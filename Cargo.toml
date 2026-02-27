@@ -1,0 +1,46 @@
+[package]
+name = "wvp-gb28181-server"
+version = "0.1.0"
+edition = "2021"
+description = "WVP GB28181 后端 Rust 重写，前端复用 web 目录"
+
+[features]
+default = ["postgres"]
+# 数据库二选一：默认 PostgreSQL；MySQL 请使用 --no-default-features --features mysql
+mysql = ["sqlx/mysql"]
+postgres = ["sqlx/postgres"]
+
+[dependencies]
+# Web
+axum = { version = "0.7", features = ["json", "macros", "form", "query"] }
+tower = "0.4"
+tower-http = { version = "0.5", features = ["cors", "fs", "trace"] }
+tokio = { version = "1", features = ["full"] }
+
+# 序列化与配置
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# 数据库（通过 features 选择 mysql 或 postgres）
+sqlx = { version = "0.7", features = ["runtime-tokio", "chrono", "macros"], default-features = false }
+chrono = { version = "0.4", features = ["serde"] }
+
+# 鉴权
+jsonwebtoken = "9"
+md-5 = "0.10"
+
+# 配置
+config = "0.14"
+
+# 日志
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# 错误与工具
+thiserror = "1"
+anyhow = "1"
+rand = "0.8"
+
+[profile.release]
+lto = true
+codegen-units = 1

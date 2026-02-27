@@ -1,0 +1,74 @@
+# PostgreSQL（默认）+ Redis，MySQL 可选，供本地开发/联调使用
+# 启动: docker compose up -d
+# 停止: docker compose down
+# 默认配置下后端连接 postgres://postgres:postgres@127.0.0.1:5432/wvp
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: wvp-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: wvp
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: wvp-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  # mysql:
+  #   image: mysql:8.0
+  #   container_name: wvp-mysql
+  #   restart: unless-stopped
+  #   profiles:
+  #     - mysql
+  #   environment:
+  #     MYSQL_ROOT_PASSWORD: Fitow2022
+  #     MYSQL_DATABASE: wvp
+  #     MYSQL_CHARACTER_SET_SERVER: utf8mb4
+  #     MYSQL_COLLATION_SERVER: utf8mb4_unicode_ci
+  #   ports:
+  #     - "3306:3306"
+  #   volumes:
+  #     - mysql_data:/var/lib/mysql
+  #   command: ["mysqld", "--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
+  #   healthcheck:
+  #     test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-pFitow2022"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 5
+  zlmediakit:
+    image: zlmediakit/zlmediakit:master
+    container_name: wvp-zlmediakit
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - zlmdata:/opt/media/bin/www
+    environment:
+      - ZLM_SERVER_SECRET=035c73f7-bb6b-4889-a715-d9eb2d1925cc
+
+volumes:
+  postgres_data:
+  redis_data:
+  # mysql_data:
+  zlmdata:
