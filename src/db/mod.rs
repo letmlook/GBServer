@@ -1,6 +1,6 @@
 mod user;
 mod device;
-mod media_server;
+pub mod media_server;
 pub mod role;
 pub mod region;
 pub mod group;
@@ -9,6 +9,7 @@ pub mod record_plan;
 pub mod stream_push;
 pub mod stream_proxy;
 pub mod platform;
+pub mod platform_channel;
 
 pub use user::*;
 pub use device::*;

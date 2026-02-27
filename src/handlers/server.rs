@@ -4,7 +4,9 @@ use axum::{
     extract::{Path, State},
     Json,
 };
-use crate::db::{get_media_server_by_id, list_media_servers, MediaServer};
+use serde::Deserialize;
+
+use crate::db::{get_media_server_by_id, list_media_servers, media_server, MediaServer};
 use crate::error::AppError;
 use crate::response::WVPResult;
 
@@ -69,26 +71,81 @@ pub async fn resource_info() -> Json<WVPResult<serde_json::Value>> {
 pub async fn media_server_check() -> Json<WVPResult<serde_json::Value>> {
     Json(WVPResult::success(serde_json::json!(true)))
 }
+
 /// GET /api/server/media_server/record/check
 pub async fn media_server_record_check() -> Json<WVPResult<serde_json::Value>> {
     Json(WVPResult::success(serde_json::json!(true)))
 }
-/// POST /api/server/media_server/save
-pub async fn media_server_save() -> Json<WVPResult<()>> {
-    Json(WVPResult::<()>::success_empty())
+
+/// POST /api/server/media_server/save - 添加或更新媒体服务器
+#[derive(Debug, Deserialize)]
+pub struct MediaServerSaveBody {
+    pub id: Option<String>,
+    pub ip: Option<String>,
+    pub hook_ip: Option<String>,
+    pub http_port: Option<i32>,
 }
+
+pub async fn media_server_save(
+    State(state): State<AppState>,
+    Json(body): Json<MediaServerSaveBody>,
+) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+    let id = body.id.unwrap_or_else(|| format!("media_server_{}", chrono::Utc::now().timestamp_millis()));
+    let ip = body.ip.unwrap_or_else(|| "127.0.0.1".to_string());
+    let http_port = body.http_port.unwrap_or(8080);
+    let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    
+    // 检查是否已存在
+    let existing = get_media_server_by_id(&state.pool, &id).await?;
+    
+    if existing.is_some() {
+        media_server::update(
+            &state.pool,
+            &id,
+            Some(&ip),
+            body.hook_ip.as_deref(),
+            Some(http_port),
+            &now,
+        ).await?;
+    } else {
+        // 添加
+        media_server::add(
+            &state.pool,
+            &id,
+            &ip,
+            http_port,
+            &now,
+        ).await?;
+    }
+    
+    Ok(Json(WVPResult::success(serde_json::json!({
+        "id": id,
+        "message": "保存成功"
+    }))))
+}
+
 /// DELETE /api/server/media_server/delete
-pub async fn media_server_delete() -> Json<WVPResult<()>> {
-    Json(WVPResult::<()>::success_empty())
+pub async fn media_server_delete(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+    media_server::delete_by_id(&state.pool, &id).await?;
+    Ok(Json(WVPResult::success(serde_json::json!({
+        "id": id,
+        "message": "删除成功"
+    }))))
 }
+
 /// GET /api/server/media_server/media_info
 pub async fn media_server_media_info() -> Json<WVPResult<serde_json::Value>> {
     Json(WVPResult::success(serde_json::json!(null)))
 }
+
 /// GET /api/server/media_server/load
 pub async fn media_server_load() -> Json<WVPResult<serde_json::Value>> {
     Json(WVPResult::success(serde_json::json!(null)))
 }
+
 /// GET /api/server/map/model-icon/list
 pub async fn map_model_icon_list() -> Json<WVPResult<Vec<serde_json::Value>>> {
     Json(WVPResult::success(vec![]))

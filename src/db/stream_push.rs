@@ -5,6 +5,7 @@ use sqlx::FromRow;
 
 use super::Pool;
 
+/// 推流记录结构体
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub struct StreamPush {
     pub id: i64,
@@ -12,8 +13,135 @@ pub struct StreamPush {
     pub stream: Option<String>,
     pub create_time: Option<String>,
     pub media_server_id: Option<String>,
+    pub server_id: Option<String>,
+    pub push_time: Option<String>,
+    pub status: Option<bool>,
     pub update_time: Option<String>,
     pub pushing: Option<bool>,
+    pub self_push: Option<bool>,
+    pub start_offline_push: Option<bool>,
+}
+
+/// 根据ID获取推流记录
+pub async fn get_by_id(pool: &Pool, id: i64) -> sqlx::Result<Option<StreamPush>> {
+    #[cfg(feature = "mysql")]
+    return sqlx::query_as::<_, StreamPush>(
+        "SELECT * FROM wvp_stream_push WHERE id = ?"
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await;
+    #[cfg(feature = "postgres")]
+    return sqlx::query_as::<_, StreamPush>(
+        "SELECT * FROM wvp_stream_push WHERE id = $1"
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await;
+}
+
+/// 添加推流记录
+pub async fn add(
+    pool: &Pool,
+    app: &str,
+    stream: &str,
+    media_server_id: &str,
+    now: &str,
+) -> sqlx::Result<u64> {
+    #[cfg(feature = "mysql")]
+    let r = sqlx::query(
+        r#"INSERT INTO wvp_stream_push (app, stream, media_server_id, create_time, update_time, pushing, self, start_offline_push)
+           VALUES (?, ?, ?, ?, ?, false, true, true)"#
+    )
+    .bind(app)
+    .bind(stream)
+    .bind(media_server_id)
+    .bind(now)
+    .bind(now)
+    .execute(pool)
+    .await?;
+    #[cfg(feature = "postgres")]
+    let r = sqlx::query(
+        r#"INSERT INTO wvp_stream_push (app, stream, media_server_id, create_time, update_time, pushing, self, start_offline_push)
+           VALUES ($1, $2, $3, $4, $5, false, true, true)"#
+    )
+    .bind(app)
+    .bind(stream)
+    .bind(media_server_id)
+    .bind(now)
+    .bind(now)
+    .execute(pool)
+    .await?;
+    Ok(r.rows_affected())
+}
+
+/// 更新推流记录
+pub async fn update(
+    pool: &Pool,
+    id: i64,
+    app: Option<&str>,
+    stream: Option<&str>,
+    media_server_id: Option<&str>,
+    now: &str,
+) -> sqlx::Result<u64> {
+    #[cfg(feature = "mysql")]
+    let r = sqlx::query(
+        r#"UPDATE wvp_stream_push SET
+           app = COALESCE(?, app),
+           stream = COALESCE(?, stream),
+           media_server_id = COALESCE(?, media_server_id),
+           update_time = ?
+           WHERE id = ?"#
+    )
+    .bind(app)
+    .bind(stream)
+    .bind(media_server_id)
+    .bind(now)
+    .bind(id)
+    .execute(pool)
+    .await?;
+    #[cfg(feature = "postgres")]
+    let r = sqlx::query(
+        r#"UPDATE wvp_stream_push SET
+           app = COALESCE($1, app),
+           stream = COALESCE($2, stream),
+           media_server_id = COALESCE($3, media_server_id),
+           update_time = $4
+           WHERE id = $5"#
+    )
+    .bind(app)
+    .bind(stream)
+    .bind(media_server_id)
+    .bind(now)
+    .bind(id)
+    .execute(pool)
+    .await?;
+    Ok(r.rows_affected())
+}
+
+/// 删除推流记录
+pub async fn delete_by_id(pool: &Pool, id: i64) -> sqlx::Result<u64> {
+    #[cfg(feature = "mysql")]
+    let r = sqlx::query("DELETE FROM wvp_stream_push WHERE id = ?")
+    .bind(id)
+    .execute(pool)
+    .await?;
+    #[cfg(feature = "postgres")]
+    let r = sqlx::query("DELETE FROM wvp_stream_push WHERE id = $1")
+    .bind(id)
+    .execute(pool)
+    .await?;
+    Ok(r.rows_affected())
+}
+
+/// 批量删除推流记录
+pub async fn batch_delete(pool: &Pool, ids: &[i64]) -> sqlx::Result<u64> {
+    let mut total: u64 = 0;
+    for id in ids {
+        let r = delete_by_id(pool, *id).await?;
+        total += r;
+    }
+    Ok(total)
 }
 
 pub async fn list_paged(
