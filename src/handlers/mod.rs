@@ -1,8 +1,12 @@
 pub mod user;
 pub mod device;
 pub mod device_stub;
+pub mod device_control;
 pub mod server;
 pub mod stream;
 pub mod platform;
 pub mod play;
+pub mod playback;
+pub mod talk;
+pub mod cascade;
 pub mod stub;

@@ -25,7 +25,17 @@ impl<T> WVPResult<T> {
         }
     }
 
-    pub fn fail(code: i32, msg: impl Into<String>) -> WVPResult<()> {
+    pub fn error(msg: impl Into<String>) -> WVPResult<T> {
+        WVPResult {
+            code: -1,
+            msg: msg.into(),
+            data: None,
+        }
+    }
+}
+
+impl WVPResult<()> {
+    pub fn fail(code: i32, msg: impl Into<String>) -> Self {
         WVPResult {
             code,
             msg: msg.into(),

@@ -19,3 +19,27 @@ static_dir: "web/dist"
 
 user_settings:
   server_id: "wvp-rust-001"
+
+# SIP 服务配置
+sip:
+  enabled: true
+  ip: "0.0.0.0"
+  port: 5060
+  device_id: "34020000002000000001"
+  password: "admin123"
+  realm: "3402000000"
+  keepalive_timeout: 30
+  register_timeout: 3600
+  charset: "UTF-8"
+
+# ZLM 流媒体服务器配置
+zlm:
+  servers:
+    - id: "zlmediakit-1"
+      ip: "127.0.0.1"
+      http_port: 8080
+      secret: "S63648HLbxckv7YjpPTXXRTOsAVGo0Ia"
+      enabled: true
+  stream_timeout: 10
+  hook_enabled: true
+  hook_url: "http://127.0.0.1:18080/api/zlm/hook"
