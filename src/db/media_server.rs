@@ -29,6 +29,7 @@ pub struct MediaServer {
     pub jtt_proxy_port: Option<i32>,
     pub auto_config: Option<bool>,
     pub secret: Option<String>,
+    #[sqlx(rename = "type")]
     pub type_: Option<String>,
     pub rtp_enable: Option<bool>,
     pub rtp_port_range: Option<String>,

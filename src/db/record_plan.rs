@@ -7,7 +7,7 @@ use super::Pool;
 
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub struct RecordPlan {
-    pub id: i64,
+    pub id: i32,
     pub snap: Option<bool>,
     pub name: String,
     pub create_time: Option<String>,
@@ -16,7 +16,7 @@ pub struct RecordPlan {
 
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub struct RecordPlanItem {
-    pub id: i64,
+    pub id: i32,
     pub start: Option<i32>,
     pub stop: Option<i32>,
     pub week_day: Option<i32>,
@@ -38,7 +38,7 @@ pub struct RecordPlanUpdate {
     pub snap: Option<bool>,
 }
 
-pub async fn get_by_id(pool: &Pool, id: i64) -> sqlx::Result<Option<RecordPlan>> {
+pub async fn get_by_id(pool: &Pool, id: i32) -> sqlx::Result<Option<RecordPlan>> {
     #[cfg(feature = "mysql")]
     return sqlx::query_as::<_, RecordPlan>(
         "SELECT id, snap, name, create_time, update_time FROM wvp_record_plan WHERE id = ?",
@@ -156,7 +156,7 @@ pub async fn update(
     Ok(r.rows_affected())
 }
 
-pub async fn delete_by_id(pool: &Pool, id: i64) -> sqlx::Result<u64> {
+pub async fn delete_by_id(pool: &Pool, id: i32) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
     {
         let _ = sqlx::query("DELETE FROM wvp_record_plan_item WHERE plan_id = ?")

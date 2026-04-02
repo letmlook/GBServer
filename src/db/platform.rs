@@ -8,7 +8,7 @@ use super::Pool;
 /// 完整的平台信息结构体
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub struct Platform {
-    pub id: i64,
+    pub id: i32,
     pub enable: Option<bool>,
     pub name: Option<String>,
     pub server_gb_id: Option<String>,

@@ -8,7 +8,7 @@ use super::Pool;
 /// 拉流代理结构体
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub struct StreamProxy {
-    pub id: i64,
+    pub id: i32,
     pub type_: Option<String>,
     pub app: Option<String>,
     pub stream: Option<String>,

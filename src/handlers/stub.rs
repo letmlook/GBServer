@@ -102,7 +102,7 @@ pub async fn role_all(State(state): State<AppState>) -> Result<Json<WVPResult<Ve
 pub struct RegionQuery {
     pub page: Option<u32>,
     pub count: Option<u32>,
-    pub id: Option<i64>,
+    pub id: Option<i32>,
     pub device_id: Option<String>,
 }
 
@@ -283,7 +283,7 @@ pub async fn region_path(
     let id = q.id.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id"))?;
     let all: Vec<Region> = region::list_all(&state.pool).await?;
     let mut path = Vec::new();
-    let mut current_id: Option<i64> = Some(id);
+    let mut current_id: Option<i32> = Some(id);
     while let Some(cid) = current_id {
         if let Some(r) = all.iter().find(|x| x.id == cid) {
             path.push(serde_json::json!({
@@ -291,7 +291,7 @@ pub async fn region_path(
                 "deviceId": r.device_id,
                 "name": r.name
             }));
-            current_id = r.parent_id.map(|p| p as i64);
+            current_id = r.parent_id;
         } else {
             break;
         }
@@ -419,7 +419,7 @@ pub async fn group_update(
 /// DELETE /api/group/delete?id=
 #[derive(Debug, Deserialize)]
 pub struct IdQuery {
-    pub id: Option<i64>,
+    pub id: Option<i32>,
 }
 
 pub async fn group_delete(
@@ -439,7 +439,7 @@ pub async fn group_path(
     let id = q.id.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id"))?;
     let all: Vec<Group> = group::list_all(&state.pool).await?;
     let mut path = Vec::new();
-    let mut current_id: Option<i64> = Some(id);
+    let mut current_id: Option<i32> = Some(id);
     while let Some(cid) = current_id {
         if let Some(g) = all.iter().find(|x| x.id == cid) {
             path.push(serde_json::json!({
@@ -447,7 +447,7 @@ pub async fn group_path(
                 "deviceId": g.device_id,
                 "name": g.name
             }));
-            current_id = g.parent_id.map(|p| p as i64);
+            current_id = g.parent_id;
         } else {
             break;
         }
@@ -581,7 +581,7 @@ pub async fn user_api_key_remark(
 /// POST /api/userApiKey/enable
 #[derive(Debug, Deserialize)]
 pub struct UserApiKeyId {
-    pub id: Option<i64>,
+    pub id: Option<i32>,
 }
 
 pub async fn user_api_key_enable(

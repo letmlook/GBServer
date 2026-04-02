@@ -1,5 +1,5 @@
 mod user;
-mod device;
+pub mod device;
 pub mod media_server;
 pub mod role;
 pub mod region;

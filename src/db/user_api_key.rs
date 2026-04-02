@@ -7,7 +7,7 @@ use super::Pool;
 
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub struct UserApiKey {
-    pub id: i64,
+    pub id: i32,
     pub user_id: Option<i64>,
     pub app: Option<String>,
     pub api_key: Option<String>,
@@ -61,7 +61,7 @@ pub async fn count_all(pool: &Pool) -> sqlx::Result<i64> {
         .await
 }
 
-pub async fn get_by_id(pool: &Pool, id: i64) -> sqlx::Result<Option<UserApiKey>> {
+pub async fn get_by_id(pool: &Pool, id: i32) -> sqlx::Result<Option<UserApiKey>> {
     #[cfg(feature = "mysql")]
     return sqlx::query_as::<_, UserApiKey>(
         "SELECT id, user_id, app, api_key, expired_at, remark, enable, create_time, update_time FROM wvp_user_api_key WHERE id = ?",
@@ -136,7 +136,7 @@ pub async fn update_remark(
     Ok(r.rows_affected())
 }
 
-pub async fn set_enable(pool: &Pool, id: i64, enable: bool, now: &str) -> sqlx::Result<u64> {
+pub async fn set_enable(pool: &Pool, id: i32, enable: bool, now: &str) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
     let r = sqlx::query("UPDATE wvp_user_api_key SET enable = ?, update_time = ? WHERE id = ?")
         .bind(enable)
@@ -156,7 +156,7 @@ pub async fn set_enable(pool: &Pool, id: i64, enable: bool, now: &str) -> sqlx::
 
 pub async fn reset_api_key(
     pool: &Pool,
-    id: i64,
+    id: i32,
     new_key: &str,
     now: &str,
 ) -> sqlx::Result<u64> {
@@ -177,7 +177,7 @@ pub async fn reset_api_key(
     Ok(r.rows_affected())
 }
 
-pub async fn delete_by_id(pool: &Pool, id: i64) -> sqlx::Result<u64> {
+pub async fn delete_by_id(pool: &Pool, id: i32) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
     let r = sqlx::query("DELETE FROM wvp_user_api_key WHERE id = ?")
         .bind(id)

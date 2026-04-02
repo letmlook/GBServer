@@ -7,7 +7,7 @@ use super::Pool;
 
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub struct Role {
-    pub id: i64,
+    pub id: i32,
     pub name: Option<String>,
     pub authority: Option<String>,
     pub create_time: Option<String>,

@@ -8,7 +8,7 @@ use super::Pool;
 /// 平台通道结构体
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub struct PlatformChannel {
-    pub id: i64,
+    pub id: i32,
     pub platform_id: Option<i64>,
     pub device_channel_id: Option<i64>,
     pub custom_device_id: Option<String>,

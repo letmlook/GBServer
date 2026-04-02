@@ -8,7 +8,7 @@ use super::Pool;
 /// 推流记录结构体
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub struct StreamPush {
-    pub id: i64,
+    pub id: i32,
     pub app: Option<String>,
     pub stream: Option<String>,
     pub create_time: Option<String>,

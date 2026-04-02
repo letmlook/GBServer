@@ -61,7 +61,18 @@ services:
     image: zlmediakit/zlmediakit:master
     container_name: wvp-zlmediakit
     restart: unless-stopped
-    network_mode: host
+    # network_mode: host  # macOS doesn't support host network mode well
+    ports:
+      - "8080:80"    # HTTP API
+      - "1935:1935"  # RTMP
+      - "554:554"    # RTSP
+      - "8000:8000"  # HTTP Hook
+      - "3000:3000"  # HTTP Player
+      - "3001:3001"  # HTTP SSL
+      - "443:443"    # HTTPS
+      - "10000:10000/udp"  # RTP
+      - "3478:3478"  # WebRTC
+      - "9000:9000"  # Additional
     volumes:
       - zlmdata:/opt/media/bin/www
     environment:

@@ -7,7 +7,7 @@ use super::Pool;
 
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub struct Group {
-    pub id: i64,
+    pub id: i32,
     pub device_id: String,
     pub name: String,
     pub parent_id: Option<i32>,
@@ -47,7 +47,7 @@ pub async fn list_all(pool: &Pool) -> sqlx::Result<Vec<Group>> {
     .await
 }
 
-pub async fn get_by_id(pool: &Pool, id: i64) -> sqlx::Result<Option<Group>> {
+pub async fn get_by_id(pool: &Pool, id: i32) -> sqlx::Result<Option<Group>> {
     #[cfg(feature = "mysql")]
     return sqlx::query_as::<_, Group>(
         "SELECT id, device_id, name, parent_id, parent_device_id, business_group, create_time, update_time, civil_code FROM wvp_common_group WHERE id = ?",
@@ -181,7 +181,7 @@ pub async fn update(
     Ok(r.rows_affected())
 }
 
-pub async fn delete_by_id(pool: &Pool, id: i64) -> sqlx::Result<u64> {
+pub async fn delete_by_id(pool: &Pool, id: i32) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
     let r = sqlx::query("DELETE FROM wvp_common_group WHERE id = ?")
         .bind(id)

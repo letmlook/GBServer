@@ -7,7 +7,7 @@ use super::Pool;
 
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub struct Device {
-    pub id: i64,
+    pub id: i32,
     pub device_id: String,
     pub name: Option<String>,
     pub manufacturer: Option<String>,
@@ -25,7 +25,7 @@ pub struct Device {
 
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub struct DeviceChannel {
-    pub id: i64,
+    pub id: i32,
     pub device_id: Option<String>,
     pub name: Option<String>,
     #[serde(rename = "channelId")]
@@ -542,4 +542,80 @@ pub async fn update_device(
     .bind(name).bind(manufacturer).bind(model).bind(transport).bind(stream_mode).bind(media_server_id).bind(custom_name).bind(now).bind(device_id)
     .execute(pool).await?;
     Ok(r.rows_affected())
+}
+
+pub async fn update_device_online(
+    pool: &Pool,
+    device_id: &str,
+    online: bool,
+    ip: Option<&str>,
+    port: Option<i32>,
+    now: &str,
+) -> sqlx::Result<u64> {
+    #[cfg(feature = "mysql")]
+    let r = sqlx::query(
+        r#"UPDATE wvp_device SET on_line = ?, ip = COALESCE(?, ip), port = COALESCE(?, port), update_time = ?
+           WHERE device_id = ?"#,
+    )
+    .bind(online).bind(ip).bind(port).bind(now).bind(device_id)
+    .execute(pool).await?;
+    #[cfg(feature = "postgres")]
+    let r = sqlx::query(
+        r#"UPDATE wvp_device SET on_line = $1, ip = COALESCE($2, ip), port = COALESCE($3, port), update_time = $4
+           WHERE device_id = $5"#,
+    )
+    .bind(online).bind(ip).bind(port).bind(now).bind(device_id)
+    .execute(pool).await?;
+    Ok(r.rows_affected())
+}
+
+pub async fn upsert_device(
+    pool: &Pool,
+    device_id: &str,
+    name: Option<&str>,
+    manufacturer: Option<&str>,
+    model: Option<&str>,
+    firmware: Option<&str>,
+    transport: Option<&str>,
+    stream_mode: Option<&str>,
+    ip: Option<&str>,
+    port: Option<i32>,
+    online: bool,
+    media_server_id: Option<&str>,
+    now: &str,
+) -> sqlx::Result<()> {
+    let mid = media_server_id.unwrap_or("auto");
+    #[cfg(feature = "mysql")]
+    {
+        sqlx::query(
+            r#"INSERT INTO wvp_device (device_id, name, manufacturer, model, firmware, transport, stream_mode, ip, port, on_line, create_time, update_time, media_server_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON DUPLICATE KEY UPDATE
+               name = COALESCE(?, name), manufacturer = COALESCE(?, manufacturer), model = COALESCE(?, model),
+               firmware = COALESCE(?, firmware), transport = COALESCE(?, transport), stream_mode = COALESCE(?, stream_mode),
+               ip = COALESCE(?, ip), port = COALESCE(?, port), on_line = ?, update_time = ?, media_server_id = COALESCE(?, media_server_id)"#,
+        )
+        .bind(device_id).bind(name).bind(manufacturer).bind(model).bind(firmware).bind(transport).bind(stream_mode)
+        .bind(ip).bind(port).bind(online).bind(now).bind(now).bind(mid)
+        .bind(name).bind(manufacturer).bind(model).bind(firmware).bind(transport).bind(stream_mode)
+        .bind(ip).bind(port).bind(online).bind(now).bind(mid)
+        .execute(pool).await?;
+    }
+    #[cfg(feature = "postgres")]
+    {
+        sqlx::query(
+            r#"INSERT INTO wvp_device (device_id, name, manufacturer, model, firmware, transport, stream_mode, ip, port, on_line, create_time, update_time, media_server_id)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+               ON CONFLICT (device_id) DO UPDATE SET
+               name = COALESCE($2, wvp_device.name), manufacturer = COALESCE($3, wvp_device.manufacturer),
+               model = COALESCE($4, wvp_device.model), firmware = COALESCE($5, wvp_device.firmware),
+               transport = COALESCE($6, wvp_device.transport), stream_mode = COALESCE($7, wvp_device.stream_mode),
+               ip = COALESCE($8, wvp_device.ip), port = COALESCE($9, wvp_device.port),
+               on_line = $10, update_time = $12, media_server_id = COALESCE($13, wvp_device.media_server_id)"#,
+        )
+        .bind(device_id).bind(name).bind(manufacturer).bind(model).bind(firmware).bind(transport).bind(stream_mode)
+        .bind(ip).bind(port).bind(online).bind(now).bind(now).bind(mid)
+        .execute(pool).await?;
+    }
+    Ok(())
 }
