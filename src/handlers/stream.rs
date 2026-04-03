@@ -320,29 +320,84 @@ pub async fn push_batch_remove(
 /// POST /api/push/save_to_gb - 保存推流信息到国标
 pub async fn push_save_to_gb(
     State(state): State<AppState>,
-    Json(body): Json<PushBatchRemoveBody>,
+    Json(body): Json<serde_json::Value>,
 ) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
-    let ids = body.ids.unwrap_or_default();
+    let id = body.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+    let device_id = body.get("deviceId").and_then(|v| v.as_str()).unwrap_or("");
+    let channel_id = body.get("channelId").and_then(|v| v.as_str()).unwrap_or("");
     
-    // For GB28181, we would register these push streams as virtual devices
-    // This is a placeholder - actual implementation would need device registration logic
+    if id <= 0 || device_id.is_empty() {
+        return Ok(Json(WVPResult::error("缺少必要参数".to_string())));
+    }
+    
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    #[cfg(feature = "mysql")]
+    {
+        let _ = sqlx::query(
+            "UPDATE wvp_push_stream SET device_id = ?, channel_id = ?, update_time = ? WHERE id = ?",
+        )
+        .bind(device_id)
+        .bind(channel_id)
+        .bind(&now)
+        .bind(id)
+        .execute(&state.pool)
+        .await;
+    }
+    #[cfg(feature = "postgres")]
+    {
+        let _ = sqlx::query(
+            "UPDATE wvp_push_stream SET device_id = $1, channel_id = $2, update_time = $3 WHERE id = $4",
+        )
+        .bind(device_id)
+        .bind(channel_id)
+        .bind(&now)
+        .bind(id)
+        .execute(&state.pool)
+        .await;
+    }
+    
     Ok(Json(WVPResult::success(serde_json::json!({
-        "saved": ids.len(),
-        "message": "Push streams saved to GB (placeholder)"
+        "saved": 1,
+        "message": "推流已保存到国标"
     }))))
 }
 
 /// POST /api/push/remove_form_gb - 从国标移除推流信息
 pub async fn push_remove_form_gb(
     State(state): State<AppState>,
-    Json(body): Json<PushBatchRemoveBody>,
+    Json(body): Json<serde_json::Value>,
 ) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
-    let ids = body.ids.unwrap_or_default();
+    let id = body.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
     
-    // For GB28181, we would unregister these push streams from virtual devices
+    if id <= 0 {
+        return Ok(Json(WVPResult::error("缺少必要参数".to_string())));
+    }
+    
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    #[cfg(feature = "mysql")]
+    {
+        let _ = sqlx::query(
+            "UPDATE wvp_push_stream SET device_id = NULL, channel_id = NULL, update_time = ? WHERE id = ?",
+        )
+        .bind(&now)
+        .bind(id)
+        .execute(&state.pool)
+        .await;
+    }
+    #[cfg(feature = "postgres")]
+    {
+        let _ = sqlx::query(
+            "UPDATE wvp_push_stream SET device_id = NULL, channel_id = NULL, update_time = $1 WHERE id = $2",
+        )
+        .bind(&now)
+        .bind(id)
+        .execute(&state.pool)
+        .await;
+    }
+    
     Ok(Json(WVPResult::success(serde_json::json!({
-        "removed": ids.len(),
-        "message": "Push streams removed from GB (placeholder)"
+        "removed": 1,
+        "message": "推流已从国标移除"
     }))))
 }
 
