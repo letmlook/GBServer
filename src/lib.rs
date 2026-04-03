@@ -9,6 +9,7 @@ pub mod sip;
 pub mod zlm;
 
 use config::AppConfig;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -27,19 +28,22 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
         None
     };
 
-    let zlm_client = if let Some(ref zlm_config) = cfg.zlm {
-        if let Some(server) = zlm_config.servers.first() {
+    let mut zlm_clients: HashMap<String, Arc<zlm::ZlmClient>> = HashMap::new();
+    let mut zlm_client: Option<Arc<zlm::ZlmClient>> = None;
+    
+    if let Some(ref zlm_config) = cfg.zlm {
+        for server in &zlm_config.servers {
             if server.enabled {
-                Some(Arc::new(zlm::ZlmClient::from_config(server)))
-            } else {
-                None
+                let client = Arc::new(zlm::ZlmClient::from_config(server));
+                zlm_clients.insert(server.id.clone(), client.clone());
+                tracing::info!("ZLM client initialized: {} ({}:{})", server.id, server.ip, server.http_port);
+                
+                if zlm_client.is_none() {
+                    zlm_client = Some(client);
+                }
             }
-        } else {
-            None
         }
-    } else {
-        None
-    };
+    }
 
     let download_manager = Arc::new(crate::handlers::playback::DownloadManager::new());
 
@@ -48,6 +52,7 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
         pool,
         sip_server: sip_server.clone(),
         zlm_client,
+        zlm_clients,
         download_manager: Some(download_manager),
     };
 
@@ -76,5 +81,20 @@ pub struct AppState {
     pub pool: db::Pool,
     pub sip_server: Option<Arc<RwLock<sip::SipServer>>>,
     pub zlm_client: Option<Arc<zlm::ZlmClient>>,
+    pub zlm_clients: HashMap<String, Arc<zlm::ZlmClient>>,
     pub download_manager: Option<Arc<crate::handlers::playback::DownloadManager>>,
+}
+
+impl AppState {
+    pub fn get_zlm_client(&self, media_server_id: Option<&str>) -> Option<Arc<zlm::ZlmClient>> {
+        if let Some(id) = media_server_id {
+            self.zlm_clients.get(id).cloned()
+        } else {
+            self.zlm_client.clone()
+        }
+    }
+    
+    pub fn list_zlm_servers(&self) -> Vec<String> {
+        self.zlm_clients.keys().cloned().collect()
+    }
 }

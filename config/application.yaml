@@ -25,6 +25,7 @@ sip:
   enabled: true
   ip: "0.0.0.0"
   port: 5060
+  tcp_port: 5061
   device_id: "34020000002000000001"
   password: "admin123"
   realm: "3402000000"

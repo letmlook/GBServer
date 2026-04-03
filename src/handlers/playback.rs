@@ -194,26 +194,94 @@ pub async fn playback_start(
 pub async fn playback_resume(
     State(state): State<AppState>,
     Path(stream_id): Path<String>,
-) -> Json<WVPResult<()>> {
+) -> Json<WVPResult<serde_json::Value>> {
     tracing::info!("Playback resume: stream={}", stream_id);
-    Json(WVPResult::<()>::success_empty())
+    
+    if let Some(ref sip_server) = state.sip_server {
+        let sip = sip_server.read().await;
+        let parts: Vec<&str> = stream_id.split('_').collect();
+        if parts.len() >= 3 {
+            let device_id = parts[1];
+            let channel_id = parts[2];
+            
+            if let Err(e) = sip.send_message_to_device(device_id, crate::sip::SipMethod::Info,
+                Some(r#"<?xml version="1.0" encoding="UTF-8"?><Resume><ChannelID>0</ChannelID></Resume>"#),
+                Some("Application/MANSCDP+xml")).await {
+                tracing::error!("Failed to send resume command: {}", e);
+                return Json(WVPResult::error(format!("SIP error: {}", e)));
+            }
+        }
+    }
+    
+    Json(WVPResult::success(serde_json::json!({
+        "streamId": stream_id,
+        "status": "playing",
+        "message": "Playback resumed"
+    })))
 }
 
 pub async fn playback_pause(
     State(state): State<AppState>,
     Path(stream_id): Path<String>,
-) -> Json<WVPResult<()>> {
+) -> Json<WVPResult<serde_json::Value>> {
     tracing::info!("Playback pause: stream={}", stream_id);
-    Json(WVPResult::<()>::success_empty())
+    
+    if let Some(ref sip_server) = state.sip_server {
+        let sip = sip_server.read().await;
+        let parts: Vec<&str> = stream_id.split('_').collect();
+        if parts.len() >= 3 {
+            let device_id = parts[1];
+            let channel_id = parts[2];
+            
+            if let Err(e) = sip.send_message_to_device(device_id, crate::sip::SipMethod::Info, 
+                Some(r#"<?xml version="1.0" encoding="UTF-8"?><Pause><ChannelID>0</ChannelID></Pause>"#),
+                Some("Application/MANSCDP+xml")).await {
+                tracing::error!("Failed to send pause command: {}", e);
+                return Json(WVPResult::error(format!("SIP error: {}", e)));
+            }
+        }
+    }
+    
+    Json(WVPResult::success(serde_json::json!({
+        "streamId": stream_id,
+        "status": "paused",
+        "message": "Playback paused"
+    })))
 }
 
 pub async fn playback_speed(
     State(state): State<AppState>,
     Path((stream_id, speed)): Path<(String, String)>,
-) -> Json<WVPResult<()>> {
+) -> Json<WVPResult<serde_json::Value>> {
     let speed: f64 = speed.parse().unwrap_or(1.0);
     tracing::info!("Playback speed: stream={}, speed={}", stream_id, speed);
-    Json(WVPResult::<()>::success_empty())
+    
+    if let Some(ref sip_server) = state.sip_server {
+        let sip = sip_server.read().await;
+        let parts: Vec<&str> = stream_id.split('_').collect();
+        if parts.len() >= 3 {
+            let device_id = parts[1];
+            let channel_id = parts[2];
+            
+            let speed_xml = format!(
+                r#"<?xml version="1.0" encoding="UTF-8"?><PlaybackSpeed><ChannelID>0</ChannelID><Speed>{}</Speed></PlaybackSpeed>"#,
+                speed
+            );
+            
+            if let Err(e) = sip.send_message_to_device(device_id, crate::sip::SipMethod::Info,
+                Some(&speed_xml),
+                Some("Application/MANSCDP+xml")).await {
+                tracing::error!("Failed to send speed command: {}", e);
+                return Json(WVPResult::error(format!("SIP error: {}", e)));
+            }
+        }
+    }
+    
+    Json(WVPResult::success(serde_json::json!({
+        "streamId": stream_id,
+        "speed": speed,
+        "message": "Playback speed updated"
+    })))
 }
 
 pub async fn playback_stop(

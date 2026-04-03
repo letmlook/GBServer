@@ -25,6 +25,7 @@ use crate::sip::gb28181::invite_session::{
 use crate::sip::gb28181::talk::{TalkManager, TalkStatus, build_talk_sdp as build_audio_sdp};
 use crate::sip::gb28181::catalog::{CatalogSubscriptionManager, build_catalog_notify_body};
 use crate::sip::core::parser::Parser;
+use crate::sip::transport::tcp::{TcpListener, TcpConnectionManager};
 use crate::zlm::ZlmClient;
 
 pub struct SipServer {
@@ -37,6 +38,9 @@ pub struct SipServer {
     transaction_manager: Arc<TransactionManager>,
     dialog_manager: Arc<DialogManager>,
     socket: Arc<RwLock<Option<UdpSocket>>>,
+    tcp_enabled: bool,
+    tcp_listener: Arc<RwLock<Option<TcpListener>>>,
+    tcp_connection_manager: Arc<TcpConnectionManager>,
     pool: Pool,
     zlm_client: Option<Arc<ZlmClient>>,
 }
@@ -53,6 +57,9 @@ impl SipServer {
             transaction_manager: Arc::new(TransactionManager::new()),
             dialog_manager: Arc::new(DialogManager::new()),
             socket: Arc::new(RwLock::new(None)),
+            tcp_enabled: false,
+            tcp_listener: Arc::new(RwLock::new(None)),
+            tcp_connection_manager: Arc::new(TcpConnectionManager::new()),
             pool,
             zlm_client: None,
         }
@@ -62,11 +69,29 @@ impl SipServer {
         self.zlm_client = client;
     }
 
+    pub fn set_tcp_enabled(&mut self, enabled: bool) {
+        self.tcp_enabled = enabled;
+    }
+
     pub async fn start(&mut self) -> Result<()> {
         let addr = format!("{}:{}", self.config.ip, self.config.port);
         let socket = UdpSocket::bind(&addr).await?;
-        tracing::info!("SIP Server listening on {}", addr);
+        tracing::info!("SIP Server UDP listening on {}", addr);
         *self.socket.write().await = Some(socket);
+        
+        if self.tcp_enabled {
+            let tcp_addr = format!("{}:{}", self.config.ip, self.config.tcp_port);
+            match TcpListener::bind(&tcp_addr).await {
+                Ok(listener) => {
+                    let local_addr = listener.local_addr();
+                    tracing::info!("SIP Server TCP listening on {}", local_addr);
+                    *self.tcp_listener.write().await = Some(listener);
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to bind TCP listener: {}", e);
+                }
+            }
+        }
         
         let device_manager = self.device_manager.clone();
         let invite_manager = self.invite_session_manager.clone();
@@ -130,33 +155,135 @@ impl SipServer {
         let catalog_subscription_manager = self.catalog_subscription_manager.clone();
         let zlm_client = self.zlm_client.clone();
         let pool = self.pool.clone();
+        let tcp_connection_manager = self.tcp_connection_manager.clone();
 
-        loop {
-            let mut buf = vec![0u8; 65535];
-            let socket_clone = socket.clone();
-            match socket_clone.recv_from(&mut buf).await {
-                Ok((len, addr)) => {
-                    let data = buf[..len].to_vec();
-                    let config = config.clone();
-                    let device_manager = device_manager.clone();
-                    let session_manager = session_manager.clone();
-                    let invite_session_manager = invite_session_manager.clone();
-                    let talk_manager = talk_manager.clone();
-                    let catalog_subscription_manager = catalog_subscription_manager.clone();
-                    let zlm_client = zlm_client.clone();
-                    let pool = pool.clone();
-                    let socket_for_response = socket.clone();
+        let tcp_listener = self.tcp_listener.write().await.take();
+        
+        let udp_socket = socket.clone();
+        let udp_config = config.clone();
+        let udp_device_manager = device_manager.clone();
+        let udp_session_manager = session_manager.clone();
+        let udp_invite_manager = invite_session_manager.clone();
+        let udp_talk_manager = talk_manager.clone();
+        let udp_catalog_manager = catalog_subscription_manager.clone();
+        let udp_zlm = zlm_client.clone();
+        let udp_pool = pool.clone();
 
-                    tokio::spawn(async move {
-                        if let Err(e) = Self::handle_packet(&data, addr, &config, &device_manager, &session_manager, &invite_session_manager, &talk_manager, &catalog_subscription_manager, &zlm_client, &pool, &socket_for_response).await {
-                            tracing::error!("SIP handler error: {}", e);
-                        }
-                    });
-                }
-                Err(e) => {
-                    tracing::error!("UDP recv error: {}", e);
+        tokio::spawn(async move {
+            loop {
+                let mut buf = vec![0u8; 65535];
+                let socket_clone = udp_socket.clone();
+                match socket_clone.recv_from(&mut buf).await {
+                    Ok((len, addr)) => {
+                        let data = buf[..len].to_vec();
+                        let config = udp_config.clone();
+                        let device_manager = udp_device_manager.clone();
+                        let session_manager = udp_session_manager.clone();
+                        let invite_session_manager = udp_invite_manager.clone();
+                        let talk_manager = udp_talk_manager.clone();
+                        let catalog_subscription_manager = udp_catalog_manager.clone();
+                        let zlm_client = udp_zlm.clone();
+                        let pool = udp_pool.clone();
+                        let socket_for_response = udp_socket.clone();
+
+                        tokio::spawn(async move {
+                            if let Err(e) = Self::handle_packet(&data, addr, &config, &device_manager, &session_manager, &invite_session_manager, &talk_manager, &catalog_subscription_manager, &zlm_client, &pool, &socket_for_response, false).await {
+                                tracing::error!("SIP handler error: {}", e);
+                            }
+                        });
+                    }
+                    Err(e) => {
+                        tracing::error!("UDP recv error: {}", e);
+                    }
                 }
             }
+        });
+
+        if let Some(mut listener) = tcp_listener {
+            let tcp_config = config.clone();
+            let tcp_device_manager = device_manager.clone();
+            let tcp_session_manager = session_manager.clone();
+            let tcp_invite_manager = invite_session_manager.clone();
+            let tcp_talk_manager = talk_manager.clone();
+            let tcp_catalog_manager = catalog_subscription_manager.clone();
+            let tcp_zlm_client = zlm_client.clone();
+            let tcp_pool = pool.clone();
+            let tcp_conn_mgr = tcp_connection_manager.clone();
+
+            tokio::spawn(async move {
+                loop {
+                    match listener.accept().await {
+                        Ok((mut stream, addr)) => {
+                            tracing::debug!("TCP connection from: {}", addr);
+                            
+                            let config = tcp_config.clone();
+                            let device_manager = tcp_device_manager.clone();
+                            let session_manager = tcp_session_manager.clone();
+                            let invite_session_manager = tcp_invite_manager.clone();
+                            let talk_manager = tcp_talk_manager.clone();
+                            let catalog_subscription_manager = tcp_catalog_manager.clone();
+                            let zlm_client = tcp_zlm_client.clone();
+                            let pool = tcp_pool.clone();
+                            let conn_manager = tcp_conn_mgr.clone();
+                            
+                            conn_manager.add_connection(addr, stream).await;
+                            
+                            tokio::spawn(async move {
+                                Self::handle_tcp_connection(addr, &config, &device_manager, &session_manager, &invite_session_manager, &talk_manager, &catalog_subscription_manager, &zlm_client, &pool, &conn_manager).await;
+                            });
+                        }
+                        Err(e) => {
+                            tracing::error!("TCP accept error: {}", e);
+                        }
+                    }
+                }
+            });
+        }
+
+        loop {
+            tokio::time::sleep(Duration::from_secs(3600)).await;
+        }
+    }
+
+    async fn handle_tcp_connection(
+        addr: SocketAddr,
+        config: &Arc<SipConfig>,
+        device_manager: &Arc<DeviceManager>,
+        session_manager: &Arc<SessionManager>,
+        invite_session_manager: &Arc<InviteSessionManager>,
+        talk_manager: &Arc<TalkManager>,
+        catalog_subscription_manager: &Arc<CatalogSubscriptionManager>,
+        zlm_client: &Option<Arc<ZlmClient>>,
+        pool: &Pool,
+        conn_manager: &TcpConnectionManager,
+    ) {
+        use crate::sip::transport::tcp::TcpStream;
+        
+        if let Some(conn) = conn_manager.get_connection(&addr).await {
+            let mut stream_guard = conn.write().await;
+            loop {
+                match stream_guard.read_message().await {
+                    Ok(Some((msg, _peer))) => {
+                        let data = format!("{:?}", msg);
+                        let data_bytes = data.as_bytes();
+                        
+                        let socket = Arc::new(tokio::net::UdpSocket::bind("0.0.0.0:0").await.unwrap());
+                        
+                        if let Err(e) = Self::handle_packet(data_bytes, addr, config, device_manager, session_manager, invite_session_manager, talk_manager, catalog_subscription_manager, zlm_client, pool, &socket, true).await {
+                            tracing::error!("TCP SIP handler error: {}", e);
+                        }
+                    }
+                    Ok(None) => {
+                        tracing::debug!("TCP connection closed: {}", addr);
+                        break;
+                    }
+                    Err(e) => {
+                        tracing::error!("TCP read error from {}: {}", addr, e);
+                        break;
+                    }
+                }
+            }
+            conn_manager.remove_connection(&addr).await;
         }
     }
 
@@ -172,6 +299,7 @@ impl SipServer {
         zlm_client: &Option<Arc<ZlmClient>>,
         pool: &Pool,
         socket: &Arc<UdpSocket>,
+        _is_tcp: bool,
     ) -> Result<()> {
         let msg = Parser::parse(data)?;
         match msg {
@@ -1764,6 +1892,94 @@ f=v/1/96/1/2/1/1/0
         Ok(())
     }
 
+    pub async fn send_play_invite(&self, device_id: &str, channel_id: &str) -> Result<()> {
+        let socket = self.socket.read().await;
+        let socket = socket.as_ref().ok_or_else(|| anyhow::anyhow!("Socket not initialized"))?;
+        
+        let device_addr = self.device_manager.get_address(device_id).await
+            .ok_or_else(|| anyhow::anyhow!("Device {} not registered", device_id))?;
+        
+        let call_id = format!("play_{}_{}", device_id, chrono::Utc::now().timestamp_millis());
+        let branch = generate_branch();
+        let cseq = format!("INVITE {}", 1);
+        let from_tag = generate_tag();
+        
+        let via = format!("SIP/2.0/UDP {}:{};branch={};rport", 
+            self.config.ip, self.config.port, branch);
+        let from = format!("<sip:{}@{}:{}>;tag={}", 
+            self.config.device_id, self.config.ip, self.config.port, from_tag);
+        let to = format!("<sip:{}@{}:{}>", channel_id, device_addr.ip(), device_addr.port());
+        let contact = format!("<sip:{}@{}:{}>", self.config.device_id, self.config.ip, self.config.port);
+        
+        let sdp = build_invite_sdp(&self.config.ip, 0, "Play", None);
+        let subject = format!("{}:{},{}:{}", self.config.device_id, channel_id, self.config.device_id, 0);
+        
+        let headers: Vec<(&str, &str)> = vec![
+            ("Via", &via),
+            ("From", &from),
+            ("To", &to),
+            ("Call-ID", &call_id),
+            ("CSeq", &cseq),
+            ("Contact", &contact),
+            ("Max-Forwards", "70"),
+            ("User-Agent", "GBServer/1.0"),
+            ("Subject", &subject),
+            ("Content-Type", "application/sdp"),
+        ];
+        
+        let uri = format!("sip:{}@{}:{}", channel_id, device_addr.ip(), device_addr.port());
+        let message = Parser::generate_request("INVITE", &uri, &headers, Some(&sdp));
+        
+        socket.send_to(message.as_bytes(), device_addr).await?;
+        tracing::info!("Sent PLAY INVITE to device {} channel {} at {}", device_id, channel_id, device_addr);
+        
+        Ok(())
+    }
+    
+    pub async fn send_playback_invite(&self, device_id: &str, channel_id: &str, start_time: &str, end_time: &str) -> Result<()> {
+        let socket = self.socket.read().await;
+        let socket = socket.as_ref().ok_or_else(|| anyhow::anyhow!("Socket not initialized"))?;
+        
+        let device_addr = self.device_manager.get_address(device_id).await
+            .ok_or_else(|| anyhow::anyhow!("Device {} not registered", device_id))?;
+        
+        let call_id = format!("playback_{}_{}", device_id, chrono::Utc::now().timestamp_millis());
+        let branch = generate_branch();
+        let cseq = format!("INVITE {}", 1);
+        let from_tag = generate_tag();
+        
+        let via = format!("SIP/2.0/UDP {}:{};branch={};rport", 
+            self.config.ip, self.config.port, branch);
+        let from = format!("<sip:{}@{}:{}>;tag={}", 
+            self.config.device_id, self.config.ip, self.config.port, from_tag);
+        let to = format!("<sip:{}@{}:{}>", channel_id, device_addr.ip(), device_addr.port());
+        let contact = format!("<sip:{}@{}:{}>", self.config.device_id, self.config.ip, self.config.port);
+        
+        let sdp = build_playback_sdp(&self.config.ip, 0, start_time, end_time);
+        let subject = format!("{}:{},{}:{}", self.config.device_id, channel_id, self.config.device_id, 1);
+        
+        let headers: Vec<(&str, &str)> = vec![
+            ("Via", &via),
+            ("From", &from),
+            ("To", &to),
+            ("Call-ID", &call_id),
+            ("CSeq", &cseq),
+            ("Contact", &contact),
+            ("Max-Forwards", "70"),
+            ("User-Agent", "GBServer/1.0"),
+            ("Subject", &subject),
+            ("Content-Type", "application/sdp"),
+        ];
+        
+        let uri = format!("sip:{}@{}:{}", channel_id, device_addr.ip(), device_addr.port());
+        let message = Parser::generate_request("INVITE", &uri, &headers, Some(&sdp));
+        
+        socket.send_to(message.as_bytes(), device_addr).await?;
+        tracing::info!("Sent PLAYBACK INVITE to device {} channel {} [{}-{}] at {}", device_id, channel_id, start_time, end_time, device_addr);
+        
+        Ok(())
+    }
+
     pub async fn send_platform_invite(&self, platform_gb_id: &str, channel_id: &str, sdp_port: u16) -> Result<()> {
         let socket = self.socket.read().await;
         let socket = socket.as_ref().ok_or_else(|| anyhow::anyhow!("Socket not initialized"))?;
@@ -1920,6 +2136,116 @@ f=v/1/96/1/2/1/1/0
         );
         
         self.send_platform_message(platform_gb_id, "Notify", sn, &self.config.device_id, Some(&body)).await
+    }
+
+    pub async fn register_to_platform(&self, platform_gb_id: &str) -> Result<()> {
+        let socket = self.socket.read().await;
+        let socket = socket.as_ref().ok_or_else(|| anyhow::anyhow!("Socket not initialized"))?;
+        
+        let platform = crate::db::platform::get_by_server_gb_id(&self.pool, platform_gb_id).await?
+            .ok_or_else(|| anyhow::anyhow!("Platform {} not found", platform_gb_id))?;
+        
+        let server_ip = platform.server_ip.as_ref().ok_or_else(|| anyhow::anyhow!("Platform IP not set"))?;
+        let server_port = platform.server_port.unwrap_or(5060) as u16;
+        
+        let device_gb_id = platform.device_gb_id.as_ref().ok_or_else(|| anyhow::anyhow!("Device GB ID not set"))?;
+        let username = platform.username.as_deref().unwrap_or("");
+        let password = platform.password.as_deref().unwrap_or("");
+        let expires = platform.expires.as_deref().unwrap_or("3600");
+        
+        let call_id = format!("reg_{}_{}", platform_gb_id, chrono::Utc::now().timestamp_millis());
+        let branch = generate_branch();
+        
+        let via = format!("SIP/2.0/UDP {}:{};branch={};rport", 
+            self.config.ip, self.config.port, branch);
+        let from = format!("<sip:{}@{}:{}>;tag={}", 
+            device_gb_id, self.config.ip, self.config.port, generate_tag());
+        let to = format!("<sip:{}@{}:{}>", device_gb_id, server_ip, server_port);
+        let contact = format!("<sip:{}@{}:{}>", device_gb_id, self.config.ip, self.config.port);
+        
+        let auth = if !password.is_empty() {
+            let nonce = generate_nonce();
+            let realm = platform.server_gb_domain.as_deref().unwrap_or("GBServer");
+            let response = Self::compute_digest_auth(username, password, realm, "REGISTER", "/", &nonce);
+            format!(r#"Proxy-Authenticate: Digest realm="{}",nonce="{}",charset=utf-8,algorithm=MD5,qop="auth"
+Authentication-Info: qop=auth,rspauth="{}",cnonce="{}",nc=00000001"#,
+                realm, nonce, response, nonce)
+        } else {
+            String::new()
+        };
+        
+        let message = format!(
+            "REGISTER sip:{}:{} SIP/2.0\r\n\
+             Via: {}\r\n\
+             From: {}\r\n\
+             To: {}\r\n\
+             Call-ID: {}\r\n\
+             CSeq: 1 REGISTER\r\n\
+             Max-Forwards: 70\r\n\
+             Expires: {}\r\n\
+             Contact: {}\r\n\
+             User-Agent: GBServer/1.0\r\n\
+             {}\
+             Content-Length: 0\r\n\r\n",
+            device_gb_id, server_port, via, from, to, call_id, expires, contact, auth
+        );
+        
+        let addr: std::net::SocketAddr = format!("{}:{}", server_ip, server_port).parse()?;
+        socket.send_to(message.as_bytes(), addr).await?;
+        tracing::info!("Sent REGISTER to platform {} at {}", platform_gb_id, addr);
+        
+        Ok(())
+    }
+    
+    pub async fn unregister_from_platform(&self, platform_gb_id: &str) -> Result<()> {
+        let socket = self.socket.read().await;
+        let socket = socket.as_ref().ok_or_else(|| anyhow::anyhow!("Socket not initialized"))?;
+        
+        let platform = crate::db::platform::get_by_server_gb_id(&self.pool, platform_gb_id).await?
+            .ok_or_else(|| anyhow::anyhow!("Platform {} not found", platform_gb_id))?;
+        
+        let server_ip = platform.server_ip.as_ref().ok_or_else(|| anyhow::anyhow!("Platform IP not set"))?;
+        let server_port = platform.server_port.unwrap_or(5060) as u16;
+        
+        let device_gb_id = platform.device_gb_id.as_ref().ok_or_else(|| anyhow::anyhow!("Device GB ID not set"))?;
+        
+        let call_id = format!("unreg_{}_{}", platform_gb_id, chrono::Utc::now().timestamp_millis());
+        let branch = generate_branch();
+        
+        let via = format!("SIP/2.0/UDP {}:{};branch={};rport", 
+            self.config.ip, self.config.port, branch);
+        let from = format!("<sip:{}@{}:{}>;tag={}", 
+            device_gb_id, self.config.ip, self.config.port, generate_tag());
+        let to = format!("<sip:{}@{}:{}>", device_gb_id, server_ip, server_port);
+        let contact = format!("<sip:{}@{}:{}>", device_gb_id, self.config.ip, self.config.port);
+        
+        let message = format!(
+            "REGISTER sip:{}:{} SIP/2.0\r\n\
+             Via: {}\r\n\
+             From: {}\r\n\
+             To: {}\r\n\
+             Call-ID: {}\r\n\
+             CSeq: 1 REGISTER\r\n\
+             Max-Forwards: 70\r\n\
+             Expires: 0\r\n\
+             Contact: {}\r\n\
+             User-Agent: GBServer/1.0\r\n\
+             Content-Length: 0\r\n\r\n",
+            device_gb_id, server_port, via, from, to, call_id, contact
+        );
+        
+        let addr: std::net::SocketAddr = format!("{}:{}", server_ip, server_port).parse()?;
+        socket.send_to(message.as_bytes(), addr).await?;
+        tracing::info!("Sent unREGISTER to platform {} at {}", platform_gb_id, addr);
+        
+        Ok(())
+    }
+    
+    fn compute_digest_auth(username: &str, password: &str, realm: &str, method: &str, uri: &str, nonce: &str) -> String {
+        use md5::{Md5, Digest};
+        let ha1 = format!("{:x}", Md5::digest(format!("{}:{}:{}", username, realm, password)));
+        let ha2 = format!("{:x}", Md5::digest(format!("{}:{}", method, uri)));
+        format!("{:x}", Md5::digest(format!("{}:{}:{}", ha1, nonce, ha2)))
     }
 
     fn extract_tag_from_header(header: &str) -> Option<String> {

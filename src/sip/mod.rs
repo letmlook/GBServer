@@ -9,4 +9,5 @@ pub mod gb28181;
 pub mod server;
 
 pub use config::{SipConfig, ZlmConfig, ZlmServerConfig};
+pub use core::method::SipMethod;
 pub use server::SipServer;

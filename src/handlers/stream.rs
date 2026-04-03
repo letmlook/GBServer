@@ -158,9 +158,9 @@ pub async fn push_remove(
     
     // Get the push stream info first to close ZLM connection
     if let Ok(Some(push)) = stream_push::get_by_id(&state.pool, id as i64).await {
-        // Close ZLM RTP server if pushing
         if push.pushing.unwrap_or(false) {
-            if let Some(ref zlm_client) = state.zlm_client {
+            let media_server_id = push.media_server_id.as_ref();
+            if let Some(zlm_client) = state.get_zlm_client(media_server_id.map(|s| s.as_str())) {
                 if let Some(stream) = &push.stream {
                     if let Err(e) = zlm_client.close_rtp_server(stream).await {
                         tracing::warn!("Failed to close RTP server: {}", e);
@@ -654,7 +654,7 @@ pub async fn proxy_stop(
         return Ok(Json(WVPResult::error("Stream ID is required")));
     }
     
-    let zlm_client = state.zlm_client.clone();
+    let zlm_client = state.get_zlm_client(Some(&media_server_id));
     
     if let Some(zlm) = zlm_client {
         match zlm.close_streams(Some("rtsp"), Some(&app), Some(&stream), true).await {

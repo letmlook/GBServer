@@ -654,20 +654,6 @@ pub async fn playback_start(
     Json(WVPResult::success(serde_json::json!({ "stream": null })))
 }
 
-pub async fn playback_resume(Path(_stream_id): Path<String>) -> Json<WVPResult<()>> {
-    Json(WVPResult::<()>::success_empty())
-}
-
-pub async fn playback_pause(Path(_stream_id): Path<String>) -> Json<WVPResult<()>> {
-    Json(WVPResult::<()>::success_empty())
-}
-
-pub async fn playback_speed(
-    Path((_stream_id, _speed)): Path<(String, String)>,
-) -> Json<WVPResult<()>> {
-    Json(WVPResult::<()>::success_empty())
-}
-
 pub async fn playback_stop(
     Path((_device_id, _channel_id, _stream_id)): Path<(String, String, String)>,
 ) -> Json<WVPResult<()>> {
