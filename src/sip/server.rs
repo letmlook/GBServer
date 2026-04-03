@@ -73,6 +73,10 @@ impl SipServer {
         self.tcp_enabled = enabled;
     }
 
+    pub fn talk_manager(&self) -> Arc<TalkManager> {
+        self.talk_manager.clone()
+    }
+
     pub async fn start(&mut self) -> Result<()> {
         let addr = format!("{}:{}", self.config.ip, self.config.port);
         let socket = UdpSocket::bind(&addr).await?;

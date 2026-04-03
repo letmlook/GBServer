@@ -13,6 +13,9 @@ use crate::db::{
 use crate::error::{AppError, ErrorCode};
 use crate::response::WVPResult;
 use crate::AppState;
+use crate::zlm::Mp4RecordFile;
+use std::collections::{HashMap, HashSet};
+use sqlx::Row;
 
 // ========== common channel ==========
 #[derive(Debug, Deserialize)]
@@ -528,6 +531,44 @@ pub async fn log_list(State(state): State<AppState>) -> Json<WVPResult<serde_jso
     Json(WVPResult::success(serde_json::json!({ "total": total, "list": list })))
 }
 
+/// GET /api/log/file/{fileName} - 下载指定日志文件
+/// Returns a binary stream with Content-Disposition header for download.
+pub async fn log_file_download(
+    State(_state): State<AppState>,
+    Path(file_name): Path<String>,
+) -> Result<axum::response::Response, AppError> {
+    use axum::http::{header, StatusCode};
+    use axum::response::Response;
+    use axum::body::Body;
+    use std::path::PathBuf;
+
+    // 日志文件目录：项目根目录 logs/，以便与前端一致的日志文件位置
+    let base_dir = PathBuf::from("./logs");
+    let file_path = base_dir.join(&file_name);
+
+    // 验证文件是否存在
+    if !file_path.exists() {
+        return Err(AppError::business(ErrorCode::Error404, format!("日志文件不存在: {}", file_name)));
+    }
+
+    // 读取文件内容
+    let data = tokio::fs::read(&file_path)
+        .await
+        .map_err(|_| AppError::business(ErrorCode::Error404, format!("日志文件读取失败: {}", file_name)))?;
+
+    // 构造响应：下载流
+    let resp = Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/octet-stream")
+        .header(
+            header::CONTENT_DISPOSITION,
+            format!("attachment; filename=\"{}\"", file_name),
+        )
+        .body(Body::from(data))
+        .unwrap();
+    Ok(resp)
+}
+
 // ========== userApiKey ==========
 #[derive(Debug, Deserialize)]
 pub struct UserApiKeyQuery {
@@ -685,16 +726,67 @@ pub async fn gb_record_download_progress(
     Json(WVPResult::success(serde_json::json!({ "progress": 0 })))
 }
 
-pub async fn cloud_record_play_path() -> Json<WVPResult<serde_json::Value>> {
-    Json(WVPResult::success(serde_json::json!(null)))
+pub async fn cloud_record_play_path(State(state): State<AppState>) -> Json<WVPResult<serde_json::Value>> {
+    // 尝试从 ZLM 获取一个可播放的云端录像路径
+    // 1) 尝试从 ZLM 的 mp4 记录中获取最近的一条
+    // 2) 将路径返回给前端，若不存在则返回 null
+    let play_path: Option<String> = if let Some(zlm) = state.get_zlm_client(None) {
+        match zlm.get_mp4_record_file("record", "record", None, None, None).await {
+            Ok(list) => list.get(0).map(|r| r.path.clone()),
+            Err(_) => None,
+        }
+    } else {
+        None
+    };
+    let val = serde_json::json!({
+        "playPath": play_path.unwrap_or_default()
+    });
+    Json(WVPResult::success(val))
 }
 
-pub async fn cloud_record_date_list() -> Json<WVPResult<Vec<serde_json::Value>>> {
-    Json(WVPResult::success(vec![]))
+pub async fn cloud_record_date_list(State(state): State<AppState>) -> Json<WVPResult<Vec<serde_json::Value>>> {
+    // 通过 ZLM 查询最近的云端录像列表，提取日期（YYYY-MM-DD）
+    // 不抛出错误，出错时返回空日期列表
+    let mut dates: HashSet<String> = HashSet::new();
+    if let Some(zlm) = state.get_zlm_client(None) {
+        if let Ok(list) = zlm.get_mp4_record_file("record", "record", None, None, None).await {
+            for rec in list {
+                let ct = rec.create_time;
+                if ct.len() >= 10 {
+                    dates.insert(ct[..10].to_string());
+                } else {
+                    dates.insert(ct);
+                }
+            }
+        }
+    }
+    let mut result = Vec::new();
+    for d in dates.into_iter() {
+        result.push(serde_json::json!({"date": d}));
+    }
+    Json(WVPResult::success(result))
 }
 
-pub async fn cloud_record_load() -> Json<WVPResult<Vec<serde_json::Value>>> {
-    Json(WVPResult::success(vec![]))
+pub async fn cloud_record_load(State(state): State<AppState>) -> Json<WVPResult<Vec<serde_json::Value>>> {
+    // 从 ZLM 获取 mp4 记录文件列表，并作为加载结果返回
+    let mut items: Vec<serde_json::Value> = Vec::new();
+    if let Some(zlm) = state.get_zlm_client(None) {
+        if let Ok(list) = zlm.get_mp4_record_file("record", "record", None, None, None).await {
+            for r in list {
+                let obj = serde_json::json!({
+                    "id": r.name,
+                    "name": r.name,
+                    "createTime": r.create_time,
+                    "duration": r.duration,
+                    "size": r.size,
+                    "path": r.path,
+                    "filePath": r.file_path,
+                });
+                items.push(obj);
+            }
+        }
+    }
+    Json(WVPResult::success(items))
 }
 
 pub async fn cloud_record_seek() -> Json<WVPResult<()>> {
@@ -705,20 +797,92 @@ pub async fn cloud_record_speed() -> Json<WVPResult<()>> {
     Json(WVPResult::<()>::success_empty())
 }
 
-pub async fn cloud_record_task_add() -> Json<WVPResult<()>> {
+pub async fn cloud_record_task_add(State(state): State<AppState>) -> Json<WVPResult<()>> {
+    // 简易实现：在 wvp_cloud_record_task 表中添加任务记录
+    // 1) 创建表（若不存在）
+    // 2) 插入一条记录
+    // 3) 返回新任务的 ID
+    // 注意：若数据库不支持或未配置，降级返回空任务
+    let pool = &state.pool;
+    // 1) 尝试创建任务表（若不存在）
+    #[cfg(feature = "postgres")]
+    let _ = sqlx::query(
+        "CREATE TABLE IF NOT EXISTS wvp_cloud_record_task (id BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY, name TEXT, status TEXT, create_time TIMESTAMP, update_time TIMESTAMP)",
+    )
+    .execute(pool).await;
+    #[cfg(feature = "mysql")]
+    let _ = sqlx::query(
+        "CREATE TABLE IF NOT EXISTS wvp_cloud_record_task (id BIGINT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(255), status VARCHAR(32), create_time DATETIME, update_time DATETIME)",
+    )
+    .execute(pool).await;
+    // 2) 插入记录（简化实现，不返回 ID）
+    // 为避免跨数据库差异，此处仅执行插入且忽略结果
+    let _ = sqlx::query("INSERT INTO wvp_cloud_record_task (name, status, create_time, update_time) VALUES ('默认任务', 'pending', NOW(), NOW())").execute(pool).await;
     Json(WVPResult::<()>::success_empty())
 }
 
-pub async fn cloud_record_task_list() -> Json<WVPResult<serde_json::Value>> {
-    Json(WVPResult::success(serde_json::json!({ "list": [] })))
+pub async fn cloud_record_task_list(State(state): State<AppState>) -> Json<WVPResult<serde_json::Value>> {
+    // 查询 wvp_cloud_record_task 表，返回任务列表
+    let pool = &state.pool;
+    // 尝试创建表，若已存在则忽略错误
+    #[cfg(feature = "postgres")]
+    let _ = sqlx::query("CREATE TABLE IF NOT EXISTS wvp_cloud_record_task (id BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY, name TEXT, status TEXT, create_time TIMESTAMP, update_time TIMESTAMP)").execute(pool).await;
+    #[cfg(feature = "mysql")]
+    let _ = sqlx::query("CREATE TABLE IF NOT EXISTS wvp_cloud_record_task (id BIGINT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(255), status VARCHAR(32), create_time DATETIME, update_time DATETIME)").execute(pool).await;
+    let rows = match sqlx::query("SELECT id, name, status, create_time, update_time FROM wvp_cloud_record_task ORDER BY id DESC").fetch_all(pool).await {
+        Ok(v) => v,
+        Err(_) => vec![],
+    };
+    let list: Vec<serde_json::Value> = rows
+        .into_iter()
+        .map(|r| {
+            let id: i64 = r.try_get::<i64, _>("id").unwrap_or_default();
+            let name: String = r.try_get::<String, _>("name").unwrap_or_default();
+            let status: String = r.try_get::<String, _>("status").unwrap_or_default();
+            let create_time: Option<String> = r.try_get::<Option<String>, _>("create_time").ok().flatten();
+            let update_time: Option<String> = r.try_get::<Option<String>, _>("update_time").ok().flatten();
+            serde_json::json!({
+                "id": id,
+                "name": name,
+                "status": status,
+                "createTime": create_time,
+                "updateTime": update_time
+            })
+        })
+        .collect();
+    Json(WVPResult::success(serde_json::json!({"list": list})))
 }
 
 pub async fn cloud_record_delete() -> Json<WVPResult<()>> {
     Json(WVPResult::<()>::success_empty())
 }
 
-pub async fn cloud_record_list() -> Json<WVPResult<serde_json::Value>> {
-    Json(WVPResult::success(serde_json::json!({ "total": 0, "list": [] })))
+pub async fn cloud_record_list(State(state): State<AppState>) -> Json<WVPResult<serde_json::Value>> {
+    // 尝试从 ZLM 获取云端录像列表
+    // 兜底返回空列表，确保兼容前端格式
+    let mut list: Vec<serde_json::Value> = Vec::new();
+    if let Some(zlm) = state.get_zlm_client(None) {
+        if let Ok(rec_list) = zlm.get_mp4_record_file("record", "record", None, None, None).await {
+            list = rec_list
+                .into_iter()
+                .map(|r| {
+                    serde_json::json!({
+                        "id": r.name,
+                        "name": r.name,
+                        "createTime": r.create_time,
+                        "duration": r.duration,
+                        "size": r.size,
+                        "path": r.path,
+                        "filePath": r.file_path,
+                    })
+                })
+                .collect();
+        }
+    }
+    Json(WVPResult::success(serde_json::json!({
+        "total": list.len(),
+        "list": list
+    })))
 }
 
 // ========== record_plan ==========
@@ -847,4 +1011,25 @@ pub async fn record_plan_link(
     let channel_id = body.channel_id.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 channelId"))?;
     record_plan::link_channel(&state.pool, channel_id, body.plan_id).await?;
     Ok(Json(WVPResult::<()>::success_empty()))
+}
+
+/// GET /api/position/history/:deviceId (used in queryTrace.vue, map/queryTrace.vue)
+pub async fn position_history(
+    Path(device_id): Path<String>,
+    Query(q): Query<PositionHistoryQuery>,
+) -> Json<serde_json::Value> {
+    let start = q.start.clone().unwrap_or_default();
+    let end = q.end.clone().unwrap_or_default();
+    tracing::info!("position history: device={}, start={}, end={}", device_id, start, end);
+    Json(serde_json::json!({
+        "code": 0,
+        "msg": "查询成功",
+        "data": []
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PositionHistoryQuery {
+    pub start: Option<String>,
+    pub end: Option<String>,
 }

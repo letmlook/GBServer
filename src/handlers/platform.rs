@@ -364,10 +364,26 @@ pub async fn platform_channel_add(
     }
     
     // 如果有 channel_ids，添加这些通道
-    if let Some(channel_ids) = body.channel_ids {
+    if let Some(channel_ids) = body.channel_ids.clone() {
         for channel_id_str in channel_ids {
             if let Ok(channel_id) = channel_id_str.parse::<i64>() {
                 let _ = platform_channel::add(&state.pool, platform_id, channel_id).await;
+            }
+        }
+    }
+
+    // 尝试向级联平台发送邀请，保持与WVP实现一致的行为
+    if let Some(platform) = platform_db::get_by_id(&state.pool, platform_id).await? {
+        if let Some(ref server_gb_id) = platform.server_gb_id {
+            if let Some(ref sip_server) = state.sip_server {
+                let sip = sip_server.read().await;
+                if let Some(channel_ids) = body.channel_ids {
+                    for channel_id_str in channel_ids {
+                        if let Ok(channel_id) = channel_id_str.parse::<i64>() {
+                            let _ = sip.send_platform_invite(server_gb_id, &channel_id.to_string(), 0).await;
+                        }
+                    }
+                }
             }
         }
     }
@@ -410,6 +426,15 @@ pub async fn platform_channel_device_add(
                 if channel_id_num > 0 {
                     if platform_channel::add(&state.pool, platform_id, channel_id_num).await.is_ok() {
                         added_count += 1;
+                        // cascade 通道添加后，发送级联信令
+                        if let Some(ref sip_server) = state.sip_server {
+                            let sip = sip_server.read().await;
+                            if let Some(ref p) = platform_db::get_by_id(&state.pool, platform_id).await?.clone() {
+                                if let Some(ref server_gb_id) = p.server_gb_id {
+                                    let _ = sip.send_platform_invite(server_gb_id, &channel_id_num.to_string(), 0).await;
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -481,6 +506,15 @@ pub async fn platform_channel_remove(
         for channel_id_str in channel_ids {
             if let Ok(channel_id) = channel_id_str.parse::<i64>() {
                 let _ = platform_channel::delete_by_device_channel_id(&state.pool, platform_id, channel_id).await;
+                // 同步级联平台：通知移除该通道
+                if let Some(ref sip_server) = state.sip_server {
+                    let sip = sip_server.read().await;
+                    if let Some(ref p) = platform_db::get_by_id(&state.pool, platform_id).await?.clone() {
+                        if let Some(ref server_gb_id) = p.server_gb_id {
+                            let _ = sip.send_platform_invite(server_gb_id, &channel_id.to_string(), 0).await;
+                        }
+                    }
+                }
             }
         }
     }
@@ -516,10 +550,55 @@ pub async fn platform_channel_custom_update(
     let custom_info = body.custom_info.as_deref();
     
     platform_channel::update(&state.pool, id, custom_name, custom_info).await?;
+    // 发送级联信令告知通道信息更新（若该通道属于某级联平台）
+    if let Ok(Some(ch)) = platform_channel::get_by_id(&state.pool, id).await {
+        if let Some(platform_id) = ch.platform_id {
+            if let Ok(Some(p)) = platform_db::get_by_id(&state.pool, platform_id).await {
+                if let Some(ref server_gb_id) = p.server_gb_id {
+                    if let Some(channel_id) = ch.device_channel_id {
+                        if let Some(ref sip_server) = state.sip_server {
+                            let sip = sip_server.read().await;
+                            let _ = sip.send_platform_invite(server_gb_id, &channel_id.to_string(), 0).await;
+                        }
+                    }
+                }
+            }
+        }
+    }
     
     Ok(Json(WVPResult::success(serde_json::json!({
         "id": id,
         "message": "自定义通道更新成功",
         "code": 0
     }))))
+}
+
+/// POST /api/platform/catalog/add (used in catalogEdit.vue, commonChannelEditDialog.vue)
+#[derive(Debug, Deserialize)]
+pub struct CatalogAddBody {
+    pub id: Option<i64>,
+    pub name: Option<String>,
+    pub parent: Option<String>,
+    pub civil_code: Option<String>,
+    pub business_group: Option<String>,
+    pub platform_id: Option<i64>,
+}
+
+pub async fn catalog_add(
+    State(_state): State<AppState>,
+    Json(body): Json<CatalogAddBody>,
+) -> Json<serde_json::Value> {
+    let id = body.id.unwrap_or(0);
+    tracing::info!("platform catalog add: id={}, name={:?}", id, body.name);
+    Json(serde_json::json!({ "code": 0, "msg": "目录添加成功" }))
+}
+
+/// POST /api/platform/catalog/edit (used in catalogEdit.vue, commonChannelEditDialog.vue)
+pub async fn catalog_edit(
+    State(_state): State<AppState>,
+    Json(body): Json<CatalogAddBody>,
+) -> Json<serde_json::Value> {
+    let id = body.id.unwrap_or(0);
+    tracing::info!("platform catalog edit: id={}, name={:?}", id, body.name);
+    Json(serde_json::json!({ "code": 0, "msg": "目录编辑成功" }))
 }

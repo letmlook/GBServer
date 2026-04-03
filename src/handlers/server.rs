@@ -1,13 +1,13 @@
 //! 流媒体服务器与系统配置 API，与前端 server.js 对应
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     Json,
 };
 use serde::Deserialize;
 
 use crate::db::{get_media_server_by_id, list_media_servers, media_server, MediaServer};
-use crate::error::AppError;
+use crate::error::{AppError, ErrorCode};
 use crate::response::WVPResult;
 
 use crate::AppState;
@@ -137,8 +137,46 @@ pub async fn media_server_delete(
 }
 
 /// GET /api/server/media_server/media_info
-pub async fn media_server_media_info() -> Json<WVPResult<serde_json::Value>> {
-    Json(WVPResult::success(serde_json::json!(null)))
+#[derive(Debug, Deserialize)]
+pub struct MediaInfoQuery {
+    pub app: Option<String>,
+    pub stream: Option<String>,
+    pub mediaServerId: Option<String>,
+}
+
+pub async fn media_server_media_info(
+    State(state): State<AppState>,
+    Query(q): Query<MediaInfoQuery>,
+) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+    let app = q.app.as_deref().unwrap_or("");
+    let stream = q.stream.as_deref().unwrap_or("");
+    if app.is_empty() || stream.is_empty() {
+        return Err(AppError::business(ErrorCode::Error400, "缺少 app 或 stream 参数"));
+    }
+
+    // 选择 ZLM 客户端
+    let zlm_client = if let Some(ref ms_id) = q.mediaServerId {
+        state.get_zlm_client(Some(ms_id)).clone()
+    } else {
+        state.get_zlm_client(None)
+    };
+
+    let client = zlm_client.ok_or_else(|| {
+        AppError::business(ErrorCode::Error404, "未配置 ZLM 客户端或媒体服务器不存在")
+    })?;
+
+    // 常见默认参数：rtmp, __defaultVhost__
+    let schema = "rtmp";
+    let vhost = "__defaultVhost__";
+
+    match client.get_media_info(schema, vhost, app, stream).await {
+        Ok(Some(info)) => {
+            let value = serde_json::to_value(info).unwrap_or(serde_json::Value::Null);
+            Ok(Json(WVPResult::success(value)))
+        }
+        Ok(None) => Ok(Json(WVPResult::success(serde_json::Value::Null))),
+        Err(e) => Err(AppError::business(ErrorCode::Error500, format!("ZLM 请求失败: {}", e))),
+    }
 }
 
 /// GET /api/server/media_server/load
@@ -148,5 +186,6 @@ pub async fn media_server_load() -> Json<WVPResult<serde_json::Value>> {
 
 /// GET /api/server/map/model-icon/list
 pub async fn map_model_icon_list() -> Json<WVPResult<Vec<serde_json::Value>>> {
+    // 参考实现：WVP 在此接口通常返回图标配置。当前实现保持向后兼容，返回空列表。
     Json(WVPResult::success(vec![]))
 }
