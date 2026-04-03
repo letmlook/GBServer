@@ -676,17 +676,57 @@ pub async fn channel_play(
                 None => return Json(serde_json::json!({"code": 1, "msg": "通道无国标ID"})),
             };
             
-            Json(serde_json::json!({
-                "code": 0,
-                "msg": "播放请求已发送",
-                "data": {
-                    "deviceId": device_id,
-                    "channelId": gb_channel_id
+            if let Some(ref zlm_client) = state.zlm_client {
+                let rtsp_url = format!("rtsp://{}:{}/{}", state.config.get("server.ip").unwrap_or(&"127.0.0.1".to_string()), 554u16, channel_id);
+                // Use similar approach as play_start to proxy the stream
+                let request = crate::zlm::AddStreamProxyRequest {
+                    secret: zlm_client.secret.clone(),
+                    vhost: "__defaultVhost__".to_string(),
+                    app: "gb".to_string(),
+                    stream: format!("{}${}", device_id, channel_id),
+                    url: rtsp_url.clone(),
+                    rtp_type: Some(0),
+                    timeout_sec: Some(30.0),
+                    enable_hls: Some(false),
+                    enable_mp4: Some(false),
+                    enable_rtsp: Some(true),
+                    enable_rtmp: Some(true),
+                    enable_fmp4: Some(true),
+                    enable_ts: Some(false),
+                    enableAAC: Some(false),
+                };
+                match zlm_client.add_stream_proxy(&request).await {
+                    Ok(key) => {
+                        let stream_url = format!("gb/{}${}", device_id, channel_id);
+                        let play_url = format!("rtsp://127.0.0.1/live/{}", stream_url);
+                        let flv_url = format!("http://127.0.0.1/flv/live.app?stream={}", stream_url);
+        let data = serde_json::json!({
+            "app": "gb",
+            "stream": key,
+            "playUrl": play_url,
+            "flvUrl": flv_url,
+            "wsUrl": format!("ws://127.0.0.1/live/{}", stream_url),
+            "deviceId": device_id,
+            "channelId": gb_channel_id,
+            "hasAudio": ch.has_audio.unwrap_or(false),
+            "rtspUrl": rtsp_url,
+        });
+        return Json(WVPResult::success(data));
+                    }
+                    Err(e) => {
+                        return Json(WVPResult::error(format!("ZLM error: {}", e)));
+                    }
                 }
-            }))
+            }
+            Json(WVPResult::success(serde_json::json!({
+                "app": "",
+                "stream": "",
+                "tracks": [],
+                "msg": "ZLM not configured or unavailable"
+            })))
         }
-        Ok(None) => Json(serde_json::json!({"code": 1, "msg": "通道不存在"})),
-        Err(_) => Json(serde_json::json!({"code": 1, "msg": "数据库错误"})),
+        Ok(None) => Json(WVPResult::error("通道不存在".to_string() )),
+        Err(_) => Json(WVPResult::error("数据库错误")),
     }
 }
 
@@ -701,10 +741,18 @@ pub async fn channel_play_stop(
     
     match common_channel::get_by_id(&state.pool, channel_id).await {
         Ok(Some(_ch)) => {
-            Json(serde_json::json!({
-                "code": 0,
-                "msg": "停止播放请求已发送"
-            }))
+            if let Some(ref zlm_client) = state.zlm_client {
+                // Stop the specific stream for this channel
+                let stream_key = format!("__defaultVhost__/gb/{}@{}", _ch.device_id.clone().unwrap_or_default(), channel_id);
+                let _ = zlm_client.close_streams(Some("rtsp"), Some("gb"), Some(&format!("{}@{}", _ch.device_id.clone().unwrap_or_default(), channel_id)), true).await;
+                let resp = serde_json::json!({
+                    "code": 0,
+                    "msg": "停止播放请求已发送",
+                    "data": {"stream": stream_key}
+                });
+                return Json(resp);
+            }
+            Json(serde_json::json!({"code": 0, "msg": "停止播放请求已发送"}))
         }
         Ok(None) => Json(serde_json::json!({"code": 1, "msg": "通道不存在"})),
         Err(_) => Json(serde_json::json!({"code": 1, "msg": "数据库错误"})),

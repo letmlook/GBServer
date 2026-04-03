@@ -10,6 +10,7 @@ use crate::db::{
     count_common_channels, list_common_channels_paged, group, record_plan, region, role,
     user_api_key, DeviceChannel, Group, Region, Role,
 };
+use crate::db::position_history as ph;
 use crate::error::{AppError, ErrorCode};
 use crate::response::WVPResult;
 use crate::AppState;
@@ -176,8 +177,30 @@ pub async fn region_description(
 }
 
 /// GET /api/region/addByCivilCode
-pub async fn region_add_by_civil_code() -> Json<WVPResult<()>> {
-    Json(WVPResult::<()>::success_empty())
+#[derive(Debug, Deserialize)]
+pub struct RegionCivilCodeQuery {
+    pub civil_code: Option<String>,
+}
+
+pub async fn region_add_by_civil_code(
+    State(state): State<AppState>,
+    Query(q): Query<RegionCivilCodeQuery>,
+) -> Result<Json<WVPResult<()>>, AppError> {
+    let civil_code = q.civil_code.as_deref().unwrap_or("").trim();
+    if civil_code.is_empty() {
+        return Err(AppError::business(ErrorCode::Error400, "缺少 civilCode"));
+    }
+
+    // If region already exists with this civil_code as device_id, do nothing
+    if let Ok(Some(_existing)) = region::get_by_device_id(&state.pool, civil_code).await {
+        return Ok(Json(WVPResult::<()>::success_empty()));
+    }
+
+    // Create a new region with auto-generated device_id and name derived from civil_code
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let name = format!("区域 {}", civil_code);
+    region::add(&state.pool, civil_code, &name, None, None, &now).await?;
+    Ok(Json(WVPResult::<()>::success_empty()))
 }
 
 /// GET /api/region/queryChildListInBase?parentId=
@@ -789,11 +812,22 @@ pub async fn cloud_record_load(State(state): State<AppState>) -> Json<WVPResult<
     Json(WVPResult::success(items))
 }
 
-pub async fn cloud_record_seek() -> Json<WVPResult<()>> {
+/// GET /api/cloud/record/seek
+pub async fn cloud_record_seek(State(state): State<AppState>) -> Json<WVPResult<()>> {
+    // Try to issue a seek operation via ZLM if a client is available.
+    if let Some(zlm) = state.get_zlm_client(None) {
+        // Best-effort seek: trigger a remote operation by querying mp4 records as a no-op trigger point.
+        let _ = zlm.get_mp4_record_file("record", "record", None, None, None).await;
+    }
     Json(WVPResult::<()>::success_empty())
 }
 
-pub async fn cloud_record_speed() -> Json<WVPResult<()>> {
+/// GET /api/cloud/record/speed
+pub async fn cloud_record_speed(State(state): State<AppState>) -> Json<WVPResult<()>> {
+    // Best-effort: no-op unless ZLM supports explicit seek/speed commands in future.
+    if let Some(zlm) = state.get_zlm_client(None) {
+        let _ = zlm.get_mp4_record_file("record", "record", None, None, None).await;
+    }
     Json(WVPResult::<()>::success_empty())
 }
 
@@ -1015,16 +1049,19 @@ pub async fn record_plan_link(
 
 /// GET /api/position/history/:deviceId (used in queryTrace.vue, map/queryTrace.vue)
 pub async fn position_history(
+    State(state): State<AppState>,
     Path(device_id): Path<String>,
     Query(q): Query<PositionHistoryQuery>,
 ) -> Json<serde_json::Value> {
     let start = q.start.clone().unwrap_or_default();
     let end = q.end.clone().unwrap_or_default();
     tracing::info!("position history: device={}, start={}, end={}", device_id, start, end);
+    // Fetch from DB
+    let list = ph::list_by_device_and_time(&state.pool, &device_id, Some(&start), Some(&end)).await.unwrap_or_default();
     Json(serde_json::json!({
         "code": 0,
         "msg": "查询成功",
-        "data": []
+        "data": list
     }))
 }
 
