@@ -8,7 +8,7 @@ use serde::Deserialize;
 
 use crate::db::platform as platform_db;
 use crate::db::platform_channel;
-use crate::db::Platform;
+use crate::db::{Platform, device as db_device};
 use crate::error::AppError;
 use crate::response::WVPResult;
 
@@ -114,7 +114,7 @@ pub async fn platform_channel_list(
     }))))
 }
 
-/// GET /api/platform/channel/push
+/// POST /api/platform/channel/push
 /// 推送通道到平台（需要对接 SIP 信令）
 #[derive(Debug, Deserialize)]
 pub struct PlatformChannelPushQuery {
@@ -124,21 +124,83 @@ pub struct PlatformChannelPushQuery {
 }
 
 pub async fn platform_channel_push(
+    State(state): State<AppState>,
     Query(q): Query<PlatformChannelPushQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
     let platform_id = q.platform_id.unwrap_or(0);
     if platform_id <= 0 {
-        return Json(WVPResult::success(serde_json::json!({
+        return Ok(Json(WVPResult::success(serde_json::json!({
             "message": "平台ID无效",
             "code": 1
-        })));
+        }))));
     }
-    // TODO: 实现 SIP 信令推送通道到平台
-    Json(WVPResult::success(serde_json::json!({
+    
+    let platform = match platform_db::get_by_id(&state.pool, platform_id as i64).await {
+        Ok(Some(p)) => p,
+        Ok(None) => {
+            return Ok(Json(WVPResult::success(serde_json::json!({
+                "message": "平台不存在",
+                "code": 1
+            }))));
+        }
+        Err(e) => {
+            tracing::error!("Failed to get platform: {}", e);
+            return Ok(Json(WVPResult::error("Database error")));
+        }
+    };
+    
+    let server_gb_id = match platform.server_gb_id {
+        Some(id) => id,
+        None => {
+            return Ok(Json(WVPResult::success(serde_json::json!({
+                "message": "平台国标ID未设置",
+                "code": 1
+            }))));
+        }
+    };
+    
+    let sip_server = match &state.sip_server {
+        Some(s) => s.clone(),
+        None => {
+            return Ok(Json(WVPResult::success(serde_json::json!({
+                "message": "SIP服务器未启动",
+                "code": 1
+            }))));
+        }
+    };
+    
+    let sip = sip_server.read().await;
+    
+    let mut pushed_count = 0;
+    let mut errors = Vec::new();
+    
+    if let Some(channel_id_list) = &q.channel_id_list {
+        for channel_id_str in channel_id_list.split(',') {
+            let channel_id = channel_id_str.trim();
+            if channel_id.is_empty() {
+                continue;
+            }
+            
+            match sip.send_platform_invite(&server_gb_id, channel_id, 0).await {
+                Ok(_) => {
+                    tracing::info!("Sent platform INVITE for channel {} to {}", channel_id, server_gb_id);
+                    pushed_count += 1;
+                }
+                Err(e) => {
+                    tracing::error!("Failed to send platform INVITE: {}", e);
+                    errors.push(format!("{}: {}", channel_id, e));
+                }
+            }
+        }
+    }
+    
+    Ok(Json(WVPResult::success(serde_json::json!({
         "platformId": platform_id,
-        "message": "通道推送命令已发送",
+        "pushedCount": pushed_count,
+        "errors": errors,
+        "message": if errors.is_empty() { "通道推送成功" } else { "通道推送完成，部分失败" },
         "code": 0
-    })))
+    }))))
 }
 
 // ========== 平台 CRUD ==========
@@ -336,11 +398,27 @@ pub async fn platform_channel_device_add(
         }))));
     }
     
-    // TODO: 需要查询设备的所有通道，然后添加到平台
-    // 目前需要对接设备通道查询功能
+    let device_ids = body.device_ids.unwrap_or_default();
+    let mut added_count = 0;
+    
+    for device_id in device_ids {
+        let channels = db_device::list_channels_for_device(&state.pool, &device_id).await?;
+        
+        for channel in channels {
+            if let Some(ref channel_id) = channel.gb_device_id {
+                let channel_id_num: i64 = channel_id.parse().unwrap_or(0);
+                if channel_id_num > 0 {
+                    if platform_channel::add(&state.pool, platform_id, channel_id_num).await.is_ok() {
+                        added_count += 1;
+                    }
+                }
+            }
+        }
+    }
     
     Ok(Json(WVPResult::success(serde_json::json!({
         "platformId": platform_id,
+        "addedCount": added_count,
         "message": "设备通道添加成功",
         "code": 0
     }))))
@@ -359,10 +437,27 @@ pub async fn platform_channel_device_remove(
         }))));
     }
     
-    // TODO: 需要查询设备的所有通道，然后从平台移除
+    let device_ids = body.device_ids.unwrap_or_default();
+    let mut removed_count = 0;
+    
+    for device_id in device_ids {
+        let channels = db_device::list_channels_for_device(&state.pool, &device_id).await?;
+        
+        for channel in channels {
+            if let Some(ref channel_id) = channel.gb_device_id {
+                let channel_id_num: i64 = channel_id.parse().unwrap_or(0);
+                if channel_id_num > 0 {
+                    if platform_channel::delete_by_device_channel_id(&state.pool, platform_id, channel_id_num).await.is_ok() {
+                        removed_count += 1;
+                    }
+                }
+            }
+        }
+    }
     
     Ok(Json(WVPResult::success(serde_json::json!({
         "platformId": platform_id,
+        "removedCount": removed_count,
         "message": "设备通道移除成功",
         "code": 0
     }))))

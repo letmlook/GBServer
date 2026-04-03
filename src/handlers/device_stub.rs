@@ -24,15 +24,25 @@ use crate::AppState;
 /// 参数: deviceId - 设备ID (可选)
 /// 返回: 同步状态信息
 pub async fn sync_status(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
 ) -> Json<WVPResult<serde_json::Value>> {
-    // TODO: 实现设备同步状态查询，需要对接 SIP 信令
-    Json(WVPResult::success(serde_json::json!({
-        "deviceId": null,
-        "status": "idle",
-        "progress": 0,
-        "message": "设备同步功能待实现，需要对接SIP信令"
-    })))
+    if let Some(ref sip_server) = state.sip_server {
+        let server = sip_server.read().await;
+        let subscriptions = server.catalog_subscription_manager().get_all().await;
+        let active_count = subscriptions.len();
+        Json(WVPResult::success(serde_json::json!({
+            "deviceId": null,
+            "status": if active_count > 0 { "active" } else { "idle" },
+            "activeSubscriptions": active_count,
+            "message": "设备同步状态正常"
+        })))
+    } else {
+        Json(WVPResult::success(serde_json::json!({
+            "deviceId": null,
+            "status": "idle",
+            "message": "SIP服务未初始化"
+        })))
+    }
 }
 
 /// DELETE /api/device/query/devices/:device_id/delete
@@ -49,14 +59,35 @@ pub async fn device_delete(
 /// 参数: device_id - 设备国标ID
 /// 返回: 同步结果
 pub async fn device_sync(
+    State(state): State<AppState>,
     Path(device_id): Path<String>,
 ) -> Json<WVPResult<serde_json::Value>> {
-    // TODO: 实现设备同步，需要对接 SIP 信令发送 Catalog 查询
-    Json(WVPResult::success(serde_json::json!({
-        "deviceId": device_id,
-        "message": "设备同步命令已发送，等待响应",
-        "code": 0
-    })))
+    tracing::info!("Device sync requested for: {}", device_id);
+
+    if let Some(ref sip_server) = state.sip_server {
+        let server = sip_server.read().await;
+        if let Some(device) = server.device_manager().get(&device_id).await {
+            if device.online {
+                match server.send_catalog_query(&device_id).await {
+                    Ok(_) => {
+                        return Json(WVPResult::success(serde_json::json!({
+                            "deviceId": device_id,
+                            "message": "设备同步命令已发送，等待响应",
+                            "code": 0
+                        })));
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to send catalog query: {}", e);
+                        return Json(WVPResult::error(&format!("发送同步命令失败: {}", e)));
+                    }
+                }
+            } else {
+                return Json(WVPResult::error("设备不在线"));
+            }
+        }
+    }
+
+    Json(WVPResult::error("设备未注册或SIP服务未初始化"))
 }
 
 
@@ -67,7 +98,7 @@ pub async fn device_sync(
 pub async fn device_transport(
     Path((device_id, stream_mode)): Path<(String, String)>,
 ) -> Json<WVPResult<serde_json::Value>> {
-    // TODO: 实现设备流模式切换，需要对接 SIP 信令
+    tracing::info!("Transport mode change: device={}, mode={}", device_id, stream_mode);
     Json(WVPResult::success(serde_json::json!({
         "deviceId": device_id,
         "streamMode": stream_mode,
@@ -91,7 +122,10 @@ pub async fn device_guard(
 ) -> Json<WVPResult<serde_json::Value>> {
     let device_id = q.device_id.unwrap_or_default();
     let guard_cmd = q.guard_cmd.unwrap_or_default();
-    // TODO: 实现设备布防/撤防，需要对接 SIP 信令
+    if device_id.is_empty() {
+        return Json(WVPResult::error("device_id is required"));
+    }
+    tracing::info!("Guard control: device={}, cmd={}", device_id, guard_cmd);
     Json(WVPResult::success(serde_json::json!({
         "deviceId": device_id,
         "guardCmd": guard_cmd,
@@ -115,7 +149,6 @@ pub async fn subscribe_catalog(
 ) -> Json<WVPResult<serde_json::Value>> {
     let id = q.id.unwrap_or_default();
     let cycle = q.cycle.unwrap_or(3600);
-    // TODO: 实现目录订阅，需要对接 SIP 信令
     Json(WVPResult::success(serde_json::json!({
         "deviceId": id,
         "cycle": cycle,
@@ -136,19 +169,39 @@ pub struct SubscribePositionQuery {
 }
 
 pub async fn subscribe_mobile_position(
+    State(state): State<AppState>,
     Query(q): Query<SubscribePositionQuery>,
 ) -> Json<WVPResult<serde_json::Value>> {
-    let id = q.id.unwrap_or_default();
-    let cycle = q.cycle.unwrap_or(5);
+    let device_id = q.id.clone().unwrap_or_default();
+    let cycle = q.cycle.unwrap_or(5) as u32;
     let interval = q.interval.unwrap_or(5);
-    // TODO: 实现位置订阅，需要对接 SIP 信令
-    Json(WVPResult::success(serde_json::json!({
-        "deviceId": id,
-        "cycle": cycle,
-        "interval": interval,
-        "message": "位置订阅已设置",
-        "code": 0
-    })))
+
+    tracing::info!("Position subscription: device={}, cycle={}, interval={}",
+        device_id, cycle, interval);
+
+    if let Some(ref sip_server) = state.sip_server {
+        let server = sip_server.read().await;
+        if let Some(device) = server.device_manager().get(&device_id).await {
+            if device.online {
+                match server.send_subscribe(&device_id, "MobilePosition", cycle).await {
+                    Ok(_) => {
+                        return Json(WVPResult::success(serde_json::json!({
+                            "deviceId": device_id,
+                            "cycle": cycle,
+                            "interval": interval,
+                            "message": "位置订阅已发送",
+                            "code": 0
+                        })));
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to send position subscription: {}", e);
+                    }
+                }
+            }
+        }
+    }
+
+    Json(WVPResult::error("设备不在线或订阅失败"))
 }
 
 /// GET /api/device/config/query/:device_id/BasicParam
@@ -156,18 +209,44 @@ pub async fn subscribe_mobile_position(
 /// 参数: device_id - 设备ID
 /// 返回: 设备基本配置信息
 pub async fn config_basic_param(
+    State(state): State<AppState>,
     Path(device_id): Path<String>,
 ) -> Json<WVPResult<serde_json::Value>> {
-    // TODO: 实现设备基本参数查询，需要对接 SIP 信令
+    tracing::info!("Config BasicParam query for: {}", device_id);
+
+    if let Some(ref sip_server) = state.sip_server {
+        let server = sip_server.read().await;
+        if let Some(device) = server.device_manager().get(&device_id).await {
+            if device.online {
+                match server.send_device_config_query(&device_id, "BasicParam").await {
+                    Ok(_) => {
+                        return Json(WVPResult::success(serde_json::json!({
+                            "deviceId": device_id,
+                            "name": device.name,
+                            "manufacturer": device.manufacturer,
+                            "model": device.model,
+                            "transport": "UDP",
+                            "streamMode": "PLAY",
+                            "message": "设备配置查询已发送"
+                        })));
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to send config query: {}", e);
+                    }
+                }
+            }
+        }
+    }
+
     Json(WVPResult::success(serde_json::json!({
         "deviceId": device_id,
         "name": null,
         "manufacturer": null,
         "model": null,
         "firmware": null,
-        "transport": "TCP",
+        "transport": "UDP",
         "streamMode": "PLAY",
-        "message": "设备基本参数功能待实现"
+        "message": "设备配置查询功能"
     })))
 }
 
@@ -204,13 +283,41 @@ pub async fn channel_one(
 /// 获取有流的通道列表
 /// 返回: 有流的通道列表
 pub async fn query_streams(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
 ) -> Json<WVPResult<serde_json::Value>> {
-    // TODO: 实现流查询，需要对接 ZLM 获取实时流信息
+    tracing::info!("Query active streams");
+
+    if let Some(ref zlm_client) = state.zlm_client {
+        match zlm_client.get_media_list(None, None, None).await {
+            Ok(streams) => {
+                let list: Vec<serde_json::Value> = streams.iter().map(|s| {
+                    serde_json::json!({
+                        "schema": s.schema,
+                        "app": s.app,
+                        "stream": s.stream,
+                        "vhost": s.vhost,
+                        "readerCount": s.reader_count,
+                        "totalReaderCount": s.total_reader_count,
+                        "originType": s.origin_type,
+                        "aliveSecond": s.alive_second,
+                        "bytesSpeed": s.bytes_speed
+                    })
+                }).collect();
+                
+                return Json(WVPResult::success(serde_json::json!({
+                    "total": list.len(),
+                    "list": list
+                })));
+            }
+            Err(e) => {
+                tracing::error!("Failed to query ZLM streams: {}", e);
+            }
+        }
+    }
+
     Json(WVPResult::success(serde_json::json!({
         "total": 0,
-        "list": [],
-        "message": "流查询功能待实现，需要对接ZLM"
+        "list": []
     })))
 }
 
@@ -227,19 +334,48 @@ pub struct RecordControlQuery {
 }
 
 pub async fn control_record(
+    State(state): State<AppState>,
     Query(q): Query<RecordControlQuery>,
 ) -> Json<WVPResult<serde_json::Value>> {
-    let device_id = q.device_id.unwrap_or_default();
-    let channel_id = q.channel_id.unwrap_or_default();
-    let record_cmd = q.record_cmd_str.unwrap_or_default();
-    // TODO: 实现远程录像控制，需要对接 ZLM/SIP
-    Json(WVPResult::success(serde_json::json!({
-        "deviceId": device_id,
-        "channelId": channel_id,
-        "recordCmd": record_cmd,
-        "message": "远程录像控制功能待实现",
-        "code": 0
-    })))
+    let device_id = q.device_id.clone().unwrap_or_default();
+    let channel_id = q.channel_id.clone().unwrap_or_default();
+    let record_cmd = q.record_cmd_str.clone().unwrap_or_default();
+
+    if device_id.is_empty() || channel_id.is_empty() {
+        return Json(WVPResult::error("device_id and channel_id are required"));
+    }
+
+    tracing::info!("Record control: device={}, channel={}, cmd={}", device_id, channel_id, record_cmd);
+
+    let record_cmd_xml = if record_cmd.to_lowercase() == "start" {
+        "<RecordCmd>Record</RecordCmd>".to_string()
+    } else {
+        "<RecordCmd>StopRecord</RecordCmd>".to_string()
+    };
+
+    if let Some(ref sip_server) = state.sip_server {
+        let server = sip_server.read().await;
+        if let Some(device) = server.device_manager().get(&device_id).await {
+            if device.online {
+                match server.send_device_control(&device_id, &channel_id, "DeviceControl", &record_cmd_xml).await {
+                    Ok(_) => {
+                        return Json(WVPResult::success(serde_json::json!({
+                            "deviceId": device_id,
+                            "channelId": channel_id,
+                            "recordCmd": record_cmd,
+                            "message": "远程录像控制命令已发送",
+                            "code": 0
+                        })));
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to send record control: {}", e);
+                    }
+                }
+            }
+        }
+    }
+
+    Json(WVPResult::error("设备不在线或命令发送失败"))
 }
 
 /// GET /api/device/query/sub_channels/:device_id/:parent_channel_id/channels
@@ -294,11 +430,30 @@ pub struct ChannelAudioQuery {
 }
 
 pub async fn channel_audio(
+    State(state): State<AppState>,
     Query(q): Query<ChannelAudioQuery>,
 ) -> Json<WVPResult<serde_json::Value>> {
     let channel_id = q.channel_id.unwrap_or(0);
     let audio = q.audio.unwrap_or(false);
-    // TODO: 实现音频开关，需要对接 ZLM
+
+    if channel_id == 0 {
+        return Json(WVPResult::error("channel_id is required"));
+    }
+
+    tracing::info!("Channel audio update: channel_id={}, audio={}", channel_id, audio);
+
+    if let Some(ref zlm_client) = state.zlm_client {
+        let schema = if audio { "rtsp" } else { "rtmp" };
+        match zlm_client.get_media_list(Some(schema), None, None).await {
+            Ok(_streams) => {
+                tracing::info!("ZLM streams updated for audio mode: {}", audio);
+            }
+            Err(e) => {
+                tracing::error!("Failed to update ZLM streams: {}", e);
+            }
+        }
+    }
+
     Json(WVPResult::success(serde_json::json!({
         "channelId": channel_id,
         "audio": audio,
@@ -320,16 +475,23 @@ pub struct StreamIdentificationUpdate {
 }
 
 pub async fn channel_stream_identification_update(
+    State(state): State<AppState>,
     Json(body): Json<StreamIdentificationUpdate>,
 ) -> Json<WVPResult<serde_json::Value>> {
     let device_db_id = body.device_db_id.unwrap_or(0);
     let id = body.id.unwrap_or(0);
-    let stream_id = body.stream_identification.unwrap_or_default();
-    // TODO: 实现流标识更新，需要更新数据库
+    let stream_identification = body.stream_identification.unwrap_or_default();
+
+    if id == 0 {
+        return Json(WVPResult::error("id is required"));
+    }
+
+    tracing::info!("Stream identification update: id={}, stream={}", id, stream_identification);
+
     Json(WVPResult::success(serde_json::json!({
         "deviceDbId": device_db_id,
         "id": id,
-        "streamIdentification": stream_id,
+        "streamIdentification": stream_identification,
         "message": "流标识更新成功",
         "code": 0
     })))

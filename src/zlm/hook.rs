@@ -110,6 +110,23 @@ pub struct ServerStartedData {
     pub https_port: u16,
 }
 
+fn parse_stream_id(stream: &str) -> Option<(String, String)> {
+    if let Some(pos) = stream.find('$') {
+        let device_id = stream[..pos].to_string();
+        let channel_id = stream[pos + 1..].to_string();
+        if device_id.len() == 20 || device_id.len() == 22 {
+            return Some((device_id, channel_id));
+        }
+    }
+    if let Some(pos) = stream.find('/') {
+        let parts: Vec<&str> = stream.split('/').collect();
+        if parts.len() >= 2 {
+            return Some((parts[0].to_string(), parts[1].to_string()));
+        }
+    }
+    None
+}
+
 pub async fn handle_webhook(
     State(state): State<AppState>,
     Json(event): Json<serde_json::Value>,
@@ -131,6 +148,45 @@ pub async fn handle_webhook(
             if let Some(data) = serde_json::from_value::<StreamNotFoundData>(event.clone()).ok() {
                 tracing::warn!("Stream not found: {}/{}/{}", 
                     data.schema, data.app, data.stream);
+
+                if let Some((device_id, channel_id)) = parse_stream_id(&data.stream) {
+                    tracing::info!("Attempting auto-pull for device={} channel={}", device_id, channel_id);
+                    
+                    if let Some(ref zlm_client) = state.zlm_client {
+                        let pull_url = format!("rtsp://{}:8554/{}", device_id, channel_id);
+                        
+                        let proxy_req = crate::zlm::AddStreamProxyRequest {
+                            secret: zlm_client.secret.clone(),
+                            vhost: "__defaultVhost__".to_string(),
+                            app: data.app.clone(),
+                            stream: data.stream.clone(),
+                            url: pull_url.clone(),
+                            rtp_type: Some(0),
+                            timeout_sec: Some(30.0),
+                            enable_hls: Some(false),
+                            enable_mp4: Some(false),
+                            enable_rtsp: Some(true),
+                            enable_rtmp: Some(false),
+                            enable_fmp4: Some(false),
+                            enable_ts: Some(false),
+                            enableAAC: Some(false),
+                        };
+
+                        match zlm_client.add_stream_proxy(&proxy_req).await {
+                            Ok(stream_key) => {
+                                tracing::info!("Auto-pull started: {} -> {}", data.stream, stream_key);
+                                return Json(WVPResult::success(serde_json::json!({
+                                    "code": 0,
+                                    "stream": stream_key,
+                                    "url": pull_url
+                                })));
+                            }
+                            Err(e) => {
+                                tracing::error!("Auto-pull failed: {}", e);
+                            }
+                        }
+                    }
+                }
             }
         }
         "on_record_mp4" => {

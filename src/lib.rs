@@ -41,11 +41,14 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
         None
     };
 
+    let download_manager = Arc::new(crate::handlers::playback::DownloadManager::new());
+
     let state = AppState {
         config: Arc::new(cfg.clone()),
         pool,
         sip_server: sip_server.clone(),
         zlm_client,
+        download_manager: Some(download_manager),
     };
 
     if let Some(ref server) = sip_server {
@@ -73,4 +76,5 @@ pub struct AppState {
     pub pool: db::Pool,
     pub sip_server: Option<Arc<RwLock<sip::SipServer>>>,
     pub zlm_client: Option<Arc<zlm::ZlmClient>>,
+    pub download_manager: Option<Arc<crate::handlers::playback::DownloadManager>>,
 }

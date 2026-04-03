@@ -2,6 +2,7 @@ use axum::{extract::{Path, Query, State}, Json};
 use serde::Deserialize;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use chrono::{DateTime, Utc};
 
 use crate::response::WVPResult;
 use crate::AppState;
@@ -65,6 +66,61 @@ impl Default for PlaybackManager {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct DownloadSession {
+    pub stream_id: String,
+    pub device_id: String,
+    pub channel_id: String,
+    pub file_name: String,
+    pub start_time: String,
+    pub end_time: String,
+    pub url: String,
+    pub status: String,
+    pub progress: f64,
+    pub created_at: DateTime<Utc>,
+}
+
+pub struct DownloadManager {
+    sessions: Arc<RwLock<std::collections::HashMap<String, DownloadSession>>>,
+}
+
+impl DownloadManager {
+    pub fn new() -> Self {
+        Self {
+            sessions: Arc::new(RwLock::new(std::collections::HashMap::new())),
+        }
+    }
+
+    pub async fn create(&self, session: DownloadSession) {
+        self.sessions.write().await.insert(session.stream_id.clone(), session);
+    }
+
+    pub async fn get(&self, stream_id: &str) -> Option<DownloadSession> {
+        self.sessions.read().await.get(stream_id).cloned()
+    }
+
+    pub async fn update_progress(&self, stream_id: &str, progress: f64, status: &str) {
+        if let Some(mut s) = self.sessions.write().await.get_mut(stream_id) {
+            s.progress = progress;
+            s.status = status.to_string();
+        }
+    }
+
+    pub async fn remove(&self, stream_id: &str) {
+        self.sessions.write().await.remove(stream_id);
+    }
+
+    pub async fn get_all(&self) -> Vec<DownloadSession> {
+        self.sessions.read().await.values().cloned().collect()
+    }
+}
+
+impl Default for DownloadManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct PlaybackQuery {
     pub start_time: Option<String>,
@@ -92,7 +148,7 @@ pub async fn playback_start(
             secret: zlm_client.secret.clone(),
             vhost: "__defaultVhost__".to_string(),
             app: "playback".to_string(),
-            stream: format!("{}@{}", device_id, channel_id),
+            stream: format!("{}${}", device_id, channel_id),
             url: proxy_url,
             rtp_type: Some(0),
             timeout_sec: Some(3600.0),
@@ -101,6 +157,8 @@ pub async fn playback_start(
             enable_rtsp: Some(true),
             enable_rtmp: Some(true),
             enable_fmp4: Some(true),
+            enable_ts: Some(false),
+            enableAAC: Some(false),
         };
 
         match zlm_client.add_stream_proxy(&request).await {
@@ -192,7 +250,7 @@ pub async fn gb_record_query(
     tracing::info!("Record query: device={}, channel={}", device_id, channel_id);
 
     if let Some(ref zlm_client) = state.zlm_client {
-        match zlm_client.get_mp4_record_file("record", &channel_id, None).await {
+        match zlm_client.get_mp4_record_file("record", &channel_id, None, None, None).await {
             Ok(files) => {
                 let records: Vec<serde_json::Value> = files.iter().map(|f| {
                     serde_json::json!({
@@ -235,11 +293,53 @@ pub async fn gb_record_download_start(
 
     let stream_id = format!("download_{}_{}_{}", device_id, channel_id,
         chrono::Utc::now().timestamp());
+    
+    let file_name = format!("{}_{}_{}_{}.mp4", device_id, channel_id, 
+        start_time.replace(":", "").replace("-", "").replace("T", "_"),
+        chrono::Utc::now().timestamp());
+
+    if let Some(ref zlm_client) = state.zlm_client {
+        let record_url = format!("rtsp://127.0.0.1/record/{}/{}", device_id, channel_id);
+        
+        match zlm_client.create_download(&record_url, &file_name, Some("./downloads")).await {
+            Ok(download_path) => {
+                tracing::info!("Download started: {} -> {}", file_name, download_path);
+                
+                let session = DownloadSession {
+                    stream_id: stream_id.clone(),
+                    device_id: device_id.clone(),
+                    channel_id: channel_id.clone(),
+                    file_name: file_name.clone(),
+                    start_time: start_time.clone(),
+                    end_time: end_time.clone(),
+                    url: record_url,
+                    status: "downloading".to_string(),
+                    progress: 0.0,
+                    created_at: Utc::now(),
+                };
+                
+                if let Some(ref dm) = state.download_manager {
+                    dm.create(session).await;
+                }
+                
+                return Json(WVPResult::success(serde_json::json!({
+                    "streamId": stream_id,
+                    "fileName": file_name,
+                    "downloadUrl": format!("/download/{}", file_name),
+                    "savePath": download_path,
+                    "progress": 0,
+                    "status": "downloading"
+                })));
+            }
+            Err(e) => {
+                tracing::error!("Failed to start download: {}", e);
+            }
+        }
+    }
 
     Json(WVPResult::success(serde_json::json!({
         "streamId": stream_id,
-        "downloadUrl": format!("/download/{}/{}/{}.mp4", device_id, channel_id, stream_id),
-        "progress": 0
+        "msg": "Download not available"
     })))
 }
 
@@ -249,6 +349,16 @@ pub async fn gb_record_download_stop(
 ) -> Json<WVPResult<()>> {
     tracing::info!("Record download stop: device={}, channel={}, stream={}",
         device_id, channel_id, stream_id);
+
+    if let Some(ref zlm_client) = state.zlm_client {
+        if let Some(ref dm) = state.download_manager {
+            if let Some(session) = dm.get(&stream_id).await {
+                let _ = zlm_client.stop_download(&session.file_name).await;
+                dm.remove(&stream_id).await;
+            }
+        }
+    }
+
     Json(WVPResult::<()>::success_empty())
 }
 
@@ -256,9 +366,40 @@ pub async fn gb_record_download_progress(
     State(state): State<AppState>,
     Path((device_id, channel_id, stream_id)): Path<(String, String, String)>,
 ) -> Json<WVPResult<serde_json::Value>> {
+    if let Some(ref zlm_client) = state.zlm_client {
+        if let Some(ref dm) = state.download_manager {
+            if let Some(session) = dm.get(&stream_id).await {
+                match zlm_client.get_download_list().await {
+                    Ok(downloads) => {
+                        for dl in downloads {
+                            if dl.file_name == session.file_name {
+                                let progress = dl.progress;
+                                let status = if progress >= 100.0 { "completed" } else { "downloading" };
+                                
+                                dm.update_progress(&stream_id, progress, status).await;
+                                
+                                return Json(WVPResult::success(serde_json::json!({
+                                    "streamId": stream_id,
+                                    "fileName": dl.file_name,
+                                    "progress": progress,
+                                    "status": status,
+                                    "downloaded": dl.downloaded,
+                                    "totalSize": dl.size
+                                })));
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to get download progress: {}", e);
+                    }
+                }
+            }
+        }
+    }
+
     Json(WVPResult::success(serde_json::json!({
         "streamId": stream_id,
-        "progress": 100,
-        "status": "completed"
+        "progress": 0,
+        "status": "unknown"
     })))
 }

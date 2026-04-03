@@ -610,12 +610,27 @@ pub async fn upsert_device(
                name = COALESCE($2, wvp_device.name), manufacturer = COALESCE($3, wvp_device.manufacturer),
                model = COALESCE($4, wvp_device.model), firmware = COALESCE($5, wvp_device.firmware),
                transport = COALESCE($6, wvp_device.transport), stream_mode = COALESCE($7, wvp_device.stream_mode),
-               ip = COALESCE($8, wvp_device.ip), port = COALESCE($9, wvp_device.port),
-               on_line = $10, update_time = $12, media_server_id = COALESCE($13, wvp_device.media_server_id)"#,
+                ip = COALESCE($8, wvp_device.ip), port = COALESCE($9, wvp_device.port),
+                on_line = $10, update_time = $12, media_server_id = COALESCE($13, wvp_device.media_server_id)"#,
         )
         .bind(device_id).bind(name).bind(manufacturer).bind(model).bind(firmware).bind(transport).bind(stream_mode)
         .bind(ip).bind(port).bind(online).bind(now).bind(now).bind(mid)
         .execute(pool).await?;
     }
     Ok(())
+}
+
+pub async fn list_all_channels(pool: &Pool) -> sqlx::Result<Vec<DeviceChannel>> {
+    #[cfg(feature = "mysql")]
+    return sqlx::query_as::<_, DeviceChannel>(
+        "SELECT * FROM wvp_device_channel"
+    )
+    .fetch_all(pool)
+    .await;
+    #[cfg(feature = "postgres")]
+    return sqlx::query_as::<_, DeviceChannel>(
+        "SELECT * FROM wvp_device_channel"
+    )
+    .fetch_all(pool)
+    .await;
 }

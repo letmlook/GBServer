@@ -1,6 +1,7 @@
 use axum::{extract::{Path, State}, Json};
 use crate::response::WVPResult;
 use crate::AppState;
+use crate::sip::gb28181::talk::build_talk_sdp;
 
 pub async fn talk_start(
     State(state): State<AppState>,
@@ -12,7 +13,7 @@ pub async fn talk_start(
         chrono::Utc::now().timestamp_millis());
 
     let media_port = 9000u16;
-    let sdp = crate::sip::gb28181::talk::build_invite_sdp(&channel_id, media_port);
+    let sdp = build_talk_sdp("0.0.0.0", media_port);
 
     Json(WVPResult::success(serde_json::json!({
         "callId": call_id,
@@ -44,7 +45,7 @@ pub async fn talk_invite(
         "callId": call_id,
         "deviceId": device_id,
         "channelId": channel_id,
-        "sdp": crate::sip::gb28181::talk::build_invite_sdp(&channel_id, 9000),
+        "sdp": build_talk_sdp("0.0.0.0", 9000),
         "mediaPort": 9000
     })))
 }

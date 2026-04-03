@@ -78,6 +78,10 @@ impl DeviceManager {
         self.devices.read().await.get(device_id).cloned()
     }
 
+    pub async fn get_address(&self, device_id: &str) -> Option<SocketAddr> {
+        self.devices.read().await.get(device_id).and_then(|d| d.addr)
+    }
+
     pub async fn set_online(&self, device_id: &str, online: bool) {
         let mut guard = self.devices.write().await;
         if let Some(d) = guard.get_mut(device_id) {
