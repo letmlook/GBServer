@@ -114,6 +114,28 @@ pub async fn get_by_server_gb_id(pool: &Pool, server_gb_id: &str) -> sqlx::Resul
     .await;
 }
 
+/// Get platform by device_gb_id (the device's GB ID within the platform context)
+pub async fn get_by_device_gb_id(pool: &Pool, device_gb_id: &str) -> sqlx::Result<Option<Platform>> {
+    #[cfg(feature = "mysql")]
+    {
+        sqlx::query_as::<_, Platform>(
+            "SELECT * FROM wvp_platform WHERE device_gb_id = ? LIMIT 1",
+        )
+        .bind(device_gb_id)
+        .fetch_optional(pool)
+        .await
+    }
+    #[cfg(feature = "postgres")]
+    {
+        sqlx::query_as::<_, Platform>(
+            "SELECT * FROM wvp_platform WHERE device_gb_id = $1 LIMIT 1",
+        )
+        .bind(device_gb_id)
+        .fetch_optional(pool)
+        .await
+    }
+}
+
 /// 添加平台
 pub async fn add(
     pool: &Pool,
