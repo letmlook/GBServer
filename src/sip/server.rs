@@ -10,6 +10,7 @@ use chrono::Utc;
 
 use crate::config::SipConfig;
 use crate::db::{Pool, device as db_device};
+use crate::db::position_history as ph;
 use crate::sip::core::{
     TransactionManager, DialogManager, SipMessage, SipRequest, SipResponse,
     SipMethod, StatusCode, ViaHeader, NameAddr, CSeq, Contact,
@@ -1469,6 +1470,17 @@ impl SipServer {
 
         tracing::info!("MobilePosition from {}: {}, {} (speed: {}, direction: {})", 
             device_id, longitude, latitude, speed, direction);
+        // Persist position history to DB
+        let _ = ph::insert_position(
+            pool,
+            device_id,
+            &time,
+            longitude,
+            latitude,
+            altitude,
+            speed,
+            direction,
+        ).await;
         
         let response_body = format!(r#"<?xml version="1.0" encoding="UTF-8"?><Response><CmdType>MobilePosition</CmdType><SN>{}</SN><DeviceID>{}</DeviceID><Result>OK</Result></Response>"#,
             sn, device_id);

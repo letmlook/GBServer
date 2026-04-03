@@ -13,8 +13,16 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+async fn init_db_tables(pool: &db::Pool) -> anyhow::Result<()> {
+    db::position_history::ensure_table(pool).await?;
+    Ok(())
+}
+
 pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
     let pool = db::create_pool(&cfg).await?;
+
+    // Initialize required DB tables on startup
+    init_db_tables(&pool).await?;
 
     let sip_server = if let Some(ref sip_config) = cfg.sip {
         if sip_config.enabled {
