@@ -8,7 +8,8 @@ use tower_http::cors::{Any, CorsLayer};
 
 use crate::auth::auth_middleware;
 use crate::handlers::{
-    device, device_control, device_stub, platform, play, playback, server, stream, stub, user,
+    common_channel, device, device_control, device_stub, front_end, jt1078, platform, play,
+    playback, server, stream, stub, talk, user,
 };
 use crate::zlm::hook as zlm_hook;
 use crate::AppState;
@@ -221,6 +222,8 @@ pub fn app(state: AppState) -> Router {
             "/api/platform/exit/:device_gb_id",
             get(platform::platform_exit),
         )
+        .route("/api/platform/catalog/add", post(platform::catalog_add))
+        .route("/api/platform/catalog/edit", post(platform::catalog_edit))
         .route(
             "/api/play/start/:device_id/:channel_id",
             get(play::play_start),
@@ -263,6 +266,7 @@ pub fn app(state: AppState) -> Router {
         .route("/api/group/path", get(stub::group_path))
         .route("/api/group/tree/query", get(stub::group_tree_query))
         .route("/api/log/list", get(stub::log_list))
+        .route("/api/log/file/:file_name", get(stub::log_file_download))
         .route("/api/userApiKey/remark", post(stub::user_api_key_remark))
         .route("/api/userApiKey/userApiKeys", get(stub::user_api_key_list))
         .route("/api/userApiKey/enable", post(stub::user_api_key_enable))
@@ -330,6 +334,25 @@ pub fn app(state: AppState) -> Router {
             delete(stub::cloud_record_delete),
         )
         .route("/api/cloud/record/list", get(stub::cloud_record_list))
+        .route(
+            "/api/talk/start/:device_id/:channel_id",
+            get(talk::talk_start),
+        )
+        .route(
+            "/api/talk/stop/:device_id/:channel_id",
+            get(talk::talk_stop),
+        )
+        .route(
+            "/api/talk/invite/:device_id/:channel_id",
+            get(talk::talk_invite),
+        )
+        .route("/api/talk/ack", post(talk::talk_ack))
+        .route("/api/talk/bye", post(talk::talk_bye))
+        .route(
+            "/api/talk/status/:device_id/:channel_id",
+            get(talk::talk_status),
+        )
+        .route("/api/talk/list", get(talk::talk_list))
         .route("/api/record/plan/get", get(stub::record_plan_get))
         .route("/api/record/plan/add", post(stub::record_plan_add))
         .route("/api/record/plan/update", post(stub::record_plan_update))
@@ -340,6 +363,386 @@ pub fn app(state: AppState) -> Router {
             get(stub::record_plan_channel_list),
         )
         .route("/api/record/plan/link", post(stub::record_plan_link))
+        .route(
+            "/api/position/history/:device_id",
+            get(stub::position_history),
+        )
+        // ========== 通用通道 common_channel ==========
+        .route("/api/common/channel/one", get(common_channel::channel_one))
+        .route(
+            "/api/common/channel/industry/list",
+            get(common_channel::industry_list),
+        )
+        .route(
+            "/api/common/channel/type/list",
+            get(common_channel::type_list),
+        )
+        .route(
+            "/api/common/channel/network/identification/list",
+            get(common_channel::network_identification_list),
+        )
+        .route(
+            "/api/common/channel/update",
+            post(common_channel::channel_update),
+        )
+        .route(
+            "/api/common/channel/reset",
+            post(common_channel::channel_reset),
+        )
+        .route("/api/common/channel/add", post(common_channel::channel_add))
+        .route(
+            "/api/common/channel/civilcode/list",
+            get(common_channel::civilcode_list),
+        )
+        .route(
+            "/api/common/channel/civilCode/unusual/list",
+            get(common_channel::unusual_civilcode_list),
+        )
+        .route(
+            "/api/common/channel/parent/unusual/list",
+            get(common_channel::unusual_parent_list),
+        )
+        .route(
+            "/api/common/channel/civilCode/unusual/clear",
+            post(common_channel::clear_unusual_civilcode),
+        )
+        .route(
+            "/api/common/channel/parent/unusual/clear",
+            post(common_channel::clear_unusual_parent),
+        )
+        .route(
+            "/api/common/channel/parent/list",
+            get(common_channel::parent_list),
+        )
+        .route(
+            "/api/common/channel/region/add",
+            post(common_channel::channel_region_add),
+        )
+        .route(
+            "/api/common/channel/region/delete",
+            post(common_channel::channel_region_delete),
+        )
+        .route(
+            "/api/common/channel/region/device/add",
+            post(common_channel::device_region_add),
+        )
+        .route(
+            "/api/common/channel/region/device/delete",
+            post(common_channel::device_region_delete),
+        )
+        .route(
+            "/api/common/channel/group/add",
+            post(common_channel::channel_group_add),
+        )
+        .route(
+            "/api/common/channel/group/delete",
+            post(common_channel::channel_group_delete),
+        )
+        .route(
+            "/api/common/channel/group/device/add",
+            post(common_channel::device_group_add),
+        )
+        .route(
+            "/api/common/channel/group/device/delete",
+            post(common_channel::device_group_delete),
+        )
+        .route(
+            "/api/common/channel/play",
+            get(common_channel::channel_play),
+        )
+        .route(
+            "/api/common/channel/play/stop",
+            get(common_channel::channel_play_stop),
+        )
+        .route(
+            "/api/common/channel/map/list",
+            get(common_channel::map_channel_list),
+        )
+        .route(
+            "/api/common/channel/map/save-level",
+            post(common_channel::map_save_level),
+        )
+        .route(
+            "/api/common/channel/map/reset-level",
+            post(common_channel::map_reset_level),
+        )
+        .route(
+            "/api/common/channel/map/thin/clear",
+            get(common_channel::map_thin_clear),
+        )
+        .route(
+            "/api/common/channel/map/thin/progress",
+            get(common_channel::map_thin_progress),
+        )
+        .route(
+            "/api/common/channel/map/thin/save",
+            get(common_channel::map_thin_save),
+        )
+        .route(
+            "/api/common/channel/map/thin/draw",
+            post(common_channel::map_thin_draw),
+        )
+        // ========== commonChannel 前端控制 ==========
+        .route(
+            "/api/common/channel/front-end/ptz",
+            get(common_channel::front_end_ptz),
+        )
+        .route(
+            "/api/common/channel/front-end/auxiliary",
+            get(common_channel::front_end_auxiliary),
+        )
+        .route(
+            "/api/common/channel/front-end/wiper",
+            get(common_channel::front_end_wiper),
+        )
+        .route(
+            "/api/common/channel/front-end/fi/iris",
+            get(common_channel::front_end_iris),
+        )
+        .route(
+            "/api/common/channel/front-end/fi/focus",
+            get(common_channel::front_end_focus),
+        )
+        .route(
+            "/api/common/channel/front-end/preset/query",
+            get(common_channel::front_end_preset_query),
+        )
+        .route(
+            "/api/common/channel/front-end/preset/add",
+            get(common_channel::front_end_preset_add),
+        )
+        .route(
+            "/api/common/channel/front-end/preset/call",
+            get(common_channel::front_end_preset_call),
+        )
+        .route(
+            "/api/common/channel/front-end/preset/delete",
+            get(common_channel::front_end_preset_delete),
+        )
+        .route(
+            "/api/common/channel/front-end/tour/point/add",
+            get(common_channel::front_end_tour_point_add),
+        )
+        .route(
+            "/api/common/channel/front-end/tour/point/delete",
+            get(common_channel::front_end_tour_point_delete),
+        )
+        .route(
+            "/api/common/channel/front-end/tour/speed",
+            get(common_channel::front_end_tour_speed),
+        )
+        .route(
+            "/api/common/channel/front-end/tour/time",
+            get(common_channel::front_end_tour_time),
+        )
+        .route(
+            "/api/common/channel/front-end/tour/start",
+            get(common_channel::front_end_tour_start),
+        )
+        .route(
+            "/api/common/channel/front-end/tour/stop",
+            get(common_channel::front_end_tour_stop),
+        )
+        .route(
+            "/api/common/channel/front-end/scan/set/speed",
+            get(common_channel::front_end_scan_set_speed),
+        )
+        .route(
+            "/api/common/channel/front-end/scan/set/left",
+            get(common_channel::front_end_scan_set_left),
+        )
+        .route(
+            "/api/common/channel/front-end/scan/set/right",
+            get(common_channel::front_end_scan_set_right),
+        )
+        .route(
+            "/api/common/channel/front-end/scan/start",
+            get(common_channel::front_end_scan_start),
+        )
+        .route(
+            "/api/common/channel/front-end/scan/stop",
+            get(common_channel::front_end_scan_stop),
+        )
+        // ========== commonChannel 回放 ==========
+        .route(
+            "/api/common/channel/playback/query",
+            get(common_channel::channel_playback_query),
+        )
+        .route(
+            "/api/common/channel/playback",
+            get(common_channel::channel_playback_start),
+        )
+        .route(
+            "/api/common/channel/playback/stop",
+            get(common_channel::channel_playback_stop),
+        )
+        .route(
+            "/api/common/channel/playback/pause",
+            get(common_channel::channel_playback_pause),
+        )
+        .route(
+            "/api/common/channel/playback/resume",
+            get(common_channel::channel_playback_resume),
+        )
+        .route(
+            "/api/common/channel/playback/seek",
+            get(common_channel::channel_playback_seek),
+        )
+        .route(
+            "/api/common/channel/playback/speed",
+            get(common_channel::channel_playback_speed),
+        )
+        // ========== 前端控制 front_end ==========
+        .route(
+            "/api/front-end/ptz/:device_id/:channel_id",
+            get(front_end::ptz),
+        )
+        .route(
+            "/api/front-end/auxiliary/:device_id/:channel_id",
+            get(front_end::auxiliary),
+        )
+        .route(
+            "/api/front-end/wiper/:device_id/:channel_id",
+            get(front_end::wiper),
+        )
+        .route(
+            "/api/front-end/fi/iris/:device_id/:channel_id",
+            get(front_end::iris),
+        )
+        .route(
+            "/api/front-end/fi/focus/:device_id/:channel_device_id",
+            get(front_end::focus),
+        )
+        .route(
+            "/api/front-end/preset/query/:device_id/:channel_device_id",
+            get(front_end::preset_query),
+        )
+        .route(
+            "/api/front-end/preset/add/:device_id/:channel_device_id",
+            get(front_end::preset_add),
+        )
+        .route(
+            "/api/front-end/preset/call/:device_id/:channel_device_id",
+            get(front_end::preset_call),
+        )
+        .route(
+            "/api/front-end/preset/delete/:device_id/:channel_device_id",
+            get(front_end::preset_delete),
+        )
+        .route(
+            "/api/front-end/cruise/point/add/:device_id/:channel_device_id",
+            get(front_end::cruise_point_add),
+        )
+        .route(
+            "/api/front-end/cruise/point/delete/:device_id/:channel_device_id",
+            get(front_end::cruise_point_delete),
+        )
+        .route(
+            "/api/front-end/cruise/speed/:device_id/:channel_device_id",
+            get(front_end::cruise_speed),
+        )
+        .route(
+            "/api/front-end/cruise/time/:device_id/:channel_device_id",
+            get(front_end::cruise_time),
+        )
+        .route(
+            "/api/front-end/cruise/start/:device_id/:channel_device_id",
+            get(front_end::cruise_start),
+        )
+        .route(
+            "/api/front-end/cruise/stop/:device_id/:channel_device_id",
+            get(front_end::cruise_stop),
+        )
+        .route(
+            "/api/front-end/scan/set/speed/:device_id/:channel_device_id",
+            get(front_end::scan_set_speed),
+        )
+        .route(
+            "/api/front-end/scan/set/left/:device_id/:channel_device_id",
+            get(front_end::scan_set_left),
+        )
+        .route(
+            "/api/front-end/scan/set/right/:device_id/:channel_device_id",
+            get(front_end::scan_set_right),
+        )
+        .route(
+            "/api/front-end/scan/start/:device_id/:channel_device_id",
+            get(front_end::scan_start),
+        )
+        .route(
+            "/api/front-end/scan/stop/:device_id/:channel_device_id",
+            get(front_end::scan_stop),
+        )
+        // ========== JT1078 部标设备 ==========
+        .route("/api/jt1078/terminal/list", get(jt1078::terminal_list))
+        .route("/api/jt1078/terminal/query", get(jt1078::terminal_query))
+        .route("/api/jt1078/terminal/add", post(jt1078::terminal_add))
+        .route("/api/jt1078/terminal/update", post(jt1078::terminal_update))
+        .route(
+            "/api/jt1078/terminal/delete",
+            delete(jt1078::terminal_delete),
+        )
+        .route(
+            "/api/jt1078/terminal/channel/list",
+            get(jt1078::channel_list),
+        )
+        .route(
+            "/api/jt1078/terminal/channel/update",
+            post(jt1078::channel_update),
+        )
+        .route(
+            "/api/jt1078/terminal/channel/add",
+            post(jt1078::channel_add),
+        )
+        .route("/api/jt1078/live/start", get(jt1078::live_start))
+        .route("/api/jt1078/live/stop", get(jt1078::live_stop))
+        .route("/api/jt1078/playback/start/", get(jt1078::playback_start))
+        .route("/api/jt1078/playback/stop/", get(jt1078::playback_stop))
+        .route(
+            "/api/jt1078/playback/control",
+            get(jt1078::playback_control),
+        )
+        .route(
+            "/api/jt1078/playback/downloadUrl",
+            get(jt1078::playback_download_url),
+        )
+        .route("/api/jt1078/ptz", get(jt1078::ptz))
+        .route("/api/jt1078/wiper", get(jt1078::wiper))
+        .route("/api/jt1078/fill-light", get(jt1078::fill_light))
+        .route("/api/jt1078/record/list", get(jt1078::record_list))
+        .route("/api/jt1078/config/get", get(jt1078::config_get))
+        .route("/api/jt1078/config/set", post(jt1078::config_set))
+        .route("/api/jt1078/attribute", get(jt1078::attribute))
+        .route("/api/jt1078/link-detection", get(jt1078::link_detection))
+        .route("/api/jt1078/position-info", get(jt1078::position_info))
+        .route("/api/jt1078/text-msg", post(jt1078::text_msg))
+        .route(
+            "/api/jt1078/telephone-callback",
+            get(jt1078::telephone_callback),
+        )
+        .route("/api/jt1078/driver-information", get(jt1078::driver_info))
+        .route(
+            "/api/jt1078/control/factory-reset",
+            post(jt1078::factory_reset),
+        )
+        .route("/api/jt1078/control/reset", post(jt1078::reset))
+        .route("/api/jt1078/control/connection", post(jt1078::connection))
+        .route("/api/jt1078/control/door", get(jt1078::door))
+        .route("/api/jt1078/media/attribute", get(jt1078::media_attribute))
+        .route("/api/jt1078/media/list", post(jt1078::media_list))
+        .route("/api/jt1078/set-phone-book", post(jt1078::set_phone_book))
+        .route("/api/jt1078/shooting", post(jt1078::shooting))
+        .route("/api/jt1078/talk/start", get(jt1078::talk_start))
+        .route("/api/jt1078/talk/stop", get(jt1078::talk_stop))
+        .route(
+            "/api/jt1078/media/upload/one/upload",
+            get(jt1078::media_upload_one),
+        )
+        // ========== 测试接口 ==========
+        .route(
+            "/api/sy/camera/list/ids",
+            get(common_channel::camera_list_ids),
+        )
         .route_layer(middleware::from_fn_with_state(
             state_clone.clone(),
             auth_middleware,
