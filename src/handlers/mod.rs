@@ -13,3 +13,4 @@ pub mod stub;
 pub mod common_channel;
 pub mod front_end;
 pub mod jt1078;
+pub mod websocket;

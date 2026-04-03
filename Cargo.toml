@@ -12,7 +12,7 @@ postgres = ["sqlx/postgres"]
 
 [dependencies]
 # Web
-axum = { version = "0.7", features = ["json", "macros", "form", "query"] }
+axum = { version = "0.7", features = ["json", "macros", "form", "query", "ws"] }
 tower = "0.4"
 tower-http = { version = "0.5", features = ["cors", "fs", "trace"] }
 tokio = { version = "1", features = ["full"] }

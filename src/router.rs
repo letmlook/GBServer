@@ -1,6 +1,6 @@
 use axum::{
     middleware,
-    routing::{delete, get, post},
+    routing::{delete, get, post, ws},
     Router,
 };
 use std::path::PathBuf;
@@ -9,7 +9,7 @@ use tower_http::cors::{Any, CorsLayer};
 use crate::auth::auth_middleware;
 use crate::handlers::{
     common_channel, device, device_control, device_stub, front_end, jt1078, platform, play,
-    playback, server, stream, stub, talk, user,
+    playback, server, stream, stub, talk, user, websocket,
 };
 use crate::zlm::hook as zlm_hook;
 use crate::AppState;
@@ -757,6 +757,9 @@ pub fn app(state: AppState) -> Router {
 
     let api = api_public.merge(api_protected);
     let app = Router::new().merge(api).with_state(state.clone());
+
+    // WebSocket：设备状态实时通知
+    let app = app.route("/api/ws", ws(websocket::ws_handler));
 
     // 静态资源：前端构建产物（与 Java 版 static 目录一致）
     let static_dir = state

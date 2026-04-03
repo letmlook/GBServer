@@ -27,6 +27,7 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
     let sip_server = if let Some(ref sip_config) = cfg.sip {
         if sip_config.enabled {
             let mut server = sip::SipServer::new(sip_config.clone(), pool.clone());
+            server.set_ws_state(ws_state.clone());
             server.start().await?;
             Some(Arc::new(RwLock::new(server)))
         } else {
@@ -54,6 +55,7 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
     }
 
     let download_manager = Arc::new(crate::handlers::playback::DownloadManager::new());
+    let ws_state = Arc::new(crate::handlers::websocket::WsState::new());
 
     let state = AppState {
         config: Arc::new(cfg.clone()),
@@ -62,6 +64,7 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
         zlm_client,
         zlm_clients,
         download_manager: Some(download_manager),
+        ws_state,
     };
 
     if let Some(ref server) = sip_server {
@@ -91,6 +94,7 @@ pub struct AppState {
     pub zlm_client: Option<Arc<zlm::ZlmClient>>,
     pub zlm_clients: HashMap<String, Arc<zlm::ZlmClient>>,
     pub download_manager: Option<Arc<crate::handlers::playback::DownloadManager>>,
+    pub ws_state: Arc<crate::handlers::websocket::WsState>,
 }
 
 impl AppState {
