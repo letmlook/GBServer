@@ -278,12 +278,13 @@ pub async fn region_add(
     Ok(Json(WVPResult::<()>::success_empty()))
 }
 
-/// GET /api/region/path?id=
+/// GET /api/region/path?id=（可省略，若省略则返回空路径）
 pub async fn region_path(
     State(state): State<AppState>,
     Query(q): Query<RegionQuery>,
 ) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
-    let id = q.id.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id"))?;
+    // 允许缺少 id，若未传则返回空路径，提升友好度
+    let id = q.id.unwrap_or(0);
     let all: Vec<Region> = region::list_all(&state.pool).await?;
     let mut path = Vec::new();
     let mut current_id: Option<i32> = Some(id);
@@ -439,7 +440,7 @@ pub async fn group_path(
     State(state): State<AppState>,
     Query(q): Query<IdQuery>,
 ) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
-    let id = q.id.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id"))?;
+    let id = q.id.unwrap_or(0);
     let all: Vec<Group> = group::list_all(&state.pool).await?;
     let mut path = Vec::new();
     let mut current_id: Option<i32> = Some(id);

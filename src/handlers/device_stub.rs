@@ -19,6 +19,8 @@ use crate::db::{
 use crate::error::{AppError, ErrorCode};
 use crate::response::WVPResult;
 use crate::AppState;
+use std::time::Duration;
+use tokio::time::timeout;
 
 /// GET /api/device/query/sync_status
 /// 参数: deviceId - 设备ID (可选)
@@ -28,7 +30,19 @@ pub async fn sync_status(
 ) -> Json<WVPResult<serde_json::Value>> {
     if let Some(ref sip_server) = state.sip_server {
         let server = sip_server.read().await;
-        let subscriptions = server.catalog_subscription_manager().get_all().await;
+        // Avoid long waits that can cause deadlocks in the catalog subscription query
+        let subscriptions = match timeout(Duration::from_millis(200),
+                                        server.catalog_subscription_manager().get_all()).await {
+            Ok(Ok(list)) => list,
+            Ok(Err(e)) => {
+                tracing::error!("catalog_subscription_manager get_all error: {}", e);
+                Vec::new()
+            }
+            Err(_) => {
+                tracing::warn!("catalog_subscription_manager.get_all timed out");
+                Vec::new()
+            }
+        };
         let active_count = subscriptions.len();
         Json(WVPResult::success(serde_json::json!({
             "deviceId": null,

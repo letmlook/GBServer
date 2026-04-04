@@ -17,7 +17,10 @@ use crate::AppState;
 pub fn app(state: AppState) -> Router {
     let state_clone = state.clone();
     let api_protected = Router::new()
-        .route("/api/user/userInfo", post(user::user_info))
+        .route(
+            "/api/user/userInfo",
+            get(user::user_info).post(user::user_info),
+        )
         .route("/api/user/users", get(user::users))
         .route("/api/user/add", post(user::add_user))
         .route("/api/user/delete", delete(user::delete_user))
