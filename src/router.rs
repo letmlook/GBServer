@@ -1,6 +1,6 @@
 use axum::{
     middleware,
-    routing::{delete, get, post, ws},
+    routing::{delete, get, post},
     Router,
 };
 use std::path::PathBuf;
@@ -14,7 +14,7 @@ use crate::handlers::{
 use crate::zlm::hook as zlm_hook;
 use crate::AppState;
 
-pub fn app(state: AppState) -> Router {
+pub fn app(state: AppState) -> Router<AppState> {
     let state_clone = state.clone();
     let api_protected = Router::new()
         .route(
@@ -749,20 +749,18 @@ pub fn app(state: AppState) -> Router {
         .route_layer(middleware::from_fn_with_state(
             state_clone.clone(),
             auth_middleware,
-        ))
-        .with_state(state_clone.clone());
+        ));
 
     let api_public = Router::new()
         .route("/api/user/login", get(user::login).post(user::login))
         .route("/api/user/logout", get(user::logout))
-        .route("/api/zlm/hook", post(zlm_hook::handle_webhook))
-        .with_state(state_clone.clone());
+        .route("/api/zlm/hook", post(zlm_hook::handle_webhook));
 
     let api = api_public.merge(api_protected);
     let app = Router::new().merge(api).with_state(state.clone());
 
     // WebSocket：设备状态实时通知
-    let app = app.route("/api/ws", ws(websocket::ws_handler));
+    let app = app.route("/api/ws", get(websocket::ws_handler));
 
     // 告警管理
     let app = app

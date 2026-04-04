@@ -77,6 +77,7 @@ async fn init_db_tables(pool: &db::Pool) -> anyhow::Result<()> {
 
 pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
     let pool = db::create_pool(&cfg).await?;
+    let ws_state = Arc::new(crate::handlers::websocket::WsState::new());
 
     // Initialize required DB tables on startup
     init_db_tables(&pool).await?;
@@ -112,7 +113,6 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
     }
 
     let download_manager = Arc::new(crate::handlers::playback::DownloadManager::new());
-    let ws_state = Arc::new(crate::handlers::websocket::WsState::new());
 
     let state = AppState {
         config: Arc::new(cfg.clone()),
@@ -135,7 +135,7 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
     }
 
     let port = cfg.server.port;
-    let app = router::app(state);
+    let app = router::app(state.clone()).with_state(state);
     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
     tracing::info!("WVP GB28181 后端启动: http://{}", addr);
     let listener = tokio::net::TcpListener::bind(addr).await?;

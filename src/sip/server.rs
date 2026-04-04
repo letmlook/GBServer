@@ -1,57 +1,38 @@
-use std::net::SocketAddr;
-use std::sync::Arc;
-use std::time::Duration;
-use tokio::net::UdpSocket;
-use tokio::sync::RwLock;
-use anyhow::Result;
-use md5::{Md5, Digest};
-use rand::Rng;
-use chrono::Utc;
-
-use crate::config::SipConfig;
-use crate::db::{Pool, device as db_device};
-use crate::db::position_history as ph;
-use crate::sip::core::{
-    TransactionManager, DialogManager, SipMessage, SipRequest, SipResponse,
-    SipMethod, StatusCode, ViaHeader, NameAddr, CSeq, Contact,
-    Authorization, Challenge, SubscriptionState
-};
-use crate::sip::gb28181::{DeviceManager, SessionManager, XmlParser, TransportMode};
-use crate::sip::gb28181::invite::SessionStatus;
-use crate::sip::gb28181::xml_parser::ChannelInfo;
-use crate::sip::gb28181::invite_session::{
-    InviteSessionManager, InviteSessionStatus, StreamType, SdpInfo,
-    build_invite_sdp, build_playback_sdp
-};
-use crate::sip::gb28181::talk::{TalkManager, TalkStatus, build_talk_sdp as build_audio_sdp};
-use crate::sip::gb28181::catalog::{CatalogSubscriptionManager, build_catalog_notify_body};
-use crate::sip::core::parser::Parser;
-use crate::sip::transport::tcp::{TcpListener, TcpConnectionManager};
-use crate::handlers::websocket::WsState;
-use crate::zlm::ZlmClient;
-use crate::db::{self as db_device, Pool};
-use crate::sip::gb28181::device::DeviceManager;
-use crate::sip::gb28181::session::SessionManager;
-use crate::sip::gb28181::invite_session::InviteSessionManager;
-use crate::sip::gb28181::talk::TalkManager;
-use crate::sip::gb28181::catalog::CatalogSubscriptionManager;
-use crate::sip::core::transaction::TransactionManager;
-use crate::sip::core::dialog::DialogManager;
-use crate::sip::core::transport::tcp::TcpConnectionManager;
-use crate::config::SipConfig;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::net::UdpSocket;
-use tokio::net::TcpListener;
-use tokio::sync::RwLock;
+use std::time::Duration;
+
+use anyhow::Result;
+use bytes::BytesMut;
+use chrono::{DateTime, Utc};
+use md5::{Digest, Md5};
 use quick_xml::events::Event;
 use quick_xml::Reader;
-use anyhow::Result;
-use chrono::{DateTime, Utc};
-use bytes::BytesMut;
-use md5::{Md5, Digest};
 use rand::Rng;
+use tokio::net::UdpSocket;
+use tokio::sync::RwLock;
+
+use crate::config::SipConfig;
+use crate::db::{device as db_device, Pool};
+use crate::db::position_history as ph;
+use crate::handlers::websocket::WsState;
+use crate::sip::core::parser::Parser;
+use crate::sip::core::{
+    Authorization, CSeq, Challenge, Contact, DialogManager, NameAddr, SipMessage, SipMethod,
+    SipRequest, SipResponse, StatusCode, SubscriptionState, TransactionManager, ViaHeader,
+};
+use crate::sip::gb28181::catalog::{build_catalog_notify_body, CatalogSubscriptionManager};
+use crate::sip::gb28181::invite::SessionStatus;
+use crate::sip::gb28181::invite_session::{
+    build_invite_sdp, build_playback_sdp, InviteSessionManager, InviteSessionStatus, SdpInfo,
+    StreamType,
+};
+use crate::sip::gb28181::talk::{build_talk_sdp as build_audio_sdp, TalkManager, TalkStatus};
+use crate::sip::gb28181::xml_parser::ChannelInfo;
+use crate::sip::gb28181::{DeviceManager, SessionManager, TransportMode, XmlParser};
+use crate::sip::transport::tcp::{TcpConnectionManager, TcpListener};
+use crate::zlm::ZlmClient;
 
 pub struct SipServer {
     config: Arc<SipConfig>,
@@ -92,13 +73,8 @@ impl SipServer {
         }
     }
 
-    pub fn set_zlm_client(&mut self, client: Arc<ZlmClient>) {
-        self.zlm_client = Some(client);
-    }
-
     pub fn set_ws_state(&mut self, ws: Arc<WsState>) {
         self.ws_state = Some(ws);
-    }
     }
 
     pub fn set_zlm_client(&mut self, client: Option<Arc<ZlmClient>>) {
@@ -208,7 +184,8 @@ impl SipServer {
         let udp_catalog_manager = catalog_subscription_manager.clone();
         let udp_zlm = zlm_client.clone();
         let udp_pool = pool.clone();
-
+        let udp_ws_state = self.ws_state.clone();
+        
         tokio::spawn(async move {
             loop {
                 let mut buf = vec![0u8; 65535];
@@ -226,8 +203,9 @@ impl SipServer {
                         let pool = udp_pool.clone();
                         let socket_for_response = udp_socket.clone();
 
+                        let ws_state = udp_ws_state.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = Self::handle_packet(&data, addr, &config, &device_manager, &session_manager, &invite_session_manager, &talk_manager, &catalog_subscription_manager, &zlm_client, &pool, &socket_for_response, false).await {
+                            if let Err(e) = Self::handle_packet(&data, addr, &config, &device_manager, &session_manager, &invite_session_manager, &talk_manager, &catalog_subscription_manager, &zlm_client, &pool, &socket_for_response, false, &ws_state).await {
                                 tracing::error!("SIP handler error: {}", e);
                             }
                         });
@@ -309,7 +287,7 @@ impl SipServer {
                         
                         let socket = Arc::new(tokio::net::UdpSocket::bind("0.0.0.0:0").await.unwrap());
                         
-                        if let Err(e) = Self::handle_packet(data_bytes, addr, config, device_manager, session_manager, invite_session_manager, talk_manager, catalog_subscription_manager, zlm_client, pool, &socket, true).await {
+                        if let Err(e) = Self::handle_packet(data_bytes, addr, config, device_manager, session_manager, invite_session_manager, talk_manager, catalog_subscription_manager, zlm_client, pool, &socket, true, &None).await {
                             tracing::error!("TCP SIP handler error: {}", e);
                         }
                     }
@@ -340,11 +318,26 @@ impl SipServer {
         pool: &Pool,
         socket: &Arc<UdpSocket>,
         _is_tcp: bool,
+        ws_state: &Option<Arc<WsState>>,
     ) -> Result<()> {
         let msg = Parser::parse(data)?;
         match msg {
             SipMessage::Request(req) => {
-                Self::handle_request(req, addr, config, device_manager, session_manager, invite_session_manager, talk_manager, catalog_subscription_manager, zlm_client, pool, socket).await
+                Self::handle_request(
+                    req,
+                    addr,
+                    config,
+                    device_manager,
+                    session_manager,
+                    invite_session_manager,
+                    talk_manager,
+                    catalog_subscription_manager,
+                    zlm_client,
+                    pool,
+                    socket,
+                    ws_state,
+                )
+                .await
             }
             SipMessage::Response(resp) => {
                 Self::handle_response(resp, session_manager).await
@@ -364,11 +357,12 @@ impl SipServer {
         zlm_client: &Option<Arc<ZlmClient>>,
         pool: &Pool,
         socket: &Arc<UdpSocket>,
+        ws_state: &Option<Arc<WsState>>,
     ) -> Result<()> {
         let method = req.method;
         match method {
             SipMethod::Register => {
-                Self::handle_register(req, addr, config, device_manager, pool, socket, &self.ws_state).await
+                Self::handle_register(req, addr, config, device_manager, pool, socket, ws_state).await
             }
             SipMethod::Message => {
                 Self::handle_message(req, addr, config, device_manager, pool, socket).await

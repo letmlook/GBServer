@@ -33,13 +33,13 @@ pub async fn sync_status(
     if let Some(ref sip_server) = state.sip_server {
         let server = sip_server.read().await;
         // Avoid long waits that can cause deadlocks in the catalog subscription query
-        let subscriptions = match timeout(Duration::from_millis(200),
-                                        server.catalog_subscription_manager().get_all()).await {
-            Ok(Ok(list)) => list,
-            Ok(Err(e)) => {
-                tracing::error!("catalog_subscription_manager get_all error: {}", e);
-                Vec::new()
-            }
+        let subscriptions = match timeout(
+            Duration::from_millis(200),
+            server.catalog_subscription_manager().get_all(),
+        )
+        .await
+        {
+            Ok(list) => list,
             Err(_) => {
                 tracing::warn!("catalog_subscription_manager.get_all timed out");
                 Vec::new()
@@ -269,7 +269,9 @@ pub async fn config_basic_param(
 
 #[derive(Debug, Deserialize)]
 pub struct ChannelOneQuery {
+    #[serde(alias = "deviceId")]
     pub device_id: Option<String>,
+    #[serde(alias = "channelId", alias = "channelDeviceId")]
     pub channel_id: Option<String>,
 }
 
@@ -344,8 +346,11 @@ pub async fn query_streams(
 /// 返回: 录像控制结果
 #[derive(Debug, Deserialize)]
 pub struct RecordControlQuery {
+    #[serde(alias = "deviceId")]
     pub device_id: Option<String>,
+    #[serde(alias = "channelId")]
     pub channel_id: Option<String>,
+    #[serde(alias = "recordCmdStr")]
     pub record_cmd_str: Option<String>,
 }
 
@@ -441,6 +446,7 @@ pub async fn tree_channel(
 /// 返回: 修改结果
 #[derive(Debug, Deserialize)]
 pub struct ChannelAudioQuery {
+    #[serde(alias = "channelId")]
     pub channel_id: Option<i64>,
     pub audio: Option<bool>,
 }
@@ -487,14 +493,16 @@ pub async fn channel_audio(
 /// 返回: 更新结果
 #[derive(Debug, Deserialize)]
 pub struct StreamIdentificationUpdate {
+    #[serde(alias = "deviceDbId")]
     pub device_db_id: Option<i64>,
     pub id: Option<i64>,
+    #[serde(alias = "streamIdentification")]
     pub stream_identification: Option<String>,
 }
 
 pub async fn channel_stream_identification_update(
     State(state): State<AppState>,
-    Json(body): Json<StreamIdentificationUpdate>,
+    Query(body): Query<StreamIdentificationUpdate>,
 ) -> Json<WVPResult<serde_json::Value>> {
     let device_db_id = body.device_db_id.unwrap_or(0);
     let id = body.id.unwrap_or(0);
@@ -519,25 +527,33 @@ pub async fn channel_stream_identification_update(
 
 #[derive(Debug, Deserialize)]
 pub struct DeviceAddBody {
+    #[serde(alias = "deviceId")]
     pub device_id: Option<String>,
     pub name: Option<String>,
     pub manufacturer: Option<String>,
     pub model: Option<String>,
     pub transport: Option<String>,
+    #[serde(alias = "streamMode")]
     pub stream_mode: Option<String>,
+    #[serde(alias = "mediaServerId")]
     pub media_server_id: Option<String>,
+    #[serde(alias = "customName")]
     pub custom_name: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct DeviceUpdateBody {
+    #[serde(alias = "deviceId")]
     pub device_id: Option<String>,
     pub name: Option<String>,
     pub manufacturer: Option<String>,
     pub model: Option<String>,
     pub transport: Option<String>,
+    #[serde(alias = "streamMode")]
     pub stream_mode: Option<String>,
+    #[serde(alias = "mediaServerId")]
     pub media_server_id: Option<String>,
+    #[serde(alias = "customName")]
     pub custom_name: Option<String>,
 }
 

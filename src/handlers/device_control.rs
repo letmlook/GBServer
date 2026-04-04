@@ -6,11 +6,15 @@ use crate::AppState;
 
 #[derive(Debug, Deserialize)]
 pub struct PtzQuery {
+    #[serde(alias = "deviceId")]
     pub device_id: Option<String>,
+    #[serde(alias = "channelId")]
     pub channel_id: Option<String>,
     pub command: Option<String>,
     pub speed: Option<u8>,
+    #[serde(alias = "presetIndex")]
     pub preset_index: Option<u32>,
+    #[serde(alias = "guardCmd")]
     pub guard_cmd: Option<String>,
 }
 

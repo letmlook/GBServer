@@ -3,8 +3,9 @@ use axum::{
     Json,
 };
 use serde::Deserialize;
+use sqlx::Row;
 
-use crate::error::AppError;
+use crate::error::{AppError, ErrorCode};
 use crate::response::WVPResult;
 use crate::AppState;
 
@@ -44,16 +45,16 @@ pub async fn alarm_list(
              ORDER BY alarm_time DESC 
              LIMIT $6 OFFSET $7",
         )
-        .bind(q.device_id)
-        .bind(q.channel_id)
-        .bind(q.alarm_type)
-        .bind(q.alarm_method)
+        .bind(&q.device_id)
+        .bind(&q.channel_id)
+        .bind(&q.alarm_type)
+        .bind(&q.alarm_method)
         .bind(q.handled)
         .bind(count as i64)
         .bind(offset as i64)
         .fetch_all(&state.pool)
         .await
-        .map_err(|e| AppError::internal(format!("数据库查询失败: {}", e)))?
+        .map_err(|e| AppError::business(ErrorCode::Error500, format!("数据库查询失败: {}", e)))?
         .into_iter()
         .map(|r| {
             let id: i64 = r.get("id");
@@ -91,10 +92,10 @@ pub async fn alarm_list(
                AND ($4::text IS NULL OR alarm_method = $4)
                AND ($5::boolean IS NULL OR handled = $5)",
         )
-        .bind(q.device_id)
-        .bind(q.channel_id)
-        .bind(q.alarm_type)
-        .bind(q.alarm_method)
+        .bind(&q.device_id)
+        .bind(&q.channel_id)
+        .bind(&q.alarm_type)
+        .bind(&q.alarm_method)
         .bind(q.handled)
         .fetch_one(&state.pool)
         .await
@@ -131,7 +132,7 @@ pub async fn alarm_list(
         .bind(offset as i64)
         .fetch_all(&state.pool)
         .await
-        .map_err(|e| AppError::internal(format!("数据库查询失败: {}", e)))?
+        .map_err(|e| AppError::business(ErrorCode::Error500, format!("数据库查询失败: {}", e)))?
         .into_iter()
         .map(|r| {
             let id: i64 = r.get("id");
@@ -200,7 +201,7 @@ pub async fn alarm_detail(
         .bind(id)
         .fetch_optional(&state.pool)
         .await
-        .map_err(|e| AppError::internal(format!("数据库查询失败: {}", e)))?;
+        .map_err(|e| AppError::business(ErrorCode::Error500, format!("数据库查询失败: {}", e)))?;
 
         match row {
             Some(r) => {
@@ -239,7 +240,7 @@ pub async fn alarm_detail(
             .bind(id)
             .fetch_optional(&state.pool)
             .await
-            .map_err(|e| AppError::internal(format!("数据库查询失败: {}", e)))?;
+            .map_err(|e| AppError::business(ErrorCode::Error500, format!("数据库查询失败: {}", e)))?;
 
         match row {
             Some(r) => {
@@ -305,7 +306,7 @@ pub async fn alarm_handle(
         .bind(id)
         .execute(&state.pool)
         .await
-        .map_err(|e| AppError::internal(format!("数据库更新失败: {}", e)))?;
+        .map_err(|e| AppError::business(ErrorCode::Error500, format!("数据库更新失败: {}", e)))?;
     }
 
     #[cfg(feature = "mysql")]
@@ -339,7 +340,7 @@ pub async fn alarm_delete(
             .bind(id)
             .execute(&state.pool)
             .await
-            .map_err(|e| AppError::internal(format!("数据库删除失败: {}", e)))?;
+            .map_err(|e| AppError::business(ErrorCode::Error500, format!("数据库删除失败: {}", e)))?;
     }
 
     #[cfg(feature = "mysql")]
@@ -348,8 +349,8 @@ pub async fn alarm_delete(
             .bind(id)
             .execute(&state.pool)
             .await
-            .map_err(|e| AppError::internal(format!("数据库删除失败: {}", e)))?;
+            .map_err(|e| AppError::business(ErrorCode::Error500, format!("数据库删除失败: {}", e)))?;
     }
 
-    Ok(Json(WVPResult::success_empty()))
+    Ok(Json(WVPResult::success(serde_json::json!(null))))
 }

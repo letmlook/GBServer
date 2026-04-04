@@ -123,7 +123,9 @@ impl Default for DownloadManager {
 
 #[derive(Debug, Deserialize)]
 pub struct PlaybackQuery {
+    #[serde(alias = "startTime")]
     pub start_time: Option<String>,
+    #[serde(alias = "endTime")]
     pub end_time: Option<String>,
 }
 
@@ -304,7 +306,9 @@ pub async fn playback_stop(
 
 #[derive(Debug, Deserialize)]
 pub struct RecordQuery {
+    #[serde(alias = "startTime")]
     pub start_time: Option<String>,
+    #[serde(alias = "endTime")]
     pub end_time: Option<String>,
     pub page: Option<u32>,
     pub count: Option<u32>,

@@ -135,7 +135,17 @@ pub async fn system_config_info(State(state): State<AppState>) -> Json<WVPResult
     // SIP config
     let sip_cfg = cfg.sip.as_ref();
     let sip_json = if let Some(s) = sip_cfg {
-        serde_json::to_value(s).unwrap_or(serde_json::Value::Null)
+        json!({
+            "enabled": s.enabled,
+            "ip": s.ip,
+            "port": s.port,
+            "tcpPort": s.tcp_port,
+            "deviceId": s.device_id,
+            "realm": s.realm,
+            "keepaliveTimeout": s.keepalive_timeout,
+            "registerTimeout": s.register_timeout,
+            "charset": s.charset,
+        })
     } else {
         serde_json::Value::Null
     };
@@ -254,13 +264,43 @@ pub async fn resource_info(State(state): State<AppState>) -> Json<WVPResult<serd
 
 // ---------- 占位：前端调用避免 404 ----------
 /// GET /api/server/media_server/check
-pub async fn media_server_check() -> Json<WVPResult<serde_json::Value>> {
-    Json(WVPResult::success(serde_json::json!(true)))
+#[derive(Debug, Deserialize)]
+pub struct MediaServerCheckQuery {
+    pub ip: Option<String>,
+    #[serde(alias = "httpPort")]
+    pub port: Option<i32>,
+    pub secret: Option<String>,
+    #[serde(rename = "type")]
+    pub type_: Option<String>,
+}
+
+pub async fn media_server_check(
+    Query(q): Query<MediaServerCheckQuery>,
+) -> Json<WVPResult<serde_json::Value>> {
+    Json(WVPResult::success(serde_json::json!({
+        "success": true,
+        "ip": q.ip,
+        "port": q.port,
+        "secret": q.secret,
+        "type": q.type_,
+    })))
 }
 
 /// GET /api/server/media_server/record/check
-pub async fn media_server_record_check() -> Json<WVPResult<serde_json::Value>> {
-    Json(WVPResult::success(serde_json::json!(true)))
+#[derive(Debug, Deserialize)]
+pub struct MediaServerRecordCheckQuery {
+    pub ip: Option<String>,
+    pub port: Option<i32>,
+}
+
+pub async fn media_server_record_check(
+    Query(q): Query<MediaServerRecordCheckQuery>,
+) -> Json<WVPResult<serde_json::Value>> {
+    Json(WVPResult::success(serde_json::json!({
+        "success": true,
+        "ip": q.ip,
+        "port": q.port,
+    })))
 }
 
 /// POST /api/server/media_server/save - 添加或更新媒体服务器
@@ -268,7 +308,9 @@ pub async fn media_server_record_check() -> Json<WVPResult<serde_json::Value>> {
 pub struct MediaServerSaveBody {
     pub id: Option<String>,
     pub ip: Option<String>,
+    #[serde(alias = "hookIp")]
     pub hook_ip: Option<String>,
+    #[serde(alias = "httpPort")]
     pub http_port: Option<i32>,
 }
 
@@ -311,10 +353,24 @@ pub async fn media_server_save(
 }
 
 /// DELETE /api/server/media_server/delete
+#[derive(Debug, Deserialize)]
+pub struct MediaServerDeleteQuery {
+    pub id: Option<String>,
+}
+
 pub async fn media_server_delete(
     State(state): State<AppState>,
-    Path(id): Path<String>,
+    Query(q): Query<MediaServerDeleteQuery>,
 ) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+    let id = q
+        .id
+        .as_deref()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if id.is_empty() {
+        return Err(AppError::business(ErrorCode::Error400, "缺少 id 参数"));
+    }
     media_server::delete_by_id(&state.pool, &id).await?;
     Ok(Json(WVPResult::success(serde_json::json!({
         "id": id,

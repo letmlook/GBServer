@@ -64,6 +64,7 @@ pub struct PushListPage {
 pub struct PushAddBody {
     pub app: Option<String>,
     pub stream: Option<String>,
+    #[serde(alias = "mediaServerId")]
     pub media_server_id: Option<String>,
 }
 
@@ -104,6 +105,7 @@ pub struct PushUpdateBody {
     pub id: Option<i64>,
     pub app: Option<String>,
     pub stream: Option<String>,
+    #[serde(alias = "mediaServerId")]
     pub media_server_id: Option<String>,
 }
 
@@ -149,7 +151,7 @@ pub struct PushRemoveBody {
 /// POST /api/push/remove
 pub async fn push_remove(
     State(state): State<AppState>,
-    Json(body): Json<PushRemoveBody>,
+    Query(body): Query<PushRemoveBody>,
 ) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
     let id = body.id.unwrap_or(0);
     if id <= 0 {
@@ -189,14 +191,16 @@ pub async fn push_remove(
 pub struct PushStartBody {
     pub id: Option<i64>,
     pub stream: Option<String>,
+    #[serde(alias = "mediaServerId")]
     pub media_server_id: Option<String>,
+    #[serde(alias = "useTcp")]
     pub use_tcp: Option<bool>,
 }
 
 /// POST /api/push/start
 pub async fn push_start(
     State(state): State<AppState>,
-    Json(body): Json<PushStartBody>,
+    Query(body): Query<PushStartBody>,
 ) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
     let id = body.id.unwrap_or(0);
     let stream_id = body.stream.clone().unwrap_or_default();
@@ -456,10 +460,14 @@ pub async fn proxy_ffmpeg_cmd_list() -> Json<WVPResult<Vec<serde_json::Value>>> 
 pub struct ProxyAddBody {
     pub app: Option<String>,
     pub stream: Option<String>,
+    #[serde(alias = "srcUrl")]
     pub src_url: Option<String>,
+    #[serde(alias = "mediaServerId")]
     pub media_server_id: Option<String>,
     pub name: Option<String>,
+    #[serde(alias = "enableAudio")]
     pub enable_audio: Option<bool>,
+    #[serde(alias = "enableMp4")]
     pub enable_mp4: Option<bool>,
 }
 
@@ -502,7 +510,9 @@ pub struct ProxyUpdateBody {
     pub id: Option<i64>,
     pub app: Option<String>,
     pub stream: Option<String>,
+    #[serde(alias = "srcUrl")]
     pub src_url: Option<String>,
+    #[serde(alias = "mediaServerId")]
     pub media_server_id: Option<String>,
     pub name: Option<String>,
 }
@@ -579,12 +589,13 @@ pub async fn proxy_save(
 pub struct ProxyStartBody {
     pub id: Option<i64>,
     pub stream: Option<String>,
+    #[serde(alias = "mediaServerId")]
     pub media_server_id: Option<String>,
 }
 
 pub async fn proxy_start(
     State(state): State<AppState>,
-    Json(body): Json<ProxyStartBody>,
+    Query(body): Query<ProxyStartBody>,
 ) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
     let id = body.id.unwrap_or(0);
     let stream_id = body.stream.clone().unwrap_or_default();
@@ -677,12 +688,13 @@ pub async fn proxy_start(
 pub struct ProxyStopBody {
     pub id: Option<i64>,
     pub stream: Option<String>,
+    #[serde(alias = "mediaServerId")]
     pub media_server_id: Option<String>,
 }
 
 pub async fn proxy_stop(
     State(state): State<AppState>,
-    Json(body): Json<ProxyStopBody>,
+    Query(body): Query<ProxyStopBody>,
 ) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
     let id = body.id.unwrap_or(0);
     let stream_id = body.stream.clone().unwrap_or_default();
@@ -734,12 +746,13 @@ pub async fn proxy_stop(
 pub struct ProxyDeleteBody {
     pub id: Option<i64>,
     pub stream: Option<String>,
+    #[serde(alias = "mediaServerId")]
     pub media_server_id: Option<String>,
 }
 
 pub async fn proxy_delete(
     State(state): State<AppState>,
-    Json(body): Json<ProxyDeleteBody>,
+    Query(body): Query<ProxyDeleteBody>,
 ) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
     let id = body.id.unwrap_or(0);
     

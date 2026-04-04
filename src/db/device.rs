@@ -48,19 +48,21 @@ pub async fn update_channel_has_audio(
 ) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
     {
-        sqlx::query("UPDATE wvp_device_channel SET has_audio = ? WHERE id = ?")
+        let result = sqlx::query("UPDATE wvp_device_channel SET has_audio = ? WHERE id = ?")
             .bind(has_audio)
             .bind(channel_id)
             .execute(pool)
-            .await
+            .await?;
+        Ok(result.rows_affected())
     }
     #[cfg(feature = "postgres")]
     {
-        sqlx::query("UPDATE wvp_device_channel SET has_audio = $1 WHERE id = $2")
+        let result = sqlx::query("UPDATE wvp_device_channel SET has_audio = $1 WHERE id = $2")
             .bind(has_audio)
             .bind(channel_id)
             .execute(pool)
-            .await
+            .await?;
+        Ok(result.rows_affected())
     }
 }
 
@@ -71,19 +73,21 @@ pub async fn update_channel_stream_identification(
 ) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
     {
-        sqlx::query("UPDATE wvp_device_channel SET stream_identification = ? WHERE id = ?")
+        let result = sqlx::query("UPDATE wvp_device_channel SET stream_identification = ? WHERE id = ?")
             .bind(stream_identification)
             .bind(channel_id)
             .execute(pool)
-            .await
+            .await?;
+        Ok(result.rows_affected())
     }
     #[cfg(feature = "postgres")]
     {
-        sqlx::query("UPDATE wvp_device_channel SET stream_identification = $1 WHERE id = $2")
+        let result = sqlx::query("UPDATE wvp_device_channel SET stream_identification = $1 WHERE id = $2")
             .bind(stream_identification)
             .bind(channel_id)
             .execute(pool)
-            .await
+            .await?;
+        Ok(result.rows_affected())
     }
 }
 
