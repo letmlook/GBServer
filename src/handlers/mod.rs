@@ -14,3 +14,4 @@ pub mod common_channel;
 pub mod front_end;
 pub mod jt1078;
 pub mod websocket;
+pub mod alarm;

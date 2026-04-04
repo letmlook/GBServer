@@ -8,7 +8,7 @@ use tower_http::cors::{Any, CorsLayer};
 
 use crate::auth::auth_middleware;
 use crate::handlers::{
-    common_channel, device, device_control, device_stub, front_end, jt1078, platform, play,
+    alarm, common_channel, device, device_control, device_stub, front_end, jt1078, platform, play,
     playback, server, stream, stub, talk, user, websocket,
 };
 use crate::zlm::hook as zlm_hook;
@@ -760,6 +760,13 @@ pub fn app(state: AppState) -> Router {
 
     // WebSocket：设备状态实时通知
     let app = app.route("/api/ws", ws(websocket::ws_handler));
+
+    // 告警管理
+    let app = app
+        .route("/api/alarm/list", get(alarm::alarm_list))
+        .route("/api/alarm/detail/:id", get(alarm::alarm_detail))
+        .route("/api/alarm/handle", post(alarm::alarm_handle))
+        .route("/api/alarm/delete/:id", delete(alarm::alarm_delete));
 
     // 静态资源：前端构建产物（与 Java 版 static 目录一致）
     let static_dir = state
