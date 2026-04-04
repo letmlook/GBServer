@@ -12,6 +12,7 @@ pub mod platform;
 pub mod platform_channel;
 pub mod common_channel;
 pub mod jt1078;
+pub mod position_history;
 
 pub use user::*;
 pub use device::*;
@@ -25,6 +26,7 @@ pub use stream_push::StreamPush;
 pub use stream_proxy::StreamProxy;
 pub use platform::Platform;
 pub use jt1078::{JtTerminal, JtChannel};
+pub use position_history::PositionHistory;
 
 use crate::config::AppConfig;
 

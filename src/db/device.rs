@@ -40,6 +40,87 @@ pub struct DeviceChannel {
     pub channel_type: Option<i32>,
 }
 
+ 
+pub async fn update_channel_has_audio(
+    pool: &Pool,
+    channel_id: i64,
+    has_audio: bool,
+) -> sqlx::Result<u64> {
+    #[cfg(feature = "mysql")]
+    {
+        sqlx::query("UPDATE wvp_device_channel SET has_audio = ? WHERE id = ?")
+            .bind(has_audio)
+            .bind(channel_id)
+            .execute(pool)
+            .await
+    }
+    #[cfg(feature = "postgres")]
+    {
+        sqlx::query("UPDATE wvp_device_channel SET has_audio = $1 WHERE id = $2")
+            .bind(has_audio)
+            .bind(channel_id)
+            .execute(pool)
+            .await
+    }
+}
+
+pub async fn update_channel_stream_identification(
+    pool: &Pool,
+    channel_id: i64,
+    stream_identification: &str,
+) -> sqlx::Result<u64> {
+    #[cfg(feature = "mysql")]
+    {
+        sqlx::query("UPDATE wvp_device_channel SET stream_identification = ? WHERE id = ?")
+            .bind(stream_identification)
+            .bind(channel_id)
+            .execute(pool)
+            .await
+    }
+    #[cfg(feature = "postgres")]
+    {
+        sqlx::query("UPDATE wvp_device_channel SET stream_identification = $1 WHERE id = $2")
+            .bind(stream_identification)
+            .bind(channel_id)
+            .execute(pool)
+            .await
+    }
+}
+
+/// Count total device channels across all devices
+pub async fn count_all_channels(pool: &Pool) -> sqlx::Result<i64> {
+    #[cfg(feature = "mysql")]
+    {
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM wvp_device_channel").fetch_one(pool).await
+    }
+    #[cfg(feature = "postgres")]
+    {
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM wvp_device_channel").fetch_one(pool).await
+    }
+}
+
+/// Count channels for online devices only
+pub async fn count_online_channels(pool: &Pool) -> sqlx::Result<i64> {
+    #[cfg(feature = "mysql")]
+    {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM wvp_device_channel dc INNER JOIN wvp_device d ON dc.device_id = d.device_id WHERE d.on_line = ?",
+        )
+        .bind(true)
+        .fetch_one(pool)
+        .await
+    }
+    #[cfg(feature = "postgres")]
+    {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM wvp_device_channel dc INNER JOIN wvp_device d ON dc.device_id = d.device_id WHERE d.on_line = $1",
+        )
+        .bind(true)
+        .fetch_one(pool)
+        .await
+    }
+}
+
 pub async fn list_devices_paged(
     pool: &Pool,
     page: u32,

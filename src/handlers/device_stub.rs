@@ -15,6 +15,8 @@ use crate::db::{
     list_channels_for_device,
     update_device,
     DeviceChannel,
+    update_channel_has_audio,
+    update_channel_stream_identification,
 };
 use crate::error::{AppError, ErrorCode};
 use crate::response::WVPResult;
@@ -461,6 +463,8 @@ pub async fn channel_audio(
         match zlm_client.get_media_list(Some(schema), None, None).await {
             Ok(_streams) => {
                 tracing::info!("ZLM streams updated for audio mode: {}", audio);
+                // Persist audio state to DB
+                let _ = update_channel_has_audio(&state.pool, channel_id, audio).await;
             }
             Err(e) => {
                 tracing::error!("Failed to update ZLM streams: {}", e);
@@ -501,6 +505,8 @@ pub async fn channel_stream_identification_update(
     }
 
     tracing::info!("Stream identification update: id={}, stream={}", id, stream_identification);
+    // Persist stream identification to DB
+    let _ = update_channel_stream_identification(&state.pool, id, &stream_identification).await;
 
     Json(WVPResult::success(serde_json::json!({
         "deviceDbId": device_db_id,

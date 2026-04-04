@@ -149,6 +149,90 @@ pub async fn get_terminal_by_phone(pool: &Pool, phone: &str) -> sqlx::Result<Opt
         .bind(phone).fetch_optional(pool).await;
 }
 
+/// Insert a new JT1078 channel for a terminal identified by phone_number.
+/// Returns number of rows affected.
+pub async fn insert_channel(
+    pool: &Pool,
+    phone_number: &str,
+    channel_id: i32,
+    name: Option<&str>,
+) -> sqlx::Result<u64> {
+    // Resolve terminal first
+    if let Some(term) = get_terminal_by_phone(pool, phone_number).await? {
+        #[cfg(feature = "mysql")]
+        {
+            let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+            let r = sqlx::query(
+                "INSERT INTO wvp_jt_channel (terminal_db_id, channel_id, name, create_time, update_time) VALUES (?, ?, ?, ?, ?)",
+            )
+            .bind(term.id)
+            .bind(channel_id)
+            .bind(name)
+            .bind(now)
+            .bind(now)
+            .execute(pool)
+            .await?;
+            Ok(r.rows_affected())
+        }
+        #[cfg(feature = "postgres")]
+        {
+            let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+            let r = sqlx::query(
+                "INSERT INTO wvp_jt_channel (terminal_db_id, channel_id, name, create_time, update_time) VALUES ($1, $2, $3, $4, $5)",
+            )
+            .bind(term.id)
+            .bind(channel_id)
+            .bind(name)
+            .bind(now)
+            .bind(now)
+            .execute(pool)
+            .await?;
+            Ok(r.rows_affected())
+        }
+    } else {
+        // Terminal not found, no insert
+        Ok(0)
+    }
+}
+
+/// Update an existing JT1078 channel by its DB id.
+/// Allows updating of name and channel_id fields.
+pub async fn update_channel(
+    pool: &Pool,
+    id: i64,
+    name: Option<&str>,
+    channel_id: Option<i32>,
+) -> sqlx::Result<u64> {
+    #[cfg(feature = "mysql")]
+    {
+        let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        let r = sqlx::query(
+            "UPDATE wvp_jt_channel SET name = COALESCE(?, name), channel_id = COALESCE(?, channel_id), update_time = ? WHERE id = ?",
+        )
+        .bind(name)
+        .bind(channel_id)
+        .bind(now)
+        .bind(id as i64)
+        .execute(pool)
+        .await?;
+        Ok(r.rows_affected())
+    }
+    #[cfg(feature = "postgres")]
+    {
+        let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        let r = sqlx::query(
+            "UPDATE wvp_jt_channel SET name = COALESCE($1, name), channel_id = COALESCE($2, channel_id), update_time = $3 WHERE id = $4",
+        )
+        .bind(name)
+        .bind(channel_id)
+        .bind(now)
+        .bind(id)
+        .execute(pool)
+        .await?;
+        Ok(r.rows_affected())
+    }
+}
+
 pub async fn list_channels_by_terminal(
     pool: &Pool,
     terminal_db_id: i32,

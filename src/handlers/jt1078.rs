@@ -387,17 +387,28 @@ pub async fn channel_list(
 
 /// POST /api/jt1078/terminal/channel/update
 pub async fn channel_update(
+    State(state): State<AppState>,
     Json(body): Json<ChannelUpdateBody>,
 ) -> Json<serde_json::Value> {
     let id = body.id.unwrap_or(0);
-
     tracing::info!("JT1078 channel update: id={}", id);
+
+    // Update DB if possible
+    if id > 0 {
+        let _ = jt_db::update_channel(
+            &state.pool,
+            id,
+            body.name.as_deref(),
+            body.channel_id,
+        ).await;
+    }
 
     Json(build_success("通道更新成功"))
 }
 
 /// POST /api/jt1078/terminal/channel/add
 pub async fn channel_add(
+    State(state): State<AppState>,
     Json(body): Json<ChannelAddBody>,
 ) -> Json<serde_json::Value> {
     let device_id = body.device_id.clone().unwrap_or_default();
@@ -405,12 +416,23 @@ pub async fn channel_add(
 
     tracing::info!("JT1078 channel add: device={}, channel={}", device_id, channel_id);
 
+    // Ensure terminal exists, then insert channel
+    if let Ok(Some(_term)) = jt_db::get_terminal_by_phone(&state.pool, &device_id).await {
+        if let Err(e) = jt_db::insert_channel(&state.pool, &device_id, channel_id, body.name.as_deref()).await {
+            tracing::error!("JT1078 channel insert error: {}", e);
+            return Json(build_error("通道添加失败"));
+        }
+    } else {
+        return Json(build_error("终端不存在"));
+    }
+
     Json(build_success("通道添加成功"))
 }
 
 // ========== 实时视频 ==========
 /// GET /api/jt1078/live/start
 pub async fn live_start(
+    State(state): State<AppState>,
     Query(q): Query<LiveQuery>,
 ) -> Json<serde_json::Value> {
     let phone = q.phone_number.clone().unwrap_or_default();
@@ -419,6 +441,43 @@ pub async fn live_start(
 
     tracing::info!("JT1078 live start: phone={}, channel={}, type={}", phone, channel_id, stream_type);
 
+    // Open RTP server on ZLM for this JT1078 channel
+    if let Some(ref zlm) = state.zlm_client {
+        let stream_id = format!("jt1078_{}_{}", phone, channel_id);
+        match zlm.open_rtp_server(&crate::zlm::OpenRtpServerRequest {
+            secret: zlm.secret.clone(),
+            stream_id: stream_id.clone(),
+            port: None,
+            use_tcp: Some(false),
+            rtp_type: Some(0),
+            recv_port: None,
+        }).await {
+            Ok(info) => {
+                let rtmp_url = format!("rtmp://127.0.0.1:1935/live/{}", info.stream_id);
+                let rtsp_url = format!("rtsp://127.0.0.1:554/{}", info.stream_id);
+                let ws_url = format!("ws://127.0.0.1/live/{}", info.stream_id);
+                return Json(serde_json::json!({
+                    "code": 0,
+                    "msg": "success",
+                    "data": {
+                        "phoneNumber": phone,
+                        "channelId": channel_id,
+                        "streamType": stream_type,
+                        "rtmpUrl": rtmp_url,
+                        "rtspUrl": rtsp_url,
+                        "wsUrl": ws_url,
+                        "stream_id": info.stream_id,
+                        "port": info.port,
+                    }
+                }));
+            }
+            Err(e) => {
+                tracing::error!("JT1078 live start ZLM error: {}", e);
+            }
+        }
+    }
+
+    // Fallback response if ZLM not configured or error
     Json(serde_json::json!({
         "code": 0,
         "msg": "success",
@@ -433,19 +492,25 @@ pub async fn live_start(
 
 /// GET /api/jt1078/live/stop
 pub async fn live_stop(
+    State(state): State<AppState>,
     Query(q): Query<LiveQuery>,
 ) -> Json<serde_json::Value> {
     let phone = q.phone_number.clone().unwrap_or_default();
     let channel_id = q.channel_id.unwrap_or(1);
 
     tracing::info!("JT1078 live stop: phone={}, channel={}", phone, channel_id);
-
+    // Close RTP server on ZLM if running
+    if let Some(ref zlm) = state.zlm_client {
+        let stream_id = format!("jt1078_{}_{}", phone, channel_id);
+        let _ = zlm.close_rtp_server(&stream_id).await;
+    }
     Json(build_success("停止播放成功"))
 }
 
 // ========== 录像回放 ==========
 /// GET /api/jt1078/playback/start
 pub async fn playback_start(
+    State(state): State<AppState>,
     Query(q): Query<PlaybackQuery>,
 ) -> Json<serde_json::Value> {
     let phone = q.phone_number.clone().unwrap_or_default();
@@ -453,33 +518,68 @@ pub async fn playback_start(
     let start_time = q.start_time.clone().unwrap_or_default();
     let end_time = q.end_time.clone().unwrap_or_default();
 
-    tracing::info!("JT1078 playback start: phone={}, channel={}, {}-{}", 
-        phone, channel_id, start_time, end_time);
+    tracing::info!("JT1078 playback start: phone={}, channel={}, {}-{}", phone, channel_id, start_time, end_time);
+
+    // Open ZLM playback RTP server
+    if let Some(ref zlm) = state.zlm_client {
+        let stream_id = format!("playback_{}_{}", phone, channel_id);
+        let rtp_req = crate::zlm::OpenRtpServerRequest {
+            secret: zlm.secret.clone(),
+            stream_id: stream_id.clone(),
+            port: None,
+            use_tcp: Some(false),
+            rtp_type: Some(0),
+            recv_port: None,
+        };
+        match zlm.open_rtp_server(&rtp_req).await {
+            Ok(info) => {
+                let play_url = format!("rtmp://127.0.0.1:1935/live/{}", info.stream_id);
+                return Json(serde_json::json!({
+                    "code": 0,
+                    "msg": "success",
+                    "data": {
+                        "streamId": stream_id,
+                        "playUrl": play_url,
+                        "rtpPort": info.port,
+                    }
+                }));
+            }
+            Err(e) => {
+                tracing::error!("Playback open RTP error: {}", e);
+            }
+        }
+    }
 
     Json(serde_json::json!({
         "code": 0,
         "msg": "success",
         "data": {
             "streamId": format!("playback_{}_{}", phone, channel_id),
-            "url": format!("rtmp://127.0.0.1/record/{}_{}", phone, channel_id)
+            "playUrl": format!("rtmp://127.0.0.1/record/{}_{}", phone, channel_id)
         }
     }))
 }
 
 /// GET /api/jt1078/playback/stop
 pub async fn playback_stop(
+    State(state): State<AppState>,
     Query(q): Query<ControlQuery>,
 ) -> Json<serde_json::Value> {
     let phone = q.phone_number.clone().unwrap_or_default();
     let channel_id = q.channel_id.unwrap_or(0);
 
     tracing::info!("JT1078 playback stop: phone={}, channel={}", phone, channel_id);
-
+    // Stop playback RTP on ZLM if running
+    if let Some(ref zlm) = state.zlm_client {
+        let stream_id = format!("playback_{}_{}", phone, channel_id);
+        let _ = zlm.close_rtp_server(&stream_id).await;
+    }
     Json(build_success("停止回放成功"))
 }
 
 /// GET /api/jt1078/playback/control
 pub async fn playback_control(
+    State(state): State<AppState>,
     Query(q): Query<ControlQuery>,
 ) -> Json<serde_json::Value> {
     let command = q.command.clone().unwrap_or_default();

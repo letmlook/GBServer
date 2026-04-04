@@ -332,8 +332,20 @@ pub async fn platform_delete(
 
 /// GET /api/platform/exit/:deviceGbId
 pub async fn platform_exit(
+    State(state): State<AppState>,
     Path(device_gb_id): Path<String>,
 ) -> Json<WVPResult<serde_json::Value>> {
+    // Look up platform by device_gb_id, then unregister from cascade platform via SIP
+    let maybe_platform = platform_db::get_by_device_gb_id(&state.pool, &device_gb_id).await;
+    if let Ok(Some(p)) = maybe_platform {
+        if let Some(ref server_gb_id) = p.server_gb_id {
+            if let Some(ref sip_server) = state.sip_server {
+                let sip = sip_server.read().await;
+                // Send UNREGISTER to cascade platform
+                let _ = sip.unregister_from_platform(server_gb_id).await;
+            }
+        }
+    }
     Json(WVPResult::success(serde_json::json!({
         "deviceGbId": device_gb_id,
         "message": "平台退出命令已发送",
@@ -585,20 +597,72 @@ pub struct CatalogAddBody {
 }
 
 pub async fn catalog_add(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Json(body): Json<CatalogAddBody>,
 ) -> Json<serde_json::Value> {
     let id = body.id.unwrap_or(0);
-    tracing::info!("platform catalog add: id={}, name={:?}", id, body.name);
+    let name = body.name.clone().unwrap_or_default();
+    let parent = body.parent.clone().unwrap_or_default();
+    let civil_code = body.civil_code.clone().unwrap_or_default();
+    let business_group = body.business_group.clone().unwrap_or_default();
+    let platform_id = body.platform_id.unwrap_or(0);
+
+    tracing::info!("platform catalog add: id={}, name={:?}, parent={}, civil_code={}, platform_id={}", id, name, parent, civil_code, platform_id);
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    #[cfg(feature = "mysql")]
+    let _ = sqlx::query("INSERT INTO wvp_platform_catalog (name, parent, civil_code, business_group, platform_id, create_time, update_time) VALUES (?, ?, ?, ?, ?, ?, ?)")
+        .bind(name).bind(parent).bind(&civil_code).bind(&business_group).bind(platform_id).bind(&now).bind(&now)
+        .execute(&state.pool).await;
+    #[cfg(feature = "postgres")]
+    let _ = sqlx::query("INSERT INTO wvp_platform_catalog (name, parent, civil_code, business_group, platform_id, create_time, update_time) VALUES ($1, $2, $3, $4, $5, $6, $7)")
+        .bind(name).bind(parent).bind(&civil_code).bind(&business_group).bind(platform_id).bind(&now).bind(&now)
+        .execute(&state.pool).await;
     Json(serde_json::json!({ "code": 0, "msg": "目录添加成功" }))
 }
 
 /// POST /api/platform/catalog/edit (used in catalogEdit.vue, commonChannelEditDialog.vue)
+#[derive(Debug, Deserialize)]
+pub struct CatalogAddBodyEdit {
+    pub id: Option<i64>,
+    pub name: Option<String>,
+    pub parent: Option<String>,
+    pub civil_code: Option<String>,
+    pub business_group: Option<String>,
+    pub platform_id: Option<i64>,
+}
+
 pub async fn catalog_edit(
-    State(_state): State<AppState>,
-    Json(body): Json<CatalogAddBody>,
+    State(state): State<AppState>,
+    Json(body): Json<CatalogAddBodyEdit>,
 ) -> Json<serde_json::Value> {
     let id = body.id.unwrap_or(0);
-    tracing::info!("platform catalog edit: id={}, name={:?}", id, body.name);
+    if id <= 0 {
+        // Fallback to add if no id provided
+        let add_body = CatalogAddBody {
+            id: None,
+            name: body.name.clone(),
+            parent: body.parent.clone(),
+            civil_code: body.civil_code.clone(),
+            business_group: body.business_group.clone(),
+            platform_id: body.platform_id,
+        };
+        // Reuse add path by delegating to insert logic via direct call
+        let _ = catalog_add(State(state.clone()), Json(add_body)).await;
+        return Json(serde_json::json!({ "code": 0, "msg": "目录编辑成功" }));
+    }
+    let name = body.name.clone().unwrap_or_default();
+    let parent = body.parent.clone().unwrap_or_default();
+    let civil_code = body.civil_code.clone().unwrap_or_default();
+    let business_group = body.business_group.clone().unwrap_or_default();
+    let platform_id = body.platform_id.unwrap_or(0);
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    #[cfg(feature = "mysql")]
+    let _ = sqlx::query("UPDATE wvp_platform_catalog SET name = COALESCE(?, name), parent = COALESCE(?, parent), civil_code = COALESCE(?, civil_code), business_group = COALESCE(?, business_group), platform_id = COALESCE(?, platform_id), update_time = ? WHERE id = ?")
+        .bind(name).bind(&parent).bind(&civil_code).bind(&business_group).bind(platform_id).bind(&now).bind(id)
+        .execute(&state.pool).await;
+    #[cfg(feature = "postgres")]
+    let _ = sqlx::query("UPDATE wvp_platform_catalog SET name = COALESCE($1, name), parent = COALESCE($2, parent), civil_code = COALESCE($3, civil_code), business_group = COALESCE($4, business_group), platform_id = COALESCE($5, platform_id), update_time = $6 WHERE id = $7")
+        .bind(name).bind(parent).bind(civil_code).bind(business_group).bind(platform_id).bind(&now).bind(id)
+        .execute(&state.pool).await;
     Json(serde_json::json!({ "code": 0, "msg": "目录编辑成功" }))
 }

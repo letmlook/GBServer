@@ -13,12 +13,78 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+async fn init_db_tables(pool: &db::Pool) -> anyhow::Result<()> {
+    db::position_history::ensure_table(pool).await?;
+    
+    // Check if core WVP tables exist; if not, run full schema init
+    #[cfg(feature = "postgres")]
+    {
+        let table_exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name = 'wvp_device')"
+        )
+        .fetch_one(pool)
+        .await.unwrap_or(false);
+        
+        if !table_exists {
+            tracing::info!("WVP schema tables not found, initializing from SQL script...");
+            let sql = include_str!("../database/init-postgresql-2.7.4.sql");
+            // Execute each statement separately (split by semicolons, skip comments)
+            for stmt in sql.split(';') {
+                let stmt = stmt.trim();
+                if stmt.is_empty() || stmt.starts_with("--") || stmt.starts_with("/*") {
+                    continue;
+                }
+                // Skip non-DML/DDL statements
+                if !stmt.starts_with("CREATE") && !stmt.starts_with("INSERT") && 
+                   !stmt.starts_with("ALTER") && !stmt.starts_with("COMMENT") &&
+                   !stmt.starts_with("DROP") && !stmt.starts_with("DO") {
+                    continue;
+                }
+                let _ = sqlx::query(stmt).execute(pool).await;
+            }
+            tracing::info!("WVP schema initialization complete");
+        }
+    }
+    
+    #[cfg(feature = "mysql")]
+    {
+        let table_exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'wvp_device')"
+        )
+        .fetch_one(pool)
+        .await.unwrap_or(false);
+        
+        if !table_exists {
+            tracing::info!("WVP schema tables not found, initializing from SQL script...");
+            let sql = include_str!("../database/init-mysql-2.7.4.sql");
+            for stmt in sql.split(';') {
+                let stmt = stmt.trim();
+                if stmt.is_empty() || stmt.starts_with("--") || stmt.starts_with("/*") {
+                    continue;
+                }
+                if !stmt.starts_with("CREATE") && !stmt.starts_with("INSERT") && 
+                   !stmt.starts_with("ALTER") && !stmt.starts_with("DROP") {
+                    continue;
+                }
+                let _ = sqlx::query(stmt).execute(pool).await;
+            }
+            tracing::info!("WVP schema initialization complete");
+        }
+    }
+    
+    Ok(())
+}
+
 pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
     let pool = db::create_pool(&cfg).await?;
+
+    // Initialize required DB tables on startup
+    init_db_tables(&pool).await?;
 
     let sip_server = if let Some(ref sip_config) = cfg.sip {
         if sip_config.enabled {
             let mut server = sip::SipServer::new(sip_config.clone(), pool.clone());
+            server.set_ws_state(ws_state.clone());
             server.start().await?;
             Some(Arc::new(RwLock::new(server)))
         } else {
@@ -46,6 +112,7 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
     }
 
     let download_manager = Arc::new(crate::handlers::playback::DownloadManager::new());
+    let ws_state = Arc::new(crate::handlers::websocket::WsState::new());
 
     let state = AppState {
         config: Arc::new(cfg.clone()),
@@ -54,6 +121,7 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
         zlm_client,
         zlm_clients,
         download_manager: Some(download_manager),
+        ws_state,
     };
 
     if let Some(ref server) = sip_server {
@@ -83,6 +151,7 @@ pub struct AppState {
     pub zlm_client: Option<Arc<zlm::ZlmClient>>,
     pub zlm_clients: HashMap<String, Arc<zlm::ZlmClient>>,
     pub download_manager: Option<Arc<crate::handlers::playback::DownloadManager>>,
+    pub ws_state: Arc<crate::handlers::websocket::WsState>,
 }
 
 impl AppState {

@@ -10,6 +10,7 @@ use chrono::Utc;
 
 use crate::config::SipConfig;
 use crate::db::{Pool, device as db_device};
+use crate::db::position_history as ph;
 use crate::sip::core::{
     TransactionManager, DialogManager, SipMessage, SipRequest, SipResponse,
     SipMethod, StatusCode, ViaHeader, NameAddr, CSeq, Contact,
@@ -26,7 +27,31 @@ use crate::sip::gb28181::talk::{TalkManager, TalkStatus, build_talk_sdp as build
 use crate::sip::gb28181::catalog::{CatalogSubscriptionManager, build_catalog_notify_body};
 use crate::sip::core::parser::Parser;
 use crate::sip::transport::tcp::{TcpListener, TcpConnectionManager};
+use crate::handlers::websocket::WsState;
 use crate::zlm::ZlmClient;
+use crate::db::{self as db_device, Pool};
+use crate::sip::gb28181::device::DeviceManager;
+use crate::sip::gb28181::session::SessionManager;
+use crate::sip::gb28181::invite_session::InviteSessionManager;
+use crate::sip::gb28181::talk::TalkManager;
+use crate::sip::gb28181::catalog::CatalogSubscriptionManager;
+use crate::sip::core::transaction::TransactionManager;
+use crate::sip::core::dialog::DialogManager;
+use crate::sip::core::transport::tcp::TcpConnectionManager;
+use crate::config::SipConfig;
+use std::collections::HashMap;
+use std::net::SocketAddr;
+use std::sync::Arc;
+use tokio::net::UdpSocket;
+use tokio::net::TcpListener;
+use tokio::sync::RwLock;
+use quick_xml::events::Event;
+use quick_xml::Reader;
+use anyhow::Result;
+use chrono::{DateTime, Utc};
+use bytes::BytesMut;
+use md5::{Md5, Digest};
+use rand::Rng;
 
 pub struct SipServer {
     config: Arc<SipConfig>,
@@ -43,6 +68,7 @@ pub struct SipServer {
     tcp_connection_manager: Arc<TcpConnectionManager>,
     pool: Pool,
     zlm_client: Option<Arc<ZlmClient>>,
+    ws_state: Option<Arc<WsState>>,
 }
 
 impl SipServer {
@@ -62,7 +88,17 @@ impl SipServer {
             tcp_connection_manager: Arc::new(TcpConnectionManager::new()),
             pool,
             zlm_client: None,
+            ws_state: None,
         }
+    }
+
+    pub fn set_zlm_client(&mut self, client: Arc<ZlmClient>) {
+        self.zlm_client = Some(client);
+    }
+
+    pub fn set_ws_state(&mut self, ws: Arc<WsState>) {
+        self.ws_state = Some(ws);
+    }
     }
 
     pub fn set_zlm_client(&mut self, client: Option<Arc<ZlmClient>>) {
@@ -332,7 +368,7 @@ impl SipServer {
         let method = req.method;
         match method {
             SipMethod::Register => {
-                Self::handle_register(req, addr, config, device_manager, pool, socket).await
+                Self::handle_register(req, addr, config, device_manager, pool, socket, &self.ws_state).await
             }
             SipMethod::Message => {
                 Self::handle_message(req, addr, config, device_manager, pool, socket).await
@@ -384,6 +420,7 @@ impl SipServer {
         device_manager: &Arc<DeviceManager>,
         pool: &Pool,
         socket: &Arc<UdpSocket>,
+        ws_state: &Option<Arc<WsState>>,
     ) -> Result<()> {
         let from = req.header("from").cloned().unwrap_or_default();
         let to = req.header("to").cloned().unwrap_or_default();
@@ -434,12 +471,24 @@ impl SipServer {
         if expires == 0 {
             db_device::update_device_online(pool, &device_id, false, None, None, &now).await?;
             device_manager.unregister(&device_id).await;
+            if let Some(ref ws) = ws_state {
+                ws.broadcast("deviceOffline", serde_json::json!({
+                    "deviceId": device_id,
+                    "status": "offline",
+                })).await;
+            }
             tracing::info!("Device unregistered: {}", device_id);
         } else {
             let ip_str = addr.ip().to_string();
             db_device::upsert_device(pool, &device_id, None, None, None, None, None, None, 
                 Some(&ip_str), Some(addr.port() as i32), true, Some("zlmediakit-1"), &now).await?;
             device_manager.register(&device_id, addr).await;
+            if let Some(ref ws) = ws_state {
+                ws.broadcast("deviceOnline", serde_json::json!({
+                    "deviceId": device_id,
+                    "status": "online",
+                })).await;
+            }
             tracing::info!("Device registered: {} (expires: {})", device_id, expires);
         }
 
@@ -1469,6 +1518,17 @@ impl SipServer {
 
         tracing::info!("MobilePosition from {}: {}, {} (speed: {}, direction: {})", 
             device_id, longitude, latitude, speed, direction);
+        // Persist position history to DB
+        let _ = ph::insert_position(
+            pool,
+            device_id,
+            &time,
+            longitude,
+            latitude,
+            altitude,
+            speed,
+            direction,
+        ).await;
         
         let response_body = format!(r#"<?xml version="1.0" encoding="UTF-8"?><Response><CmdType>MobilePosition</CmdType><SN>{}</SN><DeviceID>{}</DeviceID><Result>OK</Result></Response>"#,
             sn, device_id);
