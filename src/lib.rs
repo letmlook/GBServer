@@ -15,6 +15,63 @@ use tokio::sync::RwLock;
 
 async fn init_db_tables(pool: &db::Pool) -> anyhow::Result<()> {
     db::position_history::ensure_table(pool).await?;
+    
+    // Check if core WVP tables exist; if not, run full schema init
+    #[cfg(feature = "postgres")]
+    {
+        let table_exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name = 'wvp_device')"
+        )
+        .fetch_one(pool)
+        .await.unwrap_or(false);
+        
+        if !table_exists {
+            tracing::info!("WVP schema tables not found, initializing from SQL script...");
+            let sql = include_str!("../database/init-postgresql-2.7.4.sql");
+            // Execute each statement separately (split by semicolons, skip comments)
+            for stmt in sql.split(';') {
+                let stmt = stmt.trim();
+                if stmt.is_empty() || stmt.starts_with("--") || stmt.starts_with("/*") {
+                    continue;
+                }
+                // Skip non-DML/DDL statements
+                if !stmt.starts_with("CREATE") && !stmt.starts_with("INSERT") && 
+                   !stmt.starts_with("ALTER") && !stmt.starts_with("COMMENT") &&
+                   !stmt.starts_with("DROP") && !stmt.starts_with("DO") {
+                    continue;
+                }
+                let _ = sqlx::query(stmt).execute(pool).await;
+            }
+            tracing::info!("WVP schema initialization complete");
+        }
+    }
+    
+    #[cfg(feature = "mysql")]
+    {
+        let table_exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'wvp_device')"
+        )
+        .fetch_one(pool)
+        .await.unwrap_or(false);
+        
+        if !table_exists {
+            tracing::info!("WVP schema tables not found, initializing from SQL script...");
+            let sql = include_str!("../database/init-mysql-2.7.4.sql");
+            for stmt in sql.split(';') {
+                let stmt = stmt.trim();
+                if stmt.is_empty() || stmt.starts_with("--") || stmt.starts_with("/*") {
+                    continue;
+                }
+                if !stmt.starts_with("CREATE") && !stmt.starts_with("INSERT") && 
+                   !stmt.starts_with("ALTER") && !stmt.starts_with("DROP") {
+                    continue;
+                }
+                let _ = sqlx::query(stmt).execute(pool).await;
+            }
+            tracing::info!("WVP schema initialization complete");
+        }
+    }
+    
     Ok(())
 }
 
