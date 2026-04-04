@@ -20,8 +20,12 @@ pub struct UserApiKey {
 
 #[derive(Debug, Deserialize)]
 pub struct UserApiKeyAdd {
+    #[serde(alias = "userId")]
     pub user_id: Option<i64>,
     pub app: Option<String>,
+    #[serde(alias = "expiresAt")]
+    pub expired_at: Option<i64>,
+    pub enable: Option<bool>,
     pub remark: Option<String>,
 }
 
@@ -83,29 +87,35 @@ pub async fn add(
     user_id: i64,
     app: &str,
     api_key: &str,
+    expired_at: Option<i64>,
+    enable: bool,
     remark: Option<&str>,
     now: &str,
 ) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
     let r = sqlx::query(
-        "INSERT INTO wvp_user_api_key (user_id, app, api_key, remark, enable, create_time, update_time) VALUES (?, ?, ?, ?, 1, ?, ?)",
+        "INSERT INTO wvp_user_api_key (user_id, app, api_key, expired_at, remark, enable, create_time, update_time) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(user_id)
     .bind(app)
     .bind(api_key)
+    .bind(expired_at)
     .bind(remark)
+    .bind(enable)
     .bind(now)
     .bind(now)
     .execute(pool)
     .await?;
     #[cfg(feature = "postgres")]
     let r = sqlx::query(
-        "INSERT INTO wvp_user_api_key (user_id, app, api_key, remark, enable, create_time, update_time) VALUES ($1, $2, $3, $4, true, $5, $6)",
+        "INSERT INTO wvp_user_api_key (user_id, app, api_key, expired_at, remark, enable, create_time, update_time) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
     )
     .bind(user_id)
     .bind(app)
     .bind(api_key)
+    .bind(expired_at)
     .bind(remark)
+    .bind(enable)
     .bind(now)
     .bind(now)
     .execute(pool)

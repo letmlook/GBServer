@@ -1,7 +1,7 @@
 //! 录像计划表 wvp_record_plan, wvp_record_plan_item
 
 use serde::{Deserialize, Serialize};
-use sqlx::FromRow;
+use sqlx::{FromRow, Row};
 
 use super::Pool;
 
@@ -29,6 +29,8 @@ pub struct RecordPlanItem {
 pub struct RecordPlanAdd {
     pub name: Option<String>,
     pub snap: Option<bool>,
+    #[serde(alias = "planItemList")]
+    pub plan_item_list: Option<Vec<RecordPlanItemPayload>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -36,6 +38,18 @@ pub struct RecordPlanUpdate {
     pub id: Option<i64>,
     pub name: Option<String>,
     pub snap: Option<bool>,
+    #[serde(alias = "planItemList")]
+    pub plan_item_list: Option<Vec<RecordPlanItemPayload>>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RecordPlanItemPayload {
+    pub start: Option<i32>,
+    pub stop: Option<i32>,
+    #[serde(alias = "weekDay")]
+    pub week_day: Option<i32>,
+    #[serde(alias = "planId")]
+    pub plan_id: Option<i64>,
 }
 
 pub async fn get_by_id(pool: &Pool, id: i32) -> sqlx::Result<Option<RecordPlan>> {
@@ -126,6 +140,35 @@ pub async fn add(pool: &Pool, name: &str, snap: bool, now: &str) -> sqlx::Result
     Ok(r.rows_affected())
 }
 
+pub async fn add_with_id(pool: &Pool, name: &str, snap: bool, now: &str) -> sqlx::Result<i64> {
+    #[cfg(feature = "mysql")]
+    {
+        let r = sqlx::query(
+            "INSERT INTO wvp_record_plan (name, snap, create_time, update_time) VALUES (?, ?, ?, ?)",
+        )
+        .bind(name)
+        .bind(snap)
+        .bind(now)
+        .bind(now)
+        .execute(pool)
+        .await?;
+        Ok(r.last_insert_id() as i64)
+    }
+    #[cfg(feature = "postgres")]
+    {
+        let row = sqlx::query(
+            "INSERT INTO wvp_record_plan (name, snap, create_time, update_time) VALUES ($1, $2, $3, $4) RETURNING id",
+        )
+        .bind(name)
+        .bind(snap)
+        .bind(now)
+        .bind(now)
+        .fetch_one(pool)
+        .await?;
+        Ok(row.get::<i32, _>("id") as i64)
+    }
+}
+
 pub async fn update(
     pool: &Pool,
     id: i64,
@@ -201,4 +244,58 @@ pub async fn link_channel(
         .execute(pool)
         .await?;
     Ok(r.rows_affected())
+}
+
+pub async fn replace_items(
+    pool: &Pool,
+    plan_id: i64,
+    items: &[RecordPlanItemPayload],
+    now: &str,
+) -> sqlx::Result<u64> {
+    #[cfg(feature = "mysql")]
+    {
+        let _ = sqlx::query("DELETE FROM wvp_record_plan_item WHERE plan_id = ?")
+            .bind(plan_id)
+            .execute(pool)
+            .await?;
+        let mut affected = 0;
+        for item in items {
+            let r = sqlx::query(
+                "INSERT INTO wvp_record_plan_item (`start`, stop, week_day, plan_id, create_time, update_time) VALUES (?, ?, ?, ?, ?, ?)",
+            )
+            .bind(item.start)
+            .bind(item.stop)
+            .bind(item.week_day)
+            .bind(plan_id)
+            .bind(now)
+            .bind(now)
+            .execute(pool)
+            .await?;
+            affected += r.rows_affected();
+        }
+        Ok(affected)
+    }
+    #[cfg(feature = "postgres")]
+    {
+        let _ = sqlx::query("DELETE FROM wvp_record_plan_item WHERE plan_id = $1")
+            .bind(plan_id)
+            .execute(pool)
+            .await?;
+        let mut affected = 0;
+        for item in items {
+            let r = sqlx::query(
+                "INSERT INTO wvp_record_plan_item (\"start\", stop, week_day, plan_id, create_time, update_time) VALUES ($1, $2, $3, $4, $5, $6)",
+            )
+            .bind(item.start)
+            .bind(item.stop)
+            .bind(item.week_day)
+            .bind(plan_id)
+            .bind(now)
+            .bind(now)
+            .execute(pool)
+            .await?;
+            affected += r.rows_affected();
+        }
+        Ok(affected)
+    }
 }

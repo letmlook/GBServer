@@ -1,6 +1,7 @@
 use axum::{extract::{Path, Query, State}, Json};
 use serde::Deserialize;
 
+use crate::db::update_device_catalog_subscription;
 use crate::response::WVPResult;
 use crate::AppState;
 
@@ -154,6 +155,9 @@ pub async fn subscribe_catalog(
 ) -> Json<WVPResult<serde_json::Value>> {
     let device_id = q.id.clone().unwrap_or_default();
     let cycle = q.cycle.unwrap_or(3600) as u32;
+    let updated = update_device_catalog_subscription(&state.pool, &device_id, cycle as i32)
+        .await
+        .unwrap_or_default();
 
     tracing::info!("Catalog subscription: device={}, cycle={}", device_id, cycle);
 
@@ -166,6 +170,7 @@ pub async fn subscribe_catalog(
                         return Json(WVPResult::success(serde_json::json!({
                             "deviceId": device_id,
                             "cycle": cycle,
+                            "updated": updated,
                             "result": "Catalog subscription sent"
                         })));
                     }
@@ -175,6 +180,15 @@ pub async fn subscribe_catalog(
                 }
             }
         }
+    }
+
+    if updated > 0 {
+        return Json(WVPResult::success(serde_json::json!({
+            "deviceId": device_id,
+            "cycle": cycle,
+            "updated": updated,
+            "result": "Catalog subscription saved"
+        })));
     }
 
     Json(WVPResult::error("Device not online or subscription failed"))

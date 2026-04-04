@@ -91,6 +91,92 @@ pub async fn update_channel_stream_identification(
     }
 }
 
+pub async fn update_device_stream_mode(
+    pool: &Pool,
+    device_id: &str,
+    stream_mode: &str,
+) -> sqlx::Result<u64> {
+    #[cfg(feature = "mysql")]
+    {
+        let result = sqlx::query("UPDATE wvp_device SET stream_mode = ?, update_time = NOW() WHERE device_id = ?")
+            .bind(stream_mode)
+            .bind(device_id)
+            .execute(pool)
+            .await?;
+        Ok(result.rows_affected())
+    }
+    #[cfg(feature = "postgres")]
+    {
+        let result = sqlx::query("UPDATE wvp_device SET stream_mode = $1, update_time = NOW() WHERE device_id = $2")
+            .bind(stream_mode)
+            .bind(device_id)
+            .execute(pool)
+            .await?;
+        Ok(result.rows_affected())
+    }
+}
+
+pub async fn update_device_catalog_subscription(
+    pool: &Pool,
+    device_id: &str,
+    cycle: i32,
+) -> sqlx::Result<u64> {
+    #[cfg(feature = "mysql")]
+    {
+        let result = sqlx::query(
+            "UPDATE wvp_device SET subscribe_cycle_for_catalog = ?, update_time = NOW() WHERE device_id = ?",
+        )
+        .bind(cycle)
+        .bind(device_id)
+        .execute(pool)
+        .await?;
+        Ok(result.rows_affected())
+    }
+    #[cfg(feature = "postgres")]
+    {
+        let result = sqlx::query(
+            "UPDATE wvp_device SET subscribe_cycle_for_catalog = $1, update_time = NOW() WHERE device_id = $2",
+        )
+        .bind(cycle)
+        .bind(device_id)
+        .execute(pool)
+        .await?;
+        Ok(result.rows_affected())
+    }
+}
+
+pub async fn update_device_mobile_position_subscription(
+    pool: &Pool,
+    device_id: &str,
+    cycle: i32,
+    interval: i32,
+) -> sqlx::Result<u64> {
+    #[cfg(feature = "mysql")]
+    {
+        let result = sqlx::query(
+            "UPDATE wvp_device SET subscribe_cycle_for_mobile_position = ?, mobile_position_submission_interval = ?, update_time = NOW() WHERE device_id = ?",
+        )
+        .bind(cycle)
+        .bind(interval)
+        .bind(device_id)
+        .execute(pool)
+        .await?;
+        Ok(result.rows_affected())
+    }
+    #[cfg(feature = "postgres")]
+    {
+        let result = sqlx::query(
+            "UPDATE wvp_device SET subscribe_cycle_for_mobile_position = $1, mobile_position_submission_interval = $2, update_time = NOW() WHERE device_id = $3",
+        )
+        .bind(cycle)
+        .bind(interval)
+        .bind(device_id)
+        .execute(pool)
+        .await?;
+        Ok(result.rows_affected())
+    }
+}
+
 /// Count total device channels across all devices
 pub async fn count_all_channels(pool: &Pool) -> sqlx::Result<i64> {
     #[cfg(feature = "mysql")]

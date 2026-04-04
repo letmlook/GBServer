@@ -113,6 +113,7 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
     }
 
     let download_manager = Arc::new(crate::handlers::playback::DownloadManager::new());
+    let playback_manager = Arc::new(crate::handlers::playback::PlaybackManager::new());
 
     let state = AppState {
         config: Arc::new(cfg.clone()),
@@ -120,6 +121,7 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
         sip_server: sip_server.clone(),
         zlm_client,
         zlm_clients,
+        playback_manager: Some(playback_manager),
         download_manager: Some(download_manager),
         ws_state,
     };
@@ -150,6 +152,7 @@ pub struct AppState {
     pub sip_server: Option<Arc<RwLock<sip::SipServer>>>,
     pub zlm_client: Option<Arc<zlm::ZlmClient>>,
     pub zlm_clients: HashMap<String, Arc<zlm::ZlmClient>>,
+    pub playback_manager: Option<Arc<crate::handlers::playback::PlaybackManager>>,
     pub download_manager: Option<Arc<crate::handlers::playback::DownloadManager>>,
     pub ws_state: Arc<crate::handlers::websocket::WsState>,
 }

@@ -5,6 +5,7 @@ use axum::{
     Json,
 };
 use serde::Deserialize;
+use std::collections::HashMap;
 
 use crate::db::{stream_push, stream_proxy, StreamPush, StreamProxy};
 use crate::error::AppError;
@@ -452,8 +453,28 @@ pub struct ProxyListPage {
 }
 
 /// GET /api/proxy/ffmpeg_cmd/list
-pub async fn proxy_ffmpeg_cmd_list() -> Json<WVPResult<Vec<serde_json::Value>>> {
-    Json(WVPResult::success(vec![]))
+pub async fn proxy_ffmpeg_cmd_list(
+    Query(q): Query<ProxyListQuery>,
+) -> Json<WVPResult<HashMap<String, String>>> {
+    let media_server_hint = q.mediaServerId.unwrap_or_else(|| "auto".to_string());
+    let mut result = HashMap::new();
+    result.insert(
+        "default".to_string(),
+        format!("默认转码模板 ({media_server_hint})"),
+    );
+    result.insert(
+        "copy".to_string(),
+        "尽量直拷贝音视频，降低转码开销".to_string(),
+    );
+    result.insert(
+        "h264_aac".to_string(),
+        "转 H264 + AAC，兼容性更高".to_string(),
+    );
+    result.insert(
+        "low_latency".to_string(),
+        "低延迟模板，适合实时预览".to_string(),
+    );
+    Json(WVPResult::success(result))
 }
 
 #[derive(Debug, Deserialize)]

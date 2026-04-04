@@ -14,10 +14,8 @@ use crate::AppState;
 
 use std::time::{SystemTime, UNIX_EPOCH};
 use serde_json::json;
-use std::collections::HashMap;
 use std::str::FromStr;
 use crate::db as db;
-use crate::db::position_history as ph;
 
 // Helper functions to read /proc based system metrics (no new deps)
 use std::fs::File;
@@ -275,15 +273,85 @@ pub struct MediaServerCheckQuery {
 }
 
 pub async fn media_server_check(
+    State(state): State<AppState>,
     Query(q): Query<MediaServerCheckQuery>,
 ) -> Json<WVPResult<serde_json::Value>> {
-    Json(WVPResult::success(serde_json::json!({
-        "success": true,
-        "ip": q.ip,
-        "port": q.port,
-        "secret": q.secret,
-        "type": q.type_,
-    })))
+    let ip = q.ip.unwrap_or_else(|| "127.0.0.1".to_string());
+    let http_port = q.port.unwrap_or(80);
+    let secret = q.secret.unwrap_or_default();
+    let type_ = q.type_.unwrap_or_else(|| "zlm".to_string());
+    let temp_client = crate::zlm::ZlmClient::new(&ip, http_port as u16, &secret);
+
+    let mut payload = serde_json::json!({
+        "ip": ip,
+        "httpPort": http_port,
+        "secret": secret,
+        "type": type_,
+        "autoConfig": true,
+        "rtpEnable": false,
+        "rtpProxyPort": 30000,
+        "rtpPortRange": "30000,30500",
+        "sendRtpPortRange": "50000,60000"
+    });
+
+    if let Ok(configs) = temp_client.get_server_config().await {
+        if let Some(obj) = payload.as_object_mut() {
+            let get_i32 = |key: &str| configs.get(key).and_then(|v| i32::from_str(v).ok());
+            let get_bool = |key: &str| {
+                configs
+                    .get(key)
+                    .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE"))
+            };
+            obj.insert(
+                "hookIp".to_string(),
+                json!(configs.get("hook.hookIp").cloned().unwrap_or_default()),
+            );
+            obj.insert(
+                "sdpIp".to_string(),
+                json!(configs.get("rtp_proxy.sdp_ip").cloned().unwrap_or_default()),
+            );
+            obj.insert(
+                "streamIp".to_string(),
+                json!(configs.get("general.streamNoneReaderDelayMS").cloned().unwrap_or_default()),
+            );
+            obj.insert("httpSSlPort".to_string(), json!(get_i32("http.sslport").unwrap_or(443)));
+            obj.insert("rtmpPort".to_string(), json!(get_i32("rtmp.port").unwrap_or(1935)));
+            obj.insert("rtmpSSlPort".to_string(), json!(get_i32("rtmp.sslport").unwrap_or(0)));
+            obj.insert("rtspPort".to_string(), json!(get_i32("rtsp.port").unwrap_or(554)));
+            obj.insert("rtspSSLPort".to_string(), json!(get_i32("rtsp.sslport").unwrap_or(0)));
+            obj.insert(
+                "recordAssistPort".to_string(),
+                json!(get_i32("record.port").unwrap_or(0)),
+            );
+            obj.insert(
+                "rtpEnable".to_string(),
+                json!(get_bool("rtp_proxy.port_range").unwrap_or(false)),
+            );
+        }
+    }
+
+    if let Some(obj) = payload.as_object_mut() {
+        if obj
+            .get("streamIp")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .is_empty()
+        {
+            obj.insert(
+                "streamIp".to_string(),
+                json!(
+                    state
+                        .config
+                        .zlm
+                        .as_ref()
+                        .and_then(|cfg| cfg.servers.first().map(|sv| sv.ip.clone()))
+                        .unwrap_or_else(|| "127.0.0.1".to_string())
+                ),
+            );
+        }
+    }
+
+    Json(WVPResult::success(payload))
 }
 
 /// GET /api/server/media_server/record/check
@@ -294,12 +362,19 @@ pub struct MediaServerRecordCheckQuery {
 }
 
 pub async fn media_server_record_check(
+    State(state): State<AppState>,
     Query(q): Query<MediaServerRecordCheckQuery>,
 ) -> Json<WVPResult<serde_json::Value>> {
+    let reachable = state
+        .zlm_client
+        .as_ref()
+        .map(|_| true)
+        .unwrap_or(false);
     Json(WVPResult::success(serde_json::json!({
-        "success": true,
+        "success": reachable,
         "ip": q.ip,
         "port": q.port,
+        "recordAssistPort": q.port.unwrap_or(0),
     })))
 }
 
@@ -310,8 +385,39 @@ pub struct MediaServerSaveBody {
     pub ip: Option<String>,
     #[serde(alias = "hookIp")]
     pub hook_ip: Option<String>,
+    #[serde(alias = "sdpIp")]
+    pub sdp_ip: Option<String>,
+    #[serde(alias = "streamIp")]
+    pub stream_ip: Option<String>,
     #[serde(alias = "httpPort")]
     pub http_port: Option<i32>,
+    #[serde(alias = "httpSSlPort")]
+    pub http_ssl_port: Option<i32>,
+    pub secret: Option<String>,
+    #[serde(rename = "type")]
+    pub type_: Option<String>,
+    #[serde(alias = "autoConfig")]
+    pub auto_config: Option<bool>,
+    #[serde(alias = "rtmpPort")]
+    pub rtmp_port: Option<i32>,
+    #[serde(alias = "rtmpSSlPort")]
+    pub rtmp_ssl_port: Option<i32>,
+    #[serde(alias = "rtspPort")]
+    pub rtsp_port: Option<i32>,
+    #[serde(alias = "rtspSSLPort")]
+    pub rtsp_ssl_port: Option<i32>,
+    #[serde(alias = "rtpEnable")]
+    pub rtp_enable: Option<bool>,
+    #[serde(alias = "rtpPortRange")]
+    pub rtp_port_range: Option<String>,
+    #[serde(alias = "sendRtpPortRange")]
+    pub send_rtp_port_range: Option<String>,
+    #[serde(alias = "rtpProxyPort")]
+    pub rtp_proxy_port: Option<i32>,
+    #[serde(alias = "recordAssistPort")]
+    pub record_assist_port: Option<i32>,
+    #[serde(alias = "defaultServer")]
+    pub default_server: Option<bool>,
 }
 
 pub async fn media_server_save(
@@ -345,6 +451,95 @@ pub async fn media_server_save(
             &now,
         ).await?;
     }
+
+    #[cfg(feature = "postgres")]
+    sqlx::query(
+        r#"UPDATE wvp_media_server SET
+           hook_ip = COALESCE($1, hook_ip),
+           sdp_ip = COALESCE($2, sdp_ip),
+           stream_ip = COALESCE($3, stream_ip),
+           http_ssl_port = COALESCE($4, http_ssl_port),
+           secret = COALESCE($5, secret),
+           type = COALESCE($6, type),
+           auto_config = COALESCE($7, auto_config),
+           rtmp_port = COALESCE($8, rtmp_port),
+           rtmp_ssl_port = COALESCE($9, rtmp_ssl_port),
+           rtsp_port = COALESCE($10, rtsp_port),
+           rtsp_ssl_port = COALESCE($11, rtsp_ssl_port),
+           rtp_enable = COALESCE($12, rtp_enable),
+           rtp_port_range = COALESCE($13, rtp_port_range),
+           send_rtp_port_range = COALESCE($14, send_rtp_port_range),
+           rtp_proxy_port = COALESCE($15, rtp_proxy_port),
+           record_assist_port = COALESCE($16, record_assist_port),
+           default_server = COALESCE($17, default_server),
+           update_time = $18
+           WHERE id = $19"#,
+    )
+    .bind(body.hook_ip.as_deref())
+    .bind(body.sdp_ip.as_deref())
+    .bind(body.stream_ip.as_deref())
+    .bind(body.http_ssl_port)
+    .bind(body.secret.as_deref())
+    .bind(body.type_.as_deref())
+    .bind(body.auto_config)
+    .bind(body.rtmp_port)
+    .bind(body.rtmp_ssl_port)
+    .bind(body.rtsp_port)
+    .bind(body.rtsp_ssl_port)
+    .bind(body.rtp_enable)
+    .bind(body.rtp_port_range.as_deref())
+    .bind(body.send_rtp_port_range.as_deref())
+    .bind(body.rtp_proxy_port)
+    .bind(body.record_assist_port)
+    .bind(body.default_server)
+    .bind(&now)
+    .bind(&id)
+    .execute(&state.pool)
+    .await?;
+    #[cfg(feature = "mysql")]
+    sqlx::query(
+        r#"UPDATE wvp_media_server SET
+           hook_ip = COALESCE(?, hook_ip),
+           sdp_ip = COALESCE(?, sdp_ip),
+           stream_ip = COALESCE(?, stream_ip),
+           http_ssl_port = COALESCE(?, http_ssl_port),
+           secret = COALESCE(?, secret),
+           type = COALESCE(?, type),
+           auto_config = COALESCE(?, auto_config),
+           rtmp_port = COALESCE(?, rtmp_port),
+           rtmp_ssl_port = COALESCE(?, rtmp_ssl_port),
+           rtsp_port = COALESCE(?, rtsp_port),
+           rtsp_ssl_port = COALESCE(?, rtsp_ssl_port),
+           rtp_enable = COALESCE(?, rtp_enable),
+           rtp_port_range = COALESCE(?, rtp_port_range),
+           send_rtp_port_range = COALESCE(?, send_rtp_port_range),
+           rtp_proxy_port = COALESCE(?, rtp_proxy_port),
+           record_assist_port = COALESCE(?, record_assist_port),
+           default_server = COALESCE(?, default_server),
+           update_time = ?
+           WHERE id = ?"#,
+    )
+    .bind(body.hook_ip.as_deref())
+    .bind(body.sdp_ip.as_deref())
+    .bind(body.stream_ip.as_deref())
+    .bind(body.http_ssl_port)
+    .bind(body.secret.as_deref())
+    .bind(body.type_.as_deref())
+    .bind(body.auto_config)
+    .bind(body.rtmp_port)
+    .bind(body.rtmp_ssl_port)
+    .bind(body.rtsp_port)
+    .bind(body.rtsp_ssl_port)
+    .bind(body.rtp_enable)
+    .bind(body.rtp_port_range.as_deref())
+    .bind(body.send_rtp_port_range.as_deref())
+    .bind(body.rtp_proxy_port)
+    .bind(body.record_assist_port)
+    .bind(body.default_server)
+    .bind(&now)
+    .bind(&id)
+    .execute(&state.pool)
+    .await?;
     
     Ok(Json(WVPResult::success(serde_json::json!({
         "id": id,
@@ -423,20 +618,42 @@ pub async fn media_server_media_info(
 
 /// GET /api/server/media_server/load
 pub async fn media_server_load(State(state): State<AppState>) -> Json<WVPResult<serde_json::Value>> {
-    if let Some(ref zlm) = state.zlm_client {
-        let cfg_map = zlm.get_server_config().await.unwrap_or_default();
-        let stats_map = zlm.get_server_stats().await.unwrap_or_default();
-        let mut data = serde_json::Map::new();
-        data.insert("config".to_string(), serde_json::to_value(cfg_map).unwrap_or(serde_json::Value::Null));
-        data.insert("stats".to_string(), serde_json::to_value(stats_map).unwrap_or(serde_json::Value::Null));
-        Json(WVPResult::success(serde_json::Value::Object(data)))
-    } else {
-        Json(WVPResult::success(serde_json::json!(null)))
+    let mut server_loads = Vec::new();
+    for server_id in state.list_zlm_servers() {
+        if let Some(zlm) = state.get_zlm_client(Some(&server_id)) {
+            let cfg_map = zlm.get_server_config().await.unwrap_or_default();
+            let stats_map = zlm.get_server_stats().await.unwrap_or_default();
+            let network_map = zlm.get_net_work_api().await.unwrap_or_default();
+            server_loads.push(serde_json::json!({
+                "id": server_id,
+                "config": cfg_map,
+                "stats": stats_map,
+                "network": network_map
+            }));
+        }
     }
+    Json(WVPResult::success(serde_json::json!({
+        "list": server_loads
+    })))
 }
 
 /// GET /api/server/map/model-icon/list
 pub async fn map_model_icon_list() -> Json<WVPResult<Vec<serde_json::Value>>> {
-    // 参考实现：WVP 在此接口通常返回图标配置。当前实现保持向后兼容，返回空列表。
-    Json(WVPResult::success(vec![]))
+    Json(WVPResult::success(vec![
+        serde_json::json!({
+            "id": "camera",
+            "name": "标准枪机",
+            "icon": "el-icon-video-camera"
+        }),
+        serde_json::json!({
+            "id": "ptz",
+            "name": "云台球机",
+            "icon": "el-icon-camera"
+        }),
+        serde_json::json!({
+            "id": "vehicle",
+            "name": "车载终端",
+            "icon": "el-icon-truck"
+        }),
+    ]))
 }

@@ -17,6 +17,8 @@ use crate::db::{
     DeviceChannel,
     update_channel_has_audio,
     update_channel_stream_identification,
+    update_device_mobile_position_subscription,
+    update_device_stream_mode,
 };
 use crate::error::{AppError, ErrorCode};
 use crate::response::WVPResult;
@@ -27,9 +29,23 @@ use tokio::time::timeout;
 /// GET /api/device/query/sync_status
 /// 参数: deviceId - 设备ID (可选)
 /// 返回: 同步状态信息
+#[derive(Debug, Deserialize)]
+pub struct SyncStatusQuery {
+    #[serde(alias = "deviceId")]
+    pub device_id: Option<String>,
+}
+
 pub async fn sync_status(
     State(state): State<AppState>,
+    Query(q): Query<SyncStatusQuery>,
 ) -> Json<WVPResult<serde_json::Value>> {
+    let requested_device_id = q.device_id.unwrap_or_default();
+    let db_device = if requested_device_id.is_empty() {
+        None
+    } else {
+        get_device_by_device_id(&state.pool, &requested_device_id).await.ok().flatten()
+    };
+
     if let Some(ref sip_server) = state.sip_server {
         let server = sip_server.read().await;
         // Avoid long waits that can cause deadlocks in the catalog subscription query
@@ -47,15 +63,19 @@ pub async fn sync_status(
         };
         let active_count = subscriptions.len();
         Json(WVPResult::success(serde_json::json!({
-            "deviceId": null,
+            "deviceId": if requested_device_id.is_empty() { serde_json::Value::Null } else { serde_json::json!(requested_device_id) },
             "status": if active_count > 0 { "active" } else { "idle" },
             "activeSubscriptions": active_count,
+            "online": db_device.as_ref().and_then(|item| item.on_line).unwrap_or(false),
+            "streamMode": db_device.as_ref().and_then(|item| item.stream_mode.clone()),
             "message": "设备同步状态正常"
         })))
     } else {
         Json(WVPResult::success(serde_json::json!({
-            "deviceId": null,
+            "deviceId": if requested_device_id.is_empty() { serde_json::Value::Null } else { serde_json::json!(requested_device_id) },
             "status": "idle",
+            "online": db_device.as_ref().and_then(|item| item.on_line).unwrap_or(false),
+            "streamMode": db_device.as_ref().and_then(|item| item.stream_mode.clone()),
             "message": "SIP服务未初始化"
         })))
     }
@@ -112,12 +132,21 @@ pub async fn device_sync(
 /// 参数: device_id - 设备ID, stream_mode - 流模式 (TCP/UDP)
 /// 返回: 设置结果
 pub async fn device_transport(
+    State(state): State<AppState>,
     Path((device_id, stream_mode)): Path<(String, String)>,
 ) -> Json<WVPResult<serde_json::Value>> {
+    let normalized_mode = match stream_mode.to_uppercase().as_str() {
+        "TCP" | "UDP" | "TCP-ACTIVE" | "TCP-PASSIVE" => stream_mode.to_uppercase(),
+        _ => stream_mode.to_uppercase(),
+    };
+    let updated = update_device_stream_mode(&state.pool, &device_id, &normalized_mode)
+        .await
+        .unwrap_or_default();
     tracing::info!("Transport mode change: device={}, mode={}", device_id, stream_mode);
     Json(WVPResult::success(serde_json::json!({
         "deviceId": device_id,
-        "streamMode": stream_mode,
+        "streamMode": normalized_mode,
+        "updated": updated,
         "message": "设备流传输模式设置成功",
         "code": 0
     })))
@@ -195,6 +224,15 @@ pub async fn subscribe_mobile_position(
     tracing::info!("Position subscription: device={}, cycle={}, interval={}",
         device_id, cycle, interval);
 
+    let persisted = update_device_mobile_position_subscription(
+        &state.pool,
+        &device_id,
+        cycle as i32,
+        interval,
+    )
+    .await
+    .unwrap_or_default();
+
     if let Some(ref sip_server) = state.sip_server {
         let server = sip_server.read().await;
         if let Some(device) = server.device_manager().get(&device_id).await {
@@ -205,6 +243,7 @@ pub async fn subscribe_mobile_position(
                             "deviceId": device_id,
                             "cycle": cycle,
                             "interval": interval,
+                            "updated": persisted,
                             "message": "位置订阅已发送",
                             "code": 0
                         })));
@@ -229,6 +268,7 @@ pub async fn config_basic_param(
     Path(device_id): Path<String>,
 ) -> Json<WVPResult<serde_json::Value>> {
     tracing::info!("Config BasicParam query for: {}", device_id);
+    let db_device = get_device_by_device_id(&state.pool, &device_id).await.ok().flatten();
 
     if let Some(ref sip_server) = state.sip_server {
         let server = sip_server.read().await;
@@ -241,8 +281,8 @@ pub async fn config_basic_param(
                             "name": device.name,
                             "manufacturer": device.manufacturer,
                             "model": device.model,
-                            "transport": "UDP",
-                            "streamMode": "PLAY",
+                            "transport": db_device.as_ref().and_then(|item| item.transport.clone()).unwrap_or_else(|| "UDP".to_string()),
+                            "streamMode": db_device.as_ref().and_then(|item| item.stream_mode.clone()).unwrap_or_else(|| "UDP".to_string()),
                             "message": "设备配置查询已发送"
                         })));
                     }
@@ -256,12 +296,12 @@ pub async fn config_basic_param(
 
     Json(WVPResult::success(serde_json::json!({
         "deviceId": device_id,
-        "name": null,
-        "manufacturer": null,
-        "model": null,
+        "name": db_device.as_ref().and_then(|item| item.name.clone()),
+        "manufacturer": db_device.as_ref().and_then(|item| item.manufacturer.clone()),
+        "model": db_device.as_ref().and_then(|item| item.model.clone()),
         "firmware": null,
-        "transport": "UDP",
-        "streamMode": "PLAY",
+        "transport": db_device.as_ref().and_then(|item| item.transport.clone()).unwrap_or_else(|| "UDP".to_string()),
+        "streamMode": db_device.as_ref().and_then(|item| item.stream_mode.clone()).unwrap_or_else(|| "UDP".to_string()),
         "message": "设备配置查询功能"
     })))
 }
