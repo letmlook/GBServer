@@ -408,7 +408,8 @@ pub async fn control_record(
 
     tracing::info!("Record control: device={}, channel={}, cmd={}", device_id, channel_id, record_cmd);
 
-    let record_cmd_xml = if record_cmd.to_lowercase() == "start" {
+    let is_start = record_cmd.to_lowercase() == "start";
+    let record_cmd_xml = if is_start {
         "<RecordCmd>Record</RecordCmd>".to_string()
     } else {
         "<RecordCmd>StopRecord</RecordCmd>".to_string()
@@ -420,10 +421,26 @@ pub async fn control_record(
             if device.online {
                 match server.send_device_control(&device_id, &channel_id, "DeviceControl", &record_cmd_xml).await {
                     Ok(_) => {
+                        if let Some(ref redis) = state.redis {
+                            if is_start {
+                                crate::cache::set_recording_state(redis, &device_id, &channel_id, "Record").await;
+                            } else {
+                                crate::cache::del_recording_state(redis, &device_id, &channel_id).await;
+                            }
+                        }
+                        
+                        state.ws_state.broadcast("record_state", serde_json::json!({
+                            "deviceId": device_id,
+                            "channelId": channel_id,
+                            "recording": is_start,
+                            "recordCmd": record_cmd,
+                        })).await;
+                        
                         return Json(WVPResult::success(serde_json::json!({
                             "deviceId": device_id,
                             "channelId": channel_id,
                             "recordCmd": record_cmd,
+                            "recording": is_start,
                             "message": "远程录像控制命令已发送",
                             "code": 0
                         })));

@@ -63,6 +63,12 @@ impl ZlmClient {
         Ok(resp.data.unwrap_or_default())
     }
 
+    /// 获取当前活跃的流数量（用于负载均衡）
+    pub async fn get_active_stream_count(&self) -> Result<usize> {
+        let list = self.get_media_list(None, None, None).await?;
+        Ok(list.len())
+    }
+
     pub async fn get_media_info(&self, schema: &str, vhost: &str, app: &str, stream: &str) -> Result<Option<MediaInfo>> {
         let params = vec![
             ("secret", self.secret.clone()),

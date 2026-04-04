@@ -165,3 +165,44 @@ pub async fn delete_by_id(pool: &Pool, id: &str) -> sqlx::Result<u64> {
     .await?;
     Ok(r.rows_affected())
 }
+
+/// 同步配置文件中的媒体服务器到数据库（upsert）
+pub async fn sync_from_config(
+    pool: &Pool,
+    id: &str,
+    ip: &str,
+    http_port: i32,
+    secret: Option<&str>,
+    now: &str,
+) -> sqlx::Result<u64> {
+    #[cfg(feature = "mysql")]
+    let r = sqlx::query(
+        r#"INSERT INTO wvp_media_server (id, ip, http_port, secret, create_time, update_time, auto_config, rtp_enable, default_server, server_id, type)
+           VALUES (?, ?, ?, ?, ?, ?, false, false, true, ?, 'zlm')
+           ON DUPLICATE KEY UPDATE ip = VALUES(ip), http_port = VALUES(http_port), secret = VALUES(secret), update_time = VALUES(update_time)"#
+    )
+    .bind(id)
+    .bind(ip)
+    .bind(http_port)
+    .bind(secret)
+    .bind(now)
+    .bind(now)
+    .bind(id)
+    .execute(pool)
+    .await?;
+    #[cfg(feature = "postgres")]
+    let r = sqlx::query(
+        r#"INSERT INTO wvp_media_server (id, ip, http_port, secret, create_time, update_time, auto_config, rtp_enable, default_server, server_id, type)
+           VALUES ($1, $2, $3, $4, $5, $6, false, false, true, $1, 'zlm')
+           ON CONFLICT (id) DO UPDATE SET ip = EXCLUDED.ip, http_port = EXCLUDED.http_port, secret = EXCLUDED.secret, update_time = EXCLUDED.update_time"#
+    )
+    .bind(id)
+    .bind(ip)
+    .bind(http_port)
+    .bind(secret)
+    .bind(now)
+    .bind(now)
+    .execute(pool)
+    .await?;
+    Ok(r.rows_affected())
+}

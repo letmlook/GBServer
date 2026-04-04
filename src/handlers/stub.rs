@@ -598,8 +598,24 @@ pub async fn group_tree_query(
 }
 
 // ========== log ==========
+#[derive(Debug, Deserialize)]
+pub struct LogListQuery {
+    pub page: Option<u32>,
+    pub count: Option<u32>,
+    pub query: Option<String>,
+    #[serde(alias = "type")]
+    pub log_type: Option<String>,
+    #[serde(alias = "startTime")]
+    pub start_time: Option<String>,
+    #[serde(alias = "endTime")]
+    pub end_time: Option<String>,
+}
+
 /// GET /api/log/list（若存在 wvp_log 表则查询，否则返回空列表）
-pub async fn log_list(State(state): State<AppState>) -> Json<WVPResult<serde_json::Value>> {
+pub async fn log_list(
+    State(state): State<AppState>,
+    Query(q): Query<LogListQuery>,
+) -> Json<WVPResult<serde_json::Value>> {
     #[derive(sqlx::FromRow)]
     struct LogRow {
         id: i64,
@@ -607,20 +623,108 @@ pub async fn log_list(State(state): State<AppState>) -> Json<WVPResult<serde_jso
         r#type: Option<String>,
         create_time: Option<String>,
     }
-    let total = match sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM wvp_log")
-        .fetch_one(&state.pool)
-        .await
+    
+    let page = q.page.unwrap_or(1).max(1);
+    let count = q.count.unwrap_or(15).min(100);
+    let offset = (page - 1) * count;
+    
+    let search = q.query.as_deref().unwrap_or("").trim();
+    let log_type = q.log_type.as_deref().unwrap_or("").trim();
+    let start_time = q.start_time.as_deref().unwrap_or("").trim();
+    let end_time = q.end_time.as_deref().unwrap_or("").trim();
+    
+    let has_filter = !search.is_empty() || !log_type.is_empty() || !start_time.is_empty() || !end_time.is_empty();
+    
+    if !has_filter {
+        let total = match sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM wvp_log")
+            .fetch_one(&state.pool)
+            .await
+        {
+            Ok(n) => n,
+            _ => return Json(WVPResult::success(serde_json::json!({ "total": 0, "list": [] }))),
+        };
+        
+        #[cfg(feature = "postgres")]
+        let rows: Result<Vec<LogRow>, _> = sqlx::query_as(
+            "SELECT id, name, type, create_time FROM wvp_log ORDER BY id DESC LIMIT $1 OFFSET $2",
+        )
+        .bind(count as i64)
+        .bind(offset as i64)
+        .fetch_all(&state.pool)
+        .await;
+        
+        #[cfg(feature = "mysql")]
+        let rows: Result<Vec<LogRow>, _> = sqlx::query_as(
+            "SELECT id, name, type, create_time FROM wvp_log ORDER BY id DESC LIMIT ? OFFSET ?",
+        )
+        .bind(count as i64)
+        .bind(offset as i64)
+        .fetch_all(&state.pool)
+        .await;
+        
+        let list = match rows {
+            Ok(rows) => rows
+                .into_iter()
+                .map(|r| {
+                    serde_json::json!({
+                        "id": r.id,
+                        "name": r.name,
+                        "type": r.r#type,
+                        "createTime": r.create_time
+                    })
+                })
+                .collect::<Vec<_>>(),
+            _ => vec![],
+        };
+        
+        return Json(WVPResult::success(serde_json::json!({ "total": total, "list": list })));
+    }
+    
+    let like_search = format!("%{}%", search);
+    
+    #[cfg(feature = "postgres")]
     {
-        Ok(n) => n as u64,
-        _ => return Json(WVPResult::success(serde_json::json!({ "total": 0, "list": [] }))),
-    };
-    let rows: Result<Vec<LogRow>, _> = sqlx::query_as::<_, LogRow>(
-        "SELECT id, name, type, create_time FROM wvp_log ORDER BY id DESC LIMIT 100",
-    )
-    .fetch_all(&state.pool)
-    .await;
-    let list = match rows {
-        Ok(rows) => rows
+        let mut conditions = String::new();
+        let mut binds: Vec<String> = Vec::new();
+        
+        if !search.is_empty() {
+            conditions.push_str(" AND (name ILIKE $1 OR type ILIKE $1)");
+            binds.push(like_search.clone());
+        }
+        if !log_type.is_empty() {
+            let idx = binds.len() + 1;
+            conditions.push_str(&format!(" AND type = ${}", idx));
+            binds.push(log_type.to_string());
+        }
+        if !start_time.is_empty() {
+            let idx = binds.len() + 1;
+            conditions.push_str(&format!(" AND create_time >= ${}", idx));
+            binds.push(start_time.to_string());
+        }
+        if !end_time.is_empty() {
+            let idx = binds.len() + 1;
+            conditions.push_str(&format!(" AND create_time <= ${}", idx));
+            binds.push(end_time.to_string());
+        }
+        
+        let count_sql = format!("SELECT COUNT(*) FROM wvp_log WHERE 1=1{}", conditions);
+        let mut count_query = sqlx::query_scalar::<_, i64>(&count_sql);
+        for bind in &binds {
+            count_query = count_query.bind(bind);
+        }
+        let total: i64 = count_query.fetch_one(&state.pool).await.unwrap_or(0);
+        
+        let data_sql = format!("SELECT id, name, type, create_time FROM wvp_log WHERE 1=1{} ORDER BY id DESC LIMIT ${} OFFSET ${}", 
+            conditions, binds.len() + 1, binds.len() + 2);
+        let mut data_query = sqlx::query_as::<_, LogRow>(&data_sql);
+        for bind in &binds {
+            data_query = data_query.bind(bind);
+        }
+        data_query = data_query.bind(count as i64).bind(offset as i64);
+        
+        let rows: Vec<LogRow> = data_query.fetch_all(&state.pool).await.unwrap_or_default();
+        
+        let list: Vec<serde_json::Value> = rows
             .into_iter()
             .map(|r| {
                 serde_json::json!({
@@ -630,10 +734,64 @@ pub async fn log_list(State(state): State<AppState>) -> Json<WVPResult<serde_jso
                     "createTime": r.create_time
                 })
             })
-            .collect::<Vec<_>>(),
-        _ => vec![],
-    };
-    Json(WVPResult::success(serde_json::json!({ "total": total, "list": list })))
+            .collect();
+        
+        return Json(WVPResult::success(serde_json::json!({ "total": total, "list": list })));
+    }
+    
+    #[cfg(feature = "mysql")]
+    {
+        let mut conditions = String::new();
+        let mut binds: Vec<String> = Vec::new();
+        
+        if !search.is_empty() {
+            conditions.push_str(" AND (name LIKE ? OR type LIKE ?)");
+            binds.push(like_search.clone());
+            binds.push(like_search.clone());
+        }
+        if !log_type.is_empty() {
+            conditions.push_str(" AND type = ?");
+            binds.push(log_type.to_string());
+        }
+        if !start_time.is_empty() {
+            conditions.push_str(" AND create_time >= ?");
+            binds.push(start_time.to_string());
+        }
+        if !end_time.is_empty() {
+            conditions.push_str(" AND create_time <= ?");
+            binds.push(end_time.to_string());
+        }
+        
+        let count_sql = format!("SELECT COUNT(*) FROM wvp_log WHERE 1=1{}", conditions);
+        let mut count_query = sqlx::query_scalar::<_, i64>(&count_sql);
+        for bind in &binds {
+            count_query = count_query.bind(bind);
+        }
+        let total: i64 = count_query.fetch_one(&state.pool).await.unwrap_or(0);
+        
+        let data_sql = format!("SELECT id, name, type, create_time FROM wvp_log WHERE 1=1{} ORDER BY id DESC LIMIT ? OFFSET ?", conditions);
+        let mut data_query = sqlx::query_as::<_, LogRow>(&data_sql);
+        for bind in &binds {
+            data_query = data_query.bind(bind);
+        }
+        data_query = data_query.bind(count as i64).bind(offset as i64);
+        
+        let rows: Vec<LogRow> = data_query.fetch_all(&state.pool).await.unwrap_or_default();
+        
+        let list: Vec<serde_json::Value> = rows
+            .into_iter()
+            .map(|r| {
+                serde_json::json!({
+                    "id": r.id,
+                    "name": r.name,
+                    "type": r.r#type,
+                    "createTime": r.create_time
+                })
+            })
+            .collect();
+        
+        return Json(WVPResult::success(serde_json::json!({ "total": total, "list": list })));
+    }
 }
 
 /// GET /api/log/file/{fileName} - 下载指定日志文件

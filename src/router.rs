@@ -168,6 +168,7 @@ pub fn app(state: AppState) -> Router<AppState> {
         .route("/api/push/update", post(stream::push_update))
         .route("/api/push/start", get(stream::push_start))
         .route("/api/push/remove", post(stream::push_remove))
+        .route("/api/push/upload", post(stream::push_upload))
         .route("/api/push/batchRemove", delete(stream::push_batch_remove))
         .route("/api/push/save_to_gb", post(stream::push_save_to_gb))
         .route(

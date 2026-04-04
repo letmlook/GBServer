@@ -168,8 +168,8 @@ pub async fn insert_channel(
             .bind(term.id)
             .bind(channel_id)
             .bind(name)
-            .bind(now)
-            .bind(now)
+            .bind(&now)
+            .bind(&now)
             .execute(pool)
             .await?;
             Ok(r.rows_affected())

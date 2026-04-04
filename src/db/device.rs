@@ -805,3 +805,49 @@ pub async fn list_all_channels(pool: &Pool) -> sqlx::Result<Vec<DeviceChannel>> 
     .fetch_all(pool)
     .await;
 }
+
+/// 获取所有需要目录订阅续期的在线设备
+/// 返回 (device_id, subscribe_cycle_for_catalog) 列表
+pub async fn get_devices_for_catalog_renewal(pool: &Pool) -> sqlx::Result<Vec<(String, i32)>> {
+    #[cfg(feature = "mysql")]
+    {
+        let rows: Vec<(String, i32)> = sqlx::query_as(
+            "SELECT device_id, subscribe_cycle_for_catalog FROM wvp_device WHERE on_line = 1 AND subscribe_cycle_for_catalog > 0"
+        )
+        .fetch_all(pool)
+        .await?;
+        Ok(rows)
+    }
+    #[cfg(feature = "postgres")]
+    {
+        let rows: Vec<(String, i32)> = sqlx::query_as(
+            "SELECT device_id, subscribe_cycle_for_catalog FROM wvp_device WHERE on_line = true AND subscribe_cycle_for_catalog > 0"
+        )
+        .fetch_all(pool)
+        .await?;
+        Ok(rows)
+    }
+}
+
+/// 获取所有需要移动位置订阅续期的在线设备
+/// 返回 (device_id, subscribe_cycle_for_mobile_position) 列表
+pub async fn get_devices_for_mobile_position_renewal(pool: &Pool) -> sqlx::Result<Vec<(String, i32)>> {
+    #[cfg(feature = "mysql")]
+    {
+        let rows: Vec<(String, i32)> = sqlx::query_as(
+            "SELECT device_id, subscribe_cycle_for_mobile_position FROM wvp_device WHERE on_line = 1 AND subscribe_cycle_for_mobile_position > 0"
+        )
+        .fetch_all(pool)
+        .await?;
+        Ok(rows)
+    }
+    #[cfg(feature = "postgres")]
+    {
+        let rows: Vec<(String, i32)> = sqlx::query_as(
+            "SELECT device_id, subscribe_cycle_for_mobile_position FROM wvp_device WHERE on_line = true AND subscribe_cycle_for_mobile_position > 0"
+        )
+        .fetch_all(pool)
+        .await?;
+        Ok(rows)
+    }
+}

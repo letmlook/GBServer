@@ -7,6 +7,7 @@ pub mod handlers;
 pub mod router;
 pub mod sip;
 pub mod zlm;
+pub mod cache;
 
 use config::AppConfig;
 use std::collections::HashMap;
@@ -99,11 +100,21 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
     let mut zlm_client: Option<Arc<zlm::ZlmClient>> = None;
     
     if let Some(ref zlm_config) = cfg.zlm {
+        let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
         for server in &zlm_config.servers {
             if server.enabled {
                 let client = Arc::new(zlm::ZlmClient::from_config(server));
                 zlm_clients.insert(server.id.clone(), client.clone());
                 tracing::info!("ZLM client initialized: {} ({}:{})", server.id, server.ip, server.http_port);
+                
+                let _ = db::media_server::sync_from_config(
+                    &pool,
+                    &server.id,
+                    &server.ip,
+                    server.http_port as i32,
+                    Some(server.secret.as_str()),
+                    &now,
+                ).await;
                 
                 if zlm_client.is_none() {
                     zlm_client = Some(client);
@@ -115,6 +126,29 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
     let download_manager = Arc::new(crate::handlers::playback::DownloadManager::new());
     let playback_manager = Arc::new(crate::handlers::playback::PlaybackManager::new());
 
+    // Initialize Redis (optional)
+    let redis_conn = if let Some(ref redis_cfg) = cfg.redis {
+        match redis::Client::open(redis_cfg.url.as_str()) {
+            Ok(client) => match redis::aio::ConnectionManager::new(client).await {
+                Ok(cm) => {
+                    tracing::info!("Redis 连接成功: {}", redis_cfg.url);
+                    Some(cm)
+                }
+                Err(e) => {
+                    tracing::warn!("Redis 连接失败，将以无缓存模式运行: {}", e);
+                    None
+                }
+            },
+            Err(e) => {
+                tracing::warn!("Redis 客户端创建失败: {}", e);
+                None
+            }
+        }
+    } else {
+        tracing::info!("未配置 Redis，以无缓存模式运行");
+        None
+    };
+
     let state = AppState {
         config: Arc::new(cfg.clone()),
         pool,
@@ -124,6 +158,7 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
         playback_manager: Some(playback_manager),
         download_manager: Some(download_manager),
         ws_state,
+        redis: redis_conn,
     };
 
     if let Some(ref server) = sip_server {
@@ -155,18 +190,69 @@ pub struct AppState {
     pub playback_manager: Option<Arc<crate::handlers::playback::PlaybackManager>>,
     pub download_manager: Option<Arc<crate::handlers::playback::DownloadManager>>,
     pub ws_state: Arc<crate::handlers::websocket::WsState>,
+    pub redis: Option<redis::aio::ConnectionManager>,
 }
 
 impl AppState {
+    /// 获取 ZLM 客户端。media_server_id 为 None 或 "auto" 时自动选择负载最低的节点。
+    pub async fn get_zlm_client_auto(&self, media_server_id: Option<&str>) -> Option<(String, Arc<zlm::ZlmClient>)> {
+        match media_server_id {
+            Some(id) if id != "auto" && !id.is_empty() => {
+                self.zlm_clients.get(id).map(|c| (id.to_string(), c.clone()))
+            }
+            _ => self.select_least_loaded().await,
+        }
+    }
+
     pub fn get_zlm_client(&self, media_server_id: Option<&str>) -> Option<Arc<zlm::ZlmClient>> {
         if let Some(id) = media_server_id {
-            self.zlm_clients.get(id).cloned()
-        } else {
-            self.zlm_client.clone()
+            if id != "auto" && !id.is_empty() {
+                return self.zlm_clients.get(id).cloned();
+            }
         }
+        self.zlm_client.clone()
     }
     
     pub fn list_zlm_servers(&self) -> Vec<String> {
         self.zlm_clients.keys().cloned().collect()
+    }
+
+    /// 选择流数量最少的 ZLM 节点（最少连接数策略）
+    async fn select_least_loaded(&self) -> Option<(String, Arc<zlm::ZlmClient>)> {
+        if self.zlm_clients.is_empty() {
+            return None;
+        }
+        if self.zlm_clients.len() == 1 {
+            let (id, client) = self.zlm_clients.iter().next()?;
+            return Some((id.clone(), client.clone()));
+        }
+
+        // 优先从 Redis 读取各节点流计数
+        if let Some(ref redis) = self.redis {
+            let mut min_count = i64::MAX;
+            let mut best: Option<(String, Arc<zlm::ZlmClient>)> = None;
+            for (id, client) in &self.zlm_clients {
+                let count = cache::get_media_server_stream_count(redis, id).await;
+                if count < min_count {
+                    min_count = count;
+                    best = Some((id.clone(), client.clone()));
+                }
+            }
+            if best.is_some() {
+                return best;
+            }
+        }
+
+        // 无 Redis 时查询 ZLM API 获取实际流数
+        let mut min_count = usize::MAX;
+        let mut best: Option<(String, Arc<zlm::ZlmClient>)> = None;
+        for (id, client) in &self.zlm_clients {
+            let count = client.get_active_stream_count().await.unwrap_or(usize::MAX);
+            if count < min_count {
+                min_count = count;
+                best = Some((id.clone(), client.clone()));
+            }
+        }
+        best
     }
 }

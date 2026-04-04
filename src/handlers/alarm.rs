@@ -320,7 +320,7 @@ pub async fn alarm_handle(
         .bind(id)
         .execute(&state.pool)
         .await
-        .map_err(|e| AppError::internal(format!("数据库更新失败: {}", e)))?;
+        .map_err(|e| AppError::business(ErrorCode::Error500, format!("数据库更新失败: {}", e)))?;
     }
 
     Ok(Json(WVPResult::success(serde_json::json!({

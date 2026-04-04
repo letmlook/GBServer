@@ -396,3 +396,54 @@ pub async fn get_channels_for_map(
     .fetch_all(pool)
     .await;
 }
+
+pub async fn update_map_level(pool: &Pool, channel_ids: &[i64], level: i32) -> sqlx::Result<u64> {
+    if channel_ids.is_empty() {
+        return Ok(0);
+    }
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    
+    #[cfg(feature = "mysql")]
+    {
+        let placeholders: Vec<String> = channel_ids.iter().map(|_| "?".to_string()).collect();
+        let sql = format!(
+            "UPDATE wvp_device_channel SET map_level = ?, update_time = ? WHERE id IN ({})",
+            placeholders.join(",")
+        );
+        let mut q = sqlx::query(&sql).bind(level).bind(&now);
+        for id in channel_ids {
+            q = q.bind(id);
+        }
+        let r = q.execute(pool).await?;
+        Ok(r.rows_affected())
+    }
+    #[cfg(feature = "postgres")]
+    {
+        let placeholders: Vec<String> = channel_ids.iter().enumerate().map(|(i, _)| format!("${}", i + 3)).collect();
+        let sql = format!(
+            "UPDATE wvp_device_channel SET map_level = $1, update_time = $2 WHERE id IN ({})",
+            placeholders.join(",")
+        );
+        let mut q = sqlx::query(&sql).bind(level).bind(&now);
+        for id in channel_ids {
+            q = q.bind(id);
+        }
+        let r = q.execute(pool).await?;
+        Ok(r.rows_affected())
+    }
+}
+
+pub async fn reset_map_level(pool: &Pool) -> sqlx::Result<u64> {
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    #[cfg(feature = "mysql")]
+    let r = sqlx::query("UPDATE wvp_device_channel SET map_level = 0, update_time = ?")
+        .bind(&now)
+        .execute(pool)
+        .await?;
+    #[cfg(feature = "postgres")]
+    let r = sqlx::query("UPDATE wvp_device_channel SET map_level = 0, update_time = $1")
+        .bind(&now)
+        .execute(pool)
+        .await?;
+    Ok(r.rows_affected())
+}

@@ -22,7 +22,7 @@ use crate::sip::core::{
     Authorization, CSeq, Challenge, Contact, DialogManager, NameAddr, SipMessage, SipMethod,
     SipRequest, SipResponse, StatusCode, SubscriptionState, TransactionManager, ViaHeader,
 };
-use crate::sip::gb28181::catalog::{build_catalog_notify_body, CatalogSubscriptionManager};
+use crate::sip::gb28181::catalog::{build_catalog_notify_body, CatalogSubscriptionManager, CatalogSubscription};
 use crate::sip::gb28181::invite::SessionStatus;
 use crate::sip::gb28181::invite_session::{
     build_invite_sdp, build_playback_sdp, InviteSessionManager, InviteSessionStatus, SdpInfo,
@@ -258,6 +258,86 @@ impl SipServer {
             });
         }
 
+        let renewal_pool = pool.clone();
+        let renewal_catalog_manager = catalog_subscription_manager.clone();
+        let renewal_device_manager = device_manager.clone();
+        let renewal_config = config.clone();
+        let renewal_socket = socket.clone();
+        
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(60)).await;
+                
+                match db_device::get_devices_for_catalog_renewal(&renewal_pool).await {
+                    Ok(devices) => {
+                        for (device_id, cycle) in devices {
+                            let subs = renewal_catalog_manager.get_by_device(&device_id).await;
+                            let needs_renewal = subs.iter().any(|s| {
+                                let elapsed = (Utc::now() - s.created_at).num_seconds() as u32;
+                                let remaining = s.expires.saturating_sub(elapsed);
+                                remaining < 30
+                            });
+                            
+                            if needs_renewal {
+                                if let Some(device) = renewal_device_manager.get(&device_id).await {
+                                    if device.online {
+                                        tracing::info!("Renewing catalog subscription for device {}", device_id);
+                                        let _ = send_subscribe_internal(
+                                            &device_id,
+                                            "Catalog",
+                                            cycle as u32,
+                                            &renewal_config,
+                                            &renewal_device_manager,
+                                            &renewal_catalog_manager,
+                                            &renewal_socket,
+                                        ).await;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to get devices for catalog renewal: {}", e);
+                    }
+                }
+            }
+        });
+
+        let mobile_pool = pool.clone();
+        let mobile_config = config.clone();
+        let mobile_device_manager = device_manager.clone();
+        let mobile_socket = socket.clone();
+        
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(60)).await;
+                
+                match db_device::get_devices_for_mobile_position_renewal(&mobile_pool).await {
+                    Ok(devices) => {
+                        for (device_id, cycle) in devices {
+                            if let Some(device) = mobile_device_manager.get(&device_id).await {
+                                if device.online {
+                                    tracing::info!("Renewing mobile position subscription for device {}", device_id);
+                                    let _ = send_subscribe_internal(
+                                        &device_id,
+                                        "MobilePosition",
+                                        cycle as u32,
+                                        &mobile_config,
+                                        &mobile_device_manager,
+                                        &Arc::new(CatalogSubscriptionManager::new()),
+                                        &mobile_socket,
+                                    ).await;
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to get devices for mobile position renewal: {}", e);
+                    }
+                }
+            }
+        });
+
         loop {
             tokio::time::sleep(Duration::from_secs(3600)).await;
         }
@@ -365,7 +445,7 @@ impl SipServer {
                 Self::handle_register(req, addr, config, device_manager, pool, socket, ws_state).await
             }
             SipMethod::Message => {
-                Self::handle_message(req, addr, config, device_manager, pool, socket).await
+                Self::handle_message(req, addr, config, device_manager, pool, socket, ws_state).await
             }
             SipMethod::Invite => {
                 Self::handle_invite(req, addr, config, session_manager, invite_session_manager, talk_manager, zlm_client, pool, socket).await
@@ -508,6 +588,7 @@ impl SipServer {
         device_manager: &Arc<DeviceManager>,
         pool: &Pool,
         socket: &Arc<UdpSocket>,
+        ws_state: &Option<Arc<WsState>>,
     ) -> Result<()> {
         let from = req.header("from").cloned().unwrap_or_default();
         let to = req.header("to").cloned().unwrap_or_default();
@@ -550,7 +631,7 @@ impl SipServer {
                     return Ok(());
                 }
                 Some("Alarm") => {
-                    Self::handle_alarm(body, &device_id, &sn, pool, addr, &from, &to, &via, &call_id, &cseq, socket).await?;
+                    Self::handle_alarm(body, &device_id, &sn, pool, addr, &from, &to, &via, &call_id, &cseq, socket, ws_state).await?;
                     return Ok(());
                 }
                 Some("RecordInfo") => {
@@ -1549,11 +1630,59 @@ impl SipServer {
         call_id: &str,
         cseq: &str,
         socket: &Arc<UdpSocket>,
+        ws_state: &Option<Arc<WsState>>,
     ) -> Result<()> {
-        let parsed = XmlParser::parse(body);
-        let alarm_type = parsed.get("AlarmType").cloned().unwrap_or_else(|| "Unknown".to_string());
+        let parsed = XmlParser::parse_fields(body);
         
-        tracing::info!("Alarm from {}: {}", device_id, alarm_type);
+        let alarm_type = parsed.get("AlarmType").cloned().unwrap_or_else(|| "Unknown".to_string());
+        let alarm_priority = parsed.get("AlarmPriority").cloned();
+        let alarm_method = parsed.get("AlarmMethod").cloned();
+        let alarm_time = parsed.get("AlarmTime").cloned();
+        let alarm_description = parsed.get("AlarmDescription").cloned();
+        let channel_id = parsed.get("DeviceID").cloned().unwrap_or_else(|| device_id.to_string());
+        
+        let longitude = parsed.get("Longitude").and_then(|s| s.parse::<f64>().ok());
+        let latitude = parsed.get("Latitude").and_then(|s| s.parse::<f64>().ok());
+        
+        let create_time = Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        
+        tracing::info!(
+            "Alarm from {}: type={}, priority={:?}, method={:?}, channel={}",
+            device_id, alarm_type, alarm_priority, alarm_method, channel_id
+        );
+        
+        let alarm = crate::db::alarm::AlarmInsert {
+            device_id: device_id.to_string(),
+            channel_id: channel_id.clone(),
+            alarm_priority: alarm_priority.clone(),
+            alarm_method: alarm_method.clone(),
+            alarm_time: alarm_time.clone(),
+            alarm_description: alarm_description.clone(),
+            longitude,
+            latitude,
+            alarm_type: Some(alarm_type.clone()),
+            create_time: create_time.clone(),
+        };
+        
+        if let Err(e) = crate::db::alarm::insert_alarm(pool, &alarm).await {
+            tracing::error!("Failed to insert alarm to database: {}", e);
+        }
+        
+        if let Some(ref ws) = ws_state {
+            let alarm_data = serde_json::json!({
+                "deviceId": device_id,
+                "channelId": channel_id,
+                "alarmType": alarm_type,
+                "alarmPriority": alarm_priority,
+                "alarmMethod": alarm_method,
+                "alarmTime": alarm_time,
+                "alarmDescription": alarm_description,
+                "longitude": longitude,
+                "latitude": latitude,
+                "createTime": create_time,
+            });
+            ws.broadcast("alarm", alarm_data).await;
+        }
         
         let response_body = format!(r#"<?xml version="1.0" encoding="UTF-8"?><Response><CmdType>Alarm</CmdType><SN>{}</SN><DeviceID>{}</DeviceID><Result>OK</Result></Response>"#,
             sn, device_id);
@@ -2358,5 +2487,82 @@ async fn dbg_upsert_device(
     let now = Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     db_device::upsert_device(pool, device_id, Some(name), manufacturer, model, firmware, transport, stream_mode, ip, port, online, Some(media_server_id.as_str()), &now).await
         .map_err(|e| anyhow::anyhow!("{}", e))?;
+    Ok(())
+}
+
+async fn send_subscribe_internal(
+    device_id: &str,
+    event: &str,
+    expires: u32,
+    config: &Arc<SipConfig>,
+    device_manager: &Arc<DeviceManager>,
+    catalog_subscription_manager: &Arc<CatalogSubscriptionManager>,
+    socket: &Arc<UdpSocket>,
+) -> Result<()> {
+    let device_addr = device_manager.get_address(device_id).await
+        .ok_or_else(|| anyhow::anyhow!("Device {} not registered", device_id))?;
+    
+    let sn = chrono::Utc::now().timestamp();
+    let body = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<Query>
+<CmdType>{}</CmdType>
+<SN>{}</SN>
+<DeviceID>{}</DeviceID>
+</Query>"#,
+        event, sn, device_id
+    );
+    
+    let call_id = format!("sub_{}_{}", device_id, chrono::Utc::now().timestamp_millis());
+    let branch = generate_branch();
+    let cseq = format!("{} SUBSCRIBE", 1);
+    
+    let via = format!("SIP/2.0/UDP {}:{};branch={};rport", 
+        config.ip, config.port, branch);
+    let from = format!("<sip:{}@{}:{}>;tag={}", 
+        config.device_id, config.ip, config.port, generate_tag());
+    let to = format!("<sip:{}@{}:{}>", device_id, device_addr.ip(), device_addr.port());
+    let contact = format!("<sip:{}@{}:{}>", config.device_id, config.ip, config.port);
+    
+    let expires_header = expires.to_string();
+    let content_length = body.len().to_string();
+    
+    let headers: Vec<(&str, &str)> = vec![
+        ("Via", &via),
+        ("From", &from),
+        ("To", &to),
+        ("Call-ID", &call_id),
+        ("CSeq", &cseq),
+        ("Contact", &contact),
+        ("Expires", &expires_header),
+        ("Max-Forwards", "70"),
+        ("User-Agent", "WVP-GB28181-Rust"),
+        ("Event", event),
+        ("Accept", "Application/MANSCDP+xml"),
+        ("Content-Type", "Application/MANSCDP+xml"),
+        ("Content-Length", &content_length),
+    ];
+    
+    let request = Parser::generate_request(
+        "SUBSCRIBE",
+        &format!("sip:{}@{}:{}", device_id, device_addr.ip(), device_addr.port()),
+        &headers,
+        Some(&body),
+    );
+    
+    socket.send_to(request.as_bytes(), device_addr).await?;
+    tracing::debug!("SUBSCRIBE sent to {} for event {}", device_id, event);
+    
+    let subscription = CatalogSubscription::new(
+        &call_id,
+        device_id,
+        device_addr,
+        &via,
+        &from,
+        &to,
+        expires,
+    );
+    catalog_subscription_manager.subscribe(subscription).await;
+    
     Ok(())
 }

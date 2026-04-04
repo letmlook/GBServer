@@ -1,11 +1,12 @@
 //! 推流 /api/push 与拉流代理 /api/proxy，对应前端 streamPush.js / streamProxy.js
 
 use axum::{
-    extract::{Query, State},
+    extract::{Query, State, Multipart},
     Json,
 };
 use serde::Deserialize;
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use crate::db::{stream_push, stream_proxy, StreamPush, StreamProxy};
 use crate::error::AppError;
@@ -803,6 +804,89 @@ pub async fn proxy_delete(
         Err(e) => {
             tracing::error!("Failed to delete proxy stream: {}", e);
             Ok(Json(WVPResult::error(format!("Database error: {}", e))))
+        }
+    }
+}
+
+/// POST /api/push/upload - 上传文件推流
+pub async fn push_upload(
+    State(state): State<AppState>,
+    mut multipart: Multipart,
+) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+    let upload_dir = PathBuf::from("uploads");
+    if !upload_dir.exists() {
+        let _ = std::fs::create_dir_all(&upload_dir);
+    }
+    
+    let mut app = "upload".to_string();
+    let mut stream = String::new();
+    let mut saved_path = String::new();
+    
+    while let Some(field) = multipart.next_field().await.unwrap_or(None) {
+        let field_name = field.name().unwrap_or_default().to_string();
+        
+        match field_name.as_str() {
+            "file" => {
+                let filename = field.file_name().unwrap_or("upload.bin").to_string();
+                let ext = std::path::Path::new(&filename)
+                    .extension()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("bin");
+                
+                let timestamp = chrono::Utc::now().format("%Y%m%d%H%M%S").to_string();
+                let random_suffix: String = (0..4)
+                    .map(|_| char::from(b'a' + rand::random::<u8>() % 26))
+                    .collect();
+                stream = format!("{}_{}", timestamp, random_suffix);
+                
+                let saved_filename = format!("{}.{}", stream, ext);
+                let filepath = upload_dir.join(&saved_filename);
+                
+                let data = field.bytes().await.map_err(|e| {
+                    AppError::business(crate::error::ErrorCode::Error500, format!("读取上传文件失败: {}", e))
+                })?;
+                
+                std::fs::write(&filepath, &data).map_err(|e| {
+                    AppError::business(crate::error::ErrorCode::Error500, format!("保存文件失败: {}", e))
+                })?;
+                
+                saved_path = filepath.to_string_lossy().to_string();
+                tracing::info!("Uploaded file saved: {}", saved_path);
+            }
+            "app" => {
+                if let Ok(bytes) = field.bytes().await {
+                    app = String::from_utf8_lossy(&bytes).to_string();
+                }
+            }
+            "stream" => {
+                if let Ok(bytes) = field.bytes().await {
+                    stream = String::from_utf8_lossy(&bytes).to_string();
+                }
+            }
+            _ => {}
+        }
+    }
+    
+    if stream.is_empty() {
+        return Ok(Json(WVPResult::error("未提供文件或流名称")));
+    }
+    
+    let media_server_id = "auto".to_string();
+    let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    
+    match stream_push::add(&state.pool, &app, &stream, &media_server_id, &now).await {
+        Ok(_) => {
+            Ok(Json(WVPResult::success(serde_json::json!({
+                "app": app,
+                "stream": stream,
+                "url": saved_path,
+                "mediaServerId": media_server_id,
+                "message": "文件上传成功"
+            }))))
+        }
+        Err(e) => {
+            tracing::error!("Failed to add push stream record: {}", e);
+            Ok(Json(WVPResult::error(format!("数据库错误: {}", e))))
         }
     }
 }

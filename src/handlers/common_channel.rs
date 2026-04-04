@@ -815,16 +815,30 @@ pub struct MapLevelBody {
 }
 
 pub async fn map_save_level(
-    State(_state): State<AppState>,
-    Json(_body): Json<MapLevelBody>,
+    State(state): State<AppState>,
+    Json(body): Json<MapLevelBody>,
 ) -> Result<Json<WVPResult<()>>, AppError> {
-    // 地图缩放级别保存，当前为占位实现
+    let level = body.level.unwrap_or(0);
+    let channels = body.channels.unwrap_or_default();
+    
+    if channels.is_empty() {
+        return Ok(Json(WVPResult::<()>::success_empty()));
+    }
+    
+    let result: sqlx::Result<u64> = common_channel::update_map_level(&state.pool, &channels, level).await;
+    result.map_err(|e| AppError::business(ErrorCode::Error500, format!("更新地图级别失败: {}", e)))?;
+    
     Ok(Json(WVPResult::<()>::success_empty()))
 }
 
 /// POST /api/common/channel/map/reset-level
-pub async fn map_reset_level() -> Json<WVPResult<()>> {
-    Json(WVPResult::<()>::success_empty())
+pub async fn map_reset_level(
+    State(state): State<AppState>,
+) -> Result<Json<WVPResult<()>>, AppError> {
+    let result: sqlx::Result<u64> = common_channel::reset_map_level(&state.pool).await;
+    result.map_err(|e| AppError::business(ErrorCode::Error500, format!("重置地图级别失败: {}", e)))?;
+    
+    Ok(Json(WVPResult::<()>::success_empty()))
 }
 
 /// GET /api/common/channel/map/thin/clear?id=
