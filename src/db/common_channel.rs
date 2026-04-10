@@ -163,14 +163,14 @@ pub async fn get_unusual_parent(pool: &Pool, page: u32, count: u32) -> sqlx::Res
     let offset = (page.saturating_sub(1)) * count;
     #[cfg(feature = "mysql")]
     return sqlx::query_as::<_, DeviceChannel>(
-        "SELECT id, device_id, name, gb_device_id, status, longitude, latitude, create_time, update_time, sub_count, has_audio, channel_type FROM wvp_device_channel WHERE parent_id IS NULL OR parent_id = 0 ORDER BY id LIMIT ? OFFSET ?",
+        "SELECT id, device_id, name, gb_device_id, status, longitude, latitude, create_time, update_time, sub_count, has_audio, channel_type FROM wvp_device_channel WHERE parent_id IS NULL OR parent_id = '0' ORDER BY id LIMIT ? OFFSET ?",
     )
     .bind(count as i64).bind(offset as i64)
     .fetch_all(pool)
     .await;
     #[cfg(feature = "postgres")]
     return sqlx::query_as::<_, DeviceChannel>(
-        "SELECT id, device_id, name, gb_device_id, status, longitude, latitude, create_time, update_time, sub_count, has_audio, channel_type FROM wvp_device_channel WHERE parent_id IS NULL OR parent_id = 0 ORDER BY id LIMIT $1 OFFSET $2",
+        "SELECT id, device_id, name, gb_device_id, status, longitude, latitude, create_time, update_time, sub_count, has_audio, channel_type FROM wvp_device_channel WHERE parent_id IS NULL OR parent_id = '0' ORDER BY id LIMIT $1 OFFSET $2",
     )
     .bind(count as i64).bind(offset as i64)
     .fetch_all(pool)
@@ -180,13 +180,13 @@ pub async fn get_unusual_parent(pool: &Pool, page: u32, count: u32) -> sqlx::Res
 pub async fn count_unusual_parent(pool: &Pool) -> sqlx::Result<i64> {
     #[cfg(feature = "mysql")]
     return sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM wvp_device_channel WHERE parent_id IS NULL OR parent_id = 0",
+        "SELECT COUNT(*) FROM wvp_device_channel WHERE parent_id IS NULL OR parent_id = '0'",
     )
     .fetch_one(pool)
     .await;
     #[cfg(feature = "postgres")]
     return sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM wvp_device_channel WHERE parent_id IS NULL OR parent_id = 0",
+        "SELECT COUNT(*) FROM wvp_device_channel WHERE parent_id IS NULL OR parent_id = '0'",
     )
     .fetch_one(pool)
     .await;
@@ -208,12 +208,12 @@ pub async fn clear_unusual_civilcode(pool: &Pool, id: i64) -> sqlx::Result<u64> 
 
 pub async fn clear_unusual_parent(pool: &Pool, id: i64) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
-    let r = sqlx::query("UPDATE wvp_device_channel SET parent_id = 0 WHERE id = ?")
+    let r = sqlx::query("UPDATE wvp_device_channel SET parent_id = '0' WHERE id = ?")
         .bind(id)
         .execute(pool)
         .await?;
     #[cfg(feature = "postgres")]
-    let r = sqlx::query("UPDATE wvp_device_channel SET parent_id = 0 WHERE id = $1")
+    let r = sqlx::query("UPDATE wvp_device_channel SET parent_id = '0' WHERE id = $1")
         .bind(id)
         .execute(pool)
         .await?;
@@ -231,14 +231,14 @@ pub async fn get_parent_channels(
     let offset = (page.saturating_sub(1)) * count;
     #[cfg(feature = "mysql")]
     return sqlx::query_as::<_, DeviceChannel>(
-        "SELECT id, device_id, name, gb_device_id, status, longitude, latitude, create_time, update_time, sub_count, has_audio, channel_type FROM wvp_device_channel WHERE parent_id IS NOT NULL AND parent_id != 0 ORDER BY id LIMIT ? OFFSET ?",
+        "SELECT id, device_id, name, gb_device_id, status, longitude, latitude, create_time, update_time, sub_count, has_audio, channel_type FROM wvp_device_channel WHERE parent_id IS NOT NULL AND parent_id != '0' ORDER BY id LIMIT ? OFFSET ?",
     )
     .bind(count as i64).bind(offset as i64)
     .fetch_all(pool)
     .await;
     #[cfg(feature = "postgres")]
     return sqlx::query_as::<_, DeviceChannel>(
-        "SELECT id, device_id, name, gb_device_id, status, longitude, latitude, create_time, update_time, sub_count, has_audio, channel_type FROM wvp_device_channel WHERE parent_id IS NOT NULL AND parent_id != 0 ORDER BY id LIMIT $1 OFFSET $2",
+        "SELECT id, device_id, name, gb_device_id, status, longitude, latitude, create_time, update_time, sub_count, has_audio, channel_type FROM wvp_device_channel WHERE parent_id IS NOT NULL AND parent_id != '0' ORDER BY id LIMIT $1 OFFSET $2",
     )
     .bind(count as i64).bind(offset as i64)
     .fetch_all(pool)
@@ -253,13 +253,13 @@ pub async fn count_parent_channels(
 ) -> sqlx::Result<i64> {
     #[cfg(feature = "mysql")]
     return sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM wvp_device_channel WHERE parent_id IS NOT NULL AND parent_id != 0",
+        "SELECT COUNT(*) FROM wvp_device_channel WHERE parent_id IS NOT NULL AND parent_id != '0'",
     )
     .fetch_one(pool)
     .await;
     #[cfg(feature = "postgres")]
     return sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM wvp_device_channel WHERE parent_id IS NOT NULL AND parent_id != 0",
+        "SELECT COUNT(*) FROM wvp_device_channel WHERE parent_id IS NOT NULL AND parent_id != '0'",
     )
     .fetch_one(pool)
     .await;
@@ -337,12 +337,12 @@ pub async fn update_group(pool: &Pool, id: i64, parent_id: i64, business_group: 
 
 pub async fn clear_group(pool: &Pool, id: i64, now: &str) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
-    let r = sqlx::query("UPDATE wvp_device_channel SET parent_id = 0, business_group = NULL, update_time = ? WHERE id = ?")
+    let r = sqlx::query("UPDATE wvp_device_channel SET parent_id = '0', business_group = NULL, update_time = ? WHERE id = ?")
         .bind(now).bind(id)
         .execute(pool)
         .await?;
     #[cfg(feature = "postgres")]
-    let r = sqlx::query("UPDATE wvp_device_channel SET parent_id = 0, business_group = NULL, update_time = $1 WHERE id = $2")
+    let r = sqlx::query("UPDATE wvp_device_channel SET parent_id = '0', business_group = NULL, update_time = $1 WHERE id = $2")
         .bind(now).bind(id)
         .execute(pool)
         .await?;
@@ -365,12 +365,12 @@ pub async fn update_device_group(pool: &Pool, device_id: &str, parent_id: i64, b
 
 pub async fn clear_device_group(pool: &Pool, device_id: &str, now: &str) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
-    let r = sqlx::query("UPDATE wvp_device_channel SET parent_id = 0, business_group = NULL, update_time = ? WHERE device_id = ?")
+    let r = sqlx::query("UPDATE wvp_device_channel SET parent_id = '0', business_group = NULL, update_time = ? WHERE device_id = ?")
         .bind(now).bind(device_id)
         .execute(pool)
         .await?;
     #[cfg(feature = "postgres")]
-    let r = sqlx::query("UPDATE wvp_device_channel SET parent_id = 0, business_group = NULL, update_time = $1 WHERE device_id = $2")
+    let r = sqlx::query("UPDATE wvp_device_channel SET parent_id = '0', business_group = NULL, update_time = $1 WHERE device_id = $2")
         .bind(now).bind(device_id)
         .execute(pool)
         .await?;

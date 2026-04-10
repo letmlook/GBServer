@@ -20,7 +20,7 @@ pub struct PushListQuery {
     pub page: Option<u32>,
     pub count: Option<u32>,
     pub query: Option<String>,
-    pub pushing: Option<bool>,
+    pub pushing: Option<String>,
     pub mediaServerId: Option<String>,
 }
 
@@ -31,10 +31,11 @@ pub async fn push_list(
 ) -> Result<Json<WVPResult<PushListPage>>, AppError> {
     let page = q.page.unwrap_or(1);
     let count = q.count.unwrap_or(10).min(100);
+    let pushing = q.pushing.as_deref().and_then(|s| s.parse().ok());
     let total = stream_push::count_all(
         &state.pool,
         q.mediaServerId.as_deref(),
-        q.pushing,
+        pushing,
     )
     .await?;
     let list = stream_push::list_paged(
@@ -42,7 +43,7 @@ pub async fn push_list(
         page,
         count,
         q.mediaServerId.as_deref(),
-        q.pushing,
+        pushing,
     )
     .await?;
     Ok(Json(WVPResult::success(PushListPage {
@@ -412,7 +413,7 @@ pub struct ProxyListQuery {
     pub page: Option<u32>,
     pub count: Option<u32>,
     pub query: Option<String>,
-    pub pulling: Option<bool>,
+    pub pulling: Option<String>,
     pub mediaServerId: Option<String>,
 }
 
@@ -423,10 +424,11 @@ pub async fn proxy_list(
 ) -> Result<Json<WVPResult<ProxyListPage>>, AppError> {
     let page = q.page.unwrap_or(1);
     let count = q.count.unwrap_or(10).min(100);
+    let pulling = q.pulling.as_deref().and_then(|s| s.parse().ok());
     let total = stream_proxy::count_all(
         &state.pool,
         q.mediaServerId.as_deref(),
-        q.pulling,
+        pulling,
     )
     .await?;
     let list = stream_proxy::list_paged(
@@ -434,7 +436,7 @@ pub async fn proxy_list(
         page,
         count,
         q.mediaServerId.as_deref(),
-        q.pulling,
+        pulling,
     )
     .await?;
     Ok(Json(WVPResult::success(ProxyListPage {
