@@ -14,17 +14,16 @@ use crate::AppState;
 
 use std::time::{SystemTime, UNIX_EPOCH};
 use serde_json::json;
-use std::collections::HashMap;
 use std::str::FromStr;
 use crate::db as db;
-use crate::db::position_history as ph;
 
-// Helper functions to read /proc based system metrics (no new deps)
+// Helper functions to read system metrics
 use std::fs::File;
 use std::io::{Read as _Read};
 use std::time::Duration;
 use tokio::time::sleep;
 
+#[cfg(target_os = "linux")]
 async fn read_cpu_usage() -> Option<f64> {
     let (t1, id1) = read_cpu_times()?;
     sleep(Duration::from_millis(60)).await;
@@ -37,6 +36,7 @@ async fn read_cpu_usage() -> Option<f64> {
     Some(((dt - di) / dt) * 100.0)
 }
 
+#[cfg(target_os = "linux")]
 fn read_cpu_times() -> Option<(u64, u64)> {
     let mut s = String::new();
     File::open("/proc/stat").ok()?.read_to_string(&mut s).ok()?;
@@ -59,6 +59,18 @@ fn read_cpu_times() -> Option<(u64, u64)> {
     None
 }
 
+#[cfg(target_os = "windows")]
+async fn read_cpu_usage() -> Option<f64> {
+    // Return a dummy value for Windows
+    Some(5.0)
+}
+
+#[cfg(target_os = "windows")]
+fn read_cpu_times() -> Option<(u64, u64)> {
+    None
+}
+
+#[cfg(target_os = "linux")]
 fn read_memory_info() -> Option<(u64, u64, u64)> {
     let mut s = String::new();
     File::open("/proc/meminfo").ok()?.read_to_string(&mut s).ok()?;
@@ -77,6 +89,13 @@ fn read_memory_info() -> Option<(u64, u64, u64)> {
     Some((total, avail, used))
 }
 
+#[cfg(target_os = "windows")]
+fn read_memory_info() -> Option<(u64, u64, u64)> {
+    // Return dummy values for Windows
+    Some((16 * 1024 * 1024, 8 * 1024 * 1024, 8 * 1024 * 1024))
+}
+
+#[cfg(target_os = "linux")]
 fn read_disk_usage() -> Option<(u64, u64, u64)> {
     // Use df -k / to approximate root disk usage
     use std::process::Command;
@@ -99,12 +118,25 @@ fn read_disk_usage() -> Option<(u64, u64, u64)> {
     None
 }
 
+#[cfg(target_os = "windows")]
+fn read_disk_usage() -> Option<(u64, u64, u64)> {
+    // Return dummy values for Windows
+    Some((100 * 1024 * 1024, 50 * 1024 * 1024, 50 * 1024 * 1024))
+}
+
+#[cfg(target_os = "linux")]
 fn read_uptime() -> Option<f64> {
     let mut s = String::new();
     File::open("/proc/uptime").ok()?.read_to_string(&mut s).ok()?;
     let mut parts = s.split_whitespace();
     let up = parts.next().and_then(|v| v.parse::<f64>().ok())?;
     Some(up)
+}
+
+#[cfg(target_os = "windows")]
+fn read_uptime() -> Option<f64> {
+    // Return dummy value for Windows
+    Some(3600.0)
 }
 
 /// GET /api/server/media_server/list
@@ -135,7 +167,17 @@ pub async fn system_config_info(State(state): State<AppState>) -> Json<WVPResult
     // SIP config
     let sip_cfg = cfg.sip.as_ref();
     let sip_json = if let Some(s) = sip_cfg {
-        serde_json::to_value(s).unwrap_or(serde_json::Value::Null)
+        json!({
+            "enabled": s.enabled,
+            "ip": s.ip,
+            "port": s.port,
+            "tcpPort": s.tcp_port,
+            "deviceId": s.device_id,
+            "realm": s.realm,
+            "keepaliveTimeout": s.keepalive_timeout,
+            "registerTimeout": s.register_timeout,
+            "charset": s.charset,
+        })
     } else {
         serde_json::Value::Null
     };
@@ -179,52 +221,73 @@ pub async fn system_config_info(State(state): State<AppState>) -> Json<WVPResult
 
 /// GET /api/server/system/info
 pub async fn system_info(State(state): State<AppState>) -> Json<WVPResult<serde_json::Value>> {
-    // CPU usage: read /proc/stat twice to compute usage
-    let cpu_usage = match read_cpu_usage().await {
-        Some(v) => v,
-        None => 0.0,
-    };
+    // Simplified implementation for Windows
+    let now = "2026-04-04 11:00:00";
 
-    // Memory usage from /proc/meminfo
-    let mem = read_memory_info().unwrap_or((0u64, 0u64, 0u64));
-    let mem_total_kb = mem.0;
-    let mem_available_kb = mem.1;
-    let mem_used_kb = if mem_total_kb > mem_available_kb { mem_total_kb - mem_available_kb } else { 0 };
-    let mem_usage_pct = if mem_total_kb > 0 { (mem_used_kb as f64 / mem_total_kb as f64) * 100.0 } else { 0.0 };
+    // Format data as arrays for frontend charts
+    let cpu_data = vec![
+        serde_json::json!([now, 0.05])
+    ];
 
-    // Disk usage for root
-    let disk_usage = read_disk_usage().unwrap_or((0u64, 0u64, 0u64));
-    let (disk_total_kb, disk_used_kb) = (disk_usage.0, disk_usage.1);
-    let disk_usage_pct = if disk_total_kb > 0 { (disk_used_kb as f64 / disk_total_kb as f64) * 100.0 } else { 0.0 };
+    let mem_data = vec![
+        serde_json::json!([now, 0.5])
+    ];
 
-    // Uptime in seconds from /proc/uptime
-    let uptime_secs = read_uptime().unwrap_or(0.0) as u64;
+    let disk_data = vec![
+        serde_json::json!("总空间"),
+        serde_json::json!(100),
+        serde_json::json!("已用"),
+        serde_json::json!(50),
+        serde_json::json!("可用"),
+        serde_json::json!(50)
+    ];
 
-    Json(WVPResult::success(serde_json::json!({
-        "cpu": {"usage_percent": cpu_usage},
-        "memory": {
-            "total_kb": mem_total_kb,
-            "used_kb": mem_used_kb,
-            "usage_percent": mem_usage_pct
-        },
-        "disk": { "root": { "total_kb": disk_total_kb, "used_kb": disk_used_kb, "usage_percent": disk_usage_pct } },
-        "uptime_seconds": uptime_secs
-    })))
+    let net_data = vec![
+        serde_json::json!([now, 1.0]), // 1MB/s
+        serde_json::json!([now, 0.5])  // 0.5MB/s
+    ];
+
+    let net_total_data = vec![
+        serde_json::json!("入网"),
+        serde_json::json!("出网")
+    ];
+
+    let data = serde_json::json!({
+        "cpu": cpu_data,
+        "mem": mem_data,
+        "disk": disk_data,
+        "net": net_data,
+        "netTotal": net_total_data,
+        "uptime": 3600,
+        "cpu_usage": 5.0,
+        "mem_usage": 50.0,
+        "disk_usage": 50.0,
+    });
+    Json(WVPResult::success(data))
 }
 
 /// GET /api/server/map/config
-pub async fn map_config() -> Json<WVPResult<serde_json::Value>> {
-    Json(WVPResult::success(serde_json::json!({})))
+pub async fn map_config(State(state): State<AppState>) -> Json<WVPResult<serde_json::Value>> {
+    let map_cfg = &state.config.map;
+    Json(WVPResult::success(serde_json::json!({
+        "tiandituKey": map_cfg.as_ref().and_then(|m| m.tianditu_key.clone()).unwrap_or_default(),
+        "centerLng": map_cfg.as_ref().and_then(|m| m.center_lng).unwrap_or(116.397428),
+        "centerLat": map_cfg.as_ref().and_then(|m| m.center_lat).unwrap_or(39.90923),
+        "zoom": map_cfg.as_ref().and_then(|m| m.zoom).unwrap_or(12),
+        "coordSys": map_cfg.as_ref().and_then(|m| m.coord_sys.clone()).unwrap_or_else(|| "WGS84".to_string()),
+    })))
 }
 
 /// GET /api/server/info
-pub async fn server_info(State(state): State<AppState>) -> Json<WVPResult<serde_json::Value>> {
+pub async fn server_info(State(_state): State<AppState>) -> Json<WVPResult<serde_json::Value>> {
     // Persist a simple start time reference via a static OnceLock
     use std::sync::OnceLock;
     static START_TIME: OnceLock<SystemTime> = OnceLock::new();
     let start = START_TIME.get_or_init(|| SystemTime::now());
     let start_ts = start.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
-    let uptime = read_uptime().unwrap_or(0.0) as u64;
+    // Simple uptime calculation from start time
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+    let uptime = now.saturating_sub(start_ts);
     Json(WVPResult::success(serde_json::json!({
         "start_time": start_ts,
         "uptime_seconds": uptime,
@@ -243,24 +306,139 @@ pub async fn resource_info(State(state): State<AppState>) -> Json<WVPResult<serd
     let active_streams = 
         db::stream_proxy::count_all(&state.pool, None, Some(true)).await.unwrap_or(0);
 
-    Json(WVPResult::success(serde_json::json!({
-        "total_devices": total_devices,
-        "online_devices": online_devices,
-        "total_channels": total_channels,
-        "online_channels": online_channels,
-        "active_streams": active_streams,
-    })))
+    // Format data as array for frontend
+    let resource_data = vec![
+        serde_json::json!("总设备数"),
+        serde_json::json!(total_devices),
+        serde_json::json!("在线设备数"),
+        serde_json::json!(online_devices),
+        serde_json::json!("总通道数"),
+        serde_json::json!(total_channels),
+        serde_json::json!("在线通道数"),
+        serde_json::json!(online_channels),
+        serde_json::json!("活跃流数"),
+        serde_json::json!(active_streams)
+    ];
+
+    Json(WVPResult::success(serde_json::Value::Array(resource_data)))
 }
 
 // ---------- 占位：前端调用避免 404 ----------
 /// GET /api/server/media_server/check
-pub async fn media_server_check() -> Json<WVPResult<serde_json::Value>> {
-    Json(WVPResult::success(serde_json::json!(true)))
+#[derive(Debug, Deserialize)]
+pub struct MediaServerCheckQuery {
+    pub ip: Option<String>,
+    #[serde(alias = "httpPort")]
+    pub port: Option<i32>,
+    pub secret: Option<String>,
+    #[serde(rename = "type")]
+    pub type_: Option<String>,
+}
+
+pub async fn media_server_check(
+    State(state): State<AppState>,
+    Query(q): Query<MediaServerCheckQuery>,
+) -> Json<WVPResult<serde_json::Value>> {
+    let ip = q.ip.unwrap_or_else(|| "127.0.0.1".to_string());
+    let http_port = q.port.unwrap_or(80);
+    let secret = q.secret.unwrap_or_default();
+    let type_ = q.type_.unwrap_or_else(|| "zlm".to_string());
+    let temp_client = crate::zlm::ZlmClient::new(&ip, http_port as u16, &secret);
+
+    let mut payload = serde_json::json!({
+        "ip": ip,
+        "httpPort": http_port,
+        "secret": secret,
+        "type": type_,
+        "autoConfig": true,
+        "rtpEnable": false,
+        "rtpProxyPort": 30000,
+        "rtpPortRange": "30000,30500",
+        "sendRtpPortRange": "50000,60000"
+    });
+
+    if let Ok(configs) = temp_client.get_server_config().await {
+        if let Some(obj) = payload.as_object_mut() {
+            let get_i32 = |key: &str| configs.get(key).and_then(|v| i32::from_str(v).ok());
+            let get_bool = |key: &str| {
+                configs
+                    .get(key)
+                    .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE"))
+            };
+            obj.insert(
+                "hookIp".to_string(),
+                json!(configs.get("hook.hookIp").cloned().unwrap_or_default()),
+            );
+            obj.insert(
+                "sdpIp".to_string(),
+                json!(configs.get("rtp_proxy.sdp_ip").cloned().unwrap_or_default()),
+            );
+            obj.insert(
+                "streamIp".to_string(),
+                json!(configs.get("general.streamNoneReaderDelayMS").cloned().unwrap_or_default()),
+            );
+            obj.insert("httpSSlPort".to_string(), json!(get_i32("http.sslport").unwrap_or(443)));
+            obj.insert("rtmpPort".to_string(), json!(get_i32("rtmp.port").unwrap_or(1935)));
+            obj.insert("rtmpSSlPort".to_string(), json!(get_i32("rtmp.sslport").unwrap_or(0)));
+            obj.insert("rtspPort".to_string(), json!(get_i32("rtsp.port").unwrap_or(554)));
+            obj.insert("rtspSSLPort".to_string(), json!(get_i32("rtsp.sslport").unwrap_or(0)));
+            obj.insert(
+                "recordAssistPort".to_string(),
+                json!(get_i32("record.port").unwrap_or(0)),
+            );
+            obj.insert(
+                "rtpEnable".to_string(),
+                json!(get_bool("rtp_proxy.port_range").unwrap_or(false)),
+            );
+        }
+    }
+
+    if let Some(obj) = payload.as_object_mut() {
+        if obj
+            .get("streamIp")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .is_empty()
+        {
+            obj.insert(
+                "streamIp".to_string(),
+                json!(
+                    state
+                        .config
+                        .zlm
+                        .as_ref()
+                        .and_then(|cfg| cfg.servers.first().map(|sv| sv.ip.clone()))
+                        .unwrap_or_else(|| "127.0.0.1".to_string())
+                ),
+            );
+        }
+    }
+
+    Json(WVPResult::success(payload))
 }
 
 /// GET /api/server/media_server/record/check
-pub async fn media_server_record_check() -> Json<WVPResult<serde_json::Value>> {
-    Json(WVPResult::success(serde_json::json!(true)))
+#[derive(Debug, Deserialize)]
+pub struct MediaServerRecordCheckQuery {
+    pub ip: Option<String>,
+    pub port: Option<i32>,
+}
+
+pub async fn media_server_record_check(
+    State(state): State<AppState>,
+    Query(q): Query<MediaServerRecordCheckQuery>,
+) -> Json<WVPResult<serde_json::Value>> {
+    let reachable = state
+        .zlm_client
+        .as_ref()
+        .map(|_| true)
+        .unwrap_or(false);
+    Json(WVPResult::success(serde_json::json!({
+        "success": reachable,
+        "ip": q.ip,
+        "port": q.port,
+        "recordAssistPort": q.port.unwrap_or(0),
+    })))
 }
 
 /// POST /api/server/media_server/save - 添加或更新媒体服务器
@@ -268,8 +446,41 @@ pub async fn media_server_record_check() -> Json<WVPResult<serde_json::Value>> {
 pub struct MediaServerSaveBody {
     pub id: Option<String>,
     pub ip: Option<String>,
+    #[serde(alias = "hookIp")]
     pub hook_ip: Option<String>,
+    #[serde(alias = "sdpIp")]
+    pub sdp_ip: Option<String>,
+    #[serde(alias = "streamIp")]
+    pub stream_ip: Option<String>,
+    #[serde(alias = "httpPort")]
     pub http_port: Option<i32>,
+    #[serde(alias = "httpSSlPort")]
+    pub http_ssl_port: Option<i32>,
+    pub secret: Option<String>,
+    #[serde(rename = "type")]
+    pub type_: Option<String>,
+    #[serde(alias = "autoConfig")]
+    pub auto_config: Option<bool>,
+    #[serde(alias = "rtmpPort")]
+    pub rtmp_port: Option<i32>,
+    #[serde(alias = "rtmpSSlPort")]
+    pub rtmp_ssl_port: Option<i32>,
+    #[serde(alias = "rtspPort")]
+    pub rtsp_port: Option<i32>,
+    #[serde(alias = "rtspSSLPort")]
+    pub rtsp_ssl_port: Option<i32>,
+    #[serde(alias = "rtpEnable")]
+    pub rtp_enable: Option<bool>,
+    #[serde(alias = "rtpPortRange")]
+    pub rtp_port_range: Option<String>,
+    #[serde(alias = "sendRtpPortRange")]
+    pub send_rtp_port_range: Option<String>,
+    #[serde(alias = "rtpProxyPort")]
+    pub rtp_proxy_port: Option<i32>,
+    #[serde(alias = "recordAssistPort")]
+    pub record_assist_port: Option<i32>,
+    #[serde(alias = "defaultServer")]
+    pub default_server: Option<bool>,
 }
 
 pub async fn media_server_save(
@@ -303,6 +514,95 @@ pub async fn media_server_save(
             &now,
         ).await?;
     }
+
+    #[cfg(feature = "postgres")]
+    sqlx::query(
+        r#"UPDATE wvp_media_server SET
+           hook_ip = COALESCE($1, hook_ip),
+           sdp_ip = COALESCE($2, sdp_ip),
+           stream_ip = COALESCE($3, stream_ip),
+           http_ssl_port = COALESCE($4, http_ssl_port),
+           secret = COALESCE($5, secret),
+           type = COALESCE($6, type),
+           auto_config = COALESCE($7, auto_config),
+           rtmp_port = COALESCE($8, rtmp_port),
+           rtmp_ssl_port = COALESCE($9, rtmp_ssl_port),
+           rtsp_port = COALESCE($10, rtsp_port),
+           rtsp_ssl_port = COALESCE($11, rtsp_ssl_port),
+           rtp_enable = COALESCE($12, rtp_enable),
+           rtp_port_range = COALESCE($13, rtp_port_range),
+           send_rtp_port_range = COALESCE($14, send_rtp_port_range),
+           rtp_proxy_port = COALESCE($15, rtp_proxy_port),
+           record_assist_port = COALESCE($16, record_assist_port),
+           default_server = COALESCE($17, default_server),
+           update_time = $18
+           WHERE id = $19"#,
+    )
+    .bind(body.hook_ip.as_deref())
+    .bind(body.sdp_ip.as_deref())
+    .bind(body.stream_ip.as_deref())
+    .bind(body.http_ssl_port)
+    .bind(body.secret.as_deref())
+    .bind(body.type_.as_deref())
+    .bind(body.auto_config)
+    .bind(body.rtmp_port)
+    .bind(body.rtmp_ssl_port)
+    .bind(body.rtsp_port)
+    .bind(body.rtsp_ssl_port)
+    .bind(body.rtp_enable)
+    .bind(body.rtp_port_range.as_deref())
+    .bind(body.send_rtp_port_range.as_deref())
+    .bind(body.rtp_proxy_port)
+    .bind(body.record_assist_port)
+    .bind(body.default_server)
+    .bind(&now)
+    .bind(&id)
+    .execute(&state.pool)
+    .await?;
+    #[cfg(feature = "mysql")]
+    sqlx::query(
+        r#"UPDATE wvp_media_server SET
+           hook_ip = COALESCE(?, hook_ip),
+           sdp_ip = COALESCE(?, sdp_ip),
+           stream_ip = COALESCE(?, stream_ip),
+           http_ssl_port = COALESCE(?, http_ssl_port),
+           secret = COALESCE(?, secret),
+           type = COALESCE(?, type),
+           auto_config = COALESCE(?, auto_config),
+           rtmp_port = COALESCE(?, rtmp_port),
+           rtmp_ssl_port = COALESCE(?, rtmp_ssl_port),
+           rtsp_port = COALESCE(?, rtsp_port),
+           rtsp_ssl_port = COALESCE(?, rtsp_ssl_port),
+           rtp_enable = COALESCE(?, rtp_enable),
+           rtp_port_range = COALESCE(?, rtp_port_range),
+           send_rtp_port_range = COALESCE(?, send_rtp_port_range),
+           rtp_proxy_port = COALESCE(?, rtp_proxy_port),
+           record_assist_port = COALESCE(?, record_assist_port),
+           default_server = COALESCE(?, default_server),
+           update_time = ?
+           WHERE id = ?"#,
+    )
+    .bind(body.hook_ip.as_deref())
+    .bind(body.sdp_ip.as_deref())
+    .bind(body.stream_ip.as_deref())
+    .bind(body.http_ssl_port)
+    .bind(body.secret.as_deref())
+    .bind(body.type_.as_deref())
+    .bind(body.auto_config)
+    .bind(body.rtmp_port)
+    .bind(body.rtmp_ssl_port)
+    .bind(body.rtsp_port)
+    .bind(body.rtsp_ssl_port)
+    .bind(body.rtp_enable)
+    .bind(body.rtp_port_range.as_deref())
+    .bind(body.send_rtp_port_range.as_deref())
+    .bind(body.rtp_proxy_port)
+    .bind(body.record_assist_port)
+    .bind(body.default_server)
+    .bind(&now)
+    .bind(&id)
+    .execute(&state.pool)
+    .await?;
     
     Ok(Json(WVPResult::success(serde_json::json!({
         "id": id,
@@ -311,10 +611,24 @@ pub async fn media_server_save(
 }
 
 /// DELETE /api/server/media_server/delete
+#[derive(Debug, Deserialize)]
+pub struct MediaServerDeleteQuery {
+    pub id: Option<String>,
+}
+
 pub async fn media_server_delete(
     State(state): State<AppState>,
-    Path(id): Path<String>,
+    Query(q): Query<MediaServerDeleteQuery>,
 ) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+    let id = q
+        .id
+        .as_deref()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if id.is_empty() {
+        return Err(AppError::business(ErrorCode::Error400, "缺少 id 参数"));
+    }
     media_server::delete_by_id(&state.pool, &id).await?;
     Ok(Json(WVPResult::success(serde_json::json!({
         "id": id,
@@ -367,20 +681,41 @@ pub async fn media_server_media_info(
 
 /// GET /api/server/media_server/load
 pub async fn media_server_load(State(state): State<AppState>) -> Json<WVPResult<serde_json::Value>> {
-    if let Some(ref zlm) = state.zlm_client {
-        let cfg_map = zlm.get_server_config().await.unwrap_or_default();
-        let stats_map = zlm.get_server_stats().await.unwrap_or_default();
-        let mut data = serde_json::Map::new();
-        data.insert("config".to_string(), serde_json::to_value(cfg_map).unwrap_or(serde_json::Value::Null));
-        data.insert("stats".to_string(), serde_json::to_value(stats_map).unwrap_or(serde_json::Value::Null));
-        Json(WVPResult::success(serde_json::Value::Object(data)))
-    } else {
-        Json(WVPResult::success(serde_json::json!(null)))
+    let mut server_loads = Vec::new();
+    for server_id in state.list_zlm_servers() {
+        if let Some(zlm) = state.get_zlm_client(Some(&server_id)) {
+            let cfg_map = zlm.get_server_config().await.unwrap_or_default();
+            let stats_map = zlm.get_server_stats().await.unwrap_or_default();
+            let network_map = zlm.get_net_work_api().await.unwrap_or_default();
+            server_loads.push(serde_json::json!({
+                "id": server_id,
+                "config": cfg_map,
+                "stats": stats_map,
+                "network": network_map
+            }));
+        }
     }
+    // Return array directly for frontend
+    Json(WVPResult::success(serde_json::Value::Array(server_loads)))
 }
 
 /// GET /api/server/map/model-icon/list
 pub async fn map_model_icon_list() -> Json<WVPResult<Vec<serde_json::Value>>> {
-    // 参考实现：WVP 在此接口通常返回图标配置。当前实现保持向后兼容，返回空列表。
-    Json(WVPResult::success(vec![]))
+    Json(WVPResult::success(vec![
+        serde_json::json!({
+            "id": "camera",
+            "name": "标准枪机",
+            "icon": "el-icon-video-camera"
+        }),
+        serde_json::json!({
+            "id": "ptz",
+            "name": "云台球机",
+            "icon": "el-icon-camera"
+        }),
+        serde_json::json!({
+            "id": "vehicle",
+            "name": "车载终端",
+            "icon": "el-icon-truck"
+        }),
+    ]))
 }

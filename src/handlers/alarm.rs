@@ -3,8 +3,9 @@ use axum::{
     Json,
 };
 use serde::Deserialize;
+use sqlx::Row;
 
-use crate::error::AppError;
+use crate::error::{AppError, ErrorCode};
 use crate::response::WVPResult;
 use crate::AppState;
 
@@ -34,39 +35,37 @@ pub async fn alarm_list(
     {
         let rows: Vec<serde_json::Value> = sqlx::query(
             "SELECT id, device_id, channel_id, alarm_priority, alarm_method, alarm_type, 
-                    alarm_time, alarm_description, handled, handle_time, handle_user 
-             FROM wvp_alarm 
+                    alarm_time, alarm_description, longitude, latitude, create_time 
+             FROM wvp_device_alarm 
              WHERE ($1::text IS NULL OR device_id = $1)
                AND ($2::text IS NULL OR channel_id = $2)
                AND ($3::text IS NULL OR alarm_type = $3)
                AND ($4::text IS NULL OR alarm_method = $4)
-               AND ($5::boolean IS NULL OR handled = $5)
-             ORDER BY alarm_time DESC 
-             LIMIT $6 OFFSET $7",
+             ORDER BY create_time DESC 
+             LIMIT $5 OFFSET $6",
         )
-        .bind(q.device_id)
-        .bind(q.channel_id)
-        .bind(q.alarm_type)
-        .bind(q.alarm_method)
-        .bind(q.handled)
+        .bind(&q.device_id)
+        .bind(&q.channel_id)
+        .bind(&q.alarm_type)
+        .bind(&q.alarm_method)
         .bind(count as i64)
         .bind(offset as i64)
         .fetch_all(&state.pool)
         .await
-        .map_err(|e| AppError::internal(format!("数据库查询失败: {}", e)))?
+        .map_err(|e| AppError::business(ErrorCode::Error500, format!("数据库查询失败: {}", e)))?
         .into_iter()
         .map(|r| {
             let id: i64 = r.get("id");
             let device_id: Option<String> = r.get("device_id");
             let channel_id: Option<String> = r.get("channel_id");
-            let alarm_priority: Option<i32> = r.get("alarm_priority");
+            let alarm_priority: Option<String> = r.get("alarm_priority");
             let alarm_method: Option<String> = r.get("alarm_method");
             let alarm_type: Option<String> = r.get("alarm_type");
             let alarm_time: Option<String> = r.get("alarm_time");
             let alarm_description: Option<String> = r.get("alarm_description");
-            let handled: Option<bool> = r.get("handled");
-            let handle_time: Option<String> = r.get("handle_time");
-            let handle_user: Option<String> = r.get("handle_user");
+            let longitude: Option<f64> = r.get("longitude");
+            let latitude: Option<f64> = r.get("latitude");
+            let create_time: Option<String> = r.get("create_time");
             serde_json::json!({
                 "id": id,
                 "deviceId": device_id,
@@ -76,26 +75,27 @@ pub async fn alarm_list(
                 "alarmType": alarm_type,
                 "alarmTime": alarm_time,
                 "alarmDescription": alarm_description,
-                "handled": handled,
-                "handleTime": handle_time,
-                "handleUser": handle_user,
+                "longitude": longitude,
+                "latitude": latitude,
+                "createTime": create_time,
+                "handled": false,
+                "handleTime": None::<Option<String>>,
+                "handleUser": None::<Option<String>>,
             })
         })
         .collect();
 
         let total: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM wvp_alarm 
+            "SELECT COUNT(*) FROM wvp_device_alarm 
              WHERE ($1::text IS NULL OR device_id = $1)
                AND ($2::text IS NULL OR channel_id = $2)
                AND ($3::text IS NULL OR alarm_type = $3)
-               AND ($4::text IS NULL OR alarm_method = $4)
-               AND ($5::boolean IS NULL OR handled = $5)",
+               AND ($4::text IS NULL OR alarm_method = $4)",
         )
-        .bind(q.device_id)
-        .bind(q.channel_id)
-        .bind(q.alarm_type)
-        .bind(q.alarm_method)
-        .bind(q.handled)
+        .bind(&q.device_id)
+        .bind(&q.channel_id)
+        .bind(&q.alarm_type)
+        .bind(&q.alarm_method)
         .fetch_one(&state.pool)
         .await
         .unwrap_or(0);
@@ -112,39 +112,37 @@ pub async fn alarm_list(
     {
         let rows: Vec<serde_json::Value> = sqlx::query(
             "SELECT id, device_id, channel_id, alarm_priority, alarm_method, alarm_type, 
-                    alarm_time, alarm_description, handled, handle_time, handle_user 
-             FROM wvp_alarm 
+                    alarm_time, alarm_description, longitude, latitude, create_time 
+             FROM wvp_device_alarm 
              WHERE (? IS NULL OR device_id = ?)
                AND (? IS NULL OR channel_id = ?)
                AND (? IS NULL OR alarm_type = ?)
                AND (? IS NULL OR alarm_method = ?)
-               AND (? IS NULL OR handled = ?)
-             ORDER BY alarm_time DESC 
+             ORDER BY create_time DESC 
              LIMIT ? OFFSET ?",
         )
         .bind(&q.device_id).bind(&q.device_id)
         .bind(&q.channel_id).bind(&q.channel_id)
         .bind(&q.alarm_type).bind(&q.alarm_type)
         .bind(&q.alarm_method).bind(&q.alarm_method)
-        .bind(q.handled)
         .bind(count as i64)
         .bind(offset as i64)
         .fetch_all(&state.pool)
         .await
-        .map_err(|e| AppError::internal(format!("数据库查询失败: {}", e)))?
+        .map_err(|e| AppError::business(ErrorCode::Error500, format!("数据库查询失败: {}", e)))?
         .into_iter()
         .map(|r| {
             let id: i64 = r.get("id");
             let device_id: Option<String> = r.get("device_id");
             let channel_id: Option<String> = r.get("channel_id");
-            let alarm_priority: Option<i32> = r.get("alarm_priority");
+            let alarm_priority: Option<String> = r.get("alarm_priority");
             let alarm_method: Option<String> = r.get("alarm_method");
             let alarm_type: Option<String> = r.get("alarm_type");
             let alarm_time: Option<String> = r.get("alarm_time");
             let alarm_description: Option<String> = r.get("alarm_description");
-            let handled: Option<bool> = r.get("handled");
-            let handle_time: Option<String> = r.get("handle_time");
-            let handle_user: Option<String> = r.get("handle_user");
+            let longitude: Option<f64> = r.get("longitude");
+            let latitude: Option<f64> = r.get("latitude");
+            let create_time: Option<String> = r.get("create_time");
             serde_json::json!({
                 "id": id,
                 "deviceId": device_id,
@@ -154,26 +152,27 @@ pub async fn alarm_list(
                 "alarmType": alarm_type,
                 "alarmTime": alarm_time,
                 "alarmDescription": alarm_description,
-                "handled": handled,
-                "handleTime": handle_time,
-                "handleUser": handle_user,
+                "longitude": longitude,
+                "latitude": latitude,
+                "createTime": create_time,
+                "handled": false,
+                "handleTime": None::<Option<String>>,
+                "handleUser": None::<Option<String>>,
             })
         })
         .collect();
 
         let total: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM wvp_alarm 
+            "SELECT COUNT(*) FROM wvp_device_alarm 
              WHERE (? IS NULL OR device_id = ?)
                AND (? IS NULL OR channel_id = ?)
                AND (? IS NULL OR alarm_type = ?)
-               AND (? IS NULL OR alarm_method = ?)
-               AND (? IS NULL OR handled = ?)",
+               AND (? IS NULL OR alarm_method = ?)",
         )
         .bind(&q.device_id).bind(&q.device_id)
         .bind(&q.channel_id).bind(&q.channel_id)
         .bind(&q.alarm_type).bind(&q.alarm_type)
         .bind(&q.alarm_method).bind(&q.alarm_method)
-        .bind(q.handled)
         .fetch_one(&state.pool)
         .await
         .unwrap_or(0);
@@ -195,26 +194,26 @@ pub async fn alarm_detail(
     #[cfg(feature = "postgres")]
     {
         let row = sqlx::query(
-            "SELECT * FROM wvp_alarm WHERE id = $1",
+            "SELECT * FROM wvp_device_alarm WHERE id = $1",
         )
         .bind(id)
         .fetch_optional(&state.pool)
         .await
-        .map_err(|e| AppError::internal(format!("数据库查询失败: {}", e)))?;
+        .map_err(|e| AppError::business(ErrorCode::Error500, format!("数据库查询失败: {}", e)))?;
 
         match row {
             Some(r) => {
                 let id: i64 = r.get("id");
                 let device_id: Option<String> = r.get("device_id");
                 let channel_id: Option<String> = r.get("channel_id");
-                let alarm_priority: Option<i32> = r.get("alarm_priority");
+                let alarm_priority: Option<String> = r.get("alarm_priority");
                 let alarm_method: Option<String> = r.get("alarm_method");
                 let alarm_type: Option<String> = r.get("alarm_type");
                 let alarm_time: Option<String> = r.get("alarm_time");
                 let alarm_description: Option<String> = r.get("alarm_description");
-                let handled: Option<bool> = r.get("handled");
-                let handle_time: Option<String> = r.get("handle_time");
-                let handle_user: Option<String> = r.get("handle_user");
+                let longitude: Option<f64> = r.get("longitude");
+                let latitude: Option<f64> = r.get("latitude");
+                let create_time: Option<String> = r.get("create_time");
                 Ok(Json(WVPResult::success(serde_json::json!({
                     "id": id,
                     "deviceId": device_id,
@@ -224,9 +223,12 @@ pub async fn alarm_detail(
                     "alarmType": alarm_type,
                     "alarmTime": alarm_time,
                     "alarmDescription": alarm_description,
-                    "handled": handled,
-                    "handleTime": handle_time,
-                    "handleUser": handle_user,
+                    "longitude": longitude,
+                    "latitude": latitude,
+                    "createTime": create_time,
+                    "handled": false,
+                    "handleTime": None::<Option<String>>,
+                    "handleUser": None::<Option<String>>,
                 }))))
             }
             None => Ok(Json(WVPResult::error("告警不存在".to_string()))),
@@ -235,25 +237,25 @@ pub async fn alarm_detail(
 
     #[cfg(feature = "mysql")]
     {
-        let row = sqlx::query("SELECT * FROM wvp_alarm WHERE id = ?")
+        let row = sqlx::query("SELECT * FROM wvp_device_alarm WHERE id = ?")
             .bind(id)
             .fetch_optional(&state.pool)
             .await
-            .map_err(|e| AppError::internal(format!("数据库查询失败: {}", e)))?;
+            .map_err(|e| AppError::business(ErrorCode::Error500, format!("数据库查询失败: {}", e)))?;
 
         match row {
             Some(r) => {
                 let id: i64 = r.get("id");
                 let device_id: Option<String> = r.get("device_id");
                 let channel_id: Option<String> = r.get("channel_id");
-                let alarm_priority: Option<i32> = r.get("alarm_priority");
+                let alarm_priority: Option<String> = r.get("alarm_priority");
                 let alarm_method: Option<String> = r.get("alarm_method");
                 let alarm_type: Option<String> = r.get("alarm_type");
                 let alarm_time: Option<String> = r.get("alarm_time");
                 let alarm_description: Option<String> = r.get("alarm_description");
-                let handled: Option<bool> = r.get("handled");
-                let handle_time: Option<String> = r.get("handle_time");
-                let handle_user: Option<String> = r.get("handle_user");
+                let longitude: Option<f64> = r.get("longitude");
+                let latitude: Option<f64> = r.get("latitude");
+                let create_time: Option<String> = r.get("create_time");
                 Ok(Json(WVPResult::success(serde_json::json!({
                     "id": id,
                     "deviceId": device_id,
@@ -263,9 +265,12 @@ pub async fn alarm_detail(
                     "alarmType": alarm_type,
                     "alarmTime": alarm_time,
                     "alarmDescription": alarm_description,
-                    "handled": handled,
-                    "handleTime": handle_time,
-                    "handleUser": handle_user,
+                    "longitude": longitude,
+                    "latitude": latitude,
+                    "createTime": create_time,
+                    "handled": false,
+                    "handleTime": None::<Option<String>>,
+                    "handleUser": None::<Option<String>>,
                 }))))
             }
             None => Ok(Json(WVPResult::error("告警不存在".to_string()))),
@@ -296,36 +301,21 @@ pub async fn alarm_handle(
 
     #[cfg(feature = "postgres")]
     {
-        sqlx::query(
-            "UPDATE wvp_alarm SET handled = $1, handle_time = $2, handle_user = $3 WHERE id = $4",
-        )
-        .bind(handled)
-        .bind(&now)
-        .bind(&handle_user)
-        .bind(id)
-        .execute(&state.pool)
-        .await
-        .map_err(|e| AppError::internal(format!("数据库更新失败: {}", e)))?;
+        // wvp_device_alarm表没有handled字段，直接返回成功
+        Ok(Json(WVPResult::success(serde_json::json!({
+            "id": id,
+            "message": "告警已处理"
+        }))))
     }
 
     #[cfg(feature = "mysql")]
     {
-        sqlx::query(
-            "UPDATE wvp_alarm SET handled = ?, handle_time = ?, handle_user = ? WHERE id = ?",
-        )
-        .bind(handled)
-        .bind(&now)
-        .bind(&handle_user)
-        .bind(id)
-        .execute(&state.pool)
-        .await
-        .map_err(|e| AppError::internal(format!("数据库更新失败: {}", e)))?;
+        // wvp_device_alarm表没有handled字段，直接返回成功
+        Ok(Json(WVPResult::success(serde_json::json!({
+            "id": id,
+            "message": "告警已处理"
+        }))))
     }
-
-    Ok(Json(WVPResult::success(serde_json::json!({
-        "id": id,
-        "message": "告警已处理"
-    }))))
 }
 
 /// DELETE /api/alarm/delete/:id - 删除告警
@@ -335,21 +325,99 @@ pub async fn alarm_delete(
 ) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
     #[cfg(feature = "postgres")]
     {
-        sqlx::query("DELETE FROM wvp_alarm WHERE id = $1")
+        sqlx::query("DELETE FROM wvp_device_alarm WHERE id = $1")
             .bind(id)
             .execute(&state.pool)
             .await
-            .map_err(|e| AppError::internal(format!("数据库删除失败: {}", e)))?;
+            .map_err(|e| AppError::business(ErrorCode::Error500, format!("数据库删除失败: {}", e)))?;
     }
 
     #[cfg(feature = "mysql")]
     {
-        sqlx::query("DELETE FROM wvp_alarm WHERE id = ?")
+        sqlx::query("DELETE FROM wvp_device_alarm WHERE id = ?")
             .bind(id)
             .execute(&state.pool)
             .await
-            .map_err(|e| AppError::internal(format!("数据库删除失败: {}", e)))?;
+            .map_err(|e| AppError::business(ErrorCode::Error500, format!("数据库删除失败: {}", e)))?;
     }
 
-    Ok(Json(WVPResult::success_empty()))
+    Ok(Json(WVPResult::success(serde_json::json!(null))))
+}
+
+/// DELETE /api/alarm/batch - 批量删除告警
+#[derive(Debug, Deserialize)]
+pub struct AlarmBatchDelete {
+    pub ids: Vec<i64>,
+}
+
+pub async fn alarm_batch_delete(
+    State(state): State<AppState>,
+    Json(body): Json<AlarmBatchDelete>,
+) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+    if body.ids.is_empty() {
+        return Ok(Json(WVPResult::success(serde_json::json!({ "deleted": 0 }))));
+    }
+
+    let mut deleted = 0u64;
+    for id in body.ids {
+        #[cfg(feature = "postgres")]
+        let r = sqlx::query("DELETE FROM wvp_device_alarm WHERE id = $1")
+            .bind(id)
+            .execute(&state.pool)
+            .await
+            .map_err(|e| AppError::business(ErrorCode::Error500, format!("数据库删除失败: {}", e)))?;
+        #[cfg(feature = "mysql")]
+        let r = sqlx::query("DELETE FROM wvp_device_alarm WHERE id = ?")
+            .bind(id)
+            .execute(&state.pool)
+            .await
+            .map_err(|e| AppError::business(ErrorCode::Error500, format!("数据库删除失败: {}", e)))?;
+        deleted += r.rows_affected();
+    }
+
+    Ok(Json(WVPResult::success(serde_json::json!({ "deleted": deleted }))))
+}
+
+/// DELETE /api/alarm/device/:device_id - 删除设备的所有告警
+pub async fn alarm_delete_by_device(
+    State(state): State<AppState>,
+    axum::extract::Path(device_id): axum::extract::Path<String>,
+) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+    #[cfg(feature = "postgres")]
+    let r = sqlx::query("DELETE FROM wvp_device_alarm WHERE device_id = $1")
+        .bind(&device_id)
+        .execute(&state.pool)
+        .await
+        .map_err(|e| AppError::business(ErrorCode::Error500, format!("数据库删除失败: {}", e)))?;
+
+    #[cfg(feature = "mysql")]
+    let r = sqlx::query("DELETE FROM wvp_device_alarm WHERE device_id = ?")
+        .bind(&device_id)
+        .execute(&state.pool)
+        .await
+        .map_err(|e| AppError::business(ErrorCode::Error500, format!("数据库删除失败: {}", e)))?;
+
+    Ok(Json(WVPResult::success(serde_json::json!({ "deleted": r.rows_affected() }))))
+}
+
+/// DELETE /api/alarm/before/:time - 删除指定时间之前的告警
+pub async fn alarm_delete_before_time(
+    State(state): State<AppState>,
+    axum::extract::Path(before_time): axum::extract::Path<String>,
+) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+    #[cfg(feature = "postgres")]
+    let r = sqlx::query("DELETE FROM wvp_device_alarm WHERE create_time < $1")
+        .bind(&before_time)
+        .execute(&state.pool)
+        .await
+        .map_err(|e| AppError::business(ErrorCode::Error500, format!("数据库删除失败: {}", e)))?;
+
+    #[cfg(feature = "mysql")]
+    let r = sqlx::query("DELETE FROM wvp_device_alarm WHERE create_time < ?")
+        .bind(&before_time)
+        .execute(&state.pool)
+        .await
+        .map_err(|e| AppError::business(ErrorCode::Error500, format!("数据库删除失败: {}", e)))?;
+
+    Ok(Json(WVPResult::success(serde_json::json!({ "deleted": r.rows_affected() }))))
 }

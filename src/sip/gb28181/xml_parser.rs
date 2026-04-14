@@ -5,6 +5,36 @@ use std::collections::HashMap;
 pub struct XmlParser;
 
 impl XmlParser {
+    /// Properly maps each XML tag name to its text content.
+    /// For nested elements with the same name, the last value wins.
+    pub fn parse_fields(xml: &str) -> HashMap<String, String> {
+        let mut reader = Reader::from_str(xml);
+        let mut result = HashMap::new();
+        let mut buf = Vec::new();
+        let mut current_tag = String::new();
+
+        loop {
+            match reader.read_event_into(&mut buf) {
+                Ok(Event::Start(ref e)) => {
+                    current_tag = String::from_utf8_lossy(e.name().as_ref()).to_string();
+                }
+                Ok(Event::Text(e)) => {
+                    let text = String::from_utf8_lossy(&e).trim().to_string();
+                    if !text.is_empty() && !current_tag.is_empty() {
+                        result.insert(current_tag.clone(), text);
+                    }
+                }
+                Ok(Event::End(_)) => {
+                    current_tag.clear();
+                }
+                Ok(Event::Eof) => break,
+                _ => {}
+            }
+            buf.clear();
+        }
+        result
+    }
+
     pub fn parse(xml: &str) -> HashMap<String, String> {
         let mut reader = Reader::from_str(xml);
         let mut result = HashMap::new();

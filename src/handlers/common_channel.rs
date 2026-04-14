@@ -659,25 +659,25 @@ pub async fn device_group_delete(
 pub async fn channel_play(
     State(state): State<AppState>,
     Query(q): Query<ChannelIdQuery>,
-) -> Json<serde_json::Value> {
+) -> Json<WVPResult<serde_json::Value>> {
     let channel_id = match q.channel_id {
         Some(id) => id,
-        None => return Json(serde_json::json!({"code": 1, "msg": "缺少 channelId"})),
+        None => return Json(WVPResult::error("缺少 channelId")),
     };
     
     match common_channel::get_by_id(&state.pool, channel_id).await {
         Ok(Some(ch)) => {
             let device_id = match &ch.device_id {
                 Some(id) => id.clone(),
-                None => return Json(serde_json::json!({"code": 1, "msg": "通道无设备ID"})),
+                None => return Json(WVPResult::error("通道无设备ID")),
             };
             let gb_channel_id = match &ch.gb_device_id {
                 Some(id) => id.clone(),
-                None => return Json(serde_json::json!({"code": 1, "msg": "通道无国标ID"})),
+                None => return Json(WVPResult::error("通道无国标ID")),
             };
             
             if let Some(ref zlm_client) = state.zlm_client {
-                let rtsp_url = format!("rtsp://{}:{}/{}", state.config.get("server.ip").unwrap_or(&"127.0.0.1".to_string()), 554u16, channel_id);
+                let rtsp_url = format!("rtsp://127.0.0.1:{}/{}", 554u16, channel_id);
                 // Use similar approach as play_start to proxy the stream
                 let request = crate::zlm::AddStreamProxyRequest {
                     secret: zlm_client.secret.clone(),
@@ -700,18 +700,18 @@ pub async fn channel_play(
                         let stream_url = format!("gb/{}${}", device_id, channel_id);
                         let play_url = format!("rtsp://127.0.0.1/live/{}", stream_url);
                         let flv_url = format!("http://127.0.0.1/flv/live.app?stream={}", stream_url);
-        let data = serde_json::json!({
-            "app": "gb",
-            "stream": key,
-            "playUrl": play_url,
-            "flvUrl": flv_url,
-            "wsUrl": format!("ws://127.0.0.1/live/{}", stream_url),
-            "deviceId": device_id,
-            "channelId": gb_channel_id,
-            "hasAudio": ch.has_audio.unwrap_or(false),
-            "rtspUrl": rtsp_url,
-        });
-        return Json(WVPResult::success(data));
+                        let data = serde_json::json!({
+                            "app": "gb",
+                            "stream": key,
+                            "playUrl": play_url,
+                            "flvUrl": flv_url,
+                            "wsUrl": format!("ws://127.0.0.1/live/{}", stream_url),
+                            "deviceId": device_id,
+                            "channelId": gb_channel_id,
+                            "hasAudio": ch.has_audio.unwrap_or(false),
+                            "rtspUrl": rtsp_url,
+                        });
+                        return Json(WVPResult::success(data));
                     }
                     Err(e) => {
                         return Json(WVPResult::error(format!("ZLM error: {}", e)));
@@ -815,16 +815,30 @@ pub struct MapLevelBody {
 }
 
 pub async fn map_save_level(
-    State(_state): State<AppState>,
-    Json(_body): Json<MapLevelBody>,
+    State(state): State<AppState>,
+    Json(body): Json<MapLevelBody>,
 ) -> Result<Json<WVPResult<()>>, AppError> {
-    // 地图缩放级别保存，当前为占位实现
+    let level = body.level.unwrap_or(0);
+    let channels = body.channels.unwrap_or_default();
+    
+    if channels.is_empty() {
+        return Ok(Json(WVPResult::<()>::success_empty()));
+    }
+    
+    let result: sqlx::Result<u64> = common_channel::update_map_level(&state.pool, &channels, level).await;
+    result.map_err(|e| AppError::business(ErrorCode::Error500, format!("更新地图级别失败: {}", e)))?;
+    
     Ok(Json(WVPResult::<()>::success_empty()))
 }
 
 /// POST /api/common/channel/map/reset-level
-pub async fn map_reset_level() -> Json<WVPResult<()>> {
-    Json(WVPResult::<()>::success_empty())
+pub async fn map_reset_level(
+    State(state): State<AppState>,
+) -> Result<Json<WVPResult<()>>, AppError> {
+    let result: sqlx::Result<u64> = common_channel::reset_map_level(&state.pool).await;
+    result.map_err(|e| AppError::business(ErrorCode::Error500, format!("重置地图级别失败: {}", e)))?;
+    
+    Ok(Json(WVPResult::<()>::success_empty()))
 }
 
 /// GET /api/common/channel/map/thin/clear?id=

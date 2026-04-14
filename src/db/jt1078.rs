@@ -149,6 +149,46 @@ pub async fn get_terminal_by_phone(pool: &Pool, phone: &str) -> sqlx::Result<Opt
         .bind(phone).fetch_optional(pool).await;
 }
 
+/// 根据ID查询终端
+pub async fn get_terminal_by_id(pool: &Pool, id: i32) -> sqlx::Result<Option<JtTerminal>> {
+    #[cfg(feature = "mysql")]
+    return sqlx::query_as::<_, JtTerminal>("SELECT * FROM wvp_jt_terminal WHERE id = ?")
+        .bind(id).fetch_optional(pool).await;
+    #[cfg(feature = "postgres")]
+    return sqlx::query_as::<_, JtTerminal>("SELECT * FROM wvp_jt_terminal WHERE id = $1")
+        .bind(id).fetch_optional(pool).await;
+}
+
+/// 根据ID查询通道
+pub async fn get_channel_by_id(pool: &Pool, id: i32) -> sqlx::Result<Option<JtChannel>> {
+    #[cfg(feature = "mysql")]
+    return sqlx::query_as::<_, JtChannel>("SELECT * FROM wvp_jt_channel WHERE id = ?")
+        .bind(id).fetch_optional(pool).await;
+    #[cfg(feature = "postgres")]
+    return sqlx::query_as::<_, JtChannel>("SELECT * FROM wvp_jt_channel WHERE id = $1")
+        .bind(id).fetch_optional(pool).await;
+}
+
+/// 获取所有在线终端
+pub async fn get_online_terminals(pool: &Pool) -> sqlx::Result<Vec<JtTerminal>> {
+    #[cfg(feature = "mysql")]
+    return sqlx::query_as::<_, JtTerminal>("SELECT * FROM wvp_jt_terminal WHERE status = 1 ORDER BY id")
+        .fetch_all(pool).await;
+    #[cfg(feature = "postgres")]
+    return sqlx::query_as::<_, JtTerminal>("SELECT * FROM wvp_jt_terminal WHERE status = true ORDER BY id")
+        .fetch_all(pool).await;
+}
+
+/// 统计在线终端数量
+pub async fn count_online_terminals(pool: &Pool) -> sqlx::Result<i64> {
+    #[cfg(feature = "mysql")]
+    return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM wvp_jt_terminal WHERE status = 1")
+        .fetch_one(pool).await;
+    #[cfg(feature = "postgres")]
+    return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM wvp_jt_terminal WHERE status = true")
+        .fetch_one(pool).await;
+}
+
 /// Insert a new JT1078 channel for a terminal identified by phone_number.
 /// Returns number of rows affected.
 pub async fn insert_channel(
@@ -168,8 +208,8 @@ pub async fn insert_channel(
             .bind(term.id)
             .bind(channel_id)
             .bind(name)
-            .bind(now)
-            .bind(now)
+            .bind(&now)
+            .bind(&now)
             .execute(pool)
             .await?;
             Ok(r.rows_affected())
@@ -183,8 +223,8 @@ pub async fn insert_channel(
             .bind(term.id)
             .bind(channel_id)
             .bind(name)
-            .bind(now)
-            .bind(now)
+            .bind(&now)
+            .bind(&now)
             .execute(pool)
             .await?;
             Ok(r.rows_affected())
@@ -298,4 +338,81 @@ pub async fn delete_terminal_by_phone(pool: &Pool, phone_number: &str) -> sqlx::
     return sqlx::query("DELETE FROM wvp_jt_terminal WHERE phone_number = ?").bind(phone_number).execute(pool).await.map(|r| r.rows_affected());
     #[cfg(feature = "postgres")]
     return sqlx::query("DELETE FROM wvp_jt_terminal WHERE phone_number = $1").bind(phone_number).execute(pool).await.map(|r| r.rows_affected());
+}
+
+/// 更新终端在线状态
+pub async fn update_terminal_status(pool: &Pool, phone_number: &str, status: bool) -> sqlx::Result<u64> {
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    #[cfg(feature = "mysql")]
+    let r = sqlx::query("UPDATE wvp_jt_terminal SET status = ?, update_time = ? WHERE phone_number = ?")
+        .bind(status)
+        .bind(&now)
+        .bind(phone_number)
+        .execute(pool)
+        .await?;
+    #[cfg(feature = "postgres")]
+    let r = sqlx::query("UPDATE wvp_jt_terminal SET status = $1, update_time = $2 WHERE phone_number = $3")
+        .bind(status)
+        .bind(&now)
+        .bind(phone_number)
+        .execute(pool)
+        .await?;
+    Ok(r.rows_affected())
+}
+
+/// 删除终端通道
+pub async fn delete_channel(pool: &Pool, id: i64) -> sqlx::Result<u64> {
+    #[cfg(feature = "mysql")]
+    let r = sqlx::query("DELETE FROM wvp_jt_channel WHERE id = ?")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    #[cfg(feature = "postgres")]
+    let r = sqlx::query("DELETE FROM wvp_jt_channel WHERE id = $1")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(r.rows_affected())
+}
+
+/// 删除终端的所有通道
+pub async fn delete_channels_by_terminal(pool: &Pool, terminal_db_id: i32) -> sqlx::Result<u64> {
+    #[cfg(feature = "mysql")]
+    let r = sqlx::query("DELETE FROM wvp_jt_channel WHERE terminal_db_id = ?")
+        .bind(terminal_db_id)
+        .execute(pool)
+        .await?;
+    #[cfg(feature = "postgres")]
+    let r = sqlx::query("DELETE FROM wvp_jt_channel WHERE terminal_db_id = $1")
+        .bind(terminal_db_id)
+        .execute(pool)
+        .await?;
+    Ok(r.rows_affected())
+}
+
+/// 更新终端位置信息
+pub async fn update_terminal_position(
+    pool: &Pool,
+    phone_number: &str,
+    longitude: f64,
+    latitude: f64,
+) -> sqlx::Result<u64> {
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    #[cfg(feature = "mysql")]
+    let r = sqlx::query("UPDATE wvp_jt_terminal SET longitude = ?, latitude = ?, update_time = ? WHERE phone_number = ?")
+        .bind(longitude)
+        .bind(latitude)
+        .bind(&now)
+        .bind(phone_number)
+        .execute(pool)
+        .await?;
+    #[cfg(feature = "postgres")]
+    let r = sqlx::query("UPDATE wvp_jt_terminal SET longitude = $1, latitude = $2, update_time = $3 WHERE phone_number = $4")
+        .bind(longitude)
+        .bind(latitude)
+        .bind(&now)
+        .bind(phone_number)
+        .execute(pool)
+        .await?;
+    Ok(r.rows_affected())
 }

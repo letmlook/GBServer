@@ -286,3 +286,57 @@ pub async fn count_all(
             .await
     }
 }
+
+/// 更新推流状态
+pub async fn update_pushing_status(pool: &Pool, id: i64, pushing: bool) -> sqlx::Result<u64> {
+    #[cfg(feature = "mysql")]
+    let r = sqlx::query("UPDATE wvp_stream_push SET pushing = ? WHERE id = ?")
+        .bind(pushing)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    #[cfg(feature = "postgres")]
+    let r = sqlx::query("UPDATE wvp_stream_push SET pushing = $1 WHERE id = $2")
+        .bind(pushing)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(r.rows_affected())
+}
+
+/// 更新推流状态（status字段）
+pub async fn update_status(pool: &Pool, id: i64, status: bool) -> sqlx::Result<u64> {
+    #[cfg(feature = "mysql")]
+    let r = sqlx::query("UPDATE wvp_stream_push SET status = ? WHERE id = ?")
+        .bind(status)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    #[cfg(feature = "postgres")]
+    let r = sqlx::query("UPDATE wvp_stream_push SET status = $1 WHERE id = $2")
+        .bind(status)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(r.rows_affected())
+}
+
+/// 根据app和stream查询推流记录
+pub async fn get_by_app_stream(pool: &Pool, app: &str, stream: &str) -> sqlx::Result<Option<StreamPush>> {
+    #[cfg(feature = "mysql")]
+    return sqlx::query_as::<_, StreamPush>(
+        "SELECT id, app, stream, create_time, media_server_id, server_id, push_time, status, update_time, pushing, self as self_push, start_offline_push FROM wvp_stream_push WHERE app = ? AND stream = ?"
+    )
+    .bind(app)
+    .bind(stream)
+    .fetch_optional(pool)
+    .await;
+    #[cfg(feature = "postgres")]
+    return sqlx::query_as::<_, StreamPush>(
+        "SELECT id, app, stream, create_time, media_server_id, server_id, push_time, status, update_time, pushing, self as self_push, start_offline_push FROM wvp_stream_push WHERE app = $1 AND stream = $2"
+    )
+    .bind(app)
+    .bind(stream)
+    .fetch_optional(pool)
+    .await;
+}

@@ -484,3 +484,128 @@ impl Default for TransactionManager {
         Self::new()
     }
 }
+
+impl TransactionManager {
+    /// 启动事务超时和重传处理任务
+    pub fn start_timer_task(self: Arc<Self>) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(100));
+            loop {
+                interval.tick().await;
+                self.process_timers().await;
+            }
+        })
+    }
+    
+    /// 处理所有事务的定时器
+    async fn process_timers(&self) {
+        let now = Utc::now();
+        let mut to_retransmit = Vec::new();
+        let mut to_terminate = Vec::new();
+        
+        {
+            let guard = self.transactions.read().await;
+            for (id, txn) in guard.iter() {
+                // 检查是否需要重传
+                if txn.needs_retransmit(now) {
+                    to_retransmit.push(id.clone());
+                }
+                // 检查是否超时
+                if txn.is_timeout(now) {
+                    to_terminate.push(id.clone());
+                }
+            }
+        }
+        
+        // 处理重传
+        for id in to_retransmit {
+            if let Some(mut txn) = self.get(&id).await {
+                txn.retransmit_count += 1;
+                txn.last_activity = now;
+                self.update(&txn).await;
+                tracing::debug!("Transaction {} retransmit count: {}", id, txn.retransmit_count);
+            }
+        }
+        
+        // 处理超时
+        for id in to_terminate {
+            if let Some(mut txn) = self.get(&id).await {
+                txn.terminate();
+                self.update(&txn).await;
+                tracing::warn!("Transaction {} timed out", id);
+            }
+        }
+        
+        // 清理过期事务
+        self.cleanup_expired(300).await;
+    }
+}
+
+impl Transaction {
+    /// 检查是否需要重传
+    pub fn needs_retransmit(&self, now: DateTime<Utc>) -> bool {
+        if self.state.is_terminal() {
+            return false;
+        }
+        
+        // 最大重传次数
+        let max_retransmit = if self.is_invite() { 7 } else { 11 };
+        if self.retransmit_count >= max_retransmit {
+            return false;
+        }
+        
+        // 计算下次重传时间 (指数退避)
+        let base_timeout = self.timer_values.t1.num_milliseconds();
+        let max_timeout = self.timer_values.t2.num_milliseconds();
+        let next_timeout = std::cmp::min(
+            base_timeout * (1 << self.retransmit_count),
+            max_timeout
+        );
+        
+        let elapsed = (now - self.last_activity).num_milliseconds();
+        elapsed >= next_timeout
+    }
+    
+    /// 检查是否超时
+    pub fn is_timeout(&self, now: DateTime<Utc>) -> bool {
+        if self.state.is_terminal() {
+            return false;
+        }
+        
+        // INVITE 事务超时时间: 64*T1 (默认 32秒)
+        // 非 INVITE 事务超时时间: 64*T1 (默认 32秒)
+        let timeout_ms = 64 * self.timer_values.t1.num_milliseconds();
+        let elapsed = (now - self.created_at).num_milliseconds();
+        elapsed >= timeout_ms
+    }
+    
+    /// 终止事务
+    pub fn terminate(&mut self) {
+        self.state = match self.txn_type {
+            TransactionType::Invite => {
+                if matches!(self.state, TransactionState::InviteClient(_)) {
+                    TransactionState::InviteClient(InviteClientState::Terminated)
+                } else {
+                    TransactionState::InviteServer(InviteServerState::Terminated)
+                }
+            }
+            TransactionType::NonInvite => {
+                if matches!(self.state, TransactionState::NonInviteClient(_)) {
+                    TransactionState::NonInviteClient(NonInviteClientState::Terminated)
+                } else {
+                    TransactionState::NonInviteServer(NonInviteServerState::Terminated)
+                }
+            }
+        };
+        self.last_activity = Utc::now();
+    }
+    
+    /// 获取需要重传的请求
+    pub fn get_retransmit_request(&self) -> Option<&SipRequest> {
+        if self.needs_retransmit(Utc::now()) && !self.state.is_terminal() {
+            Some(&self.request)
+        } else {
+            None
+        }
+    }
+}

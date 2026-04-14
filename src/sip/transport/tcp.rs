@@ -133,6 +133,7 @@ impl TcpStream {
     }
 }
 
+#[derive(Clone)]
 pub struct TcpConnectionManager {
     connections: Arc<RwLock<HashMap<SocketAddr, Arc<RwLock<TcpStream>>>>>,
     max_connections: usize,

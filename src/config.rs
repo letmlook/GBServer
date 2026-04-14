@@ -11,6 +11,7 @@ pub struct AppConfig {
     pub user_settings: Option<UserSettings>,
     pub sip: Option<SipConfig>,
     pub zlm: Option<ZlmConfig>,
+    pub map: Option<MapConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -113,4 +114,18 @@ pub fn load_config() -> Result<AppConfig> {
 
     let cfg: AppConfig = base.build()?.try_deserialize()?;
     Ok(cfg)
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct MapConfig {
+    /// 天地图 API Key
+    pub tianditu_key: Option<String>,
+    /// 地图中心经度
+    pub center_lng: Option<f64>,
+    /// 地图中心纬度
+    pub center_lat: Option<f64>,
+    /// 默认缩放级别
+    pub zoom: Option<i32>,
+    /// 坐标系: WGS84 或 GCJ02
+    pub coord_sys: Option<String>,
 }

@@ -10,6 +10,8 @@ use crate::config::{ZlmServerConfig, ZlmConfig};
 pub struct ZlmClient {
     base_url: String,
     pub secret: String,
+    pub ip: String,
+    pub http_port: u16,
     http: Client,
 }
 
@@ -18,6 +20,8 @@ impl ZlmClient {
         Self {
             base_url: format!("http://{}:{}", ip, port),
             secret: secret.to_string(),
+            ip: ip.to_string(),
+            http_port: port,
             http: Client::builder()
                 .timeout(std::time::Duration::from_secs(30))
                 .build()
@@ -61,6 +65,12 @@ impl ZlmClient {
 
         let resp: ApiResponse<Vec<MediaInfo>> = self.request("/index/api/getMediaList", &params).await?;
         Ok(resp.data.unwrap_or_default())
+    }
+
+    /// 获取当前活跃的流数量（用于负载均衡）
+    pub async fn get_active_stream_count(&self) -> Result<usize> {
+        let list = self.get_media_list(None, None, None).await?;
+        Ok(list.len())
     }
 
     pub async fn get_media_info(&self, schema: &str, vhost: &str, app: &str, stream: &str) -> Result<Option<MediaInfo>> {

@@ -355,49 +355,23 @@ pub fn build_invite_sdp(
     ssrc: Option<&str>,
 ) -> String {
     let ssrc_str = ssrc.unwrap_or("0100000001");
-    format!(r#"v=0
-o=- 0 0 IN IP4 {}
-s={}
-c=IN IP4 {}
-t=0 0
-m=video {} RTP/AVP 96
-a=rtpmap:96 PS/90000
-a=sendonly
-y={}
-f=v/1/96/1/2/1/1/0
-"#,
+    format!("v=0\r\no=- 0 0 IN IP4 {}\r\ns={}\r\nc=IN IP4 {}\r\nt=0 0\r\nm=video {} RTP/AVP 96\r\na=rtpmap:96 PS/90000\r\na=sendonly\r\ny={}\r\nf=v/1/96/1/2/1/1/0\r\n",
         local_ip, stream_type, local_ip, media_port, ssrc_str)
 }
 
 pub fn build_talk_sdp(local_ip: &str, audio_port: u16) -> String {
-    format!(r#"v=0
-o=- 0 0 IN IP4 {}
-s=TALK
-c=IN IP4 {}
-t=0 0
-m=audio {} RTP/AVP 8 0 101
-a=rtpmap:8 PCMA/8000
-a=rtpmap:0 PCMU/8000
-a=rtpmap:101 telephone-event/8000
-a=sendrecv
-y=020000
-"#,
+    format!("v=0\r\no=- 0 0 IN IP4 {}\r\ns=TALK\r\nc=IN IP4 {}\r\nt=0 0\r\nm=audio {} RTP/AVP 8 0 101\r\na=rtpmap:8 PCMA/8000\r\na=rtpmap:0 PCMU/8000\r\na=rtpmap:101 telephone-event/8000\r\na=sendrecv\r\ny=020000\r\n",
         local_ip, local_ip, audio_port)
 }
 
 pub fn build_playback_sdp(local_ip: &str, media_port: u16, start_time: &str, end_time: &str) -> String {
-    format!(r#"v=0
-o=- 0 0 IN IP4 {}
-s=Playback
-c=IN IP4 {}
-t=0 0
-m=video {} RTP/AVP 96
-a=rtpmap:96 PS/90000
-a=sendonly
-y=0100000001
-f=v/1/96/1/2/1/1/0
-"#,
-        local_ip, local_ip, media_port)
+    let t_field = if !start_time.is_empty() && start_time != "0" {
+        format!("{} {}", start_time, end_time)
+    } else {
+        "0 0".to_string()
+    };
+    format!("v=0\r\no=- 0 0 IN IP4 {}\r\ns=Playback\r\nc=IN IP4 {}\r\nt={}\r\nm=video {} RTP/AVP 96\r\na=rtpmap:96 PS/90000\r\na=sendonly\r\ny=0100000001\r\nf=v/1/96/1/2/1/1/0\r\n",
+        local_ip, local_ip, t_field, media_port)
 }
 
 #[cfg(test)]

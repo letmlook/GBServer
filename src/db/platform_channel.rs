@@ -268,3 +268,83 @@ pub async fn delete_by_device_channel_id(pool: &Pool, platform_id: i64, device_c
     
     Ok(r.rows_affected())
 }
+
+/// 根据平台ID和通道ID查询
+pub async fn get_by_platform_and_channel(pool: &Pool, platform_id: i64, channel_id: &str) -> sqlx::Result<Option<PlatformChannel>> {
+    #[cfg(feature = "mysql")]
+    return sqlx::query_as::<_, PlatformChannel>(
+        "SELECT * FROM wvp_platform_channel WHERE platform_id = ? AND channel_id = ?"
+    )
+    .bind(platform_id)
+    .bind(channel_id)
+    .fetch_optional(pool)
+    .await;
+    
+    #[cfg(feature = "postgres")]
+    return sqlx::query_as::<_, PlatformChannel>(
+        "SELECT * FROM wvp_platform_channel WHERE platform_id = $1 AND channel_id = $2"
+    )
+    .bind(platform_id)
+    .bind(channel_id)
+    .fetch_optional(pool)
+    .await;
+}
+
+/// 批量添加平台通道
+pub async fn batch_add_channels(pool: &Pool, platform_id: i64, channel_ids: &[String]) -> sqlx::Result<u64> {
+    if channel_ids.is_empty() {
+        return Ok(0);
+    }
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let mut total = 0u64;
+    
+    for channel_id in channel_ids {
+        #[cfg(feature = "mysql")]
+        let r = sqlx::query(
+            "INSERT INTO wvp_platform_channel (platform_id, channel_id, create_time, update_time) VALUES (?, ?, ?, ?)"
+        )
+        .bind(platform_id)
+        .bind(channel_id)
+        .bind(&now)
+        .bind(&now)
+        .execute(pool)
+        .await?;
+        #[cfg(feature = "postgres")]
+        let r = sqlx::query(
+            "INSERT INTO wvp_platform_channel (platform_id, channel_id, create_time, update_time) VALUES ($1, $2, $3, $4)"
+        )
+        .bind(platform_id)
+        .bind(channel_id)
+        .bind(&now)
+        .bind(&now)
+        .execute(pool)
+        .await?;
+        total += r.rows_affected();
+    }
+    Ok(total)
+}
+
+/// 批量删除平台通道
+pub async fn batch_delete_channels(pool: &Pool, platform_id: i64, channel_ids: &[String]) -> sqlx::Result<u64> {
+    if channel_ids.is_empty() {
+        return Ok(0);
+    }
+    let mut total = 0u64;
+    
+    for channel_id in channel_ids {
+        #[cfg(feature = "mysql")]
+        let r = sqlx::query("DELETE FROM wvp_platform_channel WHERE platform_id = ? AND channel_id = ?")
+            .bind(platform_id)
+            .bind(channel_id)
+            .execute(pool)
+            .await?;
+        #[cfg(feature = "postgres")]
+        let r = sqlx::query("DELETE FROM wvp_platform_channel WHERE platform_id = $1 AND channel_id = $2")
+            .bind(platform_id)
+            .bind(channel_id)
+            .execute(pool)
+            .await?;
+        total += r.rows_affected();
+    }
+    Ok(total)
+}

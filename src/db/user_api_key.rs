@@ -20,8 +20,12 @@ pub struct UserApiKey {
 
 #[derive(Debug, Deserialize)]
 pub struct UserApiKeyAdd {
+    #[serde(alias = "userId")]
     pub user_id: Option<i64>,
     pub app: Option<String>,
+    #[serde(alias = "expiresAt")]
+    pub expired_at: Option<i64>,
+    pub enable: Option<bool>,
     pub remark: Option<String>,
 }
 
@@ -83,29 +87,35 @@ pub async fn add(
     user_id: i64,
     app: &str,
     api_key: &str,
+    expired_at: Option<i64>,
+    enable: bool,
     remark: Option<&str>,
     now: &str,
 ) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
     let r = sqlx::query(
-        "INSERT INTO wvp_user_api_key (user_id, app, api_key, remark, enable, create_time, update_time) VALUES (?, ?, ?, ?, 1, ?, ?)",
+        "INSERT INTO wvp_user_api_key (user_id, app, api_key, expired_at, remark, enable, create_time, update_time) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(user_id)
     .bind(app)
     .bind(api_key)
+    .bind(expired_at)
     .bind(remark)
+    .bind(enable)
     .bind(now)
     .bind(now)
     .execute(pool)
     .await?;
     #[cfg(feature = "postgres")]
     let r = sqlx::query(
-        "INSERT INTO wvp_user_api_key (user_id, app, api_key, remark, enable, create_time, update_time) VALUES ($1, $2, $3, $4, true, $5, $6)",
+        "INSERT INTO wvp_user_api_key (user_id, app, api_key, expired_at, remark, enable, create_time, update_time) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
     )
     .bind(user_id)
     .bind(app)
     .bind(api_key)
+    .bind(expired_at)
     .bind(remark)
+    .bind(enable)
     .bind(now)
     .bind(now)
     .execute(pool)
@@ -186,6 +196,57 @@ pub async fn delete_by_id(pool: &Pool, id: i32) -> sqlx::Result<u64> {
     #[cfg(feature = "postgres")]
     let r = sqlx::query("DELETE FROM wvp_user_api_key WHERE id = $1")
         .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(r.rows_affected())
+}
+
+/// 根据 API Key 查询（用于认证）
+pub async fn get_by_api_key(pool: &Pool, api_key: &str) -> sqlx::Result<Option<UserApiKey>> {
+    #[cfg(feature = "mysql")]
+    return sqlx::query_as::<_, UserApiKey>(
+        "SELECT id, user_id, app, api_key, expired_at, remark, enable, create_time, update_time FROM wvp_user_api_key WHERE api_key = ?",
+    )
+    .bind(api_key)
+    .fetch_optional(pool)
+    .await;
+    #[cfg(feature = "postgres")]
+    return sqlx::query_as::<_, UserApiKey>(
+        "SELECT id, user_id, app, api_key, expired_at, remark, enable, create_time, update_time FROM wvp_user_api_key WHERE api_key = $1",
+    )
+    .bind(api_key)
+    .fetch_optional(pool)
+    .await;
+}
+
+/// 根据用户ID查询 API Key 列表
+pub async fn list_by_user_id(pool: &Pool, user_id: i64) -> sqlx::Result<Vec<UserApiKey>> {
+    #[cfg(feature = "mysql")]
+    return sqlx::query_as::<_, UserApiKey>(
+        "SELECT id, user_id, app, api_key, expired_at, remark, enable, create_time, update_time FROM wvp_user_api_key WHERE user_id = ? ORDER BY id",
+    )
+    .bind(user_id)
+    .fetch_all(pool)
+    .await;
+    #[cfg(feature = "postgres")]
+    return sqlx::query_as::<_, UserApiKey>(
+        "SELECT id, user_id, app, api_key, expired_at, remark, enable, create_time, update_time FROM wvp_user_api_key WHERE user_id = $1 ORDER BY id",
+    )
+    .bind(user_id)
+    .fetch_all(pool)
+    .await;
+}
+
+/// 删除过期的 API Key
+pub async fn delete_expired_keys(pool: &Pool, now_ts: i64) -> sqlx::Result<u64> {
+    #[cfg(feature = "mysql")]
+    let r = sqlx::query("DELETE FROM wvp_user_api_key WHERE expired_at IS NOT NULL AND expired_at < ?")
+        .bind(now_ts)
+        .execute(pool)
+        .await?;
+    #[cfg(feature = "postgres")]
+    let r = sqlx::query("DELETE FROM wvp_user_api_key WHERE expired_at IS NOT NULL AND expired_at < $1")
+        .bind(now_ts)
         .execute(pool)
         .await?;
     Ok(r.rows_affected())

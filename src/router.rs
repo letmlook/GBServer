@@ -1,6 +1,6 @@
 use axum::{
     middleware,
-    routing::{delete, get, post, ws},
+    routing::{delete, get, post},
     Router,
 };
 use std::path::PathBuf;
@@ -14,7 +14,7 @@ use crate::handlers::{
 use crate::zlm::hook as zlm_hook;
 use crate::AppState;
 
-pub fn app(state: AppState) -> Router {
+pub fn app(state: AppState) -> Router<AppState> {
     let state_clone = state.clone();
     let api_protected = Router::new()
         .route(
@@ -59,6 +59,18 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/api/device/control/preset",
             get(device_control::device_preset),
+        )
+        .route(
+            "/api/device/control/reboot",
+            get(device_control::device_reboot),
+        )
+        .route(
+            "/api/device/config/query",
+            get(device_control::device_config_query),
+        )
+        .route(
+            "/api/device/config/update",
+            post(device_control::device_config_update),
         )
         .route(
             "/api/device/query/subscribe/catalog",
@@ -168,6 +180,7 @@ pub fn app(state: AppState) -> Router {
         .route("/api/push/update", post(stream::push_update))
         .route("/api/push/start", get(stream::push_start))
         .route("/api/push/remove", post(stream::push_remove))
+        .route("/api/push/upload", post(stream::push_upload))
         .route("/api/push/batchRemove", delete(stream::push_batch_remove))
         .route("/api/push/save_to_gb", post(stream::push_save_to_gb))
         .route(
@@ -292,6 +305,10 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/api/playback/speed/:stream_id/:speed",
             get(playback::playback_speed),
+        )
+        .route(
+            "/api/playback/seek/:stream_id/:seek_time",
+            get(playback::playback_seek),
         )
         .route(
             "/api/playback/stop/:device_id/:channel_id/:stream_id",
@@ -749,27 +766,28 @@ pub fn app(state: AppState) -> Router {
         .route_layer(middleware::from_fn_with_state(
             state_clone.clone(),
             auth_middleware,
-        ))
-        .with_state(state_clone.clone());
+        ));
 
     let api_public = Router::new()
         .route("/api/user/login", get(user::login).post(user::login))
         .route("/api/user/logout", get(user::logout))
-        .route("/api/zlm/hook", post(zlm_hook::handle_webhook))
-        .with_state(state_clone.clone());
+        .route("/api/zlm/hook", post(zlm_hook::handle_webhook));
 
     let api = api_public.merge(api_protected);
     let app = Router::new().merge(api).with_state(state.clone());
 
     // WebSocket：设备状态实时通知
-    let app = app.route("/api/ws", ws(websocket::ws_handler));
+    let app = app.route("/api/ws", get(websocket::ws_handler));
 
     // 告警管理
     let app = app
         .route("/api/alarm/list", get(alarm::alarm_list))
         .route("/api/alarm/detail/:id", get(alarm::alarm_detail))
         .route("/api/alarm/handle", post(alarm::alarm_handle))
-        .route("/api/alarm/delete/:id", delete(alarm::alarm_delete));
+        .route("/api/alarm/delete/:id", delete(alarm::alarm_delete))
+        .route("/api/alarm/batch", delete(alarm::alarm_batch_delete))
+        .route("/api/alarm/device/:device_id", delete(alarm::alarm_delete_by_device))
+        .route("/api/alarm/before/:time", delete(alarm::alarm_delete_before_time));
 
     // 静态资源：前端构建产物（与 Java 版 static 目录一致）
     let static_dir = state

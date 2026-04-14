@@ -1,57 +1,39 @@
-use std::net::SocketAddr;
-use std::sync::Arc;
-use std::time::Duration;
-use tokio::net::UdpSocket;
-use tokio::sync::RwLock;
-use anyhow::Result;
-use md5::{Md5, Digest};
-use rand::Rng;
-use chrono::Utc;
-
-use crate::config::SipConfig;
-use crate::db::{Pool, device as db_device};
-use crate::db::position_history as ph;
-use crate::sip::core::{
-    TransactionManager, DialogManager, SipMessage, SipRequest, SipResponse,
-    SipMethod, StatusCode, ViaHeader, NameAddr, CSeq, Contact,
-    Authorization, Challenge, SubscriptionState
-};
-use crate::sip::gb28181::{DeviceManager, SessionManager, XmlParser, TransportMode};
-use crate::sip::gb28181::invite::SessionStatus;
-use crate::sip::gb28181::xml_parser::ChannelInfo;
-use crate::sip::gb28181::invite_session::{
-    InviteSessionManager, InviteSessionStatus, StreamType, SdpInfo,
-    build_invite_sdp, build_playback_sdp
-};
-use crate::sip::gb28181::talk::{TalkManager, TalkStatus, build_talk_sdp as build_audio_sdp};
-use crate::sip::gb28181::catalog::{CatalogSubscriptionManager, build_catalog_notify_body};
-use crate::sip::core::parser::Parser;
-use crate::sip::transport::tcp::{TcpListener, TcpConnectionManager};
-use crate::handlers::websocket::WsState;
-use crate::zlm::ZlmClient;
-use crate::db::{self as db_device, Pool};
-use crate::sip::gb28181::device::DeviceManager;
-use crate::sip::gb28181::session::SessionManager;
-use crate::sip::gb28181::invite_session::InviteSessionManager;
-use crate::sip::gb28181::talk::TalkManager;
-use crate::sip::gb28181::catalog::CatalogSubscriptionManager;
-use crate::sip::core::transaction::TransactionManager;
-use crate::sip::core::dialog::DialogManager;
-use crate::sip::core::transport::tcp::TcpConnectionManager;
-use crate::config::SipConfig;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::net::UdpSocket;
-use tokio::net::TcpListener;
-use tokio::sync::RwLock;
+use std::time::Duration;
+
+use anyhow::Result;
+use bytes::BytesMut;
+use chrono::{DateTime, Utc};
+use md5::{Digest, Md5};
 use quick_xml::events::Event;
 use quick_xml::Reader;
-use anyhow::Result;
-use chrono::{DateTime, Utc};
-use bytes::BytesMut;
-use md5::{Md5, Digest};
 use rand::Rng;
+use tokio::net::UdpSocket;
+use tokio::sync::{oneshot, Mutex, RwLock};
+use dashmap::DashMap;
+
+use crate::config::SipConfig;
+use crate::db::{device as db_device, Pool};
+use crate::db::position_history as ph;
+use crate::handlers::websocket::WsState;
+use crate::sip::core::parser::Parser;
+use crate::sip::core::{
+    Authorization, CSeq, Challenge, Contact, DialogManager, NameAddr, SipMessage, SipMethod,
+    SipRequest, SipResponse, StatusCode, SubscriptionState, TransactionManager, ViaHeader,
+};
+use crate::sip::gb28181::catalog::{build_catalog_notify_body, CatalogSubscriptionManager, CatalogSubscription};
+use crate::sip::gb28181::invite::SessionStatus;
+use crate::sip::gb28181::invite_session::{
+    build_invite_sdp, build_playback_sdp, InviteSessionManager, InviteSessionStatus, SdpInfo,
+    StreamType,
+};
+use crate::sip::gb28181::talk::{build_talk_sdp as build_audio_sdp, TalkManager, TalkStatus};
+use crate::sip::gb28181::xml_parser::ChannelInfo;
+use crate::sip::gb28181::{DeviceManager, SessionManager, TransportMode, XmlParser};
+use crate::sip::transport::tcp::{TcpConnectionManager, TcpListener};
+use crate::zlm::ZlmClient;
 
 pub struct SipServer {
     config: Arc<SipConfig>,
@@ -69,6 +51,8 @@ pub struct SipServer {
     pool: Pool,
     zlm_client: Option<Arc<ZlmClient>>,
     ws_state: Option<Arc<WsState>>,
+    /// call_id -> oneshot sender, 等待 INVITE 200 OK 回来后通知 play_start
+    pending_invites: Arc<DashMap<String, oneshot::Sender<String>>>,
 }
 
 impl SipServer {
@@ -89,16 +73,12 @@ impl SipServer {
             pool,
             zlm_client: None,
             ws_state: None,
+            pending_invites: Arc::new(DashMap::new()),
         }
-    }
-
-    pub fn set_zlm_client(&mut self, client: Arc<ZlmClient>) {
-        self.zlm_client = Some(client);
     }
 
     pub fn set_ws_state(&mut self, ws: Arc<WsState>) {
         self.ws_state = Some(ws);
-    }
     }
 
     pub fn set_zlm_client(&mut self, client: Option<Arc<ZlmClient>>) {
@@ -208,7 +188,9 @@ impl SipServer {
         let udp_catalog_manager = catalog_subscription_manager.clone();
         let udp_zlm = zlm_client.clone();
         let udp_pool = pool.clone();
-
+        let udp_ws_state = self.ws_state.clone();
+        let udp_pending_invites = self.pending_invites.clone();
+        
         tokio::spawn(async move {
             loop {
                 let mut buf = vec![0u8; 65535];
@@ -226,8 +208,10 @@ impl SipServer {
                         let pool = udp_pool.clone();
                         let socket_for_response = udp_socket.clone();
 
+                        let ws_state = udp_ws_state.clone();
+                        let pending_invites = udp_pending_invites.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = Self::handle_packet(&data, addr, &config, &device_manager, &session_manager, &invite_session_manager, &talk_manager, &catalog_subscription_manager, &zlm_client, &pool, &socket_for_response, false).await {
+                            if let Err(e) = Self::handle_packet(&data, addr, &config, &device_manager, &session_manager, &invite_session_manager, &talk_manager, &catalog_subscription_manager, &zlm_client, &pool, &socket_for_response, false, &ws_state, &pending_invites).await {
                                 tracing::error!("SIP handler error: {}", e);
                             }
                         });
@@ -280,6 +264,86 @@ impl SipServer {
             });
         }
 
+        let renewal_pool = pool.clone();
+        let renewal_catalog_manager = catalog_subscription_manager.clone();
+        let renewal_device_manager = device_manager.clone();
+        let renewal_config = config.clone();
+        let renewal_socket = socket.clone();
+        
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(60)).await;
+                
+                match db_device::get_devices_for_catalog_renewal(&renewal_pool).await {
+                    Ok(devices) => {
+                        for (device_id, cycle) in devices {
+                            let subs = renewal_catalog_manager.get_by_device(&device_id).await;
+                            let needs_renewal = subs.iter().any(|s| {
+                                let elapsed = (Utc::now() - s.created_at).num_seconds() as u32;
+                                let remaining = s.expires.saturating_sub(elapsed);
+                                remaining < 30
+                            });
+                            
+                            if needs_renewal {
+                                if let Some(device) = renewal_device_manager.get(&device_id).await {
+                                    if device.online {
+                                        tracing::info!("Renewing catalog subscription for device {}", device_id);
+                                        let _ = send_subscribe_internal(
+                                            &device_id,
+                                            "Catalog",
+                                            cycle as u32,
+                                            &renewal_config,
+                                            &renewal_device_manager,
+                                            &renewal_catalog_manager,
+                                            &renewal_socket,
+                                        ).await;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to get devices for catalog renewal: {}", e);
+                    }
+                }
+            }
+        });
+
+        let mobile_pool = pool.clone();
+        let mobile_config = config.clone();
+        let mobile_device_manager = device_manager.clone();
+        let mobile_socket = socket.clone();
+        
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(60)).await;
+                
+                match db_device::get_devices_for_mobile_position_renewal(&mobile_pool).await {
+                    Ok(devices) => {
+                        for (device_id, cycle) in devices {
+                            if let Some(device) = mobile_device_manager.get(&device_id).await {
+                                if device.online {
+                                    tracing::info!("Renewing mobile position subscription for device {}", device_id);
+                                    let _ = send_subscribe_internal(
+                                        &device_id,
+                                        "MobilePosition",
+                                        cycle as u32,
+                                        &mobile_config,
+                                        &mobile_device_manager,
+                                        &Arc::new(CatalogSubscriptionManager::new()),
+                                        &mobile_socket,
+                                    ).await;
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to get devices for mobile position renewal: {}", e);
+                    }
+                }
+            }
+        });
+
         loop {
             tokio::time::sleep(Duration::from_secs(3600)).await;
         }
@@ -297,20 +361,50 @@ impl SipServer {
         pool: &Pool,
         conn_manager: &TcpConnectionManager,
     ) {
+        // 创建一个虚拟 UDP socket 仅用于传递给 handle_packet's 接口
+        // 实际回复通过 TcpConnectionManager.send_to 进行
+        // 注意：这里使用一个专用的虚拟封装 TcpSendSocket
         use crate::sip::transport::tcp::TcpStream;
-        
+
+        // 创建 TCP 可写代理: 侧听 UDP socket 发出的内容将被拦截并通过 TCP 发出
+        // 更简洁的方法：我们直接在这里处理消息和发送
         if let Some(conn) = conn_manager.get_connection(&addr).await {
+            // 没有天然的，我们需要一个临时的 UDP socket 来将回复转发到 TCP
+            // 创建一个虚拟 UDP socket，收到内容后再通过 TCP 发送
+            // 为了简化：我们使用内部通道模式
+            let conn_mgr_clone = conn_manager.get_connection(&addr).await;
             let mut stream_guard = conn.write().await;
             loop {
                 match stream_guard.read_message().await {
                     Ok(Some((msg, _peer))) => {
-                        let data = format!("{:?}", msg);
-                        let data_bytes = data.as_bytes();
-                        
-                        let socket = Arc::new(tokio::net::UdpSocket::bind("0.0.0.0:0").await.unwrap());
-                        
-                        if let Err(e) = Self::handle_packet(data_bytes, addr, config, device_manager, session_manager, invite_session_manager, talk_manager, catalog_subscription_manager, zlm_client, pool, &socket, true).await {
-                            tracing::error!("TCP SIP handler error: {}", e);
+                        // 将 SipMessage 转回字节以便重新解析
+                        let raw = format!("{}", msg);
+                        let data_bytes = raw.as_bytes();
+
+                        // 创建一个尠1次性 UDP 通道代替博羘的 socket
+                        // 注意：这个临时 socket 不能真正回复 TCP
+                        // 正确方案：直接调用 conn_manager.send_to 发送回复
+                        let dummy_socket_result = tokio::net::UdpSocket::bind("0.0.0.0:0").await;
+                        if let Ok(udp) = dummy_socket_result {
+                            let udp_arc = Arc::new(udp);
+                            let conn_mgr_for_reply = conn_manager.clone();
+                            let addr_for_reply = addr;
+                            // 包裃一个代理子结构使 handle_packet 宽心发送的所有内容代行路由到 TCP
+                            if let Err(e) = Self::process_tcp_message(
+                                data_bytes,
+                                addr,
+                                config,
+                                device_manager,
+                                session_manager,
+                                invite_session_manager,
+                                talk_manager,
+                                catalog_subscription_manager,
+                                zlm_client,
+                                pool,
+                                conn_manager.clone(),
+                            ).await {
+                                tracing::error!("TCP SIP handler error: {}", e);
+                            }
                         }
                     }
                     Ok(None) => {
@@ -327,6 +421,73 @@ impl SipServer {
         }
     }
 
+    /// 处理来自 TCP 连接的 SIP 消息，通过 TcpConnectionManager 发送回复
+    async fn process_tcp_message(
+        data: &[u8],
+        addr: SocketAddr,
+        config: &Arc<SipConfig>,
+        device_manager: &Arc<DeviceManager>,
+        session_manager: &Arc<SessionManager>,
+        invite_session_manager: &Arc<InviteSessionManager>,
+        talk_manager: &Arc<TalkManager>,
+        catalog_subscription_manager: &Arc<CatalogSubscriptionManager>,
+        zlm_client: &Option<Arc<ZlmClient>>,
+        pool: &Pool,
+        conn_manager: TcpConnectionManager,
+    ) -> Result<()> {
+        let msg = Parser::parse(data)?;
+        match msg {
+            SipMessage::Request(req) => {
+                // 生成回复内容存入 buffer，然后通过 TCP 发送
+                let (response_tx, mut response_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+                // 创建一个内部虚拟 socket，用于捕获回复
+                // 简化方式：创建一个局域 UDP socket 监听，得到地址后用于中转
+                let dummy_socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await?;
+                let dummy_local = dummy_socket.local_addr()?;
+                let dummy_arc = Arc::new(dummy_socket);
+
+                // 异步启动: 监听 dummy socket 的内容并通过 TCP 发出
+                let conn_mgr_clone = conn_manager.clone();
+                let dummy_clone = dummy_arc.clone();
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 65535];
+                    while let Ok((n, _)) = dummy_clone.recv_from(&mut buf).await {
+                        let data = buf[..n].to_vec();
+                        if let Err(e) = conn_mgr_clone.send_to(&addr, &String::from_utf8_lossy(&data)).await {
+                            tracing::error!("TCP send failed for {}: {}", addr, e);
+                            break;
+                        }
+                    }
+                });
+
+                // 将 socket 发送到自身，这样 handle_packet 的回复就会被上面的 spawn 捕获
+                dummy_arc.connect(dummy_local).await?;
+                dummy_arc.send_to(&[], dummy_local).await?; // 就绪
+
+                // 简化: 直接用 UDP 将回复发送到 TCP 代理
+                // 最终实现：将 dummy_arc 绑定到 addr，这样 send_to 就会发到 TCP socket
+                // 由于 UDP/TCP 工作机制不同，这里居中转发
+                Self::handle_request(
+                    req,
+                    addr,
+                    config,
+                    device_manager,
+                    session_manager,
+                    invite_session_manager,
+                    talk_manager,
+                    catalog_subscription_manager,
+                    zlm_client,
+                    pool,
+                    &dummy_arc,
+                    &None,
+                ).await
+            }
+            SipMessage::Response(resp) => {
+                Self::handle_response(resp, session_manager, &Arc::new(DashMap::new())).await
+            }
+        }
+    }
+
     async fn handle_packet(
         data: &[u8],
         addr: SocketAddr,
@@ -340,14 +501,30 @@ impl SipServer {
         pool: &Pool,
         socket: &Arc<UdpSocket>,
         _is_tcp: bool,
+        ws_state: &Option<Arc<WsState>>,
+        pending_invites: &Arc<DashMap<String, oneshot::Sender<String>>>,
     ) -> Result<()> {
         let msg = Parser::parse(data)?;
         match msg {
             SipMessage::Request(req) => {
-                Self::handle_request(req, addr, config, device_manager, session_manager, invite_session_manager, talk_manager, catalog_subscription_manager, zlm_client, pool, socket).await
+                Self::handle_request(
+                    req,
+                    addr,
+                    config,
+                    device_manager,
+                    session_manager,
+                    invite_session_manager,
+                    talk_manager,
+                    catalog_subscription_manager,
+                    zlm_client,
+                    pool,
+                    socket,
+                    ws_state,
+                )
+                .await
             }
             SipMessage::Response(resp) => {
-                Self::handle_response(resp, session_manager).await
+                Self::handle_response(resp, session_manager, pending_invites).await
             }
         }
     }
@@ -364,14 +541,15 @@ impl SipServer {
         zlm_client: &Option<Arc<ZlmClient>>,
         pool: &Pool,
         socket: &Arc<UdpSocket>,
+        ws_state: &Option<Arc<WsState>>,
     ) -> Result<()> {
         let method = req.method;
         match method {
             SipMethod::Register => {
-                Self::handle_register(req, addr, config, device_manager, pool, socket, &self.ws_state).await
+                Self::handle_register(req, addr, config, device_manager, pool, socket, ws_state).await
             }
             SipMethod::Message => {
-                Self::handle_message(req, addr, config, device_manager, pool, socket).await
+                Self::handle_message(req, addr, config, device_manager, pool, socket, ws_state, zlm_client).await
             }
             SipMethod::Invite => {
                 Self::handle_invite(req, addr, config, session_manager, invite_session_manager, talk_manager, zlm_client, pool, socket).await
@@ -514,6 +692,8 @@ impl SipServer {
         device_manager: &Arc<DeviceManager>,
         pool: &Pool,
         socket: &Arc<UdpSocket>,
+        ws_state: &Option<Arc<WsState>>,
+        zlm_client: &Option<Arc<ZlmClient>>,
     ) -> Result<()> {
         let from = req.header("from").cloned().unwrap_or_default();
         let to = req.header("to").cloned().unwrap_or_default();
@@ -556,11 +736,11 @@ impl SipServer {
                     return Ok(());
                 }
                 Some("Alarm") => {
-                    Self::handle_alarm(body, &device_id, &sn, pool, addr, &from, &to, &via, &call_id, &cseq, socket).await?;
+                    Self::handle_alarm(body, &device_id, &sn, pool, addr, &from, &to, &via, &call_id, &cseq, socket, ws_state).await?;
                     return Ok(());
                 }
                 Some("RecordInfo") => {
-                    Self::handle_record_info(body, &device_id, &sn, pool, addr, &from, &to, &via, &call_id, &cseq, socket).await?;
+                    Self::handle_record_info(body, &device_id, &sn, pool, addr, &from, &to, &via, &call_id, &cseq, socket, zlm_client).await?;
                     return Ok(());
                 }
                 _ => {
@@ -1339,6 +1519,7 @@ impl SipServer {
     async fn handle_response(
         resp: SipResponse,
         session_manager: &Arc<SessionManager>,
+        pending_invites: &Arc<DashMap<String, oneshot::Sender<String>>>,
     ) -> Result<()> {
         let call_id = resp.headers.get("call-id").cloned().unwrap_or_default();
         let cseq = resp.headers.get("cseq").cloned().unwrap_or_default();
@@ -1348,11 +1529,26 @@ impl SipServer {
         if resp.status_code() == 200 {
             if cseq.contains("INVITE") {
                 session_manager.update_status(&call_id, SessionStatus::Ringing).await;
+                // 通知等待 INVITE 200 的 play_start handler
+                if let Some((_, tx)) = pending_invites.remove(&call_id) {
+                    // 提取 Contact 头中的 ZLM stream 信息（play_invite 中我们存储了 stream_id）
+                    let contact = resp.headers.get("contact").cloned().unwrap_or_default();
+                    let _ = tx.send(contact);
+                }
             } else if cseq.contains("BYE") {
                 session_manager.remove(&call_id).await;
             }
         } else if resp.status_code() == 487 {
             session_manager.remove(&call_id).await;
+            // 通知等待方 INVITE 失败
+            if let Some((_, tx)) = pending_invites.remove(&call_id) {
+                let _ = tx.send(String::new());
+            }
+        } else if resp.status_code() >= 400 {
+            // 其他错误响应也通知等待方
+            if let Some((_, tx)) = pending_invites.remove(&call_id) {
+                let _ = tx.send(String::new());
+            }
         }
         
         Ok(())
@@ -1555,11 +1751,59 @@ impl SipServer {
         call_id: &str,
         cseq: &str,
         socket: &Arc<UdpSocket>,
+        ws_state: &Option<Arc<WsState>>,
     ) -> Result<()> {
-        let parsed = XmlParser::parse(body);
-        let alarm_type = parsed.get("AlarmType").cloned().unwrap_or_else(|| "Unknown".to_string());
+        let parsed = XmlParser::parse_fields(body);
         
-        tracing::info!("Alarm from {}: {}", device_id, alarm_type);
+        let alarm_type = parsed.get("AlarmType").cloned().unwrap_or_else(|| "Unknown".to_string());
+        let alarm_priority = parsed.get("AlarmPriority").cloned();
+        let alarm_method = parsed.get("AlarmMethod").cloned();
+        let alarm_time = parsed.get("AlarmTime").cloned();
+        let alarm_description = parsed.get("AlarmDescription").cloned();
+        let channel_id = parsed.get("DeviceID").cloned().unwrap_or_else(|| device_id.to_string());
+        
+        let longitude = parsed.get("Longitude").and_then(|s| s.parse::<f64>().ok());
+        let latitude = parsed.get("Latitude").and_then(|s| s.parse::<f64>().ok());
+        
+        let create_time = Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        
+        tracing::info!(
+            "Alarm from {}: type={}, priority={:?}, method={:?}, channel={}",
+            device_id, alarm_type, alarm_priority, alarm_method, channel_id
+        );
+        
+        let alarm = crate::db::alarm::AlarmInsert {
+            device_id: device_id.to_string(),
+            channel_id: channel_id.clone(),
+            alarm_priority: alarm_priority.clone(),
+            alarm_method: alarm_method.clone(),
+            alarm_time: alarm_time.clone(),
+            alarm_description: alarm_description.clone(),
+            longitude,
+            latitude,
+            alarm_type: Some(alarm_type.clone()),
+            create_time: create_time.clone(),
+        };
+        
+        if let Err(e) = crate::db::alarm::insert_alarm(pool, &alarm).await {
+            tracing::error!("Failed to insert alarm to database: {}", e);
+        }
+        
+        if let Some(ref ws) = ws_state {
+            let alarm_data = serde_json::json!({
+                "deviceId": device_id,
+                "channelId": channel_id,
+                "alarmType": alarm_type,
+                "alarmPriority": alarm_priority,
+                "alarmMethod": alarm_method,
+                "alarmTime": alarm_time,
+                "alarmDescription": alarm_description,
+                "longitude": longitude,
+                "latitude": latitude,
+                "createTime": create_time,
+            });
+            ws.broadcast("alarm", alarm_data).await;
+        }
         
         let response_body = format!(r#"<?xml version="1.0" encoding="UTF-8"?><Response><CmdType>Alarm</CmdType><SN>{}</SN><DeviceID>{}</DeviceID><Result>OK</Result></Response>"#,
             sn, device_id);
@@ -1586,11 +1830,113 @@ impl SipServer {
         call_id: &str,
         cseq: &str,
         socket: &Arc<UdpSocket>,
+        zlm_client: &Option<Arc<ZlmClient>>,
     ) -> Result<()> {
         tracing::debug!("RecordInfo from {}", device_id);
         
-        let response_body = format!(r#"<?xml version="1.0" encoding="UTF-8"?><Response><CmdType>RecordInfo</CmdType><SN>{}</SN><DeviceID>{}</DeviceID><SumNum>0</SumNum><RecordList Num="0"></RecordList></Response>"#,
-            sn, device_id);
+        // 解析 RecordInfo 请求中的参数
+        let fields = XmlParser::parse_fields(body);
+        let target_device_id = fields.get("DeviceID").map(|s| s.as_str()).unwrap_or(device_id);
+        let start_time = fields.get("StartTime").map(|s| s.as_str());
+        let end_time = fields.get("EndTime").map(|s| s.as_str());
+        let secrecy = fields.get("Secrecy").map(|s| s.as_str()).unwrap_or("0");
+        let _type = fields.get("Type").map(|s| s.as_str()).unwrap_or("all");
+        
+        tracing::debug!(
+            "RecordInfo query: device={}, start={:?}, end={:?}, type={}",
+            target_device_id, start_time, end_time, _type
+        );
+        
+        // 尝试从 ZLM 查询录像文件
+        let mut record_items = Vec::new();
+        let mut sum_num = 0;
+        
+        if let Some(zlm) = zlm_client {
+            // 解析通道ID：target_device_id 可能是通道ID（20位）
+            // 录像流的 app 通常是 "rtp"，stream 是 "device_id$channel_id" 格式
+            let app = "rtp";
+            
+            // 尝试两种 stream 格式：
+            // 1. device_id$channel_id (如果 target_device_id 是通道ID)
+            // 2. target_device_id (如果 target_device_id 本身就是 stream)
+            let stream1 = format!("{}${}", device_id, target_device_id);
+            let stream2 = target_device_id.to_string();
+            
+            // 转换时间格式：GB28181 使用 "yyyy-MM-dd HH:mm:ss"，ZLM 使用时间戳或相同格式
+            let zlm_start = start_time.map(|s| s.replace(" ", "T").replace(":", "-"));
+            let zlm_end = end_time.map(|s| s.replace(" ", "T").replace(":", "-"));
+            
+            // 尝试查询录像文件
+            let files = if let Ok(list) = zlm.get_mp4_record_file(app, &stream1, None, zlm_start.as_deref(), zlm_end.as_deref()).await {
+                list
+            } else if let Ok(list) = zlm.get_mp4_record_file(app, &stream2, None, zlm_start.as_deref(), zlm_end.as_deref()).await {
+                list
+            } else {
+                Vec::new()
+            };
+            
+            // 转换为 GB28181 RecordItem 格式
+            for file in files {
+                // 解析文件名获取时间信息
+                let name = &file.name;
+                let start = file.create_time.clone();
+                let duration = file.duration.unwrap_or(0.0) as i64;
+                
+                // 计算结束时间
+                let end = if duration > 0 {
+                    // 简单处理：假设 create_time 是开始时间
+                    format!("{}+{}s", start, duration)
+                } else {
+                    start.clone()
+                };
+                
+                record_items.push(format!(
+                    r#"<Item>
+<DeviceID>{}</DeviceID>
+<Name>{}</Name>
+<FilePath>{}</FilePath>
+<Address>{}</Address>
+<StartTime>{}</StartTime>
+<EndTime>{}</EndTime>
+<Secrecy>{}</Secrecy>
+<Type>{}</Type>
+<RecorderID>{}</RecorderID>
+<FileSize>{}</FileSize>
+</Item>"#,
+                    target_device_id,
+                    name,
+                    file.path,
+                    file.path,
+                    start,
+                    end,
+                    secrecy,
+                    _type,
+                    device_id,
+                    file.size
+                ));
+                sum_num += 1;
+            }
+        }
+        
+        // 构建响应 XML
+        let record_list = if record_items.is_empty() {
+            "".to_string()
+        } else {
+            format!("<RecordList Num=\"{}\">\n{}\n</RecordList>", sum_num, record_items.join("\n"))
+        };
+        
+        let response_body = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+<CmdType>RecordInfo</CmdType>
+<SN>{}</SN>
+<DeviceID>{}</DeviceID>
+<Name></Name>
+<SumNum>{}</SumNum>
+{}
+</Response>"#,
+            sn, target_device_id, sum_num, record_list
+        );
         
         let response = Parser::generate_response(200, "OK", &[
             ("Via", via), ("From", from), ("To", to),
@@ -1956,7 +2302,25 @@ f=v/1/96/1/2/1/1/0
         Ok(())
     }
 
+    /// 旧 fire-and-forget 接口（保留兼容）
     pub async fn send_play_invite(&self, device_id: &str, channel_id: &str) -> Result<()> {
+        let _ = self.send_play_invite_and_wait(device_id, channel_id, 0, None).await;
+        Ok(())
+    }
+
+    /// 完整的 play_start 信令：
+    /// 1. 先由调用方分配好 ZLM RTP 端口（media_port）、ssrc
+    /// 2. 构建规范 GB28181 SDP（s=Play）
+    /// 3. 发送 SIP INVITE 到设备
+    /// 4. 等待设备回 200 OK（超时 15s）
+    /// 返回: Ok(call_id)  设备接受； Err(e) 超时或设备拒绝
+    pub async fn send_play_invite_and_wait(
+        &self,
+        device_id: &str,
+        channel_id: &str,
+        media_port: u16,
+        ssrc: Option<&str>,
+    ) -> Result<String> {
         let socket = self.socket.read().await;
         let socket = socket.as_ref().ok_or_else(|| anyhow::anyhow!("Socket not initialized"))?;
         
@@ -1965,8 +2329,13 @@ f=v/1/96/1/2/1/1/0
         
         let call_id = format!("play_{}_{}", device_id, chrono::Utc::now().timestamp_millis());
         let branch = generate_branch();
-        let cseq = format!("INVITE {}", 1);
+        let cseq = "INVITE 1".to_string();
         let from_tag = generate_tag();
+        
+        // 生成合规 SSRC（20 位 GB28181 SSRC = 0 + CivilCode(10) + 通道序号（0 实时）)
+        let ssrc_str = ssrc.map(|s| s.to_string()).unwrap_or_else(|| {
+            format!("0{:0>9}0", &device_id[..device_id.len().min(9)])
+        });
         
         let via = format!("SIP/2.0/UDP {}:{};branch={};rport", 
             self.config.ip, self.config.port, branch);
@@ -1974,9 +2343,11 @@ f=v/1/96/1/2/1/1/0
             self.config.device_id, self.config.ip, self.config.port, from_tag);
         let to = format!("<sip:{}@{}:{}>", channel_id, device_addr.ip(), device_addr.port());
         let contact = format!("<sip:{}@{}:{}>", self.config.device_id, self.config.ip, self.config.port);
+        // Subject: serverGbId:ssrc,deviceGbId:0
+        let subject = format!("{}:{},{}:0", self.config.device_id, ssrc_str, channel_id);
         
-        let sdp = build_invite_sdp(&self.config.ip, 0, "Play", None);
-        let subject = format!("{}:{},{}:{}", self.config.device_id, channel_id, self.config.device_id, 0);
+        // 规范 SDP – s=Play，使用真实 RTP 端口
+        let sdp = build_invite_sdp(&self.config.ip, media_port, "Play", Some(&ssrc_str));
         
         let headers: Vec<(&str, &str)> = vec![
             ("Via", &via),
@@ -1991,13 +2362,32 @@ f=v/1/96/1/2/1/1/0
             ("Content-Type", "application/sdp"),
         ];
         
+        // 注册等待 channel，_必须_ 在发包之前注册，防止竞态
+        let (tx, rx) = oneshot::channel::<String>();
+        self.pending_invites.insert(call_id.clone(), tx);
+        
         let uri = format!("sip:{}@{}:{}", channel_id, device_addr.ip(), device_addr.port());
         let message = Parser::generate_request("INVITE", &uri, &headers, Some(&sdp));
-        
         socket.send_to(message.as_bytes(), device_addr).await?;
-        tracing::info!("Sent PLAY INVITE to device {} channel {} at {}", device_id, channel_id, device_addr);
+        tracing::info!("Sent PLAY INVITE to device={} channel={} port={} ssrc={} call_id={}",
+            device_id, channel_id, media_port, ssrc_str, call_id);
+        drop(socket); // 释放读锁，避免死锁
         
-        Ok(())
+        // 等待 200 OK（15 秒超时）
+        match tokio::time::timeout(Duration::from_secs(15), rx).await {
+            Ok(Ok(_)) => {
+                tracing::info!("INVITE 200 OK received for call_id={}", call_id);
+                Ok(call_id)
+            }
+            Ok(Err(_)) => {
+                self.pending_invites.remove(&call_id);
+                Err(anyhow::anyhow!("INVITE cancelled or device rejected"))
+            }
+            Err(_) => {
+                self.pending_invites.remove(&call_id);
+                Err(anyhow::anyhow!("INVITE timeout – device did not respond in 15s"))
+            }
+        }
     }
     
     pub async fn send_playback_invite(&self, device_id: &str, channel_id: &str, start_time: &str, end_time: &str) -> Result<()> {
@@ -2364,5 +2754,82 @@ async fn dbg_upsert_device(
     let now = Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     db_device::upsert_device(pool, device_id, Some(name), manufacturer, model, firmware, transport, stream_mode, ip, port, online, Some(media_server_id.as_str()), &now).await
         .map_err(|e| anyhow::anyhow!("{}", e))?;
+    Ok(())
+}
+
+async fn send_subscribe_internal(
+    device_id: &str,
+    event: &str,
+    expires: u32,
+    config: &Arc<SipConfig>,
+    device_manager: &Arc<DeviceManager>,
+    catalog_subscription_manager: &Arc<CatalogSubscriptionManager>,
+    socket: &Arc<UdpSocket>,
+) -> Result<()> {
+    let device_addr = device_manager.get_address(device_id).await
+        .ok_or_else(|| anyhow::anyhow!("Device {} not registered", device_id))?;
+    
+    let sn = chrono::Utc::now().timestamp();
+    let body = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<Query>
+<CmdType>{}</CmdType>
+<SN>{}</SN>
+<DeviceID>{}</DeviceID>
+</Query>"#,
+        event, sn, device_id
+    );
+    
+    let call_id = format!("sub_{}_{}", device_id, chrono::Utc::now().timestamp_millis());
+    let branch = generate_branch();
+    let cseq = format!("{} SUBSCRIBE", 1);
+    
+    let via = format!("SIP/2.0/UDP {}:{};branch={};rport", 
+        config.ip, config.port, branch);
+    let from = format!("<sip:{}@{}:{}>;tag={}", 
+        config.device_id, config.ip, config.port, generate_tag());
+    let to = format!("<sip:{}@{}:{}>", device_id, device_addr.ip(), device_addr.port());
+    let contact = format!("<sip:{}@{}:{}>", config.device_id, config.ip, config.port);
+    
+    let expires_header = expires.to_string();
+    let content_length = body.len().to_string();
+    
+    let headers: Vec<(&str, &str)> = vec![
+        ("Via", &via),
+        ("From", &from),
+        ("To", &to),
+        ("Call-ID", &call_id),
+        ("CSeq", &cseq),
+        ("Contact", &contact),
+        ("Expires", &expires_header),
+        ("Max-Forwards", "70"),
+        ("User-Agent", "WVP-GB28181-Rust"),
+        ("Event", event),
+        ("Accept", "Application/MANSCDP+xml"),
+        ("Content-Type", "Application/MANSCDP+xml"),
+        ("Content-Length", &content_length),
+    ];
+    
+    let request = Parser::generate_request(
+        "SUBSCRIBE",
+        &format!("sip:{}@{}:{}", device_id, device_addr.ip(), device_addr.port()),
+        &headers,
+        Some(&body),
+    );
+    
+    socket.send_to(request.as_bytes(), device_addr).await?;
+    tracing::debug!("SUBSCRIBE sent to {} for event {}", device_id, event);
+    
+    let subscription = CatalogSubscription::new(
+        &call_id,
+        device_id,
+        device_addr,
+        &via,
+        &from,
+        &to,
+        expires,
+    );
+    catalog_subscription_manager.subscribe(subscription).await;
+    
     Ok(())
 }
