@@ -194,3 +194,39 @@ pub async fn delete_by_id(pool: &Pool, id: i32) -> sqlx::Result<u64> {
         .await?;
     Ok(r.rows_affected())
 }
+
+/// 统计分组数量
+pub async fn count_all(pool: &Pool) -> sqlx::Result<i64> {
+    sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM wvp_common_group")
+        .fetch_one(pool)
+        .await
+}
+
+/// 根据设备ID删除分组
+pub async fn delete_by_device_id(pool: &Pool, device_id: &str) -> sqlx::Result<u64> {
+    #[cfg(feature = "mysql")]
+    let r = sqlx::query("DELETE FROM wvp_common_group WHERE device_id = ?")
+        .bind(device_id)
+        .execute(pool)
+        .await?;
+    #[cfg(feature = "postgres")]
+    let r = sqlx::query("DELETE FROM wvp_common_group WHERE device_id = $1")
+        .bind(device_id)
+        .execute(pool)
+        .await?;
+    Ok(r.rows_affected())
+}
+
+/// 获取子分组数量
+pub async fn count_children(pool: &Pool, parent_id: i32) -> sqlx::Result<i64> {
+    #[cfg(feature = "mysql")]
+    return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM wvp_common_group WHERE parent_id = ?")
+        .bind(parent_id)
+        .fetch_one(pool)
+        .await;
+    #[cfg(feature = "postgres")]
+    return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM wvp_common_group WHERE parent_id = $1")
+        .bind(parent_id)
+        .fetch_one(pool)
+        .await;
+}

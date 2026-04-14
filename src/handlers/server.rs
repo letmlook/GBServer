@@ -279,13 +279,15 @@ pub async fn map_config(State(state): State<AppState>) -> Json<WVPResult<serde_j
 }
 
 /// GET /api/server/info
-pub async fn server_info(State(state): State<AppState>) -> Json<WVPResult<serde_json::Value>> {
+pub async fn server_info(State(_state): State<AppState>) -> Json<WVPResult<serde_json::Value>> {
     // Persist a simple start time reference via a static OnceLock
     use std::sync::OnceLock;
     static START_TIME: OnceLock<SystemTime> = OnceLock::new();
     let start = START_TIME.get_or_init(|| SystemTime::now());
     let start_ts = start.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
-    let uptime = read_uptime().unwrap_or(0.0) as u64;
+    // Simple uptime calculation from start time
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+    let uptime = now.saturating_sub(start_ts);
     Json(WVPResult::success(serde_json::json!({
         "start_time": start_ts,
         "uptime_seconds": uptime,

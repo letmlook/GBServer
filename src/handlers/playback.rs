@@ -366,6 +366,61 @@ pub async fn playback_speed(
     })))
 }
 
+/// 回放拖动定位（seek）
+pub async fn playback_seek(
+    State(state): State<AppState>,
+    Path((stream_id, seek_time)): Path<(String, String)>,
+) -> Json<WVPResult<serde_json::Value>> {
+    tracing::info!("Playback seek: stream={}, time={}", stream_id, seek_time);
+    
+    // 更新本地会话状态
+    if let Some(ref playback_manager) = state.playback_manager {
+        playback_manager.update_current_time(&stream_id, seek_time.clone()).await;
+    }
+    
+    // 发送 SIP INFO 消息通知设备跳转
+    if let Some(ref sip_server) = state.sip_server {
+        let sip = sip_server.read().await;
+        let parts: Vec<&str> = stream_id.split('_').collect();
+        if parts.len() >= 3 {
+            let device_id = parts[1];
+            let channel_id = parts[2];
+            
+            // GB28181 回放拖动定位指令
+            let seek_xml = format!(
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<Control>
+<CmdType>DeviceControl</CmdType>
+<SN>{}</SN>
+<DeviceID>{}</DeviceID>
+<PlayBackCtrl>
+<ChannelID>{}</ChannelID>
+<PlayBackCmd>Seek</PlayBackCmd>
+<SeekTime>{}</SeekTime>
+</PlayBackCtrl>
+</Control>"#,
+                chrono::Utc::now().timestamp() % 10000,
+                device_id,
+                channel_id,
+                seek_time
+            );
+            
+            if let Err(e) = sip.send_message_to_device(device_id, crate::sip::SipMethod::Info,
+                Some(&seek_xml),
+                Some("Application/MANSCDP+xml")).await {
+                tracing::error!("Failed to send seek command: {}", e);
+                return Json(WVPResult::error(format!("SIP error: {}", e)));
+            }
+        }
+    }
+    
+    Json(WVPResult::success(serde_json::json!({
+        "streamId": stream_id,
+        "currentTime": seek_time,
+        "message": "Playback seeked"
+    })))
+}
+
 pub async fn playback_stop(
     State(state): State<AppState>,
     Path((device_id, channel_id, stream_id)): Path<(String, String, String)>,

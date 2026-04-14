@@ -5,6 +5,7 @@ use sqlx::FromRow;
 
 use super::Pool;
 
+/// 国标设备完整信息
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub struct Device {
     pub id: i32,
@@ -12,32 +13,66 @@ pub struct Device {
     pub name: Option<String>,
     pub manufacturer: Option<String>,
     pub model: Option<String>,
+    pub firmware: Option<String>,
     pub transport: Option<String>,
     pub stream_mode: Option<String>,
     pub on_line: Option<bool>,
+    pub register_time: Option<String>,
+    pub keepalive_time: Option<String>,
     pub ip: Option<String>,
     pub port: Option<i32>,
+    pub expires: Option<i32>,
     pub create_time: Option<String>,
     pub update_time: Option<String>,
     pub media_server_id: Option<String>,
     pub custom_name: Option<String>,
+    pub charset: Option<String>,
+    pub ssrc_check: Option<bool>,
+    pub geo_coord_sys: Option<String>,
+    pub sdp_ip: Option<String>,
+    pub local_ip: Option<String>,
+    pub password: Option<String>,
+    pub subscribe_cycle_for_catalog: Option<i32>,
+    pub subscribe_cycle_for_mobile_position: Option<i32>,
+    pub mobile_position_submission_interval: Option<i32>,
 }
 
+/// 设备通道完整信息
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub struct DeviceChannel {
     pub id: i32,
     pub device_id: Option<String>,
     pub name: Option<String>,
+    pub manufacturer: Option<String>,
+    pub model: Option<String>,
+    pub owner: Option<String>,
+    pub civil_code: Option<String>,
+    pub address: Option<String>,
+    pub parental: Option<i32>,
+    pub parent_id: Option<String>,
     #[serde(rename = "channelId")]
     pub gb_device_id: Option<String>,
     pub status: Option<String>,
     pub longitude: Option<f64>,
     pub latitude: Option<f64>,
+    pub ptz_type: Option<i32>,
     pub create_time: Option<String>,
     pub update_time: Option<String>,
     pub sub_count: Option<i32>,
+    pub stream_id: Option<String>,
     pub has_audio: Option<bool>,
+    pub stream_identification: Option<String>,
     pub channel_type: Option<i32>,
+    pub map_level: Option<i32>,
+    pub gb_name: Option<String>,
+    pub gb_manufacturer: Option<String>,
+    pub gb_model: Option<String>,
+    pub gb_civil_code: Option<String>,
+    pub gb_address: Option<String>,
+    pub gb_status: Option<String>,
+    pub gb_longitude: Option<f64>,
+    pub gb_latitude: Option<f64>,
+    pub record_plan_id: Option<i32>,
 }
 
  
@@ -850,4 +885,175 @@ pub async fn get_devices_for_mobile_position_renewal(pool: &Pool) -> sqlx::Resul
         .await?;
         Ok(rows)
     }
+}
+
+/// 批量更新通道在线状态
+pub async fn batch_update_channel_status(
+    pool: &Pool,
+    device_id: &str,
+    channel_ids: &[&str],
+    status: &str,
+) -> sqlx::Result<u64> {
+    if channel_ids.is_empty() {
+        return Ok(0);
+    }
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let mut total = 0u64;
+    for channel_id in channel_ids {
+        #[cfg(feature = "mysql")]
+        let r = sqlx::query("UPDATE wvp_device_channel SET status = ?, update_time = ? WHERE device_id = ? AND gb_device_id = ?")
+            .bind(status)
+            .bind(&now)
+            .bind(device_id)
+            .bind(channel_id)
+            .execute(pool)
+            .await?;
+        #[cfg(feature = "postgres")]
+        let r = sqlx::query("UPDATE wvp_device_channel SET status = $1, update_time = $2 WHERE device_id = $3 AND gb_device_id = $4")
+            .bind(status)
+            .bind(&now)
+            .bind(device_id)
+            .bind(channel_id)
+            .execute(pool)
+            .await?;
+        total += r.rows_affected();
+    }
+    Ok(total)
+}
+
+/// 删除设备的所有通道
+pub async fn delete_channels_by_device(pool: &Pool, device_id: &str) -> sqlx::Result<u64> {
+    #[cfg(feature = "mysql")]
+    let r = sqlx::query("DELETE FROM wvp_device_channel WHERE device_id = ?")
+        .bind(device_id)
+        .execute(pool)
+        .await?;
+    #[cfg(feature = "postgres")]
+    let r = sqlx::query("DELETE FROM wvp_device_channel WHERE device_id = $1")
+        .bind(device_id)
+        .execute(pool)
+        .await?;
+    Ok(r.rows_affected())
+}
+
+/// 删除单个通道
+pub async fn delete_channel_by_id(pool: &Pool, id: i64) -> sqlx::Result<u64> {
+    #[cfg(feature = "mysql")]
+    let r = sqlx::query("DELETE FROM wvp_device_channel WHERE id = ?")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    #[cfg(feature = "postgres")]
+    let r = sqlx::query("DELETE FROM wvp_device_channel WHERE id = $1")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(r.rows_affected())
+}
+
+/// 删除指定设备的指定通道
+pub async fn delete_channel(pool: &Pool, device_id: &str, channel_id: &str) -> sqlx::Result<u64> {
+    #[cfg(feature = "mysql")]
+    let r = sqlx::query("DELETE FROM wvp_device_channel WHERE device_id = ? AND gb_device_id = ?")
+        .bind(device_id)
+        .bind(channel_id)
+        .execute(pool)
+        .await?;
+    #[cfg(feature = "postgres")]
+    let r = sqlx::query("DELETE FROM wvp_device_channel WHERE device_id = $1 AND gb_device_id = $2")
+        .bind(device_id)
+        .bind(channel_id)
+        .execute(pool)
+        .await?;
+    Ok(r.rows_affected())
+}
+
+/// 批量插入通道
+pub async fn batch_insert_channels(
+    pool: &Pool,
+    device_id: &str,
+    channels: &[ChannelInsertData],
+) -> sqlx::Result<u64> {
+    if channels.is_empty() {
+        return Ok(0);
+    }
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let mut total = 0u64;
+    
+    for ch in channels {
+        #[cfg(feature = "mysql")]
+        let r = sqlx::query(
+            "INSERT INTO wvp_device_channel (device_id, name, gb_device_id, status, longitude, latitude, has_audio, channel_type, create_time, update_time) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        )
+        .bind(device_id)
+        .bind(&ch.name)
+        .bind(&ch.gb_device_id)
+        .bind(&ch.status)
+        .bind(ch.longitude)
+        .bind(ch.latitude)
+        .bind(ch.has_audio)
+        .bind(ch.channel_type)
+        .bind(&now)
+        .bind(&now)
+        .execute(pool)
+        .await?;
+        #[cfg(feature = "postgres")]
+        let r = sqlx::query(
+            "INSERT INTO wvp_device_channel (device_id, name, gb_device_id, status, longitude, latitude, has_audio, channel_type, create_time, update_time) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)"
+        )
+        .bind(device_id)
+        .bind(&ch.name)
+        .bind(&ch.gb_device_id)
+        .bind(&ch.status)
+        .bind(ch.longitude)
+        .bind(ch.latitude)
+        .bind(ch.has_audio)
+        .bind(ch.channel_type)
+        .bind(&now)
+        .bind(&now)
+        .execute(pool)
+        .await?;
+        total += r.rows_affected();
+    }
+    Ok(total)
+}
+
+/// 通道插入数据结构
+#[derive(Debug, Clone)]
+pub struct ChannelInsertData {
+    pub name: String,
+    pub gb_device_id: String,
+    pub status: String,
+    pub longitude: Option<f64>,
+    pub latitude: Option<f64>,
+    pub has_audio: Option<bool>,
+    pub channel_type: Option<i32>,
+}
+
+/// 统计在线设备数量
+pub async fn count_online_devices(pool: &Pool) -> sqlx::Result<i64> {
+    #[cfg(feature = "mysql")]
+    return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM wvp_device WHERE on_line = 1")
+        .fetch_one(pool)
+        .await;
+    #[cfg(feature = "postgres")]
+    return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM wvp_device WHERE on_line = true")
+        .fetch_one(pool)
+        .await;
+}
+
+/// 获取所有设备列表（不分页）
+pub async fn list_all_devices(pool: &Pool) -> sqlx::Result<Vec<Device>> {
+    #[cfg(feature = "mysql")]
+    return sqlx::query_as::<_, Device>(
+        "SELECT id, device_id, name, manufacturer, model, transport, stream_mode, on_line, ip, port, create_time, update_time, media_server_id, custom_name FROM wvp_device ORDER BY id"
+    )
+    .fetch_all(pool)
+    .await;
+    #[cfg(feature = "postgres")]
+    return sqlx::query_as::<_, Device>(
+        "SELECT id, device_id, name, manufacturer, model, transport, stream_mode, on_line, ip, port, create_time, update_time, media_server_id, custom_name FROM wvp_device ORDER BY id"
+    )
+    .fetch_all(pool)
+    .await;
 }

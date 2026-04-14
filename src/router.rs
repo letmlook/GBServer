@@ -61,6 +61,18 @@ pub fn app(state: AppState) -> Router<AppState> {
             get(device_control::device_preset),
         )
         .route(
+            "/api/device/control/reboot",
+            get(device_control::device_reboot),
+        )
+        .route(
+            "/api/device/config/query",
+            get(device_control::device_config_query),
+        )
+        .route(
+            "/api/device/config/update",
+            post(device_control::device_config_update),
+        )
+        .route(
             "/api/device/query/subscribe/catalog",
             get(device_control::subscribe_catalog),
         )
@@ -293,6 +305,10 @@ pub fn app(state: AppState) -> Router<AppState> {
         .route(
             "/api/playback/speed/:stream_id/:speed",
             get(playback::playback_speed),
+        )
+        .route(
+            "/api/playback/seek/:stream_id/:seek_time",
+            get(playback::playback_seek),
         )
         .route(
             "/api/playback/stop/:device_id/:channel_id/:stream_id",
@@ -768,7 +784,10 @@ pub fn app(state: AppState) -> Router<AppState> {
         .route("/api/alarm/list", get(alarm::alarm_list))
         .route("/api/alarm/detail/:id", get(alarm::alarm_detail))
         .route("/api/alarm/handle", post(alarm::alarm_handle))
-        .route("/api/alarm/delete/:id", delete(alarm::alarm_delete));
+        .route("/api/alarm/delete/:id", delete(alarm::alarm_delete))
+        .route("/api/alarm/batch", delete(alarm::alarm_batch_delete))
+        .route("/api/alarm/device/:device_id", delete(alarm::alarm_delete_by_device))
+        .route("/api/alarm/before/:time", delete(alarm::alarm_delete_before_time));
 
     // 静态资源：前端构建产物（与 Java 版 static 目录一致）
     let static_dir = state

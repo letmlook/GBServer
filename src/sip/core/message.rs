@@ -2,11 +2,21 @@ use super::header::{CSeq, Contact, NameAddr, ViaHeader};
 use super::method::SipMethod;
 use super::status::StatusCode;
 use std::collections::HashMap;
+use std::fmt;
 
 #[derive(Debug, Clone)]
 pub enum SipMessage {
     Request(SipRequest),
     Response(SipResponse),
+}
+
+impl fmt::Display for SipMessage {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            SipMessage::Request(req) => write!(f, "{}", req),
+            SipMessage::Response(resp) => write!(f, "{}", resp),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -48,7 +58,26 @@ impl SipRequest {
     pub fn set_header(&mut self, name: &str, value: &str) {
         self.headers.insert(name.to_lowercase(), value.to_string());
     }
+}
 
+impl fmt::Display for SipRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "{} {} {}", self.method.as_str(), self.uri, self.version)?;
+        for (name, value) in &self.headers {
+            writeln!(f, "{}: {}", name, value)?;
+        }
+        if let Some(body) = &self.body {
+            writeln!(f, "Content-Length: {}", body.len())?;
+            writeln!(f)?;
+            write!(f, "{}", body)?;
+        } else {
+            writeln!(f)?;
+        }
+        Ok(())
+    }
+}
+
+impl SipRequest {
     pub fn remove_header(&mut self, name: &str) -> Option<String> {
         self.headers.remove(&name.to_lowercase())
     }
@@ -196,7 +225,26 @@ impl SipResponse {
     pub fn requires_reliable(&self) -> bool {
         self.status_code.requires_reliable()
     }
+}
 
+impl fmt::Display for SipResponse {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "{} {} {}", self.version, self.status_code.code(), self.reason)?;
+        for (name, value) in &self.headers {
+            writeln!(f, "{}: {}", name, value)?;
+        }
+        if let Some(body) = &self.body {
+            writeln!(f, "Content-Length: {}", body.len())?;
+            writeln!(f)?;
+            write!(f, "{}", body)?;
+        } else {
+            writeln!(f)?;
+        }
+        Ok(())
+    }
+}
+
+impl SipResponse {
     pub fn via(&self) -> Option<&String> {
         self.header("via")
     }

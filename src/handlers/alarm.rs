@@ -343,3 +343,81 @@ pub async fn alarm_delete(
 
     Ok(Json(WVPResult::success(serde_json::json!(null))))
 }
+
+/// DELETE /api/alarm/batch - 批量删除告警
+#[derive(Debug, Deserialize)]
+pub struct AlarmBatchDelete {
+    pub ids: Vec<i64>,
+}
+
+pub async fn alarm_batch_delete(
+    State(state): State<AppState>,
+    Json(body): Json<AlarmBatchDelete>,
+) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+    if body.ids.is_empty() {
+        return Ok(Json(WVPResult::success(serde_json::json!({ "deleted": 0 }))));
+    }
+
+    let mut deleted = 0u64;
+    for id in body.ids {
+        #[cfg(feature = "postgres")]
+        let r = sqlx::query("DELETE FROM wvp_device_alarm WHERE id = $1")
+            .bind(id)
+            .execute(&state.pool)
+            .await
+            .map_err(|e| AppError::business(ErrorCode::Error500, format!("数据库删除失败: {}", e)))?;
+        #[cfg(feature = "mysql")]
+        let r = sqlx::query("DELETE FROM wvp_device_alarm WHERE id = ?")
+            .bind(id)
+            .execute(&state.pool)
+            .await
+            .map_err(|e| AppError::business(ErrorCode::Error500, format!("数据库删除失败: {}", e)))?;
+        deleted += r.rows_affected();
+    }
+
+    Ok(Json(WVPResult::success(serde_json::json!({ "deleted": deleted }))))
+}
+
+/// DELETE /api/alarm/device/:device_id - 删除设备的所有告警
+pub async fn alarm_delete_by_device(
+    State(state): State<AppState>,
+    axum::extract::Path(device_id): axum::extract::Path<String>,
+) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+    #[cfg(feature = "postgres")]
+    let r = sqlx::query("DELETE FROM wvp_device_alarm WHERE device_id = $1")
+        .bind(&device_id)
+        .execute(&state.pool)
+        .await
+        .map_err(|e| AppError::business(ErrorCode::Error500, format!("数据库删除失败: {}", e)))?;
+
+    #[cfg(feature = "mysql")]
+    let r = sqlx::query("DELETE FROM wvp_device_alarm WHERE device_id = ?")
+        .bind(&device_id)
+        .execute(&state.pool)
+        .await
+        .map_err(|e| AppError::business(ErrorCode::Error500, format!("数据库删除失败: {}", e)))?;
+
+    Ok(Json(WVPResult::success(serde_json::json!({ "deleted": r.rows_affected() }))))
+}
+
+/// DELETE /api/alarm/before/:time - 删除指定时间之前的告警
+pub async fn alarm_delete_before_time(
+    State(state): State<AppState>,
+    axum::extract::Path(before_time): axum::extract::Path<String>,
+) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+    #[cfg(feature = "postgres")]
+    let r = sqlx::query("DELETE FROM wvp_device_alarm WHERE create_time < $1")
+        .bind(&before_time)
+        .execute(&state.pool)
+        .await
+        .map_err(|e| AppError::business(ErrorCode::Error500, format!("数据库删除失败: {}", e)))?;
+
+    #[cfg(feature = "mysql")]
+    let r = sqlx::query("DELETE FROM wvp_device_alarm WHERE create_time < ?")
+        .bind(&before_time)
+        .execute(&state.pool)
+        .await
+        .map_err(|e| AppError::business(ErrorCode::Error500, format!("数据库删除失败: {}", e)))?;
+
+    Ok(Json(WVPResult::success(serde_json::json!({ "deleted": r.rows_affected() }))))
+}

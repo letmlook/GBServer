@@ -200,3 +200,54 @@ pub async fn delete_by_id(pool: &Pool, id: i32) -> sqlx::Result<u64> {
         .await?;
     Ok(r.rows_affected())
 }
+
+/// 根据 API Key 查询（用于认证）
+pub async fn get_by_api_key(pool: &Pool, api_key: &str) -> sqlx::Result<Option<UserApiKey>> {
+    #[cfg(feature = "mysql")]
+    return sqlx::query_as::<_, UserApiKey>(
+        "SELECT id, user_id, app, api_key, expired_at, remark, enable, create_time, update_time FROM wvp_user_api_key WHERE api_key = ?",
+    )
+    .bind(api_key)
+    .fetch_optional(pool)
+    .await;
+    #[cfg(feature = "postgres")]
+    return sqlx::query_as::<_, UserApiKey>(
+        "SELECT id, user_id, app, api_key, expired_at, remark, enable, create_time, update_time FROM wvp_user_api_key WHERE api_key = $1",
+    )
+    .bind(api_key)
+    .fetch_optional(pool)
+    .await;
+}
+
+/// 根据用户ID查询 API Key 列表
+pub async fn list_by_user_id(pool: &Pool, user_id: i64) -> sqlx::Result<Vec<UserApiKey>> {
+    #[cfg(feature = "mysql")]
+    return sqlx::query_as::<_, UserApiKey>(
+        "SELECT id, user_id, app, api_key, expired_at, remark, enable, create_time, update_time FROM wvp_user_api_key WHERE user_id = ? ORDER BY id",
+    )
+    .bind(user_id)
+    .fetch_all(pool)
+    .await;
+    #[cfg(feature = "postgres")]
+    return sqlx::query_as::<_, UserApiKey>(
+        "SELECT id, user_id, app, api_key, expired_at, remark, enable, create_time, update_time FROM wvp_user_api_key WHERE user_id = $1 ORDER BY id",
+    )
+    .bind(user_id)
+    .fetch_all(pool)
+    .await;
+}
+
+/// 删除过期的 API Key
+pub async fn delete_expired_keys(pool: &Pool, now_ts: i64) -> sqlx::Result<u64> {
+    #[cfg(feature = "mysql")]
+    let r = sqlx::query("DELETE FROM wvp_user_api_key WHERE expired_at IS NOT NULL AND expired_at < ?")
+        .bind(now_ts)
+        .execute(pool)
+        .await?;
+    #[cfg(feature = "postgres")]
+    let r = sqlx::query("DELETE FROM wvp_user_api_key WHERE expired_at IS NOT NULL AND expired_at < $1")
+        .bind(now_ts)
+        .execute(pool)
+        .await?;
+    Ok(r.rows_affected())
+}

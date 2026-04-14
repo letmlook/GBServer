@@ -203,16 +203,17 @@ impl ViaHeader {
 
         let protocol = parts[0].to_string();
         let mut rest = parts[1].split(';');
-        let transport_host: Vec<&str> = rest.next()?.split(':').collect();
+        let host_port: Vec<&str> = rest.next()?.split(':').collect();
 
-        let transport = transport_host[0].to_string();
-        let (host, port) = if transport_host.len() > 1 {
+        // 从protocol中提取transport (最后一个部分)
+        let transport = protocol.split('/').last()?.to_string();
+        let (host, port) = if host_port.len() > 1 {
             (
-                transport_host[1].to_string(),
-                transport_host[2].parse().unwrap_or(5060),
+                host_port[0].to_string(),
+                host_port[1].parse().unwrap_or(5060),
             )
         } else {
-            (transport_host[0].to_string(), 5060)
+            (host_port[0].to_string(), 5060)
         };
 
         let mut params = HashMap::new();
@@ -286,11 +287,25 @@ impl NameAddr {
                 }
             }
             if let Some(uri_and_params) = parts.get(1) {
-                let uri_part = uri_and_params.split('>').next().unwrap_or(uri_and_params);
-                let (u, params) = uri_part.split_once(';').unwrap_or((uri_part, ""));
-                uri = format!("<{}>", u);
+                // 分离URI和外部参数
+                let after_bracket: Vec<&str> = uri_and_params.split('>').collect();
+                let uri_part = after_bracket.get(0).unwrap_or(&"");
+                uri = uri_part.to_string();
 
-                for param in params.split(';') {
+                // 处理尖括号外的参数
+                if let Some(params_str) = after_bracket.get(1) {
+                    for param in params_str.split(';') {
+                        if let Some((key, value)) = param.trim().split_once('=') {
+                            if key.trim() == "tag" {
+                                tag = Some(value.trim().to_string());
+                            }
+                        }
+                    }
+                }
+
+                // 处理URI内部的参数
+                let (_, internal_params) = uri_part.split_once(';').unwrap_or((uri_part, ""));
+                for param in internal_params.split(';') {
                     if let Some((key, value)) = param.split_once('=') {
                         if key.trim() == "tag" {
                             tag = Some(value.trim().to_string());

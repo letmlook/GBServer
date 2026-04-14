@@ -401,7 +401,7 @@ impl SipServer {
                                 catalog_subscription_manager,
                                 zlm_client,
                                 pool,
-                                conn_manager,
+                                conn_manager.clone(),
                             ).await {
                                 tracing::error!("TCP SIP handler error: {}", e);
                             }
@@ -433,7 +433,7 @@ impl SipServer {
         catalog_subscription_manager: &Arc<CatalogSubscriptionManager>,
         zlm_client: &Option<Arc<ZlmClient>>,
         pool: &Pool,
-        conn_manager: &TcpConnectionManager,
+        conn_manager: TcpConnectionManager,
     ) -> Result<()> {
         let msg = Parser::parse(data)?;
         match msg {
@@ -549,7 +549,7 @@ impl SipServer {
                 Self::handle_register(req, addr, config, device_manager, pool, socket, ws_state).await
             }
             SipMethod::Message => {
-                Self::handle_message(req, addr, config, device_manager, pool, socket, ws_state).await
+                Self::handle_message(req, addr, config, device_manager, pool, socket, ws_state, zlm_client).await
             }
             SipMethod::Invite => {
                 Self::handle_invite(req, addr, config, session_manager, invite_session_manager, talk_manager, zlm_client, pool, socket).await
@@ -693,6 +693,7 @@ impl SipServer {
         pool: &Pool,
         socket: &Arc<UdpSocket>,
         ws_state: &Option<Arc<WsState>>,
+        zlm_client: &Option<Arc<ZlmClient>>,
     ) -> Result<()> {
         let from = req.header("from").cloned().unwrap_or_default();
         let to = req.header("to").cloned().unwrap_or_default();
@@ -739,7 +740,7 @@ impl SipServer {
                     return Ok(());
                 }
                 Some("RecordInfo") => {
-                    Self::handle_record_info(body, &device_id, &sn, pool, addr, &from, &to, &via, &call_id, &cseq, socket).await?;
+                    Self::handle_record_info(body, &device_id, &sn, pool, addr, &from, &to, &via, &call_id, &cseq, socket, zlm_client).await?;
                     return Ok(());
                 }
                 _ => {
@@ -1829,11 +1830,113 @@ impl SipServer {
         call_id: &str,
         cseq: &str,
         socket: &Arc<UdpSocket>,
+        zlm_client: &Option<Arc<ZlmClient>>,
     ) -> Result<()> {
         tracing::debug!("RecordInfo from {}", device_id);
         
-        let response_body = format!(r#"<?xml version="1.0" encoding="UTF-8"?><Response><CmdType>RecordInfo</CmdType><SN>{}</SN><DeviceID>{}</DeviceID><SumNum>0</SumNum><RecordList Num="0"></RecordList></Response>"#,
-            sn, device_id);
+        // 解析 RecordInfo 请求中的参数
+        let fields = XmlParser::parse_fields(body);
+        let target_device_id = fields.get("DeviceID").map(|s| s.as_str()).unwrap_or(device_id);
+        let start_time = fields.get("StartTime").map(|s| s.as_str());
+        let end_time = fields.get("EndTime").map(|s| s.as_str());
+        let secrecy = fields.get("Secrecy").map(|s| s.as_str()).unwrap_or("0");
+        let _type = fields.get("Type").map(|s| s.as_str()).unwrap_or("all");
+        
+        tracing::debug!(
+            "RecordInfo query: device={}, start={:?}, end={:?}, type={}",
+            target_device_id, start_time, end_time, _type
+        );
+        
+        // 尝试从 ZLM 查询录像文件
+        let mut record_items = Vec::new();
+        let mut sum_num = 0;
+        
+        if let Some(zlm) = zlm_client {
+            // 解析通道ID：target_device_id 可能是通道ID（20位）
+            // 录像流的 app 通常是 "rtp"，stream 是 "device_id$channel_id" 格式
+            let app = "rtp";
+            
+            // 尝试两种 stream 格式：
+            // 1. device_id$channel_id (如果 target_device_id 是通道ID)
+            // 2. target_device_id (如果 target_device_id 本身就是 stream)
+            let stream1 = format!("{}${}", device_id, target_device_id);
+            let stream2 = target_device_id.to_string();
+            
+            // 转换时间格式：GB28181 使用 "yyyy-MM-dd HH:mm:ss"，ZLM 使用时间戳或相同格式
+            let zlm_start = start_time.map(|s| s.replace(" ", "T").replace(":", "-"));
+            let zlm_end = end_time.map(|s| s.replace(" ", "T").replace(":", "-"));
+            
+            // 尝试查询录像文件
+            let files = if let Ok(list) = zlm.get_mp4_record_file(app, &stream1, None, zlm_start.as_deref(), zlm_end.as_deref()).await {
+                list
+            } else if let Ok(list) = zlm.get_mp4_record_file(app, &stream2, None, zlm_start.as_deref(), zlm_end.as_deref()).await {
+                list
+            } else {
+                Vec::new()
+            };
+            
+            // 转换为 GB28181 RecordItem 格式
+            for file in files {
+                // 解析文件名获取时间信息
+                let name = &file.name;
+                let start = file.create_time.clone();
+                let duration = file.duration.unwrap_or(0.0) as i64;
+                
+                // 计算结束时间
+                let end = if duration > 0 {
+                    // 简单处理：假设 create_time 是开始时间
+                    format!("{}+{}s", start, duration)
+                } else {
+                    start.clone()
+                };
+                
+                record_items.push(format!(
+                    r#"<Item>
+<DeviceID>{}</DeviceID>
+<Name>{}</Name>
+<FilePath>{}</FilePath>
+<Address>{}</Address>
+<StartTime>{}</StartTime>
+<EndTime>{}</EndTime>
+<Secrecy>{}</Secrecy>
+<Type>{}</Type>
+<RecorderID>{}</RecorderID>
+<FileSize>{}</FileSize>
+</Item>"#,
+                    target_device_id,
+                    name,
+                    file.path,
+                    file.path,
+                    start,
+                    end,
+                    secrecy,
+                    _type,
+                    device_id,
+                    file.size
+                ));
+                sum_num += 1;
+            }
+        }
+        
+        // 构建响应 XML
+        let record_list = if record_items.is_empty() {
+            "".to_string()
+        } else {
+            format!("<RecordList Num=\"{}\">\n{}\n</RecordList>", sum_num, record_items.join("\n"))
+        };
+        
+        let response_body = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+<CmdType>RecordInfo</CmdType>
+<SN>{}</SN>
+<DeviceID>{}</DeviceID>
+<Name></Name>
+<SumNum>{}</SumNum>
+{}
+</Response>"#,
+            sn, target_device_id, sum_num, record_list
+        );
         
         let response = Parser::generate_response(200, "OK", &[
             ("Via", via), ("From", from), ("To", to),

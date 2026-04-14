@@ -206,3 +206,61 @@ pub async fn sync_from_config(
     .await?;
     Ok(r.rows_affected())
 }
+
+/// 获取默认媒体服务器
+pub async fn get_default_server(pool: &Pool) -> sqlx::Result<Option<MediaServer>> {
+    #[cfg(feature = "mysql")]
+    return sqlx::query_as::<_, MediaServer>(
+        "SELECT id, ip, hook_ip, sdp_ip, stream_ip, http_port, http_ssl_port, rtmp_port, rtsp_port, rtsp_ssl_port, flv_port, flv_ssl_port, ws_port, wss_port, rtp_proxy_port, secret, rtp_enable, default_server, record_assist_port, record_day, record_transcode, create_time, update_time, status, last_keepalive_time FROM wvp_media_server WHERE default_server = 1 LIMIT 1",
+    )
+    .fetch_optional(pool)
+    .await;
+    #[cfg(feature = "postgres")]
+    return sqlx::query_as::<_, MediaServer>(
+        "SELECT id, ip, hook_ip, sdp_ip, stream_ip, http_port, http_ssl_port, rtmp_port, rtsp_port, rtsp_ssl_port, flv_port, flv_ssl_port, ws_port, wss_port, rtp_proxy_port, secret, rtp_enable, default_server, record_assist_port, record_day, record_transcode, create_time, update_time, status, last_keepalive_time FROM wvp_media_server WHERE default_server = true LIMIT 1",
+    )
+    .fetch_optional(pool)
+    .await;
+}
+
+/// 统计媒体服务器数量
+pub async fn count_all(pool: &Pool) -> sqlx::Result<i64> {
+    sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM wvp_media_server")
+        .fetch_one(pool)
+        .await
+}
+
+/// 更新服务器状态
+pub async fn update_status(pool: &Pool, id: &str, status: bool, last_keepalive: &str) -> sqlx::Result<u64> {
+    #[cfg(feature = "mysql")]
+    let r = sqlx::query("UPDATE wvp_media_server SET status = ?, last_keepalive_time = ? WHERE id = ?")
+        .bind(status)
+        .bind(last_keepalive)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    #[cfg(feature = "postgres")]
+    let r = sqlx::query("UPDATE wvp_media_server SET status = $1, last_keepalive_time = $2 WHERE id = $3")
+        .bind(status)
+        .bind(last_keepalive)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(r.rows_affected())
+}
+
+/// 获取所有在线的媒体服务器
+pub async fn list_online_servers(pool: &Pool) -> sqlx::Result<Vec<MediaServer>> {
+    #[cfg(feature = "mysql")]
+    return sqlx::query_as::<_, MediaServer>(
+        "SELECT id, ip, hook_ip, sdp_ip, stream_ip, http_port, http_ssl_port, rtmp_port, rtsp_port, rtsp_ssl_port, flv_port, flv_ssl_port, ws_port, wss_port, rtp_proxy_port, secret, rtp_enable, default_server, record_assist_port, record_day, record_transcode, create_time, update_time, status, last_keepalive_time FROM wvp_media_server WHERE status = 1 ORDER BY id",
+    )
+    .fetch_all(pool)
+    .await;
+    #[cfg(feature = "postgres")]
+    return sqlx::query_as::<_, MediaServer>(
+        "SELECT id, ip, hook_ip, sdp_ip, stream_ip, http_port, http_ssl_port, rtmp_port, rtsp_port, rtsp_ssl_port, flv_port, flv_ssl_port, ws_port, wss_port, rtp_proxy_port, secret, rtp_enable, default_server, record_assist_port, record_day, record_transcode, create_time, update_time, status, last_keepalive_time FROM wvp_media_server WHERE status = true ORDER BY id",
+    )
+    .fetch_all(pool)
+    .await;
+}
