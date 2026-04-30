@@ -79,6 +79,62 @@ pub async fn add(
     Ok(r.rows_affected())
 }
 
+/// ZLM 发现外部推流时自动登记/刷新推流记录
+pub async fn upsert_discovered(
+    pool: &Pool,
+    app: &str,
+    stream: &str,
+    media_server_id: Option<&str>,
+    server_id: Option<&str>,
+    now: &str,
+) -> sqlx::Result<u64> {
+    #[cfg(feature = "mysql")]
+    let r = sqlx::query(
+        r#"INSERT INTO wvp_stream_push
+           (app, stream, media_server_id, server_id, create_time, push_time, update_time, status, pushing, self, start_offline_push)
+           VALUES (?, ?, ?, ?, ?, ?, ?, true, true, false, false)
+           ON DUPLICATE KEY UPDATE
+             media_server_id = COALESCE(VALUES(media_server_id), media_server_id),
+             server_id = COALESCE(VALUES(server_id), server_id),
+             push_time = COALESCE(push_time, VALUES(push_time)),
+             update_time = VALUES(update_time),
+             status = true,
+             pushing = true"#
+    )
+    .bind(app)
+    .bind(stream)
+    .bind(media_server_id)
+    .bind(server_id)
+    .bind(now)
+    .bind(now)
+    .bind(now)
+    .execute(pool)
+    .await?;
+
+    #[cfg(feature = "postgres")]
+    let r = sqlx::query(
+        r#"INSERT INTO wvp_stream_push
+           (app, stream, media_server_id, server_id, create_time, push_time, update_time, status, pushing, self, start_offline_push)
+           VALUES ($1, $2, $3, $4, $5, $5, $5, true, true, false, false)
+           ON CONFLICT (app, stream) DO UPDATE SET
+             media_server_id = COALESCE(EXCLUDED.media_server_id, wvp_stream_push.media_server_id),
+             server_id = COALESCE(EXCLUDED.server_id, wvp_stream_push.server_id),
+             push_time = COALESCE(wvp_stream_push.push_time, EXCLUDED.push_time),
+             update_time = EXCLUDED.update_time,
+             status = true,
+             pushing = true"#
+    )
+    .bind(app)
+    .bind(stream)
+    .bind(media_server_id)
+    .bind(server_id)
+    .bind(now)
+    .execute(pool)
+    .await?;
+
+    Ok(r.rows_affected())
+}
+
 /// 更新推流记录
 pub async fn update(
     pool: &Pool,
@@ -301,6 +357,45 @@ pub async fn update_pushing_status(pool: &Pool, id: i64, pushing: bool) -> sqlx:
         .bind(id)
         .execute(pool)
         .await?;
+    Ok(r.rows_affected())
+}
+
+/// 根据 app/stream 更新推流在线状态
+pub async fn update_pushing_status_by_app_stream(
+    pool: &Pool,
+    app: &str,
+    stream: &str,
+    media_server_id: Option<&str>,
+    pushing: bool,
+    now: &str,
+) -> sqlx::Result<u64> {
+    #[cfg(feature = "mysql")]
+    let r = sqlx::query(
+        "UPDATE wvp_stream_push SET pushing = ?, status = ?, media_server_id = COALESCE(?, media_server_id), push_time = CASE WHEN ? THEN COALESCE(push_time, ?) ELSE push_time END, update_time = ? WHERE app = ? AND stream = ?"
+    )
+    .bind(pushing)
+    .bind(pushing)
+    .bind(media_server_id)
+    .bind(pushing)
+    .bind(now)
+    .bind(now)
+    .bind(app)
+    .bind(stream)
+    .execute(pool)
+    .await?;
+
+    #[cfg(feature = "postgres")]
+    let r = sqlx::query(
+        "UPDATE wvp_stream_push SET pushing = $1, status = $1, media_server_id = COALESCE($2, media_server_id), push_time = CASE WHEN $1 THEN COALESCE(push_time, $3) ELSE push_time END, update_time = $3 WHERE app = $4 AND stream = $5"
+    )
+    .bind(pushing)
+    .bind(media_server_id)
+    .bind(now)
+    .bind(app)
+    .bind(stream)
+    .execute(pool)
+    .await?;
+
     Ok(r.rows_affected())
 }
 

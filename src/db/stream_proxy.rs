@@ -325,6 +325,42 @@ pub async fn update_pulling_status(pool: &Pool, id: i64, pulling: bool) -> sqlx:
     Ok(r.rows_affected())
 }
 
+/// 根据 app/stream 更新代理拉流状态
+pub async fn update_pulling_status_by_app_stream(
+    pool: &Pool,
+    app: &str,
+    stream: &str,
+    media_server_id: Option<&str>,
+    pulling: bool,
+    now: &str,
+) -> sqlx::Result<u64> {
+    #[cfg(feature = "mysql")]
+    let r = sqlx::query(
+        "UPDATE wvp_stream_proxy SET pulling = ?, media_server_id = COALESCE(?, media_server_id), update_time = ? WHERE app = ? AND stream = ?"
+    )
+    .bind(pulling)
+    .bind(media_server_id)
+    .bind(now)
+    .bind(app)
+    .bind(stream)
+    .execute(pool)
+    .await?;
+
+    #[cfg(feature = "postgres")]
+    let r = sqlx::query(
+        "UPDATE wvp_stream_proxy SET pulling = $1, media_server_id = COALESCE($2, media_server_id), update_time = $3 WHERE app = $4 AND stream = $5"
+    )
+    .bind(pulling)
+    .bind(media_server_id)
+    .bind(now)
+    .bind(app)
+    .bind(stream)
+    .execute(pool)
+    .await?;
+
+    Ok(r.rows_affected())
+}
+
 /// 更新启用状态
 pub async fn update_enable_status(pool: &Pool, id: i64, enable: bool) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
