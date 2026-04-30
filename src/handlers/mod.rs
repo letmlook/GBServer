@@ -8,7 +8,6 @@ pub mod platform;
 pub mod play;
 pub mod playback;
 pub mod talk;
-pub mod cascade;
 pub mod stub;
 pub mod common_channel;
 pub mod front_end;

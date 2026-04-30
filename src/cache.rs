@@ -88,6 +88,11 @@ pub async fn reset_media_server_streams(redis: &ConnectionManager, server_id: &s
     let _: Result<(), _> = conn.set(&key, count).await;
 }
 
+/// Alias for reset_media_server_streams
+pub async fn set_media_server_streams(redis: &ConnectionManager, server_id: &str, count: i64) {
+    reset_media_server_streams(redis, server_id, count).await;
+}
+
 // --------------- 录像状态 ---------------
 
 pub async fn set_recording_state(

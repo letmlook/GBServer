@@ -79,6 +79,7 @@ pub struct ZlmServerConfig {
     pub https_port: Option<u16>,
     pub secret: String,
     pub enabled: bool,
+    pub hook_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -99,6 +100,7 @@ impl Default for ZlmConfig {
                 https_port: None,
                 secret: "035c73f7-bb6b-4889-a715-d9eb2d1925cc".to_string(),
                 enabled: true,
+                hook_url: None,
             }],
             stream_timeout: 10,
             hook_enabled: true,

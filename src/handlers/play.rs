@@ -140,14 +140,15 @@ pub async fn play_stop(
         tracing::debug!("ZLM resources cleaned for stream={}", stream_id);
     }
 
-    // 2. 发送 SIP BYE 挂断设备的推流
+    // 2. 发送 SIP BYE 挂断设备的推流（使用 InviteSession 中的 Call-ID）
     let sip = sip_server.read().await;
-    match sip.send_talk_bye(&device_id, &channel_id).await { // 虽然名字叫 talk_bye，实际上是通用的根据 active dialog 发 BYE，后续可能需要改名为 send_bye
-        Ok(_) => {
-            tracing::info!("BYE sent for stream {}", stream_id);
+    match sip.send_session_bye(&device_id, &channel_id).await {
+        Ok(call_id) => {
+            tracing::info!("Session BYE sent for stream {} call_id={}", stream_id, call_id);
         }
         Err(e) => {
-            tracing::warn!("Failed to send BYE for stream {}: {}", stream_id, e);
+            tracing::warn!("Failed to send session BYE for stream {}: {}, trying talk BYE fallback", stream_id, e);
+            let _ = sip.send_talk_bye(&device_id, &channel_id).await;
         }
     }
 

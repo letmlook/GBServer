@@ -393,6 +393,32 @@ impl ZlmClient {
         Ok(result)
     }
 
+    /// Set a single ZLM server config key-value pair
+    pub async fn set_server_config(&self, secret: &str, key: &str, value: &str) -> Result<()> {
+        #[derive(serde::Serialize)]
+        struct SetConfigReq {
+            secret: String,
+            #[serde(rename = "key")]
+            key_: String,
+            value: String,
+        }
+        let req = SetConfigReq {
+            secret: secret.to_string(),
+            key_: key.to_string(),
+            value: value.to_string(),
+        };
+        #[derive(Deserialize)]
+        struct Resp {
+            code: i32,
+        }
+        let resp: Resp = self.request_post("/index/api/setServerConfig", &req).await?;
+        if resp.code == 0 {
+            Ok(())
+        } else {
+            Err(anyhow!("setServerConfig failed with code {}", resp.code))
+        }
+    }
+
     pub async fn get_server_stats(&self) -> Result<HashMap<String, serde_json::Value>> {
         let params = vec![("secret", self.secret.clone())];
         let resp: ApiResponse<HashMap<String, serde_json::Value>> = self.request("/index/api/getServerStats", &params).await?;

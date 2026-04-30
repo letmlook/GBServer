@@ -18,6 +18,7 @@ pub mod mobile_position;
 pub mod cloud_record;
 pub mod platform_group;
 pub mod platform_region;
+pub mod audit_log;
 
 pub use user::*;
 pub use device::*;

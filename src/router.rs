@@ -1,6 +1,8 @@
 use axum::{
+    extract::State,
     middleware,
     routing::{delete, get, post},
+    Json,
     Router,
 };
 use std::path::PathBuf;
@@ -13,6 +15,29 @@ use crate::handlers::{
 };
 use crate::zlm::hook as zlm_hook;
 use crate::AppState;
+
+async fn health_check(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let db_status = match sqlx::query_scalar::<_, i64>("SELECT 1").fetch_one(&state.pool).await {
+        Ok(_) => "ok",
+        Err(_) => "error",
+    };
+    let sip_status = if state.sip_server.is_some() { "ok" } else { "disabled" };
+    let zlm_status = if state.zlm_client.is_some() { "ok" } else { "disabled" };
+    let redis_status = if state.redis.is_some() { "ok" } else { "disabled" };
+    let all_ok = db_status == "ok";
+    let status_code = if all_ok { 200 } else { 503 };
+    axum::Json(serde_json::json!({
+        "status": if all_ok { "healthy" } else { "unhealthy" },
+        "code": status_code,
+        "components": {
+            "database": db_status,
+            "sip": sip_status,
+            "zlm": zlm_status,
+            "redis": redis_status,
+        },
+        "timestamp": chrono::Utc::now().to_rfc3339(),
+    }))
+}
 
 pub fn app(state: AppState) -> Router<AppState> {
     let state_clone = state.clone();
@@ -771,7 +796,8 @@ pub fn app(state: AppState) -> Router<AppState> {
     let api_public = Router::new()
         .route("/api/user/login", get(user::login).post(user::login))
         .route("/api/user/logout", get(user::logout))
-        .route("/api/zlm/hook", post(zlm_hook::handle_webhook));
+        .route("/api/zlm/hook", post(zlm_hook::handle_webhook))
+        .route("/api/health", get(health_check));
 
     let api = api_public.merge(api_protected);
     let app = Router::new().merge(api).with_state(state.clone());

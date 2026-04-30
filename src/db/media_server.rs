@@ -264,3 +264,79 @@ pub async fn list_online_servers(pool: &Pool) -> sqlx::Result<Vec<MediaServer>> 
     .fetch_all(pool)
     .await;
 }
+
+/// Update media server ports from ZLM on_server_started hook
+pub async fn update_ports(
+    pool: &Pool,
+    id: &str,
+    http_port: i32,
+    http_ssl_port: Option<i32>,
+    rtsp_port: Option<i32>,
+    rtmp_port: Option<i32>,
+    now: &str,
+) -> sqlx::Result<u64> {
+    #[cfg(feature = "mysql")]
+    let r = sqlx::query(
+        r#"UPDATE wvp_media_server SET
+           http_port = COALESCE(?, http_port),
+           http_ssl_port = COALESCE(?, http_ssl_port),
+           rtsp_port = COALESCE(?, rtsp_port),
+           rtmp_port = COALESCE(?, rtmp_port),
+           status = 1,
+           update_time = ?
+           WHERE id = ?"#
+    )
+    .bind(http_port)
+    .bind(http_ssl_port)
+    .bind(rtsp_port)
+    .bind(rtmp_port)
+    .bind(now)
+    .bind(id)
+    .execute(pool)
+    .await?;
+    #[cfg(feature = "postgres")]
+    let r = sqlx::query(
+        r#"UPDATE wvp_media_server SET
+           http_port = COALESCE($1, http_port),
+           http_ssl_port = COALESCE($2, http_ssl_port),
+           rtsp_port = COALESCE($3, rtsp_port),
+           rtmp_port = COALESCE($4, rtmp_port),
+           status = true,
+           update_time = $5
+           WHERE id = $6"#
+    )
+    .bind(http_port)
+    .bind(http_ssl_port)
+    .bind(rtsp_port)
+    .bind(rtmp_port)
+    .bind(now)
+    .bind(id)
+    .execute(pool)
+    .await?;
+    Ok(r.rows_affected())
+}
+
+/// Update last keepalive time
+pub async fn update_last_keepalive(
+    pool: &Pool,
+    id: &str,
+    now: &str,
+) -> sqlx::Result<u64> {
+    #[cfg(feature = "mysql")]
+    let r = sqlx::query(
+        "UPDATE wvp_media_server SET last_keepalive_time = ?, status = 1 WHERE id = ?"
+    )
+    .bind(now)
+    .bind(id)
+    .execute(pool)
+    .await?;
+    #[cfg(feature = "postgres")]
+    let r = sqlx::query(
+        "UPDATE wvp_media_server SET last_keepalive_time = $1, status = true WHERE id = $2"
+    )
+    .bind(now)
+    .bind(id)
+    .execute(pool)
+    .await?;
+    Ok(r.rows_affected())
+}

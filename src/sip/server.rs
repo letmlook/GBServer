@@ -2302,6 +2302,117 @@ f=v/1/96/1/2/1/1/0
         Ok(())
     }
 
+    /// 根据 InviteSessionManager 中的 active session 发送 BYE（用于 Play/Playback/Download/Broadcast 停止）
+    pub async fn send_session_bye(&self, device_id: &str, channel_id: &str) -> Result<String> {
+        let session = self.invite_session_manager.get_by_device_channel(device_id, channel_id).await
+            .ok_or_else(|| anyhow::anyhow!("No active invite session for {}/{}", device_id, channel_id))?;
+        
+        let socket = self.socket.read().await;
+        let socket = socket.as_ref().ok_or_else(|| anyhow::anyhow!("Socket not initialized"))?;
+        
+        let device_addr = self.device_manager.get_address(device_id).await
+            .ok_or_else(|| anyhow::anyhow!("Device {} not registered", device_id))?;
+        
+        let call_id = session.call_id.clone();
+        let branch = generate_branch();
+        let cseq = "BYE 1".to_string();
+        
+        let via = format!("SIP/2.0/UDP {}:{};branch={};rport", 
+            self.config.ip, self.config.port, branch);
+        let from = format!("<sip:{}@{}:{}>;tag={}", 
+            self.config.device_id, self.config.ip, self.config.port, generate_tag());
+        let to = format!("<sip:{}@{}:{}>", channel_id, device_addr.ip(), device_addr.port());
+        
+        let headers: Vec<(&str, &str)> = vec![
+            ("Via", &via),
+            ("From", &from),
+            ("To", &to),
+            ("Call-ID", &call_id),
+            ("CSeq", &cseq),
+            ("Max-Forwards", "70"),
+        ];
+        
+        let uri = format!("sip:{}@{}:{}", channel_id, device_addr.ip(), device_addr.port());
+        let message = Parser::generate_request("BYE", &uri, &headers, None);
+        
+        socket.send_to(message.as_bytes(), device_addr).await?;
+        tracing::info!("Sent session BYE to device {} channel {} call_id={}", device_id, channel_id, call_id);
+        
+        self.invite_session_manager.update_status(&call_id, InviteSessionStatus::Terminating).await;
+        
+        if let Some(ref stream_id) = session.zlm_stream_id {
+            if let Some(ref zlm) = self.zlm_client {
+                let _ = zlm.close_rtp_server(stream_id).await;
+            }
+        }
+        
+        self.invite_session_manager.update_status(&call_id, InviteSessionStatus::Terminated).await;
+        
+        Ok(call_id)
+    }
+
+    /// 发送 GB28181 RecordInfo 查询请求（设备侧历史录像检索）
+    pub async fn send_record_info_query(
+        &self,
+        device_id: &str,
+        channel_id: &str,
+        start_time: &str,
+        end_time: &str,
+        sn: i64,
+    ) -> Result<String> {
+        let socket = self.socket.read().await;
+        let socket = socket.as_ref().ok_or_else(|| anyhow::anyhow!("Socket not initialized"))?;
+        
+        let device_addr = self.device_manager.get_address(device_id).await
+            .ok_or_else(|| anyhow::anyhow!("Device {} not registered", device_id))?;
+        
+        let call_id = format!("recinfo_{}_{}", device_id, chrono::Utc::now().timestamp_millis());
+        let branch = generate_branch();
+        let cseq = "MESSAGE 1".to_string();
+        
+        let body = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<Query>
+<CmdType>RecordInfo</CmdType>
+<SN>{}</SN>
+<DeviceID>{}</DeviceID>
+<StartTime>{}</StartTime>
+<EndTime>{}</EndTime>
+</Query>"#,
+            sn, channel_id, start_time, end_time
+        );
+        
+        let content_length = body.len().to_string();
+        
+        let via = format!("SIP/2.0/UDP {}:{};branch={};rport", 
+            self.config.ip, self.config.port, branch);
+        let from = format!("<sip:{}@{}:{}>;tag={}", 
+            self.config.device_id, self.config.ip, self.config.port, generate_tag());
+        let to = format!("<sip:{}@{}:{}>", device_id, device_addr.ip(), device_addr.port());
+        let contact = format!("<sip:{}@{}:{}>", self.config.device_id, self.config.ip, self.config.port);
+        
+        let headers: Vec<(&str, &str)> = vec![
+            ("Via", &via),
+            ("From", &from),
+            ("To", &to),
+            ("Call-ID", &call_id),
+            ("CSeq", &cseq),
+            ("Contact", &contact),
+            ("Max-Forwards", "70"),
+            ("User-Agent", "GBServer/1.0"),
+            ("Content-Type", "Application/MANSCDP+xml"),
+            ("Content-Length", &content_length),
+        ];
+        
+        let uri = format!("sip:{}@{}:{}", device_id, device_addr.ip(), device_addr.port());
+        let message = Parser::generate_request("MESSAGE", &uri, &headers, Some(&body));
+        
+        socket.send_to(message.as_bytes(), device_addr).await?;
+        tracing::info!("Sent RecordInfo query to device {} channel {} [{}-{}]", device_id, channel_id, start_time, end_time);
+        
+        Ok(call_id)
+    }
+
     /// 旧 fire-and-forget 接口（保留兼容）
     pub async fn send_play_invite(&self, device_id: &str, channel_id: &str) -> Result<()> {
         let _ = self.send_play_invite_and_wait(device_id, channel_id, 0, None).await;

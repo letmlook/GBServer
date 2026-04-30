@@ -441,6 +441,16 @@ pub async fn playback_stop(
                 ).await;
             }
             playback_manager.remove(&stream_id).await;
+
+            // Send SIP BYE to stop device playback push
+            if let Some(ref sip_server) = state.sip_server {
+                let sip = sip_server.read().await;
+                match sip.send_session_bye(&device_id, &channel_id).await {
+                    Ok(call_id) => tracing::info!("Playback BYE sent call_id={}", call_id),
+                    Err(e) => tracing::warn!("Failed to send playback BYE: {}", e),
+                }
+            }
+
             return Json(WVPResult::<()>::success_empty());
         }
     }
@@ -474,6 +484,28 @@ pub async fn gb_record_query(
 ) -> Json<WVPResult<serde_json::Value>> {
     tracing::info!("Record query: device={}, channel={}", device_id, channel_id);
 
+    let start_time = q.start_time.clone().unwrap_or_default();
+    let end_time = q.end_time.clone().unwrap_or_default();
+
+    // 1. Try GB28181 RecordInfo query via SIP if device is online
+    if let Some(ref sip_server) = state.sip_server {
+        let sip = sip_server.read().await;
+        if let Some(device) = sip.device_manager().get(&device_id).await {
+            if device.online && device.addr.is_some() {
+                let sn = chrono::Utc::now().timestamp() % 10000;
+                match sip.send_record_info_query(&device_id, &channel_id, &start_time, &end_time, sn).await {
+                    Ok(call_id) => {
+                        tracing::info!("RecordInfo SIP query sent, call_id={}", call_id);
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to send RecordInfo SIP query: {}", e);
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. Also query ZLM MP4 records as fallback/supplement
     if let Some(ref zlm_client) = state.zlm_client {
         match zlm_client.get_mp4_record_file("record", &channel_id, None, None, None).await {
             Ok(files) => {

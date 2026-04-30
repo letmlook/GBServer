@@ -8,6 +8,7 @@ pub mod router;
 pub mod sip;
 pub mod zlm;
 pub mod cache;
+pub mod scheduler;
 
 use config::AppConfig;
 use std::collections::HashMap;
@@ -16,6 +17,7 @@ use tokio::sync::RwLock;
 
 async fn init_db_tables(pool: &db::Pool) -> anyhow::Result<()> {
     db::position_history::ensure_table(pool).await?;
+    db::audit_log::ensure_table(pool).await?;
     
     // Check if core WVP tables exist; if not, run full schema init
     #[cfg(feature = "postgres")]
@@ -87,7 +89,6 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
         if sip_config.enabled {
             let mut server = sip::SipServer::new(sip_config.clone(), pool.clone());
             server.set_ws_state(ws_state.clone());
-            server.start().await?;
             Some(Arc::new(RwLock::new(server)))
         } else {
             None
@@ -121,6 +122,12 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
                 }
             }
         }
+    }
+
+    if let Some(ref server) = sip_server {
+        let mut server = server.write().await;
+        server.set_zlm_client(zlm_client.clone());
+        server.start().await?;
     }
 
     let download_manager = Arc::new(crate::handlers::playback::DownloadManager::new());
@@ -168,6 +175,19 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
             if let Err(e) = server.run().await {
                 tracing::error!("SIP Server error: {}", e);
             }
+        });
+    }
+
+    // Start RecordPlanScheduler
+    {
+        let scheduler_pool = state.pool.clone();
+        let scheduler_zlm = state.zlm_client.clone();
+        tokio::spawn(async move {
+            let scheduler = crate::scheduler::record_plan::RecordPlanScheduler::new(
+                scheduler_pool,
+                scheduler_zlm,
+            );
+            scheduler.run().await;
         });
     }
 
