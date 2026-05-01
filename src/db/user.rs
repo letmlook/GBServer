@@ -275,3 +275,43 @@ pub async fn role_exists(pool: &Pool, role_id: i32) -> sqlx::Result<bool> {
         .unwrap_or((0,));
     Ok(row.0 > 0)
 }
+
+/// 更新用户角色
+pub async fn update_user_role(pool: &Pool, user_id: i32, role_id: i32) -> sqlx::Result<u64> {
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    #[cfg(feature = "mysql")]
+    let r = sqlx::query("UPDATE wvp_user SET role_id = ?, update_time = ? WHERE id = ?")
+        .bind(role_id)
+        .bind(&now)
+        .bind(user_id)
+        .execute(pool)
+        .await?;
+    #[cfg(feature = "postgres")]
+    let r = sqlx::query("UPDATE wvp_user SET role_id = $1, update_time = $2 WHERE id = $3")
+        .bind(role_id)
+        .bind(&now)
+        .bind(user_id)
+        .execute(pool)
+        .await?;
+    Ok(r.rows_affected())
+}
+
+/// 更新用户名
+pub async fn update_username(pool: &Pool, user_id: i32, username: &str) -> sqlx::Result<u64> {
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    #[cfg(feature = "mysql")]
+    let r = sqlx::query("UPDATE wvp_user SET username = ?, update_time = ? WHERE id = ?")
+        .bind(username)
+        .bind(&now)
+        .bind(user_id)
+        .execute(pool)
+        .await?;
+    #[cfg(feature = "postgres")]
+    let r = sqlx::query("UPDATE wvp_user SET username = $1, update_time = $2 WHERE id = $3")
+        .bind(username)
+        .bind(&now)
+        .bind(user_id)
+        .execute(pool)
+        .await?;
+    Ok(r.rows_affected())
+}

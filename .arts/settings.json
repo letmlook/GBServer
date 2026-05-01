@@ -1,0 +1,6 @@
+{
+    "java.compile.nullAnalysis.mode": "automatic",
+    "diffEditor.renderSideBySide": true,
+    "clawMode.mode": "editor",
+    "workbench.activityBar.location": "default"
+}

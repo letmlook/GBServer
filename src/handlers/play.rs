@@ -31,51 +31,82 @@ pub async fn play_start(
         }
     };
 
-    let ip = device.ip.clone().unwrap_or_else(|| "127.0.0.1".to_string());
-    let port = device.port.unwrap_or(554) as u16;
-    let has_audio = channel.has_audio.unwrap_or(false);
+    if !device.on_line.unwrap_or(false) {
+        return Json(WVPResult::error("Device is offline"));
+    }
+
+    let sip_server = match &state.sip_server {
+        Some(s) => s.clone(),
+        None => return Json(WVPResult::error("SIP server not available")),
+    };
 
     if let Some(ref zlm_client) = state.zlm_client {
-        let rtsp_url = format!("rtsp://{}:{}/{}", ip, port, channel_id);
+        // 创建 ZLM 的流。stream_id 使用规范格式: 设备ID_通道ID
+        let stream_id = format!("{}_{}", device_id, channel_id);
         
-        let request = crate::zlm::AddStreamProxyRequest {
+        let is_tcp = device.transport.as_deref().unwrap_or("UDP").to_uppercase() == "TCP";
+        
+        let rtp_req = crate::zlm::OpenRtpServerRequest {
             secret: zlm_client.secret.clone(),
-            vhost: "__defaultVhost__".to_string(),
-            app: "gb".to_string(),
-            stream: format!("{}${}", device_id, channel_id),
-            url: rtsp_url.clone(),
-            rtp_type: Some(0),
-            timeout_sec: Some(30.0),
-            enable_hls: Some(false),
-            enable_mp4: Some(false),
-            enable_rtsp: Some(true),
-            enable_rtmp: Some(true),
-            enable_fmp4: Some(true),
-            enable_ts: Some(false),
-            enableAAC: Some(false),
+            stream_id: stream_id.clone(),
+            port: Some(0), // 让 ZLM 随机分配端口
+            use_tcp: Some(is_tcp),
+            rtp_type: Some(if is_tcp { 1 } else { 0 }),
+            recv_port: None,
         };
 
-        match zlm_client.add_stream_proxy(&request).await {
-            Ok(key) => {
-                tracing::info!("Stream started: {} -> {}", key, rtsp_url);
-                let stream_url = format!("gb/{}${}", device_id, channel_id);
-                let play_url = format!("rtsp://127.0.0.1/live/{}", stream_url);
-                let flv_url = format!("http://127.0.0.1/flv/live.app?stream={}", stream_url);
+        let rtp_server = match zlm_client.open_rtp_server(&rtp_req).await {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("Failed to open RTP server: {}", e);
+                return Json(WVPResult::error(format!("Media Server error: {}", e)));
+            }
+        };
+
+        tracing::info!("ZLM RTP server opened on port {}", rtp_server.port);
+
+        // 调用 SIP Server 真正发送 INVITE，并等待设备回复 200 OK
+        let sip = sip_server.read().await;
+        // 先生成规范 SSRC: 0 加上设备编号前9位加上0
+        let id_part = if device_id.len() >= 9 { &device_id[0..9] } else { &device_id };
+        let ssrc = format!("0{:0>9}0", id_part);
+
+        match sip.send_play_invite_and_wait(&device_id, &channel_id, rtp_server.port, Some(&ssrc)).await {
+            Ok(_) => {
+                tracing::info!("SIP INVITE sequence completed for {}/{}", device_id, channel_id);
+                // 构建播放地址返回给前端
+                let stream_url = format!("rtp/{}", stream_id);
+                // 这里 zlm_client 中尚未获取自身的配置公网 IP/Port
+                // 因为 WVP 接口通常提供各个协议的地址，我们可以用 127.0.0.1 或者 media server 配置地址
+                let media_ip = zlm_client.ip.clone(); 
+                let http_port = zlm_client.http_port;
+                // 注意这里假设了几个默认端口（如果在配置里解析过可以替换），这里为了快速回掉先用通配协议配置
+                
+                let play_url = format!("rtsp://{}:554/{}", media_ip, stream_url);
+                let flv_url = format!("http://{}:{}/{}.flv", media_ip, http_port, stream_url);
+                let ws_url = format!("ws://{}:{}/{}.flv", media_ip, http_port, stream_url);
+                let hls_url = format!("http://{}:{}/{}/hls.m3u8", media_ip, http_port, stream_url);
+
                 return Json(WVPResult::success(serde_json::json!({
-                    "app": "gb",
-                    "stream": key,
+                    "app": "rtp",
+                    "stream": stream_id,
                     "playUrl": play_url,
                     "flvUrl": flv_url,
-                    "wsUrl": format!("ws://127.0.0.1/live/{}", stream_url),
+                    "wsUrl": ws_url,
+                    "ws_flv": ws_url, 
+                    "hls": hls_url,
+                    "webrtc": format!("webrtc://{}:{}/index/api/webrtc?app=rtp&stream={}&type=play", media_ip, http_port, stream_id),
                     "deviceId": device_id,
                     "channelId": channel_id,
-                    "hasAudio": has_audio,
-                    "rtspUrl": rtsp_url,
+                    "hasAudio": channel.has_audio.unwrap_or(false),
+                    "ssrc": ssrc,
                 })));
             }
             Err(e) => {
-                tracing::error!("Failed to start stream: {}", e);
-                return Json(WVPResult::error(format!("ZLM error: {}", e)));
+                tracing::error!("SIP INVITE failed: {}", e);
+                // 清理已开启的 RTP 端口
+                let _ = zlm_client.close_rtp_server(&stream_id).await;
+                return Json(WVPResult::error(format!("SIP error: {}", e)));
             }
         }
     }
@@ -84,7 +115,7 @@ pub async fn play_start(
         "app": "",
         "stream": "",
         "tracks": [],
-        "msg": "ZLM not configured or unavailable"
+        "msg": "ZLM not configured"
     })))
 }
 
@@ -94,16 +125,30 @@ pub async fn play_stop(
 ) -> Json<WVPResult<()>> {
     tracing::info!("Stop play: device={}, channel={}", device_id, channel_id);
 
+    let sip_server = match &state.sip_server {
+        Some(s) => s.clone(),
+        None => return Json(WVPResult::error("SIP server not available")),
+    };
+
+    let stream_id = format!("{}_{}", device_id, channel_id);
+    
+    // 1. 通知 ZLM 停止该流的接收
     if let Some(ref zlm_client) = state.zlm_client {
-        let stream_key = format!("__defaultVhost__/gb/{}@{}", device_id, channel_id);
-        match zlm_client.close_streams(Some("rtsp"), Some("gb"), Some(&format!("{}@{}", device_id, channel_id)), true).await {
-            Ok(_) => {
-                tracing::info!("Stream stopped: {}", stream_key);
-                return Json(WVPResult::<()>::success_empty());
-            }
-            Err(e) => {
-                tracing::error!("Failed to stop stream: {}", e);
-            }
+        let _ = zlm_client.close_rtp_server(&stream_id).await;
+        // 为了干净，把相关的 session 都踢掉
+        let _ = zlm_client.close_streams(None, Some("rtp"), Some(&stream_id), true).await;
+        tracing::debug!("ZLM resources cleaned for stream={}", stream_id);
+    }
+
+    // 2. 发送 SIP BYE 挂断设备的推流（使用 InviteSession 中的 Call-ID）
+    let sip = sip_server.read().await;
+    match sip.send_session_bye(&device_id, &channel_id).await {
+        Ok(call_id) => {
+            tracing::info!("Session BYE sent for stream {} call_id={}", stream_id, call_id);
+        }
+        Err(e) => {
+            tracing::warn!("Failed to send session BYE for stream {}: {}, trying talk BYE fallback", stream_id, e);
+            let _ = sip.send_talk_bye(&device_id, &channel_id).await;
         }
     }
 

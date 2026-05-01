@@ -13,6 +13,12 @@ pub mod platform_channel;
 pub mod common_channel;
 pub mod jt1078;
 pub mod position_history;
+pub mod alarm;
+pub mod mobile_position;
+pub mod cloud_record;
+pub mod platform_group;
+pub mod platform_region;
+pub mod audit_log;
 
 pub use user::*;
 pub use device::*;
@@ -27,13 +33,20 @@ pub use stream_proxy::StreamProxy;
 pub use platform::Platform;
 pub use jt1078::{JtTerminal, JtChannel};
 pub use position_history::PositionHistory;
+pub use alarm::Alarm;
+pub use mobile_position::MobilePosition;
+pub use cloud_record::CloudRecord;
 
 use crate::config::AppConfig;
 
-#[cfg(feature = "mysql")]
+#[cfg(all(feature = "mysql", not(feature = "postgres")))]
 pub type Pool = sqlx::MySqlPool;
 
-#[cfg(feature = "postgres")]
+#[cfg(all(feature = "postgres", not(feature = "mysql")))]
+pub type Pool = sqlx::PgPool;
+
+// 默认使用postgres（当没有明确指定feature时）
+#[cfg(all(not(feature = "mysql"), not(feature = "postgres")))]
 pub type Pool = sqlx::PgPool;
 
 pub async fn create_pool(cfg: &AppConfig) -> anyhow::Result<Pool> {

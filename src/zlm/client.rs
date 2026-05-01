@@ -10,6 +10,8 @@ use crate::config::{ZlmServerConfig, ZlmConfig};
 pub struct ZlmClient {
     base_url: String,
     pub secret: String,
+    pub ip: String,
+    pub http_port: u16,
     http: Client,
 }
 
@@ -18,6 +20,8 @@ impl ZlmClient {
         Self {
             base_url: format!("http://{}:{}", ip, port),
             secret: secret.to_string(),
+            ip: ip.to_string(),
+            http_port: port,
             http: Client::builder()
                 .timeout(std::time::Duration::from_secs(30))
                 .build()
@@ -27,6 +31,10 @@ impl ZlmClient {
 
     pub fn from_config(config: &ZlmServerConfig) -> Self {
         Self::new(&config.ip, config.http_port, &config.secret)
+    }
+
+    pub fn base_url(&self) -> &str {
+        &self.base_url
     }
 
     async fn request<R: for<'de> serde::Deserialize<'de>>(&self, path: &str, params: &[(&str, String)]) -> Result<R> {
@@ -61,6 +69,12 @@ impl ZlmClient {
 
         let resp: ApiResponse<Vec<MediaInfo>> = self.request("/index/api/getMediaList", &params).await?;
         Ok(resp.data.unwrap_or_default())
+    }
+
+    /// 获取当前活跃的流数量（用于负载均衡）
+    pub async fn get_active_stream_count(&self) -> Result<usize> {
+        let list = self.get_media_list(None, None, None).await?;
+        Ok(list.len())
     }
 
     pub async fn get_media_info(&self, schema: &str, vhost: &str, app: &str, stream: &str) -> Result<Option<MediaInfo>> {
@@ -381,6 +395,32 @@ impl ZlmClient {
             }
         }
         Ok(result)
+    }
+
+    /// Set a single ZLM server config key-value pair
+    pub async fn set_server_config(&self, secret: &str, key: &str, value: &str) -> Result<()> {
+        #[derive(serde::Serialize)]
+        struct SetConfigReq {
+            secret: String,
+            #[serde(rename = "key")]
+            key_: String,
+            value: String,
+        }
+        let req = SetConfigReq {
+            secret: secret.to_string(),
+            key_: key.to_string(),
+            value: value.to_string(),
+        };
+        #[derive(Deserialize)]
+        struct Resp {
+            code: i32,
+        }
+        let resp: Resp = self.request_post("/index/api/setServerConfig", &req).await?;
+        if resp.code == 0 {
+            Ok(())
+        } else {
+            Err(anyhow!("setServerConfig failed with code {}", resp.code))
+        }
     }
 
     pub async fn get_server_stats(&self) -> Result<HashMap<String, serde_json::Value>> {

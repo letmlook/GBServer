@@ -5,6 +5,7 @@ use sqlx::FromRow;
 
 use super::Pool;
 
+/// 国标设备完整信息
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub struct Device {
     pub id: i32,
@@ -12,32 +13,66 @@ pub struct Device {
     pub name: Option<String>,
     pub manufacturer: Option<String>,
     pub model: Option<String>,
+    pub firmware: Option<String>,
     pub transport: Option<String>,
     pub stream_mode: Option<String>,
     pub on_line: Option<bool>,
+    pub register_time: Option<String>,
+    pub keepalive_time: Option<String>,
     pub ip: Option<String>,
     pub port: Option<i32>,
+    pub expires: Option<i32>,
     pub create_time: Option<String>,
     pub update_time: Option<String>,
     pub media_server_id: Option<String>,
     pub custom_name: Option<String>,
+    pub charset: Option<String>,
+    pub ssrc_check: Option<bool>,
+    pub geo_coord_sys: Option<String>,
+    pub sdp_ip: Option<String>,
+    pub local_ip: Option<String>,
+    pub password: Option<String>,
+    pub subscribe_cycle_for_catalog: Option<i32>,
+    pub subscribe_cycle_for_mobile_position: Option<i32>,
+    pub mobile_position_submission_interval: Option<i32>,
 }
 
+/// 设备通道完整信息
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub struct DeviceChannel {
     pub id: i32,
     pub device_id: Option<String>,
     pub name: Option<String>,
+    pub manufacturer: Option<String>,
+    pub model: Option<String>,
+    pub owner: Option<String>,
+    pub civil_code: Option<String>,
+    pub address: Option<String>,
+    pub parental: Option<i32>,
+    pub parent_id: Option<String>,
     #[serde(rename = "channelId")]
     pub gb_device_id: Option<String>,
     pub status: Option<String>,
     pub longitude: Option<f64>,
     pub latitude: Option<f64>,
+    pub ptz_type: Option<i32>,
     pub create_time: Option<String>,
     pub update_time: Option<String>,
     pub sub_count: Option<i32>,
+    pub stream_id: Option<String>,
     pub has_audio: Option<bool>,
+    pub stream_identification: Option<String>,
     pub channel_type: Option<i32>,
+    pub map_level: Option<i32>,
+    pub gb_name: Option<String>,
+    pub gb_manufacturer: Option<String>,
+    pub gb_model: Option<String>,
+    pub gb_civil_code: Option<String>,
+    pub gb_address: Option<String>,
+    pub gb_status: Option<String>,
+    pub gb_longitude: Option<f64>,
+    pub gb_latitude: Option<f64>,
+    pub record_plan_id: Option<i32>,
 }
 
  
@@ -48,19 +83,21 @@ pub async fn update_channel_has_audio(
 ) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
     {
-        sqlx::query("UPDATE wvp_device_channel SET has_audio = ? WHERE id = ?")
+        let result = sqlx::query("UPDATE wvp_device_channel SET has_audio = ? WHERE id = ?")
             .bind(has_audio)
             .bind(channel_id)
             .execute(pool)
-            .await
+            .await?;
+        Ok(result.rows_affected())
     }
     #[cfg(feature = "postgres")]
     {
-        sqlx::query("UPDATE wvp_device_channel SET has_audio = $1 WHERE id = $2")
+        let result = sqlx::query("UPDATE wvp_device_channel SET has_audio = $1 WHERE id = $2")
             .bind(has_audio)
             .bind(channel_id)
             .execute(pool)
-            .await
+            .await?;
+        Ok(result.rows_affected())
     }
 }
 
@@ -71,19 +108,107 @@ pub async fn update_channel_stream_identification(
 ) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
     {
-        sqlx::query("UPDATE wvp_device_channel SET stream_identification = ? WHERE id = ?")
+        let result = sqlx::query("UPDATE wvp_device_channel SET stream_identification = ? WHERE id = ?")
             .bind(stream_identification)
             .bind(channel_id)
             .execute(pool)
-            .await
+            .await?;
+        Ok(result.rows_affected())
     }
     #[cfg(feature = "postgres")]
     {
-        sqlx::query("UPDATE wvp_device_channel SET stream_identification = $1 WHERE id = $2")
+        let result = sqlx::query("UPDATE wvp_device_channel SET stream_identification = $1 WHERE id = $2")
             .bind(stream_identification)
             .bind(channel_id)
             .execute(pool)
-            .await
+            .await?;
+        Ok(result.rows_affected())
+    }
+}
+
+pub async fn update_device_stream_mode(
+    pool: &Pool,
+    device_id: &str,
+    stream_mode: &str,
+) -> sqlx::Result<u64> {
+    #[cfg(feature = "mysql")]
+    {
+        let result = sqlx::query("UPDATE wvp_device SET stream_mode = ?, update_time = NOW() WHERE device_id = ?")
+            .bind(stream_mode)
+            .bind(device_id)
+            .execute(pool)
+            .await?;
+        Ok(result.rows_affected())
+    }
+    #[cfg(feature = "postgres")]
+    {
+        let result = sqlx::query("UPDATE wvp_device SET stream_mode = $1, update_time = NOW() WHERE device_id = $2")
+            .bind(stream_mode)
+            .bind(device_id)
+            .execute(pool)
+            .await?;
+        Ok(result.rows_affected())
+    }
+}
+
+pub async fn update_device_catalog_subscription(
+    pool: &Pool,
+    device_id: &str,
+    cycle: i32,
+) -> sqlx::Result<u64> {
+    #[cfg(feature = "mysql")]
+    {
+        let result = sqlx::query(
+            "UPDATE wvp_device SET subscribe_cycle_for_catalog = ?, update_time = NOW() WHERE device_id = ?",
+        )
+        .bind(cycle)
+        .bind(device_id)
+        .execute(pool)
+        .await?;
+        Ok(result.rows_affected())
+    }
+    #[cfg(feature = "postgres")]
+    {
+        let result = sqlx::query(
+            "UPDATE wvp_device SET subscribe_cycle_for_catalog = $1, update_time = NOW() WHERE device_id = $2",
+        )
+        .bind(cycle)
+        .bind(device_id)
+        .execute(pool)
+        .await?;
+        Ok(result.rows_affected())
+    }
+}
+
+pub async fn update_device_mobile_position_subscription(
+    pool: &Pool,
+    device_id: &str,
+    cycle: i32,
+    interval: i32,
+) -> sqlx::Result<u64> {
+    #[cfg(feature = "mysql")]
+    {
+        let result = sqlx::query(
+            "UPDATE wvp_device SET subscribe_cycle_for_mobile_position = ?, mobile_position_submission_interval = ?, update_time = NOW() WHERE device_id = ?",
+        )
+        .bind(cycle)
+        .bind(interval)
+        .bind(device_id)
+        .execute(pool)
+        .await?;
+        Ok(result.rows_affected())
+    }
+    #[cfg(feature = "postgres")]
+    {
+        let result = sqlx::query(
+            "UPDATE wvp_device SET subscribe_cycle_for_mobile_position = $1, mobile_position_submission_interval = $2, update_time = NOW() WHERE device_id = $3",
+        )
+        .bind(cycle)
+        .bind(interval)
+        .bind(device_id)
+        .execute(pool)
+        .await?;
+        Ok(result.rows_affected())
     }
 }
 
@@ -714,4 +839,367 @@ pub async fn list_all_channels(pool: &Pool) -> sqlx::Result<Vec<DeviceChannel>> 
     )
     .fetch_all(pool)
     .await;
+}
+
+/// 获取所有需要目录订阅续期的在线设备
+/// 返回 (device_id, subscribe_cycle_for_catalog) 列表
+pub async fn get_devices_for_catalog_renewal(pool: &Pool) -> sqlx::Result<Vec<(String, i32)>> {
+    #[cfg(feature = "mysql")]
+    {
+        let rows: Vec<(String, i32)> = sqlx::query_as(
+            "SELECT device_id, subscribe_cycle_for_catalog FROM wvp_device WHERE on_line = 1 AND subscribe_cycle_for_catalog > 0"
+        )
+        .fetch_all(pool)
+        .await?;
+        Ok(rows)
+    }
+    #[cfg(feature = "postgres")]
+    {
+        let rows: Vec<(String, i32)> = sqlx::query_as(
+            "SELECT device_id, subscribe_cycle_for_catalog FROM wvp_device WHERE on_line = true AND subscribe_cycle_for_catalog > 0"
+        )
+        .fetch_all(pool)
+        .await?;
+        Ok(rows)
+    }
+}
+
+/// 获取所有需要移动位置订阅续期的在线设备
+/// 返回 (device_id, subscribe_cycle_for_mobile_position) 列表
+pub async fn get_devices_for_mobile_position_renewal(pool: &Pool) -> sqlx::Result<Vec<(String, i32)>> {
+    #[cfg(feature = "mysql")]
+    {
+        let rows: Vec<(String, i32)> = sqlx::query_as(
+            "SELECT device_id, subscribe_cycle_for_mobile_position FROM wvp_device WHERE on_line = 1 AND subscribe_cycle_for_mobile_position > 0"
+        )
+        .fetch_all(pool)
+        .await?;
+        Ok(rows)
+    }
+    #[cfg(feature = "postgres")]
+    {
+        let rows: Vec<(String, i32)> = sqlx::query_as(
+            "SELECT device_id, subscribe_cycle_for_mobile_position FROM wvp_device WHERE on_line = true AND subscribe_cycle_for_mobile_position > 0"
+        )
+        .fetch_all(pool)
+        .await?;
+        Ok(rows)
+    }
+}
+
+/// 批量更新通道在线状态
+pub async fn batch_update_channel_status(
+    pool: &Pool,
+    device_id: &str,
+    channel_ids: &[&str],
+    status: &str,
+) -> sqlx::Result<u64> {
+    if channel_ids.is_empty() {
+        return Ok(0);
+    }
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let mut total = 0u64;
+    for channel_id in channel_ids {
+        #[cfg(feature = "mysql")]
+        let r = sqlx::query("UPDATE wvp_device_channel SET status = ?, update_time = ? WHERE device_id = ? AND gb_device_id = ?")
+            .bind(status)
+            .bind(&now)
+            .bind(device_id)
+            .bind(channel_id)
+            .execute(pool)
+            .await?;
+        #[cfg(feature = "postgres")]
+        let r = sqlx::query("UPDATE wvp_device_channel SET status = $1, update_time = $2 WHERE device_id = $3 AND gb_device_id = $4")
+            .bind(status)
+            .bind(&now)
+            .bind(device_id)
+            .bind(channel_id)
+            .execute(pool)
+            .await?;
+        total += r.rows_affected();
+    }
+    Ok(total)
+}
+
+/// 删除设备的所有通道
+pub async fn delete_channels_by_device(pool: &Pool, device_id: &str) -> sqlx::Result<u64> {
+    #[cfg(feature = "mysql")]
+    let r = sqlx::query("DELETE FROM wvp_device_channel WHERE device_id = ?")
+        .bind(device_id)
+        .execute(pool)
+        .await?;
+    #[cfg(feature = "postgres")]
+    let r = sqlx::query("DELETE FROM wvp_device_channel WHERE device_id = $1")
+        .bind(device_id)
+        .execute(pool)
+        .await?;
+    Ok(r.rows_affected())
+}
+
+/// 删除单个通道
+pub async fn delete_channel_by_id(pool: &Pool, id: i64) -> sqlx::Result<u64> {
+    #[cfg(feature = "mysql")]
+    let r = sqlx::query("DELETE FROM wvp_device_channel WHERE id = ?")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    #[cfg(feature = "postgres")]
+    let r = sqlx::query("DELETE FROM wvp_device_channel WHERE id = $1")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(r.rows_affected())
+}
+
+/// 删除指定设备的指定通道
+pub async fn delete_channel(pool: &Pool, device_id: &str, channel_id: &str) -> sqlx::Result<u64> {
+    #[cfg(feature = "mysql")]
+    let r = sqlx::query("DELETE FROM wvp_device_channel WHERE device_id = ? AND gb_device_id = ?")
+        .bind(device_id)
+        .bind(channel_id)
+        .execute(pool)
+        .await?;
+    #[cfg(feature = "postgres")]
+    let r = sqlx::query("DELETE FROM wvp_device_channel WHERE device_id = $1 AND gb_device_id = $2")
+        .bind(device_id)
+        .bind(channel_id)
+        .execute(pool)
+        .await?;
+    Ok(r.rows_affected())
+}
+
+/// 批量插入通道
+pub async fn batch_insert_channels(
+    pool: &Pool,
+    device_id: &str,
+    channels: &[ChannelInsertData],
+) -> sqlx::Result<u64> {
+    if channels.is_empty() {
+        return Ok(0);
+    }
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let mut total = 0u64;
+    
+    for ch in channels {
+        #[cfg(feature = "mysql")]
+        let r = sqlx::query(
+            "INSERT INTO wvp_device_channel (device_id, name, gb_device_id, status, longitude, latitude, has_audio, channel_type, create_time, update_time) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        )
+        .bind(device_id)
+        .bind(&ch.name)
+        .bind(&ch.gb_device_id)
+        .bind(&ch.status)
+        .bind(ch.longitude)
+        .bind(ch.latitude)
+        .bind(ch.has_audio)
+        .bind(ch.channel_type)
+        .bind(&now)
+        .bind(&now)
+        .execute(pool)
+        .await?;
+        #[cfg(feature = "postgres")]
+        let r = sqlx::query(
+            "INSERT INTO wvp_device_channel (device_id, name, gb_device_id, status, longitude, latitude, has_audio, channel_type, create_time, update_time) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)"
+        )
+        .bind(device_id)
+        .bind(&ch.name)
+        .bind(&ch.gb_device_id)
+        .bind(&ch.status)
+        .bind(ch.longitude)
+        .bind(ch.latitude)
+        .bind(ch.has_audio)
+        .bind(ch.channel_type)
+        .bind(&now)
+        .bind(&now)
+        .execute(pool)
+        .await?;
+        total += r.rows_affected();
+    }
+    Ok(total)
+}
+
+/// 通道插入数据结构
+#[derive(Debug, Clone)]
+pub struct ChannelInsertData {
+    pub name: String,
+    pub gb_device_id: String,
+    pub status: String,
+    pub longitude: Option<f64>,
+    pub latitude: Option<f64>,
+    pub has_audio: Option<bool>,
+    pub channel_type: Option<i32>,
+}
+
+/// 统计在线设备数量
+pub async fn count_online_devices(pool: &Pool) -> sqlx::Result<i64> {
+    #[cfg(feature = "mysql")]
+    return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM wvp_device WHERE on_line = 1")
+        .fetch_one(pool)
+        .await;
+    #[cfg(feature = "postgres")]
+    return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM wvp_device WHERE on_line = true")
+        .fetch_one(pool)
+        .await;
+}
+
+/// 获取所有设备列表（不分页）
+pub async fn list_all_devices(pool: &Pool) -> sqlx::Result<Vec<Device>> {
+    #[cfg(feature = "mysql")]
+    return sqlx::query_as::<_, Device>(
+        "SELECT id, device_id, name, manufacturer, model, transport, stream_mode, on_line, ip, port, create_time, update_time, media_server_id, custom_name FROM wvp_device ORDER BY id"
+    )
+    .fetch_all(pool)
+    .await;
+    #[cfg(feature = "postgres")]
+    return sqlx::query_as::<_, Device>(
+        "SELECT id, device_id, name, manufacturer, model, transport, stream_mode, on_line, ip, port, create_time, update_time, media_server_id, custom_name FROM wvp_device ORDER BY id"
+    )
+    .fetch_all(pool)
+    .await;
+}
+
+pub async fn upsert_channel_from_catalog(
+    pool: &Pool,
+    device_id: &str,
+    channel_device_id: &str,
+    name: &str,
+    manufacturer: Option<&str>,
+    model: Option<&str>,
+    owner: Option<&str>,
+    civil_code: Option<&str>,
+    address: Option<&str>,
+    parent_id: Option<&str>,
+    online: bool,
+    longitude: Option<f64>,
+    latitude: Option<f64>,
+    ptz_type: Option<i32>,
+    has_audio: Option<bool>,
+    sub_count: Option<i32>,
+) -> sqlx::Result<bool> {
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+
+    #[cfg(feature = "postgres")]
+    {
+        let existing = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM wvp_device_channel WHERE device_id = $1 AND gb_device_id = $2"
+        )
+        .bind(device_id)
+        .bind(channel_device_id)
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0);
+
+        if existing > 0 {
+            sqlx::query(
+                r#"UPDATE wvp_device_channel SET
+                   name = COALESCE($3, name),
+                   manufacturer = COALESCE($4, manufacturer),
+                   model = COALESCE($5, model),
+                   owner = COALESCE($6, owner),
+                   civil_code = COALESCE($7, civil_code),
+                   address = COALESCE($8, address),
+                   parent_id = COALESCE($9, parent_id),
+                   status = CASE WHEN $10 THEN 'ON' ELSE 'OFF' END,
+                   longitude = COALESCE($11, longitude),
+                   latitude = COALESCE($12, latitude),
+                   ptz_type = COALESCE($13, ptz_type),
+                   has_audio = COALESCE($14, has_audio),
+                   sub_count = COALESCE($15, sub_count),
+                   update_time = $16
+                   WHERE device_id = $1 AND gb_device_id = $2"#
+            )
+            .bind(device_id)
+            .bind(channel_device_id)
+            .bind(if name.is_empty() { None as Option<&str> } else { Some(name) })
+            .bind(manufacturer)
+            .bind(model)
+            .bind(owner)
+            .bind(civil_code)
+            .bind(address)
+            .bind(parent_id)
+            .bind(online)
+            .bind(longitude)
+            .bind(latitude)
+            .bind(ptz_type)
+            .bind(has_audio)
+            .bind(sub_count)
+            .bind(&now)
+            .execute(pool)
+            .await?;
+            Ok(false)
+        } else {
+            sqlx::query(
+                r#"INSERT INTO wvp_device_channel
+                   (device_id, gb_device_id, name, manufacturer, model, owner, civil_code, address,
+                    parent_id, status, longitude, latitude, ptz_type, has_audio, sub_count,
+                    create_time, update_time)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9,
+                    CASE WHEN $10 THEN 'ON' ELSE 'OFF' END,
+                    $11, $12, $13, $14, $15, $16, $17)"#
+            )
+            .bind(device_id)
+            .bind(channel_device_id)
+            .bind(if name.is_empty() { "Unknown" } else { name })
+            .bind(manufacturer)
+            .bind(model)
+            .bind(owner)
+            .bind(civil_code)
+            .bind(address)
+            .bind(parent_id)
+            .bind(online)
+            .bind(longitude)
+            .bind(latitude)
+            .bind(ptz_type)
+            .bind(has_audio)
+            .bind(sub_count)
+            .bind(&now)
+            .bind(&now)
+            .execute(pool)
+            .await?;
+            Ok(true)
+        }
+    }
+
+    #[cfg(feature = "mysql")]
+    {
+        sqlx::query(
+            r#"INSERT INTO wvp_device_channel
+               (device_id, gb_device_id, name, manufacturer, model, owner, civil_code, address,
+                parent_id, status, longitude, latitude, ptz_type, has_audio, sub_count,
+                create_time, update_time)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,
+                CASE WHEN ? THEN 'ON' ELSE 'OFF' END,
+                ?, ?, ?, ?, ?, ?, ?)
+               ON DUPLICATE KEY UPDATE
+               name = COALESCE(VALUES(name), name),
+               manufacturer = COALESCE(VALUES(manufacturer), manufacturer),
+               parent_id = COALESCE(VALUES(parent_id), parent_id),
+               status = VALUES(status),
+               longitude = COALESCE(VALUES(longitude), longitude),
+               latitude = COALESCE(VALUES(latitude), latitude),
+               has_audio = COALESCE(VALUES(has_audio), has_audio),
+               sub_count = COALESCE(VALUES(sub_count), sub_count),
+               update_time = VALUES(update_time)"#
+        )
+        .bind(device_id)
+        .bind(channel_device_id)
+        .bind(if name.is_empty() { "Unknown" } else { name })
+        .bind(manufacturer)
+        .bind(model)
+        .bind(owner)
+        .bind(civil_code)
+        .bind(address)
+        .bind(parent_id)
+        .bind(online)
+        .bind(longitude)
+        .bind(latitude)
+        .bind(ptz_type)
+        .bind(has_audio)
+        .bind(sub_count)
+        .bind(&now)
+        .bind(&now)
+        .execute(pool)
+        .await?;
+        Ok(true)
+    }
 }

@@ -1,6 +1,8 @@
 use axum::{
+    extract::State,
     middleware,
-    routing::{delete, get, post, ws},
+    routing::{delete, get, post},
+    Json,
     Router,
 };
 use std::path::PathBuf;
@@ -9,12 +11,35 @@ use tower_http::cors::{Any, CorsLayer};
 use crate::auth::auth_middleware;
 use crate::handlers::{
     alarm, common_channel, device, device_control, device_stub, front_end, jt1078, platform, play,
-    playback, server, stream, stub, talk, user, websocket,
+    playback, server, stream, stub, talk, user, websocket, webrtc, device_batch,
 };
 use crate::zlm::hook as zlm_hook;
 use crate::AppState;
 
-pub fn app(state: AppState) -> Router {
+async fn health_check(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let db_status = match sqlx::query_scalar::<_, i64>("SELECT 1").fetch_one(&state.pool).await {
+        Ok(_) => "ok",
+        Err(_) => "error",
+    };
+    let sip_status = if state.sip_server.is_some() { "ok" } else { "disabled" };
+    let zlm_status = if state.zlm_client.is_some() { "ok" } else { "disabled" };
+    let redis_status = if state.redis.is_some() { "ok" } else { "disabled" };
+    let all_ok = db_status == "ok";
+    let status_code = if all_ok { 200 } else { 503 };
+    axum::Json(serde_json::json!({
+        "status": if all_ok { "healthy" } else { "unhealthy" },
+        "code": status_code,
+        "components": {
+            "database": db_status,
+            "sip": sip_status,
+            "zlm": zlm_status,
+            "redis": redis_status,
+        },
+        "timestamp": chrono::Utc::now().to_rfc3339(),
+    }))
+}
+
+pub fn app(state: AppState) -> Router<AppState> {
     let state_clone = state.clone();
     let api_protected = Router::new()
         .route(
@@ -59,6 +84,18 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/api/device/control/preset",
             get(device_control::device_preset),
+        )
+        .route(
+            "/api/device/control/reboot",
+            get(device_control::device_reboot),
+        )
+        .route(
+            "/api/device/config/query",
+            get(device_control::device_config_query),
+        )
+        .route(
+            "/api/device/config/update",
+            post(device_control::device_config_update),
         )
         .route(
             "/api/device/query/subscribe/catalog",
@@ -168,6 +205,7 @@ pub fn app(state: AppState) -> Router {
         .route("/api/push/update", post(stream::push_update))
         .route("/api/push/start", get(stream::push_start))
         .route("/api/push/remove", post(stream::push_remove))
+        .route("/api/push/upload", post(stream::push_upload))
         .route("/api/push/batchRemove", delete(stream::push_batch_remove))
         .route("/api/push/save_to_gb", post(stream::push_save_to_gb))
         .route(
@@ -243,6 +281,14 @@ pub fn app(state: AppState) -> Router {
             "/api/play/broadcast/stop/:device_id/:channel_id",
             get(play::broadcast_stop),
         )
+        .route(
+            "/api/play/webrtc",
+            post(webrtc::webrtc_play),
+        )
+        .route(
+            "/api/device/batch/control",
+            post(device_batch::batch_control),
+        )
         .route("/api/region/tree/list", get(stub::region_tree_list))
         .route("/api/region/delete", delete(stub::region_delete))
         .route("/api/region/description", get(stub::region_description))
@@ -292,6 +338,10 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/api/playback/speed/:stream_id/:speed",
             get(playback::playback_speed),
+        )
+        .route(
+            "/api/playback/seek/:stream_id/:seek_time",
+            get(playback::playback_seek),
         )
         .route(
             "/api/playback/stop/:device_id/:channel_id/:stream_id",
@@ -749,27 +799,29 @@ pub fn app(state: AppState) -> Router {
         .route_layer(middleware::from_fn_with_state(
             state_clone.clone(),
             auth_middleware,
-        ))
-        .with_state(state_clone.clone());
+        ));
 
     let api_public = Router::new()
         .route("/api/user/login", get(user::login).post(user::login))
         .route("/api/user/logout", get(user::logout))
         .route("/api/zlm/hook", post(zlm_hook::handle_webhook))
-        .with_state(state_clone.clone());
+        .route("/api/health", get(health_check));
 
     let api = api_public.merge(api_protected);
     let app = Router::new().merge(api).with_state(state.clone());
 
     // WebSocket：设备状态实时通知
-    let app = app.route("/api/ws", ws(websocket::ws_handler));
+    let app = app.route("/api/ws", get(websocket::ws_handler));
 
     // 告警管理
     let app = app
         .route("/api/alarm/list", get(alarm::alarm_list))
         .route("/api/alarm/detail/:id", get(alarm::alarm_detail))
         .route("/api/alarm/handle", post(alarm::alarm_handle))
-        .route("/api/alarm/delete/:id", delete(alarm::alarm_delete));
+        .route("/api/alarm/delete/:id", delete(alarm::alarm_delete))
+        .route("/api/alarm/batch", delete(alarm::alarm_batch_delete))
+        .route("/api/alarm/device/:device_id", delete(alarm::alarm_delete_by_device))
+        .route("/api/alarm/before/:time", delete(alarm::alarm_delete_before_time));
 
     // 静态资源：前端构建产物（与 Java 版 static 目录一致）
     let static_dir = state

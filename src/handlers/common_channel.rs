@@ -659,25 +659,25 @@ pub async fn device_group_delete(
 pub async fn channel_play(
     State(state): State<AppState>,
     Query(q): Query<ChannelIdQuery>,
-) -> Json<serde_json::Value> {
+) -> Json<WVPResult<serde_json::Value>> {
     let channel_id = match q.channel_id {
         Some(id) => id,
-        None => return Json(serde_json::json!({"code": 1, "msg": "缺少 channelId"})),
+        None => return Json(WVPResult::error("缺少 channelId")),
     };
     
     match common_channel::get_by_id(&state.pool, channel_id).await {
         Ok(Some(ch)) => {
             let device_id = match &ch.device_id {
                 Some(id) => id.clone(),
-                None => return Json(serde_json::json!({"code": 1, "msg": "通道无设备ID"})),
+                None => return Json(WVPResult::error("通道无设备ID")),
             };
             let gb_channel_id = match &ch.gb_device_id {
                 Some(id) => id.clone(),
-                None => return Json(serde_json::json!({"code": 1, "msg": "通道无国标ID"})),
+                None => return Json(WVPResult::error("通道无国标ID")),
             };
             
             if let Some(ref zlm_client) = state.zlm_client {
-                let rtsp_url = format!("rtsp://{}:{}/{}", state.config.get("server.ip").unwrap_or(&"127.0.0.1".to_string()), 554u16, channel_id);
+                let rtsp_url = format!("rtsp://127.0.0.1:{}/{}", 554u16, channel_id);
                 // Use similar approach as play_start to proxy the stream
                 let request = crate::zlm::AddStreamProxyRequest {
                     secret: zlm_client.secret.clone(),
@@ -700,18 +700,18 @@ pub async fn channel_play(
                         let stream_url = format!("gb/{}${}", device_id, channel_id);
                         let play_url = format!("rtsp://127.0.0.1/live/{}", stream_url);
                         let flv_url = format!("http://127.0.0.1/flv/live.app?stream={}", stream_url);
-        let data = serde_json::json!({
-            "app": "gb",
-            "stream": key,
-            "playUrl": play_url,
-            "flvUrl": flv_url,
-            "wsUrl": format!("ws://127.0.0.1/live/{}", stream_url),
-            "deviceId": device_id,
-            "channelId": gb_channel_id,
-            "hasAudio": ch.has_audio.unwrap_or(false),
-            "rtspUrl": rtsp_url,
-        });
-        return Json(WVPResult::success(data));
+                        let data = serde_json::json!({
+                            "app": "gb",
+                            "stream": key,
+                            "playUrl": play_url,
+                            "flvUrl": flv_url,
+                            "wsUrl": format!("ws://127.0.0.1/live/{}", stream_url),
+                            "deviceId": device_id,
+                            "channelId": gb_channel_id,
+                            "hasAudio": ch.has_audio.unwrap_or(false),
+                            "rtspUrl": rtsp_url,
+                        });
+                        return Json(WVPResult::success(data));
                     }
                     Err(e) => {
                         return Json(WVPResult::error(format!("ZLM error: {}", e)));
@@ -815,41 +815,194 @@ pub struct MapLevelBody {
 }
 
 pub async fn map_save_level(
-    State(_state): State<AppState>,
-    Json(_body): Json<MapLevelBody>,
+    State(state): State<AppState>,
+    Json(body): Json<MapLevelBody>,
 ) -> Result<Json<WVPResult<()>>, AppError> {
-    // 地图缩放级别保存，当前为占位实现
+    let level = body.level.unwrap_or(0);
+    let channels = body.channels.unwrap_or_default();
+    
+    if channels.is_empty() {
+        return Ok(Json(WVPResult::<()>::success_empty()));
+    }
+    
+    let result: sqlx::Result<u64> = common_channel::update_map_level(&state.pool, &channels, level).await;
+    result.map_err(|e| AppError::business(ErrorCode::Error500, format!("更新地图级别失败: {}", e)))?;
+    
     Ok(Json(WVPResult::<()>::success_empty()))
 }
 
 /// POST /api/common/channel/map/reset-level
-pub async fn map_reset_level() -> Json<WVPResult<()>> {
-    Json(WVPResult::<()>::success_empty())
+pub async fn map_reset_level(
+    State(state): State<AppState>,
+) -> Result<Json<WVPResult<()>>, AppError> {
+    let result: sqlx::Result<u64> = common_channel::reset_map_level(&state.pool).await;
+    result.map_err(|e| AppError::business(ErrorCode::Error500, format!("重置地图级别失败: {}", e)))?;
+    
+    Ok(Json(WVPResult::<()>::success_empty()))
 }
 
 /// GET /api/common/channel/map/thin/clear?id=
 pub async fn map_thin_clear(
+    State(state): State<AppState>,
     Query(q): Query<ChannelIdQuery>,
 ) -> Result<Json<WVPResult<()>>, AppError> {
-    let _id = q.channel_id.unwrap_or(0);
+    let channel_id = q.channel_id.unwrap_or(0);
+    if channel_id > 0 {
+        #[cfg(feature = "postgres")]
+        let _ = sqlx::query("UPDATE wvp_device_channel SET geojson = NULL WHERE id = $1")
+            .bind(channel_id)
+            .execute(&state.pool)
+            .await;
+        #[cfg(feature = "mysql")]
+        let _ = sqlx::query("UPDATE wvp_device_channel SET geojson = NULL WHERE id = ?")
+            .bind(channel_id)
+            .execute(&state.pool)
+            .await;
+        tracing::info!("Cleared thinned geojson for channel {}", channel_id);
+    }
     Ok(Json(WVPResult::<()>::success_empty()))
 }
 
 /// GET /api/common/channel/map/thin/progress?id=
 pub async fn map_thin_progress(
+    State(state): State<AppState>,
     Query(q): Query<ChannelIdQuery>,
 ) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
-    let _id = q.channel_id.unwrap_or(0);
+    let channel_id = q.channel_id.unwrap_or(0);
+    if channel_id > 0 {
+        #[cfg(feature = "postgres")]
+        let has_geojson: bool = sqlx::query_scalar(
+            "SELECT (geojson IS NOT NULL) FROM wvp_device_channel WHERE id = $1"
+        )
+        .bind(channel_id)
+        .fetch_optional(&state.pool)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or(false);
+
+        #[cfg(feature = "mysql")]
+        let has_geojson: bool = sqlx::query_scalar(
+            "SELECT (geojson IS NOT NULL) FROM wvp_device_channel WHERE id = ?"
+        )
+        .bind(channel_id)
+        .fetch_optional(&state.pool)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or(false);
+
+        let progress = if has_geojson { 100 } else { 0 };
+        return Ok(Json(WVPResult::success(serde_json::json!({
+            "progress": progress
+        }))));
+    }
     Ok(Json(WVPResult::success(serde_json::json!({
-        "progress": 100
+        "progress": 0
     }))))
 }
 
 /// GET /api/common/channel/map/thin/save?id=
+/// Performs Douglas-Peucker thinning on the channel's position history and saves result
 pub async fn map_thin_save(
+    State(state): State<AppState>,
     Query(q): Query<ChannelIdQuery>,
 ) -> Result<Json<WVPResult<()>>, AppError> {
-    let _id = q.channel_id.unwrap_or(0);
+    let channel_id = q.channel_id.unwrap_or(0);
+    if channel_id <= 0 {
+        return Ok(Json(WVPResult::<()>::success_empty()));
+    }
+
+    // Get channel's device_id and gb_device_id to look up position history
+    let channel = common_channel::get_by_id(&state.pool, channel_id).await
+        .map_err(|e| AppError::business(ErrorCode::Error500, format!("查询通道失败: {}", e)))?;
+    
+    let channel = match channel {
+        Some(c) => c,
+        None => return Ok(Json(WVPResult::<()>::success_empty())),
+    };
+
+    let device_id = match &channel.device_id {
+        Some(id) if !id.is_empty() => id.clone(),
+        _ => return Ok(Json(WVPResult::<()>::success_empty())),
+    };
+
+    // Get position history points
+    #[derive(sqlx::FromRow)]
+    struct PositionPoint {
+        longitude: Option<f64>,
+        latitude: Option<f64>,
+    }
+
+    #[cfg(feature = "postgres")]
+    let points: Vec<PositionPoint> = sqlx::query_as(
+        "SELECT longitude, latitude FROM wvp_position_history WHERE device_id = $1 ORDER BY time",
+    )
+    .bind(&device_id)
+    .fetch_all(&state.pool)
+    .await
+    .unwrap_or_default();
+
+    #[cfg(feature = "mysql")]
+    let points: Vec<PositionPoint> = sqlx::query_as(
+        "SELECT longitude, latitude FROM wvp_position_history WHERE device_id = ? ORDER BY time",
+    )
+    .bind(&device_id)
+    .fetch_all(&state.pool)
+    .await
+    .unwrap_or_default();
+
+    if points.len() < 2 {
+        return Ok(Json(WVPResult::<()>::success_empty()));
+    }
+
+    // Douglas-Peucker simplification with epsilon = 0.0001 degrees (~11m)
+    let coords: Vec<(f64, f64)> = points.iter()
+        .filter_map(|p| {
+            match (p.longitude, p.latitude) {
+                (Some(lng), Some(lat)) if lng != 0.0 && lat != 0.0 => Some((lng, lat)),
+                _ => None,
+            }
+        })
+        .collect();
+
+    let simplified = douglas_peucker(&coords, 0.0001);
+
+    // Build GeoJSON LineString
+    let coord_arrays: Vec<Vec<f64>> = simplified.iter()
+        .map(|(lng, lat)| vec![*lng, *lat])
+        .collect();
+    let geojson = serde_json::json!({
+        "type": "Feature",
+        "geometry": {
+            "type": "LineString",
+            "coordinates": coord_arrays
+        },
+        "properties": {
+            "channelId": channel_id,
+            "originalPoints": coords.len(),
+            "simplifiedPoints": simplified.len()
+        }
+    });
+    let geojson_str = serde_json::to_string(&geojson).unwrap_or_default();
+
+    // Save to channel's geojson field
+    #[cfg(feature = "postgres")]
+    let _ = sqlx::query("UPDATE wvp_device_channel SET geojson = $1 WHERE id = $2")
+        .bind(&geojson_str)
+        .bind(channel_id)
+        .execute(&state.pool)
+        .await;
+
+    #[cfg(feature = "mysql")]
+    let _ = sqlx::query("UPDATE wvp_device_channel SET geojson = ? WHERE id = ?")
+        .bind(&geojson_str)
+        .bind(channel_id)
+        .execute(&state.pool)
+        .await;
+
+    tracing::info!("Map thin saved for channel {}: {} -> {} points", channel_id, coords.len(), simplified.len());
+
     Ok(Json(WVPResult::<()>::success_empty()))
 }
 
@@ -861,11 +1014,125 @@ pub struct MapThinDrawBody {
 }
 
 pub async fn map_thin_draw(
+    State(state): State<AppState>,
     Json(body): Json<MapThinDrawBody>,
-) -> Result<Json<WVPResult<()>>, AppError> {
-    let _id = body.id.unwrap_or(0);
-    let _geojson = body.geojson;
-    Ok(Json(WVPResult::<()>::success_empty()))
+) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+    let channel_id = body.id.unwrap_or(0);
+    if channel_id <= 0 {
+        return Ok(Json(WVPResult::success(serde_json::json!({
+            "type": "Feature",
+            "geometry": { "type": "LineString", "coordinates": [] },
+            "properties": {}
+        }))));
+    }
+
+    // If geojson provided in request, save it and return
+    if let Some(ref geojson) = body.geojson {
+        let geojson_str = serde_json::to_string(geojson).unwrap_or_default();
+        #[cfg(feature = "postgres")]
+        let _ = sqlx::query("UPDATE wvp_device_channel SET geojson = $1 WHERE id = $2")
+            .bind(&geojson_str)
+            .bind(channel_id)
+            .execute(&state.pool)
+            .await;
+        #[cfg(feature = "mysql")]
+        let _ = sqlx::query("UPDATE wvp_device_channel SET geojson = ? WHERE id = ?")
+            .bind(&geojson_str)
+            .bind(channel_id)
+            .execute(&state.pool)
+            .await;
+        return Ok(Json(WVPResult::success(geojson.clone())));
+    }
+
+    // Otherwise return stored thinned geojson
+    #[derive(sqlx::FromRow)]
+    struct GeojsonRow {
+        geojson: Option<String>,
+    }
+
+    #[cfg(feature = "postgres")]
+    let row: Option<GeojsonRow> = sqlx::query_as(
+        "SELECT geojson FROM wvp_device_channel WHERE id = $1"
+    )
+    .bind(channel_id)
+    .fetch_optional(&state.pool)
+    .await
+    .ok()
+    .flatten();
+
+    #[cfg(feature = "mysql")]
+    let row: Option<GeojsonRow> = sqlx::query_as(
+        "SELECT geojson FROM wvp_device_channel WHERE id = ?"
+    )
+    .bind(channel_id)
+    .fetch_optional(&state.pool)
+    .await
+    .ok()
+    .flatten();
+
+    let geojson = row.and_then(|r| r.geojson)
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| serde_json::json!({
+            "type": "Feature",
+            "geometry": { "type": "LineString", "coordinates": [] },
+            "properties": {}
+        }));
+
+    Ok(Json(WVPResult::success(geojson)))
+}
+
+/// Douglas-Peucker line simplification algorithm
+fn douglas_peucker(points: &[(f64, f64)], epsilon: f64) -> Vec<(f64, f64)> {
+    if points.len() <= 2 {
+        return points.to_vec();
+    }
+
+    let first = points[0];
+    let last = points[points.len() - 1];
+
+    let mut max_dist = 0.0;
+    let mut max_idx = 0;
+
+    for (i, point) in points.iter().enumerate().skip(1).take(points.len() - 2) {
+        let dist = perpendicular_distance(*point, first, last);
+        if dist > max_dist {
+            max_dist = dist;
+            max_idx = i;
+        }
+    }
+
+    if max_dist > epsilon {
+        let mut left = douglas_peucker(&points[..=max_idx], epsilon);
+        let right = douglas_peucker(&points[max_idx..], epsilon);
+        left.pop();
+        left.extend_from_slice(&right);
+        left
+    } else {
+        vec![first, last]
+    }
+}
+
+/// Calculate perpendicular distance from point to line defined by two endpoints
+fn perpendicular_distance(point: (f64, f64), line_start: (f64, f64), line_end: (f64, f64)) -> f64 {
+    let (px, py) = point;
+    let (x1, y1) = line_start;
+    let (x2, y2) = line_end;
+
+    let dx = x2 - x1;
+    let dy = y2 - y1;
+
+    let line_len_sq = dx * dx + dy * dy;
+    if line_len_sq == 0.0 {
+        return ((px - x1).powi(2) + (py - y1).powi(2)).sqrt();
+    }
+
+    let t = ((px - x1) * dx + (py - y1) * dy) / line_len_sq;
+    let t = t.clamp(0.0, 1.0);
+
+    let proj_x = x1 + t * dx;
+    let proj_y = y1 + t * dy;
+
+    ((px - proj_x).powi(2) + (py - proj_y).powi(2)).sqrt()
 }
 
 /// GET /api/sy/camera/list/ids (测试接口)

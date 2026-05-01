@@ -11,6 +11,7 @@ pub struct AppConfig {
     pub user_settings: Option<UserSettings>,
     pub sip: Option<SipConfig>,
     pub zlm: Option<ZlmConfig>,
+    pub map: Option<MapConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -51,6 +52,42 @@ pub struct SipConfig {
     pub keepalive_timeout: u64,
     pub register_timeout: u64,
     pub charset: String,
+    pub sdp_ip: Option<String>,
+    pub stream_ip: Option<String>,
+    pub stream_reconnect: Option<StreamReconnectConfig>,
+    pub heartbeat: Option<HeartbeatConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct StreamReconnectConfig {
+    pub enabled: bool,
+    pub max_retries: u32,
+    pub retry_interval_secs: u64,
+}
+
+impl Default for StreamReconnectConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_retries: 3,
+            retry_interval_secs: 5,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct HeartbeatConfig {
+    pub timeout_multiplier: u32,
+    pub check_interval_secs: u64,
+}
+
+impl Default for HeartbeatConfig {
+    fn default() -> Self {
+        Self {
+            timeout_multiplier: 3,
+            check_interval_secs: 10,
+        }
+    }
 }
 
 impl Default for SipConfig {
@@ -66,6 +103,10 @@ impl Default for SipConfig {
             keepalive_timeout: 30,
             register_timeout: 3600,
             charset: "UTF-8".to_string(),
+            sdp_ip: None,
+            stream_ip: None,
+            stream_reconnect: None,
+            heartbeat: None,
         }
     }
 }
@@ -78,6 +119,7 @@ pub struct ZlmServerConfig {
     pub https_port: Option<u16>,
     pub secret: String,
     pub enabled: bool,
+    pub hook_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -98,6 +140,7 @@ impl Default for ZlmConfig {
                 https_port: None,
                 secret: "035c73f7-bb6b-4889-a715-d9eb2d1925cc".to_string(),
                 enabled: true,
+                hook_url: None,
             }],
             stream_timeout: 10,
             hook_enabled: true,
@@ -113,4 +156,18 @@ pub fn load_config() -> Result<AppConfig> {
 
     let cfg: AppConfig = base.build()?.try_deserialize()?;
     Ok(cfg)
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct MapConfig {
+    /// 天地图 API Key
+    pub tianditu_key: Option<String>,
+    /// 地图中心经度
+    pub center_lng: Option<f64>,
+    /// 地图中心纬度
+    pub center_lat: Option<f64>,
+    /// 默认缩放级别
+    pub zoom: Option<i32>,
+    /// 坐标系: WGS84 或 GCJ02
+    pub coord_sys: Option<String>,
 }

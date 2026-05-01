@@ -190,3 +190,38 @@ pub async fn delete_by_device_id(pool: &Pool, device_id: &str) -> sqlx::Result<u
         .await?;
     Ok(r.rows_affected())
 }
+
+/// 统计区域数量
+pub async fn count_all(pool: &Pool) -> sqlx::Result<i64> {
+    sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM wvp_common_region")
+        .fetch_one(pool)
+        .await
+}
+
+/// 获取子区域数量
+pub async fn count_children(pool: &Pool, parent_id: i32) -> sqlx::Result<i64> {
+    #[cfg(feature = "mysql")]
+    return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM wvp_common_region WHERE parent_id = ?")
+        .bind(parent_id)
+        .fetch_one(pool)
+        .await;
+    #[cfg(feature = "postgres")]
+    return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM wvp_common_region WHERE parent_id = $1")
+        .bind(parent_id)
+        .fetch_one(pool)
+        .await;
+}
+
+/// 根据行政区划代码查询区域
+pub async fn get_by_civil_code(pool: &Pool, civil_code: &str) -> sqlx::Result<Option<Region>> {
+    #[cfg(feature = "mysql")]
+    return sqlx::query_as::<_, Region>("SELECT * FROM wvp_common_region WHERE civil_code = ?")
+        .bind(civil_code)
+        .fetch_optional(pool)
+        .await;
+    #[cfg(feature = "postgres")]
+    return sqlx::query_as::<_, Region>("SELECT * FROM wvp_common_region WHERE civil_code = $1")
+        .bind(civil_code)
+        .fetch_optional(pool)
+        .await;
+}

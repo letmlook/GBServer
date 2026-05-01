@@ -1,10 +1,12 @@
 //! 推流 /api/push 与拉流代理 /api/proxy，对应前端 streamPush.js / streamProxy.js
 
 use axum::{
-    extract::{Query, State},
+    extract::{Query, State, Multipart},
     Json,
 };
 use serde::Deserialize;
+use std::collections::HashMap;
+use std::path::PathBuf;
 
 use crate::db::{stream_push, stream_proxy, StreamPush, StreamProxy};
 use crate::error::AppError;
@@ -18,7 +20,7 @@ pub struct PushListQuery {
     pub page: Option<u32>,
     pub count: Option<u32>,
     pub query: Option<String>,
-    pub pushing: Option<bool>,
+    pub pushing: Option<String>,
     pub mediaServerId: Option<String>,
 }
 
@@ -29,10 +31,11 @@ pub async fn push_list(
 ) -> Result<Json<WVPResult<PushListPage>>, AppError> {
     let page = q.page.unwrap_or(1);
     let count = q.count.unwrap_or(10).min(100);
+    let pushing = q.pushing.as_deref().and_then(|s| s.parse().ok());
     let total = stream_push::count_all(
         &state.pool,
         q.mediaServerId.as_deref(),
-        q.pushing,
+        pushing,
     )
     .await?;
     let list = stream_push::list_paged(
@@ -40,7 +43,7 @@ pub async fn push_list(
         page,
         count,
         q.mediaServerId.as_deref(),
-        q.pushing,
+        pushing,
     )
     .await?;
     Ok(Json(WVPResult::success(PushListPage {
@@ -64,6 +67,7 @@ pub struct PushListPage {
 pub struct PushAddBody {
     pub app: Option<String>,
     pub stream: Option<String>,
+    #[serde(alias = "mediaServerId")]
     pub media_server_id: Option<String>,
 }
 
@@ -104,6 +108,7 @@ pub struct PushUpdateBody {
     pub id: Option<i64>,
     pub app: Option<String>,
     pub stream: Option<String>,
+    #[serde(alias = "mediaServerId")]
     pub media_server_id: Option<String>,
 }
 
@@ -149,7 +154,7 @@ pub struct PushRemoveBody {
 /// POST /api/push/remove
 pub async fn push_remove(
     State(state): State<AppState>,
-    Json(body): Json<PushRemoveBody>,
+    Query(body): Query<PushRemoveBody>,
 ) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
     let id = body.id.unwrap_or(0);
     if id <= 0 {
@@ -189,14 +194,16 @@ pub async fn push_remove(
 pub struct PushStartBody {
     pub id: Option<i64>,
     pub stream: Option<String>,
+    #[serde(alias = "mediaServerId")]
     pub media_server_id: Option<String>,
+    #[serde(alias = "useTcp")]
     pub use_tcp: Option<bool>,
 }
 
 /// POST /api/push/start
 pub async fn push_start(
     State(state): State<AppState>,
-    Json(body): Json<PushStartBody>,
+    Query(body): Query<PushStartBody>,
 ) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
     let id = body.id.unwrap_or(0);
     let stream_id = body.stream.clone().unwrap_or_default();
@@ -406,7 +413,7 @@ pub struct ProxyListQuery {
     pub page: Option<u32>,
     pub count: Option<u32>,
     pub query: Option<String>,
-    pub pulling: Option<bool>,
+    pub pulling: Option<String>,
     pub mediaServerId: Option<String>,
 }
 
@@ -417,10 +424,11 @@ pub async fn proxy_list(
 ) -> Result<Json<WVPResult<ProxyListPage>>, AppError> {
     let page = q.page.unwrap_or(1);
     let count = q.count.unwrap_or(10).min(100);
+    let pulling = q.pulling.as_deref().and_then(|s| s.parse().ok());
     let total = stream_proxy::count_all(
         &state.pool,
         q.mediaServerId.as_deref(),
-        q.pulling,
+        pulling,
     )
     .await?;
     let list = stream_proxy::list_paged(
@@ -428,7 +436,7 @@ pub async fn proxy_list(
         page,
         count,
         q.mediaServerId.as_deref(),
-        q.pulling,
+        pulling,
     )
     .await?;
     Ok(Json(WVPResult::success(ProxyListPage {
@@ -448,18 +456,42 @@ pub struct ProxyListPage {
 }
 
 /// GET /api/proxy/ffmpeg_cmd/list
-pub async fn proxy_ffmpeg_cmd_list() -> Json<WVPResult<Vec<serde_json::Value>>> {
-    Json(WVPResult::success(vec![]))
+pub async fn proxy_ffmpeg_cmd_list(
+    Query(q): Query<ProxyListQuery>,
+) -> Json<WVPResult<HashMap<String, String>>> {
+    let media_server_hint = q.mediaServerId.unwrap_or_else(|| "auto".to_string());
+    let mut result = HashMap::new();
+    result.insert(
+        "default".to_string(),
+        format!("默认转码模板 ({media_server_hint})"),
+    );
+    result.insert(
+        "copy".to_string(),
+        "尽量直拷贝音视频，降低转码开销".to_string(),
+    );
+    result.insert(
+        "h264_aac".to_string(),
+        "转 H264 + AAC，兼容性更高".to_string(),
+    );
+    result.insert(
+        "low_latency".to_string(),
+        "低延迟模板，适合实时预览".to_string(),
+    );
+    Json(WVPResult::success(result))
 }
 
 #[derive(Debug, Deserialize)]
 pub struct ProxyAddBody {
     pub app: Option<String>,
     pub stream: Option<String>,
+    #[serde(alias = "srcUrl")]
     pub src_url: Option<String>,
+    #[serde(alias = "mediaServerId")]
     pub media_server_id: Option<String>,
     pub name: Option<String>,
+    #[serde(alias = "enableAudio")]
     pub enable_audio: Option<bool>,
+    #[serde(alias = "enableMp4")]
     pub enable_mp4: Option<bool>,
 }
 
@@ -502,7 +534,9 @@ pub struct ProxyUpdateBody {
     pub id: Option<i64>,
     pub app: Option<String>,
     pub stream: Option<String>,
+    #[serde(alias = "srcUrl")]
     pub src_url: Option<String>,
+    #[serde(alias = "mediaServerId")]
     pub media_server_id: Option<String>,
     pub name: Option<String>,
 }
@@ -579,12 +613,13 @@ pub async fn proxy_save(
 pub struct ProxyStartBody {
     pub id: Option<i64>,
     pub stream: Option<String>,
+    #[serde(alias = "mediaServerId")]
     pub media_server_id: Option<String>,
 }
 
 pub async fn proxy_start(
     State(state): State<AppState>,
-    Json(body): Json<ProxyStartBody>,
+    Query(body): Query<ProxyStartBody>,
 ) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
     let id = body.id.unwrap_or(0);
     let stream_id = body.stream.clone().unwrap_or_default();
@@ -677,12 +712,13 @@ pub async fn proxy_start(
 pub struct ProxyStopBody {
     pub id: Option<i64>,
     pub stream: Option<String>,
+    #[serde(alias = "mediaServerId")]
     pub media_server_id: Option<String>,
 }
 
 pub async fn proxy_stop(
     State(state): State<AppState>,
-    Json(body): Json<ProxyStopBody>,
+    Query(body): Query<ProxyStopBody>,
 ) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
     let id = body.id.unwrap_or(0);
     let stream_id = body.stream.clone().unwrap_or_default();
@@ -734,12 +770,13 @@ pub async fn proxy_stop(
 pub struct ProxyDeleteBody {
     pub id: Option<i64>,
     pub stream: Option<String>,
+    #[serde(alias = "mediaServerId")]
     pub media_server_id: Option<String>,
 }
 
 pub async fn proxy_delete(
     State(state): State<AppState>,
-    Json(body): Json<ProxyDeleteBody>,
+    Query(body): Query<ProxyDeleteBody>,
 ) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
     let id = body.id.unwrap_or(0);
     
@@ -769,6 +806,89 @@ pub async fn proxy_delete(
         Err(e) => {
             tracing::error!("Failed to delete proxy stream: {}", e);
             Ok(Json(WVPResult::error(format!("Database error: {}", e))))
+        }
+    }
+}
+
+/// POST /api/push/upload - 上传文件推流
+pub async fn push_upload(
+    State(state): State<AppState>,
+    mut multipart: Multipart,
+) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+    let upload_dir = PathBuf::from("uploads");
+    if !upload_dir.exists() {
+        let _ = std::fs::create_dir_all(&upload_dir);
+    }
+    
+    let mut app = "upload".to_string();
+    let mut stream = String::new();
+    let mut saved_path = String::new();
+    
+    while let Some(field) = multipart.next_field().await.unwrap_or(None) {
+        let field_name = field.name().unwrap_or_default().to_string();
+        
+        match field_name.as_str() {
+            "file" => {
+                let filename = field.file_name().unwrap_or("upload.bin").to_string();
+                let ext = std::path::Path::new(&filename)
+                    .extension()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("bin");
+                
+                let timestamp = chrono::Utc::now().format("%Y%m%d%H%M%S").to_string();
+                let random_suffix: String = (0..4)
+                    .map(|_| char::from(b'a' + rand::random::<u8>() % 26))
+                    .collect();
+                stream = format!("{}_{}", timestamp, random_suffix);
+                
+                let saved_filename = format!("{}.{}", stream, ext);
+                let filepath = upload_dir.join(&saved_filename);
+                
+                let data = field.bytes().await.map_err(|e| {
+                    AppError::business(crate::error::ErrorCode::Error500, format!("读取上传文件失败: {}", e))
+                })?;
+                
+                std::fs::write(&filepath, &data).map_err(|e| {
+                    AppError::business(crate::error::ErrorCode::Error500, format!("保存文件失败: {}", e))
+                })?;
+                
+                saved_path = filepath.to_string_lossy().to_string();
+                tracing::info!("Uploaded file saved: {}", saved_path);
+            }
+            "app" => {
+                if let Ok(bytes) = field.bytes().await {
+                    app = String::from_utf8_lossy(&bytes).to_string();
+                }
+            }
+            "stream" => {
+                if let Ok(bytes) = field.bytes().await {
+                    stream = String::from_utf8_lossy(&bytes).to_string();
+                }
+            }
+            _ => {}
+        }
+    }
+    
+    if stream.is_empty() {
+        return Ok(Json(WVPResult::error("未提供文件或流名称")));
+    }
+    
+    let media_server_id = "auto".to_string();
+    let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    
+    match stream_push::add(&state.pool, &app, &stream, &media_server_id, &now).await {
+        Ok(_) => {
+            Ok(Json(WVPResult::success(serde_json::json!({
+                "app": app,
+                "stream": stream,
+                "url": saved_path,
+                "mediaServerId": media_server_id,
+                "message": "文件上传成功"
+            }))))
+        }
+        Err(e) => {
+            tracing::error!("Failed to add push stream record: {}", e);
+            Ok(Json(WVPResult::error(format!("数据库错误: {}", e))))
         }
     }
 }

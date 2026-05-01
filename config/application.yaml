@@ -32,6 +32,17 @@ sip:
   keepalive_timeout: 30
   register_timeout: 3600
   charset: "UTF-8"
+  # SDP 中使用的 IP（NAT 穿透，公网部署时设为公网 IP）
+  # sdp_ip: "1.2.3.4"
+  # 流地址中使用的 IP（NAT 穿透，公网部署时设为公网 IP）
+  # stream_ip: "1.2.3.4"
+  stream_reconnect:
+    enabled: true
+    max_retries: 3
+    retry_interval_secs: 5
+  heartbeat:
+    timeout_multiplier: 3
+    check_interval_secs: 10
 
 # ZLM 流媒体服务器配置
 zlm:

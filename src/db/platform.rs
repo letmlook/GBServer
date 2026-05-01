@@ -271,3 +271,78 @@ pub async fn delete_by_id(pool: &Pool, id: i64) -> sqlx::Result<u64> {
         .await?;
     Ok(r.rows_affected())
 }
+
+/// 更新平台注册状态
+pub async fn update_status(pool: &Pool, id: i64, status: bool) -> sqlx::Result<u64> {
+    #[cfg(feature = "mysql")]
+    let r = sqlx::query("UPDATE wvp_platform SET status = ? WHERE id = ?")
+        .bind(status)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    #[cfg(feature = "postgres")]
+    let r = sqlx::query("UPDATE wvp_platform SET status = $1 WHERE id = $2")
+        .bind(status)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(r.rows_affected())
+}
+
+/// 更新平台启用状态
+pub async fn update_enable(pool: &Pool, id: i64, enable: bool) -> sqlx::Result<u64> {
+    #[cfg(feature = "mysql")]
+    let r = sqlx::query("UPDATE wvp_platform SET enable = ? WHERE id = ?")
+        .bind(enable)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    #[cfg(feature = "postgres")]
+    let r = sqlx::query("UPDATE wvp_platform SET enable = $1 WHERE id = $2")
+        .bind(enable)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(r.rows_affected())
+}
+
+/// 获取所有启用的平台
+pub async fn get_all_enabled_platforms(pool: &Pool) -> sqlx::Result<Vec<Platform>> {
+    #[cfg(feature = "mysql")]
+    return sqlx::query_as::<_, Platform>(
+        "SELECT * FROM wvp_platform WHERE enable = 1 ORDER BY id",
+    )
+    .fetch_all(pool)
+    .await;
+    #[cfg(feature = "postgres")]
+    return sqlx::query_as::<_, Platform>(
+        "SELECT * FROM wvp_platform WHERE enable = true ORDER BY id",
+    )
+    .fetch_all(pool)
+    .await;
+}
+
+/// 获取所有平台
+pub async fn list_platforms(pool: &Pool) -> sqlx::Result<Vec<Platform>> {
+    sqlx::query_as::<_, Platform>(
+        "SELECT * FROM wvp_platform ORDER BY id",
+    )
+    .fetch_all(pool)
+    .await
+}
+
+/// 获取所有在线平台
+pub async fn get_all_online_platforms(pool: &Pool) -> sqlx::Result<Vec<Platform>> {
+    #[cfg(feature = "mysql")]
+    return sqlx::query_as::<_, Platform>(
+        "SELECT id, enable, name, server_gb_id, server_gb_domain, server_ip, server_port, device_gb_id, device_ip, device_port, username, password, expires, keep_timeout, transport, character_set, ptz, rtcp, status, catalog_id, catalog_group, share_org, share_user, share_group, auto_push_channel, auto_push_channel_status, send_stream_ip, send_stream_port, send_stream_protocol, as_message_thread, sip_message_log, create_time, update_time FROM wvp_platform WHERE status = 1 AND enable = 1 ORDER BY id",
+    )
+    .fetch_all(pool)
+    .await;
+    #[cfg(feature = "postgres")]
+    return sqlx::query_as::<_, Platform>(
+        "SELECT id, enable, name, server_gb_id, server_gb_domain, server_ip, server_port, device_gb_id, device_ip, device_port, username, password, expires, keep_timeout, transport, character_set, ptz, rtcp, status, catalog_id, catalog_group, share_org, share_user, share_group, auto_push_channel, auto_push_channel_status, send_stream_ip, send_stream_port, send_stream_protocol, as_message_thread, sip_message_log, create_time, update_time FROM wvp_platform WHERE status = true AND enable = true ORDER BY id",
+    )
+    .fetch_all(pool)
+    .await;
+}

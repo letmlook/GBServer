@@ -4,6 +4,7 @@ use axum::{
     extract::{Path, Query, State},
     Json,
 };
+use chrono::Datelike;
 use serde::Deserialize;
 
 use crate::db::{
@@ -14,9 +15,83 @@ use crate::db::position_history as ph;
 use crate::error::{AppError, ErrorCode};
 use crate::response::WVPResult;
 use crate::AppState;
-use crate::zlm::Mp4RecordFile;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use sqlx::Row;
+
+fn normalize_record_time_ms(value: &str) -> i64 {
+    if let Ok(ts) = value.parse::<i64>() {
+        if ts > 1_000_000_000_000 {
+            return ts;
+        }
+        if ts > 1_000_000_000 {
+            return ts * 1000;
+        }
+    }
+
+    chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S")
+        .or_else(|_| chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S"))
+        .map(|dt| dt.and_utc().timestamp_millis())
+        .unwrap_or_default()
+}
+
+fn record_duration_ms(duration: Option<f64>) -> i64 {
+    duration
+        .map(|value| (value.max(0.0) * 1000.0).round() as i64)
+        .unwrap_or(0)
+}
+
+fn build_cloud_record_id(media_server_id: &str, app: &str, stream: &str, file_name: &str) -> String {
+    format!("{media_server_id}::{app}::{stream}::{file_name}")
+}
+
+fn parse_cloud_record_id(record_id: &str) -> Option<(String, String, String, String)> {
+    let mut parts = record_id.splitn(4, "::");
+    let media_server_id = parts.next()?.to_string();
+    let app = parts.next()?.to_string();
+    let stream = parts.next()?.to_string();
+    let file_name = parts.next()?.to_string();
+    Some((media_server_id, app, stream, file_name))
+}
+
+fn build_cloud_record_urls(
+    state: &AppState,
+    media_server_id: &str,
+    app: &str,
+    stream: &str,
+    fallback_path: Option<&str>,
+) -> serde_json::Value {
+    let config_server = state
+        .config
+        .zlm
+        .as_ref()
+        .and_then(|cfg| cfg.servers.iter().find(|sv| sv.id == media_server_id));
+    let server_ip = config_server
+        .map(|sv| sv.ip.clone())
+        .unwrap_or_else(|| "127.0.0.1".to_string());
+    let http_port = config_server.map(|sv| sv.http_port as i32).unwrap_or(80);
+    let https_port = config_server
+        .and_then(|sv| sv.https_port.map(|port| port as i32))
+        .unwrap_or(443);
+    let ws_port = http_port;
+    let wss_port = https_port;
+    let rtsp_port = 554;
+
+    let http_flv = format!("http://{}:{}/{}/{}.live.flv", server_ip, http_port, app, stream);
+    let https_flv = format!("https://{}:{}/{}/{}.live.flv", server_ip, https_port, app, stream);
+    let ws_flv = format!("ws://{}:{}/{}/{}.live.flv", server_ip, ws_port, app, stream);
+    let wss_flv = format!("wss://{}:{}/{}/{}.live.flv", server_ip, wss_port, app, stream);
+    let rtsp = format!("rtsp://{}:{}/{}/{}", server_ip, rtsp_port, app, stream);
+
+    serde_json::json!({
+        "httpPath": fallback_path.unwrap_or(&http_flv),
+        "httpsPath": fallback_path.unwrap_or(&https_flv),
+        "http_flv": http_flv,
+        "https_flv": https_flv,
+        "ws_flv": ws_flv,
+        "wss_flv": wss_flv,
+        "rtsp": rtsp
+    })
+}
 
 // ========== common channel ==========
 #[derive(Debug, Deserialize)]
@@ -29,6 +104,10 @@ pub struct CommonChannelListQuery {
     pub hasRecordPlan: Option<String>,
     pub civilCode: Option<String>,
     pub parentDeviceId: Option<String>,
+    #[serde(alias = "planId")]
+    pub plan_id: Option<i32>,
+    #[serde(alias = "hasLink")]
+    pub has_link: Option<String>,
 }
 
 /// GET /api/common/channel/list — 通用通道列表，返回 JSON 避免未匹配时落到静态 index.html
@@ -447,6 +526,8 @@ pub async fn group_update(
 #[derive(Debug, Deserialize)]
 pub struct IdQuery {
     pub id: Option<i32>,
+    #[serde(alias = "planId")]
+    pub plan_id: Option<i32>,
 }
 
 pub async fn group_delete(
@@ -517,8 +598,24 @@ pub async fn group_tree_query(
 }
 
 // ========== log ==========
+#[derive(Debug, Deserialize)]
+pub struct LogListQuery {
+    pub page: Option<u32>,
+    pub count: Option<u32>,
+    pub query: Option<String>,
+    #[serde(alias = "type")]
+    pub log_type: Option<String>,
+    #[serde(alias = "startTime")]
+    pub start_time: Option<String>,
+    #[serde(alias = "endTime")]
+    pub end_time: Option<String>,
+}
+
 /// GET /api/log/list（若存在 wvp_log 表则查询，否则返回空列表）
-pub async fn log_list(State(state): State<AppState>) -> Json<WVPResult<serde_json::Value>> {
+pub async fn log_list(
+    State(state): State<AppState>,
+    Query(q): Query<LogListQuery>,
+) -> Json<WVPResult<serde_json::Value>> {
     #[derive(sqlx::FromRow)]
     struct LogRow {
         id: i64,
@@ -526,20 +623,108 @@ pub async fn log_list(State(state): State<AppState>) -> Json<WVPResult<serde_jso
         r#type: Option<String>,
         create_time: Option<String>,
     }
-    let total = match sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM wvp_log")
-        .fetch_one(&state.pool)
-        .await
+    
+    let page = q.page.unwrap_or(1).max(1);
+    let count = q.count.unwrap_or(15).min(100);
+    let offset = (page - 1) * count;
+    
+    let search = q.query.as_deref().unwrap_or("").trim();
+    let log_type = q.log_type.as_deref().unwrap_or("").trim();
+    let start_time = q.start_time.as_deref().unwrap_or("").trim();
+    let end_time = q.end_time.as_deref().unwrap_or("").trim();
+    
+    let has_filter = !search.is_empty() || !log_type.is_empty() || !start_time.is_empty() || !end_time.is_empty();
+    
+    if !has_filter {
+        let total = match sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM wvp_log")
+            .fetch_one(&state.pool)
+            .await
+        {
+            Ok(n) => n,
+            _ => return Json(WVPResult::success(serde_json::json!({ "total": 0, "list": [] }))),
+        };
+        
+        #[cfg(feature = "postgres")]
+        let rows: Result<Vec<LogRow>, _> = sqlx::query_as(
+            "SELECT id, name, type, create_time FROM wvp_log ORDER BY id DESC LIMIT $1 OFFSET $2",
+        )
+        .bind(count as i64)
+        .bind(offset as i64)
+        .fetch_all(&state.pool)
+        .await;
+        
+        #[cfg(feature = "mysql")]
+        let rows: Result<Vec<LogRow>, _> = sqlx::query_as(
+            "SELECT id, name, type, create_time FROM wvp_log ORDER BY id DESC LIMIT ? OFFSET ?",
+        )
+        .bind(count as i64)
+        .bind(offset as i64)
+        .fetch_all(&state.pool)
+        .await;
+        
+        let list = match rows {
+            Ok(rows) => rows
+                .into_iter()
+                .map(|r| {
+                    serde_json::json!({
+                        "id": r.id,
+                        "name": r.name,
+                        "type": r.r#type,
+                        "createTime": r.create_time
+                    })
+                })
+                .collect::<Vec<_>>(),
+            _ => vec![],
+        };
+        
+        return Json(WVPResult::success(serde_json::json!({ "total": total, "list": list })));
+    }
+    
+    let like_search = format!("%{}%", search);
+    
+    #[cfg(feature = "postgres")]
     {
-        Ok(n) => n as u64,
-        _ => return Json(WVPResult::success(serde_json::json!({ "total": 0, "list": [] }))),
-    };
-    let rows: Result<Vec<LogRow>, _> = sqlx::query_as::<_, LogRow>(
-        "SELECT id, name, type, create_time FROM wvp_log ORDER BY id DESC LIMIT 100",
-    )
-    .fetch_all(&state.pool)
-    .await;
-    let list = match rows {
-        Ok(rows) => rows
+        let mut conditions = String::new();
+        let mut binds: Vec<String> = Vec::new();
+        
+        if !search.is_empty() {
+            conditions.push_str(" AND (name ILIKE $1 OR type ILIKE $1)");
+            binds.push(like_search.clone());
+        }
+        if !log_type.is_empty() {
+            let idx = binds.len() + 1;
+            conditions.push_str(&format!(" AND type = ${}", idx));
+            binds.push(log_type.to_string());
+        }
+        if !start_time.is_empty() {
+            let idx = binds.len() + 1;
+            conditions.push_str(&format!(" AND create_time >= ${}", idx));
+            binds.push(start_time.to_string());
+        }
+        if !end_time.is_empty() {
+            let idx = binds.len() + 1;
+            conditions.push_str(&format!(" AND create_time <= ${}", idx));
+            binds.push(end_time.to_string());
+        }
+        
+        let count_sql = format!("SELECT COUNT(*) FROM wvp_log WHERE 1=1{}", conditions);
+        let mut count_query = sqlx::query_scalar::<_, i64>(&count_sql);
+        for bind in &binds {
+            count_query = count_query.bind(bind);
+        }
+        let total: i64 = count_query.fetch_one(&state.pool).await.unwrap_or(0);
+        
+        let data_sql = format!("SELECT id, name, type, create_time FROM wvp_log WHERE 1=1{} ORDER BY id DESC LIMIT ${} OFFSET ${}", 
+            conditions, binds.len() + 1, binds.len() + 2);
+        let mut data_query = sqlx::query_as::<_, LogRow>(&data_sql);
+        for bind in &binds {
+            data_query = data_query.bind(bind);
+        }
+        data_query = data_query.bind(count as i64).bind(offset as i64);
+        
+        let rows: Vec<LogRow> = data_query.fetch_all(&state.pool).await.unwrap_or_default();
+        
+        let list: Vec<serde_json::Value> = rows
             .into_iter()
             .map(|r| {
                 serde_json::json!({
@@ -549,10 +734,64 @@ pub async fn log_list(State(state): State<AppState>) -> Json<WVPResult<serde_jso
                     "createTime": r.create_time
                 })
             })
-            .collect::<Vec<_>>(),
-        _ => vec![],
-    };
-    Json(WVPResult::success(serde_json::json!({ "total": total, "list": list })))
+            .collect();
+        
+        return Json(WVPResult::success(serde_json::json!({ "total": total, "list": list })));
+    }
+    
+    #[cfg(feature = "mysql")]
+    {
+        let mut conditions = String::new();
+        let mut binds: Vec<String> = Vec::new();
+        
+        if !search.is_empty() {
+            conditions.push_str(" AND (name LIKE ? OR type LIKE ?)");
+            binds.push(like_search.clone());
+            binds.push(like_search.clone());
+        }
+        if !log_type.is_empty() {
+            conditions.push_str(" AND type = ?");
+            binds.push(log_type.to_string());
+        }
+        if !start_time.is_empty() {
+            conditions.push_str(" AND create_time >= ?");
+            binds.push(start_time.to_string());
+        }
+        if !end_time.is_empty() {
+            conditions.push_str(" AND create_time <= ?");
+            binds.push(end_time.to_string());
+        }
+        
+        let count_sql = format!("SELECT COUNT(*) FROM wvp_log WHERE 1=1{}", conditions);
+        let mut count_query = sqlx::query_scalar::<_, i64>(&count_sql);
+        for bind in &binds {
+            count_query = count_query.bind(bind);
+        }
+        let total: i64 = count_query.fetch_one(&state.pool).await.unwrap_or(0);
+        
+        let data_sql = format!("SELECT id, name, type, create_time FROM wvp_log WHERE 1=1{} ORDER BY id DESC LIMIT ? OFFSET ?", conditions);
+        let mut data_query = sqlx::query_as::<_, LogRow>(&data_sql);
+        for bind in &binds {
+            data_query = data_query.bind(bind);
+        }
+        data_query = data_query.bind(count as i64).bind(offset as i64);
+        
+        let rows: Vec<LogRow> = data_query.fetch_all(&state.pool).await.unwrap_or_default();
+        
+        let list: Vec<serde_json::Value> = rows
+            .into_iter()
+            .map(|r| {
+                serde_json::json!({
+                    "id": r.id,
+                    "name": r.name,
+                    "type": r.r#type,
+                    "createTime": r.create_time
+                })
+            })
+            .collect();
+        
+        return Json(WVPResult::success(serde_json::json!({ "total": total, "list": list })));
+    }
 }
 
 /// GET /api/log/file/{fileName} - 下载指定日志文件
@@ -600,6 +839,29 @@ pub struct UserApiKeyQuery {
     pub count: Option<u32>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct UserApiKeyMutateQuery {
+    pub id: Option<i32>,
+    #[serde(alias = "userId")]
+    pub user_id: Option<i64>,
+    pub app: Option<String>,
+    pub enable: Option<bool>,
+    #[serde(alias = "expiresAt")]
+    pub expires_at: Option<String>,
+    pub remark: Option<String>,
+}
+
+fn parse_expired_at(raw: Option<&str>) -> Option<i64> {
+    let raw = raw?.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    chrono::NaiveDateTime::parse_from_str(raw, "%Y-%m-%d %H:%M:%S")
+        .ok()
+        .map(|dt| dt.and_utc().timestamp())
+        .or_else(|| raw.parse::<i64>().ok())
+}
+
 /// GET /api/userApiKey/userApiKeys
 pub async fn user_api_key_list(
     State(state): State<AppState>,
@@ -634,12 +896,12 @@ pub async fn user_api_key_list(
 /// POST /api/userApiKey/remark
 pub async fn user_api_key_remark(
     State(state): State<AppState>,
-    Json(body): Json<user_api_key::UserApiKeyRemark>,
+    Query(q): Query<UserApiKeyMutateQuery>,
 ) -> Result<Json<WVPResult<()>>, AppError> {
-    let id = body.id.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id"))?;
-    let remark = body.remark.as_deref().unwrap_or("");
+    let id = q.id.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id"))?;
+    let remark = q.remark.as_deref().unwrap_or("");
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    user_api_key::update_remark(&state.pool, id, remark, &now).await?;
+    user_api_key::update_remark(&state.pool, id as i64, remark, &now).await?;
     Ok(Json(WVPResult::<()>::success_empty()))
 }
 
@@ -651,9 +913,9 @@ pub struct UserApiKeyId {
 
 pub async fn user_api_key_enable(
     State(state): State<AppState>,
-    Json(body): Json<UserApiKeyId>,
+    Query(q): Query<UserApiKeyMutateQuery>,
 ) -> Result<Json<WVPResult<()>>, AppError> {
-    let id = body.id.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id"))?;
+    let id = q.id.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id"))?;
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     user_api_key::set_enable(&state.pool, id, true, &now).await?;
     Ok(Json(WVPResult::<()>::success_empty()))
@@ -661,9 +923,9 @@ pub async fn user_api_key_enable(
 
 pub async fn user_api_key_disable(
     State(state): State<AppState>,
-    Json(body): Json<UserApiKeyId>,
+    Query(q): Query<UserApiKeyMutateQuery>,
 ) -> Result<Json<WVPResult<()>>, AppError> {
-    let id = body.id.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id"))?;
+    let id = q.id.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id"))?;
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     user_api_key::set_enable(&state.pool, id, false, &now).await?;
     Ok(Json(WVPResult::<()>::success_empty()))
@@ -671,9 +933,9 @@ pub async fn user_api_key_disable(
 
 pub async fn user_api_key_reset(
     State(state): State<AppState>,
-    Json(body): Json<UserApiKeyId>,
+    Query(q): Query<UserApiKeyMutateQuery>,
 ) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
-    let id = body.id.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id"))?;
+    let id = q.id.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id"))?;
     let new_key = format!("{:032x}", rand::random::<u128>());
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     user_api_key::reset_api_key(&state.pool, id, &new_key, &now).await?;
@@ -693,11 +955,13 @@ pub async fn user_api_key_delete(
 /// POST /api/userApiKey/add
 pub async fn user_api_key_add(
     State(state): State<AppState>,
-    Json(body): Json<user_api_key::UserApiKeyAdd>,
+    Query(q): Query<UserApiKeyMutateQuery>,
 ) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
-    let user_id = body.user_id.unwrap_or(1);
-    let app = body.app.as_deref().unwrap_or("default").to_string();
-    let remark = body.remark.clone();
+    let user_id = q.user_id.unwrap_or(1);
+    let app = q.app.as_deref().unwrap_or("default").to_string();
+    let remark = q.remark.clone();
+    let enable = q.enable.unwrap_or(true);
+    let expired_at = parse_expired_at(q.expires_at.as_deref());
     let api_key = format!("{:032x}", rand::random::<u128>());
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     user_api_key::add(
@@ -705,11 +969,17 @@ pub async fn user_api_key_add(
         user_id,
         &app,
         &api_key,
+        expired_at,
+        enable,
         remark.as_deref(),
         &now,
     )
     .await?;
-    Ok(Json(WVPResult::success(serde_json::json!({ "apiKey": api_key }))))
+    Ok(Json(WVPResult::success(serde_json::json!({
+        "apiKey": api_key,
+        "enable": enable,
+        "expiredAt": expired_at
+    }))))
 }
 
 // ========== playback（回放依赖流媒体，保持兼容空实现） ==========
@@ -725,7 +995,7 @@ pub async fn playback_stop(
     Json(WVPResult::<()>::success_empty())
 }
 
-// ========== gb_record / cloud_record（依赖 ZLM/录像服务，保持兼容空实现） ==========
+// ========== gb_record / cloud_record ==========
 pub async fn gb_record_query(
     Path((_device_id, _channel_id)): Path<(String, String)>,
 ) -> Json<WVPResult<Vec<serde_json::Value>>> {
@@ -750,173 +1020,503 @@ pub async fn gb_record_download_progress(
     Json(WVPResult::success(serde_json::json!({ "progress": 0 })))
 }
 
-pub async fn cloud_record_play_path(State(state): State<AppState>) -> Json<WVPResult<serde_json::Value>> {
-    // 尝试从 ZLM 获取一个可播放的云端录像路径
-    // 1) 尝试从 ZLM 的 mp4 记录中获取最近的一条
-    // 2) 将路径返回给前端，若不存在则返回 null
-    let play_path: Option<String> = if let Some(zlm) = state.get_zlm_client(None) {
-        match zlm.get_mp4_record_file("record", "record", None, None, None).await {
-            Ok(list) => list.get(0).map(|r| r.path.clone()),
-            Err(_) => None,
-        }
-    } else {
-        None
-    };
-    let val = serde_json::json!({
-        "playPath": play_path.unwrap_or_default()
-    });
-    Json(WVPResult::success(val))
+#[derive(Debug, Deserialize)]
+pub struct CloudRecordQuery {
+    pub app: Option<String>,
+    pub stream: Option<String>,
+    #[serde(alias = "recordId")]
+    pub record_id: Option<String>,
+    #[serde(alias = "cloudRecordId")]
+    pub cloud_record_id: Option<String>,
+    #[serde(alias = "mediaServerId")]
+    pub media_server_id: Option<String>,
+    pub query: Option<String>,
+    #[serde(alias = "callId")]
+    pub call_id: Option<String>,
+    #[serde(alias = "startTime")]
+    pub start_time: Option<String>,
+    #[serde(alias = "endTime")]
+    pub end_time: Option<String>,
+    pub year: Option<i32>,
+    pub month: Option<u32>,
+    pub page: Option<u32>,
+    pub count: Option<u32>,
+    #[serde(alias = "ascOrder")]
+    pub asc_order: Option<bool>,
+    #[serde(alias = "isEnd")]
+    pub is_end: Option<bool>,
+    pub schema: Option<String>,
+    pub seek: Option<i64>,
+    pub speed: Option<f64>,
 }
 
-pub async fn cloud_record_date_list(State(state): State<AppState>) -> Json<WVPResult<Vec<serde_json::Value>>> {
-    // 通过 ZLM 查询最近的云端录像列表，提取日期（YYYY-MM-DD）
-    // 不抛出错误，出错时返回空日期列表
-    let mut dates: HashSet<String> = HashSet::new();
-    if let Some(zlm) = state.get_zlm_client(None) {
-        if let Ok(list) = zlm.get_mp4_record_file("record", "record", None, None, None).await {
-            for rec in list {
-                let ct = rec.create_time;
-                if ct.len() >= 10 {
-                    dates.insert(ct[..10].to_string());
-                } else {
-                    dates.insert(ct);
+#[derive(Debug, Deserialize)]
+pub struct CloudRecordDeleteBody {
+    pub ids: Option<Vec<String>>,
+}
+
+async fn ensure_cloud_record_task_table(pool: &crate::db::Pool) {
+    #[cfg(feature = "postgres")]
+    let query = r#"
+        CREATE TABLE IF NOT EXISTS wvp_cloud_record_task (
+            id BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
+            app TEXT,
+            stream TEXT,
+            media_server_id TEXT,
+            start_time TEXT,
+            end_time TEXT,
+            status TEXT,
+            progress DOUBLE PRECISION DEFAULT 0,
+            create_time TEXT,
+            update_time TEXT
+        )
+    "#;
+    #[cfg(feature = "mysql")]
+    let query = r#"
+        CREATE TABLE IF NOT EXISTS wvp_cloud_record_task (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            app VARCHAR(255),
+            stream VARCHAR(255),
+            media_server_id VARCHAR(255),
+            start_time VARCHAR(64),
+            end_time VARCHAR(64),
+            status VARCHAR(32),
+            progress DOUBLE DEFAULT 0,
+            create_time VARCHAR(64),
+            update_time VARCHAR(64)
+        )
+    "#;
+    let _ = sqlx::query(query).execute(pool).await;
+}
+
+pub async fn cloud_record_play_path(
+    State(state): State<AppState>,
+    Query(q): Query<CloudRecordQuery>,
+) -> Json<WVPResult<serde_json::Value>> {
+    let record_id = q.record_id.or(q.cloud_record_id).unwrap_or_default();
+    let Some((media_server_id, app, stream, file_name)) = parse_cloud_record_id(&record_id) else {
+        return Json(WVPResult::success(serde_json::json!({
+            "playPath": "",
+            "httpPath": "",
+            "httpsPath": ""
+        })));
+    };
+
+    let mut payload = build_cloud_record_urls(&state, &media_server_id, &app, &stream, None);
+    if let Some(zlm) = state.get_zlm_client(Some(&media_server_id)) {
+        if let Ok(records) = zlm.get_mp4_record_file(&app, &stream, None, None, None).await {
+            if let Some(record) = records.into_iter().find(|item| item.name == file_name) {
+                payload = build_cloud_record_urls(
+                    &state,
+                    &media_server_id,
+                    &app,
+                    &stream,
+                    Some(record.path.as_str()),
+                );
+                if let Some(obj) = payload.as_object_mut() {
+                    obj.insert("playPath".to_string(), serde_json::json!(record.path));
+                    obj.insert("filePath".to_string(), serde_json::json!(record.file_path));
+                    obj.insert("fileName".to_string(), serde_json::json!(record.name));
+                    obj.insert("stream".to_string(), serde_json::json!(stream));
+                    obj.insert("app".to_string(), serde_json::json!(app));
+                    obj.insert("mediaServerId".to_string(), serde_json::json!(media_server_id));
+                }
+                if let Some(ref playback_manager) = state.playback_manager {
+                    playback_manager.create(crate::handlers::playback::PlaybackSession {
+                        stream_id: record_id.clone(),
+                        device_id: media_server_id.clone(),
+                        channel_id: file_name.clone(),
+                        app: app.clone(),
+                        stream: stream.clone(),
+                        media_server_id: Some(media_server_id.clone()),
+                        schema: q.schema.clone().unwrap_or_else(|| "fmp4".to_string()),
+                        start_time: record.create_time.clone(),
+                        end_time: None,
+                        current_time: record.create_time,
+                        speed: 1.0,
+                        paused: false,
+                        source: "cloud_record".to_string(),
+                    }).await;
                 }
             }
         }
     }
-    let mut result = Vec::new();
-    for d in dates.into_iter() {
-        result.push(serde_json::json!({"date": d}));
-    }
-    Json(WVPResult::success(result))
+    Json(WVPResult::success(payload))
 }
 
-pub async fn cloud_record_load(State(state): State<AppState>) -> Json<WVPResult<Vec<serde_json::Value>>> {
-    // 从 ZLM 获取 mp4 记录文件列表，并作为加载结果返回
-    let mut items: Vec<serde_json::Value> = Vec::new();
-    if let Some(zlm) = state.get_zlm_client(None) {
-        if let Ok(list) = zlm.get_mp4_record_file("record", "record", None, None, None).await {
-            for r in list {
-                let obj = serde_json::json!({
-                    "id": r.name,
-                    "name": r.name,
-                    "createTime": r.create_time,
-                    "duration": r.duration,
-                    "size": r.size,
-                    "path": r.path,
-                    "filePath": r.file_path,
-                });
-                items.push(obj);
+pub async fn cloud_record_date_list(
+    State(state): State<AppState>,
+    Query(q): Query<CloudRecordQuery>,
+) -> Json<WVPResult<Vec<String>>> {
+    let app = q.app.clone().unwrap_or_else(|| "record".to_string());
+    let stream = q.stream.clone().unwrap_or_else(|| "record".to_string());
+    let media_server_ids = if let Some(id) = q.media_server_id.clone() {
+        vec![id]
+    } else {
+        let ids = state.list_zlm_servers();
+        if ids.is_empty() {
+            vec!["default".to_string()]
+        } else {
+            ids
+        }
+    };
+
+    let mut dates: HashSet<String> = HashSet::new();
+    for media_server_id in media_server_ids {
+        if let Some(zlm) = state.get_zlm_client(Some(&media_server_id)) {
+            if let Ok(list) = zlm.get_mp4_record_file(&app, &stream, None, None, None).await {
+                for rec in list {
+                    let date = rec.create_time.chars().take(10).collect::<String>();
+                    if !date.is_empty() {
+                        if let (Some(year), Some(month)) = (q.year, q.month) {
+                            if let Ok(parsed) = chrono::NaiveDate::parse_from_str(&date, "%Y-%m-%d") {
+                                if parsed.year() != year || parsed.month() != month {
+                                    continue;
+                                }
+                            }
+                        }
+                        dates.insert(date);
+                    }
+                }
             }
         }
     }
-    Json(WVPResult::success(items))
+    let mut result = dates.into_iter().collect::<Vec<_>>();
+    result.sort();
+    Json(WVPResult::success(result))
 }
 
-/// GET /api/cloud/record/seek
-pub async fn cloud_record_seek(State(state): State<AppState>) -> Json<WVPResult<()>> {
-    // Try to issue a seek operation via ZLM if a client is available.
-    if let Some(zlm) = state.get_zlm_client(None) {
-        // Best-effort seek: trigger a remote operation by querying mp4 records as a no-op trigger point.
-        let _ = zlm.get_mp4_record_file("record", "record", None, None, None).await;
-    }
-    Json(WVPResult::<()>::success_empty())
-}
-
-/// GET /api/cloud/record/speed
-pub async fn cloud_record_speed(State(state): State<AppState>) -> Json<WVPResult<()>> {
-    // Best-effort: no-op unless ZLM supports explicit seek/speed commands in future.
-    if let Some(zlm) = state.get_zlm_client(None) {
-        let _ = zlm.get_mp4_record_file("record", "record", None, None, None).await;
-    }
-    Json(WVPResult::<()>::success_empty())
-}
-
-pub async fn cloud_record_task_add(State(state): State<AppState>) -> Json<WVPResult<()>> {
-    // 简易实现：在 wvp_cloud_record_task 表中添加任务记录
-    // 1) 创建表（若不存在）
-    // 2) 插入一条记录
-    // 3) 返回新任务的 ID
-    // 注意：若数据库不支持或未配置，降级返回空任务
-    let pool = &state.pool;
-    // 1) 尝试创建任务表（若不存在）
-    #[cfg(feature = "postgres")]
-    let _ = sqlx::query(
-        "CREATE TABLE IF NOT EXISTS wvp_cloud_record_task (id BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY, name TEXT, status TEXT, create_time TIMESTAMP, update_time TIMESTAMP)",
-    )
-    .execute(pool).await;
-    #[cfg(feature = "mysql")]
-    let _ = sqlx::query(
-        "CREATE TABLE IF NOT EXISTS wvp_cloud_record_task (id BIGINT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(255), status VARCHAR(32), create_time DATETIME, update_time DATETIME)",
-    )
-    .execute(pool).await;
-    // 2) 插入记录（简化实现，不返回 ID）
-    // 为避免跨数据库差异，此处仅执行插入且忽略结果
-    let _ = sqlx::query("INSERT INTO wvp_cloud_record_task (name, status, create_time, update_time) VALUES ('默认任务', 'pending', NOW(), NOW())").execute(pool).await;
-    Json(WVPResult::<()>::success_empty())
-}
-
-pub async fn cloud_record_task_list(State(state): State<AppState>) -> Json<WVPResult<serde_json::Value>> {
-    // 查询 wvp_cloud_record_task 表，返回任务列表
-    let pool = &state.pool;
-    // 尝试创建表，若已存在则忽略错误
-    #[cfg(feature = "postgres")]
-    let _ = sqlx::query("CREATE TABLE IF NOT EXISTS wvp_cloud_record_task (id BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY, name TEXT, status TEXT, create_time TIMESTAMP, update_time TIMESTAMP)").execute(pool).await;
-    #[cfg(feature = "mysql")]
-    let _ = sqlx::query("CREATE TABLE IF NOT EXISTS wvp_cloud_record_task (id BIGINT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(255), status VARCHAR(32), create_time DATETIME, update_time DATETIME)").execute(pool).await;
-    let rows = match sqlx::query("SELECT id, name, status, create_time, update_time FROM wvp_cloud_record_task ORDER BY id DESC").fetch_all(pool).await {
-        Ok(v) => v,
-        Err(_) => vec![],
+pub async fn cloud_record_load(
+    State(state): State<AppState>,
+    Query(q): Query<CloudRecordQuery>,
+) -> Json<WVPResult<serde_json::Value>> {
+    let record_id = q.cloud_record_id.unwrap_or_default();
+    let Some((media_server_id, app, stream, file_name)) = parse_cloud_record_id(&record_id) else {
+        return Json(WVPResult::success(serde_json::json!({})));
     };
-    let list: Vec<serde_json::Value> = rows
-        .into_iter()
-        .map(|r| {
-            let id: i64 = r.try_get::<i64, _>("id").unwrap_or_default();
-            let name: String = r.try_get::<String, _>("name").unwrap_or_default();
-            let status: String = r.try_get::<String, _>("status").unwrap_or_default();
-            let create_time: Option<String> = r.try_get::<Option<String>, _>("create_time").ok().flatten();
-            let update_time: Option<String> = r.try_get::<Option<String>, _>("update_time").ok().flatten();
-            serde_json::json!({
-                "id": id,
-                "name": name,
-                "status": status,
-                "createTime": create_time,
-                "updateTime": update_time
-            })
-        })
-        .collect();
-    Json(WVPResult::success(serde_json::json!({"list": list})))
+
+    if let Some(zlm) = state.get_zlm_client(Some(&media_server_id)) {
+        if let Ok(records) = zlm.get_mp4_record_file(&app, &stream, None, None, None).await {
+            if let Some(record) = records.into_iter().find(|item| item.name == file_name) {
+                let start_time = normalize_record_time_ms(&record.create_time);
+                let duration = record_duration_ms(record.duration);
+                let end_time = start_time + duration;
+                let mut payload =
+                    build_cloud_record_urls(&state, &media_server_id, &app, &stream, Some(record.path.as_str()));
+                if let Some(obj) = payload.as_object_mut() {
+                    obj.insert("id".to_string(), serde_json::json!(record_id));
+                    obj.insert("key".to_string(), serde_json::json!(file_name));
+                    obj.insert("app".to_string(), serde_json::json!(app));
+                    obj.insert("stream".to_string(), serde_json::json!(stream));
+                    obj.insert("mediaServerId".to_string(), serde_json::json!(media_server_id));
+                    obj.insert("duration".to_string(), serde_json::json!(duration.max(1)));
+                    obj.insert("startTime".to_string(), serde_json::json!(start_time));
+                    obj.insert("endTime".to_string(), serde_json::json!(end_time));
+                    obj.insert("filePath".to_string(), serde_json::json!(record.file_path));
+                    obj.insert("playPath".to_string(), serde_json::json!(record.path));
+                }
+                if let Some(ref playback_manager) = state.playback_manager {
+                    playback_manager.create(crate::handlers::playback::PlaybackSession {
+                        stream_id: record_id.clone(),
+                        device_id: media_server_id.clone(),
+                        channel_id: file_name,
+                        app: app.clone(),
+                        stream: stream.clone(),
+                        media_server_id: Some(media_server_id.clone()),
+                        schema: q.schema.clone().unwrap_or_else(|| "fmp4".to_string()),
+                        start_time: record.create_time.clone(),
+                        end_time: Some(end_time.to_string()),
+                        current_time: record.create_time,
+                        speed: 1.0,
+                        paused: false,
+                        source: "cloud_record".to_string(),
+                    }).await;
+                }
+                return Json(WVPResult::success(payload));
+            }
+        }
+    }
+    Json(WVPResult::success(serde_json::json!({})))
 }
 
-pub async fn cloud_record_delete() -> Json<WVPResult<()>> {
-    Json(WVPResult::<()>::success_empty())
-}
-
-pub async fn cloud_record_list(State(state): State<AppState>) -> Json<WVPResult<serde_json::Value>> {
-    // 尝试从 ZLM 获取云端录像列表
-    // 兜底返回空列表，确保兼容前端格式
-    let mut list: Vec<serde_json::Value> = Vec::new();
-    if let Some(zlm) = state.get_zlm_client(None) {
-        if let Ok(rec_list) = zlm.get_mp4_record_file("record", "record", None, None, None).await {
-            list = rec_list
-                .into_iter()
-                .map(|r| {
-                    serde_json::json!({
-                        "id": r.name,
-                        "name": r.name,
-                        "createTime": r.create_time,
-                        "duration": r.duration,
-                        "size": r.size,
-                        "path": r.path,
-                        "filePath": r.file_path,
-                    })
-                })
-                .collect();
+pub async fn cloud_record_seek(
+    State(state): State<AppState>,
+    Query(q): Query<CloudRecordQuery>,
+) -> Json<WVPResult<serde_json::Value>> {
+    let record_id = q.record_id.clone().or(q.cloud_record_id.clone()).unwrap_or_default();
+    if let Some(ref playback_manager) = state.playback_manager {
+        if !record_id.is_empty() {
+            playback_manager
+                .update_current_time(&record_id, q.seek.unwrap_or_default().to_string())
+                .await;
         }
     }
     Json(WVPResult::success(serde_json::json!({
-        "total": list.len(),
-        "list": list
+        "id": record_id,
+        "mediaServerId": q.media_server_id,
+        "app": q.app,
+        "stream": q.stream,
+        "schema": q.schema.unwrap_or_else(|| "fmp4".to_string()),
+        "seek": q.seek.unwrap_or_default()
+    })))
+}
+
+pub async fn cloud_record_speed(
+    State(state): State<AppState>,
+    Query(q): Query<CloudRecordQuery>,
+) -> Json<WVPResult<serde_json::Value>> {
+    let record_id = q.record_id.clone().or(q.cloud_record_id.clone()).unwrap_or_default();
+    let speed = q.speed.unwrap_or(1.0);
+    if let Some(ref playback_manager) = state.playback_manager {
+        if !record_id.is_empty() {
+            playback_manager.update_speed(&record_id, speed).await;
+        }
+    }
+    Json(WVPResult::success(serde_json::json!({
+        "id": record_id,
+        "mediaServerId": q.media_server_id,
+        "app": q.app,
+        "stream": q.stream,
+        "schema": q.schema.unwrap_or_else(|| "fmp4".to_string()),
+        "speed": speed
+    })))
+}
+
+pub async fn cloud_record_task_add(
+    State(state): State<AppState>,
+    Query(q): Query<CloudRecordQuery>,
+) -> Json<WVPResult<serde_json::Value>> {
+    ensure_cloud_record_task_table(&state.pool).await;
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let app = q.app.unwrap_or_else(|| "record".to_string());
+    let stream = q.stream.unwrap_or_else(|| "record".to_string());
+    let media_server_id = q.media_server_id.unwrap_or_else(|| "default".to_string());
+    let start_time = q.start_time.unwrap_or_default();
+    let end_time = q.end_time.unwrap_or_default();
+
+    #[cfg(feature = "postgres")]
+    let result = sqlx::query(
+        r#"INSERT INTO wvp_cloud_record_task
+           (app, stream, media_server_id, start_time, end_time, status, progress, create_time, update_time)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)"#,
+    )
+    .bind(&app)
+    .bind(&stream)
+    .bind(&media_server_id)
+    .bind(&start_time)
+    .bind(&end_time)
+    .bind("pending")
+    .bind(0.0_f64)
+    .bind(&now)
+    .bind(&now)
+    .execute(&state.pool)
+    .await;
+    #[cfg(feature = "mysql")]
+    let result = sqlx::query(
+        r#"INSERT INTO wvp_cloud_record_task
+           (app, stream, media_server_id, start_time, end_time, status, progress, create_time, update_time)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
+    )
+    .bind(&app)
+    .bind(&stream)
+    .bind(&media_server_id)
+    .bind(&start_time)
+    .bind(&end_time)
+    .bind("pending")
+    .bind(0.0_f64)
+    .bind(&now)
+    .bind(&now)
+    .execute(&state.pool)
+    .await;
+
+    let inserted = result.ok().map(|res| res.rows_affected()).unwrap_or_default();
+    Json(WVPResult::success(serde_json::json!({
+        "app": app,
+        "stream": stream,
+        "mediaServerId": media_server_id,
+        "startTime": start_time,
+        "endTime": end_time,
+        "added": inserted
+    })))
+}
+
+pub async fn cloud_record_task_list(
+    State(state): State<AppState>,
+    Query(q): Query<CloudRecordQuery>,
+) -> Json<WVPResult<serde_json::Value>> {
+    ensure_cloud_record_task_table(&state.pool).await;
+    let rows = sqlx::query(
+        "SELECT id, app, stream, media_server_id, start_time, end_time, status, progress, create_time, update_time FROM wvp_cloud_record_task ORDER BY id DESC",
+    )
+    .fetch_all(&state.pool)
+    .await
+    .unwrap_or_default();
+    let list: Vec<serde_json::Value> = rows
+        .into_iter()
+        .filter_map(|r| {
+            let status = r.try_get::<String, _>("status").unwrap_or_default();
+            if let Some(want_end) = q.is_end {
+                let finished = matches!(status.as_str(), "done" | "completed" | "failed");
+                if finished != want_end {
+                    return None;
+                }
+            }
+            Some(serde_json::json!({
+                "id": r.try_get::<i64, _>("id").unwrap_or_default(),
+                "app": r.try_get::<Option<String>, _>("app").ok().flatten(),
+                "stream": r.try_get::<Option<String>, _>("stream").ok().flatten(),
+                "mediaServerId": r.try_get::<Option<String>, _>("media_server_id").ok().flatten(),
+                "startTime": r.try_get::<Option<String>, _>("start_time").ok().flatten(),
+                "endTime": r.try_get::<Option<String>, _>("end_time").ok().flatten(),
+                "status": status,
+                "progress": r.try_get::<Option<f64>, _>("progress").ok().flatten().unwrap_or_default(),
+                "createTime": r.try_get::<Option<String>, _>("create_time").ok().flatten(),
+                "updateTime": r.try_get::<Option<String>, _>("update_time").ok().flatten()
+            }))
+        })
+        .collect();
+    let total = list.len();
+    Json(WVPResult::success(serde_json::json!({"total": total, "list": list})))
+}
+
+pub async fn cloud_record_delete(
+    State(state): State<AppState>,
+    Json(body): Json<CloudRecordDeleteBody>,
+) -> Json<WVPResult<serde_json::Value>> {
+    let ids = body.ids.unwrap_or_default();
+    let mut deleted = Vec::new();
+    let mut failed = Vec::new();
+
+    for record_id in ids {
+        let Some((media_server_id, app, stream, file_name)) = parse_cloud_record_id(&record_id) else {
+            failed.push(record_id);
+            continue;
+        };
+        let Some(zlm) = state.get_zlm_client(Some(&media_server_id)) else {
+            failed.push(record_id);
+            continue;
+        };
+        match zlm.get_mp4_record_file(&app, &stream, None, None, None).await {
+            Ok(records) => {
+                if let Some(record) = records.into_iter().find(|item| item.name == file_name) {
+                    let target = record.file_path.unwrap_or(record.path);
+                    if zlm.delete_mp4_file(&target).await.is_ok() {
+                        deleted.push(record_id);
+                    } else {
+                        failed.push(record_id);
+                    }
+                } else {
+                    failed.push(record_id);
+                }
+            }
+            Err(_) => failed.push(record_id),
+        }
+    }
+
+    Json(WVPResult::success(serde_json::json!({
+        "deleted": deleted,
+        "failed": failed
+    })))
+}
+
+pub async fn cloud_record_list(
+    State(state): State<AppState>,
+    Query(q): Query<CloudRecordQuery>,
+) -> Json<WVPResult<serde_json::Value>> {
+    let app = q.app.clone().unwrap_or_else(|| "record".to_string());
+    let stream = q.stream.clone().unwrap_or_else(|| "record".to_string());
+    let media_server_ids = if let Some(id) = q.media_server_id.clone() {
+        vec![id]
+    } else {
+        let ids = state.list_zlm_servers();
+        if ids.is_empty() {
+            vec!["default".to_string()]
+        } else {
+            ids
+        }
+    };
+    let search = q.query.clone().unwrap_or_default().to_lowercase();
+    let call_id = q.call_id.clone().unwrap_or_default().to_lowercase();
+    let start_filter = q.start_time.as_deref().map(normalize_record_time_ms);
+    let end_filter = q.end_time.as_deref().map(normalize_record_time_ms);
+    let mut list = Vec::new();
+
+    for media_server_id in media_server_ids {
+        if let Some(zlm) = state.get_zlm_client(Some(&media_server_id)) {
+            if let Ok(records) = zlm.get_mp4_record_file(&app, &stream, None, None, None).await {
+                for record in records {
+                    let start_time = normalize_record_time_ms(&record.create_time);
+                    let time_len = record_duration_ms(record.duration);
+                    let end_time = start_time + time_len;
+                    if let Some(filter_start) = start_filter {
+                        if end_time < filter_start {
+                            continue;
+                        }
+                    }
+                    if let Some(filter_end) = end_filter {
+                        if start_time > filter_end {
+                            continue;
+                        }
+                    }
+                    let file_name = record.name.clone();
+                    let file_name_lc = file_name.to_lowercase();
+                    if !search.is_empty() && !file_name_lc.contains(&search) {
+                        continue;
+                    }
+                    if !call_id.is_empty() && !file_name_lc.contains(&call_id) {
+                        continue;
+                    }
+                    let record_id = build_cloud_record_id(&media_server_id, &app, &stream, &file_name);
+                    let mut payload = build_cloud_record_urls(
+                        &state,
+                        &media_server_id,
+                        &app,
+                        &stream,
+                        Some(record.path.as_str()),
+                    );
+                    if let Some(obj) = payload.as_object_mut() {
+                        obj.insert("id".to_string(), serde_json::json!(record_id));
+                        obj.insert("app".to_string(), serde_json::json!(app));
+                        obj.insert("stream".to_string(), serde_json::json!(stream));
+                        obj.insert("callId".to_string(), serde_json::json!(file_name));
+                        obj.insert("startTime".to_string(), serde_json::json!(start_time));
+                        obj.insert("endTime".to_string(), serde_json::json!(end_time));
+                        obj.insert("timeLen".to_string(), serde_json::json!(time_len));
+                        obj.insert("fileName".to_string(), serde_json::json!(file_name));
+                        obj.insert("createTime".to_string(), serde_json::json!(record.create_time));
+                        obj.insert("size".to_string(), serde_json::json!(record.size));
+                        obj.insert("mediaServerId".to_string(), serde_json::json!(media_server_id));
+                        obj.insert("filePath".to_string(), serde_json::json!(record.file_path));
+                    }
+                    list.push(payload);
+                }
+            }
+        }
+    }
+
+    list.sort_by(|a, b| {
+        let av = a.get("startTime").and_then(|v| v.as_i64()).unwrap_or_default();
+        let bv = b.get("startTime").and_then(|v| v.as_i64()).unwrap_or_default();
+        av.cmp(&bv)
+    });
+    if q.asc_order != Some(true) {
+        list.reverse();
+    }
+
+    let total = list.len();
+    let page = q.page.unwrap_or(1);
+    let count = q.count.unwrap_or(15).min(1000);
+    let start = (page.saturating_sub(1) * count) as usize;
+    let end = (start + count as usize).min(total);
+    let paged = if start >= total {
+        Vec::new()
+    } else {
+        list[start..end].to_vec()
+    };
+
+    Json(WVPResult::success(serde_json::json!({
+        "total": total,
+        "list": paged
     })))
 }
 
@@ -926,16 +1526,26 @@ pub async fn record_plan_get(
     State(state): State<AppState>,
     Query(q): Query<IdQuery>,
 ) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
-    let id = q.id.unwrap_or(0);
+    let id = q.id.or(q.plan_id).unwrap_or(0);
     if id == 0 {
         return Ok(Json(WVPResult::success(serde_json::Value::Null)));
     }
     let plan = record_plan::get_by_id(&state.pool, id).await?;
+    let items = record_plan::list_items(&state.pool, id as i64).await?;
     let out = match plan {
         Some(p) => serde_json::json!({
             "id": p.id,
             "snap": p.snap,
             "name": p.name,
+            "planItemList": items.iter().map(|item| serde_json::json!({
+                "id": item.id,
+                "start": item.start,
+                "stop": item.stop,
+                "weekDay": item.week_day,
+                "planId": item.plan_id,
+                "createTime": item.create_time,
+                "updateTime": item.update_time
+            })).collect::<Vec<_>>(),
             "createTime": p.create_time,
             "updateTime": p.update_time
         }),
@@ -952,7 +1562,10 @@ pub async fn record_plan_add(
     let name = body.name.as_deref().unwrap_or("默认计划");
     let snap = body.snap.unwrap_or(false);
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    record_plan::add(&state.pool, name, snap, &now).await?;
+    let plan_id = record_plan::add_with_id(&state.pool, name, snap, &now).await?;
+    if let Some(ref items) = body.plan_item_list {
+        record_plan::replace_items(&state.pool, plan_id, items, &now).await?;
+    }
     Ok(Json(WVPResult::<()>::success_empty()))
 }
 
@@ -971,6 +1584,9 @@ pub async fn record_plan_update(
         &now,
     )
     .await?;
+    if let Some(ref items) = body.plan_item_list {
+        record_plan::replace_items(&state.pool, id, items, &now).await?;
+    }
     Ok(Json(WVPResult::<()>::success_empty()))
 }
 
@@ -1014,20 +1630,151 @@ pub async fn record_plan_delete(
 /// GET /api/record/plan/channel/list
 pub async fn record_plan_channel_list(
     State(state): State<AppState>,
+    Query(q): Query<CommonChannelListQuery>,
 ) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
-    let list: Vec<crate::db::RecordPlan> = record_plan::list_paged(&state.pool, 1, 1000).await?;
-    let list: Vec<serde_json::Value> = list
-        .iter()
-        .map(|p| {
-            serde_json::json!({
-                "id": p.id,
-                "name": p.name,
-                "snap": p.snap
-            })
+    let page = q.page.unwrap_or(1);
+    let count = q.count.unwrap_or(15).min(100);
+    let offset = (page.saturating_sub(1) * count) as i64;
+    let plan_id = q.plan_id;
+    let has_link = q.has_link.as_deref();
+    let online = match q.online.as_deref() {
+        Some("true") => Some("ON"),
+        Some("false") => Some("OFF"),
+        _ => None,
+    };
+    let channel_type = q.channelType.as_deref().and_then(|v| v.parse::<i32>().ok());
+    let search = q.query.as_deref().unwrap_or("").trim();
+    let like = format!("%{}%", search);
+
+    #[cfg(feature = "postgres")]
+    let rows = sqlx::query(
+        r#"
+        SELECT id, name, gb_device_id, manufacturer, status, data_type, record_plan_id
+        FROM wvp_device_channel
+        WHERE ($1::text = '' OR name ILIKE $2 OR gb_device_id ILIKE $2)
+          AND ($3::text IS NULL OR status = $3)
+          AND ($4::int IS NULL OR data_type = $4)
+          AND (
+                $5::int IS NULL
+                OR ($6::text = 'true' AND record_plan_id = $5)
+                OR ($6::text = 'false' AND (record_plan_id IS NULL OR record_plan_id != $5))
+              )
+        ORDER BY id DESC
+        LIMIT $7 OFFSET $8
+        "#,
+    )
+    .bind(search)
+    .bind(&like)
+    .bind(online)
+    .bind(channel_type)
+    .bind(plan_id)
+    .bind(has_link)
+    .bind(count as i64)
+    .bind(offset)
+    .fetch_all(&state.pool)
+    .await?;
+    #[cfg(feature = "mysql")]
+    let rows = sqlx::query(
+        r#"
+        SELECT id, name, gb_device_id, manufacturer, status, data_type, record_plan_id
+        FROM wvp_device_channel
+        WHERE (? = '' OR name LIKE ? OR gb_device_id LIKE ?)
+          AND (? IS NULL OR status = ?)
+          AND (? IS NULL OR data_type = ?)
+          AND (
+                ? IS NULL
+                OR (? = 'true' AND record_plan_id = ?)
+                OR (? = 'false' AND (record_plan_id IS NULL OR record_plan_id != ?))
+              )
+        ORDER BY id DESC
+        LIMIT ? OFFSET ?
+        "#,
+    )
+    .bind(search)
+    .bind(&like)
+    .bind(&like)
+    .bind(online)
+    .bind(online)
+    .bind(channel_type)
+    .bind(channel_type)
+    .bind(plan_id)
+    .bind(has_link)
+    .bind(plan_id)
+    .bind(has_link)
+    .bind(plan_id)
+    .bind(count as i64)
+    .bind(offset)
+    .fetch_all(&state.pool)
+    .await?;
+
+    #[cfg(feature = "postgres")]
+    let total: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM wvp_device_channel
+        WHERE ($1::text = '' OR name ILIKE $2 OR gb_device_id ILIKE $2)
+          AND ($3::text IS NULL OR status = $3)
+          AND ($4::int IS NULL OR data_type = $4)
+          AND (
+                $5::int IS NULL
+                OR ($6::text = 'true' AND record_plan_id = $5)
+                OR ($6::text = 'false' AND (record_plan_id IS NULL OR record_plan_id != $5))
+              )
+        "#,
+    )
+    .bind(search)
+    .bind(&like)
+    .bind(online)
+    .bind(channel_type)
+    .bind(plan_id)
+    .bind(has_link)
+    .fetch_one(&state.pool)
+    .await?;
+    #[cfg(feature = "mysql")]
+    let total: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM wvp_device_channel
+        WHERE (? = '' OR name LIKE ? OR gb_device_id LIKE ?)
+          AND (? IS NULL OR status = ?)
+          AND (? IS NULL OR data_type = ?)
+          AND (
+                ? IS NULL
+                OR (? = 'true' AND record_plan_id = ?)
+                OR (? = 'false' AND (record_plan_id IS NULL OR record_plan_id != ?))
+              )
+        "#,
+    )
+    .bind(search)
+    .bind(&like)
+    .bind(&like)
+    .bind(online)
+    .bind(online)
+    .bind(channel_type)
+    .bind(channel_type)
+    .bind(plan_id)
+    .bind(has_link)
+    .bind(plan_id)
+    .bind(has_link)
+    .bind(plan_id)
+    .fetch_one(&state.pool)
+    .await?;
+
+    let list: Vec<serde_json::Value> = rows.iter().map(|r| {
+        let gb_id: Option<String> = r.try_get("gb_device_id").ok();
+        serde_json::json!({
+            "id": r.try_get::<i64, _>("id").unwrap_or_default(),
+            "gbId": gb_id,
+            "gbDeviceId": gb_id,
+            "gbName": r.try_get::<Option<String>, _>("name").ok().flatten(),
+            "gbManufacturer": r.try_get::<Option<String>, _>("manufacturer").ok().flatten(),
+            "gbStatus": r.try_get::<Option<String>, _>("status").ok().flatten().unwrap_or_else(|| "OFF".to_string()),
+            "dataType": r.try_get::<Option<i32>, _>("data_type").ok().flatten().unwrap_or(0),
+            "recordPlanId": r.try_get::<Option<i32>, _>("record_plan_id").ok().flatten(),
         })
-        .collect();
+    }).collect();
     Ok(Json(WVPResult::success(serde_json::json!({
-        "total": list.len(),
+        "total": total,
         "list": list
     }))))
 }
@@ -1035,17 +1782,91 @@ pub async fn record_plan_channel_list(
 /// POST /api/record/plan/link
 #[derive(Debug, Deserialize)]
 pub struct RecordPlanLink {
+    #[serde(alias = "channelId")]
     pub channel_id: Option<i64>,
+    #[serde(alias = "planId")]
     pub plan_id: Option<i64>,
+    #[serde(alias = "channelIds")]
+    pub channel_ids: Option<Vec<String>>,
+    #[serde(alias = "deviceDbIds")]
+    pub device_db_ids: Option<Vec<i64>>,
+    #[serde(alias = "allLink")]
+    pub all_link: Option<bool>,
 }
 
 pub async fn record_plan_link(
     State(state): State<AppState>,
     Json(body): Json<RecordPlanLink>,
 ) -> Result<Json<WVPResult<()>>, AppError> {
-    let channel_id = body.channel_id.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 channelId"))?;
-    record_plan::link_channel(&state.pool, channel_id, body.plan_id).await?;
-    Ok(Json(WVPResult::<()>::success_empty()))
+    if let Some(channel_id) = body.channel_id {
+        record_plan::link_channel(&state.pool, channel_id, body.plan_id).await?;
+        return Ok(Json(WVPResult::<()>::success_empty()));
+    }
+
+    if let Some(ref channel_ids) = body.channel_ids {
+        for gb_id in channel_ids {
+            #[cfg(feature = "postgres")]
+            let row = sqlx::query("SELECT id FROM wvp_device_channel WHERE gb_device_id = $1")
+                .bind(gb_id)
+                .fetch_optional(&state.pool)
+                .await?;
+            #[cfg(feature = "mysql")]
+            let row = sqlx::query("SELECT id FROM wvp_device_channel WHERE gb_device_id = ?")
+                .bind(gb_id)
+                .fetch_optional(&state.pool)
+                .await?;
+            if let Some(row) = row {
+                let channel_id: i64 = row.try_get::<i32, _>("id").map(|v| v as i64)
+                    .or_else(|_| row.try_get::<i64, _>("id"))
+                    .unwrap_or_default();
+                record_plan::link_channel(&state.pool, channel_id, body.plan_id).await?;
+            }
+        }
+        return Ok(Json(WVPResult::<()>::success_empty()));
+    }
+
+    if let Some(ref device_db_ids) = body.device_db_ids {
+        for device_db_id in device_db_ids {
+            #[cfg(feature = "postgres")]
+            let rows = sqlx::query("SELECT id FROM wvp_device_channel WHERE data_device_id = $1")
+                .bind(*device_db_id as i32)
+                .fetch_all(&state.pool)
+                .await?;
+            #[cfg(feature = "mysql")]
+            let rows = sqlx::query("SELECT id FROM wvp_device_channel WHERE data_device_id = ?")
+                .bind(*device_db_id as i32)
+                .fetch_all(&state.pool)
+                .await?;
+            for row in rows {
+                let channel_id: i64 = row.try_get::<i32, _>("id").map(|v| v as i64)
+                    .or_else(|_| row.try_get::<i64, _>("id"))
+                    .unwrap_or_default();
+                record_plan::link_channel(&state.pool, channel_id, body.plan_id).await?;
+            }
+        }
+        return Ok(Json(WVPResult::<()>::success_empty()));
+    }
+
+    if body.all_link.is_some() {
+        #[cfg(feature = "postgres")]
+        let rows = sqlx::query("SELECT id FROM wvp_device_channel")
+            .fetch_all(&state.pool)
+            .await?;
+        #[cfg(feature = "mysql")]
+        let rows = sqlx::query("SELECT id FROM wvp_device_channel")
+            .fetch_all(&state.pool)
+            .await?;
+        let target_plan_id = if body.all_link == Some(true) { body.plan_id } else { None };
+        for row in rows {
+            let channel_id: i64 = row.try_get::<i32, _>("id").map(|v| v as i64)
+                .or_else(|_| row.try_get::<i64, _>("id"))
+                .unwrap_or_default();
+            record_plan::link_channel(&state.pool, channel_id, target_plan_id).await?;
+        }
+        return Ok(Json(WVPResult::<()>::success_empty()));
+    }
+
+    return Err(AppError::business(ErrorCode::Error400, "缺少关联参数"));
 }
 
 /// GET /api/position/history/:deviceId (used in queryTrace.vue, map/queryTrace.vue)
@@ -1068,6 +1889,8 @@ pub async fn position_history(
 
 #[derive(Debug, Deserialize)]
 pub struct PositionHistoryQuery {
+    #[serde(alias = "startTime")]
     pub start: Option<String>,
+    #[serde(alias = "endTime")]
     pub end: Option<String>,
 }

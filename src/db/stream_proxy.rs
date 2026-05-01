@@ -9,7 +9,8 @@ use super::Pool;
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub struct StreamProxy {
     pub id: i32,
-    pub type_: Option<String>,
+    #[serde(rename = "type")]
+    pub r#type: Option<String>,
     pub app: Option<String>,
     pub stream: Option<String>,
     pub src_url: Option<String>,
@@ -181,7 +182,7 @@ pub async fn list_paged(
         if let Some(p) = pulling {
             #[cfg(feature = "mysql")]
             return sqlx::query_as::<_, StreamProxy>(
-                "SELECT id, app, stream, src_url, media_server_id, pulling, create_time, update_time, name FROM wvp_stream_proxy WHERE media_server_id = ? AND pulling = ? ORDER BY id LIMIT ? OFFSET ?",
+                "SELECT id, type, app, stream, src_url, timeout, ffmpeg_cmd_key, rtsp_type, media_server_id, enable_audio, enable_mp4, pulling, enable, create_time, name, update_time, stream_key, server_id, enable_disable_none_reader, relates_media_server_id FROM wvp_stream_proxy WHERE media_server_id = ? AND pulling = ? ORDER BY id LIMIT ? OFFSET ?",
             )
             .bind(mid)
             .bind(p)
@@ -191,7 +192,7 @@ pub async fn list_paged(
             .await;
             #[cfg(feature = "postgres")]
             return sqlx::query_as::<_, StreamProxy>(
-                "SELECT id, app, stream, src_url, media_server_id, pulling, create_time, update_time, name FROM wvp_stream_proxy WHERE media_server_id = $1 AND pulling = $2 ORDER BY id LIMIT $3 OFFSET $4",
+                "SELECT id, type, app, stream, src_url, timeout, ffmpeg_cmd_key, rtsp_type, media_server_id, enable_audio, enable_mp4, pulling, enable, create_time, name, update_time, stream_key, server_id, enable_disable_none_reader, relates_media_server_id FROM wvp_stream_proxy WHERE media_server_id = $1 AND pulling = $2 ORDER BY id LIMIT $3 OFFSET $4",
             )
             .bind(mid)
             .bind(p)
@@ -202,7 +203,7 @@ pub async fn list_paged(
         } else {
             #[cfg(feature = "mysql")]
             return sqlx::query_as::<_, StreamProxy>(
-                "SELECT id, app, stream, src_url, media_server_id, pulling, create_time, update_time, name FROM wvp_stream_proxy WHERE media_server_id = ? ORDER BY id LIMIT ? OFFSET ?",
+                "SELECT id, type, app, stream, src_url, timeout, ffmpeg_cmd_key, rtsp_type, media_server_id, enable_audio, enable_mp4, pulling, enable, create_time, name, update_time, stream_key, server_id, enable_disable_none_reader, relates_media_server_id FROM wvp_stream_proxy WHERE media_server_id = ? ORDER BY id LIMIT ? OFFSET ?",
             )
             .bind(mid)
             .bind(limit)
@@ -211,7 +212,7 @@ pub async fn list_paged(
             .await;
             #[cfg(feature = "postgres")]
             return sqlx::query_as::<_, StreamProxy>(
-                "SELECT id, app, stream, src_url, media_server_id, pulling, create_time, update_time, name FROM wvp_stream_proxy WHERE media_server_id = $1 ORDER BY id LIMIT $2 OFFSET $3",
+                "SELECT id, type, app, stream, src_url, timeout, ffmpeg_cmd_key, rtsp_type, media_server_id, enable_audio, enable_mp4, pulling, enable, create_time, name, update_time, stream_key, server_id, enable_disable_none_reader, relates_media_server_id FROM wvp_stream_proxy WHERE media_server_id = $1 ORDER BY id LIMIT $2 OFFSET $3",
             )
             .bind(mid)
             .bind(limit)
@@ -222,7 +223,7 @@ pub async fn list_paged(
     } else if let Some(p) = pulling {
         #[cfg(feature = "mysql")]
         return sqlx::query_as::<_, StreamProxy>(
-            "SELECT id, app, stream, src_url, media_server_id, pulling, create_time, update_time, name FROM wvp_stream_proxy WHERE pulling = ? ORDER BY id LIMIT ? OFFSET ?",
+            "SELECT id, type, app, stream, src_url, timeout, ffmpeg_cmd_key, rtsp_type, media_server_id, enable_audio, enable_mp4, pulling, enable, create_time, name, update_time, stream_key, server_id, enable_disable_none_reader, relates_media_server_id FROM wvp_stream_proxy WHERE pulling = ? ORDER BY id LIMIT ? OFFSET ?",
         )
         .bind(p)
         .bind(limit)
@@ -231,7 +232,7 @@ pub async fn list_paged(
         .await;
         #[cfg(feature = "postgres")]
         return sqlx::query_as::<_, StreamProxy>(
-            "SELECT id, app, stream, src_url, media_server_id, pulling, create_time, update_time, name FROM wvp_stream_proxy WHERE pulling = $1 ORDER BY id LIMIT $2 OFFSET $3",
+            "SELECT id, type, app, stream, src_url, timeout, ffmpeg_cmd_key, rtsp_type, media_server_id, enable_audio, enable_mp4, pulling, enable, create_time, name, update_time, stream_key, server_id, enable_disable_none_reader, relates_media_server_id FROM wvp_stream_proxy WHERE pulling = $1 ORDER BY id LIMIT $2 OFFSET $3",
         )
         .bind(p)
         .bind(limit)
@@ -241,7 +242,7 @@ pub async fn list_paged(
     } else {
         #[cfg(feature = "mysql")]
         return sqlx::query_as::<_, StreamProxy>(
-            "SELECT id, app, stream, src_url, media_server_id, pulling, create_time, update_time, name FROM wvp_stream_proxy ORDER BY id LIMIT ? OFFSET ?",
+            "SELECT id, type, app, stream, src_url, timeout, ffmpeg_cmd_key, rtsp_type, media_server_id, enable_audio, enable_mp4, pulling, enable, create_time, name, update_time, stream_key, server_id, enable_disable_none_reader, relates_media_server_id FROM wvp_stream_proxy ORDER BY id LIMIT ? OFFSET ?",
         )
         .bind(limit)
         .bind(offset as i64)
@@ -249,7 +250,7 @@ pub async fn list_paged(
         .await;
         #[cfg(feature = "postgres")]
         return sqlx::query_as::<_, StreamProxy>(
-            "SELECT id, app, stream, src_url, media_server_id, pulling, create_time, update_time, name FROM wvp_stream_proxy ORDER BY id LIMIT $1 OFFSET $2",
+            "SELECT id, type, app, stream, src_url, timeout, ffmpeg_cmd_key, rtsp_type, media_server_id, enable_audio, enable_mp4, pulling, enable, create_time, name, update_time, stream_key, server_id, enable_disable_none_reader, relates_media_server_id FROM wvp_stream_proxy ORDER BY id LIMIT $1 OFFSET $2",
         )
         .bind(limit)
         .bind(offset as i64)
@@ -305,4 +306,144 @@ pub async fn count_all(
             .fetch_one(pool)
             .await
     }
+}
+
+/// 更新拉流状态
+pub async fn update_pulling_status(pool: &Pool, id: i64, pulling: bool) -> sqlx::Result<u64> {
+    #[cfg(feature = "mysql")]
+    let r = sqlx::query("UPDATE wvp_stream_proxy SET pulling = ? WHERE id = ?")
+        .bind(pulling)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    #[cfg(feature = "postgres")]
+    let r = sqlx::query("UPDATE wvp_stream_proxy SET pulling = $1 WHERE id = $2")
+        .bind(pulling)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(r.rows_affected())
+}
+
+/// 根据 app/stream 更新代理拉流状态
+pub async fn update_pulling_status_by_app_stream(
+    pool: &Pool,
+    app: &str,
+    stream: &str,
+    media_server_id: Option<&str>,
+    pulling: bool,
+    now: &str,
+) -> sqlx::Result<u64> {
+    #[cfg(feature = "mysql")]
+    let r = sqlx::query(
+        "UPDATE wvp_stream_proxy SET pulling = ?, media_server_id = COALESCE(?, media_server_id), update_time = ? WHERE app = ? AND stream = ?"
+    )
+    .bind(pulling)
+    .bind(media_server_id)
+    .bind(now)
+    .bind(app)
+    .bind(stream)
+    .execute(pool)
+    .await?;
+
+    #[cfg(feature = "postgres")]
+    let r = sqlx::query(
+        "UPDATE wvp_stream_proxy SET pulling = $1, media_server_id = COALESCE($2, media_server_id), update_time = $3 WHERE app = $4 AND stream = $5"
+    )
+    .bind(pulling)
+    .bind(media_server_id)
+    .bind(now)
+    .bind(app)
+    .bind(stream)
+    .execute(pool)
+    .await?;
+
+    Ok(r.rows_affected())
+}
+
+/// 更新启用状态
+pub async fn update_enable_status(pool: &Pool, id: i64, enable: bool) -> sqlx::Result<u64> {
+    #[cfg(feature = "mysql")]
+    let r = sqlx::query("UPDATE wvp_stream_proxy SET enable = ? WHERE id = ?")
+        .bind(enable)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    #[cfg(feature = "postgres")]
+    let r = sqlx::query("UPDATE wvp_stream_proxy SET enable = $1 WHERE id = $2")
+        .bind(enable)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(r.rows_affected())
+}
+
+/// 根据 app 和 stream 查询代理
+pub async fn get_by_app_stream(pool: &Pool, app: &str, stream: &str) -> sqlx::Result<Option<StreamProxy>> {
+    #[cfg(feature = "mysql")]
+    return sqlx::query_as::<_, StreamProxy>(
+        "SELECT id, type, app, stream, src_url, timeout, ffmpeg_cmd_key, rtsp_type, media_server_id, enable_audio, enable_mp4, pulling, enable, create_time, name, update_time, stream_key, server_id, enable_disable_none_reader, relates_media_server_id FROM wvp_stream_proxy WHERE app = ? AND stream = ?"
+    )
+    .bind(app)
+    .bind(stream)
+    .fetch_optional(pool)
+    .await;
+    #[cfg(feature = "postgres")]
+    return sqlx::query_as::<_, StreamProxy>(
+        "SELECT id, type, app, stream, src_url, timeout, ffmpeg_cmd_key, rtsp_type, media_server_id, enable_audio, enable_mp4, pulling, enable, create_time, name, update_time, stream_key, server_id, enable_disable_none_reader, relates_media_server_id FROM wvp_stream_proxy WHERE app = $1 AND stream = $2"
+    )
+    .bind(app)
+    .bind(stream)
+    .fetch_optional(pool)
+    .await;
+}
+
+/// 获取所有启用的代理
+pub async fn get_all_enabled_proxies(pool: &Pool) -> sqlx::Result<Vec<StreamProxy>> {
+    #[cfg(feature = "mysql")]
+    return sqlx::query_as::<_, StreamProxy>(
+        "SELECT id, type, app, stream, src_url, timeout, ffmpeg_cmd_key, rtsp_type, media_server_id, enable_audio, enable_mp4, pulling, enable, create_time, name, update_time, stream_key, server_id, enable_disable_none_reader, relates_media_server_id FROM wvp_stream_proxy WHERE enable = 1 ORDER BY id"
+    )
+    .fetch_all(pool)
+    .await;
+    #[cfg(feature = "postgres")]
+    return sqlx::query_as::<_, StreamProxy>(
+        "SELECT id, type, app, stream, src_url, timeout, ffmpeg_cmd_key, rtsp_type, media_server_id, enable_audio, enable_mp4, pulling, enable, create_time, name, update_time, stream_key, server_id, enable_disable_none_reader, relates_media_server_id FROM wvp_stream_proxy WHERE enable = true ORDER BY id"
+    )
+    .fetch_all(pool)
+    .await;
+}
+
+/// 获取所有正在拉流的代理
+pub async fn get_all_pulling_proxies(pool: &Pool) -> sqlx::Result<Vec<StreamProxy>> {
+    #[cfg(feature = "mysql")]
+    return sqlx::query_as::<_, StreamProxy>(
+        "SELECT id, type, app, stream, src_url, timeout, ffmpeg_cmd_key, rtsp_type, media_server_id, enable_audio, enable_mp4, pulling, enable, create_time, name, update_time, stream_key, server_id, enable_disable_none_reader, relates_media_server_id FROM wvp_stream_proxy WHERE pulling = 1 ORDER BY id"
+    )
+    .fetch_all(pool)
+    .await;
+    #[cfg(feature = "postgres")]
+    return sqlx::query_as::<_, StreamProxy>(
+        "SELECT id, type, app, stream, src_url, timeout, ffmpeg_cmd_key, rtsp_type, media_server_id, enable_audio, enable_mp4, pulling, enable, create_time, name, update_time, stream_key, server_id, enable_disable_none_reader, relates_media_server_id FROM wvp_stream_proxy WHERE pulling = true ORDER BY id"
+    )
+    .fetch_all(pool)
+    .await;
+}
+
+/// 根据媒体服务器ID获取代理列表
+pub async fn list_by_media_server(pool: &Pool, media_server_id: &str) -> sqlx::Result<Vec<StreamProxy>> {
+    #[cfg(feature = "mysql")]
+    return sqlx::query_as::<_, StreamProxy>(
+        "SELECT id, type, app, stream, src_url, timeout, ffmpeg_cmd_key, rtsp_type, media_server_id, enable_audio, enable_mp4, pulling, enable, create_time, name, update_time, stream_key, server_id, enable_disable_none_reader, relates_media_server_id FROM wvp_stream_proxy WHERE media_server_id = ? ORDER BY id"
+    )
+    .bind(media_server_id)
+    .fetch_all(pool)
+    .await;
+    #[cfg(feature = "postgres")]
+    return sqlx::query_as::<_, StreamProxy>(
+        "SELECT id, type, app, stream, src_url, timeout, ffmpeg_cmd_key, rtsp_type, media_server_id, enable_audio, enable_mp4, pulling, enable, create_time, name, update_time, stream_key, server_id, enable_disable_none_reader, relates_media_server_id FROM wvp_stream_proxy WHERE media_server_id = $1 ORDER BY id"
+    )
+    .bind(media_server_id)
+    .fetch_all(pool)
+    .await;
 }
