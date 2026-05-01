@@ -32,6 +32,9 @@ use crate::sip::gb28181::invite_session::{
 use crate::sip::gb28181::talk::{build_talk_sdp as build_audio_sdp, TalkManager, TalkStatus};
 use crate::sip::gb28181::xml_parser::ChannelInfo;
 use crate::sip::gb28181::{DeviceManager, SessionManager, TransportMode, XmlParser};
+use crate::sip::gb28181::ssrc::SsrcManager;
+use crate::sip::gb28181::stream_reconnect::StreamReconnectManager;
+use crate::sip::gb28181::nat_helper::NatHelper;
 use crate::sip::transport::tcp::{TcpConnectionManager, TcpListener};
 use crate::zlm::ZlmClient;
 
@@ -51,12 +54,24 @@ pub struct SipServer {
     pool: Pool,
     zlm_client: Option<Arc<ZlmClient>>,
     ws_state: Option<Arc<WsState>>,
-    /// call_id -> oneshot sender, 等待 INVITE 200 OK 回来后通知 play_start
     pending_invites: Arc<DashMap<String, oneshot::Sender<String>>>,
+    ssrc_manager: Arc<SsrcManager>,
+    stream_reconnect_manager: Arc<StreamReconnectManager>,
+    nat_helper: Arc<NatHelper>,
 }
 
 impl SipServer {
     pub fn new(config: SipConfig, pool: Pool) -> Self {
+        let ssrc_manager = Arc::new(SsrcManager::new(&config.device_id));
+        let nat_helper = Arc::new(NatHelper::new(
+            &config.ip,
+            config.sdp_ip.as_deref(),
+            config.stream_ip.as_deref(),
+        ));
+        let stream_reconnect = config.stream_reconnect.as_ref()
+            .map(|rc| StreamReconnectManager::new(rc.enabled, rc.max_retries, rc.retry_interval_secs))
+            .unwrap_or(StreamReconnectManager::new(false, 3, 5));
+
         Self {
             config: Arc::new(config),
             device_manager: Arc::new(DeviceManager::new()),
@@ -74,6 +89,9 @@ impl SipServer {
             zlm_client: None,
             ws_state: None,
             pending_invites: Arc::new(DashMap::new()),
+            ssrc_manager,
+            stream_reconnect_manager: Arc::new(stream_reconnect),
+            nat_helper,
         }
     }
 
@@ -83,6 +101,32 @@ impl SipServer {
 
     pub fn set_zlm_client(&mut self, client: Option<Arc<ZlmClient>>) {
         self.zlm_client = client;
+    }
+
+    pub fn config(&self) -> &SipConfig {
+        &self.config
+    }
+
+    pub fn socket(&self) -> &Arc<RwLock<Option<UdpSocket>>> {
+        &self.socket
+    }
+
+    pub fn ssrc_manager(&self) -> &SsrcManager {
+        &self.ssrc_manager
+    }
+
+    pub fn nat_helper(&self) -> &NatHelper {
+        &self.nat_helper
+    }
+
+    pub fn stream_reconnect_manager(&self) -> &StreamReconnectManager {
+        &self.stream_reconnect_manager
+    }
+
+    pub async fn is_device_online(&self, device_id: &str) -> bool {
+        self.device_manager.get(device_id).await
+            .map(|d| d.online)
+            .unwrap_or(false)
     }
 
     pub fn set_tcp_enabled(&mut self, enabled: bool) {
@@ -1447,6 +1491,43 @@ impl SipServer {
             match cmd_type.as_deref() {
                 Some("Catalog") => {
                     tracing::debug!("NOTIFY Catalog body: {}", body);
+                    let device_id_for_catalog = XmlParser::get_device_id(body)
+                        .unwrap_or_else(|| Self::extract_device_id(&from).unwrap_or_default());
+                    let (sum_num, channels) = XmlParser::parse_catalog_channels(body);
+                    tracing::info!("Catalog NOTIFY from {}: {} channels (SumNum={:?})", 
+                        device_id_for_catalog, channels.len(), sum_num);
+
+                    for ch in &channels {
+                        let status = if ch.status == "ON" || ch.status == "online" { true } else { false };
+                        let parent_id = ch.parent_id.as_deref().or(Some(&device_id_for_catalog));
+                        match db_device::upsert_channel_from_catalog(
+                            pool,
+                            &device_id_for_catalog,
+                            &ch.device_id,
+                            &ch.name,
+                            ch.manufacturer.as_deref(),
+                            ch.model.as_deref(),
+                            ch.owner.as_deref(),
+                            ch.civil_code.as_deref(),
+                            ch.address.as_deref(),
+                            parent_id,
+                            status,
+                            ch.longitude,
+                            ch.latitude,
+                            ch.ptz_type,
+                            ch.has_audio,
+                            ch.sub_count,
+                        ).await {
+                            Ok(_) => {},
+                            Err(e) => tracing::warn!("Failed to upsert channel {}: {}", ch.device_id, e),
+                        }
+                    }
+
+                    if let (Some(total), false) = (sum_num, channels.is_empty()) {
+                        if (channels.len() as i32) < total {
+                            tracing::info!("Partial catalog received: {}/{}, more expected", channels.len(), total);
+                        }
+                    }
                 }
                 _ => {
                     tracing::debug!("NOTIFY body: {}", body);

@@ -310,16 +310,25 @@ pub async fn update_enable(pool: &Pool, id: i64, enable: bool) -> sqlx::Result<u
 pub async fn get_all_enabled_platforms(pool: &Pool) -> sqlx::Result<Vec<Platform>> {
     #[cfg(feature = "mysql")]
     return sqlx::query_as::<_, Platform>(
-        "SELECT id, enable, name, server_gb_id, server_gb_domain, server_ip, server_port, device_gb_id, device_ip, device_port, username, password, expires, keep_timeout, transport, character_set, ptz, rtcp, status, catalog_id, catalog_group, share_org, share_user, share_group, auto_push_channel, auto_push_channel_status, send_stream_ip, send_stream_port, send_stream_protocol, as_message_thread, sip_message_log, create_time, update_time FROM wvp_platform WHERE enable = 1 ORDER BY id",
+        "SELECT * FROM wvp_platform WHERE enable = 1 ORDER BY id",
     )
     .fetch_all(pool)
     .await;
     #[cfg(feature = "postgres")]
     return sqlx::query_as::<_, Platform>(
-        "SELECT id, enable, name, server_gb_id, server_gb_domain, server_ip, server_port, device_gb_id, device_ip, device_port, username, password, expires, keep_timeout, transport, character_set, ptz, rtcp, status, catalog_id, catalog_group, share_org, share_user, share_group, auto_push_channel, auto_push_channel_status, send_stream_ip, send_stream_port, send_stream_protocol, as_message_thread, sip_message_log, create_time, update_time FROM wvp_platform WHERE enable = true ORDER BY id",
+        "SELECT * FROM wvp_platform WHERE enable = true ORDER BY id",
     )
     .fetch_all(pool)
     .await;
+}
+
+/// 获取所有平台
+pub async fn list_platforms(pool: &Pool) -> sqlx::Result<Vec<Platform>> {
+    sqlx::query_as::<_, Platform>(
+        "SELECT * FROM wvp_platform ORDER BY id",
+    )
+    .fetch_all(pool)
+    .await
 }
 
 /// 获取所有在线平台

@@ -9,7 +9,7 @@ pub struct PtzCommand {
     pub extra: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "PascalCase")]
 pub enum PtzCommandType {
     Left,
@@ -142,4 +142,111 @@ pub fn parse_ptz_command(xml: &str) -> Option<(String, String, u8)> {
     let speed: u8 = parts[1].parse().ok()?;
 
     Some((parts[0].to_string(), device_id, speed))
+}
+
+pub struct PtzEncode;
+
+impl PtzEncode {
+    pub fn direction_8(direction: &PtzCommandType, speed: u8) -> String {
+        let s = (speed as u16).min(255) as u8;
+
+        match direction {
+            PtzCommandType::Stop => Self::to_hex_command(0, 0, 0, 0, 0),
+            PtzCommandType::Left => Self::to_hex_command(0x81, s, 0, 0, 0),
+            PtzCommandType::Right => Self::to_hex_command(0x01, s, 0, 0, 0),
+            PtzCommandType::Up => Self::to_hex_command(0, 0, 0x01, s, 0),
+            PtzCommandType::Down => Self::to_hex_command(0, 0, 0x81, s, 0),
+            PtzCommandType::LeftUp => Self::to_hex_command(0x81, s, 0x01, s, 0),
+            PtzCommandType::LeftDown => Self::to_hex_command(0x81, s, 0x81, s, 0),
+            PtzCommandType::RightUp => Self::to_hex_command(0x01, s, 0x01, s, 0),
+            PtzCommandType::RightDown => Self::to_hex_command(0x01, s, 0x81, s, 0),
+            PtzCommandType::ZoomIn => Self::to_hex_command(0, 0, 0, 0, 0x21),
+            PtzCommandType::ZoomOut => Self::to_hex_command(0, 0, 0, 0, 0x41),
+            _ => Self::to_hex_command(0, 0, 0, 0, 0),
+        }
+    }
+
+    pub fn stop() -> String {
+        Self::to_hex_command(0, 0, 0, 0, 0)
+    }
+
+    pub fn to_hex_command(pan_action: u8, pan_speed: u8, tilt_action: u8, tilt_speed: u8, zoom_data: u8) -> String {
+        format!("A5{:02X}{:02X}{:02X}{:02X}AF", pan_action, pan_speed, tilt_action, tilt_speed)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub enum FrontEndCommand {
+    CruiseStart,
+    CruiseStop,
+    SetPoint,
+    DeletePoint,
+    SetSpeed,
+    SetTime,
+    ScanStart,
+    ScanStop,
+    SetLeft,
+    SetRight,
+    WiperStart,
+    WiperStop,
+    AuxSwitchOn,
+    AuxSwitchOff,
+}
+
+impl FrontEndCommand {
+    pub fn to_xml(&self, device_id: &str, channel_id: &str, param: Option<u32>, sn: u32) -> String {
+        let cmd = match self {
+            FrontEndCommand::CruiseStart => "CruiseStart",
+            FrontEndCommand::CruiseStop => "CruiseStop",
+            FrontEndCommand::SetPoint => "SetPoint",
+            FrontEndCommand::DeletePoint => "DeletePoint",
+            FrontEndCommand::SetSpeed => "SetSpeed",
+            FrontEndCommand::SetTime => "SetTime",
+            FrontEndCommand::ScanStart => "ScanStart",
+            FrontEndCommand::ScanStop => "ScanStop",
+            FrontEndCommand::SetLeft => "SetLeft",
+            FrontEndCommand::SetRight => "SetRight",
+            FrontEndCommand::WiperStart => "WiperStart",
+            FrontEndCommand::WiperStop => "WiperStop",
+            FrontEndCommand::AuxSwitchOn => "AuxSwitchOn",
+            FrontEndCommand::AuxSwitchOff => "AuxSwitchOff",
+        };
+
+        let param_xml = param.map(|p| format!("<Param>{}</Param>", p)).unwrap_or_default();
+
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<Control>
+<CmdType>DeviceControl</CmdType>
+<SN>{}</SN>
+<DeviceID>{}</DeviceID>
+<FrontEndCmd>
+<ChannelID>{}</ChannelID>
+<Cmd>{}</Cmd>
+{}
+</FrontEndCmd>
+</Control>"#,
+            sn, device_id, channel_id, cmd, param_xml
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_ptz_stop() {
+        let cmd = PtzEncode::stop();
+        assert!(cmd.starts_with("A5"));
+        assert!(cmd.ends_with("AF"));
+    }
+
+    #[test]
+    fn test_front_end_cruise_xml() {
+        let xml = FrontEndCommand::CruiseStart.to_xml("dev1", "ch1", Some(1), 10);
+        assert!(xml.contains("CruiseStart"));
+        assert!(xml.contains("DeviceControl"));
+    }
 }

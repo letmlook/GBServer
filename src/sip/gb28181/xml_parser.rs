@@ -116,7 +116,7 @@ impl XmlParser {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ChannelInfo {
     pub device_id: String,
     pub name: String,
@@ -128,4 +128,91 @@ pub struct ChannelInfo {
     pub status: String,
     pub longitude: Option<f64>,
     pub latitude: Option<f64>,
+    pub parent_id: Option<String>,
+    pub safety_cap: Option<String>,
+    pub snapshot_url: Option<String>,
+    pub ptz_type: Option<i32>,
+    pub stream_count: Option<i32>,
+    pub has_audio: Option<bool>,
+    pub sub_count: Option<i32>,
+    pub register_status: Option<String>,
+    pub channel_type: Option<String>,
+}
+
+impl XmlParser {
+    pub fn parse_catalog_channels(xml: &str) -> (Option<i32>, Vec<ChannelInfo>) {
+        let mut reader = Reader::from_str(xml);
+        let mut buf = Vec::new();
+        let mut channels = Vec::new();
+        let mut sum_num = None;
+        let mut in_item = false;
+        let mut current_tag = String::new();
+        let mut current_channel = ChannelInfo::default();
+
+        loop {
+            match reader.read_event_into(&mut buf) {
+                Ok(Event::Start(ref e)) => {
+                    let name = String::from_utf8_lossy(e.name().as_ref()).to_string();
+                    if name == "Item" {
+                        in_item = true;
+                        current_channel = ChannelInfo::default();
+                    }
+                    current_tag = name;
+                }
+                Ok(Event::Empty(ref e)) => {
+                    let name = String::from_utf8_lossy(e.name().as_ref()).to_string();
+                    if name == "Item" && in_item {
+                        channels.push(current_channel.clone());
+                        in_item = false;
+                    }
+                }
+                Ok(Event::Text(e)) => {
+                    let text = String::from_utf8_lossy(&e).trim().to_string();
+                    if text.is_empty() { continue; }
+
+                    if current_tag == "SumNum" {
+                        sum_num = text.parse().ok();
+                    }
+
+                    if !in_item { continue; }
+
+                    match current_tag.as_str() {
+                        "DeviceID" => current_channel.device_id = text,
+                        "Name" => current_channel.name = text,
+                        "Manufacturer" => current_channel.manufacturer = Some(text),
+                        "Model" => current_channel.model = Some(text),
+                        "Owner" => current_channel.owner = Some(text),
+                        "CivilCode" => current_channel.civil_code = Some(text),
+                        "Address" => current_channel.address = Some(text),
+                        "Status" => current_channel.status = text,
+                        "Longitude" => current_channel.longitude = text.parse().ok(),
+                        "Latitude" => current_channel.latitude = text.parse().ok(),
+                        "ParentID" => current_channel.parent_id = Some(text),
+                        "SafetyCap" => current_channel.safety_cap = Some(text),
+                        "SnapshotURL" => current_channel.snapshot_url = Some(text),
+                        "PTZType" => current_channel.ptz_type = text.parse().ok(),
+                        "StreamCount" => current_channel.stream_count = text.parse().ok(),
+                        "HasAudio" => current_channel.has_audio = Some(text == "1" || text.to_lowercase() == "true"),
+                        "SubCount" => current_channel.sub_count = text.parse().ok(),
+                        "RegisterStatus" => current_channel.register_status = Some(text),
+                        "ChannelType" => current_channel.channel_type = Some(text),
+                        _ => {}
+                    }
+                }
+                Ok(Event::End(ref e)) => {
+                    let name = String::from_utf8_lossy(e.name().as_ref()).to_string();
+                    if name == "Item" && in_item {
+                        channels.push(current_channel.clone());
+                        in_item = false;
+                    }
+                    current_tag.clear();
+                }
+                Ok(Event::Eof) => break,
+                _ => {}
+            }
+            buf.clear();
+        }
+
+        (sum_num, channels)
+    }
 }

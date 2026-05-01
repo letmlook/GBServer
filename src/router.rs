@@ -11,7 +11,7 @@ use tower_http::cors::{Any, CorsLayer};
 use crate::auth::auth_middleware;
 use crate::handlers::{
     alarm, common_channel, device, device_control, device_stub, front_end, jt1078, platform, play,
-    playback, server, stream, stub, talk, user, websocket,
+    playback, server, stream, stub, talk, user, websocket, webrtc, device_batch,
 };
 use crate::zlm::hook as zlm_hook;
 use crate::AppState;
@@ -280,6 +280,14 @@ pub fn app(state: AppState) -> Router<AppState> {
         .route(
             "/api/play/broadcast/stop/:device_id/:channel_id",
             get(play::broadcast_stop),
+        )
+        .route(
+            "/api/play/webrtc",
+            post(webrtc::webrtc_play),
+        )
+        .route(
+            "/api/device/batch/control",
+            post(device_batch::batch_control),
         )
         .route("/api/region/tree/list", get(stub::region_tree_list))
         .route("/api/region/delete", delete(stub::region_delete))

@@ -14,6 +14,10 @@ pub struct SipConfig {
     pub keepalive_timeout: u64,
     pub register_timeout: u64,
     pub charset: String,
+    pub sdp_ip: Option<String>,
+    pub stream_ip: Option<String>,
+    pub stream_reconnect: Option<crate::config::StreamReconnectConfig>,
+    pub heartbeat: Option<crate::config::HeartbeatConfig>,
 }
 
 impl Default for SipConfig {
@@ -29,6 +33,10 @@ impl Default for SipConfig {
             keepalive_timeout: 30,
             register_timeout: 3600,
             charset: "UTF-8".to_string(),
+            sdp_ip: None,
+            stream_ip: None,
+            stream_reconnect: None,
+            heartbeat: None,
         }
     }
 }

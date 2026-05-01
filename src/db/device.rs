@@ -1057,3 +1057,149 @@ pub async fn list_all_devices(pool: &Pool) -> sqlx::Result<Vec<Device>> {
     .fetch_all(pool)
     .await;
 }
+
+pub async fn upsert_channel_from_catalog(
+    pool: &Pool,
+    device_id: &str,
+    channel_device_id: &str,
+    name: &str,
+    manufacturer: Option<&str>,
+    model: Option<&str>,
+    owner: Option<&str>,
+    civil_code: Option<&str>,
+    address: Option<&str>,
+    parent_id: Option<&str>,
+    online: bool,
+    longitude: Option<f64>,
+    latitude: Option<f64>,
+    ptz_type: Option<i32>,
+    has_audio: Option<bool>,
+    sub_count: Option<i32>,
+) -> sqlx::Result<bool> {
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+
+    #[cfg(feature = "postgres")]
+    {
+        let existing = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM wvp_device_channel WHERE device_id = $1 AND gb_device_id = $2"
+        )
+        .bind(device_id)
+        .bind(channel_device_id)
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0);
+
+        if existing > 0 {
+            sqlx::query(
+                r#"UPDATE wvp_device_channel SET
+                   name = COALESCE($3, name),
+                   manufacturer = COALESCE($4, manufacturer),
+                   model = COALESCE($5, model),
+                   owner = COALESCE($6, owner),
+                   civil_code = COALESCE($7, civil_code),
+                   address = COALESCE($8, address),
+                   parent_id = COALESCE($9, parent_id),
+                   status = CASE WHEN $10 THEN 'ON' ELSE 'OFF' END,
+                   longitude = COALESCE($11, longitude),
+                   latitude = COALESCE($12, latitude),
+                   ptz_type = COALESCE($13, ptz_type),
+                   has_audio = COALESCE($14, has_audio),
+                   sub_count = COALESCE($15, sub_count),
+                   update_time = $16
+                   WHERE device_id = $1 AND gb_device_id = $2"#
+            )
+            .bind(device_id)
+            .bind(channel_device_id)
+            .bind(if name.is_empty() { None as Option<&str> } else { Some(name) })
+            .bind(manufacturer)
+            .bind(model)
+            .bind(owner)
+            .bind(civil_code)
+            .bind(address)
+            .bind(parent_id)
+            .bind(online)
+            .bind(longitude)
+            .bind(latitude)
+            .bind(ptz_type)
+            .bind(has_audio)
+            .bind(sub_count)
+            .bind(&now)
+            .execute(pool)
+            .await?;
+            Ok(false)
+        } else {
+            sqlx::query(
+                r#"INSERT INTO wvp_device_channel
+                   (device_id, gb_device_id, name, manufacturer, model, owner, civil_code, address,
+                    parent_id, status, longitude, latitude, ptz_type, has_audio, sub_count,
+                    create_time, update_time)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9,
+                    CASE WHEN $10 THEN 'ON' ELSE 'OFF' END,
+                    $11, $12, $13, $14, $15, $16, $17)"#
+            )
+            .bind(device_id)
+            .bind(channel_device_id)
+            .bind(if name.is_empty() { "Unknown" } else { name })
+            .bind(manufacturer)
+            .bind(model)
+            .bind(owner)
+            .bind(civil_code)
+            .bind(address)
+            .bind(parent_id)
+            .bind(online)
+            .bind(longitude)
+            .bind(latitude)
+            .bind(ptz_type)
+            .bind(has_audio)
+            .bind(sub_count)
+            .bind(&now)
+            .bind(&now)
+            .execute(pool)
+            .await?;
+            Ok(true)
+        }
+    }
+
+    #[cfg(feature = "mysql")]
+    {
+        sqlx::query(
+            r#"INSERT INTO wvp_device_channel
+               (device_id, gb_device_id, name, manufacturer, model, owner, civil_code, address,
+                parent_id, status, longitude, latitude, ptz_type, has_audio, sub_count,
+                create_time, update_time)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,
+                CASE WHEN ? THEN 'ON' ELSE 'OFF' END,
+                ?, ?, ?, ?, ?, ?, ?)
+               ON DUPLICATE KEY UPDATE
+               name = COALESCE(VALUES(name), name),
+               manufacturer = COALESCE(VALUES(manufacturer), manufacturer),
+               parent_id = COALESCE(VALUES(parent_id), parent_id),
+               status = VALUES(status),
+               longitude = COALESCE(VALUES(longitude), longitude),
+               latitude = COALESCE(VALUES(latitude), latitude),
+               has_audio = COALESCE(VALUES(has_audio), has_audio),
+               sub_count = COALESCE(VALUES(sub_count), sub_count),
+               update_time = VALUES(update_time)"#
+        )
+        .bind(device_id)
+        .bind(channel_device_id)
+        .bind(if name.is_empty() { "Unknown" } else { name })
+        .bind(manufacturer)
+        .bind(model)
+        .bind(owner)
+        .bind(civil_code)
+        .bind(address)
+        .bind(parent_id)
+        .bind(online)
+        .bind(longitude)
+        .bind(latitude)
+        .bind(ptz_type)
+        .bind(has_audio)
+        .bind(sub_count)
+        .bind(&now)
+        .bind(&now)
+        .execute(pool)
+        .await?;
+        Ok(true)
+    }
+}

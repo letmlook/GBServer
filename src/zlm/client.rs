@@ -33,6 +33,10 @@ impl ZlmClient {
         Self::new(&config.ip, config.http_port, &config.secret)
     }
 
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
     async fn request<R: for<'de> serde::Deserialize<'de>>(&self, path: &str, params: &[(&str, String)]) -> Result<R> {
         let url = format!("{}{}", self.base_url, path);
         let mut req = self.http.get(&url);

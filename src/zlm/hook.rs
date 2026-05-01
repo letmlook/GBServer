@@ -356,12 +356,51 @@ pub async fn handle_webhook(
                 tracing::info!("Stream changed: {}/{}/{} register={}", 
                     data.schema, data.app, data.stream, data.register);
                 sync_stream_changed(&state, &data).await;
+
+                let ws_msg = serde_json::json!({
+                    "type": "streamChanged",
+                    "app": data.app,
+                    "stream": data.stream,
+                    "schema": data.schema,
+                    "register": data.register,
+                });
+                state.ws_state.broadcast("streamChanged", ws_msg).await;
             }
         }
         "on_stream_not_found" => {
             if let Some(data) = serde_json::from_value::<StreamNotFoundData>(event.clone()).ok() {
                 tracing::warn!("Stream not found: {}/{}/{}", 
                     data.schema, data.app, data.stream);
+
+                if crate::sip::gb28181::stream_reconnect::StreamReconnectManager::is_gb28181_stream(&data.stream) {
+                    if let Some((device_id, channel_id)) = crate::sip::gb28181::stream_reconnect::StreamReconnectManager::parse_stream_id(&data.stream) {
+                        tracing::info!("GB28181 stream not found, attempting reconnect: device={} channel={}", device_id, channel_id);
+
+                        if let Some(ref sip_server) = state.sip_server {
+                            let sip = sip_server.read().await;
+                            let device_online = sip.is_device_online(&device_id).await;
+
+                            if device_online {
+                                match sip.send_play_invite_and_wait(&device_id, &channel_id, 0, None).await {
+                                    Ok(_) => {
+                                        tracing::info!("Stream reconnect INVITE sent for {}/{}", device_id, channel_id);
+                                        return Json(WVPResult::success(serde_json::json!({
+                                            "code": 0,
+                                            "action": "reconnect",
+                                            "deviceId": device_id,
+                                            "channelId": channel_id
+                                        })));
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!("Stream reconnect INVITE failed: {}", e);
+                                    }
+                                }
+                            } else {
+                                tracing::debug!("Device {} offline, skip reconnect", device_id);
+                            }
+                        }
+                    }
+                }
 
                 if let Some((device_id, channel_id)) = parse_stream_id(&data.stream) {
                     tracing::info!("Attempting auto-pull for device={} channel={}", device_id, channel_id);

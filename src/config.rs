@@ -52,6 +52,42 @@ pub struct SipConfig {
     pub keepalive_timeout: u64,
     pub register_timeout: u64,
     pub charset: String,
+    pub sdp_ip: Option<String>,
+    pub stream_ip: Option<String>,
+    pub stream_reconnect: Option<StreamReconnectConfig>,
+    pub heartbeat: Option<HeartbeatConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct StreamReconnectConfig {
+    pub enabled: bool,
+    pub max_retries: u32,
+    pub retry_interval_secs: u64,
+}
+
+impl Default for StreamReconnectConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_retries: 3,
+            retry_interval_secs: 5,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct HeartbeatConfig {
+    pub timeout_multiplier: u32,
+    pub check_interval_secs: u64,
+}
+
+impl Default for HeartbeatConfig {
+    fn default() -> Self {
+        Self {
+            timeout_multiplier: 3,
+            check_interval_secs: 10,
+        }
+    }
 }
 
 impl Default for SipConfig {
@@ -67,6 +103,10 @@ impl Default for SipConfig {
             keepalive_timeout: 30,
             register_timeout: 3600,
             charset: "UTF-8".to_string(),
+            sdp_ip: None,
+            stream_ip: None,
+            stream_reconnect: None,
+            heartbeat: None,
         }
     }
 }

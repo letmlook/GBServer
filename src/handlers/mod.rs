@@ -14,3 +14,5 @@ pub mod front_end;
 pub mod jt1078;
 pub mod websocket;
 pub mod alarm;
+pub mod webrtc;
+pub mod device_batch;

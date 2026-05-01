@@ -9,6 +9,7 @@ pub mod sip;
 pub mod zlm;
 pub mod cache;
 pub mod scheduler;
+pub mod cascade;
 
 use config::AppConfig;
 use std::collections::HashMap;
