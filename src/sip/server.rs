@@ -2278,6 +2278,15 @@ f=v/1/96/1/2/1/1/0
     }
 
     pub async fn send_subscribe(&self, device_id: &str, event: &str, expires: u32) -> Result<()> {
+        let socket = self.socket.read().await;
+        let socket = socket.as_ref().ok_or_else(|| anyhow::anyhow!("Socket not initialized"))?;
+
+        let device_addr = self
+            .device_manager
+            .get_address(device_id)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("Device {} not registered", device_id))?;
+
         let sn = chrono::Utc::now().timestamp();
         let body = format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -2288,8 +2297,59 @@ f=v/1/96/1/2/1/1/0
 </Query>"#,
             event, sn, device_id
         );
-        
-        self.send_message_to_device(device_id, SipMethod::Subscribe, Some(&body), Some("Application/MANSCDP+xml")).await
+
+        let call_id = format!("sub_{}_{}", device_id, chrono::Utc::now().timestamp_millis());
+        let branch = generate_branch();
+        let cseq = "1 SUBSCRIBE".to_string();
+        let via = format!("SIP/2.0/UDP {}:{};branch={};rport", self.config.ip, self.config.port, branch);
+        let from = format!(
+            "<sip:{}@{}:{}>;tag={}",
+            self.config.device_id,
+            self.config.ip,
+            self.config.port,
+            generate_tag()
+        );
+        let to = format!("<sip:{}@{}:{}>", device_id, device_addr.ip(), device_addr.port());
+        let contact = format!(
+            "<sip:{}@{}:{}>",
+            self.config.device_id, self.config.ip, self.config.port
+        );
+        let expires_header = expires.to_string();
+
+        let headers: Vec<(&str, &str)> = vec![
+            ("Via", &via),
+            ("From", &from),
+            ("To", &to),
+            ("Call-ID", &call_id),
+            ("CSeq", &cseq),
+            ("Contact", &contact),
+            ("Expires", &expires_header),
+            ("Max-Forwards", "70"),
+            ("User-Agent", "WVP-GB28181-Rust"),
+            ("Event", event),
+            ("Accept", "Application/MANSCDP+xml"),
+            ("Content-Type", "Application/MANSCDP+xml"),
+        ];
+
+        let uri = format!("sip:{}@{}:{}", device_id, device_addr.ip(), device_addr.port());
+        let request = Parser::generate_request("SUBSCRIBE", &uri, &headers, Some(&body));
+        socket.send_to(request.as_bytes(), device_addr).await?;
+
+        if event.eq_ignore_ascii_case("Catalog") {
+            let subscription = CatalogSubscription::new(
+                &call_id,
+                device_id,
+                device_addr,
+                &via,
+                &from,
+                &to,
+                expires,
+            );
+            self.catalog_subscription_manager.subscribe(subscription).await;
+        }
+
+        tracing::info!("Sent SUBSCRIBE {} to device {} at {}", event, device_id, device_addr);
+        Ok(())
     }
 
     pub async fn send_talk_invite(&self, device_id: &str, channel_id: &str) -> Result<()> {

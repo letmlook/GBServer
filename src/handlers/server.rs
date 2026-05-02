@@ -1,7 +1,10 @@
 //! 流媒体服务器与系统配置 API，与前端 server.js 对应
 
 use axum::{
+    body::Bytes,
     extract::{Path, Query, State},
+    http::{header, Method, StatusCode},
+    response::{IntoResponse, Response},
     Json,
 };
 use serde::Deserialize;
@@ -12,6 +15,7 @@ use crate::response::WVPResult;
 
 use crate::AppState;
 
+use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 use serde_json::json;
 use std::str::FromStr;
@@ -22,6 +26,125 @@ use std::fs::File;
 use std::io::{Read as _Read};
 use std::time::Duration;
 use tokio::time::sleep;
+
+pub async fn zlm_proxy(
+    method: Method,
+    State(state): State<AppState>,
+    Path((media_server_id, path)): Path<(String, String)>,
+    Query(mut params): Query<HashMap<String, String>>,
+    body: Bytes,
+) -> Response {
+    let Some(client) = state.get_zlm_client(Some(&media_server_id)) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "code": 404,
+                "msg": format!("媒体服务不存在: {}", media_server_id),
+                "data": null
+            })),
+        )
+            .into_response();
+    };
+
+    params
+        .entry("secret".to_string())
+        .or_insert_with(|| client.secret.clone());
+
+    let target = format!("{}/{}", client.base_url().trim_end_matches('/'), path);
+    let http = reqwest::Client::new();
+    let req = if method == Method::POST {
+        http.post(&target).query(&params).body(body)
+    } else {
+        http.get(&target).query(&params)
+    };
+    let resp = match req.send().await {
+        Ok(resp) => resp,
+        Err(e) => {
+            tracing::warn!("ZLM proxy request failed: {} -> {}", target, e);
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({
+                    "code": 502,
+                    "msg": format!("ZLM请求失败: {}", e),
+                    "data": null
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    let status = StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+    let content_type = resp
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| header::HeaderValue::from_str(value).ok())
+        .unwrap_or_else(|| header::HeaderValue::from_static("application/json"));
+    let body = match resp.bytes().await {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({
+                    "code": 502,
+                    "msg": format!("读取ZLM响应失败: {}", e),
+                    "data": null
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    Response::builder()
+        .status(status)
+        .header(header::CONTENT_TYPE, content_type)
+        .body(axum::body::Body::from(body))
+        .unwrap_or_else(|_| StatusCode::BAD_GATEWAY.into_response())
+}
+
+async fn configure_zlm_hooks(
+    state: &AppState,
+    media_server_id: &str,
+    client: &crate::zlm::ZlmClient,
+) -> Vec<String> {
+    let hook_url = state
+        .config
+        .zlm
+        .as_ref()
+        .and_then(|cfg| {
+            cfg.servers
+                .iter()
+                .find(|server| server.id == media_server_id)
+                .and_then(|server| server.hook_url.clone())
+                .or_else(|| Some(cfg.hook_url.clone()))
+        })
+        .filter(|url| !url.trim().is_empty())
+        .unwrap_or_else(|| format!("http://127.0.0.1:{}/api/zlm/hook", state.config.server.port));
+
+    let config_items = [
+        ("hook.enable", "1".to_string()),
+        ("hook.on_server_started", hook_url.clone()),
+        ("hook.on_server_keepalive", hook_url.clone()),
+        ("hook.on_stream_changed", hook_url.clone()),
+        ("hook.on_stream_not_found", hook_url.clone()),
+        ("hook.on_record_mp4", hook_url.clone()),
+        ("hook.on_record_hls", hook_url.clone()),
+        ("hook.on_publish", hook_url.clone()),
+        ("hook.on_play", hook_url.clone()),
+        ("hook.on_flow_report", hook_url.clone()),
+        ("hook.on_rtp_server_timeout", hook_url.clone()),
+    ];
+
+    let mut errors = Vec::new();
+    for (key, value) in config_items {
+        if let Err(e) = client.set_server_config(&client.secret, key, &value).await {
+            let msg = format!("{}={}: {}", key, value, e);
+            tracing::warn!("Failed to configure ZLM hook {}", msg);
+            errors.push(msg);
+        }
+    }
+    errors
+}
 
 #[cfg(target_os = "linux")]
 async fn read_cpu_usage() -> Option<f64> {
@@ -603,9 +726,25 @@ pub async fn media_server_save(
     .bind(&id)
     .execute(&state.pool)
     .await?;
+
+    let auto_config = body.auto_config.unwrap_or(true);
+    let mut zlm_hook_errors = Vec::new();
+    if auto_config {
+        let client = state
+            .get_zlm_client(Some(&id))
+            .unwrap_or_else(|| std::sync::Arc::new(crate::zlm::ZlmClient::new(
+                &ip,
+                http_port as u16,
+                body.secret.as_deref().unwrap_or_default(),
+            )));
+        zlm_hook_errors = configure_zlm_hooks(&state, &id, &client).await;
+    }
     
     Ok(Json(WVPResult::success(serde_json::json!({
         "id": id,
+        "autoConfig": auto_config,
+        "hookConfigured": auto_config && zlm_hook_errors.is_empty(),
+        "hookErrors": zlm_hook_errors,
         "message": "保存成功"
     }))))
 }

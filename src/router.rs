@@ -726,11 +726,17 @@ pub fn app(state: AppState) -> Router<AppState> {
             "/api/front-end/scan/stop/:device_id/:channel_device_id",
             get(front_end::scan_stop),
         )
+        .route(
+            "/api/ptz/front_end_command/:device_id/:channel_id",
+            post(front_end::legacy_front_end_command),
+        )
         // ========== JT1078 部标设备 ==========
         .route("/api/jt1078/terminal/list", get(jt1078::terminal_list))
         .route("/api/jt1078/terminal/query", get(jt1078::terminal_query))
         .route("/api/jt1078/terminal/add", post(jt1078::terminal_add))
+        .route("/api/jt1078/terminal/add/", post(jt1078::terminal_add))
         .route("/api/jt1078/terminal/update", post(jt1078::terminal_update))
+        .route("/api/jt1078/terminal/update/", post(jt1078::terminal_update))
         .route(
             "/api/jt1078/terminal/delete",
             delete(jt1078::terminal_delete),
@@ -744,7 +750,15 @@ pub fn app(state: AppState) -> Router<AppState> {
             post(jt1078::channel_update),
         )
         .route(
+            "/api/jt1078/terminal/channel/update/",
+            post(jt1078::channel_update),
+        )
+        .route(
             "/api/jt1078/terminal/channel/add",
+            post(jt1078::channel_add),
+        )
+        .route(
+            "/api/jt1078/terminal/channel/add/",
             post(jt1078::channel_add),
         )
         .route("/api/jt1078/live/start", get(jt1078::live_start))
@@ -808,7 +822,13 @@ pub fn app(state: AppState) -> Router<AppState> {
         .route("/api/health", get(health_check));
 
     let api = api_public.merge(api_protected);
-    let app = Router::new().merge(api).with_state(state.clone());
+    let zlm_protected = Router::new()
+        .route("/zlm/:media_server_id/*path", get(server::zlm_proxy).post(server::zlm_proxy))
+        .route_layer(middleware::from_fn_with_state(
+            state_clone.clone(),
+            auth_middleware,
+        ));
+    let app = Router::new().merge(api).merge(zlm_protected).with_state(state.clone());
 
     // WebSocket：设备状态实时通知
     let app = app.route("/api/ws", get(websocket::ws_handler));

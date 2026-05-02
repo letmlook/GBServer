@@ -51,6 +51,16 @@ pub struct WiperQuery {
     pub command: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct LegacyFrontEndCommandQuery {
+    #[serde(alias = "cmdCode")]
+    pub cmd_code: Option<i32>,
+    pub parameter1: Option<i32>,
+    pub parameter2: Option<i32>,
+    #[serde(alias = "combindCode2")]
+    pub combind_code2: Option<i32>,
+}
+
 fn build_ptz_xml(command: &str, h_speed: u8, v_speed: u8, z_speed: u8) -> String {
     let ptz_cmd = match command.to_ascii_uppercase().as_str() {
         "UP" => format!("0501000000{:02X}FF", h_speed),
@@ -67,6 +77,17 @@ fn build_ptz_xml(command: &str, h_speed: u8, v_speed: u8, z_speed: u8) -> String
         _ => format!("050100000000{:02X}FF", h_speed),
     };
     format!(r#"<PTZCmd>{}</PTZCmd>"#, ptz_cmd)
+}
+
+fn build_raw_front_end_xml(cmd_code: i32, parameter1: i32, parameter2: i32, combind_code2: i32) -> String {
+    let code1 = (cmd_code & 0xff) as u8;
+    let param1 = (parameter1 & 0xff) as u8;
+    let param2 = (parameter2 & 0xff) as u8;
+    let code2 = (combind_code2 & 0xff) as u8;
+    format!(
+        r#"<PTZCmd>A50F01{:02X}{:02X}{:02X}{:02X}</PTZCmd>"#,
+        code1, param1, param2, code2
+    )
 }
 
 fn build_preset_xml(command: &str, preset_index: u32) -> String {
@@ -167,6 +188,33 @@ pub async fn ptz(
     let body = build_ptz_xml(&command, h_speed, v_speed, z_speed);
     match send_via_sip(&state, &device_id, &channel_id, "DeviceControl", &body).await {
         Ok(()) => Json(success_json("PTZ 控制命令已发送")),
+        Err(e) => Json(serde_json::json!({ "code": 1, "msg": e })),
+    }
+}
+
+/// POST /api/ptz/front_end_command/:device_id/:channel_id
+///
+/// Compatibility endpoint used by older WVP player components. They already
+/// calculate GB28181 front-end command bytes and pass them as decimal query
+/// parameters, so this handler only wraps those bytes in a DeviceControl XML.
+pub async fn legacy_front_end_command(
+    State(state): State<AppState>,
+    Path((device_id, channel_id)): Path<(String, String)>,
+    Query(q): Query<LegacyFrontEndCommandQuery>,
+) -> Json<serde_json::Value> {
+    let cmd_code = q.cmd_code.unwrap_or(0);
+    let parameter1 = q.parameter1.unwrap_or(0);
+    let parameter2 = q.parameter2.unwrap_or(0);
+    let combind_code2 = q.combind_code2.unwrap_or(0);
+
+    tracing::info!(
+        "Legacy front-end command: device={}, channel={}, cmd={}, p1={}, p2={}, c2={}",
+        device_id, channel_id, cmd_code, parameter1, parameter2, combind_code2
+    );
+
+    let body = build_raw_front_end_xml(cmd_code, parameter1, parameter2, combind_code2);
+    match send_via_sip(&state, &device_id, &channel_id, "DeviceControl", &body).await {
+        Ok(()) => Json(success_json("前端控制命令已发送")),
         Err(e) => Json(serde_json::json!({ "code": 1, "msg": e })),
     }
 }
