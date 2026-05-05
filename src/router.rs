@@ -11,8 +11,9 @@ use tower_http::cors::{Any, CorsLayer};
 use crate::auth::auth_middleware;
 use crate::handlers::{
     alarm, common_channel, device, device_control, device_stub, front_end, jt1078, platform, play,
-    playback, server, stream, stub, talk, user, websocket, webrtc, device_batch, metrics as metrics_handler,
+    playback, server, stream, stub, talk, user, websocket, webrtc, device_batch,
 };
+use crate::handlers::metrics as metrics_handler;
 use crate::zlm::hook as zlm_hook;
 use crate::AppState;
 

@@ -158,7 +158,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_feed_and_count_and_cleanup() {
-        let manager = Jt1078Manager::new(Duration::from_millis(100), Duration::from_millis(200), None);
+        let manager = Jt1078Manager::new(Duration::from_millis(100), Duration::from_millis(200), None, false);
         let addr1 = make_addr(60001);
         let payload = b"abc";
         let len = (payload.len() as u32).to_be_bytes();
