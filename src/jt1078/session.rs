@@ -13,6 +13,8 @@ pub struct Jt1078Session {
     pub authenticated: bool,
     pub buffer: Vec<u8>,
     pub last_heartbeat: Instant,
+    /// Optional session-level token override (avoids global env var races in tests)
+    pub expected_token: Option<String>,
     /// Pending structured frames keyed by seq for reordering
     pub pending: BTreeMap<u16, Jt1078Frame>,
     /// Next expected sequence to deliver (None until first structured frame seen)
@@ -36,6 +38,7 @@ impl Jt1078Session {
             authenticated: false,
             buffer: Vec::with_capacity(8 * 1024),
             last_heartbeat: Instant::now(),
+            expected_token: None,
             pending: BTreeMap::new(),
             expected_seq: None,
             max_pending: 256,
@@ -138,7 +141,8 @@ impl Jt1078Session {
     pub fn process_payload(&mut self, payload: &[u8]) -> FrameKind {
         if payload.starts_with(b"AUTH:") {
             let token = &payload[5..];
-            let configured = std::env::var("WVP__JT1078__TOKEN").unwrap_or_else(|_| "secret".into());
+            // allow per-session override to avoid races in tests
+            let configured = if let Some(cfg) = &self.expected_token { cfg.clone() } else { std::env::var("WVP__JT1078__TOKEN").unwrap_or_else(|_| "secret".into()) };
             // compare as UTF-8 trimmed string to be tolerant of minor framing differences
             let token_str = String::from_utf8_lossy(token).trim().to_string();
             if token_str == configured || token_str.contains(&configured) {
@@ -199,6 +203,7 @@ mod tests {
     fn test_auth_and_heartbeat_processing() {
         std::env::set_var("WVP__JT1078__TOKEN", "mytoken");
         let mut sess = Jt1078Session::new(make_addr());
+        sess.expected_token = Some("mytoken".into());
 
         // construct AUTH frame (length-prefixed)
         let payload = b"AUTH:mytoken";
@@ -234,6 +239,7 @@ mod tests {
     fn test_auth_failure() {
         std::env::set_var("WVP__JT1078__TOKEN", "good");
         let mut sess = Jt1078Session::new(make_addr());
+        sess.expected_token = Some("good".into());
 
         let payload = b"AUTH:bad";
         let len = (payload.len() as u32).to_be_bytes();
