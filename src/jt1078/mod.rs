@@ -9,6 +9,7 @@ use std::sync::Arc;
 pub mod server;
 pub mod frame;
 pub mod session;
+pub mod manager;
 
 #[derive(Debug, Clone)]
 pub struct Jt1078Server {

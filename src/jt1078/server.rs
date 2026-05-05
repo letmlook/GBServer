@@ -9,15 +9,25 @@ use super::Jt1078Server;
 pub async fn start(_server: &Jt1078Server) -> Result<(), Box<dyn Error + Send + Sync>> {
     // Bind TCP listener on a default port (can be configured later)
     let tcp_addr = "0.0.0.0:60000";
+
+    // Create a manager used by both TCP and UDP listeners and start cleanup
+    let manager = crate::jt1078::manager::Jt1078Manager::new(std::time::Duration::from_secs(60));
+    let manager_for_cleanup = manager.clone();
+    tokio::spawn(async move {
+        manager_for_cleanup.cleanup_loop(std::time::Duration::from_secs(30)).await;
+    });
+
     match TcpListener::bind(tcp_addr).await {
         Ok(listener) => {
+            // Spawn TCP accept loop — clone manager for TCP tasks when needed
+            let manager_for_tcp = manager.clone();
             tokio::spawn(async move {
                 loop {
                     match listener.accept().await {
                         Ok((mut socket, addr)) => {
                             tracing::info!("JT1078 TCP connection accepted from {}", addr);
+                            let manager = manager_for_tcp.clone();
                             tokio::spawn(async move {
-                                let mut session = crate::jt1078::session::Jt1078Session::new(addr);
                                 let mut read_buf = [0u8; 4096];
                                 loop {
                                     match socket.read(&mut read_buf).await {
@@ -26,12 +36,13 @@ pub async fn start(_server: &Jt1078Server) -> Result<(), Box<dyn Error + Send + 
                                             break;
                                         }
                                         Ok(n) => {
-                                            let frames = session.feed_bytes(&read_buf[..n]);
+                                            let frames = manager.feed_bytes(addr, &read_buf[..n]).await;
                                             for f in frames {
-                                                match session.process_payload(&f) {
+                                                // process payload via manager which owns sessions
+                                                let kind = manager.process_payload_for(addr, &f).await;
+                                                match kind {
                                                     crate::jt1078::session::FrameKind::AuthFailure => {
                                                         tracing::warn!("JT1078 auth failed from {}", addr);
-                                                        // close connection by returning from task
                                                         return;
                                                     }
                                                     crate::jt1078::session::FrameKind::AuthSuccess => {
@@ -42,7 +53,6 @@ pub async fn start(_server: &Jt1078Server) -> Result<(), Box<dyn Error + Send + 
                                                     }
                                                     crate::jt1078::session::FrameKind::Data(d) => {
                                                         tracing::debug!("JT1078 data {} bytes from {}", d.len(), addr);
-                                                        // TODO: dispatch data to processing pipeline
                                                     }
                                                 }
                                             }
@@ -71,17 +81,20 @@ pub async fn start(_server: &Jt1078Server) -> Result<(), Box<dyn Error + Send + 
     let udp_addr = "0.0.0.0:60000";
     match UdpSocket::bind(udp_addr).await {
         Ok(socket) => {
+            // For UDP, use the same manager to maintain sessions per peer
+            let manager_udp = manager.clone();
+            let socket_udp = socket;
             tokio::spawn(async move {
                 let mut buf = vec![0u8; 1500];
                 loop {
-                    match socket.recv_from(&mut buf).await {
+                    match socket_udp.recv_from(&mut buf).await {
                         Ok((n, addr)) => {
                             tracing::info!("JT1078 UDP packet {} bytes from {}", n, addr);
-                            // For UDP, do a lightweight session per-packet (persistent sessions could be tracked if needed)
-                            let mut session = crate::jt1078::session::Jt1078Session::new(addr);
-                            let frames = session.feed_bytes(&buf[..n]);
+                            // feed bytes into manager-managed session
+                            let frames = manager_udp.feed_bytes(addr, &buf[..n]).await;
                             for f in frames {
-                                match session.process_payload(&f) {
+                                let kind = manager_udp.process_payload_for(addr, &f).await;
+                                match kind {
                                     crate::jt1078::session::FrameKind::AuthFailure => {
                                         tracing::warn!("JT1078 UDP auth failed from {}", addr);
                                     }
