@@ -167,6 +167,19 @@ node scripts/api-integration-test.js
 - 设备同步/删除/控制、通道详情、播放/回放与 ZLM 对接、推流/代理启停与 ZLM、录像计划、云录像、告警、日志、JT1078 等可按原 Java 接口逐步实现。
 - 国标 SIP 信令、ZLM Hook、Redis 消息等可单独成模块或服务，与当前 HTTP API 协同。
 
+## JT1078 retransmit hook & config
+
+A new JT1078 retransmit detection and notification feature is added.
+
+Config (config/application.yaml):
+
+jt1078:
+  timeout_ms: 60000
+  retransmit_wait_ms: 200
+  retransmit_hook_url: "http://127.0.0.1:18080/api/jt1078/retransmit"
+
+If `retransmit_hook_url` is set, the server will POST JSON reports when missing sequence ranges time out.
+
 ## License
 
 与原项目保持一致；Rust 重写部分可视为同一项目的一部分。

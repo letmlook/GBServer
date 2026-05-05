@@ -11,7 +11,9 @@ pub async fn start(_server: &Jt1078Server) -> Result<(), Box<dyn Error + Send + 
     let tcp_addr = "0.0.0.0:60000";
 
     // Create a manager used by both TCP and UDP listeners and start cleanup
-    let manager = crate::jt1078::manager::Jt1078Manager::new(std::time::Duration::from_secs(60), std::time::Duration::from_millis(200));
+    // Load optional retransmit hook from environment or configuration
+    let retransmit_hook = std::env::var("WVP__JT1078__RETRANSMIT_HOOK").ok();
+    let manager = crate::jt1078::manager::Jt1078Manager::new(std::time::Duration::from_secs(60), std::time::Duration::from_millis(200), retransmit_hook);
     let manager_for_cleanup = manager.clone();
     tokio::spawn(async move {
         manager_for_cleanup.cleanup_loop(std::time::Duration::from_secs(30)).await;

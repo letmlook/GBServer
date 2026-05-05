@@ -55,3 +55,12 @@ zlm:
   stream_timeout: 10
   hook_enabled: true
   hook_url: "http://127.0.0.1:18080/api/zlm/hook"
+
+# JT1078 tuning & retransmit
+jt1078:
+  # Session inactivity timeout (ms)
+  timeout_ms: 60000
+  # Retransmit detection wait window (ms) — if gaps persist beyond this, a retransmit event is emitted
+  retransmit_wait_ms: 200
+  # Optional HTTP hook to receive missing-sequence reports (POST JSON)
+  retransmit_hook_url: "http://127.0.0.1:18080/api/jt1078/retransmit"

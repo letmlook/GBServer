@@ -14,15 +14,18 @@ pub struct Jt1078Manager {
     timeout: Duration,
     /// How long to wait before considering a missing sequence as timed-out (retransmit detection)
     retransmit_wait: Duration,
+    /// Optional HTTP hook URL to notify about missing sequences
+    retransmit_hook: Option<String>,
 }
 
 impl Jt1078Manager {
-    /// Create a new manager with per-session timeout and retransmit wait
-    pub fn new(timeout: Duration, retransmit_wait: Duration) -> Self {
+    /// Create a new manager with per-session timeout, retransmit wait, and optional hook URL
+    pub fn new(timeout: Duration, retransmit_wait: Duration, retransmit_hook: Option<String>) -> Self {
         Self {
             sessions: Arc::new(Mutex::new(HashMap::new())),
             timeout,
             retransmit_wait,
+            retransmit_hook,
         }
     }
 
@@ -87,7 +90,28 @@ impl Jt1078Manager {
                 let timed_out = sess.collect_timed_out_missing(self.retransmit_wait);
                 if !timed_out.is_empty() {
                     tracing::warn!("JT1078 missing sequences timed out for {}: {:?}", addr, timed_out);
-                    // TODO: emit metric or trigger retransmit hook
+                    // rate-limit per-session alerts
+                    if sess.should_trigger_missing_alert(self.retransmit_wait) {
+                        // emit tracing metric event
+                        tracing::warn!("JT1078 missing seqs for {}: {:?}", addr, timed_out);
+                        // optionally POST to external hook
+                        if let Some(hook) = &self.retransmit_hook {
+                            let addr_s = addr.to_string();
+                            let missing = timed_out.clone();
+                            let hook_url = hook.clone();
+                            tokio::spawn(async move {
+                                let client = reqwest::Client::new();
+                                #[derive(serde::Serialize)]
+                                struct MissingReport {
+                                    addr: String,
+                                    missing: Vec<u16>,
+                                    timestamp_ms: u128,
+                                }
+                                let report = MissingReport { addr: addr_s, missing, timestamp_ms: chrono::Utc::now().timestamp_millis() as u128 };
+                                let _ = client.post(&hook_url).json(&report).send().await;
+                            });
+                        }
+                    }
                 }
             }
         }
@@ -105,7 +129,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_feed_and_count_and_cleanup() {
-        let manager = Jt1078Manager::new(Duration::from_millis(100), Duration::from_millis(200));
+        let manager = Jt1078Manager::new(Duration::from_millis(100), Duration::from_millis(200), None);
         let addr1 = make_addr(60001);
         let payload = b"abc";
         let len = (payload.len() as u32).to_be_bytes();

@@ -12,6 +12,17 @@ pub struct AppConfig {
     pub sip: Option<SipConfig>,
     pub zlm: Option<ZlmConfig>,
     pub map: Option<MapConfig>,
+    pub jt1078: Option<Jt1078Config>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct Jt1078Config {
+    /// Session inactivity timeout in milliseconds
+    pub timeout_ms: Option<u64>,
+    /// Retransmit wait window in milliseconds
+    pub retransmit_wait_ms: Option<u64>,
+    /// Optional HTTP hook URL to notify about missing sequences
+    pub retransmit_hook_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

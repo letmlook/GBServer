@@ -21,6 +21,8 @@ pub struct Jt1078Session {
     pub expected_seq: Option<u16>,
     /// Maximum number of pending structured frames to hold (simple DoS protection)
     pub max_pending: usize,
+    /// Timestamp of the last missing-sequence alert sent for rate-limiting
+    pub last_missing_alert: Option<Instant>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -107,21 +109,15 @@ impl Jt1078Session {
     /// Collect missing sequence numbers that have exceeded the retransmit wait timeout.
     /// Returns a vector of seq numbers (in ascending order) that should be considered missing and handled.
     pub fn collect_timed_out_missing(&mut self, timeout: Duration) -> Vec<u16> {
-        // Build list of timed-out missing entries, remove them from pending_missing and return
+        // Build list of timed-out missing sequence numbers between expected_seq and highest pending seq.
         let now = Instant::now();
         let mut timed_out = Vec::new();
-        // pending_missing stored as seq -> Instant
-        // iterate keys to collect those older than timeout
-        if !self.pending.is_empty() {
-            // Nothing here; placeholder to keep structure in case of future changes
-        }
-        // In this simplified implementation we look for sequence holes between expected_seq and highest pending seq
         if let Some(start) = self.expected_seq {
             if let Some((&max_seq, _)) = self.pending.iter().next_back() {
                 let mut s = start;
                 while s != max_seq.wrapping_add(1) {
                     if !self.pending.contains_key(&s) {
-                        // Determine age: for now, use last_heartbeat as detection time baseline
+                        // Use last_heartbeat as a conservative baseline for age; caller will decide rate-limit
                         if now.duration_since(self.last_heartbeat) > timeout {
                             timed_out.push(s);
                         }
@@ -131,6 +127,22 @@ impl Jt1078Session {
             }
         }
         timed_out
+    }
+
+    /// Determine whether a missing-sequence alert should be triggered now for this session.
+    /// This implements simple per-session rate-limiting for alerts to avoid flooding.
+    pub fn should_trigger_missing_alert(&mut self, interval: Duration) -> bool {
+        let now = Instant::now();
+        match self.last_missing_alert {
+            Some(last) => {
+                if now.duration_since(last) < interval {
+                    return false;
+                }
+            }
+            None => {}
+        }
+        self.last_missing_alert = Some(now);
+        true
     }
 
     /// Process a single payload (decoded frame). Returns FrameKind for higher-level handling.
