@@ -12,14 +12,17 @@ use crate::jt1078::session::Jt1078Session;
 pub struct Jt1078Manager {
     sessions: Arc<Mutex<HashMap<SocketAddr, Jt1078Session>>>,
     timeout: Duration,
+    /// How long to wait before considering a missing sequence as timed-out (retransmit detection)
+    retransmit_wait: Duration,
 }
 
 impl Jt1078Manager {
-    /// Create a new manager with per-session timeout
-    pub fn new(timeout: Duration) -> Self {
+    /// Create a new manager with per-session timeout and retransmit wait
+    pub fn new(timeout: Duration, retransmit_wait: Duration) -> Self {
         Self {
             sessions: Arc::new(Mutex::new(HashMap::new())),
             timeout,
+            retransmit_wait,
         }
     }
 
@@ -76,6 +79,16 @@ impl Jt1078Manager {
             let removed = self.cleanup_once().await;
             if removed > 0 {
                 tracing::info!("JT1078 manager cleanup removed {} timed-out sessions", removed);
+            }
+
+            // scan sessions for retransmit-timeout missing sequences
+            let mut map = self.sessions.lock().await;
+            for (addr, sess) in map.iter_mut() {
+                let timed_out = sess.collect_timed_out_missing(self.retransmit_wait);
+                if !timed_out.is_empty() {
+                    tracing::warn!("JT1078 missing sequences timed out for {}: {:?}", addr, timed_out);
+                    // TODO: emit metric or trigger retransmit hook
+                }
             }
         }
     }
