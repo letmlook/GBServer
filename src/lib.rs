@@ -7,9 +7,11 @@ pub mod handlers;
 pub mod router;
 pub mod sip;
 pub mod zlm;
+pub mod jt1078;
 pub mod cache;
 pub mod scheduler;
 pub mod cascade;
+pub mod metrics;
 
 use config::AppConfig;
 use std::collections::HashMap;
@@ -125,6 +127,18 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
         }
     }
 
+    // Start ZLM health checker and register clients
+    if !zlm_clients.is_empty() {
+        let mut health_checker = zlm::ZlmHealthChecker::new(30);
+        health_checker.set_pool(pool.clone());
+        for (id, client) in zlm_clients.iter() {
+            health_checker.add_client(id, client.clone()).await;
+        }
+        tokio::spawn(async move {
+            health_checker.run_health_check_loop().await;
+        });
+    }
+
     if let Some(ref server) = sip_server {
         let mut server = server.write().await;
         server.set_zlm_client(zlm_client.clone());
@@ -179,6 +193,22 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
         });
     }
 
+    // Start Cascade registrar for platform-level SIP cascade
+    {
+        let mut registrar = crate::cascade::CascadeRegistrar::new();
+        if let Some(ref server) = state.sip_server {
+            registrar.set_sip_server(server.clone());
+        }
+        registrar.set_pool(state.pool.clone());
+        let local_device_id = state.config.sip.as_ref().map(|s| s.device_id.clone()).unwrap_or_else(|| "local_device".to_string());
+        let realm = state.config.sip.as_ref().map(|s| s.realm.clone()).unwrap_or_else(|| "GBServerRealm".to_string());
+        let pool_clone = state.pool.clone();
+        tokio::spawn(async move {
+            registrar.load_platforms_from_db(&pool_clone, &local_device_id, &realm).await;
+            registrar.run_registration_loop().await;
+        });
+    }
+
     // Start RecordPlanScheduler
     {
         let scheduler_pool = state.pool.clone();
@@ -189,6 +219,33 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
                 scheduler_zlm,
             );
             scheduler.run().await;
+        });
+    }
+
+    // Start JT1078 server (skeleton) in background
+    {
+        // If app config provides JT1078 tuning, set environment variables consumed by jt1078::server
+        if let Some(jcfg) = cfg.jt1078.as_ref() {
+            if let Some(timeout_ms) = jcfg.timeout_ms {
+                std::env::set_var("WVP__JT1078__TIMEOUT_MS", timeout_ms.to_string());
+            }
+            if let Some(rw) = jcfg.retransmit_wait_ms {
+                std::env::set_var("WVP__JT1078__RETRANSMIT_WAIT_MS", rw.to_string());
+            }
+            if let Some(ref hook) = jcfg.retransmit_hook_url {
+                std::env::set_var("WVP__JT1078__RETRANSMIT_HOOK", hook.clone());
+            }
+            // allow enabling direct device send via config env var
+            if jcfg.retransmit_hook_url.is_some() {
+                // default to not sending to device unless configured explicitly
+            }
+        }
+
+        let jt = crate::jt1078::Jt1078Server::new();
+        tokio::spawn(async move {
+            if let Err(e) = jt.start().await {
+                tracing::warn!("JT1078 server failed to start: {}", e);
+            }
         });
     }
 

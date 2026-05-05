@@ -16,16 +16,19 @@ pub struct Jt1078Manager {
     retransmit_wait: Duration,
     /// Optional HTTP hook URL to notify about missing sequences
     retransmit_hook: Option<String>,
+    /// Whether to send retransmit requests directly to device (UDP JSON) when missing seq detected
+    retransmit_send_to_device: bool,
 }
 
 impl Jt1078Manager {
-    /// Create a new manager with per-session timeout, retransmit wait, and optional hook URL
-    pub fn new(timeout: Duration, retransmit_wait: Duration, retransmit_hook: Option<String>) -> Self {
+    /// Create a new manager with per-session timeout, retransmit wait, optional hook URL, and device-send flag
+    pub fn new(timeout: Duration, retransmit_wait: Duration, retransmit_hook: Option<String>, retransmit_send_to_device: bool) -> Self {
         Self {
             sessions: Arc::new(Mutex::new(HashMap::new())),
             timeout,
             retransmit_wait,
             retransmit_hook,
+            retransmit_send_to_device,
         }
     }
 
@@ -33,10 +36,15 @@ impl Jt1078Manager {
     /// Returns parsed frames (Vec<Vec<u8>>), same as Jt1078Session::feed_bytes.
     pub async fn feed_bytes(&self, addr: SocketAddr, data: &[u8]) -> Vec<Vec<u8>> {
         let mut map = self.sessions.lock().await;
-        let session = map.entry(addr).or_insert_with(|| Jt1078Session::new(addr));
-        // update heartbeat touched time when new data arrives
-        session.last_heartbeat = Instant::now();
-        session.feed_bytes(data)
+        let frames = {
+            let session = map.entry(addr).or_insert_with(|| Jt1078Session::new(addr));
+            // update heartbeat touched time when new data arrives
+            session.last_heartbeat = Instant::now();
+            session.feed_bytes(data)
+        };
+        // update active sessions metric
+        crate::metrics::set_active_sessions(map.len());
+        frames
     }
 
     /// Explicitly remove a session
@@ -94,6 +102,8 @@ impl Jt1078Manager {
                     if sess.should_trigger_missing_alert(self.retransmit_wait) {
                         // emit tracing metric event
                         tracing::warn!("JT1078 missing seqs for {}: {:?}", addr, timed_out);
+                        // update metrics
+                        crate::metrics::inc_missing(timed_out.len() as u64);
                         // optionally POST to external hook
                         if let Some(hook) = &self.retransmit_hook {
                             let addr_s = addr.to_string();
@@ -111,10 +121,29 @@ impl Jt1078Manager {
                                 let _ = client.post(&hook_url).json(&report).send().await;
                             });
                         }
+                        // optionally send retransmit request directly to device via UDP
+                        if self.retransmit_send_to_device {
+                            let addr_copy = *addr;
+                            let missing_copy = timed_out.clone();
+                            tokio::spawn(async move {
+                                let _ = crate::jt1078::manager::send_retransmit_request(addr_copy, missing_copy).await;
+                            });
+                        }
                     }
                 }
             }
         }
+    }
+
+    /// Send a simple retransmit request to the device via UDP.
+    /// The message format is JSON: { type: "retransmit_request", missing: [..] }
+    /// This is a best-effort helper for devices that support custom retransmit messages.
+    pub async fn send_retransmit_request(addr: SocketAddr, missing: Vec<u16>) -> anyhow::Result<()> {
+        let socket = tokio::net::UdpSocket::bind("0.0.0.0:0").await?;
+        let msg = serde_json::json!({ "type": "retransmit_request", "missing": missing });
+        let data = msg.to_string().into_bytes();
+        let _ = socket.send_to(&data, addr).await?;
+        Ok(())
     }
 }
 
