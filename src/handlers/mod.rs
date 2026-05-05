@@ -16,3 +16,4 @@ pub mod websocket;
 pub mod alarm;
 pub mod webrtc;
 pub mod device_batch;
+pub mod metrics;

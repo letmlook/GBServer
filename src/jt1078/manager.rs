@@ -126,7 +126,7 @@ impl Jt1078Manager {
                             let addr_copy = *addr;
                             let missing_copy = timed_out.clone();
                             tokio::spawn(async move {
-                                let _ = crate::jt1078::manager::send_retransmit_request(addr_copy, missing_copy).await;
+                                let _ = Jt1078Manager::send_retransmit_request(addr_copy, missing_copy).await;
                             });
                         }
                     }
