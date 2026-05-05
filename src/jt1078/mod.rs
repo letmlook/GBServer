@@ -28,8 +28,9 @@ impl Jt1078Server {
     }
 
     /// Start the server loop (placeholder) — delegates to server module which spawns listeners.
-    pub async fn start(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        crate::jt1078::server::start(self).await
+    /// Accept optional JT1078-specific configuration so callers can inject values directly
+    pub async fn start(&self, cfg: Option<crate::config::Jt1078Config>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        crate::jt1078::server::start(self, cfg).await
     }
 }
 

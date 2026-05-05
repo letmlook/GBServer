@@ -242,8 +242,9 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
         }
 
         let jt = crate::jt1078::Jt1078Server::new();
+        let jcfg = cfg.jt1078.clone();
         tokio::spawn(async move {
-            if let Err(e) = jt.start().await {
+            if let Err(e) = jt.start(jcfg).await {
                 tracing::warn!("JT1078 server failed to start: {}", e);
             }
         });
