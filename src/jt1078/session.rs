@@ -44,6 +44,7 @@ impl Jt1078Session {
             pending: BTreeMap::new(),
             expected_seq: None,
             max_pending: 256,
+            last_missing_alert: None,
         }
     }
 
