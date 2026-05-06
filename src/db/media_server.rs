@@ -340,3 +340,34 @@ pub async fn update_last_keepalive(
     .await?;
     Ok(r.rows_affected())
 }
+
+/// Update flow statistics from flow report webhook
+pub async fn update_flow_stats(
+    pool: &Pool,
+    id: &str,
+    total_bytes: i64,
+    active_streams: i32,
+    now: &str,
+) -> sqlx::Result<u64> {
+    #[cfg(feature = "mysql")]
+    let r = sqlx::query(
+        "UPDATE wvp_media_server SET total_bytes = COALESCE(total_bytes, 0) + ?, active_stream_count = ?, update_time = ? WHERE id = ?"
+    )
+    .bind(total_bytes)
+    .bind(active_streams)
+    .bind(now)
+    .bind(id)
+    .execute(pool)
+    .await?;
+    #[cfg(feature = "postgres")]
+    let r = sqlx::query(
+        "UPDATE wvp_media_server SET total_bytes = COALESCE(total_bytes, 0) + $1, active_stream_count = $2, update_time = $3 WHERE id = $4"
+    )
+    .bind(total_bytes)
+    .bind(active_streams)
+    .bind(now)
+    .bind(id)
+    .execute(pool)
+    .await?;
+    Ok(r.rows_affected())
+}

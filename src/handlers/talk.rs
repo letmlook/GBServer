@@ -137,7 +137,7 @@ pub struct TalkAckQuery {
 }
 
 pub async fn talk_ack(
-    State(state): State<AppState>,
+    State(_state): State<AppState>,
     Query(q): Query<TalkAckQuery>,
 ) -> Result<Json<WVPResult<()>>, AppError> {
     let call_id = q.call_id.as_deref()

@@ -44,25 +44,25 @@ impl PlaybackManager {
     }
 
     pub async fn update_speed(&self, stream_id: &str, speed: f64) {
-        if let Some(mut s) = self.sessions.write().await.get_mut(stream_id) {
+        if let Some(s) = self.sessions.write().await.get_mut(stream_id) {
             s.speed = speed;
         }
     }
 
     pub async fn update_current_time(&self, stream_id: &str, current_time: String) {
-        if let Some(mut s) = self.sessions.write().await.get_mut(stream_id) {
+        if let Some(s) = self.sessions.write().await.get_mut(stream_id) {
             s.current_time = current_time;
         }
     }
 
     pub async fn pause(&self, stream_id: &str) {
-        if let Some(mut s) = self.sessions.write().await.get_mut(stream_id) {
+        if let Some(s) = self.sessions.write().await.get_mut(stream_id) {
             s.paused = true;
         }
     }
 
     pub async fn resume(&self, stream_id: &str) {
-        if let Some(mut s) = self.sessions.write().await.get_mut(stream_id) {
+        if let Some(s) = self.sessions.write().await.get_mut(stream_id) {
             s.paused = false;
         }
     }
@@ -112,7 +112,7 @@ impl DownloadManager {
     }
 
     pub async fn update_progress(&self, stream_id: &str, progress: f64, status: &str) {
-        if let Some(mut s) = self.sessions.write().await.get_mut(stream_id) {
+        if let Some(s) = self.sessions.write().await.get_mut(stream_id) {
             s.progress = progress;
             s.status = status.to_string();
         }
@@ -278,7 +278,7 @@ pub async fn playback_resume(
         let parts: Vec<&str> = stream_id.split('_').collect();
         if parts.len() >= 3 {
             let device_id = parts[1];
-            let channel_id = parts[2];
+            let _channel_id = parts[2];
             
             if let Err(e) = sip.send_message_to_device(device_id, crate::sip::SipMethod::Info,
                 Some(r#"<?xml version="1.0" encoding="UTF-8"?><Resume><ChannelID>0</ChannelID></Resume>"#),
@@ -310,7 +310,7 @@ pub async fn playback_pause(
         let parts: Vec<&str> = stream_id.split('_').collect();
         if parts.len() >= 3 {
             let device_id = parts[1];
-            let channel_id = parts[2];
+            let _channel_id = parts[2];
             
             if let Err(e) = sip.send_message_to_device(device_id, crate::sip::SipMethod::Info, 
                 Some(r#"<?xml version="1.0" encoding="UTF-8"?><Pause><ChannelID>0</ChannelID></Pause>"#),
@@ -343,7 +343,7 @@ pub async fn playback_speed(
         let parts: Vec<&str> = stream_id.split('_').collect();
         if parts.len() >= 3 {
             let device_id = parts[1];
-            let channel_id = parts[2];
+            let _channel_id = parts[2];
             
             let speed_xml = format!(
                 r#"<?xml version="1.0" encoding="UTF-8"?><PlaybackSpeed><ChannelID>0</ChannelID><Speed>{}</Speed></PlaybackSpeed>"#,
@@ -621,7 +621,7 @@ pub async fn gb_record_download_stop(
 
 pub async fn gb_record_download_progress(
     State(state): State<AppState>,
-    Path((device_id, channel_id, stream_id)): Path<(String, String, String)>,
+    Path((_device_id, _channel_id, stream_id)): Path<(String, String, String)>,
 ) -> Json<WVPResult<serde_json::Value>> {
     if let Some(ref zlm_client) = state.zlm_client {
         if let Some(ref dm) = state.download_manager {

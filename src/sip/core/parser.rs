@@ -1,4 +1,3 @@
-use super::header::{Authorization, CSeq, Challenge, Contact, NameAddr, ViaHeader};
 use super::message::{SipMessage, SipRequest, SipResponse};
 use super::method::SipMethod;
 use super::status::StatusCode;

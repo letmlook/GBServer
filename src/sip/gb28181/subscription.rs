@@ -76,7 +76,7 @@ impl SubscriptionManager {
 
     pub fn unsubscribe(&self, device_id: &str, sub_type: SubscriptionType) {
         let key = format!("{}_{}", device_id, sub_type.as_str());
-        if let Some((_, entry)) = self.subscriptions.remove(&key) {
+        if let Some((_, _entry)) = self.subscriptions.remove(&key) {
             tracing::info!("Subscription removed: {} {}", device_id, sub_type.as_str());
         }
     }

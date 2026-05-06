@@ -121,7 +121,7 @@ pub fn build_register_request(
     remote_host: &str,
     remote_port: u16,
     username: &str,
-    password: &str,
+    _password: &str,
 ) -> String {
     format!(
         "REGISTER sip:{}:{} SIP/2.0\r\n\

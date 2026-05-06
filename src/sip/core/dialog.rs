@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use super::message::SipRequest;
-use super::header::NameAddr;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DialogState {
@@ -225,7 +224,7 @@ impl DialogManager {
     }
     
     pub async fn get(&self, call_id: &str, local_tag: &str) -> Option<Dialog> {
-        let key = format!("{}-{}-", call_id, local_tag);
+        let _key = format!("{}-{}-", call_id, local_tag);
         self.dialogs.read().await
             .values()
             .find(|d| d.call_id == call_id && d.local_tag == local_tag)
@@ -254,7 +253,7 @@ impl DialogManager {
     }
     
     pub async fn remove(&self, call_id: &str, local_tag: &str) {
-        let key = format!("{}-{}-", call_id, local_tag);
+        let _key = format!("{}-{}-", call_id, local_tag);
         if let Some(dialog) = self.dialogs.read().await.values()
             .find(|d| d.call_id == call_id && d.local_tag == local_tag)
             .cloned() {

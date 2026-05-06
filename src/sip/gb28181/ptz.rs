@@ -170,7 +170,7 @@ impl PtzEncode {
         Self::to_hex_command(0, 0, 0, 0, 0)
     }
 
-    pub fn to_hex_command(pan_action: u8, pan_speed: u8, tilt_action: u8, tilt_speed: u8, zoom_data: u8) -> String {
+    pub fn to_hex_command(pan_action: u8, pan_speed: u8, tilt_action: u8, tilt_speed: u8, _zoom_data: u8) -> String {
         format!("A5{:02X}{:02X}{:02X}{:02X}AF", pan_action, pan_speed, tilt_action, tilt_speed)
     }
 }

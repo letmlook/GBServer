@@ -22,10 +22,9 @@ use std::str::FromStr;
 use crate::db as db;
 
 // Helper functions to read system metrics
-use std::fs::File;
-use std::io::{Read as _Read};
-use std::time::Duration;
-use tokio::time::sleep;
+#[cfg(target_os = "linux")]
+use {std::io::Read, std::fs::File, tokio::time::sleep, std::time::Duration};
+use std::process::Command;
 
 pub async fn zlm_proxy(
     method: Method,
@@ -146,119 +145,192 @@ async fn configure_zlm_hooks(
     errors
 }
 
-#[cfg(target_os = "linux")]
+// ── Platform-agnostic CPU usage ──
 async fn read_cpu_usage() -> Option<f64> {
+    read_cpu_usage_impl().await
+}
+
+#[cfg(target_os = "linux")]
+async fn read_cpu_usage_impl() -> Option<f64> {
     let (t1, id1) = read_cpu_times()?;
     sleep(Duration::from_millis(60)).await;
     let (t2, id2) = read_cpu_times()?;
     let dt = t2.saturating_sub(t1) as f64;
     let di = id2.saturating_sub(id1) as f64;
-    if dt <= 0.0 {
-        return Some(0.0);
-    }
+    if dt <= 0.0 { return Some(0.0); }
     Some(((dt - di) / dt) * 100.0)
 }
-
 #[cfg(target_os = "linux")]
 fn read_cpu_times() -> Option<(u64, u64)> {
     let mut s = String::new();
     File::open("/proc/stat").ok()?.read_to_string(&mut s).ok()?;
     for line in s.lines() {
         if line.starts_with("cpu ") {
-            let mut parts = line.split_whitespace();
-            // skip the first token 'cpu'
-            parts.next();
-            let mut vals = Vec::new();
-            for p in parts { if let Ok(n) = p.parse::<u64>() { vals.push(n); } }
-            let user = *vals.get(0).unwrap_or(&0);
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            let vals: Vec<u64> = parts.iter().skip(1).filter_map(|p| p.parse().ok()).collect();
+            let user = *vals.first().unwrap_or(&0);
             let nice = *vals.get(1).unwrap_or(&0);
             let system = *vals.get(2).unwrap_or(&0);
             let idle = *vals.get(3).unwrap_or(&0);
             let iowait = *vals.get(4).unwrap_or(&0);
-            let total = user + nice + system + idle + iowait + *vals.get(5).unwrap_or(&0) + *vals.get(6).unwrap_or(&0) + *vals.get(7).unwrap_or(&0);
+            let total: u64 = [user, nice, system, idle, iowait].iter()
+                .chain(vals.get(5..).unwrap_or(&[])).sum();
             return Some((total, idle + iowait));
         }
     }
     None
 }
 
-#[cfg(target_os = "windows")]
-async fn read_cpu_usage() -> Option<f64> {
-    // Return a dummy value for Windows
-    Some(5.0)
+#[cfg(target_os = "macos")]
+async fn read_cpu_usage_impl() -> Option<f64> {
+    // Use `top -l 1 -n 0` to get CPU usage
+    let output = Command::new("top")
+        .args(["-l", "1", "-n", "0"])
+        .output().ok()?;
+    let out = String::from_utf8_lossy(&output.stdout);
+    for line in out.lines() {
+        if line.contains("CPU usage:") {
+            // Format: "CPU usage: 5.26% user, 10.52% sys, 84.21% idle"
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            for (i, p) in parts.iter().enumerate() {
+                if p.contains("idle") && i > 0 {
+                    if let Ok(idle_pct) = parts[i-1].trim_end_matches('%').parse::<f64>() {
+                        return Some((100.0 - idle_pct).max(0.0));
+                    }
+                }
+            }
+        }
+    }
+    // Fallback: use `ps` to approximate
+    let output = Command::new("ps")
+        .args(["-A", "-o", "%cpu"])
+        .output().ok()?;
+    let out = String::from_utf8_lossy(&output.stdout);
+    let total: f64 = out.lines().skip(1)
+        .filter_map(|l| l.trim().parse::<f64>().ok())
+        .sum();
+    Some(total.min(100.0))
 }
 
 #[cfg(target_os = "windows")]
-fn read_cpu_times() -> Option<(u64, u64)> {
-    None
+async fn read_cpu_usage_impl() -> Option<f64> {
+    // Use wmic to get CPU load
+    let output = Command::new("wmic")
+        .args(["cpu", "get", "loadpercentage"])
+        .output().ok()?;
+    let out = String::from_utf8_lossy(&output.stdout);
+    out.lines().skip(1)
+        .find_map(|l| l.trim().parse::<f64>().ok())
+        .or(Some(5.0))
 }
+
+// ── Platform-agnostic memory info ──
+fn read_memory_info() -> Option<(u64, u64, u64)> { read_memory_info_impl() }
 
 #[cfg(target_os = "linux")]
-fn read_memory_info() -> Option<(u64, u64, u64)> {
+fn read_memory_info_impl() -> Option<(u64, u64, u64)> {
     let mut s = String::new();
     File::open("/proc/meminfo").ok()?.read_to_string(&mut s).ok()?;
-    let mut mem_total: Option<u64> = None;
-    let mut mem_available: Option<u64> = None;
+    let mut total = 0u64;
+    let mut avail = 0u64;
     for line in s.lines() {
         if line.starts_with("MemTotal:") {
-            mem_total = line.split_whitespace().nth(1).and_then(|v| v.parse::<u64>().ok());
+            total = line.split_whitespace().nth(1)?.parse::<u64>().ok()? * 1024;
         } else if line.starts_with("MemAvailable:") {
-            mem_available = line.split_whitespace().nth(1).and_then(|v| v.parse::<u64>().ok());
+            avail = line.split_whitespace().nth(1)?.parse::<u64>().ok()? * 1024;
         }
     }
-    let total = mem_total.unwrap_or(0);
-    let avail = mem_available.unwrap_or(0);
-    let used = total.saturating_sub(avail);
-    Some((total, avail, used))
+    Some((total, avail, total.saturating_sub(avail)))
+}
+
+#[cfg(target_os = "macos")]
+fn read_memory_info_impl() -> Option<(u64, u64, u64)> {
+    // Total from sysctl
+    let total_out = Command::new("sysctl").args(["-n", "hw.memsize"]).output().ok()?;
+    let total: u64 = String::from_utf8_lossy(&total_out.stdout).trim().parse().ok()?;
+    // Usage from vm_stat (page size is 4096 on Apple Silicon, 16384 on Intel)
+    let page_size_out = Command::new("sysctl").args(["-n", "hw.pagesize"]).output().ok()?;
+    let page_size: u64 = String::from_utf8_lossy(&page_size_out.stdout).trim().parse().unwrap_or(16384);
+    let vm_out = Command::new("vm_stat").output().ok()?;
+    let vm = String::from_utf8_lossy(&vm_out.stdout);
+    let mut active_pages = 0u64;
+    let mut inactive_pages = 0u64;
+    let mut wired_pages = 0u64;
+    for line in vm.lines() {
+        if line.contains("Pages active:") {
+            active_pages = line.split(':').nth(1)?.trim().trim_end_matches('.').parse().ok()?;
+        } else if line.contains("Pages inactive:") {
+            inactive_pages = line.split(':').nth(1)?.trim().trim_end_matches('.').parse().ok()?;
+        } else if line.contains("Pages wired down:") {
+            wired_pages = line.split(':').nth(1)?.trim().trim_end_matches('.').parse().ok()?;
+        }
+    }
+    let used_pages = active_pages + wired_pages + (inactive_pages / 2);
+    let used = used_pages * page_size;
+    Some((total, total.saturating_sub(used), used))
 }
 
 #[cfg(target_os = "windows")]
-fn read_memory_info() -> Option<(u64, u64, u64)> {
-    // Return dummy values for Windows
-    Some((16 * 1024 * 1024, 8 * 1024 * 1024, 8 * 1024 * 1024))
+fn read_memory_info_impl() -> Option<(u64, u64, u64)> {
+    // Fallback: return dummy values; real impl would use GlobalMemoryStatusEx via winapi
+    Some((16 * 1024 * 1024 * 1024, 8 * 1024 * 1024 * 1024, 8 * 1024 * 1024 * 1024))
 }
 
-#[cfg(target_os = "linux")]
-fn read_disk_usage() -> Option<(u64, u64, u64)> {
-    // Use df -k / to approximate root disk usage
-    use std::process::Command;
+// ── Platform-agnostic disk usage ──
+fn read_disk_usage() -> Option<(u64, u64, u64)> { read_disk_usage_impl() }
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn read_disk_usage_impl() -> Option<(u64, u64, u64)> {
     let output = Command::new("df").arg("-k").arg("/").output().ok()?;
-    if !output.status.success() {
-        return None;
-    }
+    if !output.status.success() { return None; }
     let out = String::from_utf8_lossy(&output.stdout);
     for (idx, line) in out.lines().enumerate() {
-        if idx == 1 { // second line contains root
+        if idx == 1 {
             let mut it = line.split_whitespace();
-            // Filesystem 1K-blocks Used Available Use%
             let _fs = it.next();
-            let total = it.next().and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
-            let used = it.next().and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
-            let _avail = it.next().and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
-            return Some((total, used, 0));
+            let total_kb = it.next()?.parse::<u64>().ok()?;
+            let used_kb = it.next()?.parse::<u64>().ok()?;
+            return Some((total_kb * 1024, used_kb * 1024, 0));
         }
     }
     None
 }
 
 #[cfg(target_os = "windows")]
-fn read_disk_usage() -> Option<(u64, u64, u64)> {
-    // Return dummy values for Windows
-    Some((100 * 1024 * 1024, 50 * 1024 * 1024, 50 * 1024 * 1024))
+fn read_disk_usage_impl() -> Option<(u64, u64, u64)> {
+    Some((100 * 1024 * 1024 * 1024, 50 * 1024 * 1024 * 1024, 50 * 1024 * 1024 * 1024))
 }
 
+// ── Platform-agnostic uptime ──
+fn read_uptime() -> Option<f64> { read_uptime_impl() }
+
 #[cfg(target_os = "linux")]
-fn read_uptime() -> Option<f64> {
+fn read_uptime_impl() -> Option<f64> {
     let mut s = String::new();
     File::open("/proc/uptime").ok()?.read_to_string(&mut s).ok()?;
-    let mut parts = s.split_whitespace();
-    let up = parts.next().and_then(|v| v.parse::<f64>().ok())?;
-    Some(up)
+    s.split_whitespace().next()?.parse::<f64>().ok()
+}
+
+#[cfg(target_os = "macos")]
+fn read_uptime_impl() -> Option<f64> {
+    // Get boot time via sysctl, compute uptime
+    let output = Command::new("sysctl").args(["-n", "kern.boottime"]).output().ok()?;
+    let out = String::from_utf8_lossy(&output.stdout);
+    // Format: { sec = 1234567890, usec = 123456 } Fri May  1 12:00:00 2026
+    let boot_secs = out.split("sec = ")
+        .nth(1)?
+        .split(',')
+        .next()?
+        .trim()
+        .parse::<u64>().ok()?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?;
+    Some(now.as_secs().saturating_sub(boot_secs) as f64)
 }
 
 #[cfg(target_os = "windows")]
-fn read_uptime() -> Option<f64> {
-    // Return dummy value for Windows
+fn read_uptime_impl() -> Option<f64> {
+    let output = Command::new("wmic").args(["os", "get", "lastbootuptime"]).output().ok()?;
+    // Fallback: return dummy
     Some(3600.0)
 }
 
@@ -343,37 +415,49 @@ pub async fn system_config_info(State(state): State<AppState>) -> Json<WVPResult
 }
 
 /// GET /api/server/system/info
-pub async fn system_info(State(state): State<AppState>) -> Json<WVPResult<serde_json::Value>> {
-    // Simplified implementation for Windows
-    let now = "2026-04-04 11:00:00";
+pub async fn system_info(State(_state): State<AppState>) -> Json<WVPResult<serde_json::Value>> {
+    let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
 
-    // Format data as arrays for frontend charts
-    let cpu_data = vec![
-        serde_json::json!([now, 0.05])
-    ];
+    // CPU
+    let cpu_usage = read_cpu_usage().await.unwrap_or(0.0);
+    let cpu_data = vec![serde_json::json!([now, cpu_usage])];
 
-    let mem_data = vec![
-        serde_json::json!([now, 0.5])
-    ];
+    // Memory
+    let mem_pct = if let Some((total, _avail, used)) = read_memory_info() {
+        if total > 0 { (used as f64 / total as f64) * 100.0 } else { 50.0 }
+    } else { 50.0 };
+    let mem_data = vec![serde_json::json!([now, mem_pct])];
 
-    let disk_data = vec![
-        serde_json::json!("总空间"),
-        serde_json::json!(100),
-        serde_json::json!("已用"),
-        serde_json::json!(50),
-        serde_json::json!("可用"),
-        serde_json::json!(50)
-    ];
+    // Disk
+    let disk_info = read_disk_usage();
+    let disk_pct = disk_info.as_ref().map(|(total, used, _)| {
+        if *total > 0 { (*used as f64 / *total as f64) * 100.0 } else { 50.0 }
+    }).unwrap_or(50.0);
+    let disk_data = disk_info.as_ref().map(|(total, used, _)| {
+        let total_gb = *total as f64 / (1024.0 * 1024.0 * 1024.0);
+        let used_gb = *used as f64 / (1024.0 * 1024.0 * 1024.0);
+        let avail_gb = total_gb - used_gb;
+        vec![
+            serde_json::json!("总空间"), serde_json::json!(format!("{:.1} GB", total_gb)),
+            serde_json::json!("已用"), serde_json::json!(format!("{:.1} GB", used_gb)),
+            serde_json::json!("可用"), serde_json::json!(format!("{:.1} GB", avail_gb)),
+        ]
+    }).unwrap_or_else(|| vec![
+        serde_json::json!("总空间"), serde_json::json!(100),
+        serde_json::json!("已用"), serde_json::json!(50),
+        serde_json::json!("可用"), serde_json::json!(50),
+    ]);
 
+    // Network (placeholder — real impl would use /proc/net/dev or netstat)
     let net_data = vec![
-        serde_json::json!([now, 1.0]), // 1MB/s
-        serde_json::json!([now, 0.5])  // 0.5MB/s
+        serde_json::json!([now, 0.0]),
+        serde_json::json!([now, 0.0]),
+    ];
+    let net_total_data = vec![
+        serde_json::json!("入网"), serde_json::json!("出网")
     ];
 
-    let net_total_data = vec![
-        serde_json::json!("入网"),
-        serde_json::json!("出网")
-    ];
+    let uptime = read_uptime().unwrap_or(3600.0) as u64;
 
     let data = serde_json::json!({
         "cpu": cpu_data,
@@ -381,10 +465,10 @@ pub async fn system_info(State(state): State<AppState>) -> Json<WVPResult<serde_
         "disk": disk_data,
         "net": net_data,
         "netTotal": net_total_data,
-        "uptime": 3600,
-        "cpu_usage": 5.0,
-        "mem_usage": 50.0,
-        "disk_usage": 50.0,
+        "uptime": uptime,
+        "cpu_usage": cpu_usage,
+        "mem_usage": mem_pct,
+        "disk_usage": disk_pct,
     });
     Json(WVPResult::success(data))
 }

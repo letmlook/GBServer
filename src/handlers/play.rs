@@ -122,7 +122,7 @@ pub async fn play_start(
 pub async fn play_stop(
     State(state): State<AppState>,
     Path((device_id, channel_id)): Path<(String, String)>,
-) -> Json<WVPResult<()>> {
+) -> Json<WVPResult<serde_json::Value>> {
     tracing::info!("Stop play: device={}, channel={}", device_id, channel_id);
 
     let sip_server = match &state.sip_server {
@@ -145,14 +145,19 @@ pub async fn play_stop(
     match sip.send_session_bye(&device_id, &channel_id).await {
         Ok(call_id) => {
             tracing::info!("Session BYE sent for stream {} call_id={}", stream_id, call_id);
+            // 返回 call_id 给调用方以便排查
+            return Json(WVPResult::success(serde_json::json!({"callId": call_id})));
         }
         Err(e) => {
             tracing::warn!("Failed to send session BYE for stream {}: {}, trying talk BYE fallback", stream_id, e);
-            let _ = sip.send_talk_bye(&device_id, &channel_id).await;
+            match sip.send_talk_bye(&device_id, &channel_id).await {
+                Ok(_) => tracing::info!("Talk BYE fallback succeeded for {}/{}", device_id, channel_id),
+                Err(e) => tracing::error!("Talk BYE fallback failed for {}/{}: {}", device_id, channel_id, e),
+            }
         }
     }
 
-    Json(WVPResult::<()>::success_empty())
+    Json(WVPResult::success(serde_json::json!({})))
 }
 
 pub async fn broadcast_start(

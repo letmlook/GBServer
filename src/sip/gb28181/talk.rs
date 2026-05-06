@@ -88,8 +88,8 @@ impl TalkManager {
         self.sessions.read().await.get(call_id).cloned()
     }
 
-    pub async fn get_mut(&self, call_id: &str) -> Option<tokio::sync::RwLockWriteGuard<'_, HashMap<String, TalkSession>>> {
-        None
+    pub async fn get_mut(&self, _call_id: &str) -> Option<tokio::sync::RwLockWriteGuard<'_, HashMap<String, TalkSession>>> {
+        Some(self.sessions.write().await)
     }
 
     pub async fn update(&self, session: &TalkSession) {

@@ -28,8 +28,8 @@ pub struct StreamReconnectManager {
     max_retries: u32,
     retry_interval_secs: u64,
     enabled: bool,
-    sip_server: Option<Arc<RwLock<crate::sip::SipServer>>>,
-    ws_state: Option<Arc<crate::handlers::websocket::WsState>>,
+    sip_server: RwLock<Option<Arc<RwLock<crate::sip::SipServer>>>>,
+    ws_state: RwLock<Option<Arc<crate::handlers::websocket::WsState>>>,
 }
 
 impl StreamReconnectManager {
@@ -39,17 +39,21 @@ impl StreamReconnectManager {
             max_retries,
             retry_interval_secs,
             enabled,
-            sip_server: None,
-            ws_state: None,
+            sip_server: RwLock::new(None),
+            ws_state: RwLock::new(None),
         }
     }
 
-    pub fn set_sip_server(&mut self, server: Arc<RwLock<crate::sip::SipServer>>) {
-        self.sip_server = Some(server);
+    pub async fn set_sip_server(&self, server: Arc<RwLock<crate::sip::SipServer>>) {
+        *self.sip_server.write().await = Some(server);
     }
 
-    pub fn set_ws_state(&mut self, ws: Arc<crate::handlers::websocket::WsState>) {
-        self.ws_state = Some(ws);
+    pub async fn set_ws_state(&self, ws: Arc<crate::handlers::websocket::WsState>) {
+        *self.ws_state.write().await = Some(ws);
+    }
+
+    pub async fn get_sip_server(&self) -> Option<Arc<RwLock<crate::sip::SipServer>>> {
+        self.sip_server.read().await.clone()
     }
 
     pub fn is_enabled(&self) -> bool {
@@ -107,18 +111,20 @@ impl StreamReconnectManager {
 
         if entry.retry_count >= entry.max_retries {
             entry.state = ReconnectState::Failed;
-            if let Some(ref ws) = self.ws_state {
-                let msg = serde_json::json!({
-                    "type": "streamReconnect",
-                    "streamId": stream_id,
-                    "state": "failed",
-                    "retryCount": entry.retry_count
-                });
-                tokio::spawn({
-                    let ws = ws.clone();
-                    let msg = msg.clone();
-                    async move { ws.broadcast("streamReconnect", msg).await; }
-                });
+            if let Ok(ws_guard) = self.ws_state.try_read() {
+                if let Some(ref ws) = *ws_guard {
+                    let msg = serde_json::json!({
+                        "type": "streamReconnect",
+                        "streamId": stream_id,
+                        "state": "failed",
+                        "retryCount": entry.retry_count
+                    });
+                    tokio::spawn({
+                        let ws = ws.clone();
+                        let msg = msg.clone();
+                        async move { ws.broadcast("streamReconnect", msg).await; }
+                    });
+                }
             }
             Some(ReconnectState::Failed)
         } else {
@@ -128,20 +134,22 @@ impl StreamReconnectManager {
 
     pub fn mark_success(&self, stream_id: &str) {
         if let Some((_, entry)) = self.entries.remove(stream_id) {
-            tracing::info!("Stream reconnected successfully: {} (after {} retries)", 
+            tracing::info!("Stream reconnected successfully: {} (after {} retries)",
                 stream_id, entry.retry_count);
-            if let Some(ref ws) = self.ws_state {
-                let msg = serde_json::json!({
-                    "type": "streamReconnect",
-                    "streamId": stream_id,
-                    "state": "success",
-                    "retryCount": entry.retry_count
-                });
-                tokio::spawn({
-                    let ws = ws.clone();
-                    let msg = msg.clone();
-                    async move { ws.broadcast("streamReconnect", msg).await; }
-                });
+            if let Ok(ws_guard) = self.ws_state.try_read() {
+                if let Some(ref ws) = *ws_guard {
+                    let msg = serde_json::json!({
+                        "type": "streamReconnect",
+                        "streamId": stream_id,
+                        "state": "success",
+                        "retryCount": entry.retry_count
+                    });
+                    tokio::spawn({
+                        let ws = ws.clone();
+                        let msg = msg.clone();
+                        async move { ws.broadcast("streamReconnect", msg).await; }
+                    });
+                }
             }
         }
     }
@@ -175,8 +183,9 @@ impl StreamReconnectManager {
             interval.tick().await;
 
             let entries = self.get_reconnectable();
+            let sip_server_opt = self.get_sip_server().await;
             for entry in entries {
-                if let Some(ref sip_server) = self.sip_server {
+                if let Some(ref sip_server) = sip_server_opt {
                     tracing::info!("Attempting stream reconnect: {} (retry {}/{})", 
                         entry.stream_id, entry.retry_count + 1, entry.max_retries);
 

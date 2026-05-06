@@ -1,4 +1,4 @@
-use axum::{extract::{Path, Query, State}, Json};
+use axum::{extract::{Query, State}, Json};
 use serde::Deserialize;
 
 use crate::db::update_device_catalog_subscription;
@@ -229,7 +229,7 @@ pub async fn subscribe_mobile_position(
     Json(WVPResult::error("Device not online or subscription failed"))
 }
 
-fn build_ptz_xml(command: &str, speed: u8, preset: u32, _dwStop: u32) -> String {
+fn build_ptz_xml(command: &str, speed: u8, _preset: u32, _dwStop: u32) -> String {
     let ptz_cmd = match command.to_ascii_uppercase().as_str() {
         "UP" => format!("0501000000{:02X}FF", speed),
         "DOWN" => format!("0501000001{:02X}FF", speed),

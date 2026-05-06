@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::RwLock;
 use chrono::{DateTime, Utc};
 
@@ -102,7 +101,7 @@ impl CatalogSubscriptionManager {
     }
 
     pub async fn update_last_notify(&self, call_id: &str) {
-        if let Some(mut sub) = self.subscriptions.write().await.get_mut(call_id) {
+        if let Some(sub) = self.subscriptions.write().await.get_mut(call_id) {
             sub.last_notify = Utc::now();
         }
     }

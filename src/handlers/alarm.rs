@@ -287,7 +287,7 @@ pub struct AlarmHandleBody {
 
 /// POST /api/alarm/handle - 处理告警
 pub async fn alarm_handle(
-    State(state): State<AppState>,
+    State(_state): State<AppState>,
     Json(body): Json<AlarmHandleBody>,
 ) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
     let id = body.id.unwrap_or(0);
@@ -295,9 +295,9 @@ pub async fn alarm_handle(
         return Ok(Json(WVPResult::error("缺少告警ID".to_string())));
     }
 
-    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    let handle_user = body.handle_user.unwrap_or_default();
-    let handled = body.handled.unwrap_or(true);
+    let _now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let _handle_user = body.handle_user.unwrap_or_default();
+    let _handled = body.handled.unwrap_or(true);
 
     #[cfg(feature = "postgres")]
     {

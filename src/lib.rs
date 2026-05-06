@@ -91,7 +91,7 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
     let sip_server = if let Some(ref sip_config) = cfg.sip {
         if sip_config.enabled {
             let mut server = sip::SipServer::new(sip_config.clone(), pool.clone());
-            server.set_ws_state(ws_state.clone());
+            server.set_ws_state(ws_state.clone()).await;
             Some(Arc::new(RwLock::new(server)))
         } else {
             None
@@ -195,17 +195,26 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
 
     // Start Cascade registrar for platform-level SIP cascade
     {
-        let mut registrar = crate::cascade::CascadeRegistrar::new();
-        if let Some(ref server) = state.sip_server {
-            registrar.set_sip_server(server.clone());
-        }
-        registrar.set_pool(state.pool.clone());
+        let registrar = Arc::new(crate::cascade::CascadeRegistrar::new());
         let local_device_id = state.config.sip.as_ref().map(|s| s.device_id.clone()).unwrap_or_else(|| "local_device".to_string());
         let realm = state.config.sip.as_ref().map(|s| s.realm.clone()).unwrap_or_else(|| "GBServerRealm".to_string());
         let pool_clone = state.pool.clone();
+
+        if let Some(ref sip_srv) = state.sip_server {
+            // Wire registrar into SipServer for response routing
+            {
+                let mut srv = sip_srv.write().await;
+                srv.set_cascade_registrar(registrar.clone());
+            }
+            // Wire SipServer into registrar for sending REGISTER requests
+            registrar.set_sip_server(sip_srv.clone()).await;
+        }
+        registrar.set_pool(state.pool.clone()).await;
+
+        let reg = registrar.clone();
         tokio::spawn(async move {
-            registrar.load_platforms_from_db(&pool_clone, &local_device_id, &realm).await;
-            registrar.run_registration_loop().await;
+            reg.load_platforms_from_db(&pool_clone, &local_device_id, &realm).await;
+            reg.run_registration_loop().await;
         });
     }
 

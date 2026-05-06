@@ -1,6 +1,5 @@
 use dashmap::DashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub struct SsrcAllocation {

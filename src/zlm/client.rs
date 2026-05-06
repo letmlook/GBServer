@@ -4,7 +4,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 
 use super::types::*;
-use crate::config::{ZlmServerConfig, ZlmConfig};
+use crate::config::ZlmServerConfig;
 
 #[derive(Clone)]
 pub struct ZlmClient {

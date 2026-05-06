@@ -155,7 +155,7 @@ fn parse_stream_id(stream: &str) -> Option<(String, String)> {
             return Some((device_id, channel_id));
         }
     }
-    if let Some(pos) = stream.find('/') {
+    if let Some(_pos) = stream.find('/') {
         let parts: Vec<&str> = stream.split('/').collect();
         if parts.len() >= 2 {
             return Some((parts[0].to_string(), parts[1].to_string()));
@@ -369,35 +369,39 @@ pub async fn handle_webhook(
         }
         "on_stream_not_found" => {
             if let Some(data) = serde_json::from_value::<StreamNotFoundData>(event.clone()).ok() {
-                tracing::warn!("Stream not found: {}/{}/{}", 
+                tracing::warn!("Stream not found: {}/{}/{}",
                     data.schema, data.app, data.stream);
 
-                if crate::sip::gb28181::stream_reconnect::StreamReconnectManager::is_gb28181_stream(&data.stream) {
-                    if let Some((device_id, channel_id)) = crate::sip::gb28181::stream_reconnect::StreamReconnectManager::parse_stream_id(&data.stream) {
-                        tracing::info!("GB28181 stream not found, attempting reconnect: device={} channel={}", device_id, channel_id);
+                // Register with reconnect manager for persistent retry
+                if let Some(ref sip_server) = state.sip_server {
+                    let sip = sip_server.read().await;
+                    let reconnect_mgr = sip.stream_reconnect_manager();
+                    // Feed the reconnect manager so it retries on schedule
+                    reconnect_mgr.on_stream_not_found(&data.app, &data.stream);
 
-                        if let Some(ref sip_server) = state.sip_server {
-                            let sip = sip_server.read().await;
-                            let device_online = sip.is_device_online(&device_id).await;
-
-                            if device_online {
-                                match sip.send_play_invite_and_wait(&device_id, &channel_id, 0, None).await {
-                                    Ok(_) => {
-                                        tracing::info!("Stream reconnect INVITE sent for {}/{}", device_id, channel_id);
-                                        return Json(WVPResult::success(serde_json::json!({
-                                            "code": 0,
-                                            "action": "reconnect",
-                                            "deviceId": device_id,
-                                            "channelId": channel_id
-                                        })));
-                                    }
-                                    Err(e) => {
-                                        tracing::warn!("Stream reconnect INVITE failed: {}", e);
-                                    }
+                    // Also attempt immediate one-shot reconnect
+                    if let Some((device_id, channel_id)) =
+                        crate::sip::gb28181::stream_reconnect::StreamReconnectManager::parse_stream_id(&data.stream)
+                    {
+                        let device_online = sip.is_device_online(&device_id).await;
+                        if device_online {
+                            match sip.send_play_invite_and_wait(&device_id, &channel_id, 0, None).await {
+                                Ok(_) => {
+                                    tracing::info!("Stream reconnect INVITE sent for {}/{}", device_id, channel_id);
+                                    reconnect_mgr.mark_success(&data.stream);
+                                    return Json(WVPResult::success(serde_json::json!({
+                                        "code": 0,
+                                        "action": "reconnect",
+                                        "deviceId": device_id,
+                                        "channelId": channel_id
+                                    })));
                                 }
-                            } else {
-                                tracing::debug!("Device {} offline, skip reconnect", device_id);
+                                Err(e) => {
+                                    tracing::warn!("Stream reconnect INVITE failed: {}", e);
+                                }
                             }
+                        } else {
+                            tracing::debug!("Device {} offline, skip reconnect", device_id);
                         }
                     }
                 }
@@ -579,6 +583,47 @@ pub async fn handle_webhook(
                 }
             }
         }
+        "on_flow_report" => {
+            // ZLM sends periodic flow stats; log summary and update Redis stream counts
+            let total_traffic = event.get("totalBytes")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let streams = event.get("streams")
+                .and_then(|v| v.as_array())
+                .map(|a| a.len())
+                .unwrap_or(0);
+            let media_server_id = event.get("mediaServerId")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            tracing::debug!(
+                "Flow report: server={} streams={} totalBytes={}",
+                media_server_id, streams, total_traffic
+            );
+            // Update media server flow stats in DB
+            let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+            let _ = crate::db::media_server::update_flow_stats(
+                &state.pool, media_server_id, total_traffic as i64, streams as i32, &now,
+            ).await;
+            // Sync active stream count to Redis
+            if let Some(ref redis) = state.redis {
+                cache::set_media_server_streams(redis, media_server_id, streams as i64).await;
+            }
+        }
+        "on_stream_none_reader" => {
+            if let Some(data) = serde_json::from_value::<StreamChangedData>(event.clone()).ok() {
+                tracing::info!(
+                    "Stream no readers: {}/{}/{}",
+                    data.schema, data.app, data.stream
+                );
+                // Auto-stop idle streams after a grace period to free ZLM resources
+                // Stream push/proxy status is updated via on_stream_changed
+                state.ws_state.broadcast("streamNoneReader", serde_json::json!({
+                    "app": data.app,
+                    "stream": data.stream,
+                    "schema": data.schema,
+                })).await;
+            }
+        }
         _ => {
             tracing::debug!("Unhandled webhook: {}", hook_name);
         }
@@ -587,4 +632,36 @@ pub async fn handle_webhook(
     Json(WVPResult::success(serde_json::json!({
         "code": 0
     })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_stream_id_dollar() {
+        let s = "34020000002000000001$101";
+        let res = parse_stream_id(s);
+        assert!(res.is_some());
+        let (d, c) = res.unwrap();
+        assert_eq!(d, "34020000002000000001");
+        assert_eq!(c, "101");
+    }
+
+    #[test]
+    fn test_parse_stream_id_slash() {
+        let s = "device/channel";
+        let res = parse_stream_id(s);
+        assert!(res.is_some());
+        let (d, c) = res.unwrap();
+        assert_eq!(d, "device");
+        assert_eq!(c, "channel");
+    }
+
+    #[test]
+    fn test_parse_record_time_ms_unix() {
+        let v = "1620000000"; // seconds
+        let ms = parse_record_time_ms(v);
+        assert!(ms >= 1620000000 * 1000);
+    }
 }

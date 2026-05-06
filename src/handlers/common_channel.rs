@@ -1,13 +1,13 @@
 //! 通用通道 API /api/common/channel，与前端 commonChannel.js 对应
 
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Query, State},
     Json,
 };
 use serde::Deserialize;
 
 use crate::db::common_channel;
-use crate::db::{count_common_channels, get_channel_by_device_and_channel_id, list_common_channels_paged, DeviceChannel};
+use crate::db::{count_common_channels, list_common_channels_paged, DeviceChannel};
 use crate::error::{AppError, ErrorCode};
 use crate::response::WVPResult;
 use crate::AppState;

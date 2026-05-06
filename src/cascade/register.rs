@@ -32,25 +32,29 @@ pub struct RegistrationState {
 
 pub struct CascadeRegistrar {
     states: DashMap<String, RegistrationState>,
-    sip_server: Option<Arc<RwLock<crate::sip::SipServer>>>,
-    pool: Option<crate::db::Pool>,
+    sip_server: RwLock<Option<Arc<RwLock<crate::sip::SipServer>>>>,
+    pool: RwLock<Option<crate::db::Pool>>,
 }
 
 impl CascadeRegistrar {
     pub fn new() -> Self {
         Self {
             states: DashMap::new(),
-            sip_server: None,
-            pool: None,
+            sip_server: RwLock::new(None),
+            pool: RwLock::new(None),
         }
     }
 
-    pub fn set_sip_server(&mut self, server: Arc<RwLock<crate::sip::SipServer>>) {
-        self.sip_server = Some(server);
+    pub async fn set_sip_server(&self, server: Arc<RwLock<crate::sip::SipServer>>) {
+        *self.sip_server.write().await = Some(server);
     }
 
-    pub fn set_pool(&mut self, pool: crate::db::Pool) {
-        self.pool = Some(pool);
+    pub async fn set_pool(&self, pool: crate::db::Pool) {
+        *self.pool.write().await = Some(pool);
+    }
+
+    pub async fn get_sip_server(&self) -> Option<Arc<RwLock<crate::sip::SipServer>>> {
+        self.sip_server.read().await.clone()
     }
 
     pub fn add_platform(
@@ -181,6 +185,8 @@ impl CascadeRegistrar {
     }
 
     pub async fn load_platforms_from_db(&self, pool: &crate::db::Pool, local_device_id: &str, realm: &str) {
+        // Also store the pool for later use
+        self.set_pool(pool.clone()).await;
         match crate::db::platform::list_platforms(pool).await {
             Ok(platforms) => {
                 for p in platforms {
@@ -235,12 +241,12 @@ impl CascadeRegistrar {
                 };
 
                 if should_register {
-                    if let Some(ref sip_server) = self.sip_server {
+                    if let Some(sip_server) = self.get_sip_server().await {
                         let platform_id = entry.platform_id.clone();
-                        let platform_device_id = entry.platform_device_id.clone();
+                        let _platform_device_id = entry.platform_device_id.clone();
                         let host = entry.host.clone();
                         let port = entry.port;
-                        let local_device_id = entry.local_device_id.clone();
+                        let _local_device_id = entry.local_device_id.clone();
                         let register_interval = entry.register_interval_secs;
 
                         let sip = sip_server.read().await;

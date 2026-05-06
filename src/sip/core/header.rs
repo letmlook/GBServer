@@ -3,7 +3,6 @@
 //! 参考 RFC 3261 §20
 
 use std::collections::HashMap;
-use std::str::FromStr;
 
 /// SIP 通用 Header 名称
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

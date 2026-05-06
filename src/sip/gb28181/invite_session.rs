@@ -268,8 +268,8 @@ impl InviteSessionManager {
         self.sessions.read().await.get(call_id).cloned()
     }
 
-    pub async fn get_mut(&self, call_id: &str) -> Option<tokio::sync::RwLockWriteGuard<'_, HashMap<String, InviteSession>>> {
-        None
+    pub async fn get_mut(&self, _call_id: &str) -> Option<tokio::sync::RwLockWriteGuard<'_, HashMap<String, InviteSession>>> {
+        Some(self.sessions.write().await)
     }
 
     pub async fn update(&self, session: &InviteSession) {
@@ -283,8 +283,9 @@ impl InviteSessionManager {
 
     pub async fn get_by_device_channel(&self, device_id: &str, channel_id: &str) -> Option<InviteSession> {
         let guard = self.sessions.read().await;
+        // Consider sessions that are not terminated (Inviting, Ringing, Active)
         guard.values()
-            .find(|s| s.device_id == device_id && s.channel_id == channel_id && s.is_active())
+            .find(|s| s.device_id == device_id && s.channel_id == channel_id && s.status != InviteSessionStatus::Terminated)
             .cloned()
     }
 

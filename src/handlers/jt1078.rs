@@ -2,13 +2,12 @@
 //! 包含终端管理、视频播放、录像回放、设备控制等功能
 
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Query, State},
     Json,
 };
 use serde::Deserialize;
 
 use crate::db::jt1078 as jt_db;
-use crate::db::{JtChannel, JtTerminal};
 use crate::error::{AppError, ErrorCode};
 use crate::response::WVPResult;
 use crate::AppState;
@@ -579,7 +578,7 @@ pub async fn playback_stop(
 
 /// GET /api/jt1078/playback/control
 pub async fn playback_control(
-    State(state): State<AppState>,
+    State(_state): State<AppState>,
     Query(q): Query<ControlQuery>,
 ) -> Json<serde_json::Value> {
     let command = q.command.clone().unwrap_or_default();
@@ -853,7 +852,7 @@ pub async fn media_attribute(
 
 /// POST /api/jt1078/media/list
 pub async fn media_list(
-    Json(body): Json<serde_json::Value>,
+    Json(_body): Json<serde_json::Value>,
 ) -> Json<serde_json::Value> {
     tracing::info!("JT1078 media list");
 

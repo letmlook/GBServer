@@ -1,4 +1,4 @@
-use sqlx::{FromRow, Row};
+use sqlx::Row;
 use crate::db::Pool;
 use crate::db::device::DeviceChannel;
 
@@ -224,9 +224,9 @@ pub async fn get_parent_channels(
     pool: &Pool,
     page: u32,
     count: u32,
-    query: Option<&str>,
-    online: Option<bool>,
-    channel_type: Option<i32>,
+    _query: Option<&str>,
+    _online: Option<bool>,
+    _channel_type: Option<i32>,
 ) -> sqlx::Result<Vec<DeviceChannel>> {
     let offset = (page.saturating_sub(1)) * count;
     #[cfg(feature = "mysql")]
@@ -247,9 +247,9 @@ pub async fn get_parent_channels(
 
 pub async fn count_parent_channels(
     pool: &Pool,
-    query: Option<&str>,
-    online: Option<bool>,
-    channel_type: Option<i32>,
+    _query: Option<&str>,
+    _online: Option<bool>,
+    _channel_type: Option<i32>,
 ) -> sqlx::Result<i64> {
     #[cfg(feature = "mysql")]
     return sqlx::query_scalar::<_, i64>(
@@ -379,9 +379,9 @@ pub async fn clear_device_group(pool: &Pool, device_id: &str, now: &str) -> sqlx
 
 pub async fn get_channels_for_map(
     pool: &Pool,
-    query: Option<&str>,
-    online: Option<bool>,
-    channel_type: Option<i32>,
+    _query: Option<&str>,
+    _online: Option<bool>,
+    _channel_type: Option<i32>,
 ) -> sqlx::Result<Vec<DeviceChannel>> {
     #[cfg(feature = "mysql")]
     return sqlx::query_as::<_, DeviceChannel>(

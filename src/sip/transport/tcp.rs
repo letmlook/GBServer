@@ -5,8 +5,7 @@ use tokio::net::TcpListener as TokioTcpListener;
 use tokio::net::TcpStream as TokioTcpStream;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::RwLock;
-use bytes::{Bytes, BytesMut};
-use anyhow::Result;
+use bytes::BytesMut;
 
 use crate::sip::core::parser::Parser;
 use crate::sip::core::SipMessage;

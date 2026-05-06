@@ -1,17 +1,13 @@
-use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
-use bytes::BytesMut;
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use md5::{Digest, Md5};
-use quick_xml::events::Event;
-use quick_xml::Reader;
 use rand::Rng;
 use tokio::net::UdpSocket;
-use tokio::sync::{oneshot, Mutex, RwLock};
+use tokio::sync::{oneshot, RwLock};
 use dashmap::DashMap;
 
 use crate::config::SipConfig;
@@ -20,23 +16,22 @@ use crate::db::position_history as ph;
 use crate::handlers::websocket::WsState;
 use crate::sip::core::parser::Parser;
 use crate::sip::core::{
-    Authorization, CSeq, Challenge, Contact, DialogManager, NameAddr, SipMessage, SipMethod,
-    SipRequest, SipResponse, StatusCode, SubscriptionState, TransactionManager, ViaHeader,
+    DialogManager, SipMessage, SipMethod,
+    SipRequest, SipResponse, TransactionManager,
 };
 use crate::sip::gb28181::catalog::{build_catalog_notify_body, CatalogSubscriptionManager, CatalogSubscription};
 use crate::sip::gb28181::invite::SessionStatus;
 use crate::sip::gb28181::invite_session::{
     build_invite_sdp, build_playback_sdp, InviteSessionManager, InviteSessionStatus, SdpInfo,
-    StreamType,
 };
 use crate::sip::gb28181::talk::{build_talk_sdp as build_audio_sdp, TalkManager, TalkStatus};
-use crate::sip::gb28181::xml_parser::ChannelInfo;
-use crate::sip::gb28181::{DeviceManager, SessionManager, TransportMode, XmlParser};
+use crate::sip::gb28181::{DeviceManager, SessionManager, XmlParser};
 use crate::sip::gb28181::ssrc::SsrcManager;
 use crate::sip::gb28181::stream_reconnect::StreamReconnectManager;
 use crate::sip::gb28181::nat_helper::NatHelper;
 use crate::sip::transport::tcp::{TcpConnectionManager, TcpListener};
 use crate::zlm::ZlmClient;
+use crate::cascade::CascadeRegistrar;
 
 pub struct SipServer {
     config: Arc<SipConfig>,
@@ -58,6 +53,7 @@ pub struct SipServer {
     ssrc_manager: Arc<SsrcManager>,
     stream_reconnect_manager: Arc<StreamReconnectManager>,
     nat_helper: Arc<NatHelper>,
+    cascade_registrar: Option<Arc<CascadeRegistrar>>,
 }
 
 impl SipServer {
@@ -92,15 +88,21 @@ impl SipServer {
             ssrc_manager,
             stream_reconnect_manager: Arc::new(stream_reconnect),
             nat_helper,
+            cascade_registrar: None,
         }
     }
 
-    pub fn set_ws_state(&mut self, ws: Arc<WsState>) {
+    pub async fn set_ws_state(&mut self, ws: Arc<WsState>) {
+        self.stream_reconnect_manager.set_ws_state(ws.clone()).await;
         self.ws_state = Some(ws);
     }
 
     pub fn set_zlm_client(&mut self, client: Option<Arc<ZlmClient>>) {
         self.zlm_client = client;
+    }
+
+    pub fn set_cascade_registrar(&mut self, registrar: Arc<CascadeRegistrar>) {
+        self.cascade_registrar = Some(registrar);
     }
 
     pub fn config(&self) -> &SipConfig {
@@ -160,8 +162,8 @@ impl SipServer {
         let device_manager = self.device_manager.clone();
         let invite_manager = self.invite_session_manager.clone();
         let talk_manager = self.talk_manager.clone();
-        let zlm_client = self.zlm_client.clone();
-        let config = self.config.clone();
+        let _zlm_client = self.zlm_client.clone();
+        let _config = self.config.clone();
         
         tokio::spawn(async move {
             loop {
@@ -175,7 +177,7 @@ impl SipServer {
             loop {
                 if let Some(ref zlm) = zlm_invite {
                     let sessions = invite_manager.get_pending_sessions().await;
-                    for mut session in sessions {
+                    for session in sessions {
                         let elapsed = (Utc::now() - session.last_activity).num_seconds();
                         if elapsed > session.timeout_seconds as i64 {
                             tracing::warn!("Invite session timeout: {}", session.call_id);
@@ -234,6 +236,7 @@ impl SipServer {
         let udp_pool = pool.clone();
         let udp_ws_state = self.ws_state.clone();
         let udp_pending_invites = self.pending_invites.clone();
+        let udp_cascade_registrar = self.cascade_registrar.clone();
         
         tokio::spawn(async move {
             loop {
@@ -254,8 +257,9 @@ impl SipServer {
 
                         let ws_state = udp_ws_state.clone();
                         let pending_invites = udp_pending_invites.clone();
+                        let cascade_registrar = udp_cascade_registrar.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = Self::handle_packet(&data, addr, &config, &device_manager, &session_manager, &invite_session_manager, &talk_manager, &catalog_subscription_manager, &zlm_client, &pool, &socket_for_response, false, &ws_state, &pending_invites).await {
+                            if let Err(e) = Self::handle_packet(&data, addr, &config, &device_manager, &session_manager, &invite_session_manager, &talk_manager, &catalog_subscription_manager, &zlm_client, &pool, &socket_for_response, false, &ws_state, &pending_invites, &cascade_registrar).await {
                                 tracing::error!("SIP handler error: {}", e);
                             }
                         });
@@ -281,7 +285,7 @@ impl SipServer {
             tokio::spawn(async move {
                 loop {
                     match listener.accept().await {
-                        Ok((mut stream, addr)) => {
+                        Ok((stream, addr)) => {
                             tracing::debug!("TCP connection from: {}", addr);
                             
                             let config = tcp_config.clone();
@@ -388,6 +392,121 @@ impl SipServer {
             }
         });
 
+        // Start stream reconnect monitor loop
+        let reconnect_mgr = self.stream_reconnect_manager.clone();
+        tokio::spawn(async move {
+            reconnect_mgr.run_reconnect_loop().await;
+        });
+
+        // Active heartbeat: periodically ping online devices to verify liveness
+        let heartbeat_config = config.clone();
+        let heartbeat_device_manager = device_manager.clone();
+        let heartbeat_pool = pool.clone();
+        let heartbeat_socket = socket.clone();
+        let heartbeat_ws = self.ws_state.clone();
+
+        tokio::spawn(async move {
+            let check_interval = heartbeat_config
+                .heartbeat
+                .as_ref()
+                .map(|h| h.check_interval_secs)
+                .unwrap_or(30);
+            let timeout_multiplier = heartbeat_config
+                .heartbeat
+                .as_ref()
+                .map(|h| h.timeout_multiplier)
+                .unwrap_or(3);
+
+            loop {
+                tokio::time::sleep(Duration::from_secs(check_interval)).await;
+
+                let devices = heartbeat_device_manager.list_all().await;
+                let now = Utc::now();
+                let keepalive_timeout = heartbeat_config.keepalive_timeout as i64;
+
+                for device in &devices {
+                    if !device.online {
+                        continue;
+                    }
+                    let elapsed = now.timestamp() - device.keepalive_time.timestamp();
+                    let threshold = keepalive_timeout * timeout_multiplier as i64;
+
+                    if elapsed > threshold {
+                        // Device hasn't sent keepalive for too long — mark offline
+                        tracing::info!(
+                            "Device {} keepalive timeout ({}s > {}s), marking offline",
+                            device.device_id, elapsed, threshold
+                        );
+                        heartbeat_device_manager.set_online(&device.device_id, false).await;
+
+                        // Update DB
+                        let now_str = now.format("%Y-%m-%d %H:%M:%S").to_string();
+                        let _ = crate::db::device::update_device_online(
+                            &heartbeat_pool,
+                            &device.device_id,
+                            false,
+                            None,
+                            None,
+                            &now_str,
+                        ).await;
+
+                        // Push WebSocket notification
+                        if let Some(ref ws) = heartbeat_ws {
+                            ws.broadcast("device", serde_json::json!({
+                                "deviceId": device.device_id,
+                                "online": false,
+                                "reason": "keepalive_timeout",
+                            })).await;
+                        }
+                    } else if elapsed > keepalive_timeout {
+                        // Device might need a keepalive ping — send MESSAGE query
+                        if let Some(addr) = device.addr {
+                            let keepalive_xml = format!(
+                                r#"<?xml version="1.0" encoding="UTF-8"?>
+<Message>
+<CmdType>Keepalive</CmdType>
+<SN>{}</SN>
+<DeviceID>{}</DeviceID>
+</Message>"#,
+                                Utc::now().timestamp() % 10000,
+                                device.device_id
+                            );
+
+                            // Build a simple SIP MESSAGE with the keepalive body
+                            let branch = format!("z9hG4bK{}", rand::random::<u32>());
+                            let call_id = format!("keepalive_{}_{}", device.device_id, Utc::now().timestamp());
+                            let local_tag = format!("keepalive_{}", rand::random::<u32>());
+
+                            let sip_msg = format!(
+                                "MESSAGE sip:{}@{}:{} SIP/2.0\r\n\
+                                 Via: SIP/2.0/UDP {}:{};rport;branch={}\r\n\
+                                 From: <sip:{}@{}:{}>;tag={}\r\n\
+                                 To: <sip:{}@{}:{}>\r\n\
+                                 Call-ID: {}\r\n\
+                                 CSeq: 1 MESSAGE\r\n\
+                                 Max-Forwards: 70\r\n\
+                                 Content-Type: Application/MANSCDP+xml\r\n\
+                                 Content-Length: {}\r\n\
+                                 \r\n\
+                                 {}",
+                                device.device_id, addr.ip(), addr.port(),
+                                heartbeat_config.ip, heartbeat_config.port, branch,
+                                heartbeat_config.device_id, heartbeat_config.ip, heartbeat_config.port, local_tag,
+                                device.device_id, addr.ip(), addr.port(),
+                                call_id,
+                                keepalive_xml.len(),
+                                keepalive_xml
+                            );
+
+                            if let Err(e) = heartbeat_socket.send_to(sip_msg.as_bytes(), addr).await {
+                                tracing::debug!("Failed to send keepalive to {} at {}: {}", device.device_id, addr, e);
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
         loop {
             tokio::time::sleep(Duration::from_secs(3600)).await;
         }
@@ -408,7 +527,7 @@ impl SipServer {
         // 创建一个虚拟 UDP socket 仅用于传递给 handle_packet's 接口
         // 实际回复通过 TcpConnectionManager.send_to 进行
         // 注意：这里使用一个专用的虚拟封装 TcpSendSocket
-        use crate::sip::transport::tcp::TcpStream;
+        
 
         // 创建 TCP 可写代理: 侧听 UDP socket 发出的内容将被拦截并通过 TCP 发出
         // 更简洁的方法：我们直接在这里处理消息和发送
@@ -416,7 +535,7 @@ impl SipServer {
             // 没有天然的，我们需要一个临时的 UDP socket 来将回复转发到 TCP
             // 创建一个虚拟 UDP socket，收到内容后再通过 TCP 发送
             // 为了简化：我们使用内部通道模式
-            let conn_mgr_clone = conn_manager.get_connection(&addr).await;
+            let _conn_mgr_clone = conn_manager.get_connection(&addr).await;
             let mut stream_guard = conn.write().await;
             loop {
                 match stream_guard.read_message().await {
@@ -430,9 +549,9 @@ impl SipServer {
                         // 正确方案：直接调用 conn_manager.send_to 发送回复
                         let dummy_socket_result = tokio::net::UdpSocket::bind("0.0.0.0:0").await;
                         if let Ok(udp) = dummy_socket_result {
-                            let udp_arc = Arc::new(udp);
-                            let conn_mgr_for_reply = conn_manager.clone();
-                            let addr_for_reply = addr;
+                            let _udp_arc = Arc::new(udp);
+                            let _conn_mgr_for_reply = conn_manager.clone();
+                            let _addr_for_reply = addr;
                             // 包裃一个代理子结构使 handle_packet 宽心发送的所有内容代行路由到 TCP
                             if let Err(e) = Self::process_tcp_message(
                                 data_bytes,
@@ -483,7 +602,7 @@ impl SipServer {
         match msg {
             SipMessage::Request(req) => {
                 // 生成回复内容存入 buffer，然后通过 TCP 发送
-                let (response_tx, mut response_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+                let (_response_tx, _response_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
                 // 创建一个内部虚拟 socket，用于捕获回复
                 // 简化方式：创建一个局域 UDP socket 监听，得到地址后用于中转
                 let dummy_socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await?;
@@ -527,7 +646,7 @@ impl SipServer {
                 ).await
             }
             SipMessage::Response(resp) => {
-                Self::handle_response(resp, session_manager, &Arc::new(DashMap::new())).await
+                Self::handle_response(resp, session_manager, &Arc::new(DashMap::new()), &None).await
             }
         }
     }
@@ -547,6 +666,7 @@ impl SipServer {
         _is_tcp: bool,
         ws_state: &Option<Arc<WsState>>,
         pending_invites: &Arc<DashMap<String, oneshot::Sender<String>>>,
+        cascade_registrar: &Option<Arc<CascadeRegistrar>>,
     ) -> Result<()> {
         let msg = Parser::parse(data)?;
         match msg {
@@ -568,13 +688,13 @@ impl SipServer {
                 .await
             }
             SipMessage::Response(resp) => {
-                Self::handle_response(resp, session_manager, pending_invites).await
+                Self::handle_response(resp, session_manager, pending_invites, cascade_registrar).await
             }
         }
     }
 
     async fn handle_request(
-        mut req: SipRequest,
+        req: SipRequest,
         addr: SocketAddr,
         config: &Arc<SipConfig>,
         device_manager: &Arc<DeviceManager>,
@@ -732,7 +852,7 @@ impl SipServer {
     async fn handle_message(
         req: SipRequest,
         addr: SocketAddr,
-        config: &Arc<SipConfig>,
+        _config: &Arc<SipConfig>,
         device_manager: &Arc<DeviceManager>,
         pool: &Pool,
         socket: &Arc<UdpSocket>,
@@ -744,7 +864,7 @@ impl SipServer {
         let via = req.header("via").cloned().unwrap_or_default();
         let call_id = req.header("call-id").cloned().unwrap_or_default();
         let cseq = req.header("cseq").cloned().unwrap_or_default();
-        let content_type = req.header("content-type").cloned().unwrap_or_default();
+        let _content_type = req.header("content-type").cloned().unwrap_or_default();
 
         let device_id = Self::extract_device_id(&from).unwrap_or_default();
         let sn = req.header("cseq").and_then(|s| s.split_whitespace().nth(1)).unwrap_or("1").to_string();
@@ -812,7 +932,7 @@ impl SipServer {
         invite_session_manager: &Arc<InviteSessionManager>,
         talk_manager: &Arc<TalkManager>,
         zlm_client: &Option<Arc<ZlmClient>>,
-        pool: &Pool,
+        _pool: &Pool,
         socket: &Arc<UdpSocket>,
     ) -> Result<()> {
         let from = req.header("from").cloned().unwrap_or_default();
@@ -820,7 +940,7 @@ impl SipServer {
         let via = req.header("via").cloned().unwrap_or_default();
         let call_id = req.header("call-id").cloned().unwrap_or_default();
         let cseq = req.header("cseq").cloned().unwrap_or_default();
-        let content_type = req.header("content-type").cloned().unwrap_or_default();
+        let _content_type = req.header("content-type").cloned().unwrap_or_default();
 
         let from_device = Self::extract_device_id(&from).unwrap_or_default();
         let to_device = Self::extract_device_id(&to).unwrap_or_default();
@@ -828,7 +948,7 @@ impl SipServer {
         tracing::info!("INVITE from {} to {} - CallID: {}", from_device, to_device, call_id);
 
         let sdp_request_body = req.body.clone();
-        let (stream_type, ssrc, sdp_info) = if let Some(body) = &req.body {
+        let (stream_type, ssrc, _sdp_info) = if let Some(body) = &req.body {
             let sdp_info = Self::parse_sdp(body);
             let stream_type = sdp_info.get("s").cloned().unwrap_or_else(|| "Play".to_string());
             let ssrc = sdp_info.get("y").cloned();
@@ -985,7 +1105,7 @@ impl SipServer {
         req: SipRequest,
         addr: SocketAddr,
         config: &Arc<SipConfig>,
-        session_manager: &Arc<SessionManager>,
+        _session_manager: &Arc<SessionManager>,
         talk_manager: &Arc<TalkManager>,
         zlm_client: &Option<Arc<ZlmClient>>,
         socket: &Arc<UdpSocket>,
@@ -1216,8 +1336,8 @@ impl SipServer {
     async fn handle_info(
         req: SipRequest,
         addr: SocketAddr,
-        config: &Arc<SipConfig>,
-        pool: &Pool,
+        _config: &Arc<SipConfig>,
+        _pool: &Pool,
         socket: &Arc<UdpSocket>,
     ) -> Result<()> {
         let via = req.header("via").cloned().unwrap_or_default();
@@ -1252,12 +1372,12 @@ impl SipServer {
     async fn handle_cancel(
         req: SipRequest,
         addr: SocketAddr,
-        config: &Arc<SipConfig>,
+        _config: &Arc<SipConfig>,
         session_manager: &Arc<SessionManager>,
         invite_session_manager: &Arc<InviteSessionManager>,
         talk_manager: &Arc<TalkManager>,
         zlm_client: &Option<Arc<ZlmClient>>,
-        pool: &Pool,
+        _pool: &Pool,
         socket: &Arc<UdpSocket>,
     ) -> Result<()> {
         let via = req.header("via").cloned().unwrap_or_default();
@@ -1323,8 +1443,8 @@ impl SipServer {
     async fn handle_prack(
         req: SipRequest,
         addr: SocketAddr,
-        config: &Arc<SipConfig>,
-        session_manager: &Arc<SessionManager>,
+        _config: &Arc<SipConfig>,
+        _session_manager: &Arc<SessionManager>,
         socket: &Arc<UdpSocket>,
     ) -> Result<()> {
         let via = req.header("via").cloned().unwrap_or_default();
@@ -1351,7 +1471,7 @@ impl SipServer {
         req: SipRequest,
         addr: SocketAddr,
         config: &Arc<SipConfig>,
-        session_manager: &Arc<SessionManager>,
+        _session_manager: &Arc<SessionManager>,
         socket: &Arc<UdpSocket>,
     ) -> Result<()> {
         let via = req.header("via").cloned().unwrap_or_default();
@@ -1362,7 +1482,7 @@ impl SipServer {
 
         tracing::info!("UPDATE received - CallID: {}", call_id);
 
-        let response_body = if let Some(body) = &req.body {
+        let response_body = if let Some(_body) = &req.body {
             Self::generate_sdp_response(&config.device_id, "Update", None, None)
         } else {
             String::new()
@@ -1385,7 +1505,7 @@ impl SipServer {
         req: SipRequest,
         addr: SocketAddr,
         config: &Arc<SipConfig>,
-        device_manager: &Arc<DeviceManager>,
+        _device_manager: &Arc<DeviceManager>,
         catalog_subscription_manager: &Arc<CatalogSubscriptionManager>,
         pool: &Pool,
         socket: &Arc<UdpSocket>,
@@ -1471,7 +1591,7 @@ impl SipServer {
     async fn handle_notify(
         req: SipRequest,
         addr: SocketAddr,
-        config: &Arc<SipConfig>,
+        _config: &Arc<SipConfig>,
         pool: &Pool,
         socket: &Arc<UdpSocket>,
     ) -> Result<()> {
@@ -1601,18 +1721,67 @@ impl SipServer {
         resp: SipResponse,
         session_manager: &Arc<SessionManager>,
         pending_invites: &Arc<DashMap<String, oneshot::Sender<String>>>,
+        cascade_registrar: &Option<Arc<CascadeRegistrar>>,
     ) -> Result<()> {
         let call_id = resp.headers.get("call-id").cloned().unwrap_or_default();
         let cseq = resp.headers.get("cseq").cloned().unwrap_or_default();
-        
+
         tracing::debug!("SIP Response: {} {} - CallID: {}", resp.status_code(), resp.reason, call_id);
-        
+
+        // Route REGISTER responses to cascade registrar
+        if cseq.contains("REGISTER") {
+            if let Some(ref registrar) = cascade_registrar {
+                let platform_id = call_id
+                    .strip_prefix("cascade_")
+                    .and_then(|s| s.rsplit('_').next())
+                    .map(|s| s.to_string());
+
+                if let Some(ref pid) = platform_id {
+                    if resp.status_code() == 401 || resp.status_code() == 407 {
+                        let nonce = resp.headers.get("www-authenticate")
+                            .or_else(|| resp.headers.get("proxy-authenticate"))
+                            .and_then(|auth| {
+                                auth.split("nonce=\"")
+                                    .nth(1)
+                                    .and_then(|s| s.split('"').next())
+                                    .map(|s| s.to_string())
+                            })
+                            .unwrap_or_default();
+                        let opaque = resp.headers.get("www-authenticate")
+                            .or_else(|| resp.headers.get("proxy-authenticate"))
+                            .and_then(|auth| {
+                                auth.split("opaque=\"")
+                                    .nth(1)
+                                    .and_then(|s| s.split('"').next())
+                                    .map(|s| s.to_string())
+                            });
+                        let realm = resp.headers.get("www-authenticate")
+                            .or_else(|| resp.headers.get("proxy-authenticate"))
+                            .and_then(|auth| {
+                                auth.split("realm=\"")
+                                    .nth(1)
+                                    .and_then(|s| s.split('"').next())
+                                    .map(|s| s.to_string())
+                            })
+                            .unwrap_or_default();
+                        if !nonce.is_empty() {
+                            registrar.handle_401_challenge(pid, &nonce, opaque.as_deref(), &realm);
+                            tracing::info!("Cascade {} received 401 challenge", pid);
+                        }
+                    } else if resp.status_code() == 200 {
+                        registrar.mark_registered(pid);
+                    } else if resp.status_code() >= 400 {
+                        registrar.mark_failed(pid);
+                    }
+                }
+            }
+            return Ok(());
+        }
+
         if resp.status_code() == 200 {
             if cseq.contains("INVITE") {
                 session_manager.update_status(&call_id, SessionStatus::Ringing).await;
-                // 通知等待 INVITE 200 的 play_start handler
                 if let Some((_, tx)) = pending_invites.remove(&call_id) {
-                    // 提取 Contact 头中的 ZLM stream 信息（play_invite 中我们存储了 stream_id）
                     let contact = resp.headers.get("contact").cloned().unwrap_or_default();
                     let _ = tx.send(contact);
                 }
@@ -1621,22 +1790,20 @@ impl SipServer {
             }
         } else if resp.status_code() == 487 {
             session_manager.remove(&call_id).await;
-            // 通知等待方 INVITE 失败
             if let Some((_, tx)) = pending_invites.remove(&call_id) {
                 let _ = tx.send(String::new());
             }
         } else if resp.status_code() >= 400 {
-            // 其他错误响应也通知等待方
             if let Some((_, tx)) = pending_invites.remove(&call_id) {
                 let _ = tx.send(String::new());
             }
         }
-        
+
         Ok(())
     }
 
     async fn handle_catalog(
-        body: &str,
+        _body: &str,
         device_id: &str,
         sn: &str,
         pool: &Pool,
@@ -1706,7 +1873,7 @@ impl SipServer {
     }
 
     async fn handle_device_info(
-        body: &str,
+        _body: &str,
         device_id: &str,
         sn: &str,
         pool: &Pool,
@@ -1745,10 +1912,10 @@ impl SipServer {
     }
 
     async fn handle_device_status(
-        body: &str,
+        _body: &str,
         device_id: &str,
         sn: &str,
-        pool: &Pool,
+        _pool: &Pool,
         addr: SocketAddr,
         from: &str,
         to: &str,
@@ -1903,7 +2070,7 @@ impl SipServer {
         body: &str,
         device_id: &str,
         sn: &str,
-        pool: &Pool,
+        _pool: &Pool,
         addr: SocketAddr,
         from: &str,
         to: &str,
@@ -2108,7 +2275,7 @@ impl SipServer {
 
     fn generate_sdp_response(device_id: &str, mode: &str, video_port: Option<u16>, audio_port: Option<u16>) -> String {
         let v_port = video_port.unwrap_or(10000);
-        let a_port = audio_port.unwrap_or(0);
+        let _a_port = audio_port.unwrap_or(0);
         
         format!(r#"v=0
 o={} 0 0 IN IP4 127.0.0.1
@@ -2275,6 +2442,11 @@ f=v/1/96/1/2/1/1/0
         );
         
         self.send_message_to_device(device_id, SipMethod::Message, Some(&body), Some("Application/MANSCDP+xml")).await
+    }
+
+    /// Send an Alarm subscription to a device so it pushes alarm notifications
+    pub async fn send_alarm_subscribe(&self, device_id: &str, expires: u32) -> Result<()> {
+        self.send_subscribe(device_id, "Alarm", expires).await
     }
 
     pub async fn send_subscribe(&self, device_id: &str, event: &str, expires: u32) -> Result<()> {
