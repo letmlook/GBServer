@@ -416,3 +416,22 @@ pub async fn update_terminal_position(
         .await?;
     Ok(r.rows_affected())
 }
+
+/// Count channels for a terminal by terminal DB id
+pub async fn count_channels_by_terminal(pool: &Pool, terminal_db_id: i32) -> sqlx::Result<i64> {
+    #[cfg(feature = "postgres")]
+    let count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM wvp_jt_channel WHERE terminal_db_id = $1"
+    )
+    .bind(terminal_db_id)
+    .fetch_one(pool)
+    .await?;
+    #[cfg(feature = "mysql")]
+    let count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM wvp_jt_channel WHERE terminal_db_id = ?"
+    )
+    .bind(terminal_db_id)
+    .fetch_one(pool)
+    .await?;
+    Ok(count)
+}

@@ -6,6 +6,8 @@ use axum::{
     Json,
 };
 use serde::Deserialize;
+use sqlx::Row;
+use std::sync::Arc;
 
 use crate::db::jt1078 as jt_db;
 use crate::error::{AppError, ErrorCode};
@@ -214,17 +216,17 @@ pub struct ConnectionBody {
 }
 
 fn build_success(msg: &str) -> serde_json::Value {
-    serde_json::json!({
-        "code": 0,
-        "msg": msg
-    })
+    serde_json::json!({ "code": 0, "msg": msg })
 }
 
 fn build_error(msg: &str) -> serde_json::Value {
-    serde_json::json!({
-        "code": 1,
-        "msg": msg
-    })
+    serde_json::json!({ "code": 1, "msg": msg })
+}
+
+/// Helper to get JT1078 manager from state, returning an error JSON if unavailable.
+async fn get_jt_manager(state: &AppState) -> Result<Arc<crate::jt1078::manager::Jt1078Manager>, Json<serde_json::Value>> {
+    let guard = state.jt1078_manager.read().await;
+    guard.clone().ok_or_else(|| Json(build_error("JT1078服务未启动")))
 }
 
 // ========== 终端管理 ==========
@@ -578,24 +580,108 @@ pub async fn playback_stop(
 
 /// GET /api/jt1078/playback/control
 pub async fn playback_control(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Query(q): Query<ControlQuery>,
 ) -> Json<serde_json::Value> {
+    let phone = q.phone_number.clone().unwrap_or_default();
+    let channel_id = q.channel_id.unwrap_or(0) as u8;
     let command = q.command.clone().unwrap_or_default();
+    let speed = q.playback_speed.unwrap_or(1.0) as u8;
+    let seek_time = q.time.map(|t| t.to_string()).unwrap_or_default();
 
-    tracing::info!("JT1078 playback control: cmd={}", command);
+    if phone.is_empty() {
+        return Json(build_error("缺少 phoneNumber"));
+    }
 
-    Json(build_success("回放控制成功"))
+    let mgr = match get_jt_manager(&state).await {
+        Ok(m) => m,
+        Err(e) => return e,
+    };
+
+    // Map frontend command to JT1078 playback control codes
+    let (control, seek) = match command.to_lowercase().as_str() {
+        "pause" => (1u8, false),
+        "resume" | "play" => (2u8, false),
+        "fastforward" | "fast_forward" => (3u8, false),
+        "fastrewind" | "fast_rewind" => (4u8, false),
+        "seek" | "drag" => (5u8, true),
+        "stop" => (0u8, false),
+        _ => (2u8, false),
+    };
+
+    let result = if seek && !seek_time.is_empty() {
+        mgr.send_playback_control(&phone, channel_id, control, speed, &seek_time).await
+    } else {
+        mgr.send_playback_control(&phone, channel_id, control, speed, "2000-01-01T00:00:00").await
+    };
+
+    match result {
+        Ok(()) => Json(build_success("回放控制成功")),
+        Err(e) => Json(build_error(&e)),
+    }
 }
 
 /// GET /api/jt1078/playback/downloadUrl
 pub async fn playback_download_url(
+    State(state): State<AppState>,
     Query(q): Query<DownloadUrlQuery>,
 ) -> Json<serde_json::Value> {
     let phone = q.phone_number.clone().unwrap_or_default();
+    let channel_id = q.channel_id.unwrap_or(0);
+    let start_time = q.start_time.clone().unwrap_or_default();
+    let end_time = q.end_time.clone().unwrap_or_default();
 
-    tracing::info!("JT1078 playback download url: phone={}", phone);
+    tracing::info!("JT1078 playback download url: phone={}, channel={}, {}-{}",
+        phone, channel_id, start_time, end_time);
 
+    // Try to find existing record in cloud_record DB
+    let stream_id = if channel_id > 0 {
+        format!("{}_{}", phone, channel_id)
+    } else {
+        phone.clone()
+    };
+
+    if let Some(ref zlm) = state.zlm_client {
+        // Check ZLM for existing MP4 records
+        if let Ok(files) = zlm.get_mp4_record_file("record", &stream_id, None, None, None).await {
+            if let Some(record) = files.first() {
+                let download_url = format!("http://{}:{}/record/{}",
+                    zlm.ip, zlm.http_port, record.name);
+                return Json(serde_json::json!({
+                    "code": 0,
+                    "data": {
+                        "url": download_url,
+                        "fileName": record.name,
+                        "filePath": record.path,
+                        "fileSize": record.size,
+                    }
+                }));
+            }
+        }
+
+        // If no existing file, start a download via ZLM
+        let download_file = format!("{}_{}.mp4", phone, chrono::Utc::now().timestamp());
+        let source_url = format!("rtsp://127.0.0.1/record/{}", stream_id);
+        match zlm.create_download(&source_url, &download_file, Some("./downloads")).await {
+            Ok(path) => {
+                let download_url = format!("http://{}:{}/download/{}",
+                    zlm.ip, zlm.http_port, download_file);
+                return Json(serde_json::json!({
+                    "code": 0,
+                    "data": {
+                        "url": download_url,
+                        "fileName": download_file,
+                        "savePath": path,
+                    }
+                }));
+            }
+            Err(e) => {
+                tracing::warn!("JT1078 download start failed: {}", e);
+            }
+        }
+    }
+
+    // Fallback
     Json(serde_json::json!({
         "code": 0,
         "data": {
@@ -607,127 +693,358 @@ pub async fn playback_download_url(
 // ========== 设备控制 ==========
 /// GET /api/jt1078/ptz
 pub async fn ptz(
+    State(state): State<AppState>,
     Query(q): Query<PtzQuery>,
 ) -> Json<serde_json::Value> {
     let phone = q.phone_number.clone().unwrap_or_default();
-    let channel_id = q.channel_id.unwrap_or(1);
+    let channel_id = q.channel_id.unwrap_or(1) as u8;
     let command = q.command.clone().unwrap_or_default();
-    let speed = q.speed.unwrap_or(1);
+    let speed = q.speed.unwrap_or(1).min(255) as u8;
 
-    tracing::info!("JT1078 PTZ: phone={}, channel={}, cmd={}, speed={}", 
-        phone, channel_id, command, speed);
+    if phone.is_empty() {
+        return Json(build_error("缺少 phoneNumber"));
+    }
 
-    Json(build_success("云台控制命令已发送"))
+    let mgr = match get_jt_manager(&state).await {
+        Ok(m) => m,
+        Err(e) => return e,
+    };
+
+    match mgr.send_ptz(&phone, channel_id, &command, speed).await {
+        Ok(()) => Json(build_success("云台控制命令已发送")),
+        Err(e) => Json(build_error(&e)),
+    }
 }
 
 /// GET /api/jt1078/wiper
 pub async fn wiper(
+    State(state): State<AppState>,
     Query(q): Query<WiperQuery>,
 ) -> Json<serde_json::Value> {
     let phone = q.phone_number.clone().unwrap_or_default();
     let command = q.command.clone().unwrap_or_default();
+    let on = matches!(command.to_lowercase().as_str(), "on" | "open" | "start" | "1");
 
-    tracing::info!("JT1078 wiper: phone={}, cmd={}", phone, command);
+    if phone.is_empty() {
+        return Json(build_error("缺少 phoneNumber"));
+    }
 
-    Json(build_success("雨刷控制命令已发送"))
+    let mgr = match get_jt_manager(&state).await {
+        Ok(m) => m,
+        Err(e) => return e,
+    };
+
+    match mgr.send_wiper(&phone, on).await {
+        Ok(()) => Json(build_success("雨刷控制命令已发送")),
+        Err(e) => Json(build_error(&e)),
+    }
 }
 
 /// GET /api/jt1078/fill-light
 pub async fn fill_light(
+    State(state): State<AppState>,
     Query(q): Query<FillLightQuery>,
 ) -> Json<serde_json::Value> {
     let phone = q.phone_number.clone().unwrap_or_default();
     let command = q.command.clone().unwrap_or_default();
+    let on = matches!(command.to_lowercase().as_str(), "on" | "open" | "start" | "1");
 
-    tracing::info!("JT1078 fill light: phone={}, cmd={}", phone, command);
+    if phone.is_empty() {
+        return Json(build_error("缺少 phoneNumber"));
+    }
 
-    Json(build_success("补光灯控制命令已发送"))
+    let mgr = match get_jt_manager(&state).await {
+        Ok(m) => m,
+        Err(e) => return e,
+    };
+
+    match mgr.send_fill_light(&phone, on).await {
+        Ok(()) => Json(build_success("补光灯控制命令已发送")),
+        Err(e) => Json(build_error(&e)),
+    }
 }
 
 /// GET /api/jt1078/record/list
 pub async fn record_list(
+    State(state): State<AppState>,
     Query(q): Query<RecordListQuery>,
 ) -> Json<serde_json::Value> {
     let phone = q.phone_number.clone().unwrap_or_default();
+    let channel_id = q.channel_id.unwrap_or(0);
 
-    tracing::info!("JT1078 record list: phone={}", phone);
+    tracing::info!("JT1078 record list: phone={}, channel={}", phone, channel_id);
+
+    // Query ZLM MP4 records for this terminal
+    if let Some(ref zlm) = state.zlm_client {
+        let app = "record";
+        let stream = if channel_id > 0 {
+            format!("{}_{}", phone, channel_id)
+        } else {
+            phone.clone()
+        };
+        match zlm.get_mp4_record_file(app, &stream, None, None, None).await {
+            Ok(files) => {
+                let records: Vec<serde_json::Value> = files.iter().map(|f| {
+                    let start_ms = f.create_time.parse::<i64>().unwrap_or(0);
+                    let duration = f.duration.unwrap_or(0.0);
+                    serde_json::json!({
+                        "fileName": f.name,
+                        "filePath": f.path,
+                        "fileSize": f.size,
+                        "startTime": start_ms,
+                        "endTime": start_ms + (duration * 1000.0) as i64,
+                        "duration": duration,
+                        "downloadUrl": format!("/record/{}", f.name)
+                    })
+                }).collect();
+                return Json(serde_json::json!({
+                    "code": 0,
+                    "data": { "list": records, "total": records.len() }
+                }));
+            }
+            Err(e) => {
+                tracing::warn!("JT1078 record list ZLM query failed: {}", e);
+            }
+        }
+    }
+
+    // Fallback: query cloud_record DB
+    match sqlx::query_as::<_, crate::db::cloud_record::CloudRecord>(
+        "SELECT * FROM wvp_cloud_record WHERE stream = $1 ORDER BY start_time DESC LIMIT 50"
+    )
+    .bind(&phone)
+    .fetch_all(&state.pool)
+    .await
+    {
+        Ok(records) => {
+            let list: Vec<serde_json::Value> = records.iter().map(|r| {
+                serde_json::json!({
+                    "fileName": r.file_name,
+                    "filePath": r.file_path,
+                    "fileSize": r.file_size,
+                    "startTime": r.start_time,
+                    "endTime": r.end_time,
+                    "duration": r.time_len,
+                })
+            }).collect();
+            return Json(serde_json::json!({
+                "code": 0,
+                "data": { "list": list, "total": list.len() }
+            }));
+        }
+        _ => {}
+    }
 
     Json(serde_json::json!({
         "code": 0,
-        "data": {
-            "list": [],
-            "total": 0
-        }
+        "data": { "list": [], "total": 0 }
     }))
 }
 
 // ========== 配置查询 ==========
 /// GET /api/jt1078/config/get
 pub async fn config_get(
+    State(state): State<AppState>,
     Query(q): Query<PositionQuery>,
 ) -> Json<serde_json::Value> {
     let phone = q.phone_number.clone().unwrap_or_default();
 
-    tracing::info!("JT1078 config get: phone={}", phone);
+    if phone.is_empty() {
+        return Json(serde_json::json!({ "code": 1, "msg": "缺少 phoneNumber" }));
+    }
+
+    // Read terminal from DB
+    if let Ok(Some(terminal)) = jt_db::get_terminal_by_phone(&state.pool, &phone).await {
+        // Use SIP config for server IP/port
+        let server_ip = state.config.sip.as_ref().map(|s| s.ip.clone()).unwrap_or_else(|| "127.0.0.1".to_string());
+        let server_port = state.config.sip.as_ref().map(|s| s.port).unwrap_or(5060);
+        return Json(serde_json::json!({
+            "code": 0,
+            "data": {
+                "phoneNumber": phone,
+                "terminalId": terminal.terminal_id,
+                "plateNo": terminal.plate_no,
+                "ip": server_ip,
+                "port": server_port,
+                "apn": "internet",
+                "model": terminal.model,
+            }
+        }));
+    }
 
     Json(serde_json::json!({
         "code": 0,
-        "data": {
-            "apn": "internet",
-            "ip": "127.0.0.1",
-            "port": 7070
-        }
+        "data": { "apn": "internet", "ip": "127.0.0.1", "port": 7070 }
     }))
 }
 
 /// POST /api/jt1078/config/set
 pub async fn config_set(
+    State(state): State<AppState>,
     Json(body): Json<ConfigBody>,
 ) -> Json<serde_json::Value> {
     let phone = body.phone_number.clone().unwrap_or_default();
+    let apn = body.apn.clone().unwrap_or_default();
+    let ip = body.ip.clone().unwrap_or_default();
+    let port = body.port.unwrap_or(60000) as u16;
 
-    tracing::info!("JT1078 config set: phone={}", phone);
+    if phone.is_empty() {
+        return Json(build_error("缺少 phoneNumber"));
+    }
 
-    Json(build_success("配置保存成功"))
+    let mgr = match get_jt_manager(&state).await {
+        Ok(m) => m,
+        Err(e) => return e,
+    };
+
+    match mgr.send_set_params(&phone, &apn, &ip, port).await {
+        Ok(()) => Json(build_success("配置保存成功")),
+        Err(e) => Json(build_error(&e)),
+    }
 }
 
 /// GET /api/jt1078/attribute
 pub async fn attribute(
+    State(state): State<AppState>,
     Query(q): Query<AttributeQuery>,
 ) -> Json<serde_json::Value> {
     let phone = q.phone_number.clone().unwrap_or_default();
 
-    tracing::info!("JT1078 attribute: phone={}", phone);
+    if phone.is_empty() {
+        return Json(serde_json::json!({ "code": 1, "msg": "缺少 phoneNumber" }));
+    }
+
+    if let Ok(Some(terminal)) = jt_db::get_terminal_by_phone(&state.pool, &phone).await {
+        return Json(serde_json::json!({
+            "code": 0,
+            "data": {
+                "phoneNumber": phone,
+                "terminalId": terminal.terminal_id,
+                "plateNo": terminal.plate_no,
+                "plateColor": terminal.plate_color,
+                "makerId": terminal.maker_id,
+                "model": terminal.model,
+                "manufacturer": terminal.maker_id.unwrap_or_else(|| "默认厂商".to_string()),
+                "status": terminal.status,
+                "longitude": terminal.longitude,
+                "latitude": terminal.latitude,
+            }
+        }));
+    }
 
     Json(serde_json::json!({
         "code": 0,
-        "data": {
-            "phoneNumber": phone,
-            "deviceType": "车载终端",
-            "manufacturer": "默认厂商"
-        }
+        "data": { "phoneNumber": phone, "deviceType": "车载终端", "manufacturer": "默认厂商" }
     }))
 }
 
 /// GET /api/jt1078/link-detection
 pub async fn link_detection(
+    State(state): State<AppState>,
     Query(q): Query<LinkDetectionQuery>,
 ) -> Json<serde_json::Value> {
     let phone = q.phone_number.clone().unwrap_or_default();
 
-    tracing::info!("JT1078 link detection: phone={}", phone);
+    if phone.is_empty() {
+        return Json(build_error("缺少 phoneNumber"));
+    }
 
-    Json(build_success("链路检测完成"))
+    let mgr = match get_jt_manager(&state).await {
+        Ok(m) => m,
+        Err(e) => return e,
+    };
+
+    let online = mgr.is_terminal_online(&phone).await;
+    if online {
+        // Send heartbeat check - query location to verify link
+        let _ = mgr.send_query_location(&phone).await;
+    }
+
+    Json(serde_json::json!({
+        "code": 0,
+        "data": { "phoneNumber": phone, "online": online, "reachable": online }
+    }))
 }
 
 // ========== 位置信息 ==========
 /// GET /api/jt1078/position-info
 pub async fn position_info(
+    State(state): State<AppState>,
     Query(q): Query<PositionQuery>,
 ) -> Json<serde_json::Value> {
     let phone = q.phone_number.clone().unwrap_or_default();
 
-    tracing::info!("JT1078 position info: phone={}", phone);
+    if phone.is_empty() {
+        return Json(serde_json::json!({ "code": 1, "msg": "缺少 phoneNumber" }));
+    }
+
+    // Query from mobile_position table (real-time position)
+    #[cfg(feature = "postgres")]
+    {
+        let row = sqlx::query(
+            "SELECT device_id, longitude, latitude, speed, direction, altitude, create_time FROM wvp_mobile_position WHERE device_id = $1 ORDER BY create_time DESC LIMIT 1"
+        )
+        .bind(&phone)
+        .fetch_optional(&state.pool)
+        .await;
+        if let Ok(Some(r)) = row {
+            let device_id: String = r.try_get("device_id").unwrap_or_default();
+            let longitude: f64 = r.try_get("longitude").unwrap_or(0.0);
+            let latitude: f64 = r.try_get("latitude").unwrap_or(0.0);
+            let speed: f64 = r.try_get("speed").unwrap_or(0.0);
+            let direction: f64 = r.try_get("direction").unwrap_or(0.0);
+            let altitude: f64 = r.try_get("altitude").unwrap_or(0.0);
+            let create_time: Option<String> = r.try_get("create_time").ok();
+            return Json(serde_json::json!({
+                "code": 0,
+                "data": {
+                    "phoneNumber": phone,
+                    "deviceId": device_id,
+                    "latitude": latitude,
+                    "longitude": longitude,
+                    "speed": speed,
+                    "direction": direction,
+                    "altitude": altitude,
+                    "time": create_time.unwrap_or_default(),
+                }
+            }));
+        }
+    }
+
+    // Fallback: query position_history
+    if let Ok(positions) = crate::db::position_history::list_by_device_and_time(
+        &state.pool, &phone, None, None,
+    ).await {
+        if let Some(latest) = positions.first() {
+            return Json(serde_json::json!({
+                "code": 0,
+                "data": {
+                    "phoneNumber": phone,
+                    "deviceId": latest.device_id,
+                    "latitude": latest.latitude,
+                    "longitude": latest.longitude,
+                    "speed": latest.speed,
+                    "direction": latest.direction,
+                    "time": latest.timestamp,
+                }
+            }));
+        }
+    }
+
+    // Final fallback: check if terminal exists
+    if let Ok(Some(terminal)) = jt_db::get_terminal_by_phone(&state.pool, &phone).await {
+        return Json(serde_json::json!({
+            "code": 0,
+            "data": {
+                "phoneNumber": phone,
+                "latitude": terminal.latitude,
+                "longitude": terminal.longitude,
+                "speed": 0.0,
+                "direction": 0,
+                "time": chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string()
+            }
+        }));
+    }
 
     Json(serde_json::json!({
         "code": 0,
@@ -745,173 +1062,376 @@ pub async fn position_info(
 // ========== 通信 ==========
 /// POST /api/jt1078/text-msg
 pub async fn text_msg(
+    State(state): State<AppState>,
     Json(body): Json<TextMsgBody>,
 ) -> Json<serde_json::Value> {
     let phone = body.phone_number.clone().unwrap_or_default();
     let message = body.message.clone().unwrap_or_default();
 
-    tracing::info!("JT1078 text msg: phone={}, msg={}", phone, message);
+    if phone.is_empty() {
+        return Json(build_error("缺少 phoneNumber"));
+    }
 
-    Json(build_success("文本消息已发送"))
+    let mgr = match get_jt_manager(&state).await {
+        Ok(m) => m,
+        Err(e) => return e,
+    };
+
+    match mgr.send_text_message(&phone, &message, false).await {
+        Ok(()) => Json(build_success("文本消息已发送")),
+        Err(e) => Json(build_error(&e)),
+    }
 }
 
 /// GET /api/jt1078/telephone-callback
 pub async fn telephone_callback(
+    State(state): State<AppState>,
     Query(q): Query<TerminalCallbackQuery>,
 ) -> Json<serde_json::Value> {
     let phone = q.phone_number.clone().unwrap_or_default();
     let dest = q.dest_phone_number.clone().unwrap_or_default();
+    let sign: u8 = q.sign.as_deref().and_then(|s| s.parse().ok()).unwrap_or(1);
 
-    tracing::info!("JT1078 telephone callback: phone={}, dest={}", phone, dest);
+    if phone.is_empty() {
+        return Json(build_error("缺少 phoneNumber"));
+    }
 
-    Json(build_success("回拨指令已发送"))
+    let mgr = match get_jt_manager(&state).await {
+        Ok(m) => m,
+        Err(e) => return e,
+    };
+
+    match mgr.send_phone_callback(&phone, sign, &dest).await {
+        Ok(()) => Json(build_success("回拨指令已发送")),
+        Err(e) => Json(build_error(&e)),
+    }
 }
 
 /// GET /api/jt1078/driver-information
 pub async fn driver_info(
+    State(state): State<AppState>,
     Query(q): Query<DriverInfoQuery>,
 ) -> Json<serde_json::Value> {
     let phone = q.phone_number.clone().unwrap_or_default();
 
-    tracing::info!("JT1078 driver info: phone={}", phone);
+    if phone.is_empty() {
+        return Json(build_error("缺少 phoneNumber"));
+    }
+
+    // Query terminal attributes from device if online
+    let mgr = match get_jt_manager(&state).await {
+        Ok(m) => m,
+        Err(e) => return e,
+    };
+
+    let online = mgr.is_terminal_online(&phone).await;
+    if online {
+        let _ = mgr.send_query_attributes(&phone).await;
+    }
+
+    // Read driver info from DB
+    if let Ok(Some(terminal)) = jt_db::get_terminal_by_phone(&state.pool, &phone).await {
+        return Json(serde_json::json!({
+            "code": 0,
+            "data": {
+                "phoneNumber": phone,
+                "driverName": terminal.plate_no.unwrap_or_else(|| "驾驶员".to_string()),
+                "licenseNo": terminal.terminal_id.unwrap_or_else(|| "123456789012345678".to_string()),
+                "online": online,
+            }
+        }));
+    }
 
     Json(serde_json::json!({
         "code": 0,
-        "data": {
-            "phoneNumber": phone,
-            "driverName": "驾驶员",
-            "licenseNo": "123456789012345678"
-        }
+        "data": { "phoneNumber": phone, "driverName": "驾驶员", "licenseNo": "123456789012345678", "online": online }
     }))
 }
 
 // ========== 设备控制 ==========
 /// POST /api/jt1078/control/factory-reset
 pub async fn factory_reset(
+    State(state): State<AppState>,
     Query(q): Query<PositionQuery>,
 ) -> Json<serde_json::Value> {
     let phone = q.phone_number.clone().unwrap_or_default();
 
-    tracing::info!("JT1078 factory reset: phone={}", phone);
+    if phone.is_empty() {
+        return Json(build_error("缺少 phoneNumber"));
+    }
 
-    Json(build_success("恢复出厂设置指令已发送"))
+    let mgr = match get_jt_manager(&state).await {
+        Ok(m) => m,
+        Err(e) => return e,
+    };
+
+    match mgr.send_terminal_control(&phone, 4).await { // 4 = factory reset
+        Ok(()) => Json(build_success("恢复出厂设置指令已发送")),
+        Err(e) => Json(build_error(&e)),
+    }
 }
 
 /// POST /api/jt1078/control/reset
 pub async fn reset(
+    State(state): State<AppState>,
     Json(body): Json<ResetBody>,
 ) -> Json<serde_json::Value> {
     let phone = body.phone_number.clone().unwrap_or_default();
 
-    tracing::info!("JT1078 reset: phone={}", phone);
+    if phone.is_empty() {
+        return Json(build_error("缺少 phoneNumber"));
+    }
 
-    Json(build_success("设备重启指令已发送"))
+    let mgr = match get_jt_manager(&state).await {
+        Ok(m) => m,
+        Err(e) => return e,
+    };
+
+    match mgr.send_terminal_control(&phone, 2).await { // 2 = restart
+        Ok(()) => Json(build_success("设备重启指令已发送")),
+        Err(e) => Json(build_error(&e)),
+    }
 }
 
 /// POST /api/jt1078/control/connection
 pub async fn connection(
+    State(state): State<AppState>,
     Json(body): Json<ConnectionBody>,
 ) -> Json<serde_json::Value> {
     let phone = body.phone_number.clone().unwrap_or_default();
+    let ip = body.ip.clone().unwrap_or_default();
+    let port = body.port.unwrap_or(60000) as u16;
 
-    tracing::info!("JT1078 connection: phone={}", phone);
+    if phone.is_empty() {
+        return Json(build_error("缺少 phoneNumber"));
+    }
 
-    Json(build_success("连接控制指令已发送"))
+    let mgr = match get_jt_manager(&state).await {
+        Ok(m) => m,
+        Err(e) => return e,
+    };
+
+    match mgr.send_connection_control(&phone, &ip, port).await {
+        Ok(()) => Json(build_success("连接控制指令已发送")),
+        Err(e) => Json(build_error(&e)),
+    }
 }
 
 /// GET /api/jt1078/control/door
 pub async fn door(
+    State(state): State<AppState>,
     Query(q): Query<DoorQuery>,
 ) -> Json<serde_json::Value> {
     let phone = q.phone_number.clone().unwrap_or_default();
     let open = q.open.unwrap_or(false);
 
-    tracing::info!("JT1078 door: phone={}, open={}", phone, open);
+    if phone.is_empty() {
+        return Json(build_error("缺少 phoneNumber"));
+    }
 
-    Json(build_success(if open { "开门指令已发送" } else { "关门指令已发送" }))
+    let mgr = match get_jt_manager(&state).await {
+        Ok(m) => m,
+        Err(e) => return e,
+    };
+
+    let control_type = if open { 1u8 } else { 0u8 }; // 1=unlock, 0=lock
+    match mgr.send_vehicle_control(&phone, control_type, open).await {
+        Ok(()) => Json(build_success(if open { "开门指令已发送" } else { "关门指令已发送" })),
+        Err(e) => Json(build_error(&e)),
+    }
 }
 
 // ========== 媒体数据 ==========
 /// GET /api/jt1078/media/attribute
 pub async fn media_attribute(
+    State(state): State<AppState>,
     Query(q): Query<MediaAttributeQuery>,
 ) -> Json<serde_json::Value> {
     let phone = q.phone_number.clone().unwrap_or_default();
 
-    tracing::info!("JT1078 media attribute: phone={}", phone);
+    if phone.is_empty() {
+        return Json(build_error("缺少 phoneNumber"));
+    }
+
+    let mgr = match get_jt_manager(&state).await {
+        Ok(m) => m,
+        Err(e) => return e,
+    };
+
+    let online = mgr.is_terminal_online(&phone).await;
+    if online {
+        let _ = mgr.send_query_attributes(&phone).await;
+    }
+
+    // Build response from DB terminal info
+    if let Ok(Some(terminal)) = jt_db::get_terminal_by_phone(&state.pool, &phone).await {
+        let channel_count = jt_db::count_channels_by_terminal(&state.pool, terminal.id).await.unwrap_or(0);
+        return Json(serde_json::json!({
+            "code": 0,
+            "data": {
+                "phoneNumber": phone,
+                "model": terminal.model,
+                "makerId": terminal.maker_id,
+                "channels": channel_count.max(1),
+                "supportAudio": true,
+                "online": online,
+            }
+        }));
+    }
 
     Json(serde_json::json!({
         "code": 0,
-        "data": {
-            "phoneNumber": phone,
-            "channels": 4,
-            "supportAudio": true
-        }
+        "data": { "phoneNumber": phone, "channels": 4, "supportAudio": true, "online": online }
     }))
 }
 
 /// POST /api/jt1078/media/list
 pub async fn media_list(
-    Json(_body): Json<serde_json::Value>,
+    State(state): State<AppState>,
+    Json(body): Json<serde_json::Value>,
 ) -> Json<serde_json::Value> {
-    tracing::info!("JT1078 media list");
+    let phone = body.get("phoneNumber").and_then(|v| v.as_str()).unwrap_or("");
+    tracing::info!("JT1078 media list: phone={}", phone);
 
-    Json(serde_json::json!({
-        "code": 0,
-        "data": {
-            "list": []
+    // If terminal is online, query media from device
+    if !phone.is_empty() {
+        let mgr = match get_jt_manager(&state).await {
+            Ok(m) => m,
+            Err(_) => return Json(serde_json::json!({ "code": 0, "data": { "list": [] } })),
+        };
+        if mgr.is_terminal_online(phone).await {
+            let channel_id: u8 = body.get("channelId").and_then(|v| v.as_u64()).unwrap_or(0) as u8;
+            let start_time = body.get("startTime").and_then(|v| v.as_str()).unwrap_or("2000-01-01T00:00:00");
+            let end_time = body.get("endTime").and_then(|v| v.as_str()).unwrap_or("2099-12-31T23:59:59");
+            let _ = mgr.send_media_search(phone, channel_id, start_time, end_time).await;
         }
-    }))
+    }
+
+    // Query ZLM media list as well
+    if let Some(ref zlm) = state.zlm_client {
+        let schema = body.get("schema").and_then(|v| v.as_str()).unwrap_or("rtmp");
+        let app = body.get("app").and_then(|v| v.as_str());
+        let stream = if !phone.is_empty() { Some(phone.to_string()) } else { body.get("stream").and_then(|v| v.as_str()).map(|s| s.to_string()) };
+        if let Ok(streams) = zlm.get_media_list(Some(schema), app, stream.as_deref()).await {
+            let list: Vec<serde_json::Value> = streams.iter().map(|s| {
+                serde_json::json!({
+                    "app": s.app, "stream": s.stream, "schema": s.schema, "vhost": s.vhost,
+                    "readerCount": s.reader_count, "totalReaderCount": s.total_reader_count,
+                    "originType": s.origin_type, "aliveSecond": s.alive_second, "bytesSpeed": s.bytes_speed,
+                })
+            }).collect();
+            return Json(serde_json::json!({ "code": 0, "data": { "list": list, "total": list.len() } }));
+        }
+    }
+
+    Json(serde_json::json!({ "code": 0, "data": { "list": [] } }))
 }
 
 // ========== 其他功能 ==========
 /// POST /api/jt1078/set-phone-book
 pub async fn set_phone_book(
-    Json(_body): Json<serde_json::Value>,
+    State(state): State<AppState>,
+    Json(body): Json<serde_json::Value>,
 ) -> Json<serde_json::Value> {
-    tracing::info!("JT1078 set phone book");
+    let phone = body.get("phoneNumber").and_then(|v| v.as_str()).unwrap_or("");
+    if phone.is_empty() {
+        return Json(build_error("缺少 phoneNumber"));
+    }
 
-    Json(build_success("电话本设置成功"))
+    // Parse contacts from body
+    let contacts: Vec<(String, String)> = body.get("contacts")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter().filter_map(|c| {
+                let name = c.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                let num = c.get("phone").or(c.get("number")).and_then(|v| v.as_str()).unwrap_or("");
+                if name.is_empty() || num.is_empty() { None } else { Some((name.to_string(), num.to_string())) }
+            }).collect()
+        }).unwrap_or_default();
+
+    let mgr = match get_jt_manager(&state).await {
+        Ok(m) => m,
+        Err(e) => return e,
+    };
+
+    match mgr.send_set_phone_book(phone, &contacts).await {
+        Ok(()) => Json(build_success("电话本设置成功")),
+        Err(e) => Json(build_error(&e)),
+    }
 }
 
 /// POST /api/jt1078/shooting
 pub async fn shooting(
-    Json(_body): Json<serde_json::Value>,
+    State(state): State<AppState>,
+    Json(body): Json<serde_json::Value>,
 ) -> Json<serde_json::Value> {
-    tracing::info!("JT1078 shooting");
+    let phone = body.get("phoneNumber").and_then(|v| v.as_str()).unwrap_or("");
+    let channel_id: u8 = body.get("channelId").and_then(|v| v.as_u64()).unwrap_or(0) as u8;
 
-    Json(build_success("抓拍指令已发送"))
+    if phone.is_empty() {
+        return Json(build_error("缺少 phoneNumber"));
+    }
+
+    let mgr = match get_jt_manager(&state).await {
+        Ok(m) => m,
+        Err(e) => return e,
+    };
+
+    match mgr.send_take_photo(&phone, channel_id).await {
+        Ok(()) => Json(build_success("抓拍指令已发送")),
+        Err(e) => Json(build_error(&e)),
+    }
 }
 
 // ========== 对讲 ==========
 /// GET /api/jt1078/talk/start
 pub async fn talk_start(
+    State(state): State<AppState>,
     Query(q): Query<TalkQuery>,
 ) -> Json<serde_json::Value> {
     let phone = q.phone_number.clone().unwrap_or_default();
-    let channel_id = q.channel_id.unwrap_or(1);
+    let channel_id = q.channel_id.unwrap_or(1) as u8;
 
-    tracing::info!("JT1078 talk start: phone={}, channel={}", phone, channel_id);
+    if phone.is_empty() {
+        return Json(build_error("缺少 phoneNumber"));
+    }
 
-    Json(serde_json::json!({
-        "code": 0,
-        "msg": "success",
-        "data": {
-            "phoneNumber": phone,
-            "channelId": channel_id
+    let mgr = match get_jt_manager(&state).await {
+        Ok(m) => m,
+        Err(e) => return e,
+    };
+
+    // Start bidirectional talk: send live video with audio and open bidirectional talk control
+    match mgr.send_live_video(&phone, channel_id, 0, false).await {
+        Ok(()) => {
+            let _ = mgr.send_live_video_control(&phone, channel_id, 5, false).await; // 5=open bidirectional talk
+            Json(serde_json::json!({ "code": 0, "msg": "success", "data": { "phoneNumber": phone, "channelId": channel_id } }))
         }
-    }))
+        Err(e) => Json(build_error(&e)),
+    }
 }
 
 /// GET /api/jt1078/talk/stop
 pub async fn talk_stop(
+    State(state): State<AppState>,
     Query(q): Query<TalkQuery>,
 ) -> Json<serde_json::Value> {
     let phone = q.phone_number.clone().unwrap_or_default();
+    let channel_id = q.channel_id.unwrap_or(1) as u8;
 
-    tracing::info!("JT1078 talk stop: phone={}", phone);
+    if phone.is_empty() {
+        return Json(build_error("缺少 phoneNumber"));
+    }
 
-    Json(build_success("对讲停止成功"))
+    let mgr = match get_jt_manager(&state).await {
+        Ok(m) => m,
+        Err(e) => return e,
+    };
+
+    match mgr.send_live_video_control(&phone, channel_id, 5, true).await { // 5=close bidirectional talk
+        Ok(()) => Json(build_success("对讲停止成功")),
+        Err(e) => Json(build_error(&e)),
+    }
 }
 
 /// GET /api/jt1078/media/upload/one/upload (used in queryMediaList.vue direct fetch)

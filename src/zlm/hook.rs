@@ -276,6 +276,13 @@ async fn sync_stream_changed(state: &AppState, data: &StreamChangedData) {
             cache::decr_media_server_streams(redis, media_server_id).await;
         }
     }
+
+    // Update global active stream metrics
+    if let Some(ref zlm) = state.zlm_client {
+        if let Ok(streams) = zlm.get_media_list(None, None, None).await {
+            crate::metrics::set_active_streams(streams.len());
+        }
+    }
 }
 
 fn should_skip_discovered_push(app: &str) -> bool {

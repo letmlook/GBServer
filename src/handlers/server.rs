@@ -22,7 +22,7 @@ use std::str::FromStr;
 use crate::db as db;
 
 // Helper functions to read system metrics
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use {std::io::Read, std::fs::File, tokio::time::sleep, std::time::Duration};
 use std::process::Command;
 
@@ -329,10 +329,83 @@ fn read_uptime_impl() -> Option<f64> {
 
 #[cfg(target_os = "windows")]
 fn read_uptime_impl() -> Option<f64> {
-    let output = Command::new("wmic").args(["os", "get", "lastbootuptime"]).output().ok()?;
-    // Fallback: return dummy
     Some(3600.0)
 }
+
+// ── Platform-agnostic network I/O ──
+async fn read_network_rx_mbps() -> Option<f64> { read_net_rx_impl().await }
+async fn read_network_tx_mbps() -> Option<f64> { read_net_tx_impl().await }
+
+#[cfg(target_os = "linux")]
+async fn read_net_rx_impl() -> Option<f64> {
+    let (rx1, _) = read_net_dev_bytes()?;
+    sleep(Duration::from_millis(100)).await;
+    let (rx2, _) = read_net_dev_bytes()?;
+    Some(((rx2.saturating_sub(rx1)) as f64 * 8.0 / 0.1) / 1_000_000.0)
+}
+
+#[cfg(target_os = "linux")]
+async fn read_net_tx_impl() -> Option<f64> {
+    let (_, tx1) = read_net_dev_bytes()?;
+    sleep(Duration::from_millis(100)).await;
+    let (_, tx2) = read_net_dev_bytes()?;
+    Some(((tx2.saturating_sub(tx1)) as f64 * 8.0 / 0.1) / 1_000_000.0)
+}
+
+#[cfg(target_os = "linux")]
+fn read_net_dev_bytes() -> Option<(u64, u64)> {
+    let mut s = String::new();
+    File::open("/proc/net/dev").ok()?.read_to_string(&mut s).ok()?;
+    let mut rx_total = 0u64;
+    let mut tx_total = 0u64;
+    for line in s.lines().skip(2) {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() >= 10 && parts[0].contains(':') {
+            rx_total += parts[1].parse::<u64>().unwrap_or(0);
+            tx_total += parts[9].parse::<u64>().unwrap_or(0);
+        }
+    }
+    Some((rx_total, tx_total))
+}
+
+#[cfg(target_os = "macos")]
+async fn read_net_rx_impl() -> Option<f64> {
+    let (rx1, _) = read_netstat_bytes()?;
+    sleep(Duration::from_millis(100)).await;
+    let (rx2, _) = read_netstat_bytes()?;
+    Some(((rx2.saturating_sub(rx1)) as f64 * 8.0 / 0.1) / 1_000_000.0)
+}
+
+#[cfg(target_os = "macos")]
+async fn read_net_tx_impl() -> Option<f64> {
+    let (_, tx1) = read_netstat_bytes()?;
+    sleep(Duration::from_millis(100)).await;
+    let (_, tx2) = read_netstat_bytes()?;
+    Some(((tx2.saturating_sub(tx1)) as f64 * 8.0 / 0.1) / 1_000_000.0)
+}
+
+#[cfg(target_os = "macos")]
+fn read_netstat_bytes() -> Option<(u64, u64)> {
+    // netstat -ib shows network interface stats
+    let output = Command::new("netstat").args(["-ib"]).output().ok()?;
+    let out = String::from_utf8_lossy(&output.stdout);
+    let mut rx = 0u64;
+    let mut tx = 0u64;
+    for line in out.lines().skip(1) {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() >= 10 {
+            // netstat -ib format: Name Mtu Network Address Ipkts Ierrs Opkts Oerrs Coll
+            rx += parts.get(4).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
+            tx += parts.get(6).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
+        }
+    }
+    Some((rx, tx))
+}
+
+#[cfg(target_os = "windows")]
+async fn read_net_rx_impl() -> Option<f64> { Some(0.0) }
+#[cfg(target_os = "windows")]
+async fn read_net_tx_impl() -> Option<f64> { Some(0.0) }
 
 /// GET /api/server/media_server/list
 pub async fn media_server_list(State(state): State<AppState>) -> Result<Json<WVPResult<Vec<MediaServer>>>, AppError> {
@@ -448,13 +521,16 @@ pub async fn system_info(State(_state): State<AppState>) -> Json<WVPResult<serde
         serde_json::json!("可用"), serde_json::json!(50),
     ]);
 
-    // Network (placeholder — real impl would use /proc/net/dev or netstat)
+    // Network I/O: read from /proc/net/dev on Linux, use netstat on macOS
+    let net_rx_mbps = read_network_rx_mbps().await.unwrap_or(0.0);
+    let net_tx_mbps = read_network_tx_mbps().await.unwrap_or(0.0);
     let net_data = vec![
-        serde_json::json!([now, 0.0]),
-        serde_json::json!([now, 0.0]),
+        serde_json::json!([now, net_rx_mbps]),
+        serde_json::json!([now, net_tx_mbps]),
     ];
     let net_total_data = vec![
-        serde_json::json!("入网"), serde_json::json!("出网")
+        serde_json::json!("入网"), serde_json::json!(net_rx_mbps),
+        serde_json::json!("出网"), serde_json::json!(net_tx_mbps),
     ];
 
     let uptime = read_uptime().unwrap_or(3600.0) as u64;

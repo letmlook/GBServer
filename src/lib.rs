@@ -147,6 +147,7 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
 
     let download_manager = Arc::new(crate::handlers::playback::DownloadManager::new());
     let playback_manager = Arc::new(crate::handlers::playback::PlaybackManager::new());
+    let jt1078_manager: Arc<tokio::sync::RwLock<Option<Arc<crate::jt1078::manager::Jt1078Manager>>>> = Arc::new(tokio::sync::RwLock::new(None));
 
     // Initialize Redis (optional)
     let redis_conn = if let Some(ref redis_cfg) = cfg.redis {
@@ -181,6 +182,7 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
         download_manager: Some(download_manager),
         ws_state,
         redis: redis_conn,
+        jt1078_manager: jt1078_manager.clone(),
     };
 
     if let Some(ref server) = sip_server {
@@ -231,9 +233,8 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
         });
     }
 
-    // Start JT1078 server (skeleton) in background
+    // Start JT1078 server in background
     {
-        // If app config provides JT1078 tuning, set environment variables consumed by jt1078::server
         if let Some(jcfg) = cfg.jt1078.as_ref() {
             if let Some(timeout_ms) = jcfg.timeout_ms {
                 std::env::set_var("WVP__JT1078__TIMEOUT_MS", timeout_ms.to_string());
@@ -244,17 +245,18 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
             if let Some(ref hook) = jcfg.retransmit_hook_url {
                 std::env::set_var("WVP__JT1078__RETRANSMIT_HOOK", hook.clone());
             }
-            // allow enabling direct device send via config env var
-            if jcfg.retransmit_hook_url.is_some() {
-                // default to not sending to device unless configured explicitly
-            }
         }
 
         let jt = crate::jt1078::Jt1078Server::new();
         let jcfg = cfg.jt1078.clone();
+        let jt_mgr_for_state = jt1078_manager.clone();
         tokio::spawn(async move {
             if let Err(e) = jt.start(jcfg).await {
                 tracing::warn!("JT1078 server failed to start: {}", e);
+            }
+            // After start, copy manager from server to AppState so handlers can access it
+            if let Some(mgr) = jt.get_manager().await {
+                *jt_mgr_for_state.write().await = Some(mgr);
             }
         });
     }
@@ -279,6 +281,7 @@ pub struct AppState {
     pub download_manager: Option<Arc<crate::handlers::playback::DownloadManager>>,
     pub ws_state: Arc<crate::handlers::websocket::WsState>,
     pub redis: Option<redis::aio::ConnectionManager>,
+    pub jt1078_manager: Arc<tokio::sync::RwLock<Option<Arc<crate::jt1078::manager::Jt1078Manager>>>>,
 }
 
 impl AppState {

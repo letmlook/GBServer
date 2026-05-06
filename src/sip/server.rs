@@ -424,6 +424,10 @@ impl SipServer {
                 let now = Utc::now();
                 let keepalive_timeout = heartbeat_config.keepalive_timeout as i64;
 
+                // Update metrics
+                let online_count = devices.iter().filter(|d| d.online).count();
+                crate::metrics::set_sip_devices_online(online_count);
+
                 for device in &devices {
                     if !device.online {
                         continue;

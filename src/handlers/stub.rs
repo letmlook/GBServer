@@ -982,43 +982,7 @@ pub async fn user_api_key_add(
     }))))
 }
 
-// ========== playback（回放依赖流媒体，保持兼容空实现） ==========
-pub async fn playback_start(
-    Path((_device_id, _channel_id)): Path<(String, String)>,
-) -> Json<WVPResult<serde_json::Value>> {
-    Json(WVPResult::success(serde_json::json!({ "stream": null })))
-}
-
-pub async fn playback_stop(
-    Path((_device_id, _channel_id, _stream_id)): Path<(String, String, String)>,
-) -> Json<WVPResult<()>> {
-    Json(WVPResult::<()>::success_empty())
-}
-
-// ========== gb_record / cloud_record ==========
-pub async fn gb_record_query(
-    Path((_device_id, _channel_id)): Path<(String, String)>,
-) -> Json<WVPResult<Vec<serde_json::Value>>> {
-    Json(WVPResult::success(vec![]))
-}
-
-pub async fn gb_record_download_start(
-    Path((_device_id, _channel_id)): Path<(String, String)>,
-) -> Json<WVPResult<serde_json::Value>> {
-    Json(WVPResult::success(serde_json::json!({ "streamId": null })))
-}
-
-pub async fn gb_record_download_stop(
-    Path((_device_id, _channel_id, _stream_id)): Path<(String, String, String)>,
-) -> Json<WVPResult<()>> {
-    Json(WVPResult::<()>::success_empty())
-}
-
-pub async fn gb_record_download_progress(
-    Path((_device_id, _channel_id, _stream_id)): Path<(String, String, String)>,
-) -> Json<WVPResult<serde_json::Value>> {
-    Json(WVPResult::success(serde_json::json!({ "progress": 0 })))
-}
+// ========== cloud_record（已实现，查询 ZLM + DB） ==========
 
 #[derive(Debug, Deserialize)]
 pub struct CloudRecordQuery {

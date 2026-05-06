@@ -1,12 +1,13 @@
 use tokio::net::{TcpListener, UdpSocket};
 use tokio::io::AsyncReadExt;
 use std::error::Error;
+use std::sync::Arc;
 
 use super::Jt1078Server;
 
 /// Start lightweight JT1078 TCP and UDP listeners. This spawns per-connection handlers
 /// that manage simple authentication, heartbeat, and reassembly using session state.
-pub async fn start(_server: &Jt1078Server, cfg: Option<crate::config::Jt1078Config>) -> Result<(), Box<dyn Error + Send + Sync>> {
+pub async fn start(server: &Jt1078Server, cfg: Option<crate::config::Jt1078Config>) -> Result<(), Box<dyn Error + Send + Sync>> {
     // Bind TCP listener on a default port (can be configured later)
     let tcp_addr = "0.0.0.0:60000";
 
@@ -17,12 +18,14 @@ pub async fn start(_server: &Jt1078Server, cfg: Option<crate::config::Jt1078Conf
     let retransmit_hook = cfg.as_ref().and_then(|c| c.retransmit_hook_url.clone()).or_else(|| std::env::var("WVP__JT1078__RETRANSMIT_HOOK").ok());
     let retransmit_send_to_device = std::env::var("WVP__JT1078__RETRANSMIT_SEND_TO_DEVICE").map(|v| v == "1" || v.eq_ignore_ascii_case("true")).unwrap_or(false);
 
-    let manager = crate::jt1078::manager::Jt1078Manager::new(
+    let manager = Arc::new(crate::jt1078::manager::Jt1078Manager::new(
         timeout,
         retransmit_wait,
         retransmit_hook,
         retransmit_send_to_device,
-    );
+    ));
+    // Store manager on server so handlers can access it
+    server.set_manager(manager.clone()).await;
     let manager_for_cleanup = manager.clone();
     tokio::spawn(async move {
         manager_for_cleanup.cleanup_loop(std::time::Duration::from_secs(30)).await;
