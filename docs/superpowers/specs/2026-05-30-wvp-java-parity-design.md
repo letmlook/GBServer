@@ -11,6 +11,7 @@ The Rust backend in this repository is intended to become a production-grade rep
 - Commit observed during design: `b760458`
 - Upstream version: WVP-Pro `2.7.4`
 - Upstream stack: Spring Boot `3.4.4`, Java `21`
+- **Frontend baseline**: The official WVP-Pro frontend at the same commit/version as the backend baseline. The Rust backend must be compatible with this latest upstream frontend — not just the Vue 2 frontend currently in this repository's `web/` directory. If the upstream frontend has evolved (new API files, changed field names, new pages, new request/response shapes), the Rust backend must match those changes.
 
 The target is not API-only compatibility. The target is protocol-production parity: the Rust backend must interoperate with real GB28181 devices, ZLMediaKit media servers, upstream GB platforms, and JT808/JT1078 terminals in the same operational scenarios that WVP-Pro supports.
 
@@ -18,7 +19,7 @@ The target is not API-only compatibility. The target is protocol-production pari
 
 A feature is considered complete only when all applicable layers are aligned:
 
-1. **API compatibility**: path, method, query/body parameters, response shape, error semantics, and frontend behavior match WVP-Pro closely enough for the WVP frontend and API clients.
+1. **API and frontend compatibility**: path, method, query/body parameters, response shape, error semantics, and frontend behavior match the official WVP-Pro frontend from the same upstream commit/version. Compatibility with only the local `web/` directory is insufficient if it differs from upstream.
 2. **Protocol behavior**: SIP, GB28181, ZLM hook, SendRtp, JT808/JT1078, and Redis/event behavior complete the real command-response lifecycle.
 3. **State management**: sessions, dialogs, SSRC, streams, subscriptions, device status, media-node status, and Redis-backed cluster state are cleaned up and recovered correctly.
 4. **Verification**: behavior is covered by unit tests, simulator tests, integration tests, API contract checks, and selected real-device or real-platform validation.
@@ -42,7 +43,7 @@ Estimated current completion by production-parity lens:
 | Area | Estimated completion |
 |---|---:|
 | Management/CRUD/API surface compatibility | 60-75% |
-| Frontend usability | 55-70% |
+| Frontend usability against the official upstream frontend | 55-70% |
 | GB28181 core production flows | 35-50% |
 | ZLM/media-node production flows | 45-60% |
 | Platform cascade production flows | 25-40% |
@@ -57,7 +58,8 @@ These are planning estimates, not final audit numbers. Phase 0 will replace them
 | Domain | Current status | Main parity gaps |
 |---|---|---|
 | User/JWT/API key | Mostly aligned surface | Login, token, and frontend request model are close; role, permission, audit status, and error semantics need verification. |
-| CRUD management APIs | Partial | Device, region, group, role, push, proxy, media-node APIs mostly exist; field-level response parity, paging, sorting, empty values, and error responses require contract checks. |
+| Official frontend/API surface | Partial | The local frontend may lag the official upstream frontend. Phase 0 must compare upstream `web/src/api`, route pages, request wrappers, and expected response fields against both the Rust backend and local `web/` implementation. |
+| CRUD management APIs | Partial | Device, region, group, role, push, proxy, media-node APIs mostly exist; field-level response parity, paging, sorting, empty values, and error responses require contract checks against the official upstream frontend and controllers. |
 | SIP REGISTER/Keepalive | Partial | Basic registration and heartbeat exist; strict GB ID validation, per-device password rules, transaction semantics, Redis/cluster state, and edge offline behavior need alignment. |
 | Catalog/device channel sync | Partial | Catalog query and partial processing exist; multi-packet handling, progress, channel deletion/offline updates, parent/civilCode/businessGroup mapping, and subscription lifecycle need work. |
 | Device status/config/control/PTZ | Partial | Many commands can be sent, but several are fire-and-forget and do not wait for parsed device responses. PTZ, preset, cruise, scan, and aux commands need WVP-Pro-compatible semantics. |
@@ -203,9 +205,9 @@ Goal: make WVP-Pro comparison repeatable.
 
 Tasks:
 
-1. Record upstream baseline `648540858/wvp-GB28181-pro@b760458`.
-2. Extract Java controller routes and Rust router routes.
-3. Generate a route/domain gap report with statuses: `missing`, `partial`, `protocol-gap`, `response-gap`, `aligned`, `not-in-scope`.
+1. Record upstream baseline `648540858/wvp-GB28181-pro@b760458`, including both Java backend and official frontend under the same commit.
+2. Extract Java controller routes, upstream frontend API modules/pages, local frontend API modules/pages, and Rust router routes.
+3. Generate route, frontend API, page, field, and domain gap reports with statuses: `missing`, `partial`, `protocol-gap`, `response-gap`, `frontend-gap`, `aligned`, `not-in-scope`.
 4. Refresh stale parity documentation and clearly mark old conclusions that are no longer accurate.
 
 Acceptance:
@@ -370,8 +372,8 @@ These three flows validate the architecture needed for later playback, download,
 | Service | Validate lifecycle logic | PendingRequest, InviteSession, SubscriptionTask, MediaState, RecordInfo aggregation |
 | Protocol simulator | Validate protocol interop without hardware | SIP device, upstream GB platform, ZLM hook, JT terminal |
 | Integration | Validate system collaboration | PostgreSQL/MySQL, Redis, ZLM, backend, WebSocket |
-| API contract | Validate WVP-Pro compatibility | path, method, query/body, response shape, error code |
-| Frontend smoke | Validate UI behavior | login, device, channel, play, record, cascade, JT, media node pages |
+| API/frontend contract | Validate compatibility with WVP-Pro backend and official frontend | path, method, query/body, response shape, error code, upstream `web/src/api` calls, page-level expected fields |
+| Frontend smoke | Validate official latest frontend behavior | login, device, channel, play, record, cascade, JT, media node pages using the official upstream frontend for the selected WVP-Pro commit |
 | Real device/platform | Validate production behavior | GB camera/NVR, upstream WVP-Pro, JT terminal |
 | Regression | Prevent backsliding | automated phase-specific core flows |
 
@@ -405,7 +407,7 @@ Mitigation: deliver by closed-loop protocol slices, keep public handlers stable,
 
 The parity project is complete when:
 
-1. Generated route/domain diff shows all in-scope WVP-Pro domains as `aligned` or intentionally `not-in-scope`.
+1. Generated route/domain/frontend diff shows all in-scope WVP-Pro backend domains and official frontend API/page expectations as `aligned` or intentionally `not-in-scope`.
 2. Core GB28181 device, live, playback, RecordInfo, Download, talk, alarm, and mobile-position flows pass simulator and selected real-device tests.
 3. ZLM hook and media-node flows pass startup, stream arrival, stream stop, no-reader, not-found, send-rtp-stopped, and record MP4 tests.
 4. Platform cascade can register with WVP-Pro as an upstream platform and complete catalog/play/stop/subscription flows.
