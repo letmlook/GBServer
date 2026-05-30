@@ -336,7 +336,7 @@ function extractFrontendApiCallsFromSource(source, sourcePath = '') {
   return calls.sort((a, b) => `${a.path} ${a.method}`.localeCompare(`${b.path} ${b.method}`))
 }
 
-function findEnclosingObjectRange(text, index) {
+function findEnclosingObjectRanges(text, index) {
   const stack = []
   let quote = null
   let escaping = false
@@ -367,18 +367,125 @@ function findEnclosingObjectRange(text, index) {
     }
   }
 
-  for (let i = stack.length - 1; i >= 0; i -= 1) {
-    const range = findBalancedRange(text, stack[i], '{', '}')
-    if (range && range.end >= index) return range
+  return stack
+    .map((start) => findBalancedRange(text, start, '{', '}'))
+    .filter((range) => range && range.end >= index)
+}
+
+function readDirectObjectPropertyExpression(objectBody, propertyName) {
+  const isIdentifierChar = (char) => /[A-Za-z0-9_$]/.test(char || '')
+  let depth = 0
+  let quote = null
+  let escaping = false
+
+  for (let i = 0; i < objectBody.length; i += 1) {
+    const char = objectBody[i]
+
+    if (quote) {
+      if (escaping) {
+        escaping = false
+      } else if (char === '\\') {
+        escaping = true
+      } else if (char === quote) {
+        quote = null
+      }
+      continue
+    }
+
+    if (char === '"' || char === "'" || char === '`') {
+      quote = char
+      continue
+    }
+
+    if (char === '(' || char === '[' || char === '{') {
+      depth += 1
+      continue
+    }
+
+    if (char === ')' || char === ']' || char === '}') {
+      depth = Math.max(0, depth - 1)
+      continue
+    }
+
+    if (depth !== 0) continue
+    if (objectBody.slice(i, i + propertyName.length) !== propertyName) continue
+    if (isIdentifierChar(objectBody[i - 1]) || isIdentifierChar(objectBody[i + propertyName.length])) continue
+
+    let colonIndex = i + propertyName.length
+    while (/\s/.test(objectBody[colonIndex] || '')) colonIndex += 1
+    if (objectBody[colonIndex] !== ':') continue
+
+    let valueIndex = colonIndex + 1
+    while (/\s/.test(objectBody[valueIndex] || '')) valueIndex += 1
+
+    const valueStart = valueIndex
+    const valueStack = []
+    let valueQuote = null
+    let valueEscaping = false
+
+    for (; valueIndex < objectBody.length; valueIndex += 1) {
+      const valueChar = objectBody[valueIndex]
+
+      if (valueQuote) {
+        if (valueEscaping) {
+          valueEscaping = false
+        } else if (valueChar === '\\') {
+          valueEscaping = true
+        } else if (valueChar === valueQuote) {
+          valueQuote = null
+        }
+        continue
+      }
+
+      if (valueChar === '"' || valueChar === "'" || valueChar === '`') {
+        valueQuote = valueChar
+        continue
+      }
+
+      if (valueChar === '(' || valueChar === '[' || valueChar === '{') {
+        valueStack.push(valueChar)
+        continue
+      }
+
+      if (valueChar === ')' || valueChar === ']' || valueChar === '}') {
+        if (valueStack.length === 0) break
+        valueStack.pop()
+        continue
+      }
+
+      if (valueStack.length === 0 && (valueChar === ',' || valueChar === '\n')) break
+    }
+
+    return objectBody.slice(valueStart, valueIndex).trim()
   }
 
   return null
 }
 
 function extractRouteObjectStringProperty(objectBody, propertyName) {
-  const expression = readObjectPropertyExpression(objectBody, propertyName)
-  const stringMatch = expression.match(/^['"]([^'"]+)['"]$/)
-  return stringMatch ? stringMatch[1] : ''
+  const expression = readDirectObjectPropertyExpression(objectBody, propertyName)
+  if (expression === null) return null
+  const stringMatch = expression.match(/^['"]([^'"]*)['"]$/)
+  return stringMatch ? stringMatch[1] : null
+}
+
+function resolveVueRoutePath(routeObjects) {
+  let resolvedPath = '/'
+
+  for (const routeObject of routeObjects) {
+    const routePath = extractRouteObjectStringProperty(routeObject.body, 'path')
+    if (routePath === null) continue
+
+    if (routePath === '') {
+      continue
+    } else if (routePath.startsWith('/')) {
+      resolvedPath = normalizeRoutePath(routePath)
+    } else {
+      resolvedPath = joinRouteParts(resolvedPath, routePath)
+    }
+  }
+
+  return resolvedPath
 }
 
 function extractVueRouterPagesFromSource(source, sourcePath = '') {
@@ -388,15 +495,16 @@ function extractVueRouterPagesFromSource(source, sourcePath = '') {
   const componentPattern = /component\s*:\s*\(\)\s*=>\s*import\(\s*['"]([^'"]+)['"]\s*\)/g
   let match
   while ((match = componentPattern.exec(clean)) !== null) {
-    const routeObject = findEnclosingObjectRange(clean, match.index)
+    const routeObjects = findEnclosingObjectRanges(clean, match.index)
+    const routeObject = routeObjects.at(-1)
     if (!routeObject) continue
 
     const routePath = extractRouteObjectStringProperty(routeObject.body, 'path')
     const routeName = extractRouteObjectStringProperty(routeObject.body, 'name')
-    if (!routePath || !routeName) continue
+    if (routePath === null || !routeName) continue
 
     const page = {
-      path: normalizeRoutePath(routePath),
+      path: resolveVueRoutePath(routeObjects),
       name: routeName,
       component: match[1],
       source: sourcePath,

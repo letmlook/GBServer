@@ -294,3 +294,53 @@ test('extractVueRouterPagesFromSource associates nested lazy components with the
     'Device /device @/views/device/index',
   ])
 })
+
+test('extractVueRouterPagesFromSource resolves empty child route path to parent path', () => {
+  const source = `
+    export const asyncRoutes = [
+      {
+        path: '/live',
+        name: 'LiveParent',
+        component: Layout,
+        children: [
+          {
+            path: '',
+            name: 'Live',
+            component: () => import('@/views/live/index')
+          }
+        ]
+      }
+    ]
+  `
+
+  const pages = audit.extractVueRouterPagesFromSource(source, 'web/src/router/index.js')
+
+  assert.deepEqual(pages.map((page) => `${page.name} ${page.path} ${page.component}`), [
+    'Live /live @/views/live/index',
+  ])
+})
+
+test('extractVueRouterPagesFromSource joins relative child route path with parent path', () => {
+  const source = `
+    export const asyncRoutes = [
+      {
+        path: '/commonChannel',
+        name: 'CommonChannel',
+        component: Layout,
+        children: [
+          {
+            path: 'region',
+            name: 'Region',
+            component: () => import('@/views/region/index')
+          }
+        ]
+      }
+    ]
+  `
+
+  const pages = audit.extractVueRouterPagesFromSource(source, 'web/src/router/index.js')
+
+  assert.deepEqual(pages.map((page) => `${page.name} ${page.path} ${page.component}`), [
+    'Region /commonChannel/region @/views/region/index',
+  ])
+})
