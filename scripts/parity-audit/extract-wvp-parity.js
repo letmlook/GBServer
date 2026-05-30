@@ -46,7 +46,7 @@ function findBalancedRange(text, startIndex, openChar, closeChar) {
       continue
     }
 
-    if (char === '"' || char === "'") {
+    if (char === '"' || char === "'" || char === '`') {
       quote = char
       continue
     }
@@ -261,21 +261,74 @@ function normalizeFrontendUrlExpression(expression) {
   return normalizeRoutePath(collapsed)
 }
 
+function readObjectPropertyExpression(objectBody, propertyName) {
+  const propertyPattern = new RegExp(`\\b${propertyName}\\s*:`)
+  const propertyMatch = propertyPattern.exec(objectBody)
+  if (!propertyMatch) return ''
+
+  let index = propertyMatch.index + propertyMatch[0].length
+  while (/\s/.test(objectBody[index] || '')) index += 1
+
+  const start = index
+  const stack = []
+  let quote = null
+  let escaping = false
+
+  for (; index < objectBody.length; index += 1) {
+    const char = objectBody[index]
+
+    if (quote) {
+      if (escaping) {
+        escaping = false
+      } else if (char === '\\') {
+        escaping = true
+      } else if (char === quote) {
+        quote = null
+      }
+      continue
+    }
+
+    if (char === '"' || char === "'" || char === '`') {
+      quote = char
+      continue
+    }
+
+    if (char === '(' || char === '[' || char === '{') {
+      stack.push(char)
+      continue
+    }
+
+    if (char === ')' || char === ']' || char === '}') {
+      if (stack.length === 0) break
+      stack.pop()
+      continue
+    }
+
+    if (stack.length === 0 && (char === ',' || char === '\n')) break
+  }
+
+  return objectBody.slice(start, index).trim()
+}
+
 function extractFrontendApiCallsFromSource(source, sourcePath = '') {
   const clean = stripComments(source)
   const calls = []
-  const requestPattern = /request\s*\(\s*\{([\s\S]*?)\}\s*\)/g
+  const requestPattern = /request\s*\(\s*\{/g
   let requestMatch
   while ((requestMatch = requestPattern.exec(clean)) !== null) {
-    const objectBody = requestMatch[1]
-    const urlMatch = objectBody.match(/\burl\s*:\s*([^,\n}]+)/)
-    if (!urlMatch) continue
+    const openBraceIndex = clean.indexOf('{', requestMatch.index)
+    const objectRange = findBalancedRange(clean, openBraceIndex, '{', '}')
+    if (!objectRange) continue
 
-    const methodMatch = objectBody.match(/\bmethod\s*:\s*['"]([A-Za-z]+)['"]/)
+    requestPattern.lastIndex = objectRange.end
+    const urlExpression = readObjectPropertyExpression(objectRange.body, 'url')
+    if (!urlExpression) continue
+
+    const methodMatch = objectRange.body.match(/\bmethod\s*:\s*['"]([A-Za-z]+)['"]/)
     const method = methodMatch ? methodMatch[1].toUpperCase() : 'GET'
     calls.push({
       method,
-      path: normalizeFrontendUrlExpression(urlMatch[1]),
+      path: normalizeFrontendUrlExpression(urlExpression),
       source: sourcePath,
       kind: 'frontend-api',
     })
@@ -283,19 +336,76 @@ function extractFrontendApiCallsFromSource(source, sourcePath = '') {
   return calls.sort((a, b) => `${a.path} ${a.method}`.localeCompare(`${b.path} ${b.method}`))
 }
 
+function findEnclosingObjectRange(text, index) {
+  const stack = []
+  let quote = null
+  let escaping = false
+
+  for (let i = 0; i < index; i += 1) {
+    const char = text[i]
+
+    if (quote) {
+      if (escaping) {
+        escaping = false
+      } else if (char === '\\') {
+        escaping = true
+      } else if (char === quote) {
+        quote = null
+      }
+      continue
+    }
+
+    if (char === '"' || char === "'" || char === '`') {
+      quote = char
+      continue
+    }
+
+    if (char === '{') {
+      stack.push(i)
+    } else if (char === '}') {
+      stack.pop()
+    }
+  }
+
+  for (let i = stack.length - 1; i >= 0; i -= 1) {
+    const range = findBalancedRange(text, stack[i], '{', '}')
+    if (range && range.end >= index) return range
+  }
+
+  return null
+}
+
+function extractRouteObjectStringProperty(objectBody, propertyName) {
+  const expression = readObjectPropertyExpression(objectBody, propertyName)
+  const stringMatch = expression.match(/^['"]([^'"]+)['"]$/)
+  return stringMatch ? stringMatch[1] : ''
+}
+
 function extractVueRouterPagesFromSource(source, sourcePath = '') {
   const clean = stripComments(source)
   const pages = []
-  const pagePattern = /path\s*:\s*['"]([^'"]+)['"][\s\S]{0,500}?name\s*:\s*['"]([^'"]+)['"][\s\S]{0,500}?component\s*:\s*\(\)\s*=>\s*import\(\s*['"]([^'"]+)['"]\s*\)/g
+  const seen = new Set()
+  const componentPattern = /component\s*:\s*\(\)\s*=>\s*import\(\s*['"]([^'"]+)['"]\s*\)/g
   let match
-  while ((match = pagePattern.exec(clean)) !== null) {
-    pages.push({
-      path: normalizeRoutePath(match[1]),
-      name: match[2],
-      component: match[3],
+  while ((match = componentPattern.exec(clean)) !== null) {
+    const routeObject = findEnclosingObjectRange(clean, match.index)
+    if (!routeObject) continue
+
+    const routePath = extractRouteObjectStringProperty(routeObject.body, 'path')
+    const routeName = extractRouteObjectStringProperty(routeObject.body, 'name')
+    if (!routePath || !routeName) continue
+
+    const page = {
+      path: normalizeRoutePath(routePath),
+      name: routeName,
+      component: match[1],
       source: sourcePath,
       kind: 'frontend-page',
-    })
+    }
+    const key = `${page.path}\0${page.name}\0${page.component}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    pages.push(page)
   }
   return pages.sort((a, b) => `${a.path} ${a.name}`.localeCompare(`${b.path} ${b.name}`))
 }

@@ -227,6 +227,23 @@ test('extractFrontendApiCallsFromSource reads request URL and method from Vue AP
   ])
 })
 
+test('extractFrontendApiCallsFromSource preserves template literal dynamic URL segments', () => {
+  const source = [
+    'export function setSpeed(deviceId, channelDeviceId) {',
+    '  return request({',
+    '    url: `/api/front-end/scan/set/speed/${deviceId}/${channelDeviceId}`,',
+    '    method: \'get\'',
+    '  })',
+    '}',
+  ].join('\n')
+
+  const calls = audit.extractFrontendApiCallsFromSource(source, 'web/src/api/front-end.js')
+
+  assert.deepEqual(calls.map((call) => `${call.method} ${call.path}`), [
+    'GET /api/front-end/scan/set/speed/{dynamic}/{dynamic}',
+  ])
+})
+
 test('extractVueRouterPagesFromSource reads route path, name, and component', () => {
   const source = `
     export const constantRoutes = [
@@ -250,5 +267,30 @@ test('extractVueRouterPagesFromSource reads route path, name, and component', ()
   assert.deepEqual(pages.map((page) => `${page.name} ${page.path} ${page.component}`), [
     'Device /device @/views/device/index',
     'DeviceRecord /device/record/{deviceId}/{channelDeviceId} @/views/device/channel/record',
+  ])
+})
+
+test('extractVueRouterPagesFromSource associates nested lazy components with their own route object', () => {
+  const source = `
+    export const asyncRoutes = [
+      {
+        path: '/device',
+        name: '设备接入',
+        component: Layout,
+        children: [
+          {
+            path: '/device',
+            name: 'Device',
+            component: () => import('@/views/device/index')
+          }
+        ]
+      }
+    ]
+  `
+
+  const pages = audit.extractVueRouterPagesFromSource(source, 'web/src/router/index.js')
+
+  assert.deepEqual(pages.map((page) => `${page.name} ${page.path} ${page.component}`), [
+    'Device /device @/views/device/index',
   ])
 })
