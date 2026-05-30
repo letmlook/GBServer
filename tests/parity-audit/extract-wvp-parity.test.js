@@ -11,6 +11,8 @@ test('module exports parser and formatter functions', () => {
   assert.equal(typeof audit.extractVueRouterPagesFromSource, 'function')
   assert.equal(typeof audit.compareRouteSets, 'function')
   assert.equal(typeof audit.buildMarkdownReport, 'function')
+  assert.equal(typeof audit.walkFiles, 'function')
+  assert.equal(typeof audit.parseArgs, 'function')
 })
 
 test('normalizeRoutePath converts Axum and Spring path params to a common shape', () => {
