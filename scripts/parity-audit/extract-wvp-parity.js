@@ -586,27 +586,35 @@ function compareRouteSets(referenceRoutes, targetRoutes) {
   const aligned = []
   const missing = []
   const methodMismatch = []
+  const mismatchPaths = new Set()
 
   for (const reference of referenceRoutes) {
     const canonical = canonicalRoutePath(reference.path)
     const key = routeKey(reference)
-    if (targetByKey.has(key)) {
+    let target = targetByKey.get(key)
+    if (!target && reference.method.toUpperCase() === 'ANY') {
+      target = targetRoutes.find((route) => canonicalRoutePath(route.path) === canonical)
+    }
+    if (target) {
       aligned.push({
         method: reference.method.toUpperCase(),
         path: canonical,
         reference,
-        target: targetByKey.get(key),
+        target,
       })
       continue
     }
 
     if (targetMethodsByPath.has(canonical)) {
-      methodMismatch.push({
-        path: canonical,
-        referenceMethods: [...referenceMethodsByPath.get(canonical)].sort(),
-        targetMethods: [...targetMethodsByPath.get(canonical)].sort(),
-        reference,
-      })
+      if (!mismatchPaths.has(canonical)) {
+        mismatchPaths.add(canonical)
+        methodMismatch.push({
+          path: canonical,
+          referenceMethods: [...referenceMethodsByPath.get(canonical)].sort(),
+          targetMethods: [...targetMethodsByPath.get(canonical)].sort(),
+          reference,
+        })
+      }
       continue
     }
 
@@ -618,7 +626,9 @@ function compareRouteSets(referenceRoutes, targetRoutes) {
   for (const target of targetRoutes) {
     const key = routeKey(target)
     const canonical = canonicalRoutePath(target.path)
-    if (!referenceByKey.has(key) && (!referenceMethodsByPath.has(canonical) || alignedPaths.has(canonical))) {
+    const referenceMethods = referenceMethodsByPath.get(canonical)
+    const referenceAcceptsAny = referenceMethods?.has('ANY')
+    if (!referenceAcceptsAny && !referenceByKey.has(key) && (!referenceMethodsByPath.has(canonical) || alignedPaths.has(canonical))) {
       extra.push({ ...target, path: canonical })
     }
   }

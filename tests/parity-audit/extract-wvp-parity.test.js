@@ -417,6 +417,41 @@ test('compareRouteSets classifies aligned, missing, extra, and method mismatch r
 })
 
 
+test('compareRouteSets treats reference ANY as wildcard for concrete target methods', () => {
+  const reference = [
+    { method: 'ANY', path: '/api/user/changePushKey', source: 'UserController.java' },
+  ]
+  const target = [
+    { method: 'GET', path: '/api/user/changePushKey', source: 'src/router.rs' },
+    { method: 'POST', path: '/api/user/changePushKey', source: 'src/router.rs' },
+  ]
+
+  const result = audit.compareRouteSets(reference, target)
+
+  assert.deepEqual(result.aligned.map((item) => `${item.method} ${item.path}`), ['ANY /api/user/changePushKey'])
+  assert.deepEqual(result.missing, [])
+  assert.deepEqual(result.extra, [])
+  assert.deepEqual(result.methodMismatch, [])
+})
+
+test('compareRouteSets emits one method mismatch per path', () => {
+  const reference = [
+    { method: 'GET', path: '/api/user/profile', source: 'UserController.java' },
+    { method: 'POST', path: '/api/user/profile', source: 'UserController.java' },
+    { method: 'PUT', path: '/api/user/profile', source: 'UserController.java' },
+  ]
+  const target = [
+    { method: 'DELETE', path: '/api/user/profile', source: 'src/router.rs' },
+  ]
+
+  const result = audit.compareRouteSets(reference, target)
+
+  assert.equal(result.methodMismatch.length, 1)
+  assert.deepEqual(result.methodMismatch.map((item) => item.path), ['/api/user/profile'])
+  assert.deepEqual(result.methodMismatch[0].referenceMethods, ['GET', 'POST', 'PUT'])
+  assert.deepEqual(result.methodMismatch[0].targetMethods, ['DELETE'])
+})
+
 test('compareRouteSets reports extra target methods on paths with aligned methods', () => {
   const reference = [
     { method: 'GET', path: '/api/user/delete', source: 'UserController.java' },
