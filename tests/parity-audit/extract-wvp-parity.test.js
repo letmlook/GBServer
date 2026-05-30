@@ -416,3 +416,19 @@ test('compareRouteSets classifies aligned, missing, extra, and method mismatch r
   assert.deepEqual(result.methodMismatch.map((item) => item.path), ['/api/user/delete'])
 })
 
+
+test('compareRouteSets reports extra target methods on paths with aligned methods', () => {
+  const reference = [
+    { method: 'GET', path: '/api/user/delete', source: 'UserController.java' },
+  ]
+  const target = [
+    { method: 'GET', path: '/api/user/delete', source: 'src/router.rs' },
+    { method: 'DELETE', path: '/api/user/delete', source: 'src/router.rs' },
+  ]
+
+  const result = audit.compareRouteSets(reference, target)
+
+  assert.deepEqual(result.aligned.map((item) => `${item.method} ${item.path}`), ['GET /api/user/delete'])
+  assert.deepEqual(result.extra.map((item) => `${item.method} ${item.path}`), ['DELETE /api/user/delete'])
+  assert.deepEqual(result.methodMismatch, [])
+})

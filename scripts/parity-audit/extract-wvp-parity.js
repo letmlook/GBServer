@@ -613,11 +613,12 @@ function compareRouteSets(referenceRoutes, targetRoutes) {
     missing.push({ ...reference, path: canonicalRoutePath(reference.path) })
   }
 
+  const alignedPaths = new Set(aligned.map((item) => item.path))
   const extra = []
   for (const target of targetRoutes) {
     const key = routeKey(target)
     const canonical = canonicalRoutePath(target.path)
-    if (!referenceByKey.has(key) && !referenceMethodsByPath.has(canonical)) {
+    if (!referenceByKey.has(key) && (!referenceMethodsByPath.has(canonical) || alignedPaths.has(canonical))) {
       extra.push({ ...target, path: canonical })
     }
   }
