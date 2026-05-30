@@ -43,9 +43,9 @@ test('extractJavaControllerRoutesFromSource reads class and method mappings', ()
   const routes = audit.extractJavaControllerRoutesFromSource(source, 'PlayController.java')
 
   assert.deepEqual(routes.map((route) => ({ method: route.method, path: route.path, source: route.source })), [
+    { method: 'GET', path: '/api/play/ssrc', source: 'PlayController.java' },
     { method: 'GET', path: '/api/play/start/{deviceId}/{channelId}', source: 'PlayController.java' },
     { method: 'POST', path: '/api/play/stop/{deviceId}/{channelId}', source: 'PlayController.java' },
-    { method: 'GET', path: '/api/play/ssrc', source: 'PlayController.java' },
   ])
 })
 

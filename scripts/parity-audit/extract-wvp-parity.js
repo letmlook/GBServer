@@ -83,7 +83,12 @@ function extractJavaControllerRoutesFromSource(source, sourcePath = '') {
       })
     }
   }
-  return routes
+  return routes.sort((a, b) => (
+    a.path.localeCompare(b.path)
+    || a.method.localeCompare(b.method)
+    || a.source.localeCompare(b.source)
+    || a.kind.localeCompare(b.kind)
+  ))
 }
 
 function extractRustRouterRoutesFromSource() {
