@@ -641,8 +641,102 @@ function compareRouteSets(referenceRoutes, targetRoutes) {
   }
 }
 
+function mdEscape(value) {
+  return String(value ?? '').replace(/\|/g, '\\|')
+}
+
+function summarizeComparison(title, comparison) {
+  const lines = []
+  lines.push(`### ${title}`)
+  lines.push('')
+  lines.push('| Status | Count |')
+  lines.push('|---|---:|')
+  lines.push(`| Aligned | ${comparison.aligned.length} |`)
+  lines.push(`| Missing | ${comparison.missing.length} |`)
+  lines.push(`| Method mismatch | ${comparison.methodMismatch.length} |`)
+  lines.push(`| Extra target entries | ${comparison.extra.length} |`)
+  lines.push('')
+
+  if (comparison.missing.length > 0) {
+    lines.push('#### Missing reference entries')
+    lines.push('')
+    for (const item of comparison.missing.slice(0, 80)) {
+      lines.push(`- ${mdEscape(item.method)} \`${mdEscape(item.path)}\` (${mdEscape(item.source)})`)
+    }
+    if (comparison.missing.length > 80) lines.push(`- ... ${comparison.missing.length - 80} more`)
+    lines.push('')
+    lines.push('| Method | Path | Source |')
+    lines.push('|---|---|---|')
+    for (const item of comparison.missing.slice(0, 80)) {
+      lines.push(`| ${mdEscape(item.method)} | \`${mdEscape(item.path)}\` | ${mdEscape(item.source)} |`)
+    }
+    if (comparison.missing.length > 80) lines.push(`| ... | ${comparison.missing.length - 80} more | ... |`)
+    lines.push('')
+  }
+
+  if (comparison.methodMismatch.length > 0) {
+    lines.push('#### Method mismatches')
+    lines.push('')
+    lines.push('| Path | Reference methods | Target methods |')
+    lines.push('|---|---|---|')
+    for (const item of comparison.methodMismatch.slice(0, 80)) {
+      lines.push(`| \`${mdEscape(item.path)}\` | ${mdEscape(item.referenceMethods.join(', '))} | ${mdEscape(item.targetMethods.join(', '))} |`)
+    }
+    if (comparison.methodMismatch.length > 80) lines.push(`| ... | ${comparison.methodMismatch.length - 80} more | ... |`)
+    lines.push('')
+  }
+
+  return lines.join('\n')
+}
+
 function buildMarkdownReport(audit) {
-  return `# WVP-Pro Phase 0 Parity Audit\n\nBaseline: ${audit.baseline?.commit || 'unknown'}\n`
+  const counts = audit.counts || {}
+  const lines = []
+  lines.push('# WVP-Pro Phase 0 Parity Audit')
+  lines.push('')
+  lines.push(`Generated at: ${audit.generatedAt || 'unknown'}`)
+  lines.push(`Baseline commit: \`${audit.baseline?.commit || 'unknown'}\``)
+  lines.push(`Upstream repository path: \`${audit.baseline?.upstream || 'unknown'}\``)
+  lines.push(`Local repository path: \`${audit.baseline?.local || 'unknown'}\``)
+  lines.push('')
+  lines.push('## Scope')
+  lines.push('')
+  lines.push('This report compares the official WVP-Pro Java backend controllers and the official WVP-Pro frontend from the same commit against the Rust backend router and the local frontend in this repository.')
+  lines.push('')
+  lines.push('## Extracted counts')
+  lines.push('')
+  lines.push(`Java controller routes: ${counts.javaRoutes || 0}`)
+  lines.push(`Rust Axum routes: ${counts.rustRoutes || 0}`)
+  lines.push(`Upstream frontend API calls: ${counts.upstreamFrontendApi || 0}`)
+  lines.push(`Local frontend API calls: ${counts.localFrontendApi || 0}`)
+  lines.push(`Upstream frontend pages: ${counts.upstreamPages || 0}`)
+  lines.push(`Local frontend pages: ${counts.localPages || 0}`)
+  lines.push('')
+  lines.push('| Source | Count |')
+  lines.push('|---|---:|')
+  lines.push(`| Java controller routes | ${counts.javaRoutes || 0} |`)
+  lines.push(`| Rust Axum routes | ${counts.rustRoutes || 0} |`)
+  lines.push(`| Upstream frontend API calls | ${counts.upstreamFrontendApi || 0} |`)
+  lines.push(`| Local frontend API calls | ${counts.localFrontendApi || 0} |`)
+  lines.push(`| Upstream frontend pages | ${counts.upstreamPages || 0} |`)
+  lines.push(`| Local frontend pages | ${counts.localPages || 0} |`)
+  lines.push('')
+  lines.push('## Comparisons')
+  lines.push('')
+  lines.push(summarizeComparison('Backend Java controllers → Rust router', audit.comparisons.backendRoutes))
+  lines.push(summarizeComparison('Official frontend API → Rust router', audit.comparisons.upstreamFrontendToRust))
+  lines.push(summarizeComparison('Official frontend API → local frontend API', audit.comparisons.upstreamFrontendToLocalFrontend))
+  lines.push(summarizeComparison('Official frontend pages → local frontend pages', audit.comparisons.upstreamPagesToLocalPages))
+  lines.push('## Status policy')
+  lines.push('')
+  lines.push('- `aligned`: same canonical path and method/page exists.')
+  lines.push('- `missing`: reference entry is absent from the target.')
+  lines.push('- `method mismatch`: canonical path exists but HTTP methods differ.')
+  lines.push('- `extra target entries`: target has entries not found in the reference; these may be extensions or obsolete local APIs.')
+  lines.push('')
+  lines.push('This report is a route and frontend-surface audit. Protocol-production status must be assigned in follow-up Phase 1+ implementation plans and tests.')
+  lines.push('')
+  return lines.join('\n')
 }
 
 function walkFiles(rootDir, predicate) {
@@ -800,6 +894,8 @@ module.exports = {
   routeKey,
   methodsByCanonicalPath,
   compareRouteSets,
+  mdEscape,
+  summarizeComparison,
   buildMarkdownReport,
   walkFiles,
   relativeSource,

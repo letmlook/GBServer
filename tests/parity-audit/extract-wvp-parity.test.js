@@ -519,3 +519,27 @@ test('buildAudit scans upstream backend/frontend and local backend/frontend tree
   assert.equal(result.comparisons.backendRoutes.aligned.length, 1)
   assert.equal(result.comparisons.upstreamFrontendToRust.aligned.length, 1)
 })
+
+test('buildMarkdownReport includes baseline, counts, and top gaps', () => {
+  const markdown = audit.buildMarkdownReport({
+    baseline: { upstream: '/tmp/wvp-GB28181-pro', local: '/repo', commit: 'b760458' },
+    generatedAt: '2026-05-30T00:00:00.000Z',
+    counts: { javaRoutes: 2, rustRoutes: 1, upstreamFrontendApi: 1, localFrontendApi: 1, upstreamPages: 1, localPages: 1 },
+    comparisons: {
+      backendRoutes: {
+        aligned: [{ method: 'GET', path: '/api/play/start/{param}/{param}' }],
+        missing: [{ method: 'POST', path: '/api/platform/add', source: 'PlatformController.java' }],
+        extra: [],
+        methodMismatch: [],
+      },
+      upstreamFrontendToRust: { aligned: [], missing: [], extra: [], methodMismatch: [] },
+      upstreamFrontendToLocalFrontend: { aligned: [], missing: [], extra: [], methodMismatch: [] },
+      upstreamPagesToLocalPages: { aligned: [], missing: [], extra: [], methodMismatch: [] },
+    },
+  })
+
+  assert.match(markdown, /# WVP-Pro Phase 0 Parity Audit/)
+  assert.match(markdown, /Baseline commit: `b760458`/)
+  assert.match(markdown, /Java controller routes: 2/)
+  assert.match(markdown, /POST `\/api\/platform\/add`/)
+})
