@@ -5,68 +5,85 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Build & Test Commands
 
 ```bash
-# Backend (default: PostgreSQL)
+# Backend (default database feature is PostgreSQL)
+cargo build
 cargo build --release
 cargo run
+cargo run --release
 cargo test
+cargo fmt
+cargo clippy --all-targets --all-features
 
-# Backend with MySQL
+# Run focused Rust tests
+cargo test <test_name>
+cargo test --lib <test_name>
+cargo test --test integration_test
+cargo test --test jt1078_integration
+
+# Backend with MySQL instead of PostgreSQL
 cargo build --release --no-default-features --features mysql
+cargo test --no-default-features --features mysql
 
-# Frontend
-cd web && npm install && npm run build:prod     # production build
-cd web && npm run dev                           # dev server (proxies to :18080)
+# Local services used by the default config
+docker compose up -d          # PostgreSQL + Redis
+docker compose ps
+docker compose down           # keeps volumes
 
-# Integration test (requires DB + Redis)
-TEST_DATABASE_URL=postgres://... TEST_REDIS_URL=redis://... cargo test --test integration_test
+# API compatibility smoke test; requires the backend and DB to be running
+BASE_URL=http://localhost:18080 node scripts/api-integration-test.js
 ```
 
-Configuration via `config/application.yaml` or env vars (`WVP__SECTION__KEY`, note double underscore separator). Start database with `docker compose up -d` (PostgreSQL + Redis).
+```bash
+# Frontend (Vue 2 + Element UI, under web/)
+cd web && npm install
+cd web && npm run dev          # dev server on :9528, proxies /dev-api to :18080
+cd web && npm run build:prod   # production output to web/dist
+cd web && npm run lint
+cd web && npm run test:unit
+cd web && npm run test:ci
+```
+
+PowerShell helpers are available on Windows from the repository root: `scripts/build.ps1` builds frontend + backend, `scripts/build-and-run.ps1` builds then runs, and `scripts/run.ps1` runs an existing release binary.
+
+Configuration loads from `config/application.yaml` plus environment overrides using the `WVP__SECTION__KEY` form (double underscore separator). The app must be run from the repository root so config files and `web/dist` resolve correctly. The README documents the default admin account (`admin` / `admin`) and first-time SQL import commands if schema auto-init is not sufficient.
 
 ## Architecture
 
+This repository is a Rust rewrite of the WVP GB28181 backend with the original-style Vue 2 frontend in `web/`. The backend uses Axum/Tower, SQLx, JWT/API-key auth, GB28181 SIP signaling, ZLMediaKit integration, optional Redis caching, platform cascade registration, record scheduling, and JT1078 vehicle terminal support.
+
 ### Startup flow (`src/lib.rs` → `run()`)
 
-1. Create DB pool, init missing tables (auto-runs `database/init-postgresql-2.7.4.sql` or the MySQL variant via `include_str!`)
-2. Create SIP server (UDP + optional TCP), wire it with ZLM client and WebSocket state
-3. Initialize ZLM clients (one per configured media server), start health checker background loop
-4. Spawn 4 background tasks: SIP server event loop, cascade registrar (platform federation), record plan scheduler, JT1078 server
-5. Start Axum HTTP server on configured port
+1. Load config, create a SQLx pool, and ensure required tables. If the core `wvp_device` table is missing, startup attempts to initialize the WVP schema from `database/init-postgresql-2.7.4.sql` or `database/init-mysql-2.7.4.sql` via `include_str!`.
+2. Create the SIP server when `sip.enabled` is true, wiring it to DB state and WebSocket state.
+3. Initialize configured ZLM clients, sync media-server rows into the DB, and start the ZLM health-check loop.
+4. Initialize optional Redis, playback/download managers, and shared `AppState`.
+5. Spawn background loops for SIP routing, cascade platform registration, record-plan scheduling, and JT1078.
+6. Build the Axum router and serve HTTP on `server.port` (default README examples use `18080`).
 
-### Layered architecture
+### Main backend layers
 
 ```
-handlers/ ──→ db/ ──→ SQLx (Postgres/MySQL)
-    │            │
-    ├──→ sip/   (GB28181 SIP signaling — UDP+TCP transport, SIP core parser, GB28181 application layer)
-    ├──→ zlm/   (ZLMediaKit HTTP API client, webhook receiver, health checker)
-    └──→ jt1078/ (JT808/JT1078 vehicle terminal protocol — UDP server, frame parsing, session management)
+handlers/ ──→ db/ ──→ SQLx (PostgreSQL by default, MySQL behind feature flag)
+    │
+    ├──→ sip/      GB28181 SIP transport, parser/core, device registry, INVITE/catalog/PTZ/SDP logic
+    ├──→ zlm/      ZLMediaKit HTTP client, hook receiver, health checker, address building
+    ├──→ jt1078/   JT808/JT1078 UDP server, frame parsing, sessions, retransmit tracking
+    ├──→ cascade/  upstream platform SIP REGISTER maintenance
+    └──→ scheduler/ record-plan background scheduling
 ```
 
-- **`handlers/`**: Thin HTTP handlers; extract params, call `db::` functions, wrap in `WVPResult<T>`. Stub handlers (`handlers/stub.rs`, `handlers/device_stub.rs`) return empty data — placeholders for API compatibility with the Java frontend.
-- **`db/`**: One module per DB table. Functions are free functions taking `&Pool`. Structs derive `sqlx::FromRow`. SQL uses `$1` placeholders (Postgres default); MySQL variants gated behind `#[cfg(feature = "mysql")]`.
-- **`sip/core/`**: Low-level SIP — message model, parser (text-based SIP grammar), transaction state machine, dialog tracking, method/status enums.
-- **`sip/gb28181/`**: GB28181 application logic — device registry, catalog subscription, invite sessions (live/playback/talk), PTZ control, SDP builder, SSRC management, NAT traversal, stream reconnect.
-- **`sip/transport/`**: UDP socket recv/send loop + TCP listener/connection manager. Messages are dispatched to `SipServer` for routing.
-- **`zlm/`**: HTTP client for ZLMediaKit APIs (add stream proxy, close streams, get media info), webhook handler for ZLM callbacks (stream change, record status), health checker with DB sync.
-- **`cascade/`**: Platform-to-platform SIP registration — loads upstream platforms from DB and maintains periodic SIP REGISTER cycles.
+- `router.rs` is the central route map. Public routes include login, health, metrics, ZLM hooks, and selected frontend/static routes; most `/api/...` routes are wrapped by `auth_middleware`.
+- `handlers/` should stay thin: extract Axum params/state, call `db::` or protocol/service modules, and return `WVPResult<T>` or `AppError`. Several `stub.rs` / `device_stub.rs` endpoints intentionally return empty compatibility responses for frontend/API parity.
+- `db/` uses one module per table/domain. Functions are free functions over `&db::Pool`; structs typically derive `sqlx::FromRow`. PostgreSQL is the default feature; MySQL-specific SQL is gated with `#[cfg(feature = "mysql")]` where needed.
+- `sip/core/` contains low-level SIP message/header/method/status parsing and transaction/dialog primitives. `sip/transport/` owns UDP/TCP networking. `sip/gb28181/` contains application-level device registration, catalog subscription, live/playback/talk INVITE sessions, PTZ, SDP, SSRC, NAT handling, and reconnect behavior.
+- `zlm/` wraps ZLMediaKit HTTP APIs and webhook handling. `AppState::get_zlm_client_auto()` selects the least-loaded node, preferring Redis stream counters and falling back to live ZLM API counts.
+- `jt1078/` handles vehicle protocol networking and session state. Config supports timeout/retransmit settings and optional hook notification for missing sequence ranges.
+- `web/` is a Vue CLI 4 / Vue 2 app. In development, `web/vue.config.js` proxies `/dev-api` and `/static/snap` to the backend at `127.0.0.1:18080`; production assets are served from `web/dist` when `static_dir` is configured.
 
-### Request/Response Pattern
+### Cross-cutting conventions
 
-All API responses use `WVPResult<T>` (`{ code: 0, msg: "成功", data: ... }`). Handlers return `Result<Json<WVPResult<T>>, AppError>`. `AppError` implements `IntoResponse` — the `?` operator automatically converts `sqlx::Error` and business errors into proper JSON error responses. Error codes mirror the Java WVP conventions (0 = success, 100 = failure, 400 = bad request, 401 = unauthorized, etc.).
+All normal API responses use `WVPResult<T>` with Java WVP-compatible shape `{ code: 0, msg: "成功", data: ... }`. Handlers generally return `Result<Json<WVPResult<T>>, AppError>` so `?` converts DB/business failures into JSON error responses.
 
-### Authentication
+Authentication accepts JWT via `access-token` or `Authorization: Bearer ...`, then falls back to API keys via `X-API-Key` or `apiKey`. Authenticated requests write audit logs asynchronously. Public route exclusions and the protected ZLM proxy are configured in `router.rs` / `auth.rs`.
 
-JWT (HS256, `access-token` header or `Authorization: Bearer`) and API Key (X-API-Key header or `apiKey` query param). The `auth_middleware` tries JWT first, falls back to API Key lookup in `wvp_user_api_key` table. Audit logs are written asynchronously (`tokio::spawn`) on every authenticated request. Public routes (login, ZLM webhook, health check, metrics) skip auth. The ZLM proxy route (`/zlm/:media_server_id/*path`) requires auth.
-
-### ZLM Node Selection
-
-`AppState::get_zlm_client_auto()` selects the least-loaded ZLM node: tries Redis stream counts first, falls back to querying each ZLM's active stream count via HTTP API. Direct ID or "auto" keyword are supported.
-
-### SIP SDP Handling
-
-SDP is built per session type: `play_sdp()` (live), `playback_sdp()` (history), `download_sdp()` (record download), `talk_sdp()` (voice), `broadcast_sdp()` (broadcast). NAT handling (`nat_helper.rs`) swaps SDP IPs based on `sdp_ip`/`stream_ip` config for NAT traversal.
-
-### Database Schema Init
-
-On startup, if `wvp_device` table is missing, the full SQL init script is executed. Each statement is split by semicolons and run individually (only DDL/DML statements — comment lines are skipped). Additional tables like `position_history` and `audit_log` are ensured via `CREATE TABLE IF NOT EXISTS`.
+SDP generation is split by use case (`play_sdp`, `playback_sdp`, `download_sdp`, `talk_sdp`, `broadcast_sdp`). NAT address rewriting is handled in `sip/gb28181/nat_helper.rs` based on configured SDP/stream IPs.
