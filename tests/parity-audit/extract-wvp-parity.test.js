@@ -244,6 +244,57 @@ test('extractFrontendApiCallsFromSource preserves template literal dynamic URL s
   ])
 })
 
+test('extractFrontendApiCallsFromSource ignores concatenation inside template literal interpolations', () => {
+  const source = [
+    'export function clearAlarm(qs) {',
+    '  return request({',
+    '    url: `/api/alarm/clear${qs ? \'?\' + qs : \'\'}`,',
+    '    method: \'delete\'',
+    '  })',
+    '}',
+  ].join('\n')
+
+  const calls = audit.extractFrontendApiCallsFromSource(source, 'web/src/api/alarm.js')
+
+  assert.deepEqual(calls.map((call) => `${call.method} ${call.path}`), [
+    'DELETE /api/alarm/clear',
+  ])
+})
+
+test('extractFrontendApiCallsFromSource strips template literal query strings from URL paths', () => {
+  const source = [
+    'export function deleteUser(id) {',
+    '  return request({',
+    '    url: `/api/user/delete?id=${id}`,',
+    '    method: \'delete\'',
+    '  })',
+    '}',
+  ].join('\n')
+
+  const calls = audit.extractFrontendApiCallsFromSource(source, 'web/src/api/user.js')
+
+  assert.deepEqual(calls.map((call) => `${call.method} ${call.path}`), [
+    'DELETE /api/user/delete',
+  ])
+})
+
+test('extractFrontendApiCallsFromSource strips concatenated query strings from URL paths', () => {
+  const source = [
+    'export function queryRecord(deviceId, channelId, startTime) {',
+    '  return request({',
+    "    url: '/api/gb_record/query/' + deviceId + '/' + channelId + '?startTime=' + startTime,",
+    '    method: \'get\'',
+    '  })',
+    '}',
+  ].join('\n')
+
+  const calls = audit.extractFrontendApiCallsFromSource(source, 'web/src/api/record.js')
+
+  assert.deepEqual(calls.map((call) => `${call.method} ${call.path}`), [
+    'GET /api/gb_record/query/{dynamic}/{dynamic}',
+  ])
+})
+
 test('extractVueRouterPagesFromSource reads route path, name, and component', () => {
   const source = `
     export const constantRoutes = [

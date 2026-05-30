@@ -240,9 +240,51 @@ function extractRustRouterRoutesFromSource(source, sourcePath = '') {
   return routes.sort((a, b) => `${a.method} ${a.path}`.localeCompare(`${b.method} ${b.path}`))
 }
 
+function splitJavaScriptConcatenation(expression) {
+  const parts = []
+  let start = 0
+  let quote = null
+  let escaping = false
+
+  for (let index = 0; index < expression.length; index += 1) {
+    const char = expression[index]
+
+    if (quote) {
+      if (escaping) {
+        escaping = false
+      } else if (char === '\\') {
+        escaping = true
+      } else if (char === quote) {
+        quote = null
+      }
+      continue
+    }
+
+    if (char === '"' || char === "'" || char === '`') {
+      quote = char
+      continue
+    }
+
+    if (char === '+') {
+      parts.push(expression.slice(start, index))
+      start = index + 1
+    }
+  }
+
+  parts.push(expression.slice(start))
+  return parts
+}
+
+function stripFrontendQueryString(path) {
+  const queryIndex = path.indexOf('?')
+  const interpolationQueryIndex = path.search(/\$\{[^}]*\?[^}]*['"`]\?/)
+  const indexes = [queryIndex, interpolationQueryIndex].filter((index) => index >= 0)
+  if (indexes.length === 0) return path
+  return path.slice(0, Math.min(...indexes))
+}
+
 function normalizeFrontendUrlExpression(expression) {
-  const parts = String(expression)
-    .split('+')
+  const parts = splitJavaScriptConcatenation(String(expression))
     .map((part) => part.trim())
     .filter(Boolean)
     .map((part) => {
@@ -253,8 +295,7 @@ function normalizeFrontendUrlExpression(expression) {
 
   if (parts.length === 0) return '/{dynamic}'
 
-  const collapsed = parts
-    .join('')
+  const collapsed = stripFrontendQueryString(parts.join(''))
     .replace(/\$\{[^}]+\}/g, '{dynamic}')
     .replace(/\/+/g, '/')
 
