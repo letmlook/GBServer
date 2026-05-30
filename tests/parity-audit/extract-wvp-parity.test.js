@@ -65,3 +65,37 @@ test('extractJavaControllerRoutesFromSource supports array mapping methods', () 
     'POST /api/device/query/devices',
   ])
 })
+
+test('extractJavaControllerRoutesFromSource emits one route per direct mapping path', () => {
+  const source = `
+    @RequestMapping("/api/device")
+    public class DeviceController {
+      @GetMapping({"/a", "/b"})
+      public WVPResult aliases() { return null; }
+    }
+  `
+
+  const routes = audit.extractJavaControllerRoutesFromSource(source, 'DeviceController.java')
+
+  assert.deepEqual(routes.map((route) => `${route.method} ${route.path}`), [
+    'GET /api/device/a',
+    'GET /api/device/b',
+  ])
+})
+
+test('extractJavaControllerRoutesFromSource emits one route per named RequestMapping path', () => {
+  const source = `
+    @RequestMapping(path = "/api/play")
+    public class PlayController {
+      @RequestMapping(value = {"/a", "/b"}, method = RequestMethod.GET)
+      public WVPResult aliases() { return null; }
+    }
+  `
+
+  const routes = audit.extractJavaControllerRoutesFromSource(source, 'PlayController.java')
+
+  assert.deepEqual(routes.map((route) => `${route.method} ${route.path}`), [
+    'GET /api/play/a',
+    'GET /api/play/b',
+  ])
+})

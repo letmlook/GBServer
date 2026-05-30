@@ -27,14 +27,24 @@ function joinRouteParts(prefix, suffix) {
   return normalizeRoutePath(`${left}/${right.replace(/^\//, '')}`)
 }
 
-function extractAnnotationValue(annotationText) {
+function extractAnnotationValues(annotationText) {
+  const directArray = annotationText.match(/\(\s*\{([^}]*)\}\s*\)/)
+  if (directArray) return [...directArray[1].matchAll(/"([^"]*)"/g)].map((match) => match[1])
+
+  const namedArray = annotationText.match(/\b(?:value|path)\s*=\s*\{([^}]*)\}/)
+  if (namedArray) return [...namedArray[1].matchAll(/"([^"]*)"/g)].map((match) => match[1])
+
   const directString = annotationText.match(/\(\s*"([^"]*)"\s*\)/)
-  if (directString) return directString[1]
+  if (directString) return [directString[1]]
 
   const valueString = annotationText.match(/\b(?:value|path)\s*=\s*"([^"]*)"/)
-  if (valueString) return valueString[1]
+  if (valueString) return [valueString[1]]
 
-  return ''
+  return ['']
+}
+
+function extractAnnotationValue(annotationText) {
+  return extractAnnotationValues(annotationText)[0] || ''
 }
 
 function extractRequestMethods(annotationName, annotationText) {
@@ -64,7 +74,7 @@ function extractRequestMethods(annotationName, annotationText) {
 function extractJavaControllerRoutesFromSource(source, sourcePath = '') {
   const clean = stripComments(source)
   const classMappingMatch = clean.match(/@(RequestMapping)\s*(\([^)]*\))?[\s\S]{0,500}?\bclass\s+\w+/)
-  const classPrefix = classMappingMatch ? extractAnnotationValue(classMappingMatch[0]) : ''
+  const classPrefixes = classMappingMatch ? extractAnnotationValues(classMappingMatch[0]) : ['']
   const routes = []
   const routeAnnotationPattern = /@(GetMapping|PostMapping|DeleteMapping|PutMapping|PatchMapping|RequestMapping)\s*(\([^)]*\))?\s*(?:\r?\n\s*)*(?:public|private|protected|@Operation|@Parameter|@ApiOperation)/g
   let match
@@ -72,15 +82,19 @@ function extractJavaControllerRoutesFromSource(source, sourcePath = '') {
     if (/^\s+class\b/.test(clean.slice(routeAnnotationPattern.lastIndex, routeAnnotationPattern.lastIndex + 50))) continue
     const annotationName = match[1]
     const annotationText = match[0]
-    const methodPath = extractAnnotationValue(annotationText)
+    const methodPaths = extractAnnotationValues(annotationText)
     const methods = extractRequestMethods(annotationName, annotationText)
-    for (const method of methods) {
-      routes.push({
-        method,
-        path: joinRouteParts(classPrefix, methodPath),
-        source: sourcePath,
-        kind: 'java-controller',
-      })
+    for (const classPrefix of classPrefixes) {
+      for (const methodPath of methodPaths) {
+        for (const method of methods) {
+          routes.push({
+            method,
+            path: joinRouteParts(classPrefix, methodPath),
+            source: sourcePath,
+            kind: 'java-controller',
+          })
+        }
+      }
     }
   }
   return routes.sort((a, b) => (
@@ -194,6 +208,7 @@ module.exports = {
   stripComments,
   joinRouteParts,
   extractAnnotationValue,
+  extractAnnotationValues,
   extractRequestMethods,
   extractJavaControllerRoutesFromSource,
   extractRustRouterRoutesFromSource,
