@@ -13,8 +13,77 @@ function normalizeRoutePath(routePath) {
   return normalized
 }
 
-function extractJavaControllerRoutesFromSource() {
-  return []
+function stripComments(source) {
+  return source
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|[^:])\/\/.*$/gm, '$1')
+}
+
+function joinRouteParts(prefix, suffix) {
+  const left = normalizeRoutePath(prefix || '/')
+  const right = normalizeRoutePath(suffix || '/')
+  if (left === '/') return right
+  if (right === '/') return left
+  return normalizeRoutePath(`${left}/${right.replace(/^\//, '')}`)
+}
+
+function extractAnnotationValue(annotationText) {
+  const directString = annotationText.match(/\(\s*"([^"]*)"\s*\)/)
+  if (directString) return directString[1]
+
+  const valueString = annotationText.match(/\b(?:value|path)\s*=\s*"([^"]*)"/)
+  if (valueString) return valueString[1]
+
+  return ''
+}
+
+function extractRequestMethods(annotationName, annotationText) {
+  const fixed = {
+    GetMapping: ['GET'],
+    PostMapping: ['POST'],
+    DeleteMapping: ['DELETE'],
+    PutMapping: ['PUT'],
+    PatchMapping: ['PATCH'],
+  }
+  if (fixed[annotationName]) return fixed[annotationName]
+
+  const methodBlock = annotationText.match(/method\s*=\s*\{([^}]+)\}/)
+  if (methodBlock) {
+    return methodBlock[1]
+      .split(',')
+      .map((part) => part.trim().replace(/^RequestMethod\./, ''))
+      .filter(Boolean)
+  }
+
+  const singleMethod = annotationText.match(/method\s*=\s*RequestMethod\.([A-Z]+)/)
+  if (singleMethod) return [singleMethod[1]]
+
+  return ['GET']
+}
+
+function extractJavaControllerRoutesFromSource(source, sourcePath = '') {
+  const clean = stripComments(source)
+  const classMappingMatch = clean.match(/@(RequestMapping)\s*(\([^)]*\))?[\s\S]{0,500}?\bclass\s+\w+/)
+  const classPrefix = classMappingMatch ? extractAnnotationValue(classMappingMatch[0]) : ''
+  const routes = []
+  const routeAnnotationPattern = /@(GetMapping|PostMapping|DeleteMapping|PutMapping|PatchMapping|RequestMapping)\s*(\([^)]*\))?\s*(?:\r?\n\s*)*(?:public|private|protected|@Operation|@Parameter|@ApiOperation)/g
+  let match
+  while ((match = routeAnnotationPattern.exec(clean)) !== null) {
+    if (/^\s+class\b/.test(clean.slice(routeAnnotationPattern.lastIndex, routeAnnotationPattern.lastIndex + 50))) continue
+    const annotationName = match[1]
+    const annotationText = match[0]
+    const methodPath = extractAnnotationValue(annotationText)
+    const methods = extractRequestMethods(annotationName, annotationText)
+    for (const method of methods) {
+      routes.push({
+        method,
+        path: joinRouteParts(classPrefix, methodPath),
+        source: sourcePath,
+        kind: 'java-controller',
+      })
+    }
+  }
+  return routes
 }
 
 function extractRustRouterRoutesFromSource() {
@@ -117,6 +186,10 @@ function parseArgs(argv) {
 
 module.exports = {
   normalizeRoutePath,
+  stripComments,
+  joinRouteParts,
+  extractAnnotationValue,
+  extractRequestMethods,
   extractJavaControllerRoutesFromSource,
   extractRustRouterRoutesFromSource,
   extractFrontendApiCallsFromSource,
