@@ -152,6 +152,23 @@ test('extractJavaControllerRoutesFromSource skips non-route annotations between 
   ])
 })
 
+test('extractJavaControllerRoutesFromSource skips non-route annotations with nested annotation arguments', () => {
+  const source = `
+    @RequestMapping("/api/server")
+    public class ServerController {
+      @GetMapping(value = "/media_server/list")
+      @Operation(summary = "List media servers", responses = @ApiResponse(responseCode = "200"))
+      public Object list() { return null; }
+    }
+  `
+
+  const routes = audit.extractJavaControllerRoutesFromSource(source, 'ServerController.java')
+
+  assert.deepEqual(routes.map((route) => `${route.method} ${route.path}`), [
+    'GET /api/server/media_server/list',
+  ])
+})
+
 test('extractJavaControllerRoutesFromSource treats bare method RequestMapping as ANY', () => {
   const source = `
     @RequestMapping("/api/user")

@@ -137,17 +137,60 @@ function extractRequestMethods(annotationName, annotationText) {
   return annotationName === 'RequestMapping' ? ['ANY'] : ['GET']
 }
 
+function parseAnnotationAt(text, atIndex) {
+  const nameMatch = text.slice(atIndex).match(/^@([A-Za-z_][A-Za-z0-9_]*)/)
+  if (!nameMatch) return null
+
+  let index = atIndex + nameMatch[0].length
+  while (/\s/.test(text[index] || '')) index += 1
+
+  if (text[index] === '(') {
+    const args = findBalancedRange(text, index, '(', ')')
+    if (!args) return null
+    index = args.end + 1
+  }
+
+  return {
+    name: nameMatch[1],
+    text: text.slice(atIndex, index),
+    end: index,
+  }
+}
+
+function skipAnnotationBlocks(text, startIndex) {
+  let index = startIndex
+
+  while (index < text.length) {
+    while (/\s/.test(text[index] || '')) index += 1
+    if (text[index] !== '@') break
+
+    const annotation = parseAnnotationAt(text, index)
+    if (!annotation) break
+    index = annotation.end
+  }
+
+  return index
+}
+
 function extractJavaControllerRoutesFromSource(source, sourcePath = '') {
   const clean = stripComments(source)
   const classMappingMatch = clean.match(/@(RequestMapping)\s*(\([^)]*\))?[\s\S]{0,500}?\bclass\s+\w+/)
   const classPrefixes = classMappingMatch ? extractAnnotationValues(classMappingMatch[0]) : ['']
   const routes = []
-  const routeAnnotationPattern = /@(GetMapping|PostMapping|DeleteMapping|PutMapping|PatchMapping|RequestMapping)\s*(\([^)]*\))?(?=\s*(?:@[A-Za-z_][A-Za-z0-9_]*(?:\s*\([^)]*\))?\s*)*(?:public|private|protected)(?!\s+class)\s+[\w<>\[\].?,\s]+\s+\w+\s*\()/g
+  const routeAnnotationPattern = /@(GetMapping|PostMapping|DeleteMapping|PutMapping|PatchMapping|RequestMapping)\b/g
+  const methodDeclarationPattern = /^(?:public|private|protected)(?!\s+class)\s+[\w<>\[\].?,\s]+\s+\w+\s*\(/
   let match
+
   while ((match = routeAnnotationPattern.exec(clean)) !== null) {
-    if (/^\s+class\b/.test(clean.slice(routeAnnotationPattern.lastIndex, routeAnnotationPattern.lastIndex + 50))) continue
-    const annotationName = match[1]
-    const annotationText = match[0]
+    const annotation = parseAnnotationAt(clean, match.index)
+    if (!annotation) continue
+
+    routeAnnotationPattern.lastIndex = annotation.end
+    const declarationIndex = skipAnnotationBlocks(clean, annotation.end)
+    if (!methodDeclarationPattern.test(clean.slice(declarationIndex))) continue
+
+    const annotationName = annotation.name
+    const annotationText = annotation.text
     const methodPaths = extractAnnotationValues(annotationText)
     const methods = extractRequestMethods(annotationName, annotationText)
     for (const classPrefix of classPrefixes) {
