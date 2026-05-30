@@ -395,3 +395,24 @@ test('extractVueRouterPagesFromSource joins relative child route path with paren
     'Region /commonChannel/region @/views/region/index',
   ])
 })
+
+test('compareRouteSets classifies aligned, missing, extra, and method mismatch routes', () => {
+  const reference = [
+    { method: 'GET', path: '/api/play/start/{deviceId}/{channelId}', source: 'PlayController.java' },
+    { method: 'DELETE', path: '/api/user/delete', source: 'UserController.java' },
+    { method: 'POST', path: '/api/platform/add', source: 'PlatformController.java' },
+  ]
+  const target = [
+    { method: 'GET', path: '/api/play/start/{device_id}/{channel_id}', source: 'src/router.rs' },
+    { method: 'GET', path: '/api/user/delete', source: 'src/router.rs' },
+    { method: 'GET', path: '/api/local-only', source: 'src/router.rs' },
+  ]
+
+  const result = audit.compareRouteSets(reference, target)
+
+  assert.deepEqual(result.aligned.map((item) => item.path), ['/api/play/start/{param}/{param}'])
+  assert.deepEqual(result.missing.map((item) => `${item.method} ${item.path}`), ['POST /api/platform/add'])
+  assert.deepEqual(result.extra.map((item) => `${item.method} ${item.path}`), ['GET /api/local-only'])
+  assert.deepEqual(result.methodMismatch.map((item) => item.path), ['/api/user/delete'])
+})
+

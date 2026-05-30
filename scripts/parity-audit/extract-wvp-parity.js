@@ -559,12 +559,74 @@ function extractVueRouterPagesFromSource(source, sourcePath = '') {
   return pages.sort((a, b) => `${a.path} ${a.name}`.localeCompare(`${b.path} ${b.name}`))
 }
 
+function canonicalRoutePath(routePath) {
+  return normalizeRoutePath(routePath).replace(/\{[^}]+\}/g, '{param}')
+}
+
+function routeKey(route) {
+  return `${route.method.toUpperCase()} ${canonicalRoutePath(route.path)}`
+}
+
+function methodsByCanonicalPath(routes) {
+  const map = new Map()
+  for (const route of routes) {
+    const canonical = canonicalRoutePath(route.path)
+    if (!map.has(canonical)) map.set(canonical, new Set())
+    map.get(canonical).add(route.method.toUpperCase())
+  }
+  return map
+}
+
 function compareRouteSets(referenceRoutes, targetRoutes) {
+  const targetByKey = new Map(targetRoutes.map((route) => [routeKey(route), route]))
+  const referenceByKey = new Map(referenceRoutes.map((route) => [routeKey(route), route]))
+  const referenceMethodsByPath = methodsByCanonicalPath(referenceRoutes)
+  const targetMethodsByPath = methodsByCanonicalPath(targetRoutes)
+
+  const aligned = []
+  const missing = []
+  const methodMismatch = []
+
+  for (const reference of referenceRoutes) {
+    const canonical = canonicalRoutePath(reference.path)
+    const key = routeKey(reference)
+    if (targetByKey.has(key)) {
+      aligned.push({
+        method: reference.method.toUpperCase(),
+        path: canonical,
+        reference,
+        target: targetByKey.get(key),
+      })
+      continue
+    }
+
+    if (targetMethodsByPath.has(canonical)) {
+      methodMismatch.push({
+        path: canonical,
+        referenceMethods: [...referenceMethodsByPath.get(canonical)].sort(),
+        targetMethods: [...targetMethodsByPath.get(canonical)].sort(),
+        reference,
+      })
+      continue
+    }
+
+    missing.push({ ...reference, path: canonicalRoutePath(reference.path) })
+  }
+
+  const extra = []
+  for (const target of targetRoutes) {
+    const key = routeKey(target)
+    const canonical = canonicalRoutePath(target.path)
+    if (!referenceByKey.has(key) && !referenceMethodsByPath.has(canonical)) {
+      extra.push({ ...target, path: canonical })
+    }
+  }
+
   return {
-    aligned: [],
-    missing: referenceRoutes.slice(),
-    extra: targetRoutes.slice(),
-    methodMismatch: [],
+    aligned: aligned.sort((a, b) => `${a.path} ${a.method}`.localeCompare(`${b.path} ${b.method}`)),
+    missing: missing.sort((a, b) => `${a.path} ${a.method}`.localeCompare(`${b.path} ${b.method}`)),
+    extra: extra.sort((a, b) => `${a.path} ${a.method}`.localeCompare(`${b.path} ${b.method}`)),
+    methodMismatch: methodMismatch.sort((a, b) => a.path.localeCompare(b.path)),
   }
 }
 
@@ -657,6 +719,9 @@ module.exports = {
   normalizeFrontendUrlExpression,
   extractFrontendApiCallsFromSource,
   extractVueRouterPagesFromSource,
+  canonicalRoutePath,
+  routeKey,
+  methodsByCanonicalPath,
   compareRouteSets,
   buildMarkdownReport,
   walkFiles,
