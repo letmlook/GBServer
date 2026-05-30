@@ -134,7 +134,7 @@ function extractRequestMethods(annotationName, annotationText) {
   const singleMethod = annotationText.match(/method\s*=\s*RequestMethod\.([A-Z]+)/)
   if (singleMethod) return [singleMethod[1]]
 
-  return ['GET']
+  return annotationName === 'RequestMapping' ? ['ANY'] : ['GET']
 }
 
 function extractJavaControllerRoutesFromSource(source, sourcePath = '') {
@@ -142,7 +142,7 @@ function extractJavaControllerRoutesFromSource(source, sourcePath = '') {
   const classMappingMatch = clean.match(/@(RequestMapping)\s*(\([^)]*\))?[\s\S]{0,500}?\bclass\s+\w+/)
   const classPrefixes = classMappingMatch ? extractAnnotationValues(classMappingMatch[0]) : ['']
   const routes = []
-  const routeAnnotationPattern = /@(GetMapping|PostMapping|DeleteMapping|PutMapping|PatchMapping|RequestMapping)\s*(\([^)]*\))?\s*(?:\r?\n\s*)*(?:public|private|protected|@Operation|@Parameter|@ApiOperation)/g
+  const routeAnnotationPattern = /@(GetMapping|PostMapping|DeleteMapping|PutMapping|PatchMapping|RequestMapping)\s*(\([^)]*\))?(?=\s*(?:@[A-Za-z_][A-Za-z0-9_]*(?:\s*\([^)]*\))?\s*)*(?:public|private|protected)(?!\s+class)\s+[\w<>\[\].?,\s]+\s+\w+\s*\()/g
   let match
   while ((match = routeAnnotationPattern.exec(clean)) !== null) {
     if (/^\s+class\b/.test(clean.slice(routeAnnotationPattern.lastIndex, routeAnnotationPattern.lastIndex + 50))) continue

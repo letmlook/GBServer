@@ -133,3 +133,37 @@ test('extractJavaControllerRoutesFromSource emits one route per named RequestMap
     'GET /api/play/b/{id}',
   ])
 })
+
+test('extractJavaControllerRoutesFromSource skips non-route annotations between mapping and method', () => {
+  const source = `
+    @RequestMapping("/api/server")
+    public class MediaServerController {
+      @GetMapping(value = "/media_server/list")
+      @ResponseBody
+      @Operation(summary = "List media servers")
+      public Object list() { return null; }
+    }
+  `
+
+  const routes = audit.extractJavaControllerRoutesFromSource(source, 'MediaServerController.java')
+
+  assert.deepEqual(routes.map((route) => `${route.method} ${route.path}`), [
+    'GET /api/server/media_server/list',
+  ])
+})
+
+test('extractJavaControllerRoutesFromSource treats bare method RequestMapping as ANY', () => {
+  const source = `
+    @RequestMapping("/api/user")
+    public class UserController {
+      @RequestMapping("/changePushKey")
+      public WVPResult changePushKey() { return null; }
+    }
+  `
+
+  const routes = audit.extractJavaControllerRoutesFromSource(source, 'UserController.java')
+
+  assert.deepEqual(routes.map((route) => `${route.method} ${route.path}`), [
+    'ANY /api/user/changePushKey',
+  ])
+})
