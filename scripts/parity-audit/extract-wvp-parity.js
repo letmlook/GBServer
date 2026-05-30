@@ -664,23 +664,89 @@ function walkFiles(rootDir, predicate) {
   return results.sort()
 }
 
-function main(argv) {
-  const args = parseArgs(argv)
-  const audit = {
+function relativeSource(rootDir, filePath) {
+  return path.relative(rootDir, filePath).replace(/\\/g, '/')
+}
+
+function readRoutesFromFiles(rootDir, files, extractor) {
+  return files.flatMap((filePath) => {
+    const source = fs.readFileSync(filePath, 'utf8')
+    return extractor(source, relativeSource(rootDir, filePath))
+  })
+}
+
+function buildAudit(options) {
+  const upstream = options.upstream || '/tmp/wvp-GB28181-pro'
+  const local = options.local || process.cwd()
+  const commit = options.commit || 'unknown'
+
+  const javaFiles = walkFiles(path.join(upstream, 'src/main/java'), (filePath) => filePath.endsWith('.java') && filePath.endsWith('Controller.java'))
+  const rustRouterFiles = [path.join(local, 'src/router.rs')].filter((filePath) => fs.existsSync(filePath))
+  const upstreamApiFiles = walkFiles(path.join(upstream, 'web/src/api'), (filePath) => filePath.endsWith('.js'))
+  const localApiFiles = walkFiles(path.join(local, 'web/src/api'), (filePath) => filePath.endsWith('.js'))
+  const upstreamRouterFiles = [path.join(upstream, 'web/src/router/index.js')].filter((filePath) => fs.existsSync(filePath))
+  const localRouterFiles = [path.join(local, 'web/src/router/index.js')].filter((filePath) => fs.existsSync(filePath))
+
+  const javaRoutes = readRoutesFromFiles(upstream, javaFiles, extractJavaControllerRoutesFromSource)
+  const rustRoutes = readRoutesFromFiles(local, rustRouterFiles, extractRustRouterRoutesFromSource)
+  const upstreamFrontendApi = readRoutesFromFiles(upstream, upstreamApiFiles, extractFrontendApiCallsFromSource)
+  const localFrontendApi = readRoutesFromFiles(local, localApiFiles, extractFrontendApiCallsFromSource)
+  const upstreamPages = readRoutesFromFiles(upstream, upstreamRouterFiles, extractVueRouterPagesFromSource)
+  const localPages = readRoutesFromFiles(local, localRouterFiles, extractVueRouterPagesFromSource)
+
+  return {
     baseline: {
-      upstream: args.upstream,
-      local: args.local,
-      commit: args.commit || 'unknown',
+      upstream,
+      local,
+      commit,
+      backend: 'official WVP-Pro Java controllers',
+      frontend: 'official WVP-Pro web directory from the same commit',
     },
     generatedAt: new Date().toISOString(),
-    javaRoutes: [],
-    rustRoutes: [],
-    upstreamFrontendApi: [],
-    localFrontendApi: [],
-    upstreamPages: [],
-    localPages: [],
-    comparisons: {},
+    counts: {
+      javaRoutes: javaRoutes.length,
+      rustRoutes: rustRoutes.length,
+      upstreamFrontendApi: upstreamFrontendApi.length,
+      localFrontendApi: localFrontendApi.length,
+      upstreamPages: upstreamPages.length,
+      localPages: localPages.length,
+    },
+    javaRoutes,
+    rustRoutes,
+    upstreamFrontendApi,
+    localFrontendApi,
+    upstreamPages,
+    localPages,
+    comparisons: {
+      backendRoutes: compareRouteSets(javaRoutes, rustRoutes),
+      upstreamFrontendToRust: compareRouteSets(upstreamFrontendApi, rustRoutes),
+      upstreamFrontendToLocalFrontend: compareRouteSets(upstreamFrontendApi, localFrontendApi),
+      upstreamPagesToLocalPages: compareRouteSets(
+        upstreamPages.map((page) => ({ method: 'PAGE', path: page.path, source: page.source, page })),
+        localPages.map((page) => ({ method: 'PAGE', path: page.path, source: page.source, page }))
+      ),
+    },
   }
+}
+
+function readGitCommit(repoDir) {
+  const headFile = path.join(repoDir, '.git', 'HEAD')
+  if (!fs.existsSync(headFile)) return 'unknown'
+  const head = fs.readFileSync(headFile, 'utf8').trim()
+  if (head.startsWith('ref:')) {
+    const refPath = path.join(repoDir, '.git', head.replace('ref:', '').trim())
+    if (fs.existsSync(refPath)) return fs.readFileSync(refPath, 'utf8').trim().slice(0, 7)
+  }
+  return head.slice(0, 7)
+}
+
+function main(argv) {
+  const args = parseArgs(argv)
+  const audit = buildAudit({
+    upstream: args.upstream,
+    local: args.local,
+    commit: args.commit || readGitCommit(args.upstream),
+  })
   const markdown = buildMarkdownReport(audit)
   if (args.outDir) {
     fs.mkdirSync(args.outDir, { recursive: true })
@@ -736,6 +802,10 @@ module.exports = {
   compareRouteSets,
   buildMarkdownReport,
   walkFiles,
+  relativeSource,
+  readRoutesFromFiles,
+  buildAudit,
+  readGitCommit,
   parseArgs,
 }
 

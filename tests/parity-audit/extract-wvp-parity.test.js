@@ -467,3 +467,55 @@ test('compareRouteSets reports extra target methods on paths with aligned method
   assert.deepEqual(result.extra.map((item) => `${item.method} ${item.path}`), ['DELETE /api/user/delete'])
   assert.deepEqual(result.methodMismatch, [])
 })
+
+
+const fs = require('node:fs')
+const os = require('node:os')
+const path = require('node:path')
+
+test('buildAudit scans upstream backend/frontend and local backend/frontend trees', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wvp-audit-'))
+  const upstream = path.join(root, 'upstream')
+  const local = path.join(root, 'local')
+
+  fs.mkdirSync(path.join(upstream, 'src/main/java/com/example'), { recursive: true })
+  fs.mkdirSync(path.join(upstream, 'web/src/api'), { recursive: true })
+  fs.mkdirSync(path.join(upstream, 'web/src/router'), { recursive: true })
+  fs.mkdirSync(path.join(local, 'src'), { recursive: true })
+  fs.mkdirSync(path.join(local, 'web/src/api'), { recursive: true })
+  fs.mkdirSync(path.join(local, 'web/src/router'), { recursive: true })
+
+  fs.writeFileSync(path.join(upstream, 'src/main/java/com/example/PlayController.java'), `
+    @RequestMapping("/api/play")
+    public class PlayController {
+      @GetMapping("/start/{deviceId}/{channelId}") public Object start() { return null; }
+    }
+  `)
+  fs.writeFileSync(path.join(upstream, 'web/src/api/play.js'), `
+    export function start(deviceId, channelId) { return request({ url: '/api/play/start/' + deviceId + '/' + channelId, method: 'get' }) }
+  `)
+  fs.writeFileSync(path.join(upstream, 'web/src/router/index.js'), `
+    export const constantRoutes = [{ path: '/live', name: 'Live', component: () => import('@/views/live/index') }]
+  `)
+  fs.writeFileSync(path.join(local, 'src/router.rs'), `
+    Router::new().route("/api/play/start/:device_id/:channel_id", get(play::play_start))
+  `)
+  fs.writeFileSync(path.join(local, 'web/src/api/play.js'), `
+    export function start(deviceId, channelId) { return request({ url: '/api/play/start/' + deviceId + '/' + channelId, method: 'get' }) }
+  `)
+  fs.writeFileSync(path.join(local, 'web/src/router/index.js'), `
+    export const constantRoutes = [{ path: '/live', name: 'Live', component: () => import('@/views/live/index') }]
+  `)
+
+  const result = audit.buildAudit({ upstream, local, commit: 'test123' })
+
+  assert.equal(result.baseline.commit, 'test123')
+  assert.equal(result.javaRoutes.length, 1)
+  assert.equal(result.rustRoutes.length, 1)
+  assert.equal(result.upstreamFrontendApi.length, 1)
+  assert.equal(result.localFrontendApi.length, 1)
+  assert.equal(result.upstreamPages.length, 1)
+  assert.equal(result.localPages.length, 1)
+  assert.equal(result.comparisons.backendRoutes.aligned.length, 1)
+  assert.equal(result.comparisons.upstreamFrontendToRust.aligned.length, 1)
+})
