@@ -674,6 +674,18 @@ function summarizeComparison(title, comparison) {
     lines.push('')
   }
 
+  if (comparison.extra.length > 0) {
+    lines.push('#### Extra target entries')
+    lines.push('')
+    lines.push('| Method | Path | Source |')
+    lines.push('|---|---|---|')
+    for (const item of comparison.extra.slice(0, 80)) {
+      lines.push(`| ${mdEscape(item.method)} | \`${mdEscape(item.path)}\` | ${mdEscape(item.source)} |`)
+    }
+    if (comparison.extra.length > 80) lines.push(`| ... | ${comparison.extra.length - 80} more | ... |`)
+    lines.push('')
+  }
+
   if (comparison.methodMismatch.length > 0) {
     lines.push('#### Method mismatches')
     lines.push('')

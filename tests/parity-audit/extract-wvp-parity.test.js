@@ -529,7 +529,7 @@ test('buildMarkdownReport includes baseline, counts, and top gaps', () => {
       backendRoutes: {
         aligned: [{ method: 'GET', path: '/api/play/start/{param}/{param}' }],
         missing: [{ method: 'POST', path: '/api/platform/add', source: 'PlatformController.java' }],
-        extra: [],
+        extra: [{ method: 'DELETE', path: '/api/local-only', source: 'src/router.rs' }],
         methodMismatch: [],
       },
       upstreamFrontendToRust: { aligned: [], missing: [], extra: [], methodMismatch: [] },
@@ -542,4 +542,6 @@ test('buildMarkdownReport includes baseline, counts, and top gaps', () => {
   assert.match(markdown, /Baseline commit: `b760458`/)
   assert.match(markdown, /Java controller routes: 2/)
   assert.match(markdown, /POST `\/api\/platform\/add`/)
+  assert.match(markdown, /#### Extra target entries/)
+  assert.match(markdown, /\| DELETE \| `\/api\/local-only` \| src\/router\.rs \|/)
 })
