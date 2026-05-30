@@ -1,0 +1,21 @@
+const assert = require('node:assert/strict')
+const test = require('node:test')
+
+const audit = require('../../scripts/parity-audit/extract-wvp-parity')
+
+test('module exports parser and formatter functions', () => {
+  assert.equal(typeof audit.normalizeRoutePath, 'function')
+  assert.equal(typeof audit.extractJavaControllerRoutesFromSource, 'function')
+  assert.equal(typeof audit.extractRustRouterRoutesFromSource, 'function')
+  assert.equal(typeof audit.extractFrontendApiCallsFromSource, 'function')
+  assert.equal(typeof audit.extractVueRouterPagesFromSource, 'function')
+  assert.equal(typeof audit.compareRouteSets, 'function')
+  assert.equal(typeof audit.buildMarkdownReport, 'function')
+})
+
+test('normalizeRoutePath converts Axum and Spring path params to a common shape', () => {
+  assert.equal(audit.normalizeRoutePath('/api/play/start/:device_id/:channel_id'), '/api/play/start/{device_id}/{channel_id}')
+  assert.equal(audit.normalizeRoutePath('/api/play/start/{deviceId}/{channelId}'), '/api/play/start/{deviceId}/{channelId}')
+  assert.equal(audit.normalizeRoutePath('api/device/query/devices/{deviceId}/'), '/api/device/query/devices/{deviceId}')
+  assert.equal(audit.normalizeRoutePath(''), '/')
+})
