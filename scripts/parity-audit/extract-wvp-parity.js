@@ -214,8 +214,30 @@ function extractJavaControllerRoutesFromSource(source, sourcePath = '') {
   ))
 }
 
-function extractRustRouterRoutesFromSource() {
-  return []
+function extractRustRouterRoutesFromSource(source, sourcePath = '') {
+  const clean = stripComments(source)
+  const routes = []
+  const routePattern = /\.route\(\s*"([^"]+)"\s*,\s*([\s\S]*?)\)\s*(?=\.route|\.merge|\.fallback|\.layer|\.with_state|;|$)/g
+  let match
+  while ((match = routePattern.exec(clean)) !== null) {
+    const routePath = normalizeRoutePath(match[1])
+    const handlerExpression = match[2]
+    const methods = new Set()
+    const methodPattern = /\b(get|post|delete|put|patch)\s*\(/g
+    let methodMatch
+    while ((methodMatch = methodPattern.exec(handlerExpression)) !== null) {
+      methods.add(methodMatch[1].toUpperCase())
+    }
+    for (const method of methods) {
+      routes.push({
+        method,
+        path: routePath,
+        source: sourcePath,
+        kind: 'rust-router',
+      })
+    }
+  }
+  return routes.sort((a, b) => `${a.method} ${a.path}`.localeCompare(`${b.method} ${b.path}`))
 }
 
 function extractFrontendApiCallsFromSource() {

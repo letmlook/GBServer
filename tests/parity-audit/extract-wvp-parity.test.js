@@ -184,3 +184,21 @@ test('extractJavaControllerRoutesFromSource treats bare method RequestMapping as
     'ANY /api/user/changePushKey',
   ])
 })
+
+test('extractRustRouterRoutesFromSource reads chained Axum route declarations', () => {
+  const source = `
+    Router::new()
+      .route("/api/user/userInfo", get(user::user_info).post(user::user_info))
+      .route("/api/play/start/:device_id/:channel_id", get(play::play_start))
+      .route("/api/user/delete", delete(user::delete_user))
+  `
+
+  const routes = audit.extractRustRouterRoutesFromSource(source, 'src/router.rs')
+
+  assert.deepEqual(routes.map((route) => `${route.method} ${route.path}`), [
+    'DELETE /api/user/delete',
+    'GET /api/play/start/{device_id}/{channel_id}',
+    'GET /api/user/userInfo',
+    'POST /api/user/userInfo',
+  ])
+})
