@@ -99,3 +99,37 @@ test('extractJavaControllerRoutesFromSource emits one route per named RequestMap
     'GET /api/play/b',
   ])
 })
+
+test('extractJavaControllerRoutesFromSource emits one route per direct mapping path with path variables', () => {
+  const source = `
+    @RequestMapping("/api/device")
+    public class DeviceController {
+      @GetMapping({"/a/{id}", "/b/{id}"})
+      public WVPResult aliases() { return null; }
+    }
+  `
+
+  const routes = audit.extractJavaControllerRoutesFromSource(source, 'DeviceController.java')
+
+  assert.deepEqual(routes.map((route) => `${route.method} ${route.path}`), [
+    'GET /api/device/a/{id}',
+    'GET /api/device/b/{id}',
+  ])
+})
+
+test('extractJavaControllerRoutesFromSource emits one route per named RequestMapping path with path variables', () => {
+  const source = `
+    @RequestMapping(path = "/api/play")
+    public class PlayController {
+      @RequestMapping(value = {"/a/{id}", "/b/{id}"}, method = RequestMethod.GET)
+      public WVPResult aliases() { return null; }
+    }
+  `
+
+  const routes = audit.extractJavaControllerRoutesFromSource(source, 'PlayController.java')
+
+  assert.deepEqual(routes.map((route) => `${route.method} ${route.path}`), [
+    'GET /api/play/a/{id}',
+    'GET /api/play/b/{id}',
+  ])
+})

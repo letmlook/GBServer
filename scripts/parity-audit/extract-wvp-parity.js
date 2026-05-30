@@ -27,20 +27,86 @@ function joinRouteParts(prefix, suffix) {
   return normalizeRoutePath(`${left}/${right.replace(/^\//, '')}`)
 }
 
+function findBalancedRange(text, startIndex, openChar, closeChar) {
+  let depth = 0
+  let quote = null
+  let escaping = false
+
+  for (let i = startIndex; i < text.length; i += 1) {
+    const char = text[i]
+
+    if (quote) {
+      if (escaping) {
+        escaping = false
+      } else if (char === '\\') {
+        escaping = true
+      } else if (char === quote) {
+        quote = null
+      }
+      continue
+    }
+
+    if (char === '"' || char === "'") {
+      quote = char
+      continue
+    }
+
+    if (char === openChar) {
+      depth += 1
+    } else if (char === closeChar) {
+      depth -= 1
+      if (depth === 0) {
+        return { start: startIndex, end: i, body: text.slice(startIndex + 1, i) }
+      }
+    }
+  }
+
+  return null
+}
+
+function extractAnnotationArguments(annotationText) {
+  const openIndex = annotationText.indexOf('(')
+  if (openIndex === -1) return ''
+  return findBalancedRange(annotationText, openIndex, '(', ')')?.body || ''
+}
+
+function extractNamedValueExpression(argsText) {
+  const namedMatch = /\b(?:value|path)\s*=/.exec(argsText)
+  if (!namedMatch) return ''
+
+  let index = namedMatch.index + namedMatch[0].length
+  while (/\s/.test(argsText[index] || '')) index += 1
+
+  if (argsText[index] === '{') {
+    return findBalancedRange(argsText, index, '{', '}')?.body || ''
+  }
+
+  if (argsText[index] === '"') {
+    const stringMatch = argsText.slice(index).match(/^"((?:\\.|[^"])*)"/)
+    return stringMatch ? `"${stringMatch[1]}"` : ''
+  }
+
+  return ''
+}
+
+function extractQuotedStrings(text) {
+  return [...text.matchAll(/"((?:\\.|[^"])*)"/g)].map((match) => match[1])
+}
+
 function extractAnnotationValues(annotationText) {
-  const directArray = annotationText.match(/\(\s*\{([^}]*)\}\s*\)/)
-  if (directArray) return [...directArray[1].matchAll(/"([^"]*)"/g)].map((match) => match[1])
+  const argsText = extractAnnotationArguments(annotationText)
+  if (!argsText) return ['']
 
-  const namedArray = annotationText.match(/\b(?:value|path)\s*=\s*\{([^}]*)\}/)
-  if (namedArray) return [...namedArray[1].matchAll(/"([^"]*)"/g)].map((match) => match[1])
+  const trimmedArgs = argsText.trim()
+  if (trimmedArgs.startsWith('{')) {
+    const directArray = findBalancedRange(trimmedArgs, 0, '{', '}')
+    if (directArray) return extractQuotedStrings(directArray.body)
+  }
 
-  const directString = annotationText.match(/\(\s*"([^"]*)"\s*\)/)
-  if (directString) return [directString[1]]
+  const namedValue = extractNamedValueExpression(argsText)
+  if (namedValue) return extractQuotedStrings(namedValue)
 
-  const valueString = annotationText.match(/\b(?:value|path)\s*=\s*"([^"]*)"/)
-  if (valueString) return [valueString[1]]
-
-  return ['']
+  return extractQuotedStrings(trimmedArgs)[0] ? [extractQuotedStrings(trimmedArgs)[0]] : ['']
 }
 
 function extractAnnotationValue(annotationText) {
