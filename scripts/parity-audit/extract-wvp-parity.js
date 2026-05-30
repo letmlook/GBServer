@@ -240,12 +240,64 @@ function extractRustRouterRoutesFromSource(source, sourcePath = '') {
   return routes.sort((a, b) => `${a.method} ${a.path}`.localeCompare(`${b.method} ${b.path}`))
 }
 
-function extractFrontendApiCallsFromSource() {
-  return []
+function normalizeFrontendUrlExpression(expression) {
+  const parts = String(expression)
+    .split('+')
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .map((part) => {
+      const stringMatch = part.match(/^'([^']*)'$|^"([^"]*)"$|^`([^`]*)`$/)
+      if (stringMatch) return stringMatch[1] || stringMatch[2] || stringMatch[3]
+      return '{dynamic}'
+    })
+
+  if (parts.length === 0) return '/{dynamic}'
+
+  const collapsed = parts
+    .join('')
+    .replace(/\$\{[^}]+\}/g, '{dynamic}')
+    .replace(/\/+/g, '/')
+
+  return normalizeRoutePath(collapsed)
 }
 
-function extractVueRouterPagesFromSource() {
-  return []
+function extractFrontendApiCallsFromSource(source, sourcePath = '') {
+  const clean = stripComments(source)
+  const calls = []
+  const requestPattern = /request\s*\(\s*\{([\s\S]*?)\}\s*\)/g
+  let requestMatch
+  while ((requestMatch = requestPattern.exec(clean)) !== null) {
+    const objectBody = requestMatch[1]
+    const urlMatch = objectBody.match(/\burl\s*:\s*([^,\n}]+)/)
+    if (!urlMatch) continue
+
+    const methodMatch = objectBody.match(/\bmethod\s*:\s*['"]([A-Za-z]+)['"]/)
+    const method = methodMatch ? methodMatch[1].toUpperCase() : 'GET'
+    calls.push({
+      method,
+      path: normalizeFrontendUrlExpression(urlMatch[1]),
+      source: sourcePath,
+      kind: 'frontend-api',
+    })
+  }
+  return calls.sort((a, b) => `${a.path} ${a.method}`.localeCompare(`${b.path} ${b.method}`))
+}
+
+function extractVueRouterPagesFromSource(source, sourcePath = '') {
+  const clean = stripComments(source)
+  const pages = []
+  const pagePattern = /path\s*:\s*['"]([^'"]+)['"][\s\S]{0,500}?name\s*:\s*['"]([^'"]+)['"][\s\S]{0,500}?component\s*:\s*\(\)\s*=>\s*import\(\s*['"]([^'"]+)['"]\s*\)/g
+  let match
+  while ((match = pagePattern.exec(clean)) !== null) {
+    pages.push({
+      path: normalizeRoutePath(match[1]),
+      name: match[2],
+      component: match[3],
+      source: sourcePath,
+      kind: 'frontend-page',
+    })
+  }
+  return pages.sort((a, b) => `${a.path} ${a.name}`.localeCompare(`${b.path} ${b.name}`))
 }
 
 function compareRouteSets(referenceRoutes, targetRoutes) {
@@ -343,6 +395,7 @@ module.exports = {
   extractRequestMethods,
   extractJavaControllerRoutesFromSource,
   extractRustRouterRoutesFromSource,
+  normalizeFrontendUrlExpression,
   extractFrontendApiCallsFromSource,
   extractVueRouterPagesFromSource,
   compareRouteSets,

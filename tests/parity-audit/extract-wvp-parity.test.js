@@ -202,3 +202,53 @@ test('extractRustRouterRoutesFromSource reads chained Axum route declarations', 
     'POST /api/user/userInfo',
   ])
 })
+
+test('extractFrontendApiCallsFromSource reads request URL and method from Vue API modules', () => {
+  const source = `
+    import request from '@/utils/request'
+
+    export function playStart(deviceId, channelId) {
+      return request({
+        url: '/api/play/start/' + deviceId + '/' + channelId,
+        method: 'get'
+      })
+    }
+
+    export function addUser(data) {
+      return request({ url: '/api/user/add', method: 'post', data })
+    }
+  `
+
+  const calls = audit.extractFrontendApiCallsFromSource(source, 'web/src/api/play.js')
+
+  assert.deepEqual(calls.map((call) => `${call.method} ${call.path}`), [
+    'GET /api/play/start/{dynamic}/{dynamic}',
+    'POST /api/user/add',
+  ])
+})
+
+test('extractVueRouterPagesFromSource reads route path, name, and component', () => {
+  const source = `
+    export const constantRoutes = [
+      {
+        path: '/device',
+        name: 'Device',
+        component: () => import('@/views/device/index'),
+        meta: { title: '国标设备' }
+      },
+      {
+        hidden: true,
+        path: '/device/record/:deviceId/:channelDeviceId',
+        name: 'DeviceRecord',
+        component: () => import('@/views/device/channel/record')
+      }
+    ]
+  `
+
+  const pages = audit.extractVueRouterPagesFromSource(source, 'web/src/router/index.js')
+
+  assert.deepEqual(pages.map((page) => `${page.name} ${page.path} ${page.component}`), [
+    'Device /device @/views/device/index',
+    'DeviceRecord /device/record/{deviceId}/{channelDeviceId} @/views/device/channel/record',
+  ])
+})
