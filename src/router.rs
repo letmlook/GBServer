@@ -10,7 +10,7 @@ use tower_http::cors::{Any, CorsLayer};
 
 use crate::auth::auth_middleware;
 use crate::handlers::{
-    alarm, common_channel, device, device_control, device_stub, front_end, jt1078, platform, play,
+    alarm, common_channel, device, device_control, device_query, device_stub, front_end, jt1078, platform, play,
     playback, server, stream, stub, talk, user, websocket, webrtc, device_batch,
 };
 use crate::handlers::metrics as metrics_handler;
@@ -150,6 +150,39 @@ pub fn app(state: AppState) -> Router<AppState> {
         .route(
             "/api/device/query/tree/:device_id",
             get(device_stub::device_tree),
+        )
+        // Device query APIs (Phase 1 - MESSAGE response routing)
+        .route(
+            "/api/device/query/info/:device_id",
+            get(device_query::device_info),
+        )
+        .route(
+            "/api/device/query/status/:device_id",
+            get(device_query::device_status),
+        )
+        .route(
+            "/api/device/config/query/:device_id/:config_type",
+            get(device_query::device_config_query),
+        )
+        .route(
+            "/api/device/config/update",
+            post(device_query::device_config_update),
+        )
+        .route(
+            "/api/play/ssrc/:device_id/:channel_id",
+            get(device_query::get_ssrc),
+        )
+        .route(
+            "/api/play/snap/:device_id/:channel_id",
+            get(device_query::get_snap),
+        )
+        .route(
+            "/api/media/getPlayUrl",
+            get(device_query::get_play_url),
+        )
+        .route(
+            "/api/media/stream_info_by_app_and_stream",
+            get(device_query::stream_info),
         )
         .route("/api/common/channel/list", get(stub::common_channel_list))
         .route("/api/role/all", get(stub::role_all))

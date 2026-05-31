@@ -2,6 +2,7 @@ pub mod user;
 pub mod device;
 pub mod device_stub;
 pub mod device_control;
+pub mod device_query;
 pub mod server;
 pub mod stream;
 pub mod platform;

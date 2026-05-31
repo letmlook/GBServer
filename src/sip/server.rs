@@ -34,6 +34,8 @@ use crate::zlm::ZlmClient;
 use crate::cascade::CascadeRegistrar;
 use crate::sip::gb28181::pending_request::PendingRequestManager;
 use crate::sip::gb28181::media_waiter::{MediaWaiterManager, MediaWaitResult};
+use crate::sip::gb28181::device_commander::DeviceCommander;
+use crate::sip::gb28181::device_query::DeviceQueryManager;
 
 pub struct SipServer {
     config: Arc<SipConfig>,
@@ -58,6 +60,8 @@ pub struct SipServer {
     cascade_registrar: Option<Arc<CascadeRegistrar>>,
     pending_request_manager: Arc<PendingRequestManager>,
     media_waiter_manager: Arc<MediaWaiterManager>,
+    device_commander: Arc<DeviceCommander>,
+    device_query_manager: Arc<DeviceQueryManager>,
 }
 
 impl SipServer {
@@ -71,6 +75,7 @@ impl SipServer {
         let stream_reconnect = config.stream_reconnect.as_ref()
             .map(|rc| StreamReconnectManager::new(rc.enabled, rc.max_retries, rc.retry_interval_secs))
             .unwrap_or(StreamReconnectManager::new(false, 3, 5));
+        let pending_request_manager = Arc::new(PendingRequestManager::new());
 
         Self {
             config: Arc::new(config),
@@ -93,8 +98,10 @@ impl SipServer {
             stream_reconnect_manager: Arc::new(stream_reconnect),
             nat_helper,
             cascade_registrar: None,
-            pending_request_manager: Arc::new(PendingRequestManager::new()),
+            pending_request_manager: pending_request_manager.clone(),
             media_waiter_manager: Arc::new(MediaWaiterManager::new()),
+            device_commander: Arc::new(DeviceCommander::new(pending_request_manager.clone())),
+            device_query_manager: Arc::new(DeviceQueryManager::new()),
         }
     }
 
@@ -143,6 +150,18 @@ impl SipServer {
 
     pub fn talk_manager(&self) -> Arc<TalkManager> {
         self.talk_manager.clone()
+    }
+
+    pub fn device_commander(&self) -> Arc<DeviceCommander> {
+        self.device_commander.clone()
+    }
+
+    pub fn device_query_manager(&self) -> Arc<DeviceQueryManager> {
+        self.device_query_manager.clone()
+    }
+
+    pub fn pending_request_manager(&self) -> Arc<PendingRequestManager> {
+        self.pending_request_manager.clone()
     }
 
     pub async fn start(&mut self) -> Result<()> {
@@ -2279,6 +2298,41 @@ impl SipServer {
 
     async fn send_response(socket: &Arc<UdpSocket>, addr: SocketAddr, response: &str) -> Result<()> {
         socket.send_to(response.as_bytes(), addr).await?;
+        Ok(())
+    }
+
+    /// 发送 SIP MESSAGE 请求到设备
+    async fn send_request(
+        &self,
+        socket: &Arc<UdpSocket>,
+        addr: SocketAddr,
+        device_id: &str,
+        call_id: &str,
+        cseq: u32,
+        content_type: &str,
+        body: &str,
+    ) -> Result<()> {
+        let request = format!(
+            "MESSAGE sip:{}@{}:{} SIP/2.0\r\n\
+             Via: SIP/2.0/UDP {}:{};rport;branch=z9hG4bK{}\r\n\
+             From: <sip:{}@{}:{}>;tag={}\r\n\
+             To: <sip:{}@{}:{}>\r\n\
+             Call-ID: {}\r\n\
+             CSeq: {} MESSAGE\r\n\
+             Content-Type: {}\r\n\
+             Content-Length: {}\r\n\r\n\
+             {}",
+            device_id, addr.ip(), addr.port(),
+            self.config.ip, self.config.port, generate_branch(),
+            self.config.device_id, self.config.ip, self.config.port, generate_tag(),
+            device_id, addr.ip(), addr.port(),
+            call_id,
+            cseq,
+            content_type,
+            body.len(),
+            body
+        );
+        socket.send_to(request.as_bytes(), addr).await?;
         Ok(())
     }
 
