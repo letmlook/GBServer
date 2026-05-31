@@ -2553,6 +2553,38 @@ f=v/1/96/1/2/1/1/0
         self.send_message_to_device(device_id, SipMethod::Message, Some(&body), Some("Application/MANSCDP+xml")).await
     }
 
+    ///发送设备信息查询
+    pub async fn send_device_info_query(&self, device_id: &str) -> Result<()> {
+        let sn = chrono::Utc::now().timestamp();
+        let body = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<Query>
+<CmdType>DeviceInfo</CmdType>
+<SN>{}</SN>
+<DeviceID>{}</DeviceID>
+</Query>"#,
+            sn, device_id
+        );
+        
+        self.send_message_to_device(device_id, SipMethod::Message, Some(&body), Some("Application/MANSCDP+xml")).await
+    }
+
+    /// 发送设备状态查询
+    pub async fn send_device_status_query(&self, device_id: &str) -> Result<()> {
+        let sn = chrono::Utc::now().timestamp();
+        let body = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<Query>
+<CmdType>DeviceStatus</CmdType>
+<SN>{}</SN>
+<DeviceID>{}</DeviceID>
+</Query>"#,
+            sn, device_id
+        );
+        
+        self.send_message_to_device(device_id, SipMethod::Message, Some(&body), Some("Application/MANSCDP+xml")).await
+    }
+
     /// Send an Alarm subscription to a device so it pushes alarm notifications
     pub async fn send_alarm_subscribe(&self, device_id: &str, expires: u32) -> Result<()> {
         self.send_subscribe(device_id, "Alarm", expires).await

@@ -49,50 +49,50 @@ pub async fn device_info(
 ) -> impl IntoResponse {
     let sn = chrono::Utc::now().timestamp_millis() as u32;
     
-    // 查询数据库获取设备信息作为基础（离线时返回本地数据）
-    let local_info = match crate::db::device::get_device_by_device_id(&state.pool, &device_id).await {
-        Ok(Some(d)) => Some(DeviceInfoResponse {
-            device_name: d.name,
-            manufacturer: d.manufacturer,
-            model: d.model,
-            firmware: None,
-            channel_count: None,
-            serial_number: None,
-        }),
-        _ => None,
-    };
-    
-    // 如果设备在线，尝试发送 SIP MESSAGE 查询
+    // 如果设备在线，发送 SIP MESSAGE 查询
     if let Some(ref sip_server) = state.sip_server {
         let server = sip_server.read().await;
         if server.is_device_online(&device_id).await {
+            // 注册 PendingRequest 并发送查询
             let commander = server.device_commander();
             let _req = commander.query_device_info(&device_id, sn);
-            
-            // TODO: 实际实现需要等待响应并返回
-            // 当前返回本地缓存数据作为后备
-            if let Some(info) = local_info {
-                return Json(WVPResult::success(serde_json::json!({
-                    "deviceId": device_id,
-                    "sn": sn,
-                    "data": info,
-                    "source": "cache"
-                }))).into_response();
+            if let Err(e) = server.send_device_info_query(&device_id).await {
+                tracing::warn!("Failed to send device info query: {}", e);
             }
+            
+            // TODO: 实际实现需要等待响应并返回实时数据
+            // 当前返回 202 Accepted，表示查询已发送
+            return Json(WVPResult::success(serde_json::json!({
+                "deviceId": device_id,
+                "sn": sn,
+                "status": "query_sent",
+                "message": "Device info query sent, response will be routed via MESSAGE"
+            }))).into_response();
         }
     }
     
-    // 如果设备不在线或无数据，返回错误
-    if local_info.is_none() {
-        return (axum::http::StatusCode::NOT_FOUND, Json(WVPResult::<()>::error("Device not found"))).into_response();
+    // 设备离线或未注册，返回数据库缓存数据
+    match crate::db::device::get_device_by_device_id(&state.pool, &device_id).await {
+        Ok(Some(d)) => {
+            let info = DeviceInfoResponse {
+                device_name: d.name,
+                manufacturer: d.manufacturer,
+                model: d.model,
+                firmware: None,
+                channel_count: None,
+                serial_number: None,
+            };
+            Json(WVPResult::success(serde_json::json!({
+                "deviceId": device_id,
+                "sn": sn,
+                "data": info,
+                "source": "cache"
+            }))).into_response()
+        }
+        _ => {
+            (axum::http::StatusCode::NOT_FOUND, Json(WVPResult::<()>::error("Device not found"))).into_response()
+        }
     }
-    
-    Json(WVPResult::success(serde_json::json!({
-        "deviceId": device_id,
-        "sn": sn,
-        "data": local_info,
-        "source": "cache"
-    }))).into_response()
 }
 
 /// ============================================================================
@@ -107,30 +107,23 @@ pub async fn device_status(
 ) -> impl IntoResponse {
     let sn = chrono::Utc::now().timestamp_millis() as u32;
     
-    // 检查设备是否在线
+    // 如果设备在线，发送 SIP MESSAGE 查询
     if let Some(ref sip_server) = state.sip_server {
         let server = sip_server.read().await;
         if server.is_device_online(&device_id).await {
+            // 注册 PendingRequest 并发送查询
             let commander = server.device_commander();
             let _req = commander.query_device_status(&device_id, sn);
+            if let Err(e) = server.send_device_status_query(&device_id).await {
+                tracing::warn!("Failed to send device status query: {}", e);
+            }
             
-            // TODO: 实际实现需要等待响应并返回
-            // 返回默认在线状态作为后备
-            let status = DeviceStatusResponse {
-                online: Some("ON".to_string()),
-                status: Some("OK".to_string()),
-                device_time: Some(chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string()),
-                encode_channel_count: None,
-                decode_channel_count: None,
-                record_channel_count: None,
-                storage_space: None,
-            };
-            
+            // TODO: 实际实现需要等待响应并返回实时数据
             return Json(WVPResult::success(serde_json::json!({
                 "deviceId": device_id,
                 "sn": sn,
-                "data": status,
-                "source": "online"
+                "status": "query_sent",
+                "message": "Device status query sent, response will be routed via MESSAGE"
             }))).into_response();
         }
     }
