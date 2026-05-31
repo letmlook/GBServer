@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use crate::sip::gb28181::PendingRequestManager;
 use crate::sip::gb28181::PendingCmdType;
-use crate::sip::gb28181::PendingRequest;
+use crate::sip::gb28181::pending_request::PendingRequest;
 use crate::sip::gb28181::QueryResult;
 
 /// 设备查询配置

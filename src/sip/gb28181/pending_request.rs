@@ -50,7 +50,7 @@ impl PendingCmdType {
 }
 
 /// 等待中的请求元数据
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PendingRequest {
     /// 设备 ID
     pub device_id: String,
@@ -64,8 +64,9 @@ pub struct PendingRequest {
     pub created_at: Instant,
     /// 超时时长
     pub timeout_secs: u64,
-    /// 响应回调（XML 原始字符串）
-    response_sender: Option<oneshot::Sender<String>>,
+    /// 响应回调（不再使用）
+    #[allow(dead_code)]
+    response_sender: Option<()>,
 }
 
 impl PendingRequest {
@@ -74,20 +75,19 @@ impl PendingRequest {
         sn: u32,
         cmd_type: PendingCmdType,
         call_id: String,
-        timeout_secs: u64,
-    ) -> (Self, oneshot::Receiver<String>) {
-        let (tx, rx) = oneshot::channel();
-        let mut req = PendingRequest {
+        timeout_secs: Option<u64>,
+    ) -> PendingRequest {
+        let timeout = timeout_secs.unwrap_or(30); // default 30s timeout
+        let req = PendingRequest {
             device_id,
             sn,
             cmd_type,
             call_id,
             created_at: Instant::now(),
-            timeout_secs,
-            response_sender: Some(tx),
+            timeout_secs: timeout,
+            response_sender: None,
         };
-        req.response_sender.take(); // we don't store the rx here
-        (req, rx)
+        req
     }
 
     pub fn is_expired(&self) -> bool {
@@ -132,13 +132,12 @@ impl PendingRequestManager {
         call_id: &str,
         timeout_secs: Option<u64>,
     ) -> PendingRequest {
-        let timeout = timeout_secs.unwrap_or(self.default_timeout_secs);
-        let (req, _rx) = PendingRequest::new(
+        let req = PendingRequest::new(
             device_id.to_string(),
             sn,
             cmd_type,
             call_id.to_string(),
-            timeout,
+            timeout_secs,
         );
 
         self.by_call_id.insert(call_id.to_string(), req.clone());
@@ -185,7 +184,19 @@ impl PendingRequestManager {
 
         let snap: Vec<_> = self.by_call_id
             .iter()
-            .map(|r| (r.key().clone(), r.clone()))
+            .map(|r| {
+                let key = r.key().clone();
+                let req = PendingRequest {
+                    device_id: r.device_id.clone(),
+                    sn: r.sn,
+                    cmd_type: r.cmd_type,
+                    call_id: r.call_id.clone(),
+                    created_at: r.created_at,
+                    timeout_secs: r.timeout_secs,
+                    response_sender: None,
+                };
+                (key, req)
+            })
             .collect();
 
         for (key, req) in snap {
@@ -217,7 +228,15 @@ impl PendingRequestManager {
         self.by_device_sn
             .iter()
             .filter(|r| r.device_id == device_id)
-            .map(|r| r.clone())
+            .map(|r| PendingRequest {
+                device_id: r.device_id.clone(),
+                sn: r.sn,
+                cmd_type: r.cmd_type,
+                call_id: r.call_id.clone(),
+                created_at: r.created_at,
+                timeout_secs: r.timeout_secs,
+                response_sender: None,
+            })
             .collect()
     }
 
@@ -340,8 +359,6 @@ mod tests {
 // handle_response() 收到 SIP 响应时调用 router.route_response()。
 // handle_message() 收到设备 MESSAGE 响应时调用 router.route_message_response()。
 // ============================================================================
-
-use crate::sip::gb28181::PendingRequestManager;
 
 /// SIP 响应路由分发器
 ///

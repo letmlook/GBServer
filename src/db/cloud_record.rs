@@ -469,6 +469,8 @@ pub async fn insert_from_hook(pool: &Pool, stream_id: &str, file_path: &str, dur
             .and_then(|p| p.to_str())
             .map(|s| s.to_string()),
         file_path: Some(file_path.to_string()),
+        file_size: None,
+        time_len: Some(duration_secs as f64),
     };
     insert(pool, &record).await
 }

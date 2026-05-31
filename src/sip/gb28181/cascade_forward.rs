@@ -301,8 +301,9 @@ impl CascadeForwarder {
     fn build_notify_msg(&self, cmd_type: &str, body: &str, sn: i64) -> Result<String, String> {
         let addr = self.upstream_addr.ok_or("Upstream not configured")?;
         let call_id = format!("fwd_{}_{}", cmd_type.to_lowercase(), sn);
-
-        Ok(format!(
+        let ip = addr.ip().to_string();
+        let port = addr.port().to_string();
+        let msg = format!(
             "MESSAGE sip:upstream@{}:{} SIP/2.0\r\n\
              Via: SIP/2.0/UDP 127.0.0.1:5060;rport;branch=z9hG4bK\r\n\
              From: <sip:{}@127.0.0.1:5060>;tag=fwd-from\r\n\
@@ -312,13 +313,14 @@ impl CascadeForwarder {
              Content-Type: APPLICATION/MANSCDP+XML\r\n\
              Content-Length: {}\r\n\r\n\
              {}",
-            addr.ip(), addr.port(),
+            ip, port,
             self.local_id,
-            addr.ip(), addr.port(),
+            ip, port,
             call_id,
             body.len(),
             body
-        )
+        );
+        Ok(msg)
     }
 }
 

@@ -34,7 +34,7 @@ pub enum SyncState {
 }
 
 /// Catalog 同步会话
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CatalogSyncSession {
     /// 关联的设备 ID
     pub device_id: String,
@@ -110,8 +110,8 @@ impl CatalogSyncSession {
         let start_tag = format!("<{}>", tag);
         let end_tag = format!("</{}>", tag);
         xml.find(&start_tag)
-            .and_then(|b| xml[b..].find(&end_tag))
-            .map(|e| xml[b + start_tag.len()..b + e].to_string())
+            .and_then(|start| xml[start..].find(&end_tag).map(|end_pos| (start, end_pos)))
+            .map(|(start, end_pos)| xml[start + start_tag.len()..start + end_pos].to_string())
     }
 }
 
@@ -189,23 +189,23 @@ impl CatalogSyncManager {
     /// 将会话缓冲中的通道数据解析并写入 DB
     async fn flush_to_db(&self, session: &CatalogSyncSession) -> Result<i32, String> {
         let device_id = &session.device_id;
-        let channels = crate::sip::gb28181::XmlParser::parse_catalog_channels(&session.buffer);
+        let (_, channels) = crate::sip::gb28181::XmlParser::parse_catalog_channels(&session.buffer);
         let mut count = 0;
 
         for ch in channels {
             let status = ch.status == "ON" || ch.status == "online";
-            let parent_id = ch.parent_id.as_deref().unwrap_or(device_id);
+            let parent_id = ch.parent_id.as_ref().unwrap_or(device_id);
 
             db_device::upsert_channel_from_catalog(
                 &self.pool,
                 device_id,
                 &ch.device_id,
-                ch.name.as_deref(),
-                ch.manufacturer.as_deref(),
-                ch.model.as_deref(),
-                ch.owner.as_deref(),
-                ch.civil_code.as_deref(),
-                ch.address.as_deref(),
+                ch.name.as_str(),
+                ch.manufacturer.as_ref().and_then(|s| Some(s.as_str())),
+                ch.model.as_ref().and_then(|s| Some(s.as_str())),
+                ch.owner.as_ref().and_then(|s| Some(s.as_str())),
+                ch.civil_code.as_ref().and_then(|s| Some(s.as_str())),
+                ch.address.as_ref().and_then(|s| Some(s.as_str())),
                 Some(parent_id),
                 status,
                 ch.longitude,
@@ -225,7 +225,7 @@ impl CatalogSyncManager {
 
     /// 获取同步会话状态
     pub fn get_session(&self, device_id: &str) -> Option<CatalogSyncSession> {
-        self.sessions.get(device_id).map(|r| r.clone())
+        self.sessions.get(device_id).map(|r| r.value().clone())
     }
 
     /// 删除同步会话

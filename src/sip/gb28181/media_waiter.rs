@@ -19,7 +19,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
-use tokio::sync::{oneshot, RwLock, Timeout as _};
+use tokio::sync::{oneshot, RwLock};
 
 use crate::sip::gb28181::InviteSessionManager;
 
@@ -35,7 +35,7 @@ pub enum MediaWaitResult {
 }
 
 /// 单个等待器元数据
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct MediaWaiter {
     pub call_id: String,
     pub zlm_stream_id: String,
@@ -144,7 +144,7 @@ impl MediaWaiterManager {
 
         let snap: Vec<_> = self.by_call_id
             .iter()
-            .map(|r| (r.key().clone(), r.clone()))
+            .map(|r| (r.key().clone(), r.value().clone()))
             .collect();
 
         for (call_id, waiter) in snap {

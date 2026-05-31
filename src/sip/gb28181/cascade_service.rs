@@ -169,9 +169,9 @@ impl CascadeService {
 
         let mut count = 0;
         for p in platforms {
-            let mut session = CascadeSession::new(p.platform_id.clone());
+            let mut session = CascadeSession::new(p.server_gb_id.clone().unwrap_or_default());
             session.shared_channel_count = 0;
-            self.sessions.insert(p.platform_id.clone(), session);
+            self.sessions.insert(p.server_gb_id.clone().unwrap_or_default(), session);
             count += 1;
         }
         Ok(count)
@@ -184,15 +184,15 @@ impl CascadeService {
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("Platform {} not found in DB", platform_id))?;
 
-        let host = platform.host.as_ref().ok_or("Platform host not set")?;
+        let host = platform.server_ip.as_ref().ok_or("Platform host not set")?;
         let port = platform.server_port.unwrap_or(5060) as u16;
         let addr: SocketAddr = format!("{}:{}", host, port)
             .parse()
             .map_err(|e| format!("Invalid platform address {}: {}", host, e))?;
 
         let mut session = self.sessions
-            .get_mut(platform_id)
-            .unwrap_or_else(|| self.sessions.insert(platform_id.to_string(), CascadeSession::new(platform_id.to_string())));
+            .entry(platform_id.to_string())
+            .or_insert_with(|| CascadeSession::new(platform_id.to_string()));
 
         session.remote_addr = Some(addr);
         session.state = CascadeState::Registering;

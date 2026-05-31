@@ -6,6 +6,7 @@
 //! 每个回放会话独立于直播会话，支持暂停/恢复/seek/倍速控制。
 
 use std::collections::HashMap;
+use std::ops::Deref;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -128,10 +129,13 @@ impl PlaybackInviteSessionManager {
 
     /// 按 stream_id 获取会话
     pub fn get_by_stream(&self, stream_id: &str) -> Option<PlaybackInviteSession> {
-        self.sessions
-            .values()
-            .find(|s| s.stream_id == stream_id)
-            .cloned()
+        // 遍历 DashMap 查找匹配的 stream_id
+        for item in self.sessions.iter() {
+            if item.stream_id == stream_id {
+                return Some(item.clone());
+            }
+        }
+        None
     }
 
     /// 更新会话

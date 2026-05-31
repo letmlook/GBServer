@@ -22,6 +22,7 @@ pub struct MobilePosition {
 }
 
 /// 插入移动位置参数
+#[derive(Debug, Clone, Default)]
 pub struct MobilePositionInsert {
     pub device_id: String,
     pub channel_id: String,

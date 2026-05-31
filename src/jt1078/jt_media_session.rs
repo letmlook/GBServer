@@ -63,7 +63,7 @@ pub struct JtMediaSession {
 /// 媒体会话管理器
 pub struct JtMediaSessionManager {
     /// phone_channel → session
-    sessions: Arc<DashMap<String, JtMediaSession>>>,
+    sessions: Arc<DashMap<String, JtMediaSession>>,
 }
 
 impl JtMediaSessionManager {
