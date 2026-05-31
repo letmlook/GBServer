@@ -445,12 +445,14 @@ impl Default for CascadeService {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
+    #[cfg(feature = "mysql")]
     #[test]
     fn test_cascade_session_lifecycle() {
-        let mgr = CascadeService::new(Pool::from(
-            sqlx::mysql::MySqlPoolOptions::new().max_connections(1).clone()
+        use super::*;
+        use sqlx::mysql::MySqlPoolOptions;
+        
+        let _mgr = CascadeService::new(Pool::from(
+            MySqlPoolOptions::new().max_connections(1).clone()
         ));
 
         // 模拟加载
@@ -464,8 +466,12 @@ mod tests {
         assert!(!active.needs_refresh()); // 新注册不需要刷新
     }
 
+    #[cfg(feature = "mysql")]
     #[test]
     fn test_cascade_needs_refresh() {
+        use super::*;
+        use chrono::Utc;
+        
         let mut session = CascadeSession::new("plat001".to_string());
         session.set_active(3600);
         // 刚注册完，不需要刷新
@@ -477,8 +483,11 @@ mod tests {
         assert!(session.needs_refresh());
     }
 
+    #[cfg(feature = "mysql")]
     #[test]
     fn test_cascade_failed() {
+        use super::*;
+        
         let mut session = CascadeSession::new("plat001".to_string());
         session.mark_failed("403 Forbidden".to_string());
         assert_eq!(session.state, CascadeState::Failed);

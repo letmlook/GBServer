@@ -346,7 +346,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_timeout_cleanup() {
-        let waiter = JtCommandWaiter::with_timeout(0); // 0s = 立即过期
+        let mut waiter = JtCommandWaiter::new();
+        waiter.default_timeout_secs = 0; // 0s = 立即过期
         waiter.register("13812340001", 0x9101, 1, None);
         assert_eq!(waiter.pending_count(), 1);
 

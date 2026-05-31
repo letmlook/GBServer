@@ -340,7 +340,8 @@ mod tests {
 
     #[test]
     fn test_cleanup_expired() {
-        let mgr = PendingRequestManager::with_timeout(1); // 1 second timeout
+        let mut mgr = PendingRequestManager::new();
+        mgr.default_timeout_secs = 1; // 1 second timeout
         mgr.register("34020000001110000001", 1, PendingCmdType::DeviceInfo, "call-x", None);
         assert_eq!(mgr.pending_count(), 1);
 
