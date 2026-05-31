@@ -10,11 +10,9 @@
 //! - CatalogSubscriptionManager 管理订阅本身的状态（订阅/取消/过期）
 //! - CatalogSyncManager 管理目录同步的进度（多包缓冲/完成状态/通道更新）
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use dashmap::DashMap;
-use tokio::sync::RwLock;
 
 use crate::sip::gb28181::CatalogSubscriptionManager;
 use crate::db::device as db_device;

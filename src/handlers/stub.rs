@@ -1996,7 +1996,7 @@ use axum::{response::IntoResponse, http::StatusCode};
 pub async fn rtp_receive_open(
     State(state): State<AppState>,
 ) -> impl IntoResponse {
-    let zlm = match &state.zlm_client {
+    let _zlm = match &state.zlm_client {
         Some(c) => c,
         None => return (StatusCode::SERVICE_UNAVAILABLE, Json(WVPResult::<()>::error("ZLM not configured"))).into_response(),
     };
@@ -2019,7 +2019,7 @@ pub async fn rtp_receive_close(
 
 /// /api/rtp/send/start — 启动 RTP 发送（SendRtp 由级联模块管理）
 pub async fn rtp_send_start(
-    State(state): State<AppState>,
+    State(_state): State<AppState>,
 ) -> impl IntoResponse {
     Json(WVPResult::success(serde_json::json!({
         "msg": "SendRtp is managed via cascade. Use /api/platform for upstream platform management."

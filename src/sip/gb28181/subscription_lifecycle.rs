@@ -9,13 +9,10 @@
 //! 支持订阅类型：Catalog / MobilePosition / Alarm
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use dashmap::DashMap;
-use tokio::sync::RwLock;
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 
-use crate::sip::gb28181::SubscriptionManager;
 use crate::sip::gb28181::SubscriptionType;
 use crate::db::Pool;
 
@@ -171,7 +168,7 @@ impl NotifyDispatcher {
         use crate::sip::gb28181::XmlParser;
         use crate::db::device as db_device;
 
-        let (sum_num, channels) = XmlParser::parse_catalog_channels(xml);
+        let (_sum_num, channels) = XmlParser::parse_catalog_channels(xml);
         let device_id = XmlParser::get_device_id(xml).unwrap_or_default();
 
         let mut count = 0;
@@ -270,7 +267,7 @@ impl NotifyDispatcher {
     }
 
     /// 处理 Alarm NOTIFY → 落库 + Redis + WS
-    pub async fn handle_alarm_notify(&self, xml: &str, redis: Option<&redis::aio::ConnectionManager>, ws: Option<&crate::handlers::websocket::WsState>) -> Result<(), String> {
+    pub async fn handle_alarm_notify(&self, xml: &str, _redis: Option<&redis::aio::ConnectionManager>, ws: Option<&crate::handlers::websocket::WsState>) -> Result<(), String> {
         use crate::db::alarm as db_alarm;
         use crate::sip::gb28181::XmlParser;
 

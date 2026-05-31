@@ -7,12 +7,10 @@
 //! - PendingRequest 管理命令-应答（DeviceInfo 等查询）
 //! - InviteSessionManager 管理 INVITE 会话（直播/回放/下载/对讲）
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
-use tokio::sync::{oneshot, RwLock};
 
 use crate::sip::gb28181::DeviceQueryManager;
 
@@ -158,7 +156,7 @@ impl PendingRequestManager {
         }
 
         // Try device_sn as fallback
-        if let Some((_, req)) = self.by_device_sn.remove(call_id) {
+        if let Some((_, _req)) = self.by_device_sn.remove(call_id) {
             return Some(xml_response.to_string());
         }
 
@@ -422,7 +420,7 @@ impl ResponseRouter {
     /// 将 body 内容追加到已积累的缓冲中，返回是否收齐。
     pub fn accumulate_record_info(
         &self,
-        call_id: &str,
+        _call_id: &str,
         body: &str,
         buffer: &mut String,
         total_num: i32,

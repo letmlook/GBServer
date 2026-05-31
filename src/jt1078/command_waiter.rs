@@ -10,7 +10,6 @@
 //! 3. 超时清理
 //! 4. 响应解析为结构化类型
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 

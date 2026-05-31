@@ -471,7 +471,7 @@ impl InviteSessionManager {
     }
 
     /// 按媒体服务器 ID 查找活跃会话（用于 ZLM 节点下线时清理）
-    pub async fn get_sessions_by_zlm(&self, media_server_id: &str) -> Vec<InviteSession> {
+    pub async fn get_sessions_by_zlm(&self, _media_server_id: &str) -> Vec<InviteSession> {
         self.sessions.read().await
             .values()
             .filter(|s| s.is_active())

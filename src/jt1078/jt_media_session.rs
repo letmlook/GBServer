@@ -8,7 +8,6 @@
 //! - PlaybackSession: 历史回放（start → control(pause/resume/seek/speed) → stop）
 //! - DownloadSession: 文件下载（start → stop + 文件上传通知）
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use chrono::{DateTime, Utc};
 

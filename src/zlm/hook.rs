@@ -712,7 +712,7 @@ pub async fn handle_webhook(
                 let path = &data.file_path;
                 let duration = data.file_duration as i64;
                 // 提取 stream_id 和时间戳
-                if let Some((device_id, channel_id)) = parse_stream_id(&data.stream) {
+                if let Some((_device_id, _channel_id)) = parse_stream_id(&data.stream) {
                     let _ = crate::db::cloud_record::insert_from_hook(
                         &state.pool, &data.stream, path, duration
                     ).await;

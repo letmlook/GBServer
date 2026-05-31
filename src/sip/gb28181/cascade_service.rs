@@ -14,14 +14,12 @@
 //! 4. 上级点播（INVITE）→ 本级向设备 INVITE → ZLM SendRtp → 上级媒体流
 //! 5. 上级停止（BYE/CANCEL）→ 停止 SendRtp
 
-use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Duration;
 
 use dashmap::DashMap;
 use tokio::sync::RwLock;
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 
 use crate::db::Pool;
 use crate::db::platform as db_platform;
@@ -342,17 +340,17 @@ impl CascadeService {
         }
 
         // 从 SDP 解析目标端口和 SSRC
-        let (media_ip, media_port) = self.parse_sdp_for_upstream(sdp)?;
+        let (_media_ip, media_port) = self.parse_sdp_for_upstream(sdp)?;
 
         // 向设备发起 INVITE（复用现有 PlayService）
         if let Some(ref sip) = self.sip_server {
             let server = sip.read().await;
             // 获取设备地址
-            let device_addr = server.device_manager().get_address(channel_id).await
+            let _device_addr = server.device_manager().get_address(channel_id).await
                 .ok_or_else(|| format!("Device {} not found or offline", channel_id))?;
 
             // 生成 SSRC（上级 SSRC）
-            let upstream_ssrc = self.extract_ssrc_from_sdp(sdp)
+            let _upstream_ssrc = self.extract_ssrc_from_sdp(sdp)
                 .unwrap_or_else(|| format!("0{:0>9}0", &platform_id[..platform_id.len().min(9)]));
 
             tracing::info!(
@@ -409,7 +407,7 @@ impl CascadeService {
         platform_id: &str,
         addr: &SocketAddr,
         username: &str,
-        password: &str,
+        _password: &str,
         call_id: &str,
         expires: u32,
     ) -> String {

@@ -817,7 +817,7 @@ impl SipServer {
         pool: &Pool,
         socket: &Arc<UdpSocket>,
         ws_state: &Option<Arc<WsState>>,
-        pending_request_manager: &Arc<PendingRequestManager>,
+        _pending_request_manager: &Arc<PendingRequestManager>,
     ) -> Result<()> {
         let from = req.header("from").cloned().unwrap_or_default();
         let to = req.header("to").cloned().unwrap_or_default();
@@ -1794,7 +1794,7 @@ impl SipServer {
         session_manager: &Arc<SessionManager>,
         pending_invites: &Arc<DashMap<String, oneshot::Sender<String>>>,
         cascade_registrar: &Option<Arc<CascadeRegistrar>>,
-        pending_request_manager: &Arc<PendingRequestManager>,
+        _pending_request_manager: &Arc<PendingRequestManager>,
     ) -> Result<()> {
         let call_id = resp.headers.get("call-id").cloned().unwrap_or_default();
         let cseq = resp.headers.get("cseq").cloned().unwrap_or_default();
@@ -2073,7 +2073,7 @@ impl SipServer {
         cseq: &str,
         socket: &Arc<UdpSocket>,
         ws_state: &Option<Arc<WsState>>,
-        pending_request_manager: &Arc<PendingRequestManager>,
+        _pending_request_manager: &Arc<PendingRequestManager>,
     ) -> Result<()> {
         let parsed = XmlParser::parse_fields(body);
         

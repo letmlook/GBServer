@@ -12,7 +12,6 @@
 //! - DeviceCommander 是业务层：知道如何 build xml / 如何解析结果 / 如何构造超时错误
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use crate::sip::gb28181::PendingRequestManager;
 use crate::sip::gb28181::PendingCmdType;
@@ -85,7 +84,7 @@ impl DeviceCommander {
     }
 
     /// 查询设备配置参数（ConfigDownload）
-    pub fn query_device_config(&self, device_id: &str, sn: u32, config_type: &str) -> PendingRequest {
+    pub fn query_device_config(&self, device_id: &str, sn: u32, _config_type: &str) -> PendingRequest {
         let call_id = format!("dc_{}_{}", device_id, sn);
         self.pending.register(
             device_id,

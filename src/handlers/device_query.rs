@@ -9,11 +9,10 @@ use axum::{
     response::IntoResponse,
 };
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 
 use crate::AppState;
 use crate::response::WVPResult;
-use crate::sip::gb28181::device_query::{DeviceQueryManager, DeviceInfoResponse, DeviceStatusResponse};
+use crate::sip::gb28181::device_query::{DeviceInfoResponse, DeviceStatusResponse};
 
 /// 查询参数
 #[derive(Debug, Deserialize)]
@@ -183,7 +182,7 @@ pub async fn device_config_query(
 /// 更新设备配置参数
 pub async fn device_config_update(
     State(_state): State<AppState>,
-    Json(payload): Json<serde_json::Value>,
+    Json(_payload): Json<serde_json::Value>,
 ) -> impl IntoResponse {
     // TODO: 实现设备配置更新
     Json(WVPResult::<()>::error("Not implemented")).into_response()

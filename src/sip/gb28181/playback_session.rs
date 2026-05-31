@@ -5,13 +5,9 @@
 //!
 //! 每个回放会话独立于直播会话，支持暂停/恢复/seek/倍速控制。
 
-use std::collections::HashMap;
-use std::ops::Deref;
 use std::sync::Arc;
-use std::time::Duration;
 
 use dashmap::DashMap;
-use tokio::sync::{oneshot, RwLock};
 use chrono::{DateTime, Utc};
 
 /// 回放会话状态
