@@ -222,9 +222,41 @@ pub async fn get_snap(
     State(state): State<AppState>,
     Path((device_id, channel_id)): Path<(String, String)>,
 ) -> impl IntoResponse {
-    // TODO: 实现快照获取
-    // 需要与 ZLM 交互获取抓图
-    Json(WVPResult::<()>::error("Not implemented")).into_response()
+    // 获取 ZLM 客户端
+    if let Some(ref zlm_client) = state.zlm_client {
+        // 构建 RTSP URL
+        let host = zlm_client.ip.as_str();
+        let port = zlm_client.http_port;
+        let stream_id = format!("{}_{}", device_id, channel_id);
+        let rtsp_url = format!("rtsp://{}:{}/live/{}", host, port, stream_id);
+        
+        // 调用 ZLM 抓图
+        match zlm_client.get_snap(&rtsp_url, Some(10.0), None).await {
+            Ok(snap_path) => {
+                // 返回相对路径，前端可以拼接完整 URL
+                let snap_url = format!("/static/snap/{}", snap_path.split('/').last().unwrap_or(&snap_path));
+                Json(WVPResult::success(serde_json::json!({
+                    "deviceId": device_id,
+                    "channelId": channel_id,
+                    "streamId": stream_id,
+                    "snapUrl": snap_url,
+                    "path": snap_path,
+                }))).into_response()
+            }
+            Err(e) => {
+                tracing::warn!("Snap failed for {}/{}: {}", device_id, channel_id, e);
+                Json(WVPResult::success(serde_json::json!({
+                    "deviceId": device_id,
+                    "channelId": channel_id,
+                    "streamId": stream_id,
+                    "error": format!("{}", e),
+                    "snapUrl": null,
+                }))).into_response()
+            }
+        }
+    } else {
+        Json(WVPResult::<()>::error("ZLM not configured")).into_response()
+    }
 }
 
 /// ============================================================================

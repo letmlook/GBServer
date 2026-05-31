@@ -528,6 +528,8 @@ pub struct IdQuery {
     pub id: Option<i32>,
     #[serde(alias = "planId")]
     pub plan_id: Option<i32>,
+    pub page: Option<u32>,
+    pub count: Option<u32>,
 }
 
 pub async fn group_delete(
@@ -1019,6 +1021,19 @@ pub struct CloudRecordDeleteBody {
     pub ids: Option<Vec<String>>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct CloudRecordCollectQuery {
+    #[serde(alias = "recordId")]
+    pub record_id: Option<String>,
+    #[serde(alias = "cloudRecordId")]
+    pub cloud_record_id: Option<String>,
+    #[serde(alias = "deviceId")]
+    pub device_id: Option<String>,
+    #[serde(alias = "channelId")]
+    pub channel_id: Option<String>,
+    pub name: Option<String>,
+}
+
 async fn ensure_cloud_record_task_table(pool: &crate::db::Pool) {
     #[cfg(feature = "postgres")]
     let query = r#"
@@ -1482,6 +1497,118 @@ pub async fn cloud_record_list(
         "total": total,
         "list": paged
     })))
+}
+
+/// ============================================================================
+/// 云录像收藏
+/// ============================================================================
+
+/// 确保收藏表存在
+async fn ensure_record_collect_table(pool: &crate::db::Pool) {
+    let _ = sqlx::query(
+        r#"CREATE TABLE IF NOT EXISTS wvp_record_collect (
+            id SERIAL PRIMARY KEY,
+            record_id VARCHAR(255) NOT NULL UNIQUE,
+            device_id VARCHAR(64),
+            channel_id VARCHAR(64),
+            name VARCHAR(255),
+            create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )"#
+    ).execute(pool).await;
+}
+
+/// GET /api/cloud/record/collect/add
+/// 收藏录像
+pub async fn cloud_record_collect_add(
+    State(state): State<AppState>,
+    Query(q): Query<CloudRecordCollectQuery>,
+) -> Json<WVPResult<serde_json::Value>> {
+    ensure_record_collect_table(&state.pool).await;
+    
+    let record_id = q.record_id.clone().or(q.cloud_record_id).unwrap_or_default();
+    if record_id.is_empty() {
+        return Json(WVPResult::error("record_id is required"));
+    }
+    
+    let device_id = q.device_id.clone().unwrap_or_default();
+    let channel_id = q.channel_id.clone().unwrap_or_default();
+    let name = q.name.clone().unwrap_or_else(|| "收藏录像".to_string());
+    
+    let result = sqlx::query(
+        "INSERT INTO wvp_record_collect (record_id, device_id, channel_id, name) VALUES ($1, $2, $3, $4) ON CONFLICT (record_id) DO NOTHING"
+    )
+    .bind(&record_id)
+    .bind(&device_id)
+    .bind(&channel_id)
+    .bind(&name)
+    .execute(&state.pool)
+    .await;
+    
+    match result {
+        Ok(r) if r.rows_affected() > 0 => {
+            Json(WVPResult::success(serde_json::json!({"recordId": record_id, "status": "collected"})))
+        }
+        _ => {
+            Json(WVPResult::success(serde_json::json!({"recordId": record_id, "status": "already_collected"})))
+        }
+    }
+}
+
+/// DELETE /api/cloud/record/collect/delete
+/// 取消收藏录像
+pub async fn cloud_record_collect_delete(
+    State(state): State<AppState>,
+    Json(body): Json<CloudRecordCollectQuery>,
+) -> Json<WVPResult<serde_json::Value>> {
+    ensure_record_collect_table(&state.pool).await;
+    
+    let record_id = body.record_id.clone().or(body.cloud_record_id).unwrap_or_default();
+    if record_id.is_empty() {
+        return Json(WVPResult::error("record_id is required"));
+    }
+    
+    sqlx::query("DELETE FROM wvp_record_collect WHERE record_id = $1")
+        .bind(&record_id)
+        .execute(&state.pool)
+        .await
+        .ok();
+    
+    Json(WVPResult::success(serde_json::json!({"recordId": record_id, "status": "deleted"})))
+}
+
+/// GET /api/cloud/record/collect/list
+/// 获取收藏列表
+pub async fn cloud_record_collect_list(
+    State(state): State<AppState>,
+    Query(q): Query<IdQuery>,
+) -> Json<WVPResult<serde_json::Value>> {
+    ensure_record_collect_table(&state.pool).await;
+    
+    let page = q.page.unwrap_or(1);
+    let count = q.count.unwrap_or(20).min(100);
+    let offset = (page.saturating_sub(1) * count) as i64;
+    
+    let records: Vec<(i32, String, String, String, String, String)> = sqlx::query_as(
+        "SELECT id, record_id, device_id, channel_id, name, create_time::text FROM wvp_record_collect ORDER BY id DESC LIMIT $1 OFFSET $2"
+    )
+    .bind(count as i64)
+    .bind(offset)
+    .fetch_all(&state.pool)
+    .await
+    .unwrap_or_default();
+    
+    let list: Vec<serde_json::Value> = records.into_iter().map(|r| {
+        serde_json::json!({
+            "id": r.0,
+            "recordId": r.1,
+            "deviceId": r.2,
+            "channelId": r.3,
+            "name": r.4,
+            "createTime": r.5
+        })
+    }).collect();
+    
+    Json(WVPResult::success(serde_json::json!({"total": list.len(), "list": list})))
 }
 
 // ========== record_plan ==========

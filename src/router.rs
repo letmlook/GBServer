@@ -434,6 +434,18 @@ pub fn app(state: AppState) -> Router<AppState> {
         )
         .route("/api/cloud/record/list", get(stub::cloud_record_list))
         .route(
+            "/api/cloud/record/collect/add",
+            get(stub::cloud_record_collect_add),
+        )
+        .route(
+            "/api/cloud/record/collect/delete",
+            delete(stub::cloud_record_collect_delete),
+        )
+        .route(
+            "/api/cloud/record/collect/list",
+            get(stub::cloud_record_collect_list),
+        )
+        .route(
             "/api/talk/start/:device_id/:channel_id",
             get(talk::talk_start),
         )
