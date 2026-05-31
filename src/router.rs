@@ -62,6 +62,14 @@ pub fn app(state: AppState) -> Router<AppState> {
             get(device::query_channels),
         )
         .route(
+            "/api/device/query/statistics/keepalive",
+            get(device::device_keepalive_statistics),
+        )
+        .route(
+            "/api/device/query/statistics/register",
+            get(device::device_register_statistics),
+        )
+        .route(
             "/api/device/query/sync_status",
             get(device_stub::sync_status),
         )

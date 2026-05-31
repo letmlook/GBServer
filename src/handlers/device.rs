@@ -78,3 +78,66 @@ pub struct ChannelPage {
     pub page: u64,
     pub size: u64,
 }
+
+/// GET /api/device/query/statistics/keepalive
+/// 设备保活统计
+pub async fn device_keepalive_statistics(
+    State(state): State<AppState>,
+) -> Json<WVPResult<serde_json::Value>> {
+    let online_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM wvp_device WHERE on_line = true"
+    )
+    .fetch_one(&state.pool)
+    .await
+    .unwrap_or(0);
+
+    let offline_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM wvp_device WHERE on_line = false OR on_line IS NULL"
+    )
+    .fetch_one(&state.pool)
+    .await
+    .unwrap_or(0);
+
+    let total = online_count + offline_count;
+
+    Json(WVPResult::success(serde_json::json!({
+        "online": online_count,
+        "offline": offline_count,
+        "total": total,
+        "onlineRate": if total > 0 { online_count as f64 / total as f64 * 100.0 } else { 0.0 }
+    })))
+}
+
+/// GET /api/device/query/statistics/register
+/// 设备注册统计
+pub async fn device_register_statistics(
+    State(state): State<AppState>,
+) -> Json<WVPResult<serde_json::Value>> {
+    let today_register: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM wvp_device WHERE DATE(create_time) = CURRENT_DATE"
+    )
+    .fetch_one(&state.pool)
+    .await
+    .unwrap_or(0);
+
+    let total_devices: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM wvp_device"
+    )
+    .fetch_one(&state.pool)
+    .await
+    .unwrap_or(0);
+
+    let active_devices: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM wvp_device WHERE on_line = true"
+    )
+    .fetch_one(&state.pool)
+    .await
+    .unwrap_or(0);
+
+    Json(WVPResult::success(serde_json::json!({
+        "todayRegister": today_register,
+        "totalDevices": total_devices,
+        "activeDevices": active_devices,
+        "inactiveDevices": total_devices - active_devices
+    })))
+}
