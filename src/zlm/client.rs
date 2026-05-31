@@ -536,3 +536,80 @@ impl std::fmt::Debug for ZlmClient {
             .finish()
     }
 }
+
+// ============================================================================
+// Phase 4.2: ZLM 媒体节点健康状态扩展
+// ============================================================================
+
+/// ZLM 节点健康状态（新增到 ZlmClient）
+#[derive(Debug, Clone)]
+pub struct ZlmHealthState {
+    /// 节点是否在线
+    pub online: bool,
+    /// 最后心跳时间（秒时间戳）
+    pub last_keepalive: i64,
+    /// 当前活跃流数量
+    pub stream_count: i32,
+    /// 当前 RTP Server 数量
+    pub rtp_server_count: i32,
+    /// 最后查询错误
+    pub last_error: Option<String>,
+}
+
+impl ZlmClient {
+    /// 探测节点是否可达（轻量级 ZLM API 检查）
+    pub async fn is_alive(&self) -> bool {
+        match self.get_api_version().await {
+            Ok(_) => true,
+            Err(_) => false,
+        }
+    }
+
+    /// 获取当前活跃流数量（从 ZLM API 获取）
+    pub async fn get_stream_count(&self) -> Result<i32, reqwest::Error> {
+        #[derive(Deserialize)]
+        struct StreamListResp {
+            #[serde(rename = "code")]
+            code: i32,
+            #[serde(rename = "data")]
+            data: Option<Vec<serde_json::Value>>,
+        }
+        let resp: StreamListResp = self.http
+            .get(format!("{}/api/stream/list", self.base_url))
+            .query(&[("secret", &self.secret)])
+            .send()
+            .await?
+            .json()
+            .await?;
+        Ok(resp.data.map(|v| v.len() as i32).unwrap_or(0))
+    }
+
+    /// 获取 API 版本（用于存活探测）
+    pub async fn get_api_version(&self) -> Result<String, reqwest::Error> {
+        #[derive(Deserialize)]
+        struct VersionResp {
+            #[serde(rename = "code")]
+            code: i32,
+            #[serde(rename = "version")]
+            version: Option<String>,
+        }
+        let resp: VersionResp = self.http
+            .get(format!("{}/api/version", self.base_url))
+            .send()
+            .await?
+            .json()
+            .await?;
+        Ok(resp.version.unwrap_or_else(|| "unknown".to_string()))
+    }
+
+    /// 获取节点健康状态快照
+    pub async fn health_snapshot(&self) -> ZlmHealthState {
+        ZlmHealthState {
+            online: self.is_alive().await,
+            last_keepalive: chrono::Utc::now().timestamp(),
+            stream_count: self.get_stream_count().await.unwrap_or(-1),
+            rtp_server_count: 0, // 可通过 get_rtp_server_list API 获取
+            last_error: None,
+        }
+    }
+}

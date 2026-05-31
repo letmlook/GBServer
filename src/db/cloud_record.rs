@@ -447,3 +447,28 @@ pub async fn delete_before_time(pool: &Pool, before_time: i64) -> sqlx::Result<u
         .await?;
     Ok(r.rows_affected())
 }
+
+/// Phase 4.1: 从 ZLM on_record_file hook 插入录像记录
+pub async fn insert_from_hook(pool: &Pool, stream_id: &str, file_path: &str, duration_secs: i64) -> sqlx::Result<i64> {
+    let now = chrono::Utc::now().timestamp();
+    let start = now - duration_secs;
+    let record = CloudRecordInsert {
+        app: "record".to_string(),
+        stream: stream_id.to_string(),
+        call_id: None,
+        start_time: Some(start),
+        end_time: Some(now),
+        media_server_id: None,
+        server_id: None,
+        file_name: std::path::Path::new(file_path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|s| s.to_string()),
+        folder: std::path::Path::new(file_path)
+            .parent()
+            .and_then(|p| p.to_str())
+            .map(|s| s.to_string()),
+        file_path: Some(file_path.to_string()),
+    };
+    insert(pool, &record).await
+}

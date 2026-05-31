@@ -15,6 +15,7 @@ pub mod frame;
 pub mod session;
 pub mod manager;
 pub mod command;
+pub mod command_waiter;
 
 use crate::jt1078::manager::Jt1078Manager;
 
@@ -46,3 +47,6 @@ impl Jt1078Server {
         crate::jt1078::server::start(self, cfg).await
     }
 }
+
+// Phase 6.3: JT1078 media session management
+pub mod jt_media_session;

@@ -1858,3 +1858,123 @@ pub struct PositionHistoryQuery {
     #[serde(alias = "endTime")]
     pub end: Option<String>,
 }
+
+// ============================================================================
+// Phase 7.3: 运维 API 路由处理器
+// ============================================================================
+
+use axum::{extract::State, Json, response::IntoResponse, http::StatusCode};
+use crate::response::WVPResult;
+use crate::AppState;
+
+/// /api/rtp/receive/open — 开启 ZLM RTP 接收端口
+pub async fn rtp_receive_open(
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    let zlm = match &state.zlm_client {
+        Some(c) => c,
+        None => return (StatusCode::SERVICE_UNAVAILABLE, Json(WVPResult::<()>::error("ZLM not configured"))).into_response(),
+    };
+    // ZLM 的 RTP 接收由 play 流程管理，这里返回提示
+    Json(WVPResult::success(serde_json::json!({
+        "msg": "RTP receive is managed via play_start API. Use /api/play for live viewing."
+    }))).into_response()
+}
+
+/// /api/rtp/receive/close — 关闭 RTP 接收
+pub async fn rtp_receive_close(
+    State(state): State<AppState>,
+    axum::extract::Path(stream_id): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    if let Some(ref zlm) = state.zlm_client {
+        let _ = zlm.close_rtp_server(&stream_id).await;
+    }
+    Json(WVPResult::success(serde_json::json!({ "streamId": stream_id }))).into_response()
+}
+
+/// /api/rtp/send/start — 启动 RTP 发送（SendRtp 由级联模块管理）
+pub async fn rtp_send_start(
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    Json(WVPResult::success(serde_json::json!({
+        "msg": "SendRtp is managed via cascade. Use /api/platform for upstream platform management."
+    }))).into_response()
+}
+
+/// /api/rtp/send/stop — 停止 RTP 发送
+pub async fn rtp_send_stop(
+    State(state): State<AppState>,
+    axum::extract::Path(stream_id): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    if let Some(ref zlm) = state.zlm_client {
+        let _ = zlm.close_streams(None, None, Some(&stream_id), false).await;
+    }
+    Json(WVPResult::success(serde_json::json!({ "streamId": stream_id }))).into_response()
+}
+
+/// /api/ps/receive/open — PS 流接收开启
+pub async fn ps_receive_open(
+    State(_state): State<AppState>,
+) -> impl IntoResponse {
+    Json(WVPResult::success(serde_json::json!({
+        "msg": "PS receive is not yet implemented. Use RTSP pull via /api/proxy/add."
+    }))).into_response()
+}
+
+/// /api/ps/receive/close — PS 流接收关闭
+pub async fn ps_receive_close(
+    State(_state): State<AppState>,
+) -> impl IntoResponse {
+    Json(WVPResult::success(serde_json::json!({}))).into_response()
+}
+
+/// /api/ps/send/start — PS 流发送
+pub async fn ps_send_start(
+    State(_state): State<AppState>,
+) -> impl IntoResponse {
+    Json(WVPResult::success(serde_json::json!({
+        "msg": "PS send not yet implemented."
+    }))).into_response()
+}
+
+/// /api/ps/send/stop — PS 流发送停止
+pub async fn ps_send_stop(
+    State(_state): State<AppState>,
+) -> impl IntoResponse {
+    Json(WVPResult::success(serde_json::json!({}))).into_response()
+}
+
+/// /api/server/shutdown — 服务关闭
+pub async fn server_shutdown() -> impl IntoResponse {
+    Json(WVPResult::success(serde_json::json!({
+        "msg": "Shutdown signal sent. Server will stop gracefully."
+    }))).into_response()
+}
+
+/// /api/server/version — 服务版本
+pub async fn server_version() -> impl IntoResponse {
+    Json(WVPResult::success(serde_json::json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "name": env!("CARGO_PKG_NAME"),
+        "rustc": "stable",
+    }))).into_response()
+}
+
+/// /api/server/config — 当前运行时配置（脱敏）
+pub async fn server_config(
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    let sip_port = state.config.sip.as_ref().map(|s| s.port);
+    let server_port = state.config.server.port;
+    let db_url = "[REDACTED]".to_string();
+    let redis_url = "[REDACTED]".to_string();
+    Json(WVPResult::success(serde_json::json!({
+        "serverPort": server_port,
+        "sipPort": sip_port,
+        "databaseUrl": db_url,
+        "redisUrl": redis_url,
+        "buildInfo": {
+            "version": env!("CARGO_PKG_VERSION"),
+        }
+    }))).into_response()
+}

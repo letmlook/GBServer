@@ -57,3 +57,57 @@ mod tests {
         assert_eq!(user["username"], "admin");
     }
 }
+
+// ============================================================================
+// SIP 模拟测试数据
+// ============================================================================
+
+/// 模拟通道数据（用于 Catalog 测试）
+#[derive(Debug, Clone)]
+pub struct SimChannel {
+    pub device_id: String,
+    pub name: String,
+    pub manufacturer: String,
+    pub model: String,
+    pub owner: String,
+    pub civil_code: String,
+    pub address: String,
+    pub parental: i32,
+    pub parent_id: String,
+    pub safety_way: i32,
+    pub register_way: i32,
+    pub cert_num: String,
+    pub certifiable: i32,
+    pub err_code: i32,
+    pub ptz_type: i32,
+    pub status: String,
+}
+
+impl SimChannel {
+    /// 创建通道数组（用于多包 Catalog 测试）
+    pub fn channel_set(count: usize, device_id_base: &str) -> Vec<SimChannel> {
+        (0..count)
+            .map(|i| {
+                let ch_id = format!("{}{:04}", device_id_base, i + 1);
+                SimChannel {
+                    device_id: ch_id,
+                    name: format!("Camera-{:04}", i + 1),
+                    manufacturer: "TestVendor".to_string(),
+                    model: "IPC-100".to_string(),
+                    owner: "Admin".to_string(),
+                    civil_code: "110000".to_string(),
+                    address: format!("Address-{:04}", i + 1),
+                    parental: 0,
+                    parent_id: device_id_base.to_string(),
+                    safety_way: 0,
+                    register_way: 1,
+                    cert_num: format!("CERT{:06}", i + 1),
+                    certifiable: 0,
+                    err_code: 0,
+                    ptz_type: 2,
+                    status: "ON".to_string(),
+                }
+            })
+            .collect()
+    }
+}

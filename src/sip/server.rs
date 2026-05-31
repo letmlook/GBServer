@@ -32,6 +32,8 @@ use crate::sip::gb28181::nat_helper::NatHelper;
 use crate::sip::transport::tcp::{TcpConnectionManager, TcpListener};
 use crate::zlm::ZlmClient;
 use crate::cascade::CascadeRegistrar;
+use crate::sip::gb28181::pending_request::PendingRequestManager;
+use crate::sip::gb28181::media_waiter::MediaWaiterManager;
 
 pub struct SipServer {
     config: Arc<SipConfig>,
@@ -54,6 +56,8 @@ pub struct SipServer {
     stream_reconnect_manager: Arc<StreamReconnectManager>,
     nat_helper: Arc<NatHelper>,
     cascade_registrar: Option<Arc<CascadeRegistrar>>,
+    pending_request_manager: Arc<PendingRequestManager>,
+    media_waiter_manager: Arc<MediaWaiterManager>,
 }
 
 impl SipServer {
@@ -89,6 +93,8 @@ impl SipServer {
             stream_reconnect_manager: Arc::new(stream_reconnect),
             nat_helper,
             cascade_registrar: None,
+            pending_request_manager: Arc::new(PendingRequestManager::new()),
+            media_waiter_manager: Arc::new(MediaWaiterManager::new()),
         }
     }
 
@@ -203,6 +209,19 @@ impl SipServer {
                 }
                 tokio::time::sleep(Duration::from_secs(30)).await;
             }
+
+
+        });
+        // Phase 1.3: PendingRequest 超时清理后台任务
+        let pending_mgr = self.pending_request_manager.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(10)).await;
+                let removed = pending_mgr.cleanup_expired();
+                for call_id in removed {
+                    tracing::warn!("PendingRequest timeout cleaned: {}", call_id);
+                }
+            }
         });
 
         dbg_upsert_device(&self.pool, &self.config.device_id, "WVP Server", Some("Rust"), Some("GBServer"), None, None, None, None, None, true, "zlmediakit-1".to_string()).await?;
@@ -221,6 +240,7 @@ impl SipServer {
         let catalog_subscription_manager = self.catalog_subscription_manager.clone();
         let zlm_client = self.zlm_client.clone();
         let pool = self.pool.clone();
+        let pending_request_manager = self.pending_request_manager.clone();
         let tcp_connection_manager = self.tcp_connection_manager.clone();
 
         let tcp_listener = self.tcp_listener.write().await.take();
@@ -236,6 +256,7 @@ impl SipServer {
         let udp_pool = pool.clone();
         let udp_ws_state = self.ws_state.clone();
         let udp_pending_invites = self.pending_invites.clone();
+        let udp_pending_request = pending_request_manager.clone();
         let udp_cascade_registrar = self.cascade_registrar.clone();
         
         tokio::spawn(async move {
@@ -258,8 +279,9 @@ impl SipServer {
                         let ws_state = udp_ws_state.clone();
                         let pending_invites = udp_pending_invites.clone();
                         let cascade_registrar = udp_cascade_registrar.clone();
+                        let pending_request_manager = udp_pending_request.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = Self::handle_packet(&data, addr, &config, &device_manager, &session_manager, &invite_session_manager, &talk_manager, &catalog_subscription_manager, &zlm_client, &pool, &socket_for_response, false, &ws_state, &pending_invites, &cascade_registrar).await {
+                            if let Err(e) = Self::handle_packet(&data, addr, &config, &device_manager, &session_manager, &invite_session_manager, &talk_manager, &catalog_subscription_manager, &zlm_client, &pool, &socket_for_response, false, &ws_state, &pending_invites, &cascade_registrar, &pending_request_manager).await {
                                 tracing::error!("SIP handler error: {}", e);
                             }
                         });
@@ -669,8 +691,10 @@ impl SipServer {
         socket: &Arc<UdpSocket>,
         _is_tcp: bool,
         ws_state: &Option<Arc<WsState>>,
+        pending_request_manager: &Arc<PendingRequestManager>,
         pending_invites: &Arc<DashMap<String, oneshot::Sender<String>>>,
         cascade_registrar: &Option<Arc<CascadeRegistrar>>,
+        pending_request_manager: &Arc<PendingRequestManager>,
     ) -> Result<()> {
         let msg = Parser::parse(data)?;
         match msg {
@@ -710,6 +734,7 @@ impl SipServer {
         pool: &Pool,
         socket: &Arc<UdpSocket>,
         ws_state: &Option<Arc<WsState>>,
+        pending_request_manager: &Arc<PendingRequestManager>,
     ) -> Result<()> {
         let method = req.method;
         match method {
@@ -717,7 +742,7 @@ impl SipServer {
                 Self::handle_register(req, addr, config, device_manager, pool, socket, ws_state).await
             }
             SipMethod::Message => {
-                Self::handle_message(req, addr, config, device_manager, pool, socket, ws_state, zlm_client).await
+                Self::handle_message(req, addr, config, device_manager, pool, socket, ws_state, zlm_client, pending_request_manager).await
             }
             SipMethod::Invite => {
                 Self::handle_invite(req, addr, config, session_manager, invite_session_manager, talk_manager, zlm_client, pool, socket).await
@@ -767,6 +792,7 @@ impl SipServer {
         pool: &Pool,
         socket: &Arc<UdpSocket>,
         ws_state: &Option<Arc<WsState>>,
+        pending_request_manager: &Arc<PendingRequestManager>,
     ) -> Result<()> {
         let from = req.header("from").cloned().unwrap_or_default();
         let to = req.header("to").cloned().unwrap_or_default();
@@ -861,6 +887,7 @@ impl SipServer {
         pool: &Pool,
         socket: &Arc<UdpSocket>,
         ws_state: &Option<Arc<WsState>>,
+        pending_request_manager: &Arc<PendingRequestManager>,
         zlm_client: &Option<Arc<ZlmClient>>,
     ) -> Result<()> {
         let from = req.header("from").cloned().unwrap_or_default();
@@ -872,6 +899,22 @@ impl SipServer {
 
         let device_id = Self::extract_device_id(&from).unwrap_or_default();
         let sn = req.header("cseq").and_then(|s| s.split_whitespace().nth(1)).unwrap_or("1").to_string();
+
+
+        // Phase 1.3: 路由 MESSAGE 响应到 PendingRequestManager
+        // 设备发送的 MESSAGE body 中包含 <Response> 时，调用 complete() 完成等待中的请求
+        if let Some(ref body) = req.body {
+            let is_response = body.contains("<Response") || body.contains("<Response>");
+            if is_response {
+                use crate::sip::gb28181::ResponseRouter;
+                let router = ResponseRouter::new(pending_request_manager.clone());
+                if let Some((cmd_type, xml)) = router.route_message_response(body, \&call_id) {
+                    tracing::debug!("PendingRequest completed for CallID {}: {:?}", call_id, cmd_type);
+                    // 解析结构化结果（可选：存入 DB 或通过 channel 通知调用方）
+                    let _result = pending_request_manager.parse_response(cmd_type, \&xml);
+                }
+            }
+        }
 
         if let Some(body) = &req.body {
             let cmd_type = XmlParser::get_cmd_type(body);
@@ -1726,6 +1769,7 @@ impl SipServer {
         session_manager: &Arc<SessionManager>,
         pending_invites: &Arc<DashMap<String, oneshot::Sender<String>>>,
         cascade_registrar: &Option<Arc<CascadeRegistrar>>,
+        pending_request_manager: &Arc<PendingRequestManager>,
     ) -> Result<()> {
         let call_id = resp.headers.get("call-id").cloned().unwrap_or_default();
         let cseq = resp.headers.get("cseq").cloned().unwrap_or_default();
@@ -2004,6 +2048,7 @@ impl SipServer {
         cseq: &str,
         socket: &Arc<UdpSocket>,
         ws_state: &Option<Arc<WsState>>,
+        pending_request_manager: &Arc<PendingRequestManager>,
     ) -> Result<()> {
         let parsed = XmlParser::parse_fields(body);
         
@@ -2818,6 +2863,80 @@ f=v/1/96/1/2/1/1/0
         }
     }
     
+
+    /// 增强版播放 INVITE：SIP 200 OK 后等待 ZLM Hook 媒体到达
+    ///
+    /// 流程：
+    ///   1. 注册 MediaWaiter（等待 ZLM Hook 触发）
+    ///   2. 发送 SIP INVITE，等待 200 OK（15s）
+    ///   3. 等待 ZLM media-arrival hook（15s）
+    ///   4. 成功：返回 stream_id 和播放地址；失败：清理资源
+    pub async fn send_play_invite_and_wait_media(
+        &self,
+        device_id: &str,
+        channel_id: &str,
+        media_port: u16,
+        zlm_stream_id: &str,
+        ssrc: Option<&str>,
+        timeout_secs: u64,
+    ) -> Result<(String, String)> {
+        let call_id = format!("play_{}_{}", device_id, chrono::Utc::now().timestamp_millis());
+
+        // 1. 注册媒体等待器（早于发包，防止竞态）
+        let waiter_key: String;
+        let media_rx: tokio::sync::oneshot::Receiver<MediaWaitResult>;
+        {
+            let (wk, rx) = self.media_waiter_manager.register(
+                &call_id, zlm_stream_id, "rtp", timeout_secs,
+            );
+            waiter_key = wk;
+            media_rx = rx;
+        }
+
+        // 2. 发送 SIP INVITE，等待 200 OK
+        match self.send_play_invite_and_wait(device_id, channel_id, media_port, ssrc).await {
+            Ok(_) => {
+                tracing::info!("SIP 200 OK for call_id={}, now waiting ZLM media...", call_id);
+            }
+            Err(e) => {
+                // SIP 失败，清理等待器
+                let _ = self.media_waiter_manager.cleanup_expired();
+                return Err(e);
+            }
+        }
+
+        // 3. 等待 ZLM Hook 触发 media-ready
+        match tokio::time::timeout(Duration::from_secs(timeout_secs), media_rx).await {
+            Ok(Ok(MediaWaitResult::MediaReady { zlm_stream_id: zid, app })) => {
+                tracing::info!("Media ready: stream_id={} app={}", zid, app);
+                // 4. 更新 InviteSession 状态为 Active
+                self.invite_session_manager.activate(&call_id).await;
+                Ok((call_id, zid))
+            }
+            Ok(Err(_)) => {
+                let _ = self.media_waiter_manager.cleanup_expired();
+                Err(anyhow::anyhow!("Media wait channel closed unexpectedly"))
+            }
+            Err(_) => {
+                let _ = self.media_waiter_manager.cleanup_expired();
+                Err(anyhow::anyhow!(
+                    "ZLM media timeout – stream did not arrive in {}s", timeout_secs
+
+    /// 通过 stream_id 触发 MediaWaiter（ZLM Hook 调用）
+    /// 返回 true 表示等待者被成功唤醒，false 表示没有等待中的请求
+    pub async fn notify_media_ready_by_stream(
+        &self,
+        stream_id: &str,
+        app: &str,
+    ) -> bool {
+        self.media_waiter_manager.resolve_by_stream(stream_id, app)
+    }
+
+                ))
+            }
+        }
+    }
+
     pub async fn send_playback_invite(&self, device_id: &str, channel_id: &str, start_time: &str, end_time: &str) -> Result<()> {
         let socket = self.socket.read().await;
         let socket = socket.as_ref().ok_or_else(|| anyhow::anyhow!("Socket not initialized"))?;
