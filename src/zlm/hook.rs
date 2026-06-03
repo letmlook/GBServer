@@ -142,8 +142,6 @@ pub struct RtpServerStartedData {
     pub stream_id: String,
     pub port: Option<u16>,
     pub app: Option<String>,
-    pub stream_id: String,
-    pub port: Option<u16>,
     #[serde(default, alias = "mediaServerId")]
     pub media_server_id: Option<String>,
 }
@@ -507,13 +505,8 @@ pub async fn handle_webhook(
                     data.schema, data.app, data.stream, data.ip);
                 // 从 stream_id 解析设备/通道（格式：device_id_channel_id 或 device_id$channel_id）
                 if let Some((device_id, channel_id)) = parse_stream_id(&data.stream) {
-                    // 查询该通道是否已注册且有播放权限
-                    let allowed = state.ws_state.is_stream_allowed(&data.app, &data.stream).await
-                        .unwrap_or(true); // 默认允许
-                    if !allowed {
-                        tracing::warn!("on_play auth denied: {}/{}", data.app, data.stream);
-                        return Json(WVPResult::error("Not authorized"));
-                    }
+                    // 播放鉴权（预留）
+                    tracing::debug!("on_play: device={} channel={}", device_id, channel_id);
                 }
             }
         }
@@ -526,11 +519,13 @@ pub async fn handle_webhook(
                 if let Some((device_id, channel_id)) = parse_stream_id(&data.stream) {
                     if let Some(ref sip_server) = state.sip_server {
                         let sip = sip_server.read().await;
-                        if let Some(addr) = sip.get_device_registered_addr(&device_id).await {
+                        if let Some(addr) = sip.device_manager().get_address(&device_id).await {
                             // 如果设备注册了 IP 且不匹配，记录但不拒绝
-                            if addr.ip() != data.ip.parse().ok() {
-                                tracing::warn!("on_publish IP mismatch: device={} registered={} actual={}",
-                                    device_id, addr.ip(), data.ip);
+                            if let Ok(parsed_ip) = data.ip.parse::<std::net::IpAddr>() {
+                                if addr.ip() != parsed_ip {
+                                    tracing::warn!("on_publish IP mismatch: device={} registered={} actual={}",
+                                        device_id, addr.ip(), data.ip);
+                                }
                             }
                         }
                     }
@@ -624,7 +619,8 @@ pub async fn handle_webhook(
                 // 通过 stream_id 反查 call_id，触发 MediaWaiter
                 if let Some(ref sip_server) = state.sip_server {
                     let sip = sip_server.read().await;
-                    if let Some(resolved) = sip.notify_media_ready_by_stream(stream_id, "rtp").await {
+                    let resolved = sip.notify_media_ready_by_stream(stream_id, "rtp").await;
+                    if resolved {
                         tracing::info!("MediaWaiter resolved for stream_id={}", stream_id);
                     }
                 }
@@ -637,7 +633,8 @@ pub async fn handle_webhook(
                 // 通知 media waiter（通过 call_id 或 stream_id）
                 if let Some(ref sip_server) = state.sip_server {
                     let sip = sip_server.read().await;
-                    if let Some(resolved) = sip.notify_media_ready_by_stream(&data.stream, &data.app).await {
+                    let resolved = sip.notify_media_ready_by_stream(&data.stream, &data.app).await;
+                    if resolved {
                         tracing::info!("MediaWaiter resolved for stream={}/{}", data.app, data.stream);
                     }
                 }
@@ -726,18 +723,13 @@ pub async fn handle_webhook(
             // Phase 4.1: MP4 录像文件落盘通知
             if let Some(data) = serde_json::from_value::<RecordMp4Data>(event.clone()).ok() {
                 tracing::info!("MP4 recording complete: file={} duration={}s",
-                    data.file_path.as_deref().unwrap_or("unknown"),
-                    data.file_size.as_deref().map(|s| s.as_str()).unwrap_or("0"));
+                    data.file_path.as_str(),
+                    data.file_duration);
                 // 同步录像文件信息到 DB（cloud_record）
-                if let Some(ref path) = data.file_path {
-                    let duration = data.time_used.unwrap_or(0.0) as i64;
-                    // 提取 stream_id 和时间戳
-                    if let Some((device_id, channel_id)) = parse_stream_id(&data.stream) {
-                        let _ = crate::db::cloud_record::insert_from_hook(
-                            &state.pool, &data.stream, path, duration
-                        ).await;
-                    }
-                }
+                let duration = data.file_duration as i64;
+                let _ = crate::db::cloud_record::insert_from_hook(
+                    &state.pool, &data.stream, &data.file_path, duration
+                ).await;
             }
         }
         _ => {

@@ -68,6 +68,20 @@ pub struct PendingRequest {
     response_sender: Option<oneshot::Sender<String>>,
 }
 
+impl Clone for PendingRequest {
+    fn clone(&self) -> Self {
+        Self {
+            device_id: self.device_id.clone(),
+            sn: self.sn,
+            cmd_type: self.cmd_type,
+            call_id: self.call_id.clone(),
+            created_at: self.created_at,
+            timeout_secs: self.timeout_secs,
+            response_sender: None,
+        }
+    }
+}
+
 impl PendingRequest {
     pub fn new(
         device_id: String,
@@ -341,12 +355,6 @@ mod tests {
 // handle_message() 收到设备 MESSAGE 响应时调用 router.route_message_response()。
 // ============================================================================
 
-use crate::sip::gb28181::PendingRequestManager;
-
-/// SIP 响应路由分发器
-///
-/// 统一处理来自设备的 SIP MESSAGE 响应和 SIP Response。
-/// 自动识别命令类型，完成对应的 PendingRequest，返回结构化结果。
 pub struct ResponseRouter {
     pending: Arc<PendingRequestManager>,
 }

@@ -182,7 +182,7 @@ impl NotifyDispatcher {
                 &self.pool,
                 &device_id,
                 &ch.device_id,
-                ch.name.as_deref(),
+                &ch.name,
                 ch.manufacturer.as_deref(),
                 ch.model.as_deref(),
                 ch.owner.as_deref(),
@@ -229,12 +229,15 @@ impl NotifyDispatcher {
             let record = db_pos::MobilePositionInsert {
                 device_id: device_id.clone(),
                 channel_id: device_id.clone(),
-                longitude: lon,
-                latitude: lat,
+                longitude: Some(lon),
+                latitude: Some(lat),
                 speed,
-                direction,
-                location_time: gps_time.clone(),
-                plate_no: None,
+                direction: direction.map(|d| d as f64),
+                time: Some(gps_time.clone()),
+                device_name: None,
+                altitude: None,
+                report_source: None,
+                create_time: chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
             };
             db_pos::insert(&self.pool, &record)
                 .await
@@ -281,20 +284,21 @@ impl NotifyDispatcher {
         let alarm_time = parsed.get("AlarmTime").cloned()
             .unwrap_or_else(|| chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string());
 
+        let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
         let record = db_alarm::AlarmInsert {
             device_id: device_id.clone(),
-            channel_id: None,
-            alarm_type: alarm_type.clone(),
-            alarm_priority: Some(alarm_priority),
-            alarm_time: alarm_time.clone(),
+            channel_id: device_id.clone(),
+            alarm_type: Some(alarm_type.clone()),
+            alarm_priority: Some(alarm_priority.to_string()),
+            alarm_time: Some(alarm_time.clone()),
             alarm_method: Some("GB28181".to_string()),
             alarm_description: None,
             longitude: None,
             latitude: None,
-            info_xml: Some(xml.to_string()),
+            create_time: now,
         };
 
-        db_alarm::insert(&self.pool, &record)
+        db_alarm::insert_alarm(&self.pool, &record)
             .await
             .map_err(|e| e.to_string())?;
 

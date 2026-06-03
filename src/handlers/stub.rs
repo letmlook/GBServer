@@ -1863,9 +1863,7 @@ pub struct PositionHistoryQuery {
 // Phase 7.3: 运维 API 路由处理器
 // ============================================================================
 
-use axum::{extract::State, Json, response::IntoResponse, http::StatusCode};
-use crate::response::WVPResult;
-use crate::AppState;
+use axum::{response::IntoResponse, http::StatusCode};
 
 /// /api/rtp/receive/open — 开启 ZLM RTP 接收端口
 pub async fn rtp_receive_open(

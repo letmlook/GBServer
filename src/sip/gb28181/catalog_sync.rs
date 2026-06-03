@@ -34,7 +34,7 @@ pub enum SyncState {
 }
 
 /// Catalog 同步会话
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CatalogSyncSession {
     /// 关联的设备 ID
     pub device_id: String,
@@ -109,9 +109,9 @@ impl CatalogSyncSession {
     fn extract_tag(xml: &str, tag: &str) -> Option<String> {
         let start_tag = format!("<{}>", tag);
         let end_tag = format!("</{}>", tag);
-        xml.find(&start_tag)
-            .and_then(|b| xml[b..].find(&end_tag))
-            .map(|e| xml[b + start_tag.len()..b + e].to_string())
+        let start_pos = xml.find(&start_tag)?;
+        let end_pos = xml[start_pos..].find(&end_tag)?;
+        Some(xml[start_pos + start_tag.len()..start_pos + end_pos].to_string())
     }
 }
 
@@ -189,7 +189,7 @@ impl CatalogSyncManager {
     /// 将会话缓冲中的通道数据解析并写入 DB
     async fn flush_to_db(&self, session: &CatalogSyncSession) -> Result<i32, String> {
         let device_id = &session.device_id;
-        let channels = crate::sip::gb28181::XmlParser::parse_catalog_channels(&session.buffer);
+        let (_total_num, channels) = crate::sip::gb28181::XmlParser::parse_catalog_channels(&session.buffer);
         let mut count = 0;
 
         for ch in channels {
@@ -200,7 +200,7 @@ impl CatalogSyncManager {
                 &self.pool,
                 device_id,
                 &ch.device_id,
-                ch.name.as_deref(),
+                &ch.name,
                 ch.manufacturer.as_deref(),
                 ch.model.as_deref(),
                 ch.owner.as_deref(),

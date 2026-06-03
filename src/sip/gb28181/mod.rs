@@ -37,7 +37,7 @@ pub use ssrc::{SsrcManager, SsrcAllocation};
 pub use nat_helper::NatHelper;
 pub use stream_reconnect::{StreamReconnectManager, ReconnectState, ReconnectEntry};
 pub use device_query::{DeviceQueryManager, DeviceInfoResponse, DeviceStatusResponse};
-pub use pending_request::{PendingRequestManager, PendingCmdType, QueryResult, ResponseRouter};
+pub use pending_request::{PendingRequest, PendingRequestManager, PendingCmdType, QueryResult, ResponseRouter};
 pub use subscription::{SubscriptionManager, SubscriptionType, SubscriptionEntry};
 pub use media_waiter::{MediaWaiterManager, MediaWaitResult};
 pub use playback_session::{PlaybackInviteSessionManager, PlaybackInviteSession, PlaybackState};

@@ -129,9 +129,9 @@ impl PlaybackInviteSessionManager {
     /// 按 stream_id 获取会话
     pub fn get_by_stream(&self, stream_id: &str) -> Option<PlaybackInviteSession> {
         self.sessions
-            .values()
-            .find(|s| s.stream_id == stream_id)
-            .cloned()
+            .iter()
+            .find(|r| r.stream_id == stream_id)
+            .map(|r| r.clone())
     }
 
     /// 更新会话

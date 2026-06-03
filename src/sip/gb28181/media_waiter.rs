@@ -14,14 +14,11 @@
 //!   ZLM Hook 收到流到达事件
 //!     → notify_media_ready(call_id, stream_id) — 唤醒等待中的任务
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
-use tokio::sync::{oneshot, RwLock, Timeout as _};
-
-use crate::sip::gb28181::InviteSessionManager;
+use tokio::sync::oneshot;
 
 /// 媒体流等待结果
 #[derive(Debug)]
@@ -35,7 +32,7 @@ pub enum MediaWaitResult {
 }
 
 /// 单个等待器元数据
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct MediaWaiter {
     pub call_id: String,
     pub zlm_stream_id: String,
