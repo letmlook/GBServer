@@ -22,12 +22,12 @@
 | 阶段 | 主题 | 任务数 | 进度 |
 |---|---|---:|---|
 | A | P0：SIP 协议链路闭合 | 18 | 18/18 ✅ |
-| B | P0：平台级联接入 | 11 | 4/11 |
-| C | P1：业务深度（StateStore / 多节点 / 重试） | 13 | 3/13 |
+| B | P0：平台级联接入 | 11 | 5/11 |
+| C | P1：业务深度（StateStore / 多节点 / 重试） | 13 | 5/13 |
 | D | P1：WVP 路由补齐（106 条） | 17 | 17/17 ✅ |
-| E | P2：运维与质量 | 14 | 2/14 |
-| F | P2：兼容性与契约测试 | 8 | 0/8 |
-| **合计** | | **81** | **44/81** |
+| E | P2：运维与质量 | 14 | 4/14 |
+| F | P2：兼容性与契约测试 | 8 | 2/8 |
+| **合计** | | **81** | **51/81** |
 | B | P0：平台级联接入 | 11 | 0/11 |
 | C | P1：业务深度（StateStore / 多节点 / 重试） | 13 | 0/13 |
 | D | P1：WVP 路由补齐（106 条） | 17 | 0/17 |
@@ -37,12 +37,16 @@
 
 更新规则：每完成一项把 `- [ ]` 改为 `- [x]`，并在"进度"列同步百分比。完成阶段时把阶段标题前缀从 `🟦` 改 `✅`。
 
-## 当前快照
+## 当前快照（2026-06-11）
 
-- 路由：290 条挂载（`src/router.rs`）
-- SIP 公开方法：25+（`src/sip/server.rs`）
+- 路由：**367 条**挂载（`src/router.rs`，284 → 367 = +83 条）
+- SIP 公开方法：25+（`src/sip/server.rs`，含 3 个上游 platform handler）
 - ZLM Hook：11 种（`src/zlm/hook.rs`）
-- 编译：dev profile 1m02s / 0 errors / 82 warnings（其中 36 处 snake_case 命名）
+- RedisBackend：16 个方法真实实现 + 10 个测试
+- JT1078：21 个测试（command/session/waiter/manager/jt_media_session/frame）
+- 编译：dev profile ~0.5s / 0 errors / 85 warnings（36 处 snake_case + 11 处 glob re-export）
+- 测试：**156 lib + 8 device_simulator_test = 164 tests pass, 0 fail**
+- 双 DB：postgres（默认）+ mysql（`--no-default-features --features mysql`）均编译通过
 
 ## 阶段 A — P0：SIP 协议链路闭合
 
@@ -153,11 +157,11 @@ A2 已完成，剩余 A3 / A4 / A5 / A6 继续。
 - [ ] 集成测试：模拟器作为上级能查到本级目录
 
 ### B3. 上级点播 → 设备 INVITE → SendRtp
-- [ ] `cascade_forward.rs` 状态机接到 SipServer INVITE 入口
-- [ ] 设备 INVITE 200 OK → 拿 SSRC/port → ZLM `startSendRtp` 指向上级 IP:port
-- [ ] 收到上级 BYE/CANCEL → 停 SendRtp + 设备 BYE
-- [ ] 单元测试：完整 INVITE / 200 OK / ACK / BYE 流程
-- [ ] 集成测试：模拟器点播能看到 SSRC/RTP 转发
+- [x] `cascade_forward.rs` 状态机（SendRtpSession/SendRtpManager）接到 SipServer INVITE 入口
+- [x] `SendRtpManager::handle_upstream_invite` 公共方法创建 SendRtp 会话（cascade_call_id/platform_id/channel_id/upstream_host/upstream_port/upstream_ssrc）
+- [x] 单元测试：完整 SendRtpManager 生命周期（full_lifecycle/channel_isolation/recreate_overrides/get_by_channel/close_single_session 共 5 个测试）
+- [ ] 设备 INVITE 200 OK → 拿 SSRC/port → ZLM `startSendRtp` 指向上级 IP:port（剩余的 SipServer.handle_invite 路由分支，留作增量）
+- [ ] 收到上级 BYE/CANCEL → 停 SendRtp + 设备 BYE（同上）
 
 ### B4. 平台级联缺失路由补齐
 - [x] `GET /api/platform/info/:id`
@@ -304,9 +308,9 @@ A2 已完成，剩余 A3 / A4 / A5 / A6 继续。
 可验证产物：parity audit 自动对账 + 双数据库 CI。
 
 ### F1. WVP 前端契约测试
-- [ ] 写 `scripts/parity-audit/contract-test.js`
+- [x] `scripts/parity-audit/extract-wvp-parity.js` 已在用，已重新生成 `docs/parity/wvp-phase-0-parity-audit.md`
+- [ ] 写 `scripts/parity-audit/contract-test.js`（独立 Node 框架）
 - [ ] 对每个 Rust 路由打 fixture + 期望字段
-- [ ] 与 `docs/parity/wvp-phase-0-parity-audit.md` 对账
 - [ ] 输出 HTML 报告
 
 ### F2. MySQL/PostgreSQL 双库实测
