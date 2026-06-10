@@ -21,3 +21,4 @@ pub mod role;
 pub mod region;
 pub mod sy_camera;
 pub mod cloud_record_extra;
+pub mod parity_extras;

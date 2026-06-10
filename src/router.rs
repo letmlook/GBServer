@@ -11,7 +11,7 @@ use tower_http::cors::{Any, CorsLayer};
 use crate::auth::auth_middleware;
 use crate::handlers::{
     alarm, common_channel, device, device_control, device_stub, front_end, jt1078, platform, play,
-    cloud_record_extra, playback, server, stream, stub, sy_camera, talk, user, websocket, webrtc, device_batch, region, role,
+    cloud_record_extra, parity_extras, playback, server, stream, stub, sy_camera, talk, user, websocket, webrtc, device_batch, region, role,
 };
 use crate::handlers::metrics as metrics_handler;
 use crate::zlm::hook as zlm_hook;
@@ -854,6 +854,15 @@ pub fn app(state: AppState) -> Router<AppState> {
         .route("/api/cloud/record/download/zip", get(cloud_record_extra::download_zip))
         .route("/api/cloud/record/list-url", get(cloud_record_extra::list_url))
         .route("/api/cloud/record/zip", get(cloud_record_extra::zip))
+        .route("/api/alarm/clear", delete(parity_extras::alarm_clear))
+        .route("/api/alarm/snap/:param", get(parity_extras::alarm_snap))
+        .route("/api/common/channel/map/tile/:z/:x/:y", get(parity_extras::channel_map_tile))
+        .route("/api/common/channel/map/thin/tile/:z/:x/:y", get(parity_extras::channel_map_thin_tile))
+        .route("/api/front-end/common/:cmd/:ch", get(parity_extras::front_end_common))
+        .route("/api/media/getPlayUrl", get(parity_extras::media_get_play_url))
+        .route("/api/media/stream_info_by_app_and_stream", get(parity_extras::media_stream_info_by_app_and_stream))
+        .route("/api/server/config", get(parity_extras::server_config))
+        .route("/api/server/version", get(parity_extras::server_version))
         .route("/api/region/one", get(region::region_one))
         .route("/api/region/page/list", get(region::region_page_list))
         .route("/api/region/sync", get(region::region_sync))

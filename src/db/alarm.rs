@@ -231,6 +231,14 @@ pub async fn get_alarm_by_id(pool: &Pool, id: i64) -> sqlx::Result<Option<Alarm>
 }
 
 /// 删除报警记录
+/// Delete ALL alarms (used by /api/alarm/clear). Returns count deleted.
+pub async fn delete_all(pool: &Pool) -> sqlx::Result<u64> {
+    #[cfg(feature = "mysql")]
+    { return sqlx::query("DELETE FROM wvp_device_alarm").execute(pool).await.map(|r| r.rows_affected()); }
+    #[cfg(feature = "postgres")]
+    { return sqlx::query("DELETE FROM wvp_device_alarm").execute(pool).await.map(|r| r.rows_affected()); }
+}
+
 pub async fn delete_alarm(pool: &Pool, id: i64) -> sqlx::Result<bool> {
     #[cfg(feature = "postgres")]
     {
