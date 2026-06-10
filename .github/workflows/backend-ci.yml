@@ -1,0 +1,73 @@
+name: Backend CI
+
+on:
+  push:
+    branches: [main, codex/**]
+  pull_request:
+    branches: [main]
+
+jobs:
+  backend-postgres:
+    name: Postgres + Rust check + test
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: wvp
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7
+        ports: ['6379:6379']
+        options: --health-cmd "redis-cli ping" --health-interval 5s --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: cargo-registry-${{ hashFiles('Cargo.lock') }}
+      - name: Import schema
+        run: |
+          PGPASSWORD=postgres psql -h localhost -U postgres -d wvp < database/init-postgresql-2.7.4.sql
+      - name: cargo check
+        run: cargo check --lib --tests
+      - name: cargo test --lib
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/wvp
+        run: cargo test --lib -- --test-threads=4
+      - name: device simulator tests
+        run: cargo test --test device_simulator_test
+
+  backend-mysql:
+    name: MySQL + Rust check
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: rootpw
+          MYSQL_DATABASE: wvp
+        ports: ['3306:3306']
+        options: >-
+          --health-cmd "mysqladmin ping -uroot -prootpw"
+          --health-interval 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: cargo-registry-${{ hashFiles('Cargo.lock') }}
+      - name: cargo check (mysql)
+        run: cargo check --no-default-features --features mysql --lib --tests

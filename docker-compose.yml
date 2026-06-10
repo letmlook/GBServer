@@ -1,85 +1,88 @@
-# PostgreSQL（默认）+ Redis，MySQL 可选，供本地开发/联调使用
-# 启动: docker compose up -d
-# 停止: docker compose down
-# 默认配置下后端连接 postgres://postgres:postgres@127.0.0.1:5432/wvp
-
 services:
-  postgres:
-    image: postgres:16-alpine
-    container_name: wvp-postgres
+  gbserver:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: gbserver:latest
+    container_name: gbserver
+    ports:
+      - "3000:3000"
+      - "5060:5060/udp"
+      - "5061:5061"
+    environment:
+      WVP__SERVER__HOST: 0.0.0.0
+      WVP__SERVER__PORT: 3000
+      WVP__SIP__IP: 0.0.0.0
+      WVP__SIP__PORT: 5060
+      WVP__DATABASE__URL: postgres://postgres:postgrespw@postgres:5432/wvp
+      WVP__REDIS__URL: redis://redis:6379
+      WVP__JWT__SECRET: ${WVP_JWT_SECRET:-please-change-me-please-change-me}
+      WVP__SIP__PASSWORD: ${WVP_SIP_PASSWORD:-please-change-me}
+      RUST_LOG: info,wvp_gb28181_server=debug
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      zlm:
+        condition: service_started
+    networks: [wvpnet]
     restart: unless-stopped
+
+  postgres:
+    image: postgres:16
+    container_name: wvp-postgres
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_PASSWORD: postgrespw
       POSTGRES_DB: wvp
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./database/init-postgresql-2.7.4.sql:/docker-entrypoint-initdb.d/init.sql:ro
     ports:
       - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
-      interval: 10s
+      test: ["CMD-SHELL", "pg_isready -U postgres -d wvp"]
+      interval: 5s
       timeout: 5s
       retries: 5
+    networks: [wvpnet]
+    restart: unless-stopped
 
   redis:
     image: redis:7-alpine
     container_name: wvp-redis
-    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
     ports:
       - "6379:6379"
-    volumes:
-      - redis_data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
+      interval: 5s
       timeout: 3s
-      retries: 3
-
-  # mysql:
-  #   image: mysql:8.0
-  #   container_name: wvp-mysql
-  #   restart: unless-stopped
-  #   profiles:
-  #     - mysql
-  #   environment:
-  #     MYSQL_ROOT_PASSWORD: Fitow2022
-  #     MYSQL_DATABASE: wvp
-  #     MYSQL_CHARACTER_SET_SERVER: utf8mb4
-  #     MYSQL_COLLATION_SERVER: utf8mb4_unicode_ci
-  #   ports:
-  #     - "3306:3306"
-  #   volumes:
-  #     - mysql_data:/var/lib/mysql
-  #   command: ["mysqld", "--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
-  #   healthcheck:
-  #     test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-pFitow2022"]
-  #     interval: 10s
-  #     timeout: 5s
-  #     retries: 5
-  zlmediakit:
-    image: zlmediakit/zlmediakit:master
-    container_name: wvp-zlmediakit
+      retries: 5
+    networks: [wvpnet]
     restart: unless-stopped
-    # network_mode: host  # macOS doesn't support host network mode well
+
+  zlm:
+    image: zlmediakit/zlmediakit:master
+    container_name: wvp-zlm
     ports:
-      - "8080:80"    # HTTP API
-      - "1935:1935"  # RTMP
-      - "554:554"    # RTSP
-      - "8000:8000"  # HTTP Hook
-      - "3000:3000"  # HTTP Player
-      - "3001:3001"  # HTTP SSL
-      - "443:443"    # HTTPS
-      - "10000:10000/udp"  # RTP
-      - "3478:3478"  # WebRTC
-      - "9000:9000"  # Additional
-    volumes:
-      - zlmdata:/opt/media/bin/www
+      - "8080:8080"
+      - "8443:8443"
+      - "554:554"
+      - "1935:1935"
+      - "30000-30100:30000-30100/udp"
     environment:
-      - ZLM_SERVER_SECRET=035c73f7-bb6b-4889-a715-d9eb2d1925cc
+      ZLM_HTTP_SECRET: 035c73f7-bb6b-4889-a715-d9eb2d1925cc
+    networks: [wvpnet]
+    restart: unless-stopped
 
 volumes:
-  postgres_data:
-  redis_data:
-  # mysql_data:
-  zlmdata:
+  pgdata: {}
+  redisdata: {}
+
+networks:
+  wvpnet:
+    driver: bridge
