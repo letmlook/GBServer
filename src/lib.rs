@@ -12,6 +12,7 @@ pub mod cache;
 pub mod scheduler;
 pub mod cascade;
 pub mod metrics;
+pub mod state_store;
 
 use config::AppConfig;
 use std::collections::HashMap;
