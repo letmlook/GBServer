@@ -11,7 +11,7 @@ use tower_http::cors::{Any, CorsLayer};
 use crate::auth::auth_middleware;
 use crate::handlers::{
     alarm, common_channel, device, device_control, device_stub, front_end, jt1078, platform, play,
-    cloud_record_extra, parity_extras, playback, rtp_control, server, stream, stub, sy_camera, talk, user, websocket, webrtc, device_batch, region, role,
+    cloud_record_extra, jt1078_extra, parity_extras, playback, rtp_control, server, stream, stub, sy_camera, talk, user, websocket, webrtc, device_batch, region, role,
 };
 use crate::handlers::metrics as metrics_handler;
 use crate::zlm::hook as zlm_hook;
@@ -872,6 +872,34 @@ pub fn app(state: AppState) -> Router<AppState> {
         .route("/api/ps/send/start", post(rtp_control::ps_send_start))
         .route("/api/ps/send/stop/:stream_id", post(rtp_control::ps_send_stop))
         .route("/api/ps/getTestPort", get(rtp_control::ps_get_test_port))
+        .route("/api/jt1078/area/circle/add", post(jt1078_extra::area_circle_add))
+        .route("/api/jt1078/area/circle/edit", post(jt1078_extra::area_circle_edit))
+        .route("/api/jt1078/area/circle/delete", get(jt1078_extra::area_circle_delete))
+        .route("/api/jt1078/area/circle/query", get(jt1078_extra::area_circle_query))
+        .route("/api/jt1078/area/circle/update", post(jt1078_extra::area_circle_update))
+        .route("/api/jt1078/area/polygon/set", post(jt1078_extra::area_polygon_set))
+        .route("/api/jt1078/area/polygon/delete", get(jt1078_extra::area_polygon_delete))
+        .route("/api/jt1078/area/polygon/query", get(jt1078_extra::area_polygon_query))
+        .route("/api/jt1078/area/rectangle/add", post(jt1078_extra::area_rectangle_add))
+        .route("/api/jt1078/area/rectangle/edit", post(jt1078_extra::area_rectangle_edit))
+        .route("/api/jt1078/area/rectangle/delete", get(jt1078_extra::area_rectangle_delete))
+        .route("/api/jt1078/area/rectangle/query", get(jt1078_extra::area_rectangle_query))
+        .route("/api/jt1078/area/rectangle/update", post(jt1078_extra::area_rectangle_update))
+        .route("/api/jt1078/route/set", post(jt1078_extra::route_set))
+        .route("/api/jt1078/route/query", get(jt1078_extra::route_query))
+        .route("/api/jt1078/route/delete", get(jt1078_extra::route_delete))
+        .route("/api/jt1078/live/continue", get(jt1078_extra::live_continue))
+        .route("/api/jt1078/live/pause", get(jt1078_extra::live_pause))
+        .route("/api/jt1078/live/switch", get(jt1078_extra::live_switch))
+        .route("/api/jt1078/record/start", get(jt1078_extra::record_start))
+        .route("/api/jt1078/record/stop", get(jt1078_extra::record_stop))
+        .route("/api/jt1078/snap", get(jt1078_extra::snap))
+        .route("/api/jt1078/control/temp-position-tracking", get(jt1078_extra::temp_position_tracking))
+        .route("/api/jt1078/confirmation-alarm-message", post(jt1078_extra::confirmation_alarm))
+        .route("/api/jt1078/playback/download", get(jt1078_extra::playback_download))
+        .route("/api/jt1078/media/upload/one/delete", get(jt1078_extra::media_upload_delete))
+        .route("/api/jt1078/terminal/channel/delete/:id", delete(jt1078_extra::terminal_channel_delete))
+        .route("/api/jt1078/terminal/channel/one/:id", get(jt1078_extra::terminal_channel_one))
         .route("/api/region/one", get(region::region_one))
         .route("/api/region/page/list", get(region::region_page_list))
         .route("/api/region/sync", get(region::region_sync))
