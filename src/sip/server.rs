@@ -108,6 +108,68 @@ pub(crate) fn build_playback_control_xml(
 }
 
 
+/// GB28181 RecordInfo 响应里 Item 的解析结果。
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct RecordInfoItem {
+    pub device_id: Option<String>,
+    pub name: Option<String>,
+    pub file_path: Option<String>,
+    pub address: Option<String>,
+    pub start_time: Option<String>,
+    pub end_time: Option<String>,
+    pub secrecy: Option<String>,
+    pub kind: Option<String>,
+}
+
+/// 从单条 `<Item>...</Item>` XML 片段解析字段。
+/// 用 `extract_tag` 风格的字符串扫描，避开 XmlParser::parse_fields 的嵌套缺陷。
+fn parse_record_item(xml: &str) -> RecordInfoItem {
+    RecordInfoItem {
+        device_id: extract_tag_text(xml, "DeviceID"),
+        name: extract_tag_text(xml, "Name"),
+        file_path: extract_tag_text(xml, "FilePath"),
+        address: extract_tag_text(xml, "Address"),
+        start_time: extract_tag_text(xml, "StartTime"),
+        end_time: extract_tag_text(xml, "EndTime"),
+        secrecy: extract_tag_text(xml, "Secrecy"),
+        kind: extract_tag_text(xml, "Type"),
+    }
+}
+
+/// 从 RecordInfo 响应 XML 中提取所有 `<Item>...</Item>` 节点。
+/// 多包聚合由调用方用 `ResponseRouter::accumulate_record_info` 完成，
+/// 这里只负责从单个完整 buffer 里拆 Item。
+pub fn parse_record_info_items(xml: &str) -> Vec<RecordInfoItem> {
+    let mut out = Vec::new();
+    let mut cursor = 0;
+    while let Some(begin) = xml[cursor..].find("<Item>") {
+        let abs = cursor + begin;
+        if let Some(end) = xml[abs..].find("</Item>") {
+            let item_end = abs + end + "</Item>".len();
+            out.push(parse_record_item(&xml[abs..item_end]));
+            cursor = item_end;
+        } else {
+            break;
+        }
+    }
+    out
+}
+
+/// 提取 `<TAG>value</TAG>` 文本，找不到返回 None。
+fn extract_tag_text(xml: &str, tag: &str) -> Option<String> {
+    let open = format!("<{}>", tag);
+    let close = format!("</{}>", tag);
+    let s = xml.find(&open)? + open.len();
+    let e = xml[s..].find(&close)? + s;
+    let value = &xml[s..e];
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
 use crate::sip::gb28181::pending_request::PendingRequestManager;
 use crate::sip::gb28181::media_waiter::{MediaWaiterManager, MediaWaitResult};
 
@@ -2852,6 +2914,17 @@ f=v/1/96/1/2/1/1/0
         let call_id = format!("recinfo_{}_{}", device_id, chrono::Utc::now().timestamp_millis());
         let branch = generate_branch();
         let cseq = "MESSAGE 1".to_string();
+
+        // 注册 PendingRequest，让 A1 路由的 ResponseRouter 收到 RecordInfo
+        // 响应时能 complete 此处注册的 entry；多包响应最终会聚合在 buffer 里
+        // 由 accumulate_record_info 完成最后一块后写入 QueryResult::Raw(xml)。
+        self.pending_request_manager.register(
+            device_id,
+            sn as u32,
+            crate::sip::gb28181::pending_request::PendingCmdType::RecordInfo,
+            &call_id,
+            Some(15),
+        );
         
         let body = format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -3509,6 +3582,108 @@ async fn send_subscribe_internal(
 #[cfg(test)]
 mod playback_control_tests {
     use super::*;
+    use crate::sip::gb28181::pending_request::PendingRequestManager;
+    use crate::sip::gb28181::ResponseRouter;
+    use std::sync::Arc;
+
+    /// GB28181 RecordInfo 响应单包解析
+    #[test]
+    fn parse_record_info_response_extracts_items() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+<CmdType>RecordInfo</CmdType>
+<SN>1</SN>
+<DeviceID>34020000001320000001</DeviceID>
+<Name>channel1</Name>
+<SumNum>1</SumNum>
+<RecordList Num="1">
+<Item>
+<DeviceID>34020000001320000002</DeviceID>
+<Name>seg-1</Name>
+<FilePath>/record/seg-1.mp4</FilePath>
+<Address>192.168.1.10</Address>
+<StartTime>2026-06-10T10:00:00</StartTime>
+<EndTime>2026-06-10T10:30:00</EndTime>
+<Secrecy>0</Secrecy>
+<Type>time</Type>
+</Item>
+</RecordList>
+</Response>"#;
+        let items = parse_record_info_items(xml);
+        assert_eq!(items.len(), 1);
+        let item = &items[0];
+        assert_eq!(item.device_id.as_deref(), Some("34020000001320000002"));
+        assert_eq!(item.name.as_deref(), Some("seg-1"));
+        assert_eq!(item.file_path.as_deref(), Some("/record/seg-1.mp4"));
+        assert_eq!(item.start_time.as_deref(), Some("2026-06-10T10:00:00"));
+        assert_eq!(item.end_time.as_deref(), Some("2026-06-10T10:30:00"));
+    }
+
+    /// 多包 RecordInfo 聚合：3 包分片合并后含全部 5 条 Item
+    #[test]
+    fn parse_record_info_response_merges_multi_packet() {
+        let page1 = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+<CmdType>RecordInfo</CmdType>
+<SN>1</SN>
+<DeviceID>34020000001320000001</DeviceID>
+<SumNum>3</SumNum>
+<RecordList>
+<Item><DeviceID>ch1</DeviceID><Name>seg-1</Name><FilePath>/r/1.mp4</FilePath></Item>
+<Item><DeviceID>ch1</DeviceID><Name>seg-2</Name><FilePath>/r/2.mp4</FilePath></Item>
+</RecordList>
+</Response>"#;
+        let page2 = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+<CmdType>RecordInfo</CmdType>
+<SN>1</SN>
+<SumNum>3</SumNum>
+<RecordList>
+<Item><DeviceID>ch1</DeviceID><Name>seg-3</Name><FilePath>/r/3.mp4</FilePath></Item>
+</RecordList>
+</Response>"#;
+        let page3 = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+<CmdType>RecordInfo</CmdType>
+<SN>1</SN>
+<SumNum>3</SumNum>
+<RecordList>
+<Item><DeviceID>ch1</DeviceID><Name>seg-4</Name><FilePath>/r/4.mp4</FilePath></Item>
+<Item><DeviceID>ch1</DeviceID><Name>seg-5</Name><FilePath>/r/5.mp4</FilePath></Item>
+</RecordList>
+</Response>"#;
+
+        let mut buffer = String::new();
+        let mut packet_count = 0;
+        let router = ResponseRouter::new(Arc::new(PendingRequestManager::new()));
+        assert!(!router.accumulate_record_info("c1", page1, &mut buffer, &mut packet_count, 3));
+        assert!(!router.accumulate_record_info("c1", page2, &mut buffer, &mut packet_count, 3));
+        assert!(router.accumulate_record_info("c1", page3, &mut buffer, &mut packet_count, 3));
+        assert_eq!(packet_count, 3);
+
+        let items = parse_record_info_items(&buffer);
+        assert_eq!(items.len(), 5);
+        let names: Vec<&str> = items
+            .iter()
+            .filter_map(|i| i.name.as_deref())
+            .collect();
+        assert_eq!(names, vec!["seg-1", "seg-2", "seg-3", "seg-4", "seg-5"]);
+    }
+
+    /// 空 RecordList 解析返回 0 items，不 panic
+    #[test]
+    fn parse_record_info_response_handles_empty_record_list() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+<CmdType>RecordInfo</CmdType>
+<SN>1</SN>
+<DeviceID>34020000001320000001</DeviceID>
+<SumNum>0</SumNum>
+<RecordList></RecordList>
+</Response>"#;
+        let items = parse_record_info_items(xml);
+        assert!(items.is_empty());
+    }
 
     #[test]
     fn build_pause_xml_uses_simple_play_back_cmd() {

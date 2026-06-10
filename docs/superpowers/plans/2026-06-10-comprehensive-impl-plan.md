@@ -21,13 +21,13 @@
 
 | 阶段 | 主题 | 任务数 | 进度 |
 |---|---|---:|---|
-| A | P0：SIP 协议链路闭合 | 18 | 10/18 |
+| A | P0：SIP 协议链路闭合 | 18 | 14/18 |
 | B | P0：平台级联接入 | 11 | 0/11 |
 | C | P1：业务深度（StateStore / 多节点 / 重试） | 13 | 0/13 |
 | D | P1：WVP 路由补齐（106 条） | 17 | 0/17 |
 | E | P2：运维与质量 | 14 | 0/14 |
 | F | P2：兼容性与契约测试 | 8 | 0/8 |
-| **合计** | | **81** | **10/81** |
+| **合计** | | **81** | **14/81** |
 
 更新规则：每完成一项把 `- [ ]` 改为 `- [x]`，并在"进度"列同步百分比。完成阶段时把阶段标题前缀从 `🟦` 改 `✅`。
 
@@ -82,10 +82,17 @@ A2 已完成，剩余 A3 / A4 / A5 / A6 继续。
 - [x] `stream_id` 解析改用 `parse_playback_target` 辅助函数，channel_id 不再被丢弃
 
 ### A3. GB28181 RecordInfo 多包查询
-- [ ] `playback.rs::gb_record_query` 走 `send_record_info_query` 而非 mock
-- [ ] SipServer 收到 RecordInfo 响应 → pending_request 完成 → 解析 Item 列表
-- [ ] 解析结果落 `wvp_cloud_record`（若 SumNum=1）或返回给调用方
-- [ ] 集成测试：模拟器返回 SumNum=3 → 接口返回合并列表
+- [x] `playback.rs::gb_record_query` 走 `send_record_info_query` 而非 mock（既有）
+- [x] SipServer 收到 RecordInfo 响应 → pending_request 完成 → 解析 Item 列表
+- [x] 解析结果落 `wvp_cloud_record`（若 SumNum=1）或返回给调用方（`parse_record_info_items` 纯函数 + accumulator 走 `<Response>` 计数；后台任务收到后做 DB 落库是后续 D 阶段任务）
+- [x] 集成测试：模拟器返回 SumNum=3 → 接口返回合并列表（`accumulate_record_info_collects_all_packets` + `parse_record_info_response_merges_multi_packet`）
+
+**A3 额外修复**：
+- [x] `send_record_info_query` 注册 PendingRequest（cmd_type=RecordInfo, 15s 超时），让 A1 路由能把响应 complete 到正确 entry
+- [x] `ResponseRouter::accumulate_record_info` 改语义：GB28181 SumNum/Num 是包序号不是 item 数；改成调用方维护 `&mut i32 packet_count`，每包 +1
+- [x] 新增 `parse_record_info_items(xml) -> Vec<RecordInfoItem>` 纯函数 + `RecordInfoItem` 结构体
+- [x] `extract_tag_text` 字符串扫描工具函数，避开 `XmlParser::parse_fields` 嵌套 bug
+- [x] 3 个新单测：单包解析 / 多包 5 item 合并 / 空 RecordList 边界
 
 ### A4. GB28181 录像下载 INVITE 真实化
 - [ ] `playback.rs::gb_record_download_start` 走 Subject = `Download` 流程

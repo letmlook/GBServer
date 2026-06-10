@@ -662,12 +662,14 @@ mod response_router_tests {
     fn accumulate_record_info_collects_all_packets() {
         let (_mgr, router) = fixture();
         let mut buffer = String::new();
+        let mut packet_count = 0;
         let packet1 = r#"<?xml version="1.0"?><Response><CmdType>RecordInfo</CmdType><SumNum>2</SumNum><RecordList><Item><Name>seg1</Name></Item></RecordList></Response>"#;
-        assert!(!router.accumulate_record_info("c1", packet1, &mut buffer, 2));
+        assert!(!router.accumulate_record_info("c1", packet1, &mut buffer, &mut packet_count, 2));
         assert!(buffer.contains("<Item>"));
         let packet2 = r#"<?xml version="1.0"?><Response><CmdType>RecordInfo</CmdType><SumNum>2</SumNum><RecordList><Item><Name>seg2</Name></Item></RecordList></Response>"#;
-        let done = router.accumulate_record_info("c1", packet2, &mut buffer, 2);
+        let done = router.accumulate_record_info("c1", packet2, &mut buffer, &mut packet_count, 2);
         assert!(done);
+        assert_eq!(packet_count, 2);
         assert!(buffer.contains("seg1"));
         assert!(buffer.contains("seg2"));
     }
@@ -676,9 +678,11 @@ mod response_router_tests {
     fn accumulate_record_info_returns_true_when_count_matches() {
         let (_mgr, router) = fixture();
         let mut buffer = String::new();
+        let mut packet_count = 0;
         let packet = r#"<?xml version="1.0"?><Response><CmdType>RecordInfo</CmdType><SumNum>1</SumNum><RecordList><Item><Name>only</Name></Item></RecordList></Response>"#;
-        let done = router.accumulate_record_info("c1", packet, &mut buffer, 1);
+        let done = router.accumulate_record_info("c1", packet, &mut buffer, &mut packet_count, 1);
         assert!(done);
+        assert_eq!(packet_count, 1);
     }
 
     #[test]
@@ -711,21 +715,25 @@ impl ResponseRouter {
         call_id: &str,
         body: &str,
         buffer: &mut String,
+        packet_count: &mut i32,
         total_num: i32,
     ) -> bool {
         use crate::sip::gb28181::XmlParser;
-        if !buffer.is_empty() {
-            // 已有过往内容，追加 RecordItem 节点
+        let _ = call_id;
+        if buffer.is_empty() {
+            *buffer = body.to_string();
+        } else {
+            // 后续包只把 RecordItem 节点 append，避免覆盖前面的 <Response> 头
             let items = XmlParser::extract_record_items(body);
             for item in items {
                 *buffer += &item;
             }
-        } else {
-            *buffer = body.to_string();
         }
 
-        let current_count = XmlParser::count_record_items(buffer);
-        current_count >= total_num
+        // GB28181 SumNum/Num 是包序号不是 item 数。调用方维护 packet_count，
+        // 每收一包 +1，达到 total_num 即收齐。
+        *packet_count += 1;
+        *packet_count >= total_num
     }
 }
 
