@@ -213,6 +213,13 @@ pub struct SubscribePositionQuery {
     pub interval: Option<i32>,
 }
 
+
+#[derive(Debug, Deserialize)]
+pub struct SubscribeAlarmQuery {
+    pub id: Option<String>,
+    pub expires: Option<i32>,
+}
+
 pub async fn subscribe_mobile_position(
     State(state): State<AppState>,
     Query(q): Query<SubscribePositionQuery>,
@@ -714,4 +721,67 @@ pub async fn device_tree(
         "total": total,
         "list": list
     }))))
+}
+
+
+/// GET /api/device/query/statistics/register
+/// 真实聚合 wvp_device 表的注册设备数
+pub async fn statistics_register(
+    State(state): State<AppState>,
+) -> Json<WVPResult<serde_json::Value>> {
+    let total = crate::db::count_registered_devices(&state.pool)
+        .await
+        .unwrap_or(0);
+    let online = crate::db::count_online_devices(&state.pool)
+        .await
+        .unwrap_or(0);
+    Json(WVPResult::success(serde_json::json!({
+        "total": total,
+        "online": online,
+        "offline": total - online
+    })))
+}
+
+/// GET /api/device/query/statistics/keepalive
+/// 真实聚合最近 60s 内有过 keepalive 的设备数
+pub async fn statistics_keepalive(
+    State(state): State<AppState>,
+) -> Json<WVPResult<serde_json::Value>> {
+    let alive = crate::db::count_alive_devices(&state.pool, 60)
+        .await
+        .unwrap_or(0);
+    let total = crate::db::count_registered_devices(&state.pool)
+        .await
+        .unwrap_or(0);
+    Json(WVPResult::success(serde_json::json!({
+        "alive": alive,
+        "total": total,
+        "window": 60
+    })))
+}
+
+/// GET /api/device/query/subscribe/alarm?deviceId=...&expires=3600
+/// 通过 SIP SUBSCRIBE 订阅设备报警事件
+pub async fn subscribe_alarm(
+    State(state): State<AppState>,
+    Query(q): Query<crate::handlers::device_stub::SubscribeAlarmQuery>,
+) -> Json<WVPResult<serde_json::Value>> {
+    let device_id = q.id.clone().unwrap_or_default();
+    let expires = q.expires.unwrap_or(3600) as u32;
+    if device_id.is_empty() {
+        return Json(WVPResult::error("device_id is required"));
+    }
+    let sip = match state.sip_server.as_ref() {
+        Some(s) => s,
+        None => return Json(WVPResult::error("SIP server not initialized")),
+    };
+    let server = sip.read().await;
+    if let Err(e) = server.send_alarm_subscribe(&device_id, expires).await {
+        return Json(WVPResult::error(format!("SIP error: {}", e)));
+    }
+    Json(WVPResult::success(serde_json::json!({
+        "deviceId": device_id,
+        "expires": expires,
+        "message": "Alarm subscription sent"
+    })))
 }

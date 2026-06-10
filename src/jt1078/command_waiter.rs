@@ -181,9 +181,10 @@ impl JtCommandWaiter {
         let (tx, rx) = oneshot::channel();
         self.by_key.insert(key.clone(), tx);
         self.by_serial.insert(serial_no, key.clone());
-        self.metadata.insert(key.clone(), JtPendingCmd::new(
-            phone.to_string(), msg_id, serial_no, timeout,
-        ));
+        self.metadata.insert(
+            key.clone(),
+            JtPendingCmd::new(phone.to_string(), msg_id, serial_no, timeout),
+        );
         (key, rx)
     }
 
@@ -221,14 +222,23 @@ impl JtCommandWaiter {
     /// 清理已超时的命令
     pub fn cleanup_expired(&self) -> Vec<String> {
         let mut removed = Vec::new();
-        let snap: Vec<_> = self.metadata.iter().map(|r| r.key().clone()).collect();
+        let snap: Vec<String> = self.metadata.iter().map(|r| r.key().clone()).collect();
+        // 收集所有已过期的 key，先判断完再统一删除，避免在持有 metadata 读锁时调 remove 死锁
+        let expired: Vec<String> = snap
+            .clone()
+            .into_iter()
+            .filter(|key| {
+                self.metadata
+                    .get(key.as_str())
+                    .map(|m| m.is_expired())
+                    .unwrap_or(false)
+            })
+            .collect();
         for key in snap {
-            if let Some(meta) = self.metadata.get(&key) {
-                if meta.is_expired() {
-                    self.by_key.remove(&key);
-                    self.metadata.remove(&key);
-                    removed.push(key.clone());
-                }
+            if expired.contains(&key) {
+                self.by_key.remove(&key);
+                self.metadata.remove(&key);
+                removed.push(key);
             }
         }
         removed
@@ -263,7 +273,12 @@ pub enum JtResponse {
     /// 通用应答（0=成功 / 1=失败）
     GeneralAck { success: bool },
     /// 位置数据
-    Location { lat: f64, lon: f64, speed: f64, time: String },
+    Location {
+        lat: f64,
+        lon: f64,
+        speed: f64,
+        time: String,
+    },
     /// 音视频类型
     MediaType { media_type: u8 },
     /// 未知类型
@@ -277,13 +292,17 @@ impl JtCommandWaiter {
             JtCmdType::Heartbeat => JtResponse::GeneralAck { success: true },
             JtCmdType::QueryLocation => self.parse_location(body),
             JtCmdType::LocationReport => self.parse_location(body),
-            JtCmdType::LiveVideoStart | JtCmdType::LiveVideoStop |
-            JtCmdType::LiveVideoControl | JtCmdType::PlaybackStart |
-            JtCmdType::PlaybackControl => {
+            JtCmdType::LiveVideoStart
+            | JtCmdType::LiveVideoStop
+            | JtCmdType::LiveVideoControl
+            | JtCmdType::PlaybackStart
+            | JtCmdType::PlaybackControl => {
                 // 通用应答：第 3 个字节（0=成功）
                 if body.len() >= 3 {
                     let result = body[2];
-                    JtResponse::GeneralAck { success: result == 0x00 }
+                    JtResponse::GeneralAck {
+                        success: result == 0x00,
+                    }
                 } else {
                     JtResponse::Unknown(body.to_vec())
                 }
@@ -308,13 +327,22 @@ impl JtCommandWaiter {
         // 时间：bytes 20-26，BCD 格式 YYMMDDHHmmss
         let time = format!(
             "20{}{}/{}/{}/{} {}:{}:{}",
-            hex_digit(body[20]), hex_digit(body[21]),
-            hex_digit(body[22]), hex_digit(body[23]),
+            hex_digit(body[20]),
+            hex_digit(body[21]),
+            hex_digit(body[22]),
+            hex_digit(body[23]),
             hex_digit(body[24]),
-            hex_digit(body[25]), hex_digit(body[26]), hex_digit(body[27])
+            hex_digit(body[25]),
+            hex_digit(body[26]),
+            hex_digit(body[27])
         );
 
-        JtResponse::Location { lat, lon, speed, time }
+        JtResponse::Location {
+            lat,
+            lon,
+            speed,
+            time,
+        }
     }
 }
 
@@ -329,7 +357,7 @@ mod tests {
     #[tokio::test]
     async fn test_register_and_complete() {
         let waiter = JtCommandWaiter::new();
-        let (key, rx) = waiter.register("13812340001", 0x9101, 1, None);
+        let (_key, rx) = waiter.register("13812340001", 0x9101, 1, None);
 
         assert_eq!(waiter.pending_count(), 1);
         assert!(waiter.has_pending_for_phone("13812340001"));
@@ -345,8 +373,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_timeout_cleanup() {
-        let mut waiter = JtCommandWaiter::new();
-        waiter.default_timeout_secs = 0; // 0s = 立即过期
+        let waiter = JtCommandWaiter::new().with_timeout(0); // 0s = 立即过期
         waiter.register("13812340001", 0x9101, 1, None);
         assert_eq!(waiter.pending_count(), 1);
 
@@ -367,12 +394,20 @@ mod tests {
         body[4..8].copy_from_slice(&lon.to_be_bytes());
         body[14..16].copy_from_slice(&60u16.to_be_bytes());
         // BCD time: 26/05/31/12/00/00
-        body[20] = 0x26; body[21] = 0x05; body[22] = 0x31;
-        body[23] = 0x12; body[24] = 0x00; body[25] = 0x00; body[26] = 0x00; body[27] = 0x00;
+        body[20] = 0x26;
+        body[21] = 0x05;
+        body[22] = 0x31;
+        body[23] = 0x12;
+        body[24] = 0x00;
+        body[25] = 0x00;
+        body[26] = 0x00;
+        body[27] = 0x00;
 
         let result = waiter.parse_response(JtCmdType::LocationReport, &body);
         match result {
-            JtResponse::Location { lat, lon, speed, .. } => {
+            JtResponse::Location {
+                lat, lon, speed, ..
+            } => {
                 assert!((lat - 30.0).abs() < 0.001);
                 assert!((lon - 120.0).abs() < 0.001);
                 assert_eq!(speed, 60.0);

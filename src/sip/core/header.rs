@@ -101,7 +101,6 @@ impl HeaderName {
             "replaces" => Some(Self::Replaces),
             "remote-party-id" => Some(Self::RemotePartyId),
             "history-info" => Some(Self::HistoryInfo),
-            "rack" => Some(Self::Rack),
             "rack" => Some(Self::RAck),
             "content-disposition" => Some(Self::ContentDisposition),
             "mime-version" => Some(Self::MIMEVersion),

@@ -56,7 +56,7 @@ pub async fn insert(pool: &Pool, record: &CloudRecordInsert) -> sqlx::Result<i64
              (app, stream, call_id, start_time, end_time, media_server_id, server_id, \
               file_name, folder, file_path, file_size, time_len) \
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) \
-             RETURNING id"
+             RETURNING id",
         )
         .bind(&record.app)
         .bind(&record.stream)
@@ -82,7 +82,7 @@ pub async fn insert(pool: &Pool, record: &CloudRecordInsert) -> sqlx::Result<i64
             "INSERT INTO wvp_cloud_record \
              (app, stream, call_id, start_time, end_time, media_server_id, server_id, \
               file_name, folder, file_path, file_size, time_len) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&record.app)
         .bind(&record.stream)
@@ -110,7 +110,7 @@ pub async fn get_by_id(pool: &Pool, id: i64) -> sqlx::Result<Option<CloudRecord>
         sqlx::query_as::<_, CloudRecord>(
             "SELECT id, app, stream, call_id, start_time, end_time, media_server_id, \
              server_id, file_name, folder, file_path, collect, file_size, time_len \
-             FROM wvp_cloud_record WHERE id = $1"
+             FROM wvp_cloud_record WHERE id = $1",
         )
         .bind(id)
         .fetch_optional(pool)
@@ -122,7 +122,7 @@ pub async fn get_by_id(pool: &Pool, id: i64) -> sqlx::Result<Option<CloudRecord>
         sqlx::query_as::<_, CloudRecord>(
             "SELECT id, app, stream, call_id, start_time, end_time, media_server_id, \
              server_id, file_name, folder, file_path, collect, file_size, time_len \
-             FROM wvp_cloud_record WHERE id = ?"
+             FROM wvp_cloud_record WHERE id = ?",
         )
         .bind(id)
         .fetch_optional(pool)
@@ -155,7 +155,7 @@ pub async fn list_paged(
                AND ($4::bigint IS NULL OR start_time >= $4) \
                AND ($5::bigint IS NULL OR end_time <= $5) \
              ORDER BY start_time DESC \
-             LIMIT $6 OFFSET $7"
+             LIMIT $6 OFFSET $7",
         )
         .bind(app)
         .bind(stream)
@@ -180,7 +180,7 @@ pub async fn list_paged(
                AND (? IS NULL OR start_time >= ?) \
                AND (? IS NULL OR end_time <= ?) \
              ORDER BY start_time DESC \
-             LIMIT ? OFFSET ?"
+             LIMIT ? OFFSET ?",
         )
         .bind(app)
         .bind(app)
@@ -216,7 +216,7 @@ pub async fn count_all(
                AND ($2::text IS NULL OR stream = $2) \
                AND ($3::text IS NULL OR media_server_id = $3) \
                AND ($4::bigint IS NULL OR start_time >= $4) \
-               AND ($5::bigint IS NULL OR end_time <= $5)"
+               AND ($5::bigint IS NULL OR end_time <= $5)",
         )
         .bind(app)
         .bind(stream)
@@ -237,7 +237,7 @@ pub async fn count_all(
                AND (? IS NULL OR stream = ?) \
                AND (? IS NULL OR media_server_id = ?) \
                AND (? IS NULL OR start_time >= ?) \
-               AND (? IS NULL OR end_time <= ?)"
+               AND (? IS NULL OR end_time <= ?)",
         )
         .bind(app)
         .bind(app)
@@ -265,7 +265,7 @@ pub async fn update(pool: &Pool, record: &CloudRecordUpdate) -> sqlx::Result<boo
              end_time = COALESCE($2, end_time), \
              file_size = COALESCE($3, file_size), \
              time_len = COALESCE($4, time_len) \
-             WHERE id = $1"
+             WHERE id = $1",
         )
         .bind(record.id)
         .bind(record.end_time)
@@ -284,7 +284,7 @@ pub async fn update(pool: &Pool, record: &CloudRecordUpdate) -> sqlx::Result<boo
              end_time = COALESCE(?, end_time), \
              file_size = COALESCE(?, file_size), \
              time_len = COALESCE(?, time_len) \
-             WHERE id = ?"
+             WHERE id = ?",
         )
         .bind(record.end_time)
         .bind(record.file_size)
@@ -449,7 +449,12 @@ pub async fn delete_before_time(pool: &Pool, before_time: i64) -> sqlx::Result<u
 }
 
 /// Phase 4.1: 从 ZLM on_record_file hook 插入录像记录
-pub async fn insert_from_hook(pool: &Pool, stream_id: &str, file_path: &str, duration_secs: i64) -> sqlx::Result<i64> {
+pub async fn insert_from_hook(
+    pool: &Pool,
+    stream_id: &str,
+    file_path: &str,
+    duration_secs: i64,
+) -> sqlx::Result<i64> {
     let now = chrono::Utc::now().timestamp();
     let start = now - duration_secs;
     let record = CloudRecordInsert {

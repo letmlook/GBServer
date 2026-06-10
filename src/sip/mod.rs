@@ -11,3 +11,4 @@ pub mod server;
 pub use config::{SipConfig, ZlmConfig, ZlmServerConfig};
 pub use core::method::SipMethod;
 pub use server::SipServer;
+pub use server::PlaybackControlCmd;

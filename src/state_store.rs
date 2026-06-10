@@ -15,7 +15,7 @@ use chrono::{DateTime, Utc};
 // 状态数据模型
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct DeviceOnlineState {
     pub online: bool,
     pub ip: String,
@@ -24,7 +24,7 @@ pub struct DeviceOnlineState {
     pub ttl_secs: u64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct StreamState {
     pub app: String,
     pub stream_id: String,
@@ -38,7 +38,7 @@ pub struct StreamState {
     pub last_activity: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct InviteSessionState {
     pub call_id: String,
     pub device_id: String,
@@ -50,7 +50,7 @@ pub struct InviteSessionState {
     pub last_activity: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct MediaServerLoad {
     pub server_id: String,
     pub stream_count: i64,
@@ -59,7 +59,7 @@ pub struct MediaServerLoad {
     pub last_keepalive: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct MobilePositionState {
     pub device_id: String,
     pub lat: f64,
@@ -69,7 +69,7 @@ pub struct MobilePositionState {
     pub time: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CascadeSendRtpState {
     pub cascade_call_id: String,
     pub platform_id: String,
@@ -151,20 +151,6 @@ impl Default for InMemoryBackend {
     fn default() -> Self { Self::new() }
 }
 
-macro_rules! impl_state_backend {
-    ($($name:ident: $t:ty),*) => {$(
-        fn $name(&self, id: &str, state: &$t) {
-            self.$name.blocking_write().insert(id.to_string(), state.clone());
-        }
-        fn $name"_get(&self, id: &str) -> Option<$t> {
-            self.$name.blocking_read().get(id).cloned()
-        }
-        fn $name"_all(&self) -> Vec<(String, $t)> {
-            self.$name.blocking_read().iter().map(|(k, v)| (k.clone(), v.clone())).collect()
-        }
-    )*}
-}
-
 impl StateBackend for InMemoryBackend {
     fn device_online_set(&self, id: &str, state: &DeviceOnlineState) {
         self.devices.blocking_write().insert(id.to_string(), state.clone());
@@ -238,34 +224,311 @@ impl StateBackend for InMemoryBackend {
 // Redis backend stub
 // ---------------------------------------------------------------------------
 
+/// Real Redis backend using `ConnectionManager` (auto-reconnects, multiplexed).
+/// Since `StateBackend` trait methods are sync, we use `tokio::task::block_in_place`
+/// + `Handle::current().block_on` to bridge into the async Redis API.
+/// Each method gracefully no-ops if Redis is unavailable.
 pub struct RedisBackend {
     url: String,
+    manager: tokio::sync::RwLock<Option<redis::aio::ConnectionManager>>,
 }
 
+const KEY_PREFIX: &str = "wvp:";
+fn k_device(id: &str) -> String { format!("{}device:online:{}", KEY_PREFIX, id) }
+fn k_stream(id: &str) -> String { format!("{}stream:{}", KEY_PREFIX, id) }
+fn k_invite(id: &str) -> String { format!("{}invite:{}", KEY_PREFIX, id) }
+fn k_ms(id: &str) -> String { format!("{}ms:load:{}", KEY_PREFIX, id) }
+fn k_ms_count(server_id: &str) -> String { format!("{}ms:streams:{}", KEY_PREFIX, server_id) }
+fn k_ms_zset() -> String { format!("{}ms:zset", KEY_PREFIX) }
+fn k_position(id: &str) -> String { format!("{}position:{}", KEY_PREFIX, id) }
+fn k_sendrtp(id: &str) -> String { format!("{}sendrtp:{}", KEY_PREFIX, id) }
+
 impl RedisBackend {
-    pub fn new(url: &str) -> Self { Self { url: url.to_string() } }
+    pub fn new(url: &str) -> Self {
+        Self { url: url.to_string(), manager: tokio::sync::RwLock::new(None) }
+    }
+
+    async fn connect(&self) {
+        if self.manager.read().await.is_some() { return; }
+        let mut w = self.manager.write().await;
+        if w.is_some() { return; }
+        let client = match redis::Client::open(self.url.as_str()) {
+            Ok(c) => c,
+            Err(e) => { tracing::warn!("Redis Client::open failed: {}", e); return; }
+        };
+        // Bound the connect attempt so unreachable Redis fails fast (1.5s).
+        let connect_fut = redis::aio::ConnectionManager::new(client);
+        match tokio::time::timeout(std::time::Duration::from_millis(1500), connect_fut).await {
+            Ok(Ok(mgr)) => { *w = Some(mgr); tracing::info!("Redis backend connected: {}", self.url); }
+            Ok(Err(e)) => tracing::warn!("Redis ConnectionManager::new failed: {}", e),
+            Err(_) => tracing::warn!("Redis connect timed out after 1.5s for {}", self.url),
+        }
+    }
+
+    async fn get_conn(&self) -> Option<redis::aio::ConnectionManager> {
+        if self.manager.read().await.is_none() {
+            self.connect().await;
+        }
+        self.manager.read().await.clone()
+    }
+}
+
+/// Bridge for reads: future returns Option<T>, helper returns Option<T> (None on no-runtime).
+fn block_on_opt<F, T>(fut: F) -> Option<T>
+where
+    F: std::future::Future<Output = Option<T>>,
+{
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => tokio::task::block_in_place(|| handle.block_on(fut)),
+        Err(_) => None,
+    }
+}
+
+/// Bridge for writes: fire-and-forget, returns ().
+fn block_on_run<F: std::future::Future<Output = ()>>(fut: F) {
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        tokio::task::block_in_place(|| handle.block_on(fut));
+    }
 }
 
 impl StateBackend for RedisBackend {
-    fn device_online_set(&self, _id: &str, _s: &DeviceOnlineState) {}
-    fn device_online_get(&self, _id: &str) -> Option<DeviceOnlineState> { None }
-    fn device_online_all(&self) -> Vec<(String, DeviceOnlineState)> { Vec::new() }
-    fn stream_set(&self, _id: &str, _s: &StreamState) {}
-    fn stream_get(&self, _id: &str) -> Option<StreamState> { None }
-    fn stream_del(&self, _id: &str) {}
-    fn stream_all(&self) -> Vec<(String, StreamState)> { Vec::new() }
-    fn invite_set(&self, _id: &str, _s: &InviteSessionState) {}
-    fn invite_get(&self, _id: &str) -> Option<InviteSessionState> { None }
-    fn invite_del(&self, _id: &str) {}
-    fn media_server_set(&self, _id: &str, _s: &MediaServerLoad) {}
-    fn media_server_get(&self, _id: &str) -> Option<MediaServerLoad> { None }
-    fn media_server_all(&self) -> Vec<(String, MediaServerLoad)> { Vec::new() }
-    fn media_server_select_least_loaded(&self) -> Option<String> { None }
-    fn position_set(&self, _id: &str, _s: &MobilePositionState) {}
-    fn position_get(&self, _id: &str) -> Option<MobilePositionState> { None }
-    fn cascade_sendrtp_set(&self, _id: &str, _s: &CascadeSendRtpState) {}
-    fn cascade_sendrtp_get(&self, _id: &str) -> Option<CascadeSendRtpState> { None }
-    fn cascade_sendrtp_del(&self, _id: &str) {}
+    fn device_online_set(&self, id: &str, state: &DeviceOnlineState) {
+        let key = k_device(id);
+        let ttl = state.ttl_secs.max(1);
+        let payload = match serde_json::to_string(state) {
+            Ok(p) => p,
+            Err(e) => { tracing::warn!("device_online_set serialize: {}", e); return; }
+        };
+        block_on_run(async {
+            use redis::AsyncCommands;
+            if let Some(mut conn) = self.get_conn().await {
+                let _: Result<(), _> = conn.set_ex(&key, &payload, ttl).await;
+            }
+        });
+    }
+    fn device_online_get(&self, id: &str) -> Option<DeviceOnlineState> {
+        let key = k_device(id);
+        let raw = block_on_opt::<_, String>(async {
+            use redis::AsyncCommands;
+            let mut conn = self.get_conn().await?;
+            let v: Option<String> = conn.get(&key).await.ok()?;
+            v
+        })?;
+        serde_json::from_str(&raw).ok()
+    }
+    fn device_online_all(&self) -> Vec<(String, DeviceOnlineState)> {
+        let pattern = format!("{}device:online:*", KEY_PREFIX);
+        block_on_opt::<_, Vec<(String, DeviceOnlineState)>>(async {
+            use redis::AsyncCommands;
+            let mut conn = self.get_conn().await?;
+            let keys: Vec<String> = conn.keys(&pattern).await.ok()?;
+            let mut out = Vec::with_capacity(keys.len());
+            let prefix = format!("{}device:online:", KEY_PREFIX);
+            for key in keys {
+                let v: Option<String> = conn.get(&key).await.ok().flatten();
+                if let Some(v) = v {
+                    if let Ok(state) = serde_json::from_str::<DeviceOnlineState>(&v) {
+                        let id = key.strip_prefix(&prefix).unwrap_or(&key).to_string();
+                        out.push((id, state));
+                    }
+                }
+            }
+            Some(out)
+        }).unwrap_or_default()
+    }
+
+    fn stream_set(&self, id: &str, state: &StreamState) {
+        let key = k_stream(id);
+        let payload = match serde_json::to_string(state) { Ok(p) => p, Err(_) => return };
+        let ms = state.media_server_id.clone();
+        block_on_run(async {
+            use redis::AsyncCommands;
+            if let Some(mut conn) = self.get_conn().await {
+                let _: Result<(), _> = conn.set(&key, &payload).await;
+                let _: Result<(), _> = conn.incr(&k_ms_count(&ms), 1).await;
+                let _: Result<(), _> = conn.sadd(&format!("{}ms:servers", KEY_PREFIX), &ms).await;
+            }
+        });
+    }
+    fn stream_get(&self, id: &str) -> Option<StreamState> {
+        let key = k_stream(id);
+        let raw = block_on_opt::<_, String>(async {
+            use redis::AsyncCommands;
+            let mut conn = self.get_conn().await?;
+            let v: Option<String> = conn.get(&key).await.ok()?;
+            v
+        })?;
+        serde_json::from_str(&raw).ok()
+    }
+    fn stream_del(&self, id: &str) {
+        let key = k_stream(id);
+        block_on_run(async {
+            use redis::AsyncCommands;
+            if let Some(mut conn) = self.get_conn().await {
+                let prev: Option<String> = conn.get(&key).await.ok().flatten();
+                let _: Result<(), _> = conn.del(&key).await;
+                if let Some(p) = prev {
+                    if let Ok(state) = serde_json::from_str::<StreamState>(&p) {
+                        let _: Result<i64, _> = conn.decr(&k_ms_count(&state.media_server_id), 1).await;
+                    }
+                }
+            }
+        });
+    }
+    fn stream_all(&self) -> Vec<(String, StreamState)> {
+        let pattern = format!("{}stream:*", KEY_PREFIX);
+        block_on_opt::<_, Vec<(String, StreamState)>>(async {
+            use redis::AsyncCommands;
+            let mut conn = self.get_conn().await?;
+            let keys: Vec<String> = conn.keys(&pattern).await.ok()?;
+            let mut out = Vec::with_capacity(keys.len());
+            let prefix = format!("{}stream:", KEY_PREFIX);
+            for key in keys {
+                let v: Option<String> = conn.get(&key).await.ok().flatten();
+                if let Some(v) = v {
+                    if let Ok(state) = serde_json::from_str::<StreamState>(&v) {
+                        let id = key.strip_prefix(&prefix).unwrap_or(&key).to_string();
+                        out.push((id, state));
+                    }
+                }
+            }
+            Some(out)
+        }).unwrap_or_default()
+    }
+
+    fn invite_set(&self, id: &str, state: &InviteSessionState) {
+        let key = k_invite(id);
+        let payload = match serde_json::to_string(state) { Ok(p) => p, Err(_) => return };
+        block_on_run(async {
+            use redis::AsyncCommands;
+            if let Some(mut conn) = self.get_conn().await {
+                let _: Result<(), _> = conn.set(&key, &payload).await;
+            }
+        });
+    }
+    fn invite_get(&self, id: &str) -> Option<InviteSessionState> {
+        let key = k_invite(id);
+        let raw = block_on_opt::<_, String>(async {
+            use redis::AsyncCommands;
+            let mut conn = self.get_conn().await?;
+            let v: Option<String> = conn.get(&key).await.ok()?;
+            v
+        })?;
+        serde_json::from_str(&raw).ok()
+    }
+    fn invite_del(&self, id: &str) {
+        let key = k_invite(id);
+        block_on_run(async {
+            use redis::AsyncCommands;
+            if let Some(mut conn) = self.get_conn().await {
+                let _: Result<(), _> = conn.del(&key).await;
+            }
+        });
+    }
+
+    fn media_server_set(&self, id: &str, state: &MediaServerLoad) {
+        let key = k_ms(id);
+        let payload = match serde_json::to_string(state) { Ok(p) => p, Err(_) => return };
+        let count = state.stream_count;
+        block_on_run(async {
+            use redis::AsyncCommands;
+            if let Some(mut conn) = self.get_conn().await {
+                let _: Result<(), _> = conn.set(&key, &payload).await;
+                let _: Result<(), _> = conn.zadd(&k_ms_zset(), id, count).await;
+                let _: Result<(), _> = conn.sadd(&format!("{}ms:servers", KEY_PREFIX), id).await;
+            }
+        });
+    }
+    fn media_server_get(&self, id: &str) -> Option<MediaServerLoad> {
+        let key = k_ms(id);
+        let raw = block_on_opt::<_, String>(async {
+            use redis::AsyncCommands;
+            let mut conn = self.get_conn().await?;
+            let v: Option<String> = conn.get(&key).await.ok()?;
+            v
+        })?;
+        serde_json::from_str(&raw).ok()
+    }
+    fn media_server_all(&self) -> Vec<(String, MediaServerLoad)> {
+        let pattern = format!("{}ms:load:*", KEY_PREFIX);
+        block_on_opt::<_, Vec<(String, MediaServerLoad)>>(async {
+            use redis::AsyncCommands;
+            let mut conn = self.get_conn().await?;
+            let keys: Vec<String> = conn.keys(&pattern).await.ok()?;
+            let mut out = Vec::with_capacity(keys.len());
+            let prefix = format!("{}ms:load:", KEY_PREFIX);
+            for key in keys {
+                let v: Option<String> = conn.get(&key).await.ok().flatten();
+                if let Some(v) = v {
+                    if let Ok(state) = serde_json::from_str::<MediaServerLoad>(&v) {
+                        let id = key.strip_prefix(&prefix).unwrap_or(&key).to_string();
+                        out.push((id, state));
+                    }
+                }
+            }
+            Some(out)
+        }).unwrap_or_default()
+    }
+    fn media_server_select_least_loaded(&self) -> Option<String> {
+        block_on_opt::<_, String>(async {
+            use redis::AsyncCommands;
+            let mut conn = self.get_conn().await?;
+            let pick: Vec<String> = conn.zrange(&k_ms_zset(), 0, 0).await.ok()?;
+            pick.into_iter().next()
+        })
+    }
+
+    fn position_set(&self, id: &str, state: &MobilePositionState) {
+        let key = k_position(id);
+        let payload = match serde_json::to_string(state) { Ok(p) => p, Err(_) => return };
+        block_on_run(async {
+            use redis::AsyncCommands;
+            if let Some(mut conn) = self.get_conn().await {
+                let _: Result<(), _> = conn.set(&key, &payload).await;
+                let _: Result<(), _> = conn.expire(&key, 60).await;
+            }
+        });
+    }
+    fn position_get(&self, id: &str) -> Option<MobilePositionState> {
+        let key = k_position(id);
+        let raw = block_on_opt::<_, String>(async {
+            use redis::AsyncCommands;
+            let mut conn = self.get_conn().await?;
+            let v: Option<String> = conn.get(&key).await.ok()?;
+            v
+        })?;
+        serde_json::from_str(&raw).ok()
+    }
+
+    fn cascade_sendrtp_set(&self, id: &str, state: &CascadeSendRtpState) {
+        let key = k_sendrtp(id);
+        let payload = match serde_json::to_string(state) { Ok(p) => p, Err(_) => return };
+        block_on_run(async {
+            use redis::AsyncCommands;
+            if let Some(mut conn) = self.get_conn().await {
+                let _: Result<(), _> = conn.set(&key, &payload).await;
+            }
+        });
+    }
+    fn cascade_sendrtp_get(&self, id: &str) -> Option<CascadeSendRtpState> {
+        let key = k_sendrtp(id);
+        let raw = block_on_opt::<_, String>(async {
+            use redis::AsyncCommands;
+            let mut conn = self.get_conn().await?;
+            let v: Option<String> = conn.get(&key).await.ok()?;
+            v
+        })?;
+        serde_json::from_str(&raw).ok()
+    }
+    fn cascade_sendrtp_del(&self, id: &str) {
+        let key = k_sendrtp(id);
+        block_on_run(async {
+            use redis::AsyncCommands;
+            if let Some(mut conn) = self.get_conn().await {
+                let _: Result<(), _> = conn.del(&key).await;
+            }
+        });
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -439,5 +702,152 @@ mod tests {
         assert_eq!(s.upstream_port, 30000);
         store.remove_cascade_sendrtp("cascade-001");
         assert!(store.get_cascade_sendrtp("cascade-001").is_none());
+    }
+}
+
+
+#[cfg(test)]
+mod redis_backend_tests {
+    use super::*;
+    use crate::state_store::*;
+
+    fn make_device_state(id: &str) -> DeviceOnlineState {
+        DeviceOnlineState {
+            online: true,
+            ip: "127.0.0.1".to_string(),
+            port: 5060,
+            last_seen: chrono::Utc::now(),
+            ttl_secs: 60,
+        }
+    }
+
+    fn make_stream_state(server: &str) -> StreamState {
+        StreamState {
+            app: "live".to_string(),
+            stream_id: "ch001".to_string(),
+            device_id: "34020000002000000001".to_string(),
+            channel_id: "34020000002000000002".to_string(),
+            ssrc: Some("0x1234".to_string()),
+            call_id: Some("call-1".to_string()),
+            media_server_id: server.to_string(),
+            online: true,
+            has_audio: true,
+            last_activity: chrono::Utc::now(),
+        }
+    }
+
+    fn make_media_server(id: &str, count: i64) -> MediaServerLoad {
+        MediaServerLoad {
+            server_id: id.to_string(),
+            stream_count: count,
+            rtp_server_count: 5,
+            online: true,
+            last_keepalive: chrono::Utc::now(),
+        }
+    }
+
+    /// All state structs serialize and round-trip via serde_json (so RedisBackend can persist them).
+    #[test]
+    fn test_device_online_state_serde_roundtrip() {
+        let s = make_device_state("dev-1");
+        let j = serde_json::to_string(&s).expect("serialize");
+        let back: DeviceOnlineState = serde_json::from_str(&j).expect("deserialize");
+        assert_eq!(back.ip, "127.0.0.1");
+        assert_eq!(back.port, 5060);
+        assert!(back.online);
+    }
+
+    #[test]
+    fn test_stream_state_serde_roundtrip() {
+        let s = make_stream_state("zlm-a");
+        let j = serde_json::to_string(&s).expect("serialize");
+        let back: StreamState = serde_json::from_str(&j).expect("deserialize");
+        assert_eq!(back.app, "live");
+        assert_eq!(back.media_server_id, "zlm-a");
+        assert_eq!(back.ssrc.as_deref(), Some("0x1234"));
+    }
+
+    #[test]
+    fn test_media_server_load_serde_roundtrip() {
+        let s = make_media_server("zlm-b", 42);
+        let j = serde_json::to_string(&s).expect("serialize");
+        let back: MediaServerLoad = serde_json::from_str(&j).expect("deserialize");
+        assert_eq!(back.stream_count, 42);
+        assert!(back.online);
+    }
+
+    /// Key builders produce namespaced keys with the wvp: prefix.
+    #[test]
+    fn test_key_prefixes_are_namespaced() {
+        assert!(k_device("abc").starts_with("wvp:device:online:"));
+        assert!(k_stream("abc").starts_with("wvp:stream:"));
+        assert!(k_invite("abc").starts_with("wvp:invite:"));
+        assert!(k_ms("abc").starts_with("wvp:ms:load:"));
+        assert!(k_ms_count("abc").starts_with("wvp:ms:streams:"));
+        assert!(k_position("abc").starts_with("wvp:position:"));
+        assert!(k_sendrtp("abc").starts_with("wvp:sendrtp:"));
+        assert!(k_ms_zset().starts_with("wvp:ms:zset"));
+    }
+
+    /// RedisBackend constructs without panic even with a bad URL (connection is lazy).
+    #[test]
+    fn test_redis_backend_construction_does_not_panic() {
+        let _ = RedisBackend::new("redis://127.0.0.1:1");
+        let _ = RedisBackend::new("redis://invalid-host:6379");
+    }
+
+    /// RedisBackend with unreachable Redis: all calls are no-ops (no panic, no error return).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_redis_backend_unreachable_is_noop() {
+        let backend = RedisBackend::new("redis://127.0.0.1:1");
+
+        let s = make_device_state("dev-x");
+        backend.device_online_set("dev-x", &s);
+        assert!(backend.device_online_get("dev-x").is_none());
+        assert_eq!(backend.device_online_all().len(), 0);
+
+        let ss = make_stream_state("zlm-a");
+        backend.stream_set("stream-x", &ss);
+        assert!(backend.stream_get("stream-x").is_none());
+        backend.stream_del("stream-x");
+        assert_eq!(backend.stream_all().len(), 0);
+
+        let inv = InviteSessionState {
+            call_id: "c1".to_string(), device_id: "d".to_string(),
+            channel_id: "ch".to_string(), session_type: "play".to_string(),
+            zlm_stream_id: Some("stream-x".to_string()), status: "active".to_string(),
+            created_at: chrono::Utc::now(), last_activity: chrono::Utc::now(),
+        };
+        backend.invite_set("inv-x", &inv);
+        assert!(backend.invite_get("inv-x").is_none());
+        backend.invite_del("inv-x");
+
+        let ms = make_media_server("zlm-a", 3);
+        backend.media_server_set("zlm-a", &ms);
+        assert!(backend.media_server_get("zlm-a").is_none());
+        assert!(backend.media_server_select_least_loaded().is_none());
+        assert_eq!(backend.media_server_all().len(), 0);
+
+        let pos = MobilePositionState {
+            device_id: "d".to_string(), lat: 31.0, lon: 121.0,
+            speed: Some(10.0), direction: Some(90), time: "2026-06-10T12:00:00".to_string(),
+        };
+        backend.position_set("d", &pos);
+        assert!(backend.position_get("d").is_none());
+
+        let rt = CascadeSendRtpState {
+            cascade_call_id: "rt-1".to_string(), platform_id: "p".to_string(),
+            channel_id: "ch".to_string(), upstream_host: "127.0.0.1".to_string(),
+            upstream_port: 9000, active: true, started_at: chrono::Utc::now(),
+        };
+        backend.cascade_sendrtp_set("rt-1", &rt);
+        assert!(backend.cascade_sendrtp_get("rt-1").is_none());
+        backend.cascade_sendrtp_del("rt-1");
+    }
+
+    /// StateStore::redis() constructs without panic even with bad URL.
+    #[test]
+    fn test_state_store_redis_constructs_without_panic() {
+        let _ = StateStore::redis("redis://127.0.0.1:1");
     }
 }

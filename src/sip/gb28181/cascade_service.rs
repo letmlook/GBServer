@@ -17,12 +17,12 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use chrono::Utc;
 use dashmap::DashMap;
 use tokio::sync::RwLock;
-use chrono::Utc;
 
-use crate::db::Pool;
 use crate::db::platform as db_platform;
+use crate::db::Pool;
 
 // ---------------------------------------------------------------------------
 // 级联平台状态机
@@ -98,8 +98,8 @@ impl CascadeSession {
             return false;
         }
         let remaining = self.expires_at - Utc::now().timestamp();
-        // 提前 60s 刷新
-        remaining <= 60 && remaining > 0
+        // 提前 60s 刷新；remaining <= 0 表示已过期，更需要刷新
+        remaining <= 60
     }
 
     pub fn needs_keepalive(&self) -> bool {
@@ -167,9 +167,10 @@ impl CascadeService {
 
         let mut count = 0;
         for p in platforms {
-            let mut session = CascadeSession::new(p.server_gb_id.clone().unwrap_or_default());
+            let pid = p.server_gb_id.clone().unwrap_or_else(|| p.id.to_string());
+            let mut session = CascadeSession::new(pid.clone());
             session.shared_channel_count = 0;
-            self.sessions.insert(p.server_gb_id.clone().unwrap_or_default(), session);
+            self.sessions.insert(pid, session);
             count += 1;
         }
         Ok(count)
@@ -188,7 +189,8 @@ impl CascadeService {
             .parse()
             .map_err(|e| format!("Invalid platform address {}: {}", host, e))?;
 
-        let mut session = self.sessions
+        let mut session = self
+            .sessions
             .entry(platform_id.to_string())
             .or_insert_with(|| CascadeSession::new(platform_id.to_string()));
 
@@ -196,7 +198,11 @@ impl CascadeService {
         session.state = CascadeState::Registering;
 
         let local_id = "34020000002000000001"; // 本级 GB ID，应从配置读取
-        let call_id = format!("cascade_{}_{}", platform_id, chrono::Utc::now().timestamp_millis());
+        let call_id = format!(
+            "cascade_{}_{}",
+            platform_id,
+            chrono::Utc::now().timestamp_millis()
+        );
 
         let expires = 3600u32;
         let msg = self.build_register_msg(
@@ -211,9 +217,14 @@ impl CascadeService {
 
         let socket = self.socket.read().await;
         if let Some(ref s) = *socket {
-            s.send_to(msg.as_bytes(), addr).await
+            s.send_to(msg.as_bytes(), addr)
+                .await
                 .map_err(|e| format!("Send REGISTER failed: {}", e))?;
-            tracing::info!("Cascade REGISTER sent: platform={} addr={}", platform_id, addr);
+            tracing::info!(
+                "Cascade REGISTER sent: platform={} addr={}",
+                platform_id,
+                addr
+            );
         } else {
             return Err("SIP socket not initialized".to_string());
         }
@@ -225,7 +236,11 @@ impl CascadeService {
     pub fn handle_register_ok(&self, platform_id: &str, expires_secs: u32) {
         if let Some(mut session) = self.sessions.get_mut(platform_id) {
             session.set_active(expires_secs);
-            tracing::info!("Cascade registered: platform={} expires={}s", platform_id, expires_secs);
+            tracing::info!(
+                "Cascade registered: platform={} expires={}s",
+                platform_id,
+                expires_secs
+            );
         }
     }
 
@@ -247,7 +262,9 @@ impl CascadeService {
 
     /// 发送 Keepalive（周期任务调用）
     pub async fn send_keepalive(&self, platform_id: &str) -> Result<(), String> {
-        let session = self.sessions.get(platform_id)
+        let session = self
+            .sessions
+            .get(platform_id)
             .ok_or_else(|| format!("No cascade session for {}", platform_id))?;
 
         let addr = session.remote_addr.ok_or("No remote address")?;
@@ -274,8 +291,12 @@ impl CascadeService {
              Content-Type: APPLICATION/MANSCDP+XML\r\n\
              Content-Length: {}\r\n\r\n\
              {}",
-            platform_id, addr.ip(), addr.port(),
-            platform_id, addr.ip(), addr.port(),
+            platform_id,
+            addr.ip(),
+            addr.port(),
+            platform_id,
+            addr.ip(),
+            addr.port(),
             chrono::Utc::now().timestamp_millis(),
             body.len(),
             body
@@ -283,7 +304,8 @@ impl CascadeService {
 
         let socket = self.socket.read().await;
         if let Some(ref s) = *socket {
-            s.send_to(msg.as_bytes(), addr).await
+            s.send_to(msg.as_bytes(), addr)
+                .await
                 .map_err(|e| format!("Keepalive send failed: {}", e))?;
             tracing::debug!("Cascade Keepalive sent: platform={}", platform_id);
         }
@@ -335,7 +357,11 @@ impl CascadeService {
         channel_id: &str,
         sdp: &str,
     ) -> Result<String, String> {
-        if !self.get_session(platform_id).map(|s| s.is_active()).unwrap_or(false) {
+        if !self
+            .get_session(platform_id)
+            .map(|s| s.is_active())
+            .unwrap_or(false)
+        {
             return Err(format!("Platform {} not active", platform_id));
         }
 
@@ -346,16 +372,22 @@ impl CascadeService {
         if let Some(ref sip) = self.sip_server {
             let server = sip.read().await;
             // 获取设备地址
-            let _device_addr = server.device_manager().get_address(channel_id).await
+            let _device_addr = server
+                .device_manager()
+                .get_address(channel_id)
+                .await
                 .ok_or_else(|| format!("Device {} not found or offline", channel_id))?;
 
             // 生成 SSRC（上级 SSRC）
-            let _upstream_ssrc = self.extract_ssrc_from_sdp(sdp)
+            let _upstream_ssrc = self
+                .extract_ssrc_from_sdp(sdp)
                 .unwrap_or_else(|| format!("0{:0>9}0", &platform_id[..platform_id.len().min(9)]));
 
             tracing::info!(
                 "Cascade upstream INVITE: platform={} channel={} upstream_port={}",
-                platform_id, channel_id, media_port
+                platform_id,
+                channel_id,
+                media_port
             );
 
             // 这里应调用设备的 INVITE，然后 SendRtp 到上级
@@ -443,15 +475,28 @@ impl Default for CascadeService {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "mysql")]
-    #[test]
-    fn test_cascade_session_lifecycle() {
-        use super::*;
-        use sqlx::mysql::MySqlPoolOptions;
-        
-        let _mgr = CascadeService::new(Pool::from(
-            MySqlPoolOptions::new().max_connections(1).clone()
-        ));
+    use super::*;
+
+    fn dummy_pool() -> Pool {
+        #[cfg(feature = "postgres")]
+        {
+            sqlx::postgres::PgPoolOptions::new()
+                .max_connections(1)
+                .connect_lazy("postgres://postgres:postgres@127.0.0.1:5432/wvp")
+                .expect("lazy pool")
+        }
+        #[cfg(feature = "mysql")]
+        {
+            sqlx::mysql::MySqlPoolOptions::new()
+                .max_connections(1)
+                .connect_lazy("mysql://root:root@127.0.0.1:3306/wvp")
+                .expect("lazy pool")
+        }
+    }
+
+    #[tokio::test]
+    async fn test_cascade_session_lifecycle() {
+        let mgr = CascadeService::new(dummy_pool());
 
         // 模拟加载
         let session = CascadeSession::new("plat001".to_string());
@@ -469,7 +514,7 @@ mod tests {
     fn test_cascade_needs_refresh() {
         use super::*;
         use chrono::Utc;
-        
+
         let mut session = CascadeSession::new("plat001".to_string());
         session.set_active(3600);
         // 刚注册完，不需要刷新
@@ -485,7 +530,7 @@ mod tests {
     #[test]
     fn test_cascade_failed() {
         use super::*;
-        
+
         let mut session = CascadeSession::new("plat001".to_string());
         session.mark_failed("403 Forbidden".to_string());
         assert_eq!(session.state, CascadeState::Failed);

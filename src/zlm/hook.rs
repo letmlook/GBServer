@@ -1,9 +1,6 @@
 //! ZLM Webhook 处理
 
-use axum::{
-    extract::State,
-    Json,
-};
+use axum::{extract::State, Json};
 use serde::{Deserialize, Serialize};
 
 use crate::cache;
@@ -360,17 +357,24 @@ pub async fn handle_webhook(
     State(state): State<AppState>,
     Json(event): Json<serde_json::Value>,
 ) -> Json<WVPResult<serde_json::Value>> {
-    let hook_name = event.get("hook_name")
+    let hook_name = event
+        .get("hook_name")
         .and_then(|v| v.as_str())
         .unwrap_or("unknown");
 
     match hook_name {
         "on_stream_changed" => {
-            if let Some(data) = event.get("schema").and_then(|_| {
-                serde_json::from_value::<StreamChangedData>(event.clone()).ok()
-            }) {
-                tracing::info!("Stream changed: {}/{}/{} register={}", 
-                    data.schema, data.app, data.stream, data.register);
+            if let Some(data) = event
+                .get("schema")
+                .and_then(|_| serde_json::from_value::<StreamChangedData>(event.clone()).ok())
+            {
+                tracing::info!(
+                    "Stream changed: {}/{}/{} register={}",
+                    data.schema,
+                    data.app,
+                    data.stream,
+                    data.register
+                );
                 sync_stream_changed(&state, &data).await;
 
                 let ws_msg = serde_json::json!({
@@ -385,8 +389,12 @@ pub async fn handle_webhook(
         }
         "on_stream_not_found" => {
             if let Some(data) = serde_json::from_value::<StreamNotFoundData>(event.clone()).ok() {
-                tracing::warn!("Stream not found: {}/{}/{}",
-                    data.schema, data.app, data.stream);
+                tracing::warn!(
+                    "Stream not found: {}/{}/{}",
+                    data.schema,
+                    data.app,
+                    data.stream
+                );
 
                 // Register with reconnect manager for persistent retry
                 if let Some(ref sip_server) = state.sip_server {
@@ -423,11 +431,15 @@ pub async fn handle_webhook(
                 }
 
                 if let Some((device_id, channel_id)) = parse_stream_id(&data.stream) {
-                    tracing::info!("Attempting auto-pull for device={} channel={}", device_id, channel_id);
-                    
+                    tracing::info!(
+                        "Attempting auto-pull for device={} channel={}",
+                        device_id,
+                        channel_id
+                    );
+
                     if let Some(ref zlm_client) = state.zlm_client {
                         let pull_url = format!("rtsp://{}:8554/{}", device_id, channel_id);
-                        
+
                         let proxy_req = crate::zlm::AddStreamProxyRequest {
                             secret: zlm_client.secret.clone(),
                             vhost: "__defaultVhost__".to_string(),
@@ -447,7 +459,11 @@ pub async fn handle_webhook(
 
                         match zlm_client.add_stream_proxy(&proxy_req).await {
                             Ok(stream_key) => {
-                                tracing::info!("Auto-pull started: {} -> {}", data.stream, stream_key);
+                                tracing::info!(
+                                    "Auto-pull started: {} -> {}",
+                                    data.stream,
+                                    stream_key
+                                );
                                 return Json(WVPResult::success(serde_json::json!({
                                     "code": 0,
                                     "stream": stream_key,
@@ -464,8 +480,11 @@ pub async fn handle_webhook(
         }
         "on_record_mp4" => {
             if let Some(data) = serde_json::from_value::<RecordMp4Data>(event.clone()).ok() {
-                tracing::info!("MP4 recorded: {} ({} bytes)", 
-                    data.file_name, data.file_size);
+                tracing::info!(
+                    "MP4 recorded: {} ({} bytes)",
+                    data.file_name,
+                    data.file_size
+                );
                 save_record(
                     &state,
                     data.media_server_id,
@@ -477,13 +496,17 @@ pub async fn handle_webhook(
                     data.file_size,
                     data.file_duration,
                     data.file_create_time,
-                ).await;
+                )
+                .await;
             }
         }
         "on_record_hls" => {
             if let Some(data) = serde_json::from_value::<RecordHlsData>(event.clone()).ok() {
-                tracing::info!("HLS recorded: {} ({} bytes)",
-                    data.file_name, data.file_size);
+                tracing::info!(
+                    "HLS recorded: {} ({} bytes)",
+                    data.file_name,
+                    data.file_size
+                );
                 save_record(
                     &state,
                     data.media_server_id,
@@ -495,26 +518,56 @@ pub async fn handle_webhook(
                     data.file_size,
                     data.file_duration,
                     data.file_create_time,
-                ).await;
+                )
+                .await;
             }
         }
         "on_play" => {
             // Phase 4.1: 播放鉴权 - 检查是否有设备/通道授权可播放
             if let Some(data) = serde_json::from_value::<PlayData>(event.clone()).ok() {
-                tracing::info!("on_play: {}/{}/{} from {}",
-                    data.schema, data.app, data.stream, data.ip);
+                tracing::info!(
+                    "on_play: {}/{}/{} from {}",
+                    data.schema,
+                    data.app,
+                    data.stream,
+                    data.ip
+                );
                 // 从 stream_id 解析设备/通道（格式：device_id_channel_id 或 device_id$channel_id）
-                // 播放鉴权暂时跳过，后续集成 ws_state.is_stream_allowed
-                let _ = parse_stream_id(&data.stream);
+                if let Some((device_id, channel_id)) = parse_stream_id(&data.stream) {
+                    // 播放鉴权（预留）
+                    tracing::debug!("on_play: device={} channel={}", device_id, channel_id);
+                }
             }
         }
         "on_publish" => {
             // Phase 4.1: 推流鉴权 - 验证设备来源
             if let Some(data) = serde_json::from_value::<PublishData>(event.clone()).ok() {
-                tracing::info!("on_publish: {}/{}/{} from {}",
-                    data.schema, data.app, data.stream, data.ip);
-                // 推流来源验证暂时跳过，后续集成 device 注册信息
-                let _ = parse_stream_id(&data.stream);
+                tracing::info!(
+                    "on_publish: {}/{}/{} from {}",
+                    data.schema,
+                    data.app,
+                    data.stream,
+                    data.ip
+                );
+                // 验证推流来源 IP 是否与注册设备匹配
+                if let Some((device_id, _channel_id)) = parse_stream_id(&data.stream) {
+                    if let Some(ref sip_server) = state.sip_server {
+                        let sip = sip_server.read().await;
+                        if let Some(addr) = sip.device_manager().get_address(&device_id).await {
+                            // 如果设备注册了 IP 且不匹配，记录但不拒绝
+                            if let Ok(parsed_ip) = data.ip.parse::<std::net::IpAddr>() {
+                                if addr.ip() != parsed_ip {
+                                    tracing::warn!(
+                                        "on_publish IP mismatch: device={} registered={} actual={}",
+                                        device_id,
+                                        addr.ip(),
+                                        data.ip
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
                 register_published_stream(&state, &data).await;
             }
         }
@@ -522,13 +575,17 @@ pub async fn handle_webhook(
             if let Some(data) = serde_json::from_value::<ServerStartedData>(event.clone()).ok() {
                 tracing::info!(
                     "ZLM server started: rtsp={} rtmp={} http={} https={}",
-                    data.rtsp_port, data.rtmp_port, data.http_port, data.https_port
+                    data.rtsp_port,
+                    data.rtmp_port,
+                    data.http_port,
+                    data.https_port
                 );
                 // Reset media server status and reconfigure hooks
-                let media_server_id = event.get("mediaServerId")
+                let media_server_id = event
+                    .get("mediaServerId")
                     .and_then(|v| v.as_str())
                     .unwrap_or("zlmediakit-1");
-                
+
                 // Phase 4.2: 重置节点状态（on_server_started 时）
                 let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
                 let _ = crate::db::media_server::update_ports(
@@ -539,17 +596,26 @@ pub async fn handle_webhook(
                     Some(data.rtsp_port as i32),
                     Some(data.rtmp_port as i32),
                     &now,
-                ).await;
+                )
+                .await;
                 // 重置流计数（在 on_server_started 时清零，避免旧数据残留）
                 if let Some(ref redis) = state.redis {
                     let _ = crate::cache::set_media_server_streams(redis, media_server_id, 0).await;
                 }
-                tracing::info!("ZLM node {} online: http={} rtsp={} rtmp={}",
-                    media_server_id, data.http_port, data.rtsp_port, data.rtmp_port);
+                tracing::info!(
+                    "ZLM node {} online: http={} rtsp={} rtmp={}",
+                    media_server_id,
+                    data.http_port,
+                    data.rtsp_port,
+                    data.rtmp_port
+                );
 
                 // Reconfigure ZLM hook URL if zlm_client is available
                 if let Some(ref zlm_client) = state.zlm_client {
-                    let hook_url = state.config.zlm.as_ref()
+                    let hook_url = state
+                        .config
+                        .zlm
+                        .as_ref()
                         .and_then(|cfg| cfg.servers.iter().find(|s| s.id == media_server_id))
                         .and_then(|sv| sv.hook_url.clone())
                         .unwrap_or_else(|| {
@@ -590,9 +656,9 @@ pub async fn handle_webhook(
                 tracing::debug!("ZLM server keepalive: {}", server_id);
                 // Update last keepalive time in DB
                 let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-                let _ = crate::db::media_server::update_last_keepalive(
-                    &state.pool, server_id, &now,
-                ).await;
+                let _ =
+                    crate::db::media_server::update_last_keepalive(&state.pool, server_id, &now)
+                        .await;
             }
         }
         "on_rtp_server_started" => {
@@ -604,7 +670,8 @@ pub async fn handle_webhook(
                 // 通过 stream_id 反查 call_id，触发 MediaWaiter
                 if let Some(ref sip_server) = state.sip_server {
                     let sip = sip_server.read().await;
-                    if sip.notify_media_ready_by_stream(stream_id, "rtp").await {
+                    let resolved = sip.notify_media_ready_by_stream(stream_id, "rtp").await;
+                    if resolved {
                         tracing::info!("MediaWaiter resolved for stream_id={}", stream_id);
                     }
                 }
@@ -617,16 +684,29 @@ pub async fn handle_webhook(
                 // 通知 media waiter（通过 call_id 或 stream_id）
                 if let Some(ref sip_server) = state.sip_server {
                     let sip = sip_server.read().await;
-                    if sip.notify_media_ready_by_stream(&data.stream, &data.app).await {
-                        tracing::info!("MediaWaiter resolved for stream={}/{}", data.app, data.stream);
+                    let resolved = sip
+                        .notify_media_ready_by_stream(&data.stream, &data.app)
+                        .await;
+                    if resolved {
+                        tracing::info!(
+                            "MediaWaiter resolved for stream={}/{}",
+                            data.app,
+                            data.stream
+                        );
                     }
                 }
                 // 广播 WebSocket 事件
-                state.ws_state.broadcast("streamStarted", serde_json::json!({
-                    "app": data.app,
-                    "stream": data.stream,
-                    "schema": data.schema,
-                })).await;
+                state
+                    .ws_state
+                    .broadcast(
+                        "streamStarted",
+                        serde_json::json!({
+                            "app": data.app,
+                            "stream": data.stream,
+                            "schema": data.schema,
+                        }),
+                    )
+                    .await;
             }
         }
 
@@ -643,7 +723,11 @@ pub async fn handle_webhook(
                     // Parse device_id/channel_id from stream_id
                     if let Some((device_id, channel_id)) = parse_stream_id(&data.stream_id) {
                         if let Ok(_) = sip.send_session_bye(&device_id, &channel_id).await {
-                            tracing::info!("Sent BYE for timed-out RTP session {}/{}", device_id, channel_id);
+                            tracing::info!(
+                                "Sent BYE for timed-out RTP session {}/{}",
+                                device_id,
+                                channel_id
+                            );
                         }
                     }
                 }
@@ -651,25 +735,35 @@ pub async fn handle_webhook(
         }
         "on_flow_report" => {
             // ZLM sends periodic flow stats; log summary and update Redis stream counts
-            let total_traffic = event.get("totalBytes")
+            let total_traffic = event
+                .get("totalBytes")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0);
-            let streams = event.get("streams")
+            let streams = event
+                .get("streams")
                 .and_then(|v| v.as_array())
                 .map(|a| a.len())
                 .unwrap_or(0);
-            let media_server_id = event.get("mediaServerId")
+            let media_server_id = event
+                .get("mediaServerId")
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown");
             tracing::debug!(
                 "Flow report: server={} streams={} totalBytes={}",
-                media_server_id, streams, total_traffic
+                media_server_id,
+                streams,
+                total_traffic
             );
             // Update media server flow stats in DB
             let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
             let _ = crate::db::media_server::update_flow_stats(
-                &state.pool, media_server_id, total_traffic as i64, streams as i32, &now,
-            ).await;
+                &state.pool,
+                media_server_id,
+                total_traffic as i64,
+                streams as i32,
+                &now,
+            )
+            .await;
             // Sync active stream count to Redis
             if let Some(ref redis) = state.redis {
                 cache::set_media_server_streams(redis, media_server_id, streams as i64).await;
@@ -679,15 +773,23 @@ pub async fn handle_webhook(
             if let Some(data) = serde_json::from_value::<StreamChangedData>(event.clone()).ok() {
                 tracing::info!(
                     "Stream no readers: {}/{}/{}",
-                    data.schema, data.app, data.stream
+                    data.schema,
+                    data.app,
+                    data.stream
                 );
                 // Auto-stop idle streams after a grace period to free ZLM resources
                 // Stream push/proxy status is updated via on_stream_changed
-                state.ws_state.broadcast("streamNoneReader", serde_json::json!({
-                    "app": data.app,
-                    "stream": data.stream,
-                    "schema": data.schema,
-                })).await;
+                state
+                    .ws_state
+                    .broadcast(
+                        "streamNoneReader",
+                        serde_json::json!({
+                            "app": data.app,
+                            "stream": data.stream,
+                            "schema": data.schema,
+                        }),
+                    )
+                    .await;
             }
         }
         "on_send_rtp_stopped" => {
@@ -695,28 +797,36 @@ pub async fn handle_webhook(
             if let Some(data) = serde_json::from_value::<StreamChangedData>(event.clone()).ok() {
                 tracing::info!("SendRTP stopped: {}/{}", data.app, data.stream);
                 // 广播级联停止事件
-                state.ws_state.broadcast("sendRtpStopped", serde_json::json!({
-                    "app": data.app,
-                    "stream": data.stream,
-                    "schema": data.schema,
-                })).await;
+                state
+                    .ws_state
+                    .broadcast(
+                        "sendRtpStopped",
+                        serde_json::json!({
+                            "app": data.app,
+                            "stream": data.stream,
+                            "schema": data.schema,
+                        }),
+                    )
+                    .await;
             }
         }
         "on_record_file" => {
             // Phase 4.1: MP4 录像文件落盘通知
             if let Some(data) = serde_json::from_value::<RecordMp4Data>(event.clone()).ok() {
-                tracing::info!("MP4 recording complete: file={} duration={}s",
-                    data.file_path,
-                    data.file_duration as i64);
+                tracing::info!(
+                    "MP4 recording complete: file={} duration={}s",
+                    data.file_path.as_str(),
+                    data.file_duration
+                );
                 // 同步录像文件信息到 DB（cloud_record）
-                let path = &data.file_path;
                 let duration = data.file_duration as i64;
-                // 提取 stream_id 和时间戳
-                if let Some((_device_id, _channel_id)) = parse_stream_id(&data.stream) {
-                    let _ = crate::db::cloud_record::insert_from_hook(
-                        &state.pool, &data.stream, path, duration
-                    ).await;
-                }
+                let _ = crate::db::cloud_record::insert_from_hook(
+                    &state.pool,
+                    &data.stream,
+                    &data.file_path,
+                    duration,
+                )
+                .await;
             }
         }
         _ => {

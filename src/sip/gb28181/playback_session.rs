@@ -7,8 +7,8 @@
 
 use std::sync::Arc;
 
-use dashmap::DashMap;
 use chrono::{DateTime, Utc};
+use dashmap::DashMap;
 
 /// 回放会话状态
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -125,18 +125,16 @@ impl PlaybackInviteSessionManager {
 
     /// 按 stream_id 获取会话
     pub fn get_by_stream(&self, stream_id: &str) -> Option<PlaybackInviteSession> {
-        // 遍历 DashMap 查找匹配的 stream_id
-        for item in self.sessions.iter() {
-            if item.stream_id == stream_id {
-                return Some(item.clone());
-            }
-        }
-        None
+        self.sessions
+            .iter()
+            .find(|r| r.stream_id == stream_id)
+            .map(|r| r.clone())
     }
 
     /// 更新会话
     pub fn update(&self, session: &PlaybackInviteSession) {
-        self.sessions.insert(session.call_id.clone(), session.clone());
+        self.sessions
+            .insert(session.call_id.clone(), session.clone());
     }
 
     /// 删除会话
@@ -188,7 +186,8 @@ impl PlaybackInviteSessionManager {
 
     /// 清理所有已停止的会话
     pub fn purge(&self) -> Vec<String> {
-        let snap: Vec<_> = self.sessions
+        let snap: Vec<_> = self
+            .sessions
             .iter()
             .filter(|r| r.is_resolved())
             .map(|r| r.key().clone())

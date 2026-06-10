@@ -10,11 +10,11 @@
 
 use std::sync::Arc;
 
-use dashmap::DashMap;
 use chrono::Utc;
+use dashmap::DashMap;
 
-use crate::sip::gb28181::SubscriptionType;
 use crate::db::Pool;
+use crate::sip::gb28181::SubscriptionType;
 
 /// 已发送的 SUBSCRIBE 会话（管理续期）
 #[derive(Debug, Clone)]
@@ -60,20 +60,34 @@ impl SubscriptionLifecycle {
     }
 
     /// 注册一个新的 SUBSCRIBE 订阅会话
-    pub fn register(&self, device_id: &str, sub_type: SubscriptionType, call_id: &str, expires_secs: u32) {
+    pub fn register(
+        &self,
+        device_id: &str,
+        sub_type: SubscriptionType,
+        call_id: &str,
+        expires_secs: u32,
+    ) {
         let key = format!("{}_{}", device_id, sub_type.as_str());
         let renew_interval = (expires_secs / 3).max(30);
         let expires_at = Utc::now().timestamp() + expires_secs as i64;
-        self.sessions.insert(key, SubscribeSession {
-            device_id: device_id.to_string(),
-            sub_type,
-            call_id: call_id.to_string(),
-            expires_at,
-            renew_interval,
-            active: true,
-        });
-        tracing::info!("SUBSCRIBE registered: {} {} expires={}s renew_interval={}s",
-            device_id, sub_type.as_str(), expires_secs, renew_interval);
+        self.sessions.insert(
+            key,
+            SubscribeSession {
+                device_id: device_id.to_string(),
+                sub_type,
+                call_id: call_id.to_string(),
+                expires_at,
+                renew_interval,
+                active: true,
+            },
+        );
+        tracing::info!(
+            "SUBSCRIBE registered: {} {} expires={}s renew_interval={}s",
+            device_id,
+            sub_type.as_str(),
+            expires_secs,
+            renew_interval
+        );
     }
 
     /// 接收 NOTIFY 后更新订阅会话（续期）
@@ -83,8 +97,12 @@ impl SubscriptionLifecycle {
             session.expires_at = Utc::now().timestamp() + new_expires_secs as i64;
             session.renew_interval = (new_expires_secs / 3).max(30);
             session.active = true;
-            tracing::debug!("SUBSCRIBE renewed: {} {} expires_at={}",
-                device_id, sub_type.as_str(), session.expires_at);
+            tracing::debug!(
+                "SUBSCRIBE renewed: {} {} expires_at={}",
+                device_id,
+                sub_type.as_str(),
+                session.expires_at
+            );
         }
     }
 
@@ -93,7 +111,11 @@ impl SubscriptionLifecycle {
         let key = format!("{}_{}", device_id, sub_type.as_str());
         if let Some(mut session) = self.sessions.get_mut(&key) {
             session.active = false;
-            tracing::info!("SUBSCRIBE unregistered: {} {}", device_id, sub_type.as_str());
+            tracing::info!(
+                "SUBSCRIBE unregistered: {} {}",
+                device_id,
+                sub_type.as_str()
+            );
         }
     }
 
@@ -165,8 +187,8 @@ impl NotifyDispatcher {
 
     /// 处理 Catalog NOTIFY → 更新 DB + WS 广播
     pub async fn handle_catalog_notify(&self, xml: &str) -> Result<i32, String> {
-        use crate::sip::gb28181::XmlParser;
         use crate::db::device as db_device;
+        use crate::sip::gb28181::XmlParser;
 
         let (_sum_num, channels) = XmlParser::parse_catalog_channels(xml);
         let device_id = XmlParser::get_device_id(xml).unwrap_or_default();
@@ -179,7 +201,7 @@ impl NotifyDispatcher {
                 &self.pool,
                 &device_id,
                 &ch.device_id,
-                ch.name.as_ref(),
+                &ch.name,
                 ch.manufacturer.as_deref(),
                 ch.model.as_deref(),
                 ch.owner.as_deref(),
@@ -198,27 +220,33 @@ impl NotifyDispatcher {
             count += 1;
         }
 
-        tracing::info!("Catalog NOTIFY processed: {} channels from {}", count, device_id);
+        tracing::info!(
+            "Catalog NOTIFY processed: {} channels from {}",
+            count,
+            device_id
+        );
         Ok(count)
     }
 
     /// 处理 MobilePosition NOTIFY → 落库 + Redis + WS
-    pub async fn handle_position_notify(&self, xml: &str, redis: Option<&redis::aio::ConnectionManager>, ws: Option<&crate::handlers::websocket::WsState>) -> Result<(), String> {
+    pub async fn handle_position_notify(
+        &self,
+        xml: &str,
+        redis: Option<&redis::aio::ConnectionManager>,
+        ws: Option<&crate::handlers::websocket::WsState>,
+    ) -> Result<(), String> {
         use crate::db::mobile_position as db_pos;
         use crate::sip::gb28181::XmlParser;
 
         let device_id = XmlParser::get_device_id(xml).unwrap_or_default();
         let parsed = XmlParser::parse_fields(xml);
 
-        let latitude: Option<f64> = parsed.get("Latitude")
-            .and_then(|s| s.parse().ok());
-        let longitude: Option<f64> = parsed.get("Longitude")
-            .and_then(|s| s.parse().ok());
-        let speed: Option<f64> = parsed.get("Speed")
-            .and_then(|s| s.parse().ok());
-        let direction: Option<i32> = parsed.get("Direction")
-            .and_then(|s| s.parse().ok());
-        let gps_time = parsed.get("Time")
+        let latitude: Option<f64> = parsed.get("Latitude").and_then(|s| s.parse().ok());
+        let longitude: Option<f64> = parsed.get("Longitude").and_then(|s| s.parse().ok());
+        let speed: Option<f64> = parsed.get("Speed").and_then(|s| s.parse().ok());
+        let direction: Option<i32> = parsed.get("Direction").and_then(|s| s.parse().ok());
+        let gps_time = parsed
+            .get("Time")
             .cloned()
             .unwrap_or_else(|| chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string());
 
@@ -231,7 +259,10 @@ impl NotifyDispatcher {
                 speed,
                 direction: direction.map(|d| d as f64),
                 time: Some(gps_time.clone()),
-                ..Default::default()
+                device_name: None,
+                altitude: None,
+                report_source: None,
+                create_time: chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
             };
             db_pos::insert(&self.pool, &record)
                 .await
@@ -248,18 +279,22 @@ impl NotifyDispatcher {
                     "time": gps_time,
                 });
                 use redis::AsyncCommands;
-            let mut conn = r.clone();
-            let _: Result<(), _> = conn.publish::<_, _, ()>(&channel, &msg.to_string()).await;
+                let mut conn = r.clone();
+                let _: Result<(), _> = conn.publish::<_, _, ()>(&channel, &msg.to_string()).await;
             }
 
             // WS 广播
             if let Some(w) = ws {
-                w.broadcast("mobilePosition", serde_json::json!({
-                    "deviceId": device_id,
-                    "latitude": lat,
-                    "longitude": lon,
-                    "speed": speed,
-                })).await;
+                w.broadcast(
+                    "mobilePosition",
+                    serde_json::json!({
+                        "deviceId": device_id,
+                        "latitude": lat,
+                        "longitude": lon,
+                        "speed": speed,
+                    }),
+                )
+                .await;
             }
         }
 
@@ -267,17 +302,31 @@ impl NotifyDispatcher {
     }
 
     /// 处理 Alarm NOTIFY → 落库 + Redis + WS
-    pub async fn handle_alarm_notify(&self, xml: &str, _redis: Option<&redis::aio::ConnectionManager>, ws: Option<&crate::handlers::websocket::WsState>) -> Result<(), String> {
+    pub async fn handle_alarm_notify(
+        &self,
+        xml: &str,
+        _redis: Option<&redis::aio::ConnectionManager>,
+        ws: Option<&crate::handlers::websocket::WsState>,
+    ) -> Result<(), String> {
         use crate::db::alarm as db_alarm;
         use crate::sip::gb28181::XmlParser;
 
         let device_id = XmlParser::get_device_id(xml).unwrap_or_default();
         let parsed = XmlParser::parse_fields(xml);
-        let alarm_type = parsed.get("AlarmType").cloned().unwrap_or_else(|| "ALARM".to_string());
-        let alarm_priority = parsed.get("Priority").and_then(|s| s.parse().ok()).unwrap_or(0);
-        let alarm_time = parsed.get("AlarmTime").cloned()
+        let alarm_type = parsed
+            .get("AlarmType")
+            .cloned()
+            .unwrap_or_else(|| "ALARM".to_string());
+        let alarm_priority = parsed
+            .get("Priority")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        let alarm_time = parsed
+            .get("AlarmTime")
+            .cloned()
             .unwrap_or_else(|| chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string());
 
+        let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
         let record = db_alarm::AlarmInsert {
             device_id: device_id.clone(),
             channel_id: device_id.clone(),
@@ -288,7 +337,7 @@ impl NotifyDispatcher {
             alarm_description: None,
             longitude: None,
             latitude: None,
-            create_time: chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+            create_time: now,
         };
 
         db_alarm::insert_alarm(&self.pool, &record)
@@ -297,12 +346,16 @@ impl NotifyDispatcher {
 
         // WS 广播
         if let Some(w) = ws {
-            w.broadcast("alarm", serde_json::json!({
-                "deviceId": device_id,
-                "alarmType": alarm_type,
-                "priority": alarm_priority,
-                "time": alarm_time,
-            })).await;
+            w.broadcast(
+                "alarm",
+                serde_json::json!({
+                    "deviceId": device_id,
+                    "alarmType": alarm_type,
+                    "priority": alarm_priority,
+                    "time": alarm_time,
+                }),
+            )
+            .await;
         }
 
         Ok(())

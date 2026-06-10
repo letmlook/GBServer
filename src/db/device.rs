@@ -6,7 +6,7 @@ use sqlx::FromRow;
 use super::Pool;
 
 /// 国标设备完整信息
-#[derive(Debug, Clone, Serialize, FromRow)]
+#[derive(Debug, Clone, Default, Serialize, FromRow)]
 pub struct Device {
     pub id: i32,
     pub device_id: String,
@@ -38,7 +38,7 @@ pub struct Device {
 }
 
 /// 设备通道完整信息
-#[derive(Debug, Clone, Serialize, FromRow)]
+#[derive(Debug, Clone, Default, Serialize, FromRow)]
 pub struct DeviceChannel {
     pub id: i32,
     pub device_id: Option<String>,
@@ -1202,4 +1202,29 @@ pub async fn upsert_channel_from_catalog(
         .await?;
         Ok(true)
     }
+}
+/// 在线注册设备数（与 on_line 字段一致）
+pub async fn count_registered_devices(pool: &Pool) -> sqlx::Result<i64> {
+    let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM wvp_device")
+        .fetch_one(pool).await?;
+    Ok(n)
+}
+
+/// 在线设备数（最近 60s 内收到过 keepalive 的设备视为在线）
+pub async fn count_alive_devices(pool: &Pool, alive_window_secs: i64) -> sqlx::Result<i64> {
+    #[cfg(feature = "postgres")]
+    let n: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM wvp_device          WHERE on_line = true            AND keepalive_time IS NOT NULL            AND EXTRACT(EPOCH FROM (NOW() - keepalive_time)) <= $1"
+    )
+    .bind(alive_window_secs)
+    .fetch_one(pool)
+    .await?;
+    #[cfg(feature = "mysql")]
+    let n: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM wvp_device          WHERE on_line = true            AND keepalive_time IS NOT NULL            AND TIMESTAMPDIFF(SECOND, keepalive_time, NOW()) <= $1"
+    )
+    .bind(alive_window_secs)
+    .fetch_one(pool)
+    .await?;
+    Ok(n)
 }

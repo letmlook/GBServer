@@ -4,38 +4,196 @@ use std::time::Duration;
 
 use anyhow::Result;
 use chrono::Utc;
+use dashmap::DashMap;
 use md5::{Digest, Md5};
 use rand::Rng;
 use tokio::net::UdpSocket;
 use tokio::sync::{oneshot, RwLock};
-use dashmap::DashMap;
 
+use crate::cascade::CascadeRegistrar;
 use crate::config::SipConfig;
-use crate::db::{device as db_device, Pool};
 use crate::db::position_history as ph;
+use crate::db::{device as db_device, platform as db_platform, Pool};
 use crate::handlers::websocket::WsState;
 use crate::sip::core::parser::Parser;
 use crate::sip::core::{
-    DialogManager, SipMessage, SipMethod,
-    SipRequest, SipResponse, TransactionManager,
+    DialogManager, SipMessage, SipMethod, SipRequest, SipResponse, TransactionManager,
 };
-use crate::sip::gb28181::catalog::{build_catalog_notify_body, CatalogSubscriptionManager, CatalogSubscription};
+use crate::sip::gb28181::catalog::{
+    build_catalog_notify_body, CatalogSubscription, CatalogSubscriptionManager,
+};
 use crate::sip::gb28181::invite::SessionStatus;
 use crate::sip::gb28181::invite_session::{
     build_invite_sdp, build_playback_sdp, InviteSessionManager, InviteSessionStatus, SdpInfo,
 };
-use crate::sip::gb28181::talk::{build_talk_sdp as build_audio_sdp, TalkManager, TalkStatus};
-use crate::sip::gb28181::{DeviceManager, SessionManager, XmlParser};
+use crate::sip::gb28181::nat_helper::NatHelper;
 use crate::sip::gb28181::ssrc::SsrcManager;
 use crate::sip::gb28181::stream_reconnect::StreamReconnectManager;
-use crate::sip::gb28181::nat_helper::NatHelper;
+use crate::sip::gb28181::talk::{build_talk_sdp as build_audio_sdp, TalkManager, TalkStatus};
+use crate::sip::gb28181::{DeviceManager, SessionManager, XmlParser};
 use crate::sip::transport::tcp::{TcpConnectionManager, TcpListener};
 use crate::zlm::ZlmClient;
-use crate::cascade::CascadeRegistrar;
-use crate::sip::gb28181::pending_request::PendingRequestManager;
-use crate::sip::gb28181::media_waiter::{MediaWaiterManager, MediaWaitResult};
+/// GB28181 回放控制命令
+///
+/// SipServer::send_playback_control 的入参类型。
+/// 不同命令对应 DeviceControl/PlayBackCtrl 下不同的子字段。
+#[derive(Debug, Clone, PartialEq)]
+pub enum PlaybackControlCmd {
+    /// 启动回放
+    Play,
+    /// 暂停
+    Pause,
+    /// 恢复
+    Resume,
+    /// 停止
+    Stop,
+    /// 跳转到指定时间（RFC 3339 或 YYYY-MM-DDTHH:MM:SS）
+    Seek { seek_time: String },
+    /// 倍速（1.0 / 2.0 / 4.0 / 8.0 / 0.5 / 0.25）
+    Scale { speed: f64 },
+}
+
+/// 按 GB28181 规范构造 PlayBackCtrl 设备控制 XML。
+/// 抽出为纯函数便于单测，覆盖 6 种命令的 XML 拼装。
+pub(crate) fn build_playback_control_xml(
+    cmd: &PlaybackControlCmd,
+    device_id: &str,
+    channel_id: &str,
+    sn: i64,
+) -> String {
+    let (inner, simple) = match cmd {
+        PlaybackControlCmd::Play => ("Play".to_string(), true),
+        PlaybackControlCmd::Pause => ("Pause".to_string(), true),
+        PlaybackControlCmd::Resume => ("Resume".to_string(), true),
+        PlaybackControlCmd::Stop => ("Stop".to_string(), true),
+        PlaybackControlCmd::Seek { seek_time } => (
+            format!(
+                r#"<SeekTime>{}</SeekTime><PlayBackCmd>Seek</PlayBackCmd>"#,
+                seek_time
+            ),
+            false,
+        ),
+        PlaybackControlCmd::Scale { speed } => (
+            format!(
+                r#"<Scale>{}</Scale><PlayBackCmd>Scale</PlayBackCmd>"#,
+                speed
+            ),
+            false,
+        ),
+    };
+
+    if simple {
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<Control>
+<CmdType>DeviceControl</CmdType>
+<SN>{sn}</SN>
+<DeviceID>{device_id}</DeviceID>
+<PlayBackCtrl>
+<ChannelID>{channel_id}</ChannelID>
+<PlayBackCmd>{inner}</PlayBackCmd>
+</PlayBackCtrl>
+</Control>"#
+        )
+    } else {
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<Control>
+<CmdType>DeviceControl</CmdType>
+<SN>{sn}</SN>
+<DeviceID>{device_id}</DeviceID>
+<PlayBackCtrl>
+<ChannelID>{channel_id}</ChannelID>
+{inner}
+</PlayBackCtrl>
+</Control>"#
+        )
+    }
+}
+/// 构造 GB28181 下载 SSRC：前缀 2（实时=0 / 回放=1 / 下载=2）+
+/// 设备号前 9 位，不足 9 位右补 0；与 WVP Java 端兼容。
+pub(crate) fn build_download_ssrc(device_id: &str) -> String {
+    let id_part = if device_id.len() >= 9 {
+        &device_id[0..9]
+    } else {
+        device_id
+    };
+    format!("2{:0>9}", id_part)
+}
+
+/// 构造下载 INVITE 的 Subject 头：
+/// `<local_id>:<channel_id>,<local_id>:<ssrc>`，其中 ssrc 来自 `build_download_ssrc`。
+pub(crate) fn build_download_subject(local_id: &str, channel_id: &str) -> String {
+    let ssrc = build_download_ssrc(local_id);
+    format!("{}:{},{}:{}", local_id, channel_id, local_id, ssrc)
+}
+
+/// GB28181 RecordInfo 响应里 Item 的解析结果。
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct RecordInfoItem {
+    pub device_id: Option<String>,
+    pub name: Option<String>,
+    pub file_path: Option<String>,
+    pub address: Option<String>,
+    pub start_time: Option<String>,
+    pub end_time: Option<String>,
+    pub secrecy: Option<String>,
+    pub kind: Option<String>,
+}
+
+/// 从单条 `<Item>...</Item>` XML 片段解析字段。
+/// 用 `extract_tag` 风格的字符串扫描，避开 XmlParser::parse_fields 的嵌套缺陷。
+fn parse_record_item(xml: &str) -> RecordInfoItem {
+    RecordInfoItem {
+        device_id: extract_tag_text(xml, "DeviceID"),
+        name: extract_tag_text(xml, "Name"),
+        file_path: extract_tag_text(xml, "FilePath"),
+        address: extract_tag_text(xml, "Address"),
+        start_time: extract_tag_text(xml, "StartTime"),
+        end_time: extract_tag_text(xml, "EndTime"),
+        secrecy: extract_tag_text(xml, "Secrecy"),
+        kind: extract_tag_text(xml, "Type"),
+    }
+}
+
+/// 从 RecordInfo 响应 XML 中提取所有 `<Item>...</Item>` 节点。
+/// 多包聚合由调用方用 `ResponseRouter::accumulate_record_info` 完成，
+/// 这里只负责从单个完整 buffer 里拆 Item。
+pub fn parse_record_info_items(xml: &str) -> Vec<RecordInfoItem> {
+    let mut out = Vec::new();
+    let mut cursor = 0;
+    while let Some(begin) = xml[cursor..].find("<Item>") {
+        let abs = cursor + begin;
+        if let Some(end) = xml[abs..].find("</Item>") {
+            let item_end = abs + end + "</Item>".len();
+            out.push(parse_record_item(&xml[abs..item_end]));
+            cursor = item_end;
+        } else {
+            break;
+        }
+    }
+    out
+}
+
+/// 提取 `<TAG>value</TAG>` 文本，找不到返回 None。
+fn extract_tag_text(xml: &str, tag: &str) -> Option<String> {
+    let open = format!("<{}>", tag);
+    let close = format!("</{}>", tag);
+    let s = xml.find(&open)? + open.len();
+    let e = xml[s..].find(&close)? + s;
+    let value = &xml[s..e];
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
 use crate::sip::gb28181::device_commander::DeviceCommander;
 use crate::sip::gb28181::device_query::DeviceQueryManager;
+use crate::sip::gb28181::media_waiter::{MediaWaitResult, MediaWaiterManager};
+use crate::sip::gb28181::pending_request::PendingRequestManager;
 
 pub struct SipServer {
     config: Arc<SipConfig>,
@@ -72,8 +230,12 @@ impl SipServer {
             config.sdp_ip.as_deref(),
             config.stream_ip.as_deref(),
         ));
-        let stream_reconnect = config.stream_reconnect.as_ref()
-            .map(|rc| StreamReconnectManager::new(rc.enabled, rc.max_retries, rc.retry_interval_secs))
+        let stream_reconnect = config
+            .stream_reconnect
+            .as_ref()
+            .map(|rc| {
+                StreamReconnectManager::new(rc.enabled, rc.max_retries, rc.retry_interval_secs)
+            })
             .unwrap_or(StreamReconnectManager::new(false, 3, 5));
         let pending_request_manager = Arc::new(PendingRequestManager::new());
 
@@ -139,7 +301,9 @@ impl SipServer {
     }
 
     pub async fn is_device_online(&self, device_id: &str) -> bool {
-        self.device_manager.get(device_id).await
+        self.device_manager
+            .get(device_id)
+            .await
             .map(|d| d.online)
             .unwrap_or(false)
     }
@@ -169,7 +333,7 @@ impl SipServer {
         let socket = UdpSocket::bind(&addr).await?;
         tracing::info!("SIP Server UDP listening on {}", addr);
         *self.socket.write().await = Some(socket);
-        
+
         if self.tcp_enabled {
             let tcp_addr = format!("{}:{}", self.config.ip, self.config.tcp_port);
             match TcpListener::bind(&tcp_addr).await {
@@ -183,13 +347,13 @@ impl SipServer {
                 }
             }
         }
-        
+
         let device_manager = self.device_manager.clone();
         let invite_manager = self.invite_session_manager.clone();
         let talk_manager = self.talk_manager.clone();
         let _zlm_client = self.zlm_client.clone();
         let _config = self.config.clone();
-        
+
         tokio::spawn(async move {
             loop {
                 device_manager.cleanup_expired(60).await;
@@ -209,7 +373,9 @@ impl SipServer {
                             if let Some(ref stream_id) = session.zlm_stream_id {
                                 let _ = zlm.close_rtp_server(stream_id).await;
                             }
-                            invite_manager.update_status(&session.call_id, InviteSessionStatus::Terminated).await;
+                            invite_manager
+                                .update_status(&session.call_id, InviteSessionStatus::Terminated)
+                                .await;
                         }
                     }
                 }
@@ -228,8 +394,6 @@ impl SipServer {
                 }
                 tokio::time::sleep(Duration::from_secs(30)).await;
             }
-
-
         });
         // Phase 1.3: PendingRequest 超时清理后台任务
         let pending_mgr = self.pending_request_manager.clone();
@@ -243,13 +407,32 @@ impl SipServer {
             }
         });
 
-        dbg_upsert_device(&self.pool, &self.config.device_id, "WVP Server", Some("Rust"), Some("GBServer"), None, None, None, None, None, true, "zlmediakit-1".to_string()).await?;
-        
+        dbg_upsert_device(
+            &self.pool,
+            &self.config.device_id,
+            "WVP Server",
+            Some("Rust"),
+            Some("GBServer"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            true,
+            "zlmediakit-1".to_string(),
+        )
+        .await?;
+
         Ok(())
     }
 
     pub async fn run(&mut self) -> Result<()> {
-        let socket = self.socket.write().await.take().expect("Server not started");
+        let socket = self
+            .socket
+            .write()
+            .await
+            .take()
+            .expect("Server not started");
         let socket = Arc::new(socket);
         let config = self.config.clone();
         let device_manager = self.device_manager.clone();
@@ -263,7 +446,7 @@ impl SipServer {
         let tcp_connection_manager = self.tcp_connection_manager.clone();
 
         let tcp_listener = self.tcp_listener.write().await.take();
-        
+
         let udp_socket = socket.clone();
         let udp_config = config.clone();
         let udp_device_manager = device_manager.clone();
@@ -277,7 +460,7 @@ impl SipServer {
         let udp_pending_invites = self.pending_invites.clone();
         let udp_pending_request = pending_request_manager.clone();
         let udp_cascade_registrar = self.cascade_registrar.clone();
-        
+
         tokio::spawn(async move {
             loop {
                 let mut buf = vec![0u8; 65535];
@@ -300,7 +483,26 @@ impl SipServer {
                         let cascade_registrar = udp_cascade_registrar.clone();
                         let pending_request_manager = udp_pending_request.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = Self::handle_packet(&data, addr, &config, &device_manager, &session_manager, &invite_session_manager, &talk_manager, &catalog_subscription_manager, &zlm_client, &pool, &socket_for_response, false, &ws_state, &pending_request_manager, &pending_invites, &cascade_registrar).await {
+                            if let Err(e) = Self::handle_packet(
+                                &data,
+                                addr,
+                                &config,
+                                &device_manager,
+                                &session_manager,
+                                &invite_session_manager,
+                                &talk_manager,
+                                &catalog_subscription_manager,
+                                &zlm_client,
+                                &pool,
+                                &socket_for_response,
+                                false,
+                                &ws_state,
+                                &pending_request_manager,
+                                &pending_invites,
+                                &cascade_registrar,
+                            )
+                            .await
+                            {
                                 tracing::error!("SIP handler error: {}", e);
                             }
                         });
@@ -322,7 +524,7 @@ impl SipServer {
             let tcp_zlm_client = zlm_client.clone();
             let tcp_pool = pool.clone();
             let tcp_conn_mgr = tcp_connection_manager.clone();
-            let tcp_pending_req_mgr = pending_request_manager.clone();
+            let tcp_pending_request = pending_request_manager.clone();
 
             tokio::spawn(async move {
                 loop {
@@ -339,12 +541,25 @@ impl SipServer {
                             let zlm_client = tcp_zlm_client.clone();
                             let pool = tcp_pool.clone();
                             let conn_manager = tcp_conn_mgr.clone();
-                            let pending_request_manager = tcp_pending_req_mgr.clone();
+                            let pending_request_manager = tcp_pending_request.clone();
 
                             conn_manager.add_connection(addr, stream).await;
 
                             tokio::spawn(async move {
-                                Self::handle_tcp_connection(addr, &config, &device_manager, &session_manager, &invite_session_manager, &talk_manager, &catalog_subscription_manager, &zlm_client, &pool, &conn_manager, &pending_request_manager).await;
+                                Self::handle_tcp_connection(
+                                    addr,
+                                    &config,
+                                    &device_manager,
+                                    &session_manager,
+                                    &invite_session_manager,
+                                    &talk_manager,
+                                    &catalog_subscription_manager,
+                                    &zlm_client,
+                                    &pool,
+                                    &conn_manager,
+                                    &pending_request_manager,
+                                )
+                                .await;
                             });
                         }
                         Err(e) => {
@@ -360,11 +575,11 @@ impl SipServer {
         let renewal_device_manager = device_manager.clone();
         let renewal_config = config.clone();
         let renewal_socket = socket.clone();
-        
+
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(Duration::from_secs(60)).await;
-                
+
                 match db_device::get_devices_for_catalog_renewal(&renewal_pool).await {
                     Ok(devices) => {
                         for (device_id, cycle) in devices {
@@ -374,11 +589,14 @@ impl SipServer {
                                 let remaining = s.expires.saturating_sub(elapsed);
                                 remaining < 30
                             });
-                            
+
                             if needs_renewal {
                                 if let Some(device) = renewal_device_manager.get(&device_id).await {
                                     if device.online {
-                                        tracing::info!("Renewing catalog subscription for device {}", device_id);
+                                        tracing::info!(
+                                            "Renewing catalog subscription for device {}",
+                                            device_id
+                                        );
                                         let _ = send_subscribe_internal(
                                             &device_id,
                                             "Catalog",
@@ -387,7 +605,8 @@ impl SipServer {
                                             &renewal_device_manager,
                                             &renewal_catalog_manager,
                                             &renewal_socket,
-                                        ).await;
+                                        )
+                                        .await;
                                     }
                                 }
                             }
@@ -404,17 +623,20 @@ impl SipServer {
         let mobile_config = config.clone();
         let mobile_device_manager = device_manager.clone();
         let mobile_socket = socket.clone();
-        
+
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(Duration::from_secs(60)).await;
-                
+
                 match db_device::get_devices_for_mobile_position_renewal(&mobile_pool).await {
                     Ok(devices) => {
                         for (device_id, cycle) in devices {
                             if let Some(device) = mobile_device_manager.get(&device_id).await {
                                 if device.online {
-                                    tracing::info!("Renewing mobile position subscription for device {}", device_id);
+                                    tracing::info!(
+                                        "Renewing mobile position subscription for device {}",
+                                        device_id
+                                    );
                                     let _ = send_subscribe_internal(
                                         &device_id,
                                         "MobilePosition",
@@ -423,7 +645,8 @@ impl SipServer {
                                         &mobile_device_manager,
                                         &Arc::new(CatalogSubscriptionManager::new()),
                                         &mobile_socket,
-                                    ).await;
+                                    )
+                                    .await;
                                 }
                             }
                         }
@@ -482,9 +705,13 @@ impl SipServer {
                         // Device hasn't sent keepalive for too long — mark offline
                         tracing::info!(
                             "Device {} keepalive timeout ({}s > {}s), marking offline",
-                            device.device_id, elapsed, threshold
+                            device.device_id,
+                            elapsed,
+                            threshold
                         );
-                        heartbeat_device_manager.set_online(&device.device_id, false).await;
+                        heartbeat_device_manager
+                            .set_online(&device.device_id, false)
+                            .await;
 
                         // Update DB
                         let now_str = now.format("%Y-%m-%d %H:%M:%S").to_string();
@@ -495,15 +722,20 @@ impl SipServer {
                             None,
                             None,
                             &now_str,
-                        ).await;
+                        )
+                        .await;
 
                         // Push WebSocket notification
                         if let Some(ref ws) = heartbeat_ws {
-                            ws.broadcast("device", serde_json::json!({
-                                "deviceId": device.device_id,
-                                "online": false,
-                                "reason": "keepalive_timeout",
-                            })).await;
+                            ws.broadcast(
+                                "device",
+                                serde_json::json!({
+                                    "deviceId": device.device_id,
+                                    "online": false,
+                                    "reason": "keepalive_timeout",
+                                }),
+                            )
+                            .await;
                         }
                     } else if elapsed > keepalive_timeout {
                         // Device might need a keepalive ping — send MESSAGE query
@@ -521,7 +753,11 @@ impl SipServer {
 
                             // Build a simple SIP MESSAGE with the keepalive body
                             let branch = format!("z9hG4bK{}", rand::random::<u32>());
-                            let call_id = format!("keepalive_{}_{}", device.device_id, Utc::now().timestamp());
+                            let call_id = format!(
+                                "keepalive_{}_{}",
+                                device.device_id,
+                                Utc::now().timestamp()
+                            );
                             let local_tag = format!("keepalive_{}", rand::random::<u32>());
 
                             let sip_msg = format!(
@@ -536,17 +772,32 @@ impl SipServer {
                                  Content-Length: {}\r\n\
                                  \r\n\
                                  {}",
-                                device.device_id, addr.ip(), addr.port(),
-                                heartbeat_config.ip, heartbeat_config.port, branch,
-                                heartbeat_config.device_id, heartbeat_config.ip, heartbeat_config.port, local_tag,
-                                device.device_id, addr.ip(), addr.port(),
+                                device.device_id,
+                                addr.ip(),
+                                addr.port(),
+                                heartbeat_config.ip,
+                                heartbeat_config.port,
+                                branch,
+                                heartbeat_config.device_id,
+                                heartbeat_config.ip,
+                                heartbeat_config.port,
+                                local_tag,
+                                device.device_id,
+                                addr.ip(),
+                                addr.port(),
                                 call_id,
                                 keepalive_xml.len(),
                                 keepalive_xml
                             );
 
-                            if let Err(e) = heartbeat_socket.send_to(sip_msg.as_bytes(), addr).await {
-                                tracing::debug!("Failed to send keepalive to {} at {}: {}", device.device_id, addr, e);
+                            if let Err(e) = heartbeat_socket.send_to(sip_msg.as_bytes(), addr).await
+                            {
+                                tracing::debug!(
+                                    "Failed to send keepalive to {} at {}: {}",
+                                    device.device_id,
+                                    addr,
+                                    e
+                                );
                             }
                         }
                     }
@@ -575,7 +826,6 @@ impl SipServer {
         // 创建一个虚拟 UDP socket 仅用于传递给 handle_packet's 接口
         // 实际回复通过 TcpConnectionManager.send_to 进行
         // 注意：这里使用一个专用的虚拟封装 TcpSendSocket
-        
 
         // 创建 TCP 可写代理: 侧听 UDP socket 发出的内容将被拦截并通过 TCP 发出
         // 更简洁的方法：我们直接在这里处理消息和发送
@@ -614,7 +864,9 @@ impl SipServer {
                                 &pool,
                                 conn_manager.clone(),
                                 pending_request_manager,
-                            ).await {
+                            )
+                            .await
+                            {
                                 tracing::error!("TCP SIP handler error: {}", e);
                             }
                         }
@@ -652,7 +904,8 @@ impl SipServer {
         match msg {
             SipMessage::Request(req) => {
                 // 生成回复内容存入 buffer，然后通过 TCP 发送
-                let (_response_tx, _response_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+                let (_response_tx, _response_rx) =
+                    tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
                 // 创建一个内部虚拟 socket，用于捕获回复
                 // 简化方式：创建一个局域 UDP socket 监听，得到地址后用于中转
                 let dummy_socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await?;
@@ -666,7 +919,10 @@ impl SipServer {
                     let mut buf = vec![0u8; 65535];
                     while let Ok((n, _)) = dummy_clone.recv_from(&mut buf).await {
                         let data = buf[..n].to_vec();
-                        if let Err(e) = conn_mgr_clone.send_to(&addr, &String::from_utf8_lossy(&data)).await {
+                        if let Err(e) = conn_mgr_clone
+                            .send_to(&addr, &String::from_utf8_lossy(&data))
+                            .await
+                        {
                             tracing::error!("TCP send failed for {}: {}", addr, e);
                             break;
                         }
@@ -694,10 +950,18 @@ impl SipServer {
                     &dummy_arc,
                     &None,
                     pending_request_manager,
-                ).await
+                )
+                .await
             }
             SipMessage::Response(resp) => {
-                Self::handle_response(resp, session_manager, &Arc::new(DashMap::new()), &None, pending_request_manager).await
+                Self::handle_response(
+                    resp,
+                    session_manager,
+                    &Arc::new(DashMap::new()),
+                    &None,
+                    pending_request_manager,
+                )
+                .await
             }
         }
     }
@@ -741,7 +1005,14 @@ impl SipServer {
                 .await
             }
             SipMessage::Response(resp) => {
-                Self::handle_response(resp, session_manager, pending_invites, cascade_registrar, pending_request_manager).await
+                Self::handle_response(
+                    resp,
+                    session_manager,
+                    pending_invites,
+                    cascade_registrar,
+                    pending_request_manager,
+                )
+                .await
             }
         }
     }
@@ -764,28 +1035,76 @@ impl SipServer {
         let method = req.method;
         match method {
             SipMethod::Register => {
-                Self::handle_register(req, addr, config, device_manager, pool, socket, ws_state, pending_request_manager).await
+                Self::handle_register(
+                    req,
+                    addr,
+                    config,
+                    device_manager,
+                    pool,
+                    socket,
+                    ws_state,
+                    pending_request_manager,
+                )
+                .await
             }
             SipMethod::Message => {
-                Self::handle_message(req, addr, config, device_manager, pool, socket, ws_state, pending_request_manager, zlm_client).await
+                Self::handle_message(
+                    req,
+                    addr,
+                    config,
+                    device_manager,
+                    pool,
+                    socket,
+                    ws_state,
+                    pending_request_manager,
+                    zlm_client,
+                )
+                .await
             }
             SipMethod::Invite => {
-                Self::handle_invite(req, addr, config, session_manager, invite_session_manager, talk_manager, zlm_client, pool, socket).await
+                Self::handle_invite(
+                    req,
+                    addr,
+                    config,
+                    session_manager,
+                    invite_session_manager,
+                    talk_manager,
+                    zlm_client,
+                    pool,
+                    socket,
+                )
+                .await
             }
             SipMethod::Ack => {
                 Self::handle_ack(req, session_manager, invite_session_manager, talk_manager).await
             }
             SipMethod::Bye => {
-                Self::handle_bye(req, session_manager, invite_session_manager, talk_manager, zlm_client, socket, addr).await
+                Self::handle_bye(
+                    req,
+                    session_manager,
+                    invite_session_manager,
+                    talk_manager,
+                    zlm_client,
+                    socket,
+                    addr,
+                )
+                .await
             }
-            SipMethod::Options => {
-                Self::handle_options(req, addr, config, socket).await
-            }
-            SipMethod::Info => {
-                Self::handle_info(req, addr, config, pool, socket).await
-            }
+            SipMethod::Options => Self::handle_options(req, addr, config, socket).await,
+            SipMethod::Info => Self::handle_info(req, addr, config, pool, socket).await,
             SipMethod::Cancel => {
-                Self::handle_cancel(req, addr, config, session_manager, invite_session_manager, talk_manager, zlm_client, pool, socket).await
+                Self::handle_cancel(
+                    req,
+                    addr,
+                    config,
+                    session_manager,
+                    invite_session_manager,
+                    talk_manager,
+                    zlm_client,
+                    pool,
+                    socket,
+                )
+                .await
             }
             SipMethod::Prack => {
                 Self::handle_prack(req, addr, config, session_manager, socket).await
@@ -794,14 +1113,19 @@ impl SipServer {
                 Self::handle_update(req, addr, config, session_manager, socket).await
             }
             SipMethod::Subscribe => {
-                Self::handle_subscribe(req, addr, config, device_manager, catalog_subscription_manager, pool, socket).await
+                Self::handle_subscribe(
+                    req,
+                    addr,
+                    config,
+                    device_manager,
+                    catalog_subscription_manager,
+                    pool,
+                    socket,
+                )
+                .await
             }
-            SipMethod::Notify => {
-                Self::handle_notify(req, addr, config, pool, socket).await
-            }
-            SipMethod::Refer => {
-                Self::handle_refer(req, addr, config, socket).await
-            }
+            SipMethod::Notify => Self::handle_notify(req, addr, config, pool, socket).await,
+            SipMethod::Refer => Self::handle_refer(req, addr, config, socket).await,
             _ => {
                 tracing::warn!("Unhandled SIP method: {}", method.as_str());
                 Self::send_error_response(501, "Not Implemented", &req, addr, socket).await
@@ -825,41 +1149,68 @@ impl SipServer {
         let call_id = req.header("call-id").cloned().unwrap_or_default();
         let cseq = req.header("cseq").cloned().unwrap_or_default();
 
-        let device_id = Self::extract_device_id(&from).or_else(|| Self::extract_device_id(&to)).unwrap_or_default();
+        let device_id = Self::extract_device_id(&from)
+            .or_else(|| Self::extract_device_id(&to))
+            .unwrap_or_default();
         if device_id.is_empty() {
             tracing::warn!("REGISTER: Cannot extract device ID");
             return Ok(());
         }
 
-        let expires: u64 = req.header("expires")
+        let expires: u64 = req
+            .header("expires")
             .and_then(|s| s.parse().ok())
             .unwrap_or(config.register_timeout);
 
         let auth = req.header("authorization").cloned();
-        
+
         if auth.is_none() {
             let nonce = generate_nonce();
-            let auth_header = Parser::generate_www_authenticate_response(&config.realm, &nonce, None);
-            let response = Parser::generate_response(401, "Unauthorized", &[
-                ("Via", &via),
-                ("From", &from),
-                ("To", &to),
-                ("Call-ID", &call_id),
-                ("CSeq", &cseq),
-                ("WWW-Authenticate", &auth_header),
-            ], None);
+            let auth_header =
+                Parser::generate_www_authenticate_response(&config.realm, &nonce, None);
+            let response = Parser::generate_response(
+                401,
+                "Unauthorized",
+                &[
+                    ("Via", &via),
+                    ("From", &from),
+                    ("To", &to),
+                    ("Call-ID", &call_id),
+                    ("CSeq", &cseq),
+                    ("WWW-Authenticate", &auth_header),
+                ],
+                None,
+            );
             Self::send_response(socket, addr, &response).await?;
-            tracing::info!("REGISTER from {} - Challenge sent (nonce: {})", device_id, nonce);
+            tracing::info!(
+                "REGISTER from {} - Challenge sent (nonce: {})",
+                device_id,
+                nonce
+            );
             return Ok(());
         }
 
         let auth_str = auth.unwrap();
-        if !Self::validate_digest(&auth_str, &device_id, &config.password, &config.realm, &format!("sip:{}@{}:{}", device_id, config.ip, config.port)) {
+        if !Self::validate_digest(
+            &auth_str,
+            &device_id,
+            &config.password,
+            &config.realm,
+            &format!("sip:{}@{}:{}", device_id, config.ip, config.port),
+        ) {
             tracing::warn!("REGISTER from {} - Invalid credentials", device_id);
-            let response = Parser::generate_response(403, "Forbidden", &[
-                ("Via", &via), ("From", &from), ("To", &to),
-                ("Call-ID", &call_id), ("CSeq", &cseq),
-            ], None);
+            let response = Parser::generate_response(
+                403,
+                "Forbidden",
+                &[
+                    ("Via", &via),
+                    ("From", &from),
+                    ("To", &to),
+                    ("Call-ID", &call_id),
+                    ("CSeq", &cseq),
+                ],
+                None,
+            );
             Self::send_response(socket, addr, &response).await?;
             return Ok(());
         }
@@ -869,45 +1220,84 @@ impl SipServer {
             db_device::update_device_online(pool, &device_id, false, None, None, &now).await?;
             device_manager.unregister(&device_id).await;
             if let Some(ref ws) = ws_state {
-                ws.broadcast("deviceOffline", serde_json::json!({
-                    "deviceId": device_id,
-                    "status": "offline",
-                })).await;
+                ws.broadcast(
+                    "deviceOffline",
+                    serde_json::json!({
+                        "deviceId": device_id,
+                        "status": "offline",
+                    }),
+                )
+                .await;
             }
             tracing::info!("Device unregistered: {}", device_id);
         } else {
             let ip_str = addr.ip().to_string();
-            db_device::upsert_device(pool, &device_id, None, None, None, None, None, None, 
-                Some(&ip_str), Some(addr.port() as i32), true, Some("zlmediakit-1"), &now).await?;
+            db_device::upsert_device(
+                pool,
+                &device_id,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(&ip_str),
+                Some(addr.port() as i32),
+                true,
+                Some("zlmediakit-1"),
+                &now,
+            )
+            .await?;
             device_manager.register(&device_id, addr).await;
             if let Some(ref ws) = ws_state {
-                ws.broadcast("deviceOnline", serde_json::json!({
-                    "deviceId": device_id,
-                    "status": "online",
-                })).await;
+                ws.broadcast(
+                    "deviceOnline",
+                    serde_json::json!({
+                        "deviceId": device_id,
+                        "status": "online",
+                    }),
+                )
+                .await;
             }
             tracing::info!("Device registered: {} (expires: {})", device_id, expires);
         }
 
         let to_tag = generate_tag();
-        let response = Parser::generate_response(200, "OK", &[
-            ("Via", &via),
-            ("From", &from),
-            ("To", &format!("{};tag={}", to.trim_end_matches('>').trim(), to_tag)),
-            ("Call-ID", &call_id),
-            ("CSeq", &cseq),
-            ("Contact", &format!("<sip:{}@{}:{}>;expires={}", device_id, addr.ip(), addr.port(), expires)),
-            ("Expires", &expires.to_string()),
-        ], None);
+        let response = Parser::generate_response(
+            200,
+            "OK",
+            &[
+                ("Via", &via),
+                ("From", &from),
+                (
+                    "To",
+                    &format!("{};tag={}", to.trim_end_matches('>').trim(), to_tag),
+                ),
+                ("Call-ID", &call_id),
+                ("CSeq", &cseq),
+                (
+                    "Contact",
+                    &format!(
+                        "<sip:{}@{}:{}>;expires={}",
+                        device_id,
+                        addr.ip(),
+                        addr.port(),
+                        expires
+                    ),
+                ),
+                ("Expires", &expires.to_string()),
+            ],
+            None,
+        );
         Self::send_response(socket, addr, &response).await?;
-        
+
         Ok(())
     }
 
     async fn handle_message(
         req: SipRequest,
         addr: SocketAddr,
-        _config: &Arc<SipConfig>,
+        config: &Arc<SipConfig>,
         device_manager: &Arc<DeviceManager>,
         pool: &Pool,
         socket: &Arc<UdpSocket>,
@@ -923,8 +1313,11 @@ impl SipServer {
         let _content_type = req.header("content-type").cloned().unwrap_or_default();
 
         let device_id = Self::extract_device_id(&from).unwrap_or_default();
-        let sn = req.header("cseq").and_then(|s| s.split_whitespace().nth(1)).unwrap_or("1").to_string();
-
+        let sn = req
+            .header("cseq")
+            .and_then(|s| s.split_whitespace().nth(1))
+            .unwrap_or("1")
+            .to_string();
 
         // Phase 1.3: 路由 MESSAGE 响应到 PendingRequestManager
         // 设备发送的 MESSAGE body 中包含 <Response> 时，调用 complete() 完成等待中的请求
@@ -934,7 +1327,11 @@ impl SipServer {
                 use crate::sip::gb28181::ResponseRouter;
                 let router = ResponseRouter::new(pending_request_manager.clone());
                 if let Some((cmd_type, xml)) = router.route_message_response(body, &call_id) {
-                    tracing::debug!("PendingRequest completed for CallID {}: {:?}", call_id, cmd_type);
+                    tracing::debug!(
+                        "PendingRequest completed for CallID {}: {:?}",
+                        call_id,
+                        cmd_type
+                    );
                     // 解析结构化结果（可选：存入 DB 或通过 channel 通知调用方）
                     let _result = pending_request_manager.parse_response(cmd_type, &xml);
                 }
@@ -945,38 +1342,140 @@ impl SipServer {
             let cmd_type = XmlParser::get_cmd_type(body);
             tracing::debug!("MESSAGE from {} - CmdType: {:?}", device_id, cmd_type);
 
+            // B2: detect upstream platform queries — when an enabled platform (registered
+            // in wvp_platform by device_gb_id) sends a Catalog/Info/Status query that
+            // targets our local GB-ID, route to upstream handlers that respond with our
+            // own catalog/info/status instead of looking up the platform as a device.
+            let upstream_platform = db_platform::get_by_device_gb_id(pool, &device_id)
+                .await
+                .ok()
+                .flatten();
+            let query_target =
+                XmlParser::get_device_id(body).unwrap_or_else(|| config.device_id.clone());
+            if upstream_platform.is_some() && query_target == config.device_id {
+                match cmd_type.as_deref() {
+                    Some("Catalog") => {
+                        return Self::handle_catalog_for_platform(
+                            &config.device_id,
+                            &sn,
+                            pool,
+                            addr,
+                            &from,
+                            &to,
+                            &via,
+                            &call_id,
+                            &cseq,
+                            socket,
+                        )
+                        .await;
+                    }
+                    Some("DeviceInfo") => {
+                        return Self::handle_device_info_for_platform(
+                            &config.device_id,
+                            &sn,
+                            addr,
+                            &from,
+                            &to,
+                            &via,
+                            &call_id,
+                            &cseq,
+                            socket,
+                        )
+                        .await;
+                    }
+                    Some("DeviceStatus") => {
+                        return Self::handle_device_status_for_platform(
+                            &config.device_id,
+                            &sn,
+                            addr,
+                            &from,
+                            &to,
+                            &via,
+                            &call_id,
+                            &cseq,
+                            socket,
+                        )
+                        .await;
+                    }
+                    _ => {} // fall through to existing routing
+                }
+            }
+
             match cmd_type.as_deref() {
                 Some("Keepalive") | Some("keepalive") => {
                     let now = Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
                     if let Some(dev_id) = XmlParser::get_device_id(body) {
                         let ip_str = addr.ip().to_string();
-                        db_device::update_device_online(pool, &dev_id, true, Some(&ip_str), Some(addr.port() as i32), &now).await?;
+                        db_device::update_device_online(
+                            pool,
+                            &dev_id,
+                            true,
+                            Some(&ip_str),
+                            Some(addr.port() as i32),
+                            &now,
+                        )
+                        .await?;
                         device_manager.update_keepalive(&dev_id, addr).await;
                     }
                     tracing::debug!("Keepalive from device: {}", device_id);
                 }
                 Some("Catalog") => {
-                    Self::handle_catalog(body, &device_id, &sn, pool, addr, &from, &to, &via, &call_id, &cseq, socket).await?;
+                    Self::handle_catalog(
+                        body, &device_id, &sn, pool, addr, &from, &to, &via, &call_id, &cseq,
+                        socket,
+                    )
+                    .await?;
                     return Ok(());
                 }
                 Some("DeviceInfo") => {
-                    Self::handle_device_info(body, &device_id, &sn, pool, addr, &from, &to, &via, &call_id, &cseq, socket).await?;
+                    Self::handle_device_info(
+                        body, &device_id, &sn, pool, addr, &from, &to, &via, &call_id, &cseq,
+                        socket,
+                    )
+                    .await?;
                     return Ok(());
                 }
                 Some("DeviceStatus") => {
-                    Self::handle_device_status(body, &device_id, &sn, pool, addr, &from, &to, &via, &call_id, &cseq, socket).await?;
+                    Self::handle_device_status(
+                        body, &device_id, &sn, pool, addr, &from, &to, &via, &call_id, &cseq,
+                        socket,
+                    )
+                    .await?;
                     return Ok(());
                 }
                 Some("MobilePosition") => {
-                    Self::handle_mobile_position(body, &device_id, &sn, pool, addr, &from, &to, &via, &call_id, &cseq, socket).await?;
+                    Self::handle_mobile_position(
+                        body, &device_id, &sn, pool, addr, &from, &to, &via, &call_id, &cseq,
+                        socket,
+                    )
+                    .await?;
                     return Ok(());
                 }
                 Some("Alarm") => {
-                    Self::handle_alarm(body, &device_id, &sn, pool, addr, &from, &to, &via, &call_id, &cseq, socket, ws_state, pending_request_manager).await?;
+                    Self::handle_alarm(
+                        body,
+                        &device_id,
+                        &sn,
+                        pool,
+                        addr,
+                        &from,
+                        &to,
+                        &via,
+                        &call_id,
+                        &cseq,
+                        socket,
+                        ws_state,
+                        pending_request_manager,
+                    )
+                    .await?;
                     return Ok(());
                 }
                 Some("RecordInfo") => {
-                    Self::handle_record_info(body, &device_id, &sn, pool, addr, &from, &to, &via, &call_id, &cseq, socket, zlm_client).await?;
+                    Self::handle_record_info(
+                        body, &device_id, &sn, pool, addr, &from, &to, &via, &call_id, &cseq,
+                        socket, zlm_client,
+                    )
+                    .await?;
                     return Ok(());
                 }
                 _ => {
@@ -985,13 +1484,18 @@ impl SipServer {
             }
         }
 
-        let response = Parser::generate_response(200, "OK", &[
-            ("Via", &via),
-            ("From", &from),
-            ("To", &to),
-            ("Call-ID", &call_id),
-            ("CSeq", &cseq),
-        ], None);
+        let response = Parser::generate_response(
+            200,
+            "OK",
+            &[
+                ("Via", &via),
+                ("From", &from),
+                ("To", &to),
+                ("Call-ID", &call_id),
+                ("CSeq", &cseq),
+            ],
+            None,
+        );
         Self::send_response(socket, addr, &response).await?;
         Ok(())
     }
@@ -1017,12 +1521,20 @@ impl SipServer {
         let from_device = Self::extract_device_id(&from).unwrap_or_default();
         let to_device = Self::extract_device_id(&to).unwrap_or_default();
 
-        tracing::info!("INVITE from {} to {} - CallID: {}", from_device, to_device, call_id);
+        tracing::info!(
+            "INVITE from {} to {} - CallID: {}",
+            from_device,
+            to_device,
+            call_id
+        );
 
         let sdp_request_body = req.body.clone();
         let (stream_type, ssrc, _sdp_info) = if let Some(body) = &req.body {
             let sdp_info = Self::parse_sdp(body);
-            let stream_type = sdp_info.get("s").cloned().unwrap_or_else(|| "Play".to_string());
+            let stream_type = sdp_info
+                .get("s")
+                .cloned()
+                .unwrap_or_else(|| "Play".to_string());
             let ssrc = sdp_info.get("y").cloned();
             (stream_type, ssrc, Some(sdp_info))
         } else {
@@ -1032,8 +1544,15 @@ impl SipServer {
         // Route to Talk handler for audio-only sessions
         if stream_type == "Talk" || stream_type == "InviteBack" {
             return Self::handle_talk_invite(
-                req, addr, config, session_manager, talk_manager, zlm_client, socket
-            ).await;
+                req,
+                addr,
+                config,
+                session_manager,
+                talk_manager,
+                zlm_client,
+                socket,
+            )
+            .await;
         }
 
         let channel_id = Self::extract_channel_id(&req.uri);
@@ -1043,31 +1562,58 @@ impl SipServer {
             return Ok(());
         }
 
-        session_manager.create(&call_id, &from_device, &channel_id, &stream_type).await;
+        session_manager
+            .create(&call_id, &from_device, &channel_id, &stream_type)
+            .await;
 
         let tag = generate_tag();
         let branch = Self::get_branch(&via).unwrap_or_else(|| generate_branch());
-        
-        let response = Parser::generate_response(100, "Trying", &[
-            ("Via", &format!("{};rport={};branch={}", via, addr.port(), branch)),
-            ("From", &from),
-            ("To", &format!("{};tag={}", to.trim_end_matches('>').trim(), tag)),
-            ("Call-ID", &call_id),
-            ("CSeq", &cseq),
-        ], None);
+
+        let response = Parser::generate_response(
+            100,
+            "Trying",
+            &[
+                (
+                    "Via",
+                    &format!("{};rport={};branch={}", via, addr.port(), branch),
+                ),
+                ("From", &from),
+                (
+                    "To",
+                    &format!("{};tag={}", to.trim_end_matches('>').trim(), tag),
+                ),
+                ("Call-ID", &call_id),
+                ("CSeq", &cseq),
+            ],
+            None,
+        );
         Self::send_response(socket, addr, &response).await?;
-        
+
         tokio::time::sleep(Duration::from_millis(50)).await;
-        
-        let response = Parser::generate_response(180, "Ringing", &[
-            ("Via", &format!("{};rport={};branch={}", via, addr.port(), branch)),
-            ("From", &from),
-            ("To", &format!("{};tag={}", to.trim_end_matches('>').trim(), tag)),
-            ("Call-ID", &call_id),
-            ("CSeq", &cseq),
-            ("Contact", &format!("<sip:{}@{}:{}>", config.device_id, config.ip, config.port)),
-            ("RSeq", "1"),
-        ], None);
+
+        let response = Parser::generate_response(
+            180,
+            "Ringing",
+            &[
+                (
+                    "Via",
+                    &format!("{};rport={};branch={}", via, addr.port(), branch),
+                ),
+                ("From", &from),
+                (
+                    "To",
+                    &format!("{};tag={}", to.trim_end_matches('>').trim(), tag),
+                ),
+                ("Call-ID", &call_id),
+                ("CSeq", &cseq),
+                (
+                    "Contact",
+                    &format!("<sip:{}@{}:{}>", config.device_id, config.ip, config.port),
+                ),
+                ("RSeq", "1"),
+            ],
+            None,
+        );
         Self::send_response(socket, addr, &response).await?;
 
         let mut media_port = 10000u16;
@@ -1078,28 +1624,35 @@ impl SipServer {
             if let Some(ref body) = sdp_request_body {
                 if let Some(info) = SdpInfo::parse(body) {
                     let device_port = info.get_video_port().unwrap_or(5000);
-                    
-                    let rtp_server = zlm.open_rtp_server(&crate::zlm::OpenRtpServerRequest {
-                        secret: zlm.secret.clone(),
-                        stream_id: format!("{}${}", from_device, channel_id),
-                        port: None,
-                        use_tcp: Some(false),
-                        rtp_type: Some(0),
-                        recv_port: None,
-                    }).await;
+
+                    let rtp_server = zlm
+                        .open_rtp_server(&crate::zlm::OpenRtpServerRequest {
+                            secret: zlm.secret.clone(),
+                            stream_id: format!("{}${}", from_device, channel_id),
+                            port: None,
+                            use_tcp: Some(false),
+                            rtp_type: Some(0),
+                            recv_port: None,
+                        })
+                        .await;
 
                     match rtp_server {
                         Ok(rtp_info) => {
-                            tracing::info!("RTP server opened: port={}, stream_id={}", rtp_info.port, rtp_info.stream_id);
+                            tracing::info!(
+                                "RTP server opened: port={}, stream_id={}",
+                                rtp_info.port,
+                                rtp_info.stream_id
+                            );
                             media_port = rtp_info.port;
                             zlm_stream_key = Some(rtp_info.stream_id);
-                            
-                            let device_ip = if let Some(received) = Self::get_received_from_via(&via) {
-                                received
-                            } else {
-                                addr.ip().to_string()
-                            };
-                            
+
+                            let device_ip =
+                                if let Some(received) = Self::get_received_from_via(&via) {
+                                    received
+                                } else {
+                                    addr.ip().to_string()
+                                };
+
                             let add_proxy_req = crate::zlm::AddStreamProxyRequest {
                                 secret: zlm.secret.clone(),
                                 vhost: "__defaultVhost__".to_string(),
@@ -1143,18 +1696,32 @@ impl SipServer {
 
         let ssrc_str = ssrc.unwrap_or_else(|| "0100000001".to_string());
         let response_body = build_invite_sdp(&config.ip, media_port, &stream_type, Some(&ssrc_str));
-        
-        let response = Parser::generate_response(200, "OK", &[
-            ("Via", &format!("{};rport={};branch={}", via, addr.port(), branch)),
-            ("From", &from),
-            ("To", &format!("{};tag={}", to.trim_end_matches('>').trim(), tag)),
-            ("Call-ID", &call_id),
-            ("CSeq", &cseq),
-            ("Contact", &format!("<sip:{}@{}:{}>", config.device_id, config.ip, config.port)),
-            ("Content-Type", "Application/SDP"),
-        ], Some(&response_body));
+
+        let response = Parser::generate_response(
+            200,
+            "OK",
+            &[
+                (
+                    "Via",
+                    &format!("{};rport={};branch={}", via, addr.port(), branch),
+                ),
+                ("From", &from),
+                (
+                    "To",
+                    &format!("{};tag={}", to.trim_end_matches('>').trim(), tag),
+                ),
+                ("Call-ID", &call_id),
+                ("CSeq", &cseq),
+                (
+                    "Contact",
+                    &format!("<sip:{}@{}:{}>", config.device_id, config.ip, config.port),
+                ),
+                ("Content-Type", "Application/SDP"),
+            ],
+            Some(&response_body),
+        );
         Self::send_response(socket, addr, &response).await?;
-        
+
         if let Some(ref stream_key) = zlm_stream_key {
             let mut invite_session = crate::sip::gb28181::invite_session::InviteSession::new(
                 &call_id,
@@ -1168,8 +1735,12 @@ impl SipServer {
             invite_session.status = InviteSessionStatus::Ringing;
             invite_session_manager.create(invite_session).await;
         }
-        
-        tracing::info!("INVITE 200 OK sent - stream: {}, port: {}", stream_type, media_port);
+
+        tracing::info!(
+            "INVITE 200 OK sent - stream: {}, port: {}",
+            stream_type,
+            media_port
+        );
         Ok(())
     }
 
@@ -1191,18 +1762,34 @@ impl SipServer {
         let from_device = Self::extract_device_id(&from).unwrap_or_default();
         let channel_id = Self::extract_channel_id(&req.uri);
 
-        tracing::info!("TALK INVITE from {} channel {} - CallID: {}", from_device, channel_id, call_id);
+        tracing::info!(
+            "TALK INVITE from {} channel {} - CallID: {}",
+            from_device,
+            channel_id,
+            call_id
+        );
 
         let tag = generate_tag();
         let branch = Self::get_branch(&via).unwrap_or_else(|| generate_branch());
 
-        let response = Parser::generate_response(100, "Trying", &[
-            ("Via", &format!("{};rport={};branch={}", via, addr.port(), branch)),
-            ("From", &from),
-            ("To", &format!("{};tag={}", to.trim_end_matches('>').trim(), tag)),
-            ("Call-ID", &call_id),
-            ("CSeq", &cseq),
-        ], None);
+        let response = Parser::generate_response(
+            100,
+            "Trying",
+            &[
+                (
+                    "Via",
+                    &format!("{};rport={};branch={}", via, addr.port(), branch),
+                ),
+                ("From", &from),
+                (
+                    "To",
+                    &format!("{};tag={}", to.trim_end_matches('>').trim(), tag),
+                ),
+                ("Call-ID", &call_id),
+                ("CSeq", &cseq),
+            ],
+            None,
+        );
         Self::send_response(socket, addr, &response).await?;
 
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -1219,18 +1806,24 @@ impl SipServer {
 
             let talk_stream_id = format!("talk/{}/{}", from_device, channel_id);
 
-            let rtp_server = zlm.open_rtp_server(&crate::zlm::OpenRtpServerRequest {
-                secret: zlm.secret.clone(),
-                stream_id: talk_stream_id.clone(),
-                port: None,
-                use_tcp: Some(false),
-                rtp_type: Some(1),
-                recv_port: None,
-            }).await;
+            let rtp_server = zlm
+                .open_rtp_server(&crate::zlm::OpenRtpServerRequest {
+                    secret: zlm.secret.clone(),
+                    stream_id: talk_stream_id.clone(),
+                    port: None,
+                    use_tcp: Some(false),
+                    rtp_type: Some(1),
+                    recv_port: None,
+                })
+                .await;
 
             match rtp_server {
                 Ok(rtp_info) => {
-                    tracing::info!("Talk RTP server opened: port={}, stream_id={}", rtp_info.port, rtp_info.stream_id);
+                    tracing::info!(
+                        "Talk RTP server opened: port={}, stream_id={}",
+                        rtp_info.port,
+                        rtp_info.stream_id
+                    );
                     media_port = rtp_info.port;
                     zlm_stream_id = Some(rtp_info.stream_id);
 
@@ -1262,32 +1855,50 @@ impl SipServer {
                 }
                 Err(e) => {
                     tracing::error!("Failed to open talk RTP server: {}", e);
-                    Self::send_error_response(503, "Service Unavailable", &req, addr, socket).await?;
+                    Self::send_error_response(503, "Service Unavailable", &req, addr, socket)
+                        .await?;
                     return Ok(());
                 }
             }
         }
 
-        let mut talk_session = crate::sip::gb28181::talk::TalkSession::new(&call_id, &from_device, &channel_id);
+        let mut talk_session =
+            crate::sip::gb28181::talk::TalkSession::new(&call_id, &from_device, &channel_id);
         talk_session.set_device_info(&addr.ip().to_string(), addr.port());
         talk_session.set_local_port(media_port);
         if let Some(ref stream_id) = zlm_stream_id {
             talk_session.set_zlm_stream(stream_id);
         }
         talk_session.status = TalkStatus::Ringing;
-        talk_manager.create(&call_id, &from_device, &channel_id).await;
+        talk_manager
+            .create(&call_id, &from_device, &channel_id)
+            .await;
         talk_manager.update(&talk_session).await;
 
         let response_body = build_audio_sdp(&config.ip, media_port);
-        let response = Parser::generate_response(200, "OK", &[
-            ("Via", &format!("{};rport={};branch={}", via, addr.port(), branch)),
-            ("From", &from),
-            ("To", &format!("{};tag={}", to.trim_end_matches('>').trim(), tag)),
-            ("Call-ID", &call_id),
-            ("CSeq", &cseq),
-            ("Contact", &format!("<sip:{}@{}:{}>", config.device_id, config.ip, config.port)),
-            ("Content-Type", "Application/SDP"),
-        ], Some(&response_body));
+        let response = Parser::generate_response(
+            200,
+            "OK",
+            &[
+                (
+                    "Via",
+                    &format!("{};rport={};branch={}", via, addr.port(), branch),
+                ),
+                ("From", &from),
+                (
+                    "To",
+                    &format!("{};tag={}", to.trim_end_matches('>').trim(), tag),
+                ),
+                ("Call-ID", &call_id),
+                ("CSeq", &cseq),
+                (
+                    "Contact",
+                    &format!("<sip:{}@{}:{}>", config.device_id, config.ip, config.port),
+                ),
+                ("Content-Type", "Application/SDP"),
+            ],
+            Some(&response_body),
+        );
         Self::send_response(socket, addr, &response).await?;
 
         tracing::info!("TALK INVITE 200 OK sent - port: {}", media_port);
@@ -1301,20 +1912,22 @@ impl SipServer {
         talk_manager: &Arc<TalkManager>,
     ) -> Result<()> {
         let call_id = req.call_id().cloned().unwrap_or_default();
-        session_manager.update_status(&call_id, SessionStatus::Active).await;
-        
+        session_manager
+            .update_status(&call_id, SessionStatus::Active)
+            .await;
+
         if let Some(mut session) = invite_session_manager.get(&call_id).await {
             session.status = InviteSessionStatus::Active;
             session.update_activity();
             invite_session_manager.update(&session).await;
         }
-        
+
         if let Some(mut session) = talk_manager.get(&call_id).await {
             session.status = TalkStatus::Active;
             session.update_activity();
             talk_manager.update(&session).await;
         }
-        
+
         tracing::info!("ACK received - CallID: {}", call_id);
         Ok(())
     }
@@ -1363,15 +1976,20 @@ impl SipServer {
         }
 
         session_manager.remove(&call_id).await;
-        
-        let response = Parser::generate_response(200, "OK", &[
-            ("Via", &via),
-            ("From", &from),
-            ("To", &to),
-            ("Call-ID", &call_id),
-            ("CSeq", &cseq),
-        ], None);
-        
+
+        let response = Parser::generate_response(
+            200,
+            "OK",
+            &[
+                ("Via", &via),
+                ("From", &from),
+                ("To", &to),
+                ("Call-ID", &call_id),
+                ("CSeq", &cseq),
+            ],
+            None,
+        );
+
         Self::send_response(socket, addr, &response).await?;
         tracing::info!("BYE received - CallID: {} - Session terminated", call_id);
         Ok(())
@@ -1430,13 +2048,18 @@ impl SipServer {
             }
         }
 
-        let response = Parser::generate_response(200, "OK", &[
-            ("Via", &via),
-            ("From", &from),
-            ("To", &to),
-            ("Call-ID", &call_id),
-            ("CSeq", &cseq),
-        ], None);
+        let response = Parser::generate_response(
+            200,
+            "OK",
+            &[
+                ("Via", &via),
+                ("From", &from),
+                ("To", &to),
+                ("Call-ID", &call_id),
+                ("CSeq", &cseq),
+            ],
+            None,
+        );
         Self::send_response(socket, addr, &response).await?;
         Ok(())
     }
@@ -1459,7 +2082,7 @@ impl SipServer {
         let cseq = req.header("cseq").cloned().unwrap_or_default();
 
         tracing::info!("CANCEL received - CallID: {}", call_id);
-        
+
         if let Some(mut session) = invite_session_manager.get(&call_id).await {
             if let Some(ref zlm) = zlm_client {
                 if let Some(ref stream_id) = session.zlm_stream_id {
@@ -1473,7 +2096,7 @@ impl SipServer {
             session.status = InviteSessionStatus::Terminated;
             invite_session_manager.update(&session).await;
         }
-        
+
         if let Some(mut session) = talk_manager.get(&call_id).await {
             if let Some(ref zlm) = zlm_client {
                 if let Some(ref stream_id) = session.zlm_stream_id {
@@ -1487,28 +2110,38 @@ impl SipServer {
             session.status = TalkStatus::Terminated;
             talk_manager.update(&session).await;
         }
-        
+
         session_manager.remove(&call_id).await;
-        
-        let response = Parser::generate_response(200, "OK", &[
-            ("Via", &via),
-            ("From", &from),
-            ("To", &to),
-            ("Call-ID", &call_id),
-            ("CSeq", &cseq),
-        ], None);
-        
+
+        let response = Parser::generate_response(
+            200,
+            "OK",
+            &[
+                ("Via", &via),
+                ("From", &from),
+                ("To", &to),
+                ("Call-ID", &call_id),
+                ("CSeq", &cseq),
+            ],
+            None,
+        );
+
         Self::send_response(socket, addr, &response).await?;
-        
-        let response = Parser::generate_response(487, "Request Terminated", &[
-            ("Via", &via),
-            ("From", &from),
-            ("To", &to),
-            ("Call-ID", &call_id),
-            ("CSeq", &cseq),
-        ], None);
+
+        let response = Parser::generate_response(
+            487,
+            "Request Terminated",
+            &[
+                ("Via", &via),
+                ("From", &from),
+                ("To", &to),
+                ("Call-ID", &call_id),
+                ("CSeq", &cseq),
+            ],
+            None,
+        );
         Self::send_response(socket, addr, &response).await?;
-        
+
         Ok(())
     }
 
@@ -1528,13 +2161,18 @@ impl SipServer {
 
         tracing::info!("PRACK received - CallID: {}, RAck: {}", call_id, rack);
 
-        let response = Parser::generate_response(200, "OK", &[
-            ("Via", &via),
-            ("From", &from),
-            ("To", &to),
-            ("Call-ID", &call_id),
-            ("CSeq", &cseq),
-        ], None);
+        let response = Parser::generate_response(
+            200,
+            "OK",
+            &[
+                ("Via", &via),
+                ("From", &from),
+                ("To", &to),
+                ("Call-ID", &call_id),
+                ("CSeq", &cseq),
+            ],
+            None,
+        );
         Self::send_response(socket, addr, &response).await?;
         Ok(())
     }
@@ -1560,15 +2198,27 @@ impl SipServer {
             String::new()
         };
 
-        let response = Parser::generate_response(200, "OK", &[
-            ("Via", &via),
-            ("From", &from),
-            ("To", &to),
-            ("Call-ID", &call_id),
-            ("CSeq", &cseq),
-            ("Contact", &format!("<sip:{}@{}:{}>", config.device_id, config.ip, config.port)),
-            ("Content-Type", "Application/SDP"),
-        ], if !response_body.is_empty() { Some(&response_body) } else { None });
+        let response = Parser::generate_response(
+            200,
+            "OK",
+            &[
+                ("Via", &via),
+                ("From", &from),
+                ("To", &to),
+                ("Call-ID", &call_id),
+                ("CSeq", &cseq),
+                (
+                    "Contact",
+                    &format!("<sip:{}@{}:{}>", config.device_id, config.ip, config.port),
+                ),
+                ("Content-Type", "Application/SDP"),
+            ],
+            if !response_body.is_empty() {
+                Some(&response_body)
+            } else {
+                None
+            },
+        );
         Self::send_response(socket, addr, &response).await?;
         Ok(())
     }
@@ -1588,7 +2238,8 @@ impl SipServer {
         let call_id = req.header("call-id").cloned().unwrap_or_default();
         let cseq = req.header("cseq").cloned().unwrap_or_default();
         let event = req.header("event").cloned().unwrap_or_default();
-        let expires: u32 = req.header("expires")
+        let expires: u32 = req
+            .header("expires")
             .and_then(|s| s.parse().ok())
             .unwrap_or(3600);
 
@@ -1596,40 +2247,49 @@ impl SipServer {
 
         let tag = generate_tag();
         let from_tag = Self::extract_tag_from_header(&from).unwrap_or_else(generate_tag);
-        
-        let response = Parser::generate_response(200, "OK", &[
-            ("Via", &via),
-            ("From", &from),
-            ("To", &format!("{};tag={}", to.trim_end_matches('>').trim(), tag)),
-            ("Call-ID", &call_id),
-            ("CSeq", &cseq),
-            ("Contact", &format!("<sip:{}@{}:{}>", config.device_id, config.ip, config.port)),
-            ("Expires", &expires.to_string()),
-            ("Allow-Events", "presence,message-summary,catalog,keep-alive"),
-        ], None);
+
+        let response = Parser::generate_response(
+            200,
+            "OK",
+            &[
+                ("Via", &via),
+                ("From", &from),
+                (
+                    "To",
+                    &format!("{};tag={}", to.trim_end_matches('>').trim(), tag),
+                ),
+                ("Call-ID", &call_id),
+                ("CSeq", &cseq),
+                (
+                    "Contact",
+                    &format!("<sip:{}@{}:{}>", config.device_id, config.ip, config.port),
+                ),
+                ("Expires", &expires.to_string()),
+                (
+                    "Allow-Events",
+                    "presence,message-summary,catalog,keep-alive",
+                ),
+            ],
+            None,
+        );
         Self::send_response(socket, addr, &response).await?;
 
         if expires > 0 {
             tokio::time::sleep(Duration::from_millis(100)).await;
-            
+
             let event_lower = event.to_lowercase();
             let notify_body;
-            
+
             if event_lower.contains("catalog") {
                 let device_id = Self::extract_device_id(&from).unwrap_or_default();
                 if !device_id.is_empty() {
-                    let channels = db_device::list_channels_for_device(pool, &device_id).await
+                    let channels = db_device::list_channels_for_device(pool, &device_id)
+                        .await
                         .unwrap_or_default();
                     notify_body = build_catalog_notify_body(&channels, 1, &device_id);
-                    
+
                     let subscription = crate::sip::gb28181::catalog::CatalogSubscription::new(
-                        &call_id,
-                        &device_id,
-                        addr,
-                        &via,
-                        &from_tag,
-                        &tag,
-                        expires,
+                        &call_id, &device_id, addr, &via, &from_tag, &tag, expires,
                     );
                     catalog_subscription_manager.subscribe(subscription).await;
                     tracing::info!("Catalog subscription stored for device: {}", device_id);
@@ -1639,11 +2299,14 @@ impl SipServer {
             } else {
                 notify_body = Self::generate_notify_body(&event);
             }
-            
+
             let notify_response = Parser::generate_notify(
                 &format!("sip:{}@{}:{}", config.device_id, addr.ip(), addr.port()),
                 &via,
-                &format!("<sip:{}@{}:{}>;tag={}", config.device_id, config.ip, config.port, tag),
+                &format!(
+                    "<sip:{}@{}:{}>;tag={}",
+                    config.device_id, config.ip, config.port, tag
+                ),
                 &to,
                 &call_id,
                 1,
@@ -1673,10 +2336,17 @@ impl SipServer {
         let call_id = req.header("call-id").cloned().unwrap_or_default();
         let cseq = req.header("cseq").cloned().unwrap_or_default();
         let event = req.header("event").cloned().unwrap_or_default();
-        let subscription_state = req.header("subscription-state").cloned().unwrap_or_default();
+        let subscription_state = req
+            .header("subscription-state")
+            .cloned()
+            .unwrap_or_default();
 
-        tracing::info!("NOTIFY received - CallID: {}, Event: {}, State: {}", 
-            call_id, event, subscription_state);
+        tracing::info!(
+            "NOTIFY received - CallID: {}, Event: {}, State: {}",
+            call_id,
+            event,
+            subscription_state
+        );
 
         if let Some(body) = &req.body {
             let cmd_type = XmlParser::get_cmd_type(body);
@@ -1686,11 +2356,19 @@ impl SipServer {
                     let device_id_for_catalog = XmlParser::get_device_id(body)
                         .unwrap_or_else(|| Self::extract_device_id(&from).unwrap_or_default());
                     let (sum_num, channels) = XmlParser::parse_catalog_channels(body);
-                    tracing::info!("Catalog NOTIFY from {}: {} channels (SumNum={:?})", 
-                        device_id_for_catalog, channels.len(), sum_num);
+                    tracing::info!(
+                        "Catalog NOTIFY from {}: {} channels (SumNum={:?})",
+                        device_id_for_catalog,
+                        channels.len(),
+                        sum_num
+                    );
 
                     for ch in &channels {
-                        let status = if ch.status == "ON" || ch.status == "online" { true } else { false };
+                        let status = if ch.status == "ON" || ch.status == "online" {
+                            true
+                        } else {
+                            false
+                        };
                         let parent_id = ch.parent_id.as_deref().or(Some(&device_id_for_catalog));
                         match db_device::upsert_channel_from_catalog(
                             pool,
@@ -1709,15 +2387,23 @@ impl SipServer {
                             ch.ptz_type,
                             ch.has_audio,
                             ch.sub_count,
-                        ).await {
-                            Ok(_) => {},
-                            Err(e) => tracing::warn!("Failed to upsert channel {}: {}", ch.device_id, e),
+                        )
+                        .await
+                        {
+                            Ok(_) => {}
+                            Err(e) => {
+                                tracing::warn!("Failed to upsert channel {}: {}", ch.device_id, e)
+                            }
                         }
                     }
 
                     if let (Some(total), false) = (sum_num, channels.is_empty()) {
                         if (channels.len() as i32) < total {
-                            tracing::info!("Partial catalog received: {}/{}, more expected", channels.len(), total);
+                            tracing::info!(
+                                "Partial catalog received: {}/{}, more expected",
+                                channels.len(),
+                                total
+                            );
                         }
                     }
                 }
@@ -1727,13 +2413,18 @@ impl SipServer {
             }
         }
 
-        let response = Parser::generate_response(200, "OK", &[
-            ("Via", &via),
-            ("From", &from),
-            ("To", &to),
-            ("Call-ID", &call_id),
-            ("CSeq", &cseq),
-        ], None);
+        let response = Parser::generate_response(
+            200,
+            "OK",
+            &[
+                ("Via", &via),
+                ("From", &from),
+                ("To", &to),
+                ("Call-ID", &call_id),
+                ("CSeq", &cseq),
+            ],
+            None,
+        );
         Self::send_response(socket, addr, &response).await?;
         Ok(())
     }
@@ -1751,16 +2442,28 @@ impl SipServer {
         let cseq = req.header("cseq").cloned().unwrap_or_default();
         let refer_to = req.header("refer-to").cloned().unwrap_or_default();
 
-        tracing::info!("REFER received - CallID: {}, Refer-To: {}", call_id, refer_to);
+        tracing::info!(
+            "REFER received - CallID: {}, Refer-To: {}",
+            call_id,
+            refer_to
+        );
 
-        let response = Parser::generate_response(202, "Accepted", &[
-            ("Via", &via),
-            ("From", &from),
-            ("To", &to),
-            ("Call-ID", &call_id),
-            ("CSeq", &cseq),
-            ("Contact", &format!("<sip:{}@{}:{}>", config.device_id, config.ip, config.port)),
-        ], None);
+        let response = Parser::generate_response(
+            202,
+            "Accepted",
+            &[
+                ("Via", &via),
+                ("From", &from),
+                ("To", &to),
+                ("Call-ID", &call_id),
+                ("CSeq", &cseq),
+                (
+                    "Contact",
+                    &format!("<sip:{}@{}:{}>", config.device_id, config.ip, config.port),
+                ),
+            ],
+            None,
+        );
         Self::send_response(socket, addr, &response).await?;
         Ok(())
     }
@@ -1778,13 +2481,18 @@ impl SipServer {
         let call_id = req.header("call-id").cloned().unwrap_or_default();
         let cseq = req.header("cseq").cloned().unwrap_or_default();
 
-        let response = Parser::generate_response(status_code, reason, &[
-            ("Via", &via),
-            ("From", &from),
-            ("To", &to),
-            ("Call-ID", &call_id),
-            ("CSeq", &cseq),
-        ], None);
+        let response = Parser::generate_response(
+            status_code,
+            reason,
+            &[
+                ("Via", &via),
+                ("From", &from),
+                ("To", &to),
+                ("Call-ID", &call_id),
+                ("CSeq", &cseq),
+            ],
+            None,
+        );
         Self::send_response(socket, addr, &response).await?;
         Ok(())
     }
@@ -1794,12 +2502,17 @@ impl SipServer {
         session_manager: &Arc<SessionManager>,
         pending_invites: &Arc<DashMap<String, oneshot::Sender<String>>>,
         cascade_registrar: &Option<Arc<CascadeRegistrar>>,
-        _pending_request_manager: &Arc<PendingRequestManager>,
+        pending_request_manager: &Arc<PendingRequestManager>,
     ) -> Result<()> {
         let call_id = resp.headers.get("call-id").cloned().unwrap_or_default();
         let cseq = resp.headers.get("cseq").cloned().unwrap_or_default();
 
-        tracing::debug!("SIP Response: {} {} - CallID: {}", resp.status_code(), resp.reason, call_id);
+        tracing::debug!(
+            "SIP Response: {} {} - CallID: {}",
+            resp.status_code(),
+            resp.reason,
+            call_id
+        );
 
         // Route REGISTER responses to cascade registrar
         if cseq.contains("REGISTER") {
@@ -1811,7 +2524,9 @@ impl SipServer {
 
                 if let Some(ref pid) = platform_id {
                     if resp.status_code() == 401 || resp.status_code() == 407 {
-                        let nonce = resp.headers.get("www-authenticate")
+                        let nonce = resp
+                            .headers
+                            .get("www-authenticate")
                             .or_else(|| resp.headers.get("proxy-authenticate"))
                             .and_then(|auth| {
                                 auth.split("nonce=\"")
@@ -1820,7 +2535,9 @@ impl SipServer {
                                     .map(|s| s.to_string())
                             })
                             .unwrap_or_default();
-                        let opaque = resp.headers.get("www-authenticate")
+                        let opaque = resp
+                            .headers
+                            .get("www-authenticate")
                             .or_else(|| resp.headers.get("proxy-authenticate"))
                             .and_then(|auth| {
                                 auth.split("opaque=\"")
@@ -1828,7 +2545,9 @@ impl SipServer {
                                     .and_then(|s| s.split('"').next())
                                     .map(|s| s.to_string())
                             });
-                        let realm = resp.headers.get("www-authenticate")
+                        let realm = resp
+                            .headers
+                            .get("www-authenticate")
                             .or_else(|| resp.headers.get("proxy-authenticate"))
                             .and_then(|auth| {
                                 auth.split("realm=\"")
@@ -1853,7 +2572,9 @@ impl SipServer {
 
         if resp.status_code() == 200 {
             if cseq.contains("INVITE") {
-                session_manager.update_status(&call_id, SessionStatus::Ringing).await;
+                session_manager
+                    .update_status(&call_id, SessionStatus::Ringing)
+                    .await;
                 if let Some((_, tx)) = pending_invites.remove(&call_id) {
                     let contact = resp.headers.get("contact").cloned().unwrap_or_default();
                     let _ = tx.send(contact);
@@ -1869,6 +2590,21 @@ impl SipServer {
         } else if resp.status_code() >= 400 {
             if let Some((_, tx)) = pending_invites.remove(&call_id) {
                 let _ = tx.send(String::new());
+            }
+        }
+
+        // Phase 1.3: 路由 INVITE/BYE/CANCEL 响应到 PendingRequestManager，
+        // 任何注册了 cmd_type 的等待方都会按 call_id 收到结构化完成结果。
+        if cseq.contains("INVITE") || cseq.contains("BYE") || cseq.contains("CANCEL") {
+            let router = crate::sip::gb28181::ResponseRouter::new(pending_request_manager.clone());
+            if let Some(cmd_type) = router.route_response(resp.status_code(), &call_id) {
+                tracing::debug!(
+                    "PendingRequest {} (cmd={:?}) completed by {} {}",
+                    call_id,
+                    cmd_type,
+                    resp.status_code(),
+                    cseq
+                );
             }
         }
 
@@ -1889,7 +2625,7 @@ impl SipServer {
         socket: &Arc<UdpSocket>,
     ) -> Result<()> {
         tracing::info!("Catalog query from {}", device_id);
-        
+
         let channels = match db_device::list_channels_for_device(pool, device_id).await {
             Ok(chs) => chs,
             Err(e) => {
@@ -1897,14 +2633,14 @@ impl SipServer {
                 Vec::new()
             }
         };
-        
+
         let mut channel_xml = String::new();
         for ch in &channels {
             let name = ch.name.as_deref().unwrap_or("未知通道");
             let gb_id = ch.gb_device_id.as_deref().unwrap_or("");
             let status = ch.status.as_deref().unwrap_or("OFF");
             let has_audio = ch.has_audio.unwrap_or(false);
-            
+
             channel_xml.push_str(&format!(
                 r#"<Item>
 <DeviceID>{}</DeviceID>
@@ -1916,30 +2652,44 @@ impl SipServer {
 <SubCount>{}</SubCount>
 <HasAudio>{}</HasAudio>
 </Item>"#,
-                gb_id, name, status, device_id,
+                gb_id,
+                name,
+                status,
+                device_id,
                 if status == "ON" { "true" } else { "false" },
                 status,
                 ch.sub_count.unwrap_or(0),
                 has_audio
             ));
         }
-        
+
         let num = channels.len();
-        let response_body = format!(r#"<?xml version="1.0" encoding="UTF-8"?>
+        let response_body = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
 <Response>
 <CmdType>Catalog</CmdType>
 <SN>{}</SN>
 <DeviceID>{}</DeviceID>
 <SumNum>{}</SumNum>
 <DeviceList Num="{}">{}</DeviceList>
-</Response>"#, sn, device_id, num, num, channel_xml);
-        
-        let response = Parser::generate_response(200, "OK", &[
-            ("Via", via), ("From", from), ("To", to),
-            ("Call-ID", call_id), ("CSeq", cseq),
-            ("Content-Type", "Application/MANSCDP+xml"),
-        ], Some(&response_body));
-        
+</Response>"#,
+            sn, device_id, num, num, channel_xml
+        );
+
+        let response = Parser::generate_response(
+            200,
+            "OK",
+            &[
+                ("Via", via),
+                ("From", from),
+                ("To", to),
+                ("Call-ID", call_id),
+                ("CSeq", cseq),
+                ("Content-Type", "Application/MANSCDP+xml"),
+            ],
+            Some(&response_body),
+        );
+
         Self::send_response(socket, addr, &response).await?;
         tracing::info!("Catalog response sent: {} channels for {}", num, device_id);
         Ok(())
@@ -1959,7 +2709,7 @@ impl SipServer {
         socket: &Arc<UdpSocket>,
     ) -> Result<()> {
         tracing::info!("DeviceInfo query from {}", device_id);
-        
+
         let db_device = db_device::get_device_by_device_id(pool, device_id).await?;
         let (name, manufacturer, model) = if let Some(d) = db_device {
             (
@@ -1968,18 +2718,32 @@ impl SipServer {
                 d.model.unwrap_or_else(|| "Unknown".to_string()),
             )
         } else {
-            ("Unknown Device".to_string(), "Unknown".to_string(), "Unknown".to_string())
+            (
+                "Unknown Device".to_string(),
+                "Unknown".to_string(),
+                "Unknown".to_string(),
+            )
         };
 
-        let response_body = format!(r#"<?xml version="1.0" encoding="UTF-8"?><Response><CmdType>DeviceInfo</CmdType><SN>{}</SN><DeviceID>{}</DeviceID><Result>OK</Result><DeviceName>{}</DeviceName><Manufacturer>{}</Manufacturer><Model>{}</Model><Channel>1</Channel></Response>"#,
-            sn, device_id, name, manufacturer, model);
-        
-        let response = Parser::generate_response(200, "OK", &[
-            ("Via", via), ("From", from), ("To", to),
-            ("Call-ID", call_id), ("CSeq", cseq),
-            ("Content-Type", "Application/MANSCDP+xml"),
-        ], Some(&response_body));
-        
+        let response_body = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?><Response><CmdType>DeviceInfo</CmdType><SN>{}</SN><DeviceID>{}</DeviceID><Result>OK</Result><DeviceName>{}</DeviceName><Manufacturer>{}</Manufacturer><Model>{}</Model><Channel>1</Channel></Response>"#,
+            sn, device_id, name, manufacturer, model
+        );
+
+        let response = Parser::generate_response(
+            200,
+            "OK",
+            &[
+                ("Via", via),
+                ("From", from),
+                ("To", to),
+                ("Call-ID", call_id),
+                ("CSeq", cseq),
+                ("Content-Type", "Application/MANSCDP+xml"),
+            ],
+            Some(&response_body),
+        );
+
         Self::send_response(socket, addr, &response).await?;
         Ok(())
     }
@@ -1998,16 +2762,28 @@ impl SipServer {
         socket: &Arc<UdpSocket>,
     ) -> Result<()> {
         tracing::debug!("DeviceStatus from {}", device_id);
-        
-        let response_body = format!(r#"<?xml version="1.0" encoding="UTF-8"?><Response><CmdType>DeviceStatus</CmdType><SN>{}</SN><DeviceID>{}</DeviceID><Result>OK</Result><Online>ON</Online><Status>OK</Status><DeviceTime>{}</DeviceTime></Response>"#,
-            sn, device_id, Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string());
-        
-        let response = Parser::generate_response(200, "OK", &[
-            ("Via", via), ("From", from), ("To", to),
-            ("Call-ID", call_id), ("CSeq", cseq),
-            ("Content-Type", "Application/MANSCDP+xml"),
-        ], Some(&response_body));
-        
+
+        let response_body = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?><Response><CmdType>DeviceStatus</CmdType><SN>{}</SN><DeviceID>{}</DeviceID><Result>OK</Result><Online>ON</Online><Status>OK</Status><DeviceTime>{}</DeviceTime></Response>"#,
+            sn,
+            device_id,
+            Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string()
+        );
+
+        let response = Parser::generate_response(
+            200,
+            "OK",
+            &[
+                ("Via", via),
+                ("From", from),
+                ("To", to),
+                ("Call-ID", call_id),
+                ("CSeq", cseq),
+                ("Content-Type", "Application/MANSCDP+xml"),
+            ],
+            Some(&response_body),
+        );
+
         Self::send_response(socket, addr, &response).await?;
         Ok(())
     }
@@ -2026,36 +2802,64 @@ impl SipServer {
         socket: &Arc<UdpSocket>,
     ) -> Result<()> {
         let parsed = XmlParser::parse(body);
-        let time = parsed.get("Time").cloned().unwrap_or_else(|| Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string());
-        let longitude: f64 = parsed.get("Longitude").and_then(|s| s.parse().ok()).unwrap_or(0.0);
-        let latitude: f64 = parsed.get("Latitude").and_then(|s| s.parse().ok()).unwrap_or(0.0);
-        let speed: f64 = parsed.get("Speed").and_then(|s| s.parse().ok()).unwrap_or(0.0);
-        let direction: f64 = parsed.get("Direction").and_then(|s| s.parse().ok()).unwrap_or(0.0);
-        let altitude: f64 = parsed.get("Altitude").and_then(|s| s.parse().ok()).unwrap_or(0.0);
+        let time = parsed
+            .get("Time")
+            .cloned()
+            .unwrap_or_else(|| Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string());
+        let longitude: f64 = parsed
+            .get("Longitude")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0.0);
+        let latitude: f64 = parsed
+            .get("Latitude")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0.0);
+        let speed: f64 = parsed
+            .get("Speed")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0.0);
+        let direction: f64 = parsed
+            .get("Direction")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0.0);
+        let altitude: f64 = parsed
+            .get("Altitude")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0.0);
 
-        tracing::info!("MobilePosition from {}: {}, {} (speed: {}, direction: {})", 
-            device_id, longitude, latitude, speed, direction);
-        // Persist position history to DB
-        let _ = ph::insert_position(
-            pool,
+        tracing::info!(
+            "MobilePosition from {}: {}, {} (speed: {}, direction: {})",
             device_id,
-            &time,
             longitude,
             latitude,
-            altitude,
             speed,
-            direction,
-        ).await;
-        
-        let response_body = format!(r#"<?xml version="1.0" encoding="UTF-8"?><Response><CmdType>MobilePosition</CmdType><SN>{}</SN><DeviceID>{}</DeviceID><Result>OK</Result></Response>"#,
-            sn, device_id);
-        
-        let response = Parser::generate_response(200, "OK", &[
-            ("Via", via), ("From", from), ("To", to),
-            ("Call-ID", call_id), ("CSeq", cseq),
-            ("Content-Type", "Application/MANSCDP+xml"),
-        ], Some(&response_body));
-        
+            direction
+        );
+        // Persist position history to DB
+        let _ = ph::insert_position(
+            pool, device_id, &time, longitude, latitude, altitude, speed, direction,
+        )
+        .await;
+
+        let response_body = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?><Response><CmdType>MobilePosition</CmdType><SN>{}</SN><DeviceID>{}</DeviceID><Result>OK</Result></Response>"#,
+            sn, device_id
+        );
+
+        let response = Parser::generate_response(
+            200,
+            "OK",
+            &[
+                ("Via", via),
+                ("From", from),
+                ("To", to),
+                ("Call-ID", call_id),
+                ("CSeq", cseq),
+                ("Content-Type", "Application/MANSCDP+xml"),
+            ],
+            Some(&response_body),
+        );
+
         Self::send_response(socket, addr, &response).await?;
         Ok(())
     }
@@ -2076,24 +2880,34 @@ impl SipServer {
         _pending_request_manager: &Arc<PendingRequestManager>,
     ) -> Result<()> {
         let parsed = XmlParser::parse_fields(body);
-        
-        let alarm_type = parsed.get("AlarmType").cloned().unwrap_or_else(|| "Unknown".to_string());
+
+        let alarm_type = parsed
+            .get("AlarmType")
+            .cloned()
+            .unwrap_or_else(|| "Unknown".to_string());
         let alarm_priority = parsed.get("AlarmPriority").cloned();
         let alarm_method = parsed.get("AlarmMethod").cloned();
         let alarm_time = parsed.get("AlarmTime").cloned();
         let alarm_description = parsed.get("AlarmDescription").cloned();
-        let channel_id = parsed.get("DeviceID").cloned().unwrap_or_else(|| device_id.to_string());
-        
+        let channel_id = parsed
+            .get("DeviceID")
+            .cloned()
+            .unwrap_or_else(|| device_id.to_string());
+
         let longitude = parsed.get("Longitude").and_then(|s| s.parse::<f64>().ok());
         let latitude = parsed.get("Latitude").and_then(|s| s.parse::<f64>().ok());
-        
+
         let create_time = Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-        
+
         tracing::info!(
             "Alarm from {}: type={}, priority={:?}, method={:?}, channel={}",
-            device_id, alarm_type, alarm_priority, alarm_method, channel_id
+            device_id,
+            alarm_type,
+            alarm_priority,
+            alarm_method,
+            channel_id
         );
-        
+
         let alarm = crate::db::alarm::AlarmInsert {
             device_id: device_id.to_string(),
             channel_id: channel_id.clone(),
@@ -2106,11 +2920,11 @@ impl SipServer {
             alarm_type: Some(alarm_type.clone()),
             create_time: create_time.clone(),
         };
-        
+
         if let Err(e) = crate::db::alarm::insert_alarm(pool, &alarm).await {
             tracing::error!("Failed to insert alarm to database: {}", e);
         }
-        
+
         if let Some(ref ws) = ws_state {
             let alarm_data = serde_json::json!({
                 "deviceId": device_id,
@@ -2126,16 +2940,26 @@ impl SipServer {
             });
             ws.broadcast("alarm", alarm_data).await;
         }
-        
-        let response_body = format!(r#"<?xml version="1.0" encoding="UTF-8"?><Response><CmdType>Alarm</CmdType><SN>{}</SN><DeviceID>{}</DeviceID><Result>OK</Result></Response>"#,
-            sn, device_id);
-        
-        let response = Parser::generate_response(200, "OK", &[
-            ("Via", via), ("From", from), ("To", to),
-            ("Call-ID", call_id), ("CSeq", cseq),
-            ("Content-Type", "Application/MANSCDP+xml"),
-        ], Some(&response_body));
-        
+
+        let response_body = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?><Response><CmdType>Alarm</CmdType><SN>{}</SN><DeviceID>{}</DeviceID><Result>OK</Result></Response>"#,
+            sn, device_id
+        );
+
+        let response = Parser::generate_response(
+            200,
+            "OK",
+            &[
+                ("Via", via),
+                ("From", from),
+                ("To", to),
+                ("Call-ID", call_id),
+                ("CSeq", cseq),
+                ("Content-Type", "Application/MANSCDP+xml"),
+            ],
+            Some(&response_body),
+        );
+
         Self::send_response(socket, addr, &response).await?;
         Ok(())
     }
@@ -2155,55 +2979,79 @@ impl SipServer {
         zlm_client: &Option<Arc<ZlmClient>>,
     ) -> Result<()> {
         tracing::debug!("RecordInfo from {}", device_id);
-        
+
         // 解析 RecordInfo 请求中的参数
         let fields = XmlParser::parse_fields(body);
-        let target_device_id = fields.get("DeviceID").map(|s| s.as_str()).unwrap_or(device_id);
+        let target_device_id = fields
+            .get("DeviceID")
+            .map(|s| s.as_str())
+            .unwrap_or(device_id);
         let start_time = fields.get("StartTime").map(|s| s.as_str());
         let end_time = fields.get("EndTime").map(|s| s.as_str());
         let secrecy = fields.get("Secrecy").map(|s| s.as_str()).unwrap_or("0");
         let _type = fields.get("Type").map(|s| s.as_str()).unwrap_or("all");
-        
+
         tracing::debug!(
             "RecordInfo query: device={}, start={:?}, end={:?}, type={}",
-            target_device_id, start_time, end_time, _type
+            target_device_id,
+            start_time,
+            end_time,
+            _type
         );
-        
+
         // 尝试从 ZLM 查询录像文件
         let mut record_items = Vec::new();
         let mut sum_num = 0;
-        
+
         if let Some(zlm) = zlm_client {
             // 解析通道ID：target_device_id 可能是通道ID（20位）
             // 录像流的 app 通常是 "rtp"，stream 是 "device_id$channel_id" 格式
             let app = "rtp";
-            
+
             // 尝试两种 stream 格式：
             // 1. device_id$channel_id (如果 target_device_id 是通道ID)
             // 2. target_device_id (如果 target_device_id 本身就是 stream)
             let stream1 = format!("{}${}", device_id, target_device_id);
             let stream2 = target_device_id.to_string();
-            
+
             // 转换时间格式：GB28181 使用 "yyyy-MM-dd HH:mm:ss"，ZLM 使用时间戳或相同格式
             let zlm_start = start_time.map(|s| s.replace(" ", "T").replace(":", "-"));
             let zlm_end = end_time.map(|s| s.replace(" ", "T").replace(":", "-"));
-            
+
             // 尝试查询录像文件
-            let files = if let Ok(list) = zlm.get_mp4_record_file(app, &stream1, None, zlm_start.as_deref(), zlm_end.as_deref()).await {
+            let files = if let Ok(list) = zlm
+                .get_mp4_record_file(
+                    app,
+                    &stream1,
+                    None,
+                    zlm_start.as_deref(),
+                    zlm_end.as_deref(),
+                )
+                .await
+            {
                 list
-            } else if let Ok(list) = zlm.get_mp4_record_file(app, &stream2, None, zlm_start.as_deref(), zlm_end.as_deref()).await {
+            } else if let Ok(list) = zlm
+                .get_mp4_record_file(
+                    app,
+                    &stream2,
+                    None,
+                    zlm_start.as_deref(),
+                    zlm_end.as_deref(),
+                )
+                .await
+            {
                 list
             } else {
                 Vec::new()
             };
-            
+
             // 转换为 GB28181 RecordItem 格式
             for file in files {
                 // 解析文件名获取时间信息
                 let name = &file.name;
                 let start = file.create_time.clone();
                 let duration = file.duration.unwrap_or(0.0) as i64;
-                
+
                 // 计算结束时间
                 let end = if duration > 0 {
                     // 简单处理：假设 create_time 是开始时间
@@ -2211,7 +3059,7 @@ impl SipServer {
                 } else {
                     start.clone()
                 };
-                
+
                 record_items.push(format!(
                     r#"<Item>
 <DeviceID>{}</DeviceID>
@@ -2239,14 +3087,18 @@ impl SipServer {
                 sum_num += 1;
             }
         }
-        
+
         // 构建响应 XML
         let record_list = if record_items.is_empty() {
             "".to_string()
         } else {
-            format!("<RecordList Num=\"{}\">\n{}\n</RecordList>", sum_num, record_items.join("\n"))
+            format!(
+                "<RecordList Num=\"{}\">\n{}\n</RecordList>",
+                sum_num,
+                record_items.join("\n")
+            )
         };
-        
+
         let response_body = format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
 <Response>
@@ -2259,13 +3111,21 @@ impl SipServer {
 </Response>"#,
             sn, target_device_id, sum_num, record_list
         );
-        
-        let response = Parser::generate_response(200, "OK", &[
-            ("Via", via), ("From", from), ("To", to),
-            ("Call-ID", call_id), ("CSeq", cseq),
-            ("Content-Type", "Application/MANSCDP+xml"),
-        ], Some(&response_body));
-        
+
+        let response = Parser::generate_response(
+            200,
+            "OK",
+            &[
+                ("Via", via),
+                ("From", from),
+                ("To", to),
+                ("Call-ID", call_id),
+                ("CSeq", cseq),
+                ("Content-Type", "Application/MANSCDP+xml"),
+            ],
+            Some(&response_body),
+        );
+
         Self::send_response(socket, addr, &response).await?;
         Ok(())
     }
@@ -2277,7 +3137,8 @@ impl SipServer {
   <tuple id="device">
     <status><basic>open</basic></status>
   </tuple>
-</presence>"#.to_string(),
+</presence>"#
+                .to_string(),
             "catalog" => r#"<?xml version="1.0" encoding="UTF-8"?>
 <Notify>
   <CmdType>Catalog</CmdType>
@@ -2285,18 +3146,26 @@ impl SipServer {
   <DeviceID>device001</DeviceID>
   <SumNum>0</SumNum>
   <DeviceList Num="0"></DeviceList>
-</Notify>"#.to_string(),
-            _ => format!(r#"<?xml version="1.0" encoding="UTF-8"?>
+</Notify>"#
+                .to_string(),
+            _ => format!(
+                r#"<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <CmdType>{}</CmdType>
   <SN>1</SN>
   <DeviceID>device001</DeviceID>
   <Result>OK</Result>
-</Response>"#, event),
+</Response>"#,
+                event
+            ),
         }
     }
 
-    async fn send_response(socket: &Arc<UdpSocket>, addr: SocketAddr, response: &str) -> Result<()> {
+    async fn send_response(
+        socket: &Arc<UdpSocket>,
+        addr: SocketAddr,
+        response: &str,
+    ) -> Result<()> {
         socket.send_to(response.as_bytes(), addr).await?;
         Ok(())
     }
@@ -2322,10 +3191,19 @@ impl SipServer {
              Content-Type: {}\r\n\
              Content-Length: {}\r\n\r\n\
              {}",
-            device_id, addr.ip(), addr.port(),
-            self.config.ip, self.config.port, generate_branch(),
-            self.config.device_id, self.config.ip, self.config.port, generate_tag(),
-            device_id, addr.ip(), addr.port(),
+            device_id,
+            addr.ip(),
+            addr.port(),
+            self.config.ip,
+            self.config.port,
+            generate_branch(),
+            self.config.device_id,
+            self.config.ip,
+            self.config.port,
+            generate_tag(),
+            device_id,
+            addr.ip(),
+            addr.port(),
             call_id,
             cseq,
             content_type,
@@ -2382,11 +3260,17 @@ impl SipServer {
         info
     }
 
-    fn generate_sdp_response(device_id: &str, mode: &str, video_port: Option<u16>, audio_port: Option<u16>) -> String {
+    fn generate_sdp_response(
+        device_id: &str,
+        mode: &str,
+        video_port: Option<u16>,
+        audio_port: Option<u16>,
+    ) -> String {
         let v_port = video_port.unwrap_or(10000);
         let _a_port = audio_port.unwrap_or(0);
-        
-        format!(r#"v=0
+
+        format!(
+            r#"v=0
 o={} 0 0 IN IP4 127.0.0.1
 s={}
 c=IN IP4 127.0.0.1
@@ -2397,7 +3281,8 @@ a=sendonly
 y=0100000001
 f=v/1/96/1/2/1/1/0
 "#,
-            device_id, mode, v_port)
+            device_id, mode, v_port
+        )
     }
 
     fn parse_ptz_cmd(body: &str) -> Option<String> {
@@ -2426,11 +3311,17 @@ f=v/1/96/1/2/1/1/0
             return false;
         }
 
-        let ha1 = format!("{:x}", Md5::digest(format!("{}:{}:{}", username, realm, password)));
+        let ha1 = format!(
+            "{:x}",
+            Md5::digest(format!("{}:{}:{}", username, realm, password))
+        );
         let ha2 = format!("{:x}", Md5::digest(format!("{}:{}", "REGISTER", uri)));
         let expected = if qop == "auth" {
             let cnonce = "00000001";
-            format!("{:x}", Md5::digest(format!("{}:{}:{}:{}:{}", ha1, nonce, cnonce, "auth", ha2)))
+            format!(
+                "{:x}",
+                Md5::digest(format!("{}:{}:{}:{}:{}", ha1, nonce, cnonce, "auth", ha2))
+            )
         } else {
             format!("{:x}", Md5::digest(format!("{}:{}:{}", ha1, nonce, ha2)))
         };
@@ -2467,22 +3358,46 @@ f=v/1/96/1/2/1/1/0
         content_type: Option<&str>,
     ) -> Result<()> {
         let socket = self.socket.read().await;
-        let socket = socket.as_ref().ok_or_else(|| anyhow::anyhow!("Socket not initialized"))?;
-        
-        let device_addr = self.device_manager.get_address(device_id).await
+        let socket = socket
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Socket not initialized"))?;
+
+        let device_addr = self
+            .device_manager
+            .get_address(device_id)
+            .await
             .ok_or_else(|| anyhow::anyhow!("Device {} not registered", device_id))?;
-        
-        let call_id = format!("msg_{}_{}", device_id, chrono::Utc::now().timestamp_millis());
+
+        let call_id = format!(
+            "msg_{}_{}",
+            device_id,
+            chrono::Utc::now().timestamp_millis()
+        );
         let branch = generate_branch();
         let cseq = format!("{} {}", 1, method.as_str());
-        
-        let via = format!("SIP/2.0/UDP {}:{};branch={};rport", 
-            self.config.ip, self.config.port, branch);
-        let from = format!("<sip:{}@{}:{}>;tag={}", 
-            self.config.device_id, self.config.ip, self.config.port, generate_tag());
-        let to = format!("<sip:{}@{}:{}>", device_id, device_addr.ip(), device_addr.port());
-        let contact = format!("<sip:{}@{}:{}>", self.config.device_id, self.config.ip, self.config.port);
-        
+
+        let via = format!(
+            "SIP/2.0/UDP {}:{};branch={};rport",
+            self.config.ip, self.config.port, branch
+        );
+        let from = format!(
+            "<sip:{}@{}:{}>;tag={}",
+            self.config.device_id,
+            self.config.ip,
+            self.config.port,
+            generate_tag()
+        );
+        let to = format!(
+            "<sip:{}@{}:{}>",
+            device_id,
+            device_addr.ip(),
+            device_addr.port()
+        );
+        let contact = format!(
+            "<sip:{}@{}:{}>",
+            self.config.device_id, self.config.ip, self.config.port
+        );
+
         let mut headers: Vec<(&str, &str)> = vec![
             ("Via", &via),
             ("From", &from),
@@ -2492,16 +3407,26 @@ f=v/1/96/1/2/1/1/0
             ("Contact", &contact),
             ("Max-Forwards", "70"),
         ];
-        
+
         if let Some(ct) = content_type {
             headers.push(("Content-Type", ct));
         }
-        
-        let uri = format!("sip:{}@{}:{}", device_id, device_addr.ip(), device_addr.port());
+
+        let uri = format!(
+            "sip:{}@{}:{}",
+            device_id,
+            device_addr.ip(),
+            device_addr.port()
+        );
         let message = Parser::generate_request_from_method(method, &uri, &headers, body);
         socket.send_to(message.as_bytes(), device_addr).await?;
-        
-        tracing::info!("Sent {} to device {} at {}", method.as_str(), device_id, device_addr);
+
+        tracing::info!(
+            "Sent {} to device {} at {}",
+            method.as_str(),
+            device_id,
+            device_addr
+        );
         Ok(())
     }
 
@@ -2516,11 +3441,23 @@ f=v/1/96/1/2/1/1/0
 </Query>"#,
             sn, device_id
         );
-        
-        self.send_message_to_device(device_id, SipMethod::Message, Some(&body), Some("Application/MANSCDP+xml")).await
+
+        self.send_message_to_device(
+            device_id,
+            SipMethod::Message,
+            Some(&body),
+            Some("Application/MANSCDP+xml"),
+        )
+        .await
     }
 
-    pub async fn send_device_control(&self, device_id: &str, channel_id: &str, cmd_type: &str, body: &str) -> Result<()> {
+    pub async fn send_device_control(
+        &self,
+        device_id: &str,
+        channel_id: &str,
+        cmd_type: &str,
+        body: &str,
+    ) -> Result<()> {
         let sn = chrono::Utc::now().timestamp();
         let xml_body = format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -2533,8 +3470,14 @@ f=v/1/96/1/2/1/1/0
 </Control>"#,
             cmd_type, sn, device_id, channel_id, body
         );
-        
-        self.send_message_to_device(device_id, SipMethod::Message, Some(&xml_body), Some("Application/MANSCDP+xml")).await
+
+        self.send_message_to_device(
+            device_id,
+            SipMethod::Message,
+            Some(&xml_body),
+            Some("Application/MANSCDP+xml"),
+        )
+        .await
     }
 
     pub async fn send_device_config_query(&self, device_id: &str, config_type: &str) -> Result<()> {
@@ -2549,8 +3492,14 @@ f=v/1/96/1/2/1/1/0
 </Query>"#,
             sn, device_id, config_type
         );
-        
-        self.send_message_to_device(device_id, SipMethod::Message, Some(&body), Some("Application/MANSCDP+xml")).await
+
+        self.send_message_to_device(
+            device_id,
+            SipMethod::Message,
+            Some(&body),
+            Some("Application/MANSCDP+xml"),
+        )
+        .await
     }
 
     ///发送设备信息查询
@@ -2565,8 +3514,14 @@ f=v/1/96/1/2/1/1/0
 </Query>"#,
             sn, device_id
         );
-        
-        self.send_message_to_device(device_id, SipMethod::Message, Some(&body), Some("Application/MANSCDP+xml")).await
+
+        self.send_message_to_device(
+            device_id,
+            SipMethod::Message,
+            Some(&body),
+            Some("Application/MANSCDP+xml"),
+        )
+        .await
     }
 
     /// 发送设备状态查询
@@ -2581,8 +3536,14 @@ f=v/1/96/1/2/1/1/0
 </Query>"#,
             sn, device_id
         );
-        
-        self.send_message_to_device(device_id, SipMethod::Message, Some(&body), Some("Application/MANSCDP+xml")).await
+
+        self.send_message_to_device(
+            device_id,
+            SipMethod::Message,
+            Some(&body),
+            Some("Application/MANSCDP+xml"),
+        )
+        .await
     }
 
     /// Send an Alarm subscription to a device so it pushes alarm notifications
@@ -2592,7 +3553,9 @@ f=v/1/96/1/2/1/1/0
 
     pub async fn send_subscribe(&self, device_id: &str, event: &str, expires: u32) -> Result<()> {
         let socket = self.socket.read().await;
-        let socket = socket.as_ref().ok_or_else(|| anyhow::anyhow!("Socket not initialized"))?;
+        let socket = socket
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Socket not initialized"))?;
 
         let device_addr = self
             .device_manager
@@ -2611,10 +3574,17 @@ f=v/1/96/1/2/1/1/0
             event, sn, device_id
         );
 
-        let call_id = format!("sub_{}_{}", device_id, chrono::Utc::now().timestamp_millis());
+        let call_id = format!(
+            "sub_{}_{}",
+            device_id,
+            chrono::Utc::now().timestamp_millis()
+        );
         let branch = generate_branch();
         let cseq = "1 SUBSCRIBE".to_string();
-        let via = format!("SIP/2.0/UDP {}:{};branch={};rport", self.config.ip, self.config.port, branch);
+        let via = format!(
+            "SIP/2.0/UDP {}:{};branch={};rport",
+            self.config.ip, self.config.port, branch
+        );
         let from = format!(
             "<sip:{}@{}:{}>;tag={}",
             self.config.device_id,
@@ -2622,7 +3592,12 @@ f=v/1/96/1/2/1/1/0
             self.config.port,
             generate_tag()
         );
-        let to = format!("<sip:{}@{}:{}>", device_id, device_addr.ip(), device_addr.port());
+        let to = format!(
+            "<sip:{}@{}:{}>",
+            device_id,
+            device_addr.ip(),
+            device_addr.port()
+        );
         let contact = format!(
             "<sip:{}@{}:{}>",
             self.config.device_id, self.config.ip, self.config.port
@@ -2644,7 +3619,12 @@ f=v/1/96/1/2/1/1/0
             ("Content-Type", "Application/MANSCDP+xml"),
         ];
 
-        let uri = format!("sip:{}@{}:{}", device_id, device_addr.ip(), device_addr.port());
+        let uri = format!(
+            "sip:{}@{}:{}",
+            device_id,
+            device_addr.ip(),
+            device_addr.port()
+        );
         let request = Parser::generate_request("SUBSCRIBE", &uri, &headers, Some(&body));
         socket.send_to(request.as_bytes(), device_addr).await?;
 
@@ -2658,36 +3638,67 @@ f=v/1/96/1/2/1/1/0
                 &to,
                 expires,
             );
-            self.catalog_subscription_manager.subscribe(subscription).await;
+            self.catalog_subscription_manager
+                .subscribe(subscription)
+                .await;
         }
 
-        tracing::info!("Sent SUBSCRIBE {} to device {} at {}", event, device_id, device_addr);
+        tracing::info!(
+            "Sent SUBSCRIBE {} to device {} at {}",
+            event,
+            device_id,
+            device_addr
+        );
         Ok(())
     }
 
     pub async fn send_talk_invite(&self, device_id: &str, channel_id: &str) -> Result<()> {
         let socket = self.socket.read().await;
-        let socket = socket.as_ref().ok_or_else(|| anyhow::anyhow!("Socket not initialized"))?;
-        
-        let device_addr = self.device_manager.get_address(device_id).await
+        let socket = socket
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Socket not initialized"))?;
+
+        let device_addr = self
+            .device_manager
+            .get_address(device_id)
+            .await
             .ok_or_else(|| anyhow::anyhow!("Device {} not registered", device_id))?;
-        
-        let call_id = format!("talk_{}_{}", device_id, chrono::Utc::now().timestamp_millis());
+
+        let call_id = format!(
+            "talk_{}_{}",
+            device_id,
+            chrono::Utc::now().timestamp_millis()
+        );
         let branch = generate_branch();
         let cseq = format!("INVITE {}", 1);
         let from_tag = generate_tag();
-        
-        let via = format!("SIP/2.0/UDP {}:{};branch={};rport", 
-            self.config.ip, self.config.port, branch);
-        let from = format!("<sip:{}@{}:{}>;tag={}", 
-            self.config.device_id, self.config.ip, self.config.port, from_tag);
-        let to = format!("<sip:{}@{}:{}>", channel_id, device_addr.ip(), device_addr.port());
-        let contact = format!("<sip:{}@{}:{}>", self.config.device_id, self.config.ip, self.config.port);
-        
+
+        let via = format!(
+            "SIP/2.0/UDP {}:{};branch={};rport",
+            self.config.ip, self.config.port, branch
+        );
+        let from = format!(
+            "<sip:{}@{}:{}>;tag={}",
+            self.config.device_id, self.config.ip, self.config.port, from_tag
+        );
+        let to = format!(
+            "<sip:{}@{}:{}>",
+            channel_id,
+            device_addr.ip(),
+            device_addr.port()
+        );
+        let contact = format!(
+            "<sip:{}@{}:{}>",
+            self.config.device_id, self.config.ip, self.config.port
+        );
+
         let sdp = build_audio_sdp(&self.config.ip, 0);
-        
-        let subject = format!("{}:{},{}:{}", self.config.device_id, channel_id, self.config.device_id, 0);
-        
+
+        let subject = format!(
+            "{}:{},{}:{}",
+            self.config.device_id, channel_id, self.config.device_id, 0
+        );
+
         let headers: Vec<(&str, &str)> = vec![
             ("Via", &via),
             ("From", &from),
@@ -2700,36 +3711,68 @@ f=v/1/96/1/2/1/1/0
             ("Subject", &subject),
             ("Content-Type", "application/sdp"),
         ];
-        
-        let uri = format!("sip:{}@{}:{}", channel_id, device_addr.ip(), device_addr.port());
+
+        let uri = format!(
+            "sip:{}@{}:{}",
+            channel_id,
+            device_addr.ip(),
+            device_addr.port()
+        );
         let message = Parser::generate_request("INVITE", &uri, &headers, Some(&sdp));
-        
+
         socket.send_to(message.as_bytes(), device_addr).await?;
-        tracing::info!("Sent TALK INVITE to device {} channel {} at {}", device_id, channel_id, device_addr);
-        
+        tracing::info!(
+            "Sent TALK INVITE to device {} channel {} at {}",
+            device_id,
+            channel_id,
+            device_addr
+        );
+
         Ok(())
     }
-    
+
     pub async fn send_talk_bye(&self, device_id: &str, channel_id: &str) -> Result<()> {
-        let session = self.talk_manager.get_by_device_channel(device_id, channel_id).await
-            .ok_or_else(|| anyhow::anyhow!("No active talk session for {}/{}", device_id, channel_id))?;
-        
+        let session = self
+            .talk_manager
+            .get_by_device_channel(device_id, channel_id)
+            .await
+            .ok_or_else(|| {
+                anyhow::anyhow!("No active talk session for {}/{}", device_id, channel_id)
+            })?;
+
         let socket = self.socket.read().await;
-        let socket = socket.as_ref().ok_or_else(|| anyhow::anyhow!("Socket not initialized"))?;
-        
-        let device_addr = self.device_manager.get_address(device_id).await
+        let socket = socket
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Socket not initialized"))?;
+
+        let device_addr = self
+            .device_manager
+            .get_address(device_id)
+            .await
             .ok_or_else(|| anyhow::anyhow!("Device {} not registered", device_id))?;
-        
+
         let call_id = &session.call_id;
         let branch = generate_branch();
         let cseq = "BYE 1".to_string();
-        
-        let via = format!("SIP/2.0/UDP {}:{};branch={};rport", 
-            self.config.ip, self.config.port, branch);
-        let from = format!("<sip:{}@{}:{}>;tag={}", 
-            self.config.device_id, self.config.ip, self.config.port, generate_tag());
-        let to = format!("<sip:{}@{}:{}>", channel_id, device_addr.ip(), device_addr.port());
-        
+
+        let via = format!(
+            "SIP/2.0/UDP {}:{};branch={};rport",
+            self.config.ip, self.config.port, branch
+        );
+        let from = format!(
+            "<sip:{}@{}:{}>;tag={}",
+            self.config.device_id,
+            self.config.ip,
+            self.config.port,
+            generate_tag()
+        );
+        let to = format!(
+            "<sip:{}@{}:{}>",
+            channel_id,
+            device_addr.ip(),
+            device_addr.port()
+        );
+
         let headers: Vec<(&str, &str)> = vec![
             ("Via", &via),
             ("From", &from),
@@ -2738,45 +3781,78 @@ f=v/1/96/1/2/1/1/0
             ("CSeq", &cseq),
             ("Max-Forwards", "70"),
         ];
-        
-        let uri = format!("sip:{}@{}:{}", channel_id, device_addr.ip(), device_addr.port());
+
+        let uri = format!(
+            "sip:{}@{}:{}",
+            channel_id,
+            device_addr.ip(),
+            device_addr.port()
+        );
         let message = Parser::generate_request("BYE", &uri, &headers, None);
-        
+
         socket.send_to(message.as_bytes(), device_addr).await?;
-        tracing::info!("Sent TALK BYE to device {} channel {}", device_id, channel_id);
-        
-        self.talk_manager.update_status(call_id, TalkStatus::Terminating).await;
-        
+        tracing::info!(
+            "Sent TALK BYE to device {} channel {}",
+            device_id,
+            channel_id
+        );
+
+        self.talk_manager
+            .update_status(call_id, TalkStatus::Terminating)
+            .await;
+
         if let Some(ref stream_id) = session.zlm_stream_id {
             if let Some(ref zlm) = self.zlm_client {
                 let _ = zlm.close_rtp_server(stream_id).await;
             }
         }
-        
+
         Ok(())
     }
 
     /// 根据 InviteSessionManager 中的 active session 发送 BYE（用于 Play/Playback/Download/Broadcast 停止）
     pub async fn send_session_bye(&self, device_id: &str, channel_id: &str) -> Result<String> {
-        let session = self.invite_session_manager.get_by_device_channel(device_id, channel_id).await
-            .ok_or_else(|| anyhow::anyhow!("No active invite session for {}/{}", device_id, channel_id))?;
-        
+        let session = self
+            .invite_session_manager
+            .get_by_device_channel(device_id, channel_id)
+            .await
+            .ok_or_else(|| {
+                anyhow::anyhow!("No active invite session for {}/{}", device_id, channel_id)
+            })?;
+
         let socket = self.socket.read().await;
-        let socket = socket.as_ref().ok_or_else(|| anyhow::anyhow!("Socket not initialized"))?;
-        
-        let device_addr = self.device_manager.get_address(device_id).await
+        let socket = socket
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Socket not initialized"))?;
+
+        let device_addr = self
+            .device_manager
+            .get_address(device_id)
+            .await
             .ok_or_else(|| anyhow::anyhow!("Device {} not registered", device_id))?;
-        
+
         let call_id = session.call_id.clone();
         let branch = generate_branch();
         let cseq = "BYE 1".to_string();
-        
-        let via = format!("SIP/2.0/UDP {}:{};branch={};rport", 
-            self.config.ip, self.config.port, branch);
-        let from = format!("<sip:{}@{}:{}>;tag={}", 
-            self.config.device_id, self.config.ip, self.config.port, generate_tag());
-        let to = format!("<sip:{}@{}:{}>", channel_id, device_addr.ip(), device_addr.port());
-        
+
+        let via = format!(
+            "SIP/2.0/UDP {}:{};branch={};rport",
+            self.config.ip, self.config.port, branch
+        );
+        let from = format!(
+            "<sip:{}@{}:{}>;tag={}",
+            self.config.device_id,
+            self.config.ip,
+            self.config.port,
+            generate_tag()
+        );
+        let to = format!(
+            "<sip:{}@{}:{}>",
+            channel_id,
+            device_addr.ip(),
+            device_addr.port()
+        );
+
         let headers: Vec<(&str, &str)> = vec![
             ("Via", &via),
             ("From", &from),
@@ -2785,24 +3861,60 @@ f=v/1/96/1/2/1/1/0
             ("CSeq", &cseq),
             ("Max-Forwards", "70"),
         ];
-        
-        let uri = format!("sip:{}@{}:{}", channel_id, device_addr.ip(), device_addr.port());
+
+        let uri = format!(
+            "sip:{}@{}:{}",
+            channel_id,
+            device_addr.ip(),
+            device_addr.port()
+        );
         let message = Parser::generate_request("BYE", &uri, &headers, None);
-        
+
         socket.send_to(message.as_bytes(), device_addr).await?;
-        tracing::info!("Sent session BYE to device {} channel {} call_id={}", device_id, channel_id, call_id);
-        
-        self.invite_session_manager.update_status(&call_id, InviteSessionStatus::Terminating).await;
-        
+        tracing::info!(
+            "Sent session BYE to device {} channel {} call_id={}",
+            device_id,
+            channel_id,
+            call_id
+        );
+
+        self.invite_session_manager
+            .update_status(&call_id, InviteSessionStatus::Terminating)
+            .await;
+
         if let Some(ref stream_id) = session.zlm_stream_id {
             if let Some(ref zlm) = self.zlm_client {
                 let _ = zlm.close_rtp_server(stream_id).await;
             }
         }
-        
-        self.invite_session_manager.update_status(&call_id, InviteSessionStatus::Terminated).await;
-        
+
+        self.invite_session_manager
+            .update_status(&call_id, InviteSessionStatus::Terminated)
+            .await;
+
         Ok(call_id)
+    }
+
+    /// 发送 GB28181 回放控制命令（PlayBackCtrl）。
+    ///
+    /// 支持的命令：Play / Pause / Resume / Stop / Seek（需 seek_time）/ Scale（需 speed）
+    /// 设备侧会回复 200 OK 标记完成；这里只负责发送，状态机由调用方（playback_manager）维护。
+    pub async fn send_playback_control(
+        &self,
+        device_id: &str,
+        channel_id: &str,
+        cmd: PlaybackControlCmd,
+    ) -> Result<()> {
+        let sn = (chrono::Utc::now().timestamp() % 10000) as i64;
+        let xml = build_playback_control_xml(&cmd, device_id, channel_id, sn);
+
+        self.send_message_to_device(
+            device_id,
+            crate::sip::SipMethod::Info,
+            Some(&xml),
+            Some("Application/MANSCDP+xml"),
+        )
+        .await
     }
 
     /// 发送 GB28181 RecordInfo 查询请求（设备侧历史录像检索）
@@ -2815,15 +3927,35 @@ f=v/1/96/1/2/1/1/0
         sn: i64,
     ) -> Result<String> {
         let socket = self.socket.read().await;
-        let socket = socket.as_ref().ok_or_else(|| anyhow::anyhow!("Socket not initialized"))?;
-        
-        let device_addr = self.device_manager.get_address(device_id).await
+        let socket = socket
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Socket not initialized"))?;
+
+        let device_addr = self
+            .device_manager
+            .get_address(device_id)
+            .await
             .ok_or_else(|| anyhow::anyhow!("Device {} not registered", device_id))?;
-        
-        let call_id = format!("recinfo_{}_{}", device_id, chrono::Utc::now().timestamp_millis());
+
+        let call_id = format!(
+            "recinfo_{}_{}",
+            device_id,
+            chrono::Utc::now().timestamp_millis()
+        );
         let branch = generate_branch();
         let cseq = "MESSAGE 1".to_string();
-        
+
+        // 注册 PendingRequest，让 A1 路由的 ResponseRouter 收到 RecordInfo
+        // 响应时能 complete 此处注册的 entry；多包响应最终会聚合在 buffer 里
+        // 由 accumulate_record_info 完成最后一块后写入 QueryResult::Raw(xml)。
+        self.pending_request_manager.register(
+            device_id,
+            sn as u32,
+            crate::sip::gb28181::pending_request::PendingCmdType::RecordInfo,
+            &call_id,
+            Some(15),
+        );
+
         let body = format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
 <Query>
@@ -2835,16 +3967,31 @@ f=v/1/96/1/2/1/1/0
 </Query>"#,
             sn, channel_id, start_time, end_time
         );
-        
+
         let content_length = body.len().to_string();
-        
-        let via = format!("SIP/2.0/UDP {}:{};branch={};rport", 
-            self.config.ip, self.config.port, branch);
-        let from = format!("<sip:{}@{}:{}>;tag={}", 
-            self.config.device_id, self.config.ip, self.config.port, generate_tag());
-        let to = format!("<sip:{}@{}:{}>", device_id, device_addr.ip(), device_addr.port());
-        let contact = format!("<sip:{}@{}:{}>", self.config.device_id, self.config.ip, self.config.port);
-        
+
+        let via = format!(
+            "SIP/2.0/UDP {}:{};branch={};rport",
+            self.config.ip, self.config.port, branch
+        );
+        let from = format!(
+            "<sip:{}@{}:{}>;tag={}",
+            self.config.device_id,
+            self.config.ip,
+            self.config.port,
+            generate_tag()
+        );
+        let to = format!(
+            "<sip:{}@{}:{}>",
+            device_id,
+            device_addr.ip(),
+            device_addr.port()
+        );
+        let contact = format!(
+            "<sip:{}@{}:{}>",
+            self.config.device_id, self.config.ip, self.config.port
+        );
+
         let headers: Vec<(&str, &str)> = vec![
             ("Via", &via),
             ("From", &from),
@@ -2857,19 +4004,32 @@ f=v/1/96/1/2/1/1/0
             ("Content-Type", "Application/MANSCDP+xml"),
             ("Content-Length", &content_length),
         ];
-        
-        let uri = format!("sip:{}@{}:{}", device_id, device_addr.ip(), device_addr.port());
+
+        let uri = format!(
+            "sip:{}@{}:{}",
+            device_id,
+            device_addr.ip(),
+            device_addr.port()
+        );
         let message = Parser::generate_request("MESSAGE", &uri, &headers, Some(&body));
-        
+
         socket.send_to(message.as_bytes(), device_addr).await?;
-        tracing::info!("Sent RecordInfo query to device {} channel {} [{}-{}]", device_id, channel_id, start_time, end_time);
-        
+        tracing::info!(
+            "Sent RecordInfo query to device {} channel {} [{}-{}]",
+            device_id,
+            channel_id,
+            start_time,
+            end_time
+        );
+
         Ok(call_id)
     }
 
     /// 旧 fire-and-forget 接口（保留兼容）
     pub async fn send_play_invite(&self, device_id: &str, channel_id: &str) -> Result<()> {
-        let _ = self.send_play_invite_and_wait(device_id, channel_id, 0, None).await;
+        let _ = self
+            .send_play_invite_and_wait(device_id, channel_id, 0, None)
+            .await;
         Ok(())
     }
 
@@ -2887,33 +4047,54 @@ f=v/1/96/1/2/1/1/0
         ssrc: Option<&str>,
     ) -> Result<String> {
         let socket = self.socket.read().await;
-        let socket = socket.as_ref().ok_or_else(|| anyhow::anyhow!("Socket not initialized"))?;
-        
-        let device_addr = self.device_manager.get_address(device_id).await
+        let socket = socket
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Socket not initialized"))?;
+
+        let device_addr = self
+            .device_manager
+            .get_address(device_id)
+            .await
             .ok_or_else(|| anyhow::anyhow!("Device {} not registered", device_id))?;
-        
-        let call_id = format!("play_{}_{}", device_id, chrono::Utc::now().timestamp_millis());
+
+        let call_id = format!(
+            "play_{}_{}",
+            device_id,
+            chrono::Utc::now().timestamp_millis()
+        );
         let branch = generate_branch();
         let cseq = "INVITE 1".to_string();
         let from_tag = generate_tag();
-        
+
         // 生成合规 SSRC（20 位 GB28181 SSRC = 0 + CivilCode(10) + 通道序号（0 实时）)
-        let ssrc_str = ssrc.map(|s| s.to_string()).unwrap_or_else(|| {
-            format!("0{:0>9}0", &device_id[..device_id.len().min(9)])
-        });
-        
-        let via = format!("SIP/2.0/UDP {}:{};branch={};rport", 
-            self.config.ip, self.config.port, branch);
-        let from = format!("<sip:{}@{}:{}>;tag={}", 
-            self.config.device_id, self.config.ip, self.config.port, from_tag);
-        let to = format!("<sip:{}@{}:{}>", channel_id, device_addr.ip(), device_addr.port());
-        let contact = format!("<sip:{}@{}:{}>", self.config.device_id, self.config.ip, self.config.port);
+        let ssrc_str = ssrc
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| format!("0{:0>9}0", &device_id[..device_id.len().min(9)]));
+
+        let via = format!(
+            "SIP/2.0/UDP {}:{};branch={};rport",
+            self.config.ip, self.config.port, branch
+        );
+        let from = format!(
+            "<sip:{}@{}:{}>;tag={}",
+            self.config.device_id, self.config.ip, self.config.port, from_tag
+        );
+        let to = format!(
+            "<sip:{}@{}:{}>",
+            channel_id,
+            device_addr.ip(),
+            device_addr.port()
+        );
+        let contact = format!(
+            "<sip:{}@{}:{}>",
+            self.config.device_id, self.config.ip, self.config.port
+        );
         // Subject: serverGbId:ssrc,deviceGbId:0
         let subject = format!("{}:{},{}:0", self.config.device_id, ssrc_str, channel_id);
-        
+
         // 规范 SDP – s=Play，使用真实 RTP 端口
         let sdp = build_invite_sdp(&self.config.ip, media_port, "Play", Some(&ssrc_str));
-        
+
         let headers: Vec<(&str, &str)> = vec![
             ("Via", &via),
             ("From", &from),
@@ -2926,18 +4107,29 @@ f=v/1/96/1/2/1/1/0
             ("Subject", &subject),
             ("Content-Type", "application/sdp"),
         ];
-        
+
         // 注册等待 channel，_必须_ 在发包之前注册，防止竞态
         let (tx, rx) = oneshot::channel::<String>();
         self.pending_invites.insert(call_id.clone(), tx);
-        
-        let uri = format!("sip:{}@{}:{}", channel_id, device_addr.ip(), device_addr.port());
+
+        let uri = format!(
+            "sip:{}@{}:{}",
+            channel_id,
+            device_addr.ip(),
+            device_addr.port()
+        );
         let message = Parser::generate_request("INVITE", &uri, &headers, Some(&sdp));
         socket.send_to(message.as_bytes(), device_addr).await?;
-        tracing::info!("Sent PLAY INVITE to device={} channel={} port={} ssrc={} call_id={}",
-            device_id, channel_id, media_port, ssrc_str, call_id);
+        tracing::info!(
+            "Sent PLAY INVITE to device={} channel={} port={} ssrc={} call_id={}",
+            device_id,
+            channel_id,
+            media_port,
+            ssrc_str,
+            call_id
+        );
         drop(socket); // 释放读锁，避免死锁
-        
+
         // 等待 200 OK（15 秒超时）
         match tokio::time::timeout(Duration::from_secs(15), rx).await {
             Ok(Ok(_)) => {
@@ -2950,11 +4142,12 @@ f=v/1/96/1/2/1/1/0
             }
             Err(_) => {
                 self.pending_invites.remove(&call_id);
-                Err(anyhow::anyhow!("INVITE timeout – device did not respond in 15s"))
+                Err(anyhow::anyhow!(
+                    "INVITE timeout – device did not respond in 15s"
+                ))
             }
         }
     }
-    
 
     /// 增强版播放 INVITE：SIP 200 OK 后等待 ZLM Hook 媒体到达
     ///
@@ -2972,23 +4165,33 @@ f=v/1/96/1/2/1/1/0
         ssrc: Option<&str>,
         timeout_secs: u64,
     ) -> Result<(String, String)> {
-        let call_id = format!("play_{}_{}", device_id, chrono::Utc::now().timestamp_millis());
+        let call_id = format!(
+            "play_{}_{}",
+            device_id,
+            chrono::Utc::now().timestamp_millis()
+        );
 
         // 1. 注册媒体等待器（早于发包，防止竞态）
         let waiter_key: String;
         let media_rx: tokio::sync::oneshot::Receiver<MediaWaitResult>;
         {
-            let (wk, rx) = self.media_waiter_manager.register(
-                &call_id, zlm_stream_id, "rtp", timeout_secs,
-            );
+            let (wk, rx) =
+                self.media_waiter_manager
+                    .register(&call_id, zlm_stream_id, "rtp", timeout_secs);
             waiter_key = wk;
             media_rx = rx;
         }
 
         // 2. 发送 SIP INVITE，等待 200 OK
-        match self.send_play_invite_and_wait(device_id, channel_id, media_port, ssrc).await {
+        match self
+            .send_play_invite_and_wait(device_id, channel_id, media_port, ssrc)
+            .await
+        {
             Ok(_) => {
-                tracing::info!("SIP 200 OK for call_id={}, now waiting ZLM media...", call_id);
+                tracing::info!(
+                    "SIP 200 OK for call_id={}, now waiting ZLM media...",
+                    call_id
+                );
             }
             Err(e) => {
                 // SIP 失败，清理等待器
@@ -2999,7 +4202,10 @@ f=v/1/96/1/2/1/1/0
 
         // 3. 等待 ZLM Hook 触发 media-ready
         match tokio::time::timeout(Duration::from_secs(timeout_secs), media_rx).await {
-            Ok(Ok(MediaWaitResult::MediaReady { zlm_stream_id: zid, app })) => {
+            Ok(Ok(MediaWaitResult::MediaReady {
+                zlm_stream_id: zid,
+                app,
+            })) => {
                 tracing::info!("Media ready: stream_id={} app={}", zid, app);
                 // 4. 更新 InviteSession 状态为 Active
                 self.invite_session_manager.activate(&call_id).await;
@@ -3020,7 +4226,8 @@ f=v/1/96/1/2/1/1/0
             Err(_) => {
                 let _ = self.media_waiter_manager.cleanup_expired();
                 Err(anyhow::anyhow!(
-                    "ZLM media timeout – stream did not arrive in {}s", timeout_secs
+                    "ZLM media timeout – stream did not arrive in {}s",
+                    timeout_secs
                 ))
             }
         }
@@ -3028,36 +4235,62 @@ f=v/1/96/1/2/1/1/0
 
     /// 通过 stream_id 触发 MediaWaiter（ZLM Hook 调用）
     /// 返回 true 表示等待者被成功唤醒，false 表示没有等待中的请求
-    pub async fn notify_media_ready_by_stream(
-        &self,
-        stream_id: &str,
-        app: &str,
-    ) -> bool {
+    pub async fn notify_media_ready_by_stream(&self, stream_id: &str, app: &str) -> bool {
         self.media_waiter_manager.resolve_by_stream(stream_id, app)
     }
 
-    pub async fn send_playback_invite(&self, device_id: &str, channel_id: &str, start_time: &str, end_time: &str) -> Result<()> {
+    pub async fn send_playback_invite(
+        &self,
+        device_id: &str,
+        channel_id: &str,
+        start_time: &str,
+        end_time: &str,
+    ) -> Result<()> {
         let socket = self.socket.read().await;
-        let socket = socket.as_ref().ok_or_else(|| anyhow::anyhow!("Socket not initialized"))?;
-        
-        let device_addr = self.device_manager.get_address(device_id).await
+        let socket = socket
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Socket not initialized"))?;
+
+        let device_addr = self
+            .device_manager
+            .get_address(device_id)
+            .await
             .ok_or_else(|| anyhow::anyhow!("Device {} not registered", device_id))?;
-        
-        let call_id = format!("playback_{}_{}", device_id, chrono::Utc::now().timestamp_millis());
+
+        let call_id = format!(
+            "playback_{}_{}",
+            device_id,
+            chrono::Utc::now().timestamp_millis()
+        );
         let branch = generate_branch();
         let cseq = format!("INVITE {}", 1);
         let from_tag = generate_tag();
-        
-        let via = format!("SIP/2.0/UDP {}:{};branch={};rport", 
-            self.config.ip, self.config.port, branch);
-        let from = format!("<sip:{}@{}:{}>;tag={}", 
-            self.config.device_id, self.config.ip, self.config.port, from_tag);
-        let to = format!("<sip:{}@{}:{}>", channel_id, device_addr.ip(), device_addr.port());
-        let contact = format!("<sip:{}@{}:{}>", self.config.device_id, self.config.ip, self.config.port);
-        
+
+        let via = format!(
+            "SIP/2.0/UDP {}:{};branch={};rport",
+            self.config.ip, self.config.port, branch
+        );
+        let from = format!(
+            "<sip:{}@{}:{}>;tag={}",
+            self.config.device_id, self.config.ip, self.config.port, from_tag
+        );
+        let to = format!(
+            "<sip:{}@{}:{}>",
+            channel_id,
+            device_addr.ip(),
+            device_addr.port()
+        );
+        let contact = format!(
+            "<sip:{}@{}:{}>",
+            self.config.device_id, self.config.ip, self.config.port
+        );
+
         let sdp = build_playback_sdp(&self.config.ip, 0, start_time, end_time);
-        let subject = format!("{}:{},{}:{}", self.config.device_id, channel_id, self.config.device_id, 1);
-        
+        let subject = format!(
+            "{}:{},{}:{}",
+            self.config.device_id, channel_id, self.config.device_id, 1
+        );
+
         let headers: Vec<(&str, &str)> = vec![
             ("Via", &via),
             ("From", &from),
@@ -3070,42 +4303,86 @@ f=v/1/96/1/2/1/1/0
             ("Subject", &subject),
             ("Content-Type", "application/sdp"),
         ];
-        
-        let uri = format!("sip:{}@{}:{}", channel_id, device_addr.ip(), device_addr.port());
+
+        let uri = format!(
+            "sip:{}@{}:{}",
+            channel_id,
+            device_addr.ip(),
+            device_addr.port()
+        );
         let message = Parser::generate_request("INVITE", &uri, &headers, Some(&sdp));
-        
+
         socket.send_to(message.as_bytes(), device_addr).await?;
-        tracing::info!("Sent PLAYBACK INVITE to device {} channel {} [{}-{}] at {}", device_id, channel_id, start_time, end_time, device_addr);
-        
+        tracing::info!(
+            "Sent PLAYBACK INVITE to device {} channel {} [{}-{}] at {}",
+            device_id,
+            channel_id,
+            start_time,
+            end_time,
+            device_addr
+        );
+
         Ok(())
     }
 
-    pub async fn send_platform_invite(&self, platform_gb_id: &str, channel_id: &str, sdp_port: u16) -> Result<()> {
+    /// 发送 GB28181 录像下载 INVITE（Subject 第 4 段 SSRC 前缀 2 表示 Download）
+    ///
+    /// 与 send_playback_invite 区别仅在 Subject 字段第 4 段（SSRC）前缀：
+    /// 实时=0、回放=1、下载=2。SDP 内容相同。
+    /// 设备回复 200 OK 后 ZLM 在 9102 端口接收 RTP 流并按 MP4 落盘。
+    pub async fn send_download_invite(
+        &self,
+        device_id: &str,
+        channel_id: &str,
+        start_time: &str,
+        end_time: &str,
+    ) -> Result<String> {
         let socket = self.socket.read().await;
-        let socket = socket.as_ref().ok_or_else(|| anyhow::anyhow!("Socket not initialized"))?;
-        
-        let platform = crate::db::platform::get_by_server_gb_id(&self.pool, platform_gb_id).await?
-            .ok_or_else(|| anyhow::anyhow!("Platform {} not found", platform_gb_id))?;
-        
-        let server_ip = platform.server_ip.as_ref().ok_or_else(|| anyhow::anyhow!("Platform IP not set"))?;
-        let server_port = platform.server_port.unwrap_or(5060) as u16;
-        
-        let call_id = format!("plat_{}_{}", platform_gb_id, chrono::Utc::now().timestamp_millis());
+        let socket = socket
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Socket not initialized"))?;
+
+        let device_addr = self
+            .device_manager
+            .get_address(device_id)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("Device {} not registered", device_id))?;
+
+        let call_id = format!(
+            "download_{}_{}",
+            device_id,
+            chrono::Utc::now().timestamp_millis()
+        );
         let branch = generate_branch();
         let cseq = format!("INVITE {}", 1);
         let from_tag = generate_tag();
-        
-        let via = format!("SIP/2.0/UDP {}:{};branch={};rport", 
-            self.config.ip, self.config.port, branch);
-        let from = format!("<sip:{}@{}:{}>;tag={}", 
-            self.config.device_id, self.config.ip, self.config.port, from_tag);
-        let to = format!("<sip:{}@{}:{}>", channel_id, server_ip, server_port);
-        let contact = format!("<sip:{}@{}:{}>", self.config.device_id, self.config.ip, self.config.port);
-        
-        let sdp = build_playback_sdp(&self.config.ip, sdp_port, "0", "0");
-        
-        let subject = format!("{}:{},{}:{}", self.config.device_id, channel_id, platform_gb_id, 0);
-        
+
+        let via = format!(
+            "SIP/2.0/UDP {}:{};branch={};rport",
+            self.config.ip, self.config.port, branch
+        );
+        let from = format!(
+            "<sip:{}@{}:{}>;tag={}",
+            self.config.device_id, self.config.ip, self.config.port, from_tag
+        );
+        let to = format!(
+            "<sip:{}@{}:{}>",
+            channel_id,
+            device_addr.ip(),
+            device_addr.port()
+        );
+        let contact = format!(
+            "<sip:{}@{}:{}>",
+            self.config.device_id, self.config.ip, self.config.port
+        );
+
+        let subject = build_download_subject(&self.config.device_id, channel_id);
+        let ssrc = build_download_ssrc(&self.config.device_id);
+
+        // SDP 与回放一致；ZLM 端口由调用方通过 OpenRtpServer 提前分配，
+        // 这里用占位 0 留给 ZLM 自行协商；客户端用 hold 方式发送.
+        let sdp = build_playback_sdp(&self.config.ip, 0, start_time, end_time);
+
         let headers: Vec<(&str, &str)> = vec![
             ("Via", &via),
             ("From", &from),
@@ -3118,38 +4395,155 @@ f=v/1/96/1/2/1/1/0
             ("Subject", &subject),
             ("Content-Type", "application/sdp"),
         ];
-        
+
+        let uri = format!(
+            "sip:{}@{}:{}",
+            channel_id,
+            device_addr.ip(),
+            device_addr.port()
+        );
+        let message = Parser::generate_request("INVITE", &uri, &headers, Some(&sdp));
+
+        socket.send_to(message.as_bytes(), device_addr).await?;
+        tracing::info!(
+            "Sent DOWNLOAD INVITE to device {} channel {} [{}-{}] ssrc={}",
+            device_id,
+            channel_id,
+            start_time,
+            end_time,
+            ssrc
+        );
+
+        Ok(call_id)
+    }
+
+    pub async fn send_platform_invite(
+        &self,
+        platform_gb_id: &str,
+        channel_id: &str,
+        sdp_port: u16,
+    ) -> Result<()> {
+        let socket = self.socket.read().await;
+        let socket = socket
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Socket not initialized"))?;
+
+        let platform = crate::db::platform::get_by_server_gb_id(&self.pool, platform_gb_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Platform {} not found", platform_gb_id))?;
+
+        let server_ip = platform
+            .server_ip
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Platform IP not set"))?;
+        let server_port = platform.server_port.unwrap_or(5060) as u16;
+
+        let call_id = format!(
+            "plat_{}_{}",
+            platform_gb_id,
+            chrono::Utc::now().timestamp_millis()
+        );
+        let branch = generate_branch();
+        let cseq = format!("INVITE {}", 1);
+        let from_tag = generate_tag();
+
+        let via = format!(
+            "SIP/2.0/UDP {}:{};branch={};rport",
+            self.config.ip, self.config.port, branch
+        );
+        let from = format!(
+            "<sip:{}@{}:{}>;tag={}",
+            self.config.device_id, self.config.ip, self.config.port, from_tag
+        );
+        let to = format!("<sip:{}@{}:{}>", channel_id, server_ip, server_port);
+        let contact = format!(
+            "<sip:{}@{}:{}>",
+            self.config.device_id, self.config.ip, self.config.port
+        );
+
+        let sdp = build_playback_sdp(&self.config.ip, sdp_port, "0", "0");
+
+        let subject = format!(
+            "{}:{},{}:{}",
+            self.config.device_id, channel_id, platform_gb_id, 0
+        );
+
+        let headers: Vec<(&str, &str)> = vec![
+            ("Via", &via),
+            ("From", &from),
+            ("To", &to),
+            ("Call-ID", &call_id),
+            ("CSeq", &cseq),
+            ("Contact", &contact),
+            ("Max-Forwards", "70"),
+            ("User-Agent", "GBServer/1.0"),
+            ("Subject", &subject),
+            ("Content-Type", "application/sdp"),
+        ];
+
         let addr: std::net::SocketAddr = format!("{}:{}", server_ip, server_port).parse()?;
         let uri = format!("sip:{}@{}:{}", channel_id, server_ip, server_port);
         let message = Parser::generate_request("INVITE", &uri, &headers, Some(&sdp));
-        
+
         socket.send_to(message.as_bytes(), addr).await?;
-        tracing::info!("Sent platform INVITE for channel {} to platform {} at {}", channel_id, platform_gb_id, addr);
-        
+        tracing::info!(
+            "Sent platform INVITE for channel {} to platform {} at {}",
+            channel_id,
+            platform_gb_id,
+            addr
+        );
+
         Ok(())
     }
-    
-    pub async fn send_platform_message(&self, platform_gb_id: &str, cmd_type: &str, sn: i64, device_id: &str, content: Option<&str>) -> Result<()> {
+
+    pub async fn send_platform_message(
+        &self,
+        platform_gb_id: &str,
+        cmd_type: &str,
+        sn: i64,
+        device_id: &str,
+        content: Option<&str>,
+    ) -> Result<()> {
         let socket = self.socket.read().await;
-        let socket = socket.as_ref().ok_or_else(|| anyhow::anyhow!("Socket not initialized"))?;
-        
-        let platform = crate::db::platform::get_by_server_gb_id(&self.pool, platform_gb_id).await?
+        let socket = socket
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Socket not initialized"))?;
+
+        let platform = crate::db::platform::get_by_server_gb_id(&self.pool, platform_gb_id)
+            .await?
             .ok_or_else(|| anyhow::anyhow!("Platform {} not found", platform_gb_id))?;
-        
-        let server_ip = platform.server_ip.as_ref().ok_or_else(|| anyhow::anyhow!("Platform IP not set"))?;
+
+        let server_ip = platform
+            .server_ip
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Platform IP not set"))?;
         let server_port = platform.server_port.unwrap_or(5060) as u16;
-        
-        let call_id = format!("plat_msg_{}_{}", platform_gb_id, chrono::Utc::now().timestamp_millis());
+
+        let call_id = format!(
+            "plat_msg_{}_{}",
+            platform_gb_id,
+            chrono::Utc::now().timestamp_millis()
+        );
         let branch = generate_branch();
         let cseq = "MESSAGE 1".to_string();
-        
-        let via = format!("SIP/2.0/UDP {}:{};branch={};rport", 
-            self.config.ip, self.config.port, branch);
-        let from = format!("<sip:{}@{}:{}>;tag={}", 
-            self.config.device_id, self.config.ip, self.config.port, generate_tag());
+
+        let via = format!(
+            "SIP/2.0/UDP {}:{};branch={};rport",
+            self.config.ip, self.config.port, branch
+        );
+        let from = format!(
+            "<sip:{}@{}:{}>;tag={}",
+            self.config.device_id,
+            self.config.ip,
+            self.config.port,
+            generate_tag()
+        );
         let to = format!("<sip:{}@{}:{}>", platform_gb_id, server_ip, server_port);
-        let contact = format!("<sip:{}@{}:{}>", self.config.device_id, self.config.ip, self.config.port);
-        
+        let contact = format!(
+            "<sip:{}@{}:{}>",
+            self.config.device_id, self.config.ip, self.config.port
+        );
+
         let body = if let Some(c) = content {
             format!(
                 r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -3171,7 +4565,7 @@ f=v/1/96/1/2/1/1/0
                 cmd_type, cmd_type, sn, device_id, cmd_type
             )
         };
-        
+
         let headers: Vec<(&str, &str)> = vec![
             ("Via", &via),
             ("From", &from),
@@ -3182,32 +4576,41 @@ f=v/1/96/1/2/1/1/0
             ("Max-Forwards", "70"),
             ("Content-Type", "Application/MANSCDP+xml"),
         ];
-        
+
         let addr: std::net::SocketAddr = format!("{}:{}", server_ip, server_port).parse()?;
         let uri = format!("sip:{}@{}:{}", platform_gb_id, server_ip, server_port);
         let message = Parser::generate_request("MESSAGE", &uri, &headers, Some(&body));
-        
+
         socket.send_to(message.as_bytes(), addr).await?;
-        tracing::info!("Sent {} to platform {} at {}", cmd_type, platform_gb_id, addr);
-        
+        tracing::info!(
+            "Sent {} to platform {} at {}",
+            cmd_type,
+            platform_gb_id,
+            addr
+        );
+
         Ok(())
     }
-    
+
     pub async fn send_platform_catalog(&self, platform_gb_id: &str) -> Result<()> {
         let sn = chrono::Utc::now().timestamp();
-        
+
         let channels = crate::db::device::list_all_channels(&self.pool).await?;
-        
+
         let mut items = String::new();
         for channel in channels.iter().take(100) {
             let channel_id = channel.gb_device_id.as_deref().unwrap_or("");
             let name = channel.name.as_deref().unwrap_or("");
             let has_audio = channel.has_audio.unwrap_or(false);
             let has_audio_str = if has_audio { "true" } else { "false" };
-            let status = if channel.status.as_deref().unwrap_or("off") == "on" { "ON" } else { "OFF" };
+            let status = if channel.status.as_deref().unwrap_or("off") == "on" {
+                "ON"
+            } else {
+                "OFF"
+            };
             let longitude = channel.longitude.unwrap_or(0.0);
             let latitude = channel.latitude.unwrap_or(0.0);
-            
+
             items.push_str(&format!(
                 r#"<Item>
 <DeviceID>{}</DeviceID>
@@ -3220,7 +4623,7 @@ f=v/1/96/1/2/1/1/0
                 channel_id, name, has_audio_str, status, longitude, latitude
             ));
         }
-        
+
         let body = format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
 <Notify>
@@ -3232,48 +4635,85 @@ f=v/1/96/1/2/1/1/0
 {}
 </DeviceList>
 </Notify>"#,
-            sn, self.config.device_id, channels.len(), channels.len().min(100), items
+            sn,
+            self.config.device_id,
+            channels.len(),
+            channels.len().min(100),
+            items
         );
-        
-        self.send_platform_message(platform_gb_id, "Notify", sn, &self.config.device_id, Some(&body)).await
+
+        self.send_platform_message(
+            platform_gb_id,
+            "Notify",
+            sn,
+            &self.config.device_id,
+            Some(&body),
+        )
+        .await
     }
 
     pub async fn register_to_platform(&self, platform_gb_id: &str) -> Result<()> {
         let socket = self.socket.read().await;
-        let socket = socket.as_ref().ok_or_else(|| anyhow::anyhow!("Socket not initialized"))?;
-        
-        let platform = crate::db::platform::get_by_server_gb_id(&self.pool, platform_gb_id).await?
+        let socket = socket
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Socket not initialized"))?;
+
+        let platform = crate::db::platform::get_by_server_gb_id(&self.pool, platform_gb_id)
+            .await?
             .ok_or_else(|| anyhow::anyhow!("Platform {} not found", platform_gb_id))?;
-        
-        let server_ip = platform.server_ip.as_ref().ok_or_else(|| anyhow::anyhow!("Platform IP not set"))?;
+
+        let server_ip = platform
+            .server_ip
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Platform IP not set"))?;
         let server_port = platform.server_port.unwrap_or(5060) as u16;
-        
-        let device_gb_id = platform.device_gb_id.as_ref().ok_or_else(|| anyhow::anyhow!("Device GB ID not set"))?;
+
+        let device_gb_id = platform
+            .device_gb_id
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Device GB ID not set"))?;
         let username = platform.username.as_deref().unwrap_or("");
         let password = platform.password.as_deref().unwrap_or("");
         let expires = platform.expires.as_deref().unwrap_or("3600");
-        
-        let call_id = format!("reg_{}_{}", platform_gb_id, chrono::Utc::now().timestamp_millis());
+
+        let call_id = format!(
+            "reg_{}_{}",
+            platform_gb_id,
+            chrono::Utc::now().timestamp_millis()
+        );
         let branch = generate_branch();
-        
-        let via = format!("SIP/2.0/UDP {}:{};branch={};rport", 
-            self.config.ip, self.config.port, branch);
-        let from = format!("<sip:{}@{}:{}>;tag={}", 
-            device_gb_id, self.config.ip, self.config.port, generate_tag());
+
+        let via = format!(
+            "SIP/2.0/UDP {}:{};branch={};rport",
+            self.config.ip, self.config.port, branch
+        );
+        let from = format!(
+            "<sip:{}@{}:{}>;tag={}",
+            device_gb_id,
+            self.config.ip,
+            self.config.port,
+            generate_tag()
+        );
         let to = format!("<sip:{}@{}:{}>", device_gb_id, server_ip, server_port);
-        let contact = format!("<sip:{}@{}:{}>", device_gb_id, self.config.ip, self.config.port);
-        
+        let contact = format!(
+            "<sip:{}@{}:{}>",
+            device_gb_id, self.config.ip, self.config.port
+        );
+
         let auth = if !password.is_empty() {
             let nonce = generate_nonce();
             let realm = platform.server_gb_domain.as_deref().unwrap_or("GBServer");
-            let response = Self::compute_digest_auth(username, password, realm, "REGISTER", "/", &nonce);
-            format!(r#"Proxy-Authenticate: Digest realm="{}",nonce="{}",charset=utf-8,algorithm=MD5,qop="auth"
+            let response =
+                Self::compute_digest_auth(username, password, realm, "REGISTER", "/", &nonce);
+            format!(
+                r#"Proxy-Authenticate: Digest realm="{}",nonce="{}",charset=utf-8,algorithm=MD5,qop="auth"
 Authentication-Info: qop=auth,rspauth="{}",cnonce="{}",nc=00000001"#,
-                realm, nonce, response, nonce)
+                realm, nonce, response, nonce
+            )
         } else {
             String::new()
         };
-        
+
         let message = format!(
             "REGISTER sip:{}:{} SIP/2.0\r\n\
              Via: {}\r\n\
@@ -3289,36 +4729,59 @@ Authentication-Info: qop=auth,rspauth="{}",cnonce="{}",nc=00000001"#,
              Content-Length: 0\r\n\r\n",
             device_gb_id, server_port, via, from, to, call_id, expires, contact, auth
         );
-        
+
         let addr: std::net::SocketAddr = format!("{}:{}", server_ip, server_port).parse()?;
         socket.send_to(message.as_bytes(), addr).await?;
         tracing::info!("Sent REGISTER to platform {} at {}", platform_gb_id, addr);
-        
+
         Ok(())
     }
-    
+
     pub async fn unregister_from_platform(&self, platform_gb_id: &str) -> Result<()> {
         let socket = self.socket.read().await;
-        let socket = socket.as_ref().ok_or_else(|| anyhow::anyhow!("Socket not initialized"))?;
-        
-        let platform = crate::db::platform::get_by_server_gb_id(&self.pool, platform_gb_id).await?
+        let socket = socket
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Socket not initialized"))?;
+
+        let platform = crate::db::platform::get_by_server_gb_id(&self.pool, platform_gb_id)
+            .await?
             .ok_or_else(|| anyhow::anyhow!("Platform {} not found", platform_gb_id))?;
-        
-        let server_ip = platform.server_ip.as_ref().ok_or_else(|| anyhow::anyhow!("Platform IP not set"))?;
+
+        let server_ip = platform
+            .server_ip
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Platform IP not set"))?;
         let server_port = platform.server_port.unwrap_or(5060) as u16;
-        
-        let device_gb_id = platform.device_gb_id.as_ref().ok_or_else(|| anyhow::anyhow!("Device GB ID not set"))?;
-        
-        let call_id = format!("unreg_{}_{}", platform_gb_id, chrono::Utc::now().timestamp_millis());
+
+        let device_gb_id = platform
+            .device_gb_id
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Device GB ID not set"))?;
+
+        let call_id = format!(
+            "unreg_{}_{}",
+            platform_gb_id,
+            chrono::Utc::now().timestamp_millis()
+        );
         let branch = generate_branch();
-        
-        let via = format!("SIP/2.0/UDP {}:{};branch={};rport", 
-            self.config.ip, self.config.port, branch);
-        let from = format!("<sip:{}@{}:{}>;tag={}", 
-            device_gb_id, self.config.ip, self.config.port, generate_tag());
+
+        let via = format!(
+            "SIP/2.0/UDP {}:{};branch={};rport",
+            self.config.ip, self.config.port, branch
+        );
+        let from = format!(
+            "<sip:{}@{}:{}>;tag={}",
+            device_gb_id,
+            self.config.ip,
+            self.config.port,
+            generate_tag()
+        );
         let to = format!("<sip:{}@{}:{}>", device_gb_id, server_ip, server_port);
-        let contact = format!("<sip:{}@{}:{}>", device_gb_id, self.config.ip, self.config.port);
-        
+        let contact = format!(
+            "<sip:{}@{}:{}>",
+            device_gb_id, self.config.ip, self.config.port
+        );
+
         let message = format!(
             "REGISTER sip:{}:{} SIP/2.0\r\n\
              Via: {}\r\n\
@@ -3333,17 +4796,27 @@ Authentication-Info: qop=auth,rspauth="{}",cnonce="{}",nc=00000001"#,
              Content-Length: 0\r\n\r\n",
             device_gb_id, server_port, via, from, to, call_id, contact
         );
-        
+
         let addr: std::net::SocketAddr = format!("{}:{}", server_ip, server_port).parse()?;
         socket.send_to(message.as_bytes(), addr).await?;
         tracing::info!("Sent unREGISTER to platform {} at {}", platform_gb_id, addr);
-        
+
         Ok(())
     }
-    
-    fn compute_digest_auth(username: &str, password: &str, realm: &str, method: &str, uri: &str, nonce: &str) -> String {
-        use md5::{Md5, Digest};
-        let ha1 = format!("{:x}", Md5::digest(format!("{}:{}:{}", username, realm, password)));
+
+    fn compute_digest_auth(
+        username: &str,
+        password: &str,
+        realm: &str,
+        method: &str,
+        uri: &str,
+        nonce: &str,
+    ) -> String {
+        use md5::{Digest, Md5};
+        let ha1 = format!(
+            "{:x}",
+            Md5::digest(format!("{}:{}:{}", username, realm, password))
+        );
         let ha2 = format!("{:x}", Md5::digest(format!("{}:{}", method, uri)));
         format!("{:x}", Md5::digest(format!("{}:{}:{}", ha1, nonce, ha2)))
     }
@@ -3356,6 +4829,112 @@ Authentication-Info: qop=auth,rspauth="{}",cnonce="{}",nc=00000001"#,
             }
         }
         None
+    } // ---------------------------------------------------------------------
+      // B2: Upstream platform MESSAGE handlers (call pure helpers)
+      // ---------------------------------------------------------------------
+    /// 上级平台 Catalog 查询 → 返回本级所有设备的全部通道
+    async fn handle_catalog_for_platform(
+        local_device_id: &str,
+        sn: &str,
+        pool: &Pool,
+        addr: SocketAddr,
+        from: &str,
+        to: &str,
+        via: &str,
+        call_id: &str,
+        cseq: &str,
+        socket: &Arc<UdpSocket>,
+    ) -> Result<()> {
+        tracing::info!(
+            "Upstream Catalog query → responding with full local catalog for {}",
+            local_device_id
+        );
+        let channels = db_device::list_all_channels(pool).await.unwrap_or_default();
+        let response_body = build_upstream_catalog_response(sn, local_device_id, &channels);
+        let response = Parser::generate_response(
+            200,
+            "OK",
+            &[
+                ("Via", via),
+                ("From", from),
+                ("To", to),
+                ("Call-ID", call_id),
+                ("CSeq", cseq),
+                ("Content-Type", "Application/MANSCDP+xml"),
+            ],
+            Some(&response_body),
+        );
+        Self::send_response(socket, addr, &response).await?;
+        Ok(())
+    }
+
+    /// 上级平台 DeviceInfo 查询 → 返回本级服务器信息
+    async fn handle_device_info_for_platform(
+        local_device_id: &str,
+        sn: &str,
+        addr: SocketAddr,
+        from: &str,
+        to: &str,
+        via: &str,
+        call_id: &str,
+        cseq: &str,
+        socket: &Arc<UdpSocket>,
+    ) -> Result<()> {
+        tracing::info!(
+            "Upstream DeviceInfo query → responding with local server info for {}",
+            local_device_id
+        );
+        let response_body = build_upstream_device_info_response(sn, local_device_id);
+        let response = Parser::generate_response(
+            200,
+            "OK",
+            &[
+                ("Via", via),
+                ("From", from),
+                ("To", to),
+                ("Call-ID", call_id),
+                ("CSeq", cseq),
+                ("Content-Type", "Application/MANSCDP+xml"),
+            ],
+            Some(&response_body),
+        );
+        Self::send_response(socket, addr, &response).await?;
+        Ok(())
+    }
+
+    /// 上级平台 DeviceStatus 查询 → 返回本级服务器状态
+    async fn handle_device_status_for_platform(
+        local_device_id: &str,
+        sn: &str,
+        addr: SocketAddr,
+        from: &str,
+        to: &str,
+        via: &str,
+        call_id: &str,
+        cseq: &str,
+        socket: &Arc<UdpSocket>,
+    ) -> Result<()> {
+        tracing::info!(
+            "Upstream DeviceStatus query → responding with local server status for {}",
+            local_device_id
+        );
+        let now = Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string();
+        let response_body = build_upstream_device_status_response(sn, local_device_id, &now);
+        let response = Parser::generate_response(
+            200,
+            "OK",
+            &[
+                ("Via", via),
+                ("From", from),
+                ("To", to),
+                ("Call-ID", call_id),
+                ("CSeq", cseq),
+                ("Content-Type", "Application/MANSCDP+xml"),
+            ],
+            Some(&response_body),
+        );
+        Self::send_response(socket, addr, &response).await?;
+        Ok(())
     }
 
     fn get_received_from_via(via: &str) -> Option<String> {
@@ -3370,7 +4949,9 @@ Authentication-Info: qop=auth,rspauth="{}",cnonce="{}",nc=00000001"#,
 
 fn generate_nonce() -> String {
     let mut rng = rand::thread_rng();
-    (0..32).map(|_| format!("{:02x}", rng.gen::<u8>())).collect()
+    (0..32)
+        .map(|_| format!("{:02x}", rng.gen::<u8>()))
+        .collect()
 }
 
 fn generate_tag() -> String {
@@ -3398,8 +4979,23 @@ async fn dbg_upsert_device(
     media_server_id: String,
 ) -> Result<()> {
     let now = Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    db_device::upsert_device(pool, device_id, Some(name), manufacturer, model, firmware, transport, stream_mode, ip, port, online, Some(media_server_id.as_str()), &now).await
-        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    db_device::upsert_device(
+        pool,
+        device_id,
+        Some(name),
+        manufacturer,
+        model,
+        firmware,
+        transport,
+        stream_mode,
+        ip,
+        port,
+        online,
+        Some(media_server_id.as_str()),
+        &now,
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("{}", e))?;
     Ok(())
 }
 
@@ -3412,9 +5008,11 @@ async fn send_subscribe_internal(
     catalog_subscription_manager: &Arc<CatalogSubscriptionManager>,
     socket: &Arc<UdpSocket>,
 ) -> Result<()> {
-    let device_addr = device_manager.get_address(device_id).await
+    let device_addr = device_manager
+        .get_address(device_id)
+        .await
         .ok_or_else(|| anyhow::anyhow!("Device {} not registered", device_id))?;
-    
+
     let sn = chrono::Utc::now().timestamp();
     let body = format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -3425,21 +5023,37 @@ async fn send_subscribe_internal(
 </Query>"#,
         event, sn, device_id
     );
-    
-    let call_id = format!("sub_{}_{}", device_id, chrono::Utc::now().timestamp_millis());
+
+    let call_id = format!(
+        "sub_{}_{}",
+        device_id,
+        chrono::Utc::now().timestamp_millis()
+    );
     let branch = generate_branch();
     let cseq = format!("{} SUBSCRIBE", 1);
-    
-    let via = format!("SIP/2.0/UDP {}:{};branch={};rport", 
-        config.ip, config.port, branch);
-    let from = format!("<sip:{}@{}:{}>;tag={}", 
-        config.device_id, config.ip, config.port, generate_tag());
-    let to = format!("<sip:{}@{}:{}>", device_id, device_addr.ip(), device_addr.port());
+
+    let via = format!(
+        "SIP/2.0/UDP {}:{};branch={};rport",
+        config.ip, config.port, branch
+    );
+    let from = format!(
+        "<sip:{}@{}:{}>;tag={}",
+        config.device_id,
+        config.ip,
+        config.port,
+        generate_tag()
+    );
+    let to = format!(
+        "<sip:{}@{}:{}>",
+        device_id,
+        device_addr.ip(),
+        device_addr.port()
+    );
     let contact = format!("<sip:{}@{}:{}>", config.device_id, config.ip, config.port);
-    
+
     let expires_header = expires.to_string();
     let content_length = body.len().to_string();
-    
+
     let headers: Vec<(&str, &str)> = vec![
         ("Via", &via),
         ("From", &from),
@@ -3455,27 +5069,396 @@ async fn send_subscribe_internal(
         ("Content-Type", "Application/MANSCDP+xml"),
         ("Content-Length", &content_length),
     ];
-    
+
     let request = Parser::generate_request(
         "SUBSCRIBE",
-        &format!("sip:{}@{}:{}", device_id, device_addr.ip(), device_addr.port()),
+        &format!(
+            "sip:{}@{}:{}",
+            device_id,
+            device_addr.ip(),
+            device_addr.port()
+        ),
         &headers,
         Some(&body),
     );
-    
+
     socket.send_to(request.as_bytes(), device_addr).await?;
     tracing::debug!("SUBSCRIBE sent to {} for event {}", device_id, event);
-    
-    let subscription = CatalogSubscription::new(
-        &call_id,
-        device_id,
-        device_addr,
-        &via,
-        &from,
-        &to,
-        expires,
-    );
+
+    let subscription =
+        CatalogSubscription::new(&call_id, device_id, device_addr, &via, &from, &to, expires);
     catalog_subscription_manager.subscribe(subscription).await;
-    
+
     Ok(())
+}
+
+/// B2: Pure helper — build the upstream Catalog response body.
+pub fn build_upstream_catalog_response(
+    sn: &str,
+    local_device_id: &str,
+    channels: &[crate::db::DeviceChannel],
+) -> String {
+    let mut items = String::new();
+    for ch in channels {
+        let name = ch.name.as_deref().unwrap_or("未知通道");
+        let gb_id = ch.gb_device_id.as_deref().unwrap_or("");
+        let parent = ch.parent_id.as_deref().unwrap_or(local_device_id);
+        let status = ch.status.as_deref().unwrap_or("OFF");
+        let has_audio = ch.has_audio.unwrap_or(false);
+        let sub_count = ch.sub_count.unwrap_or(0);
+        items.push_str(&format!(
+            "<Item><DeviceID>{}</DeviceID><Name>{}</Name><Status>{}</Status><ParentID>{}</ParentID><Online>{}</Online><SubCount>{}</SubCount><HasAudio>{}</HasAudio></Item>",
+            gb_id, name, status, parent,
+            if status == "ON" { "true" } else { "false" },
+            sub_count, has_audio
+        ));
+    }
+    let num = channels.len();
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?><Response><CmdType>Catalog</CmdType><SN>{}</SN><DeviceID>{}</DeviceID><SumNum>{}</SumNum><DeviceList Num="{}">{}</DeviceList></Response>"#,
+        sn, local_device_id, num, num, items
+    )
+}
+
+/// B2: Pure helper — build the upstream DeviceInfo response body.
+pub fn build_upstream_device_info_response(sn: &str, local_device_id: &str) -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?><Response><CmdType>DeviceInfo</CmdType><SN>{}</SN><DeviceID>{}</DeviceID><Result>OK</Result><DeviceName>WVP-GbServer</DeviceName><Manufacturer>WVP-Rust</Manufacturer><Model>GBServer v0.1</Model><Channel>1</Channel></Response>"#,
+        sn, local_device_id
+    )
+}
+
+/// B2: Pure helper — build the upstream DeviceStatus response body.
+pub fn build_upstream_device_status_response(sn: &str, local_device_id: &str, now: &str) -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?><Response><CmdType>DeviceStatus</CmdType><SN>{}</SN><DeviceID>{}</DeviceID><Result>OK</Result><Online>ON</Online><Status>OK</Status><DeviceTime>{}</DeviceTime></Response>"#,
+        sn, local_device_id, now
+    )
+}
+
+#[cfg(test)]
+mod playback_control_tests {
+    use super::*;
+    use crate::sip::gb28181::pending_request::PendingRequestManager;
+    use crate::sip::gb28181::ResponseRouter;
+    use std::sync::Arc;
+
+    /// GB28181 RecordInfo 响应单包解析
+    #[test]
+    fn parse_record_info_response_extracts_items() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+<CmdType>RecordInfo</CmdType>
+<SN>1</SN>
+<DeviceID>34020000001320000001</DeviceID>
+<Name>channel1</Name>
+<SumNum>1</SumNum>
+<RecordList Num="1">
+<Item>
+<DeviceID>34020000001320000002</DeviceID>
+<Name>seg-1</Name>
+<FilePath>/record/seg-1.mp4</FilePath>
+<Address>192.168.1.10</Address>
+<StartTime>2026-06-10T10:00:00</StartTime>
+<EndTime>2026-06-10T10:30:00</EndTime>
+<Secrecy>0</Secrecy>
+<Type>time</Type>
+</Item>
+</RecordList>
+</Response>"#;
+        let items = parse_record_info_items(xml);
+        assert_eq!(items.len(), 1);
+        let item = &items[0];
+        assert_eq!(item.device_id.as_deref(), Some("34020000001320000002"));
+        assert_eq!(item.name.as_deref(), Some("seg-1"));
+        assert_eq!(item.file_path.as_deref(), Some("/record/seg-1.mp4"));
+        assert_eq!(item.start_time.as_deref(), Some("2026-06-10T10:00:00"));
+        assert_eq!(item.end_time.as_deref(), Some("2026-06-10T10:30:00"));
+    }
+
+    /// 多包 RecordInfo 聚合：3 包分片合并后含全部 5 条 Item
+    #[test]
+    fn parse_record_info_response_merges_multi_packet() {
+        let page1 = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+<CmdType>RecordInfo</CmdType>
+<SN>1</SN>
+<DeviceID>34020000001320000001</DeviceID>
+<SumNum>3</SumNum>
+<RecordList>
+<Item><DeviceID>ch1</DeviceID><Name>seg-1</Name><FilePath>/r/1.mp4</FilePath></Item>
+<Item><DeviceID>ch1</DeviceID><Name>seg-2</Name><FilePath>/r/2.mp4</FilePath></Item>
+</RecordList>
+</Response>"#;
+        let page2 = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+<CmdType>RecordInfo</CmdType>
+<SN>1</SN>
+<SumNum>3</SumNum>
+<RecordList>
+<Item><DeviceID>ch1</DeviceID><Name>seg-3</Name><FilePath>/r/3.mp4</FilePath></Item>
+</RecordList>
+</Response>"#;
+        let page3 = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+<CmdType>RecordInfo</CmdType>
+<SN>1</SN>
+<SumNum>3</SumNum>
+<RecordList>
+<Item><DeviceID>ch1</DeviceID><Name>seg-4</Name><FilePath>/r/4.mp4</FilePath></Item>
+<Item><DeviceID>ch1</DeviceID><Name>seg-5</Name><FilePath>/r/5.mp4</FilePath></Item>
+</RecordList>
+</Response>"#;
+
+        let mut buffer = String::new();
+        let mut packet_count = 0;
+        let router = ResponseRouter::new(Arc::new(PendingRequestManager::new()));
+        assert!(!router.accumulate_record_info("c1", page1, &mut buffer, &mut packet_count, 3));
+        assert!(!router.accumulate_record_info("c1", page2, &mut buffer, &mut packet_count, 3));
+        assert!(router.accumulate_record_info("c1", page3, &mut buffer, &mut packet_count, 3));
+        assert_eq!(packet_count, 3);
+
+        let items = parse_record_info_items(&buffer);
+        assert_eq!(items.len(), 5);
+        let names: Vec<&str> = items.iter().filter_map(|i| i.name.as_deref()).collect();
+        assert_eq!(names, vec!["seg-1", "seg-2", "seg-3", "seg-4", "seg-5"]);
+    }
+
+    /// 空 RecordList 解析返回 0 items，不 panic
+    #[test]
+    fn parse_record_info_response_handles_empty_record_list() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+<CmdType>RecordInfo</CmdType>
+<SN>1</SN>
+<DeviceID>34020000001320000001</DeviceID>
+<SumNum>0</SumNum>
+<RecordList></RecordList>
+</Response>"#;
+        let items = parse_record_info_items(xml);
+        assert!(items.is_empty());
+    }
+
+    #[test]
+    fn download_ssrc_uses_prefix_2_padded_9_chars() {
+        let ssrc = build_download_ssrc("34020000001320000001");
+        // prefix "2" + 9 digit ID = 10 chars total
+        assert_eq!(ssrc.len(), 10);
+        assert!(ssrc.starts_with('2'));
+        // device_id 前 9 位是 "340200000"，与前缀 2 拼接 = "2340200000"
+        assert_eq!(ssrc, "2340200000");
+    }
+
+    #[test]
+    fn download_ssrc_pads_short_device_id() {
+        let ssrc = build_download_ssrc("123");
+        // 不足 9 位左补 0（{:0>9} 是右对齐，所以短串左补）：prefix "2" + "000000123"
+        assert_eq!(ssrc, "2000000123");
+    }
+
+    #[test]
+    fn download_subject_format_matches_wvp() {
+        let subject = build_download_subject("34020000002000000001", "34020000001320000002");
+        // 形如 "<local>:<channel>,<local>:2<deviceid9>"
+        assert!(subject.contains(":34020000001320000002,"));
+        assert!(subject.ends_with(":2340200000"));
+    }
+
+    #[test]
+    fn build_pause_xml_uses_simple_play_back_cmd() {
+        let xml = build_playback_control_xml(
+            &PlaybackControlCmd::Pause,
+            "34020000001320000001",
+            "34020000001320000002",
+            42,
+        );
+        assert!(xml.contains("<CmdType>DeviceControl</CmdType>"));
+        assert!(xml.contains("<PlayBackCmd>Pause</PlayBackCmd>"));
+        assert!(xml.contains("<ChannelID>34020000001320000002</ChannelID>"));
+        assert!(xml.contains("<DeviceID>34020000001320000001</DeviceID>"));
+        assert!(xml.contains("<SN>42</SN>"));
+        // 简单命令不应含 SeekTime / Scale
+        assert!(!xml.contains("SeekTime"));
+        assert!(!xml.contains("<Scale>"));
+    }
+
+    #[test]
+    fn build_resume_xml_uses_simple_play_back_cmd() {
+        let xml = build_playback_control_xml(&PlaybackControlCmd::Resume, "dev1", "ch1", 7);
+        assert!(xml.contains("<PlayBackCmd>Resume</PlayBackCmd>"));
+        assert!(!xml.contains("SeekTime"));
+        assert!(!xml.contains("<Scale>"));
+    }
+
+    #[test]
+    fn build_seek_xml_includes_seek_time() {
+        let xml = build_playback_control_xml(
+            &PlaybackControlCmd::Seek {
+                seek_time: "2026-06-10T10:00:00".to_string(),
+            },
+            "dev1",
+            "ch1",
+            99,
+        );
+        assert!(xml.contains("<PlayBackCmd>Seek</PlayBackCmd>"));
+        assert!(xml.contains("<SeekTime>2026-06-10T10:00:00</SeekTime>"));
+        // 简单命令字段不能混入
+        assert!(!xml.contains("<PlayBackCmd>Pause</PlayBackCmd>"));
+    }
+
+    #[test]
+    fn build_scale_xml_uses_scale_tag() {
+        let xml =
+            build_playback_control_xml(&PlaybackControlCmd::Scale { speed: 2.0 }, "dev1", "ch1", 1);
+        assert!(xml.contains("<PlayBackCmd>Scale</PlayBackCmd>"));
+        assert!(xml.contains("<Scale>2</Scale>"));
+    }
+}
+
+#[cfg(test)]
+mod upstream_message_tests {
+    use super::*;
+    use crate::db::DeviceChannel;
+
+    /// Catalog response uses our local GB-ID as DeviceID, SumNum matches channels len
+    #[test]
+    fn test_upstream_catalog_response_uses_local_device_id_and_sumnum() {
+        let xml = build_upstream_catalog_response("12345", "34020000002000000001", &[]);
+        assert!(xml.contains("<DeviceID>34020000002000000001</DeviceID>"));
+        assert!(xml.contains("<SN>12345</SN>"));
+        assert!(xml.contains("<CmdType>Catalog</CmdType>"));
+        assert!(xml.contains("<SumNum>0</SumNum>"));
+        assert!(xml.contains(r#"<DeviceList Num="0">"#));
+    }
+
+    /// Catalog response with one channel renders that channel as Item
+    #[test]
+    fn test_upstream_catalog_response_renders_single_channel() {
+        let ch = DeviceChannel {
+            id: 1,
+            device_id: Some("34020000002000000001".to_string()),
+            name: Some("Cam 1".to_string()),
+            manufacturer: None,
+            model: None,
+            owner: None,
+            civil_code: None,
+            address: None,
+            parental: None,
+            parent_id: Some("34020000002000000001".to_string()),
+            gb_device_id: Some("34020000002000000002".to_string()),
+            status: Some("ON".to_string()),
+            longitude: None,
+            latitude: None,
+            ptz_type: None,
+            create_time: None,
+            update_time: None,
+            sub_count: Some(0),
+            stream_id: None,
+            has_audio: Some(true),
+            stream_identification: None,
+            channel_type: None,
+            map_level: None,
+            gb_name: None,
+            gb_manufacturer: None,
+            gb_model: None,
+            gb_civil_code: None,
+            gb_address: None,
+            gb_status: None,
+            gb_longitude: None,
+            gb_latitude: None,
+            record_plan_id: None,
+        };
+        let xml = build_upstream_catalog_response("99", "34020000002000000001", &[ch]);
+        assert!(xml.contains("<SumNum>1</SumNum>"));
+        assert!(xml.contains(r#"<DeviceList Num="1">"#));
+        assert!(xml.contains("<DeviceID>34020000002000000002</DeviceID>"));
+        assert!(xml.contains("<Name>Cam 1</Name>"));
+        assert!(xml.contains("<Status>ON</Status>"));
+        assert!(xml.contains("<ParentID>34020000002000000001</ParentID>"));
+        assert!(xml.contains("<Online>true</Online>"));
+        assert!(xml.contains("<HasAudio>true</HasAudio>"));
+    }
+
+    /// Catalog response falls back to local_device_id when parent_id missing
+    #[test]
+    fn test_upstream_catalog_response_parent_id_fallback() {
+        let ch = DeviceChannel {
+            id: 2,
+            device_id: None,
+            name: Some("Orphan".to_string()),
+            manufacturer: None,
+            model: None,
+            owner: None,
+            civil_code: None,
+            address: None,
+            parental: None,
+            parent_id: None,
+            gb_device_id: Some("34020000002000000099".to_string()),
+            status: Some("OFF".to_string()),
+            longitude: None,
+            latitude: None,
+            ptz_type: None,
+            create_time: None,
+            update_time: None,
+            sub_count: Some(2),
+            stream_id: None,
+            has_audio: Some(false),
+            stream_identification: None,
+            channel_type: None,
+            map_level: None,
+            gb_name: None,
+            gb_manufacturer: None,
+            gb_model: None,
+            gb_civil_code: None,
+            gb_address: None,
+            gb_status: None,
+            gb_longitude: None,
+            gb_latitude: None,
+            record_plan_id: None,
+        };
+        let xml = build_upstream_catalog_response("7", "34020000002000000001", &[ch]);
+        assert!(xml.contains("<ParentID>34020000002000000001</ParentID>"));
+        assert!(xml.contains("<Online>false</Online>"));
+        assert!(xml.contains("<SubCount>2</SubCount>"));
+        assert!(xml.contains("<HasAudio>false</HasAudio>"));
+    }
+
+    /// DeviceInfo response contains server identity fields
+    #[test]
+    fn test_upstream_device_info_response_format() {
+        let xml = build_upstream_device_info_response("42", "34020000002000000001");
+        assert!(xml.contains("<CmdType>DeviceInfo</CmdType>"));
+        assert!(xml.contains("<SN>42</SN>"));
+        assert!(xml.contains("<DeviceID>34020000002000000001</DeviceID>"));
+        assert!(xml.contains("<Result>OK</Result>"));
+        assert!(xml.contains("<Manufacturer>WVP-Rust</Manufacturer>"));
+        assert!(xml.contains("<Model>GBServer v0.1</Model>"));
+    }
+
+    /// DeviceStatus response contains OK status and timestamp
+    #[test]
+    fn test_upstream_device_status_response_format() {
+        let xml = build_upstream_device_status_response(
+            "55",
+            "34020000002000000001",
+            "2026-06-10T12:00:00",
+        );
+        assert!(xml.contains("<CmdType>DeviceStatus</CmdType>"));
+        assert!(xml.contains("<SN>55</SN>"));
+        assert!(xml.contains("<DeviceID>34020000002000000001</DeviceID>"));
+        assert!(xml.contains("<Result>OK</Result>"));
+        assert!(xml.contains("<Online>ON</Online>"));
+        assert!(xml.contains("<Status>OK</Status>"));
+        assert!(xml.contains("<DeviceTime>2026-06-10T12:00:00</DeviceTime>"));
+    }
+
+    /// Routing detection: a GB-ID as XML attribute (parsed by XmlParser.parse) is the upstream query target
+    #[test]
+    fn test_xml_parser_extracts_query_target_device_id() {
+        let body = r#"<?xml version="1.0"?><Query CmdType="Catalog" DeviceID="34020000002000000001" SN="10"/>"#;
+        let target = crate::sip::gb28181::XmlParser::get_device_id(body);
+        assert_eq!(target, Some("34020000002000000001".to_string()));
+        let sn = crate::sip::gb28181::XmlParser::get_sn(body);
+        assert_eq!(sn, Some(10));
+    }
 }

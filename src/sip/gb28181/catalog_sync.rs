@@ -14,9 +14,9 @@ use std::sync::Arc;
 
 use dashmap::DashMap;
 
-use crate::sip::gb28181::CatalogSubscriptionManager;
 use crate::db::device as db_device;
 use crate::db::Pool;
+use crate::sip::gb28181::CatalogSubscriptionManager;
 
 /// Catalog 同步会话状态
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,7 +88,9 @@ impl CatalogSyncSession {
             }
         }
 
-        self.received_num += num;
+        // GB28181 协议：<Num> 是当前包序号（1..SumNum），每收一包 +1，
+        // 而非包内 item 数量；这里按包计数与总包数 SumNum 比对。
+        self.received_num += 1;
         self.state = if self.received_num >= self.total_num {
             SyncState::Done
         } else {
@@ -107,9 +109,9 @@ impl CatalogSyncSession {
     fn extract_tag(xml: &str, tag: &str) -> Option<String> {
         let start_tag = format!("<{}>", tag);
         let end_tag = format!("</{}>", tag);
-        xml.find(&start_tag)
-            .and_then(|start| xml[start..].find(&end_tag).map(|end_pos| (start, end_pos)))
-            .map(|(start, end_pos)| xml[start + start_tag.len()..start + end_pos].to_string())
+        let start_pos = xml.find(&start_tag)?;
+        let end_pos = xml[start_pos..].find(&end_tag)?;
+        Some(xml[start_pos + start_tag.len()..start_pos + end_pos].to_string())
     }
 }
 
@@ -161,12 +163,18 @@ impl CatalogSyncManager {
         if done {
             tracing::info!(
                 "Catalog sync complete: device={} total={} packets={}",
-                device_id, session.total_num, session.received_num
+                device_id,
+                session.total_num,
+                session.received_num
             );
             // 解析通道列表并更新 DB
             match self.flush_to_db(&session).await {
                 Ok(count) => {
-                    tracing::info!("Catalog channels upserted: device={} count={}", device_id, count);
+                    tracing::info!(
+                        "Catalog channels upserted: device={} count={}",
+                        device_id,
+                        count
+                    );
                 }
                 Err(e) => {
                     tracing::error!("Catalog DB upsert failed: device={} err={}", device_id, e);
@@ -177,7 +185,9 @@ impl CatalogSyncManager {
         } else {
             tracing::debug!(
                 "Catalog sync progress: device={} {}/{} packets",
-                device_id, session.received_num, session.total_num
+                device_id,
+                session.received_num,
+                session.total_num
             );
         }
 
@@ -198,12 +208,12 @@ impl CatalogSyncManager {
                 &self.pool,
                 device_id,
                 &ch.device_id,
-                ch.name.as_str(),
-                ch.manufacturer.as_ref().and_then(|s| Some(s.as_str())),
-                ch.model.as_ref().and_then(|s| Some(s.as_str())),
-                ch.owner.as_ref().and_then(|s| Some(s.as_str())),
-                ch.civil_code.as_ref().and_then(|s| Some(s.as_str())),
-                ch.address.as_ref().and_then(|s| Some(s.as_str())),
+                &ch.name,
+                ch.manufacturer.as_deref(),
+                ch.model.as_deref(),
+                ch.owner.as_deref(),
+                ch.civil_code.as_deref(),
+                ch.address.as_deref(),
                 Some(parent_id),
                 status,
                 ch.longitude,
@@ -233,9 +243,8 @@ impl CatalogSyncManager {
 
     /// 取消设备所有同步会话
     pub fn cancel_all(&self) {
-        self.sessions.retain(|_, s| {
-            s.state != SyncState::Waiting && s.state != SyncState::Receiving
-        });
+        self.sessions
+            .retain(|_, s| s.state != SyncState::Waiting && s.state != SyncState::Receiving);
     }
 
     /// 获取当前所有活跃会话数
@@ -287,16 +296,17 @@ mod tests {
         let done1 = s.add_packet(page1);
         assert!(!done1);
         assert_eq!(s.total_num, 3);
-        assert_eq!(s.received_num, 2);
+        assert_eq!(s.received_num, 1);
         assert_eq!(s.state, SyncState::Receiving);
 
         let done2 = s.add_packet(page2);
         assert!(!done2);
-        assert_eq!(s.received_num, 3);
+        assert_eq!(s.received_num, 2);
         assert_eq!(s.state, SyncState::Receiving);
 
         let done3 = s.add_packet(page3);
         assert!(done3);
+        assert_eq!(s.received_num, 3);
         assert_eq!(s.state, SyncState::Done);
     }
 
