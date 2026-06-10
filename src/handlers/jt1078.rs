@@ -442,6 +442,17 @@ pub async fn live_start(
 
     tracing::info!("JT1078 live start: phone={}, channel={}, type={}", phone, channel_id, stream_type);
 
+    // 真给 JT1078 终端发 9101 实时音视频请求，让设备推流到 ZLM 9102/UDP 端口
+    if let Some(mgr) = state.jt1078_manager.read().await.as_ref() {
+        let stream_type: u8 = match stream_type.as_str() {
+            "sub" => 1,
+            _ => 0,
+        };
+        if let Err(e) = mgr.send_live_video(&phone, channel_id as u8, stream_type, false).await {
+            tracing::warn!("JT1078 send_live_video(9101) failed for {}: {}", phone, e);
+        }
+    }
+
     // Open RTP server on ZLM for this JT1078 channel
     if let Some(ref zlm) = state.zlm_client {
         let stream_id = format!("jt1078_{}_{}", phone, channel_id);
@@ -500,6 +511,12 @@ pub async fn live_stop(
     let channel_id = q.channel_id.unwrap_or(1);
 
     tracing::info!("JT1078 live stop: phone={}, channel={}", phone, channel_id);
+    // 真给终端发 9102 关闭实时流
+    if let Some(mgr) = state.jt1078_manager.read().await.as_ref() {
+        if let Err(e) = mgr.send_live_video_control(&phone, channel_id as u8, 0, true).await {
+            tracing::warn!("JT1078 send_live_video_control(stop) failed: {}", e);
+        }
+    }
     // Close RTP server on ZLM if running
     if let Some(ref zlm) = state.zlm_client {
         let stream_id = format!("jt1078_{}_{}", phone, channel_id);
@@ -520,6 +537,17 @@ pub async fn playback_start(
     let end_time = q.end_time.clone().unwrap_or_default();
 
     tracing::info!("JT1078 playback start: phone={}, channel={}, {}-{}", phone, channel_id, start_time, end_time);
+
+    // 真给终端发 9201 回放请求
+    if !start_time.is_empty() && !end_time.is_empty() {
+        if let Some(mgr) = state.jt1078_manager.read().await.as_ref() {
+            if let Err(e) = mgr.send_playback(
+                &phone, channel_id as u8, 0, 0, 0, &start_time, &end_time,
+            ).await {
+                tracing::warn!("JT1078 send_playback(9201) failed: {}", e);
+            }
+        }
+    }
 
     // Open ZLM playback RTP server
     if let Some(ref zlm) = state.zlm_client {
@@ -570,6 +598,12 @@ pub async fn playback_stop(
     let channel_id = q.channel_id.unwrap_or(0);
 
     tracing::info!("JT1078 playback stop: phone={}, channel={}", phone, channel_id);
+    // 真给终端发 9202 关闭回放（control=4 表示停止）
+    if let Some(mgr) = state.jt1078_manager.read().await.as_ref() {
+        if let Err(e) = mgr.send_playback_control(&phone, channel_id as u8, 4, 0, "").await {
+            tracing::warn!("JT1078 send_playback_control(stop) failed: {}", e);
+        }
+    }
     // Stop playback RTP on ZLM if running
     if let Some(ref zlm) = state.zlm_client {
         let stream_id = format!("playback_{}_{}", phone, channel_id);
@@ -633,6 +667,18 @@ pub async fn playback_download_url(
 
     tracing::info!("JT1078 playback download url: phone={}, channel={}, {}-{}",
         phone, channel_id, start_time, end_time);
+
+    // 真给终端发 9201 回放请求，让设备把录像流推到 ZLM
+    if !start_time.is_empty() && !end_time.is_empty() {
+        if let Some(mgr) = state.jt1078_manager.read().await.as_ref() {
+            if let Err(e) = mgr
+                .send_playback(&phone, channel_id as u8, 0, 0, 0, &start_time, &end_time)
+                .await
+            {
+                tracing::warn!("JT1078 send_playback(9201) for download failed: {}", e);
+            }
+        }
+    }
 
     // Try to find existing record in cloud_record DB
     let stream_id = if channel_id > 0 {
