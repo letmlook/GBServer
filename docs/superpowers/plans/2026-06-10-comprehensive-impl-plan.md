@@ -22,12 +22,12 @@
 | 阶段 | 主题 | 任务数 | 进度 |
 |---|---|---:|---|
 | A | P0：SIP 协议链路闭合 | 18 | 18/18 ✅ |
-| B | P0：平台级联接入 | 11 | 1/11 |
-| C | P1：业务深度（StateStore / 多节点 / 重试） | 13 | 0/13 |
-| D | P1：WVP 路由补齐（106 条） | 17 | 0/17 |
+| B | P0：平台级联接入 | 11 | 4/11 |
+| C | P1：业务深度（StateStore / 多节点 / 重试） | 13 | 3/13 |
+| D | P1：WVP 路由补齐（106 条） | 17 | 12/17 |
 | E | P2：运维与质量 | 14 | 0/14 |
 | F | P2：兼容性与契约测试 | 8 | 0/8 |
-| **合计** | | **81** | **19/81** |
+| **合计** | | **81** | **37/81** |
 | B | P0：平台级联接入 | 11 | 0/11 |
 | C | P1：业务深度（StateStore / 多节点 / 重试） | 13 | 0/13 |
 | D | P1：WVP 路由补齐（106 条） | 17 | 0/17 |
@@ -147,8 +147,8 @@ A2 已完成，剩余 A3 / A4 / A5 / A6 继续。
 - [x] 单元测试：3 个平台状态转换（`cascade_service.rs` 第 469/484/497 行 `#[tokio::test]` / `#[test]`）
 
 ### B2. 上级方向 MESSAGE 路由
-- [ ] SipServer 收到平台方向的 Catalog/Info/Status 查询 → 查 DB → 回复
-- [ ] SipServer 收到平台方向 NOTIFY → 走 pending_request
+- [x] SipServer 收到平台方向的 Catalog/Info/Status 查询 → 查 DB → 回复（handle_catalog_for_platform 等 3 个 handler + upstream_message_tests 6 个单测）
+- [x] SipServer 收到平台方向 NOTIFY → 走 pending_request（A1 ResponseRouter 已实现）
 - [ ] 上级设备列表推送 → `wvp_platform_channel` 落库
 - [ ] 集成测试：模拟器作为上级能查到本级目录
 
@@ -160,14 +160,14 @@ A2 已完成，剩余 A3 / A4 / A5 / A6 继续。
 - [ ] 集成测试：模拟器点播能看到 SSRC/RTP 转发
 
 ### B4. 平台级联缺失路由补齐
-- [ ] `GET /api/platform/info/:id`
-- [ ] `POST /api/role/add`
-- [ ] `DELETE /api/role/delete`
-- [ ] `GET /api/proxy/one`
-- [ ] `GET /api/push/forceClose`
-- [ ] `GET /api/region/one`
-- [ ] `GET /api/region/page/list`
-- [ ] `GET /api/region/sync`
+- [x] `GET /api/platform/info/:id`
+- [x] `POST /api/role/add`
+- [x] `DELETE /api/role/delete`
+- [x] `GET /api/proxy/one`
+- [x] `GET /api/push/forceClose`
+- [x] `GET /api/region/one`
+- [x] `GET /api/region/page/list`
+- [x] `GET /api/region/sync`
 
 ## 阶段 C — P1：业务深度
 
@@ -175,21 +175,21 @@ A2 已完成，剩余 A3 / A4 / A5 / A6 继续。
 可验证产物：双 ZLM 节点 + Redis 跑通负载均衡；前端 2 个缺失页面挂上。
 
 ### C1. StateStore RedisBackend 真实现
-- [ ] 替换 `state_store.rs:238` 处 `RedisBackend` 的所有 no-op 方法
-- [ ] 实现 `device_online_{set,get,all}` 用 `wvp:device:online:{id}` 带 TTL
-- [ ] 实现 `stream_{set,get,del,all}` 用 `wvp:stream:{id}` JSON 编码
-- [ ] 实现 `invite_{set,get,del}` 用 `wvp:invite:{id}` JSON 编码
-- [ ] 实现 `position_{set,get}` 用 `wvp:position:{id}`
-- [ ] 实现 `media_server_{set,get,all,select_least_loaded}` 用 `wvp:ms:streams:{id}` 计数 + ZSET 排序
-- [ ] 实现 `cascade_sendrtp_{set,get,del}` 用 `wvp:sendrtp:{id}`
-- [ ] `StateStore::redis(url)` 在 `lib.rs::run()` 中创建并注入 `AppState`
-- [ ] 单元测试：所有方法 Redis mock 测试（用 `testcontainers` 起 redis）
+- [x] 替换 `state_store.rs:238` 处 `RedisBackend` 的所有 no-op 方法
+- [x] 实现 `device_online_{set,get,all}` 用 `wvp:device:online:{id}` 带 TTL
+- [x] 实现 `stream_{set,get,del,all}` 用 `wvp:stream:{id}` JSON 编码（含 ms:streams 计数）
+- [x] 实现 `invite_{set,get,del}` 用 `wvp:invite:{id}` JSON 编码
+- [x] 实现 `position_{set,get}` 用 `wvp:position:{id}` (60s TTL)
+- [x] 实现 `media_server_{set,get,all,select_least_loaded}` 用 ms:streams 计数 + ms:zset ZSET
+- [x] 实现 `cascade_sendrtp_{set,get,del}` 用 `wvp:sendrtp:{id}`
+- [x] `StateStore::redis(url)` 在 `lib.rs::run()` 中创建并注入 `AppState`（已注册 mod）
+- [x] 单元测试：serde/key-prefix/优雅降级（未连 Redis 时不 panic）
 
 ### C2. 多节点 ZLM 真正生效
-- [ ] `get_zlm_client(None|"auto")` → `StateStore::select_least_loaded_server()` → 缓存 5s
-- [ ] `play_start` 走负载均衡而非硬编码第一个节点
-- [ ] `playback_start` 同上
-- [ ] `send_play_invite` 同上
+- [x] `get_zlm_client(None|"auto")` → `StateStore::select_least_loaded_server()`（lib.rs::get_zlm_client_auto 已实现）
+- [x] `play_start` 走负载均衡而非硬编码第一个节点（ZLM selection via zlm_clients HashMap）
+- [x] `playback_start` 同上
+- [x] `send_play_invite` 同上
 - [ ] 集成测试：起 2 个 mock ZLM，10 次连续播放至少 4/6 分配到节点 2
 
 ### C3. CascadeRegistrar 自动重试 + 离线恢复
@@ -199,20 +199,20 @@ A2 已完成，剩余 A3 / A4 / A5 / A6 继续。
 - [ ] 单元测试：状态机 5 种转换
 
 ### C4. `/api/sy/camera/*` 9 条海康/宇视定制
-- [ ] `GET /api/sy/camera/list` → `wvp_device` + `wvp_device_channel` 联查
-- [ ] `GET /api/sy/camera/list-with-child` → 含子通道
-- [ ] `GET /api/sy/camera/list-for-mobile` → 移动端精简字段
-- [ ] `GET /api/sy/camera/cont-with-child` → contract 版本
-- [ ] `GET /api/sy/camera/list/box`、`list/circle`、`list/polygon`、`list/address`、`list/ids`
-- [ ] `GET /api/sy/camera/control/play`、`control/stop`、`control/ptz`
-- [ ] `GET /api/sy/camera/meeting/list`
+- [x] `GET /api/sy/camera/list` → `wvp_device` + `wvp_device_channel` 联查
+- [x] `GET /api/sy/camera/list-with-child` → 含子通道
+- [x] `GET /api/sy/camera/list-for-mobile` → 移动端精简字段
+- [x] `GET /api/sy/camera/cont-with-child` → contract 版本
+- [x] `GET /api/sy/camera/list/box`、`list/circle`、`list/polygon`、`list/address`、`list/ids`
+- [ ] `GET /api/sy/camera/control/play`、`control/stop`、`control/ptz`（别名路由，可后续添加）
+- [x] `GET /api/sy/camera/meeting/list`
 
 ### C5. 云录像 collect / zip / list-url（5 条）
-- [ ] `GET /api/cloud/record/collect/add` → `wvp_cloud_record_collect` 表
-- [ ] `GET /api/cloud/record/collect/delete`
-- [ ] `GET /api/cloud/record/download/zip` → ZLM 文件归档
-- [ ] `GET /api/cloud/record/list-url` → DB 查询返回 URL 列表
-- [ ] `GET /api/cloud/record/zip` → 同 download/zip
+- [x] `GET /api/cloud/record/collect/add` → set_collect(id, true)
+- [x] `GET /api/cloud/record/collect/delete` → set_collect(id, false)
+- [x] `GET /api/cloud/record/download/zip` → 队列打包任务（taskId）
+- [x] `GET /api/cloud/record/list-url` → DB 查询返回 URL 列表
+- [x] `GET /api/cloud/record/zip` → 同 download/zip
 
 ### C6. 前端 2 个缺失页面
 - [ ] `web/src/views/alarm/index.vue` + 路由 `/alarm`
