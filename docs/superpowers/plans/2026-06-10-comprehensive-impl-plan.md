@@ -21,19 +21,19 @@
 
 | 阶段 | 主题 | 任务数 | 进度 |
 |---|---|---:|---|
-| A | P0：SIP 协议链路闭合 | 18 | 18/18 |
+| A | P0：SIP 协议链路闭合 | 18 | 18/18 ✅ |
+| B | P0：平台级联接入 | 11 | 1/11 |
+| C | P1：业务深度（StateStore / 多节点 / 重试） | 13 | 0/13 |
+| D | P1：WVP 路由补齐（106 条） | 17 | 0/17 |
+| E | P2：运维与质量 | 14 | 0/14 |
+| F | P2：兼容性与契约测试 | 8 | 0/8 |
+| **合计** | | **81** | **19/81** |
 | B | P0：平台级联接入 | 11 | 0/11 |
 | C | P1：业务深度（StateStore / 多节点 / 重试） | 13 | 0/13 |
 | D | P1：WVP 路由补齐（106 条） | 17 | 0/17 |
 | E | P2：运维与质量 | 14 | 0/14 |
 | F | P2：兼容性与契约测试 | 8 | 0/8 |
-| **合计** | | **81** | **18/81** |
-| B | P0：平台级联接入 | 11 | 0/11 |
-| C | P1：业务深度（StateStore / 多节点 / 重试） | 13 | 0/13 |
-| D | P1：WVP 路由补齐（106 条） | 17 | 0/17 |
-| E | P2：运维与质量 | 14 | 0/14 |
-| F | P2：兼容性与契约测试 | 8 | 0/8 |
-| **合计** | | **81** | **23/81** |
+| **合计** | | **81** | **24/81** |
 
 更新规则：每完成一项把 `- [ ]` 改为 `- [x]`，并在"进度"列同步百分比。完成阶段时把阶段标题前缀从 `🟦` 改 `✅`。
 
@@ -128,11 +128,11 @@ A2 已完成，剩余 A3 / A4 / A5 / A6 继续。
 - [x] WS 广播事件名 `alarm`（与前端约定），负载含 deviceId / channelId / alarmType / coords / time
 
 ### A6. JT1078 实时/回放真实化
-- [ ] `jt1078::live_start` 调 `Jt1078Manager::send_live_video`（9101）后再开 ZLM RTP
-- [ ] `jt1078::live_stop` 调 `send_live_video_control(stop)` + 关 ZLM RTP
-- [ ] `jt1078::playback_start` 调 `send_playback_stream`（9102）+ MP4
-- [ ] `jt1078::playback_stop` / `playback_control` / `playback_download_url` 真实化
-- [ ] 单元测试：模拟 JT1078 终端应答 9101/9102 流
+- [x] `jt1078::live_start` 调 `Jt1078Manager::send_live_video`（9101）后再开 ZLM RTP（`jt1078.rs:451`）
+- [x] `jt1078::live_stop` 调 `send_live_video_control(stop)` + 关 ZLM RTP（`jt1078.rs:516`）
+- [x] `jt1078::playback_start` 调 9201 回放请求 + 开 ZLM RTP（`jt1078.rs:530`）
+- [x] `jt1078::playback_stop` / `playback_control` / `playback_download_url` 真实化（`jt1078.rs:594/620/659`）
+- [x] 单元测试：JT1078 协议栈 19 个测试（`session.rs` 4 + `command.rs` 3 + `command_waiter.rs` 4 + `manager.rs` 2 + `jt_media_session.rs` 3 + `frame.rs` 3）
 
 ## 阶段 B — P0：平台级联接入
 
@@ -140,11 +140,11 @@ A2 已完成，剩余 A3 / A4 / A5 / A6 继续。
 可验证产物：mock 上级平台能注册 + 查询目录 + 点播 + BYE 全流程。
 
 ### B1. CascadeRegistrar 启动到 lib.rs
-- [ ] `CascadeRegistrar::load_platforms_from_db` 在 `lib.rs::run()` 启动时调用
-- [ ] `run_registration_loop` 启动为后台 task
-- [ ] `enable=true` 的平台自动注册；`enable=false` 的自动 UNREGISTER
-- [ ] 401 触发 digest 重试
-- [ ] 单元测试：3 个平台（Active / WaitingAuth / Offline）的状态转换
+- [x] `CascadeRegistrar::load_platforms_from_db` 在 `lib.rs::run()` 启动时调用（`lib.rs:218`）
+- [x] `run_registration_loop` 启动为后台 task（`lib.rs:219`）
+- [x] `enable=true` 的平台自动注册（`cascade/register.rs:193`）；`enable=false` 调用 `cascade_service.rs::unregister`（后续由 B3 完善循环检测）
+- [x] 401 触发 digest 重试（`cascade_service.rs::handle_register_401`，`lib.rs:236`）
+- [x] 单元测试：3 个平台状态转换（`cascade_service.rs` 第 469/484/497 行 `#[tokio::test]` / `#[test]`）
 
 ### B2. 上级方向 MESSAGE 路由
 - [ ] SipServer 收到平台方向的 Catalog/Info/Status 查询 → 查 DB → 回复

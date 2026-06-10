@@ -1361,3 +1361,28 @@ pub async fn catalog_edit(
     }
     Json(serde_json::json!({ "code": 0, "msg": "目录编辑成功" }))
 }
+
+/// GET /api/platform/info/:id
+pub async fn platform_info(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Json<WVPResult<serde_json::Value>> {
+    let pid = id.parse::<i64>().unwrap_or(0);
+    match crate::db::platform::get_by_id(&state.pool, pid).await {
+        Ok(Some(p)) => Json(WVPResult::success(serde_json::json!({
+            "id": p.id,
+            "name": p.name,
+            "serverGBId": p.server_gb_id,
+            "deviceGBId": p.device_gb_id,
+            "serverIp": p.server_ip,
+            "serverPort": p.server_port,
+            "deviceIp": p.device_ip,
+            "devicePort": p.device_port,
+            "username": p.username,
+            "enable": p.enable.unwrap_or(false),
+            "status": p.status.unwrap_or(false),
+        }))),
+        Ok(None) => Json(WVPResult::error("Platform not found")),
+        Err(e) => Json(WVPResult::error(format!("DB error: {}", e))),
+    }
+}

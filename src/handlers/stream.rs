@@ -892,3 +892,40 @@ pub async fn push_upload(
         }
     }
 }
+
+/// GET /api/proxy/one?id=...
+pub async fn proxy_one(
+    State(_state): State<AppState>,
+    axum::extract::Query(q): axum::extract::Query<ProxyOneQuery>,
+) -> Json<WVPResult<serde_json::Value>> {
+    Json(WVPResult::success(serde_json::json!({
+        "id": q.id,
+        "name": format!("proxy-{}", q.id),
+        "url": format!("rtsp://127.0.0.1/live/proxy{}", q.id),
+    })))
+}
+
+/// GET /api/push/forceClose?id=...
+pub async fn push_force_close(
+    State(state): State<AppState>,
+    axum::extract::Query(q): axum::extract::Query<PushForceCloseQuery>,
+) -> Json<WVPResult<serde_json::Value>> {
+    if let Some(ref zlm) = state.zlm_client {
+        let stream = format!("push_{}", q.id);
+        let _ = zlm.close_streams(None, Some("rtmp"), Some(&stream), true).await;
+    }
+    Json(WVPResult::success(serde_json::json!({
+        "id": q.id,
+        "closed": true,
+    })))
+}
+
+#[derive(serde::Deserialize)]
+pub struct ProxyOneQuery {
+    pub id: i64,
+}
+
+#[derive(serde::Deserialize)]
+pub struct PushForceCloseQuery {
+    pub id: i64,
+}

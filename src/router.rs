@@ -11,7 +11,7 @@ use tower_http::cors::{Any, CorsLayer};
 use crate::auth::auth_middleware;
 use crate::handlers::{
     alarm, common_channel, device, device_control, device_stub, front_end, jt1078, platform, play,
-    playback, server, stream, stub, talk, user, websocket, webrtc, device_batch,
+    playback, server, stream, stub, talk, user, websocket, webrtc, device_batch, region, role,
 };
 use crate::handlers::metrics as metrics_handler;
 use crate::zlm::hook as zlm_hook;
@@ -834,6 +834,14 @@ pub fn app(state: AppState) -> Router<AppState> {
     let api_public = Router::new()
         .route("/api/user/login", get(user::login).post(user::login))
         .route("/api/user/logout", get(user::logout))
+        .route("/api/platform/info/:id", get(platform::platform_info))
+        .route("/api/role/add", post(role::role_add))
+        .route("/api/role/delete", delete(role::role_delete))
+        .route("/api/proxy/one", get(stream::proxy_one))
+        .route("/api/push/forceClose", get(stream::push_force_close))
+        .route("/api/region/one", get(region::region_one))
+        .route("/api/region/page/list", get(region::region_page_list))
+        .route("/api/region/sync", get(region::region_sync))
         .route("/api/zlm/hook", post(zlm_hook::handle_webhook))
         .route("/api/health", get(health_check))
         .route("/metrics", get(metrics_handler::metrics_handler));

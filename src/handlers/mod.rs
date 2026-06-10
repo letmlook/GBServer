@@ -17,3 +17,5 @@ pub mod alarm;
 pub mod webrtc;
 pub mod device_batch;
 pub mod metrics;
+pub mod role;
+pub mod region;
