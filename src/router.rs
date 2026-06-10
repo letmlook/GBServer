@@ -11,7 +11,7 @@ use tower_http::cors::{Any, CorsLayer};
 use crate::auth::auth_middleware;
 use crate::handlers::{
     alarm, common_channel, device, device_control, device_stub, front_end, jt1078, platform, play,
-    cloud_record_extra, parity_extras, playback, server, stream, stub, sy_camera, talk, user, websocket, webrtc, device_batch, region, role,
+    cloud_record_extra, parity_extras, playback, rtp_control, server, stream, stub, sy_camera, talk, user, websocket, webrtc, device_batch, region, role,
 };
 use crate::handlers::metrics as metrics_handler;
 use crate::zlm::hook as zlm_hook;
@@ -863,6 +863,15 @@ pub fn app(state: AppState) -> Router<AppState> {
         .route("/api/media/stream_info_by_app_and_stream", get(parity_extras::media_stream_info_by_app_and_stream))
         .route("/api/server/config", get(parity_extras::server_config))
         .route("/api/server/version", get(parity_extras::server_version))
+        .route("/api/rtp/receive/open", post(rtp_control::rtp_receive_open))
+        .route("/api/rtp/receive/close/:stream_id", post(rtp_control::rtp_receive_close))
+        .route("/api/rtp/send/start", post(rtp_control::rtp_send_start))
+        .route("/api/rtp/send/stop/:stream_id", post(rtp_control::rtp_send_stop))
+        .route("/api/ps/receive/open", post(rtp_control::ps_receive_open))
+        .route("/api/ps/receive/close/:stream_id", post(rtp_control::ps_receive_close))
+        .route("/api/ps/send/start", post(rtp_control::ps_send_start))
+        .route("/api/ps/send/stop/:stream_id", post(rtp_control::ps_send_stop))
+        .route("/api/ps/getTestPort", get(rtp_control::ps_get_test_port))
         .route("/api/region/one", get(region::region_one))
         .route("/api/region/page/list", get(region::region_page_list))
         .route("/api/region/sync", get(region::region_sync))
