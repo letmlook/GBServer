@@ -100,8 +100,8 @@ impl CascadeSession {
             return false;
         }
         let remaining = self.expires_at - Utc::now().timestamp();
-        // 提前 60s 刷新
-        remaining <= 60 && remaining > 0
+        // 提前 60s 刷新；remaining <= 0 表示已过期，更需要刷新
+        remaining <= 60
     }
 
     pub fn needs_keepalive(&self) -> bool {
@@ -449,11 +449,26 @@ impl Default for CascadeService {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_cascade_session_lifecycle() {
-        let mgr = CascadeService::new(Pool::from(
-            sqlx::mysql::MySqlPoolOptions::new().max_connections(1).clone()
-        ));
+    fn dummy_pool() -> Pool {
+        #[cfg(feature = "postgres")]
+        {
+            sqlx::postgres::PgPoolOptions::new()
+                .max_connections(1)
+                .connect_lazy("postgres://postgres:postgres@127.0.0.1:5432/wvp")
+                .expect("lazy pool")
+        }
+        #[cfg(feature = "mysql")]
+        {
+            sqlx::mysql::MySqlPoolOptions::new()
+                .max_connections(1)
+                .connect_lazy("mysql://root:root@127.0.0.1:3306/wvp")
+                .expect("lazy pool")
+        }
+    }
+
+    #[tokio::test]
+    async fn test_cascade_session_lifecycle() {
+        let mgr = CascadeService::new(dummy_pool());
 
         // 模拟加载
         let session = CascadeSession::new("plat001".to_string());

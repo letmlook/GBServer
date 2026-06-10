@@ -180,6 +180,26 @@ impl PendingRequestManager {
         None
     }
 
+    /// 按 call_id 读取命令类型（不删除），用于 SIP 响应路由判断
+    pub fn peek_cmd_type(&self, call_id: &str) -> Option<PendingCmdType> {
+        self.by_call_id
+            .get(call_id)
+            .map(|entry| entry.value().cmd_type)
+    }
+
+    /// 按 call_id 完成并返回被完成请求的 cmd_type，便于调用方分支处理
+    pub fn complete_with_meta(&self, call_id: &str, xml_response: &str) -> Option<(PendingCmdType, String)> {
+        if let Some((_, req)) = self.by_call_id.remove(call_id) {
+            let ds_key = format!("{}:{}", req.device_id, req.sn);
+            self.by_device_sn.remove(&ds_key);
+            return Some((req.cmd_type, xml_response.to_string()));
+        }
+        if let Some((_, req)) = self.by_device_sn.remove(call_id) {
+            return Some((req.cmd_type, xml_response.to_string()));
+        }
+        None
+    }
+
     /// 解析响应 XML 并返回结构化数据
     pub fn parse_response(&self, cmd_type: PendingCmdType, xml: &str) -> QueryResult {
         match cmd_type {
@@ -335,7 +355,7 @@ mod tests {
 
     #[test]
     fn test_cleanup_expired() {
-        let mgr = PendingRequestManager::with_timeout(1); // 1 second timeout
+        let mgr = PendingRequestManager::new().with_timeout(1); // 1 second timeout
         mgr.register("34020000001110000001", 1, PendingCmdType::DeviceInfo, "call-x", None);
         assert_eq!(mgr.pending_count(), 1);
 
@@ -368,9 +388,9 @@ impl ResponseRouter {
     ///
     /// 从 XML 提取 CmdType，返回完成后的 XML（供 parse_response 使用）。
     pub fn route_message_response(&self, body: &str, call_id: &str) -> Option<(PendingCmdType, String)> {
-        use crate::sip::gb28181::XmlParser;
-        let cmd_type = XmlParser::get_cmd_type(body);
-        let cmd_type_str = cmd_type.as_deref().unwrap_or("");
+        // 不依赖有 bug 的 XmlParser::parse（无法处理 Response 嵌套），
+        // 直接用字符串匹配取 <CmdType>X</CmdType>，更稳。
+        let cmd_type_str = extract_cmd_type(body);
 
         let pending_type = match cmd_type_str {
             "DeviceInfo" => Some(PendingCmdType::DeviceInfo),
@@ -395,17 +415,293 @@ impl ResponseRouter {
 
     /// 路由通用 SIP 响应（Response 方法）
     pub fn route_response(&self, status_code: u16, call_id: &str) -> Option<PendingCmdType> {
-        if status_code >= 200 {
-            // 尝试通过 call_id 找到 PendingRequest 获取类型
-            // 目前 call_id 可能不包含设备/SN 信息，这里返回 None
-            // 真实实现需在 register 时同时记录状态到 Redis/Map
-            tracing::debug!("SIP Response {} for CallID {}", status_code, call_id);
-            None
-        } else {
-            None
+        if call_id.is_empty() {
+            return None;
+        }
+
+        if let Some(cmd_type) = self.pending.peek_cmd_type(call_id) {
+            // 用状态码构造 XML 占位响应，保证等待方能区分 200 与 4xx/5xx
+            let reason = sip_reason_phrase(status_code);
+            let xml = format!(
+                r#"<?xml version="1.0" encoding="UTF-8"?><Response><StatusCode>{}</StatusCode><Reason>{}</Reason></Response>"#,
+                status_code, reason
+            );
+            let _ = self.pending.complete(call_id, &xml);
+            tracing::debug!(
+                "SIP Response {} for CallID {} resolved as {:?}",
+                status_code, call_id, cmd_type
+            );
+            return Some(cmd_type);
+        }
+
+        tracing::debug!(
+            "SIP Response {} for CallID {} had no matching pending request",
+            status_code, call_id
+        );
+        None
+    }
+
+    /// 路由后取 cmd_type，附带把响应 XML 也拿出来（当调用方有更具体的 XML 想要用时）
+    pub fn route_response_with_xml(
+        &self,
+        status_code: u16,
+        call_id: &str,
+    ) -> Option<(PendingCmdType, String)> {
+        if call_id.is_empty() {
+            return None;
+        }
+        let reason = sip_reason_phrase(status_code);
+        let xml = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?><Response><StatusCode>{}</StatusCode><Reason>{}</Reason></Response>"#,
+            status_code, reason
+        );
+        self.pending
+            .complete_with_meta(call_id, &xml)
+            .map(|(cmd_type, body)| (cmd_type, body))
+    }
+}
+
+/// 从 XML body 中提取 <CmdType>X</CmdType> 的值，兼容任意层级嵌套。
+fn extract_cmd_type(xml: &str) -> &str {
+    let open = match xml.find("<CmdType>") {
+        Some(idx) => idx,
+        None => return "",
+    };
+    let start = open + "<CmdType>".len();
+    let end_close = match xml[start..].find("</CmdType>") {
+        Some(idx) => start + idx,
+        None => return "",
+    };
+    xml[start..end_close].trim()
+}
+
+fn sip_reason_phrase(code: u16) -> &'static str {
+    match code {
+        100 => "Trying",
+        180 => "Ringing",
+        183 => "Session Progress",
+        200 => "OK",
+        202 => "Accepted",
+        300 => "Multiple Choices",
+        301 => "Moved Permanently",
+        302 => "Moved Temporarily",
+        305 => "Use Proxy",
+        380 => "Alternative Service",
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        402 => "Payment Required",
+        403 => "Forbidden",
+        404 => "Not Found",
+        405 => "Method Not Allowed",
+        406 => "Not Acceptable",
+        407 => "Proxy Authentication Required",
+        408 => "Request Timeout",
+        410 => "Gone",
+        413 => "Request Entity Too Large",
+        414 => "Request-URI Too Long",
+        415 => "Unsupported Media Type",
+        416 => "Unsupported URI Scheme",
+        420 => "Bad Extension",
+        421 => "Extension Required",
+        423 => "Interval Too Brief",
+        480 => "Temporarily Unavailable",
+        481 => "Call/Transaction Does Not Exist",
+        482 => "Loop Detected",
+        483 => "Too Many Hops",
+        484 => "Address Incomplete",
+        485 => "Ambiguous",
+        486 => "Busy Here",
+        487 => "Request Terminated",
+        488 => "Not Acceptable Here",
+        491 => "Request Pending",
+        493 => "Undecipherable",
+        500 => "Server Internal Error",
+        501 => "Not Implemented",
+        502 => "Bad Gateway",
+        503 => "Service Unavailable",
+        504 => "Server Time-out",
+        505 => "Version Not Supported",
+        513 => "Message Too Large",
+        600 => "Busy Everywhere",
+        603 => "Decline",
+        604 => "Does Not Exist Anywhere",
+        606 => "Not Acceptable",
+        _ => "Unknown",
+    }
+}
+
+#[cfg(test)]
+mod response_router_tests {
+    use super::*;
+
+    fn fixture() -> (Arc<PendingRequestManager>, ResponseRouter) {
+        let mgr = Arc::new(PendingRequestManager::new());
+        let router = ResponseRouter::new(mgr.clone());
+        (mgr, router)
+    }
+
+    #[test]
+    fn route_response_hits_pending_by_call_id() {
+        let (mgr, router) = fixture();
+        mgr.register(
+            "34020000001110000001",
+            1,
+            PendingCmdType::DeviceInfo,
+            "call-info-1",
+            None,
+        );
+        let cmd = router.route_response(200, "call-info-1");
+        assert_eq!(cmd, Some(PendingCmdType::DeviceInfo));
+        assert_eq!(mgr.pending_count(), 0);
+    }
+
+    #[test]
+    fn route_response_with_xml_returns_cmd_and_body() {
+        let (mgr, router) = fixture();
+        mgr.register(
+            "34020000001110000001",
+            7,
+            PendingCmdType::DeviceStatus,
+            "call-status-7",
+            None,
+        );
+        let (cmd, body) = router
+            .route_response_with_xml(200, "call-status-7")
+            .expect("expected resolved response");
+        assert_eq!(cmd, PendingCmdType::DeviceStatus);
+        assert!(body.contains("<StatusCode>200</StatusCode>"));
+        assert!(body.contains("<Reason>OK</Reason>"));
+    }
+
+    #[test]
+    fn route_response_returns_none_for_unknown_call_id() {
+        let (_mgr, router) = fixture();
+        assert_eq!(router.route_response(200, "ghost-call"), None);
+    }
+
+    #[test]
+    fn route_response_returns_none_for_empty_call_id() {
+        let (_mgr, router) = fixture();
+        assert_eq!(router.route_response(200, ""), None);
+    }
+
+    #[test]
+    fn route_response_4xx_uses_correct_reason() {
+        let (mgr, router) = fixture();
+        mgr.register(
+            "34020000001110000001",
+            9,
+            PendingCmdType::DeviceConfig,
+            "call-cfg-9",
+            None,
+        );
+        let (_cmd, body) = router
+            .route_response_with_xml(404, "call-cfg-9")
+            .expect("expected resolved response");
+        assert!(body.contains("<StatusCode>404</StatusCode>"));
+        assert!(body.contains("<Reason>Not Found</Reason>"));
+        assert_eq!(mgr.pending_count(), 0);
+    }
+
+    #[test]
+    fn route_message_response_resolves_all_known_cmd_types() {
+        let cases = [
+            ("DeviceInfo", PendingCmdType::DeviceInfo, "<DeviceName>IPC-1</DeviceName>"),
+            ("DeviceStatus", PendingCmdType::DeviceStatus, "<Online>ONLINE</Online>"),
+            ("Catalog", PendingCmdType::Catalog, "<DeviceList><Item/></DeviceList>"),
+            ("RecordInfo", PendingCmdType::RecordInfo, "<RecordList><Item/></RecordList>"),
+            ("MobilePosition", PendingCmdType::MobilePosition, "<Longitude>120</Longitude>"),
+            ("ConfigDownload", PendingCmdType::DeviceConfig, "<BasicParam><Name>cam</Name></BasicParam>"),
+        ];
+        for (i, (cmd_str, expected_type, payload)) in cases.iter().enumerate() {
+            let (mgr, router) = fixture();
+            let call_id = format!("call-{}", i);
+            mgr.register(
+                "34020000001110000001",
+                i as u32 + 1,
+                *expected_type,
+                &call_id,
+                None,
+            );
+            let body = format!(
+                r#"<?xml version="1.0"?><Response><CmdType>{}</CmdType>{}</Response>"#,
+                cmd_str, payload
+            );
+            let resolved = router.route_message_response(&body, &call_id);
+            assert_eq!(resolved, Some((*expected_type, body.clone())), "case {}", cmd_str);
+            assert_eq!(mgr.pending_count(), 0, "case {} should clear pending", cmd_str);
         }
     }
 
+    #[test]
+    fn route_message_response_returns_none_for_unknown_cmd_type() {
+        let (mgr, router) = fixture();
+        mgr.register(
+            "34020000001110000001",
+            11,
+            PendingCmdType::DeviceInfo,
+            "call-unk",
+            None,
+        );
+        let body = r#"<?xml version="1.0"?><Response><CmdType>Future</CmdType></Response>"#;
+        let resolved = router.route_message_response(body, "call-unk");
+        assert!(resolved.is_none());
+        // 不应被错删
+        assert_eq!(mgr.pending_count(), 1);
+    }
+
+    #[test]
+    fn route_message_response_returns_none_for_unregistered_call_id() {
+        let (_mgr, router) = fixture();
+        let body = r#"<?xml version="1.0"?><Response><CmdType>DeviceInfo</CmdType></Response>"#;
+        let resolved = router.route_message_response(body, "call-not-registered");
+        assert!(resolved.is_none());
+    }
+
+    #[test]
+    fn accumulate_record_info_collects_all_packets() {
+        let (_mgr, router) = fixture();
+        let mut buffer = String::new();
+        let packet1 = r#"<?xml version="1.0"?><Response><CmdType>RecordInfo</CmdType><SumNum>2</SumNum><RecordList><Item><Name>seg1</Name></Item></RecordList></Response>"#;
+        assert!(!router.accumulate_record_info("c1", packet1, &mut buffer, 2));
+        assert!(buffer.contains("<Item>"));
+        let packet2 = r#"<?xml version="1.0"?><Response><CmdType>RecordInfo</CmdType><SumNum>2</SumNum><RecordList><Item><Name>seg2</Name></Item></RecordList></Response>"#;
+        let done = router.accumulate_record_info("c1", packet2, &mut buffer, 2);
+        assert!(done);
+        assert!(buffer.contains("seg1"));
+        assert!(buffer.contains("seg2"));
+    }
+
+    #[test]
+    fn accumulate_record_info_returns_true_when_count_matches() {
+        let (_mgr, router) = fixture();
+        let mut buffer = String::new();
+        let packet = r#"<?xml version="1.0"?><Response><CmdType>RecordInfo</CmdType><SumNum>1</SumNum><RecordList><Item><Name>only</Name></Item></RecordList></Response>"#;
+        let done = router.accumulate_record_info("c1", packet, &mut buffer, 1);
+        assert!(done);
+    }
+
+    #[test]
+    fn route_response_invite_bye_cancel_call_id_completes() {
+        let (mgr, router) = fixture();
+        for (i, call_id) in ["call-invite", "call-bye", "call-cancel"].iter().enumerate() {
+            mgr.register(
+                "34020000001110000001",
+                i as u32 + 1,
+                PendingCmdType::DeviceInfo,
+                call_id,
+                None,
+            );
+        }
+        for (status, call_id) in [(200u16, "call-invite"), (200u16, "call-bye"), (487u16, "call-cancel")] {
+            let cmd = router.route_response(status, call_id);
+            assert_eq!(cmd, Some(PendingCmdType::DeviceInfo));
+        }
+        assert_eq!(mgr.pending_count(), 0);
+    }
+}
+
+impl ResponseRouter {
     /// 批量解析 RecordInfo 多包响应
     ///
     /// RecordInfo 响应可能分多包发送（SumNum > 1）。
@@ -439,15 +735,22 @@ impl crate::sip::gb28181::XmlParser {
     #[allow(dead_code)]
     pub fn extract_record_items(xml: &str) -> Vec<String> {
         let mut items = Vec::new();
-        let mut start = 0;
-        while let Some(begin) = xml[start..].find("<RecordItem ") {
-            let abs_begin = start + begin;
-            if let Some(end) = xml[abs_begin..].find("</RecordItem>") {
-                let item_end = abs_begin + end + strlen("</RecordItem>");
-                items.push(xml[abs_begin..item_end].to_string());
-                start = item_end;
-            } else {
-                break;
+        for (open_tag, close_tag) in [
+            ("<RecordItem>", "</RecordItem>"),
+            ("<RecordItem ", "</RecordItem>"),
+            ("<Item>", "</Item>"),
+            ("<Item ", "</Item>"),
+        ] {
+            let mut cursor = 0;
+            while let Some(begin) = xml[cursor..].find(open_tag) {
+                let abs_begin = cursor + begin;
+                if let Some(end) = xml[abs_begin..].find(close_tag) {
+                    let item_end = abs_begin + end + close_tag.len();
+                    items.push(xml[abs_begin..item_end].to_string());
+                    cursor = item_end;
+                } else {
+                    break;
+                }
             }
         }
         items
@@ -456,15 +759,15 @@ impl crate::sip::gb28181::XmlParser {
     /// 统计 RecordInfo XML 中 RecordItem 的数量
     #[allow(dead_code)]
     pub fn count_record_items(xml: &str) -> i32 {
-        let count = xml.matches("<RecordItem ").count() as i32;
-        if count == 0 && xml.contains("<RecordList ") {
-            return xml.matches("<Item ").count() as i32;
+        let record_count = xml.matches("<RecordItem>").count() as i32
+            + xml.matches("<RecordItem ").count() as i32;
+        if record_count > 0 {
+            return record_count;
         }
-        count
+        if xml.contains("<RecordList>") || xml.contains("<RecordList ") {
+            return xml.matches("<Item>").count() as i32
+                + xml.matches("<Item ").count() as i32;
+        }
+        xml.matches("<Item>").count() as i32 + xml.matches("<Item ").count() as i32
     }
 }
-
-fn strlen(s: &str) -> usize {
-    s.len()
-}
-

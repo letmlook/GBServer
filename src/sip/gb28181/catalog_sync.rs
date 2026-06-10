@@ -90,7 +90,9 @@ impl CatalogSyncSession {
             }
         }
 
-        self.received_num += num;
+        // GB28181 协议：<Num> 是当前包序号（1..SumNum），每收一包 +1，
+        // 而非包内 item 数量；这里按包计数与总包数 SumNum 比对。
+        self.received_num += 1;
         self.state = if self.received_num >= self.total_num {
             SyncState::Done
         } else {
@@ -289,16 +291,17 @@ mod tests {
         let done1 = s.add_packet(page1);
         assert!(!done1);
         assert_eq!(s.total_num, 3);
-        assert_eq!(s.received_num, 2);
+        assert_eq!(s.received_num, 1);
         assert_eq!(s.state, SyncState::Receiving);
 
         let done2 = s.add_packet(page2);
         assert!(!done2);
-        assert_eq!(s.received_num, 3);
+        assert_eq!(s.received_num, 2);
         assert_eq!(s.state, SyncState::Receiving);
 
         let done3 = s.add_packet(page3);
         assert!(done3);
+        assert_eq!(s.received_num, 3);
         assert_eq!(s.state, SyncState::Done);
     }
 

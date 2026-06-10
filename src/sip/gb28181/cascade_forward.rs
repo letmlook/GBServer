@@ -386,8 +386,8 @@ mod tests {
         assert!(forwarder.upstream_addr.is_some());
     }
 
-    #[test]
-    fn test_forward_catalog() {
+    #[tokio::test]
+    async fn test_forward_catalog() {
         let forwarder = CascadeForwarder::new("34020000002000000001".to_string());
         let channels = vec![
             CascadeChannelInfo {
@@ -403,7 +403,7 @@ mod tests {
         ];
         // 没有配置 upstream，forward_catalog 应返回错误
         // （不实际发包，测试构建逻辑）
-        let result = forwarder.forward_catalog(&channels);
+        let result = forwarder.forward_catalog(&channels).await;
         assert!(result.is_err()); // upstream not configured
     }
 }

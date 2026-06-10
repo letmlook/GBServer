@@ -1853,6 +1853,21 @@ impl SipServer {
             }
         }
 
+        // Phase 1.3: 路由 INVITE/BYE/CANCEL 响应到 PendingRequestManager，
+        // 任何注册了 cmd_type 的等待方都会按 call_id 收到结构化完成结果。
+        if cseq.contains("INVITE") || cseq.contains("BYE") || cseq.contains("CANCEL") {
+            let router = crate::sip::gb28181::ResponseRouter::new(pending_request_manager.clone());
+            if let Some(cmd_type) = router.route_response(resp.status_code(), &call_id) {
+                tracing::debug!(
+                    "PendingRequest {} (cmd={:?}) completed by {} {}",
+                    call_id,
+                    cmd_type,
+                    resp.status_code(),
+                    cseq
+                );
+            }
+        }
+
         Ok(())
     }
 

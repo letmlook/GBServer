@@ -36,6 +36,10 @@ pub enum MediaWaitResult {
 pub struct MediaWaiter {
     pub call_id: String,
     pub zlm_stream_id: String,
+    /// 完整 waiter key，格式 `{call_id}:{app}:{stream_id}`；
+    /// 由 register() 通过 with_app() 写入，cleanup_expired() 复用，
+    /// 保证 active_keys 与 receivers 用同一 key 清理。
+    pub waiter_key: String,
     pub created_at: Instant,
     pub timeout_secs: u64,
 }
@@ -45,9 +49,16 @@ impl MediaWaiter {
         Self {
             call_id,
             zlm_stream_id,
+            waiter_key: String::new(),
             created_at: Instant::now(),
             timeout_secs,
         }
+    }
+
+    /// builder：补全 `waiter_key`，让 cleanup_expired 能与 register 写入的 key 对齐
+    pub fn with_app(mut self, app: &str) -> Self {
+        self.waiter_key = format!("{}:{}:{}", self.call_id, app, self.zlm_stream_id);
+        self
     }
 
     pub fn is_expired(&self) -> bool {
@@ -99,6 +110,8 @@ impl MediaWaiterManager {
         -> (String, tokio::sync::oneshot::Receiver<MediaWaitResult>)
     {
         let waiter = MediaWaiter::new(call_id.to_string(), stream_id.to_string(), timeout_secs);
+        // builder 模式：补上 waiter_key，让 cleanup_expired 与 register 用同一 key
+        let waiter = waiter.with_app(app);
         let waiter_key = format!("{}:{}:{}", call_id, app, stream_id);
 
         let (tx, rx) = oneshot::channel();
@@ -129,8 +142,13 @@ impl MediaWaiterManager {
 
     /// 按 stream_id 完成等待（ZLM Hook 的 on_rtp_server_started）
     pub fn resolve_by_stream(&self, stream_id: &str, app: &str) -> bool {
-        if let Some(waiter) = self.by_stream_id.get(stream_id) {
-            return self.resolve(&waiter.call_id, stream_id, app);
+        // 先 clone 必要字段，drop 读锁后再调 resolve，避免在持锁时调 remove 死锁
+        let call_id_opt: Option<String> = self
+            .by_stream_id
+            .get(stream_id)
+            .map(|w| w.call_id.clone());
+        if let Some(call_id) = call_id_opt {
+            return self.resolve(&call_id, stream_id, app);
         }
         false
     }
@@ -146,7 +164,8 @@ impl MediaWaiterManager {
 
         for (call_id, waiter) in snap {
             if waiter.is_expired() {
-                let waiter_key = format!("{}:{}:{}", waiter.call_id, waiter.zlm_stream_id, waiter.zlm_stream_id);
+                // 用 waiter 自带的完整 key，与 register 写入 active_keys 的 key 一致
+                let waiter_key = waiter.waiter_key.clone();
                 self.receivers.remove(&waiter_key);
                 self.by_call_id.remove(&call_id);
                 self.by_stream_id.remove(&waiter.zlm_stream_id);

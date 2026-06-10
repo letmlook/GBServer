@@ -222,14 +222,23 @@ impl JtCommandWaiter {
     /// 清理已超时的命令
     pub fn cleanup_expired(&self) -> Vec<String> {
         let mut removed = Vec::new();
-        let snap: Vec<_> = self.metadata.iter().map(|r| r.key().clone()).collect();
+        let snap: Vec<String> = self.metadata.iter().map(|r| r.key().clone()).collect();
+        // 收集所有已过期的 key，先判断完再统一删除，避免在持有 metadata 读锁时调 remove 死锁
+        let expired: Vec<String> = snap
+            .clone()
+            .into_iter()
+            .filter(|key| {
+                self.metadata
+                    .get(key.as_str())
+                    .map(|m| m.is_expired())
+                    .unwrap_or(false)
+            })
+            .collect();
         for key in snap {
-            if let Some(meta) = self.metadata.get(&key) {
-                if meta.is_expired() {
-                    self.by_key.remove(&key);
-                    self.metadata.remove(&key);
-                    removed.push(key.clone());
-                }
+            if expired.contains(&key) {
+                self.by_key.remove(&key);
+                self.metadata.remove(&key);
+                removed.push(key);
             }
         }
         removed
@@ -330,7 +339,7 @@ mod tests {
     #[tokio::test]
     async fn test_register_and_complete() {
         let waiter = JtCommandWaiter::new();
-        let (key, rx) = waiter.register("13812340001", 0x9101, 1, None);
+        let (_key, rx) = waiter.register("13812340001", 0x9101, 1, None);
 
         assert_eq!(waiter.pending_count(), 1);
         assert!(waiter.has_pending_for_phone("13812340001"));
@@ -346,7 +355,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_timeout_cleanup() {
-        let waiter = JtCommandWaiter::with_timeout(0); // 0s = 立即过期
+        let waiter = JtCommandWaiter::new().with_timeout(0); // 0s = 立即过期
         waiter.register("13812340001", 0x9101, 1, None);
         assert_eq!(waiter.pending_count(), 1);
 
