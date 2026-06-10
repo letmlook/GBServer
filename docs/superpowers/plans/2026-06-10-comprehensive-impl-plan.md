@@ -280,8 +280,8 @@ A2 已完成，剩余 A3 / A4 / A5 / A6 继续。
 - [ ] 删除 `src/cache.rs` 中重复的 5 个函数（与 StateStore 合并）
 
 ### E2. 跨节点 RPC（src/rpc.rs）
-- [ ] 用 reqwest 实现 JSON-RPC over HTTP
-- [ ] 4 个方法：`forward_invite`、`stop_session`、`get_session_state`、`broadcast_event`
+- [x] src/rpc.rs 已存在（200 行，含 RpcRouter/register_standard_handlers，4 个方法已 stub 注册）
+- [ ] 用 reqwest 实现 JSON-RPC over HTTP（HTTP-over-JSON 框架已搭好，可直接接入 reqwest）
 - [ ] 单元测试：mock 远端节点返回
 
 ### E3. 完整集成测试
