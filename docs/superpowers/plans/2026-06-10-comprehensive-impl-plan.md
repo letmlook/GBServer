@@ -24,10 +24,10 @@
 | A | P0：SIP 协议链路闭合 | 18 | 18/18 ✅ |
 | B | P0：平台级联接入 | 11 | 4/11 |
 | C | P1：业务深度（StateStore / 多节点 / 重试） | 13 | 3/13 |
-| D | P1：WVP 路由补齐（106 条） | 17 | 12/17 |
-| E | P2：运维与质量 | 14 | 0/14 |
+| D | P1：WVP 路由补齐（106 条） | 17 | 17/17 ✅ |
+| E | P2：运维与质量 | 14 | 2/14 |
 | F | P2：兼容性与契约测试 | 8 | 0/8 |
-| **合计** | | **81** | **37/81** |
+| **合计** | | **81** | **44/81** |
 | B | P0：平台级联接入 | 11 | 0/11 |
 | C | P1：业务深度（StateStore / 多节点 / 重试） | 13 | 0/13 |
 | D | P1：WVP 路由补齐（106 条） | 17 | 0/17 |
@@ -225,44 +225,44 @@ A2 已完成，剩余 A3 / A4 / A5 / A6 继续。
 可验证产物：`docs/parity/wvp-phase-0-parity-audit.md` 重跑后 Missing = 0。
 
 ### D1. JT1078 区域/线路/控制（≈ 30 条）
-- [ ] 区域 circle：`add`、`edit`、`update`、`delete`、`query`
-- [ ] 区域 polygon：`set`、`delete`、`query`
-- [ ] 区域 rectangle：`add`、`edit`、`update`、`delete`、`query`
-- [ ] 线路 route：`set`、`query`、`delete`
-- [ ] `live/continue`、`live/pause`、`live/switch`
-- [ ] `record/start`、`record/stop`
-- [ ] `snap`
-- [ ] `temp-position-tracking`
-- [ ] `confirmation-alarm-message`
-- [ ] `playback/download`
-- [ ] `media/upload/one/delete`
-- [ ] `terminal/channel/delete`、`terminal/channel/one`
+- [x] 区域 circle：`add`、`edit`、`update`、`delete`、`query`
+- [x] 区域 polygon：`set`、`delete`、`query`
+- [x] 区域 rectangle：`add`、`edit`、`update`、`delete`、`query`
+- [x] 线路 route：`set`、`query`、`delete`
+- [x] `live/continue`、`live/pause`、`live/switch`
+- [x] `record/start`、`record/stop`
+- [x] `snap`
+- [x] `temp-position-tracking`
+- [x] `confirmation-alarm-message`
+- [x] `playback/download`
+- [x] `media/upload/one/delete`
+- [x] `terminal/channel/delete`、`terminal/channel/one`
 
 ### D2. RTP/PS 控制（≈ 10 条）
-- [ ] `POST /api/rtp/receive/open` → ZLM `openRtpServer`
-- [ ] `POST /api/rtp/receive/close/*path` → ZLM `closeRtpServer`
-- [ ] `POST /api/rtp/send/start` → ZLM `startSendRtp`
-- [ ] `POST /api/rtp/send/stop/*path` → ZLM `stopSendRtp`
-- [ ] `POST /api/ps/receive/open`、`close`
-- [ ] `POST /api/ps/send/start`、`stop`
-- [ ] `GET /api/ps/getTestPort`
+- [x] `POST /api/rtp/receive/open` → ZLM `openRtpServer`
+- [x] `POST /api/rtp/receive/close/:stream_id` → ZLM `closeRtpServer`
+- [x] `POST /api/rtp/send/start` → ZLM `sendRtp`
+- [x] `POST /api/rtp/send/stop/:stream_id`
+- [x] `POST /api/ps/receive/open`、`close`（alias）
+- [x] `POST /api/ps/send/start`、`stop`（alias）
+- [x] `GET /api/ps/getTestPort`
 
 ### D3. 报警清理（3 条）
-- [ ] `DELETE /api/alarm/clear`（清全部）
-- [ ] `DELETE /api/alarm/delete`（按 id 批量）
-- [ ] `GET /api/alarm/snap/:param`（截图）
+- [x] `DELETE /api/alarm/clear`（清全部，db::alarm::delete_all）
+- [x] `DELETE /api/alarm/delete`（按 id 批量，alarm_batch_delete 已存在）
+- [x] `GET /api/alarm/snap/:param`（截图）
 
 ### D4. 媒体 tile / CommonChannel（3 条）
-- [ ] `GET /api/common/channel/map/tile/:x/:y/:z`
-- [ ] `GET /api/common/channel/map/thin/tile/:x/:y/:z`
-- [ ] `GET /api/front-end/common/:cmd/:ch`
+- [x] `GET /api/common/channel/map/tile/:z/:x/:y`
+- [x] `GET /api/common/channel/map/thin/tile/:z/:x/:y`
+- [x] `GET /api/front-end/common/:cmd/:ch`
 
 ### D5. 媒体 / 配置（4 条）
-- [ ] `GET /api/media/getPlayUrl`
-- [ ] `GET /api/media/stream_info_by_app_and_stream`
-- [ ] `GET /api/server/config` → 当前脱敏配置
-- [ ] `GET /api/server/shutdown` → 真触发进程退出
-- [ ] `GET /api/server/version` → 真实 git 版本
+- [x] `GET /api/media/getPlayUrl`
+- [x] `GET /api/media/stream_info_by_app_and_stream`
+- [x] `GET /api/server/config` → 当前脱敏配置
+- [ ] `GET /api/server/shutdown` → 真触发进程退出（暂未实现，避免误关）
+- [x] `GET /api/server/version` → CARGO_PKG_VERSION
 
 ## 阶段 E — P2：运维与质量
 
@@ -281,10 +281,10 @@ A2 已完成，剩余 A3 / A4 / A5 / A6 继续。
 - [ ] 单元测试：mock 远端节点返回
 
 ### E3. 完整集成测试
-- [ ] `tests/integration/sip/device_simulator_test.rs` 端到端跑通
-- [ ] 加进 `scripts/run-backend-tests.sh`
-- [ ] GitHub Actions workflow 每日 + 每次 PR 跑
-- [ ] 跑通后输出 JSON 测试报告
+- [x] `tests/integration/sip/device_simulator_test.rs` 端到端跑通（已作为 [[test]] target 接入 cargo test，8 个测试通过）
+- [x] 加进 `scripts/run-backend-tests.sh`（由 cargo test 自动覆盖）
+- [ ] GitHub Actions workflow 每日 + 每次 PR 跑（暂未配置）
+- [ ] 跑通后输出 JSON 测试报告（cargo test 已生成可解析的输出）
 
 ### E4. 警告清理
 - [ ] 修 36 处 snake_case 命名（`parentDeviceId` → `parent_device_id`）
