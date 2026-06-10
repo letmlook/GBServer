@@ -11,7 +11,7 @@ use tower_http::cors::{Any, CorsLayer};
 use crate::auth::auth_middleware;
 use crate::handlers::{
     alarm, common_channel, device, device_control, device_stub, front_end, jt1078, platform, play,
-    playback, server, stream, stub, sy_camera, talk, user, websocket, webrtc, device_batch, region, role,
+    cloud_record_extra, playback, server, stream, stub, sy_camera, talk, user, websocket, webrtc, device_batch, region, role,
 };
 use crate::handlers::metrics as metrics_handler;
 use crate::zlm::hook as zlm_hook;
@@ -849,6 +849,11 @@ pub fn app(state: AppState) -> Router<AppState> {
         .route("/api/sy/camera/list/address", get(sy_camera::camera_list_address))
         .route("/api/sy/camera/list/ids", get(sy_camera::camera_list_ids))
         .route("/api/sy/camera/meeting/list", get(sy_camera::camera_meeting_list))
+        .route("/api/cloud/record/collect/add", get(cloud_record_extra::collect_add))
+        .route("/api/cloud/record/collect/delete", get(cloud_record_extra::collect_delete))
+        .route("/api/cloud/record/download/zip", get(cloud_record_extra::download_zip))
+        .route("/api/cloud/record/list-url", get(cloud_record_extra::list_url))
+        .route("/api/cloud/record/zip", get(cloud_record_extra::zip))
         .route("/api/region/one", get(region::region_one))
         .route("/api/region/page/list", get(region::region_page_list))
         .route("/api/region/sync", get(region::region_sync))
