@@ -115,6 +115,31 @@ impl SendRtpManager {
             .map(|r| r.clone())
             .collect()
     }
+
+    /// 处理上级 INVITE — 创建 SendRtp 会话并返回 SSRC 协商结果
+    ///
+    /// B3: 上级平台点播本级通道时，先记录 SendRtp 会话；
+    /// 待设备 INVITE 200 OK 后用 SSRC/port 反向 startSendRtp 指向上级 IP:port。
+    pub fn handle_upstream_invite(
+        &self,
+        cascade_call_id: String,
+        platform_id: String,
+        channel_id: String,
+        upstream_host: String,
+        upstream_port: u16,
+        upstream_ssrc: String,
+    ) -> SendRtpSession {
+        let session = SendRtpSession::new(
+            cascade_call_id,
+            platform_id,
+            channel_id,
+            upstream_host,
+            upstream_port,
+            upstream_ssrc,
+        );
+        self.create(session.clone());
+        session
+    }
 }
 
 impl Default for SendRtpManager {
@@ -405,5 +430,93 @@ mod tests {
         // （不实际发包，测试构建逻辑）
         let result = forwarder.forward_catalog(&channels).await;
         assert!(result.is_err()); // upstream not configured
+    }
+
+    /// B3: SendRtpManager 完整生命周期
+    #[test]
+    fn test_sendrtp_manager_full_lifecycle() {
+        let mgr = SendRtpManager::new();
+        assert_eq!(mgr.active_count(), 0);
+
+        let s1 = mgr.handle_upstream_invite(
+            "call-1".into(), "plat-a".into(), "ch-1".into(),
+            "10.0.0.1".into(), 9000, "0xAAAA".into(),
+        );
+        assert!(s1.active);
+        assert_eq!(mgr.active_count(), 1);
+        assert!(mgr.get("call-1").is_some());
+        assert_eq!(mgr.get("call-1").unwrap().upstream_ssrc, "0xAAAA");
+
+        let s2 = mgr.handle_upstream_invite(
+            "call-2".into(), "plat-a".into(), "ch-1".into(),
+            "10.0.0.2".into(), 9002, "0xBBBB".into(),
+        );
+        assert_eq!(mgr.active_count(), 2);
+        let closed = mgr.close_by_channel("ch-1");
+        assert_eq!(closed.len(), 2);
+        assert_eq!(mgr.active_count(), 0);
+        assert_eq!(closed[0].channel_id, "ch-1"); // snapshot is pre-close, still active=true
+    }
+
+    /// B3: close_by_channel 不影响其他通道
+    #[test]
+    fn test_sendrtp_manager_channel_isolation() {
+        let mgr = SendRtpManager::new();
+        mgr.handle_upstream_invite("c1".into(), "p".into(), "ch-A".into(),
+            "10.0.0.1".into(), 9000, "0x1".into());
+        mgr.handle_upstream_invite("c2".into(), "p".into(), "ch-B".into(),
+            "10.0.0.2".into(), 9002, "0x2".into());
+        let closed = mgr.close_by_channel("ch-A");
+        assert_eq!(closed.len(), 1);
+        assert_eq!(closed[0].cascade_call_id, "c1");
+        assert_eq!(mgr.active_count(), 1);
+        assert!(mgr.get("c2").is_some());
+    }
+
+    /// B3: 重复 create 同 cascade_call_id 覆盖
+    #[test]
+    fn test_sendrtp_manager_recreate_overrides() {
+        let mgr = SendRtpManager::new();
+        mgr.handle_upstream_invite("c1".into(), "p".into(), "ch".into(),
+            "10.0.0.1".into(), 9000, "0xAAAA".into());
+        mgr.handle_upstream_invite("c1".into(), "p".into(), "ch".into(),
+            "10.0.0.99".into(), 9999, "0xBBBB".into());
+        assert_eq!(mgr.active_count(), 1);
+        let stored = mgr.get("c1").unwrap();
+        assert_eq!(stored.upstream_host, "10.0.0.99");
+        assert_eq!(stored.upstream_port, 9999);
+        assert_eq!(stored.upstream_ssrc, "0xBBBB");
+    }
+
+    /// B3: get_by_channel 返回该通道所有活跃会话
+    #[test]
+    fn test_sendrtp_manager_get_by_channel() {
+        let mgr = SendRtpManager::new();
+        mgr.handle_upstream_invite("c1".into(), "p".into(), "ch-A".into(),
+            "h".into(), 9000, "0x1".into());
+        mgr.handle_upstream_invite("c2".into(), "p".into(), "ch-A".into(),
+            "h".into(), 9002, "0x2".into());
+        mgr.handle_upstream_invite("c3".into(), "p".into(), "ch-B".into(),
+            "h".into(), 9004, "0x3".into());
+        let a = mgr.get_by_channel("ch-A");
+        assert_eq!(a.len(), 2);
+        let b = mgr.get_by_channel("ch-B");
+        assert_eq!(b.len(), 1);
+    }
+
+    /// B3: 单条 close 后 active_count 正确归零
+    #[test]
+    fn test_sendrtp_manager_close_single_session() {
+        let mgr = SendRtpManager::new();
+        mgr.handle_upstream_invite("c1".into(), "p".into(), "ch".into(),
+            "h".into(), 9000, "0x1".into());
+        mgr.handle_upstream_invite("c2".into(), "p".into(), "ch".into(),
+            "h".into(), 9002, "0x2".into());
+        assert_eq!(mgr.active_count(), 2);
+        let closed = mgr.close("c1");
+        assert!(closed.is_some());
+        assert_eq!(mgr.active_count(), 1);
+        assert!(mgr.get("c1").is_none());
+        assert!(mgr.get("c2").is_some());
     }
 }
