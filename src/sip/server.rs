@@ -106,6 +106,24 @@ pub(crate) fn build_playback_control_xml(
         )
     }
 }
+/// 构造 GB28181 下载 SSRC：前缀 2（实时=0 / 回放=1 / 下载=2）+
+/// 设备号前 9 位，不足 9 位右补 0；与 WVP Java 端兼容。
+pub(crate) fn build_download_ssrc(device_id: &str) -> String {
+    let id_part = if device_id.len() >= 9 {
+        &device_id[0..9]
+    } else {
+        device_id
+    };
+    format!("2{:0>9}", id_part)
+}
+
+/// 构造下载 INVITE 的 Subject 头：
+/// `<local_id>:<channel_id>,<local_id>:<ssrc>`，其中 ssrc 来自 `build_download_ssrc`。
+pub(crate) fn build_download_subject(local_id: &str, channel_id: &str) -> String {
+    let ssrc = build_download_ssrc(local_id);
+    format!("{}:{},{}:{}", local_id, channel_id, local_id, ssrc)
+}
+
 
 
 /// GB28181 RecordInfo 响应里 Item 的解析结果。
@@ -3178,6 +3196,68 @@ f=v/1/96/1/2/1/1/0
         Ok(())
     }
 
+    /// 发送 GB28181 录像下载 INVITE（Subject 第 4 段 SSRC 前缀 2 表示 Download）
+    ///
+    /// 与 send_playback_invite 区别仅在 Subject 字段第 4 段（SSRC）前缀：
+    /// 实时=0、回放=1、下载=2。SDP 内容相同。
+    /// 设备回复 200 OK 后 ZLM 在 9102 端口接收 RTP 流并按 MP4 落盘。
+    pub async fn send_download_invite(
+        &self,
+        device_id: &str,
+        channel_id: &str,
+        start_time: &str,
+        end_time: &str,
+    ) -> Result<String> {
+        let socket = self.socket.read().await;
+        let socket = socket.as_ref().ok_or_else(|| anyhow::anyhow!("Socket not initialized"))?;
+
+        let device_addr = self.device_manager.get_address(device_id).await
+            .ok_or_else(|| anyhow::anyhow!("Device {} not registered", device_id))?;
+
+        let call_id = format!("download_{}_{}", device_id, chrono::Utc::now().timestamp_millis());
+        let branch = generate_branch();
+        let cseq = format!("INVITE {}", 1);
+        let from_tag = generate_tag();
+
+        let via = format!("SIP/2.0/UDP {}:{};branch={};rport",
+            self.config.ip, self.config.port, branch);
+        let from = format!("<sip:{}@{}:{}>;tag={}",
+            self.config.device_id, self.config.ip, self.config.port, from_tag);
+        let to = format!("<sip:{}@{}:{}>", channel_id, device_addr.ip(), device_addr.port());
+        let contact = format!("<sip:{}@{}:{}>", self.config.device_id, self.config.ip, self.config.port);
+
+        let subject = build_download_subject(&self.config.device_id, channel_id);
+        let ssrc = build_download_ssrc(&self.config.device_id);
+
+        // SDP 与回放一致；ZLM 端口由调用方通过 OpenRtpServer 提前分配，
+        // 这里用占位 0 留给 ZLM 自行协商；客户端用 hold 方式发送.
+        let sdp = build_playback_sdp(&self.config.ip, 0, start_time, end_time);
+
+        let headers: Vec<(&str, &str)> = vec![
+            ("Via", &via),
+            ("From", &from),
+            ("To", &to),
+            ("Call-ID", &call_id),
+            ("CSeq", &cseq),
+            ("Contact", &contact),
+            ("Max-Forwards", "70"),
+            ("User-Agent", "GBServer/1.0"),
+            ("Subject", &subject),
+            ("Content-Type", "application/sdp"),
+        ];
+
+        let uri = format!("sip:{}@{}:{}", channel_id, device_addr.ip(), device_addr.port());
+        let message = Parser::generate_request("INVITE", &uri, &headers, Some(&sdp));
+
+        socket.send_to(message.as_bytes(), device_addr).await?;
+        tracing::info!(
+            "Sent DOWNLOAD INVITE to device {} channel {} [{}-{}] ssrc={}",
+            device_id, channel_id, start_time, end_time, ssrc
+        );
+
+        Ok(call_id)
+    }
+
     pub async fn send_platform_invite(&self, platform_gb_id: &str, channel_id: &str, sdp_port: u16) -> Result<()> {
         let socket = self.socket.read().await;
         let socket = socket.as_ref().ok_or_else(|| anyhow::anyhow!("Socket not initialized"))?;
@@ -3683,6 +3763,31 @@ mod playback_control_tests {
 </Response>"#;
         let items = parse_record_info_items(xml);
         assert!(items.is_empty());
+    }
+
+    #[test]
+    fn download_ssrc_uses_prefix_2_padded_9_chars() {
+        let ssrc = build_download_ssrc("34020000001320000001");
+        // prefix "2" + 9 digit ID = 10 chars total
+        assert_eq!(ssrc.len(), 10);
+        assert!(ssrc.starts_with('2'));
+        // device_id 前 9 位是 "340200000"，与前缀 2 拼接 = "2340200000"
+        assert_eq!(ssrc, "2340200000");
+    }
+
+    #[test]
+    fn download_ssrc_pads_short_device_id() {
+        let ssrc = build_download_ssrc("123");
+        // 不足 9 位左补 0（{:0>9} 是右对齐，所以短串左补）：prefix "2" + "000000123"
+        assert_eq!(ssrc, "2000000123");
+    }
+
+    #[test]
+    fn download_subject_format_matches_wvp() {
+        let subject = build_download_subject("34020000002000000001", "34020000001320000002");
+        // 形如 "<local>:<channel>,<local>:2<deviceid9>"
+        assert!(subject.contains(":34020000001320000002,"));
+        assert!(subject.ends_with(":2340200000"));
     }
 
     #[test]

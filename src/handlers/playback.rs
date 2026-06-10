@@ -548,18 +548,84 @@ pub async fn gb_record_download_start(
 
     let stream_id = format!("download_{}_{}_{}", device_id, channel_id,
         chrono::Utc::now().timestamp());
-    
-    let file_name = format!("{}_{}_{}_{}.mp4", device_id, channel_id, 
+
+    let file_name = format!("{}_{}_{}_{}.mp4", device_id, channel_id,
         start_time.replace(":", "").replace("-", "").replace("T", "_"),
         chrono::Utc::now().timestamp());
 
+    // 1) 优先走 GB28181 录像下载 INVITE（Subject SSRC 前缀 2），
+    //    设备推送 9102 端口的 RTP 流，ZLM 自动 MP4 落盘
+    let mut used_gb28181 = false;
+    if let Some(ref sip_server) = state.sip_server {
+        let sip = sip_server.read().await;
+        if let Some(device) = sip.device_manager().get(&device_id).await {
+            if device.online && device.addr.is_some() {
+                // 提前开 ZLM RTP server 监听设备推流
+                if let Some(ref zlm) = state.zlm_client {
+                    let _ = zlm
+                        .open_rtp_server(&crate::zlm::OpenRtpServerRequest {
+                            secret: zlm.secret.clone(),
+                            stream_id: stream_id.clone(),
+                            port: Some(0),
+                            use_tcp: Some(false),
+                            rtp_type: Some(0),
+                            recv_port: None,
+                        })
+                        .await;
+                }
+                match sip
+                    .send_download_invite(&device_id, &channel_id, &start_time, &end_time)
+                    .await
+                {
+                    Ok(call_id) => {
+                        tracing::info!(
+                            "GB28181 DOWNLOAD INVITE sent, call_id={}",
+                            call_id
+                        );
+                        used_gb28181 = true;
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to send GB28181 DOWNLOAD INVITE: {}", e);
+                    }
+                }
+            }
+        }
+    }
+
+    if used_gb28181 {
+        let session = DownloadSession {
+            stream_id: stream_id.clone(),
+            device_id: device_id.clone(),
+            channel_id: channel_id.clone(),
+            file_name: file_name.clone(),
+            start_time: start_time.clone(),
+            end_time: end_time.clone(),
+            url: format!("gb28181://{}@{}/{}", device_id, channel_id, start_time),
+            status: "downloading".to_string(),
+            progress: 0.0,
+            created_at: Utc::now(),
+        };
+        if let Some(ref dm) = state.download_manager {
+            dm.create(session).await;
+        }
+        return Json(WVPResult::success(serde_json::json!({
+            "streamId": stream_id,
+            "fileName": file_name,
+            "downloadUrl": format!("/download/{}", file_name),
+            "transport": "gb28181",
+            "progress": 0,
+            "status": "inviting"
+        })));
+    }
+
+    // 2) Fallback：ZLM 本地录像拉流（RTSP 拉 + 写文件）
     if let Some(ref zlm_client) = state.zlm_client {
         let record_url = format!("rtsp://127.0.0.1/record/{}/{}", device_id, channel_id);
-        
+
         match zlm_client.create_download(&record_url, &file_name, Some("./downloads")).await {
             Ok(download_path) => {
                 tracing::info!("Download started: {} -> {}", file_name, download_path);
-                
+
                 let session = DownloadSession {
                     stream_id: stream_id.clone(),
                     device_id: device_id.clone(),
@@ -572,16 +638,17 @@ pub async fn gb_record_download_start(
                     progress: 0.0,
                     created_at: Utc::now(),
                 };
-                
+
                 if let Some(ref dm) = state.download_manager {
                     dm.create(session).await;
                 }
-                
+
                 return Json(WVPResult::success(serde_json::json!({
                     "streamId": stream_id,
                     "fileName": file_name,
                     "downloadUrl": format!("/download/{}", file_name),
                     "savePath": download_path,
+                    "transport": "zlm-local",
                     "progress": 0,
                     "status": "downloading"
                 })));
@@ -605,12 +672,26 @@ pub async fn gb_record_download_stop(
     tracing::info!("Record download stop: device={}, channel={}, stream={}",
         device_id, channel_id, stream_id);
 
-    if let Some(ref zlm_client) = state.zlm_client {
-        if let Some(ref dm) = state.download_manager {
-            if let Some(session) = dm.get(&stream_id).await {
+    // 如果是 GB28181 下载会话：发 BYE + 关 ZLM RTP server
+    if let Some(ref dm) = state.download_manager {
+        if let Some(session) = dm.get(&stream_id).await {
+            if session.url.starts_with("gb28181://") {
+                if let Some(ref sip_server) = state.sip_server {
+                    let sip = sip_server.read().await;
+                    if let Err(e) = sip
+                        .send_session_bye(&session.device_id, &session.channel_id)
+                        .await
+                    {
+                        tracing::warn!("GB28181 download BYE failed: {}", e);
+                    }
+                }
+                if let Some(ref zlm_client) = state.zlm_client {
+                    let _ = zlm_client.close_rtp_server(&stream_id).await;
+                }
+            } else if let Some(ref zlm_client) = state.zlm_client {
                 let _ = zlm_client.stop_download(&session.file_name).await;
-                dm.remove(&stream_id).await;
             }
+            dm.remove(&stream_id).await;
         }
     }
 

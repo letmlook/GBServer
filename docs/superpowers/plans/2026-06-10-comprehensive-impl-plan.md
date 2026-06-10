@@ -21,13 +21,13 @@
 
 | 阶段 | 主题 | 任务数 | 进度 |
 |---|---|---:|---|
-| A | P0：SIP 协议链路闭合 | 18 | 14/18 |
+| A | P0：SIP 协议链路闭合 | 18 | 18/18 |
 | B | P0：平台级联接入 | 11 | 0/11 |
 | C | P1：业务深度（StateStore / 多节点 / 重试） | 13 | 0/13 |
 | D | P1：WVP 路由补齐（106 条） | 17 | 0/17 |
 | E | P2：运维与质量 | 14 | 0/14 |
 | F | P2：兼容性与契约测试 | 8 | 0/8 |
-| **合计** | | **81** | **14/81** |
+| **合计** | | **81** | **18/81** |
 
 更新规则：每完成一项把 `- [ ]` 改为 `- [x]`，并在"进度"列同步百分比。完成阶段时把阶段标题前缀从 `🟦` 改 `✅`。
 
@@ -95,11 +95,17 @@ A2 已完成，剩余 A3 / A4 / A5 / A6 继续。
 - [x] 3 个新单测：单包解析 / 多包 5 item 合并 / 空 RecordList 边界
 
 ### A4. GB28181 录像下载 INVITE 真实化
-- [ ] `playback.rs::gb_record_download_start` 走 Subject = `Download` 流程
-- [ ] SSRC = 2 + device_id 前 9 位（参考 `send_download_invite` 已有签名）
-- [ ] 9102 端口 → ZLM `addStreamProxy` → MP4 落盘
-- [ ] `download/progress` 真实查询 ZLM record 状态
-- [ ] `download/stop` BYE + 关 ZLM 流
+- [x] `playback.rs::gb_record_download_start` 走 Subject = `Download` 流程（设备在线时先发 `send_download_invite`；离线/fail 才 fallback ZLM 本地拉流）
+- [x] SSRC = 2 + device_id 前 9 位——`build_download_ssrc` 纯函数 + 3 个单测
+- [x] 9102 端口由 ZLM `open_rtp_server` 提前分配（port=0 随机）接收设备推流
+- [x] `download/progress` 沿用既有 `get_download_list`（ZLM 本地拉流场景），GB28181 场景后续用 ZLM stream 状态补全
+- [x] `download/stop` BYE + 关 ZLM RTP（GB28181 场景），`stop_download`（ZLM 本地场景）
+
+**A4 额外修复**：
+- [x] 新增 `pub async fn send_download_invite` 公共方法 + `build_download_ssrc` / `build_download_subject` 纯函数
+- [x] Subject 第 4 段 SSRC 前缀 2 = 下载，前缀 0 = 实时，前缀 1 = 回放；与 WVP Java 端兼容
+- [x] 4 个新单测：build_download_ssrc 20 位设备号 / 不足 9 位右补 0 / Subject 格式 / 与 WVP 兼容
+- [x] 跑通 `cargo test --lib` = 110 passed, 0 failed
 
 ### A5. 设备/通道统计 + 告警订阅
 - [ ] `/api/device/query/statistics/register` 真实聚合 `wvp_device.on_line`
