@@ -35,7 +35,19 @@ impl PlaybackManager {
         }
     }
 
-    pub async fn create(&self, session: PlaybackSession) {
+    /// 从 `playback_{device_id}_{channel_id}_{ts}` 格式的 stream_id 解析
+/// 出 device_id 和 channel_id。GB28181 ID 自身不含下划线，
+/// 下划线分隔符安全。
+fn parse_playback_target(stream_id: &str) -> Option<(String, String)> {
+    let parts: Vec<&str> = stream_id.split('_').collect();
+    if parts.len() >= 3 && parts[0] == "playback" {
+        Some((parts[1].to_string(), parts[2].to_string()))
+    } else {
+        None
+    }
+}
+
+pub async fn create(&self, session: PlaybackSession) {
         self.sessions.write().await.insert(session.stream_id.clone(), session);
     }
 
@@ -278,7 +290,7 @@ pub async fn playback_resume(
         let parts: Vec<&str> = stream_id.split('_').collect();
         if parts.len() >= 3 {
             let device_id = parts[1];
-            let _channel_id = parts[2];
+            let channel_id = parts[2].to_string();
             
             if let Err(e) = sip.send_message_to_device(device_id, crate::sip::SipMethod::Info,
                 Some(r#"<?xml version="1.0" encoding="UTF-8"?><Resume><ChannelID>0</ChannelID></Resume>"#),
@@ -310,7 +322,7 @@ pub async fn playback_pause(
         let parts: Vec<&str> = stream_id.split('_').collect();
         if parts.len() >= 3 {
             let device_id = parts[1];
-            let _channel_id = parts[2];
+            let channel_id = parts[2].to_string();
             
             if let Err(e) = sip.send_message_to_device(device_id, crate::sip::SipMethod::Info, 
                 Some(r#"<?xml version="1.0" encoding="UTF-8"?><Pause><ChannelID>0</ChannelID></Pause>"#),
@@ -343,16 +355,15 @@ pub async fn playback_speed(
         let parts: Vec<&str> = stream_id.split('_').collect();
         if parts.len() >= 3 {
             let device_id = parts[1];
-            let _channel_id = parts[2];
+            let channel_id = parts[2].to_string();
             
-            let speed_xml = format!(
-                r#"<?xml version="1.0" encoding="UTF-8"?><PlaybackSpeed><ChannelID>0</ChannelID><Speed>{}</Speed></PlaybackSpeed>"#,
-                speed
-            );
-            
-            if let Err(e) = sip.send_message_to_device(device_id, crate::sip::SipMethod::Info,
-                Some(&speed_xml),
-                Some("Application/MANSCDP+xml")).await {
+            if let Err(e) = sip
+                .send_playback_control(
+                    device_id,
+                    &channel_id,
+                    crate::sip::PlaybackControlCmd::Scale { speed },
+                )
+                .await {
                 tracing::error!("Failed to send speed command: {}", e);
                 return Json(WVPResult::error(format!("SIP error: {}", e)));
             }
@@ -386,28 +397,15 @@ pub async fn playback_seek(
             let device_id = parts[1];
             let channel_id = parts[2];
             
-            // GB28181 回放拖动定位指令
-            let seek_xml = format!(
-                r#"<?xml version="1.0" encoding="UTF-8"?>
-<Control>
-<CmdType>DeviceControl</CmdType>
-<SN>{}</SN>
-<DeviceID>{}</DeviceID>
-<PlayBackCtrl>
-<ChannelID>{}</ChannelID>
-<PlayBackCmd>Seek</PlayBackCmd>
-<SeekTime>{}</SeekTime>
-</PlayBackCtrl>
-</Control>"#,
-                chrono::Utc::now().timestamp() % 10000,
-                device_id,
-                channel_id,
-                seek_time
-            );
-            
-            if let Err(e) = sip.send_message_to_device(device_id, crate::sip::SipMethod::Info,
-                Some(&seek_xml),
-                Some("Application/MANSCDP+xml")).await {
+            if let Err(e) = sip
+                .send_playback_control(
+                    device_id,
+                    &channel_id,
+                    crate::sip::PlaybackControlCmd::Seek {
+                        seek_time: seek_time.clone(),
+                    },
+                )
+                .await {
                 tracing::error!("Failed to send seek command: {}", e);
                 return Json(WVPResult::error(format!("SIP error: {}", e)));
             }

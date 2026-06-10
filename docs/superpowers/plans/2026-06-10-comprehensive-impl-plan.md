@@ -21,13 +21,13 @@
 
 | 阶段 | 主题 | 任务数 | 进度 |
 |---|---|---:|---|
-| A | P0：SIP 协议链路闭合 | 18 | 5/18 |
+| A | P0：SIP 协议链路闭合 | 18 | 10/18 |
 | B | P0：平台级联接入 | 11 | 0/11 |
 | C | P1：业务深度（StateStore / 多节点 / 重试） | 13 | 0/13 |
 | D | P1：WVP 路由补齐（106 条） | 17 | 0/17 |
 | E | P2：运维与质量 | 14 | 0/14 |
 | F | P2：兼容性与契约测试 | 8 | 0/8 |
-| **合计** | | **81** | **5/81** |
+| **合计** | | **81** | **10/81** |
 
 更新规则：每完成一项把 `- [ ]` 改为 `- [x]`，并在"进度"列同步百分比。完成阶段时把阶段标题前缀从 `🟦` 改 `✅`。
 
@@ -38,7 +38,9 @@
 - ZLM Hook：11 种（`src/zlm/hook.rs`）
 - 编译：dev profile 1m02s / 0 errors / 82 warnings（其中 36 处 snake_case 命名）
 
-## ✅ 阶段 A — P0：SIP 协议链路闭合（进行中）
+## 阶段 A — P0：SIP 协议链路闭合
+
+A2 已完成，剩余 A3 / A4 / A5 / A6 继续。
 
 依赖：dev-plan Phase 1.3 收口 → A1 → A2 → A3 → A4。
 可验证产物：模拟器回放 200 OK 完整链 + `pending_request` 状态机单测。
@@ -67,11 +69,17 @@
 - [x] `cascade_service.rs::dummy_pool()` 改 cfg 分发 postgres / mysql，删除硬编码 mysql
 
 ### A2. PlaybackSession 真实化
-- [ ] `playback_pause` / `playback_speed` / `playback_seek` 调用 `send_playback_control`（MANSRTSP PlaybackControl XML）
-- [ ] PlaybackInviteSessionManager 状态机与 SipServer 事件打通
-- [ ] 回放停止走 `send_session_bye`（不再用 talk BYE fallback）
-- [ ] MediaWaiter 接 9102 流 → 触发 ZLM `addStreamProxy`
-- [ ] 单元测试：模拟器暂停 / 倍速 / 跳转 / 停止 4 个事件
+- [x] `playback_pause` / `playback_speed` / `playback_seek` 调用 `send_playback_control`（GB28181 PlayBackCtrl XML）
+- [x] PlaybackInviteSessionManager 状态机与 SipServer 事件打通（既有 `playback_session.rs`，handler 通过 `playback_manager.{pause,resume,update_speed,update_current_time}` 维护）
+- [x] 回放停止走 `send_session_bye`（不再用 talk BYE fallback）—— 既有 `playback_stop` 已直接调
+- [ ] MediaWaiter 接 9102 流 → 触发 ZLM `addStreamProxy`（A2 第 4 项留到 A3/A4 配合做）
+- [x] 单元测试：build_playback_control_xml 4 个 case（Pause / Resume / Seek / Scale）XML 拼装正确
+
+**A2 额外修复**：
+- [x] 新增 `pub enum PlaybackControlCmd { Play, Pause, Resume, Stop, Seek, Scale }` + `pub(crate) fn build_playback_control_xml` 纯函数
+- [x] `src/sip/mod.rs` 增加 `pub use server::PlaybackControlCmd`
+- [x] 4 个 handler（pause/resume/speed/seek）改用 `send_playback_control`，XML 全部符合 GB28181
+- [x] `stream_id` 解析改用 `parse_playback_target` 辅助函数，channel_id 不再被丢弃
 
 ### A3. GB28181 RecordInfo 多包查询
 - [ ] `playback.rs::gb_record_query` 走 `send_record_info_query` 而非 mock

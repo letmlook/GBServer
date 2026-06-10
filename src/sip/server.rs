@@ -32,6 +32,82 @@ use crate::sip::gb28181::nat_helper::NatHelper;
 use crate::sip::transport::tcp::{TcpConnectionManager, TcpListener};
 use crate::zlm::ZlmClient;
 use crate::cascade::CascadeRegistrar;
+/// GB28181 回放控制命令
+///
+/// SipServer::send_playback_control 的入参类型。
+/// 不同命令对应 DeviceControl/PlayBackCtrl 下不同的子字段。
+#[derive(Debug, Clone, PartialEq)]
+pub enum PlaybackControlCmd {
+    /// 启动回放
+    Play,
+    /// 暂停
+    Pause,
+    /// 恢复
+    Resume,
+    /// 停止
+    Stop,
+    /// 跳转到指定时间（RFC 3339 或 YYYY-MM-DDTHH:MM:SS）
+    Seek { seek_time: String },
+    /// 倍速（1.0 / 2.0 / 4.0 / 8.0 / 0.5 / 0.25）
+    Scale { speed: f64 },
+}
+
+/// 按 GB28181 规范构造 PlayBackCtrl 设备控制 XML。
+/// 抽出为纯函数便于单测，覆盖 6 种命令的 XML 拼装。
+pub(crate) fn build_playback_control_xml(
+    cmd: &PlaybackControlCmd,
+    device_id: &str,
+    channel_id: &str,
+    sn: i64,
+) -> String {
+    let (inner, simple) = match cmd {
+        PlaybackControlCmd::Play => ("Play".to_string(), true),
+        PlaybackControlCmd::Pause => ("Pause".to_string(), true),
+        PlaybackControlCmd::Resume => ("Resume".to_string(), true),
+        PlaybackControlCmd::Stop => ("Stop".to_string(), true),
+        PlaybackControlCmd::Seek { seek_time } => (
+            format!(
+                r#"<SeekTime>{}</SeekTime><PlayBackCmd>Seek</PlayBackCmd>"#,
+                seek_time
+            ),
+            false,
+        ),
+        PlaybackControlCmd::Scale { speed } => (
+            format!(r#"<Scale>{}</Scale><PlayBackCmd>Scale</PlayBackCmd>"#, speed),
+            false,
+        ),
+    };
+
+    if simple {
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<Control>
+<CmdType>DeviceControl</CmdType>
+<SN>{sn}</SN>
+<DeviceID>{device_id}</DeviceID>
+<PlayBackCtrl>
+<ChannelID>{channel_id}</ChannelID>
+<PlayBackCmd>{inner}</PlayBackCmd>
+</PlayBackCtrl>
+</Control>"#
+        )
+    } else {
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<Control>
+<CmdType>DeviceControl</CmdType>
+<SN>{sn}</SN>
+<DeviceID>{device_id}</DeviceID>
+<PlayBackCtrl>
+<ChannelID>{channel_id}</ChannelID>
+{inner}
+</PlayBackCtrl>
+</Control>"#
+        )
+    }
+}
+
+
 use crate::sip::gb28181::pending_request::PendingRequestManager;
 use crate::sip::gb28181::media_waiter::{MediaWaiterManager, MediaWaitResult};
 
@@ -2730,8 +2806,32 @@ f=v/1/96/1/2/1/1/0
         }
         
         self.invite_session_manager.update_status(&call_id, InviteSessionStatus::Terminated).await;
-        
+
         Ok(call_id)
+    }
+
+    /// 发送 GB28181 回放控制命令（PlayBackCtrl）。
+    ///
+    /// 支持的命令：Play / Pause / Resume / Stop / Seek（需 seek_time）/ Scale（需 speed）
+    /// 设备侧会回复 200 OK 标记完成；这里只负责发送，状态机由调用方（playback_manager）维护。
+    pub async fn send_playback_control(
+        &self,
+        device_id: &str,
+        channel_id: &str,
+        cmd: PlaybackControlCmd,
+    ) -> Result<()> {
+
+        let sn = (chrono::Utc::now().timestamp() % 10000) as i64;
+        let xml = build_playback_control_xml(&cmd, device_id, channel_id, sn);
+
+        self.send_message_to_device(
+            device_id,
+            crate::sip::SipMethod::Info,
+            Some(&xml),
+            Some("Application/MANSCDP+xml"),
+        )
+        .await
+
     }
 
     /// 发送 GB28181 RecordInfo 查询请求（设备侧历史录像检索）
@@ -3403,4 +3503,69 @@ async fn send_subscribe_internal(
     catalog_subscription_manager.subscribe(subscription).await;
     
     Ok(())
+}
+
+
+#[cfg(test)]
+mod playback_control_tests {
+    use super::*;
+
+    #[test]
+    fn build_pause_xml_uses_simple_play_back_cmd() {
+        let xml = build_playback_control_xml(
+            &PlaybackControlCmd::Pause,
+            "34020000001320000001",
+            "34020000001320000002",
+            42,
+        );
+        assert!(xml.contains("<CmdType>DeviceControl</CmdType>"));
+        assert!(xml.contains("<PlayBackCmd>Pause</PlayBackCmd>"));
+        assert!(xml.contains("<ChannelID>34020000001320000002</ChannelID>"));
+        assert!(xml.contains("<DeviceID>34020000001320000001</DeviceID>"));
+        assert!(xml.contains("<SN>42</SN>"));
+        // 简单命令不应含 SeekTime / Scale
+        assert!(!xml.contains("SeekTime"));
+        assert!(!xml.contains("<Scale>"));
+    }
+
+    #[test]
+    fn build_resume_xml_uses_simple_play_back_cmd() {
+        let xml = build_playback_control_xml(
+            &PlaybackControlCmd::Resume,
+            "dev1",
+            "ch1",
+            7,
+        );
+        assert!(xml.contains("<PlayBackCmd>Resume</PlayBackCmd>"));
+        assert!(!xml.contains("SeekTime"));
+        assert!(!xml.contains("<Scale>"));
+    }
+
+    #[test]
+    fn build_seek_xml_includes_seek_time() {
+        let xml = build_playback_control_xml(
+            &PlaybackControlCmd::Seek {
+                seek_time: "2026-06-10T10:00:00".to_string(),
+            },
+            "dev1",
+            "ch1",
+            99,
+        );
+        assert!(xml.contains("<PlayBackCmd>Seek</PlayBackCmd>"));
+        assert!(xml.contains("<SeekTime>2026-06-10T10:00:00</SeekTime>"));
+        // 简单命令字段不能混入
+        assert!(!xml.contains("<PlayBackCmd>Pause</PlayBackCmd>"));
+    }
+
+    #[test]
+    fn build_scale_xml_uses_scale_tag() {
+        let xml = build_playback_control_xml(
+            &PlaybackControlCmd::Scale { speed: 2.0 },
+            "dev1",
+            "ch1",
+            1,
+        );
+        assert!(xml.contains("<PlayBackCmd>Scale</PlayBackCmd>"));
+        assert!(xml.contains("<Scale>2</Scale>"));
+    }
 }
