@@ -13,6 +13,7 @@ pub mod scheduler;
 pub mod cascade;
 pub mod metrics;
 pub mod state_store;
+pub mod security;
 
 use config::AppConfig;
 use std::collections::HashMap;
@@ -83,6 +84,14 @@ async fn init_db_tables(pool: &db::Pool) -> anyhow::Result<()> {
 }
 
 pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
+    // F3: validate JWT secret at startup (warns on weak, doesn't crash to keep dev usable)
+    match crate::security::validate_jwt_secret(&cfg.jwt.secret) {
+        Ok(()) => tracing::info!("JWT secret OK (len={})", cfg.jwt.secret.len()),
+        Err(e) => {
+            tracing::warn!("⚠️  JWT secret validation failed: {}", e);
+            tracing::warn!("Set WVP__JWT__SECRET to a ≥32-char random hex string before production.");
+        }
+    }
     let pool = db::create_pool(&cfg).await?;
     let ws_state = Arc::new(crate::handlers::websocket::WsState::new());
 
