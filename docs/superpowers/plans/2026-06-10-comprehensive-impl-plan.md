@@ -28,6 +28,12 @@
 | E | P2：运维与质量 | 14 | 0/14 |
 | F | P2：兼容性与契约测试 | 8 | 0/8 |
 | **合计** | | **81** | **18/81** |
+| B | P0：平台级联接入 | 11 | 0/11 |
+| C | P1：业务深度（StateStore / 多节点 / 重试） | 13 | 0/13 |
+| D | P1：WVP 路由补齐（106 条） | 17 | 0/17 |
+| E | P2：运维与质量 | 14 | 0/14 |
+| F | P2：兼容性与契约测试 | 8 | 0/8 |
+| **合计** | | **81** | **23/81** |
 
 更新规则：每完成一项把 `- [ ]` 改为 `- [x]`，并在"进度"列同步百分比。完成阶段时把阶段标题前缀从 `🟦` 改 `✅`。
 
@@ -108,11 +114,18 @@ A2 已完成，剩余 A3 / A4 / A5 / A6 继续。
 - [x] 跑通 `cargo test --lib` = 110 passed, 0 failed
 
 ### A5. 设备/通道统计 + 告警订阅
-- [ ] `/api/device/query/statistics/register` 真实聚合 `wvp_device.on_line`
-- [ ] `/api/device/query/statistics/keepalive` 真实聚合 `wvp_device.keepalive_time`
-- [ ] `send_alarm_subscribe` 公开方法 + `/api/device/query/subscribe/alarm` 路由
-- [ ] SipServer 报警 NOTIFY → `db::alarm::insert_alarm` 入库
-- [ ] WS 广播 `alarm_event` 消息
+- [x] `/api/device/query/statistics/register` 真实聚合 `wvp_device`（`count_registered_devices` + `count_online_devices`）
+- [x] `/api/device/query/statistics/keepalive` 真实聚合 `wvp_device.keepalive_time` 最近 60s 内的活跃数（`count_alive_devices`）
+- [x] `send_alarm_subscribe` 公开方法（A 阶段已有） + `/api/device/query/subscribe/alarm` 路由
+- [x] SipServer 报警 NOTIFY → `db::alarm::insert_alarm` 入库（`handle_alarm` 已调用）
+- [x] WS 广播 `alarm` 消息（`handle_alarm` 已广播）
+
+**A5 额外修复**：
+- [x] 新增 2 个 SQL helper：`count_registered_devices` / `count_alive_devices(secs)`，cfg 分发 postgres / mysql
+- [x] 新增 `SubscribeAlarmQuery` 结构体 + 3 个 handler：`statistics_register` / `statistics_keepalive` / `subscribe_alarm`
+- [x] 3 个路由挂上 router.rs
+- [x] `subscribe_alarm` handler 优先调 `sip.send_alarm_subscribe` 走真实 SIP 订阅
+- [x] WS 广播事件名 `alarm`（与前端约定），负载含 deviceId / channelId / alarmType / coords / time
 
 ### A6. JT1078 实时/回放真实化
 - [ ] `jt1078::live_start` 调 `Jt1078Manager::send_live_video`（9101）后再开 ZLM RTP

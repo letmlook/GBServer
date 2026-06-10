@@ -115,6 +115,9 @@ pub fn app(state: AppState) -> Router<AppState> {
             get(device_stub::channel_one),
         )
         .route("/api/device/query/streams", get(device_stub::query_streams))
+        .route("/api/device/query/statistics/register", get(device_stub::statistics_register))
+        .route("/api/device/query/statistics/keepalive", get(device_stub::statistics_keepalive))
+        .route("/api/device/query/subscribe/alarm", get(device_stub::subscribe_alarm))
         .route(
             "/api/device/control/record",
             get(device_stub::control_record),
