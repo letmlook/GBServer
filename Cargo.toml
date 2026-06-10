@@ -68,6 +68,10 @@ axum-test = "7"
 criterion = { version = "0.5", features = ["async_tokio"] }
 uuid = { version = "1", features = ["v4"] }
 
+[[test]]
+name = "device_simulator_test"
+path = "tests/integration/sip/device_simulator_test.rs"
+
 [profile.release]
 lto = true
 codegen-units = 1

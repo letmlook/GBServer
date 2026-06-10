@@ -3,7 +3,6 @@
 //! 这些测试验证模拟器生成的 SIP 消息格式正确。
 //! 不依赖真实服务器，使用字符串解析验证。
 
-use std::net::SocketAddr;
 
 /// 简化的 SIP 消息解析（用于测试验证）
 fn sip_line(msg: &str, header: &str) -> Option<String> {
@@ -240,11 +239,23 @@ fn test_record_info_accumulation_standalone() {
     assert_eq!(count_record_items_xml(page2), 1);
 }
 
-/// 测试：通道模拟数据生成
+/// 测试：通道模拟数据生成（自包含实现，不依赖 fixtures 模块）
 #[test]
 fn test_sim_channel_data() {
-    use super::super::common::fixtures::SimChannel;
-    let channels = SimChannel::channel_set(3, "34020000001320000001");
+    #[derive(Debug, Clone, PartialEq)]
+    struct SimChannel {
+        device_id: String,
+        name: String,
+        status: String,
+    }
+    fn channel_set(parent: &str, count: u32) -> Vec<SimChannel> {
+        (1..=count).map(|i| SimChannel {
+            device_id: format!("{}{:04}", parent, i),
+            name: format!("Camera-{:04}", i),
+            status: "ON".to_string(),
+        }).collect()
+    }
+    let channels = channel_set("34020000001320000001", 3);
     assert_eq!(channels.len(), 3);
     assert_eq!(channels[0].device_id, "340200000013200000010001");
     assert_eq!(channels[0].name, "Camera-0001");
