@@ -11,7 +11,7 @@ use tokio::sync::{oneshot, RwLock};
 use dashmap::DashMap;
 
 use crate::config::SipConfig;
-use crate::db::{device as db_device, Pool};
+use crate::db::{device as db_device, platform as db_platform, Pool};
 use crate::db::position_history as ph;
 use crate::handlers::websocket::WsState;
 use crate::sip::core::parser::Parser;
@@ -1044,7 +1044,7 @@ impl SipServer {
     async fn handle_message(
         req: SipRequest,
         addr: SocketAddr,
-        _config: &Arc<SipConfig>,
+        config: &Arc<SipConfig>,
         device_manager: &Arc<DeviceManager>,
         pool: &Pool,
         socket: &Arc<UdpSocket>,
@@ -1081,6 +1081,37 @@ impl SipServer {
         if let Some(body) = &req.body {
             let cmd_type = XmlParser::get_cmd_type(body);
             tracing::debug!("MESSAGE from {} - CmdType: {:?}", device_id, cmd_type);
+
+            // B2: detect upstream platform queries — when an enabled platform (registered
+            // in wvp_platform by device_gb_id) sends a Catalog/Info/Status query that
+            // targets our local GB-ID, route to upstream handlers that respond with our
+            // own catalog/info/status instead of looking up the platform as a device.
+            let upstream_platform = db_platform::get_by_device_gb_id(pool, &device_id).await.ok().flatten();
+            let query_target = XmlParser::get_device_id(body)
+                .unwrap_or_else(|| config.device_id.clone());
+            if upstream_platform.is_some() && query_target == config.device_id {
+                match cmd_type.as_deref() {
+                    Some("Catalog") => {
+                        return Self::handle_catalog_for_platform(
+                            &config.device_id, &sn, pool, addr, &from, &to,
+                            &via, &call_id, &cseq, socket,
+                        ).await;
+                    }
+                    Some("DeviceInfo") => {
+                        return Self::handle_device_info_for_platform(
+                            &config.device_id, &sn, addr, &from, &to,
+                            &via, &call_id, &cseq, socket,
+                        ).await;
+                    }
+                    Some("DeviceStatus") => {
+                        return Self::handle_device_status_for_platform(
+                            &config.device_id, &sn, addr, &from, &to,
+                            &via, &call_id, &cseq, socket,
+                        ).await;
+                    }
+                    _ => {} // fall through to existing routing
+                }
+            }
 
             match cmd_type.as_deref() {
                 Some("Keepalive") | Some("keepalive") => {
@@ -3534,7 +3565,83 @@ Authentication-Info: qop=auth,rspauth="{}",cnonce="{}",nc=00000001"#,
             }
         }
         None
+    }    // ---------------------------------------------------------------------
+    // B2: Upstream platform MESSAGE handlers (call pure helpers)
+    // ---------------------------------------------------------------------
+    /// 上级平台 Catalog 查询 → 返回本级所有设备的全部通道
+    async fn handle_catalog_for_platform(
+        local_device_id: &str,
+        sn: &str,
+        pool: &Pool,
+        addr: SocketAddr,
+        from: &str,
+        to: &str,
+        via: &str,
+        call_id: &str,
+        cseq: &str,
+        socket: &Arc<UdpSocket>,
+    ) -> Result<()> {
+        tracing::info!("Upstream Catalog query → responding with full local catalog for {}", local_device_id);
+        let channels = db_device::list_all_channels(pool).await.unwrap_or_default();
+        let response_body = build_upstream_catalog_response(sn, local_device_id, &channels);
+        let response = Parser::generate_response(200, "OK", &[
+            ("Via", via), ("From", from), ("To", to),
+            ("Call-ID", call_id), ("CSeq", cseq),
+            ("Content-Type", "Application/MANSCDP+xml"),
+        ], Some(&response_body));
+        Self::send_response(socket, addr, &response).await?;
+        Ok(())
     }
+
+    /// 上级平台 DeviceInfo 查询 → 返回本级服务器信息
+    async fn handle_device_info_for_platform(
+        local_device_id: &str,
+        sn: &str,
+        addr: SocketAddr,
+        from: &str,
+        to: &str,
+        via: &str,
+        call_id: &str,
+        cseq: &str,
+        socket: &Arc<UdpSocket>,
+    ) -> Result<()> {
+        tracing::info!("Upstream DeviceInfo query → responding with local server info for {}", local_device_id);
+        let response_body = build_upstream_device_info_response(sn, local_device_id);
+        let response = Parser::generate_response(200, "OK", &[
+            ("Via", via), ("From", from), ("To", to),
+            ("Call-ID", call_id), ("CSeq", cseq),
+            ("Content-Type", "Application/MANSCDP+xml"),
+        ], Some(&response_body));
+        Self::send_response(socket, addr, &response).await?;
+        Ok(())
+    }
+
+    /// 上级平台 DeviceStatus 查询 → 返回本级服务器状态
+    async fn handle_device_status_for_platform(
+        local_device_id: &str,
+        sn: &str,
+        addr: SocketAddr,
+        from: &str,
+        to: &str,
+        via: &str,
+        call_id: &str,
+        cseq: &str,
+        socket: &Arc<UdpSocket>,
+    ) -> Result<()> {
+        tracing::info!("Upstream DeviceStatus query → responding with local server status for {}", local_device_id);
+        let now = Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string();
+        let response_body = build_upstream_device_status_response(sn, local_device_id, &now);
+        let response = Parser::generate_response(200, "OK", &[
+            ("Via", via), ("From", from), ("To", to),
+            ("Call-ID", call_id), ("CSeq", cseq),
+            ("Content-Type", "Application/MANSCDP+xml"),
+        ], Some(&response_body));
+        Self::send_response(socket, addr, &response).await?;
+        Ok(())
+    }
+
+
+
 
     fn get_received_from_via(via: &str) -> Option<String> {
         for part in via.split(';') {
@@ -3656,6 +3763,56 @@ async fn send_subscribe_internal(
     catalog_subscription_manager.subscribe(subscription).await;
     
     Ok(())
+}
+
+
+
+/// B2: Pure helper — build the upstream Catalog response body.
+pub fn build_upstream_catalog_response(
+    sn: &str,
+    local_device_id: &str,
+    channels: &[crate::db::DeviceChannel],
+) -> String {
+    let mut items = String::new();
+    for ch in channels {
+        let name = ch.name.as_deref().unwrap_or("未知通道");
+        let gb_id = ch.gb_device_id.as_deref().unwrap_or("");
+        let parent = ch.parent_id.as_deref().unwrap_or(local_device_id);
+        let status = ch.status.as_deref().unwrap_or("OFF");
+        let has_audio = ch.has_audio.unwrap_or(false);
+        let sub_count = ch.sub_count.unwrap_or(0);
+        items.push_str(&format!(
+            "<Item><DeviceID>{}</DeviceID><Name>{}</Name><Status>{}</Status><ParentID>{}</ParentID><Online>{}</Online><SubCount>{}</SubCount><HasAudio>{}</HasAudio></Item>",
+            gb_id, name, status, parent,
+            if status == "ON" { "true" } else { "false" },
+            sub_count, has_audio
+        ));
+    }
+    let num = channels.len();
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?><Response><CmdType>Catalog</CmdType><SN>{}</SN><DeviceID>{}</DeviceID><SumNum>{}</SumNum><DeviceList Num="{}">{}</DeviceList></Response>"#,
+        sn, local_device_id, num, num, items
+    )
+}
+
+/// B2: Pure helper — build the upstream DeviceInfo response body.
+pub fn build_upstream_device_info_response(sn: &str, local_device_id: &str) -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?><Response><CmdType>DeviceInfo</CmdType><SN>{}</SN><DeviceID>{}</DeviceID><Result>OK</Result><DeviceName>WVP-GbServer</DeviceName><Manufacturer>WVP-Rust</Manufacturer><Model>GBServer v0.1</Model><Channel>1</Channel></Response>"#,
+        sn, local_device_id
+    )
+}
+
+/// B2: Pure helper — build the upstream DeviceStatus response body.
+pub fn build_upstream_device_status_response(
+    sn: &str,
+    local_device_id: &str,
+    now: &str,
+) -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?><Response><CmdType>DeviceStatus</CmdType><SN>{}</SN><DeviceID>{}</DeviceID><Result>OK</Result><Online>ON</Online><Status>OK</Status><DeviceTime>{}</DeviceTime></Response>"#,
+        sn, local_device_id, now
+    )
 }
 
 
@@ -3847,5 +4004,115 @@ mod playback_control_tests {
         );
         assert!(xml.contains("<PlayBackCmd>Scale</PlayBackCmd>"));
         assert!(xml.contains("<Scale>2</Scale>"));
+    }
+}
+
+
+#[cfg(test)]
+mod upstream_message_tests {
+    use super::*;
+    use crate::db::DeviceChannel;
+
+    /// Catalog response uses our local GB-ID as DeviceID, SumNum matches channels len
+    #[test]
+    fn test_upstream_catalog_response_uses_local_device_id_and_sumnum() {
+        let xml = build_upstream_catalog_response("12345", "34020000002000000001", &[]);
+        assert!(xml.contains("<DeviceID>34020000002000000001</DeviceID>"));
+        assert!(xml.contains("<SN>12345</SN>"));
+        assert!(xml.contains("<CmdType>Catalog</CmdType>"));
+        assert!(xml.contains("<SumNum>0</SumNum>"));
+        assert!(xml.contains(r#"<DeviceList Num="0">"#));
+    }
+
+    /// Catalog response with one channel renders that channel as Item
+    #[test]
+    fn test_upstream_catalog_response_renders_single_channel() {
+        let ch = DeviceChannel {
+            id: 1,
+            device_id: Some("34020000002000000001".to_string()),
+            name: Some("Cam 1".to_string()),
+            manufacturer: None, model: None, owner: None,
+            civil_code: None, address: None,
+            parental: None, parent_id: Some("34020000002000000001".to_string()),
+            gb_device_id: Some("34020000002000000002".to_string()),
+            status: Some("ON".to_string()),
+            longitude: None, latitude: None, ptz_type: None,
+            create_time: None, update_time: None, sub_count: Some(0),
+            stream_id: None, has_audio: Some(true),
+            stream_identification: None, channel_type: None, map_level: None,
+            gb_name: None, gb_manufacturer: None, gb_model: None,
+            gb_civil_code: None, gb_address: None, gb_status: None,
+            gb_longitude: None, gb_latitude: None, record_plan_id: None,
+        };
+        let xml = build_upstream_catalog_response("99", "34020000002000000001", &[ch]);
+        assert!(xml.contains("<SumNum>1</SumNum>"));
+        assert!(xml.contains(r#"<DeviceList Num="1">"#));
+        assert!(xml.contains("<DeviceID>34020000002000000002</DeviceID>"));
+        assert!(xml.contains("<Name>Cam 1</Name>"));
+        assert!(xml.contains("<Status>ON</Status>"));
+        assert!(xml.contains("<ParentID>34020000002000000001</ParentID>"));
+        assert!(xml.contains("<Online>true</Online>"));
+        assert!(xml.contains("<HasAudio>true</HasAudio>"));
+    }
+
+    /// Catalog response falls back to local_device_id when parent_id missing
+    #[test]
+    fn test_upstream_catalog_response_parent_id_fallback() {
+        let ch = DeviceChannel {
+            id: 2, device_id: None,
+            name: Some("Orphan".to_string()),
+            manufacturer: None, model: None, owner: None,
+            civil_code: None, address: None,
+            parental: None, parent_id: None,
+            gb_device_id: Some("34020000002000000099".to_string()),
+            status: Some("OFF".to_string()),
+            longitude: None, latitude: None, ptz_type: None,
+            create_time: None, update_time: None, sub_count: Some(2),
+            stream_id: None, has_audio: Some(false),
+            stream_identification: None, channel_type: None, map_level: None,
+            gb_name: None, gb_manufacturer: None, gb_model: None,
+            gb_civil_code: None, gb_address: None, gb_status: None,
+            gb_longitude: None, gb_latitude: None, record_plan_id: None,
+        };
+        let xml = build_upstream_catalog_response("7", "34020000002000000001", &[ch]);
+        assert!(xml.contains("<ParentID>34020000002000000001</ParentID>"));
+        assert!(xml.contains("<Online>false</Online>"));
+        assert!(xml.contains("<SubCount>2</SubCount>"));
+        assert!(xml.contains("<HasAudio>false</HasAudio>"));
+    }
+
+    /// DeviceInfo response contains server identity fields
+    #[test]
+    fn test_upstream_device_info_response_format() {
+        let xml = build_upstream_device_info_response("42", "34020000002000000001");
+        assert!(xml.contains("<CmdType>DeviceInfo</CmdType>"));
+        assert!(xml.contains("<SN>42</SN>"));
+        assert!(xml.contains("<DeviceID>34020000002000000001</DeviceID>"));
+        assert!(xml.contains("<Result>OK</Result>"));
+        assert!(xml.contains("<Manufacturer>WVP-Rust</Manufacturer>"));
+        assert!(xml.contains("<Model>GBServer v0.1</Model>"));
+    }
+
+    /// DeviceStatus response contains OK status and timestamp
+    #[test]
+    fn test_upstream_device_status_response_format() {
+        let xml = build_upstream_device_status_response("55", "34020000002000000001", "2026-06-10T12:00:00");
+        assert!(xml.contains("<CmdType>DeviceStatus</CmdType>"));
+        assert!(xml.contains("<SN>55</SN>"));
+        assert!(xml.contains("<DeviceID>34020000002000000001</DeviceID>"));
+        assert!(xml.contains("<Result>OK</Result>"));
+        assert!(xml.contains("<Online>ON</Online>"));
+        assert!(xml.contains("<Status>OK</Status>"));
+        assert!(xml.contains("<DeviceTime>2026-06-10T12:00:00</DeviceTime>"));
+    }
+
+    /// Routing detection: a GB-ID as XML attribute (parsed by XmlParser.parse) is the upstream query target
+    #[test]
+    fn test_xml_parser_extracts_query_target_device_id() {
+        let body = r#"<?xml version="1.0"?><Query CmdType="Catalog" DeviceID="34020000002000000001" SN="10"/>"#;
+        let target = crate::sip::gb28181::XmlParser::get_device_id(body);
+        assert_eq!(target, Some("34020000002000000001".to_string()));
+        let sn = crate::sip::gb28181::XmlParser::get_sn(body);
+        assert_eq!(sn, Some(10));
     }
 }
