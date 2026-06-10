@@ -6,7 +6,7 @@ use sqlx::FromRow;
 use super::Pool;
 
 /// 国标设备完整信息
-#[derive(Debug, Clone, Serialize, FromRow)]
+#[derive(Debug, Clone, Default, Serialize, FromRow)]
 pub struct Device {
     pub id: i32,
     pub device_id: String,
@@ -38,7 +38,7 @@ pub struct Device {
 }
 
 /// 设备通道完整信息
-#[derive(Debug, Clone, Serialize, FromRow)]
+#[derive(Debug, Clone, Default, Serialize, FromRow)]
 pub struct DeviceChannel {
     pub id: i32,
     pub device_id: Option<String>,

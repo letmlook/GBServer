@@ -11,7 +11,7 @@ use tower_http::cors::{Any, CorsLayer};
 use crate::auth::auth_middleware;
 use crate::handlers::{
     alarm, common_channel, device, device_control, device_stub, front_end, jt1078, platform, play,
-    playback, server, stream, stub, talk, user, websocket, webrtc, device_batch, region, role,
+    playback, server, stream, stub, sy_camera, talk, user, websocket, webrtc, device_batch, region, role,
 };
 use crate::handlers::metrics as metrics_handler;
 use crate::zlm::hook as zlm_hook;
@@ -839,6 +839,16 @@ pub fn app(state: AppState) -> Router<AppState> {
         .route("/api/role/delete", delete(role::role_delete))
         .route("/api/proxy/one", get(stream::proxy_one))
         .route("/api/push/forceClose", get(stream::push_force_close))
+        .route("/api/sy/camera/list", get(sy_camera::camera_list))
+        .route("/api/sy/camera/list-with-child", get(sy_camera::camera_list_with_child))
+        .route("/api/sy/camera/list-for-mobile", get(sy_camera::camera_list_for_mobile))
+        .route("/api/sy/camera/cont-with-child", get(sy_camera::camera_cont_with_child))
+        .route("/api/sy/camera/list/box", get(sy_camera::camera_list_box))
+        .route("/api/sy/camera/list/circle", get(sy_camera::camera_list_circle))
+        .route("/api/sy/camera/list/polygon", get(sy_camera::camera_list_polygon))
+        .route("/api/sy/camera/list/address", get(sy_camera::camera_list_address))
+        .route("/api/sy/camera/list/ids", get(sy_camera::camera_list_ids))
+        .route("/api/sy/camera/meeting/list", get(sy_camera::camera_meeting_list))
         .route("/api/region/one", get(region::region_one))
         .route("/api/region/page/list", get(region::region_page_list))
         .route("/api/region/sync", get(region::region_sync))

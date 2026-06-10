@@ -19,3 +19,4 @@ pub mod device_batch;
 pub mod metrics;
 pub mod role;
 pub mod region;
+pub mod sy_camera;
