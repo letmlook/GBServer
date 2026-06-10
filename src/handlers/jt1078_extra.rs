@@ -4,7 +4,7 @@
 //! live terminal session and is out of scope for the HTTP layer.
 
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Path, Query},
     Json,
 };
 use serde::Deserialize;

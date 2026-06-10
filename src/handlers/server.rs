@@ -23,7 +23,7 @@ use crate::db as db;
 
 // Helper functions to read system metrics
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-use {std::io::Read, std::fs::File, tokio::time::sleep, std::time::Duration};
+use {std::io::Read, tokio::time::sleep, std::time::Duration};
 use std::process::Command;
 
 pub async fn zlm_proxy(
