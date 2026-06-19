@@ -4,6 +4,13 @@
 > 上游设计：`docs/superpowers/specs/2026-05-30-wvp-java-parity-design.md` §7 Phase 3
 > 阶段承接：A2（PlaybackSession）+ A3（RecordInfo 多包）+ A4（GB28181 Download INVITE） — 上述子任务已经做了"骨架"，本阶段目标是把骨架串成真实生产闭环
 
+## 全局约束（约束所有任务）
+
+- **数据库 feature 默认值已切换为 sqlite**：`Cargo.toml` `default = ["sqlite"]`；CI 与本地开发跑 `cargo test` 默认走 SQLite
+- **三态 cfg 是强约束**：所有 `src/db/*.rs` 新增的表 / 函数必须同时给出 `#[cfg(feature = "postgres")]` / `#[cfg(feature = "mysql")]` / `#[cfg(feature = "sqlite")]` 三套 SQL 实现，照搬 `src/db/cloud_record.rs` 模板
+- **三库 CI 必跑**：Phase 3 验收需 `cargo test --lib` + `cargo test --no-default-features --features postgres --lib` + `cargo test --no-default-features --features mysql --lib` 三路全绿；任一红即失败
+- **优先复用已有 db 模块**：若 `gb_cloud_record` / `gb_device` / `gb_device_channel` 已有字段可承载 Phase 3 数据，禁止新建重复表
+
 ---
 
 ## Context
@@ -123,15 +130,21 @@ pub async fn send_playback_invite_and_wait(
 
 ### Task 3.3 — RecordInfo 多包等待 + 分页（P0，8h + 2h 测试）
 
-**目标**：`/api/playback/{device}/{channel}/record` 真正等 SIP 多包 RecordInfo 响应，调用方可以分页（page / count）。
+**目标**：`/api/playback/{device}/{channel}/record` 真正等 SIP 多包 RecordInfo 响应，调用方可以分页（page / count），查询结果可落 `gb_cloud_record` 复用现有三态 cfg 模块。
 
 | 子任务 | 文件 | 改动 |
 |---|---|---|
 | `send_record_info_query` 改 async + 返回 `Vec<RecordInfoItem>` | `src/sip/server.rs:3161` | 当前是 fire-and-forget；改用 `pending_request.register_with_receiver` + `accumulate_record_info` + `parse_record_info_items`；15s 超时返回已有部分 |
 | 新增 `QueryResult::Items(Vec<RecordInfoItem>)` 变体 | `src/sip/gb28181/pending_request.rs` | 替换当前的 `Raw(xml)`；`accumulate_record_info` 返回 true 时解析 → `Items` |
 | `gb_record_query` handler 等多包 | `src/handlers/playback.rs:478-536` | `match sip.send_record_info_query(...).await { Ok(items) => 返回分页; Err(_) => ZLM 兜底 }`；page / count 走标准 `slice` |
-| ZLM 兜底降级 | 同上 | SIP 失败 / 设备离线 → 当前 ZLM MP4 文件逻辑保留为兼容路径 |
+| **落库复用 `gb_cloud_record`**（**禁止新建 `src/db/record.rs`**） | `src/db/cloud_record.rs` | 用现有 `insert_records(device_id, channel_id, start, end, items)` 三态 SQL；新增 `query_by_device_channel(device_id, channel_id, page, count)` 三态实现 |
+| ZLM 兜底降级 | `src/handlers/playback.rs:478-536` | SIP 失败 / 设备离线 / 多包超时 → 当前 ZLM MP4 文件逻辑保留为兼容路径 |
 | 单测 + 集成 | `pending_request.rs::tests` | 多包 SumNum=5 乱序到达 → `Items(merge_5_items)`；page=1&count=10 取前 10 |
+
+**为什么复用 `gb_cloud_record`**：
+- 该表已有完整三态 cfg（`#[cfg(feature = "postgres")]` / `mysql` / `sqlite`），是当前最稳的"录像元数据"载体
+- 与设计文档 §3 "State management: sessions, dialogs, SSRC, streams, subscriptions" 的 "cleaned up and recovered correctly" 一致 —— 落库后设备重启/平台重启不丢
+- 避免在 Phase 3 中引入第四张录像相关表的 schema 漂移风险
 
 **RecordInfo 异步骨架**：
 
@@ -155,7 +168,6 @@ pub async fn send_record_info_query_and_wait(
             Ok(Ok(QueryResult::Items(packet))) => {
                 items.extend(packet);
                 packet_count += 1;
-                // 设备在 SumNum=N 包后会发最后一包，检查 SumNum
                 if let Some(sum) = self.extract_record_sum_num(&body) {
                     if packet_count >= sum { break; }
                 }
@@ -166,6 +178,11 @@ pub async fn send_record_info_query_and_wait(
             }
             _ => break,
         }
+    }
+    // 落库复用 gb_cloud_record（已三态 cfg）
+    if let Some(ref pool) = self.pool {
+        let _ = db::cloud_record::insert_records(pool, device_id, channel_id,
+            start_time, end_time, &items).await;
     }
     Ok(items)
 }
@@ -216,6 +233,34 @@ pub async fn send_record_info_query_and_wait(
 | 删除 `play_stop` 的 talk BYE fallback | `src/handlers/play.rs:152-158` | 整段删除 |
 | 文档更新 | `docs/OPERATIONS.md` | 新增 "Phase 3 真实视频/录像闭环" 章节 |
 
+### Task 3.7 — SQLite / MySQL / PostgreSQL 三库测试矩阵（P1，1h + 0.5h CI 配置）
+
+**目标**：Phase 3 新增/修改的所有 db 函数必须三库 cfg + 三库 CI 全绿；与项目 F2 阶段目标一致，但本任务只覆盖 Phase 3 涉及的 3 个 db 模块（`cloud_record` / 后续可能的 `record_plan` 等）。
+
+| 子任务 | 文件 | 改动 |
+|---|---|---|
+| 三库 cfg 检查 | `src/db/cloud_record.rs` | 验证 `query_by_device_channel` / `insert_records` 三态 cfg 完整（pg 已有，mysql 已有，sqlite 已有） |
+| SQLite 测试 | `tests/integration/sqlite_compat.rs`（已存在，参考 `Cargo.toml:83`） | 加 1 个 `cloud_record::insert_records + query_by_device_channel` round-trip 测试，验证 SQLite 路径 |
+| MySQL 测试 | 同上 | 加 1 个 cfg(feature = "mysql") round-trip |
+| PostgreSQL 测试 | 同上 | 加 1 个 cfg(feature = "postgres") round-trip |
+| CI 配置 | `.github/workflows/ci.yml`（若不存在则新建） | 加 sqlite job：`cargo test --lib` （默认走 sqlite，无需 `--features`） |
+| 验收清单脚本 | `scripts/phase3-test-matrix.sh`（新建） | 一键跑：`cargo test --lib` + `cargo test --no-default-features --features postgres --lib` + `cargo test --no-default-features --features mysql --lib` 三路 exit code |
+
+**验收命令**：
+
+```bash
+# 默认 (sqlite)
+cargo test --lib
+
+# PostgreSQL
+cargo test --no-default-features --features postgres --lib
+
+# MySQL
+cargo test --no-default-features --features mysql --lib
+```
+
+**关键原则**：Phase 3 期间所有 db 模块改动如果 break 上述任一命令，必须在 PR 中修复后才能合并；不允许"只在 SQLite 测过就合并"。
+
 ---
 
 ## 关键文件改动清单
@@ -231,9 +276,11 @@ pub async fn send_record_info_query_and_wait(
 | `src/sip/gb28181/talk.rs` | 收编 talk 与 broadcast 不互通 | 1h |
 | `src/sip/gb28181/pending_request.rs` | QueryResult::Items 变体；多包 SumNum 自终结 | 3h |
 | `src/zlm/hook.rs` | on_stream_changed 触发 media_waiter 解决；download 进度更新 | 3h |
-| `src/db/record.rs` | 新增 record_list_page（按 device/channel/time 范围分页查询本地缓存） | 2h |
+| `src/db/record.rs` | **删除本行** — Phase 3 不新建 record 模块；3.3 复用 `src/db/cloud_record.rs` 已三态 cfg 的 `insert_records` + 新增 `query_by_device_channel`（三态 cfg，模板照搬已有 insert） | 1.5h（仅 cloud_record.rs 加 query 方法） |
 | 测试 `tests/integration_test.rs` `tests/e2e_test.rs` | 新增 5 个跨子任务集成用例 | 4h |
 | `docs/OPERATIONS.md` | Phase 3 章节 | 1h |
+| `scripts/phase3-test-matrix.sh`（新） | 三库 `cargo test --lib` 一键验收脚本 | 0.5h |
+| `.github/workflows/ci.yml` | 新增 sqlite job（默认走） | 0.5h |
 
 **总计**：~40h ≈ 5 个工作日（纯实现 + 测试）+ 5-6 天 review/buffer。
 
@@ -340,18 +387,19 @@ pub async fn send_record_info_query_and_wait(
 |---|---|---|---|
 | 3.1 Live Play 真实化 | P0 | **P0** | 设计文档 Acceptance 第一条 |
 | 3.2 Playback 真实化 | P0 | **P0** | 占位 `127.0.0.1/live/...` 必删 |
-| 3.3 RecordInfo 多包 | P0 | **P0** | A3 fire-and-forget 必须改为等待 |
+| 3.3 RecordInfo 多包 | P0 | **P0** | A3 fire-and-forget 必须改为等待；复用 `gb_cloud_record` 三态 cfg |
 | 3.4 Download 真实化 | P0 | **P0** | 进度永远是 0 是严重缺陷 |
 | 3.5 Talk/Broadcast 分流 | P1 | **P1** | 功能正确但能 work |
 | 3.6 横切清理 | P1 | **P1** | 跟着 3.1/3.2 一起做 |
+| 3.7 三库测试矩阵 | (sqlite 兼容后新增) | **P1** | 默认 feature 已切 sqlite，Phase 3 db 改动必须三库 CI 全绿 |
 
 ---
 
-## 实施顺序调整（基于重审）
+## 实施顺序调整（基于重审 + sqlite 兼容）
 
 1. **第一批（P0，~16h）**：
    - 3.1 Live Play 真实化（媒体到达 + BYE 去 fallback）
-   - 3.3 RecordInfo 多包等待（直接复用 2.1 register_with_receiver 模板）
+   - 3.3 RecordInfo 多包等待（直接复用 2.1 register_with_receiver 模板 + 落库到 `gb_cloud_record` 三态 cfg）
    - 3.4 Download 进度真值（on_stream_changed 回调）
 
 2. **第二批（P0/P1，~18h）**：
@@ -360,13 +408,18 @@ pub async fn send_record_info_query_and_wait(
 
 3. **第三批（P1，~6h）**：
    - 3.6 横切清理 + 文档
+   - 3.7 三库测试矩阵（默认 sqlite + 显式 postgres/mysql 跑通验收）
 
 ---
 
 ## 完成判定
 
-- `cargo test --lib` 全绿，新增 ≥ 15 个单测覆盖 live/playback/record/download/talk/broadcast
+- **三库 `cargo test --lib` 全绿**（默认 sqlite + `--features postgres` + `--features mysql` 三路 0 失败）
+- `scripts/phase3-test-matrix.sh` 一键三库验证脚本 exit 0
+- 新增 ≥ 15 个单测覆盖 live/playback/record/download/talk/broadcast
 - `tests/integration_test.rs` 新增 ≥ 5 个跨子任务用例
+- `tests/integration/sqlite_compat.rs` 新增 ≥ 3 个三库 round-trip 测试（cloud_record / invite_session / device_query 各一）
 - 真实 IPC / NVR 至少 1 个能完成 play → playback → record → download → talk → broadcast 全流程（手测通过）
 - `docs/OPERATIONS.md` 新增 Phase 3 章节，操作步骤可复现
 - 主流程代码搜索 `rtsp://127.0.0.1/live/...` 返回 0 命中（除测试 fixture）
+- CI workflow 含 sqlite job（默认走，无需 `--features`）
