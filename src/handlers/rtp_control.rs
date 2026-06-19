@@ -1,4 +1,4 @@
-//! D2: RTP/PS control endpoints (parity with WVP Java controllers).
+//! D2: RTP/PS control endpoints (parity with reference Java controllers).
 //! Each endpoint forwards to ZLM's `openRtpServer`, `closeRtpServer`,
 //! `sendRtp` / `stopSendRtp` family of API calls.
 
@@ -105,7 +105,7 @@ pub async fn rtp_send_stop(
     })))
 }
 
-// ---------- PS aliases (PS is just RTP over MPEG-TS in WVP) ----------
+// ---------- PS aliases (PS is just RTP over MPEG-TS in reference impl) ----------
 
 /// POST /api/ps/receive/open — alias of /api/rtp/receive/open
 pub async fn ps_receive_open(

@@ -40,7 +40,7 @@
 - get_devices_for_mobile_position_renewal(pool) -> sqlx::Result<Vec<(String, i32)>>
 
 数据库字段：
-- wvp_device.subscribe_cycle_for_mobile_position (已存在)
+- gb_device.subscribe_cycle_for_mobile_position (已存在)
 ```
 
 #### 步骤 3：添加 SIP SUBSCRIBE 发送

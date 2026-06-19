@@ -1,6 +1,6 @@
 # GBServer 数据库兼容性方案
 
-> **范围**：评估并实施 SQLite 数据库兼容性。**`SQLite` 是默认生产后端**（零依赖开箱即用，≤500 设备）；`PostgreSQL` 用于生产主力 / 多实例 / Patroni 集群；`MySQL` 作为 WVP 平迁选项保留。
+> **范围**：评估并实施 SQLite 数据库兼容性。**`SQLite` 是默认生产后端**（零依赖开箱即用，≤500 设备）；`PostgreSQL` 用于生产主力 / 多实例 / Patroni 集群；`MySQL` 作为兼容历史部署的备选保留。
 >
 > **部署拓扑与集群化判断**请参阅 [`DEPLOYMENT_GUIDE.md`](./DEPLOYMENT_GUIDE.md)。
 
@@ -14,7 +14,7 @@
 |------|---------------|------|
 | **SQLite** | `default = ["sqlite"]`（✅ 默认） | 开发 / 演示 / 边缘 / 小规模生产 |
 | PostgreSQL | `--no-default-features --features postgres` | 生产主力 |
-| MySQL | `--no-default-features --features mysql` | WVP 平迁保留 |
+| MySQL | `--no-default-features --features mysql` | MySQL 平迁 / 兼容历史部署 |
 
 `src/db/mod.rs` 用 `#[cfg]` 在编译期三选一确定 `Pool` 类型，`create_pool()` 也是三分支。
 

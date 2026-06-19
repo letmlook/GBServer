@@ -1,4 +1,4 @@
-# AGENTS.md - WVP GB28181 Server
+# AGENTS.md - GBServer
 
 Agent instructions for working on this GB28181 video platform server (Rust backend + Vue 2 frontend).
 
@@ -55,10 +55,10 @@ npm run test:unit
 
 ```bash
 # PostgreSQL (default)
-psql -U postgres -d wvp -f database/init-postgresql-2.7.4.sql
+psql -U postgres -d gbserver -f database/init-postgresql-2.7.4.sql
 
 # MySQL
-mysql -uroot -p wvp < database/init-mysql-2.7.4.sql
+mysql -uroot -p gbserver < database/init-mysql-2.7.4.sql
 ```
 
 ## Code Style Guidelines
@@ -110,7 +110,7 @@ Err(AppError::business(ErrorCode::Error400, "invalid input"))
 ```rust
 // Parameterized query (PostgreSQL)
 sqlx::query_as::<_, Device>(
-    "SELECT id, device_id, name FROM wvp_device WHERE device_id = $1"
+    "SELECT id, device_id, name FROM gb_device WHERE device_id = $1"
 )
 .bind(device_id)
 .fetch_optional(pool)
@@ -159,7 +159,7 @@ pub async fn handler(
 #### Logging
 - Use `tracing` crate
 - Set level via `RUST_LOG` environment variable
-- Default: `info,wvp_gb28181_server=debug`
+- Default: `info,gbserver=debug`
 
 ```rust
 tracing::info!("Starting server on port {}", port);

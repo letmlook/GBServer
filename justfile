@@ -24,7 +24,7 @@ dev:
 pg:
     cargo run --no-default-features --features postgres
 
-# MySQL 模式（WVP 平迁）
+# MySQL 模式（MySQL 平迁 / 兼容历史部署）
 mysql:
     cargo run --no-default-features --features mysql
 

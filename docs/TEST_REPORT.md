@@ -42,7 +42,7 @@
 4. ✅ `test_zlm_connection` - ZLMediaKit连接测试通过
 
 **测试环境**:
-- PostgreSQL: `postgres://postgres:postgres@127.0.0.1:5432/wvp`
+- PostgreSQL: `postgres://postgres:postgres@127.0.0.1:5432/gbserver`
 - Redis: `redis://127.0.0.1:6379`
 - ZLMediaKit: `http://127.0.0.1:8080`
 
@@ -118,7 +118,7 @@ cargo install cargo-llvm-cov
 
 建议运行以下命令自动修复：
 ```bash
-cargo fix --lib -p wvp-gb28181-server --tests
+cargo fix --lib -p gbserver --tests
 ```
 
 ## 测试执行命令
@@ -130,7 +130,7 @@ cargo test --lib
 
 ### 运行集成测试
 ```bash
-export TEST_DATABASE_URL="postgres://postgres:postgres@127.0.0.1:5432/wvp"
+export TEST_DATABASE_URL="postgres://postgres:postgres@127.0.0.1:5432/gbserver"
 export TEST_REDIS_URL="redis://127.0.0.1:6379"
 export ZLM_URL="http://127.0.0.1:8080"
 cargo test --test integration_test
@@ -138,7 +138,7 @@ cargo test --test integration_test
 
 ### 运行端到端测试
 ```bash
-export TEST_DATABASE_URL="postgres://postgres:postgres@127.0.0.1:5432/wvp"
+export TEST_DATABASE_URL="postgres://postgres:postgres@127.0.0.1:5432/gbserver"
 export TEST_REDIS_URL="redis://127.0.0.1:6379"
 export ZLM_URL="http://127.0.0.1:8080"
 cargo test --test e2e_test

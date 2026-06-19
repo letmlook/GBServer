@@ -10,7 +10,7 @@ mod tests {
 
         // 检查所有依赖服务
         let db_url = std::env::var("TEST_DATABASE_URL")
-            .unwrap_or_else(|_| "postgres://postgres:postgres@127.0.0.1:5432/wvp".to_string());
+            .unwrap_or_else(|_| "postgres://postgres:postgres@127.0.0.1:5432/gbserver".to_string());
 
         let redis_url = std::env::var("TEST_REDIS_URL")
             .unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());

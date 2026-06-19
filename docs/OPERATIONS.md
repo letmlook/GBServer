@@ -1,9 +1,9 @@
 # GBServer Operations Manual
 
-> Last updated: 2026-06-11 — for `wvp-gb28181-server` v0.1.0 (Rust rewrite of WVP-Pro)
+> Last updated: 2026-06-11 — for `gbserver` v0.1.0
 
 This document covers installation, upgrade, runtime, monitoring, and disaster
-recovery for the Rust GB28181 server that powers the WVP-Pro compatibility
+recovery for the Rust GB28181 server that powers the GB28181 management
 surface used by the Vue 2 frontend.
 
 ## 1. Quick Start
@@ -26,7 +26,7 @@ surface used by the Vue 2 frontend.
 git clone <your fork>/GBServer.git && cd GBServer
 
 # 2. DB schema (PostgreSQL)
-psql -U postgres -d wvp < database/init-postgresql-2.7.4.sql
+psql -U postgres -d gbserver < database/init-postgresql-2.7.4.sql
 # (or MySQL: mysql -uroot -p gbserver < database/init-mysql-2.7.4.sql)
 
 # 3. backend
@@ -111,7 +111,7 @@ Set `redis.url` and the server selects the least-loaded ZLM via the
 
 ### 3.1 Upstream registration
 
-For each row in `wvp_platform` with `enable=true`, the `CascadeRegistrar`
+For each row in `gb_platform` with `enable=true`, the `CascadeRegistrar`
 sends `REGISTER` on startup and maintains keepalive every 60 s. On `401`,
 it retries with digest authentication; on 3+ keepalive misses it
 transitions to `Offline` and retries every 30 s.
@@ -119,37 +119,37 @@ transitions to `Offline` and retries every 30 s.
 ### 3.2 Upstream Catalog / Info / Status queries
 
 `SipServer::handle_message` detects incoming `MESSAGE` from a registered
-platform (looked up by GB-ID in `wvp_platform`) and routes Catalog,
+platform (looked up by GB-ID in `gb_platform`) and routes Catalog,
 DeviceInfo, DeviceStatus queries to handlers that respond with our full
 local catalog (all devices and channels).
 
 ## 4. Upgrade Procedure
 
-### 4.1 From prior WVP-Pro Java
+### 4.1 Migrating from prior Java implementation
 
-1. Stop the old Java service: `systemctl stop wvp-pro`
-2. Back up DB: `pg_dump wvp > backup_$(date +%F).sql`
+1. Stop the old Java service: `systemctl stop gbserver`
+2. Back up DB: `pg_dump gbserver > backup_$(date +%F).sql`
 3. Pull new Rust build: `git pull && cargo build --release`
 4. Start new binary: `systemctl start gbserver`
 5. Verify: `curl http://localhost:18080/api/server/version`
-6. If migration needed, see `docs/MIGRATION_FROM_WVP_JAVA.md` (not yet written)
+6. If migration needed, see `docs/MIGRATION.md` (not yet written)
 
 ### 4.2 In-place Rust upgrade
 
 ```bash
 # build new binary alongside old
 cargo build --release
-mv target/release/wvp-gb28181-server target/release/wvp-gb28181-server.new
+mv target/release/gbserver target/release/gbserver.new
 
 # atomic swap on next restart
 systemctl stop gbserver
-mv target/release/wvp-gb28181-server target/release/wvp-gb28181-server.old
-mv target/release/wvp-gb28181-server.new target/release/wvp-gb28181-server
+mv target/release/gbserver target/release/gbserver.old
+mv target/release/gbserver.new target/release/gbserver
 systemctl start gbserver
 
 # rollback if needed
 systemctl stop gbserver
-mv target/release/wvp-gb28181-server.old target/release/wvp-gb28181-server
+mv target/release/gbserver.old target/release/gbserver
 systemctl start gbserver
 ```
 
@@ -160,7 +160,7 @@ on startup (see `init_db_tables` in `src/lib.rs`).
 
 The `Jt1078Manager` (`src/jt1078/manager.rs`) handles 9101 (实时音视频) and
 9102 (历史音视频) media ports for JT/T 1078 terminals. HTTP routes in
-`/api/jt1078/*` provide WVP-Pro-compatible control surface (live pause,
+`/api/jt1078/*` provide GB28181-compatible control surface (live pause,
 record start/stop, region CRUD, route management). Full JT/T 808/1078
 protocol state machine lives in `src/jt1078/` — the HTTP layer is a thin
 adapter.
@@ -175,11 +175,11 @@ adapter.
 
 ### 6.2 Logs
 
-Default `RUST_LOG=info,wvp_gb28181_server=debug`. Use `tracing-subscriber`
+Default `RUST_LOG=info,gbserver=debug`. Use `tracing-subscriber`
 JSON formatter for production log aggregation:
 
 ```bash
-RUST_LOG=info,wvp_gb28181_server=debug cargo run --release
+RUST_LOG=info,gbserver=debug cargo run --release
 ```
 
 ### 6.3 Key metrics to alert on
@@ -199,7 +199,7 @@ RUST_LOG=info,wvp_gb28181_server=debug cargo run --release
 # stop backend first
 systemctl stop gbserver
 # restore from backup
-pg_restore --clean --dbname=wvp /var/backups/wvp/wvp_2026-06-10.sql
+pg_restore --clean --dbname=gbserver /var/backups/gbserver/gbserver_2026-06-10.sql
 # restart
 systemctl start gbserver
 ```
@@ -215,7 +215,7 @@ For multi-node cascade coordination, ensure Redis is replicated
 ### 7.3 ZLM crash
 
 Backend detects ZLM down via missing `on_server_started` hook and marks
-`wvp_media_server.online=false`. Playback requests during outage return
+`gb_media_server.online=false`. Playback requests during outage return
 502. Restart ZLM and the hook re-registers; refresh ZLM config:
 
 ```bash
@@ -249,9 +249,9 @@ GitHub Actions runs both DB backends on every push; see
 ### 8.3 Parity audit
 
 ```bash
-# Regenerate WVP-Pro parity report (requires upstream clone at /tmp/wvp-GB28181-pro)
-node scripts/parity-audit/extract-wvp-parity.js
-# Result lives at docs/parity/wvp-phase-0-parity-audit.md
+# Regenerate interface coverage report (requires reference upstream clone at /tmp/reference-java-impl)
+node scripts/parity-audit/extract-interface-coverage.js
+# Result lives at docs/parity/interface-coverage-phase-0.md
 ```
 
 ## 9. Troubleshooting
@@ -262,4 +262,4 @@ node scripts/parity-audit/extract-wvp-parity.js
 | Devices show offline | SIP UDP 5060 blocked | `ufw allow 5060/udp` and check `sip.ip` config |
 | Play URL returns 502 | ZLM unreachable | Check `zlm[*].ip` config + network ACLs |
 | Cloud records don't appear | ZLM `on_record_mp4` hook not POSTing | Verify `hook_url` matches `/api/zlm/hook` |
-| 105 Missing routes in parity audit | Upstream WVP-Pro changed | Re-run parity audit script, file issue |
+| 105 Missing routes in parity audit | Upstream reference implementation changed | Re-run parity audit script, file issue |

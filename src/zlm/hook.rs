@@ -141,7 +141,7 @@ pub struct RtpServerTimeoutData {
 // ABL 钩子支持（设计文档 §6.3 阶段 0 缺口 1）
 //
 // ABL（Another Live media Broadcaster）是 ZLMediaKit 兼容的开源分支，
-// 暴露额外的 hook 事件用于细粒度控制。WVP-Pro Java 后端在生产部署中
+// 暴露额外的 hook 事件用于细粒度控制。参考 Java 实现在生产部署中
 // 会使用这些事件，本实现补齐 on_rtp_playlist / on_record_progress。
 // =====================================================================
 

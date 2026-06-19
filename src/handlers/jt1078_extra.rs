@@ -1,4 +1,4 @@
-//! D1: JT1078 region/route/control endpoints (parity with WVP Java controllers).
+//! D1: JT1078 region/route/control endpoints (parity with reference Java controllers).
 //! Each endpoint forwards to the JT/T 808/1078 protocol stack. Most are stub
 //! handlers that return success — full JT/T protocol forwarding requires a
 //! live terminal session and is out of scope for the HTTP layer.

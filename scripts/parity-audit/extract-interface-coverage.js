@@ -704,7 +704,7 @@ function summarizeComparison(title, comparison) {
 function buildMarkdownReport(audit) {
   const counts = audit.counts || {}
   const lines = []
-  lines.push('# WVP-Pro Phase 0 Parity Audit')
+  lines.push('# GBServer Interface Coverage Report (Phase 0)')
   lines.push('')
   lines.push(`Generated at: ${audit.generatedAt || 'unknown'}`)
   lines.push(`Baseline commit: \`${audit.baseline?.commit || 'unknown'}\``)
@@ -713,7 +713,7 @@ function buildMarkdownReport(audit) {
   lines.push('')
   lines.push('## Scope')
   lines.push('')
-  lines.push('This report compares the official WVP-Pro Java backend controllers and the official WVP-Pro frontend from the same commit against the Rust backend router and the local frontend in this repository.')
+  lines.push('This report compares the reference Java backend controllers and the reference Java frontend from the same commit against the Rust backend router and the local frontend in this repository.')
   lines.push('')
   lines.push('## Extracted counts')
   lines.push('')
@@ -782,7 +782,7 @@ function readRoutesFromFiles(rootDir, files, extractor) {
 }
 
 function buildAudit(options) {
-  const upstream = options.upstream || '/tmp/wvp-GB28181-pro'
+  const upstream = options.upstream || '/tmp/reference-java-impl'
   const local = options.local || process.cwd()
   const commit = options.commit || 'unknown'
 
@@ -805,8 +805,8 @@ function buildAudit(options) {
       upstream,
       local,
       commit,
-      backend: 'official WVP-Pro Java controllers',
-      frontend: 'official WVP-Pro web directory from the same commit',
+      backend: 'reference Java backend controllers',
+      frontend: 'reference Java web directory from the same commit',
     },
     generatedAt: new Date().toISOString(),
     counts: {
@@ -856,8 +856,8 @@ function main(argv) {
   const markdown = buildMarkdownReport(audit)
   if (args.outDir) {
     fs.mkdirSync(args.outDir, { recursive: true })
-    fs.writeFileSync(path.join(args.outDir, 'wvp-phase-0-parity-audit.json'), `${JSON.stringify(audit, null, 2)}\n`)
-    fs.writeFileSync(path.join(args.outDir, 'wvp-phase-0-parity-audit.md'), markdown)
+    fs.writeFileSync(path.join(args.outDir, 'interface-coverage-phase-0.json'), `${JSON.stringify(audit, null, 2)}\n`)
+    fs.writeFileSync(path.join(args.outDir, 'interface-coverage-phase-0.md'), markdown)
   } else {
     process.stdout.write(markdown)
   }
@@ -865,7 +865,7 @@ function main(argv) {
 
 function parseArgs(argv) {
   const args = {
-    upstream: '/tmp/wvp-GB28181-pro',
+    upstream: '/tmp/reference-java-impl',
     local: process.cwd(),
     outDir: 'docs/parity',
     commit: '',

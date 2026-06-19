@@ -145,7 +145,7 @@ impl SipDeviceSimulator {
             CSeq: {} REGISTER\r\n\
             Contact: <sip:{}@{}:{}>\r\n\
             Expires: {}\r\n\
-            Authorization: Digest username=\"{}\", realm=\"WVP\", nonce=\"\", uri=\"sip:{}@{}:{}\", response=\"\"\r\n\
+            Authorization: Digest username=\"{}\", realm=\"GBServer\", nonce=\"\", uri=\"sip:{}@{}:{}\", response=\"\"\r\n\
             Content-Length: 0\r\n\r\n",
             self.session.read().await.config.device_id,
             self.session.read().await.config.device_id.split_at(16).0,

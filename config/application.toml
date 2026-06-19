@@ -9,7 +9,7 @@ port = 18080
 # 数据库三选一：默认 SQLite（与 Cargo.toml default = ["sqlite"] 一致）
 # - SQLite（默认）：零依赖，文件即库；适合开发 / 演示 / 边缘 / 小规模（≤500 设备）
 # - PostgreSQL：生产主力；多实例需配 [redis] + [rpc] peer_endpoints
-# - MySQL：WVP 平迁；schema 与 database/init-mysql-2.7.4.sql 完全兼容
+# - MySQL：MySQL 平迁 / 兼容历史部署；schema 与 database/init-mysql-2.7.4.sql 完全兼容
 [database]
 url = "sqlite://data/gbserver.db?mode=rwc"
 # url = "postgres://postgres:postgres@127.0.0.1:5432/gbserver"

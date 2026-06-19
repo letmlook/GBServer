@@ -588,7 +588,7 @@ impl StateBackend for RedisBackend {
     }
 
     fn active_recording_set(&self, channel_id: i64, state: &ActiveRecordingState) {
-        let key = format!("wvp:recording:{}", channel_id);
+        let key = format!("gbserver:recording:{}", channel_id);
         let value = match serde_json::to_string(state) {
             Ok(s) => s,
             Err(_) => return,
@@ -601,13 +601,21 @@ impl StateBackend for RedisBackend {
         });
     }
     fn active_recording_get(&self, channel_id: i64) -> Option<ActiveRecordingState> {
-        let key = format!("wvp:recording:{}", channel_id);
+        // 优先读新键(GBServer 命名空间);fallback 读旧键(wvp:recording:*)以兼容历史部署
+        let new_key = format!("gbserver:recording:{}", channel_id);
+        let legacy_key = format!("wvp:recording:{}", channel_id);
         let value: Option<String> = if let Ok(handle) = tokio::runtime::Handle::try_current() {
             tokio::task::block_in_place(|| {
                 handle.block_on(async {
                     use redis::AsyncCommands;
                     match self.get_conn().await {
-                        Some(mut conn) => conn.get(&key).await.unwrap_or(None),
+                        Some(mut conn) => {
+                            if let Some(v) = conn.get::<_, Option<String>>(&new_key).await.unwrap_or(None) {
+                                Some(v)
+                            } else {
+                                conn.get::<_, Option<String>>(&legacy_key).await.unwrap_or(None)
+                            }
+                        }
                         None => None,
                     }
                 })
@@ -618,26 +626,37 @@ impl StateBackend for RedisBackend {
         value.and_then(|s| serde_json::from_str(&s).ok())
     }
     fn active_recording_del(&self, channel_id: i64) {
-        let key = format!("wvp:recording:{}", channel_id);
+        // 同时清理新键和遗留旧键
+        let new_key = format!("gbserver:recording:{}", channel_id);
+        let legacy_key = format!("wvp:recording:{}", channel_id);
         block_on_run(async {
             use redis::AsyncCommands;
             if let Some(mut conn) = self.get_conn().await {
-                let _: Result<(), _> = conn.del(&key).await;
+                let _: Result<(), _> = conn.del::<_, ()>(&[&new_key, &legacy_key]).await;
             }
         });
     }
     fn active_recordings_count(&self) -> usize {
-        let pattern = "wvp:recording:*";
+        // 同时统计新键和遗留旧键
+        let patterns = ["gbserver:recording:*", "wvp:recording:*"];
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             tokio::task::block_in_place(|| {
                 handle.block_on(async {
                     use redis::AsyncCommands;
                     match self.get_conn().await {
-                        Some(mut conn) => conn.keys::<_, Vec<String>>(pattern).await.unwrap_or_default(),
-                        None => Vec::new(),
+                        Some(mut conn) => {
+                            let mut total = 0usize;
+                            for p in patterns {
+                                if let Ok(keys) = conn.keys::<_, Vec<String>>(p).await {
+                                    total += keys.len();
+                                }
+                            }
+                            total
+                        }
+                        None => 0usize,
                     }
                 })
-            }).len()
+            })
         } else {
             0
         }

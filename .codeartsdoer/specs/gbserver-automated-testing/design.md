@@ -66,7 +66,7 @@
 ```toml
 # Cargo.toml
 [package]
-name = "wvp-gb28181-server"
+name = "gbserver"
 
 [dev-dependencies]
 # 测试依赖将在后续配置
@@ -449,7 +449,7 @@ impl DatabaseSeeder {
     async fn seed_users(&self) {
         let admin = FixtureLoader::load::<User>("users/admin.json");
         sqlx::query!(
-            "INSERT INTO wvp_user (id, username, password, role) VALUES ($1, $2, $3, $4)",
+            "INSERT INTO gb_user (id, username, password, role) VALUES ($1, $2, $3, $4)",
             admin.id, admin.username, admin.password, admin.role
         )
         .execute(&self.pool)

@@ -108,7 +108,7 @@ pub(crate) fn build_playback_control_xml(
     }
 }
 /// 构造 GB28181 下载 SSRC：前缀 2（实时=0 / 回放=1 / 下载=2）+
-/// 设备号前 9 位，不足 9 位右补 0；与 WVP Java 端兼容。
+/// 设备号前 9 位，不足 9 位右补 0；与 Java 参考实现兼容。
 pub(crate) fn build_download_ssrc(device_id: &str) -> String {
     let id_part = if device_id.len() >= 9 {
         &device_id[0..9]
@@ -427,7 +427,7 @@ impl SipServer {
             }
         });
 
-        dbg_upsert_device(&self.pool, &self.config.device_id, "WVP Server", Some("Rust"), Some("GBServer"), None, None, None, None, None, true, "zlmediakit-1".to_string()).await?;
+        dbg_upsert_device(&self.pool, &self.config.device_id, "GBServer", Some("Rust"), Some("GBServer"), None, None, None, None, None, true, "zlmediakit-1".to_string()).await?;
         
         Ok(())
     }
@@ -2999,7 +2999,7 @@ f=v/1/96/1/2/1/1/0
             ("Contact", &contact),
             ("Expires", &expires_header),
             ("Max-Forwards", "70"),
-            ("User-Agent", "WVP-GB28181-Rust"),
+            ("User-Agent", "GBServer-GB28181-Rust"),
             ("Event", event),
             ("Accept", "Application/MANSCDP+xml"),
             ("Content-Type", "Application/MANSCDP+xml"),
@@ -3991,7 +3991,7 @@ async fn send_subscribe_internal(
         ("Contact", &contact),
         ("Expires", &expires_header),
         ("Max-Forwards", "70"),
-        ("User-Agent", "WVP-GB28181-Rust"),
+        ("User-Agent", "GBServer-GB28181-Rust"),
         ("Event", event),
         ("Accept", "Application/MANSCDP+xml"),
         ("Content-Type", "Application/MANSCDP+xml"),
@@ -4055,7 +4055,7 @@ pub fn build_upstream_catalog_response(
 /// B2: Pure helper — build the upstream DeviceInfo response body.
 pub fn build_upstream_device_info_response(sn: &str, local_device_id: &str) -> String {
     format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?><Response><CmdType>DeviceInfo</CmdType><SN>{}</SN><DeviceID>{}</DeviceID><Result>OK</Result><DeviceName>WVP-GbServer</DeviceName><Manufacturer>WVP-Rust</Manufacturer><Model>GBServer v0.1</Model><Channel>1</Channel></Response>"#,
+        r#"<?xml version="1.0" encoding="UTF-8"?><Response><CmdType>DeviceInfo</CmdType><SN>{}</SN><DeviceID>{}</DeviceID><Result>OK</Result><DeviceName>GBServer</DeviceName><Manufacturer>GBServer</Manufacturer><Model>GBServer v0.1</Model><Channel>1</Channel></Response>"#,
         sn, local_device_id
     )
 }
@@ -4197,7 +4197,7 @@ mod playback_control_tests {
     }
 
     #[test]
-    fn download_subject_format_matches_wvp() {
+    fn download_subject_format_matches_reference() {
         let subject = build_download_subject("34020000002000000001", "34020000001320000002");
         // 形如 "<local>:<channel>,<local>:2<deviceid9>"
         assert!(subject.contains(":34020000001320000002,"));
@@ -4346,7 +4346,7 @@ mod upstream_message_tests {
         assert!(xml.contains("<SN>42</SN>"));
         assert!(xml.contains("<DeviceID>34020000002000000001</DeviceID>"));
         assert!(xml.contains("<Result>OK</Result>"));
-        assert!(xml.contains("<Manufacturer>WVP-Rust</Manufacturer>"));
+        assert!(xml.contains("<Manufacturer>GBServer</Manufacturer>"));
         assert!(xml.contains("<Model>GBServer v0.1</Model>"));
     }
 

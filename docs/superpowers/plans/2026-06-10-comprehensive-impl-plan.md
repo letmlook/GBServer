@@ -3,7 +3,7 @@
 > 生成时间: 2026-06-10
 > 基线: `d286d70`（最新提交，编译通过 / 82 warnings）
 > 状态: 规划阶段，无任务开始
-> 上游文档: `docs/WVP_PARITY_GAP_ANALYSIS.md`、`docs/parity/wvp-phase-0-parity-audit.md`、`docs/superpowers/plans/2026-06-01-dev-plan.md`
+> 上游文档: `docs/WVP_PARITY_GAP_ANALYSIS.md`、`docs/parity/interface-coverage-phase-0.md`、`docs/superpowers/plans/2026-06-01-dev-plan.md`
 
 ## 目标
 
@@ -12,7 +12,7 @@
 完成定义（DoD）：
 - `cargo check` 与 `cargo test --lib` 全部通过
 - `tests/integration/sip/device_simulator.rs` 端到端模拟测试纳入 CI
-- `docs/parity/wvp-phase-0-parity-audit.md` 中 **Missing = 0**、**Method mismatch = 0**
+- `docs/parity/interface-coverage-phase-0.md` 中 **Missing = 0**、**Method mismatch = 0**
 - `/api/sy/camera/*`、前端 2 个缺失页面补齐
 - StateStore RedisBackend 真实现，多节点负载生效
 - 操作手册覆盖启动 / 升级 / 灾备
@@ -124,7 +124,7 @@ A2 已完成，剩余 A3 / A4 / A5 / A6 继续。
 
 ### A5. 设备/通道统计 + 告警订阅
 - [x] `/api/device/query/statistics/register` 真实聚合 `wvp_device`（`count_registered_devices` + `count_online_devices`）
-- [x] `/api/device/query/statistics/keepalive` 真实聚合 `wvp_device.keepalive_time` 最近 60s 内的活跃数（`count_alive_devices`）
+- [x] `/api/device/query/statistics/keepalive` 真实聚合 `gb_device.keepalive_time` 最近 60s 内的活跃数（`count_alive_devices`）
 - [x] `send_alarm_subscribe` 公开方法（A 阶段已有） + `/api/device/query/subscribe/alarm` 路由
 - [x] SipServer 报警 NOTIFY → `db::alarm::insert_alarm` 入库（`handle_alarm` 已调用）
 - [x] WS 广播 `alarm` 消息（`handle_alarm` 已广播）
@@ -231,7 +231,7 @@ A2 已完成，剩余 A3 / A4 / A5 / A6 继续。
 ## 阶段 D — P1：WVP 路由补齐（106 条）
 
 依赖：B4、C1。链式：D1 → D2 → D3 → D4 → D5。
-可验证产物：`docs/parity/wvp-phase-0-parity-audit.md` 重跑后 Missing = 0。
+可验证产物：`docs/parity/interface-coverage-phase-0.md` 重跑后 Missing = 0。
 
 ### D1. JT1078 区域/线路/控制（≈ 30 条）
 - [x] 区域 circle：`add`、`edit`、`update`、`delete`、`query`
@@ -313,7 +313,7 @@ A2 已完成，剩余 A3 / A4 / A5 / A6 继续。
 可验证产物：parity audit 自动对账 + 双数据库 CI。
 
 ### F1. WVP 前端契约测试
-- [x] `scripts/parity-audit/extract-wvp-parity.js` 已在用，已重新生成 `docs/parity/wvp-phase-0-parity-audit.md`
+- [x] `scripts/parity-audit/extract-wvp-parity.js` 已在用，已重新生成 `docs/parity/interface-coverage-phase-0.md`
 - [ ] 写 `scripts/parity-audit/contract-test.js`（独立 Node 框架）
 - [ ] 对每个 Rust 路由打 fixture + 期望字段
 - [ ] 输出 HTML 报告
@@ -357,7 +357,7 @@ A2 已完成，剩余 A3 / A4 / A5 / A6 继续。
 ## 完成判定
 
 - 所有 81 个 checkbox 全部 `[x]`
-- `docs/parity/wvp-phase-0-parity-audit.md` 重跑后 **Missing = 0**、**Method mismatch = 0**
+- `docs/parity/interface-coverage-phase-0.md` 重跑后 **Missing = 0**、**Method mismatch = 0**
 - GitHub Actions 主线绿（含双库 + 集成测试）
 - 操作文档发布到 `docs/OPERATIONS.md`
 - 在仓库根写一个 `RELEASE_NOTES_v2.md` 总结变更

@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 # =============================================================================
-# WVP GB28181 Server — multi-stage Dockerfile
+# GBServer — GB/T 28181 video platform — multi-stage Dockerfile
 # Stage 1: build Vue 2 frontend (web/dist)
 # Stage 2: build Rust backend (gbserver)
 # Stage 3: minimal runtime image (debian-slim + binary + frontend assets)
@@ -101,9 +101,9 @@ USER gbserver
 #   5061    — SIP over TCP
 EXPOSE 18080 5060/udp 5061
 
-# Healthcheck hits the public /api/health endpoint (port follows WVP__SERVER__PORT override)
+# Healthcheck hits the public /api/health endpoint (port follows GBSERVER__SERVER__PORT override)
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD sh -c 'wget -qO- "http://127.0.0.1:${WVP__SERVER__PORT:-18080}/api/health" || exit 1'
+    CMD sh -c 'wget -qO- "http://127.0.0.1:${GBSERVER__SERVER__PORT:-18080}/api/health" || exit 1'
 
 # tini reaps zombies and forwards signals (Ctrl-C, docker stop)
 ENTRYPOINT ["/usr/bin/tini", "--"]

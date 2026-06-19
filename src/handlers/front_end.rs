@@ -193,7 +193,7 @@ pub async fn ptz(
 
 /// POST /api/ptz/front_end_command/:device_id/:channel_id
 ///
-/// Compatibility endpoint used by older WVP player components. They already
+/// Compatibility endpoint used by older player components. They already
 /// calculate GB28181 front-end command bytes and pass them as decimal query
 /// parameters, so this handler only wraps those bytes in a DeviceControl XML.
 pub async fn legacy_front_end_command(

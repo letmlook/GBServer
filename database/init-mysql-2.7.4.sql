@@ -1,4 +1,4 @@
-﻿/* WVP 2.7.4 表结构 + 初始数据，已转换为 MySQL 语法 */
+﻿/* GBServer 2.7.4 schema + initial data, converted to MySQL syntax */
 SET NAMES utf8mb4;
 
 /*建表*/

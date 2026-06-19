@@ -2,11 +2,11 @@
 /**
  * F1: parity-audit/contract-test.js
  *
- * 对每个 Rust 路由打 fixture（来自 extract-wvp-parity.js）+ 期望字段（来自 fixtures/*.json），
+ * 对每个 Rust 路由打 fixture（来自 extract-interface-coverage.js）+ 期望字段（来自 fixtures/*.json），
  * 校验后端响应形状与前端契约一致。
  *
  * 用法：
- *   1. node scripts/parity-audit/extract-wvp-parity.js  # 生成 docs/parity/wvp-phase-0-parity-audit.json
+ *   1. node scripts/parity-audit/extract-interface-coverage.js  # 生成 docs/parity/interface-coverage-phase-0.json
  *   2. 启动后端：cargo run --release
  *   3. BASE_URL=http://localhost:18080 node scripts/parity-audit/contract-test.js
  *      --user=admin --password=admin
@@ -19,7 +19,7 @@ const path = require('node:path')
 const http = require('node:http')
 const https = require('node:https')
 
-const PARITY_JSON = path.join(__dirname, '../../docs/parity/wvp-phase-0-parity-audit.json')
+const PARITY_JSON = path.join(__dirname, '../../docs/parity/interface-coverage-phase-0.json')
 const FIXTURES_DIR = path.join(__dirname, 'fixtures')
 const REPORT_HTML = path.join(__dirname, '../../docs/parity/contract-test-report.html')
 
@@ -88,14 +88,14 @@ async function login() {
 // 读取 parity JSON 中的路由，组装测试计划
 function loadRoutes() {
   if (!fs.existsSync(PARITY_JSON)) {
-    throw new Error(`Parity JSON not found: ${PARITY_JSON}. Run extract-wvp-parity.js first.`)
+    throw new Error(`Parity JSON not found: ${PARITY_JSON}. Run extract-interface-coverage.js first.`)
   }
   const data = JSON.parse(fs.readFileSync(PARITY_JSON, 'utf8'))
   // Matched = Rust already implements
   const matched = (data.matched || []).slice(0, 50) // 取前 50 个避免太慢
   return matched.map((m) => ({
-    path: m.rustPath || m.wvpPath,
-    wvpPath: m.wvpPath,
+    path: m.rustPath || m.referencePath,
+    referencePath: m.referencePath,
     method: m.method || 'GET',
     category: m.category || 'unknown'
   }))
@@ -139,7 +139,7 @@ async function runSingle(route, token) {
     issues.push(`HTTP ${res.status}`)
   }
   if (res.data && typeof res.data === 'object' && 'code' in res.data) {
-    // WVP 响应格式 {code:0, msg:"成功", data:...}
+    // 标准响应格式 {code:0, msg:"成功", data:...}
     if (typeof res.data.code !== 'number') {
       pass = false
       issues.push('response.code is not number')
@@ -158,7 +158,7 @@ async function runSingle(route, token) {
   } else if (res.data === null || res.data === undefined) {
     // 也 OK
   } else {
-    issues.push('response 不符合 WVPResult 格式')
+    issues.push('response 不符合统一响应格式')
   }
 
   return {
@@ -257,7 +257,7 @@ function renderHtml(results, passed, failed) {
     <tr class="${r.ok ? 'ok' : 'fail'}">
       <td>${r.method}</td>
       <td><code>${escapeHtml(r.path)}</code></td>
-      <td>${escapeHtml(r.wvpPath || '')}</td>
+      <td>${escapeHtml(r.referencePath || '')}</td>
       <td>${r.status || '-'}</td>
       <td>${r.latencyMs}ms</td>
       <td>${r.fixture ? '✓' : '—'}</td>
@@ -285,7 +285,7 @@ code { background: #f0f0f0; padding: 2px 4px; border-radius: 3px; }
 </style>
 </head>
 <body>
-<h1>GBServer WVP-Pro 契约测试报告</h1>
+<h1>GBServer 接口契约测试报告</h1>
 <p class="summary">
   <span class="pass-count">通过 ${passed}</span> ·
   <span class="fail-count">失败 ${failed}</span> ·
@@ -295,7 +295,7 @@ code { background: #f0f0f0; padding: 2px 4px; border-radius: 3px; }
 <p>基准 URL：${escapeHtml(BASE_URL)}</p>
 <table>
 <thead>
-<tr><th>Method</th><th>Rust Path</th><th>WVP Path</th><th>HTTP</th><th>Latency</th><th>Fixture</th><th>Result</th></tr>
+<tr><th>Method</th><th>Rust Path</th><th>Reference Path</th><th>HTTP</th><th>Latency</th><th>Fixture</th><th>Result</th></tr>
 </thead>
 <tbody>${rows}</tbody>
 </table>

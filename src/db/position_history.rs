@@ -1,4 +1,4 @@
-//! WVP position history table: gb_position_history
+//! Position history table: gb_position_history
 use serde::Serialize;
 use sqlx::FromRow;
 

@@ -1,4 +1,4 @@
-//! Parity gap fillers from `docs/parity/wvp-phase-0-parity-audit.md`.
+//! Parity gap fillers from `docs/parity/interface-coverage-phase-0.md`.
 //! Bundles D3 (alarm clear/snap), D4 (channel map tiles, front-end common),
 //! and D5 (media/server config) routes in one file for fast iteration.
 //!

@@ -47,7 +47,7 @@ fn build_catalog_response(sn: &str, local_device_id: &str, channels: &[SimChanne
 
 fn build_device_info_response(sn: &str, local_device_id: &str) -> String {
     format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?><Response><CmdType>DeviceInfo</CmdType><SN>{}</SN><DeviceID>{}</DeviceID><Result>OK</Result><DeviceName>WVP-GbServer</DeviceName><Manufacturer>WVP-Rust</Manufacturer><Model>GBServer v0.1</Model><Channel>1</Channel></Response>"#,
+        r#"<?xml version="1.0" encoding="UTF-8"?><Response><CmdType>DeviceInfo</CmdType><SN>{}</SN><DeviceID>{}</DeviceID><Result>OK</Result><DeviceName>GBServer</DeviceName><Manufacturer>GBServer</Manufacturer><Model>GBServer v0.1</Model><Channel>1</Channel></Response>"#,
         sn, local_device_id
     )
 }
@@ -118,8 +118,8 @@ fn b2_upstream_device_info_response_format() {
     assert!(resp.contains("<CmdType>DeviceInfo</CmdType>"));
     assert!(resp.contains("<SN>100</SN>"));
     assert!(resp.contains("<Result>OK</Result>"));
-    assert!(resp.contains("<DeviceName>WVP-GbServer</DeviceName>"));
-    assert!(resp.contains("<Manufacturer>WVP-Rust</Manufacturer>"));
+    assert!(resp.contains("<DeviceName>GBServer</DeviceName>"));
+    assert!(resp.contains("<Manufacturer>GBServer</Manufacturer>"));
     assert!(resp.contains("<Model>GBServer v0.1</Model>"));
 }
 

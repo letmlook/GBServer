@@ -2,7 +2,7 @@
 
 ## Context
 
-前期对比发现当前 Rust 后端有 10 个功能模块与 WVP Java 后端未完全对齐。经过深入探索，**云端录像任务(task/add, task/list)和 FFmpeg 命令模板列表已经有真实实现**，实际需要工作的是以下 8 项。用户要求：Redis 完整集成，负载均衡使用最少连接数策略。
+前期对比发现当前 Rust 后端有 10 个功能模块与参考 Java 实现未完全对齐。经过深入探索，**云端录像任务(task/add, task/list)和 FFmpeg 命令模板列表已经有真实实现**，实际需要工作的是以下 8 项。用户要求：Redis 完整集成，负载均衡使用最少连接数策略。
 
 ---
 
@@ -10,7 +10,7 @@
 
 ### 1. 电子地图功能补全
 **问题**: map_save_level/reset_level/thin_* 均为 stub；map_config 返回空对象
-**数据库**: `wvp_device_channel` 已有 `map_level` 列
+**数据库**: `gb_device_channel` 已有 `map_level` 列
 
 **修改文件**:
 - `src/db/common_channel.rs` — 添加 map_level 更新/重置函数
@@ -65,7 +65,7 @@ Cargo.toml:
 ### 3. 报警订阅与持久化
 **问题**: SIP 报警消息仅记录日志不入库；无主动报警订阅机制
 
-**数据库**: `wvp_device_alarm` 表已存在于 schema
+**数据库**: `gb_device_alarm` 表已存在于 schema
 
 **修改文件**:
 - `src/db/alarm.rs` (**新文件**) — 报警 CRUD
@@ -90,7 +90,7 @@ sip/server.rs handle_alarm():
   - 通过 ws_state.broadcast() 发送报警事件到 WebSocket 客户端
 
 注: handlers/alarm.rs 已有完整的 HTTP 查询端点(list/detail/handle/delete)，
-    它们当前已查询 wvp_device_alarm 表，只需确保 SIP 端将数据写入此表即可。
+    它们当前已查询 gb_device_alarm 表，只需确保 SIP 端将数据写入此表即可。
 ```
 
 ### 4. Redis 缓存集成
@@ -246,6 +246,6 @@ sip/server.rs:
    - `/api/server/map/config` 返回非空配置
    - `/api/common/channel/map/save-level` 写入数据库
    - `/api/device/query/subscribe/catalog` 发送 SIP SUBSCRIBE
-   - 模拟报警 SIP MESSAGE → `wvp_device_alarm` 表有数据
+   - 模拟报警 SIP MESSAGE → `gb_device_alarm` 表有数据
    - `/api/push/upload` 上传文件成功
 4. `cd web && npm run lint` 前端无报错

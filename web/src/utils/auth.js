@@ -1,8 +1,8 @@
 import Cookies from 'js-cookie'
 
-const TokenKey = 'wvp_token'
-const NameKey = 'wvp_username'
-const serverIdKey = 'wvp_server_id'
+const TokenKey = 'gbserver_token'
+const NameKey = 'gbserver_username'
+const serverIdKey = 'gbserver_server_id'
 const expires = 30
 
 export function getToken() {
