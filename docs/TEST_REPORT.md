@@ -63,9 +63,9 @@
 ## Docker环境状态
 
 运行中的容器：
-- **wvp-postgres**: PostgreSQL 16-alpine (健康)
-- **wvp-redis**: Redis 7-alpine (健康)
-- **wvp-zlmediakit**: ZLMediaKit master (运行中)
+- **gbserver-postgres**: PostgreSQL 16-alpine (健康)
+- **gbserver-redis**: Redis 7-alpine (健康)
+- **gbserver-zlm**: ZLMediaKit master (运行中)
 
 ## 修复的问题
 

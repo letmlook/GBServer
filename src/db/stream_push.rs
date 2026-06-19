@@ -1,4 +1,4 @@
-//! 推流表 wvp_stream_push
+//! 推流表 gb_stream_push
 
 use serde::Serialize;
 use sqlx::FromRow;
@@ -30,14 +30,14 @@ pub struct StreamPush {
 pub async fn get_by_id(pool: &Pool, id: i64) -> sqlx::Result<Option<StreamPush>> {
     #[cfg(feature = "mysql")]
     return sqlx::query_as::<_, StreamPush>(
-        "SELECT id, app, stream, create_time, media_server_id, server_id, push_time, status, update_time, pushing, self as self_push, start_offline_push FROM wvp_stream_push WHERE id = ?"
+        "SELECT id, app, stream, create_time, media_server_id, server_id, push_time, status, update_time, pushing, self as self_push, start_offline_push FROM gb_stream_push WHERE id = ?"
     )
     .bind(id)
     .fetch_optional(pool)
     .await;
     #[cfg(feature = "postgres")]
     return sqlx::query_as::<_, StreamPush>(
-        "SELECT id, app, stream, create_time, media_server_id, server_id, push_time, status, update_time, pushing, self as self_push, start_offline_push FROM wvp_stream_push WHERE id = $1"
+        "SELECT id, app, stream, create_time, media_server_id, server_id, push_time, status, update_time, pushing, self as self_push, start_offline_push FROM gb_stream_push WHERE id = $1"
     )
     .bind(id)
     .fetch_optional(pool)
@@ -54,7 +54,7 @@ pub async fn add(
 ) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
     let r = sqlx::query(
-        r#"INSERT INTO wvp_stream_push (app, stream, media_server_id, create_time, update_time, pushing, self, start_offline_push)
+        r#"INSERT INTO gb_stream_push (app, stream, media_server_id, create_time, update_time, pushing, self, start_offline_push)
            VALUES (?, ?, ?, ?, ?, false, true, true)"#
     )
     .bind(app)
@@ -66,7 +66,7 @@ pub async fn add(
     .await?;
     #[cfg(feature = "postgres")]
     let r = sqlx::query(
-        r#"INSERT INTO wvp_stream_push (app, stream, media_server_id, create_time, update_time, pushing, self, start_offline_push)
+        r#"INSERT INTO gb_stream_push (app, stream, media_server_id, create_time, update_time, pushing, self, start_offline_push)
            VALUES ($1, $2, $3, $4, $5, false, true, true)"#
     )
     .bind(app)
@@ -90,7 +90,7 @@ pub async fn upsert_discovered(
 ) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
     let r = sqlx::query(
-        r#"INSERT INTO wvp_stream_push
+        r#"INSERT INTO gb_stream_push
            (app, stream, media_server_id, server_id, create_time, push_time, update_time, status, pushing, self, start_offline_push)
            VALUES (?, ?, ?, ?, ?, ?, ?, true, true, false, false)
            ON DUPLICATE KEY UPDATE
@@ -113,13 +113,13 @@ pub async fn upsert_discovered(
 
     #[cfg(feature = "postgres")]
     let r = sqlx::query(
-        r#"INSERT INTO wvp_stream_push
+        r#"INSERT INTO gb_stream_push
            (app, stream, media_server_id, server_id, create_time, push_time, update_time, status, pushing, self, start_offline_push)
            VALUES ($1, $2, $3, $4, $5, $5, $5, true, true, false, false)
            ON CONFLICT (app, stream) DO UPDATE SET
-             media_server_id = COALESCE(EXCLUDED.media_server_id, wvp_stream_push.media_server_id),
-             server_id = COALESCE(EXCLUDED.server_id, wvp_stream_push.server_id),
-             push_time = COALESCE(wvp_stream_push.push_time, EXCLUDED.push_time),
+             media_server_id = COALESCE(EXCLUDED.media_server_id, gb_stream_push.media_server_id),
+             server_id = COALESCE(EXCLUDED.server_id, gb_stream_push.server_id),
+             push_time = COALESCE(gb_stream_push.push_time, EXCLUDED.push_time),
              update_time = EXCLUDED.update_time,
              status = true,
              pushing = true"#
@@ -146,7 +146,7 @@ pub async fn update(
 ) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
     let r = sqlx::query(
-        r#"UPDATE wvp_stream_push SET
+        r#"UPDATE gb_stream_push SET
            app = COALESCE(?, app),
            stream = COALESCE(?, stream),
            media_server_id = COALESCE(?, media_server_id),
@@ -162,7 +162,7 @@ pub async fn update(
     .await?;
     #[cfg(feature = "postgres")]
     let r = sqlx::query(
-        r#"UPDATE wvp_stream_push SET
+        r#"UPDATE gb_stream_push SET
            app = COALESCE($1, app),
            stream = COALESCE($2, stream),
            media_server_id = COALESCE($3, media_server_id),
@@ -182,12 +182,12 @@ pub async fn update(
 /// 删除推流记录
 pub async fn delete_by_id(pool: &Pool, id: i64) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
-    let r = sqlx::query("DELETE FROM wvp_stream_push WHERE id = ?")
+    let r = sqlx::query("DELETE FROM gb_stream_push WHERE id = ?")
     .bind(id)
     .execute(pool)
     .await?;
     #[cfg(feature = "postgres")]
-    let r = sqlx::query("DELETE FROM wvp_stream_push WHERE id = $1")
+    let r = sqlx::query("DELETE FROM gb_stream_push WHERE id = $1")
     .bind(id)
     .execute(pool)
     .await?;
@@ -217,7 +217,7 @@ pub async fn list_paged(
         if let Some(p) = pushing {
             #[cfg(feature = "mysql")]
             return sqlx::query_as::<_, StreamPush>(
-                "SELECT id, app, stream, create_time, media_server_id, server_id, push_time, status, update_time, pushing, self as self_push, start_offline_push FROM wvp_stream_push WHERE media_server_id = ? AND pushing = ? ORDER BY id LIMIT ? OFFSET ?",
+                "SELECT id, app, stream, create_time, media_server_id, server_id, push_time, status, update_time, pushing, self as self_push, start_offline_push FROM gb_stream_push WHERE media_server_id = ? AND pushing = ? ORDER BY id LIMIT ? OFFSET ?",
             )
             .bind(mid)
             .bind(p)
@@ -227,7 +227,7 @@ pub async fn list_paged(
             .await;
             #[cfg(feature = "postgres")]
             return sqlx::query_as::<_, StreamPush>(
-                "SELECT id, app, stream, create_time, media_server_id, server_id, push_time, status, update_time, pushing, self as self_push, start_offline_push FROM wvp_stream_push WHERE media_server_id = $1 AND pushing = $2 ORDER BY id LIMIT $3 OFFSET $4",
+                "SELECT id, app, stream, create_time, media_server_id, server_id, push_time, status, update_time, pushing, self as self_push, start_offline_push FROM gb_stream_push WHERE media_server_id = $1 AND pushing = $2 ORDER BY id LIMIT $3 OFFSET $4",
             )
             .bind(mid)
             .bind(p)
@@ -238,7 +238,7 @@ pub async fn list_paged(
         } else {
             #[cfg(feature = "mysql")]
             return sqlx::query_as::<_, StreamPush>(
-                "SELECT id, app, stream, create_time, media_server_id, server_id, push_time, status, update_time, pushing, self as self_push, start_offline_push FROM wvp_stream_push WHERE media_server_id = ? ORDER BY id LIMIT ? OFFSET ?",
+                "SELECT id, app, stream, create_time, media_server_id, server_id, push_time, status, update_time, pushing, self as self_push, start_offline_push FROM gb_stream_push WHERE media_server_id = ? ORDER BY id LIMIT ? OFFSET ?",
             )
             .bind(mid)
             .bind(limit)
@@ -247,7 +247,7 @@ pub async fn list_paged(
             .await;
             #[cfg(feature = "postgres")]
             return sqlx::query_as::<_, StreamPush>(
-                "SELECT id, app, stream, create_time, media_server_id, server_id, push_time, status, update_time, pushing, self as self_push, start_offline_push FROM wvp_stream_push WHERE media_server_id = $1 ORDER BY id LIMIT $2 OFFSET $3",
+                "SELECT id, app, stream, create_time, media_server_id, server_id, push_time, status, update_time, pushing, self as self_push, start_offline_push FROM gb_stream_push WHERE media_server_id = $1 ORDER BY id LIMIT $2 OFFSET $3",
             )
             .bind(mid)
             .bind(limit)
@@ -258,7 +258,7 @@ pub async fn list_paged(
     } else if let Some(p) = pushing {
         #[cfg(feature = "mysql")]
         return sqlx::query_as::<_, StreamPush>(
-            "SELECT id, app, stream, create_time, media_server_id, server_id, push_time, status, update_time, pushing, self as self_push, start_offline_push FROM wvp_stream_push WHERE pushing = ? ORDER BY id LIMIT ? OFFSET ?",
+            "SELECT id, app, stream, create_time, media_server_id, server_id, push_time, status, update_time, pushing, self as self_push, start_offline_push FROM gb_stream_push WHERE pushing = ? ORDER BY id LIMIT ? OFFSET ?",
         )
         .bind(p)
         .bind(limit)
@@ -267,7 +267,7 @@ pub async fn list_paged(
         .await;
         #[cfg(feature = "postgres")]
         return sqlx::query_as::<_, StreamPush>(
-            "SELECT id, app, stream, create_time, media_server_id, server_id, push_time, status, update_time, pushing, self as self_push, start_offline_push FROM wvp_stream_push WHERE pushing = $1 ORDER BY id LIMIT $2 OFFSET $3",
+            "SELECT id, app, stream, create_time, media_server_id, server_id, push_time, status, update_time, pushing, self as self_push, start_offline_push FROM gb_stream_push WHERE pushing = $1 ORDER BY id LIMIT $2 OFFSET $3",
         )
         .bind(p)
         .bind(limit)
@@ -277,7 +277,7 @@ pub async fn list_paged(
     } else {
         #[cfg(feature = "mysql")]
         return sqlx::query_as::<_, StreamPush>(
-            "SELECT id, app, stream, create_time, media_server_id, server_id, push_time, status, update_time, pushing, self as self_push, start_offline_push FROM wvp_stream_push ORDER BY id LIMIT ? OFFSET ?",
+            "SELECT id, app, stream, create_time, media_server_id, server_id, push_time, status, update_time, pushing, self as self_push, start_offline_push FROM gb_stream_push ORDER BY id LIMIT ? OFFSET ?",
         )
         .bind(limit)
         .bind(offset as i64)
@@ -285,7 +285,7 @@ pub async fn list_paged(
         .await;
         #[cfg(feature = "postgres")]
         return sqlx::query_as::<_, StreamPush>(
-            "SELECT id, app, stream, create_time, media_server_id, server_id, push_time, status, update_time, pushing, self as self_push, start_offline_push FROM wvp_stream_push ORDER BY id LIMIT $1 OFFSET $2",
+            "SELECT id, app, stream, create_time, media_server_id, server_id, push_time, status, update_time, pushing, self as self_push, start_offline_push FROM gb_stream_push ORDER BY id LIMIT $1 OFFSET $2",
         )
         .bind(limit)
         .bind(offset as i64)
@@ -302,42 +302,42 @@ pub async fn count_all(
     if let Some(mid) = media_server_id {
         if let Some(p) = pushing {
             #[cfg(feature = "mysql")]
-            return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM wvp_stream_push WHERE media_server_id = ? AND pushing = ?")
+            return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_stream_push WHERE media_server_id = ? AND pushing = ?")
                 .bind(mid)
                 .bind(p)
                 .fetch_one(pool)
                 .await;
             #[cfg(feature = "postgres")]
-            return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM wvp_stream_push WHERE media_server_id = $1 AND pushing = $2")
+            return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_stream_push WHERE media_server_id = $1 AND pushing = $2")
                 .bind(mid)
                 .bind(p)
                 .fetch_one(pool)
                 .await;
         } else {
             #[cfg(feature = "mysql")]
-            return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM wvp_stream_push WHERE media_server_id = ?")
+            return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_stream_push WHERE media_server_id = ?")
                 .bind(mid)
                 .fetch_one(pool)
                 .await;
             #[cfg(feature = "postgres")]
-            return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM wvp_stream_push WHERE media_server_id = $1")
+            return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_stream_push WHERE media_server_id = $1")
                 .bind(mid)
                 .fetch_one(pool)
                 .await;
         }
     } else if let Some(p) = pushing {
         #[cfg(feature = "mysql")]
-        return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM wvp_stream_push WHERE pushing = ?")
+        return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_stream_push WHERE pushing = ?")
             .bind(p)
             .fetch_one(pool)
             .await;
         #[cfg(feature = "postgres")]
-        return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM wvp_stream_push WHERE pushing = $1")
+        return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_stream_push WHERE pushing = $1")
             .bind(p)
             .fetch_one(pool)
             .await;
     } else {
-        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM wvp_stream_push")
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_stream_push")
             .fetch_one(pool)
             .await
     }
@@ -346,13 +346,13 @@ pub async fn count_all(
 /// 更新推流状态
 pub async fn update_pushing_status(pool: &Pool, id: i64, pushing: bool) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
-    let r = sqlx::query("UPDATE wvp_stream_push SET pushing = ? WHERE id = ?")
+    let r = sqlx::query("UPDATE gb_stream_push SET pushing = ? WHERE id = ?")
         .bind(pushing)
         .bind(id)
         .execute(pool)
         .await?;
     #[cfg(feature = "postgres")]
-    let r = sqlx::query("UPDATE wvp_stream_push SET pushing = $1 WHERE id = $2")
+    let r = sqlx::query("UPDATE gb_stream_push SET pushing = $1 WHERE id = $2")
         .bind(pushing)
         .bind(id)
         .execute(pool)
@@ -371,7 +371,7 @@ pub async fn update_pushing_status_by_app_stream(
 ) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
     let r = sqlx::query(
-        "UPDATE wvp_stream_push SET pushing = ?, status = ?, media_server_id = COALESCE(?, media_server_id), push_time = CASE WHEN ? THEN COALESCE(push_time, ?) ELSE push_time END, update_time = ? WHERE app = ? AND stream = ?"
+        "UPDATE gb_stream_push SET pushing = ?, status = ?, media_server_id = COALESCE(?, media_server_id), push_time = CASE WHEN ? THEN COALESCE(push_time, ?) ELSE push_time END, update_time = ? WHERE app = ? AND stream = ?"
     )
     .bind(pushing)
     .bind(pushing)
@@ -386,7 +386,7 @@ pub async fn update_pushing_status_by_app_stream(
 
     #[cfg(feature = "postgres")]
     let r = sqlx::query(
-        "UPDATE wvp_stream_push SET pushing = $1, status = $1, media_server_id = COALESCE($2, media_server_id), push_time = CASE WHEN $1 THEN COALESCE(push_time, $3) ELSE push_time END, update_time = $3 WHERE app = $4 AND stream = $5"
+        "UPDATE gb_stream_push SET pushing = $1, status = $1, media_server_id = COALESCE($2, media_server_id), push_time = CASE WHEN $1 THEN COALESCE(push_time, $3) ELSE push_time END, update_time = $3 WHERE app = $4 AND stream = $5"
     )
     .bind(pushing)
     .bind(media_server_id)
@@ -402,13 +402,13 @@ pub async fn update_pushing_status_by_app_stream(
 /// 更新推流状态（status字段）
 pub async fn update_status(pool: &Pool, id: i64, status: bool) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
-    let r = sqlx::query("UPDATE wvp_stream_push SET status = ? WHERE id = ?")
+    let r = sqlx::query("UPDATE gb_stream_push SET status = ? WHERE id = ?")
         .bind(status)
         .bind(id)
         .execute(pool)
         .await?;
     #[cfg(feature = "postgres")]
-    let r = sqlx::query("UPDATE wvp_stream_push SET status = $1 WHERE id = $2")
+    let r = sqlx::query("UPDATE gb_stream_push SET status = $1 WHERE id = $2")
         .bind(status)
         .bind(id)
         .execute(pool)
@@ -420,7 +420,7 @@ pub async fn update_status(pool: &Pool, id: i64, status: bool) -> sqlx::Result<u
 pub async fn get_by_app_stream(pool: &Pool, app: &str, stream: &str) -> sqlx::Result<Option<StreamPush>> {
     #[cfg(feature = "mysql")]
     return sqlx::query_as::<_, StreamPush>(
-        "SELECT id, app, stream, create_time, media_server_id, server_id, push_time, status, update_time, pushing, self as self_push, start_offline_push FROM wvp_stream_push WHERE app = ? AND stream = ?"
+        "SELECT id, app, stream, create_time, media_server_id, server_id, push_time, status, update_time, pushing, self as self_push, start_offline_push FROM gb_stream_push WHERE app = ? AND stream = ?"
     )
     .bind(app)
     .bind(stream)
@@ -428,7 +428,7 @@ pub async fn get_by_app_stream(pool: &Pool, app: &str, stream: &str) -> sqlx::Re
     .await;
     #[cfg(feature = "postgres")]
     return sqlx::query_as::<_, StreamPush>(
-        "SELECT id, app, stream, create_time, media_server_id, server_id, push_time, status, update_time, pushing, self as self_push, start_offline_push FROM wvp_stream_push WHERE app = $1 AND stream = $2"
+        "SELECT id, app, stream, create_time, media_server_id, server_id, push_time, status, update_time, pushing, self as self_push, start_offline_push FROM gb_stream_push WHERE app = $1 AND stream = $2"
     )
     .bind(app)
     .bind(stream)

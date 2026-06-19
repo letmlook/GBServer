@@ -148,14 +148,14 @@ impl Jt1078Session {
 
     /// Process a single payload (decoded frame). Returns FrameKind for higher-level handling.
     /// Protocol decisions here are intentionally simple for tests:
-    /// - AUTH:<token> => authenticate if matches env var WVP__JT1078__TOKEN (default "secret")
+    /// - AUTH:<token> => authenticate if matches env var GBSERVER__JT1078__TOKEN (default "secret")
     /// - HEARTBEAT payload => update last_heartbeat
     /// - otherwise => Data(payload)
     pub fn process_payload(&mut self, payload: &[u8]) -> FrameKind {
         if payload.starts_with(b"AUTH:") {
             let token = &payload[5..];
             // allow per-session override to avoid races in tests
-            let configured = if let Some(cfg) = &self.expected_token { cfg.clone() } else { std::env::var("WVP__JT1078__TOKEN").unwrap_or_else(|_| "secret".into()) };
+            let configured = if let Some(cfg) = &self.expected_token { cfg.clone() } else { std::env::var("GBSERVER__JT1078__TOKEN").unwrap_or_else(|_| "secret".into()) };
             // compare as UTF-8 trimmed string to be tolerant of minor framing differences
             let token_str = String::from_utf8_lossy(token).trim().to_string();
             if token_str == configured || token_str.contains(&configured) {
@@ -214,7 +214,7 @@ mod tests {
 
     #[test]
     fn test_auth_and_heartbeat_processing() {
-        std::env::set_var("WVP__JT1078__TOKEN", "mytoken");
+        std::env::set_var("GBSERVER__JT1078__TOKEN", "mytoken");
         let mut sess = Jt1078Session::new(make_addr());
         sess.expected_token = Some("mytoken".into());
 
@@ -250,7 +250,7 @@ mod tests {
 
     #[test]
     fn test_auth_failure() {
-        std::env::set_var("WVP__JT1078__TOKEN", "good");
+        std::env::set_var("GBSERVER__JT1078__TOKEN", "good");
         let mut sess = Jt1078Session::new(make_addr());
         sess.expected_token = Some("good".into());
 

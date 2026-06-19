@@ -23,7 +23,7 @@ const WEAK_SECRETS: &[&str] = &[
 /// Returns Err with a human-readable reason otherwise.
 pub fn validate_jwt_secret(secret: &str) -> Result<(), String> {
     if secret.is_empty() {
-        return Err("JWT secret is empty — set WVP__JWT__SECRET".into());
+        return Err("JWT secret is empty — set GBSERVER__JWT__SECRET".into());
     }
     if secret.len() < MIN_JWT_SECRET_LEN {
         return Err(format!(

@@ -856,7 +856,7 @@ pub async fn record_list(
 
     // Fallback: query cloud_record DB
     match sqlx::query_as::<_, crate::db::cloud_record::CloudRecord>(
-        "SELECT * FROM wvp_cloud_record WHERE stream = $1 ORDER BY start_time DESC LIMIT 50"
+        "SELECT * FROM gb_cloud_record WHERE stream = $1 ORDER BY start_time DESC LIMIT 50"
     )
     .bind(&phone)
     .fetch_all(&state.pool)
@@ -1028,7 +1028,7 @@ pub async fn position_info(
     #[cfg(feature = "postgres")]
     {
         let row = sqlx::query(
-            "SELECT device_id, longitude, latitude, speed, direction, altitude, create_time FROM wvp_mobile_position WHERE device_id = $1 ORDER BY create_time DESC LIMIT 1"
+            "SELECT device_id, longitude, latitude, speed, direction, altitude, create_time FROM gb_mobile_position WHERE device_id = $1 ORDER BY create_time DESC LIMIT 1"
         )
         .bind(&phone)
         .fetch_optional(&state.pool)

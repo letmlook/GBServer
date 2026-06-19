@@ -11,7 +11,7 @@ use crate::AppState;
 
 // ---------- shared DTOs ----------
 
-/// Hikvision-style camera row. Combines a `wvp_device` row with its first
+/// Hikvision-style camera row. Combines a `gb_device` row with its first
 /// channel (or itself when the device has no children).
 #[derive(Serialize)]
 pub struct CameraRow {

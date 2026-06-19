@@ -725,7 +725,7 @@ pub async fn device_tree(
 
 
 /// GET /api/device/query/statistics/register
-/// 真实聚合 wvp_device 表的注册设备数
+/// 真实聚合 gb_device 表的注册设备数
 pub async fn statistics_register(
     State(state): State<AppState>,
 ) -> Json<WVPResult<serde_json::Value>> {

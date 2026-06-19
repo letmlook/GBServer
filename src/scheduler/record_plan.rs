@@ -80,7 +80,7 @@ impl RecordPlanScheduler {
 
             #[cfg(feature = "postgres")]
             let channels: Vec<ChannelRow> = sqlx::query_as(
-                "SELECT id, device_id, gb_device_id FROM wvp_device_channel WHERE record_plan_id = $1",
+                "SELECT id, device_id, gb_device_id FROM gb_device_channel WHERE record_plan_id = $1",
             )
             .bind(plan.id)
             .fetch_all(&self.pool)
@@ -88,7 +88,7 @@ impl RecordPlanScheduler {
 
             #[cfg(feature = "mysql")]
             let channels: Vec<ChannelRow> = sqlx::query_as(
-                "SELECT id, device_id, gb_device_id FROM wvp_device_channel WHERE record_plan_id = ?",
+                "SELECT id, device_id, gb_device_id FROM gb_device_channel WHERE record_plan_id = ?",
             )
             .bind(plan.id)
             .fetch_all(&self.pool)

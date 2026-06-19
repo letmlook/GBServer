@@ -1,4 +1,4 @@
-//! 录像计划表 wvp_record_plan, wvp_record_plan_item
+//! 录像计划表 gb_record_plan, gb_record_plan_item
 
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, Row};
@@ -55,14 +55,14 @@ pub struct RecordPlanItemPayload {
 pub async fn get_by_id(pool: &Pool, id: i32) -> sqlx::Result<Option<RecordPlan>> {
     #[cfg(feature = "mysql")]
     return sqlx::query_as::<_, RecordPlan>(
-        "SELECT id, snap, name, create_time, update_time FROM wvp_record_plan WHERE id = ?",
+        "SELECT id, snap, name, create_time, update_time FROM gb_record_plan WHERE id = ?",
     )
     .bind(id)
     .fetch_optional(pool)
     .await;
     #[cfg(feature = "postgres")]
     return sqlx::query_as::<_, RecordPlan>(
-        "SELECT id, snap, name, create_time, update_time FROM wvp_record_plan WHERE id = $1",
+        "SELECT id, snap, name, create_time, update_time FROM gb_record_plan WHERE id = $1",
     )
     .bind(id)
     .fetch_optional(pool)
@@ -77,7 +77,7 @@ pub async fn list_paged(
     let offset = (page.saturating_sub(1)) * count;
     #[cfg(feature = "mysql")]
     return sqlx::query_as::<_, RecordPlan>(
-        "SELECT id, snap, name, create_time, update_time FROM wvp_record_plan ORDER BY id LIMIT ? OFFSET ?",
+        "SELECT id, snap, name, create_time, update_time FROM gb_record_plan ORDER BY id LIMIT ? OFFSET ?",
     )
     .bind(count as i64)
     .bind(offset as i64)
@@ -85,7 +85,7 @@ pub async fn list_paged(
     .await;
     #[cfg(feature = "postgres")]
     return sqlx::query_as::<_, RecordPlan>(
-        "SELECT id, snap, name, create_time, update_time FROM wvp_record_plan ORDER BY id LIMIT $1 OFFSET $2",
+        "SELECT id, snap, name, create_time, update_time FROM gb_record_plan ORDER BY id LIMIT $1 OFFSET $2",
     )
     .bind(count as i64)
     .bind(offset as i64)
@@ -94,7 +94,7 @@ pub async fn list_paged(
 }
 
 pub async fn count_all(pool: &Pool) -> sqlx::Result<i64> {
-    sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM wvp_record_plan")
+    sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_record_plan")
         .fetch_one(pool)
         .await
 }
@@ -102,14 +102,14 @@ pub async fn count_all(pool: &Pool) -> sqlx::Result<i64> {
 pub async fn list_items(pool: &Pool, plan_id: i64) -> sqlx::Result<Vec<RecordPlanItem>> {
     #[cfg(feature = "mysql")]
     return sqlx::query_as::<_, RecordPlanItem>(
-        "SELECT id, start, stop, week_day, plan_id, create_time, update_time FROM wvp_record_plan_item WHERE plan_id = ? ORDER BY id",
+        "SELECT id, start, stop, week_day, plan_id, create_time, update_time FROM gb_record_plan_item WHERE plan_id = ? ORDER BY id",
     )
     .bind(plan_id)
     .fetch_all(pool)
     .await;
     #[cfg(feature = "postgres")]
     return sqlx::query_as::<_, RecordPlanItem>(
-        "SELECT id, start, stop, week_day, plan_id, create_time, update_time FROM wvp_record_plan_item WHERE plan_id = $1 ORDER BY id",
+        "SELECT id, start, stop, week_day, plan_id, create_time, update_time FROM gb_record_plan_item WHERE plan_id = $1 ORDER BY id",
     )
     .bind(plan_id)
     .fetch_all(pool)
@@ -119,7 +119,7 @@ pub async fn list_items(pool: &Pool, plan_id: i64) -> sqlx::Result<Vec<RecordPla
 pub async fn add(pool: &Pool, name: &str, snap: bool, now: &str) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
     let r = sqlx::query(
-        "INSERT INTO wvp_record_plan (name, snap, create_time, update_time) VALUES (?, ?, ?, ?)",
+        "INSERT INTO gb_record_plan (name, snap, create_time, update_time) VALUES (?, ?, ?, ?)",
     )
     .bind(name)
     .bind(snap)
@@ -129,7 +129,7 @@ pub async fn add(pool: &Pool, name: &str, snap: bool, now: &str) -> sqlx::Result
     .await?;
     #[cfg(feature = "postgres")]
     let r = sqlx::query(
-        "INSERT INTO wvp_record_plan (name, snap, create_time, update_time) VALUES ($1, $2, $3, $4)",
+        "INSERT INTO gb_record_plan (name, snap, create_time, update_time) VALUES ($1, $2, $3, $4)",
     )
     .bind(name)
     .bind(snap)
@@ -144,7 +144,7 @@ pub async fn add_with_id(pool: &Pool, name: &str, snap: bool, now: &str) -> sqlx
     #[cfg(feature = "mysql")]
     {
         let r = sqlx::query(
-            "INSERT INTO wvp_record_plan (name, snap, create_time, update_time) VALUES (?, ?, ?, ?)",
+            "INSERT INTO gb_record_plan (name, snap, create_time, update_time) VALUES (?, ?, ?, ?)",
         )
         .bind(name)
         .bind(snap)
@@ -157,7 +157,7 @@ pub async fn add_with_id(pool: &Pool, name: &str, snap: bool, now: &str) -> sqlx
     #[cfg(feature = "postgres")]
     {
         let row = sqlx::query(
-            "INSERT INTO wvp_record_plan (name, snap, create_time, update_time) VALUES ($1, $2, $3, $4) RETURNING id",
+            "INSERT INTO gb_record_plan (name, snap, create_time, update_time) VALUES ($1, $2, $3, $4) RETURNING id",
         )
         .bind(name)
         .bind(snap)
@@ -178,7 +178,7 @@ pub async fn update(
 ) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
     let r = sqlx::query(
-        "UPDATE wvp_record_plan SET name = COALESCE(?, name), snap = COALESCE(?, snap), update_time = ? WHERE id = ?",
+        "UPDATE gb_record_plan SET name = COALESCE(?, name), snap = COALESCE(?, snap), update_time = ? WHERE id = ?",
     )
     .bind(name)
     .bind(snap)
@@ -188,7 +188,7 @@ pub async fn update(
     .await?;
     #[cfg(feature = "postgres")]
     let r = sqlx::query(
-        "UPDATE wvp_record_plan SET name = COALESCE($1, name), snap = COALESCE($2, snap), update_time = $3 WHERE id = $4",
+        "UPDATE gb_record_plan SET name = COALESCE($1, name), snap = COALESCE($2, snap), update_time = $3 WHERE id = $4",
     )
     .bind(name)
     .bind(snap)
@@ -202,11 +202,11 @@ pub async fn update(
 pub async fn delete_by_id(pool: &Pool, id: i32) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
     {
-        let _ = sqlx::query("DELETE FROM wvp_record_plan_item WHERE plan_id = ?")
+        let _ = sqlx::query("DELETE FROM gb_record_plan_item WHERE plan_id = ?")
             .bind(id)
             .execute(pool)
             .await?;
-        let r = sqlx::query("DELETE FROM wvp_record_plan WHERE id = ?")
+        let r = sqlx::query("DELETE FROM gb_record_plan WHERE id = ?")
             .bind(id)
             .execute(pool)
             .await?;
@@ -214,11 +214,11 @@ pub async fn delete_by_id(pool: &Pool, id: i32) -> sqlx::Result<u64> {
     }
     #[cfg(feature = "postgres")]
     {
-        let _ = sqlx::query("DELETE FROM wvp_record_plan_item WHERE plan_id = $1")
+        let _ = sqlx::query("DELETE FROM gb_record_plan_item WHERE plan_id = $1")
             .bind(id)
             .execute(pool)
             .await?;
-        let r = sqlx::query("DELETE FROM wvp_record_plan WHERE id = $1")
+        let r = sqlx::query("DELETE FROM gb_record_plan WHERE id = $1")
             .bind(id)
             .execute(pool)
             .await?;
@@ -232,13 +232,13 @@ pub async fn link_channel(
     plan_id: Option<i64>,
 ) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
-    let r = sqlx::query("UPDATE wvp_device_channel SET record_plan_id = ? WHERE id = ?")
+    let r = sqlx::query("UPDATE gb_device_channel SET record_plan_id = ? WHERE id = ?")
         .bind(plan_id.map(|x| x as i32))
         .bind(channel_id)
         .execute(pool)
         .await?;
     #[cfg(feature = "postgres")]
-    let r = sqlx::query("UPDATE wvp_device_channel SET record_plan_id = $1 WHERE id = $2")
+    let r = sqlx::query("UPDATE gb_device_channel SET record_plan_id = $1 WHERE id = $2")
         .bind(plan_id.map(|x| x as i32))
         .bind(channel_id)
         .execute(pool)
@@ -254,14 +254,14 @@ pub async fn replace_items(
 ) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
     {
-        let _ = sqlx::query("DELETE FROM wvp_record_plan_item WHERE plan_id = ?")
+        let _ = sqlx::query("DELETE FROM gb_record_plan_item WHERE plan_id = ?")
             .bind(plan_id)
             .execute(pool)
             .await?;
         let mut affected = 0;
         for item in items {
             let r = sqlx::query(
-                "INSERT INTO wvp_record_plan_item (`start`, stop, week_day, plan_id, create_time, update_time) VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO gb_record_plan_item (`start`, stop, week_day, plan_id, create_time, update_time) VALUES (?, ?, ?, ?, ?, ?)",
             )
             .bind(item.start)
             .bind(item.stop)
@@ -277,14 +277,14 @@ pub async fn replace_items(
     }
     #[cfg(feature = "postgres")]
     {
-        let _ = sqlx::query("DELETE FROM wvp_record_plan_item WHERE plan_id = $1")
+        let _ = sqlx::query("DELETE FROM gb_record_plan_item WHERE plan_id = $1")
             .bind(plan_id)
             .execute(pool)
             .await?;
         let mut affected = 0;
         for item in items {
             let r = sqlx::query(
-                "INSERT INTO wvp_record_plan_item (\"start\", stop, week_day, plan_id, create_time, update_time) VALUES ($1, $2, $3, $4, $5, $6)",
+                "INSERT INTO gb_record_plan_item (\"start\", stop, week_day, plan_id, create_time, update_time) VALUES ($1, $2, $3, $4, $5, $6)",
             )
             .bind(item.start)
             .bind(item.stop)

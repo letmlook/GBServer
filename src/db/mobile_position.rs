@@ -1,4 +1,4 @@
-//! 移动位置上报数据表 wvp_device_mobile_position
+//! 移动位置上报数据表 gb_device_mobile_position
 
 use serde::{Deserialize, Serialize};
 
@@ -41,7 +41,7 @@ pub async fn insert(pool: &Pool, pos: &MobilePositionInsert) -> sqlx::Result<u64
     #[cfg(feature = "postgres")]
     {
         let result = sqlx::query(
-            "INSERT INTO wvp_device_mobile_position \
+            "INSERT INTO gb_device_mobile_position \
              (device_id, channel_id, device_name, time, longitude, latitude, altitude, speed, direction, report_source, create_time) \
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)"
         )
@@ -64,7 +64,7 @@ pub async fn insert(pool: &Pool, pos: &MobilePositionInsert) -> sqlx::Result<u64
     #[cfg(feature = "mysql")]
     {
         let result = sqlx::query(
-            "INSERT INTO wvp_device_mobile_position \
+            "INSERT INTO gb_device_mobile_position \
              (device_id, channel_id, device_name, time, longitude, latitude, altitude, speed, direction, report_source, create_time) \
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         )
@@ -102,7 +102,7 @@ pub async fn list_paged(
         let query = sqlx::query_as::<_, MobilePosition>(
             "SELECT id, device_id, channel_id, device_name, time, longitude, latitude, \
              altitude, speed, direction, report_source, create_time \
-             FROM wvp_device_mobile_position \
+             FROM gb_device_mobile_position \
              WHERE device_id = $1 \
                AND ($2::text IS NULL OR channel_id = $2) \
                AND ($3::text IS NULL OR time >= $3) \
@@ -125,7 +125,7 @@ pub async fn list_paged(
         let query = sqlx::query_as::<_, MobilePosition>(
             "SELECT id, device_id, channel_id, device_name, time, longitude, latitude, \
              altitude, speed, direction, report_source, create_time \
-             FROM wvp_device_mobile_position \
+             FROM gb_device_mobile_position \
              WHERE device_id = ? \
                AND (? IS NULL OR channel_id = ?) \
                AND (? IS NULL OR time >= ?) \
@@ -158,7 +158,7 @@ pub async fn count(
     #[cfg(feature = "postgres")]
     {
         let result: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM wvp_device_mobile_position \
+            "SELECT COUNT(*) FROM gb_device_mobile_position \
              WHERE device_id = $1 \
                AND ($2::text IS NULL OR channel_id = $2) \
                AND ($3::text IS NULL OR time >= $3) \
@@ -177,7 +177,7 @@ pub async fn count(
     #[cfg(feature = "mysql")]
     {
         let result: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM wvp_device_mobile_position \
+            "SELECT COUNT(*) FROM gb_device_mobile_position \
              WHERE device_id = ? \
                AND (? IS NULL OR channel_id = ?) \
                AND (? IS NULL OR time >= ?) \
@@ -201,7 +201,7 @@ pub async fn count(
 pub async fn delete_before_time(pool: &Pool, before_time: &str) -> sqlx::Result<u64> {
     #[cfg(feature = "postgres")]
     {
-        let result = sqlx::query("DELETE FROM wvp_device_mobile_position WHERE time < $1")
+        let result = sqlx::query("DELETE FROM gb_device_mobile_position WHERE time < $1")
             .bind(before_time)
             .execute(pool)
             .await?;
@@ -210,7 +210,7 @@ pub async fn delete_before_time(pool: &Pool, before_time: &str) -> sqlx::Result<
 
     #[cfg(feature = "mysql")]
     {
-        let result = sqlx::query("DELETE FROM wvp_device_mobile_position WHERE time < ?")
+        let result = sqlx::query("DELETE FROM gb_device_mobile_position WHERE time < ?")
             .bind(before_time)
             .execute(pool)
             .await?;
@@ -225,7 +225,7 @@ pub async fn get_latest_position(pool: &Pool, device_id: &str, channel_id: Optio
         let query = sqlx::query_as::<_, MobilePosition>(
             "SELECT id, device_id, channel_id, device_name, time, longitude, latitude, \
              altitude, speed, direction, report_source, create_time \
-             FROM wvp_device_mobile_position \
+             FROM gb_device_mobile_position \
              WHERE device_id = $1 AND ($2::text IS NULL OR channel_id = $2) \
              ORDER BY time DESC LIMIT 1"
         )
@@ -239,7 +239,7 @@ pub async fn get_latest_position(pool: &Pool, device_id: &str, channel_id: Optio
         let query = sqlx::query_as::<_, MobilePosition>(
             "SELECT id, device_id, channel_id, device_name, time, longitude, latitude, \
              altitude, speed, direction, report_source, create_time \
-             FROM wvp_device_mobile_position \
+             FROM gb_device_mobile_position \
              WHERE device_id = ? AND (? IS NULL OR channel_id = ?) \
              ORDER BY time DESC LIMIT 1"
         )
@@ -254,7 +254,7 @@ pub async fn get_latest_position(pool: &Pool, device_id: &str, channel_id: Optio
 pub async fn delete_by_device(pool: &Pool, device_id: &str) -> sqlx::Result<u64> {
     #[cfg(feature = "postgres")]
     {
-        let result = sqlx::query("DELETE FROM wvp_device_mobile_position WHERE device_id = $1")
+        let result = sqlx::query("DELETE FROM gb_device_mobile_position WHERE device_id = $1")
             .bind(device_id)
             .execute(pool)
             .await?;
@@ -263,7 +263,7 @@ pub async fn delete_by_device(pool: &Pool, device_id: &str) -> sqlx::Result<u64>
 
     #[cfg(feature = "mysql")]
     {
-        let result = sqlx::query("DELETE FROM wvp_device_mobile_position WHERE device_id = ?")
+        let result = sqlx::query("DELETE FROM gb_device_mobile_position WHERE device_id = ?")
             .bind(device_id)
             .execute(pool)
             .await?;
@@ -275,14 +275,14 @@ pub async fn delete_by_device(pool: &Pool, device_id: &str) -> sqlx::Result<u64>
 pub async fn get_by_id(pool: &Pool, id: i64) -> sqlx::Result<Option<MobilePosition>> {
     #[cfg(feature = "postgres")]
     return sqlx::query_as::<_, MobilePosition>(
-        "SELECT id, device_id, channel_id, device_name, time, longitude, latitude, altitude, speed, direction, report_source, create_time FROM wvp_device_mobile_position WHERE id = $1"
+        "SELECT id, device_id, channel_id, device_name, time, longitude, latitude, altitude, speed, direction, report_source, create_time FROM gb_device_mobile_position WHERE id = $1"
     )
     .bind(id)
     .fetch_optional(pool)
     .await;
     #[cfg(feature = "mysql")]
     return sqlx::query_as::<_, MobilePosition>(
-        "SELECT id, device_id, channel_id, device_name, time, longitude, latitude, altitude, speed, direction, report_source, create_time FROM wvp_device_mobile_position WHERE id = ?"
+        "SELECT id, device_id, channel_id, device_name, time, longitude, latitude, altitude, speed, direction, report_source, create_time FROM gb_device_mobile_position WHERE id = ?"
     )
     .bind(id)
     .fetch_optional(pool)

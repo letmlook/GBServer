@@ -1083,7 +1083,7 @@ impl SipServer {
             tracing::debug!("MESSAGE from {} - CmdType: {:?}", device_id, cmd_type);
 
             // B2: detect upstream platform queries — when an enabled platform (registered
-            // in wvp_platform by device_gb_id) sends a Catalog/Info/Status query that
+            // in gb_platform by device_gb_id) sends a Catalog/Info/Status query that
             // targets our local GB-ID, route to upstream handlers that respond with our
             // own catalog/info/status instead of looking up the platform as a device.
             let upstream_platform = db_platform::get_by_device_gb_id(pool, &device_id).await.ok().flatten();

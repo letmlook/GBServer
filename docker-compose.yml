@@ -6,19 +6,19 @@ services:
     image: gbserver:latest
     container_name: gbserver
     ports:
-      - "3000:3000"
+      - "18080:18080"
       - "5060:5060/udp"
       - "5061:5061"
     environment:
-      WVP__SERVER__HOST: 0.0.0.0
-      WVP__SERVER__PORT: 3000
-      WVP__SIP__IP: 0.0.0.0
-      WVP__SIP__PORT: 5060
-      WVP__DATABASE__URL: postgres://postgres:postgrespw@postgres:5432/wvp
-      WVP__REDIS__URL: redis://redis:6379
-      WVP__JWT__SECRET: ${WVP_JWT_SECRET:-please-change-me-please-change-me}
-      WVP__SIP__PASSWORD: ${WVP_SIP_PASSWORD:-please-change-me}
-      RUST_LOG: info,wvp_gb28181_server=debug
+      GBSERVER__SERVER__HOST: 0.0.0.0
+      GBSERVER__SERVER__PORT: 18080
+      GBSERVER__SIP__IP: 0.0.0.0
+      GBSERVER__SIP__PORT: 5060
+      GBSERVER__DATABASE__URL: postgres://postgres:postgrespw@postgres:5432/gbserver
+      GBSERVER__REDIS__URL: redis://redis:6379
+      GBSERVER__JWT__SECRET: ${GBSERVER_JWT_SECRET:-a7f3c9e2b1d84f6a0e8c5b2d9f1a4e7c0b3d6f9a2e5c8b1d4f7a0e3c6b9d2f5}
+      GBSERVER__SIP__PASSWORD: ${GBSERVER_SIP_PASSWORD:-admin123}
+      RUST_LOG: info,gbserver=debug
     depends_on:
       postgres:
         condition: service_healthy
@@ -26,32 +26,32 @@ services:
         condition: service_healthy
       zlm:
         condition: service_started
-    networks: [wvpnet]
+    networks: [gbservernet]
     restart: unless-stopped
 
   postgres:
     image: postgres:16
-    container_name: wvp-postgres
+    container_name: gbserver-postgres
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgrespw
-      POSTGRES_DB: wvp
+      POSTGRES_DB: gbserver
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./database/init-postgresql-2.7.4.sql:/docker-entrypoint-initdb.d/init.sql:ro
     ports:
       - "5432:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d wvp"]
+      test: ["CMD-SHELL", "pg_isready -U postgres -d gbserver"]
       interval: 5s
       timeout: 5s
       retries: 5
-    networks: [wvpnet]
+    networks: [gbservernet]
     restart: unless-stopped
 
   redis:
     image: redis:7-alpine
-    container_name: wvp-redis
+    container_name: gbserver-redis
     command: ["redis-server", "--appendonly", "yes"]
     volumes:
       - redisdata:/data
@@ -62,21 +62,30 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
-    networks: [wvpnet]
+    networks: [gbservernet]
     restart: unless-stopped
 
   zlm:
     image: zlmediakit/zlmediakit:master
-    container_name: wvp-zlm
+    container_name: gbserver-zlm
     ports:
-      - "8080:8080"
+      # HTTP / HTTPS API
+      - "8080:80"
       - "8443:8443"
+      # RTSP / RTSPS
       - "554:554"
+      - "322:322"
+      # RTMP
       - "1935:1935"
+      # WebRTC (UDP)
+      - "8000:8000/udp"
+      # SRT (UDP)
+      - "9000:9000/udp"
+      # RTP media for GB28181 (UDP)
       - "30000-30100:30000-30100/udp"
     environment:
-      ZLM_HTTP_SECRET: 035c73f7-bb6b-4889-a715-d9eb2d1925cc
-    networks: [wvpnet]
+      ZLM_HTTP_SECRET: S63648HLbxckv7YjpPTXXRTOsAVGo0Ia
+    networks: [gbservernet]
     restart: unless-stopped
 
 volumes:
@@ -84,5 +93,5 @@ volumes:
   redisdata: {}
 
 networks:
-  wvpnet:
+  gbservernet:
     driver: bridge

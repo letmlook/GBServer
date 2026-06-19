@@ -3,10 +3,10 @@
 //! 测试 PendingRequestManager 在模拟 SIP MESSAGE 响应下的行为。
 //! 这些测试不依赖真实 SIP 网络，而是直接调用 ResponseRouter 的路由逻辑。
 
-use wvp_gb28181_server::sip::gb28181::pending_request::{
+use gbserver::sip::gb28181::pending_request::{
     PendingRequestManager, PendingCmdType, QueryResult,
 };
-use wvp_gb28181_server::sip::gb28181::ResponseRouter;
+use gbserver::sip::gb28181::ResponseRouter;
 
 #[test]
 fn test_pending_request_register_and_complete() {

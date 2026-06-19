@@ -1,4 +1,4 @@
-//! 平台与分组关系表 wvp_platform_group
+//! 平台与分组关系表 gb_platform_group
 
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
@@ -18,7 +18,7 @@ pub async fn add(pool: &Pool, platform_id: i32, group_id: i32) -> sqlx::Result<i
     #[cfg(feature = "postgres")]
     {
         let result: (i64,) = sqlx::query_as(
-            "INSERT INTO wvp_platform_group (platform_id, group_id) VALUES ($1, $2) RETURNING id"
+            "INSERT INTO gb_platform_group (platform_id, group_id) VALUES ($1, $2) RETURNING id"
         )
         .bind(platform_id)
         .bind(group_id)
@@ -31,7 +31,7 @@ pub async fn add(pool: &Pool, platform_id: i32, group_id: i32) -> sqlx::Result<i
     #[cfg(feature = "mysql")]
     {
         let result = sqlx::query(
-            "INSERT INTO wvp_platform_group (platform_id, group_id) VALUES (?, ?)"
+            "INSERT INTO gb_platform_group (platform_id, group_id) VALUES (?, ?)"
         )
         .bind(platform_id)
         .bind(group_id)
@@ -47,7 +47,7 @@ pub async fn list_by_platform(pool: &Pool, platform_id: i32) -> sqlx::Result<Vec
     #[cfg(feature = "postgres")]
     {
         sqlx::query_as::<_, PlatformGroup>(
-            "SELECT id, platform_id, group_id FROM wvp_platform_group WHERE platform_id = $1"
+            "SELECT id, platform_id, group_id FROM gb_platform_group WHERE platform_id = $1"
         )
         .bind(platform_id)
         .fetch_all(pool)
@@ -57,7 +57,7 @@ pub async fn list_by_platform(pool: &Pool, platform_id: i32) -> sqlx::Result<Vec
     #[cfg(feature = "mysql")]
     {
         sqlx::query_as::<_, PlatformGroup>(
-            "SELECT id, platform_id, group_id FROM wvp_platform_group WHERE platform_id = ?"
+            "SELECT id, platform_id, group_id FROM gb_platform_group WHERE platform_id = ?"
         )
         .bind(platform_id)
         .fetch_all(pool)
@@ -70,7 +70,7 @@ pub async fn delete(pool: &Pool, platform_id: i32, group_id: i32) -> sqlx::Resul
     #[cfg(feature = "postgres")]
     {
         let result = sqlx::query(
-            "DELETE FROM wvp_platform_group WHERE platform_id = $1 AND group_id = $2"
+            "DELETE FROM gb_platform_group WHERE platform_id = $1 AND group_id = $2"
         )
         .bind(platform_id)
         .bind(group_id)
@@ -82,7 +82,7 @@ pub async fn delete(pool: &Pool, platform_id: i32, group_id: i32) -> sqlx::Resul
     #[cfg(feature = "mysql")]
     {
         let result = sqlx::query(
-            "DELETE FROM wvp_platform_group WHERE platform_id = ? AND group_id = ?"
+            "DELETE FROM gb_platform_group WHERE platform_id = ? AND group_id = ?"
         )
         .bind(platform_id)
         .bind(group_id)
@@ -96,7 +96,7 @@ pub async fn delete(pool: &Pool, platform_id: i32, group_id: i32) -> sqlx::Resul
 pub async fn delete_by_platform(pool: &Pool, platform_id: i32) -> sqlx::Result<u64> {
     #[cfg(feature = "postgres")]
     {
-        let result = sqlx::query("DELETE FROM wvp_platform_group WHERE platform_id = $1")
+        let result = sqlx::query("DELETE FROM gb_platform_group WHERE platform_id = $1")
             .bind(platform_id)
             .execute(pool)
             .await?;
@@ -105,7 +105,7 @@ pub async fn delete_by_platform(pool: &Pool, platform_id: i32) -> sqlx::Result<u
 
     #[cfg(feature = "mysql")]
     {
-        let result = sqlx::query("DELETE FROM wvp_platform_group WHERE platform_id = ?")
+        let result = sqlx::query("DELETE FROM gb_platform_group WHERE platform_id = ?")
             .bind(platform_id)
             .execute(pool)
             .await?;

@@ -20,4 +20,4 @@ try {
 
 Write-Host "`n编译完成。" -ForegroundColor Green
 Write-Host "前端输出: web\dist" -ForegroundColor Gray
-Write-Host "后端可执行文件: target\release\wvp-gb28181-server.exe" -ForegroundColor Gray
+Write-Host "后端可执行文件: target\release\gbserver.exe" -ForegroundColor Gray

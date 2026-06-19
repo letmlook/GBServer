@@ -153,7 +153,7 @@ pub async fn handler(
 
 #### Configuration
 - Use `config` crate with YAML + environment variables
-- Environment variables use `WVP__SECTION__KEY` format
+- Environment variables use `GBSERVER__SECTION__KEY` format
 - Load config in `main.rs` and pass to `run()`
 
 #### Logging
@@ -229,7 +229,7 @@ tracing::debug!("Query result: {:?}", result);
 docker compose up -d
 
 # Import database schema
-docker exec -i wvp-postgres psql -U postgres -d wvp < database/init-postgresql-2.7.4.sql
+docker exec -i gbserver-postgres psql -U postgres -d gbserver < database/init-postgresql-2.7.4.sql
 
 # Run backend
 cargo run

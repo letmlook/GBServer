@@ -45,7 +45,7 @@ cd web && npm run test:ci
 
 PowerShell helpers are available on Windows from the repository root: `scripts/build.ps1` builds frontend + backend, `scripts/build-and-run.ps1` builds then runs, and `scripts/run.ps1` runs an existing release binary.
 
-Configuration loads from `config/application.yaml` plus environment overrides using the `WVP__SECTION__KEY` form (double underscore separator). The app must be run from the repository root so config files and `web/dist` resolve correctly. The README documents the default admin account (`admin` / `admin`) and first-time SQL import commands if schema auto-init is not sufficient.
+Configuration loads from `config/application.yaml` plus environment overrides using the `GBSERVER__SECTION__KEY` form (double underscore separator). The app must be run from the repository root so config files and `web/dist` resolve correctly. The README documents the default admin account (`admin` / `admin`) and first-time SQL import commands if schema auto-init is not sufficient.
 
 ## Architecture
 
@@ -53,7 +53,7 @@ This repository is a Rust rewrite of the WVP GB28181 backend with the original-s
 
 ### Startup flow (`src/lib.rs` → `run()`)
 
-1. Load config, create a SQLx pool, and ensure required tables. If the core `wvp_device` table is missing, startup attempts to initialize the WVP schema from `database/init-postgresql-2.7.4.sql` or `database/init-mysql-2.7.4.sql` via `include_str!`.
+1. Load config, create a SQLx pool, and ensure required tables. If the core `wvp_device` table is missing, startup attempts to initialize the WVP-compatible schema from `database/init-postgresql-2.7.4.sql` or `database/init-mysql-2.7.4.sql` via `include_str!`.
 2. Create the SIP server when `sip.enabled` is true, wiring it to DB state and WebSocket state.
 3. Initialize configured ZLM clients, sync media-server rows into the DB, and start the ZLM health-check loop.
 4. Initialize optional Redis, playback/download managers, and shared `AppState`.

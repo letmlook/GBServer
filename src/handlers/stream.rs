@@ -341,7 +341,7 @@ pub async fn push_save_to_gb(
     #[cfg(feature = "mysql")]
     {
         let _ = sqlx::query(
-            "UPDATE wvp_push_stream SET device_id = ?, channel_id = ?, update_time = ? WHERE id = ?",
+            "UPDATE gb_push_stream SET device_id = ?, channel_id = ?, update_time = ? WHERE id = ?",
         )
         .bind(device_id)
         .bind(channel_id)
@@ -353,7 +353,7 @@ pub async fn push_save_to_gb(
     #[cfg(feature = "postgres")]
     {
         let _ = sqlx::query(
-            "UPDATE wvp_push_stream SET device_id = $1, channel_id = $2, update_time = $3 WHERE id = $4",
+            "UPDATE gb_push_stream SET device_id = $1, channel_id = $2, update_time = $3 WHERE id = $4",
         )
         .bind(device_id)
         .bind(channel_id)
@@ -384,7 +384,7 @@ pub async fn push_remove_form_gb(
     #[cfg(feature = "mysql")]
     {
         let _ = sqlx::query(
-            "UPDATE wvp_push_stream SET device_id = NULL, channel_id = NULL, update_time = ? WHERE id = ?",
+            "UPDATE gb_push_stream SET device_id = NULL, channel_id = NULL, update_time = ? WHERE id = ?",
         )
         .bind(&now)
         .bind(id)
@@ -394,7 +394,7 @@ pub async fn push_remove_form_gb(
     #[cfg(feature = "postgres")]
     {
         let _ = sqlx::query(
-            "UPDATE wvp_push_stream SET device_id = NULL, channel_id = NULL, update_time = $1 WHERE id = $2",
+            "UPDATE gb_push_stream SET device_id = NULL, channel_id = NULL, update_time = $1 WHERE id = $2",
         )
         .bind(&now)
         .bind(id)

@@ -27,20 +27,20 @@ git clone <your fork>/GBServer.git && cd GBServer
 
 # 2. DB schema (PostgreSQL)
 psql -U postgres -d wvp < database/init-postgresql-2.7.4.sql
-# (or MySQL: mysql -uroot -p wvp < database/init-mysql-2.7.4.sql)
+# (or MySQL: mysql -uroot -p gbserver < database/init-mysql-2.7.4.sql)
 
 # 3. backend
 cp config/application.yaml config/application.local.yaml   # override secrets
-export WVP__JWT__SECRET=$(openssl rand -hex 32)
-export WVP__DATABASE__URL=postgres://postgres:postgres@127.0.0.1:5432/wvp
-export WVP__SIP__PASSWORD=$(openssl rand -hex 16)
+export GBSERVER__JWT__SECRET=$(openssl rand -hex 32)
+export GBSERVER__DATABASE__URL=postgres://postgres:postgres@127.0.0.1:5432/gbserver
+export GBSERVER__SIP__PASSWORD=$(openssl rand -hex 16)
 cargo run --release
 
 # 4. frontend (in a separate shell)
 cd web && npm install && npm run dev
 ```
 
-Backend listens on `:3000`, frontend dev server on `:8080`.
+Backend listens on `:18080`, frontend dev server on `:9528`.
 Default admin login: `admin / admin` (rotate on first deploy).
 
 ### 1.3 Docker (compose) deploy
@@ -54,7 +54,7 @@ docker compose exec gbserver bash   # exec into container
 ## 2. Configuration Reference
 
 All settings are loaded from `config/application.yaml` plus overrides via
-environment variables (`WVP__SECTION__KEY=value`).
+environment variables (`GBSERVER__SECTION__KEY=value`).
 
 ### 2.1 Critical settings
 
@@ -76,7 +76,7 @@ sip:
   port: 5060                 # UDP
   tcp_port: 5061
   device_id: "34020000002000000001"
-  password: "admin123"        # via WVP__SIP__PASSWORD
+  password: "admin123"        # via GBSERVER__SIP__PASSWORD
   realm: "3402000000"
   keepalive_timeout: 30       # seconds
   register_timeout: 3600
@@ -95,11 +95,11 @@ zlm:
       secret: "035c73f7-bb6b-4889-a715-d9eb2d1925cc"
   stream_timeout: 30
   hook_enabled: true
-  hook_url: "http://127.0.0.1:3000/api/zlm/hook"
+  hook_url: "http://127.0.0.1:18080/api/zlm/hook"
 ```
 
 ZLM must be configured to POST hooks to `/api/zlm/hook`. Configure via
-`config.ini`: `[hook] enable=1, root_url=http://gbserver:3000`.
+`config.ini`: `[hook] enable=1, root_url=http://gbserver:18080`.
 
 ### 2.4 Multi-node ZLM (load balancing)
 
@@ -131,7 +131,7 @@ local catalog (all devices and channels).
 2. Back up DB: `pg_dump wvp > backup_$(date +%F).sql`
 3. Pull new Rust build: `git pull && cargo build --release`
 4. Start new binary: `systemctl start gbserver`
-5. Verify: `curl http://localhost:3000/api/server/version`
+5. Verify: `curl http://localhost:18080/api/server/version`
 6. If migration needed, see `docs/MIGRATION_FROM_WVP_JAVA.md` (not yet written)
 
 ### 4.2 In-place Rust upgrade
@@ -220,7 +220,7 @@ Backend detects ZLM down via missing `on_server_started` hook and marks
 
 ```bash
 curl -X POST http://zlm:8080/index/api/setServerConfig \
-  -d 'secret=YOUR_SECRET&hook.enable=1&hook.root_url=http://gbserver:3000'
+  -d 'secret=YOUR_SECRET&hook.enable=1&hook.root_url=http://gbserver:18080'
 ```
 
 ### 7.4 SIP server down
@@ -258,7 +258,7 @@ node scripts/parity-audit/extract-wvp-parity.js
 
 | Symptom | Likely cause | Fix |
 |---------|--------------|-----|
-| `JWT secret validation failed` on boot | Default / weak secret | `export WVP__JWT__SECRET=$(openssl rand -hex 32)` |
+| `JWT secret validation failed` on boot | Default / weak secret | `export GBSERVER__JWT__SECRET=$(openssl rand -hex 32)` |
 | Devices show offline | SIP UDP 5060 blocked | `ufw allow 5060/udp` and check `sip.ip` config |
 | Play URL returns 502 | ZLM unreachable | Check `zlm[*].ip` config + network ACLs |
 | Cloud records don't appear | ZLM `on_record_mp4` hook not POSTing | Verify `hook_url` matches `/api/zlm/hook` |

@@ -3,7 +3,7 @@ use redis::AsyncCommands;
 
 /// Redis 缓存操作封装，所有函数在 Redis 不可用时 graceful fallback
 
-const KEY_PREFIX: &str = "wvp:";
+const KEY_PREFIX: &str = "gb:";
 
 fn device_key(device_id: &str) -> String {
     format!("{}device:online:{}", KEY_PREFIX, device_id)

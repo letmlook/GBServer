@@ -1,4 +1,4 @@
-//! WVP position history table: wvp_position_history
+//! WVP position history table: gb_position_history
 use serde::Serialize;
 use sqlx::FromRow;
 
@@ -20,13 +20,13 @@ pub async fn ensure_table(pool: &Pool) -> sqlx::Result<()> {
     #[cfg(feature = "mysql")]
     {
         sqlx::query(
-            "CREATE TABLE IF NOT EXISTS wvp_position_history (\n\n  id BIGINT AUTO_INCREMENT PRIMARY KEY,\n  device_id VARCHAR(50) NOT NULL,\n  timestamp VARCHAR(50) NOT NULL,\n  longitude DOUBLE,\n  latitude DOUBLE,\n  altitude DOUBLE,\n  speed DOUBLE,\n  direction DOUBLE\n)"
+            "CREATE TABLE IF NOT EXISTS gb_position_history (\n\n  id BIGINT AUTO_INCREMENT PRIMARY KEY,\n  device_id VARCHAR(50) NOT NULL,\n  timestamp VARCHAR(50) NOT NULL,\n  longitude DOUBLE,\n  latitude DOUBLE,\n  altitude DOUBLE,\n  speed DOUBLE,\n  direction DOUBLE\n)"
         ).execute(pool).await?;
     }
     #[cfg(feature = "postgres")]
     {
         sqlx::query(
-            "CREATE TABLE IF NOT EXISTS wvp_position_history (\n\n  id BIGSERIAL PRIMARY KEY,\n  device_id VARCHAR(50) NOT NULL,\n  timestamp VARCHAR(50) NOT NULL,\n  longitude DOUBLE PRECISION,\n  latitude DOUBLE PRECISION,\n  altitude DOUBLE PRECISION,\n  speed DOUBLE PRECISION,\n  direction DOUBLE PRECISION\n)"
+            "CREATE TABLE IF NOT EXISTS gb_position_history (\n\n  id BIGSERIAL PRIMARY KEY,\n  device_id VARCHAR(50) NOT NULL,\n  timestamp VARCHAR(50) NOT NULL,\n  longitude DOUBLE PRECISION,\n  latitude DOUBLE PRECISION,\n  altitude DOUBLE PRECISION,\n  speed DOUBLE PRECISION,\n  direction DOUBLE PRECISION\n)"
         ).execute(pool).await?;
     }
     Ok(())
@@ -45,7 +45,7 @@ pub async fn insert_position(
     #[cfg(feature = "mysql")]
     {
         let r = sqlx::query(
-            "INSERT INTO wvp_position_history (device_id, timestamp, longitude, latitude, altitude, speed, direction) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO gb_position_history (device_id, timestamp, longitude, latitude, altitude, speed, direction) VALUES (?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(device_id)
         .bind(timestamp)
@@ -61,7 +61,7 @@ pub async fn insert_position(
     #[cfg(feature = "postgres")]
     {
         let r = sqlx::query(
-            "INSERT INTO wvp_position_history (device_id, timestamp, longitude, latitude, altitude, speed, direction) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+            "INSERT INTO gb_position_history (device_id, timestamp, longitude, latitude, altitude, speed, direction) VALUES ($1, $2, $3, $4, $5, $6, $7)",
         )
         .bind(device_id)
         .bind(timestamp)
@@ -86,7 +86,7 @@ pub async fn list_by_device_and_time(
         #[cfg(feature = "mysql")]
         {
             sqlx::query_as::<_, PositionHistory>(
-                "SELECT id, device_id, timestamp, longitude, latitude, altitude, speed, direction FROM wvp_position_history WHERE device_id = ? AND timestamp >= ? AND timestamp <= ? ORDER BY timestamp ASC",
+                "SELECT id, device_id, timestamp, longitude, latitude, altitude, speed, direction FROM gb_position_history WHERE device_id = ? AND timestamp >= ? AND timestamp <= ? ORDER BY timestamp ASC",
             )
             .bind(device_id).bind(s).bind(e)
             .fetch_all(pool).await
@@ -94,7 +94,7 @@ pub async fn list_by_device_and_time(
         #[cfg(feature = "postgres")]
         {
             sqlx::query_as::<_, PositionHistory>(
-                "SELECT id, device_id, timestamp, longitude, latitude, altitude, speed, direction FROM wvp_position_history WHERE device_id = $1 AND timestamp >= $2 AND timestamp <= $3 ORDER BY timestamp ASC",
+                "SELECT id, device_id, timestamp, longitude, latitude, altitude, speed, direction FROM gb_position_history WHERE device_id = $1 AND timestamp >= $2 AND timestamp <= $3 ORDER BY timestamp ASC",
             )
             .bind(device_id).bind(s).bind(e)
             .fetch_all(pool).await
@@ -103,7 +103,7 @@ pub async fn list_by_device_and_time(
         #[cfg(feature = "mysql")]
         {
             sqlx::query_as::<_, PositionHistory>(
-                "SELECT id, device_id, timestamp, longitude, latitude, altitude, speed, direction FROM wvp_position_history WHERE device_id = ? ORDER BY timestamp ASC",
+                "SELECT id, device_id, timestamp, longitude, latitude, altitude, speed, direction FROM gb_position_history WHERE device_id = ? ORDER BY timestamp ASC",
             )
             .bind(device_id)
             .fetch_all(pool).await
@@ -111,7 +111,7 @@ pub async fn list_by_device_and_time(
         #[cfg(feature = "postgres")]
         {
             sqlx::query_as::<_, PositionHistory>(
-                "SELECT id, device_id, timestamp, longitude, latitude, altitude, speed, direction FROM wvp_position_history WHERE device_id = $1 ORDER BY timestamp ASC",
+                "SELECT id, device_id, timestamp, longitude, latitude, altitude, speed, direction FROM gb_position_history WHERE device_id = $1 ORDER BY timestamp ASC",
             )
             .bind(device_id)
             .fetch_all(pool).await

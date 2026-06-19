@@ -1,6 +1,6 @@
-# 向 Docker 中的 PostgreSQL 初始化 WVP 库表（创建 wvp_user 等表）
+# 向 Docker 中的 PostgreSQL 初始化库表（创建 gbserver 数据库所需的 schema）
 # 用法: 在 GBServer 根目录执行 .\scripts\init-db-postgres.ps1
-# 前提: docker compose up -d 已启动 wvp-postgres 容器
+# 前提: docker compose up -d 已启动 gbserver-postgres 容器
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
@@ -12,10 +12,10 @@ if (-not (Test-Path $sqlFile)) {
     exit 1
 }
 
-Write-Host "正在向 wvp-postgres 导入 WVP 表结构及初始数据..." -ForegroundColor Cyan
-Get-Content $sqlFile -Raw -Encoding UTF8 | docker exec -i wvp-postgres psql -U postgres -d wvp
+Write-Host "正在向 gbserver-postgres 导入表结构及初始数据..." -ForegroundColor Cyan
+Get-Content $sqlFile -Raw -Encoding UTF8 | docker exec -i gbserver-postgres psql -U postgres -d gbserver
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "导入失败，请确认容器 wvp-postgres 已启动: docker compose up -d" -ForegroundColor Red
+    Write-Host "导入失败，请确认容器 gbserver-postgres 已启动: docker compose up -d" -ForegroundColor Red
     exit 1
 }
 Write-Host "导入完成。默认管理员: admin / admin" -ForegroundColor Green

@@ -163,7 +163,7 @@ impl Default for ZlmConfig {
 pub fn load_config() -> Result<AppConfig> {
     let base = config::Config::builder()
         .add_source(config::File::with_name("config/application").required(false))
-        .add_source(config::Environment::with_prefix("WVP").separator("__"));
+        .add_source(config::Environment::with_prefix("GBSERVER").separator("__"));
 
     let cfg: AppConfig = base.build()?.try_deserialize()?;
     Ok(cfg)

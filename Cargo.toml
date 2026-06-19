@@ -1,8 +1,8 @@
 [package]
-name = "wvp-gb28181-server"
+name = "gbserver"
 version = "0.1.0"
 edition = "2021"
-description = "WVP GB28181 后端 Rust 重写，前端复用 web 目录"
+description = "GBServer — GB28181 国标信令、流媒体接入与级联管理平台"
 
 [features]
 default = ["postgres"]
@@ -67,6 +67,10 @@ fake = "2.6"
 axum-test = "7"
 criterion = { version = "0.5", features = ["async_tokio"] }
 uuid = { version = "1", features = ["v4"] }
+
+[[bin]]
+name = "gbserver"
+path = "src/main.rs"
 
 [[test]]
 name = "device_simulator_test"

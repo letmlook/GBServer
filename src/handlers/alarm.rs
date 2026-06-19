@@ -36,7 +36,7 @@ pub async fn alarm_list(
         let rows: Vec<serde_json::Value> = sqlx::query(
             "SELECT id, device_id, channel_id, alarm_priority, alarm_method, alarm_type, 
                     alarm_time, alarm_description, longitude, latitude, create_time 
-             FROM wvp_device_alarm 
+             FROM gb_device_alarm 
              WHERE ($1::text IS NULL OR device_id = $1)
                AND ($2::text IS NULL OR channel_id = $2)
                AND ($3::text IS NULL OR alarm_type = $3)
@@ -86,7 +86,7 @@ pub async fn alarm_list(
         .collect();
 
         let total: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM wvp_device_alarm 
+            "SELECT COUNT(*) FROM gb_device_alarm 
              WHERE ($1::text IS NULL OR device_id = $1)
                AND ($2::text IS NULL OR channel_id = $2)
                AND ($3::text IS NULL OR alarm_type = $3)
@@ -113,7 +113,7 @@ pub async fn alarm_list(
         let rows: Vec<serde_json::Value> = sqlx::query(
             "SELECT id, device_id, channel_id, alarm_priority, alarm_method, alarm_type, 
                     alarm_time, alarm_description, longitude, latitude, create_time 
-             FROM wvp_device_alarm 
+             FROM gb_device_alarm 
              WHERE (? IS NULL OR device_id = ?)
                AND (? IS NULL OR channel_id = ?)
                AND (? IS NULL OR alarm_type = ?)
@@ -163,7 +163,7 @@ pub async fn alarm_list(
         .collect();
 
         let total: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM wvp_device_alarm 
+            "SELECT COUNT(*) FROM gb_device_alarm 
              WHERE (? IS NULL OR device_id = ?)
                AND (? IS NULL OR channel_id = ?)
                AND (? IS NULL OR alarm_type = ?)
@@ -194,7 +194,7 @@ pub async fn alarm_detail(
     #[cfg(feature = "postgres")]
     {
         let row = sqlx::query(
-            "SELECT * FROM wvp_device_alarm WHERE id = $1",
+            "SELECT * FROM gb_device_alarm WHERE id = $1",
         )
         .bind(id)
         .fetch_optional(&state.pool)
@@ -237,7 +237,7 @@ pub async fn alarm_detail(
 
     #[cfg(feature = "mysql")]
     {
-        let row = sqlx::query("SELECT * FROM wvp_device_alarm WHERE id = ?")
+        let row = sqlx::query("SELECT * FROM gb_device_alarm WHERE id = ?")
             .bind(id)
             .fetch_optional(&state.pool)
             .await
@@ -301,7 +301,7 @@ pub async fn alarm_handle(
 
     #[cfg(feature = "postgres")]
     {
-        // wvp_device_alarm表没有handled字段，直接返回成功
+        // gb_device_alarm表没有handled字段，直接返回成功
         Ok(Json(WVPResult::success(serde_json::json!({
             "id": id,
             "message": "告警已处理"
@@ -310,7 +310,7 @@ pub async fn alarm_handle(
 
     #[cfg(feature = "mysql")]
     {
-        // wvp_device_alarm表没有handled字段，直接返回成功
+        // gb_device_alarm表没有handled字段，直接返回成功
         Ok(Json(WVPResult::success(serde_json::json!({
             "id": id,
             "message": "告警已处理"
@@ -325,7 +325,7 @@ pub async fn alarm_delete(
 ) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
     #[cfg(feature = "postgres")]
     {
-        sqlx::query("DELETE FROM wvp_device_alarm WHERE id = $1")
+        sqlx::query("DELETE FROM gb_device_alarm WHERE id = $1")
             .bind(id)
             .execute(&state.pool)
             .await
@@ -334,7 +334,7 @@ pub async fn alarm_delete(
 
     #[cfg(feature = "mysql")]
     {
-        sqlx::query("DELETE FROM wvp_device_alarm WHERE id = ?")
+        sqlx::query("DELETE FROM gb_device_alarm WHERE id = ?")
             .bind(id)
             .execute(&state.pool)
             .await
@@ -361,13 +361,13 @@ pub async fn alarm_batch_delete(
     let mut deleted = 0u64;
     for id in body.ids {
         #[cfg(feature = "postgres")]
-        let r = sqlx::query("DELETE FROM wvp_device_alarm WHERE id = $1")
+        let r = sqlx::query("DELETE FROM gb_device_alarm WHERE id = $1")
             .bind(id)
             .execute(&state.pool)
             .await
             .map_err(|e| AppError::business(ErrorCode::Error500, format!("数据库删除失败: {}", e)))?;
         #[cfg(feature = "mysql")]
-        let r = sqlx::query("DELETE FROM wvp_device_alarm WHERE id = ?")
+        let r = sqlx::query("DELETE FROM gb_device_alarm WHERE id = ?")
             .bind(id)
             .execute(&state.pool)
             .await
@@ -384,14 +384,14 @@ pub async fn alarm_delete_by_device(
     axum::extract::Path(device_id): axum::extract::Path<String>,
 ) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
     #[cfg(feature = "postgres")]
-    let r = sqlx::query("DELETE FROM wvp_device_alarm WHERE device_id = $1")
+    let r = sqlx::query("DELETE FROM gb_device_alarm WHERE device_id = $1")
         .bind(&device_id)
         .execute(&state.pool)
         .await
         .map_err(|e| AppError::business(ErrorCode::Error500, format!("数据库删除失败: {}", e)))?;
 
     #[cfg(feature = "mysql")]
-    let r = sqlx::query("DELETE FROM wvp_device_alarm WHERE device_id = ?")
+    let r = sqlx::query("DELETE FROM gb_device_alarm WHERE device_id = ?")
         .bind(&device_id)
         .execute(&state.pool)
         .await
@@ -406,14 +406,14 @@ pub async fn alarm_delete_before_time(
     axum::extract::Path(before_time): axum::extract::Path<String>,
 ) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
     #[cfg(feature = "postgres")]
-    let r = sqlx::query("DELETE FROM wvp_device_alarm WHERE create_time < $1")
+    let r = sqlx::query("DELETE FROM gb_device_alarm WHERE create_time < $1")
         .bind(&before_time)
         .execute(&state.pool)
         .await
         .map_err(|e| AppError::business(ErrorCode::Error500, format!("数据库删除失败: {}", e)))?;
 
     #[cfg(feature = "mysql")]
-    let r = sqlx::query("DELETE FROM wvp_device_alarm WHERE create_time < ?")
+    let r = sqlx::query("DELETE FROM gb_device_alarm WHERE create_time < ?")
         .bind(&before_time)
         .execute(&state.pool)
         .await

@@ -24,17 +24,17 @@ async fn init_db_tables(pool: &db::Pool) -> anyhow::Result<()> {
     db::position_history::ensure_table(pool).await?;
     db::audit_log::ensure_table(pool).await?;
     
-    // Check if core WVP tables exist; if not, run full schema init
+    // Check if core tables exist; if not, run full schema init
     #[cfg(feature = "postgres")]
     {
         let table_exists: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name = 'wvp_device')"
+            "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name = 'gb_device')"
         )
         .fetch_one(pool)
         .await.unwrap_or(false);
         
         if !table_exists {
-            tracing::info!("WVP schema tables not found, initializing from SQL script...");
+            tracing::info!("Schema tables not found, initializing from SQL script...");
             let sql = include_str!("../database/init-postgresql-2.7.4.sql");
             // Execute each statement separately (split by semicolons, skip comments)
             for stmt in sql.split(';') {
@@ -50,20 +50,20 @@ async fn init_db_tables(pool: &db::Pool) -> anyhow::Result<()> {
                 }
                 let _ = sqlx::query(stmt).execute(pool).await;
             }
-            tracing::info!("WVP schema initialization complete");
+            tracing::info!("Schema initialization complete");
         }
     }
     
     #[cfg(feature = "mysql")]
     {
         let table_exists: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'wvp_device')"
+            "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'gb_device')"
         )
         .fetch_one(pool)
         .await.unwrap_or(false);
         
         if !table_exists {
-            tracing::info!("WVP schema tables not found, initializing from SQL script...");
+            tracing::info!("Schema tables not found, initializing from SQL script...");
             let sql = include_str!("../database/init-mysql-2.7.4.sql");
             for stmt in sql.split(';') {
                 let stmt = stmt.trim();
@@ -76,7 +76,7 @@ async fn init_db_tables(pool: &db::Pool) -> anyhow::Result<()> {
                 }
                 let _ = sqlx::query(stmt).execute(pool).await;
             }
-            tracing::info!("WVP schema initialization complete");
+            tracing::info!("Schema initialization complete");
         }
     }
     
@@ -89,7 +89,7 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
         Ok(()) => tracing::info!("JWT secret OK (len={})", cfg.jwt.secret.len()),
         Err(e) => {
             tracing::warn!("⚠️  JWT secret validation failed: {}", e);
-            tracing::warn!("Set WVP__JWT__SECRET to a ≥32-char random hex string before production.");
+            tracing::warn!("Set GBSERVER__JWT__SECRET to a ≥32-char random hex string before production.");
         }
     }
     let pool = db::create_pool(&cfg).await?;
@@ -247,13 +247,13 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
     {
         if let Some(jcfg) = cfg.jt1078.as_ref() {
             if let Some(timeout_ms) = jcfg.timeout_ms {
-                std::env::set_var("WVP__JT1078__TIMEOUT_MS", timeout_ms.to_string());
+                std::env::set_var("GBSERVER__JT1078__TIMEOUT_MS", timeout_ms.to_string());
             }
             if let Some(rw) = jcfg.retransmit_wait_ms {
-                std::env::set_var("WVP__JT1078__RETRANSMIT_WAIT_MS", rw.to_string());
+                std::env::set_var("GBSERVER__JT1078__RETRANSMIT_WAIT_MS", rw.to_string());
             }
             if let Some(ref hook) = jcfg.retransmit_hook_url {
-                std::env::set_var("WVP__JT1078__RETRANSMIT_HOOK", hook.clone());
+                std::env::set_var("GBSERVER__JT1078__RETRANSMIT_HOOK", hook.clone());
             }
         }
 
@@ -274,7 +274,7 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
     let port = cfg.server.port;
     let app = router::app(state.clone()).with_state(state);
     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
-    tracing::info!("WVP GB28181 后端启动: http://{}", addr);
+    tracing::info!("GBServer 启动: http://{}", addr);
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
     Ok(())

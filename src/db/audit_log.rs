@@ -4,7 +4,7 @@ pub async fn ensure_table(pool: &Pool) -> sqlx::Result<()> {
     #[cfg(feature = "postgres")]
     {
         let _ = sqlx::query(
-            r#"CREATE TABLE IF NOT EXISTS wvp_audit_log (
+            r#"CREATE TABLE IF NOT EXISTS gb_audit_log (
                 id BIGSERIAL PRIMARY KEY,
                 username VARCHAR(100),
                 action VARCHAR(200),
@@ -21,13 +21,13 @@ pub async fn ensure_table(pool: &Pool) -> sqlx::Result<()> {
         .await;
 
         let _ = sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_audit_log_create_time ON wvp_audit_log(create_time)"
+            "CREATE INDEX IF NOT EXISTS idx_audit_log_create_time ON gb_audit_log(create_time)"
         )
         .execute(pool)
         .await;
 
         let _ = sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_audit_log_username ON wvp_audit_log(username)"
+            "CREATE INDEX IF NOT EXISTS idx_audit_log_username ON gb_audit_log(username)"
         )
         .execute(pool)
         .await;
@@ -36,7 +36,7 @@ pub async fn ensure_table(pool: &Pool) -> sqlx::Result<()> {
     #[cfg(feature = "mysql")]
     {
         let _ = sqlx::query(
-            r#"CREATE TABLE IF NOT EXISTS wvp_audit_log (
+            r#"CREATE TABLE IF NOT EXISTS gb_audit_log (
                 id BIGINT AUTO_INCREMENT PRIMARY KEY,
                 username VARCHAR(100),
                 action VARCHAR(200),
@@ -53,13 +53,13 @@ pub async fn ensure_table(pool: &Pool) -> sqlx::Result<()> {
         .await;
 
         let _ = sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_audit_log_create_time ON wvp_audit_log(create_time)"
+            "CREATE INDEX IF NOT EXISTS idx_audit_log_create_time ON gb_audit_log(create_time)"
         )
         .execute(pool)
         .await;
 
         let _ = sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_audit_log_username ON wvp_audit_log(username)"
+            "CREATE INDEX IF NOT EXISTS idx_audit_log_username ON gb_audit_log(username)"
         )
         .execute(pool)
         .await;
@@ -80,7 +80,7 @@ pub async fn insert(
 ) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
     let r = sqlx::query(
-        "INSERT INTO wvp_audit_log (username, action, resource, method, path, ip, status_code) VALUES (?, ?, ?, ?, ?, ?, ?)"
+        "INSERT INTO gb_audit_log (username, action, resource, method, path, ip, status_code) VALUES (?, ?, ?, ?, ?, ?, ?)"
     )
     .bind(username)
     .bind(action)
@@ -93,7 +93,7 @@ pub async fn insert(
     .await?;
     #[cfg(feature = "postgres")]
     let r = sqlx::query(
-        "INSERT INTO wvp_audit_log (username, action, resource, method, path, ip, status_code) VALUES ($1, $2, $3, $4, $5, $6, $7)"
+        "INSERT INTO gb_audit_log (username, action, resource, method, path, ip, status_code) VALUES ($1, $2, $3, $4, $5, $6, $7)"
     )
     .bind(username)
     .bind(action)
@@ -172,19 +172,19 @@ pub async fn list_paged(
         }
     }
 
-    let count_sql = format!("SELECT COUNT(*) FROM wvp_audit_log WHERE 1=1{}", conditions);
+    let count_sql = format!("SELECT COUNT(*) FROM gb_audit_log WHERE 1=1{}", conditions);
     let mut count_q = sqlx::query_scalar::<_, i64>(&count_sql);
     for b in &bind_values { count_q = count_q.bind(b); }
     let total: i64 = count_q.fetch_one(pool).await.unwrap_or(0);
 
     #[cfg(feature = "postgres")]
     let data_sql = format!(
-        "SELECT id, username, action, resource, method, path, ip, status_code, create_time::text as create_time FROM wvp_audit_log WHERE 1=1{} ORDER BY id DESC LIMIT ${} OFFSET ${}",
+        "SELECT id, username, action, resource, method, path, ip, status_code, create_time::text as create_time FROM gb_audit_log WHERE 1=1{} ORDER BY id DESC LIMIT ${} OFFSET ${}",
         conditions, bind_values.len() + 1, bind_values.len() + 2
     );
     #[cfg(feature = "mysql")]
     let data_sql = format!(
-        "SELECT id, username, action, resource, method, path, ip, status_code, create_time FROM wvp_audit_log WHERE 1=1{} ORDER BY id DESC LIMIT ? OFFSET ?",
+        "SELECT id, username, action, resource, method, path, ip, status_code, create_time FROM gb_audit_log WHERE 1=1{} ORDER BY id DESC LIMIT ? OFFSET ?",
         conditions
     );
 

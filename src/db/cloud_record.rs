@@ -1,4 +1,4 @@
-//! 云端录像记录表 wvp_cloud_record
+//! 云端录像记录表 gb_cloud_record
 
 use serde::{Deserialize, Serialize};
 
@@ -52,7 +52,7 @@ pub async fn insert(pool: &Pool, record: &CloudRecordInsert) -> sqlx::Result<i64
     #[cfg(feature = "postgres")]
     {
         let result: (i64,) = sqlx::query_as(
-            "INSERT INTO wvp_cloud_record \
+            "INSERT INTO gb_cloud_record \
              (app, stream, call_id, start_time, end_time, media_server_id, server_id, \
               file_name, folder, file_path, file_size, time_len) \
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) \
@@ -79,7 +79,7 @@ pub async fn insert(pool: &Pool, record: &CloudRecordInsert) -> sqlx::Result<i64
     #[cfg(feature = "mysql")]
     {
         let result = sqlx::query(
-            "INSERT INTO wvp_cloud_record \
+            "INSERT INTO gb_cloud_record \
              (app, stream, call_id, start_time, end_time, media_server_id, server_id, \
               file_name, folder, file_path, file_size, time_len) \
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
@@ -110,7 +110,7 @@ pub async fn get_by_id(pool: &Pool, id: i64) -> sqlx::Result<Option<CloudRecord>
         sqlx::query_as::<_, CloudRecord>(
             "SELECT id, app, stream, call_id, start_time, end_time, media_server_id, \
              server_id, file_name, folder, file_path, collect, file_size, time_len \
-             FROM wvp_cloud_record WHERE id = $1"
+             FROM gb_cloud_record WHERE id = $1"
         )
         .bind(id)
         .fetch_optional(pool)
@@ -122,7 +122,7 @@ pub async fn get_by_id(pool: &Pool, id: i64) -> sqlx::Result<Option<CloudRecord>
         sqlx::query_as::<_, CloudRecord>(
             "SELECT id, app, stream, call_id, start_time, end_time, media_server_id, \
              server_id, file_name, folder, file_path, collect, file_size, time_len \
-             FROM wvp_cloud_record WHERE id = ?"
+             FROM gb_cloud_record WHERE id = ?"
         )
         .bind(id)
         .fetch_optional(pool)
@@ -148,7 +148,7 @@ pub async fn list_paged(
         let query = sqlx::query_as::<_, CloudRecord>(
             "SELECT id, app, stream, call_id, start_time, end_time, media_server_id, \
              server_id, file_name, folder, file_path, collect, file_size, time_len \
-             FROM wvp_cloud_record \
+             FROM gb_cloud_record \
              WHERE ($1::text IS NULL OR app = $1) \
                AND ($2::text IS NULL OR stream = $2) \
                AND ($3::text IS NULL OR media_server_id = $3) \
@@ -173,7 +173,7 @@ pub async fn list_paged(
         let query = sqlx::query_as::<_, CloudRecord>(
             "SELECT id, app, stream, call_id, start_time, end_time, media_server_id, \
              server_id, file_name, folder, file_path, collect, file_size, time_len \
-             FROM wvp_cloud_record \
+             FROM gb_cloud_record \
              WHERE (? IS NULL OR app = ?) \
                AND (? IS NULL OR stream = ?) \
                AND (? IS NULL OR media_server_id = ?) \
@@ -211,7 +211,7 @@ pub async fn count_all(
     #[cfg(feature = "postgres")]
     {
         let result: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM wvp_cloud_record \
+            "SELECT COUNT(*) FROM gb_cloud_record \
              WHERE ($1::text IS NULL OR app = $1) \
                AND ($2::text IS NULL OR stream = $2) \
                AND ($3::text IS NULL OR media_server_id = $3) \
@@ -232,7 +232,7 @@ pub async fn count_all(
     #[cfg(feature = "mysql")]
     {
         let result: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM wvp_cloud_record \
+            "SELECT COUNT(*) FROM gb_cloud_record \
              WHERE (? IS NULL OR app = ?) \
                AND (? IS NULL OR stream = ?) \
                AND (? IS NULL OR media_server_id = ?) \
@@ -261,7 +261,7 @@ pub async fn update(pool: &Pool, record: &CloudRecordUpdate) -> sqlx::Result<boo
     #[cfg(feature = "postgres")]
     {
         let result = sqlx::query(
-            "UPDATE wvp_cloud_record SET \
+            "UPDATE gb_cloud_record SET \
              end_time = COALESCE($2, end_time), \
              file_size = COALESCE($3, file_size), \
              time_len = COALESCE($4, time_len) \
@@ -280,7 +280,7 @@ pub async fn update(pool: &Pool, record: &CloudRecordUpdate) -> sqlx::Result<boo
     #[cfg(feature = "mysql")]
     {
         let result = sqlx::query(
-            "UPDATE wvp_cloud_record SET \
+            "UPDATE gb_cloud_record SET \
              end_time = COALESCE(?, end_time), \
              file_size = COALESCE(?, file_size), \
              time_len = COALESCE(?, time_len) \
@@ -301,7 +301,7 @@ pub async fn update(pool: &Pool, record: &CloudRecordUpdate) -> sqlx::Result<boo
 pub async fn delete(pool: &Pool, id: i64) -> sqlx::Result<bool> {
     #[cfg(feature = "postgres")]
     {
-        let result = sqlx::query("DELETE FROM wvp_cloud_record WHERE id = $1")
+        let result = sqlx::query("DELETE FROM gb_cloud_record WHERE id = $1")
             .bind(id)
             .execute(pool)
             .await?;
@@ -310,7 +310,7 @@ pub async fn delete(pool: &Pool, id: i64) -> sqlx::Result<bool> {
 
     #[cfg(feature = "mysql")]
     {
-        let result = sqlx::query("DELETE FROM wvp_cloud_record WHERE id = ?")
+        let result = sqlx::query("DELETE FROM gb_cloud_record WHERE id = ?")
             .bind(id)
             .execute(pool)
             .await?;
@@ -328,7 +328,7 @@ pub async fn batch_delete(pool: &Pool, ids: &[i64]) -> sqlx::Result<u64> {
     {
         let placeholders: Vec<String> = ids.iter().map(|_| "$1".to_string()).collect();
         let sql = format!(
-            "DELETE FROM wvp_cloud_record WHERE id IN ({})",
+            "DELETE FROM gb_cloud_record WHERE id IN ({})",
             placeholders.join(", ")
         );
 
@@ -345,7 +345,7 @@ pub async fn batch_delete(pool: &Pool, ids: &[i64]) -> sqlx::Result<u64> {
     {
         let placeholders: Vec<String> = ids.iter().map(|_| "?".to_string()).collect();
         let sql = format!(
-            "DELETE FROM wvp_cloud_record WHERE id IN ({})",
+            "DELETE FROM gb_cloud_record WHERE id IN ({})",
             placeholders.join(", ")
         );
 
@@ -363,7 +363,7 @@ pub async fn batch_delete(pool: &Pool, ids: &[i64]) -> sqlx::Result<u64> {
 pub async fn set_collect(pool: &Pool, id: i64, collect: bool) -> sqlx::Result<bool> {
     #[cfg(feature = "postgres")]
     {
-        let result = sqlx::query("UPDATE wvp_cloud_record SET collect = $2 WHERE id = $1")
+        let result = sqlx::query("UPDATE gb_cloud_record SET collect = $2 WHERE id = $1")
             .bind(id)
             .bind(collect)
             .execute(pool)
@@ -373,7 +373,7 @@ pub async fn set_collect(pool: &Pool, id: i64, collect: bool) -> sqlx::Result<bo
 
     #[cfg(feature = "mysql")]
     {
-        let result = sqlx::query("UPDATE wvp_cloud_record SET collect = ? WHERE id = ?")
+        let result = sqlx::query("UPDATE gb_cloud_record SET collect = ? WHERE id = ?")
             .bind(collect)
             .bind(id)
             .execute(pool)
@@ -386,14 +386,14 @@ pub async fn set_collect(pool: &Pool, id: i64, collect: bool) -> sqlx::Result<bo
 pub async fn get_by_call_id(pool: &Pool, call_id: &str) -> sqlx::Result<Option<CloudRecord>> {
     #[cfg(feature = "postgres")]
     return sqlx::query_as::<_, CloudRecord>(
-        "SELECT id, app, stream, call_id, start_time, end_time, duration, media_server_id, file_name, file_path, file_size, create_time, collect FROM wvp_cloud_record WHERE call_id = $1"
+        "SELECT id, app, stream, call_id, start_time, end_time, duration, media_server_id, file_name, file_path, file_size, create_time, collect FROM gb_cloud_record WHERE call_id = $1"
     )
     .bind(call_id)
     .fetch_optional(pool)
     .await;
     #[cfg(feature = "mysql")]
     return sqlx::query_as::<_, CloudRecord>(
-        "SELECT id, app, stream, call_id, start_time, end_time, duration, media_server_id, file_name, file_path, file_size, create_time, collect FROM wvp_cloud_record WHERE call_id = ?"
+        "SELECT id, app, stream, call_id, start_time, end_time, duration, media_server_id, file_name, file_path, file_size, create_time, collect FROM gb_cloud_record WHERE call_id = ?"
     )
     .bind(call_id)
     .fetch_optional(pool)
@@ -403,13 +403,13 @@ pub async fn get_by_call_id(pool: &Pool, call_id: &str) -> sqlx::Result<Option<C
 /// 删除指定流的录像
 pub async fn delete_by_app_stream(pool: &Pool, app: &str, stream: &str) -> sqlx::Result<u64> {
     #[cfg(feature = "postgres")]
-    let r = sqlx::query("DELETE FROM wvp_cloud_record WHERE app = $1 AND stream = $2")
+    let r = sqlx::query("DELETE FROM gb_cloud_record WHERE app = $1 AND stream = $2")
         .bind(app)
         .bind(stream)
         .execute(pool)
         .await?;
     #[cfg(feature = "mysql")]
-    let r = sqlx::query("DELETE FROM wvp_cloud_record WHERE app = ? AND stream = ?")
+    let r = sqlx::query("DELETE FROM gb_cloud_record WHERE app = ? AND stream = ?")
         .bind(app)
         .bind(stream)
         .execute(pool)
@@ -421,13 +421,13 @@ pub async fn delete_by_app_stream(pool: &Pool, app: &str, stream: &str) -> sqlx:
 pub async fn get_collect_records(pool: &Pool) -> sqlx::Result<Vec<CloudRecord>> {
     #[cfg(feature = "postgres")]
     return sqlx::query_as::<_, CloudRecord>(
-        "SELECT id, app, stream, call_id, start_time, end_time, duration, media_server_id, file_name, file_path, file_size, create_time, collect FROM wvp_cloud_record WHERE collect = true ORDER BY create_time DESC"
+        "SELECT id, app, stream, call_id, start_time, end_time, duration, media_server_id, file_name, file_path, file_size, create_time, collect FROM gb_cloud_record WHERE collect = true ORDER BY create_time DESC"
     )
     .fetch_all(pool)
     .await;
     #[cfg(feature = "mysql")]
     return sqlx::query_as::<_, CloudRecord>(
-        "SELECT id, app, stream, call_id, start_time, end_time, duration, media_server_id, file_name, file_path, file_size, create_time, collect FROM wvp_cloud_record WHERE collect = 1 ORDER BY create_time DESC"
+        "SELECT id, app, stream, call_id, start_time, end_time, duration, media_server_id, file_name, file_path, file_size, create_time, collect FROM gb_cloud_record WHERE collect = 1 ORDER BY create_time DESC"
     )
     .fetch_all(pool)
     .await;
@@ -436,12 +436,12 @@ pub async fn get_collect_records(pool: &Pool) -> sqlx::Result<Vec<CloudRecord>> 
 /// 删除指定时间之前的录像
 pub async fn delete_before_time(pool: &Pool, before_time: i64) -> sqlx::Result<u64> {
     #[cfg(feature = "postgres")]
-    let r = sqlx::query("DELETE FROM wvp_cloud_record WHERE end_time < $1")
+    let r = sqlx::query("DELETE FROM gb_cloud_record WHERE end_time < $1")
         .bind(before_time)
         .execute(pool)
         .await?;
     #[cfg(feature = "mysql")]
-    let r = sqlx::query("DELETE FROM wvp_cloud_record WHERE end_time < ?")
+    let r = sqlx::query("DELETE FROM gb_cloud_record WHERE end_time < ?")
         .bind(before_time)
         .execute(pool)
         .await?;

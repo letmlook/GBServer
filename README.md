@@ -1,4 +1,4 @@
-# WVP GB28181 后端 Rust 版
+# GBServer — GB28181 国标信令平台 Rust 版
 
 使用 Rust 完全重写 [wvp-GB28181-pro](https://github.com/648540858/wvp-GB28181-pro) 的后端，**前端** 为 Vue 2 + Element UI，位于本仓库 `web/` 目录。
 
@@ -24,7 +24,7 @@
 | **Node.js** | 构建前端（`web/dist`） | 14+ / 16+ / 18+（含 npm） | 仅构建时需要；运行时不依赖 |
 | **Redis** | 配置中可选，当前后端未使用 | 6.x / 7.x | ❌ 可选（预留） |
 
-- **仅运行已构建好的服务**：需安装并启动 **PostgreSQL** 或 **MySQL**（与编译时选择的数据库一致，默认 PostgreSQL），在 GBServer 根目录执行 `.\target\release\wvp-gb28181-server.exe`（或 `cargo run --release`），并保证 `config/application.yaml` 中 `database.url` 正确、库表已按 WVP 初始化脚本建好。
+- **仅运行已构建好的服务**：需安装并启动 **PostgreSQL** 或 **MySQL**（与编译时选择的数据库一致，默认 PostgreSQL），在 GBServer 根目录执行 `.\target\release\gbserver.exe`（或 `cargo run --release`），并保证 `config/application.yaml` 中 `database.url` 正确、库表已按 WVP 初始化脚本建好。
 - **从源码构建**：需安装 **Rust**（后端）和 **Node.js + npm**（前端），再按下方「构建前后端并运行」执行。
 
 **安装参考**（按需选用）：
@@ -49,9 +49,9 @@ docker compose ps
 docker compose down
 ```
 
-- **PostgreSQL**：用户/密码/库在 compose 中为 `postgres` / `postgres` / `wvp`，与默认配置一致。首次使用需导入 WVP 表结构与初始数据：
+- **PostgreSQL**：用户/密码/库在 compose 中为 `postgres` / `postgres` / `gbserver`，与默认配置一致。首次使用需导入 WVP 表结构与初始数据：
   ```bash
-  docker exec -i wvp-postgres psql -U postgres -d wvp < database/init-postgresql-2.7.4.sql
+  docker exec -i gbserver-postgres psql -U postgres -d gbserver < database/init-postgresql-2.7.4.sql
   ```
 - **Redis**：无密码，`redis://127.0.0.1:6379/0`，当前后端未使用，仅预留。
 - **MySQL（可选）**：若需同时跑 MySQL，使用 profile 启动：`docker compose --profile mysql up -d`。MySQL 首次使用需导入 `database/init-mysql-2.7.4.sql`（见下方「1. 数据库」）。
@@ -65,12 +65,12 @@ docker compose down
 
 - **PostgreSQL**（默认）：使用 `database/init-postgresql-2.7.4.sql`（来源于原 WVP 2.7.4 的 PostgreSQL/金仓版脚本）。先创建数据库与用户，再执行：
   ```bash
-  psql -U postgres -d wvp -f database/init-postgresql-2.7.4.sql
+  psql -U postgres -d gbserver -f database/init-postgresql-2.7.4.sql
   ```
   更多说明见 `database/README.md`。
 - **MySQL**：使用 `database/init-mysql-2.7.4.sql`（来源于原 WVP 2.7.4）。执行方式见上方「Docker 运行 MySQL + Redis」或：
   ```bash
-  mysql -uroot -p wvp < database/init-mysql-2.7.4.sql
+  mysql -uroot -p gbserver < database/init-mysql-2.7.4.sql
   ```
 
 默认管理员账号：`admin` / 密码 `admin`（MD5：`21232f297a57a5a743894a0e4a801fc3`）。
@@ -84,7 +84,7 @@ server:
   port: 18080
 
 database:
-  url: "postgres://用户:密码@127.0.0.1:5432/wvp"   # 使用 MySQL 时改为 mysql://用户:密码@127.0.0.1:3306/wvp
+  url: "postgres://用户:密码@127.0.0.1:5432/gbserver"   # 使用 MySQL 时改为 mysql://用户:密码@127.0.0.1:3306/gbserver
 
 jwt:
   secret: "请改为随机长字符串"
@@ -94,7 +94,7 @@ jwt:
 static_dir: "web/dist"
 ```
 
-也可通过环境变量覆盖，例如：`WVP__SERVER__PORT=18080`、`WVP__DATABASE__URL=postgres://...`（默认）或 `WVP__DATABASE__URL=mysql://...`。
+也可通过环境变量覆盖，例如：`GBSERVER__SERVER__PORT=18080`、`GBSERVER__DATABASE__URL=postgres://...`（默认）或 `GBSERVER__DATABASE__URL=mysql://...`。
 
 ### 3. 构建前后端并运行
 

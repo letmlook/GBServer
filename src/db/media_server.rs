@@ -1,4 +1,4 @@
-//! 流媒体服务器 wvp_media_server
+//! 流媒体服务器 gb_media_server
 
 use serde::Serialize;
 use sqlx::FromRow;
@@ -48,7 +48,7 @@ pub struct MediaServer {
 /// 获取所有媒体服务器
 pub async fn list_media_servers(pool: &Pool) -> sqlx::Result<Vec<MediaServer>> {
     sqlx::query_as::<_, MediaServer>(
-        "SELECT * FROM wvp_media_server ORDER BY id"
+        "SELECT * FROM gb_media_server ORDER BY id"
     )
     .fetch_all(pool)
     .await
@@ -58,14 +58,14 @@ pub async fn list_media_servers(pool: &Pool) -> sqlx::Result<Vec<MediaServer>> {
 pub async fn get_media_server_by_id(pool: &Pool, id: &str) -> sqlx::Result<Option<MediaServer>> {
     #[cfg(feature = "mysql")]
     return sqlx::query_as::<_, MediaServer>(
-        "SELECT * FROM wvp_media_server WHERE id = ?"
+        "SELECT * FROM gb_media_server WHERE id = ?"
     )
     .bind(id)
     .fetch_optional(pool)
     .await;
     #[cfg(feature = "postgres")]
     return sqlx::query_as::<_, MediaServer>(
-        "SELECT * FROM wvp_media_server WHERE id = $1"
+        "SELECT * FROM gb_media_server WHERE id = $1"
     )
     .bind(id)
     .fetch_optional(pool)
@@ -82,7 +82,7 @@ pub async fn add(
 ) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
     let r = sqlx::query(
-        r#"INSERT INTO wvp_media_server (id, ip, http_port, create_time, update_time, auto_config, rtp_enable, default_server)
+        r#"INSERT INTO gb_media_server (id, ip, http_port, create_time, update_time, auto_config, rtp_enable, default_server)
            VALUES (?, ?, ?, ?, ?, false, false, false)"#
     )
     .bind(id)
@@ -94,7 +94,7 @@ pub async fn add(
     .await?;
     #[cfg(feature = "postgres")]
     let r = sqlx::query(
-        r#"INSERT INTO wvp_media_server (id, ip, http_port, create_time, update_time, auto_config, rtp_enable, default_server)
+        r#"INSERT INTO gb_media_server (id, ip, http_port, create_time, update_time, auto_config, rtp_enable, default_server)
            VALUES ($1, $2, $3, $4, $5, false, false, false)"#
     )
     .bind(id)
@@ -118,7 +118,7 @@ pub async fn update(
 ) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
     let r = sqlx::query(
-        r#"UPDATE wvp_media_server SET
+        r#"UPDATE gb_media_server SET
            ip = COALESCE(?, ip),
            hook_ip = COALESCE(?, hook_ip),
            http_port = COALESCE(?, http_port),
@@ -134,7 +134,7 @@ pub async fn update(
     .await?;
     #[cfg(feature = "postgres")]
     let r = sqlx::query(
-        r#"UPDATE wvp_media_server SET
+        r#"UPDATE gb_media_server SET
            ip = COALESCE($1, ip),
            hook_ip = COALESCE($2, hook_ip),
            http_port = COALESCE($3, http_port),
@@ -154,12 +154,12 @@ pub async fn update(
 /// 删除媒体服务器
 pub async fn delete_by_id(pool: &Pool, id: &str) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
-    let r = sqlx::query("DELETE FROM wvp_media_server WHERE id = ?")
+    let r = sqlx::query("DELETE FROM gb_media_server WHERE id = ?")
     .bind(id)
     .execute(pool)
     .await?;
     #[cfg(feature = "postgres")]
-    let r = sqlx::query("DELETE FROM wvp_media_server WHERE id = $1")
+    let r = sqlx::query("DELETE FROM gb_media_server WHERE id = $1")
     .bind(id)
     .execute(pool)
     .await?;
@@ -177,7 +177,7 @@ pub async fn sync_from_config(
 ) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
     let r = sqlx::query(
-        r#"INSERT INTO wvp_media_server (id, ip, http_port, secret, create_time, update_time, auto_config, rtp_enable, default_server, server_id, type)
+        r#"INSERT INTO gb_media_server (id, ip, http_port, secret, create_time, update_time, auto_config, rtp_enable, default_server, server_id, type)
            VALUES (?, ?, ?, ?, ?, ?, false, false, true, ?, 'zlm')
            ON DUPLICATE KEY UPDATE ip = VALUES(ip), http_port = VALUES(http_port), secret = VALUES(secret), update_time = VALUES(update_time)"#
     )
@@ -192,7 +192,7 @@ pub async fn sync_from_config(
     .await?;
     #[cfg(feature = "postgres")]
     let r = sqlx::query(
-        r#"INSERT INTO wvp_media_server (id, ip, http_port, secret, create_time, update_time, auto_config, rtp_enable, default_server, server_id, type)
+        r#"INSERT INTO gb_media_server (id, ip, http_port, secret, create_time, update_time, auto_config, rtp_enable, default_server, server_id, type)
            VALUES ($1, $2, $3, $4, $5, $6, false, false, true, $1, 'zlm')
            ON CONFLICT (id) DO UPDATE SET ip = EXCLUDED.ip, http_port = EXCLUDED.http_port, secret = EXCLUDED.secret, update_time = EXCLUDED.update_time"#
     )
@@ -211,13 +211,13 @@ pub async fn sync_from_config(
 pub async fn get_default_server(pool: &Pool) -> sqlx::Result<Option<MediaServer>> {
     #[cfg(feature = "mysql")]
     return sqlx::query_as::<_, MediaServer>(
-        "SELECT id, ip, hook_ip, sdp_ip, stream_ip, http_port, http_ssl_port, rtmp_port, rtsp_port, rtsp_ssl_port, flv_port, flv_ssl_port, ws_port, wss_port, rtp_proxy_port, secret, rtp_enable, default_server, record_assist_port, record_day, record_transcode, create_time, update_time, status, last_keepalive_time FROM wvp_media_server WHERE default_server = 1 LIMIT 1",
+        "SELECT id, ip, hook_ip, sdp_ip, stream_ip, http_port, http_ssl_port, rtmp_port, rtsp_port, rtsp_ssl_port, flv_port, flv_ssl_port, ws_port, wss_port, rtp_proxy_port, secret, rtp_enable, default_server, record_assist_port, record_day, record_transcode, create_time, update_time, status, last_keepalive_time FROM gb_media_server WHERE default_server = 1 LIMIT 1",
     )
     .fetch_optional(pool)
     .await;
     #[cfg(feature = "postgres")]
     return sqlx::query_as::<_, MediaServer>(
-        "SELECT id, ip, hook_ip, sdp_ip, stream_ip, http_port, http_ssl_port, rtmp_port, rtsp_port, rtsp_ssl_port, flv_port, flv_ssl_port, ws_port, wss_port, rtp_proxy_port, secret, rtp_enable, default_server, record_assist_port, record_day, record_transcode, create_time, update_time, status, last_keepalive_time FROM wvp_media_server WHERE default_server = true LIMIT 1",
+        "SELECT id, ip, hook_ip, sdp_ip, stream_ip, http_port, http_ssl_port, rtmp_port, rtsp_port, rtsp_ssl_port, flv_port, flv_ssl_port, ws_port, wss_port, rtp_proxy_port, secret, rtp_enable, default_server, record_assist_port, record_day, record_transcode, create_time, update_time, status, last_keepalive_time FROM gb_media_server WHERE default_server = true LIMIT 1",
     )
     .fetch_optional(pool)
     .await;
@@ -225,7 +225,7 @@ pub async fn get_default_server(pool: &Pool) -> sqlx::Result<Option<MediaServer>
 
 /// 统计媒体服务器数量
 pub async fn count_all(pool: &Pool) -> sqlx::Result<i64> {
-    sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM wvp_media_server")
+    sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_media_server")
         .fetch_one(pool)
         .await
 }
@@ -233,14 +233,14 @@ pub async fn count_all(pool: &Pool) -> sqlx::Result<i64> {
 /// 更新服务器状态
 pub async fn update_status(pool: &Pool, id: &str, status: bool, last_keepalive: &str) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
-    let r = sqlx::query("UPDATE wvp_media_server SET status = ?, last_keepalive_time = ? WHERE id = ?")
+    let r = sqlx::query("UPDATE gb_media_server SET status = ?, last_keepalive_time = ? WHERE id = ?")
         .bind(status)
         .bind(last_keepalive)
         .bind(id)
         .execute(pool)
         .await?;
     #[cfg(feature = "postgres")]
-    let r = sqlx::query("UPDATE wvp_media_server SET status = $1, last_keepalive_time = $2 WHERE id = $3")
+    let r = sqlx::query("UPDATE gb_media_server SET status = $1, last_keepalive_time = $2 WHERE id = $3")
         .bind(status)
         .bind(last_keepalive)
         .bind(id)
@@ -253,13 +253,13 @@ pub async fn update_status(pool: &Pool, id: &str, status: bool, last_keepalive: 
 pub async fn list_online_servers(pool: &Pool) -> sqlx::Result<Vec<MediaServer>> {
     #[cfg(feature = "mysql")]
     return sqlx::query_as::<_, MediaServer>(
-        "SELECT id, ip, hook_ip, sdp_ip, stream_ip, http_port, http_ssl_port, rtmp_port, rtsp_port, rtsp_ssl_port, flv_port, flv_ssl_port, ws_port, wss_port, rtp_proxy_port, secret, rtp_enable, default_server, record_assist_port, record_day, record_transcode, create_time, update_time, status, last_keepalive_time FROM wvp_media_server WHERE status = 1 ORDER BY id",
+        "SELECT id, ip, hook_ip, sdp_ip, stream_ip, http_port, http_ssl_port, rtmp_port, rtsp_port, rtsp_ssl_port, flv_port, flv_ssl_port, ws_port, wss_port, rtp_proxy_port, secret, rtp_enable, default_server, record_assist_port, record_day, record_transcode, create_time, update_time, status, last_keepalive_time FROM gb_media_server WHERE status = 1 ORDER BY id",
     )
     .fetch_all(pool)
     .await;
     #[cfg(feature = "postgres")]
     return sqlx::query_as::<_, MediaServer>(
-        "SELECT id, ip, hook_ip, sdp_ip, stream_ip, http_port, http_ssl_port, rtmp_port, rtsp_port, rtsp_ssl_port, flv_port, flv_ssl_port, ws_port, wss_port, rtp_proxy_port, secret, rtp_enable, default_server, record_assist_port, record_day, record_transcode, create_time, update_time, status, last_keepalive_time FROM wvp_media_server WHERE status = true ORDER BY id",
+        "SELECT id, ip, hook_ip, sdp_ip, stream_ip, http_port, http_ssl_port, rtmp_port, rtsp_port, rtsp_ssl_port, flv_port, flv_ssl_port, ws_port, wss_port, rtp_proxy_port, secret, rtp_enable, default_server, record_assist_port, record_day, record_transcode, create_time, update_time, status, last_keepalive_time FROM gb_media_server WHERE status = true ORDER BY id",
     )
     .fetch_all(pool)
     .await;
@@ -277,7 +277,7 @@ pub async fn update_ports(
 ) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
     let r = sqlx::query(
-        r#"UPDATE wvp_media_server SET
+        r#"UPDATE gb_media_server SET
            http_port = COALESCE(?, http_port),
            http_ssl_port = COALESCE(?, http_ssl_port),
            rtsp_port = COALESCE(?, rtsp_port),
@@ -296,7 +296,7 @@ pub async fn update_ports(
     .await?;
     #[cfg(feature = "postgres")]
     let r = sqlx::query(
-        r#"UPDATE wvp_media_server SET
+        r#"UPDATE gb_media_server SET
            http_port = COALESCE($1, http_port),
            http_ssl_port = COALESCE($2, http_ssl_port),
            rtsp_port = COALESCE($3, rtsp_port),
@@ -324,7 +324,7 @@ pub async fn update_last_keepalive(
 ) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
     let r = sqlx::query(
-        "UPDATE wvp_media_server SET last_keepalive_time = ?, status = 1 WHERE id = ?"
+        "UPDATE gb_media_server SET last_keepalive_time = ?, status = 1 WHERE id = ?"
     )
     .bind(now)
     .bind(id)
@@ -332,7 +332,7 @@ pub async fn update_last_keepalive(
     .await?;
     #[cfg(feature = "postgres")]
     let r = sqlx::query(
-        "UPDATE wvp_media_server SET last_keepalive_time = $1, status = true WHERE id = $2"
+        "UPDATE gb_media_server SET last_keepalive_time = $1, status = true WHERE id = $2"
     )
     .bind(now)
     .bind(id)
@@ -351,7 +351,7 @@ pub async fn update_flow_stats(
 ) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
     let r = sqlx::query(
-        "UPDATE wvp_media_server SET total_bytes = COALESCE(total_bytes, 0) + ?, active_stream_count = ?, update_time = ? WHERE id = ?"
+        "UPDATE gb_media_server SET total_bytes = COALESCE(total_bytes, 0) + ?, active_stream_count = ?, update_time = ? WHERE id = ?"
     )
     .bind(total_bytes)
     .bind(active_streams)
@@ -361,7 +361,7 @@ pub async fn update_flow_stats(
     .await?;
     #[cfg(feature = "postgres")]
     let r = sqlx::query(
-        "UPDATE wvp_media_server SET total_bytes = COALESCE(total_bytes, 0) + $1, active_stream_count = $2, update_time = $3 WHERE id = $4"
+        "UPDATE gb_media_server SET total_bytes = COALESCE(total_bytes, 0) + $1, active_stream_count = $2, update_time = $3 WHERE id = $4"
     )
     .bind(total_bytes)
     .bind(active_streams)

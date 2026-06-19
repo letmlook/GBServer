@@ -1,4 +1,4 @@
-//! 级联平台 wvp_platform
+//! 级联平台 gb_platform
 
 use serde::Serialize;
 use sqlx::FromRow;
@@ -55,7 +55,7 @@ pub async fn list_paged(
     let limit = count.min(100) as i64;
     #[cfg(feature = "mysql")]
     return sqlx::query_as::<_, Platform>(
-        "SELECT * FROM wvp_platform ORDER BY id LIMIT ? OFFSET ?",
+        "SELECT * FROM gb_platform ORDER BY id LIMIT ? OFFSET ?",
     )
     .bind(limit)
     .bind(offset as i64)
@@ -63,7 +63,7 @@ pub async fn list_paged(
     .await;
     #[cfg(feature = "postgres")]
     return sqlx::query_as::<_, Platform>(
-        "SELECT * FROM wvp_platform ORDER BY id LIMIT $1 OFFSET $2",
+        "SELECT * FROM gb_platform ORDER BY id LIMIT $1 OFFSET $2",
     )
     .bind(limit)
     .bind(offset as i64)
@@ -73,7 +73,7 @@ pub async fn list_paged(
 
 /// 统计总数
 pub async fn count_all(pool: &Pool) -> sqlx::Result<i64> {
-    sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM wvp_platform")
+    sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_platform")
         .fetch_one(pool)
         .await
 }
@@ -82,14 +82,14 @@ pub async fn count_all(pool: &Pool) -> sqlx::Result<i64> {
 pub async fn get_by_id(pool: &Pool, id: i64) -> sqlx::Result<Option<Platform>> {
     #[cfg(feature = "mysql")]
     return sqlx::query_as::<_, Platform>(
-        "SELECT * FROM wvp_platform WHERE id = ?",
+        "SELECT * FROM gb_platform WHERE id = ?",
     )
     .bind(id)
     .fetch_optional(pool)
     .await;
     #[cfg(feature = "postgres")]
     return sqlx::query_as::<_, Platform>(
-        "SELECT * FROM wvp_platform WHERE id = $1",
+        "SELECT * FROM gb_platform WHERE id = $1",
     )
     .bind(id)
     .fetch_optional(pool)
@@ -100,14 +100,14 @@ pub async fn get_by_id(pool: &Pool, id: i64) -> sqlx::Result<Option<Platform>> {
 pub async fn get_by_server_gb_id(pool: &Pool, server_gb_id: &str) -> sqlx::Result<Option<Platform>> {
     #[cfg(feature = "mysql")]
     return sqlx::query_as::<_, Platform>(
-        "SELECT * FROM wvp_platform WHERE server_gb_id = ?",
+        "SELECT * FROM gb_platform WHERE server_gb_id = ?",
     )
     .bind(server_gb_id)
     .fetch_optional(pool)
     .await;
     #[cfg(feature = "postgres")]
     return sqlx::query_as::<_, Platform>(
-        "SELECT * FROM wvp_platform WHERE server_gb_id = $1",
+        "SELECT * FROM gb_platform WHERE server_gb_id = $1",
     )
     .bind(server_gb_id)
     .fetch_optional(pool)
@@ -119,7 +119,7 @@ pub async fn get_by_device_gb_id(pool: &Pool, device_gb_id: &str) -> sqlx::Resul
     #[cfg(feature = "mysql")]
     {
         sqlx::query_as::<_, Platform>(
-            "SELECT * FROM wvp_platform WHERE device_gb_id = ? LIMIT 1",
+            "SELECT * FROM gb_platform WHERE device_gb_id = ? LIMIT 1",
         )
         .bind(device_gb_id)
         .fetch_optional(pool)
@@ -128,7 +128,7 @@ pub async fn get_by_device_gb_id(pool: &Pool, device_gb_id: &str) -> sqlx::Resul
     #[cfg(feature = "postgres")]
     {
         sqlx::query_as::<_, Platform>(
-            "SELECT * FROM wvp_platform WHERE device_gb_id = $1 LIMIT 1",
+            "SELECT * FROM gb_platform WHERE device_gb_id = $1 LIMIT 1",
         )
         .bind(device_gb_id)
         .fetch_optional(pool)
@@ -151,7 +151,7 @@ pub async fn add(
 ) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
     let r = sqlx::query(
-        r#"INSERT INTO wvp_platform (enable, name, server_gb_id, server_ip, server_port, device_gb_id, 
+        r#"INSERT INTO gb_platform (enable, name, server_gb_id, server_ip, server_port, device_gb_id, 
            transport, username, password, expires, keep_timeout, status, create_time, update_time, auto_push_channel)
            VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, '3600', '60', 0, ?, ?, true)"#,
     )
@@ -169,7 +169,7 @@ pub async fn add(
     .await?;
     #[cfg(feature = "postgres")]
     let r = sqlx::query(
-        r#"INSERT INTO wvp_platform (enable, name, server_gb_id, server_ip, server_port, device_gb_id, 
+        r#"INSERT INTO gb_platform (enable, name, server_gb_id, server_ip, server_port, device_gb_id, 
            transport, username, password, expires, keep_timeout, status, create_time, update_time, auto_push_channel)
            VALUES (true, $1, $2, $3, $4, $5, $6, $7, $8, '3600', '60', false, $9, $10, true)"#,
     )
@@ -204,7 +204,7 @@ pub async fn update(
 ) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
     let r = sqlx::query(
-        r#"UPDATE wvp_platform SET 
+        r#"UPDATE gb_platform SET 
            name = COALESCE(?, name),
            server_gb_id = COALESCE(?, server_gb_id),
            server_ip = COALESCE(?, server_ip),
@@ -230,7 +230,7 @@ pub async fn update(
     .await?;
     #[cfg(feature = "postgres")]
     let r = sqlx::query(
-        r#"UPDATE wvp_platform SET 
+        r#"UPDATE gb_platform SET 
            name = COALESCE($1, name),
            server_gb_id = COALESCE($2, server_gb_id),
            server_ip = COALESCE($3, server_ip),
@@ -260,12 +260,12 @@ pub async fn update(
 /// 删除平台
 pub async fn delete_by_id(pool: &Pool, id: i64) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
-    let r = sqlx::query("DELETE FROM wvp_platform WHERE id = ?")
+    let r = sqlx::query("DELETE FROM gb_platform WHERE id = ?")
         .bind(id)
         .execute(pool)
         .await?;
     #[cfg(feature = "postgres")]
-    let r = sqlx::query("DELETE FROM wvp_platform WHERE id = $1")
+    let r = sqlx::query("DELETE FROM gb_platform WHERE id = $1")
         .bind(id)
         .execute(pool)
         .await?;
@@ -275,13 +275,13 @@ pub async fn delete_by_id(pool: &Pool, id: i64) -> sqlx::Result<u64> {
 /// 更新平台注册状态
 pub async fn update_status(pool: &Pool, id: i64, status: bool) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
-    let r = sqlx::query("UPDATE wvp_platform SET status = ? WHERE id = ?")
+    let r = sqlx::query("UPDATE gb_platform SET status = ? WHERE id = ?")
         .bind(status)
         .bind(id)
         .execute(pool)
         .await?;
     #[cfg(feature = "postgres")]
-    let r = sqlx::query("UPDATE wvp_platform SET status = $1 WHERE id = $2")
+    let r = sqlx::query("UPDATE gb_platform SET status = $1 WHERE id = $2")
         .bind(status)
         .bind(id)
         .execute(pool)
@@ -292,13 +292,13 @@ pub async fn update_status(pool: &Pool, id: i64, status: bool) -> sqlx::Result<u
 /// 更新平台启用状态
 pub async fn update_enable(pool: &Pool, id: i64, enable: bool) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
-    let r = sqlx::query("UPDATE wvp_platform SET enable = ? WHERE id = ?")
+    let r = sqlx::query("UPDATE gb_platform SET enable = ? WHERE id = ?")
         .bind(enable)
         .bind(id)
         .execute(pool)
         .await?;
     #[cfg(feature = "postgres")]
-    let r = sqlx::query("UPDATE wvp_platform SET enable = $1 WHERE id = $2")
+    let r = sqlx::query("UPDATE gb_platform SET enable = $1 WHERE id = $2")
         .bind(enable)
         .bind(id)
         .execute(pool)
@@ -310,13 +310,13 @@ pub async fn update_enable(pool: &Pool, id: i64, enable: bool) -> sqlx::Result<u
 pub async fn get_all_enabled_platforms(pool: &Pool) -> sqlx::Result<Vec<Platform>> {
     #[cfg(feature = "mysql")]
     return sqlx::query_as::<_, Platform>(
-        "SELECT * FROM wvp_platform WHERE enable = 1 ORDER BY id",
+        "SELECT * FROM gb_platform WHERE enable = 1 ORDER BY id",
     )
     .fetch_all(pool)
     .await;
     #[cfg(feature = "postgres")]
     return sqlx::query_as::<_, Platform>(
-        "SELECT * FROM wvp_platform WHERE enable = true ORDER BY id",
+        "SELECT * FROM gb_platform WHERE enable = true ORDER BY id",
     )
     .fetch_all(pool)
     .await;
@@ -325,7 +325,7 @@ pub async fn get_all_enabled_platforms(pool: &Pool) -> sqlx::Result<Vec<Platform
 /// 获取所有平台
 pub async fn list_platforms(pool: &Pool) -> sqlx::Result<Vec<Platform>> {
     sqlx::query_as::<_, Platform>(
-        "SELECT * FROM wvp_platform ORDER BY id",
+        "SELECT * FROM gb_platform ORDER BY id",
     )
     .fetch_all(pool)
     .await
@@ -335,13 +335,13 @@ pub async fn list_platforms(pool: &Pool) -> sqlx::Result<Vec<Platform>> {
 pub async fn get_all_online_platforms(pool: &Pool) -> sqlx::Result<Vec<Platform>> {
     #[cfg(feature = "mysql")]
     return sqlx::query_as::<_, Platform>(
-        "SELECT id, enable, name, server_gb_id, server_gb_domain, server_ip, server_port, device_gb_id, device_ip, device_port, username, password, expires, keep_timeout, transport, character_set, ptz, rtcp, status, catalog_id, catalog_group, share_org, share_user, share_group, auto_push_channel, auto_push_channel_status, send_stream_ip, send_stream_port, send_stream_protocol, as_message_thread, sip_message_log, create_time, update_time FROM wvp_platform WHERE status = 1 AND enable = 1 ORDER BY id",
+        "SELECT id, enable, name, server_gb_id, server_gb_domain, server_ip, server_port, device_gb_id, device_ip, device_port, username, password, expires, keep_timeout, transport, character_set, ptz, rtcp, status, catalog_id, catalog_group, share_org, share_user, share_group, auto_push_channel, auto_push_channel_status, send_stream_ip, send_stream_port, send_stream_protocol, as_message_thread, sip_message_log, create_time, update_time FROM gb_platform WHERE status = 1 AND enable = 1 ORDER BY id",
     )
     .fetch_all(pool)
     .await;
     #[cfg(feature = "postgres")]
     return sqlx::query_as::<_, Platform>(
-        "SELECT id, enable, name, server_gb_id, server_gb_domain, server_ip, server_port, device_gb_id, device_ip, device_port, username, password, expires, keep_timeout, transport, character_set, ptz, rtcp, status, catalog_id, catalog_group, share_org, share_user, share_group, auto_push_channel, auto_push_channel_status, send_stream_ip, send_stream_port, send_stream_protocol, as_message_thread, sip_message_log, create_time, update_time FROM wvp_platform WHERE status = true AND enable = true ORDER BY id",
+        "SELECT id, enable, name, server_gb_id, server_gb_domain, server_ip, server_port, device_gb_id, device_ip, device_port, username, password, expires, keep_timeout, transport, character_set, ptz, rtcp, status, catalog_id, catalog_group, share_org, share_user, share_group, auto_push_channel, auto_push_channel_status, send_stream_ip, send_stream_port, send_stream_protocol, as_message_thread, sip_message_log, create_time, update_time FROM gb_platform WHERE status = true AND enable = true ORDER BY id",
     )
     .fetch_all(pool)
     .await;

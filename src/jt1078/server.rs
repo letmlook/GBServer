@@ -15,8 +15,8 @@ pub async fn start(server: &Jt1078Server, cfg: Option<crate::config::Jt1078Confi
     // Use injected cfg when available, otherwise fall back to environment or defaults
     let timeout = cfg.as_ref().and_then(|c| c.timeout_ms).map(|m| std::time::Duration::from_millis(m)).unwrap_or(std::time::Duration::from_secs(60));
     let retransmit_wait = cfg.as_ref().and_then(|c| c.retransmit_wait_ms).map(|m| std::time::Duration::from_millis(m)).unwrap_or(std::time::Duration::from_millis(200));
-    let retransmit_hook = cfg.as_ref().and_then(|c| c.retransmit_hook_url.clone()).or_else(|| std::env::var("WVP__JT1078__RETRANSMIT_HOOK").ok());
-    let retransmit_send_to_device = std::env::var("WVP__JT1078__RETRANSMIT_SEND_TO_DEVICE").map(|v| v == "1" || v.eq_ignore_ascii_case("true")).unwrap_or(false);
+    let retransmit_hook = cfg.as_ref().and_then(|c| c.retransmit_hook_url.clone()).or_else(|| std::env::var("GBSERVER__JT1078__RETRANSMIT_HOOK").ok());
+    let retransmit_send_to_device = std::env::var("GBSERVER__JT1078__RETRANSMIT_SEND_TO_DEVICE").map(|v| v == "1" || v.eq_ignore_ascii_case("true")).unwrap_or(false);
 
     let manager = Arc::new(crate::jt1078::manager::Jt1078Manager::new(
         timeout,

@@ -1047,6 +1047,43 @@ dependencies = [
 ]
 
 [[package]]
+name = "gbserver"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "assert_matches",
+ "axum 0.7.9",
+ "axum-test",
+ "bytes",
+ "chrono",
+ "config",
+ "criterion",
+ "dashmap",
+ "fake",
+ "futures-util",
+ "jsonwebtoken",
+ "md-5",
+ "mockall",
+ "pretty_assertions",
+ "quick-xml",
+ "rand 0.8.5",
+ "redis",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "testcontainers",
+ "thiserror 1.0.69",
+ "tokio",
+ "tower 0.4.13",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "wiremock",
+]
+
+[[package]]
 name = "generic-array"
 version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4292,43 +4329,6 @@ name = "writeable"
 version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9edde0db4769d2dc68579893f2306b26c6ecfbe0ef499b013d731b7b9247e0b9"
-
-[[package]]
-name = "wvp-gb28181-server"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "assert_matches",
- "axum 0.7.9",
- "axum-test",
- "bytes",
- "chrono",
- "config",
- "criterion",
- "dashmap",
- "fake",
- "futures-util",
- "jsonwebtoken",
- "md-5",
- "mockall",
- "pretty_assertions",
- "quick-xml",
- "rand 0.8.5",
- "redis",
- "reqwest",
- "serde",
- "serde_json",
- "sqlx",
- "testcontainers",
- "thiserror 1.0.69",
- "tokio",
- "tower 0.4.13",
- "tower-http",
- "tracing",
- "tracing-subscriber",
- "uuid",
- "wiremock",
-]
 
 [[package]]
 name = "yaml-rust2"

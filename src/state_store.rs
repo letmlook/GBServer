@@ -233,7 +233,7 @@ pub struct RedisBackend {
     manager: tokio::sync::RwLock<Option<redis::aio::ConnectionManager>>,
 }
 
-const KEY_PREFIX: &str = "wvp:";
+const KEY_PREFIX: &str = "gb:";
 fn k_device(id: &str) -> String { format!("{}device:online:{}", KEY_PREFIX, id) }
 fn k_stream(id: &str) -> String { format!("{}stream:{}", KEY_PREFIX, id) }
 fn k_invite(id: &str) -> String { format!("{}invite:{}", KEY_PREFIX, id) }
@@ -776,17 +776,17 @@ mod redis_backend_tests {
         assert!(back.online);
     }
 
-    /// Key builders produce namespaced keys with the wvp: prefix.
+    /// Key builders produce namespaced keys with the gb: prefix.
     #[test]
     fn test_key_prefixes_are_namespaced() {
-        assert!(k_device("abc").starts_with("wvp:device:online:"));
-        assert!(k_stream("abc").starts_with("wvp:stream:"));
-        assert!(k_invite("abc").starts_with("wvp:invite:"));
-        assert!(k_ms("abc").starts_with("wvp:ms:load:"));
-        assert!(k_ms_count("abc").starts_with("wvp:ms:streams:"));
-        assert!(k_position("abc").starts_with("wvp:position:"));
-        assert!(k_sendrtp("abc").starts_with("wvp:sendrtp:"));
-        assert!(k_ms_zset().starts_with("wvp:ms:zset"));
+        assert!(k_device("abc").starts_with("gb:device:online:"));
+        assert!(k_stream("abc").starts_with("gb:stream:"));
+        assert!(k_invite("abc").starts_with("gb:invite:"));
+        assert!(k_ms("abc").starts_with("gb:ms:load:"));
+        assert!(k_ms_count("abc").starts_with("gb:ms:streams:"));
+        assert!(k_position("abc").starts_with("gb:position:"));
+        assert!(k_sendrtp("abc").starts_with("gb:sendrtp:"));
+        assert!(k_ms_zset().starts_with("gb:ms:zset"));
     }
 
     /// RedisBackend constructs without panic even with a bad URL (connection is lazy).

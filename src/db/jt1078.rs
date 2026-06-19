@@ -54,13 +54,13 @@ pub async fn list_terminals_paged(
     #[cfg(feature = "mysql")]
     {
         let sql = if has_query && online.is_some() {
-            "SELECT * FROM wvp_jt_terminal WHERE (phone_number LIKE ? OR plate_no LIKE ?) AND status = ? ORDER BY id LIMIT ? OFFSET ?"
+            "SELECT * FROM gb_jt_terminal WHERE (phone_number LIKE ? OR plate_no LIKE ?) AND status = ? ORDER BY id LIMIT ? OFFSET ?"
         } else if has_query {
-            "SELECT * FROM wvp_jt_terminal WHERE (phone_number LIKE ? OR plate_no LIKE ?) ORDER BY id LIMIT ? OFFSET ?"
+            "SELECT * FROM gb_jt_terminal WHERE (phone_number LIKE ? OR plate_no LIKE ?) ORDER BY id LIMIT ? OFFSET ?"
         } else if online.is_some() {
-            "SELECT * FROM wvp_jt_terminal WHERE status = ? ORDER BY id LIMIT ? OFFSET ?"
+            "SELECT * FROM gb_jt_terminal WHERE status = ? ORDER BY id LIMIT ? OFFSET ?"
         } else {
-            "SELECT * FROM wvp_jt_terminal ORDER BY id LIMIT ? OFFSET ?"
+            "SELECT * FROM gb_jt_terminal ORDER BY id LIMIT ? OFFSET ?"
         };
         let rows = if has_query && online.is_some() {
             sqlx::query_as::<_, JtTerminal>(sql).bind(&like).bind(&like).bind(online.unwrap()).bind(limit).bind(offset).fetch_all(pool).await?
@@ -77,13 +77,13 @@ pub async fn list_terminals_paged(
     #[cfg(feature = "postgres")]
     {
         let sql = if has_query && online.is_some() {
-            "SELECT * FROM wvp_jt_terminal WHERE (phone_number LIKE $1 OR plate_no LIKE $2) AND status = $3 ORDER BY id LIMIT $4 OFFSET $5"
+            "SELECT * FROM gb_jt_terminal WHERE (phone_number LIKE $1 OR plate_no LIKE $2) AND status = $3 ORDER BY id LIMIT $4 OFFSET $5"
         } else if has_query {
-            "SELECT * FROM wvp_jt_terminal WHERE (phone_number LIKE $1 OR plate_no LIKE $2) ORDER BY id LIMIT $3 OFFSET $4"
+            "SELECT * FROM gb_jt_terminal WHERE (phone_number LIKE $1 OR plate_no LIKE $2) ORDER BY id LIMIT $3 OFFSET $4"
         } else if online.is_some() {
-            "SELECT * FROM wvp_jt_terminal WHERE status = $1 ORDER BY id LIMIT $2 OFFSET $3"
+            "SELECT * FROM gb_jt_terminal WHERE status = $1 ORDER BY id LIMIT $2 OFFSET $3"
         } else {
-            "SELECT * FROM wvp_jt_terminal ORDER BY id LIMIT $1 OFFSET $2"
+            "SELECT * FROM gb_jt_terminal ORDER BY id LIMIT $1 OFFSET $2"
         };
         let rows = if has_query && online.is_some() {
             sqlx::query_as::<_, JtTerminal>(sql).bind(&like).bind(&like).bind(online.unwrap()).bind(limit).bind(offset).fetch_all(pool).await?
@@ -110,82 +110,82 @@ pub async fn count_terminals(
     #[cfg(feature = "mysql")]
     {
         if has_query && online.is_some() {
-            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM wvp_jt_terminal WHERE (phone_number LIKE ? OR plate_no LIKE ?) AND status = ?")
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_jt_terminal WHERE (phone_number LIKE ? OR plate_no LIKE ?) AND status = ?")
                 .bind(&like).bind(&like).bind(online.unwrap()).fetch_one(pool).await
         } else if has_query {
-            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM wvp_jt_terminal WHERE (phone_number LIKE ? OR plate_no LIKE ?)")
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_jt_terminal WHERE (phone_number LIKE ? OR plate_no LIKE ?)")
                 .bind(&like).bind(&like).fetch_one(pool).await
         } else if online.is_some() {
-            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM wvp_jt_terminal WHERE status = ?")
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_jt_terminal WHERE status = ?")
                 .bind(online.unwrap()).fetch_one(pool).await
         } else {
-            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM wvp_jt_terminal").fetch_one(pool).await
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_jt_terminal").fetch_one(pool).await
         }
     }
 
     #[cfg(feature = "postgres")]
     {
         if has_query && online.is_some() {
-            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM wvp_jt_terminal WHERE (phone_number LIKE $1 OR plate_no LIKE $2) AND status = $3")
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_jt_terminal WHERE (phone_number LIKE $1 OR plate_no LIKE $2) AND status = $3")
                 .bind(&like).bind(&like).bind(online.unwrap()).fetch_one(pool).await
         } else if has_query {
-            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM wvp_jt_terminal WHERE (phone_number LIKE $1 OR plate_no LIKE $2)")
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_jt_terminal WHERE (phone_number LIKE $1 OR plate_no LIKE $2)")
                 .bind(&like).bind(&like).fetch_one(pool).await
         } else if online.is_some() {
-            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM wvp_jt_terminal WHERE status = $1")
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_jt_terminal WHERE status = $1")
                 .bind(online.unwrap()).fetch_one(pool).await
         } else {
-            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM wvp_jt_terminal").fetch_one(pool).await
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_jt_terminal").fetch_one(pool).await
         }
     }
 }
 
 pub async fn get_terminal_by_phone(pool: &Pool, phone: &str) -> sqlx::Result<Option<JtTerminal>> {
     #[cfg(feature = "mysql")]
-    return sqlx::query_as::<_, JtTerminal>("SELECT * FROM wvp_jt_terminal WHERE phone_number = ?")
+    return sqlx::query_as::<_, JtTerminal>("SELECT * FROM gb_jt_terminal WHERE phone_number = ?")
         .bind(phone).fetch_optional(pool).await;
     #[cfg(feature = "postgres")]
-    return sqlx::query_as::<_, JtTerminal>("SELECT * FROM wvp_jt_terminal WHERE phone_number = $1")
+    return sqlx::query_as::<_, JtTerminal>("SELECT * FROM gb_jt_terminal WHERE phone_number = $1")
         .bind(phone).fetch_optional(pool).await;
 }
 
 /// 根据ID查询终端
 pub async fn get_terminal_by_id(pool: &Pool, id: i32) -> sqlx::Result<Option<JtTerminal>> {
     #[cfg(feature = "mysql")]
-    return sqlx::query_as::<_, JtTerminal>("SELECT * FROM wvp_jt_terminal WHERE id = ?")
+    return sqlx::query_as::<_, JtTerminal>("SELECT * FROM gb_jt_terminal WHERE id = ?")
         .bind(id).fetch_optional(pool).await;
     #[cfg(feature = "postgres")]
-    return sqlx::query_as::<_, JtTerminal>("SELECT * FROM wvp_jt_terminal WHERE id = $1")
+    return sqlx::query_as::<_, JtTerminal>("SELECT * FROM gb_jt_terminal WHERE id = $1")
         .bind(id).fetch_optional(pool).await;
 }
 
 /// 根据ID查询通道
 pub async fn get_channel_by_id(pool: &Pool, id: i32) -> sqlx::Result<Option<JtChannel>> {
     #[cfg(feature = "mysql")]
-    return sqlx::query_as::<_, JtChannel>("SELECT * FROM wvp_jt_channel WHERE id = ?")
+    return sqlx::query_as::<_, JtChannel>("SELECT * FROM gb_jt_channel WHERE id = ?")
         .bind(id).fetch_optional(pool).await;
     #[cfg(feature = "postgres")]
-    return sqlx::query_as::<_, JtChannel>("SELECT * FROM wvp_jt_channel WHERE id = $1")
+    return sqlx::query_as::<_, JtChannel>("SELECT * FROM gb_jt_channel WHERE id = $1")
         .bind(id).fetch_optional(pool).await;
 }
 
 /// 获取所有在线终端
 pub async fn get_online_terminals(pool: &Pool) -> sqlx::Result<Vec<JtTerminal>> {
     #[cfg(feature = "mysql")]
-    return sqlx::query_as::<_, JtTerminal>("SELECT * FROM wvp_jt_terminal WHERE status = 1 ORDER BY id")
+    return sqlx::query_as::<_, JtTerminal>("SELECT * FROM gb_jt_terminal WHERE status = 1 ORDER BY id")
         .fetch_all(pool).await;
     #[cfg(feature = "postgres")]
-    return sqlx::query_as::<_, JtTerminal>("SELECT * FROM wvp_jt_terminal WHERE status = true ORDER BY id")
+    return sqlx::query_as::<_, JtTerminal>("SELECT * FROM gb_jt_terminal WHERE status = true ORDER BY id")
         .fetch_all(pool).await;
 }
 
 /// 统计在线终端数量
 pub async fn count_online_terminals(pool: &Pool) -> sqlx::Result<i64> {
     #[cfg(feature = "mysql")]
-    return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM wvp_jt_terminal WHERE status = 1")
+    return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_jt_terminal WHERE status = 1")
         .fetch_one(pool).await;
     #[cfg(feature = "postgres")]
-    return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM wvp_jt_terminal WHERE status = true")
+    return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_jt_terminal WHERE status = true")
         .fetch_one(pool).await;
 }
 
@@ -203,7 +203,7 @@ pub async fn insert_channel(
         {
             let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
             let r = sqlx::query(
-                "INSERT INTO wvp_jt_channel (terminal_db_id, channel_id, name, create_time, update_time) VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO gb_jt_channel (terminal_db_id, channel_id, name, create_time, update_time) VALUES (?, ?, ?, ?, ?)",
             )
             .bind(term.id)
             .bind(channel_id)
@@ -218,7 +218,7 @@ pub async fn insert_channel(
         {
             let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
             let r = sqlx::query(
-                "INSERT INTO wvp_jt_channel (terminal_db_id, channel_id, name, create_time, update_time) VALUES ($1, $2, $3, $4, $5)",
+                "INSERT INTO gb_jt_channel (terminal_db_id, channel_id, name, create_time, update_time) VALUES ($1, $2, $3, $4, $5)",
             )
             .bind(term.id)
             .bind(channel_id)
@@ -247,7 +247,7 @@ pub async fn update_channel(
     {
         let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
         let r = sqlx::query(
-            "UPDATE wvp_jt_channel SET name = COALESCE(?, name), channel_id = COALESCE(?, channel_id), update_time = ? WHERE id = ?",
+            "UPDATE gb_jt_channel SET name = COALESCE(?, name), channel_id = COALESCE(?, channel_id), update_time = ? WHERE id = ?",
         )
         .bind(name)
         .bind(channel_id)
@@ -261,7 +261,7 @@ pub async fn update_channel(
     {
         let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
         let r = sqlx::query(
-            "UPDATE wvp_jt_channel SET name = COALESCE($1, name), channel_id = COALESCE($2, channel_id), update_time = $3 WHERE id = $4",
+            "UPDATE gb_jt_channel SET name = COALESCE($1, name), channel_id = COALESCE($2, channel_id), update_time = $3 WHERE id = $4",
         )
         .bind(name)
         .bind(channel_id)
@@ -278,10 +278,10 @@ pub async fn list_channels_by_terminal(
     terminal_db_id: i32,
 ) -> sqlx::Result<Vec<JtChannel>> {
     #[cfg(feature = "mysql")]
-    return sqlx::query_as::<_, JtChannel>("SELECT * FROM wvp_jt_channel WHERE terminal_db_id = ? ORDER BY channel_id")
+    return sqlx::query_as::<_, JtChannel>("SELECT * FROM gb_jt_channel WHERE terminal_db_id = ? ORDER BY channel_id")
         .bind(terminal_db_id).fetch_all(pool).await;
     #[cfg(feature = "postgres")]
-    return sqlx::query_as::<_, JtChannel>("SELECT * FROM wvp_jt_channel WHERE terminal_db_id = $1 ORDER BY channel_id")
+    return sqlx::query_as::<_, JtChannel>("SELECT * FROM gb_jt_channel WHERE terminal_db_id = $1 ORDER BY channel_id")
         .bind(terminal_db_id).fetch_all(pool).await;
 }
 
@@ -298,12 +298,12 @@ pub async fn insert_terminal(
 ) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
     let r = sqlx::query(
-        "INSERT INTO wvp_jt_terminal (phone_number, terminal_id, plate_no, plate_color, maker_id, model, media_server_id, status, create_time, update_time) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)",
+        "INSERT INTO gb_jt_terminal (phone_number, terminal_id, plate_no, plate_color, maker_id, model, media_server_id, status, create_time, update_time) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)",
     ).bind(phone_number).bind(terminal_id).bind(plate_no).bind(plate_color).bind(maker_id).bind(model).bind(media_server_id).bind(now).bind(now)
     .execute(pool).await?;
     #[cfg(feature = "postgres")]
     let r = sqlx::query(
-        "INSERT INTO wvp_jt_terminal (phone_number, terminal_id, plate_no, plate_color, maker_id, model, media_server_id, status, create_time, update_time) VALUES ($1, $2, $3, $4, $5, $6, $7, false, $8, $9)",
+        "INSERT INTO gb_jt_terminal (phone_number, terminal_id, plate_no, plate_color, maker_id, model, media_server_id, status, create_time, update_time) VALUES ($1, $2, $3, $4, $5, $6, $7, false, $8, $9)",
     ).bind(phone_number).bind(terminal_id).bind(plate_no).bind(plate_color).bind(maker_id).bind(model).bind(media_server_id).bind(now).bind(now)
     .execute(pool).await?;
     Ok(r.rows_affected())
@@ -322,12 +322,12 @@ pub async fn update_terminal(
 ) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
     let r = sqlx::query(
-        "UPDATE wvp_jt_terminal SET terminal_id = COALESCE(?, terminal_id), plate_no = COALESCE(?, plate_no), plate_color = COALESCE(?, plate_color), maker_id = COALESCE(?, maker_id), model = COALESCE(?, model), media_server_id = COALESCE(?, media_server_id), update_time = ? WHERE phone_number = ?",
+        "UPDATE gb_jt_terminal SET terminal_id = COALESCE(?, terminal_id), plate_no = COALESCE(?, plate_no), plate_color = COALESCE(?, plate_color), maker_id = COALESCE(?, maker_id), model = COALESCE(?, model), media_server_id = COALESCE(?, media_server_id), update_time = ? WHERE phone_number = ?",
     ).bind(terminal_id).bind(plate_no).bind(plate_color).bind(maker_id).bind(model).bind(media_server_id).bind(now).bind(phone_number)
     .execute(pool).await?;
     #[cfg(feature = "postgres")]
     let r = sqlx::query(
-        "UPDATE wvp_jt_terminal SET terminal_id = COALESCE($1, terminal_id), plate_no = COALESCE($2, plate_no), plate_color = COALESCE($3, plate_color), maker_id = COALESCE($4, maker_id), model = COALESCE($5, model), media_server_id = COALESCE($6, media_server_id), update_time = $7 WHERE phone_number = $8",
+        "UPDATE gb_jt_terminal SET terminal_id = COALESCE($1, terminal_id), plate_no = COALESCE($2, plate_no), plate_color = COALESCE($3, plate_color), maker_id = COALESCE($4, maker_id), model = COALESCE($5, model), media_server_id = COALESCE($6, media_server_id), update_time = $7 WHERE phone_number = $8",
     ).bind(terminal_id).bind(plate_no).bind(plate_color).bind(maker_id).bind(model).bind(media_server_id).bind(now).bind(phone_number)
     .execute(pool).await?;
     Ok(r.rows_affected())
@@ -335,23 +335,23 @@ pub async fn update_terminal(
 
 pub async fn delete_terminal_by_phone(pool: &Pool, phone_number: &str) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
-    return sqlx::query("DELETE FROM wvp_jt_terminal WHERE phone_number = ?").bind(phone_number).execute(pool).await.map(|r| r.rows_affected());
+    return sqlx::query("DELETE FROM gb_jt_terminal WHERE phone_number = ?").bind(phone_number).execute(pool).await.map(|r| r.rows_affected());
     #[cfg(feature = "postgres")]
-    return sqlx::query("DELETE FROM wvp_jt_terminal WHERE phone_number = $1").bind(phone_number).execute(pool).await.map(|r| r.rows_affected());
+    return sqlx::query("DELETE FROM gb_jt_terminal WHERE phone_number = $1").bind(phone_number).execute(pool).await.map(|r| r.rows_affected());
 }
 
 /// 更新终端在线状态
 pub async fn update_terminal_status(pool: &Pool, phone_number: &str, status: bool) -> sqlx::Result<u64> {
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     #[cfg(feature = "mysql")]
-    let r = sqlx::query("UPDATE wvp_jt_terminal SET status = ?, update_time = ? WHERE phone_number = ?")
+    let r = sqlx::query("UPDATE gb_jt_terminal SET status = ?, update_time = ? WHERE phone_number = ?")
         .bind(status)
         .bind(&now)
         .bind(phone_number)
         .execute(pool)
         .await?;
     #[cfg(feature = "postgres")]
-    let r = sqlx::query("UPDATE wvp_jt_terminal SET status = $1, update_time = $2 WHERE phone_number = $3")
+    let r = sqlx::query("UPDATE gb_jt_terminal SET status = $1, update_time = $2 WHERE phone_number = $3")
         .bind(status)
         .bind(&now)
         .bind(phone_number)
@@ -363,12 +363,12 @@ pub async fn update_terminal_status(pool: &Pool, phone_number: &str, status: boo
 /// 删除终端通道
 pub async fn delete_channel(pool: &Pool, id: i64) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
-    let r = sqlx::query("DELETE FROM wvp_jt_channel WHERE id = ?")
+    let r = sqlx::query("DELETE FROM gb_jt_channel WHERE id = ?")
         .bind(id)
         .execute(pool)
         .await?;
     #[cfg(feature = "postgres")]
-    let r = sqlx::query("DELETE FROM wvp_jt_channel WHERE id = $1")
+    let r = sqlx::query("DELETE FROM gb_jt_channel WHERE id = $1")
         .bind(id)
         .execute(pool)
         .await?;
@@ -378,12 +378,12 @@ pub async fn delete_channel(pool: &Pool, id: i64) -> sqlx::Result<u64> {
 /// 删除终端的所有通道
 pub async fn delete_channels_by_terminal(pool: &Pool, terminal_db_id: i32) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
-    let r = sqlx::query("DELETE FROM wvp_jt_channel WHERE terminal_db_id = ?")
+    let r = sqlx::query("DELETE FROM gb_jt_channel WHERE terminal_db_id = ?")
         .bind(terminal_db_id)
         .execute(pool)
         .await?;
     #[cfg(feature = "postgres")]
-    let r = sqlx::query("DELETE FROM wvp_jt_channel WHERE terminal_db_id = $1")
+    let r = sqlx::query("DELETE FROM gb_jt_channel WHERE terminal_db_id = $1")
         .bind(terminal_db_id)
         .execute(pool)
         .await?;
@@ -399,7 +399,7 @@ pub async fn update_terminal_position(
 ) -> sqlx::Result<u64> {
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     #[cfg(feature = "mysql")]
-    let r = sqlx::query("UPDATE wvp_jt_terminal SET longitude = ?, latitude = ?, update_time = ? WHERE phone_number = ?")
+    let r = sqlx::query("UPDATE gb_jt_terminal SET longitude = ?, latitude = ?, update_time = ? WHERE phone_number = ?")
         .bind(longitude)
         .bind(latitude)
         .bind(&now)
@@ -407,7 +407,7 @@ pub async fn update_terminal_position(
         .execute(pool)
         .await?;
     #[cfg(feature = "postgres")]
-    let r = sqlx::query("UPDATE wvp_jt_terminal SET longitude = $1, latitude = $2, update_time = $3 WHERE phone_number = $4")
+    let r = sqlx::query("UPDATE gb_jt_terminal SET longitude = $1, latitude = $2, update_time = $3 WHERE phone_number = $4")
         .bind(longitude)
         .bind(latitude)
         .bind(&now)
@@ -421,14 +421,14 @@ pub async fn update_terminal_position(
 pub async fn count_channels_by_terminal(pool: &Pool, terminal_db_id: i32) -> sqlx::Result<i64> {
     #[cfg(feature = "postgres")]
     let count = sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM wvp_jt_channel WHERE terminal_db_id = $1"
+        "SELECT COUNT(*) FROM gb_jt_channel WHERE terminal_db_id = $1"
     )
     .bind(terminal_db_id)
     .fetch_one(pool)
     .await?;
     #[cfg(feature = "mysql")]
     let count = sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM wvp_jt_channel WHERE terminal_db_id = ?"
+        "SELECT COUNT(*) FROM gb_jt_channel WHERE terminal_db_id = ?"
     )
     .bind(terminal_db_id)
     .fetch_one(pool)

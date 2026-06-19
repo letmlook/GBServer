@@ -23,7 +23,7 @@ use crate::db as db;
 
 // Helper functions to read system metrics
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-use {std::io::Read, tokio::time::sleep, std::time::Duration};
+use {std::fs::File, std::io::Read, tokio::time::sleep, std::time::Duration};
 use std::process::Command;
 
 pub async fn zlm_proxy(
@@ -636,7 +636,7 @@ pub async fn media_server_check(
         "autoConfig": true,
         "rtpEnable": false,
         "rtpProxyPort": 30000,
-        "rtpPortRange": "30000,30500",
+        "rtpPortRange": "30000,30100",
         "sendRtpPortRange": "50000,60000"
     });
 
@@ -800,7 +800,7 @@ pub async fn media_server_save(
 
     #[cfg(feature = "postgres")]
     sqlx::query(
-        r#"UPDATE wvp_media_server SET
+        r#"UPDATE gb_media_server SET
            hook_ip = COALESCE($1, hook_ip),
            sdp_ip = COALESCE($2, sdp_ip),
            stream_ip = COALESCE($3, stream_ip),
@@ -844,7 +844,7 @@ pub async fn media_server_save(
     .await?;
     #[cfg(feature = "mysql")]
     sqlx::query(
-        r#"UPDATE wvp_media_server SET
+        r#"UPDATE gb_media_server SET
            hook_ip = COALESCE(?, hook_ip),
            sdp_ip = COALESCE(?, sdp_ip),
            stream_ip = COALESCE(?, stream_ip),
