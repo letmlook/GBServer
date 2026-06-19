@@ -290,8 +290,8 @@ pub async fn playback_resume(
         let parts: Vec<&str> = stream_id.split('_').collect();
         if parts.len() >= 3 {
             let device_id = parts[1];
-            let channel_id = parts[2].to_string();
-            
+            let _channel_id = parts[2].to_string();
+
             if let Err(e) = sip.send_message_to_device(device_id, crate::sip::SipMethod::Info,
                 Some(r#"<?xml version="1.0" encoding="UTF-8"?><Resume><ChannelID>0</ChannelID></Resume>"#),
                 Some("Application/MANSCDP+xml")).await {
@@ -322,9 +322,9 @@ pub async fn playback_pause(
         let parts: Vec<&str> = stream_id.split('_').collect();
         if parts.len() >= 3 {
             let device_id = parts[1];
-            let channel_id = parts[2].to_string();
-            
-            if let Err(e) = sip.send_message_to_device(device_id, crate::sip::SipMethod::Info, 
+            let _channel_id = parts[2].to_string();
+
+            if let Err(e) = sip.send_message_to_device(device_id, crate::sip::SipMethod::Info,
                 Some(r#"<?xml version="1.0" encoding="UTF-8"?><Pause><ChannelID>0</ChannelID></Pause>"#),
                 Some("Application/MANSCDP+xml")).await {
                 tracing::error!("Failed to send pause command: {}", e);

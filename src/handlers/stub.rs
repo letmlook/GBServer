@@ -1,4 +1,13 @@
 //! 原占位接口改为真实实现：角色、区域、分组、日志、API Key、录像计划等
+//!
+//! ## 角色定位 (Phase 2.5)
+//!
+//! 本模块保留作为 **WVP-Pro 前端兼容性 shim**：
+//! - 部分 handler 在 Phase 1/2 推进后已切到 `device_control.rs` / `playback.rs` 等真实实现模块
+//! - 仍挂载在前端依赖的 `/api/...` 路径上以保证向后兼容
+//! - 新代码请优先使用 `crate::handlers::device_control` / `playback` 等模块
+//! - 当前所有 entry 函数未标 `#[deprecated]`，是为了不影响前端调用；待前端
+//!   切到新 API 后再做 deprecation 警告 + 隔离
 
 use axum::{
     extract::{Path, Query, State},
@@ -1870,7 +1879,7 @@ use axum::{response::IntoResponse, http::StatusCode};
 pub async fn rtp_receive_open(
     State(state): State<AppState>,
 ) -> impl IntoResponse {
-    let zlm = match &state.zlm_client {
+    let _zlm = match &state.zlm_client {
         Some(c) => c,
         None => return (StatusCode::SERVICE_UNAVAILABLE, Json(WVPResult::<()>::error("ZLM not configured"))).into_response(),
     };

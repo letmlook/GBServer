@@ -103,6 +103,29 @@ impl PendingRequest {
         (req, rx)
     }
 
+    /// Phase 2.1: 注册并保留 receiver 给调用方 await
+    /// 返回 `(PendingRequest, Receiver)` — 保留原 `register` API 不破坏 fire-and-forget
+    pub fn new_with_receiver(
+        device_id: String,
+        sn: u32,
+        cmd_type: PendingCmdType,
+        call_id: String,
+        timeout_secs: u64,
+    ) -> (Self, oneshot::Receiver<String>) {
+        let (tx, rx) = oneshot::channel();
+        let req = PendingRequest {
+            device_id,
+            sn,
+            cmd_type,
+            call_id,
+            created_at: Instant::now(),
+            timeout_secs,
+            response_sender: Some(tx),
+        };
+        // 不 take — 保留 sender 以便 complete() 时通知调用方
+        (req, rx)
+    }
+
     pub fn is_expired(&self) -> bool {
         self.created_at.elapsed() > Duration::from_secs(self.timeout_secs)
     }
@@ -162,17 +185,64 @@ impl PendingRequestManager {
         req
     }
 
+    /// Phase 2.1: 注册并返回 Receiver，调用方可以 await 响应
+    ///
+    /// 与 `register` 不同：保留 response_sender，让 `complete()` 通过 oneshot 通知调用方。
+    /// 调用方使用模式：
+    /// ```ignore
+    /// let (req, rx) = mgr.register_with_receiver(...);
+    /// mgr.insert_after_register(req);  // 显式插入到 DashMap
+    /// match tokio::time::timeout(Duration::from_secs(15), rx).await {
+    ///     Ok(Ok(xml)) => parse(xml),
+    ///     _ => Timeout,
+    /// }
+    /// ```
+    pub fn register_with_receiver(
+        &self,
+        device_id: &str,
+        sn: u32,
+        cmd_type: PendingCmdType,
+        call_id: &str,
+        timeout_secs: Option<u64>,
+    ) -> (PendingRequest, oneshot::Receiver<String>) {
+        let timeout = timeout_secs.unwrap_or(self.default_timeout_secs);
+        let (req, rx) = PendingRequest::new_with_receiver(
+            device_id.to_string(),
+            sn,
+            cmd_type,
+            call_id.to_string(),
+            timeout,
+        );
+
+        self.by_call_id.insert(call_id.to_string(), req.clone());
+
+        let ds_key = format!("{}:{}", device_id, sn);
+        self.by_device_sn.insert(ds_key, req.clone());
+
+        (req, rx)
+    }
+
     /// 按 call_id 完成一个等待中的请求，返回原始 XML
+    ///
+    /// Phase 2.1: 同时通知通过 `register_with_receiver` 注册的调用方
     pub fn complete(&self, call_id: &str, xml_response: &str) -> Option<String> {
         // Try call_id first
-        if let Some((_, req)) = self.by_call_id.remove(call_id) {
+        if let Some((_, mut req)) = self.by_call_id.remove(call_id) {
             let ds_key = format!("{}:{}", req.device_id, req.sn);
             self.by_device_sn.remove(&ds_key);
+
+            // Phase 2.1: 通知 await 端（如果有 sender 的话）
+            if let Some(tx) = req.response_sender.take() {
+                let _ = tx.send(xml_response.to_string());
+            }
             return Some(xml_response.to_string());
         }
 
         // Try device_sn as fallback
-        if let Some((_, req)) = self.by_device_sn.remove(call_id) {
+        if let Some((_, mut req)) = self.by_device_sn.remove(call_id) {
+            if let Some(tx) = req.response_sender.take() {
+                let _ = tx.send(xml_response.to_string());
+            }
             return Some(xml_response.to_string());
         }
 

@@ -65,6 +65,39 @@ pub async fn ensure_table(pool: &Pool) -> sqlx::Result<()> {
         .await;
     }
 
+    #[cfg(feature = "sqlite")]
+    {
+        // SQLite 使用 DATETIME + CURRENT_TIMESTAMP；status_code 用 INTEGER
+        let _ = sqlx::query(
+            r#"CREATE TABLE IF NOT EXISTS gb_audit_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username VARCHAR(100),
+                action VARCHAR(200),
+                resource VARCHAR(200),
+                method VARCHAR(10),
+                path VARCHAR(500),
+                ip VARCHAR(50),
+                status_code INTEGER,
+                request_body TEXT,
+                create_time DATETIME DEFAULT CURRENT_TIMESTAMP
+            )"#
+        )
+        .execute(pool)
+        .await;
+
+        let _ = sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_audit_log_create_time ON gb_audit_log(create_time)"
+        )
+        .execute(pool)
+        .await;
+
+        let _ = sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_audit_log_username ON gb_audit_log(username)"
+        )
+        .execute(pool)
+        .await;
+    }
+
     Ok(())
 }
 
@@ -104,6 +137,19 @@ pub async fn insert(
     .bind(status_code)
     .execute(pool)
     .await?;
+    #[cfg(feature = "sqlite")]
+    let r = sqlx::query(
+        "INSERT INTO gb_audit_log (username, action, resource, method, path, ip, status_code) VALUES (?, ?, ?, ?, ?, ?, ?)"
+    )
+    .bind(username)
+    .bind(action)
+    .bind(resource)
+    .bind(method)
+    .bind(path)
+    .bind(ip)
+    .bind(status_code)
+    .execute(pool)
+    .await?;
     Ok(r.rows_affected())
 }
 
@@ -117,7 +163,7 @@ pub async fn list_paged(
     count: u32,
 ) -> sqlx::Result<(i64, Vec<serde_json::Value>)> {
     let offset = (page.saturating_sub(1)) * count;
-    
+
     #[derive(sqlx::FromRow)]
     struct AuditRow {
         id: i64,
@@ -141,6 +187,8 @@ pub async fn list_paged(
             conditions.push_str(&format!(" AND username ILIKE ${}", bind_values.len() + 1));
             #[cfg(feature = "mysql")]
             conditions.push_str(&format!(" AND username LIKE ?"));
+            #[cfg(feature = "sqlite")]
+            conditions.push_str(" AND username LIKE ? COLLATE NOCASE");
             bind_values.push(like);
         }
     }
@@ -149,6 +197,8 @@ pub async fn list_paged(
             #[cfg(feature = "postgres")]
             conditions.push_str(&format!(" AND action = ${}", bind_values.len() + 1));
             #[cfg(feature = "mysql")]
+            conditions.push_str(" AND action = ?");
+            #[cfg(feature = "sqlite")]
             conditions.push_str(" AND action = ?");
             bind_values.push(a.to_string());
         }
@@ -159,6 +209,8 @@ pub async fn list_paged(
             conditions.push_str(&format!(" AND create_time >= ${}", bind_values.len() + 1));
             #[cfg(feature = "mysql")]
             conditions.push_str(" AND create_time >= ?");
+            #[cfg(feature = "sqlite")]
+            conditions.push_str(" AND create_time >= ?");
             bind_values.push(st.to_string());
         }
     }
@@ -167,6 +219,8 @@ pub async fn list_paged(
             #[cfg(feature = "postgres")]
             conditions.push_str(&format!(" AND create_time <= ${}", bind_values.len() + 1));
             #[cfg(feature = "mysql")]
+            conditions.push_str(" AND create_time <= ?");
+            #[cfg(feature = "sqlite")]
             conditions.push_str(" AND create_time <= ?");
             bind_values.push(et.to_string());
         }
@@ -183,6 +237,12 @@ pub async fn list_paged(
         conditions, bind_values.len() + 1, bind_values.len() + 2
     );
     #[cfg(feature = "mysql")]
+    let data_sql = format!(
+        "SELECT id, username, action, resource, method, path, ip, status_code, create_time FROM gb_audit_log WHERE 1=1{} ORDER BY id DESC LIMIT ? OFFSET ?",
+        conditions
+    );
+    // SQLite：DATETIME 直接以文本存储，无需 ::text 转换
+    #[cfg(feature = "sqlite")]
     let data_sql = format!(
         "SELECT id, username, action, resource, method, path, ip, status_code, create_time FROM gb_audit_log WHERE 1=1{} ORDER BY id DESC LIMIT ? OFFSET ?",
         conditions

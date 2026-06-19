@@ -14,7 +14,7 @@ use crate::handlers::{
     cloud_record_extra, jt1078_extra, parity_extras, playback, rtp_control, server, stream, stub, sy_camera, talk, user, websocket, webrtc, device_batch, region, role,
 };
 use crate::handlers::metrics as metrics_handler;
-use crate::rpc::{RpcRequest, RpcResponse, RpcRouter};
+use crate::rpc::{RpcRequest, RpcResponse};
 use crate::zlm::hook as zlm_hook;
 use crate::AppState;
 

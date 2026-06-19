@@ -2,6 +2,12 @@ use redis::aio::ConnectionManager;
 use redis::AsyncCommands;
 
 /// Redis 缓存操作封装，所有函数在 Redis 不可用时 graceful fallback
+///
+/// **E1 迁移提示**：本模块的 `set_device_online` / `get_device_online` /
+/// `set_stream_info` / `get_stream_info` / `set_media_server_streams` 已经和
+/// `crate::state_store::StateStore` 重复。新代码请优先使用 StateStore 的
+/// `set_device_online` / `set_stream` / `select_least_loaded_server` 等 API。
+/// 这里保留这些函数仅用于向后兼容，将在后续 release 删除。
 
 const KEY_PREFIX: &str = "gb:";
 
@@ -23,6 +29,8 @@ fn recording_key(device_id: &str, channel_id: &str) -> String {
 
 // --------------- 设备在线状态 ---------------
 
+/// **deprecated**: 优先使用 `crate::state_store::StateStore::set_device_online`
+#[deprecated(note = "迁移到 StateStore::set_device_online")]
 pub async fn set_device_online(
     redis: &ConnectionManager,
     device_id: &str,
@@ -35,6 +43,8 @@ pub async fn set_device_online(
     let _: Result<(), _> = conn.set_ex(&key, val, ttl_secs).await;
 }
 
+/// **deprecated**: 优先使用 `crate::state_store::StateStore::get_device_online`
+#[deprecated(note = "迁移到 StateStore::get_device_online")]
 pub async fn get_device_online(redis: &ConnectionManager, device_id: &str) -> Option<bool> {
     let mut conn = redis.clone();
     let key = device_key(device_id);
@@ -44,12 +54,16 @@ pub async fn get_device_online(redis: &ConnectionManager, device_id: &str) -> Op
 
 // --------------- 流信息缓存 ---------------
 
+/// **deprecated**: 优先使用 `crate::state_store::StateStore::set_stream`
+#[deprecated(note = "迁移到 StateStore::set_stream")]
 pub async fn set_stream_info(redis: &ConnectionManager, key: &str, info_json: &str, ttl_secs: u64) {
     let mut conn = redis.clone();
     let k = stream_key(key);
     let _: Result<(), _> = conn.set_ex(&k, info_json, ttl_secs).await;
 }
 
+/// **deprecated**: 优先使用 `crate::state_store::StateStore::get_stream`
+#[deprecated(note = "迁移到 StateStore::get_stream")]
 pub async fn get_stream_info(redis: &ConnectionManager, key: &str) -> Option<String> {
     let mut conn = redis.clone();
     let k = stream_key(key);
@@ -82,6 +96,7 @@ pub async fn get_media_server_stream_count(redis: &ConnectionManager, server_id:
 }
 
 /// 重置某个节点的流计数（用于 ZLM 重启等场景）
+#[deprecated(note = "迁移到 StateStore 媒体服务器 API")]
 pub async fn reset_media_server_streams(redis: &ConnectionManager, server_id: &str, count: i64) {
     let mut conn = redis.clone();
     let key = media_server_streams_key(server_id);
@@ -89,6 +104,7 @@ pub async fn reset_media_server_streams(redis: &ConnectionManager, server_id: &s
 }
 
 /// Alias for reset_media_server_streams
+#[deprecated(note = "迁移到 StateStore 媒体服务器 API")]
 pub async fn set_media_server_streams(redis: &ConnectionManager, server_id: &str, count: i64) {
     reset_media_server_streams(redis, server_id, count).await;
 }

@@ -29,6 +29,21 @@ pub async fn ensure_table(pool: &Pool) -> sqlx::Result<()> {
             "CREATE TABLE IF NOT EXISTS gb_position_history (\n\n  id BIGSERIAL PRIMARY KEY,\n  device_id VARCHAR(50) NOT NULL,\n  timestamp VARCHAR(50) NOT NULL,\n  longitude DOUBLE PRECISION,\n  latitude DOUBLE PRECISION,\n  altitude DOUBLE PRECISION,\n  speed DOUBLE PRECISION,\n  direction DOUBLE PRECISION\n)"
         ).execute(pool).await?;
     }
+    #[cfg(feature = "sqlite")]
+    {
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS gb_position_history (\
+             id INTEGER PRIMARY KEY AUTOINCREMENT,\
+             device_id VARCHAR(50) NOT NULL,\
+             timestamp VARCHAR(50) NOT NULL,\
+             longitude REAL,\
+             latitude REAL,\
+             altitude REAL,\
+             speed REAL,\
+             direction REAL\
+             )"
+        ).execute(pool).await?;
+    }
     Ok(())
 }
 
@@ -74,6 +89,22 @@ pub async fn insert_position(
         .await?;
         Ok(r.rows_affected())
     }
+    #[cfg(feature = "sqlite")]
+    {
+        let r = sqlx::query(
+            "INSERT INTO gb_position_history (device_id, timestamp, longitude, latitude, altitude, speed, direction) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(device_id)
+        .bind(timestamp)
+        .bind(longitude)
+        .bind(latitude)
+        .bind(altitude)
+        .bind(speed)
+        .bind(direction)
+        .execute(pool)
+        .await?;
+        Ok(r.rows_affected())
+    }
 }
 
 pub async fn list_by_device_and_time(
@@ -99,6 +130,14 @@ pub async fn list_by_device_and_time(
             .bind(device_id).bind(s).bind(e)
             .fetch_all(pool).await
         }
+        #[cfg(feature = "sqlite")]
+        {
+            sqlx::query_as::<_, PositionHistory>(
+                "SELECT id, device_id, timestamp, longitude, latitude, altitude, speed, direction FROM gb_position_history WHERE device_id = ? AND timestamp >= ? AND timestamp <= ? ORDER BY timestamp ASC",
+            )
+            .bind(device_id).bind(s).bind(e)
+            .fetch_all(pool).await
+        }
     } else {
         #[cfg(feature = "mysql")]
         {
@@ -112,6 +151,14 @@ pub async fn list_by_device_and_time(
         {
             sqlx::query_as::<_, PositionHistory>(
                 "SELECT id, device_id, timestamp, longitude, latitude, altitude, speed, direction FROM gb_position_history WHERE device_id = $1 ORDER BY timestamp ASC",
+            )
+            .bind(device_id)
+            .fetch_all(pool).await
+        }
+        #[cfg(feature = "sqlite")]
+        {
+            sqlx::query_as::<_, PositionHistory>(
+                "SELECT id, device_id, timestamp, longitude, latitude, altitude, speed, direction FROM gb_position_history WHERE device_id = ? ORDER BY timestamp ASC",
             )
             .bind(device_id)
             .fetch_all(pool).await

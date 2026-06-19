@@ -595,7 +595,7 @@ mod tests {
         use crate::state_store::StateStore;
         use std::sync::Arc;
 
-        let store = Arc::new(StateStore::memory());
+        let store = Arc::new(StateStore::in_memory());
         let mut mgr = SendRtpManager::new();
         mgr.set_state_store(store.clone());
 
@@ -623,7 +623,7 @@ mod tests {
         use crate::state_store::StateStore;
         use std::sync::Arc;
 
-        let store = Arc::new(StateStore::memory());
+        let store = Arc::new(StateStore::in_memory());
         let mut mgr = SendRtpManager::new();
         mgr.set_state_store(store.clone());
 

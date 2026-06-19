@@ -9,9 +9,10 @@
 //! 支持订阅类型：Catalog / MobilePosition / Alarm
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use dashmap::DashMap;
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 
 use crate::sip::gb28181::SubscriptionType;
 use crate::db::Pool;
@@ -270,6 +271,7 @@ impl NotifyDispatcher {
     }
 
     /// 处理 Alarm NOTIFY → 落库 + Redis + WS
+    #[allow(unused_variables)]
     pub async fn handle_alarm_notify(&self, xml: &str, redis: Option<&redis::aio::ConnectionManager>, ws: Option<&crate::handlers::websocket::WsState>) -> Result<(), String> {
         use crate::db::alarm as db_alarm;
         use crate::sip::gb28181::XmlParser;
@@ -298,6 +300,20 @@ impl NotifyDispatcher {
         db_alarm::insert_alarm(&self.pool, &record)
             .await
             .map_err(|e| e.to_string())?;
+
+        // Phase 2.3: Redis 广播到 alarm:{device_id} 频道
+        if let Some(r) = redis {
+            use redis::AsyncCommands;
+            let channel = format!("alarm:{}", device_id);
+            let msg = serde_json::json!({
+                "deviceId": device_id,
+                "alarmType": alarm_type,
+                "priority": alarm_priority,
+                "time": alarm_time,
+            });
+            let mut conn = r.clone();
+            let _: Result<(), _> = conn.publish::<_, _, ()>(&channel, &msg.to_string()).await;
+        }
 
         // WS 广播
         if let Some(w) = ws {

@@ -1228,3 +1228,97 @@ pub async fn count_alive_devices(pool: &Pool, alive_window_secs: i64) -> sqlx::R
     .await?;
     Ok(n)
 }
+
+/// Phase 2.2: 批量 upsert 通道（Catalog NOTIFY 用）
+///
+/// 把 per-channel `upsert_channel_from_catalog` 的 N 次 round-trip 优化为单条
+/// `INSERT ... ON CONFLICT/ON DUPLICATE KEY UPDATE`。
+///
+/// 每个 channel 一个 ChannelInsertData 元素，函数返回成功插入/更新的行数。
+pub async fn batch_upsert_channels(
+    pool: &Pool,
+    parent_device_id: &str,
+    channels: &[ChannelInsertData],
+) -> sqlx::Result<u64> {
+    if channels.is_empty() {
+        return Ok(0);
+    }
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+
+    #[cfg(feature = "postgres")]
+    {
+        // PostgreSQL: 单条 INSERT ... ON CONFLICT DO UPDATE
+        // VALUES ($1, $2, ...), ($3, $4, ...), ... — 用 UNNEST 模式避免 N 个参数
+        let gb_ids: Vec<&str> = channels.iter().map(|c| c.gb_device_id.as_str()).collect();
+        let names: Vec<&str> = channels.iter().map(|c| c.name.as_str()).collect();
+        let statuses: Vec<&str> = channels.iter().map(|c| c.status.as_str()).collect();
+        let longitudes: Vec<Option<f64>> = channels.iter().map(|c| c.longitude).collect();
+        let latitudes: Vec<Option<f64>> = channels.iter().map(|c| c.latitude).collect();
+        let has_audios: Vec<Option<bool>> = channels.iter().map(|c| c.has_audio).collect();
+        let channel_types: Vec<Option<i32>> = channels.iter().map(|c| c.channel_type).collect();
+
+        let result = sqlx::query(
+            r#"INSERT INTO gb_device_channel
+               (device_id, gb_device_id, name, status, longitude, latitude, has_audio, channel_type, create_time, update_time)
+               SELECT $1, gb_id, name, status, longitude, latitude, has_audio, channel_type, $2, $2
+               FROM UNNEST($3::text[], $4::text[], $5::text[], $6::float8[], $7::float8[], $8::bool[], $9::int4[])
+               AS t(gb_id, name, status, longitude, latitude, has_audio, channel_type)
+               ON CONFLICT (device_id, gb_device_id) DO UPDATE SET
+                   name = EXCLUDED.name,
+                   status = EXCLUDED.status,
+                   longitude = EXCLUDED.longitude,
+                   latitude = EXCLUDED.latitude,
+                   has_audio = EXCLUDED.has_audio,
+                   channel_type = EXCLUDED.channel_type,
+                   update_time = EXCLUDED.update_time"#,
+        )
+        .bind(parent_device_id)
+        .bind(&now)
+        .bind(&gb_ids)
+        .bind(&names)
+        .bind(&statuses)
+        .bind(&longitudes)
+        .bind(&latitudes)
+        .bind(&has_audios)
+        .bind(&channel_types)
+        .execute(pool)
+        .await?;
+        Ok(result.rows_affected())
+    }
+
+    #[cfg(feature = "mysql")]
+    {
+        // MySQL: 多次单条 INSERT ... ON DUPLICATE KEY UPDATE
+        // 因为 MySQL 不支持 UNNEST，每个 channel 单独执行
+        let mut total: u64 = 0;
+        for ch in channels {
+            let res = sqlx::query(
+                r#"INSERT INTO gb_device_channel
+                   (device_id, gb_device_id, name, status, longitude, latitude, has_audio, channel_type, create_time, update_time)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON DUPLICATE KEY UPDATE
+                       name = VALUES(name),
+                       status = VALUES(status),
+                       longitude = VALUES(longitude),
+                       latitude = VALUES(latitude),
+                       has_audio = VALUES(has_audio),
+                       channel_type = VALUES(channel_type),
+                       update_time = VALUES(update_time)"#,
+            )
+            .bind(parent_device_id)
+            .bind(&ch.gb_device_id)
+            .bind(&ch.name)
+            .bind(&ch.status)
+            .bind(ch.longitude)
+            .bind(ch.latitude)
+            .bind(ch.has_audio)
+            .bind(ch.channel_type)
+            .bind(&now)
+            .bind(&now)
+            .execute(pool)
+            .await?;
+            total += res.rows_affected();
+        }
+        Ok(total)
+    }
+}

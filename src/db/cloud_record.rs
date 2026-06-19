@@ -474,3 +474,62 @@ pub async fn insert_from_hook(pool: &Pool, stream_id: &str, file_path: &str, dur
     };
     insert(pool, &record).await
 }
+
+/// ABL `on_record_progress` 钩子专用：按 stream_id 更新最新一次录像的
+/// 累计 duration / file_size，供前端轮询实时展示。
+pub async fn update_recording_progress(
+    pool: &Pool,
+    stream_id: &str,
+    app: &str,
+    current_duration_secs: f64,
+    current_size_bytes: u64,
+) -> sqlx::Result<u64> {
+    let now = chrono::Utc::now().timestamp();
+    let duration_secs = current_duration_secs as i64;
+    #[cfg(feature = "postgres")]
+    {
+        sqlx::query(
+            r#"UPDATE gb_cloud_record
+               SET time_len = $3,
+                   file_size = $4,
+                   end_time = $5
+               WHERE id = (
+                   SELECT id FROM gb_cloud_record
+                   WHERE stream = $1 AND app = $2
+                   ORDER BY start_time DESC NULLS LAST
+                   LIMIT 1
+               )"#,
+        )
+        .bind(stream_id)
+        .bind(app)
+        .bind(duration_secs)
+        .bind(current_size_bytes as i64)
+        .bind(now)
+        .execute(pool)
+        .await
+        .map(|r| r.rows_affected())
+    }
+    #[cfg(feature = "mysql")]
+    {
+        sqlx::query(
+            r#"UPDATE gb_cloud_record
+               SET time_len = ?, file_size = ?, end_time = ?
+               WHERE id = (
+                   SELECT id FROM (
+                       SELECT id FROM gb_cloud_record
+                       WHERE stream = ? AND app = ?
+                       ORDER BY (start_time IS NULL), start_time DESC
+                       LIMIT 1
+                   ) AS t
+               )"#,
+        )
+        .bind(duration_secs)
+        .bind(current_size_bytes as i64)
+        .bind(now)
+        .bind(stream_id)
+        .bind(app)
+        .execute(pool)
+        .await
+        .map(|r| r.rows_affected())
+    }
+}

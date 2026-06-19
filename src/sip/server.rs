@@ -190,6 +190,7 @@ fn extract_tag_text(xml: &str, tag: &str) -> Option<String> {
 }
 
 use crate::sip::gb28181::pending_request::PendingRequestManager;
+use crate::sip::gb28181::subscription_lifecycle::SubscriptionLifecycle;
 use crate::sip::gb28181::media_waiter::{MediaWaiterManager, MediaWaitResult};
 
 pub struct SipServer {
@@ -216,6 +217,10 @@ pub struct SipServer {
     pending_request_manager: Arc<PendingRequestManager>,
     media_waiter_manager: Arc<MediaWaiterManager>,
     send_rtp_manager: Arc<SendRtpManager>,
+    /// Phase 2 R6: 订阅生命周期（变活代码）— 后台续订 + R3 退避
+    subscription_lifecycle: Arc<SubscriptionLifecycle>,
+    /// Phase 2 R3: per-device 续订失败计数（dashmap for concurrent access）
+    renewal_failures: Arc<DashMap<String, u32>>,
 }
 
 impl SipServer {
@@ -254,7 +259,21 @@ impl SipServer {
             pending_request_manager: Arc::new(PendingRequestManager::new()),
             media_waiter_manager: Arc::new(MediaWaiterManager::new()),
             send_rtp_manager: Arc::new(SendRtpManager::new()),
+            // Phase 2 R6: 激活 SubscriptionLifecycle（变活代码）
+            subscription_lifecycle: Arc::new(SubscriptionLifecycle::new()),
+            // Phase 2 R3: per-device 续订失败计数
+            renewal_failures: Arc::new(DashMap::new()),
         }
+    }
+
+    /// Phase 2 R6: 暴露 subscription_lifecycle 引用供后台续订循环使用
+    pub fn subscription_lifecycle(&self) -> Arc<SubscriptionLifecycle> {
+        self.subscription_lifecycle.clone()
+    }
+
+    /// Phase 2 R3: 续订失败计数器（用于退避）
+    pub fn renewal_failures(&self) -> Arc<DashMap<String, u32>> {
+        self.renewal_failures.clone()
     }
 
     /// B3: 设置 SendRtpManager（让上游级联点播时复用同一个管理器）
@@ -262,11 +281,14 @@ impl SipServer {
         self.send_rtp_manager = manager;
     }
 
-    /// E1: 注入 StateStore 到 SendRtpManager，让级联会话可跨节点共享
+    /// E1: 注入 StateStore 到 SendRtpManager + InviteSessionManager
     pub fn set_state_store(&mut self, store: std::sync::Arc<crate::state_store::StateStore>) {
         // SendRtpManager.set_state_store 需 &mut self，通过 Arc::get_mut
         // 仅当本节点是唯一持有者时有效；多节点场景下由 CascadeRegistrar 持有
         Arc::get_mut(&mut self.send_rtp_manager)
+            .map(|m| m.set_state_store(store.clone()));
+        // InviteSessionManager 通过 Arc::get_mut 注入
+        Arc::get_mut(&mut self.invite_session_manager)
             .map(|m| m.set_state_store(store));
     }
 
@@ -517,83 +539,112 @@ impl SipServer {
             });
         }
 
-        let renewal_pool = pool.clone();
+        // Phase 2 R6 + R3: 合并 Catalog / MobilePosition 续订循环为单一
+// subscription_renewal_loop，由 SubscriptionLifecycle::get_needing_renew 驱动，
+// 带 per-device failure_count 退避（>5 次则跳过 5 分钟）。
+let renewal_pool = pool.clone();
         let renewal_catalog_manager = catalog_subscription_manager.clone();
         let renewal_device_manager = device_manager.clone();
         let renewal_config = config.clone();
         let renewal_socket = socket.clone();
-        
-        tokio::spawn(async move {
-            loop {
-                tokio::time::sleep(Duration::from_secs(60)).await;
-                
-                match db_device::get_devices_for_catalog_renewal(&renewal_pool).await {
-                    Ok(devices) => {
-                        for (device_id, cycle) in devices {
-                            let subs = renewal_catalog_manager.get_by_device(&device_id).await;
-                            let needs_renewal = subs.iter().any(|s| {
-                                let elapsed = (Utc::now() - s.created_at).num_seconds() as u32;
-                                let remaining = s.expires.saturating_sub(elapsed);
-                                remaining < 30
-                            });
-                            
-                            if needs_renewal {
-                                if let Some(device) = renewal_device_manager.get(&device_id).await {
-                                    if device.online {
-                                        tracing::info!("Renewing catalog subscription for device {}", device_id);
-                                        let _ = send_subscribe_internal(
-                                            &device_id,
-                                            "Catalog",
-                                            cycle as u32,
-                                            &renewal_config,
-                                            &renewal_device_manager,
-                                            &renewal_catalog_manager,
-                                            &renewal_socket,
-                                        ).await;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        tracing::error!("Failed to get devices for catalog renewal: {}", e);
-                    }
-                }
-            }
-        });
+        let renewal_lifecycle = self.subscription_lifecycle.clone();
+        let renewal_failures = self.renewal_failures.clone();
 
-        let mobile_pool = pool.clone();
-        let mobile_config = config.clone();
-        let mobile_device_manager = device_manager.clone();
-        let mobile_socket = socket.clone();
-        
         tokio::spawn(async move {
             loop {
-                tokio::time::sleep(Duration::from_secs(60)).await;
-                
-                match db_device::get_devices_for_mobile_position_renewal(&mobile_pool).await {
-                    Ok(devices) => {
-                        for (device_id, cycle) in devices {
-                            if let Some(device) = mobile_device_manager.get(&device_id).await {
-                                if device.online {
-                                    tracing::info!("Renewing mobile position subscription for device {}", device_id);
-                                    let _ = send_subscribe_internal(
-                                        &device_id,
-                                        "MobilePosition",
-                                        cycle as u32,
-                                        &mobile_config,
-                                        &mobile_device_manager,
-                                        &Arc::new(CatalogSubscriptionManager::new()),
-                                        &mobile_socket,
-                                    ).await;
-                                }
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        tracing::error!("Failed to get devices for mobile position renewal: {}", e);
+                tokio::time::sleep(Duration::from_secs(30)).await;
+
+                // 1. 先从 DB 加载需要续订的设备（保持与原 Catalog/MobilePosition 路径一致）
+                let mut candidates: Vec<(String, String, u32)> = Vec::new();
+                if let Ok(devices) = db_device::get_devices_for_catalog_renewal(&renewal_pool).await {
+                    for (device_id, cycle) in devices {
+                        candidates.push((device_id, "Catalog".to_string(), cycle as u32));
                     }
                 }
+                if let Ok(devices) = db_device::get_devices_for_mobile_position_renewal(&renewal_pool).await {
+                    for (device_id, cycle) in devices {
+                        candidates.push((device_id, "MobilePosition".to_string(), cycle as u32));
+                    }
+                }
+
+                // 2. 把 candidate 注册到 SubscriptionLifecycle（如尚未注册）
+                for (device_id, event, cycle) in &candidates {
+                    let sub_type = match event.as_str() {
+                        "Catalog" => Some(crate::sip::gb28181::SubscriptionType::Catalog),
+                        "MobilePosition" => Some(crate::sip::gb28181::SubscriptionType::MobilePosition),
+                        _ => None,
+                    };
+                    if let Some(st) = sub_type {
+                        let key = format!("{}_{}", device_id, st.as_str());
+                        // 第一次进入续订：注册
+                        if !renewal_lifecycle.get_for_device(device_id).iter().any(|s| s.sub_type == st) {
+                            renewal_lifecycle.register(device_id, st, &key, *cycle);
+                        }
+                    }
+                }
+
+                // 3. 用 SubscriptionLifecycle::get_needing_renew 取到期列表
+                let needing = renewal_lifecycle.get_needing_renew();
+                for session in needing {
+                    let key = format!("{}_{}", session.device_id, session.sub_type.as_str());
+
+                    // R3 退避：失败 ≥ 5 次则跳过 5 分钟
+                    let fails = renewal_failures.get(&key).map(|v| *v).unwrap_or(0);
+                    if fails >= 5 {
+                        tracing::warn!(
+                            "Subscription {} exceeded failure threshold ({}), skip renewal for 5min",
+                            key, fails
+                        );
+                        continue;
+                    }
+
+                    let event_name = match session.sub_type {
+                        crate::sip::gb28181::SubscriptionType::Catalog => "Catalog",
+                        crate::sip::gb28181::SubscriptionType::MobilePosition => "MobilePosition",
+                        crate::sip::gb28181::SubscriptionType::Alarm => "Alarm",
+                    };
+                    let expires = (session.expires_at - Utc::now().timestamp()).max(30) as u32;
+
+                    // 检查设备在线
+                    if let Some(device) = renewal_device_manager.get(&session.device_id).await {
+                        if !device.online {
+                            *renewal_failures.entry(key.clone()).or_insert(0) += 1;
+                            continue;
+                        }
+                    } else {
+                        *renewal_failures.entry(key.clone()).or_insert(0) += 1;
+                        continue;
+                    }
+
+                    let result = send_subscribe_internal(
+                        &session.device_id,
+                        event_name,
+                        expires,
+                        &renewal_config,
+                        &renewal_device_manager,
+                        &renewal_catalog_manager,
+                        &renewal_socket,
+                    ).await;
+
+                    match result {
+                        Ok(_) => {
+                            // 成功：重置失败计数
+                            renewal_failures.remove(&key);
+                        }
+                        Err(e) => {
+                            // 失败：递增计数
+                            let new_count = renewal_failures.entry(key.clone()).or_insert(0);
+                            *new_count += 1;
+                            tracing::warn!(
+                                "Renewal failed for {}: {} (failures={})",
+                                key, e, *new_count
+                            );
+                        }
+                    }
+                }
+
+                // 4. 清理过期订阅
+                let _ = renewal_lifecycle.cleanup_expired();
             }
         });
 
@@ -992,7 +1043,7 @@ impl SipServer {
         pool: &Pool,
         socket: &Arc<UdpSocket>,
         ws_state: &Option<Arc<WsState>>,
-        pending_request_manager: &Arc<PendingRequestManager>,
+        _pending_request_manager: &Arc<PendingRequestManager>,
     ) -> Result<()> {
         let from = req.header("from").cloned().unwrap_or_default();
         let to = req.header("to").cloned().unwrap_or_default();
@@ -2155,6 +2206,28 @@ impl SipServer {
                 }
             } else if cseq.contains("BYE") {
                 session_manager.remove(&call_id).await;
+            } else if cseq.contains("SUBSCRIBE") {
+                // Phase 2.3: SUBSCRIBE 200 响应 → 通知 SubscriptionLifecycle 续期
+                let expires_header = resp.headers.get("expires")
+                    .and_then(|v| v.parse::<u32>().ok())
+                    .unwrap_or(3600);
+                // 从 call_id 提取 device_id 和 sub_type
+                if let Some(device_id) = call_id.strip_prefix("sub_").and_then(|s| s.split('_').next()) {
+                    let event = resp.headers.get("event").cloned().unwrap_or_default();
+                    if let Some(sub_type) = match event.as_str() {
+                        "Catalog" => Some(crate::sip::gb28181::SubscriptionType::Catalog),
+                        "MobilePosition" => Some(crate::sip::gb28181::SubscriptionType::MobilePosition),
+                        "Alarm" => Some(crate::sip::gb28181::SubscriptionType::Alarm),
+                        _ => None,
+                    } {
+                        self.subscription_lifecycle.renew(device_id, sub_type, expires_header);
+                        self.renewal_failures.remove(&format!("{}_{}", device_id, sub_type.as_str()));
+                        tracing::debug!(
+                            "SUBSCRIBE renewed: device={} event={} expires={}s",
+                            device_id, event, expires_header
+                        );
+                    }
+                }
             }
         } else if resp.status_code() == 487 {
             session_manager.remove(&call_id).await;
@@ -2383,7 +2456,7 @@ impl SipServer {
         cseq: &str,
         socket: &Arc<UdpSocket>,
         ws_state: &Option<Arc<WsState>>,
-        pending_request_manager: &Arc<PendingRequestManager>,
+        _pending_request_manager: &Arc<PendingRequestManager>,
     ) -> Result<()> {
         let parsed = XmlParser::parse_fields(body);
         
@@ -2902,6 +2975,18 @@ f=v/1/96/1/2/1/1/0
                 expires,
             );
             self.catalog_subscription_manager.subscribe(subscription).await;
+        }
+
+        // Phase 2 R6: 注册到 SubscriptionLifecycle（变活代码，让后台 get_needing_renew 能找到）
+        if let Some(sub_type) = match event {
+            "Catalog" => Some(crate::sip::gb28181::SubscriptionType::Catalog),
+            "MobilePosition" => Some(crate::sip::gb28181::SubscriptionType::MobilePosition),
+            "Alarm" => Some(crate::sip::gb28181::SubscriptionType::Alarm),
+            _ => None,
+        } {
+            self.subscription_lifecycle.register(device_id, sub_type, &call_id, expires);
+            // Phase 2 R3: 订阅成功 → 重置失败计数
+            self.renewal_failures.remove(&format!("{}_{}", device_id, sub_type.as_str()));
         }
 
         tracing::info!("Sent SUBSCRIBE {} to device {} at {}", event, device_id, device_addr);

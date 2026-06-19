@@ -137,6 +137,53 @@ pub struct RtpServerTimeoutData {
     pub media_server_id: Option<String>,
 }
 
+// =====================================================================
+// ABL 钩子支持（设计文档 §6.3 阶段 0 缺口 1）
+//
+// ABL（Another Live media Broadcaster）是 ZLMediaKit 兼容的开源分支，
+// 暴露额外的 hook 事件用于细粒度控制。WVP-Pro Java 后端在生产部署中
+// 会使用这些事件，本实现补齐 on_rtp_playlist / on_record_progress。
+// =====================================================================
+
+/// ABL `on_rtp_playlist` 事件：RTP 推流端开始 / 停止推 playlist 时触发
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RtpPlaylistData {
+    pub app: Option<String>,
+    pub stream: Option<String>,
+    pub ssrc: Option<String>,
+    #[serde(default, alias = "mediaServerId")]
+    pub media_server_id: Option<String>,
+    /// "start" / "stop"
+    pub action: Option<String>,
+}
+
+/// ABL `on_record_progress` 事件：MP4 / HLS 录制进度回调（每 N 秒一次）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecordProgressData {
+    pub app: Option<String>,
+    pub stream: Option<String>,
+    pub vhost: Option<String>,
+    #[serde(default, alias = "mediaServerId")]
+    pub media_server_id: Option<String>,
+    /// 当前累计录制时长（秒）
+    pub current_duration: Option<f64>,
+    /// 当前累计文件大小（字节）
+    pub current_size: Option<u64>,
+    /// 进度时间戳（毫秒）
+    pub progress_ts: Option<i64>,
+}
+
+/// ABL `on_send_rtp_progress` 事件：SendRtp 推流进度（每 N 包一次）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SendRtpProgressData {
+    pub app: Option<String>,
+    pub stream: Option<String>,
+    #[serde(default, alias = "mediaServerId")]
+    pub media_server_id: Option<String>,
+    pub total_sent: Option<u64>,
+    pub bytes_sent: Option<u64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RtpServerStartedData {
     pub stream_id: String,
@@ -584,6 +631,10 @@ pub async fn handle_webhook(
                         ("hook.on_rtp_server_started", hook_url.clone()),
                         ("hook.on_stream_started", hook_url.clone()),
                         ("hook.on_rtp_server_timeout", hook_url.clone()),
+                        // ABL 钩子（设计文档 §6.3 阶段 0 缺口 1）
+                        ("hook.on_rtp_playlist", hook_url.clone()),
+                        ("hook.on_record_progress", hook_url.clone()),
+                        ("hook.on_send_rtp_progress", hook_url.clone()),
                     ];
                     for (key, value) in config_items {
                         if let Err(e) = zlm_client.set_server_config(&secret, key, &value).await {
@@ -730,6 +781,59 @@ pub async fn handle_webhook(
                 let _ = crate::db::cloud_record::insert_from_hook(
                     &state.pool, &data.stream, &data.file_path, duration
                 ).await;
+            }
+        }
+        // ============ ABL 钩子（设计文档 §6.3 阶段 0 缺口 1）============
+        "on_rtp_playlist" => {
+            if let Some(data) = serde_json::from_value::<RtpPlaylistData>(event.clone()).ok() {
+                tracing::info!(
+                    "ABL rtp_playlist: app={:?} stream={:?} ssrc={:?} action={:?}",
+                    data.app, data.stream, data.ssrc, data.action
+                );
+                // 通知 WS 订阅者（用于前端展示 playlist 状态）
+                state.ws_state.broadcast("abl_rtp_playlist", serde_json::json!({
+                    "app": data.app,
+                    "stream": data.stream,
+                    "ssrc": data.ssrc,
+                    "action": data.action,
+                })).await;
+            }
+        }
+        "on_record_progress" => {
+            if let Some(data) = serde_json::from_value::<RecordProgressData>(event.clone()).ok() {
+                tracing::debug!(
+                    "ABL record_progress: {}/{} duration={:?}s size={:?}B ts={:?}",
+                    data.app.as_deref().unwrap_or(""),
+                    data.stream.as_deref().unwrap_or(""),
+                    data.current_duration, data.current_size, data.progress_ts
+                );
+                // 更新 DB 中的录像进度（cloud_record），供前端轮询
+                if let (Some(app), Some(stream)) = (data.app.as_deref(), data.stream.as_deref()) {
+                    let _ = crate::db::cloud_record::update_recording_progress(
+                        &state.pool,
+                        stream,
+                        app,
+                        data.current_duration.unwrap_or(0.0),
+                        data.current_size.unwrap_or(0),
+                    ).await;
+                }
+            }
+        }
+        "on_send_rtp_progress" => {
+            if let Some(data) = serde_json::from_value::<SendRtpProgressData>(event.clone()).ok() {
+                tracing::debug!(
+                    "ABL send_rtp_progress: {}/{} total={:?} bytes={:?}",
+                    data.app.as_deref().unwrap_or(""),
+                    data.stream.as_deref().unwrap_or(""),
+                    data.total_sent, data.bytes_sent
+                );
+                // 级联推流进度（如不需要可关闭日志），用于监控推流质量
+                state.ws_state.broadcast("abl_send_rtp_progress", serde_json::json!({
+                    "app": data.app,
+                    "stream": data.stream,
+                    "total_sent": data.total_sent,
+                    "bytes_sent": data.bytes_sent,
+                })).await;
             }
         }
         _ => {

@@ -39,17 +39,40 @@ pub use cloud_record::CloudRecord;
 
 use crate::config::AppConfig;
 
-#[cfg(all(feature = "mysql", not(feature = "postgres")))]
+// 数据库三选一：编译期通过 cargo feature 互斥确定 Pool 类型。
+// 默认 PG；MySQL 用 --no-default-features --features mysql；SQLite 用 --no-default-features --features sqlite。
+#[cfg(feature = "sqlite")]
+pub type Pool = sqlx::SqlitePool;
+
+#[cfg(all(feature = "mysql", not(feature = "postgres"), not(feature = "sqlite")))]
 pub type Pool = sqlx::MySqlPool;
 
-#[cfg(all(feature = "postgres", not(feature = "mysql")))]
+#[cfg(all(feature = "postgres", not(feature = "mysql"), not(feature = "sqlite")))]
 pub type Pool = sqlx::PgPool;
 
 // 默认使用postgres（当没有明确指定feature时）
-#[cfg(all(not(feature = "mysql"), not(feature = "postgres")))]
+#[cfg(all(not(feature = "mysql"), not(feature = "postgres"), not(feature = "sqlite")))]
 pub type Pool = sqlx::PgPool;
 
 pub async fn create_pool(cfg: &AppConfig) -> anyhow::Result<Pool> {
+    #[cfg(feature = "sqlite")]
+    {
+        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+        use std::str::FromStr;
+        let opts = SqliteConnectOptions::from_str(&cfg.database.url)
+            .map_err(|e| anyhow::anyhow!("解析 SQLite 连接串失败: {} (url={})", e, cfg.database.url))?
+            .create_if_missing(true)
+            .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+            .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
+            .busy_timeout(std::time::Duration::from_secs(5));
+        let pool = SqlitePoolOptions::new()
+            .max_connections(10)
+            .connect_with(opts)
+            .await?;
+        tracing::info!("SQLite pool 初始化成功 (WAL mode)");
+        return Ok(pool);
+    }
+
     #[cfg(feature = "mysql")]
     {
         use sqlx::mysql::MySqlPoolOptions;

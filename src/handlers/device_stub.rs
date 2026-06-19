@@ -1,4 +1,13 @@
 //! 设备相关接口：能落库的用 DB 实现，其余保持兼容空实现（后续可对接 SIP/ZLM）
+//!
+//! ## 角色定位 (Phase 2.5)
+//!
+//! 本模块部分 handler 已迁移到 `crate::handlers::device_control`：
+//! - 报警订阅 (`/api/device/subscribe/alarm`) — 实际由 `device_control::subscribe_alarm` 处理
+//! - 移动位置订阅 (`/api/device/subscribe/mobilePosition`) — 由 `device_control::subscribe_mobile_position`
+//!
+//! 仍有少量兼容路径（如 `/api/device/snap/:id`、`/api/device/record/control`）保留在本模块
+//! 以保持前端兼容。
 
 use axum::{
     extract::{Path, Query, State},

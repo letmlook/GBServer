@@ -24,7 +24,7 @@ use tokio::sync::RwLock;
 async fn init_db_tables(pool: &db::Pool) -> anyhow::Result<()> {
     db::position_history::ensure_table(pool).await?;
     db::audit_log::ensure_table(pool).await?;
-    
+
     // Check if core tables exist; if not, run full schema init
     #[cfg(feature = "postgres")]
     {
@@ -33,7 +33,7 @@ async fn init_db_tables(pool: &db::Pool) -> anyhow::Result<()> {
         )
         .fetch_one(pool)
         .await.unwrap_or(false);
-        
+
         if !table_exists {
             tracing::info!("Schema tables not found, initializing from SQL script...");
             let sql = include_str!("../database/init-postgresql-2.7.4.sql");
@@ -44,7 +44,7 @@ async fn init_db_tables(pool: &db::Pool) -> anyhow::Result<()> {
                     continue;
                 }
                 // Skip non-DML/DDL statements
-                if !stmt.starts_with("CREATE") && !stmt.starts_with("INSERT") && 
+                if !stmt.starts_with("CREATE") && !stmt.starts_with("INSERT") &&
                    !stmt.starts_with("ALTER") && !stmt.starts_with("COMMENT") &&
                    !stmt.starts_with("DROP") && !stmt.starts_with("DO") {
                     continue;
@@ -54,7 +54,7 @@ async fn init_db_tables(pool: &db::Pool) -> anyhow::Result<()> {
             tracing::info!("Schema initialization complete");
         }
     }
-    
+
     #[cfg(feature = "mysql")]
     {
         let table_exists: bool = sqlx::query_scalar(
@@ -62,7 +62,7 @@ async fn init_db_tables(pool: &db::Pool) -> anyhow::Result<()> {
         )
         .fetch_one(pool)
         .await.unwrap_or(false);
-        
+
         if !table_exists {
             tracing::info!("Schema tables not found, initializing from SQL script...");
             let sql = include_str!("../database/init-mysql-2.7.4.sql");
@@ -71,7 +71,7 @@ async fn init_db_tables(pool: &db::Pool) -> anyhow::Result<()> {
                 if stmt.is_empty() || stmt.starts_with("--") || stmt.starts_with("/*") {
                     continue;
                 }
-                if !stmt.starts_with("CREATE") && !stmt.starts_with("INSERT") && 
+                if !stmt.starts_with("CREATE") && !stmt.starts_with("INSERT") &&
                    !stmt.starts_with("ALTER") && !stmt.starts_with("DROP") {
                     continue;
                 }
@@ -80,7 +80,35 @@ async fn init_db_tables(pool: &db::Pool) -> anyhow::Result<()> {
             tracing::info!("Schema initialization complete");
         }
     }
-    
+
+    #[cfg(feature = "sqlite")]
+    {
+        // SQLite 用 sqlite_master 检测；Phase 1 仅覆盖核心 6 表最小集合
+        let table_exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='gb_device')"
+        )
+        .fetch_one(pool)
+        .await.unwrap_or(false);
+
+        if !table_exists {
+            tracing::info!("[sqlite] schema tables not found, initializing...");
+            let sql = include_str!("../database/init-sqlite-2.7.4.sql");
+            for stmt in sql.split(';') {
+                let stmt = stmt.trim();
+                if stmt.is_empty() || stmt.starts_with("--") || stmt.starts_with("/*") {
+                    continue;
+                }
+                let upper = stmt.to_uppercase();
+                if !upper.starts_with("CREATE") && !upper.starts_with("INSERT") &&
+                   !upper.starts_with("ALTER") && !upper.starts_with("DROP") {
+                    continue;
+                }
+                let _ = sqlx::query(stmt).execute(pool).await;
+            }
+            tracing::info!("[sqlite] schema initialization complete");
+        }
+    }
+
     Ok(())
 }
 
@@ -208,7 +236,7 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
 
     // E2: 注册标准 RPC 处理器（device_control / play_stop / cloud_record_sync）
     if let Some(ref router) = state.rpc_router {
-        crate::rpc::register_standard_handlers(router);
+        crate::rpc::register_standard_handlers(router).await;
     }
 
     if let Some(ref server) = sip_server {
@@ -240,9 +268,24 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
         registrar.set_pool(state.pool.clone()).await;
 
         let reg = registrar.clone();
+        let local_device_id_for_reg = local_device_id.clone();
+        let realm_for_reg = realm.clone();
         tokio::spawn(async move {
-            reg.load_platforms_from_db(&pool_clone, &local_device_id, &realm).await;
+            reg.load_platforms_from_db(&pool_clone, &local_device_id_for_reg, &realm_for_reg).await;
             reg.run_registration_loop().await;
+        });
+
+        // C3: 启动 keepalive / reload / 超时检测 三个周期任务
+        let periodic_reg = registrar.clone();
+        let local_device_id_for_periodic = local_device_id.clone();
+        let realm_for_periodic = realm.clone();
+        tokio::spawn(async move {
+            crate::cascade::register::cascade_periodic_tasks(
+                periodic_reg,
+                local_device_id_for_periodic,
+                realm_for_periodic,
+            )
+            .await;
         });
     }
 

@@ -109,7 +109,7 @@ impl PresetCommand {
             }
             PresetCommandType::Clear => {
                 format!(
-                    r#"<Control><CmdType>DeviceControl</CmdType><SN>1</SN><DeviceID>{}</DeviceID><PTZCmd>CLE_PRESET {}</PTZCmd></Control>"#,
+                    r#"<Control><CmdType>DeviceControl</CmdType><SN>1</SN><DeviceID>{}</DeviceID><PTZCmd>CLEAR_PRESET {}</PTZCmd></Control>"#,
                     self.channel_id, self.preset_index
                 )
             }
