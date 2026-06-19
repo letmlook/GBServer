@@ -6,12 +6,24 @@
 [server]
 port = 18080
 
+# 数据库三选一：默认 SQLite（与 Cargo.toml default = ["sqlite"] 一致）
+# - SQLite（默认）：零依赖，文件即库；适合开发 / 演示 / 边缘 / 小规模（≤500 设备）
+# - PostgreSQL：生产主力；多实例需配 [redis] + [rpc] peer_endpoints
+# - MySQL：WVP 平迁；schema 与 database/init-mysql-2.7.4.sql 完全兼容
 [database]
-url = "postgres://postgres:postgres@127.0.0.1:5432/gbserver"
+url = "sqlite://data/gbserver.db?mode=rwc"
+# url = "postgres://postgres:postgres@127.0.0.1:5432/gbserver"
 # url = "mysql://root:Fitow2022@127.0.0.1:3306/gbserver"
 
-[redis]
-url = "redis://127.0.0.1:6379/0"
+# SQLite 设备上限（仅 sqlite feature 生效）；超过拒绝新 REGISTER 并返回 SIP 503
+# PG/MySQL 后端忽略此字段。None = 不限；推荐 ≤500（SQLite 并发写约束）
+sqlite_max_devices = 500
+
+# Redis：单实例 SQLite 可不配（StateStore 走 InMemoryBackend）；
+# 多实例 PostgreSQL 必须配置，StateStore 跨节点共享依赖 Redis
+# 单实例 SQLite 默认无需启用；多实例部署时取消注释并填写 URL：
+# [redis]
+# url = "redis://127.0.0.1:6379/0"
 
 [jwt]
 # 256-bit 随机密钥（请勿泄露，生产环境建议用环境变量 GBSERVER__JWT__SECRET 覆盖）
