@@ -151,6 +151,30 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
     let pool = db::create_pool(&cfg).await?;
     let ws_state = Arc::new(crate::handlers::websocket::WsState::new());
 
+    // SQLite 启动期设备数检查
+    #[cfg(feature = "sqlite")]
+    if let Some(limit) = cfg.database.sqlite_max_devices {
+        match db::device::count_devices(&pool, None, None).await {
+            Ok(current) => {
+                let cur = current as usize;
+                if cur >= limit {
+                    tracing::error!(
+                        "🚨 SQLite 设备数量已达上限 ({}/{}); 新设备注册将被拒绝。请迁移到 PostgreSQL。",
+                        cur, limit
+                    );
+                } else if cur * 5 >= limit * 4 {
+                    tracing::warn!(
+                        "⚠️  SQLite 设备数量已用 {}% ({}/{}); 接近上限，请规划迁移到 PostgreSQL。",
+                        cur * 100 / limit, cur, limit
+                    );
+                } else {
+                    tracing::info!("SQLite device count: {}/{}", cur, limit);
+                }
+            }
+            Err(e) => tracing::warn!("启动期设备数检查失败: {}", e),
+        }
+    }
+
     // Initialize required DB tables on startup
     init_db_tables(&pool).await?;
 

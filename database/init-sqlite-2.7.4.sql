@@ -246,6 +246,184 @@ CREATE TABLE IF NOT EXISTS gb_stream_proxy
 CREATE UNIQUE INDEX IF NOT EXISTS uk_stream_proxy_app_stream ON gb_stream_proxy(app, stream);
 
 -- ============================================
+-- 7. gb_stream_push — 推流会话记录（Batch B 缺表修复）
+-- ============================================
+CREATE TABLE IF NOT EXISTS gb_stream_push
+(
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    app                VARCHAR(255),
+    stream             VARCHAR(255),
+    create_time        VARCHAR(50),
+    media_server_id    VARCHAR(50),
+    server_id          VARCHAR(50),
+    push_time          VARCHAR(50),
+    status             INTEGER     DEFAULT 0,
+    update_time        VARCHAR(50),
+    pushing            INTEGER     DEFAULT 0,
+    self               INTEGER     DEFAULT 0,
+    start_offline_push INTEGER     DEFAULT 1
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uk_stream_push_app_stream ON gb_stream_push(app, stream);
+
+-- ============================================
+-- 8. gb_user_api_key — API Key
+-- ============================================
+CREATE TABLE IF NOT EXISTS gb_user_api_key
+(
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id     INTEGER,
+    app         VARCHAR(255),
+    api_key     TEXT,
+    expired_at  INTEGER,
+    remark      VARCHAR(255),
+    enable      INTEGER     DEFAULT 1,
+    create_time VARCHAR(50),
+    update_time VARCHAR(50)
+);
+
+-- ============================================
+-- 9. gb_platform — 上级国标平台注册信息
+-- ============================================
+CREATE TABLE IF NOT EXISTS gb_platform
+(
+    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+    enable                INTEGER     DEFAULT 0,
+    name                  VARCHAR(255),
+    server_gb_id          VARCHAR(50),
+    server_gb_domain      VARCHAR(50),
+    server_ip             VARCHAR(50),
+    server_port           INTEGER,
+    device_gb_id          VARCHAR(50),
+    device_ip             VARCHAR(50),
+    device_port           VARCHAR(50),
+    username              VARCHAR(255),
+    password              VARCHAR(50),
+    expires               VARCHAR(50),
+    keep_timeout          VARCHAR(50),
+    transport             VARCHAR(50),
+    civil_code            VARCHAR(50),
+    manufacturer          VARCHAR(255),
+    model                 VARCHAR(255),
+    address               VARCHAR(255),
+    character_set         VARCHAR(50),
+    ptz                   INTEGER     DEFAULT 0,
+    rtcp                  INTEGER     DEFAULT 0,
+    status                INTEGER     DEFAULT 0,
+    catalog_group         INTEGER,
+    register_way          INTEGER,
+    secrecy               INTEGER,
+    create_time           VARCHAR(50),
+    update_time           VARCHAR(50),
+    as_message_channel    INTEGER     DEFAULT 0,
+    catalog_with_platform INTEGER     DEFAULT 1,
+    catalog_with_group    INTEGER     DEFAULT 1,
+    catalog_with_region   INTEGER     DEFAULT 1,
+    auto_push_channel     INTEGER     DEFAULT 1,
+    send_stream_ip        VARCHAR(50),
+    server_id             VARCHAR(50)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uk_platform_unique_server_gb_id ON gb_platform(server_gb_id);
+
+-- ============================================
+-- 10. gb_cloud_record — 云端录像记录
+-- ============================================
+CREATE TABLE IF NOT EXISTS gb_cloud_record
+(
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    app             VARCHAR(255),
+    stream          VARCHAR(255),
+    call_id         VARCHAR(255),
+    start_time      INTEGER,
+    end_time        INTEGER,
+    media_server_id VARCHAR(50),
+    server_id       VARCHAR(50),
+    file_name       VARCHAR(255),
+    folder          VARCHAR(500),
+    file_path       VARCHAR(500),
+    collect         INTEGER     DEFAULT 0,
+    file_size       INTEGER,
+    time_len        REAL
+);
+
+-- ============================================
+-- 11. gb_device_alarm — 设备报警
+-- ============================================
+CREATE TABLE IF NOT EXISTS gb_device_alarm
+(
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_id         VARCHAR(50)  NOT NULL,
+    channel_id        VARCHAR(50)  NOT NULL,
+    alarm_priority    VARCHAR(50),
+    alarm_method      VARCHAR(50),
+    alarm_time        VARCHAR(50),
+    alarm_description VARCHAR(255),
+    longitude         REAL,
+    latitude          REAL,
+    alarm_type        VARCHAR(50),
+    create_time       VARCHAR(50)  NOT NULL
+);
+
+-- ============================================
+-- 12. gb_device_mobile_position — 移动位置
+-- ============================================
+CREATE TABLE IF NOT EXISTS gb_device_mobile_position
+(
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_id     VARCHAR(50)  NOT NULL,
+    channel_id    VARCHAR(50)  NOT NULL,
+    device_name   VARCHAR(255),
+    time          VARCHAR(50),
+    longitude     REAL,
+    latitude      REAL,
+    altitude      REAL,
+    speed         REAL,
+    direction     REAL,
+    report_source VARCHAR(50),
+    create_time   VARCHAR(50)
+);
+
+-- ============================================
+-- 13. gb_common_group — 通用分组
+-- ============================================
+CREATE TABLE IF NOT EXISTS gb_common_group
+(
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_id        VARCHAR(50)  NOT NULL,
+    name             VARCHAR(255) NOT NULL,
+    parent_id        INTEGER,
+    parent_device_id VARCHAR(50) DEFAULT NULL,
+    business_group   VARCHAR(50)  NOT NULL,
+    create_time      VARCHAR(50)  NOT NULL,
+    update_time      VARCHAR(50)  NOT NULL,
+    civil_code       VARCHAR(50) DEFAULT NULL,
+    alias            VARCHAR(255) DEFAULT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uk_common_group_device_platform ON gb_common_group(device_id);
+
+-- ============================================
+-- 14. gb_record_plan + gb_record_plan_item
+-- ============================================
+CREATE TABLE IF NOT EXISTS gb_record_plan
+(
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    snap        INTEGER     DEFAULT 0,
+    name        VARCHAR(255) NOT NULL,
+    create_time VARCHAR(50),
+    update_time VARCHAR(50)
+);
+
+CREATE TABLE IF NOT EXISTS gb_record_plan_item
+(
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    "start"     INTEGER,
+    stop        INTEGER,
+    week_day    INTEGER,
+    plan_id     INTEGER,
+    create_time VARCHAR(50),
+    update_time VARCHAR(50)
+);
+
+-- ============================================
 -- 初始数据 — 默认管理员账户（与 PG/MySQL 一致）
 -- admin / admin  (MD5: 21232f297a57a5a743894a0e4a801fc3)
 -- ============================================
