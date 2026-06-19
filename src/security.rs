@@ -47,66 +47,70 @@ pub fn validate_jwt_secret(secret: &str) -> Result<(), String> {
 /// Mask any `<key>=<value>` / `"<key>":"<value>"` / `<key>: <value>` occurrence
 /// of a sensitive key in `text`. Sensitive keys are case-insensitive.
 const SENSITIVE_KEYS: &[&str] = &[
+    // URL / body 字段
     "password", "passwd", "secret", "token", "jwt", "apikey", "api_key",
     "authorization", "access_token", "refresh_token", "private",
+    // HTTP header 名（to_ascii_lowercase 已做大小写无关匹配，所以这里写小写即可）
+    "x-api-key", "x-api-token", "x-auth-token", "x-access-token",
 ];
 
 /// Returns `text` with sensitive values replaced by `***`.
 pub fn redact_sensitive(text: &str) -> String {
     let mut out = text.to_string();
     for key in SENSITIVE_KEYS {
+        // 值终止符：, } ) ] 空白 / \n（结构/字段分隔），
+        // 以及 & 和 ;（URL query string 中常见的参数分隔符）。
+        // 不加 & 会导致 `password=hunter2&user=alice` 的值一路扫到末尾
+        // 把 `&user=alice` 也吞掉。
+        let is_term = |b: u8| matches!(b, b',' | b'}' | b')' | b']' | b' ' | b'\n' | b'&' | b';');
+
         // =value
         let eq_pat = format!("{}=", key);
         if let Some(idx) = out.to_ascii_lowercase().find(&eq_pat) {
-            // Replace from `=` up to the next , } ) ] space or end-of-string
             let start = idx + eq_pat.len();
             let bytes = out.as_bytes();
             let mut end = start;
-            while end < bytes.len() {
-                let b = bytes[end];
-                if b == b',' || b == b'}' || b == b')' || b == b']' || b == b' ' || b == b'\n' {
-                    break;
-                }
+            while end < bytes.len() && !is_term(bytes[end]) {
                 end += 1;
             }
-            out.replace_range(start..end, "***");
+            // 防 start==end 时 replace_range 退化为插入（String::replace_range
+            // 对空区间会插入 replace_with），避免 "password=" → "password=***"
+            if start < end {
+                out.replace_range(start..end, "***");
+            }
         }
         // "key":"value" or "key": "value"
         let colon_pat = format!("\"{}\":", key);
         if let Some(idx) = out.to_ascii_lowercase().find(&colon_pat) {
             let after_colon = idx + colon_pat.len();
-            // skip whitespace
             let bytes = out.as_bytes();
             let mut start = after_colon;
             while start < bytes.len() && bytes[start] == b' ' {
                 start += 1;
             }
             if start < bytes.len() && bytes[start] == b'"' {
-                // find closing quote
                 let mut end = start + 1;
                 while end < bytes.len() && bytes[end] != b'"' {
                     if bytes[end] == b'\\' { end += 2; continue; }
                     end += 1;
                 }
-                if end < bytes.len() {
+                if end < bytes.len() && start + 1 < end {
                     out.replace_range(start+1..end, "***");
                 }
             }
         }
-        // key: value (yaml-style)
+        // key: value (yaml / HTTP header style)
         let colon_space_pat = format!("{}: ", key);
         if let Some(idx) = out.to_ascii_lowercase().find(&colon_space_pat) {
             let start = idx + colon_space_pat.len();
             let bytes = out.as_bytes();
             let mut end = start;
-            while end < bytes.len() {
-                let b = bytes[end];
-                if b == b',' || b == b'}' || b == b')' || b == b']' || b == b'\n' {
-                    break;
-                }
+            while end < bytes.len() && !is_term(bytes[end]) {
                 end += 1;
             }
-            out.replace_range(start..end, "***");
+            if start < end {
+                out.replace_range(start..end, "***");
+            }
         }
     }
     out

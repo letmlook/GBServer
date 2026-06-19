@@ -15,7 +15,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{broadcast, RwLock};
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone)]
 pub enum RpcTarget {
@@ -108,8 +108,12 @@ impl RpcRouter {
 
     pub async fn spawn_listener<T: RpcTransport + 'static>(&self, transport: Arc<T>) {
         let router = Arc::new(self.clone());
+        // 必须在 spawn 前同步 subscribe —— tokio::broadcast::Sender::send 在没有
+        // 活跃 receiver 时会返回 SendError(Closed)，导致紧随 spawn_listener
+        // 的 broadcast 因 race 而失败。原实现把 subscribe 放在 spawned task 内，
+        // 测试中 broadcast 在 task 还没被 poll 之前就触发，因此报 "channel closed"。
+        let mut rx = transport.receive();
         tokio::spawn(async move {
-            let mut rx = transport.receive();
             loop {
                 match rx.recv().await {
                     Ok(request) => {
@@ -139,7 +143,7 @@ impl Default for RpcRouter {
 }
 
 /// 注册标准 RPC 处理器
-pub fn register_standard_handlers(router: &RpcRouter) {
+pub async fn register_standard_handlers(router: &RpcRouter) {
     // device_control 处理器
     struct DeviceControlHandler;
     impl RpcHandler for DeviceControlHandler {
@@ -164,6 +168,10 @@ pub fn register_standard_handlers(router: &RpcRouter) {
             RpcResponse { ok: true, result: Some(payload), error: None }
         }
     }
+
+    router.register(DeviceControlHandler).await;
+    router.register(PlayStopHandler).await;
+    router.register(CloudRecordHandler).await;
 }
 
 // ---------------------------------------------------------------------------
@@ -244,7 +252,7 @@ mod tests {
         let rpc = Arc::new(LocalRpc::new("node-1"));
         let router = Arc::new(RpcRouter::new());
 
-        router.register(DeviceControlHandler).await;
+        register_standard_handlers(&router).await;
         router.spawn_listener(rpc.clone()).await;
 
         rpc.broadcast(&RpcRequest {
@@ -295,12 +303,16 @@ mod tests {
             payload: serde_json::json!({"device_id": "dev1"}),
             reply_to: None,
         };
-        // 实际发送会失败（无 server），但 send_to 应返回 endpoint 查找错误
+        // 实际发送会失败（无 server）—— send_to 应当能找到 endpoint 并尝试
+        // send_request；我们要验证的是 endpoint 查找逻辑正确，即错误不应来自
+        // endpoint 查找阶段，而是来自 HTTP 发送阶段。
         let result = rpc.send_to("node2", &req).await;
-        assert!(result.is_ok(), "node2 endpoint 应匹配 url=...node2...");
-        // 若失败，错误信息应包含 HTTP 或 connection
-        // 注意：取决于网络环境
-        let _ = result;
+        let err = result.expect_err("无 server 时 send_to 应返回 Err（HTTP 失败）");
+        assert!(
+            !err.starts_with("No endpoint for"),
+            "endpoint 查找应成功（url=http://node2:18080 含 node2），但 send_to 返回 endpoint 错误: {}",
+            err
+        );
     }
 
     /// E2: send_to 不存在的 node_id 应返回错误
