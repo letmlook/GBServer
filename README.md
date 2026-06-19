@@ -12,7 +12,7 @@
 ## 目录说明
 
 - `src/`：Rust 后端源码
-- `config/application.yaml`：默认配置
+- `config/application.toml`：默认配置
 - `web/`：前端（Vue 2 + Element UI），已从原版复制到本目录，构建输出到 `web/dist`
 
 ## 运行依赖环境
@@ -24,7 +24,7 @@
 | **Node.js** | 构建前端（`web/dist`） | 14+ / 16+ / 18+（含 npm） | 仅构建时需要；运行时不依赖 |
 | **Redis** | 配置中可选，当前后端未使用 | 6.x / 7.x | ❌ 可选（预留） |
 
-- **仅运行已构建好的服务**：需安装并启动 **PostgreSQL** 或 **MySQL**（与编译时选择的数据库一致，默认 PostgreSQL），在 GBServer 根目录执行 `.\target\release\gbserver.exe`（或 `cargo run --release`），并保证 `config/application.yaml` 中 `database.url` 正确、库表已按 WVP 初始化脚本建好。
+- **仅运行已构建好的服务**：需安装并启动 **PostgreSQL** 或 **MySQL**（与编译时选择的数据库一致，默认 PostgreSQL），在 GBServer 根目录执行 `.\target\release\gbserver.exe`（或 `cargo run --release`），并保证 `config/application.toml` 中 `database.url` 正确、库表已按 WVP 初始化脚本建好。
 - **从源码构建**：需安装 **Rust**（后端）和 **Node.js + npm**（前端），再按下方「构建前后端并运行」执行。
 
 **安装参考**（按需选用）：
@@ -36,7 +36,7 @@
 
 ### Docker 运行 PostgreSQL + Redis（默认）
 
-项目根目录提供 `docker-compose.yml`，默认一键启动 **PostgreSQL 16** 与 Redis 7，端口与 `config/application.yaml` 一致（PostgreSQL 5432、Redis 6379），无需改配置即可联调。
+项目根目录提供 `docker-compose.yml`，默认一键启动 **PostgreSQL 16** 与 Redis 7，端口与 `config/application.toml` 一致（PostgreSQL 5432、Redis 6379），无需改配置即可联调。
 
 ```bash
 # 启动 PostgreSQL + Redis（后台）
@@ -77,7 +77,7 @@ docker compose down
 
 ### 2. 配置
 
-复制并编辑 `config/application.yaml`：
+复制并编辑 `config/application.toml`：
 
 ```yaml
 server:
@@ -126,7 +126,7 @@ cargo build --release
 cargo run --release
 ```
 
-服务监听 `http://0.0.0.0:18080`。需先启动所选数据库（默认 PostgreSQL 或 MySQL），并确保 `config/application.yaml` 中 `database.url` 与编译时选择的数据库一致。
+服务监听 `http://0.0.0.0:18080`。需先启动所选数据库（默认 PostgreSQL 或 MySQL），并确保 `config/application.toml` 中 `database.url` 与编译时选择的数据库一致。
 
 ### 5. 开发时前后端分离
 
@@ -171,7 +171,7 @@ node scripts/api-integration-test.js
 
 A new JT1078 retransmit detection and notification feature is added.
 
-Config (config/application.yaml):
+Config (config/application.toml):
 
 jt1078:
   timeout_ms: 60000

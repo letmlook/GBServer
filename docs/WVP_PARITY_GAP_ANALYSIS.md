@@ -195,7 +195,7 @@
 
 缺口：
 
-- WVP 常见配置项没有全部映射到 `config/application.yaml`。
+- WVP 常见配置项没有全部映射到 `config/application.toml`。
 - 没有完整迁移工具、数据兼容说明、Java WVP 数据库升级兼容策略。
 - 运行时没有完善的健康检查、指标、任务状态页。
 

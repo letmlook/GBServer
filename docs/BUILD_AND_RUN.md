@@ -28,7 +28,7 @@
 
 | 端口 | 协议 | 用途 |
 |-----|------|------|
-| **8080** | TCP | ZLM HTTP API（与 `config.application.yaml` 的 `zlm.servers[0].http_port` 对应） |
+| **8080** | TCP | ZLM HTTP API（与 `config/application.toml` 的 `zlm.servers[0].http_port` 对应） |
 | **8443** | TCP | ZLM HTTPS |
 | **554** | TCP | ZLM RTSP |
 | **322** | TCP | ZLM RTSPS |
@@ -57,7 +57,7 @@ GBServer/
 ├── docker-compose.yml      # 一键拉起 pg + redis + zlm + gbserver
 ├── .dockerignore
 ├── config/
-│   └── application.yaml    # 默认配置（含全部端口号）
+│   └── application.toml    # 默认配置（含全部端口号）
 ├── database/
 │   └── init-postgresql-2.7.4.sql
 ├── web/                    # Vue 2 + Element UI 前端
@@ -148,7 +148,7 @@ cargo build --release
 
 ### 4.5 环境变量覆盖（可选）
 
-所有 `config/application.yaml` 字段都可通过 `GBSERVER__SECTION__KEY` 形式覆盖（双下划线分隔）：
+所有 `config/application.toml` 字段都可通过 `GBSERVER__SECTION__KEY` 形式覆盖（双下划线分隔）：
 
 ```bash
 GBSERVER__SERVER__PORT=18080 \
@@ -273,7 +273,7 @@ BASE_URL=http://localhost:18080 node scripts/api-integration-test.js
 
 如需修改任何端口，**必须同步修改**：
 
-1. `config/application.yaml`
+1. `config/application.toml`
 2. `docker-compose.yml`（含 `GBSERVER__SERVER__PORT` 等 env）
 3. `Dockerfile`（`EXPOSE` 与 `HEALTHCHECK`）
 4. `docs/OPERATIONS.md` 中相关章节
@@ -288,7 +288,7 @@ BASE_URL=http://localhost:18080 node scripts/api-integration-test.js
 A：检查仓库根目录是否存在 `Dockerfile` 与 `.dockerignore`。
 
 **Q2：ZLM 鉴权失败（hook 收不到）**
-A：确认 `docker-compose.yml` 中 `zlm.ZLM_HTTP_SECRET` 与 `config/application.yaml` 的 `zlm.servers[0].secret` 完全一致。
+A：确认 `docker-compose.yml` 中 `zlm.ZLM_HTTP_SECRET` 与 `config/application.toml` 的 `zlm.servers[0].secret` 完全一致。
 
 **Q3：前端 9528 端口代理到后端 18080 失败**
 A：确认后端已启动并监听 18080。可临时用 `curl http://localhost:18080/api/health` 验证。
@@ -297,17 +297,17 @@ A：确认后端已启动并监听 18080。可临时用 `curl http://localhost:1
 A：
 1. 防火墙放通 UDP 5060 / TCP 5061
 2. 设备的 SIP 服务器地址填写宿主机或映射后的 IP（非 localhost）
-3. `config/application.yaml` 中 `sip.password` 与设备端配置一致（默认 `admin123`，生产请修改）
+3. `config/application.toml` 中 `sip.password` 与设备端配置一致（默认 `admin123`，生产请修改）
 
 **Q5：MySQL 想替换默认 PostgreSQL**
 A：
 ```bash
 docker compose down
 cargo build --release --no-default-features --features mysql
-# 同时把 config/application.yaml 的 database.url 改为 mysql://... 并改 docker-compose 用 mysql 镜像
+# 同时把 config/application.toml 的 database.url 改为 mysql://... 并改 docker-compose 用 mysql 镜像
 ```
 
 ---
 
-**最后更新：与仓库 `config/application.yaml`、`docker-compose.yml`、`Dockerfile` 同步。**
+**最后更新：与仓库 `config/application.toml`、`docker-compose.yml`、`Dockerfile` 同步。**
 任何端口变更请同步更新本文件 §1 端口矩阵。

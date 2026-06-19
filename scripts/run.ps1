@@ -15,7 +15,7 @@ if (-not (Test-Path $exe)) {
 Write-Host "=== 启动服务 ===" -ForegroundColor Cyan
 Write-Host "可执行文件: target\release\gbserver.exe" -ForegroundColor Gray
 Write-Host "服务地址: http://0.0.0.0:18080" -ForegroundColor Gray
-Write-Host "提示: 需先启动 PostgreSQL（如 docker compose up -d）并配置 config/application.yaml" -ForegroundColor Yellow
+Write-Host "提示: 需先启动 PostgreSQL（如 docker compose up -d）并配置 config/application.toml" -ForegroundColor Yellow
 Write-Host ""
 Push-Location $root
 & $exe

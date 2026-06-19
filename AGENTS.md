@@ -198,7 +198,7 @@ tracing::debug!("Query result: {:?}", result);
 │   └── zlm/                 # ZLM media server client
 ├── web/                     # Vue 2 frontend
 ├── config/
-│   └── application.yaml     # Default configuration
+│   └── application.toml     # Default configuration
 ├── database/
 │   ├── init-postgresql-2.7.4.sql
 │   └── init-mysql-2.7.4.sql
@@ -241,6 +241,6 @@ cd web && npm run dev
 ## Important Notes
 
 - Default admin credentials: `admin` / `admin` (MD5: `21232f297a57a5a743894a0e4a801fc3`)
-- JWT secret must be changed in production (`config/application.yaml`)
+- JWT secret must be changed in production (`config/application.toml`)
 - API uses `access-token` header for authentication
 - Response format: `{ "code": 0, "msg": "成功", "data": ... }`

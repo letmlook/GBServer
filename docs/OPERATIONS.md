@@ -30,7 +30,7 @@ psql -U postgres -d wvp < database/init-postgresql-2.7.4.sql
 # (or MySQL: mysql -uroot -p gbserver < database/init-mysql-2.7.4.sql)
 
 # 3. backend
-cp config/application.yaml config/application.local.yaml   # override secrets
+cp config/application.toml config/application.local.toml   # override secrets
 export GBSERVER__JWT__SECRET=$(openssl rand -hex 32)
 export GBSERVER__DATABASE__URL=postgres://postgres:postgres@127.0.0.1:5432/gbserver
 export GBSERVER__SIP__PASSWORD=$(openssl rand -hex 16)
@@ -53,7 +53,7 @@ docker compose exec gbserver bash   # exec into container
 
 ## 2. Configuration Reference
 
-All settings are loaded from `config/application.yaml` plus overrides via
+All settings are loaded from `config/application.toml` plus overrides via
 environment variables (`GBSERVER__SECTION__KEY=value`).
 
 ### 2.1 Critical settings

@@ -41,7 +41,7 @@ log "=== 启动服务 ==="
 echo -e "  可执行文件: ${YELLOW}${EXE}${NC}"
 echo -e "  HTTP 地址 : ${YELLOW}http://0.0.0.0:${HTTP_PORT}${NC}"
 echo -e "  健康检查  : ${YELLOW}http://127.0.0.1:${HTTP_PORT}/api/health${NC}"
-echo -e "  提示: 需先启动 PostgreSQL/Redis (如 docker compose up -d) 并正确配置 ${YELLOW}config/application.yaml${NC}"
+echo -e "  提示: 需先启动 PostgreSQL/Redis (如 docker compose up -d) 并正确配置 ${YELLOW}config/application.toml${NC}"
 echo ""
 
 exec "./$EXE"

@@ -45,7 +45,7 @@ cd web && npm run test:ci
 
 PowerShell helpers are available on Windows from the repository root: `scripts/build.ps1` builds frontend + backend, `scripts/build-and-run.ps1` builds then runs, and `scripts/run.ps1` runs an existing release binary.
 
-Configuration loads from `config/application.yaml` plus environment overrides using the `GBSERVER__SECTION__KEY` form (double underscore separator). The app must be run from the repository root so config files and `web/dist` resolve correctly. The README documents the default admin account (`admin` / `admin`) and first-time SQL import commands if schema auto-init is not sufficient.
+Configuration loads from `config/application.toml` plus environment overrides using the `GBSERVER__SECTION__KEY` form (double underscore separator). The app must be run from the repository root so config files and `web/dist` resolve correctly. The README documents the default admin account (`admin` / `admin`) and first-time SQL import commands if schema auto-init is not sufficient.
 
 ## Architecture
 

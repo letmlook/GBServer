@@ -302,7 +302,7 @@ A2 已完成，剩余 A3 / A4 / A5 / A6 继续。
 - [ ] `cargo clippy -- -D warnings` 通过
 
 ### E5. 配置 / 部署完善
-- [ ] `config/application.yaml` 补 `MapConfig`、`redis.pool_size`、多 ZLM 配置示例
+- [ ] `config/application.toml` 补 `MapConfig`、`redis.pool_size`、多 ZLM 配置示例
 - [ ] `docker-compose.yml` 加 mock 上级 SIP 平台（go sip 或者 opensips）
 - [ ] `README.md` 加「升级到 v2」的章节
 - [ ] `docs/OPERATIONS.md` 新建：启动 / 升级 / 灾备 / 监控
