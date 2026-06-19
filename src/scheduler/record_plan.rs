@@ -130,7 +130,7 @@ impl RecordPlanScheduler {
             if let Some(ref zlm) = self.zlm_client {
                 let app = "rtp";
                 let stream = format!("{}_{}", device_id, gb_channel_id);
-                
+
                 match zlm.start_record("1", "__defaultVhost__", app, &stream).await {
                     Ok(_) => {
                         tracing::info!(
@@ -138,7 +138,7 @@ impl RecordPlanScheduler {
                             channel_id, app, stream
                         );
                         drop(active);
-                        self.active_recordings.write().await.insert(*channel_id, ActiveRecording {
+                        let recording = ActiveRecording {
                             channel_id: *channel_id,
                             device_id: device_id.clone(),
                             gb_channel_id: gb_channel_id.clone(),
@@ -147,7 +147,23 @@ impl RecordPlanScheduler {
                             stream: stream.clone(),
                             media_server_id: "zlmediakit-1".to_string(),
                             started_at: Utc::now(),
-                        });
+                        };
+                        self.active_recordings.write().await.insert(*channel_id, recording.clone());
+
+                        // E1: 同步写入 StateStore（跨节点可见）
+                        if let Some(ref store) = self.state_store {
+                            use crate::state_store::ActiveRecordingState;
+                            store.set_active_recording(*channel_id, ActiveRecordingState {
+                                channel_id: recording.channel_id,
+                                device_id: recording.device_id.clone(),
+                                gb_channel_id: recording.gb_channel_id.clone(),
+                                plan_id: recording.plan_id,
+                                app: recording.app.clone(),
+                                stream: recording.stream.clone(),
+                                media_server_id: recording.media_server_id.clone(),
+                                started_at: recording.started_at,
+                            });
+                        }
                         return Ok(());
                     }
                     Err(e) => {
@@ -179,6 +195,10 @@ impl RecordPlanScheduler {
         }
         for cid in to_remove {
             active.remove(&cid);
+            // E1: 同步从 StateStore 删除
+            if let Some(ref store) = self.state_store {
+                store.remove_active_recording(cid);
+            }
         }
 
         Ok(())

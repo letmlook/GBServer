@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use dashmap::DashMap;
 use tokio::sync::RwLock;
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 
 use crate::db::Pool;
 use crate::db::platform as db_platform;
@@ -356,20 +356,36 @@ impl CascadeService {
     /// C3: 检查所有活跃会话是否超时，返回超时平台列表（同时标记为 Offline）
     pub fn detect_keepalive_timeouts(&self, max_misses: i64) -> Vec<String> {
         let now = Utc::now().timestamp();
-        let mut timed_out = Vec::new();
-        for entry in self.sessions.iter() {
-            if entry.state == CascadeState::Active {
-                let elapsed = now - entry.last_keepalive;
-                if elapsed > max_misses * 30 {
-                    let key = entry.key().clone();
-                    timed_out.push(key.clone());
-                    drop(entry); // 释放读锁再获取写锁
-                    if let Some(mut s) = self.sessions.get_mut(&key) {
-                        s.mark_keepalive_timeout();
-                    }
-                }
+        let cutoff = max_misses * 30;
+
+        // 第一阶段：仅持读锁遍历收集超时会话 id。
+        // DashMap::iter() 在迭代期间持有所有 shard 的读锁，必须先把待处理 key
+        // 收集到 Vec 并 drop 迭代器，再走 get_mut 拿写锁 —— 否则 iter 的读锁
+        // 与 get_mut 的写锁会自死锁（futex_wait）。
+        // 注意：原来的 `drop(entry)` 注释是错的 —— 锁在迭代器上，不在 RefMulti 上。
+        let timed_out_keys: Vec<String> = self
+            .sessions
+            .iter()
+            .filter(|entry| {
+                entry.state == CascadeState::Active && (now - entry.last_keepalive) > cutoff
+            })
+            .map(|entry| entry.key().clone())
+            .collect();
+
+        // 第二阶段：迭代器已 drop，可安全 get_mut。
+        let mut timed_out = Vec::with_capacity(timed_out_keys.len());
+        for key in timed_out_keys {
+            if let Some(mut s) = self.sessions.get_mut(&key) {
+                let elapsed = now - s.last_keepalive;
+                s.mark_keepalive_timeout();
+                tracing::warn!(
+                    "Cascade platform {} keepalive timeout ({}s, threshold {}s)",
+                    key, elapsed, max_misses * 30
+                );
             }
+            timed_out.push(key);
         }
+
         timed_out
     }
 
@@ -424,7 +440,7 @@ impl CascadeService {
                 .ok_or_else(|| format!("Device {} not found or offline", channel_id))?;
 
             // 生成 SSRC（上级 SSRC）
-            let upstream_ssrc = self.extract_ssrc_from_sdp(sdp)
+            let _upstream_ssrc = self.extract_ssrc_from_sdp(sdp)
                 .unwrap_or_else(|| format!("0{:0>9}0", &platform_id[..platform_id.len().min(9)]));
 
             tracing::info!(
@@ -481,7 +497,7 @@ impl CascadeService {
         platform_id: &str,
         addr: &SocketAddr,
         username: &str,
-        password: &str,
+        _password: &str,
         call_id: &str,
         expires: u32,
     ) -> String {

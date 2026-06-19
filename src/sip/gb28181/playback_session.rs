@@ -119,6 +119,22 @@ impl PlaybackInviteSessionManager {
         self.state_store = Some(store);
     }
 
+    /// E1: 同步当前会话状态到 StateStore
+    fn sync_to_store(&self, call_id: &str, s: &PlaybackInviteSession) {
+        if let Some(ref store) = self.state_store {
+            store.set_invite_session(call_id, crate::state_store::InviteSessionState {
+                call_id: s.call_id.clone(),
+                device_id: s.device_id.clone(),
+                channel_id: s.channel_id.clone(),
+                session_type: "playback".to_string(),
+                zlm_stream_id: Some(s.stream_id.clone()),
+                status: format!("{:?}", s.state),
+                created_at: s.created_at,
+                last_activity: s.last_activity,
+            });
+        }
+    }
+
     /// E1: 获取活跃会话数（含 StateStore 中的）
     pub fn active_count(&self) -> usize {
         let local = self.sessions.iter().filter(|r| r.state == PlaybackState::Playing).count();
@@ -128,9 +144,18 @@ impl PlaybackInviteSessionManager {
     /// 创建新会话
     pub fn create(&self, session: PlaybackInviteSession) -> String {
         let call_id = session.call_id.clone();
-        // E1: 同步到 StateStore（标记 active_playback:1 计数）
-        if let Some(ref _store) = self.state_store {
-            // 简化：仅标记存在性；具体数据走 InviteSessionManager
+        // E1: 同步到 StateStore
+        if let Some(ref store) = self.state_store {
+            store.set_invite_session(&call_id, crate::state_store::InviteSessionState {
+                call_id: session.call_id.clone(),
+                device_id: session.device_id.clone(),
+                channel_id: session.channel_id.clone(),
+                session_type: "playback".to_string(),
+                zlm_stream_id: Some(session.stream_id.clone()),
+                status: format!("{:?}", session.state),
+                created_at: session.created_at,
+                last_activity: session.last_activity,
+            });
         }
         self.sessions.insert(call_id.clone(), session);
         call_id
@@ -163,6 +188,7 @@ impl PlaybackInviteSessionManager {
     pub fn activate(&self, call_id: &str) {
         if let Some(mut s) = self.sessions.get_mut(call_id) {
             s.set_state(PlaybackState::Playing);
+            self.sync_to_store(call_id, &s);
         }
     }
 
@@ -170,6 +196,7 @@ impl PlaybackInviteSessionManager {
     pub fn pause(&self, call_id: &str) {
         if let Some(mut s) = self.sessions.get_mut(call_id) {
             s.set_state(PlaybackState::Paused);
+            self.sync_to_store(call_id, &s);
         }
     }
 
@@ -177,6 +204,7 @@ impl PlaybackInviteSessionManager {
     pub fn resume(&self, call_id: &str) {
         if let Some(mut s) = self.sessions.get_mut(call_id) {
             s.set_state(PlaybackState::Playing);
+            self.sync_to_store(call_id, &s);
         }
     }
 
@@ -184,7 +212,19 @@ impl PlaybackInviteSessionManager {
     pub fn stop(&self, call_id: &str) {
         if let Some(mut s) = self.sessions.get_mut(call_id) {
             s.set_state(PlaybackState::Stopped);
+            // E1: 同步 StateStore
+            if let Some(ref store) = self.state_store {
+                store.remove_invite_session(call_id);
+            }
         }
+    }
+
+    /// 删除会话（purge 路径）
+    pub fn remove_with_state_cleanup(&self, call_id: &str) -> Option<PlaybackInviteSession> {
+        if let Some(ref store) = self.state_store {
+            store.remove_invite_session(call_id);
+        }
+        self.sessions.remove(call_id).map(|(_, v)| v)
     }
 
     /// 更新当前播放时间
@@ -212,6 +252,10 @@ impl PlaybackInviteSessionManager {
         let mut removed = Vec::new();
         for key in snap {
             self.sessions.remove(&key);
+            // E1: 同步 StateStore 清理
+            if let Some(ref store) = self.state_store {
+                store.remove_invite_session(&key);
+            }
             removed.push(key);
         }
         removed
