@@ -221,10 +221,12 @@ pub struct SipServer {
     subscription_lifecycle: Arc<SubscriptionLifecycle>,
     /// Phase 2 R3: per-device 续订失败计数（dashmap for concurrent access）
     renewal_failures: Arc<DashMap<String, u32>>,
+    /// SQLite 模式下设备数量上限；PG/MySQL 后端忽略
+    sqlite_max_devices: Option<usize>,
 }
 
 impl SipServer {
-    pub fn new(config: SipConfig, pool: Pool) -> Self {
+    pub fn new(config: SipConfig, pool: Pool, sqlite_max_devices: Option<usize>) -> Self {
         let ssrc_manager = Arc::new(SsrcManager::new(&config.device_id));
         let nat_helper = Arc::new(NatHelper::new(
             &config.ip,
@@ -263,6 +265,8 @@ impl SipServer {
             subscription_lifecycle: Arc::new(SubscriptionLifecycle::new()),
             // Phase 2 R3: per-device 续订失败计数
             renewal_failures: Arc::new(DashMap::new()),
+            // SQLite 设备数量上限（PG/MySQL 后端忽略）
+            sqlite_max_devices,
         }
     }
 
@@ -460,6 +464,7 @@ impl SipServer {
         let udp_send_rtp_manager = self.send_rtp_manager.clone();
         let udp_subscription_lifecycle = self.subscription_lifecycle.clone();
         let udp_renewal_failures = self.renewal_failures.clone();
+        let udp_sqlite_max_devices = self.sqlite_max_devices;
 
         tokio::spawn(async move {
             loop {
@@ -485,8 +490,9 @@ impl SipServer {
                         let send_rtp_manager = udp_send_rtp_manager.clone();
                         let subscription_lifecycle = udp_subscription_lifecycle.clone();
                         let renewal_failures = udp_renewal_failures.clone();
+                        let sqlite_max_devices = udp_sqlite_max_devices;
                         tokio::spawn(async move {
-                            if let Err(e) = Self::handle_packet(&data, addr, &config, &device_manager, &session_manager, &invite_session_manager, &talk_manager, &catalog_subscription_manager, &zlm_client, &pool, &socket_for_response, false, &ws_state, &pending_request_manager, &pending_invites, &cascade_registrar, &send_rtp_manager, &Some(subscription_lifecycle), &renewal_failures).await {
+                            if let Err(e) = Self::handle_packet(&data, addr, &config, &device_manager, &session_manager, &invite_session_manager, &talk_manager, &catalog_subscription_manager, &zlm_client, &pool, &socket_for_response, false, &ws_state, &pending_request_manager, &pending_invites, &cascade_registrar, &send_rtp_manager, &Some(subscription_lifecycle), &renewal_failures, sqlite_max_devices).await {
                                 tracing::error!("SIP handler error: {}", e);
                             }
                         });
@@ -510,6 +516,7 @@ impl SipServer {
             let tcp_conn_mgr = tcp_connection_manager.clone();
             let tcp_pending_request = pending_request_manager.clone();
             let tcp_send_rtp_manager = self.send_rtp_manager.clone();
+            let tcp_sqlite_max_devices = self.sqlite_max_devices;
 
             tokio::spawn(async move {
                 loop {
@@ -528,11 +535,12 @@ impl SipServer {
                             let conn_manager = tcp_conn_mgr.clone();
                             let pending_request_manager = tcp_pending_request.clone();
                             let send_rtp_manager = tcp_send_rtp_manager.clone();
+                            let sqlite_max_devices = tcp_sqlite_max_devices;
 
                             conn_manager.add_connection(addr, stream).await;
 
                             tokio::spawn(async move {
-                                Self::handle_tcp_connection(addr, &config, &device_manager, &session_manager, &invite_session_manager, &talk_manager, &catalog_subscription_manager, &zlm_client, &pool, &conn_manager, &pending_request_manager, &send_rtp_manager).await;
+                                Self::handle_tcp_connection(addr, &config, &device_manager, &session_manager, &invite_session_manager, &talk_manager, &catalog_subscription_manager, &zlm_client, &pool, &conn_manager, &pending_request_manager, &send_rtp_manager, sqlite_max_devices).await;
                             });
                         }
                         Err(e) => {
@@ -790,6 +798,7 @@ let renewal_pool = pool.clone();
         conn_manager: &TcpConnectionManager,
         pending_request_manager: &Arc<PendingRequestManager>,
         send_rtp_manager: &Arc<SendRtpManager>,
+        sqlite_max_devices: Option<usize>,
     ) {
         // 创建一个虚拟 UDP socket 仅用于传递给 handle_packet's 接口
         // 实际回复通过 TcpConnectionManager.send_to 进行
@@ -834,6 +843,7 @@ let renewal_pool = pool.clone();
                                 conn_manager.clone(),
                                 pending_request_manager,
                                 send_rtp_manager,
+                                sqlite_max_devices,
                             ).await {
                                 tracing::error!("TCP SIP handler error: {}", e);
                             }
@@ -868,6 +878,7 @@ let renewal_pool = pool.clone();
         conn_manager: TcpConnectionManager,
         pending_request_manager: &Arc<PendingRequestManager>,
         send_rtp_manager: &Arc<SendRtpManager>,
+        sqlite_max_devices: Option<usize>,
     ) -> Result<()> {
         let msg = Parser::parse(data)?;
         match msg {
@@ -916,6 +927,7 @@ let renewal_pool = pool.clone();
                     &None,
                     pending_request_manager,
                     send_rtp_manager,
+                    sqlite_max_devices,
                 ).await
             }
             SipMessage::Response(resp) => {
@@ -944,6 +956,7 @@ let renewal_pool = pool.clone();
         send_rtp_manager: &Arc<SendRtpManager>,
         subscription_lifecycle: &Option<Arc<crate::sip::gb28181::subscription_lifecycle::SubscriptionLifecycle>>,
         renewal_failures: &Arc<DashMap<String, u32>>,
+        sqlite_max_devices: Option<usize>,
     ) -> Result<()> {
         let msg = Parser::parse(data)?;
         match msg {
@@ -963,6 +976,7 @@ let renewal_pool = pool.clone();
                     ws_state,
                     pending_request_manager,
                     send_rtp_manager,
+                    sqlite_max_devices,
                 ).await
             }
             SipMessage::Response(resp) => {
@@ -995,11 +1009,12 @@ let renewal_pool = pool.clone();
         ws_state: &Option<Arc<WsState>>,
         pending_request_manager: &Arc<PendingRequestManager>,
         send_rtp_manager: &Arc<SendRtpManager>,
+        sqlite_max_devices: Option<usize>,
     ) -> Result<()> {
         let method = req.method;
         match method {
             SipMethod::Register => {
-                Self::handle_register(req, addr, config, device_manager, pool, socket, ws_state, pending_request_manager).await
+                Self::handle_register(req, addr, config, device_manager, pool, socket, ws_state, pending_request_manager, sqlite_max_devices).await
             }
             SipMethod::Message => {
                 Self::handle_message(req, addr, config, device_manager, pool, socket, ws_state, pending_request_manager, zlm_client).await
@@ -1053,6 +1068,7 @@ let renewal_pool = pool.clone();
         socket: &Arc<UdpSocket>,
         ws_state: &Option<Arc<WsState>>,
         _pending_request_manager: &Arc<PendingRequestManager>,
+        sqlite_max_devices: Option<usize>,
     ) -> Result<()> {
         let from = req.header("from").cloned().unwrap_or_default();
         let to = req.header("to").cloned().unwrap_or_default();
@@ -1111,8 +1127,24 @@ let renewal_pool = pool.clone();
             }
             tracing::info!("Device unregistered: {}", device_id);
         } else {
+            // SQLite 模式下检查设备数量上限
+            #[cfg(feature = "sqlite")]
+            if let Err(e) = db_device::check_sqlite_device_limit(
+                pool,
+                &device_id,
+                sqlite_max_devices,
+            ).await {
+                tracing::warn!("REGISTER rejected: {}", e);
+                let response = Parser::generate_response(503, "Service Unavailable", &[
+                    ("Via", &via), ("From", &from), ("To", &to),
+                    ("Call-ID", &call_id), ("CSeq", &cseq),
+                ], None);
+                Self::send_response(socket, addr, &response).await?;
+                return Ok(());
+            }
+
             let ip_str = addr.ip().to_string();
-            db_device::upsert_device(pool, &device_id, None, None, None, None, None, None, 
+            db_device::upsert_device(pool, &device_id, None, None, None, None, None, None,
                 Some(&ip_str), Some(addr.port() as i32), true, Some("zlmediakit-1"), &now).await?;
             device_manager.register(&device_id, addr).await;
             if let Some(ref ws) = ws_state {

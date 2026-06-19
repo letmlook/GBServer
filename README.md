@@ -5,14 +5,25 @@
 ## 技术栈
 
 - **Web**: Axum 0.7、Tower
-- **数据库**: SQLx（默认 **PostgreSQL**；可选 MySQL，与原有 WVP 表结构兼容）
+- **数据库**: SQLx（默认 **SQLite**；可选 PostgreSQL / MySQL）
 - **鉴权**: JWT（HS256，请求头 `access-token`）
-- **配置**: YAML + 环境变量
+- **配置**: TOML + 环境变量
+
+## 数据库三选一
+
+| 后端 | 默认 | 适用场景 | 启动命令 |
+|------|------|----------|----------|
+| **SQLite** | ✅ | 开发 / 演示 / 边缘节点 / 小规模生产（≤500 设备） | `cargo run` |
+| PostgreSQL | — | 生产主力，多设备 / 多实例 / Patroni 集群 | `cargo run --no-default-features --features postgres` |
+| MySQL | — | WVP 平迁，schema 与 `database/init-mysql-2.7.4.sql` 完全兼容 | `cargo run --no-default-features --features mysql` |
+
+详细见 [`docs/DATABASE_COMPATIBILITY.md`](docs/DATABASE_COMPATIBILITY.md) 和 [`docs/DEPLOYMENT_GUIDE.md`](docs/DEPLOYMENT_GUIDE.md)。
 
 ## 目录说明
 
 - `src/`：Rust 后端源码
 - `config/application.toml`：默认配置
+- `database/init-sqlite-2.7.4.sql`：SQLite 默认 schema（核心 6 表）
 - `web/`：前端（Vue 2 + Element UI），已从原版复制到本目录，构建输出到 `web/dist`
 
 ## 运行依赖环境
@@ -61,15 +72,23 @@ docker compose down
 
 ### 1. 数据库
 
-后端支持 **PostgreSQL**（默认）或 **MySQL**，二选一即可。
+后端支持 **SQLite**（默认）、**PostgreSQL**、**MySQL**，三选一即可。
 
-- **PostgreSQL**（默认）：使用 `database/init-postgresql-2.7.4.sql`（来源于原 WVP 2.7.4 的 PostgreSQL/金仓版脚本）。先创建数据库与用户，再执行：
+- **SQLite**（默认）：**开箱即用**，无需安装任何数据库。`cargo run` 启动时自动创建 `./data/gbserver.db` 并执行 `database/init-sqlite-2.7.4.sql`。配置文件示例：
+  ```toml
+  [database]
+  url = "sqlite://data/gbserver.db?mode=rwc"
+  sqlite_max_devices = 500  # SQLite 设备上限，超出需迁移到 PG
+  ```
+- **PostgreSQL**：使用 `database/init-postgresql-2.7.4.sql`。先创建数据库与用户，再执行：
   ```bash
+  cargo run --no-default-features --features postgres
   psql -U postgres -d gbserver -f database/init-postgresql-2.7.4.sql
   ```
   更多说明见 `database/README.md`。
-- **MySQL**：使用 `database/init-mysql-2.7.4.sql`（来源于原 WVP 2.7.4）。执行方式见上方「Docker 运行 MySQL + Redis」或：
+- **MySQL**：使用 `database/init-mysql-2.7.4.sql`：
   ```bash
+  cargo run --no-default-features --features mysql
   mysql -uroot -p gbserver < database/init-mysql-2.7.4.sql
   ```
 

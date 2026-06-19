@@ -40,17 +40,17 @@ pub use cloud_record::CloudRecord;
 use crate::config::AppConfig;
 
 // 数据库三选一：编译期通过 cargo feature 互斥确定 Pool 类型。
-// 默认 PG；MySQL 用 --no-default-features --features mysql；SQLite 用 --no-default-features --features sqlite。
+// 默认 SQLite；PG 用 --no-default-features --features postgres；MySQL 用 --no-default-features --features mysql。
 #[cfg(feature = "sqlite")]
 pub type Pool = sqlx::SqlitePool;
-
-#[cfg(all(feature = "mysql", not(feature = "postgres"), not(feature = "sqlite")))]
-pub type Pool = sqlx::MySqlPool;
 
 #[cfg(all(feature = "postgres", not(feature = "mysql"), not(feature = "sqlite")))]
 pub type Pool = sqlx::PgPool;
 
-// 默认使用postgres（当没有明确指定feature时）
+#[cfg(all(feature = "mysql", not(feature = "postgres"), not(feature = "sqlite")))]
+pub type Pool = sqlx::MySqlPool;
+
+// 兜底：当三个 feature 同时未指定时，默认 PG（保留历史行为）
 #[cfg(all(not(feature = "mysql"), not(feature = "postgres"), not(feature = "sqlite")))]
 pub type Pool = sqlx::PgPool;
 

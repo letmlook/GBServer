@@ -939,6 +939,87 @@ pub async fn delete_device_cascade(pool: &Pool, device_id: &str) -> sqlx::Result
     }
 }
 
+/// SQLite 模式专用：检查新增设备是否超过上限。
+/// - 已存在的设备（更新）：始终允许
+/// - 新增设备：当前数量 < max_devices 时允许；否则返回 Err
+/// PG/MySQL 后端此函数始终返回 Ok（0），由调用方按 feature 决定是否启用。
+pub async fn check_sqlite_device_limit(
+    pool: &Pool,
+    device_id: &str,
+    max_devices: Option<usize>,
+) -> Result<(), DeviceLimitError> {
+    let Some(limit) = max_devices else {
+        return Ok(()); // 未配置上限 = 无限制
+    };
+
+    // 已存在 → 允许（这是更新）
+    if device_exists(pool, device_id).await.unwrap_or(false) {
+        return Ok(());
+    }
+
+    // 新增 → 检查总数
+    let count = count_devices(pool, None, None).await.unwrap_or(0);
+    if (count as usize) >= limit {
+        return Err(DeviceLimitError {
+            current: count as usize,
+            limit,
+            device_id: device_id.to_string(),
+        });
+    }
+    Ok(())
+}
+
+/// 设备存在性查询（用于限制检查）
+pub async fn device_exists(pool: &Pool, device_id: &str) -> sqlx::Result<bool> {
+    #[cfg(feature = "mysql")]
+    {
+        let row: (i64,) = sqlx::query_as("SELECT EXISTS(SELECT 1 FROM gb_device WHERE device_id = ?)")
+            .bind(device_id)
+            .fetch_optional(pool)
+            .await?
+            .unwrap_or((0,));
+        Ok(row.0 > 0)
+    }
+    #[cfg(feature = "postgres")]
+    {
+        let row: (bool,) = sqlx::query_as("SELECT EXISTS(SELECT 1 FROM gb_device WHERE device_id = $1)")
+            .bind(device_id)
+            .fetch_optional(pool)
+            .await?
+            .unwrap_or((false,));
+        Ok(row.0)
+    }
+    #[cfg(feature = "sqlite")]
+    {
+        let row: (i64,) = sqlx::query_as("SELECT EXISTS(SELECT 1 FROM gb_device WHERE device_id = ?)")
+            .bind(device_id)
+            .fetch_optional(pool)
+            .await?
+            .unwrap_or((0,));
+        Ok(row.0 > 0)
+    }
+}
+
+/// SQLite 设备上限错误
+#[derive(Debug, Clone)]
+pub struct DeviceLimitError {
+    pub current: usize,
+    pub limit: usize,
+    pub device_id: String,
+}
+
+impl std::fmt::Display for DeviceLimitError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "SQLite 设备数量已达上限 ({}/{}); 请迁移到 PostgreSQL/MySQL 后端。新设备: {}",
+            self.current, self.limit, self.device_id
+        )
+    }
+}
+
+impl std::error::Error for DeviceLimitError {}
+
 pub async fn insert_device(
     pool: &Pool,
     device_id: &str,

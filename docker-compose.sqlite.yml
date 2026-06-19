@@ -1,0 +1,69 @@
+# GBServer SQLite 部署 profile
+#
+# 与主 docker-compose.yml 的差异：
+#   - 移除 postgres / redis 依赖（SQLite 是单文件，InMemoryBackend 替代 Redis）
+#   - 启用 GBSERVER__DATABASE__SQLITE_MAX_DEVICES=500
+#   - 数据库文件挂载到 host 上的 ./data/gbserver.db
+#
+# 用法：
+#   docker compose -f docker-compose.sqlite.yml up -d
+#
+# 配套前端（Vue）：
+#   cd web && npm run dev
+#
+# 数据备份：
+#   docker compose -f docker-compose.sqlite.yml exec gbserver \
+#     sqlite3 /var/lib/gbserver/gbserver.db ".backup /backup/gbserver-$(date +%F).db"
+
+services:
+  gbserver:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: gbserver:latest
+    container_name: gbserver-sqlite
+    ports:
+      - "18080:18080"
+      - "5060:5060/udp"
+      - "5061:5061"
+    environment:
+      GBSERVER__SERVER__HOST: 0.0.0.0
+      GBSERVER__SERVER__PORT: 18080
+      GBSERVER__SIP__IP: 0.0.0.0
+      GBSERVER__SIP__PORT: 5060
+      # SQLite 默认模式（无需 --features；Cargo.toml 默认即 sqlite）
+      GBSERVER__DATABASE__URL: "sqlite:///var/lib/gbserver/gbserver.db?mode=rwc"
+      # SQLite 设备上限（默认 500；超出需迁移到 PG）
+      GBSERVER__DATABASE__SQLITE_MAX_DEVICES: "500"
+      # Redis 留空 → 自动走 InMemoryBackend（StateStore 单机）
+      GBSERVER__JWT__SECRET: ${GBSERVER_JWT_SECRET:-a7f3c9e2b1d84f6a0e8c5b2d9f1a4e7c0b3d6f9a2e5c8b1d4f7a0e3c6b9d2f5}
+      GBSERVER__SIP__PASSWORD: ${GBSERVER_SIP_PASSWORD:-admin123}
+      RUST_LOG: info,gbserver=debug
+    volumes:
+      - sqlitedata:/var/lib/gbserver
+    networks: [gbservernet]
+    restart: unless-stopped
+
+  zlm:
+    image: zlmediakit/zlmediakit:master
+    container_name: gbserver-zlm-sqlite
+    ports:
+      - "8080:80"
+      - "8443:8443"
+      - "554:554"
+      - "322:322"
+      - "1935:1935"
+      - "8000:8000/udp"
+      - "9000:9000/udp"
+      - "30000-30100:30000-30100/udp"
+    environment:
+      ZLM_HTTP_SECRET: S63648HLbxckv7YjpPTXXRTOsAVGo0Ia
+    networks: [gbservernet]
+    restart: unless-stopped
+
+volumes:
+  sqlitedata: {}
+
+networks:
+  gbservernet:
+    driver: bridge

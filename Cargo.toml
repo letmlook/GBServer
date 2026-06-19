@@ -5,8 +5,10 @@ edition = "2021"
 description = "GBServer — GB28181 国标信令、流媒体接入与级联管理平台"
 
 [features]
-default = ["postgres"]
-# 数据库三选一：默认 PostgreSQL；MySQL 使用 --no-default-features --features mysql；SQLite 使用 --no-default-features --features sqlite
+default = ["sqlite"]
+# 数据库三选一：默认 SQLite（轻量、零依赖、适合开发/演示/边缘节点/小规模生产）；
+#   MySQL 使用 --no-default-features --features mysql；
+#   PostgreSQL 使用 --no-default-features --features postgres
 mysql = ["sqlx/mysql"]
 postgres = ["sqlx/postgres"]
 sqlite = ["sqlx/sqlite"]
@@ -76,6 +78,10 @@ path = "src/main.rs"
 [[test]]
 name = "device_simulator_test"
 path = "tests/integration/sip/device_simulator_test.rs"
+
+[[test]]
+name = "sqlite_compat"
+path = "tests/integration/sqlite_compat.rs"
 
 [profile.release]
 lto = true

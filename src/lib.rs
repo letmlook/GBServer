@@ -156,7 +156,7 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
 
     let sip_server = if let Some(ref sip_config) = cfg.sip {
         if sip_config.enabled {
-            let mut server = sip::SipServer::new(sip_config.clone(), pool.clone());
+            let mut server = sip::SipServer::new(sip_config.clone(), pool.clone(), cfg.database.sqlite_max_devices);
             server.set_ws_state(ws_state.clone()).await;
             Some(Arc::new(RwLock::new(server)))
         } else {

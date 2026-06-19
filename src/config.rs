@@ -33,6 +33,11 @@ pub struct ServerConfig {
 #[derive(Debug, Clone, Deserialize)]
 pub struct DatabaseConfig {
     pub url: String,
+    /// SQLite 模式下允许的最大设备数；超过则拒绝新设备注册。
+    /// 默认 500；超出需迁移到 PostgreSQL/MySQL。
+    /// PG/MySQL 后端忽略此字段。
+    #[serde(default)]
+    pub sqlite_max_devices: Option<usize>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
