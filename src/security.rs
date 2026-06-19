@@ -112,6 +112,32 @@ pub fn redact_sensitive(text: &str) -> String {
     out
 }
 
+/// F3: 便捷宏 — 把任意 Display 值先 redact 再写入日志。
+/// 用法：`info_redacted!("received {}", payload);` 等价 `info!("received {}", redact_sensitive(&payload.to_string()));`
+#[macro_export]
+macro_rules! info_redacted {
+    ($($arg:tt)+) => {{
+        let formatted = format!($($arg)+);
+        tracing::info!("{}", $crate::security::redact_sensitive(&formatted));
+    }};
+}
+
+#[macro_export]
+macro_rules! warn_redacted {
+    ($($arg:tt)+) => {{
+        let formatted = format!($($arg)+);
+        tracing::warn!("{}", $crate::security::redact_sensitive(&formatted));
+    }};
+}
+
+#[macro_export]
+macro_rules! debug_redacted {
+    ($($arg:tt)+) => {{
+        let formatted = format!($($arg)+);
+        tracing::debug!("{}", $crate::security::redact_sensitive(&formatted));
+    }};
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -182,5 +208,43 @@ mod tests {
     #[test]
     fn test_min_jwt_secret_len_is_32() {
         assert_eq!(MIN_JWT_SECRET_LEN, 32);
+    }
+
+    /// F3: redact_sensitive 对 query-string 形式也生效
+    #[test]
+    fn test_redact_sensitive_query_string() {
+        let s = "/api/login?password=hunter2&user=alice";
+        let r = redact_sensitive(s);
+        assert!(r.contains("password=***"));
+        assert!(!r.contains("hunter2"));
+        assert!(r.contains("user=alice"));
+    }
+
+    /// F3: redact_sensitive 对 apikey 头生效
+    #[test]
+    fn test_redact_sensitive_apikey_header() {
+        let s = "X-API-Key: secret-key-abc-123";
+        let r = redact_sensitive(s);
+        assert!(r.contains("X-API-Key: ***"));
+        assert!(!r.contains("secret-key-abc-123"));
+    }
+
+    /// F3: 边界 — 仅敏感键出现，无值，不应 panic
+    #[test]
+    fn test_redact_sensitive_no_value_after_key() {
+        let s = "password=";
+        let r = redact_sensitive(s);
+        // 不 panic，内容不变
+        assert_eq!(r, "password=");
+    }
+
+    /// F3: 多敏感字段同时脱敏
+    #[test]
+    fn test_redact_sensitive_multiple_fields() {
+        let s = r#"password=foo&token=bar&user=baz"#;
+        let r = redact_sensitive(s);
+        assert!(r.contains("password=***"));
+        assert!(r.contains("token=***"));
+        assert!(r.contains("user=baz"));
     }
 }

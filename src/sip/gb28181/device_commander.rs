@@ -12,7 +12,6 @@
 //! - DeviceCommander 是业务层：知道如何 build xml / 如何解析结果 / 如何构造超时错误
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use crate::sip::gb28181::PendingRequestManager;
 use crate::sip::gb28181::PendingCmdType;

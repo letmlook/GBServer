@@ -48,7 +48,7 @@ jobs:
         run: cargo test --test device_simulator_test
 
   backend-mysql:
-    name: MySQL + Rust check
+    name: MySQL + Rust check + test
     runs-on: ubuntu-latest
     services:
       mysql:
@@ -69,5 +69,12 @@ jobs:
         with:
           path: ~/.cargo/registry
           key: cargo-registry-${{ hashFiles('Cargo.lock') }}
+      - name: Import schema
+        run: |
+          mysql -h 127.0.0.1 -uroot -prootpw gbserver < database/init-mysql-2.7.4.sql
       - name: cargo check (mysql)
         run: cargo check --no-default-features --features mysql --lib --tests
+      - name: cargo test (mysql, no DB tests)
+        env:
+          DATABASE_URL: mysql://root:rootpw@127.0.0.1:3306/gbserver
+        run: cargo test --no-default-features --features mysql --lib -- --test-threads=4 --skip postgres --skip integration

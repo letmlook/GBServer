@@ -936,6 +936,7 @@ pub async fn media_server_delete(
 }
 
 /// GET /api/server/media_server/media_info
+#[allow(non_snake_case)]
 #[derive(Debug, Deserialize)]
 pub struct MediaInfoQuery {
     pub app: Option<String>,

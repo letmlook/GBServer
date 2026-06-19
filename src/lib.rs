@@ -12,6 +12,7 @@ pub mod cache;
 pub mod scheduler;
 pub mod cascade;
 pub mod metrics;
+pub mod rpc;
 pub mod state_store;
 pub mod security;
 
@@ -84,10 +85,19 @@ async fn init_db_tables(pool: &db::Pool) -> anyhow::Result<()> {
 }
 
 pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
-    // F3: validate JWT secret at startup (warns on weak, doesn't crash to keep dev usable)
+    // F3: validate JWT secret at startup
+    // 默认仅 warn；如果设置了 GBSERVER__SECURITY__STRICT=1 则 fail-fast 退出
     match crate::security::validate_jwt_secret(&cfg.jwt.secret) {
         Ok(()) => tracing::info!("JWT secret OK (len={})", cfg.jwt.secret.len()),
         Err(e) => {
+            let strict = std::env::var("GBSERVER__SECURITY__STRICT")
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                .unwrap_or(false);
+            if strict {
+                tracing::error!("❌ JWT secret validation failed (STRICT mode): {}", e);
+                tracing::error!("Generate a fresh secret with: openssl rand -hex 32");
+                return Err(anyhow::anyhow!("JWT secret rejected in STRICT mode"));
+            }
             tracing::warn!("⚠️  JWT secret validation failed: {}", e);
             tracing::warn!("Set GBSERVER__JWT__SECRET to a ≥32-char random hex string before production.");
         }
@@ -193,7 +203,13 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
         ws_state,
         redis: redis_conn,
         jt1078_manager: jt1078_manager.clone(),
+        rpc_router: Some(Arc::new(crate::rpc::RpcRouter::new())),
     };
+
+    // E2: 注册标准 RPC 处理器（device_control / play_stop / cloud_record_sync）
+    if let Some(ref router) = state.rpc_router {
+        crate::rpc::register_standard_handlers(router);
+    }
 
     if let Some(ref server) = sip_server {
         let srv = server.clone();
@@ -292,6 +308,7 @@ pub struct AppState {
     pub ws_state: Arc<crate::handlers::websocket::WsState>,
     pub redis: Option<redis::aio::ConnectionManager>,
     pub jt1078_manager: Arc<tokio::sync::RwLock<Option<Arc<crate::jt1078::manager::Jt1078Manager>>>>,
+    pub rpc_router: Option<Arc<crate::rpc::RpcRouter>>,
 }
 
 impl AppState {

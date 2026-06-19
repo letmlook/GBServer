@@ -22,6 +22,8 @@ pub struct RecordPlanScheduler {
     pool: Pool,
     zlm_client: Option<Arc<ZlmClient>>,
     active_recordings: Arc<RwLock<HashMap<i64, ActiveRecording>>>,
+    /// E1: 可选 StateStore（让 active 录像状态跨节点共享）
+    state_store: Option<Arc<crate::state_store::StateStore>>,
 }
 
 impl RecordPlanScheduler {
@@ -30,6 +32,22 @@ impl RecordPlanScheduler {
             pool,
             zlm_client,
             active_recordings: Arc::new(RwLock::new(HashMap::new())),
+            state_store: None,
+        }
+    }
+
+    /// E1: 注入 StateStore
+    pub fn set_state_store(&mut self, store: Arc<crate::state_store::StateStore>) {
+        self.state_store = Some(store);
+    }
+
+    /// E1: 返回当前 active 录像数（包含 StateStore 中的）
+    pub async fn active_count(&self) -> usize {
+        let local = self.active_recordings.read().await.len();
+        if let Some(ref store) = self.state_store {
+            store.active_recordings_count().max(local)
+        } else {
+            local
         }
     }
 

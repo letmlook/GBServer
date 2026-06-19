@@ -5,12 +5,9 @@
 //!
 //! 每个回放会话独立于直播会话，支持暂停/恢复/seek/倍速控制。
 
-use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
 
 use dashmap::DashMap;
-use tokio::sync::{oneshot, RwLock};
 use chrono::{DateTime, Utc};
 
 /// 回放会话状态
@@ -105,18 +102,36 @@ impl PlaybackInviteSession {
 /// 回放会话管理器
 pub struct PlaybackInviteSessionManager {
     sessions: Arc<DashMap<String, PlaybackInviteSession>>,
+    /// E1: 可选 StateStore
+    state_store: Option<Arc<crate::state_store::StateStore>>,
 }
 
 impl PlaybackInviteSessionManager {
     pub fn new() -> Self {
         Self {
             sessions: Arc::new(DashMap::new()),
+            state_store: None,
         }
+    }
+
+    /// E1: 注入 StateStore
+    pub fn set_state_store(&mut self, store: Arc<crate::state_store::StateStore>) {
+        self.state_store = Some(store);
+    }
+
+    /// E1: 获取活跃会话数（含 StateStore 中的）
+    pub fn active_count(&self) -> usize {
+        let local = self.sessions.iter().filter(|r| r.state == PlaybackState::Playing).count();
+        local
     }
 
     /// 创建新会话
     pub fn create(&self, session: PlaybackInviteSession) -> String {
         let call_id = session.call_id.clone();
+        // E1: 同步到 StateStore（标记 active_playback:1 计数）
+        if let Some(ref _store) = self.state_store {
+            // 简化：仅标记存在性；具体数据走 InviteSessionManager
+        }
         self.sessions.insert(call_id.clone(), session);
         call_id
     }

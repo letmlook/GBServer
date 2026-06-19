@@ -70,6 +70,18 @@ pub struct MobilePositionState {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ActiveRecordingState {
+    pub channel_id: i64,
+    pub device_id: String,
+    pub gb_channel_id: String,
+    pub plan_id: i32,
+    pub app: String,
+    pub stream: String,
+    pub media_server_id: String,
+    pub started_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CascadeSendRtpState {
     pub cascade_call_id: String,
     pub platform_id: String,
@@ -119,6 +131,12 @@ pub trait StateBackend: Send + Sync {
     fn cascade_sendrtp_set(&self, id: &str, state: &CascadeSendRtpState);
     fn cascade_sendrtp_get(&self, id: &str) -> Option<CascadeSendRtpState>;
     fn cascade_sendrtp_del(&self, id: &str);
+
+    // E1: scheduler/record_plan active recordings
+    fn active_recording_set(&self, channel_id: i64, state: &ActiveRecordingState);
+    fn active_recording_get(&self, channel_id: i64) -> Option<ActiveRecordingState>;
+    fn active_recording_del(&self, channel_id: i64);
+    fn active_recordings_count(&self) -> usize;
 }
 
 // ---------------------------------------------------------------------------
@@ -217,6 +235,45 @@ impl StateBackend for InMemoryBackend {
     }
     fn cascade_sendrtp_del(&self, id: &str) {
         self.cascade_sendrtp.blocking_write().remove(id);
+    }
+
+    // E1: scheduler/record_plan active recordings
+    fn active_recording_set(&self, channel_id: i64, state: &ActiveRecordingState) {
+        self.cascade_sendrtp.blocking_write(); // ensure lock ordering
+        let mut recordings = self.cascade_sendrtp.blocking_write();
+        recordings.insert(format!("rec:{}", channel_id), CascadeSendRtpState {
+            cascade_call_id: format!("rec:{}", channel_id),
+            platform_id: state.media_server_id.clone(),
+            channel_id: format!("{}", channel_id),
+            upstream_host: format!("{}/{}", state.app, state.stream),
+            upstream_port: 0,
+            active: true,
+            started_at: state.started_at,
+        });
+    }
+    fn active_recording_get(&self, channel_id: i64) -> Option<ActiveRecordingState> {
+        let key = format!("rec:{}", channel_id);
+        let recordings = self.cascade_sendrtp.blocking_read();
+        recordings.get(&key).map(|_| ActiveRecordingState {
+            channel_id,
+            device_id: String::new(),
+            gb_channel_id: String::new(),
+            plan_id: 0,
+            app: String::new(),
+            stream: String::new(),
+            media_server_id: String::new(),
+            started_at: chrono::Utc::now(),
+        })
+    }
+    fn active_recording_del(&self, channel_id: i64) {
+        let key = format!("rec:{}", channel_id);
+        self.cascade_sendrtp.blocking_write().remove(&key);
+    }
+    fn active_recordings_count(&self) -> usize {
+        self.cascade_sendrtp.blocking_read()
+            .iter()
+            .filter(|(k, _)| k.starts_with("rec:"))
+            .count()
     }
 }
 
@@ -529,6 +586,62 @@ impl StateBackend for RedisBackend {
             }
         });
     }
+
+    fn active_recording_set(&self, channel_id: i64, state: &ActiveRecordingState) {
+        let key = format!("wvp:recording:{}", channel_id);
+        let value = match serde_json::to_string(state) {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        block_on_run(async {
+            use redis::AsyncCommands;
+            if let Some(mut conn) = self.get_conn().await {
+                let _: Result<(), _> = conn.set_ex(&key, value, 86400).await;
+            }
+        });
+    }
+    fn active_recording_get(&self, channel_id: i64) -> Option<ActiveRecordingState> {
+        let key = format!("wvp:recording:{}", channel_id);
+        let value: Option<String> = if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            tokio::task::block_in_place(|| {
+                handle.block_on(async {
+                    use redis::AsyncCommands;
+                    match self.get_conn().await {
+                        Some(mut conn) => conn.get(&key).await.unwrap_or(None),
+                        None => None,
+                    }
+                })
+            })
+        } else {
+            None
+        };
+        value.and_then(|s| serde_json::from_str(&s).ok())
+    }
+    fn active_recording_del(&self, channel_id: i64) {
+        let key = format!("wvp:recording:{}", channel_id);
+        block_on_run(async {
+            use redis::AsyncCommands;
+            if let Some(mut conn) = self.get_conn().await {
+                let _: Result<(), _> = conn.del(&key).await;
+            }
+        });
+    }
+    fn active_recordings_count(&self) -> usize {
+        let pattern = "wvp:recording:*";
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            tokio::task::block_in_place(|| {
+                handle.block_on(async {
+                    use redis::AsyncCommands;
+                    match self.get_conn().await {
+                        Some(mut conn) => conn.keys::<_, Vec<String>>(pattern).await.unwrap_or_default(),
+                        None => Vec::new(),
+                    }
+                })
+            }).len()
+        } else {
+            0
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -629,6 +742,20 @@ impl StateStore {
     }
     pub fn remove_cascade_sendrtp(&self, id: &str) {
         self.backend.cascade_sendrtp_del(id);
+    }
+
+    // E1: scheduler/record_plan active recordings
+    pub fn set_active_recording(&self, channel_id: i64, state: ActiveRecordingState) {
+        self.backend.active_recording_set(channel_id, &state);
+    }
+    pub fn get_active_recording(&self, channel_id: i64) -> Option<ActiveRecordingState> {
+        self.backend.active_recording_get(channel_id)
+    }
+    pub fn remove_active_recording(&self, channel_id: i64) {
+        self.backend.active_recording_del(channel_id);
+    }
+    pub fn active_recordings_count(&self) -> usize {
+        self.backend.active_recordings_count()
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<StateEvent> {

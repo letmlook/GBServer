@@ -15,6 +15,7 @@ use crate::zlm::OpenRtpServerRequest;
 
 use crate::AppState;
 
+#[allow(non_snake_case)]
 #[derive(Debug, Deserialize)]
 pub struct PushListQuery {
     pub page: Option<u32>,
@@ -408,6 +409,7 @@ pub async fn push_remove_form_gb(
     }))))
 }
 
+#[allow(non_snake_case)]
 #[derive(Debug, Deserialize)]
 pub struct ProxyListQuery {
     pub page: Option<u32>,

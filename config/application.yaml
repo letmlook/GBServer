@@ -44,7 +44,7 @@ sip:
     timeout_multiplier: 3
     check_interval_secs: 10
 
-# ZLM 流媒体服务器配置
+# ZLM 流媒体服务器配置（多节点负载均衡示例）
 zlm:
   servers:
     - id: "zlmediakit-1"
@@ -52,9 +52,39 @@ zlm:
       http_port: 8080
       secret: "S63648HLbxckv7YjpPTXXRTOsAVGo0Ia"
       enabled: true
+    # 多节点示例（取消注释以启用）
+    # - id: "zlmediakit-2"
+    #   ip: "192.168.1.20"
+    #   http_port: 8080
+    #   secret: "OtherSecretKeyForSecondNode="
+    #   enabled: true
   stream_timeout: 10
   hook_enabled: true
   hook_url: "http://127.0.0.1:18080/api/zlm/hook"
+
+# MapConfig — 地图瓦片配置（Hikvision/宇视地图集成）
+map:
+  # 启用地图瓦片代理
+  enabled: false
+  # 默认瓦片源 URL（OpenStreetMap）
+  default_tile_url: "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+  # 瓦片缓存目录
+  cache_dir: "web/dist/static/map_tiles"
+  # 缓存大小上限（MB）
+  cache_max_size_mb: 256
+  # 子通道渲染阈值（子通道超过此数则展开为聚合点）
+  sub_channel_threshold: 50
+
+# Cross-node RPC 集群配置（多节点部署时启用）
+rpc:
+  # 本节点 ID（hostname 或人工指定）
+  node_id: "node-1"
+  # 远端节点 endpoint 列表
+  peer_endpoints:
+    # - "http://node2:18080"
+    # - "http://node3:18080"
+  # RPC 请求超时（秒）
+  timeout_secs: 5
 
 # JT1078 tuning & retransmit
 jt1078:

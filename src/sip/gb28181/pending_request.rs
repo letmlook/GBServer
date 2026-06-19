@@ -7,12 +7,11 @@
 //! - PendingRequest 管理命令-应答（DeviceInfo 等查询）
 //! - InviteSessionManager 管理 INVITE 会话（直播/回放/下载/对讲）
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
-use tokio::sync::{oneshot, RwLock};
+use tokio::sync::oneshot;
 
 use crate::sip::gb28181::DeviceQueryManager;
 

@@ -6,7 +6,6 @@
 //! 3. Alarm 转发（告警上报到上级）
 //! 4. SendRtp 会话管理（设备拉流→推送到上级）
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use dashmap::DashMap;
 use tokio::sync::RwLock;
@@ -59,17 +58,37 @@ impl SendRtpSession {
 pub struct SendRtpManager {
     /// 按 cascade_call_id 索引
     sessions: Arc<DashMap<String, SendRtpSession>>,
+    /// E1: 可选的 StateStore（用于跨节点共享）
+    state_store: Option<Arc<crate::state_store::StateStore>>,
 }
 
 impl SendRtpManager {
     pub fn new() -> Self {
         Self {
             sessions: Arc::new(DashMap::new()),
+            state_store: None,
         }
     }
 
+    /// E1: 注入 StateStore（让 SendRtp 会话在多节点间共享）
+    pub fn set_state_store(&mut self, store: Arc<crate::state_store::StateStore>) {
+        self.state_store = Some(store);
+    }
     /// 创建 SendRtp 会话
     pub fn create(&self, session: SendRtpSession) {
+        // E1: 同步到 StateStore（如果有）
+        if let Some(ref store) = self.state_store {
+            let state = crate::state_store::CascadeSendRtpState {
+                cascade_call_id: session.cascade_call_id.clone(),
+                platform_id: session.platform_id.clone(),
+                channel_id: session.channel_id.clone(),
+                upstream_host: session.upstream_host.clone(),
+                upstream_port: session.upstream_port,
+                active: session.active,
+                started_at: session.created_at,
+            };
+            store.set_cascade_sendrtp(&session.cascade_call_id, state);
+        }
         self.sessions.insert(session.cascade_call_id.clone(), session);
     }
 
@@ -82,6 +101,10 @@ impl SendRtpManager {
     pub fn close(&self, cascade_call_id: &str) -> Option<SendRtpSession> {
         if let Some(mut s) = self.sessions.get_mut(cascade_call_id) {
             s.active = false;
+        }
+        // E1: 从 StateStore 删除
+        if let Some(ref store) = self.state_store {
+            store.remove_cascade_sendrtp(cascade_call_id);
         }
         self.sessions.remove(cascade_call_id).map(|(_, v)| v)
     }
@@ -518,5 +541,110 @@ mod tests {
         assert_eq!(mgr.active_count(), 1);
         assert!(mgr.get("c1").is_none());
         assert!(mgr.get("c2").is_some());
+    }
+
+    /// B3: BYE 后 close 应当让对应 cascade_call_id 立即不可查
+    #[test]
+    fn test_sendrtp_manager_bye_cleanup() {
+        let mgr = SendRtpManager::new();
+        let s = mgr.handle_upstream_invite("call-bye".into(), "plat".into(), "ch-bye".into(),
+            "10.0.0.5".into(), 9100, "0xDEAD".into());
+        assert!(s.active);
+        let removed = mgr.close("call-bye");
+        assert!(removed.is_some(), "close should return the removed session");
+        assert!(!removed.unwrap().active, "removed session should be inactive");
+        assert!(mgr.get("call-bye").is_none());
+        assert_eq!(mgr.active_count(), 0);
+    }
+
+    /// B3: CANCEL 处理等同于 BYE — close 应彻底移除会话
+    #[test]
+    fn test_sendrtp_manager_cancel_removes_session() {
+        let mgr = SendRtpManager::new();
+        mgr.handle_upstream_invite("call-cancel".into(), "plat".into(), "ch".into(),
+            "h".into(), 9000, "0x1".into());
+        let snap_before = mgr.get_by_channel("ch");
+        assert_eq!(snap_before.len(), 1);
+
+        // CANCEL cleanup path — same as BYE
+        mgr.close("call-cancel");
+
+        let snap_after = mgr.get_by_channel("ch");
+        assert!(snap_after.is_empty(), "channel snapshot should be empty after cancel");
+        assert_eq!(mgr.active_count(), 0);
+    }
+
+    /// B3: close_by_channel 在 BYE 场景下可关闭整通道的所有级联 SendRtp
+    #[test]
+    fn test_sendrtp_manager_bye_close_by_channel() {
+        let mgr = SendRtpManager::new();
+        mgr.handle_upstream_invite("c1".into(), "p1".into(), "ch-bye".into(),
+            "h1".into(), 9000, "0x1".into());
+        mgr.handle_upstream_invite("c2".into(), "p2".into(), "ch-bye".into(),
+            "h2".into(), 9002, "0x2".into());
+        assert_eq!(mgr.active_count(), 2);
+
+        let closed = mgr.close_by_channel("ch-bye");
+        assert_eq!(closed.len(), 2);
+        assert_eq!(mgr.active_count(), 0);
+    }
+
+    /// E1: create 会话后，StateStore 应当存有对应记录
+    #[test]
+    fn test_sendrtp_manager_state_store_create_sync() {
+        use crate::state_store::StateStore;
+        use std::sync::Arc;
+
+        let store = Arc::new(StateStore::memory());
+        let mut mgr = SendRtpManager::new();
+        mgr.set_state_store(store.clone());
+
+        let s = mgr.handle_upstream_invite(
+            "call-store".into(), "plat".into(), "ch-store".into(),
+            "10.0.0.1".into(), 9000, "0xAAAA".into(),
+        );
+        assert!(s.active);
+
+        // StateStore 应当有这条记录
+        let stored = store.get_cascade_sendrtp("call-store");
+        assert!(stored.is_some(), "StateStore 应存有 SendRtp 会话");
+        let stored = stored.unwrap();
+        assert_eq!(stored.cascade_call_id, "call-store");
+        assert_eq!(stored.platform_id, "plat");
+        assert_eq!(stored.channel_id, "ch-store");
+        assert_eq!(stored.upstream_host, "10.0.0.1");
+        assert_eq!(stored.upstream_port, 9000);
+        assert!(stored.active);
+    }
+
+    /// E1: close 会话后，StateStore 应当同步删除
+    #[test]
+    fn test_sendrtp_manager_state_store_close_del() {
+        use crate::state_store::StateStore;
+        use std::sync::Arc;
+
+        let store = Arc::new(StateStore::memory());
+        let mut mgr = SendRtpManager::new();
+        mgr.set_state_store(store.clone());
+
+        mgr.handle_upstream_invite("c1".into(), "p".into(), "ch".into(),
+            "h".into(), 9000, "0x1".into());
+        assert!(store.get_cascade_sendrtp("c1").is_some());
+
+        mgr.close("c1");
+        assert!(store.get_cascade_sendrtp("c1").is_none(),
+            "close 后 StateStore 应被删除");
+    }
+
+    /// E1: 不注入 StateStore 时不应 panic
+    #[test]
+    fn test_sendrtp_manager_no_state_store_works() {
+        let mgr = SendRtpManager::new();
+        // 没有 set_state_store，直接 create 应正常工作
+        mgr.handle_upstream_invite("c1".into(), "p".into(), "ch".into(),
+            "h".into(), 9000, "0x1".into());
+        assert_eq!(mgr.active_count(), 1);
+        mgr.close("c1");
+        assert_eq!(mgr.active_count(), 0);
     }
 }

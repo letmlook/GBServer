@@ -15,7 +15,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{broadcast, RwLock};
-use serde::{Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 #[derive(Debug, Clone)]
 pub enum RpcTarget {
@@ -66,10 +66,10 @@ impl LocalRpc {
 
 impl RpcTransport for LocalRpc {
     fn broadcast(&self, request: &RpcRequest) -> Result<(), String> {
-        self.tx.send(request.clone()).map_err(|e| e.to_string())
+        self.tx.send(request.clone()).map(|_| ()).map_err(|e| e.to_string())
     }
     fn send_to(&self, _node_id: &str, request: &RpcRequest) -> Result<(), String> {
-        self.tx.send(request.clone()).map_err(|e| e.to_string())
+        self.tx.send(request.clone()).map(|_| ()).map_err(|e| e.to_string())
     }
     fn receive(&self) -> broadcast::Receiver<RpcRequest> {
         self.tx.subscribe()
@@ -166,6 +166,75 @@ pub fn register_standard_handlers(router: &RpcRouter) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// E2: HTTP-over-JSON RPC 客户端
+// ---------------------------------------------------------------------------
+
+/// HTTP RPC 客户端配置
+#[derive(Debug, Clone)]
+pub struct HttpRpcConfig {
+    pub peer_endpoints: Vec<String>, // 例如 ["http://node2:18080", "http://node3:18080"]
+    pub timeout_secs: u64,
+}
+
+impl Default for HttpRpcConfig {
+    fn default() -> Self {
+        Self {
+            peer_endpoints: Vec::new(),
+            timeout_secs: 5,
+        }
+    }
+}
+
+/// HTTP RPC 客户端 — 用 reqwest POST /api/rpc 把 RpcRequest 投递到远端节点
+pub struct HttpRpc {
+    node_id: String,
+    config: HttpRpcConfig,
+    http: reqwest::Client,
+}
+
+impl HttpRpc {
+    pub fn new(node_id: &str, config: HttpRpcConfig) -> Self {
+        let http = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(config.timeout_secs))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+        Self { node_id: node_id.to_string(), config, http }
+    }
+
+    pub async fn send_request(&self, endpoint: &str, request: &RpcRequest) -> Result<RpcResponse, String> {
+        let url = format!("{}/api/rpc", endpoint.trim_end_matches('/'));
+        let resp = self.http
+            .post(&url)
+            .json(request)
+            .send()
+            .await
+            .map_err(|e| format!("HTTP send failed: {}", e))?;
+        if !resp.status().is_success() {
+            return Err(format!("HTTP {} from {}", resp.status(), url));
+        }
+        resp.json::<RpcResponse>().await
+            .map_err(|e| format!("decode RpcResponse failed: {}", e))
+    }
+
+    pub async fn broadcast(&self, request: &RpcRequest) -> Vec<(String, Result<RpcResponse, String>)> {
+        let mut results = Vec::new();
+        for ep in &self.config.peer_endpoints {
+            let r = self.send_request(ep, request).await;
+            results.push((ep.clone(), r));
+        }
+        results
+    }
+
+    pub async fn send_to(&self, node_id: &str, request: &RpcRequest) -> Result<RpcResponse, String> {
+        // 简单按 node_id 匹配 endpoint（生产可用 service discovery）
+        let endpoint = self.config.peer_endpoints.iter()
+            .find(|e| e.contains(node_id))
+            .ok_or_else(|| format!("No endpoint for node_id={}", node_id))?;
+        self.send_request(endpoint, request).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -196,5 +265,143 @@ mod tests {
             error: None,
         };
         assert!(resp.ok);
+    }
+
+    /// E2: HttpRpcConfig 默认值
+    #[test]
+    fn test_http_rpc_config_default() {
+        let c = HttpRpcConfig::default();
+        assert!(c.peer_endpoints.is_empty());
+        assert_eq!(c.timeout_secs, 5);
+    }
+
+    /// E2: HttpRpc 构造不应 panic
+    #[test]
+    fn test_http_rpc_new() {
+        let rpc = HttpRpc::new("node-1", HttpRpcConfig::default());
+        assert_eq!(rpc.node_id, "node-1");
+    }
+
+    /// E2: HTTP URL 拼接正确
+    #[tokio::test]
+    async fn test_http_rpc_url_building() {
+        let rpc = HttpRpc::new("node-1", HttpRpcConfig {
+            peer_endpoints: vec!["http://node2:18080".to_string()],
+            ..Default::default()
+        });
+        let req = RpcRequest {
+            method: "device_control".to_string(),
+            target: "Node:node2".to_string(),
+            payload: serde_json::json!({"device_id": "dev1"}),
+            reply_to: None,
+        };
+        // 实际发送会失败（无 server），但 send_to 应返回 endpoint 查找错误
+        let result = rpc.send_to("node2", &req).await;
+        assert!(result.is_ok(), "node2 endpoint 应匹配 url=...node2...");
+        // 若失败，错误信息应包含 HTTP 或 connection
+        // 注意：取决于网络环境
+        let _ = result;
+    }
+
+    /// E2: send_to 不存在的 node_id 应返回错误
+    #[tokio::test]
+    async fn test_http_rpc_send_to_unknown_node() {
+        let rpc = HttpRpc::new("node-1", HttpRpcConfig::default());
+        let req = RpcRequest {
+            method: "device_control".to_string(),
+            target: "Node:unknown".to_string(),
+            payload: serde_json::json!({}),
+            reply_to: None,
+        };
+        let result = rpc.send_to("unknown", &req).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("No endpoint") || err.contains("HTTP"), "错误信息: {}", err);
+    }
+
+    /// E2: 端到端 mock 远端返回 RpcResponse
+    #[tokio::test]
+    async fn test_http_rpc_roundtrip_via_mock_server() {
+        use std::net::SocketAddr;
+        use axum::{routing::post, Router as AxRouter};
+        use axum::extract::Json;
+        use axum::response::IntoResponse;
+
+        async fn echo(Json(req): Json<RpcRequest>) -> impl IntoResponse {
+            Json(RpcResponse {
+                ok: true,
+                result: Some(req.payload),
+                error: None,
+            })
+        }
+
+        let app: AxRouter = AxRouter::new().route("/api/rpc", post(echo));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr: SocketAddr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        // 给 server 一点启动时间
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let rpc = HttpRpc::new("node-1", HttpRpcConfig {
+            peer_endpoints: vec![format!("http://{}", addr)],
+            timeout_secs: 2,
+        });
+
+        let req = RpcRequest {
+            method: "device_control".to_string(),
+            target: "Broadcast".to_string(),
+            payload: serde_json::json!({"device_id": "dev-abc"}),
+            reply_to: None,
+        };
+
+        let resp = rpc.send_request(&format!("http://{}", addr), &req).await.unwrap();
+        assert!(resp.ok);
+        assert_eq!(resp.result.unwrap()["device_id"], "dev-abc");
+    }
+
+    /// E2: HttpRpc.broadcast 对多 endpoint 扇出
+    #[tokio::test]
+    async fn test_http_rpc_broadcast_returns_per_endpoint_results() {
+        use axum::{routing::post, Router as AxRouter};
+        use axum::extract::Json;
+        use axum::response::IntoResponse;
+
+        async fn echo(Json(req): Json<RpcRequest>) -> impl IntoResponse {
+            Json(RpcResponse {
+                ok: true,
+                result: Some(req.payload),
+                error: None,
+            })
+        }
+
+        // 起两个独立 mock server
+        let app1: AxRouter = AxRouter::new().route("/api/rpc", post(echo));
+        let app2: AxRouter = AxRouter::new().route("/api/rpc", post(echo));
+        let l1 = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let a1 = l1.local_addr().unwrap();
+        let l2 = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let a2 = l2.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(l1, app1).await.unwrap(); });
+        tokio::spawn(async move { axum::serve(l2, app2).await.unwrap(); });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let rpc = HttpRpc::new("node-1", HttpRpcConfig {
+            peer_endpoints: vec![format!("http://{}", a1), format!("http://{}", a2)],
+            timeout_secs: 2,
+        });
+
+        let req = RpcRequest {
+            method: "play_stop".to_string(),
+            target: "Broadcast".to_string(),
+            payload: serde_json::json!({"a": 1}),
+            reply_to: None,
+        };
+        let results = rpc.broadcast(&req).await;
+        assert_eq!(results.len(), 2);
+        for (ep, r) in results {
+            assert!(r.is_ok(), "endpoint={} 应成功", ep);
+        }
     }
 }

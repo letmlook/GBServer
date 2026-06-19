@@ -9,13 +9,10 @@
 //! 支持订阅类型：Catalog / MobilePosition / Alarm
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use dashmap::DashMap;
-use tokio::sync::RwLock;
 use chrono::{DateTime, Utc};
 
-use crate::sip::gb28181::SubscriptionManager;
 use crate::sip::gb28181::SubscriptionType;
 use crate::db::Pool;
 

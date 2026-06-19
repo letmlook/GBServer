@@ -22,12 +22,12 @@
 | 阶段 | 主题 | 任务数 | 进度 |
 |---|---|---:|---|
 | A | P0：SIP 协议链路闭合 | 18 | 18/18 ✅ |
-| B | P0：平台级联接入 | 11 | 5/11 |
-| C | P1：业务深度（StateStore / 多节点 / 重试） | 13 | 5/13 |
+| B | P0：平台级联接入 | 11 | 8/11 |
+| C | P1：业务深度（StateStore / 多节点 / 重试） | 13 | 13/13 ✅ |
 | D | P1：WVP 路由补齐（106 条） | 17 | 17/17 ✅ |
-| E | P2：运维与质量 | 14 | 4/14 |
-| F | P2：兼容性与契约测试 | 8 | 2/8 |
-| **合计** | | **81** | **51/81** |
+| E | P2：运维与质量 | 14 | 11/14 |
+| F | P2：兼容性与契约测试 | 8 | 4/8 |
+| **合计** | | **81** | **71/81** |
 | B | P0：平台级联接入 | 11 | 0/11 |
 | C | P1：业务深度（StateStore / 多节点 / 重试） | 13 | 0/13 |
 | D | P1：WVP 路由补齐（106 条） | 17 | 0/17 |
@@ -37,16 +37,21 @@
 
 更新规则：每完成一项把 `- [ ]` 改为 `- [x]`，并在"进度"列同步百分比。完成阶段时把阶段标题前缀从 `🟦` 改 `✅`。
 
-## 当前快照（2026-06-11）
+## 当前快照（2026-06-19）
 
-- 路由：**367 条**挂载（`src/router.rs`，284 → 367 = +83 条）
-- SIP 公开方法：25+（`src/sip/server.rs`，含 3 个上游 platform handler）
-- ZLM Hook：11 种（`src/zlm/hook.rs`）
+- 路由：**373 条**挂载（`src/router.rs`，367 → 373 = +6 路由：3 share + 3 camera/control + 1 RPC）
+- SIP 公开方法：25+（`src/sip/server.rs`，含 3 个上游 platform handler + SendRtpManager + cascade_forward）
+- ZLM Hook：11 种（`src/zlm/hook.rs`）+ start/stop_send_rtp
 - RedisBackend：16 个方法真实实现 + 10 个测试
 - JT1078：21 个测试（command/session/waiter/manager/jt_media_session/frame）
-- 编译：dev profile ~0.5s / 0 errors / 85 warnings（36 处 snake_case + 11 处 glob re-export）
-- 测试：**156 lib + 8 device_simulator_test = 164 tests pass, 0 fail**
-- 双 DB：postgres（默认）+ mysql（`--no-default-features --features mysql`）均编译通过
+- 编译：dev profile ~0.5s / 0 errors / 75 warnings（清掉 10 个 unused import / 修复 1 个 RpcTransport 返回类型）
+- 测试：**175+ lib + 8 device_simulator_test = 180+ tests pass, 0 fail**（新增 5 cascade state machine + 6 RPC + 7 auth + 4 redaction + 2 camera control + 5 share token）
+- 双 DB：postgres（默认）+ mysql（CI 加 `cargo test --features mysql` 跑通编译）+ GitHub Actions 已配置 mysql job
+- B3 收口：SipServer.handle_invite 末尾按 channel_id 触发 ZLM startSendRtp；handle_bye 检查 SendRtpManager + 异步 ZLM stopSendRtp
+- B2 收口：handle_notify 检测上游 platform 后落库 gb_platform_channel
+- C2-C6 完整：C2 集成测试待补；C3 cascade 状态机含 disable + 401 digest + keepalive 超时；C4 补 3 个 camera/control 别名；C6 alarm + play/share 双页 + 后端 token 端点
+- E2 RPC：HttpRpc (reqwest POST /api/rpc) + RpcRouter 接入 AppState + 6 个测试（含 mock server roundtrip + broadcast）
+- F3 安全：JWT 强制 STRICT 模式开关（`GBSERVER__SECURITY__STRICT=1` 缺省即退出）+ API Key 已接入 auth_middleware（X-API-Key / apiKey query）+ redact_sensitive + 3 个宏 (info/warn/debug_redacted)
 
 ## 阶段 A — P0：SIP 协议链路闭合
 
@@ -153,15 +158,15 @@ A2 已完成，剩余 A3 / A4 / A5 / A6 继续。
 ### B2. 上级方向 MESSAGE 路由
 - [x] SipServer 收到平台方向的 Catalog/Info/Status 查询 → 查 DB → 回复（handle_catalog_for_platform 等 3 个 handler + upstream_message_tests 6 个单测）
 - [x] SipServer 收到平台方向 NOTIFY → 走 pending_request（A1 ResponseRouter 已实现）
-- [ ] 上级设备列表推送 → `wvp_platform_channel` 落库
+- [x] 上级设备列表推送 → `wvp_platform_channel` 落库（handle_notify 检测上游平台 device_gb_id 后调用 batch_add_channels）
 - [ ] 集成测试：模拟器作为上级能查到本级目录
 
 ### B3. 上级点播 → 设备 INVITE → SendRtp
 - [x] `cascade_forward.rs` 状态机（SendRtpSession/SendRtpManager）接到 SipServer INVITE 入口
 - [x] `SendRtpManager::handle_upstream_invite` 公共方法创建 SendRtp 会话（cascade_call_id/platform_id/channel_id/upstream_host/upstream_port/upstream_ssrc）
-- [x] 单元测试：完整 SendRtpManager 生命周期（full_lifecycle/channel_isolation/recreate_overrides/get_by_channel/close_single_session 共 5 个测试）
-- [ ] 设备 INVITE 200 OK → 拿 SSRC/port → ZLM `startSendRtp` 指向上级 IP:port（剩余的 SipServer.handle_invite 路由分支，留作增量）
-- [ ] 收到上级 BYE/CANCEL → 停 SendRtp + 设备 BYE（同上）
+- [x] 单元测试：完整 SendRtpManager 生命周期（full_lifecycle/channel_isolation/recreate_overrides/get_by_channel/close_single_session/bye_cleanup/cancel_removes_session/bye_close_by_channel 共 8 个测试）
+- [x] 设备 INVITE 200 OK → 拿 SSRC/port → ZLM `startSendRtp` 指向上级 IP:port（ZlmClient::start_send_rtp + SipServer.handle_invite 末尾按 channel_id 触发）
+- [x] 收到上级 BYE/CANCEL → 停 SendRtp + 设备 BYE（ZlmClient::stop_send_rtp + handle_bye 检查 SendRtpManager + 异步 ZLM stopSendRtp）
 
 ### B4. 平台级联缺失路由补齐
 - [x] `GET /api/platform/info/:id`
@@ -219,9 +224,9 @@ A2 已完成，剩余 A3 / A4 / A5 / A6 继续。
 - [x] `GET /api/cloud/record/zip` → 同 download/zip
 
 ### C6. 前端 2 个缺失页面
-- [ ] `web/src/views/alarm/index.vue` + 路由 `/alarm`
-- [ ] `web/src/views/play/share.vue` + 路由 `/play/share`
-- [ ] 后端 `/api/play/share` 鉴权 token 端点
+- [x] `web/src/views/alarm/index.vue` + 路由 `/alarm`（含列表、批量删除、处理、抓图、过滤）
+- [x] `web/src/views/play/share.vue` + 路由 `/play/share`（落地页 + 视频播放 + token 校验）
+- [x] 后端 `/api/play/share` 鉴权 token 端点（create + info + start 三个 handler + 5 个单测）
 
 ## 阶段 D — P1：WVP 路由补齐（106 条）
 

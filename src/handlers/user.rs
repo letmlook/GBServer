@@ -240,6 +240,7 @@ pub async fn change_password(
     Ok(Json(WVPResult::<()>::success_empty()))
 }
 
+#[allow(non_snake_case)]
 #[derive(Debug, Deserialize)]
 pub struct ChangePasswordParams {
     pub old_password: Option<String>,
@@ -265,6 +266,7 @@ pub async fn change_password_for_admin(
     Ok(Json(WVPResult::<()>::success_empty()))
 }
 
+#[allow(non_snake_case)]
 #[derive(Debug, Deserialize)]
 pub struct ChangePasswordForAdminParams {
     pub user_id: Option<i32>,
@@ -289,6 +291,7 @@ pub async fn change_push_key(
     Ok(Json(WVPResult::<()>::success_empty()))
 }
 
+#[allow(non_snake_case)]
 #[derive(Debug, Deserialize)]
 pub struct ChangePushKeyParams {
     pub user_id: Option<i32>,

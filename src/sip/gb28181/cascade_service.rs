@@ -14,10 +14,8 @@
 //! 4. 上级点播（INVITE）→ 本级向设备 INVITE → ZLM SendRtp → 上级媒体流
 //! 5. 上级停止（BYE/CANCEL）→ 停止 SendRtp
 
-use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Duration;
 
 use dashmap::DashMap;
 use tokio::sync::RwLock;
@@ -121,6 +119,25 @@ impl CascadeSession {
     pub fn mark_offline(&mut self) {
         self.state = CascadeState::Offline;
         self.expires_at = 0;
+    }
+
+    /// C3: 收到 401 鉴权挑战 → 状态切到 WaitingAuth，调用方在重试时
+    /// 携带 nonce + digest 重新发送 REGISTER。
+    pub fn mark_waiting_auth(&mut self, nonce: String) {
+        self.state = CascadeState::WaitingAuth;
+        self.last_error = Some(format!("401 challenge nonce={}", nonce));
+    }
+
+    /// C3: 重试时把状态从 Failed/Offline 拨回 Registering
+    pub fn mark_retrying(&mut self) {
+        self.state = CascadeState::Registering;
+    }
+
+    /// C3: Keepalive 连续失败超过阈值 → 转 Offline
+    pub fn mark_keepalive_timeout(&mut self) {
+        self.state = CascadeState::Offline;
+        self.expires_at = 0;
+        self.last_error = Some("keepalive timeout".to_string());
     }
 
     pub fn is_active(&self) -> bool {
@@ -301,6 +318,59 @@ impl CascadeService {
         }
         tracing::info!("Cascade unregistered: platform={}", platform_id);
         Ok(())
+    }
+
+    /// C3: 平台 disable → 立即停止注册循环 + 标 Offline + 移除会话。
+    /// 调用方应同时停止 CascadeRegistrar.run_registration_loop 中的该平台项。
+    pub async fn disable_platform(&self, platform_id: &str) -> Result<(), String> {
+        // 1) 标记会话为 Offline
+        if let Some(mut session) = self.sessions.get_mut(platform_id) {
+            session.mark_offline();
+        }
+        // 2) 直接移除会话（disable 后不应再有任何路由）
+        self.sessions.remove(platform_id);
+        tracing::info!("Cascade platform disabled and removed: {}", platform_id);
+        Ok(())
+    }
+
+    /// C3: 检查 Keepalive 是否超时（>3 次未响应）
+    pub fn check_keepalive_timeout(&self, platform_id: &str, max_misses: i64) -> bool {
+        if let Some(mut session) = self.sessions.get_mut(platform_id) {
+            if session.state != CascadeState::Active {
+                return false;
+            }
+            let now = Utc::now().timestamp();
+            let elapsed = now - session.last_keepalive;
+            if elapsed > max_misses * 30 {
+                session.mark_keepalive_timeout();
+                tracing::warn!(
+                    "Cascade platform {} keepalive timeout ({}s, threshold {}s)",
+                    platform_id, elapsed, max_misses * 30
+                );
+                return true;
+            }
+        }
+        false
+    }
+
+    /// C3: 检查所有活跃会话是否超时，返回超时平台列表（同时标记为 Offline）
+    pub fn detect_keepalive_timeouts(&self, max_misses: i64) -> Vec<String> {
+        let now = Utc::now().timestamp();
+        let mut timed_out = Vec::new();
+        for entry in self.sessions.iter() {
+            if entry.state == CascadeState::Active {
+                let elapsed = now - entry.last_keepalive;
+                if elapsed > max_misses * 30 {
+                    let key = entry.key().clone();
+                    timed_out.push(key.clone());
+                    drop(entry); // 释放读锁再获取写锁
+                    if let Some(mut s) = self.sessions.get_mut(&key) {
+                        s.mark_keepalive_timeout();
+                    }
+                }
+            }
+        }
+        timed_out
     }
 
     /// 获取所有需要刷新注册的会话
@@ -501,5 +571,90 @@ mod tests {
         assert_eq!(session.state, CascadeState::Failed);
         assert!(!session.is_active());
         assert_eq!(session.retry_count, 1);
+    }
+
+    /// C3.1: 401 鉴权挑战 → WaitingAuth
+    #[test]
+    fn test_cascade_state_waiting_auth_from_idle() {
+        let mut session = CascadeSession::new("plat".to_string());
+        session.state = CascadeState::Registering;
+        session.mark_waiting_auth("nonce_abc".to_string());
+        assert_eq!(session.state, CascadeState::WaitingAuth);
+        assert!(session.last_error.as_ref().unwrap().contains("nonce_abc"));
+    }
+
+    /// C3.1: WaitingAuth → 注册成功后转 Active
+    #[test]
+    fn test_cascade_state_waiting_auth_to_active() {
+        let mut session = CascadeSession::new("plat".to_string());
+        session.state = CascadeState::WaitingAuth;
+        session.set_active(3600);
+        assert_eq!(session.state, CascadeState::Active);
+        assert!(session.is_active());
+    }
+
+    /// C3.2: Keepalive 超时 → Offline
+    #[test]
+    fn test_cascade_state_keepalive_timeout() {
+        let mut session = CascadeSession::new("plat".to_string());
+        session.set_active(3600);
+        // 模拟 5 分钟未发 Keepalive
+        session.last_keepalive = Utc::now().timestamp() - 300;
+        session.mark_keepalive_timeout();
+        assert_eq!(session.state, CascadeState::Offline);
+        assert_eq!(session.expires_at, 0);
+    }
+
+    /// C3.1: 状态机从 Failed 重试拨回 Registering
+    #[test]
+    fn test_cascade_state_failed_to_retrying() {
+        let mut session = CascadeSession::new("plat".to_string());
+        session.mark_failed("timeout".to_string());
+        assert_eq!(session.state, CascadeState::Failed);
+        session.mark_retrying();
+        assert_eq!(session.state, CascadeState::Registering);
+    }
+
+    /// C3.3: disable_platform 应当移除会话
+    #[tokio::test]
+    async fn test_cascade_disable_platform_removes_session() {
+        let mgr = CascadeService::new(dummy_pool());
+        let mut session = CascadeSession::new("plat-disable".to_string());
+        session.set_active(3600);
+        mgr.sessions.insert("plat-disable".to_string(), session);
+        assert_eq!(mgr.total_count(), 1);
+
+        let r = mgr.disable_platform("plat-disable").await;
+        assert!(r.is_ok());
+        assert_eq!(mgr.total_count(), 0, "disable 后会话应被移除");
+    }
+
+    /// C3.2: detect_keepalive_timeouts 找出超时的活跃平台
+    #[tokio::test]
+    async fn test_cascade_detect_keepalive_timeouts() {
+        let mgr = CascadeService::new(dummy_pool());
+
+        // 平台 A: Active 且 keepalive 5 分钟前
+        let mut a = CascadeSession::new("plat-a".to_string());
+        a.set_active(3600);
+        a.last_keepalive = Utc::now().timestamp() - 300;
+        mgr.sessions.insert("plat-a".to_string(), a);
+
+        // 平台 B: Active 且 keepalive 刚刚
+        let mut b = CascadeSession::new("plat-b".to_string());
+        b.set_active(3600);
+        mgr.sessions.insert("plat-b".to_string(), b);
+
+        // 平台 C: Offline（不应被检测）
+        let mut c = CascadeSession::new("plat-c".to_string());
+        c.mark_offline();
+        mgr.sessions.insert("plat-c".to_string(), c);
+
+        // 阈值 3 次（即 90s）后超时 → A 应被检测到
+        let timed_out = mgr.detect_keepalive_timeouts(3);
+        assert_eq!(timed_out, vec!["plat-a".to_string()]);
+        // A 已转 Offline
+        assert_eq!(mgr.get_session("plat-a").unwrap().state, CascadeState::Offline);
+        assert_eq!(mgr.get_session("plat-b").unwrap().state, CascadeState::Active);
     }
 }

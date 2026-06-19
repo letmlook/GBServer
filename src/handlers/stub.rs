@@ -94,6 +94,7 @@ fn build_cloud_record_urls(
 }
 
 // ========== common channel ==========
+#[allow(non_snake_case)]
 #[derive(Debug, Deserialize)]
 pub struct CommonChannelListQuery {
     pub page: Option<u32>,

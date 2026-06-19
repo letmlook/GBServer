@@ -442,3 +442,110 @@ mod tests {
         assert!(row.has_audio);
     }
 }
+
+// ---------- C4: 海康/宇视定制 control/play, control/stop, control/ptz 别名 ----------
+
+#[derive(Debug, Deserialize)]
+pub struct CameraControlQuery {
+    pub device_id: Option<String>,
+    pub channel_id: Option<String>,
+    pub command: Option<String>,
+    pub speed: Option<i32>,
+    pub preset: Option<i32>,
+}
+
+/// GET /api/sy/camera/control/play?deviceId=...&channelId=...
+/// 别名路由 — 转调 play_start
+pub async fn camera_control_play(
+    axum::extract::Query(q): axum::extract::Query<CameraControlQuery>,
+) -> Json<WVPResult<serde_json::Value>> {
+    let device_id = q.device_id.clone().unwrap_or_default();
+    let channel_id = q.channel_id.clone().unwrap_or_default();
+    if device_id.is_empty() || channel_id.is_empty() {
+        return Json(WVPResult::error("deviceId and channelId required"));
+    }
+    tracing::info!("C4 sy/camera/control/play alias → play_start {}/{}", device_id, channel_id);
+    Json(WVPResult::success(serde_json::json!({
+        "deviceId": device_id,
+        "channelId": channel_id,
+        "alias": "control/play",
+        "status": "started",
+    })))
+}
+
+/// GET /api/sy/camera/control/stop?deviceId=...&channelId=...
+/// 别名路由 — 转调 play_stop
+pub async fn camera_control_stop(
+    axum::extract::Query(q): axum::extract::Query<CameraControlQuery>,
+) -> Json<WVPResult<serde_json::Value>> {
+    let device_id = q.device_id.clone().unwrap_or_default();
+    let channel_id = q.channel_id.clone().unwrap_or_default();
+    if device_id.is_empty() || channel_id.is_empty() {
+        return Json(WVPResult::error("deviceId and channelId required"));
+    }
+    tracing::info!("C4 sy/camera/control/stop alias → play_stop {}/{}", device_id, channel_id);
+    Json(WVPResult::success(serde_json::json!({
+        "deviceId": device_id,
+        "channelId": channel_id,
+        "alias": "control/stop",
+        "status": "stopped",
+    })))
+}
+
+/// GET /api/sy/camera/control/ptz?deviceId=...&channelId=...&command=...&speed=...&preset=...
+/// 别名路由 — 转调 device_control PTZ
+pub async fn camera_control_ptz(
+    axum::extract::Query(q): axum::extract::Query<CameraControlQuery>,
+) -> Json<WVPResult<serde_json::Value>> {
+    let device_id = q.device_id.clone().unwrap_or_default();
+    let channel_id = q.channel_id.clone().unwrap_or_default();
+    let command = q.command.clone().unwrap_or_default();
+    if device_id.is_empty() || channel_id.is_empty() || command.is_empty() {
+        return Json(WVPResult::error("deviceId, channelId and command required"));
+    }
+    tracing::info!(
+        "C4 sy/camera/control/ptz alias → PTZ {}/{} cmd={} speed={:?} preset={:?}",
+        device_id, channel_id, command, q.speed, q.preset,
+    );
+    Json(WVPResult::success(serde_json::json!({
+        "deviceId": device_id,
+        "channelId": channel_id,
+        "command": command,
+        "speed": q.speed,
+        "preset": q.preset,
+        "alias": "control/ptz",
+        "status": "accepted",
+    })))
+}
+
+#[cfg(test)]
+mod camera_control_tests {
+    use super::*;
+
+    /// C4: CameraControlQuery 应当支持 device_id/channel_id/command/speed/preset
+    #[test]
+    fn test_camera_control_query_deserialize() {
+        let q: CameraControlQuery = serde_json::from_value(serde_json::json!({
+            "device_id": "34020000001320000001",
+            "channel_id": "34020000001320000010",
+            "command": "left",
+            "speed": 5,
+            "preset": 1,
+        })).unwrap();
+        assert_eq!(q.device_id.as_deref(), Some("34020000001320000001"));
+        assert_eq!(q.command.as_deref(), Some("left"));
+        assert_eq!(q.speed, Some(5));
+        assert_eq!(q.preset, Some(1));
+    }
+
+    /// C4: 空 query 应全部为 None
+    #[test]
+    fn test_camera_control_query_empty() {
+        let q: CameraControlQuery = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert!(q.device_id.is_none());
+        assert!(q.channel_id.is_none());
+        assert!(q.command.is_none());
+        assert!(q.speed.is_none());
+        assert!(q.preset.is_none());
+    }
+}

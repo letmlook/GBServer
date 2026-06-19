@@ -11,7 +11,7 @@ use tokio::sync::{oneshot, RwLock};
 use dashmap::DashMap;
 
 use crate::config::SipConfig;
-use crate::db::{device as db_device, platform as db_platform, Pool};
+use crate::db::{device as db_device, platform as db_platform, platform_channel as db_platform_channel, Pool};
 use crate::db::position_history as ph;
 use crate::handlers::websocket::WsState;
 use crate::sip::core::parser::Parser;
@@ -29,6 +29,7 @@ use crate::sip::gb28181::{DeviceManager, SessionManager, XmlParser};
 use crate::sip::gb28181::ssrc::SsrcManager;
 use crate::sip::gb28181::stream_reconnect::StreamReconnectManager;
 use crate::sip::gb28181::nat_helper::NatHelper;
+use crate::sip::gb28181::cascade_forward::SendRtpManager;
 use crate::sip::transport::tcp::{TcpConnectionManager, TcpListener};
 use crate::zlm::ZlmClient;
 use crate::cascade::CascadeRegistrar;
@@ -214,6 +215,7 @@ pub struct SipServer {
     cascade_registrar: Option<Arc<CascadeRegistrar>>,
     pending_request_manager: Arc<PendingRequestManager>,
     media_waiter_manager: Arc<MediaWaiterManager>,
+    send_rtp_manager: Arc<SendRtpManager>,
 }
 
 impl SipServer {
@@ -251,7 +253,26 @@ impl SipServer {
             cascade_registrar: None,
             pending_request_manager: Arc::new(PendingRequestManager::new()),
             media_waiter_manager: Arc::new(MediaWaiterManager::new()),
+            send_rtp_manager: Arc::new(SendRtpManager::new()),
         }
+    }
+
+    /// B3: 设置 SendRtpManager（让上游级联点播时复用同一个管理器）
+    pub fn set_send_rtp_manager(&mut self, manager: Arc<SendRtpManager>) {
+        self.send_rtp_manager = manager;
+    }
+
+    /// E1: 注入 StateStore 到 SendRtpManager，让级联会话可跨节点共享
+    pub fn set_state_store(&mut self, store: std::sync::Arc<crate::state_store::StateStore>) {
+        // SendRtpManager.set_state_store 需 &mut self，通过 Arc::get_mut
+        // 仅当本节点是唯一持有者时有效；多节点场景下由 CascadeRegistrar 持有
+        Arc::get_mut(&mut self.send_rtp_manager)
+            .map(|m| m.set_state_store(store));
+    }
+
+    /// B3: 暴露 SendRtpManager 用于外部（cascade_service / BYE 处理）注册会话
+    pub fn send_rtp_manager(&self) -> Arc<SendRtpManager> {
+        self.send_rtp_manager.clone()
     }
 
     pub async fn set_ws_state(&mut self, ws: Arc<WsState>) {
@@ -414,7 +435,8 @@ impl SipServer {
         let udp_pending_invites = self.pending_invites.clone();
         let udp_pending_request = pending_request_manager.clone();
         let udp_cascade_registrar = self.cascade_registrar.clone();
-        
+        let udp_send_rtp_manager = self.send_rtp_manager.clone();
+
         tokio::spawn(async move {
             loop {
                 let mut buf = vec![0u8; 65535];
@@ -436,8 +458,9 @@ impl SipServer {
                         let pending_invites = udp_pending_invites.clone();
                         let cascade_registrar = udp_cascade_registrar.clone();
                         let pending_request_manager = udp_pending_request.clone();
+                        let send_rtp_manager = udp_send_rtp_manager.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = Self::handle_packet(&data, addr, &config, &device_manager, &session_manager, &invite_session_manager, &talk_manager, &catalog_subscription_manager, &zlm_client, &pool, &socket_for_response, false, &ws_state, &pending_request_manager, &pending_invites, &cascade_registrar).await {
+                            if let Err(e) = Self::handle_packet(&data, addr, &config, &device_manager, &session_manager, &invite_session_manager, &talk_manager, &catalog_subscription_manager, &zlm_client, &pool, &socket_for_response, false, &ws_state, &pending_request_manager, &pending_invites, &cascade_registrar, &send_rtp_manager).await {
                                 tracing::error!("SIP handler error: {}", e);
                             }
                         });
@@ -460,13 +483,14 @@ impl SipServer {
             let tcp_pool = pool.clone();
             let tcp_conn_mgr = tcp_connection_manager.clone();
             let tcp_pending_request = pending_request_manager.clone();
+            let tcp_send_rtp_manager = self.send_rtp_manager.clone();
 
             tokio::spawn(async move {
                 loop {
                     match listener.accept().await {
                         Ok((stream, addr)) => {
                             tracing::debug!("TCP connection from: {}", addr);
-                            
+
                             let config = tcp_config.clone();
                             let device_manager = tcp_device_manager.clone();
                             let session_manager = tcp_session_manager.clone();
@@ -477,11 +501,12 @@ impl SipServer {
                             let pool = tcp_pool.clone();
                             let conn_manager = tcp_conn_mgr.clone();
                             let pending_request_manager = tcp_pending_request.clone();
-                            
+                            let send_rtp_manager = tcp_send_rtp_manager.clone();
+
                             conn_manager.add_connection(addr, stream).await;
-                            
+
                             tokio::spawn(async move {
-                                Self::handle_tcp_connection(addr, &config, &device_manager, &session_manager, &invite_session_manager, &talk_manager, &catalog_subscription_manager, &zlm_client, &pool, &conn_manager, &pending_request_manager).await;
+                                Self::handle_tcp_connection(addr, &config, &device_manager, &session_manager, &invite_session_manager, &talk_manager, &catalog_subscription_manager, &zlm_client, &pool, &conn_manager, &pending_request_manager, &send_rtp_manager).await;
                             });
                         }
                         Err(e) => {
@@ -708,6 +733,7 @@ impl SipServer {
         pool: &Pool,
         conn_manager: &TcpConnectionManager,
         pending_request_manager: &Arc<PendingRequestManager>,
+        send_rtp_manager: &Arc<SendRtpManager>,
     ) {
         // 创建一个虚拟 UDP socket 仅用于传递给 handle_packet's 接口
         // 实际回复通过 TcpConnectionManager.send_to 进行
@@ -751,6 +777,7 @@ impl SipServer {
                                 pool,
                                 conn_manager.clone(),
                                 pending_request_manager,
+                                send_rtp_manager,
                             ).await {
                                 tracing::error!("TCP SIP handler error: {}", e);
                             }
@@ -784,6 +811,7 @@ impl SipServer {
         pool: &Pool,
         conn_manager: TcpConnectionManager,
         pending_request_manager: &Arc<PendingRequestManager>,
+        send_rtp_manager: &Arc<SendRtpManager>,
     ) -> Result<()> {
         let msg = Parser::parse(data)?;
         match msg {
@@ -831,10 +859,11 @@ impl SipServer {
                     &dummy_arc,
                     &None,
                     pending_request_manager,
+                    send_rtp_manager,
                 ).await
             }
             SipMessage::Response(resp) => {
-                Self::handle_response(resp, session_manager, &Arc::new(DashMap::new()), &None, pending_request_manager).await
+                Self::handle_response(resp, session_manager, &Arc::new(DashMap::new()), &None, pending_request_manager, send_rtp_manager).await
             }
         }
     }
@@ -856,6 +885,7 @@ impl SipServer {
         pending_request_manager: &Arc<PendingRequestManager>,
         pending_invites: &Arc<DashMap<String, oneshot::Sender<String>>>,
         cascade_registrar: &Option<Arc<CascadeRegistrar>>,
+        send_rtp_manager: &Arc<SendRtpManager>,
     ) -> Result<()> {
         let msg = Parser::parse(data)?;
         match msg {
@@ -874,11 +904,18 @@ impl SipServer {
                     socket,
                     ws_state,
                     pending_request_manager,
-                )
-                .await
+                    send_rtp_manager,
+                ).await
             }
             SipMessage::Response(resp) => {
-                Self::handle_response(resp, session_manager, pending_invites, cascade_registrar, pending_request_manager).await
+                Self::handle_response(
+                    resp,
+                    session_manager,
+                    pending_invites,
+                    cascade_registrar,
+                    pending_request_manager,
+                    send_rtp_manager,
+                ).await
             }
         }
     }
@@ -897,6 +934,7 @@ impl SipServer {
         socket: &Arc<UdpSocket>,
         ws_state: &Option<Arc<WsState>>,
         pending_request_manager: &Arc<PendingRequestManager>,
+        send_rtp_manager: &Arc<SendRtpManager>,
     ) -> Result<()> {
         let method = req.method;
         match method {
@@ -907,13 +945,13 @@ impl SipServer {
                 Self::handle_message(req, addr, config, device_manager, pool, socket, ws_state, pending_request_manager, zlm_client).await
             }
             SipMethod::Invite => {
-                Self::handle_invite(req, addr, config, session_manager, invite_session_manager, talk_manager, zlm_client, pool, socket).await
+                Self::handle_invite(req, addr, config, session_manager, invite_session_manager, talk_manager, zlm_client, pool, socket, send_rtp_manager).await
             }
             SipMethod::Ack => {
                 Self::handle_ack(req, session_manager, invite_session_manager, talk_manager).await
             }
             SipMethod::Bye => {
-                Self::handle_bye(req, session_manager, invite_session_manager, talk_manager, zlm_client, socket, addr).await
+                Self::handle_bye(req, session_manager, invite_session_manager, talk_manager, zlm_client, socket, addr, send_rtp_manager).await
             }
             SipMethod::Options => {
                 Self::handle_options(req, addr, config, socket).await
@@ -1174,6 +1212,7 @@ impl SipServer {
         zlm_client: &Option<Arc<ZlmClient>>,
         _pool: &Pool,
         socket: &Arc<UdpSocket>,
+        send_rtp_manager: &Arc<SendRtpManager>,
     ) -> Result<()> {
         let from = req.header("from").cloned().unwrap_or_default();
         let to = req.header("to").cloned().unwrap_or_default();
@@ -1336,7 +1375,47 @@ impl SipServer {
             invite_session.status = InviteSessionStatus::Ringing;
             invite_session_manager.create(invite_session).await;
         }
-        
+
+        // B3: 若本通道存在级联 SendRtp 会话（上级平台点播本级），则触发 ZLM startSendRtp
+        // 把本级收到的设备 RTP 转发到上级 IP:port。
+        if let (Some(zlm), Some(stream_key)) = (zlm_client.as_ref(), zlm_stream_key.as_ref()) {
+            let cascade_sessions = send_rtp_manager.get_by_channel(&channel_id);
+            for session in cascade_sessions {
+                let channel_id_for_log = channel_id.clone();
+                tracing::info!(
+                    "B3 cascade startSendRtp: channel={} -> upstream={}:{} ssrc={} stream={}",
+                    channel_id_for_log, session.upstream_host, session.upstream_port,
+                    session.upstream_ssrc, stream_key,
+                );
+                let rtp_app = "rtp".to_string();
+                let stream_id = stream_key.clone();
+                let ssrc = session.upstream_ssrc.clone();
+                let dst_url = format!("rtp://{}:{}", session.upstream_host, session.upstream_port);
+                let dst_port = session.upstream_port;
+                let upstream_host = session.upstream_host.clone();
+                let upstream_port = session.upstream_port;
+                let zlm_clone = zlm.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = zlm_clone.start_send_rtp(
+                        "__defaultVhost__",
+                        &rtp_app,
+                        &stream_id,
+                        &ssrc,
+                        &dst_url,
+                        dst_port,
+                        true, // is_udp
+                        Some(0),
+                        false, // use_ps
+                    ).await {
+                        tracing::error!(
+                            "B3 startSendRtp failed for channel {} -> {}:{} : {}",
+                            channel_id_for_log, upstream_host, upstream_port, e,
+                        );
+                    }
+                });
+            }
+        }
+
         tracing::info!("INVITE 200 OK sent - stream: {}, port: {}", stream_type, media_port);
         Ok(())
     }
@@ -1495,6 +1574,7 @@ impl SipServer {
         zlm_client: &Option<Arc<ZlmClient>>,
         socket: &Arc<UdpSocket>,
         addr: SocketAddr,
+        send_rtp_manager: &Arc<SendRtpManager>,
     ) -> Result<()> {
         let call_id = req.call_id().cloned().unwrap_or_default();
         let from = req.header("from").cloned().unwrap_or_default();
@@ -1530,8 +1610,28 @@ impl SipServer {
             talk_manager.update(&session).await;
         }
 
+        // B3: 上级 BYE → 关闭 SendRtp 会话 + ZLM stopSendRtp
+        if let Some(session) = send_rtp_manager.get(&call_id) {
+            if session.active {
+                if let Some(zlm) = zlm_client.as_ref() {
+                    let channel_id = session.channel_id.clone();
+                    let zlm_clone = zlm.clone();
+                    let ssrc = session.upstream_ssrc.clone();
+                    tokio::spawn(async move {
+                        let _ = zlm_clone.stop_send_rtp("__defaultVhost__", "rtp", &ssrc).await;
+                        tracing::info!("B3 cascade BYE -> ZLM stopSendRtp for channel={}", channel_id);
+                    });
+                }
+                send_rtp_manager.close(&call_id);
+                tracing::info!(
+                    "B3 cascade BYE: closed SendRtp session for platform={} channel={}",
+                    session.platform_id, session.channel_id
+                );
+            }
+        }
+
         session_manager.remove(&call_id).await;
-        
+
         let response = Parser::generate_response(200, "OK", &[
             ("Via", &via),
             ("From", &from),
@@ -1539,7 +1639,7 @@ impl SipServer {
             ("Call-ID", &call_id),
             ("CSeq", &cseq),
         ], None);
-        
+
         Self::send_response(socket, addr, &response).await?;
         tracing::info!("BYE received - CallID: {} - Session terminated", call_id);
         Ok(())
@@ -1854,8 +1954,34 @@ impl SipServer {
                     let device_id_for_catalog = XmlParser::get_device_id(body)
                         .unwrap_or_else(|| Self::extract_device_id(&from).unwrap_or_default());
                     let (sum_num, channels) = XmlParser::parse_catalog_channels(body);
-                    tracing::info!("Catalog NOTIFY from {}: {} channels (SumNum={:?})", 
+                    tracing::info!("Catalog NOTIFY from {}: {} channels (SumNum={:?})",
                         device_id_for_catalog, channels.len(), sum_num);
+
+                    // B2: 检测上级平台 NOTIFY — 若 device_id_for_catalog 是已注册的上级平台
+                    // 的 device_gb_id，则把通道列表落库到 gb_platform_channel。
+                    let upstream_platform =
+                        db_platform::get_by_device_gb_id(pool, &device_id_for_catalog)
+                            .await
+                            .ok()
+                            .flatten();
+                    if let Some(platform) = upstream_platform.as_ref() {
+                        let platform_id = platform.id as i64;
+                        let channel_ids: Vec<String> = channels.iter()
+                            .map(|c| c.device_id.clone())
+                            .collect();
+                        match db_platform_channel::batch_add_channels(
+                            pool, platform_id, &channel_ids,
+                        ).await {
+                            Ok(n) => tracing::info!(
+                                "B2: 上级平台 {} Catalog → 落库 gb_platform_channel {} 条",
+                                device_id_for_catalog, n,
+                            ),
+                            Err(e) => tracing::warn!(
+                                "B2: 落库 gb_platform_channel 失败 platform={}: {}",
+                                device_id_for_catalog, e,
+                            ),
+                        }
+                    }
 
                     for ch in &channels {
                         let status = if ch.status == "ON" || ch.status == "online" { true } else { false };
@@ -1963,6 +2089,7 @@ impl SipServer {
         pending_invites: &Arc<DashMap<String, oneshot::Sender<String>>>,
         cascade_registrar: &Option<Arc<CascadeRegistrar>>,
         pending_request_manager: &Arc<PendingRequestManager>,
+        send_rtp_manager: &Arc<SendRtpManager>,
     ) -> Result<()> {
         let call_id = resp.headers.get("call-id").cloned().unwrap_or_default();
         let cseq = resp.headers.get("cseq").cloned().unwrap_or_default();

@@ -469,9 +469,74 @@ impl ZlmClient {
         #[derive(Deserialize)]
         struct Resp { code: i32 }
         let resp: ApiResponse<Resp> = self.request("/index/api/sendRtpInfo", &params).await?;
-        
+
         if resp.code != 0 {
             return Err(anyhow!("ZLM error: {}", resp.msg.unwrap_or_default()));
+        }
+        Ok(())
+    }
+
+    /// B3: 启动 ZLM 将本地 RTP 流推送到上级平台 (startSendRtp)
+    ///
+    /// 由 SipServer 在收到设备 INVITE 200 OK 后调用，把本级已接收的设备 RTP
+    /// 通过 ZLM 转发到上级平台指定的 IP:port。
+    pub async fn start_send_rtp(
+        &self,
+        vhost: &str,
+        app: &str,
+        stream: &str,
+        ssrc: &str,
+        dst_url: &str,
+        dst_port: u16,
+        is_udp: bool,
+        src_port: Option<u16>,
+        use_ps: bool,
+    ) -> Result<()> {
+        let mut params = vec![
+            ("secret", self.secret.clone()),
+            ("vhost", vhost.to_string()),
+            ("app", app.to_string()),
+            ("stream", stream.to_string()),
+            ("ssrc", ssrc.to_string()),
+            ("dst_url", dst_url.to_string()),
+            ("dst_port", dst_port.to_string()),
+            ("is_udp", (if is_udp { 1 } else { 0 }).to_string()),
+            ("use_ps", (if use_ps { 1 } else { 0 }).to_string()),
+        ];
+        if let Some(p) = src_port {
+            params.push(("src_port", p.to_string()));
+        }
+
+        #[derive(Deserialize)]
+        struct Resp { code: i32 }
+        let resp: ApiResponse<Resp> = self.request("/index/api/startSendRtp", &params).await?;
+
+        if resp.code != 0 {
+            return Err(anyhow!("ZLM startSendRtp error: {}", resp.msg.unwrap_or_default()));
+        }
+        Ok(())
+    }
+
+    /// B3: 停止 ZLM 向某个上级平台的 SendRtp 推送 (stopSendRtp)
+    pub async fn stop_send_rtp(
+        &self,
+        vhost: &str,
+        app: &str,
+        stream: &str,
+    ) -> Result<()> {
+        let params = vec![
+            ("secret", self.secret.clone()),
+            ("vhost", vhost.to_string()),
+            ("app", app.to_string()),
+            ("stream", stream.to_string()),
+        ];
+
+        #[derive(Deserialize)]
+        struct Resp { code: i32 }
+        let resp: ApiResponse<Resp> = self.request("/index/api/stopSendRtp", &params).await?;
+
+        if resp.code != 0 {
+            return Err(anyhow!("ZLM stopSendRtp error: {}", resp.msg.unwrap_or_default()));
         }
         Ok(())
     }

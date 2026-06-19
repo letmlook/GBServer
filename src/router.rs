@@ -14,6 +14,7 @@ use crate::handlers::{
     cloud_record_extra, jt1078_extra, parity_extras, playback, rtp_control, server, stream, stub, sy_camera, talk, user, websocket, webrtc, device_batch, region, role,
 };
 use crate::handlers::metrics as metrics_handler;
+use crate::rpc::{RpcRequest, RpcResponse, RpcRouter};
 use crate::zlm::hook as zlm_hook;
 use crate::AppState;
 
@@ -38,6 +39,24 @@ async fn health_check(State(state): State<AppState>) -> Json<serde_json::Value> 
         },
         "timestamp": chrono::Utc::now().to_rfc3339(),
     }))
+}
+
+/// E2: HTTP RPC 端点 — 接收 JSON-RPC envelope 并通过 RpcRouter 分发到本地 handler
+pub async fn rpc_endpoint(
+    State(state): State<AppState>,
+    Json(req): Json<RpcRequest>,
+) -> Json<RpcResponse> {
+    tracing::debug!("RPC inbound: method={} target={}", req.method, req.target);
+    if let Some(router) = state.rpc_router.as_ref() {
+        let response = router.route(&req).await;
+        Json(response)
+    } else {
+        Json(RpcResponse {
+            ok: false,
+            result: None,
+            error: Some("RPC router not configured on this node".to_string()),
+        })
+    }
 }
 
 pub fn app(state: AppState) -> Router<AppState> {
@@ -849,6 +868,9 @@ pub fn app(state: AppState) -> Router<AppState> {
         .route("/api/sy/camera/list/address", get(sy_camera::camera_list_address))
         .route("/api/sy/camera/list/ids", get(sy_camera::camera_list_ids))
         .route("/api/sy/camera/meeting/list", get(sy_camera::camera_meeting_list))
+        .route("/api/sy/camera/control/play", get(sy_camera::camera_control_play))
+        .route("/api/sy/camera/control/stop", get(sy_camera::camera_control_stop))
+        .route("/api/sy/camera/control/ptz", get(sy_camera::camera_control_ptz))
         .route("/api/cloud/record/collect/add", get(cloud_record_extra::collect_add))
         .route("/api/cloud/record/collect/delete", get(cloud_record_extra::collect_delete))
         .route("/api/cloud/record/download/zip", get(cloud_record_extra::download_zip))
@@ -904,8 +926,13 @@ pub fn app(state: AppState) -> Router<AppState> {
         .route("/api/region/page/list", get(region::region_page_list))
         .route("/api/region/sync", get(region::region_sync))
         .route("/api/zlm/hook", post(zlm_hook::handle_webhook))
+        .route("/api/rpc", post(rpc_endpoint))
         .route("/api/health", get(health_check))
-        .route("/metrics", get(metrics_handler::metrics_handler));
+        .route("/metrics", get(metrics_handler::metrics_handler))
+        // C6: play/share 公开访问（凭 share token 鉴权）
+        .route("/api/play/share", get(play::play_share_create))
+        .route("/api/play/share/info", get(play::play_share_info))
+        .route("/api/play/share/start", get(play::play_share_start));
 
     let api = api_public.merge(api_protected);
     let zlm_protected = Router::new()
