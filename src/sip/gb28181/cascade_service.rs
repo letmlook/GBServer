@@ -540,14 +540,21 @@ mod tests {
         {
             sqlx::postgres::PgPoolOptions::new()
                 .max_connections(1)
-                .connect_lazy("postgres://postgres:postgres@127.0.0.1:5432/wvp")
+                .connect_lazy("postgres://postgres:postgres@127.0.0.1:5432/gbserver")
                 .expect("lazy pool")
         }
         #[cfg(feature = "mysql")]
         {
             sqlx::mysql::MySqlPoolOptions::new()
                 .max_connections(1)
-                .connect_lazy("mysql://root:root@127.0.0.1:3306/wvp")
+                .connect_lazy("mysql://root:root@127.0.0.1:3306/gbserver")
+                .expect("lazy pool")
+        }
+        #[cfg(feature = "sqlite")]
+        {
+            sqlx::sqlite::SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_lazy("sqlite::memory:")
                 .expect("lazy pool")
         }
     }
