@@ -458,6 +458,8 @@ impl SipServer {
         let udp_pending_request = pending_request_manager.clone();
         let udp_cascade_registrar = self.cascade_registrar.clone();
         let udp_send_rtp_manager = self.send_rtp_manager.clone();
+        let udp_subscription_lifecycle = self.subscription_lifecycle.clone();
+        let udp_renewal_failures = self.renewal_failures.clone();
 
         tokio::spawn(async move {
             loop {
@@ -481,8 +483,10 @@ impl SipServer {
                         let cascade_registrar = udp_cascade_registrar.clone();
                         let pending_request_manager = udp_pending_request.clone();
                         let send_rtp_manager = udp_send_rtp_manager.clone();
+                        let subscription_lifecycle = udp_subscription_lifecycle.clone();
+                        let renewal_failures = udp_renewal_failures.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = Self::handle_packet(&data, addr, &config, &device_manager, &session_manager, &invite_session_manager, &talk_manager, &catalog_subscription_manager, &zlm_client, &pool, &socket_for_response, false, &ws_state, &pending_request_manager, &pending_invites, &cascade_registrar, &send_rtp_manager).await {
+                            if let Err(e) = Self::handle_packet(&data, addr, &config, &device_manager, &session_manager, &invite_session_manager, &talk_manager, &catalog_subscription_manager, &zlm_client, &pool, &socket_for_response, false, &ws_state, &pending_request_manager, &pending_invites, &cascade_registrar, &send_rtp_manager, &Some(subscription_lifecycle), &renewal_failures).await {
                                 tracing::error!("SIP handler error: {}", e);
                             }
                         });
@@ -602,6 +606,7 @@ let renewal_pool = pool.clone();
                         crate::sip::gb28181::SubscriptionType::Catalog => "Catalog",
                         crate::sip::gb28181::SubscriptionType::MobilePosition => "MobilePosition",
                         crate::sip::gb28181::SubscriptionType::Alarm => "Alarm",
+                        crate::sip::gb28181::SubscriptionType::Keepalive => "Keepalive",
                     };
                     let expires = (session.expires_at - Utc::now().timestamp()).max(30) as u32;
 
@@ -633,7 +638,7 @@ let renewal_pool = pool.clone();
                         }
                         Err(e) => {
                             // 失败：递增计数
-                            let new_count = renewal_failures.entry(key.clone()).or_insert(0);
+                            let mut new_count = renewal_failures.entry(key.clone()).or_insert(0);
                             *new_count += 1;
                             tracing::warn!(
                                 "Renewal failed for {}: {} (failures={})",
@@ -914,7 +919,7 @@ let renewal_pool = pool.clone();
                 ).await
             }
             SipMessage::Response(resp) => {
-                Self::handle_response(resp, session_manager, &Arc::new(DashMap::new()), &None, pending_request_manager, send_rtp_manager).await
+                Self::handle_response(resp, session_manager, &Arc::new(DashMap::new()), &None, pending_request_manager, send_rtp_manager, &None, &Arc::new(DashMap::new())).await
             }
         }
     }
@@ -937,6 +942,8 @@ let renewal_pool = pool.clone();
         pending_invites: &Arc<DashMap<String, oneshot::Sender<String>>>,
         cascade_registrar: &Option<Arc<CascadeRegistrar>>,
         send_rtp_manager: &Arc<SendRtpManager>,
+        subscription_lifecycle: &Option<Arc<crate::sip::gb28181::subscription_lifecycle::SubscriptionLifecycle>>,
+        renewal_failures: &Arc<DashMap<String, u32>>,
     ) -> Result<()> {
         let msg = Parser::parse(data)?;
         match msg {
@@ -966,6 +973,8 @@ let renewal_pool = pool.clone();
                     cascade_registrar,
                     pending_request_manager,
                     send_rtp_manager,
+                    subscription_lifecycle,
+                    renewal_failures,
                 ).await
             }
         }
@@ -2141,6 +2150,8 @@ let renewal_pool = pool.clone();
         cascade_registrar: &Option<Arc<CascadeRegistrar>>,
         pending_request_manager: &Arc<PendingRequestManager>,
         send_rtp_manager: &Arc<SendRtpManager>,
+        subscription_lifecycle: &Option<Arc<crate::sip::gb28181::subscription_lifecycle::SubscriptionLifecycle>>,
+        renewal_failures: &Arc<DashMap<String, u32>>,
     ) -> Result<()> {
         let call_id = resp.headers.get("call-id").cloned().unwrap_or_default();
         let cseq = resp.headers.get("cseq").cloned().unwrap_or_default();
@@ -2220,8 +2231,10 @@ let renewal_pool = pool.clone();
                         "Alarm" => Some(crate::sip::gb28181::SubscriptionType::Alarm),
                         _ => None,
                     } {
-                        self.subscription_lifecycle.renew(device_id, sub_type, expires_header);
-                        self.renewal_failures.remove(&format!("{}_{}", device_id, sub_type.as_str()));
+                        if let Some(lifecycle) = subscription_lifecycle {
+                            lifecycle.renew(device_id, sub_type, expires_header);
+                        }
+                        renewal_failures.remove(&format!("{}_{}", device_id, sub_type.as_str()));
                         tracing::debug!(
                             "SUBSCRIBE renewed: device={} event={} expires={}s",
                             device_id, event, expires_header

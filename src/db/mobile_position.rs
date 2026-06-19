@@ -83,6 +83,29 @@ pub async fn insert(pool: &Pool, pos: &MobilePositionInsert) -> sqlx::Result<u64
         .await?;
         Ok(result.rows_affected())
     }
+
+    #[cfg(feature = "sqlite")]
+    {
+        let result = sqlx::query(
+            "INSERT INTO gb_device_mobile_position \
+             (device_id, channel_id, device_name, time, longitude, latitude, altitude, speed, direction, report_source, create_time) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        )
+        .bind(&pos.device_id)
+        .bind(&pos.channel_id)
+        .bind(&pos.device_name)
+        .bind(&pos.time)
+        .bind(pos.longitude)
+        .bind(pos.latitude)
+        .bind(pos.altitude)
+        .bind(pos.speed)
+        .bind(pos.direction)
+        .bind(&pos.report_source)
+        .bind(&pos.create_time)
+        .execute(pool)
+        .await?;
+        Ok(result.rows_affected())
+    }
 }
 
 /// 分页查询移动位置列表
@@ -145,6 +168,29 @@ pub async fn list_paged(
 
         query.fetch_all(pool).await
     }
+
+    #[cfg(feature = "sqlite")]
+    {
+        let query = sqlx::query_as::<_, MobilePosition>(
+            "SELECT id, device_id, channel_id, device_name, time, longitude, latitude, \
+             altitude, speed, direction, report_source, create_time \
+             FROM gb_device_mobile_position \
+             WHERE device_id = ?1 \
+               AND (?2 IS NULL OR channel_id = ?2) \
+               AND (?3 IS NULL OR time >= ?3) \
+               AND (?4 IS NULL OR time <= ?4) \
+             ORDER BY time DESC \
+             LIMIT ?5 OFFSET ?6"
+        )
+        .bind(device_id)
+        .bind(channel_id)
+        .bind(start_time)
+        .bind(end_time)
+        .bind(count)
+        .bind(offset);
+
+        query.fetch_all(pool).await
+    }
 }
 
 /// 统计移动位置数量
@@ -195,6 +241,25 @@ pub async fn count(
 
         Ok(result.0)
     }
+
+    #[cfg(feature = "sqlite")]
+    {
+        let result: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM gb_device_mobile_position \
+             WHERE device_id = ?1 \
+               AND (?2 IS NULL OR channel_id = ?2) \
+               AND (?3 IS NULL OR time >= ?3) \
+               AND (?4 IS NULL OR time <= ?4)"
+        )
+        .bind(device_id)
+        .bind(channel_id)
+        .bind(start_time)
+        .bind(end_time)
+        .fetch_one(pool)
+        .await?;
+
+        Ok(result.0)
+    }
 }
 
 /// 删除指定时间之前的位置记录
@@ -209,6 +274,15 @@ pub async fn delete_before_time(pool: &Pool, before_time: &str) -> sqlx::Result<
     }
 
     #[cfg(feature = "mysql")]
+    {
+        let result = sqlx::query("DELETE FROM gb_device_mobile_position WHERE time < ?")
+            .bind(before_time)
+            .execute(pool)
+            .await?;
+        Ok(result.rows_affected())
+    }
+
+    #[cfg(feature = "sqlite")]
     {
         let result = sqlx::query("DELETE FROM gb_device_mobile_position WHERE time < ?")
             .bind(before_time)
@@ -248,6 +322,20 @@ pub async fn get_latest_position(pool: &Pool, device_id: &str, channel_id: Optio
         .bind(channel_id);
         query.fetch_optional(pool).await
     }
+
+    #[cfg(feature = "sqlite")]
+    {
+        let query = sqlx::query_as::<_, MobilePosition>(
+            "SELECT id, device_id, channel_id, device_name, time, longitude, latitude, \
+             altitude, speed, direction, report_source, create_time \
+             FROM gb_device_mobile_position \
+             WHERE device_id = ?1 AND (?2 IS NULL OR channel_id = ?2) \
+             ORDER BY time DESC LIMIT 1"
+        )
+        .bind(device_id)
+        .bind(channel_id);
+        query.fetch_optional(pool).await
+    }
 }
 
 /// 删除设备的所有位置记录
@@ -269,6 +357,15 @@ pub async fn delete_by_device(pool: &Pool, device_id: &str) -> sqlx::Result<u64>
             .await?;
         Ok(result.rows_affected())
     }
+
+    #[cfg(feature = "sqlite")]
+    {
+        let result = sqlx::query("DELETE FROM gb_device_mobile_position WHERE device_id = ?")
+            .bind(device_id)
+            .execute(pool)
+            .await?;
+        Ok(result.rows_affected())
+    }
 }
 
 /// 根据ID查询单条记录
@@ -281,6 +378,13 @@ pub async fn get_by_id(pool: &Pool, id: i64) -> sqlx::Result<Option<MobilePositi
     .fetch_optional(pool)
     .await;
     #[cfg(feature = "mysql")]
+    return sqlx::query_as::<_, MobilePosition>(
+        "SELECT id, device_id, channel_id, device_name, time, longitude, latitude, altitude, speed, direction, report_source, create_time FROM gb_device_mobile_position WHERE id = ?"
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await;
+    #[cfg(feature = "sqlite")]
     return sqlx::query_as::<_, MobilePosition>(
         "SELECT id, device_id, channel_id, device_name, time, longitude, latitude, altitude, speed, direction, report_source, create_time FROM gb_device_mobile_position WHERE id = ?"
     )

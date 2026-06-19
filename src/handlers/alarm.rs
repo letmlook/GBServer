@@ -108,17 +108,17 @@ pub async fn alarm_list(
         }))))
     }
 
-    #[cfg(feature = "mysql")]
+    #[cfg(any(feature = "mysql", feature = "sqlite"))]
     {
         let rows: Vec<serde_json::Value> = sqlx::query(
-            "SELECT id, device_id, channel_id, alarm_priority, alarm_method, alarm_type, 
-                    alarm_time, alarm_description, longitude, latitude, create_time 
-             FROM gb_device_alarm 
+            "SELECT id, device_id, channel_id, alarm_priority, alarm_method, alarm_type,
+                    alarm_time, alarm_description, longitude, latitude, create_time
+             FROM gb_device_alarm
              WHERE (? IS NULL OR device_id = ?)
                AND (? IS NULL OR channel_id = ?)
                AND (? IS NULL OR alarm_type = ?)
                AND (? IS NULL OR alarm_method = ?)
-             ORDER BY create_time DESC 
+             ORDER BY create_time DESC
              LIMIT ? OFFSET ?",
         )
         .bind(&q.device_id).bind(&q.device_id)
@@ -163,7 +163,7 @@ pub async fn alarm_list(
         .collect();
 
         let total: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM gb_device_alarm 
+            "SELECT COUNT(*) FROM gb_device_alarm
              WHERE (? IS NULL OR device_id = ?)
                AND (? IS NULL OR channel_id = ?)
                AND (? IS NULL OR alarm_type = ?)
@@ -235,7 +235,7 @@ pub async fn alarm_detail(
         }
     }
 
-    #[cfg(feature = "mysql")]
+    #[cfg(any(feature = "mysql", feature = "sqlite"))]
     {
         let row = sqlx::query("SELECT * FROM gb_device_alarm WHERE id = ?")
             .bind(id)
@@ -308,7 +308,7 @@ pub async fn alarm_handle(
         }))))
     }
 
-    #[cfg(feature = "mysql")]
+    #[cfg(any(feature = "mysql", feature = "sqlite"))]
     {
         // gb_device_alarm表没有handled字段，直接返回成功
         Ok(Json(WVPResult::success(serde_json::json!({
@@ -332,7 +332,7 @@ pub async fn alarm_delete(
             .map_err(|e| AppError::business(ErrorCode::Error500, format!("数据库删除失败: {}", e)))?;
     }
 
-    #[cfg(feature = "mysql")]
+    #[cfg(any(feature = "mysql", feature = "sqlite"))]
     {
         sqlx::query("DELETE FROM gb_device_alarm WHERE id = ?")
             .bind(id)
@@ -366,7 +366,7 @@ pub async fn alarm_batch_delete(
             .execute(&state.pool)
             .await
             .map_err(|e| AppError::business(ErrorCode::Error500, format!("数据库删除失败: {}", e)))?;
-        #[cfg(feature = "mysql")]
+        #[cfg(any(feature = "mysql", feature = "sqlite"))]
         let r = sqlx::query("DELETE FROM gb_device_alarm WHERE id = ?")
             .bind(id)
             .execute(&state.pool)
@@ -390,7 +390,7 @@ pub async fn alarm_delete_by_device(
         .await
         .map_err(|e| AppError::business(ErrorCode::Error500, format!("数据库删除失败: {}", e)))?;
 
-    #[cfg(feature = "mysql")]
+    #[cfg(any(feature = "mysql", feature = "sqlite"))]
     let r = sqlx::query("DELETE FROM gb_device_alarm WHERE device_id = ?")
         .bind(&device_id)
         .execute(&state.pool)
@@ -412,7 +412,7 @@ pub async fn alarm_delete_before_time(
         .await
         .map_err(|e| AppError::business(ErrorCode::Error500, format!("数据库删除失败: {}", e)))?;
 
-    #[cfg(feature = "mysql")]
+    #[cfg(any(feature = "mysql", feature = "sqlite"))]
     let r = sqlx::query("DELETE FROM gb_device_alarm WHERE create_time < ?")
         .bind(&before_time)
         .execute(&state.pool)

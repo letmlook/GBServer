@@ -70,6 +70,13 @@ pub async fn get_media_server_by_id(pool: &Pool, id: &str) -> sqlx::Result<Optio
     .bind(id)
     .fetch_optional(pool)
     .await;
+    #[cfg(feature = "sqlite")]
+    return sqlx::query_as::<_, MediaServer>(
+        "SELECT * FROM gb_media_server WHERE id = ?"
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await;
 }
 
 /// 添加媒体服务器
@@ -96,6 +103,18 @@ pub async fn add(
     let r = sqlx::query(
         r#"INSERT INTO gb_media_server (id, ip, http_port, create_time, update_time, auto_config, rtp_enable, default_server)
            VALUES ($1, $2, $3, $4, $5, false, false, false)"#
+    )
+    .bind(id)
+    .bind(ip)
+    .bind(http_port)
+    .bind(now)
+    .bind(now)
+    .execute(pool)
+    .await?;
+    #[cfg(feature = "sqlite")]
+    let r = sqlx::query(
+        r#"INSERT INTO gb_media_server (id, ip, http_port, create_time, update_time, auto_config, rtp_enable, default_server)
+           VALUES (?, ?, ?, ?, ?, 0, 0, 0)"#
     )
     .bind(id)
     .bind(ip)
@@ -148,6 +167,22 @@ pub async fn update(
     .bind(id)
     .execute(pool)
     .await?;
+    #[cfg(feature = "sqlite")]
+    let r = sqlx::query(
+        r#"UPDATE gb_media_server SET
+           ip = COALESCE(?, ip),
+           hook_ip = COALESCE(?, hook_ip),
+           http_port = COALESCE(?, http_port),
+           update_time = ?
+           WHERE id = ?"#
+    )
+    .bind(ip)
+    .bind(hook_ip)
+    .bind(http_port)
+    .bind(now)
+    .bind(id)
+    .execute(pool)
+    .await?;
     Ok(r.rows_affected())
 }
 
@@ -160,6 +195,11 @@ pub async fn delete_by_id(pool: &Pool, id: &str) -> sqlx::Result<u64> {
     .await?;
     #[cfg(feature = "postgres")]
     let r = sqlx::query("DELETE FROM gb_media_server WHERE id = $1")
+    .bind(id)
+    .execute(pool)
+    .await?;
+    #[cfg(feature = "sqlite")]
+    let r = sqlx::query("DELETE FROM gb_media_server WHERE id = ?")
     .bind(id)
     .execute(pool)
     .await?;
@@ -204,6 +244,21 @@ pub async fn sync_from_config(
     .bind(now)
     .execute(pool)
     .await?;
+    #[cfg(feature = "sqlite")]
+    let r = sqlx::query(
+        r#"INSERT INTO gb_media_server (id, ip, http_port, secret, create_time, update_time, auto_config, rtp_enable, default_server, server_id, type)
+           VALUES (?, ?, ?, ?, ?, ?, 0, 0, 1, ?, 'zlm')
+           ON CONFLICT(id) DO UPDATE SET ip = excluded.ip, http_port = excluded.http_port, secret = excluded.secret, update_time = excluded.update_time"#
+    )
+    .bind(id)
+    .bind(ip)
+    .bind(http_port)
+    .bind(secret)
+    .bind(now)
+    .bind(now)
+    .bind(id)
+    .execute(pool)
+    .await?;
     Ok(r.rows_affected())
 }
 
@@ -218,6 +273,12 @@ pub async fn get_default_server(pool: &Pool) -> sqlx::Result<Option<MediaServer>
     #[cfg(feature = "postgres")]
     return sqlx::query_as::<_, MediaServer>(
         "SELECT id, ip, hook_ip, sdp_ip, stream_ip, http_port, http_ssl_port, rtmp_port, rtsp_port, rtsp_ssl_port, flv_port, flv_ssl_port, ws_port, wss_port, rtp_proxy_port, secret, rtp_enable, default_server, record_assist_port, record_day, record_transcode, create_time, update_time, status, last_keepalive_time FROM gb_media_server WHERE default_server = true LIMIT 1",
+    )
+    .fetch_optional(pool)
+    .await;
+    #[cfg(feature = "sqlite")]
+    return sqlx::query_as::<_, MediaServer>(
+        "SELECT id, ip, hook_ip, sdp_ip, stream_ip, http_port, http_ssl_port, rtmp_port, rtsp_port, rtsp_ssl_port, flv_port, flv_ssl_port, ws_port, wss_port, rtp_proxy_port, secret, rtp_enable, default_server, record_assist_port, record_day, record_transcode, create_time, update_time, status, last_keepalive_time FROM gb_media_server WHERE default_server = 1 LIMIT 1",
     )
     .fetch_optional(pool)
     .await;
@@ -246,6 +307,13 @@ pub async fn update_status(pool: &Pool, id: &str, status: bool, last_keepalive: 
         .bind(id)
         .execute(pool)
         .await?;
+    #[cfg(feature = "sqlite")]
+    let r = sqlx::query("UPDATE gb_media_server SET status = ?, last_keepalive_time = ? WHERE id = ?")
+        .bind(status)
+        .bind(last_keepalive)
+        .bind(id)
+        .execute(pool)
+        .await?;
     Ok(r.rows_affected())
 }
 
@@ -260,6 +328,12 @@ pub async fn list_online_servers(pool: &Pool) -> sqlx::Result<Vec<MediaServer>> 
     #[cfg(feature = "postgres")]
     return sqlx::query_as::<_, MediaServer>(
         "SELECT id, ip, hook_ip, sdp_ip, stream_ip, http_port, http_ssl_port, rtmp_port, rtsp_port, rtsp_ssl_port, flv_port, flv_ssl_port, ws_port, wss_port, rtp_proxy_port, secret, rtp_enable, default_server, record_assist_port, record_day, record_transcode, create_time, update_time, status, last_keepalive_time FROM gb_media_server WHERE status = true ORDER BY id",
+    )
+    .fetch_all(pool)
+    .await;
+    #[cfg(feature = "sqlite")]
+    return sqlx::query_as::<_, MediaServer>(
+        "SELECT id, ip, hook_ip, sdp_ip, stream_ip, http_port, http_ssl_port, rtmp_port, rtsp_port, rtsp_ssl_port, flv_port, flv_ssl_port, ws_port, wss_port, rtp_proxy_port, secret, rtp_enable, default_server, record_assist_port, record_day, record_transcode, create_time, update_time, status, last_keepalive_time FROM gb_media_server WHERE status = 1 ORDER BY id",
     )
     .fetch_all(pool)
     .await;
@@ -313,6 +387,25 @@ pub async fn update_ports(
     .bind(id)
     .execute(pool)
     .await?;
+    #[cfg(feature = "sqlite")]
+    let r = sqlx::query(
+        r#"UPDATE gb_media_server SET
+           http_port = COALESCE(?, http_port),
+           http_ssl_port = COALESCE(?, http_ssl_port),
+           rtsp_port = COALESCE(?, rtsp_port),
+           rtmp_port = COALESCE(?, rtmp_port),
+           status = 1,
+           update_time = ?
+           WHERE id = ?"#
+    )
+    .bind(http_port)
+    .bind(http_ssl_port)
+    .bind(rtsp_port)
+    .bind(rtmp_port)
+    .bind(now)
+    .bind(id)
+    .execute(pool)
+    .await?;
     Ok(r.rows_affected())
 }
 
@@ -333,6 +426,14 @@ pub async fn update_last_keepalive(
     #[cfg(feature = "postgres")]
     let r = sqlx::query(
         "UPDATE gb_media_server SET last_keepalive_time = $1, status = true WHERE id = $2"
+    )
+    .bind(now)
+    .bind(id)
+    .execute(pool)
+    .await?;
+    #[cfg(feature = "sqlite")]
+    let r = sqlx::query(
+        "UPDATE gb_media_server SET last_keepalive_time = ?, status = 1 WHERE id = ?"
     )
     .bind(now)
     .bind(id)
@@ -362,6 +463,16 @@ pub async fn update_flow_stats(
     #[cfg(feature = "postgres")]
     let r = sqlx::query(
         "UPDATE gb_media_server SET total_bytes = COALESCE(total_bytes, 0) + $1, active_stream_count = $2, update_time = $3 WHERE id = $4"
+    )
+    .bind(total_bytes)
+    .bind(active_streams)
+    .bind(now)
+    .bind(id)
+    .execute(pool)
+    .await?;
+    #[cfg(feature = "sqlite")]
+    let r = sqlx::query(
+        "UPDATE gb_media_server SET total_bytes = COALESCE(total_bytes, 0) + ?, active_stream_count = ?, update_time = ? WHERE id = ?"
     )
     .bind(total_bytes)
     .bind(active_streams)

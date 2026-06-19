@@ -67,6 +67,13 @@ pub async fn get_by_id(pool: &Pool, id: i32) -> sqlx::Result<Option<RecordPlan>>
     .bind(id)
     .fetch_optional(pool)
     .await;
+    #[cfg(feature = "sqlite")]
+    return sqlx::query_as::<_, RecordPlan>(
+        "SELECT id, snap, name, create_time, update_time FROM gb_record_plan WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await;
 }
 
 pub async fn list_paged(
@@ -86,6 +93,14 @@ pub async fn list_paged(
     #[cfg(feature = "postgres")]
     return sqlx::query_as::<_, RecordPlan>(
         "SELECT id, snap, name, create_time, update_time FROM gb_record_plan ORDER BY id LIMIT $1 OFFSET $2",
+    )
+    .bind(count as i64)
+    .bind(offset as i64)
+    .fetch_all(pool)
+    .await;
+    #[cfg(feature = "sqlite")]
+    return sqlx::query_as::<_, RecordPlan>(
+        "SELECT id, snap, name, create_time, update_time FROM gb_record_plan ORDER BY id LIMIT ? OFFSET ?",
     )
     .bind(count as i64)
     .bind(offset as i64)
@@ -114,6 +129,13 @@ pub async fn list_items(pool: &Pool, plan_id: i64) -> sqlx::Result<Vec<RecordPla
     .bind(plan_id)
     .fetch_all(pool)
     .await;
+    #[cfg(feature = "sqlite")]
+    return sqlx::query_as::<_, RecordPlanItem>(
+        "SELECT id, start, stop, week_day, plan_id, create_time, update_time FROM gb_record_plan_item WHERE plan_id = ? ORDER BY id",
+    )
+    .bind(plan_id)
+    .fetch_all(pool)
+    .await;
 }
 
 pub async fn add(pool: &Pool, name: &str, snap: bool, now: &str) -> sqlx::Result<u64> {
@@ -130,6 +152,16 @@ pub async fn add(pool: &Pool, name: &str, snap: bool, now: &str) -> sqlx::Result
     #[cfg(feature = "postgres")]
     let r = sqlx::query(
         "INSERT INTO gb_record_plan (name, snap, create_time, update_time) VALUES ($1, $2, $3, $4)",
+    )
+    .bind(name)
+    .bind(snap)
+    .bind(now)
+    .bind(now)
+    .execute(pool)
+    .await?;
+    #[cfg(feature = "sqlite")]
+    let r = sqlx::query(
+        "INSERT INTO gb_record_plan (name, snap, create_time, update_time) VALUES (?, ?, ?, ?)",
     )
     .bind(name)
     .bind(snap)
@@ -167,6 +199,19 @@ pub async fn add_with_id(pool: &Pool, name: &str, snap: bool, now: &str) -> sqlx
         .await?;
         Ok(row.get::<i32, _>("id") as i64)
     }
+    #[cfg(feature = "sqlite")]
+    {
+        let r = sqlx::query(
+            "INSERT INTO gb_record_plan (name, snap, create_time, update_time) VALUES (?, ?, ?, ?)",
+        )
+        .bind(name)
+        .bind(snap)
+        .bind(now)
+        .bind(now)
+        .execute(pool)
+        .await?;
+        Ok(r.last_insert_rowid())
+    }
 }
 
 pub async fn update(
@@ -189,6 +234,16 @@ pub async fn update(
     #[cfg(feature = "postgres")]
     let r = sqlx::query(
         "UPDATE gb_record_plan SET name = COALESCE($1, name), snap = COALESCE($2, snap), update_time = $3 WHERE id = $4",
+    )
+    .bind(name)
+    .bind(snap)
+    .bind(now)
+    .bind(id)
+    .execute(pool)
+    .await?;
+    #[cfg(feature = "sqlite")]
+    let r = sqlx::query(
+        "UPDATE gb_record_plan SET name = COALESCE(?, name), snap = COALESCE(?, snap), update_time = ? WHERE id = ?",
     )
     .bind(name)
     .bind(snap)
@@ -224,6 +279,18 @@ pub async fn delete_by_id(pool: &Pool, id: i32) -> sqlx::Result<u64> {
             .await?;
         return Ok(r.rows_affected());
     }
+    #[cfg(feature = "sqlite")]
+    {
+        let _ = sqlx::query("DELETE FROM gb_record_plan_item WHERE plan_id = ?")
+            .bind(id)
+            .execute(pool)
+            .await?;
+        let r = sqlx::query("DELETE FROM gb_record_plan WHERE id = ?")
+            .bind(id)
+            .execute(pool)
+            .await?;
+        return Ok(r.rows_affected());
+    }
 }
 
 pub async fn link_channel(
@@ -239,6 +306,12 @@ pub async fn link_channel(
         .await?;
     #[cfg(feature = "postgres")]
     let r = sqlx::query("UPDATE gb_device_channel SET record_plan_id = $1 WHERE id = $2")
+        .bind(plan_id.map(|x| x as i32))
+        .bind(channel_id)
+        .execute(pool)
+        .await?;
+    #[cfg(feature = "sqlite")]
+    let r = sqlx::query("UPDATE gb_device_channel SET record_plan_id = ? WHERE id = ?")
         .bind(plan_id.map(|x| x as i32))
         .bind(channel_id)
         .execute(pool)
@@ -285,6 +358,29 @@ pub async fn replace_items(
         for item in items {
             let r = sqlx::query(
                 "INSERT INTO gb_record_plan_item (\"start\", stop, week_day, plan_id, create_time, update_time) VALUES ($1, $2, $3, $4, $5, $6)",
+            )
+            .bind(item.start)
+            .bind(item.stop)
+            .bind(item.week_day)
+            .bind(plan_id)
+            .bind(now)
+            .bind(now)
+            .execute(pool)
+            .await?;
+            affected += r.rows_affected();
+        }
+        Ok(affected)
+    }
+    #[cfg(feature = "sqlite")]
+    {
+        let _ = sqlx::query("DELETE FROM gb_record_plan_item WHERE plan_id = ?")
+            .bind(plan_id)
+            .execute(pool)
+            .await?;
+        let mut affected = 0;
+        for item in items {
+            let r = sqlx::query(
+                "INSERT INTO gb_record_plan_item (\"start\", stop, week_day, plan_id, create_time, update_time) VALUES (?, ?, ?, ?, ?, ?)",
             )
             .bind(item.start)
             .bind(item.stop)

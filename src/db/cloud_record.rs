@@ -101,6 +101,32 @@ pub async fn insert(pool: &Pool, record: &CloudRecordInsert) -> sqlx::Result<i64
 
         Ok(result.last_insert_id() as i64)
     }
+
+    #[cfg(feature = "sqlite")]
+    {
+        let result = sqlx::query(
+            "INSERT INTO gb_cloud_record \
+             (app, stream, call_id, start_time, end_time, media_server_id, server_id, \
+              file_name, folder, file_path, file_size, time_len) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        )
+        .bind(&record.app)
+        .bind(&record.stream)
+        .bind(&record.call_id)
+        .bind(record.start_time)
+        .bind(record.end_time)
+        .bind(&record.media_server_id)
+        .bind(&record.server_id)
+        .bind(&record.file_name)
+        .bind(&record.folder)
+        .bind(&record.file_path)
+        .bind(record.file_size)
+        .bind(record.time_len)
+        .execute(pool)
+        .await?;
+
+        Ok(result.last_insert_rowid() as i64)
+    }
 }
 
 /// 根据ID查询云端录像
@@ -118,6 +144,18 @@ pub async fn get_by_id(pool: &Pool, id: i64) -> sqlx::Result<Option<CloudRecord>
     }
 
     #[cfg(feature = "mysql")]
+    {
+        sqlx::query_as::<_, CloudRecord>(
+            "SELECT id, app, stream, call_id, start_time, end_time, media_server_id, \
+             server_id, file_name, folder, file_path, collect, file_size, time_len \
+             FROM gb_cloud_record WHERE id = ?"
+        )
+        .bind(id)
+        .fetch_optional(pool)
+        .await
+    }
+
+    #[cfg(feature = "sqlite")]
     {
         sqlx::query_as::<_, CloudRecord>(
             "SELECT id, app, stream, call_id, start_time, end_time, media_server_id, \
@@ -197,6 +235,31 @@ pub async fn list_paged(
 
         query.fetch_all(pool).await
     }
+
+    #[cfg(feature = "sqlite")]
+    {
+        let query = sqlx::query_as::<_, CloudRecord>(
+            "SELECT id, app, stream, call_id, start_time, end_time, media_server_id, \
+             server_id, file_name, folder, file_path, collect, file_size, time_len \
+             FROM gb_cloud_record \
+             WHERE (?1 IS NULL OR app = ?1) \
+               AND (?2 IS NULL OR stream = ?2) \
+               AND (?3 IS NULL OR media_server_id = ?3) \
+               AND (?4 IS NULL OR start_time >= ?4) \
+               AND (?5 IS NULL OR end_time <= ?5) \
+             ORDER BY start_time DESC \
+             LIMIT ?6 OFFSET ?7"
+        )
+        .bind(app)
+        .bind(stream)
+        .bind(media_server_id)
+        .bind(start_time)
+        .bind(end_time)
+        .bind(count)
+        .bind(offset);
+
+        query.fetch_all(pool).await
+    }
 }
 
 /// 统计云端录像数量
@@ -254,6 +317,27 @@ pub async fn count_all(
 
         Ok(result.0)
     }
+
+    #[cfg(feature = "sqlite")]
+    {
+        let result: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM gb_cloud_record \
+             WHERE (?1 IS NULL OR app = ?1) \
+               AND (?2 IS NULL OR stream = ?2) \
+               AND (?3 IS NULL OR media_server_id = ?3) \
+               AND (?4 IS NULL OR start_time >= ?4) \
+               AND (?5 IS NULL OR end_time <= ?5)"
+        )
+        .bind(app)
+        .bind(stream)
+        .bind(media_server_id)
+        .bind(start_time)
+        .bind(end_time)
+        .fetch_one(pool)
+        .await?;
+
+        Ok(result.0)
+    }
 }
 
 /// 更新云端录像
@@ -295,6 +379,25 @@ pub async fn update(pool: &Pool, record: &CloudRecordUpdate) -> sqlx::Result<boo
 
         Ok(result.rows_affected() > 0)
     }
+
+    #[cfg(feature = "sqlite")]
+    {
+        let result = sqlx::query(
+            "UPDATE gb_cloud_record SET \
+             end_time = COALESCE(?, end_time), \
+             file_size = COALESCE(?, file_size), \
+             time_len = COALESCE(?, time_len) \
+             WHERE id = ?"
+        )
+        .bind(record.end_time)
+        .bind(record.file_size)
+        .bind(record.time_len)
+        .bind(record.id)
+        .execute(pool)
+        .await?;
+
+        Ok(result.rows_affected() > 0)
+    }
 }
 
 /// 删除云端录像
@@ -309,6 +412,15 @@ pub async fn delete(pool: &Pool, id: i64) -> sqlx::Result<bool> {
     }
 
     #[cfg(feature = "mysql")]
+    {
+        let result = sqlx::query("DELETE FROM gb_cloud_record WHERE id = ?")
+            .bind(id)
+            .execute(pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    #[cfg(feature = "sqlite")]
     {
         let result = sqlx::query("DELETE FROM gb_cloud_record WHERE id = ?")
             .bind(id)
@@ -357,6 +469,23 @@ pub async fn batch_delete(pool: &Pool, ids: &[i64]) -> sqlx::Result<u64> {
         let result = query.execute(pool).await?;
         Ok(result.rows_affected())
     }
+
+    #[cfg(feature = "sqlite")]
+    {
+        let placeholders: Vec<String> = ids.iter().map(|_| "?".to_string()).collect();
+        let sql = format!(
+            "DELETE FROM gb_cloud_record WHERE id IN ({})",
+            placeholders.join(", ")
+        );
+
+        let mut query = sqlx::query(&sql);
+        for id in ids {
+            query = query.bind(id);
+        }
+
+        let result = query.execute(pool).await?;
+        Ok(result.rows_affected())
+    }
 }
 
 /// 设置/取消收藏
@@ -372,6 +501,16 @@ pub async fn set_collect(pool: &Pool, id: i64, collect: bool) -> sqlx::Result<bo
     }
 
     #[cfg(feature = "mysql")]
+    {
+        let result = sqlx::query("UPDATE gb_cloud_record SET collect = ? WHERE id = ?")
+            .bind(collect)
+            .bind(id)
+            .execute(pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    #[cfg(feature = "sqlite")]
     {
         let result = sqlx::query("UPDATE gb_cloud_record SET collect = ? WHERE id = ?")
             .bind(collect)
@@ -398,6 +537,13 @@ pub async fn get_by_call_id(pool: &Pool, call_id: &str) -> sqlx::Result<Option<C
     .bind(call_id)
     .fetch_optional(pool)
     .await;
+    #[cfg(feature = "sqlite")]
+    return sqlx::query_as::<_, CloudRecord>(
+        "SELECT id, app, stream, call_id, start_time, end_time, duration, media_server_id, file_name, file_path, file_size, create_time, collect FROM gb_cloud_record WHERE call_id = ?"
+    )
+    .bind(call_id)
+    .fetch_optional(pool)
+    .await;
 }
 
 /// 删除指定流的录像
@@ -409,6 +555,12 @@ pub async fn delete_by_app_stream(pool: &Pool, app: &str, stream: &str) -> sqlx:
         .execute(pool)
         .await?;
     #[cfg(feature = "mysql")]
+    let r = sqlx::query("DELETE FROM gb_cloud_record WHERE app = ? AND stream = ?")
+        .bind(app)
+        .bind(stream)
+        .execute(pool)
+        .await?;
+    #[cfg(feature = "sqlite")]
     let r = sqlx::query("DELETE FROM gb_cloud_record WHERE app = ? AND stream = ?")
         .bind(app)
         .bind(stream)
@@ -431,6 +583,12 @@ pub async fn get_collect_records(pool: &Pool) -> sqlx::Result<Vec<CloudRecord>> 
     )
     .fetch_all(pool)
     .await;
+    #[cfg(feature = "sqlite")]
+    return sqlx::query_as::<_, CloudRecord>(
+        "SELECT id, app, stream, call_id, start_time, end_time, duration, media_server_id, file_name, file_path, file_size, create_time, collect FROM gb_cloud_record WHERE collect = 1 ORDER BY create_time DESC"
+    )
+    .fetch_all(pool)
+    .await;
 }
 
 /// 删除指定时间之前的录像
@@ -441,6 +599,11 @@ pub async fn delete_before_time(pool: &Pool, before_time: i64) -> sqlx::Result<u
         .execute(pool)
         .await?;
     #[cfg(feature = "mysql")]
+    let r = sqlx::query("DELETE FROM gb_cloud_record WHERE end_time < ?")
+        .bind(before_time)
+        .execute(pool)
+        .await?;
+    #[cfg(feature = "sqlite")]
     let r = sqlx::query("DELETE FROM gb_cloud_record WHERE end_time < ?")
         .bind(before_time)
         .execute(pool)
@@ -521,6 +684,27 @@ pub async fn update_recording_progress(
                        ORDER BY (start_time IS NULL), start_time DESC
                        LIMIT 1
                    ) AS t
+               )"#,
+        )
+        .bind(duration_secs)
+        .bind(current_size_bytes as i64)
+        .bind(now)
+        .bind(stream_id)
+        .bind(app)
+        .execute(pool)
+        .await
+        .map(|r| r.rows_affected())
+    }
+    #[cfg(feature = "sqlite")]
+    {
+        sqlx::query(
+            r#"UPDATE gb_cloud_record
+               SET time_len = ?, file_size = ?, end_time = ?
+               WHERE id = (
+                   SELECT id FROM gb_cloud_record
+                   WHERE stream = ? AND app = ?
+                   ORDER BY (start_time IS NULL), start_time DESC
+                   LIMIT 1
                )"#,
         )
         .bind(duration_secs)

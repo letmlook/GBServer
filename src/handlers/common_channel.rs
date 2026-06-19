@@ -881,7 +881,7 @@ pub async fn map_thin_progress(
         .flatten()
         .unwrap_or(false);
 
-        #[cfg(feature = "mysql")]
+        #[cfg(any(feature = "mysql", feature = "sqlite"))]
         let has_geojson: bool = sqlx::query_scalar(
             "SELECT (geojson IS NOT NULL) FROM gb_device_channel WHERE id = ?"
         )
@@ -943,7 +943,7 @@ pub async fn map_thin_save(
     .await
     .unwrap_or_default();
 
-    #[cfg(feature = "mysql")]
+    #[cfg(any(feature = "mysql", feature = "sqlite"))]
     let points: Vec<PositionPoint> = sqlx::query_as(
         "SELECT longitude, latitude FROM gb_position_history WHERE device_id = ? ORDER BY time",
     )
@@ -994,7 +994,7 @@ pub async fn map_thin_save(
         .execute(&state.pool)
         .await;
 
-    #[cfg(feature = "mysql")]
+    #[cfg(any(feature = "mysql", feature = "sqlite"))]
     let _ = sqlx::query("UPDATE gb_device_channel SET geojson = ? WHERE id = ?")
         .bind(&geojson_str)
         .bind(channel_id)
@@ -1035,7 +1035,7 @@ pub async fn map_thin_draw(
             .bind(channel_id)
             .execute(&state.pool)
             .await;
-        #[cfg(feature = "mysql")]
+        #[cfg(any(feature = "mysql", feature = "sqlite"))]
         let _ = sqlx::query("UPDATE gb_device_channel SET geojson = ? WHERE id = ?")
             .bind(&geojson_str)
             .bind(channel_id)
@@ -1060,7 +1060,7 @@ pub async fn map_thin_draw(
     .ok()
     .flatten();
 
-    #[cfg(feature = "mysql")]
+    #[cfg(any(feature = "mysql", feature = "sqlite"))]
     let row: Option<GeojsonRow> = sqlx::query_as(
         "SELECT geojson FROM gb_device_channel WHERE id = ?"
     )

@@ -671,7 +671,16 @@ pub async fn log_list(
         .bind(offset as i64)
         .fetch_all(&state.pool)
         .await;
-        
+
+        #[cfg(feature = "sqlite")]
+        let rows: Result<Vec<LogRow>, _> = sqlx::query_as(
+            "SELECT id, name, type, create_time FROM gb_log ORDER BY id DESC LIMIT ? OFFSET ?",
+        )
+        .bind(count as i64)
+        .bind(offset as i64)
+        .fetch_all(&state.pool)
+        .await;
+
         let list = match rows {
             Ok(rows) => rows
                 .into_iter()
@@ -749,11 +758,11 @@ pub async fn log_list(
         return Json(WVPResult::success(serde_json::json!({ "total": total, "list": list })));
     }
     
-    #[cfg(feature = "mysql")]
+    #[cfg(any(feature = "mysql", feature = "sqlite"))]
     {
         let mut conditions = String::new();
         let mut binds: Vec<String> = Vec::new();
-        
+
         if !search.is_empty() {
             conditions.push_str(" AND (name LIKE ? OR type LIKE ?)");
             binds.push(like_search.clone());
@@ -771,23 +780,23 @@ pub async fn log_list(
             conditions.push_str(" AND create_time <= ?");
             binds.push(end_time.to_string());
         }
-        
+
         let count_sql = format!("SELECT COUNT(*) FROM gb_log WHERE 1=1{}", conditions);
         let mut count_query = sqlx::query_scalar::<_, i64>(&count_sql);
         for bind in &binds {
             count_query = count_query.bind(bind);
         }
         let total: i64 = count_query.fetch_one(&state.pool).await.unwrap_or(0);
-        
+
         let data_sql = format!("SELECT id, name, type, create_time FROM gb_log WHERE 1=1{} ORDER BY id DESC LIMIT ? OFFSET ?", conditions);
         let mut data_query = sqlx::query_as::<_, LogRow>(&data_sql);
         for bind in &binds {
             data_query = data_query.bind(bind);
         }
         data_query = data_query.bind(count as i64).bind(offset as i64);
-        
+
         let rows: Vec<LogRow> = data_query.fetch_all(&state.pool).await.unwrap_or_default();
-        
+
         let list: Vec<serde_json::Value> = rows
             .into_iter()
             .map(|r| {
@@ -799,7 +808,7 @@ pub async fn log_list(
                 })
             })
             .collect();
-        
+
         return Json(WVPResult::success(serde_json::json!({ "total": total, "list": list })));
     }
 }
@@ -1060,6 +1069,21 @@ async fn ensure_cloud_record_task_table(pool: &crate::db::Pool) {
             update_time VARCHAR(64)
         )
     "#;
+    #[cfg(feature = "sqlite")]
+    let query = r#"
+        CREATE TABLE IF NOT EXISTS gb_cloud_record_task (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            app TEXT,
+            stream TEXT,
+            media_server_id TEXT,
+            start_time TEXT,
+            end_time TEXT,
+            status TEXT,
+            progress REAL DEFAULT 0,
+            create_time TEXT,
+            update_time TEXT
+        )
+    "#;
     let _ = sqlx::query(query).execute(pool).await;
 }
 
@@ -1286,6 +1310,23 @@ pub async fn cloud_record_task_add(
     .execute(&state.pool)
     .await;
     #[cfg(feature = "mysql")]
+    let result = sqlx::query(
+        r#"INSERT INTO gb_cloud_record_task
+           (app, stream, media_server_id, start_time, end_time, status, progress, create_time, update_time)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
+    )
+    .bind(&app)
+    .bind(&stream)
+    .bind(&media_server_id)
+    .bind(&start_time)
+    .bind(&end_time)
+    .bind("pending")
+    .bind(0.0_f64)
+    .bind(&now)
+    .bind(&now)
+    .execute(&state.pool)
+    .await;
+    #[cfg(feature = "sqlite")]
     let result = sqlx::query(
         r#"INSERT INTO gb_cloud_record_task
            (app, stream, media_server_id, start_time, end_time, status, progress, create_time, update_time)
@@ -1680,6 +1721,39 @@ pub async fn record_plan_channel_list(
     .bind(offset)
     .fetch_all(&state.pool)
     .await?;
+    #[cfg(feature = "sqlite")]
+    let rows = sqlx::query(
+        r#"
+        SELECT id, name, gb_device_id, manufacturer, status, data_type, record_plan_id
+        FROM gb_device_channel
+        WHERE (? = '' OR name LIKE ? OR gb_device_id LIKE ?)
+          AND (? IS NULL OR status = ?)
+          AND (? IS NULL OR data_type = ?)
+          AND (
+                ? IS NULL
+                OR (? = 'true' AND record_plan_id = ?)
+                OR (? = 'false' AND (record_plan_id IS NULL OR record_plan_id != ?))
+              )
+        ORDER BY id DESC
+        LIMIT ? OFFSET ?
+        "#,
+    )
+    .bind(search)
+    .bind(&like)
+    .bind(&like)
+    .bind(online)
+    .bind(online)
+    .bind(channel_type)
+    .bind(channel_type)
+    .bind(plan_id)
+    .bind(has_link)
+    .bind(plan_id)
+    .bind(has_link)
+    .bind(plan_id)
+    .bind(count as i64)
+    .bind(offset)
+    .fetch_all(&state.pool)
+    .await?;
 
     #[cfg(feature = "postgres")]
     let total: i64 = sqlx::query_scalar(
@@ -1705,6 +1779,35 @@ pub async fn record_plan_channel_list(
     .fetch_one(&state.pool)
     .await?;
     #[cfg(feature = "mysql")]
+    let total: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM gb_device_channel
+        WHERE (? = '' OR name LIKE ? OR gb_device_id LIKE ?)
+          AND (? IS NULL OR status = ?)
+          AND (? IS NULL OR data_type = ?)
+          AND (
+                ? IS NULL
+                OR (? = 'true' AND record_plan_id = ?)
+                OR (? = 'false' AND (record_plan_id IS NULL OR record_plan_id != ?))
+              )
+        "#,
+    )
+    .bind(search)
+    .bind(&like)
+    .bind(&like)
+    .bind(online)
+    .bind(online)
+    .bind(channel_type)
+    .bind(channel_type)
+    .bind(plan_id)
+    .bind(has_link)
+    .bind(plan_id)
+    .bind(has_link)
+    .bind(plan_id)
+    .fetch_one(&state.pool)
+    .await?;
+    #[cfg(feature = "sqlite")]
     let total: i64 = sqlx::query_scalar(
         r#"
         SELECT COUNT(*)
@@ -1789,6 +1892,11 @@ pub async fn record_plan_link(
                 .bind(gb_id)
                 .fetch_optional(&state.pool)
                 .await?;
+            #[cfg(feature = "sqlite")]
+            let row = sqlx::query("SELECT id FROM gb_device_channel WHERE gb_device_id = ?")
+                .bind(gb_id)
+                .fetch_optional(&state.pool)
+                .await?;
             if let Some(row) = row {
                 let channel_id: i64 = row.try_get::<i32, _>("id").map(|v| v as i64)
                     .or_else(|_| row.try_get::<i64, _>("id"))
@@ -1811,6 +1919,11 @@ pub async fn record_plan_link(
                 .bind(*device_db_id as i32)
                 .fetch_all(&state.pool)
                 .await?;
+            #[cfg(feature = "sqlite")]
+            let rows = sqlx::query("SELECT id FROM gb_device_channel WHERE data_device_id = ?")
+                .bind(*device_db_id as i32)
+                .fetch_all(&state.pool)
+                .await?;
             for row in rows {
                 let channel_id: i64 = row.try_get::<i32, _>("id").map(|v| v as i64)
                     .or_else(|_| row.try_get::<i64, _>("id"))
@@ -1827,6 +1940,10 @@ pub async fn record_plan_link(
             .fetch_all(&state.pool)
             .await?;
         #[cfg(feature = "mysql")]
+        let rows = sqlx::query("SELECT id FROM gb_device_channel")
+            .fetch_all(&state.pool)
+            .await?;
+        #[cfg(feature = "sqlite")]
         let rows = sqlx::query("SELECT id FROM gb_device_channel")
             .fetch_all(&state.pool)
             .await?;

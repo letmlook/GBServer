@@ -104,7 +104,7 @@ impl RecordPlanScheduler {
             .fetch_all(&self.pool)
             .await?;
 
-            #[cfg(feature = "mysql")]
+            #[cfg(any(feature = "mysql", feature = "sqlite"))]
             let channels: Vec<ChannelRow> = sqlx::query_as(
                 "SELECT id, device_id, gb_device_id FROM gb_device_channel WHERE record_plan_id = ?",
             )

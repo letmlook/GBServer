@@ -57,6 +57,14 @@ pub async fn list_paged(
     .bind(offset as i64)
     .fetch_all(pool)
     .await;
+    #[cfg(feature = "sqlite")]
+    return sqlx::query_as::<_, UserApiKey>(
+        "SELECT id, user_id, app, api_key, expired_at, remark, enable, create_time, update_time FROM gb_user_api_key ORDER BY id LIMIT ? OFFSET ?",
+    )
+    .bind(count as i64)
+    .bind(offset as i64)
+    .fetch_all(pool)
+    .await;
 }
 
 pub async fn count_all(pool: &Pool) -> sqlx::Result<i64> {
@@ -76,6 +84,13 @@ pub async fn get_by_id(pool: &Pool, id: i32) -> sqlx::Result<Option<UserApiKey>>
     #[cfg(feature = "postgres")]
     return sqlx::query_as::<_, UserApiKey>(
         "SELECT id, user_id, app, api_key, expired_at, remark, enable, create_time, update_time FROM gb_user_api_key WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await;
+    #[cfg(feature = "sqlite")]
+    return sqlx::query_as::<_, UserApiKey>(
+        "SELECT id, user_id, app, api_key, expired_at, remark, enable, create_time, update_time FROM gb_user_api_key WHERE id = ?",
     )
     .bind(id)
     .fetch_optional(pool)
@@ -120,6 +135,20 @@ pub async fn add(
     .bind(now)
     .execute(pool)
     .await?;
+    #[cfg(feature = "sqlite")]
+    let r = sqlx::query(
+        "INSERT INTO gb_user_api_key (user_id, app, api_key, expired_at, remark, enable, create_time, update_time) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(user_id)
+    .bind(app)
+    .bind(api_key)
+    .bind(expired_at)
+    .bind(remark)
+    .bind(enable)
+    .bind(now)
+    .bind(now)
+    .execute(pool)
+    .await?;
     Ok(r.rows_affected())
 }
 
@@ -143,6 +172,13 @@ pub async fn update_remark(
         .bind(id)
         .execute(pool)
         .await?;
+    #[cfg(feature = "sqlite")]
+    let r = sqlx::query("UPDATE gb_user_api_key SET remark = ?, update_time = ? WHERE id = ?")
+        .bind(remark)
+        .bind(now)
+        .bind(id)
+        .execute(pool)
+        .await?;
     Ok(r.rows_affected())
 }
 
@@ -156,6 +192,13 @@ pub async fn set_enable(pool: &Pool, id: i32, enable: bool, now: &str) -> sqlx::
         .await?;
     #[cfg(feature = "postgres")]
     let r = sqlx::query("UPDATE gb_user_api_key SET enable = $1, update_time = $2 WHERE id = $3")
+        .bind(enable)
+        .bind(now)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    #[cfg(feature = "sqlite")]
+    let r = sqlx::query("UPDATE gb_user_api_key SET enable = ?, update_time = ? WHERE id = ?")
         .bind(enable)
         .bind(now)
         .bind(id)
@@ -184,6 +227,13 @@ pub async fn reset_api_key(
         .bind(id)
         .execute(pool)
         .await?;
+    #[cfg(feature = "sqlite")]
+    let r = sqlx::query("UPDATE gb_user_api_key SET api_key = ?, update_time = ? WHERE id = ?")
+        .bind(new_key)
+        .bind(now)
+        .bind(id)
+        .execute(pool)
+        .await?;
     Ok(r.rows_affected())
 }
 
@@ -195,6 +245,11 @@ pub async fn delete_by_id(pool: &Pool, id: i32) -> sqlx::Result<u64> {
         .await?;
     #[cfg(feature = "postgres")]
     let r = sqlx::query("DELETE FROM gb_user_api_key WHERE id = $1")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    #[cfg(feature = "sqlite")]
+    let r = sqlx::query("DELETE FROM gb_user_api_key WHERE id = ?")
         .bind(id)
         .execute(pool)
         .await?;
@@ -217,6 +272,13 @@ pub async fn get_by_api_key(pool: &Pool, api_key: &str) -> sqlx::Result<Option<U
     .bind(api_key)
     .fetch_optional(pool)
     .await;
+    #[cfg(feature = "sqlite")]
+    return sqlx::query_as::<_, UserApiKey>(
+        "SELECT id, user_id, app, api_key, expired_at, remark, enable, create_time, update_time FROM gb_user_api_key WHERE api_key = ?",
+    )
+    .bind(api_key)
+    .fetch_optional(pool)
+    .await;
 }
 
 /// 根据用户ID查询 API Key 列表
@@ -235,6 +297,13 @@ pub async fn list_by_user_id(pool: &Pool, user_id: i64) -> sqlx::Result<Vec<User
     .bind(user_id)
     .fetch_all(pool)
     .await;
+    #[cfg(feature = "sqlite")]
+    return sqlx::query_as::<_, UserApiKey>(
+        "SELECT id, user_id, app, api_key, expired_at, remark, enable, create_time, update_time FROM gb_user_api_key WHERE user_id = ? ORDER BY id",
+    )
+    .bind(user_id)
+    .fetch_all(pool)
+    .await;
 }
 
 /// 删除过期的 API Key
@@ -246,6 +315,11 @@ pub async fn delete_expired_keys(pool: &Pool, now_ts: i64) -> sqlx::Result<u64> 
         .await?;
     #[cfg(feature = "postgres")]
     let r = sqlx::query("DELETE FROM gb_user_api_key WHERE expired_at IS NOT NULL AND expired_at < $1")
+        .bind(now_ts)
+        .execute(pool)
+        .await?;
+    #[cfg(feature = "sqlite")]
+    let r = sqlx::query("DELETE FROM gb_user_api_key WHERE expired_at IS NOT NULL AND expired_at < ?")
         .bind(now_ts)
         .execute(pool)
         .await?;

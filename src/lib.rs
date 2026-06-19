@@ -88,14 +88,24 @@ async fn init_db_tables(pool: &db::Pool) -> anyhow::Result<()> {
             "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='gb_device')"
         )
         .fetch_one(pool)
-        .await.unwrap_or(false);
+        .await
+        .unwrap_or(false);
 
         if !table_exists {
             tracing::info!("[sqlite] schema tables not found, initializing...");
             let sql = include_str!("../database/init-sqlite-2.7.4.sql");
-            for stmt in sql.split(';') {
-                let stmt = stmt.trim();
-                if stmt.is_empty() || stmt.starts_with("--") || stmt.starts_with("/*") {
+            // 逐行去除 `--` 行注释和空行，然后按 `;` 切分执行
+            let cleaned: String = sql
+                .lines()
+                .filter(|line| {
+                    let t = line.trim_start();
+                    !t.is_empty() && !t.starts_with("--")
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            for (idx, raw_stmt) in cleaned.split(';').enumerate() {
+                let stmt = raw_stmt.trim();
+                if stmt.is_empty() {
                     continue;
                 }
                 let upper = stmt.to_uppercase();
@@ -103,7 +113,15 @@ async fn init_db_tables(pool: &db::Pool) -> anyhow::Result<()> {
                    !upper.starts_with("ALTER") && !upper.starts_with("DROP") {
                     continue;
                 }
-                let _ = sqlx::query(stmt).execute(pool).await;
+                match sqlx::query(stmt).execute(pool).await {
+                    Ok(_) => tracing::debug!("[sqlite] stmt #{} OK", idx),
+                    Err(e) => tracing::error!(
+                        "[sqlite] stmt #{} FAILED: {} | error: {}",
+                        idx,
+                        stmt.chars().take(120).collect::<String>(),
+                        e
+                    ),
+                }
             }
             tracing::info!("[sqlite] schema initialization complete");
         }

@@ -158,6 +158,21 @@ pub async fn platform_query(
         .fetch_one(&state.pool)
         .await?
     };
+    #[cfg(feature = "sqlite")]
+    let total = if search.is_empty() {
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_platform")
+            .fetch_one(&state.pool)
+            .await?
+    } else {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM gb_platform WHERE name LIKE ? OR server_gb_id LIKE ? OR device_gb_id LIKE ?",
+        )
+        .bind(&like)
+        .bind(&like)
+        .bind(&like)
+        .fetch_one(&state.pool)
+        .await?
+    };
 
     #[cfg(feature = "postgres")]
     let raw_list = if search.is_empty() {
@@ -177,6 +192,25 @@ pub async fn platform_query(
         .await?
     };
     #[cfg(feature = "mysql")]
+    let raw_list = if search.is_empty() {
+        sqlx::query_as::<_, Platform>("SELECT * FROM gb_platform ORDER BY id DESC LIMIT ? OFFSET ?")
+            .bind(count as i64)
+            .bind(offset)
+            .fetch_all(&state.pool)
+            .await?
+    } else {
+        sqlx::query_as::<_, Platform>(
+            "SELECT * FROM gb_platform WHERE name LIKE ? OR server_gb_id LIKE ? OR device_gb_id LIKE ? ORDER BY id DESC LIMIT ? OFFSET ?",
+        )
+        .bind(&like)
+        .bind(&like)
+        .bind(&like)
+        .bind(count as i64)
+        .bind(offset)
+        .fetch_all(&state.pool)
+            .await?
+    };
+    #[cfg(feature = "sqlite")]
     let raw_list = if search.is_empty() {
         sqlx::query_as::<_, Platform>("SELECT * FROM gb_platform ORDER BY id DESC LIMIT ? OFFSET ?")
             .bind(count as i64)
@@ -378,6 +412,37 @@ pub async fn platform_channel_list(
     .bind(offset)
     .fetch_all(&state.pool)
     .await?;
+    #[cfg(feature = "sqlite")]
+    let rows = sqlx::query(
+        r#"
+        SELECT c.id, c.device_id, c.name, c.gb_device_id, c.status, c.channel_type, d.manufacturer,
+               pc.id as platform_channel_id, pc.custom_device_id, pc.custom_name
+        FROM gb_device_channel c
+        LEFT JOIN gb_device d ON c.device_id = d.device_id
+        LEFT JOIN gb_platform_channel pc
+               ON pc.device_channel_id = c.id AND pc.platform_id = ?
+        WHERE (? = '' OR c.name LIKE ? OR c.gb_device_id LIKE ?)
+          AND (? IS NULL OR d.on_line = ?)
+          AND (? IS NULL OR c.channel_type = ?)
+          AND ((? = 'true' AND pc.id IS NOT NULL) OR (? <> 'true' AND pc.id IS NULL))
+        ORDER BY c.id DESC
+        LIMIT ? OFFSET ?
+        "#,
+    )
+    .bind(platform_id)
+    .bind(&search)
+    .bind(&like)
+    .bind(&like)
+    .bind(online)
+    .bind(online)
+    .bind(channel_type)
+    .bind(channel_type)
+    .bind(has_share)
+    .bind(has_share)
+    .bind(count as i64)
+    .bind(offset)
+    .fetch_all(&state.pool)
+    .await?;
 
     #[cfg(feature = "postgres")]
     let total = sqlx::query_scalar::<_, i64>(
@@ -402,6 +467,32 @@ pub async fn platform_channel_list(
     .fetch_one(&state.pool)
     .await?;
     #[cfg(feature = "mysql")]
+    let total = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT COUNT(*)
+        FROM gb_device_channel c
+        LEFT JOIN gb_device d ON c.device_id = d.device_id
+        LEFT JOIN gb_platform_channel pc
+               ON pc.device_channel_id = c.id AND pc.platform_id = ?
+        WHERE (? = '' OR c.name LIKE ? OR c.gb_device_id LIKE ?)
+          AND (? IS NULL OR d.on_line = ?)
+          AND (? IS NULL OR c.channel_type = ?)
+          AND ((? = 'true' AND pc.id IS NOT NULL) OR (? <> 'true' AND pc.id IS NULL))
+        "#,
+    )
+    .bind(platform_id)
+    .bind(&search)
+    .bind(&like)
+    .bind(&like)
+    .bind(online)
+    .bind(online)
+    .bind(channel_type)
+    .bind(channel_type)
+    .bind(has_share)
+    .bind(has_share)
+    .fetch_one(&state.pool)
+    .await?;
+    #[cfg(feature = "sqlite")]
     let total = sqlx::query_scalar::<_, i64>(
         r#"
         SELECT COUNT(*)
@@ -532,7 +623,7 @@ pub async fn platform_channel_push(
         .bind(platform_id)
         .fetch_all(&state.pool)
         .await?;
-        #[cfg(feature = "mysql")]
+        #[cfg(any(feature = "mysql", feature = "sqlite"))]
         let rows = sqlx::query(
             r#"SELECT c.gb_device_id
                FROM gb_platform_channel pc
@@ -1017,6 +1108,13 @@ pub async fn platform_channel_add(
         .bind(platform_id)
         .fetch_all(&state.pool)
         .await?;
+        #[cfg(feature = "sqlite")]
+        let rows = sqlx::query(
+            "SELECT id, gb_device_id FROM gb_device_channel WHERE id NOT IN (SELECT device_channel_id FROM gb_platform_channel WHERE platform_id = ?)"
+        )
+        .bind(platform_id)
+        .fetch_all(&state.pool)
+        .await?;
         for row in rows {
             let channel_db_id = row.try_get::<i64, _>("id").unwrap_or_default();
             if channel_db_id > 0 && platform_channel::add(&state.pool, platform_id, channel_db_id).await.is_ok() {
@@ -1035,6 +1133,12 @@ pub async fn platform_channel_add(
                 .await?;
             #[cfg(feature = "mysql")]
             let row = sqlx::query("SELECT id, gb_device_id FROM gb_device_channel WHERE gb_device_id = ? OR CAST(id AS CHAR) = ? LIMIT 1")
+                .bind(&channel_id_str)
+                .bind(&channel_id_str)
+                .fetch_optional(&state.pool)
+                .await?;
+            #[cfg(feature = "sqlite")]
+            let row = sqlx::query("SELECT id, gb_device_id FROM gb_device_channel WHERE gb_device_id = ? OR CAST(id AS TEXT) = ? LIMIT 1")
                 .bind(&channel_id_str)
                 .bind(&channel_id_str)
                 .fetch_optional(&state.pool)
@@ -1196,6 +1300,12 @@ pub async fn platform_channel_remove(
                 .await?;
             #[cfg(feature = "mysql")]
             let row = sqlx::query("SELECT id FROM gb_device_channel WHERE gb_device_id = ? OR CAST(id AS CHAR) = ? LIMIT 1")
+                .bind(&channel_id_str)
+                .bind(&channel_id_str)
+                .fetch_optional(&state.pool)
+                .await?;
+            #[cfg(feature = "sqlite")]
+            let row = sqlx::query("SELECT id FROM gb_device_channel WHERE gb_device_id = ? OR CAST(id AS TEXT) = ? LIMIT 1")
                 .bind(&channel_id_str)
                 .bind(&channel_id_str)
                 .fetch_optional(&state.pool)

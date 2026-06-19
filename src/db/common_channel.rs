@@ -17,6 +17,13 @@ pub async fn get_by_id(pool: &Pool, id: i64) -> sqlx::Result<Option<DeviceChanne
     .bind(id)
     .fetch_optional(pool)
     .await;
+    #[cfg(feature = "sqlite")]
+    return sqlx::query_as::<_, DeviceChannel>(
+        "SELECT id, device_id, name, gb_device_id, status, longitude, latitude, create_time, update_time, sub_count, has_audio, channel_type FROM gb_device_channel WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await;
 }
 
 pub async fn update(
@@ -54,7 +61,7 @@ pub async fn update(
     #[cfg(feature = "postgres")]
     {
         let r = sqlx::query(
-            r#"UPDATE gb_device_channel SET 
+            r#"UPDATE gb_device_channel SET
                name = COALESCE($1, name),
                gb_device_id = COALESCE($2, gb_device_id),
                civil_code = COALESCE($3, civil_code),
@@ -64,6 +71,26 @@ pub async fn update(
                custom_name = COALESCE($7, custom_name),
                update_time = $8
                WHERE id = $9"#,
+        )
+        .bind(name).bind(channel_id).bind(civil_code).bind(parent_id)
+        .bind(business_group).bind(ptz_type).bind(custom_name).bind(now).bind(id)
+        .execute(pool)
+        .await?;
+        Ok(r.rows_affected())
+    }
+    #[cfg(feature = "sqlite")]
+    {
+        let r = sqlx::query(
+            r#"UPDATE gb_device_channel SET
+               name = COALESCE(?, name),
+               gb_device_id = COALESCE(?, gb_device_id),
+               civil_code = COALESCE(?, civil_code),
+               parent_id = COALESCE(?, parent_id),
+               business_group = COALESCE(?, business_group),
+               ptz_type = COALESCE(?, ptz_type),
+               custom_name = COALESCE(?, custom_name),
+               update_time = ?
+               WHERE id = ?"#,
         )
         .bind(name).bind(channel_id).bind(civil_code).bind(parent_id)
         .bind(business_group).bind(ptz_type).bind(custom_name).bind(now).bind(id)
@@ -81,6 +108,11 @@ pub async fn reset(pool: &Pool, id: i64, now: &str) -> sqlx::Result<u64> {
         .await?;
     #[cfg(feature = "postgres")]
     let r = sqlx::query("UPDATE gb_device_channel SET sub_count = 0, update_time = $1 WHERE id = $2")
+        .bind(now).bind(id)
+        .execute(pool)
+        .await?;
+    #[cfg(feature = "sqlite")]
+    let r = sqlx::query("UPDATE gb_device_channel SET sub_count = 0, update_time = ? WHERE id = ?")
         .bind(now).bind(id)
         .execute(pool)
         .await?;
@@ -124,6 +156,18 @@ pub async fn add(
         .await?;
         Ok(row.get::<i32, _>("id") as i64)
     }
+    #[cfg(feature = "sqlite")]
+    {
+        let result = sqlx::query(
+            r#"INSERT INTO gb_device_channel (device_id, name, gb_device_id, civil_code, parent_id, business_group, ptz_type, custom_name, create_time, update_time)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
+        )
+        .bind(device_id).bind(name).bind(channel_id).bind(civil_code).bind(parent_id)
+        .bind(business_group).bind(ptz_type).bind(custom_name).bind(now).bind(now)
+        .execute(pool)
+        .await?;
+        Ok(result.last_insert_rowid() as i64)
+    }
 }
 
 pub async fn get_unusual_civilcode(pool: &Pool, page: u32, count: u32) -> sqlx::Result<Vec<DeviceChannel>> {
@@ -142,6 +186,13 @@ pub async fn get_unusual_civilcode(pool: &Pool, page: u32, count: u32) -> sqlx::
     .bind(count as i64).bind(offset as i64)
     .fetch_all(pool)
     .await;
+    #[cfg(feature = "sqlite")]
+    return sqlx::query_as::<_, DeviceChannel>(
+        "SELECT id, device_id, name, gb_device_id, status, longitude, latitude, create_time, update_time, sub_count, has_audio, channel_type FROM gb_device_channel WHERE civil_code IS NULL OR civil_code = '' ORDER BY id LIMIT ? OFFSET ?",
+    )
+    .bind(count as i64).bind(offset as i64)
+    .fetch_all(pool)
+    .await;
 }
 
 pub async fn count_unusual_civilcode(pool: &Pool) -> sqlx::Result<i64> {
@@ -152,6 +203,12 @@ pub async fn count_unusual_civilcode(pool: &Pool) -> sqlx::Result<i64> {
     .fetch_one(pool)
     .await;
     #[cfg(feature = "postgres")]
+    return sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM gb_device_channel WHERE civil_code IS NULL OR civil_code = ''",
+    )
+    .fetch_one(pool)
+    .await;
+    #[cfg(feature = "sqlite")]
     return sqlx::query_scalar::<_, i64>(
         "SELECT COUNT(*) FROM gb_device_channel WHERE civil_code IS NULL OR civil_code = ''",
     )
@@ -175,6 +232,13 @@ pub async fn get_unusual_parent(pool: &Pool, page: u32, count: u32) -> sqlx::Res
     .bind(count as i64).bind(offset as i64)
     .fetch_all(pool)
     .await;
+    #[cfg(feature = "sqlite")]
+    return sqlx::query_as::<_, DeviceChannel>(
+        "SELECT id, device_id, name, gb_device_id, status, longitude, latitude, create_time, update_time, sub_count, has_audio, channel_type FROM gb_device_channel WHERE parent_id IS NULL OR parent_id = '0' ORDER BY id LIMIT ? OFFSET ?",
+    )
+    .bind(count as i64).bind(offset as i64)
+    .fetch_all(pool)
+    .await;
 }
 
 pub async fn count_unusual_parent(pool: &Pool) -> sqlx::Result<i64> {
@@ -185,6 +249,12 @@ pub async fn count_unusual_parent(pool: &Pool) -> sqlx::Result<i64> {
     .fetch_one(pool)
     .await;
     #[cfg(feature = "postgres")]
+    return sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM gb_device_channel WHERE parent_id IS NULL OR parent_id = '0'",
+    )
+    .fetch_one(pool)
+    .await;
+    #[cfg(feature = "sqlite")]
     return sqlx::query_scalar::<_, i64>(
         "SELECT COUNT(*) FROM gb_device_channel WHERE parent_id IS NULL OR parent_id = '0'",
     )
@@ -203,6 +273,11 @@ pub async fn clear_unusual_civilcode(pool: &Pool, id: i64) -> sqlx::Result<u64> 
         .bind(id)
         .execute(pool)
         .await?;
+    #[cfg(feature = "sqlite")]
+    let r = sqlx::query("UPDATE gb_device_channel SET civil_code = NULL WHERE id = ?")
+        .bind(id)
+        .execute(pool)
+        .await?;
     Ok(r.rows_affected())
 }
 
@@ -214,6 +289,11 @@ pub async fn clear_unusual_parent(pool: &Pool, id: i64) -> sqlx::Result<u64> {
         .await?;
     #[cfg(feature = "postgres")]
     let r = sqlx::query("UPDATE gb_device_channel SET parent_id = '0' WHERE id = $1")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    #[cfg(feature = "sqlite")]
+    let r = sqlx::query("UPDATE gb_device_channel SET parent_id = '0' WHERE id = ?")
         .bind(id)
         .execute(pool)
         .await?;
@@ -243,6 +323,13 @@ pub async fn get_parent_channels(
     .bind(count as i64).bind(offset as i64)
     .fetch_all(pool)
     .await;
+    #[cfg(feature = "sqlite")]
+    return sqlx::query_as::<_, DeviceChannel>(
+        "SELECT id, device_id, name, gb_device_id, status, longitude, latitude, create_time, update_time, sub_count, has_audio, channel_type FROM gb_device_channel WHERE parent_id IS NOT NULL AND parent_id != '0' ORDER BY id LIMIT ? OFFSET ?",
+    )
+    .bind(count as i64).bind(offset as i64)
+    .fetch_all(pool)
+    .await;
 }
 
 pub async fn count_parent_channels(
@@ -263,6 +350,12 @@ pub async fn count_parent_channels(
     )
     .fetch_one(pool)
     .await;
+    #[cfg(feature = "sqlite")]
+    return sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM gb_device_channel WHERE parent_id IS NOT NULL AND parent_id != '0'",
+    )
+    .fetch_one(pool)
+    .await;
 }
 
 pub async fn update_civil_code(pool: &Pool, id: i64, civil_code: &str, now: &str) -> sqlx::Result<u64> {
@@ -273,6 +366,11 @@ pub async fn update_civil_code(pool: &Pool, id: i64, civil_code: &str, now: &str
         .await?;
     #[cfg(feature = "postgres")]
     let r = sqlx::query("UPDATE gb_device_channel SET civil_code = $1, update_time = $2 WHERE id = $3")
+        .bind(civil_code).bind(now).bind(id)
+        .execute(pool)
+        .await?;
+    #[cfg(feature = "sqlite")]
+    let r = sqlx::query("UPDATE gb_device_channel SET civil_code = ?, update_time = ? WHERE id = ?")
         .bind(civil_code).bind(now).bind(id)
         .execute(pool)
         .await?;
@@ -290,6 +388,11 @@ pub async fn clear_civil_code(pool: &Pool, id: i64, now: &str) -> sqlx::Result<u
         .bind(now).bind(id)
         .execute(pool)
         .await?;
+    #[cfg(feature = "sqlite")]
+    let r = sqlx::query("UPDATE gb_device_channel SET civil_code = NULL, update_time = ? WHERE id = ?")
+        .bind(now).bind(id)
+        .execute(pool)
+        .await?;
     Ok(r.rows_affected())
 }
 
@@ -301,6 +404,11 @@ pub async fn update_device_civil_code(pool: &Pool, device_id: &str, civil_code: 
         .await?;
     #[cfg(feature = "postgres")]
     let r = sqlx::query("UPDATE gb_device_channel SET civil_code = $1, update_time = $2 WHERE device_id = $3")
+        .bind(civil_code).bind(now).bind(device_id)
+        .execute(pool)
+        .await?;
+    #[cfg(feature = "sqlite")]
+    let r = sqlx::query("UPDATE gb_device_channel SET civil_code = ?, update_time = ? WHERE device_id = ?")
         .bind(civil_code).bind(now).bind(device_id)
         .execute(pool)
         .await?;
@@ -318,6 +426,11 @@ pub async fn clear_device_civil_code(pool: &Pool, device_id: &str, now: &str) ->
         .bind(now).bind(device_id)
         .execute(pool)
         .await?;
+    #[cfg(feature = "sqlite")]
+    let r = sqlx::query("UPDATE gb_device_channel SET civil_code = NULL, update_time = ? WHERE device_id = ?")
+        .bind(now).bind(device_id)
+        .execute(pool)
+        .await?;
     Ok(r.rows_affected())
 }
 
@@ -329,6 +442,11 @@ pub async fn update_group(pool: &Pool, id: i64, parent_id: i64, business_group: 
         .await?;
     #[cfg(feature = "postgres")]
     let r = sqlx::query("UPDATE gb_device_channel SET parent_id = $1, business_group = $2, update_time = $3 WHERE id = $4")
+        .bind(parent_id).bind(business_group).bind(now).bind(id)
+        .execute(pool)
+        .await?;
+    #[cfg(feature = "sqlite")]
+    let r = sqlx::query("UPDATE gb_device_channel SET parent_id = ?, business_group = ?, update_time = ? WHERE id = ?")
         .bind(parent_id).bind(business_group).bind(now).bind(id)
         .execute(pool)
         .await?;
@@ -346,6 +464,11 @@ pub async fn clear_group(pool: &Pool, id: i64, now: &str) -> sqlx::Result<u64> {
         .bind(now).bind(id)
         .execute(pool)
         .await?;
+    #[cfg(feature = "sqlite")]
+    let r = sqlx::query("UPDATE gb_device_channel SET parent_id = '0', business_group = NULL, update_time = ? WHERE id = ?")
+        .bind(now).bind(id)
+        .execute(pool)
+        .await?;
     Ok(r.rows_affected())
 }
 
@@ -360,6 +483,11 @@ pub async fn update_device_group(pool: &Pool, device_id: &str, parent_id: i64, b
         .bind(parent_id).bind(business_group).bind(now).bind(device_id)
         .execute(pool)
         .await?;
+    #[cfg(feature = "sqlite")]
+    let r = sqlx::query("UPDATE gb_device_channel SET parent_id = ?, business_group = ?, update_time = ? WHERE device_id = ?")
+        .bind(parent_id).bind(business_group).bind(now).bind(device_id)
+        .execute(pool)
+        .await?;
     Ok(r.rows_affected())
 }
 
@@ -371,6 +499,11 @@ pub async fn clear_device_group(pool: &Pool, device_id: &str, now: &str) -> sqlx
         .await?;
     #[cfg(feature = "postgres")]
     let r = sqlx::query("UPDATE gb_device_channel SET parent_id = '0', business_group = NULL, update_time = $1 WHERE device_id = $2")
+        .bind(now).bind(device_id)
+        .execute(pool)
+        .await?;
+    #[cfg(feature = "sqlite")]
+    let r = sqlx::query("UPDATE gb_device_channel SET parent_id = '0', business_group = NULL, update_time = ? WHERE device_id = ?")
         .bind(now).bind(device_id)
         .execute(pool)
         .await?;
@@ -390,6 +523,12 @@ pub async fn get_channels_for_map(
     .fetch_all(pool)
     .await;
     #[cfg(feature = "postgres")]
+    return sqlx::query_as::<_, DeviceChannel>(
+        "SELECT id, device_id, name, gb_device_id, status, longitude, latitude, create_time, update_time, sub_count, has_audio, channel_type FROM gb_device_channel WHERE longitude IS NOT NULL AND latitude IS NOT NULL ORDER BY id LIMIT 1000",
+    )
+    .fetch_all(pool)
+    .await;
+    #[cfg(feature = "sqlite")]
     return sqlx::query_as::<_, DeviceChannel>(
         "SELECT id, device_id, name, gb_device_id, status, longitude, latitude, create_time, update_time, sub_count, has_audio, channel_type FROM gb_device_channel WHERE longitude IS NOT NULL AND latitude IS NOT NULL ORDER BY id LIMIT 1000",
     )
@@ -431,6 +570,20 @@ pub async fn update_map_level(pool: &Pool, channel_ids: &[i64], level: i32) -> s
         let r = q.execute(pool).await?;
         Ok(r.rows_affected())
     }
+    #[cfg(feature = "sqlite")]
+    {
+        let placeholders: Vec<String> = channel_ids.iter().map(|_| "?".to_string()).collect();
+        let sql = format!(
+            "UPDATE gb_device_channel SET map_level = ?, update_time = ? WHERE id IN ({})",
+            placeholders.join(",")
+        );
+        let mut q = sqlx::query(&sql).bind(level).bind(&now);
+        for id in channel_ids {
+            q = q.bind(id);
+        }
+        let r = q.execute(pool).await?;
+        Ok(r.rows_affected())
+    }
 }
 
 pub async fn reset_map_level(pool: &Pool) -> sqlx::Result<u64> {
@@ -442,6 +595,11 @@ pub async fn reset_map_level(pool: &Pool) -> sqlx::Result<u64> {
         .await?;
     #[cfg(feature = "postgres")]
     let r = sqlx::query("UPDATE gb_device_channel SET map_level = 0, update_time = $1")
+        .bind(&now)
+        .execute(pool)
+        .await?;
+    #[cfg(feature = "sqlite")]
+    let r = sqlx::query("UPDATE gb_device_channel SET map_level = 0, update_time = ?")
         .bind(&now)
         .execute(pool)
         .await?;

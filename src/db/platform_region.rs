@@ -40,6 +40,19 @@ pub async fn add(pool: &Pool, platform_id: i32, region_id: i32) -> sqlx::Result<
 
         Ok(result.last_insert_id() as i64)
     }
+
+    #[cfg(feature = "sqlite")]
+    {
+        let result = sqlx::query(
+            "INSERT INTO gb_platform_region (platform_id, region_id) VALUES (?, ?)"
+        )
+        .bind(platform_id)
+        .bind(region_id)
+        .execute(pool)
+        .await?;
+
+        Ok(result.last_insert_rowid() as i64)
+    }
 }
 
 /// 查询平台的所有区域
@@ -55,6 +68,16 @@ pub async fn list_by_platform(pool: &Pool, platform_id: i32) -> sqlx::Result<Vec
     }
 
     #[cfg(feature = "mysql")]
+    {
+        sqlx::query_as::<_, PlatformRegion>(
+            "SELECT id, platform_id, region_id FROM gb_platform_region WHERE platform_id = ?"
+        )
+        .bind(platform_id)
+        .fetch_all(pool)
+        .await
+    }
+
+    #[cfg(feature = "sqlite")]
     {
         sqlx::query_as::<_, PlatformRegion>(
             "SELECT id, platform_id, region_id FROM gb_platform_region WHERE platform_id = ?"
@@ -90,6 +113,18 @@ pub async fn delete(pool: &Pool, platform_id: i32, region_id: i32) -> sqlx::Resu
         .await?;
         Ok(result.rows_affected() > 0)
     }
+
+    #[cfg(feature = "sqlite")]
+    {
+        let result = sqlx::query(
+            "DELETE FROM gb_platform_region WHERE platform_id = ? AND region_id = ?"
+        )
+        .bind(platform_id)
+        .bind(region_id)
+        .execute(pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
 }
 
 /// 删除平台的所有区域关系
@@ -104,6 +139,15 @@ pub async fn delete_by_platform(pool: &Pool, platform_id: i32) -> sqlx::Result<u
     }
 
     #[cfg(feature = "mysql")]
+    {
+        let result = sqlx::query("DELETE FROM gb_platform_region WHERE platform_id = ?")
+            .bind(platform_id)
+            .execute(pool)
+            .await?;
+        Ok(result.rows_affected())
+    }
+
+    #[cfg(feature = "sqlite")]
     {
         let result = sqlx::query("DELETE FROM gb_platform_region WHERE platform_id = ?")
             .bind(platform_id)
