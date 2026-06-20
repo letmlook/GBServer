@@ -306,6 +306,14 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
             };
             Arc::new(store)
         },
+        // Phase 7.1: business-level repository facade over StateStore.
+        state_repo: {
+            let store = match &cfg.redis {
+                Some(rc) => crate::state_store::StateStore::redis(&rc.url),
+                None => crate::state_store::StateStore::in_memory(),
+            };
+            Arc::new(crate::state::StateStoreRepository::new(Arc::new(store)))
+        },
         jt1078_manager: jt1078_manager.clone(),
         rpc_router: Some(Arc::new(crate::rpc::RpcRouter::new())),
     };
@@ -430,6 +438,8 @@ pub struct AppState {
     /// `select_least_loaded_server_filtered` so offline nodes are skipped
     /// even when the Redis stream-count cache is empty.
     pub state_store: Arc<crate::state_store::StateStore>,
+    /// Phase 7.1: business-level repository facade over StateStore.
+    pub state_repo: Arc<crate::state::StateStoreRepository>,
     pub jt1078_manager: Arc<tokio::sync::RwLock<Option<Arc<crate::jt1078::manager::Jt1078Manager>>>>,
     pub rpc_router: Option<Arc<crate::rpc::RpcRouter>>,
 }
@@ -677,7 +687,8 @@ mod tests {
             download_manager: None,
             ws_state: Arc::new(crate::handlers::websocket::WsState::new()),
             redis: None,
-            state_store,
+            state_store: state_store.clone(),
+            state_repo: Arc::new(crate::state::StateStoreRepository::new(state_store)),
             jt1078_manager: Arc::new(tokio::sync::RwLock::new(None)),
             rpc_router: None,
         }

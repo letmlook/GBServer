@@ -390,6 +390,29 @@ async fn sync_stream_changed(state: &AppState, data: &StreamChangedData) {
         Err(e) => tracing::warn!("Failed to sync stream proxy status: {}", e),
     }
 
+    // Phase 7.1: media_server stream_count now goes through StateStore so it's
+    // available to select_least_loaded_server_filtered even on single-node deploys.
+    if let Some(media_server_id) = media_server_id {
+        if data.register {
+            state.state_store.set_media_server(
+                media_server_id,
+                crate::state_store::MediaServerLoad {
+                    server_id: media_server_id.to_string(),
+                    stream_count: state.state_store.get_media_server(media_server_id)
+                        .map(|s| s.stream_count + 1).unwrap_or(1),
+                    rtp_server_count: state.state_store.get_media_server(media_server_id)
+                        .map(|s| s.rtp_server_count).unwrap_or(0),
+                    online: true,
+                    last_keepalive: chrono::Utc::now(),
+                },
+            );
+        } else if let Some(mut s) = state.state_store.get_media_server(media_server_id) {
+            s.stream_count = (s.stream_count - 1).max(0);
+            s.last_keepalive = chrono::Utc::now();
+            state.state_store.set_media_server(media_server_id, s);
+        }
+    }
+    // Legacy Redis cache fallback for legacy deployments (will be removed in Phase 7.6).
     if let (Some(redis), Some(media_server_id)) = (&state.redis, media_server_id) {
         if data.register {
             cache::incr_media_server_streams(redis, media_server_id).await;
