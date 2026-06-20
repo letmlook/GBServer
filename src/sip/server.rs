@@ -3291,8 +3291,16 @@ f=v/1/96/1/2/1/1/0
     }
 
     fn validate_digest(auth: &str, username: &str, password: &str, realm: &str, uri: &str) -> bool {
+        // Strip the leading "Digest " scheme keyword (RFC 2617). Without this
+        // the parser would split the auth header at the first `,` and assign
+        // "Digest username" as a key, causing `params.get("username")` to miss
+        // and registration to always fail with 403.
+        let auth_body = auth
+            .strip_prefix("Digest ")
+            .or_else(|| auth.strip_prefix("digest "))
+            .unwrap_or(auth);
         let mut params = std::collections::HashMap::new();
-        for part in auth.split(',') {
+        for part in auth_body.split(',') {
             let part = part.trim();
             if let Some(pos) = part.find('=') {
                 let key = part[..pos].trim().to_string();

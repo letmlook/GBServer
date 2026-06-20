@@ -18,7 +18,11 @@ use crate::zlm::hook as zlm_hook;
 use crate::AppState;
 
 async fn health_check(State(state): State<AppState>) -> Json<serde_json::Value> {
-    let db_status = match sqlx::query_scalar::<_, i64>("SELECT 1").fetch_one(&state.pool).await {
+    // Use `execute` to issue a round-trip query without depending on column
+    // type decoding (PG `SELECT 1` returns INTEGER → i32, SQLite returns
+    // INTEGER → i64; decoding would fail across the boundary). `execute` only
+    // checks that the round-trip succeeded — sufficient for a health probe.
+    let db_status = match sqlx::query("SELECT 1").execute(&state.pool).await {
         Ok(_) => "ok",
         Err(_) => "error",
     };
