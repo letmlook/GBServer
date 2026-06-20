@@ -1054,6 +1054,15 @@ pub async fn list_all_streams(
         }
     }
 
+    // TODO(phase-5): unify SendRtp streams when table lands.
+    // 设计文档 §7.4 要求本接口同时返回 GB / push / proxy / SendRtp 四类流。
+    // 目前 Phase 4 仅落地 push + proxy 两类；`src/db/send_rtp.rs` 与
+    // `gb_send_rtp` 表均尚未在三个 init SQL 中建表，因此本阶段无法实现
+    // `StreamState` impl。等 Phase 5 SendRtp 表 schema 落地后，再追加
+    // `SendRtpRecord: StreamState` 并在此处调用 `send_rtp::list_paged` 后
+    // 通过 `stream_state_to_json("send_rtp", &rec)` 加入 unified。
+    // 详见 Phase 5 任务清单。
+
     // 3) 汇总统计
     let active_count = unified
         .iter()
