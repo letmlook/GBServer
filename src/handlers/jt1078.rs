@@ -1061,9 +1061,19 @@ pub async fn config_set(
         Err(e) => return e,
     };
 
-    match mgr.send_set_params(&phone, &apn, &ip, port).await {
-        Ok(()) => Json(build_success("配置保存成功")),
-        Err(e) => Json(build_error(&e)),
+    let mut port_bytes = [0u8; 4];
+    port_bytes.copy_from_slice(&port.to_be_bytes());
+    let apn_bytes = apn.as_bytes();
+    let ip_bytes = ip.as_bytes();
+    let params: Vec<(u32, &[u8])> = vec![
+        (0x0010u32, apn_bytes),
+        (0x0013u32, ip_bytes),
+        (0x0018u32, port_bytes.as_slice()),
+    ];
+    match mgr.send_set_params_and_wait(&phone, &params, 5).await {
+        Ok(0) => Json(build_success("配置保存已应答")),
+        Ok(result) => Json(build_error(&format!("配置保存失败 result={}", result))),
+        Err(e) => Json(build_error(&format!("配置保存错误: {}", e))),
     }
 }
 
@@ -1140,6 +1150,60 @@ pub async fn position_info(
 
     if phone.is_empty() {
         return Json(serde_json::json!({ "code": 1, "msg": "缺少 phoneNumber" }));
+    }
+
+    // Phase 6.5: 先从 gb_jt_terminal 表读最近位置 (优先)
+    if let Ok(Some(terminal)) = jt_db::get_terminal_by_phone(&state.pool, &phone).await {
+        if let (Some(lng), Some(lat)) = (terminal.longitude, terminal.latitude) {
+            // register_time 字段被复用为 last_position_time
+            return Json(serde_json::json!({
+                "code": 0,
+                "data": {
+                    "phoneNumber": phone,
+                    "deviceId": terminal.phone_number,
+                    "latitude": lat,
+                    "longitude": lng,
+                    "speed": 0.0,
+                    "direction": 0,
+                    "altitude": 0,
+                    "time": terminal.register_time.unwrap_or_default(),
+                    "source": "db",
+                }
+            }));
+        }
+    }
+
+    // 兜底：实时查终端 (0x8201 位置查询)
+    let mgr_guard = state.jt1078_manager.read().await;
+    if let Some(mgr) = mgr_guard.as_ref() {
+        if mgr.is_terminal_online(&phone).await {
+            if let Ok(loc) = mgr.send_query_location_and_wait(&phone, 10).await {
+                // 落库 (异步)
+                let pool = state.pool.clone();
+                let phone_owned = phone.clone();
+                let lng = loc.longitude;
+                let lat = loc.latitude;
+                let time = loc.time;
+                tokio::spawn(async move {
+                    let _ = jt_db::update_last_position(
+                        &pool, &phone_owned, lng, lat, time,
+                    ).await;
+                });
+                return Json(serde_json::json!({
+                    "code": 0,
+                    "data": {
+                        "phoneNumber": phone,
+                        "latitude": lat,
+                        "longitude": lng,
+                        "speed": loc.speed,
+                        "direction": loc.direction,
+                        "altitude": loc.altitude,
+                        "time": loc.time.to_rfc3339(),
+                        "source": "device",
+                    }
+                }));
+            }
+        }
     }
 
     // Query from mobile_position table (real-time position)
