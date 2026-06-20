@@ -16,6 +16,7 @@ pub mod rpc;
 pub mod state_store;
 pub mod state;
 pub mod security;
+pub mod cluster;
 
 use config::AppConfig;
 use std::collections::HashMap;
