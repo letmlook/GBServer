@@ -603,6 +603,34 @@ impl std::fmt::Debug for ZlmClient {
 }
 
 // ============================================================================
+// Phase 4.3: parse_port_range — "start,end" → (u16, u16)
+// ============================================================================
+
+/// Parse a port range string in the form `"start,end"` (comma-separated).
+///
+/// Returns the start and end ports as `(u16, u16)` on success.
+/// Returns an error if:
+/// - the input does not contain exactly one comma separator (i.e. not 2 parts)
+/// - either part fails to parse as a `u16`
+///
+/// The output format expected by ZLM's `setServerConfig("rtp.port_range", ...)`
+/// is `"start-end"` (dash-separated), so callers typically do:
+/// `format!("{}-{}", start, end)`.
+pub fn parse_port_range(s: &str) -> Result<(u16, u16)> {
+    let parts: Vec<&str> = s.split(',').collect();
+    if parts.len() != 2 {
+        return Err(anyhow!("Invalid port range: {} (expected 'start,end')", s));
+    }
+    let start: u16 = parts[0].parse().map_err(|e| {
+        anyhow!("Invalid port range start '{}': {}", parts[0], e)
+    })?;
+    let end: u16 = parts[1].parse().map_err(|e| {
+        anyhow!("Invalid port range end '{}': {}", parts[1], e)
+    })?;
+    Ok((start, end))
+}
+
+// ============================================================================
 // Phase 4.2: ZLM 媒体节点健康状态扩展
 // ============================================================================
 
@@ -676,5 +704,46 @@ impl ZlmClient {
             rtp_server_count: 0, // 可通过 get_rtp_server_list API 获取
             last_error: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_port_range_valid() {
+        let (start, end) = parse_port_range("30000,30200").expect("valid range should parse");
+        assert_eq!(start, 30000);
+        assert_eq!(end, 30200);
+
+        // 边界值：u16 min/max
+        let (s2, e2) = parse_port_range("0,65535").expect("boundary range should parse");
+        assert_eq!(s2, 0);
+        assert_eq!(e2, 65535);
+    }
+
+    #[test]
+    fn test_parse_port_range_invalid_format() {
+        // 只有一段（缺逗号）
+        assert!(parse_port_range("30000").is_err());
+        // 多于两段（多逗号）
+        assert!(parse_port_range("30000,30100,30200").is_err());
+        // 空字符串
+        assert!(parse_port_range("").is_err());
+        // 仅逗号
+        assert!(parse_port_range(",").is_err());
+    }
+
+    #[test]
+    fn test_parse_port_range_non_numeric() {
+        // 起始非数字
+        assert!(parse_port_range("abc,30100").is_err());
+        // 结束非数字
+        assert!(parse_port_range("30000,xyz").is_err());
+        // 超出 u16
+        assert!(parse_port_range("30000,99999").is_err());
+        // 负数（u16 parse 失败）
+        assert!(parse_port_range("-1,30100").is_err());
     }
 }

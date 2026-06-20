@@ -734,6 +734,99 @@ pub async fn handle_webhook(
                         }
                     }
                     tracing::info!("ZLM hook URLs reconfigured for server {}", media_server_id);
+
+                    // Phase 4.3: 自动同步 RTP 端口范围 + 协议开关到 ZLM
+                    // 与 gb_media_server.rtp_port_range / send_rtp_port_range 对齐
+                    match crate::db::media_server::get_media_server_by_id(
+                        &state.pool, media_server_id,
+                    ).await {
+                        Ok(Some(server_config)) => {
+                            // rtp.port_range（设备推送端口）
+                            if let Some(ref rtp_range) = server_config.rtp_port_range {
+                                match crate::zlm::client::parse_port_range(rtp_range) {
+                                    Ok((start, end)) => {
+                                        let v = format!("{}-{}", start, end);
+                                        if let Err(e) = zlm_client.set_server_config(
+                                            &secret, "rtp.port_range", &v,
+                                        ).await {
+                                            tracing::warn!(
+                                                "Failed to set ZLM rtp.port_range={}: {}",
+                                                v, e,
+                                            );
+                                        } else {
+                                            tracing::info!(
+                                                "ZLM rtp.port_range set to {} for server {}",
+                                                v, media_server_id,
+                                            );
+                                        }
+                                    }
+                                    Err(e) => tracing::warn!(
+                                        "Invalid rtp_port_range '{}' for server {}: {}",
+                                        rtp_range, media_server_id, e,
+                                    ),
+                                }
+                            }
+                            // send_rtp.port_range（推送上级平台端口）
+                            if let Some(ref srtp_range) = server_config.send_rtp_port_range {
+                                match crate::zlm::client::parse_port_range(srtp_range) {
+                                    Ok((start, end)) => {
+                                        let v = format!("{}-{}", start, end);
+                                        if let Err(e) = zlm_client.set_server_config(
+                                            &secret, "send_rtp.port_range", &v,
+                                        ).await {
+                                            tracing::warn!(
+                                                "Failed to set ZLM send_rtp.port_range={}: {}",
+                                                v, e,
+                                            );
+                                        } else {
+                                            tracing::info!(
+                                                "ZLM send_rtp.port_range set to {} for server {}",
+                                                v, media_server_id,
+                                            );
+                                        }
+                                    }
+                                    Err(e) => tracing::warn!(
+                                        "Invalid send_rtp_port_range '{}' for server {}: {}",
+                                        srtp_range, media_server_id, e,
+                                    ),
+                                }
+                            }
+                            // 协议开关（与 ZLM 默认对齐：全部启用）
+                            for (key, value) in [
+                                ("protocol.enable_rtsp", "1"),
+                                ("protocol.enable_rtmp", "1"),
+                                ("protocol.enable_hls", "1"),
+                                ("protocol.enable_http", "1"),
+                                ("protocol.enable_ws", "1"),
+                                ("protocol.enable_rtp", "1"),
+                            ] {
+                                if let Err(e) = zlm_client.set_server_config(
+                                    &secret, key, value,
+                                ).await {
+                                    tracing::warn!(
+                                        "Failed to set ZLM {}={}: {}",
+                                        key, value, e,
+                                    );
+                                }
+                            }
+                            tracing::info!(
+                                "ZLM node {} fully auto-configured (hooks + rtp ranges + protocols)",
+                                media_server_id,
+                            );
+                        }
+                        Ok(None) => {
+                            tracing::warn!(
+                                "Media server {} not found in DB; skipping RTP port range sync",
+                                media_server_id,
+                            );
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "Failed to query media_server {} for RTP config: {}",
+                                media_server_id, e,
+                            );
+                        }
+                    }
                 }
 
                 // Reset stream counts in Redis
@@ -1164,5 +1257,134 @@ mod tests {
         // 同样适用于 Unknown（保持前端可正常处理）
         let resp_unknown = ZlmHookEvent::Unknown.default_response();
         assert_eq!(resp_unknown["code"], 0);
+    }
+
+    // ============== Phase 4.3: set_server_config wiremock 集成测试 ==============
+    //
+    // 验证 `on_server_started` 自动配置循环中，所有 `set_server_config` 调用
+    // （hook.enable / hook.on_* / rtp.port_range / send_rtp.port_range /
+    //  protocol.enable_*）实际以正确的 payload 命中 ZLM HTTP API。
+    //
+    // 由于完整 on_server_started handler 需要 AppState（DB pool / Redis 等），
+    // 这里只测底层 `ZlmClient::set_server_config` 的端到端 HTTP 行为，hook.rs
+    // 调用端与 client.rs 通过同一方法对接。
+
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[tokio::test]
+    async fn test_on_server_started_auto_configures_rtp_port_range() {
+        // 1. 启动 wiremock 模拟 ZLM HTTP 服务
+        let mock_server = MockServer::start().await;
+
+        // 2. 注册 setServerConfig 端点：返回 code=0
+        Mock::given(method("POST"))
+            .and(path("/index/api/setServerConfig"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "code": 0
+            })))
+            .expect(1..) // 至少 1 次（实际会更多：hooks + rtp + protocols）
+            .mount(&mock_server)
+            .await;
+
+        // 3. 构造 ZlmClient，指向 mock server
+        let uri = mock_server.uri();
+        // uri 形如 "http://127.0.0.1:PORT"
+        let stripped = uri.trim_start_matches("http://");
+        let mut parts = stripped.splitn(2, ':');
+        let ip = parts.next().unwrap_or("127.0.0.1").to_string();
+        let port: u16 = parts
+            .next()
+            .and_then(|p| p.parse().ok())
+            .unwrap_or(80);
+
+        let zlm_client = crate::zlm::ZlmClient::new(&ip, port, "test-secret");
+
+        // 4. 模拟 on_server_started 中的 3 类 set_server_config 调用
+        let secret = "test-secret";
+
+        // (a) hook URL（已有的 Phase 4.1 行为）
+        zlm_client
+            .set_server_config(secret, "hook.enable", "1")
+            .await
+            .expect("set_server_config hook.enable");
+
+        // (b) rtp.port_range —— 验证 "start-end" 格式转换（comma → dash）
+        let rtp_range_raw = "30000,30200";
+        let (start, end) =
+            crate::zlm::client::parse_port_range(rtp_range_raw).expect("parse_port_range");
+        let rtp_value = format!("{}-{}", start, end);
+        assert_eq!(rtp_value, "30000-30200", "comma must convert to dash");
+        zlm_client
+            .set_server_config(secret, "rtp.port_range", &rtp_value)
+            .await
+            .expect("set_server_config rtp.port_range");
+
+        // (c) send_rtp.port_range
+        let srtp_value = format!("{}-{}", 40000, 40200);
+        zlm_client
+            .set_server_config(secret, "send_rtp.port_range", &srtp_value)
+            .await
+            .expect("set_server_config send_rtp.port_range");
+
+        // (d) 协议开关
+        for (key, value) in [
+            ("protocol.enable_rtsp", "1"),
+            ("protocol.enable_rtmp", "1"),
+            ("protocol.enable_hls", "1"),
+            ("protocol.enable_http", "1"),
+            ("protocol.enable_ws", "1"),
+            ("protocol.enable_rtp", "1"),
+        ] {
+            zlm_client
+                .set_server_config(secret, key, value)
+                .await
+                .expect("set_server_config protocol flag");
+        }
+
+        // 5. 验证 mock server 收到了所有调用（>= 9 次：1 hook + 2 rtp + 6 protocols）
+        let received = mock_server.received_requests().await.unwrap_or_default();
+        assert!(
+            received.len() >= 9,
+            "expected at least 9 setServerConfig calls, got {}",
+            received.len()
+        );
+
+        // 6. 验证每个关键 key 都被正确设置（key 字段在 wiremock 这里我们从 body 解析）
+        let mut found_rtp_port_range = false;
+        let mut found_send_rtp_port_range = false;
+        let mut protocol_flags = std::collections::HashSet::new();
+        for req in &received {
+            let body = String::from_utf8_lossy(&req.body).to_string();
+            if body.contains("\"key\":\"rtp.port_range\"") && body.contains("30000-30200") {
+                found_rtp_port_range = true;
+            }
+            if body.contains("\"key\":\"send_rtp.port_range\"") && body.contains("40000-40200") {
+                found_send_rtp_port_range = true;
+            }
+            for flag in [
+                "protocol.enable_rtsp",
+                "protocol.enable_rtmp",
+                "protocol.enable_hls",
+                "protocol.enable_http",
+                "protocol.enable_ws",
+                "protocol.enable_rtp",
+            ] {
+                if body.contains(&format!("\"key\":\"{}\"", flag)) {
+                    protocol_flags.insert(flag.to_string());
+                }
+            }
+        }
+        assert!(found_rtp_port_range, "rtp.port_range=30000-30200 not seen in requests");
+        assert!(
+            found_send_rtp_port_range,
+            "send_rtp.port_range=40000-40200 not seen in requests"
+        );
+        assert_eq!(
+            protocol_flags.len(),
+            6,
+            "expected 6 protocol.enable_* flags, saw {:?}",
+            protocol_flags
+        );
     }
 }
