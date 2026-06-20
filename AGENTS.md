@@ -1,4 +1,4 @@
-# AGENTS.md - WVP GB28181 Server
+# AGENTS.md - GBServer
 
 Agent instructions for working on this GB28181 video platform server (Rust backend + Vue 2 frontend).
 
@@ -55,10 +55,10 @@ npm run test:unit
 
 ```bash
 # PostgreSQL (default)
-psql -U postgres -d wvp -f database/init-postgresql-2.7.4.sql
+psql -U postgres -d gbserver -f database/init-postgresql-2.7.4.sql
 
 # MySQL
-mysql -uroot -p wvp < database/init-mysql-2.7.4.sql
+mysql -uroot -p gbserver < database/init-mysql-2.7.4.sql
 ```
 
 ## Code Style Guidelines
@@ -110,7 +110,7 @@ Err(AppError::business(ErrorCode::Error400, "invalid input"))
 ```rust
 // Parameterized query (PostgreSQL)
 sqlx::query_as::<_, Device>(
-    "SELECT id, device_id, name FROM wvp_device WHERE device_id = $1"
+    "SELECT id, device_id, name FROM gb_device WHERE device_id = $1"
 )
 .bind(device_id)
 .fetch_optional(pool)
@@ -153,13 +153,13 @@ pub async fn handler(
 
 #### Configuration
 - Use `config` crate with YAML + environment variables
-- Environment variables use `WVP__SECTION__KEY` format
+- Environment variables use `GBSERVER__SECTION__KEY` format
 - Load config in `main.rs` and pass to `run()`
 
 #### Logging
 - Use `tracing` crate
 - Set level via `RUST_LOG` environment variable
-- Default: `info,wvp_gb28181_server=debug`
+- Default: `info,gbserver=debug`
 
 ```rust
 tracing::info!("Starting server on port {}", port);
@@ -198,7 +198,7 @@ tracing::debug!("Query result: {:?}", result);
 │   └── zlm/                 # ZLM media server client
 ├── web/                     # Vue 2 frontend
 ├── config/
-│   └── application.yaml     # Default configuration
+│   └── application.toml     # Default configuration
 ├── database/
 │   ├── init-postgresql-2.7.4.sql
 │   └── init-mysql-2.7.4.sql
@@ -229,7 +229,7 @@ tracing::debug!("Query result: {:?}", result);
 docker compose up -d
 
 # Import database schema
-docker exec -i wvp-postgres psql -U postgres -d wvp < database/init-postgresql-2.7.4.sql
+docker exec -i gbserver-postgres psql -U postgres -d gbserver < database/init-postgresql-2.7.4.sql
 
 # Run backend
 cargo run
@@ -241,6 +241,6 @@ cd web && npm run dev
 ## Important Notes
 
 - Default admin credentials: `admin` / `admin` (MD5: `21232f297a57a5a743894a0e4a801fc3`)
-- JWT secret must be changed in production (`config/application.yaml`)
+- JWT secret must be changed in production (`config/application.toml`)
 - API uses `access-token` header for authentication
 - Response format: `{ "code": 0, "msg": "成功", "data": ... }`

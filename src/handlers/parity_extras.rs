@@ -1,6 +1,12 @@
-//! Parity gap fillers from `docs/parity/wvp-phase-0-parity-audit.md`.
+//! Parity gap fillers from `docs/parity/interface-coverage-phase-0.md`.
 //! Bundles D3 (alarm clear/snap), D4 (channel map tiles, front-end common),
 //! and D5 (media/server config) routes in one file for fast iteration.
+//!
+//! ## 角色定位 (Phase 2.5)
+//!
+//! 本模块是 parity audit 阶段补齐的"路由胶水层"，每个 handler 在 Phase 1 D 阶段
+//! 推进后已挂到 router.rs。新增功能请优先在专用模块（alarm/playback/stub）中实现，
+//! 本模块只作为最后的兼容路径。
 
 use axum::{
     extract::{Path, Query, State},

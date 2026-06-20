@@ -57,6 +57,7 @@ impl<T> ApiResponse<T> {
     }
 }
 
+#[allow(non_snake_case)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AddStreamProxyRequest {
     pub secret: String,

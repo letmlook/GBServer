@@ -1,0 +1,69 @@
+# Rust build artifacts
+/target
+**/target
+**/*.rs.bk
+Cargo.lock.bak
+
+# Frontend build / install artifacts
+/web/node_modules
+/web/dist
+/web/.cache
+/web/npm-debug.log*
+/web/yarn-debug.log*
+/web/yarn-error.log*
+/web/.eslintcache
+
+# VCS
+.git
+.gitignore
+.gitattributes
+
+# Editor / IDE
+.vscode
+.idea
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Claude / tooling
+.claude
+.mcp_config*
+
+# Documentation (kept in repo, not needed in image)
+/docs
+/README.md
+/CHANGELOG.md
+/LICENSE
+
+# Test / CI artifacts
+/tests/**/target
+**/*.log
+/coverage
+/.pytest_cache
+/.nyc_output
+
+# Docker files themselves
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
+# Secrets — never bake into images
+.env
+.env.*
+**/*.pem
+**/*.key
+
+# Local data
+*.sqlite
+*.sqlite3
+*.db
+
+# Build outputs
+*.tar.gz
+*.zip
+dist/
+
+# Misc
+tmp/
+temp/

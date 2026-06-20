@@ -9,12 +9,15 @@ use std::path::PathBuf;
 use tower_http::cors::{Any, CorsLayer};
 
 use crate::auth::auth_middleware;
+use crate::middleware::audit_middleware;
 use crate::handlers::{
-    alarm, common_channel, device, device_control, device_query, device_stub, front_end, jt1078, platform, play,
-    cloud_record_extra, jt1078_extra, parity_extras, playback, rtp_control, server, stream, stub, sy_camera, talk, user, websocket, webrtc, device_batch, region, role,
+    alarm, common_channel, device, device_control, device_stub, front_end, health, jt1078, platform, play,
+    cloud_record_extra, jt1078_extra, parity_extras, playback, rtp_control, server, stream, stub, sy_camera, system, talk, user, websocket, webrtc, device_batch, region, role,
 };
 use crate::handlers::metrics as metrics_handler;
+use crate::rpc::{RpcRequest, RpcResponse};
 use crate::zlm::hook as zlm_hook;
+use crate::zlm::hook_routes as zlm_hook_routes;
 use crate::AppState;
 
 async fn health_check(State(state): State<AppState>) -> Json<serde_json::Value> {
@@ -42,6 +45,24 @@ async fn health_check(State(state): State<AppState>) -> Json<serde_json::Value> 
         },
         "timestamp": chrono::Utc::now().to_rfc3339(),
     }))
+}
+
+/// E2: HTTP RPC 端点 — 接收 JSON-RPC envelope 并通过 RpcRouter 分发到本地 handler
+pub async fn rpc_endpoint(
+    State(state): State<AppState>,
+    Json(req): Json<RpcRequest>,
+) -> Json<RpcResponse> {
+    tracing::debug!("RPC inbound: method={} target={}", req.method, req.target);
+    if let Some(router) = state.rpc_router.as_ref() {
+        let response = router.route(&req).await;
+        Json(response)
+    } else {
+        Json(RpcResponse {
+            ok: false,
+            result: None,
+            error: Some("RPC router not configured on this node".to_string()),
+        })
+    }
 }
 
 pub fn app(state: AppState) -> Router<AppState> {
@@ -249,18 +270,11 @@ pub fn app(state: AppState) -> Router<AppState> {
         )
         .route("/api/server/info", get(server::server_info))
         .route("/api/server/resource/info", get(server::resource_info))
-        // Phase 7.3: 运维 API
-        .route("/api/rtp/receive/open", post(stub::rtp_receive_open))
-        .route("/api/rtp/receive/close/*path", post(stub::rtp_receive_close))
-        .route("/api/rtp/send/start", post(stub::rtp_send_start))
-        .route("/api/rtp/send/stop/*path", post(stub::rtp_send_stop))
-        .route("/api/ps/receive/open", post(stub::ps_receive_open))
-        .route("/api/ps/receive/close", post(stub::ps_receive_close))
-        .route("/api/ps/send/start", post(stub::ps_send_start))
-        .route("/api/ps/send/stop", post(stub::ps_send_stop))
-        .route("/api/server/shutdown", post(stub::server_shutdown))
-        .route("/api/server/version", get(stub::server_version))
-        .route("/api/server/config", get(stub::server_config))
+        // Phase 4.5: 流状态统一视图
+        .route("/api/server/stream/all", get(server::list_all_streams))
+        // Phase 7.3: 运维 API moved to api_protected (real impl). Removing legacy
+        // public stubs for /api/rtp/* /api/ps/* /api/server/{shutdown,version,config}
+        // to avoid route conflicts with the protected real implementations.
         .route("/api/push/list", get(stream::push_list))
         .route("/api/push/add", post(stream::push_add))
         .route("/api/push/update", post(stream::push_update))
@@ -836,8 +850,8 @@ pub fn app(state: AppState) -> Router<AppState> {
         )
         .route("/api/jt1078/live/start", get(jt1078::live_start))
         .route("/api/jt1078/live/stop", get(jt1078::live_stop))
-        .route("/api/jt1078/playback/start/", get(jt1078::playback_start))
-        .route("/api/jt1078/playback/stop/", get(jt1078::playback_stop))
+        .route("/api/jt1078/playback/start", get(jt1078::playback_start))
+        .route("/api/jt1078/playback/stop", get(jt1078::playback_stop))
         .route(
             "/api/jt1078/playback/control",
             get(jt1078::playback_control),
@@ -883,6 +897,24 @@ pub fn app(state: AppState) -> Router<AppState> {
             "/api/sy/camera/list/ids",
             get(common_channel::camera_list_ids),
         )
+        // Phase 7.4: alarm endpoints now require JWT (moved from main-app merge below)
+        .route("/api/alarm/list", get(alarm::alarm_list))
+        .route("/api/alarm/detail/:id", get(alarm::alarm_detail))
+        .route("/api/alarm/handle", post(alarm::alarm_handle))
+        .route("/api/alarm/delete/:id", delete(alarm::alarm_delete))
+        .route("/api/alarm/batch", delete(alarm::alarm_batch_delete))
+        .route("/api/alarm/device/:device_id", delete(alarm::alarm_delete_by_device))
+        .route("/api/alarm/before/:time", delete(alarm::alarm_delete_before_time))
+        // Phase 7.6: system info/stats/version/online-users
+        .route("/api/system/info", get(system::system_info))
+        .route("/api/system/stats", get(system::system_stats))
+        .route("/api/system/version", get(system::system_version))
+        .route("/api/system/online-users", get(system::online_users))
+        // Phase 7.4: audit middleware outermost — captures all responses (including 401)
+        .route_layer(middleware::from_fn_with_state(
+            state_clone.clone(),
+            audit_middleware,
+        ))
         .route_layer(middleware::from_fn_with_state(
             state_clone.clone(),
             auth_middleware,
@@ -904,8 +936,10 @@ pub fn app(state: AppState) -> Router<AppState> {
         .route("/api/sy/camera/list/circle", get(sy_camera::camera_list_circle))
         .route("/api/sy/camera/list/polygon", get(sy_camera::camera_list_polygon))
         .route("/api/sy/camera/list/address", get(sy_camera::camera_list_address))
-        .route("/api/sy/camera/list/ids", get(sy_camera::camera_list_ids))
         .route("/api/sy/camera/meeting/list", get(sy_camera::camera_meeting_list))
+        .route("/api/sy/camera/control/play", get(sy_camera::camera_control_play))
+        .route("/api/sy/camera/control/stop", get(sy_camera::camera_control_stop))
+        .route("/api/sy/camera/control/ptz", get(sy_camera::camera_control_ptz))
         .route("/api/cloud/record/collect/add", get(cloud_record_extra::collect_add))
         .route("/api/cloud/record/collect/delete", get(cloud_record_extra::collect_delete))
         .route("/api/cloud/record/download/zip", get(cloud_record_extra::download_zip))
@@ -961,8 +995,14 @@ pub fn app(state: AppState) -> Router<AppState> {
         .route("/api/region/page/list", get(region::region_page_list))
         .route("/api/region/sync", get(region::region_sync))
         .route("/api/zlm/hook", post(zlm_hook::handle_webhook))
-        .route("/api/health", get(health_check))
-        .route("/metrics", get(metrics_handler::metrics_handler));
+        .route("/api/rpc", post(rpc_endpoint))
+        .route("/api/health", get(health::liveness))
+        .route("/api/ready", get(health::readiness))
+        .route("/metrics", get(metrics_handler::metrics_handler))
+        // C6: play/share 公开访问（凭 share token 鉴权）
+        .route("/api/play/share", get(play::play_share_create))
+        .route("/api/play/share/info", get(play::play_share_info))
+        .route("/api/play/share/start", get(play::play_share_start));
 
     let api = api_public.merge(api_protected);
     let zlm_protected = Router::new()
@@ -971,20 +1011,19 @@ pub fn app(state: AppState) -> Router<AppState> {
             state_clone.clone(),
             auth_middleware,
         ));
-    let app = Router::new().merge(api).merge(zlm_protected).with_state(state.clone());
+    let app = Router::new()
+        .merge(api)
+        .merge(zlm_protected)
+        // Phase 4.1: WVP-Pro 兼容多路径 hook 路由（/api/hook/*）
+        // 公共端点，与既有 /api/zlm/hook 单路径并存
+        .merge(zlm_hook_routes::hook_routes())
+        .with_state(state.clone());
 
-    // WebSocket：设备状态实时通知
+    // WebSocket：设备状态实时通知 (Phase 7.3 + 7.4: JWT 校验在 ws_handler 内部)
     let app = app.route("/api/ws", get(websocket::ws_handler));
 
-    // 告警管理
-    let app = app
-        .route("/api/alarm/list", get(alarm::alarm_list))
-        .route("/api/alarm/detail/:id", get(alarm::alarm_detail))
-        .route("/api/alarm/handle", post(alarm::alarm_handle))
-        .route("/api/alarm/delete/:id", delete(alarm::alarm_delete))
-        .route("/api/alarm/batch", delete(alarm::alarm_batch_delete))
-        .route("/api/alarm/device/:device_id", delete(alarm::alarm_delete_by_device))
-        .route("/api/alarm/before/:time", delete(alarm::alarm_delete_before_time));
+    // Phase 7.4: alarm endpoints moved into api_protected (now require JWT).
+    // The legacy public routes below are intentionally removed.
 
     // 静态资源：前端构建产物（与 Java 版 static 目录一致）
     let static_dir = state

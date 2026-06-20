@@ -698,14 +698,17 @@ pub async fn channel_play(
                 match zlm_client.add_stream_proxy(&request).await {
                     Ok(key) => {
                         let stream_url = format!("gb/{}${}", device_id, channel_id);
-                        let play_url = format!("rtsp://127.0.0.1/live/{}", stream_url);
-                        let flv_url = format!("http://127.0.0.1/flv/live.app?stream={}", stream_url);
+                        // Phase 3.6: 用真实 ZLM 节点 IP（不再 hardcode 127.0.0.1）
+                        let media_ip = zlm_client.ip.clone();
+                        let http_port = zlm_client.http_port;
+                        let play_url = format!("rtsp://{}:554/{}", media_ip, stream_url);
+                        let flv_url = format!("http://{}:{}/{}.flv", media_ip, http_port, stream_url);
                         let data = serde_json::json!({
                             "app": "gb",
                             "stream": key,
                             "playUrl": play_url,
                             "flvUrl": flv_url,
-                            "wsUrl": format!("ws://127.0.0.1/live/{}", stream_url),
+                            "wsUrl": format!("ws://{}:{}/{}.flv", media_ip, http_port, stream_url),
                             "deviceId": device_id,
                             "channelId": gb_channel_id,
                             "hasAudio": ch.has_audio.unwrap_or(false),
@@ -849,12 +852,12 @@ pub async fn map_thin_clear(
     let channel_id = q.channel_id.unwrap_or(0);
     if channel_id > 0 {
         #[cfg(feature = "postgres")]
-        let _ = sqlx::query("UPDATE wvp_device_channel SET geojson = NULL WHERE id = $1")
+        let _ = sqlx::query("UPDATE gb_device_channel SET geojson = NULL WHERE id = $1")
             .bind(channel_id)
             .execute(&state.pool)
             .await;
         #[cfg(feature = "mysql")]
-        let _ = sqlx::query("UPDATE wvp_device_channel SET geojson = NULL WHERE id = ?")
+        let _ = sqlx::query("UPDATE gb_device_channel SET geojson = NULL WHERE id = ?")
             .bind(channel_id)
             .execute(&state.pool)
             .await;
@@ -872,7 +875,7 @@ pub async fn map_thin_progress(
     if channel_id > 0 {
         #[cfg(feature = "postgres")]
         let has_geojson: bool = sqlx::query_scalar(
-            "SELECT (geojson IS NOT NULL) FROM wvp_device_channel WHERE id = $1"
+            "SELECT (geojson IS NOT NULL) FROM gb_device_channel WHERE id = $1"
         )
         .bind(channel_id)
         .fetch_optional(&state.pool)
@@ -881,9 +884,9 @@ pub async fn map_thin_progress(
         .flatten()
         .unwrap_or(false);
 
-        #[cfg(feature = "mysql")]
+        #[cfg(any(feature = "mysql", feature = "sqlite"))]
         let has_geojson: bool = sqlx::query_scalar(
-            "SELECT (geojson IS NOT NULL) FROM wvp_device_channel WHERE id = ?"
+            "SELECT (geojson IS NOT NULL) FROM gb_device_channel WHERE id = ?"
         )
         .bind(channel_id)
         .fetch_optional(&state.pool)
@@ -936,16 +939,16 @@ pub async fn map_thin_save(
 
     #[cfg(feature = "postgres")]
     let points: Vec<PositionPoint> = sqlx::query_as(
-        "SELECT longitude, latitude FROM wvp_position_history WHERE device_id = $1 ORDER BY time",
+        "SELECT longitude, latitude FROM gb_position_history WHERE device_id = $1 ORDER BY time",
     )
     .bind(&device_id)
     .fetch_all(&state.pool)
     .await
     .unwrap_or_default();
 
-    #[cfg(feature = "mysql")]
+    #[cfg(any(feature = "mysql", feature = "sqlite"))]
     let points: Vec<PositionPoint> = sqlx::query_as(
-        "SELECT longitude, latitude FROM wvp_position_history WHERE device_id = ? ORDER BY time",
+        "SELECT longitude, latitude FROM gb_position_history WHERE device_id = ? ORDER BY time",
     )
     .bind(&device_id)
     .fetch_all(&state.pool)
@@ -988,14 +991,14 @@ pub async fn map_thin_save(
 
     // Save to channel's geojson field
     #[cfg(feature = "postgres")]
-    let _ = sqlx::query("UPDATE wvp_device_channel SET geojson = $1 WHERE id = $2")
+    let _ = sqlx::query("UPDATE gb_device_channel SET geojson = $1 WHERE id = $2")
         .bind(&geojson_str)
         .bind(channel_id)
         .execute(&state.pool)
         .await;
 
-    #[cfg(feature = "mysql")]
-    let _ = sqlx::query("UPDATE wvp_device_channel SET geojson = ? WHERE id = ?")
+    #[cfg(any(feature = "mysql", feature = "sqlite"))]
+    let _ = sqlx::query("UPDATE gb_device_channel SET geojson = ? WHERE id = ?")
         .bind(&geojson_str)
         .bind(channel_id)
         .execute(&state.pool)
@@ -1030,13 +1033,13 @@ pub async fn map_thin_draw(
     if let Some(ref geojson) = body.geojson {
         let geojson_str = serde_json::to_string(geojson).unwrap_or_default();
         #[cfg(feature = "postgres")]
-        let _ = sqlx::query("UPDATE wvp_device_channel SET geojson = $1 WHERE id = $2")
+        let _ = sqlx::query("UPDATE gb_device_channel SET geojson = $1 WHERE id = $2")
             .bind(&geojson_str)
             .bind(channel_id)
             .execute(&state.pool)
             .await;
-        #[cfg(feature = "mysql")]
-        let _ = sqlx::query("UPDATE wvp_device_channel SET geojson = ? WHERE id = ?")
+        #[cfg(any(feature = "mysql", feature = "sqlite"))]
+        let _ = sqlx::query("UPDATE gb_device_channel SET geojson = ? WHERE id = ?")
             .bind(&geojson_str)
             .bind(channel_id)
             .execute(&state.pool)
@@ -1052,7 +1055,7 @@ pub async fn map_thin_draw(
 
     #[cfg(feature = "postgres")]
     let row: Option<GeojsonRow> = sqlx::query_as(
-        "SELECT geojson FROM wvp_device_channel WHERE id = $1"
+        "SELECT geojson FROM gb_device_channel WHERE id = $1"
     )
     .bind(channel_id)
     .fetch_optional(&state.pool)
@@ -1060,9 +1063,9 @@ pub async fn map_thin_draw(
     .ok()
     .flatten();
 
-    #[cfg(feature = "mysql")]
+    #[cfg(any(feature = "mysql", feature = "sqlite"))]
     let row: Option<GeojsonRow> = sqlx::query_as(
-        "SELECT geojson FROM wvp_device_channel WHERE id = ?"
+        "SELECT geojson FROM gb_device_channel WHERE id = ?"
     )
     .bind(channel_id)
     .fetch_optional(&state.pool)

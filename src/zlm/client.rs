@@ -469,9 +469,74 @@ impl ZlmClient {
         #[derive(Deserialize)]
         struct Resp { code: i32 }
         let resp: ApiResponse<Resp> = self.request("/index/api/sendRtpInfo", &params).await?;
-        
+
         if resp.code != 0 {
             return Err(anyhow!("ZLM error: {}", resp.msg.unwrap_or_default()));
+        }
+        Ok(())
+    }
+
+    /// B3: 启动 ZLM 将本地 RTP 流推送到上级平台 (startSendRtp)
+    ///
+    /// 由 SipServer 在收到设备 INVITE 200 OK 后调用，把本级已接收的设备 RTP
+    /// 通过 ZLM 转发到上级平台指定的 IP:port。
+    pub async fn start_send_rtp(
+        &self,
+        vhost: &str,
+        app: &str,
+        stream: &str,
+        ssrc: &str,
+        dst_url: &str,
+        dst_port: u16,
+        is_udp: bool,
+        src_port: Option<u16>,
+        use_ps: bool,
+    ) -> Result<()> {
+        let mut params = vec![
+            ("secret", self.secret.clone()),
+            ("vhost", vhost.to_string()),
+            ("app", app.to_string()),
+            ("stream", stream.to_string()),
+            ("ssrc", ssrc.to_string()),
+            ("dst_url", dst_url.to_string()),
+            ("dst_port", dst_port.to_string()),
+            ("is_udp", (if is_udp { 1 } else { 0 }).to_string()),
+            ("use_ps", (if use_ps { 1 } else { 0 }).to_string()),
+        ];
+        if let Some(p) = src_port {
+            params.push(("src_port", p.to_string()));
+        }
+
+        #[derive(Deserialize)]
+        struct Resp { code: i32 }
+        let resp: ApiResponse<Resp> = self.request("/index/api/startSendRtp", &params).await?;
+
+        if resp.code != 0 {
+            return Err(anyhow!("ZLM startSendRtp error: {}", resp.msg.unwrap_or_default()));
+        }
+        Ok(())
+    }
+
+    /// B3: 停止 ZLM 向某个上级平台的 SendRtp 推送 (stopSendRtp)
+    pub async fn stop_send_rtp(
+        &self,
+        vhost: &str,
+        app: &str,
+        stream: &str,
+    ) -> Result<()> {
+        let params = vec![
+            ("secret", self.secret.clone()),
+            ("vhost", vhost.to_string()),
+            ("app", app.to_string()),
+            ("stream", stream.to_string()),
+        ];
+
+        #[derive(Deserialize)]
+        struct Resp { code: i32 }
+        let resp: ApiResponse<Resp> = self.request("/index/api/stopSendRtp", &params).await?;
+
+        if resp.code != 0 {
+            return Err(anyhow!("ZLM stopSendRtp error: {}", resp.msg.unwrap_or_default()));
         }
         Ok(())
     }
@@ -535,6 +600,52 @@ impl std::fmt::Debug for ZlmClient {
             .field("secret", &"[hidden]")
             .finish()
     }
+}
+
+// ============================================================================
+// Phase 4.3: parse_port_range — "start,end" → (u16, u16)
+// ============================================================================
+
+/// Parse a port range string in the form `"start,end"` (comma-separated).
+///
+/// Returns the start and end ports as `(u16, u16)` on success.
+/// Returns an error if:
+/// - the input does not contain exactly one comma separator (i.e. not 2 parts)
+/// - either part fails to parse as a `u16`
+///
+/// The output format expected by ZLM's `setServerConfig("rtp.port_range", ...)`
+/// is `"start-end"` (dash-separated), so callers typically do:
+/// `format!("{}-{}", start, end)`.
+pub fn parse_port_range(s: &str) -> Result<(u16, u16)> {
+    let parts: Vec<&str> = s.split(',').collect();
+    if parts.len() != 2 {
+        return Err(anyhow!("Invalid port range: {} (expected 'start,end')", s));
+    }
+    let start: u16 = parts[0].parse().map_err(|e| {
+        anyhow!("Invalid port range start '{}': {}", parts[0], e)
+    })?;
+    let end: u16 = parts[1].parse().map_err(|e| {
+        anyhow!("Invalid port range end '{}': {}", parts[1], e)
+    })?;
+    Ok((start, end))
+}
+
+/// Set a ZLM RTP port range config key from a raw `"start,end"` string.
+///
+/// This is a convenience wrapper that calls `parse_port_range`, formats the
+/// result as `"start-end"`, and then calls `zlm.set_server_config(secret, key, &value)`.
+///
+/// Returns `Ok(())` on success; propagates errors from `parse_port_range` or
+/// `set_server_config`.
+pub async fn set_rtp_port_range(
+    zlm: &ZlmClient,
+    secret: &str,
+    key: &str,
+    raw: &str,
+) -> Result<()> {
+    let (start, end) = parse_port_range(raw)?;
+    let value = format!("{}-{}", start, end);
+    zlm.set_server_config(secret, key, &value).await
 }
 
 // ============================================================================
@@ -610,6 +721,92 @@ impl ZlmClient {
             stream_count: self.get_stream_count().await.unwrap_or(-1),
             rtp_server_count: 0, // 可通过 get_rtp_server_list API 获取
             last_error: None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_port_range_valid() {
+        let (start, end) = parse_port_range("30000,30200").expect("valid range should parse");
+        assert_eq!(start, 30000);
+        assert_eq!(end, 30200);
+
+        // 边界值：u16 min/max
+        let (s2, e2) = parse_port_range("0,65535").expect("boundary range should parse");
+        assert_eq!(s2, 0);
+        assert_eq!(e2, 65535);
+    }
+
+    #[test]
+    fn test_parse_port_range_invalid_format() {
+        // 只有一段（缺逗号）
+        assert!(parse_port_range("30000").is_err());
+        // 多于两段（多逗号）
+        assert!(parse_port_range("30000,30100,30200").is_err());
+        // 空字符串
+        assert!(parse_port_range("").is_err());
+        // 仅逗号
+        assert!(parse_port_range(",").is_err());
+    }
+
+    #[test]
+    fn test_parse_port_range_non_numeric() {
+        // 起始非数字
+        assert!(parse_port_range("abc,30100").is_err());
+        // 结束非数字
+        assert!(parse_port_range("30000,xyz").is_err());
+        // 超出 u16
+        assert!(parse_port_range("30000,99999").is_err());
+        // 负数（u16 parse 失败）
+        assert!(parse_port_range("-1,30100").is_err());
+    }
+
+    // Phase 4.3: wiremock test for set_rtp_port_range
+    mod wiremock {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        #[tokio::test]
+        async fn test_set_rtp_port_range_calls_set_server_config() {
+            let mock_server = MockServer::start().await;
+
+            Mock::given(method("POST"))
+                .and(path("/index/api/setServerConfig"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "code": 0
+                })))
+                .expect(1)
+                .mount(&mock_server)
+                .await;
+
+            let uri = mock_server.uri();
+            let stripped = uri.trim_start_matches("http://");
+            let mut parts = stripped.splitn(2, ':');
+            let ip = parts.next().unwrap_or("127.0.0.1").to_string();
+            let port: u16 = parts
+                .next()
+                .and_then(|p| p.parse().ok())
+                .unwrap_or(80);
+
+            let zlm_client = crate::zlm::ZlmClient::new(&ip, port, "test-secret");
+
+            // "30000,30200" → "30000-30200"
+            super::set_rtp_port_range(&zlm_client, "test-secret", "rtp.port_range", "30000,30200")
+                .await
+                .expect("set_rtp_port_range should succeed");
+
+            let received = mock_server.received_requests().await.unwrap_or_default();
+            assert_eq!(received.len(), 1, "expected exactly 1 request");
+            let body = String::from_utf8_lossy(&received[0].body).to_string();
+            assert!(
+                body.contains("\"key\":\"rtp.port_range\"") && body.contains("30000-30200"),
+                "expected key='rtp.port_range' and value='30000-30200', got: {}",
+                body
+            );
         }
     }
 }

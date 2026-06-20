@@ -16,7 +16,7 @@ jobs:
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: wvp
+          POSTGRES_DB: gbserver
         ports: ['5432:5432']
         options: >-
           --health-cmd pg_isready
@@ -37,25 +37,25 @@ jobs:
           key: cargo-registry-${{ hashFiles('Cargo.lock') }}
       - name: Import schema
         run: |
-          PGPASSWORD=postgres psql -h localhost -U postgres -d wvp < database/init-postgresql-2.7.4.sql
+          PGPASSWORD=postgres psql -h localhost -U postgres -d gbserver < database/init-postgresql-2.7.4.sql
       - name: cargo check
         run: cargo check --lib --tests
       - name: cargo test --lib
         env:
-          DATABASE_URL: postgres://postgres:postgres@localhost:5432/wvp
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/gbserver
         run: cargo test --lib -- --test-threads=4
       - name: device simulator tests
         run: cargo test --test device_simulator_test
 
   backend-mysql:
-    name: MySQL + Rust check
+    name: MySQL + Rust check + test
     runs-on: ubuntu-latest
     services:
       mysql:
         image: mysql:8.0
         env:
           MYSQL_ROOT_PASSWORD: rootpw
-          MYSQL_DATABASE: wvp
+          MYSQL_DATABASE: gbserver
         ports: ['3306:3306']
         options: >-
           --health-cmd "mysqladmin ping -uroot -prootpw"
@@ -69,5 +69,12 @@ jobs:
         with:
           path: ~/.cargo/registry
           key: cargo-registry-${{ hashFiles('Cargo.lock') }}
+      - name: Import schema
+        run: |
+          mysql -h 127.0.0.1 -uroot -prootpw gbserver < database/init-mysql-2.7.4.sql
       - name: cargo check (mysql)
         run: cargo check --no-default-features --features mysql --lib --tests
+      - name: cargo test (mysql, no DB tests)
+        env:
+          DATABASE_URL: mysql://root:rootpw@127.0.0.1:3306/gbserver
+        run: cargo test --no-default-features --features mysql --lib -- --test-threads=4 --skip postgres --skip integration

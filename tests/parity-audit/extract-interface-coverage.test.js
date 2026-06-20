@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict')
 const test = require('node:test')
 
-const audit = require('../../scripts/parity-audit/extract-wvp-parity')
+const audit = require('../../scripts/parity-audit/extract-interface-coverage')
 
 test('module exports parser and formatter functions', () => {
   assert.equal(typeof audit.normalizeRoutePath, 'function')
@@ -474,7 +474,7 @@ const os = require('node:os')
 const path = require('node:path')
 
 test('buildAudit scans upstream backend/frontend and local backend/frontend trees', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wvp-audit-'))
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'interface-coverage-'))
   const upstream = path.join(root, 'upstream')
   const local = path.join(root, 'local')
 
@@ -522,7 +522,7 @@ test('buildAudit scans upstream backend/frontend and local backend/frontend tree
 
 test('buildMarkdownReport includes baseline, counts, and top gaps', () => {
   const markdown = audit.buildMarkdownReport({
-    baseline: { upstream: '/tmp/wvp-GB28181-pro', local: '/repo', commit: 'b760458' },
+    baseline: { upstream: '/tmp/reference-java-impl', local: '/repo', commit: 'b760458' },
     generatedAt: '2026-05-30T00:00:00.000Z',
     counts: { javaRoutes: 2, rustRoutes: 1, upstreamFrontendApi: 1, localFrontendApi: 1, upstreamPages: 1, localPages: 1 },
     comparisons: {
@@ -538,7 +538,7 @@ test('buildMarkdownReport includes baseline, counts, and top gaps', () => {
     },
   })
 
-  assert.match(markdown, /# WVP-Pro Phase 0 Parity Audit/)
+  assert.match(markdown, /# GBServer Interface Coverage Report (Phase 0)/)
   assert.match(markdown, /Baseline commit: `b760458`/)
   assert.match(markdown, /Java controller routes: 2/)
   assert.match(markdown, /POST `\/api\/platform\/add`/)

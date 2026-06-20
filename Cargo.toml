@@ -1,14 +1,17 @@
 [package]
-name = "wvp-gb28181-server"
+name = "gbserver"
 version = "0.1.0"
 edition = "2021"
-description = "WVP GB28181 后端 Rust 重写，前端复用 web 目录"
+description = "GBServer — GB28181 国标信令、流媒体接入与级联管理平台"
 
 [features]
-default = ["postgres"]
-# 数据库二选一：默认 PostgreSQL；MySQL 请使用 --no-default-features --features mysql
+default = ["sqlite"]
+# 数据库三选一：默认 SQLite（轻量、零依赖、适合开发/演示/边缘节点/小规模生产）；
+#   MySQL 使用 --no-default-features --features mysql；
+#   PostgreSQL 使用 --no-default-features --features postgres
 mysql = ["sqlx/mysql"]
 postgres = ["sqlx/postgres"]
+sqlite = ["sqlx/sqlite"]
 
 [dependencies]
 # Web
@@ -24,6 +27,9 @@ serde_json = "1"
 # 数据库（通过 features 选择 mysql 或 postgres）
 sqlx = { version = "0.7", features = ["runtime-tokio", "chrono", "macros"], default-features = false }
 chrono = { version = "0.4", features = ["serde"] }
+
+# Phase 7.6: password hashing (Argon2id, default params ~50ms)
+argon2 = "0.5"
 
 # 鉴权
 jsonwebtoken = "9"
@@ -54,6 +60,7 @@ redis = { version = "0.25", features = ["aio", "tokio-comp", "connection-manager
 # 网络
 bytes = "1"
 futures-util = "0.3"
+ipnetwork = "0.20"
 
 [dev-dependencies]
 # 后端测试依赖
@@ -68,9 +75,21 @@ axum-test = "7"
 criterion = { version = "0.5", features = ["async_tokio"] }
 uuid = { version = "1", features = ["v4"] }
 
+[[bin]]
+name = "gbserver"
+path = "src/main.rs"
+
 [[test]]
 name = "device_simulator_test"
 path = "tests/integration/sip/device_simulator_test.rs"
+
+[[test]]
+name = "sqlite_compat"
+path = "tests/integration/sqlite_compat.rs"
+
+[[test]]
+name = "state_store_two_node"
+path = "tests/integration/state_store_two_node.rs"
 
 [profile.release]
 lto = true

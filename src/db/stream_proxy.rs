@@ -1,9 +1,11 @@
-//! 拉流代理表 wvp_stream_proxy
+//! 拉流代理表 gb_stream_proxy
 
 use serde::Serialize;
 use sqlx::FromRow;
 
 use super::Pool;
+use crate::state::{StreamState, StreamStatus};
+use std::str::FromStr;
 
 /// 拉流代理结构体
 #[derive(Debug, Clone, Serialize, FromRow)]
@@ -29,20 +31,103 @@ pub struct StreamProxy {
     pub server_id: Option<String>,
     pub enable_disable_none_reader: Option<bool>,
     pub relates_media_server_id: Option<String>,
+    /// Phase 4.5: 统一流状态字段（与 `pulling` bool 并存，不替换）
+    #[serde(default)]
+    pub stream_status: Option<String>,
+}
+
+impl StreamState for StreamProxy {
+    fn stream_id(&self) -> &str {
+        self.stream.as_deref().unwrap_or("")
+    }
+    fn app(&self) -> &str {
+        self.app.as_deref().unwrap_or("")
+    }
+    fn status(&self) -> StreamStatus {
+        if let Some(ref s) = self.stream_status {
+            if let Ok(st) = StreamStatus::from_str(s) {
+                return st;
+            }
+        }
+        if self.pulling.unwrap_or(false) {
+            StreamStatus::Active
+        } else {
+            StreamStatus::Ready
+        }
+    }
+    fn set_status(&mut self, status: StreamStatus) {
+        self.stream_status = Some(status.as_str().to_string());
+    }
+    fn media_server_id(&self) -> Option<&str> {
+        self.media_server_id.as_deref()
+    }
+    fn device_id(&self) -> Option<&str> {
+        // 拉流代理通常无直接 device 关联
+        None
+    }
+    fn channel_id(&self) -> Option<&str> {
+        None
+    }
+}
+
+/// Phase 4.5: 幂等迁移 —— 为已存在的 `gb_stream_proxy` 表添加 `stream_status` 列。
+pub async fn ensure_stream_status_column(pool: &Pool) -> sqlx::Result<()> {
+    #[cfg(feature = "postgres")]
+    {
+        let _ = sqlx::query("ALTER TABLE gb_stream_proxy ADD COLUMN IF NOT EXISTS stream_status VARCHAR(32) NOT NULL DEFAULT 'ready'")
+            .execute(pool)
+            .await?;
+    }
+    #[cfg(feature = "sqlite")]
+    {
+        let exists: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pragma_table_info('gb_stream_proxy') WHERE name = 'stream_status'"
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0);
+        if exists == 0 {
+            let _ = sqlx::query("ALTER TABLE gb_stream_proxy ADD COLUMN stream_status TEXT NOT NULL DEFAULT 'ready'")
+                .execute(pool)
+                .await?;
+        }
+    }
+    #[cfg(feature = "mysql")]
+    {
+        let exists: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'gb_stream_proxy' AND column_name = 'stream_status'"
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0);
+        if exists == 0 {
+            let _ = sqlx::query("ALTER TABLE gb_stream_proxy ADD COLUMN stream_status varchar(32) NOT NULL DEFAULT 'ready'")
+                .execute(pool)
+                .await?;
+        }
+    }
+    Ok(())
 }
 
 /// 根据ID获取拉流代理
 pub async fn get_by_id(pool: &Pool, id: i64) -> sqlx::Result<Option<StreamProxy>> {
     #[cfg(feature = "mysql")]
     return sqlx::query_as::<_, StreamProxy>(
-        "SELECT * FROM wvp_stream_proxy WHERE id = ?"
+        "SELECT * FROM gb_stream_proxy WHERE id = ?"
     )
     .bind(id)
     .fetch_optional(pool)
     .await;
     #[cfg(feature = "postgres")]
     return sqlx::query_as::<_, StreamProxy>(
-        "SELECT id, type, app, stream, src_url, timeout, ffmpeg_cmd_key, rtsp_type, media_server_id, enable_audio, enable_mp4, pulling, enable, create_time, name, update_time, stream_key, server_id, enable_disable_none_reader, relates_media_server_id FROM wvp_stream_proxy WHERE id = $1"
+        "SELECT id, type, app, stream, src_url, timeout, ffmpeg_cmd_key, rtsp_type, media_server_id, enable_audio, enable_mp4, pulling, enable, create_time, name, update_time, stream_key, server_id, enable_disable_none_reader, relates_media_server_id FROM gb_stream_proxy WHERE id = $1"
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await;
+    #[cfg(feature = "sqlite")]
+    return sqlx::query_as::<_, StreamProxy>(
+        "SELECT * FROM gb_stream_proxy WHERE id = ?"
     )
     .bind(id)
     .fetch_optional(pool)
@@ -61,7 +146,7 @@ pub async fn add(
 ) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
     let r = sqlx::query(
-        r#"INSERT INTO wvp_stream_proxy (app, stream, src_url, media_server_id, name, create_time, update_time, enable, pulling)
+        r#"INSERT INTO gb_stream_proxy (app, stream, src_url, media_server_id, name, create_time, update_time, enable, pulling)
            VALUES (?, ?, ?, ?, ?, ?, ?, false, false)"#
     )
     .bind(app)
@@ -75,8 +160,22 @@ pub async fn add(
     .await?;
     #[cfg(feature = "postgres")]
     let r = sqlx::query(
-        r#"INSERT INTO wvp_stream_proxy (app, stream, src_url, media_server_id, name, create_time, update_time, enable, pulling)
+        r#"INSERT INTO gb_stream_proxy (app, stream, src_url, media_server_id, name, create_time, update_time, enable, pulling)
            VALUES ($1, $2, $3, $4, $5, $6, $7, false, false)"#
+    )
+    .bind(app)
+    .bind(stream)
+    .bind(src_url)
+    .bind(media_server_id)
+    .bind(name)
+    .bind(now)
+    .bind(now)
+    .execute(pool)
+    .await?;
+    #[cfg(feature = "sqlite")]
+    let r = sqlx::query(
+        r#"INSERT INTO gb_stream_proxy (app, stream, src_url, media_server_id, name, create_time, update_time, enable, pulling)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0)"#
     )
     .bind(app)
     .bind(stream)
@@ -103,7 +202,7 @@ pub async fn update(
 ) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
     let r = sqlx::query(
-        r#"UPDATE wvp_stream_proxy SET
+        r#"UPDATE gb_stream_proxy SET
            app = COALESCE(?, app),
            stream = COALESCE(?, stream),
            src_url = COALESCE(?, src_url),
@@ -123,7 +222,7 @@ pub async fn update(
     .await?;
     #[cfg(feature = "postgres")]
     let r = sqlx::query(
-        r#"UPDATE wvp_stream_proxy SET
+        r#"UPDATE gb_stream_proxy SET
            app = COALESCE($1, app),
            stream = COALESCE($2, stream),
            src_url = COALESCE($3, src_url),
@@ -141,18 +240,43 @@ pub async fn update(
     .bind(id)
     .execute(pool)
     .await?;
+    #[cfg(feature = "sqlite")]
+    let r = sqlx::query(
+        r#"UPDATE gb_stream_proxy SET
+           app = COALESCE(?, app),
+           stream = COALESCE(?, stream),
+           src_url = COALESCE(?, src_url),
+           media_server_id = COALESCE(?, media_server_id),
+           name = COALESCE(?, name),
+           update_time = ?
+           WHERE id = ?"#
+    )
+    .bind(app)
+    .bind(stream)
+    .bind(src_url)
+    .bind(media_server_id)
+    .bind(name)
+    .bind(now)
+    .bind(id)
+    .execute(pool)
+    .await?;
     Ok(r.rows_affected())
 }
 
 /// 删除拉流代理
 pub async fn delete_by_id(pool: &Pool, id: i64) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
-    let r = sqlx::query("DELETE FROM wvp_stream_proxy WHERE id = ?")
+    let r = sqlx::query("DELETE FROM gb_stream_proxy WHERE id = ?")
     .bind(id)
     .execute(pool)
     .await?;
     #[cfg(feature = "postgres")]
-    let r = sqlx::query("DELETE FROM wvp_stream_proxy WHERE id = $1")
+    let r = sqlx::query("DELETE FROM gb_stream_proxy WHERE id = $1")
+    .bind(id)
+    .execute(pool)
+    .await?;
+    #[cfg(feature = "sqlite")]
+    let r = sqlx::query("DELETE FROM gb_stream_proxy WHERE id = ?")
     .bind(id)
     .execute(pool)
     .await?;
@@ -182,7 +306,7 @@ pub async fn list_paged(
         if let Some(p) = pulling {
             #[cfg(feature = "mysql")]
             return sqlx::query_as::<_, StreamProxy>(
-                "SELECT id, type, app, stream, src_url, timeout, ffmpeg_cmd_key, rtsp_type, media_server_id, enable_audio, enable_mp4, pulling, enable, create_time, name, update_time, stream_key, server_id, enable_disable_none_reader, relates_media_server_id FROM wvp_stream_proxy WHERE media_server_id = ? AND pulling = ? ORDER BY id LIMIT ? OFFSET ?",
+                "SELECT id, type, app, stream, src_url, timeout, ffmpeg_cmd_key, rtsp_type, media_server_id, enable_audio, enable_mp4, pulling, enable, create_time, name, update_time, stream_key, server_id, enable_disable_none_reader, relates_media_server_id FROM gb_stream_proxy WHERE media_server_id = ? AND pulling = ? ORDER BY id LIMIT ? OFFSET ?",
             )
             .bind(mid)
             .bind(p)
@@ -192,7 +316,17 @@ pub async fn list_paged(
             .await;
             #[cfg(feature = "postgres")]
             return sqlx::query_as::<_, StreamProxy>(
-                "SELECT id, type, app, stream, src_url, timeout, ffmpeg_cmd_key, rtsp_type, media_server_id, enable_audio, enable_mp4, pulling, enable, create_time, name, update_time, stream_key, server_id, enable_disable_none_reader, relates_media_server_id FROM wvp_stream_proxy WHERE media_server_id = $1 AND pulling = $2 ORDER BY id LIMIT $3 OFFSET $4",
+                "SELECT id, type, app, stream, src_url, timeout, ffmpeg_cmd_key, rtsp_type, media_server_id, enable_audio, enable_mp4, pulling, enable, create_time, name, update_time, stream_key, server_id, enable_disable_none_reader, relates_media_server_id FROM gb_stream_proxy WHERE media_server_id = $1 AND pulling = $2 ORDER BY id LIMIT $3 OFFSET $4",
+            )
+            .bind(mid)
+            .bind(p)
+            .bind(limit)
+            .bind(offset as i64)
+            .fetch_all(pool)
+            .await;
+            #[cfg(feature = "sqlite")]
+            return sqlx::query_as::<_, StreamProxy>(
+                "SELECT id, type, app, stream, src_url, timeout, ffmpeg_cmd_key, rtsp_type, media_server_id, enable_audio, enable_mp4, pulling, enable, create_time, name, update_time, stream_key, server_id, enable_disable_none_reader, relates_media_server_id, stream_status FROM gb_stream_proxy WHERE media_server_id = ? AND pulling = ? ORDER BY id LIMIT ? OFFSET ?",
             )
             .bind(mid)
             .bind(p)
@@ -203,7 +337,7 @@ pub async fn list_paged(
         } else {
             #[cfg(feature = "mysql")]
             return sqlx::query_as::<_, StreamProxy>(
-                "SELECT id, type, app, stream, src_url, timeout, ffmpeg_cmd_key, rtsp_type, media_server_id, enable_audio, enable_mp4, pulling, enable, create_time, name, update_time, stream_key, server_id, enable_disable_none_reader, relates_media_server_id FROM wvp_stream_proxy WHERE media_server_id = ? ORDER BY id LIMIT ? OFFSET ?",
+                "SELECT id, type, app, stream, src_url, timeout, ffmpeg_cmd_key, rtsp_type, media_server_id, enable_audio, enable_mp4, pulling, enable, create_time, name, update_time, stream_key, server_id, enable_disable_none_reader, relates_media_server_id FROM gb_stream_proxy WHERE media_server_id = ? ORDER BY id LIMIT ? OFFSET ?",
             )
             .bind(mid)
             .bind(limit)
@@ -212,7 +346,16 @@ pub async fn list_paged(
             .await;
             #[cfg(feature = "postgres")]
             return sqlx::query_as::<_, StreamProxy>(
-                "SELECT id, type, app, stream, src_url, timeout, ffmpeg_cmd_key, rtsp_type, media_server_id, enable_audio, enable_mp4, pulling, enable, create_time, name, update_time, stream_key, server_id, enable_disable_none_reader, relates_media_server_id FROM wvp_stream_proxy WHERE media_server_id = $1 ORDER BY id LIMIT $2 OFFSET $3",
+                "SELECT id, type, app, stream, src_url, timeout, ffmpeg_cmd_key, rtsp_type, media_server_id, enable_audio, enable_mp4, pulling, enable, create_time, name, update_time, stream_key, server_id, enable_disable_none_reader, relates_media_server_id FROM gb_stream_proxy WHERE media_server_id = $1 ORDER BY id LIMIT $2 OFFSET $3",
+            )
+            .bind(mid)
+            .bind(limit)
+            .bind(offset as i64)
+            .fetch_all(pool)
+            .await;
+            #[cfg(feature = "sqlite")]
+            return sqlx::query_as::<_, StreamProxy>(
+                "SELECT id, type, app, stream, src_url, timeout, ffmpeg_cmd_key, rtsp_type, media_server_id, enable_audio, enable_mp4, pulling, enable, create_time, name, update_time, stream_key, server_id, enable_disable_none_reader, relates_media_server_id, stream_status FROM gb_stream_proxy WHERE media_server_id = ? ORDER BY id LIMIT ? OFFSET ?",
             )
             .bind(mid)
             .bind(limit)
@@ -223,7 +366,7 @@ pub async fn list_paged(
     } else if let Some(p) = pulling {
         #[cfg(feature = "mysql")]
         return sqlx::query_as::<_, StreamProxy>(
-            "SELECT id, type, app, stream, src_url, timeout, ffmpeg_cmd_key, rtsp_type, media_server_id, enable_audio, enable_mp4, pulling, enable, create_time, name, update_time, stream_key, server_id, enable_disable_none_reader, relates_media_server_id FROM wvp_stream_proxy WHERE pulling = ? ORDER BY id LIMIT ? OFFSET ?",
+            "SELECT id, type, app, stream, src_url, timeout, ffmpeg_cmd_key, rtsp_type, media_server_id, enable_audio, enable_mp4, pulling, enable, create_time, name, update_time, stream_key, server_id, enable_disable_none_reader, relates_media_server_id FROM gb_stream_proxy WHERE pulling = ? ORDER BY id LIMIT ? OFFSET ?",
         )
         .bind(p)
         .bind(limit)
@@ -232,7 +375,16 @@ pub async fn list_paged(
         .await;
         #[cfg(feature = "postgres")]
         return sqlx::query_as::<_, StreamProxy>(
-            "SELECT id, type, app, stream, src_url, timeout, ffmpeg_cmd_key, rtsp_type, media_server_id, enable_audio, enable_mp4, pulling, enable, create_time, name, update_time, stream_key, server_id, enable_disable_none_reader, relates_media_server_id FROM wvp_stream_proxy WHERE pulling = $1 ORDER BY id LIMIT $2 OFFSET $3",
+            "SELECT id, type, app, stream, src_url, timeout, ffmpeg_cmd_key, rtsp_type, media_server_id, enable_audio, enable_mp4, pulling, enable, create_time, name, update_time, stream_key, server_id, enable_disable_none_reader, relates_media_server_id FROM gb_stream_proxy WHERE pulling = $1 ORDER BY id LIMIT $2 OFFSET $3",
+        )
+        .bind(p)
+        .bind(limit)
+        .bind(offset as i64)
+        .fetch_all(pool)
+        .await;
+        #[cfg(feature = "sqlite")]
+        return sqlx::query_as::<_, StreamProxy>(
+            "SELECT id, type, app, stream, src_url, timeout, ffmpeg_cmd_key, rtsp_type, media_server_id, enable_audio, enable_mp4, pulling, enable, create_time, name, update_time, stream_key, server_id, enable_disable_none_reader, relates_media_server_id, stream_status FROM gb_stream_proxy WHERE pulling = ? ORDER BY id LIMIT ? OFFSET ?",
         )
         .bind(p)
         .bind(limit)
@@ -242,7 +394,7 @@ pub async fn list_paged(
     } else {
         #[cfg(feature = "mysql")]
         return sqlx::query_as::<_, StreamProxy>(
-            "SELECT id, type, app, stream, src_url, timeout, ffmpeg_cmd_key, rtsp_type, media_server_id, enable_audio, enable_mp4, pulling, enable, create_time, name, update_time, stream_key, server_id, enable_disable_none_reader, relates_media_server_id FROM wvp_stream_proxy ORDER BY id LIMIT ? OFFSET ?",
+            "SELECT id, type, app, stream, src_url, timeout, ffmpeg_cmd_key, rtsp_type, media_server_id, enable_audio, enable_mp4, pulling, enable, create_time, name, update_time, stream_key, server_id, enable_disable_none_reader, relates_media_server_id FROM gb_stream_proxy ORDER BY id LIMIT ? OFFSET ?",
         )
         .bind(limit)
         .bind(offset as i64)
@@ -250,7 +402,15 @@ pub async fn list_paged(
         .await;
         #[cfg(feature = "postgres")]
         return sqlx::query_as::<_, StreamProxy>(
-            "SELECT id, type, app, stream, src_url, timeout, ffmpeg_cmd_key, rtsp_type, media_server_id, enable_audio, enable_mp4, pulling, enable, create_time, name, update_time, stream_key, server_id, enable_disable_none_reader, relates_media_server_id FROM wvp_stream_proxy ORDER BY id LIMIT $1 OFFSET $2",
+            "SELECT id, type, app, stream, src_url, timeout, ffmpeg_cmd_key, rtsp_type, media_server_id, enable_audio, enable_mp4, pulling, enable, create_time, name, update_time, stream_key, server_id, enable_disable_none_reader, relates_media_server_id FROM gb_stream_proxy ORDER BY id LIMIT $1 OFFSET $2",
+        )
+        .bind(limit)
+        .bind(offset as i64)
+        .fetch_all(pool)
+        .await;
+        #[cfg(feature = "sqlite")]
+        return sqlx::query_as::<_, StreamProxy>(
+            "SELECT id, type, app, stream, src_url, timeout, ffmpeg_cmd_key, rtsp_type, media_server_id, enable_audio, enable_mp4, pulling, enable, create_time, name, update_time, stream_key, server_id, enable_disable_none_reader, relates_media_server_id, stream_status FROM gb_stream_proxy ORDER BY id LIMIT ? OFFSET ?",
         )
         .bind(limit)
         .bind(offset as i64)
@@ -267,42 +427,58 @@ pub async fn count_all(
     if let Some(mid) = media_server_id {
         if let Some(p) = pulling {
             #[cfg(feature = "mysql")]
-            return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM wvp_stream_proxy WHERE media_server_id = ? AND pulling = ?")
+            return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_stream_proxy WHERE media_server_id = ? AND pulling = ?")
                 .bind(mid)
                 .bind(p)
                 .fetch_one(pool)
                 .await;
             #[cfg(feature = "postgres")]
-            return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM wvp_stream_proxy WHERE media_server_id = $1 AND pulling = $2")
+            return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_stream_proxy WHERE media_server_id = $1 AND pulling = $2")
+                .bind(mid)
+                .bind(p)
+                .fetch_one(pool)
+                .await;
+            #[cfg(feature = "sqlite")]
+            return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_stream_proxy WHERE media_server_id = ? AND pulling = ?")
                 .bind(mid)
                 .bind(p)
                 .fetch_one(pool)
                 .await;
         } else {
             #[cfg(feature = "mysql")]
-            return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM wvp_stream_proxy WHERE media_server_id = ?")
+            return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_stream_proxy WHERE media_server_id = ?")
                 .bind(mid)
                 .fetch_one(pool)
                 .await;
             #[cfg(feature = "postgres")]
-            return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM wvp_stream_proxy WHERE media_server_id = $1")
+            return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_stream_proxy WHERE media_server_id = $1")
+                .bind(mid)
+                .fetch_one(pool)
+                .await;
+            #[cfg(feature = "sqlite")]
+            return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_stream_proxy WHERE media_server_id = ?")
                 .bind(mid)
                 .fetch_one(pool)
                 .await;
         }
     } else if let Some(p) = pulling {
         #[cfg(feature = "mysql")]
-        return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM wvp_stream_proxy WHERE pulling = ?")
+        return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_stream_proxy WHERE pulling = ?")
             .bind(p)
             .fetch_one(pool)
             .await;
         #[cfg(feature = "postgres")]
-        return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM wvp_stream_proxy WHERE pulling = $1")
+        return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_stream_proxy WHERE pulling = $1")
+            .bind(p)
+            .fetch_one(pool)
+            .await;
+        #[cfg(feature = "sqlite")]
+        return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_stream_proxy WHERE pulling = ?")
             .bind(p)
             .fetch_one(pool)
             .await;
     } else {
-        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM wvp_stream_proxy")
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_stream_proxy")
             .fetch_one(pool)
             .await
     }
@@ -311,13 +487,19 @@ pub async fn count_all(
 /// 更新拉流状态
 pub async fn update_pulling_status(pool: &Pool, id: i64, pulling: bool) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
-    let r = sqlx::query("UPDATE wvp_stream_proxy SET pulling = ? WHERE id = ?")
+    let r = sqlx::query("UPDATE gb_stream_proxy SET pulling = ? WHERE id = ?")
         .bind(pulling)
         .bind(id)
         .execute(pool)
         .await?;
     #[cfg(feature = "postgres")]
-    let r = sqlx::query("UPDATE wvp_stream_proxy SET pulling = $1 WHERE id = $2")
+    let r = sqlx::query("UPDATE gb_stream_proxy SET pulling = $1 WHERE id = $2")
+        .bind(pulling)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    #[cfg(feature = "sqlite")]
+    let r = sqlx::query("UPDATE gb_stream_proxy SET pulling = ? WHERE id = ?")
         .bind(pulling)
         .bind(id)
         .execute(pool)
@@ -336,7 +518,7 @@ pub async fn update_pulling_status_by_app_stream(
 ) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
     let r = sqlx::query(
-        "UPDATE wvp_stream_proxy SET pulling = ?, media_server_id = COALESCE(?, media_server_id), update_time = ? WHERE app = ? AND stream = ?"
+        "UPDATE gb_stream_proxy SET pulling = ?, media_server_id = COALESCE(?, media_server_id), update_time = ? WHERE app = ? AND stream = ?"
     )
     .bind(pulling)
     .bind(media_server_id)
@@ -348,7 +530,19 @@ pub async fn update_pulling_status_by_app_stream(
 
     #[cfg(feature = "postgres")]
     let r = sqlx::query(
-        "UPDATE wvp_stream_proxy SET pulling = $1, media_server_id = COALESCE($2, media_server_id), update_time = $3 WHERE app = $4 AND stream = $5"
+        "UPDATE gb_stream_proxy SET pulling = $1, media_server_id = COALESCE($2, media_server_id), update_time = $3 WHERE app = $4 AND stream = $5"
+    )
+    .bind(pulling)
+    .bind(media_server_id)
+    .bind(now)
+    .bind(app)
+    .bind(stream)
+    .execute(pool)
+    .await?;
+
+    #[cfg(feature = "sqlite")]
+    let r = sqlx::query(
+        "UPDATE gb_stream_proxy SET pulling = ?, media_server_id = COALESCE(?, media_server_id), update_time = ? WHERE app = ? AND stream = ?"
     )
     .bind(pulling)
     .bind(media_server_id)
@@ -364,13 +558,19 @@ pub async fn update_pulling_status_by_app_stream(
 /// 更新启用状态
 pub async fn update_enable_status(pool: &Pool, id: i64, enable: bool) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
-    let r = sqlx::query("UPDATE wvp_stream_proxy SET enable = ? WHERE id = ?")
+    let r = sqlx::query("UPDATE gb_stream_proxy SET enable = ? WHERE id = ?")
         .bind(enable)
         .bind(id)
         .execute(pool)
         .await?;
     #[cfg(feature = "postgres")]
-    let r = sqlx::query("UPDATE wvp_stream_proxy SET enable = $1 WHERE id = $2")
+    let r = sqlx::query("UPDATE gb_stream_proxy SET enable = $1 WHERE id = $2")
+        .bind(enable)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    #[cfg(feature = "sqlite")]
+    let r = sqlx::query("UPDATE gb_stream_proxy SET enable = ? WHERE id = ?")
         .bind(enable)
         .bind(id)
         .execute(pool)
@@ -382,7 +582,7 @@ pub async fn update_enable_status(pool: &Pool, id: i64, enable: bool) -> sqlx::R
 pub async fn get_by_app_stream(pool: &Pool, app: &str, stream: &str) -> sqlx::Result<Option<StreamProxy>> {
     #[cfg(feature = "mysql")]
     return sqlx::query_as::<_, StreamProxy>(
-        "SELECT id, type, app, stream, src_url, timeout, ffmpeg_cmd_key, rtsp_type, media_server_id, enable_audio, enable_mp4, pulling, enable, create_time, name, update_time, stream_key, server_id, enable_disable_none_reader, relates_media_server_id FROM wvp_stream_proxy WHERE app = ? AND stream = ?"
+        "SELECT id, type, app, stream, src_url, timeout, ffmpeg_cmd_key, rtsp_type, media_server_id, enable_audio, enable_mp4, pulling, enable, create_time, name, update_time, stream_key, server_id, enable_disable_none_reader, relates_media_server_id FROM gb_stream_proxy WHERE app = ? AND stream = ?"
     )
     .bind(app)
     .bind(stream)
@@ -390,7 +590,15 @@ pub async fn get_by_app_stream(pool: &Pool, app: &str, stream: &str) -> sqlx::Re
     .await;
     #[cfg(feature = "postgres")]
     return sqlx::query_as::<_, StreamProxy>(
-        "SELECT id, type, app, stream, src_url, timeout, ffmpeg_cmd_key, rtsp_type, media_server_id, enable_audio, enable_mp4, pulling, enable, create_time, name, update_time, stream_key, server_id, enable_disable_none_reader, relates_media_server_id FROM wvp_stream_proxy WHERE app = $1 AND stream = $2"
+        "SELECT id, type, app, stream, src_url, timeout, ffmpeg_cmd_key, rtsp_type, media_server_id, enable_audio, enable_mp4, pulling, enable, create_time, name, update_time, stream_key, server_id, enable_disable_none_reader, relates_media_server_id FROM gb_stream_proxy WHERE app = $1 AND stream = $2"
+    )
+    .bind(app)
+    .bind(stream)
+    .fetch_optional(pool)
+    .await;
+    #[cfg(feature = "sqlite")]
+    return sqlx::query_as::<_, StreamProxy>(
+        "SELECT id, type, app, stream, src_url, timeout, ffmpeg_cmd_key, rtsp_type, media_server_id, enable_audio, enable_mp4, pulling, enable, create_time, name, update_time, stream_key, server_id, enable_disable_none_reader, relates_media_server_id, stream_status FROM gb_stream_proxy WHERE app = ? AND stream = ?"
     )
     .bind(app)
     .bind(stream)
@@ -402,13 +610,19 @@ pub async fn get_by_app_stream(pool: &Pool, app: &str, stream: &str) -> sqlx::Re
 pub async fn get_all_enabled_proxies(pool: &Pool) -> sqlx::Result<Vec<StreamProxy>> {
     #[cfg(feature = "mysql")]
     return sqlx::query_as::<_, StreamProxy>(
-        "SELECT id, type, app, stream, src_url, timeout, ffmpeg_cmd_key, rtsp_type, media_server_id, enable_audio, enable_mp4, pulling, enable, create_time, name, update_time, stream_key, server_id, enable_disable_none_reader, relates_media_server_id FROM wvp_stream_proxy WHERE enable = 1 ORDER BY id"
+        "SELECT id, type, app, stream, src_url, timeout, ffmpeg_cmd_key, rtsp_type, media_server_id, enable_audio, enable_mp4, pulling, enable, create_time, name, update_time, stream_key, server_id, enable_disable_none_reader, relates_media_server_id FROM gb_stream_proxy WHERE enable = 1 ORDER BY id"
     )
     .fetch_all(pool)
     .await;
     #[cfg(feature = "postgres")]
     return sqlx::query_as::<_, StreamProxy>(
-        "SELECT id, type, app, stream, src_url, timeout, ffmpeg_cmd_key, rtsp_type, media_server_id, enable_audio, enable_mp4, pulling, enable, create_time, name, update_time, stream_key, server_id, enable_disable_none_reader, relates_media_server_id FROM wvp_stream_proxy WHERE enable = true ORDER BY id"
+        "SELECT id, type, app, stream, src_url, timeout, ffmpeg_cmd_key, rtsp_type, media_server_id, enable_audio, enable_mp4, pulling, enable, create_time, name, update_time, stream_key, server_id, enable_disable_none_reader, relates_media_server_id FROM gb_stream_proxy WHERE enable = true ORDER BY id"
+    )
+    .fetch_all(pool)
+    .await;
+    #[cfg(feature = "sqlite")]
+    return sqlx::query_as::<_, StreamProxy>(
+        "SELECT id, type, app, stream, src_url, timeout, ffmpeg_cmd_key, rtsp_type, media_server_id, enable_audio, enable_mp4, pulling, enable, create_time, name, update_time, stream_key, server_id, enable_disable_none_reader, relates_media_server_id, stream_status FROM gb_stream_proxy WHERE enable = 1 ORDER BY id"
     )
     .fetch_all(pool)
     .await;
@@ -418,13 +632,19 @@ pub async fn get_all_enabled_proxies(pool: &Pool) -> sqlx::Result<Vec<StreamProx
 pub async fn get_all_pulling_proxies(pool: &Pool) -> sqlx::Result<Vec<StreamProxy>> {
     #[cfg(feature = "mysql")]
     return sqlx::query_as::<_, StreamProxy>(
-        "SELECT id, type, app, stream, src_url, timeout, ffmpeg_cmd_key, rtsp_type, media_server_id, enable_audio, enable_mp4, pulling, enable, create_time, name, update_time, stream_key, server_id, enable_disable_none_reader, relates_media_server_id FROM wvp_stream_proxy WHERE pulling = 1 ORDER BY id"
+        "SELECT id, type, app, stream, src_url, timeout, ffmpeg_cmd_key, rtsp_type, media_server_id, enable_audio, enable_mp4, pulling, enable, create_time, name, update_time, stream_key, server_id, enable_disable_none_reader, relates_media_server_id FROM gb_stream_proxy WHERE pulling = 1 ORDER BY id"
     )
     .fetch_all(pool)
     .await;
     #[cfg(feature = "postgres")]
     return sqlx::query_as::<_, StreamProxy>(
-        "SELECT id, type, app, stream, src_url, timeout, ffmpeg_cmd_key, rtsp_type, media_server_id, enable_audio, enable_mp4, pulling, enable, create_time, name, update_time, stream_key, server_id, enable_disable_none_reader, relates_media_server_id FROM wvp_stream_proxy WHERE pulling = true ORDER BY id"
+        "SELECT id, type, app, stream, src_url, timeout, ffmpeg_cmd_key, rtsp_type, media_server_id, enable_audio, enable_mp4, pulling, enable, create_time, name, update_time, stream_key, server_id, enable_disable_none_reader, relates_media_server_id FROM gb_stream_proxy WHERE pulling = true ORDER BY id"
+    )
+    .fetch_all(pool)
+    .await;
+    #[cfg(feature = "sqlite")]
+    return sqlx::query_as::<_, StreamProxy>(
+        "SELECT id, type, app, stream, src_url, timeout, ffmpeg_cmd_key, rtsp_type, media_server_id, enable_audio, enable_mp4, pulling, enable, create_time, name, update_time, stream_key, server_id, enable_disable_none_reader, relates_media_server_id, stream_status FROM gb_stream_proxy WHERE pulling = 1 ORDER BY id"
     )
     .fetch_all(pool)
     .await;
@@ -434,14 +654,21 @@ pub async fn get_all_pulling_proxies(pool: &Pool) -> sqlx::Result<Vec<StreamProx
 pub async fn list_by_media_server(pool: &Pool, media_server_id: &str) -> sqlx::Result<Vec<StreamProxy>> {
     #[cfg(feature = "mysql")]
     return sqlx::query_as::<_, StreamProxy>(
-        "SELECT id, type, app, stream, src_url, timeout, ffmpeg_cmd_key, rtsp_type, media_server_id, enable_audio, enable_mp4, pulling, enable, create_time, name, update_time, stream_key, server_id, enable_disable_none_reader, relates_media_server_id FROM wvp_stream_proxy WHERE media_server_id = ? ORDER BY id"
+        "SELECT id, type, app, stream, src_url, timeout, ffmpeg_cmd_key, rtsp_type, media_server_id, enable_audio, enable_mp4, pulling, enable, create_time, name, update_time, stream_key, server_id, enable_disable_none_reader, relates_media_server_id FROM gb_stream_proxy WHERE media_server_id = ? ORDER BY id"
     )
     .bind(media_server_id)
     .fetch_all(pool)
     .await;
     #[cfg(feature = "postgres")]
     return sqlx::query_as::<_, StreamProxy>(
-        "SELECT id, type, app, stream, src_url, timeout, ffmpeg_cmd_key, rtsp_type, media_server_id, enable_audio, enable_mp4, pulling, enable, create_time, name, update_time, stream_key, server_id, enable_disable_none_reader, relates_media_server_id FROM wvp_stream_proxy WHERE media_server_id = $1 ORDER BY id"
+        "SELECT id, type, app, stream, src_url, timeout, ffmpeg_cmd_key, rtsp_type, media_server_id, enable_audio, enable_mp4, pulling, enable, create_time, name, update_time, stream_key, server_id, enable_disable_none_reader, relates_media_server_id FROM gb_stream_proxy WHERE media_server_id = $1 ORDER BY id"
+    )
+    .bind(media_server_id)
+    .fetch_all(pool)
+    .await;
+    #[cfg(feature = "sqlite")]
+    return sqlx::query_as::<_, StreamProxy>(
+        "SELECT id, type, app, stream, src_url, timeout, ffmpeg_cmd_key, rtsp_type, media_server_id, enable_audio, enable_mp4, pulling, enable, create_time, name, update_time, stream_key, server_id, enable_disable_none_reader, relates_media_server_id, stream_status FROM gb_stream_proxy WHERE media_server_id = ? ORDER BY id"
     )
     .bind(media_server_id)
     .fetch_all(pool)

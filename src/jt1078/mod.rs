@@ -16,6 +16,7 @@ pub mod session;
 pub mod manager;
 pub mod command;
 pub mod command_waiter;
+pub mod response_parser;
 
 use crate::jt1078::manager::Jt1078Manager;
 

@@ -8,6 +8,8 @@ use std::time::Instant;
 
 use crate::jt1078::session::Jt1078Session;
 use crate::jt1078::command;
+use crate::jt1078::command_waiter::JtCommandWaiter;
+use crate::jt1078::jt_media_session::JtMediaSessionManager;
 
 #[derive(Clone)]
 pub struct Jt1078Manager {
@@ -20,6 +22,10 @@ pub struct Jt1078Manager {
     retransmit_wait: Duration,
     retransmit_hook: Option<String>,
     retransmit_send_to_device: bool,
+    /// Phase 6.2: command → response correlation
+    command_waiter: Arc<JtCommandWaiter>,
+    /// Phase 6.3: media session manager (live/playback/download)
+    media_session_manager: Arc<JtMediaSessionManager>,
 }
 
 impl Jt1078Manager {
@@ -32,6 +38,50 @@ impl Jt1078Manager {
             retransmit_wait,
             retransmit_hook,
             retransmit_send_to_device,
+            command_waiter: Arc::new(JtCommandWaiter::new().with_timeout(10)),
+            media_session_manager: Arc::new(JtMediaSessionManager::new()),
+        }
+    }
+
+    /// Access the command waiter (for tests / direct response resolution).
+    pub fn command_waiter(&self) -> Arc<JtCommandWaiter> {
+        self.command_waiter.clone()
+    }
+
+    /// Phase 6.3: access the media session manager.
+    pub fn media_session_manager(&self) -> Arc<JtMediaSessionManager> {
+        self.media_session_manager.clone()
+    }
+
+    /// Phase 6.2: send a raw JT808 command and wait for the matching 0x0001
+    /// general common response (or any other response with same msg_id/serial).
+    pub async fn send_command_and_wait(
+        &self,
+        phone: &str,
+        msg_id: u16,
+        body: &[u8],
+        timeout_secs: u64,
+    ) -> Result<Vec<u8>, String> {
+        let addr = self.get_terminal_addr(phone).await
+            .ok_or_else(|| format!("终端 {} 未连接", phone))?;
+        let seq = self.next_seq(addr).await;
+        let frame = command::build_jt808_frame(msg_id, phone, seq, body);
+
+        // Register waiter
+        let (_key, rx) = self.command_waiter.register(phone, msg_id, seq, Some(timeout_secs));
+
+        // Send
+        self.send_raw(phone, &frame).await?;
+
+        // Wait for response
+        let timeout_dur = std::time::Duration::from_secs(timeout_secs);
+        match tokio::time::timeout(timeout_dur, rx).await {
+            Ok(Ok(body)) => Ok(body),
+            Ok(Err(_)) => Err("waiter cancelled".to_string()),
+            Err(_) => Err(format!(
+                "command 0x{:04X} to {} (serial={}) timed out after {}s",
+                msg_id, phone, seq, timeout_secs
+            )),
         }
     }
 
@@ -253,6 +303,37 @@ impl Jt1078Manager {
         session.process_payload(payload)
     }
 
+    /// Phase 6.2 — process a fully-decoded JT808 message (msg_id + serial + body).
+    /// In addition to parsing, also resolves any matching command waiter.
+    /// `phone` is the BCD-decoded phone number (string) for the source terminal.
+    pub async fn process_jt_message(
+        &self,
+        addr: SocketAddr,
+        phone: &str,
+        msg_id: u16,
+        serial: u16,
+        body: &[u8],
+    ) -> crate::jt1078::session::ParsedMessage {
+        // Update session heartbeat + last activity
+        {
+            let mut map = self.sessions.lock().await;
+            let session = map.entry(addr).or_insert_with(|| Jt1078Session::new(addr));
+            session.last_heartbeat = std::time::Instant::now();
+        }
+        // Resolve command waiter for 0x0001 general common response
+        if msg_id == 0x0001 && body.len() >= 5 {
+            let reply_serial = u16::from_be_bytes([body[0], body[1]]);
+            let reply_msg_id = u16::from_be_bytes([body[2], body[3]]);
+            let result = body[4];
+            self.command_waiter
+                .try_resolve_by_response(phone, reply_msg_id, reply_serial, result);
+        }
+        // Dispatch via session.process_jt_message
+        let mut map = self.sessions.lock().await;
+        let session = map.entry(addr).or_insert_with(|| Jt1078Session::new(addr));
+        session.process_jt_message(msg_id, serial, body)
+    }
+
     pub async fn cleanup_once(&self) -> usize {
         let mut map = self.sessions.lock().await;
         let now = Instant::now();
@@ -320,6 +401,194 @@ impl Jt1078Manager {
         let data = msg.to_string().into_bytes();
         let _ = socket.send_to(&data, addr).await?;
         Ok(())
+    }
+
+    // ================== Phase 6.2: send_*_and_wait wrappers ==================
+    // Each wraps the existing send_* method to await the 0x0001 general common
+    // response. Body is the result byte (0=success, 1=failure, 2=msg_error, 3=unsupported).
+
+    /// 0x9301 PTZ control
+    pub async fn send_ptz_and_wait(
+        &self, phone: &str, channel_id: u8, direction: &str, speed: u8, timeout_secs: u64,
+    ) -> Result<u8, String> {
+        let (b1, b2, h, v) = command::ptz_direction_bytes(direction, speed);
+        let body = command::build_ptz_control(channel_id, b1, b2, h, v, 0);
+        let resp = self.send_command_and_wait(phone, 0x9301, &body, timeout_secs).await?;
+        Ok(resp.first().copied().unwrap_or(1))
+    }
+
+    /// 0x9101 Live video start/stop.
+    /// Phase 6.3: when start (close=false), also creates a media session and
+    /// waits for ZLM on_stream_changed hook to resolve the session to Active.
+    pub async fn send_live_video_and_wait(
+        &self, phone: &str, channel_id: u8, stream_type: u8, close: bool, timeout_secs: u64,
+    ) -> Result<u8, String> {
+        let body = command::build_live_video_request(channel_id, stream_type, close);
+        let resp = self.send_command_and_wait(phone, 0x9101, &body, timeout_secs).await?;
+        let result = resp.first().copied().unwrap_or(1);
+        if !close && result == 0 {
+            // Create session and wait for ZLM media arrival
+            self.media_session_manager.create_live(phone, channel_id);
+            // Note: actual wait_for_media is initiated by handler after open_rtp_server.
+        } else if close {
+            self.media_session_manager.stop(phone, channel_id);
+        }
+        Ok(result)
+    }
+
+    /// Phase 6.3: wait for ZLM media arrival (called by handler after opening
+    /// ZLM RTP server). Returns the activated JtMediaSession.
+    pub async fn wait_for_zlm_media(
+        &self, phone: &str, channel_id: u8, timeout_secs: u64,
+    ) -> Result<crate::jt1078::jt_media_session::JtMediaSession, String> {
+        self.media_session_manager.wait_for_media(
+            phone, channel_id, std::time::Duration::from_secs(timeout_secs),
+        ).await
+    }
+
+    /// 0x9102 Live video control
+    pub async fn send_live_video_control_and_wait(
+        &self, phone: &str, channel_id: u8, control: u8, close: bool, timeout_secs: u64,
+    ) -> Result<u8, String> {
+        let body = command::build_live_video_control(channel_id, control, close);
+        let resp = self.send_command_and_wait(phone, 0x9102, &body, timeout_secs).await?;
+        Ok(resp.first().copied().unwrap_or(1))
+    }
+
+    /// 0x9201 Playback request
+    pub async fn send_playback_and_wait(
+        &self, phone: &str, channel_id: u8, stream_type: u8, storage_type: u8,
+        speed: u8, start_time: &str, end_time: &str, timeout_secs: u64,
+    ) -> Result<u8, String> {
+        let st = command::encode_time_bcd(start_time);
+        let et = command::encode_time_bcd(end_time);
+        let body = command::build_playback_request(channel_id, stream_type, storage_type, 0, speed, &st, &et);
+        let resp = self.send_command_and_wait(phone, 0x9201, &body, timeout_secs).await?;
+        Ok(resp.first().copied().unwrap_or(1))
+    }
+
+    /// 0x9202 Playback control
+    pub async fn send_playback_control_and_wait(
+        &self, phone: &str, channel_id: u8, control: u8, speed: u8, seek_time: &str, timeout_secs: u64,
+    ) -> Result<u8, String> {
+        let st = command::encode_time_bcd(seek_time);
+        let body = command::build_playback_control(channel_id, control, speed, &st);
+        let resp = self.send_command_and_wait(phone, 0x9202, &body, timeout_secs).await?;
+        Ok(resp.first().copied().unwrap_or(1))
+    }
+
+    /// 0x8103 Set terminal parameters (wiper, fill light, APN, IP, port, etc.)
+    pub async fn send_set_params_and_wait(
+        &self, phone: &str, params: &[(u32, &[u8])], timeout_secs: u64,
+    ) -> Result<u8, String> {
+        let body = command::build_set_params(params);
+        let resp = self.send_command_and_wait(phone, 0x8103, &body, timeout_secs).await?;
+        Ok(resp.first().copied().unwrap_or(1))
+    }
+
+    /// 0x8104 Query terminal parameters (waits for 0x0107 response)
+    pub async fn send_query_params_and_wait(
+        &self, phone: &str, param_ids: &[u32], timeout_secs: u64,
+    ) -> Result<Vec<crate::jt1078::response_parser::TerminalParam>, String> {
+        let body = command::build_query_params(param_ids);
+        let _ = self.send_command_and_wait(phone, 0x8104, &body, timeout_secs).await?;
+        // The actual 0x0107 message body is delivered through process_jt_message;
+        // for now we return an empty list (full impl in Phase 6.5).
+        Ok(Vec::new())
+    }
+
+    /// 0x8105 Terminal control (reset, factory reset, etc.)
+    pub async fn send_terminal_control_and_wait(
+        &self, phone: &str, cmd: u8, timeout_secs: u64,
+    ) -> Result<u8, String> {
+        let body = command::build_terminal_control(cmd);
+        let resp = self.send_command_and_wait(phone, 0x8105, &body, timeout_secs).await?;
+        Ok(resp.first().copied().unwrap_or(1))
+    }
+
+    /// 0x8106 Query terminal attributes
+    pub async fn send_query_attributes_and_wait(
+        &self, phone: &str, timeout_secs: u64,
+    ) -> Result<u8, String> {
+        let body = command::build_query_attributes();
+        let resp = self.send_command_and_wait(phone, 0x8106, &body, timeout_secs).await?;
+        Ok(resp.first().copied().unwrap_or(1))
+    }
+
+    /// 0x8201 Query location (waits for 0x0201 response)
+    pub async fn send_query_location_and_wait(
+        &self, phone: &str, timeout_secs: u64,
+    ) -> Result<crate::jt1078::response_parser::LocationReport, String> {
+        let body = command::build_query_location();
+        let _ = self.send_command_and_wait(phone, 0x8201, &body, timeout_secs).await?;
+        // The 0x0201 message body is delivered through process_jt_message.
+        // For now we return a default location (full impl in Phase 6.5).
+        Err("location response not yet wired to handler — use process_jt_message".to_string())
+    }
+
+    /// 0x8300 Text message dispatch
+    pub async fn send_text_message_and_wait(
+        &self, phone: &str, text: &str, emergency: bool, timeout_secs: u64,
+    ) -> Result<u8, String> {
+        let body = command::build_text_message(text, emergency);
+        let resp = self.send_command_and_wait(phone, 0x8300, &body, timeout_secs).await?;
+        Ok(resp.first().copied().unwrap_or(1))
+    }
+
+    /// 0x8400 Phone callback
+    pub async fn send_phone_callback_and_wait(
+        &self, phone: &str, sign: u8, dest_phone: &str, timeout_secs: u64,
+    ) -> Result<u8, String> {
+        let body = command::build_phone_callback(sign, dest_phone);
+        let resp = self.send_command_and_wait(phone, 0x8400, &body, timeout_secs).await?;
+        Ok(resp.first().copied().unwrap_or(1))
+    }
+
+    /// 0x8401 Set phone book
+    pub async fn send_set_phone_book_and_wait(
+        &self, phone: &str, contacts: &[(String, String)], timeout_secs: u64,
+    ) -> Result<u8, String> {
+        let body = command::build_set_phone_book(contacts);
+        let resp = self.send_command_and_wait(phone, 0x8401, &body, timeout_secs).await?;
+        Ok(resp.first().copied().unwrap_or(1))
+    }
+
+    /// 0x8500 Vehicle control (door open/close)
+    pub async fn send_vehicle_control_and_wait(
+        &self, phone: &str, control_type: u8, value: bool, timeout_secs: u64,
+    ) -> Result<u8, String> {
+        let body = command::build_vehicle_control(control_type, value);
+        let resp = self.send_command_and_wait(phone, 0x8500, &body, timeout_secs).await?;
+        Ok(resp.first().copied().unwrap_or(1))
+    }
+
+    /// 0x8801 Take photo
+    pub async fn send_take_photo_and_wait(
+        &self, phone: &str, channel_id: u8, timeout_secs: u64,
+    ) -> Result<u8, String> {
+        let body = command::build_take_photo(channel_id, 0x0001, 5, 0, 0x02, 0x05, 0x80, 0x80, 0x80, 0x80);
+        let resp = self.send_command_and_wait(phone, 0x8801, &body, timeout_secs).await?;
+        Ok(resp.first().copied().unwrap_or(1))
+    }
+
+    /// 0x8802 Media search
+    pub async fn send_media_search_and_wait(
+        &self, phone: &str, channel_id: u8, start_time: &str, end_time: &str, timeout_secs: u64,
+    ) -> Result<u8, String> {
+        let st = command::encode_time_bcd(start_time);
+        let et = command::encode_time_bcd(end_time);
+        let body = command::build_media_search(0, channel_id, 0, &st, &et);
+        let resp = self.send_command_and_wait(phone, 0x8802, &body, timeout_secs).await?;
+        Ok(resp.first().copied().unwrap_or(1))
+    }
+
+    /// 0x8803 Media upload
+    pub async fn send_media_upload_and_wait(
+        &self, phone: &str, media_id: u32, timeout_secs: u64,
+    ) -> Result<u8, String> {
+        let body = command::build_media_upload(media_id, 0);
+        let resp = self.send_command_and_wait(phone, 0x8803, &body, timeout_secs).await?;
+        Ok(resp.first().copied().unwrap_or(1))
     }
 }
 

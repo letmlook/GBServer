@@ -1,4 +1,16 @@
-// ! CascadeService — GB28181 平台级联服务
+// ! CascadeService — GB28181 平台级联服务（**DEPRECATED** — 2026-06-20 Phase 5）
+//!
+//! ## Deprecated
+//!
+//! 自 Phase 5（2026-06-20）起，`CascadeService` **仅作为与 SipServer 握手的兼容层**。
+//! 实际的级联注册 / Keepalive / 状态机已迁移到 [`crate::cascade::CascadeRegistrar`]。
+//!
+//! 生产路径不再使用本类型（grep 验证：`sip/server.rs` 仅持有 `CascadeRegistrar`），
+//! 本文件保留以便逐步迁移（2026-06 截至本 commit 仍存在 9 个 c3 兼容单测）。
+//!
+//! 迁移指引（见 struct 文档）。
+//!
+//! ---
 //!
 //! 实现本级向上级平台的级联注册、维护和点播转发。
 //!
@@ -20,6 +32,7 @@ use std::sync::Arc;
 use chrono::Utc;
 use dashmap::DashMap;
 use tokio::sync::RwLock;
+use chrono::Utc;
 
 use crate::db::platform as db_platform;
 use crate::db::Pool;
@@ -121,6 +134,25 @@ impl CascadeSession {
         self.expires_at = 0;
     }
 
+    /// C3: 收到 401 鉴权挑战 → 状态切到 WaitingAuth，调用方在重试时
+    /// 携带 nonce + digest 重新发送 REGISTER。
+    pub fn mark_waiting_auth(&mut self, nonce: String) {
+        self.state = CascadeState::WaitingAuth;
+        self.last_error = Some(format!("401 challenge nonce={}", nonce));
+    }
+
+    /// C3: 重试时把状态从 Failed/Offline 拨回 Registering
+    pub fn mark_retrying(&mut self) {
+        self.state = CascadeState::Registering;
+    }
+
+    /// C3: Keepalive 连续失败超过阈值 → 转 Offline
+    pub fn mark_keepalive_timeout(&mut self) {
+        self.state = CascadeState::Offline;
+        self.expires_at = 0;
+        self.last_error = Some("keepalive timeout".to_string());
+    }
+
     pub fn is_active(&self) -> bool {
         self.state == CascadeState::Active
     }
@@ -130,6 +162,25 @@ impl CascadeSession {
 // 级联服务管理器
 // ---------------------------------------------------------------------------
 
+/// ## Deprecated
+///
+/// 自 Phase 5（2026-06-20）起，`CascadeService` 仅为与 SipServer 握手的兼容层；
+/// 实际的级联注册 / Keepalive / 状态机已迁移到 [`crate::cascade::CascadeRegistrar`]。
+/// 该类型在生产路径上无调用者（grep 验证：`sip/server.rs` 仅使用 `CascadeRegistrar`），
+/// 但保留以避免一次性改动过大；后续 Phase 8+ 删除。
+///
+/// # 迁移指引
+///
+/// - REGISTER 周期 → `CascadeRegistrar::run_registration_loop`
+/// - Keepalive → `CascadeRegistrar::send_keepalive_all`
+/// - 超时检测 → `CascadeRegistrar::detect_keepalive_timeouts`
+/// - DB 同步 → `CascadeRegistrar::reload_from_db`
+/// - Digest 鉴权 → `crate::cascade::register::build_digest_response`
+#[deprecated(
+    since = "0.5.0",
+    note = "use crate::cascade::CascadeRegistrar instead (see CascadeService docs)"
+)]
+#[allow(deprecated)]
 pub struct CascadeService {
     /// 按 platform_id 索引的级联会话
     sessions: Arc<DashMap<String, CascadeSession>>,
@@ -321,6 +372,75 @@ impl CascadeService {
         Ok(())
     }
 
+    /// C3: 平台 disable → 立即停止注册循环 + 标 Offline + 移除会话。
+    /// 调用方应同时停止 CascadeRegistrar.run_registration_loop 中的该平台项。
+    pub async fn disable_platform(&self, platform_id: &str) -> Result<(), String> {
+        // 1) 标记会话为 Offline
+        if let Some(mut session) = self.sessions.get_mut(platform_id) {
+            session.mark_offline();
+        }
+        // 2) 直接移除会话（disable 后不应再有任何路由）
+        self.sessions.remove(platform_id);
+        tracing::info!("Cascade platform disabled and removed: {}", platform_id);
+        Ok(())
+    }
+
+    /// C3: 检查 Keepalive 是否超时（>3 次未响应）
+    pub fn check_keepalive_timeout(&self, platform_id: &str, max_misses: i64) -> bool {
+        if let Some(mut session) = self.sessions.get_mut(platform_id) {
+            if session.state != CascadeState::Active {
+                return false;
+            }
+            let now = Utc::now().timestamp();
+            let elapsed = now - session.last_keepalive;
+            if elapsed > max_misses * 30 {
+                session.mark_keepalive_timeout();
+                tracing::warn!(
+                    "Cascade platform {} keepalive timeout ({}s, threshold {}s)",
+                    platform_id, elapsed, max_misses * 30
+                );
+                return true;
+            }
+        }
+        false
+    }
+
+    /// C3: 检查所有活跃会话是否超时，返回超时平台列表（同时标记为 Offline）
+    pub fn detect_keepalive_timeouts(&self, max_misses: i64) -> Vec<String> {
+        let now = Utc::now().timestamp();
+        let cutoff = max_misses * 30;
+
+        // 第一阶段：仅持读锁遍历收集超时会话 id。
+        // DashMap::iter() 在迭代期间持有所有 shard 的读锁，必须先把待处理 key
+        // 收集到 Vec 并 drop 迭代器，再走 get_mut 拿写锁 —— 否则 iter 的读锁
+        // 与 get_mut 的写锁会自死锁（futex_wait）。
+        // 注意：原来的 `drop(entry)` 注释是错的 —— 锁在迭代器上，不在 RefMulti 上。
+        let timed_out_keys: Vec<String> = self
+            .sessions
+            .iter()
+            .filter(|entry| {
+                entry.state == CascadeState::Active && (now - entry.last_keepalive) > cutoff
+            })
+            .map(|entry| entry.key().clone())
+            .collect();
+
+        // 第二阶段：迭代器已 drop，可安全 get_mut。
+        let mut timed_out = Vec::with_capacity(timed_out_keys.len());
+        for key in timed_out_keys {
+            if let Some(mut s) = self.sessions.get_mut(&key) {
+                let elapsed = now - s.last_keepalive;
+                s.mark_keepalive_timeout();
+                tracing::warn!(
+                    "Cascade platform {} keepalive timeout ({}s, threshold {}s)",
+                    key, elapsed, max_misses * 30
+                );
+            }
+            timed_out.push(key);
+        }
+
+        timed_out
+    }
+
     /// 获取所有需要刷新注册的会话
     pub fn get_needing_refresh(&self) -> Vec<String> {
         self.sessions
@@ -379,8 +499,7 @@ impl CascadeService {
                 .ok_or_else(|| format!("Device {} not found or offline", channel_id))?;
 
             // 生成 SSRC（上级 SSRC）
-            let _upstream_ssrc = self
-                .extract_ssrc_from_sdp(sdp)
+            let _upstream_ssrc = self.extract_ssrc_from_sdp(sdp)
                 .unwrap_or_else(|| format!("0{:0>9}0", &platform_id[..platform_id.len().min(9)]));
 
             tracing::info!(
@@ -474,6 +593,7 @@ impl Default for CascadeService {
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
 
@@ -482,14 +602,21 @@ mod tests {
         {
             sqlx::postgres::PgPoolOptions::new()
                 .max_connections(1)
-                .connect_lazy("postgres://postgres:postgres@127.0.0.1:5432/wvp")
+                .connect_lazy("postgres://postgres:postgres@127.0.0.1:5432/gbserver")
                 .expect("lazy pool")
         }
         #[cfg(feature = "mysql")]
         {
             sqlx::mysql::MySqlPoolOptions::new()
                 .max_connections(1)
-                .connect_lazy("mysql://root:root@127.0.0.1:3306/wvp")
+                .connect_lazy("mysql://root:root@127.0.0.1:3306/gbserver")
+                .expect("lazy pool")
+        }
+        #[cfg(feature = "sqlite")]
+        {
+            sqlx::sqlite::SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_lazy("sqlite::memory:")
                 .expect("lazy pool")
         }
     }
@@ -536,5 +663,90 @@ mod tests {
         assert_eq!(session.state, CascadeState::Failed);
         assert!(!session.is_active());
         assert_eq!(session.retry_count, 1);
+    }
+
+    /// C3.1: 401 鉴权挑战 → WaitingAuth
+    #[test]
+    fn test_cascade_state_waiting_auth_from_idle() {
+        let mut session = CascadeSession::new("plat".to_string());
+        session.state = CascadeState::Registering;
+        session.mark_waiting_auth("nonce_abc".to_string());
+        assert_eq!(session.state, CascadeState::WaitingAuth);
+        assert!(session.last_error.as_ref().unwrap().contains("nonce_abc"));
+    }
+
+    /// C3.1: WaitingAuth → 注册成功后转 Active
+    #[test]
+    fn test_cascade_state_waiting_auth_to_active() {
+        let mut session = CascadeSession::new("plat".to_string());
+        session.state = CascadeState::WaitingAuth;
+        session.set_active(3600);
+        assert_eq!(session.state, CascadeState::Active);
+        assert!(session.is_active());
+    }
+
+    /// C3.2: Keepalive 超时 → Offline
+    #[test]
+    fn test_cascade_state_keepalive_timeout() {
+        let mut session = CascadeSession::new("plat".to_string());
+        session.set_active(3600);
+        // 模拟 5 分钟未发 Keepalive
+        session.last_keepalive = Utc::now().timestamp() - 300;
+        session.mark_keepalive_timeout();
+        assert_eq!(session.state, CascadeState::Offline);
+        assert_eq!(session.expires_at, 0);
+    }
+
+    /// C3.1: 状态机从 Failed 重试拨回 Registering
+    #[test]
+    fn test_cascade_state_failed_to_retrying() {
+        let mut session = CascadeSession::new("plat".to_string());
+        session.mark_failed("timeout".to_string());
+        assert_eq!(session.state, CascadeState::Failed);
+        session.mark_retrying();
+        assert_eq!(session.state, CascadeState::Registering);
+    }
+
+    /// C3.3: disable_platform 应当移除会话
+    #[tokio::test]
+    async fn test_cascade_disable_platform_removes_session() {
+        let mgr = CascadeService::new(dummy_pool());
+        let mut session = CascadeSession::new("plat-disable".to_string());
+        session.set_active(3600);
+        mgr.sessions.insert("plat-disable".to_string(), session);
+        assert_eq!(mgr.total_count(), 1);
+
+        let r = mgr.disable_platform("plat-disable").await;
+        assert!(r.is_ok());
+        assert_eq!(mgr.total_count(), 0, "disable 后会话应被移除");
+    }
+
+    /// C3.2: detect_keepalive_timeouts 找出超时的活跃平台
+    #[tokio::test]
+    async fn test_cascade_detect_keepalive_timeouts() {
+        let mgr = CascadeService::new(dummy_pool());
+
+        // 平台 A: Active 且 keepalive 5 分钟前
+        let mut a = CascadeSession::new("plat-a".to_string());
+        a.set_active(3600);
+        a.last_keepalive = Utc::now().timestamp() - 300;
+        mgr.sessions.insert("plat-a".to_string(), a);
+
+        // 平台 B: Active 且 keepalive 刚刚
+        let mut b = CascadeSession::new("plat-b".to_string());
+        b.set_active(3600);
+        mgr.sessions.insert("plat-b".to_string(), b);
+
+        // 平台 C: Offline（不应被检测）
+        let mut c = CascadeSession::new("plat-c".to_string());
+        c.mark_offline();
+        mgr.sessions.insert("plat-c".to_string(), c);
+
+        // 阈值 3 次（即 90s）后超时 → A 应被检测到
+        let timed_out = mgr.detect_keepalive_timeouts(3);
+        assert_eq!(timed_out, vec!["plat-a".to_string()]);
+        // A 已转 Offline
+        assert_eq!(mgr.get_session("plat-a").unwrap().state, CascadeState::Offline);
+        assert_eq!(mgr.get_session("plat-b").unwrap().state, CascadeState::Active);
     }
 }

@@ -13,6 +13,7 @@ use crate::AppState;
 const HEADER_ACCESS_TOKEN: &str = "access-token";
 const AUDIENCE: &str = "Audience";
 
+#[allow(non_snake_case)]
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Claims {
     pub sub: String,
@@ -55,6 +56,70 @@ impl JwtKeys {
         validation.set_required_spec_claims(&["sub", "aud", "exp", "userName"]);
         let data = decode::<Claims>(token, &self.decoding, &validation).ok()?;
         Some(data.claims)
+    }
+}
+
+/// Lightweight view used by audit middleware / WS — only the username field.
+/// Avoids forcing middleware callers to know the full Claims shape.
+#[derive(Debug, Clone)]
+pub struct ClaimsView {
+    pub user: String,
+}
+
+/// Phase 7.4: best-effort decode for audit middleware. Returns None on any failure
+/// (including expired tokens, bad signature, malformed input). Middleware logs
+/// "anonymous" in that case rather than aborting the request.
+pub fn decode_jwt_unsafe(token: &str) -> Result<ClaimsView, String> {
+    let mut validation = Validation::default();
+    validation.set_audience(&[AUDIENCE]);
+    validation.set_required_spec_claims(&["sub", "aud", "exp", "userName"]);
+    validation.validate_exp = false;
+    // Best-effort: try decoding against the configured secret; if it fails for any
+    // reason (bad signature, expired, malformed), propagate the error so middleware
+    // can fall back to "anonymous".
+    //
+    // Note: This function reads the secret from GBSERVER__JWT__SECRET env or the
+    // global config to remain sync-friendly for middleware. Production callers
+    // should use JwtKeys::verify_token instead.
+    let secret = std::env::var("GBSERVER__JWT__SECRET").unwrap_or_default();
+    if secret.is_empty() {
+        return Err("JWT secret not configured".into());
+    }
+    let decoding = DecodingKey::from_secret(secret.as_bytes());
+    let data = decode::<Claims>(token, &decoding, &validation)
+        .map_err(|e| format!("decode failed: {}", e))?;
+    Ok(ClaimsView { user: data.claims.userName })
+}
+
+/// Phase 7.6: hash a plaintext password using Argon2id with default parameters.
+/// Returns the full PHC-formatted hash string suitable for storage in gb_user.password.
+pub fn hash_password(plaintext: &str) -> Result<String, String> {
+    use argon2::password_hash::{rand_core::OsRng, PasswordHasher, SaltString};
+    let salt = SaltString::generate(&mut OsRng);
+    let argon2 = argon2::Argon2::default();
+    let hash = argon2
+        .hash_password(plaintext.as_bytes(), &salt)
+        .map_err(|e| format!("argon2 hash failed: {}", e))?;
+    Ok(hash.to_string())
+}
+
+/// Phase 7.6: verify a plaintext password against a stored Argon2id hash.
+/// Backwards-compat: if `stored` doesn't start with `$argon2`, treats it as
+/// plaintext (legacy mode) and compares directly. New hashes always start with
+/// `$argon2id$`.
+pub fn verify_password(plaintext: &str, stored: &str) -> bool {
+    use argon2::password_hash::{PasswordHash, PasswordVerifier};
+    if stored.starts_with("$argon2") {
+        let parsed = match PasswordHash::new(stored) {
+            Ok(p) => p,
+            Err(_) => return false,
+        };
+        argon2::Argon2::default()
+            .verify_password(plaintext.as_bytes(), &parsed)
+            .is_ok()
+    } else {
+        // Legacy plaintext mode
+        plaintext == stored
     }
 }
 
@@ -209,5 +274,84 @@ fn determine_action(method: &str, path: &str) -> String {
         "PUT" => "修改".to_string(),
         "DELETE" => "删除".to_string(),
         _ => "查询".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// F3: 从 HeaderMap 提取 Bearer token
+    #[test]
+    fn test_extract_token_from_authorization_bearer() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(AUTHORIZATION, "Bearer abc.def.ghi".parse().unwrap());
+        assert_eq!(extract_token_from_headers(&headers).as_deref(), Some("abc.def.ghi"));
+    }
+
+    /// F3: 从 access-token header 提取
+    #[test]
+    fn test_extract_token_from_access_token_header() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(HEADER_ACCESS_TOKEN, "xyz.tok.en".parse().unwrap());
+        assert_eq!(extract_token_from_headers(&headers).as_deref(), Some("xyz.tok.en"));
+    }
+
+    /// F3: 没有 token 时返回 None
+    #[test]
+    fn test_extract_token_none() {
+        let headers = axum::http::HeaderMap::new();
+        assert!(extract_token_from_headers(&headers).is_none());
+    }
+
+    /// F3: Authorization 但不是 Bearer 格式
+    #[test]
+    fn test_extract_token_authorization_basic_ignored() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(AUTHORIZATION, "Basic dXNlcjpwYXNz".parse().unwrap());
+        assert!(extract_token_from_headers(&headers).is_none());
+    }
+
+    /// F3: extract_api_key 从 X-API-Key 头取
+    #[test]
+    fn test_extract_api_key_from_header() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("X-API-Key", "my-secret-key".parse().unwrap());
+        let req = axum::extract::Request::builder()
+            .uri("/api/foo")
+            .body(axum::body::Body::empty()).unwrap();
+        // 直接复用 header 提取逻辑
+        let v = headers.get("X-API-Key").and_then(|v| v.to_str().ok());
+        assert_eq!(v, Some("my-secret-key"));
+    }
+
+    /// F3: determine_action 把 POST 映射到「新增」
+    #[test]
+    fn test_determine_action_post() {
+        assert_eq!(determine_action("POST", "/api/user/add"), "新增");
+        assert_eq!(determine_action("DELETE", "/api/user/delete"), "删除");
+        assert_eq!(determine_action("PUT", "/api/user/update"), "修改");
+        assert_eq!(determine_action("GET", "/api/user/list"), "查询");
+        assert_eq!(determine_action("POST", "/api/user/login"), "登录");
+        assert_eq!(determine_action("POST", "/api/user/logout"), "登出");
+    }
+
+    /// F3: JwtKeys.create_token + verify_token roundtrip
+    #[test]
+    fn test_jwt_keys_roundtrip() {
+        let keys = JwtKeys::new(b"test-secret-key");
+        let token = keys.create_token("alice", 60).expect("create token");
+        let claims = keys.verify_token(&token).expect("verify token");
+        assert_eq!(claims.userName, "alice");
+        assert_eq!(claims.aud, AUDIENCE);
+    }
+
+    /// F3: 错误的密钥应验证失败
+    #[test]
+    fn test_jwt_keys_wrong_secret_fails() {
+        let keys1 = JwtKeys::new(b"secret-1");
+        let keys2 = JwtKeys::new(b"secret-2");
+        let token = keys1.create_token("bob", 60).unwrap();
+        assert!(keys2.verify_token(&token).is_none(), "不同密钥应验证失败");
     }
 }

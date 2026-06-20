@@ -1,10 +1,10 @@
-﻿/* WVP 2.7.4 表结构 + 初始数据，已转换为 MySQL 语法 */
+﻿/* GBServer 2.7.4 schema + initial data, converted to MySQL syntax */
 SET NAMES utf8mb4;
 
 /*建表*/
 -- 存储国标设备的基础信息及在线状态
-drop table IF EXISTS wvp_device;
-create table IF NOT EXISTS wvp_device
+drop table IF EXISTS gb_device;
+create table IF NOT EXISTS gb_device
 (
     id                                  bigint auto_increment primary key COMMENT '主键ID',
     device_id                           varchar(50) not null COMMENT '国标设备编号',
@@ -45,8 +45,8 @@ create table IF NOT EXISTS wvp_device
 );
 
 -- 记录各设备上报的报警信息
-drop table IF EXISTS wvp_device_alarm;
-create table IF NOT EXISTS wvp_device_alarm
+drop table IF EXISTS gb_device_alarm;
+create table IF NOT EXISTS gb_device_alarm
 (
     id                bigint auto_increment primary key COMMENT '主键ID',
     device_id         varchar(50) not null COMMENT '国标设备ID',
@@ -62,8 +62,8 @@ create table IF NOT EXISTS wvp_device_alarm
 );
 
 -- 存储移动位置订阅上报的数据
-drop table IF EXISTS wvp_device_mobile_position;
-create table IF NOT EXISTS wvp_device_mobile_position
+drop table IF EXISTS gb_device_mobile_position;
+create table IF NOT EXISTS gb_device_mobile_position
 (
     id              bigint auto_increment primary key COMMENT '主键ID',
     device_id       varchar(50) not null COMMENT '设备ID',
@@ -80,8 +80,8 @@ create table IF NOT EXISTS wvp_device_mobile_position
 );
 
 -- 保存设备下的通道信息以及扩展属性
-drop table IF EXISTS wvp_device_channel;
-create table IF NOT EXISTS wvp_device_channel
+drop table IF EXISTS gb_device_channel;
+create table IF NOT EXISTS gb_device_channel
 (
     id                           bigint auto_increment primary key COMMENT '主键ID',
     device_id                    varchar(50) COMMENT '所属设备ID',
@@ -170,12 +170,12 @@ create table IF NOT EXISTS wvp_device_channel
     enable_broadcast             integer default 0 COMMENT '是否支持广播',
     index (data_type),
     index (data_device_id),
-    constraint uk_wvp_unique_channel unique (gb_device_id)
+    constraint uk_gb_unique_channel unique (gb_device_id)
 );
 
 -- 媒体服务器（如 ZLM）节点信息
-drop table IF EXISTS wvp_media_server;
-create table IF NOT EXISTS wvp_media_server
+drop table IF EXISTS gb_media_server;
+create table IF NOT EXISTS gb_media_server
 (
     id                  varchar(255) primary key COMMENT '媒体服务器ID',
     ip                  varchar(50) COMMENT '服务器IP',
@@ -211,12 +211,22 @@ create table IF NOT EXISTS wvp_media_server
     record_day          integer               default 7 COMMENT '录像保留天数',
     transcode_suffix    varchar(255) COMMENT '转码指令后缀',
     server_id           varchar(50) COMMENT '对应信令服务器ID',
+    -- Phase 4.4: 节点健康状态（true=online, false=offline）
+    status              bool                  default true COMMENT '在线状态',
+    -- Phase 4.4: 最后 keepalive 时间（RFC3339）
+    last_keepalive_time varchar(50) COMMENT '最后keepalive时间',
+    -- Phase 4 follow-up: keepalive_grace_count 连续丢失计数
+    consecutive_misses  integer               default 0 COMMENT '连续丢失计数',
+    -- Phase 4 follow-up: 累计流量字节
+    total_bytes         bigint                default 0 COMMENT '累计流量字节',
+    -- Phase 4 follow-up: 当前活动流数
+    active_stream_count integer               default 0 COMMENT '当前活动流数',
     constraint uk_media_server_unique_ip_http_port unique (ip, http_port, server_id)
 );
 
 -- 上级国标平台注册信息
-drop table IF EXISTS wvp_platform;
-create table IF NOT EXISTS wvp_platform
+drop table IF EXISTS gb_platform;
+create table IF NOT EXISTS gb_platform
 (
     id                    bigint auto_increment primary key COMMENT '主键ID',
     enable                bool default false COMMENT '是否启用该平台注册',
@@ -257,8 +267,8 @@ create table IF NOT EXISTS wvp_platform
 );
 
 -- 国标平台下发的通道映射关系
-drop table IF EXISTS wvp_platform_channel;
-create table IF NOT EXISTS wvp_platform_channel
+drop table IF EXISTS gb_platform_channel;
+create table IF NOT EXISTS gb_platform_channel
 (
     id                           bigint auto_increment primary key COMMENT '主键ID',
     platform_id                  integer COMMENT '平台ID',
@@ -302,28 +312,39 @@ create table IF NOT EXISTS wvp_platform_channel
 );
 
 -- 平台与分组（行政区划/组织）关系
-drop table IF EXISTS wvp_platform_group;
-create table IF NOT EXISTS wvp_platform_group
+drop table IF EXISTS gb_platform_group;
+create table IF NOT EXISTS gb_platform_group
 (
     id          bigint auto_increment primary key COMMENT '主键ID',
     platform_id integer COMMENT '平台ID',
     group_id    integer COMMENT '分组ID',
-    constraint uk_wvp_platform_group_platform_id_group_id unique (platform_id, group_id)
+    constraint uk_gb_platform_group_platform_id_group_id unique (platform_id, group_id)
 );
 
 -- 平台与区域关系
-drop table IF EXISTS wvp_platform_region;
-create table IF NOT EXISTS wvp_platform_region
+drop table IF EXISTS gb_platform_region;
+create table IF NOT EXISTS gb_platform_region
 (
     id          bigint auto_increment primary key COMMENT '主键ID',
     platform_id integer COMMENT '平台ID',
     region_id   integer COMMENT '区域ID',
-    constraint uk_wvp_platform_region_platform_id_group_id unique (platform_id, region_id)
+    constraint uk_gb_platform_region_platform_id_group_id unique (platform_id, region_id)
 );
 
+-- 媒体服务器 IP 白名单（Phase 4.2）
+drop table IF EXISTS gb_media_server_white_list;
+create table IF NOT EXISTS gb_media_server_white_list
+(
+    id              bigint auto_increment primary key COMMENT '主键ID',
+    media_server_id varchar(255) NOT NULL COMMENT '媒体服务器ID',
+    cidr            varchar(50)  NOT NULL COMMENT 'CIDR 网段',
+    create_time     varchar(50) COMMENT '创建时间',
+    INDEX idx_media_server_white_list_server_id (media_server_id)
+) COMMENT '媒体服务器 IP 白名单（hook 鉴权）';
+
 -- 拉流代理/转推配置
-drop table IF EXISTS wvp_stream_proxy;
-create table IF NOT EXISTS wvp_stream_proxy
+drop table IF EXISTS gb_stream_proxy;
+create table IF NOT EXISTS gb_stream_proxy
 (
     id                         bigint auto_increment primary key COMMENT '主键ID',
     type                       varchar(50) COMMENT '代理类型（拉流/推流）',
@@ -345,12 +366,13 @@ create table IF NOT EXISTS wvp_stream_proxy
     server_id                  varchar(50) COMMENT '信令服务器ID',
     enable_disable_none_reader bool default false COMMENT '是否无人观看时自动停流',
     relates_media_server_id    varchar(50) COMMENT '关联的媒体服务器ID',
+    stream_status              varchar(32) default 'ready' COMMENT 'Phase 4.5 统一流状态: ready|pushing|active|stopped|failed',
     constraint uk_stream_proxy_app_stream unique (app, stream)
 );
 
 -- 推流会话记录
-drop table IF EXISTS wvp_stream_push;
-create table IF NOT EXISTS wvp_stream_push
+drop table IF EXISTS gb_stream_push;
+create table IF NOT EXISTS gb_stream_push
 (
     id                 bigint auto_increment primary key COMMENT '主键ID',
     app                varchar(255) COMMENT '应用名',
@@ -364,12 +386,13 @@ create table IF NOT EXISTS wvp_stream_push
     pushing            bool default false COMMENT '是否正在推流',
     self               bool default false COMMENT '是否本地发起',
     start_offline_push bool default true COMMENT '是否离线后自动重推',
+    stream_status      varchar(32) default 'ready' COMMENT 'Phase 4.5 统一流状态: ready|pushing|active|stopped|failed',
     constraint uk_stream_push_app_stream unique (app, stream)
 );
 
 -- 云端录像记录
-drop table IF EXISTS wvp_cloud_record;
-create table IF NOT EXISTS wvp_cloud_record
+drop table IF EXISTS gb_cloud_record;
+create table IF NOT EXISTS gb_cloud_record
 (
     id              bigint auto_increment primary key COMMENT '主键ID',
     app             varchar(255) COMMENT '应用名',
@@ -388,8 +411,8 @@ create table IF NOT EXISTS wvp_cloud_record
 );
 
 -- 平台用户信息
-drop table IF EXISTS wvp_user;
-create table IF NOT EXISTS wvp_user
+drop table IF EXISTS gb_user;
+create table IF NOT EXISTS gb_user
 (
     id          bigint auto_increment primary key COMMENT '主键ID',
     username    varchar(255) COMMENT '用户名',
@@ -402,8 +425,8 @@ create table IF NOT EXISTS wvp_user
 );
 
 -- 用户角色信息
-drop table IF EXISTS wvp_user_role;
-create table IF NOT EXISTS wvp_user_role
+drop table IF EXISTS gb_user_role;
+create table IF NOT EXISTS gb_user_role
 (
     id          bigint auto_increment primary key COMMENT '主键ID',
     name        varchar(50) COMMENT '角色名称',
@@ -413,8 +436,8 @@ create table IF NOT EXISTS wvp_user_role
 );
 
 
-drop table IF EXISTS wvp_user_api_key;
-create table IF NOT EXISTS wvp_user_api_key
+drop table IF EXISTS gb_user_api_key;
+create table IF NOT EXISTS gb_user_api_key
 (
     id          bigint auto_increment primary key COMMENT '主键ID',
     user_id     bigint COMMENT '关联用户ID',
@@ -430,16 +453,16 @@ create table IF NOT EXISTS wvp_user_api_key
 
 /*初始数据*/
 -- 初始化管理员账号，账号admin 密码admin（MD5加密后）
-INSERT INTO wvp_user
+INSERT INTO gb_user
 VALUES (1, 'admin', '21232f297a57a5a743894a0e4a801fc3', 1, '2021-04-13 14:14:57', '2021-04-13 14:14:57',
         '3e80d1762a324d5b0ff636e0bd16f1e3');
 -- 初始化管理员角色
-INSERT INTO wvp_user_role
+INSERT INTO gb_user_role
 VALUES (1, 'admin', '0', '2021-04-13 14:14:57', '2021-04-13 14:14:57');
 
 -- 通用分组表，存储行业或组织结构
-drop table IF EXISTS wvp_common_group;
-create table IF NOT EXISTS wvp_common_group
+drop table IF EXISTS gb_common_group;
+create table IF NOT EXISTS gb_common_group
 (
     id               bigint auto_increment primary key COMMENT '主键ID',
     device_id        varchar(50)  NOT NULL COMMENT '分组对应的平台或设备ID',
@@ -455,8 +478,8 @@ create table IF NOT EXISTS wvp_common_group
 );
 
 -- 通用行政区域表
-drop table IF EXISTS wvp_common_region;
-create table IF NOT EXISTS wvp_common_region
+drop table IF EXISTS gb_common_region;
+create table IF NOT EXISTS gb_common_region
 (
     id               bigint auto_increment primary key COMMENT '主键ID',
     device_id        varchar(50)  NOT NULL COMMENT '区域对应的平台或设备ID',
@@ -469,8 +492,8 @@ create table IF NOT EXISTS wvp_common_region
 );
 
 -- 录像计划基础信息
-drop table IF EXISTS wvp_record_plan;
-create table IF NOT EXISTS wvp_record_plan
+drop table IF EXISTS gb_record_plan;
+create table IF NOT EXISTS gb_record_plan
 (
     id              bigint auto_increment primary key COMMENT '主键ID',
     snap            bool default false COMMENT '是否抓图计划',
@@ -480,8 +503,8 @@ create table IF NOT EXISTS wvp_record_plan
 );
 
 -- 录像计划条目表
-drop table IF EXISTS wvp_record_plan_item;
-create table IF NOT EXISTS wvp_record_plan_item
+drop table IF EXISTS gb_record_plan_item;
+create table IF NOT EXISTS gb_record_plan_item
 (
     id              bigint auto_increment primary key COMMENT '主键ID',
     start           int COMMENT '开始时间（分钟）',
@@ -493,8 +516,8 @@ create table IF NOT EXISTS wvp_record_plan_item
 );
 
 -- 交通部 JT/T 1076 终端信息
-drop table IF EXISTS wvp_jt_terminal;
-create table IF NOT EXISTS wvp_jt_terminal (
+drop table IF EXISTS gb_jt_terminal;
+create table IF NOT EXISTS gb_jt_terminal (
                                  id bigint auto_increment primary key COMMENT '主键ID',
                                  phone_number varchar(50) COMMENT '终端SIM卡号',
                                  terminal_id varchar(50) COMMENT '终端设备ID',
@@ -515,12 +538,13 @@ create table IF NOT EXISTS wvp_jt_terminal (
                                  geo_coord_sys varchar(50) COMMENT '坐标系',
                                  media_server_id varchar(50) default 'auto' COMMENT '媒体服务器ID',
                                  sdp_ip varchar(50) COMMENT 'SDP IP',
+                                 auth_code varchar(64) COMMENT 'Phase 6.1: 终端注册鉴权码（0x8100 应答）',
                                  constraint uk_jt_device_id_device_id unique (id, phone_number)
 );
 
 -- 交通部 JT/T 1076 通道信息
-drop table IF EXISTS wvp_jt_channel;
-create table IF NOT EXISTS wvp_jt_channel (
+drop table IF EXISTS gb_jt_channel;
+create table IF NOT EXISTS gb_jt_channel (
                                id bigint auto_increment primary key COMMENT '主键ID',
                                terminal_db_id integer COMMENT '所属终端记录ID',
                                channel_id integer COMMENT '通道号',
@@ -530,3 +554,72 @@ create table IF NOT EXISTS wvp_jt_channel (
                                create_time varchar(50) not null COMMENT '创建时间',
                                constraint uk_jt_channel_id_device_id unique (terminal_db_id, channel_id)
 );
+
+-- ============================================
+-- Phase 4.5: 流状态统一字段（stream_status 列幂等迁移）
+-- ============================================
+-- MySQL 8 不支持 `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`，借助
+-- information_schema 检测列是否存在后条件执行（应用层
+-- db::stream_push::ensure_stream_status_column / db::stream_proxy::ensure_stream_status_column
+-- 已封装等价逻辑，可重入）。此处保留纯 SQL 注释参考：
+--
+--   SELECT COUNT(*) FROM information_schema.columns
+--   WHERE table_schema = DATABASE() AND table_name = 'gb_stream_push'
+--     AND column_name = 'stream_status';
+--   -- 若为 0:
+--   ALTER TABLE gb_stream_push ADD COLUMN stream_status varchar(32) DEFAULT 'ready';
+--
+--   SELECT COUNT(*) FROM information_schema.columns
+--   WHERE table_schema = DATABASE() AND table_name = 'gb_stream_proxy'
+--     AND column_name = 'stream_status';
+--   -- 若为 0:
+--   ALTER TABLE gb_stream_proxy ADD COLUMN stream_status varchar(32) DEFAULT 'ready';
+
+-- ============================================
+-- Phase 6.4: JT/T 1078 媒体项 (录像检索结果)
+-- ============================================
+drop table IF EXISTS gb_jt_media_item;
+create table IF NOT EXISTS gb_jt_media_item (
+    id           bigint auto_increment primary key COMMENT '主键ID',
+    phone_number varchar(50) NOT NULL COMMENT '终端SIM卡号',
+    channel_id   integer NOT NULL COMMENT '通道号',
+    media_id     bigint NOT NULL COMMENT '媒体ID',
+    media_type   integer COMMENT '媒体类型',
+    media_format integer COMMENT '媒体格式',
+    event_code   integer COMMENT '事件码',
+    start_time   varchar(50) COMMENT '开始时间',
+    end_time     varchar(50) COMMENT '结束时间',
+    file_path    varchar(255) COMMENT '文件路径',
+    create_time  varchar(50) NOT NULL COMMENT '创建时间'
+);
+CREATE INDEX idx_jt_media_item_phone ON gb_jt_media_item (phone_number);
+CREATE INDEX idx_jt_media_item_time ON gb_jt_media_item (start_time, end_time);
+
+-- ============================================
+-- Phase 7.6 补齐：在线用户 + 集群节点
+-- ============================================
+CREATE TABLE IF NOT EXISTS gb_online_user
+(
+    id            BIGINT AUTO_INCREMENT PRIMARY KEY,
+    username      VARCHAR(100) NOT NULL,
+    ip            VARCHAR(50),
+    user_agent    VARCHAR(255),
+    login_time    VARCHAR(50)  NOT NULL,
+    last_active   VARCHAR(50)  NOT NULL,
+    jwt_jti       VARCHAR(100),
+    source        VARCHAR(20)  DEFAULT 'http'
+) COMMENT '在线用户表';
+CREATE INDEX idx_online_user_username ON gb_online_user(username);
+CREATE INDEX idx_online_user_last_active ON gb_online_user(last_active);
+
+CREATE TABLE IF NOT EXISTS gb_cluster_node
+(
+    id           BIGINT AUTO_INCREMENT PRIMARY KEY,
+    node_id      VARCHAR(100) NOT NULL,
+    addr         VARCHAR(255) NOT NULL,
+    role         VARCHAR(20)  DEFAULT 'primary',
+    last_heartbeat_secs BIGINT NOT NULL,
+    registered_at VARCHAR(50) NOT NULL
+) COMMENT '集群节点表';
+CREATE UNIQUE INDEX uk_cluster_node_id ON gb_cluster_node(node_id);
+CREATE INDEX idx_cluster_node_heartbeat ON gb_cluster_node(last_heartbeat_secs);

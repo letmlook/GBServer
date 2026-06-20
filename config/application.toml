@@ -1,0 +1,146 @@
+# GBServer 后端配置
+#
+# 优先级：环境变量 (GBSERVER__SECTION__KEY) > 此文件
+# 格式参考: https://toml.io
+
+[server]
+port = 18080
+
+# 数据库三选一：默认 SQLite（与 Cargo.toml default = ["sqlite"] 一致）
+# - SQLite（默认）：零依赖，文件即库；适合开发 / 演示 / 边缘 / 小规模（≤500 设备）
+# - PostgreSQL：生产主力；多实例需配 [redis] + [rpc] peer_endpoints
+# - MySQL：MySQL 平迁 / 兼容历史部署；schema 与 database/init-mysql-2.7.4.sql 完全兼容
+[database]
+url = "sqlite://data/gbserver.db?mode=rwc"
+# url = "postgres://postgres:postgres@127.0.0.1:5432/gbserver"
+# url = "mysql://root:Fitow2022@127.0.0.1:3306/gbserver"
+
+# SQLite 设备上限（仅 sqlite feature 生效）；超过拒绝新 REGISTER 并返回 SIP 503
+# PG/MySQL 后端忽略此字段。None = 不限；推荐 ≤500（SQLite 并发写约束）
+sqlite_max_devices = 500
+
+# Redis：单实例 SQLite 可不配（StateStore 走 InMemoryBackend）；
+# 多实例 PostgreSQL 必须配置，StateStore 跨节点共享依赖 Redis
+# 单实例 SQLite 默认无需启用；多实例部署时取消注释并填写 URL：
+# [redis]
+# url = "redis://127.0.0.1:6379/0"
+
+[jwt]
+# 256-bit 随机密钥（请勿泄露，生产环境建议用环境变量 GBSERVER__JWT__SECRET 覆盖）
+secret = "a7f3c9e2b1d84f6a0e8c5b2d9f1a4e7c0b3d6f9a2e5c8b1d4f7a0e3c6b9d2f5"
+expiration_minutes = 30
+
+# 前端静态资源目录：在 GBServer 下执行 cd web && npm run build 后产物在 web/dist
+static_dir = "web/dist"
+
+[user_settings]
+server_id = "gbserver-001"
+
+# Redis 配置（可选；Phase 7 启用 StateStore cluster / RPC 跨节点）
+[redis]
+url = "redis://127.0.0.1:6379"
+
+# Phase 7.2: 集群节点发现 / 心跳 / RPC 配置
+[cluster]
+enabled = false                       # 多节点 HA 部署时改为 true
+single_node_mode = true                # 单节点默认
+node_id = ""                            # 留空则用 process pid 哈希
+addr = "http://127.0.0.1:18080"        # 本节点 HTTP 地址
+role = "primary"
+heartbeat_interval_secs = 10
+heartbeat_ttl_secs = 60
+
+# Phase 7.4: 审计日志 middleware 配置
+[audit]
+enabled = true
+retention_days = 90
+
+# SIP 服务配置
+[sip]
+enabled = true
+ip = "0.0.0.0"
+port = 5060
+tcp_port = 5061
+device_id = "34020000002000000001"
+password = "admin123"
+realm = "3402000000"
+keepalive_timeout = 30
+register_timeout = 3600
+charset = "UTF-8"
+# SDP 中使用的 IP（NAT 穿透，公网部署时设为公网 IP）
+# sdp_ip = "1.2.3.4"
+# 流地址中使用的 IP（NAT 穿透，公网部署时设为公网 IP）
+# stream_ip = "1.2.3.4"
+
+[sip.stream_reconnect]
+enabled = true
+max_retries = 3
+retry_interval_secs = 5
+
+[sip.heartbeat]
+timeout_multiplier = 3
+check_interval_secs = 10
+
+# ZLM 流媒体服务器配置（多节点负载均衡示例）
+[zlm]
+stream_timeout = 10
+hook_enabled = true
+hook_url = "http://127.0.0.1:18080/api/zlm/hook"
+
+# 节点健康检查配置（Phase 4 follow-up）
+# - timeout_secs：单次 keepalive 超时阈值（默认 30s）
+# - grace_count：连续 N 次健康检查都判定超时才切 offline（默认 3）
+# - check_interval_secs：loop 间隔（默认 10s）
+# 弱网环境可增大 grace_count（如 5）以避免误判；timeout_secs 可调 10-120
+[zlm.keepalive]
+timeout_secs = 30
+grace_count = 3
+check_interval_secs = 10
+
+# 多节点示例：复制以下整块并修改字段即可追加
+[[zlm.servers]]
+id = "zlmediakit-1"
+ip = "127.0.0.1"
+http_port = 8080
+secret = "S63648HLbxckv7YjpPTXXRTOsAVGo0Ia"
+enabled = true
+
+# [[zlm.servers]]
+# id = "zlmediakit-2"
+# ip = "192.168.1.20"
+# http_port = 8080
+# secret = "OtherSecretKeyForSecondNode="
+# enabled = true
+
+# MapConfig — 地图瓦片配置（Hikvision/宇视地图集成）
+[map]
+# 启用地图瓦片代理
+enabled = false
+# 默认瓦片源 URL（OpenStreetMap）
+default_tile_url = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+# 瓦片缓存目录
+cache_dir = "web/dist/static/map_tiles"
+# 缓存大小上限（MB）
+cache_max_size_mb = 256
+# 子通道渲染阈值（子通道超过此数则展开为聚合点）
+sub_channel_threshold = 50
+
+# Cross-node RPC 集群配置（多节点部署时启用）
+[rpc]
+# 本节点 ID（hostname 或人工指定）
+node_id = "node-1"
+# 远端节点 endpoint 列表
+peer_endpoints = []
+# - "http://node2:18080"
+# - "http://node3:18080"
+# RPC 请求超时（秒）
+timeout_secs = 5
+
+# JT1078 tuning & retransmit
+[jt1078]
+# Session inactivity timeout (ms)
+timeout_ms = 60000
+# Retransmit detection wait window (ms) — if gaps persist beyond this, a retransmit event is emitted
+retransmit_wait_ms = 200
+# Optional HTTP hook to receive missing-sequence reports (POST JSON)
+retransmit_hook_url = "http://127.0.0.1:18080/api/jt1078/retransmit"

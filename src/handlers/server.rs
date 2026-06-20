@@ -9,9 +9,10 @@ use axum::{
 };
 use serde::Deserialize;
 
-use crate::db::{get_media_server_by_id, list_media_servers, media_server, MediaServer};
+use crate::db::{get_media_server_by_id, list_media_servers, media_server, stream_push, stream_proxy, MediaServer};
 use crate::error::{AppError, ErrorCode};
 use crate::response::WVPResult;
+use crate::state::StreamState;
 
 use crate::AppState;
 
@@ -23,7 +24,7 @@ use crate::db as db;
 
 // Helper functions to read system metrics
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-use {std::io::Read, tokio::time::sleep, std::time::Duration};
+use {std::fs::File, std::io::Read, tokio::time::sleep, std::time::Duration};
 use std::process::Command;
 
 pub async fn zlm_proxy(
@@ -636,7 +637,7 @@ pub async fn media_server_check(
         "autoConfig": true,
         "rtpEnable": false,
         "rtpProxyPort": 30000,
-        "rtpPortRange": "30000,30500",
+        "rtpPortRange": "30000,30100",
         "sendRtpPortRange": "50000,60000"
     });
 
@@ -800,7 +801,7 @@ pub async fn media_server_save(
 
     #[cfg(feature = "postgres")]
     sqlx::query(
-        r#"UPDATE wvp_media_server SET
+        r#"UPDATE gb_media_server SET
            hook_ip = COALESCE($1, hook_ip),
            sdp_ip = COALESCE($2, sdp_ip),
            stream_ip = COALESCE($3, stream_ip),
@@ -844,7 +845,7 @@ pub async fn media_server_save(
     .await?;
     #[cfg(feature = "mysql")]
     sqlx::query(
-        r#"UPDATE wvp_media_server SET
+        r#"UPDATE gb_media_server SET
            hook_ip = COALESCE(?, hook_ip),
            sdp_ip = COALESCE(?, sdp_ip),
            stream_ip = COALESCE(?, stream_ip),
@@ -936,6 +937,7 @@ pub async fn media_server_delete(
 }
 
 /// GET /api/server/media_server/media_info
+#[allow(non_snake_case)]
 #[derive(Debug, Deserialize)]
 pub struct MediaInfoQuery {
     pub app: Option<String>,
@@ -1017,4 +1019,77 @@ pub async fn map_model_icon_list() -> Json<WVPResult<Vec<serde_json::Value>>> {
             "icon": "el-icon-truck"
         }),
     ]))
+}
+
+/// Phase 4.5: 统一流视图 —— 一次性聚合 `gb_stream_push` + `gb_stream_proxy` 两表，
+/// 通过 `StreamState` trait 屏蔽表差异，返回统一 JSON。
+///
+/// GET /api/server/stream/all
+pub async fn list_all_streams(
+    State(state): State<AppState>,
+) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+    let mut unified: Vec<serde_json::Value> = Vec::new();
+
+    // 1) 推流表
+    match stream_push::list_paged(&state.pool, 1, 200, None, None).await {
+        Ok(pushes) => {
+            for s in pushes {
+                unified.push(stream_state_to_json("push", &s));
+            }
+        }
+        Err(e) => {
+            tracing::warn!("list_all_streams: stream_push query failed: {}", e);
+        }
+    }
+
+    // 2) 代理拉流表
+    match stream_proxy::list_paged(&state.pool, 1, 200, None, None).await {
+        Ok(proxies) => {
+            for s in proxies {
+                unified.push(stream_state_to_json("proxy", &s));
+            }
+        }
+        Err(e) => {
+            tracing::warn!("list_all_streams: stream_proxy query failed: {}", e);
+        }
+    }
+
+    // TODO(phase-5): unify SendRtp streams when table lands.
+    // 设计文档 §7.4 要求本接口同时返回 GB / push / proxy / SendRtp 四类流。
+    // 目前 Phase 4 仅落地 push + proxy 两类；`src/db/send_rtp.rs` 与
+    // `gb_send_rtp` 表均尚未在三个 init SQL 中建表，因此本阶段无法实现
+    // `StreamState` impl。等 Phase 5 SendRtp 表 schema 落地后，再追加
+    // `SendRtpRecord: StreamState` 并在此处调用 `send_rtp::list_paged` 后
+    // 通过 `stream_state_to_json("send_rtp", &rec)` 加入 unified。
+    // 详见 Phase 5 任务清单。
+
+    // 3) 汇总统计
+    let active_count = unified
+        .iter()
+        .filter(|v| {
+            v.get("is_active")
+                .and_then(|x| x.as_bool())
+                .unwrap_or(false)
+        })
+        .count();
+
+    Ok(Json(WVPResult::success(serde_json::json!({
+        "total": unified.len(),
+        "active": active_count,
+        "items": unified,
+    }))))
+}
+
+/// 通用辅助：把任何 `StreamState` 实现序列化为统一 JSON。
+fn stream_state_to_json(kind: &str, s: &dyn StreamState) -> serde_json::Value {
+    serde_json::json!({
+        "kind": kind,
+        "stream_id": s.stream_id(),
+        "app": s.app(),
+        "status": s.status().as_str(),
+        "is_active": s.status().is_active(),
+        "media_server_id": s.media_server_id(),
+        "device_id": s.device_id(),
+        "channel_id": s.channel_id(),
+    })
 }

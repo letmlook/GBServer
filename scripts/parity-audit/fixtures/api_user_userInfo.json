@@ -1,0 +1,14 @@
+{
+  "description": "User info response",
+  "method": "GET",
+  "expectFields": ["code", "msg", "data"],
+  "dataShape": {
+    "code": 0,
+    "msg": "成功",
+    "data": {
+      "id": "number",
+      "username": "string",
+      "role": "object"
+    }
+  }
+}

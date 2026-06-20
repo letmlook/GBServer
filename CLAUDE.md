@@ -45,15 +45,15 @@ cd web && npm run test:ci
 
 PowerShell helpers are available on Windows from the repository root: `scripts/build.ps1` builds frontend + backend, `scripts/build-and-run.ps1` builds then runs, and `scripts/run.ps1` runs an existing release binary.
 
-Configuration loads from `config/application.yaml` plus environment overrides using the `WVP__SECTION__KEY` form (double underscore separator). The app must be run from the repository root so config files and `web/dist` resolve correctly. The README documents the default admin account (`admin` / `admin`) and first-time SQL import commands if schema auto-init is not sufficient.
+Configuration loads from `config/application.toml` plus environment overrides using the `GBSERVER__SECTION__KEY` form (double underscore separator). The app must be run from the repository root so config files and `web/dist` resolve correctly. The README documents the default admin account (`admin` / `admin`) and first-time SQL import commands if schema auto-init is not sufficient.
 
 ## Architecture
 
-This repository is a Rust rewrite of the WVP GB28181 backend with the original-style Vue 2 frontend in `web/`. The backend uses Axum/Tower, SQLx, JWT/API-key auth, GB28181 SIP signaling, ZLMediaKit integration, optional Redis caching, platform cascade registration, record scheduling, and JT1078 vehicle terminal support.
+This repository is the **GBServer** — a Rust-based GB/T 28181 video platform with the original-style Vue 2 frontend in `web/`. The backend uses Axum/Tower, SQLx, JWT/API-key auth, GB28181 SIP signaling, ZLMediaKit integration, optional Redis caching, platform cascade registration, record scheduling, and JT1078 vehicle terminal support.
 
 ### Startup flow (`src/lib.rs` → `run()`)
 
-1. Load config, create a SQLx pool, and ensure required tables. If the core `wvp_device` table is missing, startup attempts to initialize the WVP schema from `database/init-postgresql-2.7.4.sql` or `database/init-mysql-2.7.4.sql` via `include_str!`.
+1. Load config, create a SQLx pool, and ensure required tables. If the core `gb_device` table is missing, startup attempts to initialize the schema from `database/init-postgresql-2.7.4.sql` or `database/init-mysql-2.7.4.sql` via `include_str!`.
 2. Create the SIP server when `sip.enabled` is true, wiring it to DB state and WebSocket state.
 3. Initialize configured ZLM clients, sync media-server rows into the DB, and start the ZLM health-check loop.
 4. Initialize optional Redis, playback/download managers, and shared `AppState`.
@@ -82,7 +82,7 @@ handlers/ ──→ db/ ──→ SQLx (PostgreSQL by default, MySQL behind feat
 
 ### Cross-cutting conventions
 
-All normal API responses use `WVPResult<T>` with Java WVP-compatible shape `{ code: 0, msg: "成功", data: ... }`. Handlers generally return `Result<Json<WVPResult<T>>, AppError>` so `?` converts DB/business failures into JSON error responses.
+All normal API responses use `WVPResult<T>` with the standard shape `{ code: 0, msg: "成功", data: ... }`. Handlers generally return `Result<Json<WVPResult<T>>, AppError>` so `?` converts DB/business failures into JSON error responses.
 
 Authentication accepts JWT via `access-token` or `Authorization: Bearer ...`, then falls back to API keys via `X-API-Key` or `apiKey`. Authenticated requests write audit logs asynchronously. Public route exclusions and the protected ZLM proxy are configured in `router.rs` / `auth.rs`.
 

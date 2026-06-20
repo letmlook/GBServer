@@ -29,7 +29,7 @@ impl DatabaseSeeder {
 
         sqlx::query!(
             r#"
-            INSERT INTO wvp_user (id, username, password, role)
+            INSERT INTO gb_user (id, username, password, role)
             VALUES ($1, $2, $3, $4)
             ON CONFLICT (username) DO NOTHING
             "#,
@@ -77,7 +77,7 @@ impl DatabaseSeeder {
     /// 清理所有测试数据
     pub async fn cleanup(&self) -> Result<(), sqlx::Error> {
         sqlx::query!("DELETE FROM device").execute(&self.pool).await?;
-        sqlx::query!("DELETE FROM wvp_user").execute(&self.pool).await?;
+        sqlx::query!("DELETE FROM gb_user").execute(&self.pool).await?;
         Ok(())
     }
 }

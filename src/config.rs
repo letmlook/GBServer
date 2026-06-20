@@ -13,6 +13,13 @@ pub struct AppConfig {
     pub zlm: Option<ZlmConfig>,
     pub map: Option<MapConfig>,
     pub jt1078: Option<Jt1078Config>,
+    /// Phase 7.2: cluster / node-discovery config. When `single_node_mode = true`,
+    /// cluster checks are skipped (Redis fallback to local node only).
+    #[serde(default)]
+    pub cluster: ClusterAppConfig,
+    /// Phase 7.4: audit middleware config. When disabled, no audit log is written.
+    #[serde(default)]
+    pub audit: AuditConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -23,6 +30,10 @@ pub struct Jt1078Config {
     pub retransmit_wait_ms: Option<u64>,
     /// Optional HTTP hook URL to notify about missing sequences
     pub retransmit_hook_url: Option<String>,
+    /// TCP listen port for JT1078 (default 60000)
+    pub tcp_port: Option<u16>,
+    /// UDP listen port for JT1078 (default 60000)
+    pub udp_port: Option<u16>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -33,6 +44,11 @@ pub struct ServerConfig {
 #[derive(Debug, Clone, Deserialize)]
 pub struct DatabaseConfig {
     pub url: String,
+    /// SQLite 模式下允许的最大设备数；超过则拒绝新设备注册。
+    /// 默认 500；超出需迁移到 PostgreSQL/MySQL。
+    /// PG/MySQL 后端忽略此字段。
+    #[serde(default)]
+    pub sqlite_max_devices: Option<usize>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -133,12 +149,45 @@ pub struct ZlmServerConfig {
     pub hook_url: Option<String>,
 }
 
+/// ZLM 节点健康检查配置（Phase 4 follow-up）
+///
+/// 控制 `media_node::health_check_loop` 的行为：
+/// - `timeout_secs`：单次 keepalive 超时阈值（默认 30s）
+/// - `grace_count`：连续 N 次健康检查都判定超时才真正切 offline（默认 3）
+/// - `check_interval_secs`：loop 间隔（默认 10s）
+#[derive(Debug, Clone, Deserialize)]
+pub struct ZlmKeepaliveConfig {
+    #[serde(default = "default_keepalive_timeout_secs")]
+    pub timeout_secs: i64,
+    #[serde(default = "default_keepalive_grace_count")]
+    pub grace_count: i32,
+    #[serde(default = "default_keepalive_check_interval_secs")]
+    pub check_interval_secs: u64,
+}
+
+fn default_keepalive_timeout_secs() -> i64 { 30 }
+fn default_keepalive_grace_count() -> i32 { 3 }
+fn default_keepalive_check_interval_secs() -> u64 { 10 }
+
+impl Default for ZlmKeepaliveConfig {
+    fn default() -> Self {
+        Self {
+            timeout_secs: default_keepalive_timeout_secs(),
+            grace_count: default_keepalive_grace_count(),
+            check_interval_secs: default_keepalive_check_interval_secs(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct ZlmConfig {
     pub servers: Vec<ZlmServerConfig>,
     pub stream_timeout: u64,
     pub hook_enabled: bool,
     pub hook_url: String,
+    /// Phase 4 follow-up: 节点健康检查配置（可从 [zlm.keepalive] 覆盖）
+    #[serde(default)]
+    pub keepalive: ZlmKeepaliveConfig,
 }
 
 impl Default for ZlmConfig {
@@ -156,6 +205,7 @@ impl Default for ZlmConfig {
             stream_timeout: 10,
             hook_enabled: true,
             hook_url: "http://127.0.0.1:18080/api/zlm/hook".to_string(),
+            keepalive: ZlmKeepaliveConfig::default(),
         }
     }
 }
@@ -163,7 +213,7 @@ impl Default for ZlmConfig {
 pub fn load_config() -> Result<AppConfig> {
     let base = config::Config::builder()
         .add_source(config::File::with_name("config/application").required(false))
-        .add_source(config::Environment::with_prefix("WVP").separator("__"));
+        .add_source(config::Environment::with_prefix("GBSERVER").separator("__"));
 
     let cfg: AppConfig = base.build()?.try_deserialize()?;
     Ok(cfg)
@@ -181,4 +231,72 @@ pub struct MapConfig {
     pub zoom: Option<i32>,
     /// 坐标系: WGS84 或 GCJ02
     pub coord_sys: Option<String>,
+}
+
+/// Phase 7.2: 集群/节点发现配置（来自 [cluster] 段落）。
+#[derive(Debug, Clone, Deserialize)]
+pub struct ClusterAppConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_cluster_single_node")]
+    pub single_node_mode: bool,
+    #[serde(default)]
+    pub node_id: String,
+    #[serde(default)]
+    pub addr: String,
+    #[serde(default = "default_cluster_role")]
+    pub role: String,
+    #[serde(default = "default_cluster_heartbeat_interval")]
+    pub heartbeat_interval_secs: u64,
+    #[serde(default = "default_cluster_heartbeat_ttl")]
+    pub heartbeat_ttl_secs: u64,
+}
+
+fn default_cluster_single_node() -> bool { true }
+fn default_cluster_role() -> String { "primary".to_string() }
+fn default_cluster_heartbeat_interval() -> u64 { 10 }
+fn default_cluster_heartbeat_ttl() -> u64 { 60 }
+
+impl Default for ClusterAppConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            single_node_mode: true,
+            node_id: format!("node-{}", std::process::id()),
+            addr: "http://127.0.0.1:18080".to_string(),
+            role: "primary".to_string(),
+            heartbeat_interval_secs: 10,
+            heartbeat_ttl_secs: 60,
+        }
+    }
+}
+
+impl ClusterAppConfig {
+    pub fn heartbeat_interval(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.heartbeat_interval_secs)
+    }
+    pub fn heartbeat_ttl(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.heartbeat_ttl_secs)
+    }
+}
+
+/// Phase 7.4: audit middleware configuration.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AuditConfig {
+    #[serde(default = "default_audit_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_audit_retention_days")]
+    pub retention_days: u32,
+}
+
+fn default_audit_enabled() -> bool { true }
+fn default_audit_retention_days() -> u32 { 90 }
+
+impl Default for AuditConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            retention_days: 90,
+        }
+    }
 }

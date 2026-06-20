@@ -37,7 +37,7 @@ pub async fn insert_alarm(pool: &Pool, alarm: &AlarmInsert) -> sqlx::Result<u64>
     #[cfg(feature = "postgres")]
     {
         let result = sqlx::query(
-            "INSERT INTO wvp_device_alarm (device_id, channel_id, alarm_priority, alarm_method, alarm_time, alarm_description, longitude, latitude, alarm_type, create_time) \
+            "INSERT INTO gb_device_alarm (device_id, channel_id, alarm_priority, alarm_method, alarm_time, alarm_description, longitude, latitude, alarm_type, create_time) \
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)"
         )
         .bind(&alarm.device_id)
@@ -58,7 +58,28 @@ pub async fn insert_alarm(pool: &Pool, alarm: &AlarmInsert) -> sqlx::Result<u64>
     #[cfg(feature = "mysql")]
     {
         let result = sqlx::query(
-            "INSERT INTO wvp_device_alarm (device_id, channel_id, alarm_priority, alarm_method, alarm_time, alarm_description, longitude, latitude, alarm_type, create_time) \
+            "INSERT INTO gb_device_alarm (device_id, channel_id, alarm_priority, alarm_method, alarm_time, alarm_description, longitude, latitude, alarm_type, create_time) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        )
+        .bind(&alarm.device_id)
+        .bind(&alarm.channel_id)
+        .bind(&alarm.alarm_priority)
+        .bind(&alarm.alarm_method)
+        .bind(&alarm.alarm_time)
+        .bind(&alarm.alarm_description)
+        .bind(alarm.longitude)
+        .bind(alarm.latitude)
+        .bind(&alarm.alarm_type)
+        .bind(&alarm.create_time)
+        .execute(pool)
+        .await?;
+        Ok(result.rows_affected())
+    }
+
+    #[cfg(feature = "sqlite")]
+    {
+        let result = sqlx::query(
+            "INSERT INTO gb_device_alarm (device_id, channel_id, alarm_priority, alarm_method, alarm_time, alarm_description, longitude, latitude, alarm_type, create_time) \
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         )
         .bind(&alarm.device_id)
@@ -95,7 +116,7 @@ pub async fn list_alarms_paged(
         let query = sqlx::query_as::<_, Alarm>(
             "SELECT id, device_id, channel_id, alarm_priority, alarm_method, alarm_time, \
              alarm_description, longitude, latitude, alarm_type, create_time \
-             FROM wvp_device_alarm \
+             FROM gb_device_alarm \
              WHERE ($1::text IS NULL OR device_id LIKE '%' || $1 || '%') \
                AND ($2::text IS NULL OR alarm_type = $2) \
                AND ($3::text IS NULL OR alarm_priority = $3) \
@@ -120,8 +141,38 @@ pub async fn list_alarms_paged(
         let query = sqlx::query_as::<_, Alarm>(
             "SELECT id, device_id, channel_id, alarm_priority, alarm_method, alarm_time, \
              alarm_description, longitude, latitude, alarm_type, create_time \
-             FROM wvp_device_alarm \
+             FROM gb_device_alarm \
              WHERE (? IS NULL OR device_id LIKE CONCAT('%', ?, '%')) \
+               AND (? IS NULL OR alarm_type = ?) \
+               AND (? IS NULL OR alarm_priority = ?) \
+               AND (? IS NULL OR alarm_time >= ?) \
+               AND (? IS NULL OR alarm_time <= ?) \
+             ORDER BY create_time DESC \
+             LIMIT ? OFFSET ?"
+        )
+        .bind(device_id)
+        .bind(device_id)
+        .bind(alarm_type)
+        .bind(alarm_type)
+        .bind(alarm_priority)
+        .bind(alarm_priority)
+        .bind(start_time)
+        .bind(start_time)
+        .bind(end_time)
+        .bind(end_time)
+        .bind(count)
+        .bind(offset);
+
+        query.fetch_all(pool).await
+    }
+
+    #[cfg(feature = "sqlite")]
+    {
+        let query = sqlx::query_as::<_, Alarm>(
+            "SELECT id, device_id, channel_id, alarm_priority, alarm_method, alarm_time, \
+             alarm_description, longitude, latitude, alarm_type, create_time \
+             FROM gb_device_alarm \
+             WHERE (? IS NULL OR device_id LIKE '%' || ? || '%') \
                AND (? IS NULL OR alarm_type = ?) \
                AND (? IS NULL OR alarm_priority = ?) \
                AND (? IS NULL OR alarm_time >= ?) \
@@ -158,7 +209,7 @@ pub async fn count_alarms(
     #[cfg(feature = "postgres")]
     {
         let result: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM wvp_device_alarm \
+            "SELECT COUNT(*) FROM gb_device_alarm \
              WHERE ($1::text IS NULL OR device_id LIKE '%' || $1 || '%') \
                AND ($2::text IS NULL OR alarm_type = $2) \
                AND ($3::text IS NULL OR alarm_priority = $3) \
@@ -179,7 +230,7 @@ pub async fn count_alarms(
     #[cfg(feature = "mysql")]
     {
         let result: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM wvp_device_alarm \
+            "SELECT COUNT(*) FROM gb_device_alarm \
              WHERE (? IS NULL OR device_id LIKE CONCAT('%', ?, '%')) \
                AND (? IS NULL OR alarm_type = ?) \
                AND (? IS NULL OR alarm_priority = ?) \
@@ -201,6 +252,27 @@ pub async fn count_alarms(
 
         Ok(result.0)
     }
+
+    #[cfg(feature = "sqlite")]
+    {
+        let result: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM gb_device_alarm \
+             WHERE (?1 IS NULL OR device_id LIKE '%' || ?1 || '%') \
+               AND (?2 IS NULL OR alarm_type = ?2) \
+               AND (?3 IS NULL OR alarm_priority = ?3) \
+               AND (?4 IS NULL OR alarm_time >= ?4) \
+               AND (?5 IS NULL OR alarm_time <= ?5)"
+        )
+        .bind(device_id)
+        .bind(alarm_type)
+        .bind(alarm_priority)
+        .bind(start_time)
+        .bind(end_time)
+        .fetch_one(pool)
+        .await?;
+
+        Ok(result.0)
+    }
 }
 
 /// 根据ID查询报警详情
@@ -210,7 +282,7 @@ pub async fn get_alarm_by_id(pool: &Pool, id: i64) -> sqlx::Result<Option<Alarm>
         sqlx::query_as::<_, Alarm>(
             "SELECT id, device_id, channel_id, alarm_priority, alarm_method, alarm_time, \
              alarm_description, longitude, latitude, alarm_type, create_time \
-             FROM wvp_device_alarm WHERE id = $1"
+             FROM gb_device_alarm WHERE id = $1"
         )
         .bind(id)
         .fetch_optional(pool)
@@ -222,7 +294,19 @@ pub async fn get_alarm_by_id(pool: &Pool, id: i64) -> sqlx::Result<Option<Alarm>
         sqlx::query_as::<_, Alarm>(
             "SELECT id, device_id, channel_id, alarm_priority, alarm_method, alarm_time, \
              alarm_description, longitude, latitude, alarm_type, create_time \
-             FROM wvp_device_alarm WHERE id = ?"
+             FROM gb_device_alarm WHERE id = ?"
+        )
+        .bind(id)
+        .fetch_optional(pool)
+        .await
+    }
+
+    #[cfg(feature = "sqlite")]
+    {
+        sqlx::query_as::<_, Alarm>(
+            "SELECT id, device_id, channel_id, alarm_priority, alarm_method, alarm_time, \
+             alarm_description, longitude, latitude, alarm_type, create_time \
+             FROM gb_device_alarm WHERE id = ?"
         )
         .bind(id)
         .fetch_optional(pool)
@@ -234,15 +318,17 @@ pub async fn get_alarm_by_id(pool: &Pool, id: i64) -> sqlx::Result<Option<Alarm>
 /// Delete ALL alarms (used by /api/alarm/clear). Returns count deleted.
 pub async fn delete_all(pool: &Pool) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
-    { return sqlx::query("DELETE FROM wvp_device_alarm").execute(pool).await.map(|r| r.rows_affected()); }
+    { return sqlx::query("DELETE FROM gb_device_alarm").execute(pool).await.map(|r| r.rows_affected()); }
     #[cfg(feature = "postgres")]
-    { return sqlx::query("DELETE FROM wvp_device_alarm").execute(pool).await.map(|r| r.rows_affected()); }
+    { return sqlx::query("DELETE FROM gb_device_alarm").execute(pool).await.map(|r| r.rows_affected()); }
+    #[cfg(feature = "sqlite")]
+    { return sqlx::query("DELETE FROM gb_device_alarm").execute(pool).await.map(|r| r.rows_affected()); }
 }
 
 pub async fn delete_alarm(pool: &Pool, id: i64) -> sqlx::Result<bool> {
     #[cfg(feature = "postgres")]
     {
-        let result = sqlx::query("DELETE FROM wvp_device_alarm WHERE id = $1")
+        let result = sqlx::query("DELETE FROM gb_device_alarm WHERE id = $1")
             .bind(id)
             .execute(pool)
             .await?;
@@ -251,7 +337,16 @@ pub async fn delete_alarm(pool: &Pool, id: i64) -> sqlx::Result<bool> {
 
     #[cfg(feature = "mysql")]
     {
-        let result = sqlx::query("DELETE FROM wvp_device_alarm WHERE id = ?")
+        let result = sqlx::query("DELETE FROM gb_device_alarm WHERE id = ?")
+            .bind(id)
+            .execute(pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    #[cfg(feature = "sqlite")]
+    {
+        let result = sqlx::query("DELETE FROM gb_device_alarm WHERE id = ?")
             .bind(id)
             .execute(pool)
             .await?;
@@ -269,7 +364,7 @@ pub async fn batch_delete_alarms(pool: &Pool, ids: &[i64]) -> sqlx::Result<u64> 
     {
         let placeholders: Vec<String> = ids.iter().map(|_| "$1".to_string()).collect();
         let sql = format!(
-            "DELETE FROM wvp_device_alarm WHERE id IN ({})",
+            "DELETE FROM gb_device_alarm WHERE id IN ({})",
             placeholders.join(", ")
         );
 
@@ -286,7 +381,24 @@ pub async fn batch_delete_alarms(pool: &Pool, ids: &[i64]) -> sqlx::Result<u64> 
     {
         let placeholders: Vec<String> = ids.iter().map(|_| "?".to_string()).collect();
         let sql = format!(
-            "DELETE FROM wvp_device_alarm WHERE id IN ({})",
+            "DELETE FROM gb_device_alarm WHERE id IN ({})",
+            placeholders.join(", ")
+        );
+
+        let mut query = sqlx::query(&sql);
+        for id in ids {
+            query = query.bind(id);
+        }
+
+        let result = query.execute(pool).await?;
+        Ok(result.rows_affected())
+    }
+
+    #[cfg(feature = "sqlite")]
+    {
+        let placeholders: Vec<String> = ids.iter().map(|_| "?".to_string()).collect();
+        let sql = format!(
+            "DELETE FROM gb_device_alarm WHERE id IN ({})",
             placeholders.join(", ")
         );
 

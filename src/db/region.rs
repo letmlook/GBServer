@@ -1,4 +1,4 @@
-//! 行政区域表 wvp_common_region
+//! 行政区域表 gb_common_region
 
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
@@ -35,7 +35,7 @@ pub struct RegionUpdate {
 
 pub async fn list_all(pool: &Pool) -> sqlx::Result<Vec<Region>> {
     sqlx::query_as::<_, Region>(
-        "SELECT id, device_id, name, parent_id, parent_device_id, create_time, update_time FROM wvp_common_region ORDER BY id",
+        "SELECT id, device_id, name, parent_id, parent_device_id, create_time, update_time FROM gb_common_region ORDER BY id",
     )
     .fetch_all(pool)
     .await
@@ -44,14 +44,21 @@ pub async fn list_all(pool: &Pool) -> sqlx::Result<Vec<Region>> {
 pub async fn get_by_id(pool: &Pool, id: i32) -> sqlx::Result<Option<Region>> {
     #[cfg(feature = "mysql")]
     return sqlx::query_as::<_, Region>(
-        "SELECT id, device_id, name, parent_id, parent_device_id, create_time, update_time FROM wvp_common_region WHERE id = ?",
+        "SELECT id, device_id, name, parent_id, parent_device_id, create_time, update_time FROM gb_common_region WHERE id = ?",
     )
     .bind(id)
     .fetch_optional(pool)
     .await;
     #[cfg(feature = "postgres")]
     return sqlx::query_as::<_, Region>(
-        "SELECT id, device_id, name, parent_id, parent_device_id, create_time, update_time FROM wvp_common_region WHERE id = $1",
+        "SELECT id, device_id, name, parent_id, parent_device_id, create_time, update_time FROM gb_common_region WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await;
+    #[cfg(feature = "sqlite")]
+    return sqlx::query_as::<_, Region>(
+        "SELECT id, device_id, name, parent_id, parent_device_id, create_time, update_time FROM gb_common_region WHERE id = ?",
     )
     .bind(id)
     .fetch_optional(pool)
@@ -61,14 +68,21 @@ pub async fn get_by_id(pool: &Pool, id: i32) -> sqlx::Result<Option<Region>> {
 pub async fn get_by_device_id(pool: &Pool, device_id: &str) -> sqlx::Result<Option<Region>> {
     #[cfg(feature = "mysql")]
     return sqlx::query_as::<_, Region>(
-        "SELECT id, device_id, name, parent_id, parent_device_id, create_time, update_time FROM wvp_common_region WHERE device_id = ?",
+        "SELECT id, device_id, name, parent_id, parent_device_id, create_time, update_time FROM gb_common_region WHERE device_id = ?",
     )
     .bind(device_id)
     .fetch_optional(pool)
     .await;
     #[cfg(feature = "postgres")]
     return sqlx::query_as::<_, Region>(
-        "SELECT id, device_id, name, parent_id, parent_device_id, create_time, update_time FROM wvp_common_region WHERE device_id = $1",
+        "SELECT id, device_id, name, parent_id, parent_device_id, create_time, update_time FROM gb_common_region WHERE device_id = $1",
+    )
+    .bind(device_id)
+    .fetch_optional(pool)
+    .await;
+    #[cfg(feature = "sqlite")]
+    return sqlx::query_as::<_, Region>(
+        "SELECT id, device_id, name, parent_id, parent_device_id, create_time, update_time FROM gb_common_region WHERE device_id = ?",
     )
     .bind(device_id)
     .fetch_optional(pool)
@@ -78,14 +92,21 @@ pub async fn get_by_device_id(pool: &Pool, device_id: &str) -> sqlx::Result<Opti
 pub async fn list_children(pool: &Pool, parent_id: i32) -> sqlx::Result<Vec<Region>> {
     #[cfg(feature = "mysql")]
     return sqlx::query_as::<_, Region>(
-        "SELECT id, device_id, name, parent_id, parent_device_id, create_time, update_time FROM wvp_common_region WHERE parent_id = ? ORDER BY id",
+        "SELECT id, device_id, name, parent_id, parent_device_id, create_time, update_time FROM gb_common_region WHERE parent_id = ? ORDER BY id",
     )
     .bind(parent_id)
     .fetch_all(pool)
     .await;
     #[cfg(feature = "postgres")]
     return sqlx::query_as::<_, Region>(
-        "SELECT id, device_id, name, parent_id, parent_device_id, create_time, update_time FROM wvp_common_region WHERE parent_id = $1 ORDER BY id",
+        "SELECT id, device_id, name, parent_id, parent_device_id, create_time, update_time FROM gb_common_region WHERE parent_id = $1 ORDER BY id",
+    )
+    .bind(parent_id)
+    .fetch_all(pool)
+    .await;
+    #[cfg(feature = "sqlite")]
+    return sqlx::query_as::<_, Region>(
+        "SELECT id, device_id, name, parent_id, parent_device_id, create_time, update_time FROM gb_common_region WHERE parent_id = ? ORDER BY id",
     )
     .bind(parent_id)
     .fetch_all(pool)
@@ -102,7 +123,7 @@ pub async fn add(
 ) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
     let r = sqlx::query(
-        "INSERT INTO wvp_common_region (device_id, name, parent_id, parent_device_id, create_time, update_time) VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO gb_common_region (device_id, name, parent_id, parent_device_id, create_time, update_time) VALUES (?, ?, ?, ?, ?, ?)",
     )
     .bind(device_id)
     .bind(name)
@@ -114,7 +135,19 @@ pub async fn add(
     .await?;
     #[cfg(feature = "postgres")]
     let r = sqlx::query(
-        "INSERT INTO wvp_common_region (device_id, name, parent_id, parent_device_id, create_time, update_time) VALUES ($1, $2, $3, $4, $5, $6)",
+        "INSERT INTO gb_common_region (device_id, name, parent_id, parent_device_id, create_time, update_time) VALUES ($1, $2, $3, $4, $5, $6)",
+    )
+    .bind(device_id)
+    .bind(name)
+    .bind(parent_id)
+    .bind(parent_device_id)
+    .bind(now)
+    .bind(now)
+    .execute(pool)
+    .await?;
+    #[cfg(feature = "sqlite")]
+    let r = sqlx::query(
+        "INSERT INTO gb_common_region (device_id, name, parent_id, parent_device_id, create_time, update_time) VALUES (?, ?, ?, ?, ?, ?)",
     )
     .bind(device_id)
     .bind(name)
@@ -138,7 +171,7 @@ pub async fn update(
 ) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
     let r = sqlx::query(
-        "UPDATE wvp_common_region SET device_id = COALESCE(?, device_id), name = COALESCE(?, name), parent_id = ?, parent_device_id = COALESCE(?, parent_device_id), update_time = ? WHERE id = ?",
+        "UPDATE gb_common_region SET device_id = COALESCE(?, device_id), name = COALESCE(?, name), parent_id = ?, parent_device_id = COALESCE(?, parent_device_id), update_time = ? WHERE id = ?",
     )
     .bind(device_id)
     .bind(name)
@@ -150,7 +183,19 @@ pub async fn update(
     .await?;
     #[cfg(feature = "postgres")]
     let r = sqlx::query(
-        "UPDATE wvp_common_region SET device_id = COALESCE($1, device_id), name = COALESCE($2, name), parent_id = $3, parent_device_id = COALESCE($4, parent_device_id), update_time = $5 WHERE id = $6",
+        "UPDATE gb_common_region SET device_id = COALESCE($1, device_id), name = COALESCE($2, name), parent_id = $3, parent_device_id = COALESCE($4, parent_device_id), update_time = $5 WHERE id = $6",
+    )
+    .bind(device_id)
+    .bind(name)
+    .bind(parent_id)
+    .bind(parent_device_id)
+    .bind(now)
+    .bind(id)
+    .execute(pool)
+    .await?;
+    #[cfg(feature = "sqlite")]
+    let r = sqlx::query(
+        "UPDATE gb_common_region SET device_id = COALESCE(?, device_id), name = COALESCE(?, name), parent_id = ?, parent_device_id = COALESCE(?, parent_device_id), update_time = ? WHERE id = ?",
     )
     .bind(device_id)
     .bind(name)
@@ -165,12 +210,17 @@ pub async fn update(
 
 pub async fn delete_by_id(pool: &Pool, id: i32) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
-    let r = sqlx::query("DELETE FROM wvp_common_region WHERE id = ?")
+    let r = sqlx::query("DELETE FROM gb_common_region WHERE id = ?")
         .bind(id)
         .execute(pool)
         .await?;
     #[cfg(feature = "postgres")]
-    let r = sqlx::query("DELETE FROM wvp_common_region WHERE id = $1")
+    let r = sqlx::query("DELETE FROM gb_common_region WHERE id = $1")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    #[cfg(feature = "sqlite")]
+    let r = sqlx::query("DELETE FROM gb_common_region WHERE id = ?")
         .bind(id)
         .execute(pool)
         .await?;
@@ -179,12 +229,17 @@ pub async fn delete_by_id(pool: &Pool, id: i32) -> sqlx::Result<u64> {
 
 pub async fn delete_by_device_id(pool: &Pool, device_id: &str) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
-    let r = sqlx::query("DELETE FROM wvp_common_region WHERE device_id = ?")
+    let r = sqlx::query("DELETE FROM gb_common_region WHERE device_id = ?")
         .bind(device_id)
         .execute(pool)
         .await?;
     #[cfg(feature = "postgres")]
-    let r = sqlx::query("DELETE FROM wvp_common_region WHERE device_id = $1")
+    let r = sqlx::query("DELETE FROM gb_common_region WHERE device_id = $1")
+        .bind(device_id)
+        .execute(pool)
+        .await?;
+    #[cfg(feature = "sqlite")]
+    let r = sqlx::query("DELETE FROM gb_common_region WHERE device_id = ?")
         .bind(device_id)
         .execute(pool)
         .await?;
@@ -193,7 +248,7 @@ pub async fn delete_by_device_id(pool: &Pool, device_id: &str) -> sqlx::Result<u
 
 /// 统计区域数量
 pub async fn count_all(pool: &Pool) -> sqlx::Result<i64> {
-    sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM wvp_common_region")
+    sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_common_region")
         .fetch_one(pool)
         .await
 }
@@ -201,12 +256,17 @@ pub async fn count_all(pool: &Pool) -> sqlx::Result<i64> {
 /// 获取子区域数量
 pub async fn count_children(pool: &Pool, parent_id: i32) -> sqlx::Result<i64> {
     #[cfg(feature = "mysql")]
-    return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM wvp_common_region WHERE parent_id = ?")
+    return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_common_region WHERE parent_id = ?")
         .bind(parent_id)
         .fetch_one(pool)
         .await;
     #[cfg(feature = "postgres")]
-    return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM wvp_common_region WHERE parent_id = $1")
+    return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_common_region WHERE parent_id = $1")
+        .bind(parent_id)
+        .fetch_one(pool)
+        .await;
+    #[cfg(feature = "sqlite")]
+    return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_common_region WHERE parent_id = ?")
         .bind(parent_id)
         .fetch_one(pool)
         .await;
@@ -215,12 +275,17 @@ pub async fn count_children(pool: &Pool, parent_id: i32) -> sqlx::Result<i64> {
 /// 根据行政区划代码查询区域
 pub async fn get_by_civil_code(pool: &Pool, civil_code: &str) -> sqlx::Result<Option<Region>> {
     #[cfg(feature = "mysql")]
-    return sqlx::query_as::<_, Region>("SELECT * FROM wvp_common_region WHERE civil_code = ?")
+    return sqlx::query_as::<_, Region>("SELECT * FROM gb_common_region WHERE civil_code = ?")
         .bind(civil_code)
         .fetch_optional(pool)
         .await;
     #[cfg(feature = "postgres")]
-    return sqlx::query_as::<_, Region>("SELECT * FROM wvp_common_region WHERE civil_code = $1")
+    return sqlx::query_as::<_, Region>("SELECT * FROM gb_common_region WHERE civil_code = $1")
+        .bind(civil_code)
+        .fetch_optional(pool)
+        .await;
+    #[cfg(feature = "sqlite")]
+    return sqlx::query_as::<_, Region>("SELECT * FROM gb_common_region WHERE civil_code = ?")
         .bind(civil_code)
         .fetch_optional(pool)
         .await;

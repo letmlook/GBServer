@@ -23,7 +23,7 @@ const WEAK_SECRETS: &[&str] = &[
 /// Returns Err with a human-readable reason otherwise.
 pub fn validate_jwt_secret(secret: &str) -> Result<(), String> {
     if secret.is_empty() {
-        return Err("JWT secret is empty — set WVP__JWT__SECRET".into());
+        return Err("JWT secret is empty — set GBSERVER__JWT__SECRET".into());
     }
     if secret.len() < MIN_JWT_SECRET_LEN {
         return Err(format!(
@@ -47,69 +47,99 @@ pub fn validate_jwt_secret(secret: &str) -> Result<(), String> {
 /// Mask any `<key>=<value>` / `"<key>":"<value>"` / `<key>: <value>` occurrence
 /// of a sensitive key in `text`. Sensitive keys are case-insensitive.
 const SENSITIVE_KEYS: &[&str] = &[
+    // URL / body 字段
     "password", "passwd", "secret", "token", "jwt", "apikey", "api_key",
     "authorization", "access_token", "refresh_token", "private",
+    // HTTP header 名（to_ascii_lowercase 已做大小写无关匹配，所以这里写小写即可）
+    "x-api-key", "x-api-token", "x-auth-token", "x-access-token",
 ];
 
 /// Returns `text` with sensitive values replaced by `***`.
 pub fn redact_sensitive(text: &str) -> String {
     let mut out = text.to_string();
     for key in SENSITIVE_KEYS {
+        // 值终止符：, } ) ] 空白 / \n（结构/字段分隔），
+        // 以及 & 和 ;（URL query string 中常见的参数分隔符）。
+        // 不加 & 会导致 `password=hunter2&user=alice` 的值一路扫到末尾
+        // 把 `&user=alice` 也吞掉。
+        let is_term = |b: u8| matches!(b, b',' | b'}' | b')' | b']' | b' ' | b'\n' | b'&' | b';');
+
         // =value
         let eq_pat = format!("{}=", key);
         if let Some(idx) = out.to_ascii_lowercase().find(&eq_pat) {
-            // Replace from `=` up to the next , } ) ] space or end-of-string
             let start = idx + eq_pat.len();
             let bytes = out.as_bytes();
             let mut end = start;
-            while end < bytes.len() {
-                let b = bytes[end];
-                if b == b',' || b == b'}' || b == b')' || b == b']' || b == b' ' || b == b'\n' {
-                    break;
-                }
+            while end < bytes.len() && !is_term(bytes[end]) {
                 end += 1;
             }
-            out.replace_range(start..end, "***");
+            // 防 start==end 时 replace_range 退化为插入（String::replace_range
+            // 对空区间会插入 replace_with），避免 "password=" → "password=***"
+            if start < end {
+                out.replace_range(start..end, "***");
+            }
         }
         // "key":"value" or "key": "value"
         let colon_pat = format!("\"{}\":", key);
         if let Some(idx) = out.to_ascii_lowercase().find(&colon_pat) {
             let after_colon = idx + colon_pat.len();
-            // skip whitespace
             let bytes = out.as_bytes();
             let mut start = after_colon;
             while start < bytes.len() && bytes[start] == b' ' {
                 start += 1;
             }
             if start < bytes.len() && bytes[start] == b'"' {
-                // find closing quote
                 let mut end = start + 1;
                 while end < bytes.len() && bytes[end] != b'"' {
                     if bytes[end] == b'\\' { end += 2; continue; }
                     end += 1;
                 }
-                if end < bytes.len() {
+                if end < bytes.len() && start + 1 < end {
                     out.replace_range(start+1..end, "***");
                 }
             }
         }
-        // key: value (yaml-style)
+        // key: value (yaml / HTTP header style)
         let colon_space_pat = format!("{}: ", key);
         if let Some(idx) = out.to_ascii_lowercase().find(&colon_space_pat) {
             let start = idx + colon_space_pat.len();
             let bytes = out.as_bytes();
             let mut end = start;
-            while end < bytes.len() {
-                let b = bytes[end];
-                if b == b',' || b == b'}' || b == b')' || b == b']' || b == b'\n' {
-                    break;
-                }
+            while end < bytes.len() && !is_term(bytes[end]) {
                 end += 1;
             }
-            out.replace_range(start..end, "***");
+            if start < end {
+                out.replace_range(start..end, "***");
+            }
         }
     }
     out
+}
+
+/// F3: 便捷宏 — 把任意 Display 值先 redact 再写入日志。
+/// 用法：`info_redacted!("received {}", payload);` 等价 `info!("received {}", redact_sensitive(&payload.to_string()));`
+#[macro_export]
+macro_rules! info_redacted {
+    ($($arg:tt)+) => {{
+        let formatted = format!($($arg)+);
+        tracing::info!("{}", $crate::security::redact_sensitive(&formatted));
+    }};
+}
+
+#[macro_export]
+macro_rules! warn_redacted {
+    ($($arg:tt)+) => {{
+        let formatted = format!($($arg)+);
+        tracing::warn!("{}", $crate::security::redact_sensitive(&formatted));
+    }};
+}
+
+#[macro_export]
+macro_rules! debug_redacted {
+    ($($arg:tt)+) => {{
+        let formatted = format!($($arg)+);
+        tracing::debug!("{}", $crate::security::redact_sensitive(&formatted));
+    }};
 }
 
 #[cfg(test)]
@@ -182,5 +212,43 @@ mod tests {
     #[test]
     fn test_min_jwt_secret_len_is_32() {
         assert_eq!(MIN_JWT_SECRET_LEN, 32);
+    }
+
+    /// F3: redact_sensitive 对 query-string 形式也生效
+    #[test]
+    fn test_redact_sensitive_query_string() {
+        let s = "/api/login?password=hunter2&user=alice";
+        let r = redact_sensitive(s);
+        assert!(r.contains("password=***"));
+        assert!(!r.contains("hunter2"));
+        assert!(r.contains("user=alice"));
+    }
+
+    /// F3: redact_sensitive 对 apikey 头生效
+    #[test]
+    fn test_redact_sensitive_apikey_header() {
+        let s = "X-API-Key: secret-key-abc-123";
+        let r = redact_sensitive(s);
+        assert!(r.contains("X-API-Key: ***"));
+        assert!(!r.contains("secret-key-abc-123"));
+    }
+
+    /// F3: 边界 — 仅敏感键出现，无值，不应 panic
+    #[test]
+    fn test_redact_sensitive_no_value_after_key() {
+        let s = "password=";
+        let r = redact_sensitive(s);
+        // 不 panic，内容不变
+        assert_eq!(r, "password=");
+    }
+
+    /// F3: 多敏感字段同时脱敏
+    #[test]
+    fn test_redact_sensitive_multiple_fields() {
+        let s = r#"password=foo&token=bar&user=baz"#;
+        let r = redact_sensitive(s);
+        assert!(r.contains("password=***"));
+        assert!(r.contains("token=***"));
+        assert!(r.contains("user=baz"));
     }
 }

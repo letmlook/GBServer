@@ -1,4 +1,4 @@
-use wvp_gb28181_server::jt1078::Jt1078Server;
+use gbserver::jt1078::Jt1078Server;
 
 #[tokio::test]
 async fn jt1078_init_smoke() {

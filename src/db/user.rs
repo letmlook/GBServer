@@ -3,7 +3,7 @@ use sqlx::FromRow;
 
 use super::Pool;
 
-/// wvp_user + wvp_user_role 联合查询结果（与 Java User 含 Role 一致）
+/// gb_user + gb_user_role 联合查询结果（与 Java User 含 Role 一致）
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub struct User {
     pub id: i32,
@@ -67,7 +67,7 @@ pub async fn find_by_username_password(
     let u = sqlx::query_as::<_, User>(
         r#"SELECT u.id, u.username, u.password, u.role_id, u.create_time, u.update_time, u.push_key,
                r.name AS role_name, r.authority AS role_authority
-        FROM wvp_user u JOIN wvp_user_role r ON u.role_id = r.id
+        FROM gb_user u JOIN gb_user_role r ON u.role_id = r.id
         WHERE u.username = ? AND u.password = ?"#,
     )
     .bind(username)
@@ -78,8 +78,19 @@ pub async fn find_by_username_password(
     let u = sqlx::query_as::<_, User>(
         r#"SELECT u.id, u.username, u.password, u.role_id, u.create_time, u.update_time, u.push_key,
                r.name AS role_name, r.authority AS role_authority
-        FROM wvp_user u JOIN wvp_user_role r ON u.role_id = r.id
+        FROM gb_user u JOIN gb_user_role r ON u.role_id = r.id
         WHERE u.username = $1 AND u.password = $2"#,
+    )
+    .bind(username)
+    .bind(password_md5)
+    .fetch_optional(pool)
+    .await?;
+    #[cfg(feature = "sqlite")]
+    let u = sqlx::query_as::<_, User>(
+        r#"SELECT u.id, u.username, u.password, u.role_id, u.create_time, u.update_time, u.push_key,
+               r.name AS role_name, r.authority AS role_authority
+        FROM gb_user u JOIN gb_user_role r ON u.role_id = r.id
+        WHERE u.username = ? AND u.password = ?"#,
     )
     .bind(username)
     .bind(password_md5)
@@ -93,7 +104,7 @@ pub async fn find_by_id(pool: &Pool, id: i32) -> sqlx::Result<Option<User>> {
     return sqlx::query_as::<_, User>(
         r#"SELECT u.id, u.username, u.password, u.role_id, u.create_time, u.update_time, u.push_key,
                r.name AS role_name, r.authority AS role_authority
-        FROM wvp_user u JOIN wvp_user_role r ON u.role_id = r.id WHERE u.id = ?"#,
+        FROM gb_user u JOIN gb_user_role r ON u.role_id = r.id WHERE u.id = ?"#,
     )
     .bind(id)
     .fetch_optional(pool)
@@ -102,7 +113,16 @@ pub async fn find_by_id(pool: &Pool, id: i32) -> sqlx::Result<Option<User>> {
     return sqlx::query_as::<_, User>(
         r#"SELECT u.id, u.username, u.password, u.role_id, u.create_time, u.update_time, u.push_key,
                r.name AS role_name, r.authority AS role_authority
-        FROM wvp_user u JOIN wvp_user_role r ON u.role_id = r.id WHERE u.id = $1"#,
+        FROM gb_user u JOIN gb_user_role r ON u.role_id = r.id WHERE u.id = $1"#,
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await;
+    #[cfg(feature = "sqlite")]
+    return sqlx::query_as::<_, User>(
+        r#"SELECT u.id, u.username, u.password, u.role_id, u.create_time, u.update_time, u.push_key,
+               r.name AS role_name, r.authority AS role_authority
+        FROM gb_user u JOIN gb_user_role r ON u.role_id = r.id WHERE u.id = ?"#,
     )
     .bind(id)
     .fetch_optional(pool)
@@ -114,7 +134,7 @@ pub async fn find_by_username(pool: &Pool, username: &str) -> sqlx::Result<Optio
     return sqlx::query_as::<_, User>(
         r#"SELECT u.id, u.username, u.password, u.role_id, u.create_time, u.update_time, u.push_key,
                r.name AS role_name, r.authority AS role_authority
-        FROM wvp_user u JOIN wvp_user_role r ON u.role_id = r.id WHERE u.username = ?"#,
+        FROM gb_user u JOIN gb_user_role r ON u.role_id = r.id WHERE u.username = ?"#,
     )
     .bind(username)
     .fetch_optional(pool)
@@ -123,7 +143,16 @@ pub async fn find_by_username(pool: &Pool, username: &str) -> sqlx::Result<Optio
     return sqlx::query_as::<_, User>(
         r#"SELECT u.id, u.username, u.password, u.role_id, u.create_time, u.update_time, u.push_key,
                r.name AS role_name, r.authority AS role_authority
-        FROM wvp_user u JOIN wvp_user_role r ON u.role_id = r.id WHERE u.username = $1"#,
+        FROM gb_user u JOIN gb_user_role r ON u.role_id = r.id WHERE u.username = $1"#,
+    )
+    .bind(username)
+    .fetch_optional(pool)
+    .await;
+    #[cfg(feature = "sqlite")]
+    return sqlx::query_as::<_, User>(
+        r#"SELECT u.id, u.username, u.password, u.role_id, u.create_time, u.update_time, u.push_key,
+               r.name AS role_name, r.authority AS role_authority
+        FROM gb_user u JOIN gb_user_role r ON u.role_id = r.id WHERE u.username = ?"#,
     )
     .bind(username)
     .fetch_optional(pool)
@@ -136,7 +165,7 @@ pub async fn get_users_paged(pool: &Pool, page: u32, count: u32) -> sqlx::Result
     return sqlx::query_as::<_, User>(
         r#"SELECT u.id, u.username, u.password, u.role_id, u.create_time, u.update_time, u.push_key,
                r.name AS role_name, r.authority AS role_authority
-        FROM wvp_user u JOIN wvp_user_role r ON u.role_id = r.id ORDER BY u.id LIMIT ? OFFSET ?"#,
+        FROM gb_user u JOIN gb_user_role r ON u.role_id = r.id ORDER BY u.id LIMIT ? OFFSET ?"#,
     )
     .bind(count as i64)
     .bind(offset as i64)
@@ -146,7 +175,17 @@ pub async fn get_users_paged(pool: &Pool, page: u32, count: u32) -> sqlx::Result
     return sqlx::query_as::<_, User>(
         r#"SELECT u.id, u.username, u.password, u.role_id, u.create_time, u.update_time, u.push_key,
                r.name AS role_name, r.authority AS role_authority
-        FROM wvp_user u JOIN wvp_user_role r ON u.role_id = r.id ORDER BY u.id LIMIT $1 OFFSET $2"#,
+        FROM gb_user u JOIN gb_user_role r ON u.role_id = r.id ORDER BY u.id LIMIT $1 OFFSET $2"#,
+    )
+    .bind(count as i64)
+    .bind(offset as i64)
+    .fetch_all(pool)
+    .await;
+    #[cfg(feature = "sqlite")]
+    return sqlx::query_as::<_, User>(
+        r#"SELECT u.id, u.username, u.password, u.role_id, u.create_time, u.update_time, u.push_key,
+               r.name AS role_name, r.authority AS role_authority
+        FROM gb_user u JOIN gb_user_role r ON u.role_id = r.id ORDER BY u.id LIMIT ? OFFSET ?"#,
     )
     .bind(count as i64)
     .bind(offset as i64)
@@ -158,7 +197,7 @@ pub async fn get_all_users(pool: &Pool) -> sqlx::Result<Vec<User>> {
     sqlx::query_as::<_, User>(
         r#"SELECT u.id, u.username, u.password, u.role_id, u.create_time, u.update_time, u.push_key,
                r.name AS role_name, r.authority AS role_authority
-        FROM wvp_user u JOIN wvp_user_role r ON u.role_id = r.id ORDER BY u.id"#,
+        FROM gb_user u JOIN gb_user_role r ON u.role_id = r.id ORDER BY u.id"#,
     )
     .fetch_all(pool)
     .await
@@ -174,7 +213,7 @@ pub async fn add_user(
 ) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
     let r = sqlx::query(
-        r#"INSERT INTO wvp_user (username, password, role_id, push_key, create_time, update_time)
+        r#"INSERT INTO gb_user (username, password, role_id, push_key, create_time, update_time)
         VALUES (?, ?, ?, ?, ?, ?)"#,
     )
     .bind(username)
@@ -187,8 +226,21 @@ pub async fn add_user(
     .await?;
     #[cfg(feature = "postgres")]
     let r = sqlx::query(
-        r#"INSERT INTO wvp_user (username, password, role_id, push_key, create_time, update_time)
+        r#"INSERT INTO gb_user (username, password, role_id, push_key, create_time, update_time)
         VALUES ($1, $2, $3, $4, $5, $6)"#,
+    )
+    .bind(username)
+    .bind(password_md5)
+    .bind(role_id)
+    .bind(push_key)
+    .bind(now)
+    .bind(now)
+    .execute(pool)
+    .await?;
+    #[cfg(feature = "sqlite")]
+    let r = sqlx::query(
+        r#"INSERT INTO gb_user (username, password, role_id, push_key, create_time, update_time)
+        VALUES (?, ?, ?, ?, ?, ?)"#,
     )
     .bind(username)
     .bind(password_md5)
@@ -203,12 +255,17 @@ pub async fn add_user(
 
 pub async fn delete_user(pool: &Pool, id: i32) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
-    let r = sqlx::query("DELETE FROM wvp_user WHERE id != 1 AND id = ?")
+    let r = sqlx::query("DELETE FROM gb_user WHERE id != 1 AND id = ?")
         .bind(id)
         .execute(pool)
         .await?;
     #[cfg(feature = "postgres")]
-    let r = sqlx::query("DELETE FROM wvp_user WHERE id != 1 AND id = $1")
+    let r = sqlx::query("DELETE FROM gb_user WHERE id != 1 AND id = $1")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    #[cfg(feature = "sqlite")]
+    let r = sqlx::query("DELETE FROM gb_user WHERE id != 1 AND id = ?")
         .bind(id)
         .execute(pool)
         .await?;
@@ -222,14 +279,21 @@ pub async fn change_password(
 ) -> sqlx::Result<u64> {
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     #[cfg(feature = "mysql")]
-    let r = sqlx::query("UPDATE wvp_user SET password = ?, update_time = ? WHERE id = ?")
+    let r = sqlx::query("UPDATE gb_user SET password = ?, update_time = ? WHERE id = ?")
         .bind(password_md5)
         .bind(&now)
         .bind(user_id)
         .execute(pool)
         .await?;
     #[cfg(feature = "postgres")]
-    let r = sqlx::query("UPDATE wvp_user SET password = $1, update_time = $2 WHERE id = $3")
+    let r = sqlx::query("UPDATE gb_user SET password = $1, update_time = $2 WHERE id = $3")
+        .bind(password_md5)
+        .bind(&now)
+        .bind(user_id)
+        .execute(pool)
+        .await?;
+    #[cfg(feature = "sqlite")]
+    let r = sqlx::query("UPDATE gb_user SET password = ?, update_time = ? WHERE id = ?")
         .bind(password_md5)
         .bind(&now)
         .bind(user_id)
@@ -240,13 +304,19 @@ pub async fn change_password(
 
 pub async fn change_push_key(pool: &Pool, user_id: i32, push_key: &str) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
-    let r = sqlx::query("UPDATE wvp_user SET push_key = ? WHERE id = ?")
+    let r = sqlx::query("UPDATE gb_user SET push_key = ? WHERE id = ?")
         .bind(push_key)
         .bind(user_id)
         .execute(pool)
         .await?;
     #[cfg(feature = "postgres")]
-    let r = sqlx::query("UPDATE wvp_user SET push_key = $1 WHERE id = $2")
+    let r = sqlx::query("UPDATE gb_user SET push_key = $1 WHERE id = $2")
+        .bind(push_key)
+        .bind(user_id)
+        .execute(pool)
+        .await?;
+    #[cfg(feature = "sqlite")]
+    let r = sqlx::query("UPDATE gb_user SET push_key = ? WHERE id = ?")
         .bind(push_key)
         .bind(user_id)
         .execute(pool)
@@ -255,20 +325,26 @@ pub async fn change_push_key(pool: &Pool, user_id: i32, push_key: &str) -> sqlx:
 }
 
 pub async fn count_users(pool: &Pool) -> sqlx::Result<i64> {
-    sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM wvp_user")
+    sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_user")
         .fetch_one(pool)
         .await
 }
 
 pub async fn role_exists(pool: &Pool, role_id: i32) -> sqlx::Result<bool> {
     #[cfg(feature = "mysql")]
-    let row: (i64,) = sqlx::query_as("SELECT 1 FROM wvp_user_role WHERE id = ?")
+    let row: (i64,) = sqlx::query_as("SELECT 1 FROM gb_user_role WHERE id = ?")
         .bind(role_id)
         .fetch_optional(pool)
         .await?
         .unwrap_or((0,));
     #[cfg(feature = "postgres")]
-    let row: (i64,) = sqlx::query_as("SELECT 1 FROM wvp_user_role WHERE id = $1")
+    let row: (i64,) = sqlx::query_as("SELECT 1 FROM gb_user_role WHERE id = $1")
+        .bind(role_id)
+        .fetch_optional(pool)
+        .await?
+        .unwrap_or((0,));
+    #[cfg(feature = "sqlite")]
+    let row: (i64,) = sqlx::query_as("SELECT 1 FROM gb_user_role WHERE id = ?")
         .bind(role_id)
         .fetch_optional(pool)
         .await?
@@ -280,14 +356,21 @@ pub async fn role_exists(pool: &Pool, role_id: i32) -> sqlx::Result<bool> {
 pub async fn update_user_role(pool: &Pool, user_id: i32, role_id: i32) -> sqlx::Result<u64> {
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     #[cfg(feature = "mysql")]
-    let r = sqlx::query("UPDATE wvp_user SET role_id = ?, update_time = ? WHERE id = ?")
+    let r = sqlx::query("UPDATE gb_user SET role_id = ?, update_time = ? WHERE id = ?")
         .bind(role_id)
         .bind(&now)
         .bind(user_id)
         .execute(pool)
         .await?;
     #[cfg(feature = "postgres")]
-    let r = sqlx::query("UPDATE wvp_user SET role_id = $1, update_time = $2 WHERE id = $3")
+    let r = sqlx::query("UPDATE gb_user SET role_id = $1, update_time = $2 WHERE id = $3")
+        .bind(role_id)
+        .bind(&now)
+        .bind(user_id)
+        .execute(pool)
+        .await?;
+    #[cfg(feature = "sqlite")]
+    let r = sqlx::query("UPDATE gb_user SET role_id = ?, update_time = ? WHERE id = ?")
         .bind(role_id)
         .bind(&now)
         .bind(user_id)
@@ -300,14 +383,21 @@ pub async fn update_user_role(pool: &Pool, user_id: i32, role_id: i32) -> sqlx::
 pub async fn update_username(pool: &Pool, user_id: i32, username: &str) -> sqlx::Result<u64> {
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     #[cfg(feature = "mysql")]
-    let r = sqlx::query("UPDATE wvp_user SET username = ?, update_time = ? WHERE id = ?")
+    let r = sqlx::query("UPDATE gb_user SET username = ?, update_time = ? WHERE id = ?")
         .bind(username)
         .bind(&now)
         .bind(user_id)
         .execute(pool)
         .await?;
     #[cfg(feature = "postgres")]
-    let r = sqlx::query("UPDATE wvp_user SET username = $1, update_time = $2 WHERE id = $3")
+    let r = sqlx::query("UPDATE gb_user SET username = $1, update_time = $2 WHERE id = $3")
+        .bind(username)
+        .bind(&now)
+        .bind(user_id)
+        .execute(pool)
+        .await?;
+    #[cfg(feature = "sqlite")]
+    let r = sqlx::query("UPDATE gb_user SET username = ?, update_time = ? WHERE id = ?")
         .bind(username)
         .bind(&now)
         .bind(user_id)

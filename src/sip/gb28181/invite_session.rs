@@ -249,17 +249,43 @@ impl InviteSession {
 
 pub struct InviteSessionManager {
     sessions: Arc<RwLock<HashMap<String, InviteSession>>>,
+    /// E1: 可选 StateStore，让活跃会话在多节点之间共享
+    state_store: Option<Arc<crate::state_store::StateStore>>,
 }
 
 impl InviteSessionManager {
     pub fn new() -> Self {
         Self {
             sessions: Arc::new(RwLock::new(HashMap::new())),
+            state_store: None,
+        }
+    }
+
+    /// E1: 注入 StateStore
+    pub fn set_state_store(&mut self, store: Arc<crate::state_store::StateStore>) {
+        self.state_store = Some(store);
+    }
+
+    /// E1: 把单个会话状态同步到 StateStore
+    fn sync_to_store(&self, session: &InviteSession) {
+        if let Some(ref store) = self.state_store {
+            store.set_invite_session(&session.call_id, crate::state_store::InviteSessionState {
+                call_id: session.call_id.clone(),
+                device_id: session.device_id.clone(),
+                channel_id: session.channel_id.clone(),
+                session_type: format!("{:?}", session.stream_type),
+                zlm_stream_id: session.zlm_stream_id.clone(),
+                status: format!("{:?}", session.status),
+                created_at: session.created_at,
+                last_activity: session.last_activity,
+            });
         }
     }
 
     pub async fn create(&self, session: InviteSession) -> String {
         let call_id = session.call_id.clone();
+        // E1: 同步 StateStore
+        self.sync_to_store(&session);
         self.sessions.write().await.insert(call_id.clone(), session);
         call_id
     }
@@ -275,9 +301,15 @@ impl InviteSessionManager {
     pub async fn update(&self, session: &InviteSession) {
         let mut guard = self.sessions.write().await;
         guard.insert(session.call_id.clone(), session.clone());
+        // E1: 同步 StateStore
+        self.sync_to_store(session);
     }
 
     pub async fn remove(&self, call_id: &str) -> Option<InviteSession> {
+        // E1: 同步 StateStore 删除
+        if let Some(ref store) = self.state_store {
+            store.remove_invite_session(call_id);
+        }
         self.sessions.write().await.remove(call_id)
     }
 
@@ -311,7 +343,7 @@ impl InviteSessionManager {
         let now = Utc::now();
         let mut guard = self.sessions.write().await;
         let mut removed = Vec::new();
-        
+
         guard.retain(|call_id, session| {
             let age = (now - session.last_activity).num_seconds();
             if age > max_age_secs && session.status == InviteSessionStatus::Terminated {
@@ -320,7 +352,14 @@ impl InviteSessionManager {
             }
             true
         });
-        
+
+        // E1: 同步删除 StateStore 中的过期会话
+        if let Some(ref store) = self.state_store {
+            for call_id in &removed {
+                store.remove_invite_session(call_id);
+            }
+        }
+
         removed
     }
 
@@ -329,6 +368,8 @@ impl InviteSessionManager {
         if let Some(session) = guard.get_mut(call_id) {
             session.status = status;
             session.last_activity = Utc::now();
+            // E1: 同步 StateStore
+            self.sync_to_store(session);
         }
     }
 

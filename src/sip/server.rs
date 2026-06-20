@@ -12,6 +12,7 @@ use tokio::sync::{oneshot, RwLock};
 
 use crate::cascade::CascadeRegistrar;
 use crate::config::SipConfig;
+use crate::db::{device as db_device, platform as db_platform, platform_channel as db_platform_channel, Pool};
 use crate::db::position_history as ph;
 use crate::db::{device as db_device, platform as db_platform, Pool};
 use crate::handlers::websocket::WsState;
@@ -26,11 +27,13 @@ use crate::sip::gb28181::invite::SessionStatus;
 use crate::sip::gb28181::invite_session::{
     build_invite_sdp, build_playback_sdp, InviteSessionManager, InviteSessionStatus, SdpInfo,
 };
-use crate::sip::gb28181::nat_helper::NatHelper;
+use crate::sip::gb28181::talk::{build_talk_sdp as build_audio_sdp, TalkManager, TalkStatus};
+use crate::sip::gb28181::broadcast::{BroadcastManager, BroadcastSession, BroadcastStatus};
+use crate::sip::gb28181::{DeviceManager, SessionManager, XmlParser};
 use crate::sip::gb28181::ssrc::SsrcManager;
 use crate::sip::gb28181::stream_reconnect::StreamReconnectManager;
-use crate::sip::gb28181::talk::{build_talk_sdp as build_audio_sdp, TalkManager, TalkStatus};
-use crate::sip::gb28181::{DeviceManager, SessionManager, XmlParser};
+use crate::sip::gb28181::nat_helper::NatHelper;
+use crate::sip::gb28181::cascade_forward::SendRtpManager;
 use crate::sip::transport::tcp::{TcpConnectionManager, TcpListener};
 use crate::zlm::ZlmClient;
 /// GB28181 回放控制命令
@@ -111,7 +114,7 @@ pub(crate) fn build_playback_control_xml(
     }
 }
 /// 构造 GB28181 下载 SSRC：前缀 2（实时=0 / 回放=1 / 下载=2）+
-/// 设备号前 9 位，不足 9 位右补 0；与 WVP Java 端兼容。
+/// 设备号前 9 位，不足 9 位右补 0；与 Java 参考实现兼容。
 pub(crate) fn build_download_ssrc(device_id: &str) -> String {
     let id_part = if device_id.len() >= 9 {
         &device_id[0..9]
@@ -194,6 +197,8 @@ use crate::sip::gb28181::device_commander::DeviceCommander;
 use crate::sip::gb28181::device_query::DeviceQueryManager;
 use crate::sip::gb28181::media_waiter::{MediaWaitResult, MediaWaiterManager};
 use crate::sip::gb28181::pending_request::PendingRequestManager;
+use crate::sip::gb28181::subscription_lifecycle::SubscriptionLifecycle;
+use crate::sip::gb28181::media_waiter::{MediaWaiterManager, MediaWaitResult};
 
 pub struct SipServer {
     config: Arc<SipConfig>,
@@ -201,6 +206,8 @@ pub struct SipServer {
     session_manager: Arc<SessionManager>,
     invite_session_manager: Arc<InviteSessionManager>,
     talk_manager: Arc<TalkManager>,
+    /// Phase 3.5: 语音广播会话管理（设备 → 多个客户端）
+    broadcast_manager: Arc<BroadcastManager>,
     catalog_subscription_manager: Arc<CatalogSubscriptionManager>,
     transaction_manager: Arc<TransactionManager>,
     dialog_manager: Arc<DialogManager>,
@@ -218,12 +225,17 @@ pub struct SipServer {
     cascade_registrar: Option<Arc<CascadeRegistrar>>,
     pending_request_manager: Arc<PendingRequestManager>,
     media_waiter_manager: Arc<MediaWaiterManager>,
-    device_commander: Arc<DeviceCommander>,
-    device_query_manager: Arc<DeviceQueryManager>,
+    send_rtp_manager: Arc<SendRtpManager>,
+    /// Phase 2 R6: 订阅生命周期（变活代码）— 后台续订 + R3 退避
+    subscription_lifecycle: Arc<SubscriptionLifecycle>,
+    /// Phase 2 R3: per-device 续订失败计数（dashmap for concurrent access）
+    renewal_failures: Arc<DashMap<String, u32>>,
+    /// SQLite 模式下设备数量上限；PG/MySQL 后端忽略
+    sqlite_max_devices: Option<usize>,
 }
 
 impl SipServer {
-    pub fn new(config: SipConfig, pool: Pool) -> Self {
+    pub fn new(config: SipConfig, pool: Pool, sqlite_max_devices: Option<usize>) -> Self {
         let ssrc_manager = Arc::new(SsrcManager::new(&config.device_id));
         let nat_helper = Arc::new(NatHelper::new(
             &config.ip,
@@ -245,6 +257,7 @@ impl SipServer {
             session_manager: Arc::new(SessionManager::new()),
             invite_session_manager: Arc::new(InviteSessionManager::new()),
             talk_manager: Arc::new(TalkManager::new()),
+            broadcast_manager: Arc::new(BroadcastManager::new()),
             catalog_subscription_manager: Arc::new(CatalogSubscriptionManager::new()),
             transaction_manager: Arc::new(TransactionManager::new()),
             dialog_manager: Arc::new(DialogManager::new()),
@@ -262,9 +275,45 @@ impl SipServer {
             cascade_registrar: None,
             pending_request_manager: pending_request_manager.clone(),
             media_waiter_manager: Arc::new(MediaWaiterManager::new()),
-            device_commander: Arc::new(DeviceCommander::new(pending_request_manager.clone())),
-            device_query_manager: Arc::new(DeviceQueryManager::new()),
+            send_rtp_manager: Arc::new(SendRtpManager::new()),
+            // Phase 2 R6: 激活 SubscriptionLifecycle（变活代码）
+            subscription_lifecycle: Arc::new(SubscriptionLifecycle::new()),
+            // Phase 2 R3: per-device 续订失败计数
+            renewal_failures: Arc::new(DashMap::new()),
+            // SQLite 设备数量上限（PG/MySQL 后端忽略）
+            sqlite_max_devices,
         }
+    }
+
+    /// Phase 2 R6: 暴露 subscription_lifecycle 引用供后台续订循环使用
+    pub fn subscription_lifecycle(&self) -> Arc<SubscriptionLifecycle> {
+        self.subscription_lifecycle.clone()
+    }
+
+    /// Phase 2 R3: 续订失败计数器（用于退避）
+    pub fn renewal_failures(&self) -> Arc<DashMap<String, u32>> {
+        self.renewal_failures.clone()
+    }
+
+    /// B3: 设置 SendRtpManager（让上游级联点播时复用同一个管理器）
+    pub fn set_send_rtp_manager(&mut self, manager: Arc<SendRtpManager>) {
+        self.send_rtp_manager = manager;
+    }
+
+    /// E1: 注入 StateStore 到 SendRtpManager + InviteSessionManager
+    pub fn set_state_store(&mut self, store: std::sync::Arc<crate::state_store::StateStore>) {
+        // SendRtpManager.set_state_store 需 &mut self，通过 Arc::get_mut
+        // 仅当本节点是唯一持有者时有效；多节点场景下由 CascadeRegistrar 持有
+        Arc::get_mut(&mut self.send_rtp_manager)
+            .map(|m| m.set_state_store(store.clone()));
+        // InviteSessionManager 通过 Arc::get_mut 注入
+        Arc::get_mut(&mut self.invite_session_manager)
+            .map(|m| m.set_state_store(store));
+    }
+
+    /// B3: 暴露 SendRtpManager 用于外部（cascade_service / BYE 处理）注册会话
+    pub fn send_rtp_manager(&self) -> Arc<SendRtpManager> {
+        self.send_rtp_manager.clone()
     }
 
     pub async fn set_ws_state(&mut self, ws: Arc<WsState>) {
@@ -316,16 +365,16 @@ impl SipServer {
         self.talk_manager.clone()
     }
 
-    pub fn device_commander(&self) -> Arc<DeviceCommander> {
-        self.device_commander.clone()
+    /// Phase 3.5: 公开 BroadcastManager 访问器，让 broadcast_* 走独立 manager
+    pub fn broadcast_manager(&self) -> Arc<BroadcastManager> {
+        self.broadcast_manager.clone()
     }
 
-    pub fn device_query_manager(&self) -> Arc<DeviceQueryManager> {
-        self.device_query_manager.clone()
-    }
-
-    pub fn pending_request_manager(&self) -> Arc<PendingRequestManager> {
-        self.pending_request_manager.clone()
+    /// Phase 3.1: 公开访问器，让 ZLM hook 能直接 resolve 等待器
+    /// (保留 `notify_media_ready_by_stream` async 包装作为外部 API，
+    ///  本访问器供 hook 内部用。)
+    pub fn media_waiter_manager(&self) -> Arc<MediaWaiterManager> {
+        self.media_waiter_manager.clone()
     }
 
     pub async fn start(&mut self) -> Result<()> {
@@ -407,22 +456,8 @@ impl SipServer {
             }
         });
 
-        dbg_upsert_device(
-            &self.pool,
-            &self.config.device_id,
-            "WVP Server",
-            Some("Rust"),
-            Some("GBServer"),
-            None,
-            None,
-            None,
-            None,
-            None,
-            true,
-            "zlmediakit-1".to_string(),
-        )
-        .await?;
-
+        dbg_upsert_device(&self.pool, &self.config.device_id, "GBServer", Some("Rust"), Some("GBServer"), None, None, None, None, None, true, "zlmediakit-1".to_string()).await?;
+        
         Ok(())
     }
 
@@ -460,6 +495,10 @@ impl SipServer {
         let udp_pending_invites = self.pending_invites.clone();
         let udp_pending_request = pending_request_manager.clone();
         let udp_cascade_registrar = self.cascade_registrar.clone();
+        let udp_send_rtp_manager = self.send_rtp_manager.clone();
+        let udp_subscription_lifecycle = self.subscription_lifecycle.clone();
+        let udp_renewal_failures = self.renewal_failures.clone();
+        let udp_sqlite_max_devices = self.sqlite_max_devices;
 
         tokio::spawn(async move {
             loop {
@@ -482,27 +521,12 @@ impl SipServer {
                         let pending_invites = udp_pending_invites.clone();
                         let cascade_registrar = udp_cascade_registrar.clone();
                         let pending_request_manager = udp_pending_request.clone();
+                        let send_rtp_manager = udp_send_rtp_manager.clone();
+                        let subscription_lifecycle = udp_subscription_lifecycle.clone();
+                        let renewal_failures = udp_renewal_failures.clone();
+                        let sqlite_max_devices = udp_sqlite_max_devices;
                         tokio::spawn(async move {
-                            if let Err(e) = Self::handle_packet(
-                                &data,
-                                addr,
-                                &config,
-                                &device_manager,
-                                &session_manager,
-                                &invite_session_manager,
-                                &talk_manager,
-                                &catalog_subscription_manager,
-                                &zlm_client,
-                                &pool,
-                                &socket_for_response,
-                                false,
-                                &ws_state,
-                                &pending_request_manager,
-                                &pending_invites,
-                                &cascade_registrar,
-                            )
-                            .await
-                            {
+                            if let Err(e) = Self::handle_packet(&data, addr, &config, &device_manager, &session_manager, &invite_session_manager, &talk_manager, &catalog_subscription_manager, &zlm_client, &pool, &socket_for_response, false, &ws_state, &pending_request_manager, &pending_invites, &cascade_registrar, &send_rtp_manager, &Some(subscription_lifecycle), &renewal_failures, sqlite_max_devices).await {
                                 tracing::error!("SIP handler error: {}", e);
                             }
                         });
@@ -525,6 +549,8 @@ impl SipServer {
             let tcp_pool = pool.clone();
             let tcp_conn_mgr = tcp_connection_manager.clone();
             let tcp_pending_request = pending_request_manager.clone();
+            let tcp_send_rtp_manager = self.send_rtp_manager.clone();
+            let tcp_sqlite_max_devices = self.sqlite_max_devices;
 
             tokio::spawn(async move {
                 loop {
@@ -542,24 +568,13 @@ impl SipServer {
                             let pool = tcp_pool.clone();
                             let conn_manager = tcp_conn_mgr.clone();
                             let pending_request_manager = tcp_pending_request.clone();
+                            let send_rtp_manager = tcp_send_rtp_manager.clone();
+                            let sqlite_max_devices = tcp_sqlite_max_devices;
 
                             conn_manager.add_connection(addr, stream).await;
 
                             tokio::spawn(async move {
-                                Self::handle_tcp_connection(
-                                    addr,
-                                    &config,
-                                    &device_manager,
-                                    &session_manager,
-                                    &invite_session_manager,
-                                    &talk_manager,
-                                    &catalog_subscription_manager,
-                                    &zlm_client,
-                                    &pool,
-                                    &conn_manager,
-                                    &pending_request_manager,
-                                )
-                                .await;
+                                Self::handle_tcp_connection(addr, &config, &device_manager, &session_manager, &invite_session_manager, &talk_manager, &catalog_subscription_manager, &zlm_client, &pool, &conn_manager, &pending_request_manager, &send_rtp_manager, sqlite_max_devices).await;
                             });
                         }
                         Err(e) => {
@@ -570,91 +585,113 @@ impl SipServer {
             });
         }
 
-        let renewal_pool = pool.clone();
+        // Phase 2 R6 + R3: 合并 Catalog / MobilePosition 续订循环为单一
+// subscription_renewal_loop，由 SubscriptionLifecycle::get_needing_renew 驱动，
+// 带 per-device failure_count 退避（>5 次则跳过 5 分钟）。
+let renewal_pool = pool.clone();
         let renewal_catalog_manager = catalog_subscription_manager.clone();
         let renewal_device_manager = device_manager.clone();
         let renewal_config = config.clone();
         let renewal_socket = socket.clone();
+        let renewal_lifecycle = self.subscription_lifecycle.clone();
+        let renewal_failures = self.renewal_failures.clone();
 
         tokio::spawn(async move {
             loop {
-                tokio::time::sleep(Duration::from_secs(60)).await;
+                tokio::time::sleep(Duration::from_secs(30)).await;
 
-                match db_device::get_devices_for_catalog_renewal(&renewal_pool).await {
-                    Ok(devices) => {
-                        for (device_id, cycle) in devices {
-                            let subs = renewal_catalog_manager.get_by_device(&device_id).await;
-                            let needs_renewal = subs.iter().any(|s| {
-                                let elapsed = (Utc::now() - s.created_at).num_seconds() as u32;
-                                let remaining = s.expires.saturating_sub(elapsed);
-                                remaining < 30
-                            });
-
-                            if needs_renewal {
-                                if let Some(device) = renewal_device_manager.get(&device_id).await {
-                                    if device.online {
-                                        tracing::info!(
-                                            "Renewing catalog subscription for device {}",
-                                            device_id
-                                        );
-                                        let _ = send_subscribe_internal(
-                                            &device_id,
-                                            "Catalog",
-                                            cycle as u32,
-                                            &renewal_config,
-                                            &renewal_device_manager,
-                                            &renewal_catalog_manager,
-                                            &renewal_socket,
-                                        )
-                                        .await;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        tracing::error!("Failed to get devices for catalog renewal: {}", e);
+                // 1. 先从 DB 加载需要续订的设备（保持与原 Catalog/MobilePosition 路径一致）
+                let mut candidates: Vec<(String, String, u32)> = Vec::new();
+                if let Ok(devices) = db_device::get_devices_for_catalog_renewal(&renewal_pool).await {
+                    for (device_id, cycle) in devices {
+                        candidates.push((device_id, "Catalog".to_string(), cycle as u32));
                     }
                 }
-            }
-        });
-
-        let mobile_pool = pool.clone();
-        let mobile_config = config.clone();
-        let mobile_device_manager = device_manager.clone();
-        let mobile_socket = socket.clone();
-
-        tokio::spawn(async move {
-            loop {
-                tokio::time::sleep(Duration::from_secs(60)).await;
-
-                match db_device::get_devices_for_mobile_position_renewal(&mobile_pool).await {
-                    Ok(devices) => {
-                        for (device_id, cycle) in devices {
-                            if let Some(device) = mobile_device_manager.get(&device_id).await {
-                                if device.online {
-                                    tracing::info!(
-                                        "Renewing mobile position subscription for device {}",
-                                        device_id
-                                    );
-                                    let _ = send_subscribe_internal(
-                                        &device_id,
-                                        "MobilePosition",
-                                        cycle as u32,
-                                        &mobile_config,
-                                        &mobile_device_manager,
-                                        &Arc::new(CatalogSubscriptionManager::new()),
-                                        &mobile_socket,
-                                    )
-                                    .await;
-                                }
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        tracing::error!("Failed to get devices for mobile position renewal: {}", e);
+                if let Ok(devices) = db_device::get_devices_for_mobile_position_renewal(&renewal_pool).await {
+                    for (device_id, cycle) in devices {
+                        candidates.push((device_id, "MobilePosition".to_string(), cycle as u32));
                     }
                 }
+
+                // 2. 把 candidate 注册到 SubscriptionLifecycle（如尚未注册）
+                for (device_id, event, cycle) in &candidates {
+                    let sub_type = match event.as_str() {
+                        "Catalog" => Some(crate::sip::gb28181::SubscriptionType::Catalog),
+                        "MobilePosition" => Some(crate::sip::gb28181::SubscriptionType::MobilePosition),
+                        _ => None,
+                    };
+                    if let Some(st) = sub_type {
+                        let key = format!("{}_{}", device_id, st.as_str());
+                        // 第一次进入续订：注册
+                        if !renewal_lifecycle.get_for_device(device_id).iter().any(|s| s.sub_type == st) {
+                            renewal_lifecycle.register(device_id, st, &key, *cycle);
+                        }
+                    }
+                }
+
+                // 3. 用 SubscriptionLifecycle::get_needing_renew 取到期列表
+                let needing = renewal_lifecycle.get_needing_renew();
+                for session in needing {
+                    let key = format!("{}_{}", session.device_id, session.sub_type.as_str());
+
+                    // R3 退避：失败 ≥ 5 次则跳过 5 分钟
+                    let fails = renewal_failures.get(&key).map(|v| *v).unwrap_or(0);
+                    if fails >= 5 {
+                        tracing::warn!(
+                            "Subscription {} exceeded failure threshold ({}), skip renewal for 5min",
+                            key, fails
+                        );
+                        continue;
+                    }
+
+                    let event_name = match session.sub_type {
+                        crate::sip::gb28181::SubscriptionType::Catalog => "Catalog",
+                        crate::sip::gb28181::SubscriptionType::MobilePosition => "MobilePosition",
+                        crate::sip::gb28181::SubscriptionType::Alarm => "Alarm",
+                        crate::sip::gb28181::SubscriptionType::Keepalive => "Keepalive",
+                    };
+                    let expires = (session.expires_at - Utc::now().timestamp()).max(30) as u32;
+
+                    // 检查设备在线
+                    if let Some(device) = renewal_device_manager.get(&session.device_id).await {
+                        if !device.online {
+                            *renewal_failures.entry(key.clone()).or_insert(0) += 1;
+                            continue;
+                        }
+                    } else {
+                        *renewal_failures.entry(key.clone()).or_insert(0) += 1;
+                        continue;
+                    }
+
+                    let result = send_subscribe_internal(
+                        &session.device_id,
+                        event_name,
+                        expires,
+                        &renewal_config,
+                        &renewal_device_manager,
+                        &renewal_catalog_manager,
+                        &renewal_socket,
+                    ).await;
+
+                    match result {
+                        Ok(_) => {
+                            // 成功：重置失败计数
+                            renewal_failures.remove(&key);
+                        }
+                        Err(e) => {
+                            // 失败：递增计数
+                            let mut new_count = renewal_failures.entry(key.clone()).or_insert(0);
+                            *new_count += 1;
+                            tracing::warn!(
+                                "Renewal failed for {}: {} (failures={})",
+                                key, e, *new_count
+                            );
+                        }
+                    }
+                }
+
+                // 4. 清理过期订阅
+                let _ = renewal_lifecycle.cleanup_expired();
             }
         });
 
@@ -822,6 +859,8 @@ impl SipServer {
         pool: &Pool,
         conn_manager: &TcpConnectionManager,
         pending_request_manager: &Arc<PendingRequestManager>,
+        send_rtp_manager: &Arc<SendRtpManager>,
+        sqlite_max_devices: Option<usize>,
     ) {
         // 创建一个虚拟 UDP socket 仅用于传递给 handle_packet's 接口
         // 实际回复通过 TcpConnectionManager.send_to 进行
@@ -864,9 +903,9 @@ impl SipServer {
                                 &pool,
                                 conn_manager.clone(),
                                 pending_request_manager,
-                            )
-                            .await
-                            {
+                                send_rtp_manager,
+                                sqlite_max_devices,
+                            ).await {
                                 tracing::error!("TCP SIP handler error: {}", e);
                             }
                         }
@@ -899,6 +938,8 @@ impl SipServer {
         pool: &Pool,
         conn_manager: TcpConnectionManager,
         pending_request_manager: &Arc<PendingRequestManager>,
+        send_rtp_manager: &Arc<SendRtpManager>,
+        sqlite_max_devices: Option<usize>,
     ) -> Result<()> {
         let msg = Parser::parse(data)?;
         match msg {
@@ -950,18 +991,12 @@ impl SipServer {
                     &dummy_arc,
                     &None,
                     pending_request_manager,
-                )
-                .await
+                    send_rtp_manager,
+                    sqlite_max_devices,
+                ).await
             }
             SipMessage::Response(resp) => {
-                Self::handle_response(
-                    resp,
-                    session_manager,
-                    &Arc::new(DashMap::new()),
-                    &None,
-                    pending_request_manager,
-                )
-                .await
+                Self::handle_response(resp, session_manager, &Arc::new(DashMap::new()), &None, pending_request_manager, send_rtp_manager, &None, &Arc::new(DashMap::new())).await
             }
         }
     }
@@ -983,6 +1018,10 @@ impl SipServer {
         pending_request_manager: &Arc<PendingRequestManager>,
         pending_invites: &Arc<DashMap<String, oneshot::Sender<String>>>,
         cascade_registrar: &Option<Arc<CascadeRegistrar>>,
+        send_rtp_manager: &Arc<SendRtpManager>,
+        subscription_lifecycle: &Option<Arc<crate::sip::gb28181::subscription_lifecycle::SubscriptionLifecycle>>,
+        renewal_failures: &Arc<DashMap<String, u32>>,
+        sqlite_max_devices: Option<usize>,
     ) -> Result<()> {
         let msg = Parser::parse(data)?;
         match msg {
@@ -1001,8 +1040,9 @@ impl SipServer {
                     socket,
                     ws_state,
                     pending_request_manager,
-                )
-                .await
+                    send_rtp_manager,
+                    sqlite_max_devices,
+                ).await
             }
             SipMessage::Response(resp) => {
                 Self::handle_response(
@@ -1011,8 +1051,10 @@ impl SipServer {
                     pending_invites,
                     cascade_registrar,
                     pending_request_manager,
-                )
-                .await
+                    send_rtp_manager,
+                    subscription_lifecycle,
+                    renewal_failures,
+                ).await
             }
         }
     }
@@ -1031,21 +1073,13 @@ impl SipServer {
         socket: &Arc<UdpSocket>,
         ws_state: &Option<Arc<WsState>>,
         pending_request_manager: &Arc<PendingRequestManager>,
+        send_rtp_manager: &Arc<SendRtpManager>,
+        sqlite_max_devices: Option<usize>,
     ) -> Result<()> {
         let method = req.method;
         match method {
             SipMethod::Register => {
-                Self::handle_register(
-                    req,
-                    addr,
-                    config,
-                    device_manager,
-                    pool,
-                    socket,
-                    ws_state,
-                    pending_request_manager,
-                )
-                .await
+                Self::handle_register(req, addr, config, device_manager, pool, socket, ws_state, pending_request_manager, sqlite_max_devices).await
             }
             SipMethod::Message => {
                 Self::handle_message(
@@ -1062,33 +1096,19 @@ impl SipServer {
                 .await
             }
             SipMethod::Invite => {
-                Self::handle_invite(
-                    req,
-                    addr,
-                    config,
-                    session_manager,
-                    invite_session_manager,
-                    talk_manager,
-                    zlm_client,
-                    pool,
-                    socket,
-                )
-                .await
+                Self::handle_invite(req, addr, config, session_manager, invite_session_manager, talk_manager, zlm_client, pool, socket, send_rtp_manager).await
             }
             SipMethod::Ack => {
                 Self::handle_ack(req, session_manager, invite_session_manager, talk_manager).await
             }
             SipMethod::Bye => {
-                Self::handle_bye(
-                    req,
-                    session_manager,
-                    invite_session_manager,
-                    talk_manager,
-                    zlm_client,
-                    socket,
-                    addr,
-                )
-                .await
+                Self::handle_bye(req, session_manager, invite_session_manager, talk_manager, zlm_client, socket, addr, send_rtp_manager).await
+            }
+            SipMethod::Options => {
+                Self::handle_options(req, addr, config, socket).await
+            }
+            SipMethod::Info => {
+                Self::handle_info(req, addr, config, pool, socket).await
             }
             SipMethod::Options => Self::handle_options(req, addr, config, socket).await,
             SipMethod::Info => Self::handle_info(req, addr, config, pool, socket).await,
@@ -1142,6 +1162,7 @@ impl SipServer {
         socket: &Arc<UdpSocket>,
         ws_state: &Option<Arc<WsState>>,
         _pending_request_manager: &Arc<PendingRequestManager>,
+        sqlite_max_devices: Option<usize>,
     ) -> Result<()> {
         let from = req.header("from").cloned().unwrap_or_default();
         let to = req.header("to").cloned().unwrap_or_default();
@@ -1231,23 +1252,25 @@ impl SipServer {
             }
             tracing::info!("Device unregistered: {}", device_id);
         } else {
-            let ip_str = addr.ip().to_string();
-            db_device::upsert_device(
+            // SQLite 模式下检查设备数量上限
+            #[cfg(feature = "sqlite")]
+            if let Err(e) = db_device::check_sqlite_device_limit(
                 pool,
                 &device_id,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                Some(&ip_str),
-                Some(addr.port() as i32),
-                true,
-                Some("zlmediakit-1"),
-                &now,
-            )
-            .await?;
+                sqlite_max_devices,
+            ).await {
+                tracing::warn!("REGISTER rejected: {}", e);
+                let response = Parser::generate_response(503, "Service Unavailable", &[
+                    ("Via", &via), ("From", &from), ("To", &to),
+                    ("Call-ID", &call_id), ("CSeq", &cseq),
+                ], None);
+                Self::send_response(socket, addr, &response).await?;
+                return Ok(());
+            }
+
+            let ip_str = addr.ip().to_string();
+            db_device::upsert_device(pool, &device_id, None, None, None, None, None, None,
+                Some(&ip_str), Some(addr.port() as i32), true, Some("zlmediakit-1"), &now).await?;
             device_manager.register(&device_id, addr).await;
             if let Some(ref ws) = ws_state {
                 ws.broadcast(
@@ -1343,7 +1366,7 @@ impl SipServer {
             tracing::debug!("MESSAGE from {} - CmdType: {:?}", device_id, cmd_type);
 
             // B2: detect upstream platform queries — when an enabled platform (registered
-            // in wvp_platform by device_gb_id) sends a Catalog/Info/Status query that
+            // in gb_platform by device_gb_id) sends a Catalog/Info/Status query that
             // targets our local GB-ID, route to upstream handlers that respond with our
             // own catalog/info/status instead of looking up the platform as a device.
             let upstream_platform = db_platform::get_by_device_gb_id(pool, &device_id)
@@ -1396,6 +1419,12 @@ impl SipServer {
                             socket,
                         )
                         .await;
+                    }
+                    Some("RecordInfo") => {
+                        return Self::handle_record_info_for_platform(
+                            body, &config.device_id, &sn, addr, &from, &to,
+                            &via, &call_id, &cseq, socket, zlm_client,
+                        ).await;
                     }
                     _ => {} // fall through to existing routing
                 }
@@ -1510,6 +1539,7 @@ impl SipServer {
         zlm_client: &Option<Arc<ZlmClient>>,
         _pool: &Pool,
         socket: &Arc<UdpSocket>,
+        send_rtp_manager: &Arc<SendRtpManager>,
     ) -> Result<()> {
         let from = req.header("from").cloned().unwrap_or_default();
         let to = req.header("to").cloned().unwrap_or_default();
@@ -1736,11 +1766,47 @@ impl SipServer {
             invite_session_manager.create(invite_session).await;
         }
 
-        tracing::info!(
-            "INVITE 200 OK sent - stream: {}, port: {}",
-            stream_type,
-            media_port
-        );
+        // B3: 若本通道存在级联 SendRtp 会话（上级平台点播本级），则触发 ZLM startSendRtp
+        // 把本级收到的设备 RTP 转发到上级 IP:port。
+        if let (Some(zlm), Some(stream_key)) = (zlm_client.as_ref(), zlm_stream_key.as_ref()) {
+            let cascade_sessions = send_rtp_manager.get_by_channel(&channel_id);
+            for session in cascade_sessions {
+                let channel_id_for_log = channel_id.clone();
+                tracing::info!(
+                    "B3 cascade startSendRtp: channel={} -> upstream={}:{} ssrc={} stream={}",
+                    channel_id_for_log, session.upstream_host, session.upstream_port,
+                    session.upstream_ssrc, stream_key,
+                );
+                let rtp_app = "rtp".to_string();
+                let stream_id = stream_key.clone();
+                let ssrc = session.upstream_ssrc.clone();
+                let dst_url = format!("rtp://{}:{}", session.upstream_host, session.upstream_port);
+                let dst_port = session.upstream_port;
+                let upstream_host = session.upstream_host.clone();
+                let upstream_port = session.upstream_port;
+                let zlm_clone = zlm.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = zlm_clone.start_send_rtp(
+                        "__defaultVhost__",
+                        &rtp_app,
+                        &stream_id,
+                        &ssrc,
+                        &dst_url,
+                        dst_port,
+                        true, // is_udp
+                        Some(0),
+                        false, // use_ps
+                    ).await {
+                        tracing::error!(
+                            "B3 startSendRtp failed for channel {} -> {}:{} : {}",
+                            channel_id_for_log, upstream_host, upstream_port, e,
+                        );
+                    }
+                });
+            }
+        }
+
+        tracing::info!("INVITE 200 OK sent - stream: {}, port: {}", stream_type, media_port);
         Ok(())
     }
 
@@ -1940,6 +2006,7 @@ impl SipServer {
         zlm_client: &Option<Arc<ZlmClient>>,
         socket: &Arc<UdpSocket>,
         addr: SocketAddr,
+        send_rtp_manager: &Arc<SendRtpManager>,
     ) -> Result<()> {
         let call_id = req.call_id().cloned().unwrap_or_default();
         let from = req.header("from").cloned().unwrap_or_default();
@@ -1975,20 +2042,35 @@ impl SipServer {
             talk_manager.update(&session).await;
         }
 
+        // B3: 上级 BYE → 关闭 SendRtp 会话 + ZLM stopSendRtp
+        if let Some(session) = send_rtp_manager.get(&call_id) {
+            if session.active {
+                if let Some(zlm) = zlm_client.as_ref() {
+                    let channel_id = session.channel_id.clone();
+                    let zlm_clone = zlm.clone();
+                    let ssrc = session.upstream_ssrc.clone();
+                    tokio::spawn(async move {
+                        let _ = zlm_clone.stop_send_rtp("__defaultVhost__", "rtp", &ssrc).await;
+                        tracing::info!("B3 cascade BYE -> ZLM stopSendRtp for channel={}", channel_id);
+                    });
+                }
+                send_rtp_manager.close(&call_id);
+                tracing::info!(
+                    "B3 cascade BYE: closed SendRtp session for platform={} channel={}",
+                    session.platform_id, session.channel_id
+                );
+            }
+        }
+
         session_manager.remove(&call_id).await;
 
-        let response = Parser::generate_response(
-            200,
-            "OK",
-            &[
-                ("Via", &via),
-                ("From", &from),
-                ("To", &to),
-                ("Call-ID", &call_id),
-                ("CSeq", &cseq),
-            ],
-            None,
-        );
+        let response = Parser::generate_response(200, "OK", &[
+            ("Via", &via),
+            ("From", &from),
+            ("To", &to),
+            ("Call-ID", &call_id),
+            ("CSeq", &cseq),
+        ], None);
 
         Self::send_response(socket, addr, &response).await?;
         tracing::info!("BYE received - CallID: {} - Session terminated", call_id);
@@ -2356,12 +2438,34 @@ impl SipServer {
                     let device_id_for_catalog = XmlParser::get_device_id(body)
                         .unwrap_or_else(|| Self::extract_device_id(&from).unwrap_or_default());
                     let (sum_num, channels) = XmlParser::parse_catalog_channels(body);
-                    tracing::info!(
-                        "Catalog NOTIFY from {}: {} channels (SumNum={:?})",
-                        device_id_for_catalog,
-                        channels.len(),
-                        sum_num
-                    );
+                    tracing::info!("Catalog NOTIFY from {}: {} channels (SumNum={:?})",
+                        device_id_for_catalog, channels.len(), sum_num);
+
+                    // B2: 检测上级平台 NOTIFY — 若 device_id_for_catalog 是已注册的上级平台
+                    // 的 device_gb_id，则把通道列表落库到 gb_platform_channel。
+                    let upstream_platform =
+                        db_platform::get_by_device_gb_id(pool, &device_id_for_catalog)
+                            .await
+                            .ok()
+                            .flatten();
+                    if let Some(platform) = upstream_platform.as_ref() {
+                        let platform_id = platform.id as i64;
+                        let channel_ids: Vec<String> = channels.iter()
+                            .map(|c| c.device_id.clone())
+                            .collect();
+                        match db_platform_channel::batch_add_channels(
+                            pool, platform_id, &channel_ids,
+                        ).await {
+                            Ok(n) => tracing::info!(
+                                "B2: 上级平台 {} Catalog → 落库 gb_platform_channel {} 条",
+                                device_id_for_catalog, n,
+                            ),
+                            Err(e) => tracing::warn!(
+                                "B2: 落库 gb_platform_channel 失败 platform={}: {}",
+                                device_id_for_catalog, e,
+                            ),
+                        }
+                    }
 
                     for ch in &channels {
                         let status = if ch.status == "ON" || ch.status == "online" {
@@ -2503,6 +2607,9 @@ impl SipServer {
         pending_invites: &Arc<DashMap<String, oneshot::Sender<String>>>,
         cascade_registrar: &Option<Arc<CascadeRegistrar>>,
         pending_request_manager: &Arc<PendingRequestManager>,
+        send_rtp_manager: &Arc<SendRtpManager>,
+        subscription_lifecycle: &Option<Arc<crate::sip::gb28181::subscription_lifecycle::SubscriptionLifecycle>>,
+        renewal_failures: &Arc<DashMap<String, u32>>,
     ) -> Result<()> {
         let call_id = resp.headers.get("call-id").cloned().unwrap_or_default();
         let cseq = resp.headers.get("cseq").cloned().unwrap_or_default();
@@ -2581,6 +2688,30 @@ impl SipServer {
                 }
             } else if cseq.contains("BYE") {
                 session_manager.remove(&call_id).await;
+            } else if cseq.contains("SUBSCRIBE") {
+                // Phase 2.3: SUBSCRIBE 200 响应 → 通知 SubscriptionLifecycle 续期
+                let expires_header = resp.headers.get("expires")
+                    .and_then(|v| v.parse::<u32>().ok())
+                    .unwrap_or(3600);
+                // 从 call_id 提取 device_id 和 sub_type
+                if let Some(device_id) = call_id.strip_prefix("sub_").and_then(|s| s.split('_').next()) {
+                    let event = resp.headers.get("event").cloned().unwrap_or_default();
+                    if let Some(sub_type) = match event.as_str() {
+                        "Catalog" => Some(crate::sip::gb28181::SubscriptionType::Catalog),
+                        "MobilePosition" => Some(crate::sip::gb28181::SubscriptionType::MobilePosition),
+                        "Alarm" => Some(crate::sip::gb28181::SubscriptionType::Alarm),
+                        _ => None,
+                    } {
+                        if let Some(lifecycle) = subscription_lifecycle {
+                            lifecycle.renew(device_id, sub_type, expires_header);
+                        }
+                        renewal_failures.remove(&format!("{}_{}", device_id, sub_type.as_str()));
+                        tracing::debug!(
+                            "SUBSCRIBE renewed: device={} event={} expires={}s",
+                            device_id, event, expires_header
+                        );
+                    }
+                }
             }
         } else if resp.status_code() == 487 {
             session_manager.remove(&call_id).await;
@@ -3621,7 +3752,7 @@ f=v/1/96/1/2/1/1/0
             ("Contact", &contact),
             ("Expires", &expires_header),
             ("Max-Forwards", "70"),
-            ("User-Agent", "WVP-GB28181-Rust"),
+            ("User-Agent", "GBServer-GB28181-Rust"),
             ("Event", event),
             ("Accept", "Application/MANSCDP+xml"),
             ("Content-Type", "Application/MANSCDP+xml"),
@@ -3651,12 +3782,19 @@ f=v/1/96/1/2/1/1/0
                 .await;
         }
 
-        tracing::info!(
-            "Sent SUBSCRIBE {} to device {} at {}",
-            event,
-            device_id,
-            device_addr
-        );
+        // Phase 2 R6: 注册到 SubscriptionLifecycle（变活代码，让后台 get_needing_renew 能找到）
+        if let Some(sub_type) = match event {
+            "Catalog" => Some(crate::sip::gb28181::SubscriptionType::Catalog),
+            "MobilePosition" => Some(crate::sip::gb28181::SubscriptionType::MobilePosition),
+            "Alarm" => Some(crate::sip::gb28181::SubscriptionType::Alarm),
+            _ => None,
+        } {
+            self.subscription_lifecycle.register(device_id, sub_type, &call_id, expires);
+            // Phase 2 R3: 订阅成功 → 重置失败计数
+            self.renewal_failures.remove(&format!("{}_{}", device_id, sub_type.as_str()));
+        }
+
+        tracing::info!("Sent SUBSCRIBE {} to device {} at {}", event, device_id, device_addr);
         Ok(())
     }
 
@@ -3799,21 +3937,152 @@ f=v/1/96/1/2/1/1/0
         let message = Parser::generate_request("BYE", &uri, &headers, None);
 
         socket.send_to(message.as_bytes(), device_addr).await?;
-        tracing::info!(
-            "Sent TALK BYE to device {} channel {}",
-            device_id,
-            channel_id
-        );
-
-        self.talk_manager
-            .update_status(call_id, TalkStatus::Terminating)
-            .await;
+        tracing::info!("Sent TALK BYE to device {} channel {}", device_id, channel_id);
+        
+        self.talk_manager.update_status(call_id, TalkStatus::Terminating).await;
 
         if let Some(ref stream_id) = session.zlm_stream_id {
             if let Some(ref zlm) = self.zlm_client {
                 let _ = zlm.close_rtp_server(stream_id).await;
             }
         }
+
+        Ok(())
+    }
+
+    /// Phase 3.5: 发送语音广播 INVITE（设备 → 多个客户端方向，SSRC 前缀 4）
+    ///
+    /// 与 `send_talk_invite` 区别：talk 是客户端 → 设备（一对一），
+    /// broadcast 是设备 → 客户端（一对多），SSRC 前缀 4。
+    /// 设备推流到 ZLM RTP server（端口由 ZLM 自动分配避免与 talk 9100/9101 冲突）。
+    pub async fn send_broadcast_invite(
+        &self,
+        device_id: &str,
+        channel_id: &str,
+    ) -> Result<String> {
+        // 1. 提前开 ZLM RTP server，让设备知道推到哪个端口
+        let stream_id = format!("broadcast_{}_{}", device_id, channel_id);
+        let mut session = BroadcastSession::new(
+            &format!("bc_{}_{}", device_id, chrono::Utc::now().timestamp_millis()),
+            device_id,
+            channel_id,
+        );
+        session.set_zlm_stream(&stream_id);
+
+        if let Some(ref zlm) = self.zlm_client {
+            let rtp_req = crate::zlm::OpenRtpServerRequest {
+                secret: zlm.secret.clone(),
+                stream_id: stream_id.clone(),
+                port: Some(0), // Phase 3.5 R4 缓解：让 ZLM 自动分配端口避免与 talk 冲突
+                use_tcp: Some(false),
+                rtp_type: Some(0),
+                recv_port: None,
+            };
+            match zlm.open_rtp_server(&rtp_req).await {
+                Ok(rtp_server) => {
+                    session.set_local_port(rtp_server.port);
+                    tracing::info!("ZLM RTP server opened for broadcast on port {}", rtp_server.port);
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to open ZLM RTP server for broadcast: {}", e);
+                }
+            }
+        }
+
+        // 2. 发送 SIP INVITE（SSRC 第 4 段前缀 4 表示 Audio/Broadcast）
+        let socket = self.socket.read().await;
+        let socket = socket.as_ref().ok_or_else(|| anyhow::anyhow!("Socket not initialized"))?;
+        let device_addr = self.device_manager.get_address(device_id).await
+            .ok_or_else(|| anyhow::anyhow!("Device {} not registered", device_id))?;
+        let call_id = session.call_id.clone();
+        let branch = generate_branch();
+        let cseq = "INVITE 1".to_string();
+
+        // SSRC 前缀 4 = Audio/Broadcast (与 WVP Java 一致)
+        let ssrc = format!("4{:0>9}0", &device_id[..device_id.len().min(9)]);
+
+        let via = format!("SIP/2.0/UDP {}:{};branch={};rport",
+            self.config.ip, self.config.port, branch);
+        let from = format!("<sip:{}@{}:{}>;tag={}",
+            self.config.device_id, self.config.ip, self.config.port, generate_tag());
+        let to = format!("<sip:{}@{}:{}>", channel_id, device_addr.ip(), device_addr.port());
+        let contact = format!("<sip:{}@{}:{}>", self.config.device_id, self.config.ip, self.config.port);
+        // Subject: serverGbId:ssrc,deviceGbId:4
+        let subject = format!("{}:{},{}:4", self.config.device_id, ssrc, channel_id);
+
+        // SDP s=Play（与 WVP 兼容）；port 用 0（实际媒体由 ZLM RTP server 收）
+        let sdp = build_invite_sdp(&self.config.ip, session.local_port, "Play", Some(&ssrc));
+
+        let headers: Vec<(&str, &str)> = vec![
+            ("Via", &via),
+            ("From", &from),
+            ("To", &to),
+            ("Call-ID", &call_id),
+            ("CSeq", &cseq),
+            ("Contact", &contact),
+            ("Max-Forwards", "70"),
+            ("User-Agent", "GBServer/1.0"),
+            ("Subject", &subject),
+            ("Content-Type", "application/sdp"),
+        ];
+
+        let uri = format!("sip:{}@{}:{}", channel_id, device_addr.ip(), device_addr.port());
+        let message = Parser::generate_request("INVITE", &uri, &headers, Some(&sdp));
+        socket.send_to(message.as_bytes(), device_addr).await?;
+        drop(socket);
+        tracing::info!("Sent BROADCAST INVITE to device={} channel={} call_id={}",
+            device_id, channel_id, call_id);
+
+        // 3. 注册会话到 BroadcastManager
+        self.broadcast_manager.create(session.clone()).await;
+        self.broadcast_manager.activate(&call_id).await;
+
+        Ok(call_id)
+    }
+
+    /// Phase 3.5: 发送语音广播 BYE（走 BroadcastManager，与 talk BYE 互不影响）
+    pub async fn send_broadcast_bye(&self, device_id: &str, channel_id: &str) -> Result<()> {
+        let session = self.broadcast_manager
+            .get_by_device_channel(device_id, channel_id).await
+            .ok_or_else(|| anyhow::anyhow!("No active broadcast session for {}/{}", device_id, channel_id))?;
+
+        let socket = self.socket.read().await;
+        let socket = socket.as_ref().ok_or_else(|| anyhow::anyhow!("Socket not initialized"))?;
+        let device_addr = self.device_manager.get_address(device_id).await
+            .ok_or_else(|| anyhow::anyhow!("Device {} not registered", device_id))?;
+        let call_id = &session.call_id;
+        let branch = generate_branch();
+        let cseq = "BYE 1".to_string();
+
+        let via = format!("SIP/2.0/UDP {}:{};branch={};rport",
+            self.config.ip, self.config.port, branch);
+        let from = format!("<sip:{}@{}:{}>;tag={}",
+            self.config.device_id, self.config.ip, self.config.port, generate_tag());
+        let to = format!("<sip:{}@{}:{}>", channel_id, device_addr.ip(), device_addr.port());
+
+        let headers: Vec<(&str, &str)> = vec![
+            ("Via", &via),
+            ("From", &from),
+            ("To", &to),
+            ("Call-ID", call_id),
+            ("CSeq", &cseq),
+            ("Max-Forwards", "70"),
+        ];
+
+        let uri = format!("sip:{}@{}:{}", channel_id, device_addr.ip(), device_addr.port());
+        let message = Parser::generate_request("BYE", &uri, &headers, None);
+        socket.send_to(message.as_bytes(), device_addr).await?;
+        tracing::info!("Sent BROADCAST BYE to device {} channel {}", device_id, channel_id);
+
+        self.broadcast_manager.start_terminating(call_id).await;
+
+        if let Some(ref stream_id) = session.zlm_stream_id {
+            if let Some(ref zlm) = self.zlm_client {
+                let _ = zlm.close_rtp_server(stream_id).await;
+            }
+        }
+        self.broadcast_manager.terminate(call_id).await;
+        self.broadcast_manager.remove(call_id).await;
 
         Ok(())
     }
@@ -4022,15 +4291,114 @@ f=v/1/96/1/2/1/1/0
         let message = Parser::generate_request("MESSAGE", &uri, &headers, Some(&body));
 
         socket.send_to(message.as_bytes(), device_addr).await?;
-        tracing::info!(
-            "Sent RecordInfo query to device {} channel {} [{}-{}]",
-            device_id,
-            channel_id,
-            start_time,
-            end_time
-        );
+        tracing::info!("Sent RecordInfo query to device {} channel {} [{}-{}]", device_id, channel_id, start_time, end_time);
 
         Ok(call_id)
+    }
+
+    /// Phase 3.3: 发送 RecordInfo 查询并等待多包响应，返回聚合后的 items
+    ///
+    /// 与 fire-and-forget 的 `send_record_info_query` 不同：
+    /// 1. 使用 `register_record_info_multi_packet` 注册多包缓冲
+    /// 2. await 累积完成的 XML（最多 15s）
+    /// 3. 解析为 `Vec<RecordInfoItem>` 返回
+    ///
+    /// 失败时（设备离线 / 超时）返回空 vec，调用方应降级到 ZLM MP4 文件列表。
+    pub async fn send_record_info_query_and_wait(
+        &self,
+        device_id: &str,
+        channel_id: &str,
+        start_time: &str,
+        end_time: &str,
+        sn: i64,
+    ) -> Result<Vec<RecordInfoItem>> {
+        let device_addr = self.device_manager.get_address(device_id).await
+            .ok_or_else(|| anyhow::anyhow!("Device {} not registered", device_id))?;
+
+        let call_id = format!("recinfo_{}_{}", device_id, chrono::Utc::now().timestamp_millis());
+        let branch = generate_branch();
+        let cseq = "MESSAGE 1".to_string();
+
+        // 1. 注册多包 RecordInfo 等待
+        let (_req, rx) = self
+            .pending_request_manager
+            .register_record_info_multi_packet(device_id, sn as u32, &call_id, 15);
+
+        let body = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<Query>
+<CmdType>RecordInfo</CmdType>
+<SN>{}</SN>
+<DeviceID>{}</DeviceID>
+<StartTime>{}</StartTime>
+<EndTime>{}</EndTime>
+</Query>"#,
+            sn, channel_id, start_time, end_time
+        );
+
+        let content_length = body.len().to_string();
+
+        let via = format!("SIP/2.0/UDP {}:{};branch={};rport",
+            self.config.ip, self.config.port, branch);
+        let from = format!("<sip:{}@{}:{}>;tag={}",
+            self.config.device_id, self.config.ip, self.config.port, generate_tag());
+        let to = format!("<sip:{}@{}:{}>", device_id, device_addr.ip(), device_addr.port());
+        let contact = format!("<sip:{}@{}:{}>", self.config.device_id, self.config.ip, self.config.port);
+
+        let headers: Vec<(&str, &str)> = vec![
+            ("Via", &via),
+            ("From", &from),
+            ("To", &to),
+            ("Call-ID", &call_id),
+            ("CSeq", &cseq),
+            ("Contact", &contact),
+            ("Max-Forwards", "70"),
+            ("User-Agent", "GBServer/1.0"),
+            ("Content-Type", "Application/MANSCDP+xml"),
+            ("Content-Length", &content_length),
+        ];
+
+        // 2. 发送 SIP MESSAGE
+        let socket = self.socket.read().await;
+        let socket = socket.as_ref().ok_or_else(|| anyhow::anyhow!("Socket not initialized"))?;
+        let uri = format!("sip:{}@{}:{}", device_id, device_addr.ip(), device_addr.port());
+        let message = Parser::generate_request("MESSAGE", &uri, &headers, Some(&body));
+        socket.send_to(message.as_bytes(), device_addr).await?;
+        drop(socket);
+        tracing::info!("Sent RecordInfo query (async) to device {} channel {} [{}-{}]",
+            device_id, channel_id, start_time, end_time);
+
+        // 3. 等待多包累积完成（15s 超时）
+        match tokio::time::timeout(Duration::from_secs(15), rx).await {
+            Ok(Ok(xml)) => {
+                let items = parse_record_info_items(&xml);
+                tracing::info!(
+                    "RecordInfo async: device={} channel={} received {} items",
+                    device_id, channel_id, items.len()
+                );
+                // 4. 落库复用 gb_cloud_record（已有三态 cfg，Phase 3.3 严禁新建 record 表）
+                if !items.is_empty() {
+                    if let Err(e) = crate::db::cloud_record::insert_records(
+                        &self.pool, device_id, channel_id,
+                        start_time, end_time, &items,
+                    ).await {
+                        tracing::warn!("Failed to persist RecordInfo to gb_cloud_record: {}", e);
+                    }
+                }
+                Ok(items)
+            }
+            Ok(Err(_cancelled)) => {
+                // 通道被关闭（注册已清理）；降级返回空
+                tracing::warn!("RecordInfo wait channel cancelled for {}", call_id);
+                self.pending_request_manager.cancel_multi_packet(&call_id);
+                Ok(Vec::new())
+            }
+            Err(_timeout) => {
+                tracing::warn!("RecordInfo wait timeout (15s) for {}", call_id);
+                self.pending_request_manager.cancel_multi_packet(&call_id);
+                Ok(Vec::new())
+            }
+        }
     }
 
     /// 旧 fire-and-forget 接口（保留兼容）
@@ -4321,16 +4689,119 @@ f=v/1/96/1/2/1/1/0
         let message = Parser::generate_request("INVITE", &uri, &headers, Some(&sdp));
 
         socket.send_to(message.as_bytes(), device_addr).await?;
-        tracing::info!(
-            "Sent PLAYBACK INVITE to device {} channel {} [{}-{}] at {}",
-            device_id,
-            channel_id,
-            start_time,
-            end_time,
-            device_addr
-        );
+        tracing::info!("Sent PLAYBACK INVITE to device {} channel {} [{}-{}] at {}", device_id, channel_id, start_time, end_time, device_addr);
 
         Ok(())
+    }
+
+    /// Phase 3.2: 发送 Playback INVITE 并等 SIP 200 OK + ZLM 媒体到达
+    ///
+    /// 流程：
+    /// 1. 注册 media waiter（call_id + zlm_stream_id + "rtp"）
+    /// 2. 发送 SIP INVITE（用 Subject 第 4 段 SSRC 前缀 1 标识 Playback）
+    /// 3. 等 SIP 200 OK
+    /// 4. 等 ZLM on_stream_changed 触发 media_waiter resolve
+    /// 5. 成功：返回 (call_id, zlm_stream_id)
+    ///
+    /// 失败/超时：清理 RTP server + media_waiter
+    pub async fn send_playback_invite_and_wait(
+        &self,
+        device_id: &str,
+        channel_id: &str,
+        start_time: &str,
+        end_time: &str,
+        zlm_stream_id: &str,
+        media_port: u16,
+        timeout_secs: u64,
+    ) -> Result<(String, String)> {
+        let call_id = format!("playback_{}_{}", device_id, chrono::Utc::now().timestamp_millis());
+
+        // 1. 注册 media waiter（早于发包）
+        let (_waiter_key, media_rx) = self
+            .media_waiter_manager()
+            .register(&call_id, zlm_stream_id, "rtp", timeout_secs);
+
+        // 2. 发送 SIP INVITE（自定义 Subject 字段第 4 段 SSRC 前缀 1 表示 Playback）
+        {
+            let socket = self.socket.read().await;
+            let socket = socket
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("Socket not initialized"))?;
+            let device_addr = self
+                .device_manager
+                .get_address(device_id)
+                .await
+                .ok_or_else(|| anyhow::anyhow!("Device {} not registered", device_id))?;
+            let branch = generate_branch();
+            let cseq = "INVITE 1".to_string();
+            let ssrc = format!("1{:0>9}0", &device_id[..device_id.len().min(9)]);
+
+            let via = format!(
+                "SIP/2.0/UDP {}:{};branch={};rport",
+                self.config.ip, self.config.port, branch
+            );
+            let from = format!(
+                "<sip:{}@{}:{}>;tag={}",
+                self.config.device_id, self.config.ip, self.config.port, generate_tag()
+            );
+            let to = format!(
+                "<sip:{}@{}:{}>",
+                channel_id, device_addr.ip(), device_addr.port()
+            );
+            let contact = format!(
+                "<sip:{}@{}:{}>",
+                self.config.device_id, self.config.ip, self.config.port
+            );
+            let sdp = build_playback_sdp(&self.config.ip, media_port, start_time, end_time);
+            let subject = format!("{}:{},{}:1", self.config.device_id, ssrc, channel_id);
+
+            let headers: Vec<(&str, &str)> = vec![
+                ("Via", &via),
+                ("From", &from),
+                ("To", &to),
+                ("Call-ID", &call_id),
+                ("CSeq", &cseq),
+                ("Contact", &contact),
+                ("Max-Forwards", "70"),
+                ("User-Agent", "GBServer/1.0"),
+                ("Subject", &subject),
+                ("Content-Type", "application/sdp"),
+            ];
+
+            let uri = format!(
+                "sip:{}@{}:{}",
+                channel_id, device_addr.ip(), device_addr.port()
+            );
+            let message = Parser::generate_request("INVITE", &uri, &headers, Some(&sdp));
+            socket.send_to(message.as_bytes(), device_addr).await?;
+            tracing::info!(
+                "Sent PLAYBACK INVITE (async) to device={} channel={} stream={} call_id={}",
+                device_id, channel_id, zlm_stream_id, call_id
+            );
+        }
+
+        // 3. 等 ZLM media waiter 触发（ZLM hook on_stream_changed 会 resolve）
+        match tokio::time::timeout(Duration::from_secs(timeout_secs), media_rx).await {
+            Ok(Ok(MediaWaitResult::MediaReady { zlm_stream_id: zid, app: _ })) => {
+                tracing::info!("Playback media ready: stream_id={}", zid);
+                Ok((call_id, zid))
+            }
+            Ok(Ok(MediaWaitResult::Timeout | MediaWaitResult::SessionNotFound)) => {
+                let _ = self.media_waiter_manager().cleanup_expired();
+                Err(anyhow::anyhow!("Playback media wait failed: not found"))
+            }
+            Ok(Err(_cancelled)) => {
+                let _ = self.media_waiter_manager().cleanup_expired();
+                Err(anyhow::anyhow!("Playback media wait channel cancelled"))
+            }
+            Err(_elapsed) => {
+                let _ = self.media_waiter_manager().cleanup_expired();
+                Err(anyhow::anyhow!(
+                    "Playback media timeout – stream did not arrive in {}s",
+                    timeout_secs
+                ))
+            }
+        }
     }
 
     /// 发送 GB28181 录像下载 INVITE（Subject 第 4 段 SSRC 前缀 2 表示 Download）
@@ -4494,24 +4965,59 @@ f=v/1/96/1/2/1/1/0
         let message = Parser::generate_request("INVITE", &uri, &headers, Some(&sdp));
 
         socket.send_to(message.as_bytes(), addr).await?;
-        tracing::info!(
-            "Sent platform INVITE for channel {} to platform {} at {}",
-            channel_id,
-            platform_gb_id,
-            addr
-        );
+        tracing::info!("Sent platform INVITE for channel {} to platform {} at {}", channel_id, platform_gb_id, addr);
 
         Ok(())
     }
 
-    pub async fn send_platform_message(
+    /// Phase 5.3: 上级平台 INVITE → 预登记 SendRtp 会话
+    ///
+    /// 流程（与设计文档 §7 Phase 5 Task 5.3 对应）：
+    /// 1. 解析上级 SDP → 提取 (upstream_host, upstream_port, upstream_ssrc)
+    /// 2. 调 `send_rtp_manager.handle_upstream_invite` 预登记 session
+    ///    （stream_key 格式：`cascade_{platform_id}_{channel_id}`）
+    /// 3. 返回 cascade_call_id 给调用方（handle_invite 后续可观察该 session 状态）
+    ///
+    /// 调用方责任：解析 + 调 SIP 信令；本方法只负责预登记。
+    /// 实际 ZLM startSendRtp 由后续设备 INVITE 200 OK 触发的
+    /// `send_rtp_manager.get_by_channel(channel_id)` 循环完成（sip/server.rs:1490）。
+    ///
+    /// # Arguments
+    /// * `platform_id` - 上级平台 GB ID（已通过 `db_platform::get_by_device_gb_id` 验证为已注册平台）
+    /// * `channel_id` - 共享通道 ID
+    /// * `sdp` - 上级 INVITE 请求的 SDP body
+    ///
+    /// # Returns
+    /// 预登记成功的 `cascade_call_id`
+    pub fn register_cascade_invite(
         &self,
-        platform_gb_id: &str,
-        cmd_type: &str,
-        sn: i64,
-        device_id: &str,
-        content: Option<&str>,
-    ) -> Result<()> {
+        platform_id: &str,
+        channel_id: &str,
+        sdp: &str,
+    ) -> Result<String> {
+        let (upstream_host, upstream_port, upstream_ssrc) =
+            parse_cascade_invite_sdp(sdp)
+                .map_err(|e| anyhow::anyhow!("Parse upstream SDP failed: {}", e))?;
+
+        let cascade_call_id = format!("cascade_{}_{}", platform_id, channel_id);
+        self.send_rtp_manager.handle_upstream_invite(
+            cascade_call_id.clone(),
+            platform_id.to_string(),
+            channel_id.to_string(),
+            upstream_host,
+            upstream_port,
+            upstream_ssrc,
+        );
+
+        tracing::info!(
+            "5.3 register_cascade_invite: platform={} channel={} cascade_call_id={} upstream={}:{}",
+            platform_id, channel_id, cascade_call_id,
+            self.config.ip, upstream_port
+        );
+        Ok(cascade_call_id)
+    }
+
+    pub async fn send_platform_message(&self, platform_gb_id: &str, cmd_type: &str, sn: i64, device_id: &str, content: Option<&str>) -> Result<()> {
         let socket = self.socket.read().await;
         let socket = socket
             .as_ref()
@@ -4590,14 +5096,164 @@ f=v/1/96/1/2/1/1/0
         let message = Parser::generate_request("MESSAGE", &uri, &headers, Some(&body));
 
         socket.send_to(message.as_bytes(), addr).await?;
-        tracing::info!(
-            "Sent {} to platform {} at {}",
-            cmd_type,
-            platform_gb_id,
-            addr
-        );
+        tracing::info!("Sent {} to platform {} at {}", cmd_type, platform_gb_id, addr);
 
         Ok(())
+    }
+
+    /// Phase 5.5a: 转发 MobilePosition 上行到所有 Active 级联平台
+    ///
+    /// 触发位置：`handle_message` 收到设备的 MobilePosition Notify 后
+    /// 调用本方法自动广播。
+    ///
+    /// XML 格式（与 WVP-Pro Java 兼容）：
+    /// ```xml
+    /// <?xml version="1.0" encoding="UTF-8"?>
+    /// <Notify>
+    /// <CmdType>MobilePosition</CmdType>
+    /// <SN>...</SN>
+    /// <DeviceID>...</DeviceID>
+    /// <Time>...</Time>
+    /// <Latitude>...</Latitude>
+    /// <Longitude>...</Longitude>
+    /// <Speed>...</Speed>
+    /// <Direction>...</Direction>
+    /// </Notify>
+    /// ```
+    ///
+    /// # Arguments
+    /// * `device_id` - 设备/通道 GB ID
+    /// * `latitude` / `longitude` / `speed` / `direction` / `time` - 位置信息
+    ///
+    /// # Returns
+    /// 成功转发的平台数量（包含失败不中断，0 = 无活跃平台或全部失败）
+    pub async fn forward_mobile_position_to_all(
+        &self,
+        device_id: &str,
+        latitude: f64,
+        longitude: f64,
+        speed: Option<f64>,
+        direction: Option<i32>,
+        time: &str,
+    ) -> Result<usize, String> {
+        let platforms = match crate::db::platform::get_all_online_platforms(&self.pool).await {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!("forward_mobile_position: get_all_online_platforms failed: {}", e);
+                return Ok(0);
+            }
+        };
+        if platforms.is_empty() {
+            return Ok(0);
+        }
+
+        let sn = chrono::Utc::now().timestamp();
+        let body = format!(
+            r#"<Notify>
+<CmdType>MobilePosition</CmdType>
+<SN>{}</SN>
+<DeviceID>{}</DeviceID>
+<Time>{}</Time>
+<Latitude>{}</Latitude>
+<Longitude>{}</Longitude>
+<Speed>{}</Speed>
+<Direction>{}</Direction>
+</Notify>"#,
+            sn,
+            device_id,
+            time,
+            latitude,
+            longitude,
+            speed.unwrap_or(0.0),
+            direction.unwrap_or(0),
+        );
+
+        let mut sent = 0;
+        for platform in platforms {
+            let server_gb_id = match platform.server_gb_id.clone() {
+                Some(id) => id,
+                None => continue,
+            };
+            match self
+                .send_platform_message(&server_gb_id, "MobilePosition", sn, device_id, Some(&body))
+                .await
+            {
+                Ok(_) => sent += 1,
+                Err(e) => tracing::warn!(
+                    "forward_mobile_position to {} failed: {}",
+                    server_gb_id, e
+                ),
+            }
+        }
+        Ok(sent)
+    }
+
+    /// Phase 5.5b: 转发 Alarm 上行到所有 Active 级联平台
+    ///
+    /// 触发位置：`handle_message` 收到设备的 Alarm Notify 后调用。
+    ///
+    /// XML 格式（与 WVP-Pro Java 兼容）：
+    /// ```xml
+    /// <?xml version="1.0" encoding="UTF-8"?>
+    /// <Notify>
+    /// <CmdType>Alarm</CmdType>
+    /// <SN>...</SN>
+    /// <DeviceID>...</DeviceID>
+    /// <AlarmPriority>...</AlarmPriority>
+    /// <AlarmMethod>...</AlarmMethod>
+    /// <AlarmTime>...</AlarmTime>
+    /// <AlarmDescription>...</AlarmDescription>
+    /// </Notify>
+    /// ```
+    pub async fn forward_alarm_to_all(
+        &self,
+        device_id: &str,
+        alarm_priority: &str,
+        alarm_method: i32,
+        alarm_time: &str,
+        alarm_description: Option<&str>,
+    ) -> Result<usize, String> {
+        let platforms = match crate::db::platform::get_all_online_platforms(&self.pool).await {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!("forward_alarm: get_all_online_platforms failed: {}", e);
+                return Ok(0);
+            }
+        };
+        if platforms.is_empty() {
+            return Ok(0);
+        }
+
+        let sn = chrono::Utc::now().timestamp();
+        let desc = alarm_description.unwrap_or("");
+        let body = format!(
+            r#"<Notify>
+<CmdType>Alarm</CmdType>
+<SN>{}</SN>
+<DeviceID>{}</DeviceID>
+<AlarmPriority>{}</AlarmPriority>
+<AlarmMethod>{}</AlarmMethod>
+<AlarmTime>{}</AlarmTime>
+<AlarmDescription>{}</AlarmDescription>
+</Notify>"#,
+            sn, device_id, alarm_priority, alarm_method, alarm_time, desc,
+        );
+
+        let mut sent = 0;
+        for platform in platforms {
+            let server_gb_id = match platform.server_gb_id.clone() {
+                Some(id) => id,
+                None => continue,
+            };
+            match self
+                .send_platform_message(&server_gb_id, "Alarm", sn, device_id, Some(&body))
+                .await
+            {
+                Ok(_) => sent += 1,
+                Err(e) => tracing::warn!("forward_alarm to {} failed: {}", server_gb_id, e),
+            }
+        }
+        Ok(sent)
     }
 
     pub async fn send_platform_catalog(&self, platform_gb_id: &str) -> Result<()> {
@@ -4945,6 +5601,99 @@ Authentication-Info: qop=auth,rspauth="{}",cnonce="{}",nc=00000001"#,
         Ok(())
     }
 
+    /// Phase 5.2: 上级平台 RecordInfo 查询 → 返回本级 ZLM MP4 录像列表
+    ///
+    /// 流程：
+    /// 1. 解析 SIP MESSAGE body 拿到 (channel_id, start_time, end_time, sn)
+    /// 2. 复用 `handle_record_info` 的 ZLM MP4 查询路径（兜底）
+    /// 3. 拼装 WVP-Pro 兼容的 Response XML 并回送
+    ///
+    /// 设计选择：当前实现用 ZLM MP4 兜底而非设备 SIP RecordInfo 多包等待，
+    /// 原因：设备侧 RecordInfo 多包响应需要 SipServer 上下文（`send_record_info_query_and_wait`），
+    /// Phase 5.2 优先把上游响应骨架接通，Phase 5.2-followup 可把 `send_record_info_query_and_wait`
+    /// 抽成 free function 后再切换为真等待。
+    #[allow(clippy::too_many_arguments)]
+    async fn handle_record_info_for_platform(
+        body: &str,
+        local_device_id: &str,
+        sn: &str,
+        addr: SocketAddr,
+        from: &str,
+        to: &str,
+        via: &str,
+        call_id: &str,
+        cseq: &str,
+        socket: &Arc<UdpSocket>,
+        zlm_client: &Option<Arc<ZlmClient>>,
+    ) -> Result<()> {
+        let _ = local_device_id;
+        tracing::info!("Upstream RecordInfo query from upstream → responding with ZLM MP4 list");
+
+        // 解析查询参数
+        let fields = XmlParser::parse_fields(body);
+        let channel_id = fields.get("DeviceID").cloned().unwrap_or_default();
+        let start_time = fields.get("StartTime").cloned();
+        let end_time = fields.get("EndTime").cloned();
+        let secrecy = fields.get("Secrecy").cloned().unwrap_or_else(|| "0".to_string());
+        let _type = fields.get("Type").cloned().unwrap_or_else(|| "all".to_string());
+
+        // 查询 ZLM MP4（与 handle_record_info 一致）
+        let mut record_items: Vec<RecordInfoItem> = Vec::new();
+        if let Some(zlm) = zlm_client {
+            let app = "rtp";
+            let stream1 = format!("{}${}", local_device_id, channel_id);
+            let stream2 = channel_id.clone();
+            let zlm_start = start_time.as_ref().map(|s| s.replace(' ', "T").replace(':', "-"));
+            let zlm_end = end_time.as_ref().map(|s| s.replace(' ', "T").replace(':', "-"));
+
+            let files = if let Ok(list) = zlm
+                .get_mp4_record_file(app, &stream1, None, zlm_start.as_deref(), zlm_end.as_deref())
+                .await
+            {
+                list
+            } else if let Ok(list) = zlm
+                .get_mp4_record_file(app, &stream2, None, zlm_start.as_deref(), zlm_end.as_deref())
+                .await
+            {
+                list
+            } else {
+                Vec::new()
+            };
+
+            for file in files {
+                let start = file.create_time.clone();
+                let duration = file.duration.unwrap_or(0.0) as i64;
+                let end = if duration > 0 {
+                    format!("{}+{}s", start, duration)
+                } else {
+                    start.clone()
+                };
+                record_items.push(RecordInfoItem {
+                    device_id: Some(channel_id.clone()),
+                    name: Some(file.name.clone()),
+                    file_path: Some(file.path.clone()),
+                    address: Some(file.path.clone()),
+                    start_time: Some(start),
+                    end_time: Some(end),
+                    secrecy: Some(secrecy.clone()),
+                    kind: Some(_type.clone()),
+                });
+            }
+        }
+
+        let response_body = build_upstream_record_info_response(sn, &channel_id, &record_items);
+        let response = Parser::generate_response(200, "OK", &[
+            ("Via", via), ("From", from), ("To", to),
+            ("Call-ID", call_id), ("CSeq", cseq),
+            ("Content-Type", "Application/MANSCDP+xml"),
+        ], Some(&response_body));
+        Self::send_response(socket, addr, &response).await?;
+        Ok(())
+    }
+
+
+
+
     fn get_received_from_via(via: &str) -> Option<String> {
         for part in via.split(';') {
             if part.trim().starts_with("received=") {
@@ -4970,6 +5719,53 @@ fn generate_tag() -> String {
 fn generate_branch() -> String {
     let mut rng = rand::thread_rng();
     format!("z9hG4bK{:08x}", rng.gen::<u32>())
+}
+
+/// Phase 5.3: 解析 WVP-Pro 上级 INVITE SDP，提取媒体端点
+///
+/// 输入：标准的 GB28181 INVITE SDP body（RFC 4566）
+/// 输出：`(upstream_host, upstream_port, upstream_ssrc)` 三元组
+///
+/// 解析规则（与 WVP-Pro Java 兼容）：
+/// - `c=IN IP4 <ip>` 取 connection address
+/// - `m=video <port> RTP/AVP ...` 取首个 m=video 行的端口
+/// - `y=<ssrc>` 取 10 位 SSRC（GB28181 规定）
+///
+/// 失败模式：
+/// - 缺 c= 或 m=video → 返回 "SDP missing c= or m=video"
+/// - 端口非法 → 返回 "bad port: ..."
+/// - 缺 y= → ssrc 默认 0000000000（与 WVP 兼容）
+pub fn parse_cascade_invite_sdp(sdp: &str) -> Result<(String, u16, String), String> {
+    let mut media_ip = String::new();
+    let mut media_port: u16 = 0;
+    let mut ssrc = String::new();
+
+    for line in sdp.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("c=IN IP4 ") {
+            media_ip = rest.split_whitespace().next().unwrap_or("").to_string();
+        } else if line.starts_with("m=video ") {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 2 {
+                media_port = parts[1]
+                    .parse()
+                    .map_err(|e| format!("bad port: {}", e))?;
+            }
+        } else if let Some(rest) = line.strip_prefix("y=") {
+            ssrc = rest.chars().take(10).collect();
+        }
+    }
+
+    if media_port == 0 {
+        return Err("SDP missing m=video with valid port".to_string());
+    }
+    if media_ip.is_empty() {
+        return Err("SDP missing c=IN IP4".to_string());
+    }
+    if ssrc.is_empty() {
+        ssrc = "0000000000".to_string();
+    }
+    Ok((media_ip, media_port, ssrc))
 }
 
 async fn dbg_upsert_device(
@@ -5071,7 +5867,7 @@ async fn send_subscribe_internal(
         ("Contact", &contact),
         ("Expires", &expires_header),
         ("Max-Forwards", "70"),
-        ("User-Agent", "WVP-GB28181-Rust"),
+        ("User-Agent", "GBServer-GB28181-Rust"),
         ("Event", event),
         ("Accept", "Application/MANSCDP+xml"),
         ("Content-Type", "Application/MANSCDP+xml"),
@@ -5131,8 +5927,58 @@ pub fn build_upstream_catalog_response(
 /// B2: Pure helper — build the upstream DeviceInfo response body.
 pub fn build_upstream_device_info_response(sn: &str, local_device_id: &str) -> String {
     format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?><Response><CmdType>DeviceInfo</CmdType><SN>{}</SN><DeviceID>{}</DeviceID><Result>OK</Result><DeviceName>WVP-GbServer</DeviceName><Manufacturer>WVP-Rust</Manufacturer><Model>GBServer v0.1</Model><Channel>1</Channel></Response>"#,
+        r#"<?xml version="1.0" encoding="UTF-8"?><Response><CmdType>DeviceInfo</CmdType><SN>{}</SN><DeviceID>{}</DeviceID><Result>OK</Result><DeviceName>GBServer</DeviceName><Manufacturer>GBServer</Manufacturer><Model>GBServer v0.1</Model><Channel>1</Channel></Response>"#,
         sn, local_device_id
+    )
+}
+
+/// Phase 5.2: 拼装上游 RecordInfo Response XML（WVP-Pro 兼容）
+///
+/// 格式（与 WVP-Pro Java 兼容）：
+/// ```xml
+/// <Response>
+///   <CmdType>RecordInfo</CmdType>
+///   <SN>...</SN>
+///   <DeviceID>...</DeviceID>
+///   <Name>...</Name>
+///   <SumNum>N</SumNum>
+///   <RecordList Num="N">
+///     <Item>
+///       <DeviceID>...</DeviceID>
+///       <Name>...</Name>
+///       <FilePath>...</FilePath>
+///       <StartTime>...</StartTime>
+///       <EndTime>...</EndTime>
+///       <Secrecy>0</Secrecy>
+///       <Type>time</Type>
+///     </Item>
+///   </RecordList>
+/// </Response>
+/// ```
+pub fn build_upstream_record_info_response(
+    sn: &str,
+    channel_id: &str,
+    items: &[RecordInfoItem],
+) -> String {
+    let mut body_items = String::new();
+    for item in items {
+        let file_path = item.file_path.as_deref().unwrap_or("");
+        let name = item.name.as_deref().unwrap_or(channel_id);
+        let device_id = item.device_id.as_deref().unwrap_or(channel_id);
+        let start = item.start_time.as_deref().unwrap_or("");
+        let end = item.end_time.as_deref().unwrap_or("");
+        body_items.push_str(&format!(
+            "<Item><DeviceID>{}</DeviceID><Name>{}</Name>\
+             <FilePath>{}</FilePath>\
+             <StartTime>{}</StartTime><EndTime>{}</EndTime>\
+             <Secrecy>0</Secrecy><Type>time</Type></Item>",
+            device_id, name, file_path, start, end
+        ));
+    }
+    let num = items.len();
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?><Response><CmdType>RecordInfo</CmdType><SN>{}</SN><DeviceID>{}</DeviceID><Name>{}-records</Name><SumNum>{}</SumNum><RecordList Num="{}">{}</RecordList></Response>"#,
+        sn, channel_id, channel_id, num, num, body_items
     )
 }
 
@@ -5265,7 +6111,7 @@ mod playback_control_tests {
     }
 
     #[test]
-    fn download_subject_format_matches_wvp() {
+    fn download_subject_format_matches_reference() {
         let subject = build_download_subject("34020000002000000001", "34020000001320000002");
         // 形如 "<local>:<channel>,<local>:2<deviceid9>"
         assert!(subject.contains(":34020000001320000002,"));
@@ -5439,7 +6285,7 @@ mod upstream_message_tests {
         assert!(xml.contains("<SN>42</SN>"));
         assert!(xml.contains("<DeviceID>34020000002000000001</DeviceID>"));
         assert!(xml.contains("<Result>OK</Result>"));
-        assert!(xml.contains("<Manufacturer>WVP-Rust</Manufacturer>"));
+        assert!(xml.contains("<Manufacturer>GBServer</Manufacturer>"));
         assert!(xml.contains("<Model>GBServer v0.1</Model>"));
     }
 
@@ -5468,5 +6314,332 @@ mod upstream_message_tests {
         assert_eq!(target, Some("34020000002000000001".to_string()));
         let sn = crate::sip::gb28181::XmlParser::get_sn(body);
         assert_eq!(sn, Some(10));
+    }
+
+    // ============ Phase 5.3: parse_cascade_invite_sdp 单测 ============
+
+    /// 标准 WVP-Pro 上级 INVITE SDP
+    #[test]
+    fn phase5_parse_cascade_invite_sdp_standard() {
+        let sdp = "v=0\r\n\
+                   o=34020000002000000001 0 0 IN IP4 192.168.1.100\r\n\
+                   s=Play\r\n\
+                   c=IN IP4 192.168.1.100\r\n\
+                   t=0 0\r\n\
+                   m=video 9000 RTP/AVP 96 98 97\r\n\
+                   a=rtpmap:96 PS/90000\r\n\
+                   a=rtpmap:98 H264/90000\r\n\
+                   y=0100000001\r\n";
+        let (ip, port, ssrc) = parse_cascade_invite_sdp(sdp).unwrap();
+        assert_eq!(ip, "192.168.1.100");
+        assert_eq!(port, 9000);
+        assert_eq!(ssrc, "0100000001");
+    }
+
+    /// 缺 c= 行 → 报错
+    #[test]
+    fn phase5_parse_cascade_invite_sdp_missing_c() {
+        let sdp = "v=0\r\n\
+                   m=video 9000 RTP/AVP 96\r\n\
+                   y=0100000001\r\n";
+        let r = parse_cascade_invite_sdp(sdp);
+        assert!(r.is_err());
+        assert!(r.unwrap_err().contains("missing c=IN IP4"));
+    }
+
+    /// 缺 m=video 行 → 报错
+    #[test]
+    fn phase5_parse_cascade_invite_sdp_missing_m_video() {
+        let sdp = "v=0\r\n\
+                   c=IN IP4 10.0.0.1\r\n\
+                   y=0100000001\r\n";
+        let r = parse_cascade_invite_sdp(sdp);
+        assert!(r.is_err());
+        assert!(r.unwrap_err().contains("missing m=video"));
+    }
+
+    /// 缺 y= 行 → ssrc 默认 0000000000
+    #[test]
+    fn phase5_parse_cascade_invite_sdp_missing_y_default() {
+        let sdp = "v=0\r\n\
+                   c=IN IP4 10.0.0.1\r\n\
+                   m=video 8000 RTP/AVP 96\r\n";
+        let (ip, port, ssrc) = parse_cascade_invite_sdp(sdp).unwrap();
+        assert_eq!(ip, "10.0.0.1");
+        assert_eq!(port, 8000);
+        assert_eq!(ssrc, "0000000000", "缺 y= 时应回退到默认 ssrc");
+    }
+
+    /// 端口非法 → 报错
+    #[test]
+    fn phase5_parse_cascade_invite_sdp_bad_port() {
+        let sdp = "v=0\r\n\
+                   c=IN IP4 10.0.0.1\r\n\
+                   m=video notanumber RTP/AVP 96\r\n";
+        let r = parse_cascade_invite_sdp(sdp);
+        assert!(r.is_err());
+        assert!(r.unwrap_err().contains("bad port"));
+    }
+
+    /// SSRC 超过 10 字符 → 截取前 10 位
+    #[test]
+    fn phase5_parse_cascade_invite_sdp_truncates_ssrc() {
+        let sdp = "v=0\r\n\
+                   c=IN IP4 10.0.0.1\r\n\
+                   m=video 8000 RTP/AVP 96\r\n\
+                   y=0100000001ABCDEF\r\n";
+        let (_, _, ssrc) = parse_cascade_invite_sdp(sdp).unwrap();
+        assert_eq!(ssrc, "0100000001", "SSRC 超过 10 位应截断");
+    }
+
+    // ============ Phase 5.3: SipServer::register_cascade_invite 集成测试 ============
+
+    /// 注册上游 INVITE → SendRtpManager 中存在对应 session
+    #[tokio::test]
+    async fn phase5_register_cascade_invite_creates_session() {
+        // 用 lazy pool（与 src/sip/gb28181/cascade_service.rs::dummy_pool 模式一致）
+        let pool = {
+            #[cfg(feature = "postgres")]
+            { sqlx::postgres::PgPoolOptions::new().max_connections(1)
+                .connect_lazy("postgres://x:x@127.0.0.1/x").unwrap() }
+            #[cfg(feature = "mysql")]
+            { sqlx::mysql::MySqlPoolOptions::new().max_connections(1)
+                .connect_lazy("mysql://x:x@127.0.0.1/x").unwrap() }
+            #[cfg(feature = "sqlite")]
+            { sqlx::sqlite::SqlitePoolOptions::new().max_connections(1)
+                .connect_lazy("sqlite::memory:").unwrap() }
+        };
+
+        let config = SipConfig::default();
+        let server = SipServer::new(config, pool, None);
+
+        let sdp = "v=0\r\n\
+                   c=IN IP4 192.168.1.100\r\n\
+                   m=video 9000 RTP/AVP 96\r\n\
+                   y=0100000001\r\n";
+        let cascade_call_id = server
+            .register_cascade_invite("34010000002000000001", "34020000001320000001", sdp)
+            .expect("register_cascade_invite should succeed");
+
+        assert_eq!(cascade_call_id, "cascade_34010000002000000001_34020000001320000001");
+
+        // 验证 SendRtpManager 中有该 session
+        let sessions = server.send_rtp_manager().get_by_channel("34020000001320000001");
+        assert_eq!(sessions.len(), 1);
+        let s = &sessions[0];
+        assert_eq!(s.platform_id, "34010000002000000001");
+        assert_eq!(s.channel_id, "34020000001320000001");
+        assert_eq!(s.upstream_host, "192.168.1.100");
+        assert_eq!(s.upstream_port, 9000);
+        assert_eq!(s.upstream_ssrc, "0100000001");
+        assert!(s.active);
+    }
+
+    /// 注册上游 INVITE（缺 c=）→ 报错且不应创建 session
+    #[tokio::test]
+    async fn phase5_register_cascade_invite_bad_sdp_no_session() {
+        let pool = {
+            #[cfg(feature = "postgres")]
+            { sqlx::postgres::PgPoolOptions::new().max_connections(1)
+                .connect_lazy("postgres://x:x@127.0.0.1/x").unwrap() }
+            #[cfg(feature = "mysql")]
+            { sqlx::mysql::MySqlPoolOptions::new().max_connections(1)
+                .connect_lazy("mysql://x:x@127.0.0.1/x").unwrap() }
+            #[cfg(feature = "sqlite")]
+            { sqlx::sqlite::SqlitePoolOptions::new().max_connections(1)
+                .connect_lazy("sqlite::memory:").unwrap() }
+        };
+
+        let config = SipConfig::default();
+        let server = SipServer::new(config, pool, None);
+
+        let bad_sdp = "v=0\r\nm=video 9000 RTP/AVP 96\r\n";
+        let r = server.register_cascade_invite("plat", "ch", bad_sdp);
+        assert!(r.is_err());
+
+        // 不应创建任何 session
+        let sessions = server.send_rtp_manager().get_by_channel("ch");
+        assert!(sessions.is_empty(), "bad SDP 不应留下 session");
+    }
+
+    // ============ Phase 5.5a: forward_mobile_position_to_all 单测 ============
+
+    /// 无活跃平台 → 返回 0 不 panic
+    #[tokio::test]
+    async fn phase5_forward_mobile_position_no_platforms() {
+        let pool = {
+            #[cfg(feature = "postgres")]
+            { sqlx::postgres::PgPoolOptions::new().max_connections(1)
+                .connect_lazy("postgres://x:x@127.0.0.1/x").unwrap() }
+            #[cfg(feature = "mysql")]
+            { sqlx::mysql::MySqlPoolOptions::new().max_connections(1)
+                .connect_lazy("mysql://x:x@127.0.0.1/x").unwrap() }
+            #[cfg(feature = "sqlite")]
+            { sqlx::sqlite::SqlitePoolOptions::new().max_connections(1)
+                .connect_lazy("sqlite::memory:").unwrap() }
+        };
+        let server = SipServer::new(SipConfig::default(), pool, None);
+
+        let count = server
+            .forward_mobile_position_to_all(
+                "34020000001320000001",
+                30.5, 114.3, Some(10.0), Some(180), "2026-06-20T12:00:00",
+            )
+            .await
+            .expect("无平台时也应成功");
+        assert_eq!(count, 0);
+    }
+
+    /// 缺省 speed / direction → 仍正常返回
+    #[tokio::test]
+    async fn phase5_forward_mobile_position_optional_fields() {
+        let pool = {
+            #[cfg(feature = "postgres")]
+            { sqlx::postgres::PgPoolOptions::new().max_connections(1)
+                .connect_lazy("postgres://x:x@127.0.0.1/x").unwrap() }
+            #[cfg(feature = "mysql")]
+            { sqlx::mysql::MySqlPoolOptions::new().max_connections(1)
+                .connect_lazy("mysql://x:x@127.0.0.1/x").unwrap() }
+            #[cfg(feature = "sqlite")]
+            { sqlx::sqlite::SqlitePoolOptions::new().max_connections(1)
+                .connect_lazy("sqlite::memory:").unwrap() }
+        };
+        let server = SipServer::new(SipConfig::default(), pool, None);
+
+        let count = server
+            .forward_mobile_position_to_all(
+                "34020000001320000001", 0.0, 0.0, None, None, "2026-06-20T12:00:00",
+            )
+            .await
+            .expect("optional 字段为 None 时也应成功");
+        assert_eq!(count, 0);
+    }
+
+    // ============ Phase 5.5b: forward_alarm_to_all 单测 ============
+
+    /// 无活跃平台 → 返回 0 不 panic
+    #[tokio::test]
+    async fn phase5_forward_alarm_no_platforms() {
+        let pool = {
+            #[cfg(feature = "postgres")]
+            { sqlx::postgres::PgPoolOptions::new().max_connections(1)
+                .connect_lazy("postgres://x:x@127.0.0.1/x").unwrap() }
+            #[cfg(feature = "mysql")]
+            { sqlx::mysql::MySqlPoolOptions::new().max_connections(1)
+                .connect_lazy("mysql://x:x@127.0.0.1/x").unwrap() }
+            #[cfg(feature = "sqlite")]
+            { sqlx::sqlite::SqlitePoolOptions::new().max_connections(1)
+                .connect_lazy("sqlite::memory:").unwrap() }
+        };
+        let server = SipServer::new(SipConfig::default(), pool, None);
+
+        let count = server
+            .forward_alarm_to_all(
+                "34020000001320000001",
+                "1", 1, "2026-06-20T12:00:00", Some("motion detection"),
+            )
+            .await
+            .expect("无平台时也应成功");
+        assert_eq!(count, 0);
+    }
+
+    /// 缺省 description → 仍正常返回
+    #[tokio::test]
+    async fn phase5_forward_alarm_no_description() {
+        let pool = {
+            #[cfg(feature = "postgres")]
+            { sqlx::postgres::PgPoolOptions::new().max_connections(1)
+                .connect_lazy("postgres://x:x@127.0.0.1/x").unwrap() }
+            #[cfg(feature = "mysql")]
+            { sqlx::mysql::MySqlPoolOptions::new().max_connections(1)
+                .connect_lazy("mysql://x:x@127.0.0.1/x").unwrap() }
+            #[cfg(feature = "sqlite")]
+            { sqlx::sqlite::SqlitePoolOptions::new().max_connections(1)
+                .connect_lazy("sqlite::memory:").unwrap() }
+        };
+        let server = SipServer::new(SipConfig::default(), pool, None);
+
+        let count = server
+            .forward_alarm_to_all(
+                "34020000001320000001", "1", 1, "2026-06-20T12:00:00", None,
+            )
+            .await
+            .expect("description 为 None 时也应成功");
+        assert_eq!(count, 0);
+    }
+
+    // ============ Phase 5.2: build_upstream_record_info_response 单测 ============
+
+    /// 空 items → 仍生成合法 XML（SumNum=0, RecordList 元素 0）
+    #[test]
+    fn phase5_build_upstream_record_info_response_empty() {
+        let xml = build_upstream_record_info_response("42", "34020000001320000001", &[]);
+        assert!(xml.contains("<CmdType>RecordInfo</CmdType>"));
+        assert!(xml.contains("<SN>42</SN>"));
+        assert!(xml.contains("<DeviceID>34020000001320000001</DeviceID>"));
+        assert!(xml.contains("<SumNum>0</SumNum>"));
+        assert!(xml.contains(r#"<RecordList Num="0">"#));
+        assert!(xml.contains("</Response>"));
+    }
+
+    /// 含 items → 生成完整 WVP-Pro 兼容 XML
+    #[test]
+    fn phase5_build_upstream_record_info_response_with_items() {
+        let items = vec![
+            RecordInfoItem {
+                device_id: Some("34020000001320000001".to_string()),
+                name: Some("ch01-record1".to_string()),
+                file_path: Some("/zlm/record/2026-06-20/ch01-001.mp4".to_string()),
+                address: Some("/zlm/record/2026-06-20/ch01-001.mp4".to_string()),
+                start_time: Some("2026-06-20T10:00:00".to_string()),
+                end_time: Some("2026-06-20T10:30:00+1800s".to_string()),
+                secrecy: Some("0".to_string()),
+                kind: Some("time".to_string()),
+            },
+            RecordInfoItem {
+                device_id: Some("34020000001320000001".to_string()),
+                name: Some("ch01-record2".to_string()),
+                file_path: Some("/zlm/record/2026-06-20/ch01-002.mp4".to_string()),
+                address: Some("/zlm/record/2026-06-20/ch01-002.mp4".to_string()),
+                start_time: Some("2026-06-20T11:00:00".to_string()),
+                end_time: Some("2026-06-20T11:30:00+1800s".to_string()),
+                secrecy: Some("0".to_string()),
+                kind: Some("time".to_string()),
+            },
+        ];
+        let xml = build_upstream_record_info_response("100", "34020000001320000001", &items);
+        assert!(xml.contains("<CmdType>RecordInfo</CmdType>"));
+        assert!(xml.contains("<SN>100</SN>"));
+        assert!(xml.contains("<SumNum>2</SumNum>"));
+        assert!(xml.contains(r#"<RecordList Num="2">"#));
+        // 两条 record
+        assert!(xml.contains("ch01-record1"));
+        assert!(xml.contains("ch01-record2"));
+        assert!(xml.contains("ch01-001.mp4"));
+        assert!(xml.contains("ch01-002.mp4"));
+    }
+
+    /// items 中含 None 字段 → 跳过空值用默认值
+    #[test]
+    fn phase5_build_upstream_record_info_response_none_fields() {
+        let items = vec![
+            RecordInfoItem {
+                device_id: None,
+                name: None,
+                file_path: None,
+                address: None,
+                start_time: None,
+                end_time: None,
+                secrecy: None,
+                kind: None,
+            },
+        ];
+        let xml = build_upstream_record_info_response("1", "fallback_ch", &items);
+        // 默认值：name / device_id 落到 channel_id；空字段为空串
+        assert!(xml.contains("<SumNum>1</SumNum>"));
+        assert!(xml.contains("fallback_ch"));  // device_id 兜底
+        assert!(xml.contains("fallback_ch-records"));  // name 兜底
+        // 不应 panic，输出合法
+        assert!(xml.contains("</Response>"));
     }
 }

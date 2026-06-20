@@ -102,6 +102,14 @@ pub struct DownloadSession {
     pub status: String,
     pub progress: f64,
     pub created_at: DateTime<Utc>,
+    /// Phase 3.4: ZLM 流标识（与 ZLM `app/stream` 对应，用于 hook 回调匹配）
+    pub zlm_stream_id: String,
+    /// Phase 3.4: ZLM app（默认 "rtp"）
+    pub zlm_app: String,
+    /// Phase 3.4: 累计已下载字节数（来自 ZLM on_stream_changed 钩子）
+    pub current_bytes: i64,
+    /// Phase 3.4: 目标字节数（来自 ZLM 估算或 start/end_time 推算）
+    pub total_bytes: i64,
 }
 
 pub struct DownloadManager {
@@ -123,7 +131,26 @@ impl DownloadManager {
         self.sessions.read().await.get(stream_id).cloned()
     }
 
-    pub async fn update_progress(&self, stream_id: &str, progress: f64, status: &str) {
+    /// Phase 3.4: 进度更新用绝对字节数（current_bytes / total_bytes * 100.0）
+    /// 对外仍返回百分比。
+    pub async fn update_progress(&self, stream_id: &str, current_bytes: i64, total_bytes: i64) {
+        if let Some(s) = self.sessions.write().await.get_mut(stream_id) {
+            s.current_bytes = current_bytes;
+            s.total_bytes = total_bytes;
+            if total_bytes > 0 {
+                s.progress = ((current_bytes as f64) / (total_bytes as f64) * 100.0)
+                    .clamp(0.0, 100.0);
+            }
+            s.status = if current_bytes >= total_bytes && total_bytes > 0 {
+                "completed".to_string()
+            } else {
+                "downloading".to_string()
+            };
+        }
+    }
+
+    /// 兼容旧 API：按 0..100 模糊语义更新
+    pub async fn update_progress_percent(&self, stream_id: &str, progress: f64, status: &str) {
         if let Some(s) = self.sessions.write().await.get_mut(stream_id) {
             s.progress = progress;
             s.status = status.to_string();
@@ -136,6 +163,16 @@ impl DownloadManager {
 
     pub async fn get_all(&self) -> Vec<DownloadSession> {
         self.sessions.read().await.values().cloned().collect()
+    }
+
+    /// Phase 3.4: 按 zlm_stream_id 查找（ZLM hook on_stream_changed 调用）
+    pub async fn get_by_zlm_stream(&self, zlm_stream_id: &str) -> Option<DownloadSession> {
+        self.sessions
+            .read()
+            .await
+            .values()
+            .find(|s| s.zlm_stream_id == zlm_stream_id)
+            .cloned()
     }
 }
 
@@ -172,73 +209,82 @@ pub async fn playback_start(
     let media_server_id = state.list_zlm_servers().into_iter().next();
     let mut source = "zlm_proxy".to_string();
 
+    // Phase 3.2: 走真实 GB28181 Playback INVITE + ZLM RTP server 媒体等待
     if let Some(ref sip_server) = state.sip_server {
-        let sip = sip_server.read().await;
-        let end = end_time.clone().unwrap_or_else(|| start_time.clone());
-        if sip
-            .send_playback_invite(&device_id, &channel_id, &start_time, &end)
-            .await
-            .is_ok()
-        {
-            source = "gb28181_invite".to_string();
-        }
-    }
-
-    if let Some(ref zlm_client) = state.zlm_client {
-        let proxy_url = format!("rtsp://127.0.0.1/live/{}/{}", device_id, channel_id);
-        let request = crate::zlm::AddStreamProxyRequest {
-            secret: zlm_client.secret.clone(),
-            vhost: "__defaultVhost__".to_string(),
-            app: app.clone(),
-            stream: stream.clone(),
-            url: proxy_url,
-            rtp_type: Some(0),
-            timeout_sec: Some(3600.0),
-            enable_hls: Some(false),
-            enable_mp4: Some(false),
-            enable_rtsp: Some(true),
-            enable_rtmp: Some(true),
-            enable_fmp4: Some(true),
-            enable_ts: Some(false),
-            enableAAC: Some(false),
-        };
-
-        match zlm_client.add_stream_proxy(&request).await {
-            Ok(key) => {
-                tracing::info!("Playback stream started: {}", key);
-                if let Some(ref playback_manager) = state.playback_manager {
-                    playback_manager.create(PlaybackSession {
-                        stream_id: stream_id.clone(),
-                        device_id: device_id.clone(),
-                        channel_id: channel_id.clone(),
-                        app: app.clone(),
-                        stream: key.clone(),
-                        media_server_id: media_server_id.clone(),
-                        schema: "rtsp".to_string(),
-                        start_time: start_time.clone(),
-                        end_time: end_time.clone(),
-                        current_time: start_time.clone(),
-                        speed: 1.0,
-                        paused: false,
-                        source: source.clone(),
-                    }).await;
+        if let Some(ref zlm_client) = state.zlm_client {
+            // 1. 先开 ZLM RTP server（端口由 ZLM 自动分配）
+            let rtp_req = crate::zlm::OpenRtpServerRequest {
+                secret: zlm_client.secret.clone(),
+                stream_id: stream_id.clone(),
+                port: Some(0),
+                use_tcp: Some(false),
+                rtp_type: Some(0),
+                recv_port: None,
+            };
+            match zlm_client.open_rtp_server(&rtp_req).await {
+                Ok(rtp_server) => {
+                    // 2. 发 SIP INVITE + 等 ZLM 媒体到达
+                    let sip = sip_server.read().await;
+                    let end = end_time.clone().unwrap_or_else(|| start_time.clone());
+                    match sip
+                        .send_playback_invite_and_wait(
+                            &device_id, &channel_id,
+                            &start_time, &end, &stream_id, rtp_server.port, 15,
+                        )
+                        .await
+                    {
+                        Ok((_call_id, _zlm_stream_id)) => {
+                            source = "gb28181_playback_invite".to_string();
+                            let media_ip = zlm_client.ip.clone();
+                            let http_port = zlm_client.http_port;
+                            let play_url = format!("rtsp://{}:554/{}/{}", media_ip, app, stream_id);
+                            let flv_url = format!("http://{}:{}/{}/{}.flv", media_ip, http_port, app, stream_id);
+                            let hls_url = format!("http://{}:{}/{}/{}/hls.m3u8", media_ip, http_port, app, stream_id);
+                            if let Some(ref playback_manager) = state.playback_manager {
+                                playback_manager.create(PlaybackSession {
+                                    stream_id: stream_id.clone(),
+                                    device_id: device_id.clone(),
+                                    channel_id: channel_id.clone(),
+                                    app: app.clone(),
+                                    stream: stream_id.clone(),
+                                    media_server_id: media_server_id.clone(),
+                                    schema: "rtsp".to_string(),
+                                    start_time: start_time.clone(),
+                                    end_time: end_time.clone(),
+                                    current_time: start_time.clone(),
+                                    speed: 1.0,
+                                    paused: false,
+                                    source: source.clone(),
+                                }).await;
+                            }
+                            return Json(WVPResult::success(serde_json::json!({
+                                "streamId": stream_id,
+                                "deviceId": device_id,
+                                "channelId": channel_id,
+                                "app": app,
+                                "stream": stream_id,
+                                "playUrl": play_url,
+                                "flvUrl": flv_url,
+                                "hls": hls_url,
+                                "startTime": start_time,
+                                "endTime": end_time,
+                                "currentTime": start_time,
+                                "speed": 1.0,
+                                "source": source
+                            })));
+                        }
+                        Err(e) => {
+                            tracing::error!("Playback INVITE + media wait failed: {}", e);
+                            // 清理已开 RTP 端口
+                            let _ = zlm_client.close_rtp_server(&stream_id).await;
+                            // 兜底发 BYE
+                            let _ = sip.send_session_bye(&device_id, &channel_id).await;
+                        }
+                    }
                 }
-                return Json(WVPResult::success(serde_json::json!({
-                    "streamId": stream_id,
-                    "deviceId": device_id,
-                    "channelId": channel_id,
-                    "app": app,
-                    "stream": key,
-                    "playUrl": format!("rtsp://127.0.0.1/playback/{}", key),
-                    "startTime": start_time,
-                    "endTime": end_time,
-                    "currentTime": start_time,
-                    "speed": 1.0,
-                    "source": source
-                })));
-            }
-            Err(e) => {
-                tracing::error!("Failed to start playback stream: {}", e);
+                Err(e) => {
+                    tracing::error!("Failed to open ZLM RTP server for playback: {}", e);
+                }
             }
         }
     }
@@ -284,23 +330,29 @@ pub async fn playback_resume(
     if let Some(ref playback_manager) = state.playback_manager {
         playback_manager.resume(&stream_id).await;
     }
-    
+
+    // Phase 3.2: 用 send_playback_control 走规范 PlaybackCtrl 消息（替代裸 XML）
     if let Some(ref sip_server) = state.sip_server {
         let sip = sip_server.read().await;
         let parts: Vec<&str> = stream_id.split('_').collect();
         if parts.len() >= 3 {
             let device_id = parts[1];
             let channel_id = parts[2].to_string();
-            
-            if let Err(e) = sip.send_message_to_device(device_id, crate::sip::SipMethod::Info,
-                Some(r#"<?xml version="1.0" encoding="UTF-8"?><Resume><ChannelID>0</ChannelID></Resume>"#),
-                Some("Application/MANSCDP+xml")).await {
+
+            if let Err(e) = sip
+                .send_playback_control(
+                    device_id,
+                    &channel_id,
+                    crate::sip::PlaybackControlCmd::Resume,
+                )
+                .await
+            {
                 tracing::error!("Failed to send resume command: {}", e);
                 return Json(WVPResult::error(format!("SIP error: {}", e)));
             }
         }
     }
-    
+
     Json(WVPResult::success(serde_json::json!({
         "streamId": stream_id,
         "status": "playing",
@@ -316,23 +368,29 @@ pub async fn playback_pause(
     if let Some(ref playback_manager) = state.playback_manager {
         playback_manager.pause(&stream_id).await;
     }
-    
+
+    // Phase 3.2: 用 send_playback_control 走规范 PlaybackCtrl 消息（替代裸 XML）
     if let Some(ref sip_server) = state.sip_server {
         let sip = sip_server.read().await;
         let parts: Vec<&str> = stream_id.split('_').collect();
         if parts.len() >= 3 {
             let device_id = parts[1];
             let channel_id = parts[2].to_string();
-            
-            if let Err(e) = sip.send_message_to_device(device_id, crate::sip::SipMethod::Info, 
-                Some(r#"<?xml version="1.0" encoding="UTF-8"?><Pause><ChannelID>0</ChannelID></Pause>"#),
-                Some("Application/MANSCDP+xml")).await {
+
+            if let Err(e) = sip
+                .send_playback_control(
+                    device_id,
+                    &channel_id,
+                    crate::sip::PlaybackControlCmd::Pause,
+                )
+                .await
+            {
                 tracing::error!("Failed to send pause command: {}", e);
                 return Json(WVPResult::error(format!("SIP error: {}", e)));
             }
         }
     }
-    
+
     Json(WVPResult::success(serde_json::json!({
         "streamId": stream_id,
         "status": "paused",
@@ -484,43 +542,90 @@ pub async fn gb_record_query(
 
     let start_time = q.start_time.clone().unwrap_or_default();
     let end_time = q.end_time.clone().unwrap_or_default();
+    let page = q.page.unwrap_or(1).max(1) as i64;
+    let count = q.count.unwrap_or(20).clamp(1, 200) as i64;
 
-    // 1. Try GB28181 RecordInfo query via SIP if device is online
+    // Phase 3.3: 真正等 SIP 多包 RecordInfo 响应（最多 15s），返回聚合 items
     if let Some(ref sip_server) = state.sip_server {
         let sip = sip_server.read().await;
         if let Some(device) = sip.device_manager().get(&device_id).await {
             if device.online && device.addr.is_some() {
                 let sn = chrono::Utc::now().timestamp() % 10000;
-                match sip.send_record_info_query(&device_id, &channel_id, &start_time, &end_time, sn).await {
-                    Ok(call_id) => {
-                        tracing::info!("RecordInfo SIP query sent, call_id={}", call_id);
+                match sip
+                    .send_record_info_query_and_wait(
+                        &device_id, &channel_id, &start_time, &end_time, sn,
+                    )
+                    .await
+                {
+                    Ok(items) if !items.is_empty() => {
+                        // 分页：page 从 1 开始，count 由调用方控制
+                        let total = items.len() as i64;
+                        let offset = ((page - 1) * count) as usize;
+                        let paged: Vec<serde_json::Value> = items
+                            .iter()
+                            .skip(offset)
+                            .take(count as usize)
+                            .map(|it| {
+                                serde_json::json!({
+                                    "deviceId": it.device_id,
+                                    "name": it.name,
+                                    "filePath": it.file_path,
+                                    "startTime": it.start_time,
+                                    "endTime": it.end_time,
+                                    "address": it.address,
+                                    "secrecy": it.secrecy,
+                                    "type": it.kind,
+                                })
+                            })
+                            .collect();
+                        return Json(WVPResult::success(serde_json::json!({
+                            "list": paged,
+                            "total": total,
+                            "page": page,
+                            "count": count,
+                            "source": "gb28181_record_info"
+                        })));
+                    }
+                    Ok(_) => {
+                        // 空 items：设备回了 RecordInfo 但没有录像段；
+                        // 继续走 ZLM 兜底（兼容历史 ZLM MP4 文件）
                     }
                     Err(e) => {
-                        tracing::warn!("Failed to send RecordInfo SIP query: {}", e);
+                        tracing::warn!("RecordInfo async wait failed: {}", e);
                     }
                 }
             }
         }
     }
 
-    // 2. Also query ZLM MP4 records as fallback/supplement
+    // 兼容路径：ZLM 本地 MP4 文件列表
     if let Some(ref zlm_client) = state.zlm_client {
         match zlm_client.get_mp4_record_file("record", &channel_id, None, None, None).await {
             Ok(files) => {
-                let records: Vec<serde_json::Value> = files.iter().map(|f| {
-                    serde_json::json!({
-                        "fileName": f.name,
-                        "filePath": f.path,
-                        "fileSize": f.size,
-                        "startTime": f.create_time,
-                        "endTime": f.create_time,
-                        "downloadUrl": format!("/record/{}", f.name)
+                let total = files.len() as i64;
+                let offset = ((page - 1) * count) as usize;
+                let records: Vec<serde_json::Value> = files
+                    .iter()
+                    .skip(offset)
+                    .take(count as usize)
+                    .map(|f| {
+                        serde_json::json!({
+                            "fileName": f.name,
+                            "filePath": f.path,
+                            "fileSize": f.size,
+                            "startTime": f.create_time,
+                            "endTime": f.create_time,
+                            "downloadUrl": format!("/record/{}", f.name)
+                        })
                     })
-                }).collect();
+                    .collect();
 
                 return Json(WVPResult::success(serde_json::json!({
                     "list": records,
-                    "total": records.len()
+                    "total": total,
+                    "page": page,
+                    "count": count,
+                    "source": "zlm_mp4"
                 })));
             }
             Err(e) => {
@@ -531,7 +636,9 @@ pub async fn gb_record_query(
 
     Json(WVPResult::success(serde_json::json!({
         "list": [],
-        "total": 0
+        "total": 0,
+        "page": page,
+        "count": count
     })))
 }
 
@@ -604,7 +711,18 @@ pub async fn gb_record_download_start(
             status: "downloading".to_string(),
             progress: 0.0,
             created_at: Utc::now(),
+            zlm_stream_id: stream_id.clone(),
+            zlm_app: "rtp".to_string(),
+            current_bytes: 0,
+            total_bytes: 0,
         };
+        // Phase 3.4: 注册 media waiter，等设备推流到达；流到达后状态从 inviting → downloading
+        if let Some(ref sip_server) = state.sip_server {
+            let sip = sip_server.read().await;
+            let (_key, _rx) = sip
+                .media_waiter_manager()
+                .register(&format!("dlw_{}", stream_id), &stream_id, "rtp", 15);
+        }
         if let Some(ref dm) = state.download_manager {
             dm.create(session).await;
         }
@@ -637,6 +755,10 @@ pub async fn gb_record_download_start(
                     status: "downloading".to_string(),
                     progress: 0.0,
                     created_at: Utc::now(),
+                    zlm_stream_id: stream_id.clone(),
+                    zlm_app: "rtp".to_string(),
+                    current_bytes: 0,
+                    total_bytes: 0,
                 };
 
                 if let Some(ref dm) = state.download_manager {
@@ -711,8 +833,9 @@ pub async fn gb_record_download_progress(
                             if dl.file_name == session.file_name {
                                 let progress = dl.progress;
                                 let status = if progress >= 100.0 { "completed" } else { "downloading" };
-                                
-                                dm.update_progress(&stream_id, progress, status).await;
+
+                                // Phase 3.4: ZLM MP4 下载进度用百分比更新（兼容路径）
+                                dm.update_progress_percent(&stream_id, progress, status).await;
                                 
                                 return Json(WVPResult::success(serde_json::json!({
                                     "streamId": stream_id,
@@ -738,4 +861,85 @@ pub async fn gb_record_download_progress(
         "progress": 0,
         "status": "unknown"
     })))
+}
+
+#[cfg(test)]
+mod download_manager_tests {
+    use super::*;
+
+    fn make_session(stream_id: &str, zlm_stream_id: &str) -> DownloadSession {
+        DownloadSession {
+            stream_id: stream_id.to_string(),
+            device_id: "dev1".to_string(),
+            channel_id: "ch1".to_string(),
+            file_name: "test.mp4".to_string(),
+            start_time: "2026-06-10T10:00:00".to_string(),
+            end_time: "2026-06-10T11:00:00".to_string(),
+            url: "gb28181://dev1@ch1/start".to_string(),
+            status: "downloading".to_string(),
+            progress: 0.0,
+            created_at: Utc::now(),
+            zlm_stream_id: zlm_stream_id.to_string(),
+            zlm_app: "rtp".to_string(),
+            current_bytes: 0,
+            total_bytes: 0,
+        }
+    }
+
+    /// Phase 3.4: 进度 0 → 50% → 100% 字节更新
+    #[tokio::test]
+    async fn test_download_progress_by_bytes() {
+        let dm = DownloadManager::new();
+        dm.create(make_session("s1", "download_dev1_ch1_t1")).await;
+        dm.update_progress("s1", 0, 1_000_000).await;
+        let s = dm.get("s1").await.unwrap();
+        assert_eq!(s.progress, 0.0);
+        assert_eq!(s.current_bytes, 0);
+        assert_eq!(s.total_bytes, 1_000_000);
+
+        dm.update_progress("s1", 500_000, 1_000_000).await;
+        let s = dm.get("s1").await.unwrap();
+        assert!((s.progress - 50.0).abs() < 0.01);
+        assert_eq!(s.status, "downloading");
+
+        dm.update_progress("s1", 1_000_000, 1_000_000).await;
+        let s = dm.get("s1").await.unwrap();
+        assert!((s.progress - 100.0).abs() < 0.01);
+        assert_eq!(s.status, "completed");
+    }
+
+    /// Phase 3.4: 进度超 100% 时 clamp 到 100
+    #[tokio::test]
+    async fn test_download_progress_clamps_to_100() {
+        let dm = DownloadManager::new();
+        dm.create(make_session("s2", "download_x")).await;
+        dm.update_progress("s2", 2_000_000, 1_000_000).await;
+        let s = dm.get("s2").await.unwrap();
+        assert_eq!(s.progress, 100.0);
+    }
+
+    /// Phase 3.4: 按 zlm_stream_id 查找（ZLM hook 用）
+    #[tokio::test]
+    async fn test_download_get_by_zlm_stream() {
+        let dm = DownloadManager::new();
+        dm.create(make_session("a", "download_abc")).await;
+        dm.create(make_session("b", "download_xyz")).await;
+
+        let s = dm.get_by_zlm_stream("download_abc").await;
+        assert!(s.is_some());
+        assert_eq!(s.unwrap().stream_id, "a");
+
+        let s = dm.get_by_zlm_stream("not_found").await;
+        assert!(s.is_none());
+    }
+
+    /// Phase 3.4: remove 清理会话
+    #[tokio::test]
+    async fn test_download_remove() {
+        let dm = DownloadManager::new();
+        dm.create(make_session("s3", "download_remove")).await;
+        assert!(dm.get("s3").await.is_some());
+        dm.remove("s3").await;
+        assert!(dm.get("s3").await.is_none());
+    }
 }

@@ -1,4 +1,4 @@
-//! 平台通道表 wvp_platform_channel
+//! 平台通道表 gb_platform_channel
 
 use serde::Serialize;
 use sqlx::FromRow;
@@ -59,7 +59,7 @@ pub async fn list_by_platform_id(
     
     #[cfg(feature = "mysql")]
     return sqlx::query_as::<_, PlatformChannel>(
-        "SELECT * FROM wvp_platform_channel WHERE platform_id = ? ORDER BY id LIMIT ? OFFSET ?",
+        "SELECT * FROM gb_platform_channel WHERE platform_id = ? ORDER BY id LIMIT ? OFFSET ?",
     )
     .bind(platform_id)
     .bind(limit)
@@ -69,7 +69,17 @@ pub async fn list_by_platform_id(
     
     #[cfg(feature = "postgres")]
     return sqlx::query_as::<_, PlatformChannel>(
-        "SELECT * FROM wvp_platform_channel WHERE platform_id = $1 ORDER BY id LIMIT $2 OFFSET $3",
+        "SELECT * FROM gb_platform_channel WHERE platform_id = $1 ORDER BY id LIMIT $2 OFFSET $3",
+    )
+    .bind(platform_id)
+    .bind(limit)
+    .bind(offset as i64)
+    .fetch_all(pool)
+    .await;
+
+    #[cfg(feature = "sqlite")]
+    return sqlx::query_as::<_, PlatformChannel>(
+        "SELECT * FROM gb_platform_channel WHERE platform_id = ? ORDER BY id LIMIT ? OFFSET ?",
     )
     .bind(platform_id)
     .bind(limit)
@@ -82,7 +92,7 @@ pub async fn list_by_platform_id(
 pub async fn count_by_platform_id(pool: &Pool, platform_id: i64) -> sqlx::Result<i64> {
     #[cfg(feature = "mysql")]
     return sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM wvp_platform_channel WHERE platform_id = ?"
+        "SELECT COUNT(*) FROM gb_platform_channel WHERE platform_id = ?"
     )
     .bind(platform_id)
     .fetch_one(pool)
@@ -90,7 +100,15 @@ pub async fn count_by_platform_id(pool: &Pool, platform_id: i64) -> sqlx::Result
     
     #[cfg(feature = "postgres")]
     return sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM wvp_platform_channel WHERE platform_id = $1"
+        "SELECT COUNT(*) FROM gb_platform_channel WHERE platform_id = $1"
+    )
+    .bind(platform_id)
+    .fetch_one(pool)
+    .await;
+
+    #[cfg(feature = "sqlite")]
+    return sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM gb_platform_channel WHERE platform_id = ?"
     )
     .bind(platform_id)
     .fetch_one(pool)
@@ -105,7 +123,7 @@ pub async fn add(
 ) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
     let r = sqlx::query(
-        "INSERT INTO wvp_platform_channel (platform_id, device_channel_id) VALUES (?, ?)",
+        "INSERT INTO gb_platform_channel (platform_id, device_channel_id) VALUES (?, ?)",
     )
     .bind(platform_id)
     .bind(device_channel_id)
@@ -114,47 +132,68 @@ pub async fn add(
     
     #[cfg(feature = "postgres")]
     let r = sqlx::query(
-        "INSERT INTO wvp_platform_channel (platform_id, device_channel_id) VALUES ($1, $2)",
+        "INSERT INTO gb_platform_channel (platform_id, device_channel_id) VALUES ($1, $2)",
     )
     .bind(platform_id)
     .bind(device_channel_id)
     .execute(pool)
     .await?;
-    
+
+    #[cfg(feature = "sqlite")]
+    let r = sqlx::query(
+        "INSERT INTO gb_platform_channel (platform_id, device_channel_id) VALUES (?, ?)",
+    )
+    .bind(platform_id)
+    .bind(device_channel_id)
+    .execute(pool)
+    .await?;
+
     Ok(r.rows_affected())
 }
 
 /// 删除平台通道
 pub async fn delete_by_id(pool: &Pool, id: i64) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
-    let r = sqlx::query("DELETE FROM wvp_platform_channel WHERE id = ?")
+    let r = sqlx::query("DELETE FROM gb_platform_channel WHERE id = ?")
         .bind(id)
         .execute(pool)
         .await?;
     
     #[cfg(feature = "postgres")]
-    let r = sqlx::query("DELETE FROM wvp_platform_channel WHERE id = $1")
+    let r = sqlx::query("DELETE FROM gb_platform_channel WHERE id = $1")
         .bind(id)
         .execute(pool)
         .await?;
-    
+
+    #[cfg(feature = "sqlite")]
+    let r = sqlx::query("DELETE FROM gb_platform_channel WHERE id = ?")
+        .bind(id)
+        .execute(pool)
+        .await?;
+
     Ok(r.rows_affected())
 }
 
 /// 批量删除平台通道
 pub async fn batch_delete_by_platform(pool: &Pool, platform_id: i64) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
-    let r = sqlx::query("DELETE FROM wvp_platform_channel WHERE platform_id = ?")
+    let r = sqlx::query("DELETE FROM gb_platform_channel WHERE platform_id = ?")
         .bind(platform_id)
         .execute(pool)
         .await?;
     
     #[cfg(feature = "postgres")]
-    let r = sqlx::query("DELETE FROM wvp_platform_channel WHERE platform_id = $1")
+    let r = sqlx::query("DELETE FROM gb_platform_channel WHERE platform_id = $1")
         .bind(platform_id)
         .execute(pool)
         .await?;
-    
+
+    #[cfg(feature = "sqlite")]
+    let r = sqlx::query("DELETE FROM gb_platform_channel WHERE platform_id = ?")
+        .bind(platform_id)
+        .execute(pool)
+        .await?;
+
     Ok(r.rows_affected())
 }
 
@@ -163,20 +202,28 @@ pub async fn batch_delete_by_platform(pool: &Pool, platform_id: i64) -> sqlx::Re
 pub async fn get_by_id(pool: &Pool, id: i64) -> sqlx::Result<Option<PlatformChannel>> {
     #[cfg(feature = "mysql")]
     let row = sqlx::query_as::<_, PlatformChannel>(
-        "SELECT * FROM wvp_platform_channel WHERE id = ?"
+        "SELECT * FROM gb_platform_channel WHERE id = ?"
     )
     .bind(id)
     .fetch_optional(pool)
     .await;
-    
+
     #[cfg(feature = "postgres")]
     let row = sqlx::query_as::<_, PlatformChannel>(
-        "SELECT * FROM wvp_platform_channel WHERE id = $1"
+        "SELECT * FROM gb_platform_channel WHERE id = $1"
     )
     .bind(id)
     .fetch_optional(pool)
     .await;
-    
+
+    #[cfg(feature = "sqlite")]
+    let row = sqlx::query_as::<_, PlatformChannel>(
+        "SELECT * FROM gb_platform_channel WHERE id = ?"
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await;
+
     row
 }
 
@@ -194,7 +241,7 @@ pub async fn update(
     #[cfg(feature = "mysql")]
     {
         let mut updates = Vec::new();
-        let mut query = sqlx::query("UPDATE wvp_platform_channel SET ");
+        let mut query = sqlx::query("UPDATE gb_platform_channel SET ");
         
         if let Some(name) = custom_name {
             updates.push("custom_name = ?");
@@ -225,23 +272,54 @@ pub async fn update(
     #[cfg(feature = "postgres")]
     {
         let mut updates = Vec::new();
-        
+
         if let Some(name) = custom_name {
             updates.push(format!("custom_name = '{}'", name.replace("'", "''")));
         }
         if let Some(info) = custom_info {
             updates.push(format!("custom_address = '{}'", info.replace("'", "''")));
         }
-        
+
         if updates.is_empty() {
             return Ok(0);
         }
-        
+
         let sql = format!("{} WHERE id = $1", updates.join(", "));
         let r = sqlx::query(&sql)
             .bind(id)
             .execute(pool)
             .await?;
+        return Ok(r.rows_affected());
+    }
+
+    #[cfg(feature = "sqlite")]
+    {
+        let mut updates = Vec::new();
+        let mut query = sqlx::query("UPDATE gb_platform_channel SET ");
+
+        if let Some(name) = custom_name {
+            updates.push("custom_name = ?");
+            query = query.bind(name);
+        }
+        if let Some(info) = custom_info {
+            updates.push("custom_address = ?");
+            query = query.bind(info);
+        }
+
+        if updates.is_empty() {
+            return Ok(0);
+        }
+
+        let sql = format!("{} WHERE id = ?", updates.join(", "));
+        let mut query = sqlx::query(&sql);
+        if let Some(name) = custom_name {
+            query = query.bind(name);
+        }
+        if let Some(info) = custom_info {
+            query = query.bind(info);
+        }
+        query = query.bind(id);
+        let r = query.execute(pool).await?;
         return Ok(r.rows_affected());
     }
 }
@@ -250,7 +328,7 @@ pub async fn update(
 pub async fn delete_by_device_channel_id(pool: &Pool, platform_id: i64, device_channel_id: i64) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
     let r = sqlx::query(
-        "DELETE FROM wvp_platform_channel WHERE platform_id = ? AND device_channel_id = ?"
+        "DELETE FROM gb_platform_channel WHERE platform_id = ? AND device_channel_id = ?"
     )
     .bind(platform_id)
     .bind(device_channel_id)
@@ -259,13 +337,22 @@ pub async fn delete_by_device_channel_id(pool: &Pool, platform_id: i64, device_c
     
     #[cfg(feature = "postgres")]
     let r = sqlx::query(
-        "DELETE FROM wvp_platform_channel WHERE platform_id = $1 AND device_channel_id = $2"
+        "DELETE FROM gb_platform_channel WHERE platform_id = $1 AND device_channel_id = $2"
     )
     .bind(platform_id)
     .bind(device_channel_id)
     .execute(pool)
     .await?;
-    
+
+    #[cfg(feature = "sqlite")]
+    let r = sqlx::query(
+        "DELETE FROM gb_platform_channel WHERE platform_id = ? AND device_channel_id = ?"
+    )
+    .bind(platform_id)
+    .bind(device_channel_id)
+    .execute(pool)
+    .await?;
+
     Ok(r.rows_affected())
 }
 
@@ -273,7 +360,7 @@ pub async fn delete_by_device_channel_id(pool: &Pool, platform_id: i64, device_c
 pub async fn get_by_platform_and_channel(pool: &Pool, platform_id: i64, channel_id: &str) -> sqlx::Result<Option<PlatformChannel>> {
     #[cfg(feature = "mysql")]
     return sqlx::query_as::<_, PlatformChannel>(
-        "SELECT * FROM wvp_platform_channel WHERE platform_id = ? AND channel_id = ?"
+        "SELECT * FROM gb_platform_channel WHERE platform_id = ? AND channel_id = ?"
     )
     .bind(platform_id)
     .bind(channel_id)
@@ -282,7 +369,16 @@ pub async fn get_by_platform_and_channel(pool: &Pool, platform_id: i64, channel_
     
     #[cfg(feature = "postgres")]
     return sqlx::query_as::<_, PlatformChannel>(
-        "SELECT * FROM wvp_platform_channel WHERE platform_id = $1 AND channel_id = $2"
+        "SELECT * FROM gb_platform_channel WHERE platform_id = $1 AND channel_id = $2"
+    )
+    .bind(platform_id)
+    .bind(channel_id)
+    .fetch_optional(pool)
+    .await;
+
+    #[cfg(feature = "sqlite")]
+    return sqlx::query_as::<_, PlatformChannel>(
+        "SELECT * FROM gb_platform_channel WHERE platform_id = ? AND channel_id = ?"
     )
     .bind(platform_id)
     .bind(channel_id)
@@ -301,7 +397,7 @@ pub async fn batch_add_channels(pool: &Pool, platform_id: i64, channel_ids: &[St
     for channel_id in channel_ids {
         #[cfg(feature = "mysql")]
         let r = sqlx::query(
-            "INSERT INTO wvp_platform_channel (platform_id, channel_id, create_time, update_time) VALUES (?, ?, ?, ?)"
+            "INSERT INTO gb_platform_channel (platform_id, channel_id, create_time, update_time) VALUES (?, ?, ?, ?)"
         )
         .bind(platform_id)
         .bind(channel_id)
@@ -311,7 +407,17 @@ pub async fn batch_add_channels(pool: &Pool, platform_id: i64, channel_ids: &[St
         .await?;
         #[cfg(feature = "postgres")]
         let r = sqlx::query(
-            "INSERT INTO wvp_platform_channel (platform_id, channel_id, create_time, update_time) VALUES ($1, $2, $3, $4)"
+            "INSERT INTO gb_platform_channel (platform_id, channel_id, create_time, update_time) VALUES ($1, $2, $3, $4)"
+        )
+        .bind(platform_id)
+        .bind(channel_id)
+        .bind(&now)
+        .bind(&now)
+        .execute(pool)
+        .await?;
+        #[cfg(feature = "sqlite")]
+        let r = sqlx::query(
+            "INSERT INTO gb_platform_channel (platform_id, channel_id, create_time, update_time) VALUES (?, ?, ?, ?)"
         )
         .bind(platform_id)
         .bind(channel_id)
@@ -330,16 +436,22 @@ pub async fn batch_delete_channels(pool: &Pool, platform_id: i64, channel_ids: &
         return Ok(0);
     }
     let mut total = 0u64;
-    
+
     for channel_id in channel_ids {
         #[cfg(feature = "mysql")]
-        let r = sqlx::query("DELETE FROM wvp_platform_channel WHERE platform_id = ? AND channel_id = ?")
+        let r = sqlx::query("DELETE FROM gb_platform_channel WHERE platform_id = ? AND channel_id = ?")
             .bind(platform_id)
             .bind(channel_id)
             .execute(pool)
             .await?;
         #[cfg(feature = "postgres")]
-        let r = sqlx::query("DELETE FROM wvp_platform_channel WHERE platform_id = $1 AND channel_id = $2")
+        let r = sqlx::query("DELETE FROM gb_platform_channel WHERE platform_id = $1 AND channel_id = $2")
+            .bind(platform_id)
+            .bind(channel_id)
+            .execute(pool)
+            .await?;
+        #[cfg(feature = "sqlite")]
+        let r = sqlx::query("DELETE FROM gb_platform_channel WHERE platform_id = ? AND channel_id = ?")
             .bind(platform_id)
             .bind(channel_id)
             .execute(pool)

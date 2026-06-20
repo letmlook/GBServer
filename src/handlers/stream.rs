@@ -15,6 +15,7 @@ use crate::zlm::OpenRtpServerRequest;
 
 use crate::AppState;
 
+#[allow(non_snake_case)]
 #[derive(Debug, Deserialize)]
 pub struct PushListQuery {
     pub page: Option<u32>,
@@ -341,7 +342,7 @@ pub async fn push_save_to_gb(
     #[cfg(feature = "mysql")]
     {
         let _ = sqlx::query(
-            "UPDATE wvp_push_stream SET device_id = ?, channel_id = ?, update_time = ? WHERE id = ?",
+            "UPDATE gb_push_stream SET device_id = ?, channel_id = ?, update_time = ? WHERE id = ?",
         )
         .bind(device_id)
         .bind(channel_id)
@@ -353,7 +354,7 @@ pub async fn push_save_to_gb(
     #[cfg(feature = "postgres")]
     {
         let _ = sqlx::query(
-            "UPDATE wvp_push_stream SET device_id = $1, channel_id = $2, update_time = $3 WHERE id = $4",
+            "UPDATE gb_push_stream SET device_id = $1, channel_id = $2, update_time = $3 WHERE id = $4",
         )
         .bind(device_id)
         .bind(channel_id)
@@ -384,7 +385,7 @@ pub async fn push_remove_form_gb(
     #[cfg(feature = "mysql")]
     {
         let _ = sqlx::query(
-            "UPDATE wvp_push_stream SET device_id = NULL, channel_id = NULL, update_time = ? WHERE id = ?",
+            "UPDATE gb_push_stream SET device_id = NULL, channel_id = NULL, update_time = ? WHERE id = ?",
         )
         .bind(&now)
         .bind(id)
@@ -394,7 +395,7 @@ pub async fn push_remove_form_gb(
     #[cfg(feature = "postgres")]
     {
         let _ = sqlx::query(
-            "UPDATE wvp_push_stream SET device_id = NULL, channel_id = NULL, update_time = $1 WHERE id = $2",
+            "UPDATE gb_push_stream SET device_id = NULL, channel_id = NULL, update_time = $1 WHERE id = $2",
         )
         .bind(&now)
         .bind(id)
@@ -408,6 +409,7 @@ pub async fn push_remove_form_gb(
     }))))
 }
 
+#[allow(non_snake_case)]
 #[derive(Debug, Deserialize)]
 pub struct ProxyListQuery {
     pub page: Option<u32>,
@@ -685,18 +687,23 @@ pub async fn proxy_start(
     match zlm.add_stream_proxy(&request).await {
         Ok(key) => {
             tracing::info!("Proxy stream started: {} -> {}", key, src_url);
-            
+
             let stream_url = format!("{}/{}", app, stream);
-            let play_url = format!("rtsp://127.0.0.1/live/{}", stream_url);
-            let flv_url = format!("http://127.0.0.1/flv/live.app?stream={}", stream_url);
-            
+            // Phase 3.6: 改用真实 ZLM 节点 IP（不再 hardcode 127.0.0.1）
+            let media_ip = zlm.ip.clone();
+            let http_port = zlm.http_port;
+            let play_url = format!("rtsp://{}:554/{}", media_ip, stream_url);
+            let flv_url = format!("http://{}:{}/{}.flv", media_ip, http_port, stream_url);
+            // wsUrl: ZLM 默认 ws 端口 = http_port (websockets 复用 HTTP)
+            let ws_url = format!("ws://{}:{}/live/{}", media_ip, http_port, stream_url);
+
             Ok(Json(WVPResult::success(serde_json::json!({
                 "app": app,
                 "stream": stream,
                 "streamKey": key,
                 "playUrl": play_url,
                 "flvUrl": flv_url,
-                "wsUrl": format!("ws://127.0.0.1/live/{}", stream_url),
+                "wsUrl": ws_url,
                 "mediaServerId": ms_id,
                 "message": "Proxy stream started successfully"
             }))))
@@ -895,13 +902,15 @@ pub async fn push_upload(
 
 /// GET /api/proxy/one?id=...
 pub async fn proxy_one(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     axum::extract::Query(q): axum::extract::Query<ProxyOneQuery>,
 ) -> Json<WVPResult<serde_json::Value>> {
+    // Phase 3.6: 用真实 ZLM 节点 IP（不再 hardcode 127.0.0.1）
+    let media_ip = state.zlm_client.as_ref().map(|z| z.ip.clone()).unwrap_or_else(|| "127.0.0.1".to_string());
     Json(WVPResult::success(serde_json::json!({
         "id": q.id,
         "name": format!("proxy-{}", q.id),
-        "url": format!("rtsp://127.0.0.1/live/proxy{}", q.id),
+        "url": format!("rtsp://{}:554/live/proxy{}", media_ip, q.id),
     })))
 }
 

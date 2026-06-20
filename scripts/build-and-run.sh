@@ -46,7 +46,7 @@ build_frontend() {
 build_backend() {
     log "编译后端（release）..."
     cargo build --release
-    ok "后端编译完成 → target/release/GBServer"
+    ok "后端编译完成 → target/release/gbserver"
 }
 
 # ── 启动后端（生产模式，serve 前端静态文件）─────────────────────────

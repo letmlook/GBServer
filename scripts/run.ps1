@@ -5,7 +5,7 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 if (-not (Test-Path "$root\web\package.json")) { $root = (Get-Location).Path }
 
-$exe = "$root\target\release\wvp-gb28181-server.exe"
+$exe = "$root\target\release\gbserver.exe"
 if (-not (Test-Path $exe)) {
     Write-Host "未找到可执行文件: $exe" -ForegroundColor Red
     Write-Host "请先执行 .\scripts\build-and-run.ps1 或 cargo build --release" -ForegroundColor Yellow
@@ -13,9 +13,9 @@ if (-not (Test-Path $exe)) {
 }
 
 Write-Host "=== 启动服务 ===" -ForegroundColor Cyan
-Write-Host "可执行文件: target\release\wvp-gb28181-server.exe" -ForegroundColor Gray
+Write-Host "可执行文件: target\release\gbserver.exe" -ForegroundColor Gray
 Write-Host "服务地址: http://0.0.0.0:18080" -ForegroundColor Gray
-Write-Host "提示: 需先启动 PostgreSQL（如 docker compose up -d）并配置 config/application.yaml" -ForegroundColor Yellow
+Write-Host "提示: 需先启动 PostgreSQL（如 docker compose up -d）并配置 config/application.toml" -ForegroundColor Yellow
 Write-Host ""
 Push-Location $root
 & $exe

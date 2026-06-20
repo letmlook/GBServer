@@ -154,7 +154,7 @@ export default {
       reader.readAsDataURL(blob)
       reader.onload = (e) => {
         const a = document.createElement('a')
-        a.download = `wvp-${this.filter}-${moment().format('yyyy-MM-DD')}.log`
+        a.download = `gbserver-${this.filter}-${moment().format('yyyy-MM-DD')}.log`
         a.href = e.target.result
         document.body.appendChild(a)
         a.click()

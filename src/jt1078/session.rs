@@ -33,6 +33,35 @@ pub enum FrameKind {
     Data(Vec<u8>),
 }
 
+/// Parsed business message — emitted by Jt1078Session::process_jt_message
+/// after stripping the JT808 framing. Phase 6.1-6.5.
+#[derive(Debug, Clone)]
+pub enum ParsedMessage {
+    /// 0x0002 Heartbeat
+    Heartbeat,
+    /// 0x0100 Terminal register
+    Register(crate::jt1078::response_parser::RegisterRequest),
+    /// 0x0102 Terminal attribute report
+    AttributeReport(crate::jt1078::response_parser::AttributeReport),
+    /// 0x0200 Location report
+    LocationReport(crate::jt1078::response_parser::LocationReport),
+    /// 0x0801 Media retrieval first item
+    MediaItem(crate::jt1078::response_parser::MediaItem),
+    /// 0x0001 Generic common response
+    CommonResponse {
+        /// The serial_no of the original command being responded to
+        reply_serial: u16,
+        /// The msg_id being responded to
+        reply_msg_id: u16,
+        /// 0=success, 1=failure, 2=msg_error, 3=unsupported
+        result: u8,
+    },
+    /// 0x0107 Query terminal params response
+    QueryParamsResponse(Vec<crate::jt1078::response_parser::TerminalParam>),
+    /// Any other unrecognised message — body preserved
+    Unknown { msg_id: u16, serial: u16, body: Vec<u8> },
+}
+
 impl Jt1078Session {
     pub fn new(peer: SocketAddr) -> Self {
         Self {
@@ -148,14 +177,14 @@ impl Jt1078Session {
 
     /// Process a single payload (decoded frame). Returns FrameKind for higher-level handling.
     /// Protocol decisions here are intentionally simple for tests:
-    /// - AUTH:<token> => authenticate if matches env var WVP__JT1078__TOKEN (default "secret")
+    /// - AUTH:<token> => authenticate if matches env var GBSERVER__JT1078__TOKEN (default "secret")
     /// - HEARTBEAT payload => update last_heartbeat
     /// - otherwise => Data(payload)
     pub fn process_payload(&mut self, payload: &[u8]) -> FrameKind {
         if payload.starts_with(b"AUTH:") {
             let token = &payload[5..];
             // allow per-session override to avoid races in tests
-            let configured = if let Some(cfg) = &self.expected_token { cfg.clone() } else { std::env::var("WVP__JT1078__TOKEN").unwrap_or_else(|_| "secret".into()) };
+            let configured = if let Some(cfg) = &self.expected_token { cfg.clone() } else { std::env::var("GBSERVER__JT1078__TOKEN").unwrap_or_else(|_| "secret".into()) };
             // compare as UTF-8 trimmed string to be tolerant of minor framing differences
             let token_str = String::from_utf8_lossy(token).trim().to_string();
             if token_str == configured || token_str.contains(&configured) {
@@ -178,6 +207,69 @@ impl Jt1078Session {
     /// Whether the session is considered timed out given the provided duration
     pub fn is_timed_out(&self, timeout: Duration) -> bool {
         Instant::now().duration_since(self.last_heartbeat) > timeout
+    }
+
+    /// Phase 6.1+ — process a fully-decoded JT808 message (msg_id, serial, body).
+    /// Performs message-type-based dispatch and returns a `ParsedMessage`.
+    pub fn process_jt_message(
+        &mut self,
+        msg_id: u16,
+        serial: u16,
+        body: &[u8],
+    ) -> ParsedMessage {
+        use crate::jt1078::response_parser;
+        match msg_id {
+            0x0002 => {
+                self.last_heartbeat = Instant::now();
+                ParsedMessage::Heartbeat
+            }
+            0x0100 => match response_parser::parse_register_request(body) {
+                Ok(req) => ParsedMessage::Register(req),
+                Err(e) => {
+                    tracing::warn!("parse_register_request failed: {}", e);
+                    ParsedMessage::Unknown { msg_id, serial, body: body.to_vec() }
+                }
+            },
+            0x0102 => match response_parser::parse_attribute_report(body) {
+                Ok(a) => ParsedMessage::AttributeReport(a),
+                Err(e) => {
+                    tracing::warn!("parse_attribute_report failed: {}", e);
+                    ParsedMessage::Unknown { msg_id, serial, body: body.to_vec() }
+                }
+            },
+            0x0200 => match response_parser::parse_location_report(body) {
+                Ok(l) => ParsedMessage::LocationReport(l),
+                Err(e) => {
+                    tracing::warn!("parse_location_report failed: {}", e);
+                    ParsedMessage::Unknown { msg_id, serial, body: body.to_vec() }
+                }
+            },
+            0x0801 => match response_parser::parse_media_item_first(body) {
+                Ok(m) => ParsedMessage::MediaItem(m),
+                Err(e) => {
+                    tracing::warn!("parse_media_item_first failed: {}", e);
+                    ParsedMessage::Unknown { msg_id, serial, body: body.to_vec() }
+                }
+            },
+            0x0001 => {
+                if body.len() >= 5 {
+                    let reply_serial = u16::from_be_bytes([body[0], body[1]]);
+                    let reply_msg_id = u16::from_be_bytes([body[2], body[3]]);
+                    let result = body[4];
+                    ParsedMessage::CommonResponse { reply_serial, reply_msg_id, result }
+                } else {
+                    ParsedMessage::Unknown { msg_id, serial, body: body.to_vec() }
+                }
+            }
+            0x0107 => match response_parser::parse_query_params_response(body) {
+                Ok(p) => ParsedMessage::QueryParamsResponse(p),
+                Err(e) => {
+                    tracing::warn!("parse_query_params_response failed: {}", e);
+                    ParsedMessage::Unknown { msg_id, serial, body: body.to_vec() }
+                }
+            },
+            _ => ParsedMessage::Unknown { msg_id, serial, body: body.to_vec() },
+        }
     }
 }
 
@@ -214,7 +306,7 @@ mod tests {
 
     #[test]
     fn test_auth_and_heartbeat_processing() {
-        std::env::set_var("WVP__JT1078__TOKEN", "mytoken");
+        std::env::set_var("GBSERVER__JT1078__TOKEN", "mytoken");
         let mut sess = Jt1078Session::new(make_addr());
         sess.expected_token = Some("mytoken".into());
 
@@ -250,7 +342,7 @@ mod tests {
 
     #[test]
     fn test_auth_failure() {
-        std::env::set_var("WVP__JT1078__TOKEN", "good");
+        std::env::set_var("GBSERVER__JT1078__TOKEN", "good");
         let mut sess = Jt1078Session::new(make_addr());
         sess.expected_token = Some("good".into());
 

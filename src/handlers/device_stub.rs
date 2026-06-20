@@ -1,4 +1,13 @@
 //! 设备相关接口：能落库的用 DB 实现，其余保持兼容空实现（后续可对接 SIP/ZLM）
+//!
+//! ## 角色定位 (Phase 2.5)
+//!
+//! 本模块部分 handler 已迁移到 `crate::handlers::device_control`：
+//! - 报警订阅 (`/api/device/subscribe/alarm`) — 实际由 `device_control::subscribe_alarm` 处理
+//! - 移动位置订阅 (`/api/device/subscribe/mobilePosition`) — 由 `device_control::subscribe_mobile_position`
+//!
+//! 仍有少量兼容路径（如 `/api/device/snap/:id`、`/api/device/record/control`）保留在本模块
+//! 以保持前端兼容。
 
 use axum::{
     extract::{Path, Query, State},
@@ -22,6 +31,7 @@ use crate::db::{
 };
 use crate::error::{AppError, ErrorCode};
 use crate::response::WVPResult;
+use crate::state::StreamStateRepository;
 use crate::AppState;
 use std::time::Duration;
 use tokio::time::timeout;
@@ -428,12 +438,11 @@ pub async fn control_record(
             if device.online {
                 match server.send_device_control(&device_id, &channel_id, "DeviceControl", &record_cmd_xml).await {
                     Ok(_) => {
-                        if let Some(ref redis) = state.redis {
-                            if is_start {
-                                crate::cache::set_recording_state(redis, &device_id, &channel_id, "Record").await;
-                            } else {
-                                crate::cache::del_recording_state(redis, &device_id, &channel_id).await;
-                            }
+                        // Phase 7.1: use StateStore repository instead of cache.rs (deprecated).
+                        if is_start {
+                            state.state_repo.as_ref().set_recording(&device_id, &channel_id, "Record");
+                        } else {
+                            state.state_repo.as_ref().del_recording(&device_id, &channel_id);
                         }
                         
                         state.ws_state.broadcast("record_state", serde_json::json!({
@@ -725,7 +734,7 @@ pub async fn device_tree(
 
 
 /// GET /api/device/query/statistics/register
-/// 真实聚合 wvp_device 表的注册设备数
+/// 真实聚合 gb_device 表的注册设备数
 pub async fn statistics_register(
     State(state): State<AppState>,
 ) -> Json<WVPResult<serde_json::Value>> {

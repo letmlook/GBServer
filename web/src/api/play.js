@@ -26,3 +26,32 @@ export function broadcastStop(deviceId, channelId, ) {
     url: '/api/play/broadcast/stop/' + deviceId + '/' + channelId
   })
 }
+
+// C6: 分享链接鉴权 token
+export function createShareLink(deviceId, channelId, ttl) {
+  return request({
+    method: 'get',
+    url: '/api/play/share',
+    params: {
+      deviceId,
+      channelId,
+      ttl
+    }
+  })
+}
+
+export function shareInfo(params) {
+  return request({
+    method: 'get',
+    url: '/api/play/share/info',
+    params
+  })
+}
+
+export function shareStart(params) {
+  return request({
+    method: 'get',
+    url: '/api/play/share/start',
+    params
+  })
+}

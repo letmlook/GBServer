@@ -25,6 +25,7 @@ pub struct TerminalListQuery {
 #[derive(Debug, Deserialize)]
 pub struct TerminalQuery {
     pub device_id: Option<String>,
+    #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
 }
 
@@ -38,6 +39,7 @@ pub struct ChannelListQuery {
 
 #[derive(Debug, Deserialize)]
 pub struct LiveQuery {
+    #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
     pub channel_id: Option<i32>,
     pub r#type: Option<String>,
@@ -45,6 +47,7 @@ pub struct LiveQuery {
 
 #[derive(Debug, Deserialize)]
 pub struct PlaybackQuery {
+    #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
     pub channel_id: Option<i32>,
     pub start_time: Option<String>,
@@ -57,6 +60,7 @@ pub struct PlaybackQuery {
 
 #[derive(Debug, Deserialize)]
 pub struct RecordListQuery {
+    #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
     pub channel_id: Option<i32>,
     pub start_time: Option<String>,
@@ -65,6 +69,7 @@ pub struct RecordListQuery {
 
 #[derive(Debug, Deserialize)]
 pub struct DownloadUrlQuery {
+    #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
     pub channel_id: Option<i32>,
     pub start_time: Option<String>,
@@ -77,6 +82,7 @@ pub struct DownloadUrlQuery {
 
 #[derive(Debug, Deserialize)]
 pub struct ControlQuery {
+    #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
     pub channel_id: Option<i32>,
     pub command: Option<String>,
@@ -86,6 +92,7 @@ pub struct ControlQuery {
 
 #[derive(Debug, Deserialize)]
 pub struct PtzQuery {
+    #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
     pub channel_id: Option<i32>,
     pub command: Option<String>,
@@ -94,6 +101,7 @@ pub struct PtzQuery {
 
 #[derive(Debug, Deserialize)]
 pub struct WiperQuery {
+    #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
     pub channel_id: Option<i32>,
     pub command: Option<String>,
@@ -101,6 +109,7 @@ pub struct WiperQuery {
 
 #[derive(Debug, Deserialize)]
 pub struct FillLightQuery {
+    #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
     pub channel_id: Option<i32>,
     pub command: Option<String>,
@@ -108,32 +117,38 @@ pub struct FillLightQuery {
 
 #[derive(Debug, Deserialize)]
 pub struct PositionQuery {
+    #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct LinkDetectionQuery {
+    #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct AttributeQuery {
+    #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct DriverInfoQuery {
+    #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct TextMsgBody {
+    #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
     pub message: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct TerminalCallbackQuery {
+    #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
     pub sign: Option<String>,
     pub dest_phone_number: Option<String>,
@@ -141,23 +156,27 @@ pub struct TerminalCallbackQuery {
 
 #[derive(Debug, Deserialize)]
 pub struct DoorQuery {
+    #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
     pub open: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct MediaAttributeQuery {
+    #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct TalkQuery {
+    #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
     pub channel_id: Option<i32>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct TerminalAddBody {
+    #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
     pub name: Option<String>,
     pub device_id: Option<String>,
@@ -169,6 +188,7 @@ pub struct TerminalAddBody {
 
 #[derive(Debug, Deserialize)]
 pub struct TerminalUpdateBody {
+    #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
     pub name: Option<String>,
     pub device_id: Option<String>,
@@ -195,6 +215,7 @@ pub struct ChannelAddBody {
 
 #[derive(Debug, Deserialize)]
 pub struct ConfigBody {
+    #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
     pub apn: Option<String>,
     pub ip: Option<String>,
@@ -205,11 +226,13 @@ pub struct ConfigBody {
 
 #[derive(Debug, Deserialize)]
 pub struct ResetBody {
+    #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct ConnectionBody {
+    #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
     pub ip: Option<String>,
     pub port: Option<i32>,
@@ -438,68 +461,86 @@ pub async fn live_start(
 ) -> Json<serde_json::Value> {
     let phone = q.phone_number.clone().unwrap_or_default();
     let channel_id = q.channel_id.unwrap_or(1);
-    let stream_type = q.r#type.clone().unwrap_or_else(|| "main".to_string());
+    let stream_type_str = q.r#type.clone().unwrap_or_else(|| "main".to_string());
 
+    if phone.is_empty() {
+        return Json(build_error("缺少 phoneNumber"));
+    }
+
+    let stream_type: u8 = match stream_type_str.as_str() {
+        "sub" => 1,
+        _ => 0,
+    };
     tracing::info!("JT1078 live start: phone={}, channel={}, type={}", phone, channel_id, stream_type);
 
-    // 真给 JT1078 终端发 9101 实时音视频请求，让设备推流到 ZLM 9102/UDP 端口
-    if let Some(mgr) = state.jt1078_manager.read().await.as_ref() {
-        let stream_type: u8 = match stream_type.as_str() {
-            "sub" => 1,
-            _ => 0,
-        };
-        if let Err(e) = mgr.send_live_video(&phone, channel_id as u8, stream_type, false).await {
-            tracing::warn!("JT1078 send_live_video(9101) failed for {}: {}", phone, e);
+    let zlm = match state.zlm_client.as_ref() {
+        Some(z) => z,
+        None => return Json(build_error("ZLM 未配置")),
+    };
+
+    // 1) Open ZLM RTP server (allocates a port for terminal to push to)
+    let stream_id = format!("jt1078_{}_{}", phone, channel_id);
+    let rtp_info = match zlm.open_rtp_server(&crate::zlm::OpenRtpServerRequest {
+        secret: zlm.secret.clone(),
+        stream_id: stream_id.clone(),
+        port: None,
+        use_tcp: Some(false),
+        rtp_type: Some(0),
+        recv_port: None,
+    }).await {
+        Ok(i) => i,
+        Err(e) => return Json(build_error(&format!("ZLM RTP 失败: {}", e))),
+    };
+
+    // 2) Send 0x9101 to terminal + wait for 0x0001 ack (10s timeout)
+    let mgr_guard = state.jt1078_manager.read().await;
+    let mgr = match mgr_guard.as_ref() {
+        Some(m) => m,
+        None => {
+            let _ = zlm.close_rtp_server(&stream_id).await;
+            return Json(build_error("JT1078 manager 未初始化"));
         }
+    };
+    let result = match mgr.send_live_video_and_wait(&phone, channel_id as u8, stream_type, false, 10).await {
+        Ok(r) => r,
+        Err(e) => {
+            let _ = zlm.close_rtp_server(&stream_id).await;
+            return Json(build_error(&format!("实时视频命令失败: {}", e)));
+        }
+    };
+    if result != 0 {
+        let _ = zlm.close_rtp_server(&stream_id).await;
+        return Json(build_error(&format!("终端拒绝实时视频 result={}", result)));
     }
 
-    // Open RTP server on ZLM for this JT1078 channel
-    if let Some(ref zlm) = state.zlm_client {
-        let stream_id = format!("jt1078_{}_{}", phone, channel_id);
-        match zlm.open_rtp_server(&crate::zlm::OpenRtpServerRequest {
-            secret: zlm.secret.clone(),
-            stream_id: stream_id.clone(),
-            port: None,
-            use_tcp: Some(false),
-            rtp_type: Some(0),
-            recv_port: None,
-        }).await {
-            Ok(info) => {
-                let rtmp_url = format!("rtmp://127.0.0.1:1935/live/{}", info.stream_id);
-                let rtsp_url = format!("rtsp://127.0.0.1:554/{}", info.stream_id);
-                let ws_url = format!("ws://127.0.0.1/live/{}", info.stream_id);
-                return Json(serde_json::json!({
-                    "code": 0,
-                    "msg": "success",
-                    "data": {
-                        "phoneNumber": phone,
-                        "channelId": channel_id,
-                        "streamType": stream_type,
-                        "rtmpUrl": rtmp_url,
-                        "rtspUrl": rtsp_url,
-                        "wsUrl": ws_url,
-                        "stream_id": info.stream_id,
-                        "port": info.port,
-                    }
-                }));
-            }
-            Err(e) => {
-                tracing::error!("JT1078 live start ZLM error: {}", e);
-            }
+    // 3) Wait for ZLM on_stream_changed hook to resolve (10s timeout)
+    match mgr.wait_for_zlm_media(&phone, channel_id as u8, 10).await {
+        Ok(sess) => {
+            // Build real URLs from ZLM host/port + resolved stream_id
+            let zlm_stream_id = sess.zlm_stream_id.clone().unwrap_or_else(|| stream_id.clone());
+            let host = zlm.ip.clone();
+            Json(serde_json::json!({
+                "code": 0,
+                "msg": "success",
+                "data": {
+                    "phoneNumber": phone,
+                    "channelId": channel_id,
+                    "streamType": stream_type,
+                    "rtmpUrl": format!("rtmp://{}/live/{}", host, zlm_stream_id),
+                    "rtspUrl": format!("rtsp://{}/{}", host, zlm_stream_id),
+                    "wsUrl": format!("ws://{}/live/{}", host, zlm_stream_id),
+                    "stream_id": zlm_stream_id,
+                    "port": rtp_info.port,
+                    "session_state": "active",
+                }
+            }))
+        }
+        Err(e) => {
+            // 清理 ZLM RTP server
+            let _ = zlm.close_rtp_server(&stream_id).await;
+            Json(build_error(&format!("ZLM 媒体等待失败: {}", e)))
         }
     }
-
-    // Fallback response if ZLM not configured or error
-    Json(serde_json::json!({
-        "code": 0,
-        "msg": "success",
-        "data": {
-            "phoneNumber": phone,
-            "channelId": channel_id,
-            "streamType": stream_type,
-            "url": format!("rtmp://127.0.0.1/live/{}_{}", phone, channel_id)
-        }
-    }))
 }
 
 /// GET /api/jt1078/live/stop
@@ -508,21 +549,32 @@ pub async fn live_stop(
     Query(q): Query<LiveQuery>,
 ) -> Json<serde_json::Value> {
     let phone = q.phone_number.clone().unwrap_or_default();
-    let channel_id = q.channel_id.unwrap_or(1);
+    let channel_id = q.channel_id.unwrap_or(1) as u8;
+
+    if phone.is_empty() {
+        return Json(build_error("缺少 phoneNumber"));
+    }
 
     tracing::info!("JT1078 live stop: phone={}, channel={}", phone, channel_id);
-    // 真给终端发 9102 关闭实时流
-    if let Some(mgr) = state.jt1078_manager.read().await.as_ref() {
-        if let Err(e) = mgr.send_live_video_control(&phone, channel_id as u8, 0, true).await {
-            tracing::warn!("JT1078 send_live_video_control(stop) failed: {}", e);
+    let mgr_guard = state.jt1078_manager.read().await;
+    if let Some(mgr) = mgr_guard.as_ref() {
+        // Stop the media session first
+        mgr.media_session_manager().stop(&phone, channel_id);
+        // Send 0x9102 close + wait for 0x0001 ack
+        match mgr.send_live_video_control_and_wait(&phone, channel_id, 0, true, 5).await {
+            Ok(0) => {
+                // Close ZLM RTP server
+                if let Some(ref zlm) = state.zlm_client {
+                    let stream_id = format!("jt1078_{}_{}", phone, channel_id);
+                    let _ = zlm.close_rtp_server(&stream_id).await;
+                }
+                return Json(build_success("停止播放已应答"));
+            }
+            Ok(result) => return Json(build_error(&format!("终端拒绝停止 result={}", result))),
+            Err(e) => return Json(build_error(&format!("停止错误: {}", e))),
         }
     }
-    // Close RTP server on ZLM if running
-    if let Some(ref zlm) = state.zlm_client {
-        let stream_id = format!("jt1078_{}_{}", phone, channel_id);
-        let _ = zlm.close_rtp_server(&stream_id).await;
-    }
-    Json(build_success("停止播放成功"))
+    Json(build_error("JT1078 manager 未初始化"))
 }
 
 // ========== 录像回放 ==========
@@ -536,57 +588,75 @@ pub async fn playback_start(
     let start_time = q.start_time.clone().unwrap_or_default();
     let end_time = q.end_time.clone().unwrap_or_default();
 
+    if phone.is_empty() {
+        return Json(build_error("缺少 phoneNumber"));
+    }
+    if start_time.is_empty() || end_time.is_empty() {
+        return Json(build_error("缺少 startTime / endTime"));
+    }
+
     tracing::info!("JT1078 playback start: phone={}, channel={}, {}-{}", phone, channel_id, start_time, end_time);
 
-    // 真给终端发 9201 回放请求
-    if !start_time.is_empty() && !end_time.is_empty() {
-        if let Some(mgr) = state.jt1078_manager.read().await.as_ref() {
-            if let Err(e) = mgr.send_playback(
-                &phone, channel_id as u8, 0, 0, 0, &start_time, &end_time,
-            ).await {
-                tracing::warn!("JT1078 send_playback(9201) failed: {}", e);
-            }
+    let zlm = match state.zlm_client.as_ref() {
+        Some(z) => z,
+        None => return Json(build_error("ZLM 未配置")),
+    };
+
+    // 1) Open ZLM RTP server for playback
+    let stream_id = format!("playback_{}_{}", phone, channel_id);
+    let rtp_info = match zlm.open_rtp_server(&crate::zlm::OpenRtpServerRequest {
+        secret: zlm.secret.clone(),
+        stream_id: stream_id.clone(),
+        port: None,
+        use_tcp: Some(false),
+        rtp_type: Some(0),
+        recv_port: None,
+    }).await {
+        Ok(i) => i,
+        Err(e) => return Json(build_error(&format!("ZLM RTP 失败: {}", e))),
+    };
+
+    // 2) Send 0x9201 to terminal + wait for 0x0001 ack
+    let mgr_guard = state.jt1078_manager.read().await;
+    let mgr = match mgr_guard.as_ref() {
+        Some(m) => m,
+        None => {
+            let _ = zlm.close_rtp_server(&stream_id).await;
+            return Json(build_error("JT1078 manager 未初始化"));
         }
+    };
+    let result = match mgr.send_playback_and_wait(
+        &phone, channel_id as u8, 0, 0, 0, &start_time, &end_time, 10,
+    ).await {
+        Ok(r) => r,
+        Err(e) => {
+            let _ = zlm.close_rtp_server(&stream_id).await;
+            return Json(build_error(&format!("回放命令失败: {}", e)));
+        }
+    };
+    if result != 0 {
+        let _ = zlm.close_rtp_server(&stream_id).await;
+        return Json(build_error(&format!("终端拒绝回放 result={}", result)));
     }
 
-    // Open ZLM playback RTP server
-    if let Some(ref zlm) = state.zlm_client {
-        let stream_id = format!("playback_{}_{}", phone, channel_id);
-        let rtp_req = crate::zlm::OpenRtpServerRequest {
-            secret: zlm.secret.clone(),
-            stream_id: stream_id.clone(),
-            port: None,
-            use_tcp: Some(false),
-            rtp_type: Some(0),
-            recv_port: None,
-        };
-        match zlm.open_rtp_server(&rtp_req).await {
-            Ok(info) => {
-                let play_url = format!("rtmp://127.0.0.1:1935/live/{}", info.stream_id);
-                return Json(serde_json::json!({
-                    "code": 0,
-                    "msg": "success",
-                    "data": {
-                        "streamId": stream_id,
-                        "playUrl": play_url,
-                        "rtpPort": info.port,
-                    }
-                }));
+    // 3) Create playback session + wait for ZLM media
+    mgr.media_session_manager().create_playback(&phone, channel_id as u8);
+    match mgr.wait_for_zlm_media(&phone, channel_id as u8, 10).await {
+        Ok(sess) => Json(serde_json::json!({
+            "code": 0,
+            "msg": "success",
+            "data": {
+                "streamId": sess.zlm_stream_id.clone().unwrap_or_else(|| stream_id.clone()),
+                "playUrl": format!("rtmp://{}/live/{}", zlm.ip, sess.zlm_stream_id.clone().unwrap_or_else(|| stream_id.clone())),
+                "rtpPort": rtp_info.port,
+                "sessionState": "active",
             }
-            Err(e) => {
-                tracing::error!("Playback open RTP error: {}", e);
-            }
+        })),
+        Err(e) => {
+            let _ = zlm.close_rtp_server(&stream_id).await;
+            Json(build_error(&format!("回放媒体等待失败: {}", e)))
         }
     }
-
-    Json(serde_json::json!({
-        "code": 0,
-        "msg": "success",
-        "data": {
-            "streamId": format!("playback_{}_{}", phone, channel_id),
-            "playUrl": format!("rtmp://127.0.0.1/record/{}_{}", phone, channel_id)
-        }
-    }))
 }
 
 /// GET /api/jt1078/playback/stop
@@ -595,21 +665,30 @@ pub async fn playback_stop(
     Query(q): Query<ControlQuery>,
 ) -> Json<serde_json::Value> {
     let phone = q.phone_number.clone().unwrap_or_default();
-    let channel_id = q.channel_id.unwrap_or(0);
+    let channel_id = q.channel_id.unwrap_or(0) as u8;
+
+    if phone.is_empty() {
+        return Json(build_error("缺少 phoneNumber"));
+    }
 
     tracing::info!("JT1078 playback stop: phone={}, channel={}", phone, channel_id);
-    // 真给终端发 9202 关闭回放（control=4 表示停止）
-    if let Some(mgr) = state.jt1078_manager.read().await.as_ref() {
-        if let Err(e) = mgr.send_playback_control(&phone, channel_id as u8, 4, 0, "").await {
-            tracing::warn!("JT1078 send_playback_control(stop) failed: {}", e);
+    let mgr_guard = state.jt1078_manager.read().await;
+    if let Some(mgr) = mgr_guard.as_ref() {
+        mgr.media_session_manager().stop(&phone, channel_id);
+        // Send 0x9202 close (control=4) + wait for 0x0001
+        match mgr.send_playback_control_and_wait(&phone, channel_id, 4, 0, "2000-01-01T00:00:00", 5).await {
+            Ok(0) => {
+                if let Some(ref zlm) = state.zlm_client {
+                    let stream_id = format!("playback_{}_{}", phone, channel_id);
+                    let _ = zlm.close_rtp_server(&stream_id).await;
+                }
+                return Json(build_success("停止回放已应答"));
+            }
+            Ok(result) => return Json(build_error(&format!("终端拒绝停止 result={}", result))),
+            Err(e) => return Json(build_error(&format!("停止回放错误: {}", e))),
         }
     }
-    // Stop playback RTP on ZLM if running
-    if let Some(ref zlm) = state.zlm_client {
-        let stream_id = format!("playback_{}_{}", phone, channel_id);
-        let _ = zlm.close_rtp_server(&stream_id).await;
-    }
-    Json(build_success("停止回放成功"))
+    Json(build_error("JT1078 manager 未初始化"))
 }
 
 /// GET /api/jt1078/playback/control
@@ -644,14 +723,26 @@ pub async fn playback_control(
     };
 
     let result = if seek && !seek_time.is_empty() {
-        mgr.send_playback_control(&phone, channel_id, control, speed, &seek_time).await
+        mgr.send_playback_control_and_wait(&phone, channel_id, control, speed, &seek_time, 5).await
     } else {
-        mgr.send_playback_control(&phone, channel_id, control, speed, "2000-01-01T00:00:00").await
+        mgr.send_playback_control_and_wait(&phone, channel_id, control, speed, "2000-01-01T00:00:00", 5).await
     };
 
     match result {
-        Ok(()) => Json(build_success("回放控制成功")),
-        Err(e) => Json(build_error(&e)),
+        Ok(0) => {
+            // Update session state for pause/resume/speed
+            match control {
+                1 => mgr.media_session_manager().pause(&phone, channel_id),
+                2 => mgr.media_session_manager().resume(&phone, channel_id),
+                _ => {}
+            }
+            if control == 3 || control == 4 || (control == 5 && speed > 0) {
+                mgr.media_session_manager().update_speed(&phone, channel_id, speed as f64);
+            }
+            Json(build_success("回放控制已应答"))
+        }
+        Ok(result) => Json(build_error(&format!("回放控制失败 result={}", result))),
+        Err(e) => Json(build_error(&format!("回放控制错误: {}", e))),
     }
 }
 
@@ -756,9 +847,10 @@ pub async fn ptz(
         Err(e) => return e,
     };
 
-    match mgr.send_ptz(&phone, channel_id, &command, speed).await {
-        Ok(()) => Json(build_success("云台控制命令已发送")),
-        Err(e) => Json(build_error(&e)),
+    match mgr.send_ptz_and_wait(&phone, channel_id, &command, speed, 5).await {
+        Ok(0) => Json(build_success("云台控制命令已应答")),
+        Ok(result) => Json(build_error(&format!("云台失败 result={}", result))),
+        Err(e) => Json(build_error(&format!("云台错误: {}", e))),
     }
 }
 
@@ -780,9 +872,10 @@ pub async fn wiper(
         Err(e) => return e,
     };
 
-    match mgr.send_wiper(&phone, on).await {
-        Ok(()) => Json(build_success("雨刷控制命令已发送")),
-        Err(e) => Json(build_error(&e)),
+    match mgr.send_set_params_and_wait(&phone, &[(0x0033u32, &[if on { 1 } else { 0 }])], 5).await {
+        Ok(0) => Json(build_success("雨刷控制命令已应答")),
+        Ok(result) => Json(build_error(&format!("雨刷失败 result={}", result))),
+        Err(e) => Json(build_error(&format!("雨刷错误: {}", e))),
     }
 }
 
@@ -804,9 +897,10 @@ pub async fn fill_light(
         Err(e) => return e,
     };
 
-    match mgr.send_fill_light(&phone, on).await {
-        Ok(()) => Json(build_success("补光灯控制命令已发送")),
-        Err(e) => Json(build_error(&e)),
+    match mgr.send_set_params_and_wait(&phone, &[(0x0016u32, &[if on { 1 } else { 0 }])], 5).await {
+        Ok(0) => Json(build_success("补光灯控制命令已应答")),
+        Ok(result) => Json(build_error(&format!("补光灯失败 result={}", result))),
+        Err(e) => Json(build_error(&format!("补光灯错误: {}", e))),
     }
 }
 
@@ -816,11 +910,65 @@ pub async fn record_list(
     Query(q): Query<RecordListQuery>,
 ) -> Json<serde_json::Value> {
     let phone = q.phone_number.clone().unwrap_or_default();
-    let channel_id = q.channel_id.unwrap_or(0);
+    let channel_id = q.channel_id.unwrap_or(0) as i32;
+    let start_time = q.start_time.clone().unwrap_or_default();
+    let end_time = q.end_time.clone().unwrap_or_default();
 
-    tracing::info!("JT1078 record list: phone={}, channel={}", phone, channel_id);
+    if phone.is_empty() {
+        return Json(build_error("缺少 phoneNumber"));
+    }
 
-    // Query ZLM MP4 records for this terminal
+    tracing::info!("JT1078 record list: phone={}, channel={}, {}-{}", phone, channel_id, start_time, end_time);
+
+    // Phase 6.4: 真发 0x8802 media search → 等 0x0001 应答 → 落库 → 返回
+    if !start_time.is_empty() && !end_time.is_empty() {
+        let mgr_guard = state.jt1078_manager.read().await;
+        if let Some(mgr) = mgr_guard.as_ref() {
+            if mgr.is_terminal_online(&phone).await {
+                match mgr.send_media_search_and_wait(
+                    &phone, channel_id as u8, &start_time, &end_time, 30,
+                ).await {
+                    Ok(_) => {
+                        // 终端应答 - 实际的多包 0x0801 通过 process_jt_message 接收
+                        // 此处返回时先尝试从 DB 读已落库的 items
+                        drop(mgr_guard);
+                        match jt_db::list_media_items_by_terminal(
+                            &state.pool, &phone,
+                            Some(&start_time), Some(&end_time), 50,
+                        ).await {
+                            Ok(items) if !items.is_empty() => {
+                                let list: Vec<serde_json::Value> = items.iter().map(|i| {
+                                    serde_json::json!({
+                                        "mediaId": i.media_id,
+                                        "phoneNumber": i.phone_number,
+                                        "channelId": i.channel_id,
+                                        "mediaType": i.media_type,
+                                        "mediaFormat": i.media_format,
+                                        "eventCode": i.event_code,
+                                        "startTime": i.start_time,
+                                        "endTime": i.end_time,
+                                        "source": "device",
+                                    })
+                                }).collect();
+                                return Json(serde_json::json!({
+                                    "code": 0,
+                                    "data": { "list": list, "total": list.len() }
+                                }));
+                            }
+                            _ => {
+                                // DB 还没有 items (0x0801 多包未到达) - 继续兜底
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("JT1078 send_media_search(0x8802) failed for {}: {}", phone, e);
+                    }
+                }
+            }
+        }
+    }
+
+    // Fallback: ZLM MP4 records
     if let Some(ref zlm) = state.zlm_client {
         let app = "record";
         let stream = if channel_id > 0 {
@@ -828,57 +976,50 @@ pub async fn record_list(
         } else {
             phone.clone()
         };
-        match zlm.get_mp4_record_file(app, &stream, None, None, None).await {
-            Ok(files) => {
-                let records: Vec<serde_json::Value> = files.iter().map(|f| {
-                    let start_ms = f.create_time.parse::<i64>().unwrap_or(0);
-                    let duration = f.duration.unwrap_or(0.0);
-                    serde_json::json!({
-                        "fileName": f.name,
-                        "filePath": f.path,
-                        "fileSize": f.size,
-                        "startTime": start_ms,
-                        "endTime": start_ms + (duration * 1000.0) as i64,
-                        "duration": duration,
-                        "downloadUrl": format!("/record/{}", f.name)
-                    })
-                }).collect();
-                return Json(serde_json::json!({
-                    "code": 0,
-                    "data": { "list": records, "total": records.len() }
-                }));
-            }
-            Err(e) => {
-                tracing::warn!("JT1078 record list ZLM query failed: {}", e);
-            }
-        }
-    }
-
-    // Fallback: query cloud_record DB
-    match sqlx::query_as::<_, crate::db::cloud_record::CloudRecord>(
-        "SELECT * FROM wvp_cloud_record WHERE stream = $1 ORDER BY start_time DESC LIMIT 50"
-    )
-    .bind(&phone)
-    .fetch_all(&state.pool)
-    .await
-    {
-        Ok(records) => {
-            let list: Vec<serde_json::Value> = records.iter().map(|r| {
+        if let Ok(files) = zlm.get_mp4_record_file(app, &stream, None, None, None).await {
+            let records: Vec<serde_json::Value> = files.iter().map(|f| {
+                let start_ms = f.create_time.parse::<i64>().unwrap_or(0);
+                let duration = f.duration.unwrap_or(0.0);
                 serde_json::json!({
-                    "fileName": r.file_name,
-                    "filePath": r.file_path,
-                    "fileSize": r.file_size,
-                    "startTime": r.start_time,
-                    "endTime": r.end_time,
-                    "duration": r.time_len,
+                    "fileName": f.name,
+                    "filePath": f.path,
+                    "fileSize": f.size,
+                    "startTime": start_ms,
+                    "endTime": start_ms + (duration * 1000.0) as i64,
+                    "duration": duration,
+                    "downloadUrl": format!("/record/{}", f.name),
+                    "source": "zlm",
                 })
             }).collect();
             return Json(serde_json::json!({
                 "code": 0,
-                "data": { "list": list, "total": list.len() }
+                "data": { "list": records, "total": records.len() }
             }));
         }
-        _ => {}
+    }
+
+    // Final fallback: cloud_record DB
+    if let Ok(records) = sqlx::query_as::<_, crate::db::cloud_record::CloudRecord>(
+        "SELECT * FROM gb_cloud_record WHERE stream = $1 ORDER BY start_time DESC LIMIT 50"
+    )
+    .bind(&phone)
+    .fetch_all(&state.pool)
+    .await {
+        let list: Vec<serde_json::Value> = records.iter().map(|r| {
+            serde_json::json!({
+                "fileName": r.file_name,
+                "filePath": r.file_path,
+                "fileSize": r.file_size,
+                "startTime": r.start_time,
+                "endTime": r.end_time,
+                "duration": r.time_len,
+                "source": "cloud_record",
+            })
+        }).collect();
+        return Json(serde_json::json!({
+            "code": 0,
+            "data": { "list": list, "total": list.len() }
+        }));
     }
 
     Json(serde_json::json!({
@@ -943,9 +1084,19 @@ pub async fn config_set(
         Err(e) => return e,
     };
 
-    match mgr.send_set_params(&phone, &apn, &ip, port).await {
-        Ok(()) => Json(build_success("配置保存成功")),
-        Err(e) => Json(build_error(&e)),
+    let mut port_bytes = [0u8; 4];
+    port_bytes.copy_from_slice(&port.to_be_bytes());
+    let apn_bytes = apn.as_bytes();
+    let ip_bytes = ip.as_bytes();
+    let params: Vec<(u32, &[u8])> = vec![
+        (0x0010u32, apn_bytes),
+        (0x0013u32, ip_bytes),
+        (0x0018u32, port_bytes.as_slice()),
+    ];
+    match mgr.send_set_params_and_wait(&phone, &params, 5).await {
+        Ok(0) => Json(build_success("配置保存已应答")),
+        Ok(result) => Json(build_error(&format!("配置保存失败 result={}", result))),
+        Err(e) => Json(build_error(&format!("配置保存错误: {}", e))),
     }
 }
 
@@ -1024,11 +1175,65 @@ pub async fn position_info(
         return Json(serde_json::json!({ "code": 1, "msg": "缺少 phoneNumber" }));
     }
 
+    // Phase 6.5: 先从 gb_jt_terminal 表读最近位置 (优先)
+    if let Ok(Some(terminal)) = jt_db::get_terminal_by_phone(&state.pool, &phone).await {
+        if let (Some(lng), Some(lat)) = (terminal.longitude, terminal.latitude) {
+            // register_time 字段被复用为 last_position_time
+            return Json(serde_json::json!({
+                "code": 0,
+                "data": {
+                    "phoneNumber": phone,
+                    "deviceId": terminal.phone_number,
+                    "latitude": lat,
+                    "longitude": lng,
+                    "speed": 0.0,
+                    "direction": 0,
+                    "altitude": 0,
+                    "time": terminal.register_time.unwrap_or_default(),
+                    "source": "db",
+                }
+            }));
+        }
+    }
+
+    // 兜底：实时查终端 (0x8201 位置查询)
+    let mgr_guard = state.jt1078_manager.read().await;
+    if let Some(mgr) = mgr_guard.as_ref() {
+        if mgr.is_terminal_online(&phone).await {
+            if let Ok(loc) = mgr.send_query_location_and_wait(&phone, 10).await {
+                // 落库 (异步)
+                let pool = state.pool.clone();
+                let phone_owned = phone.clone();
+                let lng = loc.longitude;
+                let lat = loc.latitude;
+                let time = loc.time;
+                tokio::spawn(async move {
+                    let _ = jt_db::update_last_position(
+                        &pool, &phone_owned, lng, lat, time,
+                    ).await;
+                });
+                return Json(serde_json::json!({
+                    "code": 0,
+                    "data": {
+                        "phoneNumber": phone,
+                        "latitude": lat,
+                        "longitude": lng,
+                        "speed": loc.speed,
+                        "direction": loc.direction,
+                        "altitude": loc.altitude,
+                        "time": loc.time.to_rfc3339(),
+                        "source": "device",
+                    }
+                }));
+            }
+        }
+    }
+
     // Query from mobile_position table (real-time position)
     #[cfg(feature = "postgres")]
     {
         let row = sqlx::query(
-            "SELECT device_id, longitude, latitude, speed, direction, altitude, create_time FROM wvp_mobile_position WHERE device_id = $1 ORDER BY create_time DESC LIMIT 1"
+            "SELECT device_id, longitude, latitude, speed, direction, altitude, create_time FROM gb_mobile_position WHERE device_id = $1 ORDER BY create_time DESC LIMIT 1"
         )
         .bind(&phone)
         .fetch_optional(&state.pool)
@@ -1123,9 +1328,10 @@ pub async fn text_msg(
         Err(e) => return e,
     };
 
-    match mgr.send_text_message(&phone, &message, false).await {
-        Ok(()) => Json(build_success("文本消息已发送")),
-        Err(e) => Json(build_error(&e)),
+    match mgr.send_text_message_and_wait(&phone, &message, false, 5).await {
+        Ok(0) => Json(build_success("文本消息已应答")),
+        Ok(result) => Json(build_error(&format!("文本消息失败 result={}", result))),
+        Err(e) => Json(build_error(&format!("文本消息错误: {}", e))),
     }
 }
 
@@ -1147,9 +1353,10 @@ pub async fn telephone_callback(
         Err(e) => return e,
     };
 
-    match mgr.send_phone_callback(&phone, sign, &dest).await {
-        Ok(()) => Json(build_success("回拨指令已发送")),
-        Err(e) => Json(build_error(&e)),
+    match mgr.send_phone_callback_and_wait(&phone, sign, &dest, 5).await {
+        Ok(0) => Json(build_success("回拨指令已应答")),
+        Ok(result) => Json(build_error(&format!("回拨失败 result={}", result))),
+        Err(e) => Json(build_error(&format!("回拨错误: {}", e))),
     }
 }
 
@@ -1172,7 +1379,7 @@ pub async fn driver_info(
 
     let online = mgr.is_terminal_online(&phone).await;
     if online {
-        let _ = mgr.send_query_attributes(&phone).await;
+        let _ = mgr.send_query_attributes_and_wait(&phone, 5).await;
     }
 
     // Read driver info from DB
@@ -1211,9 +1418,10 @@ pub async fn factory_reset(
         Err(e) => return e,
     };
 
-    match mgr.send_terminal_control(&phone, 4).await { // 4 = factory reset
-        Ok(()) => Json(build_success("恢复出厂设置指令已发送")),
-        Err(e) => Json(build_error(&e)),
+    match mgr.send_terminal_control_and_wait(&phone, 4, 5).await { // 4 = factory reset
+        Ok(0) => Json(build_success("恢复出厂设置指令已应答")),
+        Ok(result) => Json(build_error(&format!("恢复出厂设置失败 result={}", result))),
+        Err(e) => Json(build_error(&format!("恢复出厂设置错误: {}", e))),
     }
 }
 
@@ -1233,9 +1441,10 @@ pub async fn reset(
         Err(e) => return e,
     };
 
-    match mgr.send_terminal_control(&phone, 2).await { // 2 = restart
-        Ok(()) => Json(build_success("设备重启指令已发送")),
-        Err(e) => Json(build_error(&e)),
+    match mgr.send_terminal_control_and_wait(&phone, 2, 5).await { // 2 = restart
+        Ok(0) => Json(build_success("设备重启指令已应答")),
+        Ok(result) => Json(build_error(&format!("设备重启失败 result={}", result))),
+        Err(e) => Json(build_error(&format!("设备重启错误: {}", e))),
     }
 }
 
@@ -1257,9 +1466,13 @@ pub async fn connection(
         Err(e) => return e,
     };
 
-    match mgr.send_connection_control(&phone, &ip, port).await {
-        Ok(()) => Json(build_success("连接控制指令已发送")),
-        Err(e) => Json(build_error(&e)),
+    let mut port_bytes = [0u8; 4];
+    port_bytes.copy_from_slice(&port.to_be_bytes());
+    let params = vec![(0x0018u32, port_bytes.as_slice())];
+    match mgr.send_set_params_and_wait(&phone, &params, 5).await {
+        Ok(0) => Json(build_success("连接控制指令已应答")),
+        Ok(result) => Json(build_error(&format!("连接控制失败 result={}", result))),
+        Err(e) => Json(build_error(&format!("连接控制错误: {}", e))),
     }
 }
 
@@ -1281,9 +1494,10 @@ pub async fn door(
     };
 
     let control_type = if open { 1u8 } else { 0u8 }; // 1=unlock, 0=lock
-    match mgr.send_vehicle_control(&phone, control_type, open).await {
-        Ok(()) => Json(build_success(if open { "开门指令已发送" } else { "关门指令已发送" })),
-        Err(e) => Json(build_error(&e)),
+    match mgr.send_vehicle_control_and_wait(&phone, control_type, open, 5).await {
+        Ok(0) => Json(build_success(if open { "开门指令已应答" } else { "关门指令已应答" })),
+        Ok(result) => Json(build_error(&format!("车门控制失败 result={}", result))),
+        Err(e) => Json(build_error(&format!("车门控制错误: {}", e))),
     }
 }
 
@@ -1306,7 +1520,7 @@ pub async fn media_attribute(
 
     let online = mgr.is_terminal_online(&phone).await;
     if online {
-        let _ = mgr.send_query_attributes(&phone).await;
+        let _ = mgr.send_query_attributes_and_wait(&phone, 5).await;
     }
 
     // Build response from DB terminal info
@@ -1349,7 +1563,7 @@ pub async fn media_list(
             let channel_id: u8 = body.get("channelId").and_then(|v| v.as_u64()).unwrap_or(0) as u8;
             let start_time = body.get("startTime").and_then(|v| v.as_str()).unwrap_or("2000-01-01T00:00:00");
             let end_time = body.get("endTime").and_then(|v| v.as_str()).unwrap_or("2099-12-31T23:59:59");
-            let _ = mgr.send_media_search(phone, channel_id, start_time, end_time).await;
+            let _ = mgr.send_media_search_and_wait(phone, channel_id, start_time, end_time, 30).await;
         }
     }
 
@@ -1400,9 +1614,10 @@ pub async fn set_phone_book(
         Err(e) => return e,
     };
 
-    match mgr.send_set_phone_book(phone, &contacts).await {
-        Ok(()) => Json(build_success("电话本设置成功")),
-        Err(e) => Json(build_error(&e)),
+    match mgr.send_set_phone_book_and_wait(phone, &contacts, 5).await {
+        Ok(0) => Json(build_success("电话本设置已应答")),
+        Ok(result) => Json(build_error(&format!("电话本设置失败 result={}", result))),
+        Err(e) => Json(build_error(&format!("电话本设置错误: {}", e))),
     }
 }
 
@@ -1423,9 +1638,10 @@ pub async fn shooting(
         Err(e) => return e,
     };
 
-    match mgr.send_take_photo(&phone, channel_id).await {
-        Ok(()) => Json(build_success("抓拍指令已发送")),
-        Err(e) => Json(build_error(&e)),
+    match mgr.send_take_photo_and_wait(&phone, channel_id, 5).await {
+        Ok(0) => Json(build_success("抓拍指令已应答")),
+        Ok(result) => Json(build_error(&format!("抓拍失败 result={}", result))),
+        Err(e) => Json(build_error(&format!("抓拍错误: {}", e))),
     }
 }
 
@@ -1448,9 +1664,9 @@ pub async fn talk_start(
     };
 
     // Start bidirectional talk: send live video with audio and open bidirectional talk control
-    match mgr.send_live_video(&phone, channel_id, 0, false).await {
-        Ok(()) => {
-            let _ = mgr.send_live_video_control(&phone, channel_id, 5, false).await; // 5=open bidirectional talk
+    match mgr.send_live_video_and_wait(&phone, channel_id, 0, false, 5).await {
+        Ok(_) => {
+            let _ = mgr.send_live_video_control_and_wait(&phone, channel_id, 5, false, 5).await; // 5=open bidirectional talk
             Json(serde_json::json!({ "code": 0, "msg": "success", "data": { "phoneNumber": phone, "channelId": channel_id } }))
         }
         Err(e) => Json(build_error(&e)),
@@ -1474,30 +1690,47 @@ pub async fn talk_stop(
         Err(e) => return e,
     };
 
-    match mgr.send_live_video_control(&phone, channel_id, 5, true).await { // 5=close bidirectional talk
-        Ok(()) => Json(build_success("对讲停止成功")),
-        Err(e) => Json(build_error(&e)),
+    match mgr.send_live_video_control_and_wait(&phone, channel_id, 5, true, 5).await { // 5=close bidirectional talk
+        Ok(0) => Json(build_success("对讲停止已应答")),
+        Ok(result) => Json(build_error(&format!("对讲停止失败 result={}", result))),
+        Err(e) => Json(build_error(&format!("对讲停止错误: {}", e))),
     }
 }
 
 /// GET /api/jt1078/media/upload/one/upload (used in queryMediaList.vue direct fetch)
 #[derive(Debug, Deserialize)]
 pub struct MediaUploadQuery {
+    #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
     pub media_id: Option<String>,
 }
 
 pub async fn media_upload_one(
+    State(state): State<AppState>,
     Query(q): Query<MediaUploadQuery>,
 ) -> Json<serde_json::Value> {
     let phone = q.phone_number.clone().unwrap_or_default();
-    let media_id = q.media_id.clone().unwrap_or_default();
+    let media_id_str = q.media_id.clone().unwrap_or_default();
+    let media_id: u32 = media_id_str.parse().unwrap_or(0);
     tracing::info!("JT1078 media upload one: phone={}, media_id={}", phone, media_id);
-    Json(serde_json::json!({
-        "code": 0,
-        "msg": "success",
-        "data": {
-            "url": format!("http://127.0.0.1:8080/media/{}", media_id)
+
+    if phone.is_empty() {
+        return Json(build_error("缺少 phoneNumber"));
+    }
+
+    if let Some(mgr) = state.jt1078_manager.read().await.as_ref() {
+        match mgr.send_media_upload_and_wait(&phone, media_id, 5).await {
+            Ok(0) => Json(serde_json::json!({
+                "code": 0,
+                "msg": "success",
+                "data": {
+                    "url": format!("/api/jt1078/media/upload/{}", media_id)
+                }
+            })),
+            Ok(result) => Json(build_error(&format!("媒体上传失败 result={}", result))),
+            Err(e) => Json(build_error(&format!("媒体上传错误: {}", e))),
         }
-    }))
+    } else {
+        Json(build_error("JT1078 manager 未初始化"))
+    }
 }

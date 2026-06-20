@@ -245,6 +245,35 @@ pub fn build_query_attributes() -> Vec<u8> {
     vec![]
 }
 
+/// 0x8100: Terminal register response body.
+/// Layout:
+///   2 bytes reply_serial | 1 byte result | N bytes auth_code
+/// Result codes:
+///   0 = success
+///   1 = vehicle already registered
+///   2 = no such vehicle in DB
+///   3 = terminal already registered
+///   4 = no such terminal in DB
+pub fn build_register_response_body(register_serial: u16, result: u8, auth_code: &str) -> Vec<u8> {
+    let mut body = Vec::new();
+    body.extend_from_slice(&register_serial.to_be_bytes());
+    body.push(result);
+    let code_bytes = auth_code.as_bytes();
+    if code_bytes.len() > 255 {
+        // Truncate to 255 bytes max (JT/T 808 limit)
+        body.extend_from_slice(&code_bytes[..255]);
+    } else {
+        body.extend_from_slice(code_bytes);
+    }
+    body
+}
+
+/// 0x8100: Build complete terminal register response frame.
+pub fn build_register_response(phone: &str, register_serial: u16, result: u8, auth_code: &str) -> Vec<u8> {
+    let body = build_register_response_body(register_serial, result, auth_code);
+    build_jt808_frame(0x8100, phone, 0, &body)
+}
+
 /// 0x8801: Take photo
 pub fn build_take_photo(channel_id: u8, photo_cmd: u16, interval: u16, save_flag: u8,
     resolution: u8, quality: u8, brightness: u8, contrast: u8, saturation: u8, chroma: u8) -> Vec<u8> {
@@ -349,5 +378,30 @@ mod tests {
         let bcd = phone_to_bcd("13812345678");
         let phone = bcd_to_phone(&bcd);
         assert_eq!(phone, "13812345678");
+    }
+
+    #[test]
+    fn test_build_register_response_body_success() {
+        let body = build_register_response_body(42, 0, "AUTH123");
+        assert_eq!(body.len(), 2 + 1 + 7);
+        assert_eq!(u16::from_be_bytes([body[0], body[1]]), 42);
+        assert_eq!(body[2], 0);
+        assert_eq!(&body[3..], b"AUTH123");
+    }
+
+    #[test]
+    fn test_build_register_response_body_failed() {
+        let body = build_register_response_body(7, 2, "");
+        assert_eq!(body.len(), 3);
+        assert_eq!(u16::from_be_bytes([body[0], body[1]]), 7);
+        assert_eq!(body[2], 2);
+    }
+
+    #[test]
+    fn test_build_register_response_frame() {
+        let frame = build_register_response("13812345678", 100, 0, "XYZ");
+        assert_eq!(frame[0], 0x7E);
+        assert_eq!(*frame.last().unwrap(), 0x7E);
+        assert_eq!(u16::from_be_bytes([frame[1], frame[2]]), 0x8100);
     }
 }

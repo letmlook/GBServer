@@ -1,13 +1,13 @@
-# WVP-Pro Phase 0 Parity Audit
+# GBServer Interface Coverage Report (Phase 0)
 
 Generated at: 2026-06-10T16:07:00.146Z
 Baseline commit: `unknown`
-Upstream repository path: `/tmp/wvp-GB28181-pro`
+Upstream repository path: `/tmp/reference-java-impl`
 Local repository path: `/Users/lipeng/.codex/worktrees/63cb/GBServer`
 
 ## Scope
 
-This report compares the official WVP-Pro Java backend controllers and the official WVP-Pro frontend from the same commit against the Rust backend router and the local frontend in this repository.
+This report compares the reference Java backend controllers and the reference Java frontend from the same commit against the Rust backend router and the local frontend in this repository.
 
 ## Extracted counts
 

@@ -17,13 +17,13 @@ use crate::AppState;
 
 async fn update_platform_status(pool: &crate::db::Pool, id: i64, status: bool) -> Result<(), sqlx::Error> {
     #[cfg(feature = "postgres")]
-    sqlx::query("UPDATE wvp_platform SET status = $1 WHERE id = $2")
+    sqlx::query("UPDATE gb_platform SET status = $1 WHERE id = $2")
         .bind(status)
         .bind(id)
         .execute(pool)
         .await?;
     #[cfg(feature = "mysql")]
-    sqlx::query("UPDATE wvp_platform SET status = ? WHERE id = ?")
+    sqlx::query("UPDATE gb_platform SET status = ? WHERE id = ?")
         .bind(status)
         .bind(id)
         .execute(pool)
@@ -132,12 +132,12 @@ pub async fn platform_query(
 
     #[cfg(feature = "postgres")]
     let total = if search.is_empty() {
-        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM wvp_platform")
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_platform")
             .fetch_one(&state.pool)
             .await?
     } else {
         sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*) FROM wvp_platform WHERE name LIKE $1 OR server_gb_id LIKE $1 OR device_gb_id LIKE $1",
+            "SELECT COUNT(*) FROM gb_platform WHERE name LIKE $1 OR server_gb_id LIKE $1 OR device_gb_id LIKE $1",
         )
         .bind(&like)
         .fetch_one(&state.pool)
@@ -145,12 +145,27 @@ pub async fn platform_query(
     };
     #[cfg(feature = "mysql")]
     let total = if search.is_empty() {
-        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM wvp_platform")
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_platform")
             .fetch_one(&state.pool)
             .await?
     } else {
         sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*) FROM wvp_platform WHERE name LIKE ? OR server_gb_id LIKE ? OR device_gb_id LIKE ?",
+            "SELECT COUNT(*) FROM gb_platform WHERE name LIKE ? OR server_gb_id LIKE ? OR device_gb_id LIKE ?",
+        )
+        .bind(&like)
+        .bind(&like)
+        .bind(&like)
+        .fetch_one(&state.pool)
+        .await?
+    };
+    #[cfg(feature = "sqlite")]
+    let total = if search.is_empty() {
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_platform")
+            .fetch_one(&state.pool)
+            .await?
+    } else {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM gb_platform WHERE name LIKE ? OR server_gb_id LIKE ? OR device_gb_id LIKE ?",
         )
         .bind(&like)
         .bind(&like)
@@ -161,14 +176,14 @@ pub async fn platform_query(
 
     #[cfg(feature = "postgres")]
     let raw_list = if search.is_empty() {
-        sqlx::query_as::<_, Platform>("SELECT * FROM wvp_platform ORDER BY id DESC LIMIT $1 OFFSET $2")
+        sqlx::query_as::<_, Platform>("SELECT * FROM gb_platform ORDER BY id DESC LIMIT $1 OFFSET $2")
             .bind(count as i64)
             .bind(offset)
             .fetch_all(&state.pool)
             .await?
     } else {
         sqlx::query_as::<_, Platform>(
-            "SELECT * FROM wvp_platform WHERE name LIKE $1 OR server_gb_id LIKE $1 OR device_gb_id LIKE $1 ORDER BY id DESC LIMIT $2 OFFSET $3",
+            "SELECT * FROM gb_platform WHERE name LIKE $1 OR server_gb_id LIKE $1 OR device_gb_id LIKE $1 ORDER BY id DESC LIMIT $2 OFFSET $3",
         )
         .bind(&like)
         .bind(count as i64)
@@ -178,14 +193,33 @@ pub async fn platform_query(
     };
     #[cfg(feature = "mysql")]
     let raw_list = if search.is_empty() {
-        sqlx::query_as::<_, Platform>("SELECT * FROM wvp_platform ORDER BY id DESC LIMIT ? OFFSET ?")
+        sqlx::query_as::<_, Platform>("SELECT * FROM gb_platform ORDER BY id DESC LIMIT ? OFFSET ?")
             .bind(count as i64)
             .bind(offset)
             .fetch_all(&state.pool)
             .await?
     } else {
         sqlx::query_as::<_, Platform>(
-            "SELECT * FROM wvp_platform WHERE name LIKE ? OR server_gb_id LIKE ? OR device_gb_id LIKE ? ORDER BY id DESC LIMIT ? OFFSET ?",
+            "SELECT * FROM gb_platform WHERE name LIKE ? OR server_gb_id LIKE ? OR device_gb_id LIKE ? ORDER BY id DESC LIMIT ? OFFSET ?",
+        )
+        .bind(&like)
+        .bind(&like)
+        .bind(&like)
+        .bind(count as i64)
+        .bind(offset)
+        .fetch_all(&state.pool)
+            .await?
+    };
+    #[cfg(feature = "sqlite")]
+    let raw_list = if search.is_empty() {
+        sqlx::query_as::<_, Platform>("SELECT * FROM gb_platform ORDER BY id DESC LIMIT ? OFFSET ?")
+            .bind(count as i64)
+            .bind(offset)
+            .fetch_all(&state.pool)
+            .await?
+    } else {
+        sqlx::query_as::<_, Platform>(
+            "SELECT * FROM gb_platform WHERE name LIKE ? OR server_gb_id LIKE ? OR device_gb_id LIKE ? ORDER BY id DESC LIMIT ? OFFSET ?",
         )
         .bind(&like)
         .bind(&like)
@@ -325,9 +359,9 @@ pub async fn platform_channel_list(
         r#"
         SELECT c.id, c.device_id, c.name, c.gb_device_id, c.status, c.channel_type, d.manufacturer,
                pc.id as platform_channel_id, pc.custom_device_id, pc.custom_name
-        FROM wvp_device_channel c
-        LEFT JOIN wvp_device d ON c.device_id = d.device_id
-        LEFT JOIN wvp_platform_channel pc
+        FROM gb_device_channel c
+        LEFT JOIN gb_device d ON c.device_id = d.device_id
+        LEFT JOIN gb_platform_channel pc
                ON pc.device_channel_id = c.id AND pc.platform_id = $1
         WHERE ($2 = '' OR c.name LIKE $3 OR c.gb_device_id LIKE $3)
           AND ($4::bool IS NULL OR d.on_line = $4)
@@ -352,9 +386,40 @@ pub async fn platform_channel_list(
         r#"
         SELECT c.id, c.device_id, c.name, c.gb_device_id, c.status, c.channel_type, d.manufacturer,
                pc.id as platform_channel_id, pc.custom_device_id, pc.custom_name
-        FROM wvp_device_channel c
-        LEFT JOIN wvp_device d ON c.device_id = d.device_id
-        LEFT JOIN wvp_platform_channel pc
+        FROM gb_device_channel c
+        LEFT JOIN gb_device d ON c.device_id = d.device_id
+        LEFT JOIN gb_platform_channel pc
+               ON pc.device_channel_id = c.id AND pc.platform_id = ?
+        WHERE (? = '' OR c.name LIKE ? OR c.gb_device_id LIKE ?)
+          AND (? IS NULL OR d.on_line = ?)
+          AND (? IS NULL OR c.channel_type = ?)
+          AND ((? = 'true' AND pc.id IS NOT NULL) OR (? <> 'true' AND pc.id IS NULL))
+        ORDER BY c.id DESC
+        LIMIT ? OFFSET ?
+        "#,
+    )
+    .bind(platform_id)
+    .bind(&search)
+    .bind(&like)
+    .bind(&like)
+    .bind(online)
+    .bind(online)
+    .bind(channel_type)
+    .bind(channel_type)
+    .bind(has_share)
+    .bind(has_share)
+    .bind(count as i64)
+    .bind(offset)
+    .fetch_all(&state.pool)
+    .await?;
+    #[cfg(feature = "sqlite")]
+    let rows = sqlx::query(
+        r#"
+        SELECT c.id, c.device_id, c.name, c.gb_device_id, c.status, c.channel_type, d.manufacturer,
+               pc.id as platform_channel_id, pc.custom_device_id, pc.custom_name
+        FROM gb_device_channel c
+        LEFT JOIN gb_device d ON c.device_id = d.device_id
+        LEFT JOIN gb_platform_channel pc
                ON pc.device_channel_id = c.id AND pc.platform_id = ?
         WHERE (? = '' OR c.name LIKE ? OR c.gb_device_id LIKE ?)
           AND (? IS NULL OR d.on_line = ?)
@@ -383,9 +448,9 @@ pub async fn platform_channel_list(
     let total = sqlx::query_scalar::<_, i64>(
         r#"
         SELECT COUNT(*)
-        FROM wvp_device_channel c
-        LEFT JOIN wvp_device d ON c.device_id = d.device_id
-        LEFT JOIN wvp_platform_channel pc
+        FROM gb_device_channel c
+        LEFT JOIN gb_device d ON c.device_id = d.device_id
+        LEFT JOIN gb_platform_channel pc
                ON pc.device_channel_id = c.id AND pc.platform_id = $1
         WHERE ($2 = '' OR c.name LIKE $3 OR c.gb_device_id LIKE $3)
           AND ($4::bool IS NULL OR d.on_line = $4)
@@ -405,9 +470,35 @@ pub async fn platform_channel_list(
     let total = sqlx::query_scalar::<_, i64>(
         r#"
         SELECT COUNT(*)
-        FROM wvp_device_channel c
-        LEFT JOIN wvp_device d ON c.device_id = d.device_id
-        LEFT JOIN wvp_platform_channel pc
+        FROM gb_device_channel c
+        LEFT JOIN gb_device d ON c.device_id = d.device_id
+        LEFT JOIN gb_platform_channel pc
+               ON pc.device_channel_id = c.id AND pc.platform_id = ?
+        WHERE (? = '' OR c.name LIKE ? OR c.gb_device_id LIKE ?)
+          AND (? IS NULL OR d.on_line = ?)
+          AND (? IS NULL OR c.channel_type = ?)
+          AND ((? = 'true' AND pc.id IS NOT NULL) OR (? <> 'true' AND pc.id IS NULL))
+        "#,
+    )
+    .bind(platform_id)
+    .bind(&search)
+    .bind(&like)
+    .bind(&like)
+    .bind(online)
+    .bind(online)
+    .bind(channel_type)
+    .bind(channel_type)
+    .bind(has_share)
+    .bind(has_share)
+    .fetch_one(&state.pool)
+    .await?;
+    #[cfg(feature = "sqlite")]
+    let total = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT COUNT(*)
+        FROM gb_device_channel c
+        LEFT JOIN gb_device d ON c.device_id = d.device_id
+        LEFT JOIN gb_platform_channel pc
                ON pc.device_channel_id = c.id AND pc.platform_id = ?
         WHERE (? = '' OR c.name LIKE ? OR c.gb_device_id LIKE ?)
           AND (? IS NULL OR d.on_line = ?)
@@ -525,18 +616,18 @@ pub async fn platform_channel_push(
         #[cfg(feature = "postgres")]
         let rows = sqlx::query(
             r#"SELECT c.gb_device_id
-               FROM wvp_platform_channel pc
-               INNER JOIN wvp_device_channel c ON c.id = pc.device_channel_id
+               FROM gb_platform_channel pc
+               INNER JOIN gb_device_channel c ON c.id = pc.device_channel_id
                WHERE pc.platform_id = $1"#,
         )
         .bind(platform_id)
         .fetch_all(&state.pool)
         .await?;
-        #[cfg(feature = "mysql")]
+        #[cfg(any(feature = "mysql", feature = "sqlite"))]
         let rows = sqlx::query(
             r#"SELECT c.gb_device_id
-               FROM wvp_platform_channel pc
-               INNER JOIN wvp_device_channel c ON c.id = pc.device_channel_id
+               FROM gb_platform_channel pc
+               INNER JOIN gb_device_channel c ON c.id = pc.device_channel_id
                WHERE pc.platform_id = ?"#,
         )
         .bind(platform_id)
@@ -662,7 +753,7 @@ pub async fn platform_add(
 
     #[cfg(feature = "postgres")]
     sqlx::query(
-        r#"UPDATE wvp_platform SET
+        r#"UPDATE gb_platform SET
            server_gb_domain = COALESCE($1, server_gb_domain),
            device_ip = COALESCE($2, device_ip),
            device_port = COALESCE($3, device_port),
@@ -712,7 +803,7 @@ pub async fn platform_add(
     .await?;
     #[cfg(feature = "mysql")]
     sqlx::query(
-        r#"UPDATE wvp_platform SET
+        r#"UPDATE gb_platform SET
            server_gb_domain = COALESCE(?, server_gb_domain),
            device_ip = COALESCE(?, device_ip),
            device_port = COALESCE(?, device_port),
@@ -815,7 +906,7 @@ pub async fn platform_update(
 
     #[cfg(feature = "postgres")]
     sqlx::query(
-        r#"UPDATE wvp_platform SET
+        r#"UPDATE gb_platform SET
            server_gb_domain = COALESCE($1, server_gb_domain),
            device_ip = COALESCE($2, device_ip),
            device_port = COALESCE($3, device_port),
@@ -867,7 +958,7 @@ pub async fn platform_update(
     .await?;
     #[cfg(feature = "mysql")]
     sqlx::query(
-        r#"UPDATE wvp_platform SET
+        r#"UPDATE gb_platform SET
            server_gb_domain = COALESCE(?, server_gb_domain),
            device_ip = COALESCE(?, device_ip),
            device_port = COALESCE(?, device_port),
@@ -1005,14 +1096,21 @@ pub async fn platform_channel_add(
     if body.all == Some(true) {
         #[cfg(feature = "postgres")]
         let rows = sqlx::query(
-            "SELECT id, gb_device_id FROM wvp_device_channel WHERE id NOT IN (SELECT device_channel_id FROM wvp_platform_channel WHERE platform_id = $1)"
+            "SELECT id, gb_device_id FROM gb_device_channel WHERE id NOT IN (SELECT device_channel_id FROM gb_platform_channel WHERE platform_id = $1)"
         )
         .bind(platform_id)
         .fetch_all(&state.pool)
         .await?;
         #[cfg(feature = "mysql")]
         let rows = sqlx::query(
-            "SELECT id, gb_device_id FROM wvp_device_channel WHERE id NOT IN (SELECT device_channel_id FROM wvp_platform_channel WHERE platform_id = ?)"
+            "SELECT id, gb_device_id FROM gb_device_channel WHERE id NOT IN (SELECT device_channel_id FROM gb_platform_channel WHERE platform_id = ?)"
+        )
+        .bind(platform_id)
+        .fetch_all(&state.pool)
+        .await?;
+        #[cfg(feature = "sqlite")]
+        let rows = sqlx::query(
+            "SELECT id, gb_device_id FROM gb_device_channel WHERE id NOT IN (SELECT device_channel_id FROM gb_platform_channel WHERE platform_id = ?)"
         )
         .bind(platform_id)
         .fetch_all(&state.pool)
@@ -1029,12 +1127,18 @@ pub async fn platform_channel_add(
     } else if let Some(channel_ids) = body.channel_ids.clone() {
         for channel_id_str in channel_ids {
             #[cfg(feature = "postgres")]
-            let row = sqlx::query("SELECT id, gb_device_id FROM wvp_device_channel WHERE gb_device_id = $1 OR CAST(id AS TEXT) = $1 LIMIT 1")
+            let row = sqlx::query("SELECT id, gb_device_id FROM gb_device_channel WHERE gb_device_id = $1 OR CAST(id AS TEXT) = $1 LIMIT 1")
                 .bind(&channel_id_str)
                 .fetch_optional(&state.pool)
                 .await?;
             #[cfg(feature = "mysql")]
-            let row = sqlx::query("SELECT id, gb_device_id FROM wvp_device_channel WHERE gb_device_id = ? OR CAST(id AS CHAR) = ? LIMIT 1")
+            let row = sqlx::query("SELECT id, gb_device_id FROM gb_device_channel WHERE gb_device_id = ? OR CAST(id AS CHAR) = ? LIMIT 1")
+                .bind(&channel_id_str)
+                .bind(&channel_id_str)
+                .fetch_optional(&state.pool)
+                .await?;
+            #[cfg(feature = "sqlite")]
+            let row = sqlx::query("SELECT id, gb_device_id FROM gb_device_channel WHERE gb_device_id = ? OR CAST(id AS TEXT) = ? LIMIT 1")
                 .bind(&channel_id_str)
                 .bind(&channel_id_str)
                 .fetch_optional(&state.pool)
@@ -1190,12 +1294,18 @@ pub async fn platform_channel_remove(
     } else if let Some(channel_ids) = body.channel_ids {
         for channel_id_str in channel_ids {
             #[cfg(feature = "postgres")]
-            let row = sqlx::query("SELECT id FROM wvp_device_channel WHERE gb_device_id = $1 OR CAST(id AS TEXT) = $1 LIMIT 1")
+            let row = sqlx::query("SELECT id FROM gb_device_channel WHERE gb_device_id = $1 OR CAST(id AS TEXT) = $1 LIMIT 1")
                 .bind(&channel_id_str)
                 .fetch_optional(&state.pool)
                 .await?;
             #[cfg(feature = "mysql")]
-            let row = sqlx::query("SELECT id FROM wvp_device_channel WHERE gb_device_id = ? OR CAST(id AS CHAR) = ? LIMIT 1")
+            let row = sqlx::query("SELECT id FROM gb_device_channel WHERE gb_device_id = ? OR CAST(id AS CHAR) = ? LIMIT 1")
+                .bind(&channel_id_str)
+                .bind(&channel_id_str)
+                .fetch_optional(&state.pool)
+                .await?;
+            #[cfg(feature = "sqlite")]
+            let row = sqlx::query("SELECT id FROM gb_device_channel WHERE gb_device_id = ? OR CAST(id AS TEXT) = ? LIMIT 1")
                 .bind(&channel_id_str)
                 .bind(&channel_id_str)
                 .fetch_optional(&state.pool)
@@ -1249,13 +1359,13 @@ pub async fn platform_channel_custom_update(
     platform_channel::update(&state.pool, id, custom_name, custom_info).await?;
     if let Some(custom_device_id) = body.custom_device_id.as_deref() {
         #[cfg(feature = "postgres")]
-        sqlx::query("UPDATE wvp_platform_channel SET custom_device_id = $1 WHERE id = $2")
+        sqlx::query("UPDATE gb_platform_channel SET custom_device_id = $1 WHERE id = $2")
             .bind(custom_device_id)
             .bind(id)
             .execute(&state.pool)
             .await?;
         #[cfg(feature = "mysql")]
-        sqlx::query("UPDATE wvp_platform_channel SET custom_device_id = ? WHERE id = ?")
+        sqlx::query("UPDATE gb_platform_channel SET custom_device_id = ? WHERE id = ?")
             .bind(custom_device_id)
             .bind(id)
             .execute(&state.pool)
@@ -1299,11 +1409,11 @@ pub async fn catalog_add(
     tracing::info!("platform catalog add: id={}, name={:?}, parent={}, civil_code={}, platform_id={}", id, name, parent, civil_code, platform_id);
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     #[cfg(feature = "mysql")]
-    let _ = sqlx::query("INSERT INTO wvp_platform_catalog (name, parent, civil_code, business_group, platform_id, create_time, update_time) VALUES (?, ?, ?, ?, ?, ?, ?)")
+    let _ = sqlx::query("INSERT INTO gb_platform_catalog (name, parent, civil_code, business_group, platform_id, create_time, update_time) VALUES (?, ?, ?, ?, ?, ?, ?)")
         .bind(name).bind(parent).bind(&civil_code).bind(&business_group).bind(platform_id).bind(&now).bind(&now)
         .execute(&state.pool).await;
     #[cfg(feature = "postgres")]
-    let _ = sqlx::query("INSERT INTO wvp_platform_catalog (name, parent, civil_code, business_group, platform_id, create_time, update_time) VALUES ($1, $2, $3, $4, $5, $6, $7)")
+    let _ = sqlx::query("INSERT INTO gb_platform_catalog (name, parent, civil_code, business_group, platform_id, create_time, update_time) VALUES ($1, $2, $3, $4, $5, $6, $7)")
         .bind(name).bind(parent).bind(&civil_code).bind(&business_group).bind(platform_id).bind(&now).bind(&now)
         .execute(&state.pool).await;
     if platform_id > 0 {
@@ -1349,11 +1459,11 @@ pub async fn catalog_edit(
     let platform_id = body.platform_id.unwrap_or(0);
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     #[cfg(feature = "mysql")]
-    let _ = sqlx::query("UPDATE wvp_platform_catalog SET name = COALESCE(?, name), parent = COALESCE(?, parent), civil_code = COALESCE(?, civil_code), business_group = COALESCE(?, business_group), platform_id = COALESCE(?, platform_id), update_time = ? WHERE id = ?")
+    let _ = sqlx::query("UPDATE gb_platform_catalog SET name = COALESCE(?, name), parent = COALESCE(?, parent), civil_code = COALESCE(?, civil_code), business_group = COALESCE(?, business_group), platform_id = COALESCE(?, platform_id), update_time = ? WHERE id = ?")
         .bind(name).bind(&parent).bind(&civil_code).bind(&business_group).bind(platform_id).bind(&now).bind(id)
         .execute(&state.pool).await;
     #[cfg(feature = "postgres")]
-    let _ = sqlx::query("UPDATE wvp_platform_catalog SET name = COALESCE($1, name), parent = COALESCE($2, parent), civil_code = COALESCE($3, civil_code), business_group = COALESCE($4, business_group), platform_id = COALESCE($5, platform_id), update_time = $6 WHERE id = $7")
+    let _ = sqlx::query("UPDATE gb_platform_catalog SET name = COALESCE($1, name), parent = COALESCE($2, parent), civil_code = COALESCE($3, civil_code), business_group = COALESCE($4, business_group), platform_id = COALESCE($5, platform_id), update_time = $6 WHERE id = $7")
         .bind(name).bind(parent).bind(civil_code).bind(business_group).bind(platform_id).bind(&now).bind(id)
         .execute(&state.pool).await;
     if platform_id > 0 {

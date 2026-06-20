@@ -4,7 +4,7 @@ pub async fn ensure_table(pool: &Pool) -> sqlx::Result<()> {
     #[cfg(feature = "postgres")]
     {
         let _ = sqlx::query(
-            r#"CREATE TABLE IF NOT EXISTS wvp_audit_log (
+            r#"CREATE TABLE IF NOT EXISTS gb_audit_log (
                 id BIGSERIAL PRIMARY KEY,
                 username VARCHAR(100),
                 action VARCHAR(200),
@@ -21,13 +21,13 @@ pub async fn ensure_table(pool: &Pool) -> sqlx::Result<()> {
         .await;
 
         let _ = sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_audit_log_create_time ON wvp_audit_log(create_time)"
+            "CREATE INDEX IF NOT EXISTS idx_audit_log_create_time ON gb_audit_log(create_time)"
         )
         .execute(pool)
         .await;
 
         let _ = sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_audit_log_username ON wvp_audit_log(username)"
+            "CREATE INDEX IF NOT EXISTS idx_audit_log_username ON gb_audit_log(username)"
         )
         .execute(pool)
         .await;
@@ -36,7 +36,7 @@ pub async fn ensure_table(pool: &Pool) -> sqlx::Result<()> {
     #[cfg(feature = "mysql")]
     {
         let _ = sqlx::query(
-            r#"CREATE TABLE IF NOT EXISTS wvp_audit_log (
+            r#"CREATE TABLE IF NOT EXISTS gb_audit_log (
                 id BIGINT AUTO_INCREMENT PRIMARY KEY,
                 username VARCHAR(100),
                 action VARCHAR(200),
@@ -53,13 +53,47 @@ pub async fn ensure_table(pool: &Pool) -> sqlx::Result<()> {
         .await;
 
         let _ = sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_audit_log_create_time ON wvp_audit_log(create_time)"
+            "CREATE INDEX IF NOT EXISTS idx_audit_log_create_time ON gb_audit_log(create_time)"
         )
         .execute(pool)
         .await;
 
         let _ = sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_audit_log_username ON wvp_audit_log(username)"
+            "CREATE INDEX IF NOT EXISTS idx_audit_log_username ON gb_audit_log(username)"
+        )
+        .execute(pool)
+        .await;
+    }
+
+    #[cfg(feature = "sqlite")]
+    {
+        // SQLite 使用 DATETIME + CURRENT_TIMESTAMP；status_code 用 INTEGER
+        let _ = sqlx::query(
+            r#"CREATE TABLE IF NOT EXISTS gb_audit_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username VARCHAR(100),
+                action VARCHAR(200),
+                resource VARCHAR(200),
+                method VARCHAR(10),
+                path VARCHAR(500),
+                ip VARCHAR(50),
+                status_code INTEGER,
+                request_body TEXT,
+                elapsed_ms BIGINT,
+                create_time DATETIME DEFAULT CURRENT_TIMESTAMP
+            )"#
+        )
+        .execute(pool)
+        .await;
+
+        let _ = sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_audit_log_create_time ON gb_audit_log(create_time)"
+        )
+        .execute(pool)
+        .await;
+
+        let _ = sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_audit_log_username ON gb_audit_log(username)"
         )
         .execute(pool)
         .await;
@@ -80,7 +114,7 @@ pub async fn insert(
 ) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
     let r = sqlx::query(
-        "INSERT INTO wvp_audit_log (username, action, resource, method, path, ip, status_code) VALUES (?, ?, ?, ?, ?, ?, ?)"
+        "INSERT INTO gb_audit_log (username, action, resource, method, path, ip, status_code) VALUES (?, ?, ?, ?, ?, ?, ?)"
     )
     .bind(username)
     .bind(action)
@@ -93,7 +127,20 @@ pub async fn insert(
     .await?;
     #[cfg(feature = "postgres")]
     let r = sqlx::query(
-        "INSERT INTO wvp_audit_log (username, action, resource, method, path, ip, status_code) VALUES ($1, $2, $3, $4, $5, $6, $7)"
+        "INSERT INTO gb_audit_log (username, action, resource, method, path, ip, status_code) VALUES ($1, $2, $3, $4, $5, $6, $7)"
+    )
+    .bind(username)
+    .bind(action)
+    .bind(resource)
+    .bind(method)
+    .bind(path)
+    .bind(ip)
+    .bind(status_code)
+    .execute(pool)
+    .await?;
+    #[cfg(feature = "sqlite")]
+    let r = sqlx::query(
+        "INSERT INTO gb_audit_log (username, action, resource, method, path, ip, status_code) VALUES (?, ?, ?, ?, ?, ?, ?)"
     )
     .bind(username)
     .bind(action)
@@ -107,6 +154,46 @@ pub async fn insert(
     Ok(r.rows_affected())
 }
 
+/// Phase 7.4: extended insert with `elapsed_ms` column. Caller (audit_middleware)
+/// already times the request; we just persist it.
+pub async fn insert_with_metrics(
+    pool: &Pool,
+    username: &str,
+    action: &str,
+    resource: &str,
+    method: &str,
+    path: &str,
+    ip: &str,
+    status_code: i32,
+    elapsed_ms: i64,
+) -> sqlx::Result<()> {
+    // Try extended schema first (gb_audit_log + elapsed_ms), fall back to basic schema.
+    // We do this with INSERT IGNORE-style fallback: attempt to insert with elapsed_ms;
+    // if the column doesn't exist, retry without it.
+    let with_elapsed_result = sqlx::query(
+        "INSERT INTO gb_audit_log (username, action, resource, method, path, ip, status_code, elapsed_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+    )
+    .bind(username).bind(action).bind(resource).bind(method).bind(path).bind(ip).bind(status_code).bind(elapsed_ms)
+    .execute(pool).await;
+    if with_elapsed_result.is_ok() {
+        return Ok(());
+    }
+    // Fallback: basic schema (no elapsed_ms column)
+    #[cfg(feature = "mysql")]
+    { let _ = sqlx::query("INSERT INTO gb_audit_log (username, action, resource, method, path, ip, status_code) VALUES (?, ?, ?, ?, ?, ?, ?)")
+        .bind(username).bind(action).bind(resource).bind(method).bind(path).bind(ip).bind(status_code)
+        .execute(pool).await?; }
+    #[cfg(feature = "postgres")]
+    { let _ = sqlx::query("INSERT INTO gb_audit_log (username, action, resource, method, path, ip, status_code) VALUES ($1, $2, $3, $4, $5, $6, $7)")
+        .bind(username).bind(action).bind(resource).bind(method).bind(path).bind(ip).bind(status_code)
+        .execute(pool).await?; }
+    #[cfg(feature = "sqlite")]
+    { let _ = sqlx::query("INSERT INTO gb_audit_log (username, action, resource, method, path, ip, status_code) VALUES (?, ?, ?, ?, ?, ?, ?)")
+        .bind(username).bind(action).bind(resource).bind(method).bind(path).bind(ip).bind(status_code)
+        .execute(pool).await?; }
+    Ok(())
+}
+
 pub async fn list_paged(
     pool: &Pool,
     username: Option<&str>,
@@ -117,7 +204,7 @@ pub async fn list_paged(
     count: u32,
 ) -> sqlx::Result<(i64, Vec<serde_json::Value>)> {
     let offset = (page.saturating_sub(1)) * count;
-    
+
     #[derive(sqlx::FromRow)]
     struct AuditRow {
         id: i64,
@@ -141,6 +228,8 @@ pub async fn list_paged(
             conditions.push_str(&format!(" AND username ILIKE ${}", bind_values.len() + 1));
             #[cfg(feature = "mysql")]
             conditions.push_str(&format!(" AND username LIKE ?"));
+            #[cfg(feature = "sqlite")]
+            conditions.push_str(" AND username LIKE ? COLLATE NOCASE");
             bind_values.push(like);
         }
     }
@@ -149,6 +238,8 @@ pub async fn list_paged(
             #[cfg(feature = "postgres")]
             conditions.push_str(&format!(" AND action = ${}", bind_values.len() + 1));
             #[cfg(feature = "mysql")]
+            conditions.push_str(" AND action = ?");
+            #[cfg(feature = "sqlite")]
             conditions.push_str(" AND action = ?");
             bind_values.push(a.to_string());
         }
@@ -159,6 +250,8 @@ pub async fn list_paged(
             conditions.push_str(&format!(" AND create_time >= ${}", bind_values.len() + 1));
             #[cfg(feature = "mysql")]
             conditions.push_str(" AND create_time >= ?");
+            #[cfg(feature = "sqlite")]
+            conditions.push_str(" AND create_time >= ?");
             bind_values.push(st.to_string());
         }
     }
@@ -168,23 +261,31 @@ pub async fn list_paged(
             conditions.push_str(&format!(" AND create_time <= ${}", bind_values.len() + 1));
             #[cfg(feature = "mysql")]
             conditions.push_str(" AND create_time <= ?");
+            #[cfg(feature = "sqlite")]
+            conditions.push_str(" AND create_time <= ?");
             bind_values.push(et.to_string());
         }
     }
 
-    let count_sql = format!("SELECT COUNT(*) FROM wvp_audit_log WHERE 1=1{}", conditions);
+    let count_sql = format!("SELECT COUNT(*) FROM gb_audit_log WHERE 1=1{}", conditions);
     let mut count_q = sqlx::query_scalar::<_, i64>(&count_sql);
     for b in &bind_values { count_q = count_q.bind(b); }
     let total: i64 = count_q.fetch_one(pool).await.unwrap_or(0);
 
     #[cfg(feature = "postgres")]
     let data_sql = format!(
-        "SELECT id, username, action, resource, method, path, ip, status_code, create_time::text as create_time FROM wvp_audit_log WHERE 1=1{} ORDER BY id DESC LIMIT ${} OFFSET ${}",
+        "SELECT id, username, action, resource, method, path, ip, status_code, create_time::text as create_time FROM gb_audit_log WHERE 1=1{} ORDER BY id DESC LIMIT ${} OFFSET ${}",
         conditions, bind_values.len() + 1, bind_values.len() + 2
     );
     #[cfg(feature = "mysql")]
     let data_sql = format!(
-        "SELECT id, username, action, resource, method, path, ip, status_code, create_time FROM wvp_audit_log WHERE 1=1{} ORDER BY id DESC LIMIT ? OFFSET ?",
+        "SELECT id, username, action, resource, method, path, ip, status_code, create_time FROM gb_audit_log WHERE 1=1{} ORDER BY id DESC LIMIT ? OFFSET ?",
+        conditions
+    );
+    // SQLite：DATETIME 直接以文本存储，无需 ::text 转换
+    #[cfg(feature = "sqlite")]
+    let data_sql = format!(
+        "SELECT id, username, action, resource, method, path, ip, status_code, create_time FROM gb_audit_log WHERE 1=1{} ORDER BY id DESC LIMIT ? OFFSET ?",
         conditions
     );
 

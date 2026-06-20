@@ -1,6 +1,4 @@
-target
-node_modules
-web/dist
-backend.log
-.arts
-.claude/
+data/
+data/**
+target/
+scripts/test-env.sh

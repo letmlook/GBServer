@@ -9,9 +9,20 @@
 //! - DownloadSession: 文件下载（start → stop + 文件上传通知）
 
 use std::sync::Arc;
+use std::time::Duration;
 use chrono::{DateTime, Utc};
 
 use dashmap::DashMap;
+use tokio::sync::oneshot;
+
+/// Phase 6.3: media arrival waiter — sender-side handle.
+/// Inserted into JtMediaSessionManager::waiters; resolved by activate_and_resolve
+/// when ZLM on_stream_changed / on_publish hook fires.
+pub struct MediaWaiter {
+    pub phone: String,
+    pub channel_id: u8,
+    pub sender: Option<oneshot::Sender<JtMediaSession>>,
+}
 
 /// 会话状态
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,13 +74,70 @@ pub struct JtMediaSession {
 pub struct JtMediaSessionManager {
     /// phone_channel → session
     sessions: Arc<DashMap<String, JtMediaSession>>,
+    /// phone_channel → media arrival waiter (Phase 6.3)
+    waiters: Arc<DashMap<String, MediaWaiter>>,
 }
 
 impl JtMediaSessionManager {
     pub fn new() -> Self {
         Self {
             sessions: Arc::new(DashMap::new()),
+            waiters: Arc::new(DashMap::new()),
         }
+    }
+
+    /// Test-only helper to clone Arc-backed shared state.
+    #[doc(hidden)]
+    pub fn clone_for_test(&self) -> Self {
+        Self {
+            sessions: self.sessions.clone(),
+            waiters: self.waiters.clone(),
+        }
+    }
+
+    /// Phase 6.3: wait for ZLM media arrival (on_stream_changed/on_publish hook).
+    /// Returns the activated session, or error on timeout / cancel.
+    pub async fn wait_for_media(
+        &self,
+        phone: &str,
+        channel_id: u8,
+        timeout: Duration,
+    ) -> Result<JtMediaSession, String> {
+        let key = format!("{}_{}", phone, channel_id);
+        let (tx, rx) = oneshot::channel();
+        self.waiters.insert(
+            key.clone(),
+            MediaWaiter {
+                phone: phone.to_string(),
+                channel_id,
+                sender: Some(tx),
+            },
+        );
+        match tokio::time::timeout(timeout, rx).await {
+            Ok(Ok(sess)) => Ok(sess),
+            Ok(Err(_canceled)) => Err("media waiter cancelled".to_string()),
+            Err(_elapsed) => {
+                self.waiters.remove(&key);
+                Err(format!("media wait timeout for {}_{}", phone, channel_id))
+            }
+        }
+    }
+
+    /// Phase 6.3: resolve the matching waiter when ZLM hook fires.
+    /// Returns true if a waiter was found and resolved.
+    pub fn resolve_waiter(&self, phone: &str, channel_id: u8, zlm_stream_id: &str) -> bool {
+        let key = format!("{}_{}", phone, channel_id);
+        if let Some((_, mut w)) = self.waiters.remove(&key) {
+            // Update the session state to Active
+            self.activate(phone, channel_id, zlm_stream_id);
+            if let Some(tx) = w.sender.take() {
+                if let Some(sess) = self.get(phone, channel_id) {
+                    let _ = tx.send(sess);
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     fn session_key(phone: &str, channel_id: u8) -> String {
@@ -252,5 +320,30 @@ mod tests {
         let pb = mgr.get_by_type(MediaSessionType::Playback);
         assert_eq!(live.len(), 1);
         assert_eq!(pb.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_wait_for_media_resolves_on_activate() {
+        let mgr = JtMediaSessionManager::new();
+        mgr.create_live("13812340001", 2);
+        let mgr_clone = mgr.clone_for_test();
+        let wait_handle = tokio::spawn(async move {
+            mgr_clone.wait_for_media("13812340001", 2, std::time::Duration::from_secs(2)).await
+        });
+        // Give time for waiter to register
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let resolved = mgr.resolve_waiter("13812340001", 2, "jt1078_13812340001_2");
+        assert!(resolved);
+        let sess = wait_handle.await.unwrap().unwrap();
+        assert_eq!(sess.state, MediaSessionState::Active);
+        assert_eq!(sess.zlm_stream_id.as_deref(), Some("jt1078_13812340001_2"));
+    }
+
+    #[tokio::test]
+    async fn test_wait_for_media_timeout() {
+        let mgr = JtMediaSessionManager::new();
+        mgr.create_live("13812340001", 3);
+        let result = mgr.wait_for_media("13812340001", 3, std::time::Duration::from_millis(100)).await;
+        assert!(result.is_err());
     }
 }

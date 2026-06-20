@@ -1,10 +1,10 @@
 {
   "baseline": {
-    "upstream": "/tmp/wvp-GB28181-pro",
+    "upstream": "/tmp/reference-java-impl",
     "local": "/Users/lipeng/.codex/worktrees/63cb/GBServer",
     "commit": "unknown",
-    "backend": "official WVP-Pro Java controllers",
-    "frontend": "official WVP-Pro web directory from the same commit"
+    "backend": "reference Java backend controllers",
+    "frontend": "reference Java web directory from the same commit"
   },
   "generatedAt": "2026-06-10T16:07:00.146Z",
   "counts": {

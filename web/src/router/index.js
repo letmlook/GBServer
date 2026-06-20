@@ -261,6 +261,19 @@ export const constantRoutes = [
         meta: { title: '平台信息', icon: 'systemInfo' }
       },
       {
+        path: '/alarm',
+        name: 'Alarm',
+        component: () => import('@/views/alarm/index'),
+        meta: { title: '告警管理', icon: 'el-icon-bell' }
+      },
+      {
+        path: '/play/share',
+        name: 'PlayShare',
+        component: () => import('@/views/play/share'),
+        meta: { title: '分享播放', icon: 'el-icon-share' },
+        hidden: true
+      },
+      {
         path: '/operations/historyLog',
         name: 'OperationsHistoryLog',
         component: () => import('@/views/operations/historyLog'),
