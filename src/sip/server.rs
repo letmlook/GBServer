@@ -3959,10 +3959,57 @@ f=v/1/96/1/2/1/1/0
         
         socket.send_to(message.as_bytes(), addr).await?;
         tracing::info!("Sent platform INVITE for channel {} to platform {} at {}", channel_id, platform_gb_id, addr);
-        
+
         Ok(())
     }
-    
+
+    /// Phase 5.3: 上级平台 INVITE → 预登记 SendRtp 会话
+    ///
+    /// 流程（与设计文档 §7 Phase 5 Task 5.3 对应）：
+    /// 1. 解析上级 SDP → 提取 (upstream_host, upstream_port, upstream_ssrc)
+    /// 2. 调 `send_rtp_manager.handle_upstream_invite` 预登记 session
+    ///    （stream_key 格式：`cascade_{platform_id}_{channel_id}`）
+    /// 3. 返回 cascade_call_id 给调用方（handle_invite 后续可观察该 session 状态）
+    ///
+    /// 调用方责任：解析 + 调 SIP 信令；本方法只负责预登记。
+    /// 实际 ZLM startSendRtp 由后续设备 INVITE 200 OK 触发的
+    /// `send_rtp_manager.get_by_channel(channel_id)` 循环完成（sip/server.rs:1490）。
+    ///
+    /// # Arguments
+    /// * `platform_id` - 上级平台 GB ID（已通过 `db_platform::get_by_device_gb_id` 验证为已注册平台）
+    /// * `channel_id` - 共享通道 ID
+    /// * `sdp` - 上级 INVITE 请求的 SDP body
+    ///
+    /// # Returns
+    /// 预登记成功的 `cascade_call_id`
+    pub fn register_cascade_invite(
+        &self,
+        platform_id: &str,
+        channel_id: &str,
+        sdp: &str,
+    ) -> Result<String> {
+        let (upstream_host, upstream_port, upstream_ssrc) =
+            parse_cascade_invite_sdp(sdp)
+                .map_err(|e| anyhow::anyhow!("Parse upstream SDP failed: {}", e))?;
+
+        let cascade_call_id = format!("cascade_{}_{}", platform_id, channel_id);
+        self.send_rtp_manager.handle_upstream_invite(
+            cascade_call_id.clone(),
+            platform_id.to_string(),
+            channel_id.to_string(),
+            upstream_host,
+            upstream_port,
+            upstream_ssrc,
+        );
+
+        tracing::info!(
+            "5.3 register_cascade_invite: platform={} channel={} cascade_call_id={} upstream={}:{}",
+            platform_id, channel_id, cascade_call_id,
+            self.config.ip, upstream_port
+        );
+        Ok(cascade_call_id)
+    }
+
     pub async fn send_platform_message(&self, platform_gb_id: &str, cmd_type: &str, sn: i64, device_id: &str, content: Option<&str>) -> Result<()> {
         let socket = self.socket.read().await;
         let socket = socket.as_ref().ok_or_else(|| anyhow::anyhow!("Socket not initialized"))?;
@@ -4291,6 +4338,53 @@ fn generate_tag() -> String {
 fn generate_branch() -> String {
     let mut rng = rand::thread_rng();
     format!("z9hG4bK{:08x}", rng.gen::<u32>())
+}
+
+/// Phase 5.3: 解析 WVP-Pro 上级 INVITE SDP，提取媒体端点
+///
+/// 输入：标准的 GB28181 INVITE SDP body（RFC 4566）
+/// 输出：`(upstream_host, upstream_port, upstream_ssrc)` 三元组
+///
+/// 解析规则（与 WVP-Pro Java 兼容）：
+/// - `c=IN IP4 <ip>` 取 connection address
+/// - `m=video <port> RTP/AVP ...` 取首个 m=video 行的端口
+/// - `y=<ssrc>` 取 10 位 SSRC（GB28181 规定）
+///
+/// 失败模式：
+/// - 缺 c= 或 m=video → 返回 "SDP missing c= or m=video"
+/// - 端口非法 → 返回 "bad port: ..."
+/// - 缺 y= → ssrc 默认 0000000000（与 WVP 兼容）
+pub fn parse_cascade_invite_sdp(sdp: &str) -> Result<(String, u16, String), String> {
+    let mut media_ip = String::new();
+    let mut media_port: u16 = 0;
+    let mut ssrc = String::new();
+
+    for line in sdp.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("c=IN IP4 ") {
+            media_ip = rest.split_whitespace().next().unwrap_or("").to_string();
+        } else if line.starts_with("m=video ") {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 2 {
+                media_port = parts[1]
+                    .parse()
+                    .map_err(|e| format!("bad port: {}", e))?;
+            }
+        } else if let Some(rest) = line.strip_prefix("y=") {
+            ssrc = rest.chars().take(10).collect();
+        }
+    }
+
+    if media_port == 0 {
+        return Err("SDP missing m=video with valid port".to_string());
+    }
+    if media_ip.is_empty() {
+        return Err("SDP missing c=IN IP4".to_string());
+    }
+    if ssrc.is_empty() {
+        ssrc = "0000000000".to_string();
+    }
+    Ok((media_ip, media_port, ssrc))
 }
 
 async fn dbg_upsert_device(
@@ -4739,5 +4833,151 @@ mod upstream_message_tests {
         assert_eq!(target, Some("34020000002000000001".to_string()));
         let sn = crate::sip::gb28181::XmlParser::get_sn(body);
         assert_eq!(sn, Some(10));
+    }
+
+    // ============ Phase 5.3: parse_cascade_invite_sdp 单测 ============
+
+    /// 标准 WVP-Pro 上级 INVITE SDP
+    #[test]
+    fn phase5_parse_cascade_invite_sdp_standard() {
+        let sdp = "v=0\r\n\
+                   o=34020000002000000001 0 0 IN IP4 192.168.1.100\r\n\
+                   s=Play\r\n\
+                   c=IN IP4 192.168.1.100\r\n\
+                   t=0 0\r\n\
+                   m=video 9000 RTP/AVP 96 98 97\r\n\
+                   a=rtpmap:96 PS/90000\r\n\
+                   a=rtpmap:98 H264/90000\r\n\
+                   y=0100000001\r\n";
+        let (ip, port, ssrc) = parse_cascade_invite_sdp(sdp).unwrap();
+        assert_eq!(ip, "192.168.1.100");
+        assert_eq!(port, 9000);
+        assert_eq!(ssrc, "0100000001");
+    }
+
+    /// 缺 c= 行 → 报错
+    #[test]
+    fn phase5_parse_cascade_invite_sdp_missing_c() {
+        let sdp = "v=0\r\n\
+                   m=video 9000 RTP/AVP 96\r\n\
+                   y=0100000001\r\n";
+        let r = parse_cascade_invite_sdp(sdp);
+        assert!(r.is_err());
+        assert!(r.unwrap_err().contains("missing c=IN IP4"));
+    }
+
+    /// 缺 m=video 行 → 报错
+    #[test]
+    fn phase5_parse_cascade_invite_sdp_missing_m_video() {
+        let sdp = "v=0\r\n\
+                   c=IN IP4 10.0.0.1\r\n\
+                   y=0100000001\r\n";
+        let r = parse_cascade_invite_sdp(sdp);
+        assert!(r.is_err());
+        assert!(r.unwrap_err().contains("missing m=video"));
+    }
+
+    /// 缺 y= 行 → ssrc 默认 0000000000
+    #[test]
+    fn phase5_parse_cascade_invite_sdp_missing_y_default() {
+        let sdp = "v=0\r\n\
+                   c=IN IP4 10.0.0.1\r\n\
+                   m=video 8000 RTP/AVP 96\r\n";
+        let (ip, port, ssrc) = parse_cascade_invite_sdp(sdp).unwrap();
+        assert_eq!(ip, "10.0.0.1");
+        assert_eq!(port, 8000);
+        assert_eq!(ssrc, "0000000000", "缺 y= 时应回退到默认 ssrc");
+    }
+
+    /// 端口非法 → 报错
+    #[test]
+    fn phase5_parse_cascade_invite_sdp_bad_port() {
+        let sdp = "v=0\r\n\
+                   c=IN IP4 10.0.0.1\r\n\
+                   m=video notanumber RTP/AVP 96\r\n";
+        let r = parse_cascade_invite_sdp(sdp);
+        assert!(r.is_err());
+        assert!(r.unwrap_err().contains("bad port"));
+    }
+
+    /// SSRC 超过 10 字符 → 截取前 10 位
+    #[test]
+    fn phase5_parse_cascade_invite_sdp_truncates_ssrc() {
+        let sdp = "v=0\r\n\
+                   c=IN IP4 10.0.0.1\r\n\
+                   m=video 8000 RTP/AVP 96\r\n\
+                   y=0100000001ABCDEF\r\n";
+        let (_, _, ssrc) = parse_cascade_invite_sdp(sdp).unwrap();
+        assert_eq!(ssrc, "0100000001", "SSRC 超过 10 位应截断");
+    }
+
+    // ============ Phase 5.3: SipServer::register_cascade_invite 集成测试 ============
+
+    /// 注册上游 INVITE → SendRtpManager 中存在对应 session
+    #[tokio::test]
+    async fn phase5_register_cascade_invite_creates_session() {
+        // 用 lazy pool（与 src/sip/gb28181/cascade_service.rs::dummy_pool 模式一致）
+        let pool = {
+            #[cfg(feature = "postgres")]
+            { sqlx::postgres::PgPoolOptions::new().max_connections(1)
+                .connect_lazy("postgres://x:x@127.0.0.1/x").unwrap() }
+            #[cfg(feature = "mysql")]
+            { sqlx::mysql::MySqlPoolOptions::new().max_connections(1)
+                .connect_lazy("mysql://x:x@127.0.0.1/x").unwrap() }
+            #[cfg(feature = "sqlite")]
+            { sqlx::sqlite::SqlitePoolOptions::new().max_connections(1)
+                .connect_lazy("sqlite::memory:").unwrap() }
+        };
+
+        let config = SipConfig::default();
+        let server = SipServer::new(config, pool, None);
+
+        let sdp = "v=0\r\n\
+                   c=IN IP4 192.168.1.100\r\n\
+                   m=video 9000 RTP/AVP 96\r\n\
+                   y=0100000001\r\n";
+        let cascade_call_id = server
+            .register_cascade_invite("34010000002000000001", "34020000001320000001", sdp)
+            .expect("register_cascade_invite should succeed");
+
+        assert_eq!(cascade_call_id, "cascade_34010000002000000001_34020000001320000001");
+
+        // 验证 SendRtpManager 中有该 session
+        let sessions = server.send_rtp_manager().get_by_channel("34020000001320000001");
+        assert_eq!(sessions.len(), 1);
+        let s = &sessions[0];
+        assert_eq!(s.platform_id, "34010000002000000001");
+        assert_eq!(s.channel_id, "34020000001320000001");
+        assert_eq!(s.upstream_host, "192.168.1.100");
+        assert_eq!(s.upstream_port, 9000);
+        assert_eq!(s.upstream_ssrc, "0100000001");
+        assert!(s.active);
+    }
+
+    /// 注册上游 INVITE（缺 c=）→ 报错且不应创建 session
+    #[tokio::test]
+    async fn phase5_register_cascade_invite_bad_sdp_no_session() {
+        let pool = {
+            #[cfg(feature = "postgres")]
+            { sqlx::postgres::PgPoolOptions::new().max_connections(1)
+                .connect_lazy("postgres://x:x@127.0.0.1/x").unwrap() }
+            #[cfg(feature = "mysql")]
+            { sqlx::mysql::MySqlPoolOptions::new().max_connections(1)
+                .connect_lazy("mysql://x:x@127.0.0.1/x").unwrap() }
+            #[cfg(feature = "sqlite")]
+            { sqlx::sqlite::SqlitePoolOptions::new().max_connections(1)
+                .connect_lazy("sqlite::memory:").unwrap() }
+        };
+
+        let config = SipConfig::default();
+        let server = SipServer::new(config, pool, None);
+
+        let bad_sdp = "v=0\r\nm=video 9000 RTP/AVP 96\r\n";
+        let r = server.register_cascade_invite("plat", "ch", bad_sdp);
+        assert!(r.is_err());
+
+        // 不应创建任何 session
+        let sessions = server.send_rtp_manager().get_by_channel("ch");
+        assert!(sessions.is_empty(), "bad SDP 不应留下 session");
     }
 }
