@@ -13,7 +13,6 @@ use axum::{
     routing::post,
     Json, Router,
 };
-use serde::Deserialize;
 
 use crate::response::WVPResult;
 use crate::AppState;
@@ -120,12 +119,6 @@ impl HookEventTag for RecordMp4 {
 impl HookEventTag for FlowReport {
     const HOOK_NAME: &'static str = ON_FLOW_REPORT;
     const ENUM: ZlmHookEvent = ZlmHookEvent::FlowReport;
-}
-
-#[derive(Debug, Deserialize)]
-struct HookRequest {
-    #[serde(default)]
-    hook_name: Option<String>,
 }
 
 /// 泛型 handler：所有 hook 路由共用此实现
