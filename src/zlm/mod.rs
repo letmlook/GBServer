@@ -1,5 +1,6 @@
 pub mod client;
 pub mod hook;
+pub mod hook_routes;
 pub mod types;
 pub mod address_builder;
 pub mod health_checker;

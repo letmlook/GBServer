@@ -16,6 +16,7 @@ use crate::handlers::{
 use crate::handlers::metrics as metrics_handler;
 use crate::rpc::{RpcRequest, RpcResponse};
 use crate::zlm::hook as zlm_hook;
+use crate::zlm::hook_routes as zlm_hook_routes;
 use crate::AppState;
 
 async fn health_check(State(state): State<AppState>) -> Json<serde_json::Value> {
@@ -941,7 +942,13 @@ pub fn app(state: AppState) -> Router<AppState> {
             state_clone.clone(),
             auth_middleware,
         ));
-    let app = Router::new().merge(api).merge(zlm_protected).with_state(state.clone());
+    let app = Router::new()
+        .merge(api)
+        .merge(zlm_protected)
+        // Phase 4.1: WVP-Pro 兼容多路径 hook 路由（/api/hook/*）
+        // 公共端点，与既有 /api/zlm/hook 单路径并存
+        .merge(zlm_hook_routes::hook_routes())
+        .with_state(state.clone());
 
     // WebSocket：设备状态实时通知
     let app = app.route("/api/ws", get(websocket::ws_handler));
