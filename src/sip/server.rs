@@ -4070,10 +4070,165 @@ f=v/1/96/1/2/1/1/0
         
         socket.send_to(message.as_bytes(), addr).await?;
         tracing::info!("Sent {} to platform {} at {}", cmd_type, platform_gb_id, addr);
-        
+
         Ok(())
     }
-    
+
+    /// Phase 5.5a: 转发 MobilePosition 上行到所有 Active 级联平台
+    ///
+    /// 触发位置：`handle_message` 收到设备的 MobilePosition Notify 后
+    /// 调用本方法自动广播。
+    ///
+    /// XML 格式（与 WVP-Pro Java 兼容）：
+    /// ```xml
+    /// <?xml version="1.0" encoding="UTF-8"?>
+    /// <Notify>
+    /// <CmdType>MobilePosition</CmdType>
+    /// <SN>...</SN>
+    /// <DeviceID>...</DeviceID>
+    /// <Time>...</Time>
+    /// <Latitude>...</Latitude>
+    /// <Longitude>...</Longitude>
+    /// <Speed>...</Speed>
+    /// <Direction>...</Direction>
+    /// </Notify>
+    /// ```
+    ///
+    /// # Arguments
+    /// * `device_id` - 设备/通道 GB ID
+    /// * `latitude` / `longitude` / `speed` / `direction` / `time` - 位置信息
+    ///
+    /// # Returns
+    /// 成功转发的平台数量（包含失败不中断，0 = 无活跃平台或全部失败）
+    pub async fn forward_mobile_position_to_all(
+        &self,
+        device_id: &str,
+        latitude: f64,
+        longitude: f64,
+        speed: Option<f64>,
+        direction: Option<i32>,
+        time: &str,
+    ) -> Result<usize, String> {
+        let platforms = match crate::db::platform::get_all_online_platforms(&self.pool).await {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!("forward_mobile_position: get_all_online_platforms failed: {}", e);
+                return Ok(0);
+            }
+        };
+        if platforms.is_empty() {
+            return Ok(0);
+        }
+
+        let sn = chrono::Utc::now().timestamp();
+        let body = format!(
+            r#"<Notify>
+<CmdType>MobilePosition</CmdType>
+<SN>{}</SN>
+<DeviceID>{}</DeviceID>
+<Time>{}</Time>
+<Latitude>{}</Latitude>
+<Longitude>{}</Longitude>
+<Speed>{}</Speed>
+<Direction>{}</Direction>
+</Notify>"#,
+            sn,
+            device_id,
+            time,
+            latitude,
+            longitude,
+            speed.unwrap_or(0.0),
+            direction.unwrap_or(0),
+        );
+
+        let mut sent = 0;
+        for platform in platforms {
+            let server_gb_id = match platform.server_gb_id.clone() {
+                Some(id) => id,
+                None => continue,
+            };
+            match self
+                .send_platform_message(&server_gb_id, "MobilePosition", sn, device_id, Some(&body))
+                .await
+            {
+                Ok(_) => sent += 1,
+                Err(e) => tracing::warn!(
+                    "forward_mobile_position to {} failed: {}",
+                    server_gb_id, e
+                ),
+            }
+        }
+        Ok(sent)
+    }
+
+    /// Phase 5.5b: 转发 Alarm 上行到所有 Active 级联平台
+    ///
+    /// 触发位置：`handle_message` 收到设备的 Alarm Notify 后调用。
+    ///
+    /// XML 格式（与 WVP-Pro Java 兼容）：
+    /// ```xml
+    /// <?xml version="1.0" encoding="UTF-8"?>
+    /// <Notify>
+    /// <CmdType>Alarm</CmdType>
+    /// <SN>...</SN>
+    /// <DeviceID>...</DeviceID>
+    /// <AlarmPriority>...</AlarmPriority>
+    /// <AlarmMethod>...</AlarmMethod>
+    /// <AlarmTime>...</AlarmTime>
+    /// <AlarmDescription>...</AlarmDescription>
+    /// </Notify>
+    /// ```
+    pub async fn forward_alarm_to_all(
+        &self,
+        device_id: &str,
+        alarm_priority: &str,
+        alarm_method: i32,
+        alarm_time: &str,
+        alarm_description: Option<&str>,
+    ) -> Result<usize, String> {
+        let platforms = match crate::db::platform::get_all_online_platforms(&self.pool).await {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!("forward_alarm: get_all_online_platforms failed: {}", e);
+                return Ok(0);
+            }
+        };
+        if platforms.is_empty() {
+            return Ok(0);
+        }
+
+        let sn = chrono::Utc::now().timestamp();
+        let desc = alarm_description.unwrap_or("");
+        let body = format!(
+            r#"<Notify>
+<CmdType>Alarm</CmdType>
+<SN>{}</SN>
+<DeviceID>{}</DeviceID>
+<AlarmPriority>{}</AlarmPriority>
+<AlarmMethod>{}</AlarmMethod>
+<AlarmTime>{}</AlarmTime>
+<AlarmDescription>{}</AlarmDescription>
+</Notify>"#,
+            sn, device_id, alarm_priority, alarm_method, alarm_time, desc,
+        );
+
+        let mut sent = 0;
+        for platform in platforms {
+            let server_gb_id = match platform.server_gb_id.clone() {
+                Some(id) => id,
+                None => continue,
+            };
+            match self
+                .send_platform_message(&server_gb_id, "Alarm", sn, device_id, Some(&body))
+                .await
+            {
+                Ok(_) => sent += 1,
+                Err(e) => tracing::warn!("forward_alarm to {} failed: {}", server_gb_id, e),
+            }
+        }
+        Ok(sent)
+    }
+
     pub async fn send_platform_catalog(&self, platform_gb_id: &str) -> Result<()> {
         let sn = chrono::Utc::now().timestamp();
         
@@ -4979,5 +5134,111 @@ mod upstream_message_tests {
         // 不应创建任何 session
         let sessions = server.send_rtp_manager().get_by_channel("ch");
         assert!(sessions.is_empty(), "bad SDP 不应留下 session");
+    }
+
+    // ============ Phase 5.5a: forward_mobile_position_to_all 单测 ============
+
+    /// 无活跃平台 → 返回 0 不 panic
+    #[tokio::test]
+    async fn phase5_forward_mobile_position_no_platforms() {
+        let pool = {
+            #[cfg(feature = "postgres")]
+            { sqlx::postgres::PgPoolOptions::new().max_connections(1)
+                .connect_lazy("postgres://x:x@127.0.0.1/x").unwrap() }
+            #[cfg(feature = "mysql")]
+            { sqlx::mysql::MySqlPoolOptions::new().max_connections(1)
+                .connect_lazy("mysql://x:x@127.0.0.1/x").unwrap() }
+            #[cfg(feature = "sqlite")]
+            { sqlx::sqlite::SqlitePoolOptions::new().max_connections(1)
+                .connect_lazy("sqlite::memory:").unwrap() }
+        };
+        let server = SipServer::new(SipConfig::default(), pool, None);
+
+        let count = server
+            .forward_mobile_position_to_all(
+                "34020000001320000001",
+                30.5, 114.3, Some(10.0), Some(180), "2026-06-20T12:00:00",
+            )
+            .await
+            .expect("无平台时也应成功");
+        assert_eq!(count, 0);
+    }
+
+    /// 缺省 speed / direction → 仍正常返回
+    #[tokio::test]
+    async fn phase5_forward_mobile_position_optional_fields() {
+        let pool = {
+            #[cfg(feature = "postgres")]
+            { sqlx::postgres::PgPoolOptions::new().max_connections(1)
+                .connect_lazy("postgres://x:x@127.0.0.1/x").unwrap() }
+            #[cfg(feature = "mysql")]
+            { sqlx::mysql::MySqlPoolOptions::new().max_connections(1)
+                .connect_lazy("mysql://x:x@127.0.0.1/x").unwrap() }
+            #[cfg(feature = "sqlite")]
+            { sqlx::sqlite::SqlitePoolOptions::new().max_connections(1)
+                .connect_lazy("sqlite::memory:").unwrap() }
+        };
+        let server = SipServer::new(SipConfig::default(), pool, None);
+
+        let count = server
+            .forward_mobile_position_to_all(
+                "34020000001320000001", 0.0, 0.0, None, None, "2026-06-20T12:00:00",
+            )
+            .await
+            .expect("optional 字段为 None 时也应成功");
+        assert_eq!(count, 0);
+    }
+
+    // ============ Phase 5.5b: forward_alarm_to_all 单测 ============
+
+    /// 无活跃平台 → 返回 0 不 panic
+    #[tokio::test]
+    async fn phase5_forward_alarm_no_platforms() {
+        let pool = {
+            #[cfg(feature = "postgres")]
+            { sqlx::postgres::PgPoolOptions::new().max_connections(1)
+                .connect_lazy("postgres://x:x@127.0.0.1/x").unwrap() }
+            #[cfg(feature = "mysql")]
+            { sqlx::mysql::MySqlPoolOptions::new().max_connections(1)
+                .connect_lazy("mysql://x:x@127.0.0.1/x").unwrap() }
+            #[cfg(feature = "sqlite")]
+            { sqlx::sqlite::SqlitePoolOptions::new().max_connections(1)
+                .connect_lazy("sqlite::memory:").unwrap() }
+        };
+        let server = SipServer::new(SipConfig::default(), pool, None);
+
+        let count = server
+            .forward_alarm_to_all(
+                "34020000001320000001",
+                "1", 1, "2026-06-20T12:00:00", Some("motion detection"),
+            )
+            .await
+            .expect("无平台时也应成功");
+        assert_eq!(count, 0);
+    }
+
+    /// 缺省 description → 仍正常返回
+    #[tokio::test]
+    async fn phase5_forward_alarm_no_description() {
+        let pool = {
+            #[cfg(feature = "postgres")]
+            { sqlx::postgres::PgPoolOptions::new().max_connections(1)
+                .connect_lazy("postgres://x:x@127.0.0.1/x").unwrap() }
+            #[cfg(feature = "mysql")]
+            { sqlx::mysql::MySqlPoolOptions::new().max_connections(1)
+                .connect_lazy("mysql://x:x@127.0.0.1/x").unwrap() }
+            #[cfg(feature = "sqlite")]
+            { sqlx::sqlite::SqlitePoolOptions::new().max_connections(1)
+                .connect_lazy("sqlite::memory:").unwrap() }
+        };
+        let server = SipServer::new(SipConfig::default(), pool, None);
+
+        let count = server
+            .forward_alarm_to_all(
+                "34020000001320000001", "1", 1, "2026-06-20T12:00:00", None,
+            )
+            .await
+            .expect("description 为 None 时也应成功");
+        assert_eq!(count, 0);
     }
 }
