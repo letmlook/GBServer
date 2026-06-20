@@ -15,16 +15,34 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 
-/// Keepalive 超时阈值：默认 30 秒
+/// Keepalive 超时阈值：默认 30 秒（来自 [zlm.keepalive].timeout_secs）
 pub const DEFAULT_KEEPALIVE_TIMEOUT_SECS: i64 = 30;
 
-/// 后台 loop 间隔：10 秒
+/// 后台 loop 间隔：10 秒（来自 [zlm.keepalive].check_interval_secs）
 pub const HEALTH_CHECK_INTERVAL_SECS: u64 = 10;
 
 /// keepalive_grace_count：连续 N 次健康检查都判定超时才真正切 offline。
 /// 默认 3 次，对应 30s 超时 × 3 = ~90s 真实离线判定窗口。
 /// R2 缓解：避免弱网下瞬时丢包就被切 offline。
 pub const DEFAULT_KEEPALIVE_GRACE_COUNT: i32 = 3;
+
+/// 健康检查配置（与 config.toml [zlm.keepalive] 字段一一对应）
+#[derive(Debug, Clone, Copy)]
+pub struct HealthCheckConfig {
+    pub timeout_secs: i64,
+    pub grace_count: i32,
+    pub check_interval_secs: u64,
+}
+
+impl Default for HealthCheckConfig {
+    fn default() -> Self {
+        Self {
+            timeout_secs: DEFAULT_KEEPALIVE_TIMEOUT_SECS,
+            grace_count: DEFAULT_KEEPALIVE_GRACE_COUNT,
+            check_interval_secs: HEALTH_CHECK_INTERVAL_SECS,
+        }
+    }
+}
 
 /// 媒体节点只读视图（让 `is_online` 可以在 trait 内纯函数实现）
 pub trait MediaNode: Send + Sync {
@@ -42,14 +60,15 @@ pub trait MediaNode: Send + Sync {
 
 /// 一次性扫描并把超时节点标 offline。
 ///
+/// 使用默认配置（timeout=30s, grace=3）。
 /// 返回被标记为 offline 的节点数。
 pub async fn run_health_check_once(
     pool: &crate::db::Pool,
 ) -> anyhow::Result<usize> {
-    run_health_check_once_with_grace(pool, DEFAULT_KEEPALIVE_GRACE_COUNT).await
+    run_health_check_once_with_config(pool, &HealthCheckConfig::default()).await
 }
 
-/// 与 `run_health_check_once` 相同，但显式指定 grace count（测试用）。
+/// 与 `run_health_check_once` 相同，但显式指定 timeout + grace。
 ///
 /// 行为（两步原子 SQL）：
 /// 1. 递增过期的在线节点的 `consecutive_misses`
@@ -57,12 +76,12 @@ pub async fn run_health_check_once(
 /// 3. 重置健康节点的 `consecutive_misses = 0`
 ///
 /// 返回**新切为 offline**的节点数（不是被递增的）。
-pub async fn run_health_check_once_with_grace(
+pub async fn run_health_check_once_with_config(
     pool: &crate::db::Pool,
-    grace_count: i32,
+    config: &HealthCheckConfig,
 ) -> anyhow::Result<usize> {
     use crate::db::media_server;
-    let offline_threshold = Utc::now() - chrono::Duration::seconds(DEFAULT_KEEPALIVE_TIMEOUT_SECS);
+    let offline_threshold = Utc::now() - chrono::Duration::seconds(config.timeout_secs);
     let threshold_str = offline_threshold.to_rfc3339();
 
     // Step 1: 递增过期节点的连续丢失计数
@@ -72,7 +91,7 @@ pub async fn run_health_check_once_with_grace(
 
     // Step 2: 切连续丢失达到阈值的节点为 offline
     let affected = media_server::mark_offline_if_miss_count_exceeded(
-        pool, grace_count,
+        pool, config.grace_count,
     ).await?;
 
     // Step 3: 重置健康节点的 miss 计数（keepalive 恢复）
@@ -82,8 +101,8 @@ pub async fn run_health_check_once_with_grace(
 
     if affected > 0 {
         tracing::info!(
-            "Marked {} media nodes offline (keepalive timeout × {} grace)",
-            affected, grace_count
+            "Marked {} media nodes offline (keepalive timeout={}s × {} grace)",
+            affected, config.timeout_secs, config.grace_count
         );
     }
     if reset_count > 0 {
@@ -95,15 +114,15 @@ pub async fn run_health_check_once_with_grace(
     Ok(affected as usize)
 }
 
-/// 后台 loop：每 10s 跑一次 `run_health_check_once`
+/// 后台 loop：每 N 秒（来自 `config.check_interval_secs`）跑一次 health check
 ///
 /// 错误只 warn，不退出 — 因为 keepalive 超时检测是辅助功能，不能因为单次
 /// 数据库错误就让整个后台任务消失。
-pub async fn health_check_loop(pool: crate::db::Pool) {
-    let mut interval = tokio::time::interval(Duration::from_secs(HEALTH_CHECK_INTERVAL_SECS));
+pub async fn health_check_loop(pool: crate::db::Pool, config: HealthCheckConfig) {
+    let mut interval = tokio::time::interval(Duration::from_secs(config.check_interval_secs));
     loop {
         interval.tick().await;
-        if let Err(e) = run_health_check_once(&pool).await {
+        if let Err(e) = run_health_check_once_with_config(&pool, &config).await {
             tracing::warn!("MediaNode health check failed: {}", e);
         }
     }
@@ -224,7 +243,7 @@ mod tests {
         .expect("insert fresh");
 
         // 跑一次 health check（用 grace_count=1 保持原始语义：单次超时立即切 offline）
-        let affected = run_health_check_once_with_grace(&pool, 1)
+        let affected = run_health_check_once_with_config(&pool, &HealthCheckConfig { timeout_secs: 30, grace_count: 1, check_interval_secs: 10 })
             .await
             .expect("health check");
         assert_eq!(affected, 1, "exactly one row should be marked offline");
@@ -292,7 +311,7 @@ mod tests {
         .expect("insert");
 
         // 跑 health check with grace_count=3
-        let affected = run_health_check_once_with_grace(&pool, 3)
+        let affected = run_health_check_once_with_config(&pool, &HealthCheckConfig { timeout_secs: 30, grace_count: 3, check_interval_secs: 10 })
             .await
             .expect("health check");
         assert_eq!(affected, 0, "第一次未达 grace_count 不应切 offline");
@@ -354,7 +373,7 @@ mod tests {
         .expect("insert");
 
         // 跑 health check with grace_count=3
-        let affected = run_health_check_once_with_grace(&pool, 3)
+        let affected = run_health_check_once_with_config(&pool, &HealthCheckConfig { timeout_secs: 30, grace_count: 3, check_interval_secs: 10 })
             .await
             .expect("health check");
         assert_eq!(affected, 1, "达到 grace_count 应该切 offline");

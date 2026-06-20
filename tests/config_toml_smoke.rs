@@ -56,6 +56,15 @@ fn toml_config_loads_and_deserializes() {
     assert_eq!(first.http_port, 8080);
     assert!(first.enabled);
 
+    // Phase 4 follow-up: [zlm.keepalive] 子节应被正确反序列化
+    let ka = &zlm.keepalive;
+    assert_eq!(ka.timeout_secs, 30, "[zlm.keepalive].timeout_secs 应为 30");
+    assert_eq!(ka.grace_count, 3, "[zlm.keepalive].grace_count 应为 3");
+    assert_eq!(
+        ka.check_interval_secs, 10,
+        "[zlm.keepalive].check_interval_secs 应为 10"
+    );
+
     let jt = cfg.jt1078.as_ref().expect("jt1078 should be present");
     assert_eq!(jt.timeout_ms, Some(60000));
     assert_eq!(jt.retransmit_wait_ms, Some(200));

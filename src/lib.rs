@@ -233,12 +233,25 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
         });
     }
 
-    // Phase 4.4: 媒体节点 keepalive 超时检测 — 每 10s 扫描一次，
-    // 把超过 DEFAULT_KEEPALIVE_TIMEOUT_SECS 秒无 keepalive 的节点切 offline
+    // Phase 4.4 + follow-up: 媒体节点 keepalive 超时检测 — 每 N 秒扫描一次，
+    // 把超过 timeout_secs 秒无 keepalive 的节点切 offline
+    // (timeout_secs / grace_count / check_interval_secs 来自 [zlm.keepalive])
     {
         let health_pool = pool.clone();
+        let keepalive_cfg = cfg.zlm.as_ref()
+            .map(|z| z.keepalive.clone())
+            .unwrap_or_default();
+        let health_config = zlm::media_node::HealthCheckConfig {
+            timeout_secs: keepalive_cfg.timeout_secs,
+            grace_count: keepalive_cfg.grace_count,
+            check_interval_secs: keepalive_cfg.check_interval_secs,
+        };
+        tracing::info!(
+            "MediaNode health check started: timeout={}s, grace={}, interval={}s",
+            health_config.timeout_secs, health_config.grace_count, health_config.check_interval_secs
+        );
         tokio::spawn(async move {
-            zlm::media_node::health_check_loop(health_pool).await;
+            zlm::media_node::health_check_loop(health_pool, health_config).await;
         });
     }
 

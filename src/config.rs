@@ -138,12 +138,45 @@ pub struct ZlmServerConfig {
     pub hook_url: Option<String>,
 }
 
+/// ZLM 节点健康检查配置（Phase 4 follow-up）
+///
+/// 控制 `media_node::health_check_loop` 的行为：
+/// - `timeout_secs`：单次 keepalive 超时阈值（默认 30s）
+/// - `grace_count`：连续 N 次健康检查都判定超时才真正切 offline（默认 3）
+/// - `check_interval_secs`：loop 间隔（默认 10s）
+#[derive(Debug, Clone, Deserialize)]
+pub struct ZlmKeepaliveConfig {
+    #[serde(default = "default_keepalive_timeout_secs")]
+    pub timeout_secs: i64,
+    #[serde(default = "default_keepalive_grace_count")]
+    pub grace_count: i32,
+    #[serde(default = "default_keepalive_check_interval_secs")]
+    pub check_interval_secs: u64,
+}
+
+fn default_keepalive_timeout_secs() -> i64 { 30 }
+fn default_keepalive_grace_count() -> i32 { 3 }
+fn default_keepalive_check_interval_secs() -> u64 { 10 }
+
+impl Default for ZlmKeepaliveConfig {
+    fn default() -> Self {
+        Self {
+            timeout_secs: default_keepalive_timeout_secs(),
+            grace_count: default_keepalive_grace_count(),
+            check_interval_secs: default_keepalive_check_interval_secs(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct ZlmConfig {
     pub servers: Vec<ZlmServerConfig>,
     pub stream_timeout: u64,
     pub hook_enabled: bool,
     pub hook_url: String,
+    /// Phase 4 follow-up: 节点健康检查配置（可从 [zlm.keepalive] 覆盖）
+    #[serde(default)]
+    pub keepalive: ZlmKeepaliveConfig,
 }
 
 impl Default for ZlmConfig {
@@ -161,6 +194,7 @@ impl Default for ZlmConfig {
             stream_timeout: 10,
             hook_enabled: true,
             hook_url: "http://127.0.0.1:18080/api/zlm/hook".to_string(),
+            keepalive: ZlmKeepaliveConfig::default(),
         }
     }
 }
