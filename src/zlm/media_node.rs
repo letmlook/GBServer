@@ -39,7 +39,7 @@ pub trait MediaNode: Send + Sync {
 ///
 /// 返回被标记为 offline 的节点数。
 pub async fn run_health_check_once(
-    pool: &sqlx::Pool<sqlx::Sqlite>,
+    pool: &crate::db::Pool,
 ) -> anyhow::Result<usize> {
     let offline_threshold = Utc::now() - chrono::Duration::seconds(DEFAULT_KEEPALIVE_TIMEOUT_SECS);
     let affected = crate::db::media_server::mark_offline_if_expired(
@@ -60,7 +60,7 @@ pub async fn run_health_check_once(
 ///
 /// 错误只 warn，不退出 — 因为 keepalive 超时检测是辅助功能，不能因为单次
 /// 数据库错误就让整个后台任务消失。
-pub async fn health_check_loop(pool: sqlx::Pool<sqlx::Sqlite>) {
+pub async fn health_check_loop(pool: crate::db::Pool) {
     let mut interval = tokio::time::interval(Duration::from_secs(HEALTH_CHECK_INTERVAL_SECS));
     loop {
         interval.tick().await;
