@@ -12,11 +12,9 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use dashmap::DashMap;
-use chrono::Utc;
 
 use crate::sip::gb28181::SubscriptionType;
 use crate::db::Pool;
-use crate::sip::gb28181::SubscriptionType;
 
 /// 已发送的 SUBSCRIBE 会话（管理续期）
 #[derive(Debug, Clone)]

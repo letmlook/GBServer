@@ -32,7 +32,6 @@ use std::sync::Arc;
 use chrono::Utc;
 use dashmap::DashMap;
 use tokio::sync::RwLock;
-use chrono::Utc;
 
 use crate::db::platform as db_platform;
 use crate::db::Pool;
