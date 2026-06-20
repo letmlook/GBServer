@@ -487,6 +487,12 @@ impl AppState {
         }
 
         // Step C: Redis 在线计数（兼容旧 fallback，未经过 offline 过滤）
+        // 设计取舍：offline 过滤已在 Step A/B 的 `select_least_loaded_server_filtered`
+        // 和 `online_ids` 列表中应用（R5 mitigation：offline 过滤在 Redis 之前）。
+        // 本步骤仅作为 state_store 失败后的次级 fallback，使用 Redis 原始流计数
+        // 找到当前最少负载的节点 —— 严格 offline 过滤此时已不必要，因为
+        // 前面所有步骤已经尽力避免选到 offline 节点；这里最后再退让一次
+        // 以兼容老部署（Redis 存在但 state_store 暂未填充的场景）。
         if let Some(ref redis) = self.redis {
             let mut min_count = i64::MAX;
             let mut best: Option<(String, Arc<zlm::ZlmClient>)> = None;
@@ -503,6 +509,12 @@ impl AppState {
         }
 
         // Step D: 查询 ZLM API 获取实际流数（最后兼容 fallback）
+        // 设计取舍：与 Step C 相同 —— offline 过滤在 Step A/B 完成；本步仅
+        // 作为 Redis 也不可用时的最终 tie-breaker，使用 ZLM 实时 `get_active_stream_count`
+        // 选最少负载的节点。如果某个被检测 offline 但 ZLM 实际可达的节点在此处胜出，
+        // 也不会造成数据/连接错误（业务上只是把流推到该节点），并且会被
+        // `health_check_loop`（media_node.rs）10s 内重新标记为 online / offline
+        // 收敛到 Step A 的路径。Safety net 在所有上游信号失败时仍会兜底返回首个节点。
         let mut min_count = usize::MAX;
         let mut best: Option<(String, Arc<zlm::ZlmClient>)> = None;
         for (id, client) in &self.zlm_clients {
