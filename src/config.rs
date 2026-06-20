@@ -17,6 +17,9 @@ pub struct AppConfig {
     /// cluster checks are skipped (Redis fallback to local node only).
     #[serde(default)]
     pub cluster: ClusterAppConfig,
+    /// Phase 7.4: audit middleware config. When disabled, no audit log is written.
+    #[serde(default)]
+    pub audit: AuditConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -274,5 +277,26 @@ impl ClusterAppConfig {
     }
     pub fn heartbeat_ttl(&self) -> std::time::Duration {
         std::time::Duration::from_secs(self.heartbeat_ttl_secs)
+    }
+}
+
+/// Phase 7.4: audit middleware configuration.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AuditConfig {
+    #[serde(default = "default_audit_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_audit_retention_days")]
+    pub retention_days: u32,
+}
+
+fn default_audit_enabled() -> bool { true }
+fn default_audit_retention_days() -> u32 { 90 }
+
+impl Default for AuditConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            retention_days: 90,
+        }
     }
 }

@@ -1,14 +1,35 @@
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
 
 static JT1078_MISSING: AtomicU64 = AtomicU64::new(0);
 static JT1078_ACTIVE: AtomicUsize = AtomicUsize::new(0);
 static SIP_DEVICES_ONLINE: AtomicUsize = AtomicUsize::new(0);
 static SIP_INVITES_ACTIVE: AtomicUsize = AtomicUsize::new(0);
 static STREAMS_ACTIVE: AtomicUsize = AtomicUsize::new(0);
+// Phase 7.5: extended metric set
+static CLUSTER_NODES_ACTIVE: AtomicUsize = AtomicUsize::new(0);
+static RPC_MESSAGES_TOTAL: AtomicU64 = AtomicU64::new(0);
+static WS_CLIENTS_CONNECTED: AtomicUsize = AtomicUsize::new(0);
+static AUDIT_LOG_WRITES_TOTAL: AtomicU64 = AtomicU64::new(0);
+static AUDIT_LOG_WRITES_FAILED: AtomicU64 = AtomicU64::new(0);
+static REDIS_STATE_KEYS: AtomicI64 = AtomicI64::new(-1);
 
 pub fn inc_missing(n: u64) {
     JT1078_MISSING.fetch_add(n, Ordering::Relaxed);
 }
+
+// Phase 7.5 setters
+pub fn set_cluster_nodes_active(n: usize) { CLUSTER_NODES_ACTIVE.store(n, Ordering::Relaxed); }
+pub fn inc_rpc_messages_total() { RPC_MESSAGES_TOTAL.fetch_add(1, Ordering::Relaxed); }
+pub fn inc_ws_clients(delta: i64) {
+    if delta >= 0 {
+        WS_CLIENTS_CONNECTED.fetch_add(delta as usize, Ordering::Relaxed);
+    } else {
+        WS_CLIENTS_CONNECTED.fetch_sub((-delta) as usize, Ordering::Relaxed);
+    }
+}
+pub fn inc_audit_log_writes_total() { AUDIT_LOG_WRITES_TOTAL.fetch_add(1, Ordering::Relaxed); }
+pub fn inc_audit_log_writes_failed() { AUDIT_LOG_WRITES_FAILED.fetch_add(1, Ordering::Relaxed); }
+pub fn set_redis_state_keys(n: i64) { REDIS_STATE_KEYS.store(n, Ordering::Relaxed); }
 
 pub fn set_active_sessions(n: usize) {
     JT1078_ACTIVE.store(n, Ordering::Relaxed);

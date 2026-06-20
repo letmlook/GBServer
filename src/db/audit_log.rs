@@ -79,6 +79,7 @@ pub async fn ensure_table(pool: &Pool) -> sqlx::Result<()> {
                 ip VARCHAR(50),
                 status_code INTEGER,
                 request_body TEXT,
+                elapsed_ms BIGINT,
                 create_time DATETIME DEFAULT CURRENT_TIMESTAMP
             )"#
         )
@@ -151,6 +152,46 @@ pub async fn insert(
     .execute(pool)
     .await?;
     Ok(r.rows_affected())
+}
+
+/// Phase 7.4: extended insert with `elapsed_ms` column. Caller (audit_middleware)
+/// already times the request; we just persist it.
+pub async fn insert_with_metrics(
+    pool: &Pool,
+    username: &str,
+    action: &str,
+    resource: &str,
+    method: &str,
+    path: &str,
+    ip: &str,
+    status_code: i32,
+    elapsed_ms: i64,
+) -> sqlx::Result<()> {
+    // Try extended schema first (gb_audit_log + elapsed_ms), fall back to basic schema.
+    // We do this with INSERT IGNORE-style fallback: attempt to insert with elapsed_ms;
+    // if the column doesn't exist, retry without it.
+    let with_elapsed_result = sqlx::query(
+        "INSERT INTO gb_audit_log (username, action, resource, method, path, ip, status_code, elapsed_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+    )
+    .bind(username).bind(action).bind(resource).bind(method).bind(path).bind(ip).bind(status_code).bind(elapsed_ms)
+    .execute(pool).await;
+    if with_elapsed_result.is_ok() {
+        return Ok(());
+    }
+    // Fallback: basic schema (no elapsed_ms column)
+    #[cfg(feature = "mysql")]
+    { let _ = sqlx::query("INSERT INTO gb_audit_log (username, action, resource, method, path, ip, status_code) VALUES (?, ?, ?, ?, ?, ?, ?)")
+        .bind(username).bind(action).bind(resource).bind(method).bind(path).bind(ip).bind(status_code)
+        .execute(pool).await?; }
+    #[cfg(feature = "postgres")]
+    { let _ = sqlx::query("INSERT INTO gb_audit_log (username, action, resource, method, path, ip, status_code) VALUES ($1, $2, $3, $4, $5, $6, $7)")
+        .bind(username).bind(action).bind(resource).bind(method).bind(path).bind(ip).bind(status_code)
+        .execute(pool).await?; }
+    #[cfg(feature = "sqlite")]
+    { let _ = sqlx::query("INSERT INTO gb_audit_log (username, action, resource, method, path, ip, status_code) VALUES (?, ?, ?, ?, ?, ?, ?)")
+        .bind(username).bind(action).bind(resource).bind(method).bind(path).bind(ip).bind(status_code)
+        .execute(pool).await?; }
+    Ok(())
 }
 
 pub async fn list_paged(

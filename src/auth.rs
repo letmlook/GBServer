@@ -59,6 +59,38 @@ impl JwtKeys {
     }
 }
 
+/// Lightweight view used by audit middleware / WS — only the username field.
+/// Avoids forcing middleware callers to know the full Claims shape.
+#[derive(Debug, Clone)]
+pub struct ClaimsView {
+    pub user: String,
+}
+
+/// Phase 7.4: best-effort decode for audit middleware. Returns None on any failure
+/// (including expired tokens, bad signature, malformed input). Middleware logs
+/// "anonymous" in that case rather than aborting the request.
+pub fn decode_jwt_unsafe(token: &str) -> Result<ClaimsView, String> {
+    let mut validation = Validation::default();
+    validation.set_audience(&[AUDIENCE]);
+    validation.set_required_spec_claims(&["sub", "aud", "exp", "userName"]);
+    validation.validate_exp = false;
+    // Best-effort: try decoding against the configured secret; if it fails for any
+    // reason (bad signature, expired, malformed), propagate the error so middleware
+    // can fall back to "anonymous".
+    //
+    // Note: This function reads the secret from GBSERVER__JWT__SECRET env or the
+    // global config to remain sync-friendly for middleware. Production callers
+    // should use JwtKeys::verify_token instead.
+    let secret = std::env::var("GBSERVER__JWT__SECRET").unwrap_or_default();
+    if secret.is_empty() {
+        return Err("JWT secret not configured".into());
+    }
+    let decoding = DecodingKey::from_secret(secret.as_bytes());
+    let data = decode::<Claims>(token, &decoding, &validation)
+        .map_err(|e| format!("decode failed: {}", e))?;
+    Ok(ClaimsView { user: data.claims.userName })
+}
+
 pub fn extract_token(req: &Request) -> Option<String> {
     extract_token_from_headers(req.headers())
 }

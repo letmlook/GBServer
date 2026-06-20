@@ -18,6 +18,7 @@ pub mod state;
 pub mod security;
 pub mod cluster;
 pub mod ws;
+pub mod middleware;
 
 use config::AppConfig;
 use std::collections::HashMap;
@@ -759,6 +760,7 @@ mod tests {
             map: None,
             jt1078: None,
             cluster: crate::config::ClusterAppConfig::default(),
+            audit: crate::config::AuditConfig::default(),
         }
     }
 

@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use tower_http::cors::{Any, CorsLayer};
 
 use crate::auth::auth_middleware;
+use crate::middleware::audit_middleware;
 use crate::handlers::{
     alarm, common_channel, device, device_control, device_stub, front_end, jt1078, platform, play,
     cloud_record_extra, jt1078_extra, parity_extras, playback, rtp_control, server, stream, stub, sy_camera, talk, user, websocket, webrtc, device_batch, region, role,
@@ -848,6 +849,20 @@ pub fn app(state: AppState) -> Router<AppState> {
             "/api/sy/camera/list/ids",
             get(common_channel::camera_list_ids),
         )
+        // Phase 7.4: alarm endpoints now require JWT (moved from main-app merge below)
+        .route("/api/alarm/list", get(alarm::alarm_list))
+        .route("/api/alarm/detail/:id", get(alarm::alarm_detail))
+        .route("/api/alarm/handle", post(alarm::alarm_handle))
+        .route("/api/alarm/delete/:id", delete(alarm::alarm_delete))
+        .route("/api/alarm/batch", delete(alarm::alarm_batch_delete))
+        .route("/api/alarm/device/:device_id", delete(alarm::alarm_delete_by_device))
+        .route("/api/alarm/before/:time", delete(alarm::alarm_delete_before_time))
+        .route("/api/log/list", get(stub::log_list))
+        // Phase 7.4: audit middleware outermost — captures all responses (including 401)
+        .route_layer(middleware::from_fn_with_state(
+            state_clone.clone(),
+            audit_middleware,
+        ))
         .route_layer(middleware::from_fn_with_state(
             state_clone.clone(),
             auth_middleware,
@@ -952,18 +967,11 @@ pub fn app(state: AppState) -> Router<AppState> {
         .merge(zlm_hook_routes::hook_routes())
         .with_state(state.clone());
 
-    // WebSocket：设备状态实时通知
+    // WebSocket：设备状态实时通知 (Phase 7.3 + 7.4: JWT 校验在 ws_handler 内部)
     let app = app.route("/api/ws", get(websocket::ws_handler));
 
-    // 告警管理
-    let app = app
-        .route("/api/alarm/list", get(alarm::alarm_list))
-        .route("/api/alarm/detail/:id", get(alarm::alarm_detail))
-        .route("/api/alarm/handle", post(alarm::alarm_handle))
-        .route("/api/alarm/delete/:id", delete(alarm::alarm_delete))
-        .route("/api/alarm/batch", delete(alarm::alarm_batch_delete))
-        .route("/api/alarm/device/:device_id", delete(alarm::alarm_delete_by_device))
-        .route("/api/alarm/before/:time", delete(alarm::alarm_delete_before_time));
+    // Phase 7.4: alarm endpoints moved into api_protected (now require JWT).
+    // The legacy public routes below are intentionally removed.
 
     // 静态资源：前端构建产物（与 Java 版 static 目录一致）
     let static_dir = state
