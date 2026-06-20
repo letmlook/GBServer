@@ -4,6 +4,8 @@ use serde::Serialize;
 use sqlx::FromRow;
 
 use super::Pool;
+use crate::state::{StreamState, StreamStatus};
+use std::str::FromStr;
 
 /// 推流记录结构体
 #[derive(Debug, Clone, Serialize, FromRow)]
@@ -24,6 +26,87 @@ pub struct StreamPush {
     // (or alias it in SELECT queries if needed in the future).
     pub self_push: Option<bool>,
     pub start_offline_push: Option<bool>,
+    /// Phase 4.5: 统一流状态字段（与 `pushing` bool 并存，不替换）
+    #[serde(default)]
+    pub stream_status: Option<String>,
+}
+
+impl StreamState for StreamPush {
+    fn stream_id(&self) -> &str {
+        self.stream.as_deref().unwrap_or("")
+    }
+    fn app(&self) -> &str {
+        self.app.as_deref().unwrap_or("")
+    }
+    fn status(&self) -> StreamStatus {
+        // 优先读 stream_status（新统一字段），fallback 解析历史 pushing bool
+        if let Some(ref s) = self.stream_status {
+            if let Ok(st) = StreamStatus::from_str(s) {
+                return st;
+            }
+        }
+        if self.pushing.unwrap_or(false) {
+            StreamStatus::Pushing
+        } else {
+            StreamStatus::Ready
+        }
+    }
+    fn set_status(&mut self, status: StreamStatus) {
+        self.stream_status = Some(status.as_str().to_string());
+    }
+    fn media_server_id(&self) -> Option<&str> {
+        self.media_server_id.as_deref()
+    }
+    fn device_id(&self) -> Option<&str> {
+        // 历史结构未携带设备/通道关联字段（通过 GB 上层 INVITE 间接关联）
+        None
+    }
+    fn channel_id(&self) -> Option<&str> {
+        None
+    }
+}
+
+/// Phase 4.5: 幂等迁移 —— 为已存在的 `gb_stream_push` 表添加 `stream_status` 列。
+/// 三态 cfg 防御：PG 用 `ADD COLUMN IF NOT EXISTS`；SQLite / MySQL 用 information_schema 检测后条件执行。
+pub async fn ensure_stream_status_column(pool: &Pool) -> sqlx::Result<()> {
+    // PostgreSQL: ADD COLUMN IF NOT EXISTS
+    #[cfg(feature = "postgres")]
+    {
+        let _ = sqlx::query("ALTER TABLE gb_stream_push ADD COLUMN IF NOT EXISTS stream_status VARCHAR(32) NOT NULL DEFAULT 'ready'")
+            .execute(pool)
+            .await?;
+    }
+    // SQLite: pragma_table_info 检测
+    #[cfg(feature = "sqlite")]
+    {
+        let exists: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pragma_table_info('gb_stream_push') WHERE name = 'stream_status'"
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0);
+        if exists == 0 {
+            let _ = sqlx::query("ALTER TABLE gb_stream_push ADD COLUMN stream_status TEXT NOT NULL DEFAULT 'ready'")
+                .execute(pool)
+                .await?;
+        }
+    }
+    // MySQL: information_schema 检测
+    #[cfg(feature = "mysql")]
+    {
+        let exists: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'gb_stream_push' AND column_name = 'stream_status'"
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0);
+        if exists == 0 {
+            let _ = sqlx::query("ALTER TABLE gb_stream_push ADD COLUMN stream_status varchar(32) NOT NULL DEFAULT 'ready'")
+                .execute(pool)
+                .await?;
+        }
+    }
+    Ok(())
 }
 
 /// 根据ID获取推流记录

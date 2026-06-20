@@ -224,6 +224,8 @@ pub fn app(state: AppState) -> Router<AppState> {
         )
         .route("/api/server/info", get(server::server_info))
         .route("/api/server/resource/info", get(server::resource_info))
+        // Phase 4.5: 流状态统一视图
+        .route("/api/server/stream/all", get(server::list_all_streams))
         // Phase 7.3: 运维 API
         .route("/api/rtp/receive/open", post(stub::rtp_receive_open))
         .route("/api/rtp/receive/close/*path", post(stub::rtp_receive_close))

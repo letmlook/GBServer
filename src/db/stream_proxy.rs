@@ -4,6 +4,8 @@ use serde::Serialize;
 use sqlx::FromRow;
 
 use super::Pool;
+use crate::state::{StreamState, StreamStatus};
+use std::str::FromStr;
 
 /// 拉流代理结构体
 #[derive(Debug, Clone, Serialize, FromRow)]
@@ -29,6 +31,82 @@ pub struct StreamProxy {
     pub server_id: Option<String>,
     pub enable_disable_none_reader: Option<bool>,
     pub relates_media_server_id: Option<String>,
+    /// Phase 4.5: 统一流状态字段（与 `pulling` bool 并存，不替换）
+    #[serde(default)]
+    pub stream_status: Option<String>,
+}
+
+impl StreamState for StreamProxy {
+    fn stream_id(&self) -> &str {
+        self.stream.as_deref().unwrap_or("")
+    }
+    fn app(&self) -> &str {
+        self.app.as_deref().unwrap_or("")
+    }
+    fn status(&self) -> StreamStatus {
+        if let Some(ref s) = self.stream_status {
+            if let Ok(st) = StreamStatus::from_str(s) {
+                return st;
+            }
+        }
+        if self.pulling.unwrap_or(false) {
+            StreamStatus::Active
+        } else {
+            StreamStatus::Ready
+        }
+    }
+    fn set_status(&mut self, status: StreamStatus) {
+        self.stream_status = Some(status.as_str().to_string());
+    }
+    fn media_server_id(&self) -> Option<&str> {
+        self.media_server_id.as_deref()
+    }
+    fn device_id(&self) -> Option<&str> {
+        // 拉流代理通常无直接 device 关联
+        None
+    }
+    fn channel_id(&self) -> Option<&str> {
+        None
+    }
+}
+
+/// Phase 4.5: 幂等迁移 —— 为已存在的 `gb_stream_proxy` 表添加 `stream_status` 列。
+pub async fn ensure_stream_status_column(pool: &Pool) -> sqlx::Result<()> {
+    #[cfg(feature = "postgres")]
+    {
+        let _ = sqlx::query("ALTER TABLE gb_stream_proxy ADD COLUMN IF NOT EXISTS stream_status VARCHAR(32) NOT NULL DEFAULT 'ready'")
+            .execute(pool)
+            .await?;
+    }
+    #[cfg(feature = "sqlite")]
+    {
+        let exists: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pragma_table_info('gb_stream_proxy') WHERE name = 'stream_status'"
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0);
+        if exists == 0 {
+            let _ = sqlx::query("ALTER TABLE gb_stream_proxy ADD COLUMN stream_status TEXT NOT NULL DEFAULT 'ready'")
+                .execute(pool)
+                .await?;
+        }
+    }
+    #[cfg(feature = "mysql")]
+    {
+        let exists: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'gb_stream_proxy' AND column_name = 'stream_status'"
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0);
+        if exists == 0 {
+            let _ = sqlx::query("ALTER TABLE gb_stream_proxy ADD COLUMN stream_status varchar(32) NOT NULL DEFAULT 'ready'")
+                .execute(pool)
+                .await?;
+        }
+    }
+    Ok(())
 }
 
 /// 根据ID获取拉流代理

@@ -356,6 +356,7 @@ create table IF NOT EXISTS gb_stream_proxy
     server_id                  varchar(50) COMMENT '信令服务器ID',
     enable_disable_none_reader bool default false COMMENT '是否无人观看时自动停流',
     relates_media_server_id    varchar(50) COMMENT '关联的媒体服务器ID',
+    stream_status              varchar(32) default 'ready' COMMENT 'Phase 4.5 统一流状态: ready|pushing|active|stopped|failed',
     constraint uk_stream_proxy_app_stream unique (app, stream)
 );
 
@@ -375,6 +376,7 @@ create table IF NOT EXISTS gb_stream_push
     pushing            bool default false COMMENT '是否正在推流',
     self               bool default false COMMENT '是否本地发起',
     start_offline_push bool default true COMMENT '是否离线后自动重推',
+    stream_status      varchar(32) default 'ready' COMMENT 'Phase 4.5 统一流状态: ready|pushing|active|stopped|failed',
     constraint uk_stream_push_app_stream unique (app, stream)
 );
 
@@ -541,3 +543,23 @@ create table IF NOT EXISTS gb_jt_channel (
                                create_time varchar(50) not null COMMENT '创建时间',
                                constraint uk_jt_channel_id_device_id unique (terminal_db_id, channel_id)
 );
+
+-- ============================================
+-- Phase 4.5: 流状态统一字段（stream_status 列幂等迁移）
+-- ============================================
+-- MySQL 8 不支持 `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`，借助
+-- information_schema 检测列是否存在后条件执行（应用层
+-- db::stream_push::ensure_stream_status_column / db::stream_proxy::ensure_stream_status_column
+-- 已封装等价逻辑，可重入）。此处保留纯 SQL 注释参考：
+--
+--   SELECT COUNT(*) FROM information_schema.columns
+--   WHERE table_schema = DATABASE() AND table_name = 'gb_stream_push'
+--     AND column_name = 'stream_status';
+--   -- 若为 0:
+--   ALTER TABLE gb_stream_push ADD COLUMN stream_status varchar(32) DEFAULT 'ready';
+--
+--   SELECT COUNT(*) FROM information_schema.columns
+--   WHERE table_schema = DATABASE() AND table_name = 'gb_stream_proxy'
+--     AND column_name = 'stream_status';
+--   -- 若为 0:
+--   ALTER TABLE gb_stream_proxy ADD COLUMN stream_status varchar(32) DEFAULT 'ready';

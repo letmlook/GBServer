@@ -254,7 +254,8 @@ CREATE TABLE IF NOT EXISTS gb_stream_proxy
     stream_key                 VARCHAR(255),
     server_id                  VARCHAR(50),
     enable_disable_none_reader INTEGER DEFAULT 0,
-    relates_media_server_id    VARCHAR(50)
+    relates_media_server_id    VARCHAR(50),
+    stream_status              TEXT        DEFAULT 'ready'
 );
 CREATE UNIQUE INDEX IF NOT EXISTS uk_stream_proxy_app_stream ON gb_stream_proxy(app, stream);
 
@@ -274,7 +275,8 @@ CREATE TABLE IF NOT EXISTS gb_stream_push
     update_time        VARCHAR(50),
     pushing            INTEGER     DEFAULT 0,
     self               INTEGER     DEFAULT 0,
-    start_offline_push INTEGER     DEFAULT 1
+    start_offline_push INTEGER     DEFAULT 1,
+    stream_status      TEXT        DEFAULT 'ready'
 );
 CREATE UNIQUE INDEX IF NOT EXISTS uk_stream_push_app_stream ON gb_stream_push(app, stream);
 
@@ -447,3 +449,15 @@ INSERT INTO gb_user (id, username, password, role_id, create_time, update_time, 
 VALUES (1, 'admin', '21232f297a57a5a743894a0e4a801fc3', 1,
         '2021-04-13 14:14:57', '2021-04-13 14:14:57',
         '3e80d1762a324d5b0ff636e0bd16f1e3');
+
+-- ============================================
+-- Phase 4.5: 流状态统一字段（stream_status 列）
+-- ============================================
+-- 注意：SQLite 不支持 `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`（旧版本）。
+-- 应用层 lib.rs::init_db_tables 已检测 sqlite_master + pragma_table_info，
+-- 故此处仅作纯迁移注释参考。运行时通过 `db::stream_push::ensure_stream_status_column`
+-- 与 `db::stream_proxy::ensure_stream_status_column` 执行（依赖三态 cfg）。
+
+-- 旧版本 SQLite 的可执行迁移（手动执行）：
+-- ALTER TABLE gb_stream_proxy ADD COLUMN stream_status TEXT NOT NULL DEFAULT 'ready';
+-- ALTER TABLE gb_stream_push  ADD COLUMN stream_status TEXT NOT NULL DEFAULT 'ready';

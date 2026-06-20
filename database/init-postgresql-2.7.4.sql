@@ -943,3 +943,14 @@ COMMENT ON COLUMN gb_jt_channel.has_audio IS '是否有音频';
 COMMENT ON COLUMN gb_jt_channel.name IS '通道名称';
 COMMENT ON COLUMN gb_jt_channel.update_time IS '更新时间';
 COMMENT ON COLUMN gb_jt_channel.create_time IS '创建时间';
+
+-- ============================================
+-- Phase 4.5: 流状态统一字段（stream_status 列）
+-- ============================================
+-- PostgreSQL 原生支持 `ADD COLUMN IF NOT EXISTS`，幂等可重入。
+-- 与历史 bool 字段 `pushing` / `pulling` 并存，零破坏。
+ALTER TABLE gb_stream_proxy ADD COLUMN IF NOT EXISTS stream_status VARCHAR(32) NOT NULL DEFAULT 'ready';
+ALTER TABLE gb_stream_push  ADD COLUMN IF NOT EXISTS stream_status VARCHAR(32) NOT NULL DEFAULT 'ready';
+
+COMMENT ON COLUMN gb_stream_proxy.stream_status IS 'Phase 4.5 统一流状态: ready|pushing|active|stopped|failed';
+COMMENT ON COLUMN gb_stream_push.stream_status  IS 'Phase 4.5 统一流状态: ready|pushing|active|stopped|failed';

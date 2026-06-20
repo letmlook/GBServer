@@ -14,6 +14,7 @@ pub mod cascade;
 pub mod metrics;
 pub mod rpc;
 pub mod state_store;
+pub mod state;
 pub mod security;
 
 use config::AppConfig;
@@ -24,6 +25,9 @@ use tokio::sync::RwLock;
 async fn init_db_tables(pool: &db::Pool) -> anyhow::Result<()> {
     db::position_history::ensure_table(pool).await?;
     db::audit_log::ensure_table(pool).await?;
+    // Phase 4.5: 幂等迁移 —— 流状态统一字段
+    let _ = db::stream_push::ensure_stream_status_column(pool).await;
+    let _ = db::stream_proxy::ensure_stream_status_column(pool).await;
 
     // Check if core tables exist; if not, run full schema init
     #[cfg(feature = "postgres")]
