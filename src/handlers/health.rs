@@ -34,8 +34,12 @@ pub async fn liveness() -> (StatusCode, Json<serde_json::Value>) {
 pub async fn readiness(
     State(state): State<AppState>,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    let db_ok = sqlx::query_scalar::<_, i64>("SELECT 1")
-        .fetch_one(&state.pool)
+    // Use `execute` to issue a round-trip query without depending on column
+    // type decoding (PG `SELECT 1` returns INTEGER → i32, SQLite returns INTEGER
+    // → i64; decoding would fail across the boundary). `execute` only checks
+    // the result rows-affected — sufficient for a liveness probe.
+    let db_ok = sqlx::query("SELECT 1")
+        .execute(&state.pool)
         .await
         .is_ok();
 
