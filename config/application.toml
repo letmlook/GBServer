@@ -101,8 +101,8 @@ check_interval_secs = 10
 [[zlm.servers]]
 id = "zlmediakit-1"
 ip = "127.0.0.1"
-http_port = 8080
-secret = "S63648HLbxckv7YjpPTXXRTOsAVGo0Ia"
+http_port = 18081
+secret = "EctdXjqgidxs2AMquujELlQEh3G4OqAH"
 enabled = true
 
 # [[zlm.servers]]
