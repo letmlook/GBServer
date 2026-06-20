@@ -17,6 +17,7 @@ pub mod state_store;
 pub mod state;
 pub mod security;
 pub mod cluster;
+pub mod ws;
 
 use config::AppConfig;
 use std::collections::HashMap;
@@ -289,7 +290,7 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
         None
     };
 
-    let state = AppState {
+    let mut state = AppState {
         config: Arc::new(cfg.clone()),
         pool,
         sip_server: sip_server.clone(),
@@ -298,6 +299,10 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
         playback_manager: Some(playback_manager),
         download_manager: Some(download_manager),
         ws_state,
+        // Phase 7.3: cluster-aware WS hub. Receives RPC `ws_broadcast` from
+        // sibling nodes and fans out to local clients.
+        // (constructed below with the router reference)
+        ws_hub: Arc::new(crate::ws::WsHub::new(cfg.cluster.node_id.clone(), None)),
         redis: redis_conn.clone(),
         // Phase 4.6: construct StateStore — Redis backend if available, else in-memory.
         state_store: {
@@ -339,6 +344,34 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
     if let Some(ref router) = state.rpc_router {
         crate::rpc::register_standard_handlers(router).await;
     }
+
+    // Phase 7.3: 注册 ws_broadcast RPC handler — 让其他节点的 ws_hub 能被本节点 fanout
+    if let Some(ref router) = state.rpc_router {
+        let hub_clone = state.ws_hub.clone();
+        struct WsBroadcastHandler { hub: Arc<crate::ws::WsHub> }
+        impl crate::rpc::RpcHandler for WsBroadcastHandler {
+            fn name(&self) -> &str { "ws_broadcast" }
+            fn handle(&self, payload: serde_json::Value) -> crate::rpc::RpcResponse {
+                let hub = self.hub.clone();
+                // Spawn async dispatch — RpcHandler is sync; use tokio::spawn.
+                tokio::spawn(async move {
+                    hub.handle_rpc_broadcast(payload).await;
+                });
+                crate::rpc::RpcResponse { ok: true, result: None, error: None }
+            }
+        }
+        router.register(WsBroadcastHandler { hub: hub_clone }).await;
+    }
+
+    // Phase 7.3: 把 state.rpc_router 注入 ws_hub（让 hub 能 cluster 广播）
+    // WsHub::set_router 只能通过 Arc::get_mut 调用（要求 strong_count==1）；
+    // run() 是唯一构造 ws_hub 的地方，所以此处一定为 1。
+    if let Some(router) = state.rpc_router.clone() {
+        if let Some(hub_mut) = Arc::get_mut(&mut state.ws_hub) {
+            hub_mut.set_router(Some(router));
+        }
+    }
+
 
     // Phase 7.2: 启动 cluster heartbeat task（自动 evict 过期节点）
     {
@@ -486,6 +519,8 @@ pub struct AppState {
     pub playback_manager: Option<Arc<crate::handlers::playback::PlaybackManager>>,
     pub download_manager: Option<Arc<crate::handlers::playback::DownloadManager>>,
     pub ws_state: Arc<crate::handlers::websocket::WsState>,
+    /// Phase 7.3: cluster-aware WebSocket fanout hub.
+    pub ws_hub: Arc<crate::ws::WsHub>,
     pub redis: Option<redis::aio::ConnectionManager>,
     /// Phase 4.6: unified state store (Redis or in-memory). Drives
     /// `select_least_loaded_server_filtered` so offline nodes are skipped
@@ -742,6 +777,7 @@ mod tests {
             playback_manager: None,
             download_manager: None,
             ws_state: Arc::new(crate::handlers::websocket::WsState::new()),
+            ws_hub: Arc::new(crate::ws::WsHub::new("node-test".to_string(), None)),
             redis: None,
             state_store: state_store.clone(),
             state_repo: Arc::new(crate::state::StateStoreRepository::new(state_store)),
