@@ -340,8 +340,6 @@ cargo test --no-default-features --features postgres --lib       # PostgreSQL
 cargo test --no-default-features --features mysql --lib           # MySQL
 ```
 
-CI 矩阵在 [`.github/workflows/db-features.yml`](.github/workflows/db-features.yml) 中对 SQLite / PostgreSQL / MySQL 三个 feature 分别跑回归。
-
 ---
 
 ## 🛣️ 路线图
