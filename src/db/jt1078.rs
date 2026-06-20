@@ -521,3 +521,78 @@ pub async fn update_last_position(
     .await?;
     Ok(result.rows_affected())
 }
+
+// =================== Phase 6.4: Media item persistence ===================
+
+#[derive(Debug, Clone, Serialize, FromRow)]
+pub struct JtMediaItem {
+    pub id: i32,
+    pub phone_number: String,
+    pub channel_id: i32,
+    pub media_id: u32,
+    pub media_type: Option<i32>,
+    pub media_format: Option<i32>,
+    pub event_code: Option<i32>,
+    pub start_time: Option<String>,
+    pub end_time: Option<String>,
+    pub file_path: Option<String>,
+    pub create_time: String,
+}
+
+/// Insert a JT/T 1078 media item (returned from 0x8802 media search).
+pub async fn insert_media_item(
+    pool: &Pool,
+    phone: &str,
+    channel_id: i32,
+    media_id: u32,
+    media_type: i32,
+    media_format: i32,
+    event_code: i32,
+    start_time: &str,
+    end_time: &str,
+) -> sqlx::Result<u64> {
+    let now = chrono::Utc::now().to_rfc3339();
+    let result = sqlx::query(
+        "INSERT INTO gb_jt_media_item (phone_number, channel_id, media_id, media_type, media_format, event_code, start_time, end_time, create_time) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    )
+    .bind(phone)
+    .bind(channel_id)
+    .bind(media_id as i64)
+    .bind(media_type)
+    .bind(media_format)
+    .bind(event_code)
+    .bind(start_time)
+    .bind(end_time)
+    .bind(&now)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected())
+}
+
+/// List media items for a terminal within optional time range.
+pub async fn list_media_items_by_terminal(
+    pool: &Pool,
+    phone: &str,
+    start_time: Option<&str>,
+    end_time: Option<&str>,
+    limit: i32,
+) -> sqlx::Result<Vec<JtMediaItem>> {
+    let limit_64 = limit as i64;
+    let rows: Vec<JtMediaItem> = match (start_time, end_time) {
+        (Some(s), Some(e)) => {
+            sqlx::query_as::<_, JtMediaItem>(
+                "SELECT * FROM gb_jt_media_item WHERE phone_number = ? AND start_time >= ? AND end_time <= ? ORDER BY start_time DESC LIMIT ?"
+            )
+            .bind(phone).bind(s).bind(e).bind(limit_64)
+            .fetch_all(pool).await?
+        }
+        _ => {
+            sqlx::query_as::<_, JtMediaItem>(
+                "SELECT * FROM gb_jt_media_item WHERE phone_number = ? ORDER BY start_time DESC LIMIT ?"
+            )
+            .bind(phone).bind(limit_64)
+            .fetch_all(pool).await?
+        }
+    };
+    Ok(rows)
+}

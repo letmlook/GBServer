@@ -500,3 +500,23 @@ CREATE TABLE IF NOT EXISTS gb_jt_terminal
 );
 CREATE UNIQUE INDEX IF NOT EXISTS uk_jt_device_id_device_id
     ON gb_jt_terminal (id, phone_number);
+
+-- ============================================
+-- Phase 6.4: JT/T 1078 媒体项 (录像检索结果)
+-- ============================================
+CREATE TABLE IF NOT EXISTS gb_jt_media_item
+(
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    phone_number TEXT NOT NULL,
+    channel_id   INTEGER NOT NULL,
+    media_id     INTEGER NOT NULL,
+    media_type   INTEGER,
+    media_format INTEGER,
+    event_code   INTEGER,
+    start_time   TEXT,
+    end_time     TEXT,
+    file_path    TEXT,
+    create_time  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_jt_media_item_phone ON gb_jt_media_item (phone_number);
+CREATE INDEX IF NOT EXISTS idx_jt_media_item_time ON gb_jt_media_item (start_time, end_time);

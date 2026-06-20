@@ -966,3 +966,24 @@ ALTER TABLE gb_stream_push  ADD COLUMN IF NOT EXISTS stream_status VARCHAR(32) N
 
 COMMENT ON COLUMN gb_stream_proxy.stream_status IS 'Phase 4.5 统一流状态: ready|pushing|active|stopped|failed';
 COMMENT ON COLUMN gb_stream_push.stream_status  IS 'Phase 4.5 统一流状态: ready|pushing|active|stopped|failed';
+
+-- ============================================
+-- Phase 6.4: JT/T 1078 媒体项 (录像检索结果)
+-- ============================================
+CREATE TABLE IF NOT EXISTS gb_jt_media_item
+(
+    id           serial PRIMARY KEY,
+    phone_number character varying(50) NOT NULL,
+    channel_id   integer NOT NULL,
+    media_id     bigint NOT NULL,
+    media_type   integer,
+    media_format integer,
+    event_code   integer,
+    start_time   character varying(50),
+    end_time     character varying(50),
+    file_path    character varying(255),
+    create_time  character varying(50) NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_jt_media_item_phone ON gb_jt_media_item (phone_number);
+CREATE INDEX IF NOT EXISTS idx_jt_media_item_time ON gb_jt_media_item (start_time, end_time);
+COMMENT ON TABLE gb_jt_media_item IS 'Phase 6.4: JT/T 1078 录像检索结果';

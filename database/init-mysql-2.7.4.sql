@@ -574,3 +574,23 @@ create table IF NOT EXISTS gb_jt_channel (
 --     AND column_name = 'stream_status';
 --   -- 若为 0:
 --   ALTER TABLE gb_stream_proxy ADD COLUMN stream_status varchar(32) DEFAULT 'ready';
+
+-- ============================================
+-- Phase 6.4: JT/T 1078 媒体项 (录像检索结果)
+-- ============================================
+drop table IF EXISTS gb_jt_media_item;
+create table IF NOT EXISTS gb_jt_media_item (
+    id           bigint auto_increment primary key COMMENT '主键ID',
+    phone_number varchar(50) NOT NULL COMMENT '终端SIM卡号',
+    channel_id   integer NOT NULL COMMENT '通道号',
+    media_id     bigint NOT NULL COMMENT '媒体ID',
+    media_type   integer COMMENT '媒体类型',
+    media_format integer COMMENT '媒体格式',
+    event_code   integer COMMENT '事件码',
+    start_time   varchar(50) COMMENT '开始时间',
+    end_time     varchar(50) COMMENT '结束时间',
+    file_path    varchar(255) COMMENT '文件路径',
+    create_time  varchar(50) NOT NULL COMMENT '创建时间'
+);
+CREATE INDEX idx_jt_media_item_phone ON gb_jt_media_item (phone_number);
+CREATE INDEX idx_jt_media_item_time ON gb_jt_media_item (start_time, end_time);

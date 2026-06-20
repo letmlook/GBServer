@@ -887,11 +887,65 @@ pub async fn record_list(
     Query(q): Query<RecordListQuery>,
 ) -> Json<serde_json::Value> {
     let phone = q.phone_number.clone().unwrap_or_default();
-    let channel_id = q.channel_id.unwrap_or(0);
+    let channel_id = q.channel_id.unwrap_or(0) as i32;
+    let start_time = q.start_time.clone().unwrap_or_default();
+    let end_time = q.end_time.clone().unwrap_or_default();
 
-    tracing::info!("JT1078 record list: phone={}, channel={}", phone, channel_id);
+    if phone.is_empty() {
+        return Json(build_error("缺少 phoneNumber"));
+    }
 
-    // Query ZLM MP4 records for this terminal
+    tracing::info!("JT1078 record list: phone={}, channel={}, {}-{}", phone, channel_id, start_time, end_time);
+
+    // Phase 6.4: 真发 0x8802 media search → 等 0x0001 应答 → 落库 → 返回
+    if !start_time.is_empty() && !end_time.is_empty() {
+        let mgr_guard = state.jt1078_manager.read().await;
+        if let Some(mgr) = mgr_guard.as_ref() {
+            if mgr.is_terminal_online(&phone).await {
+                match mgr.send_media_search_and_wait(
+                    &phone, channel_id as u8, &start_time, &end_time, 30,
+                ).await {
+                    Ok(_) => {
+                        // 终端应答 - 实际的多包 0x0801 通过 process_jt_message 接收
+                        // 此处返回时先尝试从 DB 读已落库的 items
+                        drop(mgr_guard);
+                        match jt_db::list_media_items_by_terminal(
+                            &state.pool, &phone,
+                            Some(&start_time), Some(&end_time), 50,
+                        ).await {
+                            Ok(items) if !items.is_empty() => {
+                                let list: Vec<serde_json::Value> = items.iter().map(|i| {
+                                    serde_json::json!({
+                                        "mediaId": i.media_id,
+                                        "phoneNumber": i.phone_number,
+                                        "channelId": i.channel_id,
+                                        "mediaType": i.media_type,
+                                        "mediaFormat": i.media_format,
+                                        "eventCode": i.event_code,
+                                        "startTime": i.start_time,
+                                        "endTime": i.end_time,
+                                        "source": "device",
+                                    })
+                                }).collect();
+                                return Json(serde_json::json!({
+                                    "code": 0,
+                                    "data": { "list": list, "total": list.len() }
+                                }));
+                            }
+                            _ => {
+                                // DB 还没有 items (0x0801 多包未到达) - 继续兜底
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("JT1078 send_media_search(0x8802) failed for {}: {}", phone, e);
+                    }
+                }
+            }
+        }
+    }
+
+    // Fallback: ZLM MP4 records
     if let Some(ref zlm) = state.zlm_client {
         let app = "record";
         let stream = if channel_id > 0 {
@@ -899,57 +953,50 @@ pub async fn record_list(
         } else {
             phone.clone()
         };
-        match zlm.get_mp4_record_file(app, &stream, None, None, None).await {
-            Ok(files) => {
-                let records: Vec<serde_json::Value> = files.iter().map(|f| {
-                    let start_ms = f.create_time.parse::<i64>().unwrap_or(0);
-                    let duration = f.duration.unwrap_or(0.0);
-                    serde_json::json!({
-                        "fileName": f.name,
-                        "filePath": f.path,
-                        "fileSize": f.size,
-                        "startTime": start_ms,
-                        "endTime": start_ms + (duration * 1000.0) as i64,
-                        "duration": duration,
-                        "downloadUrl": format!("/record/{}", f.name)
-                    })
-                }).collect();
-                return Json(serde_json::json!({
-                    "code": 0,
-                    "data": { "list": records, "total": records.len() }
-                }));
-            }
-            Err(e) => {
-                tracing::warn!("JT1078 record list ZLM query failed: {}", e);
-            }
-        }
-    }
-
-    // Fallback: query cloud_record DB
-    match sqlx::query_as::<_, crate::db::cloud_record::CloudRecord>(
-        "SELECT * FROM gb_cloud_record WHERE stream = $1 ORDER BY start_time DESC LIMIT 50"
-    )
-    .bind(&phone)
-    .fetch_all(&state.pool)
-    .await
-    {
-        Ok(records) => {
-            let list: Vec<serde_json::Value> = records.iter().map(|r| {
+        if let Ok(files) = zlm.get_mp4_record_file(app, &stream, None, None, None).await {
+            let records: Vec<serde_json::Value> = files.iter().map(|f| {
+                let start_ms = f.create_time.parse::<i64>().unwrap_or(0);
+                let duration = f.duration.unwrap_or(0.0);
                 serde_json::json!({
-                    "fileName": r.file_name,
-                    "filePath": r.file_path,
-                    "fileSize": r.file_size,
-                    "startTime": r.start_time,
-                    "endTime": r.end_time,
-                    "duration": r.time_len,
+                    "fileName": f.name,
+                    "filePath": f.path,
+                    "fileSize": f.size,
+                    "startTime": start_ms,
+                    "endTime": start_ms + (duration * 1000.0) as i64,
+                    "duration": duration,
+                    "downloadUrl": format!("/record/{}", f.name),
+                    "source": "zlm",
                 })
             }).collect();
             return Json(serde_json::json!({
                 "code": 0,
-                "data": { "list": list, "total": list.len() }
+                "data": { "list": records, "total": records.len() }
             }));
         }
-        _ => {}
+    }
+
+    // Final fallback: cloud_record DB
+    if let Ok(records) = sqlx::query_as::<_, crate::db::cloud_record::CloudRecord>(
+        "SELECT * FROM gb_cloud_record WHERE stream = $1 ORDER BY start_time DESC LIMIT 50"
+    )
+    .bind(&phone)
+    .fetch_all(&state.pool)
+    .await {
+        let list: Vec<serde_json::Value> = records.iter().map(|r| {
+            serde_json::json!({
+                "fileName": r.file_name,
+                "filePath": r.file_path,
+                "fileSize": r.file_size,
+                "startTime": r.start_time,
+                "endTime": r.end_time,
+                "duration": r.time_len,
+                "source": "cloud_record",
+            })
+        }).collect();
+        return Json(serde_json::json!({
+            "code": 0,
+            "data": { "list": list, "total": list.len() }
+        }));
     }
 
     Json(serde_json::json!({
