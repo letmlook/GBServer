@@ -42,15 +42,6 @@ impl HookAuthChecker {
         self
     }
 
-    /// 直接构造（用于测试）
-    #[cfg(test)]
-    pub(crate) fn new_with(secret: &str, whitelist: Vec<ipnetwork::IpNetwork>) -> Self {
-        Self {
-            expected_secret: secret.to_string(),
-            whitelist,
-        }
-    }
-
     /// 校验 ZLM 推送的 secret 字段
     ///
     /// 注意：使用 constant-time 比较避免 timing attack。
@@ -65,8 +56,8 @@ impl HookAuthChecker {
         let exp = self.expected_secret.as_bytes();
         let prov = provided.as_bytes();
 
-        // 先比对长度，把差异累加到 diff
-        let mut diff = (exp.len() ^ prov.len()) as u8;
+        // 先比对长度，把差异累加到 diff（使用 if 而非 XOR 避免高位截断）
+        let mut diff = if exp.len() != prov.len() { 1u8 } else { 0u8 };
 
         // 取较短长度进行字节比较
         let common_len = exp.len().min(prov.len());
