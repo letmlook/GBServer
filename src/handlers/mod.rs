@@ -24,3 +24,4 @@ pub mod cloud_record_extra;
 pub mod parity_extras;
 pub mod rtp_control;
 pub mod jt1078_extra;
+pub mod health;

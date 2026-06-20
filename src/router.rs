@@ -11,7 +11,7 @@ use tower_http::cors::{Any, CorsLayer};
 use crate::auth::auth_middleware;
 use crate::middleware::audit_middleware;
 use crate::handlers::{
-    alarm, common_channel, device, device_control, device_stub, front_end, jt1078, platform, play,
+    alarm, common_channel, device, device_control, device_stub, front_end, health, jt1078, platform, play,
     cloud_record_extra, jt1078_extra, parity_extras, playback, rtp_control, server, stream, stub, sy_camera, talk, user, websocket, webrtc, device_batch, region, role,
 };
 use crate::handlers::metrics as metrics_handler;
@@ -945,7 +945,8 @@ pub fn app(state: AppState) -> Router<AppState> {
         .route("/api/region/sync", get(region::region_sync))
         .route("/api/zlm/hook", post(zlm_hook::handle_webhook))
         .route("/api/rpc", post(rpc_endpoint))
-        .route("/api/health", get(health_check))
+        .route("/api/health", get(health::liveness))
+        .route("/api/ready", get(health::readiness))
         .route("/metrics", get(metrics_handler::metrics_handler))
         // C6: play/share 公开访问（凭 share token 鉴权）
         .route("/api/play/share", get(play::play_share_create))
