@@ -547,7 +547,9 @@ impl AppState {
     }
 }
 
-#[cfg(test)]
+// Phase 5.6: 这些测试是 SQLite-specific（使用 SqlitePoolOptions / SQLite DDL），
+// 在 --features postgres / mysql 下编译会失败。整组测试 cfg-gate。
+#[cfg(all(test, feature = "sqlite"))]
 mod tests {
     //! Phase 4.6 — `select_least_loaded` integration with `state_store` +
     //! `db::media_server::list_online_servers`.
@@ -556,9 +558,11 @@ mod tests {
     //! - offline node is skipped, least-loaded online is picked
     //! - the actual least-loaded (smallest stream_count) wins
     //! - when all are offline, falls through to iter().next() safety net (not None)
+    // Phase 5.6: 修复 PG/MySQL 编译失败 — 该测试仅在 sqlite feature 下有意义
+    #[cfg(feature = "sqlite")]
+    use sqlx::sqlite::SqlitePoolOptions;
     use super::*;
     use chrono::Utc;
-    use sqlx::sqlite::SqlitePoolOptions;
     use crate::config::{ServerConfig, DatabaseConfig, JwtConfig};
 
     /// Build a minimal `gb_media_server` table on an in-memory SQLite pool.

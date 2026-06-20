@@ -352,3 +352,127 @@ cargo test --lib sip::gb28181::pending_request::tests::test_register_record_info
 # 排除测试 fixture 后应该为 0
 grep -rn "rtsp://127.0.0.1/live" src/ | grep -v tests/ | wc -l
 ```
+
+---
+
+## Phase 5 — 平台级联（Platform Cascade）生产闭环
+
+> 基于 `2026-05-30-wvp-java-parity-design.md` §7 Phase 5。本阶段把 GBServer 升级为可作为 WVP-Pro Java 或标准 GB 上级平台的"下级平台"。
+
+### 1. 范围
+
+| 子任务 | 状态 | 关键文件 |
+|---|---|---|
+| **5.1** CascadeRegistrar 串联 | ✅ | `src/cascade/register.rs`、`src/sip/gb28181/cascade_service.rs` |
+| **5.2** 上级 RecordInfo 查询响应 | ⏳ | （待 Phase 5.2 实施） |
+| **5.3** 上级 INVITE → SendRtp 整链路 | ✅ | `src/sip/server.rs::register_cascade_invite`、`parse_cascade_invite_sdp` |
+| **5.4** `on_send_rtp_stopped` 路由 | ✅ | `src/sip/gb28181/cascade_forward.rs::close_by_stream`、`src/zlm/hook.rs` |
+| **5.5a** MobilePosition 上行转发 | ✅ | `src/sip/server.rs::forward_mobile_position_to_all` |
+| **5.5b** Alarm 上行转发 | ✅ | `src/sip/server.rs::forward_alarm_to_all` |
+| **5.6** 横切 + 三库 + 文档 | ✅ | `scripts/phase5-test-matrix.sh` |
+
+### 2. 关键 API
+
+#### 2.1 预登记级联 SendRtp 会话
+
+```rust
+// 5.3: 解析 SDP → 预登记 session
+let cascade_call_id = sip_server.register_cascade_invite(
+    platform_id,      // 上级 GB ID
+    channel_id,       // 共享通道 ID
+    sdp,              // 上级 INVITE SDP body
+)?;
+```
+
+`register_cascade_invite` 内部：
+1. 解析 SDP 提取 `(upstream_host, upstream_port, upstream_ssrc)`
+2. 调 `send_rtp_manager.handle_upstream_invite` 预登记
+3. 返回 `cascade_call_id`
+
+后续设备 INVITE 200 OK 触发 `send_rtp_manager.get_by_channel(channel_id)` 循环，自动 `zlm.start_send_rtp(...)` 推向上级。
+
+#### 2.2 上级 / MobilePosition / Alarm 上行转发
+
+```rust
+// 5.5a: 本级设备位置上报 → 广播所有 Active 级联平台
+let count = sip_server.forward_mobile_position_to_all(
+    device_id, latitude, longitude, speed, direction, time,
+).await?;
+
+// 5.5b: 本级设备告警 → 广播所有 Active 级联平台
+let count = sip_server.forward_alarm_to_all(
+    device_id, alarm_priority, alarm_method, alarm_time, description,
+).await?;
+```
+
+查询 `db_platform::get_all_online_platforms`（`status=1 AND enable=1`），对每个平台调 `send_platform_message`。
+
+#### 2.3 ZLM SendRtp 异常断开清理
+
+```rust
+// 5.4: ZLM 推 on_send_rtp_stopped → close_by_stream
+send_rtp_manager.close_by_stream(&data.stream)  // 精确 / 前缀匹配
+```
+
+匹配规则：
+- 精确等于 `cascade_call_id`
+- 前缀匹配（容忍 ZLM 追加的 `.ts` / `.h264` 后缀）
+- 关闭后同步从 StateStore 删除
+
+### 3. 验收
+
+#### 3.1 三库测试矩阵
+
+```bash
+bash scripts/phase5-test-matrix.sh
+# 预期：sqlite 268 passed / postgres 261 passed / mysql 261 passed
+```
+
+#### 3.2 Phase 5 关键单测汇总（19 个新增）
+
+```bash
+cargo test --lib phase5_   # 19 个 phase5_ 前缀单测
+```
+
+| 模块 | 测试名 | 数量 |
+|---|---|---|
+| `cascade::register::c3_tests` | `phase5_build_digest_response_*` | 3 |
+| `sip::gb28181::cascade_forward::tests` | `phase5_close_by_stream_*` | 4 |
+| `sip::server::upstream_message_tests` | `phase5_parse_cascade_invite_sdp_*` | 6 |
+| `sip::server::upstream_message_tests` | `phase5_register_cascade_invite_*` | 2 |
+| `sip::server::upstream_message_tests` | `phase5_forward_mobile_position_*` | 2 |
+| `sip::server::upstream_message_tests` | `phase5_forward_alarm_*` | 2 |
+
+#### 3.3 CascadeService 已 deprecated
+
+```bash
+# 生产路径不再使用（grep 验证）
+grep -rn "CascadeService::" src/ --include="*.rs" | grep -v "cascade_service.rs\|tests"
+# 预期：无结果
+```
+
+`#[deprecated(since = "0.5.0")]` 警告会引导后续阶段删除。
+
+### 4. 真实部署手测（与设计文档 Acceptance 对应）
+
+| 步骤 | 预期 | 备注 |
+|---|---|---|
+| 真实 WVP-Pro Java 启动 | 配置本级为下级平台 | 需 `gb_platform.enable=true` |
+| WVP-Pro 注册本级 | 收到 200 OK | 401 鉴权 → digest 重试 → 200 |
+| WVP-Pro 查询目录 | 收到本级设备列表 | Catalog / Info / Status / **RecordInfo**（待 5.2） |
+| WVP-Pro 点播本级通道 | 拉流成功 | `register_cascade_invite` + 设备 INVITE → ZLM SendRtp |
+| WVP-Pro 停止 | 本级 SendRtp 关闭 | `on_send_rtp_stopped` → `close_by_stream` |
+| WVP-Pro 订阅告警/位置 | 收到上报 | `forward_*_to_all` 路径 |
+
+### 5. 风险与衔接
+
+- **R1** 上级 INVITE 4 模块串通 — 已通过 `register_cascade_invite` 入口收敛，单元测试覆盖 SDP 解析 6 个 case
+- **R2** CascadeService deprecated — 与 CascadeRegistrar 并存，`#[allow(deprecated)]` 抑制警告
+- **R3** `close_by_stream` 误关非 cascade 流 — 通过 `SendRtpManager` 内部查找，作用域隔离
+
+### 衔接
+
+- **Phase 3.1** Live 媒体等待 → 5.3 上级 INVITE 复用同一条 ZLM SendRtp 路径
+- **Phase 3.3** RecordInfo 多包等待 → 5.2 上级 RecordInfo 直接复用（待实施）
+- **Phase 4.5** StreamStatus 统一接口 → 5.4 `close_by_stream` 复用 Stopped 状态
+- **Phase 7** Redis StateStore → 5.4 已通过 `store.remove_cascade_sendrtp` 同步（E1 已实现）
