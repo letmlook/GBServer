@@ -11,7 +11,7 @@ use tower_http::cors::{Any, CorsLayer};
 use crate::auth::auth_middleware;
 use crate::middleware::audit_middleware;
 use crate::handlers::{
-    alarm, common_channel, device, device_control, device_stub, front_end, health, jt1078, platform, play,
+    alarm, common_channel, device, device_control, device_query, device_stub, front_end, health, jt1078, platform, play,
     cloud_record_extra, jt1078_extra, parity_extras, playback, rtp_control, server, stream, stub, sy_camera, system, talk, user, websocket, webrtc, device_batch, region, role,
 };
 use crate::handlers::metrics as metrics_handler;
@@ -148,8 +148,6 @@ pub fn app(state: AppState) -> Router<AppState> {
             get(device_stub::channel_one),
         )
         .route("/api/device/query/streams", get(device_stub::query_streams))
-        .route("/api/device/query/statistics/register", get(device_stub::statistics_register))
-        .route("/api/device/query/statistics/keepalive", get(device_stub::statistics_keepalive))
         .route("/api/device/query/subscribe/alarm", get(device_stub::subscribe_alarm))
         .route(
             "/api/device/control/record",
@@ -199,10 +197,6 @@ pub fn app(state: AppState) -> Router<AppState> {
         .route(
             "/api/device/config/query/:device_id/:config_type",
             get(device_query::device_config_query),
-        )
-        .route(
-            "/api/device/config/update",
-            post(device_query::device_config_update),
         )
         .route(
             "/api/play/ssrc/:device_id/:channel_id",
@@ -940,7 +934,6 @@ pub fn app(state: AppState) -> Router<AppState> {
         .route("/api/sy/camera/control/play", get(sy_camera::camera_control_play))
         .route("/api/sy/camera/control/stop", get(sy_camera::camera_control_stop))
         .route("/api/sy/camera/control/ptz", get(sy_camera::camera_control_ptz))
-        .route("/api/cloud/record/collect/add", get(cloud_record_extra::collect_add))
         .route("/api/cloud/record/collect/delete", get(cloud_record_extra::collect_delete))
         .route("/api/cloud/record/download/zip", get(cloud_record_extra::download_zip))
         .route("/api/cloud/record/list-url", get(cloud_record_extra::list_url))
@@ -950,8 +943,6 @@ pub fn app(state: AppState) -> Router<AppState> {
         .route("/api/common/channel/map/tile/:z/:x/:y", get(parity_extras::channel_map_tile))
         .route("/api/common/channel/map/thin/tile/:z/:x/:y", get(parity_extras::channel_map_thin_tile))
         .route("/api/front-end/common/:cmd/:ch", get(parity_extras::front_end_common))
-        .route("/api/media/getPlayUrl", get(parity_extras::media_get_play_url))
-        .route("/api/media/stream_info_by_app_and_stream", get(parity_extras::media_stream_info_by_app_and_stream))
         .route("/api/server/config", get(parity_extras::server_config))
         .route("/api/server/version", get(parity_extras::server_version))
         .route("/api/rtp/receive/open", post(rtp_control::rtp_receive_open))

@@ -14,7 +14,6 @@ use crate::cascade::CascadeRegistrar;
 use crate::config::SipConfig;
 use crate::db::{device as db_device, platform as db_platform, platform_channel as db_platform_channel, Pool};
 use crate::db::position_history as ph;
-use crate::db::{device as db_device, platform as db_platform, Pool};
 use crate::handlers::websocket::WsState;
 use crate::sip::core::parser::Parser;
 use crate::sip::core::{
@@ -198,7 +197,6 @@ use crate::sip::gb28181::device_query::DeviceQueryManager;
 use crate::sip::gb28181::media_waiter::{MediaWaitResult, MediaWaiterManager};
 use crate::sip::gb28181::pending_request::PendingRequestManager;
 use crate::sip::gb28181::subscription_lifecycle::SubscriptionLifecycle;
-use crate::sip::gb28181::media_waiter::{MediaWaiterManager, MediaWaitResult};
 
 pub struct SipServer {
     config: Arc<SipConfig>,
@@ -224,6 +222,8 @@ pub struct SipServer {
     nat_helper: Arc<NatHelper>,
     cascade_registrar: Option<Arc<CascadeRegistrar>>,
     pending_request_manager: Arc<PendingRequestManager>,
+    /// Phase 1: 业务层命令发送器（query_device_info/status 等），封装 PendingRequest 使用
+    device_commander: Arc<DeviceCommander>,
     media_waiter_manager: Arc<MediaWaiterManager>,
     send_rtp_manager: Arc<SendRtpManager>,
     /// Phase 2 R6: 订阅生命周期（变活代码）— 后台续订 + R3 退避
@@ -274,6 +274,7 @@ impl SipServer {
             nat_helper,
             cascade_registrar: None,
             pending_request_manager: pending_request_manager.clone(),
+            device_commander: Arc::new(DeviceCommander::new(pending_request_manager.clone())),
             media_waiter_manager: Arc::new(MediaWaiterManager::new()),
             send_rtp_manager: Arc::new(SendRtpManager::new()),
             // Phase 2 R6: 激活 SubscriptionLifecycle（变活代码）
@@ -3470,6 +3471,11 @@ f=v/1/96/1/2/1/1/0
 
     pub fn device_manager(&self) -> Arc<DeviceManager> {
         self.device_manager.clone()
+    }
+
+    /// Phase 1: 设备命令发送器（query_device_info/status/config）
+    pub fn device_commander(&self) -> Arc<DeviceCommander> {
+        self.device_commander.clone()
     }
 
     pub fn session_manager(&self) -> Arc<SessionManager> {

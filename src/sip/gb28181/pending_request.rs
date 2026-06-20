@@ -49,7 +49,7 @@ impl PendingCmdType {
 }
 
 /// 等待中的请求元数据
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct PendingRequest {
     /// 设备 ID
     pub device_id: String,
@@ -63,9 +63,27 @@ pub struct PendingRequest {
     pub created_at: Instant,
     /// 超时时长
     pub timeout_secs: u64,
-    /// 响应回调（不再使用）
+    /// 响应回调：oneshot sender，`complete()` 时调用 `tx.send(xml)` 通知 await 端
+    /// 注意：oneshot::Sender 不可 Clone，所以 PendingRequest 不实现 Clone（避免误用）。
+    /// 业务代码请使用 `register_with_receiver` 拿到独立的 receiver，不要在多个持有者间共享 sender。
     #[allow(dead_code)]
-    response_sender: Option<()>,
+    response_sender: Option<oneshot::Sender<String>>,
+}
+
+impl Clone for PendingRequest {
+    fn clone(&self) -> Self {
+        Self {
+            device_id: self.device_id.clone(),
+            sn: self.sn,
+            cmd_type: self.cmd_type,
+            call_id: self.call_id.clone(),
+            created_at: self.created_at,
+            timeout_secs: self.timeout_secs,
+            // 关键：oneshot::Sender 不可 Clone — 重复 Clone 会导致 `tx.send` 双发 panic。
+            // 这里显式 None，确保只有原持有者能 send。
+            response_sender: None,
+        }
+    }
 }
 
 impl PendingRequest {
@@ -169,7 +187,7 @@ impl PendingRequestManager {
     ) -> (PendingRequest, oneshot::Receiver<String>) {
         let (tx, rx) = oneshot::channel::<String>();
         // 构造一个无 sender 的 PendingRequest（因为 sender 在 multi_packet_buffers 里）
-        let (mut req, _rx_unused) = PendingRequest::new(
+        let (mut req, _rx_unused) = PendingRequest::new_with_receiver(
             device_id.to_string(),
             sn,
             PendingCmdType::RecordInfo,
