@@ -408,14 +408,19 @@ impl CascadeRegistrar {
 
         let auth_header = if state.status == RegistrationStatus::Challenged {
             if let Some(ref nonce) = state.nonce {
-                let ha1 = md5_hex(&format!("{}:{}:{}", state.local_device_id, state.realm, state.password));
-                let ha2 = md5_hex(&format!("REGISTER:sip:{}@{}:{}", state.platform_device_id, state.host, state.port));
-                let response = md5_hex(&format!("{}:{}:{}", ha1, nonce, ha2));
+                let uri = format!("sip:{}@{}:{}", state.platform_device_id, state.host, state.port);
+                let response = build_digest_response(
+                    &state.local_device_id,
+                    &state.realm,
+                    &state.password,
+                    "REGISTER",
+                    &uri,
+                    nonce,
+                );
 
                 let mut auth = format!(
-                    "Digest username=\"{}\", realm=\"{}\", nonce=\"{}\", uri=\"sip:{}@{}:{}\", response=\"{}\"",
-                    state.local_device_id, state.realm, nonce,
-                    state.platform_device_id, state.host, state.port, response
+                    "Digest username=\"{}\", realm=\"{}\", nonce=\"{}\", uri=\"{}\", response=\"{}\"",
+                    state.local_device_id, state.realm, nonce, uri, response
                 );
                 if let Some(ref opaque) = state.opaque {
                     auth.push_str(&format!(", opaque=\"{}\"", opaque));
@@ -636,6 +641,27 @@ fn md5_hex(input: &str) -> String {
     format!("{:x}", hasher.finalize())
 }
 
+/// Phase 5.1: 公共 RFC 2617 Digest 计算函数
+///
+/// 公式：`response = MD5(MD5(username:realm:password) : nonce : MD5(method:uri))`
+///
+/// 复用于：
+/// - `build_register_request` 的 401 challenge 响应
+/// - `cascade_service.rs::build_register_msg` 的 digest 计算（标 deprecated 但保留）
+/// - 后续 Phase 7 跨节点 RPC 鉴权
+pub fn build_digest_response(
+    username: &str,
+    realm: &str,
+    password: &str,
+    method: &str,
+    uri: &str,
+    nonce: &str,
+) -> String {
+    let ha1 = md5_hex(&format!("{}:{}:{}", username, realm, password));
+    let ha2 = md5_hex(&format!("{}:{}", method, uri));
+    md5_hex(&format!("{}:{}:{}", ha1, nonce, ha2))
+}
+
 #[cfg(test)]
 mod c3_tests {
     use super::*;
@@ -801,5 +827,59 @@ mod c3_tests {
         // None 状态视为无限远，应当被报告
         // 但因为状态不是 Registered → 跳过
         assert!(timed_out.is_empty());
+    }
+
+    // ============ Phase 5.1: build_digest_response 公共函数单测 ============
+
+    /// RFC 2617 §3.5 basic auth（无 qop）测试向量
+    /// HA1 = MD5("Mufasa:testrealm@host.com:Circle Of Life") = 939e7578ed9e3c518a452acee763bce9
+    /// HA2 = MD5("GET:/dir/index.html") = 39aff3a2bab6126f332b942af96d3366
+    /// response = MD5("939e7578ed9e3c518a452acee763bce9:dcd98b7102dd2f0e8b11d0f600bfb0c093:39aff3a2bab6126f332b942af96d3366")
+    ///          = 670fd8c2df070c60b045671b8b24ff02
+    #[test]
+    fn phase5_build_digest_response_rfc2617_vector() {
+        let r = build_digest_response(
+            "Mufasa",
+            "testrealm@host.com",
+            "Circle Of Life",
+            "GET",
+            "/dir/index.html",
+            "dcd98b7102dd2f0e8b11d0f600bfb0c093",
+        );
+        assert_eq!(r, "670fd8c2df070c60b045671b8b24ff02");
+    }
+
+    /// REGISTER 场景：HA2 = MD5("REGISTER:sip:user@host:5060")
+    #[test]
+    fn phase5_build_digest_response_register() {
+        let r = build_digest_response(
+            "34020000002000000001",
+            "GBServer",
+            "secret123",
+            "REGISTER",
+            "sip:37010000002000000001@192.168.1.10:5060",
+            "test-nonce-abc",
+        );
+        // 32 字符 hex
+        assert_eq!(r.len(), 32);
+        assert!(r.chars().all(|c| c.is_ascii_hexdigit()));
+        // 同样输入两次得到同样结果（确定性）
+        let r2 = build_digest_response(
+            "34020000002000000001",
+            "GBServer",
+            "secret123",
+            "REGISTER",
+            "sip:37010000002000000001@192.168.1.10:5060",
+            "test-nonce-abc",
+        );
+        assert_eq!(r, r2);
+    }
+
+    /// 不同输入应得到不同 digest
+    #[test]
+    fn phase5_build_digest_response_different_inputs_differ() {
+        let r1 = build_digest_response("u", "r", "p", "M", "sip:u@r:1", "n");
+        let r2 = build_digest_response("u", "r", "p", "M", "sip:u@r:2", "n");
+        assert_ne!(r1, r2, "URI 端口不同应得到不同 digest");
     }
 }

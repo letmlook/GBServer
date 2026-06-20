@@ -1,4 +1,16 @@
-// ! CascadeService — GB28181 平台级联服务
+// ! CascadeService — GB28181 平台级联服务（**DEPRECATED** — 2026-06-20 Phase 5）
+//!
+//! ## Deprecated
+//!
+//! 自 Phase 5（2026-06-20）起，`CascadeService` **仅作为与 SipServer 握手的兼容层**。
+//! 实际的级联注册 / Keepalive / 状态机已迁移到 [`crate::cascade::CascadeRegistrar`]。
+//!
+//! 生产路径不再使用本类型（grep 验证：`sip/server.rs` 仅持有 `CascadeRegistrar`），
+//! 本文件保留以便逐步迁移（2026-06 截至本 commit 仍存在 9 个 c3 兼容单测）。
+//!
+//! 迁移指引（见 struct 文档）。
+//!
+//! ---
 //!
 //! 实现本级向上级平台的级联注册、维护和点播转发。
 //!
@@ -149,6 +161,25 @@ impl CascadeSession {
 // 级联服务管理器
 // ---------------------------------------------------------------------------
 
+/// ## Deprecated
+///
+/// 自 Phase 5（2026-06-20）起，`CascadeService` 仅为与 SipServer 握手的兼容层；
+/// 实际的级联注册 / Keepalive / 状态机已迁移到 [`crate::cascade::CascadeRegistrar`]。
+/// 该类型在生产路径上无调用者（grep 验证：`sip/server.rs` 仅使用 `CascadeRegistrar`），
+/// 但保留以避免一次性改动过大；后续 Phase 8+ 删除。
+///
+/// # 迁移指引
+///
+/// - REGISTER 周期 → `CascadeRegistrar::run_registration_loop`
+/// - Keepalive → `CascadeRegistrar::send_keepalive_all`
+/// - 超时检测 → `CascadeRegistrar::detect_keepalive_timeouts`
+/// - DB 同步 → `CascadeRegistrar::reload_from_db`
+/// - Digest 鉴权 → `crate::cascade::register::build_digest_response`
+#[deprecated(
+    since = "0.5.0",
+    note = "use crate::cascade::CascadeRegistrar instead (see CascadeService docs)"
+)]
+#[allow(deprecated)]
 pub struct CascadeService {
     /// 按 platform_id 索引的级联会话
     sessions: Arc<DashMap<String, CascadeSession>>,
@@ -532,6 +563,7 @@ impl Default for CascadeService {
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
 
