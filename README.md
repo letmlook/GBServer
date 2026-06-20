@@ -340,6 +340,17 @@ cargo test --no-default-features --features postgres --lib       # PostgreSQL
 cargo test --no-default-features --features mysql --lib           # MySQL
 ```
 
+### 浏览器端到端（Playwright）
+
+```bash
+cd e2e
+npm install && npx playwright install chromium
+npx playwright test                  # 跑全套（需先启动后端 / 前端 dev server / ZLM）
+npx playwright show-report           # 查看 HTML 报告
+```
+
+详见 [`e2e/README.md`](e2e/README.md)。截图落盘到 `e2e/artifacts/`。
+
 ---
 
 ## 🛣️ 路线图
