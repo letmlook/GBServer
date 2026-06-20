@@ -632,7 +632,11 @@ pub async fn handle_webhook(
         "on_play" => {
             // Phase 4.1: 播放鉴权 - 检查是否有设备/通道授权可播放
             if let Some(data) = serde_json::from_value::<PlayData>(event.clone()).ok() {
-                tracing::info!("on_play: {}/{}/{} from {}", 
+                // Phase 4.2: secret 鉴权 + IP 白名单
+                if let Some(resp) = check_hook_auth(&state, &event, &data.ip).await {
+                    return resp;
+                }
+                tracing::info!("on_play: {}/{}/{} from {}",
                     data.schema, data.app, data.stream, data.ip);
                 // 从 stream_id 解析设备/通道（格式：device_id_channel_id 或 device_id$channel_id）
                 if let Some((device_id, channel_id)) = parse_stream_id(&data.stream) {
@@ -644,7 +648,11 @@ pub async fn handle_webhook(
         "on_publish" => {
             // Phase 4.1: 推流鉴权 - 验证设备来源
             if let Some(data) = serde_json::from_value::<PublishData>(event.clone()).ok() {
-                tracing::info!("on_publish: {}/{}/{} from {}", 
+                // Phase 4.2: secret 鉴权 + IP 白名单
+                if let Some(resp) = check_hook_auth(&state, &event, &data.ip).await {
+                    return resp;
+                }
+                tracing::info!("on_publish: {}/{}/{} from {}",
                     data.schema, data.app, data.stream, data.ip);
                 // 验证推流来源 IP 是否与注册设备匹配
                 if let Some((device_id, channel_id)) = parse_stream_id(&data.stream) {
@@ -928,6 +936,100 @@ pub async fn handle_webhook(
     Json(WVPResult::success(serde_json::json!({
         "code": 0
     })))
+}
+
+/// Phase 4.2: hook 鉴权（secret + IP 白名单）
+///
+/// 返回 `Some(Json)` 表示鉴权失败，调用方应直接 return。
+/// 返回 `None` 表示通过（放行或白名单为空）。
+async fn check_hook_auth(
+    state: &AppState,
+    event: &serde_json::Value,
+    client_ip_str: &str,
+) -> Option<Json<WVPResult<serde_json::Value>>> {
+    use crate::zlm::auth::{AuthResult, HookAuthChecker};
+
+    let provided_secret = event
+        .get("secret")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    let media_server_id = event
+        .get("mediaServerId")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    // 节点 expected_secret：优先用 in-memory ZLM client，回退到 DB
+    let expected_secret: String = if !media_server_id.is_empty() {
+        if let Some(client) = state.get_zlm_client(Some(media_server_id)) {
+            client.secret.clone()
+        } else {
+            // 兜底：从 DB 查 secret
+            crate::db::media_server::get_media_server_by_id(&state.pool, media_server_id)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|s| s.secret)
+                .unwrap_or_default()
+        }
+    } else {
+        // 没有 mediaServerId，尝试用默认节点
+        state
+            .zlm_client
+            .as_ref()
+            .map(|c| c.secret.clone())
+            .unwrap_or_default()
+    };
+
+    // 加载白名单 CIDR（按 media_server_id）
+    let cidrs_str: Vec<String> = if !media_server_id.is_empty() {
+        crate::db::media_server::get_white_list_cidrs(&state.pool, media_server_id)
+            .await
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
+    // 解析 CIDR 字符串为 IpNetwork，解析失败记 warn 并忽略
+    let cidrs: Vec<ipnetwork::IpNetwork> = cidrs_str
+        .iter()
+        .filter_map(|s| match s.parse::<ipnetwork::IpNetwork>() {
+            Ok(net) => Some(net),
+            Err(e) => {
+                tracing::warn!("Invalid CIDR in whitelist '{}': {}", s, e);
+                None
+            }
+        })
+        .collect();
+
+    // 客户端 IP 解析失败时拒绝（无法验证白名单）
+    let client_ip = match client_ip_str.parse::<std::net::IpAddr>() {
+        Ok(ip) => ip,
+        Err(_) => {
+            tracing::warn!("hook auth: unparseable client IP '{}'", client_ip_str);
+            return Some(Json(WVPResult::error("Unauthorized: invalid client IP")));
+        }
+    };
+
+    let checker = HookAuthChecker::new(&expected_secret).with_whitelist(cidrs);
+
+    match checker.check(provided_secret, &client_ip) {
+        AuthResult::Ok => None,
+        AuthResult::UnauthorizedSecret => {
+            tracing::warn!(
+                "hook auth: secret mismatch from {} (server={})",
+                client_ip, media_server_id
+            );
+            Some(Json(WVPResult::error("Unauthorized: secret mismatch")))
+        }
+        AuthResult::IpNotWhitelisted => {
+            tracing::warn!(
+                "hook auth: IP {} not in whitelist (server={})",
+                client_ip, media_server_id
+            );
+            Some(Json(WVPResult::error("Unauthorized: IP not in whitelist")))
+        }
+    }
 }
 
 #[cfg(test)]

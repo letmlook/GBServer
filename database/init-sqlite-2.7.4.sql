@@ -218,6 +218,19 @@ CREATE UNIQUE INDEX IF NOT EXISTS uk_media_server_unique_ip_http_port
     ON gb_media_server(ip, http_port, server_id);
 
 -- ============================================
+-- 5b. gb_media_server_white_list — 媒体服务器 IP 白名单（Phase 4.2）
+-- ============================================
+CREATE TABLE IF NOT EXISTS gb_media_server_white_list
+(
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    media_server_id VARCHAR(255) NOT NULL,
+    cidr            VARCHAR(50)  NOT NULL,
+    create_time     VARCHAR(50)
+);
+CREATE INDEX IF NOT EXISTS idx_media_server_white_list_server_id
+    ON gb_media_server_white_list(media_server_id);
+
+-- ============================================
 -- 6. gb_stream_proxy — 拉流代理 / 转推配置
 -- ============================================
 CREATE TABLE IF NOT EXISTS gb_stream_proxy

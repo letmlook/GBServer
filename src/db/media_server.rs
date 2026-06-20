@@ -482,3 +482,109 @@ pub async fn update_flow_stats(
     .await?;
     Ok(r.rows_affected())
 }
+
+// =====================================================================
+// IP 白名单（Phase 4.2 — hook secret 鉴权 + IP 校验）
+//
+// 每个媒体服务器可绑定一组 CIDR 网段，ZLM hook（on_play / on_publish）时
+// 检查客户端 IP 是否落在白名单内。
+// =====================================================================
+
+/// 获取指定媒体服务器的全部白名单 CIDR
+pub async fn get_white_list_cidrs(
+    pool: &Pool,
+    media_server_id: &str,
+) -> sqlx::Result<Vec<String>> {
+    #[cfg(feature = "mysql")]
+    let rows = sqlx::query_scalar::<_, String>(
+        "SELECT cidr FROM gb_media_server_white_list WHERE media_server_id = ? ORDER BY id"
+    )
+    .bind(media_server_id)
+    .fetch_all(pool)
+    .await?;
+    #[cfg(feature = "postgres")]
+    let rows = sqlx::query_scalar::<_, String>(
+        "SELECT cidr FROM gb_media_server_white_list WHERE media_server_id = $1 ORDER BY id"
+    )
+    .bind(media_server_id)
+    .fetch_all(pool)
+    .await?;
+    #[cfg(feature = "sqlite")]
+    let rows = sqlx::query_scalar::<_, String>(
+        "SELECT cidr FROM gb_media_server_white_list WHERE media_server_id = ? ORDER BY id"
+    )
+    .bind(media_server_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
+/// 新增一条白名单 CIDR
+pub async fn add_white_list_cidr(
+    pool: &Pool,
+    media_server_id: &str,
+    cidr: &str,
+    now: &str,
+) -> sqlx::Result<u64> {
+    #[cfg(feature = "mysql")]
+    let r = sqlx::query(
+        "INSERT INTO gb_media_server_white_list (media_server_id, cidr, create_time) VALUES (?, ?, ?)"
+    )
+    .bind(media_server_id)
+    .bind(cidr)
+    .bind(now)
+    .execute(pool)
+    .await?;
+    #[cfg(feature = "postgres")]
+    let r = sqlx::query(
+        "INSERT INTO gb_media_server_white_list (media_server_id, cidr, create_time) VALUES ($1, $2, $3)"
+    )
+    .bind(media_server_id)
+    .bind(cidr)
+    .bind(now)
+    .execute(pool)
+    .await?;
+    #[cfg(feature = "sqlite")]
+    let r = sqlx::query(
+        "INSERT INTO gb_media_server_white_list (media_server_id, cidr, create_time) VALUES (?, ?, ?)"
+    )
+    .bind(media_server_id)
+    .bind(cidr)
+    .bind(now)
+    .execute(pool)
+    .await?;
+    Ok(r.rows_affected())
+}
+
+/// 删除一条白名单 CIDR（按 media_server_id + cidr 唯一匹配）
+pub async fn remove_white_list_cidr(
+    pool: &Pool,
+    media_server_id: &str,
+    cidr: &str,
+) -> sqlx::Result<u64> {
+    #[cfg(feature = "mysql")]
+    let r = sqlx::query(
+        "DELETE FROM gb_media_server_white_list WHERE media_server_id = ? AND cidr = ?"
+    )
+    .bind(media_server_id)
+    .bind(cidr)
+    .execute(pool)
+    .await?;
+    #[cfg(feature = "postgres")]
+    let r = sqlx::query(
+        "DELETE FROM gb_media_server_white_list WHERE media_server_id = $1 AND cidr = $2"
+    )
+    .bind(media_server_id)
+    .bind(cidr)
+    .execute(pool)
+    .await?;
+    #[cfg(feature = "sqlite")]
+    let r = sqlx::query(
+        "DELETE FROM gb_media_server_white_list WHERE media_server_id = ? AND cidr = ?"
+    )
+    .bind(media_server_id)
+    .bind(cidr)
+    .execute(pool)
+    .await?;
+    Ok(r.rows_affected())
+}

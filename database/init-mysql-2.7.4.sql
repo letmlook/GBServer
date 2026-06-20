@@ -321,6 +321,17 @@ create table IF NOT EXISTS gb_platform_region
     constraint uk_gb_platform_region_platform_id_group_id unique (platform_id, region_id)
 );
 
+-- 媒体服务器 IP 白名单（Phase 4.2）
+drop table IF EXISTS gb_media_server_white_list;
+create table IF NOT EXISTS gb_media_server_white_list
+(
+    id              bigint auto_increment primary key COMMENT '主键ID',
+    media_server_id varchar(255) NOT NULL COMMENT '媒体服务器ID',
+    cidr            varchar(50)  NOT NULL COMMENT 'CIDR 网段',
+    create_time     varchar(50) COMMENT '创建时间',
+    INDEX idx_media_server_white_list_server_id (media_server_id)
+) COMMENT '媒体服务器 IP 白名单（hook 鉴权）';
+
 -- 拉流代理/转推配置
 drop table IF EXISTS gb_stream_proxy;
 create table IF NOT EXISTS gb_stream_proxy

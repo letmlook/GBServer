@@ -4,6 +4,7 @@ pub mod hook_routes;
 pub mod types;
 pub mod address_builder;
 pub mod health_checker;
+pub mod auth;
 
 pub use client::ZlmClient;
 pub use types::*;

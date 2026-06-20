@@ -394,6 +394,26 @@ COMMENT ON COLUMN gb_media_server.transcode_suffix IS '转码指令后缀';
 COMMENT ON COLUMN gb_media_server.server_id IS '对应信令服务器ID';
 
 
+-- ============================================
+-- 媒体服务器 IP 白名单（Phase 4.2）
+-- ============================================
+drop table IF EXISTS gb_media_server_white_list;
+create table IF NOT EXISTS gb_media_server_white_list
+(
+    id              serial primary key,
+    media_server_id character varying(255) not null,
+    cidr            character varying(50)  not null,
+    create_time     character varying(50)
+);
+CREATE INDEX idx_media_server_white_list_server_id
+    ON gb_media_server_white_list(media_server_id);
+COMMENT ON TABLE gb_media_server_white_list IS '媒体服务器 IP 白名单（hook 鉴权）';
+COMMENT ON COLUMN gb_media_server_white_list.id IS '主键ID';
+COMMENT ON COLUMN gb_media_server_white_list.media_server_id IS '媒体服务器ID';
+COMMENT ON COLUMN gb_media_server_white_list.cidr IS 'CIDR 网段';
+COMMENT ON COLUMN gb_media_server_white_list.create_time IS '创建时间';
+
+
 drop table IF EXISTS gb_platform;
 create table IF NOT EXISTS gb_platform
 (
