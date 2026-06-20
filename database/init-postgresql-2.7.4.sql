@@ -910,12 +910,14 @@ create table IF NOT EXISTS gb_jt_terminal (
                                  geo_coord_sys character varying(50),
                                  media_server_id character varying(50) default 'auto',
                                  sdp_ip character varying(50),
+                                 auth_code character varying(64),
                                  constraint uk_jt_device_id_device_id unique (id, phone_number)
 );
 COMMENT ON TABLE gb_jt_terminal IS '交通部 JT/T 1076 终端信息';
 COMMENT ON COLUMN gb_jt_terminal.id IS '主键ID';
 COMMENT ON COLUMN gb_jt_terminal.phone_number IS '终端SIM卡号';
 COMMENT ON COLUMN gb_jt_terminal.terminal_id IS '终端设备ID';
+COMMENT ON COLUMN gb_jt_terminal.auth_code IS 'Phase 6.1: 终端注册鉴权码（0x8100 应答）';
 COMMENT ON COLUMN gb_jt_terminal.province_id IS '所在省份ID';
 COMMENT ON COLUMN gb_jt_terminal.province_text IS '所在省份名称';
 COMMENT ON COLUMN gb_jt_terminal.city_id IS '所在城市ID';

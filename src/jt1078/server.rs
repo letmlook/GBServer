@@ -8,8 +8,11 @@ use super::Jt1078Server;
 /// Start lightweight JT1078 TCP and UDP listeners. This spawns per-connection handlers
 /// that manage simple authentication, heartbeat, and reassembly using session state.
 pub async fn start(server: &Jt1078Server, cfg: Option<crate::config::Jt1078Config>) -> Result<(), Box<dyn Error + Send + Sync>> {
-    // Bind TCP listener on a default port (can be configured later)
-    let tcp_addr = "0.0.0.0:60000";
+    // Phase 6.1: TCP/UDP ports now read from Jt1078Config (default 60000)
+    let tcp_port = cfg.as_ref().and_then(|c| c.tcp_port).unwrap_or(60000);
+    let udp_port = cfg.as_ref().and_then(|c| c.udp_port).unwrap_or(60000);
+    let tcp_addr = format!("0.0.0.0:{}", tcp_port);
+    let udp_addr = format!("0.0.0.0:{}", udp_port);
 
     // Create a manager used by both TCP and UDP listeners and start cleanup
     // Use injected cfg when available, otherwise fall back to environment or defaults
@@ -31,7 +34,7 @@ pub async fn start(server: &Jt1078Server, cfg: Option<crate::config::Jt1078Confi
         manager_for_cleanup.cleanup_loop(std::time::Duration::from_secs(30)).await;
     });
 
-    match TcpListener::bind(tcp_addr).await {
+    match TcpListener::bind(&tcp_addr).await {
         Ok(listener) => {
             // Spawn TCP accept loop — clone manager for TCP tasks when needed
             let manager_for_tcp = manager.clone();
@@ -92,8 +95,7 @@ pub async fn start(server: &Jt1078Server, cfg: Option<crate::config::Jt1078Confi
     }
 
     // Bind UDP socket
-    let udp_addr = "0.0.0.0:60000";
-    match UdpSocket::bind(udp_addr).await {
+    match UdpSocket::bind(&udp_addr).await {
         Ok(socket) => {
             // For UDP, use the same manager to maintain sessions per peer
             let manager_udp = manager.clone();

@@ -471,3 +471,32 @@ VALUES (1, 'admin', '21232f297a57a5a743894a0e4a801fc3', 1,
 -- 旧版本 SQLite 的可执行迁移（手动执行）：
 -- ALTER TABLE gb_stream_proxy ADD COLUMN stream_status TEXT NOT NULL DEFAULT 'ready';
 -- ALTER TABLE gb_stream_push  ADD COLUMN stream_status TEXT NOT NULL DEFAULT 'ready';
+-- ============================================
+-- Phase 6.1: JT/T 1078 终端表 (SQLite 之前未建，补建)
+-- ============================================
+CREATE TABLE IF NOT EXISTS gb_jt_terminal
+(
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    phone_number    TEXT,
+    terminal_id     TEXT,
+    province_id     TEXT,
+    province_text   TEXT,
+    city_id         TEXT,
+    city_text       TEXT,
+    maker_id        TEXT,
+    model           TEXT,
+    plate_color     INTEGER,
+    plate_no        TEXT,
+    longitude       REAL,
+    latitude        REAL,
+    status          INTEGER DEFAULT 0,
+    register_time   TEXT,
+    update_time     TEXT NOT NULL,
+    create_time     TEXT NOT NULL,
+    geo_coord_sys   TEXT,
+    media_server_id TEXT  DEFAULT 'auto',
+    sdp_ip          TEXT,
+    auth_code       TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uk_jt_device_id_device_id
+    ON gb_jt_terminal (id, phone_number);

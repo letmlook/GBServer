@@ -538,6 +538,7 @@ create table IF NOT EXISTS gb_jt_terminal (
                                  geo_coord_sys varchar(50) COMMENT '坐标系',
                                  media_server_id varchar(50) default 'auto' COMMENT '媒体服务器ID',
                                  sdp_ip varchar(50) COMMENT 'SDP IP',
+                                 auth_code varchar(64) COMMENT 'Phase 6.1: 终端注册鉴权码（0x8100 应答）',
                                  constraint uk_jt_device_id_device_id unique (id, phone_number)
 );
 

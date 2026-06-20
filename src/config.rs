@@ -23,6 +23,10 @@ pub struct Jt1078Config {
     pub retransmit_wait_ms: Option<u64>,
     /// Optional HTTP hook URL to notify about missing sequences
     pub retransmit_hook_url: Option<String>,
+    /// TCP listen port for JT1078 (default 60000)
+    pub tcp_port: Option<u16>,
+    /// UDP listen port for JT1078 (default 60000)
+    pub udp_port: Option<u16>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

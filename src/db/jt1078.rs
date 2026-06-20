@@ -24,6 +24,9 @@ pub struct JtTerminal {
     pub geo_coord_sys: Option<String>,
     pub media_server_id: Option<String>,
     pub sdp_ip: Option<String>,
+    /// Phase 6.1: authentication code for terminal register response (0x8100).
+    /// Read from DB; matched against incoming 0x0100 register body.
+    pub auth_code: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, FromRow)]
@@ -473,4 +476,48 @@ pub async fn count_channels_by_terminal(pool: &Pool, terminal_db_id: i32) -> sql
     .fetch_one(pool)
     .await?;
     Ok(count)
+}
+
+// =================== Phase 6.1: Terminal authentication code lookup ===================
+
+/// Look up the auth_code assigned to a terminal by phone number.
+/// Returns None if terminal not found OR if auth_code column is NULL.
+pub async fn get_auth_code_by_phone(pool: &Pool, phone: &str) -> sqlx::Result<Option<String>> {
+    let row: Option<(Option<String>,)> = sqlx::query_as("SELECT auth_code FROM gb_jt_terminal WHERE phone_number = ?")
+        .bind(phone)
+        .fetch_optional(pool)
+        .await?;
+    Ok(row.and_then(|r| r.0))
+}
+
+/// Update the auth_code for a terminal (admin operation).
+pub async fn update_auth_code(pool: &Pool, phone: &str, auth_code: &str) -> sqlx::Result<u64> {
+    let result = sqlx::query("UPDATE gb_jt_terminal SET auth_code = ?, update_time = ? WHERE phone_number = ?")
+        .bind(auth_code)
+        .bind(chrono::Utc::now().to_rfc3339())
+        .bind(phone)
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected())
+}
+
+/// Phase 6.5: Update last reported position (longitude, latitude, time).
+pub async fn update_last_position(
+    pool: &Pool,
+    phone: &str,
+    longitude: f64,
+    latitude: f64,
+    time: chrono::DateTime<chrono::Utc>,
+) -> sqlx::Result<u64> {
+    let result = sqlx::query(
+        "UPDATE gb_jt_terminal SET longitude = ?, latitude = ?, register_time = ?, update_time = ? WHERE phone_number = ?"
+    )
+    .bind(longitude)
+    .bind(latitude)
+    .bind(time.to_rfc3339())
+    .bind(chrono::Utc::now().to_rfc3339())
+    .bind(phone)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected())
 }

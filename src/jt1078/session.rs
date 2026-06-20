@@ -33,6 +33,35 @@ pub enum FrameKind {
     Data(Vec<u8>),
 }
 
+/// Parsed business message — emitted by Jt1078Session::process_jt_message
+/// after stripping the JT808 framing. Phase 6.1-6.5.
+#[derive(Debug, Clone)]
+pub enum ParsedMessage {
+    /// 0x0002 Heartbeat
+    Heartbeat,
+    /// 0x0100 Terminal register
+    Register(crate::jt1078::response_parser::RegisterRequest),
+    /// 0x0102 Terminal attribute report
+    AttributeReport(crate::jt1078::response_parser::AttributeReport),
+    /// 0x0200 Location report
+    LocationReport(crate::jt1078::response_parser::LocationReport),
+    /// 0x0801 Media retrieval first item
+    MediaItem(crate::jt1078::response_parser::MediaItem),
+    /// 0x0001 Generic common response
+    CommonResponse {
+        /// The serial_no of the original command being responded to
+        reply_serial: u16,
+        /// The msg_id being responded to
+        reply_msg_id: u16,
+        /// 0=success, 1=failure, 2=msg_error, 3=unsupported
+        result: u8,
+    },
+    /// 0x0107 Query terminal params response
+    QueryParamsResponse(Vec<crate::jt1078::response_parser::TerminalParam>),
+    /// Any other unrecognised message — body preserved
+    Unknown { msg_id: u16, serial: u16, body: Vec<u8> },
+}
+
 impl Jt1078Session {
     pub fn new(peer: SocketAddr) -> Self {
         Self {
@@ -178,6 +207,69 @@ impl Jt1078Session {
     /// Whether the session is considered timed out given the provided duration
     pub fn is_timed_out(&self, timeout: Duration) -> bool {
         Instant::now().duration_since(self.last_heartbeat) > timeout
+    }
+
+    /// Phase 6.1+ — process a fully-decoded JT808 message (msg_id, serial, body).
+    /// Performs message-type-based dispatch and returns a `ParsedMessage`.
+    pub fn process_jt_message(
+        &mut self,
+        msg_id: u16,
+        serial: u16,
+        body: &[u8],
+    ) -> ParsedMessage {
+        use crate::jt1078::response_parser;
+        match msg_id {
+            0x0002 => {
+                self.last_heartbeat = Instant::now();
+                ParsedMessage::Heartbeat
+            }
+            0x0100 => match response_parser::parse_register_request(body) {
+                Ok(req) => ParsedMessage::Register(req),
+                Err(e) => {
+                    tracing::warn!("parse_register_request failed: {}", e);
+                    ParsedMessage::Unknown { msg_id, serial, body: body.to_vec() }
+                }
+            },
+            0x0102 => match response_parser::parse_attribute_report(body) {
+                Ok(a) => ParsedMessage::AttributeReport(a),
+                Err(e) => {
+                    tracing::warn!("parse_attribute_report failed: {}", e);
+                    ParsedMessage::Unknown { msg_id, serial, body: body.to_vec() }
+                }
+            },
+            0x0200 => match response_parser::parse_location_report(body) {
+                Ok(l) => ParsedMessage::LocationReport(l),
+                Err(e) => {
+                    tracing::warn!("parse_location_report failed: {}", e);
+                    ParsedMessage::Unknown { msg_id, serial, body: body.to_vec() }
+                }
+            },
+            0x0801 => match response_parser::parse_media_item_first(body) {
+                Ok(m) => ParsedMessage::MediaItem(m),
+                Err(e) => {
+                    tracing::warn!("parse_media_item_first failed: {}", e);
+                    ParsedMessage::Unknown { msg_id, serial, body: body.to_vec() }
+                }
+            },
+            0x0001 => {
+                if body.len() >= 5 {
+                    let reply_serial = u16::from_be_bytes([body[0], body[1]]);
+                    let reply_msg_id = u16::from_be_bytes([body[2], body[3]]);
+                    let result = body[4];
+                    ParsedMessage::CommonResponse { reply_serial, reply_msg_id, result }
+                } else {
+                    ParsedMessage::Unknown { msg_id, serial, body: body.to_vec() }
+                }
+            }
+            0x0107 => match response_parser::parse_query_params_response(body) {
+                Ok(p) => ParsedMessage::QueryParamsResponse(p),
+                Err(e) => {
+                    tracing::warn!("parse_query_params_response failed: {}", e);
+                    ParsedMessage::Unknown { msg_id, serial, body: body.to_vec() }
+                }
+            },
+            _ => ParsedMessage::Unknown { msg_id, serial, body: body.to_vec() },
+        }
     }
 }
 
