@@ -37,6 +37,12 @@ pub struct Device {
     pub mobile_position_submission_interval: Option<i32>,
 }
 
+/// Phase 7 audit fix: full column list matching the Device struct above.
+/// Used by query_devices_paged and related endpoints to avoid
+/// "no column found for name: firmware" 500 errors when callers
+/// (e.g. WVP-Pro frontend) request all device fields.
+pub const DEVICE_SELECT_COLUMNS: &str = "id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval";
+
 /// 设备通道完整信息
 #[derive(Debug, Clone, Default, Serialize, FromRow)]
 pub struct DeviceChannel {
@@ -326,25 +332,25 @@ pub async fn list_devices_paged(
     #[cfg(feature = "mysql")]
     let rows = if has_query && status.is_some() {
         sqlx::query_as::<_, Device>(
-            "SELECT id, device_id, name, manufacturer, model, transport, stream_mode, on_line, ip, port, create_time, update_time, media_server_id, custom_name FROM gb_device WHERE (device_id LIKE ? OR name LIKE ?) AND on_line = ? ORDER BY id LIMIT ? OFFSET ?",
+            "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval FROM gb_device WHERE (device_id LIKE ? OR name LIKE ?) AND on_line = ? ORDER BY id LIMIT ? OFFSET ?",
         )
         .bind(&like).bind(&like).bind(status.unwrap()).bind(limit).bind(offset)
         .fetch_all(pool).await?
     } else if has_query {
         sqlx::query_as::<_, Device>(
-            "SELECT id, device_id, name, manufacturer, model, transport, stream_mode, on_line, ip, port, create_time, update_time, media_server_id, custom_name FROM gb_device WHERE (device_id LIKE ? OR name LIKE ?) ORDER BY id LIMIT ? OFFSET ?",
+            "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval FROM gb_device WHERE (device_id LIKE ? OR name LIKE ?) ORDER BY id LIMIT ? OFFSET ?",
         )
         .bind(&like).bind(&like).bind(limit).bind(offset)
         .fetch_all(pool).await?
     } else if status.is_some() {
         sqlx::query_as::<_, Device>(
-            "SELECT id, device_id, name, manufacturer, model, transport, stream_mode, on_line, ip, port, create_time, update_time, media_server_id, custom_name FROM gb_device WHERE on_line = ? ORDER BY id LIMIT ? OFFSET ?",
+            "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval FROM gb_device WHERE on_line = ? ORDER BY id LIMIT ? OFFSET ?",
         )
         .bind(status.unwrap()).bind(limit).bind(offset)
         .fetch_all(pool).await?
     } else {
         sqlx::query_as::<_, Device>(
-            "SELECT id, device_id, name, manufacturer, model, transport, stream_mode, on_line, ip, port, create_time, update_time, media_server_id, custom_name FROM gb_device ORDER BY id LIMIT ? OFFSET ?",
+            "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval FROM gb_device ORDER BY id LIMIT ? OFFSET ?",
         )
         .bind(limit).bind(offset)
         .fetch_all(pool).await?
@@ -352,25 +358,25 @@ pub async fn list_devices_paged(
     #[cfg(feature = "postgres")]
     let rows = if has_query && status.is_some() {
         sqlx::query_as::<_, Device>(
-            "SELECT id, device_id, name, manufacturer, model, transport, stream_mode, on_line, ip, port, create_time, update_time, media_server_id, custom_name FROM gb_device WHERE (device_id LIKE $1 OR name LIKE $2) AND on_line = $3 ORDER BY id LIMIT $4 OFFSET $5",
+            "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval FROM gb_device WHERE (device_id LIKE $1 OR name LIKE $2) AND on_line = $3 ORDER BY id LIMIT $4 OFFSET $5",
         )
         .bind(&like).bind(&like).bind(status.unwrap()).bind(limit).bind(offset)
         .fetch_all(pool).await?
     } else if has_query {
         sqlx::query_as::<_, Device>(
-            "SELECT id, device_id, name, manufacturer, model, transport, stream_mode, on_line, ip, port, create_time, update_time, media_server_id, custom_name FROM gb_device WHERE (device_id LIKE $1 OR name LIKE $2) ORDER BY id LIMIT $3 OFFSET $4",
+            "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval FROM gb_device WHERE (device_id LIKE $1 OR name LIKE $2) ORDER BY id LIMIT $3 OFFSET $4",
         )
         .bind(&like).bind(&like).bind(limit).bind(offset)
         .fetch_all(pool).await?
     } else if status.is_some() {
         sqlx::query_as::<_, Device>(
-            "SELECT id, device_id, name, manufacturer, model, transport, stream_mode, on_line, ip, port, create_time, update_time, media_server_id, custom_name FROM gb_device WHERE on_line = $1 ORDER BY id LIMIT $2 OFFSET $3",
+            "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval FROM gb_device WHERE on_line = $1 ORDER BY id LIMIT $2 OFFSET $3",
         )
         .bind(status.unwrap()).bind(limit).bind(offset)
         .fetch_all(pool).await?
     } else {
         sqlx::query_as::<_, Device>(
-            "SELECT id, device_id, name, manufacturer, model, transport, stream_mode, on_line, ip, port, create_time, update_time, media_server_id, custom_name FROM gb_device ORDER BY id LIMIT $1 OFFSET $2",
+            "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval FROM gb_device ORDER BY id LIMIT $1 OFFSET $2",
         )
         .bind(limit).bind(offset)
         .fetch_all(pool).await?
@@ -378,25 +384,25 @@ pub async fn list_devices_paged(
     #[cfg(feature = "sqlite")]
     let rows = if has_query && status.is_some() {
         sqlx::query_as::<_, Device>(
-            "SELECT id, device_id, name, manufacturer, model, transport, stream_mode, on_line, ip, port, create_time, update_time, media_server_id, custom_name FROM gb_device WHERE (device_id LIKE ? OR name LIKE ?) AND on_line = ? ORDER BY id LIMIT ? OFFSET ?",
+            "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval FROM gb_device WHERE (device_id LIKE ? OR name LIKE ?) AND on_line = ? ORDER BY id LIMIT ? OFFSET ?",
         )
         .bind(&like).bind(&like).bind(status.unwrap()).bind(limit).bind(offset)
         .fetch_all(pool).await?
     } else if has_query {
         sqlx::query_as::<_, Device>(
-            "SELECT id, device_id, name, manufacturer, model, transport, stream_mode, on_line, ip, port, create_time, update_time, media_server_id, custom_name FROM gb_device WHERE (device_id LIKE ? OR name LIKE ?) ORDER BY id LIMIT ? OFFSET ?",
+            "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval FROM gb_device WHERE (device_id LIKE ? OR name LIKE ?) ORDER BY id LIMIT ? OFFSET ?",
         )
         .bind(&like).bind(&like).bind(limit).bind(offset)
         .fetch_all(pool).await?
     } else if status.is_some() {
         sqlx::query_as::<_, Device>(
-            "SELECT id, device_id, name, manufacturer, model, transport, stream_mode, on_line, ip, port, create_time, update_time, media_server_id, custom_name FROM gb_device WHERE on_line = ? ORDER BY id LIMIT ? OFFSET ?",
+            "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval FROM gb_device WHERE on_line = ? ORDER BY id LIMIT ? OFFSET ?",
         )
         .bind(status.unwrap()).bind(limit).bind(offset)
         .fetch_all(pool).await?
     } else {
         sqlx::query_as::<_, Device>(
-            "SELECT id, device_id, name, manufacturer, model, transport, stream_mode, on_line, ip, port, create_time, update_time, media_server_id, custom_name FROM gb_device ORDER BY id LIMIT ? OFFSET ?",
+            "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval FROM gb_device ORDER BY id LIMIT ? OFFSET ?",
         )
         .bind(limit).bind(offset)
         .fetch_all(pool).await?
@@ -465,21 +471,21 @@ pub async fn count_devices(
 pub async fn get_device_by_device_id(pool: &Pool, device_id: &str) -> sqlx::Result<Option<Device>> {
     #[cfg(feature = "mysql")]
     return sqlx::query_as::<_, Device>(
-        "SELECT id, device_id, name, manufacturer, model, transport, stream_mode, on_line, ip, port, create_time, update_time, media_server_id, custom_name FROM gb_device WHERE device_id = ?",
+        "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval FROM gb_device WHERE device_id = ?",
     )
     .bind(device_id)
     .fetch_optional(pool)
     .await;
     #[cfg(feature = "postgres")]
     return sqlx::query_as::<_, Device>(
-        "SELECT id, device_id, name, manufacturer, model, transport, stream_mode, on_line, ip, port, create_time, update_time, media_server_id, custom_name FROM gb_device WHERE device_id = $1",
+        "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval FROM gb_device WHERE device_id = $1",
     )
     .bind(device_id)
     .fetch_optional(pool)
     .await;
     #[cfg(feature = "sqlite")]
     return sqlx::query_as::<_, Device>(
-        "SELECT id, device_id, name, manufacturer, model, transport, stream_mode, on_line, ip, port, create_time, update_time, media_server_id, custom_name FROM gb_device WHERE device_id = ?",
+        "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval FROM gb_device WHERE device_id = ?",
     )
     .bind(device_id)
     .fetch_optional(pool)
@@ -1486,19 +1492,19 @@ pub async fn count_online_devices(pool: &Pool) -> sqlx::Result<i64> {
 pub async fn list_all_devices(pool: &Pool) -> sqlx::Result<Vec<Device>> {
     #[cfg(feature = "mysql")]
     return sqlx::query_as::<_, Device>(
-        "SELECT id, device_id, name, manufacturer, model, transport, stream_mode, on_line, ip, port, create_time, update_time, media_server_id, custom_name FROM gb_device ORDER BY id"
+        "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval FROM gb_device ORDER BY id"
     )
     .fetch_all(pool)
     .await;
     #[cfg(feature = "postgres")]
     return sqlx::query_as::<_, Device>(
-        "SELECT id, device_id, name, manufacturer, model, transport, stream_mode, on_line, ip, port, create_time, update_time, media_server_id, custom_name FROM gb_device ORDER BY id"
+        "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval FROM gb_device ORDER BY id"
     )
     .fetch_all(pool)
     .await;
     #[cfg(feature = "sqlite")]
     return sqlx::query_as::<_, Device>(
-        "SELECT id, device_id, name, manufacturer, model, transport, stream_mode, on_line, ip, port, create_time, update_time, media_server_id, custom_name FROM gb_device ORDER BY id"
+        "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval FROM gb_device ORDER BY id"
     )
     .fetch_all(pool)
     .await;

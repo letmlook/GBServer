@@ -371,6 +371,53 @@ CREATE TABLE IF NOT EXISTS gb_cloud_record
 );
 
 -- ============================================
+-- 10b. gb_common_region — 通用行政区域表（Phase 7.6 补齐，与 PG/MySQL 对齐）
+-- ============================================
+CREATE TABLE IF NOT EXISTS gb_common_region
+(
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_id        VARCHAR(50)  NOT NULL,
+    name             VARCHAR(255) NOT NULL,
+    parent_id        INTEGER,
+    parent_device_id VARCHAR(50)  DEFAULT NULL,
+    create_time      VARCHAR(50)  NOT NULL,
+    update_time      VARCHAR(50)  NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uk_common_region_device_id ON gb_common_region(device_id);
+
+-- ============================================
+-- 10c. gb_online_user — 在线用户（Phase 7.6 补齐）
+-- ============================================
+CREATE TABLE IF NOT EXISTS gb_online_user
+(
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    username      VARCHAR(100) NOT NULL,
+    ip            VARCHAR(50),
+    user_agent    VARCHAR(255),
+    login_time    VARCHAR(50)  NOT NULL,
+    last_active   VARCHAR(50)  NOT NULL,
+    jwt_jti       VARCHAR(100),
+    source        VARCHAR(20)  DEFAULT 'http'
+);
+CREATE INDEX IF NOT EXISTS idx_online_user_username ON gb_online_user(username);
+CREATE INDEX IF NOT EXISTS idx_online_user_last_active ON gb_online_user(last_active);
+
+-- ============================================
+-- 10d. gb_cluster_node — 集群节点（Phase 7.6 补齐）
+-- ============================================
+CREATE TABLE IF NOT EXISTS gb_cluster_node
+(
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    node_id      VARCHAR(100) NOT NULL,
+    addr         VARCHAR(255) NOT NULL,
+    role         VARCHAR(20)  DEFAULT 'primary',
+    last_heartbeat_secs BIGINT NOT NULL,
+    registered_at VARCHAR(50) NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uk_cluster_node_id ON gb_cluster_node(node_id);
+CREATE INDEX IF NOT EXISTS idx_cluster_node_heartbeat ON gb_cluster_node(last_heartbeat_secs);
+
+-- ============================================
 -- 11. gb_device_alarm — 设备报警
 -- ============================================
 CREATE TABLE IF NOT EXISTS gb_device_alarm

@@ -1,2 +1,4 @@
 data/
 data/**
+target/
+scripts/test-env.sh

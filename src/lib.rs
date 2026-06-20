@@ -91,15 +91,25 @@ async fn init_db_tables(pool: &db::Pool) -> anyhow::Result<()> {
     #[cfg(feature = "sqlite")]
     {
         // SQLite 用 sqlite_master 检测；Phase 1 仅覆盖核心 6 表最小集合
-        let table_exists: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='gb_device')"
-        )
-        .fetch_one(pool)
-        .await
-        .unwrap_or(false);
+        // Phase 7.6: 检测多个核心表确保 schema 完整；任一缺失即触发 init。
+        let core_tables = ["gb_device", "gb_common_region", "gb_online_user", "gb_cluster_node"];
+        let mut missing_any = false;
+        for tbl in &core_tables {
+            let exists: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?)"
+            )
+            .bind(tbl)
+            .fetch_one(pool)
+            .await
+            .unwrap_or(false);
+            if !exists {
+                missing_any = true;
+                tracing::warn!("[sqlite] missing core table: {}", tbl);
+            }
+        }
 
-        if !table_exists {
-            tracing::info!("[sqlite] schema tables not found, initializing...");
+        if missing_any {
+            tracing::info!("[sqlite] schema tables missing — running incremental init");
             let sql = include_str!("../database/init-sqlite-2.7.4.sql");
             // 逐行去除 `--` 行注释和空行，然后按 `;` 切分执行
             let cleaned: String = sql
@@ -120,10 +130,14 @@ async fn init_db_tables(pool: &db::Pool) -> anyhow::Result<()> {
                    !upper.starts_with("ALTER") && !upper.starts_with("DROP") {
                     continue;
                 }
+                // Only CREATE statements use IF NOT EXISTS so they're safe to
+                // re-run; INSERT statements inside init-sqlite would only apply
+                // to a fresh schema. We accept re-execution since core seeds
+                // are idempotent (use INSERT OR IGNORE equivalent via WHERE NOT EXISTS).
                 match sqlx::query(stmt).execute(pool).await {
                     Ok(_) => tracing::debug!("[sqlite] stmt #{} OK", idx),
-                    Err(e) => tracing::error!(
-                        "[sqlite] stmt #{} FAILED: {} | error: {}",
+                    Err(e) => tracing::warn!(
+                        "[sqlite] stmt #{} SKIP: {} | error: {}",
                         idx,
                         stmt.chars().take(120).collect::<String>(),
                         e

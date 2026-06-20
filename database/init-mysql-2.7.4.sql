@@ -594,3 +594,32 @@ create table IF NOT EXISTS gb_jt_media_item (
 );
 CREATE INDEX idx_jt_media_item_phone ON gb_jt_media_item (phone_number);
 CREATE INDEX idx_jt_media_item_time ON gb_jt_media_item (start_time, end_time);
+
+-- ============================================
+-- Phase 7.6 补齐：在线用户 + 集群节点
+-- ============================================
+CREATE TABLE IF NOT EXISTS gb_online_user
+(
+    id            BIGINT AUTO_INCREMENT PRIMARY KEY,
+    username      VARCHAR(100) NOT NULL,
+    ip            VARCHAR(50),
+    user_agent    VARCHAR(255),
+    login_time    VARCHAR(50)  NOT NULL,
+    last_active   VARCHAR(50)  NOT NULL,
+    jwt_jti       VARCHAR(100),
+    source        VARCHAR(20)  DEFAULT 'http'
+) COMMENT '在线用户表';
+CREATE INDEX idx_online_user_username ON gb_online_user(username);
+CREATE INDEX idx_online_user_last_active ON gb_online_user(last_active);
+
+CREATE TABLE IF NOT EXISTS gb_cluster_node
+(
+    id           BIGINT AUTO_INCREMENT PRIMARY KEY,
+    node_id      VARCHAR(100) NOT NULL,
+    addr         VARCHAR(255) NOT NULL,
+    role         VARCHAR(20)  DEFAULT 'primary',
+    last_heartbeat_secs BIGINT NOT NULL,
+    registered_at VARCHAR(50) NOT NULL
+) COMMENT '集群节点表';
+CREATE UNIQUE INDEX uk_cluster_node_id ON gb_cluster_node(node_id);
+CREATE INDEX idx_cluster_node_heartbeat ON gb_cluster_node(last_heartbeat_secs);

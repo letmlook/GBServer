@@ -692,6 +692,39 @@ COMMENT ON COLUMN gb_stream_push.pushing IS '是否正在推流';
 COMMENT ON COLUMN gb_stream_push.self IS '是否本地发起';
 COMMENT ON COLUMN gb_stream_push.start_offline_push IS '是否离线后自动重推';
 
+-- ============================================
+-- Phase 7.6 补齐：在线用户 + 集群节点
+-- ============================================
+drop table IF EXISTS gb_online_user;
+create table IF NOT EXISTS gb_online_user
+(
+    id            BIGSERIAL PRIMARY KEY,
+    username      VARCHAR(100) NOT NULL,
+    ip            VARCHAR(50),
+    user_agent    VARCHAR(255),
+    login_time    VARCHAR(50)  NOT NULL,
+    last_active   VARCHAR(50)  NOT NULL,
+    jwt_jti       VARCHAR(100),
+    source        VARCHAR(20)  DEFAULT 'http'
+);
+CREATE INDEX IF NOT EXISTS idx_online_user_username ON gb_online_user(username);
+CREATE INDEX IF NOT EXISTS idx_online_user_last_active ON gb_online_user(last_active);
+COMMENT ON TABLE gb_online_user IS '在线用户表（Phase 7.6 补齐）';
+
+drop table IF EXISTS gb_cluster_node;
+create table IF NOT EXISTS gb_cluster_node
+(
+    id           BIGSERIAL PRIMARY KEY,
+    node_id      VARCHAR(100) NOT NULL,
+    addr         VARCHAR(255) NOT NULL,
+    role         VARCHAR(20)  DEFAULT 'primary',
+    last_heartbeat_secs BIGINT NOT NULL,
+    registered_at VARCHAR(50) NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uk_cluster_node_id ON gb_cluster_node(node_id);
+CREATE INDEX IF NOT EXISTS idx_cluster_node_heartbeat ON gb_cluster_node(last_heartbeat_secs);
+COMMENT ON TABLE gb_cluster_node IS '集群节点表（Phase 7.6 补齐）';
+
 
 drop table IF EXISTS gb_cloud_record;
 create table IF NOT EXISTS gb_cloud_record

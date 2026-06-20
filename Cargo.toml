@@ -87,6 +87,10 @@ path = "tests/integration/sip/device_simulator_test.rs"
 name = "sqlite_compat"
 path = "tests/integration/sqlite_compat.rs"
 
+[[test]]
+name = "state_store_two_node"
+path = "tests/integration/state_store_two_node.rs"
+
 [profile.release]
 lto = true
 codegen-units = 1

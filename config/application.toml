@@ -36,6 +36,25 @@ static_dir = "web/dist"
 [user_settings]
 server_id = "gbserver-001"
 
+# Redis 配置（可选；Phase 7 启用 StateStore cluster / RPC 跨节点）
+[redis]
+url = "redis://127.0.0.1:6379"
+
+# Phase 7.2: 集群节点发现 / 心跳 / RPC 配置
+[cluster]
+enabled = false                       # 多节点 HA 部署时改为 true
+single_node_mode = true                # 单节点默认
+node_id = ""                            # 留空则用 process pid 哈希
+addr = "http://127.0.0.1:18080"        # 本节点 HTTP 地址
+role = "primary"
+heartbeat_interval_secs = 10
+heartbeat_ttl_secs = 60
+
+# Phase 7.4: 审计日志 middleware 配置
+[audit]
+enabled = true
+retention_days = 90
+
 # SIP 服务配置
 [sip]
 enabled = true

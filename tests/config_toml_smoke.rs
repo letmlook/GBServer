@@ -10,9 +10,12 @@ fn toml_config_loads_and_deserializes() {
 
     // 必填字段
     assert_eq!(cfg.server.port, 18080);
+    // Accept any of the supported DB backends (sqlite/postgres/mysql).
+    // The dev default is sqlite; CI may override to postgres/mysql via env.
     assert!(
         cfg.database.url.starts_with("postgres://")
-            || cfg.database.url.starts_with("mysql://"),
+            || cfg.database.url.starts_with("mysql://")
+            || cfg.database.url.starts_with("sqlite://"),
         "database.url must be a SQL URL, got: {}",
         cfg.database.url
     );

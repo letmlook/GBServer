@@ -793,8 +793,8 @@ pub fn app(state: AppState) -> Router<AppState> {
         )
         .route("/api/jt1078/live/start", get(jt1078::live_start))
         .route("/api/jt1078/live/stop", get(jt1078::live_stop))
-        .route("/api/jt1078/playback/start/", get(jt1078::playback_start))
-        .route("/api/jt1078/playback/stop/", get(jt1078::playback_stop))
+        .route("/api/jt1078/playback/start", get(jt1078::playback_start))
+        .route("/api/jt1078/playback/stop", get(jt1078::playback_stop))
         .route(
             "/api/jt1078/playback/control",
             get(jt1078::playback_control),

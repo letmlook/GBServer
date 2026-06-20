@@ -29,17 +29,35 @@ fn password_for_db(password: &str) -> String {
     }
 }
 
-/// GET/POST /api/user/login?username=xx&password=xx  前端传的 password 已为 32 位 MD5 十六进制
+/// GET/POST /api/user/login?username=xx&password=xx
+/// Phase 7.6: Password is verified via Argon2 (preferred) with MD5 fallback
+/// to the historical plaintext/MD5 passwords still present in some DBs.
+/// Frontend is expected to send the MD5 hex of the plaintext password
+/// (matches the historical behavior). The handler additionally supports
+/// direct plaintext for migration convenience — passwords stored as
+/// Argon2 hashes (`$argon2id$...`) are validated against the plaintext;
+/// legacy MD5/plaintext passwords are validated by re-hashing the input.
 pub async fn login(
     State(state): State<AppState>,
     Query(params): Query<LoginParams>,
 ) -> Result<impl IntoResponse, AppError> {
+    use crate::auth::verify_password;
     let username = params.username.as_deref().ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 username"))?;
     let password = params.password.as_deref().ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 password"))?;
-    let password_md5 = password_for_db(password);
-    let mut user = db::find_by_username_password(&state.pool, username, &password_md5)
+    let mut user = db::find_by_username(&state.pool, username)
         .await?
         .ok_or_else(|| AppError::business(ErrorCode::Error100, "用户名或密码错误"))?;
+    // Verify password: try Argon2 first, fall back to MD5 (legacy compatibility).
+    let stored = user.password.clone().unwrap_or_default();
+    let ok = if stored.starts_with("$argon2") {
+        verify_password(password, &stored)
+    } else {
+        let password_md5 = password_for_db(password);
+        password_md5 == stored
+    };
+    if !ok {
+        return Err(AppError::business(ErrorCode::Error100, "用户名或密码错误"));
+    }
     user.for_login();
 
     let keys = JwtKeys::new(state.config.jwt.secret.as_bytes());
@@ -177,10 +195,12 @@ pub async fn add_user(
         return Err(AppError::business(ErrorCode::Error400, "角色不存在"));
     }
 
-    let password_md5 = md5_hex(password);
+    // Phase 7.6: store password as Argon2id hash instead of plaintext MD5.
+    let password_hash = crate::auth::hash_password(password)
+        .map_err(|e| AppError::business(ErrorCode::Error100, format!("hash failed: {}", e)))?;
     let push_key = md5_hex(&format!("{}{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis(), password));
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    let n = db::add_user(&state.pool, username, &password_md5, role_id, &push_key, &now).await?;
+    let n = db::add_user(&state.pool, username, &password_hash, role_id, &push_key, &now).await?;
     if n == 0 {
         return Err(AppError::business(ErrorCode::Error100, "添加失败"));
     }

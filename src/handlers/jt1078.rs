@@ -25,6 +25,7 @@ pub struct TerminalListQuery {
 #[derive(Debug, Deserialize)]
 pub struct TerminalQuery {
     pub device_id: Option<String>,
+    #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
 }
 
@@ -38,6 +39,7 @@ pub struct ChannelListQuery {
 
 #[derive(Debug, Deserialize)]
 pub struct LiveQuery {
+    #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
     pub channel_id: Option<i32>,
     pub r#type: Option<String>,
@@ -45,6 +47,7 @@ pub struct LiveQuery {
 
 #[derive(Debug, Deserialize)]
 pub struct PlaybackQuery {
+    #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
     pub channel_id: Option<i32>,
     pub start_time: Option<String>,
@@ -57,6 +60,7 @@ pub struct PlaybackQuery {
 
 #[derive(Debug, Deserialize)]
 pub struct RecordListQuery {
+    #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
     pub channel_id: Option<i32>,
     pub start_time: Option<String>,
@@ -65,6 +69,7 @@ pub struct RecordListQuery {
 
 #[derive(Debug, Deserialize)]
 pub struct DownloadUrlQuery {
+    #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
     pub channel_id: Option<i32>,
     pub start_time: Option<String>,
@@ -77,6 +82,7 @@ pub struct DownloadUrlQuery {
 
 #[derive(Debug, Deserialize)]
 pub struct ControlQuery {
+    #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
     pub channel_id: Option<i32>,
     pub command: Option<String>,
@@ -86,6 +92,7 @@ pub struct ControlQuery {
 
 #[derive(Debug, Deserialize)]
 pub struct PtzQuery {
+    #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
     pub channel_id: Option<i32>,
     pub command: Option<String>,
@@ -94,6 +101,7 @@ pub struct PtzQuery {
 
 #[derive(Debug, Deserialize)]
 pub struct WiperQuery {
+    #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
     pub channel_id: Option<i32>,
     pub command: Option<String>,
@@ -101,6 +109,7 @@ pub struct WiperQuery {
 
 #[derive(Debug, Deserialize)]
 pub struct FillLightQuery {
+    #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
     pub channel_id: Option<i32>,
     pub command: Option<String>,
@@ -108,32 +117,38 @@ pub struct FillLightQuery {
 
 #[derive(Debug, Deserialize)]
 pub struct PositionQuery {
+    #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct LinkDetectionQuery {
+    #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct AttributeQuery {
+    #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct DriverInfoQuery {
+    #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct TextMsgBody {
+    #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
     pub message: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct TerminalCallbackQuery {
+    #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
     pub sign: Option<String>,
     pub dest_phone_number: Option<String>,
@@ -141,23 +156,27 @@ pub struct TerminalCallbackQuery {
 
 #[derive(Debug, Deserialize)]
 pub struct DoorQuery {
+    #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
     pub open: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct MediaAttributeQuery {
+    #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct TalkQuery {
+    #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
     pub channel_id: Option<i32>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct TerminalAddBody {
+    #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
     pub name: Option<String>,
     pub device_id: Option<String>,
@@ -169,6 +188,7 @@ pub struct TerminalAddBody {
 
 #[derive(Debug, Deserialize)]
 pub struct TerminalUpdateBody {
+    #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
     pub name: Option<String>,
     pub device_id: Option<String>,
@@ -195,6 +215,7 @@ pub struct ChannelAddBody {
 
 #[derive(Debug, Deserialize)]
 pub struct ConfigBody {
+    #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
     pub apn: Option<String>,
     pub ip: Option<String>,
@@ -205,11 +226,13 @@ pub struct ConfigBody {
 
 #[derive(Debug, Deserialize)]
 pub struct ResetBody {
+    #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct ConnectionBody {
+    #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
     pub ip: Option<String>,
     pub port: Option<i32>,
@@ -1677,6 +1700,7 @@ pub async fn talk_stop(
 /// GET /api/jt1078/media/upload/one/upload (used in queryMediaList.vue direct fetch)
 #[derive(Debug, Deserialize)]
 pub struct MediaUploadQuery {
+    #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
     pub media_id: Option<String>,
 }
