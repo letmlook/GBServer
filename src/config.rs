@@ -13,6 +13,10 @@ pub struct AppConfig {
     pub zlm: Option<ZlmConfig>,
     pub map: Option<MapConfig>,
     pub jt1078: Option<Jt1078Config>,
+    /// Phase 7.2: cluster / node-discovery config. When `single_node_mode = true`,
+    /// cluster checks are skipped (Redis fallback to local node only).
+    #[serde(default)]
+    pub cluster: ClusterAppConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -224,4 +228,51 @@ pub struct MapConfig {
     pub zoom: Option<i32>,
     /// 坐标系: WGS84 或 GCJ02
     pub coord_sys: Option<String>,
+}
+
+/// Phase 7.2: 集群/节点发现配置（来自 [cluster] 段落）。
+#[derive(Debug, Clone, Deserialize)]
+pub struct ClusterAppConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_cluster_single_node")]
+    pub single_node_mode: bool,
+    #[serde(default)]
+    pub node_id: String,
+    #[serde(default)]
+    pub addr: String,
+    #[serde(default = "default_cluster_role")]
+    pub role: String,
+    #[serde(default = "default_cluster_heartbeat_interval")]
+    pub heartbeat_interval_secs: u64,
+    #[serde(default = "default_cluster_heartbeat_ttl")]
+    pub heartbeat_ttl_secs: u64,
+}
+
+fn default_cluster_single_node() -> bool { true }
+fn default_cluster_role() -> String { "primary".to_string() }
+fn default_cluster_heartbeat_interval() -> u64 { 10 }
+fn default_cluster_heartbeat_ttl() -> u64 { 60 }
+
+impl Default for ClusterAppConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            single_node_mode: true,
+            node_id: format!("node-{}", std::process::id()),
+            addr: "http://127.0.0.1:18080".to_string(),
+            role: "primary".to_string(),
+            heartbeat_interval_secs: 10,
+            heartbeat_ttl_secs: 60,
+        }
+    }
+}
+
+impl ClusterAppConfig {
+    pub fn heartbeat_interval(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.heartbeat_interval_secs)
+    }
+    pub fn heartbeat_ttl(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.heartbeat_ttl_secs)
+    }
 }

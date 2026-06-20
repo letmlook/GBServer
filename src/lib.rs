@@ -317,11 +317,63 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
         },
         jt1078_manager: jt1078_manager.clone(),
         rpc_router: Some(Arc::new(crate::rpc::RpcRouter::new())),
+        // Phase 7.2: cluster registry. In single_node_mode without Redis, returns
+        // only the local node from list_active(); otherwise reads from Redis SET/ZSET.
+        cluster_registry: {
+            let redis_conn = redis_conn.clone();
+            let cluster_cfg = crate::cluster::ClusterConfig {
+                enabled: cfg.cluster.enabled,
+                single_node_mode: cfg.cluster.single_node_mode,
+                node_id: cfg.cluster.node_id.clone(),
+                addr: cfg.cluster.addr.clone(),
+                role: cfg.cluster.role.clone(),
+                heartbeat_interval: cfg.cluster.heartbeat_interval(),
+                heartbeat_ttl: cfg.cluster.heartbeat_ttl(),
+            };
+            let redis_arc = redis_conn.map(|c| Arc::new(tokio::sync::Mutex::new(c)));
+            Arc::new(crate::cluster::ClusterRegistry::new(cluster_cfg, redis_arc))
+        },
     };
 
     // E2: 注册标准 RPC 处理器（device_control / play_stop / cloud_record_sync）
     if let Some(ref router) = state.rpc_router {
         crate::rpc::register_standard_handlers(router).await;
+    }
+
+    // Phase 7.2: 启动 cluster heartbeat task（自动 evict 过期节点）
+    {
+        let registry = state.cluster_registry.clone();
+        let _hb = registry.start_heartbeat_task();
+    }
+
+    // Phase 7.2: 启动 Redis RPC subscriber（如果 Redis 已配置）
+    if let (Some(ref router), Some(redis_manager)) = (&state.rpc_router, &state.redis) {
+        let cfg_url = state.config.redis.as_ref().map(|r| r.url.clone());
+        if let Some(url) = cfg_url {
+            let client = match redis::Client::open(url.as_str()) {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::warn!("RedisRpcTransport: cannot open client: {}", e);
+                    return Ok(());
+                }
+            };
+            let transport = Arc::new(crate::rpc::RedisRpcTransport::new(
+                state.cluster_registry.config().node_id.clone(),
+                Arc::new(tokio::sync::Mutex::new(redis_manager.clone())),
+                client,
+            ));
+            let transport_clone = transport.clone();
+            let router_clone = router.clone();
+            let _sub = transport.start_subscriber().await;
+            tokio::spawn(async move {
+                use crate::rpc::RpcTransport;
+                let mut rx = transport_clone.receive();
+                while let Ok(req) = rx.recv().await {
+                    let _ = router_clone.route(&req).await;
+                }
+            });
+            tracing::info!("RedisRpcTransport subscriber started");
+        }
     }
 
     if let Some(ref server) = sip_server {
@@ -443,6 +495,8 @@ pub struct AppState {
     pub state_repo: Arc<crate::state::StateStoreRepository>,
     pub jt1078_manager: Arc<tokio::sync::RwLock<Option<Arc<crate::jt1078::manager::Jt1078Manager>>>>,
     pub rpc_router: Option<Arc<crate::rpc::RpcRouter>>,
+    /// Phase 7.2: cluster registry (Redis-backed node discovery).
+    pub cluster_registry: Arc<crate::cluster::ClusterRegistry>,
 }
 
 impl AppState {
@@ -669,6 +723,7 @@ mod tests {
             zlm: None,
             map: None,
             jt1078: None,
+            cluster: crate::config::ClusterAppConfig::default(),
         }
     }
 
@@ -692,6 +747,10 @@ mod tests {
             state_repo: Arc::new(crate::state::StateStoreRepository::new(state_store)),
             jt1078_manager: Arc::new(tokio::sync::RwLock::new(None)),
             rpc_router: None,
+            cluster_registry: Arc::new(crate::cluster::ClusterRegistry::new(
+                crate::cluster::ClusterConfig::default(),
+                None,
+            )),
         }
     }
 
