@@ -11,3 +11,7 @@ e2e/artifacts/*.log
 e2e/artifacts/*.pid
 e2e/artifacts/*.png
 e2e/artifacts/.auth.json
+
+# 调试期临时文件（本次 dev 调试）
+.pids/
+logs/
