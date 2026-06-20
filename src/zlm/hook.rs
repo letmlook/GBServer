@@ -750,6 +750,19 @@ pub async fn handle_webhook(
                     &now,
                 ).await;
                 // 重置流计数（在 on_server_started 时清零，避免旧数据残留）
+                // Phase 7.1: route through StateStore (single source of truth).
+                state.state_store.set_media_server(
+                    media_server_id,
+                    crate::state_store::MediaServerLoad {
+                        server_id: media_server_id.to_string(),
+                        stream_count: 0,
+                        rtp_server_count: 0,
+                        online: true,
+                        last_keepalive: chrono::Utc::now(),
+                    },
+                );
+                // Legacy Redis cache fallback (will be removed in Phase 7.6).
+                #[allow(unused_imports)]
                 if let Some(ref redis) = state.redis {
                     let _ = crate::cache::set_media_server_streams(redis, media_server_id, 0).await;
                 }

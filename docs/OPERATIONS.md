@@ -622,3 +622,168 @@ bash scripts/phase6-test-matrix.sh
 - **Phase 5** `CascadeRegistrar` 鉴权模式 → 6.1 `auth_code` 从 DB 读复用
 - **Phase 7** Redis StateStore → 6.2/6.3 终端注册表 + 命令等待 + 媒体会话 跨节点时改用 Redis
 
+
+---
+
+## Phase 7 — Redis Cluster, RPC, WebSocket, Operations & Edge APIs
+
+### 概述
+Phase 7 把 GBServer 从"单节点 + 散落内存状态"提升到"Redis-backed cluster + 跨节点 RPC + WebSocket fanout + 完整审计 + 监控 + 安全路由"的生产部署形态。
+
+### 主要交付物
+
+#### 7.1 StateStore 全面接入
+- `crate::state_store::StateStore` 扩展 6 个新 State 类型：
+  - `PendingRequestState`（SIP / JT 命令等待）
+  - `SubscriptionState`（Catalog / MobilePosition / Alarm）
+  - `RecordingState`（device_id:channel_id）
+  - `JtTerminalState`（JT 终端会话）
+  - `JtCommandWaiterState`（JT 命令关联）
+  - `JtMediaSessionState`（JT 媒体会话）
+- 新模块 `src/state/repository.rs`：
+  - `StreamStateRepository` trait 抽象业务层访问
+  - `StateStoreRepository` 实现（thin wrapper）
+- 所有 7 个新 State 都有 Redis + InMemory 双 backend 支持
+- `crate::cache.rs` 中 `set_recording_state` / `del_recording_state` / `media_server_streams` 等已全部迁移到 StateStore（保留 deprecated 注释，Phase 7.6 之后删除）
+- **新单测**：8 个（phase71_state_tests）+ 7 个（repository::tests）
+
+#### 7.2 跨节点 RPC + 集群节点发现
+- 新模块 `src/cluster/{mod,registry}.rs`：
+  - `ClusterConfig`（`single_node_mode` / `heartbeat_interval` / `heartbeat_ttl`）
+  - `ClusterRegistry` Redis SET（活跃节点）+ ZSET（心跳分数）
+  - `touch()` / `evict_expired()` / `list_active()` 带 graceful Redis fallback
+- `crate::rpc`：
+  - `RpcRequest.from_node` 字段（`#[serde(default)]` 向后兼容）
+  - `RedisRpcTransport` 基于 Redis Pub/Sub（broadcast）+ Stream（send_to at-least-once）
+  - `start_subscriber` 后台任务 + `from_node` self-echo 过滤
+- `run()` 启动心跳 task + RPC subscriber
+- **新单测**：6 个（cluster::registry::tests）+ 3 个（rpc::tests）
+
+#### 7.3 WebSocket cluster fanout + JWT
+- 新模块 `src/ws/{mod,hub,jwt}.rs`：
+  - `WsHub` cluster-aware（local dispatch + RPC broadcast）
+  - `verify_ws_jwt` HS256 + 30s leeway
+  - `WsQuery` query 参数（`?token=` / `?events=`）
+  - 订阅事件：默认 `alarm` / `device_status` / `record_state` / `jt_position` / `jt_alarm`
+- `handlers/websocket.rs::ws_handler` JWT 校验在 upgrade 前（无 token 返 401）
+- AppState 加 `ws_hub: Arc<WsHub>`；`run()` late-bind rpc_router
+- **新单测**：4 个（jwt::tests）+ 7 个（hub::tests）
+
+#### 7.4 安全路由 + 审计日志
+- 新模块 `src/middleware/{mod,audit}.rs`：
+  - `audit_middleware` 自动捕获 username / IP / path / status_code / elapsed_ms
+  - `tokio::spawn` 异步写 DB，不阻塞响应
+  - skip `/metrics` / `/api/health` / `/api/ready` 防自递归
+  - 遵守 `config.audit.enabled` 开关
+- `db/audit_log.rs` 加 `elapsed_ms` 列 + `insert_with_metrics()`
+- `auth.rs` 加 `decode_jwt_unsafe` / `ClaimsView`
+- `router.rs`：
+  - `/api/alarm/*` 从 main-app merge 移到 `api_protected`（必须 JWT）
+  - audit_middleware 在 auth_middleware 之外（捕获所有响应包括 401）
+- **新单测**：1 个（audit::tests 编译断言）
+
+#### 7.5 Metrics + Health + Readiness
+- `metrics.rs` 扩展到 14 个指标 + Prometheus HELP/TYPE：
+  - `gb_cluster_nodes_active` / `gb_rpc_messages_total`
+  - `gb_ws_clients_connected` / `gb_audit_log_writes_total` / `gb_audit_log_writes_failed`
+  - `gb_redis_state_keys` / `gb_build_info{version}`
+- 新 `handlers/health.rs`：
+  - `liveness`：永远 200（不查 DB/Redis，避免 k8s 误重启）
+  - `readiness`：200 only if DB + cluster + Redis OK；503 否则
+  - `single_node_mode` 自动跳过 cluster 检查
+- `/api/health` + `/api/ready` 路由注册
+
+#### 7.6 鉴权码哈希 + 系统端点
+- 新依赖 `argon2 = "0.5"`
+- `auth.rs::hash_password` / `verify_password` Argon2id + 自动向后兼容旧明文
+- 新 `handlers/system.rs`：
+  - `/api/system/info` 版本 + 启动时间 + 特性开关
+  - `/api/system/stats` 设备/通道/流/会话/JT 终端/cluster 统计
+  - `/api/system/version` 简化版本端点
+  - `/api/system/online-users` 在线用户（基于 WS client count 近似）
+
+### 部署配置
+
+```toml
+# config/application.toml (Phase 7 新增段落)
+
+[cluster]
+enabled = false                       # 是否启用集群模式
+single_node_mode = true                # 单节点模式（生产 HA 部署设 false）
+node_id = "node-1"                     # 本节点 ID（默认 = pid 哈希）
+addr = "http://10.0.0.5:18080"        # 本节点 HTTP 地址
+role = "primary"                       # primary / secondary
+heartbeat_interval_secs = 10
+heartbeat_ttl_secs = 60
+
+[audit]
+enabled = true                        # 是否启用审计日志
+retention_days = 90                    # 保留天数
+```
+
+### Redis 配置
+
+```toml
+[redis]
+url = "redis://10.0.0.10:6379"
+```
+
+无 Redis 配置时，Phase 7 自动降级为单节点模式（`single_node_mode = true`）。
+
+### 兼容性
+
+- **向后兼容**：Phase 7 与 Phase 1-6 完整衔接；既有 API + SIP + JT 链路无 breaking change
+- **依赖**：单节点部署无新增依赖；集群部署需 Redis 7.0+
+- **WS JWT**：默认开启；可通过 `[ws] require_auth = false` 关闭（兼容旧部署）
+- **审计**：默认开启；可通过 `[audit] enabled = false` 关闭
+
+### 验收命令
+
+```bash
+# 三库测试矩阵
+cargo test --lib
+cargo test --no-default-features --features postgres --lib
+cargo test --no-default-features --features mysql --lib
+
+# 单节点无 Redis 部署验证
+GBSERVER__REDIS__URL='' cargo run
+curl http://localhost:18080/api/system/info      # 应包含 redis: false
+curl http://localhost:18080/api/ready            # 200 ready
+
+# 单节点有 Redis 部署验证
+GBSERVER__REDIS__URL=redis://localhost:6379 cargo run
+curl http://localhost:18080/api/system/info      # redis: true
+curl http://localhost:18080/metrics              # 含 14+ 指标
+
+# 双节点集群验证（HAProxy 后端）
+# node-A 上触发 alarm → node-B 上 WS 客户端应能收到（订阅 alarm event）
+# node-A 上 /api/play/start → node-B 上 /api/play/stop 能停止
+
+# WS JWT 验证
+curl -i http://localhost:18080/api/ws             # 401 Missing JWT
+curl -i 'http://localhost:18080/api/ws?token=xxx' # 401 invalid signature (正常 token 升级成功)
+```
+
+### 衔接 Phase 1-6
+
+- **Phase 1** PendingRequestManager → 7.1 `PendingRequestState`
+- **Phase 1** InviteSessionStore → 7.1 `InviteSessionState`
+- **Phase 2** SubscriptionLifecycle → 7.1 `SubscriptionState`
+- **Phase 3** MediaWaiterManager → 7.1 InviteSessionState.zlm_stream_id
+- **Phase 4** `select_least_loaded_server_filtered` → 7.5 metrics 加 `gb_media_server_load`
+- **Phase 4** `mark_offline_if_expired` → 7.2 RPC 跨节点同步
+- **Phase 5** SendRtpManager → 7.2 RedisRpcTransport 跨节点
+- **Phase 5** 5.5a/b MobilePosition/Alarm 上行 → 7.3 `ws_hub.broadcast_event`
+- **Phase 6** JtCommandWaiter/JtMediaSession → 7.1 终端注册表走 StateStore
+- **Phase 6** 鉴权码明文 → 7.6 Argon2 哈希
+
+### 风险与缓解
+
+- **R1** Redis 切换导致旧数据丢失：StateStore 双 backend（InMemory + Redis），通过 `mode=redis` 环境变量切换
+- **R2** WS JWT 破坏现有部署：query `?token=` + Authorization 双方式兼容；`[ws] require_auth = false` 关闭
+- **R3** audit middleware 性能：`tokio::spawn` 异步写；`/metrics` / `/health` / `/ready` bypass
+- **R4** 跨节点 RPC 重复处理：`from_node` self-echo 过滤；`RedisRpcTransport::receive` 仅发 non-self
+- **R5** StateStore 抽象泄漏：trait 保持最小；复杂查询直接走 `state_store.xxx_raw`
+- **R6** 删除 cache.rs 回归：7.1 替换 + 7.6 才 `rm`；中间状态三库 CI 验证
+- **R7** Argon2 哈希性能：默认参数 ~50ms（登录可接受）；DB `VARCHAR(255)` 容纳完整 hash
+- **R8** cluster 节点发现依赖 Redis：`single_node_mode = true` 跳过 cluster 检查

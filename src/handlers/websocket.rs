@@ -42,6 +42,11 @@ impl WsState {
             }
         }
     }
+
+    /// Phase 7.6: count currently-connected WS clients (approximate).
+    pub async fn broadcast_count(&self) -> usize {
+        self.tx_map.read().await.len()
+    }
 }
 
 /// Phase 7.3: WebSocket upgrade handler with JWT validation.

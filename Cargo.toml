@@ -28,6 +28,9 @@ serde_json = "1"
 sqlx = { version = "0.7", features = ["runtime-tokio", "chrono", "macros"], default-features = false }
 chrono = { version = "0.4", features = ["serde"] }
 
+# Phase 7.6: password hashing (Argon2id, default params ~50ms)
+argon2 = "0.5"
+
 # 鉴权
 jsonwebtoken = "9"
 md-5 = "0.10"

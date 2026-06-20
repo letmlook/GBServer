@@ -12,7 +12,7 @@ use crate::auth::auth_middleware;
 use crate::middleware::audit_middleware;
 use crate::handlers::{
     alarm, common_channel, device, device_control, device_stub, front_end, health, jt1078, platform, play,
-    cloud_record_extra, jt1078_extra, parity_extras, playback, rtp_control, server, stream, stub, sy_camera, talk, user, websocket, webrtc, device_batch, region, role,
+    cloud_record_extra, jt1078_extra, parity_extras, playback, rtp_control, server, stream, stub, sy_camera, system, talk, user, websocket, webrtc, device_batch, region, role,
 };
 use crate::handlers::metrics as metrics_handler;
 use crate::rpc::{RpcRequest, RpcResponse};
@@ -858,6 +858,11 @@ pub fn app(state: AppState) -> Router<AppState> {
         .route("/api/alarm/device/:device_id", delete(alarm::alarm_delete_by_device))
         .route("/api/alarm/before/:time", delete(alarm::alarm_delete_before_time))
         .route("/api/log/list", get(stub::log_list))
+        // Phase 7.6: system info/stats/version/online-users
+        .route("/api/system/info", get(system::system_info))
+        .route("/api/system/stats", get(system::system_stats))
+        .route("/api/system/version", get(system::system_version))
+        .route("/api/system/online-users", get(system::online_users))
         // Phase 7.4: audit middleware outermost — captures all responses (including 401)
         .route_layer(middleware::from_fn_with_state(
             state_clone.clone(),

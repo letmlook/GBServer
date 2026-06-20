@@ -91,6 +91,38 @@ pub fn decode_jwt_unsafe(token: &str) -> Result<ClaimsView, String> {
     Ok(ClaimsView { user: data.claims.userName })
 }
 
+/// Phase 7.6: hash a plaintext password using Argon2id with default parameters.
+/// Returns the full PHC-formatted hash string suitable for storage in gb_user.password.
+pub fn hash_password(plaintext: &str) -> Result<String, String> {
+    use argon2::password_hash::{rand_core::OsRng, PasswordHasher, SaltString};
+    let salt = SaltString::generate(&mut OsRng);
+    let argon2 = argon2::Argon2::default();
+    let hash = argon2
+        .hash_password(plaintext.as_bytes(), &salt)
+        .map_err(|e| format!("argon2 hash failed: {}", e))?;
+    Ok(hash.to_string())
+}
+
+/// Phase 7.6: verify a plaintext password against a stored Argon2id hash.
+/// Backwards-compat: if `stored` doesn't start with `$argon2`, treats it as
+/// plaintext (legacy mode) and compares directly. New hashes always start with
+/// `$argon2id$`.
+pub fn verify_password(plaintext: &str, stored: &str) -> bool {
+    use argon2::password_hash::{PasswordHash, PasswordVerifier};
+    if stored.starts_with("$argon2") {
+        let parsed = match PasswordHash::new(stored) {
+            Ok(p) => p,
+            Err(_) => return false,
+        };
+        argon2::Argon2::default()
+            .verify_password(plaintext.as_bytes(), &parsed)
+            .is_ok()
+    } else {
+        // Legacy plaintext mode
+        plaintext == stored
+    }
+}
+
 pub fn extract_token(req: &Request) -> Option<String> {
     extract_token_from_headers(req.headers())
 }
