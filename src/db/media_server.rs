@@ -442,6 +442,40 @@ pub async fn update_last_keepalive(
     Ok(r.rows_affected())
 }
 
+/// Mark media servers as offline if their last keepalive is older than `before_time`.
+///
+/// Only rows currently with `status = 1` are eligible; the timestamp is
+/// compared against `last_keepalive_time` (stored as RFC3339 string).
+///
+/// Returns the number of rows updated (i.e. newly-offline nodes).
+pub async fn mark_offline_if_expired(
+    pool: &Pool,
+    before_time: &str,
+) -> sqlx::Result<u64> {
+    #[cfg(feature = "mysql")]
+    let r = sqlx::query(
+        "UPDATE gb_media_server SET status = 0 WHERE status = 1 AND last_keepalive_time < ?"
+    )
+    .bind(before_time)
+    .execute(pool)
+    .await?;
+    #[cfg(feature = "postgres")]
+    let r = sqlx::query(
+        "UPDATE gb_media_server SET status = 0 WHERE status = 1 AND last_keepalive_time < $1"
+    )
+    .bind(before_time)
+    .execute(pool)
+    .await?;
+    #[cfg(feature = "sqlite")]
+    let r = sqlx::query(
+        "UPDATE gb_media_server SET status = 0 WHERE status = 1 AND last_keepalive_time < ?"
+    )
+    .bind(before_time)
+    .execute(pool)
+    .await?;
+    Ok(r.rows_affected())
+}
+
 /// Update flow statistics from flow report webhook
 pub async fn update_flow_stats(
     pool: &Pool,

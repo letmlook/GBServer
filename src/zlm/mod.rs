@@ -5,6 +5,7 @@ pub mod types;
 pub mod address_builder;
 pub mod health_checker;
 pub mod auth;
+pub mod media_node;
 
 pub use client::ZlmClient;
 pub use types::*;

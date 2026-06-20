@@ -229,6 +229,15 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
         });
     }
 
+    // Phase 4.4: 媒体节点 keepalive 超时检测 — 每 10s 扫描一次，
+    // 把超过 DEFAULT_KEEPALIVE_TIMEOUT_SECS 秒无 keepalive 的节点切 offline
+    {
+        let health_pool = pool.clone();
+        tokio::spawn(async move {
+            zlm::media_node::health_check_loop(health_pool).await;
+        });
+    }
+
     if let Some(ref server) = sip_server {
         let mut server = server.write().await;
         server.set_zlm_client(zlm_client.clone());
