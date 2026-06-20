@@ -364,7 +364,7 @@ grep -rn "rtsp://127.0.0.1/live" src/ | grep -v tests/ | wc -l
 | 子任务 | 状态 | 关键文件 |
 |---|---|---|
 | **5.1** CascadeRegistrar 串联 | ✅ | `src/cascade/register.rs`、`src/sip/gb28181/cascade_service.rs` |
-| **5.2** 上级 RecordInfo 查询响应 | ⏳ | （待 Phase 5.2 实施） |
+| **5.2** 上级 RecordInfo 查询响应 | ✅ | `src/sip/server.rs::handle_record_info_for_platform`、`build_upstream_record_info_response` |
 | **5.3** 上级 INVITE → SendRtp 整链路 | ✅ | `src/sip/server.rs::register_cascade_invite`、`parse_cascade_invite_sdp` |
 | **5.4** `on_send_rtp_stopped` 路由 | ✅ | `src/sip/gb28181/cascade_forward.rs::close_by_stream`、`src/zlm/hook.rs` |
 | **5.5a** MobilePosition 上行转发 | ✅ | `src/sip/server.rs::forward_mobile_position_to_all` |
@@ -442,6 +442,7 @@ cargo test --lib phase5_   # 19 个 phase5_ 前缀单测
 | `sip::server::upstream_message_tests` | `phase5_register_cascade_invite_*` | 2 |
 | `sip::server::upstream_message_tests` | `phase5_forward_mobile_position_*` | 2 |
 | `sip::server::upstream_message_tests` | `phase5_forward_alarm_*` | 2 |
+| `sip::server::upstream_message_tests` | `phase5_build_upstream_record_info_response_*` | 3 |
 
 #### 3.3 CascadeService 已 deprecated
 
