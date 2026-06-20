@@ -418,6 +418,27 @@ async fn sync_stream_changed(state: &AppState, data: &StreamChangedData) {
                 data.stream, resolved
             );
         }
+
+        // Phase 6.3: 如果 stream 命名以 "jt1078_" 开头，路由到 JtMediaSessionManager
+        if data.stream.starts_with("jt1078_") {
+            // Format: jt1078_{phone}_{channel_id}
+            let rest = data.stream.trim_start_matches("jt1078_");
+            let parts: Vec<&str> = rest.splitn(2, '_').collect();
+            if parts.len() == 2 {
+                let phone = parts[0].to_string();
+                let channel_id: u8 = parts[1].parse().unwrap_or(0);
+                let mgr_guard = state.jt1078_manager.read().await;
+                if let Some(m) = mgr_guard.as_ref() {
+                    let resolved = m
+                        .media_session_manager()
+                        .resolve_waiter(&phone, channel_id, &data.stream);
+                    tracing::info!(
+                        "6.3 on_stream_changed routed to JtMediaSessionManager: phone={} ch={} resolved={}",
+                        phone, channel_id, resolved
+                    );
+                }
+            }
+        }
     }
 
     // Phase 3.4: 如果该 stream 属于下载会话，触发下载进度更新。

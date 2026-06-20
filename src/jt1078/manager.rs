@@ -9,6 +9,7 @@ use std::time::Instant;
 use crate::jt1078::session::Jt1078Session;
 use crate::jt1078::command;
 use crate::jt1078::command_waiter::JtCommandWaiter;
+use crate::jt1078::jt_media_session::JtMediaSessionManager;
 
 #[derive(Clone)]
 pub struct Jt1078Manager {
@@ -23,6 +24,8 @@ pub struct Jt1078Manager {
     retransmit_send_to_device: bool,
     /// Phase 6.2: command → response correlation
     command_waiter: Arc<JtCommandWaiter>,
+    /// Phase 6.3: media session manager (live/playback/download)
+    media_session_manager: Arc<JtMediaSessionManager>,
 }
 
 impl Jt1078Manager {
@@ -36,12 +39,18 @@ impl Jt1078Manager {
             retransmit_hook,
             retransmit_send_to_device,
             command_waiter: Arc::new(JtCommandWaiter::new().with_timeout(10)),
+            media_session_manager: Arc::new(JtMediaSessionManager::new()),
         }
     }
 
     /// Access the command waiter (for tests / direct response resolution).
     pub fn command_waiter(&self) -> Arc<JtCommandWaiter> {
         self.command_waiter.clone()
+    }
+
+    /// Phase 6.3: access the media session manager.
+    pub fn media_session_manager(&self) -> Arc<JtMediaSessionManager> {
+        self.media_session_manager.clone()
     }
 
     /// Phase 6.2: send a raw JT808 command and wait for the matching 0x0001
@@ -408,13 +417,33 @@ impl Jt1078Manager {
         Ok(resp.first().copied().unwrap_or(1))
     }
 
-    /// 0x9101 Live video start/stop
+    /// 0x9101 Live video start/stop.
+    /// Phase 6.3: when start (close=false), also creates a media session and
+    /// waits for ZLM on_stream_changed hook to resolve the session to Active.
     pub async fn send_live_video_and_wait(
         &self, phone: &str, channel_id: u8, stream_type: u8, close: bool, timeout_secs: u64,
     ) -> Result<u8, String> {
         let body = command::build_live_video_request(channel_id, stream_type, close);
         let resp = self.send_command_and_wait(phone, 0x9101, &body, timeout_secs).await?;
-        Ok(resp.first().copied().unwrap_or(1))
+        let result = resp.first().copied().unwrap_or(1);
+        if !close && result == 0 {
+            // Create session and wait for ZLM media arrival
+            self.media_session_manager.create_live(phone, channel_id);
+            // Note: actual wait_for_media is initiated by handler after open_rtp_server.
+        } else if close {
+            self.media_session_manager.stop(phone, channel_id);
+        }
+        Ok(result)
+    }
+
+    /// Phase 6.3: wait for ZLM media arrival (called by handler after opening
+    /// ZLM RTP server). Returns the activated JtMediaSession.
+    pub async fn wait_for_zlm_media(
+        &self, phone: &str, channel_id: u8, timeout_secs: u64,
+    ) -> Result<crate::jt1078::jt_media_session::JtMediaSession, String> {
+        self.media_session_manager.wait_for_media(
+            phone, channel_id, std::time::Duration::from_secs(timeout_secs),
+        ).await
     }
 
     /// 0x9102 Live video control

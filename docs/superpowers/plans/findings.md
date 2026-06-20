@@ -1,124 +1,171 @@
 # Findings & Decisions
 
 ## Requirements
-- 输入：`docs/superpowers/specs/2026-05-30-wvp-java-parity-design.md`（§7 Phase 6） + `docs/superpowers/plans/2026-06-20-phase-4-impl-plan.md` + `docs/superpowers/plans/2026-06-20-phase-5-impl-plan.md`
-- 输出：`docs/superpowers/plans/2026-06-20-phase-6-impl-plan.md`
+- 输入：`docs/superpowers/specs/2026-05-30-wvp-java-parity-design.md`（§7 Phase 7） + `docs/superpowers/plans/2026-06-20-phase-6-impl-plan.md` + 当前 main 分支代码（基线 `79bfb29` Phase 6.1 完成）
+- 输出：`docs/superpowers/plans/2026-06-20-phase-7-impl-plan.md`
 - 要求：与既有计划风格一致；可被 subagent 任务级执行；含 File Structure、子任务、关键代码骨架、验收命令、风险与衔接
 - 风格：中文；技术名词保持英文；表格化呈现
 
 ## Research Findings
 
-### 设计文档 §7 Phase 6 原文要点
-1. **Goal**：make JT terminal workflows real rather than route-only.
+### 设计文档 §7 Phase 7 原文要点
+1. **Goal**：complete production deployment features（Redis 集群 / RPC / WebSocket / 运维 / 边缘 API）
 2. **Tasks (5)**：
-   - 6.1 终端注册/鉴权/心跳/TCP/UDP/offline 检测/DB 映射
-   - 6.2 命令关联（msg_id + serial + phone）
-   - 6.3 实时视频 start/stop/pause/continue/switch
-   - 6.4 录像列表/回放 start/控制/stop/下载/上传/列表/删除
-   - 6.5 PTZ/文本/电话本/围栏/配置查询/属性/司机/媒体属性
+   - 7.1 Redis-backed `StateStore` for CSEQ/SN/SSRC, device/stream/session state, GPS/alarm, push/proxy, platform SendRtp, WebSocket fanout
+   - 7.2 跨节点 RPC for device control / play/stop / stream state / platform play / SendRtp / cloud-record operations
+   - 7.3 Add or align `/api/rtp` `/api/ps` log download / system info / health/readiness / metrics behavior
+   - 7.4 Fix public/protected routing for `/api/alarm/*` and `/api/ws` or document them as intentionally public
+   - 7.5 Record audit logs with real response statuses
 3. **Acceptance**：
-   - Simulator + 至少 1 个真实 JT 终端能完成 register / live / playback / record query / selected controls
-   - API route 覆盖 WVP-Pro live pause/continue/switch 路径
-   - 默认占位坐标/司机数据/摄像头 OSD 不再作为主要生产数据
-4. **Estimate**：4-6 周
+   - Single-node and two-node Redis-backed deployments pass core protocol smoke tests
+   - WebSocket events and stream states remain consistent across nodes
+   - Security route exposure matches intended policy
+4. **Estimate**：2-4 周
 
-### 当前代码现状（直接来自仓库）
+### 当前代码现状（直接来自仓库审计）
 
-**`src/jt1078/` 模块**（2032 行）：
-- `manager.rs`（371 行）：`Jt1078Manager` 持有 `sessions`/`terminal_addrs`/`seq_counters` 三个 DashMap；`send_command` 走 `send_raw`（**fire-and-forget，不等响应**）；提供 `send_ptz`/`send_live_video`/`send_playback`/`send_wiper`/`send_fill_light`/`send_terminal_control`/`send_text_message`/`send_phone_callback`/`send_vehicle_control`/`send_take_photo`/`send_media_search`/`send_media_upload`/`send_set_phone_book`/`send_query_attributes`/`send_query_location`/`send_connection_control` 等 15+ 命令发送方法
-- `command.rs`（353 行）：`build_jt808_frame` + 各类消息体编码（PTZ/live/playback/wiper/fill_light/terminal_control/text_message/phone_callback/vehicle_control/take_photo/media_search/media_upload/set_phone_book/query_attributes/set_params）；**缺 0x8100 终端注册应答编码**、**缺 0x0100 注册请求解析**
-- `command_waiter.rs`（400 行）：`JtCommandWaiter` + `JtCmdType` 枚举（20+ variant）+ 13 个单测；**`register`/`unregister`/`try_resolve_by_response` 公共方法缺失**；**0 引用**
-- `jt_media_session.rs`（256 行）：`JtMediaSession`（含 phone/channel_id/zlm_stream_id/speed/current_pos_secs/last_activity）+ `JtMediaSessionManager` + `create_live`/`create_playback`/`activate`/`pause`/`resume`/`stop`/`update_position`/`update_speed`/`get`/`remove`/`get_by_type`；**缺 `MediaWaiter` 等待 ZLM 媒体到达**；**0 引用**；**缺 `StreamState` trait 实现**
-- `session.rs`（315 行）：`Jt1078Session`（per-connection）+ `parse_jt1078_frame`/`parse_jt1078_structured_frame` 帧解析 + `process_payload` 当前仅识别 `AUTH:<token>`/`HEARTBEAT`；**缺标准 JT/T 808 0x0100/0x8100/0x0102/0x0200/0x0801/0x0001 协议分发**
-- `server.rs`（140 行）：`start` 启动 TCP/UDP 监听 + 端口**硬编码 `0.0.0.0:60000`（TCP 与 UDP 同端口）** + spawn accept loop + 调用 `feed_bytes` + `process_payload_for`；**缺 cfg 读端口**、**缺注册协议处理**、**缺命令关联**
-- `frame.rs`（145 行）：`parse_jt1078_frame`（legacy length-prefixed）+ `parse_jt1078_structured_frame`（structured seq+ts+xor）
-- `mod.rs`（52 行）：`Jt1078Server` 持有 `manager: Arc<RwLock<Option<Arc<Jt1078Manager>>>>`
+**`src/state_store.rs`（1061 行）— 已有完整 StateStore 抽象层**：
+- 13 类 State 结构：`DeviceOnlineState` / `StreamState` / `InviteSessionState` / `MediaServerLoad` / `MobilePositionState` / `ActiveRecordingState` / `JTTerminalState` / `PlatformSendRtpState` / ...
+- `StateStore::in_memory()` + `StateStore::redis(url)` 双 backend
+- `InMemoryBackend`（172 行，`std::sync::RwLock`）+ `RedisBackend`（316 行，`ConnectionManager` + 自动重连 + 1.5s 连接超时）
+- `StateBackend` trait + `serde_json` 序列化所有 State
+- 30+ setter/getter/deleter 方法
+- **仅 7 个文件实际使用**：`src/lib.rs`（构造）/ `src/scheduler/record_plan.rs` / `src/sip/gb28181/{cascade_forward,playback_session,invite_session}.rs` / `src/cache.rs`（deprecated 注释）
+- **缺口**：缺 `PendingRequestState` / `SubscriptionState` / `JtCommandWaiterState` / `JtMediaSessionState` / `RecordingState` 完整迁移
 
-**`src/handlers/jt1078.rs`**（1503 行）：
-- 25+ 路由函数：`terminal_list`/`query`/`add`/`update`/`delete`/`channel_list`/`update`/`add` + `live_start`/`stop` + `playback_start`/`stop`/`control`/`download_url` + `ptz`/`wiper`/`fill_light` + `record_list` + `config_get`/`config_set` + `attribute` + `link_detection` + `position_info` + `text_msg` + `telephone_callback` + `driver_info` + `factory_reset` + `reset` + `connection` + `door` + `media_attribute` + `media_list` + `set_phone_book` + `shooting` + `talk_start`/`stop` + `media_upload_one`
-- **关键缺陷**：
-  - `live_start`（line 435-503）发 0x9101 后**不 await 0x0001 应答** + 返回 `rtmp://127.0.0.1:1935/live/...` / `rtsp://127.0.0.1:554/...` / `ws://127.0.0.1/live/...` 占位 URL
-  - `playback_start`（line 530-590）发 0x9201 后**不 await 0x0001 应答** + 不创建 JtMediaSession
-  - `playback_control`（line 616-657）**完全不调 0x9202**（仅返回 build_success）
-  - `ptz`/`wiper`/`fill_light`/`text_msg` 等 15+ handler **全部 `build_success("成功")` 占位**
-  - `position_info` 返回 `{longitude: 0.0, latitude: 0.0}` 占位
-  - `config_get` 返 IP/port 字符串拼装
+**`src/cache.rs`（140 行）— deprecated 但仍存在**：
+- 全部函数 `#[deprecated(note = "迁移到 StateStore::xxx")]`
+- `set_device_online` / `get_device_online` / `set_stream_info` / `get_stream_info` / `incr_media_server_streams` / `decr_media_server_streams` / `get_media_server_stream_count` / `reset_media_server_streams` / `set_recording_state` / `get_recording_state` / `del_recording_state`
+- **仍被 import**：grep `crate::cache::` 在 handlers/play.rs + playback.rs + stream.rs + device_control.rs 等多处
 
-**`src/db/jt1078.rs`**（476 行）：
-- `JtTerminal` 结构 + `JtChannel` 结构
-- 已三态 cfg：`list_terminals_paged`/`count_terminals`/`get_terminal_by_phone`/`get_terminal_by_id`/`get_channel_by_id`/`get_online_terminals`/`count_online_terminals`/`insert_channel`/`update_channel`/`list_channels_by_terminal`/`insert_terminal`/`update_terminal`
-- **缺**：`get_auth_code_by_phone` / `update_last_position` / `get_last_position` / `update_attribute` / `insert_media_item` / `list_media_items_by_terminal`
-- **缺字段**：`JtTerminal` 缺 `auth_code` / `last_lng` / `last_lat` / `last_position_time` / `attribute` JSON
+**`src/rpc.rs`（419 行）— 已实现 RpcRouter**：
+- `RpcRequest` / `RpcResponse` / `RpcTransport` trait + `LocalRpc`（单节点 tokio mpsc）+ `RpcRouter`（按 method 分发）
+- `register_standard_handlers` 注册 device_control / play_stop / stream_state_changed / cascade_sendrtp_start/stop / cloud_record_sync / ws_broadcast
+- **缺口**：缺 `RedisRpcTransport`（跨节点 Pub/Sub）+ 节点发现 + `from_node` 过滤
 
-### 与 Phase 1-5 衔接点
+**`src/metrics.rs`（60 行）— 仅 5 个指标**：
+- `jt1078_missing_retransmit_total` / `jt1078_active_sessions` / `sip_devices_online` / `sip_invites_active` / `streams_active`
+- 全部 AtomicU64 / AtomicUsize；缺 cluster / RPC / WS / Redis / DB / audit 指标
+- **缺口**：缺 Prometheus HELP/TYPE 注释（部分字段缺 HELP）
 
-| Phase | 可复用资产 | 6.x 用法 |
+**`src/handlers/websocket.rs`（98 行）— 单节点 + 无 JWT**：
+- `WsState { tx_map: Arc<RwLock<HashMap<client_id, mpsc::Sender>>>` }`
+- `broadcast(event, data)` 仅本节点 mpsc 派发
+- `ws_handler` 直接 upgrade，**无 JWT 校验**
+- **缺口**：JWT 校验 + cluster fanout + 客户端订阅过滤 + 终端事件
+
+**`src/handlers/rtp_control.rs`（157 行）— `/api/rtp/*` `/api/ps/*` 已实现**：
+- `rtp_receive_open` / `close` / `send_start` / `send_stop` / `ps_*` / `ps_get_test_port`
+- 走 `zlm.open_rtp_server` / `zlm.close_rtp_server` / `zlm.send_rtp_info`
+- **注意点**：`/api/ps/send/stop` 是占位（注释明示"implicit on stream teardown"）；可优化但非阻塞
+
+**`src/db/audit_log.rs`（272 行）— 完整三态 cfg**：
+- `ensure_table`（postgres/mysql/sqlite）+ `insert` + `list_paged`（含 username / action / start_time / end_time 过滤 + 分页）
+- **仅 2 处调用**：`src/auth.rs:102`（login）+ `src/auth.rs:144`（logout）
+- **缺口**：handler middleware 自动写 + `/api/log/list` 替换 stub + request_body 字段
+
+**`src/router.rs`（40376 行）— alarm/ws 路由在主体外**：
+- Line 956：`/api/ws` 独立追加（未走 `auth_middleware`）
+- Line 960-966：`/api/alarm/list` + 7 个 `/api/alarm/*` 独立追加（**未走 `auth_middleware`**）— 设计文档 §4 known issue
+- Line 932：`/api/rpc` 已注册
+- Line 934：`/metrics` 已注册
+- Line 230-237：`/api/rtp/*` `/api/ps/*` 早期注册（被 891-899 覆盖）
+- **缺口**：alarm/ws 合并回 `api_protected`；audit middleware 装载
+
+**`src/auth.rs`（约 200 行关键段）— 用户密码明文**：
+- 登录成功仅调用 `db::audit_log::insert`（line 102/144）
+- **缺口**：password 字段仍是明文（Phase 6 衔接明示）；Argon2 哈希未实现
+
+### 与 Phase 1-6 衔接点
+
+| Phase | 可复用资产 | 7.x 用法 |
 |---|---|---|
-| Phase 1 | `PendingRequestManager`（key: device_id+sn） | 6.2 `JtCommandWaiter` 复用模式（key 改为 phone+msg_id+serial） |
-| Phase 1 | `InviteSessionStore`（INVITE 会话） | 6.3 `JtMediaSessionManager` 复用模式（key 改为 phone+channel_id） |
-| Phase 3 | `MediaWaiterManager`（ZLM 媒体等待） | 6.3 实时视频媒体等待复用 oneshot 模式 |
-| Phase 3 | RecordInfo 多包聚合 `accumulate_*` 模板 | 6.4 0x0801 媒体检索多包聚合 |
-| Phase 4 | `StreamState` trait + `StreamStatus` 枚举 | 6.3 `JtMediaSession` 实现 `StreamState` |
-| Phase 4 | ZLM `on_stream_changed` hook 路由 | 6.3 路由到 `JtMediaSessionManager.activate_and_resolve` |
-| Phase 5 | `CascadeRegistrar` 注册状态机 | 6.1 终端注册鉴权模式参考（DB 配置 + 状态机） |
-| Phase 5 | `SendRtpManager` cascade 转发 | 6.3 终端视频若需级联转发 |
+| Phase 1 | `PendingRequestManager`（key: device_id+sn） | 7.1 扩展 `PendingRequestState` 走 StateStore |
+| Phase 1 | `InviteSessionStore`（INVITE 会话） | 7.1 扩展 `InviteSessionState`；Redis 让多节点 SIP 共享 |
+| Phase 2 | `SubscriptionLifecycle`（`subscription_state` HashMap） | 7.1 迁 StateStore + 7.2 跨节点续期 |
+| Phase 3 | `MediaWaiterManager`（oneshot 等待 ZLM 媒体） | 7.1 `InviteSessionState.zlm_stream_id` 已含 |
+| Phase 3 | RecordInfo 多包聚合 | 7.2 跨节点分发 + `cloud_record_sync` |
+| Phase 4 | `StateStore`（已实现双 backend） | 7.1 扩展新 State + Repository trait |
+| Phase 4 | `select_least_loaded_server_filtered` | 7.5 metrics 加 `gb_media_server_load` |
+| Phase 4 | `mark_offline_if_expired` | 7.2 跨节点时由 RPC 同步 |
+| Phase 5 | `CascadeRegistrar` / `SendRtpManager` | 7.2 跨节点 SendRtp 用 RedisRpcTransport |
+| Phase 5 | 5.5a/b MobilePosition / Alarm 上行 | 7.3 `ws_hub.broadcast_event("jt_position")` |
+| Phase 5 | `close_by_stream` 用 `state_store.del_cascade_sendrtp` | 7.1 已就位；Redis 多节点共享 |
+| Phase 6 | `JtCommandWaiter` / `JtMediaSessionManager` | 7.1 终端注册表/等待/session 走 StateStore |
+| Phase 6 | 终端鉴权码 `auth_code` 明文 | 7.6 哈希（与 user password 一起） |
+| Phase 6 | 终端位置/告警 WS 推送未实现 | 7.3 `jt_event` channel |
 
-### Phase 6 子任务映射
+### Phase 7 子任务映射
 
-| 设计文档 | 当前完成度 | Phase 6 子任务 |
+| 设计文档 | 当前完成度 | Phase 7 子任务 |
 |---|---|---|
-| 6.1 终端注册/鉴权/心跳/offline | `Jt1078Manager` 80% 完整；TCP/UDP 监听 + 简单 AUTH 鉴权；**缺标准 JT/T 808 0x0100 注册协议 + DB 鉴权码** | 6.1 标准注册 + auth_code + 端口配置化 |
-| 6.2 命令关联 | `JtCommandWaiter` 已存在但 0 引用；所有 `send_*` fire-and-forget | 6.2 JtCommandWaiter 接入 + 15+ `send_*_and_wait` |
-| 6.3 live/playback/control | `live_start` 返 `127.0.0.1/live/...` 占位；`JtMediaSessionManager` 已存在但 0 引用；ZLM 钩子未接线 | 6.3 live/playback/control 真实链路 + JtMediaSession 接入 + ZLM 钩子路由 |
-| 6.4 record/upload/attribute | `record_list` 仅查 ZLM/DB，缺 0x8802；`media_upload_one` 缺 0x8803 + 上传进度 | 6.4 record/upload/attribute 真实链路 + 0x0801 多包聚合 |
-| 6.5 params/position/attribute | `config_get` 拼字符串；`position_info` `{0.0, 0.0}` 占位；缺 0x8104/0x0107/0x8107/0x8201 | 6.5 params/position/attribute 真实链路 + DB 落库 |
+| 7.1 Redis-backed StateStore for CSEQ/SN/SSRC + device/stream/session + GPS/alarm + push/proxy + SendRtp + WS fanout | StateStore 1061 行已实现双 backend；仅 7 文件使用；`cache.rs` deprecated 仍 140 行 | 7.1 StateStore 全面接入 + 7 个新 State + `StreamStateRepository` trait + `cache.rs` 全面替换 |
+| 7.2 跨节点 RPC（device control / play/stop / stream state / SendRtp / cloud-record） | `RpcRouter` 419 行 + `LocalRpc` + 7 standard handlers 已实现；缺 Redis transport + 节点发现 | 7.2 RedisRpcTransport（Pub/Sub + Stream inbox）+ ClusterRegistry（Redis SET 心跳）+ 节点发现 |
+| 7.3 `/api/rtp` `/api/ps` log download / system info / health/readiness / metrics | `rtp_control.rs` 157 行已实现 RTP/PS 真实转发；缺 system/info/stats/version/online-users；`/api/log/list` 是 stub | 7.3 WebSocket cluster fanout + JWT 鉴权 + 终端事件（jt_position / jt_alarm）+ system 端点 + log_audit 真实实现 |
+| 7.4 Fix public/protected routing for `/api/alarm/*` `/api/ws` | router.rs:956-966 alarm/ws 独立追加未走 auth；audit_log DB 已有但仅 2 处调用 | 7.4 alarm/ws 合并回 api_protected + audit middleware 自动写所有 handler + status_code 准确 |
+| 7.5 审计日志带真实 response statuses | audit_log 表已三态 cfg；`list_paged` 已实现 | 7.5 metrics 扩展 25+ 指标（cluster/RPC/WS/Redis/audit）+ `/api/health` 拆分为 liveness + `/api/ready` readiness |
+| 隐含：密码哈希 + 在线用户 + 系统监控 | password 明文 + 缺 `/api/system/*` + 缺 `/metrics` Prometheus HELP/TYPE | 7.6 Argon2 hash + `/api/system/{info,stats,version,online-users}` + 删除 cache.rs + 三库 CI + 文档 |
 
 ## Technical Decisions
 | Decision | Rationale |
 |----------|-----------|
-| `Jt1078Manager` 持有 `Arc<JtCommandWaiter>` + `Arc<JtMediaSessionManager>` + `Arc<Pool>` 三件套 | 单一入口管理命令等待 / 媒体会话 / DB 鉴权 |
-| 6.2 拆 15+ `send_*_and_wait` 方法 | 6.3-6.5 全部 handler 改造都依赖；命名对齐已有 `send_*` |
-| 6.3 拆 3 个子步骤：创 session → 等 0x0001 → 等 ZLM 媒体 | R1 风险分解；每步单独单测 |
-| 6.4 多包媒体检索简化为 0x8802 + 0x0801 单包聚合 | R3 风险控制；多包 start+middle+end 放 6.4-followup |
-| 6.5 位置从 DB 读（`gb_jt_terminal.last_lat`/`last_lng`），0x8201 兜底 | 避免占位 `{longitude: 0.0, latitude: 0.0}`；提升性能 |
-| 移除 `127.0.0.1/live/...` 占位 URL | 设计文档 §6.1 禁项 |
-| 终端鉴权码走 DB `auth_code` 替代 env-var 临时 token | 设计文档 §7 Phase 6.1 + 安全考量 |
-| TCP/UDP 端口从 `Jt1078Config` 读，可配置 | 避免与 SIP 端口冲突；可部署到多网卡 |
-| `JtMediaSession` 实现 `StreamState` trait | 与 Phase 4 推流/代理/SendRtp 状态统一 |
-| 沿用 phase-4/5 的三库 cfg + tests/integration/ 模式 | 与既有 CI 矩阵一致 |
+| Phase 7 拆 6 子任务（5 功能 + 1 横切） | phase-4/5/6 已证明 5-6 子任务粒度最稳 |
+| StateStore 优先于 cache.rs：`StreamStateRepository` trait + StateStoreRepository impl | 设计文档 §6.6 强制要求 + 抽象复用 + 避免双重 API |
+| RedisRpcTransport 用 Pub/Sub + Stream inbox 双模式 | Pub/Sub 实时 + Stream 至少一次补可靠性；故障时降级 |
+| WebSocket JWT 在 upgrade 前校验（不进 auth_middleware） | upgrade 协议特殊；fallback query `?token=` 兼容 |
+| audit middleware 用 `tokio::spawn` 异步写 + bypass `/metrics` `/health` `/ready` | 不阻塞响应 + 避免自身递归 |
+| password 哈希 Argon2 + 兼容旧明文（一次迁移期 verify 失败时按明文匹配） | 设计文档 §6 安全 + 平滑迁移 |
+| ClusterRegistry 用 Redis SET + ZSET 心跳（10s 心跳 / 60s 过期） | 比 gossip 简单；Redis HA 生产可用 |
+| 单节点模式 `single_node_mode = true` 跳过 cluster 检查 | Redis 故障时降级运行 |
+| 双节点 cluster / ws_cluster 集成测试标 `#[ignore]` 仅本地跑 | CI 无 Redis 依赖；本地 + Redis-CI job 启用 |
+| `/api/health` 拆 liveness + `/api/ready` readiness | Kubernetes 标配；liveness 不查 DB 避免重启循环 |
+| metrics 25+ 指标加 Prometheus HELP/TYPE | Prometheus relabel + 文档化字段含义 |
+| 沿用 phase-4/5/6 的三库 cfg + tests/integration/ 模式 | 与既有 CI 矩阵一致 |
+| Phase 7.1 先标 deprecated；Phase 7.6 才删除 cache.rs | 平滑迁移 + 三库 CI 验证 |
 
 ## Issues Encountered
 | Issue | Resolution |
 |-------|------------|
-| `JtCommandWaiter` 已存在 400 行但 0 引用 | 6.2 需新增 `register`/`unregister`/`try_resolve_by_response` 公共方法，并在 manager.rs 接线 |
-| `JtMediaSessionManager` 已存在 256 行但 0 引用 | 6.3 需新增 `MediaWaiter` + `wait_for_media` + `activate_and_resolve` + `StreamState` impl |
-| TCP/UDP 端口硬编码 `0.0.0.0:60000` | 6.1 从 `Jt1078Config` 读 + 拆分 tcp_port/udp_port |
-| `JtTerminal` 缺 `auth_code` 字段 | 6.1 三态 cfg 迁移 + DB 新增字段 |
-| `live_start` 返 `127.0.0.1/live/...` 占位 | 6.3 等 ZLM 媒体到达后返真实 RTMP/RTSP |
-| `ptz`/`wiper`/`fill_light` 等 15+ handler 返 `build_success("成功")` | 6.2 + 6.5 全部改用 `send_*_and_wait` |
-| `position_info` 返 `{longitude: 0.0, latitude: 0.0}` | 6.5 DB 读 + 0x8201 兜底；失败时返 404 |
-| ZLM `on_stream_changed` 钩子未路由到 JtMediaSession | 6.3 新增路由逻辑（仿 `data.stream.starts_with("jt1078_")`） |
+| StateStore 已实现 1061 行但仅 7 个文件用 | 7.1 全面接入 + 7 个新 State + Repository trait 抽象 |
+| `cache.rs` 已 deprecated 但仍 140 行 | 7.1 全部 `#[deprecated]` + 调用方替换；7.6 删除整个文件 |
+| `RpcRouter` 仅 `LocalRpc`，无 Redis transport | 7.2 加 `RedisRpcTransport` + 节点发现 + `from_node` 过滤 |
+| `mark_offline_if_expired`（Phase 4）单节点执行 | 7.2 跨节点时通过 RPC 同步 |
+| `WsState` 单节点 mpsc + 无 JWT | 7.3 cluster fanout + JWT upgrade 前校验 |
+| `/api/alarm/*` 在 router.rs:960-966 独立追加 | 7.4 合并回 `api_protected` 走 auth_middleware |
+| `/api/ws` router.rs:956 独立追加无 JWT | 7.4 JWT 在 upgrade 前校验 |
+| `auth.rs` 仅 2 处 `db::audit_log::insert` | 7.4 middleware 自动写所有 handler |
+| `/api/log/list` 是 stub | 7.4 改用 `audit_log` DB 查询 |
+| `metrics.rs` 60 行 5 个指标 | 7.5 扩展到 25+ 指标含 cluster/RPC/WS |
+| `/api/health` 简单 SQL ping | 7.5 拆 liveness + readiness（DB+Redis+cluster 检查） |
+| 缺 `/ready` `/api/system/info` | 7.5/7.6 新增 |
+| 用户 password 明文 | 7.6 Argon2 哈希 + 兼容旧明文迁移 |
+| Phase 6 终端事件 WS 未实现 | 7.3 加 `jt_event` channel |
+| 缺 `/api/system/online-users` | 7.6 新增（写 `gb_online_user` 表） |
+| `state/mod.rs` 20 行无 trait 抽象 | 7.1 加 `StreamStateRepository` trait |
 
 ## Final Deliverable
-- `docs/superpowers/plans/2026-06-20-phase-6-impl-plan.md`（~700 行）
-- 5 子任务 + 1 横切：6.1 标准注册 / 6.2 JtCommandWaiter 接入 / 6.3 live+playback+control / 6.4 record+upload+attribute / 6.5 params+position+attribute / 6.6 横切+三库+文档
-- 估时 ~150h（4 周编码 + 1 周 buffer）
+- `docs/superpowers/plans/2026-06-20-phase-7-impl-plan.md`（~570 行）
+- 6 子任务：7.1 StateStore 全面接入 / 7.2 跨节点 RPC + 集群节点发现 / 7.3 WebSocket cluster + JWT + 终端事件 / 7.4 安全路由 + 审计日志 + 日志管理 / 7.5 Metrics + Health + Readiness / 7.6 鉴权码哈希 + 系统端点 + 横切
+- 估时 ~128h（3 周编码 + 1 周 buffer）
 
 ## Resources
 - 设计文档：`docs/superpowers/specs/2026-05-30-wvp-java-parity-design.md`
 - 上游基线：WVP-Pro 2.7.4 / commit b760458
 - 既有计划：
-  - `docs/superpowers/plans/2026-06-20-phase-4-impl-plan.md`（4.x ZLM）
+  - `docs/superpowers/plans/2026-06-20-phase-6-impl-plan.md`（6.x JT1078）
   - `docs/superpowers/plans/2026-06-20-phase-5-impl-plan.md`（5.x 级联）
   - `docs/superpowers/plans/2026-06-19-phase-3-impl-plan.md`（3.x 视频/录像）
-- 关键代码：
-  - `src/jt1078/{mod, manager, session, server, command, frame, command_waiter, jt_media_session}.rs` — 协议栈
-  - `src/handlers/jt1078.rs` — `/api/jt1078/*` 路由
-  - `src/db/jt1078.rs` — `gb_jt_terminal` / `gb_jt_terminal_channel` 表
-  - `src/zlm/hook.rs` — ZLM 钩子（路由到 JtMediaSession）
-  - `src/state/stream_status.rs` — `StreamState` trait
+- 关键代码（Phase 7 范畴）：
+  - `src/state_store.rs`（1061 行）+ `src/cache.rs`（140 行）— 状态抽象层
+  - `src/rpc.rs`（419 行）— RpcRouter + LocalRpc
+  - `src/handlers/{websocket,rtp_control,metrics}.rs` — WS / RTP/PS / Metrics
+  - `src/db/audit_log.rs`（272 行）— 审计日志 DB
+  - `src/metrics.rs`（60 行）— Prometheus 输出
+  - `src/auth.rs` — 用户鉴权
+  - `src/router.rs`（40376 行，956-966 行 alarm/ws 独立追加）
 - 数据库：`database/init-{sqlite,postgresql,mysql}-2.7.4.sql`
-- 标准规范：JT/T 808-2011 / JT/T 1078-2016 道路运输车辆卫星定位系统终端通讯协议
+- 鉴权：JWT（jsonwebtoken） + Argon2（待引入）
+- Redis：`redis = "0.25"` + `connection-manager`
 
 ## Visual/Browser Findings
 - （无图像/浏览器内容）
