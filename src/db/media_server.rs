@@ -410,6 +410,9 @@ pub async fn update_ports(
 }
 
 /// Update last keepalive time
+///
+/// Phase 4 follow-up: 同时 reset `consecutive_misses = 0`，避免 grace count
+/// 在节点恢复后还保留旧的丢失计数。
 pub async fn update_last_keepalive(
     pool: &Pool,
     id: &str,
@@ -417,7 +420,7 @@ pub async fn update_last_keepalive(
 ) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
     let r = sqlx::query(
-        "UPDATE gb_media_server SET last_keepalive_time = ?, status = 1 WHERE id = ?"
+        "UPDATE gb_media_server SET last_keepalive_time = ?, status = 1, consecutive_misses = 0 WHERE id = ?"
     )
     .bind(now)
     .bind(id)
@@ -425,7 +428,7 @@ pub async fn update_last_keepalive(
     .await?;
     #[cfg(feature = "postgres")]
     let r = sqlx::query(
-        "UPDATE gb_media_server SET last_keepalive_time = $1, status = true WHERE id = $2"
+        "UPDATE gb_media_server SET last_keepalive_time = $1, status = true, consecutive_misses = 0 WHERE id = $2"
     )
     .bind(now)
     .bind(id)
@@ -433,7 +436,7 @@ pub async fn update_last_keepalive(
     .await?;
     #[cfg(feature = "sqlite")]
     let r = sqlx::query(
-        "UPDATE gb_media_server SET last_keepalive_time = ?, status = 1 WHERE id = ?"
+        "UPDATE gb_media_server SET last_keepalive_time = ?, status = 1, consecutive_misses = 0 WHERE id = ?"
     )
     .bind(now)
     .bind(id)
@@ -469,6 +472,112 @@ pub async fn mark_offline_if_expired(
     #[cfg(feature = "sqlite")]
     let r = sqlx::query(
         "UPDATE gb_media_server SET status = 0 WHERE status = 1 AND last_keepalive_time < ?"
+    )
+    .bind(before_time)
+    .execute(pool)
+    .await?;
+    Ok(r.rows_affected())
+}
+
+/// Phase 4 follow-up: keepalive_grace_count 容错版本（拆分两个原子 SQL）
+///
+/// 步骤 1：`increment_miss_count_if_expired` —
+/// 对每个 status=1 且 `last_keepalive_time < before_time` 的节点，
+/// 仅 `consecutive_misses += 1`。返回被递增的节点数。
+pub async fn increment_miss_count_if_expired(
+    pool: &Pool,
+    before_time: &str,
+) -> sqlx::Result<u64> {
+    #[cfg(feature = "mysql")]
+    let r = sqlx::query(
+        "UPDATE gb_media_server SET consecutive_misses = consecutive_misses + 1 \
+         WHERE status = 1 AND last_keepalive_time < ?"
+    )
+    .bind(before_time)
+    .execute(pool)
+    .await?;
+    #[cfg(feature = "postgres")]
+    let r = sqlx::query(
+        "UPDATE gb_media_server SET consecutive_misses = consecutive_misses + 1 \
+         WHERE status = true AND last_keepalive_time < $1"
+    )
+    .bind(before_time)
+    .execute(pool)
+    .await?;
+    #[cfg(feature = "sqlite")]
+    let r = sqlx::query(
+        "UPDATE gb_media_server SET consecutive_misses = consecutive_misses + 1 \
+         WHERE status = 1 AND last_keepalive_time < ?"
+    )
+    .bind(before_time)
+    .execute(pool)
+    .await?;
+    Ok(r.rows_affected())
+}
+
+/// Phase 4 follow-up: keepalive_grace_count 容错版本（步骤 2）
+///
+/// 对每个 status=1 且 `consecutive_misses >= grace_count` 的节点：
+/// - `status = false` (offline)
+/// - reset `consecutive_misses = 0`
+///
+/// 返回被新切为 offline 的节点数。
+pub async fn mark_offline_if_miss_count_exceeded(
+    pool: &Pool,
+    grace_count: i32,
+) -> sqlx::Result<u64> {
+    #[cfg(feature = "mysql")]
+    let r = sqlx::query(
+        "UPDATE gb_media_server SET status = 0, consecutive_misses = 0 \
+         WHERE status = 1 AND consecutive_misses >= ?"
+    )
+    .bind(grace_count)
+    .execute(pool)
+    .await?;
+    #[cfg(feature = "postgres")]
+    let r = sqlx::query(
+        "UPDATE gb_media_server SET status = false, consecutive_misses = 0 \
+         WHERE status = true AND consecutive_misses >= $1"
+    )
+    .bind(grace_count)
+    .execute(pool)
+    .await?;
+    #[cfg(feature = "sqlite")]
+    let r = sqlx::query(
+        "UPDATE gb_media_server SET status = 0, consecutive_misses = 0 \
+         WHERE status = 1 AND consecutive_misses >= ?"
+    )
+    .bind(grace_count)
+    .execute(pool)
+    .await?;
+    Ok(r.rows_affected())
+}
+
+/// Phase 4 follow-up: 重置健康节点的 `consecutive_misses = 0`（keepalive 恢复）
+pub async fn reset_miss_count_for_fresh_nodes(
+    pool: &Pool,
+    before_time: &str,
+) -> sqlx::Result<u64> {
+    #[cfg(feature = "mysql")]
+    let r = sqlx::query(
+        "UPDATE gb_media_server SET consecutive_misses = 0 \
+         WHERE status = 1 AND last_keepalive_time >= ? AND consecutive_misses > 0"
+    )
+    .bind(before_time)
+    .execute(pool)
+    .await?;
+    #[cfg(feature = "postgres")]
+    let r = sqlx::query(
+        "UPDATE gb_media_server SET consecutive_misses = 0 \
+         WHERE status = true AND last_keepalive_time >= $1 AND consecutive_misses > 0"
+    )
+    .bind(before_time)
+    .execute(pool)
+    .await?;
+    #[cfg(feature = "sqlite")]
+    let r = sqlx::query(
+        "UPDATE gb_media_server SET consecutive_misses = 0 \
+         WHERE status = 1 AND last_keepalive_time >= ? AND consecutive_misses > 0"
     )
     .bind(before_time)
     .execute(pool)

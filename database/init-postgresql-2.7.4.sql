@@ -355,6 +355,16 @@ create table IF NOT EXISTS gb_media_server
     record_day          integer               default 7,
     transcode_suffix    character varying(255),
     server_id           character varying(50),
+    -- Phase 4.4: 节点健康状态（true=online, false=offline）
+    status              bool                  default true,
+    -- Phase 4.4: 最后 keepalive 时间（RFC3339）
+    last_keepalive_time character varying(50),
+    -- Phase 4 follow-up: keepalive_grace_count 连续丢失计数
+    consecutive_misses  integer               default 0,
+    -- Phase 4 follow-up: 累计流量字节
+    total_bytes         bigint                default 0,
+    -- Phase 4 follow-up: 当前活动流数
+    active_stream_count integer               default 0,
     constraint uk_media_server_unique_ip_http_port unique (ip, http_port, server_id)
 );
 COMMENT ON TABLE gb_media_server IS '媒体服务器（如 ZLM）节点信息';

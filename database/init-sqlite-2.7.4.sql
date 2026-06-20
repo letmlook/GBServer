@@ -212,7 +212,17 @@ CREATE TABLE IF NOT EXISTS gb_media_server
     record_path         VARCHAR(255),
     record_day          INTEGER     DEFAULT 7,
     transcode_suffix    VARCHAR(255),
-    server_id           VARCHAR(50)
+    server_id           VARCHAR(50),
+    -- Phase 4.4: 节点健康状态（1=online, 0=offline）
+    status              INTEGER     DEFAULT 1,
+    -- Phase 4.4: 最后 keepalive 时间（RFC3339）
+    last_keepalive_time VARCHAR(50),
+    -- Phase 4 follow-up: keepalive_grace_count 连续丢失计数
+    consecutive_misses  INTEGER     DEFAULT 0,
+    -- Phase 4 follow-up: 累计流量字节
+    total_bytes         BIGINT      DEFAULT 0,
+    -- Phase 4 follow-up: 当前活动流数
+    active_stream_count INTEGER     DEFAULT 0
 );
 CREATE UNIQUE INDEX IF NOT EXISTS uk_media_server_unique_ip_http_port
     ON gb_media_server(ip, http_port, server_id);

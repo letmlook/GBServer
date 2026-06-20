@@ -211,6 +211,16 @@ create table IF NOT EXISTS gb_media_server
     record_day          integer               default 7 COMMENT '录像保留天数',
     transcode_suffix    varchar(255) COMMENT '转码指令后缀',
     server_id           varchar(50) COMMENT '对应信令服务器ID',
+    -- Phase 4.4: 节点健康状态（true=online, false=offline）
+    status              bool                  default true COMMENT '在线状态',
+    -- Phase 4.4: 最后 keepalive 时间（RFC3339）
+    last_keepalive_time varchar(50) COMMENT '最后keepalive时间',
+    -- Phase 4 follow-up: keepalive_grace_count 连续丢失计数
+    consecutive_misses  integer               default 0 COMMENT '连续丢失计数',
+    -- Phase 4 follow-up: 累计流量字节
+    total_bytes         bigint                default 0 COMMENT '累计流量字节',
+    -- Phase 4 follow-up: 当前活动流数
+    active_stream_count integer               default 0 COMMENT '当前活动流数',
     constraint uk_media_server_unique_ip_http_port unique (ip, http_port, server_id)
 );
 
