@@ -292,3 +292,197 @@ async fn sqlite_user_auth_login_succeeds() {
     assert_eq!(username, "admin");
     assert_eq!(role_id, Some(1));
 }
+
+/// Phase 4.5: list_all_streams unified format 验证（SQLite 路径）
+///
+/// Verifies that `gb_stream_push` and `gb_stream_proxy` rows are independently
+/// queryable and that both contribute to a unified stream list with the expected
+/// `stream_status` field — covering the DB layer of `GET /api/server/stream/all`.
+#[tokio::test]
+async fn test_list_all_streams_unified_format() {
+    use gbserver::db::{stream_push, stream_proxy};
+    use gbserver::state::{StreamStatus, StreamState};
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+    use std::str::FromStr;
+    use std::time::Duration;
+
+    let opts = SqliteConnectOptions::from_str("sqlite::memory:")
+        .unwrap()
+        .create_if_missing(true)
+        .busy_timeout(Duration::from_secs(5));
+    let pool = SqlitePoolOptions::new()
+        .max_connections(2)
+        .connect_with(opts)
+        .await
+        .expect("sqlite in-memory pool");
+
+    // Init schema (includes gb_stream_push and gb_stream_proxy with stream_status column)
+    let sql = include_str!("../../database/init-sqlite-2.7.4.sql");
+    let cleaned: String = sql
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("--"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    for stmt in cleaned.split(';') {
+        let s = stmt.trim();
+        if s.is_empty() {
+            continue;
+        }
+        sqlx::query(s).execute(&pool).await.expect("init schema");
+    }
+
+    // Ensure stream_status column exists (defensive — init SQL has it but be safe)
+    stream_push::ensure_stream_status_column(&pool).await.expect("ensure push column");
+    stream_proxy::ensure_stream_status_column(&pool).await.expect("ensure proxy column");
+
+    let now = "2026-06-20 10:00:00";
+
+    // Insert one gb_stream_push row (pushing=true, stream_status='pushing')
+    stream_push::add(&pool, "live", "push-test", "ms-1", now)
+        .await
+        .expect("stream_push add");
+    // Fetch it back and update stream_status to pushing
+    let pushes = stream_push::list_paged(&pool, 1, 10, None, None)
+        .await
+        .expect("list_paged push");
+    assert!(!pushes.is_empty(), "should have at least one push row");
+    let push_id: i64 = pushes[0].id as i64;
+    // Update stream_status to 'pushing' so is_active returns true
+    sqlx::query("UPDATE gb_stream_push SET stream_status = 'pushing' WHERE id = ?")
+        .bind(push_id)
+        .execute(&pool)
+        .await
+        .expect("update push stream_status");
+
+    // Insert one gb_stream_proxy row (pulling=false, stream_status='active')
+    stream_proxy::add(&pool, "live", "proxy-test", "rtsp://foo", "ms-1", "ProxyTest", now)
+        .await
+        .expect("stream_proxy add");
+    // Update stream_status to 'active'
+    let proxies = stream_proxy::list_paged(&pool, 1, 10, None, None)
+        .await
+        .expect("list_paged proxy");
+    assert!(!proxies.is_empty(), "should have at least one proxy row");
+    let proxy_id: i64 = proxies[0].id as i64;
+    sqlx::query("UPDATE gb_stream_proxy SET stream_status = 'active' WHERE id = ?")
+        .bind(proxy_id)
+        .execute(&pool)
+        .await
+        .expect("update proxy stream_status");
+
+    // Re-fetch and verify unified format fields
+    let pushes = stream_push::list_paged(&pool, 1, 10, None, None)
+        .await
+        .expect("list_paged push re-fetch");
+    let proxies = stream_proxy::list_paged(&pool, 1, 10, None, None)
+        .await
+        .expect("list_paged proxy re-fetch");
+
+    assert_eq!(pushes.len(), 1, "should have exactly 1 push row");
+    assert_eq!(proxies.len(), 1, "should have exactly 1 proxy row");
+
+    let p = &pushes[0];
+    assert_eq!(p.app.as_deref(), Some("live"));
+    assert_eq!(p.stream.as_deref(), Some("push-test"));
+    assert_eq!(p.media_server_id.as_deref(), Some("ms-1"));
+    assert_eq!(p.status(), StreamStatus::Pushing, "push row status should be Pushing");
+    assert!(p.status().is_active(), "push row is_active should be true");
+
+    let pr = &proxies[0];
+    assert_eq!(pr.app.as_deref(), Some("live"));
+    assert_eq!(pr.stream.as_deref(), Some("proxy-test"));
+    assert_eq!(pr.media_server_id.as_deref(), Some("ms-1"));
+    assert_eq!(pr.status(), StreamStatus::Active, "proxy row status should be Active");
+    assert!(pr.status().is_active(), "proxy row is_active should be true");
+
+    // Unified count: push + proxy = 2 total
+    let total = pushes.len() + proxies.len();
+    let active = pushes.iter().filter(|s| s.status().is_active()).count()
+        + proxies.iter().filter(|s| s.status().is_active()).count();
+    assert_eq!(total, 2, "unified total should be 2");
+    assert_eq!(active, 2, "both streams should be active");
+}
+
+/// Phase 3.7: cloud_record 三态 cfg 验证（SQLite 路径）
+/// 验证 insert_records + query_by_device_channel round-trip 与分页
+#[tokio::test]
+async fn sqlite_cloud_record_insert_and_query_roundtrip() {
+    use gbserver::db::cloud_record;
+    use gbserver::sip::server::RecordInfoItem;
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+    use std::str::FromStr;
+    use std::time::Duration;
+
+    let opts = SqliteConnectOptions::from_str("sqlite::memory:")
+        .unwrap()
+        .create_if_missing(true)
+        .busy_timeout(Duration::from_secs(5));
+    let pool = SqlitePoolOptions::new()
+        .max_connections(2)
+        .connect_with(opts)
+        .await
+        .expect("sqlite in-memory pool");
+
+    // 复用生产 init SQL
+    let sql = include_str!("../../database/init-sqlite-2.7.4.sql");
+    let cleaned: String = sql
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("--"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    for stmt in cleaned.split(';') {
+        let s = stmt.trim();
+        if s.is_empty() {
+            continue;
+        }
+        sqlx::query(s).execute(&pool).await.expect("init schema");
+    }
+
+    // 准备几条 mock RecordInfoItem
+    let items = vec![
+        RecordInfoItem {
+            device_id: Some("ch1".to_string()),
+            name: Some("seg-1.mp4".to_string()),
+            file_path: Some("/record/seg-1.mp4".to_string()),
+            address: None,
+            start_time: Some("2026-06-10T10:00:00".to_string()),
+            end_time: Some("2026-06-10T10:30:00".to_string()),
+            secrecy: Some("0".to_string()),
+            kind: Some("time".to_string()),
+        },
+        RecordInfoItem {
+            device_id: Some("ch1".to_string()),
+            name: Some("seg-2.mp4".to_string()),
+            file_path: Some("/record/seg-2.mp4".to_string()),
+            address: None,
+            start_time: Some("2026-06-10T11:00:00".to_string()),
+            end_time: Some("2026-06-10T11:30:00".to_string()),
+            secrecy: Some("0".to_string()),
+            kind: Some("time".to_string()),
+        },
+    ];
+
+    // 落库
+    let inserted = cloud_record::insert_records(
+        &pool, "dev-1", "ch1",
+        "2026-06-10T00:00:00", "2026-06-10T23:59:59", &items,
+    ).await.expect("insert_records should succeed on sqlite");
+    assert_eq!(inserted, 2, "应该插入 2 条 record");
+
+    // 查询（page=1&count=10）
+    let queried = cloud_record::query_by_device_channel(
+        &pool, "dev-1", "ch1",
+        None, None, 1, 10,
+    ).await.expect("query_by_device_channel should succeed on sqlite");
+    assert_eq!(queried.len(), 2);
+    let names: Vec<String> = queried.iter().filter_map(|r| r.file_name.clone()).collect();
+    assert!(names.contains(&"seg-1.mp4".to_string()));
+    assert!(names.contains(&"seg-2.mp4".to_string()));
+
+    // 分页：page=1&count=1
+    let paged = cloud_record::query_by_device_channel(
+        &pool, "dev-1", "ch1",
+        None, None, 1, 1,
+    ).await.expect("paged query should succeed");
+    assert_eq!(paged.len(), 1, "page=1&count=1 应只返回 1 条");
+}

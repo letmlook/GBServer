@@ -127,7 +127,7 @@ pub async fn get_by_id(pool: &Pool, id: i64) -> sqlx::Result<Option<StreamPush>>
     .await;
     #[cfg(feature = "sqlite")]
     return sqlx::query_as::<_, StreamPush>(
-        "SELECT id, app, stream, create_time, media_server_id, server_id, push_time, status, update_time, pushing, self as self_push, start_offline_push FROM gb_stream_push WHERE id = ?"
+        "SELECT id, app, stream, create_time, media_server_id, server_id, push_time, status, update_time, pushing, self as self_push, start_offline_push, stream_status FROM gb_stream_push WHERE id = ?"
     )
     .bind(id)
     .fetch_optional(pool)
@@ -363,7 +363,7 @@ pub async fn list_paged(
         if let Some(p) = pushing {
             #[cfg(feature = "mysql")]
             return sqlx::query_as::<_, StreamPush>(
-                "SELECT id, app, stream, create_time, media_server_id, server_id, push_time, status, update_time, pushing, self as self_push, start_offline_push FROM gb_stream_push WHERE media_server_id = ? AND pushing = ? ORDER BY id LIMIT ? OFFSET ?",
+                "SELECT id, app, stream, create_time, media_server_id, server_id, push_time, status, update_time, pushing, self as self_push, start_offline_push, stream_status FROM gb_stream_push WHERE media_server_id = ? AND pushing = ? ORDER BY id LIMIT ? OFFSET ?",
             )
             .bind(mid)
             .bind(p)
@@ -373,7 +373,7 @@ pub async fn list_paged(
             .await;
             #[cfg(feature = "postgres")]
             return sqlx::query_as::<_, StreamPush>(
-                "SELECT id, app, stream, create_time, media_server_id, server_id, push_time, status, update_time, pushing, self as self_push, start_offline_push FROM gb_stream_push WHERE media_server_id = $1 AND pushing = $2 ORDER BY id LIMIT $3 OFFSET $4",
+                "SELECT id, app, stream, create_time, media_server_id, server_id, push_time, status, update_time, pushing, self as self_push, start_offline_push, stream_status FROM gb_stream_push WHERE media_server_id = $1 AND pushing = $2 ORDER BY id LIMIT $3 OFFSET $4",
             )
             .bind(mid)
             .bind(p)
@@ -383,7 +383,7 @@ pub async fn list_paged(
             .await;
             #[cfg(feature = "sqlite")]
             return sqlx::query_as::<_, StreamPush>(
-                "SELECT id, app, stream, create_time, media_server_id, server_id, push_time, status, update_time, pushing, self as self_push, start_offline_push FROM gb_stream_push WHERE media_server_id = ? AND pushing = ? ORDER BY id LIMIT ? OFFSET ?",
+                "SELECT id, app, stream, create_time, media_server_id, server_id, push_time, status, update_time, pushing, self as self_push, start_offline_push, stream_status FROM gb_stream_push WHERE media_server_id = ? AND pushing = ? ORDER BY id LIMIT ? OFFSET ?",
             )
             .bind(mid)
             .bind(p)
@@ -394,7 +394,7 @@ pub async fn list_paged(
         } else {
             #[cfg(feature = "mysql")]
             return sqlx::query_as::<_, StreamPush>(
-                "SELECT id, app, stream, create_time, media_server_id, server_id, push_time, status, update_time, pushing, self as self_push, start_offline_push FROM gb_stream_push WHERE media_server_id = ? ORDER BY id LIMIT ? OFFSET ?",
+                "SELECT id, app, stream, create_time, media_server_id, server_id, push_time, status, update_time, pushing, self as self_push, start_offline_push, stream_status FROM gb_stream_push WHERE media_server_id = ? ORDER BY id LIMIT ? OFFSET ?",
             )
             .bind(mid)
             .bind(limit)
@@ -403,7 +403,7 @@ pub async fn list_paged(
             .await;
             #[cfg(feature = "postgres")]
             return sqlx::query_as::<_, StreamPush>(
-                "SELECT id, app, stream, create_time, media_server_id, server_id, push_time, status, update_time, pushing, self as self_push, start_offline_push FROM gb_stream_push WHERE media_server_id = $1 ORDER BY id LIMIT $2 OFFSET $3",
+                "SELECT id, app, stream, create_time, media_server_id, server_id, push_time, status, update_time, pushing, self as self_push, start_offline_push, stream_status FROM gb_stream_push WHERE media_server_id = $1 ORDER BY id LIMIT $2 OFFSET $3",
             )
             .bind(mid)
             .bind(limit)
@@ -412,7 +412,7 @@ pub async fn list_paged(
             .await;
             #[cfg(feature = "sqlite")]
             return sqlx::query_as::<_, StreamPush>(
-                "SELECT id, app, stream, create_time, media_server_id, server_id, push_time, status, update_time, pushing, self as self_push, start_offline_push FROM gb_stream_push WHERE media_server_id = ? ORDER BY id LIMIT ? OFFSET ?",
+                "SELECT id, app, stream, create_time, media_server_id, server_id, push_time, status, update_time, pushing, self as self_push, start_offline_push, stream_status FROM gb_stream_push WHERE media_server_id = ? ORDER BY id LIMIT ? OFFSET ?",
             )
             .bind(mid)
             .bind(limit)
@@ -423,7 +423,7 @@ pub async fn list_paged(
     } else if let Some(p) = pushing {
         #[cfg(feature = "mysql")]
         return sqlx::query_as::<_, StreamPush>(
-            "SELECT id, app, stream, create_time, media_server_id, server_id, push_time, status, update_time, pushing, self as self_push, start_offline_push FROM gb_stream_push WHERE pushing = ? ORDER BY id LIMIT ? OFFSET ?",
+            "SELECT id, app, stream, create_time, media_server_id, server_id, push_time, status, update_time, pushing, self as self_push, start_offline_push, stream_status FROM gb_stream_push WHERE pushing = ? ORDER BY id LIMIT ? OFFSET ?",
         )
         .bind(p)
         .bind(limit)
@@ -432,7 +432,7 @@ pub async fn list_paged(
         .await;
         #[cfg(feature = "postgres")]
         return sqlx::query_as::<_, StreamPush>(
-            "SELECT id, app, stream, create_time, media_server_id, server_id, push_time, status, update_time, pushing, self as self_push, start_offline_push FROM gb_stream_push WHERE pushing = $1 ORDER BY id LIMIT $2 OFFSET $3",
+            "SELECT id, app, stream, create_time, media_server_id, server_id, push_time, status, update_time, pushing, self as self_push, start_offline_push, stream_status FROM gb_stream_push WHERE pushing = $1 ORDER BY id LIMIT $2 OFFSET $3",
         )
         .bind(p)
         .bind(limit)
@@ -441,7 +441,7 @@ pub async fn list_paged(
         .await;
         #[cfg(feature = "sqlite")]
         return sqlx::query_as::<_, StreamPush>(
-            "SELECT id, app, stream, create_time, media_server_id, server_id, push_time, status, update_time, pushing, self as self_push, start_offline_push FROM gb_stream_push WHERE pushing = ? ORDER BY id LIMIT ? OFFSET ?",
+            "SELECT id, app, stream, create_time, media_server_id, server_id, push_time, status, update_time, pushing, self as self_push, start_offline_push, stream_status FROM gb_stream_push WHERE pushing = ? ORDER BY id LIMIT ? OFFSET ?",
         )
         .bind(p)
         .bind(limit)
@@ -451,7 +451,7 @@ pub async fn list_paged(
     } else {
         #[cfg(feature = "mysql")]
         return sqlx::query_as::<_, StreamPush>(
-            "SELECT id, app, stream, create_time, media_server_id, server_id, push_time, status, update_time, pushing, self as self_push, start_offline_push FROM gb_stream_push ORDER BY id LIMIT ? OFFSET ?",
+            "SELECT id, app, stream, create_time, media_server_id, server_id, push_time, status, update_time, pushing, self as self_push, start_offline_push, stream_status FROM gb_stream_push ORDER BY id LIMIT ? OFFSET ?",
         )
         .bind(limit)
         .bind(offset as i64)
@@ -459,7 +459,7 @@ pub async fn list_paged(
         .await;
         #[cfg(feature = "postgres")]
         return sqlx::query_as::<_, StreamPush>(
-            "SELECT id, app, stream, create_time, media_server_id, server_id, push_time, status, update_time, pushing, self as self_push, start_offline_push FROM gb_stream_push ORDER BY id LIMIT $1 OFFSET $2",
+            "SELECT id, app, stream, create_time, media_server_id, server_id, push_time, status, update_time, pushing, self as self_push, start_offline_push, stream_status FROM gb_stream_push ORDER BY id LIMIT $1 OFFSET $2",
         )
         .bind(limit)
         .bind(offset as i64)
@@ -467,7 +467,7 @@ pub async fn list_paged(
         .await;
         #[cfg(feature = "sqlite")]
         return sqlx::query_as::<_, StreamPush>(
-            "SELECT id, app, stream, create_time, media_server_id, server_id, push_time, status, update_time, pushing, self as self_push, start_offline_push FROM gb_stream_push ORDER BY id LIMIT ? OFFSET ?",
+            "SELECT id, app, stream, create_time, media_server_id, server_id, push_time, status, update_time, pushing, self as self_push, start_offline_push, stream_status FROM gb_stream_push ORDER BY id LIMIT ? OFFSET ?",
         )
         .bind(limit)
         .bind(offset as i64)
