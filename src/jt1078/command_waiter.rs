@@ -252,6 +252,34 @@ impl JtCommandWaiter {
     pub fn has_pending_for_phone(&self, phone: &str) -> bool {
         self.metadata.iter().any(|r| r.phone == phone)
     }
+
+    /// Phase 6.2: try to resolve a waiter by 0x0001 general common response.
+    /// The body of 0x0001 is (reply_serial:u16, reply_msg_id:u16, result:u8).
+    /// On match, returns true and the response is sent to the waiter.
+    pub fn try_resolve_by_response(
+        &self,
+        phone: &str,
+        reply_msg_id: u16,
+        reply_serial: u16,
+        result: u8,
+    ) -> bool {
+        // Find key by metadata (phone + msg_id + serial)
+        let matched_key: Option<String> = self
+            .metadata
+            .iter()
+            .find(|r| {
+                r.value().phone == phone
+                    && r.value().msg_id == reply_msg_id
+                    && r.value().serial_no == reply_serial
+            })
+            .map(|r| r.key().clone());
+        if let Some(key) = matched_key {
+            // Build response body: just the result code
+            self.complete_by_key(&key, vec![result])
+        } else {
+            false
+        }
+    }
 }
 
 impl Default for JtCommandWaiter {
@@ -396,5 +424,32 @@ mod tests {
         assert_eq!(JtCmdType::from_msg_id(0x9201), JtCmdType::PlaybackStart);
         assert_eq!(JtCmdType::from_msg_id(0x8103), JtCmdType::Ptz);
         assert_eq!(JtCmdType::from_msg_id(0x8202), JtCmdType::QueryLocation);
+    }
+
+    #[tokio::test]
+    async fn test_try_resolve_by_response_match() {
+        let waiter = JtCommandWaiter::new();
+        let (_key, rx) = waiter.register("13812340001", 0x9301, 5, None);
+        let resolved = waiter.try_resolve_by_response("13812340001", 0x9301, 5, 0);
+        assert!(resolved);
+        let body = rx.await.unwrap();
+        assert_eq!(body, vec![0u8]);
+    }
+
+    #[tokio::test]
+    async fn test_try_resolve_by_response_no_match() {
+        let waiter = JtCommandWaiter::new();
+        let resolved = waiter.try_resolve_by_response("13812340001", 0x9301, 99, 0);
+        assert!(!resolved);
+    }
+
+    #[tokio::test]
+    async fn test_try_resolve_by_response_wrong_msg_id() {
+        let waiter = JtCommandWaiter::new();
+        let (_key, _rx) = waiter.register("13812340001", 0x9301, 5, None);
+        // wrong msg_id
+        let resolved = waiter.try_resolve_by_response("13812340001", 0x9302, 5, 0);
+        assert!(!resolved);
+        assert_eq!(waiter.pending_count(), 1);
     }
 }

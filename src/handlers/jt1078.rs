@@ -756,9 +756,10 @@ pub async fn ptz(
         Err(e) => return e,
     };
 
-    match mgr.send_ptz(&phone, channel_id, &command, speed).await {
-        Ok(()) => Json(build_success("云台控制命令已发送")),
-        Err(e) => Json(build_error(&e)),
+    match mgr.send_ptz_and_wait(&phone, channel_id, &command, speed, 5).await {
+        Ok(0) => Json(build_success("云台控制命令已应答")),
+        Ok(result) => Json(build_error(&format!("云台失败 result={}", result))),
+        Err(e) => Json(build_error(&format!("云台错误: {}", e))),
     }
 }
 
@@ -780,9 +781,10 @@ pub async fn wiper(
         Err(e) => return e,
     };
 
-    match mgr.send_wiper(&phone, on).await {
-        Ok(()) => Json(build_success("雨刷控制命令已发送")),
-        Err(e) => Json(build_error(&e)),
+    match mgr.send_set_params_and_wait(&phone, &[(0x0033u32, &[if on { 1 } else { 0 }])], 5).await {
+        Ok(0) => Json(build_success("雨刷控制命令已应答")),
+        Ok(result) => Json(build_error(&format!("雨刷失败 result={}", result))),
+        Err(e) => Json(build_error(&format!("雨刷错误: {}", e))),
     }
 }
 
@@ -804,9 +806,10 @@ pub async fn fill_light(
         Err(e) => return e,
     };
 
-    match mgr.send_fill_light(&phone, on).await {
-        Ok(()) => Json(build_success("补光灯控制命令已发送")),
-        Err(e) => Json(build_error(&e)),
+    match mgr.send_set_params_and_wait(&phone, &[(0x0016u32, &[if on { 1 } else { 0 }])], 5).await {
+        Ok(0) => Json(build_success("补光灯控制命令已应答")),
+        Ok(result) => Json(build_error(&format!("补光灯失败 result={}", result))),
+        Err(e) => Json(build_error(&format!("补光灯错误: {}", e))),
     }
 }
 
@@ -1123,9 +1126,10 @@ pub async fn text_msg(
         Err(e) => return e,
     };
 
-    match mgr.send_text_message(&phone, &message, false).await {
-        Ok(()) => Json(build_success("文本消息已发送")),
-        Err(e) => Json(build_error(&e)),
+    match mgr.send_text_message_and_wait(&phone, &message, false, 5).await {
+        Ok(0) => Json(build_success("文本消息已应答")),
+        Ok(result) => Json(build_error(&format!("文本消息失败 result={}", result))),
+        Err(e) => Json(build_error(&format!("文本消息错误: {}", e))),
     }
 }
 
@@ -1147,9 +1151,10 @@ pub async fn telephone_callback(
         Err(e) => return e,
     };
 
-    match mgr.send_phone_callback(&phone, sign, &dest).await {
-        Ok(()) => Json(build_success("回拨指令已发送")),
-        Err(e) => Json(build_error(&e)),
+    match mgr.send_phone_callback_and_wait(&phone, sign, &dest, 5).await {
+        Ok(0) => Json(build_success("回拨指令已应答")),
+        Ok(result) => Json(build_error(&format!("回拨失败 result={}", result))),
+        Err(e) => Json(build_error(&format!("回拨错误: {}", e))),
     }
 }
 
@@ -1172,7 +1177,7 @@ pub async fn driver_info(
 
     let online = mgr.is_terminal_online(&phone).await;
     if online {
-        let _ = mgr.send_query_attributes(&phone).await;
+        let _ = mgr.send_query_attributes_and_wait(&phone, 5).await;
     }
 
     // Read driver info from DB
@@ -1211,9 +1216,10 @@ pub async fn factory_reset(
         Err(e) => return e,
     };
 
-    match mgr.send_terminal_control(&phone, 4).await { // 4 = factory reset
-        Ok(()) => Json(build_success("恢复出厂设置指令已发送")),
-        Err(e) => Json(build_error(&e)),
+    match mgr.send_terminal_control_and_wait(&phone, 4, 5).await { // 4 = factory reset
+        Ok(0) => Json(build_success("恢复出厂设置指令已应答")),
+        Ok(result) => Json(build_error(&format!("恢复出厂设置失败 result={}", result))),
+        Err(e) => Json(build_error(&format!("恢复出厂设置错误: {}", e))),
     }
 }
 
@@ -1233,9 +1239,10 @@ pub async fn reset(
         Err(e) => return e,
     };
 
-    match mgr.send_terminal_control(&phone, 2).await { // 2 = restart
-        Ok(()) => Json(build_success("设备重启指令已发送")),
-        Err(e) => Json(build_error(&e)),
+    match mgr.send_terminal_control_and_wait(&phone, 2, 5).await { // 2 = restart
+        Ok(0) => Json(build_success("设备重启指令已应答")),
+        Ok(result) => Json(build_error(&format!("设备重启失败 result={}", result))),
+        Err(e) => Json(build_error(&format!("设备重启错误: {}", e))),
     }
 }
 
@@ -1257,9 +1264,13 @@ pub async fn connection(
         Err(e) => return e,
     };
 
-    match mgr.send_connection_control(&phone, &ip, port).await {
-        Ok(()) => Json(build_success("连接控制指令已发送")),
-        Err(e) => Json(build_error(&e)),
+    let mut port_bytes = [0u8; 4];
+    port_bytes.copy_from_slice(&port.to_be_bytes());
+    let params = vec![(0x0018u32, port_bytes.as_slice())];
+    match mgr.send_set_params_and_wait(&phone, &params, 5).await {
+        Ok(0) => Json(build_success("连接控制指令已应答")),
+        Ok(result) => Json(build_error(&format!("连接控制失败 result={}", result))),
+        Err(e) => Json(build_error(&format!("连接控制错误: {}", e))),
     }
 }
 
@@ -1281,9 +1292,10 @@ pub async fn door(
     };
 
     let control_type = if open { 1u8 } else { 0u8 }; // 1=unlock, 0=lock
-    match mgr.send_vehicle_control(&phone, control_type, open).await {
-        Ok(()) => Json(build_success(if open { "开门指令已发送" } else { "关门指令已发送" })),
-        Err(e) => Json(build_error(&e)),
+    match mgr.send_vehicle_control_and_wait(&phone, control_type, open, 5).await {
+        Ok(0) => Json(build_success(if open { "开门指令已应答" } else { "关门指令已应答" })),
+        Ok(result) => Json(build_error(&format!("车门控制失败 result={}", result))),
+        Err(e) => Json(build_error(&format!("车门控制错误: {}", e))),
     }
 }
 
@@ -1306,7 +1318,7 @@ pub async fn media_attribute(
 
     let online = mgr.is_terminal_online(&phone).await;
     if online {
-        let _ = mgr.send_query_attributes(&phone).await;
+        let _ = mgr.send_query_attributes_and_wait(&phone, 5).await;
     }
 
     // Build response from DB terminal info
@@ -1349,7 +1361,7 @@ pub async fn media_list(
             let channel_id: u8 = body.get("channelId").and_then(|v| v.as_u64()).unwrap_or(0) as u8;
             let start_time = body.get("startTime").and_then(|v| v.as_str()).unwrap_or("2000-01-01T00:00:00");
             let end_time = body.get("endTime").and_then(|v| v.as_str()).unwrap_or("2099-12-31T23:59:59");
-            let _ = mgr.send_media_search(phone, channel_id, start_time, end_time).await;
+            let _ = mgr.send_media_search_and_wait(phone, channel_id, start_time, end_time, 30).await;
         }
     }
 
@@ -1400,9 +1412,10 @@ pub async fn set_phone_book(
         Err(e) => return e,
     };
 
-    match mgr.send_set_phone_book(phone, &contacts).await {
-        Ok(()) => Json(build_success("电话本设置成功")),
-        Err(e) => Json(build_error(&e)),
+    match mgr.send_set_phone_book_and_wait(phone, &contacts, 5).await {
+        Ok(0) => Json(build_success("电话本设置已应答")),
+        Ok(result) => Json(build_error(&format!("电话本设置失败 result={}", result))),
+        Err(e) => Json(build_error(&format!("电话本设置错误: {}", e))),
     }
 }
 
@@ -1423,9 +1436,10 @@ pub async fn shooting(
         Err(e) => return e,
     };
 
-    match mgr.send_take_photo(&phone, channel_id).await {
-        Ok(()) => Json(build_success("抓拍指令已发送")),
-        Err(e) => Json(build_error(&e)),
+    match mgr.send_take_photo_and_wait(&phone, channel_id, 5).await {
+        Ok(0) => Json(build_success("抓拍指令已应答")),
+        Ok(result) => Json(build_error(&format!("抓拍失败 result={}", result))),
+        Err(e) => Json(build_error(&format!("抓拍错误: {}", e))),
     }
 }
 
@@ -1448,9 +1462,9 @@ pub async fn talk_start(
     };
 
     // Start bidirectional talk: send live video with audio and open bidirectional talk control
-    match mgr.send_live_video(&phone, channel_id, 0, false).await {
-        Ok(()) => {
-            let _ = mgr.send_live_video_control(&phone, channel_id, 5, false).await; // 5=open bidirectional talk
+    match mgr.send_live_video_and_wait(&phone, channel_id, 0, false, 5).await {
+        Ok(_) => {
+            let _ = mgr.send_live_video_control_and_wait(&phone, channel_id, 5, false, 5).await; // 5=open bidirectional talk
             Json(serde_json::json!({ "code": 0, "msg": "success", "data": { "phoneNumber": phone, "channelId": channel_id } }))
         }
         Err(e) => Json(build_error(&e)),
@@ -1474,9 +1488,10 @@ pub async fn talk_stop(
         Err(e) => return e,
     };
 
-    match mgr.send_live_video_control(&phone, channel_id, 5, true).await { // 5=close bidirectional talk
-        Ok(()) => Json(build_success("对讲停止成功")),
-        Err(e) => Json(build_error(&e)),
+    match mgr.send_live_video_control_and_wait(&phone, channel_id, 5, true, 5).await { // 5=close bidirectional talk
+        Ok(0) => Json(build_success("对讲停止已应答")),
+        Ok(result) => Json(build_error(&format!("对讲停止失败 result={}", result))),
+        Err(e) => Json(build_error(&format!("对讲停止错误: {}", e))),
     }
 }
 
@@ -1488,16 +1503,31 @@ pub struct MediaUploadQuery {
 }
 
 pub async fn media_upload_one(
+    State(state): State<AppState>,
     Query(q): Query<MediaUploadQuery>,
 ) -> Json<serde_json::Value> {
     let phone = q.phone_number.clone().unwrap_or_default();
-    let media_id = q.media_id.clone().unwrap_or_default();
+    let media_id_str = q.media_id.clone().unwrap_or_default();
+    let media_id: u32 = media_id_str.parse().unwrap_or(0);
     tracing::info!("JT1078 media upload one: phone={}, media_id={}", phone, media_id);
-    Json(serde_json::json!({
-        "code": 0,
-        "msg": "success",
-        "data": {
-            "url": format!("http://127.0.0.1:8080/media/{}", media_id)
+
+    if phone.is_empty() {
+        return Json(build_error("缺少 phoneNumber"));
+    }
+
+    if let Some(mgr) = state.jt1078_manager.read().await.as_ref() {
+        match mgr.send_media_upload_and_wait(&phone, media_id, 5).await {
+            Ok(0) => Json(serde_json::json!({
+                "code": 0,
+                "msg": "success",
+                "data": {
+                    "url": format!("/api/jt1078/media/upload/{}", media_id)
+                }
+            })),
+            Ok(result) => Json(build_error(&format!("媒体上传失败 result={}", result))),
+            Err(e) => Json(build_error(&format!("媒体上传错误: {}", e))),
         }
-    }))
+    } else {
+        Json(build_error("JT1078 manager 未初始化"))
+    }
 }
