@@ -203,6 +203,60 @@ pub struct StreamChangedByAppData {
     pub media_server_id: Option<String>,
 }
 
+// =====================================================================
+// ZlmHookEvent 枚举（Phase 4.1，WVP-Pro 兼容）
+//
+// 所有 ZLM hook 事件以枚举形式表达，便于 dispatcher 严格匹配及前端按需订阅。
+// `from_hook_name` 将 ZLM 字符串 hook 名（如 "on_stream_changed"）解析为枚举；
+// `default_response` 返回 WVP-Pro 兼容的成功响应结构。
+// =====================================================================
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ZlmHookEvent {
+    ServerStarted,
+    ServerKeepalive,
+    StreamChanged,
+    StreamNotFound,
+    StreamNoneReader,
+    StreamStarted,
+    Publish,
+    Play,
+    RtpServerStarted,
+    RtpServerTimeout,
+    SendRtpStopped,
+    RecordMp4,
+    RecordProgress,
+    FlowReport,
+    Unknown,
+}
+
+impl ZlmHookEvent {
+    pub fn from_hook_name(name: &str) -> Self {
+        match name {
+            "on_server_started" => Self::ServerStarted,
+            "on_server_keepalive" => Self::ServerKeepalive,
+            "on_stream_changed" => Self::StreamChanged,
+            "on_stream_not_found" => Self::StreamNotFound,
+            "on_stream_none_reader" => Self::StreamNoneReader,
+            "on_stream_started" => Self::StreamStarted,
+            "on_publish" => Self::Publish,
+            "on_play" => Self::Play,
+            "on_rtp_server_started" => Self::RtpServerStarted,
+            "on_rtp_server_timeout" => Self::RtpServerTimeout,
+            "on_send_rtp_stopped" => Self::SendRtpStopped,
+            "on_record_mp4" | "on_record_file" => Self::RecordMp4,
+            "on_record_progress" => Self::RecordProgress,
+            "on_flow_report" => Self::FlowReport,
+            _ => Self::Unknown,
+        }
+    }
+
+    /// WVP-Pro 兼容的默认成功响应：前端只需 `code === 0` 即视为成功。
+    pub fn default_response(&self) -> serde_json::Value {
+        serde_json::json!({"code": 0, "msg": "success"})
+    }
+}
+
 fn parse_stream_id(stream: &str) -> Option<(String, String)> {
     if let Some(pos) = stream.find('$') {
         let device_id = stream[..pos].to_string();
@@ -337,6 +391,36 @@ async fn sync_stream_changed(state: &AppState, data: &StreamChangedData) {
     if let Some(ref zlm) = state.zlm_client {
         if let Ok(streams) = zlm.get_media_list(None, None, None).await {
             crate::metrics::set_active_streams(streams.len());
+        }
+    }
+
+    // Phase 3.1: 当 RTP 流注册时，通知 media_waiter_manager
+    // 让 play_start 等媒体到达的 handler 收到 MediaReady 后返回。
+    if data.register && data.app == "rtp" {
+        if let Some(ref sip_server) = state.sip_server {
+            let sip = sip_server.read().await;
+            let resolved = sip
+                .media_waiter_manager()
+                .resolve_by_stream(&data.stream, &data.app);
+            tracing::debug!(
+                "on_stream_changed rtp/{} register=true media_waiter resolved={}",
+                data.stream, resolved
+            );
+        }
+    }
+
+    // Phase 3.4: 如果该 stream 属于下载会话，触发下载进度更新。
+    // 通过 stream_id 包含 "download_" 前缀识别（与 3.4 中 stream_id 命名一致）。
+    if data.register && data.stream.starts_with("download_") {
+        if let Some(ref dm) = state.download_manager {
+            if let Some(session) = dm.get_by_zlm_stream(&data.stream).await {
+                tracing::info!(
+                    "Download stream ready: session={} stream={}",
+                    session.stream_id, data.stream
+                );
+                // 状态从 inviting → downloading；进度仍待 ZLM MP4 落盘回调
+                dm.update_progress_percent(&session.stream_id, 0.0, "downloading").await;
+            }
         }
     }
 }
@@ -875,5 +959,108 @@ mod tests {
         let v = "1620000000"; // seconds
         let ms = parse_record_time_ms(v);
         assert!(ms >= 1620000000 * 1000);
+    }
+
+    // ============== ZlmHookEvent 解析测试（Phase 4.1） ==============
+
+    #[test]
+    fn test_zlm_hook_event_parse_stream_changed() {
+        assert_eq!(
+            ZlmHookEvent::from_hook_name("on_stream_changed"),
+            ZlmHookEvent::StreamChanged
+        );
+    }
+
+    #[test]
+    fn test_zlm_hook_event_parse_publish_play() {
+        assert_eq!(
+            ZlmHookEvent::from_hook_name("on_publish"),
+            ZlmHookEvent::Publish
+        );
+        assert_eq!(
+            ZlmHookEvent::from_hook_name("on_play"),
+            ZlmHookEvent::Play
+        );
+    }
+
+    #[test]
+    fn test_zlm_hook_event_parse_server_events() {
+        assert_eq!(
+            ZlmHookEvent::from_hook_name("on_server_started"),
+            ZlmHookEvent::ServerStarted
+        );
+        assert_eq!(
+            ZlmHookEvent::from_hook_name("on_server_keepalive"),
+            ZlmHookEvent::ServerKeepalive
+        );
+    }
+
+    #[test]
+    fn test_zlm_hook_event_parse_stream_lifecycle() {
+        assert_eq!(
+            ZlmHookEvent::from_hook_name("on_stream_not_found"),
+            ZlmHookEvent::StreamNotFound
+        );
+        assert_eq!(
+            ZlmHookEvent::from_hook_name("on_stream_none_reader"),
+            ZlmHookEvent::StreamNoneReader
+        );
+        assert_eq!(
+            ZlmHookEvent::from_hook_name("on_stream_started"),
+            ZlmHookEvent::StreamStarted
+        );
+    }
+
+    #[test]
+    fn test_zlm_hook_event_parse_rtp_events() {
+        assert_eq!(
+            ZlmHookEvent::from_hook_name("on_rtp_server_started"),
+            ZlmHookEvent::RtpServerStarted
+        );
+        assert_eq!(
+            ZlmHookEvent::from_hook_name("on_rtp_server_timeout"),
+            ZlmHookEvent::RtpServerTimeout
+        );
+        assert_eq!(
+            ZlmHookEvent::from_hook_name("on_send_rtp_stopped"),
+            ZlmHookEvent::SendRtpStopped
+        );
+    }
+
+    #[test]
+    fn test_zlm_hook_event_parse_record_aliases() {
+        // 兼容两个常见 hook 名
+        assert_eq!(
+            ZlmHookEvent::from_hook_name("on_record_mp4"),
+            ZlmHookEvent::RecordMp4
+        );
+        assert_eq!(
+            ZlmHookEvent::from_hook_name("on_record_file"),
+            ZlmHookEvent::RecordMp4
+        );
+        assert_eq!(
+            ZlmHookEvent::from_hook_name("on_record_progress"),
+            ZlmHookEvent::RecordProgress
+        );
+        assert_eq!(
+            ZlmHookEvent::from_hook_name("on_flow_report"),
+            ZlmHookEvent::FlowReport
+        );
+    }
+
+    #[test]
+    fn test_zlm_hook_event_unknown_and_default_response() {
+        // 未知 hook 名称 → Unknown
+        assert_eq!(
+            ZlmHookEvent::from_hook_name("on_something_made_up"),
+            ZlmHookEvent::Unknown
+        );
+        // default_response 始终是 WVP-Pro 兼容的成功结构
+        let resp = ZlmHookEvent::StreamChanged.default_response();
+        assert_eq!(resp["code"], 0);
+        assert_eq!(resp["msg"], "success");
+        // 同样适用于 Unknown（保持前端可正常处理）
+        let resp_unknown = ZlmHookEvent::Unknown.default_response();
+        assert_eq!(resp_unknown["code"], 0);
     }
 }
