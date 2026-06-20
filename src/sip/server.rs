@@ -1255,6 +1255,12 @@ let renewal_pool = pool.clone();
                             &via, &call_id, &cseq, socket,
                         ).await;
                     }
+                    Some("RecordInfo") => {
+                        return Self::handle_record_info_for_platform(
+                            body, &config.device_id, &sn, addr, &from, &to,
+                            &via, &call_id, &cseq, socket, zlm_client,
+                        ).await;
+                    }
                     _ => {} // fall through to existing routing
                 }
             }
@@ -4467,6 +4473,96 @@ Authentication-Info: qop=auth,rspauth="{}",cnonce="{}",nc=00000001"#,
         Ok(())
     }
 
+    /// Phase 5.2: 上级平台 RecordInfo 查询 → 返回本级 ZLM MP4 录像列表
+    ///
+    /// 流程：
+    /// 1. 解析 SIP MESSAGE body 拿到 (channel_id, start_time, end_time, sn)
+    /// 2. 复用 `handle_record_info` 的 ZLM MP4 查询路径（兜底）
+    /// 3. 拼装 WVP-Pro 兼容的 Response XML 并回送
+    ///
+    /// 设计选择：当前实现用 ZLM MP4 兜底而非设备 SIP RecordInfo 多包等待，
+    /// 原因：设备侧 RecordInfo 多包响应需要 SipServer 上下文（`send_record_info_query_and_wait`），
+    /// Phase 5.2 优先把上游响应骨架接通，Phase 5.2-followup 可把 `send_record_info_query_and_wait`
+    /// 抽成 free function 后再切换为真等待。
+    #[allow(clippy::too_many_arguments)]
+    async fn handle_record_info_for_platform(
+        body: &str,
+        local_device_id: &str,
+        sn: &str,
+        addr: SocketAddr,
+        from: &str,
+        to: &str,
+        via: &str,
+        call_id: &str,
+        cseq: &str,
+        socket: &Arc<UdpSocket>,
+        zlm_client: &Option<Arc<ZlmClient>>,
+    ) -> Result<()> {
+        let _ = local_device_id;
+        tracing::info!("Upstream RecordInfo query from upstream → responding with ZLM MP4 list");
+
+        // 解析查询参数
+        let fields = XmlParser::parse_fields(body);
+        let channel_id = fields.get("DeviceID").cloned().unwrap_or_default();
+        let start_time = fields.get("StartTime").cloned();
+        let end_time = fields.get("EndTime").cloned();
+        let secrecy = fields.get("Secrecy").cloned().unwrap_or_else(|| "0".to_string());
+        let _type = fields.get("Type").cloned().unwrap_or_else(|| "all".to_string());
+
+        // 查询 ZLM MP4（与 handle_record_info 一致）
+        let mut record_items: Vec<RecordInfoItem> = Vec::new();
+        if let Some(zlm) = zlm_client {
+            let app = "rtp";
+            let stream1 = format!("{}${}", local_device_id, channel_id);
+            let stream2 = channel_id.clone();
+            let zlm_start = start_time.as_ref().map(|s| s.replace(' ', "T").replace(':', "-"));
+            let zlm_end = end_time.as_ref().map(|s| s.replace(' ', "T").replace(':', "-"));
+
+            let files = if let Ok(list) = zlm
+                .get_mp4_record_file(app, &stream1, None, zlm_start.as_deref(), zlm_end.as_deref())
+                .await
+            {
+                list
+            } else if let Ok(list) = zlm
+                .get_mp4_record_file(app, &stream2, None, zlm_start.as_deref(), zlm_end.as_deref())
+                .await
+            {
+                list
+            } else {
+                Vec::new()
+            };
+
+            for file in files {
+                let start = file.create_time.clone();
+                let duration = file.duration.unwrap_or(0.0) as i64;
+                let end = if duration > 0 {
+                    format!("{}+{}s", start, duration)
+                } else {
+                    start.clone()
+                };
+                record_items.push(RecordInfoItem {
+                    device_id: Some(channel_id.clone()),
+                    name: Some(file.name.clone()),
+                    file_path: Some(file.path.clone()),
+                    address: Some(file.path.clone()),
+                    start_time: Some(start),
+                    end_time: Some(end),
+                    secrecy: Some(secrecy.clone()),
+                    kind: Some(_type.clone()),
+                });
+            }
+        }
+
+        let response_body = build_upstream_record_info_response(sn, &channel_id, &record_items);
+        let response = Parser::generate_response(200, "OK", &[
+            ("Via", via), ("From", from), ("To", to),
+            ("Call-ID", call_id), ("CSeq", cseq),
+            ("Content-Type", "Application/MANSCDP+xml"),
+        ], Some(&response_body));
+        Self::send_response(socket, addr, &response).await?;
+        Ok(())
+    }
+
 
 
 
@@ -4674,6 +4770,56 @@ pub fn build_upstream_device_info_response(sn: &str, local_device_id: &str) -> S
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?><Response><CmdType>DeviceInfo</CmdType><SN>{}</SN><DeviceID>{}</DeviceID><Result>OK</Result><DeviceName>GBServer</DeviceName><Manufacturer>GBServer</Manufacturer><Model>GBServer v0.1</Model><Channel>1</Channel></Response>"#,
         sn, local_device_id
+    )
+}
+
+/// Phase 5.2: 拼装上游 RecordInfo Response XML（WVP-Pro 兼容）
+///
+/// 格式（与 WVP-Pro Java 兼容）：
+/// ```xml
+/// <Response>
+///   <CmdType>RecordInfo</CmdType>
+///   <SN>...</SN>
+///   <DeviceID>...</DeviceID>
+///   <Name>...</Name>
+///   <SumNum>N</SumNum>
+///   <RecordList Num="N">
+///     <Item>
+///       <DeviceID>...</DeviceID>
+///       <Name>...</Name>
+///       <FilePath>...</FilePath>
+///       <StartTime>...</StartTime>
+///       <EndTime>...</EndTime>
+///       <Secrecy>0</Secrecy>
+///       <Type>time</Type>
+///     </Item>
+///   </RecordList>
+/// </Response>
+/// ```
+pub fn build_upstream_record_info_response(
+    sn: &str,
+    channel_id: &str,
+    items: &[RecordInfoItem],
+) -> String {
+    let mut body_items = String::new();
+    for item in items {
+        let file_path = item.file_path.as_deref().unwrap_or("");
+        let name = item.name.as_deref().unwrap_or(channel_id);
+        let device_id = item.device_id.as_deref().unwrap_or(channel_id);
+        let start = item.start_time.as_deref().unwrap_or("");
+        let end = item.end_time.as_deref().unwrap_or("");
+        body_items.push_str(&format!(
+            "<Item><DeviceID>{}</DeviceID><Name>{}</Name>\
+             <FilePath>{}</FilePath>\
+             <StartTime>{}</StartTime><EndTime>{}</EndTime>\
+             <Secrecy>0</Secrecy><Type>time</Type></Item>",
+            device_id, name, file_path, start, end
+        ));
+    }
+    let num = items.len();
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?><Response><CmdType>RecordInfo</CmdType><SN>{}</SN><DeviceID>{}</DeviceID><Name>{}-records</Name><SumNum>{}</SumNum><RecordList Num="{}">{}</RecordList></Response>"#,
+        sn, channel_id, channel_id, num, num, body_items
     )
 }
 
@@ -5240,5 +5386,80 @@ mod upstream_message_tests {
             .await
             .expect("description 为 None 时也应成功");
         assert_eq!(count, 0);
+    }
+
+    // ============ Phase 5.2: build_upstream_record_info_response 单测 ============
+
+    /// 空 items → 仍生成合法 XML（SumNum=0, RecordList 元素 0）
+    #[test]
+    fn phase5_build_upstream_record_info_response_empty() {
+        let xml = build_upstream_record_info_response("42", "34020000001320000001", &[]);
+        assert!(xml.contains("<CmdType>RecordInfo</CmdType>"));
+        assert!(xml.contains("<SN>42</SN>"));
+        assert!(xml.contains("<DeviceID>34020000001320000001</DeviceID>"));
+        assert!(xml.contains("<SumNum>0</SumNum>"));
+        assert!(xml.contains(r#"<RecordList Num="0">"#));
+        assert!(xml.contains("</Response>"));
+    }
+
+    /// 含 items → 生成完整 WVP-Pro 兼容 XML
+    #[test]
+    fn phase5_build_upstream_record_info_response_with_items() {
+        let items = vec![
+            RecordInfoItem {
+                device_id: Some("34020000001320000001".to_string()),
+                name: Some("ch01-record1".to_string()),
+                file_path: Some("/zlm/record/2026-06-20/ch01-001.mp4".to_string()),
+                address: Some("/zlm/record/2026-06-20/ch01-001.mp4".to_string()),
+                start_time: Some("2026-06-20T10:00:00".to_string()),
+                end_time: Some("2026-06-20T10:30:00+1800s".to_string()),
+                secrecy: Some("0".to_string()),
+                kind: Some("time".to_string()),
+            },
+            RecordInfoItem {
+                device_id: Some("34020000001320000001".to_string()),
+                name: Some("ch01-record2".to_string()),
+                file_path: Some("/zlm/record/2026-06-20/ch01-002.mp4".to_string()),
+                address: Some("/zlm/record/2026-06-20/ch01-002.mp4".to_string()),
+                start_time: Some("2026-06-20T11:00:00".to_string()),
+                end_time: Some("2026-06-20T11:30:00+1800s".to_string()),
+                secrecy: Some("0".to_string()),
+                kind: Some("time".to_string()),
+            },
+        ];
+        let xml = build_upstream_record_info_response("100", "34020000001320000001", &items);
+        assert!(xml.contains("<CmdType>RecordInfo</CmdType>"));
+        assert!(xml.contains("<SN>100</SN>"));
+        assert!(xml.contains("<SumNum>2</SumNum>"));
+        assert!(xml.contains(r#"<RecordList Num="2">"#));
+        // 两条 record
+        assert!(xml.contains("ch01-record1"));
+        assert!(xml.contains("ch01-record2"));
+        assert!(xml.contains("ch01-001.mp4"));
+        assert!(xml.contains("ch01-002.mp4"));
+    }
+
+    /// items 中含 None 字段 → 跳过空值用默认值
+    #[test]
+    fn phase5_build_upstream_record_info_response_none_fields() {
+        let items = vec![
+            RecordInfoItem {
+                device_id: None,
+                name: None,
+                file_path: None,
+                address: None,
+                start_time: None,
+                end_time: None,
+                secrecy: None,
+                kind: None,
+            },
+        ];
+        let xml = build_upstream_record_info_response("1", "fallback_ch", &items);
+        // 默认值：name / device_id 落到 channel_id；空字段为空串
+        assert!(xml.contains("<SumNum>1</SumNum>"));
+        assert!(xml.contains("fallback_ch"));  // device_id 兜底
+        assert!(xml.contains("fallback_ch-records"));  // name 兜底
+        // 不应 panic，输出合法
+        assert!(xml.contains("</Response>"));
     }
 }
