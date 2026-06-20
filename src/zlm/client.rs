@@ -630,6 +630,24 @@ pub fn parse_port_range(s: &str) -> Result<(u16, u16)> {
     Ok((start, end))
 }
 
+/// Set a ZLM RTP port range config key from a raw `"start,end"` string.
+///
+/// This is a convenience wrapper that calls `parse_port_range`, formats the
+/// result as `"start-end"`, and then calls `zlm.set_server_config(secret, key, &value)`.
+///
+/// Returns `Ok(())` on success; propagates errors from `parse_port_range` or
+/// `set_server_config`.
+pub async fn set_rtp_port_range(
+    zlm: &ZlmClient,
+    secret: &str,
+    key: &str,
+    raw: &str,
+) -> Result<()> {
+    let (start, end) = parse_port_range(raw)?;
+    let value = format!("{}-{}", start, end);
+    zlm.set_server_config(secret, key, &value).await
+}
+
 // ============================================================================
 // Phase 4.2: ZLM 媒体节点健康状态扩展
 // ============================================================================
@@ -745,5 +763,50 @@ mod tests {
         assert!(parse_port_range("30000,99999").is_err());
         // 负数（u16 parse 失败）
         assert!(parse_port_range("-1,30100").is_err());
+    }
+
+    // Phase 4.3: wiremock test for set_rtp_port_range
+    mod wiremock {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        #[tokio::test]
+        async fn test_set_rtp_port_range_calls_set_server_config() {
+            let mock_server = MockServer::start().await;
+
+            Mock::given(method("POST"))
+                .and(path("/index/api/setServerConfig"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "code": 0
+                })))
+                .expect(1)
+                .mount(&mock_server)
+                .await;
+
+            let uri = mock_server.uri();
+            let stripped = uri.trim_start_matches("http://");
+            let mut parts = stripped.splitn(2, ':');
+            let ip = parts.next().unwrap_or("127.0.0.1").to_string();
+            let port: u16 = parts
+                .next()
+                .and_then(|p| p.parse().ok())
+                .unwrap_or(80);
+
+            let zlm_client = crate::zlm::ZlmClient::new(&ip, port, "test-secret");
+
+            // "30000,30200" → "30000-30200"
+            super::set_rtp_port_range(&zlm_client, "test-secret", "rtp.port_range", "30000,30200")
+                .await
+                .expect("set_rtp_port_range should succeed");
+
+            let received = mock_server.received_requests().await.unwrap_or_default();
+            assert_eq!(received.len(), 1, "expected exactly 1 request");
+            let body = String::from_utf8_lossy(&received[0].body).to_string();
+            assert!(
+                body.contains("\"key\":\"rtp.port_range\"") && body.contains("30000-30200"),
+                "expected key='rtp.port_range' and value='30000-30200', got: {}",
+                body
+            );
+        }
     }
 }

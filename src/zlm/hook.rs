@@ -7,6 +7,17 @@ use axum::{
 use serde::{Deserialize, Serialize};
 
 use crate::cache;
+
+/// Phase 4.3: Protocol enable flags synced to ZLM on `on_server_started`.
+pub const PROTOCOL_ENABLE_FLAGS: &[(&str, &str)] = &[
+    ("protocol.enable_rtsp", "1"),
+    ("protocol.enable_rtmp", "1"),
+    ("protocol.enable_hls", "1"),
+    ("protocol.enable_http", "1"),
+    ("protocol.enable_ws", "1"),
+    ("protocol.enable_rtp", "1"),
+];
+
 use crate::db::cloud_record::{self, CloudRecordInsert};
 use crate::db::{stream_proxy, stream_push};
 use crate::response::WVPResult;
@@ -743,63 +754,36 @@ pub async fn handle_webhook(
                         Ok(Some(server_config)) => {
                             // rtp.port_range（设备推送端口）
                             if let Some(ref rtp_range) = server_config.rtp_port_range {
-                                match crate::zlm::client::parse_port_range(rtp_range) {
-                                    Ok((start, end)) => {
-                                        let v = format!("{}-{}", start, end);
-                                        if let Err(e) = zlm_client.set_server_config(
-                                            &secret, "rtp.port_range", &v,
-                                        ).await {
-                                            tracing::warn!(
-                                                "Failed to set ZLM rtp.port_range={}: {}",
-                                                v, e,
-                                            );
-                                        } else {
-                                            tracing::info!(
-                                                "ZLM rtp.port_range set to {} for server {}",
-                                                v, media_server_id,
-                                            );
-                                        }
-                                    }
+                                match crate::zlm::client::set_rtp_port_range(
+                                    zlm_client, &secret, "rtp.port_range", rtp_range,
+                                ).await {
+                                    Ok(()) => tracing::info!(
+                                        "ZLM rtp.port_range set to {} for server {}",
+                                        rtp_range, media_server_id,
+                                    ),
                                     Err(e) => tracing::warn!(
-                                        "Invalid rtp_port_range '{}' for server {}: {}",
-                                        rtp_range, media_server_id, e,
+                                        "Failed to set ZLM rtp.port_range={}: {}",
+                                        rtp_range, e,
                                     ),
                                 }
                             }
                             // send_rtp.port_range（推送上级平台端口）
                             if let Some(ref srtp_range) = server_config.send_rtp_port_range {
-                                match crate::zlm::client::parse_port_range(srtp_range) {
-                                    Ok((start, end)) => {
-                                        let v = format!("{}-{}", start, end);
-                                        if let Err(e) = zlm_client.set_server_config(
-                                            &secret, "send_rtp.port_range", &v,
-                                        ).await {
-                                            tracing::warn!(
-                                                "Failed to set ZLM send_rtp.port_range={}: {}",
-                                                v, e,
-                                            );
-                                        } else {
-                                            tracing::info!(
-                                                "ZLM send_rtp.port_range set to {} for server {}",
-                                                v, media_server_id,
-                                            );
-                                        }
-                                    }
+                                match crate::zlm::client::set_rtp_port_range(
+                                    zlm_client, &secret, "send_rtp.port_range", srtp_range,
+                                ).await {
+                                    Ok(()) => tracing::info!(
+                                        "ZLM send_rtp.port_range set to {} for server {}",
+                                        srtp_range, media_server_id,
+                                    ),
                                     Err(e) => tracing::warn!(
-                                        "Invalid send_rtp_port_range '{}' for server {}: {}",
-                                        srtp_range, media_server_id, e,
+                                        "Failed to set ZLM send_rtp.port_range={}: {}",
+                                        srtp_range, e,
                                     ),
                                 }
                             }
                             // 协议开关（与 ZLM 默认对齐：全部启用）
-                            for (key, value) in [
-                                ("protocol.enable_rtsp", "1"),
-                                ("protocol.enable_rtmp", "1"),
-                                ("protocol.enable_hls", "1"),
-                                ("protocol.enable_http", "1"),
-                                ("protocol.enable_ws", "1"),
-                                ("protocol.enable_rtp", "1"),
-                            ] {
+                            for (key, value) in PROTOCOL_ENABLE_FLAGS {
                                 if let Err(e) = zlm_client.set_server_config(
                                     &secret, key, value,
                                 ).await {
@@ -1309,16 +1293,12 @@ mod tests {
             .await
             .expect("set_server_config hook.enable");
 
-        // (b) rtp.port_range —— 验证 "start-end" 格式转换（comma → dash）
-        let rtp_range_raw = "30000,30200";
-        let (start, end) =
-            crate::zlm::client::parse_port_range(rtp_range_raw).expect("parse_port_range");
-        let rtp_value = format!("{}-{}", start, end);
-        assert_eq!(rtp_value, "30000-30200", "comma must convert to dash");
-        zlm_client
-            .set_server_config(secret, "rtp.port_range", &rtp_value)
-            .await
-            .expect("set_server_config rtp.port_range");
+        // (b) rtp.port_range —— set_rtp_port_range helper handles comma→dash conversion
+        crate::zlm::client::set_rtp_port_range(
+            &zlm_client, secret, "rtp.port_range", "30000,30200",
+        )
+        .await
+        .expect("set_rtp_port_range rtp.port_range");
 
         // (c) send_rtp.port_range
         let srtp_value = format!("{}-{}", 40000, 40200);
@@ -1328,14 +1308,7 @@ mod tests {
             .expect("set_server_config send_rtp.port_range");
 
         // (d) 协议开关
-        for (key, value) in [
-            ("protocol.enable_rtsp", "1"),
-            ("protocol.enable_rtmp", "1"),
-            ("protocol.enable_hls", "1"),
-            ("protocol.enable_http", "1"),
-            ("protocol.enable_ws", "1"),
-            ("protocol.enable_rtp", "1"),
-        ] {
+        for (key, value) in PROTOCOL_ENABLE_FLAGS {
             zlm_client
                 .set_server_config(secret, key, value)
                 .await
