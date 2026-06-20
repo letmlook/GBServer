@@ -7,9 +7,33 @@
 //! 状态类别：设备在线/流状态/会话状态/GPS位置/告警/级联SendRtp/媒体节点负载
 
 use std::collections::HashMap;
-use std::sync::Arc;
-use tokio::sync::{RwLock, broadcast};
+use std::sync::{Arc, RwLock};
+use tokio::sync::broadcast;
 use chrono::{DateTime, Utc};
+
+// ---------------------------------------------------------------------------
+// Phase 4.6: `InMemoryBackend` now uses `std::sync::RwLock` (was
+// `tokio::sync::RwLock` previously, but `blocking_read()`/`blocking_write()`
+// panic from inside an async runtime, breaking the `select_least_loaded` call
+// path). The trait methods are still sync; we bridge into async callers via
+// `block_in_place` so the executor can park the current thread while we hold
+// the std RwLock briefly.
+macro_rules! read_lock {
+    ($lock:expr) => {{
+        match tokio::runtime::Handle::try_current() {
+            Ok(_h) => tokio::task::block_in_place(|| $lock.read().expect("in-memory rwlock read")),
+            Err(_) => $lock.read().expect("in-memory rwlock read"),
+        }
+    }};
+}
+macro_rules! write_lock {
+    ($lock:expr) => {{
+        match tokio::runtime::Handle::try_current() {
+            Ok(_h) => tokio::task::block_in_place(|| $lock.write().expect("in-memory rwlock write")),
+            Err(_) => $lock.write().expect("in-memory rwlock write"),
+        }
+    }};
+}
 
 // ---------------------------------------------------------------------------
 // 状态数据模型
@@ -124,6 +148,9 @@ pub trait StateBackend: Send + Sync {
     fn media_server_get(&self, id: &str) -> Option<MediaServerLoad>;
     fn media_server_all(&self) -> Vec<(String, MediaServerLoad)>;
     fn media_server_select_least_loaded(&self) -> Option<String>;
+    /// Phase 4.6: select least-loaded among only the allowed ids (offline filtered).
+    /// Returns `None` when none of `allowed_ids` are present or when no flow count exists.
+    fn media_server_select_least_loaded_filtered(&self, allowed_ids: &[String]) -> Option<String>;
 
     fn position_set(&self, id: &str, state: &MobilePositionState);
     fn position_get(&self, id: &str) -> Option<MobilePositionState>;
@@ -171,76 +198,84 @@ impl Default for InMemoryBackend {
 
 impl StateBackend for InMemoryBackend {
     fn device_online_set(&self, id: &str, state: &DeviceOnlineState) {
-        self.devices.blocking_write().insert(id.to_string(), state.clone());
+        { write_lock!(self.devices) }.insert(id.to_string(), state.clone());
     }
     fn device_online_get(&self, id: &str) -> Option<DeviceOnlineState> {
-        self.devices.blocking_read().get(id).cloned()
+        { read_lock!(self.devices) }.get(id).cloned()
     }
     fn device_online_all(&self) -> Vec<(String, DeviceOnlineState)> {
-        self.devices.blocking_read().iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+        { read_lock!(self.devices) }.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
     }
 
     fn stream_set(&self, id: &str, state: &StreamState) {
-        self.streams.blocking_write().insert(id.to_string(), state.clone());
+        { write_lock!(self.streams) }.insert(id.to_string(), state.clone());
     }
     fn stream_get(&self, id: &str) -> Option<StreamState> {
-        self.streams.blocking_read().get(id).cloned()
+        { read_lock!(self.streams) }.get(id).cloned()
     }
     fn stream_del(&self, id: &str) {
-        self.streams.blocking_write().remove(id);
+        { write_lock!(self.streams) }.remove(id);
     }
     fn stream_all(&self) -> Vec<(String, StreamState)> {
-        self.streams.blocking_read().iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+        { read_lock!(self.streams) }.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
     }
 
     fn invite_set(&self, id: &str, state: &InviteSessionState) {
-        self.invites.blocking_write().insert(id.to_string(), state.clone());
+        { write_lock!(self.invites) }.insert(id.to_string(), state.clone());
     }
     fn invite_get(&self, id: &str) -> Option<InviteSessionState> {
-        self.invites.blocking_read().get(id).cloned()
+        { read_lock!(self.invites) }.get(id).cloned()
     }
     fn invite_del(&self, id: &str) {
-        self.invites.blocking_write().remove(id);
+        { write_lock!(self.invites) }.remove(id);
     }
 
     fn media_server_set(&self, id: &str, state: &MediaServerLoad) {
-        self.media_servers.blocking_write().insert(id.to_string(), state.clone());
+        { write_lock!(self.media_servers) }.insert(id.to_string(), state.clone());
     }
     fn media_server_get(&self, id: &str) -> Option<MediaServerLoad> {
-        self.media_servers.blocking_read().get(id).cloned()
+        { read_lock!(self.media_servers) }.get(id).cloned()
     }
     fn media_server_all(&self) -> Vec<(String, MediaServerLoad)> {
-        self.media_servers.blocking_read().iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+        { read_lock!(self.media_servers) }.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
     }
     fn media_server_select_least_loaded(&self) -> Option<String> {
-        self.media_servers.blocking_read()
+        { read_lock!(self.media_servers) }
             .iter()
             .filter(|(_, v)| v.online)
             .min_by_key(|(_, v)| v.stream_count)
             .map(|(k, _)| k.clone())
     }
+    fn media_server_select_least_loaded_filtered(&self, allowed_ids: &[String]) -> Option<String> {
+        let allowed: std::collections::HashSet<&str> =
+            allowed_ids.iter().map(|s| s.as_str()).collect();
+        { read_lock!(self.media_servers) }
+            .iter()
+            .filter(|(k, v)| v.online && allowed.contains(k.as_str()))
+            .min_by_key(|(_, v)| v.stream_count)
+            .map(|(k, _)| k.clone())
+    }
 
     fn position_set(&self, id: &str, state: &MobilePositionState) {
-        self.positions.blocking_write().insert(id.to_string(), state.clone());
+        { write_lock!(self.positions) }.insert(id.to_string(), state.clone());
     }
     fn position_get(&self, id: &str) -> Option<MobilePositionState> {
-        self.positions.blocking_read().get(id).cloned()
+        { read_lock!(self.positions) }.get(id).cloned()
     }
 
     fn cascade_sendrtp_set(&self, id: &str, state: &CascadeSendRtpState) {
-        self.cascade_sendrtp.blocking_write().insert(id.to_string(), state.clone());
+        { write_lock!(self.cascade_sendrtp) }.insert(id.to_string(), state.clone());
     }
     fn cascade_sendrtp_get(&self, id: &str) -> Option<CascadeSendRtpState> {
-        self.cascade_sendrtp.blocking_read().get(id).cloned()
+        { read_lock!(self.cascade_sendrtp) }.get(id).cloned()
     }
     fn cascade_sendrtp_del(&self, id: &str) {
-        self.cascade_sendrtp.blocking_write().remove(id);
+        { write_lock!(self.cascade_sendrtp) }.remove(id);
     }
 
     // E1: scheduler/record_plan active recordings
     fn active_recording_set(&self, channel_id: i64, state: &ActiveRecordingState) {
-        self.cascade_sendrtp.blocking_write(); // ensure lock ordering
-        let mut recordings = self.cascade_sendrtp.blocking_write();
+        let mut recordings = { write_lock!(self.cascade_sendrtp) };
         recordings.insert(format!("rec:{}", channel_id), CascadeSendRtpState {
             cascade_call_id: format!("rec:{}", channel_id),
             platform_id: state.media_server_id.clone(),
@@ -253,7 +288,7 @@ impl StateBackend for InMemoryBackend {
     }
     fn active_recording_get(&self, channel_id: i64) -> Option<ActiveRecordingState> {
         let key = format!("rec:{}", channel_id);
-        let recordings = self.cascade_sendrtp.blocking_read();
+        let recordings = { read_lock!(self.cascade_sendrtp) };
         recordings.get(&key).map(|_| ActiveRecordingState {
             channel_id,
             device_id: String::new(),
@@ -267,10 +302,10 @@ impl StateBackend for InMemoryBackend {
     }
     fn active_recording_del(&self, channel_id: i64) {
         let key = format!("rec:{}", channel_id);
-        self.cascade_sendrtp.blocking_write().remove(&key);
+        { write_lock!(self.cascade_sendrtp) }.remove(&key);
     }
     fn active_recordings_count(&self) -> usize {
-        self.cascade_sendrtp.blocking_read()
+        { read_lock!(self.cascade_sendrtp) }
             .iter()
             .filter(|(k, _)| k.starts_with("rec:"))
             .count()
@@ -534,6 +569,24 @@ impl StateBackend for RedisBackend {
             pick.into_iter().next()
         })
     }
+    fn media_server_select_least_loaded_filtered(&self, allowed_ids: &[String]) -> Option<String> {
+        if allowed_ids.is_empty() { return None; }
+        block_on_opt::<_, String>(async {
+            use redis::AsyncCommands;
+            let mut conn = self.get_conn().await?;
+            // Pull all members of the zset (small cardinality: media servers)
+            let all: Vec<String> = conn.zrange(&k_ms_zset(), 0, -1).await.ok()?;
+            let allowed: std::collections::HashSet<&str> =
+                allowed_ids.iter().map(|s| s.as_str()).collect();
+            // zset is ordered by score (stream_count) ascending — first match wins
+            for id in all {
+                if allowed.contains(id.as_str()) {
+                    return Some(id);
+                }
+            }
+            None
+        })
+    }
 
     fn position_set(&self, id: &str, state: &MobilePositionState) {
         let key = k_position(id);
@@ -740,6 +793,15 @@ impl StateStore {
     }
     pub fn select_least_loaded_server(&self) -> Option<String> {
         self.backend.media_server_select_least_loaded()
+    }
+
+    /// Phase 4.6: select the least-loaded media server among the allowed ids only.
+    /// `allowed_ids` is the list of online media server ids (from DB).
+    /// Returns `None` when no flow count exists for any allowed id — caller
+    /// is expected to fall back to the first online server.
+    pub fn select_least_loaded_server_filtered(&self, allowed_ids: &[String]) -> Option<String> {
+        if allowed_ids.is_empty() { return None; }
+        self.backend.media_server_select_least_loaded_filtered(allowed_ids)
     }
 
     // Position
