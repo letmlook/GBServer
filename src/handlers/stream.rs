@@ -694,14 +694,16 @@ pub async fn proxy_start(
             let http_port = zlm.http_port;
             let play_url = format!("rtsp://{}:554/{}", media_ip, stream_url);
             let flv_url = format!("http://{}:{}/{}.flv", media_ip, http_port, stream_url);
-            
+            // wsUrl: ZLM 默认 ws 端口 = http_port (websockets 复用 HTTP)
+            let ws_url = format!("ws://{}:{}/live/{}", media_ip, http_port, stream_url);
+
             Ok(Json(WVPResult::success(serde_json::json!({
                 "app": app,
                 "stream": stream,
                 "streamKey": key,
                 "playUrl": play_url,
                 "flvUrl": flv_url,
-                "wsUrl": format!("ws://127.0.0.1/live/{}", stream_url),
+                "wsUrl": ws_url,
                 "mediaServerId": ms_id,
                 "message": "Proxy stream started successfully"
             }))))

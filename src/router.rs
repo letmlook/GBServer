@@ -227,18 +227,9 @@ pub fn app(state: AppState) -> Router<AppState> {
         .route("/api/server/resource/info", get(server::resource_info))
         // Phase 4.5: 流状态统一视图
         .route("/api/server/stream/all", get(server::list_all_streams))
-        // Phase 7.3: 运维 API
-        .route("/api/rtp/receive/open", post(stub::rtp_receive_open))
-        .route("/api/rtp/receive/close/*path", post(stub::rtp_receive_close))
-        .route("/api/rtp/send/start", post(stub::rtp_send_start))
-        .route("/api/rtp/send/stop/*path", post(stub::rtp_send_stop))
-        .route("/api/ps/receive/open", post(stub::ps_receive_open))
-        .route("/api/ps/receive/close", post(stub::ps_receive_close))
-        .route("/api/ps/send/start", post(stub::ps_send_start))
-        .route("/api/ps/send/stop", post(stub::ps_send_stop))
-        .route("/api/server/shutdown", post(stub::server_shutdown))
-        .route("/api/server/version", get(stub::server_version))
-        .route("/api/server/config", get(stub::server_config))
+        // Phase 7.3: 运维 API moved to api_protected (real impl). Removing legacy
+        // public stubs for /api/rtp/* /api/ps/* /api/server/{shutdown,version,config}
+        // to avoid route conflicts with the protected real implementations.
         .route("/api/push/list", get(stream::push_list))
         .route("/api/push/add", post(stream::push_add))
         .route("/api/push/update", post(stream::push_update))
@@ -857,7 +848,6 @@ pub fn app(state: AppState) -> Router<AppState> {
         .route("/api/alarm/batch", delete(alarm::alarm_batch_delete))
         .route("/api/alarm/device/:device_id", delete(alarm::alarm_delete_by_device))
         .route("/api/alarm/before/:time", delete(alarm::alarm_delete_before_time))
-        .route("/api/log/list", get(stub::log_list))
         // Phase 7.6: system info/stats/version/online-users
         .route("/api/system/info", get(system::system_info))
         .route("/api/system/stats", get(system::system_stats))
@@ -889,7 +879,6 @@ pub fn app(state: AppState) -> Router<AppState> {
         .route("/api/sy/camera/list/circle", get(sy_camera::camera_list_circle))
         .route("/api/sy/camera/list/polygon", get(sy_camera::camera_list_polygon))
         .route("/api/sy/camera/list/address", get(sy_camera::camera_list_address))
-        .route("/api/sy/camera/list/ids", get(sy_camera::camera_list_ids))
         .route("/api/sy/camera/meeting/list", get(sy_camera::camera_meeting_list))
         .route("/api/sy/camera/control/play", get(sy_camera::camera_control_play))
         .route("/api/sy/camera/control/stop", get(sy_camera::camera_control_stop))
