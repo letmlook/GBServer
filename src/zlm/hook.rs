@@ -929,8 +929,19 @@ pub async fn handle_webhook(
         }
         "on_send_rtp_stopped" => {
             // Phase 4.1: SendRtp 停止通知（级联平台关闭推流）
+            // Phase 5.4: 按 stream 路由到 SendRtpManager 关闭对应 session
             if let Some(data) = serde_json::from_value::<StreamChangedData>(event.clone()).ok() {
                 tracing::info!("SendRTP stopped: {}/{}", data.app, data.stream);
+                // 5.4: 关闭 SendRtpManager 中匹配的 cascade session
+                if let Some(ref sip_server) = state.sip_server {
+                    let sip = sip_server.read().await;
+                    if let Some(session) = sip.send_rtp_manager().close_by_stream(&data.stream) {
+                        tracing::info!(
+                            "5.4 on_send_rtp_stopped → closed cascade session platform={} channel={} stream={}",
+                            session.platform_id, session.channel_id, data.stream
+                        );
+                    }
+                }
                 // 广播级联停止事件
                 state.ws_state.broadcast("sendRtpStopped", serde_json::json!({
                     "app": data.app,

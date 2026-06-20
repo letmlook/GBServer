@@ -109,6 +109,41 @@ impl SendRtpManager {
         self.sessions.remove(cascade_call_id).map(|(_, v)| v)
     }
 
+    /// Phase 5.4: 按 ZLM 推送的 stream_id 关闭 SendRtp 会话
+    ///
+    /// 用途：`on_send_rtp_stopped` hook 收到 ZLM 通知时按 `data.stream` 查表清理。
+    /// 匹配规则：
+    /// 1. 精确等于 `cascade_call_id`（大多数情况，cascade_call_id 形如 `cascade_{platform}_{channel}`）
+    /// 2. 前缀匹配（容忍 ZLM 在 stream 末尾追加 `.ts` / `-h264` 等后缀）
+    ///
+    /// 关闭后：
+    /// - `active` 置 false（保留 session 供查询）
+    /// - 同步到 StateStore（如已注入），用于跨节点一致性
+    /// - 返回被关闭的 session（供调用方做后续处理，如发 BYE 给上级）
+    pub fn close_by_stream(&self, stream_id: &str) -> Option<SendRtpSession> {
+        // 先收集匹配 key（DashMap iter 持 shard 读锁，必须先 drop 再 remove）
+        let matched_key: Option<String> = self
+            .sessions
+            .iter()
+            .find(|entry| {
+                entry.value().cascade_call_id == stream_id
+                    || stream_id.starts_with(&entry.value().cascade_call_id)
+            })
+            .map(|entry| entry.key().clone());
+
+        if let Some(key) = matched_key {
+            if let Some(mut entry) = self.sessions.get_mut(&key) {
+                entry.active = false;
+            }
+            // 从 StateStore 删除
+            if let Some(ref store) = self.state_store {
+                store.remove_cascade_sendrtp(&key);
+            }
+            return self.sessions.remove(&key).map(|(_, v)| v);
+        }
+        None
+    }
+
     /// 按通道关闭所有会话
     pub fn close_by_channel(&self, channel_id: &str) -> Vec<SendRtpSession> {
         let snap: Vec<_> = self.sessions
@@ -646,5 +681,82 @@ mod tests {
         assert_eq!(mgr.active_count(), 1);
         mgr.close("c1");
         assert_eq!(mgr.active_count(), 0);
+    }
+
+    // ============ Phase 5.4: close_by_stream 单测 ============
+
+    /// close_by_stream 精确匹配 cascade_call_id
+    #[test]
+    fn phase5_close_by_stream_exact_match() {
+        let mgr = SendRtpManager::new();
+        mgr.handle_upstream_invite(
+            "cascade_plat1_ch1".into(), "plat1".into(), "ch1".into(),
+            "192.168.1.10".into(), 9000, "0x1234".into()
+        );
+        assert_eq!(mgr.active_count(), 1);
+
+        let closed = mgr.close_by_stream("cascade_plat1_ch1");
+        assert!(closed.is_some(), "精确匹配应能关闭 session");
+        let session = closed.unwrap();
+        assert_eq!(session.cascade_call_id, "cascade_plat1_ch1");
+        assert_eq!(session.platform_id, "plat1");
+        assert_eq!(mgr.active_count(), 0, "关闭后 active_count 应为 0");
+    }
+
+    /// close_by_stream 前缀匹配（容忍 ZLM 在 stream 末尾追加 .ts 等后缀）
+    #[test]
+    fn phase5_close_by_stream_prefix_match() {
+        let mgr = SendRtpManager::new();
+        mgr.handle_upstream_invite(
+            "cascade_plat1_ch1".into(), "plat1".into(), "ch1".into(),
+            "192.168.1.10".into(), 9000, "0x1234".into()
+        );
+
+        // ZLM 实际推送的 stream 可能带 .ts 后缀
+        let closed = mgr.close_by_stream("cascade_plat1_ch1.h264");
+        assert!(closed.is_some(), "前缀匹配应能命中");
+        assert_eq!(mgr.active_count(), 0);
+    }
+
+    /// close_by_stream 不匹配时返回 None 且不 panic
+    #[test]
+    fn phase5_close_by_stream_no_match() {
+        let mgr = SendRtpManager::new();
+        mgr.handle_upstream_invite(
+            "cascade_plat1_ch1".into(), "plat1".into(), "ch1".into(),
+            "192.168.1.10".into(), 9000, "0x1234".into()
+        );
+
+        let closed = mgr.close_by_stream("cascade_other_ch1");
+        assert!(closed.is_none(), "不应匹配其他 session");
+        assert_eq!(mgr.active_count(), 1, "无关 stream 不应影响 active session");
+
+        // 空字符串也不应 panic
+        let none = mgr.close_by_stream("");
+        assert!(none.is_none());
+    }
+
+    /// close_by_stream 同步到 StateStore
+    #[test]
+    fn phase5_close_by_stream_state_store_sync() {
+        use crate::state_store::StateStore;
+        use std::sync::Arc;
+
+        let store = Arc::new(StateStore::in_memory());
+        let mut mgr = SendRtpManager::new();
+        mgr.set_state_store(store.clone());
+
+        mgr.handle_upstream_invite(
+            "cascade_sync_test".into(), "plat".into(), "ch".into(),
+            "h".into(), 9000, "0x1".into()
+        );
+        assert!(store.get_cascade_sendrtp("cascade_sync_test").is_some());
+
+        let closed = mgr.close_by_stream("cascade_sync_test");
+        assert!(closed.is_some());
+        assert!(
+            store.get_cascade_sendrtp("cascade_sync_test").is_none(),
+            "close_by_stream 应同步从 StateStore 删除"
+        );
     }
 }
