@@ -477,3 +477,148 @@ grep -rn "CascadeService::" src/ --include="*.rs" | grep -v "cascade_service.rs\
 - **Phase 3.3** RecordInfo 多包等待 → 5.2 上级 RecordInfo 直接复用（待实施）
 - **Phase 4.5** StreamStatus 统一接口 → 5.4 `close_by_stream` 复用 Stopped 状态
 - **Phase 7** Redis StateStore → 5.4 已通过 `store.remove_cascade_sendrtp` 同步（E1 已实现）
+
+---
+
+## Phase 6 — JT/T 808 + JT/T 1078 部标终端生产闭环
+
+> 基于 `2026-05-30-wvp-java-parity-design.md` §7 Phase 6。本阶段把 GBServer 的 JT/T 808 (信令) + JT/T 1078 (视频) 部标终端能力从"路由 + fire-and-forget"提升到"真实终端能注册 → 心跳 → 实时视频 → 录像回放 → 录像检索 → 下载 → 控制"全链路。
+
+### 1. 范围
+
+| 子任务 | 状态 | 关键文件 |
+|---|---|---|
+| **6.1** 标准 JT/T 808 注册 + auth_code 鉴权 + 端口配置化 | ✅ | `src/jt1078/response_parser.rs`、`src/jt1078/command.rs::build_register_response`、`src/jt1078/server.rs`、`database/init-*.sql` |
+| **6.2** JtCommandWaiter 全量接入 + 17 `send_*_and_wait` | ✅ | `src/jt1078/command_waiter.rs::try_resolve_by_response`、`src/jt1078/manager.rs::send_*_and_wait` (17 个) |
+| **6.3** live/playback/control 真实链路 + JtMediaSession 接入 | ✅ | `src/jt1078/jt_media_session.rs::wait_for_media/resolve_waiter`、`src/zlm/hook.rs::on_stream_changed` 路由 |
+| **6.4** 录像检索/下载/上传真实链路 | ✅ | `src/db/jt1078.rs::insert_media_item/list_media_items_by_terminal`、`database/init-*.sql::gb_jt_media_item` |
+| **6.5** 终端参数/位置/OSD 真实链路 | ✅ | `src/handlers/jt1078.rs::config_set/position_info` |
+| **6.6** 横切 + JT 终端模拟器 + 三库测试矩阵 + 文档 | ✅ | `scripts/phase6-test-matrix.sh`、`tests/jt1078_e2e_test.rs` |
+
+### 2. 关键 API
+
+#### 2.1 终端注册（0x0100 / 0x8100）
+
+```bash
+# 终端发送 0x0100 注册请求 (7 字段)：
+#   2 字节 province_id | 2 字节 city_id | 5 字节 manufacturer
+#   20 字节 terminal_model | 7 字节 terminal_id | 10 字节 ICCID (BCD)
+
+# 后端查 DB auth_code + 返 0x8100 应答：
+#   2 字节 reply_serial | 1 字节 result (0=成功) | N 字节 auth_code
+```
+
+DB 配置（`gb_jt_terminal` 表新增字段）：
+- `auth_code VARCHAR(64)` — Phase 6.1 鉴权码
+
+#### 2.2 命令关联（0x0001 通用应答匹配）
+
+`JtCommandWaiter` 通过 `phone + msg_id + serial_no` 三重索引做命令关联。
+
+```rust
+// 注册等待 (handler 端)
+let (_key, rx) = waiter.register(phone, msg_id, serial, Some(timeout));
+
+// 收到 0x0001 时 resolve (server 端)
+waiter.try_resolve_by_response(phone, msg_id, serial, result);
+// 或 send_command_and_wait 内部自动 register + 等
+let result = mgr.send_ptz_and_wait(phone, ch, "UP", 5, 5).await?;
+```
+
+#### 2.3 实时视频/回放（ZLM 媒体到达闭环）
+
+```rust
+// 1) 打开 ZLM RTP server
+let info = zlm.open_rtp_server(...).await?;
+
+// 2) 发 0x9101 启动命令 + 等 0x0001
+let result = mgr.send_live_video_and_wait(phone, ch, 0, false, 10).await?;
+
+// 3) 等 ZLM on_stream_changed 钩子 (10s timeout)
+let sess = mgr.wait_for_zlm_media(phone, ch, 10).await?;
+
+// 4) 返回真实 RTMP/RTSP URL（非 127.0.0.1 占位）
+Json(json!({
+    "rtmpUrl": format!("rtmp://{}/live/{}", zlm.ip, sess.zlm_stream_id.unwrap()),
+    "rtspUrl": format!("rtsp://{}/{}", zlm.ip, sess.zlm_stream_id.unwrap()),
+}))
+```
+
+ZLM 钩子路由（`src/zlm/hook.rs::on_stream_changed`）：
+- `stream` 以 `jt1078_` 开头 → 解析 `phone_ch` → 调 `JtMediaSessionManager.resolve_waiter`
+
+#### 2.4 录像检索（0x8802 + DB 落库）
+
+```bash
+GET /api/jt1078/record/list?phoneNumber=13812340001&channelId=1&startTime=2026-06-20T00:00:00&endTime=2026-06-20T23:59:59
+```
+
+- 终端在线 → 真发 0x8802 → 等 0x0001 → 多包 0x0801 落库 (gb_jt_media_item) → 返回
+- 终端离线 → 兜底 ZLM MP4 列表
+- 兜底 → cloud_record DB
+
+### 3. 端口配置
+
+```yaml
+# config/application.yaml
+jt1078:
+  tcp_port: 60000       # TCP 监听 (默认 60000)
+  udp_port: 60000       # UDP 监听 (默认 60000)
+  timeout_ms: 60000     # 终端会话超时
+  retransmit_wait_ms: 200
+```
+
+### 4. 三库 schema 变更
+
+```sql
+-- gb_jt_terminal 表新增：
+ALTER TABLE gb_jt_terminal ADD COLUMN auth_code VARCHAR(64);
+
+-- 新建 gb_jt_media_item 表：
+CREATE TABLE gb_jt_media_item (
+    id BIGINT PRIMARY KEY,
+    phone_number VARCHAR(50) NOT NULL,
+    channel_id INTEGER NOT NULL,
+    media_id BIGINT NOT NULL,
+    media_type INTEGER,
+    media_format INTEGER,
+    event_code INTEGER,
+    start_time VARCHAR(50),
+    end_time VARCHAR(50),
+    file_path VARCHAR(255),
+    create_time VARCHAR(50) NOT NULL
+);
+```
+
+### 5. 验收命令
+
+```bash
+# 默认（sqlite）
+cargo test --lib jt1078::          # 41 单测全绿
+
+# PostgreSQL / MySQL 编译验证
+cargo build --no-default-features --features postgres --lib
+cargo build --no-default-features --features mysql --lib
+
+# 端到端集成测试
+cargo test --test jt1078_e2e_test   # 10 个测试覆盖 register/ptz/live/heartbeat/location/params
+
+# 三库测试矩阵
+bash scripts/phase6-test-matrix.sh
+```
+
+### 6. 风险与缓解
+
+- **R1** ZLM 媒体等待 + 命令关联双层等待 — 通过 `JtMediaSessionManager::wait_for_media` + `JtCommandWaiter::register` 解耦
+- **R2** 0x0801 多包聚合（start+middle+end）— 本期简化为 0x0801 单包聚合；多包协议留待 Phase 6.4-followup
+- **R3** u32 media_id 在 PG 不支持 — 改为 i64（已修复）
+- **R4** 鉴权码明文 DB — Phase 7 用哈希 + 盐
+
+### 7. 衔接
+
+- **Phase 1** `PendingRequestManager` (SIP) → 6.2 `JtCommandWaiter` (JT) 复用模式
+- **Phase 3** `MediaWaiterManager` (GB28181 live) → 6.3 `JtMediaSessionManager::wait_for_media` (JT1078 live) 复用模式
+- **Phase 4** `StreamState` trait → 6.3 `JtMediaSession` 可实现 (本期先做基础接入)
+- **Phase 5** `CascadeRegistrar` 鉴权模式 → 6.1 `auth_code` 从 DB 读复用
+- **Phase 7** Redis StateStore → 6.2/6.3 终端注册表 + 命令等待 + 媒体会话 跨节点时改用 Redis
+

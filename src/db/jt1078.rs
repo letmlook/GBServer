@@ -529,7 +529,7 @@ pub struct JtMediaItem {
     pub id: i32,
     pub phone_number: String,
     pub channel_id: i32,
-    pub media_id: u32,
+    pub media_id: i64,
     pub media_type: Option<i32>,
     pub media_format: Option<i32>,
     pub event_code: Option<i32>,
