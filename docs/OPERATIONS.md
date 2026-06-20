@@ -263,3 +263,92 @@ node scripts/parity-audit/extract-interface-coverage.js
 | Play URL returns 502 | ZLM unreachable | Check `zlm[*].ip` config + network ACLs |
 | Cloud records don't appear | ZLM `on_record_mp4` hook not POSTing | Verify `hook_url` matches `/api/zlm/hook` |
 | 105 Missing routes in parity audit | Upstream reference implementation changed | Re-run parity audit script, file issue |
+
+---
+
+## Phase 3 — 真实视频/录像闭环
+
+> 基于 `2026-05-30-wvp-java-parity-design.md` §7 Phase 3。本阶段把 Live / Playback / RecordInfo / Download / Talk-Broadcast 五类视频流从"骨架"升级到"生产闭环"。
+
+### 1. Live Play 真实化
+
+**API**：`POST /api/play/start/{device}/{channel}` 现在等 SIP 200 OK **且** ZLM 媒体到达（`on_stream_changed` 触发 `MediaWaiterManager::resolve_by_stream`），超时清理 RTP server + 发 BYE。
+
+- `src/handlers/play.rs::play_start` 改用 `send_play_invite_and_wait_media`（15s 媒体等待）
+- `src/zlm/hook.rs::sync_stream_changed` 在 `data.app == "rtp" && data.register` 时调 `sip.media_waiter_manager().resolve_by_stream`
+- `play_stop` 移除 talk BYE fallback；只走 live session 的 BYE
+
+**Subject 命名规范**（与 WVP Java 一致）：
+
+| 用途 | SSRC 前缀 | 类型 | Manager |
+|---|---|---|---|
+| Live Play | 0 | Play | `InviteSessionManager` |
+| Playback | 1 | Playback | `PlaybackInviteSession` |
+| Download | 2 | Download | `InviteSessionManager` + `DownloadManager` |
+| Talk | 3 | Audio | `TalkManager` |
+| Broadcast | 4 | Audio | `BroadcastManager` |
+
+### 2. Playback 真实化
+
+**API**：`POST /api/playback/start/{device}/{channel}` 不再回退到 `rtsp://127.0.0.1/live/...` 占位。
+
+- 先开 ZLM RTP server（端口自动分配）
+- 调 `send_playback_invite_and_wait`（15s 媒体等待）
+- pause/resume 改用 `send_playback_control(Pause/Resume)`，不再发裸 XML
+
+### 3. RecordInfo 多包等待
+
+**API**：`GET /api/playback/{device}/{channel}/record?page=N&count=M`
+
+- 真正等 SIP 多包 RecordInfo 响应（`PendingRequestManager::register_record_info_multi_packet` + `push_record_info_packet`，SumNum 自终结）
+- 分页：page 从 1 开始，count 1..200（默认 20）
+- 落库复用 `gb_cloud_record`（三态 cfg，禁止新建 `src/db/record.rs`）
+
+### 4. Download 真实化
+
+**API**：`POST /api/playback/{device}/{channel}/download/start` + `GET /download/progress/{streamId}`
+
+- `DownloadSession` 新增 `zlm_stream_id` / `zlm_app` / `current_bytes` / `total_bytes`
+- ZLM `on_stream_changed` 检测 `stream.starts_with("download_")` 时调 `download_manager.update_progress_percent` 切到 downloading
+- `update_progress` 改用绝对字节数（current_bytes / total_bytes * 100.0）
+- download BYE 真清理：关 RTP server + 移除 download session
+
+### 5. Talk / Broadcast 分流
+
+**API**：`POST /api/broadcast/start/{device}/{channel}` + `POST /api/broadcast/stop/{device}/{channel}`
+
+- 新增 `src/sip/gb28181/broadcast.rs`（独立 `BroadcastManager`，Subject SSRC 前缀 4）
+- `broadcast_start` 改用 `send_broadcast_invite`（端口 `0` 让 ZLM 自动分配，避免与 talk 9100/9101 冲突 — 缓解 R4）
+- `broadcast_stop` 改用 `send_broadcast_bye`，与 talk BYE 互不影响
+- `TalkManager` 不动
+
+### 6. 验证清单
+
+```bash
+# 默认（sqlite）跑 lib 测试
+cargo test --lib
+
+# PostgreSQL
+cargo test --no-default-features --features postgres --lib
+
+# MySQL
+cargo test --no-default-features --features mysql --lib
+
+# 关键单测
+cargo test --lib handlers::playback::download_manager_tests
+cargo test --lib sip::gb28181::broadcast
+cargo test --lib sip::gb28181::pending_request::tests::test_register_record_info_multi_packet
+```
+
+### 7. 已知风险（详见 plan §"风险与缓解"）
+
+- **R1** 媒体到达超时（默认 15s，可由 `play_start` query 参数 `mediaTimeoutMs` 覆盖）
+- **R4** talk / broadcast 端口冲突（已用 ZLM 自动分配缓解）
+- **R5** `on_stream_changed` 误命中其它 stream（仅 `data.stream == expected_stream_id` 时 resolve）
+
+### 8. 主流程代码搜索占位 URL 应为 0 命中
+
+```bash
+# 排除测试 fixture 后应该为 0
+grep -rn "rtsp://127.0.0.1/live" src/ | grep -v tests/ | wc -l
+```

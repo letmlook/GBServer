@@ -143,6 +143,10 @@ pub struct PendingRequestManager {
     by_device_sn: Arc<DashMap<String, PendingRequest>>,
     /// 超时阈值（秒）
     default_timeout_secs: u64,
+    /// Phase 3.3: 多包聚合缓冲（按 call_id 索引）
+    /// value: (累积 buffer, 已收包数, SumNum, sender)
+    /// sender 直接持有（PendingRequest::Clone 会丢失 response_sender）。
+    multi_packet_buffers: Arc<DashMap<String, (String, i32, i32, Option<oneshot::Sender<String>>)>>,
 }
 
 impl PendingRequestManager {
@@ -151,12 +155,110 @@ impl PendingRequestManager {
             by_call_id: Arc::new(DashMap::new()),
             by_device_sn: Arc::new(DashMap::new()),
             default_timeout_secs: 10,
+            multi_packet_buffers: Arc::new(DashMap::new()),
         }
     }
 
     pub fn with_timeout(mut self, default_timeout_secs: u64) -> Self {
         self.default_timeout_secs = default_timeout_secs;
         self
+    }
+
+    /// Phase 3.3: 注册一个多包 RecordInfo 请求
+    ///
+    /// 与 `register_with_receiver` 类似，但额外在 `multi_packet_buffers` 中创建缓冲状态。
+    /// 调用方在收到响应时调用 `push_record_info_packet` 累积；满 SumNum 时返回 true。
+    /// 返回 `(PendingRequest, Receiver<String>)` — receiver 在 `push_record_info_packet`
+    /// 达到 SumNum 时收到累积的完整 XML。
+    ///
+    /// **注意**：`PendingRequest` 的 `Clone` 实现会丢失 `response_sender`（避免 oneshot
+    /// 重复 send），所以 multi-packet 模式下 sender 由 `multi_packet_buffers` 中的
+    /// 最后一个元素持有，调用方在调用 `push_record_info_packet` 时直接拿 sender。
+    pub fn register_record_info_multi_packet(
+        &self,
+        device_id: &str,
+        sn: u32,
+        call_id: &str,
+        timeout_secs: u64,
+    ) -> (PendingRequest, oneshot::Receiver<String>) {
+        let (tx, rx) = oneshot::channel::<String>();
+        // 构造一个无 sender 的 PendingRequest（因为 sender 在 multi_packet_buffers 里）
+        let (mut req, _rx_unused) = PendingRequest::new(
+            device_id.to_string(),
+            sn,
+            PendingCmdType::RecordInfo,
+            call_id.to_string(),
+            timeout_secs,
+        );
+        req.response_sender = None; // 显式确保不存 sender
+        self.by_call_id.insert(call_id.to_string(), req.clone());
+        let ds_key = format!("{}:{}", device_id, sn);
+        self.by_device_sn.insert(ds_key, req.clone());
+        // 初始化缓冲：buffer="", received=0, sum_num=0 (sum_num 在第一个 packet 到达时更新)
+        // 最后一个元素是 sender —— 收齐时直接 send(buf)
+        self.multi_packet_buffers
+            .insert(call_id.to_string(), (String::new(), 0, 0, Some(tx)));
+        (req, rx)
+    }
+
+    /// Phase 3.3: 推入一个 RecordInfo 响应 packet
+    ///
+    /// - 从 packet 的 XML 中提取 `<SumNum>` 和本包的 item 数；
+    /// - 第一个 packet 用其 SumNum 初始化预期总数；
+    /// - 后续 packet 累积 item 节点到 buffer；
+    /// - 当 received_count >= sum_num 时移除缓冲，send(buf) 给等待端，返回累积的 XML。
+    ///
+    /// 返回 Some(accumulated_xml) 表示收齐；None 表示未收齐或未注册。
+    pub fn push_record_info_packet(&self, call_id: &str, body: &str) -> Option<String> {
+        use crate::sip::gb28181::XmlParser;
+        let sum_num = extract_sum_num(body);
+        // 1. 第一个包到达：初始化 sum_num
+        let mut entry = self.multi_packet_buffers.get_mut(call_id)?;
+        if entry.2 == 0 {
+            entry.2 = sum_num;
+        }
+        let current_sum = entry.2;
+        if entry.1 == 0 {
+            // 第一个包：整段作为初始 buffer（保留 <Response> 头）
+            entry.0 = body.to_string();
+        } else {
+            // 后续包：只 append RecordItem 节点，避免覆盖前面的 <Response> 头
+            let items = XmlParser::extract_record_items(body);
+            for item in items {
+                entry.0.push_str(&item);
+            }
+        }
+        entry.1 += 1;
+        let received = entry.1;
+        drop(entry);
+
+        // 2. 检查是否收齐
+        if current_sum > 0 && received >= current_sum {
+            if let Some((_, (buf, _, _, tx_opt))) = self.multi_packet_buffers.remove(call_id) {
+                // 清理 by_call_id / by_device_sn
+                if let Some((_, req)) = self.by_call_id.remove(call_id) {
+                    let ds_key = format!("{}:{}", req.device_id, req.sn);
+                    self.by_device_sn.remove(&ds_key);
+                }
+                // 通知等待端（multi-packet 模式 sender 在 buffer 里）
+                if let Some(tx) = tx_opt {
+                    let _ = tx.send(buf.clone());
+                }
+                return Some(buf);
+            }
+        }
+        None
+    }
+
+    /// Phase 3.3: 取消多包聚合（用于超时清理）
+    pub fn cancel_multi_packet(&self, call_id: &str) -> bool {
+        self.multi_packet_buffers.remove(call_id).is_some()
+    }
+
+    /// Phase 3.3: 检查 call_id 是否已注册多包 RecordInfo
+    /// (routing 用，未注册时回退到原 complete 路径以兼容单包 RecordInfo)
+    pub fn is_multi_packet_registered(&self, call_id: &str) -> bool {
+        self.multi_packet_buffers.contains_key(call_id)
     }
 
     /// 注册一个新的待等请求，返回请求元数据
@@ -433,6 +535,85 @@ mod tests {
         assert_eq!(removed.len(), 1);
         assert_eq!(mgr.pending_count(), 0);
     }
+
+    /// Phase 3.3: RecordInfo 多包累积 — 3 个 packet（SumNum=3），全部到达后返回累积 XML
+    #[tokio::test]
+    async fn test_register_record_info_multi_packet_completes_after_sum_num() {
+        let mgr = PendingRequestManager::new();
+        let (_req, mut rx) = mgr.register_record_info_multi_packet(
+            "34020000001110000001", 100, "call-mp-1", 15,
+        );
+        assert_eq!(mgr.pending_count(), 1);
+
+        let packet1 = r#"<?xml version="1.0"?>
+<Response>
+<CmdType>RecordInfo</CmdType>
+<SN>100</SN>
+<SumNum>3</SumNum>
+<RecordList>
+<Item><DeviceID>ch1</DeviceID><Name>seg1</Name><FilePath>/r/1.mp4</FilePath><StartTime>2026-06-10T10:00:00</StartTime><EndTime>2026-06-10T10:30:00</EndTime></Item>
+<Item><DeviceID>ch1</DeviceID><Name>seg2</Name><FilePath>/r/2.mp4</FilePath><StartTime>2026-06-10T11:00:00</StartTime><EndTime>2026-06-10T11:30:00</EndTime></Item>
+</RecordList>
+</Response>"#;
+        let result = mgr.push_record_info_packet("call-mp-1", packet1);
+        assert!(result.is_none(), "first packet should not complete");
+
+        let packet2 = r#"<?xml version="1.0"?>
+<Response>
+<CmdType>RecordInfo</CmdType>
+<SN>100</SN>
+<SumNum>3</SumNum>
+<RecordList>
+<Item><DeviceID>ch1</DeviceID><Name>seg3</Name><FilePath>/r/3.mp4</FilePath><StartTime>2026-06-10T12:00:00</StartTime><EndTime>2026-06-10T12:30:00</EndTime></Item>
+</RecordList>
+</Response>"#;
+        let result = mgr.push_record_info_packet("call-mp-1", packet2);
+        assert!(result.is_none(), "second packet should not complete");
+
+        let packet3 = r#"<?xml version="1.0"?>
+<Response>
+<CmdType>RecordInfo</CmdType>
+<SN>100</SN>
+<SumNum>3</SumNum>
+<RecordList>
+<Item><DeviceID>ch1</DeviceID><Name>seg4</Name><FilePath>/r/4.mp4</FilePath></Item>
+<Item><DeviceID>ch1</DeviceID><Name>seg5</Name><FilePath>/r/5.mp4</FilePath></Item>
+</RecordList>
+</Response>"#;
+        let result = mgr.push_record_info_packet("call-mp-1", packet3);
+        let accumulated = result.expect("third packet should complete");
+        assert!(accumulated.contains("seg1"));
+        assert!(accumulated.contains("seg3"));
+        assert!(accumulated.contains("seg5"));
+        assert_eq!(mgr.pending_count(), 0);
+
+        // rx 收到累积的 XML
+        let xml = tokio::time::timeout(Duration::from_secs(1), rx)
+            .await
+            .expect("rx not received within 1s")
+            .expect("rx not cancelled");
+        assert!(xml.contains("seg1"));
+        assert!(xml.contains("seg5"));
+    }
+
+    /// Phase 3.3: 未知 call_id 的 packet 不影响 pending
+    #[tokio::test]
+    async fn test_push_record_info_packet_for_unknown_call_id_returns_none() {
+        let mgr = PendingRequestManager::new();
+        let result = mgr.push_record_info_packet("never-registered", "<Response/>");
+        assert!(result.is_none());
+    }
+
+    /// Phase 3.3: cancel_multi_packet 清理缓冲
+    #[tokio::test]
+    async fn test_cancel_multi_packet_removes_buffer() {
+        let mgr = PendingRequestManager::new();
+        let (_req, _rx) = mgr.register_record_info_multi_packet(
+            "34020000001110000001", 200, "call-cancel", 15,
+        );
+        assert!(mgr.cancel_multi_packet("call-cancel"));
+        assert!(!mgr.cancel_multi_packet("call-cancel"));
+    }
 }
 
 // ============================================================================
@@ -456,6 +637,8 @@ impl ResponseRouter {
     /// 路由 SIP MESSAGE 响应（MESSAGE 是请求也是响应，body 中带 Response）
     ///
     /// 从 XML 提取 CmdType，返回完成后的 XML（供 parse_response 使用）。
+    /// Phase 3.3: RecordInfo 多包时由 `pending.push_record_info_packet` 累积，
+    /// SumNum 达到后才返回累积 XML。
     pub fn route_message_response(&self, body: &str, call_id: &str) -> Option<(PendingCmdType, String)> {
         // 不依赖有 bug 的 XmlParser::parse（无法处理 Response 嵌套），
         // 直接用字符串匹配取 <CmdType>X</CmdType>，更稳。
@@ -472,6 +655,18 @@ impl ResponseRouter {
         };
 
         if let Some(pt) = pending_type {
+            // Phase 3.3: RecordInfo 走多包路径（如果已注册 multi-packet）；
+            // 若未注册多包（单包 RecordInfo 兼容），回退到原 complete 路径
+            if pt == PendingCmdType::RecordInfo {
+                if self.pending.is_multi_packet_registered(call_id) {
+                    if let Some(accumulated) = self.pending.push_record_info_packet(call_id, body) {
+                        return Some((pt, accumulated));
+                    }
+                    // 多包已注册但未收齐：不返回（让调用方继续等待）
+                    return None;
+                }
+                // 未注册多包 → 走原 complete 路径（兼容单包 RecordInfo）
+            }
             if let Some(xml) = self.pending.complete(call_id, body) {
                 return Some((pt, xml));
             }
@@ -542,6 +737,20 @@ fn extract_cmd_type(xml: &str) -> &str {
         None => return "",
     };
     xml[start..end_close].trim()
+}
+
+/// 从 RecordInfo 响应 XML 中提取 <SumNum> 的值，未找到返回 0
+fn extract_sum_num(xml: &str) -> i32 {
+    let open = match xml.find("<SumNum>") {
+        Some(idx) => idx,
+        None => return 0,
+    };
+    let start = open + "<SumNum>".len();
+    let end_close = match xml[start..].find("</SumNum>") {
+        Some(idx) => start + idx,
+        None => return 0,
+    };
+    xml[start..end_close].trim().parse().unwrap_or(0)
 }
 
 fn sip_reason_phrase(code: u16) -> &'static str {

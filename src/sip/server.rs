@@ -25,6 +25,7 @@ use crate::sip::gb28181::invite_session::{
     build_invite_sdp, build_playback_sdp, InviteSessionManager, InviteSessionStatus, SdpInfo,
 };
 use crate::sip::gb28181::talk::{build_talk_sdp as build_audio_sdp, TalkManager, TalkStatus};
+use crate::sip::gb28181::broadcast::{BroadcastManager, BroadcastSession, BroadcastStatus};
 use crate::sip::gb28181::{DeviceManager, SessionManager, XmlParser};
 use crate::sip::gb28181::ssrc::SsrcManager;
 use crate::sip::gb28181::stream_reconnect::StreamReconnectManager;
@@ -199,6 +200,8 @@ pub struct SipServer {
     session_manager: Arc<SessionManager>,
     invite_session_manager: Arc<InviteSessionManager>,
     talk_manager: Arc<TalkManager>,
+    /// Phase 3.5: 语音广播会话管理（设备 → 多个客户端）
+    broadcast_manager: Arc<BroadcastManager>,
     catalog_subscription_manager: Arc<CatalogSubscriptionManager>,
     transaction_manager: Arc<TransactionManager>,
     dialog_manager: Arc<DialogManager>,
@@ -243,6 +246,7 @@ impl SipServer {
             session_manager: Arc::new(SessionManager::new()),
             invite_session_manager: Arc::new(InviteSessionManager::new()),
             talk_manager: Arc::new(TalkManager::new()),
+            broadcast_manager: Arc::new(BroadcastManager::new()),
             catalog_subscription_manager: Arc::new(CatalogSubscriptionManager::new()),
             transaction_manager: Arc::new(TransactionManager::new()),
             dialog_manager: Arc::new(DialogManager::new()),
@@ -346,6 +350,18 @@ impl SipServer {
 
     pub fn talk_manager(&self) -> Arc<TalkManager> {
         self.talk_manager.clone()
+    }
+
+    /// Phase 3.5: 公开 BroadcastManager 访问器，让 broadcast_* 走独立 manager
+    pub fn broadcast_manager(&self) -> Arc<BroadcastManager> {
+        self.broadcast_manager.clone()
+    }
+
+    /// Phase 3.1: 公开访问器，让 ZLM hook 能直接 resolve 等待器
+    /// (保留 `notify_media_ready_by_stream` async 包装作为外部 API，
+    ///  本访问器供 hook 内部用。)
+    pub fn media_waiter_manager(&self) -> Arc<MediaWaiterManager> {
+        self.media_waiter_manager.clone()
     }
 
     pub async fn start(&mut self) -> Result<()> {
@@ -3119,13 +3135,150 @@ f=v/1/96/1/2/1/1/0
         tracing::info!("Sent TALK BYE to device {} channel {}", device_id, channel_id);
         
         self.talk_manager.update_status(call_id, TalkStatus::Terminating).await;
-        
+
         if let Some(ref stream_id) = session.zlm_stream_id {
             if let Some(ref zlm) = self.zlm_client {
                 let _ = zlm.close_rtp_server(stream_id).await;
             }
         }
-        
+
+        Ok(())
+    }
+
+    /// Phase 3.5: 发送语音广播 INVITE（设备 → 多个客户端方向，SSRC 前缀 4）
+    ///
+    /// 与 `send_talk_invite` 区别：talk 是客户端 → 设备（一对一），
+    /// broadcast 是设备 → 客户端（一对多），SSRC 前缀 4。
+    /// 设备推流到 ZLM RTP server（端口由 ZLM 自动分配避免与 talk 9100/9101 冲突）。
+    pub async fn send_broadcast_invite(
+        &self,
+        device_id: &str,
+        channel_id: &str,
+    ) -> Result<String> {
+        // 1. 提前开 ZLM RTP server，让设备知道推到哪个端口
+        let stream_id = format!("broadcast_{}_{}", device_id, channel_id);
+        let mut session = BroadcastSession::new(
+            &format!("bc_{}_{}", device_id, chrono::Utc::now().timestamp_millis()),
+            device_id,
+            channel_id,
+        );
+        session.set_zlm_stream(&stream_id);
+
+        if let Some(ref zlm) = self.zlm_client {
+            let rtp_req = crate::zlm::OpenRtpServerRequest {
+                secret: zlm.secret.clone(),
+                stream_id: stream_id.clone(),
+                port: Some(0), // Phase 3.5 R4 缓解：让 ZLM 自动分配端口避免与 talk 冲突
+                use_tcp: Some(false),
+                rtp_type: Some(0),
+                recv_port: None,
+            };
+            match zlm.open_rtp_server(&rtp_req).await {
+                Ok(rtp_server) => {
+                    session.set_local_port(rtp_server.port);
+                    tracing::info!("ZLM RTP server opened for broadcast on port {}", rtp_server.port);
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to open ZLM RTP server for broadcast: {}", e);
+                }
+            }
+        }
+
+        // 2. 发送 SIP INVITE（SSRC 第 4 段前缀 4 表示 Audio/Broadcast）
+        let socket = self.socket.read().await;
+        let socket = socket.as_ref().ok_or_else(|| anyhow::anyhow!("Socket not initialized"))?;
+        let device_addr = self.device_manager.get_address(device_id).await
+            .ok_or_else(|| anyhow::anyhow!("Device {} not registered", device_id))?;
+        let call_id = session.call_id.clone();
+        let branch = generate_branch();
+        let cseq = "INVITE 1".to_string();
+
+        // SSRC 前缀 4 = Audio/Broadcast (与 WVP Java 一致)
+        let ssrc = format!("4{:0>9}0", &device_id[..device_id.len().min(9)]);
+
+        let via = format!("SIP/2.0/UDP {}:{};branch={};rport",
+            self.config.ip, self.config.port, branch);
+        let from = format!("<sip:{}@{}:{}>;tag={}",
+            self.config.device_id, self.config.ip, self.config.port, generate_tag());
+        let to = format!("<sip:{}@{}:{}>", channel_id, device_addr.ip(), device_addr.port());
+        let contact = format!("<sip:{}@{}:{}>", self.config.device_id, self.config.ip, self.config.port);
+        // Subject: serverGbId:ssrc,deviceGbId:4
+        let subject = format!("{}:{},{}:4", self.config.device_id, ssrc, channel_id);
+
+        // SDP s=Play（与 WVP 兼容）；port 用 0（实际媒体由 ZLM RTP server 收）
+        let sdp = build_invite_sdp(&self.config.ip, session.local_port, "Play", Some(&ssrc));
+
+        let headers: Vec<(&str, &str)> = vec![
+            ("Via", &via),
+            ("From", &from),
+            ("To", &to),
+            ("Call-ID", &call_id),
+            ("CSeq", &cseq),
+            ("Contact", &contact),
+            ("Max-Forwards", "70"),
+            ("User-Agent", "GBServer/1.0"),
+            ("Subject", &subject),
+            ("Content-Type", "application/sdp"),
+        ];
+
+        let uri = format!("sip:{}@{}:{}", channel_id, device_addr.ip(), device_addr.port());
+        let message = Parser::generate_request("INVITE", &uri, &headers, Some(&sdp));
+        socket.send_to(message.as_bytes(), device_addr).await?;
+        drop(socket);
+        tracing::info!("Sent BROADCAST INVITE to device={} channel={} call_id={}",
+            device_id, channel_id, call_id);
+
+        // 3. 注册会话到 BroadcastManager
+        self.broadcast_manager.create(session.clone()).await;
+        self.broadcast_manager.activate(&call_id).await;
+
+        Ok(call_id)
+    }
+
+    /// Phase 3.5: 发送语音广播 BYE（走 BroadcastManager，与 talk BYE 互不影响）
+    pub async fn send_broadcast_bye(&self, device_id: &str, channel_id: &str) -> Result<()> {
+        let session = self.broadcast_manager
+            .get_by_device_channel(device_id, channel_id).await
+            .ok_or_else(|| anyhow::anyhow!("No active broadcast session for {}/{}", device_id, channel_id))?;
+
+        let socket = self.socket.read().await;
+        let socket = socket.as_ref().ok_or_else(|| anyhow::anyhow!("Socket not initialized"))?;
+        let device_addr = self.device_manager.get_address(device_id).await
+            .ok_or_else(|| anyhow::anyhow!("Device {} not registered", device_id))?;
+        let call_id = &session.call_id;
+        let branch = generate_branch();
+        let cseq = "BYE 1".to_string();
+
+        let via = format!("SIP/2.0/UDP {}:{};branch={};rport",
+            self.config.ip, self.config.port, branch);
+        let from = format!("<sip:{}@{}:{}>;tag={}",
+            self.config.device_id, self.config.ip, self.config.port, generate_tag());
+        let to = format!("<sip:{}@{}:{}>", channel_id, device_addr.ip(), device_addr.port());
+
+        let headers: Vec<(&str, &str)> = vec![
+            ("Via", &via),
+            ("From", &from),
+            ("To", &to),
+            ("Call-ID", call_id),
+            ("CSeq", &cseq),
+            ("Max-Forwards", "70"),
+        ];
+
+        let uri = format!("sip:{}@{}:{}", channel_id, device_addr.ip(), device_addr.port());
+        let message = Parser::generate_request("BYE", &uri, &headers, None);
+        socket.send_to(message.as_bytes(), device_addr).await?;
+        tracing::info!("Sent BROADCAST BYE to device {} channel {}", device_id, channel_id);
+
+        self.broadcast_manager.start_terminating(call_id).await;
+
+        if let Some(ref stream_id) = session.zlm_stream_id {
+            if let Some(ref zlm) = self.zlm_client {
+                let _ = zlm.close_rtp_server(stream_id).await;
+            }
+        }
+        self.broadcast_manager.terminate(call_id).await;
+        self.broadcast_manager.remove(call_id).await;
+
         Ok(())
     }
 
@@ -3271,8 +3424,113 @@ f=v/1/96/1/2/1/1/0
         
         socket.send_to(message.as_bytes(), device_addr).await?;
         tracing::info!("Sent RecordInfo query to device {} channel {} [{}-{}]", device_id, channel_id, start_time, end_time);
-        
+
         Ok(call_id)
+    }
+
+    /// Phase 3.3: 发送 RecordInfo 查询并等待多包响应，返回聚合后的 items
+    ///
+    /// 与 fire-and-forget 的 `send_record_info_query` 不同：
+    /// 1. 使用 `register_record_info_multi_packet` 注册多包缓冲
+    /// 2. await 累积完成的 XML（最多 15s）
+    /// 3. 解析为 `Vec<RecordInfoItem>` 返回
+    ///
+    /// 失败时（设备离线 / 超时）返回空 vec，调用方应降级到 ZLM MP4 文件列表。
+    pub async fn send_record_info_query_and_wait(
+        &self,
+        device_id: &str,
+        channel_id: &str,
+        start_time: &str,
+        end_time: &str,
+        sn: i64,
+    ) -> Result<Vec<RecordInfoItem>> {
+        let device_addr = self.device_manager.get_address(device_id).await
+            .ok_or_else(|| anyhow::anyhow!("Device {} not registered", device_id))?;
+
+        let call_id = format!("recinfo_{}_{}", device_id, chrono::Utc::now().timestamp_millis());
+        let branch = generate_branch();
+        let cseq = "MESSAGE 1".to_string();
+
+        // 1. 注册多包 RecordInfo 等待
+        let (_req, rx) = self
+            .pending_request_manager
+            .register_record_info_multi_packet(device_id, sn as u32, &call_id, 15);
+
+        let body = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<Query>
+<CmdType>RecordInfo</CmdType>
+<SN>{}</SN>
+<DeviceID>{}</DeviceID>
+<StartTime>{}</StartTime>
+<EndTime>{}</EndTime>
+</Query>"#,
+            sn, channel_id, start_time, end_time
+        );
+
+        let content_length = body.len().to_string();
+
+        let via = format!("SIP/2.0/UDP {}:{};branch={};rport",
+            self.config.ip, self.config.port, branch);
+        let from = format!("<sip:{}@{}:{}>;tag={}",
+            self.config.device_id, self.config.ip, self.config.port, generate_tag());
+        let to = format!("<sip:{}@{}:{}>", device_id, device_addr.ip(), device_addr.port());
+        let contact = format!("<sip:{}@{}:{}>", self.config.device_id, self.config.ip, self.config.port);
+
+        let headers: Vec<(&str, &str)> = vec![
+            ("Via", &via),
+            ("From", &from),
+            ("To", &to),
+            ("Call-ID", &call_id),
+            ("CSeq", &cseq),
+            ("Contact", &contact),
+            ("Max-Forwards", "70"),
+            ("User-Agent", "GBServer/1.0"),
+            ("Content-Type", "Application/MANSCDP+xml"),
+            ("Content-Length", &content_length),
+        ];
+
+        // 2. 发送 SIP MESSAGE
+        let socket = self.socket.read().await;
+        let socket = socket.as_ref().ok_or_else(|| anyhow::anyhow!("Socket not initialized"))?;
+        let uri = format!("sip:{}@{}:{}", device_id, device_addr.ip(), device_addr.port());
+        let message = Parser::generate_request("MESSAGE", &uri, &headers, Some(&body));
+        socket.send_to(message.as_bytes(), device_addr).await?;
+        drop(socket);
+        tracing::info!("Sent RecordInfo query (async) to device {} channel {} [{}-{}]",
+            device_id, channel_id, start_time, end_time);
+
+        // 3. 等待多包累积完成（15s 超时）
+        match tokio::time::timeout(Duration::from_secs(15), rx).await {
+            Ok(Ok(xml)) => {
+                let items = parse_record_info_items(&xml);
+                tracing::info!(
+                    "RecordInfo async: device={} channel={} received {} items",
+                    device_id, channel_id, items.len()
+                );
+                // 4. 落库复用 gb_cloud_record（已有三态 cfg，Phase 3.3 严禁新建 record 表）
+                if !items.is_empty() {
+                    if let Err(e) = crate::db::cloud_record::insert_records(
+                        &self.pool, device_id, channel_id,
+                        start_time, end_time, &items,
+                    ).await {
+                        tracing::warn!("Failed to persist RecordInfo to gb_cloud_record: {}", e);
+                    }
+                }
+                Ok(items)
+            }
+            Ok(Err(_cancelled)) => {
+                // 通道被关闭（注册已清理）；降级返回空
+                tracing::warn!("RecordInfo wait channel cancelled for {}", call_id);
+                self.pending_request_manager.cancel_multi_packet(&call_id);
+                Ok(Vec::new())
+            }
+            Err(_timeout) => {
+                tracing::warn!("RecordInfo wait timeout (15s) for {}", call_id);
+                self.pending_request_manager.cancel_multi_packet(&call_id);
+                Ok(Vec::new())
+            }
+        }
     }
 
     /// 旧 fire-and-forget 接口（保留兼容）
@@ -3477,11 +3735,121 @@ f=v/1/96/1/2/1/1/0
         
         let uri = format!("sip:{}@{}:{}", channel_id, device_addr.ip(), device_addr.port());
         let message = Parser::generate_request("INVITE", &uri, &headers, Some(&sdp));
-        
+
         socket.send_to(message.as_bytes(), device_addr).await?;
         tracing::info!("Sent PLAYBACK INVITE to device {} channel {} [{}-{}] at {}", device_id, channel_id, start_time, end_time, device_addr);
-        
+
         Ok(())
+    }
+
+    /// Phase 3.2: 发送 Playback INVITE 并等 SIP 200 OK + ZLM 媒体到达
+    ///
+    /// 流程：
+    /// 1. 注册 media waiter（call_id + zlm_stream_id + "rtp"）
+    /// 2. 发送 SIP INVITE（用 Subject 第 4 段 SSRC 前缀 1 标识 Playback）
+    /// 3. 等 SIP 200 OK
+    /// 4. 等 ZLM on_stream_changed 触发 media_waiter resolve
+    /// 5. 成功：返回 (call_id, zlm_stream_id)
+    ///
+    /// 失败/超时：清理 RTP server + media_waiter
+    pub async fn send_playback_invite_and_wait(
+        &self,
+        device_id: &str,
+        channel_id: &str,
+        start_time: &str,
+        end_time: &str,
+        zlm_stream_id: &str,
+        media_port: u16,
+        timeout_secs: u64,
+    ) -> Result<(String, String)> {
+        let call_id = format!("playback_{}_{}", device_id, chrono::Utc::now().timestamp_millis());
+
+        // 1. 注册 media waiter（早于发包）
+        let (_waiter_key, media_rx) = self
+            .media_waiter_manager()
+            .register(&call_id, zlm_stream_id, "rtp", timeout_secs);
+
+        // 2. 发送 SIP INVITE（自定义 Subject 字段第 4 段 SSRC 前缀 1 表示 Playback）
+        {
+            let socket = self.socket.read().await;
+            let socket = socket
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("Socket not initialized"))?;
+            let device_addr = self
+                .device_manager
+                .get_address(device_id)
+                .await
+                .ok_or_else(|| anyhow::anyhow!("Device {} not registered", device_id))?;
+            let branch = generate_branch();
+            let cseq = "INVITE 1".to_string();
+            let ssrc = format!("1{:0>9}0", &device_id[..device_id.len().min(9)]);
+
+            let via = format!(
+                "SIP/2.0/UDP {}:{};branch={};rport",
+                self.config.ip, self.config.port, branch
+            );
+            let from = format!(
+                "<sip:{}@{}:{}>;tag={}",
+                self.config.device_id, self.config.ip, self.config.port, generate_tag()
+            );
+            let to = format!(
+                "<sip:{}@{}:{}>",
+                channel_id, device_addr.ip(), device_addr.port()
+            );
+            let contact = format!(
+                "<sip:{}@{}:{}>",
+                self.config.device_id, self.config.ip, self.config.port
+            );
+            let sdp = build_playback_sdp(&self.config.ip, media_port, start_time, end_time);
+            let subject = format!("{}:{},{}:1", self.config.device_id, ssrc, channel_id);
+
+            let headers: Vec<(&str, &str)> = vec![
+                ("Via", &via),
+                ("From", &from),
+                ("To", &to),
+                ("Call-ID", &call_id),
+                ("CSeq", &cseq),
+                ("Contact", &contact),
+                ("Max-Forwards", "70"),
+                ("User-Agent", "GBServer/1.0"),
+                ("Subject", &subject),
+                ("Content-Type", "application/sdp"),
+            ];
+
+            let uri = format!(
+                "sip:{}@{}:{}",
+                channel_id, device_addr.ip(), device_addr.port()
+            );
+            let message = Parser::generate_request("INVITE", &uri, &headers, Some(&sdp));
+            socket.send_to(message.as_bytes(), device_addr).await?;
+            tracing::info!(
+                "Sent PLAYBACK INVITE (async) to device={} channel={} stream={} call_id={}",
+                device_id, channel_id, zlm_stream_id, call_id
+            );
+        }
+
+        // 3. 等 ZLM media waiter 触发（ZLM hook on_stream_changed 会 resolve）
+        match tokio::time::timeout(Duration::from_secs(timeout_secs), media_rx).await {
+            Ok(Ok(MediaWaitResult::MediaReady { zlm_stream_id: zid, app: _ })) => {
+                tracing::info!("Playback media ready: stream_id={}", zid);
+                Ok((call_id, zid))
+            }
+            Ok(Ok(MediaWaitResult::Timeout | MediaWaitResult::SessionNotFound)) => {
+                let _ = self.media_waiter_manager().cleanup_expired();
+                Err(anyhow::anyhow!("Playback media wait failed: not found"))
+            }
+            Ok(Err(_cancelled)) => {
+                let _ = self.media_waiter_manager().cleanup_expired();
+                Err(anyhow::anyhow!("Playback media wait channel cancelled"))
+            }
+            Err(_elapsed) => {
+                let _ = self.media_waiter_manager().cleanup_expired();
+                Err(anyhow::anyhow!(
+                    "Playback media timeout – stream did not arrive in {}s",
+                    timeout_secs
+                ))
+            }
+        }
     }
 
     /// 发送 GB28181 录像下载 INVITE（Subject 第 4 段 SSRC 前缀 2 表示 Download）

@@ -687,10 +687,13 @@ pub async fn proxy_start(
     match zlm.add_stream_proxy(&request).await {
         Ok(key) => {
             tracing::info!("Proxy stream started: {} -> {}", key, src_url);
-            
+
             let stream_url = format!("{}/{}", app, stream);
-            let play_url = format!("rtsp://127.0.0.1/live/{}", stream_url);
-            let flv_url = format!("http://127.0.0.1/flv/live.app?stream={}", stream_url);
+            // Phase 3.6: 改用真实 ZLM 节点 IP（不再 hardcode 127.0.0.1）
+            let media_ip = zlm.ip.clone();
+            let http_port = zlm.http_port;
+            let play_url = format!("rtsp://{}:554/{}", media_ip, stream_url);
+            let flv_url = format!("http://{}:{}/{}.flv", media_ip, http_port, stream_url);
             
             Ok(Json(WVPResult::success(serde_json::json!({
                 "app": app,
@@ -897,13 +900,15 @@ pub async fn push_upload(
 
 /// GET /api/proxy/one?id=...
 pub async fn proxy_one(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     axum::extract::Query(q): axum::extract::Query<ProxyOneQuery>,
 ) -> Json<WVPResult<serde_json::Value>> {
+    // Phase 3.6: 用真实 ZLM 节点 IP（不再 hardcode 127.0.0.1）
+    let media_ip = state.zlm_client.as_ref().map(|z| z.ip.clone()).unwrap_or_else(|| "127.0.0.1".to_string());
     Json(WVPResult::success(serde_json::json!({
         "id": q.id,
         "name": format!("proxy-{}", q.id),
-        "url": format!("rtsp://127.0.0.1/live/proxy{}", q.id),
+        "url": format!("rtsp://{}:554/live/proxy{}", media_ip, q.id),
     })))
 }
 

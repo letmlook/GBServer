@@ -698,14 +698,17 @@ pub async fn channel_play(
                 match zlm_client.add_stream_proxy(&request).await {
                     Ok(key) => {
                         let stream_url = format!("gb/{}${}", device_id, channel_id);
-                        let play_url = format!("rtsp://127.0.0.1/live/{}", stream_url);
-                        let flv_url = format!("http://127.0.0.1/flv/live.app?stream={}", stream_url);
+                        // Phase 3.6: 用真实 ZLM 节点 IP（不再 hardcode 127.0.0.1）
+                        let media_ip = zlm_client.ip.clone();
+                        let http_port = zlm_client.http_port;
+                        let play_url = format!("rtsp://{}:554/{}", media_ip, stream_url);
+                        let flv_url = format!("http://{}:{}/{}.flv", media_ip, http_port, stream_url);
                         let data = serde_json::json!({
                             "app": "gb",
                             "stream": key,
                             "playUrl": play_url,
                             "flvUrl": flv_url,
-                            "wsUrl": format!("ws://127.0.0.1/live/{}", stream_url),
+                            "wsUrl": format!("ws://{}:{}/{}.flv", media_ip, http_port, stream_url),
                             "deviceId": device_id,
                             "channelId": gb_channel_id,
                             "hasAudio": ch.has_audio.unwrap_or(false),

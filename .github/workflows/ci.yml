@@ -52,5 +52,8 @@ jobs:
           key: ${{ runner.os }}-cargo-target-${{ hashFiles('**/Cargo.lock') }}
       - name: Build
         run: cargo build --all-features --verbose
-      - name: Run tests
+      - name: Run tests (sqlite, default)
+        # Phase 3.7: 默认 feature 走 sqlite；CI 必须覆盖三库之一
+        run: cargo test --lib -- --nocapture
+      - name: Run tests (postgres)
         run: cargo test --features postgres -- --nocapture

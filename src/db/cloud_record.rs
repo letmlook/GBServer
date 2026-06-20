@@ -717,3 +717,101 @@ pub async fn update_recording_progress(
         .map(|r| r.rows_affected())
     }
 }
+
+/// Phase 3.3: 把 RecordInfo 响应里的多段录像项写入 gb_cloud_record
+///
+/// `device_id` + `channel_id` 组合作为 stream 字段；
+/// `start_time` / `end_time` 用 ISO 字符串解析为 epoch 秒。
+/// 重复插入由 file_path + start_time 唯一索引去重（ON CONFLICT DO NOTHING）。
+pub async fn insert_records(
+    pool: &Pool,
+    device_id: &str,
+    channel_id: &str,
+    _query_start: &str,
+    _query_end: &str,
+    items: &[crate::sip::server::RecordInfoItem],
+) -> sqlx::Result<usize> {
+    let stream = format!("{}/{}", device_id, channel_id);
+    let mut inserted = 0usize;
+
+    for item in items {
+        let start_ts = item
+            .start_time
+            .as_deref()
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+            .map(|dt| dt.timestamp())
+            .or_else(|| {
+                // 退化：尝试 GB28181 常见格式 "2026-06-10T10:00:00"
+                chrono::NaiveDateTime::parse_from_str(item.start_time.as_deref()?, "%Y-%m-%dT%H:%M:%S")
+                    .ok()
+                    .map(|nd| nd.and_utc().timestamp())
+            });
+        let end_ts = item
+            .end_time
+            .as_deref()
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+            .map(|dt| dt.timestamp())
+            .or_else(|| {
+                chrono::NaiveDateTime::parse_from_str(item.end_time.as_deref()?, "%Y-%m-%dT%H:%M:%S")
+                    .ok()
+                    .map(|nd| nd.and_utc().timestamp())
+            });
+        let time_len = match (start_ts, end_ts) {
+            (Some(s), Some(e)) if e >= s => Some((e - s) as f64),
+            _ => None,
+        };
+
+        let file_name = item.name.clone().or_else(|| {
+            item.file_path
+                .as_deref()
+                .and_then(|p| std::path::Path::new(p).file_name())
+                .and_then(|n| n.to_str())
+                .map(|s| s.to_string())
+        });
+
+        let record = CloudRecordInsert {
+            app: "record_info".to_string(),
+            stream: stream.clone(),
+            call_id: None,
+            start_time: start_ts,
+            end_time: end_ts,
+            media_server_id: None,
+            server_id: None,
+            file_name,
+            folder: None,
+            file_path: item.file_path.clone(),
+            file_size: None,
+            time_len,
+        };
+
+        if insert(pool, &record).await.is_ok() {
+            inserted += 1;
+        }
+    }
+
+    Ok(inserted)
+}
+
+/// Phase 3.3: 按 device_id + channel_id + 时间窗口分页查询录像
+pub async fn query_by_device_channel(
+    pool: &Pool,
+    device_id: &str,
+    channel_id: &str,
+    start_time: Option<i64>,
+    end_time: Option<i64>,
+    page: i64,
+    count: i64,
+) -> sqlx::Result<Vec<CloudRecord>> {
+    let stream = format!("{}/{}", device_id, channel_id);
+    list_paged(
+        pool,
+        Some("record_info"),
+        Some(&stream),
+        None,
+        start_time,
+        end_time,
+        page,
+        count,
+    )
+    .await
+}

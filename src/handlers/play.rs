@@ -71,17 +71,19 @@ pub async fn play_start(
         let id_part = if device_id.len() >= 9 { &device_id[0..9] } else { &device_id };
         let ssrc = format!("0{:0>9}0", id_part);
 
-        match sip.send_play_invite_and_wait(&device_id, &channel_id, rtp_server.port, Some(&ssrc)).await {
-            Ok(_) => {
-                tracing::info!("SIP INVITE sequence completed for {}/{}", device_id, channel_id);
+        match sip.send_play_invite_and_wait_media(
+            &device_id, &channel_id, rtp_server.port, &stream_id, Some(&ssrc), 15,
+        ).await {
+            Ok((_call_id, _zlm_stream_id)) => {
+                tracing::info!("SIP INVITE + ZLM media ready for {}/{}", device_id, channel_id);
                 // 构建播放地址返回给前端
                 let stream_url = format!("rtp/{}", stream_id);
                 // 这里 zlm_client 中尚未获取自身的配置公网 IP/Port
                 // 因为 WVP 接口通常提供各个协议的地址，我们可以用 127.0.0.1 或者 media server 配置地址
-                let media_ip = zlm_client.ip.clone(); 
+                let media_ip = zlm_client.ip.clone();
                 let http_port = zlm_client.http_port;
                 // 注意这里假设了几个默认端口（如果在配置里解析过可以替换），这里为了快速回掉先用通配协议配置
-                
+
                 let play_url = format!("rtsp://{}:554/{}", media_ip, stream_url);
                 let flv_url = format!("http://{}:{}/{}.flv", media_ip, http_port, stream_url);
                 let ws_url = format!("ws://{}:{}/{}.flv", media_ip, http_port, stream_url);
@@ -93,7 +95,7 @@ pub async fn play_start(
                     "playUrl": play_url,
                     "flvUrl": flv_url,
                     "wsUrl": ws_url,
-                    "ws_flv": ws_url, 
+                    "ws_flv": ws_url,
                     "hls": hls_url,
                     "webrtc": format!("webrtc://{}:{}/index/api/webrtc?app=rtp&stream={}&type=play", media_ip, http_port, stream_id),
                     "deviceId": device_id,
@@ -103,9 +105,11 @@ pub async fn play_start(
                 })));
             }
             Err(e) => {
-                tracing::error!("SIP INVITE failed: {}", e);
+                tracing::error!("SIP INVITE or media wait failed: {}", e);
                 // 清理已开启的 RTP 端口
                 let _ = zlm_client.close_rtp_server(&stream_id).await;
+                // 兜底再发一次 BYE，确保设备端不会持续推流
+                let _ = sip.send_session_bye(&device_id, &channel_id).await;
                 return Json(WVPResult::error(format!("SIP error: {}", e)));
             }
         }
@@ -141,6 +145,8 @@ pub async fn play_stop(
     }
 
     // 2. 发送 SIP BYE 挂断设备的推流（使用 InviteSession 中的 Call-ID）
+    // Phase 3.1: 删除 talk BYE fallback —— live 与 talk 是不同 session，
+    // talk BYE 走错语义；live 路径 3.1 保证 InviteSession 一定存在。
     let sip = sip_server.read().await;
     match sip.send_session_bye(&device_id, &channel_id).await {
         Ok(call_id) => {
@@ -149,11 +155,7 @@ pub async fn play_stop(
             return Json(WVPResult::success(serde_json::json!({"callId": call_id})));
         }
         Err(e) => {
-            tracing::warn!("Failed to send session BYE for stream {}: {}, trying talk BYE fallback", stream_id, e);
-            match sip.send_talk_bye(&device_id, &channel_id).await {
-                Ok(_) => tracing::info!("Talk BYE fallback succeeded for {}/{}", device_id, channel_id),
-                Err(e) => tracing::error!("Talk BYE fallback failed for {}/{}: {}", device_id, channel_id, e),
-            }
+            tracing::warn!("Failed to send session BYE for stream {}: {}", stream_id, e);
         }
     }
 
@@ -189,12 +191,14 @@ pub async fn broadcast_start(
     };
 
     let sip = sip_server.read().await;
-    match sip.send_talk_invite(&device_id, &channel_id).await {
-        Ok(_) => {
-            tracing::info!("Broadcast INVITE sent to {}/{}", device_id, channel_id);
+    // Phase 3.5: broadcast 走独立 BroadcastManager，不再共享 talk_invite
+    match sip.send_broadcast_invite(&device_id, &channel_id).await {
+        Ok(call_id) => {
+            tracing::info!("Broadcast INVITE sent to {}/{} call_id={}", device_id, channel_id, call_id);
             Json(WVPResult::success(serde_json::json!({
                 "deviceId": device_id,
                 "channelId": channel_id,
+                "callId": call_id,
                 "message": "Broadcast started"
             })))
         }
@@ -219,7 +223,8 @@ pub async fn broadcast_stop(
     };
 
     let sip = sip_server.read().await;
-    match sip.send_talk_bye(&device_id, &channel_id).await {
+    // Phase 3.5: broadcast BYE 走 BroadcastManager，与 talk 互不影响
+    match sip.send_broadcast_bye(&device_id, &channel_id).await {
         Ok(_) => {
             tracing::info!("Broadcast BYE sent to {}/{}", device_id, channel_id);
             Json(WVPResult::success(serde_json::json!({

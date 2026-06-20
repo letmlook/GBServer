@@ -516,7 +516,8 @@ impl AppState {
             return best;
         }
 
-        // 全部 API 失败 → iter().next() 兜底（保留旧部署兼容）
+        // Safety net: if all upstream signals fail (Redis/ZLM unreachable or all offline in DB),
+        // return the first configured client rather than leaving callers with None.
         self.zlm_clients.iter().next().map(|(id, c)| (id.clone(), c.clone()))
     }
 }
@@ -529,7 +530,7 @@ mod tests {
     //! Three SQLite-backed tests cover:
     //! - offline node is skipped, least-loaded online is picked
     //! - the actual least-loaded (smallest stream_count) wins
-    //! - when all are offline, returns `None` (or iter().next() fallback when list empty)
+    //! - when all are offline, falls through to iter().next() safety net (not None)
     use super::*;
     use chrono::Utc;
     use sqlx::sqlite::SqlitePoolOptions;
@@ -731,10 +732,13 @@ mod tests {
     }
 
     #[test]
-    fn test_select_least_loaded_fallback_when_all_offline() {
-        // All servers offline in DB → list_online_servers returns [].
-        // The function should fall through to Step C/D (no Redis, ZLM API
-        // unreachable), then to iter().next() fallback.
+    fn test_select_least_loaded_iter_fallback_when_filter_exhausted() {
+        // All servers are offline in the DB, so list_online_servers returns [].
+        // Steps A-D all fail (no Redis, ZLM API unreachable).
+        // The implementation falls through to the iter().next() safety net
+        // rather than returning None — this preserves backward compatibility
+        // with single-node deployments and multi-node setups where the DB
+        // keepalive status may lag behind actual reachability.
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
@@ -756,10 +760,9 @@ mod tests {
         let state = make_app_state(pool, store, zlm_clients);
 
         let picked = rt.block_on(state.select_least_loaded());
-        // Brief Step 5: 全 offline → 返回 None。
-        // Our impl falls back to iter().next() at the very end (Redis 不可用兼容),
-        // so we expect *some* zlm_client picked. The key invariant is that the
-        // offline-flagged DB rows must not steer the pick.
+        // iter().next() safety net always returns Some when at least one
+        // client is configured, even when all are DB-offline and upstream
+        // signals are unreachable.
         assert!(picked.is_some(), "fallback should still return a configured zlm_client");
         let (picked_id, _) = picked.unwrap();
         assert!(
