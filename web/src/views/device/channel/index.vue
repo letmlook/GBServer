@@ -72,7 +72,7 @@
         header-row-class-name="table-header"
       >
         <el-table-column prop="name" label="名称" min-width="180" />
-        <el-table-column prop="deviceId" label="编号" min-width="180" />
+        <el-table-column prop="channelId" label="编号" min-width="180" />
         <el-table-column label="快照" min-width="100">
           <template v-slot:default="scope">
             <el-image
@@ -330,6 +330,9 @@ export default {
         this.deviceChannelList = data.list
         this.deviceChannelList.forEach(e => {
           e.ptzType = e.ptzType + ''
+          // Phase 5: 前端用 ptzTypes 字典补齐 ptzTypeText 显示。
+          const pt = parseInt(e.ptzType, 10)
+          this.$set(e, 'ptzTypeText', this.ptzTypes[pt] || '未知')
           this.$set(e, 'playLoading', false)
         })
         // 防止出现表格错位

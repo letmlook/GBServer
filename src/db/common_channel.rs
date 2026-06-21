@@ -46,7 +46,7 @@ pub async fn update(
                gb_device_id = COALESCE(?, gb_device_id),
                civil_code = COALESCE(?, civil_code),
                parent_id = COALESCE(?, parent_id),
-               business_group = COALESCE(?, business_group),
+               business_group_id = COALESCE(?, business_group),
                ptz_type = COALESCE(?, ptz_type),
                custom_name = COALESCE(?, custom_name),
                update_time = ?
@@ -66,7 +66,7 @@ pub async fn update(
                gb_device_id = COALESCE($2, gb_device_id),
                civil_code = COALESCE($3, civil_code),
                parent_id = COALESCE($4, parent_id),
-               business_group = COALESCE($5, business_group),
+               business_group_id = COALESCE($5, business_group),
                ptz_type = COALESCE($6, ptz_type),
                custom_name = COALESCE($7, custom_name),
                update_time = $8
@@ -86,7 +86,7 @@ pub async fn update(
                gb_device_id = COALESCE(?, gb_device_id),
                civil_code = COALESCE(?, civil_code),
                parent_id = COALESCE(?, parent_id),
-               business_group = COALESCE(?, business_group),
+               business_group_id = COALESCE(?, business_group),
                ptz_type = COALESCE(?, ptz_type),
                custom_name = COALESCE(?, custom_name),
                update_time = ?
@@ -134,7 +134,7 @@ pub async fn add(
     #[cfg(feature = "mysql")]
     {
         let result = sqlx::query(
-            r#"INSERT INTO gb_device_channel (device_id, name, gb_device_id, civil_code, parent_id, business_group, ptz_type, custom_name, create_time, update_time)
+            r#"INSERT INTO gb_device_channel (device_id, name, gb_device_id, civil_code, parent_id, business_group_id, ptz_type, custom_name, create_time, update_time)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
         )
         .bind(device_id).bind(name).bind(channel_id).bind(civil_code).bind(parent_id)
@@ -146,7 +146,7 @@ pub async fn add(
     #[cfg(feature = "postgres")]
     {
         let row = sqlx::query(
-            r#"INSERT INTO gb_device_channel (device_id, name, gb_device_id, civil_code, parent_id, business_group, ptz_type, custom_name, create_time, update_time)
+            r#"INSERT INTO gb_device_channel (device_id, name, gb_device_id, civil_code, parent_id, business_group_id, ptz_type, custom_name, create_time, update_time)
                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                RETURNING id"#,
         )
@@ -158,9 +158,13 @@ pub async fn add(
     }
     #[cfg(feature = "sqlite")]
     {
+        // SQLite schema requires data_type and data_device_id (NOT NULL).
+        // We default them to 0 / the row's id when not provided; the caller
+        // can update them later via the proper update_* functions.
         let result = sqlx::query(
-            r#"INSERT INTO gb_device_channel (device_id, name, gb_device_id, civil_code, parent_id, business_group, ptz_type, custom_name, create_time, update_time)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
+            r#"INSERT INTO gb_device_channel
+               (device_id, name, gb_device_id, civil_code, parent_id, business_group_id, ptz_type, custom_name, create_time, update_time, data_type, data_device_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)"#,
         )
         .bind(device_id).bind(name).bind(channel_id).bind(civil_code).bind(parent_id)
         .bind(business_group).bind(ptz_type).bind(custom_name).bind(now).bind(now)
@@ -436,17 +440,17 @@ pub async fn clear_device_civil_code(pool: &Pool, device_id: &str, now: &str) ->
 
 pub async fn update_group(pool: &Pool, id: i64, parent_id: i64, business_group: &str, now: &str) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
-    let r = sqlx::query("UPDATE gb_device_channel SET parent_id = ?, business_group = ?, update_time = ? WHERE id = ?")
+    let r = sqlx::query("UPDATE gb_device_channel SET parent_id = ?, business_group_id = ?, update_time = ? WHERE id = ?")
         .bind(parent_id).bind(business_group).bind(now).bind(id)
         .execute(pool)
         .await?;
     #[cfg(feature = "postgres")]
-    let r = sqlx::query("UPDATE gb_device_channel SET parent_id = $1, business_group = $2, update_time = $3 WHERE id = $4")
+    let r = sqlx::query("UPDATE gb_device_channel SET parent_id = $1, business_group_id = $2, update_time = $3 WHERE id = $4")
         .bind(parent_id).bind(business_group).bind(now).bind(id)
         .execute(pool)
         .await?;
     #[cfg(feature = "sqlite")]
-    let r = sqlx::query("UPDATE gb_device_channel SET parent_id = ?, business_group = ?, update_time = ? WHERE id = ?")
+    let r = sqlx::query("UPDATE gb_device_channel SET parent_id = ?, business_group_id = ?, update_time = ? WHERE id = ?")
         .bind(parent_id).bind(business_group).bind(now).bind(id)
         .execute(pool)
         .await?;
@@ -455,17 +459,17 @@ pub async fn update_group(pool: &Pool, id: i64, parent_id: i64, business_group: 
 
 pub async fn clear_group(pool: &Pool, id: i64, now: &str) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
-    let r = sqlx::query("UPDATE gb_device_channel SET parent_id = '0', business_group = NULL, update_time = ? WHERE id = ?")
+    let r = sqlx::query("UPDATE gb_device_channel SET parent_id = '0', business_group_id = NULL, update_time = ? WHERE id = ?")
         .bind(now).bind(id)
         .execute(pool)
         .await?;
     #[cfg(feature = "postgres")]
-    let r = sqlx::query("UPDATE gb_device_channel SET parent_id = '0', business_group = NULL, update_time = $1 WHERE id = $2")
+    let r = sqlx::query("UPDATE gb_device_channel SET parent_id = '0', business_group_id = NULL, update_time = $1 WHERE id = $2")
         .bind(now).bind(id)
         .execute(pool)
         .await?;
     #[cfg(feature = "sqlite")]
-    let r = sqlx::query("UPDATE gb_device_channel SET parent_id = '0', business_group = NULL, update_time = ? WHERE id = ?")
+    let r = sqlx::query("UPDATE gb_device_channel SET parent_id = '0', business_group_id = NULL, update_time = ? WHERE id = ?")
         .bind(now).bind(id)
         .execute(pool)
         .await?;
@@ -474,17 +478,17 @@ pub async fn clear_group(pool: &Pool, id: i64, now: &str) -> sqlx::Result<u64> {
 
 pub async fn update_device_group(pool: &Pool, device_id: &str, parent_id: i64, business_group: &str, now: &str) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
-    let r = sqlx::query("UPDATE gb_device_channel SET parent_id = ?, business_group = ?, update_time = ? WHERE device_id = ?")
+    let r = sqlx::query("UPDATE gb_device_channel SET parent_id = ?, business_group_id = ?, update_time = ? WHERE device_id = ?")
         .bind(parent_id).bind(business_group).bind(now).bind(device_id)
         .execute(pool)
         .await?;
     #[cfg(feature = "postgres")]
-    let r = sqlx::query("UPDATE gb_device_channel SET parent_id = $1, business_group = $2, update_time = $3 WHERE device_id = $4")
+    let r = sqlx::query("UPDATE gb_device_channel SET parent_id = $1, business_group_id = $2, update_time = $3 WHERE device_id = $4")
         .bind(parent_id).bind(business_group).bind(now).bind(device_id)
         .execute(pool)
         .await?;
     #[cfg(feature = "sqlite")]
-    let r = sqlx::query("UPDATE gb_device_channel SET parent_id = ?, business_group = ?, update_time = ? WHERE device_id = ?")
+    let r = sqlx::query("UPDATE gb_device_channel SET parent_id = ?, business_group_id = ?, update_time = ? WHERE device_id = ?")
         .bind(parent_id).bind(business_group).bind(now).bind(device_id)
         .execute(pool)
         .await?;
@@ -493,17 +497,17 @@ pub async fn update_device_group(pool: &Pool, device_id: &str, parent_id: i64, b
 
 pub async fn clear_device_group(pool: &Pool, device_id: &str, now: &str) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
-    let r = sqlx::query("UPDATE gb_device_channel SET parent_id = '0', business_group = NULL, update_time = ? WHERE device_id = ?")
+    let r = sqlx::query("UPDATE gb_device_channel SET parent_id = '0', business_group_id = NULL, update_time = ? WHERE device_id = ?")
         .bind(now).bind(device_id)
         .execute(pool)
         .await?;
     #[cfg(feature = "postgres")]
-    let r = sqlx::query("UPDATE gb_device_channel SET parent_id = '0', business_group = NULL, update_time = $1 WHERE device_id = $2")
+    let r = sqlx::query("UPDATE gb_device_channel SET parent_id = '0', business_group_id = NULL, update_time = $1 WHERE device_id = $2")
         .bind(now).bind(device_id)
         .execute(pool)
         .await?;
     #[cfg(feature = "sqlite")]
-    let r = sqlx::query("UPDATE gb_device_channel SET parent_id = '0', business_group = NULL, update_time = ? WHERE device_id = ?")
+    let r = sqlx::query("UPDATE gb_device_channel SET parent_id = '0', business_group_id = NULL, update_time = ? WHERE device_id = ?")
         .bind(now).bind(device_id)
         .execute(pool)
         .await?;
@@ -604,4 +608,14 @@ pub async fn reset_map_level(pool: &Pool) -> sqlx::Result<u64> {
         .execute(pool)
         .await?;
     Ok(r.rows_affected())
+}
+
+/// Migration: add custom_name column to gb_device_channel if missing.
+/// The channel_add / channel_update functions reference `custom_name` but
+/// the original SQLite schema doesn't include it. Adding via ALTER TABLE
+/// (idempotent: swallows "duplicate column" errors).
+pub async fn ensure_columns(pool: &Pool) -> sqlx::Result<()> {
+    let _ = sqlx::query("ALTER TABLE gb_device_channel ADD COLUMN custom_name VARCHAR(255)")
+        .execute(pool).await;
+    Ok(())
 }

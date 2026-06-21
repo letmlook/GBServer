@@ -66,7 +66,7 @@ pub async fn play_start(
         tracing::info!("ZLM RTP server opened on port {}", rtp_server.port);
 
         // 调用 SIP Server 真正发送 INVITE，并等待设备回复 200 OK
-        let sip = sip_server.read().await;
+        let sip = &*sip_server;
         // 先生成规范 SSRC: 0 加上设备编号前9位加上0
         let id_part = if device_id.len() >= 9 { &device_id[0..9] } else { &device_id };
         let ssrc = format!("0{:0>9}0", id_part);
@@ -147,7 +147,7 @@ pub async fn play_stop(
     // 2. 发送 SIP BYE 挂断设备的推流（使用 InviteSession 中的 Call-ID）
     // Phase 3.1: 删除 talk BYE fallback —— live 与 talk 是不同 session，
     // talk BYE 走错语义；live 路径 3.1 保证 InviteSession 一定存在。
-    let sip = sip_server.read().await;
+    let sip = &*sip_server;
     match sip.send_session_bye(&device_id, &channel_id).await {
         Ok(call_id) => {
             tracing::info!("Session BYE sent for stream {} call_id={}", stream_id, call_id);
@@ -190,7 +190,7 @@ pub async fn broadcast_start(
         }
     };
 
-    let sip = sip_server.read().await;
+    let sip = &*sip_server;
     // Phase 3.5: broadcast 走独立 BroadcastManager，不再共享 talk_invite
     match sip.send_broadcast_invite(&device_id, &channel_id).await {
         Ok(call_id) => {
@@ -222,7 +222,7 @@ pub async fn broadcast_stop(
         }
     };
 
-    let sip = sip_server.read().await;
+    let sip = &*sip_server;
     // Phase 3.5: broadcast BYE 走 BroadcastManager，与 talk 互不影响
     match sip.send_broadcast_bye(&device_id, &channel_id).await {
         Ok(_) => {

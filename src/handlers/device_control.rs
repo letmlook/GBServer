@@ -36,7 +36,7 @@ pub async fn device_ptz(
         device_id, channel_id, command, speed);
 
     if let Some(ref sip_server) = state.sip_server {
-        let server = sip_server.read().await;
+        let server = &*sip_server;
         if let Some(device) = server.device_manager().get(&device_id).await {
             if device.online && device.addr.is_some() {
                 let ptz_cmd = build_ptz_xml(&command, speed, 0, 0);
@@ -79,7 +79,7 @@ pub async fn device_preset(
         device_id, channel_id, command, preset_index);
 
     if let Some(ref sip_server) = state.sip_server {
-        let server = sip_server.read().await;
+        let server = &*sip_server;
         if let Some(device) = server.device_manager().get(&device_id).await {
             if device.online && device.addr.is_some() {
                 let preset_cmd = build_preset_xml(&command, preset_index);
@@ -119,7 +119,7 @@ pub async fn device_guard(
     tracing::info!("Guard control: device={}, cmd={}", device_id, guard_cmd);
 
     if let Some(ref sip_server) = state.sip_server {
-        let server = sip_server.read().await;
+        let server = &*sip_server;
         if let Some(device) = server.device_manager().get(&device_id).await {
             if device.online && device.addr.is_some() {
                 let guard_xml = format!(r#"<GuardCmd>{}</GuardCmd>"#, guard_cmd);
@@ -162,7 +162,7 @@ pub async fn subscribe_catalog(
     tracing::info!("Catalog subscription: device={}, cycle={}", device_id, cycle);
 
     if let Some(ref sip_server) = state.sip_server {
-        let server = sip_server.read().await;
+        let server = &*sip_server;
         if let Some(device) = server.device_manager().get(&device_id).await {
             if device.online {
                 match server.send_subscribe(&device_id, "Catalog", cycle).await {
@@ -206,7 +206,7 @@ pub async fn subscribe_mobile_position(
         device_id, cycle, interval);
 
     if let Some(ref sip_server) = state.sip_server {
-        let server = sip_server.read().await;
+        let server = &*sip_server;
         if let Some(device) = server.device_manager().get(&device_id).await {
             if device.online {
                 match server.send_subscribe(&device_id, "MobilePosition", cycle).await {
@@ -283,7 +283,7 @@ pub async fn device_config_query(
     tracing::info!("Config query: device={}, type={}", device_id, config_type);
 
     if let Some(ref sip_server) = state.sip_server {
-        let server = sip_server.read().await;
+        let server = &*sip_server;
         if let Some(device) = server.device_manager().get(&device_id).await {
             if device.online && device.addr.is_some() {
                 // 发送配置查询请求
@@ -347,7 +347,7 @@ pub async fn device_config_update(
     tracing::info!("Config update: device={}, type={}", device_id, config_type);
 
     if let Some(ref sip_server) = state.sip_server {
-        let server = sip_server.read().await;
+        let server = &*sip_server;
         if let Some(device) = server.device_manager().get(&device_id).await {
             if device.online && device.addr.is_some() {
                 // 根据配置类型构建不同的配置XML
@@ -464,7 +464,7 @@ pub async fn device_reboot(
     tracing::info!("Device reboot: device={}", device_id);
 
     if let Some(ref sip_server) = state.sip_server {
-        let server = sip_server.read().await;
+        let server = &*sip_server;
         if let Some(device) = server.device_manager().get(&device_id).await {
             if device.online && device.addr.is_some() {
                 let reboot_xml = format!(

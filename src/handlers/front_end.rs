@@ -151,7 +151,7 @@ async fn send_via_sip(
     body: &str,
 ) -> Result<(), String> {
     if let Some(ref sip_server) = state.sip_server {
-        let server = sip_server.read().await;
+        let server = &*sip_server;
         if let Some(device) = server.device_manager().get(device_id).await {
             if device.online && device.addr.is_some() {
                 return match server.send_device_control(device_id, channel_id, cmd_type, body).await {

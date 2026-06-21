@@ -224,7 +224,7 @@ pub async fn playback_start(
             match zlm_client.open_rtp_server(&rtp_req).await {
                 Ok(rtp_server) => {
                     // 2. 发 SIP INVITE + 等 ZLM 媒体到达
-                    let sip = sip_server.read().await;
+                    let sip = &*sip_server;
                     let end = end_time.clone().unwrap_or_else(|| start_time.clone());
                     match sip
                         .send_playback_invite_and_wait(
@@ -333,7 +333,7 @@ pub async fn playback_resume(
 
     // Phase 3.2: 用 send_playback_control 走规范 PlaybackCtrl 消息（替代裸 XML）
     if let Some(ref sip_server) = state.sip_server {
-        let sip = sip_server.read().await;
+        let sip = &*sip_server;
         let parts: Vec<&str> = stream_id.split('_').collect();
         if parts.len() >= 3 {
             let device_id = parts[1];
@@ -371,7 +371,7 @@ pub async fn playback_pause(
 
     // Phase 3.2: 用 send_playback_control 走规范 PlaybackCtrl 消息（替代裸 XML）
     if let Some(ref sip_server) = state.sip_server {
-        let sip = sip_server.read().await;
+        let sip = &*sip_server;
         let parts: Vec<&str> = stream_id.split('_').collect();
         if parts.len() >= 3 {
             let device_id = parts[1];
@@ -409,7 +409,7 @@ pub async fn playback_speed(
     }
     
     if let Some(ref sip_server) = state.sip_server {
-        let sip = sip_server.read().await;
+        let sip = &*sip_server;
         let parts: Vec<&str> = stream_id.split('_').collect();
         if parts.len() >= 3 {
             let device_id = parts[1];
@@ -449,7 +449,7 @@ pub async fn playback_seek(
     
     // 发送 SIP INFO 消息通知设备跳转
     if let Some(ref sip_server) = state.sip_server {
-        let sip = sip_server.read().await;
+        let sip = &*sip_server;
         let parts: Vec<&str> = stream_id.split('_').collect();
         if parts.len() >= 3 {
             let device_id = parts[1];
@@ -500,7 +500,7 @@ pub async fn playback_stop(
 
             // Send SIP BYE to stop device playback push
             if let Some(ref sip_server) = state.sip_server {
-                let sip = sip_server.read().await;
+                let sip = &*sip_server;
                 match sip.send_session_bye(&device_id, &channel_id).await {
                     Ok(call_id) => tracing::info!("Playback BYE sent call_id={}", call_id),
                     Err(e) => tracing::warn!("Failed to send playback BYE: {}", e),
@@ -547,7 +547,7 @@ pub async fn gb_record_query(
 
     // Phase 3.3: 真正等 SIP 多包 RecordInfo 响应（最多 15s），返回聚合 items
     if let Some(ref sip_server) = state.sip_server {
-        let sip = sip_server.read().await;
+        let sip = &*sip_server;
         if let Some(device) = sip.device_manager().get(&device_id).await {
             if device.online && device.addr.is_some() {
                 let sn = chrono::Utc::now().timestamp() % 10000;
@@ -664,7 +664,7 @@ pub async fn gb_record_download_start(
     //    设备推送 9102 端口的 RTP 流，ZLM 自动 MP4 落盘
     let mut used_gb28181 = false;
     if let Some(ref sip_server) = state.sip_server {
-        let sip = sip_server.read().await;
+        let sip = &*sip_server;
         if let Some(device) = sip.device_manager().get(&device_id).await {
             if device.online && device.addr.is_some() {
                 // 提前开 ZLM RTP server 监听设备推流
@@ -718,7 +718,7 @@ pub async fn gb_record_download_start(
         };
         // Phase 3.4: 注册 media waiter，等设备推流到达；流到达后状态从 inviting → downloading
         if let Some(ref sip_server) = state.sip_server {
-            let sip = sip_server.read().await;
+            let sip = &*sip_server;
             let (_key, _rx) = sip
                 .media_waiter_manager()
                 .register(&format!("dlw_{}", stream_id), &stream_id, "rtp", 15);
@@ -799,7 +799,7 @@ pub async fn gb_record_download_stop(
         if let Some(session) = dm.get(&stream_id).await {
             if session.url.starts_with("gb28181://") {
                 if let Some(ref sip_server) = state.sip_server {
-                    let sip = sip_server.read().await;
+                    let sip = &*sip_server;
                     if let Err(e) = sip
                         .send_session_bye(&session.device_id, &session.channel_id)
                         .await

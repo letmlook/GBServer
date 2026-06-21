@@ -411,3 +411,42 @@ pub async fn batch_delete_alarms(pool: &Pool, ids: &[i64]) -> sqlx::Result<u64> 
         Ok(result.rows_affected())
     }
 }
+
+/// Migration: ensure gb_device_alarm has handle columns.
+/// These columns are missing from the original schema; without them,
+/// `alarm_handle` cannot persist its updates (a regression vs. the historical
+/// "gb_device_alarm表没有handled字段" comment in the handler).
+/// Adding columns to an existing SQLite table is done via ALTER TABLE,
+/// which fails with "duplicate column" if the column already exists — we
+/// swallow that error so the migration is idempotent.
+pub async fn ensure_columns(pool: &Pool) -> sqlx::Result<()> {
+    // ADD COLUMN is feature-uniform: SQLite/MySQL/Postgres all support the
+    // same SQL syntax for adding a single nullable column.
+    for stmt in [
+        "ALTER TABLE gb_device_alarm ADD COLUMN handled INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE gb_device_alarm ADD COLUMN handle_user VARCHAR(50)",
+        "ALTER TABLE gb_device_alarm ADD COLUMN handle_time VARCHAR(50)",
+    ] {
+        // Swallow "duplicate column" errors so the migration is idempotent.
+        let _ = sqlx::query(stmt).execute(pool).await;
+    }
+    Ok(())
+}
+
+/// Update the handle state of a single alarm. Returns the rows affected.
+pub async fn set_handled(
+    pool: &Pool,
+    id: i64,
+    handle_user: Option<&str>,
+    handle_time: &str,
+) -> sqlx::Result<u64> {
+    let r = sqlx::query(
+        "UPDATE gb_device_alarm SET handled = 1, handle_user = ?, handle_time = ? WHERE id = ?"
+    )
+    .bind(handle_user)
+    .bind(handle_time)
+    .bind(id)
+    .execute(pool)
+    .await?;
+    Ok(r.rows_affected())
+}

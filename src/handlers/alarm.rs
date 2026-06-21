@@ -34,8 +34,9 @@ pub async fn alarm_list(
     #[cfg(feature = "postgres")]
     {
         let rows: Vec<serde_json::Value> = sqlx::query(
-            "SELECT id, device_id, channel_id, alarm_priority, alarm_method, alarm_type, 
-                    alarm_time, alarm_description, longitude, latitude, create_time 
+            "SELECT id, device_id, channel_id, alarm_priority, alarm_method, alarm_type,
+                    alarm_time, alarm_description, longitude, latitude, create_time,
+                    handled, handle_user, handle_time
              FROM gb_device_alarm 
              WHERE ($1::text IS NULL OR device_id = $1)
                AND ($2::text IS NULL OR channel_id = $2)
@@ -66,6 +67,9 @@ pub async fn alarm_list(
             let longitude: Option<f64> = r.get("longitude");
             let latitude: Option<f64> = r.get("latitude");
             let create_time: Option<String> = r.get("create_time");
+            let handled: Option<i32> = r.get("handled");
+            let handle_user: Option<String> = r.get("handle_user");
+            let handle_time: Option<String> = r.get("handle_time");
             serde_json::json!({
                 "id": id,
                 "deviceId": device_id,
@@ -78,9 +82,9 @@ pub async fn alarm_list(
                 "longitude": longitude,
                 "latitude": latitude,
                 "createTime": create_time,
-                "handled": false,
-                "handleTime": None::<Option<String>>,
-                "handleUser": None::<Option<String>>,
+                "handled": handled.unwrap_or(0) != 0,
+                "handleTime": handle_time,
+                "handleUser": handle_user,
             })
         })
         .collect();
@@ -112,7 +116,8 @@ pub async fn alarm_list(
     {
         let rows: Vec<serde_json::Value> = sqlx::query(
             "SELECT id, device_id, channel_id, alarm_priority, alarm_method, alarm_type,
-                    alarm_time, alarm_description, longitude, latitude, create_time
+                    alarm_time, alarm_description, longitude, latitude, create_time,
+                    handled, handle_user, handle_time
              FROM gb_device_alarm
              WHERE (? IS NULL OR device_id = ?)
                AND (? IS NULL OR channel_id = ?)
@@ -143,6 +148,9 @@ pub async fn alarm_list(
             let longitude: Option<f64> = r.get("longitude");
             let latitude: Option<f64> = r.get("latitude");
             let create_time: Option<String> = r.get("create_time");
+            let handled: Option<i32> = r.get("handled");
+            let handle_user: Option<String> = r.get("handle_user");
+            let handle_time: Option<String> = r.get("handle_time");
             serde_json::json!({
                 "id": id,
                 "deviceId": device_id,
@@ -155,9 +163,9 @@ pub async fn alarm_list(
                 "longitude": longitude,
                 "latitude": latitude,
                 "createTime": create_time,
-                "handled": false,
-                "handleTime": None::<Option<String>>,
-                "handleUser": None::<Option<String>>,
+                "handled": handled.unwrap_or(0) != 0,
+                "handleTime": handle_time,
+                "handleUser": handle_user,
             })
         })
         .collect();
@@ -214,6 +222,9 @@ pub async fn alarm_detail(
                 let longitude: Option<f64> = r.get("longitude");
                 let latitude: Option<f64> = r.get("latitude");
                 let create_time: Option<String> = r.get("create_time");
+                let handled: Option<i32> = r.get("handled");
+                let handle_user: Option<String> = r.get("handle_user");
+                let handle_time: Option<String> = r.get("handle_time");
                 Ok(Json(WVPResult::success(serde_json::json!({
                     "id": id,
                     "deviceId": device_id,
@@ -226,9 +237,9 @@ pub async fn alarm_detail(
                     "longitude": longitude,
                     "latitude": latitude,
                     "createTime": create_time,
-                    "handled": false,
-                    "handleTime": None::<Option<String>>,
-                    "handleUser": None::<Option<String>>,
+                    "handled": handled.unwrap_or(0) != 0,
+                    "handleTime": handle_time,
+                    "handleUser": handle_user,
                 }))))
             }
             None => Ok(Json(WVPResult::error("告警不存在".to_string()))),
@@ -256,6 +267,9 @@ pub async fn alarm_detail(
                 let longitude: Option<f64> = r.get("longitude");
                 let latitude: Option<f64> = r.get("latitude");
                 let create_time: Option<String> = r.get("create_time");
+                let handled: Option<i32> = r.get("handled");
+                let handle_user: Option<String> = r.get("handle_user");
+                let handle_time: Option<String> = r.get("handle_time");
                 Ok(Json(WVPResult::success(serde_json::json!({
                     "id": id,
                     "deviceId": device_id,
@@ -268,9 +282,9 @@ pub async fn alarm_detail(
                     "longitude": longitude,
                     "latitude": latitude,
                     "createTime": create_time,
-                    "handled": false,
-                    "handleTime": None::<Option<String>>,
-                    "handleUser": None::<Option<String>>,
+                    "handled": handled.unwrap_or(0) != 0,
+                    "handleTime": handle_time,
+                    "handleUser": handle_user,
                 }))))
             }
             None => Ok(Json(WVPResult::error("告警不存在".to_string()))),
@@ -281,13 +295,14 @@ pub async fn alarm_detail(
 #[derive(Debug, Deserialize)]
 pub struct AlarmHandleBody {
     pub id: Option<i64>,
+    #[serde(alias = "handleUser")]
     pub handle_user: Option<String>,
     pub handled: Option<bool>,
 }
 
 /// POST /api/alarm/handle - 处理告警
 pub async fn alarm_handle(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Json(body): Json<AlarmHandleBody>,
 ) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
     let id = body.id.unwrap_or(0);
@@ -295,27 +310,23 @@ pub async fn alarm_handle(
         return Ok(Json(WVPResult::error("缺少告警ID".to_string())));
     }
 
-    let _now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    let _handle_user = body.handle_user.unwrap_or_default();
-    let _handled = body.handled.unwrap_or(true);
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let handle_user = body.handle_user.as_deref();
 
-    #[cfg(feature = "postgres")]
-    {
-        // gb_device_alarm表没有handled字段，直接返回成功
-        Ok(Json(WVPResult::success(serde_json::json!({
-            "id": id,
-            "message": "告警已处理"
-        }))))
+    // Persist the handle state. The migration in db::alarm::ensure_columns
+    // adds the handled/handle_user/handle_time columns on first run.
+    let rows = crate::db::alarm::set_handled(&state.pool, id, handle_user, &now).await?;
+
+    if rows == 0 {
+        return Ok(Json(WVPResult::error("告警不存在".to_string())));
     }
 
-    #[cfg(any(feature = "mysql", feature = "sqlite"))]
-    {
-        // gb_device_alarm表没有handled字段，直接返回成功
-        Ok(Json(WVPResult::success(serde_json::json!({
-            "id": id,
-            "message": "告警已处理"
-        }))))
-    }
+    Ok(Json(WVPResult::success(serde_json::json!({
+        "id": id,
+        "handleUser": handle_user,
+        "handleTime": now,
+        "message": "告警已处理"
+    }))))
 }
 
 /// DELETE /api/alarm/delete/:id - 删除告警

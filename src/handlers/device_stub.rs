@@ -57,7 +57,7 @@ pub async fn sync_status(
     };
 
     if let Some(ref sip_server) = state.sip_server {
-        let server = sip_server.read().await;
+        let server = &*sip_server;
         // Avoid long waits that can cause deadlocks in the catalog subscription query
         let subscriptions = match timeout(
             Duration::from_millis(200),
@@ -111,7 +111,7 @@ pub async fn device_sync(
     tracing::info!("Device sync requested for: {}", device_id);
 
     if let Some(ref sip_server) = state.sip_server {
-        let server = sip_server.read().await;
+        let server = &*sip_server;
         if let Some(device) = server.device_manager().get(&device_id).await {
             if device.online {
                 match server.send_catalog_query(&device_id).await {
@@ -251,7 +251,7 @@ pub async fn subscribe_mobile_position(
     .unwrap_or_default();
 
     if let Some(ref sip_server) = state.sip_server {
-        let server = sip_server.read().await;
+        let server = &*sip_server;
         if let Some(device) = server.device_manager().get(&device_id).await {
             if device.online {
                 match server.send_subscribe(&device_id, "MobilePosition", cycle).await {
@@ -288,7 +288,7 @@ pub async fn config_basic_param(
     let db_device = get_device_by_device_id(&state.pool, &device_id).await.ok().flatten();
 
     if let Some(ref sip_server) = state.sip_server {
-        let server = sip_server.read().await;
+        let server = &*sip_server;
         if let Some(device) = server.device_manager().get(&device_id).await {
             if device.online {
                 match server.send_device_config_query(&device_id, "BasicParam").await {
@@ -433,7 +433,7 @@ pub async fn control_record(
     };
 
     if let Some(ref sip_server) = state.sip_server {
-        let server = sip_server.read().await;
+        let server = &*sip_server;
         if let Some(device) = server.device_manager().get(&device_id).await {
             if device.online {
                 match server.send_device_control(&device_id, &channel_id, "DeviceControl", &record_cmd_xml).await {
@@ -486,12 +486,16 @@ pub async fn sub_channels(
     }))))
 }
 
-fn channel_to_json(c: &DeviceChannel) -> serde_json::Value {
+pub(crate) fn channel_to_json(c: &DeviceChannel) -> serde_json::Value {
+    // 同时输出 camelCase 和 gb_* 前缀字段,兼容前端 /device/channel、
+    // /commonChannel、hasStreamChannel 等页面读取 `gbName`/`gbStatus`/
+    // `gbManufacturer`/`ptzTypeText` 等字段(Phase 5: 修复通道列表空白)。
     serde_json::json!({
         "id": c.id,
         "deviceId": c.device_id,
         "name": c.name,
         "channelId": c.gb_device_id,
+        "gbId": c.gb_device_id.clone().unwrap_or_default(),
         "status": c.status,
         "longitude": c.longitude,
         "latitude": c.latitude,
@@ -499,7 +503,43 @@ fn channel_to_json(c: &DeviceChannel) -> serde_json::Value {
         "updateTime": c.update_time,
         "subCount": c.sub_count,
         "hasAudio": c.has_audio,
-        "channelType": c.channel_type
+        "channelType": c.channel_type,
+        "ptzType": c.ptz_type.map(|t| t.to_string()).unwrap_or_default(),
+        // —— gb_* 兼容字段 ——
+        "gbName": c.name,
+        "gbDeviceId": c.gb_device_id,
+        "gbManufacturer": c.manufacturer,
+        "gbModel": c.model,
+        "gbOwner": c.owner,
+        "gbCivilCode": c.civil_code,
+        "gbAddress": c.address,
+        "gbParental": c.parental,
+        "gbParentId": c.parent_id,
+        "gbStatus": c.status,
+        "gbLongitude": c.longitude,
+        "gbLatitude": c.latitude,
+        "streamId": c.stream_id,
+        "streamIdentification": c.stream_identification,
+        "manufacturer": c.manufacturer,
+        "model": c.model,
+        "owner": c.owner,
+        "civilCode": c.civil_code,
+        "address": c.address,
+        "parental": c.parental,
+        "parentId": c.parent_id,
+        "ptzTypeText": ptz_type_text(c.ptz_type),
+    })
+}
+
+/// 把数字 ptz_type 翻译为前端表头用的中文标签。
+/// 与 web/src/views/device/channel/index.vue data().ptzTypes 保持一致。
+pub(crate) fn ptz_type_text(ptz: Option<i32>) -> Option<String> {
+    ptz.map(|v| match v {
+        1 => "球机".to_string(),
+        2 => "半球".to_string(),
+        3 => "固定枪机".to_string(),
+        4 => "遥控枪机".to_string(),
+        _ => "未知".to_string(),
     })
 }
 
@@ -780,11 +820,11 @@ pub async fn subscribe_alarm(
     if device_id.is_empty() {
         return Json(WVPResult::error("device_id is required"));
     }
-    let sip = match state.sip_server.as_ref() {
+    let sip_server = match state.sip_server.as_ref() {
         Some(s) => s,
         None => return Json(WVPResult::error("SIP server not initialized")),
     };
-    let server = sip.read().await;
+    let server = &**sip_server;
     if let Err(e) = server.send_alarm_subscribe(&device_id, expires).await {
         return Json(WVPResult::error(format!("SIP error: {}", e)));
     }

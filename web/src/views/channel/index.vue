@@ -250,7 +250,14 @@ export default {
       groupDeviceId: null,
       groupBusiness: null,
 
-      multipleSelection: []
+      multipleSelection: [],
+      ptzTypes: {
+        0: '未知',
+        1: '球机',
+        2: '半球',
+        3: '固定枪机',
+        4: '遥控枪机'
+      }
     }
   },
   mounted() {
@@ -294,6 +301,10 @@ export default {
         this.channelList = data.list
         this.channelList.forEach(e => {
           e.ptzType = e.ptzType + ''
+          // Phase 5: 后端没有直接返回 ptzTypeText,前端用 ptzTypes 字典补齐。
+          // 1 = 球机 / 2 = 半球 / 3 = 固定枪机 / 4 = 遥控枪机 / 其他 = 未知。
+          const pt = parseInt(e.ptzType, 10)
+          this.$set(e, 'ptzTypeText', this.ptzTypes[pt] || '未知')
           this.$set(e, 'playLoading', false)
         })
         // 防止出现表格错位

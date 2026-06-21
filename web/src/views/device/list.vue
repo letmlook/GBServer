@@ -113,7 +113,7 @@
           <el-button
             type="text"
             size="medium"
-            :disabled="scope.row.online===0"
+            :disabled="!scope.row.onLine"
             icon="el-icon-refresh"
             @click="refDevice(scope.row)"
             @mouseover="getTooltipContent(scope.row.deviceId)"
@@ -248,7 +248,7 @@ export default {
     },
     deleteDevice: function(row) {
       let msg = '确定删除此设备？'
-      if (row.online !== 0) {
+      if (row.onLine) {
         msg = '在线设备删除后仍可通过注册再次上线。<br/>如需彻底删除请先将设备离线。<br/><strong>确定删除此设备？</strong>'
       }
       this.$confirm(msg, '提示', {

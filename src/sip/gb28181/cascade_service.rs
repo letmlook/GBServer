@@ -190,7 +190,7 @@ pub struct CascadeService {
     /// DB 连接池
     pool: Pool,
     /// 插件：向设备发送 INVITE 的 SipServer（通过 AppState 访问）
-    sip_server: Option<Arc<RwLock<crate::sip::SipServer>>>,
+    sip_server: Option<Arc<crate::sip::SipServer>>,
 }
 
 impl CascadeService {
@@ -205,7 +205,7 @@ impl CascadeService {
     }
 
     /// 注入 SipServer 引用（供 SendRtp 流程使用）
-    pub fn set_sip_server(&mut self, server: Arc<RwLock<crate::sip::SipServer>>) {
+    pub fn set_sip_server(&mut self, server: Arc<crate::sip::SipServer>) {
         self.sip_server = Some(server);
     }
 
@@ -489,7 +489,7 @@ impl CascadeService {
 
         // 向设备发起 INVITE（复用现有 PlayService）
         if let Some(ref sip) = self.sip_server {
-            let server = sip.read().await;
+            let server = sip.as_ref();
             // 获取设备地址
             let _device_addr = server
                 .device_manager()

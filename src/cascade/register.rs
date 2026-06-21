@@ -32,7 +32,7 @@ pub struct RegistrationState {
 
 pub struct CascadeRegistrar {
     states: DashMap<String, RegistrationState>,
-    sip_server: RwLock<Option<Arc<RwLock<crate::sip::SipServer>>>>,
+    sip_server: RwLock<Option<Arc<crate::sip::SipServer>>>,
     pool: RwLock<Option<crate::db::Pool>>,
 }
 
@@ -45,7 +45,7 @@ impl CascadeRegistrar {
         }
     }
 
-    pub async fn set_sip_server(&self, server: Arc<RwLock<crate::sip::SipServer>>) {
+    pub async fn set_sip_server(&self, server: Arc<crate::sip::SipServer>) {
         *self.sip_server.write().await = Some(server);
     }
 
@@ -53,7 +53,7 @@ impl CascadeRegistrar {
         *self.pool.write().await = Some(pool);
     }
 
-    pub async fn get_sip_server(&self) -> Option<Arc<RwLock<crate::sip::SipServer>>> {
+    pub async fn get_sip_server(&self) -> Option<Arc<crate::sip::SipServer>> {
         self.sip_server.read().await.clone()
     }
 
@@ -306,7 +306,7 @@ impl CascadeRegistrar {
                 None => continue,
             };
 
-            let sip = sip_server.read().await;
+            let sip = &*sip_server;
             let socket_arc = sip.socket().clone();
             drop(sip);
             let socket_guard = socket_arc.read().await;
@@ -341,7 +341,7 @@ impl CascadeRegistrar {
             .state(platform_id)
             .ok_or_else(|| format!("Platform {} state not found", platform_id))?;
 
-        let sip = sip_server.read().await;
+        let sip = &*sip_server;
         let socket_arc = sip.socket().clone();
         drop(sip);
         let socket_guard = socket_arc.read().await;
@@ -535,7 +535,7 @@ impl CascadeRegistrar {
                     None => continue,
                 };
 
-                let sip = sip_server.read().await;
+                let sip = &*sip_server;
                 let socket_arc = sip.socket().clone();
                 drop(sip);
 

@@ -6,7 +6,7 @@ use axum::{
 };
 use serde::Deserialize;
 
-use crate::db::{count_channels, count_devices, list_channels_paged, list_devices_paged, Device, DeviceChannel};
+use crate::db::{count_channels, count_devices, list_channels_paged, list_devices_paged, Device};
 use crate::error::AppError;
 use crate::response::WVPResult;
 
@@ -62,9 +62,15 @@ pub async fn query_channels(
     let count = q.count.unwrap_or(10).min(100);
     let total = count_channels(&state.pool, &device_id).await?;
     let list = list_channels_paged(&state.pool, &device_id, page, count).await?;
+    // Phase 5: 同时输出 camelCase + gb_* + ptzTypeText,前端 /device/channel、
+    // 地图信息窗等都用同一份数据。
+    let rows: Vec<serde_json::Value> = list
+        .into_iter()
+        .map(|c| crate::handlers::device_stub::channel_to_json(&c))
+        .collect();
     let out = ChannelPage {
         total: total as u64,
-        list,
+        list: rows,
         page: page as u64,
         size: count as u64,
     };
@@ -74,7 +80,7 @@ pub async fn query_channels(
 #[derive(Debug, serde::Serialize)]
 pub struct ChannelPage {
     pub total: u64,
-    pub list: Vec<DeviceChannel>,
+    pub list: Vec<serde_json::Value>,
     pub page: u64,
     pub size: u64,
 }

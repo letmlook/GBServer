@@ -50,7 +50,7 @@ pub async fn batch_control(
         None => return Json(WVPResult::error("SIP server not available")),
     };
 
-    let sip = sip_server.read().await;
+    let sip = &*sip_server;
 
     for device_id in &req.device_ids {
         let result = match req.command {

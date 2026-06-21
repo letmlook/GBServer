@@ -13,6 +13,23 @@ use crate::db::{Platform, device as db_device};
 use crate::error::AppError;
 use crate::response::WVPResult;
 
+/// Deserialize a port field that may be either a JSON number (Vue's default)
+/// or a JSON string (some legacy frontend forms). Returns the value as a String.
+fn deserialize_port<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde_json::Value;
+    let v = Value::deserialize(deserializer)?;
+    match v {
+        Value::Null => Ok(None),
+        Value::String(s) => Ok(Some(s)),
+        Value::Number(n) => Ok(Some(n.to_string())),
+        // Anything else: try to take its raw text representation
+        other => Ok(Some(other.to_string())),
+    }
+}
+
 use crate::AppState;
 
 async fn update_platform_status(pool: &crate::db::Pool, id: i64, status: bool) -> Result<(), sqlx::Error> {
@@ -46,7 +63,7 @@ async fn sync_platform_registration(
         return Ok(false);
     };
 
-    let sip = sip_server.read().await;
+    let sip = &*sip_server;
     let result = if enable {
         sip.register_to_platform(server_gb_id).await
     } else {
@@ -81,7 +98,7 @@ async fn push_platform_channels(
         return Ok(0);
     };
 
-    let sip = sip_server.read().await;
+    let sip = &*sip_server;
     let mut pushed_count = 0;
     for channel_id in channel_ids {
         if channel_id.trim().is_empty() {
@@ -107,7 +124,7 @@ async fn refresh_platform_catalog(state: &AppState, platform_id: i64) -> Result<
     let Some(ref sip_server) = state.sip_server else {
         return Ok(());
     };
-    let sip = sip_server.read().await;
+    let sip = &*sip_server;
     let _ = sip.send_platform_catalog(server_gb_id).await;
     Ok(())
 }
@@ -601,7 +618,7 @@ pub async fn platform_channel_push(
         }
     };
     
-    let sip = sip_server.read().await;
+    let sip = &*sip_server;
     
     let mut pushed_count = 0;
     let mut errors = Vec::new();
@@ -689,7 +706,7 @@ pub struct PlatformAddBody {
     pub device_gb_id: Option<String>,
     #[serde(alias = "deviceIp")]
     pub device_ip: Option<String>,
-    #[serde(alias = "devicePort")]
+    #[serde(alias = "devicePort", deserialize_with = "deserialize_port")]
     pub device_port: Option<String>,
     pub username: Option<String>,
     #[serde(alias = "civilCode")]
@@ -851,6 +868,56 @@ pub async fn platform_add(
     .bind(&server_gb_id)
     .execute(&state.pool)
     .await?;
+    #[cfg(feature = "sqlite")]
+    sqlx::query(
+        r#"UPDATE gb_platform SET
+           server_gb_domain = COALESCE(?, server_gb_domain),
+           device_ip = COALESCE(?, device_ip),
+           device_port = COALESCE(?, device_port),
+           civil_code = COALESCE(?, civil_code),
+           manufacturer = COALESCE(?, manufacturer),
+           model = COALESCE(?, model),
+           address = COALESCE(?, address),
+           ptz = COALESCE(?, ptz),
+           rtcp = COALESCE(?, rtcp),
+           character_set = COALESCE(?, character_set),
+           catalog_group = COALESCE(?, catalog_group),
+           secrecy = COALESCE(?, secrecy),
+           as_message_channel = COALESCE(?, as_message_channel),
+           auto_push_channel = COALESCE(?, auto_push_channel),
+           catalog_with_platform = COALESCE(?, catalog_with_platform),
+           catalog_with_group = COALESCE(?, catalog_with_group),
+           catalog_with_region = COALESCE(?, catalog_with_region),
+           send_stream_ip = COALESCE(?, send_stream_ip),
+           enable = COALESCE(?, enable),
+           expires = COALESCE(?, expires),
+           keep_timeout = COALESCE(?, keep_timeout)
+           WHERE server_gb_id = ?"#,
+    )
+    .bind(body.server_gb_domain.as_deref())
+    .bind(body.device_ip.as_deref())
+    .bind(body.device_port.as_deref())
+    .bind(body.civil_code.as_deref())
+    .bind(body.manufacturer.as_deref())
+    .bind(body.model.as_deref())
+    .bind(body.address.as_deref())
+    .bind(body.ptz)
+    .bind(body.rtcp)
+    .bind(body.character_set.as_deref())
+    .bind(body.catalog_group)
+    .bind(body.secrecy)
+    .bind(body.as_message_channel)
+    .bind(body.auto_push_channel)
+    .bind(body.catalog_with_platform)
+    .bind(body.catalog_with_group)
+    .bind(body.catalog_with_region)
+    .bind(body.send_stream_ip.as_deref())
+    .bind(body.enable)
+    .bind(body.expires.as_deref())
+    .bind(body.keep_timeout.as_deref())
+    .bind(&server_gb_id)
+    .execute(&state.pool)
+    .await?;
 
     if let Some(platform) = platform_db::get_by_server_gb_id(&state.pool, &server_gb_id).await? {
         let registered = sync_platform_registration(&state, &platform).await?;
@@ -957,6 +1024,58 @@ pub async fn platform_update(
     .execute(&state.pool)
     .await?;
     #[cfg(feature = "mysql")]
+    sqlx::query(
+        r#"UPDATE gb_platform SET
+           server_gb_domain = COALESCE(?, server_gb_domain),
+           device_ip = COALESCE(?, device_ip),
+           device_port = COALESCE(?, device_port),
+           civil_code = COALESCE(?, civil_code),
+           manufacturer = COALESCE(?, manufacturer),
+           model = COALESCE(?, model),
+           address = COALESCE(?, address),
+           ptz = COALESCE(?, ptz),
+           rtcp = COALESCE(?, rtcp),
+           character_set = COALESCE(?, character_set),
+           catalog_group = COALESCE(?, catalog_group),
+           secrecy = COALESCE(?, secrecy),
+           as_message_channel = COALESCE(?, as_message_channel),
+           auto_push_channel = COALESCE(?, auto_push_channel),
+           catalog_with_platform = COALESCE(?, catalog_with_platform),
+           catalog_with_group = COALESCE(?, catalog_with_group),
+           catalog_with_region = COALESCE(?, catalog_with_region),
+           send_stream_ip = COALESCE(?, send_stream_ip),
+           enable = COALESCE(?, enable),
+           expires = COALESCE(?, expires),
+           keep_timeout = COALESCE(?, keep_timeout),
+           update_time = ?
+           WHERE id = ?"#,
+    )
+    .bind(body.server_gb_domain.as_deref())
+    .bind(body.device_ip.as_deref())
+    .bind(body.device_port.as_deref())
+    .bind(body.civil_code.as_deref())
+    .bind(body.manufacturer.as_deref())
+    .bind(body.model.as_deref())
+    .bind(body.address.as_deref())
+    .bind(body.ptz)
+    .bind(body.rtcp)
+    .bind(body.character_set.as_deref())
+    .bind(body.catalog_group)
+    .bind(body.secrecy)
+    .bind(body.as_message_channel)
+    .bind(body.auto_push_channel)
+    .bind(body.catalog_with_platform)
+    .bind(body.catalog_with_group)
+    .bind(body.catalog_with_region)
+    .bind(body.send_stream_ip.as_deref())
+    .bind(body.enable)
+    .bind(body.expires.as_deref())
+    .bind(body.keep_timeout.as_deref())
+    .bind(&now)
+    .bind(id)
+    .execute(&state.pool)
+    .await?;
+    #[cfg(feature = "sqlite")]
     sqlx::query(
         r#"UPDATE gb_platform SET
            server_gb_domain = COALESCE(?, server_gb_domain),

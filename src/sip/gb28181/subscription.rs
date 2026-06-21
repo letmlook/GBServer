@@ -37,7 +37,7 @@ pub struct SubscriptionEntry {
 
 pub struct SubscriptionManager {
     subscriptions: DashMap<String, SubscriptionEntry>,
-    sip_server: Option<Arc<RwLock<crate::sip::SipServer>>>,
+    sip_server: Option<Arc<crate::sip::SipServer>>,
     ws_state: Option<Arc<crate::handlers::websocket::WsState>>,
 }
 
@@ -50,7 +50,7 @@ impl SubscriptionManager {
         }
     }
 
-    pub fn set_sip_server(&mut self, server: Arc<RwLock<crate::sip::SipServer>>) {
+    pub fn set_sip_server(&mut self, server: Arc<crate::sip::SipServer>) {
         self.sip_server = Some(server);
     }
 

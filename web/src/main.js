@@ -6,6 +6,18 @@ import ElementUI from 'element-ui'
 import 'element-ui/lib/theme-chalk/index.css'
 import locale from 'element-ui/lib/locale/lang/en' // lang i18n
 
+// Register ECharts components that v-charts 1.19 omits (notably `title`).
+// v-charts' core only requires `tooltip` and `legend`, so any chart that
+// relies on `extend.title` silently drops the title. Importing these here
+// registers them globally so all ve-line/ve-bar/ve-histogram instances
+// honor the title option.
+import 'echarts/lib/component/title'
+import 'echarts/lib/component/markLine'
+import 'echarts/lib/component/markPoint'
+import 'echarts/lib/component/markArea'
+import 'echarts/lib/component/dataZoom'
+import 'echarts/lib/component/grid'
+
 import '@/styles/index.scss' // global css
 
 import App from './App'

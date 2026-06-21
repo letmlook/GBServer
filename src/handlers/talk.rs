@@ -24,7 +24,7 @@ pub async fn talk_start(
 
     // 发送语音对讲 INVITE
     let result = {
-        let sip = sip_server.write().await;
+        let sip = &*sip_server;
         sip.send_talk_invite(&device_id, &channel_id).await
     };
 
@@ -65,7 +65,7 @@ pub async fn talk_stop(
 
     // 发送语音对讲 BYE
     let result = {
-        let sip = sip_server.write().await;
+        let sip = &*sip_server;
         sip.send_talk_bye(&device_id, &channel_id).await
     };
 
@@ -96,7 +96,7 @@ pub async fn talk_invite(
 
     // 发送语音对讲 INVITE
     let result = {
-        let sip = sip_server.write().await;
+        let sip = &*sip_server;
         sip.send_talk_invite(&device_id, &channel_id).await
     };
 
@@ -171,7 +171,7 @@ pub async fn talk_bye(
 
     // 发送语音对讲 BYE
     let result = {
-        let sip = sip_server.write().await;
+        let sip = &*sip_server;
         sip.send_talk_bye(device_id, channel_id).await
     };
 
@@ -199,7 +199,7 @@ pub async fn talk_status(
         .ok_or_else(|| AppError::business(ErrorCode::Error100, "SIP服务未启动"))?;
 
     let talk_session = {
-        let sip = sip_server.read().await;
+        let sip = &*sip_server;
         sip.talk_manager().get_by_device_channel(&device_id, &channel_id).await
     };
 
@@ -249,7 +249,7 @@ pub async fn talk_list(
         .ok_or_else(|| AppError::business(ErrorCode::Error100, "SIP服务未启动"))?;
 
     let talk_manager = {
-        let sip = sip_server.read().await;
+        let sip = &*sip_server;
         sip.talk_manager()
     };
     

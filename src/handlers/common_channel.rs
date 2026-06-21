@@ -27,7 +27,7 @@ async fn lookup_channel_and_send(
             let (cmd_type, body, success_msg) = cmd_builder(&ch);
 
             if let Some(ref sip_server) = state.sip_server {
-                let server = sip_server.read().await;
+                let server = &*sip_server;
                 if let Some(device) = server.device_manager().get(&device_id).await {
                     if device.online && device.addr.is_some() {
                         match server.send_device_control(&device_id, &gb_channel_id, &cmd_type, &body).await {
@@ -151,6 +151,10 @@ pub async fn channel_list(
 }
 
 fn channel_to_json(c: &DeviceChannel) -> serde_json::Value {
+    // 把 DeviceChannel 字段同时以 camelCase 和 gb_* 前缀输出,兼容
+    // 前端 /channel、/device/channel、/commonChannel 等页面读取 `gbName` /
+    // `gbDeviceId` / `gbStatus` / `gbLongitude` / `gbLatitude` 等历史命名。
+    // Phase 5: 修复前端通道列表 / 地图信息窗显示空白的问题。
     serde_json::json!({
         "id": c.id,
         "deviceId": c.device_id,
@@ -165,7 +169,42 @@ fn channel_to_json(c: &DeviceChannel) -> serde_json::Value {
         "subCount": c.sub_count,
         "hasAudio": c.has_audio,
         "channelType": c.channel_type,
-        "ptzType": c.channel_type.map(|t| t.to_string()).unwrap_or_default(),
+        "ptzType": c.ptz_type.map(|t| t.to_string()).unwrap_or_default(),
+        // —— gb_* 兼容字段 ——
+        "gbName": c.name,
+        "gbDeviceId": c.gb_device_id,
+        "gbManufacturer": c.manufacturer,
+        "gbModel": c.model,
+        "gbOwner": c.owner,
+        "gbCivilCode": c.civil_code,
+        "gbAddress": c.address,
+        "gbParental": c.parental,
+        "gbParentId": c.parent_id,
+        "gbStatus": c.status,
+        "gbLongitude": c.longitude,
+        "gbLatitude": c.latitude,
+        "streamId": c.stream_id,
+        "streamIdentification": c.stream_identification,
+        "manufacturer": c.manufacturer,
+        "model": c.model,
+        "owner": c.owner,
+        "civilCode": c.civil_code,
+        "address": c.address,
+        "parental": c.parental,
+        "parentId": c.parent_id,
+        "ptzTypeText": ptz_type_text(c.ptz_type),
+    })
+}
+
+/// 把数字 ptz_type 翻译为前端表头用的中文标签。
+/// 与 web/src/views/device/channel/index.vue data().ptzTypes 保持一致。
+fn ptz_type_text(ptz: Option<i32>) -> Option<String> {
+    ptz.map(|v| match v {
+        1 => "球机".to_string(),
+        2 => "半球".to_string(),
+        3 => "固定枪机".to_string(),
+        4 => "遥控枪机".to_string(),
+        _ => "未知".to_string(),
     })
 }
 
@@ -1677,7 +1716,7 @@ pub async fn channel_playback_start(
             let gb_channel_id = ch.gb_device_id.clone().unwrap_or_default();
 
             if let Some(ref sip_server) = state.sip_server {
-                let server = sip_server.read().await;
+                let server = &*sip_server;
                 if let Some(device) = server.device_manager().get(&device_id).await {
                     if device.online {
                         match server.send_playback_invite(&device_id, &gb_channel_id, &start_time, &end_time).await {

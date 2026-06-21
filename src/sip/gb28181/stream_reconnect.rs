@@ -28,7 +28,7 @@ pub struct StreamReconnectManager {
     max_retries: u32,
     retry_interval_secs: u64,
     enabled: bool,
-    sip_server: RwLock<Option<Arc<RwLock<crate::sip::SipServer>>>>,
+    sip_server: RwLock<Option<Arc<crate::sip::SipServer>>>,
     ws_state: RwLock<Option<Arc<crate::handlers::websocket::WsState>>>,
 }
 
@@ -44,7 +44,7 @@ impl StreamReconnectManager {
         }
     }
 
-    pub async fn set_sip_server(&self, server: Arc<RwLock<crate::sip::SipServer>>) {
+    pub async fn set_sip_server(&self, server: Arc<crate::sip::SipServer>) {
         *self.sip_server.write().await = Some(server);
     }
 
@@ -52,7 +52,7 @@ impl StreamReconnectManager {
         *self.ws_state.write().await = Some(ws);
     }
 
-    pub async fn get_sip_server(&self) -> Option<Arc<RwLock<crate::sip::SipServer>>> {
+    pub async fn get_sip_server(&self) -> Option<Arc<crate::sip::SipServer>> {
         self.sip_server.read().await.clone()
     }
 
@@ -189,7 +189,7 @@ impl StreamReconnectManager {
                     tracing::info!("Attempting stream reconnect: {} (retry {}/{})", 
                         entry.stream_id, entry.retry_count + 1, entry.max_retries);
 
-                    let sip = sip_server.read().await;
+                    let sip = &*sip_server;
                     let result = sip.send_play_invite_and_wait(
                         &entry.device_id,
                         &entry.channel_id,

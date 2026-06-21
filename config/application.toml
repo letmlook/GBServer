@@ -3,6 +3,9 @@
 # 优先级：环境变量 (GBSERVER__SECTION__KEY) > 此文件
 # 格式参考: https://toml.io
 
+# 前端静态资源目录：在 GBServer 下执行 cd web && npm run build 后产物在 web/dist
+static_dir = "web/dist"
+
 [server]
 port = 18080
 
@@ -30,9 +33,6 @@ sqlite_max_devices = 500
 secret = "a7f3c9e2b1d84f6a0e8c5b2d9f1a4e7c0b3d6f9a2e5c8b1d4f7a0e3c6b9d2f5"
 expiration_minutes = 30
 
-# 前端静态资源目录：在 GBServer 下执行 cd web && npm run build 后产物在 web/dist
-static_dir = "web/dist"
-
 [user_settings]
 server_id = "gbserver-001"
 
@@ -58,7 +58,7 @@ retention_days = 90
 # SIP 服务配置
 [sip]
 enabled = true
-ip = "0.0.0.0"
+ip = "192.168.3.119"
 port = 5060
 tcp_port = 5061
 device_id = "34020000002000000001"

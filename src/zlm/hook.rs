@@ -429,7 +429,7 @@ async fn sync_stream_changed(state: &AppState, data: &StreamChangedData) {
     // 让 play_start 等媒体到达的 handler 收到 MediaReady 后返回。
     if data.register && data.app == "rtp" {
         if let Some(ref sip_server) = state.sip_server {
-            let sip = sip_server.read().await;
+            let sip = sip_server.as_ref();
             let resolved = sip
                 .media_waiter_manager()
                 .resolve_by_stream(&data.stream, &data.app);
@@ -584,7 +584,7 @@ pub async fn handle_webhook(
 
                 // Register with reconnect manager for persistent retry
                 if let Some(ref sip_server) = state.sip_server {
-                    let sip = sip_server.read().await;
+                    let sip = sip_server.as_ref();
                     let reconnect_mgr = sip.stream_reconnect_manager();
                     // Feed the reconnect manager so it retries on schedule
                     reconnect_mgr.on_stream_not_found(&data.app, &data.stream);
@@ -736,7 +736,7 @@ pub async fn handle_webhook(
                 // 验证推流来源 IP 是否与注册设备匹配
                 if let Some((device_id, _channel_id)) = parse_stream_id(&data.stream) {
                     if let Some(ref sip_server) = state.sip_server {
-                        let sip = sip_server.read().await;
+                        let sip = sip_server.as_ref();
                         if let Some(addr) = sip.device_manager().get_address(&device_id).await {
                             // 如果设备注册了 IP 且不匹配，记录但不拒绝
                             if let Ok(parsed_ip) = data.ip.parse::<std::net::IpAddr>() {
@@ -936,7 +936,7 @@ pub async fn handle_webhook(
                 tracing::info!("ZLM RTP server started: stream_id={}", stream_id);
                 // 通过 stream_id 反查 call_id，触发 MediaWaiter
                 if let Some(ref sip_server) = state.sip_server {
-                    let sip = sip_server.read().await;
+                    let sip = sip_server.as_ref();
                     let resolved = sip.notify_media_ready_by_stream(stream_id, "rtp").await;
                     if resolved {
                         tracing::info!("MediaWaiter resolved for stream_id={}", stream_id);
@@ -950,7 +950,7 @@ pub async fn handle_webhook(
                 tracing::info!("Stream started: app={} stream={}", data.app, data.stream);
                 // 通知 media waiter（通过 call_id 或 stream_id）
                 if let Some(ref sip_server) = state.sip_server {
-                    let sip = sip_server.read().await;
+                    let sip = sip_server.as_ref();
                     let resolved = sip
                         .notify_media_ready_by_stream(&data.stream, &data.app)
                         .await;
@@ -986,7 +986,7 @@ pub async fn handle_webhook(
                 );
                 // Clean up InviteSession associated with this stream
                 if let Some(ref sip_server) = state.sip_server {
-                    let sip = sip_server.read().await;
+                    let sip = sip_server.as_ref();
                     // Parse device_id/channel_id from stream_id
                     if let Some((device_id, channel_id)) = parse_stream_id(&data.stream_id) {
                         if let Ok(_) = sip.send_session_bye(&device_id, &channel_id).await {
@@ -1066,7 +1066,7 @@ pub async fn handle_webhook(
                 tracing::info!("SendRTP stopped: {}/{}", data.app, data.stream);
                 // 5.4: 关闭 SendRtpManager 中匹配的 cascade session
                 if let Some(ref sip_server) = state.sip_server {
-                    let sip = sip_server.read().await;
+                    let sip = sip_server.as_ref();
                     if let Some(session) = sip.send_rtp_manager().close_by_stream(&data.stream) {
                         tracing::info!(
                             "5.4 on_send_rtp_stopped → closed cascade session platform={} channel={} stream={}",

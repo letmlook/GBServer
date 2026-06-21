@@ -157,6 +157,16 @@ pub async fn common_channel_list(
                 .channel_type
                 .map(|t: i32| t.to_string())
                 .unwrap_or_else(|| "".to_string());
+            let ptz_type_text = c.channel_type.map(|v| match v {
+                1 => "球机".to_string(),
+                2 => "半球".to_string(),
+                3 => "固定枪机".to_string(),
+                4 => "遥控枪机".to_string(),
+                _ => "未知".to_string(),
+            });
+            // Phase 5: 同时输出 camelCase 与 gb_* 前缀字段,兼容前端
+            // /channel 页面读取 `gbName`/`gbDeviceId`/`gbStatus` 等历史命名,
+            // 否则通道列表 / 地图信息窗显示空白。
             serde_json::json!({
                 "id": c.id,
                 "deviceId": c.device_id,
@@ -172,6 +182,28 @@ pub async fn common_channel_list(
                 "hasAudio": c.has_audio,
                 "channelType": c.channel_type,
                 "ptzType": ptz_type,
+                "ptzTypeText": ptz_type_text,
+                "gbName": c.name,
+                "gbDeviceId": c.gb_device_id,
+                "gbManufacturer": c.manufacturer,
+                "gbModel": c.model,
+                "gbOwner": c.owner,
+                "gbCivilCode": c.civil_code,
+                "gbAddress": c.address,
+                "gbParental": c.parental,
+                "gbParentId": c.parent_id,
+                "gbStatus": c.status,
+                "gbLongitude": c.longitude,
+                "gbLatitude": c.latitude,
+                "streamId": c.stream_id,
+                "streamIdentification": c.stream_identification,
+                "manufacturer": c.manufacturer,
+                "model": c.model,
+                "owner": c.owner,
+                "civilCode": c.civil_code,
+                "address": c.address,
+                "parental": c.parental,
+                "parentId": c.parent_id,
             })
         })
         .collect();
@@ -210,7 +242,14 @@ pub async fn region_tree_list(
 
 fn build_region_tree(list: &[Region], parent_id: Option<i32>) -> Vec<serde_json::Value> {
     list.iter()
-        .filter(|r| r.parent_id == parent_id)
+        // A region's "root" status is `parent_id == None` (canonical) OR
+        // `parent_id == Some(-1)` (legacy / "ROOT" sentinel used by the
+        // frontend form). Treat both as roots so tree_list returns the
+        // top-level nodes the user just inserted.
+        .filter(|r| match parent_id {
+            None => r.parent_id.is_none() || r.parent_id == Some(-1),
+            Some(target) => r.parent_id == Some(target),
+        })
         .map(|r| {
             let children = build_region_tree(list, Some(r.id as i32));
             serde_json::json!({
@@ -456,7 +495,10 @@ pub async fn region_tree_query(
 // ========== group ==========
 fn build_group_tree(list: &[Group], parent_id: Option<i32>) -> Vec<serde_json::Value> {
     list.iter()
-        .filter(|g| g.parent_id == parent_id)
+        .filter(|g| match parent_id {
+            None => g.parent_id.is_none() || g.parent_id == Some(-1),
+            Some(target) => g.parent_id == Some(target),
+        })
         .map(|g| {
             let children = build_group_tree(list, Some(g.id as i32));
             serde_json::json!({

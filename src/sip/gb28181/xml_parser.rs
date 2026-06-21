@@ -39,6 +39,7 @@ impl XmlParser {
         let mut reader = Reader::from_str(xml);
         let mut result = HashMap::new();
         let mut buf = Vec::new();
+        let mut current_tag = String::new();
 
         loop {
             match reader.read_event_into(&mut buf) {
@@ -49,13 +50,23 @@ impl XmlParser {
                         let value = String::from_utf8_lossy(&attr.value).to_string();
                         result.insert(key, value);
                     }
+                    current_tag = name.clone();
                     result.insert("__tag".to_string(), name);
                 }
                 Ok(Event::Text(e)) => {
                     let text = String::from_utf8_lossy(&e).trim().to_string();
                     if !text.is_empty() {
-                        result.insert("__text".to_string(), text);
+                        // 既保留原 __text 全局键,也写入当前 tag 名作为 key,
+                        // 这样 XmlParser::get_cmd_type / get_device_id 能在 GB28181
+                        // 使用元素内容（如 <CmdType>Keepalive</CmdType>）时正确取值。
+                        result.insert("__text".to_string(), text.clone());
+                        if !current_tag.is_empty() {
+                            result.insert(current_tag.clone(), text);
+                        }
                     }
+                }
+                Ok(Event::End(_)) => {
+                    current_tag.clear();
                 }
                 Ok(Event::Eof) => break,
                 _ => {}
@@ -66,8 +77,21 @@ impl XmlParser {
     }
 
     pub fn get_device_id(xml: &str) -> Option<String> {
-        let parsed = Self::parse(xml);
-        parsed.get("DeviceID").cloned()
+        // 不使用 parse() 的 HashMap 提取 — 后者在同名标签多次出现时会保留最后一个值
+        // （例如 <Response><DeviceID>parent</DeviceID>...
+        //       <DeviceList><Item><DeviceID>child1</DeviceID>...
+        // 上层需要的是父 DeviceID），所以这里用直接字符串扫描返回首个 <DeviceID>。
+        let open = match xml.find("<DeviceID>") {
+            Some(idx) => idx,
+            None => return None,
+        };
+        let start = open + "<DeviceID>".len();
+        let end_close = match xml[start..].find("</DeviceID>") {
+            Some(idx) => start + idx,
+            None => return None,
+        };
+        let val = xml[start..end_close].trim();
+        if val.is_empty() { None } else { Some(val.to_string()) }
     }
 
     pub fn get_cmd_type(xml: &str) -> Option<String> {

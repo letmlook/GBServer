@@ -462,13 +462,37 @@ impl SipServer {
         Ok(())
     }
 
-    pub async fn run(&mut self) -> Result<()> {
-        let socket = self
-            .socket
-            .write()
-            .await
-            .take()
-            .expect("Server not started");
+    /// Run the SIP server event loops. Takes `&self` so the outer `Arc<SipServer>`
+    /// wrapper is NOT held under write-lock for the entire process lifetime
+    /// (which would deadlock all `sip_server.read().await` callers).
+    /// The two `&mut` operations the original signature needed — taking the
+    /// socket and TCP listener OUT of their inner RwLocks — are performed
+    /// via `Arc::get_mut` on the (only) inner Arcs, then moved into the spawned
+    /// loops by clone.
+    pub async fn run(&self) -> Result<()> {
+        // Take the bound UDP socket out. This is the only `&mut self` operation
+        // the original run() needed; it writes to the inner `Arc<RwLock<Option<UdpSocket>>>`.
+        // Since we hold the only `Arc<SipServer>` at startup (no other clones yet),
+        // we can use `Arc::get_mut` on the inner field to mutate it.
+        let socket = {
+            // inner_arc: Arc<RwLock<Option<UdpSocket>>>
+            let inner_arc = self.socket.clone();
+            // We need &mut on the inner Arc. We can do this by replacing it
+            // with an empty one and taking ownership — but we can't move out
+            // of &self. Use std::mem::take via unsafe-free swap instead.
+            // Safe alternative: use a oneshot to receive the socket from a
+            // brief &mut self call site. The caller of run() is lib.rs which
+            // already has &mut access via Arc::get_mut on the SipServer itself.
+            // To keep this method `&self`, do the swap through a parking_lot-style
+            // take: clone-and-swap via std::mem::replace is impossible on Arc.
+            //
+            // Pragmatic solution: hold the write lock on the inner RwLock BRIEFLY
+            // to take the socket. The inner RwLock is independent of any outer
+            // lock, so no deadlock here.
+            let mut guard = inner_arc.write().await;
+            guard.take()
+        }
+        .expect("Server not started");
         let socket = Arc::new(socket);
         let config = self.config.clone();
         let device_manager = self.device_manager.clone();
@@ -1175,7 +1199,7 @@ let renewal_pool = pool.clone();
             .or_else(|| Self::extract_device_id(&to))
             .unwrap_or_default();
         if device_id.is_empty() {
-            tracing::warn!("REGISTER: Cannot extract device ID");
+            tracing::warn!("REGISTER: Cannot extract device ID - from={:?} to={:?} cseq={:?}", from, to, cseq);
             return Ok(());
         }
 
@@ -1450,6 +1474,57 @@ let renewal_pool = pool.clone();
                     tracing::debug!("Keepalive from device: {}", device_id);
                 }
                 Some("Catalog") => {
+                    // 上级设备以两种方式与我们通信:
+                    // 1. 它查询我们的目录(body 为空或仅 <?xml...?>):当作 Query 处理,
+                    //    返回本级目录。
+                    // 2. 它响应我们之前发出的 Catalog Query(body 含 <Response> 与
+                    //    <DeviceList><Item>...):需要把下级通道 upsert 到
+                    //    gb_device_channel,设备列表才能显示通道。
+                    if body.contains("<Response") {
+                        // Phase 3.x: 与 handle_notify 同路径,把响应里的通道落库。
+                        let device_id_for_catalog = XmlParser::get_device_id(body)
+                            .unwrap_or_else(|| device_id.clone());
+                        let (sum_num, channels) = XmlParser::parse_catalog_channels(body);
+                        tracing::info!(
+                            "Catalog RESPONSE from {}: {} channels (SumNum={:?})",
+                            device_id_for_catalog, channels.len(), sum_num,
+                        );
+                        for ch in &channels {
+                            let status = ch.status == "ON" || ch.status.to_lowercase() == "online";
+                            let parent_id = ch.parent_id.clone().or(Some(device_id_for_catalog.clone()));
+                            if let Err(e) = db_device::upsert_channel_from_catalog(
+                                pool,
+                                &device_id_for_catalog,
+                                &ch.device_id,
+                                &ch.name,
+                                ch.manufacturer.as_deref(),
+                                ch.model.as_deref(),
+                                ch.owner.as_deref(),
+                                ch.civil_code.as_deref(),
+                                ch.address.as_deref(),
+                                parent_id.as_deref(),
+                                status,
+                                ch.longitude,
+                                ch.latitude,
+                                ch.ptz_type,
+                                ch.has_audio,
+                                ch.sub_count,
+                            ).await {
+                                tracing::warn!("upsert channel {} failed: {}", ch.device_id, e);
+                            }
+                        }
+                        // 回复 200 OK(MESSAGE 也要求回复 200)
+                        let response = Parser::generate_response(
+                            200, "OK",
+                            &[("Via", &via), ("From", &from), ("To", &to),
+                              ("Call-ID", &call_id), ("CSeq", &cseq)],
+                            None,
+                        );
+                        Self::send_response(socket, addr, &response).await?;
+                        return Ok(());
+                    }
+
+                    // 否则当作 Query 处理
                     Self::handle_catalog(
                         body, &device_id, &sn, pool, addr, &from, &to, &via, &call_id, &cseq,
                         socket,
@@ -3348,14 +3423,27 @@ let renewal_pool = pool.clone();
 
     fn extract_device_id(sip_uri: &str) -> Option<String> {
         let uri = sip_uri.trim();
-        let start = uri.find('<')? + 1;
+        // GB28181 标准: <sip:id@host>; 部分厂商(包括 Hikvision iSecure Center、
+        // Dahua DSS 等)在国标级联时会用 UUID/Hex 字符串作为 SIP 用户名
+        // (例如 32 位的 efc7875677ca4ae586a41e70b6f1103c)。
+        // 这里接受任意带 <sip:user@host> 形式的 URI，只要 user 长度 ≥ 8 且全部为
+        // 字母/数字，就作为设备 ID 返回；保留 20/22 的快速通道不变。
+        let start = uri.find('<').map(|i| i + 1).unwrap_or(0);
         let end = uri.find('>').unwrap_or(uri.len());
         let uri = &uri[start..end];
         let uri = uri.trim_start_matches("sip:");
         let parts: Vec<&str> = uri.split('@').collect();
-        let user = parts.first()?;
-        let user = user.trim();
+        let user = parts.first()?.trim();
+        if user.is_empty() {
+            return None;
+        }
         if user.len() == 20 || user.len() == 22 {
+            return Some(user.to_string());
+        }
+        // 兼容非标准 ID：UUID / hex / 任意 alphanumeric (>=8 chars)
+        if user.len() >= 8
+            && user.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
             Some(user.to_string())
         } else {
             None
@@ -3445,8 +3533,6 @@ f=v/1/96/1/2/1/1/0
         let username2 = params.get("username").map(|s| s.as_str()).unwrap_or("");
         let response = params.get("response").map(|s| s.as_str()).unwrap_or("");
         let nonce = params.get("nonce").map(|s| s.as_str()).unwrap_or("");
-        let qop = params.get("qop").map(|s| s.as_str()).unwrap_or("auth");
-
         if username2 != username {
             return false;
         }
@@ -3455,15 +3541,31 @@ f=v/1/96/1/2/1/1/0
             "{:x}",
             Md5::digest(format!("{}:{}:{}", username, realm, password))
         );
-        let ha2 = format!("{:x}", Md5::digest(format!("{}:{}", "REGISTER", uri)));
-        let expected = if qop == "auth" {
-            let cnonce = "00000001";
-            format!(
-                "{:x}",
-                Md5::digest(format!("{}:{}:{}:{}:{}", ha1, nonce, cnonce, "auth", ha2))
-            )
-        } else {
-            format!("{:x}", Md5::digest(format!("{}:{}:{}", ha1, nonce, ha2)))
+        // RFC 2617 §3.2.2.5: HA2 必须基于客户端 Authorization 头里的 "uri" 字段计算，
+        // 而不是 server 自己拼接的 Request-URI。客户端很可能发 sip:server_ip，
+        // server 端拼的 sip:device_id@server_ip:port 通常与客户端不一致，会导致 HA2 不匹配。
+        let digest_uri = params.get("uri").map(|s| s.as_str()).unwrap_or(uri);
+        let ha2 = format!("{:x}", Md5::digest(format!("{}:{}", "REGISTER", digest_uri)));
+        // RFC 2617 §3.2.2: response 取决于客户端是否声明 qop。
+        //   - 客户端带 qop="auth"        -> KD1 = MD5(HA1:nonce:nc:cnonce:qop:HA2)
+        //   - 客户端未声明 qop (RFC 2069 兼容) -> KD1 = MD5(HA1:nonce:HA2)
+        // 历史 bug: 此处把 cnonce 写死为 "00000001"，导致所有走 qop=auth 的设备
+        // REGISTER 都会因为 expected != response 被 403 拒绝。
+        let expected = match params.get("qop").map(|s| s.as_str()) {
+            Some(qop) if qop.split(',').any(|q| q.trim() == "auth") => {
+                let nc = params.get("nc").map(|s| s.as_str()).unwrap_or("00000001");
+                let cnonce = params.get("cnonce").map(|s| s.as_str()).unwrap_or("");
+                format!(
+                    "{:x}",
+                    Md5::digest(format!(
+                        "{}:{}:{}:{}:auth:{}",
+                        ha1, nonce, nc, cnonce, ha2
+                    ))
+                )
+            }
+            _ => {
+                format!("{:x}", Md5::digest(format!("{}:{}:{}", ha1, nonce, ha2)))
+            }
         };
 
         expected == response

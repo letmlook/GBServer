@@ -6,7 +6,15 @@ use sqlx::FromRow;
 use super::Pool;
 
 /// 国标设备完整信息
+///
+/// `rename_all = "camelCase"` 与前端 Vue 页面保持一致：
+/// 前端表格列通过 `scope.row.deviceId`、`scope.row.streamMode`、
+/// `scope.row.onLine`、`scope.row.subscribeCycleForCatalog` 等
+/// camelCase 属性访问；后端返回 snake_case 会导致列表列空白，
+/// 以及基于 `row.deviceId` 的删除请求 URL 退化为
+/// `/api/device/query/devices/undefined/delete`（看似删除无效果）。
 #[derive(Debug, Clone, Default, Serialize, FromRow)]
+#[serde(rename_all = "camelCase")]
 pub struct Device {
     pub id: i32,
     pub device_id: String,
@@ -35,13 +43,21 @@ pub struct Device {
     pub subscribe_cycle_for_catalog: Option<i32>,
     pub subscribe_cycle_for_mobile_position: Option<i32>,
     pub mobile_position_submission_interval: Option<i32>,
+    pub host_address: Option<String>,
+    pub channel_count: Option<i32>,
+    pub server_id: Option<String>,
 }
 
 /// Phase 7 audit fix: full column list matching the Device struct above.
 /// Used by query_devices_paged and related endpoints to avoid
 /// "no column found for name: firmware" 500 errors when callers
 /// (e.g. WVP-Pro frontend) request all device fields.
-pub const DEVICE_SELECT_COLUMNS: &str = "id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval";
+pub const DEVICE_SELECT_COLUMNS: &str = "id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval, host_address, server_id";
+
+/// 设备通道完整列名集合,与 [`DeviceChannel`] 字段一一对应。
+/// Phase 4.x: 所有 SELECT DeviceChannel 的查询必须使用该常量,避免
+/// "no column found for name: <field>" 500 错误。
+pub const DEVICE_CHANNEL_SELECT_COLUMNS: &str = "id, device_id, name, manufacturer, model, owner, civil_code, address, parental, parent_id, gb_device_id, status, longitude, latitude, ptz_type, create_time, update_time, sub_count, stream_id, has_audio, stream_identification, channel_type, map_level, gb_name, gb_manufacturer, gb_model, gb_civil_code, gb_address, gb_status, gb_longitude, gb_latitude, record_plan_id";
 
 /// 设备通道完整信息
 #[derive(Debug, Clone, Default, Serialize, FromRow)]
@@ -332,25 +348,25 @@ pub async fn list_devices_paged(
     #[cfg(feature = "mysql")]
     let rows = if has_query && status.is_some() {
         sqlx::query_as::<_, Device>(
-            "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval FROM gb_device WHERE (device_id LIKE ? OR name LIKE ?) AND on_line = ? ORDER BY id LIMIT ? OFFSET ?",
+            "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval, host_address, (SELECT COUNT(*) FROM gb_device_channel WHERE device_id = gb_device.device_id) AS channel_count, server_id FROM gb_device WHERE (device_id LIKE ? OR name LIKE ?) AND on_line = ? ORDER BY id LIMIT ? OFFSET ?",
         )
         .bind(&like).bind(&like).bind(status.unwrap()).bind(limit).bind(offset)
         .fetch_all(pool).await?
     } else if has_query {
         sqlx::query_as::<_, Device>(
-            "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval FROM gb_device WHERE (device_id LIKE ? OR name LIKE ?) ORDER BY id LIMIT ? OFFSET ?",
+            "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval, host_address, (SELECT COUNT(*) FROM gb_device_channel WHERE device_id = gb_device.device_id) AS channel_count, server_id FROM gb_device WHERE (device_id LIKE ? OR name LIKE ?) ORDER BY id LIMIT ? OFFSET ?",
         )
         .bind(&like).bind(&like).bind(limit).bind(offset)
         .fetch_all(pool).await?
     } else if status.is_some() {
         sqlx::query_as::<_, Device>(
-            "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval FROM gb_device WHERE on_line = ? ORDER BY id LIMIT ? OFFSET ?",
+            "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval, host_address, (SELECT COUNT(*) FROM gb_device_channel WHERE device_id = gb_device.device_id) AS channel_count, server_id FROM gb_device WHERE on_line = ? ORDER BY id LIMIT ? OFFSET ?",
         )
         .bind(status.unwrap()).bind(limit).bind(offset)
         .fetch_all(pool).await?
     } else {
         sqlx::query_as::<_, Device>(
-            "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval FROM gb_device ORDER BY id LIMIT ? OFFSET ?",
+            "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval, host_address, (SELECT COUNT(*) FROM gb_device_channel WHERE device_id = gb_device.device_id) AS channel_count, server_id FROM gb_device ORDER BY id LIMIT ? OFFSET ?",
         )
         .bind(limit).bind(offset)
         .fetch_all(pool).await?
@@ -358,25 +374,25 @@ pub async fn list_devices_paged(
     #[cfg(feature = "postgres")]
     let rows = if has_query && status.is_some() {
         sqlx::query_as::<_, Device>(
-            "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval FROM gb_device WHERE (device_id LIKE $1 OR name LIKE $2) AND on_line = $3 ORDER BY id LIMIT $4 OFFSET $5",
+            "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval, host_address, (SELECT COUNT(*) FROM gb_device_channel WHERE device_id = gb_device.device_id) AS channel_count, server_id FROM gb_device WHERE (device_id LIKE $1 OR name LIKE $2) AND on_line = $3 ORDER BY id LIMIT $4 OFFSET $5",
         )
         .bind(&like).bind(&like).bind(status.unwrap()).bind(limit).bind(offset)
         .fetch_all(pool).await?
     } else if has_query {
         sqlx::query_as::<_, Device>(
-            "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval FROM gb_device WHERE (device_id LIKE $1 OR name LIKE $2) ORDER BY id LIMIT $3 OFFSET $4",
+            "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval, host_address, (SELECT COUNT(*) FROM gb_device_channel WHERE device_id = gb_device.device_id) AS channel_count, server_id FROM gb_device WHERE (device_id LIKE $1 OR name LIKE $2) ORDER BY id LIMIT $3 OFFSET $4",
         )
         .bind(&like).bind(&like).bind(limit).bind(offset)
         .fetch_all(pool).await?
     } else if status.is_some() {
         sqlx::query_as::<_, Device>(
-            "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval FROM gb_device WHERE on_line = $1 ORDER BY id LIMIT $2 OFFSET $3",
+            "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval, host_address, (SELECT COUNT(*) FROM gb_device_channel WHERE device_id = gb_device.device_id) AS channel_count, server_id FROM gb_device WHERE on_line = $1 ORDER BY id LIMIT $2 OFFSET $3",
         )
         .bind(status.unwrap()).bind(limit).bind(offset)
         .fetch_all(pool).await?
     } else {
         sqlx::query_as::<_, Device>(
-            "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval FROM gb_device ORDER BY id LIMIT $1 OFFSET $2",
+            "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval, host_address, (SELECT COUNT(*) FROM gb_device_channel WHERE device_id = gb_device.device_id) AS channel_count, server_id FROM gb_device ORDER BY id LIMIT $1 OFFSET $2",
         )
         .bind(limit).bind(offset)
         .fetch_all(pool).await?
@@ -384,25 +400,25 @@ pub async fn list_devices_paged(
     #[cfg(feature = "sqlite")]
     let rows = if has_query && status.is_some() {
         sqlx::query_as::<_, Device>(
-            "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval FROM gb_device WHERE (device_id LIKE ? OR name LIKE ?) AND on_line = ? ORDER BY id LIMIT ? OFFSET ?",
+            "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval, host_address, (SELECT COUNT(*) FROM gb_device_channel WHERE device_id = gb_device.device_id) AS channel_count, server_id FROM gb_device WHERE (device_id LIKE ? OR name LIKE ?) AND on_line = ? ORDER BY id LIMIT ? OFFSET ?",
         )
         .bind(&like).bind(&like).bind(status.unwrap()).bind(limit).bind(offset)
         .fetch_all(pool).await?
     } else if has_query {
         sqlx::query_as::<_, Device>(
-            "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval FROM gb_device WHERE (device_id LIKE ? OR name LIKE ?) ORDER BY id LIMIT ? OFFSET ?",
+            "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval, host_address, (SELECT COUNT(*) FROM gb_device_channel WHERE device_id = gb_device.device_id) AS channel_count, server_id FROM gb_device WHERE (device_id LIKE ? OR name LIKE ?) ORDER BY id LIMIT ? OFFSET ?",
         )
         .bind(&like).bind(&like).bind(limit).bind(offset)
         .fetch_all(pool).await?
     } else if status.is_some() {
         sqlx::query_as::<_, Device>(
-            "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval FROM gb_device WHERE on_line = ? ORDER BY id LIMIT ? OFFSET ?",
+            "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval, host_address, (SELECT COUNT(*) FROM gb_device_channel WHERE device_id = gb_device.device_id) AS channel_count, server_id FROM gb_device WHERE on_line = ? ORDER BY id LIMIT ? OFFSET ?",
         )
         .bind(status.unwrap()).bind(limit).bind(offset)
         .fetch_all(pool).await?
     } else {
         sqlx::query_as::<_, Device>(
-            "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval FROM gb_device ORDER BY id LIMIT ? OFFSET ?",
+            "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval, host_address, (SELECT COUNT(*) FROM gb_device_channel WHERE device_id = gb_device.device_id) AS channel_count, server_id FROM gb_device ORDER BY id LIMIT ? OFFSET ?",
         )
         .bind(limit).bind(offset)
         .fetch_all(pool).await?
@@ -471,21 +487,21 @@ pub async fn count_devices(
 pub async fn get_device_by_device_id(pool: &Pool, device_id: &str) -> sqlx::Result<Option<Device>> {
     #[cfg(feature = "mysql")]
     return sqlx::query_as::<_, Device>(
-        "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval FROM gb_device WHERE device_id = ?",
+        "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval, host_address, server_id FROM gb_device WHERE device_id = ?",
     )
     .bind(device_id)
     .fetch_optional(pool)
     .await;
     #[cfg(feature = "postgres")]
     return sqlx::query_as::<_, Device>(
-        "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval FROM gb_device WHERE device_id = $1",
+        "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval, host_address, server_id FROM gb_device WHERE device_id = $1",
     )
     .bind(device_id)
     .fetch_optional(pool)
     .await;
     #[cfg(feature = "sqlite")]
     return sqlx::query_as::<_, Device>(
-        "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval FROM gb_device WHERE device_id = ?",
+        "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval, host_address, server_id FROM gb_device WHERE device_id = ?",
     )
     .bind(device_id)
     .fetch_optional(pool)
@@ -500,21 +516,24 @@ pub async fn list_channels_paged(
 ) -> sqlx::Result<Vec<DeviceChannel>> {
     let offset = (page.saturating_sub(1)) * count;
     #[cfg(feature = "mysql")]
-    return sqlx::query_as::<_, DeviceChannel>(
-        "SELECT id, device_id, name, gb_device_id, status, longitude, latitude, create_time, update_time, sub_count, has_audio, channel_type FROM gb_device_channel WHERE device_id = ? ORDER BY id LIMIT ? OFFSET ?",
-    )
+    return sqlx::query_as::<_, DeviceChannel>(&format!(
+        "SELECT {} FROM gb_device_channel WHERE device_id = ? ORDER BY id LIMIT ? OFFSET ?",
+        DEVICE_CHANNEL_SELECT_COLUMNS,
+    ))
     .bind(device_id).bind(count as i64).bind(offset as i64)
     .fetch_all(pool).await;
     #[cfg(feature = "postgres")]
-    return sqlx::query_as::<_, DeviceChannel>(
-        "SELECT id, device_id, name, gb_device_id, status, longitude, latitude, create_time, update_time, sub_count, has_audio, channel_type FROM gb_device_channel WHERE device_id = $1 ORDER BY id LIMIT $2 OFFSET $3",
-    )
+    return sqlx::query_as::<_, DeviceChannel>(&format!(
+        "SELECT {} FROM gb_device_channel WHERE device_id = $1 ORDER BY id LIMIT $2 OFFSET $3",
+        DEVICE_CHANNEL_SELECT_COLUMNS,
+    ))
     .bind(device_id).bind(count as i64).bind(offset as i64)
     .fetch_all(pool).await;
     #[cfg(feature = "sqlite")]
-    return sqlx::query_as::<_, DeviceChannel>(
-        "SELECT id, device_id, name, gb_device_id, status, longitude, latitude, create_time, update_time, sub_count, has_audio, channel_type FROM gb_device_channel WHERE device_id = ? ORDER BY id LIMIT ? OFFSET ?",
-    )
+    return sqlx::query_as::<_, DeviceChannel>(&format!(
+        "SELECT {} FROM gb_device_channel WHERE device_id = ? ORDER BY id LIMIT ? OFFSET ?",
+        DEVICE_CHANNEL_SELECT_COLUMNS,
+    ))
     .bind(device_id).bind(count as i64).bind(offset as i64)
     .fetch_all(pool).await;
 }
@@ -538,21 +557,24 @@ pub async fn get_channel_by_device_and_channel_id(
 ) -> sqlx::Result<Option<DeviceChannel>> {
     let id_val = channel_id.parse::<i64>().unwrap_or(0);
     #[cfg(feature = "mysql")]
-    return sqlx::query_as::<_, DeviceChannel>(
-        "SELECT id, device_id, name, gb_device_id, status, longitude, latitude, create_time, update_time, sub_count, has_audio, channel_type FROM gb_device_channel WHERE device_id = ? AND (gb_device_id = ? OR id = ?) LIMIT 1",
-    )
+    return sqlx::query_as::<_, DeviceChannel>(&format!(
+        "SELECT {} FROM gb_device_channel WHERE device_id = ? AND (gb_device_id = ? OR id = ?) LIMIT 1",
+        DEVICE_CHANNEL_SELECT_COLUMNS,
+    ))
     .bind(device_id).bind(channel_id).bind(id_val)
     .fetch_optional(pool).await;
     #[cfg(feature = "postgres")]
-    return sqlx::query_as::<_, DeviceChannel>(
-        "SELECT id, device_id, name, gb_device_id, status, longitude, latitude, create_time, update_time, sub_count, has_audio, channel_type FROM gb_device_channel WHERE device_id = $1 AND (gb_device_id = $2 OR id = $3) LIMIT 1",
-    )
+    return sqlx::query_as::<_, DeviceChannel>(&format!(
+        "SELECT {} FROM gb_device_channel WHERE device_id = $1 AND (gb_device_id = $2 OR id = $3) LIMIT 1",
+        DEVICE_CHANNEL_SELECT_COLUMNS,
+    ))
     .bind(device_id).bind(channel_id).bind(id_val)
     .fetch_optional(pool).await;
     #[cfg(feature = "sqlite")]
-    return sqlx::query_as::<_, DeviceChannel>(
-        "SELECT id, device_id, name, gb_device_id, status, longitude, latitude, create_time, update_time, sub_count, has_audio, channel_type FROM gb_device_channel WHERE device_id = ? AND (gb_device_id = ? OR id = ?) LIMIT 1",
-    )
+    return sqlx::query_as::<_, DeviceChannel>(&format!(
+        "SELECT {} FROM gb_device_channel WHERE device_id = ? AND (gb_device_id = ? OR id = ?) LIMIT 1",
+        DEVICE_CHANNEL_SELECT_COLUMNS,
+    ))
     .bind(device_id).bind(channel_id).bind(id_val)
     .fetch_optional(pool).await;
 }
@@ -563,21 +585,24 @@ pub async fn list_channels_by_parent(
     parent_channel_id: &str,
 ) -> sqlx::Result<Vec<DeviceChannel>> {
     #[cfg(feature = "mysql")]
-    return sqlx::query_as::<_, DeviceChannel>(
-        "SELECT id, device_id, name, gb_device_id, status, longitude, latitude, create_time, update_time, sub_count, has_audio, channel_type FROM gb_device_channel WHERE device_id = ? AND (parent_id = ? OR gb_parent_id = ?) ORDER BY id",
-    )
+    return sqlx::query_as::<_, DeviceChannel>(&format!(
+        "SELECT {} FROM gb_device_channel WHERE device_id = ? AND (parent_id = ? OR gb_parent_id = ?) ORDER BY id",
+        DEVICE_CHANNEL_SELECT_COLUMNS,
+    ))
     .bind(device_id).bind(parent_channel_id).bind(parent_channel_id)
     .fetch_all(pool).await;
     #[cfg(feature = "postgres")]
-    return sqlx::query_as::<_, DeviceChannel>(
-        "SELECT id, device_id, name, gb_device_id, status, longitude, latitude, create_time, update_time, sub_count, has_audio, channel_type FROM gb_device_channel WHERE device_id = $1 AND (parent_id = $2 OR gb_parent_id = $3) ORDER BY id",
-    )
+    return sqlx::query_as::<_, DeviceChannel>(&format!(
+        "SELECT {} FROM gb_device_channel WHERE device_id = $1 AND (parent_id = $2 OR gb_parent_id = $3) ORDER BY id",
+        DEVICE_CHANNEL_SELECT_COLUMNS,
+    ))
     .bind(device_id).bind(parent_channel_id).bind(parent_channel_id)
     .fetch_all(pool).await;
     #[cfg(feature = "sqlite")]
-    return sqlx::query_as::<_, DeviceChannel>(
-        "SELECT id, device_id, name, gb_device_id, status, longitude, latitude, create_time, update_time, sub_count, has_audio, channel_type FROM gb_device_channel WHERE device_id = ? AND (parent_id = ? OR gb_parent_id = ?) ORDER BY id",
-    )
+    return sqlx::query_as::<_, DeviceChannel>(&format!(
+        "SELECT {} FROM gb_device_channel WHERE device_id = ? AND (parent_id = ? OR gb_parent_id = ?) ORDER BY id",
+        DEVICE_CHANNEL_SELECT_COLUMNS,
+    ))
     .bind(device_id).bind(parent_channel_id).bind(parent_channel_id)
     .fetch_all(pool).await;
 }
@@ -586,20 +611,23 @@ pub async fn list_channels_for_device(
     pool: &Pool,
     device_id: &str,
 ) -> sqlx::Result<Vec<DeviceChannel>> {
+    // Phase 4.x: SELECT 必须覆盖 DeviceChannel 全部字段,否则 FromRow 报
+    // "no column found for name: <field>" 500。
+    let cols = "id, device_id, name, manufacturer, model, owner, civil_code, address, parental, parent_id, gb_device_id, status, longitude, latitude, ptz_type, create_time, update_time, sub_count, stream_id, has_audio, stream_identification, channel_type, map_level, gb_name, gb_manufacturer, gb_model, gb_civil_code, gb_address, gb_status, gb_longitude, gb_latitude, record_plan_id";
     #[cfg(feature = "mysql")]
-    return sqlx::query_as::<_, DeviceChannel>(
-        "SELECT id, device_id, name, gb_device_id, status, longitude, latitude, create_time, update_time, sub_count, has_audio, channel_type FROM gb_device_channel WHERE device_id = ? ORDER BY id",
-    )
+    return sqlx::query_as::<_, DeviceChannel>(&format!(
+        "SELECT {} FROM gb_device_channel WHERE device_id = ? ORDER BY id", cols
+    ))
     .bind(device_id).fetch_all(pool).await;
     #[cfg(feature = "postgres")]
-    return sqlx::query_as::<_, DeviceChannel>(
-        "SELECT id, device_id, name, gb_device_id, status, longitude, latitude, create_time, update_time, sub_count, has_audio, channel_type FROM gb_device_channel WHERE device_id = $1 ORDER BY id",
-    )
+    return sqlx::query_as::<_, DeviceChannel>(&format!(
+        "SELECT {} FROM gb_device_channel WHERE device_id = $1 ORDER BY id", cols
+    ))
     .bind(device_id).fetch_all(pool).await;
     #[cfg(feature = "sqlite")]
-    return sqlx::query_as::<_, DeviceChannel>(
-        "SELECT id, device_id, name, gb_device_id, status, longitude, latitude, create_time, update_time, sub_count, has_audio, channel_type FROM gb_device_channel WHERE device_id = ? ORDER BY id",
-    )
+    return sqlx::query_as::<_, DeviceChannel>(&format!(
+        "SELECT {} FROM gb_device_channel WHERE device_id = ? ORDER BY id", cols
+    ))
     .bind(device_id).fetch_all(pool).await;
 }
 
@@ -621,36 +649,38 @@ pub async fn list_common_channels_paged(
 
     #[cfg(feature = "mysql")]
     {
+        // Phase 4.x: 改用 SELECT *,避免遗漏 DeviceChannel 字段导致
+        // "no column found for name: <field>" 500;多读若干冗余字段可控。
         let rows = if has_query && online.is_some() && channel_type.is_some() {
-            sqlx::query_as::<_, DeviceChannel>("SELECT c.id, c.device_id, c.name, c.gb_device_id, c.status, c.longitude, c.latitude, c.create_time, c.update_time, c.sub_count, c.has_audio, c.channel_type FROM gb_device_channel c INNER JOIN gb_device d ON c.device_id = d.device_id WHERE (c.name LIKE ? OR c.gb_device_id LIKE ?) AND d.on_line = ? AND c.channel_type = ? ORDER BY c.id LIMIT ? OFFSET ?")
+            sqlx::query_as::<_, DeviceChannel>("SELECT c.* FROM gb_device_channel c INNER JOIN gb_device d ON c.device_id = d.device_id WHERE (c.name LIKE ? OR c.gb_device_id LIKE ?) AND d.on_line = ? AND c.channel_type = ? ORDER BY c.id LIMIT ? OFFSET ?")
                 .bind(&like).bind(&like).bind(online.unwrap()).bind(channel_type.unwrap()).bind(limit).bind(offset)
                 .fetch_all(pool).await?
         } else if has_query && online.is_some() {
-            sqlx::query_as::<_, DeviceChannel>("SELECT c.id, c.device_id, c.name, c.gb_device_id, c.status, c.longitude, c.latitude, c.create_time, c.update_time, c.sub_count, c.has_audio, c.channel_type FROM gb_device_channel c INNER JOIN gb_device d ON c.device_id = d.device_id WHERE (c.name LIKE ? OR c.gb_device_id LIKE ?) AND d.on_line = ? ORDER BY c.id LIMIT ? OFFSET ?")
+            sqlx::query_as::<_, DeviceChannel>("SELECT c.* FROM gb_device_channel c INNER JOIN gb_device d ON c.device_id = d.device_id WHERE (c.name LIKE ? OR c.gb_device_id LIKE ?) AND d.on_line = ? ORDER BY c.id LIMIT ? OFFSET ?")
                 .bind(&like).bind(&like).bind(online.unwrap()).bind(limit).bind(offset)
                 .fetch_all(pool).await?
         } else if has_query && channel_type.is_some() {
-            sqlx::query_as::<_, DeviceChannel>("SELECT c.id, c.device_id, c.name, c.gb_device_id, c.status, c.longitude, c.latitude, c.create_time, c.update_time, c.sub_count, c.has_audio, c.channel_type FROM gb_device_channel c WHERE (c.name LIKE ? OR c.gb_device_id LIKE ?) AND c.channel_type = ? ORDER BY c.id LIMIT ? OFFSET ?")
+            sqlx::query_as::<_, DeviceChannel>("SELECT c.* FROM gb_device_channel c WHERE (c.name LIKE ? OR c.gb_device_id LIKE ?) AND c.channel_type = ? ORDER BY c.id LIMIT ? OFFSET ?")
                 .bind(&like).bind(&like).bind(channel_type.unwrap()).bind(limit).bind(offset)
                 .fetch_all(pool).await?
         } else if has_query {
-            sqlx::query_as::<_, DeviceChannel>("SELECT c.id, c.device_id, c.name, c.gb_device_id, c.status, c.longitude, c.latitude, c.create_time, c.update_time, c.sub_count, c.has_audio, c.channel_type FROM gb_device_channel c WHERE (c.name LIKE ? OR c.gb_device_id LIKE ?) ORDER BY c.id LIMIT ? OFFSET ?")
+            sqlx::query_as::<_, DeviceChannel>("SELECT c.* FROM gb_device_channel c WHERE (c.name LIKE ? OR c.gb_device_id LIKE ?) ORDER BY c.id LIMIT ? OFFSET ?")
                 .bind(&like).bind(&like).bind(limit).bind(offset)
                 .fetch_all(pool).await?
         } else if online.is_some() && channel_type.is_some() {
-            sqlx::query_as::<_, DeviceChannel>("SELECT c.id, c.device_id, c.name, c.gb_device_id, c.status, c.longitude, c.latitude, c.create_time, c.update_time, c.sub_count, c.has_audio, c.channel_type FROM gb_device_channel c INNER JOIN gb_device d ON c.device_id = d.device_id WHERE d.on_line = ? AND c.channel_type = ? ORDER BY c.id LIMIT ? OFFSET ?")
+            sqlx::query_as::<_, DeviceChannel>("SELECT c.* FROM gb_device_channel c INNER JOIN gb_device d ON c.device_id = d.device_id WHERE d.on_line = ? AND c.channel_type = ? ORDER BY c.id LIMIT ? OFFSET ?")
                 .bind(online.unwrap()).bind(channel_type.unwrap()).bind(limit).bind(offset)
                 .fetch_all(pool).await?
         } else if online.is_some() {
-            sqlx::query_as::<_, DeviceChannel>("SELECT c.id, c.device_id, c.name, c.gb_device_id, c.status, c.longitude, c.latitude, c.create_time, c.update_time, c.sub_count, c.has_audio, c.channel_type FROM gb_device_channel c INNER JOIN gb_device d ON c.device_id = d.device_id WHERE d.on_line = ? ORDER BY c.id LIMIT ? OFFSET ?")
+            sqlx::query_as::<_, DeviceChannel>("SELECT c.* FROM gb_device_channel c INNER JOIN gb_device d ON c.device_id = d.device_id WHERE d.on_line = ? ORDER BY c.id LIMIT ? OFFSET ?")
                 .bind(online.unwrap()).bind(limit).bind(offset)
                 .fetch_all(pool).await?
         } else if channel_type.is_some() {
-            sqlx::query_as::<_, DeviceChannel>("SELECT c.id, c.device_id, c.name, c.gb_device_id, c.status, c.longitude, c.latitude, c.create_time, c.update_time, c.sub_count, c.has_audio, c.channel_type FROM gb_device_channel c WHERE c.channel_type = ? ORDER BY c.id LIMIT ? OFFSET ?")
+            sqlx::query_as::<_, DeviceChannel>("SELECT c.* FROM gb_device_channel c WHERE c.channel_type = ? ORDER BY c.id LIMIT ? OFFSET ?")
                 .bind(channel_type.unwrap()).bind(limit).bind(offset)
                 .fetch_all(pool).await?
         } else {
-            sqlx::query_as::<_, DeviceChannel>("SELECT id, device_id, name, gb_device_id, status, longitude, latitude, create_time, update_time, sub_count, has_audio, channel_type FROM gb_device_channel ORDER BY id LIMIT ? OFFSET ?")
+            sqlx::query_as::<_, DeviceChannel>("SELECT * FROM gb_device_channel ORDER BY id LIMIT ? OFFSET ?")
                 .bind(limit).bind(offset)
                 .fetch_all(pool).await?
         };
@@ -660,21 +690,21 @@ pub async fn list_common_channels_paged(
     #[cfg(feature = "postgres")]
     {
         let (sql, _): (_, Vec<i64>) = if has_query && online.is_some() && channel_type.is_some() {
-            ("SELECT c.id, c.device_id, c.name, c.gb_device_id, c.status, c.longitude, c.latitude, c.create_time, c.update_time, c.sub_count, c.has_audio, c.channel_type FROM gb_device_channel c INNER JOIN gb_device d ON c.device_id = d.device_id WHERE (c.name LIKE $1 OR c.gb_device_id LIKE $2) AND d.on_line = $3 AND c.channel_type = $4 ORDER BY c.id LIMIT $5 OFFSET $6", vec![])
+            ("SELECT c.* FROM gb_device_channel c INNER JOIN gb_device d ON c.device_id = d.device_id WHERE (c.name LIKE $1 OR c.gb_device_id LIKE $2) AND d.on_line = $3 AND c.channel_type = $4 ORDER BY c.id LIMIT $5 OFFSET $6", vec![])
         } else if has_query && online.is_some() {
-            ("SELECT c.id, c.device_id, c.name, c.gb_device_id, c.status, c.longitude, c.latitude, c.create_time, c.update_time, c.sub_count, c.has_audio, c.channel_type FROM gb_device_channel c INNER JOIN gb_device d ON c.device_id = d.device_id WHERE (c.name LIKE $1 OR c.gb_device_id LIKE $2) AND d.on_line = $3 ORDER BY c.id LIMIT $4 OFFSET $5", vec![])
+            ("SELECT c.* FROM gb_device_channel c INNER JOIN gb_device d ON c.device_id = d.device_id WHERE (c.name LIKE $1 OR c.gb_device_id LIKE $2) AND d.on_line = $3 ORDER BY c.id LIMIT $4 OFFSET $5", vec![])
         } else if has_query && channel_type.is_some() {
-            ("SELECT c.id, c.device_id, c.name, c.gb_device_id, c.status, c.longitude, c.latitude, c.create_time, c.update_time, c.sub_count, c.has_audio, c.channel_type FROM gb_device_channel c WHERE (c.name LIKE $1 OR c.gb_device_id LIKE $2) AND c.channel_type = $3 ORDER BY c.id LIMIT $4 OFFSET $5", vec![])
+            ("SELECT c.* FROM gb_device_channel c WHERE (c.name LIKE $1 OR c.gb_device_id LIKE $2) AND c.channel_type = $3 ORDER BY c.id LIMIT $4 OFFSET $5", vec![])
         } else if has_query {
-            ("SELECT c.id, c.device_id, c.name, c.gb_device_id, c.status, c.longitude, c.latitude, c.create_time, c.update_time, c.sub_count, c.has_audio, c.channel_type FROM gb_device_channel c WHERE (c.name LIKE $1 OR c.gb_device_id LIKE $2) ORDER BY c.id LIMIT $3 OFFSET $4", vec![])
+            ("SELECT c.* FROM gb_device_channel c WHERE (c.name LIKE $1 OR c.gb_device_id LIKE $2) ORDER BY c.id LIMIT $3 OFFSET $4", vec![])
         } else if online.is_some() && channel_type.is_some() {
-            ("SELECT c.id, c.device_id, c.name, c.gb_device_id, c.status, c.longitude, c.latitude, c.create_time, c.update_time, c.sub_count, c.has_audio, c.channel_type FROM gb_device_channel c INNER JOIN gb_device d ON c.device_id = d.device_id WHERE d.on_line = $1 AND c.channel_type = $2 ORDER BY c.id LIMIT $3 OFFSET $4", vec![])
+            ("SELECT c.* FROM gb_device_channel c INNER JOIN gb_device d ON c.device_id = d.device_id WHERE d.on_line = $1 AND c.channel_type = $2 ORDER BY c.id LIMIT $3 OFFSET $4", vec![])
         } else if online.is_some() {
-            ("SELECT c.id, c.device_id, c.name, c.gb_device_id, c.status, c.longitude, c.latitude, c.create_time, c.update_time, c.sub_count, c.has_audio, c.channel_type FROM gb_device_channel c INNER JOIN gb_device d ON c.device_id = d.device_id WHERE d.on_line = $1 ORDER BY c.id LIMIT $2 OFFSET $3", vec![])
+            ("SELECT c.* FROM gb_device_channel c INNER JOIN gb_device d ON c.device_id = d.device_id WHERE d.on_line = $1 ORDER BY c.id LIMIT $2 OFFSET $3", vec![])
         } else if channel_type.is_some() {
-            ("SELECT c.id, c.device_id, c.name, c.gb_device_id, c.status, c.longitude, c.latitude, c.create_time, c.update_time, c.sub_count, c.has_audio, c.channel_type FROM gb_device_channel c WHERE c.channel_type = $1 ORDER BY c.id LIMIT $2 OFFSET $3", vec![])
+            ("SELECT c.* FROM gb_device_channel c WHERE c.channel_type = $1 ORDER BY c.id LIMIT $2 OFFSET $3", vec![])
         } else {
-            ("SELECT id, device_id, name, gb_device_id, status, longitude, latitude, create_time, update_time, sub_count, has_audio, channel_type FROM gb_device_channel ORDER BY id LIMIT $1 OFFSET $2", vec![])
+            ("SELECT * FROM gb_device_channel ORDER BY id LIMIT $1 OFFSET $2", vec![])
         };
         // Build query with bind - use raw to avoid dynamic param count
         let rows = if has_query && online.is_some() && channel_type.is_some() {
@@ -715,21 +745,21 @@ pub async fn list_common_channels_paged(
     #[cfg(feature = "sqlite")]
     {
         let (sql, _): (_, Vec<i64>) = if has_query && online.is_some() && channel_type.is_some() {
-            ("SELECT c.id, c.device_id, c.name, c.gb_device_id, c.status, c.longitude, c.latitude, c.create_time, c.update_time, c.sub_count, c.has_audio, c.channel_type FROM gb_device_channel c INNER JOIN gb_device d ON c.device_id = d.device_id WHERE (c.name LIKE ? OR c.gb_device_id LIKE ?) AND d.on_line = ? AND c.channel_type = ? ORDER BY c.id LIMIT ? OFFSET ?", vec![])
+            ("SELECT c.* FROM gb_device_channel c INNER JOIN gb_device d ON c.device_id = d.device_id WHERE (c.name LIKE ? OR c.gb_device_id LIKE ?) AND d.on_line = ? AND c.channel_type = ? ORDER BY c.id LIMIT ? OFFSET ?", vec![])
         } else if has_query && online.is_some() {
-            ("SELECT c.id, c.device_id, c.name, c.gb_device_id, c.status, c.longitude, c.latitude, c.create_time, c.update_time, c.sub_count, c.has_audio, c.channel_type FROM gb_device_channel c INNER JOIN gb_device d ON c.device_id = d.device_id WHERE (c.name LIKE ? OR c.gb_device_id LIKE ?) AND d.on_line = ? ORDER BY c.id LIMIT ? OFFSET ?", vec![])
+            ("SELECT c.* FROM gb_device_channel c INNER JOIN gb_device d ON c.device_id = d.device_id WHERE (c.name LIKE ? OR c.gb_device_id LIKE ?) AND d.on_line = ? ORDER BY c.id LIMIT ? OFFSET ?", vec![])
         } else if has_query && channel_type.is_some() {
-            ("SELECT c.id, c.device_id, c.name, c.gb_device_id, c.status, c.longitude, c.latitude, c.create_time, c.update_time, c.sub_count, c.has_audio, c.channel_type FROM gb_device_channel c WHERE (c.name LIKE ? OR c.gb_device_id LIKE ?) AND c.channel_type = ? ORDER BY c.id LIMIT ? OFFSET ?", vec![])
+            ("SELECT c.* FROM gb_device_channel c WHERE (c.name LIKE ? OR c.gb_device_id LIKE ?) AND c.channel_type = ? ORDER BY c.id LIMIT ? OFFSET ?", vec![])
         } else if has_query {
-            ("SELECT c.id, c.device_id, c.name, c.gb_device_id, c.status, c.longitude, c.latitude, c.create_time, c.update_time, c.sub_count, c.has_audio, c.channel_type FROM gb_device_channel c WHERE (c.name LIKE ? OR c.gb_device_id LIKE ?) ORDER BY c.id LIMIT ? OFFSET ?", vec![])
+            ("SELECT c.* FROM gb_device_channel c WHERE (c.name LIKE ? OR c.gb_device_id LIKE ?) ORDER BY c.id LIMIT ? OFFSET ?", vec![])
         } else if online.is_some() && channel_type.is_some() {
-            ("SELECT c.id, c.device_id, c.name, c.gb_device_id, c.status, c.longitude, c.latitude, c.create_time, c.update_time, c.sub_count, c.has_audio, c.channel_type FROM gb_device_channel c INNER JOIN gb_device d ON c.device_id = d.device_id WHERE d.on_line = ? AND c.channel_type = ? ORDER BY c.id LIMIT ? OFFSET ?", vec![])
+            ("SELECT c.* FROM gb_device_channel c INNER JOIN gb_device d ON c.device_id = d.device_id WHERE d.on_line = ? AND c.channel_type = ? ORDER BY c.id LIMIT ? OFFSET ?", vec![])
         } else if online.is_some() {
-            ("SELECT c.id, c.device_id, c.name, c.gb_device_id, c.status, c.longitude, c.latitude, c.create_time, c.update_time, c.sub_count, c.has_audio, c.channel_type FROM gb_device_channel c INNER JOIN gb_device d ON c.device_id = d.device_id WHERE d.on_line = ? ORDER BY c.id LIMIT ? OFFSET ?", vec![])
+            ("SELECT c.* FROM gb_device_channel c INNER JOIN gb_device d ON c.device_id = d.device_id WHERE d.on_line = ? ORDER BY c.id LIMIT ? OFFSET ?", vec![])
         } else if channel_type.is_some() {
-            ("SELECT c.id, c.device_id, c.name, c.gb_device_id, c.status, c.longitude, c.latitude, c.create_time, c.update_time, c.sub_count, c.has_audio, c.channel_type FROM gb_device_channel c WHERE c.channel_type = ? ORDER BY c.id LIMIT ? OFFSET ?", vec![])
+            ("SELECT c.* FROM gb_device_channel c WHERE c.channel_type = ? ORDER BY c.id LIMIT ? OFFSET ?", vec![])
         } else {
-            ("SELECT id, device_id, name, gb_device_id, status, longitude, latitude, create_time, update_time, sub_count, has_audio, channel_type FROM gb_device_channel ORDER BY id LIMIT ? OFFSET ?", vec![])
+            ("SELECT * FROM gb_device_channel ORDER BY id LIMIT ? OFFSET ?", vec![])
         };
         let rows = if has_query && online.is_some() && channel_type.is_some() {
             sqlx::query_as::<_, DeviceChannel>(sql)
@@ -1492,19 +1522,19 @@ pub async fn count_online_devices(pool: &Pool) -> sqlx::Result<i64> {
 pub async fn list_all_devices(pool: &Pool) -> sqlx::Result<Vec<Device>> {
     #[cfg(feature = "mysql")]
     return sqlx::query_as::<_, Device>(
-        "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval FROM gb_device ORDER BY id"
+        "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval, host_address, (SELECT COUNT(*) FROM gb_device_channel WHERE device_id = gb_device.device_id) AS channel_count, server_id FROM gb_device ORDER BY id"
     )
     .fetch_all(pool)
     .await;
     #[cfg(feature = "postgres")]
     return sqlx::query_as::<_, Device>(
-        "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval FROM gb_device ORDER BY id"
+        "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval, host_address, (SELECT COUNT(*) FROM gb_device_channel WHERE device_id = gb_device.device_id) AS channel_count, server_id FROM gb_device ORDER BY id"
     )
     .fetch_all(pool)
     .await;
     #[cfg(feature = "sqlite")]
     return sqlx::query_as::<_, Device>(
-        "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval FROM gb_device ORDER BY id"
+        "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval, host_address, (SELECT COUNT(*) FROM gb_device_channel WHERE device_id = gb_device.device_id) AS channel_count, server_id FROM gb_device ORDER BY id"
     )
     .fetch_all(pool)
     .await;
@@ -1656,14 +1686,25 @@ pub async fn upsert_channel_from_catalog(
     }
     #[cfg(feature = "sqlite")]
     {
+        // Phase 4.x: 查询父设备 db id,作为 data_device_id;data_type = 0 (channel)
+        // 否则受 NOT NULL 约束直接 INSERT 失败。
+        let parent_db_id: i64 = sqlx::query_scalar::<_, i64>(
+            "SELECT COALESCE(id, 0) FROM gb_device WHERE device_id = ?",
+        )
+        .bind(device_id)
+        .fetch_optional(pool)
+        .await
+        .unwrap_or(None)
+        .unwrap_or(0);
+
         sqlx::query(
             r#"INSERT INTO gb_device_channel
                (device_id, gb_device_id, name, manufacturer, model, owner, civil_code, address,
                 parent_id, status, longitude, latitude, ptz_type, has_audio, sub_count,
-                create_time, update_time)
+                create_time, update_time, data_type, data_device_id)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,
                 CASE WHEN ? THEN 'ON' ELSE 'OFF' END,
-                ?, ?, ?, ?, ?, ?, ?)
+                ?, ?, ?, ?, ?, ?, ?, 0, ?)
                ON CONFLICT(gb_device_id) DO UPDATE SET
                name = COALESCE(excluded.name, gb_device_channel.name),
                manufacturer = COALESCE(excluded.manufacturer, gb_device_channel.manufacturer),
@@ -1692,6 +1733,7 @@ pub async fn upsert_channel_from_catalog(
         .bind(sub_count)
         .bind(&now)
         .bind(&now)
+        .bind(parent_db_id)
         .execute(pool)
         .await?;
         Ok(true)

@@ -28,6 +28,8 @@ use tokio::sync::RwLock;
 async fn init_db_tables(pool: &db::Pool) -> anyhow::Result<()> {
     db::position_history::ensure_table(pool).await?;
     db::audit_log::ensure_table(pool).await?;
+    db::alarm::ensure_columns(pool).await?;
+    db::common_channel::ensure_columns(pool).await?;
     // Phase 4.5: 幂等迁移 —— 流状态统一字段
     let _ = db::stream_push::ensure_stream_status_column(pool).await;
     let _ = db::stream_proxy::ensure_stream_status_column(pool).await;
@@ -199,11 +201,11 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
     // Initialize required DB tables on startup
     init_db_tables(&pool).await?;
 
-    let sip_server = if let Some(ref sip_config) = cfg.sip {
+    let mut sip_server = if let Some(ref sip_config) = cfg.sip {
         if sip_config.enabled {
             let mut server = sip::SipServer::new(sip_config.clone(), pool.clone(), cfg.database.sqlite_max_devices);
             server.set_ws_state(ws_state.clone()).await;
-            Some(Arc::new(RwLock::new(server)))
+            Some(Arc::new(server))
         } else {
             None
         }
@@ -211,9 +213,11 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
         None
     };
 
+    // Construct ZLM clients FIRST so we can wire them into the SipServer
+    // before any other Arc clones of SipServer exist.
     let mut zlm_clients: HashMap<String, Arc<zlm::ZlmClient>> = HashMap::new();
     let mut zlm_client: Option<Arc<zlm::ZlmClient>> = None;
-    
+
     if let Some(ref zlm_config) = cfg.zlm {
         let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
         for server in &zlm_config.servers {
@@ -221,7 +225,7 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
                 let client = Arc::new(zlm::ZlmClient::from_config(server));
                 zlm_clients.insert(server.id.clone(), client.clone());
                 tracing::info!("ZLM client initialized: {} ({}:{})", server.id, server.ip, server.http_port);
-                
+
                 let _ = db::media_server::sync_from_config(
                     &pool,
                     &server.id,
@@ -230,7 +234,7 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
                     Some(server.secret.as_str()),
                     &now,
                 ).await;
-                
+
                 if zlm_client.is_none() {
                     zlm_client = Some(client);
                 }
@@ -272,10 +276,68 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
         });
     }
 
-    if let Some(ref server) = sip_server {
-        let mut server = server.write().await;
-        server.set_zlm_client(zlm_client.clone());
-        server.start().await?;
+    // Wire cascade registrar, ZLM client, start, and spawn run() task ALL
+    // here, before sip_server is cloned into AppState. We need every mutator
+    // to run while Arc::strong_count(&sip_server) == 1.
+    {
+        let registrar = Arc::new(crate::cascade::CascadeRegistrar::new());
+        let local_device_id = cfg.sip.as_ref()
+            .map(|s| s.device_id.clone())
+            .unwrap_or_else(|| "local_device".to_string());
+        let realm = cfg.sip.as_ref()
+            .map(|s| s.realm.clone())
+            .unwrap_or_else(|| "GBServerRealm".to_string());
+
+        if let Some(sip_srv) = sip_server.as_mut() {
+            let sip_mut = Arc::get_mut(sip_srv)
+                .expect("SipServer Arc must be unique at this point (no clones yet)");
+            // set_cascade_registrar
+            sip_mut.set_cascade_registrar(registrar.clone());
+            // set_zlm_client (uses selected zlm_client)
+            sip_mut.set_zlm_client(zlm_client.clone());
+            // start() binds UDP/TCP listeners; safe to call now
+            sip_mut.start().await?;
+        }
+        registrar.set_pool(pool.clone()).await;
+
+        // Clone the Arc into the registrar — this bumps strong count to 2,
+        // but no further mutators run on the SipServer.
+        if let Some(sip_srv) = sip_server.as_ref() {
+            registrar.set_sip_server(sip_srv.clone()).await;
+        }
+
+        // Spawn the SIP server run() task. Strong count is now 3 (binding +
+        // registrar + spawned task). All future operations are reads.
+        if let Some(srv) = sip_server.as_ref() {
+            let srv_clone = srv.clone();
+            tokio::spawn(async move {
+                if let Err(e) = srv_clone.run().await {
+                    tracing::error!("SIP Server error: {}", e);
+                }
+            });
+        }
+
+        // Spawn the cascade periodic tasks and registration loop.
+        let reg = registrar.clone();
+        let local_device_id_for_reg = local_device_id.clone();
+        let realm_for_reg = realm.clone();
+        let pool_clone = pool.clone();
+        tokio::spawn(async move {
+            reg.load_platforms_from_db(&pool_clone, &local_device_id_for_reg, &realm_for_reg).await;
+            reg.run_registration_loop().await;
+        });
+
+        let periodic_reg = registrar.clone();
+        let local_device_id_for_periodic = local_device_id.clone();
+        let realm_for_periodic = realm.clone();
+        tokio::spawn(async move {
+            crate::cascade::register::cascade_periodic_tasks(
+                periodic_reg,
+                local_device_id_for_periodic,
+                realm_for_periodic,
+            )
+            .await;
+        });
     }
 
     let download_manager = Arc::new(crate::handlers::playback::DownloadManager::new());
@@ -424,55 +486,9 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
         }
     }
 
-    if let Some(ref server) = sip_server {
-        let srv = server.clone();
-        tokio::spawn(async move {
-            let mut server = srv.write().await;
-            if let Err(e) = server.run().await {
-                tracing::error!("SIP Server error: {}", e);
-            }
-        });
-    }
-
-    // Start Cascade registrar for platform-level SIP cascade
-    {
-        let registrar = Arc::new(crate::cascade::CascadeRegistrar::new());
-        let local_device_id = state.config.sip.as_ref().map(|s| s.device_id.clone()).unwrap_or_else(|| "local_device".to_string());
-        let realm = state.config.sip.as_ref().map(|s| s.realm.clone()).unwrap_or_else(|| "GBServerRealm".to_string());
-        let pool_clone = state.pool.clone();
-
-        if let Some(ref sip_srv) = state.sip_server {
-            // Wire registrar into SipServer for response routing
-            {
-                let mut srv = sip_srv.write().await;
-                srv.set_cascade_registrar(registrar.clone());
-            }
-            // Wire SipServer into registrar for sending REGISTER requests
-            registrar.set_sip_server(sip_srv.clone()).await;
-        }
-        registrar.set_pool(state.pool.clone()).await;
-
-        let reg = registrar.clone();
-        let local_device_id_for_reg = local_device_id.clone();
-        let realm_for_reg = realm.clone();
-        tokio::spawn(async move {
-            reg.load_platforms_from_db(&pool_clone, &local_device_id_for_reg, &realm_for_reg).await;
-            reg.run_registration_loop().await;
-        });
-
-        // C3: 启动 keepalive / reload / 超时检测 三个周期任务
-        let periodic_reg = registrar.clone();
-        let local_device_id_for_periodic = local_device_id.clone();
-        let realm_for_periodic = realm.clone();
-        tokio::spawn(async move {
-            crate::cascade::register::cascade_periodic_tasks(
-                periodic_reg,
-                local_device_id_for_periodic,
-                realm_for_periodic,
-            )
-            .await;
-        });
-    }
+    // Defer the SIP server run() spawn until AFTER the cascade registrar
+    // is wired up, so the run() task is the second Arc clone (and after
+    // cascade init, no other mutators run on the SipServer).
 
     // Start RecordPlanScheduler
     {
@@ -528,7 +544,7 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
 pub struct AppState {
     pub config: Arc<AppConfig>,
     pub pool: db::Pool,
-    pub sip_server: Option<Arc<RwLock<sip::SipServer>>>,
+    pub sip_server: Option<Arc<sip::SipServer>>,
     pub zlm_client: Option<Arc<zlm::ZlmClient>>,
     pub zlm_clients: HashMap<String, Arc<zlm::ZlmClient>>,
     pub playback_manager: Option<Arc<crate::handlers::playback::PlaybackManager>>,

@@ -50,7 +50,7 @@ pub async fn device_info(
     
     // 如果设备在线，发送 SIP MESSAGE 查询
     if let Some(ref sip_server) = state.sip_server {
-        let server = sip_server.read().await;
+        let server = &*sip_server;
         if server.is_device_online(&device_id).await {
             // 注册 PendingRequest 并发送查询
             let commander = server.device_commander();
@@ -108,7 +108,7 @@ pub async fn device_status(
     
     // 如果设备在线，发送 SIP MESSAGE 查询
     if let Some(ref sip_server) = state.sip_server {
-        let server = sip_server.read().await;
+        let server = &*sip_server;
         if server.is_device_online(&device_id).await {
             // 注册 PendingRequest 并发送查询
             let commander = server.device_commander();
@@ -160,7 +160,7 @@ pub async fn device_config_query(
     
     // 检查设备是否在线
     if let Some(ref sip_server) = state.sip_server {
-        let server = sip_server.read().await;
+        let server = &*sip_server;
         if server.is_device_online(&device_id).await {
             let commander = server.device_commander();
             let _req = commander.query_device_config(&device_id, sn, &config_type);
@@ -199,7 +199,7 @@ pub async fn get_ssrc(
     Path((device_id, channel_id)): Path<(String, String)>,
 ) -> impl IntoResponse {
     if let Some(ref sip_server) = state.sip_server {
-        let server = sip_server.read().await;
+        let server = &*sip_server;
         let ssrc_mgr = server.ssrc_manager();
         let ssrc = ssrc_mgr.allocate(&device_id, &channel_id, "live");
         return Json(WVPResult::success(serde_json::json!({
