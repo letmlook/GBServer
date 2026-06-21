@@ -86,7 +86,11 @@
         <el-table-column label="类型" min-width="100">
           <template v-slot:default="scope">
             <div slot="reference" class="name-wrapper">
-              <el-tag size="medium" effect="plain" type="success" :style="$channelTypeList[scope.row.dataType].style">{{ $channelTypeList[scope.row.dataType].name }}</el-tag>
+              <!-- Phase 6: dataType 可能为 null/0/未注册类型(国标设备 1,推流 2,拉流 3,部标 200),
+                  不在字典时使用 fallback '其他' 避免 .style 访问 undefined 抛错。 -->
+              <el-tag size="medium" effect="plain" :style="($channelTypeList[scope.row.dataType] || $channelTypeList[0]).style">
+                {{ ($channelTypeList[scope.row.dataType] || {}).name || '其他' }}
+              </el-tag>
             </div>
           </template>
         </el-table-column>

@@ -29,6 +29,8 @@ pub enum MediaWaitResult {
     Timeout,
     /// 会话不存在或已被清理
     SessionNotFound,
+    /// 设备拒绝：SIP INVITE 收到 4xx/5xx 响应（设备不支持 / 没录像 / 不在线等）
+    DeviceRejected { status: u16, reason: String },
 }
 
 /// 单个等待器元数据
@@ -155,6 +157,30 @@ impl MediaWaiterManager {
         false
     }
 
+    /// 按 call_id 主动 reject 等待（设备回 4xx/5xx 时调用，避免等到 15s 超时）。
+    /// 通过 `by_call_id` 反查到 `waiter_key`，再从 `receivers` 取 sender。
+    pub fn reject_by_call_id(&self, call_id: &str, status: u16, reason: &str) -> bool {
+        let waiter_key_opt: Option<String> =
+            self.by_call_id.get(call_id).map(|w| w.waiter_key.clone());
+        let Some(waiter_key) = waiter_key_opt else {
+            return false;
+        };
+        let Some((_, tx)) = self.receivers.remove(&waiter_key) else {
+            return false;
+        };
+        let _ = tx.send(MediaWaitResult::DeviceRejected {
+            status,
+            reason: reason.to_string(),
+        });
+        self.by_call_id.remove(call_id);
+        // 同步把 stream_id / active_keys 也清掉
+        if let Some(stream_id) = waiter_key.split(':').next_back() {
+            self.by_stream_id.remove(stream_id);
+        }
+        self.active_keys.remove(&waiter_key);
+        true
+    }
+
     /// 清理已超时的等待器
     pub fn cleanup_expired(&self) -> Vec<String> {
         let mut removed = Vec::new();
@@ -251,5 +277,31 @@ mod tests {
         let resolved = mgr.resolve("unknown-call", "unknown-stream", "rtp");
         assert!(!resolved);
         assert_eq!(mgr.active_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_media_waiter_reject_by_call_id() {
+        // 验证设备回 4xx/5xx 时 reject_by_call_id 能立即通知等待者
+        // （避免干等到 media_waiter timeout）。
+        let mgr = MediaWaiterManager::new();
+        let (_, rx) = mgr.register("call-005", "stream-rej", "rtp", 60);
+        assert_eq!(mgr.active_count(), 1);
+
+        let rejected = mgr.reject_by_call_id("call-005", 503, "Service Unavailable");
+        assert!(rejected);
+        assert_eq!(mgr.active_count(), 0);
+
+        // 等待者应收到 DeviceRejected 变体（不再是 Timeout）
+        match rx.await {
+            Ok(MediaWaitResult::DeviceRejected { status, reason }) => {
+                assert_eq!(status, 503);
+                assert_eq!(reason, "Service Unavailable");
+            }
+            other => panic!("Expected DeviceRejected, got {:?}", other),
+        }
+
+        // 二次 reject / 不存在的 call_id 不报错
+        assert!(!mgr.reject_by_call_id("call-005", 486, "Busy Here"));
+        assert!(!mgr.reject_by_call_id("nonexistent", 503, "x"));
     }
 }

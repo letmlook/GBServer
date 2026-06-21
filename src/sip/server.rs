@@ -209,14 +209,14 @@ pub struct SipServer {
     catalog_subscription_manager: Arc<CatalogSubscriptionManager>,
     transaction_manager: Arc<TransactionManager>,
     dialog_manager: Arc<DialogManager>,
-    socket: Arc<RwLock<Option<UdpSocket>>>,
+    socket: Arc<RwLock<Option<Arc<UdpSocket>>>>,
     tcp_enabled: bool,
     tcp_listener: Arc<RwLock<Option<TcpListener>>>,
     tcp_connection_manager: Arc<TcpConnectionManager>,
     pool: Pool,
     zlm_client: Option<Arc<ZlmClient>>,
     ws_state: Option<Arc<WsState>>,
-    pending_invites: Arc<DashMap<String, oneshot::Sender<String>>>,
+    pending_invites: Arc<DashMap<String, oneshot::Sender<SipResponse>>>,
     ssrc_manager: Arc<SsrcManager>,
     stream_reconnect_manager: Arc<StreamReconnectManager>,
     nat_helper: Arc<NatHelper>,
@@ -334,7 +334,7 @@ impl SipServer {
         &self.config
     }
 
-    pub fn socket(&self) -> &Arc<RwLock<Option<UdpSocket>>> {
+    pub fn socket(&self) -> &Arc<RwLock<Option<Arc<UdpSocket>>>> {
         &self.socket
     }
 
@@ -382,7 +382,14 @@ impl SipServer {
         let addr = format!("{}:{}", self.config.ip, self.config.port);
         let socket = UdpSocket::bind(&addr).await?;
         tracing::info!("SIP Server UDP listening on {}", addr);
-        *self.socket.write().await = Some(socket);
+        *self.socket.write().await = Some(Arc::new(socket));
+
+        // 从 DB 恢复 on_line 设备到内存 device_manager —— 设备在跨重启场景
+        // 不会主动重新 REGISTER（mock 设备尤其如此），把 DB 里的 ip/port 还原
+        // 到内存后 play 流程就能用 device_manager.get_address() 找到目标。
+        if let Err(e) = self.restore_online_devices_from_db().await {
+            tracing::warn!("Failed to restore online devices from DB: {}", e);
+        }
 
         if self.tcp_enabled {
             let tcp_addr = format!("{}:{}", self.config.ip, self.config.tcp_port);
@@ -458,7 +465,25 @@ impl SipServer {
         });
 
         dbg_upsert_device(&self.pool, &self.config.device_id, "GBServer", Some("Rust"), Some("GBServer"), None, None, None, None, None, true, "zlmediakit-1".to_string()).await?;
-        
+
+        Ok(())
+    }
+
+    /// 启动时从 DB 加载 on_line=1 的设备到 device_manager。
+    /// 让 mock / 已 register 但服务重启后不再 REGISTER 的设备
+    /// 在 play 流程中可被 device_manager.get_address() 找到。
+    async fn restore_online_devices_from_db(&self) -> Result<()> {
+        let devices = db_device::list_all_devices(&self.pool).await?;
+        let mut count = 0;
+        for d in devices.iter().filter(|d| d.on_line.unwrap_or(false)) {
+            self.device_manager.restore(d).await;
+            count += 1;
+            tracing::info!(
+                "Restored online device from DB: device_id={} ip={:?}:{:?}",
+                d.device_id, d.ip, d.port
+            );
+        }
+        tracing::info!("Restored {} online devices from DB", count);
         Ok(())
     }
 
@@ -470,30 +495,15 @@ impl SipServer {
     /// via `Arc::get_mut` on the (only) inner Arcs, then moved into the spawned
     /// loops by clone.
     pub async fn run(&self) -> Result<()> {
-        // Take the bound UDP socket out. This is the only `&mut self` operation
-        // the original run() needed; it writes to the inner `Arc<RwLock<Option<UdpSocket>>>`.
-        // Since we hold the only `Arc<SipServer>` at startup (no other clones yet),
-        // we can use `Arc::get_mut` on the inner field to mutate it.
-        let socket = {
-            // inner_arc: Arc<RwLock<Option<UdpSocket>>>
+        // 取出共享的 `Arc<UdpSocket>` 用于本循环的 recv_from。
+        // `Arc<UdpSocket>` 通过 `Deref<Target=UdpSocket>` 让 17 个发包方法
+        // (`self.socket.read().await`) 调 `socket.send_to(...)` 时无需任何
+        // 改动 —— 自动 deref 到 `&UdpSocket`。
+        let socket: Arc<UdpSocket> = {
             let inner_arc = self.socket.clone();
-            // We need &mut on the inner Arc. We can do this by replacing it
-            // with an empty one and taking ownership — but we can't move out
-            // of &self. Use std::mem::take via unsafe-free swap instead.
-            // Safe alternative: use a oneshot to receive the socket from a
-            // brief &mut self call site. The caller of run() is lib.rs which
-            // already has &mut access via Arc::get_mut on the SipServer itself.
-            // To keep this method `&self`, do the swap through a parking_lot-style
-            // take: clone-and-swap via std::mem::replace is impossible on Arc.
-            //
-            // Pragmatic solution: hold the write lock on the inner RwLock BRIEFLY
-            // to take the socket. The inner RwLock is independent of any outer
-            // lock, so no deadlock here.
-            let mut guard = inner_arc.write().await;
-            guard.take()
-        }
-        .expect("Server not started");
-        let socket = Arc::new(socket);
+            let guard = inner_arc.read().await;
+            guard.as_ref().expect("Server not started").clone()
+        };
         let config = self.config.clone();
         let device_manager = self.device_manager.clone();
         let session_manager = self.session_manager.clone();
@@ -524,6 +534,7 @@ impl SipServer {
         let udp_subscription_lifecycle = self.subscription_lifecycle.clone();
         let udp_renewal_failures = self.renewal_failures.clone();
         let udp_sqlite_max_devices = self.sqlite_max_devices;
+        let udp_media_waiter_manager = self.media_waiter_manager.clone();
 
         tokio::spawn(async move {
             loop {
@@ -550,8 +561,9 @@ impl SipServer {
                         let subscription_lifecycle = udp_subscription_lifecycle.clone();
                         let renewal_failures = udp_renewal_failures.clone();
                         let sqlite_max_devices = udp_sqlite_max_devices;
+                        let media_waiter_manager = udp_media_waiter_manager.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = Self::handle_packet(&data, addr, &config, &device_manager, &session_manager, &invite_session_manager, &talk_manager, &catalog_subscription_manager, &zlm_client, &pool, &socket_for_response, false, &ws_state, &pending_request_manager, &pending_invites, &cascade_registrar, &send_rtp_manager, &Some(subscription_lifecycle), &renewal_failures, sqlite_max_devices).await {
+                            if let Err(e) = Self::handle_packet(&data, addr, &config, &device_manager, &session_manager, &invite_session_manager, &talk_manager, &catalog_subscription_manager, &zlm_client, &pool, &socket_for_response, false, &ws_state, &pending_request_manager, &pending_invites, &cascade_registrar, &send_rtp_manager, &Some(subscription_lifecycle), &renewal_failures, sqlite_max_devices, &media_waiter_manager).await {
                                 tracing::error!("SIP handler error: {}", e);
                             }
                         });
@@ -576,6 +588,11 @@ impl SipServer {
             let tcp_pending_request = pending_request_manager.clone();
             let tcp_send_rtp_manager = self.send_rtp_manager.clone();
             let tcp_sqlite_max_devices = self.sqlite_max_devices;
+            let tcp_media_waiter_manager = self.media_waiter_manager.clone();
+            // TCP 路径下也用同一个 UDP socket 发 ACK(GB28181 允许 INVITE
+            // 走 TCP 注册但媒体/ACK 走 UDP)。dummy_arc 是 TCP Request 分支里
+            // 给 handle_packet 的占位 socket,这里换成主 socket 更稳。
+            let tcp_socket = socket.clone();
 
             tokio::spawn(async move {
                 loop {
@@ -595,11 +612,13 @@ impl SipServer {
                             let pending_request_manager = tcp_pending_request.clone();
                             let send_rtp_manager = tcp_send_rtp_manager.clone();
                             let sqlite_max_devices = tcp_sqlite_max_devices;
+                            let media_waiter_manager = tcp_media_waiter_manager.clone();
+                            let socket = tcp_socket.clone();
 
                             conn_manager.add_connection(addr, stream).await;
 
                             tokio::spawn(async move {
-                                Self::handle_tcp_connection(addr, &config, &device_manager, &session_manager, &invite_session_manager, &talk_manager, &catalog_subscription_manager, &zlm_client, &pool, &conn_manager, &pending_request_manager, &send_rtp_manager, sqlite_max_devices).await;
+                                Self::handle_tcp_connection(addr, &config, &device_manager, &session_manager, &invite_session_manager, &talk_manager, &catalog_subscription_manager, &zlm_client, &pool, &conn_manager, &pending_request_manager, &send_rtp_manager, sqlite_max_devices, &media_waiter_manager, &socket).await;
                             });
                         }
                         Err(e) => {
@@ -886,6 +905,8 @@ let renewal_pool = pool.clone();
         pending_request_manager: &Arc<PendingRequestManager>,
         send_rtp_manager: &Arc<SendRtpManager>,
         sqlite_max_devices: Option<usize>,
+        media_waiter_manager: &Arc<MediaWaiterManager>,
+        socket: &Arc<UdpSocket>,
     ) {
         // 创建一个虚拟 UDP socket 仅用于传递给 handle_packet's 接口
         // 实际回复通过 TcpConnectionManager.send_to 进行
@@ -930,6 +951,8 @@ let renewal_pool = pool.clone();
                                 pending_request_manager,
                                 send_rtp_manager,
                                 sqlite_max_devices,
+                                media_waiter_manager,
+                                socket,
                             ).await {
                                 tracing::error!("TCP SIP handler error: {}", e);
                             }
@@ -965,6 +988,8 @@ let renewal_pool = pool.clone();
         pending_request_manager: &Arc<PendingRequestManager>,
         send_rtp_manager: &Arc<SendRtpManager>,
         sqlite_max_devices: Option<usize>,
+        media_waiter_manager: &Arc<MediaWaiterManager>,
+        socket: &Arc<UdpSocket>,
     ) -> Result<()> {
         let msg = Parser::parse(data)?;
         match msg {
@@ -1021,7 +1046,19 @@ let renewal_pool = pool.clone();
                 ).await
             }
             SipMessage::Response(resp) => {
-                Self::handle_response(resp, session_manager, &Arc::new(DashMap::new()), &None, pending_request_manager, send_rtp_manager, &None, &Arc::new(DashMap::new())).await
+                Self::handle_response(
+                    resp,
+                    session_manager,
+                    &Arc::new(DashMap::new()),
+                    &None,
+                    pending_request_manager,
+                    send_rtp_manager,
+                    &None,
+                    &Arc::new(DashMap::new()),
+                    media_waiter_manager,
+                    socket,
+                    config,
+                ).await
             }
         }
     }
@@ -1041,12 +1078,13 @@ let renewal_pool = pool.clone();
         _is_tcp: bool,
         ws_state: &Option<Arc<WsState>>,
         pending_request_manager: &Arc<PendingRequestManager>,
-        pending_invites: &Arc<DashMap<String, oneshot::Sender<String>>>,
+        pending_invites: &Arc<DashMap<String, oneshot::Sender<SipResponse>>>,
         cascade_registrar: &Option<Arc<CascadeRegistrar>>,
         send_rtp_manager: &Arc<SendRtpManager>,
         subscription_lifecycle: &Option<Arc<crate::sip::gb28181::subscription_lifecycle::SubscriptionLifecycle>>,
         renewal_failures: &Arc<DashMap<String, u32>>,
         sqlite_max_devices: Option<usize>,
+        media_waiter_manager: &Arc<MediaWaiterManager>,
     ) -> Result<()> {
         let msg = Parser::parse(data)?;
         match msg {
@@ -1079,6 +1117,9 @@ let renewal_pool = pool.clone();
                     send_rtp_manager,
                     subscription_lifecycle,
                     renewal_failures,
+                    media_waiter_manager,
+                    socket,
+                    config,
                 ).await
             }
         }
@@ -2680,21 +2721,25 @@ let renewal_pool = pool.clone();
     async fn handle_response(
         resp: SipResponse,
         session_manager: &Arc<SessionManager>,
-        pending_invites: &Arc<DashMap<String, oneshot::Sender<String>>>,
+        pending_invites: &Arc<DashMap<String, oneshot::Sender<SipResponse>>>,
         cascade_registrar: &Option<Arc<CascadeRegistrar>>,
         pending_request_manager: &Arc<PendingRequestManager>,
         send_rtp_manager: &Arc<SendRtpManager>,
         subscription_lifecycle: &Option<Arc<crate::sip::gb28181::subscription_lifecycle::SubscriptionLifecycle>>,
         renewal_failures: &Arc<DashMap<String, u32>>,
+        media_waiter_manager: &Arc<MediaWaiterManager>,
+        socket: &Arc<UdpSocket>,
+        config: &Arc<SipConfig>,
     ) -> Result<()> {
         let call_id = resp.headers.get("call-id").cloned().unwrap_or_default();
         let cseq = resp.headers.get("cseq").cloned().unwrap_or_default();
 
         tracing::debug!(
-            "SIP Response: {} {} - CallID: {}",
+            "SIP Response: {} {} - CallID: {} cseq={}",
             resp.status_code(),
             resp.reason,
-            call_id
+            call_id,
+            cseq
         );
 
         // Route REGISTER responses to cascade registrar
@@ -2754,13 +2799,69 @@ let renewal_pool = pool.clone();
         }
 
         if resp.status_code() == 200 {
-            if cseq.contains("INVITE") {
+            // GB28181 设备的 INVITE 200 OK 可能不严格带 CSeq header
+            // (gbcpp/1.0 这种 mock 实现就没带)。用 call_id 前缀
+            // 替代 cseq.contains("INVITE") 来判断是否 INVITE 响应。
+            let is_invite = cseq.contains("INVITE")
+                || call_id.starts_with("play_")
+                || call_id.starts_with("playback_")
+                || call_id.starts_with("download_");
+            if is_invite {
                 session_manager
                     .update_status(&call_id, SessionStatus::Ringing)
                     .await;
                 if let Some((_, tx)) = pending_invites.remove(&call_id) {
-                    let contact = resp.headers.get("contact").cloned().unwrap_or_default();
-                    let _ = tx.send(contact);
+                    // 把整个 200 OK 响应(含 SDP)发给调用方,
+                    // 方便 play/playback 流程解析设备的 m= 端口并调
+                    // ZLM connectRtpServer(应对设备 200 OK SDP 报自己
+                    // 端口的非标准行为,gbcpp/1.0 mock 即如此)。
+                    let _ = tx.send(resp.clone());
+                }
+
+                // GB28181 三次握手必须完整:INVITE → 200 OK → ACK。
+                // 设备收到 200 OK 后等不到 ACK 不会推流。
+                // 从 session_manager 拿 INVITE 时的 From (带 server tag) / CSeq / device_addr。
+                if let Some(invite_ctx) = session_manager.get(&call_id).await {
+                    if let (Some(from_header), Some(cseq_num), Some(device_addr)) = (
+                        invite_ctx.from_header.as_ref(),
+                        invite_ctx.cseq_num,
+                        invite_ctx.device_addr,
+                    ) {
+                        let to_tagged = resp
+                            .headers
+                            .get("to")
+                            .cloned()
+                            .unwrap_or_else(|| "<sip:unknown@unknown>".to_string());
+                        let ack_branch = generate_branch();
+                        let ack_via = format!(
+                            "SIP/2.0/UDP {}:{};branch={};rport",
+                            config.ip, config.port, ack_branch
+                        );
+                        let ack_uri = format!(
+                            "sip:{}@{}:{}",
+                            invite_ctx.channel_id, device_addr.ip(), device_addr.port()
+                        );
+                        let ack_cseq = format!("ACK {}", cseq_num);
+                        let ack = Parser::generate_ack(
+                            &ack_uri,
+                            &ack_via,
+                            from_header,
+                            &to_tagged,
+                            &call_id,
+                            &ack_cseq,
+                        );
+                        if let Err(e) = socket.send_to(ack.as_bytes(), device_addr).await {
+                            tracing::warn!(
+                                "Failed to send ACK for call_id={}: {}",
+                                call_id, e
+                            );
+                        } else {
+                            tracing::info!(
+                                "Sent ACK to device for call_id={} (channel={})",
+                                call_id, invite_ctx.channel_id
+                            );
+                        }
+                    }
                 }
             } else if cseq.contains("BYE") {
                 session_manager.remove(&call_id).await;
@@ -2792,11 +2893,23 @@ let renewal_pool = pool.clone();
         } else if resp.status_code() == 487 {
             session_manager.remove(&call_id).await;
             if let Some((_, tx)) = pending_invites.remove(&call_id) {
-                let _ = tx.send(String::new());
+                let _ = tx.send(resp.clone());
             }
         } else if resp.status_code() >= 400 {
+            // 通知 media_waiter：设备拒绝（避免 15s 干等）。
+            // 适用于 INVITE 类的 4xx/5xx(503 Service Unavailable / 486 / 480 等),
+            // 让 `send_playback_invite_and_wait` / `send_invite_and_wait` 立即返回
+            // DeviceRejected,而不是等到 timeout。
+            let is_invite_resp = cseq.contains("INVITE")
+                || call_id.starts_with("play_")
+                || call_id.starts_with("playback_")
+                || call_id.starts_with("download_");
+            if is_invite_resp {
+                media_waiter_manager
+                    .reject_by_call_id(&call_id, resp.status_code(), &resp.reason);
+            }
             if let Some((_, tx)) = pending_invites.remove(&call_id) {
-                let _ = tx.send(String::new());
+                let _ = tx.send(resp.clone());
             }
         }
 
@@ -4529,7 +4642,7 @@ f=v/1/96/1/2/1/1/0
         channel_id: &str,
         media_port: u16,
         ssrc: Option<&str>,
-    ) -> Result<String> {
+    ) -> Result<(String, SipResponse)> {
         let socket = self.socket.read().await;
         let socket = socket
             .as_ref()
@@ -4593,8 +4706,19 @@ f=v/1/96/1/2/1/1/0
         ];
 
         // 注册等待 channel，_必须_ 在发包之前注册，防止竞态
-        let (tx, rx) = oneshot::channel::<String>();
+        let (tx, rx) = oneshot::channel::<SipResponse>();
         self.pending_invites.insert(call_id.clone(), tx);
+
+        // 创建 session_manager 条目（如果还不存在）并保存 INVITE 上下文，
+        // handle_response 收到 200 OK 时据此发 ACK —— GB28181 三次握手
+        // 缺 ACK 设备不推流。
+        // 实时播放 stream_type = "Play"
+        self.session_manager
+            .create(&call_id, device_id, channel_id, "Play")
+            .await;
+        self.session_manager
+            .set_invite_context(&call_id, from.clone(), 1, device_addr)
+            .await;
 
         let uri = format!(
             "sip:{}@{}:{}",
@@ -4614,11 +4738,16 @@ f=v/1/96/1/2/1/1/0
         );
         drop(socket); // 释放读锁，避免死锁
 
-        // 等待 200 OK（15 秒超时）
+        // 等待 200 OK（15 秒超时）。rx 现在带整个 SipResponse(含 SDP),
+        // 调用方需要根据设备宣告的 m= 端口调 ZLM connectRtpServer。
         match tokio::time::timeout(Duration::from_secs(15), rx).await {
-            Ok(Ok(_)) => {
-                tracing::info!("INVITE 200 OK received for call_id={}", call_id);
-                Ok(call_id)
+            Ok(Ok(resp)) => {
+                tracing::info!(
+                    "INVITE 200 OK received for call_id={} has_body={}",
+                    call_id,
+                    resp.body.is_some()
+                );
+                Ok((call_id, resp))
             }
             Ok(Err(_)) => {
                 self.pending_invites.remove(&call_id);
@@ -4648,7 +4777,7 @@ f=v/1/96/1/2/1/1/0
         zlm_stream_id: &str,
         ssrc: Option<&str>,
         timeout_secs: u64,
-    ) -> Result<(String, String)> {
+    ) -> Result<(String, String, Option<SipResponse>)> {
         let call_id = format!(
             "play_{}_{}",
             device_id,
@@ -4667,22 +4796,23 @@ f=v/1/96/1/2/1/1/0
         }
 
         // 2. 发送 SIP INVITE，等待 200 OK
-        match self
+        let invite_resp = match self
             .send_play_invite_and_wait(device_id, channel_id, media_port, ssrc)
             .await
         {
-            Ok(_) => {
+            Ok((_call_id, resp)) => {
                 tracing::info!(
                     "SIP 200 OK for call_id={}, now waiting ZLM media...",
                     call_id
                 );
+                Some(resp)
             }
             Err(e) => {
                 // SIP 失败，清理等待器
                 let _ = self.media_waiter_manager.cleanup_expired();
                 return Err(e);
             }
-        }
+        };
 
         // 3. 等待 ZLM Hook 触发 media-ready
         match tokio::time::timeout(Duration::from_secs(timeout_secs), media_rx).await {
@@ -4693,7 +4823,7 @@ f=v/1/96/1/2/1/1/0
                 tracing::info!("Media ready: stream_id={} app={}", zid, app);
                 // 4. 更新 InviteSession 状态为 Active
                 self.invite_session_manager.activate(&call_id).await;
-                Ok((call_id, zid))
+                Ok((call_id, zid, invite_resp))
             }
             Ok(Ok(MediaWaitResult::Timeout)) => {
                 let _ = self.media_waiter_manager.cleanup_expired();
@@ -4702,6 +4832,9 @@ f=v/1/96/1/2/1/1/0
             Ok(Ok(MediaWaitResult::SessionNotFound)) => {
                 let _ = self.media_waiter_manager.cleanup_expired();
                 Err(anyhow::anyhow!("Media session not found"))
+            }
+            Ok(Ok(MediaWaitResult::DeviceRejected { status, reason })) => {
+                Err(anyhow::anyhow!("Device rejected INVITE: {} {}", status, reason))
             }
             Ok(Err(_)) => {
                 let _ = self.media_waiter_manager.cleanup_expired();
@@ -4799,6 +4932,13 @@ f=v/1/96/1/2/1/1/0
         socket.send_to(message.as_bytes(), device_addr).await?;
         tracing::info!("Sent PLAYBACK INVITE to device {} channel {} [{}-{}] at {}", device_id, channel_id, start_time, end_time, device_addr);
 
+        // 保存 INVITE 上下文,handle_response 收到 200 OK 时发 ACK。
+        // 设备 ack 后无 ACK 不推流 —— GB28181 三次握手必须完整。
+        self.session_manager
+            .set_invite_context(&call_id, from.clone(), 1, device_addr)
+            .await;
+        drop(socket);
+
         Ok(())
     }
 
@@ -4886,6 +5026,14 @@ f=v/1/96/1/2/1/1/0
                 "Sent PLAYBACK INVITE (async) to device={} channel={} stream={} call_id={}",
                 device_id, channel_id, zlm_stream_id, call_id
             );
+
+            // 保存 INVITE 上下文，handle_response 收到 200 OK 时发 ACK。
+            // 设备收到 200 OK 后等不到 ACK 不会推流 —— GB28181 三次握手必须完整。
+            // 这里直接用 SipServer 自己的 session_manager 字段。
+            let cseq_num: u32 = 1;
+            self.session_manager
+                .set_invite_context(&call_id, from.clone(), cseq_num, device_addr)
+                .await;
         }
 
         // 3. 等 ZLM media waiter 触发（ZLM hook on_stream_changed 会 resolve）
@@ -4897,6 +5045,9 @@ f=v/1/96/1/2/1/1/0
             Ok(Ok(MediaWaitResult::Timeout | MediaWaitResult::SessionNotFound)) => {
                 let _ = self.media_waiter_manager().cleanup_expired();
                 Err(anyhow::anyhow!("Playback media wait failed: not found"))
+            }
+            Ok(Ok(MediaWaitResult::DeviceRejected { status, reason })) => {
+                Err(anyhow::anyhow!("Playback device rejected: {} {}", status, reason))
             }
             Ok(Err(_cancelled)) => {
                 let _ = self.media_waiter_manager().cleanup_expired();

@@ -375,6 +375,7 @@ impl NotifyDispatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     #[test]
     fn test_subscribe_register_and_renew() {

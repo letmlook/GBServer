@@ -78,6 +78,41 @@ impl DeviceManager {
         self.devices.read().await.get(device_id).cloned()
     }
 
+    /// 从 DB 恢复 online 设备到内存(用于服务重启后保持设备可达)。
+    /// 优先用 DB 里的 ip/port 构造 addr,缺失时退化为 None。
+    pub async fn restore(&self, device: &crate::db::device::Device) {
+        let addr = match (device.ip.as_deref(), device.port) {
+            (Some(ip), Some(port)) => format!("{}:{}", ip, port).parse().ok(),
+            _ => None,
+        };
+        let dev = Device {
+            device_id: device.device_id.clone(),
+            name: device.name.clone(),
+            manufacturer: device.manufacturer.clone(),
+            model: device.model.clone(),
+            firmware: device.firmware.clone(),
+            transport: if device.transport.as_deref().unwrap_or("UDP").to_uppercase() == "TCP" {
+                TransportMode::TCP
+            } else {
+                TransportMode::UDP
+            },
+            ip: device.ip.clone(),
+            port: device.port.map(|p| p as u16),
+            online: true,
+            register_time: Utc::now(),
+            keepalive_time: Utc::now(),
+            expires: 3600,
+            username: None,
+            password: None,
+            custom_name: device.custom_name.clone(),
+            addr,
+        };
+        self.devices
+            .write()
+            .await
+            .insert(device.device_id.clone(), dev);
+    }
+
     pub async fn get_address(&self, device_id: &str) -> Option<SocketAddr> {
         self.devices.read().await.get(device_id).and_then(|d| d.addr)
     }

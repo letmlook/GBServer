@@ -735,7 +735,14 @@ pub async fn device_one(
     State(state): State<AppState>,
     Path(device_id): Path<String>,
 ) -> Json<WVPResult<serde_json::Value>> {
-    match get_device_by_device_id(&state.pool, &device_id).await {
+    tracing::info!("DEBUG_DEVICE_ONE: query for device_id={:?}", device_id);
+    let result = get_device_by_device_id(&state.pool, &device_id).await;
+    tracing::info!("DEBUG_DEVICE_ONE: query result is_ok={} is_some={}",
+        result.is_ok(), result.as_ref().map(|r| r.is_some()).unwrap_or(false));
+    if let Err(ref e) = result {
+        tracing::error!("DEBUG_DEVICE_ONE: query error: {:?}", e);
+    }
+    match result {
         Ok(Some(d)) => {
             let v = serde_json::json!({
                 "deviceId": d.device_id,

@@ -3,6 +3,27 @@ use crate::response::WVPResult;
 use crate::AppState;
 use crate::db::device as db_device;
 
+/// 从 SDP 文本里解析首个 m=video/m=audio 的端口号。
+/// 例如 `m=video 11001 TCP/RTP/AVP 96` 返回 Some(11001)。
+fn parse_sdp_media_port(sdp: &str) -> Option<u16> {
+    for line in sdp.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("m=") {
+            // 形如: "video 11001 TCP/RTP/AVP 96" / "audio 8000 RTP/AVP 0"
+            let mut it = rest.split_whitespace();
+            let media_type = it.next()?;
+            if media_type == "video" || media_type == "audio" {
+                if let Some(p) = it.next() {
+                    if let Ok(port) = p.parse::<u16>() {
+                        return Some(port);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 pub async fn play_start(
     State(state): State<AppState>,
     Path((device_id, channel_id)): Path<(String, String)>,
@@ -43,9 +64,13 @@ pub async fn play_start(
     if let Some(ref zlm_client) = state.zlm_client {
         // 创建 ZLM 的流。stream_id 使用规范格式: 设备ID_通道ID
         let stream_id = format!("{}_{}", device_id, channel_id);
-        
+
         let is_tcp = device.transport.as_deref().unwrap_or("UDP").to_uppercase() == "TCP";
-        
+
+        // 预开 ZLM RTP server —— 标准 GB28181 设备会按 INVITE SDP m= 端口
+        // (也就是这个端口) 推流。对于非标准实现(例如 gbcpp/1.0 mock 在
+        // 200 OK SDP 里另写 m= 端口),会在收到 200 OK 后用 connectRtpServer
+        // 接管。
         let rtp_req = crate::zlm::OpenRtpServerRequest {
             secret: zlm_client.secret.clone(),
             stream_id: stream_id.clone(),
@@ -74,8 +99,45 @@ pub async fn play_start(
         match sip.send_play_invite_and_wait_media(
             &device_id, &channel_id, rtp_server.port, &stream_id, Some(&ssrc), 15,
         ).await {
-            Ok((_call_id, _zlm_stream_id)) => {
+            Ok((_call_id, _zlm_stream_id, invite_resp)) => {
                 tracing::info!("SIP INVITE + ZLM media ready for {}/{}", device_id, channel_id);
+
+                // 解析设备 200 OK SDP,如果 m= 端口和 ZLM RTP server 端口不一致
+                // (gbcpp/1.0 等非标准设备),用 connectRtpServer 让 ZLM 主动
+                // connect 到设备宣告的推流端口,避免 ZLM 守错端口收不到流。
+                if let Some(resp) = invite_resp {
+                    if let Some(sdp) = &resp.body {
+                        if let Some(device_port) = parse_sdp_media_port(sdp) {
+                            if device_port != rtp_server.port {
+                                tracing::warn!(
+                                    "Device 200 OK m={} != ZLM RTP server port {}. Switching to ZLM connectRtpServer to device:{}",
+                                    device_port, rtp_server.port, device_port
+                                );
+                                let _ = zlm_client.close_rtp_server(&stream_id).await;
+                                let dst = format!(
+                                    "{}://{}:{}",
+                                    if is_tcp { "rtp" } else { "rtp" },
+                                    device.ip.as_deref().unwrap_or("0.0.0.0"),
+                                    device_port
+                                );
+                                if let Err(e) =
+                                    zlm_client.connect_rtp_server(&stream_id, &dst, None).await
+                                {
+                                    tracing::error!(
+                                        "connectRtpServer to device:{} failed: {}",
+                                        device_port, e
+                                    );
+                                } else {
+                                    tracing::info!(
+                                        "ZLM connectRtpServer -> {} (stream_id={})",
+                                        dst, stream_id
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // 构建播放地址返回给前端
                 let stream_url = format!("rtp/{}", stream_id);
                 // 这里 zlm_client 中尚未获取自身的配置公网 IP/Port

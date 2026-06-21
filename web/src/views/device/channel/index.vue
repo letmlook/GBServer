@@ -140,7 +140,7 @@
           <template v-slot:default="scope">
             <el-button
               size="medium"
-              :disabled="device == null || device.online === 0"
+              :disabled="!device || !device.onLine"
               icon="el-icon-video-play"
               type="text"
               :loading="scope.row.playLoading"
@@ -150,7 +150,7 @@
             <el-button
               v-if="!!scope.row.streamId"
               size="medium"
-              :disabled="device == null || device.online === 0"
+              :disabled="!device || !device.onLine"
               icon="el-icon-switch-button"
               type="text"
               style="color: #f56c6c"
@@ -168,26 +168,26 @@
             </el-button>
             <el-divider direction="vertical" />
             <el-button
-              v-if="scope.row.subCount > 0 || scope.row.parental === 1 || scope.row.deviceId.length <= 8"
+              v-if="scope.row.subCount > 0 || scope.row.parental === 1 || scope.row.channelId.length <= 8"
               size="medium"
               icon="el-icon-s-open"
               type="text"
               @click="changeSubchannel(scope.row)"
             >查看
             </el-button>
-            <el-divider v-if="scope.row.subCount > 0 || scope.row.parental === 1 || scope.row.deviceId.length <= 8" direction="vertical" />
+            <el-divider v-if="scope.row.subCount > 0 || scope.row.parental === 1 || scope.row.channelId.length <= 8" direction="vertical" />
             <el-dropdown @command="(command)=>{moreClick(command, scope.row)}">
               <el-button size="medium" type="text">
                 更多<i class="el-icon-arrow-down el-icon--right" />
               </el-button>
               <el-dropdown-menu>
-                <el-dropdown-item command="records" :disabled="device == null || device.online === 0">
+                <el-dropdown-item command="records" :disabled="!device || !device.onLine">
                   设备录像</el-dropdown-item>
-                <el-dropdown-item command="cloudRecords" :disabled="device == null || device.online === 0">
+                <el-dropdown-item command="cloudRecords" :disabled="!device || !device.onLine">
                   云端录像</el-dropdown-item>
-                <el-dropdown-item command="record" :disabled="device == null || device.online === 0">
+                <el-dropdown-item command="record" :disabled="!device || !device.onLine">
                   设备录像控制-开始</el-dropdown-item>
-                <el-dropdown-item command="stopRecord" :disabled="device == null || device.online === 0">
+                <el-dropdown-item command="stopRecord" :disabled="!device || !device.onLine">
                   设备录像控制-停止</el-dropdown-item>
               </el-dropdown-menu>
 
@@ -345,7 +345,10 @@ export default {
     // 通知设备上传媒体流
     sendDevicePush: function(itemData) {
       const deviceId = this.deviceId
-      const channelId = itemData.deviceId
+      // Phase 6: 之前错误地用 itemData.deviceId (实际是父设备 ID)
+      // 作为 channelId,导致播放请求 URL 写成
+      // /api/play/play/<parent_id>/<parent_id>。改成 itemData.channelId。
+      const channelId = itemData.channelId
       itemData.playLoading = true
       console.log('通知设备推流1：' + deviceId + ' : ' + channelId)
       this.$store.dispatch('play/play', [deviceId, channelId])
@@ -388,20 +391,20 @@ export default {
     },
     queryRecords: function(itemData) {
       const deviceId = this.deviceId
-      const channelId = itemData.deviceId
+      const channelId = itemData.channelId
 
       this.$router.push(`/device/record/${deviceId}/${channelId}`)
     },
     queryCloudRecords: function(itemData) {
       const deviceId = this.deviceId
-      const channelId = itemData.deviceId
+      const channelId = itemData.channelId
 
       this.$router.push(`/cloudRecord/detail/rtp/${deviceId}_${channelId}`)
     },
     startRecord: function(itemData) {
       this.$store.dispatch('device/deviceRecord', {
         deviceId: this.deviceId,
-        channelId: itemData.deviceId,
+        channelId: itemData.channelId,
         recordCmdStr: 'Record'
       }).then(data => {
         this.$message.success({
@@ -418,7 +421,7 @@ export default {
     stopRecord: function(itemData) {
       this.$store.dispatch('device/deviceRecord', {
         deviceId: this.deviceId,
-        channelId: itemData.deviceId,
+        channelId: itemData.channelId,
         recordCmdStr: 'StopRecord'
       }).then(data => {
         this.$message.success({
@@ -435,7 +438,7 @@ export default {
     stopDevicePush: function(itemData) {
       this.$store.dispatch('play/stop', {
         deviceId: this.deviceId,
-        channelId: itemData.deviceId
+        channelId: itemData.channelId
       }).then(data => {
         this.initData()
       }).catch((error) => {
@@ -448,7 +451,9 @@ export default {
     },
     getSnap: function(row) {
       const baseUrl = window.baseUrl ? window.baseUrl : ''
-      return ((process.env.NODE_ENV === 'development') ? process.env.VUE_APP_BASE_API : baseUrl) + '/api/device/query/snap/' + this.deviceId + '/' + row.deviceId
+      // Phase 6: 用 row.channelId 而不是 row.deviceId 拼快照 URL,
+      // 否则指向父设备 SNAP 接口而非通道。
+      return ((process.env.NODE_ENV === 'development') ? process.env.VUE_APP_BASE_API : baseUrl) + '/api/device/query/snap/' + this.deviceId + '/' + row.channelId
     },
     getBigSnap: function(row) {
       return [this.getSnap(row)]
@@ -477,7 +482,8 @@ export default {
     changeSubchannel(itemData) {
       this.beforeUrl = this.$router.currentRoute.path
 
-      var url = `/${this.$router.currentRoute.name}/${this.$router.currentRoute.params.deviceId}/${itemData.deviceId}`
+      // Phase 6: 用 itemData.channelId 作为子目录 ID,而不是 deviceId (父设备 ID)。
+      var url = `/${this.$router.currentRoute.name}/${this.$router.currentRoute.params.deviceId}/${itemData.channelId}`
       this.$router.push(url).then(() => {
         this.searchStr = ''
         this.channelType = ''

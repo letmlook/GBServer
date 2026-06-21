@@ -1,6 +1,6 @@
 use sqlx::Row;
 use crate::db::Pool;
-use crate::db::device::DeviceChannel;
+use crate::db::device::{DeviceChannel, DEVICE_CHANNEL_SELECT_COLUMNS};
 
 pub async fn get_by_id(pool: &Pool, id: i64) -> sqlx::Result<Option<DeviceChannel>> {
     #[cfg(feature = "mysql")]
@@ -313,24 +313,28 @@ pub async fn get_parent_channels(
     _channel_type: Option<i32>,
 ) -> sqlx::Result<Vec<DeviceChannel>> {
     let offset = (page.saturating_sub(1)) * count;
+    let cols = DEVICE_CHANNEL_SELECT_COLUMNS;
     #[cfg(feature = "mysql")]
-    return sqlx::query_as::<_, DeviceChannel>(
-        "SELECT id, device_id, name, gb_device_id, status, longitude, latitude, create_time, update_time, sub_count, has_audio, channel_type FROM gb_device_channel WHERE parent_id IS NOT NULL AND parent_id != '0' ORDER BY id LIMIT ? OFFSET ?",
-    )
+    return sqlx::query_as::<_, DeviceChannel>(&format!(
+        "SELECT {} FROM gb_device_channel WHERE parent_id IS NOT NULL AND parent_id != '0' ORDER BY id LIMIT ? OFFSET ?",
+        cols
+    ))
     .bind(count as i64).bind(offset as i64)
     .fetch_all(pool)
     .await;
     #[cfg(feature = "postgres")]
-    return sqlx::query_as::<_, DeviceChannel>(
-        "SELECT id, device_id, name, gb_device_id, status, longitude, latitude, create_time, update_time, sub_count, has_audio, channel_type FROM gb_device_channel WHERE parent_id IS NOT NULL AND parent_id != '0' ORDER BY id LIMIT $1 OFFSET $2",
-    )
+    return sqlx::query_as::<_, DeviceChannel>(&format!(
+        "SELECT {} FROM gb_device_channel WHERE parent_id IS NOT NULL AND parent_id != '0' ORDER BY id LIMIT $1 OFFSET $2",
+        cols
+    ))
     .bind(count as i64).bind(offset as i64)
     .fetch_all(pool)
     .await;
     #[cfg(feature = "sqlite")]
-    return sqlx::query_as::<_, DeviceChannel>(
-        "SELECT id, device_id, name, gb_device_id, status, longitude, latitude, create_time, update_time, sub_count, has_audio, channel_type FROM gb_device_channel WHERE parent_id IS NOT NULL AND parent_id != '0' ORDER BY id LIMIT ? OFFSET ?",
-    )
+    return sqlx::query_as::<_, DeviceChannel>(&format!(
+        "SELECT {} FROM gb_device_channel WHERE parent_id IS NOT NULL AND parent_id != '0' ORDER BY id LIMIT ? OFFSET ?",
+        cols
+    ))
     .bind(count as i64).bind(offset as i64)
     .fetch_all(pool)
     .await;

@@ -48,7 +48,8 @@ CREATE TABLE IF NOT EXISTS gb_device
     heart_beat_count                    INTEGER,
     position_capability                 INTEGER,
     broadcast_push_after_ack            INTEGER     DEFAULT 0,
-    server_id                           VARCHAR(50)
+    server_id                           VARCHAR(50),
+    channel_count                       INTEGER     DEFAULT 0
 );
 CREATE UNIQUE INDEX IF NOT EXISTS uk_device_device ON gb_device(device_id);
 

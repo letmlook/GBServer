@@ -1,6 +1,7 @@
 //! Invite 会话管理
 
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use chrono::{DateTime, Utc};
@@ -16,6 +17,13 @@ pub struct InviteSession {
     pub stream_port: Option<u16>,
     pub created_at: DateTime<Utc>,
     pub status: SessionStatus,
+    /// INVITE 时的 From 头（带 server tag），用来发 ACK 时复用，
+    /// 保证 ACK 和 INVITE 同一对话（tag 一致）。
+    pub from_header: Option<String>,
+    /// INVITE 时的 CSeq 数字（"INVITE N" 中的 N），ACK 用 "ACK N"。
+    pub cseq_num: Option<u32>,
+    /// 设备地址（IP:port），发 ACK 时直接用。
+    pub device_addr: Option<SocketAddr>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -49,6 +57,9 @@ impl SessionManager {
             stream_port: None,
             created_at: Utc::now(),
             status: SessionStatus::Inviting,
+            from_header: None,
+            cseq_num: None,
+            device_addr: None,
         };
         self.sessions.write().await.insert(call_id.to_string(), session);
     }
@@ -61,6 +72,33 @@ impl SessionManager {
         let mut guard = self.sessions.write().await;
         if let Some(s) = guard.get_mut(call_id) {
             s.status = status;
+        }
+    }
+
+    /// 在发 INVITE 后回填 session 的 From / CSeq / device_addr，
+    /// 供后续 `handle_response` 收到 200 OK 时构造 ACK。
+    /// 如果 session 不存在则先用 device_id="" 占位 create（之后 handle_response
+    /// 实际只需要 from/cseq/addr 三个字段）。
+    pub async fn set_invite_context(
+        &self,
+        call_id: &str,
+        from_header: String,
+        cseq_num: u32,
+        device_addr: SocketAddr,
+    ) {
+        // 先确保 session 存在(占位 create,字段后续被回填)
+        {
+            let guard = self.sessions.read().await;
+            if !guard.contains_key(call_id) {
+                drop(guard);
+                self.create(call_id, "", "", "Unknown").await;
+            }
+        }
+        let mut guard = self.sessions.write().await;
+        if let Some(s) = guard.get_mut(call_id) {
+            s.from_header = Some(from_header);
+            s.cseq_num = Some(cseq_num);
+            s.device_addr = Some(device_addr);
         }
     }
 

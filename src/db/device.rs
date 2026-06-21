@@ -52,7 +52,7 @@ pub struct Device {
 /// Used by query_devices_paged and related endpoints to avoid
 /// "no column found for name: firmware" 500 errors when callers
 /// (e.g. WVP-Pro frontend) request all device fields.
-pub const DEVICE_SELECT_COLUMNS: &str = "id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval, host_address, server_id";
+pub const DEVICE_SELECT_COLUMNS: &str = "id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval, host_address, channel_count, server_id";
 
 /// 设备通道完整列名集合,与 [`DeviceChannel`] 字段一一对应。
 /// Phase 4.x: 所有 SELECT DeviceChannel 的查询必须使用该常量,避免
@@ -485,24 +485,28 @@ pub async fn count_devices(
 }
 
 pub async fn get_device_by_device_id(pool: &Pool, device_id: &str) -> sqlx::Result<Option<Device>> {
+    // Phase 4.x: SELECT 必须与 Device struct 字段一一对应,否则 FromRow 报
+    // ColumnNotFound。所有 db 列都要包含,新增字段(host_address、
+    // channel_count、server_id)也要同步加上。
+    let cols = DEVICE_SELECT_COLUMNS;
     #[cfg(feature = "mysql")]
-    return sqlx::query_as::<_, Device>(
-        "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval, host_address, server_id FROM gb_device WHERE device_id = ?",
-    )
+    return sqlx::query_as::<_, Device>(&format!(
+        "SELECT {} FROM gb_device WHERE device_id = ?", cols
+    ))
     .bind(device_id)
     .fetch_optional(pool)
     .await;
     #[cfg(feature = "postgres")]
-    return sqlx::query_as::<_, Device>(
-        "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval, host_address, server_id FROM gb_device WHERE device_id = $1",
-    )
+    return sqlx::query_as::<_, Device>(&format!(
+        "SELECT {} FROM gb_device WHERE device_id = $1", cols
+    ))
     .bind(device_id)
     .fetch_optional(pool)
     .await;
     #[cfg(feature = "sqlite")]
-    return sqlx::query_as::<_, Device>(
-        "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval, host_address, server_id FROM gb_device WHERE device_id = ?",
-    )
+    return sqlx::query_as::<_, Device>(&format!(
+        "SELECT {} FROM gb_device WHERE device_id = ?", cols
+    ))
     .bind(device_id)
     .fetch_optional(pool)
     .await;

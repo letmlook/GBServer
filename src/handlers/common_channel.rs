@@ -150,7 +150,7 @@ pub async fn channel_list(
     Ok(Json(WVPResult::success(data)))
 }
 
-fn channel_to_json(c: &DeviceChannel) -> serde_json::Value {
+pub(crate) fn channel_to_json(c: &DeviceChannel) -> serde_json::Value {
     // 把 DeviceChannel 字段同时以 camelCase 和 gb_* 前缀输出,兼容
     // 前端 /channel、/device/channel、/commonChannel 等页面读取 `gbName` /
     // `gbDeviceId` / `gbStatus` / `gbLongitude` / `gbLatitude` 等历史命名。
@@ -394,14 +394,8 @@ pub async fn civilcode_list(
     let total = count_common_channels(&state.pool, q.query.as_deref(), online, channel_type).await?;
 
     let rows: Vec<serde_json::Value> = list
-        .into_iter()
-        .map(|c| {
-            serde_json::json!({
-                "deviceId": c.device_id,
-                "name": c.name,
-                "channelId": c.gb_device_id,
-            })
-        })
+        .iter()
+        .map(|c| channel_to_json(c))
         .collect();
 
     Ok(Json(WVPResult::success(serde_json::json!({
@@ -423,15 +417,8 @@ pub async fn unusual_civilcode_list(
     let total = common_channel::count_unusual_civilcode(&state.pool).await?;
 
     let rows: Vec<serde_json::Value> = list
-        .into_iter()
-        .map(|c| {
-            serde_json::json!({
-                "id": c.id,
-                "deviceId": c.device_id,
-                "name": c.name,
-                "channelId": c.gb_device_id,
-            })
-        })
+        .iter()
+        .map(|c| channel_to_json(c))
         .collect();
 
     Ok(Json(WVPResult::success(serde_json::json!({
@@ -452,15 +439,8 @@ pub async fn unusual_parent_list(
     let total = common_channel::count_unusual_parent(&state.pool).await?;
 
     let rows: Vec<serde_json::Value> = list
-        .into_iter()
-        .map(|c| {
-            serde_json::json!({
-                "id": c.id,
-                "deviceId": c.device_id,
-                "name": c.name,
-                "channelId": c.gb_device_id,
-            })
-        })
+        .iter()
+        .map(|c| channel_to_json(c))
         .collect();
 
     Ok(Json(WVPResult::success(serde_json::json!({
@@ -513,16 +493,11 @@ pub async fn parent_list(
     let list: Vec<DeviceChannel> = common_channel::get_parent_channels(&state.pool, page, count, q.query.as_deref(), online, channel_type).await?;
     let total = common_channel::count_parent_channels(&state.pool, q.query.as_deref(), online, channel_type).await?;
 
+    // Phase 6: 同步输出 camelCase + gb_* + ptzTypeText,前端
+    // /channel/group、/channel/region 都读取这些字段。
     let rows: Vec<serde_json::Value> = list
-        .into_iter()
-        .map(|c| {
-            serde_json::json!({
-                "id": c.id,
-                "deviceId": c.device_id,
-                "name": c.name,
-                "channelId": c.gb_device_id,
-            })
-        })
+        .iter()
+        .map(|c| channel_to_json(c))
         .collect();
 
     Ok(Json(WVPResult::success(serde_json::json!({

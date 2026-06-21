@@ -15,6 +15,22 @@ pub struct ZlmClient {
     http: Client,
 }
 
+/// ZLM `/index/api/openRtpServer` 的真实响应：成功时 `port` / `cookie` 在
+/// 顶层而非 `data` 字段里（ZLM 简单 API 的惯例，区别于 listRtpServer
+/// 那种 `data: [...]` 形式）。用扁平结构接收，避免 `data: Some(RtpServerInfo)`
+/// 因 `RtpServerInfo.stream_id` 必填而整个反序列化失败、导致调用方
+/// 看到 "No RTP server info returned"。
+#[derive(Deserialize)]
+struct OpenRtpServerResp {
+    code: i32,
+    #[serde(default)]
+    msg: Option<String>,
+    #[serde(default)]
+    port: Option<u16>,
+    #[serde(default)]
+    cookie: Option<String>,
+}
+
 impl ZlmClient {
     pub fn new(ip: &str, port: u16, secret: &str) -> Self {
         Self {
@@ -201,7 +217,7 @@ impl ZlmClient {
             ("secret", self.secret.clone()),
             ("stream_id", req.stream_id.clone()),
         ];
-        
+
         if let Some(port) = req.port {
             params.push(("port", port.to_string()));
         }
@@ -215,13 +231,26 @@ impl ZlmClient {
             params.push(("recv_port", recv_port.to_string()));
         }
 
-        let resp: ApiResponse<RtpServerInfo> = self.request("/index/api/openRtpServer", &params).await?;
-        
+        let resp: OpenRtpServerResp = self.request("/index/api/openRtpServer", &params).await?;
+
         if resp.code != 0 {
             return Err(anyhow!("ZLM error: {} - {}", resp.code, resp.msg.unwrap_or_default()));
         }
-        
-        resp.data.ok_or_else(|| anyhow!("No RTP server info returned"))
+
+        let port = resp.port.ok_or_else(|| anyhow!("No RTP server info returned"))?;
+
+        // ZLM openRtpServer 不回传 stream_id / ssrc 等字段，从入参回填；
+        // 调用方（playback / play / broadcast / cascade）已经持有 stream_id，
+        // 这样下游继续用 `RtpServerInfo.stream_id` 不会变 None。
+        Ok(RtpServerInfo {
+            port,
+            stream_id: req.stream_id.clone(),
+            ssrc: None,
+            client_ip: None,
+            client_port: None,
+            server_port: None,
+            selectrtp_conn: None,
+        })
     }
 
     pub async fn close_rtp_server(&self, stream_id: &str) -> Result<()> {
@@ -233,7 +262,36 @@ impl ZlmClient {
         #[derive(Deserialize)]
         struct Resp { code: i32 }
         let resp: ApiResponse<Resp> = self.request("/index/api/closeRtpServer", &params).await?;
-        
+
+        if resp.code != 0 {
+            return Err(anyhow!("ZLM error: {}", resp.msg.unwrap_or_default()));
+        }
+        Ok(())
+    }
+
+    /// 让 ZLM 主动连接远端的 RTP 服务器(`设备` 侧 GB28181 INVITE 200 OK
+    /// SDP 里的 m= 端口 —— 设备宣告自己将从该端口发送流)。
+    /// 解决了"设备按 200 OK SDP 推流而不是按 INVITE m= 推流"的非标准
+    /// gbcpp/1.0 mock 行为;WVP2.6.9 同样依赖此机制。
+    pub async fn connect_rtp_server(
+        &self,
+        stream_id: &str,
+        dst_url: &str, // 例如 "rtp://192.168.3.200:11001"
+        app: Option<&str>,
+    ) -> Result<()> {
+        let mut params = vec![
+            ("secret", self.secret.clone()),
+            ("stream_id", stream_id.to_string()),
+            ("dst_url", dst_url.to_string()),
+        ];
+        if let Some(a) = app {
+            params.push(("app", a.to_string()));
+        }
+
+        #[derive(Deserialize)]
+        struct Resp { code: i32 }
+        let resp: ApiResponse<Resp> = self.request("/index/api/connectRtpServer", &params).await?;
+
         if resp.code != 0 {
             return Err(anyhow!("ZLM error: {}", resp.msg.unwrap_or_default()));
         }
