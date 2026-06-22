@@ -101,8 +101,12 @@ check_interval_secs = 10
 [[zlm.servers]]
 id = "zlmediakit-1"
 ip = "127.0.0.1"
-http_port = 18081
-secret = "EctdXjqgidxs2AMquujELlQEh3G4OqAH"
+http_port = 8080
+# 与 docker-compose 当前 ZLM 镜像 conf/config.ini 里实际生效的 api.secret 对齐：
+# `docker exec gbserver-zlm cat /opt/media/conf/config.ini | grep secret=`
+# 镜像版本(2026-06 master)不识别 ZLM_HTTP_SECRET 环境变量,所以容器启动时
+# 仍用 config.ini 硬编码值。后端必须传这个 secret 才能调通 ZLM HTTP API。
+secret = "ZbazSBBDlqDHxMwmsBgv3e8ow1KOsi4F"
 enabled = true
 
 # [[zlm.servers]]
