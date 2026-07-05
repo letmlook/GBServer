@@ -1,0 +1,89 @@
+@use './_tokens.scss';
+@use './_responsive.scss' as *;
+@use './_utilities.scss';
+@use './_element-overrides.scss';
+@use './mixin.scss';
+@use './transition.scss';
+@use './sidebar.scss';
+
+@use 'normalize.css/normalize.css';
+
+/* 全局基础排版 */
+body {
+  height: 100%;
+  -moz-osx-font-smoothing: grayscale;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  font-family: var(--font-sans);
+  color: var(--text-primary);
+  background: var(--bg-base);
+}
+
+html, #app { height: 100%; box-sizing: border-box; }
+
+*, *:before, *:after { box-sizing: inherit; }
+
+a:focus, a:active { outline: none; }
+a, a:focus, a:hover { cursor: pointer; color: inherit; text-decoration: none; }
+div:focus { outline: none; }
+
+.clearfix {
+  &:after {
+    visibility: hidden; display: block; font-size: 0; content: " "; clear: both; height: 0;
+  }
+}
+
+.app-container { padding: var(--space-5); min-height: calc(100vh - var(--topbar-height) - var(--tagsbar-height)); }
+
+// 全局页面骨架
+.gb-page {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 20px 24px 32px;
+  min-height: calc(100vh - var(--topbar-height) - var(--tagsbar-height));
+}
+.gb-page__header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.gb-page__title { font-size: var(--text-xl); font-weight: 600; color: var(--text-primary); margin: 0; }
+.gb-page__subtitle { font-size: var(--text-xs); color: var(--text-tertiary); margin-top: 4px; }
+.gb-page__actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+.gb-grid { display: grid; gap: 14px; }
+.gb-grid--kpi  { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+.gb-grid--2col { grid-template-columns: 1fr; }
+.gb-grid--3col { grid-template-columns: 1fr; }
+.gb-grid--split { grid-template-columns: 2fr 1fr; }
+
+@include tablet { .gb-grid--split { grid-template-columns: 1fr; } }
+@include desktop {
+  .gb-grid--2col { grid-template-columns: 2fr 1fr; }
+  .gb-grid--3col { grid-template-columns: 2fr 1fr 1fr; }
+}
+
+.gb-filterbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  padding: 12px 14px;
+  &__label { font-size: var(--text-xs); color: var(--text-tertiary); margin-right: 4px; }
+  &__right { margin-left: auto; display: flex; gap: 8px; }
+}
+
+.gb-bulkbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  background: var(--bg-elevated);
+  border: 1px dashed var(--border-default);
+  border-radius: var(--radius-md);
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+}

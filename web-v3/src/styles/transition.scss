@@ -1,0 +1,14 @@
+/* 路由过渡 */
+
+.fade-transform-enter-active,
+.fade-transform-leave-active {
+  transition: all 0.28s ease;
+}
+.fade-transform-enter-from {
+  opacity: 0;
+  transform: translateX(-12px);
+}
+.fade-transform-leave-to {
+  opacity: 0;
+  transform: translateX(12px);
+}

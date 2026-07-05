@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" href="/favicon.ico" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>GBServer 视频平台</title>
+    <style>
+      html, body, #app { height: 100%; margin: 0; padding: 0; }
+      #app-loading {
+        position: fixed; inset: 0;
+        display: grid; place-items: center;
+        background: #f5f8fc;
+        color: #7e8ea3;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif;
+        font-size: 13px;
+      }
+      #app-loading .dot {
+        width: 6px; height: 6px; border-radius: 50%;
+        background: #0b8ab2; display: inline-block; margin: 0 4px;
+        animation: pulse 1.2s ease-in-out infinite;
+      }
+      #app-loading .dot:nth-child(2) { animation-delay: .15s; }
+      #app-loading .dot:nth-child(3) { animation-delay: .3s; }
+      @keyframes pulse { 0%, 100% { opacity: .2 } 50% { opacity: 1 } }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <div id="app-loading">
+        <span>GBServer 启动中</span>
+        <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+      </div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

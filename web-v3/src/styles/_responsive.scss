@@ -1,0 +1,17 @@
+/* 响应式断点 */
+
+@mixin mobile {
+  @media (max-width: 768px) { @content; }
+}
+
+@mixin tablet {
+  @media (max-width: 1024px) { @content; }
+}
+
+@mixin desktop {
+  @media (min-width: 1280px) { @content; }
+}
+
+@mixin wide {
+  @media (min-width: 1600px) { @content; }
+}
