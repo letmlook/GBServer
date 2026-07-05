@@ -24,6 +24,12 @@ pub struct InviteSession {
     pub cseq_num: Option<u32>,
     /// 设备地址（IP:port），发 ACK 时直接用。
     pub device_addr: Option<SocketAddr>,
+    /// ACK 是否已发送。handle_response 收到 200 OK 时检查这个标志,
+    /// 已发过则跳过——某些 GB28181 设备(gbcpp/1.0 mock 实测)会把每次
+    /// ACK 当成新请求重新回 200 OK,造成 ACK 风暴(单 call_id 几十万次
+    /// ACK 反复发送,日志爆炸 + CPU 占用 + SIP socket 拥塞)。
+    /// RFC 3261 13.3.1.4: 2xx 重传由 UAC 吸收,不应再发 ACK。
+    pub ack_sent: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -60,6 +66,7 @@ impl SessionManager {
             from_header: None,
             cseq_num: None,
             device_addr: None,
+            ack_sent: false,
         };
         self.sessions.write().await.insert(call_id.to_string(), session);
     }
@@ -72,6 +79,26 @@ impl SessionManager {
         let mut guard = self.sessions.write().await;
         if let Some(s) = guard.get_mut(call_id) {
             s.status = status;
+        }
+    }
+
+    /// 标记该 call_id 的 INVITE 200 OK 已被 ACK 回应过。handle_response
+    /// 在重新收到 200 OK（设备重传/gbcpp mock 误把 ACK 当新请求）时
+    /// 检查此标志,跳过再次发送 ACK——RFC 3261 13.3.1.4 要求 2xx 重传
+    /// 由 UAC 吸收不再 ACK。返回 true 表示本次是首次（实际应发 ACK）,
+    /// false 表示已经发过（应跳过）。
+    pub async fn mark_ack_sent_if_first(&self, call_id: &str) -> bool {
+        let mut guard = self.sessions.write().await;
+        if let Some(s) = guard.get_mut(call_id) {
+            if s.ack_sent {
+                false
+            } else {
+                s.ack_sent = true;
+                true
+            }
+        } else {
+            // 没有 session 记录（理论上不应发生,但保险起见允许 ACK）
+            true
         }
     }
 

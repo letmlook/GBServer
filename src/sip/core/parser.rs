@@ -47,7 +47,7 @@ impl Parser {
             }
             if in_body {
                 if !body_content.is_empty() {
-                    body_content.push('\r');
+                    body_content.push_str("\r\n");
                 }
                 body_content.push_str(line);
                 continue;
@@ -103,7 +103,7 @@ impl Parser {
             }
             if in_body {
                 if !body_content.is_empty() {
-                    body_content.push('\r');
+                    body_content.push_str("\r\n");
                 }
                 body_content.push_str(line);
                 continue;

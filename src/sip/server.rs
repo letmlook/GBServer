@@ -2815,53 +2815,71 @@ let renewal_pool = pool.clone();
                     // 方便 play/playback 流程解析设备的 m= 端口并调
                     // ZLM connectRtpServer(应对设备 200 OK SDP 报自己
                     // 端口的非标准行为,gbcpp/1.0 mock 即如此)。
+                    tracing::debug!(
+                        "INVITE 200 OK full body for call_id={}: {:?}",
+                        call_id,
+                        resp.body
+                    );
                     let _ = tx.send(resp.clone());
                 }
 
                 // GB28181 三次握手必须完整:INVITE → 200 OK → ACK。
                 // 设备收到 200 OK 后等不到 ACK 不会推流。
                 // 从 session_manager 拿 INVITE 时的 From (带 server tag) / CSeq / device_addr。
-                if let Some(invite_ctx) = session_manager.get(&call_id).await {
-                    if let (Some(from_header), Some(cseq_num), Some(device_addr)) = (
-                        invite_ctx.from_header.as_ref(),
-                        invite_ctx.cseq_num,
-                        invite_ctx.device_addr,
-                    ) {
-                        let to_tagged = resp
-                            .headers
-                            .get("to")
-                            .cloned()
-                            .unwrap_or_else(|| "<sip:unknown@unknown>".to_string());
-                        let ack_branch = generate_branch();
-                        let ack_via = format!(
-                            "SIP/2.0/UDP {}:{};branch={};rport",
-                            config.ip, config.port, ack_branch
-                        );
-                        let ack_uri = format!(
-                            "sip:{}@{}:{}",
-                            invite_ctx.channel_id, device_addr.ip(), device_addr.port()
-                        );
-                        let ack_cseq = format!("ACK {}", cseq_num);
-                        let ack = Parser::generate_ack(
-                            &ack_uri,
-                            &ack_via,
-                            from_header,
-                            &to_tagged,
-                            &call_id,
-                            &ack_cseq,
-                        );
-                        if let Err(e) = socket.send_to(ack.as_bytes(), device_addr).await {
-                            tracing::warn!(
-                                "Failed to send ACK for call_id={}: {}",
-                                call_id, e
+                //
+                // 幂等保护:gbcpp/1.0 mock 等非标 GB28181 设备会把每次
+                // ACK 当成新请求重新回 200 OK,导致 handle_response 反复
+                // 进入这段代码。RFC 3261 13.3.1.4 要求 2xx 重传由 UAC
+                // 吸收不再 ACK,所以这里 mark_ack_sent_if_first() 是
+                // 整个 call 的"ACK 一次性"闸门。
+                if session_manager.mark_ack_sent_if_first(&call_id).await {
+                    if let Some(invite_ctx) = session_manager.get(&call_id).await {
+                        if let (Some(from_header), Some(cseq_num), Some(device_addr)) = (
+                            invite_ctx.from_header.as_ref(),
+                            invite_ctx.cseq_num,
+                            invite_ctx.device_addr,
+                        ) {
+                            let to_tagged = resp
+                                .headers
+                                .get("to")
+                                .cloned()
+                                .unwrap_or_else(|| "<sip:unknown@unknown>".to_string());
+                            let ack_branch = generate_branch();
+                            let ack_via = format!(
+                                "SIP/2.0/UDP {}:{};branch={};rport",
+                                config.ip, config.port, ack_branch
                             );
-                        } else {
-                            tracing::info!(
-                                "Sent ACK to device for call_id={} (channel={})",
-                                call_id, invite_ctx.channel_id
+                            let ack_uri = format!(
+                                "sip:{}@{}:{}",
+                                invite_ctx.channel_id, device_addr.ip(), device_addr.port()
                             );
+                            let ack_cseq = format!("ACK {}", cseq_num);
+                            let ack = Parser::generate_ack(
+                                &ack_uri,
+                                &ack_via,
+                                from_header,
+                                &to_tagged,
+                                &call_id,
+                                &ack_cseq,
+                            );
+                            if let Err(e) = socket.send_to(ack.as_bytes(), device_addr).await {
+                                tracing::warn!(
+                                    "Failed to send ACK for call_id={}: {}",
+                                    call_id, e
+                                );
+                            } else {
+                                tracing::info!(
+                                    "Sent ACK to device for call_id={} (channel={})",
+                                    call_id, invite_ctx.channel_id
+                                );
+                            }
                         }
                     }
+                } else {
+                    tracing::debug!(
+                        "Skip duplicate ACK for call_id={} (already sent)",
+                        call_id
+                    );
                 }
             } else if cseq.contains("BYE") {
                 session_manager.remove(&call_id).await;

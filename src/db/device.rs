@@ -488,7 +488,17 @@ pub async fn get_device_by_device_id(pool: &Pool, device_id: &str) -> sqlx::Resu
     // Phase 4.x: SELECT 必须与 Device struct 字段一一对应,否则 FromRow 报
     // ColumnNotFound。所有 db 列都要包含,新增字段(host_address、
     // channel_count、server_id)也要同步加上。
-    let cols = DEVICE_SELECT_COLUMNS;
+    //
+    // channel_count 用 (SELECT COUNT(*) FROM gb_device_channel ...) 子查询
+    // 而不是直接列引用,与 list_devices_paged 同模式。这样不依赖 gb_device
+    // 表存在 channel_count 列——早期 schema 升级前的存量库缺这列,直接
+    // SELECT 会触发 "no such column: channel_count",handler 把 Err 当
+    // None 返回 null,前端 /api/device/query/devices/:id 拿不到 onLine,
+    // 国标通道列表的"播放"按钮被 :disabled="!device" 锁死。
+    let cols = DEVICE_SELECT_COLUMNS.replace(
+        "channel_count",
+        "(SELECT COUNT(*) FROM gb_device_channel WHERE device_id = gb_device.device_id) AS channel_count",
+    );
     #[cfg(feature = "mysql")]
     return sqlx::query_as::<_, Device>(&format!(
         "SELECT {} FROM gb_device WHERE device_id = ?", cols

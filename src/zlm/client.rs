@@ -277,12 +277,14 @@ impl ZlmClient {
         &self,
         stream_id: &str,
         dst_url: &str, // 例如 "rtp://192.168.3.200:11001"
+        dst_port: u16, // ZLM 要求 dst_port 单独传(不是合并在 URL 里)
         app: Option<&str>,
     ) -> Result<()> {
         let mut params = vec![
             ("secret", self.secret.clone()),
             ("stream_id", stream_id.to_string()),
             ("dst_url", dst_url.to_string()),
+            ("dst_port", dst_port.to_string()),
         ];
         if let Some(a) = app {
             params.push(("app", a.to_string()));

@@ -65,12 +65,24 @@ pub async fn play_start(
         // 创建 ZLM 的流。stream_id 使用规范格式: 设备ID_通道ID
         let stream_id = format!("{}_{}", device_id, channel_id);
 
-        let is_tcp = device.transport.as_deref().unwrap_or("UDP").to_uppercase() == "TCP";
+        let transport_mode = device
+            .transport
+            .as_deref()
+            .or(device.stream_mode.as_deref())
+            .unwrap_or("UDP")
+            .to_uppercase();
+        let is_tcp_passive = transport_mode == "TCP-PASSIVE";
+        let is_tcp = transport_mode == "TCP" || is_tcp_passive;
 
         // 预开 ZLM RTP server —— 标准 GB28181 设备会按 INVITE SDP m= 端口
         // (也就是这个端口) 推流。对于非标准实现(例如 gbcpp/1.0 mock 在
         // 200 OK SDP 里另写 m= 端口),会在收到 200 OK 后用 connectRtpServer
         // 接管。
+        //
+        // TCP-PASSIVE 例外:设备不在这个端口推流,它在等 ZLM 主动 connect。
+        // 这个端口开不开都不影响(下一步会 close),但 openRtpServer 仍要调
+        // 才能保证 ZLM 内部流注册成功,后续 connectRtpServer 才能用同一个
+        // stream_id 接管。
         let rtp_req = crate::zlm::OpenRtpServerRequest {
             secret: zlm_client.secret.clone(),
             stream_id: stream_id.clone(),
@@ -88,13 +100,101 @@ pub async fn play_start(
             }
         };
 
-        tracing::info!("ZLM RTP server opened on port {}", rtp_server.port);
+        tracing::info!("ZLM RTP server opened on port {} (transport={})", rtp_server.port, transport_mode);
 
         // 调用 SIP Server 真正发送 INVITE，并等待设备回复 200 OK
         let sip = &*sip_server;
         // 先生成规范 SSRC: 0 加上设备编号前9位加上0
         let id_part = if device_id.len() >= 9 { &device_id[0..9] } else { &device_id };
         let ssrc = format!("0{:0>9}0", id_part);
+
+        // TCP-PASSIVE 设备不走"等媒体到达"路径:它压根不会推流给 ZLM,
+        // 等 ZLM 主动 connect 它的 listen 端口。把 SIP 200 OK 拿到后,
+        // 关闭刚才开的 ZLM 监听端口,改用 connectRtpServer 让 ZLM 去连
+        // 设备 SDP 宣告的推流端口。
+        if is_tcp_passive {
+            let (call_id, resp) = match sip
+                .send_play_invite_and_wait(&device_id, &channel_id, rtp_server.port, Some(&ssrc))
+                .await
+            {
+                Ok(pair) => pair,
+                Err(e) => {
+                    tracing::error!("SIP INVITE for TCP-PASSIVE failed: {}", e);
+                    let _ = zlm_client.close_rtp_server(&stream_id).await;
+                    let _ = sip.send_session_bye(&device_id, &channel_id).await;
+                    return Json(WVPResult::error(format!("SIP error: {}", e)));
+                }
+            };
+            tracing::info!(
+                "TCP-PASSIVE device: SIP 200 OK received for {}, switching ZLM to connectRtpServer",
+                call_id
+            );
+
+            let device_port = resp
+                .body
+                .as_deref()
+                .and_then(parse_sdp_media_port)
+                .ok_or_else(|| {
+                    tracing::error!(
+                        "TCP-PASSIVE device 200 OK missing/invalid SDP m= port. Full SDP body:\n{:?}",
+                        resp.body
+                    );
+                    "device SDP missing media port"
+                });
+
+            let device_port = match device_port {
+                Ok(p) => p,
+                Err(e) => {
+                    let _ = zlm_client.close_rtp_server(&stream_id).await;
+                    let _ = sip.send_session_bye(&device_id, &channel_id).await;
+                    return Json(WVPResult::error(e));
+                }
+            };
+
+            // 让 ZLM 主动 connect 到设备的 TCP 端口。注意:不要先
+            // closeRtpServer,那样 ZLM 就找不到 stream_id 对应的流,
+            // connectRtpServer 会返回 "can not find the stream"。
+            // openRtpServer 已经创建好流,connectRtpServer 接管它做主动
+            // connect。
+            let dst = format!(
+                "rtp://{}:{}",
+                device.ip.as_deref().unwrap_or("0.0.0.0"),
+                device_port
+            );
+            if let Err(e) = zlm_client.connect_rtp_server(&stream_id, &dst, device_port, None).await {
+                tracing::error!(
+                    "connectRtpServer to TCP-PASSIVE device:{} failed: {}",
+                    device_port,
+                    e
+                );
+                let _ = zlm_client.close_rtp_server(&stream_id).await;
+                let _ = sip.send_session_bye(&device_id, &channel_id).await;
+                return Json(WVPResult::error(format!("ZLM connect error: {}", e)));
+            }
+            tracing::info!(
+                "ZLM connectRtpServer (TCP-PASSIVE) -> {} (stream_id={})",
+                dst,
+                stream_id
+            );
+
+            // 等几秒让 ZLM connect 后拿到媒体再返回成功(此时 ZLM 应在
+            // 通过 hook 通知 media-ready,但客户端只关心 stream_id/play_url)
+            return Json(WVPResult::success(serde_json::json!({
+                "app": "rtp",
+                "stream": stream_id,
+                "playUrl": format!("rtsp://{}:554/rtp/{}", zlm_client.ip, stream_id),
+                "flvUrl": format!("http://{}:{}/{}.flv", zlm_client.ip, zlm_client.http_port, stream_id),
+                "wsUrl": format!("ws://{}:{}/{}.flv", zlm_client.ip, zlm_client.http_port, stream_id),
+                "ws_flv": format!("ws://{}:{}/{}.flv", zlm_client.ip, zlm_client.http_port, stream_id),
+                "hls": format!("http://{}:{}/rtp/{}/hls.m3u8", zlm_client.ip, zlm_client.http_port, stream_id),
+                "webrtc": format!("webrtc://{}:{}/index/api/webrtc?app=rtp&stream={}&type=play", zlm_client.ip, zlm_client.http_port, stream_id),
+                "deviceId": device_id,
+                "channelId": channel_id,
+                "hasAudio": channel.has_audio.unwrap_or(false),
+                "ssrc": ssrc,
+                "transport": "TCP-PASSIVE",
+            })));
+        }
 
         match sip.send_play_invite_and_wait_media(
             &device_id, &channel_id, rtp_server.port, &stream_id, Some(&ssrc), 15,
@@ -113,7 +213,7 @@ pub async fn play_start(
                                     "Device 200 OK m={} != ZLM RTP server port {}. Switching to ZLM connectRtpServer to device:{}",
                                     device_port, rtp_server.port, device_port
                                 );
-                                let _ = zlm_client.close_rtp_server(&stream_id).await;
+                                // 不先 closeRtpServer,否则 ZLM 找不到 stream
                                 let dst = format!(
                                     "{}://{}:{}",
                                     if is_tcp { "rtp" } else { "rtp" },
@@ -121,7 +221,7 @@ pub async fn play_start(
                                     device_port
                                 );
                                 if let Err(e) =
-                                    zlm_client.connect_rtp_server(&stream_id, &dst, None).await
+                                    zlm_client.connect_rtp_server(&stream_id, &dst, device_port, None).await
                                 {
                                     tracing::error!(
                                         "connectRtpServer to device:{} failed: {}",
