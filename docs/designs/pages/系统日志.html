@@ -1,0 +1,359 @@
+<!doctype html>
+<html lang="zh-CN" class="light" data-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>系统日志 · GBServer</title>
+    <style id="theme-vars">
+/* ===========================================================
+ * GBServer Redesign · 品牌视觉规范
+ * 调性：蓝白浅色 · 清爽专业
+ * 主色：青蓝（监控/流媒体）
+ * =========================================================== */
+
+:root {
+  /* 主色调色板（identity）— 保持青蓝 */
+  --brand-primary-50:  #e8f4f9;
+  --brand-primary-100: #c6e4f0;
+  --brand-primary-200: #9ad0e6;
+  --brand-primary-300: #5eb4d4;
+  --brand-primary-400: #2a93bd;
+  --brand-primary-500: #0b8ab2;   /* 主品牌色 */
+  --brand-primary-600: #086d90;
+  --brand-primary-700: #05546f;
+  --brand-primary-800: #043c52;
+  --brand-primary-900: #022536;
+
+  /* 浅色主题色阶（蓝白） */
+  --bg-base:        #f5f8fc;   /* 主背景 · 浅蓝灰 */
+  --bg-surface:    #ffffff;   /* 卡片背景 · 纯白 */
+  --bg-elevated:  #f0f5fa;   /* 弹层/二级表面 · 极浅蓝 */
+  --bg-overlay:    #e7f0f7;   /* 悬浮 */
+  --bg-hover:      #e1ecf5;
+  --bg-active:    #d4e4f1;
+
+  --border-subtle:  #e3ebf3;   /* 细边框 */
+  --border-default: #d2dfeb;
+  --border-strong:  #b6cbdc;
+
+  --text-primary:    #0f1c2d;   /* 主文字 · 深墨蓝 */
+  --text-secondary: #4b5d72;
+  --text-tertiary:  #7e8ea3;
+  --text-disabled:  #b6c2d2;
+
+  /* 语义状态色 */
+  --state-success: #16a34a;
+  --state-warning: #ea8a0c;
+  --state-error:   #dc2626;
+  --state-info:    #0284c7;
+
+  /* 直播/在线标识色 */
+  --live-dot: #dc2626;
+  --rec-dot:  #ea8a0c;
+
+  /* 间距系统（8 倍数） */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+
+  /* 圆角（克制） */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-full: 9999px;
+
+  /* 字体 */
+  --font-sans: "Inter", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+  --font-display: "Inter", "PingFang SC", system-ui, sans-serif;
+
+  /* 字号阶 */
+  --text-xs:   11px;
+  --text-sm:   13px;
+  --text-base: 14px;
+  --text-md:   15px;
+  --text-lg:   17px;
+  --text-xl:   20px;
+  --text-2xl:  24px;
+  --text-3xl:  30px;
+  --text-display: 40px;
+
+  /* 阴影（浅色模式 — 极弱、偏冷） */
+  --shadow-card: 0 1px 0 0 rgba(11,138,178,0.04) inset, 0 1px 2px rgba(15,28,45,0.05);
+  --shadow-pop:  0 8px 24px rgba(15,28,45,0.10), 0 0 0 1px rgba(11,138,178,0.08) inset;
+
+  /* 侧栏/顶栏尺寸 */
+  --sidebar-width: 220px;
+  --sidebar-collapsed: 64px;
+  --topbar-height: 56px;
+  --tagsbar-height: 38px;
+
+  /* 布局卡 */
+  --layout-radius: 10px;
+  --layout-border: 1px solid var(--border-subtle);
+}
+
+/* 全局基础排版 */
+html, body {
+  background: var(--bg-base);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  -webkit-font-smoothing: antialiased;
+}
+
+.text-secondary { color: var(--text-secondary); }
+.text-tertiary { color: var(--text-tertiary); }
+.text-primary-accent { color: var(--brand-primary-500); }
+
+.mono { font-family: var(--font-mono); font-feature-settings: "tnum"; }
+
+.kbd {
+  display: inline-block;
+  padding: 2px 6px;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+}
+
+/* 状态点 */
+.dot {
+  display: inline-block; width: 8px; height: 8px;
+  border-radius: var(--radius-full);
+  box-shadow: 0 0 0 3px rgba(11,138,178,0.04) inset;
+}
+.dot-success { background: var(--state-success); box-shadow: 0 0 6px rgba(22,163,74,0.35); }
+.dot-warning { background: var(--state-warning); box-shadow: 0 0 6px rgba(234,138,12,0.35); }
+.dot-error   { background: var(--state-error);   box-shadow: 0 0 6px rgba(220,38,38,0.35);   }
+.dot-info    { background: var(--state-info);    box-shadow: 0 0 6px rgba(2,132,199,0.35);    }
+
+/* 直播标识 */
+.live-tag {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 2px 8px; font-size: var(--text-xs); font-weight: 600;
+  background: rgba(220,38,38,0.10); color: var(--state-error);
+  border-radius: var(--radius-full);
+}
+.live-tag::before {
+  content: ""; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--live-dot); animation: pulse 1.6s infinite;
+}
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+    </style>
+        <style type="text/tailwindcss">
+@theme inline {
+  --color-primary: var(--brand-primary-500);
+  --color-primary-foreground: var(--brand-foreground);
+  --color-background: var(--brand-background);
+  --color-foreground: var(--brand-foreground);
+  --color-surface: var(--brand-surface);
+  --color-border: var(--brand-border);
+  --color-muted: var(--brand-muted);
+  --color-muted-foreground: var(--brand-muted-foreground);
+  --color-success: var(--brand-success);
+  --color-warning: var(--brand-warning);
+  --color-error: var(--brand-error);
+  --color-info: var(--brand-info);
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+}
+    </style>
+
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.3.1/dist/index.global.js"></script>
+    <script src="https://unpkg.com/lucide@1.8.0/dist/umd/lucide.min.js"></script>
+    <style type="text/tailwindcss">
+  
+  @layer base {
+    body { background: var(--brand-background); color: var(--brand-foreground); }
+    td, th { @apply break-words; word-break: break-all; word-break: auto-phrase; }
+    th { @apply whitespace-nowrap; }
+  }
+    </style>
+    <style>
+      .no-scrollbar::-webkit-scrollbar { display: none; }
+      .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+      [data-icon] {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        -webkit-mask-size: contain;
+        mask-size: contain;
+        -webkit-mask-repeat: no-repeat;
+        mask-repeat: no-repeat;
+        -webkit-mask-position: center;
+        mask-position: center;
+        background-color: currentColor;
+      }
+    </style>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+</head>
+<body>
+<div class="app-shell">
+  <aside class="app-sidebar">
+    <div class="app-logo">
+      <div class="logo-mark">
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <!-- 外框 -->
+          <rect x="2.5" y="2.5" width="19" height="19" rx="3" stroke="currentColor" stroke-width="1.5"/>
+          <!-- 内框 -->
+          <rect x="7" y="7" width="10" height="10" rx="1.5" stroke="currentColor" stroke-width="1.2" opacity=".5"/>
+          <!-- 中心圆点 -->
+          <circle cx="12" cy="12" r="2.4" fill="currentColor"/>
+          <!-- 四向延伸线（工业感） -->
+          <line x1="12" y1="1" x2="12" y2="3.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+          <line x1="12" y1="20.5" x2="12" y2="23" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+          <line x1="1" y1="12" x2="3.5" y2="12" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+          <line x1="20.5" y1="12" x2="23" y2="12" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+        </svg>
+      </div>
+      <div class="logo-text">
+        <div class="logo-name">GBServer</div>
+      </div>
+      <span class="logo-pulse" aria-hidden="true">●&nbsp;LIVE</span>
+    </div>
+    <nav class="app-nav">
+      <div class="nav-group-title">监控中心</div>
+      <a class="nav-item" data-dom-id="nav-dashboard" href="dashboard.html"><svg viewBox="0 0 24 24" fill="none"><path d="M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z" stroke="currentColor" stroke-width="1.5"/></svg><span>控制台</span></a>
+      <a class="nav-item" data-dom-id="nav-live" href="live-wall.html"><svg viewBox="0 0 24 24" fill="none"><path d="M15 8l7-4v16l-7-4v-8zM2 6h11v12H2z" stroke="currentColor" stroke-width="1.5"/></svg><span>实时视频</span><span class="live-tag-mini">LIVE</span></a>
+      <a class="nav-item" data-dom-id="nav-playback" href="playback.html"><svg viewBox="0 0 24 24" fill="none"><path d="M12 5V2L8 6l4 4V7" stroke="currentColor" stroke-width="1.5"/></svg><span>录像回放</span></a>
+      <a class="nav-item" data-dom-id="nav-map" href="map.html"><svg viewBox="0 0 24 24" fill="none"><path d="M12 2C7.6 2 4 5.6 4 10c0 6 8 12 8 12s8-6 8-12c0-4.4-3.6-8-8-8z" stroke="currentColor" stroke-width="1.5"/></svg><span>GIS 地图</span></a>
+      <div class="nav-group-title">资源管理</div>
+      <a class="nav-item" data-dom-id="nav-channel" href="channel-list.html"><svg viewBox="0 0 24 24" fill="none"><path d="M4 6h16v12H4z" stroke="currentColor" stroke-width="1.5"/></svg><span>通道列表</span></a>
+      <a class="nav-item" data-dom-id="nav-jt" href="jt-device.html"><svg viewBox="0 0 24 24" fill="none"><path d="M5 11l1.5-4h11L19 11" stroke="currentColor" stroke-width="1.5"/></svg><span>车载终端</span></a>
+      <a class="nav-item" data-dom-id="nav-stream-proxy" href="stream-proxy.html"><svg viewBox="0 0 24 24" fill="none"><path d="M4 12h6m4 0h6" stroke="currentColor" stroke-width="1.5"/></svg><span>拉流代理</span></a>
+      <a class="nav-item" data-dom-id="nav-record" href="record-plan.html"><svg viewBox="0 0 24 24" fill="none"><path d="M12 8v5l3 2" stroke="currentColor" stroke-width="1.5"/></svg><span>录像计划</span></a>
+      <div class="nav-group-title">系统</div>
+      <a class="nav-item" data-dom-id="nav-platform" href="platform-cascade.html"><svg viewBox="0 0 24 24" fill="none"><path d="M4 12h16" stroke="currentColor" stroke-width="1.5"/></svg><span>上级对接</span></a>
+      <a class="nav-item" data-dom-id="nav-media" href="media-server.html"><svg viewBox="0 0 24 24" fill="none"><rect x="3" y="4" width="18" height="6" rx="1" stroke="currentColor" stroke-width="1.5"/></svg><span>媒体服务器</span></a>
+      <a class="nav-item" data-dom-id="nav-user" href="user.html"><svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="4" stroke="currentColor" stroke-width="1.5"/></svg><span>用户权限</span></a>
+      <a class="nav-item is-active" data-dom-id="nav-log" href="log.html"><svg viewBox="0 0 24 24" fill="none"><path d="M4 4h16v16H4z" stroke="currentColor" stroke-width="1.5"/></svg><span>系统日志</span></a>
+    </nav>
+    <div class="sidebar-foot">
+      <div class="server-status-row"><span class="dot dot-success"></span><span>SIP 网关 · 在线</span></div>
+      <div class="server-status-row"><span class="dot dot-success"></span><span>媒体节点 ×14</span></div>
+    </div>
+  </aside>
+
+  <div class="app-main">
+    <header class="app-topbar">
+      <div class="topbar-left">
+        <button class="icon-btn"><svg viewBox="0 0 24 24" fill="none"><path d="M4 6h16M4 12h16M4 18h16" stroke="currentColor" stroke-width="1.6"/></svg></button>
+        <div class="breadcrumb text-sm"><span style="color:var(--text-tertiary)">系统 /</span><span>系统日志</span></div>
+      </div>
+      <div style="display:flex;justify-content:center">
+        <div class="search-bar"><svg viewBox="0 0 24 24" fill="none"><circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="1.6"/><path d="M21 21l-4.35-4.35" stroke="currentColor" stroke-width="1.6"/></svg><input placeholder="搜索日志内容 / level / source…" /></div>
+      </div>
+      <div class="topbar-right">
+        <button style="background:transparent;border:1px solid var(--border-default);color:var(--text-secondary);border-radius:6px;padding:6px 14px;font-size:12px;cursor:pointer">导出 · 10万行</button>
+        <button style="background:var(--brand-primary-500);color:white;border:0;border-radius:6px;padding:6px 14px;font-size:12px;cursor:pointer">实时跟随 ⏵</button>
+      </div>
+    </header>
+
+    <main style="padding: 20px 24px; overflow-y:auto; display:flex; flex-direction:column; gap:14px;">
+
+      <section class="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <article class="card" style="padding:14px 16px"><div style="font-size:11px;color:var(--text-tertiary)">日志速率</div><div style="font-family:var(--font-mono);font-size:22px;font-weight:700;margin-top:4px">186/s</div></article>
+        <article class="card" style="padding:14px 16px"><div style="font-size:11px;color:var(--text-tertiary)">WARNING</div><div style="font-family:var(--font-mono);font-size:22px;font-weight:700;margin-top:4px;color:var(--state-warning)">23</div></article>
+        <article class="card" style="padding:14px 16px"><div style="font-size:11px;color:var(--text-tertiary)">ERROR</div><div style="font-family:var(--font-mono);font-size:22px;font-weight:700;margin-top:4px;color:var(--state-error)">7</div></article>
+        <article class="card" style="padding:14px 16px"><div style="font-size:11px;color:var(--text-tertiary)">AUDIT</div><div style="font-family:var(--font-mono);font-size:22px;font-weight:700;margin-top:4px;color:var(--brand-primary-300)">186</div></article>
+      </section>
+
+      <article class="card" style="overflow:hidden">
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:14px 18px;border-bottom:1px solid var(--border-subtle);font-size:13px;font-weight:600">
+          <div>实时日志流</div>
+          <div style="display:flex;gap:8px">
+            <button style="background:transparent;border:1px solid var(--border-default);color:var(--text-secondary);border-radius:6px;padding:3px 10px;font-size:11px;cursor:pointer">ALL</button>
+            <button style="background:rgba(11,138,178,.1);border:1px solid var(--brand-primary-500);color:var(--brand-primary-300);border-radius:6px;padding:3px 10px;font-size:11px;cursor:pointer">INFO + WARN + ERROR</button>
+            <button style="background:transparent;border:1px solid var(--border-default);color:var(--text-secondary);border-radius:6px;padding:3px 10px;font-size:11px;cursor:pointer">SIP</button>
+            <button style="background:transparent;border:1px solid var(--border-default);color:var(--text-secondary);border-radius:6px;padding:3px 10px;font-size:11px;cursor:pointer">ZLM</button>
+            <button style="background:transparent;border:1px solid var(--border-default);color:var(--text-secondary);border-radius:6px;padding:3px 10px;font-size:11px;cursor:pointer">JT/T</button>
+          </div>
+        </div>
+
+        <div style="background:#050b15;padding:14px 22px;font-family:var(--font-mono);font-size:12.5px;line-height:1.85;max-height:540px;overflow:auto">
+          <div><span class="log-time">2026-07-05T16:42:18.421Z</span>  <span class="level-tag level-ERROR">ERROR</span>  <span class="log-source">zlm-core-01</span>  <span class="log-msg">stream_proxy[<span class="highlight">41042200001320000102</span>].play failed: connection timeout after 3000ms</span></div>
+          <div><span class="log-time">2026-07-05T16:42:18.418Z</span>  <span class="level-tag level-WARN">WARN</span>  <span class="log-source">sip-gw-beijing</span>  <span class="log-msg">REGISTER <span class="highlight">44000000002000000001</span> timeout, attempt <span class="highlight">3/5</span> in 6s</span></div>
+          <div><span class="log-time">2026-07-05T16:42:18.402Z</span>  <span class="level-tag level-AUDIT">AUDIT</span>  <span class="log-source">api-gateway</span>  <span class="log-msg">admin POST <span class="highlight">/api/v1/device/channel/sync</span> → 200 OK (412 ch)</span></div>
+          <div><span class="log-time">2026-07-05T16:42:18.395Z</span>  <span class="level-tag level-INFO">INFO</span>  <span class="log-source">recorder</span>  <span class="log-msg">slot=evening_24x7 channel=<span class="highlight">44010000001310000001</span> started</span></div>
+          <div><span class="log-time">2026-07-05T16:42:18.388Z</span>  <span class="level-tag level-INFO">INFO</span>  <span class="log-source">zlm-edge-01</span>  <span class="log-msg">rtmp push accepted: rtmp://10.21.0.11/live/<span class="highlight">k127</span> (4.3 Mbps, hls ready)</span></div>
+          <div><span class="log-time">2026-07-05T16:42:18.371Z</span>  <span class="level-tag level-AUDIT">AUDIT</span>  <span class="log-source">api-gateway</span>  <span class="log-msg">zhang_wei PATCH <span class="highlight">/api/v1/media-server/4</span> field=weight → 200</span></div>
+          <div><span class="log-time">2026-07-05T16:42:18.355Z</span>  <span class="level-tag level-INFO">INFO</span>  <span class="log-source">jt-core</span>  <span class="log-msg">terminal=<span class="highlight">粤B·A8888</span> gps=(22.5341,113.9527) speed=68 km/h</span></div>
+          <div><span class="log-time">2026-07-05T16:42:18.339Z</span>  <span class="level-tag level-DEBUG">DEBUG</span>  <span class="log-source">sip-core</span>  <span class="log-msg">recv SIP/2.0 200 OK · from <span class="highlight">44010000002000000002</span> · CSeq=21 INVITE</span></div>
+          <div><span class="log-time">2026-07-05T16:42:18.310Z</span>  <span class="level-tag level-INFO">INFO</span>  <span class="log-source">platform</span>  <span class="log-msg">cloud-cascade updated catalog: +18 ch, -3 ch (next sync 60s)</span></div>
+          <div><span class="log-time">2026-07-05T16:42:18.298Z</span>  <span class="level-tag level-INFO">INFO</span>  <span class="log-source">stream-proxy</span>  <span class="log-msg">active watchers: <span class="highlight">3,415</span> · total bandwidth: 12.8 Gbps</span></div>
+          <div><span class="log-time">2026-07-05T16:42:18.275Z</span>  <span class="level-tag level-AUDIT">AUDIT</span>  <span class="log-source">api-gateway</span>  <span class="log-msg">guest_demo GET <span class="highlight">/api/v1/platform/list</span> → 200 (cached, 24ms)</span></div>
+          <div><span class="log-time">2026-07-05T16:42:18.260Z</span>  <span class="level-tag level-WARN">WARN</span>  <span class="log-source">zlm-edge-04</span>  <span class="log-msg">disk usage <span class="highlight">78%</span> · auto-rotate enabled (threshold 85%)</span></div>
+          <div><span class="log-time">2026-07-05T16:42:18.241Z</span>  <span class="level-tag level-INFO">INFO</span>  <span class="log-source">sip-core</span>  <span class="log-msg">subscriber refreshed: <span class="highlight">44010600002000000001</span> (expires 3600)</span></div>
+          <div><span class="log-time">2026-07-05T16:42:18.225Z</span>  <span class="level-tag level-INFO">INFO</span>  <span class="log-source">storage</span>  <span class="log-msg">compaction cycle started, scanning <span class="highlight">2.3M segments</span></span></div>
+          <div><span class="log-time">2026-07-05T16:42:18.198Z</span>  <span class="level-tag level-DEBUG">DEBUG</span>  <span class="log-source">stream-proxy</span>  <span class="log-msg">idle timer expired on proxy <span class="highlight">app:haizhu3</span>, releasing 5 watchers</span></div>
+        </div>
+      </article>
+    </main>
+  </div>
+</div>
+
+    <style>
+  body { background: var(--bg-base); color: var(--text-primary); }
+  .app-shell { display: grid; grid-template-columns: var(--sidebar-width) 1fr; min-height: 100vh; }
+  .app-main { display: grid; grid-template-rows: var(--topbar-height) 1fr; }
+  background: var(--bg-surface); border-right: 1px solid var(--border-subtle); border-right: 1px solid var(--border-subtle); }
+  .app-logo { padding: 18px 20px 18px 20px; display: flex; flex-direction: row; gap: 14px; align-items: center; justify-content: flex-start; border-bottom: 1px solid var(--border-subtle); position: relative; background: linear-gradient(180deg, transparent, rgba(11,138,178,.02)); }
+  .app-logo::after { content: ""; position: absolute; left: 20px; right: 20px; bottom: -1px; height: 1px; background: linear-gradient(90deg, transparent, var(--brand-primary-300) 30%, var(--brand-primary-300) 70%, transparent); opacity: .35; }
+  .logo-mark { flex: 0 0 44px; width: 44px; height: 44px; border-radius: 11px; background: linear-gradient(135deg, var(--brand-primary-300), var(--brand-primary-600) 60%, var(--brand-primary-800)); display: flex; align-items: center; justify-content: center; color: white; box-shadow: 0 6px 16px rgba(11,138,178,.4), inset 0 0 0 1px rgba(255,255,255,.12), inset 0 -8px 12px rgba(0,0,0,.15); position: relative; overflow: hidden; margin: 0; }
+  .logo-mark::before { content: ""; position: absolute; inset: 0; background: radial-gradient(circle at 30% 20%, rgba(255,255,255,.18), transparent 50%); pointer-events: none; }
+  .logo-mark svg { width: 26px; height: 26px; display: block; position: relative; z-index: 1; }
+  .logo-text { flex: 1 1 auto; min-width: 0; padding: 0 0 0 10px; display: flex; flex-direction: column; gap: 2px; justify-content: center; align-items: flex-start; }
+  .logo-name { font-family: 'Space Grotesk', var(--font-sans); font-weight: 600; font-size: 18px; line-height: 1; letter-spacing: -.02em; color: var(--text-primary); font-feature-settings: 'ss01' on; padding: 0; margin: 0; }
+  .logo-pulse { position: absolute; top: 14px; right: 12px; display: inline-flex; align-items: center; gap: 3px; padding: 3px 8px; font-family: 'JetBrains Mono', var(--font-mono); font-size: 9px; font-weight: 600; letter-spacing: .12em; color: #15803d; background: rgba(34,197,94,.1); border: 1px solid rgba(34,197,94,.25); border-radius: 99px; text-transform: uppercase; }
+  .app-nav { padding: 12px 8px; }
+  .nav-group-title { font-size: 10px; text-transform: uppercase; letter-spacing: 1.5px; color: var(--text-tertiary); padding: 8px 12px 6px; }
+  .nav-item { display: flex; gap: 12px; align-items: center; padding: 9px 12px; margin: 1px 0; border-radius: 8px; color: var(--text-secondary); text-decoration: none; font-size: 13px; }
+  .nav-item svg { width: 16px; height: 16px; opacity: .8; }
+  .nav-item:hover { background: var(--bg-hover); color: var(--text-primary); }
+  .nav-item.is-active { background: linear-gradient(90deg, rgba(11,138,178,0.18), transparent); color: var(--brand-primary-300); box-shadow: inset 2px 0 0 var(--brand-primary-400); }
+  .live-tag-mini { margin-left: auto; font-size: 9px; font-weight: 700; background: var(--state-error); color: white; padding: 1px 5px; border-radius: 3px; }
+  .sidebar-foot { padding: 12px; border-top: 1px solid var(--border-subtle); }
+  .server-status-row { display: flex; gap: 8px; align-items: center; font-size: 11px; color: var(--text-tertiary); padding: 3px 0; }
+  .server-status-row .dot { width: 6px; height: 6px; }
+  .app-topbar { background: var(--bg-surface); border-bottom: 1px solid var(--border-subtle); display: grid; grid-template-columns: 1fr 2fr 1fr; align-items: center; padding: 0 20px; gap: 16px; }
+  .topbar-left, .topbar-right { display: flex; align-items: center; gap: 14px; }
+  .topbar-right { justify-content: flex-end; }
+  .icon-btn { width: 32px; height: 32px; border-radius: 8px; background: transparent; border: 1px solid transparent; display: grid; place-items: center; color: var(--text-secondary); cursor: pointer; }
+  .icon-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+  .icon-btn svg { width: 16px; height: 16px; }
+  .search-bar { display: flex; align-items: center; gap: 8px; background: var(--bg-elevated); border: 1px solid var(--border-default); border-radius: 8px; padding: 7px 12px; width: 100%; max-width: 520px; }
+  .search-bar svg { width: 14px; height: 14px; color: var(--text-tertiary); }
+  .search-bar input { flex: 1; background: transparent; border: 0; outline: 0; color: var(--text-primary); font-size: 13px; }
+
+  .card { background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: 10px; }
+
+  .level-tag { display: inline-block; padding: 2px 8px; border-radius: 4px; font-family: var(--font-mono); font-size: 11px; font-weight: 700; min-width: 56px; text-align: center; }
+  .level-INFO  { background: rgba(56,189,248,.12); color: var(--state-info); }
+  .level-WARN  { background: rgba(245,158,11,.12); color: var(--state-warning); }
+  .level-ERROR { background: rgba(239,68,68,.12); color: var(--state-error); }
+  .level-DEBUG { background: rgba(122,137,161,.12); color: var(--text-tertiary); }
+  .level-AUDIT { background: rgba(11,138,178,.12); color: var(--brand-primary-300); }
+
+  .log-source { display: inline-block; padding: 1px 8px; border-radius: 3px; font-family: var(--font-mono); font-size: 10px; font-weight: 600; background: rgba(11,138,178,.06); color: var(--brand-primary-200); border: 1px solid rgba(11,138,178,.2); }
+
+  .log-line { font-family: var(--font-mono); font-size: 12.5px; line-height: 1.7; }
+  .log-time { color: var(--text-tertiary); }
+  .log-msg { color: var(--text-secondary); }
+  .log-msg .highlight { color: var(--brand-primary-300); }
+</style>
+</body>
+</html>

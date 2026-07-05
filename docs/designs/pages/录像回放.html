@@ -1,0 +1,481 @@
+<!doctype html>
+<html lang="zh-CN" class="light" data-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>录像回放 · GBServer</title>
+    <style id="theme-vars">
+/* ===========================================================
+ * GBServer Redesign · 品牌视觉规范
+ * 调性：蓝白浅色 · 清爽专业
+ * 主色：青蓝（监控/流媒体）
+ * =========================================================== */
+
+:root {
+  /* 主色调色板（identity）— 保持青蓝 */
+  --brand-primary-50:  #e8f4f9;
+  --brand-primary-100: #c6e4f0;
+  --brand-primary-200: #9ad0e6;
+  --brand-primary-300: #5eb4d4;
+  --brand-primary-400: #2a93bd;
+  --brand-primary-500: #0b8ab2;   /* 主品牌色 */
+  --brand-primary-600: #086d90;
+  --brand-primary-700: #05546f;
+  --brand-primary-800: #043c52;
+  --brand-primary-900: #022536;
+
+  /* 浅色主题色阶（蓝白） */
+  --bg-base:        #f5f8fc;   /* 主背景 · 浅蓝灰 */
+  --bg-surface:    #ffffff;   /* 卡片背景 · 纯白 */
+  --bg-elevated:  #f0f5fa;   /* 弹层/二级表面 · 极浅蓝 */
+  --bg-overlay:    #e7f0f7;   /* 悬浮 */
+  --bg-hover:      #e1ecf5;
+  --bg-active:    #d4e4f1;
+
+  --border-subtle:  #e3ebf3;   /* 细边框 */
+  --border-default: #d2dfeb;
+  --border-strong:  #b6cbdc;
+
+  --text-primary:    #0f1c2d;   /* 主文字 · 深墨蓝 */
+  --text-secondary: #4b5d72;
+  --text-tertiary:  #7e8ea3;
+  --text-disabled:  #b6c2d2;
+
+  /* 语义状态色 */
+  --state-success: #16a34a;
+  --state-warning: #ea8a0c;
+  --state-error:   #dc2626;
+  --state-info:    #0284c7;
+
+  /* 直播/在线标识色 */
+  --live-dot: #dc2626;
+  --rec-dot:  #ea8a0c;
+
+  /* 间距系统（8 倍数） */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+
+  /* 圆角（克制） */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-full: 9999px;
+
+  /* 字体 */
+  --font-sans: "Inter", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+  --font-display: "Inter", "PingFang SC", system-ui, sans-serif;
+
+  /* 字号阶 */
+  --text-xs:   11px;
+  --text-sm:   13px;
+  --text-base: 14px;
+  --text-md:   15px;
+  --text-lg:   17px;
+  --text-xl:   20px;
+  --text-2xl:  24px;
+  --text-3xl:  30px;
+  --text-display: 40px;
+
+  /* 阴影（浅色模式 — 极弱、偏冷） */
+  --shadow-card: 0 1px 0 0 rgba(11,138,178,0.04) inset, 0 1px 2px rgba(15,28,45,0.05);
+  --shadow-pop:  0 8px 24px rgba(15,28,45,0.10), 0 0 0 1px rgba(11,138,178,0.08) inset;
+
+  /* 侧栏/顶栏尺寸 */
+  --sidebar-width: 220px;
+  --sidebar-collapsed: 64px;
+  --topbar-height: 56px;
+  --tagsbar-height: 38px;
+
+  /* 布局卡 */
+  --layout-radius: 10px;
+  --layout-border: 1px solid var(--border-subtle);
+}
+
+/* 全局基础排版 */
+html, body {
+  background: var(--bg-base);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  -webkit-font-smoothing: antialiased;
+}
+
+.text-secondary { color: var(--text-secondary); }
+.text-tertiary { color: var(--text-tertiary); }
+.text-primary-accent { color: var(--brand-primary-500); }
+
+.mono { font-family: var(--font-mono); font-feature-settings: "tnum"; }
+
+.kbd {
+  display: inline-block;
+  padding: 2px 6px;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+}
+
+/* 状态点 */
+.dot {
+  display: inline-block; width: 8px; height: 8px;
+  border-radius: var(--radius-full);
+  box-shadow: 0 0 0 3px rgba(11,138,178,0.04) inset;
+}
+.dot-success { background: var(--state-success); box-shadow: 0 0 6px rgba(22,163,74,0.35); }
+.dot-warning { background: var(--state-warning); box-shadow: 0 0 6px rgba(234,138,12,0.35); }
+.dot-error   { background: var(--state-error);   box-shadow: 0 0 6px rgba(220,38,38,0.35);   }
+.dot-info    { background: var(--state-info);    box-shadow: 0 0 6px rgba(2,132,199,0.35);    }
+
+/* 直播标识 */
+.live-tag {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 2px 8px; font-size: var(--text-xs); font-weight: 600;
+  background: rgba(220,38,38,0.10); color: var(--state-error);
+  border-radius: var(--radius-full);
+}
+.live-tag::before {
+  content: ""; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--live-dot); animation: pulse 1.6s infinite;
+}
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+    </style>
+        <style type="text/tailwindcss">
+@theme inline {
+  --color-primary: var(--brand-primary-500);
+  --color-primary-foreground: var(--brand-foreground);
+  --color-background: var(--brand-background);
+  --color-foreground: var(--brand-foreground);
+  --color-surface: var(--brand-surface);
+  --color-border: var(--brand-border);
+  --color-muted: var(--brand-muted);
+  --color-muted-foreground: var(--brand-muted-foreground);
+  --color-success: var(--brand-success);
+  --color-warning: var(--brand-warning);
+  --color-error: var(--brand-error);
+  --color-info: var(--brand-info);
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+}
+    </style>
+
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.3.1/dist/index.global.js"></script>
+    <script src="https://unpkg.com/lucide@1.8.0/dist/umd/lucide.min.js"></script>
+    <style type="text/tailwindcss">
+  
+  @layer base {
+    body { background: var(--brand-background); color: var(--brand-foreground); }
+    td, th { @apply break-words; word-break: break-all; word-break: auto-phrase; }
+    th { @apply whitespace-nowrap; }
+  }
+    </style>
+    <style>
+      .no-scrollbar::-webkit-scrollbar { display: none; }
+      .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+      [data-icon] {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        -webkit-mask-size: contain;
+        mask-size: contain;
+        -webkit-mask-repeat: no-repeat;
+        mask-repeat: no-repeat;
+        -webkit-mask-position: center;
+        mask-position: center;
+        background-color: currentColor;
+      }
+    </style>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+</head>
+<body>
+<div class="app-shell">
+  <aside class="app-sidebar">
+    <div class="app-logo">
+      <div class="logo-mark">
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <!-- 外框 -->
+          <rect x="2.5" y="2.5" width="19" height="19" rx="3" stroke="currentColor" stroke-width="1.5"/>
+          <!-- 内框 -->
+          <rect x="7" y="7" width="10" height="10" rx="1.5" stroke="currentColor" stroke-width="1.2" opacity=".5"/>
+          <!-- 中心圆点 -->
+          <circle cx="12" cy="12" r="2.4" fill="currentColor"/>
+          <!-- 四向延伸线（工业感） -->
+          <line x1="12" y1="1" x2="12" y2="3.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+          <line x1="12" y1="20.5" x2="12" y2="23" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+          <line x1="1" y1="12" x2="3.5" y2="12" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+          <line x1="20.5" y1="12" x2="23" y2="12" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+        </svg>
+      </div>
+      <div class="logo-text">
+        <div class="logo-name">GBServer</div>
+      </div>
+      <span class="logo-pulse" aria-hidden="true">●&nbsp;LIVE</span>
+    </div>
+    <nav class="app-nav">
+      <div class="nav-group">
+        <div class="nav-group-title">监控中心</div>
+        <a class="nav-item" data-dom-id="nav-dashboard" href="dashboard.html"><svg viewBox="0 0 24 24" fill="none"><path d="M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z" stroke="currentColor" stroke-width="1.5"/></svg><span>控制台</span></a>
+        <a class="nav-item" data-dom-id="nav-live" href="live-wall.html"><svg viewBox="0 0 24 24" fill="none"><path d="M15 8l7-4v16l-7-4v-8zM2 6h11v12H2z" stroke="currentColor" stroke-width="1.5"/></svg><span>实时视频</span><span class="live-tag-mini">LIVE</span></a>
+        <a class="nav-item is-active" data-dom-id="nav-playback" href="playback.html"><svg viewBox="0 0 24 24" fill="none"><path d="M12 5V2L8 6l4 4V7c3.31 0 6 2.69 6 6 0 2.97-2.17 5.43-5 5.91v2.02c3.95-.49 7-3.85 7-7.93 0-4.42-3.58-8-8-8z" stroke="currentColor" stroke-width="1.5"/></svg><span>录像回放</span></a>
+        <a class="nav-item" data-dom-id="nav-map" href="map.html"><svg viewBox="0 0 24 24" fill="none"><path d="M12 2C7.6 2 4 5.6 4 10c0 6 8 12 8 12s8-6 8-12c0-4.4-3.6-8-8-8zm0 11a3 3 0 1 1 0-6 3 3 0 0 1 0 6z" stroke="currentColor" stroke-width="1.5"/></svg><span>GIS 地图</span></a>
+      </div>
+      <div class="nav-group">
+        <div class="nav-group-title">资源管理</div>
+        <a class="nav-item" data-dom-id="nav-channel" href="channel-list.html"><svg viewBox="0 0 24 24" fill="none"><path d="M4 6h16v12H4z" stroke="currentColor" stroke-width="1.5"/></svg><span>通道列表</span></a>
+        <a class="nav-item" data-dom-id="nav-jt" href="jt-device.html"><svg viewBox="0 0 24 24" fill="none"><path d="M5 11l1.5-4h11L19 11" stroke="currentColor" stroke-width="1.5"/></svg><span>车载终端</span></a>
+        <a class="nav-item" data-dom-id="nav-stream-proxy" href="stream-proxy.html"><svg viewBox="0 0 24 24" fill="none"><path d="M4 12h6m4 0h6M14 8l4 4-4 4M10 8L6 12l4 4" stroke="currentColor" stroke-width="1.5"/></svg><span>拉流代理</span></a>
+        <a class="nav-item" data-dom-id="nav-record" href="record-plan.html"><svg viewBox="0 0 24 24" fill="none"><path d="M12 8v5l3 2M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z" stroke="currentColor" stroke-width="1.5"/></svg><span>录像计划</span></a>
+      </div>
+      <div class="nav-group">
+        <div class="nav-group-title">系统</div>
+        <a class="nav-item" data-dom-id="nav-platform" href="platform-cascade.html"><svg viewBox="0 0 24 24" fill="none"><path d="M4 12h16M4 6h16M4 18h16" stroke="currentColor" stroke-width="1.5"/></svg><span>上级对接</span></a>
+        <a class="nav-item" data-dom-id="nav-media" href="media-server.html"><svg viewBox="0 0 24 24" fill="none"><rect x="3" y="4" width="18" height="6" rx="1" stroke="currentColor" stroke-width="1.5"/><rect x="3" y="14" width="18" height="6" rx="1" stroke="currentColor" stroke-width="1.5"/></svg><span>媒体服务器</span></a>
+        <a class="nav-item" data-dom-id="nav-user" href="user.html"><svg viewBox="0 0 24 24" fill="none"><path d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8zm-8 9a8 8 0 0 1 16 0" stroke="currentColor" stroke-width="1.5"/></svg><span>用户权限</span></a>
+        <a class="nav-item" data-dom-id="nav-log" href="log.html"><svg viewBox="0 0 24 24" fill="none"><path d="M4 4h16v16H4z" stroke="currentColor" stroke-width="1.5"/><path d="M8 9h8M8 13h8M8 17h5" stroke="currentColor" stroke-width="1.5"/></svg><span>系统日志</span></a>
+      </div>
+    </nav>
+    <div class="sidebar-foot">
+      <div class="server-status-row"><span class="dot dot-success"></span><span>SIP 网关 · 在线</span></div>
+      <div class="server-status-row"><span class="dot dot-success"></span><span>媒体节点 ×14</span></div>
+    </div>
+  </aside>
+
+  <div class="app-main">
+    <header class="app-topbar">
+      <div class="topbar-left">
+        <button class="icon-btn"><svg viewBox="0 0 24 24" fill="none"><path d="M4 6h16M4 12h16M4 18h16" stroke="currentColor" stroke-width="1.6"/></svg></button>
+        <div class="breadcrumb text-sm">
+          <span style="color:var(--text-tertiary)">监控中心 /</span>
+          <span>录像回放</span>
+        </div>
+      </div>
+      <div style="display:flex;justify-content:center">
+        <div class="search-bar">
+          <svg viewBox="0 0 24 24" fill="none"><circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="1.6"/><path d="M21 21l-4.35-4.35" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+          <input placeholder="搜索录像片段 / 国标 ID…" />
+        </div>
+      </div>
+      <div class="topbar-right">
+        <button class="icon-btn"><svg viewBox="0 0 24 24" fill="none"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" stroke="currentColor" stroke-width="1.6"/></svg></button>
+        <div style="display:flex;align-items:center;gap:8px;padding:4px 10px 4px 4px;border:1px solid var(--border-default);border-radius:8px">
+          <div style="width:26px;height:26px;border-radius:6px;background:linear-gradient(135deg,var(--brand-primary-300),var(--brand-primary-600));display:grid;place-items:center;color:white;font-weight:700;font-size:12px">A</div>
+          <div><div style="font-size:12px;font-weight:600">admin</div><div style="font-size:10px;color:var(--text-tertiary)">超级管理员</div></div>
+        </div>
+      </div>
+    </header>
+
+    <main style="padding: 20px 24px; display:flex; flex-direction:column; gap:14px; overflow-y:auto">
+      <!-- 检索 -->
+      <section class="card" style="background:var(--bg-surface);border:1px solid var(--border-subtle);border-radius:10px;padding:16px 20px">
+        <div class="grid grid-cols-1 md:grid-cols-12 gap-4">
+          <div class="md:col-span-3">
+            <label class="text-xs" style="color:var(--text-tertiary)">通道</label>
+            <div style="margin-top:6px;background:var(--bg-elevated);border:1px solid var(--border-default);border-radius:6px;padding:8px 12px;font-size:13px;display:flex;justify-content:space-between;align-items:center"><span>海珠门岗 · 41042200001320000102</span><span style="color:var(--text-tertiary)">▾</span></div>
+          </div>
+          <div class="md:col-span-2">
+            <label class="text-xs" style="color:var(--text-tertiary)">开始时间</label>
+            <div style="margin-top:6px;background:var(--bg-elevated);border:1px solid var(--border-default);border-radius:6px;padding:8px 12px;font-size:13px;font-family:var(--font-mono)">2026-07-05 00:00:00</div>
+          </div>
+          <div class="md:col-span-2">
+            <label class="text-xs" style="color:var(--text-tertiary)">结束时间</label>
+            <div style="margin-top:6px;background:var(--bg-elevated);border:1px solid var(--border-default);border-radius:6px;padding:8px 12px;font-size:13px;font-family:var(--font-mono)">2026-07-05 23:59:59</div>
+          </div>
+          <div class="md:col-span-2">
+            <label class="text-xs" style="color:var(--text-tertiary)">录像类型</label>
+            <div style="margin-top:6px;background:var(--bg-elevated);border:1px solid var(--border-default);border-radius:6px;padding:8px 12px;font-size:13px;display:flex;justify-content:space-between"><span>全部 · 时段 + 事件 + 报警</span><span style="color:var(--text-tertiary)">▾</span></div>
+          </div>
+          <div class="md:col-span-3 flex items-end">
+            <button style="background:var(--brand-primary-500);color:white;border:0;border-radius:6px;padding:9px 16px;font-size:13px;cursor:pointer;margin-right:8px" data-dom-id="playback-search">检索录像</button>
+            <button style="background:transparent;border:1px solid var(--border-default);color:var(--text-secondary);border-radius:6px;padding:9px 16px;font-size:13px;cursor:pointer">重置</button>
+            <button style="margin-left:auto;background:rgba(239,68,68,.1);border:1px solid var(--state-error);color:var(--state-error);border-radius:6px;padding:9px 16px;font-size:13px;cursor:pointer">下载</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- 播放 + 控制 -->
+      <section>
+        <div class="player-shell">
+          <img src="../assets/image_2_yi19x4.jpg" alt="">
+          <div class="player-overlay">
+            <div class="player-hud">
+              <span>● REC PLAYBACK · 1× 速度</span>
+              <span>2026-07-05 14:28:32</span>
+            </div>
+            <div class="player-hud" style="font-size:13px">
+              <span>海珠门岗 · 东 · 4K · H.265</span>
+              <span style="font-size:11px">2026-07-05 14:28:32 ~ 16:42:18</span>
+            </div>
+          </div>
+        </div>
+        <div class="controls-bar">
+          <button class="ctrl-btn"><svg viewBox="0 0 24 24" fill="none"><path d="M19 4l-14 8 14 8V4z" fill="currentColor"/></svg></button>
+          <button class="ctrl-btn"><svg viewBox="0 0 24 24" fill="none"><path d="M11 5l-7 7 7 7M20 5l-7 7 7 7" stroke="currentColor" stroke-width="1.6"/></svg></button>
+          <button class="ctrl-btn primary" data-dom-id="playback-play"><svg viewBox="0 0 24 24" fill="none"><path d="M6 5l12 7-12 7V5z" fill="currentColor"/></svg></button>
+          <button class="ctrl-btn"><svg viewBox="0 0 24 24" fill="none"><path d="M13 5l7 7-7 7M4 5l7 7-7 7" stroke="currentColor" stroke-width="1.6"/></svg></button>
+          <button class="ctrl-btn"><svg viewBox="0 0 24 24" fill="none"><path d="M5 4l14 8-14 8V4z" fill="currentColor"/></svg></button>
+          <span style="font-family:var(--font-mono);font-size:12px;color:rgba(255,255,255,0.8);min-width:160px">14:28:32 / 16:42:18</span>
+
+          <div style="display:flex;gap:4px;margin-left:12px">
+            <button class="ctrl-btn" style="width:auto;padding:0 10px;font-size:11px">0.5×</button>
+            <button class="ctrl-btn" style="width:auto;padding:0 10px;font-size:11px;background:var(--brand-primary-400);border-color:var(--brand-primary-300)">1×</button>
+            <button class="ctrl-btn" style="width:auto;padding:0 10px;font-size:11px">2×</button>
+            <button class="ctrl-btn" style="width:auto;padding:0 10px;font-size:11px">4×</button>
+          </div>
+          <div style="flex:1"></div>
+          <span style="font-size:11px;color:rgba(255,255,255,0.6)">拖拽下方时间轴到任意位置</span>
+        </div>
+      </section>
+
+      <!-- 时间轴 -->
+      <section class="timeline-wrap">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <div style="font-size:13px;font-weight:600">时间轴</div>
+          <div style="display:flex;gap:8px;font-size:11px;color:var(--text-tertiary)">
+            <span><span style="display:inline-block;width:8px;height:8px;background:var(--brand-primary-400);border-radius:2px;margin-right:4px"></span>常规录像</span>
+            <span><span style="display:inline-block;width:8px;height:8px;background:var(--state-warning);border-radius:2px;margin-right:4px"></span>事件触发</span>
+            <span><span style="display:inline-block;width:8px;height:8px;background:var(--state-error);border-radius:2px;margin-right:4px"></span>报警录像</span>
+          </div>
+        </div>
+        <div class="timeline-hour-bar">
+          <span>00:00</span><span>03:00</span><span>06:00</span><span>09:00</span><span>12:00</span><span>15:00</span><span>18:00</span><span>21:00</span><span>23:59</span>
+        </div>
+
+        <div class="timeline-row"><span style="font-size:11px;color:var(--text-tertiary)">海珠门岗 · 4K</span>
+          <div class="timeline-lane">
+            <div class="timeline-clips" style="left:0%;width:38%">00:00 – 09:00</div>
+            <div class="timeline-clips alt" style="left:39%;width:5%">事件</div>
+            <div class="timeline-clips" style="left:46%;width:34%">11:00 – 18:30</div>
+            <div class="timeline-clips event" style="left:81%;width:7%">15:42 越界</div>
+            <div class="timeline-clips" style="left:88%;width:11%">21:00 – 23:30</div>
+          </div>
+        </div>
+        <div class="timeline-row"><span style="font-size:11px;color:var(--text-tertiary)">海珠仓库 · 1080P</span>
+          <div class="timeline-lane">
+            <div class="timeline-clips" style="left:0%;width:60%">00:00 – 14:30</div>
+            <div class="timeline-clips event" style="left:62%;width:6%">智能识别</div>
+            <div class="timeline-clips" style="left:69%;width:30%">16:30 – 23:30</div>
+          </div>
+        </div>
+        <div class="timeline-row"><span style="font-size:11px;color:var(--text-tertiary)">停车场 B2 · 1080P</span>
+          <div class="timeline-lane">
+            <div class="timeline-clips" style="left:5%;width:30%">01:30 – 08:30</div>
+            <div class="timeline-clips" style="left:38%;width:55%">09:00 – 22:00</div>
+          </div>
+        </div>
+        <div class="timeline-row"><span style="font-size:11px;color:var(--text-tertiary)">天河城 4F · 4K</span>
+          <div class="timeline-lane">
+            <div class="timeline-clips" style="left:0%;width:100%">24 小时连续</div>
+          </div>
+        </div>
+        <div class="timeline-row"><span style="font-size:11px;color:var(--text-tertiary)">番禺园区 · 1080P</span>
+          <div class="timeline-lane">
+            <div class="timeline-clips" style="left:0%;width:35%">00:00 – 08:30</div>
+            <div class="timeline-clips alt" style="left:36%;width:4%">信号丢失</div>
+            <div class="timeline-clips" style="left:42%;width:55%">10:00 – 23:00</div>
+          </div>
+        </div>
+
+        <!-- 当前游标 -->
+        <div style="position:relative;height:0">
+          <div style="position:absolute;left:62%;top:-176px;width:2px;height:170px;background:var(--brand-primary-300);box-shadow:0 0 8px var(--brand-primary-300);">
+            <div style="position:absolute;top:-6px;left:-7px;width:16px;height:16px;border-radius:50%;background:var(--brand-primary-400);border:2px solid var(--bg-surface)"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 同步多路 -->
+      <section style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px">
+        <div class="player-shell" style="aspect-ratio:16/9">
+          <img src="../assets/image_1_yi19x4.jpg" alt="">
+          <div class="player-overlay"><div class="player-hud"><span style="background:rgba(0,0,0,.4);padding:1px 6px;border-radius:3px">海珠仓库 · SYNC</span><span>14:28:32</span></div></div>
+        </div>
+        <div class="player-shell" style="aspect-ratio:16/9">
+          <img src="../assets/image_3_yi19x4.jpg" alt="">
+          <div class="player-overlay"><div class="player-hud"><span style="background:rgba(0,0,0,.4);padding:1px 6px;border-radius:3px">停车场 B2 · SYNC</span><span>14:28:32</span></div></div>
+        </div>
+        <div class="player-shell" style="aspect-ratio:16/9">
+          <img src="../assets/image_1_yi19x4.jpg" alt="">
+          <div class="player-overlay"><div class="player-hud"><span style="background:rgba(0,0,0,.4);padding:1px 6px;border-radius:3px">天河城 4F · SYNC</span><span>14:28:32</span></div></div>
+        </div>
+        <div class="player-shell" style="aspect-ratio:16/9">
+          <img src="../assets/image_2_yi19x4.jpg" alt="">
+          <div class="player-overlay"><div class="player-hud"><span style="background:rgba(0,0,0,.4);padding:1px 6px;border-radius:3px">番禺园区 · SYNC</span><span>14:28:32</span></div></div>
+        </div>
+      </section>
+    </main>
+  </div>
+</div>
+
+    <style>
+  body { background: var(--bg-base); color: var(--text-primary); }
+  .app-shell { display: grid; grid-template-columns: var(--sidebar-width) 1fr; min-height: 100vh; }
+  .app-main { display: grid; grid-template-rows: var(--topbar-height) 1fr; }
+  background: var(--bg-surface); border-right: 1px solid var(--border-subtle); border-right: 1px solid var(--border-subtle); display: flex; flex-direction: column; }
+  .app-logo { padding: 18px 20px 18px 20px; display: flex; flex-direction: row; gap: 14px; align-items: center; justify-content: flex-start; border-bottom: 1px solid var(--border-subtle); position: relative; background: linear-gradient(180deg, transparent, rgba(11,138,178,.02)); }
+  .app-logo::after { content: ""; position: absolute; left: 20px; right: 20px; bottom: -1px; height: 1px; background: linear-gradient(90deg, transparent, var(--brand-primary-300) 30%, var(--brand-primary-300) 70%, transparent); opacity: .35; }
+  .logo-mark { flex: 0 0 44px; width: 44px; height: 44px; border-radius: 11px; background: linear-gradient(135deg, var(--brand-primary-300), var(--brand-primary-600) 60%, var(--brand-primary-800)); display: flex; align-items: center; justify-content: center; color: white; box-shadow: 0 6px 16px rgba(11,138,178,.4), inset 0 0 0 1px rgba(255,255,255,.12), inset 0 -8px 12px rgba(0,0,0,.15); position: relative; overflow: hidden; margin: 0; }
+  .logo-mark::before { content: ""; position: absolute; inset: 0; background: radial-gradient(circle at 30% 20%, rgba(255,255,255,.18), transparent 50%); pointer-events: none; }
+  .logo-mark svg { width: 26px; height: 26px; display: block; position: relative; z-index: 1; }
+  .logo-text { flex: 1 1 auto; min-width: 0; padding: 0 0 0 10px; display: flex; flex-direction: column; gap: 2px; justify-content: center; align-items: flex-start; }
+  .logo-name { font-family: 'Space Grotesk', var(--font-sans); font-weight: 600; font-size: 18px; line-height: 1; letter-spacing: -.02em; color: var(--text-primary); font-feature-settings: 'ss01' on; padding: 0; margin: 0; }
+  .logo-pulse { position: absolute; top: 14px; right: 12px; display: inline-flex; align-items: center; gap: 3px; padding: 3px 8px; font-family: 'JetBrains Mono', var(--font-mono); font-size: 9px; font-weight: 600; letter-spacing: .12em; color: #15803d; background: rgba(34,197,94,.1); border: 1px solid rgba(34,197,94,.25); border-radius: 99px; text-transform: uppercase; }
+  .app-nav { flex: 1; overflow-y: auto; padding: 12px 8px; }
+  .nav-group { margin-bottom: 12px; }
+  .nav-group-title { font-size: 10px; text-transform: uppercase; letter-spacing: 1.5px; color: var(--text-tertiary); padding: 8px 12px 6px; }
+  .nav-item { display: flex; gap: 12px; align-items: center; padding: 9px 12px; margin: 1px 0; border-radius: 8px; color: var(--text-secondary); text-decoration: none; font-size: 13px; cursor: pointer; }
+  .nav-item svg { width: 16px; height: 16px; opacity: .8; }
+  .nav-item:hover { background: var(--bg-hover); color: var(--text-primary); }
+  .nav-item.is-active { background: linear-gradient(90deg, rgba(11,138,178,0.18), transparent); color: var(--brand-primary-300); box-shadow: inset 2px 0 0 var(--brand-primary-400); }
+  .live-tag-mini { margin-left: auto; font-size: 9px; font-weight: 700; background: var(--state-error); color: white; padding: 1px 5px; border-radius: 3px; }
+  .sidebar-foot { padding: 12px; border-top: 1px solid var(--border-subtle); }
+  .server-status-row { display: flex; gap: 8px; align-items: center; font-size: 11px; color: var(--text-tertiary); padding: 3px 0; }
+  .server-status-row .dot { width: 6px; height: 6px; }
+  .app-topbar { background: var(--bg-surface); border-bottom: 1px solid var(--border-subtle); display: grid; grid-template-columns: 1fr 2fr 1fr; align-items: center; padding: 0 20px; gap: 16px; }
+  .topbar-left, .topbar-right { display: flex; align-items: center; gap: 14px; }
+  .topbar-right { justify-content: flex-end; }
+  .icon-btn { width: 32px; height: 32px; border-radius: 8px; background: transparent; border: 1px solid transparent; display: grid; place-items: center; color: var(--text-secondary); cursor: pointer; }
+  .icon-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+  .icon-btn svg { width: 16px; height: 16px; }
+  .search-bar { display: flex; align-items: center; gap: 8px; background: var(--bg-elevated); border: 1px solid var(--border-default); border-radius: 8px; padding: 7px 12px; width: 100%; max-width: 520px; }
+  .search-bar svg { width: 14px; height: 14px; color: var(--text-tertiary); }
+  .search-bar input { flex: 1; background: transparent; border: 0; outline: 0; color: var(--text-primary); font-size: 13px; }
+
+  .player-shell { background: #050b15; border-radius: 10px; overflow: hidden; aspect-ratio: 16/9; border: 1px solid var(--border-subtle); position: relative; }
+  .player-shell img { width: 100%; height: 100%; object-fit: cover; }
+  .player-overlay { position: absolute; inset: 0; background: linear-gradient(180deg, rgba(0,0,0,0.6) 0%, transparent 30%, transparent 60%, rgba(0,0,0,0.7) 100%); display: flex; flex-direction: column; justify-content: space-between; padding: 16px 18px; }
+  .player-hud { display: flex; justify-content: space-between; font-family: var(--font-mono); font-size: 11px; color: rgba(255,255,255,0.8); }
+
+  .timeline-wrap { background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: 10px; padding: 16px 18px; margin-top: 12px; }
+  .timeline-row { display: grid; grid-template-columns: 80px 1fr; gap: 12px; align-items: center; padding: 4px 0; }
+  .timeline-lane { position: relative; height: 22px; background: rgba(10,15,26,0.6); border-radius: 4px; }
+  .timeline-clips { position: absolute; top: 3px; bottom: 3px; background: linear-gradient(90deg, var(--brand-primary-500), var(--brand-primary-300)); border-radius: 3px; display: flex; align-items: center; padding: 0 6px; font-size: 10px; color: rgba(255,255,255,0.85); overflow: hidden; }
+  .timeline-clips.alt { background: linear-gradient(90deg, var(--state-warning), #fde68a); }
+  .timeline-clips.event { background: linear-gradient(90deg, var(--state-error), #fecaca); }
+  .timeline-clips.event::after { content: "⚠"; margin-left: 4px; }
+  .timeline-hour-bar { font-family: var(--font-mono); font-size: 10px; color: var(--text-tertiary); display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid var(--border-subtle); margin-bottom: 6px; }
+
+  .controls-bar { display: flex; align-items: center; gap: 16px; padding: 12px 16px; background: rgba(10,15,26,0.6); border-top: 1px solid var(--border-subtle); border-radius: 0 0 10px 10px; margin-top: -1px; }
+  .ctrl-btn { background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.08); color: white; width: 32px; height: 32px; border-radius: 6px; display: grid; place-items: center; cursor: pointer; }
+  .ctrl-btn:hover { background: rgba(255,255,255,0.16); }
+  .ctrl-btn.primary { background: var(--brand-primary-400); border-color: var(--brand-primary-300); width: 40px; height: 40px; border-radius: 9999px; }
+  .ctrl-btn.primary:hover { background: var(--brand-primary-300); }
+
+  .clip-card { padding: 14px; background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: 10px; }
+  .clip-card:hover { border-color: var(--brand-primary-500); background: rgba(11,138,178,0.06); }
+</style>
+</body>
+</html>
