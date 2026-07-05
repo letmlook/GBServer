@@ -1,330 +1,84 @@
 <template>
-  <div id="app" class="app-container">
-    <div v-if="!platform" style="height: calc(100vh - 124px);">
-      <el-form :inline="true" size="mini">
-        <el-form-item label="搜索">
-          <el-input
-            v-model="searchStr"
-            style="margin-right: 1rem; width: auto;"
-            size="mini"
-            placeholder="关键字"
-            prefix-icon="el-icon-search"
-            clearable
-            @input="queryList"
-          />
-        </el-form-item>
-        <el-form-item>
-          <el-button
-            icon="el-icon-plus"
-            size="mini"
-            style="margin-right: 1rem;"
-            type="primary"
-            @click="addParentPlatform"
-          >添加
-          </el-button>
-        </el-form-item>
-        <el-form-item style="float: right;">
-          <el-button icon="el-icon-refresh-right" circle @click="refresh()" />
-        </el-form-item>
-      </el-form>
-      <!--设备列表-->
-      <el-table
-        size="small"
-        :data="platformList"
-        style="width: 100%"
-        height="calc(100% - 64px)"
-        :loading="loading"
-      >
-        <el-table-column prop="name" label="名称" />
-        <el-table-column prop="serverGBId" label="平台编号" min-width="200" />
-        <el-table-column label="是否启用" min-width="80">
-          <template v-slot:default="scope">
-            <div slot="reference" class="name-wrapper">
-              <el-tag v-if="scope.row.enable && myServerId !== scope.row.serverId" size="medium" style="border-color: #ecf1af">已启用</el-tag>
-              <el-tag v-if="scope.row.enable && myServerId === scope.row.serverId" size="medium">已启用</el-tag>
-              <el-tag v-if="!scope.row.enable" size="medium" type="info">未启用</el-tag>
-            </div>
-          </template>
-        </el-table-column>
-        <el-table-column label="状态" min-width="80">
-          <template v-slot:default="scope">
-            <div slot="reference" class="name-wrapper">
-              <el-tag v-if="scope.row.status" size="medium">在线</el-tag>
-              <el-tag v-if="!scope.row.status" size="medium" type="info">离线</el-tag>
-            </div>
-          </template>
-        </el-table-column>
-        <el-table-column label="地址" min-width="160">
-          <template v-slot:default="scope">
-            <div slot="reference" class="name-wrapper">
-              <el-tag size="medium">{{ scope.row.serverIp }}:{{ scope.row.serverPort }}</el-tag>
-            </div>
-          </template>
-        </el-table-column>
-        <el-table-column prop="deviceGBId" label="设备国标编号" min-width="200" />
-        <el-table-column prop="transport" label="信令传输模式" min-width="120" />
-        <el-table-column prop="channelCount" label="通道数" min-width="120" />
-        <el-table-column label="订阅信息" min-width="120" fixed="right">
-          <template v-slot:default="scope">
-            <i
-              v-if="scope.row.alarmSubscribe"
-              style="font-size: 20px"
-              title="报警订阅"
-              class="iconfont icon-gbaojings subscribe-on "
-            />
-            <i
-              v-if="!scope.row.alarmSubscribe"
-              style="font-size: 20px"
-              title="报警订阅"
-              class="iconfont icon-gbaojings subscribe-off "
-            />
-            <i v-if="scope.row.catalogSubscribe" title="目录订阅" class="iconfont icon-gjichus subscribe-on" />
-            <i v-if="!scope.row.catalogSubscribe" title="目录订阅" class="iconfont icon-gjichus subscribe-off" />
-            <i
-              v-if="scope.row.mobilePositionSubscribe"
-              title="位置订阅"
-              class="iconfont icon-gxunjians subscribe-on"
-            />
-            <i
-              v-if="!scope.row.mobilePositionSubscribe"
-              title="位置订阅"
-              class="iconfont icon-gxunjians subscribe-off"
-            />
-          </template>
-        </el-table-column>
+  <div class="gb-page">
+    <div class="gb-page__header">
+      <div>
+        <h1 class="gb-page__title">上级平台对接</h1>
+        <p class="gb-page__subtitle">GB/T 28181 · 与上级 / 第三方视频平台的级联注册和共享</p>
+      </div>
+      <div class="gb-page__actions">
+        <button class="gb-btn">心跳检测</button>
+        <button class="gb-btn">导入</button>
+        <button class="gb-btn gb-btn--primary">+ 新增平台</button>
+      </div>
+    </div>
 
-        <el-table-column label="操作" min-width="260" fixed="right">
-          <template v-slot:default="scope">
-            <el-button size="medium" icon="el-icon-edit" type="text" @click="editPlatform(scope.row)">编辑</el-button>
-            <el-button size="medium" icon="el-icon-share" type="text" @click="chooseChannel(scope.row)">通道共享
-            </el-button>
-            <el-button
-              size="medium"
-              icon="el-icon-top"
-              type="text"
-              :loading="pushChannelLoading"
-              @click="pushChannel(scope.row)"
-            >推送通道
-            </el-button>
-            <el-button
-              size="medium"
-              icon="el-icon-delete"
-              type="text"
-              style="color: #f56c6c"
-              @click="deletePlatform(scope.row)"
-            >删除
-            </el-button>
+    <section class="gb-grid gb-grid--kpi">
+      <stat-card label="平台总数" :value="28" trend="已对接 26" trend-tone="success" :spark="[2,3,4,6,8,12,18,28]" />
+      <stat-card label="注册成功" :value="26" value-tone="success" trend="成功率 92.8%" trend-tone="success" :spark="[60,68,72,80,86,90,92,92]" />
+      <stat-card label="过期未续" :value="1" value-tone="warning" trend="1 个 6 时未续" trend-tone="neutral" :spark="[0,0,1,0,1,1,1,1]" />
+      <stat-card label="拉流通道" :value="486" value-tone="primary" trend="来自 5 个平台" trend-tone="neutral" :spark="[100,150,200,300,400,420,450,486]" />
+    </section>
+
+    <article class="gb-card">
+      <header class="gb-card-title">
+        <span>平台列表</span>
+        <div class="gb-toolbar">
+          <div class="gb-search" style="flex:0 1 220px">
+            <svg viewBox="0 0 24 24" fill="none"><circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="1.6"/><path d="M21 21l-4.35-4.35" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+            <input placeholder="搜索平台 / 域">
+          </div>
+        </div>
+      </header>
+      <el-table :data="rows" stripe size="small" style="width:100%">
+        <el-table-column prop="name" label="平台名称" min-width="180" />
+        <el-table-column prop="gbId" label="国标 ID" min-width="220">
+          <template slot-scope="{ row }"><span class="mono text-tertiary">{{ row.gbId }}</span></template>
+        </el-table-column>
+        <el-table-column prop="sip" label="SIP 服务" min-width="220">
+          <template slot-scope="{ row }"><span class="mono">{{ row.sip }}</span></template>
+        </el-table-column>
+        <el-table-column prop="type" label="对接方向" width="100">
+          <template slot-scope="{ row }"><span :class="['gb-chip', 'gb-chip--' + row.typeTone]">{{ row.type }}</span></template>
+        </el-table-column>
+        <el-table-column prop="state" label="状态" width="100">
+          <template slot-scope="{ row }"><span :class="['gb-chip', 'gb-chip--' + row.stateTone]">{{ row.state }}</span></template>
+        </el-table-column>
+        <el-table-column prop="channels" label="共享通道" width="100">
+          <template slot-scope="{ row }"><span class="mono">{{ row.channels }}</span></template>
+        </el-table-column>
+        <el-table-column prop="expires" label="过期" min-width="140">
+          <template slot-scope="{ row }"><span class="mono text-tertiary">{{ row.expires }}</span></template>
+        </el-table-column>
+        <el-table-column label="操作" align="right" width="200">
+          <template slot-scope="{ row }">
+            <button class="gb-btn-link">续期</button>
+            <button class="gb-btn-link">通道</button>
+            <button class="gb-btn-link">编辑</button>
           </template>
         </el-table-column>
       </el-table>
-      <el-pagination
-        style="text-align: right"
-        :current-page="currentPage"
-        :page-size="count"
-        :page-sizes="[15, 25, 35, 50]"
-        layout="total, sizes, prev, pager, next"
-        :total="total"
-        @size-change="handleSizeChange"
-        @current-change="currentChange"
-      />
-    </div>
-
-    <platformEdit
-      v-if="platform"
-      ref="platformEdit"
-      v-model="platform"
-      :close-edit="closeEdit"
-      :device-ips="deviceIps"
-    />
-    <shareChannel ref="shareChannel" />
+    </article>
   </div>
 </template>
 
 <script>
-import shareChannel from '../dialog/shareChannel.vue'
-import platformEdit from './edit.vue'
-import Vue from 'vue'
+import StatCard from '@/components/StatCard'
 
 export default {
   name: 'Platform',
-  components: {
-    shareChannel,
-    platformEdit
-  },
+  components: { StatCard },
   data() {
     return {
-      loading: false,
-      platformList: [], // 设备列表
-      deviceIps: [], // 设备列表
-      defaultPlatform: null,
-      platform: null,
-      pushChannelLoading: false,
-      searchStr: '',
-      currentPage: 1,
-      count: 15,
-      total: 0
-    }
-  },
-  computed: {
-    Vue() {
-      return Vue
-    },
-    myServerId() {
-      return this.$store.getters.serverId
-    }
-  },
-  mounted() {
-    this.initData()
-    this.updateLooper = setInterval(this.initData, 10000)
-  },
-  destroyed() {
-    clearTimeout(this.updateLooper)
-  },
-  methods: {
-    addParentPlatform: function() {
-      this.platform = this.defaultPlatform
-    },
-    editPlatform: function(platform) {
-      this.platform = platform
-    },
-    closeEdit: function() {
-      this.platform = null
-      this.getPlatformList()
-    },
-    deletePlatform: function(platform) {
-      this.$confirm('确认删除?', '提示', {
-        confirmButtonText: '确定',
-        cancelButtonText: '取消',
-        type: 'warning'
-      }).then(() => {
-        this.deletePlatformCommit(platform)
-      })
-    },
-    deletePlatformCommit: function(platform) {
-      this.loading = true
-      this.$store.dispatch('platform/remove', platform.id)
-        .then(() => {
-          this.$message.success({
-            showClose: true,
-            message: '删除成功'
-          })
-          this.initData()
-        })
-        .catch((error) => {
-          this.loading = false
-          this.$message.error({
-            showClose: true,
-            message: error
-          })
-        })
-        .finally(() => {
-          this.loading = false
-        })
-    },
-    chooseChannel: function(platform) {
-      this.$refs.shareChannel.openDialog(platform.id, this.initData)
-    },
-    pushChannel: function(row) {
-      this.pushChannelLoading = true
-      this.$store.dispatch('platform/pushChannel', row.id)
-        .then((data) => {
-          this.$message.success({
-            showClose: true,
-            message: '推送成功'
-          })
-        })
-        .catch((error) => {
-          this.$message.error({
-            showClose: true,
-            message: error
-          })
-        })
-        .finally(() => {
-          this.pushChannelLoading = false
-        })
-    },
-    initData: function() {
-      this.$store.dispatch('platform/getServerConfig')
-        .then((data) => {
-          this.deviceIps = data.deviceIp.split(',')
-          this.defaultPlatform = {
-            id: null,
-            enable: true,
-            ptz: true,
-            rtcp: false,
-            asMessageChannel: false,
-            autoPushChannel: false,
-            name: null,
-            serverGBId: null,
-            serverGBDomain: null,
-            serverIp: null,
-            serverPort: null,
-            deviceGBId: data.username,
-            deviceIp: this.deviceIps[0],
-            devicePort: data.devicePort,
-            username: data.username,
-            password: data.password,
-            expires: 3600,
-            keepTimeout: 60,
-            transport: 'UDP',
-            characterSet: 'GB2312',
-            startOfflinePush: false,
-            customGroup: false,
-            catalogWithPlatform: 0,
-            catalogWithGroup: 0,
-            catalogWithRegion: 0,
-            manufacturer: null,
-            model: null,
-            address: null,
-            secrecy: 1,
-            catalogGroup: 1,
-            civilCode: null,
-            sendStreamIp: data.sendStreamIp
-          }
-        })
-      this.getPlatformList()
-    },
-    currentChange: function(val) {
-      this.currentPage = val
-      this.getPlatformList()
-    },
-    handleSizeChange: function(val) {
-      this.count = val
-      this.getPlatformList()
-    },
-    queryList: function() {
-      this.currentPage = 1
-      this.total = 0
-      this.getPlatformList()
-    },
-    getPlatformList: function() {
-      this.$store.dispatch('platform/query', {
-        count: this.count,
-        page: this.currentPage,
-        query: this.searchStr
-      })
-        .then((data) => {
-          this.total = data.total
-          this.platformList = data.list
-        })
-        .catch(function(error) {
-          console.log(error)
-        })
-    },
-    refresh: function() {
-      this.initData()
+      rows: [
+        { name: '广州市公安局交警支队', gbId: '13010000002000000001', sip: 'sip:10.20.4.5:5060', type: '上级', typeTone: 'primary', state: '已注册', stateTone: 'success', channels: 412, expires: '2030-12-31' },
+        { name: '省厅视频专网', gbId: '13000000002000000001', sip: 'sip:10.30.4.5:5060', type: '上级', typeTone: 'primary', state: '已注册', stateTone: 'success', channels: 64, expires: '2030-12-31' },
+        { name: '天河区城管平台', gbId: '44010000002000000001', sip: 'sip:10.40.4.5:5060', type: '平级', typeTone: 'info', state: '已注册', stateTone: 'success', channels: 8, expires: '2030-12-31' },
+        { name: '海珠区应急平台', gbId: '41042200002000000001', sip: 'sip:10.50.4.5:5060', type: '平级', typeTone: 'info', state: '已注册', stateTone: 'success', channels: 12, expires: '2030-12-31' },
+        { name: '黄埔区交通局', gbId: '51010000002000000001', sip: 'sip:10.60.4.5:5060', type: '下级', typeTone: 'success', state: '注册中', stateTone: 'warning', channels: 0, expires: '—' },
+        { name: '广州公交集团', gbId: '44010000003000000001', sip: 'sip:10.70.4.5:5060', type: '下级', typeTone: 'success', state: '已注册', stateTone: 'success', channels: 482, expires: '2030-12-31' },
+        { name: '南沙港务集团', gbId: '44010000004000000001', sip: 'sip:10.80.4.5:5060', type: '下级', typeTone: 'success', state: '过期', stateTone: 'error', channels: 16, expires: '2026-07-04' }
+      ]
     }
   }
 }
 </script>
-<style>
-.subscribe-on {
-  color: #409EFF;
-  font-size: 18px;
-}
-
-.subscribe-off {
-  color: #afafb3;
-  font-size: 18px;
-}
-</style>

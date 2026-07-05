@@ -1,15 +1,21 @@
 <template>
-  <div class="sidebar-logo-container" :class="{'collapse':collapse}">
-    <transition name="sidebarLogoFade">
-      <router-link v-if="collapse" key="collapse" class="sidebar-logo-link" to="/">
-        <img v-if="logo" :src="logo" class="sidebar-logo">
-        <h1 v-else class="sidebar-title">{{ title }} </h1>
-      </router-link>
-      <router-link v-else key="expand" class="sidebar-logo-link" to="/">
-        <img v-if="logo" :src="logo" class="sidebar-logo">
-        <h1 class="sidebar-title">{{ title }} </h1>
-      </router-link>
-    </transition>
+  <div class="app-logo">
+    <div class="logo-mark">
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <rect x="2.5" y="2.5" width="19" height="19" rx="3" stroke="currentColor" stroke-width="1.5" />
+        <rect x="7" y="7" width="10" height="10" rx="1.5" stroke="currentColor" stroke-width="1.2" opacity="0.5" />
+        <circle cx="12" cy="12" r="2.4" fill="currentColor" />
+        <line x1="12" y1="1" x2="12" y2="3.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
+        <line x1="12" y1="20.5" x2="12" y2="23" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
+        <line x1="1" y1="12" x2="3.5" y2="12" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
+        <line x1="20.5" y1="12" x2="23" y2="12" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
+      </svg>
+    </div>
+    <div v-if="!collapse" class="logo-text">
+      <div class="logo-name">GBServer</div>
+      <div class="logo-sub">视频融合平台</div>
+    </div>
+    <span v-if="!collapse" class="logo-pulse">LIVE</span>
   </div>
 </template>
 
@@ -17,66 +23,7 @@
 export default {
   name: 'SidebarLogo',
   props: {
-    collapse: {
-      type: Boolean,
-      required: true
-    }
-  },
-  data() {
-    return {
-      title: 'GBServer 视频平台',
-      logo: 'https://wpimg.wallstcn.com/69a1c46c-eb1c-4b46-8bd4-e9e686ef5251.png'
-    }
+    collapse: { type: Boolean, required: true }
   }
 }
 </script>
-
-<style lang="scss" scoped>
-.sidebarLogoFade-enter-active {
-  transition: opacity 1.5s;
-}
-
-.sidebarLogoFade-enter,
-.sidebarLogoFade-leave-to {
-  opacity: 0;
-}
-
-.sidebar-logo-container {
-  position: relative;
-  width: 100%;
-  height: 50px;
-  line-height: 50px;
-  background: #2b2f3a;
-  text-align: center;
-  overflow: hidden;
-
-  & .sidebar-logo-link {
-    height: 100%;
-    width: 100%;
-
-    & .sidebar-logo {
-      width: 32px;
-      height: 32px;
-      vertical-align: middle;
-      margin-right: 12px;
-    }
-
-    & .sidebar-title {
-      display: inline-block;
-      margin: 0;
-      color: #fff;
-      font-weight: 600;
-      line-height: 50px;
-      font-size: 14px;
-      font-family: Avenir, Helvetica Neue, Arial, Helvetica, sans-serif;
-      vertical-align: middle;
-    }
-  }
-
-  &.collapse {
-    .sidebar-logo {
-      margin-right: 0px;
-    }
-  }
-}
-</style>

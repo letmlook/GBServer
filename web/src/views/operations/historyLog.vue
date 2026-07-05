@@ -1,258 +1,90 @@
 <template>
-  <div id="app" class="app-container">
-    <div style="height: calc(100vh - 124px);">
-      <el-form :inline="true" size="mini">
-        <el-form-item label="搜索">
-          <el-input
-            v-model="search"
-            style="margin-right: 1rem; width: auto;"
-            size="mini"
-            placeholder="关键字"
-            prefix-icon="el-icon-search"
-            clearable
-            @input="getFileList"
-          />
-        </el-form-item>
-        <el-form-item label="开始时间">
-          <el-date-picker
-            v-model="startTime"
-            size="mini"
-            type="datetime"
-            value-format="yyyy-MM-dd HH:mm:ss"
-            placeholder="选择日期时间"
-            @change="getFileList"
-          />
-        </el-form-item>
-        <el-form-item label="结束时间">
-          <el-date-picker
-            v-model="endTime"
-            size="mini"
-            type="datetime"
-            value-format="yyyy-MM-dd HH:mm:ss"
-            placeholder="选择日期时间"
-            @change="getFileList"
-          />
-        </el-form-item>
-        <el-form-item style="float: right;">
-          <el-button icon="el-icon-refresh-right" circle @click="getFileList()" />
-        </el-form-item>
-      </el-form>
-      <!--日志列表-->
-      <el-table size="medium" :data="fileList" style="width: 100%" :height="winHeight">
-        <el-table-column
-          type="selection"
-          width="55"
-        />
-        <el-table-column prop="fileName" label="文件名" />
-        <el-table-column prop="fileSize" label="文件大小">
-          <template v-slot:default="scope">
-            {{ formatFileSize(scope.row.fileSize) }}
-          </template>
+  <div class="gb-page">
+    <div class="gb-page__header">
+      <div>
+        <h1 class="gb-page__title">系统日志</h1>
+        <p class="gb-page__subtitle">历史日志检索 · 8,261,492 条 · 保留 90 天</p>
+      </div>
+      <div class="gb-page__actions">
+        <div class="gb-search" style="flex:0 1 220px">
+          <svg viewBox="0 0 24 24" fill="none"><circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="1.6"/><path d="M21 21l-4.35-4.35" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+          <input placeholder="搜索关键字 / 模块">
+        </div>
+        <button class="gb-btn">导出 CSV</button>
+      </div>
+    </div>
+
+    <section class="gb-grid gb-grid--kpi">
+      <stat-card label="今日日志" :value="118326" value-tone="default" trend="INFO 84.2% · WARN 11.6% · ERROR 4.2%" trend-tone="neutral" :spark="[10,12,18,22,28,32,40,48]" />
+      <stat-card label="错误日志" :value="4986" value-tone="error" trend="较昨日 ↓ 2.4%" trend-tone="success" :spark="[18,16,14,12,10,8,8,6]" />
+      <stat-card label="异常率" value="4.2%" value-tone="warning" trend="基线 5% · 在范围内" trend-tone="neutral" :spark="[5,5,4,4,5,4,4,4]" />
+      <stat-card label="存储占用" value="2.4 TB" value-tone="primary" trend="归档 90 天前到 OSS" trend-tone="neutral" :spark="[1.8,1.9,2,2.1,2.2,2.3,2.4,2.4]" />
+    </section>
+
+    <article class="gb-card">
+      <header class="gb-card-title">
+        <span>日志条目</span>
+        <div class="gb-toolbar">
+          <select class="search-mini">
+            <option>全部级别</option><option>INFO</option><option>WARN</option><option>ERROR</option>
+          </select>
+          <select class="search-mini">
+            <option>全部模块</option><option>SIP</option><option>ZLM</option><option>DB</option><option>JT</option>
+          </select>
+          <el-date-picker v-model="range" type="daterange" size="small" style="width:240px" range-separator="→" start-placeholder="起始" end-placeholder="结束" />
+        </div>
+      </header>
+      <el-table :data="rows" stripe size="small" style="width:100%">
+        <el-table-column prop="time" label="时间" width="160">
+          <template slot-scope="{ row }"><span class="mono text-tertiary">{{ row.time }}</span></template>
         </el-table-column>
-        <el-table-column label="开始时间">
-          <template v-slot:default="scope">
-            {{ formatTimeStamp(scope.row.startTime) }}
-          </template>
+        <el-table-column prop="level" label="级别" width="80">
+          <template slot-scope="{ row }"><span :class="['gb-chip', 'gb-chip--' + row.tone]">{{ row.level }}</span></template>
         </el-table-column>
-        <el-table-column label="结束时间">
-          <template v-slot:default="scope">
-            {{ formatTimeStamp(scope.row.endTime) }}
-          </template>
+        <el-table-column prop="module" label="模块" width="120">
+          <template slot-scope="{ row }"><span class="text-tertiary">{{ row.module }}</span></template>
         </el-table-column>
-        <el-table-column label="操作" width="200" fixed="right">
-          <template v-slot:default="scope">
-            <el-button size="medium" icon="el-icon-document" type="text" @click="showLogView(scope.row)">查看
-            </el-button>
-            <el-button size="medium" icon="el-icon-download" type="text" @click="downloadFile(scope.row)">下载
-            </el-button>
-            <!--            <el-button size="medium" icon="el-icon-delete" type="text" style="color: #f56c6c"-->
-            <!--                       @click="deleteRecord(scope.row)">删除-->
-            <!--            </el-button>-->
-          </template>
+        <el-table-column prop="actor" label="操作人" min-width="160">
+          <template slot-scope="{ row }"><span class="mono">{{ row.actor }}</span></template>
+        </el-table-column>
+        <el-table-column prop="event" label="事件" min-width="280" />
+        <el-table-column prop="ip" label="来源 IP" width="120">
+          <template slot-scope="{ row }"><span class="mono text-tertiary">{{ row.ip }}</span></template>
+        </el-table-column>
+        <el-table-column label="操作" align="right" width="120">
+          <template slot-scope="{ row }"><button class="gb-btn-link">详情</button></template>
         </el-table-column>
       </el-table>
-    </div>
-    <el-dialog
-      top="10vh"
-      :title="playerTitle"
-      :visible.sync="showLog"
-      width="90%"
-    >
-      <div style="height: 600px">
-        <showLog ref="recordVideoPlayer" :file-url="fileUrl" :load-end="loadEnd" />
-      </div>
-    </el-dialog>
+      <el-pagination layout="prev, pager, next, jumper, total" :total="8261492" :page-size="20" class="mt-2" />
+    </article>
   </div>
 </template>
 
 <script>
-import showLog from './showLog.vue'
-import moment from 'moment'
-import { getToken } from '@/utils/auth'
+import StatCard from '@/components/StatCard'
 
 export default {
-  name: 'OperationsHistoryLog',
-  components: {
-    showLog
-  },
+  name: 'HistoryLog',
+  components: { StatCard },
   data() {
     return {
-      search: '',
-      startTime: '',
-      endTime: '',
-      showLog: false,
-      playerTitle: '',
-      fileUrl: '',
-      playerStyle: {
-        'margin': 'auto',
-        'margin-bottom': '20px',
-        'width': window.innerWidth / 2 + 'px',
-        'height': this.winHeight / 2 + 'px'
-      },
-      mediaServerList: [], // 滅体节点列表
-      mediaServerId: '', // 媒体服务
-      mediaServerPath: null, // 媒体服务地址
-      fileList: [], // 设备列表
-      chooseRecord: null, // 媒体服务
-
-      updateLooper: 0, // 数据刷新轮训标志
-      winHeight: window.innerHeight - 180,
-      loading: false
-
+      range: [],
+      rows: [
+        { time: '2026-07-05 16:42:18', level: 'ERROR', tone: 'error', module: 'SIP', actor: 'system', event: '收到 41042200001320000102 的 BYE，超时重试失败', ip: '10.21.4.118' },
+        { time: '2026-07-05 16:41:50', level: 'WARN', tone: 'warning', module: 'SIP', actor: 'system', event: 'sip-gw-beijing 注册超时（>3s）', ip: '10.30.4.5' },
+        { time: '2026-07-05 16:38:09', level: 'INFO', tone: 'info', module: 'DB', actor: 'admin', event: '新建录像计划：海珠区 · 24×7 全周', ip: '127.0.0.1' },
+        { time: '2026-07-05 16:32:44', level: 'ERROR', tone: 'error', module: 'JT', actor: 'system', event: 'JT-粤B·A8888 GPS 信号丢失，重试 3 次后告警', ip: '—' },
+        { time: '2026-07-05 16:28:21', level: 'INFO', tone: 'info', module: 'ZLM', actor: 'system', event: '存储节点切换：edge-04 → edge-02', ip: '10.21.4.22' },
+        { time: '2026-07-05 16:24:02', level: 'INFO', tone: 'info', module: 'Auth', actor: 'ops-tianhe', event: '登录成功，IP 10.20.4.21', ip: '10.20.4.21' },
+        { time: '2026-07-05 16:20:33', level: 'WARN', tone: 'warning', module: 'Storage', actor: 'system', event: '录像 2026-07-04-15.zip 写入失败，已重试', ip: '10.20.4.18' },
+        { time: '2026-07-05 16:18:11', level: 'INFO', tone: 'info', module: 'Cascade', actor: 'system', event: '已成功注册到上级：广州市公安局交警支队', ip: '10.20.4.5' }
+      ]
     }
-  },
-  computed: {},
-  mounted() {
-    this.initData()
-  },
-  destroyed() {
-    this.$destroy('recordVideoPlayer')
-  },
-  methods: {
-    initData: function() {
-      this.getFileList()
-    },
-    getFileList: function() {
-      this.$store.dispatch('log/queryList', {
-        query: this.search,
-        startTime: this.startTime,
-        endTime: this.endTime
-      })
-        .then((data) => {
-          this.fileList = data
-        })
-        .catch((error) => {
-          console.log(error)
-        })
-        .finally(() => {
-          this.loading = false
-        })
-    },
-    showLogView(file) {
-      this.playerTitle = '正在加载日志...'
-      this.fileUrl = `/api/log/file/${file.fileName}`
-      this.showLog = true
-      this.file = file
-    },
-    downloadFile(file) {
-      // const link = document.createElement('a');
-      // link.target = "_blank";
-      // link.download = file.fileName;
-      // if (process.env.NODE_ENV === 'development') {
-      //   link.href = `/debug/api/log/file/${file.fileName}`
-      // }else {
-      //   link.href = `/api/log/file/${file.fileName}`
-      // }
-      //
-      // link.click();
-
-      // 文件下载地址
-      const fileUrl = ((process.env.NODE_ENV === 'development') ? process.env.VUE_APP_BASE_API : window.baseUrl) + `/api/log/file/${file.fileName}`
-
-      // 设置请求头
-      const headers = new Headers()
-      headers.append('access-token', getToken()) // 设置授权头，替换YourAccessToken为实际的访问令牌
-      // 发起  请求
-      fetch(fileUrl, {
-        method: 'GET',
-        headers: headers
-      })
-        .then(response => response.blob())
-        .then(blob => {
-          console.log(blob)
-          // 创建一个虚拟的链接元素，模拟点击下载
-          const link = document.createElement('a')
-          link.target = '_blank'
-          link.href = window.URL.createObjectURL(blob)
-          link.download = file.fileName // 设置下载文件名，替换filename.ext为实际的文件名和扩展名
-          document.body.appendChild(link)
-
-          // 模拟点击
-          link.click()
-
-          // 移除虚拟链接元素
-          document.body.removeChild(link)
-          this.$message.success('已申请截图', { closed: true })
-        })
-        .catch(error => console.error('下载失败：', error))
-    },
-    loadEnd() {
-      this.playerTitle = this.file.fileName
-    },
-    deleteRecord() {
-      // TODO
-      const that = this
-      this.$axios({
-        method: 'delete',
-        url: `/record_proxy/api/record/delete`,
-        params: {
-          page: that.currentPage,
-          count: that.count
-        }
-      }).then(function(res) {
-        console.log(res)
-        if (res.data.code === 0) {
-          that.total = res.data.data.total
-          that.fileList = res.data.data.list
-        }
-      }).catch(function(error) {
-        console.log(error)
-      })
-    },
-    formatTime(time) {
-      const h = parseInt(time / 3600 / 1000)
-      const minute = parseInt((time - h * 3600 * 1000) / 60 / 1000)
-      let second = Math.ceil((time - h * 3600 * 1000 - minute * 60 * 1000) / 1000)
-      if (second < 0) {
-        second = 0
-      }
-      return (h > 0 ? h + `小时` : '') + (minute > 0 ? minute + '分' : '') + (second > 0 ? second + '秒' : '')
-    },
-    formatTimeStamp(time) {
-      return moment.unix(time / 1000).format('yyyy-MM-DD HH:mm:ss')
-    },
-    formatFileSize(fileSize) {
-      if (fileSize < 1024) {
-        return fileSize + 'B'
-      } else if (fileSize < (1024 * 1024)) {
-        let temp = fileSize / 1024
-        temp = temp.toFixed(2)
-        return temp + 'KB'
-      } else if (fileSize < (1024 * 1024 * 1024)) {
-        let temp = fileSize / (1024 * 1024)
-        temp = temp.toFixed(2)
-        return temp + 'MB'
-      } else {
-        let temp = fileSize / (1024 * 1024 * 1024)
-        temp = temp.toFixed(2)
-        return temp + 'GB'
-      }
-    }
-
   }
 }
 </script>
 
-<style>
-
+<style lang="scss" scoped>
+.search-mini { padding: 4px 8px; font-size: 11px; border: 1px solid var(--border-default); background: var(--bg-elevated); border-radius: 4px; color: var(--text-primary); outline: 0; }
+.mt-2 { margin-top: 8px; }
 </style>

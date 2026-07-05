@@ -1,138 +1,135 @@
 <template>
-  <div class="navbar">
-    <hamburger :is-active="sidebar.opened" class="hamburger-container" @toggleClick="toggleSideBar" />
+  <header class="app-topbar">
+    <div class="topbar-left">
+      <button class="gb-icon-btn" :aria-label="sidebar.opened ? '折叠侧栏' : '展开侧栏'" @click="toggleSideBar">
+        <svg v-if="sidebar.opened" viewBox="0 0 24 24" fill="none">
+          <path d="M4 6h16M4 12h10M4 18h16" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+        </svg>
+        <svg v-else viewBox="0 0 24 24" fill="none">
+          <path d="M4 6h16M4 12h16M4 18h16" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+        </svg>
+      </button>
+      <div class="topbar-breadcrumb">
+        <span>{{ parentTitle }}</span>
+        <span v-if="parentTitle && currentTitle" class="sep">/</span>
+        <span class="current">{{ currentTitle }}</span>
+      </div>
+    </div>
 
-    <breadcrumb class="breadcrumb-container" />
+    <div class="topbar-center">
+      <div class="gb-search" role="search">
+        <svg viewBox="0 0 24 24" fill="none">
+          <circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="1.6" />
+          <path d="M21 21l-4.35-4.35" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+        </svg>
+        <input
+          v-model="query"
+          type="text"
+          placeholder="搜索通道、设备、平台…"
+          @keyup.enter="onSearch"
+        >
+        <span class="kbd">/</span>
+      </div>
+    </div>
 
-    <div class="right-menu">
-      <el-dropdown class="avatar-container" trigger="click">
-        <div class="avatar-wrapper">
-          欢迎，{{ name }}
-          <i class="el-icon-caret-bottom" />
+    <div class="topbar-right">
+      <div class="topbar-stat" v-if="latency">
+        <span class="gb-dot gb-dot--success" />
+        <span class="mono">{{ latency }}</span>
+        <span class="text-tertiary">延迟</span>
+      </div>
+      <button class="gb-icon-btn" aria-label="告警" @click="goToAlarm">
+        <svg viewBox="0 0 24 24" fill="none">
+          <path d="M12 3l9 16H3z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" />
+        </svg>
+        <span class="badge-dot" />
+      </button>
+      <button class="gb-icon-btn" aria-label="主题" @click="toggleTheme">
+        <svg viewBox="0 0 24 24" fill="none">
+          <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" stroke="currentColor" stroke-width="1.6" />
+        </svg>
+      </button>
+      <el-dropdown trigger="click" @command="onCommand">
+        <div class="user-chip">
+          <div class="user-avatar">{{ avatarLetter }}</div>
+          <div>
+            <div class="user-name">{{ name || 'admin' }}</div>
+            <div class="user-role">{{ role || '超级管理员' }}</div>
+          </div>
         </div>
-        <el-dropdown-menu slot="dropdown" class="user-dropdown">
-          <el-dropdown-item @click.native="changePassword">
-            <span style="display:block;">修改密码</span>
-          </el-dropdown-item>
-          <el-dropdown-item @click.native="logout">
-            <span style="display:block;">注销</span>
-          </el-dropdown-item>
+        <el-dropdown-menu slot="dropdown">
+          <el-dropdown-item icon="el-icon-key" command="password">修改密码</el-dropdown-item>
+          <el-dropdown-item icon="el-icon-setting" command="profile">个人设置</el-dropdown-item>
+          <el-dropdown-item divided icon="el-icon-switch-button" command="logout">注销</el-dropdown-item>
         </el-dropdown-menu>
       </el-dropdown>
     </div>
-    <changePasswordDialog ref="changePasswordDialog"></changePasswordDialog>
-  </div>
+
+    <changePasswordDialog ref="changePasswordDialog" />
+  </header>
 </template>
 
 <script>
 import { mapGetters } from 'vuex'
-import Breadcrumb from '@/components/Breadcrumb'
-import Hamburger from '@/components/Hamburger'
 import changePasswordDialog from './dialog/changePassword.vue'
 
 export default {
-  components: {
-    Breadcrumb,
-    Hamburger,
-    changePasswordDialog
+  name: 'Navbar',
+  components: { changePasswordDialog },
+  data() {
+    return { query: '', latency: '12ms' }
   },
   computed: {
-    ...mapGetters([
-      'sidebar',
-      'name'
-    ])
+    ...mapGetters(['sidebar', 'name', 'role']),
+    parentTitle() {
+      const matched = this.$route.matched
+      if (matched.length < 2) return ''
+      const parent = matched[matched.length - 2]
+      return (parent.meta && parent.meta.title) || ''
+    },
+    currentTitle() {
+      return (this.$route.meta && this.$route.meta.title) || ''
+    },
+    avatarLetter() {
+      return (this.name || 'A').slice(0, 1).toUpperCase()
+    }
   },
   methods: {
-    toggleSideBar() {
-      this.$store.dispatch('app/toggleSideBar')
+    toggleSideBar() { this.$store.dispatch('app/toggleSideBar') },
+    toggleTheme() {
+      this.$message && this.$message.info('主题切换：预留接口')
     },
-    async logout() {
-      await this.$store.dispatch('user/logout')
-      console.log('logout')
-      this.$router.push(`/login?redirect=${this.$route.fullPath}`)
+    onSearch() {
+      if (!this.query) return
+      this.$message && this.$message.info(`搜索：${this.query}`)
     },
-    changePassword() {
-      this.$refs.changePasswordDialog.openDialog(this.logout)
+    goToAlarm() { this.$router.push('/alarm') },
+    async onCommand(cmd) {
+      if (cmd === 'logout') {
+        await this.$store.dispatch('user/logout')
+        this.$router.push(`/login?redirect=${this.$route.fullPath}`)
+      } else if (cmd === 'password') {
+        this.$refs.changePasswordDialog.openDialog(this.logout)
+      } else if (cmd === 'profile') {
+        this.$message && this.$message.info('个人设置：预留页面')
+      }
+    },
+    bindGlobalKey(e) {
+      if (e.key === '/' && document.activeElement && document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'TEXTAREA') {
+        e.preventDefault()
+        this.$el.querySelector('.gb-search input') && this.$el.querySelector('.gb-search input').focus()
+      }
     }
+  },
+  mounted() {
+    document.addEventListener('keydown', this.bindGlobalKey)
+  },
+  beforeDestroy() {
+    document.removeEventListener('keydown', this.bindGlobalKey)
   }
 }
 </script>
 
-<style lang="scss" scoped>
-.navbar {
-  height: 50px;
-  overflow: hidden;
-  position: relative;
-  background: #fff;
-  box-shadow: 0 1px 4px rgba(0,21,41,.08);
-
-  .hamburger-container {
-    line-height: 46px;
-    height: 100%;
-    float: left;
-    cursor: pointer;
-    transition: background .3s;
-    -webkit-tap-highlight-color:transparent;
-
-    &:hover {
-      background: rgba(0, 0, 0, .025)
-    }
-  }
-
-  .breadcrumb-container {
-    float: left;
-  }
-
-  .right-menu {
-    float: right;
-    height: 100%;
-    line-height: 50px;
-
-    &:focus {
-      outline: none;
-    }
-
-    .right-menu-item {
-      display: inline-block;
-      padding: 0 8px;
-      height: 100%;
-      font-size: 18px;
-      color: #5a5e66;
-      vertical-align: text-bottom;
-
-      &.hover-effect {
-        cursor: pointer;
-        transition: background .3s;
-
-        &:hover {
-          background: rgba(0, 0, 0, .025)
-        }
-      }
-    }
-
-    .avatar-container {
-      margin-right: 30px;
-
-      .avatar-wrapper {
-        margin-top: 5px;
-        position: relative;
-        cursor: pointer;
-        .user-avatar {
-          cursor: pointer;
-          width: 40px;
-          height: 40px;
-          border-radius: 10px;
-        }
-
-        .el-icon-caret-bottom {
-          cursor: pointer;
-          position: absolute;
-          right: -20px;
-          top: 19px;
-          font-size: 12px;
-        }
-      }
-    }
-  }
-}
+<style scoped>
+.app-topbar { background: var(--bg-surface); }
 </style>

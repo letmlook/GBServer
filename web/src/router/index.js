@@ -67,6 +67,17 @@ export const constantRoutes = [
     }]
   },
   {
+    path: '/playback',
+    component: Layout,
+    redirect: '/playback',
+    children: [{
+      path: '',
+      name: 'Playback',
+      component: () => import('@/views/playback/index'),
+      meta: { title: '录像回放', icon: 'playback' }
+    }]
+  },
+  {
     path: '/channel',
     component: Layout,
     redirect: '/channel',
