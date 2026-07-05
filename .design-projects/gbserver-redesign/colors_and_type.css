@@ -1,0 +1,144 @@
+/* ===========================================================
+ * GBServer Redesign · 品牌视觉规范
+ * 调性：蓝白浅色 · 清爽专业
+ * 主色：青蓝（监控/流媒体）
+ * =========================================================== */
+
+:root {
+  /* 主色调色板（identity）— 保持青蓝 */
+  --brand-primary-50:  #e8f4f9;
+  --brand-primary-100: #c6e4f0;
+  --brand-primary-200: #9ad0e6;
+  --brand-primary-300: #5eb4d4;
+  --brand-primary-400: #2a93bd;
+  --brand-primary-500: #0b8ab2;   /* 主品牌色 */
+  --brand-primary-600: #086d90;
+  --brand-primary-700: #05546f;
+  --brand-primary-800: #043c52;
+  --brand-primary-900: #022536;
+
+  /* 浅色主题色阶（蓝白） */
+  --bg-base:        #f5f8fc;   /* 主背景 · 浅蓝灰 */
+  --bg-surface:    #ffffff;   /* 卡片背景 · 纯白 */
+  --bg-elevated:  #f0f5fa;   /* 弹层/二级表面 · 极浅蓝 */
+  --bg-overlay:    #e7f0f7;   /* 悬浮 */
+  --bg-hover:      #e1ecf5;
+  --bg-active:    #d4e4f1;
+
+  --border-subtle:  #e3ebf3;   /* 细边框 */
+  --border-default: #d2dfeb;
+  --border-strong:  #b6cbdc;
+
+  --text-primary:    #0f1c2d;   /* 主文字 · 深墨蓝 */
+  --text-secondary: #4b5d72;
+  --text-tertiary:  #7e8ea3;
+  --text-disabled:  #b6c2d2;
+
+  /* 语义状态色 */
+  --state-success: #16a34a;
+  --state-warning: #ea8a0c;
+  --state-error:   #dc2626;
+  --state-info:    #0284c7;
+
+  /* 直播/在线标识色 */
+  --live-dot: #dc2626;
+  --rec-dot:  #ea8a0c;
+
+  /* 间距系统（8 倍数） */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+
+  /* 圆角（克制） */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-full: 9999px;
+
+  /* 字体 */
+  --font-sans: "Inter", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+  --font-display: "Inter", "PingFang SC", system-ui, sans-serif;
+
+  /* 字号阶 */
+  --text-xs:   11px;
+  --text-sm:   13px;
+  --text-base: 14px;
+  --text-md:   15px;
+  --text-lg:   17px;
+  --text-xl:   20px;
+  --text-2xl:  24px;
+  --text-3xl:  30px;
+  --text-display: 40px;
+
+  /* 阴影（浅色模式 — 极弱、偏冷） */
+  --shadow-card: 0 1px 0 0 rgba(11,138,178,0.04) inset, 0 1px 2px rgba(15,28,45,0.05);
+  --shadow-pop:  0 8px 24px rgba(15,28,45,0.10), 0 0 0 1px rgba(11,138,178,0.08) inset;
+
+  /* 侧栏/顶栏尺寸 */
+  --sidebar-width: 220px;
+  --sidebar-collapsed: 64px;
+  --topbar-height: 56px;
+  --tagsbar-height: 38px;
+
+  /* 布局卡 */
+  --layout-radius: 10px;
+  --layout-border: 1px solid var(--border-subtle);
+}
+
+/* 全局基础排版 */
+html, body {
+  background: var(--bg-base);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  -webkit-font-smoothing: antialiased;
+}
+
+.text-secondary { color: var(--text-secondary); }
+.text-tertiary { color: var(--text-tertiary); }
+.text-primary-accent { color: var(--brand-primary-500); }
+
+.mono { font-family: var(--font-mono); font-feature-settings: "tnum"; }
+
+.kbd {
+  display: inline-block;
+  padding: 2px 6px;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+}
+
+/* 状态点 */
+.dot {
+  display: inline-block; width: 8px; height: 8px;
+  border-radius: var(--radius-full);
+  box-shadow: 0 0 0 3px rgba(11,138,178,0.04) inset;
+}
+.dot-success { background: var(--state-success); box-shadow: 0 0 6px rgba(22,163,74,0.35); }
+.dot-warning { background: var(--state-warning); box-shadow: 0 0 6px rgba(234,138,12,0.35); }
+.dot-error   { background: var(--state-error);   box-shadow: 0 0 6px rgba(220,38,38,0.35);   }
+.dot-info    { background: var(--state-info);    box-shadow: 0 0 6px rgba(2,132,199,0.35);    }
+
+/* 直播标识 */
+.live-tag {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 2px 8px; font-size: var(--text-xs); font-weight: 600;
+  background: rgba(220,38,38,0.10); color: var(--state-error);
+  border-radius: var(--radius-full);
+}
+.live-tag::before {
+  content: ""; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--live-dot); animation: pulse 1.6s infinite;
+}
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }

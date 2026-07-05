@@ -1,0 +1,566 @@
+<!doctype html>
+<html lang="zh-CN" class="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>实时视频墙 · GBServer</title>
+    <style id="theme-vars">
+/* ===========================================================
+ * GBServer Redesign · 品牌视觉规范
+ * 调性：蓝白浅色 · 清爽专业
+ * 主色：青蓝（监控/流媒体）
+ * =========================================================== */
+
+:root {
+  /* 主色调色板（identity）— 保持青蓝 */
+  --brand-primary-50:  #e8f4f9;
+  --brand-primary-100: #c6e4f0;
+  --brand-primary-200: #9ad0e6;
+  --brand-primary-300: #5eb4d4;
+  --brand-primary-400: #2a93bd;
+  --brand-primary-500: #0b8ab2;   /* 主品牌色 */
+  --brand-primary-600: #086d90;
+  --brand-primary-700: #05546f;
+  --brand-primary-800: #043c52;
+  --brand-primary-900: #022536;
+
+  /* 浅色主题色阶（蓝白） */
+  --bg-base:        #f5f8fc;   /* 主背景 · 浅蓝灰 */
+  --bg-surface:    #ffffff;   /* 卡片背景 · 纯白 */
+  --bg-elevated:  #f0f5fa;   /* 弹层/二级表面 · 极浅蓝 */
+  --bg-overlay:    #e7f0f7;   /* 悬浮 */
+  --bg-hover:      #e1ecf5;
+  --bg-active:    #d4e4f1;
+
+  --border-subtle:  #e3ebf3;   /* 细边框 */
+  --border-default: #d2dfeb;
+  --border-strong:  #b6cbdc;
+
+  --text-primary:    #0f1c2d;   /* 主文字 · 深墨蓝 */
+  --text-secondary: #4b5d72;
+  --text-tertiary:  #7e8ea3;
+  --text-disabled:  #b6c2d2;
+
+  /* 语义状态色 */
+  --state-success: #16a34a;
+  --state-warning: #ea8a0c;
+  --state-error:   #dc2626;
+  --state-info:    #0284c7;
+
+  /* 直播/在线标识色 */
+  --live-dot: #dc2626;
+  --rec-dot:  #ea8a0c;
+
+  /* 间距系统（8 倍数） */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+
+  /* 圆角（克制） */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-full: 9999px;
+
+  /* 字体 */
+  --font-sans: "Inter", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+  --font-display: "Inter", "PingFang SC", system-ui, sans-serif;
+
+  /* 字号阶 */
+  --text-xs:   11px;
+  --text-sm:   13px;
+  --text-base: 14px;
+  --text-md:   15px;
+  --text-lg:   17px;
+  --text-xl:   20px;
+  --text-2xl:  24px;
+  --text-3xl:  30px;
+  --text-display: 40px;
+
+  /* 阴影（浅色模式 — 极弱、偏冷） */
+  --shadow-card: 0 1px 0 0 rgba(11,138,178,0.04) inset, 0 1px 2px rgba(15,28,45,0.05);
+  --shadow-pop:  0 8px 24px rgba(15,28,45,0.10), 0 0 0 1px rgba(11,138,178,0.08) inset;
+
+  /* 侧栏/顶栏尺寸 */
+  --sidebar-width: 220px;
+  --sidebar-collapsed: 64px;
+  --topbar-height: 56px;
+  --tagsbar-height: 38px;
+
+  /* 布局卡 */
+  --layout-radius: 10px;
+  --layout-border: 1px solid var(--border-subtle);
+}
+
+/* 全局基础排版 */
+html, body {
+  background: var(--bg-base);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  -webkit-font-smoothing: antialiased;
+}
+
+.text-secondary { color: var(--text-secondary); }
+.text-tertiary { color: var(--text-tertiary); }
+.text-primary-accent { color: var(--brand-primary-500); }
+
+.mono { font-family: var(--font-mono); font-feature-settings: "tnum"; }
+
+.kbd {
+  display: inline-block;
+  padding: 2px 6px;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+}
+
+/* 状态点 */
+.dot {
+  display: inline-block; width: 8px; height: 8px;
+  border-radius: var(--radius-full);
+  box-shadow: 0 0 0 3px rgba(11,138,178,0.04) inset;
+}
+.dot-success { background: var(--state-success); box-shadow: 0 0 6px rgba(22,163,74,0.35); }
+.dot-warning { background: var(--state-warning); box-shadow: 0 0 6px rgba(234,138,12,0.35); }
+.dot-error   { background: var(--state-error);   box-shadow: 0 0 6px rgba(220,38,38,0.35);   }
+.dot-info    { background: var(--state-info);    box-shadow: 0 0 6px rgba(2,132,199,0.35);    }
+
+/* 直播标识 */
+.live-tag {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 2px 8px; font-size: var(--text-xs); font-weight: 600;
+  background: rgba(220,38,38,0.10); color: var(--state-error);
+  border-radius: var(--radius-full);
+}
+.live-tag::before {
+  content: ""; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--live-dot); animation: pulse 1.6s infinite;
+}
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+    </style>
+        <style type="text/tailwindcss">
+@theme inline {
+  --color-primary: var(--brand-primary-500);
+  --color-primary-foreground: var(--brand-foreground);
+  --color-background: var(--brand-background);
+  --color-foreground: var(--brand-foreground);
+  --color-surface: var(--brand-surface);
+  --color-border: var(--brand-border);
+  --color-muted: var(--brand-muted);
+  --color-muted-foreground: var(--brand-muted-foreground);
+  --color-success: var(--brand-success);
+  --color-warning: var(--brand-warning);
+  --color-error: var(--brand-error);
+  --color-info: var(--brand-info);
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+}
+    </style>
+
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.3.1/dist/index.global.js"></script>
+    <script src="https://unpkg.com/lucide@1.8.0/dist/umd/lucide.min.js"></script>
+    <style type="text/tailwindcss">
+  
+  @layer base {
+    body { background: var(--brand-background); color: var(--brand-foreground); }
+    td, th { @apply break-words; word-break: break-all; word-break: auto-phrase; }
+    th { @apply whitespace-nowrap; }
+  }
+    </style>
+    <style>
+      .no-scrollbar::-webkit-scrollbar { display: none; }
+      .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+      [data-icon] {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        -webkit-mask-size: contain;
+        mask-size: contain;
+        -webkit-mask-repeat: no-repeat;
+        mask-repeat: no-repeat;
+        -webkit-mask-position: center;
+        mask-position: center;
+        background-color: currentColor;
+      }
+    </style>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+</head>
+<body>
+<div class="app-shell">
+  <!-- 侧栏 -->
+  <aside class="app-sidebar">
+    <div class="app-logo">
+      <div class="logo-mark">
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <!-- 外框 -->
+          <rect x="2.5" y="2.5" width="19" height="19" rx="3" stroke="currentColor" stroke-width="1.5"/>
+          <!-- 内框 -->
+          <rect x="7" y="7" width="10" height="10" rx="1.5" stroke="currentColor" stroke-width="1.2" opacity=".5"/>
+          <!-- 中心圆点 -->
+          <circle cx="12" cy="12" r="2.4" fill="currentColor"/>
+          <!-- 四向延伸线（工业感） -->
+          <line x1="12" y1="1" x2="12" y2="3.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+          <line x1="12" y1="20.5" x2="12" y2="23" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+          <line x1="1" y1="12" x2="3.5" y2="12" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+          <line x1="20.5" y1="12" x2="23" y2="12" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+        </svg>
+      </div>
+      <div class="logo-text">
+        <div class="logo-name">GBServer</div>
+      </div>
+      <span class="logo-pulse" aria-hidden="true">●&nbsp;LIVE</span>
+    </div>
+    <nav class="app-nav">
+      <div class="nav-group">
+        <div class="nav-group-title">监控中心</div>
+        <a class="nav-item" data-dom-id="nav-dashboard" href="dashboard.html"><svg viewBox="0 0 24 24" fill="none"><path d="M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z" stroke="currentColor" stroke-width="1.5"/></svg><span>控制台</span></a>
+        <a class="nav-item is-active" data-dom-id="nav-live" href="live-wall.html"><svg viewBox="0 0 24 24" fill="none"><path d="M15 8l7-4v16l-7-4v-8zM2 6h11v12H2z" stroke="currentColor" stroke-width="1.5"/></svg><span>实时视频</span><span class="live-tag-mini">LIVE</span></a>
+        <a class="nav-item" data-dom-id="nav-playback" href="playback.html"><svg viewBox="0 0 24 24" fill="none"><path d="M12 5V2L8 6l4 4V7c3.31 0 6 2.69 6 6 0 2.97-2.17 5.43-5 5.91v2.02c3.95-.49 7-3.85 7-7.93 0-4.42-3.58-8-8-8z" stroke="currentColor" stroke-width="1.5"/></svg><span>录像回放</span></a>
+        <a class="nav-item" data-dom-id="nav-map" href="map.html"><svg viewBox="0 0 24 24" fill="none"><path d="M12 2C7.6 2 4 5.6 4 10c0 6 8 12 8 12s8-6 8-12c0-4.4-3.6-8-8-8zm0 11a3 3 0 1 1 0-6 3 3 0 0 1 0 6z" stroke="currentColor" stroke-width="1.5"/></svg><span>GIS 地图</span></a>
+      </div>
+      <div class="nav-group">
+        <div class="nav-group-title">资源管理</div>
+        <a class="nav-item" data-dom-id="nav-channel" href="channel-list.html"><svg viewBox="0 0 24 24" fill="none"><path d="M4 6h16v12H4z" stroke="currentColor" stroke-width="1.5"/><path d="M2 10h20" stroke="currentColor" stroke-width="1.5"/></svg><span>通道列表</span></a>
+        <a class="nav-item" data-dom-id="nav-jt" href="jt-device.html"><svg viewBox="0 0 24 24" fill="none"><path d="M5 11l1.5-4h11L19 11M7 11v7h10v-7M9 15h6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg><span>车载终端</span></a>
+        <a class="nav-item" data-dom-id="nav-stream-proxy" href="stream-proxy.html"><svg viewBox="0 0 24 24" fill="none"><path d="M4 12h6m4 0h6M14 8l4 4-4 4M10 8L6 12l4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg><span>拉流代理</span></a>
+        <a class="nav-item" data-dom-id="nav-record" href="record-plan.html"><svg viewBox="0 0 24 24" fill="none"><path d="M12 8v5l3 2M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z" stroke="currentColor" stroke-width="1.5"/></svg><span>录像计划</span></a>
+      </div>
+      <div class="nav-group">
+        <div class="nav-group-title">系统</div>
+        <a class="nav-item" data-dom-id="nav-platform" href="platform-cascade.html"><svg viewBox="0 0 24 24" fill="none"><path d="M4 12h16M4 6h16M4 18h16" stroke="currentColor" stroke-width="1.5"/></svg><span>上级对接</span></a>
+        <a class="nav-item" data-dom-id="nav-media" href="media-server.html"><svg viewBox="0 0 24 24" fill="none"><rect x="3" y="4" width="18" height="6" rx="1" stroke="currentColor" stroke-width="1.5"/><rect x="3" y="14" width="18" height="6" rx="1" stroke="currentColor" stroke-width="1.5"/></svg><span>媒体服务器</span></a>
+        <a class="nav-item" data-dom-id="nav-user" href="user.html"><svg viewBox="0 0 24 24" fill="none"><path d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8zm-8 9a8 8 0 0 1 16 0" stroke="currentColor" stroke-width="1.5"/></svg><span>用户权限</span></a>
+        <a class="nav-item" data-dom-id="nav-log" href="log.html"><svg viewBox="0 0 24 24" fill="none"><path d="M4 4h16v16H4z" stroke="currentColor" stroke-width="1.5"/><path d="M8 9h8M8 13h8M8 17h5" stroke="currentColor" stroke-width="1.5"/></svg><span>系统日志</span></a>
+      </div>
+    </nav>
+    <div class="sidebar-foot">
+      <div class="server-status-row"><span class="dot dot-success"></span><span>SIP 网关 · 在线</span></div>
+      <div class="server-status-row"><span class="dot dot-success"></span><span>媒体节点 ×14</span></div>
+    </div>
+  </aside>
+
+  <div class="app-main">
+    <!-- 顶栏 -->
+    <header class="app-topbar">
+      <div class="topbar-left">
+        <button class="icon-btn"><svg viewBox="0 0 24 24" fill="none"><path d="M4 6h16M4 12h16M4 18h16" stroke="currentColor" stroke-width="1.6"/></svg></button>
+        <div class="breadcrumb text-sm">
+          <span class="text-tertiary">监控中心 /</span>
+          <span>实时视频墙</span>
+        </div>
+      </div>
+      <div style="display:flex;justify-content:center;">
+        <div class="search-bar">
+          <svg viewBox="0 0 24 24" fill="none"><circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="1.6"/><path d="M21 21l-4.35-4.35" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+          <input placeholder="搜索通道名 / 国标 ID…" />
+          <span class="kbd" style="font-family: var(--font-mono); font-size: 11px; background: var(--bg-elevated); padding: 2px 6px; border-radius: 4px; color: var(--text-tertiary);">/</span>
+        </div>
+      </div>
+      <div class="topbar-right">
+        <button class="icon-btn"><svg viewBox="0 0 24 24" fill="none"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" stroke="currentColor" stroke-width="1.6"/></svg></button>
+        <div style="display:flex;align-items:center;gap:8px;padding:4px 10px 4px 4px;border:1px solid var(--border-default);border-radius:8px">
+          <div style="width:26px;height:26px;border-radius:6px;background:linear-gradient(135deg,var(--brand-primary-300),var(--brand-primary-600));display:grid;place-items:center;color:white;font-weight:700;font-size:12px">A</div>
+          <div><div style="font-size:12px;font-weight:600">admin</div><div style="font-size:10px;color:var(--text-tertiary)">超级管理员</div></div>
+        </div>
+      </div>
+    </header>
+
+    <!-- 主体 -->
+    <main style="display:grid;grid-template-columns: 280px 1fr 320px;background:var(--bg-base);overflow:hidden;">
+
+      <!-- 左侧：设备树 -->
+      <aside class="tree-pane">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+          <div style="font-size:12px;font-weight:600">设备分组</div>
+          <button style="background:transparent;border:0;color:var(--brand-primary-300);font-size:12px;cursor:pointer">展开全部</button>
+        </div>
+        <input style="width:100%;padding:7px 10px;background:var(--bg-elevated);border:1px solid var(--border-default);border-radius:6px;color:var(--text-primary);font-size:12px;outline:0" placeholder="筛选通道…" />
+
+        <div style="margin-top:14px">
+          <div class="tree-node is-active">
+            <span style="margin-right:6px">▾</span> 🏢 海珠区 · 总数 412
+          </div>
+          <div class="tree-children">
+            <div class="tree-leaf"><span class="dot dot-success"></span>海珠门岗 (12)</div>
+            <div class="tree-leaf"><span class="dot dot-success"></span>海珠仓库 (32)</div>
+            <div class="tree-leaf"><span class="dot dot-warning"></span>海珠停车场 (8)</div>
+            <div class="tree-leaf"><span class="dot dot-error"></span>海珠园区 · 故障 (3)</div>
+          </div>
+
+          <div class="tree-node">
+            <span style="margin-right:6px">▾</span> 🏛️ 天河区 · 总数 486
+          </div>
+          <div class="tree-children">
+            <div class="tree-leaf"><span class="dot dot-success"></span>天河城商圈 (98)</div>
+            <div class="tree-leaf"><span class="dot dot-success"></span>天河区政府 (12)</div>
+          </div>
+
+          <div class="tree-node">
+            <span style="margin-right:6px">▾</span> 🛣️ 道路监控 · 总数 1,247
+          </div>
+          <div class="tree-children">
+            <div class="tree-leaf"><span class="dot dot-success"></span>高速 (623)</div>
+            <div class="tree-leaf"><span class="dot dot-success"></span>主干道 (412)</div>
+            <div class="tree-leaf"><span class="dot dot-success"></span>桥梁 (212)</div>
+          </div>
+
+          <div class="tree-node">
+            <span style="margin-right:6px">▸</span> 🚌 公交 · 1,025
+          </div>
+          <div class="tree-node">
+            <span style="margin-right:6px">▸</span> 🚇 地铁站 · 671
+          </div>
+        </div>
+      </aside>
+
+      <!-- 中间：视频墙 -->
+      <section style="display:flex;flex-direction:column;overflow:hidden;">
+        <!-- 筛选 + 视图切换 -->
+        <div class="filter-bar">
+          <span class="filter-chip is-active">全部 2,915</span>
+          <span class="filter-chip">在线 2,890</span>
+          <span class="filter-chip">录制中 1,247</span>
+          <span class="filter-chip">离线 25</span>
+          <span class="filter-chip">故障 3</span>
+          <div style="flex:1"></div>
+          <div class="grid-toolbar">
+            <button class="layout-btn">1×1</button>
+            <button class="layout-btn">2×2</button>
+            <button class="layout-btn is-active">4×4</button>
+            <button class="layout-btn">5×5</button>
+            <button class="layout-btn">6×6</button>
+          </div>
+        </div>
+
+        <!-- 数据条 -->
+        <div class="stat-strip">
+          <span class="stat-pill" style="background:rgba(34,197,94,.1);color:var(--state-success)"><span class="dot dot-success"></span> 16 路在线</span>
+          <span class="stat-pill" style="background:rgba(11,138,178,.1);color:var(--brand-primary-300)">总码率 38.4 Mbps</span>
+          <span class="stat-pill" style="background:rgba(245,158,11,.1);color:var(--state-warning)">丢包率 0.02%</span>
+          <span style="color:var(--text-tertiary);font-size:11px">协议混合: H.264 ×14 · H.265 ×2</span>
+          <div style="flex:1"></div>
+          <button style="background:rgba(239,68,68,.1);border:1px solid var(--state-error);color:var(--state-error);border-radius:6px;padding:3px 10px;font-size:12px;cursor:pointer"><span class="dot dot-error"></span> 紧急录像</button>
+          <button style="background:var(--brand-primary-500);border:0;color:white;border-radius:6px;padding:5px 12px;font-size:12px;cursor:pointer">全屏轮播</button>
+        </div>
+
+        <!-- 视频墙 -->
+        <div class="layout-4x4 flex-1 overflow-auto">
+          <div class="video-grid" id="videoGrid">
+            <!-- 16 cells, 8 unique assets cycling -->
+          </div>
+        </div>
+      </section>
+
+      <!-- 右侧：当前通道详情 + PTZ 控制 -->
+      <aside style="background:var(--bg-surface);border-left:1px solid var(--border-subtle);padding:14px;display:flex;flex-direction:column;gap:14px;overflow-y:auto">
+        <!-- 重点通道主预览 -->
+        <div class="video-cell" style="aspect-ratio:16/9;border-color:var(--brand-primary-500)">
+          <img src="../assets/video-stream-1.jpg" alt="">
+          <div class="video-overlay">
+            <div class="video-meta-top">
+              <span class="chip chip-error" style="background:rgba(239,68,68,.85)">● LIVE</span>
+              <span class="text-white/80 mono">41042200001320000102</span>
+            </div>
+            <div class="video-meta-bottom">
+              <div>
+                <div class="text-white">海珠门岗 · 东 · 4K</div>
+                <div class="text-white/60 text-[10px]">25 fps · 6 Mbps · H.265</div>
+              </div>
+              <div class="text-white/80 mono text-[10px]">16:42:18</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 通道元数据 -->
+        <div class="card" style="padding:14px">
+          <div style="font-size:13px;font-weight:600;margin-bottom:10px">通道详情</div>
+          <table style="width:100%;font-size:12px">
+            <tr><td style="color:var(--text-tertiary);padding:3px 0">国标 ID</td><td class="mono text-right">41042200001320000102</td></tr>
+            <tr><td style="color:var(--text-tertiary);padding:3px 0">父设备</td><td class="text-right">44010000001310000001</td></tr>
+            <tr><td style="color:var(--text-tertiary);padding:3px 0">设备 IP</td><td class="mono text-right">10.21.4.118</td></tr>
+            <tr><td style="color:var(--text-tertiary);padding:3px 0">经纬度</td><td class="text-right">113.27°N · 23.13°E</td></tr>
+            <tr><td style="color:var(--text-tertiary);padding:3px 0">在线时长</td><td class="text-right">14 天 6 时</td></tr>
+            <tr><td style="color:var(--text-tertiary);padding:3px 0">所属平台</td><td class="text-right">天河中心</td></tr>
+          </table>
+        </div>
+
+        <!-- PTZ 控制 -->
+        <div class="card" style="padding:14px">
+          <div style="font-size:13px;font-weight:600;margin-bottom:10px">云台控制</div>
+          <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;max-width:200px;margin:0 auto">
+            <div></div>
+            <button class="ptz-btn">▲</button>
+            <div></div>
+            <button class="ptz-btn">◀</button>
+            <button class="ptz-btn" style="background:var(--state-error);">●</button>
+            <button class="ptz-btn">▶</button>
+            <div></div>
+            <button class="ptz-btn">▼</button>
+            <div></div>
+          </div>
+          <div style="display:flex;gap:6px;margin-top:10px;justify-content:center">
+            <button class="ptz-zoom">+ 放大</button>
+            <button class="ptz-zoom">− 缩小</button>
+            <button class="ptz-zoom">⟳ 聚焦</button>
+          </div>
+          <div style="display:flex;gap:6px;margin-top:6px;justify-content:center">
+            <button class="ptz-zoom">光圈 -</button>
+            <button class="ptz-zoom">光圈 +</button>
+            <button class="ptz-zoom">预置</button>
+          </div>
+        </div>
+
+        <!-- 操作记录 -->
+        <div class="card" style="padding:14px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+            <div style="font-size:13px;font-weight:600">操作记录</div>
+            <button style="background:transparent;border:0;color:var(--brand-primary-300);font-size:12px;cursor:pointer">查看全部</button>
+          </div>
+          <div style="font-size:12px">
+            <div style="display:flex;gap:8px;padding:6px 0;border-bottom:1px solid var(--border-subtle)">
+              <span class="mono text-tertiary">16:42</span>
+              <span>录像开始</span>
+              <span style="margin-left:auto;color:var(--text-tertiary)">admin</span>
+            </div>
+            <div style="display:flex;gap:8px;padding:6px 0;border-bottom:1px solid var(--border-subtle)">
+              <span class="mono text-tertiary">15:18</span>
+              <span>PTZ 转动 · 东偏南 32°</span>
+              <span style="margin-left:auto;color:var(--text-tertiary)">guest01</span>
+            </div>
+            <div style="display:flex;gap:8px;padding:6px 0">
+              <span class="mono text-tertiary">14:50</span>
+              <span>截图保存</span>
+              <span style="margin-left:auto;color:var(--text-tertiary)">admin</span>
+            </div>
+          </div>
+        </div>
+      </aside>
+    </main>
+  </div>
+</div>
+
+<style>
+  .ptz-btn { background: rgba(11,138,178,0.16); border: 1px solid var(--brand-primary-500); color: var(--brand-primary-200); height: 36px; border-radius: 6px; cursor: pointer; font-weight: 700; }
+  .ptz-btn:hover { background: var(--brand-primary-500); color: white; }
+  .ptz-zoom { background: var(--bg-elevated); border: 1px solid var(--border-default); color: var(--text-secondary); font-size: 11px; padding: 4px 10px; border-radius: 5px; cursor: pointer; }
+  .ptz-zoom:hover { background: var(--bg-hover); color: var(--text-primary); }
+  .card { background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: 10px; }
+</style>
+
+<script>
+  const imgs = ['../assets/video-stream-1.jpg','../assets/video-stream-2.jpg','../assets/video-stream-3.jpg'];
+  const names = ['海珠门岗','高速K127','天河城4F','停车场B2','黄埔仓库','白云机场','番禺园区','番禺大桥','增城路口','东莞大道','深圳前海','南沙港','珠海横琴','澳门关口','香港西九龙','北京国贸'];
+  const grid = document.getElementById('videoGrid');
+  for (let i=0;i<16;i++){
+    const cell = document.createElement('div');
+    cell.className = 'video-cell';
+    cell.innerHTML = '<img src="' + imgs[i % 3] + '" alt="">' +
+      `<div class="video-overlay">
+        <div class="video-meta-top">
+          ${i%5===3?'<span class="chip chip-mute" style="background:rgba(122,137,161,.85)">离线</span>':'<span class="chip chip-error" style="background:rgba(239,68,68,.85)">● LIVE</span>'}
+          <span class="text-white/80 mono text-[9px]">${(i+1).toString().padStart(2,'0')}</span>
+        </div>
+        <div class="cell-actions">
+          <button class="cell-action" title="放大">⤢</button>
+          <button class="cell-action" title="录制">●</button>
+          <button class="cell-action" title="对讲">🎙</button>
+        </div>
+        <div class="video-meta-bottom">
+          <div class="text-white text-[10px]">${names[i]}</div>
+          <div class="text-white/80 mono text-[9px]">16:42:18</div>
+        </div>
+      </div>
+    `;
+    grid.appendChild(cell);
+  }
+</script>
+
+    <style>
+  body { background: var(--bg-base); color: var(--text-primary); }
+  .app-shell { display: grid; grid-template-columns: var(--sidebar-width) 1fr; min-height: 100vh; }
+  .app-main { display: grid; grid-template-rows: var(--topbar-height) 1fr; }
+  background: var(--bg-surface); border-right: 1px solid var(--border-subtle); border-right: 1px solid var(--border-subtle); display: flex; flex-direction: column; }
+  .app-logo { padding: 18px 20px 18px 20px; display: flex; flex-direction: row; gap: 14px; align-items: center; justify-content: flex-start; border-bottom: 1px solid var(--border-subtle); position: relative; background: linear-gradient(180deg, transparent, rgba(11,138,178,.02)); }
+  .app-logo::after { content: ""; position: absolute; left: 20px; right: 20px; bottom: -1px; height: 1px; background: linear-gradient(90deg, transparent, var(--brand-primary-300) 30%, var(--brand-primary-300) 70%, transparent); opacity: .35; }
+  .logo-mark { flex: 0 0 44px; width: 44px; height: 44px; border-radius: 11px; background: linear-gradient(135deg, var(--brand-primary-300), var(--brand-primary-600) 60%, var(--brand-primary-800)); display: flex; align-items: center; justify-content: center; color: white; box-shadow: 0 6px 16px rgba(11,138,178,.4), inset 0 0 0 1px rgba(255,255,255,.12), inset 0 -8px 12px rgba(0,0,0,.15); position: relative; overflow: hidden; margin: 0; }
+  .logo-mark::before { content: ""; position: absolute; inset: 0; background: radial-gradient(circle at 30% 20%, rgba(255,255,255,.18), transparent 50%); pointer-events: none; }
+  .logo-mark svg { width: 26px; height: 26px; display: block; position: relative; z-index: 1; }
+  .logo-text { flex: 1 1 auto; min-width: 0; padding: 0 0 0 10px; display: flex; flex-direction: column; gap: 2px; justify-content: center; align-items: flex-start; }
+  .logo-name { font-family: 'Space Grotesk', var(--font-sans); font-weight: 600; font-size: 18px; line-height: 1; letter-spacing: -.02em; color: var(--text-primary); font-feature-settings: 'ss01' on; padding: 0; margin: 0; }
+  .logo-pulse { position: absolute; top: 14px; right: 12px; display: inline-flex; align-items: center; gap: 3px; padding: 3px 8px; font-family: 'JetBrains Mono', var(--font-mono); font-size: 9px; font-weight: 600; letter-spacing: .12em; color: #15803d; background: rgba(34,197,94,.1); border: 1px solid rgba(34,197,94,.25); border-radius: 99px; text-transform: uppercase; }
+  .app-nav { flex: 1; overflow-y: auto; padding: 12px 8px; }
+  .nav-group { margin-bottom: 12px; }
+  .nav-group-title { font-size: 10px; text-transform: uppercase; letter-spacing: 1.5px; color: var(--text-tertiary); padding: 8px 12px 6px; }
+  .nav-item { display: flex; gap: 12px; align-items: center; padding: 9px 12px; margin: 1px 0; border-radius: 8px; color: var(--text-secondary); text-decoration: none; font-size: 13px; cursor: pointer; }
+  .nav-item svg { width: 16px; height: 16px; opacity: .8; }
+  .nav-item:hover { background: var(--bg-hover); color: var(--text-primary); }
+  .nav-item.is-active { background: linear-gradient(90deg, rgba(11,138,178,0.18), transparent); color: var(--brand-primary-300); box-shadow: inset 2px 0 0 var(--brand-primary-400); }
+  .live-tag-mini { margin-left: auto; font-size: 9px; font-weight: 700; background: var(--state-error); color: white; padding: 1px 5px; border-radius: 3px; }
+  .sidebar-foot { padding: 12px; border-top: 1px solid var(--border-subtle); }
+  .server-status-row { display: flex; gap: 8px; align-items: center; font-size: 11px; color: var(--text-tertiary); padding: 3px 0; }
+  .server-status-row .dot { width: 6px; height: 6px; }
+  .app-topbar { background: var(--bg-surface); border-bottom: 1px solid var(--border-subtle); display: grid; grid-template-columns: 1fr 2fr 1fr; align-items: center; padding: 0 20px; gap: 16px; }
+  .topbar-left, .topbar-right { display: flex; align-items: center; gap: 14px; }
+  .topbar-right { justify-content: flex-end; }
+  .icon-btn { width: 32px; height: 32px; border-radius: 8px; background: transparent; border: 1px solid transparent; display: grid; place-items: center; color: var(--text-secondary); cursor: pointer; }
+  .icon-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+  .icon-btn svg { width: 16px; height: 16px; }
+  .search-bar { display: flex; align-items: center; gap: 8px; background: var(--bg-elevated); border: 1px solid var(--border-default); border-radius: 8px; padding: 7px 12px; width: 100%; max-width: 520px; }
+  .search-bar svg { width: 14px; height: 14px; color: var(--text-tertiary); }
+  .search-bar input { flex: 1; background: transparent; border: 0; outline: 0; color: var(--text-primary); font-size: 13px; }
+
+  .video-grid { display: grid; gap: 6px; padding: 14px; }
+  .video-cell { position: relative; background: #050b15; border-radius: 6px; overflow: hidden; aspect-ratio: 16/9; border: 1px solid var(--border-subtle); }
+  .video-cell:hover { border-color: var(--brand-primary-400); box-shadow: 0 0 0 1px var(--brand-primary-400); }
+  .video-cell:hover .cell-actions { opacity: 1; }
+  .video-cell img { width: 100%; height: 100%; object-fit: cover; }
+  .video-overlay { position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: space-between; padding: 8px 10px; background: linear-gradient(180deg, rgba(0,0,0,0.4) 0%, transparent 30%, transparent 60%, rgba(0,0,0,0.6) 100%); }
+  .video-meta-top { display: flex; justify-content: space-between; font-size: 10px; }
+  .video-meta-bottom { display: flex; justify-content: space-between; align-items: center; font-size: 10px; }
+  .cell-actions { position: absolute; top: 8px; right: 8px; display: flex; gap: 4px; opacity: 0; transition: opacity .15s; }
+  .cell-action { width: 24px; height: 24px; background: rgba(0,0,0,0.6); backdrop-filter: blur(6px); border: 1px solid rgba(255,255,255,0.1); border-radius: 5px; display: grid; place-items: center; cursor: pointer; color: white; }
+  .cell-action:hover { background: var(--brand-primary-500); }
+
+  .filter-bar { display: flex; gap: 10px; align-items: center; padding: 12px 14px; background: var(--bg-surface); border-bottom: 1px solid var(--border-subtle); }
+  .filter-chip { padding: 5px 12px; border-radius: 6px; font-size: 12px; background: var(--bg-elevated); border: 1px solid var(--border-default); color: var(--text-secondary); cursor: pointer; }
+  .filter-chip.is-active { background: rgba(11,138,178,0.16); color: var(--brand-primary-300); border-color: var(--brand-primary-500); }
+  .filter-chip:hover:not(.is-active) { background: var(--bg-hover); }
+
+  .grid-toolbar { display: flex; gap: 4px; }
+  .layout-btn { padding: 4px 10px; background: var(--bg-elevated); border: 1px solid var(--border-default); border-radius: 6px; cursor: pointer; color: var(--text-secondary); font-size: 12px; }
+  .layout-btn.is-active { background: rgba(11,138,178,0.18); color: var(--brand-primary-300); border-color: var(--brand-primary-400); }
+
+  .stat-strip { padding: 10px 14px; display: flex; gap: 14px; align-items: center; background: var(--bg-base); border-bottom: 1px solid var(--border-subtle); }
+  .stat-pill { font-size: 11px; padding: 3px 10px; border-radius: 999px; display: inline-flex; gap: 6px; align-items: center; }
+
+  .tree-pane { background: var(--bg-surface); border-right: 1px solid var(--border-subtle); padding: 14px; overflow-y: auto; }
+  .tree-node { padding: 7px 10px; border-radius: 6px; font-size: 13px; color: var(--text-secondary); cursor: pointer; }
+  .tree-node:hover { background: var(--bg-hover); color: var(--text-primary); }
+  .tree-node.is-active { background: rgba(11,138,178,0.16); color: var(--brand-primary-300); }
+  .tree-children { padding-left: 16px; }
+  .tree-leaf { display: flex; gap: 8px; align-items: center; padding: 5px 10px; font-size: 12px; border-radius: 5px; color: var(--text-tertiary); cursor: pointer; }
+  .tree-leaf:hover { background: var(--bg-hover); color: var(--text-primary); }
+
+  .layout-2x2 .video-grid { grid-template-columns: repeat(2, 1fr); }
+  .layout-3x3 .video-grid { grid-template-columns: repeat(3, 1fr); }
+  .layout-4x4 .video-grid { grid-template-columns: repeat(4, 1fr); }
+  .layout-5x5 .video-grid { grid-template-columns: repeat(5, 1fr); }
+</style>
+</body>
+</html>

@@ -1,0 +1,1094 @@
+{
+  "data": [
+    {
+      "id": "page-login",
+      "title": "登录",
+      "type": "page",
+      "version": 1,
+      "createdAt": 1783253109202,
+      "canvasData": {
+        "x": 0,
+        "y": 0,
+        "group": 0
+      },
+      "devMetadata": {
+        "htmlSrc": "pages/login.html",
+        "interactions": [
+          {
+            "domId": "login-submit",
+            "targetPageId": "page-dashboard",
+            "transitionLabel": "登录成功"
+          }
+        ]
+      }
+    },
+    {
+      "id": "page-dashboard",
+      "title": "控制台 · Console",
+      "type": "page",
+      "version": 1,
+      "createdAt": 1717900000000,
+      "canvasData": {
+        "x": 620,
+        "y": 0,
+        "group": 0
+      },
+      "devMetadata": {
+        "htmlSrc": "pages/dashboard.html",
+        "interactions": [
+          {
+            "domId": "nav-dashboard",
+            "targetPageId": "page-dashboard",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-live",
+            "targetPageId": "page-live-wall",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-playback",
+            "targetPageId": "page-playback",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-map",
+            "targetPageId": "page-map",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-channel",
+            "targetPageId": "page-channel-list",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-jt",
+            "targetPageId": "page-jt-device",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-stream-proxy",
+            "targetPageId": "page-stream-proxy",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-record",
+            "targetPageId": "page-record-plan",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-platform",
+            "targetPageId": "page-platform-cascade",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-media",
+            "targetPageId": "page-media-server",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-user",
+            "targetPageId": "page-user",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-log",
+            "targetPageId": "page-log",
+            "hideEdge": true
+          },
+          {
+            "domId": "open-live-wall",
+            "targetPageId": "page-live-wall"
+          }
+        ]
+      }
+    },
+    {
+      "id": "page-live-wall",
+      "title": "实时视频墙",
+      "type": "page",
+      "version": 1,
+      "createdAt": 1717900000000,
+      "canvasData": {
+        "x": 1240,
+        "y": 0,
+        "group": 0
+      },
+      "devMetadata": {
+        "htmlSrc": "pages/live-wall.html",
+        "interactions": [
+          {
+            "domId": "nav-dashboard",
+            "targetPageId": "page-dashboard",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-live",
+            "targetPageId": "page-live-wall",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-playback",
+            "targetPageId": "page-playback",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-map",
+            "targetPageId": "page-map",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-channel",
+            "targetPageId": "page-channel-list",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-jt",
+            "targetPageId": "page-jt-device",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-stream-proxy",
+            "targetPageId": "page-stream-proxy",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-record",
+            "targetPageId": "page-record-plan",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-platform",
+            "targetPageId": "page-platform-cascade",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-media",
+            "targetPageId": "page-media-server",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-user",
+            "targetPageId": "page-user",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-log",
+            "targetPageId": "page-log",
+            "hideEdge": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "page-playback",
+      "title": "录像回放",
+      "type": "page",
+      "version": 1,
+      "createdAt": 1717900000000,
+      "canvasData": {
+        "x": 0,
+        "y": 521,
+        "group": 0
+      },
+      "devMetadata": {
+        "htmlSrc": "pages/playback.html",
+        "interactions": [
+          {
+            "domId": "nav-dashboard",
+            "targetPageId": "page-dashboard",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-live",
+            "targetPageId": "page-live-wall",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-playback",
+            "targetPageId": "page-playback",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-map",
+            "targetPageId": "page-map",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-channel",
+            "targetPageId": "page-channel-list",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-jt",
+            "targetPageId": "page-jt-device",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-stream-proxy",
+            "targetPageId": "page-stream-proxy",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-record",
+            "targetPageId": "page-record-plan",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-platform",
+            "targetPageId": "page-platform-cascade",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-media",
+            "targetPageId": "page-media-server",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-user",
+            "targetPageId": "page-user",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-log",
+            "targetPageId": "page-log",
+            "hideEdge": true
+          },
+          {
+            "domId": "playback-search",
+            "targetPageId": "page-playback",
+            "hideEdge": true
+          },
+          {
+            "domId": "playback-play",
+            "targetPageId": "page-playback",
+            "hideEdge": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "page-map",
+      "title": "GIS 地图",
+      "type": "page",
+      "version": 1,
+      "createdAt": 1717900000000,
+      "canvasData": {
+        "x": 620,
+        "y": 521,
+        "group": 0
+      },
+      "devMetadata": {
+        "htmlSrc": "pages/map.html",
+        "interactions": [
+          {
+            "domId": "nav-dashboard",
+            "targetPageId": "page-dashboard",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-live",
+            "targetPageId": "page-live-wall",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-playback",
+            "targetPageId": "page-playback",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-map",
+            "targetPageId": "page-map",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-channel",
+            "targetPageId": "page-channel-list",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-jt",
+            "targetPageId": "page-jt-device",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-stream-proxy",
+            "targetPageId": "page-stream-proxy",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-record",
+            "targetPageId": "page-record-plan",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-platform",
+            "targetPageId": "page-platform-cascade",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-media",
+            "targetPageId": "page-media-server",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-user",
+            "targetPageId": "page-user",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-log",
+            "targetPageId": "page-log",
+            "hideEdge": true
+          },
+          {
+            "domId": "draw-track",
+            "targetPageId": "page-jt-device",
+            "hideEdge": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "page-channel-list",
+      "title": "通道列表",
+      "type": "page",
+      "version": 1,
+      "createdAt": 1717900000000,
+      "canvasData": {
+        "x": 1240,
+        "y": 521,
+        "group": 0
+      },
+      "devMetadata": {
+        "htmlSrc": "pages/channel-list.html",
+        "interactions": [
+          {
+            "domId": "nav-dashboard",
+            "targetPageId": "page-dashboard",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-live",
+            "targetPageId": "page-live-wall",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-playback",
+            "targetPageId": "page-playback",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-map",
+            "targetPageId": "page-map",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-channel",
+            "targetPageId": "page-channel-list",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-jt",
+            "targetPageId": "page-jt-device",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-stream-proxy",
+            "targetPageId": "page-stream-proxy",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-record",
+            "targetPageId": "page-record-plan",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-platform",
+            "targetPageId": "page-platform-cascade",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-media",
+            "targetPageId": "page-media-server",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-user",
+            "targetPageId": "page-user",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-log",
+            "targetPageId": "page-log",
+            "hideEdge": true
+          },
+          {
+            "domId": "add-channel",
+            "targetPageId": "page-channel-list",
+            "hideEdge": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "page-jt-device",
+      "title": "车载终端管理",
+      "type": "page",
+      "version": 1,
+      "createdAt": 1717900000000,
+      "canvasData": {
+        "x": 1860,
+        "y": 521,
+        "group": 0
+      },
+      "devMetadata": {
+        "htmlSrc": "pages/jt-device.html",
+        "interactions": [
+          {
+            "domId": "nav-dashboard",
+            "targetPageId": "page-dashboard",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-live",
+            "targetPageId": "page-live-wall",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-playback",
+            "targetPageId": "page-playback",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-map",
+            "targetPageId": "page-map",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-channel",
+            "targetPageId": "page-channel-list",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-jt",
+            "targetPageId": "page-jt-device",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-stream-proxy",
+            "targetPageId": "page-stream-proxy",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-record",
+            "targetPageId": "page-record-plan",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-platform",
+            "targetPageId": "page-platform-cascade",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-media",
+            "targetPageId": "page-media-server",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-user",
+            "targetPageId": "page-user",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-log",
+            "targetPageId": "page-log",
+            "hideEdge": true
+          },
+          {
+            "domId": "add-jt",
+            "targetPageId": "page-jt-device",
+            "hideEdge": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "page-stream-proxy",
+      "title": "拉流代理",
+      "type": "page",
+      "version": 1,
+      "createdAt": 1717900000000,
+      "canvasData": {
+        "x": 2480,
+        "y": 521,
+        "group": 0
+      },
+      "devMetadata": {
+        "htmlSrc": "pages/stream-proxy.html",
+        "interactions": [
+          {
+            "domId": "nav-dashboard",
+            "targetPageId": "page-dashboard",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-live",
+            "targetPageId": "page-live-wall",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-playback",
+            "targetPageId": "page-playback",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-map",
+            "targetPageId": "page-map",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-channel",
+            "targetPageId": "page-channel-list",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-jt",
+            "targetPageId": "page-jt-device",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-stream-proxy",
+            "targetPageId": "page-stream-proxy",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-record",
+            "targetPageId": "page-record-plan",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-platform",
+            "targetPageId": "page-platform-cascade",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-media",
+            "targetPageId": "page-media-server",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-user",
+            "targetPageId": "page-user",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-log",
+            "targetPageId": "page-log",
+            "hideEdge": true
+          },
+          {
+            "domId": "add-proxy",
+            "targetPageId": "page-stream-proxy",
+            "hideEdge": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "page-record-plan",
+      "title": "录像计划",
+      "type": "page",
+      "version": 1,
+      "createdAt": 1717900000000,
+      "canvasData": {
+        "x": 3100,
+        "y": 521,
+        "group": 0
+      },
+      "devMetadata": {
+        "htmlSrc": "pages/record-plan.html",
+        "interactions": [
+          {
+            "domId": "nav-dashboard",
+            "targetPageId": "page-dashboard",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-live",
+            "targetPageId": "page-live-wall",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-playback",
+            "targetPageId": "page-playback",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-map",
+            "targetPageId": "page-map",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-channel",
+            "targetPageId": "page-channel-list",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-jt",
+            "targetPageId": "page-jt-device",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-stream-proxy",
+            "targetPageId": "page-stream-proxy",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-record",
+            "targetPageId": "page-record-plan",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-platform",
+            "targetPageId": "page-platform-cascade",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-media",
+            "targetPageId": "page-media-server",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-user",
+            "targetPageId": "page-user",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-log",
+            "targetPageId": "page-log",
+            "hideEdge": true
+          },
+          {
+            "domId": "add-plan",
+            "targetPageId": "page-record-plan",
+            "hideEdge": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "page-platform-cascade",
+      "title": "上级平台对接",
+      "type": "page",
+      "version": 1,
+      "createdAt": 1717900000000,
+      "canvasData": {
+        "x": 3720,
+        "y": 521,
+        "group": 0
+      },
+      "devMetadata": {
+        "htmlSrc": "pages/platform-cascade.html",
+        "interactions": [
+          {
+            "domId": "nav-dashboard",
+            "targetPageId": "page-dashboard",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-live",
+            "targetPageId": "page-live-wall",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-playback",
+            "targetPageId": "page-playback",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-map",
+            "targetPageId": "page-map",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-channel",
+            "targetPageId": "page-channel-list",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-jt",
+            "targetPageId": "page-jt-device",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-stream-proxy",
+            "targetPageId": "page-stream-proxy",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-record",
+            "targetPageId": "page-record-plan",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-platform",
+            "targetPageId": "page-platform-cascade",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-media",
+            "targetPageId": "page-media-server",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-user",
+            "targetPageId": "page-user",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-log",
+            "targetPageId": "page-log",
+            "hideEdge": true
+          },
+          {
+            "domId": "add-platform",
+            "targetPageId": "page-platform-cascade",
+            "hideEdge": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "page-media-server",
+      "title": "媒体服务器",
+      "type": "page",
+      "version": 1,
+      "createdAt": 1717900000000,
+      "canvasData": {
+        "x": 4340,
+        "y": 521,
+        "group": 0
+      },
+      "devMetadata": {
+        "htmlSrc": "pages/media-server.html",
+        "interactions": [
+          {
+            "domId": "nav-dashboard",
+            "targetPageId": "page-dashboard",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-live",
+            "targetPageId": "page-live-wall",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-playback",
+            "targetPageId": "page-playback",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-map",
+            "targetPageId": "page-map",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-channel",
+            "targetPageId": "page-channel-list",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-jt",
+            "targetPageId": "page-jt-device",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-stream-proxy",
+            "targetPageId": "page-stream-proxy",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-record",
+            "targetPageId": "page-record-plan",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-platform",
+            "targetPageId": "page-platform-cascade",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-media",
+            "targetPageId": "page-media-server",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-user",
+            "targetPageId": "page-user",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-log",
+            "targetPageId": "page-log",
+            "hideEdge": true
+          },
+          {
+            "domId": "add-media-node",
+            "targetPageId": "page-media-server",
+            "hideEdge": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "page-user",
+      "title": "用户与权限",
+      "type": "page",
+      "version": 1,
+      "createdAt": 1717900000000,
+      "canvasData": {
+        "x": 4960,
+        "y": 521,
+        "group": 0
+      },
+      "devMetadata": {
+        "htmlSrc": "pages/user.html",
+        "interactions": [
+          {
+            "domId": "nav-dashboard",
+            "targetPageId": "page-dashboard",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-live",
+            "targetPageId": "page-live-wall",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-playback",
+            "targetPageId": "page-playback",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-map",
+            "targetPageId": "page-map",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-channel",
+            "targetPageId": "page-channel-list",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-jt",
+            "targetPageId": "page-jt-device",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-stream-proxy",
+            "targetPageId": "page-stream-proxy",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-record",
+            "targetPageId": "page-record-plan",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-platform",
+            "targetPageId": "page-platform-cascade",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-media",
+            "targetPageId": "page-media-server",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-user",
+            "targetPageId": "page-user",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-log",
+            "targetPageId": "page-log",
+            "hideEdge": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "page-log",
+      "title": "系统日志",
+      "type": "page",
+      "version": 1,
+      "createdAt": 1717900000000,
+      "canvasData": {
+        "x": 5580,
+        "y": 521,
+        "group": 0
+      },
+      "devMetadata": {
+        "htmlSrc": "pages/log.html",
+        "interactions": [
+          {
+            "domId": "nav-dashboard",
+            "targetPageId": "page-dashboard",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-live",
+            "targetPageId": "page-live-wall",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-playback",
+            "targetPageId": "page-playback",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-map",
+            "targetPageId": "page-map",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-channel",
+            "targetPageId": "page-channel-list",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-jt",
+            "targetPageId": "page-jt-device",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-stream-proxy",
+            "targetPageId": "page-stream-proxy",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-record",
+            "targetPageId": "page-record-plan",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-platform",
+            "targetPageId": "page-platform-cascade",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-media",
+            "targetPageId": "page-media-server",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-user",
+            "targetPageId": "page-user",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-log",
+            "targetPageId": "page-log",
+            "hideEdge": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "image-001",
+      "title": "控制台背景图案",
+      "type": "image",
+      "version": 1,
+      "createdAt": 1717900000001,
+      "canvasData": {
+        "x": 0,
+        "y": 1053
+      },
+      "devMetadata": {
+        "imageSrc": "assets/bg-dashboard.jpg"
+      }
+    },
+    {
+      "id": "image-002",
+      "title": "监控视频画面·停车场",
+      "type": "image",
+      "version": 1,
+      "createdAt": 1717900000002,
+      "canvasData": {
+        "x": 620,
+        "y": 1053
+      },
+      "devMetadata": {
+        "imageSrc": "assets/video-stream-1.jpg"
+      }
+    },
+    {
+      "id": "image-003",
+      "title": "监控视频画面·城市道路",
+      "type": "image",
+      "version": 1,
+      "createdAt": 1717900000003,
+      "canvasData": {
+        "x": 1240,
+        "y": 1053
+      },
+      "devMetadata": {
+        "imageSrc": "assets/video-stream-2.jpg"
+      }
+    },
+    {
+      "id": "image-004",
+      "title": "监控视频画面·商场内部",
+      "type": "image",
+      "version": 1,
+      "createdAt": 1717900000004,
+      "canvasData": {
+        "x": 1860,
+        "y": 1053
+      },
+      "devMetadata": {
+        "imageSrc": "assets/video-stream-3.jpg"
+      }
+    },
+    {
+      "id": "image-005",
+      "title": "GIS 卫星地图背景",
+      "type": "image",
+      "version": 1,
+      "createdAt": 1717900000005,
+      "canvasData": {
+        "x": 2480,
+        "y": 1053
+      },
+      "devMetadata": {
+        "imageSrc": "assets/map-bg.jpg"
+      }
+    },
+    {
+      "id": "image-006",
+      "title": "登录页背景",
+      "type": "image",
+      "version": 1,
+      "createdAt": 1717900000006,
+      "canvasData": {
+        "x": 3100,
+        "y": 1053
+      },
+      "devMetadata": {
+        "imageSrc": "assets/login-bg.jpg"
+      }
+    }
+  ],
+  "config": {
+    "autoLayout": true,
+    "deviceType": "desktop",
+    "projectName": "GBServer · 现代化重新设计",
+    "designLibrary": null,
+    "showEdge": true,
+    "windowSize": {
+      "width": 800,
+      "height": 600
+    }
+  }
+}
