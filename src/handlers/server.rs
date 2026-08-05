@@ -320,6 +320,7 @@ fn read_disk_usage_impl() -> Option<(u64, u64, u64)> {
 ///    只在 dashboard 显示"真实"磁盘。
 /// 3. 主挂载点 `/` 优先作为该磁盘的代表挂载点；其余情况下选使用率
 ///    最高的挂载点（更直观反映磁盘压力）。
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn read_all_disk_usage() -> Vec<(String, u64, u64)> {
     let output = match Command::new("df").arg("-kP").output() {
         Ok(o) if o.status.success() => o,
@@ -633,7 +634,7 @@ fn is_virtual_interface(name: &str) -> bool {
 
 fn detect_outbound_ip_cached() -> Option<IpAddr> {
     use std::sync::Mutex;
-    use std::time::Instant;
+    use std::time::{Duration, Instant};
     static CACHE: OnceLock<Mutex<Option<(Instant, IpAddr)>>> = OnceLock::new();
     let m = CACHE.get_or_init(|| Mutex::new(None));
     let mut guard = m.lock().unwrap();
