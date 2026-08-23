@@ -1,7 +1,6 @@
 /* ===========================================================
  * GBServer Redesign · Design Tokens
- * 调性：蓝白浅色 · 清爽专业
- * 主色：青蓝（监控/流媒体）
+ * 与 web/src/styles/_tokens.scss 保持一致
  * =========================================================== */
 
 :root {
@@ -11,16 +10,16 @@
   --brand-primary-200: #9ad0e6;
   --brand-primary-300: #5eb4d4;
   --brand-primary-400: #2a93bd;
-  --brand-primary-500: #0b8ab2; /* 主品牌色 */
+  --brand-primary-500: #0b8ab2;
   --brand-primary-600: #086d90;
   --brand-primary-700: #05546f;
   --brand-primary-800: #043c52;
   --brand-primary-900: #022536;
 
   /* 背景层 */
-  --bg-base:       #f5f8fc; /* 主背景 · 浅蓝灰 */
-  --bg-surface:    #ffffff; /* 卡片背景 · 纯白 */
-  --bg-elevated:   #f0f5fa; /* 弹层/二级表面 */
+  --bg-base:       #f5f8fc;
+  --bg-surface:    #ffffff;
+  --bg-elevated:   #f0f5fa;
   --bg-overlay:    #e7f0f7;
   --bg-hover:      #e1ecf5;
   --bg-active:     #d4e4f1;
@@ -85,7 +84,7 @@
   --shadow-pop:  0 8px 24px rgba(15, 28, 45, 0.10), 0 0 0 1px rgba(11, 138, 178, 0.08) inset;
   --shadow-overlay: 0 16px 48px rgba(15, 28, 45, 0.18);
 
-  /* 侧栏/顶栏尺寸 */
+  /* 布局尺寸 */
   --sidebar-width: 220px;
   --sidebar-collapsed: 64px;
   --topbar-height: 56px;
@@ -96,7 +95,7 @@
   --sideBarCollapsedWidth: var(--sidebar-collapsed);
   --navbarHeight: var(--topbar-height);
   --tagsViewHeight: var(--tagsbar-height);
-  --tagsbarHeight: var(--tagsbar-height); /* 兼容 layout/index.vue 里的命名 */
+  --tagsbarHeight: var(--tagsbar-height);
 
   /* 布局卡 */
   --layout-radius: 10px;
@@ -104,7 +103,7 @@
   --layout-bg: var(--bg-surface);
   --layout-padding: 16px;
 
-  /* Element UI 主题 */
+  /* Element Plus 主题变量（覆盖默认） */
   --el-color-primary: var(--brand-primary-500);
   --el-color-primary-light-3: var(--brand-primary-300);
   --el-color-primary-light-5: var(--brand-primary-200);
@@ -128,8 +127,3 @@
   --el-border-radius-small: var(--radius-sm);
   --el-font-family: var(--font-sans);
 }
-
-/* 断点（用于 SCSS） */
-$breakpoint-mobile:  768px;
-$breakpoint-tablet:  1024px;
-$breakpoint-desktop: 1280px;

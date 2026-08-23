@@ -1,8 +1,12 @@
 <template>
   <header class="app-topbar">
     <div class="topbar-left">
-      <button class="gb-icon-btn" :aria-label="sidebar.opened ? '折叠侧栏' : '展开侧栏'" @click="toggleSideBar">
-        <svg v-if="sidebar.opened" viewBox="0 0 24 24" fill="none">
+      <button
+        class="gb-icon-btn"
+        :aria-label="appStore.sidebar.opened ? '折叠侧栏' : '展开侧栏'"
+        @click="appStore.toggleSidebar()"
+      >
+        <svg v-if="appStore.sidebar.opened" viewBox="0 0 24 24" fill="none">
           <path d="M4 6h16M4 12h10M4 18h16" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
         </svg>
         <svg v-else viewBox="0 0 24 24" fill="none">
@@ -27,18 +31,18 @@
           type="text"
           placeholder="搜索通道、设备、平台…"
           @keyup.enter="onSearch"
-        >
+        />
         <span class="kbd">/</span>
       </div>
     </div>
 
     <div class="topbar-right">
-      <div class="topbar-stat" v-if="latency">
+      <div v-if="latency" class="topbar-stat">
         <span class="gb-dot gb-dot--success" />
         <span class="mono">{{ latency }}</span>
         <span class="text-tertiary">延迟</span>
       </div>
-      <button class="gb-icon-btn" aria-label="告警" @click="goToAlarm">
+      <button class="gb-icon-btn" aria-label="告警" @click="goAlarm">
         <svg viewBox="0 0 24 24" fill="none">
           <path d="M12 3l9 16H3z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" />
         </svg>
@@ -52,84 +56,131 @@
       <el-dropdown trigger="click" @command="onCommand">
         <div class="user-chip">
           <div class="user-avatar">{{ avatarLetter }}</div>
-          <div>
-            <div class="user-name">{{ name || 'admin' }}</div>
-            <div class="user-role">{{ role || '超级管理员' }}</div>
+          <div class="user-info">
+            <div class="user-name">{{ userStore.name || 'admin' }}</div>
+            <div class="user-role">超级管理员</div>
           </div>
         </div>
-        <el-dropdown-menu slot="dropdown">
-          <el-dropdown-item icon="el-icon-key" command="password">修改密码</el-dropdown-item>
-          <el-dropdown-item icon="el-icon-setting" command="profile">个人设置</el-dropdown-item>
-          <el-dropdown-item divided icon="el-icon-switch-button" command="logout">注销</el-dropdown-item>
-        </el-dropdown-menu>
+        <template #dropdown>
+          <el-dropdown-menu>
+            <el-dropdown-item icon="el-icon-key" command="password">修改密码</el-dropdown-item>
+            <el-dropdown-item icon="el-icon-setting" command="profile">个人设置</el-dropdown-item>
+            <el-dropdown-item divided icon="el-icon-switch-button" command="logout">注销</el-dropdown-item>
+          </el-dropdown-menu>
+        </template>
       </el-dropdown>
     </div>
-
-    <changePasswordDialog ref="changePasswordDialog" />
   </header>
 </template>
 
-<script>
-import { mapGetters } from 'vuex'
-import changePasswordDialog from './dialog/changePassword.vue'
+<script setup lang="ts">
+import { computed, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { ElMessage } from 'element-plus'
+import { useAppStore } from '@/store/modules/app'
+import { useUserStore } from '@/store/modules/user'
 
-export default {
-  name: 'Navbar',
-  components: { changePasswordDialog },
-  data() {
-    return { query: '', latency: '12ms' }
-  },
-  computed: {
-    ...mapGetters(['sidebar', 'name', 'role']),
-    parentTitle() {
-      const matched = this.$route.matched
-      if (matched.length < 2) return ''
-      const parent = matched[matched.length - 2]
-      return (parent.meta && parent.meta.title) || ''
-    },
-    currentTitle() {
-      return (this.$route.meta && this.$route.meta.title) || ''
-    },
-    avatarLetter() {
-      return (this.name || 'A').slice(0, 1).toUpperCase()
-    }
-  },
-  methods: {
-    toggleSideBar() { this.$store.dispatch('app/toggleSideBar') },
-    toggleTheme() {
-      this.$message && this.$message.info('主题切换：预留接口')
-    },
-    onSearch() {
-      if (!this.query) return
-      this.$message && this.$message.info(`搜索：${this.query}`)
-    },
-    goToAlarm() { this.$router.push('/alarm') },
-    async onCommand(cmd) {
-      if (cmd === 'logout') {
-        await this.$store.dispatch('user/logout')
-        this.$router.push(`/login?redirect=${this.$route.fullPath}`)
-      } else if (cmd === 'password') {
-        this.$refs.changePasswordDialog.openDialog(this.logout)
-      } else if (cmd === 'profile') {
-        this.$message && this.$message.info('个人设置：预留页面')
-      }
-    },
-    bindGlobalKey(e) {
-      if (e.key === '/' && document.activeElement && document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'TEXTAREA') {
-        e.preventDefault()
-        this.$el.querySelector('.gb-search input') && this.$el.querySelector('.gb-search input').focus()
-      }
-    }
-  },
-  mounted() {
-    document.addEventListener('keydown', this.bindGlobalKey)
-  },
-  beforeDestroy() {
-    document.removeEventListener('keydown', this.bindGlobalKey)
+const appStore = useAppStore()
+const userStore = useUserStore()
+const route = useRoute()
+const router = useRouter()
+
+const query = ref('')
+const latency = ref('12ms')
+
+const parentTitle = computed(() => {
+  const matched = route.matched
+  if (matched.length < 2) return ''
+  return (matched[matched.length - 2].meta.title as string | undefined) || ''
+})
+const currentTitle = computed(() => (route.meta.title as string | undefined) || '')
+
+const avatarLetter = computed(() =>
+  (userStore.name || 'A').slice(0, 1).toUpperCase()
+)
+
+function onSearch() {
+  if (!query.value) return
+  ElMessage.info(`搜索：${query.value}`)
+}
+function toggleTheme() {
+  ElMessage.info('主题切换：预留接口')
+}
+function goAlarm() {
+  router.push('/alarm')
+}
+async function onCommand(cmd: string) {
+  if (cmd === 'logout') {
+    await userStore.logout()
+    router.push(`/login?redirect=${route.fullPath}`)
+  } else if (cmd === 'password') {
+    ElMessage.info('修改密码：预留接口')
+  } else if (cmd === 'profile') {
+    ElMessage.info('个人设置：预留接口')
   }
 }
 </script>
 
-<style scoped>
-.app-topbar { background: var(--bg-surface); }
+<style lang="scss" scoped>
+.app-topbar {
+  flex: 0 0 56px;
+  min-height: 56px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 16px;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.topbar-left { display: flex; align-items: center; gap: 12px; min-width: 240px; }
+.topbar-breadcrumb { display: flex; gap: 6px; font-size: var(--text-sm); color: var(--text-tertiary); }
+.topbar-breadcrumb .current { color: var(--text-primary); font-weight: 600; }
+.topbar-breadcrumb .sep { color: var(--text-disabled); }
+
+.topbar-center { flex: 1; max-width: 480px; }
+.topbar-center .gb-search { width: 100%; }
+.gb-search .kbd {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  background: var(--bg-overlay);
+  border-radius: 2px;
+  padding: 1px 4px;
+  color: var(--text-tertiary);
+}
+
+.topbar-right { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+.topbar-stat {
+  display: flex; align-items: center; gap: 6px;
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  padding: 0 8px;
+  .mono { color: var(--text-primary); }
+}
+.badge-dot {
+  position: absolute; top: 6px; right: 6px;
+  width: 6px; height: 6px;
+  background: var(--state-error);
+  border-radius: 50%;
+}
+
+.user-chip {
+  display: flex; align-items: center; gap: 8px;
+  padding: 4px 10px 4px 4px;
+  border-radius: var(--radius-full);
+  cursor: pointer;
+  transition: background 0.15s;
+  &:hover { background: var(--bg-hover); }
+}
+.user-avatar {
+  width: 28px; height: 28px;
+  display: grid; place-items: center;
+  background: var(--brand-primary-500);
+  color: #fff;
+  border-radius: 50%;
+  font-weight: 600;
+  font-size: var(--text-sm);
+}
+.user-info { line-height: 1.1; }
+.user-name { font-size: var(--text-xs); color: var(--text-primary); font-weight: 600; }
+.user-role { font-size: 10px; color: var(--text-tertiary); }
 </style>

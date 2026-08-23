@@ -1,288 +1,190 @@
 <template>
-  <div class="login-shell">
-    <!-- 背景图 -->
-    <div class="login-bg" />
-    <!-- 左侧蒙层 -->
-    <div class="login-mask" />
+  <div class="login-page">
+    <section class="login-card">
+      <div class="login-card__brand">
+        <div class="brand-mark">
+          <svg viewBox="0 0 24 24" fill="none">
+            <rect x="2.5" y="2.5" width="19" height="19" rx="3" stroke="currentColor" stroke-width="1.5" />
+            <circle cx="12" cy="12" r="2.4" fill="currentColor" />
+            <line x1="12" y1="1" x2="12" y2="3.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
+            <line x1="12" y1="20.5" x2="12" y2="23" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
+            <line x1="1" y1="12" x2="3.5" y2="12" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
+            <line x1="20.5" y1="12" x2="23" y2="12" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
+          </svg>
+        </div>
+        <h1 class="brand-title">GBServer</h1>
+        <p class="brand-sub">GB/T 28181 视频融合平台</p>
+        <ul class="brand-points">
+          <li>多协议接入 · 50,000+ 通道实时调阅</li>
+          <li>云端级联 · 跨地域可视域组网</li>
+          <li>智能录像 · 行为检测 / 帧级检索</li>
+        </ul>
+        <footer class="brand-foot">© 2025 GBServer Team · 视频感知 · 行业互联</footer>
+      </div>
 
-    <main class="login-main">
-      <!-- 左侧品牌区 -->
-      <section class="login-brand">
-        <div class="brand-top">
-          <div class="brand-mark">GB</div>
-          <div class="brand-meta">
-            <span class="brand-name">GBServer</span>
-            <span class="brand-version text-primary-accent">v2.7.4</span>
-          </div>
+      <el-form
+        ref="formRef"
+        :model="form"
+        :rules="rules"
+        class="login-card__form"
+        size="large"
+        @submit.prevent="onSubmit"
+      >
+        <header class="form-head">
+          <h2>欢迎回来</h2>
+          <p>使用 SIP 平台的统一凭证登录</p>
+        </header>
+        <el-form-item prop="username">
+          <el-input
+            v-model="form.username"
+            placeholder="用户名 / SIP 编号"
+            :prefix-icon="User"
+            autocomplete="username"
+          />
+        </el-form-item>
+        <el-form-item prop="password">
+          <el-input
+            v-model="form.password"
+            type="password"
+            placeholder="登录密码"
+            :prefix-icon="Lock"
+            show-password
+            autocomplete="current-password"
+            @keyup.enter="onSubmit"
+          />
+        </el-form-item>
+        <div class="form-row">
+          <el-checkbox v-model="form.remember">7 天免登录</el-checkbox>
+          <a class="link" @click="onForget">忘记密码？</a>
         </div>
-        <div class="brand-mid">
-          <h1>GB/T 28181<br>视频物联平台</h1>
-          <p>让每一路视频信号都精准抵达指挥中枢。</p>
+        <el-button
+          type="primary"
+          :loading="loading"
+          class="submit"
+          @click="onSubmit"
+        >
+          登 录
+        </el-button>
+        <div class="hint">
+          演示账号：<span class="mono">admin / admin</span>
         </div>
-        <div class="brand-foot">© 2026 GBServer · All signals live</div>
-      </section>
-
-      <!-- 右侧登录控件 -->
-      <section class="login-pane">
-        <div class="login-card">
-          <h2>登录控制台</h2>
-          <el-form ref="form" :model="form" :rules="rules" @submit.native.prevent="onSubmit" @keyup.enter.native="onSubmit">
-            <div class="field">
-              <svg viewBox="0 0 24 24" fill="none" class="field-icon">
-                <circle cx="12" cy="8" r="4" stroke="currentColor" stroke-width="1.5" />
-                <path d="M4 21c0-4.4 3.6-8 8-8s8 3.6 8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
-              </svg>
-              <input
-                ref="username"
-                v-model="form.username"
-                type="text"
-                placeholder="用户名"
-                autocomplete="username"
-              >
-            </div>
-            <div class="field">
-              <svg viewBox="0 0 24 24" fill="none" class="field-icon">
-                <rect x="4" y="11" width="16" height="10" rx="2" stroke="currentColor" stroke-width="1.5" />
-                <path d="M8 11V7a4 4 0 0 1 8 0v4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
-              </svg>
-              <input
-                v-model="form.password"
-                :type="showPwd ? 'text' : 'password'"
-                placeholder="密码"
-                autocomplete="current-password"
-              >
-              <button type="button" class="field-toggle" :aria-label="showPwd ? '隐藏密码' : '显示密码'" @click="showPwd = !showPwd">
-                <svg v-if="!showPwd" viewBox="0 0 24 24" fill="none">
-                  <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7S2 12 2 12z" stroke="currentColor" stroke-width="1.5" />
-                  <circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.5" />
-                </svg>
-                <svg v-else viewBox="0 0 24 24" fill="none">
-                  <path d="M3 3l18 18" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
-                  <path d="M10.5 6.2A9.7 9.7 0 0 1 12 6c7 0 10 6 10 6a17.5 17.5 0 0 1-3 3.7M6.6 6.6C3.7 8.5 2 12 2 12s3 6 10 6c1.7 0 3.2-.3 4.5-.8" stroke="currentColor" stroke-width="1.5" />
-                  <path d="M9.9 10a3 3 0 0 0 4.2 4.2" stroke="currentColor" stroke-width="1.5" />
-                </svg>
-              </button>
-            </div>
-            <div class="login-options">
-              <el-checkbox v-model="form.remember">7 天免登录</el-checkbox>
-              <a class="text-primary-accent" href="javascript:;">忘记密码？</a>
-            </div>
-            <button class="login-submit" :disabled="loading" type="submit">
-              <span v-if="!loading">登录</span>
-              <span v-else>登录中…</span>
-            </button>
-            <div class="login-hint">
-              <span class="text-tertiary">演示账号：admin / admin</span>
-            </div>
-          </el-form>
-        </div>
-      </section>
-    </main>
+      </el-form>
+    </section>
   </div>
 </template>
 
-<script>
-import { validUsername } from '@/utils/validate'
+<script setup lang="ts">
+import { reactive, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
+import { User, Lock } from '@element-plus/icons-vue'
+import { useUserStore } from '@/store/modules/user'
+import { validUsername, validPassword } from '@/utils/validate'
 
-export default {
-  name: 'Login',
-  data() {
-    return {
-      form: { username: 'admin', password: 'admin', remember: false },
-      showPwd: false,
-      loading: false,
-      redirect: undefined,
-      rules: {
-        username: [{ required: true, trigger: 'blur', validator: (r, v, cb) => validUsername(v) ? cb() : cb(new Error('请输入用户名')) }],
-        password: [{ required: true, trigger: 'blur', validator: (r, v, cb) => v ? cb() : cb(new Error('请输入密码')) }]
-      }
-    }
-  },
-  watch: {
-    $route: {
-      handler(route) { this.redirect = route.query && route.query.redirect },
-      immediate: true
-    }
-  },
-  mounted() {
-    this.$nextTick(() => this.$refs.username && this.$refs.username.focus())
-  },
-  methods: {
-    onSubmit() {
-      this.$refs.form.validate(valid => {
-        if (!valid) return
-        this.loading = true
-        this.$store.dispatch('user/login', this.form)
-          .then(() => { this.$router.push({ path: this.redirect || '/' }) })
-          .catch(err => this.$message && this.$message.error(typeof err === 'string' ? err : (err && err.message) || '登录失败'))
-          .finally(() => { this.loading = false })
-      })
-    }
+const route = useRoute()
+const router = useRouter()
+const userStore = useUserStore()
+
+const formRef = ref<FormInstance>()
+const loading = ref(false)
+const form = reactive({ username: 'admin', password: 'admin', remember: true })
+
+const rules: FormRules = {
+  username: [{ required: true, validator: (_, v: string, cb) => (validUsername(v) ? cb() : cb(new Error('请输入用户名'))) }],
+  password: [{ required: true, validator: (_, v: string, cb) => (validPassword(v) ? cb() : cb(new Error('请输入密码'))) }]
+}
+
+async function onSubmit() {
+  if (!formRef.value) return
+  try {
+    await formRef.value.validate()
+  } catch {
+    return
   }
+  loading.value = true
+  try {
+    await userStore.login({ username: form.username, password: form.password })
+    ElMessage.success('登录成功')
+    const redirect = (route.query.redirect as string) || '/'
+    await router.push(redirect)
+  } finally {
+    loading.value = false
+  }
+}
+
+function onForget() {
+  ElMessage.info('请联系系统管理员重置密码')
 }
 </script>
 
 <style lang="scss" scoped>
-.login-shell {
-  position: relative;
+.login-page {
   min-height: 100vh;
-  background: #02080f;
-  color: #e2eef9;
-  font-family: var(--font-sans);
+  display: grid;
+  place-items: center;
+  background:
+    radial-gradient(circle at 12% 20%, rgba(11, 138, 178, 0.18) 0%, transparent 40%),
+    radial-gradient(circle at 90% 80%, rgba(11, 138, 178, 0.10) 0%, transparent 36%),
+    var(--bg-base);
+}
+
+.login-card {
+  display: grid;
+  grid-template-columns: 360px 1fr;
+  width: 880px;
+  max-width: 95vw;
+  background: var(--bg-surface);
+  border-radius: 16px;
+  box-shadow: var(--shadow-overlay);
   overflow: hidden;
-}
-.login-bg {
-  position: fixed; inset: 0;
-  background-image: url('/static/images/bg19.webp');
-  background-size: cover;
-  background-position: center;
-  filter: brightness(0.5) contrast(1.05) saturate(0.9);
-}
-.login-mask {
-  position: fixed; inset: 0;
-  background: linear-gradient(90deg, rgba(2,8,15,0.88) 0%, rgba(2,8,15,0.65) 40%, rgba(2,8,15,0.15) 100%);
-}
-.login-main {
-  position: relative;
-  min-height: 100vh;
-  display: flex;
-}
+  border: 1px solid var(--border-subtle);
 
-/* 左侧品牌区 3 占比 */
-.login-brand {
-  flex: 3;
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
-  padding: 56px;
+  @media (max-width: 768px) {
+    grid-template-columns: 1fr;
+    .login-card__brand { display: none; }
+  }
 
-  .brand-top { display: flex; align-items: center; gap: 14px; }
+  &__brand {
+    color: #fff;
+    padding: 36px 32px;
+    background:
+      radial-gradient(circle at 30% 30%, rgba(255, 255, 255, 0.10) 0%, transparent 60%),
+      linear-gradient(135deg, var(--brand-primary-600) 0%, var(--brand-primary-500) 50%, var(--brand-primary-400) 100%);
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
   .brand-mark {
     width: 44px; height: 44px;
-    border-radius: 10px;
-    background: var(--brand-primary-500);
-    color: #fff; font-weight: 700; font-size: 18px;
     display: grid; place-items: center;
-    letter-spacing: -0.5px;
+    background: rgba(255, 255, 255, 0.10);
+    border-radius: 10px;
+    svg { width: 22px; height: 22px; }
   }
-  .brand-meta { display: flex; align-items: baseline; gap: 10px; }
-  .brand-name { color: #fff; font-size: 22px; font-weight: 600; letter-spacing: -0.3px; }
-  .brand-version { font-size: 12px; color: var(--brand-primary-300); }
-
-  .brand-mid {
-    max-width: 560px;
-    h1 {
-      color: #fff;
-      font-weight: 600;
-      line-height: 1.05;
-      letter-spacing: -0.02em;
-      font-size: clamp(40px, 5vw, 64px);
-      margin: 0;
-    }
-    p {
-      margin-top: 24px;
-      color: rgba(226, 238, 249, 0.7);
-      font-size: 15px;
-      line-height: 1.6;
-      max-width: 460px;
-    }
+  .brand-title { font-size: 26px; font-weight: 700; margin: 4px 0 0; }
+  .brand-sub { font-size: 13px; opacity: .85; margin: 0; }
+  .brand-points {
+    list-style: none; margin: 12px 0 0; padding: 0;
+    display: flex; flex-direction: column; gap: 8px;
+    font-size: 12px; opacity: .9;
+    li::before { content: '✓'; margin-right: 6px; opacity: .75; }
   }
-  .brand-foot { font-size: 11px; color: rgba(226, 238, 249, 0.4); }
-}
+  .brand-foot { font-size: 11px; opacity: .65; margin-top: auto; }
 
-/* 右侧登录区 2 占比 */
-.login-pane {
-  flex: 2;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 56px;
-}
-.login-card {
-  width: 100%;
-  max-width: 360px;
-
-  h2 {
-    color: #fff;
-    font-size: 24px;
-    font-weight: 600;
-    letter-spacing: -0.3px;
-    margin: 0 0 36px;
+  &__form {
+    padding: 40px 44px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    .form-head h2 { font-size: 20px; font-weight: 700; margin: 0; }
+    .form-head p { font-size: 12px; color: var(--text-tertiary); margin: 4px 0 24px; }
   }
-}
-
-.field {
-  position: relative;
-  margin-bottom: 12px;
-  .field-icon {
-    position: absolute; left: 14px; top: 50%;
-    transform: translateY(-50%);
-    width: 16px; height: 16px;
-    color: var(--text-tertiary);
-    pointer-events: none;
+  .form-row {
+    display: flex; align-items: center; justify-content: space-between;
+    font-size: var(--text-xs); margin: -4px 0 8px;
+    .link { color: var(--brand-primary-500); cursor: pointer; }
   }
-  input {
-    width: 100%;
-    background: rgba(10, 19, 32, 0.7);
-    border: 1px solid #1a2a3d;
-    color: #e2eef9;
-    font-size: 14px;
-    padding: 12px 14px 12px 40px;
-    border-radius: 8px;
-    outline: none;
-    transition: border-color 0.15s, box-shadow 0.15s;
-    font-family: var(--font-sans);
-    &:focus {
-      border-color: var(--brand-primary-500);
-      box-shadow: 0 0 0 3px rgba(11, 138, 178, 0.2);
-    }
-    &::placeholder { color: var(--text-tertiary); }
-  }
-  .field-toggle {
-    position: absolute; right: 12px; top: 50%;
-    transform: translateY(-50%);
-    background: none; border: 0;
-    color: var(--text-tertiary);
-    width: 18px; height: 18px;
-    padding: 0;
-    cursor: pointer;
-    &:hover { color: var(--brand-primary-300); }
-    svg { width: 16px; height: 16px; }
-  }
-}
-
-.login-options {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin: 14px 0 18px;
-  font-size: 12px;
-  ::v-deep .el-checkbox { color: rgba(226, 238, 249, 0.7); }
-  ::v-deep .el-checkbox__label { font-size: 12px; }
-  a { cursor: pointer; }
-}
-.login-submit {
-  width: 100%;
-  background: var(--brand-primary-500);
-  border: 0;
-  color: #fff;
-  font-size: 14px;
-  letter-spacing: 0.1em;
-  padding: 12px;
-  border-radius: 8px;
-  cursor: pointer;
-  transition: background 0.15s, transform 0.05s;
-  box-shadow: 0 8px 20px rgba(11, 138, 178, 0.3);
-  &:hover { background: var(--brand-primary-600); }
-  &:active { transform: scale(0.99); }
-  &:disabled { opacity: 0.6; cursor: not-allowed; }
-}
-.login-hint { margin-top: 18px; text-align: center; font-size: 11px; }
-
-@media (max-width: 960px) {
-  .login-main { flex-direction: column; }
-  .login-brand { display: none; }
-  .login-pane { padding: 32px 24px; }
-  .login-card { max-width: 100%; }
+  .submit { width: 100%; height: 40px; font-size: 14px; letter-spacing: 4px; }
+  .hint { font-size: var(--text-xs); color: var(--text-tertiary); text-align: center; margin-top: 14px; }
 }
 </style>

@@ -6,7 +6,7 @@
 
 面向 **GB/T 28181-2016** 国标协议、JT1078 车辆终端协议的 **流媒体接入与级联管理平台**。
 
-Rust 全异步后端（Axum + SQLx + Tokio），保留 Vue 2 + Element UI 前端（位于 `web/`），
+Rust 全异步后端（Axum + SQLx + Tokio），前端为 Vue 3 + Element Plus + Vite（位于 [`web/`](web/README.md)），
 目标是提供比传统 Java 实现更高的单机并发、更低的资源占用与更现代的工程实践。
 
 [特性](#-核心特性) · [快速开始](#-快速开始) · [文档索引](#-文档索引) · [部署分级](#-部署分级) · [API 概览](#-api-概览)
@@ -68,8 +68,8 @@ GBServer 是面向 **GB/T 28181-2016** 国标协议的流媒体接入与级联�
 
 ```
                     ┌────────────────────────────────────┐
-                    │          前端 (Vue 2 SPA)          │
-                    │  web/dist  ←  webpack build        │
+                    │          前端 (Vue 3 SPA)          │
+                    │  web/dist  ←  Vite build         │
                     └──────────────┬─────────────────────┘
                                    │ HTTP / WS
                     ┌──────────────▼─────────────────────┐
@@ -253,7 +253,8 @@ MySQL 通过 profile 启动：`docker compose --profile mysql up -d`。
 |------|------|
 | [docs/DEPLOYMENT_GUIDE.md](docs/DEPLOYMENT_GUIDE.md) | 构建、运行、部署分级、配置、监控、灾备、升级、FAQ（仓库唯一对外文档） |
 | [database/README.md](database/README.md) | 初始化脚本说明 |
-| [web/README.md](web/README.md) / [README-zh.md](web/README-zh.md) | 前端子项目说明 |
+| [web/README.md](web/README.md) | 前端子项目（Vue 3 + Element Plus + Vite）说明 |
+| [web-legacy-vue2/README.md](web-legacy-vue2/README.md) | 旧 Vue 2 前端归档（仅历史保留，runtime 不再使用） |
 
 ---
 

@@ -1,106 +1,109 @@
 <template>
-  <div class="gb-page">
-    <div class="gb-page__header">
+  <div class="media-server-page">
+    <div class="page-header">
       <div>
-        <h1 class="gb-page__title">媒体服务器 · ZLMediaKit</h1>
-        <p class="gb-page__subtitle">14 个 ZLM 节点 · 边缘 10 · 核心 4 · 总带宽 168 Gbps</p>
+        <h1 class="page-title">媒体节点</h1>
+        <p class="page-subtitle">ZLMediaKit 集群 · {{ onlineCount }} 个在线 / {{ rows.length }} 个总计</p>
       </div>
-      <div class="gb-page__actions">
-        <button class="gb-btn">健康检查</button>
-        <button class="gb-btn">导入</button>
-        <button class="gb-btn gb-btn--primary">+ 新增节点</button>
+      <div class="page-actions">
+        <el-button @click="loadData">刷新</el-button>
+        <el-button type="primary" :icon="Plus" @click="onAdd">新增节点</el-button>
       </div>
     </div>
 
-    <section class="gb-grid gb-grid--3col">
-      <article v-for="n in nodes" :key="n.name" class="node-card gb-card" :class="`tone-${n.tone}`">
-        <header class="node-card__head">
-          <div>
-            <div class="node-card__name">{{ n.name }}</div>
-            <div class="node-card__ip mono">{{ n.ip }}</div>
-          </div>
-          <span :class="['gb-chip', 'gb-chip--' + (n.tone === 'error' ? 'error' : n.tone === 'warning' ? 'warning' : 'success')]">
-            <span :class="['gb-dot', 'gb-dot--' + (n.tone === 'error' ? 'error' : n.tone === 'warning' ? 'warning' : 'success')]" />
-            {{ n.stateLabel }}
-          </span>
-        </header>
-        <ul class="node-card__meta">
-          <li><span>CPU</span><span class="mono">{{ n.cpu }}%</span><div class="gb-progress"><div class="gb-progress__fill" :class="`gb-progress__fill--${n.tone === 'error' ? 'error' : n.tone === 'warning' ? 'warning' : 'success'}`" :style="{ width: n.cpu + '%' }" /></div></li>
-          <li><span>内存</span><span class="mono">{{ n.mem }}%</span><div class="gb-progress"><div class="gb-progress__fill" :class="`gb-progress__fill--${n.tone === 'error' ? 'error' : n.tone === 'warning' ? 'warning' : 'success'}`" :style="{ width: n.mem + '%' }" /></div></li>
-          <li><span>带宽</span><span class="mono">{{ n.bandwidth }} / 10 Gbps</span><div class="gb-progress"><div class="gb-progress__fill" :class="`gb-progress__fill--${n.tone === 'error' ? 'error' : n.tone === 'warning' ? 'warning' : 'success'}`" :style="{ width: n.bandwidthPct + '%' }" /></div></li>
-          <li><span>推流数</span><span class="mono">{{ n.streams }}</span></li>
-          <li><span>运行时长</span><span class="mono">{{ n.uptime }}</span></li>
-        </ul>
-        <footer class="node-card__foot">
-          <span class="text-tertiary text-xs">v{{ n.version }}</span>
-          <button class="gb-btn-link">详情</button>
-        </footer>
-      </article>
-    </section>
-
-    <article class="gb-card">
-      <header class="gb-card-title"><span>节点表格视图</span><span class="meta">支持全局排序 / 筛选</span></header>
-      <el-table :data="nodes" stripe size="small" style="width:100%">
-        <el-table-column prop="name" label="节点名" min-width="180" />
-        <el-table-column prop="ip" label="地址" min-width="160">
-          <template slot-scope="{ row }"><span class="mono">{{ row.ip }}</span></template>
+    <el-card>
+      <el-table :data="rows" v-loading="loading" stripe border>
+        <el-table-column prop="id" label="节点 ID" min-width="200">
+          <template #default="{ row }"><span class="mono">{{ row.id }}</span></template>
         </el-table-column>
-        <el-table-column prop="type" label="类型" width="100" />
-        <el-table-column prop="cpu" label="CPU" width="100">
-          <template slot-scope="{ row }"><span class="mono">{{ row.cpu }}%</span></template>
+        <el-table-column prop="ip" label="IP" min-width="120">
+          <template #default="{ row }"><span class="mono">{{ row.ip }}</span></template>
         </el-table-column>
-        <el-table-column prop="mem" label="内存" width="100">
-          <template slot-scope="{ row }"><span class="mono">{{ row.mem }}%</span></template>
+        <el-table-column prop="httpPort" label="HTTP 端口" width="120" />
+        <el-table-column prop="rtmpPort" label="RTMP" width="80" />
+        <el-table-column prop="rtspPort" label="RTSP" width="80" />
+        <el-table-column label="在线" width="80">
+          <template #default="{ row }">
+            <el-tag :type="row.status ? 'success' : 'info'" size="small">{{ row.status ? '在线' : '离线' }}</el-tag>
+          </template>
         </el-table-column>
-        <el-table-column prop="streams" label="推流数" width="100" />
-        <el-table-column prop="stateLabel" label="状态" width="100">
-          <template slot-scope="{ row }"><span :class="['gb-chip', 'gb-chip--' + (row.tone === 'error' ? 'error' : row.tone === 'warning' ? 'warning' : 'success')]">{{ row.stateLabel }}</span></template>
+        <el-table-column prop="lastKeepaliveTime" label="心跳时间" min-width="180">
+          <template #default="{ row }"><span class="mono">{{ row.lastKeepaliveTime ?? '-' }}</span></template>
         </el-table-column>
-        <el-table-column prop="uptime" label="运行时长" min-width="120" />
-        <el-table-column label="操作" align="right" width="180">
-          <template slot-scope="{ row }">
-            <button class="gb-btn-link">重启</button>
-            <button class="gb-btn-link">配置</button>
-            <button class="gb-btn-link">日志</button>
+        <el-table-column label="操作" width="200" fixed="right">
+          <template #default="{ row }">
+            <el-button link type="primary" @click="onCheck(row)">检测</el-button>
+            <el-button link type="primary" @click="onEdit(row)">编辑</el-button>
+            <el-button link type="danger" @click="onDelete(row)">删除</el-button>
           </template>
         </el-table-column>
       </el-table>
-    </article>
+    </el-card>
+
+    <media-server-edit-dialog v-model="editVisible" :server="currentRow" @saved="loadData" />
   </div>
 </template>
 
-<script>
-export default {
-  name: 'MediaServer',
-  data() {
-    return {
-      nodes: [
-        { name: 'zlm-edge-01', ip: '10.21.4.21', type: '边缘', cpu: 38, mem: 52, bandwidth: '3.2', bandwidthPct: 32, streams: 156, uptime: '14 天', version: '8.4', tone: 'success', stateLabel: '在线' },
-        { name: 'zlm-edge-02', ip: '10.21.4.22', type: '边缘', cpu: 52, mem: 61, bandwidth: '4.4', bandwidthPct: 44, streams: 192, uptime: '14 天', version: '8.4', tone: 'success', stateLabel: '在线' },
-        { name: 'zlm-edge-03', ip: '10.21.4.23', type: '边缘', cpu: 46, mem: 58, bandwidth: '3.8', bandwidthPct: 38, streams: 178, uptime: '14 天', version: '8.4', tone: 'success', stateLabel: '在线' },
-        { name: 'zlm-edge-04', ip: '10.21.4.24', type: '边缘', cpu: 71, mem: 78, bandwidth: '7.1', bandwidthPct: 71, streams: 218, uptime: '6 天', version: '8.4', tone: 'warning', stateLabel: '高负载' },
-        { name: 'zlm-core-01', ip: '10.20.4.11', type: '核心', cpu: 38, mem: 52, bandwidth: '3.2', bandwidthPct: 32, streams: 156, uptime: '30 天', version: '8.5', tone: 'success', stateLabel: '在线' },
-        { name: 'zlm-core-02', ip: '10.20.4.12', type: '核心', cpu: 92, mem: 88, bandwidth: '9.6', bandwidthPct: 96, streams: 412, uptime: '30 天', version: '8.5', tone: 'error', stateLabel: '告警' }
-      ]
-    }
+<script setup lang="ts">
+import { onMounted, ref } from 'vue'
+import { Plus } from '@element-plus/icons-vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { getMediaServerList, checkMediaServer, deleteMediaServer, type MediaServer } from '@/api/mediaServer'
+import MediaServerEditDialog from './EditDialog.vue'
+
+const loading = ref(false)
+const rows = ref<any[]>([])
+const editVisible = ref(false)
+const currentRow = ref<MediaServer>({} as MediaServer)
+
+const onlineCount = ref(0)
+
+async function loadData() {
+  loading.value = true
+  try {
+    const res = await getMediaServerList()
+    rows.value = (res.data as MediaServer[]) ?? []
+    onlineCount.value = rows.value.filter((r) => r.status).length
+  } finally {
+    loading.value = false
   }
 }
+
+function onAdd() {
+  currentRow.value = {} as MediaServer
+  editVisible.value = true
+}
+
+function onEdit(row: any) {
+  currentRow.value = { ...row }
+  editVisible.value = true
+}
+
+async function onCheck(row: any) {
+  if (!row.id) return
+  const res = await checkMediaServer(row.id)
+  if ((res.data as any)?.code === 0) {
+    ElMessage.success('连通正常')
+  } else {
+    ElMessage.error(`检测失败: ${(res.data as any)?.msg ?? ''}`)
+  }
+  loadData()
+}
+
+async function onDelete(row: any) {
+  await ElMessageBox.confirm(`确认删除媒体节点 ${row.id} ？`, '确认', { type: 'warning' })
+  await deleteMediaServer(row.id ?? '')
+  ElMessage.success('已删除')
+  loadData()
+}
+
+onMounted(loadData)
 </script>
 
-<style lang="scss" scoped>
-.gb-grid--3col { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
-@media (max-width: 1280px) { .gb-grid--3col { grid-template-columns: repeat(2, 1fr); } }
-@media (max-width: 768px) { .gb-grid--3col { grid-template-columns: 1fr; } }
-
-.node-card { display: flex; flex-direction: column; gap: 12px; }
-.node-card.tone-warning { border-color: rgba(234,138,12,.40); }
-.node-card.tone-error   { border-color: rgba(220,38,38,.40); }
-.node-card__head { display: flex; justify-content: space-between; align-items: flex-start; }
-.node-card__name { font-size: var(--text-md); font-weight: 600; }
-.node-card__ip   { font-size: 11px; color: var(--text-tertiary); margin-top: 2px; }
-.node-card__meta { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 8px; }
-.node-card__meta li { display: grid; grid-template-columns: 64px 1fr 110px; align-items: center; gap: 8px; font-size: 11px; color: var(--text-secondary); }
-.node-card__meta li span:nth-child(2) { text-align: right; }
-.node-card__meta li .gb-progress { grid-column: 1 / 4; }
-.node-card__foot { display: flex; justify-content: space-between; align-items: center; padding-top: 6px; border-top: 1px solid var(--border-subtle); }
+<style scoped>
+.media-server-page { padding: 16px; }
+.page-header { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 12px; }
+.page-title { font-size: 20px; font-weight: 600; margin: 0; }
+.page-subtitle { color: var(--el-text-color-secondary); font-size: 12px; margin-top: 4px; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
 </style>

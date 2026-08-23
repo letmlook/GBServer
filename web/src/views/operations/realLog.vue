@@ -1,118 +1,174 @@
 <template>
-  <div class="gb-page real-log">
-    <div class="gb-page__header">
+  <div class="real-log-page">
+    <div class="page-header">
       <div>
-        <h1 class="gb-page__title">实时日志 <span class="gb-dot gb-dot--success" style="margin-left:6px" /> <span class="text-tertiary text-xs">tail -f</span></h1>
-        <p class="gb-page__subtitle">来自 14 个媒体节点、SIP 网关、数据库等 · 实时刷新 1s</p>
+        <h1 class="page-title">实时日志</h1>
+        <p class="page-subtitle">{{ events.length }} 条 · 错误 {{ errors }} · 警告 {{ warns }}</p>
       </div>
-      <div class="gb-page__actions">
+      <div class="page-actions">
         <el-switch v-model="paused" active-text="暂停" />
         <el-switch v-model="wrap" active-text="自动换行" />
-        <select v-model="level" class="search-mini">
-          <option value="">全部级别</option><option>INFO</option><option>WARN</option><option>ERROR</option>
-        </select>
-        <button class="gb-btn" @click="cleared = true">清屏</button>
-        <button class="gb-btn gb-btn--danger">停止订阅</button>
+        <el-select v-model="level" placeholder="级别" clearable style="width: 120px">
+          <el-option label="INFO" value="INFO" />
+          <el-option label="WARN" value="WARN" />
+          <el-option label="ERROR" value="ERROR" />
+          <el-option label="DEBUG" value="DEBUG" />
+        </el-select>
+        <el-button @click="onClear">清屏</el-button>
       </div>
     </div>
 
-    <article class="gb-card log-card" style="padding:0">
-      <div class="log-toolbar">
-        <span class="text-tertiary text-xs mono">{{ events.length }} 条</span>
-        <span class="text-tertiary text-xs">·</span>
-        <span class="text-tertiary text-xs">错误 <span class="text-error mono">{{ errors }}</span> · 警告 <span class="text-warning mono">{{ warns }}</span></span>
-        <div class="flex-1" />
-        <span class="text-tertiary text-xs">订阅：SIP · ZLM · DB · JT · Storage · Auth</span>
-      </div>
-      <div ref="scroller" class="log-body">
-        <div v-for="(l, i) in events" :key="i" :class="['log-line', 'lv-' + l.tone]">
+    <el-card class="log-card">
+      <template #header>
+        <div class="log-header">
+          <span class="text-tertiary text-xs">tail -f 模拟</span>
+          <span class="text-tertiary text-xs">订阅：SIP · ZLM · DB · JT · Storage · Auth</span>
+          <div class="flex-1" />
+          <span :class="['status', paused ? 'paused' : 'running']">
+            <span :class="['gb-dot', paused ? 'gb-dot--warning' : 'gb-dot--success']" />
+            {{ paused ? '已暂停' : '运行中' }}
+          </span>
+        </div>
+      </template>
+
+      <div ref="scroller" :class="['log-body', wrap ? 'is-wrap' : '']" v-auto-bottom>
+        <div v-if="!events.length" class="empty">
+          <el-empty description="暂无日志（请确保后端推送）" />
+        </div>
+        <div v-for="(l, i) in filteredEvents" :key="i" :class="['log-line', 'lv-' + l.tone]">
           <span class="log-time mono">{{ l.time }}</span>
           <span :class="['log-level', 'lv-' + l.tone]">{{ l.level }}</span>
-          <span class="log-module">{{ l.module }}</span>
-          <span class="log-text mono">{{ l.text }}</span>
+          <span class="log-logger mono">{{ l.logger }}</span>
+          <span class="log-msg">{{ l.message }}</span>
         </div>
-        <empty-state v-if="cleared" text="已清屏 · 等待新日志…" />
       </div>
-    </article>
+    </el-card>
   </div>
 </template>
 
-<script>
-import EmptyState from '@/components/EmptyState'
+<script setup lang="ts">
+import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
+import { getLogList, type LogRecord } from '@/api/log'
 
-export default {
-  name: 'RealLog',
-  components: { EmptyState },
-  data() {
-    return {
-      paused: false,
-      wrap: false,
-      level: '',
-      cleared: false,
-      errors: 0,
-      warns: 0,
-      events: [
-        { time: '16:42:18.214', level: 'ERROR', tone: 'error', module: 'SIP', text: '[41042200001320000102] receive BYE timeout (3 retries left)' },
-        { time: '16:42:17.911', level: 'INFO', tone: 'info', module: 'ZLM', text: 'stream open: rtmp://live.aliyun.com/live/cdn001 (192.168.4.18:38514)' },
-        { time: '16:42:16.732', level: 'INFO', tone: 'info', module: 'DB', text: 'INSERT INTO gb_record_plan (name, type, start, end) VALUES (...)' },
-        { time: '16:42:15.488', level: 'WARN', tone: 'warning', module: 'SIP', text: 'register timeout for sip-gw-beijing, will retry in 30s' },
-        { time: '16:42:14.211', level: 'INFO', tone: 'info', module: 'JT', text: '[粤B·A8888] gps pos (113.27, 23.13) speed=78km/h' },
-        { time: '16:42:12.044', level: 'INFO', tone: 'info', module: 'Auth', text: 'user ops-tianhe login ok' },
-        { time: '16:42:10.892', level: 'INFO', tone: 'info', module: 'ZLM', text: 'edge-04 cpu=71% mem=78% (warning threshold reached)' },
-        { time: '16:42:09.330', level: 'ERROR', tone: 'error', module: 'JT', text: '[粤B·A8888] gps signal lost for 480s, raising alarm' },
-        { time: '16:42:08.110', level: 'INFO', tone: 'info', module: 'Cascade', text: 'send REGISTER sip:13010000002000000001@10.20.4.5' }
-      ]
-    }
-  },
-  mounted() {
-    this.tick()
-  },
-  beforeDestroy() { if (this._t) clearInterval(this._t) },
-  methods: {
-    tick() {
-      this._t = setInterval(() => {
-        if (this.paused) return
-        const samples = [
-          { level: 'INFO', tone: 'info', module: 'SIP', text: `[${this.id()}] INVITE 200 OK from 10.21.4.118` },
-          { level: 'INFO', tone: 'info', module: 'ZLM', text: `playback rtmp://${this.id()}/live/main opened` },
-          { level: 'WARN', tone: 'warning', module: 'Storage', text: `disk usage 78% on /mnt/store-03` },
-          { level: 'INFO', tone: 'info', module: 'DB', text: `SELECT COUNT(*) FROM gb_channel WHERE online=1 → 2915` },
-          { level: 'ERROR', tone: 'error', module: 'ZLM', text: `stream close: client timeout (10.20.4.10)` }
-        ]
-        const s = samples[Math.floor(Math.random() * samples.length)]
-        const now = new Date()
-        const time = now.toTimeString().slice(0, 8) + '.' + String(now.getMilliseconds()).padStart(3, '0')
-        this.events.push({ time, ...s })
-        if (this.events.length > 200) this.events.shift()
-        if (s.tone === 'error') this.errors++
-        if (s.tone === 'warning') this.warns++
-        this.$nextTick(() => {
-          const el = this.$refs.scroller
-          if (el) el.scrollTop = el.scrollHeight
-        })
-      }, 1100)
-    },
-    id() { return '44' + Math.floor(Math.random() * 1e15).toString().padStart(15, '0') }
+const events = ref<LogRecord[]>([])
+const paused = ref(false)
+const wrap = ref(false)
+const level = ref('')
+
+const filteredEvents = computed(() => {
+  if (!level.value) return events.value
+  return events.value.filter((e) => (e.level ?? '').toUpperCase() === level.value)
+})
+
+const errors = computed(() => events.value.filter((e) => (e.level ?? '').toUpperCase() === 'ERROR').length)
+const warns = computed(() => events.value.filter((e) => (e.level ?? '').toUpperCase() === 'WARN').length)
+
+const scroller = ref<HTMLElement | null>(null)
+let timer: ReturnType<typeof setInterval> | null = null
+
+async function loadHistory() {
+  try {
+    const res = await getLogList({ page: 1, count: 200 })
+    events.value = (res.data?.list ?? []).map((e) => ({ ...e, tone: toneOf(e.level) }))
+  } catch {
+    events.value = []
+  }
+}
+
+function toneOf(level?: string): 'info' | 'warn' | 'error' | 'debug' {
+  switch ((level ?? '').toUpperCase()) {
+    case 'ERROR':
+      return 'error'
+    case 'WARN':
+    case 'WARNING':
+      return 'warn'
+    case 'DEBUG':
+      return 'debug'
+    default:
+      return 'info'
+  }
+}
+
+function pushMockEvent() {
+  // 真实日志需 WebSocket 推送；此处用历史 + 占位模拟
+  const now = new Date().toISOString().replace('T', ' ').slice(0, 19)
+  const levels = ['INFO', 'INFO', 'INFO', 'DEBUG', 'WARN', 'INFO', 'ERROR']
+  const loggers = ['sip.Server', 'zlm.Hook', 'db.Pool', 'stream.Play', 'auth.Jwt', 'jt.Session']
+  const messages = [
+    'INVITE 200 OK channel=34020000001310000001 ssrc=0x12345',
+    'on_play http://10.21.4.118/play/live/stream1',
+    'pool acquire connection in 2ms',
+    'start play session, ssr=10.21.4.118',
+    'heartbeat timeout, mark offline',
+    'token refreshed, expires in 30min',
+    'database deadlock detected, retrying'
+  ]
+  const idx = Math.floor(Math.random() * messages.length)
+  const lv = levels[idx]
+  events.value.push({
+    time: now,
+    level: lv,
+    logger: loggers[idx % loggers.length],
+    message: messages[idx],
+    tone: toneOf(lv)
+  })
+  if (events.value.length > 500) events.value.shift()
+}
+
+function onClear() {
+  events.value = []
+}
+
+onMounted(async () => {
+  await loadHistory()
+  timer = setInterval(() => {
+    if (paused.value) return
+    pushMockEvent()
+    nextTick(() => {
+      if (scroller.value) scroller.value.scrollTop = scroller.value.scrollHeight
+    })
+  }, 1500)
+})
+
+onUnmounted(() => {
+  if (timer) clearInterval(timer)
+})
+
+// 简易 v-auto-bottom 指令：事件触发后自动滚到底
+const vAutoBottom = {
+  updated(el: HTMLElement) {
+    el.scrollTop = el.scrollHeight
   }
 }
 </script>
 
-<style lang="scss" scoped>
-.log-card { display: flex; flex-direction: column; height: calc(100vh - 56px - 38px - 92px); }
-.log-toolbar { display: flex; gap: 12px; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--border-subtle); }
-.log-body { flex: 1; overflow: auto; background: #0a0f17; color: #d6e0ec; font-family: var(--font-mono); font-size: 12px; padding: 6px 0; }
-.log-line { display: grid; grid-template-columns: 110px 60px 90px 1fr; gap: 8px; padding: 2px 14px; align-items: center; }
-.log-line:hover { background: rgba(255,255,255,0.04); }
-.log-time { color: #5a6f87; }
-.log-level { font-weight: 700; padding: 1px 6px; border-radius: 3px; text-align: center; font-size: 10px; }
-.log-level.lv-info { background: rgba(2,132,199,.20); color: #5eb4d4; }
-.log-level.lv-warning { background: rgba(234,138,12,.20); color: #ea8a0c; }
-.log-level.lv-error { background: rgba(220,38,38,.20); color: #ef4444; }
-.log-module { color: #9ad0e6; }
-.log-text { white-space: pre; overflow: hidden; text-overflow: ellipsis; }
-
-.search-mini { padding: 4px 8px; font-size: 11px; border: 1px solid var(--border-default); background: var(--bg-elevated); border-radius: 4px; color: var(--text-primary); outline: 0; }
+<style scoped>
+.real-log-page { padding: 16px; }
+.page-header { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 12px; }
+.page-title { font-size: 20px; font-weight: 600; margin: 0; }
+.page-subtitle { color: var(--el-text-color-secondary); font-size: 12px; margin-top: 4px; }
+.log-card { min-height: 600px; }
+.log-header { display: flex; align-items: center; gap: 12px; }
+.status { display: flex; align-items: center; gap: 4px; font-size: 12px; }
+.log-body { background: #0f172a; color: #e2e8f0; font-family: ui-monospace, monospace; font-size: 12px; padding: 12px; height: 540px; overflow-y: auto; border-radius: 4px; white-space: pre; line-height: 1.6; }
+.log-body.is-wrap { white-space: pre-wrap; word-break: break-all; }
+.empty { display: flex; align-items: center; justify-content: center; height: 100%; }
+.log-line { display: flex; gap: 8px; padding: 1px 0; }
+.log-time { color: #94a3b8; min-width: 140px; }
+.log-level { padding: 0 6px; border-radius: 3px; min-width: 50px; text-align: center; font-weight: 600; }
+.log-logger { color: #cbd5e1; min-width: 100px; }
+.log-msg { flex: 1; }
+.lv-info .log-level { background: #1e3a8a; color: #dbeafe; }
+.lv-warn .log-level { background: #854d0e; color: #fef3c7; }
+.lv-error .log-level { background: #991b1b; color: #fee2e2; }
+.lv-debug .log-level { background: #374151; color: #e5e7eb; }
+.lv-error .log-msg { color: #fca5a5; }
+.lv-warn .log-msg { color: #fde68a; }
+.mono { font-family: ui-monospace, monospace; }
+.text-tertiary { color: var(--el-text-color-secondary); }
+.text-xs { font-size: 12px; }
 .flex-1 { flex: 1; }
-.text-error { color: var(--state-error); }
-.text-warning { color: var(--state-warning); }
+.gb-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; }
+.gb-dot--success { background: #16a34a; }
+.gb-dot--warning { background: #f59e0b; }
 </style>

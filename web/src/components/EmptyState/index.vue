@@ -12,9 +12,22 @@
   </div>
 </template>
 
-<script>
-export default {
-  name: 'EmptyState',
-  props: { text: { type: String, default: '' } }
-}
+<script setup lang="ts">
+withDefaults(defineProps<{ text?: string }>(), { text: '' })
 </script>
+
+<style lang="scss" scoped>
+.gb-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 40px 16px;
+  color: var(--text-tertiary);
+  font-size: var(--text-xs);
+
+  &__icon {
+    color: var(--text-disabled);
+  }
+}
+</style>

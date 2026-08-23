@@ -1,221 +1,249 @@
 <template>
-  <div class="live-wall">
-    <!-- 左侧设备树 -->
-    <aside class="live-tree">
-      <div class="live-tree__head">
-        <span class="text-sm font-semibold">设备分组</span>
-        <button class="gb-btn-link" @click="expandAll = !expandAll">{{ expandAll ? '收起全部' : '展开全部' }}</button>
+  <div class="live-page">
+    <div class="page-header">
+      <div>
+        <h1 class="page-title">实时直播</h1>
+        <p class="page-subtitle">{{ stats.online }} 路在线 · {{ stats.total }} 路总计</p>
       </div>
-      <input v-model="treeFilter" class="live-tree__search" placeholder="筛选通道…">
-      <div class="live-tree__list">
-        <div v-for="g in groups" :key="g.name" class="tree-node" :class="{ 'is-open': g.open }">
-          <div class="tree-node__row" @click="g.open = !g.open">
-            <span class="caret">{{ g.open ? '▾' : '▸' }}</span>
-            <span class="emoji">{{ g.emoji }}</span>
-            <span class="flex-1">{{ g.name }}</span>
-            <span class="text-tertiary text-xs">{{ g.total }}</span>
+      <div class="page-actions">
+        <el-button @click="loadData">刷新</el-button>
+        <el-radio-group v-model="layout" size="small">
+          <el-radio-button label="2x2">2×2</el-radio-button>
+          <el-radio-button label="3x3">3×3</el-radio-button>
+          <el-radio-button label="4x4">4×4</el-radio-button>
+        </el-radio-group>
+      </div>
+    </div>
+
+    <el-row :gutter="12">
+      <el-col :xs="24" :md="6">
+        <el-card class="device-tree-card">
+          <template #header>
+            <div class="card-header">
+              <span>设备 / 通道</span>
+              <el-input v-model="kw" size="small" placeholder="筛选" clearable style="width: 120px" />
+            </div>
+          </template>
+          <el-tree
+            :data="tree"
+            :props="{ label: 'name', children: 'children' }"
+            node-key="id"
+            highlight-current
+            :filter-node-method="filterNode"
+            :default-expand-all="true"
+            @node-click="onNodeClick"
+            ref="treeRef"
+            style="background: transparent"
+          >
+            <template #default="{ node, data }">
+              <span class="tree-row">
+                <span class="tree-label">{{ node.label }}</span>
+                <el-tag v-if="data.status" :type="data.status === 'ON' ? 'success' : 'info'" size="small">{{ data.status === 'ON' ? 'ON' : 'OFF' }}</el-tag>
+              </span>
+            </template>
+          </el-tree>
+        </el-card>
+      </el-col>
+
+      <el-col :xs="24" :md="18">
+        <el-card class="grid-card" v-loading="loading">
+          <div v-if="!currentChannel" class="empty">
+            <el-empty description="请从左侧选择通道开始播放" />
           </div>
-          <div v-if="g.open" class="tree-children">
-            <div v-for="c in g.children" :key="c.name" class="tree-leaf" :class="{ 'is-active': activeLeaf === c.name }" @click="activeLeaf = c.name">
-              <span :class="['gb-dot', 'gb-dot--' + (c.state || 'success')]" />
-              <span class="flex-1">{{ c.name }}</span>
-              <span class="text-tertiary text-xs">{{ c.count }}</span>
+          <div v-else>
+            <div :class="['video-grid', `video-grid--${layout}`]">
+              <div v-for="(cell, idx) in cells" :key="idx" class="video-cell" :class="{ 'is-primary': cell.primary }">
+                <div class="video-cell__header">
+                  <span class="video-cell__no">{{ String(idx + 1).padStart(2, '0') }}</span>
+                  <span class="video-cell__title">{{ cell.name }}</span>
+                  <el-tag v-if="cell.primary" type="danger" size="small" effect="dark">● LIVE</el-tag>
+                </div>
+                <div class="video-cell__body">
+                  <video v-if="cell.primary && cell.url" :src="cell.url" controls autoplay muted class="video-element" />
+                  <div v-else class="video-placeholder">
+                    <el-icon size="32"><VideoCameraFilled /></el-icon>
+                  </div>
+                </div>
+                <div class="video-cell__footer">
+                  <span class="mono small">{{ cell.id ?? '-' }}</span>
+                  <el-button-group size="small">
+                    <el-button @click="onSnap(cell)">抓图</el-button>
+                    <el-button @click="onStop(cell)" type="danger" plain>停止</el-button>
+                  </el-button-group>
+                </div>
+              </div>
+            </div>
+            <div class="ptz-bar">
+              <span class="ptz-title">PTZ:</span>
+              <el-button-group>
+                <el-button :icon="ArrowUp" @click="sendPtz(currentChannel, 'UP')" />
+                <el-button :icon="ArrowLeft" @click="sendPtz(currentChannel, 'LEFT')" />
+                <el-button :icon="VideoPause" @click="sendPtz(currentChannel, 'STOP')">停止</el-button>
+                <el-button :icon="ArrowRight" @click="sendPtz(currentChannel, 'RIGHT')" />
+                <el-button :icon="ArrowDown" @click="sendPtz(currentChannel, 'DOWN')" />
+              </el-button-group>
+              <el-button-group style="margin-left: 12px">
+                <el-button @click="sendPtz(currentChannel, 'ZOOM_IN')">放大</el-button>
+                <el-button @click="sendPtz(currentChannel, 'ZOOM_OUT')">缩小</el-button>
+              </el-button-group>
             </div>
           </div>
-        </div>
-      </div>
-    </aside>
-
-    <!-- 中间视频墙 -->
-    <section class="live-main">
-      <div class="filter-bar">
-        <span v-for="f in filters" :key="f.label" class="gb-pill" :class="{ 'is-active': activeFilter === f.label }" @click="activeFilter = f.label">
-          {{ f.label }} {{ f.count.toLocaleString() }}
-        </span>
-        <div class="flex-1" />
-        <div class="layout-toolbar">
-          <button v-for="l in layouts" :key="l" class="layout-btn" :class="{ 'is-active': layout === l }" @click="layout = l">{{ l }}</button>
-        </div>
-      </div>
-
-      <div class="stat-strip">
-        <span class="stat-pill" style="background:rgba(22,163,74,.10);color:var(--state-success)"><span class="gb-dot gb-dot--success" /> 16 路在线</span>
-        <span class="stat-pill" style="background:rgba(11,138,178,.10);color:var(--brand-primary-500)">总码率 38.4 Mbps</span>
-        <span class="stat-pill" style="background:rgba(234,138,12,.10);color:var(--state-warning)">丢包率 0.02%</span>
-        <span class="text-tertiary text-xs">协议混合: H.264 ×14 · H.265 ×2</span>
-        <div class="flex-1" />
-        <button class="gb-btn gb-btn--danger"><span class="gb-dot gb-dot--error" /> 紧急录像</button>
-        <button class="gb-btn gb-btn--primary">全屏轮播</button>
-      </div>
-
-      <div :class="['wall-grid', `wall-grid--${layout}`]">
-        <video-cell v-for="(c, i) in cells" :key="i" :title="c.title" :no="String(i + 1).padStart(2, '0')" :state="c.state" />
-      </div>
-    </section>
-
-    <!-- 右侧详情 -->
-    <aside class="live-detail">
-      <div class="video-cell gb-video-cell" style="aspect-ratio:16/9; border-color:var(--brand-primary-500)">
-        <img src="/static/images/bg19.webp" alt="">
-        <div class="gb-video-cell__overlay">
-          <div class="gb-video-cell__overlay-top">
-            <span class="gb-chip gb-chip--error" style="background:rgba(239,68,68,.85)">● LIVE</span>
-            <span class="mono" style="font-size:11px">41042200001320000102</span>
-          </div>
-          <div class="gb-video-cell__overlay-bottom">
-            <div>
-              <div>海珠门岗 · 东 · 4K</div>
-              <div style="font-size:10px; opacity:0.6">25 fps · 6 Mbps · H.265</div>
-            </div>
-            <div class="mono" style="font-size:10px; opacity:0.8">16:42:18</div>
-          </div>
-        </div>
-      </div>
-
-      <article class="gb-card">
-        <div class="gb-card-title" style="margin-bottom:10px"><span>通道详情</span></div>
-        <table class="kv">
-          <tr><td class="k">国标 ID</td><td class="v mono">41042200001320000102</td></tr>
-          <tr><td class="k">父设备</td><td class="v mono">44010000001310000001</td></tr>
-          <tr><td class="k">设备 IP</td><td class="v mono">10.21.4.118</td></tr>
-          <tr><td class="k">经纬度</td><td class="v">113.27°N · 23.13°E</td></tr>
-          <tr><td class="k">在线时长</td><td class="v">14 天 6 时</td></tr>
-          <tr><td class="k">所属平台</td><td class="v">天河中心</td></tr>
-          <tr><td class="k">视频参数</td><td class="v">4K · H.265 · 25 fps</td></tr>
-        </table>
-      </article>
-
-      <article class="gb-card">
-        <div class="gb-card-title"><span>PTZ 控制</span><span class="meta">云台</span></div>
-        <div class="ptz-pad">
-          <button class="ptz-btn">↑</button>
-          <div class="ptz-row">
-            <button class="ptz-btn">←</button>
-            <button class="ptz-btn primary">●</button>
-            <button class="ptz-btn">→</button>
-          </div>
-          <button class="ptz-btn">↓</button>
-        </div>
-        <div class="ptz-zoom">
-          <button class="gb-btn">−</button>
-          <span class="text-tertiary">变倍</span>
-          <button class="gb-btn">+</button>
-          <span class="text-tertiary" style="margin-left:12px">聚焦</span>
-          <button class="gb-btn">+</button>
-        </div>
-      </article>
-    </aside>
+        </el-card>
+      </el-col>
+    </el-row>
   </div>
 </template>
 
-<script>
-import VideoCell from '@/components/VideoCell'
+<script setup lang="ts">
+import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { ElMessage } from 'element-plus'
+import {
+  ArrowUp,
+  ArrowDown,
+  ArrowLeft,
+  ArrowRight,
+  VideoPause,
+  VideoCameraFilled
+} from '@element-plus/icons-vue'
+import { queryStreams, startPlay, stopPlay, playSnap, getPlayUrl } from '@/api/live'
+import { queryDeviceTree } from '@/api/device'
 
-export default {
-  name: 'LiveWall',
-  components: { VideoCell },
-  data() {
-    return {
-      expandAll: true,
-      treeFilter: '',
-      activeLeaf: '海珠门岗',
-      activeFilter: '全部',
-      layout: '4×4',
-      filters: [
-        { label: '全部', count: 2915 },
-        { label: '在线', count: 2890 },
-        { label: '录制中', count: 1247 },
-        { label: '离线', count: 25 },
-        { label: '故障', count: 3 }
-      ],
-      layouts: ['1×1', '2×2', '4×4', '5×5', '6×6'],
-      groups: [
-        { name: '海珠区 · 总数 412', emoji: '🏢', total: 412, open: true, children: [
-          { name: '海珠门岗', state: 'success', count: 12 },
-          { name: '海珠仓库', state: 'success', count: 32 },
-          { name: '海珠停车场', state: 'warning', count: 8 },
-          { name: '海珠园区 · 故障', state: 'error', count: 3 }
-        ] },
-        { name: '天河区 · 总数 486', emoji: '🏛️', total: 486, open: true, children: [
-          { name: '天河城商圈', state: 'success', count: 98 },
-          { name: '天河区政府', state: 'success', count: 12 }
-        ] },
-        { name: '道路监控 · 总数 1,247', emoji: '🛣️', total: 1247, open: false, children: [
-          { name: '高速', state: 'success', count: 623 },
-          { name: '主干道', state: 'success', count: 412 },
-          { name: '桥梁', state: 'success', count: 212 }
-        ] },
-        { name: '公交 · 1,025', emoji: '🚌', total: 1025, open: false, children: [] },
-        { name: '地铁站 · 671', emoji: '🚇', total: 671, open: false, children: [] }
-      ],
-      cells: [
-        { title: '海珠门岗 · 东', state: 'live' }, { title: '高速 K127', state: 'live' },
-        { title: '天河城 4F', state: 'live' }, { title: '停车场 B2', state: 'live' },
-        { title: '黄埔仓库', state: 'rec' }, { title: '白云机场', state: 'live' },
-        { title: '番禺园区', state: 'offline' }, { title: '番禺大桥', state: 'live' },
-        { title: '海珠仓库', state: 'live' }, { title: '天河区政府', state: 'live' },
-        { title: '桥梁监测', state: 'live' }, { title: '主干道北', state: 'live' },
-        { title: '地铁公园前', state: 'rec' }, { title: '公交 86 路', state: 'live' },
-        { title: '园区西门口', state: 'mute' }, { title: '仓库 B 区', state: 'live' }
-      ]
+const route = useRoute()
+const router = useRouter()
+const loading = ref(false)
+const kw = ref('')
+const layout = ref<'2x2' | '3x3' | '4x4'>('2x2')
+const tree = ref<any[]>([])
+const treeRef = ref<any>()
+const streams = ref<{ deviceId: string; channelId: string; app: string; stream: string }[]>([])
+const currentChannel = ref<{ deviceId: string; channelId: string; name?: string } | null>(null)
+const cells = ref<any[]>([])
+
+const stats = computed(() => ({
+  total: streams.value.length,
+  online: streams.value.length
+}))
+
+watch(kw, (v) => treeRef.value?.filter(v))
+
+function filterNode(value: string, data: any) {
+  if (!value) return true
+  return data.name?.includes(value) ?? false
+}
+
+async function loadData() {
+  loading.value = true
+  try {
+    const res = await queryStreams({ page: 1, count: 1000 })
+    const list = res.data?.list ?? []
+    streams.value = list.map((s: any) => ({
+      deviceId: s.mediaServerId ?? '',
+      channelId: s.stream ?? '',
+      app: s.app ?? '',
+      stream: s.stream ?? ''
+    }))
+
+    // 构建设备树（按 deviceId 分组）
+    const grouped = new Map<string, any[]>()
+    for (const s of streams.value) {
+      const arr = grouped.get(s.deviceId) ?? []
+      arr.push({ id: `${s.deviceId}:${s.channelId}`, name: s.stream, raw: s })
+      grouped.set(s.deviceId, arr)
     }
+    tree.value = Array.from(grouped.entries()).map(([deviceId, children]) => ({
+      id: deviceId,
+      name: deviceId,
+      children
+    }))
+  } finally {
+    loading.value = false
   }
 }
+
+async function onNodeClick(node: any) {
+  if (!node.raw) return
+  await playChannel(node.raw)
+}
+
+async function playChannel(s: { deviceId: string; channelId: string }) {
+  try {
+    const res = await startPlay(s.deviceId, s.channelId)
+    const data = res.data ?? { streamId: '', playUrl: '' }
+    const url = data.playUrl || (await getPlayUrl({ deviceId: s.deviceId, channelId: s.channelId })).data?.url || ''
+    currentChannel.value = { ...s, name: data.streamId || s.channelId }
+    buildGrid(s, url)
+  } catch (e: any) {
+    ElMessage.error(e?.message ?? '播放失败')
+  }
+}
+
+function buildGrid(s: any, url: string) {
+  const count = layout.value === '2x2' ? 4 : layout.value === '3x3' ? 9 : 16
+  const grid: any[] = []
+  grid.push({ ...s, url, primary: true })
+  while (grid.length < count) grid.push({})
+  cells.value = grid
+}
+
+async function onSnap(cell: any) {
+  if (!cell?.deviceId || !cell?.channelId) return
+  try {
+    await playSnap(cell.deviceId, cell.channelId)
+    ElMessage.success('抓图已保存')
+  } catch (e: any) {
+    ElMessage.error(e?.message ?? '抓图失败')
+  }
+}
+
+async function onStop(cell: any) {
+  if (!cell?.deviceId || !cell?.channelId) return
+  await stopPlay(cell.deviceId, cell.channelId)
+  ElMessage.success('已停止')
+  buildGrid(cell, '')
+}
+
+function sendPtz(channel: any, cmd: string) {
+  ElMessage.info(`PTZ ${cmd} 已下发（前端占位）`)
+}
+
+onMounted(async () => {
+  await loadData()
+  const qd = route.query.deviceId as string | undefined
+  const qc = route.query.channelId as string | undefined
+  if (qd && qc) {
+    await nextTick()
+    await playChannel({ deviceId: qd, channelId: qc })
+  }
+})
 </script>
 
-<style lang="scss" scoped>
-.live-wall {
-  display: grid;
-  grid-template-columns: 280px 1fr 320px;
-  height: calc(100vh - 56px - 38px);
-  background: var(--bg-base);
-  overflow: hidden;
-}
-@media (max-width: 1280px) { .live-wall { grid-template-columns: 220px 1fr 280px; } }
-@media (max-width: 1024px) { .live-wall { grid-template-columns: 1fr; height: auto; } }
-
-/* 左侧 */
-.live-tree { background: var(--bg-surface); border-right: 1px solid var(--border-subtle); padding: 12px; overflow-y: auto; }
-.live-tree__head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
-.live-tree__search { width: 100%; padding: 7px 10px; background: var(--bg-elevated); border: 1px solid var(--border-default); border-radius: 6px; color: var(--text-primary); font-size: 12px; outline: 0; }
-.live-tree__list { margin-top: 12px; }
-.tree-node__row { display: flex; align-items: center; gap: 6px; padding: 6px 6px; border-radius: 4px; cursor: pointer; font-size: 12px; }
-.tree-node__row:hover { background: var(--bg-hover); }
-.tree-children { padding-left: 14px; }
-.tree-leaf { display: flex; align-items: center; gap: 6px; padding: 4px 6px; border-radius: 4px; cursor: pointer; font-size: 12px; }
-.tree-leaf:hover { background: var(--bg-hover); }
-.tree-leaf.is-active { background: rgba(11,138,178,.10); color: var(--brand-primary-500); }
-.caret { color: var(--text-tertiary); width: 10px; }
-.flex-1 { flex: 1; }
-
-/* 中间 */
-.live-main { display: flex; flex-direction: column; overflow: hidden; }
-.filter-bar { display: flex; align-items: center; gap: 6px; padding: 10px 14px; border-bottom: 1px solid var(--border-subtle); background: var(--bg-surface); flex-wrap: wrap; }
-.layout-toolbar { display: flex; gap: 4px; }
-.layout-btn { padding: 4px 10px; font-size: 11px; border: 1px solid var(--border-default); background: var(--bg-surface); color: var(--text-secondary); border-radius: 4px; cursor: pointer; }
-.layout-btn:hover { border-color: var(--brand-primary-300); color: var(--brand-primary-500); }
-.layout-btn.is-active { background: var(--brand-primary-500); color: #fff; border-color: var(--brand-primary-500); }
-
-.stat-strip { display: flex; align-items: center; gap: 10px; padding: 8px 14px; background: var(--bg-surface); border-bottom: 1px solid var(--border-subtle); flex-wrap: wrap; }
-.stat-pill { display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; border-radius: 4px; font-size: 11px; font-weight: 500; }
-
-.wall-grid { flex: 1; padding: 10px; overflow: auto; display: grid; gap: 6px; }
-.wall-grid--1x1 { grid-template-columns: 1fr; }
-.wall-grid--2x2 { grid-template-columns: repeat(2, 1fr); }
-.wall-grid--4x4 { grid-template-columns: repeat(4, 1fr); }
-.wall-grid--5x5 { grid-template-columns: repeat(5, 1fr); }
-.wall-grid--6x6 { grid-template-columns: repeat(6, 1fr); }
-
-/* 右侧 */
-.live-detail { background: var(--bg-surface); border-left: 1px solid var(--border-subtle); padding: 14px; display: flex; flex-direction: column; gap: 14px; overflow-y: auto; }
-.kv { width: 100%; font-size: 12px; }
-.kv .k { color: var(--text-tertiary); padding: 3px 0; }
-.kv .v { text-align: right; }
-
-.ptz-pad { display: flex; flex-direction: column; align-items: center; gap: 4px; margin-bottom: 12px; }
-.ptz-row { display: flex; gap: 4px; }
-.ptz-btn { width: 32px; height: 32px; border: 1px solid var(--border-default); background: var(--bg-elevated); border-radius: 6px; cursor: pointer; color: var(--text-secondary); }
-.ptz-btn:hover { border-color: var(--brand-primary-300); color: var(--brand-primary-500); }
-.ptz-btn.primary { background: var(--brand-primary-500); color: #fff; border-color: var(--brand-primary-500); }
-.ptz-zoom { display: flex; align-items: center; gap: 6px; font-size: 11px; }
+<style scoped>
+.live-page { padding: 16px; }
+.page-header { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 12px; }
+.page-title { font-size: 20px; font-weight: 600; margin: 0; }
+.page-subtitle { color: var(--el-text-color-secondary); font-size: 12px; margin-top: 4px; }
+.device-tree-card { height: calc(100vh - 200px); overflow: auto; }
+.grid-card { min-height: 600px; }
+.card-header { display: flex; justify-content: space-between; align-items: center; }
+.empty { padding: 80px 0; }
+.tree-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; width: 100%; }
+.tree-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.video-grid { display: grid; gap: 6px; }
+.video-grid--2x2 { grid-template-columns: repeat(2, 1fr); }
+.video-grid--3x3 { grid-template-columns: repeat(3, 1fr); }
+.video-grid--4x4 { grid-template-columns: repeat(4, 1fr); }
+.video-cell { background: #0b0b0b; color: #fff; border-radius: 6px; overflow: hidden; aspect-ratio: 16/9; position: relative; display: flex; flex-direction: column; }
+.video-cell.is-primary { box-shadow: 0 0 0 2px var(--el-color-danger); }
+.video-cell__header { display: flex; gap: 8px; align-items: center; padding: 6px 10px; background: rgba(0,0,0,.6); font-size: 12px; }
+.video-cell__no { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; opacity: 0.7; }
+.video-cell__title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.video-cell__body { flex: 1; display: flex; align-items: center; justify-content: center; background: #111; }
+.video-cell__footer { display: flex; justify-content: space-between; align-items: center; padding: 4px 10px; background: rgba(0,0,0,.6); font-size: 11px; }
+.video-element { width: 100%; height: 100%; object-fit: contain; background: #000; }
+.video-placeholder { color: #555; }
+.ptz-bar { padding: 12px; display: flex; align-items: center; }
+.ptz-title { margin-right: 8px; color: var(--el-text-color-secondary); }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.small { font-size: 11px; }
 </style>

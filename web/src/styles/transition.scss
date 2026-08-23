@@ -1,48 +1,14 @@
-// global transition css
+/* 路由过渡 */
 
-/* fade */
-.fade-enter-active,
-.fade-leave-active {
-  transition: opacity 0.28s;
+.fade-transform-enter-active,
+.fade-transform-leave-active {
+  transition: all 0.28s ease;
 }
-
-.fade-enter,
-.fade-leave-active {
+.fade-transform-enter-from {
   opacity: 0;
+  transform: translateX(-12px);
 }
-
-/* fade-transform */
-.fade-transform-leave-active,
-.fade-transform-enter-active {
-  transition: all .5s;
-}
-
-.fade-transform-enter {
-  opacity: 0;
-  transform: translateX(-30px);
-}
-
 .fade-transform-leave-to {
   opacity: 0;
-  transform: translateX(30px);
-}
-
-/* breadcrumb transition */
-.breadcrumb-enter-active,
-.breadcrumb-leave-active {
-  transition: all .5s;
-}
-
-.breadcrumb-enter,
-.breadcrumb-leave-active {
-  opacity: 0;
-  transform: translateX(20px);
-}
-
-.breadcrumb-move {
-  transition: all .5s;
-}
-
-.breadcrumb-leave-active {
-  position: absolute;
+  transform: translateX(12px);
 }

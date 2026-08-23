@@ -1,21 +1,21 @@
 <template>
   <section class="app-main">
-    <transition name="fade-transform" mode="out-in">
-      <keep-alive :include="cachedViews">
-        <router-view :key="key" />
-      </keep-alive>
-    </transition>
+    <router-view v-slot="{ Component, route }">
+      <transition name="fade-transform" mode="out-in">
+        <keep-alive :include="cachedViewNames">
+          <component :is="Component" :key="route.fullPath" />
+        </keep-alive>
+      </transition>
+    </router-view>
   </section>
 </template>
 
-<script>
-export default {
-  name: 'AppMain',
-  computed: {
-    key() { return this.$route.path },
-    cachedViews() { return this.$store.state.tagsView.cachedViews }
-  }
-}
+<script setup lang="ts">
+import { computed } from 'vue'
+import { useTagsViewStore } from '@/store/modules/tagsView'
+
+const tagsView = useTagsViewStore()
+const cachedViewNames = computed(() => tagsView.cachedViews)
 </script>
 
 <style scoped>
@@ -24,5 +24,6 @@ export default {
   width: 100%;
   position: relative;
   min-height: 0;
+  overflow: auto;
 }
 </style>

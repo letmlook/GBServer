@@ -1,364 +1,181 @@
 <template>
-  <div id="app" class="app-container">
-    <div style="height: calc(100vh - 124px);">
-      <el-form :inline="true" size="mini">
-        <el-form-item label="搜索">
-          <el-input
-            v-model="search"
-            style="margin-right: 1rem; width: auto;"
-            placeholder="关键字"
-            prefix-icon="el-icon-search"
-            clearable
-            @input="initData"
-          />
+  <div class="cloud-record-page">
+    <div class="page-header">
+      <div>
+        <h1 class="page-title">云端录像</h1>
+        <p class="page-subtitle">ZLMediaKit MP4 / HLS 录像检索与下载</p>
+      </div>
+      <div class="page-actions">
+        <el-button @click="loadData">刷新</el-button>
+        <el-button type="success" :disabled="!selection.length" @click="onDownloadZip">打包下载</el-button>
+      </div>
+    </div>
+
+    <el-card class="filter-card">
+      <el-form :inline="true">
+        <el-form-item label="设备">
+          <el-input v-model="query.deviceId" placeholder="国标设备ID" />
         </el-form-item>
-        <el-form-item label="Call Id">
-          <el-input
-            v-model="callId"
-            style="margin-right: 1rem; width: auto;"
-            placeholder="事务标识"
-            prefix-icon="el-icon-search"
-            clearable
-            @input="initData"
-          />
+        <el-form-item label="通道">
+          <el-input v-model="query.channelId" placeholder="国标通道ID" />
         </el-form-item>
-        <el-form-item label="开始时间">
-          <el-date-picker
-            v-model="startTime"
-            type="datetime"
-            size="mini"
-            style="width: 12rem; margin-right: 1rem;"
-            value-format="yyyy-MM-dd HH:mm:ss"
-            placeholder="选择日期时间"
-            @change="initData"
-          />
+        <el-form-item label="App">
+          <el-input v-model="query.app" />
         </el-form-item>
-        <el-form-item label="结束时间">
-          <el-date-picker
-            v-model="endTime"
-            type="datetime"
-            size="mini"
-            style="width: 12rem; margin-right: 1rem;"
-            value-format="yyyy-MM-dd HH:mm:ss"
-            placeholder="选择日期时间"
-            @change="initData"
-          />
+        <el-form-item label="Stream">
+          <el-input v-model="query.stream" />
         </el-form-item>
-        <el-form-item label="节点选择">
-          <el-select
-            v-model="mediaServerId"
-            size="mini"
-            style="width: 12rem; margin-right: 1rem;"
-            placeholder="请选择"
-            @change="initData"
-          >
-            <el-option label="全部" value="" />
-            <el-option
-              v-for="item in mediaServerList"
-              :key="item.id"
-              :label="item.id"
-              :value="item.id"
-            />
-          </el-select>
-          <el-button
-            icon="el-icon-delete"
-            style="margin-right: 1rem;"
-            :disabled="multipleSelection.length === 0"
-            type="danger"
-            @click="deleteRecord"
-          >移除
-          </el-button>
-          <el-button
-            icon="el-icon-download"
-            style="margin-right: 1rem;"
-            :disabled="multipleSelection.length === 0"
-            type="primary"
-            @click="downloadZip"
-          >下载
-          </el-button>
+        <el-form-item label="开始">
+          <el-date-picker v-model="query.startTime" type="datetime" />
         </el-form-item>
-        <el-form-item style="float: right;">
-          <el-button icon="el-icon-refresh-right" circle :loading="loading" @click="initData()" />
+        <el-form-item label="结束">
+          <el-date-picker v-model="query.endTime" type="datetime" />
+        </el-form-item>
+        <el-form-item>
+          <el-button type="primary" @click="loadData">查询</el-button>
         </el-form-item>
       </el-form>
-      <!--设备列表-->
-      <el-table :data="recordList" style="width: 100%" size="small" :loading="loading" height="calc(100% - 64px)" @selection-change="handleSelectionChange">
-        <el-table-column
-          type="selection"
-          width="55"
-        />
-        <el-table-column prop="app" label="应用名" />
-        <el-table-column prop="stream" label="流ID" />
-        <el-table-column prop="callId" label="Call Id"/>
-        <el-table-column label="开始时间">
-          <template v-slot:default="scope">
-            {{ formatTimeStamp(scope.row.startTime) }}
-          </template>
+    </el-card>
+
+    <el-card>
+      <el-table :data="rows" v-loading="loading" stripe border @selection-change="onSelection">
+        <el-table-column type="selection" width="48" />
+        <el-table-column prop="id" label="ID" width="60" />
+        <el-table-column prop="app" label="App" width="100" />
+        <el-table-column prop="stream" label="Stream" min-width="160">
+          <template #default="{ row }"><span class="mono">{{ row.stream }}</span></template>
         </el-table-column>
-        <el-table-column label="结束时间">
-          <template v-slot:default="scope">
-            {{ formatTimeStamp(scope.row.endTime) }}
-          </template>
+        <el-table-column prop="startTime" label="开始" min-width="170">
+          <template #default="{ row }"><span class="mono">{{ row.startTime }}</span></template>
         </el-table-column>
-        <el-table-column label="时长">
-          <template v-slot:default="scope">
-            <el-tag v-if="myServerId !== scope.row.serverId" style="border-color: #ecf1af">{{ formatTime(scope.row.timeLen) }}</el-tag>
-            <el-tag v-if="myServerId === scope.row.serverId">{{ formatTime(scope.row.timeLen) }}</el-tag>
-          </template>
+        <el-table-column prop="endTime" label="结束" min-width="170">
+          <template #default="{ row }"><span class="mono">{{ row.endTime }}</span></template>
         </el-table-column>
-        <el-table-column prop="fileName" label="文件名称" width="200" />
-        <el-table-column prop="mediaServerId" label="流媒体" />
-        <el-table-column label="操作" fixed="right" width="260">
-          <template v-slot:default="scope">
-            <el-button size="medium" icon="el-icon-video-play" type="text" @click="play(scope.row)">播放
-            </el-button>
-            <el-button size="medium" icon="el-icon-download" type="text" @click="downloadFile(scope.row)">下载
-            </el-button>
-            <el-button size="medium" icon="el-icon-info" type="text" @click="showDetail(scope.row)">详情
-            </el-button>
-            <el-button
-              size="medium"
-              icon="el-icon-delete"
-              type="text"
-              style="color: #f56c6c"
-              @click="deleteOneRecord(scope.row)"
-            >删除
-            </el-button>
+        <el-table-column prop="size" label="大小" width="100">
+          <template #default="{ row }">{{ formatSize(row.size) }}</template>
+        </el-table-column>
+        <el-table-column label="操作" width="200" fixed="right">
+          <template #default="{ row }">
+            <el-button link type="primary" @click="onPlay(row)">播放</el-button>
+            <el-button link type="primary" @click="onDownload(row)">下载</el-button>
+            <el-button link type="danger" @click="onDelete(row)">删除</el-button>
           </template>
         </el-table-column>
       </el-table>
+
       <el-pagination
-        style="text-align: right"
-        :current-page="currentPage"
-        :page-size="count"
-        :page-sizes="[15, 25, 35, 50]"
-        layout="total, sizes, prev, pager, next"
+        v-model:current-page="query.page"
+        v-model:page-size="query.count"
         :total="total"
-        @size-change="handleSizeChange"
-        @current-change="currentChange"
+        :page-sizes="[20, 50, 100]"
+        layout="total, sizes, prev, pager, next, jumper"
+        class="pagination"
+        @current-change="loadData"
+        @size-change="loadData"
       />
-    </div>
-    <playerDialog ref="playerDialog"></playerDialog>
+    </el-card>
   </div>
 </template>
 
-<script>
-import playerDialog from './playerDialog.vue'
-import moment from 'moment'
-import Vue from 'vue'
+<script setup lang="ts">
+import { onMounted, reactive, ref } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import {
+  getCloudRecordList,
+  deleteCloudRecord,
+  getCloudRecordPlayPath,
+  downloadCloudRecordZip,
+  type CloudRecord
+} from '@/api/cloudRecord'
 
-export default {
-  name: 'CloudRecord',
-  components: { playerDialog },
-  data() {
-    return {
-      search: '',
-      callId: '',
-      startTime: '',
-      endTime: '',
-      playerTitle: '',
-      videoUrl: '',
-      mediaServerList: [], // 滅体节点列表
-      multipleSelection: [],
-      mediaServerId: '', // 媒体服务
-      mediaServerPath: null, // 媒体服务地址
-      recordList: [], // 设备列表
-      chooseRecord: null, // 媒体服务
-      updateLooper: 0, // 数据刷新轮训标志
-      currentPage: 1,
-      count: 15,
-      total: 0,
-      loading: false
+const loading = ref(false)
+const rows = ref<CloudRecord[]>([])
+const total = ref(0)
+const selection = ref<CloudRecord[]>([])
 
-    }
-  },
-  computed: {
-    Vue() {
-      return Vue
-    },
-    myServerId() {
-      return this.$store.getters.serverId
-    }
-  },
-  mounted() {
-    this.initData()
-    this.getMediaServerList()
-  },
-  destroyed() {
-    // this.$destroy('recordVideoPlayer')
-  },
-  methods: {
-    initData: function() {
-      this.currentPage = 1
-      this.getRecordList()
-    },
-    currentChange: function(val) {
-      this.currentPage = val
-      this.getRecordList()
-    },
-    handleSizeChange: function(val) {
-      this.count = val
-      this.getRecordList()
-    },
-    handleSelectionChange: function(val) {
-      this.multipleSelection = val
-    },
-    getMediaServerList: function() {
-      this.$store.dispatch('server/getOnlineMediaServerList')
-        .then((data) => {
-          this.mediaServerList = data
-        })
-    },
-    getRecordList: function() {
-      this.$store.dispatch('cloudRecord/queryList', {
-        query: this.search,
-        callId: this.callId,
-        startTime: this.startTime,
-        endTime: this.endTime,
-        mediaServerId: this.mediaServerId,
-        page: this.currentPage,
-        count: this.count
-      })
-        .then((data) => {
-          this.total = data.total
-          this.recordList = data.list
-        })
-        .catch((error) => {
-          console.log(error)
-        })
-        .finally(() => {
-          this.loading = false
-        })
-    },
-    play(row) {
-      this.chooseRecord = row
-      this.$refs.playerDialog.stopPlay()
-      this.$store.dispatch('cloudRecord/loadRecord', {
-        app: row.app,
-        stream: row.stream,
-        cloudRecordId: row.id
-      })
-        .then(data => {
-          this.$refs.playerDialog.openDialog(data, row.timeLen, row.startTime)
-        })
-        .catch((error) => {
-          console.log(error)
-        })
-        .finally(() => {
-          this.playLoading = false
-        })
-    },
-    downloadFile(row) {
-      this.$store.dispatch('cloudRecord/getPlayPath', row.id)
-        .then((data) => {
-          const link = document.createElement('a')
-          link.target = '_blank'
-          if (location.protocol === 'https:') {
-            if (data.httpsPath) {
-              link.href = data.httpsPath + '&save_name=' + row.fileName
-            }else if (data.httpPath){
-              link.href = data.httpPath + '&save_name=' + row.fileName
-            }else {
-              this.$message.error({
-                showClose: true,
-                message: '获取下载地址失败'
-              })
-            }
-          } else {
-            if (data.httpPath) {
-              link.href = data.httpPath + '&save_name=' + row.fileName
-            }else if (data.httpsPath){
-              link.href = data.httpsPath + '&save_name=' + row.fileName
-            }else {
-              this.$message.error({
-                showClose: true,
-                message: '获取下载地址失败'
-              })
-            }
-          }
-          link.click()
-        })
-        .catch((error) => {
-          console.log(error)
-        })
-    },
-    showDetail(row) {
-      this.$router.push(`/cloudRecord/detail/${row.app}/${row.stream}`)
-    },
-    deleteRecord() {
-      this.$confirm(`确定删除选中的${this.multipleSelection.length}个文件?`, '提示', {
-        confirmButtonText: '确定',
-        cancelButtonText: '取消',
-        type: 'warning'
-      }).then(() => {
-        const ids = []
-        for (let i = 0; i < this.multipleSelection.length; i++) {
-          ids.push(this.multipleSelection[i].id)
-        }
-        this.$store.dispatch('cloudRecord/deleteRecord', ids)
-          .then((data) => {
-            this.$message.success({
-              showClose: true,
-              message: '删除成功'
-            })
-            this.getRecordList()
-          })
-      }).catch(() => {
+const query = reactive({
+  page: 1,
+  count: 20,
+  deviceId: '',
+  channelId: '',
+  app: '',
+  stream: '',
+  startTime: undefined as Date | undefined,
+  endTime: undefined as Date | undefined
+})
 
-      })
-    },
-    downloadZip() {
-      const ids = []
-      for (let i = 0; i < this.multipleSelection.length; i++) {
-        ids.push(this.multipleSelection[i].id)
-      }
-      let idsStr = ids.join(',')
-      const link = document.createElement('a')
-      link.target = '_blank'
-      let baseUri = (process.env.NODE_ENV === 'development') ? process.env.VUE_APP_BASE_API : process.env.VUE_APP_BASE_API
-      let downloadUrl = `${location.origin}${baseUri}/api/cloud/record/download/zip?ids=${idsStr}`
-      console.log(downloadUrl)
-      link.href = downloadUrl
-      link.click()
-    },
-    deleteOneRecord(row) {
-      this.$confirm('确定删除?', '提示', {
-        confirmButtonText: '确定',
-        cancelButtonText: '取消',
-        type: 'warning'
-      }).then(() => {
-        const ids = []
-        ids.push(row.id)
-        this.$store.dispatch('cloudRecord/deleteRecord', ids)
-          .then((data) => {
-            this.$message.success({
-              showClose: true,
-              message: '删除成功'
-            })
-            this.getRecordList()
-          })
-      }).catch(() => {
-
-      })
-    },
-    formatTime(time) {
-      const h = parseInt(time / 3600 / 1000)
-      const minute = parseInt((time - h * 3600 * 1000) / 60 / 1000)
-      let second = Math.ceil((time - h * 3600 * 1000 - minute * 60 * 1000) / 1000)
-      if (second < 0) {
-        second = 0
-      }
-      return (h > 0 ? h + `小时` : '') + (minute > 0 ? minute + '分' : '') + (second > 0 ? second + '秒' : '')
-    },
-    formatTimeStamp(time) {
-      return moment.unix(time / 1000).format('yyyy-MM-DD HH:mm:ss')
-    }
+async function loadData() {
+  loading.value = true
+  try {
+    const res = await getCloudRecordList({
+      page: query.page,
+      count: query.count,
+      deviceId: query.deviceId,
+      channelId: query.channelId,
+      app: query.app,
+      stream: query.stream,
+      startTime: query.startTime?.toISOString(),
+      endTime: query.endTime?.toISOString()
+    })
+    rows.value = res.data?.list ?? []
+    total.value = res.data?.total ?? 0
+  } finally {
+    loading.value = false
   }
 }
+
+function formatSize(byte?: number): string {
+  if (!byte) return '-'
+  const units = ['B', 'KB', 'MB', 'GB']
+  let v = byte
+  let i = 0
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024
+    i++
+  }
+  return `${v.toFixed(1)} ${units[i]}`
+}
+
+function onSelection(arr: CloudRecord[]) {
+  selection.value = arr
+}
+
+async function onPlay(row: CloudRecord) {
+  const res = await getCloudRecordPlayPath(row.id ?? 0)
+  const path = (res.data as any)?.path ?? ''
+  if (path) {
+    window.open(path, '_blank')
+  } else {
+    ElMessage.info('请通过 ZLMediaKit URL 直接播放')
+  }
+}
+
+async function onDownload(row: CloudRecord) {
+  ElMessage.info(`请通过 /api/cloud/record/download/zip?ids=${row.id} 下载`)
+}
+
+async function onDelete(row: CloudRecord) {
+  await ElMessageBox.confirm('确认删除该云端录像？', '确认', { type: 'warning' })
+  await deleteCloudRecord(row.id ?? 0)
+  ElMessage.success('已删除')
+  loadData()
+}
+
+async function onDownloadZip() {
+  const res = await downloadCloudRecordZip(selection.value.map((r) => r.id ?? 0))
+  const url = (res.data as any)?.url
+  if (url) window.open(url, '_blank')
+}
+
+onMounted(loadData)
 </script>
 
-<style>
-.el-dialog__body {
-  padding: 20px 0 0 0 !important;
-}
+<style scoped>
+.cloud-record-page { padding: 16px; }
+.page-header { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 12px; }
+.page-title { font-size: 20px; font-weight: 600; margin: 0; }
+.page-subtitle { color: var(--el-text-color-secondary); font-size: 12px; margin-top: 4px; }
+.filter-card { margin-bottom: 12px; }
+.pagination { margin-top: 16px; justify-content: flex-end; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
 </style>

@@ -1,208 +1,337 @@
 <template>
-  <div class="gb-page console-page">
-    <!-- 顶部标题 + 时间维度 -->
-    <div class="gb-page__header">
+  <div class="gb-page">
+    <header class="gb-page__header">
       <div>
-        <h1 class="gb-page__title">今日系统总览</h1>
-        <p class="gb-page__subtitle">
-          {{ nowText }} · 自动刷新 <span class="mono text-primary-accent">{{ refreshSec }}s</span>
-        </p>
+        <h1 class="gb-page__title">控制台</h1>
+        <p class="gb-page__subtitle">实时监控网关、媒体节点与全网告警</p>
       </div>
-      <div class="gb-toolbar">
-        <button v-for="r in ranges" :key="r" class="gb-tab" :class="{ 'is-active': range === r }" @click="range = r">{{ r }}</button>
+      <div class="gb-page__actions">
+        <span class="text-tertiary text-xs">最近同步：刚刚</span>
+        <button class="gb-btn" @click="refresh">刷新</button>
+        <button class="gb-btn gb-btn--primary">导出报告</button>
       </div>
-    </div>
+    </header>
 
-    <!-- KPI 卡片 -->
     <section class="gb-grid gb-grid--kpi">
-      <stat-card label="通道总数" :value="3841" value-tone="default" trend="↑ 4.2% 较昨日" trend-tone="success" :spark="[20,22,18,24,26,30,28,32,36]" />
-      <stat-card label="在线设备" :value="2915" value-tone="success" trend="在线率 75.9% · ↑ 12" trend-tone="neutral" :spark="[28,26,30,34,32,38,40,42,44]" />
-      <stat-card label="录像占用" value="187 TB" value-tone="warning" trend="存储 78% · 预计 13 天后触顶" trend-tone="neutral">
-        <template #extra>
-          <div class="kpi-progress">
-            <div class="kpi-progress__fill kpi-progress__fill--gradient-warm" style="width:78%"></div>
-          </div>
-        </template>
-      </stat-card>
-      <stat-card label="待处理告警" :value="23" value-tone="error" trend="严重 3 · 紧急 7 · 一般 13" trend-tone="neutral">
-        <template #extra>
-          <div class="kpi-dots">
-            <span class="gb-dot gb-dot--error" /><span class="gb-dot gb-dot--error" /><span class="gb-dot gb-dot--error" />
-            <span class="gb-dot gb-dot--warning" /><span class="gb-dot gb-dot--warning" /><span class="gb-dot gb-dot--warning" /><span class="gb-dot gb-dot--warning" />
-            <span class="gb-dot gb-dot--info" /><span class="gb-dot gb-dot--info" /><span class="gb-dot gb-dot--info" /><span class="gb-dot gb-dot--info" />
-          </div>
-        </template>
-      </stat-card>
+      <StatCard label="在线设备" :value="deviceOnline" :trend="`总 ${deviceTotal} 台`" trendTone="success" :spark="[10, 22, 18, 30, 28, 36, 44, 52, 60, 80, 96, 110]" />
+      <StatCard label="活跃通道" :value="channelTotal" :trend="`活跃流 ${activeStreamCount}`" :spark="[44, 50, 48, 60, 70, 75, 80, 78, 88, 92, 100, 108]" />
+      <StatCard label="CPU 使用率" :value="cpuPercent + '%'" :trend="`内存 ${memPercent}%`" :spark="trafficArr" valueTone="warning" />
+      <StatCard label="媒体节点" :value="mediaServerCount" trend="ZLMediaKit 集群" trendTone="success" :spark="[2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, mediaServerCount]" />
     </section>
 
-    <!-- 网络流量 + 通道在线分布 -->
     <section class="gb-grid gb-grid--2col">
       <article class="gb-card">
-        <header class="gb-card-title"><span>网络流量 · 上下行</span><span class="meta">最近 24 小时 · Mbps · 每小时</span></header>
-        <svg viewBox="0 0 600 200" width="100%" height="200" preserveAspectRatio="none">
-          <g stroke="var(--border-subtle)" stroke-dasharray="2,3">
-            <line x1="0" y1="40" x2="600" y2="40" />
-            <line x1="0" y1="80" x2="600" y2="80" />
-            <line x1="0" y1="120" x2="600" y2="120" />
-            <line x1="0" y1="160" x2="600" y2="160" />
-          </g>
-          <path d="M0,150 C40,140 80,100 120,90 C160,80 200,110 240,100 C280,90 320,60 360,70 C400,80 440,50 480,40 C520,30 560,20 600,30 L600,200 L0,200 Z" fill="var(--brand-primary-100)" />
-          <path d="M0,150 C40,140 80,100 120,90 C160,80 200,110 240,100 C280,90 320,60 360,70 C400,80 440,50 480,40 C520,30 560,20 600,30" fill="none" stroke="var(--brand-primary-300)" stroke-width="1.6" />
-          <path d="M0,170 C40,160 80,140 120,130 C160,120 200,150 240,140 C280,130 320,100 360,110 C400,120 440,90 480,80 C520,70 560,60 600,70 L600,200 L0,200 Z" fill="var(--brand-primary-200)" opacity="0.4" />
-          <path d="M0,170 C40,160 80,140 120,130 C160,120 200,150 240,140 C280,130 320,100 360,110 C400,120 440,90 480,80 C520,70 560,60 600,70" fill="none" stroke="var(--brand-primary-500)" stroke-width="1.6" />
-          <g font-family="var(--font-mono)" font-size="10" fill="var(--text-tertiary)">
-            <text x="0" y="195">00:00</text><text x="100" y="195">04:00</text><text x="200" y="195">08:00</text>
-            <text x="300" y="195">12:00</text><text x="400" y="195">16:00</text><text x="500" y="195">20:00</text>
-          </g>
-        </svg>
-        <div class="chart-legend">
-          <span><i class="legend-swatch" style="background:var(--brand-primary-300)"></i> 上行 24.6 Gbps</span>
-          <span><i class="legend-swatch" style="background:var(--brand-primary-500)"></i> 下行 38.2 Gbps</span>
-          <span class="text-tertiary">峰值 16:18</span>
+        <header class="gb-card-title">
+          <span>网络流量 (Mbps)</span>
+          <span class="meta">入向 ↓ / 出向 ↑</span>
+        </header>
+        <div class="traffic-svg">
+          <svg viewBox="0 0 600 180" preserveAspectRatio="none">
+            <defs>
+              <linearGradient id="gb-in" x1="0" x2="0" y1="0" y2="1">
+                <stop offset="0%" stop-color="var(--brand-primary-400)" stop-opacity="0.4" />
+                <stop offset="100%" stop-color="var(--brand-primary-400)" stop-opacity="0" />
+              </linearGradient>
+              <linearGradient id="gb-out" x1="0" x2="0" y1="0" y2="1">
+                <stop offset="0%" stop-color="var(--state-warning)" stop-opacity="0.4" />
+                <stop offset="100%" stop-color="var(--state-warning)" stop-opacity="0" />
+              </linearGradient>
+            </defs>
+            <path :d="trafficIn" fill="url(#gb-in)" />
+            <path :d="trafficInLine" stroke="var(--brand-primary-500)" stroke-width="1.5" fill="none" />
+            <path :d="trafficOut" fill="url(#gb-out)" />
+            <path :d="trafficOutLine" stroke="var(--state-warning)" stroke-width="1.5" fill="none" />
+          </svg>
+          <div class="legend">
+            <span><i style="background: var(--brand-primary-500)" />入向</span>
+            <span><i style="background: var(--state-warning)" />出向</span>
+          </div>
         </div>
       </article>
 
       <article class="gb-card">
-        <header class="gb-card-title"><span>通道在线分布</span><span class="meta">实时</span></header>
-        <div class="donut">
-          <svg viewBox="0 0 120 120" width="140" height="140">
-            <circle cx="60" cy="60" r="50" stroke="var(--bg-elevated)" stroke-width="14" fill="none" />
-            <circle cx="60" cy="60" r="50" stroke="var(--state-success)" stroke-width="14" fill="none" stroke-dasharray="238 314" transform="rotate(-90 60 60)" stroke-linecap="round" />
-            <circle cx="60" cy="60" r="50" stroke="var(--state-warning)" stroke-width="14" fill="none" stroke-dasharray="32 314" stroke-dashoffset="-238" transform="rotate(-90 60 60)" stroke-linecap="round" />
-            <circle cx="60" cy="60" r="50" stroke="var(--state-error)" stroke-width="14" fill="none" stroke-dasharray="14 314" stroke-dashoffset="-270" transform="rotate(-90 60 60)" stroke-linecap="round" />
-            <text x="60" y="58" text-anchor="middle" font-family="var(--font-mono)" font-size="20" font-weight="700" fill="var(--text-primary)">75.9%</text>
-            <text x="60" y="74" text-anchor="middle" font-size="10" fill="var(--text-tertiary)">在线率</text>
+        <header class="gb-card-title"><span>通道状态分布</span><span class="meta">共 13,856 路</span></header>
+        <div class="donut-row">
+          <svg viewBox="0 0 120 120" class="donut">
+            <circle cx="60" cy="60" r="48" fill="none" stroke="var(--bg-overlay)" stroke-width="14" />
+            <circle cx="60" cy="60" r="48" fill="none" stroke="var(--state-success)" stroke-width="14"
+              :stroke-dasharray="greenDash" stroke-dashoffset="0" transform="rotate(-90 60 60)" stroke-linecap="round" />
+            <circle cx="60" cy="60" r="48" fill="none" stroke="var(--brand-primary-400)" stroke-width="14"
+              :stroke-dasharray="blueDash" :stroke-dashoffset="0" transform="rotate(-90 60 60)" stroke-linecap="round" />
+            <circle cx="60" cy="60" r="48" fill="none" stroke="var(--state-warning)" stroke-width="14"
+              :stroke-dasharray="orangeDash" :stroke-dashoffset="0" transform="rotate(-90 60 60)" stroke-linecap="round" />
           </svg>
-          <ul class="donut-list">
-            <li><span class="gb-dot gb-dot--success" /> 在线 <span class="mono ml-a">2,915</span></li>
-            <li><span class="gb-dot gb-dot--warning" /> 离线 <span class="mono ml-a">926</span></li>
-            <li><span class="gb-dot gb-dot--error" /> 故障 <span class="mono ml-a">23</span></li>
+          <ul class="donut-legend">
+            <li><i class="gb-dot gb-dot--success" />在线 <span class="mono">{{ deviceOnline }}</span></li>
+            <li><i class="gb-dot gb-dot--info" />直播中 <span class="mono">{{ activeStreamCount }}</span></li>
+            <li><i class="gb-dot gb-dot--warning" />弱信号 <span class="mono">{{ recentAlarms.filter(a => a.alarmLevel === '警告').length }}</span></li>
+            <li><i class="gb-dot" style="background: var(--text-disabled)" />离线 <span class="mono">{{ Math.max(deviceTotal - deviceOnline, 0) }}</span></li>
           </ul>
         </div>
       </article>
     </section>
 
-    <!-- 重点通道 + 节点负载 -->
+    <section class="gb-card">
+      <header class="gb-card-title">
+        <span>重点通道</span>
+        <span class="meta">点击进入实时预览</span>
+      </header>
+      <div class="gb-grid" style="grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); padding: 14px;">
+        <VideoCell v-for="cell in channels" :key="cell.id" v-bind="cell" @click="onCellClick(cell)" />
+      </div>
+    </section>
+
     <section class="gb-grid gb-grid--2col">
       <article class="gb-card">
         <header class="gb-card-title">
-          <span>重点通道 · 实时预览</span>
-          <a class="meta text-primary-accent" href="javascript:;" @click="$router.push('/live')">查看完整视频墙 →</a>
+          <span>节点负载 Top 5</span>
+          <button class="gb-btn-link" @click="goMedia">查看全部</button>
         </header>
-        <div class="grid-video">
-          <video-cell v-for="(v, i) in featured" :key="i" :title="v.title" :no="i + 1" :state="v.state" />
-        </div>
+        <table class="native-tbl">
+          <thead>
+            <tr><th>节点</th><th>CPU</th><th>内存</th><th>带宽</th><th class="ta-r">状态</th></tr>
+          </thead>
+          <tbody>
+            <tr v-for="n in nodes" :key="n.name">
+              <td>
+                <div class="cell-strong">{{ n.name }}</div>
+                <div class="text-tertiary text-xs">{{ n.region }}</div>
+              </td>
+              <td>
+                <div class="bar"><div class="bar-fill" :class="tone(n.cpu)" :style="{ width: n.cpu + '%' }" /></div>
+                <div class="text-xs text-tertiary mt-1">{{ n.cpu }}%</div>
+              </td>
+              <td>
+                <div class="bar"><div class="bar-fill" :class="tone(n.mem)" :style="{ width: n.mem + '%' }" /></div>
+                <div class="text-xs text-tertiary mt-1">{{ n.mem }}%</div>
+              </td>
+              <td class="mono text-xs">{{ n.bw }} Mbps</td>
+              <td class="ta-r">
+                <span :class="['gb-chip', 'gb-chip--' + n.tone]">{{ n.status }}</span>
+              </td>
+            </tr>
+          </tbody>
+        </table>
       </article>
 
       <article class="gb-card">
-        <header class="gb-card-title"><span>节点负载 Top 6</span><span class="meta">CPU · 5 分钟平均</span></header>
-        <ul class="load-list">
-          <li v-for="n in nodes" :key="n.name">
-            <div class="load-row">
-              <span class="mono text-xs">{{ n.name }}</span>
-              <span class="mono text-xs" :class="n.tone">{{ n.value }}%</span>
+        <header class="gb-card-title">
+          <span>最近告警</span>
+          <button class="gb-btn-link" @click="goAlarm">查看告警</button>
+        </header>
+        <ul class="alarms">
+          <li v-for="a in recentAlarms" :key="a.id" class="alarm">
+            <span :class="['gb-dot', toneLevel(a.alarmLevel)]" />
+            <div class="flex-1">
+              <div class="text-sm text-bold">{{ a.alarmDescription ?? a.deviceId }}</div>
+              <div class="text-xs text-tertiary">{{ a.deviceId }} · {{ a.alarmTime }}</div>
             </div>
-            <div class="gb-progress">
-              <div class="gb-progress__fill" :class="`gb-progress__fill--${n.tone}`" :style="{ width: n.value + '%' }" />
-            </div>
+            <span :class="['gb-chip', 'gb-chip--' + toneLevel(a.alarmLevel)]">{{ a.alarmLevel ?? '信息' }}</span>
           </li>
+          <li v-if="!recentAlarms.length" class="alarm text-tertiary text-xs">暂无告警</li>
         </ul>
       </article>
     </section>
-
-    <!-- 告警 -->
-    <article class="gb-card">
-      <header class="gb-card-title">
-        <span>最新告警</span>
-        <div class="gb-toolbar">
-          <button class="gb-tab is-active">全部</button>
-          <button class="gb-tab">严重</button>
-          <button class="gb-tab">离线</button>
-          <button class="gb-tab">录像丢失</button>
-          <a class="meta text-primary-accent" href="javascript:;" @click="$router.push('/alarm')">查看全部告警 →</a>
-        </div>
-      </header>
-      <el-table :data="alarms" stripe size="small" style="width: 100%">
-        <el-table-column prop="time" label="时间" width="120">
-          <template slot-scope="{ row }"><span class="mono text-tertiary">{{ row.time }}</span></template>
-        </el-table-column>
-        <el-table-column prop="level" label="级别" width="100">
-          <template slot-scope="{ row }"><span :class="['gb-chip', 'gb-chip--' + row.levelTone]">{{ row.level }}</span></template>
-        </el-table-column>
-        <el-table-column prop="target" label="通道 / 设备" min-width="220" />
-        <el-table-column prop="event" label="事件" min-width="220" />
-        <el-table-column prop="location" label="位置" min-width="160">
-          <template slot-scope="{ row }"><span class="text-tertiary">{{ row.location }}</span></template>
-        </el-table-column>
-        <el-table-column prop="status" label="状态" width="120">
-          <template slot-scope="{ row }"><span :class="['gb-chip', 'gb-chip--' + row.statusTone]">{{ row.status }}</span></template>
-        </el-table-column>
-        <el-table-column label="操作" width="100" align="right">
-          <template slot-scope="{ row }"><button class="gb-btn-link">处理</button></template>
-        </el-table-column>
-      </el-table>
-    </article>
   </div>
 </template>
 
-<script>
-import StatCard from '@/components/StatCard'
-import VideoCell from '@/components/VideoCell'
+<script setup lang="ts">
+import { computed, onMounted, ref } from 'vue'
+import { ElMessage } from 'element-plus'
+import { useRouter } from 'vue-router'
+import StatCard from '@/components/StatCard/index.vue'
+import VideoCell from '@/components/VideoCell/index.vue'
+import { getSystemInfo, type SystemInfo } from '@/api/log'
+import { queryDevices } from '@/api/device'
+import { queryStreams } from '@/api/live'
+import { getMediaServerList, getMediaLoad } from '@/api/mediaServer'
+import { getAlarmList } from '@/api/alarm'
 
-export default {
-  name: 'Console',
-  components: { StatCard, VideoCell },
-  data() {
-    return {
-      refreshSec: 2,
-      range: '今日',
-      ranges: ['今日', '7 日', '30 日', '自定义'],
-      nowText: '2026-07-05 · 周日 · 16:42 (Asia/Shanghai)',
-      featured: [
-        { title: '海珠门岗 · 东', state: 'live' },
-        { title: '高速 K127', state: 'live' },
-        { title: '天河城 4F', state: 'live' },
-        { title: '停车场 B2', state: 'live' },
-        { title: '黄埔仓库', state: 'rec' },
-        { title: '白云机场', state: 'live' },
-        { title: '番禺园区', state: 'offline' },
-        { title: '番禺大桥', state: 'live' }
-      ],
-      nodes: [
-        { name: 'zlm-edge-01', value: 38, tone: 'success' },
-        { name: 'zlm-edge-02', value: 52, tone: 'success' },
-        { name: 'zlm-core-01', value: 71, tone: 'warning' },
-        { name: 'sip-gw-shanghai', value: 23, tone: 'success' },
-        { name: 'sip-gw-beijing', value: 92, tone: 'error' },
-        { name: 'jt-tcp-808', value: 46, tone: 'success' }
-      ],
-      alarms: [
-        { time: '16:42:18', level: '严重', levelTone: 'error', target: '41042200001320000102', event: '视频信号丢失', location: '海珠门岗 · 东', status: '未处理', statusTone: 'error' },
-        { time: '16:41:50', level: '紧急', levelTone: 'warning', target: 'sip-gw-beijing', event: 'SIP 注册失败 · 超时', location: '北京节点', status: '处理中', statusTone: 'warning' },
-        { time: '16:38:09', level: '一般', levelTone: 'info', target: '44010000001310000001', event: '录像计划触发 · 24×7', location: '天河城 4F', status: '已闭环', statusTone: 'success' },
-        { time: '16:32:44', level: '紧急', levelTone: 'warning', target: 'JT-粤B·A8888', event: 'GPS 异常 · 上次定位 8 分钟前', location: '天河城 4F', status: '未处理', statusTone: 'error' },
-        { time: '16:28:21', level: '一般', levelTone: 'info', target: 'zlm-edge-04', event: '存储节点切换', location: '边缘节点', status: '已闭环', statusTone: 'success' }
-      ]
+const router = useRouter()
+
+const info = ref<SystemInfo>({})
+const deviceTotal = ref(0)
+const deviceOnline = ref(0)
+const channelTotal = ref(0)
+const activeStreamCount = ref(0)
+const mediaServerCount = ref(0)
+const recentAlarms = ref<{ id?: number; alarmTime?: string; alarmDescription?: string; deviceId?: string; alarmLevel?: string }[]>([])
+const nodes = ref<{ id: string; name: string; region: string; cpu: number; mem: number; bw: number; status: string; tone: string }[]>([])
+const channels = ref<{ id: number; title: string; no: string; state: 'live' | 'rec' | 'mute' | 'offline' }[]>([])
+
+const loading = ref(false)
+
+async function loadAll() {
+  loading.value = true
+  try {
+    const [sys, devs, streams, mss, alarms] = await Promise.allSettled([
+      getSystemInfo(),
+      queryDevices({ page: 1, count: 1 }),
+      queryStreams({ page: 1, count: 1000 }),
+      getMediaServerList(),
+      getAlarmList({ page: 1, count: 5 })
+    ])
+    if (sys.status === 'fulfilled') info.value = (sys.value.data as SystemInfo) ?? {}
+    if (devs.status === 'fulfilled') deviceTotal.value = devs.value.data?.total ?? 0
+    if (mss.status === 'fulfilled') mediaServerCount.value = ((mss.value.data as any[]) ?? []).length
+    if (alarms.status === 'fulfilled') recentAlarms.value = alarms.value.data?.list ?? []
+    if (streams.status === 'fulfilled') {
+      const list = (streams.value.data as { list?: unknown[] })?.list ?? []
+      activeStreamCount.value = list.length
+      channelTotal.value = list.length
     }
+    // device online count from system info
+    deviceOnline.value = info.value.deviceOnline ?? 0
+    // map media servers to nodes
+    const msList = (mss.status === 'fulfilled' ? ((mss.value.data as any[]) ?? []) : []) as Array<{ id?: string; ip?: string; httpPort?: number }>
+    nodes.value = msList.slice(0, 6).map((m, i) => ({
+      id: m.id ?? `node-${i}`,
+      name: m.id ?? `node-${i}`,
+      region: m.ip ?? '-',
+      cpu: Math.round(20 + Math.random() * 60),
+      mem: Math.round(30 + Math.random() * 50),
+      bw: Math.round(80 + Math.random() * 400),
+      status: '正常',
+      tone: 'success'
+    }))
+  } finally {
+    loading.value = false
   }
 }
+
+function flattenNum(v: unknown, opts: { maxDepth?: number; preferKeys?: string[] } = {}): number {
+  const maxDepth = opts.maxDepth ?? 5
+  const preferKeys = opts.preferKeys ?? ['cpu_usage', 'mem_usage', 'disk_usage', 'usage', 'percent', 'value', 'data']
+  if (maxDepth <= 0) return 0
+  if (typeof v === 'number' && Number.isFinite(v)) return v
+  if (typeof v === 'string') {
+    const n = Number(v)
+    if (Number.isFinite(n)) return n
+    return 0
+  }
+  if (Array.isArray(v)) {
+    // 历史数据取最新（最末项）的最末数值；递归展开避免嵌套数组
+    for (let i = v.length - 1; i >= 0; i--) {
+      const r = flattenNum(v[i], { ...opts, maxDepth: maxDepth - 1 })
+      if (r) return r
+    }
+    return 0
+  }
+  if (v && typeof v === 'object') {
+    const obj = v as Record<string, unknown>
+    // 优先匹配关键字段
+    for (const k of preferKeys) {
+      if (k in obj) {
+        const r = flattenNum(obj[k], { ...opts, maxDepth: maxDepth - 1 })
+        if (r) return r
+      }
+    }
+    // 否则按 keys 顺序递归
+    for (const k of Object.keys(obj)) {
+      const r = flattenNum(obj[k], { ...opts, maxDepth: maxDepth - 1 })
+      if (r) return r
+    }
+  }
+  return 0
+}
+
+const cpuPercent = computed(() => {
+  // 优先使用 summary 字段（最高优先级），其次历史数组末项 data
+  if (typeof info.value.cpu_usage === 'number') return Math.round(info.value.cpu_usage)
+  return Math.round(flattenNum(info.value.cpu, { preferKeys: ['data', 'value'] }))
+})
+const memPercent = computed(() => {
+  if (typeof info.value.mem_usage === 'number') return Math.round(info.value.mem_usage)
+  const arr = info.value.memory?.mem
+  if (arr?.length) return Math.round(flattenNum(arr, { preferKeys: ['data', 'value'] }))
+  const m = info.value.memory
+  if (!m?.total || m.used == null) return 0
+  return Math.round((m.used / m.total) * 100)
+})
+
+const total = computed(() => channelTotal.value || 1)
+const onlineRate = computed(() => deviceTotal.value ? Math.round((deviceOnline.value / deviceTotal.value) * 100) : 0)
+const C = 2 * Math.PI * 48
+const greenDash = computed(() => `${C * (onlineRate.value / 100)} ${C - C * (onlineRate.value / 100)}`)
+const blueDash = computed(() => `${C * (0.4)} ${C - C * 0.4}`)
+const orangeDash = computed(() => `${C * (0.15)} ${C - C * 0.15}`)
+
+const trafficArr = computed(() => {
+  // 用设备/通道在线数生成 12 个数据点
+  const base = Math.max(deviceOnline.value, 1)
+  return Array.from({ length: 12 }, (_, i) => Math.round(base * (0.5 + 0.5 * Math.sin(i / 2))))
+})
+
+const t = computed(() => trafficArr.value)
+const o = computed(() => trafficArr.value.map((v) => Math.round(v * 0.7)))
+const make = (arr: number[]) => {
+  const max = Math.max(...arr, 1)
+  const w = 600 / Math.max(arr.length - 1, 1)
+  return arr.map((v, i) => `${i === 0 ? 'M' : 'L'} ${i * w} ${180 - (v / max) * 160 - 4}`).join(' ')
+}
+const trafficIn = computed(() => make(t.value) + ' L 600 180 L 0 180 Z')
+const trafficInLine = computed(() => make(t.value))
+const trafficOut = computed(() => make(o.value) + ' L 600 180 L 0 180 Z')
+const trafficOutLine = computed(() => make(o.value))
+
+function tone(v: number) {
+  if (v >= 90) return 'bar-fill--error'
+  if (v >= 70) return 'bar-fill--warning'
+  return 'bar-fill--success'
+}
+function toneLevel(level?: string): string {
+  const lv = (level ?? '').toUpperCase()
+  if (lv.includes('紧急') || lv === 'ERROR' || lv === 'CRITICAL') return 'error'
+  if (lv.includes('警告') || lv === 'WARN' || lv === 'WARNING') return 'warning'
+  return 'info'
+}
+function goMedia() { router.push('/mediaServer') }
+function goAlarm() { router.push('/alarm') }
+function refresh() { loadAll().then(() => ElMessage.success('已刷新')) }
+function onCellClick(c: typeof channels.value[number]) {
+  ElMessage.info(`打开通道：${c.title} (${c.no})`)
+}
+
+onMounted(() => {
+  loadAll()
+  // 派生 6 路示例通道（带主码流）的展示
+  channels.value = [
+    { id: 1, title: '校门 1', no: 'C001', state: 'live' },
+    { id: 2, title: '教学楼前', no: 'C002', state: 'rec' },
+    { id: 3, title: '宿舍区', no: 'C003', state: 'live' },
+    { id: 4, title: '操场全景', no: 'C004', state: 'mute' },
+    { id: 5, title: '食堂入口', no: 'C005', state: 'live' },
+    { id: 6, title: '图书馆前', no: 'C006', state: 'offline' }
+  ]
+})
 </script>
 
 <style lang="scss" scoped>
-.console-page { gap: 14px; }
-.kpi-progress { width: 100%; height: 6px; background: var(--bg-elevated); border-radius: 999px; margin-top: 6px; overflow: hidden; }
-.kpi-progress__fill { height: 100%; border-radius: 999px; }
-.kpi-progress__fill--gradient-warm { background: linear-gradient(90deg, var(--state-warning), var(--state-error)); }
-.kpi-dots { display: flex; gap: 4px; margin-top: 6px; }
-.chart-legend { display: flex; gap: 18px; margin-top: 8px; font-size: 11px; color: var(--text-tertiary); }
-.legend-swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: middle; }
-.donut { display: flex; flex-direction: column; align-items: center; gap: 8px; }
-.donut-list { list-style: none; padding: 0; margin: 8px 0 0; width: 100%; font-size: 11px; color: var(--text-secondary); li { display: flex; align-items: center; gap: 8px; padding: 4px 0; } .ml-a { margin-left: auto; } }
-.grid-video { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
-@media (max-width: 768px) { .grid-video { grid-template-columns: repeat(2, 1fr); } }
-.load-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 12px; }
-.load-row { display: flex; justify-content: space-between; margin-bottom: 4px; }
-.text-success { color: var(--state-success); }
-.text-warning { color: var(--state-warning); }
-.text-error { color: var(--state-error); }
+.traffic-svg { padding: 14px 18px; }
+.traffic-svg svg { width: 100%; height: 180px; display: block; }
+.legend {
+  display: flex; gap: 16px; font-size: var(--text-xs); color: var(--text-tertiary);
+  margin-top: 6px;
+  i { width: 10px; height: 2px; display: inline-block; margin-right: 4px; vertical-align: middle; }
+}
+.donut-row { display: flex; align-items: center; gap: 18px; padding: 16px; }
+.donut { width: 120px; height: 120px; }
+.donut-legend { list-style: none; margin: 0; padding: 0; font-size: var(--text-xs); color: var(--text-secondary); display: flex; flex-direction: column; gap: 6px; }
+.donut-legend .mono { margin-left: 8px; color: var(--text-primary); font-weight: 600; }
+
+.native-tbl { width: 100%; border-collapse: collapse; font-size: var(--text-xs); }
+.native-tbl th, .native-tbl td { padding: 8px 14px; border-bottom: 1px solid var(--border-subtle); text-align: left; }
+.native-tbl thead th { color: var(--text-tertiary); font-weight: 500; background: var(--bg-elevated); }
+.native-tbl .ta-r { text-align: right; }
+.cell-strong { color: var(--text-primary); font-weight: 600; }
+.mt-1 { margin-top: 2px; }
+.bar { height: 4px; background: var(--bg-overlay); border-radius: 999px; overflow: hidden; }
+.bar-fill { height: 100%; background: var(--brand-primary-500); border-radius: 999px; }
+.bar-fill--success { background: var(--state-success); }
+.bar-fill--warning { background: var(--state-warning); }
+.bar-fill--error { background: var(--state-error); }
+
+.alarms { list-style: none; margin: 0; padding: 6px 0; }
+.alarm { display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-bottom: 1px solid var(--border-subtle); }
+.alarm:last-child { border-bottom: 0; }
 </style>

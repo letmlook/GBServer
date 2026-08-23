@@ -6,12 +6,12 @@
 .vscode/
 .idea/
 
-# web-v3 build artifacts
-web-v3/dist/
-web-v3/node_modules/
+# web/ build artifacts（Vite dist 通过 backend static_dir 托管，symlink 指向 web/dist）
+web/dist/
 
-# web/ Vue 2 build symlink (指向 web-v3/dist 让 backend 静态托管)
-web/dist
+# 旧 Vue 2 前端归档（仅 git 历史保留，runtime 不再使用）
+web-legacy-vue2/node_modules/
+web-legacy-vue2/dist/
 
-# Claude 本地配置（不应入库）
+# Claude 本地配置（不入库）
 .claude/settings.local.json

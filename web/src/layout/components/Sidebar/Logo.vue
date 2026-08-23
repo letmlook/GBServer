@@ -19,11 +19,40 @@
   </div>
 </template>
 
-<script>
-export default {
-  name: 'SidebarLogo',
-  props: {
-    collapse: { type: Boolean, required: true }
-  }
-}
+<script setup lang="ts">
+defineProps<{ collapse: boolean }>()
 </script>
+
+<style lang="scss" scoped>
+.app-logo {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--brand-primary-500);
+  position: relative;
+}
+.logo-mark {
+  width: 32px; height: 32px;
+  display: grid; place-items: center;
+  background: rgba(11, 138, 178, 0.08);
+  border-radius: var(--radius-sm);
+  flex-shrink: 0;
+  svg { width: 18px; height: 18px; }
+}
+.logo-text { line-height: 1.2; min-width: 0; }
+.logo-name { font-size: var(--text-sm); font-weight: 700; color: var(--text-primary); }
+.logo-sub  { font-size: 10px; color: var(--text-tertiary); }
+.logo-pulse {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--state-error);
+  background: rgba(220, 38, 38, 0.10);
+  border-radius: 2px;
+  padding: 2px 4px;
+  letter-spacing: 0.5px;
+}
+</style>

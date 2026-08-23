@@ -1,90 +1,157 @@
 <template>
-  <div class="gb-page">
-    <div class="gb-page__header">
+  <div class="history-log-page">
+    <div class="page-header">
       <div>
-        <h1 class="gb-page__title">系统日志</h1>
-        <p class="gb-page__subtitle">历史日志检索 · 8,261,492 条 · 保留 90 天</p>
+        <h1 class="page-title">历史日志</h1>
+        <p class="page-subtitle">{{ total }} 条 · 支持按时间/级别/关键字检索</p>
       </div>
-      <div class="gb-page__actions">
-        <div class="gb-search" style="flex:0 1 220px">
-          <svg viewBox="0 0 24 24" fill="none"><circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="1.6"/><path d="M21 21l-4.35-4.35" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
-          <input placeholder="搜索关键字 / 模块">
-        </div>
-        <button class="gb-btn">导出 CSV</button>
+      <div class="page-actions">
+        <el-button @click="loadData">刷新</el-button>
+        <el-button @click="onExport">导出</el-button>
       </div>
     </div>
 
-    <section class="gb-grid gb-grid--kpi">
-      <stat-card label="今日日志" :value="118326" value-tone="default" trend="INFO 84.2% · WARN 11.6% · ERROR 4.2%" trend-tone="neutral" :spark="[10,12,18,22,28,32,40,48]" />
-      <stat-card label="错误日志" :value="4986" value-tone="error" trend="较昨日 ↓ 2.4%" trend-tone="success" :spark="[18,16,14,12,10,8,8,6]" />
-      <stat-card label="异常率" value="4.2%" value-tone="warning" trend="基线 5% · 在范围内" trend-tone="neutral" :spark="[5,5,4,4,5,4,4,4]" />
-      <stat-card label="存储占用" value="2.4 TB" value-tone="primary" trend="归档 90 天前到 OSS" trend-tone="neutral" :spark="[1.8,1.9,2,2.1,2.2,2.3,2.4,2.4]" />
-    </section>
+    <el-card class="filter-card">
+      <el-form :inline="true">
+        <el-form-item label="关键字">
+          <el-input v-model="query.query" placeholder="消息关键字" clearable @keyup.enter="loadData" />
+        </el-form-item>
+        <el-form-item label="级别">
+          <el-select v-model="query.level" placeholder="全部" clearable style="width: 120px">
+            <el-option label="INFO" value="INFO" />
+            <el-option label="WARN" value="WARN" />
+            <el-option label="ERROR" value="ERROR" />
+            <el-option label="DEBUG" value="DEBUG" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="时间">
+          <el-date-picker v-model="timeRange" type="datetimerange" />
+        </el-form-item>
+        <el-form-item>
+          <el-button type="primary" @click="loadData">查询</el-button>
+          <el-button @click="resetQuery">重置</el-button>
+        </el-form-item>
+      </el-form>
+    </el-card>
 
-    <article class="gb-card">
-      <header class="gb-card-title">
-        <span>日志条目</span>
-        <div class="gb-toolbar">
-          <select class="search-mini">
-            <option>全部级别</option><option>INFO</option><option>WARN</option><option>ERROR</option>
-          </select>
-          <select class="search-mini">
-            <option>全部模块</option><option>SIP</option><option>ZLM</option><option>DB</option><option>JT</option>
-          </select>
-          <el-date-picker v-model="range" type="daterange" size="small" style="width:240px" range-separator="→" start-placeholder="起始" end-placeholder="结束" />
-        </div>
-      </header>
-      <el-table :data="rows" stripe size="small" style="width:100%">
-        <el-table-column prop="time" label="时间" width="160">
-          <template slot-scope="{ row }"><span class="mono text-tertiary">{{ row.time }}</span></template>
+    <el-card>
+      <el-table :data="rows" v-loading="loading" stripe border>
+        <el-table-column prop="time" label="时间" min-width="180">
+          <template #default="{ row }"><span class="mono">{{ row.time }}</span></template>
         </el-table-column>
-        <el-table-column prop="level" label="级别" width="80">
-          <template slot-scope="{ row }"><span :class="['gb-chip', 'gb-chip--' + row.tone]">{{ row.level }}</span></template>
+        <el-table-column label="级别" width="100">
+          <template #default="{ row }">
+            <el-tag :type="levelTagType(row.level)" size="small">{{ row.level }}</el-tag>
+          </template>
         </el-table-column>
-        <el-table-column prop="module" label="模块" width="120">
-          <template slot-scope="{ row }"><span class="text-tertiary">{{ row.module }}</span></template>
+        <el-table-column prop="logger" label="Logger" min-width="160">
+          <template #default="{ row }"><span class="mono">{{ row.logger }}</span></template>
         </el-table-column>
-        <el-table-column prop="actor" label="操作人" min-width="160">
-          <template slot-scope="{ row }"><span class="mono">{{ row.actor }}</span></template>
-        </el-table-column>
-        <el-table-column prop="event" label="事件" min-width="280" />
-        <el-table-column prop="ip" label="来源 IP" width="120">
-          <template slot-scope="{ row }"><span class="mono text-tertiary">{{ row.ip }}</span></template>
-        </el-table-column>
-        <el-table-column label="操作" align="right" width="120">
-          <template slot-scope="{ row }"><button class="gb-btn-link">详情</button></template>
+        <el-table-column prop="message" label="消息" min-width="280" show-overflow-tooltip />
+        <el-table-column prop="thread" label="线程" min-width="120">
+          <template #default="{ row }"><span class="mono">{{ row.thread }}</span></template>
         </el-table-column>
       </el-table>
-      <el-pagination layout="prev, pager, next, jumper, total" :total="8261492" :page-size="20" class="mt-2" />
-    </article>
+
+      <el-pagination
+        v-model:current-page="query.page"
+        v-model:page-size="query.count"
+        :total="total"
+        :page-sizes="[20, 50, 100, 200]"
+        layout="total, sizes, prev, pager, next, jumper"
+        class="pagination"
+        @current-change="loadData"
+        @size-change="loadData"
+      />
+    </el-card>
   </div>
 </template>
 
-<script>
-import StatCard from '@/components/StatCard'
+<script setup lang="ts">
+import { onMounted, reactive, ref, watch } from 'vue'
+import { ElMessage } from 'element-plus'
+import { getLogList, type LogRecord } from '@/api/log'
 
-export default {
-  name: 'HistoryLog',
-  components: { StatCard },
-  data() {
-    return {
-      range: [],
-      rows: [
-        { time: '2026-07-05 16:42:18', level: 'ERROR', tone: 'error', module: 'SIP', actor: 'system', event: '收到 41042200001320000102 的 BYE，超时重试失败', ip: '10.21.4.118' },
-        { time: '2026-07-05 16:41:50', level: 'WARN', tone: 'warning', module: 'SIP', actor: 'system', event: 'sip-gw-beijing 注册超时（>3s）', ip: '10.30.4.5' },
-        { time: '2026-07-05 16:38:09', level: 'INFO', tone: 'info', module: 'DB', actor: 'admin', event: '新建录像计划：海珠区 · 24×7 全周', ip: '127.0.0.1' },
-        { time: '2026-07-05 16:32:44', level: 'ERROR', tone: 'error', module: 'JT', actor: 'system', event: 'JT-粤B·A8888 GPS 信号丢失，重试 3 次后告警', ip: '—' },
-        { time: '2026-07-05 16:28:21', level: 'INFO', tone: 'info', module: 'ZLM', actor: 'system', event: '存储节点切换：edge-04 → edge-02', ip: '10.21.4.22' },
-        { time: '2026-07-05 16:24:02', level: 'INFO', tone: 'info', module: 'Auth', actor: 'ops-tianhe', event: '登录成功，IP 10.20.4.21', ip: '10.20.4.21' },
-        { time: '2026-07-05 16:20:33', level: 'WARN', tone: 'warning', module: 'Storage', actor: 'system', event: '录像 2026-07-04-15.zip 写入失败，已重试', ip: '10.20.4.18' },
-        { time: '2026-07-05 16:18:11', level: 'INFO', tone: 'info', module: 'Cascade', actor: 'system', event: '已成功注册到上级：广州市公安局交警支队', ip: '10.20.4.5' }
-      ]
-    }
+const loading = ref(false)
+const rows = ref<LogRecord[]>([])
+const total = ref(0)
+const timeRange = ref<[Date, Date] | null>(null)
+
+const query = reactive({
+  page: 1,
+  count: 20,
+  query: '',
+  level: '',
+  startTime: undefined as string | undefined,
+  endTime: undefined as string | undefined
+})
+
+watch(timeRange, (v) => {
+  if (v) {
+    query.startTime = v[0].toISOString()
+    query.endTime = v[1].toISOString()
+  } else {
+    query.startTime = undefined
+    query.endTime = undefined
+  }
+})
+
+async function loadData() {
+  loading.value = true
+  try {
+    const res = await getLogList({
+      page: query.page,
+      count: query.count,
+      query: query.query,
+      level: query.level,
+      startTime: query.startTime,
+      endTime: query.endTime
+    })
+    rows.value = res.data?.list ?? []
+    total.value = res.data?.total ?? 0
+  } catch {
+    rows.value = []
+    total.value = 0
+  } finally {
+    loading.value = false
   }
 }
+
+function resetQuery() {
+  query.query = ''
+  query.level = ''
+  timeRange.value = null
+  query.page = 1
+  loadData()
+}
+
+function levelTagType(level?: string): 'success' | 'warning' | 'danger' | 'info' {
+  switch ((level ?? '').toUpperCase()) {
+    case 'ERROR':
+      return 'danger'
+    case 'WARN':
+    case 'WARNING':
+      return 'warning'
+    case 'DEBUG':
+      return 'info'
+    default:
+      return 'success'
+  }
+}
+
+function onExport() {
+  ElMessage.info('通过 /api/log/list?format=csv 导出（当前接口已支持流式输出）')
+}
+
+onMounted(loadData)
 </script>
 
-<style lang="scss" scoped>
-.search-mini { padding: 4px 8px; font-size: 11px; border: 1px solid var(--border-default); background: var(--bg-elevated); border-radius: 4px; color: var(--text-primary); outline: 0; }
-.mt-2 { margin-top: 8px; }
+<style scoped>
+.history-log-page { padding: 16px; }
+.page-header { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 12px; }
+.page-title { font-size: 20px; font-weight: 600; margin: 0; }
+.page-subtitle { color: var(--el-text-color-secondary); font-size: 12px; margin-top: 4px; }
+.filter-card { margin-bottom: 12px; }
+.pagination { margin-top: 16px; justify-content: flex-end; }
+.mono { font-family: ui-monospace, monospace; font-size: 12px; }
 </style>

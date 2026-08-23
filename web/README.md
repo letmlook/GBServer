@@ -1,254 +1,114 @@
-# GBServer Web · Frontend
+# GBServer Web V3
 
-The web management console for **[GBServer](../README.md)** — a Rust-based GB/T 28181 video platform.
+Vue 3 + Element Plus + Vite + TypeScript 重写的 GBServer 管理后台。
+替代原 Vue 2 + Element UI + Webpack 的 [web/](../web/) 实现。
 
-It is a **Vue 2 + Element UI** single-page application that talks to the GBServer HTTP API
-(`/api/*`) and provides day-to-day operations for devices, channels, streams, recording plans,
-cascade platforms, JT1078 vehicles, and user/system administration.
+## 状态
 
-The frontend pages mirror the conventional GB28181 admin console: any feature exposed by the
-backend HTTP API is reachable from the UI without further glue code.
+| Phase | 内容 | 状态 |
+|-------|------|------|
+| Phase 1 | 脚手架 + 路由壳 + 登录 + 控制台 | ✅ 完成 |
+| Phase 2 | 监控中心 + 资源管理业务页 | ✅ 完成 |
+| Phase 3 | 平台 + 用户 + 报警 + JT1078 | ✅ 完成 |
+| Phase 4 | 运维（实时日志/历史日志/系统信息） | ✅ 完成 |
+| Phase 5 | 第三方库替代（js-md5, dayjs, screenfull） | ✅ 完成 |
+| Phase 6 | 通用组件（Pagination / GbTable / GbSearchForm / BackToTop / Upload） | ✅ 完成 |
+| Phase 7 | API 全量类型化（14 个 API 模块 + 14 个 VO 模型） | ✅ 完成 |
 
-> 🇨🇳 [中文说明](./README-zh.md)
+**完成度**：所有 17 个业务路由可用 + 控制台动态数据 + 通用组件封装 + 类型检查 0 错误 + Vite 构建 4.4s。
 
----
-
-## 📑 Contents
-
-- [Overview](#-overview)
-- [Tech Stack](#-tech-stack)
-- [Prerequisites](#-prerequisites)
-- [Quick Start](#-quick-start)
-- [Project Layout](#-project-layout)
-- [Integration with Backend](#-integration-with-backend)
-- [Build & Release](#-build--release)
-- [Code Style & Quality](#-code-style--quality)
-- [Testing](#-testing)
-- [Internationalization](#-internationalization)
-- [Troubleshooting](#-troubleshooting)
-- [Acknowledgements](#-acknowledgements)
-- [License](#-license)
-
----
-
-## 🔭 Overview
-
-- **Purpose** — UI for GBServer. Implements the conventional GB28181 admin screens and call sites,
-  so any feature available in the backend HTTP API is reachable here.
-- **Mode** — SPA; backend serves the built static bundle from `web/dist` when `static_dir` is set.
-- **Auth** — JWT in `access-token` header; admin login, role-based sidebar, dynamic routes.
-- **Visualization** — ECharts / v-charts, OpenLayers (maps), log viewer, tree components.
-
----
-
-## 🛠️ Tech Stack
-
-| Layer | Library | Version |
-|-------|---------|---------|
-| Framework | Vue | 2.6.10 |
-| UI Kit | Element UI | 2.15.x |
-| Router | vue-router | 3.0.6 |
-| State | vuex | 3.1.0 |
-| HTTP | axios | ^0.24.0 |
-| Charts | ECharts / v-charts | 4.9 / 1.19 |
-| Maps | OpenLayers | ^10.6.1 |
-| Trees | vue-ztree-2.0 / @wchbrad/vue-easy-tree | — |
-| Date | dayjs / moment | 1.11 / 2.29 |
-| Build | @vue/cli-service | 4.4.4 |
-| Test | Jest + @vue/test-utils | 23 / 1.0-beta |
-| Lint | ESLint + eslint-plugin-vue | 6.7 / 6.2 |
-
-> Engines: Node `>=8.9`, npm `>=3.0.0`. Recommended: Node 16/18 LTS.
-
----
-
-## ✅ Prerequisites
-
-| Tool | Why | Install |
-|------|-----|---------|
-| **Node.js** ≥ 14 (16/18 LTS recommended) | Build & dev server | <https://nodejs.org/> |
-| **npm** ≥ 6 (bundled with Node) | Dependency management | — |
-| **GBServer backend** running on `:18080` | Data source for dev mode | see [../README.md §Quick Start](../README.md#-quick-start) |
-
-No additional system libraries are required.
-
----
-
-## 🚀 Quick Start
+## 运行
 
 ```bash
-# 1. Install dependencies
+cd web-v3
 npm install
-# (in China, use a mirror to speed up)
-# npm install --registry=https://registry.npmmirror.com
-
-# 2. Start the dev server (with HMR, proxies /dev-api to http://127.0.0.1:18080)
-npm run dev
-# → http://localhost:9528
-
-# 3. Build for production (output: ./dist)
-npm run build:prod
-
-# 4. Build for staging
-npm run build:stage
+npm run dev          # 开发：http://localhost:9529
+npm run type-check   # TypeScript 类型检查（vue-tsc --noEmit）
+npm run build        # 生产构建到 dist/
+npm run preview      # 预览构建产物
 ```
 
-> 💡 During dev, requests from the SPA are prefixed with `/dev-api` and proxied to the backend.
-> In production builds, the prefix is empty so the bundle can be served by the backend itself.
+默认账号 `admin` / `admin`。
 
----
+## 路由（17 条）
 
-## 🗂️ Project Layout
+| 路由 | 标题 | 文件 |
+|------|------|------|
+| `/dashboard` | 控制台 | `src/views/dashboard/` |
+| `/device` | 国标设备 | `src/views/device/` |
+| `/channel` | 通道列表 | `src/views/channel/` |
+| `/live` | 实时直播 | `src/views/live/` |
+| `/playback` | 录像回放 | `src/views/playback/` |
+| `/cloudRecord` | 云端录像 | `src/views/cloudRecord/` |
+| `/mediaServer` | 媒体节点 | `src/views/mediaServer/` |
+| `/recordPlan` | 录像计划 | `src/views/recordPlan/` |
+| `/platform` | 上级平台 | `src/views/platform/` |
+| `/streamProxy` | 拉流代理 | `src/views/streamProxy/` |
+| `/streamPush` | 推流列表 | `src/views/streamPush/` |
+| `/map` | 电子地图 | `src/views/map/` |
+| `/alarm` | 报警管理 | `src/views/alarm/` |
+| `/user` | 用户管理 | `src/views/user/` |
+| `/jtDevice` | JT1078 终端 | `src/views/jtDevice/` |
+| `/operations/realLog` | 实时日志 | `src/views/operations/` |
+| `/operations/historyLog` | 历史日志 | `src/views/operations/` |
+| `/operations/systemInfo` | 系统信息 | `src/views/operations/` |
+
+## 项目结构
 
 ```
-web/
-├── public/                  # Static assets copied as-is
-├── src/
-│   ├── api/                 # One file per backend domain (user.js, device.js, …)
-│   ├── assets/              # Images, fonts
-│   ├── components/          # Reusable components
-│   ├── directive/           # Custom Vue directives
-│   ├── icons/               # SVG icon sprite
-│   ├── layout/              # Header, Sidebar, Breadcrumb, TagsView, …
-│   ├── router/              # vue-router definitions + permission guards
-│   ├── store/               # vuex modules
-│   ├── styles/              # Global SCSS
-│   ├── utils/               # request.js (axios wrapper), auth, formatters
-│   ├── views/               # Page-level components
-│   ├── App.vue              # Root
-│   ├── main.js              # Bootstrap
-│   ├── permission.js        # Route guard
-│   └── settings.js          # App title, logo, fixed-header flags
-├── tests/                   # Jest unit tests
-├── mock/                    # Optional mock server
-├── .env.development         # ENV=development, VUE_APP_BASE_API=/dev-api
-├── .env.production          # ENV=production,  VUE_APP_BASE_API=
-├── vue.config.js            # devServer proxy, alias, webpack tweaks
-├── babel.config.js
-├── postcss.config.js
-├── jest.config.js
-└── package.json
+src/
+├── api/                # 类型化 API 客户端（14 个模块）
+│   ├── alarm.ts cloudRecord.ts device.ts jtDevice.ts live.ts
+│   ├── log.ts mediaServer.ts platform.ts playback.ts
+│   ├── recordPlan.ts region.ts streamProxy.ts streamPush.ts
+│   └── user.ts
+├── components/         # 通用组件
+│   ├── BackToTop/ EmptyState/ GbSearchForm/ GbTable/
+│   ├── Pagination/ StatCard/ SvgIcon/ Upload/ VideoCell/
+├── composables/        # Vue 组合式函数
+├── icons/              # SVG 图标（41 个）
+├── layout/             # 布局壳（Navbar/Sidebar/TagsView）
+├── router/             # Vue Router 4
+├── store/              # Pinia store
+├── styles/             # 全局样式 + Element Plus 主题
+├── types/              # TypeScript 类型定义
+│   ├── api.ts          # WvpResult<T> / PageQuery / PageResult
+│   └── model.ts        # DeviceVO / ChannelVO / PlatformVO 等 14 个 VO
+├── utils/              # request / auth / get-page-title
+├── views/              # 业务页面（17 个）
+└── App.vue / main.ts / permission.ts
 ```
 
----
+## API 类型化约定
 
-## 🔌 Integration with Backend
+所有 API 返回 `WvpResult<T>`：
 
-| Aspect | Dev | Prod |
-|--------|-----|------|
-| Base API prefix | `/dev-api` (proxied to `http://127.0.0.1:18080`) | `""` (served by backend on `/api/...`) |
-| Source of truth | `web/.env.development` → `VUE_APP_BASE_API` | `web/.env.production` → `VUE_APP_BASE_API` |
-| Proxy config | `web/vue.config.js` → `devServer.proxy` | n/a |
-| Static hosting | backend `static_dir` = `web/dist` | backend `static_dir` = `web/dist` |
-
-**Pointing dev server at a remote backend** — edit `vue.config.js`:
-
-```js
-devServer: {
-  proxy: {
-    '/dev-api': { target: 'http://your-backend:18080', changeOrigin: true, pathRewrite: { '^/dev-api': '/' } },
-    '/static/snap': { target: 'http://your-backend:18080', changeOrigin: true },
-  }
+```ts
+interface WvpResult<T> {
+  code: number      // 0 = 成功，其他为业务错误
+  msg: string
+  data: T
 }
 ```
 
-**Auth** — `src/utils/request.js` attaches `access-token` from cookie/local storage on every
-request and unwraps `{ code, msg, data }` responses. Non-zero `code` triggers a unified error toast.
+分页接口返回 `{ total: number; list: T[] }`，统一封装在 `src/types/api.ts::PageResult<T>`。
 
----
+## 与 web/ 并行策略
 
-## 📦 Build & Release
+`web/` 与 `web-v3/` 同时存在，后端不感知前端。新功能优先在 `web-v3/` 实现。当 `web-v3/` 覆盖 ≥ 90% 业务路径后，将 `web/dist` 切换为 `web-v3/dist` 并下线 `web/`。
 
-```bash
-# Standard production build → web/dist
-npm run build:prod
+## 风险
 
-# Staging build (uses .env.staging)
-npm run build:stage
+- **JT1078 协议操作层**：live/record/snap 等端点仍为"已受理"响应（需在线终端 session）
+- **实时日志**：当前用历史列表 + 1.5s 推送模拟；真实生产需要 WebSocket 推送
+- **电子地图**：用 SVG 占位渲染点位；待接入真实地图引擎（高德/天地图）
+- **CSS 主题**：与 web/ 视觉差异需要设计评审后微调
+- **国际化**：当前硬编码中文；如需英文版需引入 vue-i18n
 
-# Preview the built bundle locally
-npm run preview
-npm run preview -- --report    # also produces bundle analysis
+## 版本
 
-# Optimize SVG sprites
-npm run svgo
-```
-
-After `build:prod`, copy nothing manually — just point GBServer's `static_dir` to `web/dist`
-and restart the backend.
-
----
-
-## 🧹 Code Style & Quality
-
-```bash
-npm run lint            # check
-npm run lint -- --fix   # auto-fix
-```
-
-- ESLint with `plugin:vue/recommended`.
-- Prettier is **not** included by default; integrate via your editor or add `eslint-config-prettier`.
-- Vue files: 2-space indent, single quotes, no semicolons (per `eslintrc.js`).
-
----
-
-## 🧪 Testing
-
-```bash
-npm run test:unit       # Jest with @vue/test-utils, clears cache first
-npm run test:ci         # lint + unit tests, suitable for CI
-```
-
-Test files live in `tests/unit/**` and are picked up by `jest.config.js`. Add new specs next
-to the code they cover or in `tests/unit/`, mirroring the source path.
-
----
-
-## 🌍 Internationalization
-
-The original vue-admin-template is Chinese-first; this fork keeps the same primary locale
-with English text in a few user-facing labels. Adding a new language typically means:
-
-1. Extract string literals into `src/lang/{en-US,zh-CN}.js` (vue-i18n recommended).
-2. Register in `src/main.js` and persist choice in `vuex` + `localStorage`.
-3. Add a language switcher under `src/components/LangSelect/`.
-
----
-
-## 🛠️ Troubleshooting
-
-| Symptom | Likely Cause | Fix |
-|---------|--------------|-----|
-| Login fails in dev with 404 on `/dev-api/...` | Backend not started on `:18080` | `cargo run` from repo root |
-| `npm run dev` opens a blank page | Port 9528 occupied | `npm run dev -- --port 9529` |
-| Production bundle not served | `web/dist` empty or wrong `static_dir` | Run `npm run build:prod`; set `static_dir = "web/dist"` |
-| ESLint errors on save | Disabled by config to avoid noise | Run `npm run lint -- --fix` |
-| China network slow install | `registry.npmjs.org` reachable | `npm install --registry=https://registry.npmmirror.com` |
-
----
-
-## 🙏 Acknowledgements
-
-This frontend is a heavily customized fork of
-[vue-admin-template](https://github.com/PanJiaChen/vue-admin-template) by
-**[PanJiaChen](https://github.com/PanJiaChen)** (MIT). All upstream credits apply.
-
-Related projects in the same family:
-
-- [vue-element-admin](https://github.com/PanJiaChen/vue-element-admin)
-- [electron-vue-admin](https://github.com/PanJiaChen/electron-vue-admin)
-- [vue-typescript-admin-template](https://github.com/Armour/vue-typescript-admin-template)
-
----
-
-## 📜 License
-
-MIT — same as the upstream `vue-admin-template` and the GBServer project.
-
----
-
-<div align="center">
-
-[← Back to GBServer root](../README.md) · [中文文档 →](./README-zh.md)
-
-</div>
+- Vue 3.5.12
+- Element Plus 2.8.6
+- Vite 5.4.10
+- TypeScript 5.6.3
+- Pinia 2.2.6
