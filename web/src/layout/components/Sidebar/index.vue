@@ -27,8 +27,8 @@
         <span>媒体节点 ×{{ mediaCount }}</span>
       </div>
       <div class="server-status-row">
-        <span class="gb-dot gb-dot--warning" />
-        <span>存储 78% 已用</span>
+        <span :class="['gb-dot', diskPercent < 70 ? 'gb-dot--success' : diskPercent < 90 ? 'gb-dot--warning' : 'gb-dot--error']" />
+        <span>存储 {{ diskPercent }}% 已用</span>
       </div>
     </div>
   </aside>
@@ -41,19 +41,32 @@ import Logo from './Logo.vue'
 import SvgIcon from '@/components/SvgIcon/index.vue'
 import { useAppStore } from '@/store/modules/app'
 import { getMediaServerList } from '@/api/mediaServer'
+import { getSystemInfo } from '@/api/log'
 
 const route = useRoute()
 const router = useRouter()
 const appStore = useAppStore()
 
 const mediaCount = ref(0)
+const diskPercent = ref(0)
 async function refreshSidebarStats() {
   try {
-    const res = await getMediaServerList()
-    const list = (res.data as unknown[]) ?? []
-    mediaCount.value = list.length
+    const [msRes, sysRes] = await Promise.allSettled([
+      getMediaServerList(),
+      getSystemInfo()
+    ])
+    if (msRes.status === 'fulfilled') {
+      const list = (msRes.value.data as unknown[]) ?? []
+      mediaCount.value = list.length
+    }
+    if (sysRes.status === 'fulfilled') {
+      const data = sysRes.value.data as any
+      if (typeof data?.disk_usage === 'number') {
+        diskPercent.value = Math.round(data.disk_usage)
+      }
+    }
   } catch {
-    // 静默失败：侧栏 stats 不影响导航
+    // 静默失败
   }
 }
 onMounted(refreshSidebarStats)

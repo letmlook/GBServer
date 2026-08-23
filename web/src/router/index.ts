@@ -25,6 +25,12 @@ const constantRoutes: RouteRecordRaw[] = [
         meta: { title: '控制台', icon: 'dashboard', affix: true }
       },
       {
+        path: 'redirect/:path(.*)*',
+        name: 'Redirect',
+        component: () => import('@/views/redirect.vue'),
+        meta: { hidden: true }
+      },
+      {
         path: 'device',
         name: 'Device',
         component: () => import('@/views/device/index.vue'),

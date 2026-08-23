@@ -56,20 +56,63 @@
     </el-card>
 
     <record-plan-edit-dialog v-model="editVisible" :plan="currentRow" @saved="loadData" />
+
+    <el-dialog v-model="linkVisible" :title="`关联通道 — ${currentPlan?.name ?? ''}`" width="780px" @open="loadLinkChannels">
+      <el-form :inline="true">
+        <el-form-item label="关键字">
+          <el-input v-model="linkKw" placeholder="通道名/ID" clearable @keyup.enter="loadLinkChannels" />
+        </el-form-item>
+        <el-form-item>
+          <el-button type="primary" @click="loadLinkChannels">查询</el-button>
+        </el-form-item>
+      </el-form>
+      <el-table
+        :data="linkCandidates"
+        v-loading="linkLoading"
+        stripe
+        border
+        max-height="400"
+        @selection-change="(arr) => (linkSelected = arr as any)"
+      >
+        <el-table-column type="selection" width="50" :selectable="(row) => !row.linked" />
+        <el-table-column prop="channelId" label="通道 ID" min-width="200" />
+        <el-table-column prop="name" label="通道名" min-width="200" />
+        <el-table-column prop="deviceId" label="所属设备" min-width="200" />
+        <el-table-column label="已关联" width="80" align="center">
+          <template #default="{ row }">
+            <el-tag v-if="row.linked" type="success" size="small">✓</el-tag>
+          </template>
+        </el-table-column>
+      </el-table>
+      <template #footer>
+        <el-button @click="linkVisible = false">取消</el-button>
+        <el-button type="primary" :loading="linkSaving" @click="onLinkSave">保存关联</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onMounted, reactive, ref } from 'vue'
 import { Plus } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { getRecordPlanList, deleteRecordPlan, addRecordPlan, updateRecordPlan, type RecordPlan } from '@/api/recordPlan'
+import { getRecordPlanList, deleteRecordPlan, addRecordPlan, updateRecordPlan, linkChannels, unlinkChannel, getPlanChannels, type RecordPlan } from '@/api/recordPlan'
+import { getChannelList, type Channel } from '@/api/channel'
 import RecordPlanEditDialog from './EditDialog.vue'
 
 const loading = ref(false)
 const rows = ref<RecordPlan[]>([])
 const editVisible = ref(false)
 const currentRow = ref<Partial<RecordPlan>>({})
+
+// 关联通道 dialog
+const linkVisible = ref(false)
+const linkLoading = ref(false)
+const linkSaving = ref(false)
+const currentPlan = ref<RecordPlan | null>(null)
+const linkKw = ref('')
+const linkCandidates = ref<Array<Channel & { linked: boolean }>>([])
+const linkSelected = ref<Array<Channel & { linked: boolean }>>([])
 
 async function loadData() {
   loading.value = true
@@ -102,7 +145,49 @@ async function onToggle(row: RecordPlan) {
 }
 
 function onLink(row: RecordPlan) {
-  ElMessage.info(`关联通道 - 通过 /api/record/plan/link (planId=${row.id}) 实现，可调 linkChannels API`)
+  currentPlan.value = row
+  linkSelected.value = []
+  linkVisible.value = true
+}
+
+async function loadLinkChannels() {
+  if (!currentPlan.value?.id) return
+  linkLoading.value = true
+  try {
+    // 1) 已关联的通道
+    const linkedRes = await getPlanChannels(currentPlan.value.id)
+    const linkedIds = new Set(((linkedRes.data as any)?.list ?? []).map((c: any) => c.channelId).filter(Boolean))
+    // 2) 全量可选通道
+    const allRes = await getChannelList({ page: 1, count: 500, query: linkKw.value || undefined })
+    const list = ((allRes.data as any)?.list ?? []) as Array<Channel>
+    linkCandidates.value = list.map((c) => ({ ...c, linked: linkedIds.has(c.channelId) }))
+  } catch (e: any) {
+    ElMessage.error(e?.message ?? '加载通道失败')
+    linkCandidates.value = []
+  } finally {
+    linkLoading.value = false
+  }
+}
+
+async function onLinkSave() {
+  if (!currentPlan.value?.id || linkSelected.value.length === 0) {
+    ElMessage.warning('请选择要关联的通道')
+    return
+  }
+  linkSaving.value = true
+  try {
+    // 逐个关联（后端 linkChannels 支持批量 channelIds，这里用批量）
+    const ids = linkSelected.value.map((c) => c.id).filter((x): x is number => typeof x === 'number')
+    if (ids.length > 0) {
+      await linkChannels(currentPlan.value.id ?? 0, ids)
+    }
+    ElMessage.success(`已关联 ${ids.length} 个通道`)
+    linkVisible.value = false
+  } catch (e: any) {
+    ElMessage.error(e?.message ?? '关联失败')
+  } finally {
+    linkSaving.value = false
+  }
 }
 
 async function onDelete(row: RecordPlan) {

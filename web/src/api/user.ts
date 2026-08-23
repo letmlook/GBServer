@@ -10,9 +10,19 @@ export interface LoginPayload {
 }
 
 export interface LoginResult {
+  id: number
   accessToken: string
   username: string
   serverId: string
+}
+
+export interface UserInfoResult {
+  id: number
+  username: string
+  role?: { id: number; name: string; authority?: string }
+  pushKey?: string
+  createTime?: string
+  updateTime?: string
 }
 
 export function login(payload: LoginPayload) {
@@ -34,7 +44,7 @@ export function logout() {
 }
 
 export function getUserInfo() {
-  return request<WvpResult>({
+  return request<WvpResult<UserInfoResult>>({
     method: 'post',
     url: '/user/userInfo'
   })

@@ -76,7 +76,7 @@
 <script setup lang="ts">
 import { reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
+import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'element-plus'
 import { User, Lock } from '@element-plus/icons-vue'
 import { useUserStore } from '@/store/modules/user'
 import { validUsername, validPassword } from '@/utils/validate'
@@ -113,7 +113,11 @@ async function onSubmit() {
 }
 
 function onForget() {
-  ElMessage.info('请联系系统管理员重置密码')
+  ElMessageBox.alert(
+    '如忘记密码，请联系系统管理员（admin 账号）通过「用户管理 → 重置」功能重置您的密码。\n\n管理员登录后可进入 用户管理 → 选中账号 → 重置密码。',
+    '忘记密码',
+    { confirmButtonText: '我知道了' }
+  )
 }
 </script>
 

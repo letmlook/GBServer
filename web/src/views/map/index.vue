@@ -60,23 +60,64 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { getRegionTreeList, type Region } from '@/api/region'
+import { getChannelList } from '@/api/channel'
+import { useRouter } from 'vue-router'
+import { ElMessage } from 'element-plus'
+
+const router = useRouter()
 
 const regions = ref<Region[]>([])
 const coord = ref<'WGS84' | 'GCJ02'>('WGS84')
 const points = ref<{ x: number; y: number; name: string; channelId: string; online: boolean }[]>([])
+const loadingPoints = ref(false)
 
-function onRegionClick(node: Region) {
-  // 简化：根据 regionId 生成示例点位；真实场景应调 /api/common/channel/list 并筛选
-  const cx = 400 + Math.cos(node.id ?? 0) * 200
-  const cy = 250 + Math.sin(node.id ?? 0) * 150
-  points.value = [
-    { x: cx, y: cy, name: `${node.name}-01`, channelId: `ch-${node.id}-01`, online: true },
-    { x: cx + 60, y: cy + 30, name: `${node.name}-02`, channelId: `ch-${node.id}-02`, online: false }
-  ]
+async function onRegionClick(node: Region) {
+  // 调 /api/common/channel/list 取该行政区划下通道，按经纬度映射到 SVG 画布
+  loadingPoints.value = true
+  try {
+    const res = await getChannelList({ page: 1, count: 200, query: node.deviceId ?? undefined })
+    const list = ((res.data as any)?.list ?? []) as Array<{
+      channelId: string
+      name?: string
+      longitude?: number
+      latitude?: number
+      status?: string
+    }>
+    // WGS84 / GCJ02 简化为：把经度映射到 x，纬度映射到 y（中心点 + 偏移）
+    // 真实地图应用高德/天地图瓦片，本 SVG 仅为示意
+    const lons = list.map((c) => c.longitude ?? 0).filter((x) => x !== 0)
+    const lats = list.map((c) => c.latitude ?? 0).filter((x) => x !== 0)
+    const cLon = lons.length ? (Math.min(...lons) + Math.max(...lons)) / 2 : 113.27
+    const cLat = lats.length ? (Math.min(...lats) + Math.max(...lats)) / 2 : 23.13
+    const span = Math.max(
+      ...lons.map((x) => Math.abs(x - cLon)),
+      ...lats.map((y) => Math.abs(y - cLat)),
+      0.1
+    )
+    points.value = list.map((c) => ({
+      x: 400 + ((c.longitude ?? cLon) - cLon) * (300 / span),
+      y: 250 - ((c.latitude ?? cLat) - cLat) * (180 / span),
+      name: c.name ?? c.channelId,
+      channelId: c.channelId,
+      online: c.status === 'ON'
+    }))
+    if (points.value.length === 0) {
+      ElMessage.info(`行政区划 ${node.name} 下暂未发现带经纬度的通道`)
+    }
+  } catch (e: any) {
+    ElMessage.error(e?.message ?? '加载通道点位失败')
+  } finally {
+    loadingPoints.value = false
+  }
 }
 
-function onPointClick(p: any) {
-  console.log('selected channel:', p)
+async function onPointClick(p: any) {
+  if (!p.deviceId || !p.channelId) {
+    ElMessage.info('该点位缺少设备/通道标识')
+    return
+  }
+  // 跳直播页 + 选中
+  await router.push({ name: 'Live', query: { deviceId: p.deviceId, channelId: p.channelId } })
 }
 
 onMounted(async () => {

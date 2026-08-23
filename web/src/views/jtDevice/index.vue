@@ -114,6 +114,38 @@
           </el-table>
         </el-card>
       </el-tab-pane>
+
+      <el-tab-pane label="终端通道" name="channel">
+        <el-card>
+          <el-form :inline="true">
+            <el-form-item label="终端手机号">
+              <el-input v-model="channelPhone" placeholder="筛选 phone" clearable />
+            </el-form-item>
+            <el-form-item>
+              <el-button type="primary" @click="loadChannelsFor(channelPhone)">查询</el-button>
+            </el-form-item>
+          </el-form>
+          <el-table :data="channels" v-loading="channelLoading" stripe border>
+            <el-table-column prop="id" label="ID" width="60" />
+            <el-table-column prop="phoneNumber" label="手机号" min-width="140" />
+            <el-table-column prop="channelId" label="通道号" width="80" />
+            <el-table-column prop="channelName" label="通道名" min-width="160" />
+            <el-table-column label="状态" width="100">
+              <template #default="{ row }">
+                <el-tag :type="row.status ? 'success' : 'info'" size="small">
+                  {{ row.status ? '在线' : '离线' }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="hasAudio" label="音频" width="80" align="center">
+              <template #default="{ row }">
+                <el-tag v-if="row.hasAudio" type="success" size="small">是</el-tag>
+                <el-tag v-else type="info" size="small">否</el-tag>
+              </template>
+            </el-table-column>
+          </el-table>
+        </el-card>
+      </el-tab-pane>
     </el-tabs>
 
     <jt-terminal-edit-dialog v-model="terminalEditVisible" :terminal="currentTerminal" @saved="loadData" />
@@ -211,13 +243,28 @@ async function onShowChannels(row: any) {
   await loadChannelsFor(row.id)
 }
 
+const channels = ref<Array<{
+  id?: number
+  terminalDbId?: number
+  phoneNumber?: string
+  channelId?: number
+  channelName?: string
+  hasAudio?: boolean
+  status?: boolean
+}>>([])
+const channelLoading = ref(false)
+
 async function loadChannelsFor(terminalDbId: number | string) {
+  channelLoading.value = true
   try {
     const res = await getJtChannelList(terminalDbId)
-    // 把 jt channel 列表简单展示：目前复用 circles 表格（按结构对齐列），后续如需独立通道表可加
-    ElMessage.success(`已加载 ${(res.data as any)?.list?.length ?? 0} 个通道`)
+    channels.value = ((res.data as any)?.list ?? []) as typeof channels.value
+    ElMessage.success(`已加载 ${channels.value.length} 个通道`)
   } catch (e: any) {
     ElMessage.error(e?.message ?? '加载通道失败')
+    channels.value = []
+  } finally {
+    channelLoading.value = false
   }
 }
 

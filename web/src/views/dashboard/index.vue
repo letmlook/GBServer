@@ -308,7 +308,11 @@ function goMedia() { router.push('/mediaServer') }
 function goAlarm() { router.push('/alarm') }
 function refresh() { loadAll().then(() => ElMessage.success('已刷新')) }
 function onCellClick(c: typeof channels.value[number]) {
-  ElMessage.info(`打开通道：${c.title} (${c.no})`)
+  if (!c.deviceId || !c.channelId) {
+    ElMessage.warning('该通道暂无可用播放标识')
+    return
+  }
+  router.push({ name: 'Live', query: { deviceId: c.deviceId, channelId: c.channelId } })
 }
 
 onMounted(async () => {

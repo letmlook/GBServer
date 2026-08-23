@@ -9,9 +9,11 @@ interface SidebarState {
 interface AppState {
   sidebar: SidebarState
   device: 'desktop' | 'mobile'
+  theme: 'light' | 'dark'
 }
 
 const SIDEBAR_COOKIE = 'sidebarStatus'
+const THEME_KEY = 'gbserver_theme'
 
 export const useAppStore = defineStore('app', {
   state: (): AppState => ({
@@ -19,7 +21,8 @@ export const useAppStore = defineStore('app', {
       opened: Cookies.get(SIDEBAR_COOKIE) ? !!+Cookies.get(SIDEBAR_COOKIE)! : true,
       withoutAnimation: false
     },
-    device: 'desktop'
+    device: 'desktop',
+    theme: (Cookies.get(THEME_KEY) as 'light' | 'dark' | undefined) ?? 'light'
   }),
   actions: {
     toggleSidebar() {
@@ -34,6 +37,11 @@ export const useAppStore = defineStore('app', {
     },
     toggleDevice(device: 'desktop' | 'mobile') {
       this.device = device
+    },
+    toggleTheme() {
+      this.theme = this.theme === 'light' ? 'dark' : 'light'
+      Cookies.set(THEME_KEY, this.theme, { expires: 365 })
+      document.documentElement.classList.toggle('dark', this.theme === 'dark')
     }
   }
 })
