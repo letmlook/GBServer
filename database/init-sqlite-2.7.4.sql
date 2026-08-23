@@ -568,3 +568,64 @@ CREATE TABLE IF NOT EXISTS gb_jt_media_item
 );
 CREATE INDEX IF NOT EXISTS idx_jt_media_item_phone ON gb_jt_media_item (phone_number);
 CREATE INDEX IF NOT EXISTS idx_jt_media_item_time ON gb_jt_media_item (start_time, end_time);
+
+-- ============================================
+-- Phase 6.5: JT/T 1078 圆形区域 (围栏)
+-- ============================================
+CREATE TABLE IF NOT EXISTS gb_jt_area_circle
+(
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    phone_number TEXT    NOT NULL,
+    label        TEXT,
+    center_lat   REAL    NOT NULL,
+    center_lon   REAL    NOT NULL,
+    radius_m     INTEGER NOT NULL,
+    create_time  TEXT    NOT NULL,
+    update_time  TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_jt_area_circle_phone ON gb_jt_area_circle (phone_number);
+
+-- ============================================
+-- Phase 6.5: JT/T 1078 多边形区域 (围栏)
+-- ============================================
+CREATE TABLE IF NOT EXISTS gb_jt_area_polygon
+(
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    phone_number TEXT NOT NULL,
+    label        TEXT,
+    points_json  TEXT NOT NULL,
+    create_time  TEXT NOT NULL,
+    update_time  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_jt_area_polygon_phone ON gb_jt_area_polygon (phone_number);
+
+-- ============================================
+-- Phase 6.5: JT/T 1078 矩形区域 (围栏)
+-- ============================================
+CREATE TABLE IF NOT EXISTS gb_jt_area_rectangle
+(
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    phone_number      TEXT NOT NULL,
+    label             TEXT,
+    left_top_lat      REAL NOT NULL,
+    left_top_lon      REAL NOT NULL,
+    right_bottom_lat  REAL NOT NULL,
+    right_bottom_lon  REAL NOT NULL,
+    create_time       TEXT NOT NULL,
+    update_time       TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_jt_area_rectangle_phone ON gb_jt_area_rectangle (phone_number);
+
+-- ============================================
+-- Phase 6.5: JT/T 1078 路线 (线路)
+-- ============================================
+CREATE TABLE IF NOT EXISTS gb_jt_route
+(
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    phone_number    TEXT NOT NULL,
+    label           TEXT,
+    waypoints_json  TEXT NOT NULL,
+    create_time     TEXT NOT NULL,
+    update_time     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_jt_route_phone ON gb_jt_route (phone_number);

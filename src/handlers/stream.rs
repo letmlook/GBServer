@@ -326,6 +326,8 @@ pub async fn push_batch_remove(
 }
 
 /// POST /api/push/save_to_gb - 保存推流信息到国标
+/// 内部工具 — 按 feature 分发不同 SQL；sqlite 路径下部分参数仅在 cfg(postgres/mysql) 中使用
+#[allow(unused_variables)]
 pub async fn push_save_to_gb(
     State(state): State<AppState>,
     Json(body): Json<serde_json::Value>,
@@ -371,6 +373,8 @@ pub async fn push_save_to_gb(
 }
 
 /// POST /api/push/remove_form_gb - 从国标移除推流信息
+/// 内部工具 — 按 feature 分发不同 SQL；sqlite 路径下部分参数仅在 cfg(postgres/mysql) 中使用
+#[allow(unused_variables)]
 pub async fn push_remove_form_gb(
     State(state): State<AppState>,
     Json(body): Json<serde_json::Value>,

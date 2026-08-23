@@ -20,13 +20,24 @@ pub mod platform_group;
 pub mod platform_region;
 pub mod audit_log;
 
+// 跨模块同名函数 re-export（如 `count_all`、`get_by_id` 等多模块共有）。
+// 调用方写 `db::count_all(&pool)` 时使用"先 import 的优先"语义；触发 warning 但不编译失败。
+// 业务层实际依赖调用路径明确（`db::device::get_by_id` vs `db::region::get_by_id`）。
+#[allow(ambiguous_glob_reexports)]
 pub use user::*;
+#[allow(ambiguous_glob_reexports)]
 pub use device::*;
+#[allow(ambiguous_glob_reexports)]
 pub use media_server::*;
+#[allow(ambiguous_glob_reexports)]
 pub use role::*;
+#[allow(ambiguous_glob_reexports)]
 pub use region::*;
+#[allow(ambiguous_glob_reexports)]
 pub use group::*;
+#[allow(ambiguous_glob_reexports)]
 pub use user_api_key::*;
+#[allow(ambiguous_glob_reexports)]
 pub use record_plan::*;
 pub use stream_push::StreamPush;
 pub use stream_proxy::StreamProxy;

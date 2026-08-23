@@ -4,7 +4,6 @@
 //! compatibility. Returns basic runtime + cluster + DB aggregate counts.
 
 use std::sync::OnceLock;
-use std::time::Instant;
 
 use axum::extract::State;
 use axum::Json;

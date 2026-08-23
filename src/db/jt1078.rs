@@ -596,3 +596,347 @@ pub async fn list_media_items_by_terminal(
     };
     Ok(rows)
 }
+
+// ============================================================================
+// Phase 6.5: 区域/路线 持久化（GBServer 扩展，JT/T 808/1078 围栏管理）
+// ============================================================================
+
+#[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]
+pub struct JtAreaCircle {
+    pub id: i64,
+    pub phone_number: String,
+    pub label: Option<String>,
+    pub center_lat: f64,
+    pub center_lon: f64,
+    pub radius_m: i32,
+    pub create_time: String,
+    pub update_time: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]
+pub struct JtAreaPolygon {
+    pub id: i64,
+    pub phone_number: String,
+    pub label: Option<String>,
+    pub points_json: String,
+    pub create_time: String,
+    pub update_time: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]
+pub struct JtAreaRectangle {
+    pub id: i64,
+    pub phone_number: String,
+    pub label: Option<String>,
+    pub left_top_lat: f64,
+    pub left_top_lon: f64,
+    pub right_bottom_lat: f64,
+    pub right_bottom_lon: f64,
+    pub create_time: String,
+    pub update_time: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]
+pub struct JtRoute {
+    pub id: i64,
+    pub phone_number: String,
+    pub label: Option<String>,
+    pub waypoints_json: String,
+    pub create_time: String,
+    pub update_time: String,
+}
+
+pub async fn insert_area_circle(
+    pool: &Pool,
+    phone_number: &str,
+    label: Option<&str>,
+    center_lat: f64,
+    center_lon: f64,
+    radius_m: i32,
+) -> sqlx::Result<i64> {
+    let now = chrono::Utc::now().to_rfc3339();
+    let row: (i64,) = sqlx::query_as(
+        "INSERT INTO gb_jt_area_circle (phone_number, label, center_lat, center_lon, radius_m, create_time, update_time)
+         VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id"
+    )
+    .bind(phone_number).bind(label).bind(center_lat).bind(center_lon)
+    .bind(radius_m).bind(&now).bind(&now)
+    .fetch_one(pool).await?;
+    Ok(row.0)
+}
+
+pub async fn update_area_circle(
+    pool: &Pool, id: i64,
+    label: Option<&str>, center_lat: f64, center_lon: f64, radius_m: i32,
+) -> sqlx::Result<u64> {
+    let now = chrono::Utc::now().to_rfc3339();
+    let n = sqlx::query(
+        "UPDATE gb_jt_area_circle SET label = ?, center_lat = ?, center_lon = ?, radius_m = ?, update_time = ? WHERE id = ?"
+    )
+    .bind(label).bind(center_lat).bind(center_lon).bind(radius_m).bind(&now).bind(id)
+    .execute(pool).await?
+    .rows_affected();
+    Ok(n)
+}
+
+pub async fn delete_area_circle(pool: &Pool, id: i64) -> sqlx::Result<u64> {
+    let n = sqlx::query("DELETE FROM gb_jt_area_circle WHERE id = ?")
+        .bind(id)
+        .execute(pool).await?
+        .rows_affected();
+    Ok(n)
+}
+
+pub async fn list_area_circles_by_phone(
+    pool: &Pool, phone_number: &str,
+) -> sqlx::Result<Vec<JtAreaCircle>> {
+    let rows = sqlx::query_as::<_, JtAreaCircle>(
+        "SELECT * FROM gb_jt_area_circle WHERE phone_number = ? ORDER BY id DESC"
+    )
+    .bind(phone_number)
+    .fetch_all(pool).await?;
+    Ok(rows)
+}
+
+pub async fn insert_area_polygon(
+    pool: &Pool, phone_number: &str, label: Option<&str>, points_json: &str,
+) -> sqlx::Result<i64> {
+    let now = chrono::Utc::now().to_rfc3339();
+    let row: (i64,) = sqlx::query_as(
+        "INSERT INTO gb_jt_area_polygon (phone_number, label, points_json, create_time, update_time)
+         VALUES (?, ?, ?, ?, ?) RETURNING id"
+    )
+    .bind(phone_number).bind(label).bind(points_json).bind(&now).bind(&now)
+    .fetch_one(pool).await?;
+    Ok(row.0)
+}
+
+pub async fn delete_area_polygon(pool: &Pool, id: i64) -> sqlx::Result<u64> {
+    let n = sqlx::query("DELETE FROM gb_jt_area_polygon WHERE id = ?")
+        .bind(id)
+        .execute(pool).await?
+        .rows_affected();
+    Ok(n)
+}
+
+pub async fn list_area_polygons_by_phone(
+    pool: &Pool, phone_number: &str,
+) -> sqlx::Result<Vec<JtAreaPolygon>> {
+    let rows = sqlx::query_as::<_, JtAreaPolygon>(
+        "SELECT * FROM gb_jt_area_polygon WHERE phone_number = ? ORDER BY id DESC"
+    )
+    .bind(phone_number)
+    .fetch_all(pool).await?;
+    Ok(rows)
+}
+
+pub async fn insert_area_rectangle(
+    pool: &Pool, phone_number: &str, label: Option<&str>,
+    lt_lat: f64, lt_lon: f64, rb_lat: f64, rb_lon: f64,
+) -> sqlx::Result<i64> {
+    let now = chrono::Utc::now().to_rfc3339();
+    let row: (i64,) = sqlx::query_as(
+        "INSERT INTO gb_jt_area_rectangle (phone_number, label, left_top_lat, left_top_lon, right_bottom_lat, right_bottom_lon, create_time, update_time)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id"
+    )
+    .bind(phone_number).bind(label).bind(lt_lat).bind(lt_lon).bind(rb_lat).bind(rb_lon)
+    .bind(&now).bind(&now)
+    .fetch_one(pool).await?;
+    Ok(row.0)
+}
+
+pub async fn update_area_rectangle(
+    pool: &Pool, id: i64, label: Option<&str>,
+    lt_lat: f64, lt_lon: f64, rb_lat: f64, rb_lon: f64,
+) -> sqlx::Result<u64> {
+    let now = chrono::Utc::now().to_rfc3339();
+    let n = sqlx::query(
+        "UPDATE gb_jt_area_rectangle SET label = ?, left_top_lat = ?, left_top_lon = ?, right_bottom_lat = ?, right_bottom_lon = ?, update_time = ? WHERE id = ?"
+    )
+    .bind(label).bind(lt_lat).bind(lt_lon).bind(rb_lat).bind(rb_lon).bind(&now).bind(id)
+    .execute(pool).await?
+    .rows_affected();
+    Ok(n)
+}
+
+pub async fn delete_area_rectangle(pool: &Pool, id: i64) -> sqlx::Result<u64> {
+    let n = sqlx::query("DELETE FROM gb_jt_area_rectangle WHERE id = ?")
+        .bind(id)
+        .execute(pool).await?
+        .rows_affected();
+    Ok(n)
+}
+
+pub async fn list_area_rectangles_by_phone(
+    pool: &Pool, phone_number: &str,
+) -> sqlx::Result<Vec<JtAreaRectangle>> {
+    let rows = sqlx::query_as::<_, JtAreaRectangle>(
+        "SELECT * FROM gb_jt_area_rectangle WHERE phone_number = ? ORDER BY id DESC"
+    )
+    .bind(phone_number)
+    .fetch_all(pool).await?;
+    Ok(rows)
+}
+
+pub async fn insert_route(
+    pool: &Pool, phone_number: &str, label: Option<&str>, waypoints_json: &str,
+) -> sqlx::Result<i64> {
+    let now = chrono::Utc::now().to_rfc3339();
+    let row: (i64,) = sqlx::query_as(
+        "INSERT INTO gb_jt_route (phone_number, label, waypoints_json, create_time, update_time)
+         VALUES (?, ?, ?, ?, ?) RETURNING id"
+    )
+    .bind(phone_number).bind(label).bind(waypoints_json).bind(&now).bind(&now)
+    .fetch_one(pool).await?;
+    Ok(row.0)
+}
+
+pub async fn delete_route(pool: &Pool, id: i64) -> sqlx::Result<u64> {
+    let n = sqlx::query("DELETE FROM gb_jt_route WHERE id = ?")
+        .bind(id)
+        .execute(pool).await?
+        .rows_affected();
+    Ok(n)
+}
+
+pub async fn list_routes_by_phone(
+    pool: &Pool, phone_number: &str,
+) -> sqlx::Result<Vec<JtRoute>> {
+    let rows = sqlx::query_as::<_, JtRoute>(
+        "SELECT * FROM gb_jt_route WHERE phone_number = ? ORDER BY id DESC"
+    )
+    .bind(phone_number)
+    .fetch_all(pool).await?;
+    Ok(rows)
+}
+
+#[cfg(all(test, feature = "sqlite"))]
+mod tests {
+    use super::*;
+
+    async fn make_pool() -> sqlx::Pool<sqlx::Sqlite> {
+        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+        use std::str::FromStr;
+        use std::time::Duration;
+
+        let opts = SqliteConnectOptions::from_str("sqlite::memory:")
+            .unwrap()
+            .create_if_missing(true)
+            .busy_timeout(Duration::from_secs(5));
+        let pool = SqlitePoolOptions::new()
+            .max_connections(4)
+            .connect_with(opts)
+            .await
+            .unwrap();
+
+        // 初始化本测试关心的 4 张表（不依赖 init-sqlite 的整 schema）
+        for sql in [
+            "CREATE TABLE gb_jt_area_circle (\
+                id INTEGER PRIMARY KEY AUTOINCREMENT, phone_number TEXT NOT NULL, label TEXT, \
+                center_lat REAL NOT NULL, center_lon REAL NOT NULL, radius_m INTEGER NOT NULL, \
+                create_time TEXT NOT NULL, update_time TEXT NOT NULL)",
+            "CREATE TABLE gb_jt_area_polygon (\
+                id INTEGER PRIMARY KEY AUTOINCREMENT, phone_number TEXT NOT NULL, label TEXT, \
+                points_json TEXT NOT NULL, create_time TEXT NOT NULL, update_time TEXT NOT NULL)",
+            "CREATE TABLE gb_jt_area_rectangle (\
+                id INTEGER PRIMARY KEY AUTOINCREMENT, phone_number TEXT NOT NULL, label TEXT, \
+                left_top_lat REAL NOT NULL, left_top_lon REAL NOT NULL, \
+                right_bottom_lat REAL NOT NULL, right_bottom_lon REAL NOT NULL, \
+                create_time TEXT NOT NULL, update_time TEXT NOT NULL)",
+            "CREATE TABLE gb_jt_route (\
+                id INTEGER PRIMARY KEY AUTOINCREMENT, phone_number TEXT NOT NULL, label TEXT, \
+                waypoints_json TEXT NOT NULL, create_time TEXT NOT NULL, update_time TEXT NOT NULL)",
+        ] {
+            sqlx::query(sql).execute(&pool).await.unwrap();
+        }
+        pool
+    }
+
+    #[tokio::test]
+    async fn area_circle_crud_roundtrip() {
+        let pool = make_pool().await;
+        let id = insert_area_circle(&pool, "13800000001", Some("工厂围栏"), 31.5, 121.4, 500).await.unwrap();
+        assert!(id > 0);
+
+        let items = list_area_circles_by_phone(&pool, "13800000001").await.unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].center_lat, 31.5);
+        assert_eq!(items[0].center_lon, 121.4);
+        assert_eq!(items[0].radius_m, 500);
+        assert_eq!(items[0].label.as_deref(), Some("工厂围栏"));
+
+        // update
+        let n = update_area_circle(&pool, id, Some("新围栏"), 31.6, 121.5, 800).await.unwrap();
+        assert_eq!(n, 1);
+        let items = list_area_circles_by_phone(&pool, "13800000001").await.unwrap();
+        assert_eq!(items[0].label.as_deref(), Some("新围栏"));
+        assert_eq!(items[0].radius_m, 800);
+
+        // delete
+        let n = delete_area_circle(&pool, id).await.unwrap();
+        assert_eq!(n, 1);
+        let items = list_area_circles_by_phone(&pool, "13800000001").await.unwrap();
+        assert_eq!(items.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn area_polygon_crud_roundtrip() {
+        let pool = make_pool().await;
+        let pts = r#"[{"lat":31.5,"lon":121.4},{"lat":31.6,"lon":121.4}]"#;
+        let id = insert_area_polygon(&pool, "13800000002", Some("poly1"), pts).await.unwrap();
+        assert!(id > 0);
+
+        let items = list_area_polygons_by_phone(&pool, "13800000002").await.unwrap();
+        assert_eq!(items.len(), 1);
+        assert!(items[0].points_json.contains("31.5"));
+        assert_eq!(items[0].label.as_deref(), Some("poly1"));
+
+        assert_eq!(delete_area_polygon(&pool, id).await.unwrap(), 1);
+        assert_eq!(list_area_polygons_by_phone(&pool, "13800000002").await.unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn area_rectangle_crud_roundtrip() {
+        let pool = make_pool().await;
+        let id = insert_area_rectangle(&pool, "13800000003", Some("rect1"), 31.5, 121.0, 31.0, 121.5)
+            .await.unwrap();
+        let items = list_area_rectangles_by_phone(&pool, "13800000003").await.unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].left_top_lat, 31.5);
+        assert_eq!(items[0].right_bottom_lon, 121.5);
+
+        let n = update_area_rectangle(&pool, id, Some("rect1-updated"), 31.6, 121.1, 31.1, 121.6)
+            .await.unwrap();
+        assert_eq!(n, 1);
+        let items = list_area_rectangles_by_phone(&pool, "13800000003").await.unwrap();
+        assert_eq!(items[0].label.as_deref(), Some("rect1-updated"));
+
+        assert_eq!(delete_area_rectangle(&pool, id).await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn route_crud_roundtrip() {
+        let pool = make_pool().await;
+        let wps = r#"[{"lat":31.5,"lon":121.4},{"lat":31.6,"lon":121.5}]"#;
+        let id = insert_route(&pool, "13800000004", Some("线路A"), wps).await.unwrap();
+        let items = list_routes_by_phone(&pool, "13800000004").await.unwrap();
+        assert_eq!(items.len(), 1);
+        assert!(items[0].waypoints_json.contains("31.5"));
+        assert_eq!(items[0].label.as_deref(), Some("线路A"));
+
+        assert_eq!(delete_route(&pool, id).await.unwrap(), 1);
+        assert_eq!(list_routes_by_phone(&pool, "13800000004").await.unwrap().len(), 0);
+    }
+
+    /// 验证不同 phone_number 的围栏互不干扰（边界）
+    #[tokio::test]
+    async fn areas_are_scoped_by_phone() {
+        let pool = make_pool().await;
+        insert_area_circle(&pool, "13800000010", None, 1.0, 1.0, 100).await.unwrap();
+        insert_area_circle(&pool, "13800000011", None, 2.0, 2.0, 200).await.unwrap();
+
+        assert_eq!(list_area_circles_by_phone(&pool, "13800000010").await.unwrap().len(), 1);
+        assert_eq!(list_area_circles_by_phone(&pool, "13800000011").await.unwrap().len(), 1);
+        assert_eq!(list_area_circles_by_phone(&pool, "13800000099").await.unwrap().len(), 0);
+    }
+}

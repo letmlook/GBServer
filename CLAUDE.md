@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Build & Test Commands
 
 ```bash
-# Backend (default database feature is PostgreSQL)
+# Backend (default database feature is SQLite; switch via --features)
 cargo build
 cargo build --release
 cargo run
@@ -20,9 +20,12 @@ cargo test --lib <test_name>
 cargo test --test integration_test
 cargo test --test jt1078_integration
 
-# Backend with MySQL instead of PostgreSQL
+# Backend with MySQL instead of SQLite (--no-default-features --features mysql)
+# Backend with PostgreSQL instead of SQLite (--no-default-features --features postgres)
 cargo build --release --no-default-features --features mysql
 cargo test --no-default-features --features mysql
+cargo build --release --no-default-features --features postgres
+cargo test --no-default-features --features postgres
 
 # Local services used by the default config
 docker compose up -d          # PostgreSQL + Redis
@@ -53,7 +56,7 @@ This repository is the **GBServer** — a Rust-based GB/T 28181 video platform w
 
 ### Startup flow (`src/lib.rs` → `run()`)
 
-1. Load config, create a SQLx pool, and ensure required tables. If the core `gb_device` table is missing, startup attempts to initialize the schema from `database/init-postgresql-2.7.4.sql` or `database/init-mysql-2.7.4.sql` via `include_str!`.
+1. Load config, create a SQLx pool, and ensure required tables. If the core `gb_device` table is missing, startup attempts to initialize the schema from `database/init-sqlite-2.7.4.sql`, `database/init-postgresql-2.7.4.sql`, or `database/init-mysql-2.7.4.sql` via `include_str!` based on the active feature.
 2. Create the SIP server when `sip.enabled` is true, wiring it to DB state and WebSocket state.
 3. Initialize configured ZLM clients, sync media-server rows into the DB, and start the ZLM health-check loop.
 4. Initialize optional Redis, playback/download managers, and shared `AppState`.
@@ -63,7 +66,7 @@ This repository is the **GBServer** — a Rust-based GB/T 28181 video platform w
 ### Main backend layers
 
 ```
-handlers/ ──→ db/ ──→ SQLx (PostgreSQL by default, MySQL behind feature flag)
+handlers/ ──→ db/ ──→ SQLx (SQLite by default; MySQL/PostgreSQL behind feature flag)
     │
     ├──→ sip/      GB28181 SIP transport, parser/core, device registry, INVITE/catalog/PTZ/SDP logic
     ├──→ zlm/      ZLMediaKit HTTP client, hook receiver, health checker, address building
@@ -74,7 +77,7 @@ handlers/ ──→ db/ ──→ SQLx (PostgreSQL by default, MySQL behind feat
 
 - `router.rs` is the central route map. Public routes include login, health, metrics, ZLM hooks, and selected frontend/static routes; most `/api/...` routes are wrapped by `auth_middleware`.
 - `handlers/` should stay thin: extract Axum params/state, call `db::` or protocol/service modules, and return `WVPResult<T>` or `AppError`. Several `stub.rs` / `device_stub.rs` endpoints intentionally return empty compatibility responses for frontend/API parity.
-- `db/` uses one module per table/domain. Functions are free functions over `&db::Pool`; structs typically derive `sqlx::FromRow`. PostgreSQL is the default feature; MySQL-specific SQL is gated with `#[cfg(feature = "mysql")]` where needed.
+- `db/` uses one module per table/domain. Functions are free functions over `&db::Pool`; structs typically derive `sqlx::FromRow`. SQLite is the default feature; MySQL/PostgreSQL-specific SQL is gated with `#[cfg(feature = "mysql")]` / `#[cfg(feature = "postgres")]` where needed.
 - `sip/core/` contains low-level SIP message/header/method/status parsing and transaction/dialog primitives. `sip/transport/` owns UDP/TCP networking. `sip/gb28181/` contains application-level device registration, catalog subscription, live/playback/talk INVITE sessions, PTZ, SDP, SSRC, NAT handling, and reconnect behavior.
 - `zlm/` wraps ZLMediaKit HTTP APIs and webhook handling. `AppState::get_zlm_client_auto()` selects the least-loaded node, preferring Redis stream counters and falling back to live ZLM API counts.
 - `jt1078/` handles vehicle protocol networking and session state. Config supports timeout/retransmit settings and optional hook notification for missing sequence ranges.

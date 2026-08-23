@@ -308,7 +308,6 @@ impl CascadeRegistrar {
 
             let sip = &*sip_server;
             let socket_arc = sip.socket().clone();
-            drop(sip);
             let socket_guard = socket_arc.read().await;
             if let Some(ref udp) = *socket_guard {
                 let ip = match host.parse::<std::net::IpAddr>() {
@@ -343,7 +342,6 @@ impl CascadeRegistrar {
 
         let sip = &*sip_server;
         let socket_arc = sip.socket().clone();
-        drop(sip);
         let socket_guard = socket_arc.read().await;
         let udp = (*socket_guard)
             .as_ref()
@@ -537,7 +535,6 @@ impl CascadeRegistrar {
 
                 let sip = &*sip_server;
                 let socket_arc = sip.socket().clone();
-                drop(sip);
 
                 let socket_guard = socket_arc.read().await;
                 let udp_socket = match socket_guard.as_ref() {

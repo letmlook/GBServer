@@ -6,7 +6,6 @@ use axum::{
     Json,
 };
 use serde::Deserialize;
-use sqlx::Row;
 use std::sync::Arc;
 
 use crate::db::jt1078 as jt_db;
@@ -326,6 +325,8 @@ pub async fn terminal_query(
 }
 
 /// POST /api/jt1078/terminal/add
+/// 内部工具 — 按 feature 分发不同 SQL；sqlite 路径下部分参数仅在 cfg(postgres/mysql) 中使用
+#[allow(unused_variables)]
 pub async fn terminal_add(
     State(state): State<AppState>,
     Json(body): Json<TerminalAddBody>,
@@ -344,6 +345,8 @@ pub async fn terminal_add(
 }
 
 /// POST /api/jt1078/terminal/update
+/// 内部工具 — 按 feature 分发不同 SQL；sqlite 路径下部分参数仅在 cfg(postgres/mysql) 中使用
+#[allow(unused_variables)]
 pub async fn terminal_update(
     State(state): State<AppState>,
     Json(body): Json<TerminalUpdateBody>,
@@ -362,6 +365,8 @@ pub async fn terminal_update(
 }
 
 /// DELETE /api/jt1078/terminal/delete
+/// 内部工具 — 按 feature 分发不同 SQL；sqlite 路径下部分参数仅在 cfg(postgres/mysql) 中使用
+#[allow(unused_variables)]
 pub async fn terminal_delete(
     State(state): State<AppState>,
     Query(q): Query<TerminalQuery>,
@@ -376,6 +381,8 @@ pub async fn terminal_delete(
 
 // ========== 通道管理 ==========
 /// GET /api/jt1078/terminal/channel/list
+/// 内部工具 — 按 feature 分发不同 SQL；sqlite 路径下部分参数仅在 cfg(postgres/mysql) 中使用
+#[allow(unused_variables)]
 pub async fn channel_list(
     State(state): State<AppState>,
     Query(q): Query<ChannelListQuery>,
@@ -855,6 +862,8 @@ pub async fn ptz(
 }
 
 /// GET /api/jt1078/wiper
+/// 内部工具 — 按 feature 分发不同 SQL；sqlite 路径下部分参数仅在 cfg(postgres/mysql) 中使用
+#[allow(unused_variables)]
 pub async fn wiper(
     State(state): State<AppState>,
     Query(q): Query<WiperQuery>,
@@ -1449,6 +1458,8 @@ pub async fn reset(
 }
 
 /// POST /api/jt1078/control/connection
+/// 内部工具 — 按 feature 分发不同 SQL；sqlite 路径下部分参数仅在 cfg(postgres/mysql) 中使用
+#[allow(unused_variables)]
 pub async fn connection(
     State(state): State<AppState>,
     Json(body): Json<ConnectionBody>,

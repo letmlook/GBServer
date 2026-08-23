@@ -176,6 +176,7 @@ impl ZlmClient {
         ];
 
         #[derive(Deserialize)]
+        #[allow(dead_code)]
         struct Resp { code: i32 }
         let resp: ApiResponse<Resp> = self.request("/index/api/close_stream", &params).await?;
         
@@ -260,6 +261,7 @@ impl ZlmClient {
         ];
 
         #[derive(Deserialize)]
+        #[allow(dead_code)]
         struct Resp { code: i32 }
         let resp: ApiResponse<Resp> = self.request("/index/api/closeRtpServer", &params).await?;
 
@@ -291,6 +293,7 @@ impl ZlmClient {
         }
 
         #[derive(Deserialize)]
+        #[allow(dead_code)]
         struct Resp { code: i32 }
         let resp: ApiResponse<Resp> = self.request("/index/api/connectRtpServer", &params).await?;
 
@@ -386,6 +389,7 @@ impl ZlmClient {
         ];
 
         #[derive(Deserialize)]
+        #[allow(dead_code)]
         struct Resp { code: i32 }
         let resp: ApiResponse<Resp> = self.request("/index/api/deleteRecord", &params).await?;
         
@@ -508,6 +512,7 @@ impl ZlmClient {
         let params = vec![("secret", self.secret.clone())];
         
         #[derive(Deserialize)]
+        #[allow(dead_code)]
         struct Resp { code: i32 }
         let resp: ApiResponse<Resp> = self.request("/index/api/restartServer", &params).await?;
         
@@ -527,6 +532,7 @@ impl ZlmClient {
         ];
 
         #[derive(Deserialize)]
+        #[allow(dead_code)]
         struct Resp { code: i32 }
         let resp: ApiResponse<Resp> = self.request("/index/api/sendRtpInfo", &params).await?;
 
@@ -568,6 +574,7 @@ impl ZlmClient {
         }
 
         #[derive(Deserialize)]
+        #[allow(dead_code)]
         struct Resp { code: i32 }
         let resp: ApiResponse<Resp> = self.request("/index/api/startSendRtp", &params).await?;
 
@@ -592,6 +599,7 @@ impl ZlmClient {
         ];
 
         #[derive(Deserialize)]
+        #[allow(dead_code)]
         struct Resp { code: i32 }
         let resp: ApiResponse<Resp> = self.request("/index/api/stopSendRtp", &params).await?;
 
@@ -643,6 +651,7 @@ impl ZlmClient {
         ];
 
         #[derive(Deserialize)]
+        #[allow(dead_code)]
         struct Resp { code: i32 }
         let resp: ApiResponse<Resp> = self.request("/index/api/close_download", &params).await?;
         
@@ -739,6 +748,7 @@ impl ZlmClient {
     /// 获取当前活跃流数量（从 ZLM API 获取）
     pub async fn get_stream_count(&self) -> Result<i32, reqwest::Error> {
         #[derive(Deserialize)]
+        #[allow(dead_code)]
         struct StreamListResp {
             #[serde(rename = "code")]
             code: i32,
@@ -758,6 +768,7 @@ impl ZlmClient {
     /// 获取 API 版本（用于存活探测）
     pub async fn get_api_version(&self) -> Result<String, reqwest::Error> {
         #[derive(Deserialize)]
+        #[allow(dead_code)]
         struct VersionResp {
             #[serde(rename = "code")]
             code: i32,

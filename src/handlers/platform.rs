@@ -32,6 +32,8 @@ where
 
 use crate::AppState;
 
+/// 内部工具 — 按 feature 分发不同 SQL；sqlite 路径下部分参数仅在 cfg(postgres/mysql) 中使用
+#[allow(unused_variables)]
 async fn update_platform_status(pool: &crate::db::Pool, id: i64, status: bool) -> Result<(), sqlx::Error> {
     #[cfg(feature = "postgres")]
     sqlx::query("UPDATE gb_platform SET status = $1 WHERE id = $2")
@@ -1460,6 +1462,8 @@ pub struct PlatformChannelCustomUpdate {
     pub custom_info: Option<String>,
 }
 
+/// 内部工具 — 按 feature 分发不同 SQL；sqlite 路径下部分参数仅在 cfg(postgres/mysql) 中使用
+#[allow(unused_variables)]
 pub async fn platform_channel_custom_update(
     State(state): State<AppState>,
     Json(body): Json<PlatformChannelCustomUpdate>,
@@ -1514,6 +1518,8 @@ pub struct CatalogAddBody {
     pub platform_id: Option<i64>,
 }
 
+/// 内部工具 — 按 feature 分发不同 SQL；sqlite 路径下部分参数仅在 cfg(postgres/mysql) 中使用
+#[allow(unused_variables)]
 pub async fn catalog_add(
     State(state): State<AppState>,
     Json(body): Json<CatalogAddBody>,
@@ -1552,6 +1558,8 @@ pub struct CatalogAddBodyEdit {
     pub platform_id: Option<i64>,
 }
 
+/// 内部工具 — 按 feature 分发不同 SQL；sqlite 路径下部分参数仅在 cfg(postgres/mysql) 中使用
+#[allow(unused_variables)]
 pub async fn catalog_edit(
     State(state): State<AppState>,
     Json(body): Json<CatalogAddBodyEdit>,

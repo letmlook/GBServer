@@ -147,6 +147,10 @@ pub struct PendingRequestManager {
     by_device_sn: Arc<DashMap<String, PendingRequest>>,
     /// 超时阈值（秒）
     default_timeout_secs: u64,
+    /// Phase 2.1 修复：单独的 oneshot Sender 映射（PendingRequest::Clone 会丢失 response_sender，
+    /// 所以不能靠 DashMap 中的克隆体持有 sender。这里按 call_id 索引 sender，
+    /// `complete()` 完成时取出并 send。）
+    senders: Arc<DashMap<String, oneshot::Sender<String>>>,
     /// Phase 3.3: 多包聚合缓冲（按 call_id 索引）
     /// value: (累积 buffer, 已收包数, SumNum, sender)
     /// sender 直接持有（PendingRequest::Clone 会丢失 response_sender）。
@@ -159,6 +163,7 @@ impl PendingRequestManager {
             by_call_id: Arc::new(DashMap::new()),
             by_device_sn: Arc::new(DashMap::new()),
             default_timeout_secs: 10,
+            senders: Arc::new(DashMap::new()),
             multi_packet_buffers: Arc::new(DashMap::new()),
         }
     }
@@ -274,12 +279,14 @@ impl PendingRequestManager {
         call_id: &str,
         timeout_secs: Option<u64>,
     ) -> PendingRequest {
+        // 解析默认超时：从 manager 配置取，而不是硬编码 30
+        let timeout = timeout_secs.unwrap_or(self.default_timeout_secs);
         let req = PendingRequest::new(
             device_id.to_string(),
             sn,
             cmd_type,
             call_id.to_string(),
-            timeout_secs,
+            Some(timeout),
         );
 
         self.by_call_id.insert(call_id.to_string(), req.clone());
@@ -311,7 +318,7 @@ impl PendingRequestManager {
         timeout_secs: Option<u64>,
     ) -> (PendingRequest, oneshot::Receiver<String>) {
         let timeout = timeout_secs.unwrap_or(self.default_timeout_secs);
-        let (req, rx) = PendingRequest::new_with_receiver(
+        let (mut req, rx) = PendingRequest::new_with_receiver(
             device_id.to_string(),
             sn,
             cmd_type,
@@ -324,6 +331,12 @@ impl PendingRequestManager {
         let ds_key = format!("{}:{}", device_id, sn);
         self.by_device_sn.insert(ds_key, req.clone());
 
+        // 把 sender 从 req 移到 senders map：req.clone() 后 sender 已经是 None，
+        // 所以从原 req 中 take() 取出真正的 sender。
+        if let Some(tx) = req.response_sender.take() {
+            self.senders.insert(call_id.to_string(), tx);
+        }
+
         (req, rx)
     }
 
@@ -332,20 +345,20 @@ impl PendingRequestManager {
     /// Phase 2.1: 同时通知通过 `register_with_receiver` 注册的调用方
     pub fn complete(&self, call_id: &str, xml_response: &str) -> Option<String> {
         // Try call_id first
-        if let Some((_, mut req)) = self.by_call_id.remove(call_id) {
+        if let Some((_, req)) = self.by_call_id.remove(call_id) {
             let ds_key = format!("{}:{}", req.device_id, req.sn);
             self.by_device_sn.remove(&ds_key);
 
-            // Phase 2.1: 通知 await 端（如果有 sender 的话）
-            if let Some(tx) = req.response_sender.take() {
+            // Phase 2.1 修复：sender 在 `senders` map 中持有（PendingRequest::Clone 会丢失）
+            if let Some((_, tx)) = self.senders.remove(call_id) {
                 let _ = tx.send(xml_response.to_string());
             }
             return Some(xml_response.to_string());
         }
 
         // Try device_sn as fallback
-        if let Some((_, mut req)) = self.by_device_sn.remove(call_id) {
-            if let Some(tx) = req.response_sender.take() {
+        if let Some((_, _req)) = self.by_device_sn.remove(call_id) {
+            if let Some((_, tx)) = self.senders.remove(call_id) {
                 let _ = tx.send(xml_response.to_string());
             }
             return Some(xml_response.to_string());
@@ -418,6 +431,8 @@ impl PendingRequestManager {
                 let ds_key = format!("{}:{}", req.device_id, req.sn);
                 self.by_call_id.remove(&key);
                 self.by_device_sn.remove(&ds_key);
+                // 清理对应的 sender，避免 oneshot 句柄泄漏
+                self.senders.remove(&key);
                 removed.push(key);
             }
         }
@@ -457,6 +472,7 @@ impl PendingRequestManager {
         let key = format!("{}:{}", device_id, sn);
         if let Some((_, req)) = self.by_device_sn.remove(&key) {
             self.by_call_id.remove(&req.call_id);
+            self.senders.remove(&req.call_id);
             return true;
         }
         false
@@ -476,6 +492,7 @@ impl PendingRequestManager {
         for (ds_key, call_id) in snap {
             self.by_call_id.remove(&call_id);
             self.by_device_sn.remove(&ds_key);
+            self.senders.remove(&call_id);
             count += 1;
         }
         count
@@ -585,6 +602,40 @@ mod tests {
         let removed = mgr.cleanup_expired();
         assert_eq!(removed.len(), 1);
         assert_eq!(mgr.pending_count(), 0);
+    }
+
+    /// register() 在调用方传 None 时使用 manager 的 default_timeout_secs，而不是硬编码 30
+    /// 回归保护：如果未来有人把硬编码改回来，这个测试会失败
+    #[test]
+    fn test_register_uses_manager_default_timeout_when_none() {
+        let mgr = PendingRequestManager::new().with_timeout(2); // 2s
+        let req = mgr.register(
+            "34020000001110000002",
+            2,
+            PendingCmdType::DeviceInfo,
+            "call-y",
+            None, // 关键：None 时必须取 manager 默认值
+        );
+        assert_eq!(req.timeout_secs, 2, "register 应采用 manager 默认超时，而非硬编码 30");
+
+        // 等 3s 后确认按 2s 超时清理（如果用了 30s 硬编码则不会清理）
+        std::thread::sleep(Duration::from_secs(3));
+        let removed = mgr.cleanup_expired();
+        assert_eq!(removed.len(), 1, "应按 manager 默认 2s 超时清理，验证未硬编码 30");
+    }
+
+    /// 调用方显式传入 timeout 时必须优先生效，不被 manager 默认覆盖
+    #[test]
+    fn test_register_uses_caller_timeout_over_default() {
+        let mgr = PendingRequestManager::new().with_timeout(2); // 2s default
+        let req = mgr.register(
+            "34020000001110000003",
+            3,
+            PendingCmdType::DeviceInfo,
+            "call-z",
+            Some(5), // 显式 5s
+        );
+        assert_eq!(req.timeout_secs, 5, "调用方显式超时应优先生效");
     }
 
     /// Phase 3.3: RecordInfo 多包累积 — 3 个 packet（SumNum=3），全部到达后返回累积 XML

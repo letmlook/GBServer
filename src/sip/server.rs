@@ -27,7 +27,7 @@ use crate::sip::gb28181::invite_session::{
     build_invite_sdp, build_playback_sdp, InviteSessionManager, InviteSessionStatus, SdpInfo,
 };
 use crate::sip::gb28181::talk::{build_talk_sdp as build_audio_sdp, TalkManager, TalkStatus};
-use crate::sip::gb28181::broadcast::{BroadcastManager, BroadcastSession, BroadcastStatus};
+use crate::sip::gb28181::broadcast::{BroadcastManager, BroadcastSession};
 use crate::sip::gb28181::{DeviceManager, SessionManager, XmlParser};
 use crate::sip::gb28181::ssrc::SsrcManager;
 use crate::sip::gb28181::stream_reconnect::StreamReconnectManager;
@@ -193,7 +193,6 @@ fn extract_tag_text(xml: &str, tag: &str) -> Option<String> {
 }
 
 use crate::sip::gb28181::device_commander::DeviceCommander;
-use crate::sip::gb28181::device_query::DeviceQueryManager;
 use crate::sip::gb28181::media_waiter::{MediaWaitResult, MediaWaiterManager};
 use crate::sip::gb28181::pending_request::PendingRequestManager;
 use crate::sip::gb28181::subscription_lifecycle::SubscriptionLifecycle;
@@ -1176,8 +1175,6 @@ let renewal_pool = pool.clone();
             SipMethod::Info => {
                 Self::handle_info(req, addr, config, pool, socket).await
             }
-            SipMethod::Options => Self::handle_options(req, addr, config, socket).await,
-            SipMethod::Info => Self::handle_info(req, addr, config, pool, socket).await,
             SipMethod::Cancel => {
                 Self::handle_cancel(
                     req,
@@ -2724,7 +2721,8 @@ let renewal_pool = pool.clone();
         pending_invites: &Arc<DashMap<String, oneshot::Sender<SipResponse>>>,
         cascade_registrar: &Option<Arc<CascadeRegistrar>>,
         pending_request_manager: &Arc<PendingRequestManager>,
-        send_rtp_manager: &Arc<SendRtpManager>,
+        // 注：send_rtp_manager 当前未在响应路径使用，但保留参数位置以兼容调用方
+        _send_rtp_manager: &Arc<SendRtpManager>,
         subscription_lifecycle: &Option<Arc<crate::sip::gb28181::subscription_lifecycle::SubscriptionLifecycle>>,
         renewal_failures: &Arc<DashMap<String, u32>>,
         media_waiter_manager: &Arc<MediaWaiterManager>,
@@ -3858,6 +3856,42 @@ f=v/1/96/1/2/1/1/0
         .await
     }
 
+    /// 设置设备流传输模式（GB/T 28181 设备控制 — 整设备级，非通道级）
+    /// 协议消息体：
+    /// ```xml
+    /// <Control>
+    ///   <CmdType>DeviceControl</CmdType>
+    ///   <SN>...</SN>
+    ///   <DeviceID>...</DeviceID>
+    ///   <Transport>TCP-PASSIVE</Transport>
+    /// </Control>
+    /// ```
+    pub async fn send_device_transport(
+        &self,
+        device_id: &str,
+        transport: &str,
+    ) -> Result<()> {
+        let sn = chrono::Utc::now().timestamp();
+        let xml_body = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<Control>
+<CmdType>DeviceControl</CmdType>
+<SN>{}</SN>
+<DeviceID>{}</DeviceID>
+<Transport>{}</Transport>
+</Control>"#,
+            sn, device_id, transport
+        );
+
+        self.send_message_to_device(
+            device_id,
+            SipMethod::Message,
+            Some(&xml_body),
+            Some("Application/MANSCDP+xml"),
+        )
+        .await
+    }
+
     pub async fn send_device_config_query(&self, device_id: &str, config_type: &str) -> Result<()> {
         let sn = chrono::Utc::now().timestamp();
         let body = format!(
@@ -4268,7 +4302,6 @@ f=v/1/96/1/2/1/1/0
         let uri = format!("sip:{}@{}:{}", channel_id, device_addr.ip(), device_addr.port());
         let message = Parser::generate_request("INVITE", &uri, &headers, Some(&sdp));
         socket.send_to(message.as_bytes(), device_addr).await?;
-        drop(socket);
         tracing::info!("Sent BROADCAST INVITE to device={} channel={} call_id={}",
             device_id, channel_id, call_id);
 
@@ -4603,7 +4636,6 @@ f=v/1/96/1/2/1/1/0
         let uri = format!("sip:{}@{}:{}", device_id, device_addr.ip(), device_addr.port());
         let message = Parser::generate_request("MESSAGE", &uri, &headers, Some(&body));
         socket.send_to(message.as_bytes(), device_addr).await?;
-        drop(socket);
         tracing::info!("Sent RecordInfo query (async) to device {} channel {} [{}-{}]",
             device_id, channel_id, start_time, end_time);
 
@@ -4754,7 +4786,6 @@ f=v/1/96/1/2/1/1/0
             ssrc_str,
             call_id
         );
-        drop(socket); // 释放读锁，避免死锁
 
         // 等待 200 OK（15 秒超时）。rx 现在带整个 SipResponse(含 SDP),
         // 调用方需要根据设备宣告的 m= 端口调 ZLM connectRtpServer。
@@ -4803,13 +4834,13 @@ f=v/1/96/1/2/1/1/0
         );
 
         // 1. 注册媒体等待器（早于发包，防止竞态）
-        let waiter_key: String;
+        let _waiter_key: String;
         let media_rx: tokio::sync::oneshot::Receiver<MediaWaitResult>;
         {
             let (wk, rx) =
                 self.media_waiter_manager
                     .register(&call_id, zlm_stream_id, "rtp", timeout_secs);
-            waiter_key = wk;
+            _waiter_key = wk;
             media_rx = rx;
         }
 
@@ -4955,7 +4986,7 @@ f=v/1/96/1/2/1/1/0
         self.session_manager
             .set_invite_context(&call_id, from.clone(), 1, device_addr)
             .await;
-        drop(socket);
+        // 注：socket 读锁在此作用域结束自动释放，不需手动 drop(&socket)。
 
         Ok(())
     }

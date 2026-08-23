@@ -275,7 +275,7 @@ pub enum DeviceStatusResult {
     ParseError(String),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct DeviceInfoData {
     pub device_name: Option<String>,
     pub manufacturer: Option<String>,
@@ -285,7 +285,7 @@ pub struct DeviceInfoData {
     pub serial_number: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct DeviceStatusData {
     pub online: Option<String>,
     pub status: Option<String>,
@@ -382,5 +382,130 @@ mod tests {
         assert_eq!(cmd.pending_count(), 1);
         assert!(!cmd.has_pending_for("34020000001110000001"));
         assert!(cmd.has_pending_for("34020000002220000002"));
+    }
+
+    /// register_with_receiver → 上游完成 → oneshot 收到原始 XML
+    /// 端到端测试设备查询 / P1 修复所依赖的"等待 SIP 响应"通路
+    #[tokio::test]
+    async fn test_register_with_receiver_resolves_on_complete() {
+        let mgr = Arc::new(PendingRequestManager::new());
+        let cmd = DeviceCommander::new(mgr.clone());
+
+        let (_req, rx) = cmd.register_device_info_with_receiver("34020000001320000001", 200);
+        assert_eq!(cmd.pending_count(), 1);
+
+        // 模拟 SIP MESSAGE 响应到达（PendingRequestManager::complete 会调用 oneshot）
+        let response_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+<CmdType>DeviceInfo</CmdType><SN>200</SN><DeviceID>34020000001320000001</DeviceID>
+<DeviceName>Cam-A</DeviceName><Manufacturer>Hikvision</Manufacturer><Model>DS-2CD</Model>
+<Channel>2</Channel>
+</Response>"#;
+        let returned = mgr.complete("di_34020000001320000001_200", response_xml);
+        assert!(returned.is_some(), "complete 应返回原始 XML");
+
+        // 收 oneshot
+        let xml = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            rx,
+        )
+        .await
+        .expect("不应超时")
+        .expect("oneshot 不应被取消");
+        assert!(xml.contains("<DeviceName>Cam-A</DeviceName>"));
+        assert!(xml.contains("<Channel>2</Channel>"));
+    }
+
+    /// 设备无响应：await_response 应返回 DeviceQueryResult::Timeout
+    /// 验证 P1 实装中 15s 超时分支所依赖的 API
+    #[tokio::test]
+    async fn test_await_response_returns_timeout_when_no_reply() {
+        let cmd = make_commander();
+        let (_req, rx) = cmd.register_device_info_with_receiver("34020000001320000002", 201);
+
+        // 用 0.2s 超时替代真实 15s，加快测试
+        match cmd.await_response(_req, rx, 0).await {
+            Err(DeviceQueryResult::Timeout) => {} // 预期
+            other => panic!("预期 Timeout，实际 {:?}", other),
+        }
+    }
+
+    /// query_device_info_and_parse：注册 → 发送 → 完成 → 解析，整链路
+    /// 验证 P1 实装的 device_info handler 端到端行为
+    #[tokio::test]
+    async fn test_query_device_info_and_parse_end_to_end() {
+        let mgr = Arc::new(PendingRequestManager::new());
+        let cmd = DeviceCommander::new(mgr.clone());
+
+        // 在另一个 task 中"模拟设备响应"：等 send 触发后 50ms 调用 complete
+        let mgr_for_reply = mgr.clone();
+        let reply_task = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            mgr_for_reply.complete(
+                "di_34020000001320000003_202",
+                r#"<?xml version="1.0"?>
+<Response><CmdType>DeviceInfo</CmdType><SN>202</SN>
+<DeviceID>34020000001320000003</DeviceID>
+<DeviceName>Cam-B</DeviceName><Manufacturer>Uniview</Manufacturer><Channel>8</Channel>
+</Response>"#,
+            );
+        });
+
+        // 模拟发送：立即成功
+        let result = cmd
+            .query_device_info_and_parse(
+                "34020000001320000003",
+                202,
+                async { Ok(()) },
+                5,
+            )
+            .await;
+
+        match result {
+            DeviceInfoResult::Ok(data) => {
+                assert_eq!(data.device_name.as_deref(), Some("Cam-B"));
+                assert_eq!(data.manufacturer.as_deref(), Some("Uniview"));
+                assert_eq!(data.channel_count, Some(8));
+            }
+            other => panic!("预期 Ok，实际 {:?}", other),
+        }
+        reply_task.await.unwrap();
+    }
+
+    /// 设备发送失败：query_device_info_and_parse 应返回 ParseError
+    #[tokio::test]
+    async fn test_query_device_info_and_parse_send_failure() {
+        let cmd = make_commander();
+        let result = cmd
+            .query_device_info_and_parse(
+                "34020000001320000004",
+                203,
+                async { Err("network down".to_string()) },
+                5,
+            )
+            .await;
+        match result {
+            DeviceInfoResult::ParseError(msg) => assert!(msg.contains("network down")),
+            other => panic!("预期 ParseError，实际 {:?}", other),
+        }
+    }
+
+    /// 设备发送成功但超时：应返回 ParseError("timeout")
+    #[tokio::test]
+    async fn test_query_device_info_and_parse_timeout() {
+        let cmd = make_commander();
+        // 不调用 complete，触发 0s 超时
+        let result = cmd
+            .query_device_info_and_parse(
+                "34020000001320000005",
+                204,
+                async { Ok(()) },
+                0,
+            )
+            .await;
+        match result {
+            DeviceInfoResult::ParseError(msg) => assert!(msg.contains("timeout")),
+            other => panic!("预期 ParseError(timeout)，实际 {:?}", other),
+        }
     }
 }

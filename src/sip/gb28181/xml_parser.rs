@@ -81,17 +81,11 @@ impl XmlParser {
         // （例如 <Response><DeviceID>parent</DeviceID>...
         //       <DeviceList><Item><DeviceID>child1</DeviceID>...
         // 上层需要的是父 DeviceID），所以这里用直接字符串扫描返回首个 <DeviceID>。
-        let open = match xml.find("<DeviceID>") {
-            Some(idx) => idx,
-            None => return None,
-        };
-        let start = open + "<DeviceID>".len();
-        let end_close = match xml[start..].find("</DeviceID>") {
-            Some(idx) => start + idx,
-            None => return None,
-        };
-        let val = xml[start..end_close].trim();
-        if val.is_empty() { None } else { Some(val.to_string()) }
+        if let Some(val) = Self::find_first_element(xml, "DeviceID") {
+            return Some(val);
+        }
+        // 属性形式：Query/Notify/Response 根标签上的 DeviceID="..."，GB/T 28181 设备普遍用此形式
+        Self::find_first_attr(xml, "DeviceID")
     }
 
     pub fn get_cmd_type(xml: &str) -> Option<String> {
@@ -238,5 +232,103 @@ impl XmlParser {
         }
 
         (sum_num, channels)
+    }
+
+    /// 提取首个 `<TagName>...</TagName>` 元素值（不依赖 quick-xml 解析，对同名多标签取首个）
+    pub fn find_first_element(xml: &str, tag: &str) -> Option<String> {
+        let open_marker = format!("<{}>", tag);
+        let close_marker = format!("</{}>", tag);
+        let open = xml.find(&open_marker)?;
+        let start = open + open_marker.len();
+        let end_close = xml[start..].find(&close_marker)?;
+        let val = xml[start..start + end_close].trim();
+        if val.is_empty() {
+            None
+        } else {
+            Some(val.to_string())
+        }
+    }
+
+    /// 提取首个 `TagName="..."` 属性值（GB/T 28181 设备常在根标签用属性形式传 DeviceID）
+    pub fn find_first_attr(xml: &str, attr: &str) -> Option<String> {
+        let marker = format!("{}=\"", attr);
+        let idx = xml.find(&marker)?;
+        let start = idx + marker.len();
+        let end_q = xml[start..].find('"')?;
+        let val = xml[start..start + end_q].trim();
+        if val.is_empty() {
+            None
+        } else {
+            Some(val.to_string())
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 元素形式 `<DeviceID>...</DeviceID>` 仍然优先识别（兼容历史路径）
+    #[test]
+    fn find_first_element_basic() {
+        let xml = r#"<Response><DeviceID>34020000002000000001</DeviceID><Result>OK</Result></Response>"#;
+        assert_eq!(
+            XmlParser::find_first_element(xml, "DeviceID").as_deref(),
+            Some("34020000002000000001")
+        );
+    }
+
+    /// 元素形式不区分大小写也是敏感，标签必须匹配
+    #[test]
+    fn find_first_element_missing_returns_none() {
+        let xml = r#"<Response><Result>OK</Result></Response>"#;
+        assert!(XmlParser::find_first_element(xml, "DeviceID").is_none());
+    }
+
+    /// 属性形式 `DeviceID="..."`：真实 GB 设备在 Query/Notify/Response 根标签使用
+    #[test]
+    fn find_first_attr_basic() {
+        let xml = r#"<?xml version="1.0"?><Query CmdType="Catalog" DeviceID="34020000002000000001" SN="10"/>"#;
+        assert_eq!(
+            XmlParser::find_first_attr(xml, "DeviceID").as_deref(),
+            Some("34020000002000000001")
+        );
+    }
+
+    /// 属性不存在时返回 None，不返回空字符串
+    #[test]
+    fn find_first_attr_missing_returns_none() {
+        let xml = r#"<?xml version="1.0"?><Query CmdType="Catalog" SN="10"/>"#;
+        assert!(XmlParser::find_first_attr(xml, "DeviceID").is_none());
+    }
+
+    /// `get_device_id` 在元素形式存在时优先返回元素值（保持原行为）
+    #[test]
+    fn get_device_id_prefers_element_over_attr() {
+        let xml = r#"<Response><DeviceID>34020000001110000001</DeviceID></Response>"#;
+        assert_eq!(
+            XmlParser::get_device_id(xml).as_deref(),
+            Some("34020000001110000001")
+        );
+    }
+
+    /// `get_device_id` 在仅属性形式时回退到属性（这是上游真实设备的主要形式）
+    #[test]
+    fn get_device_id_falls_back_to_attr() {
+        let xml = r#"<?xml version="1.0"?><Query CmdType="Catalog" DeviceID="34020000002000000001" SN="10"/>"#;
+        assert_eq!(
+            XmlParser::get_device_id(xml).as_deref(),
+            Some("34020000002000000001")
+        );
+    }
+
+    /// 空元素/空属性都返回 None（避免把空字符串当合法 ID 传下去）
+    #[test]
+    fn get_device_id_empty_inputs_return_none() {
+        let xml = r#"<Response><DeviceID>   </DeviceID></Response>"#;
+        assert!(XmlParser::get_device_id(xml).is_none());
+
+        let xml = r#"<Query CmdType="Catalog" DeviceID="" SN="10"/>"#;
+        assert!(XmlParser::get_device_id(xml).is_none());
     }
 }

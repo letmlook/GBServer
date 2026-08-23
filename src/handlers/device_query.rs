@@ -47,29 +47,50 @@ pub async fn device_info(
     Path(device_id): Path<String>,
 ) -> impl IntoResponse {
     let sn = chrono::Utc::now().timestamp_millis() as u32;
-    
-    // 如果设备在线，发送 SIP MESSAGE 查询
+
+    // 设备在线：注册 + 发送 SIP MESSAGE + 等待响应（带 15s 超时）
     if let Some(ref sip_server) = state.sip_server {
         let server = &*sip_server;
         if server.is_device_online(&device_id).await {
-            // 注册 PendingRequest 并发送查询
             let commander = server.device_commander();
-            let _req = commander.query_device_info(&device_id, sn);
-            if let Err(e) = server.send_device_info_query(&device_id).await {
-                tracing::warn!("Failed to send device info query: {}", e);
-            }
-            
-            // TODO: 实际实现需要等待响应并返回实时数据
-            // 当前返回 202 Accepted，表示查询已发送
-            return Json(WVPResult::success(serde_json::json!({
-                "deviceId": device_id,
-                "sn": sn,
-                "status": "query_sent",
-                "message": "Device info query sent, response will be routed via MESSAGE"
-            }))).into_response();
+            let server = &*server;
+            return match commander
+                .query_device_info_and_parse(
+                    &device_id,
+                    sn,
+                    async {
+                        server
+                            .send_device_info_query(&device_id)
+                            .await
+                            .map_err(|e| e.to_string())
+                    },
+                    15,
+                )
+                .await
+            {
+                crate::sip::gb28181::device_commander::DeviceInfoResult::Ok(info) => {
+                    Json(WVPResult::success(serde_json::json!({
+                        "deviceId": device_id,
+                        "sn": sn,
+                        "data": info,
+                        "source": "live",
+                    })))
+                    .into_response()
+                }
+                crate::sip::gb28181::device_commander::DeviceInfoResult::ParseError(msg) => {
+                    Json(WVPResult::success(serde_json::json!({
+                        "deviceId": device_id,
+                        "sn": sn,
+                        "status": "timeout_or_error",
+                        "message": msg,
+                        "source": "live",
+                    })))
+                    .into_response()
+                }
+            };
         }
     }
-    
+
     // 设备离线或未注册，返回数据库缓存数据
     match crate::db::device::get_device_by_device_id(&state.pool, &device_id).await {
         Ok(Some(d)) => {
@@ -85,12 +106,15 @@ pub async fn device_info(
                 "deviceId": device_id,
                 "sn": sn,
                 "data": info,
-                "source": "cache"
-            }))).into_response()
+                "source": "cache",
+            })))
+            .into_response()
         }
-        _ => {
-            (axum::http::StatusCode::NOT_FOUND, Json(WVPResult::<()>::error("Device not found"))).into_response()
-        }
+        _ => (
+            axum::http::StatusCode::NOT_FOUND,
+            Json(WVPResult::<()>::error("Device not found")),
+        )
+            .into_response(),
     }
 }
 
@@ -105,28 +129,50 @@ pub async fn device_status(
     Path(device_id): Path<String>,
 ) -> impl IntoResponse {
     let sn = chrono::Utc::now().timestamp_millis() as u32;
-    
-    // 如果设备在线，发送 SIP MESSAGE 查询
+
+    // 设备在线：注册 + 发送 SIP MESSAGE + 等待响应（带 15s 超时）
     if let Some(ref sip_server) = state.sip_server {
         let server = &*sip_server;
         if server.is_device_online(&device_id).await {
-            // 注册 PendingRequest 并发送查询
             let commander = server.device_commander();
-            let _req = commander.query_device_status(&device_id, sn);
-            if let Err(e) = server.send_device_status_query(&device_id).await {
-                tracing::warn!("Failed to send device status query: {}", e);
-            }
-            
-            // TODO: 实际实现需要等待响应并返回实时数据
-            return Json(WVPResult::success(serde_json::json!({
-                "deviceId": device_id,
-                "sn": sn,
-                "status": "query_sent",
-                "message": "Device status query sent, response will be routed via MESSAGE"
-            }))).into_response();
+            let server = &*server;
+            return match commander
+                .query_device_status_and_parse(
+                    &device_id,
+                    sn,
+                    async {
+                        server
+                            .send_device_status_query(&device_id)
+                            .await
+                            .map_err(|e| e.to_string())
+                    },
+                    15,
+                )
+                .await
+            {
+                crate::sip::gb28181::device_commander::DeviceStatusResult::Ok(status) => {
+                    Json(WVPResult::success(serde_json::json!({
+                        "deviceId": device_id,
+                        "sn": sn,
+                        "data": status,
+                        "source": "live",
+                    })))
+                    .into_response()
+                }
+                crate::sip::gb28181::device_commander::DeviceStatusResult::ParseError(msg) => {
+                    Json(WVPResult::success(serde_json::json!({
+                        "deviceId": device_id,
+                        "sn": sn,
+                        "status": "timeout_or_error",
+                        "message": msg,
+                        "source": "live",
+                    })))
+                    .into_response()
+                }
+            };
         }
     }
-    
+
     // 设备离线
     let status = DeviceStatusResponse {
         online: Some("OFF".to_string()),
@@ -137,13 +183,14 @@ pub async fn device_status(
         record_channel_count: None,
         storage_space: None,
     };
-    
+
     Json(WVPResult::success(serde_json::json!({
         "deviceId": device_id,
         "sn": sn,
         "data": status,
-        "source": "cache"
-    }))).into_response()
+        "source": "cache",
+    })))
+    .into_response()
 }
 
 /// ============================================================================
@@ -157,35 +204,53 @@ pub async fn device_config_query(
     Path((device_id, config_type)): Path<(String, String)>,
 ) -> impl IntoResponse {
     let sn = chrono::Utc::now().timestamp_millis() as u32;
-    
+
     // 检查设备是否在线
     if let Some(ref sip_server) = state.sip_server {
         let server = &*sip_server;
         if server.is_device_online(&device_id).await {
             let commander = server.device_commander();
-            let _req = commander.query_device_config(&device_id, sn, &config_type);
-            
-            // TODO: 实际实现需要等待响应并返回
-            return Json(WVPResult::success(serde_json::json!({
-                "deviceId": device_id,
-                "configType": config_type,
-                "sn": sn,
-                "message": "Query sent, waiting for response"
-            }))).into_response();
+            let (_req, rx) =
+                commander.register_device_config_with_receiver(&device_id, sn);
+            // 启动发送（不阻塞等待）
+            let server_send = server.clone();
+            let device_id_send = device_id.clone();
+            let config_type_send = config_type.clone();
+            let send_task = tokio::spawn(async move {
+                server_send
+                    .send_device_config_query(&device_id_send, &config_type_send)
+                    .await
+            });
+            // 等待响应（带 15s 超时）
+            return match commander.await_response(_req, rx, 15).await {
+                Ok(xml) => {
+                    // 不强解析 ConfigDownload 结构（多种配置类型结构差异大），把原始 XML 透传
+                    Json(WVPResult::success(serde_json::json!({
+                        "deviceId": device_id,
+                        "configType": config_type,
+                        "sn": sn,
+                        "xml": xml,
+                        "source": "live",
+                    })))
+                    .into_response()
+                }
+                Err(_) => {
+                    let _ = send_task.await;
+                    Json(WVPResult::success(serde_json::json!({
+                        "deviceId": device_id,
+                        "configType": config_type,
+                        "sn": sn,
+                        "status": "timeout",
+                        "message": "Device did not respond within 15s",
+                        "source": "live",
+                    })))
+                    .into_response()
+                }
+            };
         }
     }
-    
-    Json(WVPResult::<()>::error("Device offline or not registered")).into_response()
-}
 
-/// POST /api/device/config/update
-/// 更新设备配置参数
-pub async fn device_config_update(
-    State(_state): State<AppState>,
-    Json(_payload): Json<serde_json::Value>,
-) -> impl IntoResponse {
-    // TODO: 实现设备配置更新
-    Json(WVPResult::<()>::error("Not implemented")).into_response()
+    Json(WVPResult::<()>::error("Device offline or not registered")).into_response()
 }
 
 /// ============================================================================

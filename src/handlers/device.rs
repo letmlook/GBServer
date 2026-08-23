@@ -17,7 +17,9 @@ pub struct DevicesQuery {
     pub page: Option<u32>,
     pub count: Option<u32>,
     pub query: Option<String>,
-    pub status: Option<bool>,
+    /// "ON" / "OFF" / "" (空 = 全部)
+    #[serde(default)]
+    pub status: Option<String>,
 }
 
 /// GET /api/device/query/devices
@@ -27,8 +29,13 @@ pub async fn query_devices(
 ) -> Result<Json<WVPResult<DevicePage>>, AppError> {
     let page = q.page.unwrap_or(1);
     let count = q.count.unwrap_or(10).min(100);
-    let total = count_devices(&state.pool, q.query.as_deref(), q.status).await?;
-    let list = list_devices_paged(&state.pool, page, count, q.query.as_deref(), q.status).await?;
+    let online = match q.status.as_deref() {
+        Some("ON") | Some("on") | Some("1") | Some("true") => Some(true),
+        Some("OFF") | Some("off") | Some("0") | Some("false") => Some(false),
+        _ => None,
+    };
+    let total = count_devices(&state.pool, q.query.as_deref(), online).await?;
+    let list = list_devices_paged(&state.pool, page, count, q.query.as_deref(), online).await?;
     let out = DevicePage {
         total: total as u64,
         list,

@@ -73,7 +73,7 @@ impl CatalogSyncSession {
         let sum_num = Self::extract_tag(xml, "SumNum")
             .and_then(|s| s.parse().ok())
             .unwrap_or(1);
-        let num = Self::extract_tag(xml, "Num")
+        let _num = Self::extract_tag(xml, "Num")
             .and_then(|s| s.parse().ok())
             .unwrap_or(1);
 

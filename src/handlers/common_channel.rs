@@ -859,6 +859,8 @@ pub async fn map_reset_level(
 }
 
 /// GET /api/common/channel/map/thin/clear?id=
+/// 内部工具 — 按 feature 分发不同 SQL；sqlite 路径下部分参数仅在 cfg(postgres/mysql) 中使用
+#[allow(unused_variables)]
 pub async fn map_thin_clear(
     State(state): State<AppState>,
     Query(q): Query<ChannelIdQuery>,

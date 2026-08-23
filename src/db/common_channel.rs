@@ -1,4 +1,3 @@
-use sqlx::Row;
 use crate::db::Pool;
 use crate::db::device::{DeviceChannel, DEVICE_CHANNEL_SELECT_COLUMNS};
 

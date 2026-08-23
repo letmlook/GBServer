@@ -139,24 +139,49 @@ pub async fn device_sync(
 
 /// POST /api/device/query/transport/:device_id/:stream_mode
 /// 设置设备流传输模式
-/// 参数: device_id - 设备ID, stream_mode - 流模式 (TCP/UDP)
-/// 返回: 设置结果
+/// 参数: device_id - 设备ID, stream_mode - 流模式 (TCP/UDP/TCP-ACTIVE/TCP-PASSIVE)
+/// 返回: 设置结果（同时更新 DB 并向设备下发 SIP Control/Transport 消息）
 pub async fn device_transport(
     State(state): State<AppState>,
     Path((device_id, stream_mode)): Path<(String, String)>,
 ) -> Json<WVPResult<serde_json::Value>> {
-    let normalized_mode = match stream_mode.to_uppercase().as_str() {
-        "TCP" | "UDP" | "TCP-ACTIVE" | "TCP-PASSIVE" => stream_mode.to_uppercase(),
-        _ => stream_mode.to_uppercase(),
-    };
+    let normalized_mode = stream_mode.to_uppercase();
+    let valid_modes = ["TCP", "UDP", "TCP-ACTIVE", "TCP-PASSIVE"];
+    if !valid_modes.contains(&normalized_mode.as_str()) {
+        return Json(WVPResult::error(format!(
+            "不支持的传输模式: {}（必须是 TCP/UDP/TCP-ACTIVE/TCP-PASSIVE）",
+            stream_mode
+        )));
+    }
+
+    // 1) 更新数据库
     let updated = update_device_stream_mode(&state.pool, &device_id, &normalized_mode)
         .await
         .unwrap_or_default();
-    tracing::info!("Transport mode change: device={}, mode={}", device_id, stream_mode);
+    tracing::info!("Transport mode change: device={}, mode={}", device_id, normalized_mode);
+
+    // 2) 向设备下发 SIP Control/Transport 消息（设备在线才发；不在线仅 DB 更新也合法）
+    let mut sip_sent = false;
+    let mut sip_error: Option<String> = None;
+    if let Some(ref sip_server) = state.sip_server {
+        let server = &*sip_server;
+        if server.is_device_online(&device_id).await {
+            match server.send_device_transport(&device_id, &normalized_mode).await {
+                Ok(_) => sip_sent = true,
+                Err(e) => {
+                    tracing::warn!("Failed to send Transport SIP: {}", e);
+                    sip_error = Some(e.to_string());
+                }
+            }
+        }
+    }
+
     Json(WVPResult::success(serde_json::json!({
         "deviceId": device_id,
         "streamMode": normalized_mode,
         "updated": updated,
+        "sipSent": sip_sent,
+        "sipError": sip_error,
         "message": "设备流传输模式设置成功",
         "code": 0
     })))
