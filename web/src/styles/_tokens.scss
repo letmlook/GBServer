@@ -127,3 +127,71 @@
   --el-border-radius-small: var(--radius-sm);
   --el-font-family: var(--font-sans);
 }
+
+/* ===========================================================
+ * Dark Theme（html.dark）— 覆盖 :root tokens 形成暗色变体
+ * 切换由 appStore.toggleTheme() 控制 html.dark class
+ * =========================================================== */
+html.dark {
+  /* 主色阶（暗色下保持青蓝主色，但语义色提亮） */
+  --brand-primary-50:  #0a2433;
+  --brand-primary-100: #0d2f44;
+  --brand-primary-500: #3eb0d4;
+  --brand-primary-600: #2a93bd;
+  --brand-primary-700: #5eb4d4;
+
+  /* 背景层（由浅入深） */
+  --bg-base:       #0f172a;   /* 主背景 深石板蓝 */
+  --bg-surface:    #1a2236;   /* 卡片/侧栏 */
+  --bg-elevated:   #232b40;   /* 悬浮卡片 */
+  --bg-overlay:    #2d3650;   /* 弹层/覆盖 */
+  --bg-disabled:   #3a4258;
+
+  /* 文字层（暗底浅字） */
+  --text-primary:   #e2e8f0;
+  --text-secondary: #94a3b8;
+  --text-tertiary:  #64748b;
+  --text-disabled:  #475569;
+  --text-on-primary: #0f172a;
+
+  /* 状态色 */
+  --state-success: #22c55e;
+  --state-warning: #f59e0b;
+  --state-error:   #ef4444;
+  --state-info:    #38bdf8;
+
+  /* 边框 */
+  --border-default: #334155;
+  --border-subtle:  #1e293b;
+  --border-strong:  #475569;
+
+  /* Element Plus 覆盖 */
+  --el-bg-color: var(--bg-base);
+  --el-bg-color-page: var(--bg-base);
+  --el-bg-color-overlay: var(--bg-surface);
+  --el-text-color-primary: var(--text-primary);
+  --el-text-color-regular: var(--text-secondary);
+  --el-text-color-secondary: var(--text-tertiary);
+  --el-text-color-placeholder: var(--text-disabled);
+  --el-border-color: var(--border-default);
+  --el-border-color-light: var(--border-subtle);
+  --el-border-color-lighter: var(--border-subtle);
+  --el-fill-color-blank: var(--bg-surface);
+  --el-fill-color-light: var(--bg-elevated);
+  --el-fill-color-lighter: var(--bg-base);
+  --el-mask-bg: rgba(0, 0, 0, 0.6);
+
+  /* 品牌色加深 */
+  --el-color-primary: var(--brand-primary-500);
+  --el-color-primary-light-3: var(--brand-primary-400);
+  --el-color-primary-light-5: var(--brand-primary-300);
+  --el-color-primary-light-7: var(--brand-primary-200);
+  --el-color-primary-light-9: var(--brand-primary-100);
+  --el-color-primary-dark-2: var(--brand-primary-600);
+}
+
+/* 暗色模式全局微调：页面背景随主题切换 */
+html.dark body {
+  background: var(--bg-base);
+  color: var(--text-primary);
+}
