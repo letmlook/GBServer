@@ -56,6 +56,18 @@ export function addChannel(data: Partial<Channel>) {
   })
 }
 
+/**
+ * 单通道删除（DELETE /api/common/channel/delete?id=<channel.id>）
+ * 注意：依赖列表查询返回的 `id` 字段（数据库主键），不是 channelId（国标 ID）
+ */
+export function deleteChannel(id: number | string) {
+  return request<WvpResult>({
+    method: 'delete',
+    url: '/common/channel/delete',
+    params: { id }
+  })
+}
+
 export function updateChannel(data: Partial<Channel>) {
   return request<WvpResult>({
     method: 'post',

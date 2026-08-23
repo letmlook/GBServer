@@ -98,7 +98,7 @@
 import { onMounted, reactive, ref } from 'vue'
 import { Plus } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { getChannelList, getIndustryList, getTypeList, getNetworkIdentificationList } from '@/api/channel'
+import { getChannelList, getIndustryList, getTypeList, getNetworkIdentificationList, deleteChannel } from '@/api/channel'
 import { startPlay, playSnap } from '@/api/live'
 import { useRouter } from 'vue-router'
 import Pagination from '@/components/Pagination/index.vue'
@@ -186,10 +186,17 @@ async function onSnapshot(row: any) {
 }
 
 async function onDelete(row: any) {
-  await ElMessageBox.confirm(`确认删除通道 ${row.name ?? row.channelId} ？`, '确认', {
-    type: 'warning'
+  await ElMessageBox.confirm(`确认删除通道 ${row.name ?? row.channelId} ？该操作不可恢复`, '危险操作', {
+    type: 'error'
   })
-  ElMessage.info('删除通道 — 后端无对应单通道删除端点，建议在所属设备内删除')
+  const id = row.id ?? row.channelId
+  if (!id) {
+    ElMessage.error('通道缺少主键 id，无法删除')
+    return
+  }
+  await deleteChannel(id)
+  ElMessage.success('已删除')
+  loadData()
 }
 
 onMounted(async () => {

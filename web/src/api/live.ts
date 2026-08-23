@@ -67,6 +67,23 @@ export function queryStreams(params: { page?: number; count?: number; query?: st
   })
 }
 
+/**
+ * 云台控制命令：LEFT/RIGHT/UP/DOWN/STOP/ZOOM_IN/ZOOM_OUT/FOCUS_NEAR/FOCUS_FAR/IRIS_OPEN/IRIS_CLOSE
+ * 通过后端 SIP MESSAGE DeviceControl 下发到 GB28181 通道
+ */
+export function sendPtz(params: {
+  deviceId: string
+  channelId: string
+  cmd: string
+  speed?: number
+}) {
+  return request<WvpResult>({
+    method: 'get',
+    url: `/front-end/ptz/${params.deviceId}/${params.channelId}`,
+    params: { cmd: params.cmd, speed: params.speed ?? 50 }
+  })
+}
+
 export interface StreamChannel {
   deviceId: string
   channelId: string

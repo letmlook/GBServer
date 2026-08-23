@@ -154,17 +154,18 @@ const deviceTotal = ref(0)
 const deviceOnline = ref(0)
 const channelTotal = ref(0)
 const activeStreamCount = ref(0)
+const streams = ref<Array<{ mediaServerId?: string; app?: string; stream?: string; deviceId?: string }>>([])
 const mediaServerCount = ref(0)
 const recentAlarms = ref<{ id?: number; alarmTime?: string; alarmDescription?: string; deviceId?: string; alarmLevel?: string }[]>([])
 const nodes = ref<{ id: string; name: string; region: string; cpu: number; mem: number; bw: number; status: string; tone: string }[]>([])
-const channels = ref<{ id: number; title: string; no: string; state: 'live' | 'rec' | 'mute' | 'offline' }[]>([])
+const channels = ref<Array<{ id: number; title: string; no: string; state: 'live' | 'rec' | 'mute' | 'offline'; deviceId?: string; channelId?: string }>>([])
 
 const loading = ref(false)
 
 async function loadAll() {
   loading.value = true
   try {
-    const [sys, devs, streams, mss, alarms] = await Promise.allSettled([
+    const [sys, devs, streamRes, mss, alarms] = await Promise.allSettled([
       getSystemInfo(),
       queryDevices({ page: 1, count: 1 }),
       queryStreams({ page: 1, count: 1000 }),
@@ -175,25 +176,43 @@ async function loadAll() {
     if (devs.status === 'fulfilled') deviceTotal.value = devs.value.data?.total ?? 0
     if (mss.status === 'fulfilled') mediaServerCount.value = ((mss.value.data as any[]) ?? []).length
     if (alarms.status === 'fulfilled') recentAlarms.value = alarms.value.data?.list ?? []
-    if (streams.status === 'fulfilled') {
-      const list = (streams.value.data as { list?: unknown[] })?.list ?? []
+    if (streamRes.status === 'fulfilled') {
+      const list = ((streamRes.value.data as any)?.list ?? []) as Array<{ mediaServerId?: string; app?: string; stream?: string; deviceId?: string }>
+      streams.value = list
       activeStreamCount.value = list.length
       channelTotal.value = list.length
     }
     // device online count from system info
     deviceOnline.value = info.value.deviceOnline ?? 0
-    // map media servers to nodes
+    // map media servers to nodes（用 system_info 汇总 + load 流量真实数据）
     const msList = (mss.status === 'fulfilled' ? ((mss.value.data as any[]) ?? []) : []) as Array<{ id?: string; ip?: string; httpPort?: number }>
-    nodes.value = msList.slice(0, 6).map((m, i) => ({
-      id: m.id ?? `node-${i}`,
-      name: m.id ?? `node-${i}`,
-      region: m.ip ?? '-',
-      cpu: Math.round(20 + Math.random() * 60),
-      mem: Math.round(30 + Math.random() * 50),
-      bw: Math.round(80 + Math.random() * 400),
-      status: '正常',
-      tone: 'success'
-    }))
+    const loadRes = mss.status === 'fulfilled' ? await Promise.allSettled(msList.slice(0, 6).map((m) => getMediaLoad(m.id ?? ''))) : []
+    const loadMap = new Map<string, any>()
+    for (let i = 0; i < msList.length && i < loadRes.length; i++) {
+      const r = loadRes[i]
+      if (r.status === 'fulfilled') {
+        const arr = ((r.value.data as unknown) as any[]) ?? []
+        if (arr[0]) loadMap.set(msList[i].id ?? '', arr[0])
+      }
+    }
+    const sysCpu = info.value.cpu_usage ?? 0
+    const sysMem = info.value.mem_usage ?? 0
+    nodes.value = msList.slice(0, 6).map((m, i) => {
+      const ld = loadMap.get(m.id ?? '')
+      const bw = Math.round(
+        ((ld?.gbReceive ?? 0) + (ld?.gbSend ?? 0)) * 100
+      ) / 100
+      return {
+        id: m.id ?? `node-${i}`,
+        name: m.id ?? `node-${i}`,
+        region: m.ip ?? '-',
+        cpu: Math.round(sysCpu),
+        mem: Math.round(sysMem),
+        bw,
+        status: bw > 50 || sysCpu > 90 ? '高负载' : '正常',
+        tone: bw > 50 || sysCpu > 90 ? 'warning' : 'success'
+      }
+    })
   } finally {
     loading.value = false
   }
@@ -292,17 +311,18 @@ function onCellClick(c: typeof channels.value[number]) {
   ElMessage.info(`打开通道：${c.title} (${c.no})`)
 }
 
-onMounted(() => {
-  loadAll()
-  // 派生 6 路示例通道（带主码流）的展示
-  channels.value = [
-    { id: 1, title: '校门 1', no: 'C001', state: 'live' },
-    { id: 2, title: '教学楼前', no: 'C002', state: 'rec' },
-    { id: 3, title: '宿舍区', no: 'C003', state: 'live' },
-    { id: 4, title: '操场全景', no: 'C004', state: 'mute' },
-    { id: 5, title: '食堂入口', no: 'C005', state: 'live' },
-    { id: 6, title: '图书馆前', no: 'C006', state: 'offline' }
-  ]
+onMounted(async () => {
+  await loadAll()
+  // 从 queryStreams 真实数据派生最多 6 路重点通道（优先 live）
+  const liveList = streams.value.slice(0, 6).map((s, i) => ({
+    id: i + 1,
+    title: s.stream ?? 'Unknown',
+    no: `C${String(i + 1).padStart(3, '0')}`,
+    state: 'live' as const,
+    deviceId: s.deviceId ?? '',
+    channelId: s.stream ?? ''
+  }))
+  if (liveList.length > 0) channels.value = liveList
 })
 </script>
 

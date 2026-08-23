@@ -7,7 +7,7 @@ use axum::{
 use serde::Deserialize;
 
 use crate::db::common_channel;
-use crate::db::{count_common_channels, list_common_channels_paged, DeviceChannel};
+use crate::db::{count_common_channels, delete_channel_by_id, list_common_channels_paged, DeviceChannel};
 use crate::error::{AppError, ErrorCode};
 use crate::response::WVPResult;
 use crate::AppState;
@@ -1819,4 +1819,26 @@ pub async fn channel_playback_speed(
     let speed = q.speed.clone().unwrap_or_default();
     tracing::info!("commonChannel playback speed: channel_id={}, stream={}, speed={}", channel_id, stream, speed);
     Json(serde_json::json!({ "code": 0, "msg": "回放倍速设置成功" }))
+}
+
+/// DELETE /api/common/channel/delete?id=<i64>
+/// 单条通用通道删除（与 device_id 解耦，仅按内部 id 删）
+pub async fn channel_delete(
+    State(state): State<AppState>,
+    Query(q): Query<ChannelDeleteQ>,
+) -> Result<Json<WVPResult<()>>, AppError> {
+    let id = q.id.unwrap_or(0);
+    if id <= 0 {
+        return Err(AppError::business(ErrorCode::Error400, "缺少通道 id"));
+    }
+    let n = delete_channel_by_id(&state.pool, id).await?;
+    if n == 0 {
+        return Err(AppError::business(ErrorCode::Error400, "通道不存在"));
+    }
+    Ok(Json(WVPResult::<()>::success_empty()))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ChannelDeleteQ {
+    pub id: Option<i64>,
 }

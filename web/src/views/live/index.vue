@@ -106,7 +106,14 @@ import {
   VideoPause,
   VideoCameraFilled
 } from '@element-plus/icons-vue'
-import { queryStreams, startPlay, stopPlay, playSnap, getPlayUrl } from '@/api/live'
+import {
+  startPlay,
+  stopPlay,
+  playSnap,
+  getPlayUrl,
+  sendPtz as sendPtzApi,
+  queryStreams
+} from '@/api/live'
 import { queryDeviceTree } from '@/api/device'
 
 const route = useRoute()
@@ -203,8 +210,17 @@ async function onStop(cell: any) {
   buildGrid(cell, '')
 }
 
-function sendPtz(channel: any, cmd: string) {
-  ElMessage.info(`PTZ ${cmd} 已下发（前端占位）`)
+async function sendPtz(channel: any, cmd: string) {
+  if (!channel?.deviceId || !channel?.channelId) {
+    ElMessage.warning('请先选择播放通道')
+    return
+  }
+  try {
+    await sendPtzApi({ deviceId: channel.deviceId, channelId: channel.channelId, cmd })
+    ElMessage.success(`PTZ ${cmd} 已下发`)
+  } catch (e: any) {
+    ElMessage.error(e?.message ?? `PTZ ${cmd} 失败`)
+  }
 }
 
 onMounted(async () => {

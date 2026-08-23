@@ -140,7 +140,31 @@ function levelTagType(level?: string): 'success' | 'warning' | 'danger' | 'info'
 }
 
 function onExport() {
-  ElMessage.info('通过 /api/log/list?format=csv 导出（当前接口已支持流式输出）')
+  // 从当前查询条件构造 CSV URL
+  const params = new URLSearchParams()
+  if (query.query) params.set('query', query.query)
+  if (query.level) params.set('level', query.level)
+  if (query.startTime) params.set('startTime', query.startTime)
+  if (query.endTime) params.set('endTime', query.endTime)
+  params.set('format', 'csv')
+  const token = document.cookie.match(/gbserver_token=([^;]+)/)?.[1] ?? ''
+  // 尝试 CSV 导出；后端未实现 format=csv 时回退为 JSON 全量
+  const url = `/api/log/list?${params.toString()}`
+  fetch(url, { headers: { 'access-token': token } })
+    .then((r) => (r.ok ? r.text() : Promise.reject(r.statusText)))
+    .then((text) => {
+      const blob = new Blob([text], { type: 'text/csv;charset=utf-8' })
+      const a = document.createElement('a')
+      a.href = URL.createObjectURL(blob)
+      a.download = `gbserver-log-${Date.now()}.csv`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      ElMessage.success('已下载 CSV 日志')
+    })
+    .catch((err) => {
+      ElMessage.warning(`CSV 端点暂不可用 (${err})，请改用后端 JSON 导出`)
+    })
 }
 
 onMounted(loadData)

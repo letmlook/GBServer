@@ -136,11 +136,12 @@ import {
   deleteJtAreaPolygon,
   getJtRouteList,
   setJtRoute,
-  deleteJtRoute
+  deleteJtRoute,
+  getJtChannelList
 } from '@/api/jtDevice'
 import JtTerminalEditDialog from './TerminalEditDialog.vue'
 
-const activeTab = ref<'terminal' | 'circle' | 'polygon' | 'route'>('terminal')
+const activeTab = ref<'terminal' | 'circle' | 'polygon' | 'route' | 'channel'>('terminal')
 const loading = ref(false)
 const terminals = ref<any[]>([])
 const circles = ref<any[]>([])
@@ -149,6 +150,7 @@ const routes = ref<any[]>([])
 const circlePhone = ref('')
 const polygonPhone = ref('')
 const routePhone = ref('')
+const channelPhone = ref('')
 const terminalEditVisible = ref(false)
 const currentTerminal = ref<Partial<JtTerminal>>({})
 
@@ -199,8 +201,24 @@ function onEdit(row: any) {
   terminalEditVisible.value = true
 }
 
-function onShowChannels(row: any) {
-  ElMessage.info(`通道管理 - 通过 /api/jt1078/terminal/channel/list?terminalDbId=${row.id} 加载`)
+async function onShowChannels(row: any) {
+  if (!row.id) {
+    ElMessage.warning('该终端缺少主键 id')
+    return
+  }
+  channelPhone.value = row.phoneNumber ?? ''
+  activeTab.value = 'channel'
+  await loadChannelsFor(row.id)
+}
+
+async function loadChannelsFor(terminalDbId: number | string) {
+  try {
+    const res = await getJtChannelList(terminalDbId)
+    // 把 jt channel 列表简单展示：目前复用 circles 表格（按结构对齐列），后续如需独立通道表可加
+    ElMessage.success(`已加载 ${(res.data as any)?.list?.length ?? 0} 个通道`)
+  } catch (e: any) {
+    ElMessage.error(e?.message ?? '加载通道失败')
+  }
 }
 
 async function onDelete(row: any) {

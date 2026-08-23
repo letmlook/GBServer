@@ -524,6 +524,7 @@ pub fn app(state: AppState) -> Router<AppState> {
             post(common_channel::channel_reset),
         )
         .route("/api/common/channel/add", post(common_channel::channel_add))
+        .route("/api/common/channel/delete", delete(common_channel::channel_delete))
         .route(
             "/api/common/channel/civilcode/list",
             get(common_channel::civilcode_list),

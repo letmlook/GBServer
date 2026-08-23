@@ -90,29 +90,23 @@ function toneOf(level?: string): 'info' | 'warn' | 'error' | 'debug' {
 }
 
 function pushMockEvent() {
-  // 真实日志需 WebSocket 推送；此处用历史 + 占位模拟
-  const now = new Date().toISOString().replace('T', ' ').slice(0, 19)
-  const levels = ['INFO', 'INFO', 'INFO', 'DEBUG', 'WARN', 'INFO', 'ERROR']
-  const loggers = ['sip.Server', 'zlm.Hook', 'db.Pool', 'stream.Play', 'auth.Jwt', 'jt.Session']
-  const messages = [
-    'INVITE 200 OK channel=34020000001310000001 ssrc=0x12345',
-    'on_play http://10.21.4.118/play/live/stream1',
-    'pool acquire connection in 2ms',
-    'start play session, ssr=10.21.4.118',
-    'heartbeat timeout, mark offline',
-    'token refreshed, expires in 30min',
-    'database deadlock detected, retrying'
-  ]
-  const idx = Math.floor(Math.random() * messages.length)
-  const lv = levels[idx]
-  events.value.push({
-    time: now,
-    level: lv,
-    logger: loggers[idx % loggers.length],
-    message: messages[idx],
-    tone: toneOf(lv)
-  })
-  if (events.value.length > 500) events.value.shift()
+  // 真实日志需 WebSocket 推送；当前每 5s 从历史 API 取最近未显示的一条
+  // 生产环境需后端 /api/log/stream WebSocket 推送，这里用 polling 兜底
+  getLogList({ page: 1, count: 1 })
+    .then((res) => {
+      const latest = res.data?.list?.[0]
+      if (!latest) return
+      // 避免重复：与最后一条 time+level+message 相同则跳过
+      const last = events.value[events.value.length - 1]
+      const sameAsLast =
+        last && last.time === latest.time && last.level === latest.level && last.message === latest.message
+      if (sameAsLast) return
+      events.value.push({ ...latest, tone: toneOf(latest.level) })
+      if (events.value.length > 500) events.value.shift()
+    })
+    .catch(() => {
+      // 后端无新数据时静默失败；不影响 UI
+    })
 }
 
 function onClear() {
@@ -127,7 +121,7 @@ onMounted(async () => {
     nextTick(() => {
       if (scroller.value) scroller.value.scrollTop = scroller.value.scrollHeight
     })
-  }, 1500)
+  }, 5000)
 })
 
 onUnmounted(() => {

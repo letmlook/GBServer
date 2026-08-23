@@ -141,17 +141,34 @@ function onSelection(arr: CloudRecord[]) {
 }
 
 async function onPlay(row: CloudRecord) {
-  const res = await getCloudRecordPlayPath(row.id ?? 0)
-  const path = (res.data as any)?.path ?? ''
-  if (path) {
-    window.open(path, '_blank')
-  } else {
-    ElMessage.info('请通过 ZLMediaKit URL 直接播放')
+  try {
+    const res = await getCloudRecordPlayPath(row.id ?? 0)
+    const data = (res.data as any) ?? {}
+    const url: string = data.httpPath || data.playPath || data.filePath || ''
+    if (url) {
+      window.open(url, '_blank')
+    } else {
+      ElMessage.warning('该录像无可播放路径，请确认 ZLM 录像已生成')
+    }
+  } catch (e: any) {
+    ElMessage.error(e?.message ?? '获取播放路径失败')
   }
 }
 
 async function onDownload(row: CloudRecord) {
-  ElMessage.info(`请通过 /api/cloud/record/download/zip?ids=${row.id} 下载`)
+  try {
+    const res = await downloadCloudRecordZip([row.id ?? 0])
+    const data = (res.data as any) ?? {}
+    const url: string = data.url ?? data.downloadUrl ?? ''
+    if (url) {
+      window.open(url, '_blank')
+      ElMessage.success('已开始下载 ZIP')
+    } else {
+      ElMessage.warning('后端未返回 ZIP URL，请检查 ZLM 存储配置')
+    }
+  } catch (e: any) {
+    ElMessage.error(e?.message ?? 'ZIP 下载请求失败')
+  }
 }
 
 async function onDelete(row: CloudRecord) {

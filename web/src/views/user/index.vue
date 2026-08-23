@@ -24,7 +24,7 @@
         <el-table-column prop="createTime" label="创建时间" min-width="180">
           <template #default="{ row }"><span class="mono">{{ row.createTime ?? '-' }}</span></template>
         </el-table-column>
-        <el-table-column label="操作" width="240" fixed="right">
+        <el-table-column label="操作" width="280" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" @click="onChangePwd(row)">改密</el-button>
             <el-button link type="primary" @click="onResetPwd(row)">重置</el-button>
@@ -36,14 +36,34 @@
     </el-card>
 
     <user-add-dialog v-model="addVisible" :roles="roles" @saved="loadData" />
+    <el-dialog v-model="pwdVisible" title="修改密码" width="420px" @open="onPwdOpen">
+      <el-form ref="pwdFormRef" :model="pwdForm" :rules="pwdRules" label-width="100px">
+        <el-form-item label="用户名">
+          <span class="mono">{{ pwdTarget?.username ?? '-' }}</span>
+        </el-form-item>
+        <el-form-item label="原密码" prop="oldPassword">
+          <el-input v-model="pwdForm.oldPassword" type="password" show-password />
+        </el-form-item>
+        <el-form-item label="新密码" prop="password">
+          <el-input v-model="pwdForm.password" type="password" show-password />
+        </el-form-item>
+        <el-form-item label="确认新密码" prop="password2">
+          <el-input v-model="pwdForm.password2" type="password" show-password />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="pwdVisible = false">取消</el-button>
+        <el-button type="primary" :loading="pwdSaving" @click="onPwdSave">保存</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
 import { Plus } from '@element-plus/icons-vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
-import { getUserList, deleteUser, changePasswordForAdmin, changePushKey, getRoleAll } from '@/api/user'
+import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'element-plus'
+import { getUserList, deleteUser, changePassword, changePasswordForAdmin, changePushKey, getRoleAll } from '@/api/user'
 import UserAddDialog from './AddDialog.vue'
 
 const loading = ref(false)
@@ -51,6 +71,29 @@ const rows = ref<any[]>([])
 const roles = ref<{ id: number; name: string }[]>([])
 const addVisible = ref(false)
 const myUserId = ref<number>()
+
+const pwdVisible = ref(false)
+const pwdTarget = ref<any>(null)
+const pwdSaving = ref(false)
+const pwdFormRef = ref<FormInstance>()
+const pwdForm = reactive({ oldPassword: '', password: '', password2: '' })
+const pwdRules: FormRules = {
+  oldPassword: [{ required: true, message: '请输入原密码', trigger: 'blur' }],
+  password: [
+    { required: true, message: '请输入新密码', trigger: 'blur' },
+    { min: 6, message: '密码至少 6 位', trigger: 'blur' }
+  ],
+  password2: [
+    { required: true, message: '请再次输入新密码', trigger: 'blur' },
+    {
+      validator: (_rule, value, callback) => {
+        if (value !== pwdForm.password) callback(new Error('两次输入不一致'))
+        else callback()
+      },
+      trigger: 'blur'
+    }
+  ]
+}
 
 async function loadData() {
   loading.value = true
@@ -66,13 +109,38 @@ function onAdd() {
   addVisible.value = true
 }
 
-async function onChangePwd(_row: any) {
-  ElMessage.info('请通过修改密码对话框修改（前端占位）')
+function onPwdOpen() {
+  pwdForm.oldPassword = ''
+  pwdForm.password = ''
+  pwdForm.password2 = ''
+}
+
+async function onPwdSave() {
+  if (!pwdFormRef.value) return
+  await pwdFormRef.value.validate()
+  pwdSaving.value = true
+  try {
+    await changePassword({
+      oldPassword: pwdForm.oldPassword,
+      password: pwdForm.password
+    })
+    ElMessage.success('密码已修改，请重新登录')
+    pwdVisible.value = false
+  } catch (e: any) {
+    ElMessage.error(e?.message ?? '密码修改失败')
+  } finally {
+    pwdSaving.value = false
+  }
+}
+
+function onChangePwd(row: any) {
+  pwdTarget.value = row
+  pwdVisible.value = true
 }
 
 async function onResetPwd(row: any) {
-  const { value } = await ElMessageBox.prompt('新密码', `重置 ${row.username} 的密码`, {
-    inputValidator: (v) => (v ? true : '请输入新密码')
+  const { value } = await ElMessageBox.prompt('新密码（至少 6 位）', `重置 ${row.username} 的密码`, {
+    inputValidator: (v) => (v && v.length >= 6 ? true : '密码至少 6 位')
   })
   await changePasswordForAdmin({ userId: row.id, password: value })
   ElMessage.success('密码已重置')
@@ -80,7 +148,10 @@ async function onResetPwd(row: any) {
 
 async function onRegenKey(row: any) {
   await ElMessageBox.confirm(`确认重置用户 ${row.username} 的 PushKey？`, '确认', { type: 'warning' })
-  const newKey = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2)
+  // 生成 32 字节随机 hex key（与服务端 pushKey 长度对齐）
+  const buf = new Uint8Array(16)
+  crypto.getRandomValues(buf)
+  const newKey = Array.from(buf).map((b) => b.toString(16).padStart(2, '0')).join('')
   await changePushKey({ userId: row.id, pushKey: newKey })
   ElMessage.success(`新 PushKey: ${newKey}`)
   loadData()
