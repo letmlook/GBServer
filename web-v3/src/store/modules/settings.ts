@@ -18,8 +18,7 @@ export const useSettingsStore = defineStore('settings', {
   actions: {
     changeSetting(key: keyof SettingsState, value: boolean) {
       if (key in this.$state) {
-        // @ts-expect-error dynamic key
-        this[key] = value
+        ;(this as unknown as Record<string, unknown>)[key] = value
       }
     }
   }

@@ -23,8 +23,8 @@
         <span>SIP 网关 · 在线</span>
       </div>
       <div class="server-status-row">
-        <span class="gb-dot gb-dot--success" />
-        <span>媒体节点 ×14</span>
+        <span :class="['gb-dot', mediaCount > 0 ? 'gb-dot--success' : 'gb-dot--warning']" />
+        <span>媒体节点 ×{{ mediaCount }}</span>
       </div>
       <div class="server-status-row">
         <span class="gb-dot gb-dot--warning" />
@@ -35,24 +35,37 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter, type RouteRecordRaw } from 'vue-router'
 import Logo from './Logo.vue'
 import SvgIcon from '@/components/SvgIcon/index.vue'
 import { useAppStore } from '@/store/modules/app'
+import { getMediaServerList } from '@/api/mediaServer'
 
 const route = useRoute()
 const router = useRouter()
 const appStore = useAppStore()
+
+const mediaCount = ref(0)
+async function refreshSidebarStats() {
+  try {
+    const res = await getMediaServerList()
+    const list = (res.data as unknown[]) ?? []
+    mediaCount.value = list.length
+  } catch {
+    // 静默失败：侧栏 stats 不影响导航
+  }
+}
+onMounted(refreshSidebarStats)
 
 const isCollapse = computed(
   () => !appStore.sidebar.opened || appStore.device === 'mobile'
 )
 
 const ROOT_GROUPS: Array<{ title: string; paths: string[] }> = [
-  { title: '监控中心', paths: ['/dashboard'] },
-  { title: '资源管理', paths: [] },
-  { title: '运维中心', paths: [] }
+  { title: '监控中心', paths: ['/dashboard', '/live', '/playback', '/cloudRecord', '/map'] },
+  { title: '资源管理', paths: ['/device', '/channel', '/mediaServer', '/recordPlan', '/streamProxy', '/streamPush'] },
+  { title: '运维中心', paths: ['/platform', '/alarm', '/jtDevice', '/user', '/operations'] }
 ]
 
 interface NavItem {
@@ -61,8 +74,10 @@ interface NavItem {
   meta?: { title?: string; icon?: string }
 }
 
+const allRoutes = computed(() => router.getRoutes() as RouteRecordRaw[])
+
 const groups = computed(() => {
-  const all = flatten(router.options.routes as RouteRecordRaw[])
+  const all = flatten(allRoutes.value)
   return ROOT_GROUPS
     .map((g) => ({
       title: g.title,
@@ -75,7 +90,9 @@ function flatten(routes: RouteRecordRaw[], base = '/'): NavItem[] {
   const out: NavItem[] = []
   for (const r of routes) {
     if (r.meta?.hidden || !r.meta?.title) continue
-    const full = r.path?.startsWith('/') ? r.path : `${base.replace(/\/$/, '')}/${r.path ?? ''}`
+    // Vue Router 4 getRoutes() 返回的 path 已经 normalize 过（含 leading /）
+    const full = r.path ?? ''
+    if (!full) continue
     if (r.children && r.children.length) {
       out.push(...flatten(r.children, full))
     } else {
@@ -101,12 +118,14 @@ function isLive(item: NavItem): boolean {
   border-right: 1px solid var(--border-subtle);
   display: flex;
   flex-direction: column;
-  height: 100vh;
+  /* 不写 height: 100vh，让 flex 父级决定高度；
+     同时自身 overflow: hidden 限制 children 边界 */
+  height: 100%;
   overflow: hidden;
   width: 100%;
 }
 
-.app-nav { flex: 1; padding: 8px 6px; overflow-y: auto; }
+.app-nav { flex: 1 1 0; min-height: 0; padding: 8px 6px; overflow-y: auto; overflow-x: hidden; }
 
 .nav-group + .nav-group { margin-top: 14px; }
 

@@ -1,7 +1,8 @@
 <template>
   <router-view />
+  <back-to-top />
 </template>
 
 <script setup lang="ts">
-// 全局 router-view，根布局在子路由里
+import BackToTop from '@/components/BackToTop/index.vue'
 </script>

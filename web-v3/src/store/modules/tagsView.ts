@@ -1,12 +1,16 @@
 import { defineStore } from 'pinia'
-import type { RouteLocationNormalized } from 'vue-router'
 
-export interface TagView extends Partial<RouteLocationNormalized> {
+export interface TagView {
   path: string
   name?: string | symbol | null
   title: string
   affix?: boolean
   noCache?: boolean
+  fullPath?: string
+  query?: Record<string, unknown>
+  params?: Record<string, unknown>
+  hash?: string
+  meta?: Record<string, unknown>
 }
 
 interface TagsViewState {

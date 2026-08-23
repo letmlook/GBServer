@@ -1,5 +1,8 @@
-import md5 from 'js-md5'
 import { request } from '@/utils/request'
+import type { WvpResult } from '@/types/api'
+import * as md5ns from 'js-md5'
+const md5 = (md5ns as unknown as { default?: (s: string) => string; (s: string): string }).default
+  ?? (md5ns as unknown as (s: string) => string)
 
 export interface LoginPayload {
   username: string
@@ -12,20 +15,20 @@ export interface LoginResult {
   serverId: string
 }
 
-export function login(params: LoginPayload) {
+export function login(payload: LoginPayload) {
   return request<WvpResult<LoginResult>>({
-    url: '/api/user/login',
+    url: '/user/login',
     method: 'get',
     params: {
-      username: params.username.trim(),
-      password: md5(params.password)
+      username: payload.username.trim(),
+      password: md5(payload.password)
     }
   })
 }
 
 export function logout() {
   return request<WvpResult>({
-    url: '/api/user/logout',
+    url: '/user/logout',
     method: 'get'
   })
 }
@@ -33,53 +36,78 @@ export function logout() {
 export function getUserInfo() {
   return request<WvpResult>({
     method: 'post',
-    url: '/api/user/userInfo'
+    url: '/user/userInfo'
   })
 }
 
-export function changePushKey(params: { pushKey: string; userId: string | number }) {
+export interface User {
+  id?: number
+  username: string
+  password?: string
+  roleId?: number
+  roleName?: string
+  pushKey?: string
+  createTime?: string
+  updateTime?: string
+}
+
+export interface UserQueryParams {
+  page?: number
+  count?: number
+  query?: string
+}
+
+export function getUserList(params: UserQueryParams) {
+  return request<WvpResult<{ total: number; list: User[] }>>({
+    method: 'get',
+    url: '/user/users',
+    params
+  })
+}
+
+export function addUser(data: { username: string; password: string; roleId: number }) {
   return request<WvpResult>({
     method: 'post',
-    url: '/api/user/changePushKey',
-    params
+    url: '/user/add',
+    params: data
   })
 }
 
-export function queryList(params: { page: number; count: number }) {
-  return request<WvpResult>({
-    method: 'get',
-    url: '/api/user/users',
-    params
-  })
-}
-
-export function removeById(id: string | number) {
+export function deleteUser(id: number | string) {
   return request<WvpResult>({
     method: 'delete',
-    url: `/api/user/delete?id=${id}`
+    url: '/user/delete',
+    params: { id }
   })
 }
 
-export function add(params: { username: string; password: string; roleId: string | number }) {
+export function changePassword(data: { oldPassword: string; password: string }) {
   return request<WvpResult>({
     method: 'post',
-    url: '/api/user/add',
-    params
+    url: '/user/changePassword',
+    params: data
   })
 }
 
-export function changePassword(params: { oldPassword: string; password: string }) {
+export function changePasswordForAdmin(data: { userId: number | string; password: string }) {
   return request<WvpResult>({
     method: 'post',
-    url: '/api/user/changePassword',
-    params
+    url: '/user/changePasswordForAdmin',
+    params: data
   })
 }
 
-export function changePasswordForAdmin(params: { password: string; userId: string | number }) {
+export function changePushKey(data: { userId: number | string; pushKey: string }) {
   return request<WvpResult>({
     method: 'post',
-    url: '/api/user/changePasswordForAdmin',
-    params
+    url: '/user/changePushKey',
+    params: data
+  })
+}
+
+export function getRoleAll() {
+  return request<WvpResult<{ id: number; name: string }[]>>({
+    method: 'get',
+    url: '/role/all'
   })
 }

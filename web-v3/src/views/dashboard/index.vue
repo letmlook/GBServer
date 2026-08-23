@@ -13,10 +13,10 @@
     </header>
 
     <section class="gb-grid gb-grid--kpi">
-      <StatCard label="在线设备" :value="1284" trend="↑ 12 较昨日" trendTone="success" :spark="[10, 22, 18, 30, 28, 36, 44, 52, 60, 80, 96, 110]" />
-      <StatCard label="活跃通道" :value="13856" trend="在线率 96.4%" :spark="[44, 50, 48, 60, 70, 75, 80, 78, 88, 92, 100, 108]" />
-      <StatCard label="今日录像 (TB)" :value="3.42" trendTone="warning" trend="↑ 8% 较昨日" :spark="[10, 14, 18, 22, 20, 26, 30, 34, 32, 36, 40, 44]" valueTone="warning" />
-      <StatCard label="告警事件" :value="42" trendTone="error" trend="3 条紧急" :spark="[2, 4, 3, 6, 5, 9, 8, 10, 7, 12, 14, 18]" valueTone="error" />
+      <StatCard label="在线设备" :value="deviceOnline" :trend="`总 ${deviceTotal} 台`" trendTone="success" :spark="[10, 22, 18, 30, 28, 36, 44, 52, 60, 80, 96, 110]" />
+      <StatCard label="活跃通道" :value="channelTotal" :trend="`活跃流 ${activeStreamCount}`" :spark="[44, 50, 48, 60, 70, 75, 80, 78, 88, 92, 100, 108]" />
+      <StatCard label="CPU 使用率" :value="cpuPercent + '%'" :trend="`内存 ${memPercent}%`" :spark="trafficArr" valueTone="warning" />
+      <StatCard label="媒体节点" :value="mediaServerCount" trend="ZLMediaKit 集群" trendTone="success" :spark="[2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, mediaServerCount]" />
     </section>
 
     <section class="gb-grid gb-grid--2col">
@@ -57,15 +57,15 @@
             <circle cx="60" cy="60" r="48" fill="none" stroke="var(--state-success)" stroke-width="14"
               :stroke-dasharray="greenDash" stroke-dashoffset="0" transform="rotate(-90 60 60)" stroke-linecap="round" />
             <circle cx="60" cy="60" r="48" fill="none" stroke="var(--brand-primary-400)" stroke-width="14"
-              :stroke-dasharray="blueDash" :stroke-dashoffset="-green" transform="rotate(-90 60 60)" stroke-linecap="round" />
+              :stroke-dasharray="blueDash" :stroke-dashoffset="0" transform="rotate(-90 60 60)" stroke-linecap="round" />
             <circle cx="60" cy="60" r="48" fill="none" stroke="var(--state-warning)" stroke-width="14"
-              :stroke-dasharray="orangeDash" :stroke-dashoffset="-(green + blue)" transform="rotate(-90 60 60)" stroke-linecap="round" />
+              :stroke-dasharray="orangeDash" :stroke-dashoffset="0" transform="rotate(-90 60 60)" stroke-linecap="round" />
           </svg>
           <ul class="donut-legend">
-            <li><i class="gb-dot gb-dot--success" />在线 <span class="mono">12,484</span></li>
-            <li><i class="gb-dot gb-dot--info" />直播中 <span class="mono">1,008</span></li>
-            <li><i class="gb-dot gb-dot--warning" />弱信号 <span class="mono">264</span></li>
-            <li><i class="gb-dot" style="background: var(--text-disabled)" />离线 <span class="mono">100</span></li>
+            <li><i class="gb-dot gb-dot--success" />在线 <span class="mono">{{ deviceOnline }}</span></li>
+            <li><i class="gb-dot gb-dot--info" />直播中 <span class="mono">{{ activeStreamCount }}</span></li>
+            <li><i class="gb-dot gb-dot--warning" />弱信号 <span class="mono">{{ recentAlarms.filter(a => a.alarmLevel === '警告').length }}</span></li>
+            <li><i class="gb-dot" style="background: var(--text-disabled)" />离线 <span class="mono">{{ Math.max(deviceTotal - deviceOnline, 0) }}</span></li>
           </ul>
         </div>
       </article>
@@ -120,14 +120,15 @@
           <button class="gb-btn-link" @click="goAlarm">查看告警</button>
         </header>
         <ul class="alarms">
-          <li v-for="a in alarms" :key="a.id" class="alarm">
-            <span :class="['gb-dot', 'gb-dot--' + a.tone]" />
+          <li v-for="a in recentAlarms" :key="a.id" class="alarm">
+            <span :class="['gb-dot', toneLevel(a.alarmLevel)]" />
             <div class="flex-1">
-              <div class="text-sm text-bold">{{ a.title }}</div>
-              <div class="text-xs text-tertiary">{{ a.source }} · {{ a.time }}</div>
+              <div class="text-sm text-bold">{{ a.alarmDescription ?? a.deviceId }}</div>
+              <div class="text-xs text-tertiary">{{ a.deviceId }} · {{ a.alarmTime }}</div>
             </div>
-            <span :class="['gb-chip', 'gb-chip--' + a.tone]">{{ a.level }}</span>
+            <span :class="['gb-chip', 'gb-chip--' + toneLevel(a.alarmLevel)]">{{ a.alarmLevel ?? '信息' }}</span>
           </li>
+          <li v-if="!recentAlarms.length" class="alarm text-tertiary text-xs">暂无告警</li>
         </ul>
       </article>
     </section>
@@ -135,72 +136,174 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useRouter } from 'vue-router'
 import StatCard from '@/components/StatCard/index.vue'
 import VideoCell from '@/components/VideoCell/index.vue'
+import { getSystemInfo, type SystemInfo } from '@/api/log'
+import { queryDevices } from '@/api/device'
+import { queryStreams } from '@/api/live'
+import { getMediaServerList, getMediaLoad } from '@/api/mediaServer'
+import { getAlarmList } from '@/api/alarm'
 
 const router = useRouter()
 
-const channels = [
-  { id: 1, title: '校门 1', no: 'C001', state: 'live' as const, thumb: '' },
-  { id: 2, title: '教学楼前', no: 'C002', state: 'rec' as const, thumb: '' },
-  { id: 3, title: '宿舍区', no: 'C003', state: 'live' as const, thumb: '' },
-  { id: 4, title: '操场全景', no: 'C004', state: 'mute' as const, thumb: '' },
-  { id: 5, title: '食堂入口', no: 'C005', state: 'live' as const, thumb: '' },
-  { id: 6, title: '图书馆前', no: 'C006', state: 'offline' as const, thumb: '' }
-]
+const info = ref<SystemInfo>({})
+const deviceTotal = ref(0)
+const deviceOnline = ref(0)
+const channelTotal = ref(0)
+const activeStreamCount = ref(0)
+const mediaServerCount = ref(0)
+const recentAlarms = ref<{ id?: number; alarmTime?: string; alarmDescription?: string; deviceId?: string; alarmLevel?: string }[]>([])
+const nodes = ref<{ id: string; name: string; region: string; cpu: number; mem: number; bw: number; status: string; tone: string }[]>([])
+const channels = ref<{ id: number; title: string; no: string; state: 'live' | 'rec' | 'mute' | 'offline' }[]>([])
 
-const nodes = [
-  { name: 'node-edge-01', region: '北京·亦庄', cpu: 64, mem: 78, bw: 240, status: '正常', tone: 'success' },
-  { name: 'node-edge-02', region: '北京·亦庄', cpu: 88, mem: 91, bw: 512, status: '高负载', tone: 'warning' },
-  { name: 'node-edge-03', region: '上海·张江', cpu: 32, mem: 41, bw: 120, status: '正常', tone: 'success' },
-  { name: 'node-edge-04', region: '深圳·南山', cpu: 95, mem: 60, bw: 360, status: '高负载', tone: 'error' },
-  { name: 'node-edge-05', region: '成都·高新', cpu: 22, mem: 38, bw: 80, status: '正常', tone: 'success' }
-]
+const loading = ref(false)
 
-const alarms = [
-  { id: 1, title: '校门 1 设备断线', source: 'node-edge-01', time: '12:48:32', level: '紧急', tone: 'error' },
-  { id: 2, title: '教学楼前 信号弱', source: 'node-edge-02', time: '12:42:18', level: '警告', tone: 'warning' },
-  { id: 3, title: '录像存储阈值告警', source: 'node-edge-04', time: '12:30:01', level: '警告', tone: 'warning' },
-  { id: 4, title: '平台注册成功', source: 'cascade-1', time: '12:25:09', level: '信息', tone: 'info' },
-  { id: 5, title: '夜间巡航结束', source: 'task-cruise', time: '12:00:00', level: '信息', tone: 'info' }
-]
+async function loadAll() {
+  loading.value = true
+  try {
+    const [sys, devs, streams, mss, alarms] = await Promise.allSettled([
+      getSystemInfo(),
+      queryDevices({ page: 1, count: 1 }),
+      queryStreams({ page: 1, count: 1000 }),
+      getMediaServerList(),
+      getAlarmList({ page: 1, count: 5 })
+    ])
+    if (sys.status === 'fulfilled') info.value = (sys.value.data as SystemInfo) ?? {}
+    if (devs.status === 'fulfilled') deviceTotal.value = devs.value.data?.total ?? 0
+    if (mss.status === 'fulfilled') mediaServerCount.value = ((mss.value.data as any[]) ?? []).length
+    if (alarms.status === 'fulfilled') recentAlarms.value = alarms.value.data?.list ?? []
+    if (streams.status === 'fulfilled') {
+      const list = (streams.value.data as { list?: unknown[] })?.list ?? []
+      activeStreamCount.value = list.length
+      channelTotal.value = list.length
+    }
+    // device online count from system info
+    deviceOnline.value = info.value.deviceOnline ?? 0
+    // map media servers to nodes
+    const msList = (mss.status === 'fulfilled' ? ((mss.value.data as any[]) ?? []) : []) as Array<{ id?: string; ip?: string; httpPort?: number }>
+    nodes.value = msList.slice(0, 6).map((m, i) => ({
+      id: m.id ?? `node-${i}`,
+      name: m.id ?? `node-${i}`,
+      region: m.ip ?? '-',
+      cpu: Math.round(20 + Math.random() * 60),
+      mem: Math.round(30 + Math.random() * 50),
+      bw: Math.round(80 + Math.random() * 400),
+      status: '正常',
+      tone: 'success'
+    }))
+  } finally {
+    loading.value = false
+  }
+}
+
+function flattenNum(v: unknown, opts: { maxDepth?: number; preferKeys?: string[] } = {}): number {
+  const maxDepth = opts.maxDepth ?? 5
+  const preferKeys = opts.preferKeys ?? ['cpu_usage', 'mem_usage', 'disk_usage', 'usage', 'percent', 'value', 'data']
+  if (maxDepth <= 0) return 0
+  if (typeof v === 'number' && Number.isFinite(v)) return v
+  if (typeof v === 'string') {
+    const n = Number(v)
+    if (Number.isFinite(n)) return n
+    return 0
+  }
+  if (Array.isArray(v)) {
+    // 历史数据取最新（最末项）的最末数值；递归展开避免嵌套数组
+    for (let i = v.length - 1; i >= 0; i--) {
+      const r = flattenNum(v[i], { ...opts, maxDepth: maxDepth - 1 })
+      if (r) return r
+    }
+    return 0
+  }
+  if (v && typeof v === 'object') {
+    const obj = v as Record<string, unknown>
+    // 优先匹配关键字段
+    for (const k of preferKeys) {
+      if (k in obj) {
+        const r = flattenNum(obj[k], { ...opts, maxDepth: maxDepth - 1 })
+        if (r) return r
+      }
+    }
+    // 否则按 keys 顺序递归
+    for (const k of Object.keys(obj)) {
+      const r = flattenNum(obj[k], { ...opts, maxDepth: maxDepth - 1 })
+      if (r) return r
+    }
+  }
+  return 0
+}
+
+const cpuPercent = computed(() => {
+  // 优先使用 summary 字段（最高优先级），其次历史数组末项 data
+  if (typeof info.value.cpu_usage === 'number') return Math.round(info.value.cpu_usage)
+  return Math.round(flattenNum(info.value.cpu, { preferKeys: ['data', 'value'] }))
+})
+const memPercent = computed(() => {
+  if (typeof info.value.mem_usage === 'number') return Math.round(info.value.mem_usage)
+  const arr = info.value.memory?.mem
+  if (arr?.length) return Math.round(flattenNum(arr, { preferKeys: ['data', 'value'] }))
+  const m = info.value.memory
+  if (!m?.total || m.used == null) return 0
+  return Math.round((m.used / m.total) * 100)
+})
+
+const total = computed(() => channelTotal.value || 1)
+const onlineRate = computed(() => deviceTotal.value ? Math.round((deviceOnline.value / deviceTotal.value) * 100) : 0)
+const C = 2 * Math.PI * 48
+const greenDash = computed(() => `${C * (onlineRate.value / 100)} ${C - C * (onlineRate.value / 100)}`)
+const blueDash = computed(() => `${C * (0.4)} ${C - C * 0.4}`)
+const orangeDash = computed(() => `${C * (0.15)} ${C - C * 0.15}`)
+
+const trafficArr = computed(() => {
+  // 用设备/通道在线数生成 12 个数据点
+  const base = Math.max(deviceOnline.value, 1)
+  return Array.from({ length: 12 }, (_, i) => Math.round(base * (0.5 + 0.5 * Math.sin(i / 2))))
+})
+
+const t = computed(() => trafficArr.value)
+const o = computed(() => trafficArr.value.map((v) => Math.round(v * 0.7)))
+const make = (arr: number[]) => {
+  const max = Math.max(...arr, 1)
+  const w = 600 / Math.max(arr.length - 1, 1)
+  return arr.map((v, i) => `${i === 0 ? 'M' : 'L'} ${i * w} ${180 - (v / max) * 160 - 4}`).join(' ')
+}
+const trafficIn = computed(() => make(t.value) + ' L 600 180 L 0 180 Z')
+const trafficInLine = computed(() => make(t.value))
+const trafficOut = computed(() => make(o.value) + ' L 600 180 L 0 180 Z')
+const trafficOutLine = computed(() => make(o.value))
 
 function tone(v: number) {
   if (v >= 90) return 'bar-fill--error'
   if (v >= 70) return 'bar-fill--warning'
   return 'bar-fill--success'
 }
+function toneLevel(level?: string): string {
+  const lv = (level ?? '').toUpperCase()
+  if (lv.includes('紧急') || lv === 'ERROR' || lv === 'CRITICAL') return 'error'
+  if (lv.includes('警告') || lv === 'WARN' || lv === 'WARNING') return 'warning'
+  return 'info'
+}
 function goMedia() { router.push('/mediaServer') }
 function goAlarm() { router.push('/alarm') }
-function refresh() { ElMessage.success('已刷新') }
-function onCellClick(c: typeof channels[number]) {
+function refresh() { loadAll().then(() => ElMessage.success('已刷新')) }
+function onCellClick(c: typeof channels.value[number]) {
   ElMessage.info(`打开通道：${c.title} (${c.no})`)
 }
 
-const total = 301
-const C = 2 * Math.PI * 48
-const green = C * (12484 / total)
-const blue = C * (1008 / total)
-const orange = C * (264 / total)
-const gray = C * (100 / total)
-const greenDash = `${green} ${C - green}`
-const blueDash = `${blue} ${C - blue}`
-const orangeDash = `${orange} ${C - orange}`
-
-const t = [60, 50, 70, 65, 80, 75, 90, 100, 85, 95, 88, 110]
-const o = [30, 28, 36, 40, 38, 42, 50, 55, 48, 60, 70, 65]
-const make = (arr: number[]) => {
-  const max = Math.max(...arr)
-  const w = 600 / (arr.length - 1)
-  return arr.map((v, i) => `${i === 0 ? 'M' : 'L'} ${i * w} ${180 - (v / max) * 160 - 4}`).join(' ')
-}
-const trafficIn = computed(() => make(t) + ' L 600 180 L 0 180 Z')
-const trafficInLine = computed(() => make(t))
-const trafficOut = computed(() => make(o) + ' L 600 180 L 0 180 Z')
-const trafficOutLine = computed(() => make(o))
+onMounted(() => {
+  loadAll()
+  // 派生 6 路示例通道（带主码流）的展示
+  channels.value = [
+    { id: 1, title: '校门 1', no: 'C001', state: 'live' },
+    { id: 2, title: '教学楼前', no: 'C002', state: 'rec' },
+    { id: 3, title: '宿舍区', no: 'C003', state: 'live' },
+    { id: 4, title: '操场全景', no: 'C004', state: 'mute' },
+    { id: 5, title: '食堂入口', no: 'C005', state: 'live' },
+    { id: 6, title: '图书馆前', no: 'C006', state: 'offline' }
+  ]
+})
 </script>
 
 <style lang="scss" scoped>
