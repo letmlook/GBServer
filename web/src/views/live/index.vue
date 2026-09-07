@@ -307,51 +307,54 @@ async function attachVideo(url: string) {
   }
 
   // Chrome/Firefox：先尝试 hls.js（HLS），失败则 flv.js（FLV）
-  const Hls = await loadScript('hls.js', [
-    'https://cdn.jsdelivr.net/npm/hls.js@1.5.13/dist/hls.min.js',
-    'https://unpkg.com/hls.js@1.5.13/dist/hls.min.js',
-  ])
-  if (Hls && Hls.isSupported()) {
-    nativeVideo.style.display = 'block'
-    if (flvVideo) flvVideo.style.display = 'none'
-    const hls = new Hls({ liveSyncDuration: 1, enableWorker: true })
-    hls.loadSource(url)
-    hls.attachMedia(nativeVideo)
-    hls.on(Hls.Events.ERROR, (_e: any, data: any) => {
-      if (data?.fatal) {
-        playError.value = `HLS 错误: ${data?.details ?? data?.type ?? 'unknown'}（确认 ZLM HLS 已启用或使用 FLV）`
-        playerStatus.value = 'error'
-      }
-    })
-    hlsInstance = hls
-    return
+  try {
+    const Hls = (await import('hls.js')).default
+    if (Hls.isSupported()) {
+      nativeVideo.style.display = 'block'
+      if (flvVideo) flvVideo.style.display = 'none'
+      const hls = new Hls({ liveSyncDuration: 1, enableWorker: true })
+      hls.loadSource(url)
+      hls.attachMedia(nativeVideo)
+      hls.on(Hls.Events.ERROR, (_e: any, data: any) => {
+        if (data?.fatal) {
+          playError.value = `HLS 错误: ${data?.details ?? data?.type ?? 'unknown'}（确认 ZLM HLS 已启用或使用 FLV）`
+          playerStatus.value = 'error'
+        }
+      })
+      hlsInstance = hls
+      return
+    }
+  } catch (e: any) {
+    // hls.js 加载或初始化失败，回退到 flv.js
+    playError.value = `hls.js 不可用: ${e?.message ?? e}`
   }
 
   // HLS 不支持或 hls.js 加载失败，尝试 flv.js
-  const flvjs = await loadScript('flv.js', [
-    'https://cdn.jsdelivr.net/npm/flv.js@1.6.2/dist/flv.min.js',
-    'https://unpkg.com/flv.js@1.6.2/dist/flv.min.js',
-  ])
-  if (flvjs && flvjs.isSupported() && flvVideo) {
-    nativeVideo.style.display = 'none'
-    flvVideo.style.display = 'block'
-    const player = flvjs.createPlayer({
-      type: 'flv',
-      url,
-      isLive: true,
-    })
-    player.attachMediaElement(flvVideo)
-    try { player.load() } catch (e) { /* ignore */ }
-    player.play().catch((e: any) => {
-      playError.value = `FLV 播放失败: ${e?.message ?? e}`
-      playerStatus.value = 'error'
-    })
-    player.on(flvjs.Events.ERROR, (errType: string, errDetail: string) => {
-      playError.value = `FLV 错误: ${errType} / ${errDetail}`
-      playerStatus.value = 'error'
-    })
-    flvPlayer = player
-    return
+  try {
+    const flvjs = (await import('flv.js')).default
+    if (flvjs.isSupported() && flvVideo) {
+      nativeVideo.style.display = 'none'
+      flvVideo.style.display = 'block'
+      const player = flvjs.createPlayer({
+        type: 'flv',
+        url,
+        isLive: true,
+      })
+      player.attachMediaElement(flvVideo)
+      try { player.load() } catch (e) { /* ignore */ }
+      Promise.resolve(player.play()).catch((e: any) => {
+        playError.value = `FLV 播放失败: ${e?.message ?? e}`
+        playerStatus.value = 'error'
+      })
+      player.on(flvjs.Events.ERROR, (errType: string, errDetail: string) => {
+        playError.value = `FLV 错误: ${errType} / ${errDetail}`
+        playerStatus.value = 'error'
+      })
+      flvPlayer = player
+      return
+    }
+  } catch (e: any) {
+    playError.value = `flv.js 不可用: ${e?.message ?? e}`
   }
 
   // 最后尝试：直接用原生 <video> src（可能能播 RTMP 之外的格式）
@@ -359,24 +362,6 @@ async function attachVideo(url: string) {
   if (flvVideo) flvVideo.style.display = 'none'
   nativeVideo.src = url
   playError.value = '浏览器不支持该视频格式；建议使用 Chrome / Safari / Edge 访问'
-}
-
-function loadScript(globalName: string, cdnUrls: string[]): Promise<any> {
-  return new Promise((resolve) => {
-    const w = window as any
-    if (w[globalName]) return resolve(w[globalName])
-    let idx = 0
-    const tryLoad = () => {
-      if (idx >= cdnUrls.length) return resolve(null)
-      const s = document.createElement('script')
-      s.src = cdnUrls[idx++]
-      s.async = true
-      s.onload = () => resolve(w[globalName] ?? null)
-      s.onerror = () => tryLoad()
-      document.head.appendChild(s)
-    }
-    tryLoad()
-  })
 }
 
 function onVideoLoaded() {
