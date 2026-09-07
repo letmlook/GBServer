@@ -1,0 +1,20 @@
+{
+  "id": 1,
+  "enable": true,
+  "name": "MockCascade-1",
+  "serverGBId": "34020000002000000099",
+  "serverIp": "127.0.0.1",
+  "serverPort": 5062,
+  "deviceGBId": "34020000001320000001",
+  "deviceIp": "127.0.0.1",
+  "devicePort": 5060,
+  "username": "admin",
+  "password": "admin123",
+  "realm": "3402000000",
+  "transport": "UDP",
+  "registerInterval": 3600,
+  "keepaliveInterval": 60,
+  "status": true,
+  "createTime": "2026-08-23 20:00:00",
+  "updateTime": "2026-08-23 20:00:00"
+}

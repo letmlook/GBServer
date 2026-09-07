@@ -1,0 +1,21 @@
+{
+  "id": "550e8400-e29b-41d4-a716-446655440002",
+  "device_id": "34020000001320000002",
+  "name": "MockCamera-02",
+  "manufacturer": "MockVendor",
+  "model": "MOCK-IPC-200",
+  "firmware": "1.0.0-mock",
+  "transport": "UDP",
+  "stream_mode": "TCP-ACTIVE",
+  "on_line": false,
+  "register_time": "2026-08-22 10:00:00",
+  "keepalive_time": "2026-08-22 10:25:00",
+  "ip": "127.0.0.1",
+  "port": 15061,
+  "expires": 3600,
+  "media_server_id": "zlmediakit-mock-1",
+  "password": "admin123",
+  "channel_count": 4,
+  "create_time": "2026-08-22 10:00:00",
+  "update_time": "2026-08-22 10:25:00"
+}

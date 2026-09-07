@@ -1,0 +1,116 @@
+# GBServer 模拟测试编排（mock 进程 + 可选 Redis）
+#
+# 与 docker-compose.yml（生产依赖：PG + Redis + 真实 ZLM）并立，
+# 本文件只拉起轻量级的 mock 进程容器 + Redis（如果后端需要）。
+#
+# 用法：
+#   docker compose -f mock/docker-compose.mock.yml up -d
+#   docker compose -f mock/docker-compose.mock.yml down
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: gbserver-mock-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  # SIP 设备 mock（容器化）
+  sip-device:
+    build:
+      context: ./tools/sip-device
+      dockerfile_inline: |
+        FROM python:3.11-alpine
+        COPY sip_device_mock.py /app/
+        WORKDIR /app
+        CMD ["python3", "sip_device_mock.py", \
+             "--server", "host.docker.internal:5060", \
+             "--auto-register", "--auto-keepalive", "30"]
+    container_name: gbserver-mock-sip
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "15060:15060/udp"
+    restart: unless-stopped
+
+  # JT1078 终端 mock
+  jt1078-terminal:
+    build:
+      context: ./tools/jt1078-terminal
+      dockerfile_inline: |
+        FROM python:3.11-alpine
+        COPY jt1078_terminal_mock.py /app/
+        WORKDIR /app
+        CMD ["python3", "jt1078_terminal_mock.py", \
+             "--server", "host.docker.internal:60000", \
+             "--phone-decimal", "13912345678", \
+             "--plate", "京A12345"]
+    container_name: gbserver-mock-jt1078
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "16000:16000/udp"
+    restart: unless-stopped
+
+  # ZLM mock
+  zlm:
+    build:
+      context: ./tools/zlm
+      dockerfile_inline: |
+        FROM python:3.11-alpine
+        COPY zlm_mock.py /app/
+        WORKDIR /app
+        EXPOSE 8080
+        CMD ["python3", "zlm_mock.py", "--port", "8080", \
+             "--secret", "demo", \
+             "--hook-url", "http://host.docker.internal:18080/api/zlm/hook"]
+    container_name: gbserver-mock-zlm
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+
+  # Webhook 接收
+  webhook-receiver:
+    build:
+      context: ./tools/webhook-receiver
+      dockerfile_inline: |
+        FROM python:3.11-alpine
+        COPY webhook_receiver.py /app/
+        WORKDIR /app
+        EXPOSE 9090
+        CMD ["python3", "webhook_receiver.py", "--port", "9090"]
+    container_name: gbserver-mock-webhook
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "9090:9090"
+    restart: unless-stopped
+
+  # 级联平台 mock
+  cascade-platform:
+    build:
+      context: ./tools/cascade-platform
+      dockerfile_inline: |
+        FROM python:3.11-alpine
+        COPY cascade_mock.py /app/
+        WORKDIR /app
+        CMD ["python3", "cascade_mock.py", "--port", "5062", \
+             "--server-id", "34020000002000000099"]
+    container_name: gbserver-mock-cascade
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "5062:5062/udp"
+    restart: unless-stopped
+
+networks:
+  default:
+    name: gbserver-mock-net

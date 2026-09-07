@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+<CmdType>DeviceInfo</CmdType>
+<SN>1</SN>
+<DeviceID>34020000001320000001</DeviceID>
+<DeviceName>MockCamera-01</DeviceName>
+<Manufacturer>MockVendor</Manufacturer>
+<Model>MOCK-IPC-100</Model>
+<FirmwareVersion>1.0.0-mock</FirmwareVersion>
+<Channel>4</Channel>
+</Response>

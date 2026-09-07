@@ -1,0 +1,35 @@
+{
+  "_comment": "GBServer Redis 种子数据 - 用于多实例 / StateStore 测试",
+  "_usage": "通过 mock/scripts/seed-redis.sh 灌入；key 前缀与 GBServer 代码约定一致",
+
+  "state_store": {
+    "_comment": "StateStore 键值（GBServer src/state_store.rs 中的命名空间）",
+    "gbserver:001:media_load": "3",
+    "gbserver:001:active_streams": "[\"rtp/34020000001320000001\", \"rtp/34020000001320000003\"]",
+    "gbserver:001:heartbeat": "{\"ts\": 1692816000, \"addr\": \"http://127.0.0.1:18080\"}"
+  },
+
+  "cache": {
+    "_comment": "HTTP API 缓存（短 TTL）",
+    "cache:api:device:query:devices:page1": "{\"total\":1,\"list\":[]}",
+    "cache:api:server:media_server:list": "[{\"id\":\"zlmediakit-1\",\"ip\":\"127.0.0.1\",\"httpPort\":8080}]"
+  },
+
+  "rate_limit": {
+    "_comment": "限流计数器（IP + endpoint + window）",
+    "ratelimit:127.0.0.1:/api/user/login:60s": "3",
+    "ratelimit:127.0.0.1:/api/device/query/devices:60s": "47"
+  },
+
+  "session": {
+    "_comment": "用户会话（JWT 黑名单等）",
+    "session:user:admin:last_active": "1692816000",
+    "session:user:viewer:last_active": "1692815000"
+  },
+
+  "rpc": {
+    "_comment": "跨节点 RPC 队列 / 心跳",
+    "rpc:node-1:heartbeat": "{\"role\":\"primary\",\"ts\":1692816000,\"load\":0.3}",
+    "rpc:queue:cross_node_invoke": "[]"
+  }
+}

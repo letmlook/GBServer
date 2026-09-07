@@ -1,0 +1,10 @@
+{
+  "code": 0,
+  "msg": "成功",
+  "data": {
+    "id": "550e8400-e29b-41d4-a716-446655440002",
+    "username": "admin",
+    "role": "admin",
+    "pushKey": "abcd1234efgh5678ijkl9012mnop3456"
+  }
+}

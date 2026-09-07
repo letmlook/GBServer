@@ -1,0 +1,9 @@
+{
+  "hook_name": "on_server_started",
+  "port": 554,
+  "hook_port": 0,
+  "rtsp_port": 554,
+  "rtmp_port": 1935,
+  "http_port": 8080,
+  "https_port": 8443
+}

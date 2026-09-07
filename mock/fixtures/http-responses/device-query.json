@@ -1,0 +1,43 @@
+{
+  "code": 0,
+  "msg": "成功",
+  "data": {
+    "total": 2,
+    "list": [
+      {
+        "id": 1,
+        "deviceId": "34020000001320000001",
+        "name": "MockCamera-01",
+        "manufacturer": "MockVendor",
+        "model": "MOCK-IPC-100",
+        "firmware": "1.0.0-mock",
+        "transport": "UDP",
+        "streamMode": "TCP-ACTIVE",
+        "onLine": true,
+        "ip": "127.0.0.1",
+        "port": 15060,
+        "registerTime": "2026-08-23 20:00:00",
+        "keepaliveTime": "2026-08-23 20:30:00",
+        "channelCount": 4,
+        "mediaServerId": "zlmediakit-mock-1"
+      },
+      {
+        "id": 2,
+        "deviceId": "34020000001320000002",
+        "name": "MockCamera-02",
+        "manufacturer": "MockVendor",
+        "model": "MOCK-IPC-100",
+        "firmware": "1.0.0-mock",
+        "transport": "UDP",
+        "streamMode": "TCP-ACTIVE",
+        "onLine": true,
+        "ip": "127.0.0.1",
+        "port": 15061,
+        "registerTime": "2026-08-23 20:00:00",
+        "keepaliveTime": "2026-08-23 20:30:00",
+        "channelCount": 4,
+        "mediaServerId": "zlmediakit-mock-1"
+      }
+    ]
+  }
+}

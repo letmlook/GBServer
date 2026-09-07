@@ -1,0 +1,20 @@
+{
+  "code": 0,
+  "msg": "成功",
+  "data": [
+    {
+      "id": "zlmediakit-mock-1",
+      "ip": "127.0.0.1",
+      "httpPort": 8080,
+      "rtmpPort": 1935,
+      "rtspPort": 554,
+      "secret": "demo",
+      "enabled": true,
+      "hookEnabled": true,
+      "hookUrl": "http://127.0.0.1:18080/api/zlm/hook",
+      "status": "online",
+      "streamCount": 0,
+      "loadScore": 0
+    }
+  ]
+}

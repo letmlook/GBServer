@@ -1,0 +1,10 @@
+{
+  "hook_name": "on_publish",
+  "mediaServerId": "zlmediakit-mock-1",
+  "schema": "rtsp",
+  "app": "rtp",
+  "stream": "34020000001320000001",
+  "ip": "127.0.0.1",
+  "port": 10000,
+  "vhost": "__defaultVhost"
+}

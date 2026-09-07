@@ -1,0 +1,14 @@
+{
+  "code": 0,
+  "msg": "success",
+  "data": {
+    "api.secret": "demo",
+    "protocol.enable_rtsp": 1,
+    "protocol.enable_rtmp": 1,
+    "protocol.enable_hls": 1,
+    "protocol.enable_http": 1,
+    "protocol.enable_ws": 1,
+    "protocol.enable_rtp": 1,
+    "general.mediaServerId": "zlmediakit-mock-1"
+  }
+}

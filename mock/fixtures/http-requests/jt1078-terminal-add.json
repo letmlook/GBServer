@@ -1,0 +1,14 @@
+{
+  "id": 1,
+  "terminalPhone": "13912345678",
+  "manufacturer": "MOCK",
+  "model": "MOCK-V100",
+  "plateColor": 2,
+  "plate": "京A12345",
+  "channelCount": 4,
+  "protocol": "JT1078",
+  "transport": "UDP",
+  "ip": "127.0.0.1",
+  "port": 16000,
+  "status": true
+}
