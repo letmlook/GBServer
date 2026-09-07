@@ -60,7 +60,7 @@ GBServer 是面向 **GB/T 28181-2016** 国标协议的流媒体接入与级联�
 | HTTP 客户端 | reqwest（rustls-tls） | 0.11 |
 | 缓存 | redis | 0.25 |
 | SIP/GB28181 | quick-xml + 自研 SIP 协议栈 | 0.31 |
-| 前端 | Vue 2 + Element UI + Vue CLI 4 | 2.6 / 2.15 / 4.4 |
+| 前端 | Vue 3 + Element Plus + Vite + TypeScript | 3.5 / 2.8 / 5.4 / 5.6 |
 
 ---
 
