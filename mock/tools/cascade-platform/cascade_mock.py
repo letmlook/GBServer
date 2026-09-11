@@ -20,6 +20,7 @@ import asyncio
 import hashlib
 import json
 import re
+import threading
 import logging
 import os
 import signal
@@ -111,6 +112,13 @@ class CascadePlatform:
         msg = data.decode(errors="replace")
         first_line = msg.splitlines()[0] if msg else ""
         log.info("RX <- %s:%d: %s", addr[0], addr[1], first_line[:120])
+        if first_line.startswith(f"{SIP_VERSION} "):
+            # 收到的响应（我们发 INVITE 后下级的 200 OK / 4xx / 5xx）
+            self.report["last_response_status"] = first_line
+            parts = msg.split("\r\n\r\n", 1)
+            if first_line.startswith(f"{SIP_VERSION} 200") and len(parts) > 1:
+                self.report["last_answer_sdp"] = parts[1]
+            return
         if first_line.startswith("REGISTER "):
             asyncio.create_task(self._on_register(msg, addr))
         elif first_line.startswith("MESSAGE "):
@@ -179,6 +187,54 @@ class CascadePlatform:
         if self.transport:
             self.transport.sendto(payload, addr)
             log.info("TX -> %s:%d: %s", addr[0], addr[1], payload.decode().splitlines()[0][:120])
+
+    # ----- 主动发起 INVITE（模拟上级平台点播本级） -----
+
+    def send_invite(
+        self,
+        target_addr: tuple,
+        channel_id: str,
+        recv_ip: str,
+        recv_port: int,
+        ssrc: str,
+        our_id: Optional[str] = None,
+    ) -> str:
+        """向上级（GBServer）发起 INVITE，SDP 里给出**本平台的收流地址**。
+
+        真实上级平台点播本级就是这个动作：`c=`/`m=` 指向上级自己的收流端口，
+        并要求下级把流推过来。此前 mock 只会应答 INVITE，无法验证这条链路。
+        """
+        call_id = f"{uuid.uuid4().hex}@cascade-pull"
+        branch = make_branch()
+        from_tag = uuid.uuid4().hex[:8]
+        local_id = our_id or self.server_id
+        body = (
+            "v=0\r\n"
+            f"o={local_id} 0 0 IN IP4 {recv_ip}\r\n"
+            "s=Play\r\n"
+            f"c=IN IP4 {recv_ip}\r\n"
+            "t=0 0\r\n"
+            f"m=video {recv_port} RTP/AVP 96\r\n"
+            "a=recvonly\r\n"
+            "a=rtpmap:96 PS/90000\r\n"
+            f"y={ssrc}\r\n"
+        )
+        subject = f"{channel_id}:{ssrc},{local_id}:0"
+        msg = (
+            f"INVITE sip:{channel_id}@{target_addr[0]}:{target_addr[1]} SIP/2.0\r\n"
+            f"Via: SIP/2.0/UDP {recv_ip}:{self.port};rport;branch={branch}\r\n"
+            f"From: <sip:{local_id}@{self.realm}>;tag={from_tag}\r\n"
+            f"To: <sip:{channel_id}@{target_addr[0]}:{target_addr[1]}>\r\n"
+            f"Call-ID: {call_id}\r\n"
+            "CSeq: 1 INVITE\r\n"
+            f"Contact: <sip:{local_id}@{recv_ip}:{self.port}>\r\n"
+            f"Subject: {subject}\r\n"
+            "Content-Type: application/sdp\r\n"
+            f"Content-Length: {len(body.encode())}\r\n\r\n{body}"
+        )
+        self.report["invites"] += 1
+        self._send(msg.encode(), target_addr)
+        return call_id
 
     async def _on_register(self, msg: str, addr: tuple):
         # 解析 From 中的设备 ID 与 Expires
@@ -409,6 +465,10 @@ def main():
     )
     parser.add_argument("--password", default="admin123", help="下级平台口令（Digest 校验用）")
     parser.add_argument(
+        "--control-port", type=int, default=0,
+        help="HTTP 控制口（0=关闭）。/trigger/invite 让 mock 主动发 INVITE 模拟上级点播",
+    )
+    parser.add_argument(
         "--report", default=None,
         help="把注册/消息记账写到该 JSON 文件（供验证脚本断言）",
     )
@@ -436,7 +496,48 @@ def main():
 
     platform._send = _send_with_report  # type: ignore[assignment]
 
+    def start_control_server(control_port: int):
+        """极简 HTTP 控制口：`/trigger/invite?...` 让 mock 主动发 INVITE。"""
+        import http.server
+        import urllib.parse
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, fmt, *args):  # noqa: A003
+                log.debug("control: " + fmt, *args)
+
+            def do_GET(self):  # noqa: N802
+                parsed = urllib.parse.urlparse(self.path)
+                params = urllib.parse.parse_qs(parsed.query)
+                if parsed.path == "/trigger/invite":
+                    channel = params.get("channel", [""])[0]
+                    target = params.get("target", ["127.0.0.1:5060"])[0]
+                    host, _, port = target.rpartition(":")
+                    recv_ip = params.get("recv_ip", ["127.0.0.1"])[0]
+                    recv_port = int(params.get("recv_port", ["20000"])[0])
+                    ssrc = params.get("ssrc", ["0200000001"])[0]
+                    call_id = platform.send_invite(
+                        (host, int(port)), channel, recv_ip, recv_port, ssrc
+                    )
+                    body = json.dumps({"code": 0, "call_id": call_id}).encode()
+                elif parsed.path == "/report":
+                    body = json.dumps(platform.report, ensure_ascii=False).encode()
+                else:
+                    self.send_response(404)
+                    self.end_headers()
+                    return
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        server = http.server.ThreadingHTTPServer(("0.0.0.0", control_port), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        log.info("级联 mock 控制口: http://127.0.0.1:%d/trigger/invite?channel=...", control_port)
+
     async def run():
+        if args.control_port:
+            start_control_server(args.control_port)
         await platform.start()
         stop = asyncio.Event()
         loop = asyncio.get_running_loop()

@@ -26,6 +26,12 @@ pub struct SendRtpSession {
     pub upstream_port: u16,
     /// 上级 SSRC
     pub upstream_ssrc: String,
+    /// 被推送的 **ZLM 流标识**（`{device}_{channel}`）。
+    ///
+    /// 关闭推送时必须用 stream（或 ssrc）而不是别的字段：此前
+    /// `stop_send_rtp` 被传的是 **ssrc** 而参数名是 `stream`，
+    /// ZLM 找不到名为该 ssrc 的流 —— 推流**从未被真正停止**。
+    pub zlm_stream_id: Option<String>,
     /// 活跃状态
     pub active: bool,
     /// 创建时间
@@ -48,6 +54,7 @@ impl SendRtpSession {
             upstream_host,
             upstream_port,
             upstream_ssrc,
+            zlm_stream_id: None,
             active: true,
             created_at: Utc::now(),
         }
@@ -89,6 +96,13 @@ pub struct SendRtpManager {
     sessions: Arc<DashMap<String, SendRtpSession>>,
     /// E1: 可选的 StateStore（用于跨节点共享）
     state_store: Option<Arc<crate::state_store::StateStore>>,
+}
+
+impl SendRtpSession {
+    /// 记录被推送的 ZLM 流标识（startSendRtp 成功后回填）。
+    pub fn set_zlm_stream(&mut self, stream_id: &str) {
+        self.zlm_stream_id = Some(stream_id.to_string());
+    }
 }
 
 impl SendRtpManager {
@@ -188,6 +202,18 @@ impl SendRtpManager {
             .find(|entry| entry.value().upstream_ssrc == ssrc)
             .map(|entry| entry.key().clone());
         matched_key.and_then(|k| self.close(&k))
+    }
+
+    /// 回填某通道下所有会话的 ZLM 流标识（startSendRtp 成功后调用）。
+    pub fn set_stream_by_channel(&self, channel_id: &str, stream_id: &str) -> usize {
+        let mut n = 0;
+        for mut entry in self.sessions.iter_mut() {
+            if entry.value().channel_id == channel_id {
+                entry.value_mut().set_zlm_stream(stream_id);
+                n += 1;
+            }
+        }
+        n
     }
 
     /// 按通道关闭所有会话

@@ -663,18 +663,42 @@ impl ZlmClient {
     }
 
     /// B3: 停止 ZLM 向某个上级平台的 SendRtp 推送 (stopSendRtp)
+    /// 停止一路 SendRtp 推流。
+    ///
+    /// ZLM 的 `stopSendRtp` 允许用 `stream` **或** `ssrc` 选中会话；
+    /// 两者都给最稳妥。此前调用方把 **ssrc** 传进了 `stream` 参数，
+    /// ZLM 找不到名为该 ssrc 的流 ⇒ 推流从未真正停止（上游会一直收到 RTP）。
     pub async fn stop_send_rtp(
         &self,
         vhost: &str,
         app: &str,
         stream: &str,
     ) -> Result<()> {
-        let params = vec![
+        self.stop_send_rtp_ex(vhost, app, Some(stream), None).await
+    }
+
+    /// 同上，但可显式给出 `ssrc`（两者任一即可定位会话）。
+    pub async fn stop_send_rtp_ex(
+        &self,
+        vhost: &str,
+        app: &str,
+        stream: Option<&str>,
+        ssrc: Option<&str>,
+    ) -> Result<()> {
+        let mut params = vec![
             ("secret", self.secret.clone()),
             ("vhost", vhost.to_string()),
             ("app", app.to_string()),
-            ("stream", stream.to_string()),
         ];
+        if let Some(s) = stream.filter(|s| !s.is_empty()) {
+            params.push(("stream", s.to_string()));
+        }
+        if let Some(s) = ssrc.filter(|s| !s.is_empty()) {
+            params.push(("ssrc", s.to_string()));
+        }
+        if stream.map(|s| s.is_empty()).unwrap_or(true) && ssrc.is_none() {
+            return Err(anyhow!("stopSendRtp 需要 stream 或 ssrc 之一"));
+        }
 
         #[derive(Deserialize)]
         #[allow(dead_code)]

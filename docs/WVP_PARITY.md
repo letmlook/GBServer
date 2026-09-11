@@ -12,7 +12,7 @@
 | 总代码量（src/） | 69,619 行 Rust | `find src -name '*.rs' \| xargs wc -l` |
 | 已注册 HTTP 路由 | 383 条唯一 `/api/...` 路径 | `grep -oE '"/api/[^"]*"' src/router.rs \| sort -u \| wc -l` |
 | Handler 模块 | 29 个（含 `stub.rs` / `device_stub.rs` 两个兼容 shim） | `grep -c 'pub mod' src/handlers/mod.rs` |
-| 后端测试 | **543 通过** / 0 失败（第十六轮后回填） | `cargo test --no-fail-fast` |
+| 后端测试 | **545 通过** / 0 失败（第十八轮后回填） | `cargo test --no-fail-fast` |
 | 编译状态 | `cargo check` 0 error / **0 warning**；clippy 262；**deprecated 0** | `cargo check` / `cargo clippy --all-targets` |
 | 数据库 feature | SQLite（默认）/ PostgreSQL / MySQL **三者均编译通过** | CI `feature-matrix` job |
 | CI | ⏸️ 工作流已就绪但**按需暂停自动触发**（见 `.github/workflows/ci.yml`） | — |
@@ -793,6 +793,88 @@ cargo test                      543 passed / 0 failed
 cargo check --all-targets        warnings 0
 ```
 
+### 上级平台点播本级（级联拉流）接线 + 对外通告 IP + stopSendRtp（2026-09-12 第十八轮）
+
+第十七轮定位的"级联拉流未接线"本轮完成实现与端到端验证，同时修掉两个相关缺陷。
+
+#### 1. 级联拉流：从"只有测试调用"到完整链路
+
+此前 `SipServer::register_cascade_invite()`（解析上级 SDP → 预登记 SendRtp 会话）
+**只有测试调用、运行时没有任何调用点**，也没有"判定来电方是已注册上级平台"的分支
+—— 上级 INVITE 过来只会被当成"设备呼入"，连 200 OK 的 SDP 都不对。
+
+现在 `handle_invite` 里新增独立分支：
+
+| 步骤 | 实现 |
+|------|------|
+| ① 判定上级身份 | `db_platform::get_by_server_gb_id(pool, from_device)` 命中即认为是上级平台（与设备呼入彻底分流，不污染设备会话表） |
+| ② 取本级通道 | 优先 `Subject` 第 1 段（`<通道>:<ssrc>,<上级>:0`），回落 Request-URI；新增 `db_device::get_channel_by_channel_id()` 反查通道 → 所属设备 |
+| ③ 分配发送端口 | 为本次级联开一个专用 RTP 端口（`cascade_{platform}_{channel}`），**应答 SDP 的 `m=` 与 `startSendRtp` 的 `src_port` 用同一个**（否则上级看到的源端口与 SDP 通告不一致，会被丢弃） |
+| ④ 应答 | 100 → 180 → 200 OK，SDP 用本级对外地址与上一步端口 |
+| ⑤ 预登记 SendRtp 会话 | `SendRtpManager.handle_upstream_invite()`（`cascade_{platform}_{channel}`） |
+| ⑥ 拉起设备流并推流 | 静态方法拿不到 `&self`，因此**入队** `CascadePullRequest`；`lib.rs` 里以 `Arc<SipServer>` 起的后台任务（500ms 轮询）调 `start_live_stream()` 拉起设备流，成功后再 `startSendRtp()` 推给上级（`use_ps=true`：国标级联要 PS 封装） |
+
+**实测**（真实服务 + ZLM 模拟器 + 级联模拟器主动发 INVITE）：
+
+```
+上游 INVITE(Subject=34020000001320000001:0200000001,...)
+→ 200 OK，应答 SDP: o=- 0 0 IN IP4 192.168.3.149 / c=IN IP4 192.168.3.149 / m=video 30000 / y=0200000001
+→ 级联点播：platform=34020000002000000099 通道=34020000001320000001 设备=34020000001320000001 → 上级 127.0.0.1:20000 ssrc=0200000001 本端发送端口=30000
+→ 设备侧收到点播 INVITE（m=video 30001，按需拉起）
+→ startSendRtp stream=34020000001320000001_34020000001320000001 -> rtp://127.0.0.1:20000 ssrc=0200000001 src_port=30000
+（上游 BYE）→ 级联 BYE（按通道兜底）：通道 … 关闭了 1 个 SendRtp 会话
+              → ZLM stopSendRtp existed=True
+```
+
+BYE 兜底是必要的：上级 BYE 用的是**它自己的对话 Call-ID**，与本地登记的
+`cascade_{platform}_{channel}` 不一致，只按 call_id 查会漏掉 —— "上级已挂断、
+平台还在推流"。现在按 Request-URI 的通道兜底关闭。
+
+#### 2. `stopSendRtp` 一直在选错会话（推流从未真正停止）
+
+`ZlmClient::stop_send_rtp(vhost, app, **stream**)` 的两个调用点传的却是 **ssrc**：
+ZLM 去找名为该 ssrc 的流，找不到就返回错误 —— 于是"停止级联推流"从未生效
+（实测 mock 侧 `existed=False`，上游会一直收到 RTP）。
+
+现新增 `stop_send_rtp_ex(vhost, app, stream, ssrc)`（ZLM 允许二者任一选中会话，
+两个都给最稳妥），`SendRtpSession` 增加 `zlm_stream_id` 并在 `startSendRtp`
+成功后回填，BYE 时用 `stream + ssrc` 一起定位。实测 `existed=True`。
+
+#### 3. 对外通告 IP：`sip.ip=0.0.0.0` 被原样写进 Via/Contact/SDP
+
+`sip.ip` 同时承担"绑定地址"和"对外通告地址"两个角色，默认 `0.0.0.0` 时
+Via / From / Contact / SDP 的 `c=` 全是 `0.0.0.0` —— 设备与上级平台无处回包、
+无处收流。实测级联应答 SDP 就是 `c=IN IP4 0.0.0.0`。
+
+现在启动时做**角色分离**：
+
+* `ip`（对外通告）= 配置值；若配置为通配地址且未显式配 `sdp_ip`/`stream_ip`，
+  用 "UDP connect 8.8.8.8 让内核选路 + `getsockname`"（RFC 6724 思路）解析出
+  真实出口 IP；
+* 新增 `SipConfig.bind_ip`（`#[serde(skip)]`）保留原来的通配地址用于**绑定** ——
+  否则只监听一块网卡：本机回环、其它网段的设备都连不上，DHCP 换 IP 还会启动失败。
+
+实测：`sip.ip=0.0.0.0 是通配地址：对外通告用 192.168.3.149，仍绑定 0.0.0.0`，
+应答 SDP 的 `c=` 变为 `192.168.3.149`。
+
+#### 4. 模拟器与测试
+
+* 级联 mock 新增 `--control-port`：`/trigger/invite` 让 mock **主动**发 INVITE
+  （SDP 给出自己的收流地址），`/report` 返回记账（含**收到的** 200 OK 与应答 SDP）。
+  此前 mock 只会应答 INVITE，"上级点播本级"这条链路根本无法验证。
+* 新增单测：`Subject` 通道解析（含空段/无 Subject/仅一段）、拉流队列出入队保真。
+
+#### 第十八轮基线
+
+```
+cargo test                      545 passed / 0 failed   (上轮 543)
+cargo build --features mysql     OK
+cargo build --features postgres  OK
+cargo check --all-targets        warnings 0
+npx playwright test             25 passed / 0 failed / 0 skipped
+级联拉流（上级 INVITE → 200 OK SDP → 按需拉流 → startSendRtp → BYE stopSendRtp）PASS
+```
+
 ### 仍未解决 / 需真实设备核验
 
 以下是本轮**已定位但未改动**的项，均在代码中留有注释或在此登记，
@@ -841,18 +923,11 @@ cargo check --all-targets        warnings 0
    的载荷结构未与真实样本核对（官方文档未给出示例）。
 10. **多节点下 `general.mediaServerId`** 现在会在 autoConfig 时下发为节点主键；
     但**手工在 ZLM 侧改过该键**的既有部署仍需重新保存节点才会对齐。
-11. **上级平台点播本级（级联拉流）尚未接线**（2026-09-12 第十七轮定位）：
-    `SipServer::register_cascade_invite()`（解析上级 SDP → 预登记 SendRtp 会话）
-    与 `handle_invite` 里的 B3 段（按通道取会话 → `ZLM startSendRtp`）都已实现，
-    但 **`register_cascade_invite` 只有测试调用、运行时没有任何调用点** ——
-    也没有"判定来电方是已注册上级平台"的分支。因此上级向本级发 INVITE 时，
-    200 OK 能回，但**永远不会把流推给上级**。
-    接线需要：①在 `handle_invite` 里按 `from_device` 查 `gb_platform` 判定上级身份；
-    ②解析 `Subject`/URI 取得本级通道；③预登记 SendRtp 会话；
-    ④按需拉起设备流（`start_live_stream`）后再 `startSendRtp`。
-    其中 ④ 需要把 `start_live_stream` 从 `&self` 方法抽成"按部件调用"的自由函数
-    （`handle_invite` 是静态方法，拿不到 `&self`），属于结构性改动，
-    本轮只做了定位与文档记录，**不计入已实现**。
+11. ~~**上级平台点播本级（级联拉流）尚未接线**~~ **已实现并端到端验证（第十八轮）**：
+    见上方第十八轮小节。当前实现用进程级队列 + `Arc<SipServer>` 后台任务
+    解耦静态信令路径与 `&self` 媒体路径；后续若继续加级联能力（如上级云台控制
+    转发、级联录像回放），建议把 `start_live_stream` 抽成"按部件调用"的自由函数，
+    让静态路径可以直接复用，而不再绕队列。
 
 ### 工程问题
 

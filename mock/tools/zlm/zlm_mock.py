@@ -637,8 +637,23 @@ class ZlmMockHandler(http.server.BaseHTTPRequestHandler):
     def _handle_stop_send_rtp(self, params: dict, payload: dict):
         app = params.get("app", [""])[0]
         stream = params.get("stream", [""])[0]
-        existed = _state["send_rtp"].pop((app, stream), None)
-        log.info("stopSendRtp: %s/%s existed=%s", app, stream, bool(existed))
+        ssrc = params.get("ssrc", [""])[0]
+        existed = None
+        # 真实 ZLM 允许用 stream **或** ssrc 选中会话
+        if stream:
+            existed = _state["send_rtp"].pop((app, stream), None)
+        if existed is None and ssrc:
+            key = next(
+                (k for k, v in _state["send_rtp"].items()
+                 if v.get("ssrc") == ssrc and (not app or k[0] == app)),
+                None,
+            )
+            if key is not None:
+                existed = _state["send_rtp"].pop(key, None)
+        log.info(
+            "stopSendRtp: app=%s stream=%s ssrc=%s existed=%s",
+            app, stream, ssrc, bool(existed),
+        )
         self._send_json(200, _ok(None))
 
     def _handle_send_rtp_info(self, params: dict, payload: dict):

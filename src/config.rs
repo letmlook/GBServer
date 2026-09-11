@@ -112,6 +112,17 @@ pub struct SipConfig {
     /// 也就无法注册，而 TCP 的解析/分帧/响应回程代码全都白写了。
     #[serde(default = "default_true")]
     pub tcp_enabled: bool,
+    /// **实际绑定**的地址（不序列化）。
+    ///
+    /// `ip` 同时承担两个角色会出问题：它既要写进 Via/Contact/SDP 对外通告，
+    /// 又被拿来 `bind`。若把通配地址 `0.0.0.0` 解析成局域网 IP 后直接拿去
+    /// 绑定，就会**只监听那一块网卡**（本机回环、其它网段的设备都连不上），
+    /// 而且 DHCP 换 IP 后启动直接失败。
+    ///
+    /// 因此：`ip` = 对外通告地址；`bind_ip` = 绑定地址（缺省等于 `ip`）。
+    /// 只有"配置为通配地址 + 自动解析出通告地址"时才会两者分离。
+    #[serde(skip)]
+    pub bind_ip: Option<String>,
     pub device_id: String,
     pub password: String,
     pub realm: String,
@@ -164,6 +175,7 @@ impl Default for SipConfig {
             port: 5060,
             tcp_port: 5060,
             tcp_enabled: true,
+            bind_ip: None,
             device_id: "34020000002000000001".to_string(),
             password: "admin123".to_string(),
             realm: "3402000000".to_string(),

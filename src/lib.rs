@@ -394,6 +394,42 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
     // Initialize required DB tables on startup
     init_db_tables(&pool).await?;
 
+    // 解析 SIP 对外通告 IP。
+    //
+    // `sip.ip` 常配成 `0.0.0.0`（"绑定所有网卡"）—— 用它**监听**没问题，
+    // 但把它写进 Via / From / Contact / SDP 的 `c=` 就是**对外通告 0.0.0.0**：
+    // 设备与上级平台都无处回包/无处收流（实测级联应答 SDP 就是
+    // `c=IN IP4 0.0.0.0`，上级拿不到可用的收流地址）。
+    //
+    // 因此当 `sip.ip` 是通配地址且没有显式配 `sdp_ip`/`stream_ip` 时，
+    // 用"假装连外网让 OS 选路"的标准做法（RFC 6724 思路，与
+    // `handlers::server::detect_outbound_ip` 一致）解析出真实出口 IP，
+    // 既用于绑定也用于通告；解析失败则保持原值并告警。
+    let mut cfg = cfg;
+    if let Some(ref mut sip_cfg) = cfg.sip {
+        let wildcard = sip_cfg.ip.is_empty()
+            || sip_cfg.ip == "0.0.0.0"
+            || sip_cfg.ip == "::";
+        let no_explicit_advertise = sip_cfg.sdp_ip.is_none() && sip_cfg.stream_ip.is_none();
+        if wildcard && no_explicit_advertise {
+            match detect_sip_local_ip() {
+                Some(ip) => {
+                    tracing::info!(
+                        "sip.ip={} 是通配地址：对外通告用 {}（Via/Contact/SDP），                         仍绑定 0.0.0.0 以服务所有网卡",
+                        sip_cfg.ip,
+                        ip
+                    );
+                    sip_cfg.bind_ip = Some(sip_cfg.ip.clone());
+                    sip_cfg.ip = ip;
+                }
+                None => tracing::warn!(
+                    "sip.ip={} 是通配地址且无法解析本机出口 IP：Via/Contact/SDP 将通告 0.0.0.0，                     请在 config/application.toml 显式设置 sip.ip / sip.sdp_ip",
+                    sip_cfg.ip
+                ),
+            }
+        }
+    }
+
     let mut sip_server = if let Some(ref sip_config) = cfg.sip {
         if sip_config.enabled {
             let mut server = sip::SipServer::new(sip_config.clone(), pool.clone(), cfg.database.sqlite_max_devices);
@@ -518,6 +554,19 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
             tokio::spawn(async move {
                 if let Err(e) = srv_clone.run().await {
                     tracing::error!("SIP Server error: {}", e);
+                }
+            });
+        }
+
+        // 级联拉流：`handle_invite`（静态方法）只把"上级点播本级"的请求入队，
+        // 这里用 `Arc<SipServer>` 的后台任务真正拉起设备流并 startSendRtp。
+        if let Some(srv) = sip_server.as_ref() {
+            let pull_srv = srv.clone();
+            tokio::spawn(async move {
+                let mut tick = tokio::time::interval(std::time::Duration::from_millis(500));
+                loop {
+                    tick.tick().await;
+                    pull_srv.drain_cascade_pulls().await;
                 }
             });
         }
@@ -1184,3 +1233,18 @@ mod tests {
     }
 }
 
+/// 解析本机用于 SIP 对外通告的 IPv4 地址。
+///
+/// UDP `connect` 不实际发包，但会让内核按路由表选出出口接口，
+/// 再用 `local_addr()` 读回该接口的地址。跨 Linux/macOS 行为一致，
+/// 不需要解析 `ifconfig`。
+fn detect_sip_local_ip() -> Option<String> {
+    use std::net::UdpSocket;
+    let socket = UdpSocket::bind("0.0.0.0:0").ok()?;
+    socket.connect("8.8.8.8:80").ok()?;
+    let local = socket.local_addr().ok()?;
+    if local.ip().is_unspecified() {
+        return None;
+    }
+    Some(local.ip().to_string())
+}

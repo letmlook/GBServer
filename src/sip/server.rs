@@ -390,6 +390,88 @@ impl SipServer {
         self.cascade_registrar = Some(registrar);
     }
 
+    /// 处理队列里的级联拉流请求：拉起设备流 + startSendRtp 到上级。
+    pub async fn drain_cascade_pulls(&self) {
+        let requests: Vec<CascadePullRequest> = {
+            let mut q = cascade_pull_queue().lock().await;
+            if q.is_empty() {
+                return;
+            }
+            q.drain(..).collect()
+        };
+
+        for req in requests {
+            // 丢弃长时间排队/重试无效的请求（上级早已超时）
+            if req.created_at.elapsed() > Duration::from_secs(60) {
+                tracing::warn!(
+                    "级联拉流请求已过期（{}s），丢弃: platform={} channel={}",
+                    req.created_at.elapsed().as_secs(),
+                    req.platform_id,
+                    req.channel_id
+                );
+                self.send_rtp_manager.close_by_channel(&req.channel_id);
+                continue;
+            }
+
+            let stream_id = match self
+                .start_live_stream(&req.device_id, &req.channel_id, 15)
+                .await
+            {
+                Ok(sid) => sid,
+                Err(e) => {
+                    tracing::error!(
+                        "级联拉流失败：无法拉起设备流 device={} channel={}: {}",
+                        req.device_id,
+                        req.channel_id,
+                        e
+                    );
+                    self.send_rtp_manager.close_by_channel(&req.channel_id);
+                    continue;
+                }
+            };
+
+            if let Some(zlm) = self.zlm_client.as_ref() {
+                let dst_url = format!("rtp://{}:{}", req.upstream_host, req.upstream_port);
+                match zlm
+                    .start_send_rtp(
+                        "__defaultVhost__",
+                        "rtp",
+                        &stream_id,
+                        &req.upstream_ssrc,
+                        &dst_url,
+                        req.upstream_port,
+                        true,
+                        Some(req.local_send_port).filter(|p| *p != 0),
+                        // 国标级联要求 PS 封装，上级平台按 PS 解复用
+                        true,
+                    )
+                    .await
+                {
+                    Ok(()) => {
+                        self.send_rtp_manager
+                            .set_stream_by_channel(&req.channel_id, &stream_id);
+                        tracing::info!(
+                            "级联拉流：startSendRtp stream={} -> {} ssrc={} src_port={}",
+                            stream_id,
+                            dst_url,
+                            req.upstream_ssrc,
+                            req.local_send_port
+                        )
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            "级联拉流：startSendRtp 失败 stream={} -> {}: {}",
+                            stream_id,
+                            dst_url,
+                            e
+                        );
+                        self.send_rtp_manager.close_by_channel(&req.channel_id);
+                    }
+                }
+            }
+        }
+    }
+
     /// 取级联注册器（handler 需要它做"立即注册 / 注销"）。
     ///
     /// 平台注册的唯一实现属于 `CascadeRegistrar`（它持有注册状态、401 挑战、
@@ -450,7 +532,12 @@ impl SipServer {
     }
 
     pub async fn start(&mut self) -> Result<()> {
-        let addr = format!("{}:{}", self.config.ip, self.config.port);
+        let bind_ip = self
+            .config
+            .bind_ip
+            .clone()
+            .unwrap_or_else(|| self.config.ip.clone());
+        let addr = format!("{}:{}", bind_ip, self.config.port);
         let socket = UdpSocket::bind(&addr).await?;
         tracing::info!("SIP Server UDP listening on {}", addr);
         *self.socket.write().await = Some(Arc::new(socket));
@@ -492,7 +579,7 @@ impl SipServer {
         }
 
         if self.tcp_enabled {
-            let tcp_addr = format!("{}:{}", self.config.ip, self.config.tcp_port);
+            let tcp_addr = format!("{}:{}", bind_ip, self.config.tcp_port);
             match TcpListener::bind(&tcp_addr).await {
                 Ok(listener) => {
                     let local_addr = listener.local_addr();
@@ -1885,7 +1972,7 @@ let renewal_pool = pool.clone();
         invite_session_manager: &Arc<InviteSessionManager>,
         talk_manager: &Arc<TalkManager>,
         zlm_client: &Option<Arc<ZlmClient>>,
-        _pool: &Pool,
+        pool: &Pool,
         socket: &Arc<UdpSocket>,
         send_rtp_manager: &Arc<SendRtpManager>,
     ) -> Result<()> {
@@ -1931,6 +2018,38 @@ let renewal_pool = pool.clone();
                 socket,
             )
             .await;
+        }
+
+        // ── 级联：来电方是**已注册的上级平台** → 上级点播本级通道 ──
+        //
+        // 这与"设备呼入平台"语义完全不同：请求 URI 指向的是**本级通道**，
+        // 对方 SDP 给的是**它自己的收流地址**，我们要把本级的流推过去。
+        // 必须先判定身份，否则会走进下面的"设备呼入"逻辑（去解析设备 SDP、
+        // 开 RTP server），既做不成级联，还会污染设备会话表。
+        if !from_device.is_empty() {
+            let is_upstream = crate::db::platform::get_by_server_gb_id(pool, &from_device)
+                .await
+                .ok()
+                .flatten()
+                .is_some();
+            if is_upstream {
+                return Self::handle_cascade_pull_invite(
+                    &req,
+                    addr,
+                    config,
+                    pool,
+                    zlm_client,
+                    socket,
+                    send_rtp_manager,
+                    &from_device,
+                    &from,
+                    &to,
+                    &via,
+                    &call_id,
+                    &cseq,
+                )
+                .await;
+            }
         }
 
         let channel_id = Self::extract_channel_id(&req.uri);
@@ -2117,6 +2236,9 @@ let renewal_pool = pool.clone();
                 let upstream_host = session.upstream_host.clone();
                 let upstream_port = session.upstream_port;
                 let zlm_clone = zlm.clone();
+                let mgr_for_backfill = send_rtp_manager.clone();
+                let channel_for_backfill = channel_id.clone();
+                let stream_for_backfill = stream_id.clone();
                 tokio::spawn(async move {
                     if let Err(e) = zlm_clone.start_send_rtp(
                         "__defaultVhost__",
@@ -2127,11 +2249,18 @@ let renewal_pool = pool.clone();
                         dst_port,
                         true, // is_udp
                         Some(0),
-                        false, // use_ps
+                        // 国标级联要求 PS 封装（与 drain_cascade_pulls 保持一致）
+                        true,
                     ).await {
                         tracing::error!(
                             "B3 startSendRtp failed for channel {} -> {}:{} : {}",
                             channel_id_for_log, upstream_host, upstream_port, e,
+                        );
+                    } else {
+                        // 回填 ZLM 流标识：BYE 时要用它（或 ssrc）才能停掉推流
+                        mgr_for_backfill.set_stream_by_channel(
+                            &channel_for_backfill,
+                            &stream_for_backfill,
                         );
                     }
                 });
@@ -2140,6 +2269,211 @@ let renewal_pool = pool.clone();
 
         tracing::info!("INVITE 200 OK sent - stream: {}, port: {}", stream_type, media_port);
         Ok(())
+    }
+
+    /// 处理**上级平台点播本级通道**的 INVITE（级联拉流）。
+    ///
+    /// 与设备呼入的区别：
+    /// * 来电方是 `gb_platform` 里已注册的上级平台；
+    /// * 通道属于**本级**（要反查它挂在哪个国标设备下）；
+    /// * 对方 SDP 是它的收流地址 ⇒ 我们用 `startSendRtp` 把本级流推过去。
+    ///
+    /// 流程：
+    /// 1. 解析上级 SDP（`c=` / `m=video` / `y=`）；
+    /// 2. `Subject` 或 URI 取本级通道，反查所属设备；
+    /// 3. 为本次级联开一个专用发送端口（应答 SDP 里通告给上级，
+    ///    并作为 `startSendRtp` 的 `src_port`，保证上级看到的源端口一致）；
+    /// 4. 预登记 SendRtp 会话（`SendRtpManager`）；
+    /// 5. 100 → 180 → 200 OK（带本级 SDP）；
+    /// 6. 入队 `CascadePullRequest`，由后台任务拉起设备流并 startSendRtp。
+    #[allow(clippy::too_many_arguments)]
+    async fn handle_cascade_pull_invite(
+        req: &SipRequest,
+        addr: SocketAddr,
+        config: &Arc<SipConfig>,
+        pool: &Pool,
+        zlm_client: &Option<Arc<ZlmClient>>,
+        socket: &Arc<UdpSocket>,
+        send_rtp_manager: &Arc<SendRtpManager>,
+        platform_id: &str,
+        from: &str,
+        to: &str,
+        via: &str,
+        call_id: &str,
+        cseq: &str,
+    ) -> Result<()> {
+        let sdp = req.body.clone().unwrap_or_default();
+        let (upstream_host, upstream_port, upstream_ssrc) =
+            match parse_cascade_invite_sdp(&sdp) {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!(
+                        "级联 INVITE 的 SDP 无法解析（platform={} call_id={}）: {}",
+                        platform_id,
+                        call_id,
+                        e
+                    );
+                    Self::send_error_response(400, "Bad Request", req, addr, socket).await?;
+                    return Ok(());
+                }
+            };
+
+        // 通道：优先 Subject 的第 1 段（`<通道>:<ssrc>,<本级>:0`），其次 URI
+        let channel_id = Self::extract_channel_from_subject(req)
+            .filter(|c| !c.is_empty())
+            .unwrap_or_else(|| Self::extract_channel_id(&req.uri));
+        if channel_id.is_empty() {
+            tracing::warn!("级联 INVITE 无法确定本级通道: uri={}", req.uri);
+            Self::send_error_response(404, "Not Found", req, addr, socket).await?;
+            return Ok(());
+        }
+
+        // 通道 → 设备（本级库里的设备-通道关系）
+        let device_id = match crate::db::device::get_channel_by_channel_id(pool, &channel_id).await {
+            Ok(Some(ch)) => match ch.device_id {
+                Some(d) if !d.is_empty() => d,
+                _ => {
+                    tracing::warn!("级联 INVITE: 通道 {} 没有归属设备", channel_id);
+                    Self::send_error_response(404, "Not Found", req, addr, socket).await?;
+                    return Ok(());
+                }
+            },
+            Ok(None) => {
+                tracing::warn!("级联 INVITE: 本级不存在通道 {}", channel_id);
+                Self::send_error_response(404, "Not Found", req, addr, socket).await?;
+                return Ok(());
+            }
+            Err(e) => {
+                tracing::error!("级联 INVITE 查询通道 {} 失败: {}", channel_id, e);
+                Self::send_error_response(500, "Server Internal Error", req, addr, socket).await?;
+                return Ok(());
+            }
+        };
+
+        let tag = generate_tag();
+        let branch = Self::get_branch(via).unwrap_or_else(|| generate_branch());
+        let to_tagged = format!("{};tag={}", to.trim_end_matches('>').trim(), tag);
+        let contact = format!("<sip:{}@{}:{}>", config.device_id, config.ip, config.port);
+
+        // 100 Trying / 180 Ringing：先稳住上级的事务层
+        for (code, reason) in [(100u16, "Trying"), (180, "Ringing")] {
+            let r = Parser::generate_response(
+                code,
+                reason,
+                &[
+                    ("Via", &format!("{};rport={};branch={}", via, addr.port(), branch)),
+                    ("From", from),
+                    ("To", &to_tagged),
+                    ("Call-ID", call_id),
+                    ("CSeq", cseq),
+                    ("Contact", &contact),
+                ],
+                None,
+            );
+            Self::send_response(socket, addr, &r).await?;
+        }
+
+        // 专用发送端口：应答 SDP 的 m= 与 startSendRtp 的 src_port 用同一个，
+        // 否则上级看到的 RTP 源端口与 SDP 通告的不一致，多数上级平台会丢弃。
+        let send_stream_id = format!("cascade_{}_{}", platform_id, channel_id);
+        let mut local_send_port = 0u16;
+        if let Some(zlm) = zlm_client {
+            match zlm
+                .open_rtp_server(&crate::zlm::OpenRtpServerRequest {
+                    secret: zlm.secret.clone(),
+                    stream_id: send_stream_id.clone(),
+                    port: Some(0),
+                    use_tcp: Some(false),
+                    rtp_type: Some(0),
+                    recv_port: None,
+                })
+                .await
+            {
+                Ok(info) => local_send_port = info.port,
+                Err(e) => tracing::warn!(
+                    "级联拉流：为 {} 分配发送端口失败（应答 SDP 将以 0 端口回复）: {}",
+                    send_stream_id,
+                    e
+                ),
+            }
+        }
+
+        let media_ip = config
+            .stream_ip
+            .clone()
+            .or_else(|| config.sdp_ip.clone())
+            .unwrap_or_else(|| config.ip.clone());
+        let answer_sdp = build_invite_sdp(
+            &media_ip,
+            local_send_port,
+            "Play",
+            Some(&upstream_ssrc),
+        );
+
+        let response = Parser::generate_response(
+            200,
+            "OK",
+            &[
+                ("Via", &format!("{};rport={};branch={}", via, addr.port(), branch)),
+                ("From", from),
+                ("To", &to_tagged),
+                ("Call-ID", call_id),
+                ("CSeq", cseq),
+                ("Contact", &contact),
+                ("Content-Type", "Application/SDP"),
+            ],
+            Some(&answer_sdp),
+        );
+        Self::send_response(socket, addr, &response).await?;
+
+        // 预登记 SendRtp 会话（cascade_call_id 与 BYE 关停逻辑保持一致）
+        let cascade_call_id = format!("cascade_{}_{}", platform_id, channel_id);
+        send_rtp_manager.handle_upstream_invite(
+            cascade_call_id.clone(),
+            platform_id.to_string(),
+            channel_id.clone(),
+            upstream_host.clone(),
+            upstream_port,
+            upstream_ssrc.clone(),
+        );
+
+        cascade_pull_queue().lock().await.push(CascadePullRequest {
+            platform_id: platform_id.to_string(),
+            channel_id: channel_id.clone(),
+            device_id: device_id.clone(),
+            upstream_host: upstream_host.clone(),
+            upstream_port,
+            upstream_ssrc: upstream_ssrc.clone(),
+            local_send_port,
+            created_at: std::time::Instant::now(),
+        });
+
+        tracing::info!(
+            "级联点播：platform={} 通道={} 设备={} → 上级 {}:{} ssrc={} 本端发送端口={}",
+            platform_id,
+            channel_id,
+            device_id,
+            upstream_host,
+            upstream_port,
+            upstream_ssrc,
+            local_send_port
+        );
+        Ok(())
+    }
+
+    /// 从 `Subject` 头取本级通道 ID。
+    ///
+    /// 国标级联的 Subject 形如 `<通道编码>:<发送端序列号>,<接收方编码>:<ssrc>`
+    /// （WVP 与多数设备都按这个形状发）。取第 1 段冒号前的部分。
+    fn extract_channel_from_subject(req: &SipRequest) -> Option<String> {
+        let subject = req.header("subject")?;
+        let first = subject.split(',').next()?.trim();
+        let channel = first.split(':').next()?.trim();
+        if channel.is_empty() {
+            None
+        } else {
+            Some(channel.to_string())
+        }
     }
 
     async fn handle_talk_invite(
@@ -2381,11 +2715,18 @@ let renewal_pool = pool.clone();
                     let channel_id = session.channel_id.clone();
                     let zlm_clone = zlm.clone();
                     let ssrc = session.upstream_ssrc.clone();
+                    let zlm_stream = session.zlm_stream_id.clone();
                     tokio::spawn(async move {
                         // best-effort：ZLM 里没有这条 SendRtp 时返回错误是正常的，
-                        // 但仍要记录下来，便于区分"本来就没有"和"关不掉"
+                        // 但仍要记录下来，便于区分"本来就没有"和"关不掉"。
+                        // `stream` 与 `ssrc` 都带上：ZLM 允许二者任一选中会话。
                         if let Err(e) = zlm_clone
-                            .stop_send_rtp("__defaultVhost__", "rtp", &ssrc)
+                            .stop_send_rtp_ex(
+                                "__defaultVhost__",
+                                "rtp",
+                                zlm_stream.as_deref(),
+                                Some(&ssrc),
+                            )
                             .await
                         {
                             tracing::warn!(
@@ -2401,6 +2742,46 @@ let renewal_pool = pool.clone();
                 tracing::info!(
                     "B3 cascade BYE: closed SendRtp session for platform={} channel={}",
                     session.platform_id, session.channel_id
+                );
+            }
+        } else if let Some(channel_id) = {
+            // 上级平台的 BYE 用的是**它自己的对话 Call-ID**，与我们在
+            // `register_cascade_invite` 里登记的 `cascade_{platform}_{channel}`
+            // 不一致 —— 只按 call_id 查会漏掉，导致"上级已经挂断，平台还在
+            // 往它推流"。这里按 BYE 的 Request-URI 取通道兜底关闭。
+            let c = Self::extract_channel_id(&req.uri);
+            if c.is_empty() { None } else { Some(c) }
+        } {
+            let closed = send_rtp_manager.close_by_channel(&channel_id);
+            if !closed.is_empty() {
+                if let Some(zlm) = zlm_client.as_ref() {
+                    for session in &closed {
+                        let ssrc = session.upstream_ssrc.clone();
+                        let zlm_stream = session.zlm_stream_id.clone();
+                        let zlm = zlm.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) = zlm
+                                .stop_send_rtp_ex(
+                                    "__defaultVhost__",
+                                    "rtp",
+                                    zlm_stream.as_deref(),
+                                    Some(&ssrc),
+                                )
+                                .await
+                            {
+                                tracing::warn!(
+                                    "级联 BYE 兜底 stopSendRtp 失败 ssrc={}: {}",
+                                    ssrc,
+                                    e
+                                );
+                            }
+                        });
+                    }
+                }
+                tracing::info!(
+                    "级联 BYE（按通道兜底）：通道 {} 关闭了 {} 个 SendRtp 会话",
+                    channel_id,
+                    closed.len()
                 );
             }
         }
@@ -6582,6 +6963,39 @@ fn generate_nonce() -> String {
         .collect()
 }
 
+/// 一次"上级平台点播本级"的待处理请求。
+///
+/// `handle_invite` 是**静态方法**（拿不到 `&self`），而"按需拉起设备流"
+/// 必须走 `SipServer::start_live_stream`（需要 device_manager /
+/// session_manager / media_waiter 等成员）。用这个队列把两边解耦：
+/// 静态信令路径只做"解析 + 预登记 SendRtp 会话 + 应答 200 OK + 入队"，
+/// `SipServer` 的后台任务负责真正拉起设备流并 `startSendRtp`。
+///
+/// 此前 `register_cascade_invite()` 只有测试调用、运行时没有任何调用点，
+/// 也没有"判定来电方是已注册上级平台"的分支 —— 上级点播本级只会拿到 200 OK，
+/// **永远收不到流**。
+#[derive(Debug, Clone)]
+pub struct CascadePullRequest {
+    pub platform_id: String,
+    pub channel_id: String,
+    pub device_id: String,
+    pub upstream_host: String,
+    pub upstream_port: u16,
+    pub upstream_ssrc: String,
+    /// 应答 SDP 里通告给上级的本端发送端口（`startSendRtp` 的 src_port）
+    pub local_send_port: u16,
+    pub created_at: std::time::Instant,
+}
+
+/// 待处理的级联拉流请求（进程级队列，见 `CascadePullRequest`）。
+static CASCADE_PULL_QUEUE: std::sync::OnceLock<
+    tokio::sync::Mutex<Vec<CascadePullRequest>>,
+> = std::sync::OnceLock::new();
+
+pub fn cascade_pull_queue() -> &'static tokio::sync::Mutex<Vec<CascadePullRequest>> {
+    CASCADE_PULL_QUEUE.get_or_init(|| tokio::sync::Mutex::new(Vec::new()))
+}
+
 /// 构造 `CSeq` 头的值：**序号在前、方法在后**。
 ///
 /// RFC 3261 §20.16 的 `CSeq` 文法就是 `<digits> <method>`
@@ -7684,5 +8098,92 @@ mod upstream_message_tests {
         assert!(xml.contains("fallback_ch-records"));  // name 兜底
         // 不应 panic，输出合法
         assert!(xml.contains("</Response>"));
+    }
+}
+
+#[cfg(test)]
+mod cascade_pull_tests {
+    use super::*;
+
+    fn req_with_subject(subject: Option<&str>, uri: &str) -> SipRequest {
+        let mut req = SipRequest {
+            method: crate::sip::SipMethod::Invite,
+            uri: uri.to_string(),
+            version: "SIP/2.0".to_string(),
+            headers: std::collections::HashMap::new(),
+            body: None,
+        };
+        if let Some(s) = subject {
+            req.set_header("subject", s);
+        }
+        req
+    }
+
+    /// 国标级联的 Subject 形如 `<通道>:<ssrc>,<上级>:0`，通道必须能从里面取到。
+    #[test]
+    fn extract_channel_from_subject_variants() {
+        let r = req_with_subject(
+            Some("34020000001320000001:0200000001,34020000002000000099:0"),
+            "sip:34020000002000000001@10.0.0.1:5060",
+        );
+        assert_eq!(
+            CascadePullHandleChannelProbe::channel(&r).as_deref(),
+            Some("34020000001320000001")
+        );
+
+        // 只有一段也要能用
+        let r = req_with_subject(Some("34020000001320000002"), "sip:x@y");
+        assert_eq!(
+            CascadePullHandleChannelProbe::channel(&r).as_deref(),
+            Some("34020000001320000002")
+        );
+
+        // 没有 Subject → None，调用方回落到 URI
+        let r = req_with_subject(None, "sip:34020000001320000003@10.0.0.1:5060");
+        assert!(CascadePullHandleChannelProbe::channel(&r).is_none());
+        assert_eq!(
+            crate::sip::SipServer::extract_channel_id(&r.uri),
+            "34020000001320000003"
+        );
+
+        // 空 Subject 段不能当成通道
+        let r = req_with_subject(Some(":0200000001,plat:0"), "sip:x@y");
+        assert!(CascadePullHandleChannelProbe::channel(&r).is_none());
+    }
+
+    /// 拉流请求队列的出入队语义（跨任务传递，必须无丢失）。
+    #[tokio::test]
+    async fn cascade_pull_queue_drains_all() {
+        let before = cascade_pull_queue().lock().await.len();
+        for i in 0..3 {
+            cascade_pull_queue().lock().await.push(CascadePullRequest {
+                platform_id: format!("plat{}", i),
+                channel_id: format!("ch{}", i),
+                device_id: format!("dev{}", i),
+                upstream_host: "10.0.0.9".into(),
+                upstream_port: 20000 + i as u16,
+                upstream_ssrc: "0200000001".into(),
+                local_send_port: 30000,
+                created_at: std::time::Instant::now(),
+            });
+        }
+        let drained: Vec<_> = cascade_pull_queue().lock().await.drain(..).collect();
+        assert_eq!(drained.len(), before + 3);
+        assert!(cascade_pull_queue().lock().await.is_empty());
+        // 字段保真
+        let last = drained.last().unwrap();
+        assert_eq!(last.upstream_port, 20002);
+        assert_eq!(last.created_at.elapsed().as_secs(), 0);
+    }
+}
+
+/// 仅用于测试访问私有 helper（`extract_channel_from_subject` 是静态私有方法）。
+#[cfg(test)]
+struct CascadePullHandleChannelProbe;
+
+#[cfg(test)]
+impl CascadePullHandleChannelProbe {
+    fn channel(req: &SipRequest) -> Option<String> {
+        crate::sip::SipServer::extract_channel_from_subject(req)
     }
 }

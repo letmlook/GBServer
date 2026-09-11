@@ -593,6 +593,45 @@ pub async fn get_channel_by_device_and_channel_id(
     .fetch_optional(pool).await;
 }
 
+/// 按**通道国标 ID** 反查通道（不限设备）。
+///
+/// 级联场景下上级平台只给出本级通道编码，平台必须据此找到它挂在哪个
+/// 国标设备下才能拉起媒体流。此前没有这个查询，`handle_invite` 的级联分支
+/// 因而无法把通道映射到设备。
+pub async fn get_channel_by_channel_id(
+    pool: &Pool,
+    channel_id: &str,
+) -> sqlx::Result<Option<DeviceChannel>> {
+    let id_val = channel_id.parse::<i64>().unwrap_or(0);
+    #[cfg(feature = "mysql")]
+    return sqlx::query_as::<_, DeviceChannel>(&format!(
+        "SELECT {} FROM gb_device_channel WHERE gb_device_id = ? OR id = ? LIMIT 1",
+        DEVICE_CHANNEL_SELECT_COLUMNS,
+    ))
+    .bind(channel_id)
+    .bind(id_val)
+    .fetch_optional(pool)
+    .await;
+    #[cfg(feature = "postgres")]
+    return sqlx::query_as::<_, DeviceChannel>(&format!(
+        "SELECT {} FROM gb_device_channel WHERE gb_device_id = $1 OR id = $2 LIMIT 1",
+        DEVICE_CHANNEL_SELECT_COLUMNS,
+    ))
+    .bind(channel_id)
+    .bind(id_val)
+    .fetch_optional(pool)
+    .await;
+    #[cfg(feature = "sqlite")]
+    return sqlx::query_as::<_, DeviceChannel>(&format!(
+        "SELECT {} FROM gb_device_channel WHERE gb_device_id = ? OR id = ? LIMIT 1",
+        DEVICE_CHANNEL_SELECT_COLUMNS,
+    ))
+    .bind(channel_id)
+    .bind(id_val)
+    .fetch_optional(pool)
+    .await;
+}
+
 pub async fn list_channels_by_parent(
     pool: &Pool,
     device_id: &str,
