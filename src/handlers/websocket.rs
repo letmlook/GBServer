@@ -112,7 +112,8 @@ pub async fn ws_handler(
 
     let ws_state = state.ws_state.clone();
     let ws_hub = state.ws_hub.clone();
-    let user = claims.sub.clone();
+    // 用真实用户名做身份（`sub` 对登录 token 恒为 "login"，见 ws::jwt::WsClaims）
+    let user = claims.username();
     let events_csv = params.events.clone();
     ws.on_upgrade(move |socket| async move {
         // Register in WsHub (cluster-aware) — returns the rx that carries

@@ -11,7 +11,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::AppState;
 
 const HEADER_ACCESS_TOKEN: &str = "access-token";
-const AUDIENCE: &str = "Audience";
+/// JWT 的 audience；WS 侧的校验也必须用同一个值（见 `ws::jwt`）。
+pub const AUDIENCE: &str = "Audience";
 
 #[allow(non_snake_case)]
 #[derive(Debug, Serialize, Deserialize)]

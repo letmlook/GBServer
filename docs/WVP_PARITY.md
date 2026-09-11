@@ -242,6 +242,58 @@ INVITE 为 `a=recvonly`（平台收、设备发），设备 200 OK 才是 `a=sen
 |------|------|------|
 | **Redis 连接失败没有记忆** | `RedisBackend::connect()` 在 `manager` 仍为 `None` 时会被**每一次**状态读写重新触发（`get_conn` 的唯一入口），日志里出现连续的 `Redis connect timed out after 1.5s`。ZLM 每个 hook（on_stream_changed / on_publish / on_play …）都要更新流状态 → Redis 挂掉时"每个 hook 慢 1.5s"，ZLM 侧极易判定 hook 超时 | 新增失败冷却：连接失败后 30s 内直接走内存后端，不再重试；连接成功即清除冷却。新增测试断言冷却期内 20 次读写总耗时 < 500ms（修复前会 ≥ 30s） |
 
+### 语音对讲：从"信令通、音频无"到端到端打通（2026-09-12 第八轮）
+
+**此前的真实状态**：对讲的信令与 SDP 协商看起来"有实现"，但**没有任何音频通路** ——
+没有 G.711A 编解码、没有 RTP 打包发送、`TalkSession.local_port/device_ip/device_port`
+无人消费。对着麦克风说话，设备什么也收不到。
+
+| 问题 | 运行时证据 | 修复 |
+|------|-----------|------|
+| **去话 INVITE 从不登记 `session_manager`** | 日志只有 `Sent TALK INVITE`，**没有** `Sent ACK`；而 GB28181 三次握手缺 ACK 设备不会推流。`handle_response` 发 ACK 依赖 `session_manager.get(call_id)` 取 from/cseq/device_addr | 登记 INVITE 上下文；实测出现 `Sent ACK to device for call_id=talk_...` |
+| **设备 200 OK 的 SDP 从不解析** | `TalkSession.device_port` 一直是 INVITE 时的信令地址，不知道把音频发到哪 | 解析 `m=audio` + `c=` 回填 `device_ip/device_port`；设备写 `0.0.0.0` 时回退到其 SIP 信令源地址（实测 `0.0.0.0` → `127.0.0.1`） |
+| **`openRtpServer` 失败仍发 `m=audio 0`** | `m=audio 0` 在 SDP 中表示媒体流被禁用，对讲不可能建立，接口却回"对讲请求已发送" | 取不到收流端口直接失败并返回原因 |
+| **接口返回的 callId 与会话的 callId 不是同一个** | `/api/talk/start` 自己又拼了带毫秒时间戳的 callId，前端据此查询/停止对讲必然查不到 | 统一使用 `send_talk_invite` 返回的真实 call_id |
+| **`/api/ws` 对登录用户完全不可用** | `verify_ws_jwt` 用裸 `Validation::new(HS256)` **未设 audience**，而 `jsonwebtoken` 在"token 带 `aud`、校验未配 `aud`"时返回 `InvalidAudience`；实测 WS 握手 `401 JWT invalid: InvalidAudience`。单测自造 token 没有 `aud`，因此测试全绿 | 与 HTTP 侧对齐 audience 与必需声明；补两个回归守卫（真实登录 token 必须通过、缺 aud 必须被拒） |
+| **WS 侧所有用户是同一个身份** | `Claims.sub` 对登录 token 恒为字符串 `"login"`（用户名在 `userName`），而 `ws_handler` 拿 `sub` 当用户身份注册 WsHub | `WsClaims` 增加 `userName` 与 `username()`，`ws_handler` 改用它 |
+
+**新增的音频管线**（`src/sip/gb28181/talk_audio.rs`）：
+
+* G.711 A-law 编解码，与 Sun `g711.c` / ITU-T G.711 参考实现一致；
+  期望值由**独立转写**的参考实现算出后固化为测试（含 `linear2alaw(1000)=0xFA`、
+  `i16::MIN → 0x2A` 等边界），另有全量程往返误差上界测试。
+  （A-law 数字静音 `0` 编码为 `0xD5`、解码回 `+8`，是固有直流偏置，不是 bug。）
+* RTP 打包（RFC 3550，PT=8 / PCMA / 8000，20ms = 160 样本 = 160 字节），
+  序号与时间戳按样本数递增。
+* `TalkAudioSender`：本地 UDP socket → 设备音频地址；不足一帧的**尾包也发**
+  （否则句尾被吞）。
+* WS 端点 `GET /api/talk/audio/:device_id/:channel_id?token=<jwt>`：
+  二进制帧 = 8kHz 单声道 i16 小端 PCM，服务端编码后发 RTP。
+  **必须注册在 `api_protected` 之外**：浏览器无法为 WS 设置请求头，
+  `auth_middleware`（只认 `access-token`/`Bearer`）必然把握手判 401；
+  与 `/api/ws` 一致，由 handler 内部用 `?token=` 校验。
+* 对讲 SDP 的 `y=` 与实际 RTP 包的 SSRC 现在同一个值（`build_audio_ssrc`，
+  前缀 4；会话记录该 SSRC）。
+
+**端到端验证**（真实服务 + 真实 SIP 发包 + 手写最小 WS 客户端 + 假设备 UDP 监听）：
+
+```
+WS 握手: HTTP/1.1 101 Switching Protocols
+假设备收到 2 个 UDP 包
+  包 0: V=2 PT=8 seq=0 ts=0   ssrc=4000000000 payload=160B 尽为0xFA=True
+  包 1: V=2 PT=8 seq=1 ts=160 ssrc=4000000000 payload=160B 尽为0xFA=True
+结论: 通过
+```
+
+服务端日志同步确认：`对讲音频上行通道建立: ... -> 127.0.0.1:10002 ssrc=4000000000`
+与 `对讲音频上行通道关闭: ... 共 2 包 / 320 字节`。
+（0xFA = `linear2alaw(1000)`，测试用 1000 而非 0，避免"恰等于默认值"的假阳性。）
+
+**尚未做的部分**：前端还没有对讲界面（`web/src/` 里没有麦克风采集/播放代码）。
+后端链路已可用且经过验证，前端需要一个「对讲」面板：
+`getUserMedia` → `AudioContext` 重采样到 8kHz → 经上述 WS 发送二进制帧；
+设备侧音频由 ZLM 的 `local_port` 收流后经 ws-flv 播放，不经过该 WS。
+
 ### 仍未解决 / 需真实设备核验
 
 以下是本轮**已定位但未改动**的项，均在代码中留有注释或在此登记，
@@ -256,8 +308,7 @@ INVITE 为 `a=recvonly`（平台收、设备发），设备 200 OK 才是 `a=sen
    `localId:channelId,localId:flag`。国标示例为
    `<通道编码>:<发送端序列号>,<接收方编码>:<ssrc>`。实时点播路径可能正在实际互操作，
    改动风险大于收益，故保留现状并在此登记。
-3. **对讲/广播的媒体面**：SDP 与信令已可用，但"浏览器音频 → ZLM → RTP → 设备"
-   的上行音频管线尚未实现（`TalkSession.zlm_stream_id` 已记录，无消费方）。
+3. ~~对讲/广播的媒体面~~ **已实现（第八轮）**：见下方「语音对讲」小节。
 4. ~~**`log_file_download`** 仍是文件路径下载；前端 `getLogFile` 定义了但从未调用。~~
    **已修复（第七轮）**：该端点此前固定去 `./logs/<name>` 找文件，而本进程
    **不写日志文件**（tracing 采集层直接落 `gb_log` 表）、`logs/` 目录也从未创建

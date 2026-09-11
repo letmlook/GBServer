@@ -4,6 +4,7 @@ pub mod cascade;
 pub mod invite;
 pub mod ptz;
 pub mod talk;
+pub mod talk_audio;
 pub mod broadcast;
 pub mod xml_parser;
 pub mod invite_session;

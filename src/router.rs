@@ -1021,6 +1021,17 @@ pub fn app(state: AppState) -> Router<AppState> {
     // WebSocket：设备状态实时通知 (Phase 7.3 + 7.4: JWT 校验在 ws_handler 内部)
     let app = app.route("/api/ws", get(websocket::ws_handler));
 
+    // 语音对讲上行音频（浏览器 PCM → G.711A → RTP → 设备）。
+    //
+    // 必须注册在 `api_protected` **之外**：浏览器无法为 WebSocket 设置自定义
+    // 请求头，所以 `auth_middleware`（只认 `access-token`/`Bearer`）必然把
+    // 握手判成 401。这里与 `/api/ws` 保持一致 —— 路由公开，JWT 在 handler
+    // 内部用 `?token=` 校验（见 `handlers::talk::talk_audio_ws`）。
+    let app = app.route(
+        "/api/talk/audio/:device_id/:channel_id",
+        get(talk::talk_audio_ws),
+    );
+
     // Phase 7.4: alarm endpoints moved into api_protected (now require JWT).
     // The legacy public routes below are intentionally removed.
 

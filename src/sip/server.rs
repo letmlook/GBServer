@@ -4382,6 +4382,9 @@ f=v/1/96/1/2/1/1/0
         session.set_device_info(&device_addr.ip().to_string(), device_addr.port());
         session.set_zlm_stream(&stream_id);
         session.set_local_port(media_port);
+        // SSRC 前缀 4 = 音频/广播；SDP 的 y= 与后续 RTP 包都用它
+        let talk_ssrc = build_audio_ssrc(device_id);
+        session.set_ssrc(&talk_ssrc);
         session.status = TalkStatus::Inviting;
         self.talk_manager.update(&session).await;
 
@@ -4416,7 +4419,11 @@ f=v/1/96/1/2/1/1/0
             .set_invite_context(&call_id, from.clone(), 1, device_addr)
             .await;
 
-        let sdp = build_audio_sdp(&self.config.ip, media_port);
+        let sdp = crate::sip::gb28181::talk::build_talk_sdp_with_ssrc(
+            &self.config.ip,
+            media_port,
+            &talk_ssrc,
+        );
 
         let subject = format!(
             "{}:{},{}:{}",
