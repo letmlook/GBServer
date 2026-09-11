@@ -585,6 +585,8 @@ class SipDeviceMock:
             await self._reply_device_status(msg, addr)
         elif "<CmdType>ConfigDownload</CmdType>" in body:
             await self._reply_config_download(msg, addr)
+        elif "<CmdType>RecordInfo</CmdType>" in body:
+            await self._reply_record_info(msg, addr)
         else:
             log.debug("未识别 MESSAGE body: %s", body[:200])
 
@@ -663,6 +665,64 @@ class SipDeviceMock:
         )
         self.transport.sendto(payload.encode(), addr)
         log.info("ConfigDownload(%s) 应答已发送 sn=%s", config_type, sn)
+
+    async def _reply_record_info(self, msg: str, addr: tuple, pages: int = 2):
+        """应答 RecordInfo（录像查询），**按多包**返回以覆盖平台的分页聚合。
+
+        平台侧 `send_record_info_query_and_wait` 用
+        `register_record_info_multi_packet` 累积，SumNum 到齐后才完成；
+        每个包都必须回显同一个 SN 与 Call-ID。
+        """
+        body_in = msg.split("\r\n\r\n", 1)[1] if "\r\n\r\n" in msg else ""
+        sn = self._extract_xml_value(body_in, "SN") or "1"
+        channel_id = self._extract_xml_value(body_in, "DeviceID") or self.cfg.device_id
+        call_id = self._extract_header(msg, "Call-ID", "")
+        realm = realm_from_device_id(self.cfg.device_id)
+        local = self.transport.get_extra_info("sockname")
+
+        per_page = 2
+        for page in range(1, pages + 1):
+            items = ""
+            for k in range(per_page):
+                idx = (page - 1) * per_page + k + 1
+                items += (
+                    '<Item>\r\n'
+                    f'<DeviceID>{channel_id}</DeviceID>\r\n'
+                    f'<Name>录像片段{idx}</Name>\r\n'
+                    f'<FilePath>/mnt/record/{channel_id}/{idx}.mp4</FilePath>\r\n'
+                    '<Address>192.168.1.10</Address>\r\n'
+                    '<StartTime>2026-09-01T10:00:00</StartTime>\r\n'
+                    '<EndTime>2026-09-01T10:05:00</EndTime>\r\n'
+                    '<Secrecy>0</Secrecy>\r\n'
+                    '<Type>time</Type>\r\n'
+                    '<RecorderID>34020000001320000001</RecorderID>\r\n'
+                    '</Item>\r\n'
+                )
+            body = (
+                '<?xml version="1.0" encoding="UTF-8"?>\r\n'
+                '<Response>\r\n'
+                '<CmdType>RecordInfo</CmdType>\r\n'
+                f'<SN>{sn}</SN>\r\n'
+                f'<DeviceID>{channel_id}</DeviceID>\r\n'
+                f'<SumNum>{pages}</SumNum>\r\n'
+                f'<RecordList Num="{per_page}">\r\n{items}</RecordList>\r\n'
+                '</Response>\r\n'
+            )
+            cseq = self.state.next_cseq()
+            branch = make_branch()
+            payload = (
+                f"MESSAGE sip:{realm}@{self.server_addr[0]}:{self.server_addr[1]} {SIP_VERSION}\r\n"
+                f"Via: {SIP_VERSION}/UDP {local[0]}:{local[1]};rport;branch={branch}\r\n"
+                f"From: <sip:{self.cfg.device_id}@{realm}>;tag={uuid.uuid4().hex[:8]}\r\n"
+                f"To: <sip:{realm}@{realm}>\r\n"
+                f"Call-ID: {call_id}\r\n"
+                f"CSeq: {cseq} MESSAGE\r\n"
+                f"Content-Type: Application/MANSCDP+XML\r\n"
+                f"Content-Length: {len(body.encode())}\r\n"
+                f"\r\n{body}"
+            )
+            self.transport.sendto(payload.encode(), addr)
+        log.info("RecordInfo 应答已发送 sn=%s 共 %d 包", sn, pages)
 
     async def _on_invite(self, msg: str, addr: tuple):
         """处理 INVITE，发送 200 OK + SDP，3 秒后 BYE"""

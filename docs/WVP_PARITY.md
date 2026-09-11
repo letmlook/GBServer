@@ -359,7 +359,13 @@ WS 握手: HTTP/1.1 101 Switching Protocols
 SN 兜底命中 2 次；Unsolicited 0 次（此前同一场景 17 次 / 5 秒）
 ```
 
-模拟器同步补齐 `ConfigDownload` 应答（回显 SN），使成功路径可被验证。
+模拟器同步补齐 `ConfigDownload` 与 **多包 `RecordInfo`** 应答（均回显 SN），
+使成功路径可被验证。录像查询实测：2 个分页 × 2 条 → `total=4`、4 条唯一记录，
+多包聚合正确。
+
+（附注：`/api/gb_record/query` 返回里的 `count` 是**页大小**（默认 20），
+`total` 才是结果总数；与其它列表接口一致，不是缺陷。该路径的 SN 与 Call-ID
+在 `send_record_info_query_and_wait` 内部由同一个变量产生，本就一致。）
 
 ### 仍未解决 / 需真实设备核验
 
