@@ -2,7 +2,10 @@
 //! These endpoints expose the device+channel tables in the contract format
 //! expected by Hikvision iSecure Center / Uniview clients.
 
-use axum::{extract::{Query, State}, Json};
+use axum::{
+    extract::{Path, Query, State},
+    Json,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::db;
@@ -470,16 +473,28 @@ mod tests {
 
 #[derive(Debug, Deserialize)]
 pub struct CameraControlQuery {
+    // 前端/海康宇视客户端传的是 camelCase（`deviceId` / `channelId`），
+    // 此前只认 snake_case —— 而旧实现无论参数是否解析成功都返回假成功，
+    // 参数从未生效也无人发现。别名两种都收。
+    #[serde(alias = "deviceId")]
     pub device_id: Option<String>,
+    #[serde(alias = "channelId")]
     pub channel_id: Option<String>,
     pub command: Option<String>,
     pub speed: Option<i32>,
+    #[serde(alias = "presetIndex", alias = "presetIndexNo")]
     pub preset: Option<i32>,
 }
 
 /// GET /api/sy/camera/control/play?deviceId=...&channelId=...
-/// 别名路由 — 转调 play_start
+///
+/// sy 视图的**别名路由**：真正转调 `play::play_start`。
+///
+/// 修正：此前这三个别名端点只打一条日志然后返回 `status: "started"` ——
+/// 注释写着"转调 play_start"，代码里却**没有任何调用**：调用方以为已经开始
+/// 播放，实际设备既没收到 INVITE，ZLM 也没开收流端口。
 pub async fn camera_control_play(
+    State(state): State<AppState>,
     axum::extract::Query(q): axum::extract::Query<CameraControlQuery>,
 ) -> Json<WVPResult<serde_json::Value>> {
     let device_id = q.device_id.clone().unwrap_or_default();
@@ -487,18 +502,19 @@ pub async fn camera_control_play(
     if device_id.is_empty() || channel_id.is_empty() {
         return Json(WVPResult::error("deviceId and channelId required"));
     }
-    tracing::info!("C4 sy/camera/control/play alias → play_start {}/{}", device_id, channel_id);
-    Json(WVPResult::success(serde_json::json!({
-        "deviceId": device_id,
-        "channelId": channel_id,
-        "alias": "control/play",
-        "status": "started",
-    })))
+    tracing::info!(
+        "sy/camera/control/play → play_start {}/{}",
+        device_id,
+        channel_id
+    );
+    crate::handlers::play::play_start(State(state), Path((device_id, channel_id))).await
 }
 
 /// GET /api/sy/camera/control/stop?deviceId=...&channelId=...
-/// 别名路由 — 转调 play_stop
+///
+/// 别名路由：真正转调 `play::play_stop`（含给设备发 BYE）。
 pub async fn camera_control_stop(
+    State(state): State<AppState>,
     axum::extract::Query(q): axum::extract::Query<CameraControlQuery>,
 ) -> Json<WVPResult<serde_json::Value>> {
     let device_id = q.device_id.clone().unwrap_or_default();
@@ -506,18 +522,19 @@ pub async fn camera_control_stop(
     if device_id.is_empty() || channel_id.is_empty() {
         return Json(WVPResult::error("deviceId and channelId required"));
     }
-    tracing::info!("C4 sy/camera/control/stop alias → play_stop {}/{}", device_id, channel_id);
-    Json(WVPResult::success(serde_json::json!({
-        "deviceId": device_id,
-        "channelId": channel_id,
-        "alias": "control/stop",
-        "status": "stopped",
-    })))
+    tracing::info!(
+        "sy/camera/control/stop → play_stop {}/{}",
+        device_id,
+        channel_id
+    );
+    crate::handlers::play::play_stop(State(state), Path((device_id, channel_id))).await
 }
 
 /// GET /api/sy/camera/control/ptz?deviceId=...&channelId=...&command=...&speed=...&preset=...
-/// 别名路由 — 转调 device_control PTZ
+///
+/// 别名路由：真正转调 `device_control::device_ptz`（下发 SIP DeviceControl/PtzCmd）。
 pub async fn camera_control_ptz(
+    State(state): State<AppState>,
     axum::extract::Query(q): axum::extract::Query<CameraControlQuery>,
 ) -> Json<WVPResult<serde_json::Value>> {
     let device_id = q.device_id.clone().unwrap_or_default();
@@ -527,18 +544,22 @@ pub async fn camera_control_ptz(
         return Json(WVPResult::error("deviceId, channelId and command required"));
     }
     tracing::info!(
-        "C4 sy/camera/control/ptz alias → PTZ {}/{} cmd={} speed={:?} preset={:?}",
-        device_id, channel_id, command, q.speed, q.preset,
+        "sy/camera/control/ptz → device_ptz {}/{} cmd={} speed={:?} preset={:?}",
+        device_id,
+        channel_id,
+        command,
+        q.speed,
+        q.preset,
     );
-    Json(WVPResult::success(serde_json::json!({
-        "deviceId": device_id,
-        "channelId": channel_id,
-        "command": command,
-        "speed": q.speed,
-        "preset": q.preset,
-        "alias": "control/ptz",
-        "status": "accepted",
-    })))
+    let ptz = crate::handlers::device_control::PtzQuery {
+        device_id: Some(device_id),
+        channel_id: Some(channel_id),
+        command: Some(command),
+        speed: q.speed.map(|v| v.clamp(0, 255) as u8),
+        preset_index: q.preset.map(|p| p as u32),
+        guard_cmd: None
+    };
+    crate::handlers::device_control::device_ptz(State(state), Query(ptz)).await
 }
 
 #[cfg(test)]
@@ -559,6 +580,24 @@ mod camera_control_tests {
         assert_eq!(q.command.as_deref(), Some("left"));
         assert_eq!(q.speed, Some(5));
         assert_eq!(q.preset, Some(1));
+    }
+
+    /// 前端传的是 camelCase（`deviceId`/`channelId`），必须能解析 ——
+    /// 旧实现只认 snake_case 且无论成败都回假成功，参数从未生效。
+    #[test]
+    fn test_camera_control_query_camel_case() {
+        let q: CameraControlQuery = serde_json::from_value(serde_json::json!({
+            "deviceId": "34020000001320000001",
+            "channelId": "34020000001320000010",
+            "command": "right",
+            "speed": 4,
+            "presetIndex": 2,
+        })).unwrap();
+        assert_eq!(q.device_id.as_deref(), Some("34020000001320000001"));
+        assert_eq!(q.channel_id.as_deref(), Some("34020000001320000010"));
+        assert_eq!(q.command.as_deref(), Some("right"));
+        assert_eq!(q.speed, Some(4));
+        assert_eq!(q.preset, Some(2));
     }
 
     /// C4: 空 query 应全部为 None

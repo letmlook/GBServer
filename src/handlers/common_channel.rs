@@ -1236,27 +1236,53 @@ fn perpendicular_distance(point: (f64, f64), line_start: (f64, f64), line_end: (
 /// GET /api/sy/camera/list/ids (测试接口)
 #[derive(Debug, Deserialize)]
 pub struct CameraListQuery {
+    // 查询串通常是 camelCase（`deviceIds`）——没有别名时参数不会绑定，
+    // 而 handler 会把"没绑定"当成"没传"返回空列表，调用方看到的是
+    // "该设备下没有摄像机"，与真实原因（参数名不匹配）完全无关。
+    #[serde(alias = "deviceIds", alias = "deviceId")]
     pub device_ids: Option<String>,
     pub geo_coord_sys: Option<String>,
     pub traditional: Option<bool>,
 }
 
+/// GET /api/sy/camera/list/ids?deviceIds=a,b,c
+///
+/// 按设备编号返回该设备下的**真实通道**（名称 + 经纬度）。
+///
+/// 修正：此前**完全不查库**，对每个入参 deviceId 直接返回
+/// `latitude: 39.9042, longitude: 116.4074, name: "Camera-<id>"` ——
+/// 天安门坐标 + 编造名称，调用方拿到的是假数据却看不出任何异常。
 pub async fn camera_list_ids(
+    State(state): State<AppState>,
     Query(q): Query<CameraListQuery>,
 ) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
-    let device_ids: Vec<String> = q.device_ids
+    let device_ids: Vec<String> = q
+        .device_ids
         .as_ref()
-        .map(|s| s.split(',').map(|x| x.to_string()).collect())
+        .map(|s| {
+            s.split(',')
+                .map(|x| x.trim().to_string())
+                .filter(|x| !x.is_empty())
+                .collect()
+        })
         .unwrap_or_default();
 
     let mut result = Vec::new();
     for device_id in device_ids {
-        result.push(serde_json::json!({
-            "deviceId": device_id,
-            "latitude": 39.9042,
-            "longitude": 116.4074,
-            "name": format!("Camera-{}", device_id)
-        }));
+        let channels = crate::db::device::list_channels_for_device(&state.pool, &device_id).await?;
+        for ch in channels {
+            result.push(serde_json::json!({
+                // 通道的业务标识优先用 gb_device_id（国标通道编号），
+                // 缺失时退回表主键
+                "deviceId": ch.gb_device_id.clone().unwrap_or_else(|| ch.id.to_string()),
+                "parentDeviceId": device_id,
+                "name": ch.name.clone().unwrap_or_default(),
+                "longitude": ch.gb_longitude.or(ch.longitude),
+                "latitude": ch.gb_latitude.or(ch.latitude),
+                "status": ch.gb_status.clone().unwrap_or(ch.status.clone().unwrap_or_default()),
+                "hasAudio": ch.has_audio.unwrap_or(false),
+            }));
+        }
     }
 
     Ok(Json(WVPResult::success(serde_json::json!({

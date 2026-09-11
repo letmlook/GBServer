@@ -78,7 +78,16 @@ pub struct ChannelListQuery {
     pub page: Option<u32>,
     pub count: Option<u32>,
     pub query: Option<String>,
+    /// 终端手机号（`deviceId` / `phoneNumber` 两种别名都收）
+    #[serde(alias = "deviceId", alias = "phoneNumber")]
     pub device_id: Option<String>,
+    /// **前端实际传的参数**：终端的数据库主键（`gb_jt_terminal.id`）。
+    ///
+    /// 此前只认 `device_id`（手机号），而 JT 设备页传的是 `terminalDbId` ——
+    /// 参数绑定不上就被当成"没传 device_id"直接返回空列表，
+    /// 页面上"终端通道"永远是空的。
+    #[serde(alias = "terminalDbId")]
+    pub terminal_db_id: Option<i32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -245,14 +254,22 @@ pub struct TerminalUpdateBody {
 #[derive(Debug, Deserialize)]
 pub struct ChannelUpdateBody {
     pub id: Option<i64>,
+    /// 前端字段是 `channelName`，历史字段是 `name`
+    #[serde(alias = "channelName")]
     pub name: Option<String>,
+    #[serde(alias = "channelId")]
     pub channel_id: Option<i32>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct ChannelAddBody {
+    /// 终端手机号：前端传 `phoneNumber`，历史字段是 `device_id`/`deviceId`
+    #[serde(alias = "phoneNumber", alias = "deviceId")]
     pub device_id: Option<String>,
+    /// 前端字段是 `channelName`，历史字段是 `name`
+    #[serde(alias = "channelName")]
     pub name: Option<String>,
+    #[serde(alias = "channelId")]
     pub channel_id: Option<i32>,
     pub stream_type: Option<String>,
 }
@@ -433,11 +450,18 @@ pub async fn channel_list(
     Query(q): Query<ChannelListQuery>,
 ) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
     let device_id = q.device_id.clone().unwrap_or_default();
-    if device_id.is_empty() {
-        return Ok(Json(WVPResult::success(serde_json::json!({ "list": [], "total": 0 }))));
-    }
 
-    let terminal = jt_db::get_terminal_by_phone(&state.pool, &device_id).await?;
+    // 终端定位：优先用主键（前端传 terminalDbId），其次按手机号
+    let terminal = match q.terminal_db_id {
+        Some(id) => jt_db::get_terminal_by_id(&state.pool, id).await?,
+        None if !device_id.is_empty() => jt_db::get_terminal_by_phone(&state.pool, &device_id).await?,
+        None => None,
+    };
+    if terminal.is_none() && device_id.is_empty() && q.terminal_db_id.is_none() {
+        return Ok(Json(WVPResult::success(
+            serde_json::json!({ "list": [], "total": 0 }),
+        )));
+    }
     let channels = match terminal {
         Some(t) => jt_db::list_channels_by_terminal(&state.pool, t.id).await?,
         None => vec![],
@@ -469,17 +493,20 @@ pub async fn channel_update(
     let id = body.id.unwrap_or(0);
     tracing::info!("JT1078 channel update: id={}", id);
 
-    // Update DB if possible
-    if id > 0 {
-        let _ = jt_db::update_channel(
-            &state.pool,
-            id,
-            body.name.as_deref(),
-            body.channel_id,
-        ).await;
+    if id <= 0 {
+        return Json(build_error("缺少通道 id"));
     }
 
-    Json(build_success("通道更新成功"))
+    // 修正：此前 `let _ = update_channel(...)` 吞掉错误并无条件返回"更新成功"，
+    // 即使 id 不存在、数据库报错，调用方也以为已保存。
+    match jt_db::update_channel(&state.pool, id, body.name.as_deref(), body.channel_id).await {
+        Ok(0) => Json(build_error(&format!("通道不存在: {}", id))),
+        Ok(_) => Json(build_success("通道更新成功")),
+        Err(e) => {
+            tracing::error!("JT1078 channel update error id={}: {}", id, e);
+            Json(build_error("通道更新失败"))
+        }
+    }
 }
 
 /// POST /api/jt1078/terminal/channel/add
@@ -1886,5 +1913,75 @@ pub async fn media_upload_one(
         }
     } else {
         Json(build_error("JT1078 manager 未初始化"))
+    }
+}
+
+#[cfg(test)]
+mod channel_dto_tests {
+    use super::*;
+
+    /// 前端 JT 设备页的字段名必须被接受：
+    /// `channel/list` 传 `terminalDbId`，`channel/add` 传 `phoneNumber` + `channelName`。
+    ///
+    /// 回归：这些 DTO 此前只认 snake_case（`device_id`/`name`），参数绑定不上就被
+    /// 当成"没传"，列表恒为空、新增恒报"终端不存在"，而接口一律返回 200 ——
+    /// 页面上的终端通道管理因此完全不可用却看不出原因。
+    #[test]
+    fn channel_list_query_accepts_frontend_and_legacy_names() {
+        let q: ChannelListQuery =
+            serde_json::from_value(serde_json::json!({"terminalDbId": 7})).unwrap();
+        assert_eq!(q.terminal_db_id, Some(7));
+
+        let q: ChannelListQuery =
+            serde_json::from_value(serde_json::json!({"terminal_db_id": 7})).unwrap();
+        assert_eq!(q.terminal_db_id, Some(7));
+
+        let q: ChannelListQuery =
+            serde_json::from_value(serde_json::json!({"phoneNumber": "13912345678"})).unwrap();
+        assert_eq!(q.device_id.as_deref(), Some("13912345678"));
+
+        let q: ChannelListQuery =
+            serde_json::from_value(serde_json::json!({"deviceId": "13912345678"})).unwrap();
+        assert_eq!(q.device_id.as_deref(), Some("13912345678"));
+
+        let q: ChannelListQuery = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert!(q.device_id.is_none() && q.terminal_db_id.is_none());
+    }
+
+    #[test]
+    fn channel_add_body_accepts_frontend_names() {
+        let b: ChannelAddBody = serde_json::from_value(serde_json::json!({
+            "phoneNumber": "13912345678",
+            "channelId": 2,
+            "channelName": "模拟通道2",
+            "hasAudio": true,
+        }))
+        .unwrap();
+        assert_eq!(b.device_id.as_deref(), Some("13912345678"));
+        assert_eq!(b.channel_id, Some(2));
+        assert_eq!(b.name.as_deref(), Some("模拟通道2"));
+
+        // 历史字段名依然可用
+        let b: ChannelAddBody = serde_json::from_value(serde_json::json!({
+            "device_id": "13912345678",
+            "channel_id": 3,
+            "name": "legacy",
+        }))
+        .unwrap();
+        assert_eq!(b.device_id.as_deref(), Some("13912345678"));
+        assert_eq!(b.name.as_deref(), Some("legacy"));
+    }
+
+    #[test]
+    fn channel_update_body_accepts_frontend_names() {
+        let b: ChannelUpdateBody = serde_json::from_value(serde_json::json!({
+            "id": 5,
+            "channelId": 1,
+            "channelName": "改名",
+        }))
+        .unwrap();
+        assert_eq!(b.id, Some(5));
+        assert_eq!(b.channel_id, Some(1));
+        assert_eq!(b.name.as_deref(), Some("改名"));
     }
 }

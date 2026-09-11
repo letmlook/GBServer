@@ -95,15 +95,59 @@ pub async fn rtp_send_start(
 }
 
 /// POST /api/rtp/send/stop/:stream_id
+///
+/// 停止一路 SendRtp 推流。
+///
+/// 修正：此前只返回一句 `"SendRtp stop is implicit on stream teardown"` 的
+/// **假成功** —— 既不查会话也不调 ZLM，调用方以为推流已停，实际 ZLM 仍在
+/// 往目标地址推 RTP。
+///
+/// 现在按 stream_id / ssrc 定位并真正调用 `stopSendRtp`（ZLM 允许二者
+/// 任一选中会话，两个都给最稳妥）。
+#[derive(Deserialize, Default)]
+pub struct StopSendRtpQuery {
+    /// 可选：无法从 stream_id 推断时显式给出 SSRC
+    pub ssrc: Option<String>,
+    /// 可选：ZLM 应用名（默认 rtp）
+    pub app: Option<String>,
+}
+
 pub async fn rtp_send_stop(
     Path(stream_id): Path<String>,
-    State(_state): State<AppState>,
+    axum::extract::Query(q): axum::extract::Query<StopSendRtpQuery>,
+    State(state): State<AppState>,
 ) -> Json<WVPResult<serde_json::Value>> {
-    // ZLM sendRtp stop is implicitly tied to stream teardown — close_rtp_server handles both directions.
-    Json(WVPResult::success(serde_json::json!({
-        "streamId": stream_id,
-        "msg": "SendRtp stop is implicit on stream teardown; closeRtpServer called by caller",
-    })))
+    let Some(zlm) = state.zlm_clients.values().next() else {
+        return Json(WVPResult::error("no ZLM available"));
+    };
+    let app = q.app.unwrap_or_else(|| "rtp".to_string());
+
+    // SSRC 兜底：级联推流的 SSRC 存在 SendRtpManager 会话里
+    let ssrc = match q.ssrc {
+        Some(s) if !s.is_empty() => Some(s),
+        _ => state
+            .sip_server
+            .as_ref()
+            .and_then(|sip| {
+                sip.send_rtp_manager()
+                    .get_by_channel(&stream_id)
+                    .first()
+                    .map(|session| session.upstream_ssrc.clone())
+            }),
+    };
+
+    match zlm
+        .stop_send_rtp_ex("__defaultVhost__", &app, Some(&stream_id), ssrc.as_deref())
+        .await
+    {
+        Ok(()) => Json(WVPResult::success(serde_json::json!({
+            "streamId": stream_id,
+            "app": app,
+            "ssrc": ssrc,
+            "stopped": true,
+        }))),
+        Err(e) => Json(WVPResult::error(format!("ZLM stopSendRtp 失败: {}", e))),
+    }
 }
 
 // ---------- PS aliases (PS is just RTP over MPEG-TS in reference impl) ----------
@@ -135,9 +179,10 @@ pub async fn ps_send_start(
 /// POST /api/ps/send/stop/:stream_id
 pub async fn ps_send_stop(
     Path(stream_id): Path<String>,
+    axum::extract::Query(q): axum::extract::Query<StopSendRtpQuery>,
     State(state): State<AppState>,
 ) -> Json<WVPResult<serde_json::Value>> {
-    rtp_send_stop(Path(stream_id), State(state)).await
+    rtp_send_stop(Path(stream_id), axum::extract::Query(q), State(state)).await
 }
 
 /// GET /api/ps/getTestPort — return a free UDP port for testing

@@ -689,13 +689,32 @@ pub async fn terminal_channel_delete(
     }
 }
 
-/// 终端通道详情
+/// GET /api/jt1078/terminal/channel/one/{id}
+///
+/// 终端通道详情：按 `gb_jt_channel.id` 查库返回。
+///
+/// 修正：此前不查库，只回一句"请使用主 handler ..."的提示 ——
+/// 路由已经指向这里，等于该端点**永远拿不到数据**（提示里指向的
+/// "主 handler" 就是它自己）。
 pub async fn terminal_channel_one(
+    State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Json<WVPResult<serde_json::Value>> {
-    tracing::info!("JT1078 terminal channel one: {}", id);
-    Json(WVPResult::success(serde_json::json!({
-        "id": id,
-        "msg": "请使用主 handler /api/jt1078/terminal/channel/one/{id}"
-    })))
+    let id_num: i32 = match id.parse() {
+        Ok(v) => v,
+        Err(_) => return err(&format!("通道 id 非法: {}", id)),
+    };
+    match jt_db::get_channel_by_id(&state.pool, id_num).await {
+        Ok(Some(c)) => Json(WVPResult::success(serde_json::json!({
+            "id": c.id,
+            "terminalDbId": c.terminal_db_id,
+            "channelId": c.channel_id,
+            "name": c.name,
+            "hasAudio": c.has_audio,
+            "createTime": c.create_time,
+            "updateTime": c.update_time,
+        }))),
+        Ok(None) => err(&format!("通道不存在: {}", id_num)),
+        Err(e) => err(&format!("查询通道失败: {}", e)),
+    }
 }

@@ -5,7 +5,7 @@ use crate::db::update_device_catalog_subscription;
 use crate::response::WVPResult;
 use crate::AppState;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 pub struct PtzQuery {
     #[serde(alias = "deviceId")]
     pub device_id: Option<String>,

@@ -12,7 +12,7 @@
 | 总代码量（src/） | 69,619 行 Rust | `find src -name '*.rs' \| xargs wc -l` |
 | 已注册 HTTP 路由 | 383 条唯一 `/api/...` 路径 | `grep -oE '"/api/[^"]*"' src/router.rs \| sort -u \| wc -l` |
 | Handler 模块 | 29 个（含 `stub.rs` / `device_stub.rs` 两个兼容 shim） | `grep -c 'pub mod' src/handlers/mod.rs` |
-| 后端测试 | **556 通过** / 0 失败（第二十轮后回填） | `cargo test --no-fail-fast` |
+| 后端测试 | **560 通过** / 0 失败（第二十一轮后回填） | `cargo test --no-fail-fast` |
 | 编译状态 | `cargo check` 0 error / **0 warning**；clippy 262；**deprecated 0** | `cargo check` / `cargo clippy --all-targets` |
 | 数据库 feature | SQLite（默认）/ PostgreSQL / MySQL **三者均编译通过** | CI `feature-matrix` job |
 | CI | ⏸️ 工作流已就绪但**按需暂停自动触发**（见 `.github/workflows/ci.yml`） | — |
@@ -991,6 +991,55 @@ cargo build --features postgres  OK
 cargo check --all-targets        warnings 0
 npx playwright test             25 passed / 0 failed / 0 skipped
 JT1078 终端录像检索（0x8802 → 0x0802 → API 返回终端结果）PASS
+```
+
+### 又一批「假成功 / 假数据」端点 + 前端契约不匹配（2026-09-12 第二十一轮）
+
+这一轮用"找没有 await / 没有 DB 调用的 handler"的启发式扫描，再加上**按前端真实
+载荷**逐个调用，又挖出 5 处：
+
+| 端点 | 问题 | 修复 |
+|------|------|------|
+| `GET /api/sy/camera/control/play` | 注释写着"转调 play_start"，代码**只打日志**然后返回 `status:"started"` —— 设备既没收到 INVITE，ZLM 也没开收流端口 | 真正转调 `play::play_start` |
+| `GET /api/sy/camera/control/stop` | 同上（注释说转调 play_stop，实际什么都没做，也不发 BYE） | 真正转调 `play::play_stop` |
+| `GET /api/sy/camera/control/ptz` | 同上（注释说转调 PTZ，实际没下发 DeviceControl） | 真正转调 `device_control::device_ptz` |
+| `POST /api/rtp/send/stop/:stream_id` | 只回一句 `"SendRtp stop is implicit on stream teardown"` 的**假成功**，既不查会话也不调 ZLM —— 调用方以为推流已停，ZLM 仍在往目标推 RTP | 真正调用 `stopSendRtp`（stream + ssrc 双选择器；ssrc 可从级联会话兜底取） |
+| `GET /api/sy/camera/list/ids` | **完全不查库**：对每个入参 deviceId 直接返回天安门坐标 `39.9042/116.4074` 和编造的名称 `Camera-<id>` | 按设备查 `gb_device_channel`，返回真实通道名/经纬度/在线状态 |
+| `GET /api/jt1078/terminal/channel/one/{id}` | 只回"请使用主 handler ..."的提示，而**路由指的就是它自己** ⇒ 永远拿不到数据 | 按 `gb_jt_channel.id` 查库返回；id 非法/不存在如实报错 |
+
+**前端契约不匹配（同一类缺陷的又一簇）**：JT 设备页的字段名与后端 DTO 不一致，
+而旧代码把"参数没绑定"当成"没传"静默返回空/成功，页面因此完全不可用却看不出原因：
+
+| 调用 | 前端字段 | 后端旧字段 | 现象 | 修复 |
+|------|----------|------------|------|------|
+| `terminal/channel/list` | `terminalDbId` | `device_id` | 列表恒为空 | 增加 `terminalDbId` 别名，并支持按 `gb_jt_terminal.id` 查询（仍兼容手机号） |
+| `terminal/channel/add` | `phoneNumber` + `channelName` | `device_id` + `name` | 恒报"终端不存在" | 增加 `phoneNumber`/`deviceId`/`channelName` 别名 |
+| `terminal/channel/update` | `channelName` | `name` | 名称改不了；且 `let _ =` 吞掉错误后仍报"更新成功"（id 不存在也报成功） | 增加别名；id≤0 报错；DB 错误/0 行影响如实返回 |
+| `sy/camera/control/*` | `deviceId`/`channelId` | `device_id`/`channel_id` | 参数不生效（旧实现无论如何都回假成功） | 增加 camelCase 别名（`presetIndex` 亦可） |
+| `sy/camera/list/ids` | `deviceIds` | `device_ids` | 恒空列表 | 增加 `deviceIds`/`deviceId` 别名 |
+
+**实测**（真实服务 + SIP/ZLM 模拟器）：
+
+```
+/api/sy/camera/control/play?...  → code 0, stream=34020000001320000001_...   （真发 INVITE）
+/api/sy/camera/control/ptz?...   → "PTZ command sent"                        （真发 DeviceControl）
+/api/sy/camera/control/stop?...  → callId=play_...                           （SIP 侧收到 BYE）
+/api/rtp/send/stop/...           → {"stopped":true,"app":"rtp","ssrc":...}    （真调 stopSendRtp）
+/api/sy/camera/list/ids?deviceIds=3402...0001 → total=4（真实通道名，非 Camera-<id>）
+/api/jt1078/terminal/channel/add {phoneNumber,channelName} → 成功
+/api/jt1078/terminal/channel/list?terminalDbId=1 → 1 条
+/api/jt1078/terminal/channel/one/1 → 真实行（含改名后的 name）
+/api/jt1078/terminal/channel/update {id:99999} → {"code":1,"msg":"通道不存在: 99999"}
+```
+
+#### 第二十一轮基线
+
+```
+cargo test                      560 passed / 0 failed   (上轮 556；+3 JT1078 DTO 契约测试 +1 camelCase)
+cargo build --features mysql     OK
+cargo build --features postgres  OK
+cargo check --all-targets        warnings 0
+npx playwright test             25 passed / 0 failed / 0 skipped
 ```
 
 ### 仍未解决 / 需真实设备核验
