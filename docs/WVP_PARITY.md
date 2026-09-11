@@ -9,11 +9,11 @@
 
 | 维度 | 数值 | 验证方式 |
 |------|------|----------|
-| 总代码量（src/） | 64,422 行 Rust | `find src -name '*.rs' \| xargs wc -l` |
+| 总代码量（src/） | 64,914 行 Rust | `find src -name '*.rs' \| xargs wc -l` |
 | 已注册 HTTP 路由 | 380 条唯一 `/api/...` 路径 | `grep -oE '"/api/[^"]*"' src/router.rs \| sort -u \| wc -l` |
 | Handler 模块 | 29 个（含 `stub.rs` / `device_stub.rs` 两个兼容 shim） | `grep -c 'pub mod' src/handlers/mod.rs` |
-| 后端测试 | **471 通过** / 2 忽略 / 0 失败 | `cargo test --no-fail-fast` |
-| 编译状态 | `cargo check` 0 error / **0 warning**；clippy 262；**deprecated 0** | `cargo check` / `cargo clippy --all-targets` |
+| 后端测试 | **478 通过** / 3 忽略 / 0 失败 | `cargo test --no-fail-fast` |
+| 编译状态 | `cargo check` 0 error / **0 warning**；clippy 261；**deprecated 0** | `cargo check` / `cargo clippy --all-targets` |
 | 数据库 feature | SQLite（默认）/ PostgreSQL / MySQL **三者均编译通过** | CI `feature-matrix` job |
 | CI | ⏸️ 工作流已就绪但**按需暂停自动触发**（见 `.github/workflows/ci.yml`） | — |
 | 前端 | `web/` = **Vue 3 + Element Plus + Vite + TS**（17 个业务视图）；`web-legacy-vue2/` 为归档参考 | `ls web/src/views` |
@@ -38,7 +38,7 @@
 ### 本轮（2026-09-11）关键结论
 
 - **CI 门禁恢复**：编译 + 全量测试 + 三库 feature + 前端构建为硬门禁；`fmt` / `clippy` 暂列为非门禁（基线未清零）。**注**：应要求已暂停自动触发，改为仅手动 `workflow_dispatch`，见 `.github/workflows/ci.yml`。
-- **测试完全自包含**：默认 SQLite feature 下 471 个测试不连接 Redis / PG / MySQL / ZLM，CI 无需 service 容器。
+- **测试完全自包含**：默认 SQLite feature 下 478 个测试不连接 Redis / PG / MySQL / ZLM，CI 无需 service 容器。
 - **前端已完成 Vue 3 迁移**：`web-v3/` 已转正为 `web/`（commit `2acf5a7`），Vue 2 归档至 `web-legacy-vue2/`。本文档此前多处 "web-v3 Phase 2 待迁移" 的描述已过时，本轮一并修正。
 - **CI 首次运行即抓到真实缺陷**：`Navbar.vue` 缺 `reactive` 显式 import，依赖被 gitignore 的
   `auto-imports.d.ts` 兜底 → **任何干净 clone 跑 `npm run build` 都会失败**（`dev` 与
@@ -92,6 +92,20 @@
 |------|------|------|
 | **RFC 3261 §17 事务重传完全未生效** | `TransactionManager` 被构造却从未使用；`process_timers` **只自增重传计数并打日志，从不发送**（它不持有 socket）。GB28181 默认走 UDP，丢包即无补救 | 保存首次发送的**原始字节**（重传须逐字一致，Via branch 不能变）；注入出站通道；`process_timers` 真正发送；响应到达即终止事务。新增 5 个测试（含"是否真的发出去"） |
 | **JT1078 5 个端点报「协议原语未实现」** | 实测该说法不成立：`build_take_photo`(0x8801)/`build_media_upload`(0x8803) 与 `send_command_and_wait` 都已存在，真正只缺 0x8202/0x8203/0x9205 | 补齐 3 个原语 + 4 个 `send_*_and_wait`，5 个端点全部真实下发；另加严格时间解析 `try_encode_time_bcd`（原 `encode_time_bcd` 解析失败会**静默用当前时间**，会把错误时间段下发给终端） |
+
+### 数据层缺陷（2026-09-12 第三轮修复）
+
+**核查方法**：正则提取 `src/` 中所有 `FROM/INTO/UPDATE/JOIN <table>` 引用，
+与三份 schema 的建表清单求差 —— 一次性找出全部「表不存在」类缺陷。
+
+| 问题 | 影响 | 修复 |
+|------|------|------|
+| **`gb_platform_catalog` 三库都没有** + `catalog_add/edit` **无 sqlite 分支** + 错误被吞 | 默认部署下这两个端点**完全空转却返回"目录添加成功"** | 三库补表；补 sqlite 分支；改为 `Result` 传播错误 |
+| **表名写错 `gb_mobile_position`**（实为 `gb_device_mobile_position`） | JT1078 位置查询 DB 兜底**永远返回空** | 修正表名 |
+| **表名写错 `gb_push_stream`**（实为 `gb_stream_push`，4 处） | 推流绑定/解绑国标设备**永远失败** | 修正表名 |
+| **PG/MySQL 缺 4 张 JT1078 表** + 该 4 表不在启动补表中 | 旧库升级后对应 CRUD 报 `no such table` | 补 PG/MySQL 表 + 启动幂等补表 |
+| **5 个 handler 只有 mysql/postgres 分支、无 sqlite 分支** | 默认部署下静默空转（含 `media_server_save` 的**扩展字段被丢弃**） | 按仓库既有约定扩为 `any(mysql, sqlite)`；写操作传播错误 |
+| **`gb_log` 三库都没有** + 无文件 appender + 前后端契约不匹配 | 「系统日志」功能整体不成立（`log_list` 永远返回空） | 建表 + 实现 tracing 采集层 + 按前端契约重写查询 |
 
 ### 工程问题
 
