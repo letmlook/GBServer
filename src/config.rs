@@ -318,6 +318,13 @@ pub struct RpcAppConfig {
     /// HTTP RPC 超时秒数（默认 5）
     #[serde(default)]
     pub timeout_secs: Option<u64>,
+    /// 节点间共享密钥。非空时，出站请求带 `X-RPC-Secret` 头，
+    /// 入站 `/api/rpc` 校验该头；为空则不校验（仅适用于单节点/受信内网）。
+    ///
+    /// 2026-09-11 新增：此前 `/api/rpc` **完全无鉴权**，任何能访问端口的人
+    /// 都可直接调用集群 RPC 方法。
+    #[serde(default)]
+    pub secret: Option<String>,
 }
 
 /// Phase 7.4: audit middleware configuration.

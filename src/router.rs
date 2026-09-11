@@ -48,20 +48,46 @@ async fn health_check(State(state): State<AppState>) -> Json<serde_json::Value> 
 }
 
 /// E2: HTTP RPC 端点 — 接收 JSON-RPC envelope 并通过 RpcRouter 分发到本地 handler
+///
+/// 2026-09-11：新增共享密钥校验。此前该端点**完全无鉴权**（出站也不带凭证），
+/// 任何能访问端口的人都能直接调用集群 RPC 方法。现在 `[rpc].secret` 非空时，
+/// 入站必须携带匹配的 `X-RPC-Secret`，否则 401。
 pub async fn rpc_endpoint(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<RpcRequest>,
-) -> Json<RpcResponse> {
+) -> Result<Json<RpcResponse>, (axum::http::StatusCode, Json<RpcResponse>)> {
+    if let Some(expected) = state.config.rpc.secret.as_deref().filter(|s| !s.is_empty()) {
+        let provided = headers
+            .get("x-rpc-secret")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        if provided != expected {
+            tracing::warn!(
+                "拒绝 RPC 入站：X-RPC-Secret 缺失或不匹配（method={}）",
+                req.method
+            );
+            return Err((
+                axum::http::StatusCode::UNAUTHORIZED,
+                Json(RpcResponse {
+                    ok: false,
+                    result: None,
+                    error: Some("invalid or missing X-RPC-Secret".to_string()),
+                }),
+            ));
+        }
+    }
+
     tracing::debug!("RPC inbound: method={} target={}", req.method, req.target);
     if let Some(router) = state.rpc_router.as_ref() {
         let response = router.route(&req).await;
-        Json(response)
+        Ok(Json(response))
     } else {
-        Json(RpcResponse {
+        Ok(Json(RpcResponse {
             ok: false,
             result: None,
             error: Some("RPC router not configured on this node".to_string()),
-        })
+        }))
     }
 }
 
@@ -1118,6 +1144,64 @@ mod tests {
         assert_eq!(status_of(&base, "/metrics").await, 200);
         // 未注册路径必须 404 —— 否则说明上面的 200 可能是被兜底 handler 吞掉的
         assert_eq!(status_of(&base, "/api/definitely-not-a-route").await, 404);
+    }
+
+    // ================= RPC 入站共享密钥（2026-09-11 修复） =================
+
+    fn rpc_body() -> serde_json::Value {
+        serde_json::json!({"method": "health", "target": "local", "payload": {}, "reply_to": null})
+    }
+
+    /// 配置了 `[rpc].secret` 时，入站必须携带匹配的 `X-RPC-Secret`。
+    ///
+    /// 此前 `/api/rpc` 完全无鉴权，任何能访问端口的人都能直接调用集群 RPC 方法。
+    #[tokio::test]
+    async fn test_rpc_endpoint_enforces_shared_secret() {
+        let mut state = app_state().await;
+        let mut cfg = (*state.config).clone();
+        cfg.rpc.secret = Some("rpc-s3cret".to_string());
+        state.config = std::sync::Arc::new(cfg);
+        let base = spawn(state).await;
+
+        let client = reqwest::Client::new();
+        let url = format!("{}/api/rpc", base);
+
+        // 不带密钥 → 401
+        let r = client.post(&url).json(&rpc_body()).send().await.unwrap();
+        assert_eq!(r.status().as_u16(), 401, "缺少 X-RPC-Secret 必须被拒绝");
+
+        // 密钥错误 → 401
+        let r = client
+            .post(&url)
+            .header("X-RPC-Secret", "wrong")
+            .json(&rpc_body())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status().as_u16(), 401, "密钥错误必须被拒绝");
+
+        // 密钥正确 → 放行（本测试未配 rpc_router，业务层返回 ok:false，但状态码 200）
+        let r = client
+            .post(&url)
+            .header("X-RPC-Secret", "rpc-s3cret")
+            .json(&rpc_body())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status().as_u16(), 200, "密钥正确应放行");
+    }
+
+    /// 未配置 secret 时保持向后兼容（单节点 / 受信内网）
+    #[tokio::test]
+    async fn test_rpc_endpoint_allows_when_no_secret_configured() {
+        let base = spawn(app_state().await).await;
+        let r = reqwest::Client::new()
+            .post(format!("{}/api/rpc", base))
+            .json(&rpc_body())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status().as_u16(), 200, "未配置密钥时应放行以兼容旧部署");
     }
 
     /// 受保护端点「已注册」的判据是 **401 而非 404**（未注册才会 404）。

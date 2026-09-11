@@ -553,8 +553,15 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
             let http_rpc = crate::rpc::HttpRpc::new(&node_id, crate::rpc::HttpRpcConfig {
                 peer_endpoints: cfg.rpc.peer_endpoints.clone(),
                 timeout_secs: cfg.rpc.timeout_secs.unwrap_or(5),
+                secret: cfg.rpc.secret.clone(),
             });
             router.register_outbound(Arc::new(http_rpc)).await;
+            if cfg.rpc.secret.as_deref().map(|s| s.is_empty()).unwrap_or(true) {
+                tracing::warn!(
+                    "多节点 RPC 已启用（{} 个对端）但未配置 [rpc].secret —— 入站 /api/rpc 将不校验来源，                     建议设置共享密钥",
+                    cfg.rpc.peer_endpoints.len()
+                );
+            }
             tracing::info!("HttpRpc outbound enabled: {} peers", cfg.rpc.peer_endpoints.len());
         }
     }

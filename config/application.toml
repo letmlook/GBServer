@@ -151,6 +151,9 @@ peer_endpoints = []
 # - "http://node3:18080"
 # RPC 请求超时（秒）
 timeout_secs = 5
+# 节点间共享密钥。非空时：出站请求带 X-RPC-Secret 头，入站 /api/rpc 校验该头。
+# 留空则不校验 —— 仅适用于单节点或完全受信内网（多节点部署强烈建议设置）。
+# secret = "change-me-to-a-long-random-string"
 
 # JT1078 tuning & retransmit
 [jt1078]

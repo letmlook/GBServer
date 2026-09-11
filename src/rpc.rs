@@ -213,6 +213,8 @@ impl Default for RpcRouter {
 pub struct HttpRpcConfig {
     pub peer_endpoints: Vec<String>, // 例如 ["http://node2:18080", "http://node3:18080"]
     pub timeout_secs: u64,
+    /// 节点间共享密钥；非空时出站请求带 `X-RPC-Secret` 头
+    pub secret: Option<String>,
 }
 
 impl Default for HttpRpcConfig {
@@ -220,6 +222,7 @@ impl Default for HttpRpcConfig {
         Self {
             peer_endpoints: Vec::new(),
             timeout_secs: 5,
+            secret: None,
         }
     }
 }
@@ -240,10 +243,18 @@ impl HttpRpc {
         Self { node_id: node_id.to_string(), config, http }
     }
 
+    /// 出站请求统一附带共享密钥（未配置则不带头）
+    fn authed(&self, rb: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        match self.config.secret.as_deref() {
+            Some(s) if !s.is_empty() => rb.header("X-RPC-Secret", s),
+            _ => rb,
+        }
+    }
+
     pub async fn send_request(&self, endpoint: &str, request: &RpcRequest) -> Result<RpcResponse, String> {
         let url = format!("{}/api/rpc", endpoint.trim_end_matches('/'));
-        let resp = self.http
-            .post(&url)
+        let resp = self
+            .authed(self.http.post(&url))
             .json(request)
             .send()
             .await
@@ -285,13 +296,18 @@ impl RpcTransport for HttpRpc {
         }
         let http = self.http.clone();
         let endpoints = self.config.peer_endpoints.clone();
+        let secret = self.config.secret.clone();
         if endpoints.is_empty() {
             return Err("HttpRpc: no peer_endpoints configured".to_string());
         }
         tokio::spawn(async move {
             for ep in &endpoints {
                 let url = format!("{}/api/rpc", ep.trim_end_matches('/'));
-                if let Err(e) = http.post(&url).json(&req).send().await {
+                let rb = match secret.as_deref() {
+                    Some(s) if !s.is_empty() => http.post(&url).header("X-RPC-Secret", s),
+                    _ => http.post(&url),
+                };
+                if let Err(e) = rb.json(&req).send().await {
                     tracing::warn!("HttpRpc broadcast to {} failed: {}", url, e);
                 }
             }
@@ -309,9 +325,14 @@ impl RpcTransport for HttpRpc {
             .ok_or_else(|| format!("HttpRpc: No endpoint for node_id={}", node_id))?
             .clone();
         let http = self.http.clone();
+        let secret = self.config.secret.clone();
         tokio::spawn(async move {
             let url = format!("{}/api/rpc", endpoint.trim_end_matches('/'));
-            if let Err(e) = http.post(&url).json(&req).send().await {
+            let rb = match secret.as_deref() {
+                Some(s) if !s.is_empty() => http.post(&url).header("X-RPC-Secret", s),
+                _ => http.post(&url),
+            };
+            if let Err(e) = rb.json(&req).send().await {
                 tracing::warn!("HttpRpc send_to {} failed: {}", url, e);
             }
         });
@@ -679,6 +700,7 @@ mod tests {
         let rpc = HttpRpc::new("node-1", HttpRpcConfig {
             peer_endpoints: vec![format!("http://{}", addr)],
             timeout_secs: 2,
+                secret: None,
         });
 
         let req = RpcRequest {
@@ -723,6 +745,7 @@ mod tests {
         let rpc = HttpRpc::new("node-1", HttpRpcConfig {
             peer_endpoints: vec![format!("http://{}", a1), format!("http://{}", a2)],
             timeout_secs: 2,
+                secret: None,
         });
 
         let req = RpcRequest {
