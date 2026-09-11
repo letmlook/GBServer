@@ -2024,39 +2024,23 @@ let renewal_pool = pool.clone();
                             media_port = rtp_info.port;
                             zlm_stream_key = Some(rtp_info.stream_id);
 
-                            let device_ip =
-                                if let Some(received) = Self::get_received_from_via(&via) {
-                                    received
-                                } else {
-                                    addr.ip().to_string()
-                                };
-
-                            let add_proxy_req = crate::zlm::AddStreamProxyRequest {
-                                secret: zlm.secret.clone(),
-                                vhost: "__defaultVhost__".to_string(),
-                                app: "rtp".to_string(),
-                                stream: format!("{}${}", from_device, channel_id),
-                                url: format!("rtsp://{}:{}/{}", device_ip, device_port, channel_id),
-                                rtp_type: Some(0),
-                                timeout_sec: Some(3600.0),
-                                enable_hls: Some(false),
-                                enable_mp4: Some(false),
-                                enable_rtsp: Some(true),
-                                enable_rtmp: Some(false),
-                                enable_fmp4: Some(false),
-                                enable_ts: Some(false),
-                                enableAAC: Some(false),
-                            };
-
-                            match zlm.add_stream_proxy(&add_proxy_req).await {
-                                Ok(proxy_key) => {
-                                    tracing::info!("ZLM stream proxy started: {}", proxy_key);
-                                }
-                                Err(e) => {
-                                    tracing::error!("Failed to start ZLM stream proxy: {}", e);
-                                    error_occurred = true;
-                                }
-                            }
+                            // 修正：这里原本会去 `addStreamProxy` 拉
+                            // `rtsp://{device_ip}:{sdp_m_port}/{channel}` ——
+                            // 地址是**编造**的：国标设备不在 SDP 的 m= 端口上提供
+                            // RTSP 服务（那个端口是它准备推 RTP 的端口），
+                            // 设备编号也不是主机名。结果必然是代理失败 →
+                            // `error_occurred = true` → 对来电方回 **503**，
+                            // 连"设备呼入"这条路径都走不通。
+                            //
+                            // 正确语义见 RFC/国标：设备 INVITE 平台时是**设备要推流
+                            // 给平台**（或上级平台点播本级），平台只需用自己刚开的
+                            // RTP 收流端口应答 200 OK 即可，不需要反向拉流。
+                            tracing::info!(
+                                "入站 INVITE：已开 RTP 收流端口 {}（stream_id={}），直接应答 200 OK",
+                                rtp_info.port,
+                                zlm_stream_key.as_deref().unwrap_or("")
+                            );
+                            let _ = device_port; // SDP 中的设备端口仅用于日志/排障
                         }
                         Err(e) => {
                             tracing::error!("Failed to open RTP server: {}", e);

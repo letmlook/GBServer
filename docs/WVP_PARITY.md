@@ -764,6 +764,35 @@ npx playwright test             25 passed / 0 failed / 0 skipped
 级联完整生命周期（401 → 摘要注册 → keepalive/Catalog → 注销） PASS
 ```
 
+### 入站 INVITE 的伪造 RTSP 拉流分支（2026-09-12 第十七轮）
+
+与第十三轮在 `on_stream_not_found` 里删掉的是**同一类**假实现，位于
+`handle_invite`（设备/上级 INVITE 平台）里：
+
+```rust
+// 修正前
+let add_proxy_req = AddStreamProxyRequest {
+    url: format!("rtsp://{}:{}/{}", device_ip, device_port, channel_id),
+    ...
+};
+```
+
+`device_ip:device_port` 取自对方 SDP 的 `m=video` 端口（设备准备**推** RTP 的端口），
+国标设备并不会在那个端口上提供 RTSP 服务，设备编号也不是主机名。于是这条
+`addStreamProxy` **必然失败** → `error_occurred = true` → 平台对来电方回
+**503 Service Unavailable**：连"设备/上级呼入"这条路径都走不通。
+
+正确语义（RFC 3261 §13 + 国标）：对方 INVITE 平台是它要**推流给平台**（设备呼入）
+或**上级平台点播本级**，平台只需用自己刚开的 RTP 收流端口应答 200 OK，
+不需要反向拉流。现已删除该分支，入站 INVITE 直接以本机 RTP 收流端口应答 200 OK。
+
+#### 第十七轮基线
+
+```
+cargo test                      543 passed / 0 failed
+cargo check --all-targets        warnings 0
+```
+
 ### 仍未解决 / 需真实设备核验
 
 以下是本轮**已定位但未改动**的项，均在代码中留有注释或在此登记，
@@ -812,6 +841,18 @@ npx playwright test             25 passed / 0 failed / 0 skipped
    的载荷结构未与真实样本核对（官方文档未给出示例）。
 10. **多节点下 `general.mediaServerId`** 现在会在 autoConfig 时下发为节点主键；
     但**手工在 ZLM 侧改过该键**的既有部署仍需重新保存节点才会对齐。
+11. **上级平台点播本级（级联拉流）尚未接线**（2026-09-12 第十七轮定位）：
+    `SipServer::register_cascade_invite()`（解析上级 SDP → 预登记 SendRtp 会话）
+    与 `handle_invite` 里的 B3 段（按通道取会话 → `ZLM startSendRtp`）都已实现，
+    但 **`register_cascade_invite` 只有测试调用、运行时没有任何调用点** ——
+    也没有"判定来电方是已注册上级平台"的分支。因此上级向本级发 INVITE 时，
+    200 OK 能回，但**永远不会把流推给上级**。
+    接线需要：①在 `handle_invite` 里按 `from_device` 查 `gb_platform` 判定上级身份；
+    ②解析 `Subject`/URI 取得本级通道；③预登记 SendRtp 会话；
+    ④按需拉起设备流（`start_live_stream`）后再 `startSendRtp`。
+    其中 ④ 需要把 `start_live_stream` 从 `&self` 方法抽成"按部件调用"的自由函数
+    （`handle_invite` 是静态方法，拿不到 `&self`），属于结构性改动，
+    本轮只做了定位与文档记录，**不计入已实现**。
 
 ### 工程问题
 
