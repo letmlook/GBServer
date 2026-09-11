@@ -16,7 +16,7 @@ use axum::{
 
 use crate::response::WVPResult;
 use crate::AppState;
-use crate::zlm::hook::{handle_webhook, ZlmHookEvent};
+use crate::zlm::hook::{handle_webhook_inner, ZlmHookEvent};
 
 // 事件名常量（与 ZlmHookEvent::from_hook_name 入参一致）
 const ON_SERVER_STARTED: &str = "on_server_started";
@@ -204,6 +204,7 @@ pub const ROUTED_HOOK_EVENTS: &[&str] = &[
 /// 3. 委托给 `handle_webhook`，由其根据 hook_name 路由到具体业务逻辑
 async fn handle_hook_event<T: HookEventTag>(
     State(state): State<AppState>,
+    raw_query: Option<axum::extract::RawQuery>,
     Json(mut event): Json<serde_json::Value>,
 ) -> Json<WVPResult<serde_json::Value>> {
     // **必须在这里把路由绑定的事件名注入请求体。**
@@ -248,7 +249,10 @@ async fn handle_hook_event<T: HookEventTag>(
         }
     }
 
-    handle_webhook(State(state), Json(event)).await
+    // 把查询串一并透传：真实 ZLM 经 `[hook] admin_params` 把 secret 作为
+    // URL 参数附加（body 里没有 secret），鉴权必须能读到它。
+    let query = raw_query.and_then(|q| q.0);
+    handle_webhook_inner(&state, event, query.as_deref()).await
 }
 
 /// WVP-Pro 多路径 hook 路由集合

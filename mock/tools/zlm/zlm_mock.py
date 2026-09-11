@@ -163,6 +163,12 @@ class ZlmMockHandler(http.server.BaseHTTPRequestHandler):
             return
         base = _hook_base_url(url)
         target = f"{base}/api/hook/{hook_name}"
+        # 真实 ZLM 会把 `[hook] admin_params` 附加到每个 hook URL 上
+        # （默认 `secret=xxx`）—— secret **不在 body 里**。GBServer 侧因此必须
+        # 从查询串读 secret；mock 不模拟这一点就会掩盖该缺陷。
+        params = _state.get("server_config", {}).get("hook.admin_params", "")
+        if params:
+            target = f"{target}?{params}"
         payload = dict(data)
         payload.setdefault("mediaServerId", "zlmediakit-mock-1")
         threading.Thread(target=_post_hook, args=(target, payload), daemon=True).start()
@@ -416,6 +422,9 @@ class ZlmMockHandler(http.server.BaseHTTPRequestHandler):
         # 与真实 ZLM 一致：POST 到该事件自己的 URL、body 扁平且不含 hook_name
         base.pop("hook_name", None)
         target = f"{_hook_base_url(self.server.hook_url)}/api/hook/{name}"  # type: ignore
+        params = _state.get("server_config", {}).get("hook.admin_params", "")
+        if params:
+            target = f"{target}?{params}"
         threading.Thread(target=_post_hook, args=(target, base), daemon=True).start()
         log.info("触发 Webhook: %s -> %s", name, target)
         self._send_json(200, _ok({"triggered": True, "hook_name": name}))

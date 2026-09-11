@@ -133,7 +133,7 @@ async fn configure_zlm_hooks(
     // `hook_routes::handle_hook_event` 的说明）。此前 11 个 hook 全部指向
     // 同一个 `/api/zlm/hook`，而该端点靠 body 里的 hook_name 分派 →
     // 真实 ZLM 下全部落到 "unknown"，整套 webhook 集成静默失效。
-    let config_items = crate::zlm::hook::hook_config_items(&hook_url);
+    let config_items = crate::zlm::hook::hook_config_items(&hook_url, &client.secret);
 
     // 并发下发 + 总超时（见 `ZlmClient::set_server_configs_batch`）。
     // 修正：此前 11 次**串行**调用，ZLM 不健康时本接口实测等 33 秒

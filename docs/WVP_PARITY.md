@@ -399,6 +399,41 @@ hook body 之前嵌在 `data` 里且带 `hook_name`（现改为真实 ZLM 的扁
 POST 到各自事件 URL）；`openRtpServer` 之前不创建流（真实 ZLM 会，导致"先起流再取地址"
 的第二个请求误判）；`closeRtpServer` 之前不移除流。
 
+### ZLM hook 载荷契约与鉴权（2026-09-12 第十二轮）
+
+上一轮修好了 hook 的**分派**；这一轮逐个事件下发**真实形态的扁平载荷**，验证
+"分派之后是否真的产生效果"，又发现四类缺陷——每一个都表现为"接口回 200、
+日志什么都不打"：
+
+| 问题 | 证据 | 修复 |
+|------|------|------|
+| **`RecordMp4Data` 与真实载荷不匹配** | 官方文档的 `on_record_mp4` 示例 body 里**没有 `schema`**，时长字段是 **`time_len`**（float）、开始时间是 **`start_time`**（整数）；而结构体把 `schema`/`file_duration`/`file_create_time` 声明为必填 → 反序列化必然失败 → 事件被静默丢弃（连 "MP4 recorded" 都不打），**云录像永远不入库** | `schema` 改 Option，`file_duration` 加 `alias="time_len"`、新增 `file_start_time`（`alias="start_time"`，UNIX 秒并格式化为可读时间）；`RecordHlsData` 同样处理 |
+| **`StreamChangedData` 用错字段名** | 真实 ZLM 的字段是 **`regist`**（其 wiki 有专门 commit "on_stream_changed 注册时添加 regist 字段"），结构体只认 `register` → 该事件被静默丢弃，**流上下线状态永远不同步** | 加 `#[serde(alias = "regist")]`；实测日志出现 `Stream changed: rtsp/rtp/… register=true` |
+| **`ServerStartedData` 六个端口全必填** | 少任何一个字段（不同 ZLM 版本字段集不一致）都会让整条 `on_server_started` 被丢弃 —— 而**hook 配置只在这一条事件里做**，于是整套 webhook 静默失效（本轮实测：省略 `hook_port`/`https_port` 即无任何日志） | 全部字段 `#[serde(default)]` 并给出协议默认值；实测残缺载荷（只给 `rtsp_port`/`http_port`）也能完成重新配置 |
+| **hook secret 的传递方式错了** | 真实 ZLM 通过 `[hook] admin_params` 把 secret 作为 **URL 查询参数**附加（body 里没有 secret），而 `check_hook_auth` 只从 body 读 → 带鉴权的 `on_publish` / `on_play` **一律 "secret mismatch"**，ZLM 因此**拒绝一切推流与播放**；而且我们从没给 ZLM 配过 `admin_params`，它附加的 secret 本来也对不上 | ①`hook_config_items()` 增加 `hook.admin_params=secret=<node secret>`（并显式设 `hook.timeoutSec=5`）；②`check_hook_auth` 改为**优先从查询串**取 secret（含百分号解码），body 作为兼容回退。实测：不带 secret → 拒绝；带正确 secret → 放行并处理 |
+| **鉴权 fail-open 且顺序错误** | `check_hook_auth` 写在 `if let Some(data) = from_value(...)` 的**成功分支内** → body 少一个字段就完全跳过鉴权并回 `{"code":0}`（放行）；同时它先判"IP 不可解析"再判 secret，载荷缺 `ip` 时返回的是 "invalid client IP"，掩盖真正的结论 | 鉴权提到解析之前**无条件执行**（fail-closed）；并改为 **secret 优先**、白名单仅在拿得到 IP 时校验 |
+
+**实测**（真实服务 + ZLM 模拟器按真实形态回调）：
+
+```
+on_publish 无 secret                -> {"code":-1,"msg":"Unauthorized: secret mismatch"}
+on_publish ?secret=<正确>            -> {"code":0} 且日志 "on_publish: rtsp/rtp/x from 127.0.0.1"
+on_record_mp4（真实载荷）            -> 日志 "MP4 recorded: 15-53-02.mp4 (1913597 bytes)"
+                                      且 gb_cloud_record 入库 (time_len=11.0)
+on_stream_changed（regist=true）     -> 日志 "Stream changed: rtsp/rtp/… register=true"
+on_server_started（残缺载荷）        -> 日志 "ZLM hook URLs reconfigured"；
+                                      mock 侧收到 hook.enable=1、
+                                      hook.admin_params=secret=<node secret>、
+                                      hook.timeoutSec=5、
+                                      每个事件各自的 /api/hook/<event> URL
+起流（mock 带 admin_params 回调）     -> on_rtp_server_started 被接受 →
+                                      "MediaWaiter resolved" → /api/play/start code 0
+```
+
+**ZLM 模拟器同步补齐两处保真度**（否则这些缺陷会被掩盖）：hook 回调现在会附加
+自身配置里的 `hook.admin_params` 作为查询参数（真实 ZLM 行为），并且
+`openRtpServer`/`closeRtpServer` 会相应地创建/移除流。
+
 ### 仍未解决 / 需真实设备核验
 
 以下是本轮**已定位但未改动**的项，均在代码中留有注释或在此登记，

@@ -49,6 +49,11 @@ pub struct StreamChangedData {
     pub app: String,
     pub stream: String,
     pub vhost: String,
+    /// 真实 ZLM 的字段名是 **`regist`**（其 wiki 有专门的 commit
+    /// "on_stream_changed 注册时添加 regist 字段"），不是 `register`。
+    /// 此前只认 `register` → 该事件反序列化失败、被静默丢弃，
+    /// 流上下线状态因此永远不同步。
+    #[serde(alias = "regist")]
     pub register: bool,
     #[serde(default, alias = "mediaServerId")]
     pub media_server_id: Option<String>,
@@ -65,10 +70,17 @@ pub struct StreamNotFoundData {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecordMp4Data {
-    pub schema: String,
+    /// 真实 ZLM 的 `on_record_mp4` 载荷里**没有** `schema` 字段
+    /// （见 https://docs.zlmediakit.com/guide/media_server/web_hook_api.html
+    /// 的 on_record_mp4 示例 body）。此前声明为必填 `String` → 反序列化必然
+    /// 失败 → 整个事件被静默丢弃（连 "MP4 recorded" 都不会打），
+    /// 云录像永远不入库。
+    #[serde(default)]
+    pub schema: Option<String>,
     pub app: String,
     pub stream: String,
-    pub vhost: String,
+    #[serde(default)]
+    pub vhost: Option<String>,
     #[serde(default, alias = "mediaServerId")]
     pub media_server_id: Option<String>,
     pub file_name: String,
@@ -76,16 +88,29 @@ pub struct RecordMp4Data {
     #[serde(default)]
     pub folder: Option<String>,
     pub file_size: u64,
+    /// 录制时长（秒）。真实 ZLM 的字段名是 **`time_len`**（float）。
+    #[serde(default, alias = "time_len")]
     pub file_duration: f64,
-    pub file_create_time: String,
+    /// 录制开始时间（UNIX 秒）。真实 ZLM 的字段名是 **`start_time`**（整数）。
+    #[serde(default, alias = "start_time")]
+    pub file_start_time: i64,
+    /// 相对播放地址（真实 ZLM 载荷里有，此前未声明）
+    #[serde(default)]
+    pub url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecordHlsData {
-    pub schema: String,
+    /// 与 `RecordMp4Data` 同样的问题：ZLM 的录制类 hook 载荷里没有必填的
+    /// `schema`，时长字段是 `time_len`、开始时间是 `start_time`（UNIX 秒）。
+    /// 声明成必填 `schema`/`file_duration`/`file_create_time` 会让反序列化
+    /// 直接失败、整条事件被静默丢弃。
+    #[serde(default)]
+    pub schema: Option<String>,
     pub app: String,
     pub stream: String,
-    pub vhost: String,
+    #[serde(default)]
+    pub vhost: Option<String>,
     #[serde(default, alias = "mediaServerId")]
     pub media_server_id: Option<String>,
     pub file_name: String,
@@ -93,8 +118,12 @@ pub struct RecordHlsData {
     #[serde(default)]
     pub folder: Option<String>,
     pub file_size: u64,
+    #[serde(default, alias = "time_len")]
     pub file_duration: f64,
-    pub file_create_time: String,
+    #[serde(default, alias = "start_time")]
+    pub file_start_time: i64,
+    #[serde(default)]
+    pub url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -121,12 +150,35 @@ pub struct PublishData {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerStartedData {
+    /// 全部字段都容错。
+    ///
+    /// 此前六个端口都是**必填**：ZLM 少发任何一个（不同版本/发行版字段集并不
+    /// 一致）都会导致 `from_value` 失败 → 整个 `on_server_started` 被静默丢弃
+    /// → 节点状态不更新、端口不同步，**最关键的是 hook 重新配置永远不会执行**
+    /// （hook 配置只在这一条事件里做），于是整套 webhook 静默失效。
+    /// 现在缺字段就用默认值，重要的动作照常执行。
+    #[serde(default)]
     pub port: u16,
+    #[serde(default)]
     pub hook_port: u16,
+    #[serde(default = "default_rtsp_port")]
     pub rtsp_port: u16,
+    #[serde(default = "default_rtmp_port")]
     pub rtmp_port: u16,
+    #[serde(default = "default_http_port")]
     pub http_port: u16,
+    #[serde(default)]
     pub https_port: u16,
+}
+
+fn default_rtsp_port() -> u16 {
+    554
+}
+fn default_rtmp_port() -> u16 {
+    1935
+}
+fn default_http_port() -> u16 {
+    80
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -309,10 +361,25 @@ pub const CONFIGURED_HOOK_EVENTS: &[&str] = &[
     "on_send_rtp_progress",
 ];
 
-/// 构造 `<hook.xxx, url>` 配置项列表（含 `hook.enable`）。
-pub fn hook_config_items(configured_hook_url: &str) -> Vec<(String, String)> {
+/// 构造 `<hook.xxx, url>` 配置项列表（含 `hook.enable` 与 `hook.admin_params`）。
+///
+/// `secret` 会被写进 `hook.admin_params` —— ZLM 会把该参数**附加到每个 hook
+/// 请求的 URL 上**（官方文档：`admin_params=secret=xxx`），而不是放进 body。
+/// 不配置它时，ZLM 会用它自己 config.ini 里的默认值，与我们节点的 secret
+/// 对不上 → 带鉴权的 `on_publish` / `on_play` 全部被我们拒绝 → ZLM 拒绝一切
+/// 推流与播放。
+pub fn hook_config_items(configured_hook_url: &str, secret: &str) -> Vec<(String, String)> {
     let base = hook_base_url(configured_hook_url);
-    let mut items = vec![("hook.enable".to_string(), "1".to_string())];
+    let mut items = vec![
+        ("hook.enable".to_string(), "1".to_string()),
+        (
+            "hook.admin_params".to_string(),
+            format!("secret={}", secret),
+        ),
+        // ZLM 的 hook 超时（秒）：默认 10s，显式收紧到 5s，
+        // 避免 ZLM 因为慢回调而长时间阻塞推流/播放鉴权。
+        ("hook.timeoutSec".to_string(), "5".to_string()),
+    ];
     for event in CONFIGURED_HOOK_EVENTS {
         items.push((
             format!("hook.{}", event),
@@ -622,7 +689,62 @@ fn sync_media_server_stream_count(
 
 pub async fn handle_webhook(
     State(state): State<AppState>,
+    raw_query: Option<axum::extract::RawQuery>,
     Json(event): Json<serde_json::Value>,
+) -> Json<WVPResult<serde_json::Value>> {
+    let query = raw_query.and_then(|q| q.0);
+    handle_webhook_inner(&state, event, query.as_deref()).await
+}
+
+/// 从查询串里取 `secret`。
+///
+/// 真实 ZLMediaKit 通过 `[hook] admin_params` 把 secret 作为**URL 查询参数**
+/// 附带在每个 hook 请求上（默认 `admin_params=secret=xxx`，见官方文档），
+/// 而 **body 里没有 `secret` 字段**。此前只从 body 读 → 所有带鉴权的
+/// `on_publish` / `on_play` 一律返回 "secret mismatch"，
+/// ZLM 因此**拒绝一切推流与播放**。
+fn secret_from_query(query: Option<&str>) -> Option<String> {
+    let q = query?;
+    for kv in q.split('&') {
+        let (k, v) = match kv.split_once('=') {
+            Some(pair) => pair,
+            None => continue,
+        };
+        if k == "secret" {
+            return Some(percent_decode(v));
+        }
+    }
+    None
+}
+
+/// 最小化百分号解码（ZLM 的 secret 可能是 base64，含 `+/=`）。
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).ok();
+            if let Some(b) = hex.and_then(|h| u8::from_str_radix(h, 16).ok()) {
+                out.push(b);
+                i += 3;
+                continue;
+            }
+        }
+        if bytes[i] == b'+' {
+            out.push(b' ');
+        } else {
+            out.push(bytes[i]);
+        }
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).to_string()
+}
+
+pub(crate) async fn handle_webhook_inner(
+    state: &AppState,
+    event: serde_json::Value,
+    query: Option<&str>,
 ) -> Json<WVPResult<serde_json::Value>> {
     let hook_name = event
         .get("hook_name")
@@ -752,6 +874,12 @@ pub async fn handle_webhook(
                     data.file_name,
                     data.file_size
                 );
+                // 真实 ZLM 给的是 start_time（UNIX 秒），本地格式化成可读时间
+                let created = chrono::DateTime::from_timestamp(data.file_start_time, 0)
+                    .map(|t| t.format("%Y-%m-%d %H:%M:%S").to_string())
+                    .unwrap_or_else(|| {
+                        chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string()
+                    });
                 save_record(
                     &state,
                     data.media_server_id,
@@ -762,7 +890,7 @@ pub async fn handle_webhook(
                     data.file_path,
                     data.file_size,
                     data.file_duration,
-                    data.file_create_time,
+                    created,
                 )
                 .await;
             }
@@ -774,6 +902,12 @@ pub async fn handle_webhook(
                     data.file_name,
                     data.file_size
                 );
+                // 真实 ZLM 给的是 start_time（UNIX 秒），本地格式化成可读时间
+                let created = chrono::DateTime::from_timestamp(data.file_start_time, 0)
+                    .map(|t| t.format("%Y-%m-%d %H:%M:%S").to_string())
+                    .unwrap_or_else(|| {
+                        chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string()
+                    });
                 save_record(
                     &state,
                     data.media_server_id,
@@ -784,18 +918,25 @@ pub async fn handle_webhook(
                     data.file_path,
                     data.file_size,
                     data.file_duration,
-                    data.file_create_time,
+                    created,
                 )
                 .await;
             }
         }
         "on_play" => {
-            // Phase 4.1: 播放鉴权 - 检查是否有设备/通道授权可播放
+            // 鉴权必须在**解析 body 之前**无条件执行。
+            //
+            // 修正：此前 `check_hook_auth` 写在 `if let Some(data) = from_value(...)`
+            // 成功分支里 —— 只要 body 少了某个字段导致解析失败，就**完全跳过鉴权**
+            // 并返回 {"code":0}（放行）。对一个鉴权型 hook 来说这是 fail-open：
+            // 任何我们没预料到的载荷都会在无 secret 的情况下被允许播放。
+            // 现在先按 body 里的 ip 字段（尽力而为）做鉴权，失败即拒绝；
+            // 解析失败只影响后续的业务处理，不影响鉴权结论。
+            let client_ip = event.get("ip").and_then(|v| v.as_str()).unwrap_or("");
+            if let Some(resp) = check_hook_auth(state, &event, client_ip, query).await {
+                return resp;
+            }
             if let Some(data) = serde_json::from_value::<PlayData>(event.clone()).ok() {
-                // Phase 4.2: secret 鉴权 + IP 白名单
-                if let Some(resp) = check_hook_auth(&state, &event, &data.ip).await {
-                    return resp;
-                }
                 tracing::info!("on_play: {}/{}/{} from {}",
                     data.schema, data.app, data.stream, data.ip);
                 // 从 stream_id 解析设备/通道（格式：device_id_channel_id 或 device_id$channel_id）
@@ -806,12 +947,12 @@ pub async fn handle_webhook(
             }
         }
         "on_publish" => {
-            // Phase 4.1: 推流鉴权 - 验证设备来源
+            // 鉴权必须先做、且与 body 解析无关（理由同 on_play：此前是 fail-open）
+            let client_ip = event.get("ip").and_then(|v| v.as_str()).unwrap_or("");
+            if let Some(resp) = check_hook_auth(state, &event, client_ip, query).await {
+                return resp;
+            }
             if let Some(data) = serde_json::from_value::<PublishData>(event.clone()).ok() {
-                // Phase 4.2: secret 鉴权 + IP 白名单
-                if let Some(resp) = check_hook_auth(&state, &event, &data.ip).await {
-                    return resp;
-                }
                 tracing::info!("on_publish: {}/{}/{} from {}",
                     data.schema, data.app, data.stream, data.ip);
                 // 验证推流来源 IP 是否与注册设备匹配
@@ -901,7 +1042,7 @@ pub async fn handle_webhook(
                     // body 里没有 hook_name）。此前这里把所有 hook 都指向
                     // 同一个 hook_url，且 on_server_keepalive 缺失 ——
                     // ZLM 收到后无法区分事件，等于整套 hook 都不生效。
-                    let config_items = crate::zlm::hook::hook_config_items(&hook_url);
+                    let config_items = crate::zlm::hook::hook_config_items(&hook_url, &secret);
                     for (key, value) in &config_items {
                         if let Err(e) =
                             zlm_client.set_server_config(&secret, key, value).await
@@ -1241,13 +1382,21 @@ async fn check_hook_auth(
     state: &AppState,
     event: &serde_json::Value,
     client_ip_str: &str,
+    query: Option<&str>,
 ) -> Option<Json<WVPResult<serde_json::Value>>> {
-    use crate::zlm::auth::{AuthResult, HookAuthChecker};
+    use crate::zlm::auth::HookAuthChecker;
 
-    let provided_secret = event
-        .get("secret")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    // 优先用 URL 查询参数里的 secret（真实 ZLM 经 `admin_params` 这样传），
+    // 其次才看 body 里的 `secret`（兼容手工测试与部分魔改实现）。
+    let provided_secret = match secret_from_query(query) {
+        Some(s) if !s.is_empty() => s,
+        _ => event
+            .get("secret")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+    };
+    let provided_secret = provided_secret.as_str();
 
     let media_server_id = event
         .get("mediaServerId")
@@ -1297,34 +1446,45 @@ async fn check_hook_auth(
         })
         .collect();
 
-    // 客户端 IP 解析失败时拒绝（无法验证白名单）
-    let client_ip = match client_ip_str.parse::<std::net::IpAddr>() {
-        Ok(ip) => ip,
-        Err(_) => {
-            tracing::warn!("hook auth: unparseable client IP '{}'", client_ip_str);
-            return Some(Json(WVPResult::error("Unauthorized: invalid client IP")));
-        }
-    };
-
     let checker = HookAuthChecker::new(&expected_secret).with_whitelist(cidrs);
 
-    match checker.check(provided_secret, &client_ip) {
-        AuthResult::Ok => None,
-        AuthResult::UnauthorizedSecret => {
-            tracing::warn!(
-                "hook auth: secret mismatch from {} (server={})",
-                client_ip, media_server_id
-            );
-            Some(Json(WVPResult::error("Unauthorized: secret mismatch")))
-        }
-        AuthResult::IpNotWhitelisted => {
-            tracing::warn!(
-                "hook auth: IP {} not in whitelist (server={})",
-                client_ip, media_server_id
-            );
-            Some(Json(WVPResult::error("Unauthorized: IP not in whitelist")))
+    // 顺序很重要：**先校验 secret，再校验 IP 白名单**。
+    //
+    // 此前是"解析不出客户端 IP 就直接拒绝"，于是当 body 里没有 `ip` 字段时，
+    // 返回的是 "invalid client IP" —— 既掩盖了真正的结论（secret 对不对），
+    // 也让"secret 正确但载荷缺 ip"的合法请求被拒。secret 是主控制项，
+    // 白名单是附加项：主控制项通过后再看白名单，且只在**拿得到 IP** 时才校验
+    // （白名单为空时 `check_ip` 本就返回 true）。
+    if !checker.check_secret(provided_secret) {
+        tracing::warn!(
+            "hook auth: secret mismatch from '{}' (server={})",
+            client_ip_str,
+            media_server_id
+        );
+        return Some(Json(WVPResult::error("Unauthorized: secret mismatch")));
+    }
+
+    if !client_ip_str.is_empty() {
+        match client_ip_str.parse::<std::net::IpAddr>() {
+            Ok(client_ip) => {
+                if !checker.check_ip(&client_ip) {
+                    tracing::warn!(
+                        "hook auth: IP {} not in whitelist (server={})",
+                        client_ip,
+                        media_server_id
+                    );
+                    return Some(Json(WVPResult::error("Unauthorized: IP not allowed")));
+                }
+            }
+            Err(_) => {
+                tracing::warn!("hook auth: unparseable client IP '{}'", client_ip_str);
+                return Some(Json(WVPResult::error("Unauthorized: invalid client IP")));
+            }
         }
     }
+
+    // 走到这里：secret 通过，且（若有 IP）白名单也通过
+    None
 }
 
 #[cfg(test)]
@@ -1663,6 +1823,41 @@ mod hook_config_tests {
         );
     }
 
+    /// 真实 ZLM 经 `[hook] admin_params` 把 secret 作为 URL 查询参数附加，
+    /// body 里没有它。此前只从 body 读 → 所有带鉴权的 on_publish / on_play
+    /// 一律 "secret mismatch"，ZLM 因此拒绝一切推流与播放。
+    #[test]
+    fn secret_is_read_from_query_string() {
+        assert_eq!(
+            secret_from_query(Some("secret=abc123")).as_deref(),
+            Some("abc123")
+        );
+        // 与其它参数混排
+        assert_eq!(
+            secret_from_query(Some("foo=1&secret=S%2B%2F%3D&bar=2")).as_deref(),
+            Some("S+/=")
+        );
+        // `+` 视作空格（表单编码习惯）
+        assert_eq!(
+            secret_from_query(Some("secret=a+b")).as_deref(),
+            Some("a b")
+        );
+        assert_eq!(secret_from_query(Some("other=1")), None);
+        assert_eq!(secret_from_query(Some("")), None);
+        assert_eq!(secret_from_query(None), None);
+        // 键名必须完全匹配，不能把 `mysecret=` 当成 secret
+        assert_eq!(secret_from_query(Some("mysecret=x")), None);
+    }
+
+    #[test]
+    fn percent_decode_handles_malformed_input() {
+        assert_eq!(percent_decode("abc"), "abc");
+        assert_eq!(percent_decode("%41%42"), "AB");
+        // 截断的百分号序列原样保留，不 panic
+        assert_eq!(percent_decode("a%4"), "a%4");
+        assert_eq!(percent_decode("a%zz"), "a%zz");
+    }
+
     #[test]
     fn hook_event_url_appends_api_hook_path() {
         assert_eq!(
@@ -1680,10 +1875,17 @@ mod hook_config_tests {
     /// 共用同一个地址会让 body（无 hook_name）无法判别类型。
     #[test]
     fn hook_config_items_use_distinct_per_event_urls() {
-        let items = hook_config_items("http://127.0.0.1:18080/api/zlm/hook");
+        let items = hook_config_items("http://127.0.0.1:18080/api/zlm/hook", "s3cr3t");
         assert_eq!(items[0], ("hook.enable".to_string(), "1".to_string()));
-        // 1 个 enable + 每个事件 1 项
-        assert_eq!(items.len(), 1 + CONFIGURED_HOOK_EVENTS.len());
+        // admin_params 必须带上 secret —— ZLM 靠它把 secret 附加到 hook URL 上
+        assert!(
+            items
+                .iter()
+                .any(|(k, v)| k == "hook.admin_params" && v == "secret=s3cr3t"),
+            "必须配置 hook.admin_params=secret=<node secret>"
+        );
+        // enable + admin_params + timeoutSec + 每个事件 1 项
+        assert_eq!(items.len(), 3 + CONFIGURED_HOOK_EVENTS.len());
 
         let mut urls: Vec<&String> = items
             .iter()
@@ -1695,17 +1897,17 @@ mod hook_config_tests {
         urls.dedup();
         assert_eq!(urls.len(), total, "每个事件的回调 URL 必须互不相同");
 
+        // 只校验事件项（`hook.on_*`）；enable / admin_params / timeoutSec
+        // 不是 URL，不参与该断言。
         for (key, value) in &items {
-            if let Some(event) = key.strip_prefix("hook.") {
-                if event != "enable" {
-                    assert!(
-                        value.ends_with(&format!("/api/hook/{}", event)),
-                        "{} 的 URL 应以 /api/hook/{} 结尾，实际 {}",
-                        key,
-                        event,
-                        value
-                    );
-                }
+            if let Some(event) = key.strip_prefix("hook.on_") {
+                assert!(
+                    value.ends_with(&format!("/api/hook/on_{}", event)),
+                    "{} 的 URL 应以 /api/hook/on_{} 结尾，实际 {}",
+                    key,
+                    event,
+                    value
+                );
             }
         }
     }
