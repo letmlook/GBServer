@@ -33,8 +33,10 @@ async fn init_db_tables(pool: &db::Pool) -> anyhow::Result<()> {
     db::alarm::ensure_columns(pool).await?;
     db::common_channel::ensure_columns(pool).await?;
     // Phase 4.5: 幂等迁移 —— 流状态统一字段
-    let _ = db::stream_push::ensure_stream_status_column(pool).await;
-    let _ = db::stream_proxy::ensure_stream_status_column(pool).await;
+    // 修正：此前吞掉错误。这两列是 gb_stream_push / gb_stream_proxy 查询的必需列，
+    // 建列失败却在启动时静默略过，只会把问题推迟成运行期的 "no such column"。
+    db::stream_push::ensure_stream_status_column(pool).await?;
+    db::stream_proxy::ensure_stream_status_column(pool).await?;
     // 旧版 SQLite 库升级补建（幂等）：下列表曾缺失于 init-sqlite-2.7.4.sql，
     // 旧库核心表齐全、不会触发全量 init，需启动时单独补建（仅 SQLite 需要，
     // PG/MySQL init 脚本一直包含这些表）。

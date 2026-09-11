@@ -1220,9 +1220,14 @@ pub async fn position_info(
                 let lat = loc.latitude;
                 let time = loc.time;
                 tokio::spawn(async move {
-                    let _ = jt_db::update_last_position(
-                        &pool, &phone_owned, lng, lat, time,
-                    ).await;
+                    if let Err(e) =
+                        jt_db::update_last_position(&pool, &phone_owned, lng, lat, time).await
+                    {
+                        tracing::error!(
+                            "JT1078 位置回写失败 phone={} lng={} lat={}: {}",
+                            phone_owned, lng, lat, e
+                        );
+                    }
                 });
                 return Json(serde_json::json!({
                     "code": 0,

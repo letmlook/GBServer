@@ -1167,7 +1167,13 @@ pub async fn platform_delete(
                 .await;
             }
         }
-        let _ = platform_channel::batch_delete_by_platform(&state.pool, id).await;
+        // 修正：级联删除失败被 `let _ =` 吞掉时，平台行会被删掉但 gb_platform_channel
+        // 里还留着一批指向不存在平台的孤儿行。必须传播。
+        platform_channel::batch_delete_by_platform(&state.pool, id)
+            .await
+            .map_err(|e| {
+                AppError::business(ErrorCode::Error500, format!("删除平台通道关联失败: {}", e))
+            })?;
         platform_db::delete_by_id(&state.pool, id).await?;
     }
     Ok(Json(WVPResult::success(serde_json::json!({

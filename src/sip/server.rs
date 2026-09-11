@@ -3183,10 +3183,13 @@ let renewal_pool = pool.clone();
             direction
         );
         // Persist position history to DB
-        let _ = ph::insert_position(
+        if let Err(e) = ph::insert_position(
             pool, device_id, &time, longitude, latitude, altitude, speed, direction,
         )
-        .await;
+        .await
+        {
+            tracing::error!("设备 {} 的 MobilePosition 历史写库失败: {}", device_id, e);
+        }
 
         let response_body = format!(
             r#"<?xml version="1.0" encoding="UTF-8"?><Response><CmdType>MobilePosition</CmdType><SN>{}</SN><DeviceID>{}</DeviceID><Result>OK</Result></Response>"#,

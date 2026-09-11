@@ -562,36 +562,41 @@ pub struct ChannelAudioQuery {
 pub async fn channel_audio(
     State(state): State<AppState>,
     Query(q): Query<ChannelAudioQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
     let channel_id = q.channel_id.unwrap_or(0);
     let audio = q.audio.unwrap_or(false);
 
     if channel_id == 0 {
-        return Json(WVPResult::error("channel_id is required"));
+        return Ok(Json(WVPResult::error("channel_id is required")));
     }
 
     tracing::info!("Channel audio update: channel_id={}, audio={}", channel_id, audio);
 
-    if let Some(ref zlm_client) = state.zlm_client {
-        let schema = if audio { "rtsp" } else { "rtmp" };
-        match zlm_client.get_media_list(Some(schema), None, None).await {
-            Ok(_streams) => {
-                tracing::info!("ZLM streams updated for audio mode: {}", audio);
-                // Persist audio state to DB
-                let _ = update_channel_has_audio(&state.pool, channel_id, audio).await;
-            }
-            Err(e) => {
-                tracing::error!("Failed to update ZLM streams: {}", e);
-            }
-        }
+    // 2026-09-12 修正：此前这里对一个**只读查询**（get_media_list）的结果视而不见，
+    // 却打印 "ZLM streams updated for audio mode" —— 既没有真的改 ZLM，
+    // 又把真正的 DB 写入错误用 `let _ =` 吞掉，然后返回「通道音频设置已更新」。
+    //
+    // 该设置的真实作用：`gb_device_channel.has_audio` 会被 `sip/gb28181/catalog.rs`
+    // 读取并作为 `<HasAudio>` 写入上报给上级平台的目录响应。因此**落库即生效**，
+    // 这里只需如实写入并如实报告失败。
+    let affected = update_channel_has_audio(&state.pool, channel_id, audio)
+        .await
+        .map_err(|e| {
+            AppError::business(ErrorCode::Error500, format!("通道音频设置写入失败: {}", e))
+        })?;
+    if affected == 0 {
+        return Err(AppError::business(
+            ErrorCode::Error404,
+            format!("通道不存在: id={}", channel_id),
+        ));
     }
 
-    Json(WVPResult::success(serde_json::json!({
+    Ok(Json(WVPResult::success(serde_json::json!({
         "channelId": channel_id,
         "audio": audio,
-        "message": "通道音频设置已更新",
+        "message": "通道音频设置已更新（将在上报上级平台的目录中体现）",
         "code": 0
-    })))
+    }))))
 }
 
 
@@ -611,26 +616,36 @@ pub struct StreamIdentificationUpdate {
 pub async fn channel_stream_identification_update(
     State(state): State<AppState>,
     Query(body): Query<StreamIdentificationUpdate>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
     let device_db_id = body.device_db_id.unwrap_or(0);
     let id = body.id.unwrap_or(0);
     let stream_identification = body.stream_identification.unwrap_or_default();
 
     if id == 0 {
-        return Json(WVPResult::error("id is required"));
+        return Ok(Json(WVPResult::error("id is required")));
     }
 
     tracing::info!("Stream identification update: id={}, stream={}", id, stream_identification);
-    // Persist stream identification to DB
-    let _ = update_channel_stream_identification(&state.pool, id, &stream_identification).await;
+    // 修正：此前写入错误被 `let _ =` 吞掉后仍返回「更新成功」
+    let affected = update_channel_stream_identification(&state.pool, id, &stream_identification)
+        .await
+        .map_err(|e| {
+            AppError::business(ErrorCode::Error500, format!("流标识写入失败: {}", e))
+        })?;
+    if affected == 0 {
+        return Err(AppError::business(
+            ErrorCode::Error404,
+            format!("通道不存在: id={}", id),
+        ));
+    }
 
-    Json(WVPResult::success(serde_json::json!({
+    Ok(Json(WVPResult::success(serde_json::json!({
         "deviceDbId": device_db_id,
         "id": id,
         "streamIdentification": stream_identification,
         "message": "流标识更新成功",
         "code": 0
-    })))
+    }))))
 }
 
 #[derive(Debug, Deserialize)]

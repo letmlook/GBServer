@@ -915,10 +915,11 @@ pub async fn map_thin_clear(
     let channel_id = q.channel_id.unwrap_or(0);
     if channel_id > 0 {
         #[cfg(feature = "postgres")]
-        let _ = sqlx::query("UPDATE gb_device_channel SET geojson = NULL WHERE id = $1")
+        sqlx::query("UPDATE gb_device_channel SET geojson = NULL WHERE id = $1")
             .bind(channel_id)
             .execute(&state.pool)
-            .await;
+            .await
+            .map_err(|e| AppError::business(ErrorCode::Error500, format!("清除稀化数据失败: {}", e)))?;
         #[cfg(any(feature = "mysql", feature = "sqlite"))]
         sqlx::query("UPDATE gb_device_channel SET geojson = NULL WHERE id = ?")
             .bind(channel_id)
@@ -1054,19 +1055,32 @@ pub async fn map_thin_save(
     let geojson_str = serde_json::to_string(&geojson).unwrap_or_default();
 
     // Save to channel's geojson field
+    // 修正：此前两条分支都用 `let _ =` 吞掉错误，稀化算了半天却可能根本没落库，
+    // 接口仍返回成功。现在如实传播。
     #[cfg(feature = "postgres")]
-    let _ = sqlx::query("UPDATE gb_device_channel SET geojson = $1 WHERE id = $2")
+    let affected = sqlx::query("UPDATE gb_device_channel SET geojson = $1 WHERE id = $2")
         .bind(&geojson_str)
         .bind(channel_id)
         .execute(&state.pool)
-        .await;
+        .await
+        .map_err(|e| AppError::business(ErrorCode::Error500, format!("保存稀化数据失败: {}", e)))?
+        .rows_affected();
 
     #[cfg(any(feature = "mysql", feature = "sqlite"))]
-    let _ = sqlx::query("UPDATE gb_device_channel SET geojson = ? WHERE id = ?")
+    let affected = sqlx::query("UPDATE gb_device_channel SET geojson = ? WHERE id = ?")
         .bind(&geojson_str)
         .bind(channel_id)
         .execute(&state.pool)
-        .await;
+        .await
+        .map_err(|e| AppError::business(ErrorCode::Error500, format!("保存稀化数据失败: {}", e)))?
+        .rows_affected();
+
+    if affected == 0 {
+        return Err(AppError::business(
+            ErrorCode::Error404,
+            format!("通道不存在: id={}", channel_id),
+        ));
+    }
 
     tracing::info!("Map thin saved for channel {}: {} -> {} points", channel_id, coords.len(), simplified.len());
 
@@ -1096,18 +1110,29 @@ pub async fn map_thin_draw(
     // If geojson provided in request, save it and return
     if let Some(ref geojson) = body.geojson {
         let geojson_str = serde_json::to_string(geojson).unwrap_or_default();
+        // 修正：此前写入失败会被静默忽略，但仍把入参回显为“已保存”
         #[cfg(feature = "postgres")]
-        let _ = sqlx::query("UPDATE gb_device_channel SET geojson = $1 WHERE id = $2")
+        let affected = sqlx::query("UPDATE gb_device_channel SET geojson = $1 WHERE id = $2")
             .bind(&geojson_str)
             .bind(channel_id)
             .execute(&state.pool)
-            .await;
+            .await
+            .map_err(|e| AppError::business(ErrorCode::Error500, format!("保存绘制数据失败: {}", e)))?
+            .rows_affected();
         #[cfg(any(feature = "mysql", feature = "sqlite"))]
-        let _ = sqlx::query("UPDATE gb_device_channel SET geojson = ? WHERE id = ?")
+        let affected = sqlx::query("UPDATE gb_device_channel SET geojson = ? WHERE id = ?")
             .bind(&geojson_str)
             .bind(channel_id)
             .execute(&state.pool)
-            .await;
+            .await
+            .map_err(|e| AppError::business(ErrorCode::Error500, format!("保存绘制数据失败: {}", e)))?
+            .rows_affected();
+        if affected == 0 {
+            return Err(AppError::business(
+                ErrorCode::Error404,
+                format!("通道不存在: id={}", channel_id),
+            ));
+        }
         return Ok(Json(WVPResult::success(geojson.clone())));
     }
 

@@ -200,9 +200,15 @@ pub async fn auth_middleware(
             let resource = path.clone();
 
             tokio::spawn(async move {
-                let _ = crate::db::audit_log::insert(
-                    &pool, &username, &action, &resource, &method, &path, &ip, 200,
-                ).await;
+                // 审计失败不应阻断请求，但绝不能静默丢失
+                if let Err(e) =
+                    crate::db::audit_log::insert(
+                        &pool, &username, &action, &resource, &method, &path, &ip, 200,
+                    )
+                    .await
+                {
+                    tracing::error!("审计日志写入失败 user={} {} {}: {}", username, method, path, e);
+                }
             });
 
             return next.run(request).await;
@@ -242,9 +248,17 @@ pub async fn auth_middleware(
                 let username = format!("apikey:{}", api_key_record.app.as_deref().unwrap_or("unknown"));
 
                 tokio::spawn(async move {
-                    let _ = crate::db::audit_log::insert(
-                        &pool, &username, &action, &resource, &method, &path, &ip, 200,
-                    ).await;
+                    if let Err(e) =
+                        crate::db::audit_log::insert(
+                            &pool, &username, &action, &resource, &method, &path, &ip, 200,
+                        )
+                        .await
+                    {
+                        tracing::error!(
+                            "审计日志写入失败 user={} {} {}: {}",
+                            username, method, path, e
+                        );
+                    }
                 });
 
                 return next.run(request).await;

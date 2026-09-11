@@ -935,9 +935,12 @@ pub async fn handle_webhook(
                 tracing::debug!("ZLM server keepalive: {}", server_id);
                 // Update last keepalive time in DB
                 let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-                let _ =
+                if let Err(e) =
                     crate::db::media_server::update_last_keepalive(&state.pool, server_id, &now)
-                        .await;
+                        .await
+                {
+                    tracing::error!("更新 ZLM 节点 {} 心跳时间失败: {}", server_id, e);
+                }
             }
         }
         "on_rtp_server_started" => {

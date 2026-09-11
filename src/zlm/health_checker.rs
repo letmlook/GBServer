@@ -49,7 +49,14 @@ impl ZlmHealthChecker {
                 if let Some(ref pool) = self.pool {
                     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
                     let online = new_status == ZlmServerStatus::Online;
-                    let _ = crate::db::media_server::update_status(pool, id, online, &now).await;
+                    if let Err(e) =
+                        crate::db::media_server::update_status(pool, id, online, &now).await
+                    {
+                        tracing::error!(
+                            "ZLM 节点 {} 状态写库失败 (online={}): {}",
+                            id, online, e
+                        );
+                    }
                 }
             }
 
