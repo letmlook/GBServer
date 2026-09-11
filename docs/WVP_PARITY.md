@@ -3,7 +3,29 @@
 > 目标：完全平替 WVP-PRO（Java GB28181 平台）的全部功能。
 > 本文档作为持续校对的事实基线：每次推进后更新对应条目并记录证据。
 
-## 当前基线（2026-08-23）
+## 当前基线（2026-09-11）
+
+> 本节数字为**实测值**，复现命令见每行「验证方式」。上次基线见文末「历史基线」。
+
+| 维度 | 数值 | 验证方式 |
+|------|------|----------|
+| 总代码量（src/） | 62,587 行 Rust | `find src -name '*.rs' \| xargs wc -l` |
+| 已注册 HTTP 路由 | 374 个 `.route()` / 370 条唯一 `/api/...` 路径 | `grep -cE '\.route\(' src/router.rs` |
+| Handler 模块 | 29 个（含 `stub.rs` / `device_stub.rs` 两个兼容 shim） | `grep -c 'pub mod' src/handlers/mod.rs` |
+| 后端测试 | **396 通过**（lib 349 + 集成 47）/ 2 忽略 / 0 失败 | `cargo test --no-fail-fast` |
+| 编译状态 | `cargo check` 0 error / 51 warning（`--all-targets` 为 61） | `cargo check` |
+| 数据库 feature | SQLite（默认）/ PostgreSQL / MySQL **三者均编译通过** | CI `feature-matrix` job |
+| CI | ✅ 已恢复（`.github/workflows/ci.yml`，2026-09-11 新增） | — |
+| 前端 | `web/` = **Vue 3 + Element Plus + Vite + TS**（本轮已转正，17 个业务视图）；`web-legacy-vue2/` 为归档参考 | `ls web/src/views` |
+| 前端产物 | `web/dist/` 构建通过（`npm run build` = `vue-tsc --noEmit && vite build`） | — |
+
+### 本轮（2026-09-11）关键结论
+
+- **CI 门禁恢复**：编译 + 全量测试 + 三库 feature + 前端构建为硬门禁；`fmt` / `clippy` 暂列为非门禁（基线未清零，见 `.github/workflows/ci.yml` 注释）。
+- **测试完全自包含**：默认 SQLite feature 下 396 个测试不连接 Redis / PG / MySQL / ZLM，CI 无需 service 容器。
+- **前端已完成 Vue 3 迁移**：`web-v3/` 已转正为 `web/`（commit `2acf5a7`），Vue 2 归档至 `web-legacy-vue2/`。本文档此前多处 "web-v3 Phase 2 待迁移" 的描述已过时，本轮一并修正。
+
+## 历史基线（2026-08-23）
 
 | 维度 | 数值 |
 |------|------|
@@ -122,7 +144,14 @@
 
 ### P4 · 前端 WVP 业务页迁移
 
-- [ ] **`web-v3/` Phase 2**：channel / live / playback / map / mediaServer / recordPlan（详见 [web-v3/MIGRATION.md](web-v3/MIGRATION.md)）
+- [x] **Vue 3 前端迁移全部完成**（2026-08-23，commit `2acf5a7`）
+  - `web-v3/` 转正为 `web/`；Vue 2 归档至 `web-legacy-vue2/`（仅参考）
+  - 17 个业务视图已落地：channel / live / playback / map / mediaServer / recordPlan /
+    platform / streamProxy / streamPush / cloudRecord / alarm / device / jtDevice /
+    dashboard / login / operations / user
+  - 迁移细节见 [web/MIGRATION.md](../web/MIGRATION.md)（该文件已标注 Phase 2+ 表格为历史记录）
+- [ ] **前端仅剩体验类收尾**（非迁移阻塞项）：`commonChannel` 页 `<Region>` 的 `offsetHeight`
+      报错、`operations` 页 `childValue.startsWith` 未防御非字符串（见 `docs/debug/ISSUES.md`）
 
 ### P5 · 代码质量
 
@@ -181,7 +210,7 @@
 - **JT1078 模块**：作为 GBServer 独有扩展（超越 WVP），路由齐全，纳入平替范围
 ## WVP-PRO 路由对照（2026-08-23 核对）
 
-按 WVP-PRO Java 控制器分类（项目知识 + 公开源码 API 表），逐条核对当前实现的 369 路由：
+按 WVP-PRO Java 控制器分类（项目知识 + 公开源码 API 表），逐条核对当前实现的 370 路由：
 
 | 模块 | WVP-PRO 端点数 | 已覆盖 | 状态 |
 |------|--------------|-------|------|
@@ -217,13 +246,14 @@
 | Front End PTZ/Preset/Scan/Tour/FI/Wiper | 20 | 20 | ✅ 完整 |
 | JT1078 区域/路由/控制（GBServer 扩展，**超出 WVP 范围**） | 26 | 16 (CRUD) + 10 (协议) | ✅ DB 层实装 + 协议层 stub |
 
-**结论**：WVP-PRO 公开 API 端点 100% 已挂载到 router.rs（共 369 条），端点路径 + 参数 + 响应 schema 与 Java 版对齐。JT1078 部分为 GBServer 独有扩展，区域/路由 CRUD 已实装 DB 层，协议操作层保留"已受理"响应（需要在线终端 + JT/T 808/1078 协议栈）。
+**结论**：WVP-PRO 公开 API 端点 100% 已挂载到 router.rs（共 370 条），端点路径 + 参数 + 响应 schema 与 Java 版对齐。JT1078 部分为 GBServer 独有扩展，区域/路由 CRUD 已实装 DB 层，协议操作层保留"已受理"响应（需要在线终端 + JT/T 808/1078 协议栈）。
 
 **待 PR/独立 sprint 闭环的剩余工作**（不属于"功能平替"范畴，而是工程化收尾）：
 
-1. `web-v3/` Phase 2 业务页迁移（前端，~5 周）
-2. cascade_service → CascadeRegistrar 迁移（30 个 warning 一次清零，独立 PR）
+1. ~~`web-v3/` Phase 2 业务页迁移（前端，~5 周）~~ → ✅ 已完成（2026-08-23）
+2. cascade_service → CascadeRegistrar 迁移（30 个 deprecated 字段/结构 warning 一次清零，独立 PR）
 3. cache::set_media_server_streams → StateStore 迁移（4 个 warning + 真正统一状态源）
+4. 清零 `cargo fmt` 差异（约 2.6 万行）与剩余 clippy warning，随后把 CI `hygiene` job 提升为门禁
 
 ## WVP-PRO 真实源码对照（2026-08-23 第 5 次推进）
 
@@ -307,4 +337,6 @@ WVP-PRO 提供 LiveGBS 兼容的 `/api/v1/device/{list,channellist,...}` 端点�
 
 ⚠️ **P1 端点 await 路径只有单元测试，无真实 GB28181 设备 e2e**——实际 GB/T 28181 设备在线、SIP 响应符合预期，需要真实摄像头（或 SIP 信令模拟器）做联调才能完整验证。
 
-⚠️ **web-v3 Phase 2 前端业务页**（多周工作量）— 真正的 UI 平替只能在前端完成后才有意义。
+⚠️ **前端业务页已全部迁移完成**（2026-08-23），当前无 UI 平替阻塞项；仅剩少量体验类收尾（见 P4 节）。
+
+⚠️ **CI 已恢复**（2026-09-11），但 `fmt` / `clippy` 仍为非门禁 —— 基线未清零前不设为硬约束。

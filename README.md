@@ -341,6 +341,26 @@ cargo test --no-default-features --features postgres --lib       # PostgreSQL
 cargo test --no-default-features --features mysql --lib           # MySQL
 ```
 
+### 持续集成（GitHub Actions）
+
+每次 push 与 PR 都会跑 [`.github/workflows/ci.yml`](.github/workflows/ci.yml)：
+
+| Job | 内容 | 是否门禁 |
+|-----|------|----------|
+| `backend` | `cargo check --all-targets` + `cargo test --no-fail-fast`（SQLite 默认 feature） | ✅ |
+| `feature-matrix` | `sqlite` / `postgres` / `mysql` 三种 feature 各自可编译 | ✅ |
+| `frontend` | `npm ci` + `npm run build`（`vue-tsc --noEmit && vite build`） | ✅ |
+| `hygiene` | `cargo fmt --check` + `cargo clippy` | ❌ 仅报告 |
+
+> 默认 SQLite feature 下的测试**完全自包含**（不连接 Redis / PostgreSQL / MySQL / ZLM），
+> 因此 CI 无需任何 service 容器。
+>
+> `hygiene` 暂不设为门禁：当前基线尚有约 2.6 万行 `rustfmt` 差异与 50+ clippy warning
+> （主要是 `cascade_service` 待迁移产生的 deprecated 告警）。清理完成后即可摘掉
+> `continue-on-error` 提升为硬约束。
+>
+> 本地等效命令：`just feature-check`（三 feature 编译）、`just clippy`、`just fmt`。
+
 ### 浏览器端到端（Playwright）
 
 ```bash
