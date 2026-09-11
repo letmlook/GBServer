@@ -80,27 +80,23 @@ pub async fn insert_batch(pool: &Pool, rows: &[NewLogEntry]) -> sqlx::Result<u64
 /// 分页查询日志，返回 `(总数, 当页数据)`。
 ///
 /// 过滤条件：`query`（message 模糊）、`level`（等值）、`start` / `end`（time 闭区间）。
-pub async fn list_paged(
-    pool: &Pool,
+/// 方言占位符：postgres 用 `$n`，sqlite/mysql 用 `?`。
+fn ph(i: usize) -> String {
+    if cfg!(feature = "postgres") {
+        format!("${}", i)
+    } else {
+        "?".to_string()
+    }
+}
+
+/// 依据过滤条件拼出 `WHERE` 子句与绑定值。
+/// `list_paged` 与 `export` 共用，避免两处条件写法漂移。
+fn build_filter(
     query: Option<&str>,
     level: Option<&str>,
     start: Option<&str>,
     end: Option<&str>,
-    page: u32,
-    count: u32,
-) -> sqlx::Result<(i64, Vec<LogEntry>)> {
-    let page = page.max(1);
-    let count = count.clamp(1, 500);
-    let offset = ((page - 1) * count) as i64;
-
-    // 动态拼 WHERE：三种方言的占位符不同，这里按方言选择
-    let ph = |i: usize| -> String {
-        if cfg!(feature = "postgres") {
-            format!("${}", i)
-        } else {
-            "?".to_string()
-        }
-    };
+) -> (String, Vec<String>) {
     let mut conds: Vec<String> = Vec::new();
     let mut binds: Vec<String> = Vec::new();
     if let Some(q) = query.map(str::trim).filter(|s| !s.is_empty()) {
@@ -125,6 +121,50 @@ pub async fn list_paged(
     } else {
         format!(" WHERE {}", conds.join(" AND "))
     };
+    (where_clause, binds)
+}
+
+/// 导出过滤后的日志（按时间正序，供下载）。
+///
+/// `limit` 上限 50000：导出是给人看的诊断文件，不是数据迁移通道；
+/// 无上限会让一次请求把整张表读进内存。
+pub async fn export(
+    pool: &Pool,
+    query: Option<&str>,
+    level: Option<&str>,
+    start: Option<&str>,
+    end: Option<&str>,
+    limit: u32,
+) -> sqlx::Result<Vec<LogEntry>> {
+    let (where_clause, binds) = build_filter(query, level, start, end);
+    let limit = limit.clamp(1, 50_000);
+    // 正序：日志文件按时间阅读
+    let sql = format!(
+        "SELECT id, time, level, logger, thread, message, source FROM gb_log{} ORDER BY id ASC LIMIT {}",
+        where_clause,
+        ph(binds.len() + 1)
+    );
+    let mut q = sqlx::query_as::<_, LogEntry>(&sql);
+    for b in &binds {
+        q = q.bind(b);
+    }
+    q.bind(limit as i64).fetch_all(pool).await
+}
+
+pub async fn list_paged(
+    pool: &Pool,
+    query: Option<&str>,
+    level: Option<&str>,
+    start: Option<&str>,
+    end: Option<&str>,
+    page: u32,
+    count: u32,
+) -> sqlx::Result<(i64, Vec<LogEntry>)> {
+    let page = page.max(1);
+    let count = count.clamp(1, 500);
+    let offset = ((page - 1) * count) as i64;
+
+    let (where_clause, binds) = build_filter(query, level, start, end);
 
     let count_sql = format!("SELECT COUNT(*) FROM gb_log{}", where_clause);
     let mut cq = sqlx::query_scalar::<_, i64>(&count_sql);

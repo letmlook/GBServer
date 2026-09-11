@@ -711,33 +711,91 @@ pub async fn log_list(
     }
 }
 
-/// GET /api/log/file/{fileName} - 下载指定日志文件
-/// Returns a binary stream with Content-Disposition header for download.
+/// GET /api/log/file/{fileName} - 下载日志文件
+///
+/// 两种用法：
+/// 1. **导出结构化日志**（真正可用的路径）：
+///    `gbserver-log.csv` / `gbserver-log.json`
+///    —— 直接导出 `gb_log` 表内容，支持 `query` / `level` / `startTime` /
+///    `endTime` 过滤。
+///    本进程**不写日志文件**（tracing 采集层直接把结构化日志落到 `gb_log`），
+///    所以此前固定去 `./logs/<fileName>` 找文件是必然 404 的死路径。
+/// 2. 运维自行放置/挂载在 `./logs/` 下的真实文件；文件名经过严格校验
+///    （见 [`safe_log_file_name`]）。
 pub async fn log_file_download(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Path(file_name): Path<String>,
+    Query(q): Query<LogExportQuery>,
 ) -> Result<axum::response::Response, AppError> {
+    use axum::body::Body;
     use axum::http::{header, StatusCode};
     use axum::response::Response;
-    use axum::body::Body;
-    use std::path::PathBuf;
 
-    // 日志文件目录：项目根目录 logs/，以便与前端一致的日志文件位置
-    let base_dir = PathBuf::from("./logs");
-    let file_path = base_dir.join(&file_name);
+    // ---- 1) 结构化日志导出 ----
+    let lower = file_name.to_ascii_lowercase();
+    if lower == "gbserver-log.csv" || lower == "gbserver-log.json" {
+        let rows = crate::db::log::export(
+            &state.pool,
+            q.query.as_deref(),
+            q.level.as_deref(),
+            q.start_time.as_deref(),
+            q.end_time.as_deref(),
+            50_000,
+        )
+        .await?;
 
-    // 验证文件是否存在
-    if !file_path.exists() {
-        return Err(AppError::business(ErrorCode::Error404, format!("日志文件不存在: {}", file_name)));
+        let (body, content_type) = if lower.ends_with(".csv") {
+            (logs_to_csv(&rows), "text/csv; charset=utf-8")
+        } else {
+            (
+                serde_json::to_vec_pretty(&rows)
+                    .map_err(|e| AppError::business(ErrorCode::Error500, format!("序列化日志失败: {}", e)))?,
+                "application/json; charset=utf-8",
+            )
+        };
+
+        return Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, content_type)
+            .header(
+                header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{}\"", file_name),
+            )
+            .body(Body::from(body))
+            .map_err(|e| AppError::business(ErrorCode::Error500, format!("构造响应失败: {}", e)));
     }
 
-    // 读取文件内容
-    let data = tokio::fs::read(&file_path)
-        .await
-        .map_err(|_| AppError::business(ErrorCode::Error404, format!("日志文件读取失败: {}", file_name)))?;
+    // ---- 2) 运维放置的真实日志文件 ----
+    let Some(safe_name) = safe_log_file_name(&file_name) else {
+        // 明确拒绝而不是默默返回 404：这是安全边界，不该被当成"文件不存在"
+        return Err(AppError::business(
+            ErrorCode::Error400,
+            "非法日志文件名（只允许字母、数字、点、横线、下划线，且不允许以点开头）",
+        ));
+    };
 
-    // 构造响应：下载流
-    let resp = Response::builder()
+    let file_path = std::path::PathBuf::from("./logs").join(safe_name);
+    if !file_path.is_file() {
+        return Err(AppError::business(
+            ErrorCode::Error404,
+            format!("日志文件不存在: {}", file_name),
+        ));
+    }
+
+    // 修正：此前把所有读取错误都映射成 404（`map_err(|_| ...404)`），
+    // 权限不足 / IO 错误会被伪装成"文件不存在"。现在如实区分。
+    let data = tokio::fs::read(&file_path).await.map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            AppError::business(ErrorCode::Error404, format!("日志文件不存在: {}", file_name))
+        } else {
+            AppError::business(
+                ErrorCode::Error500,
+                format!("日志文件读取失败 {}: {}", file_name, e),
+            )
+        }
+    })?;
+
+    Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "application/octet-stream")
         .header(
@@ -745,8 +803,58 @@ pub async fn log_file_download(
             format!("attachment; filename=\"{}\"", file_name),
         )
         .body(Body::from(data))
-        .unwrap();
-    Ok(resp)
+        .map_err(|e| AppError::business(ErrorCode::Error500, format!("构造响应失败: {}", e)))
+}
+
+/// 日志导出过滤条件。
+#[derive(Debug, Deserialize)]
+pub struct LogExportQuery {
+    pub query: Option<String>,
+    pub level: Option<String>,
+    #[serde(alias = "startTime")]
+    pub start_time: Option<String>,
+    #[serde(alias = "endTime")]
+    pub end_time: Option<String>,
+}
+
+/// 校验日志文件名，防目录穿越。
+///
+/// 修正前直接 `PathBuf::from("./logs").join(file_name)`：axum 的路径参数会做
+/// 百分号解码，`..%2f` 之类会被还原成 `../`，因此 `GET
+/// /api/log/file/..%2f..%2fetc%2fpasswd` 可以读到仓库外的任意文件。
+/// 现在只接受"单段、纯字母数字与 `._-`、不以点开头、不含 `..`"的文件名。
+fn safe_log_file_name(name: &str) -> Option<&str> {
+    let ok = !name.is_empty()
+        && name.len() <= 128
+        && !name.starts_with('.')
+        && !name.contains("..")
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'));
+    ok.then_some(name)
+}
+
+/// 把日志导出成 CSV。字段一律加引号并转义内部引号，
+/// 避免日志正文里的逗号/换行/引号破坏表格结构。
+fn logs_to_csv(rows: &[crate::db::log::LogEntry]) -> Vec<u8> {
+    fn esc(v: Option<&str>) -> String {
+        let s = v.unwrap_or("");
+        format!("\"{}\"", s.replace('"', "\"\""))
+    }
+    let mut out = String::from("id,time,level,logger,thread,source,message\n");
+    for r in rows {
+        out.push_str(&format!(
+            "{},{},{},{},{},{},{}\n",
+            r.id,
+            esc(Some(r.time.as_str())),
+            esc(Some(r.level.as_str())),
+            esc(r.logger.as_deref()),
+            esc(r.thread.as_deref()),
+            esc(r.source.as_deref()),
+            esc(r.message.as_deref()),
+        ));
+    }
+    out.into_bytes()
 }
 
 // ========== userApiKey ==========
@@ -2022,3 +2130,59 @@ pub async fn server_shutdown() -> impl IntoResponse {
     }))).into_response()
 }
 
+#[cfg(test)]
+mod log_export_tests {
+    use super::*;
+
+    /// 目录穿越必须被拒绝：axum 路径参数会做百分号解码，
+    /// 修正前 `..%2f..%2fetc%2fpasswd` 会被还原成 `../../etc/passwd` 并读到仓库外文件。
+    #[test]
+    fn safe_log_file_name_rejects_traversal_and_separators() {
+        for bad in [
+            "../etc/passwd",
+            "..",
+            "a/../../b",
+            "a/b.log",
+            "a\\b.log",
+            ".hidden",
+            "",
+            "with space.log",
+            "semi;colon.log",
+            "%2e%2e%2fetc",
+            "x.log\0",
+        ] {
+            assert!(
+                safe_log_file_name(bad).is_none(),
+                "{:?} 应被拒绝",
+                bad
+            );
+        }
+    }
+
+    #[test]
+    fn safe_log_file_name_accepts_plain_names() {
+        for good in ["gbserver-log.csv", "app.log", "2026-09-12_01-00.log", "a1.b2-c3_d4"] {
+            assert_eq!(safe_log_file_name(good), Some(good), "{:?} 应被接受", good);
+        }
+    }
+
+    /// 日志正文里的逗号 / 引号 / 换行不能破坏 CSV 结构。
+    #[test]
+    fn logs_to_csv_escapes_delimiters() {
+        let rows = vec![crate::db::log::LogEntry {
+            id: 1,
+            time: "2026-09-12 01:00:00.000".to_string(),
+            level: "WARN".to_string(),
+            logger: Some("gbserver::x".to_string()),
+            thread: Some("tokio-runtime-worker".to_string()),
+            message: Some("a,\"quoted\" line\nsecond line".to_string()),
+            source: Some("src/x.rs:1".to_string()),
+        }];
+        let csv = String::from_utf8(logs_to_csv(&rows)).unwrap();
+        assert!(csv.starts_with("id,time,level,logger,thread,source,message\n"));
+        // 引号被转义成两个引号，且整段仍包在一对引号里
+        assert!(csv.contains("\"a,\"\"quoted\"\" line\nsecond line\""), "{csv}");
+        // 数据行数 = 表头 + 1；正文里的 \n 在引号内，不应被当成新行分隔
+        assert_eq!(csv.matches("2026-09-12 01:00:00.000").count(), 1);
+    }
+}

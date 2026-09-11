@@ -177,7 +177,7 @@ pub async fn add_user(
     headers: HeaderMap,
     Query(params): Query<AddUserParams>,
 ) -> Result<Json<WVPResult<()>>, AppError> {
-    let _ = require_admin(&state, &headers).await?;
+    require_admin(&state, &headers).await?;
     let username = params.username.as_deref().ok_or_else(|| AppError::business(ErrorCode::Error400, "参数不可为空"))?;
     let password = params.password.as_deref().ok_or_else(|| AppError::business(ErrorCode::Error400, "参数不可为空"))?;
     let role_id = params
@@ -215,7 +215,7 @@ pub async fn delete_user(
     headers: HeaderMap,
     Query(q): Query<DeleteQuery>,
 ) -> Result<Json<WVPResult<()>>, AppError> {
-    let _ = require_admin(&state, &headers).await?;
+    require_admin(&state, &headers).await?;
     let id = q.id.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id"))?;
     let n = db::delete_user(&state.pool, id).await?;
     if n == 0 {
@@ -301,7 +301,7 @@ pub async fn change_push_key(
     headers: HeaderMap,
     Query(params): Query<ChangePushKeyParams>,
 ) -> Result<Json<WVPResult<()>>, AppError> {
-    let _ = require_admin(&state, &headers).await?;
+    require_admin(&state, &headers).await?;
     let user_id = params.user_id.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 userId"))?;
     let push_key = params.push_key.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 pushKey"))?;
     let n = db::change_push_key(&state.pool, user_id, &push_key).await?;

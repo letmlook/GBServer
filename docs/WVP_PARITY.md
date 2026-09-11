@@ -218,7 +218,18 @@ INVITE 为 `a=recvonly`（平台收、设备发），设备 200 OK 才是 `a=sen
    改动风险大于收益，故保留现状并在此登记。
 3. **对讲/广播的媒体面**：SDP 与信令已可用，但"浏览器音频 → ZLM → RTP → 设备"
    的上行音频管线尚未实现（`TalkSession.zlm_stream_id` 已记录，无消费方）。
-4. **`log_file_download`** 仍是文件路径下载；前端 `getLogFile` 定义了但从未调用。
+4. ~~**`log_file_download`** 仍是文件路径下载；前端 `getLogFile` 定义了但从未调用。~~
+   **已修复（第七轮）**：该端点此前固定去 `./logs/<name>` 找文件，而本进程
+   **不写日志文件**（tracing 采集层直接落 `gb_log` 表）、`logs/` 目录也从未创建
+   —— 因此它是**必然 404 的死路径**，且 `PathBuf::from("./logs").join(file_name)`
+   存在**目录穿越**：axum 的路径参数会做百分号解码（实测
+   `/api/log/file/%67bserver-log.csv` 返回 200，证明 `%67`→`g`），
+   所以 `..%2f..%2fetc%2fpasswd` 会被还原成 `../../etc/passwd` 并读到仓库外文件。
+   现改为：`gbserver-log.csv` / `gbserver-log.json` 直接导出 `gb_log`（支持
+   `query`/`level`/时间范围过滤）；真实文件走严格文件名校验（单段、纯
+   `[A-Za-z0-9._-]`、不以点开头、不含 `..`），非法名返回 400 而非静默 404；
+   读取错误不再一律伪装成 404，IO/权限错误如实返回 500。
+   新增 3 个测试（含穿越用例与 CSV 转义）。
 5. **`catalog_sync` 的完成判定依赖设备如实上报 `SumNum`**：若设备声明
    `SumNum=N` 却只发更少的包，会话会一直停在 `Receiving`（`device_sync`
    8 秒后如实返回该状态）。已保留逐包 upsert 兜底，因此不会丢通道，

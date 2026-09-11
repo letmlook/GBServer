@@ -488,7 +488,15 @@ impl SipServer {
                         if elapsed > session.timeout_seconds as i64 {
                             tracing::warn!("Invite session timeout: {}", session.call_id);
                             if let Some(ref stream_id) = session.zlm_stream_id {
-                                let _ = zlm.close_rtp_server(stream_id).await;
+                                // best-effort 清理，但失败要留痕：RTP server 未关掉
+                                // 会一直占着收流端口
+                                if let Err(e) = zlm.close_rtp_server(stream_id).await {
+                                    tracing::warn!(
+                                        "会话超时清理 ZLM RTP server 失败 stream={}: {}",
+                                        stream_id,
+                                        e
+                                    );
+                                }
                             }
                             invite_manager
                                 .update_status(&session.call_id, InviteSessionStatus::Terminated)
@@ -2287,7 +2295,18 @@ let renewal_pool = pool.clone();
                     let zlm_clone = zlm.clone();
                     let ssrc = session.upstream_ssrc.clone();
                     tokio::spawn(async move {
-                        let _ = zlm_clone.stop_send_rtp("__defaultVhost__", "rtp", &ssrc).await;
+                        // best-effort：ZLM 里没有这条 SendRtp 时返回错误是正常的，
+                        // 但仍要记录下来，便于区分"本来就没有"和"关不掉"
+                        if let Err(e) = zlm_clone
+                            .stop_send_rtp("__defaultVhost__", "rtp", &ssrc)
+                            .await
+                        {
+                            tracing::warn!(
+                                "B3 级联 BYE 后 stopSendRtp 失败 ssrc={}: {}",
+                                ssrc,
+                                e
+                            );
+                        }
                         tracing::info!("B3 cascade BYE -> ZLM stopSendRtp for channel={}", channel_id);
                     });
                 }
