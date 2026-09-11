@@ -19,7 +19,6 @@ pub mod playback_session;
 pub mod device_commander;
 pub mod catalog_sync;
 pub mod subscription_lifecycle;
-pub mod cascade_service;
 pub mod cascade_forward;
 
 pub use device::{Device, DeviceManager, TransportMode};
@@ -46,6 +45,4 @@ pub use playback_session::{PlaybackInviteSessionManager, PlaybackInviteSession, 
 pub use device_commander::{DeviceCommander, DeviceInfoResult, DeviceStatusResult, DeviceInfoData, DeviceStatusData, QueryOptions};
 pub use catalog_sync::{CatalogSyncManager, CatalogSyncSession, SyncState};
 pub use subscription_lifecycle::{SubscriptionLifecycle, NotifyDispatcher, SubscribeSession};
-#[allow(deprecated)]
-pub use cascade_service::{CascadeService, CascadeSession, CascadeState};
 pub use cascade_forward::{CascadeForwarder, SendRtpManager, SendRtpSession, CascadeForwardConfig, CascadeChannelInfo, MobilePositionInfo, AlarmInfo};
