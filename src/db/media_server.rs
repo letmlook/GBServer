@@ -266,19 +266,19 @@ pub async fn sync_from_config(
 pub async fn get_default_server(pool: &Pool) -> sqlx::Result<Option<MediaServer>> {
     #[cfg(feature = "mysql")]
     return sqlx::query_as::<_, MediaServer>(
-        "SELECT id, ip, hook_ip, sdp_ip, stream_ip, http_port, http_ssl_port, rtmp_port, rtsp_port, rtsp_ssl_port, flv_port, flv_ssl_port, ws_port, wss_port, rtp_proxy_port, secret, rtp_enable, default_server, record_assist_port, record_day, record_transcode, create_time, update_time, status, last_keepalive_time FROM gb_media_server WHERE default_server = 1 LIMIT 1",
+        "SELECT * FROM gb_media_server WHERE default_server = 1 LIMIT 1",
     )
     .fetch_optional(pool)
     .await;
     #[cfg(feature = "postgres")]
     return sqlx::query_as::<_, MediaServer>(
-        "SELECT id, ip, hook_ip, sdp_ip, stream_ip, http_port, http_ssl_port, rtmp_port, rtsp_port, rtsp_ssl_port, flv_port, flv_ssl_port, ws_port, wss_port, rtp_proxy_port, secret, rtp_enable, default_server, record_assist_port, record_day, record_transcode, create_time, update_time, status, last_keepalive_time FROM gb_media_server WHERE default_server = true LIMIT 1",
+        "SELECT * FROM gb_media_server WHERE default_server = true LIMIT 1",
     )
     .fetch_optional(pool)
     .await;
     #[cfg(feature = "sqlite")]
     return sqlx::query_as::<_, MediaServer>(
-        "SELECT id, ip, hook_ip, sdp_ip, stream_ip, http_port, http_ssl_port, rtmp_port, rtsp_port, rtsp_ssl_port, flv_port, flv_ssl_port, ws_port, wss_port, rtp_proxy_port, secret, rtp_enable, default_server, record_assist_port, record_day, record_transcode, create_time, update_time, status, last_keepalive_time FROM gb_media_server WHERE default_server = 1 LIMIT 1",
+        "SELECT * FROM gb_media_server WHERE default_server = 1 LIMIT 1",
     )
     .fetch_optional(pool)
     .await;
@@ -321,19 +321,19 @@ pub async fn update_status(pool: &Pool, id: &str, status: bool, last_keepalive: 
 pub async fn list_online_servers(pool: &Pool) -> sqlx::Result<Vec<MediaServer>> {
     #[cfg(feature = "mysql")]
     return sqlx::query_as::<_, MediaServer>(
-        "SELECT id, ip, hook_ip, sdp_ip, stream_ip, http_port, http_ssl_port, rtmp_port, rtsp_port, rtsp_ssl_port, flv_port, flv_ssl_port, ws_port, wss_port, rtp_proxy_port, secret, rtp_enable, default_server, record_assist_port, record_day, record_transcode, create_time, update_time, status, last_keepalive_time FROM gb_media_server WHERE status = 1 ORDER BY id",
+        "SELECT * FROM gb_media_server WHERE status = 1 ORDER BY id",
     )
     .fetch_all(pool)
     .await;
     #[cfg(feature = "postgres")]
     return sqlx::query_as::<_, MediaServer>(
-        "SELECT id, ip, hook_ip, sdp_ip, stream_ip, http_port, http_ssl_port, rtmp_port, rtsp_port, rtsp_ssl_port, flv_port, flv_ssl_port, ws_port, wss_port, rtp_proxy_port, secret, rtp_enable, default_server, record_assist_port, record_day, record_transcode, create_time, update_time, status, last_keepalive_time FROM gb_media_server WHERE status = true ORDER BY id",
+        "SELECT * FROM gb_media_server WHERE status = true ORDER BY id",
     )
     .fetch_all(pool)
     .await;
     #[cfg(feature = "sqlite")]
     return sqlx::query_as::<_, MediaServer>(
-        "SELECT id, ip, hook_ip, sdp_ip, stream_ip, http_port, http_ssl_port, rtmp_port, rtsp_port, rtsp_ssl_port, flv_port, flv_ssl_port, ws_port, wss_port, rtp_proxy_port, secret, rtp_enable, default_server, record_assist_port, record_day, record_transcode, create_time, update_time, status, last_keepalive_time FROM gb_media_server WHERE status = 1 ORDER BY id",
+        "SELECT * FROM gb_media_server WHERE status = 1 ORDER BY id",
     )
     .fetch_all(pool)
     .await;

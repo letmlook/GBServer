@@ -1,3 +1,5 @@
+#[cfg(all(test, feature = "sqlite"))]
+mod read_smoke;
 mod user;
 pub mod device;
 pub mod media_server;
