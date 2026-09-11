@@ -95,7 +95,7 @@ fn test_pending_request_cancel_single() {
 #[test]
 fn test_pending_request_timeout_cleanup() {
     // 使用 0 秒超时的管理器（立即过期）
-    let mgr = PendingRequestManager::with_timeout(0);
+    let mgr = PendingRequestManager::new().with_timeout(0);
     mgr.register("34020000001110000001", 1, PendingCmdType::DeviceInfo, "call-x", None);
     assert_eq!(mgr.pending_count(), 1);
 
@@ -162,8 +162,8 @@ fn test_pending_request_record_info_raw() {
 
 #[test]
 fn test_response_router_message_response() {
-    let mgr = PendingRequestManager::new();
-    let router = ResponseRouter::new(std::sync::Arc::new(mgr));
+    let mgr = std::sync::Arc::new(PendingRequestManager::new());
+    let router = ResponseRouter::new(mgr.clone());
 
     // 注册请求
     let pending = mgr.register(
@@ -210,6 +210,7 @@ fn test_response_router_accumulate_record_info() {
 
     let call_id = "ri-call-001";
     let mut buffer = String::new();
+    let mut packet_count = 0i32;
     let total = 2;
 
     // 第一包
@@ -223,7 +224,7 @@ fn test_response_router_accumulate_record_info() {
 <Item><Name>Rec-01</Name></Item>
 </Response>"#;
 
-    let done = router.accumulate_record_info(call_id, page1, &mut buffer, total);
+    let done = router.accumulate_record_info(call_id, page1, &mut buffer, &mut packet_count, total);
     assert!(!done, "第一包不应认为收齐");
     assert!(buffer.contains("Rec-01"));
 
@@ -233,7 +234,7 @@ fn test_response_router_accumulate_record_info() {
 <Item><Name>Rec-02</Name></Item>
 </Response>"#;
 
-    let done = router.accumulate_record_info(call_id, page2, &mut buffer, total);
+    let done = router.accumulate_record_info(call_id, page2, &mut buffer, &mut packet_count, total);
     assert!(done, "两包后应认为收齐");
     assert!(buffer.contains("Rec-01"));
     assert!(buffer.contains("Rec-02"));

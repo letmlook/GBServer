@@ -4,7 +4,7 @@ pub mod response;
 pub mod auth;
 pub mod archive;
 pub mod db;
-#[cfg(test)]
+#[cfg(all(test, feature = "sqlite"))]
 pub(crate) mod test_support;
 pub mod handlers;
 pub mod router;

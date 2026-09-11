@@ -1,10 +1,14 @@
 //! `/api/cloud/record/*` extras — collect toggles, list-url, zip packaging.
 //! These complement the CRUD already in `src/handlers/cloud_record.rs`.
 
-use axum::{extract::{Query, State}, Json};
+use axum::{
+    extract::{Path, Query, State},
+    Json,
+};
 use serde::Deserialize;
 
 use crate::db;
+use crate::error::{AppError, ErrorCode};
 use crate::response::WVPResult;
 use crate::AppState;
 
@@ -78,18 +82,15 @@ pub async fn list_url(
         &state.pool, kw, None, None, None, None,
     ).await.unwrap_or(0);
     let urls: Vec<serde_json::Value> = records.iter().map(|r| {
-        let path = r.file_path.clone().unwrap_or_default();
-        let url = if path.is_empty() {
-            String::new()
-        } else {
-            format!("/record/{}", path)
-        };
+        // 2026-09-11：此前这里给出 `/record/<path>`，但**没有对应路由**，
+        // 点开必然 404。现改为真实可用的下载端点（支持 Range）。
+        let has_file = r.file_path.as_deref().map(|p| !p.is_empty()).unwrap_or(false);
         serde_json::json!({
             "id": r.id,
             "app": r.app,
             "stream": r.stream,
             "fileName": r.file_name,
-            "url": url,
+            "url": if has_file { format!("/api/cloud/record/download/{}", r.id) } else { String::new() },
             "startTime": r.start_time,
             "endTime": r.end_time,
             "duration": r.time_len,
@@ -300,6 +301,60 @@ pub async fn zip(
     download_zip(State(state), Query(q)).await
 }
 
+/// GET /api/cloud/record/download/:id — 下载/播放单条录像文件
+///
+/// 2026-09-11 新增：`list_url` 与告警抓拍此前给出的 `/record/<path>` URL
+/// **并没有对应的路由**，即返回的地址点开必然 404。此端点提供真实可用的下载地址。
+///
+/// 内部用 `tower_http::services::ServeFile`，因此**自动支持 HTTP Range** ——
+/// `<video>` 标签才可能拖动进度条。
+pub async fn download_file(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    headers: axum::http::HeaderMap,
+) -> Result<axum::response::Response, AppError> {
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    let rec = db::cloud_record::get_by_id(&state.pool, id)
+        .await?
+        .ok_or_else(|| AppError::business(ErrorCode::Error404, format!("录像记录不存在: {}", id)))?;
+
+    let record_root = state
+        .config
+        .server
+        .record_root
+        .as_deref()
+        .map(std::path::PathBuf::from);
+    let path = resolve_record_file(&rec, record_root.as_deref()).ok_or_else(|| {
+        AppError::business(
+            ErrorCode::Error404,
+            format!(
+                "录像文件在本机不存在（记录 file_path={:?}）；若 ZLM 挂载点不同，请设置 server.record_root",
+                rec.file_path
+            ),
+        )
+    })?;
+
+    // 把 Range 头透传给 ServeFile，以获得 206 分片响应
+    let mut req = Request::builder()
+        .uri("/")
+        .body(Body::empty())
+        .expect("build request");
+    if let Some(range) = headers.get(axum::http::header::RANGE) {
+        req.headers_mut()
+            .insert(axum::http::header::RANGE, range.clone());
+    }
+
+    let res = ServiceExt::oneshot(tower_http::services::ServeFile::new(&path), req)
+        .await
+        .map_err(|e| AppError::business(ErrorCode::Error500, format!("读取录像文件失败: {}", e)))?;
+
+    // ServeFile 的响应体是 ServeFileSystemResponseBody，需转成 axum 的 Body
+    Ok(res.map(Body::new))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -430,6 +485,7 @@ mod tests {
 
     // ============ 端到端：真实 SQLite + 真实磁盘文件 + 真实 ZIP ============
 
+    #[cfg(feature = "sqlite")]
     use crate::test_support::sqlite_pool_with_schema;
 
     #[cfg(feature = "sqlite")]

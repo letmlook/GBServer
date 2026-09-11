@@ -72,3 +72,69 @@ pub(crate) fn temp_dir(tag: &str) -> std::path::PathBuf {
     std::fs::create_dir_all(&dir).expect("create temp dir");
     dir
 }
+
+/// 最小可用 `AppConfig`（只填充测试关心的字段，其余为默认）
+pub(crate) fn app_config() -> crate::config::AppConfig {
+    use crate::config::{
+        AppConfig, AuditConfig, ClusterAppConfig, DatabaseConfig, JwtConfig, RpcAppConfig,
+        ServerConfig,
+    };
+    AppConfig {
+        server: ServerConfig {
+            port: 18080,
+            download_dir: None,
+            record_root: None,
+        },
+        database: DatabaseConfig {
+            url: "sqlite::memory:".into(),
+            sqlite_max_devices: None,
+        },
+        redis: None,
+        jwt: JwtConfig {
+            secret: "test-secret-test-secret-test-secret-1234".into(),
+            expiration_minutes: 60,
+        },
+        static_dir: None,
+        user_settings: None,
+        sip: None,
+        zlm: None,
+        map: None,
+        jt1078: None,
+        cluster: ClusterAppConfig::default(),
+        audit: AuditConfig::default(),
+        rpc: RpcAppConfig::default(),
+    }
+}
+
+/// 构造一个自洽的 `AppState`：内存 SQLite（含生产 schema）+ 内存 StateStore +
+/// 无 SIP / 无 ZLM / 无 Redis。
+///
+/// 用于 handler 级与 router 级测试 —— 例如验证「路由能成功构建」（可捕获
+/// 历史上的 `Overlapping method route` 启动 panic）。
+pub(crate) async fn app_state() -> crate::AppState {
+    use std::sync::Arc;
+
+    let pool = sqlite_pool_with_schema().await;
+    let state_store = Arc::new(crate::state_store::StateStore::in_memory());
+
+    crate::AppState {
+        config: Arc::new(app_config()),
+        pool,
+        sip_server: None,
+        zlm_client: None,
+        zlm_clients: std::collections::HashMap::new(),
+        playback_manager: None,
+        download_manager: None,
+        ws_state: Arc::new(crate::handlers::websocket::WsState::new()),
+        ws_hub: Arc::new(crate::ws::WsHub::new("test-node".to_string(), None)),
+        redis: None,
+        state_store: state_store.clone(),
+        state_repo: Arc::new(crate::state::StateStoreRepository::new(state_store)),
+        jt1078_manager: Arc::new(tokio::sync::RwLock::new(None)),
+        rpc_router: None,
+        cluster_registry: Arc::new(crate::cluster::ClusterRegistry::new(
+            crate::cluster::ClusterConfig::default(),
+            None,
+        )),
+    }
+}

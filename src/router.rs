@@ -905,18 +905,6 @@ pub fn app(state: AppState) -> Router<AppState> {
         .route("/api/system/stats", get(system::system_stats))
         .route("/api/system/version", get(system::system_version))
         .route("/api/system/online-users", get(system::online_users))
-        // Phase 7.4: audit middleware outermost — captures all responses (including 401)
-        .route_layer(middleware::from_fn_with_state(
-            state_clone.clone(),
-            audit_middleware,
-        ))
-        .route_layer(middleware::from_fn_with_state(
-            state_clone.clone(),
-            auth_middleware,
-        ));
-
-    let api_public = Router::new()
-        .route("/api/user/login", get(user::login).post(user::login))
         .route("/api/user/logout", get(user::logout))
         .route("/api/platform/info/:id", get(platform::platform_info))
         .route("/api/role/add", post(role::role_add))
@@ -937,6 +925,8 @@ pub fn app(state: AppState) -> Router<AppState> {
         .route("/api/sy/camera/control/ptz", get(sy_camera::camera_control_ptz))
         .route("/api/cloud/record/collect/delete", get(cloud_record_extra::collect_delete))
         .route("/api/cloud/record/download/zip", get(cloud_record_extra::download_zip))
+        // 单条录像文件下载/播放（支持 HTTP Range，供 <video> 拖动）
+        .route("/api/cloud/record/download/:id", get(cloud_record_extra::download_file))
         .route("/api/cloud/record/list-url", get(cloud_record_extra::list_url))
         .route("/api/cloud/record/zip", get(cloud_record_extra::zip))
         .route("/api/alarm/clear", delete(parity_extras::alarm_clear))
@@ -986,6 +976,19 @@ pub fn app(state: AppState) -> Router<AppState> {
         .route("/api/region/one", get(region::region_one))
         .route("/api/region/page/list", get(region::region_page_list))
         .route("/api/region/sync", get(region::region_sync))
+        // Phase 7.4: audit middleware outermost — captures all responses (including 401)
+        .route_layer(middleware::from_fn_with_state(
+            state_clone.clone(),
+            audit_middleware,
+        ))
+        .route_layer(middleware::from_fn_with_state(
+            state_clone.clone(),
+            auth_middleware,
+        ));
+
+    let api_public = Router::new()
+
+        .route("/api/user/login", get(user::login).post(user::login))
         .route("/api/zlm/hook", post(zlm_hook::handle_webhook))
         .route("/api/rpc", post(rpc_endpoint))
         .route("/api/health", get(health::liveness))
@@ -1054,4 +1057,121 @@ pub fn app(state: AppState) -> Router<AppState> {
         .allow_methods(Any)
         .allow_headers(Any);
     app.layer(cors)
+}
+
+#[cfg(all(test, feature = "sqlite"))]
+mod tests {
+    use super::*;
+    use crate::test_support::app_state;
+
+    /// 在临时端口起一个真实 HTTP 服务，返回 base URL。
+    ///
+    /// 不用 `axum-test`：其 7.x 依赖 axum 0.6，与本项目的 axum 0.7 不兼容
+    /// （会在依赖图里同时存在两个 axum 版本）。直接起服务 + 用已有的 reqwest 请求，
+    /// 既真实又不引入额外依赖。
+    async fn spawn(state: AppState) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind ephemeral port");
+        let addr = listener.local_addr().expect("local_addr");
+        let app = app(state.clone()).with_state(state);
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        format!("http://{}", addr)
+    }
+
+    async fn status_of(base: &str, path: &str) -> u16 {
+        reqwest::get(format!("{}{}", base, path))
+            .await
+            .unwrap_or_else(|e| panic!("请求 {} 失败: {}", path, e))
+            .status()
+            .as_u16()
+    }
+
+    async fn post_status_of(base: &str, path: &str) -> u16 {
+        reqwest::Client::new()
+            .post(format!("{}{}", base, path))
+            .json(&serde_json::json!({}))
+            .send()
+            .await
+            .unwrap_or_else(|e| panic!("POST {} 失败: {}", path, e))
+            .status()
+            .as_u16()
+    }
+
+    /// 路由表必须能成功构建。
+    ///
+    /// axum 检测到重复路由时会在**启动瞬间 panic** —— 本仓库历史上正是被
+    /// `Overlapping method route` 打断过启动（见 `docs/debug/ISSUES.md`）。
+    /// 这条测试把该风险从「部署时才炸」前移到测试阶段。
+    #[tokio::test]
+    async fn test_router_builds_without_conflicts() {
+        let state = app_state().await;
+        let _ = app(state);
+    }
+
+    #[tokio::test]
+    async fn test_public_routes_ok_and_unknown_is_404() {
+        let base = spawn(app_state().await).await;
+        assert_eq!(status_of(&base, "/api/health").await, 200);
+        assert_eq!(status_of(&base, "/metrics").await, 200);
+        // 未注册路径必须 404 —— 否则说明上面的 200 可能是被兜底 handler 吞掉的
+        assert_eq!(status_of(&base, "/api/definitely-not-a-route").await, 404);
+    }
+
+    /// 受保护端点「已注册」的判据是 **401 而非 404**（未注册才会 404）。
+    ///
+    /// 同时这是一条**安全回归测试**：2026-09-11 发现 `api_public`（无任何中间件）
+    /// 里混入了 71 个敏感端点 —— 云录像下载、角色增删、JT1078 控制、RTP/PS 控制、
+    /// 服务器配置、区域/告警等全部可**未鉴权访问**（实测返回 200）。
+    /// 已全部移入带 audit + auth 中间件的 `api_protected`。
+    #[tokio::test]
+    async fn test_protected_routes_require_auth() {
+        let base = spawn(app_state().await).await;
+        for path in [
+            // 云录像
+            "/api/cloud/record/download/1",
+            "/api/cloud/record/download/zip",
+            "/api/cloud/record/list-url",
+            "/api/cloud/record/zip",
+            // 区域
+            "/api/region/one?id=1",
+            "/api/region/page/list",
+            "/api/region/sync",
+            // 地图 / 告警 / 前端指令
+            "/api/common/channel/map/tile/10/1/1",
+            "/api/common/channel/map/thin/tile/10/1/1",
+            "/api/common/channel/playback/pause",
+            "/api/alarm/snap/dev1",
+            "/api/alarm/clear",
+            "/api/front-end/common/ptz/34020000001310000001",
+            // 服务器信息 / 平台 / 中亿视图
+            "/api/server/config",
+            "/api/server/version",
+            "/api/platform/info/1",
+            "/api/sy/camera/list",
+            // JT1078 / RTP / PS / 推流代理
+            "/api/jt1078/route/query",
+            "/api/jt1078/record/start",
+            "/api/jt1078/area/circle/query",
+            "/api/rtp/send/stop/abc",
+            "/api/ps/getTestPort",
+            "/api/proxy/one",
+            "/api/push/forceClose",
+            "/api/user/logout",
+        ] {
+            let status = status_of(&base, path).await;
+            assert_ne!(status, 404, "{} 未注册到路由表（返回 404）", path);
+            assert_eq!(status, 401, "{} 未受鉴权保护（越权风险）", path);
+        }
+
+        // POST 型端点同样必须受保护（role/add 可提权，尤为关键）
+        for path in ["/api/role/add", "/api/jt1078/area/circle/add"] {
+            let status = post_status_of(&base, path).await;
+            assert_ne!(status, 404, "{} 未注册到路由表（返回 404）", path);
+            assert_eq!(status, 401, "{} 未受鉴权保护（越权风险）", path);
+        }
+    }
+
 }

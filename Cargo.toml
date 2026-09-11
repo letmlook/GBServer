@@ -16,7 +16,7 @@ sqlite = ["sqlx/sqlite"]
 [dependencies]
 # Web
 axum = { version = "0.7", features = ["json", "macros", "form", "query", "ws", "multipart"] }
-tower = "0.4"
+tower = { version = "0.4", features = ["util"] }
 tower-http = { version = "0.5", features = ["cors", "fs", "trace"] }
 tokio = { version = "1", features = ["full"] }
 
@@ -71,13 +71,20 @@ testcontainers = "0.14"
 assert_matches = "1.5"
 pretty_assertions = "1.4"
 fake = "2.6"
-axum-test = "7"
 criterion = { version = "0.5", features = ["async_tokio"] }
 uuid = { version = "1", features = ["v4"] }
 
 [[bin]]
 name = "gbserver"
 path = "src/main.rs"
+
+[[test]]
+name = "sip_pending_request_integration"
+path = "tests/integration/sip/integration.rs"
+
+[[test]]
+name = "cascade_integration"
+path = "tests/integration/sip/cascade_integration_test.rs"
 
 [[test]]
 name = "device_simulator_test"
