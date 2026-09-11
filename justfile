@@ -68,8 +68,18 @@ feature-check:
 fmt:
     cargo fmt --all -- --check
 
+# Clippy（默认 sqlite feature，与 CI 的 hygiene job 一致）
+#
+# 注意：不要用 `--all-features`。sqlite / postgres / mysql 是三选一的互斥 feature，
+# 同时开启会让 cfg 代码路径互相冲突，实测产生 162 个编译错误（2026-09-11）。
+# 需要逐 feature 验证请用 `just feature-check`。
 clippy:
-    cargo clippy --all-targets --all-features -- -D warnings
+    cargo clippy --all-targets
+
+# 严格模式：warning 视为错误。
+# 当前基线尚有 51 个 warning（主要是 deprecated cascade_service），清理后再接入 CI 门禁。
+clippy-strict:
+    cargo clippy --all-targets -- -D warnings
 
 # === Docker ===
 

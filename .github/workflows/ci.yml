@@ -1,0 +1,129 @@
+# GBServer CI — 编译 / 测试 / 三库 feature / 前端构建门禁
+#
+# 背景：本仓库曾因 `602036b`（未完整编译就提交的 auto-fix）叠加 `e132db2`（删除 CI）
+# 而进入"无法 cargo run"的状态，靠事后人工抢救才恢复（见 docs/debug/ISSUES.md）。
+# 本工作流的目的就是让"提交必须能编译 + 测试必须通过"重新成为硬约束。
+#
+# 门禁（失败即拦截）：
+#   - backend        : SQLite 默认 feature 下 cargo check --all-targets + 全量测试
+#   - feature-matrix : SQLite / PostgreSQL / MySQL 三种数据库 feature 各自可编译
+#   - frontend       : vue-tsc 类型检查 + vite 生产构建
+#
+# 非门禁（仅报告，不拦截；见 hygiene job 的 continue-on-error）：
+#   - rustfmt / clippy —— 当前基线尚未清零（约 2.6 万行 fmt 差异 + 50+ warning），
+#     直接设为门禁会让 CI 从第一天起一直红。待清理完成后再摘掉 continue-on-error。
+#
+# 无需 service 容器：默认 feature 下测试完全自包含
+# （349 lib + 47 集成，全部使用内存 SQLite / 进程内状态，不连接 Redis/PG/MySQL/ZLM）。
+
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+# 同一分支的旧运行自动取消，避免排队堆积
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ── 后端：默认 SQLite feature，编译 + 全量测试 ────────────────────────────
+  backend:
+    name: Backend (sqlite) · check + test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry + target
+        uses: Swatinem/rust-cache@v2
+
+      - name: cargo check --all-targets
+        run: cargo check --all-targets --locked
+
+      - name: cargo test
+        run: cargo test --no-fail-fast --locked
+
+  # ── 后端：三种数据库 feature 各自可编译 ───────────────────────────────────
+  # 历史教训：postgres / mysql 两条分支曾长期处于编译失败状态而无人发现
+  # （HEAD 9674844 才顺手修掉三处缺 sqlx::Row 导入）。
+  feature-matrix:
+    name: Backend feature · ${{ matrix.feature }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        feature: [sqlite, postgres, mysql]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry + target
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: feature-${{ matrix.feature }}
+
+      - name: cargo check (${{ matrix.feature }})
+        run: |
+          cargo check --all-targets --locked \
+            --no-default-features --features ${{ matrix.feature }}
+
+  # ── 前端：Vue 3 + Element Plus + Vite，类型检查 + 生产构建 ────────────────
+  frontend:
+    name: Frontend · type-check + build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: npm ci
+        run: npm ci
+
+      # package.json 的 build 脚本 = vue-tsc --noEmit && vite build
+      - name: npm run build
+        run: npm run build
+
+  # ── 代码规范：非门禁，仅报告 ──────────────────────────────────────────────
+  hygiene:
+    name: Hygiene (non-blocking) · fmt + clippy
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry + target
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: hygiene
+
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+      # 注意：不用 --all-features —— sqlite/postgres/mysql 三选一，
+      # 同时开启会得到无意义的 feature 组合；用默认（sqlite）。
+      - name: cargo clippy
+        run: cargo clippy --all-targets -- -D warnings
