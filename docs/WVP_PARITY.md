@@ -12,8 +12,8 @@
 | 总代码量（src/） | 62,587 行 Rust | `find src -name '*.rs' \| xargs wc -l` |
 | 已注册 HTTP 路由 | 374 个 `.route()` / 370 条唯一 `/api/...` 路径 | `grep -cE '\.route\(' src/router.rs` |
 | Handler 模块 | 29 个（含 `stub.rs` / `device_stub.rs` 两个兼容 shim） | `grep -c 'pub mod' src/handlers/mod.rs` |
-| 后端测试 | **396 通过**（lib 349 + 集成 47）/ 2 忽略 / 0 失败 | `cargo test --no-fail-fast` |
-| 编译状态 | `cargo check` 0 error / 51 warning（`--all-targets` 为 61） | `cargo check` |
+| 后端测试 | **389 通过**（lib 342 + 集成 47）/ 2 忽略 / 0 失败 | `cargo test --no-fail-fast` |
+| 编译状态 | `cargo check` 0 error / 21 warning（`--all-targets` 为 30） | `cargo check` |
 | 数据库 feature | SQLite（默认）/ PostgreSQL / MySQL **三者均编译通过** | CI `feature-matrix` job |
 | CI | ✅ 已恢复（`.github/workflows/ci.yml`，2026-09-11 新增） | — |
 | 前端 | `web/` = **Vue 3 + Element Plus + Vite + TS**（本轮已转正，17 个业务视图）；`web-legacy-vue2/` 为归档参考 | `ls web/src/views` |
@@ -22,8 +22,13 @@
 ### 本轮（2026-09-11）关键结论
 
 - **CI 门禁恢复**：编译 + 全量测试 + 三库 feature + 前端构建为硬门禁；`fmt` / `clippy` 暂列为非门禁（基线未清零，见 `.github/workflows/ci.yml` 注释）。
-- **测试完全自包含**：默认 SQLite feature 下 396 个测试不连接 Redis / PG / MySQL / ZLM，CI 无需 service 容器。
+- **测试完全自包含**：默认 SQLite feature 下 389 个测试不连接 Redis / PG / MySQL / ZLM，CI 无需 service 容器。
 - **前端已完成 Vue 3 迁移**：`web-v3/` 已转正为 `web/`（commit `2acf5a7`），Vue 2 归档至 `web-legacy-vue2/`。本文档此前多处 "web-v3 Phase 2 待迁移" 的描述已过时，本轮一并修正。
+- **CI 首次运行即抓到真实缺陷**：`Navbar.vue` 缺 `reactive` 显式 import，依赖被 gitignore 的
+  `auto-imports.d.ts` 兜底 → **任何干净 clone 跑 `npm run build` 都会失败**（`dev` 与
+  `build:no-check` 正常，故长期潜伏）。已修复，见 commit `0434629`。
+- **删除 751 行死代码**：`sip/gb28181/cascade_service.rs` 实为零生产调用的 deprecated 模块，
+  删除后 deprecated 告警 66 → 8、clippy 告警 329 → 297。
 
 ## 历史基线（2026-08-23）
 
@@ -175,11 +180,24 @@
 - [x] **`dead/unreachable code`**（2026-08-23 清理）
   - `sip/server.rs:1178-1179` 重复的 `SipMethod::Options/Info` match 臂删除（前者已覆盖）
   - `sip/server.rs:4839` `waiter_key` 改为 `_waiter_key`（分配但未读）
-- [ ] **55 个剩余 cargo warnings** —— 主要是：
-  - **30 deprecated cascade_service 字段/结构**（架构性：应迁移到 `crate::cascade::CascadeRegistrar`，影响大需独立 PR）
-  - **4 deprecated cache 函数**（`set_media_server_streams` / `reset_media_server_streams`）
-  - **~21 其他**：future-incompat（`redis v0.25.4`）+ 零散变量名
-  - 建议下一批：cascade_service 迁移 CascadeRegistrar（独立大重构）+ cache → StateStore 迁移
+- [x] **cascade_service 30 条 deprecated 字段/结构 warning**（2026-09-11 解决）
+  - 原判断是「架构性：应迁移到 `crate::cascade::CascadeRegistrar`，影响大需独立 PR」
+  - **实测该判断有误**：`CascadeService` 早已零生产调用（唯一构造点全在它自己的单测里），
+    模块文档也自述「生产路径不再使用本类型」。因此正确做法不是迁移而是**直接删除**
+  - 已删除 `src/sip/gb28181/cascade_service.rs`（751 行）+ `mod.rs` 的 `pub mod` 与
+    `#[allow(deprecated)] pub use`（那处 allow 正是此前压住告警的补丁）
+  - 能力对照确认 `cascade/register.rs` + `cascade_forward.rs` 为超集（含 11 个
+    `c3_*` / `phase5_*` 等价测试）
+- [ ] **8 条剩余 deprecated（cache → StateStore）**：
+  - `cache::set_media_server_streams` / `reset_media_server_streams`，调用点
+    `zlm/hook.rs:800,916,1036`
+  - ⚠️ **不是死代码**：`lib.rs:755` 的 `select_least_loaded` 会在 StateStore 不可用时
+    fallback 读取该 Redis 计数，属活跃的负载均衡逻辑 —— 迁移需连同 fallback 策略一起设计
+- [ ] **剩余 clippy 告警 297 条**（2026-09-11 实测，原 329）：主要为
+  `too_many_arguments` 108（handler 多参数，宜在 `Cargo.toml [lints]` 显式放行）、
+  `borrow_deref_ref` 86、`unnecessary_unwrap` 40、`unnecessary_cast` 34 等机械项
+  - 建议下一批：`cargo clippy --fix` 清机械项 + `[lints]` 配置结构性项，
+    清零后再把 CI `hygiene` job 提升为硬门禁
 
 ## 已验证 · 端到端冒烟（2026-06-20 历史记录）
 
@@ -251,8 +269,10 @@
 **待 PR/独立 sprint 闭环的剩余工作**（不属于"功能平替"范畴，而是工程化收尾）：
 
 1. ~~`web-v3/` Phase 2 业务页迁移（前端，~5 周）~~ → ✅ 已完成（2026-08-23）
-2. cascade_service → CascadeRegistrar 迁移（30 个 deprecated 字段/结构 warning 一次清零，独立 PR）
-3. cache::set_media_server_streams → StateStore 迁移（4 个 warning + 真正统一状态源）
+2. ~~cascade_service → CascadeRegistrar 迁移（30 个 deprecated warning，独立 PR）~~
+   → ✅ 2026-09-11 解决：实为**零调用的死代码**，直接删除模块（751 行）而非迁移
+3. cache::set_media_server_streams → StateStore 迁移（8 个 deprecated warning + 真正统一状态源）
+   —— ⚠️ 涉及活跃的负载均衡 fallback（`lib.rs:755`），需连同 fallback 策略一起设计
 4. 清零 `cargo fmt` 差异（约 2.6 万行）与剩余 clippy warning，随后把 CI `hygiene` job 提升为门禁
 
 ## WVP-PRO 真实源码对照（2026-08-23 第 5 次推进）
