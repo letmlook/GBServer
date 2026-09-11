@@ -9,11 +9,11 @@
 
 | 维度 | 数值 | 验证方式 |
 |------|------|----------|
-| 总代码量（src/） | 64,423 行 Rust | `find src -name '*.rs' \| xargs wc -l` |
+| 总代码量（src/） | 64,422 行 Rust | `find src -name '*.rs' \| xargs wc -l` |
 | 已注册 HTTP 路由 | 380 条唯一 `/api/...` 路径 | `grep -oE '"/api/[^"]*"' src/router.rs \| sort -u \| wc -l` |
 | Handler 模块 | 29 个（含 `stub.rs` / `device_stub.rs` 两个兼容 shim） | `grep -c 'pub mod' src/handlers/mod.rs` |
-| 后端测试 | **460 通过** / 2 忽略 / 0 失败 | `cargo test --no-fail-fast` |
-| 编译状态 | `cargo check` 0 error / **19 warning**；clippy 297；**deprecated 0** | `cargo check` / `cargo clippy --all-targets` |
+| 后端测试 | **471 通过** / 2 忽略 / 0 失败 | `cargo test --no-fail-fast` |
+| 编译状态 | `cargo check` 0 error / **0 warning**；clippy 262；**deprecated 0** | `cargo check` / `cargo clippy --all-targets` |
 | 数据库 feature | SQLite（默认）/ PostgreSQL / MySQL **三者均编译通过** | CI `feature-matrix` job |
 | CI | ⏸️ 工作流已就绪但**按需暂停自动触发**（见 `.github/workflows/ci.yml`） | — |
 | 前端 | `web/` = **Vue 3 + Element Plus + Vite + TS**（17 个业务视图）；`web-legacy-vue2/` 为归档参考 | `ls web/src/views` |
@@ -38,7 +38,7 @@
 ### 本轮（2026-09-11）关键结论
 
 - **CI 门禁恢复**：编译 + 全量测试 + 三库 feature + 前端构建为硬门禁；`fmt` / `clippy` 暂列为非门禁（基线未清零）。**注**：应要求已暂停自动触发，改为仅手动 `workflow_dispatch`，见 `.github/workflows/ci.yml`。
-- **测试完全自包含**：默认 SQLite feature 下 460 个测试不连接 Redis / PG / MySQL / ZLM，CI 无需 service 容器。
+- **测试完全自包含**：默认 SQLite feature 下 471 个测试不连接 Redis / PG / MySQL / ZLM，CI 无需 service 容器。
 - **前端已完成 Vue 3 迁移**：`web-v3/` 已转正为 `web/`（commit `2acf5a7`），Vue 2 归档至 `web-legacy-vue2/`。本文档此前多处 "web-v3 Phase 2 待迁移" 的描述已过时，本轮一并修正。
 - **CI 首次运行即抓到真实缺陷**：`Navbar.vue` 缺 `reactive` 显式 import，依赖被 gitignore 的
   `auto-imports.d.ts` 兜底 → **任何干净 clone 跑 `npm run build` 都会失败**（`dev` 与
@@ -85,6 +85,13 @@
 
 新增 `src/db/read_smoke.rs`：为 20+ 张表各播种一行并真实解码，专防此类漂移
 （空表测不出——无行可解码就不会触发 `ColumnNotFound`）。
+
+### 协议缺口（2026-09-11 第二轮修复）
+
+| 问题 | 说明 | 修复 |
+|------|------|------|
+| **RFC 3261 §17 事务重传完全未生效** | `TransactionManager` 被构造却从未使用；`process_timers` **只自增重传计数并打日志，从不发送**（它不持有 socket）。GB28181 默认走 UDP，丢包即无补救 | 保存首次发送的**原始字节**（重传须逐字一致，Via branch 不能变）；注入出站通道；`process_timers` 真正发送；响应到达即终止事务。新增 5 个测试（含"是否真的发出去"） |
+| **JT1078 5 个端点报「协议原语未实现」** | 实测该说法不成立：`build_take_photo`(0x8801)/`build_media_upload`(0x8803) 与 `send_command_and_wait` 都已存在，真正只缺 0x8202/0x8203/0x9205 | 补齐 3 个原语 + 4 个 `send_*_and_wait`，5 个端点全部真实下发；另加严格时间解析 `try_encode_time_bcd`（原 `encode_time_bcd` 解析失败会**静默用当前时间**，会把错误时间段下发给终端） |
 
 ### 工程问题
 
