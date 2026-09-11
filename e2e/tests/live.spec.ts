@@ -24,32 +24,18 @@ const __dirname = path.dirname(__filename);
 const ARTIFACT_DIR = path.resolve(__dirname, '../artifacts');
 fs.mkdirSync(ARTIFACT_DIR, { recursive: true });
 
-const AUTH_FILE = path.resolve(__dirname, '../artifacts/.auth.json');
-
-const LOGIN_USERNAME = '用户名 / SIP 编号';
-const LOGIN_PASSWORD = '登录密码';
-const LOGIN_BUTTON = '登 录';
-
-async function loginAsAdmin(page: Page) {
-  await page.goto('/login');
-  await page.locator(`input[placeholder="${LOGIN_USERNAME}"]`).fill('admin');
-  await page.locator(`input[placeholder="${LOGIN_PASSWORD}"]`).fill('admin');
-  await page.getByRole('button', { name: LOGIN_BUTTON }).click();
-  await page.waitForURL(/\/(dashboard)?$/, { timeout: 15_000 });
-}
-
 async function gotoLive(page: Page) {
-  await page.goto('/live', { waitUntil: 'domcontentloaded' });
+  // hash 模式：直接 goto('/live') 会让 hash 为空、被路由解析成 `/` 并重定向到
+  // `#/dashboard`，实时直播页根本不会渲染（这正是此前 4 个用例失败的根因）。
+  await page.goto('/#/live', { waitUntil: 'domcontentloaded' });
   await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => {});
 }
 
 test.describe('Live page (/live) — Vue 3 features', () => {
-  test.beforeEach(async ({ browser }) => {
-    const context = await browser.newContext({ storageState: AUTH_FILE });
-    const page = await context.newPage();
-    await loginAsAdmin(page);
-    await context.close();
-  });
+  // 鉴权状态由 globalSetup 统一准备（e2e/global-setup.ts），并通过项目级
+  // `use.storageState` 生效，所以默认 page fixture 就是已登录态。
+  // 此前这里每个用例都会新建一个带 storageState 的 context、再登录一次、
+  // 然后立刻关掉 —— 登录结果从未被用例使用，纯属每次多花一次登录时间。
 
   test('renders header actions + test-play button', async ({ page }) => {
     await gotoLive(page);
@@ -120,17 +106,25 @@ test.describe('Live page (/live) — Vue 3 features', () => {
     }
   });
 
-  test('PTZ bar renders with 8 control buttons', async ({ page }) => {
+  test('PTZ bar renders after selecting a channel (7 PTZ + 对讲)', async ({ page }) => {
     await gotoLive(page);
-    // PTZ 区域在选中通道后显示；先选个通道（如果有）或跳过
-    const hasGrid = await page.locator('.video-grid').isVisible().catch(() => false);
-    if (!hasGrid) {
-      test.skip(true, 'no channel available; PTZ bar not visible');
+
+    // 通道节点形如 `GBServer ON`（设备为父节点）。若库里确实没有通道，
+    // 才允许跳过 —— 但必须先尝试选中，否则这个用例会**永远**被跳过、
+    // 等于什么都没断言（此前就是这样：只看 .video-grid 是否可见，
+    // 而它只在选中通道后才渲染，于是从未执行过按钮计数断言）。
+    const channelNode = page.locator('.el-tree-node__content').filter({ hasText: 'ON' }).first();
+    if ((await channelNode.count()) === 0) {
+      test.skip(true, '数据库中没有通道；PTZ 工具条需要先选中通道');
       return;
     }
-    // 上 / 下 / 左 / 右 / 停止 / 放大 / 缩小 = 7 个外加停止 → 共 7 按钮（含 停止 PTZ 一项）
-    // element-plus 的 el-button-group > .el-button
+    await channelNode.click();
+    await expect(page.locator('.video-grid')).toBeVisible();
+
+    // 上 / 下 / 左 / 右 / 停止 / 放大 / 缩小 = 7 个 PTZ 按钮，
+    // 外加工具条右侧的「对讲」按钮（components/TalkPanel）= 8 个。
     const ptzButtons = page.locator('.ptz-bar .el-button');
-    await expect(ptzButtons).toHaveCount(7);
+    await expect(ptzButtons).toHaveCount(8);
+    await expect(page.getByRole('button', { name: '对讲' })).toBeVisible();
   });
 });

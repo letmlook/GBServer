@@ -62,15 +62,22 @@ test.describe('GBServer admin UI smoke (Vue 3)', () => {
     expect(r.status(), 'backend /api/health').toBe(200);
   });
 
-  test('login page renders', async ({ page }) => {
+  test('login page renders', async ({ browser }) => {
+    // 项目级 storageState 是已登录态，而已登录访问 /login 会被守卫重定向到 /，
+    // 因此这里显式开一个空状态的 context。
+    const context = await browser.newContext({ storageState: { cookies: [], origins: [] } });
+    const page = await context.newPage();
     await page.goto('/login');
     await expect(page.locator(`input[placeholder="${LOGIN_USERNAME_PLACEHOLDER}"]`)).toBeVisible();
     await expect(page.locator(`input[placeholder="${LOGIN_PASSWORD_PLACEHOLDER}"]`)).toBeVisible();
     await expect(page.getByRole('button', { name: LOGIN_BUTTON_TEXT })).toBeVisible();
     await page.screenshot({ path: path.join(ARTIFACT_DIR, 'login.png'), fullPage: true });
+    await context.close();
   });
 
-  test('admin login → dashboard (persist auth)', async ({ page }) => {
+  test('admin login → dashboard', async ({ browser }) => {
+    const context = await browser.newContext({ storageState: { cookies: [], origins: [] } });
+    const page = await context.newPage();
     const errors: string[] = [];
     page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
     page.on('console', (m: ConsoleMessage) => {
@@ -86,7 +93,7 @@ test.describe('GBServer admin UI smoke (Vue 3)', () => {
     await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => {});
     await expect(page).toHaveURL(/\/(dashboard)?$/);
 
-    await page.context().storageState({ path: AUTH_FILE });
+    // 鉴权状态已由 globalSetup 统一落盘（e2e/global-setup.ts），此处不再重复写
     await page.screenshot({ path: path.join(ARTIFACT_DIR, 'dashboard-after-login.png'), fullPage: true });
 
     const real = errors.filter(
@@ -96,6 +103,7 @@ test.describe('GBServer admin UI smoke (Vue 3)', () => {
       console.warn(`[dashboard] ${real.length} non-fatal console issue(s):`);
       for (const r of real.slice(0, 3)) console.warn(`  - ${r.slice(0, 200)}`);
     }
+    await context.close();
   });
 
   for (const p of ADMIN_PAGES) {
@@ -109,15 +117,22 @@ test.describe('GBServer admin UI smoke (Vue 3)', () => {
           if (m.type() === 'error') errors.push(`console.error: ${m.text()}`);
         });
 
-        // Vue 3 + vue-router 4 默认 history 模式（vite.config.ts base: '/'）。
-        // 与 Vue 2 的 hash 模式不同，直接 page.goto(path) 即可。
-        await page.goto(p.path, { waitUntil: 'domcontentloaded' });
+        // 路由是 **hash 模式**（`createWebHashHistory`，见 src/router/index.ts）。
+        // 此前这里用 history 路径 `page.goto(p.path)` 直接访问 —— 浏览器请求
+        // `/live` 时 hash 为空，vue-router 解析成 `/` 并重定向到 `#/dashboard`，
+        // 于是这 17 个"page renders"用例**每个都在渲染控制台页并全部通过**，
+        // 从来没有真正渲染过被断言的那些页面（截图也都是 dashboard）。
+        // 现在走 hash 路径，并断言 hash 确实切换到了目标路由。
+        await page.goto(`/#${p.path}`, { waitUntil: 'domcontentloaded' });
         await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => {});
 
         const url = page.url();
-        if (/\/login$/.test(url)) {
+        if (/\/login$/.test(url) || url.includes('#/login')) {
           throw new Error(`Auth was lost: redirected to ${url} when visiting ${p.path}`);
         }
+        await expect(page, `hash 应切到 ${p.path}（实际 ${url}）`).toHaveURL(
+          new RegExp(`#${p.path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`)
+        );
 
         const hasBody = await page.locator('body').isVisible();
         expect(hasBody, `body visible for ${p.name}`).toBe(true);

@@ -311,6 +311,27 @@ WS 握手: HTTP/1.1 101 Switching Protocols
 `content-type: application/json`（修复前是 `text/html`）；
 对讲音频 WS 经代理握手得到 `HTTP/1.1 101 Switching Protocols`。
 
+### 端到端 UI 测试（Playwright）首次整体通过（2026-09-12 第九轮）
+
+此前这套 e2e 从未在新环境上绿过，而且**通过的用例也没测到东西**：
+
+| 问题 | 运行时证据 | 修复 |
+|------|-----------|------|
+| **鉴权状态靠副作用产生** | `artifacts/.auth.json` 由 `smoke.spec.ts` 第 3 个用例写出，而 Playwright 按文件名字母序执行（`live.spec.ts` 在前）→ 干净检出上 live 的 5 个用例全部 `ENOENT: artifacts/.auth.json` | 提升为 `globalSetup`（`e2e/global-setup.ts`）登录一次并落盘；项目级 `use.storageState` 让默认 `page` 即为已登录态，需要未登录的用例显式开空状态 context |
+| **路由模式写错** | 快照里侧边栏是 `#/dashboard` 这类 hash 链接；实测 `goto('/live')` → `hash=#/dashboard`（`测试播放` 按钮数 0），`goto('/#/live')` → `hash=#/live`（按钮数 1）。应用用的是 `createWebHashHistory`，而测试用 history 路径 | 测试改走 hash 路径；`smoke.spec.ts` 增加"hash 确实切到目标路由"的断言 |
+| **17 个"page renders"用例是空的** | `page.goto(p.path)` 每次都落在 `#/dashboard`，而断言只检查"没被重定向到登录页"与"body 可见" → 这 17 个用例**每个都在渲染控制台页并全部通过**，截图也都是 dashboard | 走 hash 路径 + 断言 hash；现在确实逐页渲染 |
+| **PTZ 用例永远跳过** | 它只看 `.video-grid` 是否可见，而 `.video-grid` 只在选中通道后才渲染 → 从未执行过按钮计数断言 | 改为真的点击通道节点；实测选中后按钮数为 **8**（7 个 PTZ + 1 个「对讲」） |
+
+**结果**：`npx playwright test` → **24 passed / 0 failed / 0 skipped**（此前为
+19 passed / 5 failed）。前置：后端 :18080（可用临时 SQLite）、前端 dev :9528、
+`npx playwright install chromium`。
+
+顺带修掉 `handlers/device_stub.rs` 的同类问题：`device_transport` 用
+`unwrap_or_default()` 吞掉 DB 更新错误并仍回"设置成功"（现如实传播，
+0 行受影响解释为"设备不存在"）；删除两个迁移残留的无引用请求结构体
+（`GuardQuery` / `SubscribeCatalogQuery`）；更正模块头那句已经过时的
+"其余保持兼容空实现（后续可对接 SIP/ZLM）"。
+
 ### 仍未解决 / 需真实设备核验
 
 以下是本轮**已定位但未改动**的项，均在代码中留有注释或在此登记，

@@ -1,4 +1,9 @@
-//! 设备相关接口：能落库的用 DB 实现，其余保持兼容空实现（后续可对接 SIP/ZLM）
+//! 设备相关接口（增删改查、目录同步、传输模式、订阅、通道配置等）。
+//!
+//! 注：早期这里大量使用"返回固定 JSON 的兼容实现"，模块头也写着
+//! "其余保持兼容空实现（后续可对接 SIP/ZLM）"。经 2026-09 的逐条核对，
+//! 本模块**已无空实现**：每个 handler 要么真实落库、要么真的下发 SIP 信令
+//! 或调用 ZLM，失败时如实返回错误。
 //!
 //! ## 角色定位 (Phase 2.5)
 //!
@@ -198,20 +203,29 @@ pub async fn device_sync(
 pub async fn device_transport(
     State(state): State<AppState>,
     Path((device_id, stream_mode)): Path<(String, String)>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
     let normalized_mode = stream_mode.to_uppercase();
     let valid_modes = ["TCP", "UDP", "TCP-ACTIVE", "TCP-PASSIVE"];
     if !valid_modes.contains(&normalized_mode.as_str()) {
-        return Json(WVPResult::error(format!(
+        return Ok(Json(WVPResult::error(format!(
             "不支持的传输模式: {}（必须是 TCP/UDP/TCP-ACTIVE/TCP-PASSIVE）",
             stream_mode
-        )));
+        ))));
     }
 
     // 1) 更新数据库
+    //
+    // 修正：此前用 `unwrap_or_default()` 吞掉 DB 错误，`updated` 静默变成 0，
+    // 而响应仍然回「设备流传输模式设置成功」——设备不存在或写库失败都会被
+    // 伪装成成功。现在如实传播，并把"0 行受影响"解释为设备不存在。
     let updated = update_device_stream_mode(&state.pool, &device_id, &normalized_mode)
         .await
-        .unwrap_or_default();
+        .map_err(|e| {
+            AppError::business(ErrorCode::Error500, format!("更新传输模式失败: {}", e))
+        })?;
+    if updated == 0 {
+        return Ok(Json(WVPResult::error(format!("设备不存在: {}", device_id))));
+    }
     tracing::info!("Transport mode change: device={}, mode={}", device_id, normalized_mode);
 
     // 2) 向设备下发 SIP Control/Transport 消息（设备在线才发；不在线仅 DB 更新也合法）
@@ -230,7 +244,7 @@ pub async fn device_transport(
         }
     }
 
-    Json(WVPResult::success(serde_json::json!({
+    Ok(Json(WVPResult::success(serde_json::json!({
         "deviceId": device_id,
         "streamMode": normalized_mode,
         "updated": updated,
@@ -238,30 +252,13 @@ pub async fn device_transport(
         "sipError": sip_error,
         "message": "设备流传输模式设置成功",
         "code": 0
-    })))
+    }))))
 }
 
-/// GET /api/device/control/guard
-/// 设备布防/撤防控制
-/// 参数: deviceId, guardCmd (SetGuard/ResetGuard)
-/// 返回: 控制结果
-#[derive(Debug, Deserialize)]
-pub struct GuardQuery {
-    #[serde(alias = "deviceId")]
-    pub device_id: Option<String>,
-    #[serde(alias = "guardCmd")]
-    pub guard_cmd: Option<String>,
-}
-
-/// GET /api/device/query/subscribe/catalog
-/// 订阅设备目录
-/// 参数: id - 设备ID, cycle - 订阅周期(秒)
-/// 返回: 订阅结果
-#[derive(Debug, Deserialize)]
-pub struct SubscribeCatalogQuery {
-    pub id: Option<String>,
-    pub cycle: Option<i32>,
-}
+// 注：`GuardQuery` 与 `SubscribeCatalogQuery` 曾在此定义，但对应的 handler
+// 已分别迁移到 `device_control::device_guard` / `device_control::subscribe_catalog`，
+// 这两个结构体在仓库内已无任何引用（`pub` 使得编译器不会报 dead_code），
+// 属于迁移残留，已删除以免误以为本模块还负责这两条路径。
 
 /// GET /api/device/query/subscribe/mobile-position
 /// 订阅设备移动位置
