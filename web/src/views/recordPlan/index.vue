@@ -3,129 +3,134 @@
     <div class="page-header">
       <div>
         <h1 class="page-title">录像计划</h1>
-        <p class="page-subtitle">定时录像 · 通道关联</p>
+        <p class="page-subtitle">按时段自动拉起设备流并录像 · 通道关联</p>
       </div>
       <div class="page-actions">
-        <el-button @click="loadData">刷新</el-button>
+        <el-button :icon="Refresh" @click="loadData">刷新</el-button>
         <el-button type="primary" :icon="Plus" @click="onAdd">新增计划</el-button>
       </div>
     </div>
 
     <el-card>
+      <el-form :inline="true" size="small" class="search-bar">
+        <el-form-item label="关键字">
+          <el-input
+            v-model="query"
+            placeholder="计划名称"
+            clearable
+            style="width: 200px"
+            @keyup.enter="onSearch"
+          />
+        </el-form-item>
+        <el-form-item>
+          <el-button type="primary" @click="onSearch">查询</el-button>
+        </el-form-item>
+      </el-form>
+
       <el-table :data="rows" v-loading="loading" stripe border>
-        <el-table-column type="index" label="#" width="50" />
-        <el-table-column prop="id" label="ID" width="60" />
-        <el-table-column prop="name" label="计划名称" min-width="200" />
-        <el-table-column prop="planType" label="类型" width="100" />
-        <el-table-column prop="startTime" label="开始" width="100" />
-        <el-table-column prop="endTime" label="结束" width="100" />
-        <el-table-column label="周日" width="60" align="center">
-          <template #default="{ row }">{{ row.sun ? '✓' : '·' }}</template>
-        </el-table-column>
-        <el-table-column label="周一" width="60" align="center">
-          <template #default="{ row }">{{ row.mon ? '✓' : '·' }}</template>
-        </el-table-column>
-        <el-table-column label="周二" width="60" align="center">
-          <template #default="{ row }">{{ row.tue ? '✓' : '·' }}</template>
-        </el-table-column>
-        <el-table-column label="周三" width="60" align="center">
-          <template #default="{ row }">{{ row.wed ? '✓' : '·' }}</template>
-        </el-table-column>
-        <el-table-column label="周四" width="60" align="center">
-          <template #default="{ row }">{{ row.thu ? '✓' : '·' }}</template>
-        </el-table-column>
-        <el-table-column label="周五" width="60" align="center">
-          <template #default="{ row }">{{ row.fri ? '✓' : '·' }}</template>
-        </el-table-column>
-        <el-table-column label="周六" width="60" align="center">
-          <template #default="{ row }">{{ row.sat ? '✓' : '·' }}</template>
-        </el-table-column>
-        <el-table-column label="启用" width="80">
+        <el-table-column prop="id" label="ID" width="70" />
+        <el-table-column prop="name" label="计划名称" min-width="160" />
+        <el-table-column label="录像时段" min-width="320">
           <template #default="{ row }">
-            <el-switch v-model="row.enable" @change="onToggle(row)" />
+            <span class="windows">{{ summarizePlanItems(row.planItemList) }}</span>
           </template>
         </el-table-column>
+        <el-table-column prop="channelCount" label="关联通道" width="100" align="center" />
+        <el-table-column prop="updateTime" label="更新时间" width="180" />
+        <el-table-column prop="createTime" label="创建时间" width="180" />
         <el-table-column label="操作" width="220" fixed="right">
           <template #default="{ row }">
-            <el-button link type="primary" @click="onEdit(row)">编辑</el-button>
             <el-button link type="primary" @click="onLink(row)">关联通道</el-button>
+            <el-button link type="primary" @click="onEdit(row)">编辑</el-button>
             <el-button link type="danger" @click="onDelete(row)">删除</el-button>
           </template>
         </el-table-column>
       </el-table>
+
+      <el-pagination
+        class="pager"
+        layout="total, sizes, prev, pager, next"
+        :total="total"
+        :current-page="page"
+        :page-size="count"
+        :page-sizes="[15, 30, 50, 100]"
+        @current-change="onPageChange"
+        @size-change="onSizeChange"
+      />
     </el-card>
 
     <record-plan-edit-dialog v-model="editVisible" :plan="currentRow" @saved="loadData" />
-
-    <el-dialog v-model="linkVisible" :title="`关联通道 — ${currentPlan?.name ?? ''}`" width="780px" @open="loadLinkChannels">
-      <el-form :inline="true">
-        <el-form-item label="关键字">
-          <el-input v-model="linkKw" placeholder="通道名/ID" clearable @keyup.enter="loadLinkChannels" />
-        </el-form-item>
-        <el-form-item>
-          <el-button type="primary" @click="loadLinkChannels">查询</el-button>
-        </el-form-item>
-      </el-form>
-      <el-table
-        :data="linkCandidates"
-        v-loading="linkLoading"
-        stripe
-        border
-        max-height="400"
-        @selection-change="(arr) => (linkSelected = arr as any)"
-      >
-        <el-table-column type="selection" width="50" :selectable="(row) => !row.linked" />
-        <el-table-column prop="channelId" label="通道 ID" min-width="200" />
-        <el-table-column prop="name" label="通道名" min-width="200" />
-        <el-table-column prop="deviceId" label="所属设备" min-width="200" />
-        <el-table-column label="已关联" width="80" align="center">
-          <template #default="{ row }">
-            <el-tag v-if="row.linked" type="success" size="small">✓</el-tag>
-          </template>
-        </el-table-column>
-      </el-table>
-      <template #footer>
-        <el-button @click="linkVisible = false">取消</el-button>
-        <el-button type="primary" :loading="linkSaving" @click="onLinkSave">保存关联</el-button>
-      </template>
-    </el-dialog>
+    <link-channel-dialog
+      v-model="linkVisible"
+      :plan-id="currentPlan?.id"
+      :plan-name="currentPlan?.name ?? ''"
+      @changed="loadData"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
-import { Plus } from '@element-plus/icons-vue'
+import { onMounted, ref } from 'vue'
+import { Plus, Refresh } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { getRecordPlanList, deleteRecordPlan, addRecordPlan, updateRecordPlan, linkChannels, unlinkChannel, getPlanChannels, type RecordPlan } from '@/api/recordPlan'
-import { getChannelList, type Channel } from '@/api/channel'
+import {
+  deleteRecordPlan,
+  getRecordPlanList,
+  summarizePlanItems,
+  type RecordPlan
+} from '@/api/recordPlan'
 import RecordPlanEditDialog from './EditDialog.vue'
+import LinkChannelDialog from './LinkChannelDialog.vue'
 
-const loading = ref(false)
 const rows = ref<RecordPlan[]>([])
-const editVisible = ref(false)
-const currentRow = ref<Partial<RecordPlan>>({})
+const loading = ref(false)
+const query = ref('')
+const page = ref(1)
+const count = ref(15)
+const total = ref(0)
 
-// 关联通道 dialog
+const editVisible = ref(false)
 const linkVisible = ref(false)
-const linkLoading = ref(false)
-const linkSaving = ref(false)
+const currentRow = ref<Partial<RecordPlan> | null>(null)
 const currentPlan = ref<RecordPlan | null>(null)
-const linkKw = ref('')
-const linkCandidates = ref<Array<Channel & { linked: boolean }>>([])
-const linkSelected = ref<Array<Channel & { linked: boolean }>>([])
 
 async function loadData() {
   loading.value = true
   try {
-    const res = await getRecordPlanList({ page: 1, count: 200 })
+    const res = await getRecordPlanList({
+      page: page.value,
+      count: count.value,
+      query: query.value || undefined
+    })
     rows.value = res.data?.list ?? []
+    total.value = res.data?.total ?? 0
+  } catch (e: any) {
+    ElMessage.error(e?.message ?? '加载录像计划失败')
+    rows.value = []
+    total.value = 0
   } finally {
     loading.value = false
   }
 }
 
+function onSearch() {
+  page.value = 1
+  loadData()
+}
+
+function onPageChange(p: number) {
+  page.value = p
+  loadData()
+}
+
+function onSizeChange(c: number) {
+  count.value = c
+  page.value = 1
+  loadData()
+}
+
 function onAdd() {
-  currentRow.value = { mon: true, tue: true, wed: true, thu: true, fri: true, sat: true, sun: true, enable: true, startTime: '00:00:00', endTime: '23:59:59' }
+  currentRow.value = null
   editVisible.value = true
 }
 
@@ -134,75 +139,57 @@ function onEdit(row: RecordPlan) {
   editVisible.value = true
 }
 
-async function onToggle(row: RecordPlan) {
-  try {
-    await updateRecordPlan({ id: row.id, enable: row.enable })
-    ElMessage.success(row.enable ? '已启用' : '已停用')
-  } catch (e: any) {
-    ElMessage.error(e?.message ?? '切换失败')
-    row.enable = !row.enable
-  }
-}
-
 function onLink(row: RecordPlan) {
   currentPlan.value = row
-  linkSelected.value = []
   linkVisible.value = true
 }
 
-async function loadLinkChannels() {
-  if (!currentPlan.value?.id) return
-  linkLoading.value = true
-  try {
-    // 1) 已关联的通道
-    const linkedRes = await getPlanChannels(currentPlan.value.id)
-    const linkedIds = new Set(((linkedRes.data as any)?.list ?? []).map((c: any) => c.channelId).filter(Boolean))
-    // 2) 全量可选通道
-    const allRes = await getChannelList({ page: 1, count: 500, query: linkKw.value || undefined })
-    const list = ((allRes.data as any)?.list ?? []) as Array<Channel>
-    linkCandidates.value = list.map((c) => ({ ...c, linked: linkedIds.has(c.channelId) }))
-  } catch (e: any) {
-    ElMessage.error(e?.message ?? '加载通道失败')
-    linkCandidates.value = []
-  } finally {
-    linkLoading.value = false
-  }
-}
-
-async function onLinkSave() {
-  if (!currentPlan.value?.id || linkSelected.value.length === 0) {
-    ElMessage.warning('请选择要关联的通道')
-    return
-  }
-  linkSaving.value = true
-  try {
-    // 逐个关联（后端 linkChannels 支持批量 channelIds，这里用批量）
-    const ids = linkSelected.value.map((c) => c.id).filter((x): x is number => typeof x === 'number')
-    if (ids.length > 0) {
-      await linkChannels(currentPlan.value.id ?? 0, ids)
-    }
-    ElMessage.success(`已关联 ${ids.length} 个通道`)
-    linkVisible.value = false
-  } catch (e: any) {
-    ElMessage.error(e?.message ?? '关联失败')
-  } finally {
-    linkSaving.value = false
-  }
-}
-
 async function onDelete(row: RecordPlan) {
-  await ElMessageBox.confirm(`确认删除计划 ${row.name} ？`, '确认', { type: 'warning' })
-  await deleteRecordPlan(row.id ?? 0)
-  ElMessage.success('已删除')
-  loadData()
+  await ElMessageBox.confirm(`确认删除计划「${row.name}」？关联的通道会一并解除。`, '确认', {
+    type: 'warning'
+  })
+  try {
+    await deleteRecordPlan(row.id ?? 0)
+    ElMessage.success('已删除')
+    loadData()
+  } catch (e: any) {
+    ElMessage.error(e?.message ?? '删除失败')
+  }
 }
 
 onMounted(loadData)
 </script>
 
 <style scoped>
-.record-plan-page { padding: 16px; }
-.page-header { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 12px; }
-.page-title { font-size: 20px; font-weight: 600; margin: 0; }
-.page-subtitle { color: var(--el-text-color-secondary); font-size: 12px; margin-top: 4px; }
+.record-plan-page {
+  padding: 16px;
+}
+.page-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  margin-bottom: 12px;
+}
+.page-title {
+  font-size: 20px;
+  font-weight: 600;
+  margin: 0;
+}
+.page-subtitle {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  margin-top: 4px;
+}
+.search-bar {
+  margin-bottom: 8px;
+}
+.windows {
+  font-size: 12px;
+  color: var(--el-text-color-regular);
+  line-height: 1.5;
+}
+.pager {
+  margin-top: 12px;
+  justify-content: flex-end;
+}
 </style>

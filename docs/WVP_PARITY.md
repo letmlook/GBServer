@@ -3,16 +3,16 @@
 > 目标：完全平替 WVP-PRO（Java GB28181 平台）的全部功能。
 > 本文档作为持续校对的事实基线：每次推进后更新对应条目并记录证据。
 
-## 当前基线（2026-09-11）
+## 当前基线（2026-09-12）
 
 > 本节数字为**实测值**，复现命令见每行「验证方式」。上次基线见文末「历史基线」。
 
 | 维度 | 数值 | 验证方式 |
 |------|------|----------|
-| 总代码量（src/） | 69,619 行 Rust | `find src -name '*.rs' \| xargs wc -l` |
+| 总代码量（src/） | 73,712 行 Rust | `find src -name '*.rs' \| xargs wc -l` |
 | 已注册 HTTP 路由 | 383 条唯一 `/api/...` 路径 | `grep -oE '"/api/[^"]*"' src/router.rs \| sort -u \| wc -l` |
 | Handler 模块 | 29 个（含 `stub.rs` / `device_stub.rs` 两个兼容 shim） | `grep -c 'pub mod' src/handlers/mod.rs` |
-| 后端测试 | **570 通过** / 0 失败（第二十四轮后回填） | `cargo test --no-fail-fast` |
+| 后端测试 | **595 通过** / 0 失败（第二十六轮刷新；lib 532 + 集成 63） | `cargo test` |
 | 编译状态 | `cargo check` 0 error / **0 warning**；clippy 262；**deprecated 0** | `cargo check` / `cargo clippy --all-targets` |
 | 数据库 feature | SQLite（默认）/ PostgreSQL / MySQL **三者均编译通过** | CI `feature-matrix` job |
 | CI | ⏸️ 工作流已就绪但**按需暂停自动触发**（见 `.github/workflows/ci.yml`） | — |
@@ -1173,6 +1173,129 @@ npx playwright test             25 passed / 0 failed / 0 skipped
 JT1078 TCP + UDP 双通道（注册/查询/抓拍）PASS
 ```
 
+### 录像计划：从来不录像，且按 UTC 匹配时间窗（2026-09-12 第二十五轮）
+
+`record_plan`（录像计划）是本项目对外承诺的功能之一，前端 `/#/recordPlan`
+可以增删计划与时间条目。第二十五轮之前，这个功能**从未产生过任何录像文件**：
+
+| # | 缺陷 | 证据 | 修复 |
+|---|------|------|------|
+| 1 | **计划到点后直接对不存在的流调 `startRecord`**：调度器只做 `zlm.start_record(stream)`，而该设备的流**根本没人拉过**（实时点播要等用户点播才 INVITE） | ZLM 侧 `isRecording` 永远 `{"code":0,"exist":false}`；`/api/cloud-record/list` 永远空 | tick 里先按通道调 `start_live_stream()`（真实向下游设备发 INVITE 并 `startSendRtp` 到 ZLM），等流建立后再 `start_record`；拉流失败只 warn 不 panic，下个 tick 重试 |
+| 2 | **时间窗按 UTC 匹配**：调度器用 `chrono::Utc::now()` 取「当天第几秒」，而计划条目里的 `start`/`stop` 是**用户本地时间**（前端按本地时间选择） | 本机 `local = UTC-8`，一个 06:54–07:20 的计划在 UTC 下变成 22:54–23:20，**整整偏 8 小时**——白天录不上、半夜乱录 | 改用 `chrono::Local::now()`；窗口语义保持半开区间 `[start, stop)` |
+| 3 | 计划条目匹配逻辑内联在 tick 里，无法单测 | —— | 抽成纯函数 `schedule_matches(items, weekday, seconds)`，补 3 个测试（半开区间边界、多窗口任一命中、缺字段不误命中） |
+
+**实测**（真实后端 + SIP 设备 mock + ZLM mock）：
+
+```
+# 把计划窗口设成覆盖"现在"，等一个 tick（30s）
+22:55:29 INFO 已按期拉起设备流 34020000001320000001_34020000001320000001（channel=1）
+22:55:29 INFO started MP4 recording for channel 1 stream rtp/34020000001320000001_34020000001320000001 (node zlmediakit-1)
+SIP mock: Sent PLAY INVITE ... port=30000          # 真的向设备发了点播
+/api/zlm MediaServer isRecording → {"code":0,"exist":true}
+
+# 把计划窗口移到过去，等一个 tick
+INFO stopped MP4 recording for channel 1 stream rtp/34020000001320000001_34020000001320000001
+/api/zlm MediaServer isRecording → {"code":0,"exist":false}
+```
+
+窗口用的是本地时间这一点也被这次实测证实：计划里填的是本地 06:54 附近，
+若仍按 UTC 匹配（当时 UTC 已 22:55）该 tick **不会**命中——但它命中了。
+
+#### 第二十五轮基线
+
+```
+cargo test                       573 passed / 0 failed   (上轮 570；+3 调度匹配测试)
+cargo check --features mysql     OK
+cargo check --features postgres  OK
+cargo check --all-targets        本项目 0 warning（仅 redis 0.25.4 的 future-incompat 提示）
+npx playwright test              25 passed / 0 failed / 0 skipped
+录像计划（拉起设备流 → 录制 → 到点停止）PASS
+```
+
+### 录像计划：前端契约全错、时段口径全错、删除路由不可用（2026-09-12 第二十六轮）
+
+第二十五轮修好了"到点会去拉流并录像"，但那只解决了**调度器**这一半。
+这一轮把 WVP-PRO 的真实实现拉下来逐行对照后（见下方"证据来源"），发现整条
+录像计划链路从**前端到后端**都跟 WVP 对不上，用户在界面上根本建不出一个能生效的计划：
+
+| # | 缺陷 | 证据 | 修复 |
+|---|------|------|------|
+| 1 | **前端提交的字段后端根本不认**：前端发 `{planType, startTime, endTime, enable, mon..sun}`，后端（= WVP 契约）只认 `planItemList:[{start,stop,weekDay}]` | 实测 `POST /api/record/plan/add` 带旧载荷返回 `{"code":0,"msg":"成功"}`，但 `gb_record_plan_item` **一行都没写** | 前端按 WVP 契约重写：`RecordPlanItem{start,stop,weekDay}`；后端补上 WVP 的校验 —— 空 `planItemList` 直接 400「添加录制计划时，录制计划不可为空」（此前是静默成功） |
+| 2 | **时段口径错**：`start/stop` 是**当天第几分钟**（0..1440）且是**闭区间**，我们按"当天第几秒 + 半开区间"比 | WVP `RecordPlanMapper.queryRecordIng`：`index = hour*60 + minute`、`where wrpi.start <= #{index} and stop >= #{index}` | `schedule_matches` 改为分钟 + 闭区间；补回归测试 `seconds_are_not_minutes` 钉死这个坑 |
+| 3 | **星期口径错**：WVP 用 `LocalDateTime.getDayOfWeek().getValue()` = **ISO 1..7（周一=1）**，我们用 `num_days_from_monday()` = 0..6 | 同上 `queryCurrentChannelRecord()`；WVP `edit.vue` 里 `weekDay: i + 1` | 改用 `number_from_monday()`；周几不合法（0/8）直接 400 |
+| 4 | **删除从来没成功过**：前端用 GET 调 `/api/record/plan/delete`，路由只注册了 DELETE（`router.rs`），且 handler 只读 `id` 不读 `planId` | 实测 `GET .../delete?planId=N` → **405**；`DELETE .../delete?planId=N` → **400「缺少 id」** | 前端改 DELETE；handler 同时接受 `id`/`planId`；删除时**一并清理**时段条目与通道上的 `record_plan_id`（对齐 WVP `delete()` 的 `removeRecordPlanByPlanId + cleanItems + delete`） |
+| 5 | **关联通道完全无效**：前端传通道**主键**（WVP `CommonGBChannel.gbId`），后端拿它当 `gb_device_id` 字符串去查 → 一条都查不到 → 循环体不执行 → **仍返回成功** | 通道列表接口的 `gbId` 也返回 `gb_device_id` 字符串，语义整体错位 | `gbId` 改为通道主键（与 WVP `wdc.id as gb_id` 一致）；`link` 支持主键/国标编号两种输入，**有任何一个不存在就 400**，`allLink` 缺 `planId` 也报错 |
+| 6 | **列表页 6 列全是空的**：前端渲染 `planType/startTime/endTime/mon..sun/enable`，后端从不返回这些字段 | — | 列表改为 WVP 的列：名称 / 录像时段汇总 / **关联通道数** / 更新时间 / 创建时间；`query` 与 `get` 都补上 `channelCount`（WVP 的 `(select count(1) ...)`）与 `planItemList`，并支持 `query` 名称检索 |
+| 7 | 关联/取消关联后要等下一个 60s tick 才生效 | WVP `link()` 里**同步**调用一次 `execution()` | 增加进程级 `Notify`：`link`/`add`/`update`/`delete` 后立即唤醒调度器（实测关联后 **2 秒内** `isRecording=true`） |
+| 8 | `channel/list` 把推流/代理通道也列出来 | WVP 硬编码 `where wdc.channel_type = 0` | 只列国标通道；`hasLink=false` 对齐 WVP = `record_plan_id IS NULL`（此前把"已关联到其它计划"的通道也当成未关联）；名称/编号/状态走 `coalesce(gb_xxx, xxx)`（目录同步写的是老列，`gb_*` 列为空） |
+| 9 | 前端没有"按设备关联"入口，也没有已关联列表 | WVP `linkChannelRecord.vue` | `link` 保留 `deviceDbIds`；前端"关联通道"对话框补上未关联/已关联切换、关键字、在线筛选、添加/移除/全部添加/全部移除 |
+
+**顺带修掉的界面问题**：`main.ts` 没有设置 Element Plus 语言包，`ElMessageBox`
+显示英文 `OK`/`Cancel`（有截图证据），与整站中文界面不一致 —— 已设置 `zh-cn`。
+
+**证据来源（本次真正拉取了 WVP-PRO 源码逐行比对，不再靠推测）**：
+
+- `RecordPlanMapper.java`：`queryRecordIng(week, index)` 的完整 SQL；
+- `RecordPlanServiceImpl.java`：`execution()` / `queryCurrentChannelRecord()` /
+  `stopStreams()` / `add()` / `update()`（跳过字段不全的条目）/ `delete()` /
+  `link()` / `linkAll()` / `cleanAll()`；以及 `recording(app,stream)` 被
+  `MediaServiceImpl.closeStreamOnNoneReader()` 用来**保护正在录像的流不被"无人观看"关掉**
+  —— 我们的 `zlm/hook.rs::decide_idle_stream` 第 3 步的 `isRecording` 判定与之等效；
+- `RecordPlanController.java`：6 个端点的参数名与校验（`planId`、`allLink`、
+  `hasLink`、`channelType`）；
+- `web/src/views/recordPlan/{index,edit}.vue` + `common/weekTimePicker.vue`：确认
+  `start/stop` 是分钟（`getTrackStyle` 用 `100/24/60 * track.start`）、`weekDay = i + 1`；
+- `CommonGBChannelMapper.queryForRecordPlanForWebList`：`wdc.id as gb_id` + `channel_type = 0`。
+
+> `RecordPlan.snap`（"是否开启定时截图"）在 WVP master 里**只存不用**
+> （全仓库 `grep getSnap()` 无调用），所以我们同样只保留字段、不发明行为，
+> 界面上明确标注"服务端暂未接线"。
+
+**实测**（真实后端 + SIP 设备 mock + ZLM mock，全新 DB）：
+
+```
+0) 目录同步             → channelCount=4
+1) 未关联通道列表       → total=4，gbId=4/3/2/1（**主键**，不是国标编号字符串）
+2) 旧前端载荷 add       → 400 添加录制计划时，录制计划不可为空（此前：code:0，但 0 条时段）
+3) 新契约 add           → 成功；ISO 周6 第 438 分钟 → 计划 [408,528]
+4) start>stop           → 400 时段起点 600 大于终点 300
+   空 planItemList      → 400 添加录制计划时，录制计划不可为空
+5) get                  → name=E2E计划 channelCount=0 planItemList=[{start:408,stop:528,weekDay:6}]
+6) link(channelIds=[4]) → 成功；channelCount=1
+7) link([999999])       → 400 以下通道不存在: 999999
+8) 关联后 t=2s          → ZLM isRecording {"code":0,"exist":true}
+   后端日志             → 已按期拉起设备流 3402...0004（channel=4）
+                          started MP4 recording for channel 4 stream rtp/34020000001320000001_34020000001320000004
+   SIP 设备 mock        → RX INVITE sip:34020000001320000004 → 200 OK (video/Play, m=video 30000)
+9) GET  delete(planId)  → 405（旧前端写法）
+   DELETE delete(planId)→ 200；plans=0 items=0 linked_channels=0（时段与通道关联都被清干净）
+```
+
+**新增测试 22 个**：
+
+- 调度匹配 6 个（闭区间边界、**秒/分钟回归保护**、ISO 周一=1、多窗口、缺字段、全天窗）；
+- `db::record_plan` 5 个（条目校验/`is_complete`、`replace_items` 跳过不全条目、
+  删除清理条目+通道关联、关联/取消/全部、名称检索分页）；
+- handler 11 个（空时段 400、倒置时段 400、add→get 往返、更新/删除不存在的计划 400、
+  **按 planId 删除**、按主键关联真的落库、未知通道/未知计划 400、
+  `gbId` 为主键 + `hasLink` 语义、全部关联/全部取消、query 的 channelCount 与检索）；
+- 占位符改写 2 个（postgres `?`→`$n` 编号、LIMIT/OFFSET 必须接在 WHERE 参数之后）。
+
+**新增 e2e 2 个**（`e2e/tests/recordPlan.spec.ts`）：断言**真实请求体**是 WVP 契约
+（`planItemList` + 分钟 + ISO 星期）、列表能读回时段、编辑生效、**删除走 DELETE**；
+另一用例验证非法时段被前端拦截。
+
+#### 第二十六轮基线
+
+```
+cargo test                       595 passed / 0 failed   (上轮 573；+22 录像计划)
+cargo check --features mysql     OK
+cargo check --features postgres  OK
+cargo check --all-targets        本项目 0 warning
+npx playwright test              27 passed / 0 failed / 0 skipped  (上轮 25；+2)
+录像计划（新增/编辑/列表/关联/删除 + 立即录像）PASS
+```
+
 ### 仍未解决 / 需真实设备核验
 
 以下是本轮**已定位但未改动**的项，均在代码中留有注释或在此登记，
@@ -1240,9 +1363,9 @@ JT1078 TCP + UDP 双通道（注册/查询/抓拍）PASS
     部分 2022 设备可能只认后者 —— 需要真实设备确认后再决定是否追加兼容分支。
 13. **`on_rtp_playlist` / `on_record_progress` / `on_send_rtp_progress`**
    的载荷结构未与真实样本核对（官方文档未给出示例）。
-10. **多节点下 `general.mediaServerId`** 现在会在 autoConfig 时下发为节点主键；
+14. **多节点下 `general.mediaServerId`** 现在会在 autoConfig 时下发为节点主键；
     但**手工在 ZLM 侧改过该键**的既有部署仍需重新保存节点才会对齐。
-11. ~~**上级平台点播本级（级联拉流）尚未接线**~~ **已实现并端到端验证（第十八轮）**：
+15. ~~**上级平台点播本级（级联拉流）尚未接线**~~ **已实现并端到端验证（第十八轮）**：
     见上方第十八轮小节。当前实现用进程级队列 + `Arc<SipServer>` 后台任务
     解耦静态信令路径与 `&self` 媒体路径；后续若继续加级联能力（如上级云台控制
     转发、级联录像回放），建议把 `start_live_stream` 抽成"按部件调用"的自由函数，
@@ -1266,7 +1389,7 @@ JT1078 TCP + UDP 双通道（注册/查询/抓拍）PASS
 | 总代码量（src/） | 61,095 行 Rust |
 | 已注册 HTTP 路由 | 369 条唯一 `/api/...` 路径 |
 | Handler 模块 | 21 个（其中 `stub.rs`/`device_stub.rs` 主要是 shim 与少量占位） |
-| 后端测试 | **395 通过**（lib 348 + 集成 47）/ 2 忽略 / 0 失败 |
+| 后端测试 | **573 通过**（lib 510 + 集成 63）/ 3 忽略 / 0 失败（第二十五轮刷新） |
 | 编译状态 | `cargo check` 0 error / 55 warning |
 | 前端 | `web/` Vue 2 现状稳定；`web-v3/` Phase 1 完成（脚手架+登录+控制台） |
 | 数据库 | SQLite/PostgreSQL/MySQL 三选一，默认 SQLite |
@@ -1287,7 +1410,7 @@ JT1078 TCP + UDP 双通道（注册/查询/抓拍）PASS
 | ZLM (`server/media_server/*`) | 10 | ✅ 完整 | list/one/save/online/check/load/media_info/record_check |
 | 系统 (`server/*`) | 9 | ✅ 完整 | system_info/config/map/info/version/resource_info/stream_all |
 | 区域/分组 (`region/group/`) | 16 | ✅ 完整 | tree/path/addByCivilCode/sync |
-| 录像计划 (`record_plan/`) | 6 | ✅ 完整 | add/update/delete/query/link/channel_list |
+| 录像计划 (`record_plan/`) | 6 | ✅ 完整 | add/update/delete/query/link/channel_list；分钟/ISO 星期口径 + 到点拉流录制 + 前端契约对齐 WVP（第二十五/二十六轮） |
 | API Key (`userApiKey/`) | 7 | ✅ 完整 | add/delete/enable/disable/remark/reset/list |
 | 角色 (`role/`) | 3 | ✅ 完整 | all/add/delete |
 | 日志 (`log/`) | 2 | ✅ 完整 | list + file download |
@@ -1448,6 +1571,9 @@ JT1078 TCP + UDP 双通道（注册/查询/抓拍）PASS
 
 ## 测试基线（每次推进后回填）
 
+- 2026-09-12 第二十六轮：`cargo test` —— **595 通过 / 0 失败**（lib 532 + 集成 63；+22 录像计划）
+  - 同时：`npx playwright test` 27 通过 / 0 失败 / 0 跳过；mysql/postgres feature 构建 OK
+- 2026-09-12 第二十五轮：`cargo test` —— **573 通过 / 0 失败**（lib 510 + 集成 63；+3 录像计划调度匹配）
 - 2026-08-23 第四次推进：`cargo test --no-fail-fast` —— **395 通过 / 2 忽略 / 0 失败**
   - lib: 348（+5：JT1078 area/route CRUD 集成测试）
 - 2026-08-23 第三次推进：`cargo test --no-fail-fast` —— **392 通过 / 2 忽略 / 0 失败**

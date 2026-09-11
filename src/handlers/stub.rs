@@ -1667,6 +1667,37 @@ pub async fn cloud_record_collect_list(
 }
 
 // ========== record_plan ==========
+
+/// WVP `DateUtil.getNow()` 用的是本地时间；录像计划的时段本身也是本地时间，
+/// 时间戳跟着本地走，前端显示才不会差 8 小时。
+fn local_now_str() -> String {
+    chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string()
+}
+
+/// 校验一组计划时段，出错直接返回 400。
+///
+/// 比 WVP 严的一点：`start > stop` 会被拒绝。WVP 允许保存但那条时段
+/// 永远不会命中（SQL `start <= index and stop >= index`），属于静默失败。
+fn validate_record_plan_items(
+    items: &[record_plan::RecordPlanItemPayload],
+) -> Result<(), AppError> {
+    if items.is_empty() {
+        return Err(AppError::business(
+            ErrorCode::Error400,
+            "录制计划时段不可为空",
+        ));
+    }
+    for (idx, item) in items.iter().enumerate() {
+        if let Some(err) = item.validate() {
+            return Err(AppError::business(
+                ErrorCode::Error400,
+                format!("第 {} 个时段不合法: {}", idx + 1, err),
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// GET /api/record/plan/get?id=
 pub async fn record_plan_get(
     State(state): State<AppState>,
@@ -1678,11 +1709,13 @@ pub async fn record_plan_get(
     }
     let plan = record_plan::get_by_id(&state.pool, id).await?;
     let items = record_plan::list_items(&state.pool, id as i64).await?;
+    let channel_count = record_plan::count_linked_channels(&state.pool, id as i64).await?;
     let out = match plan {
         Some(p) => serde_json::json!({
             "id": p.id,
             "snap": p.snap,
             "name": p.name,
+            "channelCount": channel_count,
             "planItemList": items.iter().map(|item| serde_json::json!({
                 "id": item.id,
                 "start": item.start,
@@ -1705,13 +1738,22 @@ pub async fn record_plan_add(
     State(state): State<AppState>,
     Json(body): Json<record_plan::RecordPlanAdd>,
 ) -> Result<Json<WVPResult<()>>, AppError> {
-    let name = body.name.as_deref().unwrap_or("默认计划");
+    let name = body.name.as_deref().map(str::trim).filter(|s| !s.is_empty())
+        .ok_or_else(|| AppError::business(ErrorCode::Error400, "计划名称不可为空"))?;
+    // WVP `RecordPlanController.add()`：planItemList 为空直接报错
+    // "添加录制计划时，录制计划不可为空"。此前我们静默建了一条**没有时段**的
+    // 计划：列表里看得见，调度器永远不会命中 —— 保存成功但功能为零。
+    let items = body
+        .plan_item_list
+        .as_ref()
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| AppError::business(ErrorCode::Error400, "添加录制计划时，录制计划不可为空"))?;
+    validate_record_plan_items(items)?;
     let snap = body.snap.unwrap_or(false);
-    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let now = local_now_str();
     let plan_id = record_plan::add_with_id(&state.pool, name, snap, &now).await?;
-    if let Some(ref items) = body.plan_item_list {
-        record_plan::replace_items(&state.pool, plan_id, items, &now).await?;
-    }
+    record_plan::replace_items(&state.pool, plan_id, items, &now).await?;
+    crate::scheduler::record_plan::wake_record_plan_scheduler();
     Ok(Json(WVPResult::<()>::success_empty()))
 }
 
@@ -1721,42 +1763,71 @@ pub async fn record_plan_update(
     Json(body): Json<record_plan::RecordPlanUpdate>,
 ) -> Result<Json<WVPResult<()>>, AppError> {
     let id = body.id.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id"))?;
-    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    record_plan::update(
-        &state.pool,
-        id,
-        body.name.as_deref(),
-        body.snap,
-        &now,
-    )
-    .await?;
+    if id == 0 {
+        return Err(AppError::business(ErrorCode::Error400, "计划 ID 不可为空"));
+    }
+    if record_plan::get_by_id(&state.pool, id as i32).await?.is_none() {
+        return Err(AppError::business(
+            ErrorCode::Error400,
+            format!("录制计划不存在: {id}"),
+        ));
+    }
     if let Some(ref items) = body.plan_item_list {
+        validate_record_plan_items(items)?;
+    }
+    let now = local_now_str();
+    record_plan::update(&state.pool, id, body.name.as_deref(), body.snap, &now).await?;
+    if let Some(ref items) = body.plan_item_list {
+        // WVP `update()`：先清后写；空列表等价于"清空所有时段"
         record_plan::replace_items(&state.pool, id, items, &now).await?;
     }
+    crate::scheduler::record_plan::wake_record_plan_scheduler();
     Ok(Json(WVPResult::<()>::success_empty()))
+}
+
+/// GET /api/record/plan/query 的查询参数（WVP: page/count/query）
+#[derive(Debug, Deserialize)]
+pub struct RecordPlanQuery {
+    pub page: Option<u32>,
+    pub count: Option<u32>,
+    pub query: Option<String>,
 }
 
 /// GET /api/record/plan/query
 pub async fn record_plan_query(
     State(state): State<AppState>,
-    Query(q): Query<PageQuery>,
+    Query(q): Query<RecordPlanQuery>,
 ) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
     let page = q.page.unwrap_or(1);
-    let count = q.count.unwrap_or(10).min(100);
-    let list: Vec<crate::db::RecordPlan> = record_plan::list_paged(&state.pool, page, count).await?;
-    let total: i64 = record_plan::count_all(&state.pool).await?;
-    let list: Vec<serde_json::Value> = list
-        .iter()
-        .map(|p| {
-            serde_json::json!({
-                "id": p.id,
-                "snap": p.snap,
-                "name": p.name,
-                "createTime": p.create_time,
-                "updateTime": p.update_time
-            })
-        })
-        .collect();
+    let count = q.count.unwrap_or(15).min(100);
+    let search = q
+        .query
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let plans: Vec<crate::db::RecordPlan> =
+        record_plan::list_paged(&state.pool, page, count, search).await?;
+    let total: i64 = record_plan::count_all(&state.pool, search).await?;
+    let mut list: Vec<serde_json::Value> = Vec::with_capacity(plans.len());
+    for p in &plans {
+        let channel_count = record_plan::count_linked_channels(&state.pool, p.id as i64).await?;
+        let items = record_plan::list_items(&state.pool, p.id as i64).await?;
+        list.push(serde_json::json!({
+            "id": p.id,
+            "snap": p.snap,
+            "name": p.name,
+            "channelCount": channel_count,
+            "planItemList": items.iter().map(|item| serde_json::json!({
+                "id": item.id,
+                "start": item.start,
+                "stop": item.stop,
+                "weekDay": item.week_day,
+                "planId": item.plan_id
+            })).collect::<Vec<_>>(),
+            "createTime": p.create_time,
+            "updateTime": p.update_time
+        }));
+    }
     Ok(Json(WVPResult::success(serde_json::json!({
         "total": total,
         "list": list
@@ -1768,219 +1839,207 @@ pub async fn record_plan_delete(
     State(state): State<AppState>,
     Query(q): Query<IdQuery>,
 ) -> Result<Json<WVPResult<()>>, AppError> {
-    let id = q.id.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id"))?;
-    record_plan::delete_by_id(&state.pool, id).await?;
+    // WVP 的参数名是 **planId**（`RecordPlanController.delete(Integer planId)`），
+    // `IdQuery` 已经 alias 到 `plan_id`。早期实现只读 `id`，
+    // 于是前端按 WVP 契约传 planId 时稳定得到 400「缺少 id」——删除功能不可用。
+    let id = q
+        .id
+        .or(q.plan_id)
+        .ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 planId"))?;
+    // WVP `delete()`：计划不存在时报 "录制计划不存在"，而不是静默成功
+    if record_plan::get_by_id(&state.pool, id as i32).await?.is_none() {
+        return Err(AppError::business(
+            ErrorCode::Error400,
+            format!("录制计划不存在: {id}"),
+        ));
+    }
+    record_plan::delete_by_id(&state.pool, id as i32).await?;
+    crate::scheduler::record_plan::wake_record_plan_scheduler();
     Ok(Json(WVPResult::<()>::success_empty()))
 }
 
+/// 动态 WHERE 构造器（录像计划通道列表用）。
+///
+/// 统一用 `?` 写条件，postgres 下按顺序把第 k 个 `?` 改写成 `$k`——同一份 SQL
+/// 文本即可服务三种方言。早期实现把整条 SQL（含全部条件分支）抄了 6 遍
+/// （3 方言 × 行查询/计数），改一个条件要改 6 处，正是"改了这里忘了那里"的温床。
+struct DynWhere {
+    conds: Vec<String>,
+    binds: Vec<BindValue>,
+}
+
+#[derive(Clone)]
+enum BindValue {
+    Text(String),
+    Int(i32),
+}
+
+impl DynWhere {
+    fn new() -> Self {
+        Self {
+            conds: Vec::new(),
+            binds: Vec::new(),
+        }
+    }
+
+    /// 追加一个条件；`?` 的个数必须与 `values` 个数一致。
+    fn add(&mut self, cond: impl Into<String>, values: Vec<BindValue>) {
+        let cond = cond.into();
+        debug_assert_eq!(cond.matches('?').count(), values.len());
+        self.conds.push(cond);
+        self.binds.extend(values);
+    }
+
+    /// 按方言生成最终 SQL（postgres 把 `?` 换成 `$1..$n`）。
+    fn sql(&self, base: &str) -> String {
+        self.sql_for(base, cfg!(feature = "postgres"))
+    }
+
+    /// `sql` 的可测版本：`postgres` 显式传入，便于在 sqlite 构建下也能
+    /// 验证占位符改写（否则这段逻辑只在 postgres 构建里才跑到）。
+    fn sql_for(&self, base: &str, postgres: bool) -> String {
+        let raw = if self.conds.is_empty() {
+            base.to_string()
+        } else {
+            format!("{} WHERE {}", base, self.conds.join(" AND "))
+        };
+        if postgres {
+            let mut out = String::with_capacity(raw.len() + 16);
+            let mut n = 0usize;
+            for ch in raw.chars() {
+                if ch == '?' {
+                    n += 1;
+                    out.push_str(&format!("${n}"));
+                } else {
+                    out.push(ch);
+                }
+            }
+            out
+        } else {
+            raw
+        }
+    }
+}
+
+/// 录像计划通道列表的一行。
+///
+/// `gb_*` 列在目录同步路径下是空的（数据写在老列 `name`/`status` 上），
+/// 所以 SQL 里统一 `coalesce`。
+#[derive(Debug, sqlx::FromRow)]
+struct RecordPlanChannelRow {
+    id: i64,
+    gb_device_id: Option<String>,
+    gb_name: Option<String>,
+    gb_manufacturer: Option<String>,
+    gb_model: Option<String>,
+    gb_status: Option<String>,
+    data_type: Option<i32>,
+    record_plan_id: Option<i32>,
+}
+
+impl RecordPlanChannelRow {
+    fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            // WVP: `wdc.id as gb_id` —— 前端 link 时把 gbId 当 channelIds 回传，
+            // 所以这里必须是**通道主键**，不能是国标编号。
+            "id": self.id,
+            "gbId": self.id,
+            "gbDeviceId": self.gb_device_id,
+            "gbName": self.gb_name,
+            "gbManufacturer": self.gb_manufacturer,
+            "gbModel": self.gb_model,
+            "gbStatus": self.gb_status.clone().unwrap_or_else(|| "OFF".to_string()),
+            "dataType": self.data_type.unwrap_or(0),
+            "recordPlanId": self.record_plan_id,
+        })
+    }
+}
+
 /// GET /api/record/plan/channel/list
+///
+/// 与 WVP `CommonGBChannelMapper.queryForRecordPlanForWebList` 对齐：
+///
+/// * **只列国标通道**（`channel_type = 0`）—— 录像计划要能真的拉起设备流，
+///   把推流/代理/车载通道放进来只会得到一条永远录不到东西的计划；
+/// * `gbId` 是通道**主键**（`gb_device_channel.id`）；
+/// * `hasLink=true` → `record_plan_id = planId`；`hasLink=false` → `IS NULL`
+///   （WVP 语义：未关联 = 不属于任何计划）；
+/// * 名称/编号/在线状态都走 `coalesce(gb_xxx, xxx)`。
 pub async fn record_plan_channel_list(
     State(state): State<AppState>,
     Query(q): Query<CommonChannelListQuery>,
 ) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
-    let page = q.page.unwrap_or(1);
-    let count = q.count.unwrap_or(15).min(100);
-    let offset = (page.saturating_sub(1) * count) as i64;
+    let page = q.page.unwrap_or(1).max(1);
+    let count = q.count.unwrap_or(15).clamp(1, 500);
+    let offset = ((page - 1) * count) as i64;
     let plan_id = q.plan_id;
     let has_link = q.has_link.as_deref();
-    let online = match q.online.as_deref() {
-        Some("true") => Some("ON"),
-        Some("false") => Some("OFF"),
-        _ => None,
-    };
+    let online = q.online.as_deref();
     let channel_type = q.channelType.as_deref().and_then(|v| v.parse::<i32>().ok());
-    let search = q.query.as_deref().unwrap_or("").trim();
-    let like = format!("%{}%", search);
+    let search = q.query.as_deref().unwrap_or("").trim().to_string();
 
-    #[cfg(feature = "postgres")]
-    let rows = sqlx::query(
-        r#"
-        SELECT id, name, gb_device_id, manufacturer, status, data_type, record_plan_id
-        FROM gb_device_channel
-        WHERE ($1::text = '' OR name ILIKE $2 OR gb_device_id ILIKE $2)
-          AND ($3::text IS NULL OR status = $3)
-          AND ($4::int IS NULL OR data_type = $4)
-          AND (
-                $5::int IS NULL
-                OR ($6::text = 'true' AND record_plan_id = $5)
-                OR ($6::text = 'false' AND (record_plan_id IS NULL OR record_plan_id != $5))
-              )
-        ORDER BY id DESC
-        LIMIT $7 OFFSET $8
-        "#,
-    )
-    .bind(search)
-    .bind(&like)
-    .bind(online)
-    .bind(channel_type)
-    .bind(plan_id)
-    .bind(has_link)
-    .bind(count as i64)
-    .bind(offset)
-    .fetch_all(&state.pool)
-    .await?;
-    #[cfg(feature = "mysql")]
-    let rows = sqlx::query(
-        r#"
-        SELECT id, name, gb_device_id, manufacturer, status, data_type, record_plan_id
-        FROM gb_device_channel
-        WHERE (? = '' OR name LIKE ? OR gb_device_id LIKE ?)
-          AND (? IS NULL OR status = ?)
-          AND (? IS NULL OR data_type = ?)
-          AND (
-                ? IS NULL
-                OR (? = 'true' AND record_plan_id = ?)
-                OR (? = 'false' AND (record_plan_id IS NULL OR record_plan_id != ?))
-              )
-        ORDER BY id DESC
-        LIMIT ? OFFSET ?
-        "#,
-    )
-    .bind(search)
-    .bind(&like)
-    .bind(&like)
-    .bind(online)
-    .bind(online)
-    .bind(channel_type)
-    .bind(channel_type)
-    .bind(plan_id)
-    .bind(has_link)
-    .bind(plan_id)
-    .bind(has_link)
-    .bind(plan_id)
-    .bind(count as i64)
-    .bind(offset)
-    .fetch_all(&state.pool)
-    .await?;
-    #[cfg(feature = "sqlite")]
-    let rows = sqlx::query(
-        r#"
-        SELECT id, name, gb_device_id, manufacturer, status, data_type, record_plan_id
-        FROM gb_device_channel
-        WHERE (? = '' OR name LIKE ? OR gb_device_id LIKE ?)
-          AND (? IS NULL OR status = ?)
-          AND (? IS NULL OR data_type = ?)
-          AND (
-                ? IS NULL
-                OR (? = 'true' AND record_plan_id = ?)
-                OR (? = 'false' AND (record_plan_id IS NULL OR record_plan_id != ?))
-              )
-        ORDER BY id DESC
-        LIMIT ? OFFSET ?
-        "#,
-    )
-    .bind(search)
-    .bind(&like)
-    .bind(&like)
-    .bind(online)
-    .bind(online)
-    .bind(channel_type)
-    .bind(channel_type)
-    .bind(plan_id)
-    .bind(has_link)
-    .bind(plan_id)
-    .bind(has_link)
-    .bind(plan_id)
-    .bind(count as i64)
-    .bind(offset)
-    .fetch_all(&state.pool)
-    .await?;
+    let mut w = DynWhere::new();
+    if !search.is_empty() {
+        let like = format!("%{}%", search);
+        w.add(
+            "(coalesce(c.gb_device_id, c.device_id) LIKE ? OR coalesce(c.gb_name, c.name) LIKE ?)",
+            vec![BindValue::Text(like.clone()), BindValue::Text(like)],
+        );
+    }
+    match online {
+        Some("true") => w.add("coalesce(c.gb_status, c.status) = ?", vec![BindValue::Text("ON".into())]),
+        Some("false") => w.add("coalesce(c.gb_status, c.status) = ?", vec![BindValue::Text("OFF".into())]),
+        _ => {}
+    }
+    if let Some(t) = channel_type {
+        w.add("c.data_type = ?", vec![BindValue::Int(t)]);
+    }
+    // 只列国标设备通道（WVP 同样硬编码 channel_type = 0）
+    w.add("c.channel_type = 0", vec![]);
+    if let Some(p) = plan_id {
+        match has_link {
+            Some("true") => w.add("c.record_plan_id = ?", vec![BindValue::Int(p)]),
+            Some("false") => w.add("c.record_plan_id IS NULL", vec![]),
+            _ => {}
+        }
+    }
 
-    #[cfg(feature = "postgres")]
-    let total: i64 = sqlx::query_scalar(
-        r#"
-        SELECT COUNT(*)
-        FROM gb_device_channel
-        WHERE ($1::text = '' OR name ILIKE $2 OR gb_device_id ILIKE $2)
-          AND ($3::text IS NULL OR status = $3)
-          AND ($4::int IS NULL OR data_type = $4)
-          AND (
-                $5::int IS NULL
-                OR ($6::text = 'true' AND record_plan_id = $5)
-                OR ($6::text = 'false' AND (record_plan_id IS NULL OR record_plan_id != $5))
-              )
-        "#,
-    )
-    .bind(search)
-    .bind(&like)
-    .bind(online)
-    .bind(channel_type)
-    .bind(plan_id)
-    .bind(has_link)
-    .fetch_one(&state.pool)
-    .await?;
-    #[cfg(feature = "mysql")]
-    let total: i64 = sqlx::query_scalar(
-        r#"
-        SELECT COUNT(*)
-        FROM gb_device_channel
-        WHERE (? = '' OR name LIKE ? OR gb_device_id LIKE ?)
-          AND (? IS NULL OR status = ?)
-          AND (? IS NULL OR data_type = ?)
-          AND (
-                ? IS NULL
-                OR (? = 'true' AND record_plan_id = ?)
-                OR (? = 'false' AND (record_plan_id IS NULL OR record_plan_id != ?))
-              )
-        "#,
-    )
-    .bind(search)
-    .bind(&like)
-    .bind(&like)
-    .bind(online)
-    .bind(online)
-    .bind(channel_type)
-    .bind(channel_type)
-    .bind(plan_id)
-    .bind(has_link)
-    .bind(plan_id)
-    .bind(has_link)
-    .bind(plan_id)
-    .fetch_one(&state.pool)
-    .await?;
-    #[cfg(feature = "sqlite")]
-    let total: i64 = sqlx::query_scalar(
-        r#"
-        SELECT COUNT(*)
-        FROM gb_device_channel
-        WHERE (? = '' OR name LIKE ? OR gb_device_id LIKE ?)
-          AND (? IS NULL OR status = ?)
-          AND (? IS NULL OR data_type = ?)
-          AND (
-                ? IS NULL
-                OR (? = 'true' AND record_plan_id = ?)
-                OR (? = 'false' AND (record_plan_id IS NULL OR record_plan_id != ?))
-              )
-        "#,
-    )
-    .bind(search)
-    .bind(&like)
-    .bind(&like)
-    .bind(online)
-    .bind(online)
-    .bind(channel_type)
-    .bind(channel_type)
-    .bind(plan_id)
-    .bind(has_link)
-    .bind(plan_id)
-    .bind(has_link)
-    .bind(plan_id)
-    .fetch_one(&state.pool)
-    .await?;
+    const BASE_COLS: &str = "SELECT c.id, \
+        coalesce(c.gb_device_id, c.device_id) AS gb_device_id, \
+        coalesce(c.gb_name, c.name) AS gb_name, \
+        coalesce(c.gb_manufacturer, c.manufacturer) AS gb_manufacturer, \
+        coalesce(c.gb_model, c.model) AS gb_model, \
+        coalesce(c.gb_status, c.status) AS gb_status, \
+        c.data_type, c.record_plan_id \
+        FROM gb_device_channel c";
+    const BASE_COUNT: &str = "SELECT COUNT(*) FROM gb_device_channel c";
 
-    let list: Vec<serde_json::Value> = rows.iter().map(|r| {
-        let gb_id: Option<String> = r.try_get("gb_device_id").ok();
-        serde_json::json!({
-            "id": r.try_get::<i64, _>("id").unwrap_or_default(),
-            "gbId": gb_id,
-            "gbDeviceId": gb_id,
-            "gbName": r.try_get::<Option<String>, _>("name").ok().flatten(),
-            "gbManufacturer": r.try_get::<Option<String>, _>("manufacturer").ok().flatten(),
-            "gbStatus": r.try_get::<Option<String>, _>("status").ok().flatten().unwrap_or_else(|| "OFF".to_string()),
-            "dataType": r.try_get::<Option<i32>, _>("data_type").ok().flatten().unwrap_or(0),
-            "recordPlanId": r.try_get::<Option<i32>, _>("record_plan_id").ok().flatten(),
-        })
-    }).collect();
+    let limit_ph = if cfg!(feature = "postgres") {
+        format!(" LIMIT ${} OFFSET ${}", w.binds.len() + 1, w.binds.len() + 2)
+    } else {
+        " LIMIT ? OFFSET ?".to_string()
+    };
+    let sql_rows = format!("{}{}", w.sql(BASE_COLS), format!(" ORDER BY c.id DESC{limit_ph}"));
+    let mut q_rows = sqlx::query_as::<_, RecordPlanChannelRow>(&sql_rows);
+    for b in &w.binds {
+        q_rows = match b {
+            BindValue::Text(v) => q_rows.bind(v.as_str()),
+            BindValue::Int(v) => q_rows.bind(*v),
+        };
+    }
+    let rows: Vec<RecordPlanChannelRow> = q_rows.bind(count as i64).bind(offset).fetch_all(&state.pool).await?;
+
+    let sql_count = w.sql(BASE_COUNT);
+    let mut q_count = sqlx::query_scalar::<_, i64>(&sql_count);
+    for b in &w.binds {
+        q_count = match b {
+            BindValue::Text(v) => q_count.bind(v.as_str()),
+            BindValue::Int(v) => q_count.bind(*v),
+        };
+    }
+    let total: i64 = q_count.fetch_one(&state.pool).await?;
+
+    let list: Vec<serde_json::Value> = rows.iter().map(|r| r.to_json()).collect();
     Ok(Json(WVPResult::success(serde_json::json!({
         "total": total,
         "list": list
@@ -1994,101 +2053,167 @@ pub struct RecordPlanLink {
     pub channel_id: Option<i64>,
     #[serde(alias = "planId")]
     pub plan_id: Option<i64>,
+    /// WVP 前端传的是通道**主键**（`CommonGBChannel.gbId`，即
+    /// `gb_device_channel.id`）；早期调用方传的是国标编号字符串。
+    /// 两种都收（见 `resolve_channel_ids`）。
     #[serde(alias = "channelIds")]
-    pub channel_ids: Option<Vec<String>>,
+    pub channel_ids: Option<Vec<serde_json::Value>>,
     #[serde(alias = "deviceDbIds")]
     pub device_db_ids: Option<Vec<i64>>,
     #[serde(alias = "allLink")]
     pub all_link: Option<bool>,
 }
 
+/// 把一个"通道标识"解析成通道主键。
+///
+/// 支持两种输入：
+/// 1. 数字/数字字符串 → 通道主键（WVP 语义）；
+/// 2. 其它字符串 → `gb_device_id` 反查主键。
+///
+/// 显式区分两者很重要：早期实现**只**把输入当国标编号去查
+/// `gb_device_id`，而前端传的是主键数字，于是每个通道都查不到，
+/// 循环体一次都没进，接口却返回"成功"——关联操作完全无效且无任何提示。
+async fn resolve_channel_id(
+    pool: &crate::db::Pool,
+    raw: &serde_json::Value,
+) -> Result<Option<i64>, AppError> {
+    if let Some(n) = raw.as_i64() {
+        if record_plan::channel_exists(pool, n).await? {
+            return Ok(Some(n));
+        }
+        // 数字但主键不存在：再按国标编号试一次（编号可能纯数字）
+        if let Some(id) = record_plan::channel_id_by_gb_id(pool, &n.to_string()).await? {
+            return Ok(Some(id));
+        }
+        return Ok(None);
+    }
+    if let Some(text) = raw.as_str() {
+        let text = text.trim();
+        if text.is_empty() {
+            return Ok(None);
+        }
+        if let Ok(n) = text.parse::<i64>() {
+            if record_plan::channel_exists(pool, n).await? {
+                return Ok(Some(n));
+            }
+        }
+        return Ok(record_plan::channel_id_by_gb_id(pool, text).await?);
+    }
+    Ok(None)
+}
+
 pub async fn record_plan_link(
     State(state): State<AppState>,
     Json(body): Json<RecordPlanLink>,
 ) -> Result<Json<WVPResult<()>>, AppError> {
+    // WVP `link()`：channelIds 为空直接报错
+    if body.channel_ids.as_ref().is_some_and(|v| v.is_empty())
+        && body.channel_id.is_none()
+        && body.device_db_ids.as_ref().is_none_or(|v| v.is_empty())
+        && body.all_link.is_none()
+    {
+        return Err(AppError::business(ErrorCode::Error400, "通道编号必须存在"));
+    }
+    // 关联到某个计划前，先确认计划真的存在（否则会在通道上留一个野 plan_id）
+    if let Some(plan_id) = body.plan_id {
+        if plan_id > 0 && record_plan::get_by_id(&state.pool, plan_id as i32).await?.is_none() {
+            return Err(AppError::business(
+                ErrorCode::Error400,
+                format!("录制计划不存在: {plan_id}"),
+            ));
+        }
+    }
+
+    // 1) 单个通道
     if let Some(channel_id) = body.channel_id {
-        record_plan::link_channel(&state.pool, channel_id, body.plan_id).await?;
+        let affected = record_plan::link_channel(&state.pool, channel_id, body.plan_id).await?;
+        if affected == 0 {
+            return Err(AppError::business(
+                ErrorCode::Error400,
+                format!("通道不存在: {channel_id}"),
+            ));
+        }
+        crate::scheduler::record_plan::wake_record_plan_scheduler();
         return Ok(Json(WVPResult::<()>::success_empty()));
     }
 
-    if let Some(ref channel_ids) = body.channel_ids {
-        for gb_id in channel_ids {
-            #[cfg(feature = "postgres")]
-            let row = sqlx::query("SELECT id FROM gb_device_channel WHERE gb_device_id = $1")
-                .bind(gb_id)
-                .fetch_optional(&state.pool)
-                .await?;
-            #[cfg(feature = "mysql")]
-            let row = sqlx::query("SELECT id FROM gb_device_channel WHERE gb_device_id = ?")
-                .bind(gb_id)
-                .fetch_optional(&state.pool)
-                .await?;
-            #[cfg(feature = "sqlite")]
-            let row = sqlx::query("SELECT id FROM gb_device_channel WHERE gb_device_id = ?")
-                .bind(gb_id)
-                .fetch_optional(&state.pool)
-                .await?;
-            if let Some(row) = row {
-                let channel_id: i64 = row.try_get::<i32, _>("id").map(|v| v as i64)
-                    .or_else(|_| row.try_get::<i64, _>("id"))
-                    .unwrap_or_default();
-                record_plan::link_channel(&state.pool, channel_id, body.plan_id).await?;
+    // 2) 通道列表
+    if let Some(ref raw_ids) = body.channel_ids {
+        let mut resolved = Vec::new();
+        let mut unknown = Vec::new();
+        for raw in raw_ids {
+            match resolve_channel_id(&state.pool, raw).await? {
+                Some(id) => resolved.push(id),
+                None => unknown.push(raw.to_string()),
             }
         }
+        if !unknown.is_empty() {
+            return Err(AppError::business(
+                ErrorCode::Error400,
+                format!("以下通道不存在: {}", unknown.join(", ")),
+            ));
+        }
+        for id in &resolved {
+            record_plan::link_channel(&state.pool, *id, body.plan_id).await?;
+        }
+        // 取消关联用 null；关联传 planId（WVP 的 `link(channelIds, null)` 语义）
+        tracing::info!(
+            "record_plan_link: {} 个通道 {} 计划 {:?}",
+            resolved.len(),
+            if body.plan_id.is_some() { "关联到" } else { "取消关联" },
+            body.plan_id
+        );
+        crate::scheduler::record_plan::wake_record_plan_scheduler();
         return Ok(Json(WVPResult::<()>::success_empty()));
     }
 
+    // 3) 按设备关联（设备下所有通道）
     if let Some(ref device_db_ids) = body.device_db_ids {
+        if device_db_ids.is_empty() {
+            return Err(AppError::business(ErrorCode::Error400, "设备 ID 不可为空"));
+        }
+        let mut total = 0usize;
         for device_db_id in device_db_ids {
-            #[cfg(feature = "postgres")]
-            let rows = sqlx::query("SELECT id FROM gb_device_channel WHERE data_device_id = $1")
-                .bind(*device_db_id as i32)
-                .fetch_all(&state.pool)
-                .await?;
-            #[cfg(feature = "mysql")]
-            let rows = sqlx::query("SELECT id FROM gb_device_channel WHERE data_device_id = ?")
-                .bind(*device_db_id as i32)
-                .fetch_all(&state.pool)
-                .await?;
-            #[cfg(feature = "sqlite")]
-            let rows = sqlx::query("SELECT id FROM gb_device_channel WHERE data_device_id = ?")
-                .bind(*device_db_id as i32)
-                .fetch_all(&state.pool)
-                .await?;
-            for row in rows {
-                let channel_id: i64 = row.try_get::<i32, _>("id").map(|v| v as i64)
-                    .or_else(|_| row.try_get::<i64, _>("id"))
-                    .unwrap_or_default();
-                record_plan::link_channel(&state.pool, channel_id, body.plan_id).await?;
+            let ids = record_plan::channel_ids_by_device_db_id(&state.pool, *device_db_id).await?;
+            if ids.is_empty() {
+                tracing::warn!("record_plan_link: 设备 {} 下没有通道", device_db_id);
+            }
+            for id in &ids {
+                record_plan::link_channel(&state.pool, *id, body.plan_id).await?;
+                total += 1;
             }
         }
-        return Ok(Json(WVPResult::<()>::success_empty()));
-    }
-
-    if body.all_link.is_some() {
-        #[cfg(feature = "postgres")]
-        let rows = sqlx::query("SELECT id FROM gb_device_channel")
-            .fetch_all(&state.pool)
-            .await?;
-        #[cfg(feature = "mysql")]
-        let rows = sqlx::query("SELECT id FROM gb_device_channel")
-            .fetch_all(&state.pool)
-            .await?;
-        #[cfg(feature = "sqlite")]
-        let rows = sqlx::query("SELECT id FROM gb_device_channel")
-            .fetch_all(&state.pool)
-            .await?;
-        let target_plan_id = if body.all_link == Some(true) { body.plan_id } else { None };
-        for row in rows {
-            let channel_id: i64 = row.try_get::<i32, _>("id").map(|v| v as i64)
-                .or_else(|_| row.try_get::<i64, _>("id"))
-                .unwrap_or_default();
-            record_plan::link_channel(&state.pool, channel_id, target_plan_id).await?;
+        if total == 0 {
+            return Err(AppError::business(
+                ErrorCode::Error400,
+                "所选设备下没有可关联的通道",
+            ));
         }
+        crate::scheduler::record_plan::wake_record_plan_scheduler();
         return Ok(Json(WVPResult::<()>::success_empty()));
     }
 
-    return Err(AppError::business(ErrorCode::Error400, "缺少关联参数"));
+    // 4) 全部关联 / 全部取消关联
+    if let Some(all_link) = body.all_link {
+        // WVP `linkAll(planId)` / `cleanAll(planId)` 两个分支都要 planId
+        let plan_id = body
+            .plan_id
+            .ok_or_else(|| AppError::business(ErrorCode::Error400, "全部关联/取消关联时必须提供 planId"))?;
+        if all_link {
+            let ids = record_plan::all_channel_ids(&state.pool).await?;
+            for id in &ids {
+                record_plan::link_channel(&state.pool, *id, Some(plan_id)).await?;
+            }
+            tracing::info!("record_plan_link: 全部 {} 个通道关联到计划 {}", ids.len(), plan_id);
+        } else {
+            let n = record_plan::unlink_all_channels(&state.pool, plan_id).await?;
+            tracing::info!("record_plan_link: 计划 {} 移除全部关联（{} 个通道）", plan_id, n);
+        }
+        crate::scheduler::record_plan::wake_record_plan_scheduler();
+        return Ok(Json(WVPResult::<()>::success_empty()));
+    }
+
+    Err(AppError::business(ErrorCode::Error400, "缺少关联参数"))
 }
 
 /// GET /api/position/history/:deviceId (used in queryTrace.vue, map/queryTrace.vue)
@@ -2185,5 +2310,493 @@ mod log_export_tests {
         assert!(csv.contains("\"a,\"\"quoted\"\" line\nsecond line\""), "{csv}");
         // 数据行数 = 表头 + 1；正文里的 \n 在引号内，不应被当成新行分隔
         assert_eq!(csv.matches("2026-09-12 01:00:00.000").count(), 1);
+    }
+}
+
+#[cfg(test)]
+mod dyn_where_tests {
+    use super::*;
+
+    #[test]
+    fn test_postgres_placeholder_rewrite() {
+        let mut w = DynWhere::new();
+        assert_eq!(w.sql_for("SELECT * FROM t", true), "SELECT * FROM t");
+        assert_eq!(w.sql_for("SELECT * FROM t", false), "SELECT * FROM t");
+
+        w.add("a LIKE ? OR b LIKE ?", vec![BindValue::Text("%x%".into()), BindValue::Text("%x%".into())]);
+        w.add("c.channel_type = 0", vec![]);
+        w.add("d = ?", vec![BindValue::Int(7)]);
+
+        // sqlite/mysql：保持 ? 原样
+        assert_eq!(
+            w.sql_for("SELECT * FROM t", false),
+            "SELECT * FROM t WHERE a LIKE ? OR b LIKE ? AND c.channel_type = 0 AND d = ?"
+        );
+        // postgres：按顺序编号 $1..$3
+        assert_eq!(
+            w.sql_for("SELECT * FROM t", true),
+            "SELECT * FROM t WHERE a LIKE $1 OR b LIKE $2 AND c.channel_type = 0 AND d = $3"
+        );
+        assert_eq!(w.binds.len(), 3);
+    }
+
+    /// 计数查询与行查询共用同一个 WHERE，但行查询在后面追加 LIMIT/OFFSET，
+    /// 编号必须接在 WHERE 参数之后（否则 postgres 下会串位）。
+    #[test]
+    fn test_postgres_limit_placeholders_follow_binds() {
+        let mut w = DynWhere::new();
+        w.add("a = ?", vec![BindValue::Text("x".into())]);
+        let n = w.binds.len();
+        let sql = format!("{} LIMIT ${} OFFSET ${}", w.sql_for("SELECT 1 FROM t", true), n + 1, n + 2);
+        assert_eq!(sql, "SELECT 1 FROM t WHERE a = $1 LIMIT $2 OFFSET $3");
+    }
+}
+
+#[cfg(all(test, feature = "sqlite"))]
+mod record_plan_handler_tests {
+    use super::*;
+    use crate::db::RecordPlanUpdate;
+    use crate::test_support::app_state;
+
+    fn id_query(id: i32) -> IdQuery {
+        IdQuery {
+            id: Some(id),
+            plan_id: None,
+            page: None,
+            count: None,
+        }
+    }
+
+    fn channel_query(has_link: Option<&str>, plan_id: Option<i32>) -> CommonChannelListQuery {
+        CommonChannelListQuery {
+            page: Some(1),
+            count: Some(50),
+            query: None,
+            online: None,
+            channelType: None,
+            hasRecordPlan: None,
+            civilCode: None,
+            parentDeviceId: None,
+            plan_id,
+            has_link: has_link.map(|s| s.to_string()),
+        }
+    }
+
+
+    fn item(start: i32, stop: i32, day: i32) -> crate::db::record_plan::RecordPlanItemPayload {
+        crate::db::record_plan::RecordPlanItemPayload {
+            start: Some(start),
+            stop: Some(stop),
+            week_day: Some(day),
+            plan_id: None,
+        }
+    }
+
+    fn add_body(
+        name: Option<&str>,
+        items: Option<Vec<crate::db::record_plan::RecordPlanItemPayload>>,
+    ) -> crate::db::record_plan::RecordPlanAdd {
+        crate::db::record_plan::RecordPlanAdd {
+            name: name.map(|s| s.to_string()),
+            snap: None,
+            plan_item_list: items,
+        }
+    }
+
+    async fn seed_channel(state: &AppState, gb_id: &str) -> i64 {
+        let r = sqlx::query(
+            "INSERT INTO gb_device_channel \
+             (device_id, name, gb_device_id, status, data_type, data_device_id, channel_type, \
+              create_time, update_time) \
+             VALUES ('dev1', ?, ?, 'ON', 0, 1, 0, '2026-01-01 00:00:00', '2026-01-01 00:00:00')",
+        )
+        .bind(format!("ch-{gb_id}"))
+        .bind(gb_id)
+        .execute(&state.pool)
+        .await
+        .expect("insert channel");
+        r.last_insert_rowid()
+    }
+
+    /// WVP `RecordPlanController.add()` 对空 `planItemList` 直接报错。
+    /// 早期实现会静默建一条**没有任何时段**的计划：列表里看得见，
+    /// 调度器永远不命中 —— 保存成功但功能为零。
+    #[tokio::test]
+    async fn test_add_rejects_empty_plan_item_list() {
+        let state = app_state().await;
+        let err = record_plan_add(State(state.clone()), Json(add_body(Some("p"), None)))
+            .await
+            .expect_err("空时段必须被拒绝");
+        match err {
+            AppError::Business(ErrorCode::Error400, msg) => {
+                assert!(msg.contains("不可为空"), "{msg}")
+            }
+            other => panic!("期望 400 业务错误，实际 {other:?}"),
+        }
+
+        let err = record_plan_add(State(state.clone()), Json(add_body(Some("p"), Some(vec![]))))
+            .await
+            .expect_err("空数组同样必须被拒绝");
+        assert!(matches!(err, AppError::Business(ErrorCode::Error400, _)));
+
+        // 校验失败时不得留下半条计划
+        let total = crate::db::record_plan::count_all(&state.pool, None).await.unwrap();
+        assert_eq!(total, 0, "校验失败不应写入任何计划");
+    }
+
+    #[tokio::test]
+    async fn test_add_rejects_reversed_window() {
+        let state = app_state().await;
+        let err = record_plan_add(
+            State(state.clone()),
+            Json(add_body(Some("p"), Some(vec![item(660, 600, 1)]))),
+        )
+        .await
+        .expect_err("start > stop 必须被拒绝");
+        assert!(matches!(err, AppError::Business(ErrorCode::Error400, _)));
+    }
+
+    /// add → get 往返：`planItemList` 与 `channelCount` 都要能读回来。
+    #[tokio::test]
+    async fn test_add_get_roundtrip_keeps_items_and_channel_count() {
+        let state = app_state().await;
+        let ch = seed_channel(&state, "34020000001310000001").await;
+        let _ = record_plan_add(
+            State(state.clone()),
+            Json(add_body(Some("机房"), Some(vec![item(600, 660, 1), item(1200, 1260, 7)]))),
+        )
+        .await
+        .expect("add 应成功");
+
+        let resp = record_plan_get(State(state.clone()), Query(id_query(1)))
+            .await
+            .expect("get 应成功");
+        let v = resp.0.data.as_ref().expect("data");
+        assert_eq!(v["name"], "机房");
+        assert_eq!(v["channelCount"], 0);
+        let items = v["planItemList"].as_array().expect("planItemList");
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0]["start"], 600);
+        assert_eq!(items[0]["stop"], 660);
+        assert_eq!(items[0]["weekDay"], 1);
+
+        // 关联一个通道后 channelCount 应变成 1
+        let _ = record_plan_link(
+            State(state.clone()),
+            Json(RecordPlanLink {
+                channel_id: None,
+                plan_id: Some(1),
+                channel_ids: Some(vec![serde_json::json!(ch)]),
+                device_db_ids: None,
+                all_link: None,
+            }),
+        )
+        .await
+        .expect("link 应成功");
+
+        let resp = record_plan_get(State(state.clone()), Query(id_query(1)))
+            .await
+            .unwrap();
+        assert_eq!(resp.0.data.as_ref().unwrap()["channelCount"], 1);
+    }
+
+    #[tokio::test]
+    async fn test_update_requires_existing_plan() {
+        let state = app_state().await;
+        let err = record_plan_update(
+            State(state.clone()),
+            Json(RecordPlanUpdate {
+                id: Some(999),
+                name: Some("x".into()),
+                snap: None,
+                plan_item_list: Some(vec![item(0, 60, 1)]),
+            }),
+        )
+        .await
+        .expect_err("更新不存在的计划必须报错");
+        match err {
+            AppError::Business(_, msg) => assert!(msg.contains("不存在"), "{msg}"),
+            other => panic!("期望业务错误，实际 {other:?}"),
+        }
+    }
+
+    /// WVP 契约：`DELETE /api/record/plan/delete?planId=`。
+    /// 早期实现只读 `id`，前端按 WVP 传 planId 时稳定 400「缺少 id」。
+    #[tokio::test]
+    async fn test_delete_accepts_plan_id_param() {
+        let state = app_state().await;
+        let _ = record_plan_add(
+            State(state.clone()),
+            Json(add_body(Some("待删"), Some(vec![item(0, 1439, 1)]))),
+        )
+        .await
+        .unwrap();
+
+        let _ = record_plan_delete(
+            State(state.clone()),
+            Query(IdQuery {
+                id: None,
+                plan_id: Some(1),
+                page: None,
+                count: None,
+            }),
+        )
+        .await
+        .expect("按 planId 删除必须成功");
+        assert_eq!(
+            crate::db::record_plan::count_all(&state.pool, None).await.unwrap(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn test_delete_requires_existing_plan() {
+        let state = app_state().await;
+        let err = record_plan_delete(State(state.clone()), Query(id_query(7)))
+            .await
+            .expect_err("删除不存在的计划必须报错");
+        match err {
+            AppError::Business(_, msg) => assert!(msg.contains("不存在"), "{msg}"),
+            other => panic!("期望业务错误，实际 {other:?}"),
+        }
+    }
+
+    /// 关联通道：前端传的是**通道主键**（`gbId`）。
+    /// 早期实现把 `channelIds` 一律当国标编号去查 `gb_device_id`，
+    /// 每个通道都查不到 → 循环一次没进 → 接口仍返回成功。
+    #[tokio::test]
+    async fn test_link_by_numeric_channel_id_actually_links() {
+        let state = app_state().await;
+        let _ = record_plan_add(
+            State(state.clone()),
+            Json(add_body(Some("p"), Some(vec![item(0, 1439, 1)]))),
+        )
+        .await
+        .unwrap();
+        let ch = seed_channel(&state, "34020000001310000001").await;
+
+        let _ = record_plan_link(
+            State(state.clone()),
+            Json(RecordPlanLink {
+                channel_id: None,
+                plan_id: Some(1),
+                channel_ids: Some(vec![serde_json::json!(ch)]),
+                device_db_ids: None,
+                all_link: None,
+            }),
+        )
+        .await
+        .expect("按主键关联应成功");
+
+        assert_eq!(
+            crate::db::record_plan::count_linked_channels(&state.pool, 1)
+                .await
+                .unwrap(),
+            1,
+            "关联必须真的写进 record_plan_id"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_link_rejects_unknown_channel_and_unknown_plan() {
+        let state = app_state().await;
+        let _ = record_plan_add(
+            State(state.clone()),
+            Json(add_body(Some("p"), Some(vec![item(0, 1439, 1)]))),
+        )
+        .await
+        .unwrap();
+
+        // 不存在的通道 → 报错（不能静默成功）
+        let err = record_plan_link(
+            State(state.clone()),
+            Json(RecordPlanLink {
+                channel_id: None,
+                plan_id: Some(1),
+                channel_ids: Some(vec![serde_json::json!(4242)]),
+                device_db_ids: None,
+                all_link: None,
+            }),
+        )
+        .await
+        .expect_err("未知通道必须报错");
+        match err {
+            AppError::Business(_, msg) => assert!(msg.contains("不存在"), "{msg}"),
+            other => panic!("期望业务错误，实际 {other:?}"),
+        }
+
+        // 不存在的计划 → 报错
+        let err = record_plan_link(
+            State(state.clone()),
+            Json(RecordPlanLink {
+                channel_id: None,
+                plan_id: Some(999),
+                channel_ids: None,
+                device_db_ids: None,
+                all_link: None,
+            }),
+        )
+        .await
+        .expect_err("未知计划必须报错");
+        assert!(matches!(err, AppError::Business(_, _)));
+    }
+
+    /// `hasLink=false` 表示"不属于任何计划"（WVP 语义）；
+    /// `gbId` 必须是通道主键，前端 link 时原样回传。
+    #[tokio::test]
+    async fn test_channel_list_returns_numeric_gb_id_and_unlinked_semantics() {
+        let state = app_state().await;
+        let _ = record_plan_add(
+            State(state.clone()),
+            Json(add_body(Some("p"), Some(vec![item(0, 1439, 1)]))),
+        )
+        .await
+        .unwrap();
+        let ch = seed_channel(&state, "34020000001310000001").await;
+
+        let q = channel_query;
+
+        let resp = record_plan_channel_list(State(state.clone()), Query(q(Some("false"), Some(1))))
+            .await
+            .unwrap();
+        let list = resp.0.data.as_ref().unwrap()["list"].as_array().unwrap();
+        assert_eq!(list.len(), 1, "未关联列表应包含该通道");
+        assert_eq!(list[0]["gbId"], ch, "gbId 必须是通道主键");
+        assert_eq!(list[0]["gbDeviceId"], "34020000001310000001");
+        assert_eq!(list[0]["gbName"], "ch-34020000001310000001");
+
+        // 关联后：未关联列表为空，已关联列表有 1 条
+        let _ = record_plan_link(
+            State(state.clone()),
+            Json(RecordPlanLink {
+                channel_id: Some(ch),
+                plan_id: Some(1),
+                channel_ids: None,
+                device_db_ids: None,
+                all_link: None,
+            }),
+        )
+        .await
+        .unwrap();
+
+        let resp = record_plan_channel_list(State(state.clone()), Query(q(Some("false"), Some(1))))
+            .await
+            .unwrap();
+        assert_eq!(resp.0.data.as_ref().unwrap()["list"].as_array().unwrap().len(), 0);
+        let resp = record_plan_channel_list(State(state.clone()), Query(q(Some("true"), Some(1))))
+            .await
+            .unwrap();
+        assert_eq!(resp.0.data.as_ref().unwrap()["list"].as_array().unwrap().len(), 1);
+        assert_eq!(resp.0.data.as_ref().unwrap()["total"], 1);
+    }
+
+    #[tokio::test]
+    async fn test_link_all_and_clean_all() {
+        let state = app_state().await;
+        let _ = record_plan_add(
+            State(state.clone()),
+            Json(add_body(Some("p"), Some(vec![item(0, 1439, 1)]))),
+        )
+        .await
+        .unwrap();
+        seed_channel(&state, "34020000001310000001").await;
+        seed_channel(&state, "34020000001310000002").await;
+
+        let _ = record_plan_link(
+            State(state.clone()),
+            Json(RecordPlanLink {
+                channel_id: None,
+                plan_id: Some(1),
+                channel_ids: None,
+                device_db_ids: None,
+                all_link: Some(true),
+            }),
+        )
+        .await
+        .expect("全部关联应成功");
+        assert_eq!(
+            crate::db::record_plan::count_linked_channels(&state.pool, 1)
+                .await
+                .unwrap(),
+            2
+        );
+
+        let _ = record_plan_link(
+            State(state.clone()),
+            Json(RecordPlanLink {
+                channel_id: None,
+                plan_id: Some(1),
+                channel_ids: None,
+                device_db_ids: None,
+                all_link: Some(false),
+            }),
+        )
+        .await
+        .expect("全部取消关联应成功");
+        assert_eq!(
+            crate::db::record_plan::count_linked_channels(&state.pool, 1)
+                .await
+                .unwrap(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn test_query_returns_channel_count_and_search() {
+        let state = app_state().await;
+        let _ = record_plan_add(
+            State(state.clone()),
+            Json(add_body(Some("机房全天"), Some(vec![item(0, 1439, 1)]))),
+        )
+        .await
+        .unwrap();
+        let _ = record_plan_add(
+            State(state.clone()),
+            Json(add_body(Some("大厅夜间"), Some(vec![item(1320, 1439, 3)]))),
+        )
+        .await
+        .unwrap();
+        let ch = seed_channel(&state, "34020000001310000001").await;
+        let _ = record_plan_link(
+            State(state.clone()),
+            Json(RecordPlanLink {
+                channel_id: Some(ch),
+                plan_id: Some(1),
+                channel_ids: None,
+                device_db_ids: None,
+                all_link: None,
+            }),
+        )
+        .await
+        .unwrap();
+
+        let resp = record_plan_query(
+            State(state.clone()),
+            Query(RecordPlanQuery {
+                page: Some(1),
+                count: Some(10),
+                query: None,
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(resp.0.data.as_ref().unwrap()["total"], 2);
+        let list = resp.0.data.as_ref().unwrap()["list"].as_array().unwrap();
+        let first = list.iter().find(|p| p["name"] == "机房全天").unwrap();
+        assert_eq!(first["channelCount"], 1);
+        assert_eq!(first["planItemList"].as_array().unwrap().len(), 1);
+
+        let resp = record_plan_query(
+            State(state.clone()),
+            Query(RecordPlanQuery {
+                page: Some(1),
+                count: Some(10),
+                query: Some("大厅".into()),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(resp.0.data.as_ref().unwrap()["total"], 1);
+        assert_eq!(resp.0.data.as_ref().unwrap()["list"][0]["name"], "大厅夜间");
     }
 }

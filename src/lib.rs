@@ -776,12 +776,17 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
         let scheduler_pool = state.pool.clone();
         let scheduler_zlm = state.zlm_client.clone();
         let scheduler_clients = state.zlm_clients.clone();
+        let scheduler_sip = state.sip_server.clone();
         tokio::spawn(async move {
             let mut scheduler = crate::scheduler::record_plan::RecordPlanScheduler::new(
                 scheduler_pool,
                 scheduler_zlm,
             );
             scheduler.set_zlm_clients(scheduler_clients);
+            // 录像计划要能自己拉起设备流（否则没人观看时永远录不到）
+            if let Some(sip) = scheduler_sip {
+                scheduler.set_sip_server(sip);
+            }
             scheduler.run().await;
         });
     }
