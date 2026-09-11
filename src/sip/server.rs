@@ -1215,6 +1215,7 @@ let renewal_pool = pool.clone();
                 Self::handle_response(
                     resp,
                     session_manager,
+                    talk_manager,
                     pending_invites,
                     cascade_registrar,
                     pending_request_manager,
@@ -2875,9 +2876,11 @@ let renewal_pool = pool.clone();
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn handle_response(
         resp: SipResponse,
         session_manager: &Arc<SessionManager>,
+        talk_manager: &Arc<TalkManager>,
         pending_invites: &Arc<DashMap<String, oneshot::Sender<SipResponse>>>,
         cascade_registrar: &Option<Arc<CascadeRegistrar>>,
         pending_request_manager: &Arc<PendingRequestManager>,
@@ -2954,6 +2957,79 @@ let renewal_pool = pool.clone();
                 }
             }
             return Ok(());
+        }
+
+        // ---- 语音对讲：去话 INVITE 的响应 ----
+        //
+        // 设备的 200 OK SDP 里 `c=` + `m=audio <port>` 是它**收发音频**的
+        // 地址与端口，必须回填到 TalkSession，否则平台不知道把麦克风音频
+        // 发到哪里（`TalkSession.device_ip/device_port` 一直是 INVITE 时
+        // 填的信令地址，不是媒体地址）。
+        if call_id.starts_with("talk_") {
+            if resp.status_code() == 200 {
+                match resp.body.as_deref().and_then(|b| {
+                    crate::sip::gb28181::talk::parse_talk_sdp(b)
+                }) {
+                    Some((ip, port)) => {
+                        // 设备 SDP 的 c= 常常写成 0.0.0.0（模拟器与部分国标设备都如此），
+                        // 那不是可路由地址。此时回退到该设备的 SIP 信令源地址，
+                        // 否则平台会把麦克风音频发到 0.0.0.0:port。
+                        let media_ip = if ip.trim().is_empty()
+                            || ip == "0.0.0.0"
+                            || ip == "::"
+                        {
+                            match session_manager
+                                .get(&call_id)
+                                .await
+                                .and_then(|s| s.device_addr)
+                                .map(|a| a.ip().to_string())
+                            {
+                                Some(f) => {
+                                    tracing::warn!(
+                                        "Talk 200 OK 的 c= 为 {}，回退使用设备信令地址 {}",
+                                        ip,
+                                        f
+                                    );
+                                    f
+                                }
+                                None => ip.clone(),
+                            }
+                        } else {
+                            ip.clone()
+                        };
+                        if let Some(mut sess) = talk_manager.get(&call_id).await {
+                            sess.set_device_info(&media_ip, port);
+                            sess.status = TalkStatus::Active;
+                            sess.update_activity();
+                            talk_manager.update(&sess).await;
+                        }
+                        tracing::info!(
+                            "Talk session {} 就绪：设备音频地址 {}:{} (local_port 见 /api/talk/list)",
+                            call_id,
+                            media_ip,
+                            port
+                        );
+                    }
+                    None => {
+                        tracing::warn!(
+                            "Talk 200 OK 的 SDP 未解析出音频地址 call_id={} body={:?}",
+                            call_id,
+                            resp.body
+                        );
+                    }
+                }
+            } else if resp.status_code() >= 400 {
+                if let Some(mut sess) = talk_manager.get(&call_id).await {
+                    sess.status = TalkStatus::Terminated;
+                    talk_manager.update(&sess).await;
+                }
+                tracing::warn!(
+                    "Talk INVITE 被拒绝 call_id={} status={} {}",
+                    call_id,
+                    resp.status_code(),
+                    resp.reason
+                );
+            }
         }
 
         if resp.status_code() == 200 {
@@ -4236,33 +4312,44 @@ f=v/1/96/1/2/1/1/0
     /// 与 `send_broadcast_invite` 一样，先让 ZLM 开一个收流端口，再把该端口
     /// 写进 `m=audio`。此前 `m=audio` 的端口固定为 0，而 SDP 中端口 0 表示
     /// 该媒体流被禁用，设备没有可推流的目标。
-    pub async fn send_talk_invite(&self, device_id: &str, channel_id: &str) -> Result<()> {
+    /// 返回本次对讲的**真实 call_id**，供 handler 回给前端做后续关联
+    /// （此前 handler 自己又拼了一个带毫秒时间戳的 callId，
+    /// 与 TalkManager 里登记的 call_id 不是同一个，前端无法据此查询/停止对讲）。
+    pub async fn send_talk_invite(&self, device_id: &str, channel_id: &str) -> Result<String> {
         // 1. 先开 ZLM RTP server（端口交给 ZLM 自动分配）
+        //
+        // 修正：此前 `open_rtp_server` 失败只记一条 warn 然后带着 media_port=0
+        // 继续发 INVITE —— `m=audio 0` 在 SDP 里表示"该媒体流被禁用"，
+        // 设备没有可推流的目标，对讲不可能建立，而接口仍然报"对讲请求已发送"。
         let stream_id = format!("talk_{}_{}", device_id, channel_id);
-        let mut media_port: u16 = 0;
-        if let Some(ref zlm) = self.zlm_client {
-            match zlm
-                .open_rtp_server(&crate::zlm::OpenRtpServerRequest {
-                    secret: zlm.secret.clone(),
-                    stream_id: stream_id.clone(),
-                    port: Some(0),
-                    use_tcp: Some(false),
-                    rtp_type: Some(0),
-                    recv_port: None,
-                })
-                .await
-            {
-                Ok(info) => {
-                    media_port = info.port;
-                    tracing::info!(
-                        "ZLM RTP server opened for talk {} on port {}",
-                        stream_id, media_port
-                    );
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to open ZLM RTP server for talk: {}", e);
-                }
+        let media_port: u16 = match self.zlm_client.as_ref() {
+            Some(zlm) => {
+                let info = zlm
+                    .open_rtp_server(&crate::zlm::OpenRtpServerRequest {
+                        secret: zlm.secret.clone(),
+                        stream_id: stream_id.clone(),
+                        port: Some(0),
+                        use_tcp: Some(false),
+                        rtp_type: Some(0),
+                        recv_port: None,
+                    })
+                    .await
+                    .map_err(|e| {
+                        anyhow::anyhow!("为对讲申请 ZLM 收流端口失败（{}）: {}", stream_id, e)
+                    })?;
+                tracing::info!(
+                    "ZLM RTP server opened for talk {} on port {}",
+                    stream_id,
+                    info.port
+                );
+                info.port
             }
+            None => {
+                return Err(anyhow::anyhow!("ZLM 未配置，无法为语音对讲分配收流端口"));
+            }
+        };
+        if media_port == 0 {
+            return Err(anyhow::anyhow!("ZLM 返回的对讲收流端口为 0"));
         }
 
         let socket = self.socket.read().await;
@@ -4317,6 +4404,18 @@ f=v/1/96/1/2/1/1/0
             self.config.device_id, self.config.ip, self.config.port
         );
 
+        // 3. 登记 INVITE 上下文。
+        //    修正：此前去话对讲完全不写 `session_manager`，而 `handle_response`
+        //    发 ACK 依赖 `session_manager.get(&call_id)` 里的
+        //    from/cseq/device_addr —— 拿不到就**根本不发 ACK**，
+        //    GB28181 三次握手缺 ACK，设备不会推音频。
+        self.session_manager
+            .create(&call_id, device_id, channel_id, "Talk")
+            .await;
+        self.session_manager
+            .set_invite_context(&call_id, from.clone(), 1, device_addr)
+            .await;
+
         let sdp = build_audio_sdp(&self.config.ip, media_port);
 
         let subject = format!(
@@ -4347,13 +4446,15 @@ f=v/1/96/1/2/1/1/0
 
         socket.send_to(message.as_bytes(), device_addr).await?;
         tracing::info!(
-            "Sent TALK INVITE to device {} channel {} at {}",
+            "Sent TALK INVITE to device {} channel {} at {} (call_id={}, local_port={})",
             device_id,
             channel_id,
-            device_addr
+            device_addr,
+            call_id,
+            media_port
         );
 
-        Ok(())
+        Ok(call_id)
     }
 
     pub async fn send_talk_bye(&self, device_id: &str, channel_id: &str) -> Result<()> {

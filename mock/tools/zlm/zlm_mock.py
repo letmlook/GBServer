@@ -59,7 +59,13 @@ _state = {
     "rtp_servers": {},         # key -> dict
     "stream_proxies": {},      # key -> dict
     "streams": {},             # (app, stream) -> dict
+    "send_rtp": {},            # (app, stream) -> dict
+    "recordings": {},          # (app, stream) -> dict
     "media_secret": "demo",
+    # getServerConfig 返回的基础配置；setServerConfig 会覆盖其中的键
+    "server_config": {},
+    "rtp_port_start": 30000,
+    "rtp_port_end": 30100,
 }
 
 
@@ -97,88 +103,96 @@ class ZlmMockHandler(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self):  # noqa: N802
         parsed = urllib.parse.urlparse(self.path)
-        path = parsed.path
         params = urllib.parse.parse_qs(parsed.query)
-        # 触发器端点
-        if path.startswith("/trigger/"):
-            self._handle_trigger(path[len("/trigger/"):])
-            return
-        # 真实 ZLM API
-        if path == "/index/api/getServerConfig":
-            self._handle_get_server_config(params)
-        elif path == "/index/api/getApiList":
-            self._handle_get_api_list()
-        elif path == "/index/api/getMediaList":
-            self._handle_get_media_list(params)
-        elif path == "/index/api/getMediaInfo":
-            self._handle_get_media_info(params)
-        elif path == "/index/api/isMediaExist":
-            self._handle_is_media_exist(params)
-        elif path == "/index/api/listRtpServer":
-            self._handle_list_rtp_server(params)
-        elif path == "/index/api/getRtpInfo":
-            self._handle_get_rtp_info(params)
-        elif path == "/index/api/getStatistic":
-            self._handle_get_statistic()
-        elif path == "/healthz":
-            self._send_json(200, _ok({"alive": True}))
-        else:
-            log.warning("未实现 API: %s", path)
-            self._send_json(404, _err(-1, f"unknown api: {path}"))
+        self._dispatch(parsed.path, params, {})
 
     def do_POST(self):  # noqa: N802
         parsed = urllib.parse.urlparse(self.path)
-        path = parsed.path
         length = int(self.headers.get("Content-Length", "0"))
         raw = self.rfile.read(length) if length > 0 else b""
         try:
             payload = json.loads(raw) if raw else {}
         except json.JSONDecodeError:
             payload = {}
-        params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-        if not self._check_secret(params):
-            self._send_json(401, _err(-100, "secret invalid"))
+        params = urllib.parse.parse_qs(parsed.query)
+        # 真实 ZLM 的部分 API 同时接受 query 与 JSON body（setServerConfig 走 JSON），
+        # 这里把 body 里的标量并入 params，调用方不必关心用哪种方式传参。
+        if isinstance(payload, dict):
+            for k, v in payload.items():
+                params.setdefault(k, [str(v)])
+        self._dispatch(parsed.path, params, payload if isinstance(payload, dict) else {})
+
+    def _dispatch(self, path: str, params: dict, payload: dict) -> None:
+        """统一分发：GET/POST 共用一张路由表。
+
+        真实 ZLM 的 API 大多接受 GET+query，只有 setServerConfig 是 POST+JSON；
+        此前 mock 把 GET/POST 各写一套 if-else，两边不一致（例如 setServerConfig
+        只在 POST 里、而 close_streams 根本没实现），调用方一不小心就打到 404。
+        """
+        if path.startswith("/trigger/"):
+            self._handle_trigger(path[len("/trigger/"):])
             return
-        if path == "/index/api/addStreamProxy":
-            self._handle_add_stream_proxy(params)
-        elif path == "/index/api/delStreamProxy":
-            self._handle_del_stream_proxy(params)
-        elif path == "/index/api/openRtpServer":
-            self._handle_open_rtp_server(params)
-        elif path == "/index/api/closeRtpServer":
-            self._handle_close_rtp_server(params)
-        elif path == "/index/api/pushStream":
-            self._handle_push_stream(params, payload)
-        else:
-            log.warning("未实现 POST: %s", path)
+        if path == "/healthz":
+            self._send_json(200, _ok({"alive": True}))
+            return
+        handler = _ROUTES.get(path)
+        if handler is None:
+            log.warning("未实现 API: %s", path)
             self._send_json(404, _err(-1, f"unknown api: {path}"))
+            return
+        handler(self, params, payload)
 
     # ----- 具体 handler -----
 
-    def _handle_get_server_config(self, params: dict):
+    def _handle_get_server_config(self, params: dict, payload: dict):
         if not self._check_secret(params):
             return self._send_json(401, _err(-100, "secret invalid"))
-        self._send_json(200, _ok({
+        # 两处都必须与真实 ZLM 对齐，否则 GBServer 的 ZlmClient 反序列化会失败
+        # （`ApiResponse<Vec<Resp>>`，且 Resp 把所有字段 flatten 进
+        # HashMap<String,String>）：
+        #   1) `data` 是**单元素数组**，不是对象；
+        #   2) 所有配置值都是**字符串**，不是数字/布尔。
+        # 此前 mock 返回 `data: {..整数..}`，导致 getServerConfig 必然解析失败
+        # → 健康检查永远判 ZLM offline、media_server/check 丢掉全部探测字段。
+        cfg = {
+            "api.apiDebug": "0",
             "api.secret": _state["media_secret"],
-            "protocol.enable_rtsp": 1,
-            "protocol.enable_rtmp": 1,
-            "protocol.enable_hls": 1,
-            "protocol.enable_http": 1,
-            "protocol.enable_ws": 1,
-            "protocol.enable_rtp": 1,
             "general.mediaServerId": "zlmediakit-mock-1",
-        }))
+            "general.enableVhost": "1",
+            "hook.enable": "0",
+            "hook.hookIp": "127.0.0.1",
+            "protocol.enable_rtsp": "1",
+            "protocol.enable_rtmp": "1",
+            "protocol.enable_hls": "1",
+            "protocol.enable_http": "1",
+            "protocol.enable_ws": "1",
+            "protocol.enable_rtp": "1",
+            "protocol.enable_ts": "1",
+            "protocol.enable_fmp4": "1",
+            "rtp.port_range": "30000-30100",
+            "rtp_proxy.port_range": "30000-30100",
+            "record.appName": "record",
+            "record.filePath": "./www/record/",
+        }
+        cfg.update(_state["server_config"])
+        self._send_json(200, _ok([cfg]))
 
-    def _handle_get_api_list(self):
+    def _handle_get_api_list(self, params: dict, payload: dict):
         apis = [
-            "getServerConfig", "getApiList", "getMediaList", "getMediaInfo",
-            "isMediaExist", "addStreamProxy", "delStreamProxy",
-            "openRtpServer", "closeRtpServer", "listRtpServer", "getRtpInfo",
-            "pushStream", "getStatistic",
+            "getServerConfig", "setServerConfig", "getApiList", "getMediaList",
+            "getMediaInfo", "isMediaExist", "addStreamProxy", "delStreamProxy",
+            "openRtpServer", "closeRtpServer", "connectRtpServer",
+            "listRtpServer", "getRtpInfo", "pushStream", "getStatistic",
+            "getServerStats", "getNetWorkApi", "close_streams", "close_stream",
+            "kick_session", "kick_sessions",
+            "startSendRtp", "stopSendRtp", "sendRtpInfo",
+            "startRecord", "stopRecord", "isRecording", "getMp4RecordFile",
+            "getSnap", "createDownload", "getDownloadList", "close_download",
+            "deleteRecord", "addFfmpegSource", "restartServer", "version",
         ]
         self._send_json(200, _ok(apis))
 
-    def _handle_get_media_list(self, params: dict):
+    def _handle_get_media_list(self, params: dict, payload: dict):
         if not self._check_secret(params):
             return self._send_json(401, _err(-100, "secret invalid"))
         schema = params.get("schema", [None])[0]
@@ -195,7 +209,7 @@ class ZlmMockHandler(http.server.BaseHTTPRequestHandler):
             result.append(m)
         self._send_json(200, _ok(result))
 
-    def _handle_get_media_info(self, params: dict):
+    def _handle_get_media_info(self, params: dict, payload: dict):
         if not self._check_secret(params):
             return self._send_json(401, _err(-100, "secret invalid"))
         key = (params.get("schema", [None])[0],
@@ -208,7 +222,7 @@ class ZlmMockHandler(http.server.BaseHTTPRequestHandler):
                 return
         self._send_json(200, _ok(None))
 
-    def _handle_is_media_exist(self, params: dict):
+    def _handle_is_media_exist(self, params: dict, payload: dict):
         if not self._check_secret(params):
             return self._send_json(401, _err(-100, "secret invalid"))
         key = (params.get("schema", [None])[0],
@@ -221,7 +235,7 @@ class ZlmMockHandler(http.server.BaseHTTPRequestHandler):
                 return
         self._send_json(200, _ok({"exist": False}))
 
-    def _handle_add_stream_proxy(self, params: dict):
+    def _handle_add_stream_proxy(self, params: dict, payload: dict):
         url = params.get("url", [""])[0]
         app = params.get("app", ["proxy"])[0]
         stream = params.get("stream", ["proxy"])[0]
@@ -242,7 +256,7 @@ class ZlmMockHandler(http.server.BaseHTTPRequestHandler):
         log.info("addStreamProxy: %s -> %s", url, key)
         self._send_json(200, _ok({"key": key}))
 
-    def _handle_del_stream_proxy(self, params: dict):
+    def _handle_del_stream_proxy(self, params: dict, payload: dict):
         key = params.get("key", [""])[0]
         if key in _state["stream_proxies"]:
             del _state["stream_proxies"][key]
@@ -251,10 +265,16 @@ class ZlmMockHandler(http.server.BaseHTTPRequestHandler):
         else:
             self._send_json(200, _err(-1, "key not found"))
 
-    def _handle_open_rtp_server(self, params: dict):
+    def _handle_open_rtp_server(self, params: dict, payload: dict):
         port = int(params.get("port", [0])[0])
         if port == 0:
-            port = random.randint(30000, 30100)
+            # 确定性分配：随机端口会与已分配的撞车，测试因此不稳定
+            used = {int(v["port"]) for v in _state["rtp_servers"].values()}
+            port = next(
+                (p for p in range(_state["rtp_port_start"], _state["rtp_port_end"] + 1)
+                 if p not in used),
+                _state["rtp_port_start"],
+            )
         stream_id = params.get("stream_id", [f"rtp-{port}"])[0]
         tcp = params.get("tcp_mode", ["0"])[0] == "1"
         _state["rtp_servers"][stream_id] = {
@@ -272,7 +292,7 @@ class ZlmMockHandler(http.server.BaseHTTPRequestHandler):
         }
         self._send_json(200, body)
 
-    def _handle_close_rtp_server(self, params: dict):
+    def _handle_close_rtp_server(self, params: dict, payload: dict):
         stream_id = params.get("stream_id", [""])[0]
         if stream_id in _state["rtp_servers"]:
             del _state["rtp_servers"][stream_id]
@@ -280,17 +300,17 @@ class ZlmMockHandler(http.server.BaseHTTPRequestHandler):
         else:
             self._send_json(200, _err(-1, "stream_id not found"))
 
-    def _handle_list_rtp_server(self, params: dict):
+    def _handle_list_rtp_server(self, params: dict, payload: dict):
         if not self._check_secret(params):
             return self._send_json(401, _err(-100, "secret invalid"))
         self._send_json(200, _ok(list(_state["rtp_servers"].values())))
 
-    def _handle_get_rtp_info(self, params: dict):
+    def _handle_get_rtp_info(self, params: dict, payload: dict):
         stream_id = params.get("stream_id", [""])[0]
         info = _state["rtp_servers"].get(stream_id)
         self._send_json(200, _ok(info))
 
-    def _handle_get_statistic(self):
+    def _handle_get_statistic(self, params: dict, payload: dict):
         self._send_json(200, _ok({
             "MediaSource": {"total": len(_state["media_list"])},
             "MultiMediaSourceMaps": {"total": len(_state["media_list"])},
@@ -349,6 +369,172 @@ class ZlmMockHandler(http.server.BaseHTTPRequestHandler):
         self._send_json(200, _ok({"triggered": True, "hook_name": name}))
 
 
+    # ----- 补齐的端点（此前 mock 未实现，调用方只能拿到 404） -----
+
+    def _handle_set_server_config(self, params: dict, payload: dict):
+        """setServerConfig：GET+query 或 POST+JSON 都要支持。
+
+        真实 ZLM 用 POST+JSON；GBServer 的 ZlmClient 也走 POST。
+        返回形状：`{code, changed}`（changed=1 表示确有变更）。
+        """
+        key = params.get("key", [""])[0]
+        value = str(params.get("value", [""])[0])
+        if not key:
+            return self._send_json(200, _err(-1, "key required"))
+        old = _state["server_config"].get(key)
+        _state["server_config"][key] = value
+        log.info("setServerConfig: %s=%s", key, value)
+        self._send_json(200, {"code": 0, "msg": "success", "changed": 0 if old == value else 1})
+
+    def _handle_version(self, params: dict, payload: dict):
+        """版本端点。同时兼容 `data.version`（真实 ZLM）与顶层 `version`
+        （GBServer `get_api_version` 读的是顶层）。"""
+        body = {
+            "code": 0,
+            "msg": "success",
+            "version": SERVER_VERSION,
+            "data": {"version": SERVER_VERSION, "branchName": "mock", "buildTime": BUILD_TIME},
+        }
+        self._send_json(200, body)
+
+    def _handle_connect_rtp_server(self, params: dict, payload: dict):
+        """connectRtpServer：让 ZLM 主动连到设备端口。
+
+        真实 ZLM 在 `stream_id` 不对应已知流时返回
+        `{"code":-1,"msg":"can not find the stream"}` —— 这正是
+        `handlers/play.rs` 里注释提到的那个坑，mock 必须复现，
+        否则测不出调用方的错误处理。
+        """
+        stream_id = params.get("stream_id", [""])[0]
+        if stream_id not in _state["rtp_servers"] and stream_id not in _state["streams"]:
+            return self._send_json(200, _err(-1, "can not find the stream"))
+        log.info(
+            "connectRtpServer: stream_id=%s dst_url=%s dst_port=%s",
+            stream_id, params.get("dst_url", [""])[0], params.get("dst_port", [""])[0],
+        )
+        self._send_json(200, _ok(None))
+
+    def _handle_close_streams(self, params: dict, payload: dict):
+        """close_streams：按 app/stream/schema 批量关流。
+
+        返回 `CloseStreamsResponse{count_hit,count_closed}`。
+        """
+        app = params.get("app", [None])[0]
+        stream = params.get("stream", [None])[0]
+        schema = params.get("schema", [None])[0]
+        before = len(_state["media_list"])
+        _state["media_list"] = [
+            m for m in _state["media_list"]
+            if not (
+                (app is None or m.get("app") == app)
+                and (stream is None or m.get("stream") == stream)
+                and (schema is None or m.get("schema") == schema)
+            )
+        ]
+        hit = before - len(_state["media_list"])
+        log.info("close_streams: app=%s stream=%s hit=%d", app, stream, hit)
+        self._send_json(200, _ok({"count_hit": hit, "count_closed": hit}))
+
+    def _handle_close_stream(self, params: dict, payload: dict):
+        return self._handle_close_streams(params, payload)
+
+    def _handle_kick_sessions(self, params: dict, payload: dict):
+        self._send_json(200, _ok({"count_hit": 0, "count_closed": 0}))
+
+    def _handle_kick_session(self, params: dict, payload: dict):
+        self._send_json(200, _ok(None))
+
+    def _handle_start_send_rtp(self, params: dict, payload: dict):
+        app = params.get("app", [""])[0]
+        stream = params.get("stream", [""])[0]
+        _state["send_rtp"][(app, stream)] = {
+            "app": app,
+            "stream": stream,
+            "ssrc": params.get("ssrc", [""])[0],
+            "dst_url": params.get("dst_url", [""])[0],
+            "dst_port": params.get("dst_port", [""])[0],
+            "is_udp": params.get("is_udp", ["0"])[0],
+            "use_ps": params.get("use_ps", ["0"])[0],
+        }
+        log.info(
+            "startSendRtp: %s/%s ssrc=%s -> %s:%s",
+            app, stream, params.get("ssrc", [""])[0],
+            params.get("dst_url", [""])[0], params.get("dst_port", [""])[0],
+        )
+        self._send_json(200, {"code": 0, "msg": "success", "local_port": 40000 + len(_state["send_rtp"])})
+
+    def _handle_stop_send_rtp(self, params: dict, payload: dict):
+        app = params.get("app", [""])[0]
+        stream = params.get("stream", [""])[0]
+        existed = _state["send_rtp"].pop((app, stream), None)
+        log.info("stopSendRtp: %s/%s existed=%s", app, stream, bool(existed))
+        self._send_json(200, _ok(None))
+
+    def _handle_send_rtp_info(self, params: dict, payload: dict):
+        app = params.get("app", [""])[0]
+        stream = params.get("stream", [""])[0]
+        info = _state["send_rtp"].get((app, stream))
+        if info is None:
+            return self._send_json(200, _err(-1, "can not find the send rtp"))
+        self._send_json(200, _ok(info))
+
+    def _handle_start_record(self, params: dict, payload: dict):
+        key = (params.get("app", [""])[0], params.get("stream", [""])[0])
+        _state["recordings"][key] = {"type": params.get("type", ["1"])[0]}
+        self._send_json(200, _ok({"result": True}))
+
+    def _handle_stop_record(self, params: dict, payload: dict):
+        key = (params.get("app", [""])[0], params.get("stream", [""])[0])
+        _state["recordings"].pop(key, None)
+        self._send_json(200, _ok({"result": True}))
+
+    def _handle_is_recording(self, params: dict, payload: dict):
+        key = (params.get("app", [""])[0], params.get("stream", [""])[0])
+        status = _state["recordings"].get(key)
+        self._send_json(200, _ok({"status": bool(status)}))
+
+    def _handle_get_mp4_record_file(self, params: dict, payload: dict):
+        # GBServer 读的是 `data.list`（Mp4RecordResponse）
+        self._send_json(200, _ok({"rootPath": "", "paths": [], "list": []}))
+
+    def _handle_get_snap(self, params: dict, payload: dict):
+        """getSnap：GBServer 的 ZlmClient 按 JSON 解析（`ApiResponse<SnapResponse>`），
+        因此这里返回 `data.path`；真实 ZLM 默认直接回图片字节，若要核对需同时支持
+        两种形态（用 `snap=1` 之类的开关区分），此处按调用方期望的形状返回。"""
+        self._send_json(200, _ok({"path": "mock://snap/1.jpg"}))
+
+    def _handle_get_server_stats(self, params: dict, payload: dict):
+        # 真实 ZLM：data 是**对象**（不是数组）
+        self._send_json(200, _ok({
+            "MediaSource": len(_state["media_list"]),
+            "MultiMediaSourceMuxer": len(_state["media_list"]),
+            "TcpSession": 0,
+            "UdpSession": 0,
+            "TcpSessionCount": 0,
+            "UdpSessionCount": 0,
+        }))
+
+    def _handle_get_network_api(self, params: dict, payload: dict):
+        self._send_json(200, _ok({"interface": [], "dns": []}))
+
+    def _handle_create_download(self, params: dict, payload: dict):
+        self._send_json(200, _ok(None))
+
+    def _handle_get_download_list(self, params: dict, payload: dict):
+        self._send_json(200, _ok({"data": [], "total": 0}))
+
+    def _handle_close_download(self, params: dict, payload: dict):
+        self._send_json(200, _ok(None))
+
+    def _handle_delete_record(self, params: dict, payload: dict):
+        self._send_json(200, _ok(None))
+
+    def _handle_add_ffmpeg_source(self, params: dict, payload: dict):
+        self._send_json(200, _ok({"key": f"ffmpeg-{int(time.time())}"}))
+
+    def _handle_restart_server(self, params: dict, payload: dict):
+        self._send_json(200, _ok(None))
+
 def _post_hook(url: str, payload: dict):
     """简易 POST 到 Webhook 接收器（用 urllib）"""
     import urllib.request
@@ -359,6 +545,50 @@ def _post_hook(url: str, payload: dict):
             log.info("Hook POST %s -> %d", url, resp.getcode())
     except Exception as e:
         log.warning("Hook POST 失败: %s", e)
+
+
+# 路由表：GET/POST 共用
+_ROUTES = {
+    "/index/api/getServerConfig": ZlmMockHandler._handle_get_server_config,
+    "/index/api/setServerConfig": ZlmMockHandler._handle_set_server_config,
+    "/index/api/getApiList": ZlmMockHandler._handle_get_api_list,
+    "/index/api/getMediaList": ZlmMockHandler._handle_get_media_list,
+    "/index/api/getMediaInfo": ZlmMockHandler._handle_get_media_info,
+    "/index/api/isMediaExist": ZlmMockHandler._handle_is_media_exist,
+    "/index/api/addStreamProxy": ZlmMockHandler._handle_add_stream_proxy,
+    "/index/api/delStreamProxy": ZlmMockHandler._handle_del_stream_proxy,
+    "/index/api/openRtpServer": ZlmMockHandler._handle_open_rtp_server,
+    "/index/api/closeRtpServer": ZlmMockHandler._handle_close_rtp_server,
+    "/index/api/connectRtpServer": ZlmMockHandler._handle_connect_rtp_server,
+    "/index/api/listRtpServer": ZlmMockHandler._handle_list_rtp_server,
+    "/index/api/getRtpInfo": ZlmMockHandler._handle_get_rtp_info,
+    "/index/api/pushStream": ZlmMockHandler._handle_push_stream,
+    "/index/api/getStatistic": ZlmMockHandler._handle_get_statistic,
+    "/index/api/getServerStats": ZlmMockHandler._handle_get_server_stats,
+    "/index/api/getNetWorkApi": ZlmMockHandler._handle_get_network_api,
+    "/index/api/close_streams": ZlmMockHandler._handle_close_streams,
+    "/index/api/close_stream": ZlmMockHandler._handle_close_stream,
+    "/index/api/kick_session": ZlmMockHandler._handle_kick_session,
+    "/index/api/kick_sessions": ZlmMockHandler._handle_kick_sessions,
+    "/index/api/startSendRtp": ZlmMockHandler._handle_start_send_rtp,
+    "/index/api/stopSendRtp": ZlmMockHandler._handle_stop_send_rtp,
+    "/index/api/sendRtpInfo": ZlmMockHandler._handle_send_rtp_info,
+    "/index/api/startRecord": ZlmMockHandler._handle_start_record,
+    "/index/api/stopRecord": ZlmMockHandler._handle_stop_record,
+    "/index/api/isRecording": ZlmMockHandler._handle_is_recording,
+    "/index/api/getMp4RecordFile": ZlmMockHandler._handle_get_mp4_record_file,
+    "/index/api/getSnap": ZlmMockHandler._handle_get_snap,
+    "/index/api/createDownload": ZlmMockHandler._handle_create_download,
+    "/index/api/getDownloadList": ZlmMockHandler._handle_get_download_list,
+    "/index/api/close_download": ZlmMockHandler._handle_close_download,
+    "/index/api/deleteRecord": ZlmMockHandler._handle_delete_record,
+    "/index/api/addFfmpegSource": ZlmMockHandler._handle_add_ffmpeg_source,
+    "/index/api/restartServer": ZlmMockHandler._handle_restart_server,
+    # ZlmClient::get_api_version 打的是 `/api/version`（不带 /index），
+    # 真实 ZLM 是 `/index/api/version`；两个都提供，便于同时验证两种路径。
+    "/index/api/version": ZlmMockHandler._handle_version,
+    "/api/version": ZlmMockHandler._handle_version,
+}
 
 
 # ---------------- 启动 / 停止助手 ----------------

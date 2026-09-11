@@ -29,13 +29,14 @@ pub async fn talk_start(
     };
 
     match result {
-        Ok(_) => {
-            // 生成呼叫ID用于后续跟踪
-            let call_id = format!("talk_{}_{}_{}", device_id, channel_id,
-                chrono::Utc::now().timestamp_millis());
-            
+        Ok(call_id) => {
+            // 修正：此前这里又自己拼了一个 `talk_{device}_{channel}_{ts}` 作为 callId
+            // 返回给前端，与 TalkManager 里登记的 call_id 不是同一个字符串
+            // （登记时用的是 send_talk_invite 内部生成的那个），
+            // 前端拿这个 callId 去 /api/talk/status 或停止对讲都会查不到。
+            // 现在统一使用 send_talk_invite 返回的真实 call_id。
             tracing::info!("[Talk] INVITE 发送成功: call_id={}", call_id);
-            
+
             Ok(Json(WVPResult::success(serde_json::json!({
                 "callId": call_id,
                 "deviceId": device_id,
@@ -101,9 +102,7 @@ pub async fn talk_invite(
     };
 
     match result {
-        Ok(_) => {
-            let call_id = format!("invite_{}_{}", device_id, channel_id);
-            
+        Ok(call_id) => {
             // 获取本地IP用于SDP
             let local_ip = state.config.sip.as_ref()
                 .map(|c| c.ip.clone())
@@ -111,10 +110,12 @@ pub async fn talk_invite(
 
             // 展示用 SDP 必须用真实分配到的收流端口：此前固定传 0，
             // 回给前端的是一份 m=audio 0（端口 0 = 媒体流被禁用）的无效 SDP。
+            // 会话按 call_id 精确查询（此前按 device+channel 模糊查，
+            // 同一设备重复发起时会拿到旧会话）。
             let local_port = {
                 let sip = &*sip_server;
                 sip.talk_manager()
-                    .get_by_device_channel(&device_id, &channel_id)
+                    .get(&call_id)
                     .await
                     .map(|s| s.local_port)
                     .unwrap_or(0)

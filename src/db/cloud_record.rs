@@ -534,21 +534,21 @@ pub async fn set_collect(pool: &Pool, id: i64, collect: bool) -> sqlx::Result<bo
 pub async fn get_by_call_id(pool: &Pool, call_id: &str) -> sqlx::Result<Option<CloudRecord>> {
     #[cfg(feature = "postgres")]
     return sqlx::query_as::<_, CloudRecord>(
-        "SELECT id, app, stream, call_id, start_time, end_time, duration, media_server_id, file_name, file_path, file_size, create_time, collect FROM gb_cloud_record WHERE call_id = $1"
+        "SELECT id, app, stream, call_id, start_time, end_time, media_server_id, file_name, file_path, file_size, collect, server_id, folder, time_len FROM gb_cloud_record WHERE call_id = $1"
     )
     .bind(call_id)
     .fetch_optional(pool)
     .await;
     #[cfg(feature = "mysql")]
     return sqlx::query_as::<_, CloudRecord>(
-        "SELECT id, app, stream, call_id, start_time, end_time, duration, media_server_id, file_name, file_path, file_size, create_time, collect FROM gb_cloud_record WHERE call_id = ?"
+        "SELECT id, app, stream, call_id, start_time, end_time, media_server_id, file_name, file_path, file_size, collect, server_id, folder, time_len FROM gb_cloud_record WHERE call_id = ?"
     )
     .bind(call_id)
     .fetch_optional(pool)
     .await;
     #[cfg(feature = "sqlite")]
     return sqlx::query_as::<_, CloudRecord>(
-        "SELECT id, app, stream, call_id, start_time, end_time, duration, media_server_id, file_name, file_path, file_size, create_time, collect FROM gb_cloud_record WHERE call_id = ?"
+        "SELECT id, app, stream, call_id, start_time, end_time, media_server_id, file_name, file_path, file_size, collect, server_id, folder, time_len FROM gb_cloud_record WHERE call_id = ?"
     )
     .bind(call_id)
     .fetch_optional(pool)
@@ -582,19 +582,19 @@ pub async fn delete_by_app_stream(pool: &Pool, app: &str, stream: &str) -> sqlx:
 pub async fn get_collect_records(pool: &Pool) -> sqlx::Result<Vec<CloudRecord>> {
     #[cfg(feature = "postgres")]
     return sqlx::query_as::<_, CloudRecord>(
-        "SELECT id, app, stream, call_id, start_time, end_time, duration, media_server_id, file_name, file_path, file_size, create_time, collect FROM gb_cloud_record WHERE collect = true ORDER BY create_time DESC"
+        "SELECT id, app, stream, call_id, start_time, end_time, media_server_id, file_name, file_path, file_size, collect, server_id, folder, time_len FROM gb_cloud_record WHERE collect = true ORDER BY create_time DESC"
     )
     .fetch_all(pool)
     .await;
     #[cfg(feature = "mysql")]
     return sqlx::query_as::<_, CloudRecord>(
-        "SELECT id, app, stream, call_id, start_time, end_time, duration, media_server_id, file_name, file_path, file_size, create_time, collect FROM gb_cloud_record WHERE collect = 1 ORDER BY create_time DESC"
+        "SELECT id, app, stream, call_id, start_time, end_time, media_server_id, file_name, file_path, file_size, collect, server_id, folder, time_len FROM gb_cloud_record WHERE collect = 1 ORDER BY create_time DESC"
     )
     .fetch_all(pool)
     .await;
     #[cfg(feature = "sqlite")]
     return sqlx::query_as::<_, CloudRecord>(
-        "SELECT id, app, stream, call_id, start_time, end_time, duration, media_server_id, file_name, file_path, file_size, create_time, collect FROM gb_cloud_record WHERE collect = 1 ORDER BY create_time DESC"
+        "SELECT id, app, stream, call_id, start_time, end_time, media_server_id, file_name, file_path, file_size, collect, server_id, folder, time_len FROM gb_cloud_record WHERE collect = 1 ORDER BY create_time DESC"
     )
     .fetch_all(pool)
     .await;

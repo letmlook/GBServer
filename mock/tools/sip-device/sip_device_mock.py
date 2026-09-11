@@ -77,6 +77,8 @@ class DeviceConfig:
     password: str = "admin123"
     realm: str = "3402000000"
     expires_secs: int = 3600
+    # 语音对讲时设备侧收发音频的 RTP 端口（200 OK 的 m=audio 里上报）
+    talk_port: int = 10002
 
 
 @dataclass
@@ -366,22 +368,48 @@ def build_invite_ok(
     from_tag: str,
     to_tag: str,
     ssrc: str,
+    request_body: Optional[str] = None,
+    talk_port: int = 10002,
 ) -> bytes:
-    """构造 INVITE 200 OK + SDP"""
+    """构造 INVITE 200 OK + SDP
+
+    按请求 SDP 里的业务类型回应：
+      * `s=Talk` / `m=audio`  → 回 `m=audio`（PCMA）+ `a=sendrecv`
+        —— 语音对讲时设备要在自己的端口上**收发**音频，平台据此把
+        麦克风音频发到 `c=IN IP4 <device>` + `m=audio <port>`。
+      * 其它（实时/回放/下载）→ 回 `m=video`（PS）
+    """
     realm = realm_from_device_id(cfg.device_id)
-    sdp = (
-        f"v=0\r\n"
-        f"o={cfg.device_id} 0 0 IN IP4 {local_addr[0]}\r\n"
-        f"s=Play\r\n"
-        f"c=IN IP4 {local_addr[0]}\r\n"
-        f"t=0 0\r\n"
-        f"m=video 10000 RTP/AVP 96 97 98\r\n"
-        f"a=recvonly\r\n"
-        f"a=rtpmap:96 PS/90000\r\n"
-        f"a=rtpmap:97 MPEG4/90000\r\n"
-        f"a=rtpmap:98 H264/90000\r\n"
-        f"y={ssrc}\r\n"
-    )
+    req = request_body or ""
+    is_talk = ("s=Talk" in req) or ("m=audio" in req)
+    if is_talk:
+        sdp = (
+            f"v=0\r\n"
+            f"o={cfg.device_id} 0 0 IN IP4 {local_addr[0]}\r\n"
+            f"s=Talk\r\n"
+            f"c=IN IP4 {local_addr[0]}\r\n"
+            f"t=0 0\r\n"
+            f"m=audio {talk_port} RTP/AVP 8 0 101\r\n"
+            f"a=rtpmap:8 PCMA/8000\r\n"
+            f"a=rtpmap:0 PCMU/8000\r\n"
+            f"a=rtpmap:101 telephone-event/8000\r\n"
+            f"a=sendrecv\r\n"
+            f"y={ssrc}\r\n"
+        )
+    else:
+        sdp = (
+            f"v=0\r\n"
+            f"o={cfg.device_id} 0 0 IN IP4 {local_addr[0]}\r\n"
+            f"s=Play\r\n"
+            f"c=IN IP4 {local_addr[0]}\r\n"
+            f"t=0 0\r\n"
+            f"m=video 10000 RTP/AVP 96 97 98\r\n"
+            f"a=recvonly\r\n"
+            f"a=rtpmap:96 PS/90000\r\n"
+            f"a=rtpmap:97 MPEG4/90000\r\n"
+            f"a=rtpmap:98 H264/90000\r\n"
+            f"y={ssrc}\r\n"
+        )
     msg = (
         f"{SIP_VERSION} 200 OK\r\n"
         f"Via: {SIP_VERSION}/UDP {server_addr[0]}:{server_addr[1]};rport;branch={branch}\r\n"
@@ -601,9 +629,16 @@ class SipDeviceMock:
             "cseq": invite_cseq, "started": time.time(),
         }
         local = self.transport.get_extra_info("sockname")
-        payload = build_invite_ok(self.cfg, local, addr, invite_cseq, call_id, branch, from_tag, to_tag, ssrc)
+        req_body = msg.split("\r\n\r\n", 1)[1] if "\r\n\r\n" in msg else ""
+        payload = build_invite_ok(
+            self.cfg, local, addr, invite_cseq, call_id, branch, from_tag, to_tag, ssrc,
+            request_body=req_body, talk_port=self.cfg.talk_port,
+        )
         self.transport.sendto(payload, addr)
-        log.info("INVITE 200 OK sent for call %s, ssrc=%s", call_id, ssrc)
+        log.info(
+            "INVITE 200 OK sent for call %s, ssrc=%s (%s)",
+            call_id, ssrc, "audio/Talk" if ("s=Talk" in req_body or "m=audio" in req_body) else "video/Play",
+        )
         # 模拟媒体会话：3 秒后主动 BYE
         async def delayed_bye():
             await asyncio.sleep(3)

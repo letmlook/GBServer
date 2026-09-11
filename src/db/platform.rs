@@ -433,19 +433,19 @@ pub async fn list_platforms(pool: &Pool) -> sqlx::Result<Vec<Platform>> {
 pub async fn get_all_online_platforms(pool: &Pool) -> sqlx::Result<Vec<Platform>> {
     #[cfg(feature = "mysql")]
     return sqlx::query_as::<_, Platform>(
-        "SELECT id, enable, name, server_gb_id, server_gb_domain, server_ip, server_port, device_gb_id, device_ip, device_port, username, password, expires, keep_timeout, transport, character_set, ptz, rtcp, status, catalog_id, catalog_group, share_org, share_user, share_group, auto_push_channel, auto_push_channel_status, send_stream_ip, send_stream_port, send_stream_protocol, as_message_thread, sip_message_log, create_time, update_time FROM gb_platform WHERE status = 1 AND enable = 1 ORDER BY id",
+        "SELECT id, enable, name, server_gb_id, server_gb_domain, server_ip, server_port, device_gb_id, device_ip, device_port, username, password, expires, keep_timeout, transport, character_set, ptz, rtcp, status, catalog_group, auto_push_channel, send_stream_ip, create_time, update_time, civil_code, manufacturer, model, address, register_way, secrecy, as_message_channel, catalog_with_platform, catalog_with_group, catalog_with_region, server_id FROM gb_platform WHERE status = 1 AND enable = 1 ORDER BY id",
     )
     .fetch_all(pool)
     .await;
     #[cfg(feature = "postgres")]
     return sqlx::query_as::<_, Platform>(
-        "SELECT id, enable, name, server_gb_id, server_gb_domain, server_ip, server_port, device_gb_id, device_ip, device_port, username, password, expires, keep_timeout, transport, character_set, ptz, rtcp, status, catalog_id, catalog_group, share_org, share_user, share_group, auto_push_channel, auto_push_channel_status, send_stream_ip, send_stream_port, send_stream_protocol, as_message_thread, sip_message_log, create_time, update_time FROM gb_platform WHERE status = true AND enable = true ORDER BY id",
+        "SELECT id, enable, name, server_gb_id, server_gb_domain, server_ip, server_port, device_gb_id, device_ip, device_port, username, password, expires, keep_timeout, transport, character_set, ptz, rtcp, status, catalog_group, auto_push_channel, send_stream_ip, create_time, update_time, civil_code, manufacturer, model, address, register_way, secrecy, as_message_channel, catalog_with_platform, catalog_with_group, catalog_with_region, server_id FROM gb_platform WHERE status = true AND enable = true ORDER BY id",
     )
     .fetch_all(pool)
     .await;
     #[cfg(feature = "sqlite")]
     return sqlx::query_as::<_, Platform>(
-        "SELECT id, enable, name, server_gb_id, server_gb_domain, server_ip, server_port, device_gb_id, device_ip, device_port, username, password, expires, keep_timeout, transport, character_set, ptz, rtcp, status, catalog_id, catalog_group, share_org, share_user, share_group, auto_push_channel, auto_push_channel_status, send_stream_ip, send_stream_port, send_stream_protocol, as_message_thread, sip_message_log, create_time, update_time FROM gb_platform WHERE status = 1 AND enable = 1 ORDER BY id",
+        "SELECT id, enable, name, server_gb_id, server_gb_domain, server_ip, server_port, device_gb_id, device_ip, device_port, username, password, expires, keep_timeout, transport, character_set, ptz, rtcp, status, catalog_group, auto_push_channel, send_stream_ip, create_time, update_time, civil_code, manufacturer, model, address, register_way, secrecy, as_message_channel, catalog_with_platform, catalog_with_group, catalog_with_region, server_id FROM gb_platform WHERE status = 1 AND enable = 1 ORDER BY id",
     )
     .fetch_all(pool)
     .await;

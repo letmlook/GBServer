@@ -132,6 +132,17 @@ async fn smoke_user_and_stream_reads() {
         .expect("get_all_enabled_proxies");
 
     db::stream_push::get_by_id(&pool, 1).await.expect("stream_push::get_by_id");
+    db::stream_push::get_by_app_stream(&pool, "push", "s1")
+        .await
+        .expect("stream_push::get_by_app_stream");
+    db::stream_proxy::get_by_id(&pool, 1).await.expect("stream_proxy::get_by_id");
+    db::stream_proxy::get_by_app_stream(&pool, "proxy", "s1")
+        .await
+        .expect("stream_proxy::get_by_app_stream");
+    let proxies = db::stream_proxy::list_paged(&pool, 1, 10, None, None)
+        .await
+        .expect("stream_proxy::list_paged");
+    assert!(!proxies.is_empty());
 }
 
 /// 其余业务域：同样必须能真实解码一行
@@ -168,6 +179,13 @@ async fn smoke_platform_plan_apikey_reads() {
     db::platform::get_all_enabled_platforms(&pool)
         .await
         .expect("get_all_enabled_platforms");
+    // 该函数的显式列清单曾漏掉 11 个 Platform 字段（civil_code / manufacturer /
+    // model / address / register_way / secrecy / as_message_channel /
+    // catalog_with_* / server_id），运行期会报 no column found for name。
+    // 这里补一条"真的解码一遍"的守卫。
+    db::platform::get_all_online_platforms(&pool)
+        .await
+        .expect("get_all_online_platforms");
 
     db::platform_channel::get_by_id(&pool, 1).await.expect("platform_channel::get_by_id");
     db::platform_group::list_by_platform(&pool, 1)

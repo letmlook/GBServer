@@ -113,14 +113,14 @@ pub async fn ensure_stream_status_column(pool: &Pool) -> sqlx::Result<()> {
 pub async fn get_by_id(pool: &Pool, id: i64) -> sqlx::Result<Option<StreamPush>> {
     #[cfg(feature = "mysql")]
     return sqlx::query_as::<_, StreamPush>(
-        "SELECT id, app, stream, create_time, media_server_id, server_id, push_time, status, update_time, pushing, self as self_push, start_offline_push FROM gb_stream_push WHERE id = ?"
+        "SELECT id, app, stream, create_time, media_server_id, server_id, push_time, status, update_time, pushing, self as self_push, start_offline_push, stream_status FROM gb_stream_push WHERE id = ?"
     )
     .bind(id)
     .fetch_optional(pool)
     .await;
     #[cfg(feature = "postgres")]
     return sqlx::query_as::<_, StreamPush>(
-        "SELECT id, app, stream, create_time, media_server_id, server_id, push_time, status, update_time, pushing, self as self_push, start_offline_push FROM gb_stream_push WHERE id = $1"
+        "SELECT id, app, stream, create_time, media_server_id, server_id, push_time, status, update_time, pushing, self as self_push, start_offline_push, stream_status FROM gb_stream_push WHERE id = $1"
     )
     .bind(id)
     .fetch_optional(pool)
@@ -645,7 +645,7 @@ pub async fn update_status(pool: &Pool, id: i64, status: bool) -> sqlx::Result<u
 pub async fn get_by_app_stream(pool: &Pool, app: &str, stream: &str) -> sqlx::Result<Option<StreamPush>> {
     #[cfg(feature = "mysql")]
     return sqlx::query_as::<_, StreamPush>(
-        "SELECT id, app, stream, create_time, media_server_id, server_id, push_time, status, update_time, pushing, self as self_push, start_offline_push FROM gb_stream_push WHERE app = ? AND stream = ?"
+        "SELECT id, app, stream, create_time, media_server_id, server_id, push_time, status, update_time, pushing, self as self_push, start_offline_push, stream_status FROM gb_stream_push WHERE app = ? AND stream = ?"
     )
     .bind(app)
     .bind(stream)
@@ -653,7 +653,7 @@ pub async fn get_by_app_stream(pool: &Pool, app: &str, stream: &str) -> sqlx::Re
     .await;
     #[cfg(feature = "postgres")]
     return sqlx::query_as::<_, StreamPush>(
-        "SELECT id, app, stream, create_time, media_server_id, server_id, push_time, status, update_time, pushing, self as self_push, start_offline_push FROM gb_stream_push WHERE app = $1 AND stream = $2"
+        "SELECT id, app, stream, create_time, media_server_id, server_id, push_time, status, update_time, pushing, self as self_push, start_offline_push, stream_status FROM gb_stream_push WHERE app = $1 AND stream = $2"
     )
     .bind(app)
     .bind(stream)
@@ -661,7 +661,7 @@ pub async fn get_by_app_stream(pool: &Pool, app: &str, stream: &str) -> sqlx::Re
     .await;
     #[cfg(feature = "sqlite")]
     return sqlx::query_as::<_, StreamPush>(
-        "SELECT id, app, stream, create_time, media_server_id, server_id, push_time, status, update_time, pushing, self as self_push, start_offline_push FROM gb_stream_push WHERE app = ? AND stream = ?"
+        "SELECT id, app, stream, create_time, media_server_id, server_id, push_time, status, update_time, pushing, self as self_push, start_offline_push, stream_status FROM gb_stream_push WHERE app = ? AND stream = ?"
     )
     .bind(app)
     .bind(stream)

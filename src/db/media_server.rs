@@ -51,6 +51,20 @@ pub struct MediaServer {
     pub record_day: Option<i32>,
     pub transcode_suffix: Option<String>,
     pub server_id: Option<String>,
+
+    // ---- 以下字段 DB 里一直存在，但结构体此前没有声明 ----
+    // `SELECT *` 查出这些列后，sqlx 因为结构体没有对应字段而**静默丢弃**，
+    // 于是 /api/server/media_server/list 里既没有 status 也没有
+    // lastKeepaliveTime —— 而前端 `views/mediaServer/index.vue` 正是用
+    // `row.status`（状态列）与 `row.lastKeepaliveTime`（最后心跳列）渲染的，
+    // 这两列在界面上永远是空的。
+    // 健康检查其实一直在写 `gb_media_server.status` / `last_keepalive_time`，
+    // 只是从来没被读出来。
+    pub status: Option<bool>,
+    pub last_keepalive_time: Option<String>,
+    pub consecutive_misses: Option<i32>,
+    pub total_bytes: Option<i64>,
+    pub active_stream_count: Option<i32>,
 }
 
 /// 获取所有媒体服务器
