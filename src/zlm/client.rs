@@ -466,6 +466,60 @@ impl ZlmClient {
     }
 
     /// Set a single ZLM server config key-value pair
+    /// 并发下发一批 `setServerConfig`，并给整批一个总预算。
+    ///
+    /// 为什么需要它：ZLM 可达时单次调用是毫秒级，串行循环看不出问题；
+    /// 但 ZLM 不可达（或前面挂了反向代理返回 502）时，每次调用都要等满
+    /// 客户端超时。实测 `POST /api/server/media_server/save` 在 ZLM 不健康时
+    /// **串行**下发 11 个 hook 配置要 33 秒（最坏 30s × 11 = 5 分钟以上），
+    /// 而 ZLM 的 `on_server_started` 回调里还有 13 + 2 + N 项配置要下发。
+    ///
+    /// 行为：并发下发；超出预算后取消剩余任务，并在返回的错误列表里
+    /// 明确写出「超时 + 还有多少项未完成」，而不是无限等下去或假装成功。
+    ///
+    /// 返回：失败/超时项的说明文本（空表示全部成功）。
+    pub async fn set_server_configs_batch(
+        &self,
+        secret: &str,
+        items: Vec<(String, String)>,
+        budget: std::time::Duration,
+    ) -> Vec<String> {
+        let mut set = tokio::task::JoinSet::new();
+        for (key, value) in items {
+            let client = self.clone();
+            let secret = secret.to_string();
+            set.spawn(async move {
+                let r = client.set_server_config(&secret, &key, &value).await;
+                (key, value, r)
+            });
+        }
+
+        let mut errors = Vec::new();
+        let deadline = tokio::time::Instant::now() + budget;
+        loop {
+            match tokio::time::timeout_at(deadline, set.join_next()).await {
+                Err(_) => {
+                    let pending = set.len();
+                    set.abort_all();
+                    errors.push(format!(
+                        "下发 ZLM 配置超时（{:?}），仍有 {} 项未完成",
+                        budget, pending
+                    ));
+                    break;
+                }
+                Ok(None) => break,
+                Ok(Some(Ok((key, value, Err(e))))) => {
+                    errors.push(format!("{}={}: {}", key, value, e));
+                }
+                Ok(Some(Ok((_key, _value, Ok(()))))) => {}
+                Ok(Some(Err(join_err))) => {
+                    errors.push(format!("ZLM 配置任务异常: {}", join_err));
+                }
+            }
+        }
+        errors
+    }
+
     pub async fn set_server_config(&self, secret: &str, key: &str, value: &str) -> Result<()> {
         #[derive(serde::Serialize)]
         struct SetConfigReq {

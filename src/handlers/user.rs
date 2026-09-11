@@ -238,7 +238,7 @@ pub async fn change_password(
     let token = crate::auth::extract_token_from_headers(&headers).ok_or(AppError::Unauthorized)?;
     let keys = JwtKeys::new(state.config.jwt.secret.as_bytes());
     let claims = keys.verify_token(&token).ok_or(AppError::Unauthorized)?;
-    let old_md5 = params.old_password.or(params.oldPassword).ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 oldPassword"))?;
+    let old_md5 = params.old_password.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 oldPassword"))?;
     let new_pwd = params.password.as_deref().ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 password"))?;
 
     let user = db::find_by_username(&state.pool, &claims.userName).await?.ok_or(AppError::Unauthorized)?;
@@ -259,13 +259,13 @@ pub async fn change_password(
     Ok(Json(WVPResult::<()>::success_empty()))
 }
 
-#[allow(non_snake_case)]
+/// 旧写法是「再声明一个 camelCase 同义字段 + `#[serde(rename)]`」，
+/// 会出现两个字段映射到同一个 JSON 键（serde 报 unreachable pattern），
+/// 且调用方要靠 `a.or(b)` 兜。现已统一为 snake_case 主名 + camelCase alias。
 #[derive(Debug, Deserialize)]
 pub struct ChangePasswordParams {
     #[serde(alias = "oldPassword")]
     pub old_password: Option<String>,
-    #[serde(rename = "oldPassword")]
-    pub oldPassword: Option<String>,
     pub password: Option<String>,
 }
 
@@ -276,7 +276,7 @@ pub async fn change_password_for_admin(
     Query(params): Query<ChangePasswordForAdminParams>,
 ) -> Result<Json<WVPResult<()>>, AppError> {
     let _claims = require_admin(&state, &headers).await?;
-    let user_id = params.user_id.or(params.userId).ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 userId"))?;
+    let user_id = params.user_id.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 userId"))?;
     let password = params.password.as_deref().ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 password"))?;
     // 管理员重置口令也存 Argon2id（此前写 MD5）
     let new_hash = crate::auth::hash_password(password)
@@ -288,12 +288,10 @@ pub async fn change_password_for_admin(
     Ok(Json(WVPResult::<()>::success_empty()))
 }
 
-#[allow(non_snake_case)]
 #[derive(Debug, Deserialize)]
 pub struct ChangePasswordForAdminParams {
+    #[serde(alias = "userId")]
     pub user_id: Option<i32>,
-    #[serde(rename = "userId")]
-    pub userId: Option<i32>,
     pub password: Option<String>,
 }
 
@@ -304,8 +302,8 @@ pub async fn change_push_key(
     Query(params): Query<ChangePushKeyParams>,
 ) -> Result<Json<WVPResult<()>>, AppError> {
     let _ = require_admin(&state, &headers).await?;
-    let user_id = params.user_id.or(params.userId).ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 userId"))?;
-    let push_key = params.push_key.or(params.pushKey).ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 pushKey"))?;
+    let user_id = params.user_id.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 userId"))?;
+    let push_key = params.push_key.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 pushKey"))?;
     let n = db::change_push_key(&state.pool, user_id, &push_key).await?;
     if n == 0 {
         return Err(AppError::business(ErrorCode::Error100, "修改失败"));
@@ -313,15 +311,12 @@ pub async fn change_push_key(
     Ok(Json(WVPResult::<()>::success_empty()))
 }
 
-#[allow(non_snake_case)]
 #[derive(Debug, Deserialize)]
 pub struct ChangePushKeyParams {
+    #[serde(alias = "userId")]
     pub user_id: Option<i32>,
-    #[serde(rename = "userId")]
-    pub userId: Option<i32>,
+    #[serde(alias = "pushKey")]
     pub push_key: Option<String>,
-    #[serde(rename = "pushKey")]
-    pub pushKey: Option<String>,
 }
 
 async fn require_admin(state: &AppState, headers: &HeaderMap) -> Result<crate::auth::Claims, AppError> {

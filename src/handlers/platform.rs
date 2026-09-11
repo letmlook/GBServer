@@ -769,7 +769,11 @@ pub struct PlatformAddBody {
     pub device_gb_id: Option<String>,
     #[serde(alias = "deviceIp")]
     pub device_ip: Option<String>,
-    #[serde(alias = "devicePort", deserialize_with = "deserialize_port")]
+    // `deserialize_with` 会**去掉** `Option<T>` 字段的隐式 default，
+    // 于是这个本该可选的字段变成了必填 —— 前端平台表单从不提交
+    // `devicePort`，`POST /api/platform/add` 因此必然 422
+    // "missing field `device_port`"，新建平台完全不可用。
+    #[serde(default, alias = "devicePort", deserialize_with = "deserialize_port")]
     pub device_port: Option<String>,
     pub username: Option<String>,
     #[serde(alias = "civilCode")]

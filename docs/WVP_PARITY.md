@@ -186,9 +186,21 @@ INVITE 为 `a=recvonly`（平台收、设备发），设备 200 OK 才是 `a=sen
 | **前后端字段命名契约不匹配（响应侧）** | `/api/role/all` 返回 `create_time`，前端 `Role` 接口是 `createTime`（列表时间列为空）；`/api/server/media_server/list` 返回 `http_port`/`sdp_ip`/`type_`，而 `views/mediaServer/index.vue` 用 `prop="httpPort"`（这些列全空，`type_` 连键名都对不上） | `MediaServer` 加 `#[serde(rename_all = "camelCase")]` + `type_` 显式 `rename = "type"`；`Role` 用 `rename_all(serialize = "camelCase")`（只改序列化方向，反序列化仍兼容 snake_case）；`system/configInfo` 的 zlm 段一并统一。复扫后响应侧不匹配数 **9 → 0** |
 
 **冒烟基线（本轮结束时）**：254 个 GET 端点 **0 个 5xx**、**0 个
-`no such column` / `no such table`**；97 个 POST 端点 **0 个 5xx**；
+`no such column` / `no such table`**；97 个 POST 端点 **0 个 5xx / 0 个超时**；
 未带 token 访问受保护端点返回 401；登录 → 区域/分组新增 → PTZ 参数绑定
 → 应用新端点均按预期返回。
+
+#### 第二轮运行时冒烟追加（请求耗时与必填字段）
+
+| 问题 | 运行时证据 | 修复 |
+|------|-----------|------|
+| **`POST /api/server/media_server/save` 慢到像卡死** | 实测 **33.4 秒**（`curl` 15s 直接超时）；日志显示是 11 次**串行** `setServerConfig`，ZLM 不健康时每次等约 3s（客户端超时上限 30s，最坏 30×11≈5.5 分钟）。ZLM 的 `on_server_started` 回调里还有 13 + 2 + N 项配置同样串行下发 | 新增 `ZlmClient::set_server_configs_batch`（并发下发 + 总预算 10s，超时如实报告「还有 N 项未完成」）；`configure_zlm_hooks` 改用它，**33.4s → 3.8s** |
+| **`/api/server/media_server/load` 的 `gbReceive`/`gbSend` 恒为 0** | 这两个数字是从 ZLM `getServerStats` 里按 `MediaStreamCount` / `MediaSenderCount` / `sendRtpCount` 取的 —— 这些键名是**凭空猜的**（ZLM 不返回），所以永远取不到；而这个被控制台轮询的接口还要为此每个节点多等一次 HTTP 往返 | 改用本进程内存里的权威计数：`InviteSessionManager::get_active_sessions()` 与 `SendRtpManager::active_count()`（GB 会话目前没有按节点归属的信息，故为全局真实值，已在代码注释与文档注明） |
+| **`/api/platform/add` 与 `/update` 必然 422** | `{"code":422,"msg":"missing field `device_port`"}` —— `PlatformAddBody.device_port` 是 `Option<String>`，但带了 `deserialize_with`，而 **`deserialize_with` 会去掉 `Option<T>` 的隐式 default**，使该字段变成必填；前端平台表单从不提交 `devicePort`，因此新建平台完全不可用 | 补 `#[serde(default)]`。全仓库扫描确认这是唯一一处（`Option<T>` + `deserialize_with` 且无 `default`） |
+| 用户口令/推送键参数结构体的旧写法 | `ChangePasswordParams` 同时声明 `old_password` 与 `oldPassword`（后者 `rename = "oldPassword"`），两个字段映射到同一 JSON 键，serde 报 `unreachable pattern`；调用方靠 `a.or(b)` 兜底 | 三个结构体统一为 snake_case 主名 + camelCase alias，删除重复字段与 `#[allow(non_snake_case)]` |
+
+**第二轮基线**：GET 254 项 / POST 97 项全量复扫 —— **0 个 5xx、0 个悬挂超时、0 个 `no such column`**；
+404 从 5 项降至仅剩「记录确实不存在」，422 从 5 项降至 3 项（均为前端本来就会提供的必填字段）。
 
 ### 仍未解决 / 需真实设备核验
 

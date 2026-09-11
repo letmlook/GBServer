@@ -142,13 +142,19 @@ async fn configure_zlm_hooks(
         ("hook.on_rtp_server_timeout", hook_url.clone()),
     ];
 
-    let mut errors = Vec::new();
-    for (key, value) in config_items {
-        if let Err(e) = client.set_server_config(&client.secret, key, &value).await {
-            let msg = format!("{}={}: {}", key, value, e);
-            tracing::warn!("Failed to configure ZLM hook {}", msg);
-            errors.push(msg);
-        }
+    // 并发下发 + 总超时（见 `ZlmClient::set_server_configs_batch`）。
+    // 修正：此前 11 次**串行**调用，ZLM 不健康时本接口实测等 33 秒
+    // （最坏 30s × 11），普通后台管理操作变成"卡死"。
+    const HOOK_CONFIG_BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
+    let items: Vec<(String, String)> = config_items
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v))
+        .collect();
+    let errors = client
+        .set_server_configs_batch(&client.secret, items, HOOK_CONFIG_BUDGET)
+        .await;
+    for e in &errors {
+        tracing::warn!("Failed to configure ZLM hook {}", e);
     }
     errors
 }
@@ -1347,54 +1353,48 @@ pub async fn media_server_media_info(
 /// - `gbReceive`: 国标收流数（从 ZLM getServerStats 中取常见键，找不到为 0）
 /// - `gbSend`   : 国标推流数（同上）
 pub async fn media_server_load(State(state): State<AppState>) -> Json<WVPResult<serde_json::Value>> {
+    // gbReceive / gbSend 改用**本进程内存里的权威计数**：
+    //   * gbReceive = 活跃的 GB28181 INVITE 会话（设备 → 平台收流）
+    //   * gbSend    = 活跃的级联 SendRtp 会话（平台 → 上级推流）
+    //
+    // 修正：此前这两个数字是从 ZLM `getServerStats` 里按
+    // `MediaStreamCount` / `MediaSenderCount` / `sendRtpCount` 等键名取的 ——
+    // 这些键名是凭空猜的（ZLM 的 getServerStats 不返回它们），因此
+    // `gbReceive`/`gbSend` 在任何部署下都恒为 0；同时为了让这个**被控制台轮询**
+    // 的接口去取那两个不存在的键，每个 ZLM 节点还要多等一次 HTTP 往返，
+    // ZLM 不可达时每节点要等满客户端超时，接口整体线性变慢。
+    let (gb_receive, gb_send) = match state.sip_server.as_ref() {
+        Some(sip) => (
+            sip.invite_session_manager().get_active_sessions().await.len(),
+            sip.send_rtp_manager().active_count(),
+        ),
+        None => (0, 0),
+    };
+
     let mut server_loads = Vec::new();
     for server_id in state.list_zlm_servers() {
-        if let Some(zlm) = state.get_zlm_client(Some(&server_id)) {
-            // Push / proxy counts (per media server, active only)
-            let push = db::stream_push::count_all(&state.pool, Some(&server_id), Some(true))
-                .await.unwrap_or(0);
-            let proxy = db::stream_proxy::count_all(&state.pool, Some(&server_id), Some(true))
-                .await.unwrap_or(0);
+        // 每节点的推流 / 拉流代理数来自数据库（由 ZLM on_stream_changed 钩子
+        // 写入 media_server_id），是真实且按节点归属的。
+        let push = db::stream_push::count_all(&state.pool, Some(&server_id), Some(true))
+            .await
+            .unwrap_or(0);
+        let proxy = db::stream_proxy::count_all(&state.pool, Some(&server_id), Some(true))
+            .await
+            .unwrap_or(0);
 
-            // gbReceive / gbSend: pull from ZLM stats if exposed, else 0.
-            // ZLM getServerStats reports aggregate stream counts; we look for
-            // a few well-known keys, falling back to 0 if ZLM doesn't report.
-            let stats_map = zlm.get_server_stats().await.unwrap_or_default();
-            let pick_i64 = |keys: &[&str]| -> i64 {
-                for k in keys {
-                    if let Some(v) = stats_map.get(*k) {
-                        if let Some(n) = v.as_i64() {
-                            return n;
-                        }
-                        if let Some(s) = v.as_str() {
-                            if let Ok(n) = s.parse::<i64>() {
-                                return n;
-                            }
-                        }
-                    }
-                }
-                0
-            };
-            let gb_receive = pick_i64(&[
-                "MediaStreamCount",
-                "mediaStreamCount",
-                "streamCount",
-            ]);
-            let gb_send = pick_i64(&[
-                "MediaSenderCount",
-                "mediaSenderCount",
-                "sendRtpCount",
-            ]);
-
-            server_loads.push(serde_json::json!({
-                "id": server_id,
-                "push": push,
-                "proxy": proxy,
-                "gbReceive": gb_receive,
-                "gbSend": gb_send,
-            }));
-        }
+        server_loads.push(serde_json::json!({
+            "id": server_id,
+            "push": push,
+            "proxy": proxy,
+            // GB 收发会话目前没有按媒体节点归属的信息（InviteSession /
+            // SendRtpSession 都不记录 media_server_id），因此这两项是
+            // 本进程的全局真实值；多节点部署下各节点行会显示相同的数字，
+            // 而不是此前那个恒为 0 的假值。
+            "gbReceive": gb_receive,
+            "gbSend": gb_send,
+        }));
     }
+
     // Return array directly for frontend
     Json(WVPResult::success(serde_json::Value::Array(server_loads)))
 }
