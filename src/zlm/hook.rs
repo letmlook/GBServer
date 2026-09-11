@@ -528,6 +528,39 @@ async fn register_published_stream(state: &AppState, data: &PublishData) {
     }
 }
 
+/// 将 ZLM `on_flow_report` 上报的**权威绝对流数**同步到 `StateStore`。
+///
+/// `streams` 是绝对计数，因此直接覆盖 `stream_count` —— 除同步外，还能纠正
+/// `on_stream_changed` 增减路径可能累积的漂移（例如漏收 unregister 事件）。
+///
+/// 语义细节：
+/// - **已存在**的条目只更新 `stream_count` / `last_keepalive`，不触碰 `online` 与
+///   `rtp_server_count`。这一点很重要：内存后端的 filtered 选择会按 `online` 过滤
+///   （见 `state_store.rs::media_server_select_least_loaded_filtered`），
+///   若在此处强行置 `online = true`，会把已判离线的节点重新变成候选。
+/// - **不存在**的条目按「刚上报过即在线」新建，`online: true`。
+///
+/// 2026-09-11：原先此逻辑写的是 Redis `gb:ms:streams:*` 计数（`cache` 模块）。
+/// 该模块已与 StateStore 完全重复并删除，此处为迁移后的唯一状态源。
+fn sync_media_server_stream_count(
+    store: &crate::state_store::StateStore,
+    media_server_id: &str,
+    streams: i64,
+) {
+    let mut load = store
+        .get_media_server(media_server_id)
+        .unwrap_or(crate::state_store::MediaServerLoad {
+            server_id: media_server_id.to_string(),
+            stream_count: 0,
+            rtp_server_count: 0,
+            online: true,
+            last_keepalive: chrono::Utc::now(),
+        });
+    load.stream_count = streams;
+    load.last_keepalive = chrono::Utc::now();
+    store.set_media_server(media_server_id, load);
+}
+
 pub async fn handle_webhook(
     State(state): State<AppState>,
     Json(event): Json<serde_json::Value>,
@@ -1011,22 +1044,7 @@ pub async fn handle_webhook(
             )
             .await;
             // Sync active stream count to StateStore (single source of truth).
-            //
-            // `streams` 是 ZLM 上报的**权威绝对计数**，因此这里直接覆盖 StateStore 的
-            // stream_count —— 除了同步，还能纠正 `on_stream_changed` 增减路径可能累积的漂移。
-            let mut load = state
-                .state_store
-                .get_media_server(media_server_id)
-                .unwrap_or(crate::state_store::MediaServerLoad {
-                    server_id: media_server_id.to_string(),
-                    stream_count: 0,
-                    rtp_server_count: 0,
-                    online: true,
-                    last_keepalive: chrono::Utc::now(),
-                });
-            load.stream_count = streams as i64;
-            load.last_keepalive = chrono::Utc::now();
-            state.state_store.set_media_server(media_server_id, load);
+            sync_media_server_stream_count(&state.state_store, media_server_id, streams as i64);
         }
         "on_stream_none_reader" => {
             if let Some(data) = serde_json::from_value::<StreamChangedData>(event.clone()).ok() {
@@ -1506,5 +1524,64 @@ mod tests {
             "expected 6 protocol.enable_* flags, saw {:?}",
             protocol_flags
         );
+    }
+
+    // ============== on_flow_report → StateStore 同步（2026-09-11 cache 迁移） ==============
+
+    /// 构造一个带 `MediaServerLoad` 的内存 StateStore
+    fn store_with(id: &str, stream_count: i64, rtp_server_count: i32, online: bool) -> crate::state_store::StateStore {
+        let store = crate::state_store::StateStore::in_memory();
+        store.set_media_server(
+            id,
+            crate::state_store::MediaServerLoad {
+                server_id: id.to_string(),
+                stream_count,
+                rtp_server_count,
+                online,
+                last_keepalive: chrono::Utc::now(),
+            },
+        );
+        store
+    }
+
+    #[test]
+    fn test_flow_report_creates_entry_for_unknown_server() {
+        let store = crate::state_store::StateStore::in_memory();
+        sync_media_server_stream_count(&store, "zlm-new", 7);
+        let load = store.get_media_server("zlm-new").expect("entry should be created");
+        assert_eq!(load.stream_count, 7);
+        assert_eq!(load.server_id, "zlm-new");
+        assert!(load.online, "刚上报过 flow report 的节点应视为在线");
+    }
+
+    #[test]
+    fn test_flow_report_overwrites_stream_count_with_absolute_value() {
+        // flow report 是绝对计数，应直接覆盖，而不是在旧值上做增减
+        let store = store_with("zlm-a", 10, 3, true);
+        sync_media_server_stream_count(&store, "zlm-a", 4);
+        let load = store.get_media_server("zlm-a").unwrap();
+        assert_eq!(load.stream_count, 4, "应被绝对计数覆盖");
+        assert_eq!(load.rtp_server_count, 3, "不应触碰 rtp_server_count");
+    }
+
+    #[test]
+    fn test_flow_report_corrects_drift_downward() {
+        // on_stream_changed 的增减路径可能累积漂移（如漏收 unregister），
+        // flow report 的绝对计数应能把它纠正回来 —— 这正是迁移它的价值
+        let store = store_with("zlm-a", 99, 0, true);
+        sync_media_server_stream_count(&store, "zlm-a", 0);
+        assert_eq!(store.get_media_server("zlm-a").unwrap().stream_count, 0);
+    }
+
+    #[test]
+    fn test_flow_report_preserves_existing_offline_flag() {
+        // 关键回归保护：不能因为收到 flow report 就把已判离线的节点重新置为 online，
+        // 否则内存后端的 `media_server_select_least_loaded_filtered`（按 online 过滤）
+        // 会重新把该节点纳入候选。
+        let store = store_with("zlm-a", 2, 0, false);
+        sync_media_server_stream_count(&store, "zlm-a", 5);
+        let load = store.get_media_server("zlm-a").unwrap();
+        assert_eq!(load.stream_count, 5, "计数仍应更新");
+        assert!(!load.online, "已有条目的 online 不应被 flow report 覆盖");
     }
 }
