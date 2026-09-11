@@ -1183,7 +1183,22 @@ npx playwright test             25 passed / 0 failed / 0 skipped
 10. **JT1078 命令只经 UDP 下发**：`send_raw` 用注入的监听 socket（UDP）。
     以 TCP 注册的终端（`JT1078 TCP listener` 已能收帧）目前收不到平台命令，
     需要按终端连接类型选择 TCP 连接下发。
-11. **`on_rtp_playlist` / `on_record_progress` / `on_send_rtp_progress`**
+11. **巡航/扫描/辅助开关的报文形态待核验**（2026-09-12 第二十三轮定位）：
+    `handlers/front_end.rs` 当前发的是**属性式** XML：
+    `<CruiseCmd id="1" preset="5" action="add" />`、`<ScanCmd id="1" action="start" />`。
+    GB/T 28181-**2022** §A.3.5/A.3.6/A.3.7 把巡航/扫描/辅助开关规定为
+    **8 字节二进制 PTZCmd**（字节4 指令码：0x84~0x88 巡航 / 0x89、0x8A 扫描 /
+    0x8C、0x8D 辅助），与 2016 的 XML 元素风格都**不是**属性式写法。
+    在没有真实设备或权威 2016 元素表可核对前不臆造 —— 现在这批端点的报文
+    形态**明确登记为未核验**，不作为已实现。
+12. **FI（聚焦/光圈）与预置位存在两套并存编码**（同上）：
+    本实现按 **GB/T 28181-2016** 用独立元素 `<FICmd>` / `<PresetCmd>`+`<PresetIndex>`
+    （与 WVP 参考实现一致，因此满足平替目标）；
+    **2022** §A.3.3/A.3.4 则把它们并入 8 字节 `PTZCmd`
+    （字节4 高 2 位=01 表示 FI；预置位用字节4=0x81/0x82/0x83、编号在数据2，
+    例如调用预置位 5 = `A50F0182000500xx`）。
+    部分 2022 设备可能只认后者 —— 需要真实设备确认后再决定是否追加兼容分支。
+13. **`on_rtp_playlist` / `on_record_progress` / `on_send_rtp_progress`**
    的载荷结构未与真实样本核对（官方文档未给出示例）。
 10. **多节点下 `general.mediaServerId`** 现在会在 autoConfig 时下发为节点主键；
     但**手工在 ZLM 侧改过该键**的既有部署仍需重新保存节点才会对齐。
