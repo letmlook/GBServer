@@ -19,8 +19,16 @@
 name: CI
 
 on:
-  push:
-  pull_request:
+  # ⚠️ 2026-09-11 起已**暂停自动触发**（应要求：避免每次 push 都跑一遍）。
+  # 目前只保留手动触发。需要时：
+  #   - GitHub Actions 页面点 "Run workflow"，或
+  #   - 命令行 `gh workflow run CI`
+  # 注意：GitHub 层面也已停用（`gh workflow disable CI`），所以手动运行前
+  # 需要先 `gh workflow enable CI`。
+  #
+  # 恢复 push / PR 自动触发：取消下面两行注释即可（并确保工作流已 enable）。
+  # push:
+  # pull_request:
   workflow_dispatch:
 
 env:
