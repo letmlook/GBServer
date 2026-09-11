@@ -262,6 +262,7 @@ pub async fn change_password(
 #[allow(non_snake_case)]
 #[derive(Debug, Deserialize)]
 pub struct ChangePasswordParams {
+    #[serde(alias = "oldPassword")]
     pub old_password: Option<String>,
     #[serde(rename = "oldPassword")]
     pub oldPassword: Option<String>,

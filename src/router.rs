@@ -272,6 +272,9 @@ pub fn app(state: AppState) -> Router<AppState> {
         .route("/api/push/add", post(stream::push_add))
         .route("/api/push/update", post(stream::push_update))
         .route("/api/push/start", get(stream::push_start))
+        // 前端 web/src/api/streamPush.ts::stopStreamPush 一直调用该路径，
+        // 但后端此前未注册，「停止推流」按钮会落到 SPA 兜底拿到 index.html。
+        .route("/api/push/stop", get(stream::push_stop))
         .route("/api/push/remove", post(stream::push_remove))
         .route("/api/push/upload", post(stream::push_upload))
         .route("/api/push/batchRemove", delete(stream::push_batch_remove))
@@ -814,6 +817,8 @@ pub fn app(state: AppState) -> Router<AppState> {
         // ========== JT1078 部标设备 ==========
         .route("/api/jt1078/terminal/list", get(jt1078::terminal_list))
         .route("/api/jt1078/terminal/query", get(jt1078::terminal_query))
+        // 前端 jtDevice.ts::getJtTerminalOne 调用；此前未注册
+        .route("/api/jt1078/terminal/one", get(jt1078::terminal_one))
         .route("/api/jt1078/terminal/add", post(jt1078::terminal_add))
         .route("/api/jt1078/terminal/add/", post(jt1078::terminal_add))
         .route("/api/jt1078/terminal/update", post(jt1078::terminal_update))

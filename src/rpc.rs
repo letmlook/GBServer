@@ -35,10 +35,12 @@ pub struct RpcRequest {
     pub method: String,
     pub target: String,
     pub payload: serde_json::Value,
+    #[serde(alias = "replyTo")]
     pub reply_to: Option<String>,
     /// Phase 7.2: identifier of the node that originated this request.
     /// Used by Redis-backed transport to skip self-echo.
     #[serde(default)]
+    #[serde(alias = "fromNode")]
     pub from_node: Option<String>,
 }
 

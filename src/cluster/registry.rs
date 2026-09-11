@@ -31,9 +31,11 @@ struct NodeMeta {
 /// Phase 7.2: 单个集群节点的元数据。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ClusterNode {
+    #[serde(alias = "nodeId")]
     pub node_id: String,
     pub addr: String,           // "http://10.0.0.5:8080"
     pub role: String,           // "primary" / "secondary"
+    #[serde(alias = "lastHeartbeatSecs")]
     pub last_heartbeat_secs: i64,
 }
 

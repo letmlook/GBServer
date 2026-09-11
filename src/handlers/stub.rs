@@ -228,6 +228,7 @@ pub struct RegionQuery {
     pub page: Option<u32>,
     pub count: Option<u32>,
     pub id: Option<i32>,
+    #[serde(alias = "deviceId")]
     pub device_id: Option<String>,
 }
 

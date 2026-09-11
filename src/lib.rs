@@ -27,21 +27,23 @@ use config::AppConfig;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+/// 启动期建表 / 迁移。**四个阶段严格按序**，顺序搞错会导致全新库起不来：
+///
+/// 1. 不依赖任何既有表的幂等建表（`CREATE TABLE IF NOT EXISTS`）。
+/// 2. 核心表缺失时执行 `database/init-*.sql` 全量建表。
+/// 3. 依赖表已存在的**列级迁移**（`ALTER TABLE ... ADD COLUMN`）。
+/// 4. 旧库补表（幂等）。
+///
+/// 历史缺陷：第 3 步（`alarm` / `common_channel` / `stream_push` / `stream_proxy`
+/// 的 `ensure_columns` / `ensure_stream_status_column`）曾被排在第 2 步**之前**。
+/// 全新数据库上那些表还不存在，迁移会直接报 `no such table: gb_stream_push`；
+/// 旧代码用 `let _ =` 把错误吞掉，所以表面能启动。一旦改为如实传播错误
+/// （见「静默失败」修复），全新部署会**直接启动失败** —— 这正是运行时冒烟
+/// 测试抓到的第一个问题。
 async fn init_db_tables(pool: &db::Pool) -> anyhow::Result<()> {
+    // ---- 阶段 1：与既有表无关的幂等建表 ----
     db::position_history::ensure_table(pool).await?;
     db::audit_log::ensure_table(pool).await?;
-    db::alarm::ensure_columns(pool).await?;
-    db::common_channel::ensure_columns(pool).await?;
-    // Phase 4.5: 幂等迁移 —— 流状态统一字段
-    // 修正：此前吞掉错误。这两列是 gb_stream_push / gb_stream_proxy 查询的必需列，
-    // 建列失败却在启动时静默略过，只会把问题推迟成运行期的 "no such column"。
-    db::stream_push::ensure_stream_status_column(pool).await?;
-    db::stream_proxy::ensure_stream_status_column(pool).await?;
-    // 旧版 SQLite 库升级补建（幂等）：下列表曾缺失于 init-sqlite-2.7.4.sql，
-    // 旧库核心表齐全、不会触发全量 init，需启动时单独补建（仅 SQLite 需要，
-    // PG/MySQL init 脚本一直包含这些表）。
-    #[cfg(feature = "sqlite")]
-    ensure_sqlite_upgrade_tables(pool).await?;
 
     // Check if core tables exist; if not, run full schema init
     #[cfg(feature = "postgres")]
@@ -158,6 +160,23 @@ async fn init_db_tables(pool: &db::Pool) -> anyhow::Result<()> {
             tracing::info!("[sqlite] schema initialization complete");
         }
     }
+
+    // ---- 阶段 3：依赖表已存在的列级迁移 ----
+    // 必须在全量建表之后执行，否则全新库上会 ALTER 不存在的表。
+    db::alarm::ensure_columns(pool).await?;
+    db::common_channel::ensure_columns(pool).await?;
+    // Phase 4.5: 幂等迁移 —— 流状态统一字段。
+    // 这两列是 gb_stream_push / gb_stream_proxy 查询的必需列，建列失败
+    // 必须如实传播，否则只会推迟成运行期的 "no such column"。
+    db::stream_push::ensure_stream_status_column(pool).await?;
+    db::stream_proxy::ensure_stream_status_column(pool).await?;
+
+    // ---- 阶段 4：旧版 SQLite 库升级补建（幂等） ----
+    // gb_platform_channel / gb_platform_group / gb_platform_region / gb_jt_channel
+    // 曾缺失于 init-sqlite-2.7.4.sql；旧库核心表检测通过而跳过全量 init，
+    // 需在此单独补齐（仅 SQLite 需要，PG/MySQL 脚本一直包含这些表）。
+    #[cfg(feature = "sqlite")]
+    ensure_sqlite_upgrade_tables(pool).await?;
 
     Ok(())
 }

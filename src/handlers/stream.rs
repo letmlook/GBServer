@@ -264,7 +264,18 @@ pub async fn push_start(
             
             if id > 0 {
                 let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-                let _ = stream_push::update(&state.pool, id, None, None, Some(&ms_id), &now).await;
+                // 修正：此前吞掉错误 —— ZLM 已开好收流端口但库里没记，
+                // 「推流中」状态与媒体面不一致。
+                stream_push::update(&state.pool, id, None, None, Some(&ms_id), &now)
+                    .await
+                    .map_err(|e| {
+                        AppError::business(ErrorCode::Error500, format!("推流记录更新失败: {}", e))
+                    })?;
+                stream_push::update_pushing_status(&state.pool, id, true)
+                    .await
+                    .map_err(|e| {
+                        AppError::business(ErrorCode::Error500, format!("推流状态更新失败: {}", e))
+                    })?;
             }
             
             Ok(Json(WVPResult::success(serde_json::json!({
@@ -306,7 +317,13 @@ pub async fn push_batch_remove(
             if push.pushing.unwrap_or(false) {
                 if let Some(ref zlm_client) = state.zlm_client {
                     if let Some(stream) = &push.stream {
-                        let _ = zlm_client.close_rtp_server(stream).await;
+                        if let Err(e) = zlm_client.close_rtp_server(stream).await {
+                            tracing::warn!(
+                                "批量删除推流 {} 时关闭 ZLM RTP server 失败: {}",
+                                stream,
+                                e
+                            );
+                        }
                     }
                 }
             }
@@ -924,15 +941,114 @@ pub async fn proxy_one(
 pub async fn push_force_close(
     State(state): State<AppState>,
     axum::extract::Query(q): axum::extract::Query<PushForceCloseQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
-    if let Some(ref zlm) = state.zlm_client {
-        let stream = format!("push_{}", q.id);
-        let _ = zlm.close_streams(None, Some("rtmp"), Some(&stream), true).await;
+) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+    let Some(ref zlm) = state.zlm_client else {
+        return Err(AppError::business(
+            ErrorCode::Error100,
+            "ZLM 未配置，无法强制关闭推流",
+        ));
+    };
+    // 优先用记录里的真实 stream / app 名；拿不到再退回 push_{id} 约定名
+    let rec = stream_push::get_by_id(&state.pool, q.id).await?;
+    let stream = rec
+        .as_ref()
+        .and_then(|r| r.stream.clone())
+        .unwrap_or_else(|| format!("push_{}", q.id));
+    let app = rec.as_ref().and_then(|r| r.app.clone());
+
+    // 修正：此前 `let _ =` 吞掉 ZLM 错误并无条件返回 closed: true
+    zlm.close_streams(app.as_deref(), None, Some(&stream), true)
+        .await
+        .map_err(|e| {
+            AppError::business(ErrorCode::Error500, format!("关闭推流 {} 失败: {}", stream, e))
+        })?;
+
+    if let Err(e) = stream_push::update_pushing_status(&state.pool, q.id, false).await {
+        tracing::warn!("关闭推流后更新 pushing 状态失败 id={}: {}", q.id, e);
     }
-    Json(WVPResult::success(serde_json::json!({
+
+    Ok(Json(WVPResult::success(serde_json::json!({
         "id": q.id,
+        "stream": stream,
         "closed": true,
-    })))
+    }))))
+}
+
+/// 停止推流（前端 `/api/push/stop`）。
+///
+/// 前端 `web/src/api/streamPush.ts::stopStreamPush` 一直在调这个路径，
+/// 但后端从未注册过 —— 请求会落到 SPA 兜底并返回 index.html，
+/// 「停止推流」按钮实际不工作。
+#[derive(Debug, Deserialize)]
+pub struct PushStopQuery {
+    pub id: Option<i64>,
+    pub stream: Option<String>,
+}
+
+pub async fn push_stop(
+    State(state): State<AppState>,
+    Query(q): Query<PushStopQuery>,
+) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+    let id = q.id.unwrap_or(0);
+
+    // 解析要关闭的 stream：优先用请求里的，其次查库
+    let (stream, app) = if let Some(s) = q.stream.as_deref().filter(|s| !s.is_empty()) {
+        (s.to_string(), None)
+    } else if id > 0 {
+        match stream_push::get_by_id(&state.pool, id).await? {
+            Some(rec) => (rec.stream.clone().unwrap_or_default(), rec.app.clone()),
+            None => {
+                return Err(AppError::business(
+                    ErrorCode::Error404,
+                    format!("推流记录不存在: {}", id),
+                ))
+            }
+        }
+    } else {
+        return Err(AppError::business(
+            ErrorCode::Error400,
+            "缺少 id 或 stream 参数",
+        ));
+    };
+
+    if stream.is_empty() {
+        return Err(AppError::business(
+            ErrorCode::Error400,
+            "该推流记录没有 stream 名称，无法停止",
+        ));
+    }
+
+    // 1) 关掉 ZLM 侧的收流（RTP server 与普通流是互斥的两种收流方式，
+    //    因此只有两条路径都失败才判定为失败）
+    if let Some(ref zlm) = state.zlm_client {
+        let rtp_err = zlm.close_rtp_server(&stream).await.err();
+        let stream_err = zlm
+            .close_streams(app.as_deref(), None, Some(&stream), true)
+            .await
+            .err();
+        if let (Some(a), Some(b)) = (rtp_err, stream_err) {
+            return Err(AppError::business(
+                ErrorCode::Error500,
+                format!("停止推流 {} 失败: RTP={}; stream={}", stream, a, b),
+            ));
+        }
+    }
+
+    // 2) 落库 pushing = false
+    if id > 0 {
+        stream_push::update_pushing_status(&state.pool, id, false)
+            .await
+            .map_err(|e| {
+                AppError::business(ErrorCode::Error500, format!("推流状态更新失败: {}", e))
+            })?;
+    }
+
+    Ok(Json(WVPResult::success(serde_json::json!({
+        "id": id,
+        "stream": stream,
+        "stopped": true,
+        "message": "推流已停止"
+    }))))
 }
 
 #[derive(serde::Deserialize)]

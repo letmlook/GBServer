@@ -6,10 +6,13 @@ use crate::AppState;
 
 #[derive(Debug, Deserialize)]
 pub struct BatchControlRequest {
+    #[serde(alias = "deviceIds")]
     pub device_ids: Vec<String>,
     pub command: BatchCommand,
+    #[serde(alias = "channelId")]
     pub channel_id: Option<String>,
     pub speed: Option<u8>,
+    #[serde(alias = "presetIndex")]
     pub preset_index: Option<u32>,
 }
 

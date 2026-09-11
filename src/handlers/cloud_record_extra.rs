@@ -24,8 +24,10 @@ pub struct ListUrlQuery {
     #[serde(default)]
     pub count: Option<u32>,
     #[serde(default)]
+    #[serde(alias = "deviceId")]
     pub device_id: Option<String>,
     #[serde(default)]
+    #[serde(alias = "channelId")]
     pub channel_id: Option<String>,
 }
 

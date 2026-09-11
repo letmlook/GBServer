@@ -14,6 +14,7 @@ use crate::zlm::OpenRtpServerRequest;
 
 #[derive(Deserialize, Default)]
 pub struct OpenRtpQuery {
+    #[serde(alias = "streamId")]
     pub stream_id: Option<String>,
     #[serde(default)]
     pub port: Option<u16>,

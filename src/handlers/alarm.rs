@@ -13,11 +13,17 @@ use crate::AppState;
 pub struct AlarmQuery {
     pub page: Option<u32>,
     pub count: Option<u32>,
+    #[serde(alias = "deviceId")]
     pub device_id: Option<String>,
+    #[serde(alias = "channelId")]
     pub channel_id: Option<String>,
+    #[serde(alias = "alarmMethod")]
     pub alarm_method: Option<String>,
+    #[serde(alias = "alarmType")]
     pub alarm_type: Option<String>,
+    #[serde(alias = "startTime")]
     pub start_time: Option<String>,
+    #[serde(alias = "endTime")]
     pub end_time: Option<String>,
     pub handled: Option<bool>,
 }

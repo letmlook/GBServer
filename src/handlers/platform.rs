@@ -595,8 +595,11 @@ pub async fn platform_channel_list(
 #[derive(Debug, Deserialize)]
 pub struct PlatformChannelPushQuery {
     #[serde(alias = "id")]
+    #[serde(alias = "platformId")]
     pub platform_id: Option<i64>,
+    #[serde(alias = "channelIdList")]
     pub channel_id_list: Option<String>,
+    #[serde(alias = "deviceIdList")]
     pub device_id_list: Option<String>,
 }
 

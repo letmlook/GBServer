@@ -38,6 +38,7 @@ use crate::AppState;
 pub struct IdQuery {
     pub id: Option<String>,
     pub phone: Option<String>,
+    #[serde(alias = "channelId")]
     pub channel_id: Option<i32>,
 }
 

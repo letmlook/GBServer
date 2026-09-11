@@ -47,6 +47,7 @@ pub struct CameraMobile {
 /// Filter by administrative code prefix.
 #[derive(Deserialize, Default)]
 pub struct AddressQuery {
+    #[serde(alias = "civilCode")]
     pub civil_code: Option<String>,
     #[serde(default)]
     pub page: Option<u32>,

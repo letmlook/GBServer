@@ -1087,6 +1087,7 @@ pub struct MediaServerSaveBody {
     #[serde(alias = "httpPort")]
     pub http_port: Option<i32>,
     #[serde(alias = "httpSSlPort")]
+    #[serde(alias = "httpSslPort")]
     pub http_ssl_port: Option<i32>,
     pub secret: Option<String>,
     #[serde(rename = "type")]
@@ -1096,10 +1097,12 @@ pub struct MediaServerSaveBody {
     #[serde(alias = "rtmpPort")]
     pub rtmp_port: Option<i32>,
     #[serde(alias = "rtmpSSlPort")]
+    #[serde(alias = "rtmpSslPort")]
     pub rtmp_ssl_port: Option<i32>,
     #[serde(alias = "rtspPort")]
     pub rtsp_port: Option<i32>,
     #[serde(alias = "rtspSSLPort")]
+    #[serde(alias = "rtspSslPort")]
     pub rtsp_ssl_port: Option<i32>,
     #[serde(alias = "rtpEnable")]
     pub rtp_enable: Option<bool>,

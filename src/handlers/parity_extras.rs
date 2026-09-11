@@ -263,7 +263,9 @@ pub async fn front_end_common(
 
 #[derive(Deserialize, Default)]
 pub struct PlayUrlQuery {
+    #[serde(alias = "deviceId")]
     pub device_id: Option<String>,
+    #[serde(alias = "channelId")]
     pub channel_id: Option<String>,
     pub stream: Option<String>,
     #[serde(default)]

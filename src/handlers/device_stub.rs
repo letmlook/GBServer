@@ -247,7 +247,9 @@ pub async fn device_transport(
 /// 返回: 控制结果
 #[derive(Debug, Deserialize)]
 pub struct GuardQuery {
+    #[serde(alias = "deviceId")]
     pub device_id: Option<String>,
+    #[serde(alias = "guardCmd")]
     pub guard_cmd: Option<String>,
 }
 

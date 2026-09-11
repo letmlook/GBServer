@@ -9,9 +9,12 @@ pub struct WebRtcOfferRequest {
     pub app: Option<String>,
     pub stream: Option<String>,
     #[serde(rename = "type")]
+    #[serde(alias = "offerType")]
     pub offer_type: Option<String>,
     pub sdp: Option<String>,
+    #[serde(alias = "deviceId")]
     pub device_id: Option<String>,
+    #[serde(alias = "channelId")]
     pub channel_id: Option<String>,
 }
 

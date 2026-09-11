@@ -12,8 +12,11 @@ use crate::AppState;
 #[derive(Debug, Deserialize)]
 pub struct PtzQuery {
     pub command: Option<String>,
+    #[serde(alias = "horizonSpeed")]
     pub horizon_speed: Option<i32>,
+    #[serde(alias = "verticalSpeed")]
     pub vertical_speed: Option<i32>,
+    #[serde(alias = "zoomSpeed")]
     pub zoom_speed: Option<i32>,
     pub speed: Option<i32>,
 }

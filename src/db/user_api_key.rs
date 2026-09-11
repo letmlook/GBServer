@@ -24,6 +24,7 @@ pub struct UserApiKeyAdd {
     pub user_id: Option<i64>,
     pub app: Option<String>,
     #[serde(alias = "expiresAt")]
+    #[serde(alias = "expiredAt")]
     pub expired_at: Option<i64>,
     pub enable: Option<bool>,
     pub remark: Option<String>,

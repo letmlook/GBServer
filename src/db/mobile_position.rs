@@ -8,8 +8,11 @@ use super::Pool;
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct MobilePosition {
     pub id: i64,
+    #[serde(alias = "deviceId")]
     pub device_id: String,
+    #[serde(alias = "channelId")]
     pub channel_id: String,
+    #[serde(alias = "deviceName")]
     pub device_name: Option<String>,
     pub time: Option<String>,
     pub longitude: Option<f64>,
@@ -17,7 +20,9 @@ pub struct MobilePosition {
     pub altitude: Option<f64>,
     pub speed: Option<f64>,
     pub direction: Option<f64>,
+    #[serde(alias = "reportSource")]
     pub report_source: Option<String>,
+    #[serde(alias = "createTime")]
     pub create_time: Option<String>,
 }
 

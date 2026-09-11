@@ -143,8 +143,11 @@ pub async fn talk_invite(
 /// 设备响应 200 OK 后，前端发送 ACK 确认
 #[derive(Debug, Deserialize)]
 pub struct TalkAckQuery {
+    #[serde(alias = "callId")]
     pub call_id: Option<String>,
+    #[serde(alias = "deviceId")]
     pub device_id: Option<String>,
+    #[serde(alias = "channelId")]
     pub channel_id: Option<String>,
 }
 

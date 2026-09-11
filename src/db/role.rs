@@ -11,7 +11,9 @@ pub struct Role {
     pub id: i32,
     pub name: Option<String>,
     pub authority: Option<String>,
+    #[serde(alias = "createTime")]
     pub create_time: Option<String>,
+    #[serde(alias = "updateTime")]
     pub update_time: Option<String>,
 }
 

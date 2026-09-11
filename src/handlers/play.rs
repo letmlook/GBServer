@@ -413,8 +413,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ShareToken {
     pub token: String,
+    #[serde(alias = "deviceId")]
     pub device_id: String,
+    #[serde(alias = "channelId")]
     pub channel_id: String,
+    #[serde(alias = "expiresAt")]
     pub expires_at: i64,
 }
 

@@ -10,16 +10,25 @@ pub struct CloudRecord {
     pub id: i64,
     pub app: String,
     pub stream: String,
+    #[serde(alias = "callId")]
     pub call_id: Option<String>,
+    #[serde(alias = "startTime")]
     pub start_time: Option<i64>,
+    #[serde(alias = "endTime")]
     pub end_time: Option<i64>,
+    #[serde(alias = "mediaServerId")]
     pub media_server_id: Option<String>,
+    #[serde(alias = "serverId")]
     pub server_id: Option<String>,
+    #[serde(alias = "fileName")]
     pub file_name: Option<String>,
     pub folder: Option<String>,
+    #[serde(alias = "filePath")]
     pub file_path: Option<String>,
     pub collect: Option<bool>,
+    #[serde(alias = "fileSize")]
     pub file_size: Option<i64>,
+    #[serde(alias = "timeLen")]
     pub time_len: Option<f64>,
 }
 

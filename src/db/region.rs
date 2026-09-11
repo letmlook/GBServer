@@ -18,9 +18,12 @@ pub struct Region {
 
 #[derive(Debug, Deserialize)]
 pub struct RegionAdd {
+    #[serde(alias = "deviceId")]
     pub device_id: Option<String>,
     pub name: Option<String>,
+    #[serde(alias = "parentId")]
     pub parent_id: Option<i32>,
+    #[serde(alias = "parentDeviceId")]
     pub parent_device_id: Option<String>,
 }
 

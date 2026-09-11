@@ -18,9 +18,11 @@ use crate::sip::gb28181::device_query::{DeviceInfoResponse, DeviceStatusResponse
 #[derive(Debug, Deserialize)]
 pub struct DeviceQueryParams {
     /// 设备ID
+    #[serde(alias = "deviceId")]
     pub device_id: String,
     /// 超时秒数（默认10）
     #[serde(default = "default_timeout")]
+    #[serde(alias = "timeoutSecs")]
     pub timeout_secs: u64,
 }
 

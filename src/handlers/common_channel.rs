@@ -137,16 +137,22 @@ pub struct CommonChannelQuery {
     pub count: Option<u32>,
     pub query: Option<String>,
     pub online: Option<String>,
+    #[serde(alias = "channelType")]
     pub channel_type: Option<String>,
+    #[serde(alias = "hasRecordPlan")]
     pub has_record_plan: Option<String>,
+    #[serde(alias = "civilCode")]
     pub civil_code: Option<String>,
+    #[serde(alias = "parentDeviceId")]
     pub parent_device_id: Option<String>,
+    #[serde(alias = "groupDeviceId")]
     pub group_device_id: Option<String>,
     pub id: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct ChannelIdQuery {
+    #[serde(alias = "channelId")]
     pub channel_id: Option<i64>,
 }
 

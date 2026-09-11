@@ -20,11 +20,16 @@ pub struct Group {
 
 #[derive(Debug, Deserialize)]
 pub struct GroupAdd {
+    #[serde(alias = "deviceId")]
     pub device_id: Option<String>,
     pub name: Option<String>,
+    #[serde(alias = "parentId")]
     pub parent_id: Option<i32>,
+    #[serde(alias = "parentDeviceId")]
     pub parent_device_id: Option<String>,
+    #[serde(alias = "businessGroup")]
     pub business_group: Option<String>,
+    #[serde(alias = "civilCode")]
     pub civil_code: Option<String>,
 }
 

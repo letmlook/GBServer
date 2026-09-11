@@ -7,7 +7,9 @@ pub struct AppConfig {
     pub database: DatabaseConfig,
     pub redis: Option<RedisConfig>,
     pub jwt: JwtConfig,
+    #[serde(alias = "staticDir")]
     pub static_dir: Option<String>,
+    #[serde(alias = "userSettings")]
     pub user_settings: Option<UserSettings>,
     pub sip: Option<SipConfig>,
     pub zlm: Option<ZlmConfig>,

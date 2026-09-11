@@ -6,15 +6,23 @@ use sqlx::FromRow;
 #[derive(Debug, Serialize, Deserialize, FromRow)]
 pub struct Alarm {
     pub id: i64,
+    #[serde(alias = "deviceId")]
     pub device_id: String,
+    #[serde(alias = "channelId")]
     pub channel_id: String,
+    #[serde(alias = "alarmPriority")]
     pub alarm_priority: Option<String>,
+    #[serde(alias = "alarmMethod")]
     pub alarm_method: Option<String>,
+    #[serde(alias = "alarmTime")]
     pub alarm_time: Option<String>,
+    #[serde(alias = "alarmDescription")]
     pub alarm_description: Option<String>,
     pub longitude: Option<f64>,
     pub latitude: Option<f64>,
+    #[serde(alias = "alarmType")]
     pub alarm_type: Option<String>,
+    #[serde(alias = "createTime")]
     pub create_time: String,
 }
 

@@ -44,7 +44,9 @@ pub struct DeviceOnlineState {
     pub online: bool,
     pub ip: String,
     pub port: u16,
+    #[serde(alias = "lastSeen")]
     pub last_seen: DateTime<Utc>,
+    #[serde(alias = "ttlSecs")]
     pub ttl_secs: u64,
 }
 

@@ -26,9 +26,51 @@ pub struct TerminalListQuery {
 
 #[derive(Debug, Deserialize)]
 pub struct TerminalQuery {
+    #[serde(alias = "deviceId")]
     pub device_id: Option<String>,
     #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
+}
+
+/// GET /api/jt1078/terminal/one?id=
+///
+/// 前端 `web/src/api/jtDevice.ts::getJtTerminalOne` 调用该路径，但后端此前
+/// 未注册，请求会落到 SPA 兜底并拿到 index.html。
+pub async fn terminal_one(
+    State(state): State<AppState>,
+    Query(q): Query<TerminalOneQuery>,
+) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+    let id = q
+        .id
+        .ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id 参数"))?;
+
+    let Some(t) = jt_db::get_terminal_by_id(&state.pool, id).await? else {
+        return Err(AppError::business(
+            ErrorCode::Error404,
+            format!("终端不存在: {}", id),
+        ));
+    };
+
+    Ok(Json(WVPResult::success(serde_json::json!({
+        "id": t.id,
+        "phoneNumber": t.phone_number,
+        "terminalId": t.terminal_id,
+        "plateNo": t.plate_no,
+        "plateColor": t.plate_color,
+        "makerId": t.maker_id,
+        "model": t.model,
+        "status": t.status,
+        "longitude": t.longitude,
+        "latitude": t.latitude,
+        "mediaServerId": t.media_server_id,
+        "createTime": t.create_time,
+        "updateTime": t.update_time,
+    }))))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TerminalOneQuery {
+    pub id: Option<i32>,
 }
 
 #[derive(Debug, Deserialize)]

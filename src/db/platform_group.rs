@@ -9,7 +9,9 @@ use super::Pool;
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct PlatformGroup {
     pub id: i64,
+    #[serde(alias = "platformId")]
     pub platform_id: Option<i32>,
+    #[serde(alias = "groupId")]
     pub group_id: Option<i32>,
 }
 
