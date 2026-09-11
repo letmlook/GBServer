@@ -8,7 +8,6 @@ pub mod router;
 pub mod sip;
 pub mod zlm;
 pub mod jt1078;
-pub mod cache;
 pub mod scheduler;
 pub mod cascade;
 pub mod metrics;
@@ -702,10 +701,12 @@ impl AppState {
 
     /// 选择流数量最少的 ZLM 节点（最少连接数策略）
     ///
-    /// Phase 4.6：优先过滤 offline 节点（基于 `gb_media_server.status`），
-    /// 然后用 `StateStore` 的流计数（Redis zset 或 in-memory）选最少负载的；
-    /// state_store 不可用 / 无流计数时 fallback 到 online 列表的第一个；
-    /// 全 offline 时（无可选 online）直接取 `zlm_clients.iter().next()` 兼容。
+    /// 回退链（从优到次）：
+    /// 1. 优先过滤 offline 节点（基于 `gb_media_server.status`），再用 `StateStore`
+    ///    的流计数（Redis zset 或 in-memory）选最少负载的；
+    /// 2. state_store 无流计数 / 选择失败 → 取 online 列表的第一个；
+    /// 3. DB 拿不到 online 列表 → 用 ZLM 实时 `get_active_stream_count` 选最少负载的；
+    /// 4. 全部信号失败 → 兜底取 `zlm_clients.iter().next()` 兼容。
     async fn select_least_loaded(&self) -> Option<(String, Arc<zlm::ZlmClient>)> {
         if self.zlm_clients.is_empty() {
             return None;
@@ -741,35 +742,18 @@ impl AppState {
             }
         }
 
-        // Step C: Redis 在线计数（兼容旧 fallback，未经过 offline 过滤）
-        // 设计取舍：offline 过滤已在 Step A/B 的 `select_least_loaded_server_filtered`
-        // 和 `online_ids` 列表中应用（R5 mitigation：offline 过滤在 Redis 之前）。
-        // 本步骤仅作为 state_store 失败后的次级 fallback，使用 Redis 原始流计数
-        // 找到当前最少负载的节点 —— 严格 offline 过滤此时已不必要，因为
-        // 前面所有步骤已经尽力避免选到 offline 节点；这里最后再退让一次
-        // 以兼容老部署（Redis 存在但 state_store 暂未填充的场景）。
-        if let Some(ref redis) = self.redis {
-            let mut min_count = i64::MAX;
-            let mut best: Option<(String, Arc<zlm::ZlmClient>)> = None;
-            for (id, client) in &self.zlm_clients {
-                let count = cache::get_media_server_stream_count(redis, id).await;
-                if count < min_count {
-                    min_count = count;
-                    best = Some((id.clone(), client.clone()));
-                }
-            }
-            if best.is_some() {
-                return best;
-            }
-        }
-
-        // Step D: 查询 ZLM API 获取实际流数（最后兼容 fallback）
-        // 设计取舍：与 Step C 相同 —— offline 过滤在 Step A/B 完成；本步仅
-        // 作为 Redis 也不可用时的最终 tie-breaker，使用 ZLM 实时 `get_active_stream_count`
+        // Step C: 查询 ZLM API 获取实际流数（最终 tie-breaker）
+        // 设计取舍：offline 过滤在 Step A/B 完成；仅当 DB 拿不到 online 列表
+        // （online_ids 为空）时才走到这里，用 ZLM 实时 `get_active_stream_count`
         // 选最少负载的节点。如果某个被检测 offline 但 ZLM 实际可达的节点在此处胜出，
         // 也不会造成数据/连接错误（业务上只是把流推到该节点），并且会被
         // `health_check_loop`（media_node.rs）10s 内重新标记为 online / offline
         // 收敛到 Step A 的路径。Safety net 在所有上游信号失败时仍会兜底返回首个节点。
+        //
+        // 历史：此处原有一步「读 Redis `gb:ms:streams:*` 计数」的次级 fallback。
+        // 该计数由 `zlm/hook.rs` 维护，与 StateStore 完全重复（Phase 7.1 起 hook
+        // 已同时写 StateStore），且 Step A 的 StateStore 查询已覆盖它；删除后
+        // 唯一状态源收敛为 StateStore，本步用 ZLM 实时数据兜底。
         let mut min_count = usize::MAX;
         let mut best: Option<(String, Arc<zlm::ZlmClient>)> = None;
         for (id, client) in &self.zlm_clients {
@@ -783,7 +767,7 @@ impl AppState {
             return best;
         }
 
-        // Safety net: if all upstream signals fail (Redis/ZLM unreachable or all offline in DB),
+        // Safety net: if all upstream signals fail (ZLM unreachable or all offline in DB),
         // return the first configured client rather than leaving callers with None.
         self.zlm_clients.iter().next().map(|(id, c)| (id.clone(), c.clone()))
     }

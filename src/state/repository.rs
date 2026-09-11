@@ -124,7 +124,7 @@ impl StreamStateRepository for StateStoreRepository {
         let prev = self.store.get_pending(key);
         self.store.set_pending(key, state);
         // For InMemory/Redis backends the counter helper is approximated via key existence;
-        // callers that need an exact atomic counter should use Redis directly via `cache::incr_*`.
+        // callers that need an exact atomic counter should use Redis directly.
         // This trait API is intentionally best-effort.
         match prev {
             Some(p) => {

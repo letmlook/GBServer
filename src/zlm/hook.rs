@@ -3,8 +3,6 @@
 use axum::{extract::State, Json};
 use serde::{Deserialize, Serialize};
 
-use crate::cache;
-
 /// Phase 4.3: Protocol enable flags synced to ZLM on `on_server_started`.
 pub const PROTOCOL_ENABLE_FLAGS: &[(&str, &str)] = &[
     ("protocol.enable_rtsp", "1"),
@@ -409,15 +407,6 @@ async fn sync_stream_changed(state: &AppState, data: &StreamChangedData) {
             state.state_store.set_media_server(media_server_id, s);
         }
     }
-    // Legacy Redis cache fallback for legacy deployments (will be removed in Phase 7.6).
-    if let (Some(redis), Some(media_server_id)) = (&state.redis, media_server_id) {
-        if data.register {
-            cache::incr_media_server_streams(redis, media_server_id).await;
-        } else {
-            cache::decr_media_server_streams(redis, media_server_id).await;
-        }
-    }
-
     // Update global active stream metrics
     if let Some(ref zlm) = state.zlm_client {
         if let Ok(streams) = zlm.get_media_list(None, None, None).await {
@@ -794,11 +783,6 @@ pub async fn handle_webhook(
                         last_keepalive: chrono::Utc::now(),
                     },
                 );
-                // Legacy Redis cache fallback (will be removed in Phase 7.6).
-                #[allow(unused_imports)]
-                if let Some(ref redis) = state.redis {
-                    let _ = crate::cache::set_media_server_streams(redis, media_server_id, 0).await;
-                }
                 tracing::info!(
                     "ZLM node {} online: http={} rtsp={} rtmp={}",
                     media_server_id,
@@ -910,11 +894,6 @@ pub async fn handle_webhook(
                         }
                     }
                 }
-
-                // Reset stream counts in Redis
-                if let Some(ref redis) = state.redis {
-                    cache::set_media_server_streams(redis, media_server_id, 0).await;
-                }
             }
         }
         "on_server_keepalive" => {
@@ -1001,7 +980,7 @@ pub async fn handle_webhook(
             }
         }
         "on_flow_report" => {
-            // ZLM sends periodic flow stats; log summary and update Redis stream counts
+            // ZLM sends periodic flow stats; log summary and sync StateStore stream counts
             let total_traffic = event
                 .get("totalBytes")
                 .and_then(|v| v.as_u64())
@@ -1031,10 +1010,23 @@ pub async fn handle_webhook(
                 &now,
             )
             .await;
-            // Sync active stream count to Redis
-            if let Some(ref redis) = state.redis {
-                cache::set_media_server_streams(redis, media_server_id, streams as i64).await;
-            }
+            // Sync active stream count to StateStore (single source of truth).
+            //
+            // `streams` 是 ZLM 上报的**权威绝对计数**，因此这里直接覆盖 StateStore 的
+            // stream_count —— 除了同步，还能纠正 `on_stream_changed` 增减路径可能累积的漂移。
+            let mut load = state
+                .state_store
+                .get_media_server(media_server_id)
+                .unwrap_or(crate::state_store::MediaServerLoad {
+                    server_id: media_server_id.to_string(),
+                    stream_count: 0,
+                    rtp_server_count: 0,
+                    online: true,
+                    last_keepalive: chrono::Utc::now(),
+                });
+            load.stream_count = streams as i64;
+            load.last_keepalive = chrono::Utc::now();
+            state.state_store.set_media_server(media_server_id, load);
         }
         "on_stream_none_reader" => {
             if let Some(data) = serde_json::from_value::<StreamChangedData>(event.clone()).ok() {
