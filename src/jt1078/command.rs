@@ -133,9 +133,49 @@ pub fn encode_time_bcd(time_str: &str) -> [u8; 6] {
     ]
 }
 
+fn bcd_from_utc(dt: chrono::DateTime<chrono::Utc>) -> [u8; 6] {
+    [
+        dt.format("%y").to_string().parse::<u8>().unwrap_or(0),
+        dt.format("%m").to_string().parse::<u8>().unwrap_or(1),
+        dt.format("%d").to_string().parse::<u8>().unwrap_or(1),
+        dt.format("%H").to_string().parse::<u8>().unwrap_or(0),
+        dt.format("%M").to_string().parse::<u8>().unwrap_or(0),
+        dt.format("%S").to_string().parse::<u8>().unwrap_or(0),
+    ]
+}
+
+/// **严格**解析时间字符串为 BCD[6]；无法解析返回 `None`。
+///
+/// 与 [`encode_time_bcd`] 的区别：后者解析失败会**静默回退到当前时间**，
+/// 这在「录像下载」这类必须先确认时间段的场景下会把**错误的时间范围**下发到终端。
+/// 需要先校验再下发的调用方应使用本函数。
+///
+/// 支持：Unix 秒 / 毫秒时间戳、`%Y-%m-%dT%H:%M:%S`、`%Y-%m-%d %H:%M:%S`、`%Y-%m-%d`。
+pub fn try_encode_time_bcd(time_str: &str) -> Option<[u8; 6]> {
+    use chrono::{NaiveDate, NaiveDateTime, TimeZone};
+
+    let s = time_str.trim();
+    if s.is_empty() {
+        return None;
+    }
+    if let Ok(ts) = s.parse::<i64>() {
+        let ts = if ts > 1_000_000_000_000 { ts / 1000 } else { ts };
+        return chrono::DateTime::from_timestamp(ts, 0).map(bcd_from_utc);
+    }
+    for fmt in ["%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"] {
+        if let Ok(dt) = NaiveDateTime::parse_from_str(s, fmt) {
+            return Some(bcd_from_utc(chrono::Utc.from_utc_datetime(&dt)));
+        }
+    }
+    if let Ok(d) = NaiveDate::parse_from_str(s, "%Y-%m-%d") {
+        let dt = d.and_hms_opt(0, 0, 0)?;
+        return Some(bcd_from_utc(chrono::Utc.from_utc_datetime(&dt)));
+    }
+    None
+}
+
 /// 0x9202: Playback control
-pub fn build_playback_control(channel_id: u8, control: u8, speed: u8, seek_time: &[u8; 6]) -> Vec<u8> {
-    let mut body = Vec::with_capacity(9);
+pub fn build_playback_control(channel_id: u8, control: u8, speed: u8, seek_time: &[u8; 6]) -> Vec<u8> {    let mut body = Vec::with_capacity(9);
     body.push(channel_id);
     body.push(control);
     body.push(speed);
@@ -302,6 +342,85 @@ pub fn build_media_upload(media_id: u32, delete_flag: u8) -> Vec<u8> {
     body
 }
 
+/// 0x8801 摄像头立即拍摄命令 —— 用作**录像控制**。
+///
+/// JT/T 808-2019 §8.28 的「拍摄命令」字段取 `0x0001` 表示开始录像、
+/// `0x0000` 表示停止录像，因此同一原语即可承载 record start/stop。
+///
+/// - `duration_secs`：录像时长（秒）；`0` 表示按终端最小间隔持续录像
+/// - `save`：`true` 保存到终端存储，`false` 实时上传
+pub fn build_record_control(
+    channel_id: u8,
+    start: bool,
+    duration_secs: u16,
+    save: bool,
+) -> Vec<u8> {
+    build_take_photo(
+        channel_id,
+        if start { 0x0001 } else { 0x0000 },
+        duration_secs,
+        if save { 1 } else { 0 },
+        0x02,
+        0x05,
+        0x80,
+        0x80,
+        0x80,
+        0x80,
+    )
+}
+
+/// 0x8202 临时位置跟踪控制
+///
+/// JT/T 808-2019 §8.16：时间间隔（WORD，秒）+ 位置跟踪有效期（DWORD，秒）。
+pub fn build_temp_position_tracking(interval_secs: u16, validity_secs: u32) -> Vec<u8> {
+    let mut body = Vec::with_capacity(6);
+    body.extend_from_slice(&interval_secs.to_be_bytes());
+    body.extend_from_slice(&validity_secs.to_be_bytes());
+    body
+}
+
+/// 0x8203 人工确认报警消息
+///
+/// JT/T 808-2019 §8.17：报警消息流水号（WORD）+ 人工确认报警类型（DWORD 位标志）。
+pub fn build_confirm_alarm(alarm_seq: u16, alarm_type: u32) -> Vec<u8> {
+    let mut body = Vec::with_capacity(6);
+    body.extend_from_slice(&alarm_seq.to_be_bytes());
+    body.extend_from_slice(&alarm_type.to_be_bytes());
+    body
+}
+
+/// 0x9205 文件上传指令（JT/T 1078）
+///
+/// 请求终端把指定时间段的音视频资源上传到平台 —— 即「录像下载」。
+///
+/// 字段顺序（JT/T 1078-2016 §5.5）：
+/// 音视频资源类型(BYTE) 通道ID(BYTE) 开始时间(BCD[6]) 结束时间(BCD[6])
+/// 报警标志(DWORD) 音视频资源掩码(DWORD) 存储器类型(BYTE) 上传方式(BYTE) 最大文件大小(DWORD)
+#[allow(clippy::too_many_arguments)]
+pub fn build_file_upload_request(
+    resource_type: u8,
+    channel_id: u8,
+    start_time: &[u8; 6],
+    end_time: &[u8; 6],
+    alarm_flag: u32,
+    resource_mask: u32,
+    storage_type: u8,
+    upload_mode: u8,
+    max_file_size: u32,
+) -> Vec<u8> {
+    let mut body = Vec::with_capacity(32);
+    body.push(resource_type);
+    body.push(channel_id);
+    body.extend_from_slice(start_time);
+    body.extend_from_slice(end_time);
+    body.extend_from_slice(&alarm_flag.to_be_bytes());
+    body.extend_from_slice(&resource_mask.to_be_bytes());
+    body.push(storage_type);
+    body.push(upload_mode);
+    body.extend_from_slice(&max_file_size.to_be_bytes());
+    body
+}
+
 /// 0x8401: Set phone book
 pub fn build_set_phone_book(contacts: &[(String, String)]) -> Vec<u8> {
     let mut body = Vec::new();
@@ -403,5 +522,87 @@ mod tests {
         assert_eq!(frame[0], 0x7E);
         assert_eq!(*frame.last().unwrap(), 0x7E);
         assert_eq!(u16::from_be_bytes([frame[1], frame[2]]), 0x8100);
+    }
+
+    // ====== 2026-09-11 补齐的协议原语（用于打通此前"未实现"的 5 个端点）======
+
+    #[test]
+    fn test_build_record_control_start_vs_stop() {
+        let start = build_record_control(1, true, 0, true);
+        let stop = build_record_control(1, false, 0, true);
+        assert_eq!(start.len(), 12, "0x8801 体固定 12 字节");
+        assert_eq!(start[0], 1, "通道ID");
+        // 「拍摄命令」字段为 WORD 大端：1=开始录像 / 0=停止录像
+        assert_eq!(u16::from_be_bytes([start[1], start[2]]), 0x0001);
+        assert_eq!(u16::from_be_bytes([stop[1], stop[2]]), 0x0000);
+        assert_eq!(start[5], 1, "save=true → 保存标志 1");
+        assert_eq!(build_record_control(1, true, 0, false)[5], 0, "save=false → 0");
+    }
+
+    #[test]
+    fn test_build_temp_position_tracking_layout() {
+        let body = build_temp_position_tracking(30, 600);
+        assert_eq!(body.len(), 6, "WORD(2) + DWORD(4)");
+        assert_eq!(u16::from_be_bytes([body[0], body[1]]), 30);
+        assert_eq!(
+            u32::from_be_bytes([body[2], body[3], body[4], body[5]]),
+            600
+        );
+    }
+
+    #[test]
+    fn test_build_confirm_alarm_layout() {
+        let body = build_confirm_alarm(0x1234, 0xDEAD_BEEF);
+        assert_eq!(body.len(), 6, "WORD(2) + DWORD(4)");
+        assert_eq!(u16::from_be_bytes([body[0], body[1]]), 0x1234);
+        assert_eq!(
+            u32::from_be_bytes([body[2], body[3], body[4], body[5]]),
+            0xDEAD_BEEF
+        );
+    }
+
+    #[test]
+    fn test_build_file_upload_request_layout() {
+        let st = encode_time_bcd("2026-01-02 03:04:05");
+        let et = encode_time_bcd("2026-01-02 04:05:06");
+        let body = build_file_upload_request(0, 3, &st, &et, 0, 0xFFFF_FFFF, 0, 1, 0);
+        // 1 + 1 + 6 + 6 + 4 + 4 + 1 + 1 + 4 = 28
+        assert_eq!(body.len(), 28, "0x9205 体固定 28 字节");
+        assert_eq!(body[0], 0, "资源类型=音视频");
+        assert_eq!(body[1], 3, "通道ID");
+        assert_eq!(&body[2..8], &st[..], "开始时间 BCD");
+        assert_eq!(&body[8..14], &et[..], "结束时间 BCD");
+        assert_eq!(
+            u32::from_be_bytes([body[24], body[25], body[26], body[27]]),
+            0,
+            "最大文件大小=0 表示不限制"
+        );
+    }
+
+    #[test]
+    fn test_try_encode_time_bcd_accepts_supported_formats() {
+        let expected = [26u8, 1, 2, 3, 4, 5];
+        assert_eq!(try_encode_time_bcd("2026-01-02 03:04:05"), Some(expected));
+        assert_eq!(try_encode_time_bcd("2026-01-02T03:04:05"), Some(expected));
+        assert_eq!(try_encode_time_bcd("2026-01-02"), Some([26, 1, 2, 0, 0, 0]));
+        // Unix 时间戳（秒）
+        assert!(try_encode_time_bcd("1767323045").is_some());
+        // 毫秒时间戳
+        assert!(try_encode_time_bcd("1767323045000").is_some());
+    }
+
+    /// 关键差异：严格版本必须拒绝非法输入，而 `encode_time_bcd` 会**静默回退到当前时间**。
+    /// 对「录像下载」来说后者会把错误时间段下发到终端。
+    #[test]
+    fn test_try_encode_time_bcd_rejects_invalid_while_lenient_falls_back() {
+        for bad in ["", "   ", "not-a-time", "2026-13-45 99:99:99"] {
+            assert!(
+                try_encode_time_bcd(bad).is_none(),
+                "严格解析必须拒绝 {:?}",
+                bad
+            );
+        }
+        // 宽松版本对同样输入不报错（这正是需要严格版本的原因）
+        let _ = encode_time_bcd("not-a-time");
     }
 }

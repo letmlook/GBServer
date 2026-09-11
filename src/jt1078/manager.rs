@@ -588,6 +588,79 @@ impl Jt1078Manager {
         Ok(resp.first().copied().unwrap_or(1))
     }
 
+    /// 0x8801 摄像头立即拍摄命令 —— 用作**录像开始/停止**控制。
+    ///
+    /// 复用拍照原语的「拍摄命令」字段（`1`=开始录像 / `0`=停止录像）。
+    pub async fn send_record_control_and_wait(
+        &self,
+        phone: &str,
+        channel_id: u8,
+        start: bool,
+        duration_secs: u16,
+        timeout_secs: u64,
+    ) -> Result<u8, String> {
+        let body = command::build_record_control(channel_id, start, duration_secs, true);
+        let resp = self.send_command_and_wait(phone, 0x8801, &body, timeout_secs).await?;
+        Ok(resp.first().copied().unwrap_or(1))
+    }
+
+    /// 0x8202 临时位置跟踪控制（时间间隔 + 有效期），等待终端通用应答。
+    pub async fn send_temp_position_tracking_and_wait(
+        &self,
+        phone: &str,
+        interval_secs: u16,
+        validity_secs: u32,
+        timeout_secs: u64,
+    ) -> Result<u8, String> {
+        let body = command::build_temp_position_tracking(interval_secs, validity_secs);
+        let resp = self.send_command_and_wait(phone, 0x8202, &body, timeout_secs).await?;
+        Ok(resp.first().copied().unwrap_or(1))
+    }
+
+    /// 0x8203 人工确认报警消息（报警流水号 + 确认类型位标志），等待终端通用应答。
+    pub async fn send_confirm_alarm_and_wait(
+        &self,
+        phone: &str,
+        alarm_seq: u16,
+        alarm_type: u32,
+        timeout_secs: u64,
+    ) -> Result<u8, String> {
+        let body = command::build_confirm_alarm(alarm_seq, alarm_type);
+        let resp = self.send_command_and_wait(phone, 0x8203, &body, timeout_secs).await?;
+        Ok(resp.first().copied().unwrap_or(1))
+    }
+
+    /// 0x9205 文件上传指令 —— 请求终端上传指定时间段的音视频资源（录像下载）。
+    pub async fn send_file_upload_and_wait(
+        &self,
+        phone: &str,
+        channel_id: u8,
+        start_time: &str,
+        end_time: &str,
+        timeout_secs: u64,
+    ) -> Result<u8, String> {
+        // 严格解析：解析失败必须显式报错，而不是静默用「当前时间」下发给终端
+        let st = command::try_encode_time_bcd(start_time)
+            .ok_or_else(|| format!("无法解析开始时间: {}", start_time))?;
+        let et = command::try_encode_time_bcd(end_time)
+            .ok_or_else(|| format!("无法解析结束时间: {}", end_time))?;
+        // 资源类型 0=音视频；报警标志 0=不筛选；资源掩码全 1=全部资源；
+        // 存储器 0=主存储器；上传方式 1=手动上传；最大文件大小 0=不限制
+        let body = command::build_file_upload_request(
+            0,
+            channel_id,
+            &st,
+            &et,
+            0,
+            0xFFFF_FFFF,
+            0,
+            1,
+            0,
+        );
+        let resp = self.send_command_and_wait(phone, 0x9205, &body, timeout_secs).await?;
+        Ok(resp.first().copied().unwrap_or(1))
+    }
+
     /// 0x8803 Media upload
     pub async fn send_media_upload_and_wait(
         &self, phone: &str, media_id: u32, timeout_secs: u64,

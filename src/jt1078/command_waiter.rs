@@ -47,8 +47,12 @@ pub enum JtCmdType {
     TakePhoto,
     /// 查询终端属性
     QueryAttributes,
-    /// 查询位置信息
+    /// 查询位置信息（0x8201）
     QueryLocation,
+    /// 临时位置跟踪控制（0x8202）
+    TempPositionTracking,
+    /// 人工确认报警消息（0x8203）
+    ConfirmAlarm,
     /// 位置信息上报
     LocationReport,
     /// 行驶记录仪数据上传
@@ -72,9 +76,13 @@ impl JtCmdType {
             0x9202 => JtCmdType::PlaybackControl,
             0x8103 => JtCmdType::Ptz,
             0x8300 => JtCmdType::TextMessage,
-            0x8802 => JtCmdType::TakePhoto,
+            0x8801 => JtCmdType::TakePhoto,
+            0x8802 => JtCmdType::MediaSearch,
+            0x9205 => JtCmdType::FileUpload,
             0x8108 => JtCmdType::QueryAttributes,
-            0x8202 => JtCmdType::QueryLocation,
+            0x8201 => JtCmdType::QueryLocation,
+            0x8202 => JtCmdType::TempPositionTracking,
+            0x8203 => JtCmdType::ConfirmAlarm,
             0x0200 => JtCmdType::LocationReport,
             0x0704 => JtCmdType::DriveRecorder,
             _ => JtCmdType::Unknown,
@@ -97,6 +105,8 @@ impl JtCmdType {
             JtCmdType::TextMessage => "TextMessage",
             JtCmdType::TakePhoto => "TakePhoto",
             JtCmdType::QueryAttributes => "QueryAttributes",
+            JtCmdType::TempPositionTracking => "TempPositionTracking",
+            JtCmdType::ConfirmAlarm => "ConfirmAlarm",
             JtCmdType::QueryLocation => "QueryLocation",
             JtCmdType::LocationReport => "LocationReport",
             JtCmdType::DriveRecorder => "DriveRecorder",
@@ -450,7 +460,14 @@ mod tests {
         assert_eq!(JtCmdType::from_msg_id(0x9101), JtCmdType::LiveVideoStart);
         assert_eq!(JtCmdType::from_msg_id(0x9201), JtCmdType::PlaybackStart);
         assert_eq!(JtCmdType::from_msg_id(0x8103), JtCmdType::Ptz);
-        assert_eq!(JtCmdType::from_msg_id(0x8202), JtCmdType::QueryLocation);
+        assert_eq!(JtCmdType::from_msg_id(0x8201), JtCmdType::QueryLocation);
+        assert_eq!(
+            JtCmdType::from_msg_id(0x8202),
+            JtCmdType::TempPositionTracking
+        );
+        assert_eq!(JtCmdType::from_msg_id(0x8203), JtCmdType::ConfirmAlarm);
+        assert_eq!(JtCmdType::from_msg_id(0x8801), JtCmdType::TakePhoto);
+        assert_eq!(JtCmdType::from_msg_id(0x9205), JtCmdType::FileUpload);
     }
 
     #[tokio::test]

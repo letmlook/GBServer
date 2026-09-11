@@ -1238,6 +1238,9 @@ mod tests {
             // JT1078 / RTP / PS / 推流代理
             "/api/jt1078/route/query",
             "/api/jt1078/record/start",
+            "/api/jt1078/record/stop",
+            "/api/jt1078/control/temp-position-tracking",
+            "/api/jt1078/playback/download",
             "/api/jt1078/area/circle/query",
             "/api/rtp/send/stop/abc",
             "/api/ps/getTestPort",
@@ -1251,7 +1254,11 @@ mod tests {
         }
 
         // POST 型端点同样必须受保护（role/add 可提权，尤为关键）
-        for path in ["/api/role/add", "/api/jt1078/area/circle/add"] {
+        for path in [
+            "/api/role/add",
+            "/api/jt1078/area/circle/add",
+            "/api/jt1078/confirmation-alarm-message",
+        ] {
             let status = post_status_of(&base, path).await;
             assert_ne!(status, 404, "{} 未注册到路由表（返回 404）", path);
             assert_eq!(status, 401, "{} 未受鉴权保护（越权风险）", path);
