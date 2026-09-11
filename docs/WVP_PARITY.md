@@ -12,7 +12,7 @@
 | 总代码量（src/） | 69,619 行 Rust | `find src -name '*.rs' \| xargs wc -l` |
 | 已注册 HTTP 路由 | 383 条唯一 `/api/...` 路径 | `grep -oE '"/api/[^"]*"' src/router.rs \| sort -u \| wc -l` |
 | Handler 模块 | 29 个（含 `stub.rs` / `device_stub.rs` 两个兼容 shim） | `grep -c 'pub mod' src/handlers/mod.rs` |
-| 后端测试 | **541 通过** / 0 失败（第十五轮后回填） | `cargo test --no-fail-fast` |
+| 后端测试 | **543 通过** / 0 失败（第十六轮后回填） | `cargo test --no-fail-fast` |
 | 编译状态 | `cargo check` 0 error / **0 warning**；clippy 262；**deprecated 0** | `cargo check` / `cargo clippy --all-targets` |
 | 数据库 feature | SQLite（默认）/ PostgreSQL / MySQL **三者均编译通过** | CI `feature-matrix` job |
 | CI | ⏸️ 工作流已就绪但**按需暂停自动触发**（见 `.github/workflows/ci.yml`） | — |
@@ -712,6 +712,58 @@ npx playwright test             25 passed / 0 failed / 0 skipped
 录像下载链路（INVITE → startRecord → 完成 → stopRecord/BYE） PASS
 ```
 
+### 级联（上级平台）注册：从未成功过 —— 四层缺陷叠加（2026-09-12 第十六轮）
+
+核验"上级平台"这条 WVP 头等功能时发现：**级联注册在真实环境里从未成功过**。
+四层缺陷叠加，每修好一层才露出下一层：
+
+| # | 缺陷 | 证据 | 修复 |
+|---|------|------|------|
+| 1 | **平台键用错字段** | `load_platforms_from_db` 用 `device_gb_id` 当 `platform_id`，而前端平台表单**从不提交**该字段（`Platform` 类型里根本没有它）⇒ 键恒为**空串**；而 REST API（`/api/platform/exit/:id`）与响应路由用的是 `server_gb_id` —— 两边永远对不上 | 平台键统一为**上级平台国标 ID**（`server_gb_id`），`load_platforms_from_db` / `reload_from_db` 同步 |
+| 2 | **响应路由把 nonce 当平台 ID** | `call_id.strip_prefix("cascade_").rsplit('_').next()` 从 `cascade_{platform_id}_{nonce}` 里抠出的是 **nonce**。实测日志：`Cascade f3eec4303c372b0a received 401 challenge` —— 后面那串是 nonce，于是 `handle_401_challenge` / `mark_registered` / `mark_failed` 全部作用在不存在的平台上 | 注册状态新增 `last_call_id`，`build_register_request` 回填；新增 `resolve_platform_from_call_id()` 取代字符串切分 |
+| 3 | **挑战后不再重发** | `handle_401_challenge` 只把状态置为 `Challenged`，而周期注册循环的筛选条件是 `NotRegistered / Failed / (Registered 且过半程)` —— **不含 `Challenged`** ⇒ 收到 401 之后永远不再发第二个 REGISTER（`register_ok` 恒为 0） | 收到 401 后**立即**带摘要重发（`register_now`）；同时把 `Challenged`（以及卡住 >5s 的 `Registering`）纳入周期重试 |
+| 4 | **两份互相矛盾的 REGISTER 实现** | `SipServer::register_to_platform` 另写了一份：Request-URI 是 `REGISTER sip:{}:{}`（缺 host，实测发成 `REGISTER sip::5062`）、并且**预置假 nonce 的 `Proxy-Authenticate`** 当鉴权（真实上级平台只会因此拒绝）；它和注册器的状态机互相矛盾 | 删除该实现（含 `unregister_from_platform`、随之无用的 `compute_digest_auth`）；`handler` 改为 `registrar.upsert_platform_from_db()` + `registrar.register_now()`，注销走 `unregister_and_remove()`；新增 `SipServer::cascade_registrar()` 仅暴露传输能力 |
+
+另外：注册用 **CSeq 计数器**（挑战重发必须递增，否则上级视作重传）；
+`register_now` 走 `send_request_to`，因此 **TCP 信令的上级平台同样可用**。
+
+**模拟器补齐**：`cascade_mock.py` 新增 `--require-digest`（先回 401 挑战、
+校验 `Authorization` 摘要，未带凭据 → 401，摘要错 → 403）与 `--report`
+（注册/注销/消息/INVITE 记账落盘）。此前的 mock 无条件回 200 OK，
+"预置假 nonce"这种假实现因此从未被发现。
+
+**实测（完整生命周期）**：
+
+```
+添加平台 → REGISTER sip:34020000002000000099@127.0.0.1:5062   ← Request-URI 正确
+         ← 401 Unauthorized (nonce=0139…)
+         → REGISTER（Authorization: Digest …, CSeq 2）
+         ← 200 OK
+报告: register_challenged=1, register_ok=1, devices=["34020000002000000001"]
+      keepalive MESSAGE / Catalog MESSAGE 均到达上级
+禁用平台 → REGISTER (Expires: 0) → 上级"设备注销" → report.unregister=1
+```
+
+**新增回归测试**：`test_platform_key_and_call_id_resolution`（键与 Call-ID 反查）、
+`test_401_challenge_produces_authorization_header`（首次不得预置
+`Proxy-Authenticate`；挑战后必须带 `Authorization`/`nonce`/`uri`，CSeq 递增）。
+
+> 同时修正一处 DashMap **自死锁**：`build_register_request` 里
+> `self.states.get(platform_id)?` 的读锁尚未释放就 `get_mut` 回填
+> `last_call_id` —— 同一分片的读写锁互斥，`cargo test --lib cascade` 会**永远挂住**。
+> 现改为先 `clone()` 再释放读锁。
+
+#### 第十六轮基线
+
+```
+cargo test                      543 passed / 0 failed   (上轮 541)
+cargo build --features mysql     OK
+cargo build --features postgres  OK
+cargo check --all-targets        warnings 0
+npx playwright test             25 passed / 0 failed / 0 skipped
+级联完整生命周期（401 → 摘要注册 → keepalive/Catalog → 注销） PASS
+```
+
 ### 仍未解决 / 需真实设备核验
 
 以下是本轮**已定位但未改动**的项，均在代码中留有注释或在此登记，
@@ -884,8 +936,8 @@ npx playwright test             25 passed / 0 failed / 0 skipped
 - [x] **JT1078 路线 CRUD**（2026-08-23 实装）
   - 表：`gb_jt_route` + `JtRoute` + insert/delete/list
   - Handler：3 个端点（set/query/delete）
-- [ ] **JT1078 协议操作层 12 个端点**（live/record/snap/temp_position_tracking/confirmation_alarm/playback_download/media_upload_delete/terminal_channel_*）
-  - 现状：保留为"已受理"响应（log + success），需在线终端 + JT/T 808/1078 协议栈才能真下发
+- [x] **JT1078 协议操作层 12 个端点**（live/record/snap/temp_position_tracking/confirmation_alarm/playback_download/media_upload_delete/terminal_channel_*）（2026-09-11 全部接线，本轮**复核确认**）
+  - 现状：全部经 `src/jt1078/` 的 `Jt1078Manager` **真实下发并等待终端通用应答**，失败即返回错误；已无"已受理"占位响应
   - 关联模块：[src/jt1078/](src/jt1078/) 5 个子模块、4,850 LOC
   - 平替评估：WVP-PRO 没有 JT1078 协议层；这部分是 GBServer 独有扩展，已不再是"silently do nothing"
 

@@ -28,6 +28,15 @@ pub struct RegistrationState {
     pub max_retries: u32,
     pub nonce: Option<String>,
     pub opaque: Option<String>,
+    /// 注册用 CSeq 计数器（挑战重发必须递增）
+    pub register_cseq: u32,
+    /// 最近一次 REGISTER 使用的 Call-ID。
+    ///
+    /// 用来把响应（尤其 401 挑战）**可靠地**对应回平台：此前靠
+    /// `call_id.rsplit('_').next()` 从 `cascade_{platform_id}_{nonce}` 里
+    /// 抠出 platform_id，抠到的是 **nonce**，于是 401 挑战永远匹配不到平台，
+    /// 级联注册卡死在挑战阶段 —— 现象是"上级一直没注册上，日志只有挑战"。
+    pub last_call_id: Option<String>,
 }
 
 pub struct CascadeRegistrar {
@@ -83,6 +92,8 @@ impl CascadeRegistrar {
             max_retries: 5,
             nonce: None,
             opaque: None,
+            register_cseq: 0,
+            last_call_id: None,
         });
     }
 
@@ -183,7 +194,8 @@ impl CascadeRegistrar {
             let expires_secs: u64 = p.expires.as_deref()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(3600);
-            let platform_id = p.device_gb_id.clone().unwrap_or_else(|| server_gb_id.clone());
+            // 与 load_platforms_from_db 保持一致：键 = 上级平台国标 ID
+            let platform_id = server_gb_id.clone();
 
             active_ids.insert(platform_id.clone());
 
@@ -365,6 +377,106 @@ impl CascadeRegistrar {
         Ok(())
     }
 
+    /// 由 Call-ID 反查平台 ID（替代脆弱的字符串切分）。
+    pub fn resolve_platform_from_call_id(&self, call_id: &str) -> Option<String> {
+        if call_id.is_empty() {
+            return None;
+        }
+        self.states
+            .iter()
+            .find(|e| e.value().last_call_id.as_deref() == Some(call_id))
+            .map(|e| e.key().clone())
+    }
+
+    /// 从 DB 读取**单个**平台并写入/更新注册状态。
+    ///
+    /// 新增或编辑平台后需要立即注册，而不是等 60s 的周期性 reload。
+    pub async fn upsert_platform_from_db(
+        &self,
+        server_gb_id: &str,
+        local_device_id: &str,
+        realm: &str,
+    ) -> Result<(), String> {
+        let pool = self.pool.read().await.clone().ok_or("registrar 未绑定数据库")?;
+        let p = crate::db::platform::get_by_server_gb_id(&pool, server_gb_id)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("平台 {} 不存在", server_gb_id))?;
+        if !p.enable.unwrap_or(false) {
+            return Err(format!("平台 {} 未启用", server_gb_id));
+        }
+        let server_ip = p.server_ip.clone().unwrap_or_else(|| "127.0.0.1".to_string());
+        let server_port = p.server_port.unwrap_or(5060) as u16;
+        let password = p.password.clone().unwrap_or_default();
+        let expires_secs: u64 = p
+            .expires
+            .as_deref()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(3600);
+
+        match self.states.get_mut(server_gb_id) {
+            Some(mut s) => {
+                if s.host != server_ip
+                    || s.port != server_port
+                    || s.password != password
+                    || s.realm != realm
+                {
+                    s.host = server_ip;
+                    s.port = server_port;
+                    s.password = password;
+                    s.realm = realm.to_string();
+                    s.status = RegistrationStatus::NotRegistered;
+                    s.nonce = None;
+                    s.opaque = None;
+                }
+            }
+            None => self.add_platform(
+                server_gb_id,
+                &p.server_gb_id.clone().unwrap_or_else(|| server_gb_id.to_string()),
+                &server_ip,
+                server_port,
+                local_device_id,
+                &password,
+                realm,
+                expires_secs,
+            ),
+        }
+        Ok(())
+    }
+
+    /// 立即发送一次 REGISTER（不等周期任务）。
+    ///
+    /// 走 `SipServer::send_request_to`，因此 TCP 信令的上级平台同样可用。
+    pub async fn register_now(&self, platform_id: &str) -> Result<(), String> {
+        let sip = self
+            .get_sip_server()
+            .await
+            .ok_or_else(|| "SIP server 未就绪".to_string())?;
+        let state = self.state(platform_id).ok_or_else(|| {
+            format!("registrar 中没有平台 {} 的注册状态", platform_id)
+        })?;
+        let cseq = state.register_cseq.wrapping_add(1);
+        if let Some(mut s) = self.states.get_mut(platform_id) {
+            s.register_cseq = cseq;
+        }
+        let msg = self
+            .build_register_request(platform_id, cseq, state.register_interval_secs as u32)
+            .ok_or_else(|| format!("构造 REGISTER 失败: {}", platform_id))?;
+        let ip: std::net::IpAddr = state
+            .host
+            .parse()
+            .map_err(|_| format!("平台地址不是合法 IP: {}", state.host))?;
+        let addr = std::net::SocketAddr::new(ip, state.port);
+        sip.send_request_to(addr, &msg)
+            .await
+            .map_err(|e| e.to_string())?;
+        if let Some(mut s) = self.states.get_mut(platform_id) {
+            s.status = RegistrationStatus::Registering;
+        }
+        tracing::info!("已向级联平台 {} 发送 REGISTER（{}）", platform_id, addr);
+        Ok(())
+    }
+
     pub fn handle_401_challenge(&self, platform_id: &str, nonce: &str, opaque: Option<&str>, realm: &str) {
         if let Some(mut state) = self.states.get_mut(platform_id) {
             state.status = RegistrationStatus::Challenged;
@@ -399,10 +511,17 @@ impl CascadeRegistrar {
     }
 
     pub fn build_register_request(&self, platform_id: &str, cseq: u32, expires: u32) -> Option<String> {
-        let state = self.states.get(platform_id)?;
+        // **先 clone 再释放读锁**：DashMap 的 `get` 持有分片读锁，
+        // 若在同一函数里再 `get_mut`（下面的 last_call_id 回填）会对同一分片
+        // 自死锁 —— 这正是"cargo test --lib cascade 永远跑不完"的原因。
+        let state = self.states.get(platform_id)?.clone();
         let branch = format!("z9hG4bK{}", rand_nonce());
         let call_id = format!("cascade_{}_{}", platform_id, rand_nonce());
         let tag = format!("local_{}", rand_nonce());
+        // 记录本次 Call-ID，供响应路由反查平台（见 last_call_id 的说明）
+        if let Some(mut s) = self.states.get_mut(platform_id) {
+            s.last_call_id = Some(call_id.clone());
+        }
 
         let auth_header = if state.status == RegistrationStatus::Challenged {
             if let Some(ref nonce) = state.nonce {
@@ -470,7 +589,12 @@ impl CascadeRegistrar {
                         let expires_secs: u64 = p.expires.as_deref()
                             .and_then(|s| s.parse().ok())
                             .unwrap_or(3600);
-                        let platform_id = p.device_gb_id.as_deref().unwrap_or(&server_gb_id).to_string();
+                        // 平台键统一用**上级平台的国标 ID**（server_gb_id）：
+                        // 它是稳定且唯一的，也是 REST API（/api/platform/exit/:id）
+                        // 与 `handle_response` 用的同一个标识。此前用 device_gb_id
+                        // （本地下级 ID，前端表单从不提交 ⇒ 空串）当键，导致
+                        // 所有平台挤在同一个空键上、且 API 按 server_gb_id 找不到。
+                        let platform_id = server_gb_id.clone();
 
                         self.add_platform(
                             &platform_id,
@@ -507,6 +631,15 @@ impl CascadeRegistrar {
                 .iter()
                 .filter(|entry| match entry.status {
                     RegistrationStatus::NotRegistered | RegistrationStatus::Failed => true,
+                    // 挑战态必须继续重发，否则注册永远停在 401 之后
+                    // （实测：挑战收到、nonce 记下，然后 30s 一轮的循环
+                    //  永远跳过它，`register_ok` 恒为 0）。
+                    RegistrationStatus::Challenged => true,
+                    // 卡在 Registering 的（丢了响应的）超过 5s 也重试
+                    RegistrationStatus::Registering => match entry.last_register {
+                        Some(last) => (Utc::now() - last).num_seconds() >= 5,
+                        None => true,
+                    },
                     RegistrationStatus::Registered => match entry.last_register {
                         Some(last) => {
                             let elapsed = (Utc::now() - last).num_seconds() as u64;
@@ -514,7 +647,6 @@ impl CascadeRegistrar {
                         }
                         None => true,
                     },
-                    _ => false,
                 })
                 .map(|entry| {
                     (
@@ -542,7 +674,16 @@ impl CascadeRegistrar {
                     None => continue,
                 };
 
-                let cseq = 1u32;
+                // CSeq 必须严格递增：挑战后的重发用同一个 CSeq 会被
+                // 上级平台当成重传（RFC 3261 §12.2.1.1）。
+                let cseq = self
+                    .states
+                    .get(&platform_id)
+                    .map(|s| s.register_cseq.wrapping_add(1))
+                    .unwrap_or(1);
+                if let Some(mut s) = self.states.get_mut(&platform_id) {
+                    s.register_cseq = cseq;
+                }
                 let expires = register_interval_secs as u32;
 
                 let register_msg = match self.build_register_request(&platform_id, cseq, expires) {
@@ -878,5 +1019,77 @@ mod c3_tests {
         let r1 = build_digest_response("u", "r", "p", "M", "sip:u@r:1", "n");
         let r2 = build_digest_response("u", "r", "p", "M", "sip:u@r:2", "n");
         assert_ne!(r1, r2, "URI 端口不同应得到不同 digest");
+    }
+    /// 平台键必须是**上级平台的国标 ID**（server_gb_id），且能由 Call-ID 反查。
+    ///
+    /// 回归两处真实缺陷：
+    /// 1. 平台键曾用 `device_gb_id`（本地下级 ID，前端表单从不提交 ⇒ 空串），
+    ///    所有平台挤在同一个空键上，REST API 按 server_gb_id 也找不到；
+    /// 2. 响应路由曾用 `call_id.rsplit('_').next()` 解析平台，从
+    ///    `cascade_{platform_id}_{nonce}` 里抠出的是 nonce，401 挑战因此
+    ///    永远作用在不存在的平台上 —— 级联注册卡死在挑战阶段。
+    #[tokio::test]
+    async fn test_platform_key_and_call_id_resolution() {
+        let r = CascadeRegistrar::new();
+        r.add_platform(
+            "34020000002000000099",
+            "34020000002000000099",
+            "127.0.0.1",
+            5062,
+            "34020000002000000001",
+            "admin123",
+            "3402000000",
+            3600,
+        );
+        // 未建报文前没有 Call-ID 记录
+        assert!(r.resolve_platform_from_call_id("cascade_34020000002000000099_abc").is_none());
+
+        let msg = r.build_register_request("34020000002000000099", 1, 3600).unwrap();
+        // Request-URI 必须是「上级国标 ID@上级 host:port」，不是 `sip::5062`
+        assert!(
+            msg.starts_with("REGISTER sip:34020000002000000099@127.0.0.1:5062 SIP/2.0\r\n"),
+            "Request-URI 不正确: {}",
+            msg.lines().next().unwrap_or("")
+        );
+        let call_id = msg
+            .lines()
+            .find_map(|l| l.strip_prefix("Call-ID: "))
+            .expect("应有 Call-ID")
+            .to_string();
+        assert!(call_id.starts_with("cascade_34020000002000000099_"), "{}", call_id);
+        assert_eq!(
+            r.resolve_platform_from_call_id(&call_id).as_deref(),
+            Some("34020000002000000099"),
+            "必须能由 Call-ID 反查到平台"
+        );
+        assert!(r.resolve_platform_from_call_id("").is_none());
+        assert!(r.resolve_platform_from_call_id("cascade_unknown_x").is_none());
+    }
+
+    /// 挑战 → 带 Authorization 重发 的报文形态（RFC 2617）。
+    #[tokio::test]
+    async fn test_401_challenge_produces_authorization_header() {
+        let r = CascadeRegistrar::new();
+        r.add_platform(
+            "plat1", "34020000002000000099", "10.0.0.9", 5060,
+            "34020000002000000001", "admin123", "3402000000", 3600,
+        );
+        let first = r.build_register_request("plat1", 1, 3600).unwrap();
+        assert!(
+            !first.contains("Authorization:"),
+            "首次注册不应预置 Authorization/Proxy-Authenticate"
+        );
+        assert!(
+            !first.contains("Proxy-Authenticate:"),
+            "上级未挑战就发 Proxy-Authenticate 是假实现"
+        );
+
+        r.handle_401_challenge("plat1", "nonce-1", Some("opaque-1"), "3402000000");
+        let second = r.build_register_request("plat1", 2, 3600).unwrap();
+        assert!(second.contains("Authorization: Digest"), "{}", second);
+        assert!(second.contains("nonce=\"nonce-1\""), "{}", second);
+        assert!(second.contains("opaque=\"opaque-1\""), "{}", second);
+        assert!(second.contains("uri=\"sip:34020000002000000099@10.0.0.9:5060\""), "{}", second);
+        assert!(second.contains("CSeq: 2 REGISTER"), "{}", second);
     }
 }

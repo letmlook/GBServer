@@ -390,6 +390,17 @@ impl SipServer {
         self.cascade_registrar = Some(registrar);
     }
 
+    /// 取级联注册器（handler 需要它做"立即注册 / 注销"）。
+    ///
+    /// 平台注册的唯一实现属于 `CascadeRegistrar`（它持有注册状态、401 挑战、
+    /// 周期重试与 keepalive）；`SipServer` 只提供传输通道。此前
+    /// `SipServer::register_to_platform` 另写了一份"预置假 nonce 的
+    /// Proxy-Authenticate + 畸形 Request-URI（`REGISTER sip::5062`）"的实现，
+    /// 与注册器的状态机互相矛盾，现已删除。
+    pub fn cascade_registrar(&self) -> Option<Arc<CascadeRegistrar>> {
+        self.cascade_registrar.clone()
+    }
+
     pub fn config(&self) -> &SipConfig {
         &self.config
     }
@@ -2998,10 +3009,15 @@ let renewal_pool = pool.clone();
         // Route REGISTER responses to cascade registrar
         if cseq.contains("REGISTER") {
             if let Some(ref registrar) = cascade_registrar {
-                let platform_id = call_id
-                    .strip_prefix("cascade_")
-                    .and_then(|s| s.rsplit('_').next())
-                    .map(|s| s.to_string());
+                // 由注册器按 Call-ID 反查平台。
+                //
+                // 修正：此前是 `call_id.strip_prefix("cascade_").rsplit('_').next()`
+                // —— 从 `cascade_{platform_id}_{nonce}` 里抠出来的是 **nonce**，
+                // 于是 `handle_401_challenge` / `mark_registered` 全都作用在
+                // 不存在的平台上，级联注册永远停在挑战阶段（实测日志：
+                // `Cascade f3eec4303c372b0a received 401 challenge`，
+                // 后面那串是 nonce，不是平台 ID）。
+                let platform_id = registrar.resolve_platform_from_call_id(&call_id);
 
                 if let Some(ref pid) = platform_id {
                     if resp.status_code() == 401 || resp.status_code() == 407 {
@@ -3039,7 +3055,16 @@ let renewal_pool = pool.clone();
                             .unwrap_or_default();
                         if !nonce.is_empty() {
                             registrar.handle_401_challenge(pid, &nonce, opaque.as_deref(), &realm);
-                            tracing::info!("Cascade {} received 401 challenge", pid);
+                            tracing::info!(
+                                "Cascade {} received 401 challenge, 立即带摘要重发",
+                                pid
+                            );
+                            // **必须立刻重发**：挑战只把状态置为 Challenged，
+                            // 而周期注册循环的筛选条件里没有 Challenged ——
+                            // 不主动重发的话注册会永远停在挑战阶段。
+                            if let Err(e) = registrar.register_now(pid).await {
+                                tracing::warn!("Cascade {} 摘要重发失败: {}", pid, e);
+                            }
                         }
                     } else if resp.status_code() == 200 {
                         registrar.mark_registered(pid);
@@ -6345,165 +6370,6 @@ f=v/1/96/1/2/1/1/0
             Some(&body),
         )
         .await
-    }
-
-    pub async fn register_to_platform(&self, platform_gb_id: &str) -> Result<()> {
-        let platform = crate::db::platform::get_by_server_gb_id(&self.pool, platform_gb_id)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("Platform {} not found", platform_gb_id))?;
-
-        let server_ip = platform
-            .server_ip
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Platform IP not set"))?;
-        let server_port = platform.server_port.unwrap_or(5060) as u16;
-
-        let device_gb_id = platform
-            .device_gb_id
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Device GB ID not set"))?;
-        let username = platform.username.as_deref().unwrap_or("");
-        let password = platform.password.as_deref().unwrap_or("");
-        let expires = platform.expires.as_deref().unwrap_or("3600");
-
-        let call_id = format!(
-            "reg_{}_{}",
-            platform_gb_id,
-            chrono::Utc::now().timestamp_millis()
-        );
-        let branch = generate_branch();
-
-        let via = format!(
-            "SIP/2.0/UDP {}:{};branch={};rport",
-            self.config.ip, self.config.port, branch
-        );
-        let from = format!(
-            "<sip:{}@{}:{}>;tag={}",
-            device_gb_id,
-            self.config.ip,
-            self.config.port,
-            generate_tag()
-        );
-        let to = format!("<sip:{}@{}:{}>", device_gb_id, server_ip, server_port);
-        let contact = format!(
-            "<sip:{}@{}:{}>",
-            device_gb_id, self.config.ip, self.config.port
-        );
-
-        let auth = if !password.is_empty() {
-            let nonce = generate_nonce();
-            let realm = platform.server_gb_domain.as_deref().unwrap_or("GBServer");
-            let response =
-                Self::compute_digest_auth(username, password, realm, "REGISTER", "/", &nonce);
-            format!(
-                r#"Proxy-Authenticate: Digest realm="{}",nonce="{}",charset=utf-8,algorithm=MD5,qop="auth"
-Authentication-Info: qop=auth,rspauth="{}",cnonce="{}",nc=00000001"#,
-                realm, nonce, response, nonce
-            )
-        } else {
-            String::new()
-        };
-
-        let message = format!(
-            "REGISTER sip:{}:{} SIP/2.0\r\n\
-             Via: {}\r\n\
-             From: {}\r\n\
-             To: {}\r\n\
-             Call-ID: {}\r\n\
-             CSeq: 1 REGISTER\r\n\
-             Max-Forwards: 70\r\n\
-             Expires: {}\r\n\
-             Contact: {}\r\n\
-             User-Agent: GBServer/1.0\r\n\
-             {}\
-             Content-Length: 0\r\n\r\n",
-            device_gb_id, server_port, via, from, to, call_id, expires, contact, auth
-        );
-
-        let addr: std::net::SocketAddr = format!("{}:{}", server_ip, server_port).parse()?;
-        self.send_request_to(addr, &message).await?;
-        tracing::info!("Sent REGISTER to platform {} at {}", platform_gb_id, addr);
-
-        Ok(())
-    }
-
-    pub async fn unregister_from_platform(&self, platform_gb_id: &str) -> Result<()> {
-        let platform = crate::db::platform::get_by_server_gb_id(&self.pool, platform_gb_id)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("Platform {} not found", platform_gb_id))?;
-
-        let server_ip = platform
-            .server_ip
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Platform IP not set"))?;
-        let server_port = platform.server_port.unwrap_or(5060) as u16;
-
-        let device_gb_id = platform
-            .device_gb_id
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Device GB ID not set"))?;
-
-        let call_id = format!(
-            "unreg_{}_{}",
-            platform_gb_id,
-            chrono::Utc::now().timestamp_millis()
-        );
-        let branch = generate_branch();
-
-        let via = format!(
-            "SIP/2.0/UDP {}:{};branch={};rport",
-            self.config.ip, self.config.port, branch
-        );
-        let from = format!(
-            "<sip:{}@{}:{}>;tag={}",
-            device_gb_id,
-            self.config.ip,
-            self.config.port,
-            generate_tag()
-        );
-        let to = format!("<sip:{}@{}:{}>", device_gb_id, server_ip, server_port);
-        let contact = format!(
-            "<sip:{}@{}:{}>",
-            device_gb_id, self.config.ip, self.config.port
-        );
-
-        let message = format!(
-            "REGISTER sip:{}:{} SIP/2.0\r\n\
-             Via: {}\r\n\
-             From: {}\r\n\
-             To: {}\r\n\
-             Call-ID: {}\r\n\
-             CSeq: 1 REGISTER\r\n\
-             Max-Forwards: 70\r\n\
-             Expires: 0\r\n\
-             Contact: {}\r\n\
-             User-Agent: GBServer/1.0\r\n\
-             Content-Length: 0\r\n\r\n",
-            device_gb_id, server_port, via, from, to, call_id, contact
-        );
-
-        let addr: std::net::SocketAddr = format!("{}:{}", server_ip, server_port).parse()?;
-        self.send_request_to(addr, &message).await?;
-        tracing::info!("Sent unREGISTER to platform {} at {}", platform_gb_id, addr);
-
-        Ok(())
-    }
-
-    fn compute_digest_auth(
-        username: &str,
-        password: &str,
-        realm: &str,
-        method: &str,
-        uri: &str,
-        nonce: &str,
-    ) -> String {
-        use md5::{Digest, Md5};
-        let ha1 = format!(
-            "{:x}",
-            Md5::digest(format!("{}:{}:{}", username, realm, password))
-        );
-        let ha2 = format!("{:x}", Md5::digest(format!("{}:{}", method, uri)));
-        format!("{:x}", Md5::digest(format!("{}:{}:{}", ha1, nonce, ha2)))
     }
 
     fn extract_tag_from_header(header: &str) -> Option<String> {

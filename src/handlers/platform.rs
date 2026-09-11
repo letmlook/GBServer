@@ -66,10 +66,34 @@ async fn sync_platform_registration(
     };
 
     let sip = &*sip_server;
+
+    // 级联注册的唯一实现是 `CascadeRegistrar`：它持有注册状态、401 挑战、
+    // 周期重试与 keepalive。这里只负责"把 DB 变更同步给它 + 立即触发一次"。
+    let Some(registrar) = sip.cascade_registrar() else {
+        tracing::warn!("级联注册器未就绪，无法同步平台 {} 的注册状态", server_gb_id);
+        update_platform_status(&state.pool, id, false).await?;
+        return Ok(false);
+    };
+
+    let local_device_id = sip.config().device_id.clone();
+    let realm = sip.config().realm.clone();
+
     let result = if enable {
-        sip.register_to_platform(server_gb_id).await
+        match registrar
+            .upsert_platform_from_db(server_gb_id, &local_device_id, &realm)
+            .await
+        {
+            Ok(()) => registrar
+                .register_now(server_gb_id)
+                .await
+                .map_err(|e| anyhow::anyhow!(e)),
+            Err(e) => Err(anyhow::anyhow!(e)),
+        }
     } else {
-        sip.unregister_from_platform(server_gb_id).await
+        registrar
+            .unregister_and_remove(server_gb_id, 0)
+            .await
+            .map_err(|e| anyhow::anyhow!(e))
     };
 
     match result {
