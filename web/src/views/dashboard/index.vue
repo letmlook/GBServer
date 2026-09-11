@@ -154,7 +154,7 @@ const deviceTotal = ref(0)
 const deviceOnline = ref(0)
 const channelTotal = ref(0)
 const activeStreamCount = ref(0)
-const streams = ref<Array<{ mediaServerId?: string; app?: string; stream?: string; deviceId?: string }>>([])
+const streams = ref<Array<{ mediaServerId?: string; app?: string; stream?: string; deviceId?: string; channelId?: string }>>([])
 const mediaServerCount = ref(0)
 const recentAlarms = ref<{ id?: number; alarmTime?: string; alarmDescription?: string; deviceId?: string; alarmLevel?: string }[]>([])
 const nodes = ref<{ id: string; name: string; region: string; cpu: number; mem: number; bw: number; status: string; tone: string }[]>([])
@@ -177,7 +177,13 @@ async function loadAll() {
     if (mss.status === 'fulfilled') mediaServerCount.value = ((mss.value.data as any[]) ?? []).length
     if (alarms.status === 'fulfilled') recentAlarms.value = alarms.value.data?.list ?? []
     if (streamRes.status === 'fulfilled') {
-      const list = ((streamRes.value.data as any)?.list ?? []) as Array<{ mediaServerId?: string; app?: string; stream?: string; deviceId?: string }>
+      const list = ((streamRes.value.data as any)?.list ?? []) as Array<{
+        mediaServerId?: string
+        app?: string
+        stream?: string
+        deviceId?: string
+        channelId?: string
+      }>
       streams.value = list
       activeStreamCount.value = list.length
       channelTotal.value = list.length
@@ -324,7 +330,9 @@ onMounted(async () => {
     no: `C${String(i + 1).padStart(3, '0')}`,
     state: 'live' as const,
     deviceId: s.deviceId ?? '',
-    channelId: s.stream ?? ''
+    // 必须用后端解析出的 channelId（国标通道号），此前误用 ZLM 的流名，
+    // 跳转过去必然找不到通道
+    channelId: s.channelId ?? ''
   }))
   if (liveList.length > 0) channels.value = liveList
 })

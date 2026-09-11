@@ -38,13 +38,13 @@ pub async fn login(
         .ok_or_else(|| AppError::business(ErrorCode::Error100, "用户名或密码错误"))?;
     // 兼容校验：Argon2id ↔ 旧版 MD5 ↔ 明文（见 auth::verify_password_compat）
     let stored = user.password.clone().unwrap_or_default();
-    if !crate::auth::verify_password_compat(password, &stored) {
+    if !crate::auth::verify_password_flexible(password, &stored) {
         return Err(AppError::business(ErrorCode::Error100, "用户名或密码错误"));
     }
     // 机会式升级：旧格式（MD5 / 明文）在登录成功后自动替换为 Argon2id，用户无感。
     // 这样种子 admin 的弱 MD5 会在首次登录后自行变强，无需人工改密。
     if !crate::auth::is_argon2_hash(&stored) {
-        match crate::auth::hash_password(password) {
+        match crate::auth::hash_password(&crate::auth::password_secret(password)) {
             Ok(new_hash) => match db::change_password(&state.pool, user.id, &new_hash).await {
                 Ok(_) => tracing::info!("用户 {} 的口令哈希已升级为 Argon2id", username),
                 Err(e) => tracing::warn!("口令哈希升级失败（不影响本次登录）: {}", e),
@@ -190,7 +190,9 @@ pub async fn add_user(
     }
 
     // Phase 7.6: store password as Argon2id hash instead of plaintext MD5.
-    let password_hash = crate::auth::hash_password(password)
+    // 2026-09-12: 先统一成"客户端登录时会送的那个秘密值"（md5(明文)）再哈希，
+    // 否则库里是 Argon2(明文) 而登录送 md5(明文)，新建用户永远登不上。
+    let password_hash = crate::auth::hash_password(&crate::auth::password_secret(password))
         .map_err(|e| AppError::business(ErrorCode::Error100, format!("hash failed: {}", e)))?;
     let push_key = md5_hex(&format!("{}{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis(), password));
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
@@ -246,11 +248,11 @@ pub async fn change_password(
     // 此前这里是 `current_md5 != old_md5` 的明文比较，导致存 Argon2id 的新用户
     // **永远无法修改自己的密码**（Argon2 串不可能等于 MD5 十六进制）。
     let stored = user.password.clone().unwrap_or_default();
-    if !crate::auth::verify_password_compat(old_md5.as_str(), &stored) {
+    if !crate::auth::verify_password_flexible(old_md5.as_str(), &stored) {
         return Err(AppError::business(ErrorCode::Error100, "旧密码错误"));
     }
     // 新口令存 Argon2id（此前写 MD5，等于把新建时的 Argon2id 降级）
-    let new_hash = crate::auth::hash_password(new_pwd)
+    let new_hash = crate::auth::hash_password(&crate::auth::password_secret(new_pwd))
         .map_err(|e| AppError::business(ErrorCode::Error100, format!("hash failed: {}", e)))?;
     let n = db::change_password(&state.pool, user.id, &new_hash).await?;
     if n == 0 {
@@ -278,8 +280,9 @@ pub async fn change_password_for_admin(
     let _claims = require_admin(&state, &headers).await?;
     let user_id = params.user_id.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 userId"))?;
     let password = params.password.as_deref().ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 password"))?;
-    // 管理员重置口令也存 Argon2id（此前写 MD5）
-    let new_hash = crate::auth::hash_password(password)
+    // 管理员重置口令也存 Argon2id（此前写 MD5）；秘密值同样取 md5(明文)，
+    // 与登录侧（送 md5）保持一致，否则被重置的账号从此登录不上。
+    let new_hash = crate::auth::hash_password(&crate::auth::password_secret(password))
         .map_err(|e| AppError::business(ErrorCode::Error100, format!("hash failed: {}", e)))?;
     let n = db::change_password(&state.pool, user_id, &new_hash).await?;
     if n == 0 {
@@ -328,4 +331,171 @@ async fn require_admin(state: &AppState, headers: &HeaderMap) -> Result<crate::a
         return Err(AppError::business(ErrorCode::Error400, "用户无权限"));
     }
     Ok(claims)
+}
+
+#[cfg(all(test, feature = "sqlite"))]
+mod password_flow_tests {
+    use super::*;
+    use crate::test_support::app_state;
+
+    async fn admin_headers(state: &AppState) -> HeaderMap {
+        // 种子里 admin/admin 是 MD5 行，登录送 md5(明文)
+        let keys = JwtKeys::new(state.config.jwt.secret.as_bytes());
+        let token = keys.create_token("admin", 60).expect("token");
+        let mut h = HeaderMap::new();
+        h.insert("access-token", token.parse().expect("header value"));
+        h
+    }
+
+    fn md5(s: &str) -> String {
+        crate::auth::legacy_md5(s)
+    }
+
+    async fn stored(name: &str, state: &AppState) -> String {
+        db::find_by_username(&state.pool, name)
+            .await
+            .unwrap()
+            .unwrap()
+            .password
+            .unwrap_or_default()
+    }
+
+    /// 回归保护：界面「新增用户」送**明文**，登录送 **md5(明文)** —— 两边必须对得上。
+    ///
+    /// 修复前库里是 `Argon2(明文)`，登录送 md5，新建用户永远登录不上。
+    #[tokio::test]
+    async fn test_add_then_login_with_md5() {
+        let state = app_state().await;
+        let headers = admin_headers(&state).await;
+
+        let _ = add_user(
+            State(state.clone()),
+            headers.clone(),
+            Query(AddUserParams {
+                username: Some("u1".into()),
+                password: Some("plain123".into()),
+                role_id: Some(1),
+            }),
+        )
+        .await
+        .expect("新增用户应成功");
+
+        let s = stored("u1", &state).await;
+        assert!(crate::auth::is_argon2_hash(&s), "必须是 Argon2id: {s}");
+        // 登录页面/JS 送的是 md5
+        assert!(crate::auth::verify_password_flexible(&md5("plain123"), &s));
+        // 外部接口直接送明文也应通过
+        assert!(crate::auth::verify_password_flexible("plain123", &s));
+        assert!(!crate::auth::verify_password_flexible("wrong", &s));
+    }
+
+    /// 管理员「重置」后，被重置的账号必须能用新口令登录。
+    #[tokio::test]
+    async fn test_admin_reset_then_login() {
+        let state = app_state().await;
+        let headers = admin_headers(&state).await;
+        let _ = add_user(
+            State(state.clone()),
+            headers.clone(),
+            Query(AddUserParams {
+                username: Some("u1".into()),
+                password: Some("plain123".into()),
+                role_id: Some(1),
+            }),
+        )
+        .await
+        .unwrap();
+        let uid = db::find_by_username(&state.pool, "u1").await.unwrap().unwrap().id;
+
+        let _ = change_password_for_admin(
+            State(state.clone()),
+            headers.clone(),
+            Query(ChangePasswordForAdminParams {
+                user_id: Some(uid),
+                password: Some("reset999".into()),
+            }),
+        )
+        .await
+        .expect("重置应成功");
+
+        let s = stored("u1", &state).await;
+        assert!(crate::auth::verify_password_flexible(&md5("reset999"), &s), "重置后必须能用新口令登录");
+        assert!(!crate::auth::verify_password_flexible(&md5("plain123"), &s), "旧口令必须失效");
+    }
+
+    /// 自助改密：`oldPassword` 走登录口径（md5），改完必须能用新口令登录。
+    #[tokio::test]
+    async fn test_self_change_password_then_login() {
+        let state = app_state().await;
+        let headers = admin_headers(&state).await;
+        let _ = add_user(
+            State(state.clone()),
+            headers.clone(),
+            Query(AddUserParams {
+                username: Some("u1".into()),
+                password: Some("plain123".into()),
+                role_id: Some(1),
+            }),
+        )
+        .await
+        .unwrap();
+
+        // 用 u1 自己的 token（前端登录后保存的）
+        let keys = JwtKeys::new(state.config.jwt.secret.as_bytes());
+        let token = keys.create_token("u1", 60).unwrap();
+        let mut h = HeaderMap::new();
+        h.insert("access-token", token.parse().unwrap());
+
+        // 前端 api 层会把 oldPassword md5 后再发
+        let _ = change_password(
+            State(state.clone()),
+            h,
+            Query(ChangePasswordParams {
+                old_password: Some(md5("plain123")),
+                password: Some("brandnew1".into()),
+            }),
+        )
+        .await
+        .expect("改密应成功");
+
+        let s = stored("u1", &state).await;
+        assert!(crate::auth::verify_password_flexible(&md5("brandnew1"), &s));
+        assert!(!crate::auth::verify_password_flexible(&md5("plain123"), &s));
+    }
+
+    /// 旧密码错误必须被拒绝（且不改动已有口令）。
+    #[tokio::test]
+    async fn test_self_change_password_rejects_wrong_old() {
+        let state = app_state().await;
+        let headers = admin_headers(&state).await;
+        let _ = add_user(
+            State(state.clone()),
+            headers.clone(),
+            Query(AddUserParams {
+                username: Some("u1".into()),
+                password: Some("plain123".into()),
+                role_id: Some(1),
+            }),
+        )
+        .await
+        .unwrap();
+        let keys = JwtKeys::new(state.config.jwt.secret.as_bytes());
+        let token = keys.create_token("u1", 60).unwrap();
+        let mut h = HeaderMap::new();
+        h.insert("access-token", token.parse().unwrap());
+
+        let err = change_password(
+            State(state.clone()),
+            h,
+            Query(ChangePasswordParams {
+                old_password: Some(md5("nope")),
+                password: Some("brandnew1".into()),
+            }),
+        )
+        .await
+        .expect_err("旧密码错误应报错");
+        assert!(matches!(err, AppError::Business(_, _)));
+        let s = stored("u1", &state).await;
+        assert!(crate::auth::verify_password_flexible(&md5("plain123"), &s), "口令不应被改动");
+    }
 }

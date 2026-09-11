@@ -15,7 +15,9 @@
       <el-table :data="rows" v-loading="loading" stripe border>
         <el-table-column prop="id" label="ID" width="60" />
         <el-table-column prop="username" label="用户名" min-width="160" />
-        <el-table-column prop="roleName" label="角色" min-width="120" />
+        <el-table-column label="角色" min-width="120">
+          <template #default="{ row }">{{ row.role?.name ?? row.roleName ?? '-' }}</template>
+        </el-table-column>
         <el-table-column prop="pushKey" label="PushKey" min-width="280">
           <template #default="{ row }">
             <span class="mono">{{ row.pushKey ?? '-' }}</span>
@@ -33,6 +35,17 @@
           </template>
         </el-table-column>
       </el-table>
+
+      <el-pagination
+        class="pager"
+        layout="total, sizes, prev, pager, next"
+        :total="total"
+        :current-page="page"
+        :page-size="count"
+        :page-sizes="[10, 20, 50, 100]"
+        @current-change="onPageChange"
+        @size-change="onSizeChange"
+      />
     </el-card>
 
     <user-add-dialog v-model="addVisible" :roles="roles" @saved="loadData" />
@@ -95,14 +108,36 @@ const pwdRules: FormRules = {
   ]
 }
 
+// 后端 `GET /api/user/users` 会把 count 截断到 100，所以这里必须真分页，
+// 否则第 101 个及之后的用户永远不可见（页面此前写死 count: 200 且没有分页器）。
+const page = ref(1)
+const count = ref(20)
+const total = ref(0)
+
 async function loadData() {
   loading.value = true
   try {
-    const res = await getUserList({ page: 1, count: 200 })
+    const res = await getUserList({ page: page.value, count: count.value })
     rows.value = res.data?.list ?? []
+    total.value = res.data?.total ?? 0
+  } catch (e: any) {
+    ElMessage.error(e?.message ?? '加载用户失败')
+    rows.value = []
+    total.value = 0
   } finally {
     loading.value = false
   }
+}
+
+function onPageChange(p: number) {
+  page.value = p
+  loadData()
+}
+
+function onSizeChange(c: number) {
+  count.value = c
+  page.value = 1
+  loadData()
 }
 
 function onAdd() {
@@ -171,6 +206,10 @@ onMounted(async () => {
 </script>
 
 <style scoped>
+.pager {
+  margin-top: 12px;
+  justify-content: flex-end;
+}
 .user-page { padding: 16px; }
 .page-header { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 12px; }
 .page-title { font-size: 20px; font-weight: 600; margin: 0; }

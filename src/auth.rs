@@ -151,6 +151,37 @@ pub fn is_argon2_hash(stored: &str) -> bool {
 /// 2026-09-11：此前 `change_password` 用**明文相等**比较旧密码
 /// （`current_md5 != old_md5`），导致新建用户（存 Argon2id）**永远无法修改自己的
 /// 密码**；同时改密后又把哈希写成 MD5，造成安全降级。统一走本函数后两条都修掉。
+/// 口令的"秘密值"：统一成 MD5 十六进制。
+///
+/// 本仓库的登录约定是**前端发送 `md5(明文)`**（与 WVP-PRO 一致，见
+/// `web/src/api/user.ts` 的 login / `web-legacy-vue2` 的 store），而存储侧走
+/// Argon2id。因此写库时必须对**客户端送来的口令**再做一次 `legacy_md5`，
+/// 保证"库里存的哈希"和"登录时校验的字符串"是同一个值。
+///
+/// 2026-09-12 修复：此前 `add_user` / `change_password*` 直接
+/// `hash_password(收到的明文)`，导致库里是 `Argon2(明文)`，而登录送 `md5(明文)`
+/// —— 通过界面新建的用户、被管理员重置过密码的用户**永远登录不上**。
+/// 注意 `legacy_md5` 对已经是 32 位十六进制的输入是幂等的，所以老前端
+/// （直接送 md5）也不会被二次哈希。
+pub fn password_secret(input: &str) -> String {
+    legacy_md5(input)
+}
+
+/// 宽松口令校验：把输入同时按"原样"和"MD5 十六进制"两种口径各校验一次。
+///
+/// 覆盖两组调用约定，避免任何一侧再出现"存的和验的不是同一个值"：
+/// * 前端统一送 `md5(明文)`（WVP 约定）→ 第一次命中；
+/// * 外部脚本/接口直接送明文 → 第二次 `md5(明文)` 命中。
+///
+/// 对旧库里的 MD5 行 `verify_password_compat` 本身两种口径都能过。
+pub fn verify_password_flexible(input: &str, stored: &str) -> bool {
+    if verify_password_compat(input, stored) {
+        return true;
+    }
+    let md5 = legacy_md5(input);
+    md5 != input && verify_password_compat(&md5, stored)
+}
+
 pub fn verify_password_compat(plaintext: &str, stored: &str) -> bool {
     if is_argon2_hash(stored) {
         verify_password(plaintext, stored)
@@ -439,6 +470,55 @@ mod password_tests {
     fn test_plaintext_legacy_verification() {
         assert!(verify_password_compat("plain", "plain"));
         assert!(!verify_password_compat("x", "plain"));
+    }
+
+    /// 口令"秘密值"：明文 → md5；已经是 md5 的输入保持幂等。
+    #[test]
+    fn test_password_secret_is_md5_and_idempotent() {
+        assert_eq!(password_secret("admin"), "21232f297a57a5a743894a0e4a801fc3");
+        assert_eq!(
+            password_secret("21232f297a57a5a743894a0e4a801fc3"),
+            "21232f297a57a5a743894a0e4a801fc3",
+            "已是 MD5 的输入不得被二次哈希（老前端直接送 md5）"
+        );
+        assert_eq!(password_secret("  admin  "), password_secret("admin"), "应 trim");
+    }
+
+    /// 端到端（值层面）：界面新建用户时送**明文**入库，登录时送 **md5** —— 必须能对上。
+    ///
+    /// 2026-09-12 修复前的组合是 `hash_password(明文)`，与登录送的 md5 不匹配，
+    /// 导致"通过界面新建的用户永远登录不上"。
+    #[test]
+    fn test_login_md5_matches_password_created_from_plaintext() {
+        let plaintext = "s3cret-pass";
+        let stored = hash_password(&password_secret(plaintext)).unwrap();
+        // 旧前端 / 登录页面送 md5
+        assert!(verify_password_flexible(&legacy_md5(plaintext), &stored));
+        // 外部脚本直接送明文也应通过
+        assert!(verify_password_flexible(plaintext, &stored));
+        // 错误口令必须拒绝
+        assert!(!verify_password_flexible("wrong", &stored));
+        // 修复前的写法（直接哈希明文）无法被 md5 登录校验通过 —— 固化这个差异
+        let buggy = hash_password(plaintext).unwrap();
+        assert!(!verify_password_compat(&legacy_md5(plaintext), &buggy));
+        assert!(!verify_password_flexible(&legacy_md5(plaintext), &buggy));
+    }
+
+    /// 旧库里的 MD5 行：两种口径都应通过（登录送 md5、脚本送明文）。
+    #[test]
+    fn test_legacy_md5_row_accepts_both_wire_forms() {
+        let stored = legacy_md5("admin");
+        assert!(verify_password_flexible("admin", &stored));
+        assert!(verify_password_flexible(&legacy_md5("admin"), &stored));
+        assert!(!verify_password_flexible("nope", &stored));
+    }
+
+    /// 改密后（新口令同样以 md5 为秘密值）用登录口径能通过。
+    #[test]
+    fn test_changed_password_is_verifiable_with_login_wire_form() {
+        let new_plain = "new-pass-1";
+        let stored = hash_password(&password_secret(new_plain)).unwrap();
+        assert!(verify_password_flexible(&legacy_md5(new_plain), &stored));
     }
 
     /// 回归保护：Argon2id 串不可能等于 MD5 十六进制。

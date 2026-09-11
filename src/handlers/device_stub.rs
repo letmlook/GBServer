@@ -482,47 +482,117 @@ pub async fn channel_one(
 }
 
 /// GET /api/device/query/streams
-/// 获取有流的通道列表
-/// 返回: 有流的通道列表
+///
+/// 返回**正在推流**的通道列表（数据源是 ZLM `/index/api/getMediaList`，逐节点汇总）。
+///
+/// 与 WVP 的 `DeviceQuery./streams`（返回 `PageInfo<DeviceChannel>`）对齐的关键点：
+/// * 每行必须带 `deviceId`/`channelId` —— 前端要靠它跳转到实时预览；此前只把
+///   ZLM 的流信息原样透出，`deviceId` 不存在，仪表盘 6 张卡片全是死链；
+/// * `mediaServerId` 标注该流属于哪个节点（多节点部署时前端/排查都需要）；
+/// * 支持 `page`/`count`/`query`（`query` 匹配设备号/通道号/流名），`total` 是
+///   **过滤后**的总数，而不是当前页条数。
 pub async fn query_streams(
     State(state): State<AppState>,
+    Query(q): Query<StreamQuery>,
 ) -> Json<WVPResult<serde_json::Value>> {
-    tracing::info!("Query active streams");
+    let page = q.page.unwrap_or(1).max(1);
+    let count = q.count.unwrap_or(50).clamp(1, 1000);
+    let keyword = q
+        .query
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_lowercase());
 
-    if let Some(ref zlm_client) = state.zlm_client {
-        match zlm_client.get_media_list(None, None, None).await {
+    tracing::info!("Query active streams: page={page} count={count} query={keyword:?}");
+
+    // 多节点：逐节点查询并标注来源；默认节点若不在表里也要带上
+    let mut nodes: Vec<(String, std::sync::Arc<crate::zlm::ZlmClient>)> = state
+        .zlm_clients
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    if let Some(ref default_client) = state.zlm_client {
+        if !nodes.iter().any(|(_, c)| std::sync::Arc::ptr_eq(c, default_client)) {
+            nodes.push(("auto".to_string(), default_client.clone()));
+        }
+    }
+
+    let mut rows: Vec<serde_json::Value> = Vec::new();
+    for (media_server_id, client) in nodes {
+        match client.get_media_list(None, None, None).await {
             Ok(streams) => {
-                let list: Vec<serde_json::Value> = streams.iter().map(|s| {
-                    serde_json::json!({
-                        "schema": s.schema,
-                        "app": s.app,
-                        "stream": s.stream,
-                        "vhost": s.vhost,
-                        "readerCount": s.reader_count,
-                        "totalReaderCount": s.total_reader_count,
-                        "originType": s.origin_type,
-                        "aliveSecond": s.alive_second,
-                        "bytesSpeed": s.bytes_speed
-                    })
-                }).collect();
-                
-                return Json(WVPResult::success(serde_json::json!({
-                    "total": list.len(),
-                    "list": list
-                })));
+                for s in &streams {
+                    rows.push(stream_row_json(&media_server_id, s));
+                }
             }
             Err(e) => {
-                tracing::error!("Failed to query ZLM streams: {}", e);
+                tracing::warn!("查询 ZLM 节点 {media_server_id} 的流列表失败: {e}");
             }
         }
     }
 
+    if let Some(ref kw) = keyword {
+        rows.retain(|r| {
+            ["deviceId", "channelId", "stream", "app"].iter().any(|k| {
+                r.get(k)
+                    .and_then(|v| v.as_str())
+                    .map(|v| v.to_lowercase().contains(kw))
+                    .unwrap_or(false)
+            })
+        });
+    }
+    let total = rows.len();
+    let offset = ((page - 1) * count) as usize;
+    let list: Vec<serde_json::Value> = rows.into_iter().skip(offset).take(count as usize).collect();
+
     Json(WVPResult::success(serde_json::json!({
-        "total": 0,
-        "list": []
+        "total": total,
+        "list": list
     })))
 }
 
+/// `/api/device/query/streams` 的查询参数
+#[derive(Debug, Deserialize)]
+pub struct StreamQuery {
+    pub page: Option<u32>,
+    pub count: Option<u32>,
+    pub query: Option<String>,
+}
+
+/// 把一路 ZLM 流拼成前端需要的行。
+///
+/// `deviceId`/`channelId` 从流名里取前两段（`设备ID_通道ID[...]`），
+/// 回放流名形如 `设备ID_通道ID_开始_结束`，所以按段取而不是按 `parse_stream_id`
+/// 的整段切分。推流/代理（`push_xxx`/`proxy_xxx`）没有国标标识，如实留空。
+fn stream_row_json(media_server_id: &str, s: &crate::zlm::types::MediaInfo) -> serde_json::Value {
+    let mut parts = s.stream.split('_');
+    let (device_id, channel_id) = match (parts.next(), parts.next()) {
+        (Some(d), Some(c))
+            if !d.is_empty()
+                && !c.is_empty()
+                && !s.stream.starts_with("push_")
+                && !s.stream.starts_with("proxy_") =>
+        {
+            (d.to_string(), c.to_string())
+        }
+        _ => (String::new(), String::new()),
+    };
+    serde_json::json!({
+        "deviceId": device_id,
+        "channelId": channel_id,
+        "mediaServerId": media_server_id,
+        "schema": s.schema,
+        "app": s.app,
+        "stream": s.stream,
+        "vhost": s.vhost,
+        "readerCount": s.reader_count,
+        "totalReaderCount": s.total_reader_count,
+        "originType": s.origin_type,
+        "aliveSecond": s.alive_second,
+        "bytesSpeed": s.bytes_speed
+    })
+}
 
 /// GET /api/device/control/record
 /// 设备远程录像控制
@@ -946,4 +1016,58 @@ pub async fn subscribe_alarm(
         "expires": expires,
         "message": "Alarm subscription sent"
     })))
+}
+
+#[cfg(test)]
+mod stream_row_tests {
+    use super::*;
+    use crate::zlm::types::MediaInfo;
+
+    fn info(stream: &str) -> MediaInfo {
+        MediaInfo {
+            app: "rtp".to_string(),
+            stream: stream.to_string(),
+            schema: "rtsp".to_string(),
+            vhost: "__defaultVhost__".to_string(),
+            reader_count: 0,
+            total_reader_count: 0,
+            origin_type: 0,
+            origin_url: None,
+            create_stamp: 0,
+            alive_second: 0,
+            bytes_speed: 0,
+            tracks: Vec::new(),
+        }
+    }
+
+    /// 实时流 `设备ID_通道ID` 必须解析出国标标识（前端靠它跳转直播页）。
+    #[test]
+    fn test_live_stream_row_has_device_and_channel() {
+        let row = stream_row_json("zlmediakit-1", &info("34020000001320000001_34020000001310000001"));
+        assert_eq!(row["deviceId"], "34020000001320000001");
+        assert_eq!(row["channelId"], "34020000001310000001");
+        assert_eq!(row["mediaServerId"], "zlmediakit-1");
+        assert_eq!(row["stream"], "34020000001320000001_34020000001310000001");
+    }
+
+    /// 回放流名多两段（开始/结束时间），通道号仍是第二段。
+    #[test]
+    fn test_playback_stream_row_takes_second_segment() {
+        let row = stream_row_json(
+            "auto",
+            &info("34020000001320000001_34020000001310000001_1700000000_1700003600"),
+        );
+        assert_eq!(row["deviceId"], "34020000001320000001");
+        assert_eq!(row["channelId"], "34020000001310000001");
+    }
+
+    /// 推流/代理没有国标标识，如实留空（前端据此跳过，而不是跳转到不存在的通道）。
+    #[test]
+    fn test_push_and_proxy_streams_have_no_gb_ids() {
+        for name in ["push_live1", "proxy_camera1", "single"] {
+            let row = stream_row_json("auto", &info(name));
+            assert_eq!(row["deviceId"], "", "{name} 不应有 deviceId");
+            assert_eq!(row["channelId"], "", "{name} 不应有 channelId");
+        }
+    }
 }

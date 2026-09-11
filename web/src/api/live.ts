@@ -75,16 +75,47 @@ export function getPlayUrl(params: { deviceId: string; channelId?: string; proto
   })
 }
 
-export function getWebrtcPlay(params: { deviceId: string; channelId: string }) {
-  return request<WvpResult<{ url: string }>>({
-    method: 'get',
+/**
+ * WebRTC 拉流：后端 `/api/play/webrtc` 只注册了 **POST**，且要求 JSON body
+ * 里带 SDP offer（`WebRtcOfferRequest { deviceId, channelId, sdp, type }`），
+ * 返回的是 **SDP answer**（`{sdp, type, app, stream}`），不是播放地址。
+ *
+ * 此前这里写成 GET + query 并声明返回 `{url}`：方法不匹配会 405，
+ * 即使改成 GET 参数也进不了 body。当前无页面调用方（直播页用
+ * `/api/play/start` 返回的 flv/hls/ws 地址）。
+ */
+export function postWebrtcPlay(params: {
+  deviceId: string
+  channelId: string
+  sdp: string
+  type?: string
+}) {
+  return request<WvpResult<{ sdp: string; type: string; app: string; stream: string }>>({
+    method: 'post',
     url: '/play/webrtc',
-    params
+    data: { ...params, type: params.type ?? 'offer' }
   })
 }
 
+export interface MediaStreamRow {
+  /** 国标设备编号（由 `stream` 名 `设备ID_通道ID` 解析；解析不出为空串） */
+  deviceId: string
+  /** 国标通道编号 */
+  channelId: string
+  mediaServerId?: string
+  schema?: string
+  app: string
+  stream: string
+  vhost?: string
+  readerCount?: number
+  totalReaderCount?: number
+  originType?: number
+  aliveSecond?: number
+  bytesSpeed?: number
+}
+
 export function queryStreams(params: { page?: number; count?: number; query?: string }) {
-  return request<WvpResult<{ total: number; list: { mediaServerId: string; app: string; stream: string; readerCount?: number }[] }>>({
+  return request<WvpResult<{ total: number; list: MediaStreamRow[] }>>({
     method: 'get',
     url: '/device/query/streams',
     params
@@ -98,13 +129,27 @@ export function queryStreams(params: { page?: number; count?: number; query?: st
 export function sendPtz(params: {
   deviceId: string
   channelId: string
+  /** UP/DOWN/LEFT/RIGHT/STOP/ZOOM_IN/ZOOM_OUT */
   cmd: string
+  /** 单一速度（0-255），三个方向共用；需要分别控制时用下面的可选参数 */
   speed?: number
+  horizonSpeed?: number
+  verticalSpeed?: number
+  zoomSpeed?: number
 }) {
+  const speed = params.speed ?? 50
   return request<WvpResult>({
     method: 'get',
     url: `/front-end/ptz/${params.deviceId}/${params.channelId}`,
-    params: { cmd: params.cmd, speed: params.speed ?? 50 }
+    // 参数名必须与 WVP/后端一致：command + 三个 *Speed。
+    // 早期发的是 `cmd`/`speed`，后端一个都绑不上 —— 命令变成"无动作"，
+    // 接口却返回成功，云台按钮点了没反应。
+    params: {
+      command: params.cmd,
+      horizonSpeed: params.horizonSpeed ?? speed,
+      verticalSpeed: params.verticalSpeed ?? speed,
+      zoomSpeed: params.zoomSpeed ?? speed
+    }
   })
 }
 
