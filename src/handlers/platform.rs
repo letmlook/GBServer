@@ -10,7 +10,7 @@ use sqlx::Row;
 use crate::db::platform as platform_db;
 use crate::db::platform_channel;
 use crate::db::{Platform, device as db_device};
-use crate::error::AppError;
+use crate::error::{AppError, ErrorCode};
 use crate::response::WVPResult;
 
 /// Deserialize a port field that may be either a JSON number (Vue's default)
@@ -1518,36 +1518,66 @@ pub struct CatalogAddBody {
     pub platform_id: Option<i64>,
 }
 
-/// 内部工具 — 按 feature 分发不同 SQL；sqlite 路径下部分参数仅在 cfg(postgres/mysql) 中使用
-#[allow(unused_variables)]
+/// POST /api/platform/catalog/add
+///
+/// 2026-09-12 修复（此前有三重缺陷，等于**必然失败却报告成功**）：
+/// 1. `gb_platform_catalog` 表在**三份 schema 中都不存在**
+/// 2. **没有 `sqlite` 分支** —— 默认 SQLite 部署下该端点什么都不做
+/// 3. INSERT 的错误被 `let _ =` 忽略，却始终返回「目录添加成功」
 pub async fn catalog_add(
     State(state): State<AppState>,
     Json(body): Json<CatalogAddBody>,
-) -> Json<serde_json::Value> {
-    let id = body.id.unwrap_or(0);
+) -> Result<Json<serde_json::Value>, AppError> {
     let name = body.name.clone().unwrap_or_default();
     let parent = body.parent.clone().unwrap_or_default();
     let civil_code = body.civil_code.clone().unwrap_or_default();
     let business_group = body.business_group.clone().unwrap_or_default();
     let platform_id = body.platform_id.unwrap_or(0);
-
-    tracing::info!("platform catalog add: id={}, name={:?}, parent={}, civil_code={}, platform_id={}", id, name, parent, civil_code, platform_id);
-    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    #[cfg(feature = "mysql")]
-    let _ = sqlx::query("INSERT INTO gb_platform_catalog (name, parent, civil_code, business_group, platform_id, create_time, update_time) VALUES (?, ?, ?, ?, ?, ?, ?)")
-        .bind(name).bind(parent).bind(&civil_code).bind(&business_group).bind(platform_id).bind(&now).bind(&now)
-        .execute(&state.pool).await;
-    #[cfg(feature = "postgres")]
-    let _ = sqlx::query("INSERT INTO gb_platform_catalog (name, parent, civil_code, business_group, platform_id, create_time, update_time) VALUES ($1, $2, $3, $4, $5, $6, $7)")
-        .bind(name).bind(parent).bind(&civil_code).bind(&business_group).bind(platform_id).bind(&now).bind(&now)
-        .execute(&state.pool).await;
-    if platform_id > 0 {
-        let _ = refresh_platform_catalog(&state, platform_id).await;
+    if name.trim().is_empty() {
+        return Err(AppError::business(ErrorCode::Error400, "缺少 name"));
     }
-    Json(serde_json::json!({ "code": 0, "msg": "目录添加成功" }))
+    tracing::info!(
+        "platform catalog add: name={:?}, parent={}, civil_code={}, platform_id={}",
+        name,
+        parent,
+        civil_code,
+        platform_id
+    );
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+
+    let sql = if cfg!(feature = "postgres") {
+        "INSERT INTO gb_platform_catalog (name, parent, civil_code, business_group, platform_id, create_time, update_time) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7)"
+    } else {
+        "INSERT INTO gb_platform_catalog (name, parent, civil_code, business_group, platform_id, create_time, update_time) \
+         VALUES (?, ?, ?, ?, ?, ?, ?)"
+    };
+    let affected = sqlx::query(sql)
+        .bind(&name)
+        .bind(&parent)
+        .bind(&civil_code)
+        .bind(&business_group)
+        .bind(platform_id)
+        .bind(&now)
+        .bind(&now)
+        .execute(&state.pool)
+        .await
+        .map_err(|e| AppError::business(ErrorCode::Error500, format!("目录写入失败: {}", e)))?
+        .rows_affected();
+
+    // 推送上级平台属尽力而为：本地已落库，推送失败只告警不失败
+    if platform_id > 0 {
+        if let Err(e) = refresh_platform_catalog(&state, platform_id).await {
+            tracing::warn!("目录已写入，但刷新上级平台目录失败: {}", e);
+        }
+    }
+    Ok(Json(serde_json::json!({
+        "code": 0,
+        "msg": "目录添加成功",
+        "affected": affected,
+    })))
 }
 
-/// POST /api/platform/catalog/edit (used in catalogEdit.vue, commonChannelEditDialog.vue)
 #[derive(Debug, Deserialize)]
 pub struct CatalogAddBodyEdit {
     pub id: Option<i64>,
@@ -1558,15 +1588,17 @@ pub struct CatalogAddBodyEdit {
     pub platform_id: Option<i64>,
 }
 
-/// 内部工具 — 按 feature 分发不同 SQL；sqlite 路径下部分参数仅在 cfg(postgres/mysql) 中使用
+/// POST /api/platform/catalog/edit (used in catalogEdit.vue, commonChannelEditDialog.vue)
+///
+/// 与 `catalog_add` 同样的问题已一并修复：补 sqlite 分支、传播错误、不再空转报成功。
 #[allow(unused_variables)]
 pub async fn catalog_edit(
     State(state): State<AppState>,
     Json(body): Json<CatalogAddBodyEdit>,
-) -> Json<serde_json::Value> {
+) -> Result<Json<serde_json::Value>, AppError> {
     let id = body.id.unwrap_or(0);
     if id <= 0 {
-        // Fallback to add if no id provided
+        // 无 id 时退化为新增（保持既有语义），但**必须传播错误**
         let add_body = CatalogAddBody {
             id: None,
             name: body.name.clone(),
@@ -1575,9 +1607,8 @@ pub async fn catalog_edit(
             business_group: body.business_group.clone(),
             platform_id: body.platform_id,
         };
-        // Reuse add path by delegating to insert logic via direct call
-        let _ = catalog_add(State(state.clone()), Json(add_body)).await;
-        return Json(serde_json::json!({ "code": 0, "msg": "目录编辑成功" }));
+        let Json(_) = catalog_add(State(state.clone()), Json(add_body)).await?;
+        return Ok(Json(serde_json::json!({ "code": 0, "msg": "目录编辑成功" })));
     }
     let name = body.name.clone().unwrap_or_default();
     let parent = body.parent.clone().unwrap_or_default();
@@ -1585,18 +1616,45 @@ pub async fn catalog_edit(
     let business_group = body.business_group.clone().unwrap_or_default();
     let platform_id = body.platform_id.unwrap_or(0);
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    #[cfg(feature = "mysql")]
-    let _ = sqlx::query("UPDATE gb_platform_catalog SET name = COALESCE(?, name), parent = COALESCE(?, parent), civil_code = COALESCE(?, civil_code), business_group = COALESCE(?, business_group), platform_id = COALESCE(?, platform_id), update_time = ? WHERE id = ?")
-        .bind(name).bind(&parent).bind(&civil_code).bind(&business_group).bind(platform_id).bind(&now).bind(id)
-        .execute(&state.pool).await;
-    #[cfg(feature = "postgres")]
-    let _ = sqlx::query("UPDATE gb_platform_catalog SET name = COALESCE($1, name), parent = COALESCE($2, parent), civil_code = COALESCE($3, civil_code), business_group = COALESCE($4, business_group), platform_id = COALESCE($5, platform_id), update_time = $6 WHERE id = $7")
-        .bind(name).bind(parent).bind(civil_code).bind(business_group).bind(platform_id).bind(&now).bind(id)
-        .execute(&state.pool).await;
-    if platform_id > 0 {
-        let _ = refresh_platform_catalog(&state, platform_id).await;
+
+    let sql = if cfg!(feature = "postgres") {
+        "UPDATE gb_platform_catalog SET name = COALESCE($1, name), parent = COALESCE($2, parent), \
+         civil_code = COALESCE($3, civil_code), business_group = COALESCE($4, business_group), \
+         platform_id = COALESCE($5, platform_id), update_time = $6 WHERE id = $7"
+    } else {
+        "UPDATE gb_platform_catalog SET name = COALESCE(?, name), parent = COALESCE(?, parent), \
+         civil_code = COALESCE(?, civil_code), business_group = COALESCE(?, business_group), \
+         platform_id = COALESCE(?, platform_id), update_time = ? WHERE id = ?"
+    };
+    let affected = sqlx::query(sql)
+        .bind(&name)
+        .bind(&parent)
+        .bind(&civil_code)
+        .bind(&business_group)
+        .bind(platform_id)
+        .bind(&now)
+        .bind(id)
+        .execute(&state.pool)
+        .await
+        .map_err(|e| AppError::business(ErrorCode::Error500, format!("目录更新失败: {}", e)))?
+        .rows_affected();
+
+    if affected == 0 {
+        return Err(AppError::business(
+            ErrorCode::Error404,
+            format!("目录不存在: id={}", id),
+        ));
     }
-    Json(serde_json::json!({ "code": 0, "msg": "目录编辑成功" }))
+    if platform_id > 0 {
+        if let Err(e) = refresh_platform_catalog(&state, platform_id).await {
+            tracing::warn!("目录已更新，但刷新上级平台目录失败: {}", e);
+        }
+    }
+    Ok(Json(serde_json::json!({
+        "code": 0,
+        "msg": "目录编辑成功",
+        "affected": affected,
+    })))
 }
 
 /// GET /api/platform/info/:id

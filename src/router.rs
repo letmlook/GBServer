@@ -1231,6 +1231,8 @@ mod tests {
             "/api/role/add",
             "/api/jt1078/area/circle/add",
             "/api/jt1078/confirmation-alarm-message",
+            "/api/platform/catalog/add",
+            "/api/platform/catalog/edit",
         ] {
             let status = post_status_of(&base, path).await;
             assert_ne!(status, 404, "{} 未注册到路由表（返回 404）", path);

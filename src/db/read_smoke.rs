@@ -242,3 +242,36 @@ async fn smoke_jt1078_and_history_reads() {
         .await
         .expect("audit_log::list_paged");
 }
+
+/// 回归保护：这些表此前**只存在于 init-sqlite 的建表脚本**里，而该脚本仅在
+/// 「gb_device 不存在」时执行 —— 于是已有旧库升级后始终缺表，对应端点报
+/// "no such table"。同时 PostgreSQL / MySQL 的 schema 也缺其中 4 张。
+///
+/// 本测试逐一确认它们**存在且可写**。
+#[tokio::test]
+async fn smoke_previously_missing_tables_exist_and_accept_writes() {
+    let pool = sqlite_pool_with_schema().await;
+    let now = "2026-01-01 00:00:00";
+
+    // 4 张 JT1078 区域/路线表
+    sqlx::query("INSERT INTO gb_jt_area_circle (phone_number, label, center_lat, center_lon, radius_m, create_time, update_time) VALUES ('13800000001','c',32.0,118.0,100,?,?)")
+        .bind(now).bind(now).execute(&pool).await.expect("gb_jt_area_circle 应存在且可写");
+    sqlx::query("INSERT INTO gb_jt_area_polygon (phone_number, label, points_json, create_time, update_time) VALUES ('13800000001','p','[]',?,?)")
+        .bind(now).bind(now).execute(&pool).await.expect("gb_jt_area_polygon 应存在且可写");
+    sqlx::query("INSERT INTO gb_jt_area_rectangle (phone_number, label, left_top_lat, left_top_lon, right_bottom_lat, right_bottom_lon, create_time, update_time) VALUES ('13800000001','r',33.0,119.0,32.0,118.0,?,?)")
+        .bind(now).bind(now).execute(&pool).await.expect("gb_jt_area_rectangle 应存在且可写");
+    sqlx::query("INSERT INTO gb_jt_route (phone_number, label, waypoints_json, create_time, update_time) VALUES ('13800000001','w','[]',?,?)")
+        .bind(now).bind(now).execute(&pool).await.expect("gb_jt_route 应存在且可写");
+
+    // 平台目录表（catalog_add/edit 一直在写它）
+    sqlx::query("INSERT INTO gb_platform_catalog (name, parent, civil_code, business_group, platform_id, create_time, update_time) VALUES ('n','p','340200','g',1,?,?)")
+        .bind(now).bind(now).execute(&pool).await.expect("gb_platform_catalog 应存在且可写");
+    let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM gb_platform_catalog")
+        .fetch_one(&pool).await.unwrap();
+    assert_eq!(n, 1);
+
+    // 更新路径（catalog_edit）同样要能命中
+    let affected = sqlx::query("UPDATE gb_platform_catalog SET name = COALESCE(?, name), update_time = ? WHERE id = 1")
+        .bind(Some("renamed")).bind(now).execute(&pool).await.unwrap().rows_affected();
+    assert_eq!(affected, 1, "目录更新应命中 1 行");
+}

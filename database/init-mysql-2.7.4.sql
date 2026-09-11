@@ -623,3 +623,62 @@ CREATE TABLE IF NOT EXISTS gb_cluster_node
 ) COMMENT '集群节点表';
 CREATE UNIQUE INDEX uk_cluster_node_id ON gb_cluster_node(node_id);
 CREATE INDEX idx_cluster_node_heartbeat ON gb_cluster_node(last_heartbeat_secs);
+
+-- JT1078 区域/路线（2026-09-12 补齐：此前仅 SQLite 有此 4 张表）
+create table IF NOT EXISTS gb_jt_area_circle (
+    id           bigint auto_increment primary key COMMENT '主键ID',
+    phone_number varchar(50) NOT NULL COMMENT '终端SIM卡号',
+    label        varchar(255) COMMENT '围栏名称',
+    center_lat   double NOT NULL COMMENT '中心纬度',
+    center_lon   double NOT NULL COMMENT '中心经度',
+    radius_m     integer NOT NULL COMMENT '半径(米)',
+    create_time  varchar(50) NOT NULL COMMENT '创建时间',
+    update_time  varchar(50) NOT NULL COMMENT '更新时间'
+);
+CREATE INDEX idx_jt_area_circle_phone ON gb_jt_area_circle (phone_number);
+
+create table IF NOT EXISTS gb_jt_area_polygon (
+    id           bigint auto_increment primary key COMMENT '主键ID',
+    phone_number varchar(50) NOT NULL COMMENT '终端SIM卡号',
+    label        varchar(255) COMMENT '围栏名称',
+    points_json  text NOT NULL COMMENT '顶点 JSON',
+    create_time  varchar(50) NOT NULL COMMENT '创建时间',
+    update_time  varchar(50) NOT NULL COMMENT '更新时间'
+);
+CREATE INDEX idx_jt_area_polygon_phone ON gb_jt_area_polygon (phone_number);
+
+create table IF NOT EXISTS gb_jt_area_rectangle (
+    id               bigint auto_increment primary key COMMENT '主键ID',
+    phone_number     varchar(50) NOT NULL COMMENT '终端SIM卡号',
+    label            varchar(255) COMMENT '围栏名称',
+    left_top_lat     double NOT NULL COMMENT '左上纬度',
+    left_top_lon     double NOT NULL COMMENT '左上经度',
+    right_bottom_lat double NOT NULL COMMENT '右下纬度',
+    right_bottom_lon double NOT NULL COMMENT '右下经度',
+    create_time      varchar(50) NOT NULL COMMENT '创建时间',
+    update_time      varchar(50) NOT NULL COMMENT '更新时间'
+);
+CREATE INDEX idx_jt_area_rectangle_phone ON gb_jt_area_rectangle (phone_number);
+
+create table IF NOT EXISTS gb_jt_route (
+    id             bigint auto_increment primary key COMMENT '主键ID',
+    phone_number   varchar(50) NOT NULL COMMENT '终端SIM卡号',
+    label          varchar(255) COMMENT '路线名称',
+    waypoints_json text NOT NULL COMMENT '途经点 JSON',
+    create_time    varchar(50) NOT NULL COMMENT '创建时间',
+    update_time    varchar(50) NOT NULL COMMENT '更新时间'
+);
+CREATE INDEX idx_jt_route_phone ON gb_jt_route (phone_number);
+
+-- 平台目录（2026-09-12 新增，原因同 PostgreSQL 注释）
+create table IF NOT EXISTS gb_platform_catalog (
+    id             bigint auto_increment primary key COMMENT '主键ID',
+    name           varchar(255) COMMENT '目录名称',
+    parent         varchar(255) COMMENT '父节点',
+    civil_code     varchar(50) COMMENT '行政区划编码',
+    business_group varchar(255) COMMENT '业务分组',
+    platform_id    integer COMMENT '平台ID',
+    create_time    varchar(50) COMMENT '创建时间',
+    update_time    varchar(50) COMMENT '更新时间'
+);
+CREATE INDEX idx_platform_catalog_platform ON gb_platform_catalog (platform_id);

@@ -234,6 +234,56 @@ async fn ensure_sqlite_upgrade_tables(pool: &db::Pool) -> anyhow::Result<()> {
         )"#,
         "CREATE UNIQUE INDEX IF NOT EXISTS uk_jt_channel_terminal_channel \
          ON gb_jt_channel (terminal_db_id, channel_id)",
+        // 2026-09-12：以下 5 张表此前只存在于 init-sqlite 的建表脚本里，
+        // 而该脚本仅在「gb_device 不存在」时才会执行 —— 于是**已有的旧库**
+        // 升级上来始终缺这些表，对应端点运行时报 "no such table"。
+        r#"CREATE TABLE IF NOT EXISTS gb_jt_area_circle (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            phone_number TEXT    NOT NULL,
+            label        TEXT,
+            center_lat   REAL    NOT NULL,
+            center_lon   REAL    NOT NULL,
+            radius_m     INTEGER NOT NULL,
+            create_time  TEXT    NOT NULL,
+            update_time  TEXT    NOT NULL
+        )"#,
+        r#"CREATE TABLE IF NOT EXISTS gb_jt_area_polygon (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            phone_number TEXT NOT NULL,
+            label        TEXT,
+            points_json  TEXT NOT NULL,
+            create_time  TEXT NOT NULL,
+            update_time  TEXT NOT NULL
+        )"#,
+        r#"CREATE TABLE IF NOT EXISTS gb_jt_area_rectangle (
+            id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            phone_number      TEXT NOT NULL,
+            label             TEXT,
+            left_top_lat      REAL NOT NULL,
+            left_top_lon      REAL NOT NULL,
+            right_bottom_lat  REAL NOT NULL,
+            right_bottom_lon  REAL NOT NULL,
+            create_time       TEXT NOT NULL,
+            update_time       TEXT NOT NULL
+        )"#,
+        r#"CREATE TABLE IF NOT EXISTS gb_jt_route (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            phone_number    TEXT NOT NULL,
+            label           TEXT,
+            waypoints_json  TEXT NOT NULL,
+            create_time     TEXT NOT NULL,
+            update_time     TEXT NOT NULL
+        )"#,
+        r#"CREATE TABLE IF NOT EXISTS gb_platform_catalog (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            name           VARCHAR(255),
+            parent         VARCHAR(255),
+            civil_code     VARCHAR(50),
+            business_group VARCHAR(255),
+            platform_id    INTEGER,
+            create_time    VARCHAR(50),
+            update_time    VARCHAR(50)
+        )"#,
     ];
     for stmt in STMTS {
         if let Err(e) = sqlx::query(stmt).execute(pool).await {

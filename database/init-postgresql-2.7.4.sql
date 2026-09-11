@@ -1020,3 +1020,69 @@ CREATE TABLE IF NOT EXISTS gb_jt_media_item
 CREATE INDEX IF NOT EXISTS idx_jt_media_item_phone ON gb_jt_media_item (phone_number);
 CREATE INDEX IF NOT EXISTS idx_jt_media_item_time ON gb_jt_media_item (start_time, end_time);
 COMMENT ON TABLE gb_jt_media_item IS 'Phase 6.4: JT/T 1078 录像检索结果';
+
+-- JT1078 区域/路线（2026-09-12 补齐：此前仅 SQLite 有此 4 张表，
+-- 导致 PostgreSQL 部署下 JT1078 区域/路线 CRUD 全部 "table does not exist"）
+CREATE TABLE IF NOT EXISTS gb_jt_area_circle
+(
+    id           serial PRIMARY KEY,
+    phone_number character varying(50) NOT NULL,
+    label        character varying(255),
+    center_lat   double precision NOT NULL,
+    center_lon   double precision NOT NULL,
+    radius_m     integer NOT NULL,
+    create_time  character varying(50) NOT NULL,
+    update_time  character varying(50) NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_jt_area_circle_phone ON gb_jt_area_circle (phone_number);
+
+CREATE TABLE IF NOT EXISTS gb_jt_area_polygon
+(
+    id           serial PRIMARY KEY,
+    phone_number character varying(50) NOT NULL,
+    label        character varying(255),
+    points_json  text NOT NULL,
+    create_time  character varying(50) NOT NULL,
+    update_time  character varying(50) NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_jt_area_polygon_phone ON gb_jt_area_polygon (phone_number);
+
+CREATE TABLE IF NOT EXISTS gb_jt_area_rectangle
+(
+    id               serial PRIMARY KEY,
+    phone_number     character varying(50) NOT NULL,
+    label            character varying(255),
+    left_top_lat     double precision NOT NULL,
+    left_top_lon     double precision NOT NULL,
+    right_bottom_lat double precision NOT NULL,
+    right_bottom_lon double precision NOT NULL,
+    create_time      character varying(50) NOT NULL,
+    update_time      character varying(50) NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_jt_area_rectangle_phone ON gb_jt_area_rectangle (phone_number);
+
+CREATE TABLE IF NOT EXISTS gb_jt_route
+(
+    id             serial PRIMARY KEY,
+    phone_number   character varying(50) NOT NULL,
+    label          character varying(255),
+    waypoints_json text NOT NULL,
+    create_time    character varying(50) NOT NULL,
+    update_time    character varying(50) NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_jt_route_phone ON gb_jt_route (phone_number);
+
+-- 平台目录（2026-09-12 新增：handlers/platform.rs 的 catalog_add/edit 一直在写这张表，
+-- 但它此前在三份 schema 中都不存在，配合被忽略的错误形成了"必然失败却报成功"）
+CREATE TABLE IF NOT EXISTS gb_platform_catalog
+(
+    id             serial PRIMARY KEY,
+    name           character varying(255),
+    parent         character varying(255),
+    civil_code     character varying(50),
+    business_group character varying(255),
+    platform_id    integer,
+    create_time    character varying(50),
+    update_time    character varying(50)
+);
+CREATE INDEX IF NOT EXISTS idx_platform_catalog_platform ON gb_platform_catalog (platform_id);

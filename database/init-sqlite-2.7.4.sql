@@ -424,6 +424,20 @@ CREATE TABLE IF NOT EXISTS gb_platform_region
 CREATE UNIQUE INDEX IF NOT EXISTS uk_gb_platform_region_platform_id_region_id
     ON gb_platform_region (platform_id, region_id);
 
+-- 平台目录（2026-09-12 新增：catalog_add/edit 一直在写这张表但此前不存在）
+CREATE TABLE IF NOT EXISTS gb_platform_catalog
+(
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    name           VARCHAR(255),
+    parent         VARCHAR(255),
+    civil_code     VARCHAR(50),
+    business_group VARCHAR(255),
+    platform_id    INTEGER,
+    create_time    VARCHAR(50),
+    update_time    VARCHAR(50)
+);
+CREATE INDEX IF NOT EXISTS idx_platform_catalog_platform ON gb_platform_catalog (platform_id);
+
 -- ============================================
 -- 10. gb_cloud_record — 云端录像记录
 -- ============================================
