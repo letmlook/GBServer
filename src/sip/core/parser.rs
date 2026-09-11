@@ -137,6 +137,12 @@ impl Parser {
     ) -> String {
         let mut response = format!("SIP/2.0 {} {}\r\n", status_code, reason);
         for (name, value) in headers {
+            // Content-Length 一律由这里统一生成：调用方再传一个会产生
+            // **重复的 Content-Length 头**，接收方对"以哪个为准"可以有不同
+            // 解释（RFC 7230 §3.3.2 把重复且不一致的长度视为潜在攻击）。
+            if name.eq_ignore_ascii_case("content-length") {
+                continue;
+            }
             response.push_str(&format!("{}: {}\r\n", name, value));
         }
         if let Some(b) = body {
@@ -163,6 +169,10 @@ impl Parser {
     ) -> String {
         let mut request = format!("{} {} SIP/2.0\r\n", method, uri);
         for (name, value) in headers {
+            // 同 generate_response：长度由这里统一生成，避免重复头
+            if name.eq_ignore_ascii_case("content-length") {
+                continue;
+            }
             request.push_str(&format!("{}: {}\r\n", name, value));
         }
         if let Some(b) = body {

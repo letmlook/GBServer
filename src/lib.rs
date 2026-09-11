@@ -398,6 +398,18 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
         if sip_config.enabled {
             let mut server = sip::SipServer::new(sip_config.clone(), pool.clone(), cfg.database.sqlite_max_devices);
             server.set_ws_state(ws_state.clone()).await;
+            // **必须显式接线**：`SipServer::tcp_enabled` 与 `sip.tcp_enabled`
+            // 之间此前没有任何连接点，`set_tcp_enabled` 是死代码 ——
+            // TCP 监听器从未启动，TCP 设备无法注册。
+            server.set_tcp_enabled(sip_config.tcp_enabled);
+            tracing::info!(
+                "SIP 传输：UDP {}:{}，TCP {}:{}（tcp_enabled={}）",
+                sip_config.ip,
+                sip_config.port,
+                sip_config.ip,
+                sip_config.tcp_port,
+                sip_config.tcp_enabled
+            );
             Some(Arc::new(server))
         } else {
             None

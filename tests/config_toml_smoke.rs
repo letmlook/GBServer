@@ -28,7 +28,10 @@ fn toml_config_loads_and_deserializes() {
     let sip = cfg.sip.as_ref().expect("sip should be present");
     assert!(sip.enabled);
     assert_eq!(sip.port, 5060);
-    assert_eq!(sip.tcp_port, 5061);
+    // TCP 与 UDP 共用端口：国标设备只配「IP + 端口 + 传输方式」，
+    // TCP 单独放 5061 会让以 5060/TCP 配置的设备连不上。
+    assert_eq!(sip.tcp_port, 5060);
+    assert!(sip.tcp_enabled, "SIP TCP 监听默认必须开启（否则 TCP 设备无法注册）");
     assert_eq!(sip.device_id, "34020000002000000001");
     assert_eq!(sip.realm, "3402000000");
 

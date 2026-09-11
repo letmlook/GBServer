@@ -308,7 +308,9 @@ impl SipServer {
             catalog_subscription_manager: Arc::new(CatalogSubscriptionManager::new()),
             transaction_manager: Arc::new(TransactionManager::new()),
             socket: Arc::new(RwLock::new(None)),
-            tcp_enabled: false,
+            // 默认开启（见 SipConfig::tcp_enabled 的说明）：TCP 监听器此前
+            // 因为这里硬编码 false 且 set_tcp_enabled 从未被调用而从未启动。
+            tcp_enabled: true,
             tcp_listener: Arc::new(RwLock::new(None)),
             tcp_connection_manager: Arc::new(TcpConnectionManager::new()),
             pool,
@@ -709,7 +711,7 @@ impl SipServer {
             tokio::spawn(async move {
                 loop {
                     match listener.accept().await {
-                        Ok((stream, addr)) => {
+                        Ok((reader, write_half, addr)) => {
                             tracing::debug!("TCP connection from: {}", addr);
 
                             let config = tcp_config.clone();
@@ -734,11 +736,14 @@ impl SipServer {
                             let transaction_manager = tcp_transaction_manager.clone();
                             let catalog_sync_manager = tcp_catalog_sync_manager.clone();
 
-                            conn_manager.add_connection(addr, stream).await;
+                            // 写半交给连接管理器（供响应与平台主动请求使用），
+                            // 读半留在读循环里 —— 两者不共用锁，避免
+                            // "读阻塞"与"写响应"互相顶住。
+                            conn_manager.add_connection(addr, write_half).await;
 
                             tokio::spawn(async move {
                                 Self::handle_tcp_connection(
-                                    addr, &config, &device_manager, &session_manager,
+                                    addr, reader, &config, &device_manager, &session_manager,
                                     &invite_session_manager, &talk_manager,
                                     &catalog_subscription_manager, &zlm_client, &pool,
                                     &conn_manager, &pending_request_manager,
@@ -1000,7 +1005,16 @@ let renewal_pool = pool.clone();
                                 keepalive_xml
                             );
 
-                            if let Err(e) = heartbeat_socket.send_to(sip_msg.as_bytes(), addr).await
+                            // 经统一出站口发送：设备以 TCP 注册时，平台心跳
+                            // 必须走同一条 TCP 连接（走 UDP 设备收不到，
+                            // 会被判定"平台失联"从而注销）。
+                            if let Err(e) =
+                                crate::sip::transport::tcp::send_sip_out(
+                                    &heartbeat_socket,
+                                    addr,
+                                    &sip_msg,
+                                )
+                                .await
                             {
                                 tracing::debug!(
                                     "Failed to send keepalive to {} at {}: {}",
@@ -1022,6 +1036,7 @@ let renewal_pool = pool.clone();
 
     async fn handle_tcp_connection(
         addr: SocketAddr,
+        mut reader: crate::sip::transport::tcp::TcpReader,
         config: &Arc<SipConfig>,
         device_manager: &Arc<DeviceManager>,
         session_manager: &Arc<SessionManager>,
@@ -1044,24 +1059,15 @@ let renewal_pool = pool.clone();
         transaction_manager: &Arc<TransactionManager>,
         catalog_sync_manager: &Arc<CatalogSyncManager>,
     ) {
-        // 创建一个虚拟 UDP socket 仅用于传递给 handle_packet's 接口
-        // 实际回复通过 TcpConnectionManager.send_to 进行
-        // 注意：这里使用一个专用的虚拟封装 TcpSendSocket
-
-        // 创建 TCP 可写代理: 侧听 UDP socket 发出的内容将被拦截并通过 TCP 发出
-        // 更简洁的方法：我们直接在这里处理消息和发送
-        if let Some(conn) = conn_manager.get_connection(&addr).await {
-            // 没有天然的，我们需要一个临时的 UDP socket 来将回复转发到 TCP
-            // 创建一个虚拟 UDP socket，收到内容后再通过 TCP 发送
-            // 为了简化：我们使用内部通道模式
-            let _conn_mgr_clone = conn_manager.get_connection(&addr).await;
-            let mut stream_guard = conn.write().await;
+        // 读循环只持有**读半**，写半在 `conn_manager` 里，两者不共用锁。
+        // 此前这里 `conn.write().await` 一直持到循环结束，而回响应的
+        // `send_to` 又要拿同一把写锁 —— 直接死锁：设备 REGISTER 后
+        // 平台一个字节都回不出来（实测）。
+        {
             loop {
-                match stream_guard.read_message().await {
-                    Ok(Some((msg, _peer))) => {
-                        // 将 SipMessage 转回字节以便重新解析
-                        let raw = format!("{}", msg);
-                        let data_bytes = raw.as_bytes();
+                match reader.read_message().await {
+                    Ok(Some((_msg, raw))) => {
+                        let data_bytes = raw.as_slice();
 
                         // 响应路由：process_tcp_message 会登记 (对端地址 → TCP 连接)，
                         // send_response 优先经该 TCP 连接返回（RFC 3261 §18.2.2）
@@ -3197,7 +3203,13 @@ let renewal_pool = pool.clone();
                                 &call_id,
                                 &ack_cseq,
                             );
-                            if let Err(e) = socket.send_to(ack.as_bytes(), device_addr).await {
+                            if let Err(e) = crate::sip::transport::tcp::send_sip_out(
+                                socket,
+                                device_addr,
+                                &ack,
+                            )
+                            .await
+                            {
                                 tracing::warn!(
                                     "Failed to send ACK for call_id={}: {}",
                                     call_id, e
@@ -3837,6 +3849,19 @@ let renewal_pool = pool.clone();
         }
     }
 
+    /// 统一的出站 SIP 请求发送（按设备实际使用的传输方式走 TCP 或 UDP）。
+    ///
+    /// 详见 `crate::sip::transport::tcp::send_sip_out` 的说明：以 TCP 注册的
+    /// 设备只在 TCP 上监听，走 UDP 的出站请求会被静默丢弃 —— 平台"发了
+    /// INVITE/BYE/MESSAGE 却没有任何反应"。
+    pub async fn send_request_to(&self, addr: SocketAddr, message: &str) -> Result<bool> {
+        let socket = self.socket.read().await;
+        let socket = socket
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Socket not initialized"))?;
+        crate::sip::transport::tcp::send_sip_out(socket, addr, message).await
+    }
+
     async fn send_response(
         socket: &Arc<UdpSocket>,
         addr: SocketAddr,
@@ -3850,7 +3875,11 @@ let renewal_pool = pool.clone();
                 let mgr = route.value().clone();
                 drop(route);
                 match mgr.send_to(&addr, response).await {
-                    Ok(()) => return Ok(()),
+                    Ok(true) => return Ok(()),
+                    Ok(false) => {
+                        // 连接已不在此管理器里（例如刚被清理），走 UDP
+                        routes.remove(&addr);
+                    }
                     Err(e) => {
                         tracing::warn!("TCP response to {} failed, falling back to UDP: {}", addr, e);
                         routes.remove(&addr);
@@ -4045,11 +4074,6 @@ f=v/1/96/1/2/1/1/0
         body: Option<&str>,
         content_type: Option<&str>,
     ) -> Result<()> {
-        let socket = self.socket.read().await;
-        let socket = socket
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Socket not initialized"))?;
-
         let device_addr = self
             .device_manager
             .get_address(device_id)
@@ -4107,7 +4131,7 @@ f=v/1/96/1/2/1/1/0
             device_addr.port()
         );
         let message = Parser::generate_request_from_method(method, &uri, &headers, body);
-        socket.send_to(message.as_bytes(), device_addr).await?;
+        let sent_over_tcp = self.send_request_to(device_addr, &message).await?;
 
         // 登记客户端事务：未收到响应时由事务层按 RFC 3261 §17 指数退避重传。
         //
@@ -4115,6 +4139,20 @@ f=v/1/96/1/2/1/1/0
         // 因此保存原始字节 `message`，而不是靠重新序列化 `request`。
         // 2026-09-11 之前事务层虽登记了"重传计数"，但 `process_timers`
         // 从不真正发送 —— 该缺陷现已修复（见 `sip/core/transaction.rs`）。
+        //
+        // **TCP 上不登记重传**：RFC 3261 §17.1.2 规定可靠传输（TCP）不做
+        // 定时器重传，重传通道也只有 UDP socket。若在 TCP 发送后仍登记事务，
+        // 事务层会把同一个请求再用 UDP 重发一遍 —— 设备会收到一个来自
+        // 未知通道的重复请求（甚至触发 481）。
+        if sent_over_tcp {
+            tracing::debug!(
+                "{} 经 TCP 发送到 {}，按 RFC 3261 §17.1.2 不登记重传事务",
+                method.as_str(),
+                device_id
+            );
+            return Ok(());
+        }
+
         if let Ok(SipMessage::Request(req)) = Parser::parse(message.as_bytes()) {
             if let Some(ti) = TransportInfo::from_request(&req, &device_addr.to_string()) {
                 let timers = self.transaction_manager.timers().clone();
@@ -4316,11 +4354,6 @@ f=v/1/96/1/2/1/1/0
     }
 
     pub async fn send_subscribe(&self, device_id: &str, event: &str, expires: u32) -> Result<()> {
-        let socket = self.socket.read().await;
-        let socket = socket
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Socket not initialized"))?;
-
         let device_addr = self
             .device_manager
             .get_address(device_id)
@@ -4390,7 +4423,7 @@ f=v/1/96/1/2/1/1/0
             device_addr.port()
         );
         let request = Parser::generate_request("SUBSCRIBE", &uri, &headers, Some(&body));
-        socket.send_to(request.as_bytes(), device_addr).await?;
+        self.send_request_to(device_addr, &request).await?;
 
         if event.eq_ignore_ascii_case("Catalog") {
             let subscription = CatalogSubscription::new(
@@ -4467,11 +4500,6 @@ f=v/1/96/1/2/1/1/0
         if media_port == 0 {
             return Err(anyhow::anyhow!("ZLM 返回的对讲收流端口为 0"));
         }
-
-        let socket = self.socket.read().await;
-        let socket = socket
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Socket not initialized"))?;
 
         let device_addr = self
             .device_manager
@@ -4567,7 +4595,7 @@ f=v/1/96/1/2/1/1/0
         );
         let message = Parser::generate_request("INVITE", &uri, &headers, Some(&sdp));
 
-        socket.send_to(message.as_bytes(), device_addr).await?;
+        self.send_request_to(device_addr, &message).await?;
         tracing::info!(
             "Sent TALK INVITE to device {} channel {} at {} (call_id={}, local_port={})",
             device_id,
@@ -4588,11 +4616,6 @@ f=v/1/96/1/2/1/1/0
             .ok_or_else(|| {
                 anyhow::anyhow!("No active talk session for {}/{}", device_id, channel_id)
             })?;
-
-        let socket = self.socket.read().await;
-        let socket = socket
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Socket not initialized"))?;
 
         let device_addr = self
             .device_manager
@@ -4639,7 +4662,7 @@ f=v/1/96/1/2/1/1/0
         );
         let message = Parser::generate_request("BYE", &uri, &headers, None);
 
-        socket.send_to(message.as_bytes(), device_addr).await?;
+        self.send_request_to(device_addr, &message).await?;
         tracing::info!("Sent TALK BYE to device {} channel {}", device_id, channel_id);
         
         self.talk_manager.update_status(call_id, TalkStatus::Terminating).await;
@@ -4693,8 +4716,6 @@ f=v/1/96/1/2/1/1/0
         }
 
         // 2. 发送 SIP INVITE（SSRC 第 4 段前缀 4 表示 Audio/Broadcast）
-        let socket = self.socket.read().await;
-        let socket = socket.as_ref().ok_or_else(|| anyhow::anyhow!("Socket not initialized"))?;
         let device_addr = self.device_manager.get_address(device_id).await
             .ok_or_else(|| anyhow::anyhow!("Device {} not registered", device_id))?;
         let call_id = session.call_id.clone();
@@ -4732,7 +4753,7 @@ f=v/1/96/1/2/1/1/0
 
         let uri = format!("sip:{}@{}:{}", channel_id, device_addr.ip(), device_addr.port());
         let message = Parser::generate_request("INVITE", &uri, &headers, Some(&sdp));
-        socket.send_to(message.as_bytes(), device_addr).await?;
+        self.send_request_to(device_addr, &message).await?;
         tracing::info!("Sent BROADCAST INVITE to device={} channel={} call_id={}",
             device_id, channel_id, call_id);
 
@@ -4749,8 +4770,6 @@ f=v/1/96/1/2/1/1/0
             .get_by_device_channel(device_id, channel_id).await
             .ok_or_else(|| anyhow::anyhow!("No active broadcast session for {}/{}", device_id, channel_id))?;
 
-        let socket = self.socket.read().await;
-        let socket = socket.as_ref().ok_or_else(|| anyhow::anyhow!("Socket not initialized"))?;
         let device_addr = self.device_manager.get_address(device_id).await
             .ok_or_else(|| anyhow::anyhow!("Device {} not registered", device_id))?;
         let call_id = &session.call_id;
@@ -4774,7 +4793,7 @@ f=v/1/96/1/2/1/1/0
 
         let uri = format!("sip:{}@{}:{}", channel_id, device_addr.ip(), device_addr.port());
         let message = Parser::generate_request("BYE", &uri, &headers, None);
-        socket.send_to(message.as_bytes(), device_addr).await?;
+        self.send_request_to(device_addr, &message).await?;
         tracing::info!("Sent BROADCAST BYE to device {} channel {}", device_id, channel_id);
 
         self.broadcast_manager.start_terminating(call_id).await;
@@ -4813,11 +4832,6 @@ f=v/1/96/1/2/1/1/0
             .ok_or_else(|| {
                 anyhow::anyhow!("No active invite session for {}/{}", device_id, channel_id)
             })?;
-
-        let socket = self.socket.read().await;
-        let socket = socket
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Socket not initialized"))?;
 
         // 设备可能刚刚掉线（正是要发 BYE 的常见场景），此时内存注册表里
         // 已经没有它 —— 回落到会话记录的对端地址，别让"重发 BYE"失败。
@@ -4875,7 +4889,7 @@ f=v/1/96/1/2/1/1/0
         );
         let message = Parser::generate_request("BYE", &uri, &headers, None);
 
-        socket.send_to(message.as_bytes(), device_addr).await?;
+        self.send_request_to(device_addr, &message).await?;
         tracing::info!(
             "Sent session BYE to device {} channel {} call_id={}",
             device_id,
@@ -4931,11 +4945,6 @@ f=v/1/96/1/2/1/1/0
         end_time: &str,
         sn: i64,
     ) -> Result<String> {
-        let socket = self.socket.read().await;
-        let socket = socket
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Socket not initialized"))?;
-
         let device_addr = self
             .device_manager
             .get_address(device_id)
@@ -5018,7 +5027,7 @@ f=v/1/96/1/2/1/1/0
         );
         let message = Parser::generate_request("MESSAGE", &uri, &headers, Some(&body));
 
-        socket.send_to(message.as_bytes(), device_addr).await?;
+        self.send_request_to(device_addr, &message).await?;
         tracing::info!("Sent RecordInfo query to device {} channel {} [{}-{}]", device_id, channel_id, start_time, end_time);
 
         Ok(call_id)
@@ -5087,11 +5096,9 @@ f=v/1/96/1/2/1/1/0
         ];
 
         // 2. 发送 SIP MESSAGE
-        let socket = self.socket.read().await;
-        let socket = socket.as_ref().ok_or_else(|| anyhow::anyhow!("Socket not initialized"))?;
         let uri = format!("sip:{}@{}:{}", device_id, device_addr.ip(), device_addr.port());
         let message = Parser::generate_request("MESSAGE", &uri, &headers, Some(&body));
-        socket.send_to(message.as_bytes(), device_addr).await?;
+        self.send_request_to(device_addr, &message).await?;
         tracing::info!("Sent RecordInfo query (async) to device {} channel {} [{}-{}]",
             device_id, channel_id, start_time, end_time);
 
@@ -5196,11 +5203,6 @@ f=v/1/96/1/2/1/1/0
         media_port: u16,
         ssrc: Option<&str>,
     ) -> Result<(String, SipResponse)> {
-        let socket = self.socket.read().await;
-        let socket = socket
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Socket not initialized"))?;
-
         let device_addr = self
             .device_manager
             .get_address(device_id)
@@ -5296,7 +5298,7 @@ f=v/1/96/1/2/1/1/0
             device_addr.port()
         );
         let message = Parser::generate_request("INVITE", &uri, &headers, Some(&sdp));
-        socket.send_to(message.as_bytes(), device_addr).await?;
+        self.send_request_to(device_addr, &message).await?;
         tracing::info!(
             "Sent PLAY INVITE to device={} channel={} port={} ssrc={} call_id={}",
             device_id,
@@ -5552,11 +5554,6 @@ f=v/1/96/1/2/1/1/0
         end_time: &str,
         media_port: u16,
     ) -> Result<()> {
-        let socket = self.socket.read().await;
-        let socket = socket
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Socket not initialized"))?;
-
         let device_addr = self
             .device_manager
             .get_address(device_id)
@@ -5625,7 +5622,7 @@ f=v/1/96/1/2/1/1/0
         );
         let message = Parser::generate_request("INVITE", &uri, &headers, Some(&sdp));
 
-        socket.send_to(message.as_bytes(), device_addr).await?;
+        self.send_request_to(device_addr, &message).await?;
         tracing::info!("Sent PLAYBACK INVITE to device {} channel {} [{}-{}] at {}", device_id, channel_id, start_time, end_time, device_addr);
 
         // 保存 INVITE 上下文,handle_response 收到 200 OK 时发 ACK。
@@ -5687,10 +5684,6 @@ f=v/1/96/1/2/1/1/0
 
         // 2. 发送 SIP INVITE（自定义 Subject 字段第 4 段 SSRC 前缀 1 表示 Playback）
         {
-            let socket = self.socket.read().await;
-            let socket = socket
-                .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("Socket not initialized"))?;
             let device_addr = self
                 .device_manager
                 .get_address(device_id)
@@ -5750,7 +5743,7 @@ f=v/1/96/1/2/1/1/0
                 channel_id, device_addr.ip(), device_addr.port()
             );
             let message = Parser::generate_request("INVITE", &uri, &headers, Some(&sdp));
-            socket.send_to(message.as_bytes(), device_addr).await?;
+            self.send_request_to(device_addr, &message).await?;
             tracing::info!(
                 "Sent PLAYBACK INVITE (async) to device={} channel={} stream={} call_id={}",
                 device_id, channel_id, zlm_stream_id, call_id
@@ -5829,11 +5822,6 @@ f=v/1/96/1/2/1/1/0
         end_time: &str,
         media_port: u16,
     ) -> Result<String> {
-        let socket = self.socket.read().await;
-        let socket = socket
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Socket not initialized"))?;
-
         let device_addr = self
             .device_manager
             .get_address(device_id)
@@ -5901,7 +5889,7 @@ f=v/1/96/1/2/1/1/0
         );
         let message = Parser::generate_request("INVITE", &uri, &headers, Some(&sdp));
 
-        socket.send_to(message.as_bytes(), device_addr).await?;
+        self.send_request_to(device_addr, &message).await?;
         tracing::info!(
             "Sent DOWNLOAD INVITE to device {} channel {} [{}-{}] ssrc={}",
             device_id,
@@ -5947,11 +5935,6 @@ f=v/1/96/1/2/1/1/0
         channel_id: &str,
         sdp_port: u16,
     ) -> Result<()> {
-        let socket = self.socket.read().await;
-        let socket = socket
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Socket not initialized"))?;
-
         let platform = crate::db::platform::get_by_server_gb_id(&self.pool, platform_gb_id)
             .await?
             .ok_or_else(|| anyhow::anyhow!("Platform {} not found", platform_gb_id))?;
@@ -6017,7 +6000,7 @@ f=v/1/96/1/2/1/1/0
         let uri = format!("sip:{}@{}:{}", channel_id, server_ip, server_port);
         let message = Parser::generate_request("INVITE", &uri, &headers, Some(&sdp));
 
-        socket.send_to(message.as_bytes(), addr).await?;
+        self.send_request_to(addr, &message).await?;
         tracing::info!("Sent platform INVITE for channel {} to platform {} at {}", channel_id, platform_gb_id, addr);
 
         Ok(())
@@ -6071,11 +6054,6 @@ f=v/1/96/1/2/1/1/0
     }
 
     pub async fn send_platform_message(&self, platform_gb_id: &str, cmd_type: &str, sn: i64, device_id: &str, content: Option<&str>) -> Result<()> {
-        let socket = self.socket.read().await;
-        let socket = socket
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Socket not initialized"))?;
-
         let platform = crate::db::platform::get_by_server_gb_id(&self.pool, platform_gb_id)
             .await?
             .ok_or_else(|| anyhow::anyhow!("Platform {} not found", platform_gb_id))?;
@@ -6148,7 +6126,7 @@ f=v/1/96/1/2/1/1/0
         let uri = format!("sip:{}@{}:{}", platform_gb_id, server_ip, server_port);
         let message = Parser::generate_request("MESSAGE", &uri, &headers, Some(&body));
 
-        socket.send_to(message.as_bytes(), addr).await?;
+        self.send_request_to(addr, &message).await?;
         tracing::info!("Sent {} to platform {} at {}", cmd_type, platform_gb_id, addr);
 
         Ok(())
@@ -6370,11 +6348,6 @@ f=v/1/96/1/2/1/1/0
     }
 
     pub async fn register_to_platform(&self, platform_gb_id: &str) -> Result<()> {
-        let socket = self.socket.read().await;
-        let socket = socket
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Socket not initialized"))?;
-
         let platform = crate::db::platform::get_by_server_gb_id(&self.pool, platform_gb_id)
             .await?
             .ok_or_else(|| anyhow::anyhow!("Platform {} not found", platform_gb_id))?;
@@ -6448,18 +6421,13 @@ Authentication-Info: qop=auth,rspauth="{}",cnonce="{}",nc=00000001"#,
         );
 
         let addr: std::net::SocketAddr = format!("{}:{}", server_ip, server_port).parse()?;
-        socket.send_to(message.as_bytes(), addr).await?;
+        self.send_request_to(addr, &message).await?;
         tracing::info!("Sent REGISTER to platform {} at {}", platform_gb_id, addr);
 
         Ok(())
     }
 
     pub async fn unregister_from_platform(&self, platform_gb_id: &str) -> Result<()> {
-        let socket = self.socket.read().await;
-        let socket = socket
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Socket not initialized"))?;
-
         let platform = crate::db::platform::get_by_server_gb_id(&self.pool, platform_gb_id)
             .await?
             .ok_or_else(|| anyhow::anyhow!("Platform {} not found", platform_gb_id))?;
@@ -6515,7 +6483,7 @@ Authentication-Info: qop=auth,rspauth="{}",cnonce="{}",nc=00000001"#,
         );
 
         let addr: std::net::SocketAddr = format!("{}:{}", server_ip, server_port).parse()?;
-        socket.send_to(message.as_bytes(), addr).await?;
+        self.send_request_to(addr, &message).await?;
         tracing::info!("Sent unREGISTER to platform {} at {}", platform_gb_id, addr);
 
         Ok(())
@@ -6951,7 +6919,7 @@ async fn send_subscribe_internal(
         Some(&body),
     );
 
-    socket.send_to(request.as_bytes(), device_addr).await?;
+    crate::sip::transport::tcp::send_sip_out(socket, device_addr, &request).await?;
     tracing::debug!("SUBSCRIBE sent to {} for event {}", device_id, event);
 
     let subscription =

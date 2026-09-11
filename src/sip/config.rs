@@ -7,7 +7,20 @@ pub struct SipConfig {
     pub enabled: bool,
     pub ip: String,
     pub port: u16,
+    /// SIP **TCP** 监听端口。
+    ///
+    /// 国标设备只配置"平台的 IP + 端口 + 传输方式"，用同一个端口选 TCP 或
+    /// UDP。因此这个值**默认与 `port` 相同**（5060）—— 若单独放在 5061，
+    /// 以 TCP 配置为 5060 的设备会连不上。
     pub tcp_port: u16,
+    /// 是否启用 SIP TCP 监听。
+    ///
+    /// 默认**开启**：TCP 信令的解析/分帧/响应回程/出站发送都已实现，但
+    /// `SipServer::tcp_enabled` 之前硬编码 false 且 `set_tcp_enabled` 从未被
+    /// 调用 —— TCP 监听器**从未启动**，以 TCP 注册的设备完全无法接入
+    /// （UDP 端口收不到它们的 REGISTER）。
+    #[serde(default = "default_true")]
+    pub tcp_enabled: bool,
     pub device_id: String,
     pub password: String,
     pub realm: String,
@@ -26,7 +39,8 @@ impl Default for SipConfig {
             enabled: true,
             ip: "0.0.0.0".to_string(),
             port: 5060,
-            tcp_port: 5061,
+            tcp_port: 5060,
+            tcp_enabled: true,
             device_id: "34020000002000000001".to_string(),
             password: "admin123".to_string(),
             realm: "3402000000".to_string(),
@@ -75,4 +89,8 @@ impl Default for ZlmConfig {
             hook_url: "http://127.0.0.1:18080/api/zlm/hook".to_string(),
         }
     }
+}
+
+fn default_true() -> bool {
+    true
 }

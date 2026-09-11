@@ -69,7 +69,11 @@ retention_days = 90
 enabled = true
 ip = "0.0.0.0"
 port = 5060
-tcp_port = 5061
+# TCP 监听端口。国标设备用「同一端口 + 传输方式」接入，
+# 因此默认与 port 相同；需要分开时再改。
+tcp_port = 5060
+# 是否启用 SIP TCP 监听（默认开）。TCP 设备只能通过 TCP 注册。
+tcp_enabled = true
 device_id = "34020000002000000001"
 password = "admin123"
 realm = "3402000000"

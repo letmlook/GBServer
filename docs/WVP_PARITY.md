@@ -12,7 +12,7 @@
 | 总代码量（src/） | 69,619 行 Rust | `find src -name '*.rs' \| xargs wc -l` |
 | 已注册 HTTP 路由 | 383 条唯一 `/api/...` 路径 | `grep -oE '"/api/[^"]*"' src/router.rs \| sort -u \| wc -l` |
 | Handler 模块 | 29 个（含 `stub.rs` / `device_stub.rs` 两个兼容 shim） | `grep -c 'pub mod' src/handlers/mod.rs` |
-| 后端测试 | **533 通过** / 0 失败（第十三轮后回填） | `cargo test --no-fail-fast` |
+| 后端测试 | **539 通过** / 0 失败（第十四轮后回填） | `cargo test --no-fail-fast` |
 | 编译状态 | `cargo check` 0 error / **0 warning**；clippy 262；**deprecated 0** | `cargo check` / `cargo clippy --all-targets` |
 | 数据库 feature | SQLite（默认）/ PostgreSQL / MySQL **三者均编译通过** | CI `feature-matrix` job |
 | CI | ⏸️ 工作流已就绪但**按需暂停自动触发**（见 `.github/workflows/ci.yml`） | — |
@@ -588,7 +588,7 @@ ZLM 的 `config.ini` 里**没有**"流 IP"这个配置项（`[general]` 只有
 | SIP 设备 | BYE **对话校验**（From tag / To tag / CSeq 递增），失败回 `481` 并落盘报告；`parse_cseq` 解析失败即报错（不再兜底成 1）；`--auto-bye-secs`（默认 3，测试平台侧 BYE 时用 0）；INVITE 日志打印请求 SDP 的 `m=` 行（`m=video 0` 一眼可见） |
 | ZLM | `isRecording`/`isMediaExist` 改回真实的**顶层** `exist`；MediaInfo 返回完整字段集（含 `readerCount`）与真实 camelCase；`getServerConfig` 增加 `general.streamNoneReaderDelayMS` / `protocol.auto_close` / `rtp_proxy.sdp_ip`；hook 载荷的 `mediaServerId` 取 `general.mediaServerId`（不再写死）；`on_stream_none_reader` 触发器**按 ZLM 语义执行**响应（`close:true` 即下架流）；新增 `on_flow_report` 触发器（载荷里刻意不含流数量字段）；新增 `/debug/hook_responses` 让"后端到底回了什么"可查 |
 
-#### 本轮基线
+#### 第十三轮基线
 
 ```
 cargo test                      533 passed / 0 failed   (上轮 510)
@@ -596,6 +596,65 @@ cargo build --features mysql     OK
 cargo build --features postgres  OK
 cargo check --all-targets        warnings 0
 npx playwright test             25 passed / 0 failed / 0 skipped
+```
+
+### SIP TCP 信令：三层缺陷叠加导致「TCP 设备完全无法接入」（2026-09-12 第十四轮）
+
+上一轮修好出站对话后，进一步追问"传输通道对不对"，结果发现 **SIP over TCP
+在真实环境里从来没有工作过**，而且是三层缺陷叠在一起，任何一层单独修都看不到效果：
+
+| # | 缺陷 | 证据 | 修复 |
+|---|------|------|------|
+| 1 | **TCP 监听器从未启动** | `SipServer::tcp_enabled` 硬编码 `false`，`set_tcp_enabled()` **全仓无调用点**；`SipConfig` 里也没有对应配置项 —— 配置 `tcp_port = 5061` 形同虚设，TCP 的解析/分帧/上下文处理代码全是死代码 | `SipConfig` 增加 `tcp_enabled`（默认 `true`）并在 `lib.rs` 显式接线 `server.set_tcp_enabled(...)`；启动日志打印实际监听地址 |
+| 2 | **`Display` 只写 `\n`，TCP 路径丢光所有头字段** | TCP 读循环把消息 `format!("{}", msg)` 重新序列化后再交给 `handle_packet`，而 `Parser::parse_request` 按 `"\r\n"` 切分 → 一行都切不开 → `From`/`To`/`CSeq` 全部为空，日志 `REGISTER: Cannot extract device ID - from="" to="" cseq=""` | `Display for SipRequest/SipResponse` 改按 RFC 3261 §7 输出 **CRLF**；并让 TCP 循环直接把**原始字节**交给 `handle_packet`（`TcpReader::read_message` 同时返回 raw），不再依赖序列化实现 |
+| 3 | **读循环与响应发送死锁** | 读循环 `conn.write().await` 一直持有到连接结束，而 `send_response → send_to` 要拿同一把写锁 → 平台连 401 挑战都回不出去（实测：探针 REGISTER 后 5 秒无任何响应，后端日志停在 `TCP connection from`） | 把连接**拆成读/写两半**：`TcpListener::accept` 返回 `(TcpReader, OwnedWriteHalf, addr)`，写半交给 `TcpConnectionManager`（`Arc<Mutex<OwnedWriteHalf>>`），读半留在读循环 —— 两者不共用锁 |
+
+顺带修掉两个相关缺陷：
+
+- **`Display`/`generate_request` 会输出重复的 `Content-Length`**：解析出来的头里
+  本来就有它，序列化时又按 body 长度写一个。接收方对"以哪个为准"可以有不同解释
+  （分帧歧义）。现在统一由生成方写一次，并跳过调用方传入/已有的 `Content-Length`。
+- **出站请求的传输选择**：新增 `send_sip_out()`（精确地址 → 同 IP 且**唯一**连接
+  → UDP）。此前只有**响应**按 RFC 3261 §18.2.2 回到 TCP 连接，所有**出站请求**
+  （INVITE/ACK/BYE/MESSAGE/INFO/SUBSCRIBE）以及设备心跳都硬编码走 UDP ——
+  TCP 设备"平台发了没反应，日志却显示已发送"。同 IP 有多条连接时**不做**兜底
+  （同一 NAT 出口常挂多台设备，猜错会把给 A 的 BYE 发到 B 的连接上）。
+  另外：经 TCP 发出的请求**不再登记重传事务**（RFC 3261 §17.1.2 可靠传输不重传，
+  否则事务层会用 UDP 重发同一个请求）。
+
+**实测证据**（新增 `mock/tools/sip-device/tcp_register_probe.py`：纯 TCP 探针，
+复用 `sip_device_mock.py` 的构造函数，避免第二套 SIP 实现漂移）：
+
+```
+[probe] TCP connected to 127.0.0.1:5060 from port 53622
+[probe] -> REGISTER ...            [probe] <- SIP/2.0 401 Unauthorized
+[probe] -> REGISTER ...（带摘要）   [probe] <- SIP/2.0 200 OK
+[probe] TCP REGISTER OK（平台应已登记该 TCP 连接）
+（触发 /api/device/query/devices/{id}/sync）
+[probe] <- MESSAGE sip:34020000001320000001@127.0.0.1:53687 SIP/2.0   ← 平台主动请求走了 TCP
+[probe] -> 200 OK for MESSAGE
+[probe] PASS: 平台出站请求确实走了 TCP（收到 ['MESSAGE']）
+```
+
+修复前的同一探针：`REGISTER 无响应`（平台侧 `TCP connection from` 之后没有任何日志）。
+
+**同时补齐的回归测试**（防止这四类问题再次静默复发）：
+
+- `sip::core::message::wire_format_tests`：`Display` 必须 CRLF、往返后头字段不丢、
+  `Content-Length` 与实际 body 一致且不重复
+- `sip::transport::tcp::outbound_transport_tests`：有 TCP 连接时走 TCP 且 **UDP 侧收不到**、
+  无连接时如实回落 UDP 并返回 `false`、连接不存在时 `send_to` 返回 `Ok(false)`
+- `tests/config_toml_smoke.rs`：`tcp_enabled` 必须为真、`tcp_port` 与 UDP 同端口
+
+#### 第十四轮基线
+
+```
+cargo test                      539 passed / 0 failed   (上轮 533)
+cargo build --features mysql     OK
+cargo build --features postgres  OK
+cargo check --all-targets        warnings 0
+npx playwright test             25 passed / 0 failed / 0 skipped
+TCP 探针（纯 TCP 注册 + 平台主动请求）  PASS
 ```
 
 ### 仍未解决 / 需真实设备核验
@@ -638,9 +697,10 @@ npx playwright test             25 passed / 0 failed / 0 skipped
    同一设备在不同路径会拿到不同长度的 SSRC。
 7. **TCP 信令**已与 UDP 统一分发，但 `handle_packet` 的参数已达 23 个，
    后续应改为上下文结构体，否则每次新增能力都要再穿一遍全部调用点。
-8. **`send_session_bye` 仍只走 UDP socket**：TCP 传输的设备收到 BYE 会走错
-   通道（TCP 信令已经统一分发到 `handle_packet`，但**出站**请求还没有统一的
-   传输抽象）。第十三轮已修好对话正确性（tag/CSeq），传输选择待补。
+8. ~~**`send_session_bye` 仍只走 UDP socket**~~ **已修复（第十四轮）**：
+   新增 `sip::transport::tcp::send_sip_out()` 作为**出站请求的唯一发送口**，
+   按对端地址选 TCP/UDP；`send_session_bye` / `send_talk_bye` / `send_broadcast_bye`
+   / INVITE / ACK / MESSAGE / SUBSCRIBE 与设备心跳全部改走它。
 9. **`on_rtp_playlist` / `on_record_progress` / `on_send_rtp_progress`**
    的载荷结构未与真实样本核对（官方文档未给出示例）。
 10. **多节点下 `general.mediaServerId`** 现在会在 autoConfig 时下发为节点主键；
