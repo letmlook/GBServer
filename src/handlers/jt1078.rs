@@ -1660,6 +1660,48 @@ pub async fn media_list(
                     "data": { "list": [], "total": 0 }
                 }));
             }
+
+            // 检索结果是**另一条**上行消息（0x0802），这里等它到达
+            // （最多 5s）。真实终端通常几百毫秒内回。
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while std::time::Instant::now() < deadline {
+                if let Some(items) = mgr
+                    .take_media_search_result(phone, std::time::Duration::from_secs(30))
+                    .await
+                {
+                    let list: Vec<serde_json::Value> = items
+                        .iter()
+                        .map(|it| {
+                            serde_json::json!({
+                                "mediaId": it.media_id,
+                                "mediaType": it.media_type,
+                                "mediaTypeName": it.media_type_name(),
+                                "channelId": it.channel_id,
+                                "eventCode": it.event_code,
+                                "startTime": it.start_time.format("%Y-%m-%d %H:%M:%S").to_string(),
+                                "endTime": it.end_time.format("%Y-%m-%d %H:%M:%S").to_string(),
+                                "longitude": it.longitude,
+                                "latitude": it.latitude,
+                            })
+                        })
+                        .collect();
+                    return Json(serde_json::json!({
+                        "code": 0,
+                        "data": {
+                            "list": list,
+                            "total": list.len(),
+                            "source": "terminal_media_search"
+                        }
+                    }));
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+            tracing::warn!("等待终端多媒体检索应答超时 phone={}", phone);
+            return Json(serde_json::json!({
+                "code": 1,
+                "msg": "终端未在 5s 内返回多媒体检索应答（0x0802）",
+                "data": { "list": [], "total": 0, "source": "terminal_media_search" }
+            }));
         }
     }
 

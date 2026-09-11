@@ -94,53 +94,40 @@ pub fn build_playback_request(channel_id: u8, stream_type: u8, storage_type: u8,
     body
 }
 
-/// Encode datetime string "2020-01-01T12:00:00" or timestamp to 6-byte BCD
+/// 把时间字符串/时间戳编码为 JT/T 808 的 **BCD[6]**（YY MM DD HH mm ss）。
+///
+/// **真 BCD**：2026-01-02 03:04:05 → `26 01 02 03 04 05`（十六进制表示）。
+/// 解析失败会**静默回退到当前时间**；需要严格校验的调用方请用
+/// [`try_encode_time_bcd`]。
 pub fn encode_time_bcd(time_str: &str) -> [u8; 6] {
-    // Try parsing as i64 timestamp first (seconds or milliseconds)
-    if let Ok(ts) = time_str.parse::<i64>() {
-        let ts = if ts > 1_000_000_000_000 { ts / 1000 } else { ts };
-        let dt = chrono::DateTime::from_timestamp(ts, 0).unwrap_or_else(|| chrono::Utc::now());
-        let y = dt.format("%y").to_string().parse::<u8>().unwrap_or(0);
-        let m = dt.format("%m").to_string().parse::<u8>().unwrap_or(1);
-        let d = dt.format("%d").to_string().parse::<u8>().unwrap_or(1);
-        let h = dt.format("%H").to_string().parse::<u8>().unwrap_or(0);
-        let min = dt.format("%M").to_string().parse::<u8>().unwrap_or(0);
-        let s = dt.format("%S").to_string().parse::<u8>().unwrap_or(0);
-        return [y, m, d, h, min, s];
-    }
-    // Try parsing as datetime string
-    let formats = ["%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"];
-    for fmt in &formats {
-        if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(time_str, fmt) {
-            let y = dt.format("%y").to_string().parse::<u8>().unwrap_or(0);
-            let m = dt.format("%m").to_string().parse::<u8>().unwrap_or(1);
-            let d = dt.format("%d").to_string().parse::<u8>().unwrap_or(1);
-            let h = dt.format("%H").to_string().parse::<u8>().unwrap_or(0);
-            let min = dt.format("%M").to_string().parse::<u8>().unwrap_or(0);
-            let s = dt.format("%S").to_string().parse::<u8>().unwrap_or(0);
-            return [y, m, d, h, min, s];
-        }
-    }
-    // Fallback: current time
-    let now = chrono::Utc::now();
-    [
-        now.format("%y").to_string().parse::<u8>().unwrap_or(0),
-        now.format("%m").to_string().parse::<u8>().unwrap_or(1),
-        now.format("%d").to_string().parse::<u8>().unwrap_or(1),
-        now.format("%H").to_string().parse::<u8>().unwrap_or(0),
-        now.format("%M").to_string().parse::<u8>().unwrap_or(0),
-        now.format("%S").to_string().parse::<u8>().unwrap_or(0),
-    ]
+    try_encode_time_bcd(time_str).unwrap_or_else(|| bcd_from_utc(chrono::Utc::now()))
 }
 
+/// 把 UTC 时间编码成 JT/T 808 的 **BCD[6]**（YY MM DD HH mm ss，每字节两位十进制）。
+///
+/// **真 BCD**：2026 → `0x26`，9 月 → `0x09`。
+/// 此前返回的是**原始数值**（"%y" = 26 → 字节 `0x1A`），与平台自己的
+/// `parse_bcd_datetime`（按半字节解码）以及国标都不一致 —— 下发给终端的
+/// 检索/回放时间段全是错的；"平台内自测"因为收发两边都错反而看不出来，
+/// 本轮写 0x0802 往返测试时才暴露。
 fn bcd_from_utc(dt: chrono::DateTime<chrono::Utc>) -> [u8; 6] {
+    fn two_digits(value: u8) -> u8 {
+        ((value / 10) << 4) | (value % 10)
+    }
+    let num = |fmt: &str, fallback: u8| -> u8 {
+        dt.format(fmt)
+            .to_string()
+            .parse::<u8>()
+            .map(two_digits)
+            .unwrap_or(fallback)
+    };
     [
-        dt.format("%y").to_string().parse::<u8>().unwrap_or(0),
-        dt.format("%m").to_string().parse::<u8>().unwrap_or(1),
-        dt.format("%d").to_string().parse::<u8>().unwrap_or(1),
-        dt.format("%H").to_string().parse::<u8>().unwrap_or(0),
-        dt.format("%M").to_string().parse::<u8>().unwrap_or(0),
-        dt.format("%S").to_string().parse::<u8>().unwrap_or(0),
+        num("%y", 0x00),
+        num("%m", 0x01),
+        num("%d", 0x01),
+        num("%H", 0x00),
+        num("%M", 0x00),
+        num("%S", 0x00),
     ]
 }
 
@@ -581,10 +568,11 @@ mod tests {
 
     #[test]
     fn test_try_encode_time_bcd_accepts_supported_formats() {
-        let expected = [26u8, 1, 2, 3, 4, 5];
+        // **真 BCD**：2026-01-02 03:04:05 → 0x26 0x01 0x02 0x03 0x04 0x05
+        let expected = [0x26u8, 0x01, 0x02, 0x03, 0x04, 0x05];
         assert_eq!(try_encode_time_bcd("2026-01-02 03:04:05"), Some(expected));
         assert_eq!(try_encode_time_bcd("2026-01-02T03:04:05"), Some(expected));
-        assert_eq!(try_encode_time_bcd("2026-01-02"), Some([26, 1, 2, 0, 0, 0]));
+        assert_eq!(try_encode_time_bcd("2026-01-02"), Some([0x26, 0x01, 0x02, 0, 0, 0]));
         // Unix 时间戳（秒）
         assert!(try_encode_time_bcd("1767323045").is_some());
         // 毫秒时间戳

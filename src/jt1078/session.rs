@@ -47,6 +47,8 @@ pub enum ParsedMessage {
     LocationReport(crate::jt1078::response_parser::LocationReport),
     /// 0x0801 Media retrieval first item
     MediaItem(crate::jt1078::response_parser::MediaItem),
+    /// 0x0802 多媒体数据检索应答（终端录像/图片列表，0x8802 的应答）
+    MediaSearchResult(Vec<crate::jt1078::response_parser::MediaSearchItem>),
     /// 0x0001 Generic common response
     CommonResponse {
         /// The serial_no of the original command being responded to
@@ -241,6 +243,13 @@ impl Jt1078Session {
                 Ok(l) => ParsedMessage::LocationReport(l),
                 Err(e) => {
                     tracing::warn!("parse_location_report failed: {}", e);
+                    ParsedMessage::Unknown { msg_id, serial, body: body.to_vec() }
+                }
+            },
+            0x0802 => match response_parser::parse_media_search_response(body) {
+                Ok(items) => ParsedMessage::MediaSearchResult(items),
+                Err(e) => {
+                    tracing::warn!("parse_media_search_response failed: {}", e);
                     ParsedMessage::Unknown { msg_id, serial, body: body.to_vec() }
                 }
             },

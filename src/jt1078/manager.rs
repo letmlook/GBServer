@@ -26,6 +26,12 @@ pub struct Jt1078Manager {
     command_waiter: Arc<JtCommandWaiter>,
     /// 数据库连接池（终端注册/在线状态落库；`None` 时退化为仅内存）
     pool: std::sync::OnceLock<crate::db::Pool>,
+    /// 终端多媒体检索结果缓存（0x8802 请求 → 0x0802 应答）。
+    ///
+    /// 请求与应答是两条独立的上行/下行消息：HTTP 侧发完 0x8802 后需要等待
+    /// 终端的 0x0802，这里用一块共享缓存做交接（带采集时间，避免拿到上一次
+    /// 检索的陈旧结果）。
+    media_search_results: Arc<Mutex<std::collections::HashMap<String, (std::time::Instant, Vec<crate::jt1078::response_parser::MediaSearchItem>)>>>,
     /// 下发命令用的 UDP socket（与监听同一端口）。
     ///
     /// 此前 `send_raw` 每条命令都 `UdpSocket::bind("0.0.0.0:0")` 新建临时端口，
@@ -49,6 +55,7 @@ impl Jt1078Manager {
             retransmit_send_to_device,
             pool: std::sync::OnceLock::new(),
             send_socket: std::sync::OnceLock::new(),
+            media_search_results: Arc::new(Mutex::new(std::collections::HashMap::new())),
             command_waiter: Arc::new(JtCommandWaiter::new().with_timeout(10)),
             media_session_manager: Arc::new(JtMediaSessionManager::new()),
         }
@@ -128,6 +135,37 @@ impl Jt1078Manager {
     /// 绑定数据库连接池（由 `jt1078::server::start` 注入）。
     pub fn set_pool(&self, pool: crate::db::Pool) {
         let _ = self.pool.set(pool);
+    }
+
+    /// 记录终端返回的多媒体检索结果（`process_jt_message` 收到 0x0802 时调用）。
+    pub async fn store_media_search_result(
+        &self,
+        phone: &str,
+        items: Vec<crate::jt1078::response_parser::MediaSearchItem>,
+    ) {
+        let mut map = self.media_search_results.lock().await;
+        map.insert(phone.to_string(), (std::time::Instant::now(), items));
+    }
+
+    /// 取走终端的多媒体检索结果（`max_age` 内有效，取走即清空避免重复使用）。
+    pub async fn take_media_search_result(
+        &self,
+        phone: &str,
+        max_age: std::time::Duration,
+    ) -> Option<Vec<crate::jt1078::response_parser::MediaSearchItem>> {
+        let mut map = self.media_search_results.lock().await;
+        match map.get(phone) {
+            Some((at, items)) if at.elapsed() <= max_age => {
+                let items = items.clone();
+                map.remove(phone);
+                Some(items)
+            }
+            Some(_) => {
+                map.remove(phone);
+                None
+            }
+            None => None,
+        }
     }
 
     /// 终端注册/心跳时落库并把状态置为在线。
@@ -429,6 +467,14 @@ impl Jt1078Manager {
             }
             crate::jt1078::session::ParsedMessage::Heartbeat => {
                 self.persist_terminal_online(phone, None).await;
+            }
+            crate::jt1078::session::ParsedMessage::MediaSearchResult(items) => {
+                tracing::info!(
+                    "JT1078 收到多媒体检索应答 phone={} items={}",
+                    phone,
+                    items.len()
+                );
+                self.store_media_search_result(phone, items.clone()).await;
             }
             _ => {}
         }
@@ -777,6 +823,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_feed_and_count_and_cleanup() {
+
         let manager = Jt1078Manager::new(Duration::from_millis(100), Duration::from_millis(200), None, false);
         let addr1 = make_addr(60001);
         let payload = b"abc";
@@ -810,5 +857,48 @@ mod tests {
         assert!(manager.is_terminal_online("13812345678").await);
         manager.remove(&addr).await;
         assert!(!manager.is_terminal_online("13812345678").await);
+    }
+    /// 多媒体检索结果：取走即清空，过期结果不被复用。
+    #[tokio::test]
+    async fn test_media_search_result_store_and_take() {
+        use crate::jt1078::response_parser::MediaSearchItem;
+        let manager = Jt1078Manager::new(
+            Duration::from_secs(60), Duration::from_millis(200), None, false,
+        );
+        assert!(manager
+            .take_media_search_result("13912345678", Duration::from_secs(30))
+            .await
+            .is_none());
+        manager
+            .store_media_search_result("13912345678", vec![MediaSearchItem {
+                media_id: 1,
+                media_type: 2,
+                channel_id: 1,
+                event_code: 0,
+                start_time: chrono::Utc::now(),
+                end_time: chrono::Utc::now(),
+                longitude: None,
+                latitude: None,
+            }])
+            .await;
+        let taken = manager
+            .take_media_search_result("13912345678", Duration::from_secs(30))
+            .await
+            .expect("应能取到结果");
+        assert_eq!(taken.len(), 1);
+        // 取走即清空，避免同一批结果被重复返回
+        assert!(manager
+            .take_media_search_result("13912345678", Duration::from_secs(30))
+            .await
+            .is_none());
+        // 过期（max_age=0）不再返回
+        manager
+            .store_media_search_result("13912345678", Vec::new())
+            .await;
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        assert!(manager
+            .take_media_search_result("13912345678", std::time::Duration::from_millis(1))
+            .await
+            .is_none());
     }
 }

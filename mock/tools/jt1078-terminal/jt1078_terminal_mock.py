@@ -92,6 +92,19 @@ ALARM_SUBTYPES = {
 }
 
 
+# ---------------- 时间编码 ----------------
+
+def encode_time_bcd(time_str: str) -> bytes:
+    """把 "YYYY-MM-DD HH:MM:SS" 编码为 JT/T 808 的 BCD[6]（每字节两位十进制）。
+
+    与平台侧 `command::encode_time_bcd` 对齐：2026-09-01 10:00:00
+    → 0x26 0x09 0x01 0x10 0x00 0x00。
+    """
+    tm = time.strptime(time_str, "%Y-%m-%d %H:%M:%S")
+    parts = [tm.tm_year % 100, tm.tm_mon, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec]
+    return bytes(((p // 10) << 4) | (p % 10) for p in parts)
+
+
 # ---------------- 帧编解码 ----------------
 
 def escape_bytes(data: bytes) -> bytes:
@@ -345,8 +358,10 @@ class Jt1078TerminalMock:
             self._handle_live_stream(frame)
         elif frame["msg_id"] == MSG_RETRANSMIT:
             self._handle_retransmit(frame)
-        elif frame["msg_id"] == 0x9201:  # 录像列表查询
+        elif frame["msg_id"] == 0x9201:  # 录像列表查询（旧接口）
             self._handle_record_query(frame)
+        elif frame["msg_id"] == 0x8802:  # 多媒体数据检索（平台下发）
+            self._handle_media_search(frame)
         elif frame["msg_id"] == MSG_TEXT_MSG:
             self._handle_text_msg(frame)
         elif 0x8000 <= frame["msg_id"] <= 0x8FFF and frame["msg_id"] != MSG_PLATFORM_ACK:
@@ -484,6 +499,29 @@ class Jt1078TerminalMock:
         )
         ack_body += item
         self._send(MSG_RECORD_QUERY_ACK, ack_body)
+
+    def _handle_media_search(self, frame: dict):
+        """0x8802 多媒体数据检索 → 回 0x0802 多媒体数据检索应答（JT/T 808-2013 §8.19）。
+
+        每个媒体项固定 27 字节：
+        多媒体数据ID(4) 类型(1) 通道(1) 事件编码(1) 起始(BCD6) 结束(BCD6) 经度(4) 纬度(4)
+        此前 mock 只实现了自造的 0x9201/"录像列表查询"，平台的 0x8802 检索
+        因此永远得不到应答 —— 终端录像检索这条链路无法验证。
+        """
+        # 先回通用应答，再回检索结果（真实终端也是先通用应答）
+        self._send_common_ack(frame["seq"], frame["msg_id"], 0)
+
+        items = [
+            (1001, 2, 1, 0, "2026-09-01 10:00:00", "2026-09-01 10:05:00", 116_397_000, 39_909_000),
+            (1002, 0, 2, 1, "2026-09-01 11:00:00", "2026-09-01 11:00:30", 0, 0),
+        ]
+        body = struct.pack("!H", len(items))
+        for media_id, media_type, channel, event, start, end, lon, lat in items:
+            body += struct.pack("!IBBB", media_id, media_type, channel, event)
+            body += encode_time_bcd(start)
+            body += encode_time_bcd(end)
+            body += struct.pack("!II", lon, lat)
+        self._send(0x0802, body)
 
     def _handle_text_msg(self, frame: dict):
         # 文本下发，回应通用应答

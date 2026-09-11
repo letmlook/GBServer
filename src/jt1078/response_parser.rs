@@ -231,6 +231,97 @@ pub fn parse_media_item_first(body: &[u8]) -> Result<MediaItem, String> {
     })
 }
 
+/// 0x0802 多媒体数据检索应答里的一条媒体数据项（JT/T 808-2013 §8.19）。
+///
+/// 字段布局（每条固定 27 字节）：
+/// `多媒体数据ID(4) 多媒体类型(1) 通道ID(1) 事件项编码(1) 起始时间(BCD6)
+///  结束时间(BCD6) 经度(4) 纬度(4)`
+///
+/// 经纬度为 0 或 0xFFFFFFFF 表示无效。
+#[derive(Debug, Clone, PartialEq)]
+pub struct MediaSearchItem {
+    pub media_id: u32,
+    /// 0=图像 1=音频 2=视频
+    pub media_type: u8,
+    pub channel_id: u8,
+    pub event_code: u8,
+    pub start_time: DateTime<Utc>,
+    pub end_time: DateTime<Utc>,
+    pub longitude: Option<f64>,
+    pub latitude: Option<f64>,
+}
+
+impl MediaSearchItem {
+    pub fn media_type_name(&self) -> &'static str {
+        match self.media_type {
+            0 => "image",
+            1 => "audio",
+            2 => "video",
+            _ => "unknown",
+        }
+    }
+}
+
+/// 解析 0x0802 多媒体数据检索应答。
+///
+/// 结构：`多媒体数据总数目(WORD)` + N × 27 字节媒体数据项。
+/// 末尾若有多余字节（部分终端会补齐）直接忽略；单项损坏则**跳过该项并继续**，
+/// 不因为一条坏数据把整个检索结果丢掉。
+pub fn parse_media_search_response(body: &[u8]) -> Result<Vec<MediaSearchItem>, String> {
+    if body.len() < 2 {
+        return Err(format!(
+            "media search response too short: got {}, need at least 2",
+            body.len()
+        ));
+    }
+    const ITEM_LEN: usize = 27;
+    let declared = u16::from_be_bytes([body[0], body[1]]) as usize;
+    let mut items = Vec::new();
+    let mut pos = 2;
+    while pos + ITEM_LEN <= body.len() {
+        let item = &body[pos..pos + ITEM_LEN];
+        pos += ITEM_LEN;
+
+        let media_id = u32::from_be_bytes([item[0], item[1], item[2], item[3]]);
+        let media_type = item[4];
+        let channel_id = item[5];
+        let event_code = item[6];
+        let (Ok(start_time), Ok(end_time)) = (
+            parse_bcd_datetime(&item[7..13]),
+            parse_bcd_datetime(&item[13..19]),
+        ) else {
+            tracing::warn!(
+                "0x0802 媒体项时间非法，跳过 media_id={} channel={}",
+                media_id,
+                channel_id
+            );
+            continue;
+        };
+        let lon_raw = u32::from_be_bytes([item[19], item[20], item[21], item[22]]);
+        let lat_raw = u32::from_be_bytes([item[23], item[24], item[25], item[26]]);
+        let valid = |v: u32| v != 0 && v != 0xFFFF_FFFF;
+        items.push(MediaSearchItem {
+            media_id,
+            media_type,
+            channel_id,
+            event_code,
+            start_time,
+            end_time,
+            longitude: valid(lon_raw).then(|| lon_raw as f64 / 1_000_000.0),
+            latitude: valid(lat_raw).then(|| lat_raw as f64 / 1_000_000.0),
+        });
+    }
+
+    if items.len() < declared {
+        tracing::warn!(
+            "0x0802 声明 {} 条媒体项，实际解析出 {} 条（报文可能被截断）",
+            declared,
+            items.len()
+        );
+    }
+    Ok(items)
+}
+
 /// Query terminal params response 0x0107 (Phase 6.5)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TerminalParam {
@@ -397,7 +488,6 @@ mod tests {
         assert_eq!(req.plate, "京A12345");
     }
 
-    #[test]
     /// 2019 追加字段（ICCID / 硬件版本）不解析：车牌不定长，无法定位其起点。
     /// 这里确认"多余字节不会被误读成车牌内容"，而不是凭空解析出垃圾串。
     #[test]
@@ -519,5 +609,88 @@ mod tests {
     fn test_parse_query_params_response_truncated_header() {
         let body = vec![0u8; 3];
         assert!(parse_query_params_response(&body).is_err());
+    }
+}
+
+#[cfg(test)]
+mod media_search_tests {
+    use super::*;
+
+    /// 构造一条 27 字节媒体数据项（起始/结束时间为 BCD）。
+    fn item(media_id: u32, media_type: u8, channel: u8, event: u8, start: &str, end: &str,
+            lon: u32, lat: u32) -> Vec<u8> {
+        let mut v = Vec::with_capacity(27);
+        v.extend_from_slice(&media_id.to_be_bytes());
+        v.push(media_type);
+        v.push(channel);
+        v.push(event);
+        v.extend_from_slice(&crate::jt1078::command::encode_time_bcd(start));
+        v.extend_from_slice(&crate::jt1078::command::encode_time_bcd(end));
+        v.extend_from_slice(&lon.to_be_bytes());
+        v.extend_from_slice(&lat.to_be_bytes());
+        assert_eq!(v.len(), 27);
+        v
+    }
+
+    /// 0x0802 真实布局：总数目(2) + N × 27 字节项。
+    #[test]
+    fn parses_media_search_response() {
+        let mut body = Vec::new();
+        body.extend_from_slice(&2u16.to_be_bytes());
+        body.extend_from_slice(&item(1001, 2, 1, 0, "2026-09-01T10:00:00", "2026-09-01T10:05:00",
+                                     116_397_000, 39_909_000));
+        body.extend_from_slice(&item(1002, 0, 2, 1, "2026-09-01T11:00:00", "2026-09-01T11:00:30",
+                                     0, 0));
+
+        let items = parse_media_search_response(&body).expect("应能解析");
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].media_id, 1001);
+        assert_eq!(items[0].media_type, 2);
+        assert_eq!(items[0].media_type_name(), "video");
+        assert_eq!(items[0].channel_id, 1);
+        assert_eq!(items[0].start_time.format("%Y-%m-%d %H:%M:%S").to_string(), "2026-09-01 10:00:00");
+        assert_eq!(items[0].end_time.format("%Y-%m-%d %H:%M:%S").to_string(), "2026-09-01 10:05:00");
+        assert!((items[0].longitude.unwrap() - 116.397).abs() < 1e-6);
+        assert!((items[0].latitude.unwrap() - 39.909).abs() < 1e-6);
+        // 0 表示无效经纬度
+        assert_eq!(items[1].longitude, None);
+        assert_eq!(items[1].latitude, None);
+        assert_eq!(items[1].media_type_name(), "image");
+    }
+
+    /// 声明 2 条但只有 1 条完整：返回已解析的部分，不整体失败。
+    #[test]
+    fn tolerates_truncated_item_list() {
+        let mut body = Vec::new();
+        body.extend_from_slice(&2u16.to_be_bytes());
+        body.extend_from_slice(&item(7, 2, 1, 0, "2026-09-01T10:00:00", "2026-09-01T10:01:00", 0, 0));
+        body.extend_from_slice(&[0u8; 10]); // 第二条只剩半截
+
+        let items = parse_media_search_response(&body).unwrap();
+        assert_eq!(items.len(), 1, "完整的那条必须保留");
+        assert_eq!(items[0].media_id, 7);
+    }
+
+    /// 单条时间字段损坏时跳过该条，不影响其它条目。
+    #[test]
+    fn skips_item_with_invalid_time() {
+        let mut bad = item(9, 2, 1, 0, "2026-09-01T10:00:00", "2026-09-01T10:01:00", 0, 0);
+        bad[7] = 0xFF; // BCD 非法
+        let mut body = Vec::new();
+        body.extend_from_slice(&2u16.to_be_bytes());
+        body.extend_from_slice(&bad);
+        body.extend_from_slice(&item(10, 2, 1, 0, "2026-09-01T12:00:00", "2026-09-01T12:01:00", 0, 0));
+
+        let items = parse_media_search_response(&body).unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].media_id, 10);
+    }
+
+    #[test]
+    fn rejects_too_short_body() {
+        assert!(parse_media_search_response(&[]).is_err());
+        assert!(parse_media_search_response(&[0]).is_err());
+        // 只有总数目、没有条目 → 合法但空
+        assert_eq!(parse_media_search_response(&[0, 0]).unwrap().len(), 0);
     }
 }

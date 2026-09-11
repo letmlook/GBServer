@@ -12,7 +12,7 @@
 | 总代码量（src/） | 69,619 行 Rust | `find src -name '*.rs' \| xargs wc -l` |
 | 已注册 HTTP 路由 | 383 条唯一 `/api/...` 路径 | `grep -oE '"/api/[^"]*"' src/router.rs \| sort -u \| wc -l` |
 | Handler 模块 | 29 个（含 `stub.rs` / `device_stub.rs` 两个兼容 shim） | `grep -c 'pub mod' src/handlers/mod.rs` |
-| 后端测试 | **552 通过** / 0 失败（第十九轮后回填） | `cargo test --no-fail-fast` |
+| 后端测试 | **556 通过** / 0 失败（第二十轮后回填） | `cargo test --no-fail-fast` |
 | 编译状态 | `cargo check` 0 error / **0 warning**；clippy 262；**deprecated 0** | `cargo check` / `cargo clippy --all-targets` |
 | 数据库 feature | SQLite（默认）/ PostgreSQL / MySQL **三者均编译通过** | CI `feature-matrix` job |
 | CI | ⏸️ 工作流已就绪但**按需暂停自动触发**（见 `.github/workflows/ci.yml`） | — |
@@ -927,6 +927,72 @@ npx playwright test             25 passed / 0 failed / 0 skipped
 JT1078 端到端（注册 → 落库 → 列表 → 链路检测 → 命令往返）PASS
 ```
 
+### JT1078 终端录像检索（0x8802 / 0x0802）+ BCD 时间编码缺陷（2026-09-12 第二十轮）
+
+上一轮把 JT1078 入站链路接通后，`/api/jt1078/media/list` 仍只能"确认请求已下发"
+（终端结果 0x0802 未解析）。本轮补上这条链路，并顺带抓到一个**影响所有下发时间段**
+的编码缺陷。
+
+#### 1. `encode_time_bcd` 发的不是 BCD
+
+`command::encode_time_bcd` / `bcd_from_utc` 此前返回的是**原始数值**字节：
+2026 年 → `"%y"` = 26 → 字节 `0x1A`；而 JT/T 808 规定时间字段是 **BCD**
+（每字节两位十进制：2026 → `0x26`、9 月 → `0x09`）。
+
+后果：平台下发给终端的**所有时间段**（多媒体检索 0x8802、回放 0x9201、
+文件上传 0x9205、回放控制 0x9202 的 seek）全是错的。而平台自己的
+`parse_bcd_datetime` 是按半字节解码的 —— 收发两边一起错，
+"平台内自测"因此完全看不出来。本轮写 0x0802 往返测试时才暴露
+（我构造的 BCD 时间被解成 2026 之外的年份）。
+
+现在 `bcd_from_utc` 输出真 BCD，并补了 `try_encode_time_bcd` 的单测期望值。
+
+#### 2. 0x0802 多媒体数据检索应答
+
+新增按 JT/T 808-2013 §8.19 的实现：
+
+* `response_parser::MediaSearchItem` + `parse_media_search_response`：
+  `多媒体数据总数目(2)` + N × 27 字节项
+  （`媒体ID(4) 类型(1) 通道(1) 事件编码(1) 起始(BCD6) 结束(BCD6) 经度(4) 纬度(4)`）；
+  经纬度 0/0xFFFFFFFF 视为无效；单项时间非法**跳过该条并继续**；
+  末尾多余字节忽略；实际条数少于声明条数时告警但不丢已解析结果。
+* `session`：`ParsedMessage::MediaSearchResult`（0x0802）。
+* `Jt1078Manager`：检索结果缓存（带采集时间，`take` 即清空，避免复用陈旧结果）。
+* `handlers/jt1078.rs::media_list`：下发 0x8802 后等待 0x0802（最多 5s），
+  返回终端真实检索结果（`source: terminal_media_search`）；
+  超时如实报错而不是回一个空列表冒充成功。
+* 模拟器：`/0x8802 → 0x0802`（先通用应答，再回 2 条媒体项，时间为真 BCD）。
+
+**实测**：
+
+```
+请求: POST /api/jt1078/media/list {"phoneNumber":"13912345678",...}
+终端: RX 0x8802 → 回 0x0001 通用应答 + TX 0x0802 (body_len=56 = 2 + 2×27)
+后端: JT1078 收到多媒体检索应答 phone=13912345678 items=2
+响应: {"code":0,"data":{"list":[{"mediaId":1001,"mediaTypeName":"video",
+        "channelId":1,"startTime":"2026-09-01 10:00:00","endTime":"2026-09-01 10:05:00",
+        "longitude":116.397,"latitude":39.909}, {"mediaId":1002,"mediaTypeName":"image",
+        "longitude":null,"latitude":null}],"total":2,"source":"terminal_media_search"}}
+```
+
+#### 3. 顺带核实（无需改动）
+
+* `RtpPlaylistData` / `RecordProgressData` / `SendRtpProgressData`
+  （`on_rtp_playlist` / `on_record_progress` / `on_send_rtp_progress`）
+  **所有字段都是 `Option`**，载荷裁剪不会导致事件被静默丢弃 ——
+  与"字段必填导致整条事件解析失败"的旧缺陷不同，本轮确认无需改动。
+
+#### 第二十轮基线
+
+```
+cargo test                      556 passed / 0 failed   (上轮 552；+4 0x0802 解析/缓存测试)
+cargo build --features mysql     OK
+cargo build --features postgres  OK
+cargo check --all-targets        warnings 0
+npx playwright test             25 passed / 0 failed / 0 skipped
+JT1078 终端录像检索（0x8802 → 0x0802 → API 返回终端结果）PASS
+```
+
 ### 仍未解决 / 需真实设备核验
 
 以下是本轮**已定位但未改动**的项，均在代码中留有注释或在此登记，
@@ -971,11 +1037,9 @@ JT1078 端到端（注册 → 落库 → 列表 → 链路检测 → 命令往�
    新增 `sip::transport::tcp::send_sip_out()` 作为**出站请求的唯一发送口**，
    按对端地址选 TCP/UDP；`send_session_bye` / `send_talk_bye` / `send_broadcast_bye`
    / INVITE / ACK / MESSAGE / SUBSCRIBE 与设备心跳全部改走它。
-9. **JT1078 终端侧媒体列表（0x0802 多媒体数据检索应答）未解析**：
-   `/api/jt1078/media/list` 能真实下发 0x8802 检索请求（失败会如实报错），但终端
-   返回的 0x0802 结果尚未解析入库，因此该接口目前只能确认"请求已下发"。
-   0x0802 的字段布局随 JT/T 808 版本（2011/2013/2019）变化，
-   在没有真实终端样本前不宜臆造 —— 需要一份真实报文再实现。
+9. ~~**JT1078 终端侧媒体列表（0x0802）未解析**~~ **已实现（第二十轮）**：
+   按 JT/T 808-2013 §8.19 解析 0x0802，`/api/jt1078/media/list` 返回终端真实
+   检索结果。**仍需真实终端核验**的是 2011/2019 版本差异（本实现按 2013）。
 10. **JT1078 命令只经 UDP 下发**：`send_raw` 用注入的监听 socket（UDP）。
     以 TCP 注册的终端（`JT1078 TCP listener` 已能收帧）目前收不到平台命令，
     需要按终端连接类型选择 TCP 连接下发。
