@@ -21,6 +21,7 @@ pub mod device_commander;
 pub mod catalog_sync;
 pub mod subscription_lifecycle;
 pub mod cascade_forward;
+pub mod front_end_control;
 
 pub use device::{Device, DeviceManager, TransportMode};
 pub use catalog::{CatalogSubscription, CatalogSubscriptionManager, build_catalog_notify_body};

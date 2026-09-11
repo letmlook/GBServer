@@ -44,43 +44,54 @@ pub(crate) async fn lookup_channel_and_send(
     }
 }
 
-fn build_ptz_xml(command: &str, h_speed: u8, v_speed: u8, z_speed: u8) -> String {
-    let ptz_cmd = match command.to_ascii_uppercase().as_str() {
-        "UP" => format!("0501000000{:02X}FF", h_speed),
-        "DOWN" => format!("0501000001{:02X}FF", v_speed),
-        "LEFT" => format!("0501000002{:02X}FF", h_speed),
-        "RIGHT" => format!("0501000003{:02X}FF", h_speed),
-        "ZOOM_IN" => format!("0501010000{:02X}FF", z_speed),
-        "ZOOM_OUT" => format!("0501010001{:02X}FF", z_speed),
-        "FOCUS_IN" => format!("0501020000{:02X}FF", z_speed),
-        "FOCUS_OUT" => format!("0501020001{:02X}FF", z_speed),
-        "IRIS_IN" => format!("0501030000{:02X}FF", z_speed),
-        "IRIS_OUT" => format!("0501030001{:02X}FF", z_speed),
-        "STOP" => "05010000000000FF".to_string(),
-        _ => format!("050100000000{:02X}FF", h_speed),
-    };
-    format!(r#"<PTZCmd>{}</PTZCmd>"#, ptz_cmd)
+/// 构造 `<Control>` 子元素（云台/镜头/预置位），与
+/// `handlers::device_control` 共用同一实现
+/// （`sip::gb28181::front_end_control`）。
+///
+/// 修正：此前这里与 `device_control` 各写一份 `05 01 00 00 00 ss FF`
+/// 的 6 字节 PTZCmd，且聚焦/光圈/预置位一律用 `<PTZCmd>` ——
+/// 与国标（8 字节 0xA5 起始 + 累加校验；聚焦/光圈用 `FICmd`；
+/// 预置位用 `PresetCmd`+`PresetIndex`）不一致，真实设备无法识别。
+fn build_ptz_xml(command: &str, h_speed: u8, _v_speed: u8, _z_speed: u8) -> String {
+    front_end_element(command, h_speed, 0)
 }
 
 fn build_preset_xml(command: &str, preset_index: u32) -> String {
-    let preset_cmd = match command.to_ascii_uppercase().as_str() {
-        "GOTO_PRESET" => format!("07000100000000{:02X}FF", preset_index),
-        "SET_PRESET" => format!("07000100010000{:02X}FF", preset_index),
-        "CLEAR_PRESET" => format!("07000100020000{:02X}FF", preset_index),
-        _ => format!("07000100000000{:02X}FF", preset_index),
-    };
-    format!(r#"<PTZCmd>{}</PTZCmd>"#, preset_cmd)
+    front_end_element(command, 1, preset_index)
 }
 
-fn build_fi_xml(cmd_type: &str, command: &str, speed: u8) -> String {
-    let fi_cmd = match (cmd_type, command.to_lowercase().as_str()) {
-        ("iris", "on" | "open") => format!("0501030000{:02X}FF", speed),
-        ("iris", _) => format!("0501030001{:02X}FF", speed),
-        ("focus", "on" | "open") => format!("0501020000{:02X}FF", speed),
-        ("focus", _) => format!("0501020001{:02X}FF", speed),
-        _ => format!("0501030000{:02X}FF", speed),
+fn build_fi_xml(cmd_type: &str, command: &str, _speed: u8) -> String {
+    // 兼容旧的 (类型, on/off) 调用形式
+    let cmd = match (cmd_type, command.to_lowercase().as_str()) {
+        ("iris", "on" | "open") => "IRIS_IN",
+        ("iris", _) => "IRIS_OUT",
+        ("focus", "on" | "open") => "FOCUS_IN",
+        ("focus", _) => "FOCUS_OUT",
+        _ => return String::new(),
     };
-    format!(r#"<PTZCmd>{}</PTZCmd>"#, fi_cmd)
+    front_end_element(cmd, 1, 0)
+}
+
+/// 统一把动作名翻成国标元素（`PTZCmd` / `FICmd` / `PresetCmd`）。
+fn front_end_element(command: &str, speed: u8, preset_index: u32) -> String {
+    use crate::sip::gb28181::front_end_control::{
+        build_ptz_cmd, control_element, preset_index_element, PtzAction,
+    };
+    match control_element(command, speed, preset_index) {
+        Some(("PTZCmd", v)) => format!(r#"<PTZCmd>{}</PTZCmd>"#, v),
+        Some(("FICmd", v)) => format!(r#"<FICmd>{}</FICmd>"#, v),
+        Some((_, v)) => {
+            let (cmd_value, index) = v.split_once('|').unwrap_or((v.as_str(), "0"));
+            let idx = preset_index_element(command, preset_index)
+                .unwrap_or_else(|| format!("<PresetIndex>{}</PresetIndex>", index));
+            format!(r#"<PresetCmd>{}</PresetCmd>{}"#, cmd_value, idx)
+        }
+        // 未知动作按"停止"下发，避免设备停在不可预期的状态
+        None => format!(
+            r#"<PTZCmd>{}</PTZCmd>"#,
+            build_ptz_cmd(PtzAction::Stop, 0)
+        ),
+    }
 }
 
 /// 通用前端指令（`/api/front-end/common/:cmd/:ch` 兼容路径）支持的指令名。

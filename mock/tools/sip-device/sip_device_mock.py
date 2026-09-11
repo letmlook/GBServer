@@ -654,6 +654,34 @@ class SipDeviceMock:
             await self._reply_config_download(msg, addr)
         elif "<CmdType>RecordInfo</CmdType>" in body:
             await self._reply_record_info(msg, addr)
+        elif "<CmdType>DeviceControl</CmdType>" in body:
+            # 设备控制（云台/镜头/预置位/录像/布防…）：真实设备按国标解析
+            # PTZCmd/FICmd/PresetCmd。这里把控制元素原样打到日志，
+            # 让"下发的指令到底是什么"可被外部核对（否则只能看平台自己的日志）。
+            elem = ""
+            for name in ("PTZCmd", "FICmd", "PresetCmd", "PresetIndex", "RecordCmd",
+                         "GuardCmd", "WiperCmd", "AuxCmd", "AlarmCmd"):
+                value = self._extract_xml_value(body, name)
+                if value:
+                    elem += f"{name}={value} "
+            log.info("DeviceControl 收到: %s", elem or body[:120])
+            cseq = self.state.next_cseq()
+            branch = self._extract_via_branch(msg)
+            call_id = self._extract_header(msg, "Call-ID", "")
+            from_h = self._extract_header(msg, "From", "")
+            to_h = self._extract_header(msg, "To", "")
+            sn = self._extract_xml_value(body, "SN") or "1"
+            local = self.transport.get_extra_info("sockname")
+            resp = (
+                f"{SIP_VERSION} 200 OK\r\n"
+                f"Via: {SIP_VERSION}/UDP {local[0]}:{local[1]};rport;branch={branch}\r\n"
+                f"From: {from_h}\r\n"
+                f"To: {to_h};tag={uuid.uuid4().hex[:8]}\r\n"
+                f"Call-ID: {call_id}\r\n"
+                f"CSeq: {cseq} MESSAGE\r\n"
+                f"Content-Length: 0\r\n\r\n"
+            )
+            self.transport.sendto(resp.encode(), addr)
         else:
             log.debug("未识别 MESSAGE body: %s", body[:200])
 

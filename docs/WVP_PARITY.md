@@ -12,7 +12,7 @@
 | 总代码量（src/） | 69,619 行 Rust | `find src -name '*.rs' \| xargs wc -l` |
 | 已注册 HTTP 路由 | 383 条唯一 `/api/...` 路径 | `grep -oE '"/api/[^"]*"' src/router.rs \| sort -u \| wc -l` |
 | Handler 模块 | 29 个（含 `stub.rs` / `device_stub.rs` 两个兼容 shim） | `grep -c 'pub mod' src/handlers/mod.rs` |
-| 后端测试 | **562 通过** / 0 失败（第二十二轮后回填） | `cargo test --no-fail-fast` |
+| 后端测试 | **567 通过** / 0 失败（第二十三轮后回填） | `cargo test --no-fail-fast` |
 | 编译状态 | `cargo check` 0 error / **0 warning**；clippy 262；**deprecated 0** | `cargo check` / `cargo clippy --all-targets` |
 | 数据库 feature | SQLite（默认）/ PostgreSQL / MySQL **三者均编译通过** | CI `feature-matrix` job |
 | CI | ⏸️ 工作流已就绪但**按需暂停自动触发**（见 `.github/workflows/ci.yml`） | — |
@@ -1066,6 +1066,67 @@ speed 2→ INFO 正文: PLAY RTSP/1.0  / CSeq: 4 / Scale: 2         call_id 同�
 
 ```
 cargo test                      562 passed / 0 failed   (上轮 560；+2 MANSRTSP 报文测试)
+cargo build --features mysql     OK
+cargo build --features postgres  OK
+cargo check --all-targets        warnings 0
+npx playwright test             25 passed / 0 failed / 0 skipped
+```
+
+### 前端设备控制（云台/镜头/预置位）指令格式全错（2026-09-12 第二十三轮）
+
+顺着"接口回 success 但设备可能无效"的线索核对**下发到设备的字节**，发现
+云台/镜头/预置位控制的指令格式全都不符合国标，而且实现有三份、互相不一致：
+
+| 位置 | 旧实现 | 问题 |
+|------|--------|------|
+| `handlers/device_control.rs::build_ptz_xml` | `0501000000{ss}FF` | 6 字节；非 `0xA5` 起始；无累加校验 |
+| `handlers/common_channel.rs::build_ptz_xml/build_fi_xml/build_preset_xml` | 同上格式，且聚焦/光圈/预置位一律塞进 `<PTZCmd>` | 同上 + 元素名错误 |
+| `handlers/device_batch.rs` | 硬编码 `"A500000000AF"` | 5 字节、校验错误 |
+
+国标（GB/T 28181 附录 A.2）要求 `PTZCmd` 是**固定 8 字节**：
+
+```text
+字节1 0xA5   起始码
+字节2 组合码1（高4位版本=0，低4位校验位=0xF）
+字节3 地址低8位
+字节4 指令码（bit0 右/bit1 左/bit2 下/bit3 上/bit4 变倍+/bit5 变倍-）
+字节5 数据1（水平速度）
+字节6 数据2（垂直速度）
+字节7 组合码2（高4位=数据3，低4位=地址高4位）
+字节8 校验码 = 前 7 字节之和 % 256
+```
+
+且**聚焦/光圈与预置位在国标里是独立元素**：`<FICmd>`（FocusNear/FocusFar/
+IrisOpen/IrisClose）与 `<PresetCmd>`+`<PresetIndex>`（SetPreset/CallPreset/
+DelPreset），不能借用 `<PTZCmd>`。
+
+现在三者统一到新模块 `src/sip/gb28181/front_end_control.rs`，单测与参考资料
+给出的标准样例**逐字节对齐**：
+
+```
+向上 A50F0108 001F00 DC     向下 A50F0104 001F00 D8
+向左 A50F0102 1F0000 D6     向右 A50F0101 1F0000 D5
+放大 A50F0110 000010 D5     缩小 A50F0120 000010 E5
+停止 A50F0100 000000 B5（速度必须清零，否则云台会一直转）
+```
+
+**实测**（SIP 设备模拟器现在会把控制元素原样打日志，便于外部核对）：
+
+```
+up&speed=31      → DeviceControl 收到: PTZCmd=A50F0108001F00DC
+zoom_in&speed=1  → DeviceControl 收到: PTZCmd=A50F0110000010D5
+stop             → DeviceControl 收到: PTZCmd=A50F0100000000B5
+focus_in         → DeviceControl 收到: FICmd=FocusNear
+goto_preset 7    → DeviceControl 收到: PresetCmd=CallPreset PresetIndex=7
+```
+
+修复前模拟器收到的是 `PTZCmd=0501000000{ss}FF` 这类非法指令（聚焦/预置位也
+塞在 PTZCmd 里），真实设备只能拒绝或忽略。
+
+#### 第二十三轮基线
+
+```
+cargo test                      567 passed / 0 failed   (上轮 562；+5 PTZ/FICmd/PresetCmd 报文测试)
 cargo build --features mysql     OK
 cargo build --features postgres  OK
 cargo check --all-targets        warnings 0

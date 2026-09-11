@@ -230,34 +230,34 @@ pub async fn subscribe_mobile_position(
 }
 
 #[allow(non_snake_case)]
-fn build_ptz_xml(command: &str, speed: u8, _preset: u32, _dwStop: u32) -> String {
-    let ptz_cmd = match command.to_ascii_uppercase().as_str() {
-        "UP" => format!("0501000000{:02X}FF", speed),
-        "DOWN" => format!("0501000001{:02X}FF", speed),
-        "LEFT" => format!("0501000002{:02X}FF", speed),
-        "RIGHT" => format!("0501000003{:02X}FF", speed),
-        "ZOOM_IN" => format!("0501010000{:02X}FF", speed),
-        "ZOOM_OUT" => format!("0501010001{:02X}FF", speed),
-        "FOCUS_IN" => format!("0501020000{:02X}FF", speed),
-        "FOCUS_OUT" => format!("0501020001{:02X}FF", speed),
-        "IRIS_IN" => format!("0501030000{:02X}FF", speed),
-        "IRIS_OUT" => format!("0501030001{:02X}FF", speed),
-        "STOP" => "05010000000000FF".to_string(),
-        _ => format!("050100000000{:02X}FF", speed),
-    };
-    
-    format!(r#"<PTZCmd>{}</PTZCmd>"#, ptz_cmd)
+/// 构造 `<Control>` 的子元素体（云台/镜头/预置位）。
+///
+/// 统一走 `sip::gb28181::front_end_control`：`PTZCmd` 是国标 8 字节格式
+/// （0xA5 起始 + 累加校验），聚焦/光圈用 `<FICmd>`，预置位用
+/// `<PresetCmd>`+`<PresetIndex>`。
+///
+/// 修正：此前这里生成 `05 01 00 00 00 ss FF`（6 字节、非 A5 起始、无校验），
+/// 且把聚焦/光圈/预置位一律塞进 `<PTZCmd>` —— 真实设备按国标解析时
+/// 得到的都是无效指令。
+fn build_ptz_xml(command: &str, speed: u8, preset: u32, _dwStop: u32) -> String {
+    match crate::sip::gb28181::front_end_control::control_element(command, speed, preset) {
+        Some(("PTZCmd", v)) => format!(r#"<PTZCmd>{}</PTZCmd>"#, v),
+        Some(("FICmd", v)) => format!(r#"<FICmd>{}</FICmd>"#, v),
+        Some(("PresetCmd", v)) => {
+            // `PresetCmd` 的取值形如 `CallPreset|7`，需拆成两个元素
+            let (cmd_value, index) = v.split_once('|').unwrap_or((v.as_str(), "0"));
+            format!(
+                r#"<PresetCmd>{}</PresetCmd><PresetIndex>{}</PresetIndex>"#,
+                cmd_value, index
+            )
+        }
+        _ => format!(r#"<PTZCmd>{}</PTZCmd>"#, crate::sip::gb28181::front_end_control::build_ptz_cmd(
+            crate::sip::gb28181::front_end_control::PtzAction::Stop, 0)),
+    }
 }
 
 fn build_preset_xml(command: &str, preset_index: u32) -> String {
-    let preset_cmd = match command.to_ascii_uppercase().as_str() {
-        "GOTO_PRESET" => format!("07000100000000{:02X}FF", preset_index),
-        "SET_PRESET" => format!("07000100010000{:02X}FF", preset_index),
-        "CLEAR_PRESET" => format!("07000100020000{:02X}FF", preset_index),
-        _ => format!("07000100000000{:02X}FF", preset_index),
-    };
-    
-    format!(r#"<PTZCmd>{}</PTZCmd>"#, preset_cmd)
+    build_ptz_xml(command, 1, preset_index, 0)
 }
 
 /// 设备配置查询

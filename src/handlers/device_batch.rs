@@ -59,7 +59,13 @@ pub async fn batch_control(
         let result = match req.command {
             BatchCommand::PtzStop => {
                 if let Some(ref channel_id) = req.channel_id {
-                    match sip.send_device_control(device_id, channel_id, "PTZCmd", "A500000000AF").await {
+                    // 停止云台：用国标 8 字节 PTZCmd（0xA5 起始 + 累加校验），
+                    // 此前硬编码的 "A500000000AF" 既不是 8 字节、校验也不对。
+                    let stop_cmd = crate::sip::gb28181::front_end_control::build_ptz_cmd(
+                        crate::sip::gb28181::front_end_control::PtzAction::Stop,
+                        0,
+                    );
+                    match sip.send_device_control(device_id, channel_id, "PTZCmd", &stop_cmd).await {
                         Ok(_) => DeviceControlResult { device_id: device_id.clone(), success: true, message: None },
                         Err(e) => DeviceControlResult { device_id: device_id.clone(), success: false, message: Some(format!("{}", e)) },
                     }
