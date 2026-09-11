@@ -289,10 +289,27 @@ WS 握手: HTTP/1.1 101 Switching Protocols
 与 `对讲音频上行通道关闭: ... 共 2 包 / 320 字节`。
 （0xFA = `linear2alaw(1000)`，测试用 1000 而非 0，避免"恰等于默认值"的假阳性。）
 
-**尚未做的部分**：前端还没有对讲界面（`web/src/` 里没有麦克风采集/播放代码）。
-后端链路已可用且经过验证，前端需要一个「对讲」面板：
-`getUserMedia` → `AudioContext` 重采样到 8kHz → 经上述 WS 发送二进制帧；
-设备侧音频由 ZLM 的 `local_port` 收流后经 ws-flv 播放，不经过该 WS。
+**前端对讲面板（同轮补齐）**：`web/src/components/TalkPanel/index.vue` +
+`web/src/api/talk.ts`，已挂到 `views/live/index.vue` 的 PTZ 工具条。
+
+* `getUserMedia` → `AudioContext` → 线性插值重采样到 **8kHz**（用小数游标，
+  正确处理 44100→8000 这类非整数比）→ i16 小端二进制帧经 WS 发送；
+* 播放设备侧音频不走该 WS：设备把 RTP 推到 ZLM 的 `localPort`，浏览器播放
+  ZLM 的 ws-flv 即可；
+* 结束时关闭 WS、停止麦克风轨道、并发送 `/api/talk/stop`（BYE）；
+  组件卸载时静默收尾，避免麦克风一直开着。
+
+**同时修掉一个阻塞开发模式的配置错误**：`vite.config.ts` 的 `/dev-api` 代理
+原先 `rewrite` 成**空串**，于是 `/dev-api/user/login` → `/user/login`，
+而后端只注册 `/api/user/login`，未知路径被 SPA 兜底 `nest_service("/")` 命中，
+返回 **200 + text/html**（index.html）—— 前端 axios 拿到 200 却不是 JSON，
+**开发模式下所有接口都不可用**（生产用 `VITE_APP_BASE_API='/api'` 同源直连，
+所以只有 dev 受影响，容易长期不被发现）。现改为重写到 `/api`，并给该代理
+开启 `ws: true`（否则 `/api/ws` 与对讲音频 WS 在 dev 下握手失败）。
+
+验证：经 vite dev 代理 `GET /dev-api/user/login` 返回
+`content-type: application/json`（修复前是 `text/html`）；
+对讲音频 WS 经代理握手得到 `HTTP/1.1 101 Switching Protocols`。
 
 ### 仍未解决 / 需真实设备核验
 

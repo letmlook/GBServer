@@ -49,7 +49,16 @@ export default defineConfig(({ mode }) => {
         '/dev-api': {
           target: env.VITE_PROXY_TARGET || 'http://127.0.0.1:18080',
           changeOrigin: true,
-          rewrite: (p) => p.replace(/^\/dev-api/, '')
+          // 修正：这里原先把 `/dev-api` 重写成 **空串**，于是
+          // `/dev-api/user/login` → `/user/login`，而后端只注册了
+          // `/api/user/login`，未知路径会被 SPA 兜底 `nest_service("/")`
+          // 命中，返回 **200 + text/html**（index.html）。前端 axios 拿到
+          // 200 却不是 JSON，**开发模式下所有接口都不可用**。
+          // 生产用 VITE_APP_BASE_API='/api' 同源直连，因此只有 dev 受影响。
+          rewrite: (p) => p.replace(/^\/dev-api/, '/api'),
+          // WebSocket 也需要代理：语音对讲音频（/api/talk/audio）与实时推送
+          // （/api/ws）都走 WS，未开启时代理会直接握手失败。
+          ws: true
         },
         '/static/snap': {
           target: env.VITE_PROXY_TARGET || 'http://127.0.0.1:18080',

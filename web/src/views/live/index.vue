@@ -143,6 +143,12 @@
                 <el-button @click="sendPtz(currentChannel, 'ZOOM_IN')">放大</el-button>
                 <el-button @click="sendPtz(currentChannel, 'ZOOM_OUT')">缩小</el-button>
               </el-button-group>
+              <span style="margin-left: 12px">
+                <TalkPanel
+                  :device-id="currentChannel?.deviceId"
+                  :channel-id="currentChannel?.channelId"
+                />
+              </span>
             </div>
           </div>
         </el-card>
@@ -170,6 +176,7 @@ import {
   sendPtz as sendPtzApi,
 } from '@/api/live'
 import { cameraListWithChild } from '@/api/syCamera'
+import TalkPanel from '@/components/TalkPanel/index.vue'
 
 const route = useRoute()
 const router = useRouter()
