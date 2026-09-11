@@ -202,6 +202,31 @@ INVITE 为 `a=recvonly`（平台收、设备发），设备 200 OK 才是 `a=sen
 **第二轮基线**：GET 254 项 / POST 97 项全量复扫 —— **0 个 5xx、0 个悬挂超时、0 个 `no such column`**；
 404 从 5 项降至仅剩「记录确实不存在」，422 从 5 项降至 3 项（均为前端本来就会提供的必填字段）。
 
+#### 真实 SIP 信令端到端验证（第三轮，2026-09-12）
+
+用仓库自带的 `mock/tools/sip-device/sip_device_mock.py` 对真实运行的服务做信令联调，
+**发现模拟器自身有 bug，导致它此前从未成功注册过**：
+
+| 问题 | 证据 | 修复 |
+|------|------|------|
+| **模拟器 Digest 鉴权算错，注册必然 403** | `_extract_header(self, msg, name, default="")` 的第三个参数是 **default**，没有「按键取值」的语义，而调用方写的是 `_extract_header(msg, "WWW-Authenticate", "realm")` —— 于是 realm 与 nonce 都被赋成**整个头值**（`'Digest realm="...", nonce="...", algorithm=MD5, qop="auth"'`），HA1/HA2 全错。服务端日志：`REGISTER from 34020000001320000001 - Invalid credentials` → 403 | 新增 `_extract_auth_param()` 真正按参数名解析；顺带让模拟器在服务端宣告 `qop="auth"` 时按 RFC 2617 带 `qop/nc/cnonce` 计算（覆盖服务端那段曾把 cnonce 写死的历史 bug 分支） |
+
+**修复后的端到端结果**（服务端 `cargo run` 真实运行，模拟器真实发包）：
+
+1. `REGISTER` → 401 挑战 → 带 Digest 重发 → **200 OK**（qop=auth 分支）；
+2. `MESSAGE/Keepalive` 周期上报 → 200 OK；
+3. 设备出现在 `/api/device/query/devices`，`onLine=true` 且 IP/端口正确；
+4. `GET /api/device/query/devices/{id}/sync` 触发真实 Catalog 查询，模拟器按
+   **3 个分页**返回，`catalog_sync` 聚合结果：
+   `{"syncState":"done","totalPackets":3,"receivedPackets":3,"channelCount":3,"message":"设备目录同步完成"}`
+   —— 验证了第五轮接线的分页聚合与完成状态反馈；
+5. 3 个通道落入 `gb_device_channel` 并在 `/api/common/channel/list` 可见
+   （`ON` 状态、名称来自设备上报）。
+
+未能验证的部分：实时点播的完整媒体链路需要 ZLMediaKit 在线；当前环境 ZLM 不可达，
+`/api/play/start/...` 如实返回 `Media Server error: HTTP error: 502 Bad Gateway`
+（约 1 秒内失败，无悬挂），即 SIP INVITE 之后的 ZLM `openRtpServer` 步骤被正确拒绝。
+
 ### 仍未解决 / 需真实设备核验
 
 以下是本轮**已定位但未改动**的项，均在代码中留有注释或在此登记，

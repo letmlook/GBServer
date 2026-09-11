@@ -35,6 +35,7 @@ import hashlib
 import logging
 import os
 import random
+import re
 import signal
 import socket
 import sys
@@ -438,6 +439,8 @@ class SipDeviceMock:
         self.state = DeviceState()
         self.transport: Optional[asyncio.DatagramTransport] = None
         self.server_nonce: Optional[str] = None
+        # 服务端 401 里宣告的 qop；为 "auth" 时按 RFC 2617 用 qop 计算 digest
+        self.server_qop: Optional[str] = None
         self.server_realm: Optional[str] = None
         self.last_register_ts = 0.0
         self._keepalive_task: Optional[asyncio.Task] = None
@@ -491,13 +494,16 @@ class SipDeviceMock:
 
     async def _on_401(self, msg: str, addr: tuple):
         # 提取 nonce 与 realm，重新发送带 Digest 的 REGISTER
-        realm = self._extract_header(msg, "WWW-Authenticate", "realm")
-        nonce = self._extract_header(msg, "WWW-Authenticate", "nonce")
+        realm = self._extract_auth_param(msg, "WWW-Authenticate", "realm")
+        nonce = self._extract_auth_param(msg, "WWW-Authenticate", "nonce")
         if not realm or not nonce:
             log.warning("401 缺少 realm/nonce，跳过重试")
             return
         self.server_realm = realm
         self.server_nonce = nonce
+        # 服务端宣告 qop 时按 RFC 2617 用 qop=auth 计算（覆盖服务端的 qop 分支）
+        qop_raw = self._extract_auth_param(msg, "WWW-Authenticate", "qop") or ""
+        self.server_qop = "auth" if "auth" in qop_raw.lower() else None
         await asyncio.sleep(0.05)
         await self._send_register_with_digest(addr)
 
@@ -515,8 +521,8 @@ class SipDeviceMock:
         await self._on_401(msg, addr)
 
     async def _on_407_proxy(self, msg: str, addr: tuple):
-        realm = self._extract_header(msg, "Proxy-Authenticate", "realm")
-        nonce = self._extract_header(msg, "Proxy-Authenticate", "nonce")
+        realm = self._extract_auth_param(msg, "Proxy-Authenticate", "realm")
+        nonce = self._extract_auth_param(msg, "Proxy-Authenticate", "nonce")
         if realm and nonce:
             self.server_realm = realm
             self.server_nonce = nonce
@@ -703,9 +709,13 @@ class SipDeviceMock:
         local = self.transport.get_extra_info("sockname")
         # 计算 Digest
         uri = f"sip:{self.server_realm}@{self.server_addr[0]}:{self.server_addr[1]}"
+        qop = getattr(self, "server_qop", None)
+        nc = "00000001" if qop else None
+        cnonce = uuid.uuid4().hex[:16] if qop else None
         resp = compute_digest_response(
             self.cfg.username, self.server_realm, self.cfg.password,
             "REGISTER", uri, self.server_nonce,
+            qop=qop, nc=nc, cnonce=cnonce,
         )
         auth = (
             f'Digest username="{self.cfg.username}", '
@@ -715,6 +725,8 @@ class SipDeviceMock:
             f'response="{resp}", '
             f'algorithm=MD5'
         )
+        if qop:
+            auth += f', qop={qop}, nc={nc}, cnonce="{cnonce}"'
         payload = build_register(
             self.cfg, local, self.server_addr, cseq, self.cfg.expires_secs,
             authorization_header=auth,
@@ -742,6 +754,23 @@ class SipDeviceMock:
             if line.lower().startswith(name.lower() + ":"):
                 return line.split(":", 1)[1].strip()
         return default
+
+    def _extract_auth_param(self, msg: str, header: str, param: str) -> Optional[str]:
+        """从 WWW-Authenticate / Proxy-Authenticate 头里取单个参数。
+
+        历史 bug：调用方写的是
+        `self._extract_header(msg, "WWW-Authenticate", "realm")`，
+        但 `_extract_header` 的第三个参数是 **default**，没有按键取值的语义，
+        于是 realm 与 nonce 都被赋成了**整个头值**
+        （'Digest realm="...", nonce="...", algorithm=MD5, qop="auth"'）。
+        结果 HA1/HA2 全错，任何 REGISTER 都必然被服务端 403 拒绝
+        —— 这个模拟器此前从未成功注册过。
+        """
+        raw = self._extract_header(msg, header, "")
+        if not raw:
+            return None
+        m = re.search(rf'{re.escape(param)}\s*=\s*"?([^",]+)"?', raw, re.IGNORECASE)
+        return m.group(1).strip() if m else None
 
     def _extract_via_branch(self, msg: str) -> str:
         for line in msg.splitlines():
