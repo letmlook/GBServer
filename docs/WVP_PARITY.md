@@ -12,7 +12,7 @@
 | 总代码量（src/） | 69,619 行 Rust | `find src -name '*.rs' \| xargs wc -l` |
 | 已注册 HTTP 路由 | 383 条唯一 `/api/...` 路径 | `grep -oE '"/api/[^"]*"' src/router.rs \| sort -u \| wc -l` |
 | Handler 模块 | 29 个（含 `stub.rs` / `device_stub.rs` 两个兼容 shim） | `grep -c 'pub mod' src/handlers/mod.rs` |
-| 后端测试 | **560 通过** / 0 失败（第二十一轮后回填） | `cargo test --no-fail-fast` |
+| 后端测试 | **562 通过** / 0 失败（第二十二轮后回填） | `cargo test --no-fail-fast` |
 | 编译状态 | `cargo check` 0 error / **0 warning**；clippy 262；**deprecated 0** | `cargo check` / `cargo clippy --all-targets` |
 | 数据库 feature | SQLite（默认）/ PostgreSQL / MySQL **三者均编译通过** | CI `feature-matrix` job |
 | CI | ⏸️ 工作流已就绪但**按需暂停自动触发**（见 `.github/workflows/ci.yml`） | — |
@@ -1036,6 +1036,36 @@ JT1078 终端录像检索（0x8802 → 0x0802 → API 返回终端结果）PASS
 
 ```
 cargo test                      560 passed / 0 failed   (上轮 556；+3 JT1078 DTO 契约测试 +1 camelCase)
+cargo build --features mysql     OK
+cargo build --features postgres  OK
+cargo check --all-targets        warnings 0
+npx playwright test             25 passed / 0 failed / 0 skipped
+```
+
+### 回放控制：报文族与对话都错了（2026-09-12 第二十二轮）
+
+核验"回放暂停/拖动/倍速"时发现：三个接口都返回 success，但**在真实设备上完全无效**。
+
+| # | 缺陷 | 证据 | 修复 |
+|---|------|------|------|
+| 1 | **报文族错了**：回放控制用的是 `build_playback_control_xml`，即 `<Control><CmdType>DeviceControl...>` 的 **MANSCDP** 报文（那是云台/报警/录像的设备控制族），而 GB/T 28181 §9.10 规定回放控制是 **MANSRTSP**（`PLAY`/`PAUSE`/`TEARDOWN` + `Scale:`/`Range: npt=`），`Content-Type: Application/MANSRTSP` | 实测 SIP 侧收到的 INFO 正文是 `<?xml version="1.0" ...?>`，设备只能当作无法识别的控制命令 | 新增 `build_playback_control_mansrtsp()`：Play/Resume→`PLAY`、Pause→`PAUSE`、Stop→`TEARDOWN`、Seek→`Range: npt=<秒>-`、Scale→`Scale: <倍率>` |
+| 2 | **不是对话内请求**：走 `send_message_to_device` 会**新建 Call-ID 和新 From tag**，设备无法把它关联到正在播放的回放会话（RFC 3261 §12.2.2 要求 Call-ID + 本地 tag + 远端 tag 一致、CSeq 严格递增） | 实测旧实现 Call-ID 与回放 INVITE 不同 | 改为从 `InviteSessionManager` 取出该路回放会话，复用其 Call-ID / 本地 tag / 对端 tag，CSeq 用 `bye_cseq()` 递增并回写会话 |
+
+**实测**（真实服务 + SIP 设备模拟器）：
+
+```
+回放 INVITE call_id=playback_34020000001320000001_1789165834347
+pause  → INFO 正文: PAUSE RTSP/1.0 / CSeq: 2                    call_id 同上
+seek 60→ INFO 正文: PLAY RTSP/1.0  / CSeq: 3 / Range: npt=60-   call_id 同上
+speed 2→ INFO 正文: PLAY RTSP/1.0  / CSeq: 4 / Scale: 2         call_id 同上
+```
+
+修复前：INFO 正文是 MANSCDP XML，且 Call-ID 与回放对话无关。
+
+#### 第二十二轮基线
+
+```
+cargo test                      562 passed / 0 failed   (上轮 560；+2 MANSRTSP 报文测试)
 cargo build --features mysql     OK
 cargo build --features postgres  OK
 cargo check --all-targets        warnings 0

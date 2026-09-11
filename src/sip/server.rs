@@ -57,6 +57,75 @@ pub enum PlaybackControlCmd {
 
 /// 按 GB28181 规范构造 PlayBackCtrl 设备控制 XML。
 /// 抽出为纯函数便于单测，覆盖 6 种命令的 XML 拼装。
+/// 构造 GB28181 **历史视频回放控制**的 MANSRTSP 报文。
+///
+/// 国标（GB/T 28181-2016 §9.10）规定回放控制走 SIP INFO，`Content-Type`
+/// 必须是 `Application/MANSRTSP`，正文是 RTSP 风格的控制命令：
+///
+/// | 控制 | 方法 | 附加头 |
+/// |------|------|--------|
+/// | 播放/恢复 | `PLAY` | — |
+/// | 暂停 | `PAUSE` | — |
+/// | 停止 | `TEARDOWN` | — |
+/// | 拖动 | `PLAY` | `Range: npt=<秒>-` |
+/// | 倍速 | `PLAY` | `Scale: <倍率>` |
+///
+/// # 为什么单独抽出来
+///
+/// 此前回放控制用的是 `build_playback_control_xml`（`<Control><CmdType>DeviceControl`
+/// 的 **MANSCDP** 报文）——那是"设备控制"（云台/报警/录像）的报文族，
+/// 与回放控制完全不同。设备收到 MANSCDP 的 INFO 只会当作无法识别的控制命令，
+/// **暂停/继续/拖动/倍速全都不会生效**，而平台侧返回的是 success。
+pub(crate) fn build_playback_control_mansrtsp(
+    cmd: &PlaybackControlCmd,
+    cseq: u32,
+) -> String {
+    let (method, extra) = match cmd {
+        PlaybackControlCmd::Play | PlaybackControlCmd::Resume => ("PLAY", String::new()),
+        PlaybackControlCmd::Pause => ("PAUSE", String::new()),
+        PlaybackControlCmd::Stop => ("TEARDOWN", String::new()),
+        PlaybackControlCmd::Seek { seek_time } => {
+            // 国标 Range 用 npt（秒）。入参可能是 RFC3339、`HH:MM:SS` 或纯秒数。
+            let npt = seek_time_to_npt(seek_time);
+            ("PLAY", format!("Range: npt={}-\r\n", npt))
+        }
+        PlaybackControlCmd::Scale { speed } => {
+            ("PLAY", format!("Scale: {}\r\n", speed))
+        }
+    };
+    format!("{} RTSP/1.0\r\nCSeq: {}\r\n{}", method, cseq, extra)
+}
+
+/// 把回放定位时间换算成 MANSRTSP `Range: npt=` 需要的秒数。
+///
+/// 支持：纯秒数、`HH:MM:SS`、`YYYY-MM-DDTHH:MM:SS`（按当日 00:00:00 起算）。
+/// 无法识别时回退为 `0`（从头播放）——调用方已在入口校验过格式。
+fn seek_time_to_npt(seek_time: &str) -> f64 {
+    let t = seek_time.trim();
+    if let Ok(secs) = t.parse::<f64>() {
+        return secs;
+    }
+    if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(t, "%Y-%m-%dT%H:%M:%S") {
+        use chrono::Timelike;
+        return (dt.hour() * 3600 + dt.minute() * 60 + dt.second()) as f64;
+    }
+    if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(t, "%Y-%m-%d %H:%M:%S") {
+        use chrono::Timelike;
+        return (dt.hour() * 3600 + dt.minute() * 60 + dt.second()) as f64;
+    }
+    let parts: Vec<&str> = t.split(':').collect();
+    if parts.len() == 3 {
+        if let (Ok(h), Ok(m), Ok(s)) = (
+            parts[0].parse::<f64>(),
+            parts[1].parse::<f64>(),
+            parts[2].parse::<f64>(),
+        ) {
+            return h * 3600.0 + m * 60.0 + s;
+        }
+    }
+    0.0
+}
+
 pub(crate) fn build_playback_control_xml(
     cmd: &PlaybackControlCmd,
     device_id: &str,
@@ -5304,26 +5373,110 @@ f=v/1/96/1/2/1/1/0
         Ok(call_id)
     }
 
-    /// 发送 GB28181 回放控制命令（PlayBackCtrl）。
+    /// 发送 GB28181 回放控制命令（MANSRTSP）。
     ///
-    /// 支持的命令：Play / Pause / Resume / Stop / Seek（需 seek_time）/ Scale（需 speed）
-    /// 设备侧会回复 200 OK 标记完成；这里只负责发送，状态机由调用方（playback_manager）维护。
+    /// 支持：Play / Pause / Resume / Stop / Seek / Scale。
+    ///
+    /// 两个关键点（此前都不对，导致回放控制**在真实设备上完全无效**）：
+    ///
+    /// 1. **报文族**：回放控制是 `Application/MANSRTSP`（RTSP 风格的
+    ///    `PLAY`/`PAUSE`/`TEARDOWN`），不是设备控制的 MANSCDP XML ——
+    ///    见 [`build_playback_control_mansrtsp`]。
+    /// 2. **必须是对话内请求**（RFC 3261 §12.2.2）：Call-ID、From tag、To tag
+    ///    必须与该路回放的 INVITE 对话一致，CSeq 严格递增。此前走
+    ///    `send_message_to_device` 会新建 Call-ID/新 tag，设备无法把它关联到
+    ///    正在播放的会话，只能丢弃。
     pub async fn send_playback_control(
         &self,
         device_id: &str,
         channel_id: &str,
         cmd: PlaybackControlCmd,
     ) -> Result<()> {
-        let sn = (chrono::Utc::now().timestamp() % 10000) as i64;
-        let xml = build_playback_control_xml(&cmd, device_id, channel_id, sn);
+        // 优先用活跃会话；没有会话时回退到旧的独立 INFO（保持兼容，
+        // 但要能看出"这次控制没有对话"）
+        let session = self
+            .invite_session_manager
+            .get_by_device_channel(device_id, channel_id)
+            .await;
 
-        self.send_message_to_device(
+        let Some(session) = session else {
+            tracing::warn!(
+                "回放控制 {}/{} 没有活跃会话，按独立 INFO 发送（设备可能无法关联到会话）",
+                device_id,
+                channel_id
+            );
+            let sn = (chrono::Utc::now().timestamp() % 10000) as i64;
+            let xml = build_playback_control_xml(&cmd, device_id, channel_id, sn);
+            return self
+                .send_message_to_device(
+                    device_id,
+                    crate::sip::SipMethod::Info,
+                    Some(&xml),
+                    Some("Application/MANSCDP+xml"),
+                )
+                .await;
+        };
+
+        let cseq_num = session.bye_cseq(); // CSeq 严格递增
+        let body = build_playback_control_mansrtsp(&cmd, cseq_num);
+        let call_id = session.call_id.clone();
+        let from_tag = session
+            .local_tag
+            .clone()
+            .unwrap_or_else(generate_tag);
+
+        let addr = match self.device_manager.get_address(device_id).await {
+            Some(a) => a,
+            None => session.peer_addr,
+        };
+        let branch = generate_branch();
+        let via = format!(
+            "SIP/2.0/UDP {}:{};branch={};rport",
+            self.config.ip, self.config.port, branch
+        );
+        let from = format!(
+            "<sip:{}@{}:{}>;tag={}",
+            self.config.device_id, self.config.ip, self.config.port, from_tag
+        );
+        let mut to = format!(
+            "<sip:{}@{}:{}>",
+            channel_id,
+            addr.ip(),
+            addr.port()
+        );
+        if let Some(remote_tag) = session.remote_tag.as_deref() {
+            to = format!("{};tag={}", to, remote_tag);
+        }
+        let cseq = cseq_header(cseq_num, "INFO");
+
+        let headers: Vec<(&str, &str)> = vec![
+            ("Via", &via),
+            ("From", &from),
+            ("To", &to),
+            ("Call-ID", &call_id),
+            ("CSeq", &cseq),
+            ("Max-Forwards", "70"),
+            ("Content-Type", "Application/MANSRTSP"),
+        ];
+        let uri = format!("sip:{}@{}:{}", channel_id, addr.ip(), addr.port());
+        let message = Parser::generate_request("INFO", &uri, &headers, Some(&body));
+
+        self.send_request_to(addr, &message).await?;
+        // 会话内 CSeq 递增，避免下一条控制命令复用同一序号
+        if let Some(mut s) = self.invite_session_manager.get(&call_id).await {
+            s.invite_cseq = cseq_num;
+            s.update_activity();
+            self.invite_session_manager.update(&s).await;
+        }
+        tracing::info!(
+            "回放控制已发送 {}/{} call_id={} cseq={} body={:?}",
             device_id,
-            crate::sip::SipMethod::Info,
-            Some(&xml),
-            Some("Application/MANSCDP+xml"),
-        )
-        .await
+            channel_id,
+            call_id,
+            cseq_num,
+            body
+        );
+        Ok(())
     }
 
     /// 发送 GB28181 RecordInfo 查询请求（设备侧历史录像检索）
@@ -8185,5 +8338,44 @@ struct CascadePullHandleChannelProbe;
 impl CascadePullHandleChannelProbe {
     fn channel(req: &SipRequest) -> Option<String> {
         crate::sip::SipServer::extract_channel_from_subject(req)
+    }
+}
+
+#[cfg(test)]
+mod playback_control_mansrtsp_tests {
+    use super::*;
+
+    /// 回放控制必须是 MANSRTSP（RTSP 风格），不是 MANSCDP XML。
+    #[test]
+    fn builds_rtsp_style_commands() {
+        let b = build_playback_control_mansrtsp(&PlaybackControlCmd::Pause, 3);
+        assert!(b.starts_with("PAUSE RTSP/1.0\r\n"), "{}", b);
+        assert!(b.contains("CSeq: 3\r\n"), "{}", b);
+        assert!(!b.contains("<?xml"), "回放控制不能是 XML：{}", b);
+
+        let b = build_playback_control_mansrtsp(&PlaybackControlCmd::Resume, 4);
+        assert!(b.starts_with("PLAY RTSP/1.0\r\n"), "{}", b);
+
+        let b = build_playback_control_mansrtsp(&PlaybackControlCmd::Stop, 5);
+        assert!(b.starts_with("TEARDOWN RTSP/1.0\r\n"), "{}", b);
+    }
+
+    /// 倍速用 `Scale`，拖动用 `Range: npt=<秒>-`。
+    #[test]
+    fn scale_and_seek_use_rtsp_headers() {
+        let b = build_playback_control_mansrtsp(&PlaybackControlCmd::Scale { speed: 4.0 }, 6);
+        assert!(b.starts_with("PLAY RTSP/1.0\r\n"), "{}", b);
+        assert!(b.contains("Scale: 4\r\n"), "{}", b);
+
+        let b = build_playback_control_mansrtsp(
+            &PlaybackControlCmd::Seek { seek_time: "120".into() },
+            7,
+        );
+        assert!(b.contains("Range: npt=120-\r\n"), "{}", b);
+
+        // 也接受 HH:MM:SS 与日期时间形式
+        assert_eq!(seek_time_to_npt("01:02:03"), 3723.0);
+        assert_eq!(seek_time_to_npt("2026-09-01T00:01:30"), 90.0);
+        assert_eq!(seek_time_to_npt("坏数据"), 0.0);
     }
 }
