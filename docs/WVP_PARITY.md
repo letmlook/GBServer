@@ -12,7 +12,7 @@
 | 总代码量（src/） | 61,669 行 Rust | `find src -name '*.rs' \| xargs wc -l` |
 | 已注册 HTTP 路由 | 374 个 `.route()` / 370 条唯一 `/api/...` 路径 | `grep -cE '\.route\(' src/router.rs` |
 | Handler 模块 | 29 个（含 `stub.rs` / `device_stub.rs` 两个兼容 shim） | `grep -c 'pub mod' src/handlers/mod.rs` |
-| 后端测试 | **389 通过**（lib 342 + 集成 47）/ 2 忽略 / 0 失败 | `cargo test --no-fail-fast` |
+| 后端测试 | **393 通过**（lib 346 + 集成 47）/ 2 忽略 / 0 失败 | `cargo test --no-fail-fast` |
 | 编译状态 | `cargo check` 0 error / **17 warning**；clippy 292；**deprecated 0** | `cargo check` / `cargo clippy --all-targets` |
 | 数据库 feature | SQLite（默认）/ PostgreSQL / MySQL **三者均编译通过** | CI `feature-matrix` job |
 | CI | ✅ 已恢复（`.github/workflows/ci.yml`，2026-09-11 新增） | — |
@@ -22,7 +22,7 @@
 ### 本轮（2026-09-11）关键结论
 
 - **CI 门禁恢复**：编译 + 全量测试 + 三库 feature + 前端构建为硬门禁；`fmt` / `clippy` 暂列为非门禁（基线未清零，见 `.github/workflows/ci.yml` 注释）。
-- **测试完全自包含**：默认 SQLite feature 下 389 个测试不连接 Redis / PG / MySQL / ZLM，CI 无需 service 容器。
+- **测试完全自包含**：默认 SQLite feature 下 393 个测试不连接 Redis / PG / MySQL / ZLM，CI 无需 service 容器。
 - **前端已完成 Vue 3 迁移**：`web-v3/` 已转正为 `web/`（commit `2acf5a7`），Vue 2 归档至 `web-legacy-vue2/`。本文档此前多处 "web-v3 Phase 2 待迁移" 的描述已过时，本轮一并修正。
 - **CI 首次运行即抓到真实缺陷**：`Navbar.vue` 缺 `reactive` 显式 import，依赖被 gitignore 的
   `auto-imports.d.ts` 兜底 → **任何干净 clone 跑 `npm run build` 都会失败**（`dev` 与
@@ -32,6 +32,8 @@
 - **状态源统一到 StateStore**：完成 cache → StateStore 迁移。`zlm/hook.rs` 4 处 legacy
   Redis 写入中 3 处纯冗余、1 处（`on_flow_report`）改为覆盖 StateStore；连带发现整个
   `src/cache.rs` 已零调用方，整体删除 140 行。**deprecated 告警归零**，clippy 297 → 292。
+  核查中发现 `on_flow_report` / `handle_webhook` **此前无任何测试覆盖**，已把同步逻辑
+  提取为可测函数并补 4 个测试（lib 342 → 346）。
 
 ## 历史基线（2026-08-23）
 
