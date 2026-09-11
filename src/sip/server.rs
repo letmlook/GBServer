@@ -17,7 +17,8 @@ use crate::db::position_history as ph;
 use crate::handlers::websocket::WsState;
 use crate::sip::core::parser::Parser;
 use crate::sip::core::{
-    DialogManager, SipMessage, SipMethod, SipRequest, SipResponse, TransactionManager,
+    DialogManager, SipMessage, SipMethod, SipRequest, SipResponse, Transaction, TransactionManager,
+    TransportInfo,
 };
 use crate::sip::gb28181::catalog::{
     build_catalog_notify_body, CatalogSubscription, CatalogSubscriptionManager,
@@ -383,6 +384,35 @@ impl SipServer {
         tracing::info!("SIP Server UDP listening on {}", addr);
         *self.socket.write().await = Some(Arc::new(socket));
 
+        // ── RFC 3261 §17 事务层接线（2026-09-11）──────────────────────────
+        //
+        // 事务层本身不持有 socket：这里注入一条出站通道，并启动定时器任务。
+        // 两者缺一不可 —— 此前 `TransactionManager` 虽被构造却从未使用，
+        // 且 `process_timers` 只自增重传计数、不真正发送。
+        //
+        // 只对 UDP 生效（TCP 由传输层保证可靠交付）。
+        {
+            let (tx_sink, mut rx_sink) =
+                tokio::sync::mpsc::unbounded_channel::<(SocketAddr, Vec<u8>)>();
+            let socket_handle = self.socket.clone();
+            tokio::spawn(async move {
+                while let Some((dst, raw)) = rx_sink.recv().await {
+                    let guard = socket_handle.read().await;
+                    match guard.as_ref() {
+                        Some(sock) => {
+                            if let Err(e) = sock.send_to(&raw, dst).await {
+                                tracing::warn!("事务重传发送失败 -> {}: {}", dst, e);
+                            }
+                        }
+                        None => tracing::warn!("事务重传时 UDP socket 尚未就绪 -> {}", dst),
+                    }
+                }
+            });
+            self.transaction_manager.set_outbound_sink(tx_sink).await;
+            let _timer = self.transaction_manager.clone().start_timer_task();
+            tracing::info!("SIP 事务层已启用（UDP 重传按 RFC 3261 §17 指数退避）");
+        }
+
         // 从 DB 恢复 on_line 设备到内存 device_manager —— 设备在跨重启场景
         // 不会主动重新 REGISTER（mock 设备尤其如此），把 DB 里的 ip/port 还原
         // 到内存后 play 流程就能用 device_manager.get_address() 找到目标。
@@ -534,6 +564,7 @@ impl SipServer {
         let udp_renewal_failures = self.renewal_failures.clone();
         let udp_sqlite_max_devices = self.sqlite_max_devices;
         let udp_media_waiter_manager = self.media_waiter_manager.clone();
+        let udp_transaction_manager = self.transaction_manager.clone();
 
         tokio::spawn(async move {
             loop {
@@ -561,8 +592,9 @@ impl SipServer {
                         let renewal_failures = udp_renewal_failures.clone();
                         let sqlite_max_devices = udp_sqlite_max_devices;
                         let media_waiter_manager = udp_media_waiter_manager.clone();
+                        let transaction_manager = udp_transaction_manager.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = Self::handle_packet(&data, addr, &config, &device_manager, &session_manager, &invite_session_manager, &talk_manager, &catalog_subscription_manager, &zlm_client, &pool, &socket_for_response, false, &ws_state, &pending_request_manager, &pending_invites, &cascade_registrar, &send_rtp_manager, &Some(subscription_lifecycle), &renewal_failures, sqlite_max_devices, &media_waiter_manager).await {
+                            if let Err(e) = Self::handle_packet(&data, addr, &config, &device_manager, &session_manager, &invite_session_manager, &talk_manager, &catalog_subscription_manager, &zlm_client, &pool, &socket_for_response, false, &ws_state, &pending_request_manager, &pending_invites, &cascade_registrar, &send_rtp_manager, &Some(subscription_lifecycle), &renewal_failures, sqlite_max_devices, &media_waiter_manager, &transaction_manager).await {
                                 tracing::error!("SIP handler error: {}", e);
                             }
                         });
@@ -1050,6 +1082,7 @@ let renewal_pool = pool.clone();
         renewal_failures: &Arc<DashMap<String, u32>>,
         sqlite_max_devices: Option<usize>,
         media_waiter_manager: &Arc<MediaWaiterManager>,
+        transaction_manager: &Arc<TransactionManager>,
     ) -> Result<()> {
         let msg = Parser::parse(data)?;
         match msg {
@@ -1073,6 +1106,21 @@ let renewal_pool = pool.clone();
                 ).await
             }
             SipMessage::Response(resp) => {
+                // 收到响应即终止对应的客户端事务，停止 RFC 3261 §17 的重传。
+                // 必须在处理响应之前做，避免响应已到却仍继续重传旧请求。
+                if let (Some(call_id), Some(cseq)) =
+                    (resp.header("call-id"), resp.header("cseq"))
+                {
+                    if let Some(n) = cseq
+                        .split_whitespace()
+                        .next()
+                        .and_then(|v| v.parse::<u32>().ok())
+                    {
+                        transaction_manager
+                            .handle_response(call_id, n, resp.status_code.code())
+                            .await;
+                    }
+                }
                 Self::handle_response(
                     resp,
                     session_manager,
@@ -3778,6 +3826,28 @@ f=v/1/96/1/2/1/1/0
         );
         let message = Parser::generate_request_from_method(method, &uri, &headers, body);
         socket.send_to(message.as_bytes(), device_addr).await?;
+
+        // 登记客户端事务：未收到响应时由事务层按 RFC 3261 §17 指数退避重传。
+        //
+        // 关键点：重传必须与首次发送**逐字一致**（尤其 Via branch），
+        // 因此保存原始字节 `message`，而不是靠重新序列化 `request`。
+        // 2026-09-11 之前事务层虽登记了"重传计数"，但 `process_timers`
+        // 从不真正发送 —— 该缺陷现已修复（见 `sip/core/transaction.rs`）。
+        if let Ok(SipMessage::Request(req)) = Parser::parse(message.as_bytes()) {
+            if let Some(ti) = TransportInfo::from_request(&req, &device_addr.to_string()) {
+                let timers = self.transaction_manager.timers().clone();
+                let txn = if matches!(method, SipMethod::Invite) {
+                    Transaction::new_invite_client(req, ti, timers)
+                } else {
+                    Transaction::new_noninvite_client(req, ti, timers)
+                };
+                let txn_id = txn.id.clone();
+                self.transaction_manager.add(txn).await;
+                self.transaction_manager
+                    .attach_raw_bytes(&txn_id, message.as_bytes().to_vec())
+                    .await;
+            }
+        }
 
         tracing::info!(
             "Sent {} to device {} at {}",

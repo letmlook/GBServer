@@ -354,7 +354,7 @@ mod tests {
     fn test_extract_api_key_from_header() {
         let mut headers = axum::http::HeaderMap::new();
         headers.insert("X-API-Key", "my-secret-key".parse().unwrap());
-        let req = axum::extract::Request::builder()
+        let _req = axum::extract::Request::builder()
             .uri("/api/foo")
             .body(axum::body::Body::empty()).unwrap();
         // 直接复用 header 提取逻辑

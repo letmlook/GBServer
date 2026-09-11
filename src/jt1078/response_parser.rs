@@ -12,7 +12,7 @@
 //! - Phase 6.4: media items first 0x0801, location report 0x0200, attribute report 0x0102
 //! - Phase 6.5: query terminal params response 0x0107
 
-use chrono::{DateTime, Datelike, NaiveDate, NaiveDateTime, NaiveTime, Utc};
+use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 
 /// Terminal register request 0x0100
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -321,6 +321,8 @@ fn read_length_prefixed_ascii(body: &[u8], pos: usize) -> Result<(String, usize)
 #[cfg(test)]
 mod tests {
     use super::*;
+    // year()/month()/day() 来自 Datelike trait，仅测试用到
+    use chrono::Datelike;
 
     #[test]
     fn test_bcd_to_string_full() {

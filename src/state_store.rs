@@ -1737,7 +1737,6 @@ mod phase71_state_tests {
 #[cfg(test)]
 mod redis_backend_tests {
     use super::*;
-    use crate::state_store::*;
 
     fn make_device_state(id: &str) -> DeviceOnlineState {
         DeviceOnlineState {

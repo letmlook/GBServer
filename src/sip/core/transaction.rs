@@ -1,6 +1,7 @@
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use tokio::sync::{mpsc, RwLock};
 use chrono::{DateTime, Utc, Duration};
 use super::message::SipRequest;
 use super::method::SipMethod;
@@ -74,6 +75,9 @@ pub struct Transaction {
     pub last_response: Option<u16>,
     pub retransmit_count: u32,
     pub timer_values: TimerValues,
+    /// 原始出站字节。**逐字重传**用：RFC 3261 §17.1.1.2 要求重传报文与首次发送
+    /// 完全一致（尤其 Via branch 不能变），因此不能靠重新序列化 `request` 来生成。
+    pub raw_bytes: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Clone)]
@@ -196,6 +200,7 @@ impl Transaction {
             last_response: None,
             retransmit_count: 0,
             timer_values: timers,
+            raw_bytes: None,
         }
     }
     
@@ -215,6 +220,7 @@ impl Transaction {
             last_response: None,
             retransmit_count: 0,
             timer_values: timers,
+            raw_bytes: None,
         }
     }
     
@@ -234,6 +240,7 @@ impl Transaction {
             last_response: None,
             retransmit_count: 0,
             timer_values: timers,
+            raw_bytes: None,
         }
     }
     
@@ -253,6 +260,7 @@ impl Transaction {
             last_response: None,
             retransmit_count: 0,
             timer_values: timers,
+            raw_bytes: None,
         }
     }
     
@@ -359,6 +367,12 @@ impl Transaction {
 pub struct TransactionManager {
     transactions: Arc<RwLock<HashMap<String, Transaction>>>,
     timers: TimerValues,
+    /// 出站发送通道 `(目的地址, 原始字节)`。
+    ///
+    /// 事务层本身不持有 socket；由 `SipServer` 注入该通道后，
+    /// `process_timers` 才具备"真正把重传报文发出去"的能力。
+    /// 未注入时事务层退化为只记时（与 2026-09-11 之前的行为一致）。
+    outbound: Arc<RwLock<Option<mpsc::UnboundedSender<(SocketAddr, Vec<u8>)>>>>,
 }
 
 impl TransactionManager {
@@ -366,6 +380,7 @@ impl TransactionManager {
         Self {
             transactions: Arc::new(RwLock::new(HashMap::new())),
             timers: TimerValues::default(),
+            outbound: Arc::new(RwLock::new(None)),
         }
     }
     
@@ -373,6 +388,20 @@ impl TransactionManager {
         Self {
             transactions: Arc::new(RwLock::new(HashMap::new())),
             timers,
+            outbound: Arc::new(RwLock::new(None)),
+        }
+    }
+
+    /// 注入出站发送通道，使事务层具备真实重传能力。
+    pub async fn set_outbound_sink(&self, sink: mpsc::UnboundedSender<(SocketAddr, Vec<u8>)>) {
+        *self.outbound.write().await = Some(sink);
+    }
+
+    /// 为已登记的事务附加原始出站字节（用于逐字重传）。
+    pub async fn attach_raw_bytes(&self, id: &str, raw: Vec<u8>) {
+        let mut guard = self.transactions.write().await;
+        if let Some(txn) = guard.get_mut(id) {
+            txn.raw_bytes = Some(raw);
         }
     }
     
@@ -523,7 +552,38 @@ impl TransactionManager {
                 txn.retransmit_count += 1;
                 txn.last_activity = now;
                 self.update(&txn).await;
-                tracing::debug!("Transaction {} retransmit count: {}", id, txn.retransmit_count);
+
+                // 真正把原始字节重发出去（RFC 3261 §17.1.1.2 / §17.1.2.2）。
+                // 缺原始字节或未注入出站通道时无法发送，仅保留计数便于观测 ——
+                // 2026-09-11 之前这里**只自增计数并打日志，从不发送**。
+                match (
+                    txn.raw_bytes.as_ref(),
+                    txn.transport.peer_addr.parse::<SocketAddr>(),
+                ) {
+                    (Some(raw), Ok(addr)) => {
+                        let sink = self.outbound.read().await;
+                        match sink.as_ref() {
+                            Some(tx) => {
+                                if tx.send((addr, raw.clone())).is_err() {
+                                    tracing::warn!("事务 {} 重传失败：出站通道已关闭", id);
+                                } else {
+                                    tracing::debug!(
+                                        "事务 {} 第 {} 次重传 -> {}",
+                                        id,
+                                        txn.retransmit_count,
+                                        addr
+                                    );
+                                }
+                            }
+                            None => {
+                                tracing::debug!("事务 {} 需重传但未注入出站通道", id);
+                            }
+                        }
+                    }
+                    _ => {
+                        tracing::debug!("事务 {} 需重传但缺少原始字节或目的地址", id);
+                    }
+                }
             }
         }
         
@@ -607,5 +667,140 @@ impl Transaction {
         } else {
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod retransmit_tests {
+    use super::*;
+    use crate::sip::core::{Parser, SipMessage};
+    use tokio::sync::mpsc;
+
+    fn sample_request(call_id: &str) -> SipRequest {
+        let raw = format!(
+            "MESSAGE sip:34020000001320000001@127.0.0.1:5060 SIP/2.0\r\n\
+             Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKtest;rport\r\n\
+             From: <sip:34020000002000000001@127.0.0.1:5060>;tag=abc\r\n\
+             To: <sip:34020000001320000001@127.0.0.1:5060>\r\n\
+             Call-ID: {}\r\n\
+             CSeq: 1 MESSAGE\r\n\
+             Max-Forwards: 70\r\n\
+             Content-Length: 0\r\n\r\n",
+            call_id
+        );
+        match Parser::parse(raw.as_bytes()).expect("parse sample request") {
+            SipMessage::Request(r) => r,
+            _ => panic!("expected request"),
+        }
+    }
+
+    fn fast_timers() -> TimerValues {
+        TimerValues {
+            t1: Duration::milliseconds(20),
+            ..Default::default()
+        }
+    }
+
+    async fn register_txn(
+        mgr: &Arc<TransactionManager>,
+        call_id: &str,
+        raw: Option<Vec<u8>>,
+    ) -> String {
+        let req = sample_request(call_id);
+        let ti = TransportInfo::from_request(&req, "127.0.0.1:5061").expect("transport info");
+        let txn = Transaction::new_noninvite_client(req, ti, mgr.timers().clone());
+        let id = txn.id.clone();
+        mgr.add(txn).await;
+        if let Some(bytes) = raw {
+            mgr.attach_raw_bytes(&id, bytes).await;
+        }
+        id
+    }
+
+    /// 回归保护：事务层必须**真的把原文重传出去**。
+    ///
+    /// 2026-09-11 之前 `process_timers` 只自增 `retransmit_count` 并打日志，
+    /// 从不发送任何东西 —— 即 RFC 3261 §17 的 UDP 重传完全没生效。
+    #[tokio::test]
+    async fn test_retransmit_actually_sends_raw_bytes() {
+        let mgr = Arc::new(TransactionManager::with_timers(fast_timers()));
+        let (tx, mut rx) = mpsc::unbounded_channel::<(SocketAddr, Vec<u8>)>();
+        mgr.set_outbound_sink(tx).await;
+
+        let raw = b"RAW-SIP-REQUEST-BYTES".to_vec();
+        let _id = register_txn(&mgr, "call-retrans-1", Some(raw.clone())).await;
+
+        let _timer = mgr.clone().start_timer_task();
+        let got = tokio::time::timeout(std::time::Duration::from_secs(3), rx.recv())
+            .await
+            .expect("应在超时前收到重传报文")
+            .expect("出站通道不应关闭");
+
+        assert_eq!(got.0, "127.0.0.1:5061".parse::<SocketAddr>().unwrap());
+        assert_eq!(
+            got.1, raw,
+            "重传必须逐字发送原始字节（Via branch 不能变）"
+        );
+    }
+
+    /// 未附加原始字节时不应发送，也不应 panic（仅保留计数便于观测）。
+    #[tokio::test]
+    async fn test_no_retransmit_without_raw_bytes() {
+        let mgr = Arc::new(TransactionManager::with_timers(fast_timers()));
+        let (tx, mut rx) = mpsc::unbounded_channel::<(SocketAddr, Vec<u8>)>();
+        mgr.set_outbound_sink(tx).await;
+
+        let _id = register_txn(&mgr, "call-retrans-2", None).await;
+        let _timer = mgr.clone().start_timer_task();
+
+        let res = tokio::time::timeout(std::time::Duration::from_millis(300), rx.recv()).await;
+        assert!(res.is_err(), "缺少原始字节时不应发出任何报文");
+    }
+
+    /// 未注入出站通道时不应 panic（退化为只记时）。
+    #[tokio::test]
+    async fn test_retransmit_without_sink_does_not_panic() {
+        let mgr = Arc::new(TransactionManager::with_timers(fast_timers()));
+        let _id = register_txn(&mgr, "call-retrans-3", Some(b"x".to_vec())).await;
+        let _timer = mgr.clone().start_timer_task();
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+
+    /// 收到响应后必须**停止重传**（否则会向设备发重复请求）。
+    #[tokio::test]
+    async fn test_handle_response_stops_retransmission() {
+        let mgr = Arc::new(TransactionManager::with_timers(fast_timers()));
+        let (tx, mut rx) = mpsc::unbounded_channel::<(SocketAddr, Vec<u8>)>();
+        mgr.set_outbound_sink(tx).await;
+
+        let id = register_txn(&mgr, "call-retrans-4", Some(b"y".to_vec())).await;
+
+        // 收到 200 终态响应
+        let txn = mgr.handle_response("call-retrans-4", 1, 200).await;
+        assert!(txn.is_some(), "应能按 call_id + cseq 匹配到事务");
+        assert!(
+            mgr.get(&id).await.map(|t| t.state.is_terminal()).unwrap_or(true),
+            "200 之后事务应进入终态"
+        );
+
+        let _timer = mgr.clone().start_timer_task();
+        let res = tokio::time::timeout(std::time::Duration::from_millis(300), rx.recv()).await;
+        assert!(res.is_err(), "事务已终态，不应再重传");
+    }
+
+    /// 重传次数必须按指数退避递增且有上限（RFC 3261 非 INVITE 为 11 次）。
+    #[tokio::test]
+    async fn test_retransmit_backoff_and_cap() {
+        let mgr = Arc::new(TransactionManager::with_timers(fast_timers()));
+        let (tx, _rx) = mpsc::unbounded_channel::<(SocketAddr, Vec<u8>)>();
+        mgr.set_outbound_sink(tx).await;
+        let id = register_txn(&mgr, "call-retrans-5", Some(b"z".to_vec())).await;
+
+        let _timer = mgr.clone().start_timer_task();
+        tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+
+        let count = mgr.get(&id).await.map(|t| t.retransmit_count).unwrap_or(0);
+        assert!(count >= 1, "应已发生重传，实际 {}", count);
+        assert!(count <= 11, "非 INVITE 事务重传上限为 11 次，实际 {}", count);
     }
 }

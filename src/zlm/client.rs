@@ -635,11 +635,6 @@ impl ZlmClient {
             list: Vec<DownloadInfo>
         }
         
-        #[derive(Deserialize)]
-        struct InnerResp {
-            data: Option<Resp>
-        }
-        
         let resp: ApiResponse<Resp> = self.request("/index/api/getDownloadList", &params).await?;
         Ok(resp.data.map(|r| r.list).unwrap_or_default())
     }

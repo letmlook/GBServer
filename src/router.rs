@@ -20,33 +20,6 @@ use crate::zlm::hook as zlm_hook;
 use crate::zlm::hook_routes as zlm_hook_routes;
 use crate::AppState;
 
-async fn health_check(State(state): State<AppState>) -> Json<serde_json::Value> {
-    // Use `execute` to issue a round-trip query without depending on column
-    // type decoding (PG `SELECT 1` returns INTEGER → i32, SQLite returns
-    // INTEGER → i64; decoding would fail across the boundary). `execute` only
-    // checks that the round-trip succeeded — sufficient for a health probe.
-    let db_status = match sqlx::query("SELECT 1").execute(&state.pool).await {
-        Ok(_) => "ok",
-        Err(_) => "error",
-    };
-    let sip_status = if state.sip_server.is_some() { "ok" } else { "disabled" };
-    let zlm_status = if state.zlm_client.is_some() { "ok" } else { "disabled" };
-    let redis_status = if state.redis.is_some() { "ok" } else { "disabled" };
-    let all_ok = db_status == "ok";
-    let status_code = if all_ok { 200 } else { 503 };
-    axum::Json(serde_json::json!({
-        "status": if all_ok { "healthy" } else { "unhealthy" },
-        "code": status_code,
-        "components": {
-            "database": db_status,
-            "sip": sip_status,
-            "zlm": zlm_status,
-            "redis": redis_status,
-        },
-        "timestamp": chrono::Utc::now().to_rfc3339(),
-    }))
-}
-
 /// E2: HTTP RPC 端点 — 接收 JSON-RPC envelope 并通过 RpcRouter 分发到本地 handler
 ///
 /// 2026-09-11：新增共享密钥校验。此前该端点**完全无鉴权**（出站也不带凭证），

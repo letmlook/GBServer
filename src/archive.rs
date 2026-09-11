@@ -186,7 +186,6 @@ pub fn write_zip_stored(
         let header_pos = offset;
         // 占位头：CRC / size 先写 0，数据写完后回填
         write_local_header(&mut w, &name_bytes, 0, 0, time, date)?;
-        let header_len = (30 + name_bytes.len()) as u64;
 
         let mut crc = 0u32;
         let mut written = 0u64;
@@ -224,7 +223,6 @@ pub fn write_zip_stored(
             crc32: crc,
         });
 
-        let _ = header_len;
         offset = data_end;
     }
 
@@ -257,6 +255,7 @@ pub fn write_zip_stored(
 ///
 /// 生产路径不依赖它；它的价值是让「写出的确实是标准 ZIP」成为**可执行的证据**，
 /// 而不只是口头声明（另见用 Python `zipfile` / `unzip -t` 做过的外部交叉验证）。
+#[cfg(test)]
 pub(crate) fn read_zip_stored(path: &Path) -> io::Result<Vec<(String, Vec<u8>)>> {
     let bad = |m: &str| io::Error::new(io::ErrorKind::InvalidData, m.to_string());
     let raw = std::fs::read(path)?;

@@ -9,7 +9,7 @@
 //! 本模块只作为最后的兼容路径。
 
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Path, State},
     Json,
 };
 use serde::Deserialize;
@@ -268,49 +268,6 @@ pub struct PlayUrlQuery {
     pub stream: Option<String>,
     #[serde(default)]
     pub transport: Option<String>,
-}
-
-/// GET /api/media/getPlayUrl — build a play URL for a device or channel
-pub async fn media_get_play_url(
-    State(state): State<AppState>,
-    Query(q): Query<PlayUrlQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
-    let device = q.device_id.unwrap_or_default();
-    let channel = q.channel_id.unwrap_or_default();
-    let stream = q.stream.unwrap_or_else(|| format!("{}:{}", device, channel));
-    let transport: String = q.transport.clone().unwrap_or_else(|| "auto".to_string());
-    // Pick any available ZLM client (first one) to embed in URL
-    let media = state.zlm_clients.values().next()
-        .map(|c| c.ip.clone())
-        .unwrap_or_else(|| "127.0.0.1".to_string());
-    let url = match transport.as_str() {
-        "rtsp" => format!("rtsp://{}/live/{}", media, stream),
-        "rtmp" => format!("rtmp://{}/live/{}", media, stream),
-        "hls"  => format!("http://{}/hls/{}/index.m3u8", media, stream),
-        _      => format!("webrtc://{}/live/{}", media, stream),
-    };
-    Json(WVPResult::success(serde_json::json!({
-        "url": url,
-        "stream": stream,
-        "transport": transport,
-        "mediaServerId": media,
-    })))
-}
-
-/// GET /api/media/stream_info_by_app_and_stream?app=&stream=
-pub async fn media_stream_info_by_app_and_stream(
-    State(_state): State<AppState>,
-    Query(q): Query<PlayUrlQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
-    let app = q.device_id.clone().unwrap_or_else(|| "live".to_string());
-    let stream = q.stream.clone().unwrap_or_default();
-    Json(WVPResult::success(serde_json::json!({
-        "app": app,
-        "stream": stream,
-        "online": false,
-        "clients": 0,
-        "msg": "实时查询 ZLM getMediaInfo",
-    })))
 }
 
 /// GET /api/server/config — current sanitized config snapshot

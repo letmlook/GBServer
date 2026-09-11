@@ -34,22 +34,6 @@ pub struct ZipQuery {
     pub ids: Option<String>, // comma-separated CloudRecord ids
 }
 
-/// GET /api/cloud/record/collect/add?id=<i64>
-pub async fn collect_add(
-    State(state): State<AppState>,
-    Query(q): Query<CollectQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
-    let id = match q.id {
-        Some(i) if i > 0 => i,
-        _ => return Json(WVPResult::error("missing id")),
-    };
-    match db::cloud_record::set_collect(&state.pool, id, true).await {
-        Ok(true) => Json(WVPResult::success(serde_json::json!({"id": id, "collect": true}))),
-        Ok(false) => Json(WVPResult::error("record not found")),
-        Err(e) => Json(WVPResult::error(format!("DB error: {}", e))),
-    }
-}
-
 /// GET /api/cloud/record/collect/delete?id=<i64>
 pub async fn collect_delete(
     State(state): State<AppState>,

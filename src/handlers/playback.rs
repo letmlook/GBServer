@@ -35,18 +35,6 @@ impl PlaybackManager {
         }
     }
 
-    /// 从 `playback_{device_id}_{channel_id}_{ts}` 格式的 stream_id 解析
-/// 出 device_id 和 channel_id。GB28181 ID 自身不含下划线，
-/// 下划线分隔符安全。
-fn parse_playback_target(stream_id: &str) -> Option<(String, String)> {
-    let parts: Vec<&str> = stream_id.split('_').collect();
-    if parts.len() >= 3 && parts[0] == "playback" {
-        Some((parts[1].to_string(), parts[2].to_string()))
-    } else {
-        None
-    }
-}
-
 pub async fn create(&self, session: PlaybackSession) {
         self.sessions.write().await.insert(session.stream_id.clone(), session);
     }

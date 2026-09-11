@@ -185,20 +185,6 @@ pub async fn ws_handler(
     })
 }
 
-/// Phase 7.6: detect a real WebSocket upgrade request via headers.
-fn is_websocket_upgrade(headers: &HeaderMap) -> bool {
-    let has_upgrade = headers.get("upgrade")
-        .and_then(|v| v.to_str().ok())
-        .map(|v| v.eq_ignore_ascii_case("websocket"))
-        .unwrap_or(false);
-    let has_connection = headers.get("connection")
-        .and_then(|v| v.to_str().ok())
-        .map(|v| v.to_ascii_lowercase().contains("upgrade"))
-        .unwrap_or(false);
-    let has_key = headers.get("sec-websocket-key").is_some();
-    has_upgrade && has_connection && has_key
-}
-
 /// Phase 7.6: minimal percent-decode for query parameters.
 fn url_decode(s: &str) -> String {
     // Minimal decode: %XX → byte, '+' → ' '. JWT tokens are URL-safe base64 so

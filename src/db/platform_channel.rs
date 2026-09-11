@@ -294,23 +294,23 @@ pub async fn update(
 
     #[cfg(feature = "sqlite")]
     {
+        // 先收集需要更新的列，避免构造一个「空 SET 子句」的无效 SQL。
+        // 2026-09-11：此前这里还额外构造了一个 `UPDATE ... SET `（空 SET，
+        // 非法 SQL）并 bind 了参数，但该 query 从未执行就被丢弃 —— 编译器
+        // `unused_assignments` 告警即指向此处。已删除这段死代码。
         let mut updates = Vec::new();
-        let mut query = sqlx::query("UPDATE gb_platform_channel SET ");
-
-        if let Some(name) = custom_name {
+        if custom_name.is_some() {
             updates.push("custom_name = ?");
-            query = query.bind(name);
         }
-        if let Some(info) = custom_info {
+        if custom_info.is_some() {
             updates.push("custom_address = ?");
-            query = query.bind(info);
         }
 
         if updates.is_empty() {
             return Ok(0);
         }
 
-        let sql = format!("{} WHERE id = ?", updates.join(", "));
+        let sql = format!("UPDATE gb_platform_channel SET {} WHERE id = ?", updates.join(", "));
         let mut query = sqlx::query(&sql);
         if let Some(name) = custom_name {
             query = query.bind(name);

@@ -197,23 +197,6 @@ pub struct GuardQuery {
     pub guard_cmd: Option<String>,
 }
 
-pub async fn device_guard(
-    Query(q): Query<GuardQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
-    let device_id = q.device_id.unwrap_or_default();
-    let guard_cmd = q.guard_cmd.unwrap_or_default();
-    if device_id.is_empty() {
-        return Json(WVPResult::error("device_id is required"));
-    }
-    tracing::info!("Guard control: device={}, cmd={}", device_id, guard_cmd);
-    Json(WVPResult::success(serde_json::json!({
-        "deviceId": device_id,
-        "guardCmd": guard_cmd,
-        "message": "设备布防/撤防命令已发送",
-        "code": 0
-    })))
-}
-
 /// GET /api/device/query/subscribe/catalog
 /// 订阅设备目录
 /// 参数: id - 设备ID, cycle - 订阅周期(秒)
@@ -222,19 +205,6 @@ pub async fn device_guard(
 pub struct SubscribeCatalogQuery {
     pub id: Option<String>,
     pub cycle: Option<i32>,
-}
-
-pub async fn subscribe_catalog(
-    Query(q): Query<SubscribeCatalogQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
-    let id = q.id.unwrap_or_default();
-    let cycle = q.cycle.unwrap_or(3600);
-    Json(WVPResult::success(serde_json::json!({
-        "deviceId": id,
-        "cycle": cycle,
-        "message": "目录订阅已设置",
-        "code": 0
-    })))
 }
 
 /// GET /api/device/query/subscribe/mobile-position
@@ -804,42 +774,6 @@ pub async fn device_tree(
     }))))
 }
 
-
-/// GET /api/device/query/statistics/register
-/// 真实聚合 gb_device 表的注册设备数
-pub async fn statistics_register(
-    State(state): State<AppState>,
-) -> Json<WVPResult<serde_json::Value>> {
-    let total = crate::db::count_registered_devices(&state.pool)
-        .await
-        .unwrap_or(0);
-    let online = crate::db::count_online_devices(&state.pool)
-        .await
-        .unwrap_or(0);
-    Json(WVPResult::success(serde_json::json!({
-        "total": total,
-        "online": online,
-        "offline": total - online
-    })))
-}
-
-/// GET /api/device/query/statistics/keepalive
-/// 真实聚合最近 60s 内有过 keepalive 的设备数
-pub async fn statistics_keepalive(
-    State(state): State<AppState>,
-) -> Json<WVPResult<serde_json::Value>> {
-    let alive = crate::db::count_alive_devices(&state.pool, 60)
-        .await
-        .unwrap_or(0);
-    let total = crate::db::count_registered_devices(&state.pool)
-        .await
-        .unwrap_or(0);
-    Json(WVPResult::success(serde_json::json!({
-        "alive": alive,
-        "total": total,
-        "window": 60
-    })))
-}
 
 /// GET /api/device/query/subscribe/alarm?deviceId=...&expires=3600
 /// 通过 SIP SUBSCRIBE 订阅设备报警事件

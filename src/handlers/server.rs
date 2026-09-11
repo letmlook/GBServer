@@ -284,26 +284,6 @@ fn read_memory_info_impl() -> Option<(u64, u64, u64)> {
     Some((16 * 1024 * 1024 * 1024, 8 * 1024 * 1024 * 1024, 8 * 1024 * 1024 * 1024))
 }
 
-// ── Platform-agnostic disk usage ──
-fn read_disk_usage() -> Option<(u64, u64, u64)> { read_disk_usage_impl() }
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-fn read_disk_usage_impl() -> Option<(u64, u64, u64)> {
-    let output = Command::new("df").arg("-k").arg("/").output().ok()?;
-    if !output.status.success() { return None; }
-    let out = String::from_utf8_lossy(&output.stdout);
-    for (idx, line) in out.lines().enumerate() {
-        if idx == 1 {
-            let mut it = line.split_whitespace();
-            let _fs = it.next();
-            let total_kb = it.next()?.parse::<u64>().ok()?;
-            let used_kb = it.next()?.parse::<u64>().ok()?;
-            return Some((total_kb * 1024, used_kb * 1024, 0));
-        }
-    }
-    None
-}
-
 /// 列出真实磁盘（每根 = 一个物理磁盘），返回 `(path, total_bytes, used_bytes)`。
 ///
 /// dashboard 磁盘图期望多根柱子（每根 = 一个真实物理磁盘）。我们解析
@@ -439,11 +419,6 @@ fn read_all_disk_usage() -> Vec<(String, u64, u64)> {
     vec![("C:".to_string(),
           100 * 1024 * 1024 * 1024,
           50 * 1024 * 1024 * 1024)]
-}
-
-#[cfg(target_os = "windows")]
-fn read_disk_usage_impl() -> Option<(u64, u64, u64)> {
-    Some((100 * 1024 * 1024 * 1024, 50 * 1024 * 1024 * 1024, 50 * 1024 * 1024 * 1024))
 }
 
 // ── Platform-agnostic uptime ──

@@ -19,16 +19,6 @@ fn md5_hex(s: &str) -> String {
     format!("{:x}", h.finalize())
 }
 
-/// 前端已传 MD5(密码) 的 32 位小写十六进制，此处直接使用；若为明文则再计算 MD5
-fn password_for_db(password: &str) -> String {
-    let s = password.trim();
-    if s.len() == 32 && s.chars().all(|c| c.is_ascii_hexdigit()) {
-        s.to_lowercase()
-    } else {
-        md5_hex(s)
-    }
-}
-
 /// GET/POST /api/user/login?username=xx&password=xx
 /// Phase 7.6: Password is verified via Argon2 (preferred) with MD5 fallback
 /// to the historical plaintext/MD5 passwords still present in some DBs.
