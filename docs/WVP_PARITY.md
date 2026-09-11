@@ -227,6 +227,21 @@ INVITE 为 `a=recvonly`（平台收、设备发），设备 200 OK 才是 `a=sen
 `/api/play/start/...` 如实返回 `Media Server error: HTTP error: 502 Bad Gateway`
 （约 1 秒内失败，无悬挂），即 SIP INVITE 之后的 ZLM `openRtpServer` 步骤被正确拒绝。
 
+#### ZLM webhook 与 Redis 降级（第三轮追加）
+
+对 `/api/zlm/hook` 逐个投递真实形状的 ZLM 回调（`on_server_started` /
+`on_server_keepalive` / `on_stream_changed` / `on_publish` / `on_play` /
+`on_record_mp4` / `on_rtp_server_started` / `on_rtp_server_timeout` /
+`on_stream_none_reader` / `on_send_rtp_stopped` / `on_flow_report` /
+`on_stream_not_found`，以及未知事件与缺 `hook_name` 两种边界）：
+全部返回 `{"code":0}`，未知事件按 `Unhandled webhook` 记录而**不崩溃、也不假成功**。
+
+同一轮发现并修复：**Redis 不可用时每次状态更新都白等 1.5s**。
+
+| 问题 | 证据 | 修复 |
+|------|------|------|
+| **Redis 连接失败没有记忆** | `RedisBackend::connect()` 在 `manager` 仍为 `None` 时会被**每一次**状态读写重新触发（`get_conn` 的唯一入口），日志里出现连续的 `Redis connect timed out after 1.5s`。ZLM 每个 hook（on_stream_changed / on_publish / on_play …）都要更新流状态 → Redis 挂掉时"每个 hook 慢 1.5s"，ZLM 侧极易判定 hook 超时 | 新增失败冷却：连接失败后 30s 内直接走内存后端，不再重试；连接成功即清除冷却。新增测试断言冷却期内 20 次读写总耗时 < 500ms（修复前会 ≥ 30s） |
+
 ### 仍未解决 / 需真实设备核验
 
 以下是本轮**已定位但未改动**的项，均在代码中留有注释或在此登记，

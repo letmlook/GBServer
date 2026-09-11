@@ -544,7 +544,18 @@ impl StateBackend for InMemoryBackend {
 pub struct RedisBackend {
     url: String,
     manager: tokio::sync::RwLock<Option<redis::aio::ConnectionManager>>,
+    /// 上次连接失败后的冷却截止时刻。
+    ///
+    /// 没有它的时候：`manager` 始终是 `None`，于是**每一次**状态读写都会
+    /// 重新尝试连接并白等 1.5s 超时。ZLM 的每个 hook（on_stream_changed /
+    /// on_publish / on_play …）都会更新流状态，Redis 不可用时就变成
+    /// "每个 hook 慢 1.5s"，ZLM 侧很容易判定 hook 超时。
+    /// 现在失败后 30s 内直接走内存后端，不再重试。
+    retry_after: std::sync::Mutex<Option<std::time::Instant>>,
 }
+
+/// Redis 连接失败后的冷却时长。
+const REDIS_RETRY_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(30);
 
 const KEY_PREFIX: &str = "gb:";
 fn k_device(id: &str) -> String { format!("{}device:online:{}", KEY_PREFIX, id) }
@@ -564,23 +575,72 @@ fn k_jt_media(key: &str) -> String { format!("{}jt:media:{}", KEY_PREFIX, key) }
 
 impl RedisBackend {
     pub fn new(url: &str) -> Self {
-        Self { url: url.to_string(), manager: tokio::sync::RwLock::new(None) }
+        Self {
+            url: url.to_string(),
+            manager: tokio::sync::RwLock::new(None),
+            retry_after: std::sync::Mutex::new(None),
+        }
+    }
+
+    /// 进入冷却期（连接失败时调用）。
+    fn mark_unavailable(&self) {
+        if let Ok(mut g) = self.retry_after.lock() {
+            *g = Some(std::time::Instant::now() + REDIS_RETRY_COOLDOWN);
+        }
+    }
+
+    /// 连接成功，清除冷却。
+    fn mark_available(&self) {
+        if let Ok(mut g) = self.retry_after.lock() {
+            *g = None;
+        }
+    }
+
+    /// 当前是否处于失败冷却期。锁在本函数内释放，不会跨 await 持有。
+    fn in_cooldown(&self) -> bool {
+        match self.retry_after.lock() {
+            Ok(g) => match *g {
+                Some(at) => std::time::Instant::now() < at,
+                None => false,
+            },
+            Err(_) => false,
+        }
     }
 
     async fn connect(&self) {
         if self.manager.read().await.is_some() { return; }
+        // 冷却期内直接回落到内存后端，不再白等一次连接超时
+        if self.in_cooldown() { return; }
         let mut w = self.manager.write().await;
         if w.is_some() { return; }
         let client = match redis::Client::open(self.url.as_str()) {
             Ok(c) => c,
-            Err(e) => { tracing::warn!("Redis Client::open failed: {}", e); return; }
+            Err(e) => {
+                tracing::warn!("Redis Client::open failed: {}", e);
+                self.mark_unavailable();
+                return;
+            }
         };
         // Bound the connect attempt so unreachable Redis fails fast (1.5s).
         let connect_fut = redis::aio::ConnectionManager::new(client);
         match tokio::time::timeout(std::time::Duration::from_millis(1500), connect_fut).await {
-            Ok(Ok(mgr)) => { *w = Some(mgr); tracing::info!("Redis backend connected: {}", self.url); }
-            Ok(Err(e)) => tracing::warn!("Redis ConnectionManager::new failed: {}", e),
-            Err(_) => tracing::warn!("Redis connect timed out after 1.5s for {}", self.url),
+            Ok(Ok(mgr)) => {
+                *w = Some(mgr);
+                self.mark_available();
+                tracing::info!("Redis backend connected: {}", self.url);
+            }
+            Ok(Err(e)) => {
+                tracing::warn!("Redis ConnectionManager::new failed: {}", e);
+                self.mark_unavailable();
+            }
+            Err(_) => {
+                tracing::warn!(
+                    "Redis connect timed out after 1.5s for {}（{:?} 内不再重试，直接走内存后端）",
+                    self.url,
+                    REDIS_RETRY_COOLDOWN
+                );
+                self.mark_unavailable();
+            }
         }
     }
 
@@ -1823,6 +1883,32 @@ mod redis_backend_tests {
     fn test_redis_backend_construction_does_not_panic() {
         let _ = RedisBackend::new("redis://127.0.0.1:1");
         let _ = RedisBackend::new("redis://invalid-host:6379");
+    }
+
+    /// 连续读写不应每次都白等一次连接超时：失败后进入冷却期，
+    /// 后续调用立即回落到内存后端。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_redis_backend_failure_is_remembered() {
+        let backend = RedisBackend::new("redis://127.0.0.1:1");
+        let s = make_device_state("dev-cool");
+
+        // 第一次：可能付一次连接尝试的代价
+        backend.device_online_set("dev-cool", &s);
+        assert!(backend.in_cooldown(), "首次失败后应进入冷却期");
+
+        // 之后 20 次必须都是毫秒级（不再尝试连接）
+        let t0 = std::time::Instant::now();
+        for _ in 0..20 {
+            backend.device_online_set("dev-cool", &s);
+            assert!(backend.device_online_get("dev-cool").is_none());
+            backend.device_online_all();
+        }
+        let elapsed = t0.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_millis(500),
+            "冷却期内 20 次读写耗时 {:?}，说明仍在反复重试连接",
+            elapsed
+        );
     }
 
     /// RedisBackend with unreachable Redis: all calls are no-ops (no panic, no error return).
