@@ -37,7 +37,7 @@ build_frontend() {
         log "安装前端依赖..."
         npm install
     fi
-    npm run build:prod
+    npm run build
     ok "前端编译完成 → web/dist"
     cd "$PROJECT_DIR"
 }

@@ -1,5 +1,10 @@
 # GBServer Web · Frontend
 
+> ⚠️ **ARCHIVED (2026-08-23)** — This Vue 2 + Element UI app is no longer the active frontend and is kept for
+> reference/rollback only. The active frontend is the Vue 3 + Element Plus + Vite + TypeScript app in
+> [`../web/`](../web/). Nothing in the build pipeline (Dockerfile, backend `static_dir`, scripts) references
+> this directory anymore. The README below describes the historical state.
+
 The web management console for **[GBServer](../README.md)** — a Rust-based GB/T 28181 video platform.
 
 It is a **Vue 2 + Element UI** single-page application that talks to the GBServer HTTP API

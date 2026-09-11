@@ -9,7 +9,7 @@ Write-Host "=== 1. 构建前端 (web/dist) ===" -ForegroundColor Cyan
 Push-Location "$root\web"
 try {
     if (-not (Test-Path node_modules)) { npm install }
-    npm run build:prod
+    npm run build
 } finally { Pop-Location }
 
 Write-Host "`n=== 2. 编译后端 (target/release) ===" -ForegroundColor Cyan

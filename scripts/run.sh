@@ -27,7 +27,7 @@ fi
 # ── 前端静态文件检查 ───────────────────────────────────────────────
 if [ ! -d "web/dist" ]; then
     warn "未找到 web/dist 目录，前端页面将无法访问"
-    warn "如需前端，请先执行:  cd web && npm install && npm run build:prod"
+    warn "如需前端，请先执行:  cd web && npm install && npm run build"
 fi
 
 # ── 数据库 / Redis 检查 ────────────────────────────────────────────

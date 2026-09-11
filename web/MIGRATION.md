@@ -2,7 +2,8 @@
 
 > 源分支：`feat-refactor-frontend-OcNoxC`（已含 Vue 2 + Element UI 的设计系统重构）
 > 目标：`web-v3/`（Vue 3 + Element Plus + Vite + TypeScript）
-> 状态：**Phase 1 完成**，下表为剩余 Phase 2+ 待办。
+> 状态：✅ **迁移已全部完成**（2026-08-23，commit `2acf5a7` web-v3 转正为 `web/`，Vue 2 归档至 `web-legacy-vue2/`）。
+> 下文的 Phase 2+ 表格仅作历史记录保留；当前真实状态以 [`web/README.md`](./README.md) 为准。
 
 ## Phase 1 ✅（本次 PR）
 

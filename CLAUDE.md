@@ -14,11 +14,13 @@ cargo test
 cargo fmt
 cargo clippy --all-targets --all-features
 
-# Run focused Rust tests
+# Run focused Rust tests (registered [[test]] targets in Cargo.toml)
 cargo test <test_name>
 cargo test --lib <test_name>
-cargo test --test integration_test
-cargo test --test jt1078_integration
+cargo test --test sqlite_compat          # main DB layer test suite (memory SQLite)
+cargo test --test device_simulator_test  # SIP message format + heartbeat scenarios
+cargo test --test state_store_two_node   # cross-node state consistency
+cargo test --test jt1078_e2e_test        # JT1078 command/response lifecycle
 
 # Backend with MySQL instead of SQLite (--no-default-features --features mysql)
 # Backend with PostgreSQL instead of SQLite (--no-default-features --features postgres)
@@ -28,22 +30,23 @@ cargo build --release --no-default-features --features postgres
 cargo test --no-default-features --features postgres
 
 # Local services used by the default config
-docker compose up -d          # PostgreSQL + Redis
+docker compose up -d          # PostgreSQL + Redis + ZLMediaKit
 docker compose ps
 docker compose down           # keeps volumes
-
-# API compatibility smoke test; requires the backend and DB to be running
-BASE_URL=http://localhost:18080 node scripts/api-integration-test.js
 ```
 
 ```bash
-# Frontend (Vue 2 + Element UI, under web/)
+# Frontend (Vue 3 + Element Plus + Vite + TypeScript, under web/)
 cd web && npm install
-cd web && npm run dev          # dev server on :9528, proxies /dev-api to :18080
-cd web && npm run build:prod   # production output to web/dist
+cd web && npm run dev           # dev server on :9528, proxies /dev-api to :18080
+cd web && npm run build         # type-check (vue-tsc) + production build to web/dist
+cd web && npm run build:no-check  # production build without vue-tsc
 cd web && npm run lint
-cd web && npm run test:unit
-cd web && npm run test:ci
+```
+
+```bash
+# End-to-end UI tests (Playwright; needs backend :18080 + frontend dev :9528 running)
+cd e2e && npx playwright test
 ```
 
 PowerShell helpers are available on Windows from the repository root: `scripts/build.ps1` builds frontend + backend, `scripts/build-and-run.ps1` builds then runs, and `scripts/run.ps1` runs an existing release binary.
@@ -52,7 +55,7 @@ Configuration loads from `config/application.toml` plus environment overrides us
 
 ## Architecture
 
-This repository is the **GBServer** — a Rust-based GB/T 28181 video platform with the original-style Vue 2 frontend in `web/`. The backend uses Axum/Tower, SQLx, JWT/API-key auth, GB28181 SIP signaling, ZLMediaKit integration, optional Redis caching, platform cascade registration, record scheduling, and JT1078 vehicle terminal support.
+This repository is the **GBServer** — a Rust-based GB/T 28181 video platform. The frontend in `web/` is Vue 3 + Element Plus + Vite + TypeScript (migrated from the archived Vue 2 app now kept in `web-legacy-vue2/` for reference). The backend uses Axum/Tower, SQLx, JWT/API-key auth, GB28181 SIP signaling, ZLMediaKit integration, optional Redis caching, platform cascade registration, record scheduling, and JT1078 vehicle terminal support.
 
 ### Startup flow (`src/lib.rs` → `run()`)
 
@@ -81,7 +84,7 @@ handlers/ ──→ db/ ──→ SQLx (SQLite by default; MySQL/PostgreSQL behi
 - `sip/core/` contains low-level SIP message/header/method/status parsing and transaction/dialog primitives. `sip/transport/` owns UDP/TCP networking. `sip/gb28181/` contains application-level device registration, catalog subscription, live/playback/talk INVITE sessions, PTZ, SDP, SSRC, NAT handling, and reconnect behavior.
 - `zlm/` wraps ZLMediaKit HTTP APIs and webhook handling. `AppState::get_zlm_client_auto()` selects the least-loaded node, preferring Redis stream counters and falling back to live ZLM API counts.
 - `jt1078/` handles vehicle protocol networking and session state. Config supports timeout/retransmit settings and optional hook notification for missing sequence ranges.
-- `web/` is a Vue CLI 4 / Vue 2 app. In development, `web/vue.config.js` proxies `/dev-api` and `/static/snap` to the backend at `127.0.0.1:18080`; production assets are served from `web/dist` when `static_dir` is configured.
+- `web/` is a Vue 3 + Element Plus + Vite + TypeScript SPA. In development, `web/vite.config.ts` proxies `/dev-api` and `/static/snap` to the backend at `127.0.0.1:18080`; production assets are served from `web/dist` when `static_dir` is configured. API calls go through the typed modules in `web/src/api/` and the axios wrapper in `web/src/utils/request.ts` (adds the `access-token` header, treats `code !== 0` as failure).
 
 ### Cross-cutting conventions
 

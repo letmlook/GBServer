@@ -77,7 +77,7 @@ mysql -uroot -p gbserver < database/init-mysql-2.7.4.sql
 # 1) 编译
 ./scripts/build.sh                       # 前后端都编译
 # 或分步
-( cd web && npm install && npm run build:prod )
+( cd web && npm install && npm run build )
 cargo build --release
 
 # 2) 运行

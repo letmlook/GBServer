@@ -1,29 +1,35 @@
 # AGENTS.md - GBServer
 
-Agent instructions for working on this GB28181 video platform server (Rust backend + Vue 2 frontend).
+Agent instructions for working on this GB28181 video platform server (Rust backend + Vue 3 frontend).
 
 ## Project Overview
 
-- **Backend**: Rust with Axum 0.7, SQLx (PostgreSQL/MySQL), JWT auth
-- **Frontend**: Vue 2 + Element UI (in `web/` directory)
-- **Purpose**: GB28181 protocol video management platform
+- **Backend**: Rust with Axum 0.7, SQLx (SQLite default / PostgreSQL / MySQL via cargo features), JWT auth
+- **Frontend**: Vue 3 + Element Plus + Vite + TypeScript (in `web/` directory; archived Vue 2 app in `web-legacy-vue2/`, reference only)
+- **Purpose**: GB28181 protocol video management platform (WVP-PRO compatible) with JT1078 vehicle terminal support
 
 ## Build Commands
 
 ### Backend (Rust)
 
 ```bash
-# Development
+# Development (default feature: sqlite — zero-dependency, auto-creates ./data/gbserver.db)
 cargo run
 
 # Release build
 cargo build --release
 
-# With MySQL instead of PostgreSQL
+# With MySQL instead of SQLite
 cargo build --release --no-default-features --features mysql
+
+# With PostgreSQL instead of SQLite
+cargo build --release --no-default-features --features postgres
+
+# Focused tests
+cargo test --test sqlite_compat
 ```
 
-### Frontend (Vue 2)
+### Frontend (Vue 3)
 
 ```bash
 cd web
@@ -31,17 +37,19 @@ cd web
 # Install dependencies
 npm install
 
-# Development server
+# Development server (:9528, proxies /dev-api to backend :18080)
 npm run dev
 
-# Production build
-npm run build:prod
+# Production build (vue-tsc type check + vite build → web/dist)
+npm run build
 
 # Lint
 npm run lint
+```
 
-# Unit tests
-npm run test:unit
+```bash
+# End-to-end UI tests (Playwright; requires backend :18080 + frontend dev :9528)
+cd e2e && npx playwright test
 ```
 
 ### Run Both
@@ -54,7 +62,9 @@ npm run test:unit
 ### Database Setup
 
 ```bash
-# PostgreSQL (default)
+# SQLite (default) — nothing to do; schema auto-initializes on first start
+
+# PostgreSQL
 psql -U postgres -d gbserver -f database/init-postgresql-2.7.4.sql
 
 # MySQL
@@ -104,7 +114,7 @@ Err(AppError::business(ErrorCode::Error400, "invalid input"))
 - Use `sqlx::query_as` for queries returning rows
 - Use `sqlx::query_scalar` for aggregate queries
 - Use `sqlx::query` for INSERT/UPDATE/DELETE
-- Handle both PostgreSQL and MySQL with `#[cfg(feature = "postgres")]` / `#[cfg(feature = "mysql")]`
+- Handle SQLite / PostgreSQL / MySQL dialects with `#[cfg(feature = "sqlite")]` / `#[cfg(feature = "postgres")]` / `#[cfg(feature = "mysql")]` blocks in the same function
 - Use parameterized queries - never interpolate SQL directly
 
 ```rust
@@ -152,7 +162,7 @@ pub async fn handler(
 ```
 
 #### Configuration
-- Use `config` crate with YAML + environment variables
+- Use `config` crate with TOML (`config/application.toml`) + environment variables
 - Environment variables use `GBSERVER__SECTION__KEY` format
 - Load config in `main.rs` and pass to `run()`
 
@@ -166,40 +176,44 @@ tracing::info!("Starting server on port {}", port);
 tracing::debug!("Query result: {:?}", result);
 ```
 
-### Frontend (Vue 2)
+### Frontend (Vue 3)
 
-- Uses Vue CLI 4.4.4
-- ESLint for linting (`eslint --ext .js,.vue src`)
-- Element UI for components
+- Vite 5 + TypeScript, vue-tsc for type checking (`npm run build` runs it)
+- Element Plus with on-demand auto-import (unplugin-vue-components)
+- Pinia stores in `web/src/store/modules/`, typed API modules in `web/src/api/`
+- axios wrapper `web/src/utils/request.ts` adds the `access-token` header and treats `code !== 0` as failure
 - Follow existing patterns in `web/src/`
 
 ## Project Structure
 
 ```
-/home/letmlook/GBServer/
+GBServer/
 ├── src/
 │   ├── main.rs              # Entry point
-│   ├── lib.rs               # AppState, run() function
+│   ├── lib.rs               # AppState, run() function, background task wiring
 │   ├── config.rs            # Configuration loading
 │   ├── error.rs             # AppError, ErrorCode
 │   ├── response.rs          # WVPResult
 │   ├── auth.rs              # JWT authentication
-│   ├── router.rs            # Route definitions
+│   ├── router.rs            # Route definitions (~374 routes)
 │   ├── db/                  # Database layer
-│   │   ├── mod.rs           # Pool creation
-│   │   ├── device.rs        # Device/Channel queries
-│   │   ├── user.rs          # User queries
-│   │   └── ...              # Other DB modules
-│   ├── handlers/            # HTTP handlers
-│   │   ├── user.rs          # User endpoints
-│   │   ├── device.rs        # Device endpoints
-│   │   └── ...              # Other handlers
-│   ├── sip/                 # GB28181 SIP implementation
-│   └── zlm/                 # ZLM media server client
-├── web/                     # Vue 2 frontend
+│   ├── handlers/            # HTTP handlers (incl. stub.rs / device_stub.rs compat shims)
+│   ├── sip/                 # GB28181 SIP stack (core/ transport/ gb28181/)
+│   ├── zlm/                 # ZLM media server client + hooks
+│   ├── jt1078/              # JT1078 vehicle terminal protocol
+│   ├── cascade/             # Upstream platform registration
+│   ├── scheduler/           # Record plan scheduling
+│   ├── ws/ + cluster/ + rpc/ + state_store.rs  # Cluster/WS/state infrastructure
+│   └── middleware/          # Audit logging
+├── web/                     # Vue 3 frontend (active)
+├── web-legacy-vue2/         # Archived Vue 2 frontend (reference only)
+├── e2e/                     # Playwright UI tests
+├── mock/                    # Python simulators (SIP device / JT1078 terminal / cascade)
+├── docs/                    # Deployment guide, WVP parity, stub retirement plan, UI designs
 ├── config/
 │   └── application.toml     # Default configuration
 ├── database/
+│   ├── init-sqlite-2.7.4.sql
 │   ├── init-postgresql-2.7.4.sql
 │   └── init-mysql-2.7.4.sql
 └── Cargo.toml
@@ -225,14 +239,14 @@ tracing::debug!("Query result: {:?}", result);
 ### Running the Application
 
 ```bash
-# Start database (Docker)
+# SQLite default: just run the backend (schema auto-initializes)
+cargo run
+
+# Or with PostgreSQL/Redis/ZLM via Docker Compose
 docker compose up -d
 
-# Import database schema
+# Import PostgreSQL schema (if not auto-initialized)
 docker exec -i gbserver-postgres psql -U postgres -d gbserver < database/init-postgresql-2.7.4.sql
-
-# Run backend
-cargo run
 
 # In another terminal, run frontend dev server
 cd web && npm run dev

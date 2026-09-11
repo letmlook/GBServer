@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 # =============================================================================
 # GBServer — GB/T 28181 video platform — multi-stage Dockerfile
-# Stage 1: build Vue 2 frontend (web/dist)
+# Stage 1: build Vue 3 frontend (web/dist)
 # Stage 2: build Rust backend (gbserver)
 # Stage 3: minimal runtime image (debian-slim + binary + frontend assets)
 # =============================================================================
@@ -24,7 +24,7 @@ RUN npm install --no-audit --no-fund --prefer-offline
 
 # Build production assets
 COPY web/ ./
-RUN npm run build:prod \
+RUN npm run build \
     && test -d dist \
     && echo "frontend build OK: $(du -sh dist | cut -f1)"
 

@@ -50,7 +50,7 @@ if [ "$SKIP_FRONTEND" -eq 0 ]; then
         log "安装前端依赖 (npm install)..."
         npm install --no-audit --no-fund
     fi
-    npm run build:prod
+    npm run build
     ok "前端编译完成 → web/dist"
     popd > /dev/null
 fi
