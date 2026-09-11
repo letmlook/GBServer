@@ -820,3 +820,92 @@ pub async fn query_by_device_channel(
     )
     .await
 }
+
+/// 查最近一条 `stream` 中包含 `needle` 的录像记录（按 `end_time` 倒序取 1 条）。
+///
+/// 用于「设备/通道最近一次抓拍或录像」这类查询：GB28181 上报的 stream 名通常包含
+/// 设备或通道编码（如 `34020000001320000001_34020000001310000001`），
+/// 因此用子串匹配即可把设备与它的录像关联起来。
+pub async fn find_latest_by_stream_like(
+    pool: &Pool,
+    needle: &str,
+) -> sqlx::Result<Option<CloudRecord>> {
+    let pattern = format!("%{}%", needle);
+    #[cfg(feature = "mysql")]
+    return sqlx::query_as::<_, CloudRecord>(
+        "SELECT * FROM gb_cloud_record WHERE stream LIKE ? ORDER BY end_time DESC, id DESC LIMIT 1",
+    )
+    .bind(&pattern)
+    .fetch_optional(pool)
+    .await;
+    #[cfg(feature = "postgres")]
+    return sqlx::query_as::<_, CloudRecord>(
+        "SELECT * FROM gb_cloud_record WHERE stream LIKE $1 ORDER BY end_time DESC, id DESC LIMIT 1",
+    )
+    .bind(&pattern)
+    .fetch_optional(pool)
+    .await;
+    #[cfg(feature = "sqlite")]
+    return sqlx::query_as::<_, CloudRecord>(
+        "SELECT * FROM gb_cloud_record WHERE stream LIKE ? ORDER BY end_time DESC, id DESC LIMIT 1",
+    )
+    .bind(&pattern)
+    .fetch_optional(pool)
+    .await;
+}
+
+#[cfg(all(test, feature = "sqlite"))]
+mod tests {
+    use super::*;
+    use crate::test_support::sqlite_pool_with_schema;
+
+    async fn insert_rec(pool: &Pool, stream: &str, file_name: &str, end_time: i64) -> i64 {
+        insert(
+            pool,
+            &CloudRecordInsert {
+                app: "record".into(),
+                stream: stream.into(),
+                call_id: None,
+                start_time: Some(end_time - 10),
+                end_time: Some(end_time),
+                media_server_id: None,
+                server_id: None,
+                file_name: Some(file_name.into()),
+                folder: None,
+                file_path: Some(format!("/tmp/{}", file_name)),
+                file_size: Some(1),
+                time_len: Some(10.0),
+            },
+        )
+        .await
+        .expect("insert record")
+    }
+
+    /// `find_latest_by_stream_like` 用于「设备最近一次抓拍/录像」查询（alarm_snap）。
+    #[tokio::test]
+    async fn test_find_latest_by_stream_like() {
+        let pool = sqlite_pool_with_schema().await;
+        let dev = "34020000001320000001";
+
+        insert_rec(&pool, &format!("{}_34020000001310000001", dev), "older.mp4", 100).await;
+        insert_rec(&pool, &format!("{}_34020000001310000002", dev), "newer.mp4", 200).await;
+        // 另一个设备，不应命中
+        insert_rec(&pool, "34020000001320000099_34020000001310000001", "other.mp4", 300).await;
+
+        let latest = find_latest_by_stream_like(&pool, dev)
+            .await
+            .unwrap()
+            .expect("应找到记录");
+        assert_eq!(
+            latest.file_name.as_deref(),
+            Some("newer.mp4"),
+            "应取 end_time 最大的那条"
+        );
+
+        // 无匹配必须是 None，而不是退化成「返回全部中随便一条」
+        assert!(find_latest_by_stream_like(&pool, "no-such-device")
+            .await
+            .unwrap()
+            .is_none());
+    }
+}

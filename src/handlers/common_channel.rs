@@ -12,7 +12,7 @@ use crate::error::{AppError, ErrorCode};
 use crate::response::WVPResult;
 use crate::AppState;
 
-async fn lookup_channel_and_send(
+pub(crate) async fn lookup_channel_and_send(
     state: &AppState,
     channel_id: i64,
     cmd_builder: impl FnOnce(&DeviceChannel) -> (String, String, String),
@@ -81,6 +81,53 @@ fn build_fi_xml(cmd_type: &str, command: &str, speed: u8) -> String {
         _ => format!("0501030000{:02X}FF", speed),
     };
     format!(r#"<PTZCmd>{}</PTZCmd>"#, fi_cmd)
+}
+
+/// 通用前端指令（`/api/front-end/common/:cmd/:ch` 兼容路径）支持的指令名。
+///
+/// 只覆盖本模块已有明确 GB28181 控制语义与 XML 构造函数的子集；更细的控制
+/// （预置位、巡航、扫描、雨刷速度等）请走 `/api/common/channel/front-end/*` 专用端点。
+pub const SUPPORTED_FRONT_END_COMMANDS: &[&str] = &[
+    "UP",
+    "DOWN",
+    "LEFT",
+    "RIGHT",
+    "ZOOM_IN",
+    "ZOOM_OUT",
+    "STOP",
+    "FOCUS_IN",
+    "FOCUS_OUT",
+    "IRIS_IN",
+    "IRIS_OUT",
+    "WIPER_ON",
+    "WIPER_OFF",
+    "GUARD_SET",
+    "GUARD_RESET",
+];
+
+/// 把通用前端指令名映射为 `(SIP 控制消息类型, XML 体)`；未知指令返回 `None`。
+///
+/// 抽出为纯函数便于单测覆盖全部受支持指令。
+pub fn front_end_command_body(cmd_upper: &str) -> Option<(String, String)> {
+    let body = match cmd_upper {
+        // PTZ 平移/缩放/停止：复用既有 PTZCmd 构造（默认中等速度 0x40）
+        "UP" | "DOWN" | "LEFT" | "RIGHT" | "ZOOM_IN" | "ZOOM_OUT" | "STOP" => {
+            build_ptz_xml(cmd_upper, 0x40, 0x40, 0x40)
+        }
+        // 聚焦 / 光圈
+        "FOCUS_IN" => build_fi_xml("focus", "on", 0x40),
+        "FOCUS_OUT" => build_fi_xml("focus", "off", 0x40),
+        "IRIS_IN" => build_fi_xml("iris", "on", 0x40),
+        "IRIS_OUT" => build_fi_xml("iris", "off", 0x40),
+        // 雨刷
+        "WIPER_ON" => "<WiperCmd>Open</WiperCmd>".to_string(),
+        "WIPER_OFF" => "<WiperCmd>Close</WiperCmd>".to_string(),
+        // 布防 / 撤防
+        "GUARD_SET" => "<GuardCmd>SetGuard</GuardCmd>".to_string(),
+        "GUARD_RESET" => "<GuardCmd>ResetGuard</GuardCmd>".to_string(),
+        _ => return None,
+    };
+    Some(("DeviceControl".to_string(), body))
 }
 
 // ========== 查询参数 ==========
@@ -2123,6 +2170,52 @@ mod tests {
         assert_eq!(parse_playback_speed("0.5"), Some(0.5));
         assert_eq!(parse_playback_speed(" 4 "), Some(4.0));
         assert_eq!(parse_playback_speed("2.5"), Some(2.5));
+    }
+
+    // ============ 通用前端指令映射（/api/front-end/common/:cmd/:ch） ============
+
+    #[test]
+    fn test_front_end_command_body_covers_every_supported_command() {
+        for cmd in SUPPORTED_FRONT_END_COMMANDS {
+            let got = front_end_command_body(cmd);
+            let (ty, body) = got.unwrap_or_else(|| panic!("{} 在受支持列表里却无法映射", cmd));
+            assert_eq!(ty, "DeviceControl", "{} 的控制类型应为 DeviceControl", cmd);
+            assert!(
+                body.starts_with('<') && body.ends_with('>'),
+                "{} 的 XML 体异常: {}",
+                cmd,
+                body
+            );
+        }
+    }
+
+    #[test]
+    fn test_front_end_command_body_spot_checks() {
+        assert!(front_end_command_body("UP").unwrap().1.contains("PTZCmd"));
+        assert!(front_end_command_body("STOP").unwrap().1.contains("PTZCmd"));
+        assert_eq!(
+            front_end_command_body("WIPER_ON").unwrap().1,
+            "<WiperCmd>Open</WiperCmd>"
+        );
+        assert_eq!(
+            front_end_command_body("WIPER_OFF").unwrap().1,
+            "<WiperCmd>Close</WiperCmd>"
+        );
+        assert_eq!(
+            front_end_command_body("GUARD_SET").unwrap().1,
+            "<GuardCmd>SetGuard</GuardCmd>"
+        );
+        assert_eq!(
+            front_end_command_body("GUARD_RESET").unwrap().1,
+            "<GuardCmd>ResetGuard</GuardCmd>"
+        );
+    }
+
+    #[test]
+    fn test_front_end_command_body_is_case_insensitive_via_caller() {
+        // 调用方会先 to_ascii_uppercase；小写直达应返回 None，保证契约清晰
+        assert!(front_end_command_body("up").is_none());
+        assert!(front_end_command_body("NOT_A_COMMAND").is_none());
     }
 
     #[test]
