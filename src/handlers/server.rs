@@ -1188,7 +1188,10 @@ pub async fn media_server_save(
     .bind(&id)
     .execute(&state.pool)
     .await?;
-    #[cfg(feature = "mysql")]
+    // 2026-09-12：SQLite 与 MySQL 占位符语法一致，故共用同一分支。
+    // 此前只 cfg(mysql)，导致默认 SQLite 部署下扩展字段（secret / 各类端口 /
+    // rtp_port_range 等）被**静默丢弃**。
+    #[cfg(any(feature = "mysql", feature = "sqlite"))]
     sqlx::query(
         r#"UPDATE gb_media_server SET
            hook_ip = COALESCE(?, hook_ip),

@@ -1245,7 +1245,7 @@ pub async fn position_info(
     #[cfg(feature = "postgres")]
     {
         let row = sqlx::query(
-            "SELECT device_id, longitude, latitude, speed, direction, altitude, create_time FROM gb_mobile_position WHERE device_id = $1 ORDER BY create_time DESC LIMIT 1"
+            "SELECT device_id, longitude, latitude, speed, direction, altitude, create_time FROM gb_device_mobile_position WHERE device_id = $1 ORDER BY create_time DESC LIMIT 1"
         )
         .bind(&phone)
         .fetch_optional(&state.pool)

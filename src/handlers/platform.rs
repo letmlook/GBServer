@@ -1487,7 +1487,7 @@ pub async fn platform_channel_custom_update(
             .bind(id)
             .execute(&state.pool)
             .await?;
-        #[cfg(feature = "mysql")]
+        #[cfg(any(feature = "mysql", feature = "sqlite"))]
         sqlx::query("UPDATE gb_platform_channel SET custom_device_id = ? WHERE id = ?")
             .bind(custom_device_id)
             .bind(id)

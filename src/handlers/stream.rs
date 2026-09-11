@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::db::{stream_push, stream_proxy, StreamPush, StreamProxy};
-use crate::error::AppError;
+use crate::error::{AppError, ErrorCode};
 use crate::response::WVPResult;
 use crate::zlm::OpenRtpServerRequest;
 
@@ -341,22 +341,23 @@ pub async fn push_save_to_gb(
     }
     
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    #[cfg(feature = "mysql")]
+    #[cfg(any(feature = "mysql", feature = "sqlite"))]
     {
-        let _ = sqlx::query(
-            "UPDATE gb_push_stream SET device_id = ?, channel_id = ?, update_time = ? WHERE id = ?",
+        sqlx::query(
+            "UPDATE gb_stream_push SET device_id = ?, channel_id = ?, update_time = ? WHERE id = ?",
         )
         .bind(device_id)
         .bind(channel_id)
         .bind(&now)
         .bind(id)
         .execute(&state.pool)
-        .await;
+        .await
+        .map_err(|e| AppError::business(ErrorCode::Error500, format!("绑定国标设备失败: {}", e)))?;
     }
     #[cfg(feature = "postgres")]
     {
         let _ = sqlx::query(
-            "UPDATE gb_push_stream SET device_id = $1, channel_id = $2, update_time = $3 WHERE id = $4",
+            "UPDATE gb_stream_push SET device_id = $1, channel_id = $2, update_time = $3 WHERE id = $4",
         )
         .bind(device_id)
         .bind(channel_id)
@@ -386,20 +387,21 @@ pub async fn push_remove_form_gb(
     }
     
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    #[cfg(feature = "mysql")]
+    #[cfg(any(feature = "mysql", feature = "sqlite"))]
     {
-        let _ = sqlx::query(
-            "UPDATE gb_push_stream SET device_id = NULL, channel_id = NULL, update_time = ? WHERE id = ?",
+        sqlx::query(
+            "UPDATE gb_stream_push SET device_id = NULL, channel_id = NULL, update_time = ? WHERE id = ?",
         )
         .bind(&now)
         .bind(id)
         .execute(&state.pool)
-        .await;
+        .await
+        .map_err(|e| AppError::business(ErrorCode::Error500, format!("解绑国标设备失败: {}", e)))?;
     }
     #[cfg(feature = "postgres")]
     {
         let _ = sqlx::query(
-            "UPDATE gb_push_stream SET device_id = NULL, channel_id = NULL, update_time = $1 WHERE id = $2",
+            "UPDATE gb_stream_push SET device_id = NULL, channel_id = NULL, update_time = $1 WHERE id = $2",
         )
         .bind(&now)
         .bind(id)

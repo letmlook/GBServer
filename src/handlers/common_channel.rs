@@ -919,11 +919,12 @@ pub async fn map_thin_clear(
             .bind(channel_id)
             .execute(&state.pool)
             .await;
-        #[cfg(feature = "mysql")]
-        let _ = sqlx::query("UPDATE gb_device_channel SET geojson = NULL WHERE id = ?")
+        #[cfg(any(feature = "mysql", feature = "sqlite"))]
+        sqlx::query("UPDATE gb_device_channel SET geojson = NULL WHERE id = ?")
             .bind(channel_id)
             .execute(&state.pool)
-            .await;
+            .await
+            .map_err(|e| AppError::business(ErrorCode::Error500, format!("清除稀化数据失败: {}", e)))?;
         tracing::info!("Cleared thinned geojson for channel {}", channel_id);
     }
     Ok(Json(WVPResult::<()>::success_empty()))
