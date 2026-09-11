@@ -5,8 +5,13 @@ use sqlx::FromRow;
 
 use super::Pool;
 
-/// 角色信息结构体
+/// 角色信息结构体。
+///
+/// 仅**序列化**方向改为 camelCase（前端 `Role` 接口用 `createTime`/`updateTime`，
+/// `/api/role/all` 此前返回 `create_time`，列表里的创建/更新时间列是空的）。
+/// 反序列化方向保持 snake_case 主名 + camelCase alias，不影响请求体兼容性。
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+#[serde(rename_all(serialize = "camelCase"))]
 pub struct Role {
     pub id: i32,
     pub name: Option<String>,

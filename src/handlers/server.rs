@@ -705,16 +705,17 @@ pub async fn system_config_info(State(state): State<AppState>) -> Json<WVPResult
             json!({
                 "id": sv.id,
                 "ip": sv.ip,
-                "http_port": sv.http_port,
-                "https_port": sv.https_port,
+                // 与 /api/server/media_server/list 保持一致的 camelCase
+                "httpPort": sv.http_port,
+                "httpsPort": sv.https_port,
                 "enabled": sv.enabled,
             })
         }).collect();
         json!({
             "servers": servers,
-            "stream_timeout": z.stream_timeout,
-            "hook_enabled": z.hook_enabled,
-            "hook_url": z.hook_url,
+            "streamTimeout": z.stream_timeout,
+            "hookEnabled": z.hook_enabled,
+            "hookUrl": z.hook_url,
         })
     } else {
         serde_json::Value::Null

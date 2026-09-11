@@ -5,8 +5,15 @@ use sqlx::FromRow;
 
 use super::Pool;
 
-/// 媒体服务器结构体
+/// 媒体服务器结构体。
+///
+/// 序列化统一用 camelCase：前端 `web/src/api/mediaServer.ts::MediaServer`
+/// 以及 `views/mediaServer/index.vue`（`prop="httpPort"`）都按 camelCase 取值，
+/// 而这里此前直接序列化成 `http_port`/`sdp_ip`/`type_` 等 snake_case 键，
+/// 表格里这些列全是空的（`type_` 更是连键名都对不上）。
+/// 该结构体只 derive `Serialize`（不反序列化请求体），故可安全使用 `rename_all`。
 #[derive(Debug, Clone, Serialize, FromRow)]
+#[serde(rename_all = "camelCase")]
 pub struct MediaServer {
     pub id: String,
     pub ip: Option<String>,
@@ -30,6 +37,7 @@ pub struct MediaServer {
     pub auto_config: Option<bool>,
     pub secret: Option<String>,
     #[sqlx(rename = "type")]
+    #[serde(rename = "type")]
     pub type_: Option<String>,
     pub rtp_enable: Option<bool>,
     pub rtp_port_range: Option<String>,

@@ -171,6 +171,25 @@ INVITE 为 `a=recvonly`（平台收、设备发），设备 200 OK 才是 `a=sen
 | **录像下载端口分配失败仍继续** | ZLM 分配失败后仍发出 `m=video 0` 的 INVITE，留下一个永远不会完成的下载会话 | 直接失败并记录 error |
 | 陈旧注释 | `handlers/server.rs` 段落标题写「占位：前端调用避免 404」，段内 8 个 handler 全是真实实现；`jt1078/mod.rs` 文档仍称 0x8202/0x8203/0x9205「未实现」，实际已补齐 | 按实际内容更正 |
 
+### 运行时冒烟发现的问题（2026-09-12 第六轮修复）
+
+**方法**：不再只做静态审计，而是**真的把服务跑起来**（全新 SQLite 库 + 独立
+端口），登录取 JWT 后把 `router.rs` 里 254 个 GET / 97 个 POST 端点全量打一遍，
+再用脚本比对「前端 TS 接口字段」与「后端实际请求/响应字段」。下面每一条都是
+**运行时复现**出来的，静态审计全部漏掉了。
+
+| 问题 | 运行时证据 | 修复 |
+|------|-----------|------|
+| **全新部署直接启动失败** | 空库启动 → `Error: no such table: gb_stream_push`，进程退出 | `init_db_tables` 把依赖既有表的**列级迁移**排在全量建表**之前**；空库上 `ALTER TABLE gb_stream_push` 必然失败。旧代码用 `let _ =` 吞掉错误才"看起来能启动"。现拆成四个严格有序阶段：幂等建表 → 全量建表 → 列级迁移 → 旧库补表 |
+| **前后端字段命名契约系统性不匹配（请求侧）** | `POST /api/region/add` 发 camelCase → `{"code":400,"msg":"deviceId 与 name 必填"}`；`/api/common/channel/playback/pause?channelId=1` → 报"缺少 stream"（其实 channelId 没绑上） | 前端一律发 camelCase，而大量请求结构体只声明 snake_case 且无 `#[serde(alias)]`——**同一个仓库里两种写法并存**（`device_control.rs::PtzQuery` 记得加 alias，`front_end.rs::PtzQuery` 就忘了）。已为 `handlers/**` + `db/**` 中 85 个 `Deserialize` 结构体补 92 个 camelCase alias（alias 是增量语义，snake_case 调用方不受影响） |
+| **前端在调、后端没注册** | `GET /api/push/stop`、`GET /api/jt1078/terminal/one` 返回的是 SPA 的 `index.html`（HTTP 200，`Content-Type: text/html`） | 「停止推流」按钮与终端详情接口整体不工作。已实现并注册；`push_start` / `push_batch_remove` / `push_force_close` 三处吞掉 ZLM/DB 错误后假装成功的写法一并改为如实传播 |
+| **前后端字段命名契约不匹配（响应侧）** | `/api/role/all` 返回 `create_time`，前端 `Role` 接口是 `createTime`（列表时间列为空）；`/api/server/media_server/list` 返回 `http_port`/`sdp_ip`/`type_`，而 `views/mediaServer/index.vue` 用 `prop="httpPort"`（这些列全空，`type_` 连键名都对不上） | `MediaServer` 加 `#[serde(rename_all = "camelCase")]` + `type_` 显式 `rename = "type"`；`Role` 用 `rename_all(serialize = "camelCase")`（只改序列化方向，反序列化仍兼容 snake_case）；`system/configInfo` 的 zlm 段一并统一。复扫后响应侧不匹配数 **9 → 0** |
+
+**冒烟基线（本轮结束时）**：254 个 GET 端点 **0 个 5xx**、**0 个
+`no such column` / `no such table`**；97 个 POST 端点 **0 个 5xx**；
+未带 token 访问受保护端点返回 401；登录 → 区域/分组新增 → PTZ 参数绑定
+→ 应用新端点均按预期返回。
+
 ### 仍未解决 / 需真实设备核验
 
 以下是本轮**已定位但未改动**的项，均在代码中留有注释或在此登记，
