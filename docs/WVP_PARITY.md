@@ -160,6 +160,17 @@ INVITE 为 `a=recvonly`（平台收、设备发），设备 200 OK 才是 `a=sen
 | `handlers/talk.rs` 回给前端的展示 SDP | 固定 `m=audio 0` | 改读会话的真实 `local_port` |
 | 广播 11 位 SSRC | `format!("4{:0>9}0", …)` 得到 11 位（国标是 10 位） | 统一 `build_ssrc(prefix, id)`：`0` 实时 / `1` 回放 / `2` 下载 / `4` 广播 |
 
+### TCP 信令与「延迟实现」（2026-09-12 第五轮修复）
+
+| 问题 | 影响 | 修复 |
+|------|------|------|
+| **TCP 入站信令走的是与 UDP 完全不同的分支** | `process_tcp_message` 自行调用 `handle_request`/`handle_response`，并给 `pending_invites`、`cascade_registrar`、`subscription_lifecycle`、`renewal_failures` 传 `Arc::new(DashMap::new())` / `None` 这类**一次性空对象**。于是 `sip.transport = "tcp"` 的部署里：INVITE 响应**永远无法唤醒**等待中的 `pending_invites`（实时点播/回放必然超时）、级联注册的 200 OK 无法完成注册、订阅续订状态与失败计数全部丢失、客户端事务永不终止（事务表只增不减） | `process_tcp_message` 改为**统一走 `handle_packet`**（与 UDP 同一条分发路径），并补齐全部上下文句柄；TCP 专属的响应路由（RFC 3261 §18.2.2）保留 |
+| **`SsrcManager::allocate` 产出 15 位 SSRC** | `format!("0{}{:04}0", prefix9, seq)` = 1+9+4+1 = **15 位**，而国标 SSRC 是 **10 位十进制**。该值会写进 INVITE 的 `y=`；单元测试还把 15 位当作期望值固化了下来 | 改为 `类型位(1) + 域标识(5) + 流序号(4)` 共 10 位；类型位随业务类型变化（0 实时/1 回放/2 下载/4 广播）；测试改为断言 10 位并新增各类型位用例 |
+| **`catalog_sync`（331 行）只有 `pub use`、无任何调用者** | 目录**分页**响应（`SumNum > 1`）没有聚合与完成状态；`/api/device/query/devices/:id/sync` 只回一句「命令已发送，等待响应」，前端无从判断同步是否完成或失败 | 接入 `SipServer`；`send_catalog_query` 启动同步会话；Response 与 NOTIFY 两条目录路径都调用 `handle_packet` 聚合分页；**保留逐包 upsert 作为兜底**（设备少发最后一页时不会丢已收到的通道）；`device_sync` 现在等待同步结果（最多 8s）并返回 `syncState/totalPackets/receivedPackets/channelCount/error` |
+| **统一流视图只返回 2/4 类流** | `list_all_streams` 留了 `TODO(phase-5): 等 gb_send_rtp 建表`，实际该类流在 `SendRtpManager`（内存 DashMap）里，**根本不需要建表**；"gb" 类同样被漏掉 | `SendRtpSession` 与 `InviteSession` 实现 `StreamState`；新增 `SendRtpManager::list_all()` 与 `SipServer::invite_session_manager()`；四类流（push / proxy / gb / send_rtp）齐备，TODO 删除 |
+| **录像下载端口分配失败仍继续** | ZLM 分配失败后仍发出 `m=video 0` 的 INVITE，留下一个永远不会完成的下载会话 | 直接失败并记录 error |
+| 陈旧注释 | `handlers/server.rs` 段落标题写「占位：前端调用避免 404」，段内 8 个 handler 全是真实实现；`jt1078/mod.rs` 文档仍称 0x8202/0x8203/0x9205「未实现」，实际已补齐 | 按实际内容更正 |
+
 ### 仍未解决 / 需真实设备核验
 
 以下是本轮**已定位但未改动**的项，均在代码中留有注释或在此登记，
@@ -176,9 +187,17 @@ INVITE 为 `a=recvonly`（平台收、设备发），设备 200 OK 才是 `a=sen
    改动风险大于收益，故保留现状并在此登记。
 3. **对讲/广播的媒体面**：SDP 与信令已可用，但"浏览器音频 → ZLM → RTP → 设备"
    的上行音频管线尚未实现（`TalkSession.zlm_stream_id` 已记录，无消费方）。
-4. **`gb_record_download_start`**：ZLM 端口分配失败时仍会继续发 INVITE
-   （此时 `m=video 0`），目前只记 `warn`；应改为直接失败。
-5. **`log_file_download`** 仍是文件路径下载；前端 `getLogFile` 定义了但从未调用。
+4. **`log_file_download`** 仍是文件路径下载；前端 `getLogFile` 定义了但从未调用。
+5. **`catalog_sync` 的完成判定依赖设备如实上报 `SumNum`**：若设备声明
+   `SumNum=N` 却只发更少的包，会话会一直停在 `Receiving`（`device_sync`
+   8 秒后如实返回该状态）。已保留逐包 upsert 兜底，因此不会丢通道，
+   但"同步完成"无法判定。
+6. **`SsrcManager` 与 `build_ssrc(prefix, id)` 两套 SSRC 机制并存**：
+   设备侧 INVITE 用后者（按设备号确定性推导），级联取流用前者（按会话分配）。
+   两者都能产出合法 10 位值，但未统一；统一前需确认回放/下载 SSRC
+   是否必须可复现（回放控制/停流需要按 SSRC 反查会话）。
+7. **TCP 信令**已与 UDP 统一分发，但 `handle_packet` 的参数已达 23 个，
+   后续应改为上下文结构体，否则每次新增能力都要再穿一遍全部调用点。
 
 ### 工程问题
 

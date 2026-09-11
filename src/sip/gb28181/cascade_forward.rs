@@ -54,6 +54,35 @@ impl SendRtpSession {
     }
 }
 
+impl crate::state::StreamState for SendRtpSession {
+    fn stream_id(&self) -> &str {
+        &self.cascade_call_id
+    }
+    fn app(&self) -> &str {
+        "cascade"
+    }
+    fn status(&self) -> crate::state::StreamStatus {
+        if self.active {
+            crate::state::StreamStatus::Active
+        } else {
+            crate::state::StreamStatus::Stopped
+        }
+    }
+    fn set_status(&mut self, status: crate::state::StreamStatus) {
+        self.active = status.is_active();
+    }
+    fn media_server_id(&self) -> Option<&str> {
+        None
+    }
+    /// 级联推流的上游是「上级平台」，不是本域设备，故无 device_id
+    fn device_id(&self) -> Option<&str> {
+        None
+    }
+    fn channel_id(&self) -> Option<&str> {
+        Some(&self.channel_id)
+    }
+}
+
 /// SendRtp 会话管理器
 pub struct SendRtpManager {
     /// 按 cascade_call_id 索引
@@ -164,6 +193,14 @@ impl SendRtpManager {
     /// 获取活跃会话数
     pub fn active_count(&self) -> usize {
         self.sessions.iter().filter(|r| r.active).count()
+    }
+
+    /// 列出全部 SendRtp 会话（含已结束的，供统一流视图展示）。
+    ///
+    /// `SendRtpManager` 是纯内存结构（`DashMap`），并不存在 `gb_send_rtp` 表；
+    /// 统一流视图此前因「等 Phase 5 建表」的 TODO 而完全漏掉这一类流。
+    pub fn list_all(&self) -> Vec<SendRtpSession> {
+        self.sessions.iter().map(|r| r.clone()).collect()
     }
 
     /// 获取通道相关的所有活跃会话

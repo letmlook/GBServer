@@ -952,7 +952,10 @@ pub async fn resource_info(State(state): State<AppState>) -> Json<WVPResult<serd
     Json(WVPResult::success(data))
 }
 
-// ---------- 占位：前端调用避免 404 ----------
+// ---------- 媒体节点探测 / 保存 / 统一流视图 ----------
+// （此前这里的标题是「占位：前端调用避免 404」，但段内每个 handler
+//   都是真实实现：探测走 ZLM getServerConfig、load 走各节点真实统计、
+//   list_all_streams 聚合四类流。标题已按实际内容更正。）
 /// GET /api/server/media_server/check
 #[derive(Debug, Deserialize)]
 pub struct MediaServerCheckQuery {
@@ -1446,16 +1449,23 @@ pub async fn list_all_streams(
         }
     }
 
-    // TODO(phase-5): unify SendRtp streams when table lands.
-    // 设计文档 §7.4 要求本接口同时返回 GB / push / proxy / SendRtp 四类流。
-    // 目前 Phase 4 仅落地 push + proxy 两类；`src/db/send_rtp.rs` 与
-    // `gb_send_rtp` 表均尚未在三个 init SQL 中建表，因此本阶段无法实现
-    // `StreamState` impl。等 Phase 5 SendRtp 表 schema 落地后，再追加
-    // `SendRtpRecord: StreamState` 并在此处调用 `send_rtp::list_paged` 后
-    // 通过 `stream_state_to_json("send_rtp", &rec)` 加入 unified。
-    // 详见 Phase 5 任务清单。
+    // 3) GB28181 INVITE 会话（实时/回放/下载/对讲）+ 级联 SendRtp
+    //
+    //    这两类流不落库：INVITE 会话在 `InviteSessionManager` 里，
+    //    级联推流在 `SendRtpManager`（内存 DashMap）里。
+    //    此前这里留了一条 "TODO(phase-5): 等 gb_send_rtp 建表" 的注释，
+    //    导致设计文档 §7.4 要求的四类流只返回了 push + proxy 两类；
+    //    实际上根本不需要建表，两个管理器都能直接列举。
+    if let Some(ref sip) = state.sip_server {
+        for s in sip.invite_session_manager().get_active_sessions().await {
+            unified.push(stream_state_to_json("gb", &s));
+        }
+        for s in sip.send_rtp_manager().list_all() {
+            unified.push(stream_state_to_json("send_rtp", &s));
+        }
+    }
 
-    // 3) 汇总统计
+    // 4) 汇总统计
     let active_count = unified
         .iter()
         .filter(|v| {

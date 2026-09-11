@@ -125,11 +125,6 @@ fn build_ssrc(prefix: u8, device_id: &str) -> String {
     format!("{}{:0>9}", prefix, id_part)
 }
 
-/// 实时点播 SSRC（前缀 0）。
-pub(crate) fn build_live_ssrc(device_id: &str) -> String {
-    build_ssrc(0, device_id)
-}
-
 /// 回放 SSRC（前缀 1）。
 pub(crate) fn build_playback_ssrc(device_id: &str) -> String {
     build_ssrc(1, device_id)
@@ -214,6 +209,7 @@ fn extract_tag_text(xml: &str, tag: &str) -> Option<String> {
     }
 }
 
+use crate::sip::gb28181::catalog_sync::CatalogSyncManager;
 use crate::sip::gb28181::device_commander::DeviceCommander;
 use crate::sip::gb28181::media_waiter::{MediaWaitResult, MediaWaiterManager};
 use crate::sip::gb28181::pending_request::PendingRequestManager;
@@ -246,6 +242,9 @@ pub struct SipServer {
     device_commander: Arc<DeviceCommander>,
     media_waiter_manager: Arc<MediaWaiterManager>,
     send_rtp_manager: Arc<SendRtpManager>,
+    /// 目录同步会话（分页聚合 + 完成状态）。
+    /// 此前该模块（331 行）只有 `pub use` 再无任何调用者。
+    catalog_sync_manager: Arc<CatalogSyncManager>,
     /// Phase 2 R6: 订阅生命周期（变活代码）— 后台续订 + R3 退避
     subscription_lifecycle: Arc<SubscriptionLifecycle>,
     /// Phase 2 R3: per-device 续订失败计数（dashmap for concurrent access）
@@ -270,6 +269,7 @@ impl SipServer {
             })
             .unwrap_or(StreamReconnectManager::new(false, 3, 5));
         let pending_request_manager = Arc::new(PendingRequestManager::new());
+        let catalog_sync_manager = Arc::new(CatalogSyncManager::new(pool.clone()));
 
         Self {
             config: Arc::new(config),
@@ -296,6 +296,7 @@ impl SipServer {
             device_commander: Arc::new(DeviceCommander::new(pending_request_manager.clone())),
             media_waiter_manager: Arc::new(MediaWaiterManager::new()),
             send_rtp_manager: Arc::new(SendRtpManager::new()),
+            catalog_sync_manager,
             // Phase 2 R6: 激活 SubscriptionLifecycle（变活代码）
             subscription_lifecycle: Arc::new(SubscriptionLifecycle::new()),
             // Phase 2 R3: per-device 续订失败计数
@@ -332,6 +333,17 @@ impl SipServer {
     }
 
     /// B3: 暴露 SendRtpManager 用于外部（cascade_service / BYE 处理）注册会话
+    /// 目录同步管理器（分页聚合状态、完成/失败结果）。
+    pub fn catalog_sync_manager(&self) -> Arc<CatalogSyncManager> {
+        self.catalog_sync_manager.clone()
+    }
+
+    /// 活跃的 GB28181 INVITE 会话（实时/回放/下载/对讲），
+    /// 供统一流视图 `/api/server/stream/all` 的 "gb" 分类使用。
+    pub fn invite_session_manager(&self) -> Arc<InviteSessionManager> {
+        self.invite_session_manager.clone()
+    }
+
     pub fn send_rtp_manager(&self) -> Arc<SendRtpManager> {
         self.send_rtp_manager.clone()
     }
@@ -581,6 +593,7 @@ impl SipServer {
         let udp_send_rtp_manager = self.send_rtp_manager.clone();
         let udp_subscription_lifecycle = self.subscription_lifecycle.clone();
         let udp_renewal_failures = self.renewal_failures.clone();
+        let udp_catalog_sync_manager = self.catalog_sync_manager.clone();
         let udp_sqlite_max_devices = self.sqlite_max_devices;
         let udp_media_waiter_manager = self.media_waiter_manager.clone();
         let udp_transaction_manager = self.transaction_manager.clone();
@@ -612,8 +625,9 @@ impl SipServer {
                         let sqlite_max_devices = udp_sqlite_max_devices;
                         let media_waiter_manager = udp_media_waiter_manager.clone();
                         let transaction_manager = udp_transaction_manager.clone();
+                        let catalog_sync_manager = udp_catalog_sync_manager.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = Self::handle_packet(&data, addr, &config, &device_manager, &session_manager, &invite_session_manager, &talk_manager, &catalog_subscription_manager, &zlm_client, &pool, &socket_for_response, false, &ws_state, &pending_request_manager, &pending_invites, &cascade_registrar, &send_rtp_manager, &Some(subscription_lifecycle), &renewal_failures, sqlite_max_devices, &media_waiter_manager, &transaction_manager).await {
+                            if let Err(e) = Self::handle_packet(&data, addr, &config, &device_manager, &session_manager, &invite_session_manager, &talk_manager, &catalog_subscription_manager, &zlm_client, &pool, &socket_for_response, false, &ws_state, &pending_request_manager, &pending_invites, &cascade_registrar, &send_rtp_manager, &Some(subscription_lifecycle), &renewal_failures, sqlite_max_devices, &media_waiter_manager, &transaction_manager, &catalog_sync_manager).await {
                                 tracing::error!("SIP handler error: {}", e);
                             }
                         });
@@ -639,6 +653,16 @@ impl SipServer {
             let tcp_send_rtp_manager = self.send_rtp_manager.clone();
             let tcp_sqlite_max_devices = self.sqlite_max_devices;
             let tcp_media_waiter_manager = self.media_waiter_manager.clone();
+            // TCP 与 UDP 共用同一条分发路径所需的上下文：
+            // 此前 TCP 分支用一次性空对象顶替这些句柄，导致 TCP 信令下
+            // INVITE 响应无法唤醒 pending_invites、级联注册无法完成等。
+            let tcp_ws_state = self.ws_state.clone();
+            let tcp_pending_invites = self.pending_invites.clone();
+            let tcp_cascade_registrar = self.cascade_registrar.clone();
+            let tcp_subscription_lifecycle = self.subscription_lifecycle.clone();
+            let tcp_renewal_failures = self.renewal_failures.clone();
+            let tcp_transaction_manager = self.transaction_manager.clone();
+            let tcp_catalog_sync_manager = self.catalog_sync_manager.clone();
             // TCP 路径下也用同一个 UDP socket 发 ACK(GB28181 允许 INVITE
             // 走 TCP 注册但媒体/ACK 走 UDP)。dummy_arc 是 TCP Request 分支里
             // 给 handle_packet 的占位 socket,这里换成主 socket 更稳。
@@ -664,11 +688,28 @@ impl SipServer {
                             let sqlite_max_devices = tcp_sqlite_max_devices;
                             let media_waiter_manager = tcp_media_waiter_manager.clone();
                             let socket = tcp_socket.clone();
+                            let ws_state = tcp_ws_state.clone();
+                            let pending_invites = tcp_pending_invites.clone();
+                            let cascade_registrar = tcp_cascade_registrar.clone();
+                            let subscription_lifecycle = tcp_subscription_lifecycle.clone();
+                            let renewal_failures = tcp_renewal_failures.clone();
+                            let transaction_manager = tcp_transaction_manager.clone();
+                            let catalog_sync_manager = tcp_catalog_sync_manager.clone();
 
                             conn_manager.add_connection(addr, stream).await;
 
                             tokio::spawn(async move {
-                                Self::handle_tcp_connection(addr, &config, &device_manager, &session_manager, &invite_session_manager, &talk_manager, &catalog_subscription_manager, &zlm_client, &pool, &conn_manager, &pending_request_manager, &send_rtp_manager, sqlite_max_devices, &media_waiter_manager, &socket).await;
+                                Self::handle_tcp_connection(
+                                    addr, &config, &device_manager, &session_manager,
+                                    &invite_session_manager, &talk_manager,
+                                    &catalog_subscription_manager, &zlm_client, &pool,
+                                    &conn_manager, &pending_request_manager,
+                                    &send_rtp_manager, sqlite_max_devices,
+                                    &media_waiter_manager, &socket, &ws_state,
+                                    &pending_invites, &cascade_registrar,
+                                    &Some(subscription_lifecycle), &renewal_failures,
+                                    &transaction_manager, &catalog_sync_manager,
+                                ).await;
                             });
                         }
                         Err(e) => {
@@ -957,6 +998,13 @@ let renewal_pool = pool.clone();
         sqlite_max_devices: Option<usize>,
         media_waiter_manager: &Arc<MediaWaiterManager>,
         socket: &Arc<UdpSocket>,
+        ws_state: &Option<Arc<WsState>>,
+        pending_invites: &Arc<DashMap<String, oneshot::Sender<SipResponse>>>,
+        cascade_registrar: &Option<Arc<CascadeRegistrar>>,
+        subscription_lifecycle: &Option<Arc<crate::sip::gb28181::subscription_lifecycle::SubscriptionLifecycle>>,
+        renewal_failures: &Arc<DashMap<String, u32>>,
+        transaction_manager: &Arc<TransactionManager>,
+        catalog_sync_manager: &Arc<CatalogSyncManager>,
     ) {
         // 创建一个虚拟 UDP socket 仅用于传递给 handle_packet's 接口
         // 实际回复通过 TcpConnectionManager.send_to 进行
@@ -996,6 +1044,13 @@ let renewal_pool = pool.clone();
                             sqlite_max_devices,
                             media_waiter_manager,
                             socket,
+                            ws_state,
+                            pending_invites,
+                            cascade_registrar,
+                            subscription_lifecycle,
+                            renewal_failures,
+                            transaction_manager,
+                            catalog_sync_manager,
                         ).await {
                             tracing::error!("TCP SIP handler error: {}", e);
                         }
@@ -1015,7 +1070,22 @@ let renewal_pool = pool.clone();
         }
     }
 
-    /// 处理来自 TCP 连接的 SIP 消息，通过 TcpConnectionManager 发送回复
+    /// 处理来自 TCP 连接的 SIP 消息。
+    ///
+    /// RFC 3261 §18.2.2：经 TCP 到达的请求，响应必须经同一 TCP 连接返回，
+    /// 因此先登记 (对端地址 → 连接管理器) 供 `send_response` 查表。
+    ///
+    /// 随后**统一走 `handle_packet`**（与 UDP 完全同一条分发路径）。
+    /// 此前 TCP 分支自行调用 `handle_request` / `handle_response`，并且给
+    /// `pending_invites`、`cascade_registrar`、`subscription_lifecycle`、
+    /// `renewal_failures` 传的是 `Arc::new(DashMap::new())` / `None` 这类
+    /// 一次性空对象，导致 TCP 信令下：
+    ///   * INVITE 响应永远无法唤醒等待中的 `pending_invites`
+    ///     —— 即 `sip.transport = "tcp"` 的部署里实时点播/回放必然超时；
+    ///   * 级联向上级注册收到的 200 OK 无法完成注册流程；
+    ///   * 订阅续订状态与续订失败计数全部丢失；
+    ///   * 客户端事务永不终止，事务表只增不减（RFC 3261 §17）。
+    #[allow(clippy::too_many_arguments)]
     async fn process_tcp_message(
         data: &[u8],
         addr: SocketAddr,
@@ -1033,50 +1103,42 @@ let renewal_pool = pool.clone();
         sqlite_max_devices: Option<usize>,
         media_waiter_manager: &Arc<MediaWaiterManager>,
         socket: &Arc<UdpSocket>,
+        ws_state: &Option<Arc<WsState>>,
+        pending_invites: &Arc<DashMap<String, oneshot::Sender<SipResponse>>>,
+        cascade_registrar: &Option<Arc<CascadeRegistrar>>,
+        subscription_lifecycle: &Option<Arc<crate::sip::gb28181::subscription_lifecycle::SubscriptionLifecycle>>,
+        renewal_failures: &Arc<DashMap<String, u32>>,
+        transaction_manager: &Arc<TransactionManager>,
+        catalog_sync_manager: &Arc<CatalogSyncManager>,
     ) -> Result<()> {
-        let msg = Parser::parse(data)?;
-        match msg {
-            SipMessage::Request(req) => {
-                // RFC 3261 §18.2.2：经 TCP 到达的请求，响应应经同一 TCP 连接返回。
-                // 登记 (对端地址 → 连接管理器)，send_response 发送时优先查表走 TCP，
-                // 查不到（连接已断）再回落 UDP。连接关闭时由 accept 循环移除表项。
-                crate::sip::transport::tcp::tcp_response_routes()
-                    .insert(addr, conn_manager.clone());
+        crate::sip::transport::tcp::tcp_response_routes().insert(addr, conn_manager);
 
-                Self::handle_request(
-                    req,
-                    addr,
-                    config,
-                    device_manager,
-                    session_manager,
-                    invite_session_manager,
-                    talk_manager,
-                    catalog_subscription_manager,
-                    zlm_client,
-                    pool,
-                    socket,
-                    &None,
-                    pending_request_manager,
-                    send_rtp_manager,
-                    sqlite_max_devices,
-                ).await
-            }
-            SipMessage::Response(resp) => {
-                Self::handle_response(
-                    resp,
-                    session_manager,
-                    &Arc::new(DashMap::new()),
-                    &None,
-                    pending_request_manager,
-                    send_rtp_manager,
-                    &None,
-                    &Arc::new(DashMap::new()),
-                    media_waiter_manager,
-                    socket,
-                    config,
-                ).await
-            }
-        }
+        Self::handle_packet(
+            data,
+            addr,
+            config,
+            device_manager,
+            session_manager,
+            invite_session_manager,
+            talk_manager,
+            catalog_subscription_manager,
+            zlm_client,
+            pool,
+            socket,
+            true,
+            ws_state,
+            pending_request_manager,
+            pending_invites,
+            cascade_registrar,
+            send_rtp_manager,
+            subscription_lifecycle,
+            renewal_failures,
+            sqlite_max_devices,
+            media_waiter_manager,
+            transaction_manager,
+            catalog_sync_manager,
+        )
+        .await
     }
 
     async fn handle_packet(
@@ -1102,6 +1164,7 @@ let renewal_pool = pool.clone();
         sqlite_max_devices: Option<usize>,
         media_waiter_manager: &Arc<MediaWaiterManager>,
         transaction_manager: &Arc<TransactionManager>,
+        catalog_sync_manager: &Arc<CatalogSyncManager>,
     ) -> Result<()> {
         let msg = Parser::parse(data)?;
         match msg {
@@ -1122,6 +1185,7 @@ let renewal_pool = pool.clone();
                     pending_request_manager,
                     send_rtp_manager,
                     sqlite_max_devices,
+                    catalog_sync_manager,
                 ).await
             }
             SipMessage::Response(resp) => {
@@ -1173,6 +1237,7 @@ let renewal_pool = pool.clone();
         pending_request_manager: &Arc<PendingRequestManager>,
         send_rtp_manager: &Arc<SendRtpManager>,
         sqlite_max_devices: Option<usize>,
+        catalog_sync_manager: &Arc<CatalogSyncManager>,
     ) -> Result<()> {
         let method = req.method;
         match method {
@@ -1190,6 +1255,7 @@ let renewal_pool = pool.clone();
                     ws_state,
                     pending_request_manager,
                     zlm_client,
+                    catalog_sync_manager,
                 )
                 .await
             }
@@ -1240,7 +1306,9 @@ let renewal_pool = pool.clone();
                 )
                 .await
             }
-            SipMethod::Notify => Self::handle_notify(req, addr, config, pool, socket).await,
+            SipMethod::Notify => {
+                Self::handle_notify(req, addr, config, pool, socket, catalog_sync_manager).await
+            }
             SipMethod::Refer => Self::handle_refer(req, addr, config, socket).await,
             _ => {
                 tracing::warn!("Unhandled SIP method: {}", method.as_str());
@@ -1423,6 +1491,7 @@ let renewal_pool = pool.clone();
         ws_state: &Option<Arc<WsState>>,
         pending_request_manager: &Arc<PendingRequestManager>,
         zlm_client: &Option<Arc<ZlmClient>>,
+        catalog_sync_manager: &Arc<CatalogSyncManager>,
     ) -> Result<()> {
         let from = req.header("from").cloned().unwrap_or_default();
         let to = req.header("to").cloned().unwrap_or_default();
@@ -1584,6 +1653,27 @@ let renewal_pool = pool.clone();
                                 tracing::warn!("upsert channel {} failed: {}", ch.device_id, e);
                             }
                         }
+
+                        // 分页聚合：设备可能把目录分若干页返回（SumNum > 1），
+                        // 这里按 (device_id, sn) 累计包数，收齐后 flush 并记录
+                        // 同步完成状态；上面的逐包 upsert 保留作为兜底，
+                        // 这样即使设备少发了最后一页也不会丢已收到的通道。
+                        match catalog_sync_manager
+                            .handle_packet(&device_id_for_catalog, body)
+                            .await
+                        {
+                            Ok(true) => tracing::info!(
+                                "Catalog sync complete for {}",
+                                device_id_for_catalog
+                            ),
+                            Ok(false) => {}
+                            Err(e) => tracing::warn!(
+                                "Catalog sync flush failed for {}: {}",
+                                device_id_for_catalog,
+                                e
+                            ),
+                        }
+
                         // 回复 200 OK(MESSAGE 也要求回复 200)
                         let response = Parser::generate_response(
                             200, "OK",
@@ -2558,6 +2648,7 @@ let renewal_pool = pool.clone();
         _config: &Arc<SipConfig>,
         pool: &Pool,
         socket: &Arc<UdpSocket>,
+        catalog_sync_manager: &Arc<CatalogSyncManager>,
     ) -> Result<()> {
         let via = req.header("via").cloned().unwrap_or_default();
         let from = req.header("from").cloned().unwrap_or_default();
@@ -2587,6 +2678,23 @@ let renewal_pool = pool.clone();
                     let (sum_num, channels) = XmlParser::parse_catalog_channels(body);
                     tracing::info!("Catalog NOTIFY from {}: {} channels (SumNum={:?})",
                         device_id_for_catalog, channels.len(), sum_num);
+
+                    // 订阅推送的目录同样可能是分页的，走同一套聚合逻辑
+                    match catalog_sync_manager
+                        .handle_packet(&device_id_for_catalog, body)
+                        .await
+                    {
+                        Ok(true) => tracing::info!(
+                            "Catalog sync complete (NOTIFY) for {}",
+                            device_id_for_catalog
+                        ),
+                        Ok(false) => {}
+                        Err(e) => tracing::warn!(
+                            "Catalog sync flush failed (NOTIFY) for {}: {}",
+                            device_id_for_catalog,
+                            e
+                        ),
+                    }
 
                     // B2: 检测上级平台 NOTIFY — 若 device_id_for_catalog 是已注册的上级平台
                     // 的 device_gb_id，则把通道列表落库到 gb_platform_channel。
@@ -3838,6 +3946,9 @@ f=v/1/96/1/2/1/1/0
 
     pub async fn send_catalog_query(&self, device_id: &str) -> Result<()> {
         let sn = chrono::Utc::now().timestamp();
+        // 开启一次目录同步会话：设备可能把目录分若干页返回（SumNum > 1），
+        // 需要按 (device_id, sn) 聚合后才算同步完成。
+        self.catalog_sync_manager.start_sync(device_id, sn as u32);
         let body = format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
 <Query>

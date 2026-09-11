@@ -684,11 +684,14 @@ pub async fn gb_record_download_start(
                     None => 0,
                 };
                 if media_port == 0 {
-                    tracing::warn!(
-                        "未取得 ZLM 收流端口，录像下载 INVITE 将不带可用 m= 端口 ({}/{})",
+                    // 端口 0 在 SDP 里表示媒体流被禁用，发出去也不会收到流。
+                    // 此前只记一条 warn 然后照发（对调用方伪装成"下载已开始"），
+                    // 改为直接失败，避免留下一个永远不会完成的下载会话。
+                    tracing::error!(
+                        "ZLM 收流端口分配失败，放弃录像下载 INVITE ({}/{})",
                         device_id, channel_id
                     );
-                }
+                } else {
                 match sip
                     .send_download_invite(
                         &device_id,
@@ -698,16 +701,17 @@ pub async fn gb_record_download_start(
                         media_port,
                     )
                     .await
-                {
-                    Ok(call_id) => {
-                        tracing::info!(
-                            "GB28181 DOWNLOAD INVITE sent, call_id={}",
-                            call_id
-                        );
-                        used_gb28181 = true;
-                    }
-                    Err(e) => {
-                        tracing::warn!("Failed to send GB28181 DOWNLOAD INVITE: {}", e);
+                    {
+                        Ok(call_id) => {
+                            tracing::info!(
+                                "GB28181 DOWNLOAD INVITE sent, call_id={}",
+                                call_id
+                            );
+                            used_gb28181 = true;
+                        }
+                        Err(e) => {
+                            tracing::warn!("Failed to send GB28181 DOWNLOAD INVITE: {}", e);
+                        }
                     }
                 }
             }

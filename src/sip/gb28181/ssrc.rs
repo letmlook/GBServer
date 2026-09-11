@@ -29,9 +29,24 @@ impl SsrcManager {
         }
     }
 
+    /// 分配一个 SSRC。
+    ///
+    /// 国标 SSRC 为 **10 位十进制**：1 位类型位 + 5 位域标识 + 4 位流序号。
+    /// 此前这里是 `format!("0{}{:04}0", prefix9, seq)` —— 前缀 9 位再加 4 位
+    /// 序号加尾随 0，得到的是 **15 位**字符串，写进 INVITE 的 `y=` 即为非法值
+    /// （单元测试还把 15 位当成期望值固化了下来）。
     pub fn allocate(&self, device_id: &str, channel_id: &str, stream_type: &str) -> String {
         let seq = self.counter.fetch_add(1, Ordering::Relaxed);
-        let ssrc = format!("0{}{:04}0", self.device_prefix, seq % 10000);
+        // 类型位：0 实时 / 1 回放 / 2 下载 / 4 广播(含对讲)
+        let type_digit = match stream_type.to_ascii_lowercase().as_str() {
+            "playback" | "history" | "play_back" => '1',
+            "download" => '2',
+            "broadcast" | "talk" | "audio" => '4',
+            _ => '0',
+        };
+        // 域标识取 SIP 设备号前 5 位（不足 5 位左补 0）
+        let domain: String = self.device_prefix.chars().take(5).collect();
+        let ssrc = format!("{}{:0<5}{:04}", type_digit, domain, seq % 10000);
 
         self.allocations.insert(ssrc.clone(), SsrcAllocation {
             ssrc: ssrc.clone(),
@@ -96,9 +111,10 @@ mod tests {
     fn test_allocate_and_release() {
         let manager = SsrcManager::new("34020000002000000001");
         let ssrc = manager.allocate("device1", "channel1", "Play");
-        assert!(ssrc.starts_with('0'));
-        assert!(ssrc.ends_with('0'));
-        assert_eq!(ssrc.len(), 15);
+        // 国标 SSRC 必须是 10 位十进制
+        assert_eq!(ssrc.len(), 10, "SSRC 应为 10 位, 实际 {}", ssrc);
+        assert!(ssrc.chars().all(|c| c.is_ascii_digit()), "SSRC 必须全是数字: {}", ssrc);
+        assert!(ssrc.starts_with('0'), "实时流类型位应为 0: {}", ssrc);
 
         let alloc = manager.get(&ssrc).unwrap();
         assert_eq!(alloc.device_id, "device1");
@@ -106,6 +122,30 @@ mod tests {
         let released = manager.release(&ssrc).unwrap();
         assert_eq!(released.ssrc, ssrc);
         assert!(manager.get(&ssrc).is_none());
+    }
+
+    /// 类型位必须随业务类型变化，长度恒为 10。
+    #[test]
+    fn test_allocate_type_digit_and_width() {
+        let manager = SsrcManager::new("34020000002000000001");
+        let cases = [
+            ("Play", '0'),
+            ("playback", '1'),
+            ("download", '2'),
+            ("broadcast", '4'),
+            ("talk", '4'),
+        ];
+        for (kind, expected) in cases {
+            let ssrc = manager.allocate("d", "c", kind);
+            assert_eq!(ssrc.len(), 10, "{} -> {}", kind, ssrc);
+            assert!(
+                ssrc.starts_with(expected),
+                "{} 的类型位应为 {}，实际 {}",
+                kind,
+                expected,
+                ssrc
+            );
+        }
     }
 
     #[test]

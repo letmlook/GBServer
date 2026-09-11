@@ -247,6 +247,40 @@ impl InviteSession {
     }
 }
 
+impl crate::state::StreamState for InviteSession {
+    fn stream_id(&self) -> &str {
+        self.zlm_stream_id.as_deref().unwrap_or(&self.call_id)
+    }
+    fn app(&self) -> &str {
+        &self.zlm_app
+    }
+    fn status(&self) -> crate::state::StreamStatus {
+        use InviteSessionStatus::*;
+        match self.status {
+            Active => crate::state::StreamStatus::Active,
+            Pending | Inviting | Ringing => crate::state::StreamStatus::Pushing,
+            Terminating | Terminated => crate::state::StreamStatus::Stopped,
+        }
+    }
+    fn set_status(&mut self, status: crate::state::StreamStatus) {
+        use crate::state::StreamStatus;
+        self.status = match status {
+            StreamStatus::Ready | StreamStatus::Pushing => InviteSessionStatus::Inviting,
+            StreamStatus::Active => InviteSessionStatus::Active,
+            StreamStatus::Stopped | StreamStatus::Failed => InviteSessionStatus::Terminated,
+        };
+    }
+    fn media_server_id(&self) -> Option<&str> {
+        None
+    }
+    fn device_id(&self) -> Option<&str> {
+        Some(&self.device_id)
+    }
+    fn channel_id(&self) -> Option<&str> {
+        Some(&self.channel_id)
+    }
+}
+
 pub struct InviteSessionManager {
     sessions: Arc<RwLock<HashMap<String, InviteSession>>>,
     /// E1: 可选 StateStore，让活跃会话在多节点之间共享

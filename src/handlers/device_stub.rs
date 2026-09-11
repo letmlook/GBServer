@@ -116,9 +116,63 @@ pub async fn device_sync(
             if device.online {
                 match server.send_catalog_query(&device_id).await {
                     Ok(_) => {
+                        // 目录可能分多页返回（SumNum > 1），这里等设备把本次
+                        // 同步（同一 device_id + sn）发完再回结果，最多等 8 秒。
+                        // 此前只回一句「命令已发送」——前端拿不到任何同步结果，
+                        // 也无从判断是否失败（设备若一直不回，界面永远停在"同步中"）。
+                        let manager = server.catalog_sync_manager();
+                        let deadline =
+                            tokio::time::Instant::now() + std::time::Duration::from_secs(8);
+                        let (mut sync_state, mut total, mut received, mut error) =
+                            ("waiting".to_string(), 0_i32, 0_i32, None::<String>);
+                        loop {
+                            if let Some(sess) = manager.get_session(&device_id) {
+                                total = sess.total_num;
+                                received = sess.received_num;
+                                error = sess.error.clone();
+                                sync_state = match sess.state {
+                                    crate::sip::gb28181::SyncState::Waiting => "waiting",
+                                    crate::sip::gb28181::SyncState::Receiving => "receiving",
+                                    crate::sip::gb28181::SyncState::Done => "done",
+                                    crate::sip::gb28181::SyncState::Failed => "failed",
+                                }
+                                .to_string();
+                                if matches!(
+                                    sess.state,
+                                    crate::sip::gb28181::SyncState::Done
+                                        | crate::sip::gb28181::SyncState::Failed
+                                ) {
+                                    break;
+                                }
+                            }
+                            if tokio::time::Instant::now() >= deadline {
+                                break;
+                            }
+                            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                        }
+
+                        // 统计本次同步后该设备名下的通道数，便于前端直接展示结果
+                        let channel_count =
+                            crate::db::device::list_channels_for_device(&state.pool, &device_id)
+                                .await
+                                .map(|v| v.len())
+                                .unwrap_or(0);
+
+                        let message = match sync_state.as_str() {
+                            "done" => "设备目录同步完成",
+                            "failed" => "设备目录同步失败",
+                            "receiving" => "设备目录同步进行中（未在超时前收齐分页）",
+                            _ => "已发送目录查询，设备尚未响应",
+                        };
+
                         return Json(WVPResult::success(serde_json::json!({
                             "deviceId": device_id,
-                            "message": "设备同步命令已发送，等待响应",
+                            "syncState": sync_state,
+                            "totalPackets": total,
+                            "receivedPackets": received,
+                            "channelCount": channel_count,
+                            "error": error,
+                            "message": message,
                             "code": 0
                         })));
                     }
