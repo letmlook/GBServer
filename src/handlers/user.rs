@@ -41,22 +41,26 @@ pub async fn login(
     State(state): State<AppState>,
     Query(params): Query<LoginParams>,
 ) -> Result<impl IntoResponse, AppError> {
-    use crate::auth::verify_password;
     let username = params.username.as_deref().ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 username"))?;
     let password = params.password.as_deref().ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 password"))?;
     let mut user = db::find_by_username(&state.pool, username)
         .await?
         .ok_or_else(|| AppError::business(ErrorCode::Error100, "用户名或密码错误"))?;
-    // Verify password: try Argon2 first, fall back to MD5 (legacy compatibility).
+    // 兼容校验：Argon2id ↔ 旧版 MD5 ↔ 明文（见 auth::verify_password_compat）
     let stored = user.password.clone().unwrap_or_default();
-    let ok = if stored.starts_with("$argon2") {
-        verify_password(password, &stored)
-    } else {
-        let password_md5 = password_for_db(password);
-        password_md5 == stored
-    };
-    if !ok {
+    if !crate::auth::verify_password_compat(password, &stored) {
         return Err(AppError::business(ErrorCode::Error100, "用户名或密码错误"));
+    }
+    // 机会式升级：旧格式（MD5 / 明文）在登录成功后自动替换为 Argon2id，用户无感。
+    // 这样种子 admin 的弱 MD5 会在首次登录后自行变强，无需人工改密。
+    if !crate::auth::is_argon2_hash(&stored) {
+        match crate::auth::hash_password(password) {
+            Ok(new_hash) => match db::change_password(&state.pool, user.id, &new_hash).await {
+                Ok(_) => tracing::info!("用户 {} 的口令哈希已升级为 Argon2id", username),
+                Err(e) => tracing::warn!("口令哈希升级失败（不影响本次登录）: {}", e),
+            },
+            Err(e) => tracing::warn!("生成 Argon2id 哈希失败: {}", e),
+        }
     }
     user.for_login();
 
@@ -248,12 +252,17 @@ pub async fn change_password(
     let new_pwd = params.password.as_deref().ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 password"))?;
 
     let user = db::find_by_username(&state.pool, &claims.userName).await?.ok_or(AppError::Unauthorized)?;
-    let current_md5 = user.password.as_deref().unwrap_or("");
-    if current_md5 != old_md5.as_str() {
+    // 旧口令同样走兼容校验：
+    // 此前这里是 `current_md5 != old_md5` 的明文比较，导致存 Argon2id 的新用户
+    // **永远无法修改自己的密码**（Argon2 串不可能等于 MD5 十六进制）。
+    let stored = user.password.clone().unwrap_or_default();
+    if !crate::auth::verify_password_compat(old_md5.as_str(), &stored) {
         return Err(AppError::business(ErrorCode::Error100, "旧密码错误"));
     }
-    let new_md5 = md5_hex(new_pwd);
-    let n = db::change_password(&state.pool, user.id, &new_md5).await?;
+    // 新口令存 Argon2id（此前写 MD5，等于把新建时的 Argon2id 降级）
+    let new_hash = crate::auth::hash_password(new_pwd)
+        .map_err(|e| AppError::business(ErrorCode::Error100, format!("hash failed: {}", e)))?;
+    let n = db::change_password(&state.pool, user.id, &new_hash).await?;
     if n == 0 {
         return Err(AppError::business(ErrorCode::Error100, "修改失败"));
     }
@@ -278,8 +287,10 @@ pub async fn change_password_for_admin(
     let _claims = require_admin(&state, &headers).await?;
     let user_id = params.user_id.or(params.userId).ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 userId"))?;
     let password = params.password.as_deref().ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 password"))?;
-    let new_md5 = md5_hex(password);
-    let n = db::change_password(&state.pool, user_id, &new_md5).await?;
+    // 管理员重置口令也存 Argon2id（此前写 MD5）
+    let new_hash = crate::auth::hash_password(password)
+        .map_err(|e| AppError::business(ErrorCode::Error100, format!("hash failed: {}", e)))?;
+    let n = db::change_password(&state.pool, user_id, &new_hash).await?;
     if n == 0 {
         return Err(AppError::business(ErrorCode::Error100, "修改失败"));
     }

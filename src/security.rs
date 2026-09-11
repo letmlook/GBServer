@@ -7,8 +7,17 @@
 /// Minimum length for a JWT secret (RFC 7518 / OWASP recommends ≥ 256 bits = 32 bytes).
 pub const MIN_JWT_SECRET_LEN: usize = 32;
 
+/// `config/application.toml` 中随仓库一起提交的示例密钥。
+///
+/// 2026-09-11：它长度合规（64 位 hex）且原本不在弱密钥表里，因此**能通过校验** ——
+/// 但它已进入公开 Git 历史，任何拿到仓库的人都能用它伪造 JWT。必须视为弱密钥；
+/// 生产环境须用 `GBSERVER__JWT__SECRET` 覆盖。
+pub const COMMITTED_DEMO_JWT_SECRET: &str =
+    "a7f3c9e2b1d84f6a0e8c5b2d9f1a4e7c0b3d6f9a2e5c8b1d4f7a0e3c6b9d2f5";
+
 /// Built-in weak / demo secrets that must never be used in production.
 const WEAK_SECRETS: &[&str] = &[
+    COMMITTED_DEMO_JWT_SECRET,
     "change-me",
     "change-me-in-production",
     "secret",
@@ -156,6 +165,33 @@ mod tests {
         assert!(validate_jwt_secret("short").is_err());
     }
 
+    /// 回归保护：随仓库提交的示例密钥必须被判为弱密钥。
+    ///
+    /// 它 64 位、长度合规，若不显式列入弱密钥表就会**静默通过**校验 ——
+    /// 而它已在公开 Git 历史中，等于人尽皆知的签名密钥。
+    #[test]
+    fn test_validate_jwt_secret_rejects_committed_demo_secret() {
+        // 关键点：它**长度合规**（≥32），仅靠长度校验抓不到（实际是 63 位 hex，
+        // 说明是手打而非真随机 32 字节）
+        assert!(
+            COMMITTED_DEMO_JWT_SECRET.len() >= MIN_JWT_SECRET_LEN,
+            "示例密钥长度合规，正是它会被静默放行的原因"
+        );
+        let err = validate_jwt_secret(COMMITTED_DEMO_JWT_SECRET)
+            .expect_err("随仓库提交的示例密钥必须被拒绝");
+        assert!(err.contains("weak") || err.contains("default"), "错误信息: {}", err);
+    }
+
+    /// 配置文件里的实际取值也必须被拦下（防止示例密钥被改回）
+    #[test]
+    fn test_config_file_jwt_secret_is_rejected() {
+        let cfg = crate::config::load_config().expect("load application.toml");
+        assert!(
+            validate_jwt_secret(&cfg.jwt.secret).is_err(),
+            "仓库默认配置中的 JWT 密钥应被判为弱密钥，请改用 GBSERVER__JWT__SECRET 覆盖"
+        );
+    }
+
     #[test]
     fn test_validate_jwt_secret_rejects_known_weak() {
         assert!(validate_jwt_secret("password1234567890123456789012345").is_err());
@@ -164,8 +200,10 @@ mod tests {
 
     #[test]
     fn test_validate_jwt_secret_accepts_strong_random() {
-        // 32+ char hex string with no weak prefix
-        let secret = "a7f3c9e2b1d84f6a0e8c5b2d9f1a4e7c0b3d6f9a2e5c8b1d4f7a0e3c6b9d2f5";
+        // 必须是**不在**仓库中的随机值。
+        // 注意：本测试原先用的正是 config/application.toml 里那个已提交的密钥，
+        // 于是把「已公开的密钥」当成了正面样例 —— 现已改掉。
+        let secret = "9f1c4b7e2a5d8c0f3b6e9a2d5c8f1b4e7a0d3c6f9b2e5a8d1c4f7b0e3a6d9c2f";
         assert!(validate_jwt_secret(secret).is_ok());
     }
 

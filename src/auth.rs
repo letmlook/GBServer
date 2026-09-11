@@ -123,6 +123,43 @@ pub fn verify_password(plaintext: &str, stored: &str) -> bool {
     }
 }
 
+/// 旧版 MD5 规范化（与 `handlers::user::password_for_db` 的约定一致）：
+/// 前端直接传口令的 MD5 十六进制时原样使用，传明文时自行计算 MD5。
+pub fn legacy_md5(password: &str) -> String {
+    use md5::{Digest, Md5};
+    let s = password.trim();
+    if s.len() == 32 && s.chars().all(|c| c.is_ascii_hexdigit()) {
+        s.to_lowercase()
+    } else {
+        let mut h = Md5::new();
+        h.update(s.as_bytes());
+        format!("{:x}", h.finalize())
+    }
+}
+
+/// 存储的哈希是否已是当前推荐的 Argon2id 格式。
+pub fn is_argon2_hash(stored: &str) -> bool {
+    stored.starts_with("$argon2")
+}
+
+/// 兼容校验口令，覆盖本仓库出现过的三种存储格式：
+/// 1. `$argon2…` —— Argon2id（当前格式，`add_user` 写入）
+/// 2. 32 位十六进制 —— 旧版 MD5（种子 admin 与历史数据）
+/// 3. 其它 —— 更早的明文
+///
+/// 2026-09-11：此前 `change_password` 用**明文相等**比较旧密码
+/// （`current_md5 != old_md5`），导致新建用户（存 Argon2id）**永远无法修改自己的
+/// 密码**；同时改密后又把哈希写成 MD5，造成安全降级。统一走本函数后两条都修掉。
+pub fn verify_password_compat(plaintext: &str, stored: &str) -> bool {
+    if is_argon2_hash(stored) {
+        verify_password(plaintext, stored)
+    } else if stored.len() == 32 && stored.chars().all(|c| c.is_ascii_hexdigit()) {
+        legacy_md5(plaintext) == stored.to_lowercase()
+    } else {
+        plaintext == stored
+    }
+}
+
 pub fn extract_token(req: &Request) -> Option<String> {
     extract_token_from_headers(req.headers())
 }
@@ -353,5 +390,54 @@ mod tests {
         let keys2 = JwtKeys::new(b"secret-2");
         let token = keys1.create_token("bob", 60).unwrap();
         assert!(keys2.verify_token(&token).is_none(), "不同密钥应验证失败");
+    }
+}
+
+#[cfg(test)]
+mod password_tests {
+    use super::*;
+
+    #[test]
+    fn test_argon2_roundtrip() {
+        let h = hash_password("s3cret-pass").unwrap();
+        assert!(is_argon2_hash(&h));
+        assert!(verify_password_compat("s3cret-pass", &h));
+        assert!(!verify_password_compat("wrong-pass", &h));
+    }
+
+    #[test]
+    fn test_legacy_md5_verification() {
+        // md5("admin") —— 种子 admin 在 init-sqlite 中的存储值
+        let stored = "21232f297a57a5a743894a0e4a801fc3";
+        assert!(
+            verify_password_compat("admin", stored),
+            "明文口令应能通过 MD5 校验"
+        );
+        assert!(
+            verify_password_compat("21232f297a57a5a743894a0e4a801fc3", stored),
+            "前端直接传 MD5 十六进制也应通过"
+        );
+        assert!(!verify_password_compat("wrong", stored));
+    }
+
+    #[test]
+    fn test_plaintext_legacy_verification() {
+        assert!(verify_password_compat("plain", "plain"));
+        assert!(!verify_password_compat("x", "plain"));
+    }
+
+    /// 回归保护：Argon2id 串不可能等于 MD5 十六进制。
+    ///
+    /// `change_password` 曾用 `current_md5 != old_md5` 做**明文比较**，导致新建用户
+    /// （存 Argon2id）永远无法修改自己的密码。本测试固化两者的不可混用性。
+    #[test]
+    fn test_argon2_hash_never_equals_md5() {
+        let argon = hash_password("admin").unwrap();
+        let md5 = legacy_md5("admin");
+        assert_ne!(argon, md5);
+        assert!(is_argon2_hash(&argon));
+        assert!(!is_argon2_hash(&md5));
+        // 用 MD5 串本身去校验 Argon2 哈希必须失败（旧实现的路径）
+        assert!(!verify_password_compat(&md5, &argon));
     }
 }
