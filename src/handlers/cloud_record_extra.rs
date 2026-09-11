@@ -430,45 +430,7 @@ mod tests {
 
     // ============ 端到端：真实 SQLite + 真实磁盘文件 + 真实 ZIP ============
 
-    /// 建一个跑过生产 schema 的内存 SQLite
-    #[cfg(feature = "sqlite")]
-    async fn sqlite_pool_with_schema() -> db::Pool {
-        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
-        use std::str::FromStr;
-
-        let opts = SqliteConnectOptions::from_str("sqlite::memory:")
-            .unwrap()
-            .create_if_missing(true);
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect_with(opts)
-            .await
-            .expect("sqlite in-memory pool");
-
-        let sql = include_str!("../../database/init-sqlite-2.7.4.sql");
-        let cleaned: String = sql
-            .lines()
-            .filter(|l| {
-                let t = l.trim_start();
-                !t.is_empty() && !t.starts_with("--")
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        for raw in cleaned.split(';') {
-            let stmt = raw.trim();
-            if stmt.is_empty() {
-                continue;
-            }
-            let upper = stmt.to_uppercase();
-            if !upper.starts_with("CREATE") && !upper.starts_with("INSERT") {
-                continue;
-            }
-            sqlx::query(stmt).execute(&pool).await.unwrap_or_else(|e| {
-                panic!("init SQL failed: {} | stmt: {}", e, &stmt[..80.min(stmt.len())])
-            });
-        }
-        pool
-    }
+    use crate::test_support::sqlite_pool_with_schema;
 
     #[cfg(feature = "sqlite")]
     fn insert_cfg(

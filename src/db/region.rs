@@ -271,22 +271,3 @@ pub async fn count_children(pool: &Pool, parent_id: i32) -> sqlx::Result<i64> {
         .fetch_one(pool)
         .await;
 }
-
-/// 根据行政区划代码查询区域
-pub async fn get_by_civil_code(pool: &Pool, civil_code: &str) -> sqlx::Result<Option<Region>> {
-    #[cfg(feature = "mysql")]
-    return sqlx::query_as::<_, Region>("SELECT * FROM gb_common_region WHERE civil_code = ?")
-        .bind(civil_code)
-        .fetch_optional(pool)
-        .await;
-    #[cfg(feature = "postgres")]
-    return sqlx::query_as::<_, Region>("SELECT * FROM gb_common_region WHERE civil_code = $1")
-        .bind(civil_code)
-        .fetch_optional(pool)
-        .await;
-    #[cfg(feature = "sqlite")]
-    return sqlx::query_as::<_, Region>("SELECT * FROM gb_common_region WHERE civil_code = ?")
-        .bind(civil_code)
-        .fetch_optional(pool)
-        .await;
-}

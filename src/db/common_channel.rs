@@ -7,21 +7,21 @@ use sqlx::Row;
 pub async fn get_by_id(pool: &Pool, id: i64) -> sqlx::Result<Option<DeviceChannel>> {
     #[cfg(feature = "mysql")]
     return sqlx::query_as::<_, DeviceChannel>(
-        "SELECT id, device_id, name, gb_device_id, status, longitude, latitude, create_time, update_time, sub_count, has_audio, channel_type FROM gb_device_channel WHERE id = ?",
+        &format!("SELECT {} FROM gb_device_channel WHERE id = ?", DEVICE_CHANNEL_SELECT_COLUMNS),
     )
     .bind(id)
     .fetch_optional(pool)
     .await;
     #[cfg(feature = "postgres")]
     return sqlx::query_as::<_, DeviceChannel>(
-        "SELECT id, device_id, name, gb_device_id, status, longitude, latitude, create_time, update_time, sub_count, has_audio, channel_type FROM gb_device_channel WHERE id = $1",
+        &format!("SELECT {} FROM gb_device_channel WHERE id = $1", DEVICE_CHANNEL_SELECT_COLUMNS),
     )
     .bind(id)
     .fetch_optional(pool)
     .await;
     #[cfg(feature = "sqlite")]
     return sqlx::query_as::<_, DeviceChannel>(
-        "SELECT id, device_id, name, gb_device_id, status, longitude, latitude, create_time, update_time, sub_count, has_audio, channel_type FROM gb_device_channel WHERE id = ?",
+        &format!("SELECT {} FROM gb_device_channel WHERE id = ?", DEVICE_CHANNEL_SELECT_COLUMNS),
     )
     .bind(id)
     .fetch_optional(pool)
@@ -180,21 +180,21 @@ pub async fn get_unusual_civilcode(pool: &Pool, page: u32, count: u32) -> sqlx::
     let offset = (page.saturating_sub(1)) * count;
     #[cfg(feature = "mysql")]
     return sqlx::query_as::<_, DeviceChannel>(
-        "SELECT id, device_id, name, gb_device_id, status, longitude, latitude, create_time, update_time, sub_count, has_audio, channel_type FROM gb_device_channel WHERE civil_code IS NULL OR civil_code = '' ORDER BY id LIMIT ? OFFSET ?",
+        &format!("SELECT {} FROM gb_device_channel WHERE civil_code IS NULL OR civil_code = '' ORDER BY id LIMIT ? OFFSET ?", DEVICE_CHANNEL_SELECT_COLUMNS),
     )
     .bind(count as i64).bind(offset as i64)
     .fetch_all(pool)
     .await;
     #[cfg(feature = "postgres")]
     return sqlx::query_as::<_, DeviceChannel>(
-        "SELECT id, device_id, name, gb_device_id, status, longitude, latitude, create_time, update_time, sub_count, has_audio, channel_type FROM gb_device_channel WHERE civil_code IS NULL OR civil_code = '' ORDER BY id LIMIT $1 OFFSET $2",
+        &format!("SELECT {} FROM gb_device_channel WHERE civil_code IS NULL OR civil_code = '' ORDER BY id LIMIT $1 OFFSET $2", DEVICE_CHANNEL_SELECT_COLUMNS),
     )
     .bind(count as i64).bind(offset as i64)
     .fetch_all(pool)
     .await;
     #[cfg(feature = "sqlite")]
     return sqlx::query_as::<_, DeviceChannel>(
-        "SELECT id, device_id, name, gb_device_id, status, longitude, latitude, create_time, update_time, sub_count, has_audio, channel_type FROM gb_device_channel WHERE civil_code IS NULL OR civil_code = '' ORDER BY id LIMIT ? OFFSET ?",
+        &format!("SELECT {} FROM gb_device_channel WHERE civil_code IS NULL OR civil_code = '' ORDER BY id LIMIT ? OFFSET ?", DEVICE_CHANNEL_SELECT_COLUMNS),
     )
     .bind(count as i64).bind(offset as i64)
     .fetch_all(pool)
@@ -222,25 +222,52 @@ pub async fn count_unusual_civilcode(pool: &Pool) -> sqlx::Result<i64> {
     .await;
 }
 
+/// 取通道表中所有非空且去重的行政区划编码（civil_code），按编码升序。
+///
+/// 供 `/api/region/sync` 按行政区划补齐区域表使用。
+pub async fn list_distinct_civil_codes(pool: &Pool) -> sqlx::Result<Vec<String>> {
+    #[cfg(feature = "mysql")]
+    return sqlx::query_scalar::<_, String>(
+        "SELECT DISTINCT civil_code FROM gb_device_channel \
+         WHERE civil_code IS NOT NULL AND civil_code <> '' ORDER BY civil_code",
+    )
+    .fetch_all(pool)
+    .await;
+    #[cfg(feature = "postgres")]
+    return sqlx::query_scalar::<_, String>(
+        "SELECT DISTINCT civil_code FROM gb_device_channel \
+         WHERE civil_code IS NOT NULL AND civil_code <> '' ORDER BY civil_code",
+    )
+    .fetch_all(pool)
+    .await;
+    #[cfg(feature = "sqlite")]
+    return sqlx::query_scalar::<_, String>(
+        "SELECT DISTINCT civil_code FROM gb_device_channel \
+         WHERE civil_code IS NOT NULL AND civil_code <> '' ORDER BY civil_code",
+    )
+    .fetch_all(pool)
+    .await;
+}
+
 pub async fn get_unusual_parent(pool: &Pool, page: u32, count: u32) -> sqlx::Result<Vec<DeviceChannel>> {
     let offset = (page.saturating_sub(1)) * count;
     #[cfg(feature = "mysql")]
     return sqlx::query_as::<_, DeviceChannel>(
-        "SELECT id, device_id, name, gb_device_id, status, longitude, latitude, create_time, update_time, sub_count, has_audio, channel_type FROM gb_device_channel WHERE parent_id IS NULL OR parent_id = '0' ORDER BY id LIMIT ? OFFSET ?",
+        &format!("SELECT {} FROM gb_device_channel WHERE parent_id IS NULL OR parent_id = '0' ORDER BY id LIMIT ? OFFSET ?", DEVICE_CHANNEL_SELECT_COLUMNS),
     )
     .bind(count as i64).bind(offset as i64)
     .fetch_all(pool)
     .await;
     #[cfg(feature = "postgres")]
     return sqlx::query_as::<_, DeviceChannel>(
-        "SELECT id, device_id, name, gb_device_id, status, longitude, latitude, create_time, update_time, sub_count, has_audio, channel_type FROM gb_device_channel WHERE parent_id IS NULL OR parent_id = '0' ORDER BY id LIMIT $1 OFFSET $2",
+        &format!("SELECT {} FROM gb_device_channel WHERE parent_id IS NULL OR parent_id = '0' ORDER BY id LIMIT $1 OFFSET $2", DEVICE_CHANNEL_SELECT_COLUMNS),
     )
     .bind(count as i64).bind(offset as i64)
     .fetch_all(pool)
     .await;
     #[cfg(feature = "sqlite")]
     return sqlx::query_as::<_, DeviceChannel>(
-        "SELECT id, device_id, name, gb_device_id, status, longitude, latitude, create_time, update_time, sub_count, has_audio, channel_type FROM gb_device_channel WHERE parent_id IS NULL OR parent_id = '0' ORDER BY id LIMIT ? OFFSET ?",
+        &format!("SELECT {} FROM gb_device_channel WHERE parent_id IS NULL OR parent_id = '0' ORDER BY id LIMIT ? OFFSET ?", DEVICE_CHANNEL_SELECT_COLUMNS),
     )
     .bind(count as i64).bind(offset as i64)
     .fetch_all(pool)
@@ -528,19 +555,19 @@ pub async fn get_channels_for_map(
 ) -> sqlx::Result<Vec<DeviceChannel>> {
     #[cfg(feature = "mysql")]
     return sqlx::query_as::<_, DeviceChannel>(
-        "SELECT id, device_id, name, gb_device_id, status, longitude, latitude, create_time, update_time, sub_count, has_audio, channel_type FROM gb_device_channel WHERE longitude IS NOT NULL AND latitude IS NOT NULL ORDER BY id LIMIT 1000",
+        &format!("SELECT {} FROM gb_device_channel WHERE longitude IS NOT NULL AND latitude IS NOT NULL ORDER BY id LIMIT 1000", DEVICE_CHANNEL_SELECT_COLUMNS),
     )
     .fetch_all(pool)
     .await;
     #[cfg(feature = "postgres")]
     return sqlx::query_as::<_, DeviceChannel>(
-        "SELECT id, device_id, name, gb_device_id, status, longitude, latitude, create_time, update_time, sub_count, has_audio, channel_type FROM gb_device_channel WHERE longitude IS NOT NULL AND latitude IS NOT NULL ORDER BY id LIMIT 1000",
+        &format!("SELECT {} FROM gb_device_channel WHERE longitude IS NOT NULL AND latitude IS NOT NULL ORDER BY id LIMIT 1000", DEVICE_CHANNEL_SELECT_COLUMNS),
     )
     .fetch_all(pool)
     .await;
     #[cfg(feature = "sqlite")]
     return sqlx::query_as::<_, DeviceChannel>(
-        "SELECT id, device_id, name, gb_device_id, status, longitude, latitude, create_time, update_time, sub_count, has_audio, channel_type FROM gb_device_channel WHERE longitude IS NOT NULL AND latitude IS NOT NULL ORDER BY id LIMIT 1000",
+        &format!("SELECT {} FROM gb_device_channel WHERE longitude IS NOT NULL AND latitude IS NOT NULL ORDER BY id LIMIT 1000", DEVICE_CHANNEL_SELECT_COLUMNS),
     )
     .fetch_all(pool)
     .await;
@@ -624,4 +651,63 @@ pub async fn ensure_columns(pool: &Pool) -> sqlx::Result<()> {
     let _ = sqlx::query("ALTER TABLE gb_device_channel ADD COLUMN custom_name VARCHAR(255)")
         .execute(pool).await;
     Ok(())
+}
+
+#[cfg(all(test, feature = "sqlite"))]
+mod tests {
+    use super::*;
+    use crate::test_support::sqlite_pool_with_schema;
+
+    async fn seed_channel(pool: &Pool, device_id: &str, gb_id: &str, civil: Option<&str>) {
+        sqlx::query(
+            "INSERT INTO gb_device_channel \
+             (device_id, name, gb_device_id, civil_code, status, data_type, data_device_id, \
+              longitude, latitude, parent_id, create_time, update_time) \
+             VALUES (?, ?, ?, ?, 'ON', 0, 0, 118.7, 32.0, '0', '2026-01-01 00:00:00', '2026-01-01 00:00:00')",
+        )
+        .bind(device_id)
+        .bind(format!("ch-{}", gb_id))
+        .bind(gb_id)
+        .bind(civil)
+        .execute(pool)
+        .await
+        .expect("insert channel");
+    }
+
+    /// 回归保护：SELECT 覆盖 DeviceChannel **全部**列。
+    ///
+    /// 2026-09-11：`get_by_id` / `get_unusual_parent` / `get_unusual_civilcode` /
+    /// `get_channels_for_map` 曾使用只有 12 列的残缺清单，运行时一律报
+    /// `no column found for name: manufacturer` —— 导致所有走
+    /// `lookup_channel_and_send` 的 PTZ/预置位/雨刷/光圈/巡航端点以及
+    /// `/api/common/channel/map/list` 全部 500。
+    /// 该缺陷不会被编译期发现，只能靠真实的查询执行来兜住。
+    #[tokio::test]
+    async fn test_device_channel_queries_return_full_row() {
+        let pool = sqlite_pool_with_schema().await;
+        seed_channel(&pool, "dev1", "34020000001310000001", Some("340200")).await;
+
+        let by_id = get_by_id(&pool, 1)
+            .await
+            .expect("get_by_id 不得因缺列而失败");
+        assert!(by_id.is_some());
+
+        let unusual_parent = get_unusual_parent(&pool, 1, 10)
+            .await
+            .expect("get_unusual_parent 不得因缺列而失败");
+        assert_eq!(unusual_parent.len(), 1);
+
+        let unusual_civil = get_unusual_civilcode(&pool, 1, 10)
+            .await
+            .expect("get_unusual_civilcode 不得因缺列而失败");
+        assert!(unusual_civil.is_empty(), "civil_code 非空，不应命中");
+
+        let map_rows = get_channels_for_map(&pool, None, None, None)
+            .await
+            .expect("get_channels_for_map 不得因缺列而失败");
+        assert_eq!(map_rows.len(), 1);
+        // 经纬度必须真实带出（地图相关端点的前提）
+        assert_eq!(map_rows[0].longitude, Some(118.7));
+        assert_eq!(map_rows[0].latitude, Some(32.0));
+    }
 }

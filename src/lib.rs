@@ -4,6 +4,8 @@ pub mod response;
 pub mod auth;
 pub mod archive;
 pub mod db;
+#[cfg(test)]
+pub(crate) mod test_support;
 pub mod handlers;
 pub mod router;
 pub mod sip;
