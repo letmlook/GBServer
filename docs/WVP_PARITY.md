@@ -9,20 +9,36 @@
 
 | 维度 | 数值 | 验证方式 |
 |------|------|----------|
-| 总代码量（src/） | 61,669 行 Rust | `find src -name '*.rs' \| xargs wc -l` |
-| 已注册 HTTP 路由 | 374 个 `.route()` / 370 条唯一 `/api/...` 路径 | `grep -cE '\.route\(' src/router.rs` |
+| 总代码量（src/） | 64,423 行 Rust | `find src -name '*.rs' \| xargs wc -l` |
+| 已注册 HTTP 路由 | 380 条唯一 `/api/...` 路径 | `grep -oE '"/api/[^"]*"' src/router.rs \| sort -u \| wc -l` |
 | Handler 模块 | 29 个（含 `stub.rs` / `device_stub.rs` 两个兼容 shim） | `grep -c 'pub mod' src/handlers/mod.rs` |
-| 后端测试 | **393 通过**（lib 346 + 集成 47）/ 2 忽略 / 0 失败 | `cargo test --no-fail-fast` |
-| 编译状态 | `cargo check` 0 error / **17 warning**；clippy 292；**deprecated 0** | `cargo check` / `cargo clippy --all-targets` |
+| 后端测试 | **460 通过** / 2 忽略 / 0 失败 | `cargo test --no-fail-fast` |
+| 编译状态 | `cargo check` 0 error / **19 warning**；clippy 297；**deprecated 0** | `cargo check` / `cargo clippy --all-targets` |
 | 数据库 feature | SQLite（默认）/ PostgreSQL / MySQL **三者均编译通过** | CI `feature-matrix` job |
-| CI | ✅ 已恢复（`.github/workflows/ci.yml`，2026-09-11 新增） | — |
-| 前端 | `web/` = **Vue 3 + Element Plus + Vite + TS**（本轮已转正，17 个业务视图）；`web-legacy-vue2/` 为归档参考 | `ls web/src/views` |
+| CI | ⏸️ 工作流已就绪但**按需暂停自动触发**（见 `.github/workflows/ci.yml`） | — |
+| 前端 | `web/` = **Vue 3 + Element Plus + Vite + TS**（17 个业务视图）；`web-legacy-vue2/` 为归档参考 | `ls web/src/views` |
 | 前端产物 | `web/dist/` 构建通过（`npm run build` = `vue-tsc --noEmit && vite build`） | — |
+
+### ⚠️ 重要更正：API 挂载 ≠ 功能可用
+
+**本节由 2026-09-11 的深度审计补充，推翻了此前「100% 平替」的乐观结论。**
+
+此前的对照表衡量的是**路由是否挂载**，而把「已挂载」当成了「已实现」。实际审计发现
+（详见下方「真实性与安全问题」）：
+
+- **71 个端点完全未鉴权**（`api_public` 未挂任何中间件），含角色增删、云录像下载、JT1078 控制
+- **5 个端点返回编造的成功**（回放控制只打日志、zip 打包返回凭空 taskId）
+- **2 类运行时必然失败的 DB 查询**（结构体列清单漂移），其中一类导致约 20 个 PTZ 类端点 500
+- **16 个测试写了却从未被编译运行**
+- **口令哈希降级 + 新建用户无法改密**
+
+结论应表述为：**路由覆盖接近完整，功能真实性存在明确缺口，且缺口是可枚举的**。
+
 
 ### 本轮（2026-09-11）关键结论
 
-- **CI 门禁恢复**：编译 + 全量测试 + 三库 feature + 前端构建为硬门禁；`fmt` / `clippy` 暂列为非门禁（基线未清零，见 `.github/workflows/ci.yml` 注释）。
-- **测试完全自包含**：默认 SQLite feature 下 393 个测试不连接 Redis / PG / MySQL / ZLM，CI 无需 service 容器。
+- **CI 门禁恢复**：编译 + 全量测试 + 三库 feature + 前端构建为硬门禁；`fmt` / `clippy` 暂列为非门禁（基线未清零）。**注**：应要求已暂停自动触发，改为仅手动 `workflow_dispatch`，见 `.github/workflows/ci.yml`。
+- **测试完全自包含**：默认 SQLite feature 下 460 个测试不连接 Redis / PG / MySQL / ZLM，CI 无需 service 容器。
 - **前端已完成 Vue 3 迁移**：`web-v3/` 已转正为 `web/`（commit `2acf5a7`），Vue 2 归档至 `web-legacy-vue2/`。本文档此前多处 "web-v3 Phase 2 待迁移" 的描述已过时，本轮一并修正。
 - **CI 首次运行即抓到真实缺陷**：`Navbar.vue` 缺 `reactive` 显式 import，依赖被 gitignore 的
   `auto-imports.d.ts` 兜底 → **任何干净 clone 跑 `npm run build` 都会失败**（`dev` 与
@@ -34,6 +50,52 @@
   `src/cache.rs` 已零调用方，整体删除 140 行。**deprecated 告警归零**，clippy 297 → 292。
   核查中发现 `on_flow_report` / `handle_webhook` **此前无任何测试覆盖**，已把同步逻辑
   提取为可测函数并补 4 个测试（lib 342 → 346）。
+
+---
+
+## 真实性与安全问题（2026-09-11 深度审计）
+
+> 目标从「路由挂载率」转为「功能是否真实可用」。以下每一条都有对应测试固化。
+
+### 安全（均已修复）
+
+| 问题 | 严重度 | 说明 | 修复 |
+|------|--------|------|------|
+| **71 个端点未鉴权** | 🔴 高 | `api_public` 未挂任何中间件，实测未带 token 即 200：云录像下载、`role/add`、JT1078 控制、`server/config` 等。紧邻代码注释却写着「已移入 api_protected 需 JWT」 | 全部移入带 audit+auth 的 `api_protected`；仅保留 9 个确需公开的（login/zlm hook/rpc/health/ready/metrics/play share）。新增 27 端点安全回归测试 |
+| **`/api/rpc` 完全无鉴权** | 🔴 高 | 集群 RPC 入站无校验、出站不带凭证，任何人可调用 RPC 方法 | 新增 `[rpc].secret`；出站带 `X-RPC-Secret`，入站校验，不匹配 401；多节点未设密钥时启动告警 |
+| **口令哈希降级 + 无法改密** | 🔴 高 | `change_password` 用**明文比较**校验旧口令 → 存 Argon2id 的新用户**永远改不了密码**；且改密写回 MD5（降级） | 新增 `verify_password_compat`（Argon2id↔MD5↔明文）；改密存 Argon2id；**登录时机会式升级**旧哈希 |
+| **已公开的默认 JWT 密钥可静默通过** | 🟠 中 | `config/application.toml` 里的密钥已在 Git 历史中，但长度合规、不在弱密钥表 → 静默通过 | 加入 `COMMITTED_DEMO_JWT_SECRET` 弱密钥；原有测试甚至拿它当「强随机」样例，已改正 |
+
+### 假实现（已改为真实实现）
+
+| 端点 | 此前行为 | 现行为 |
+|------|----------|--------|
+| `common_channel/playback/{pause,resume,seek,speed}` | `State(_state)` 故意不收 state，只打日志就返回「成功」 | 解析目标（会话优先）→ 更新本地会话 → 下发 GB28181 `PlayBackCtrl` |
+| `cloud_record/download/zip` | 返回凭空拼的 `taskId` + `status:"queued"`，声称可查（无此端点） | 真实打包 ZIP（新增 `src/archive.rs`，stored 方式零依赖），返回真实 URL |
+| `common/channel/map[/thin]/tile/:z/:x/:y` | 恒返回 `count:0, items:[]` | 真实 slippy-map 瓦片边界过滤；thin 按 `map_level` 排除已合并点 |
+| `front-end/common/:cmd/:ch` | 回显「指令已下发」但**什么都没发** | 映射 15 个指令为真实 DeviceControl XML 并下发；未知指令显式报错 |
+| `alarm/snap/:param` | 返回指向**自身**的 URL | 查最近一条关联录像，返回可用的 `/api/cloud/record/download/:id` |
+
+### 运行时必然失败（编译期不可见）
+
+| 问题 | 影响 | 修复 |
+|------|------|------|
+| `DeviceChannel` 查询只有 12/32 列 | 所有走 `lookup_channel_and_send` 的 PTZ/预置位/雨刷/光圈/巡航端点 + `map/list` **全部 500** | 统一用 `DEVICE_CHANNEL_SELECT_COLUMNS` 常量 |
+| `MediaServer` 查询引用 `ws_port`/`wss_port`/`record_transcode` | 这 3 列在 schema 与结构体中**都不存在** → `list_online_servers` 恒失败，**ZLM 节点离线过滤静默失效** | 6 处改用 `SELECT *` |
+
+新增 `src/db/read_smoke.rs`：为 20+ 张表各播种一行并真实解码，专防此类漂移
+（空表测不出——无行可解码就不会触发 `ColumnNotFound`）。
+
+### 工程问题
+
+- **16 个测试写了却从未运行**：`tests/integration/sip/{integration,cascade_integration_test}.rs`
+  位于子目录，cargo 只自动发现 `tests/*.rs` 与 `tests/<dir>/main.rs`。已注册为 `[[test]]`
+  并修正与 API 的漂移（`with_timeout` builder 化、`accumulate_record_info` 增参等）
+- 删除纯占位测试 `device_api_test.rs`（3 测试 0 断言 6 处 TODO，且从未编译）
+- 移除 `axum-test` dev 依赖：其 7.x 依赖 **axum 0.6**（与本项目 0.7 不兼容，依赖图里有两个 axum）
+- 新增 `test_support`（内存 SQLite + 生产 schema + 可构造 `AppState`），
+  使 handler/router 级测试成为可能，并新增「路由可构建」测试防住历史上的启动 panic
+
 
 ## 历史基线（2026-08-23）
 
