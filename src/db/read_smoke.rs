@@ -263,6 +263,11 @@ async fn smoke_previously_missing_tables_exist_and_accept_writes() {
     sqlx::query("INSERT INTO gb_jt_route (phone_number, label, waypoints_json, create_time, update_time) VALUES ('13800000001','w','[]',?,?)")
         .bind(now).bind(now).execute(&pool).await.expect("gb_jt_route 应存在且可写");
 
+    // 系统日志表（log_list 一直在查它，但此前三库都没建）
+    sqlx::query("INSERT INTO gb_log (time, level, logger, thread, message, source) VALUES (?,?,?,?,?,?)")
+        .bind(now).bind("INFO").bind("t").bind("t1").bind("m").bind("s")
+        .execute(&pool).await.expect("gb_log 应存在且可写");
+
     // 平台目录表（catalog_add/edit 一直在写它）
     sqlx::query("INSERT INTO gb_platform_catalog (name, parent, civil_code, business_group, platform_id, create_time, update_time) VALUES ('n','p','340200','g',1,?,?)")
         .bind(now).bind(now).execute(&pool).await.expect("gb_platform_catalog 应存在且可写");

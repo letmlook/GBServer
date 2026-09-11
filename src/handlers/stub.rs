@@ -663,197 +663,50 @@ pub struct LogListQuery {
     pub start_time: Option<String>,
     #[serde(alias = "endTime")]
     pub end_time: Option<String>,
+    /// 级别过滤（前端 historyLog 使用 `level` 参数）
+    pub level: Option<String>,
 }
 
-/// GET /api/log/list（若存在 gb_log 表则查询，否则返回空列表）
+/// GET /api/log/list — 查询系统日志（可按 message / level / 时间范围过滤）
+///
+/// 2026-09-12 重写。此前实现有双重问题：
+/// 1. 查询的 `gb_log` 表**从未在任何 schema 中创建**，且错误被吞成空列表
+///    → 该端点永远返回空，「实时日志 / 历史日志」页面实质不可用；
+/// 2. 返回的是**文件行**（name/type/create_time），而前端 `historyLog.vue`
+///    渲染的是日志**条目**（time/level/logger/message/thread）—— 契约不匹配。
+///
+/// 现按前端契约返回结构化日志条目，数据来自 `tracing` 采集层（见 `crate::logging`）。
 pub async fn log_list(
     State(state): State<AppState>,
     Query(q): Query<LogListQuery>,
 ) -> Json<WVPResult<serde_json::Value>> {
-    #[derive(sqlx::FromRow)]
-    struct LogRow {
-        id: i64,
-        name: Option<String>,
-        r#type: Option<String>,
-        create_time: Option<String>,
-    }
-    
     let page = q.page.unwrap_or(1).max(1);
-    let count = q.count.unwrap_or(15).min(100);
-    let offset = (page - 1) * count;
-    
-    let search = q.query.as_deref().unwrap_or("").trim();
-    let log_type = q.log_type.as_deref().unwrap_or("").trim();
-    let start_time = q.start_time.as_deref().unwrap_or("").trim();
-    let end_time = q.end_time.as_deref().unwrap_or("").trim();
-    
-    let has_filter = !search.is_empty() || !log_type.is_empty() || !start_time.is_empty() || !end_time.is_empty();
-    
-    if !has_filter {
-        let total = match sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_log")
-            .fetch_one(&state.pool)
-            .await
-        {
-            Ok(n) => n,
-            _ => return Json(WVPResult::success(serde_json::json!({ "total": 0, "list": [] }))),
-        };
-        
-        #[cfg(feature = "postgres")]
-        let rows: Result<Vec<LogRow>, _> = sqlx::query_as(
-            "SELECT id, name, type, create_time FROM gb_log ORDER BY id DESC LIMIT $1 OFFSET $2",
-        )
-        .bind(count as i64)
-        .bind(offset as i64)
-        .fetch_all(&state.pool)
-        .await;
-        
-        #[cfg(feature = "mysql")]
-        let rows: Result<Vec<LogRow>, _> = sqlx::query_as(
-            "SELECT id, name, type, create_time FROM gb_log ORDER BY id DESC LIMIT ? OFFSET ?",
-        )
-        .bind(count as i64)
-        .bind(offset as i64)
-        .fetch_all(&state.pool)
-        .await;
+    let count = q.count.unwrap_or(15).clamp(1, 500);
+    // 前端 historyLog 用 level 过滤；旧结构体里叫 log_type，这里两者都接受
+    let level = q.level.as_deref().or(q.log_type.as_deref());
 
-        #[cfg(feature = "sqlite")]
-        let rows: Result<Vec<LogRow>, _> = sqlx::query_as(
-            "SELECT id, name, type, create_time FROM gb_log ORDER BY id DESC LIMIT ? OFFSET ?",
-        )
-        .bind(count as i64)
-        .bind(offset as i64)
-        .fetch_all(&state.pool)
-        .await;
-
-        let list = match rows {
-            Ok(rows) => rows
-                .into_iter()
-                .map(|r| {
-                    serde_json::json!({
-                        "id": r.id,
-                        "name": r.name,
-                        "type": r.r#type,
-                        "createTime": r.create_time
-                    })
-                })
-                .collect::<Vec<_>>(),
-            _ => vec![],
-        };
-        
-        return Json(WVPResult::success(serde_json::json!({ "total": total, "list": list })));
-    }
-    
-    let like_search = format!("%{}%", search);
-    
-    #[cfg(feature = "postgres")]
+    match crate::db::log::list_paged(
+        &state.pool,
+        q.query.as_deref(),
+        level,
+        q.start_time.as_deref(),
+        q.end_time.as_deref(),
+        page,
+        count,
+    )
+    .await
     {
-        let mut conditions = String::new();
-        let mut binds: Vec<String> = Vec::new();
-        
-        if !search.is_empty() {
-            conditions.push_str(" AND (name ILIKE $1 OR type ILIKE $1)");
-            binds.push(like_search.clone());
+        Ok((total, list)) => Json(WVPResult::success(serde_json::json!({
+            "total": total,
+            "list": list,
+            "page": page,
+            "count": count,
+        }))),
+        Err(e) => {
+            // 不再把错误吞成"空列表"：明确返回错误，让调用方知道查询失败
+            tracing::error!("查询系统日志失败: {}", e);
+            Json(WVPResult::error(format!("查询系统日志失败: {}", e)))
         }
-        if !log_type.is_empty() {
-            let idx = binds.len() + 1;
-            conditions.push_str(&format!(" AND type = ${}", idx));
-            binds.push(log_type.to_string());
-        }
-        if !start_time.is_empty() {
-            let idx = binds.len() + 1;
-            conditions.push_str(&format!(" AND create_time >= ${}", idx));
-            binds.push(start_time.to_string());
-        }
-        if !end_time.is_empty() {
-            let idx = binds.len() + 1;
-            conditions.push_str(&format!(" AND create_time <= ${}", idx));
-            binds.push(end_time.to_string());
-        }
-        
-        let count_sql = format!("SELECT COUNT(*) FROM gb_log WHERE 1=1{}", conditions);
-        let mut count_query = sqlx::query_scalar::<_, i64>(&count_sql);
-        for bind in &binds {
-            count_query = count_query.bind(bind);
-        }
-        let total: i64 = count_query.fetch_one(&state.pool).await.unwrap_or(0);
-        
-        let data_sql = format!("SELECT id, name, type, create_time FROM gb_log WHERE 1=1{} ORDER BY id DESC LIMIT ${} OFFSET ${}", 
-            conditions, binds.len() + 1, binds.len() + 2);
-        let mut data_query = sqlx::query_as::<_, LogRow>(&data_sql);
-        for bind in &binds {
-            data_query = data_query.bind(bind);
-        }
-        data_query = data_query.bind(count as i64).bind(offset as i64);
-        
-        let rows: Vec<LogRow> = data_query.fetch_all(&state.pool).await.unwrap_or_default();
-        
-        let list: Vec<serde_json::Value> = rows
-            .into_iter()
-            .map(|r| {
-                serde_json::json!({
-                    "id": r.id,
-                    "name": r.name,
-                    "type": r.r#type,
-                    "createTime": r.create_time
-                })
-            })
-            .collect();
-        
-        return Json(WVPResult::success(serde_json::json!({ "total": total, "list": list })));
-    }
-    
-    #[cfg(any(feature = "mysql", feature = "sqlite"))]
-    {
-        let mut conditions = String::new();
-        let mut binds: Vec<String> = Vec::new();
-
-        if !search.is_empty() {
-            conditions.push_str(" AND (name LIKE ? OR type LIKE ?)");
-            binds.push(like_search.clone());
-            binds.push(like_search.clone());
-        }
-        if !log_type.is_empty() {
-            conditions.push_str(" AND type = ?");
-            binds.push(log_type.to_string());
-        }
-        if !start_time.is_empty() {
-            conditions.push_str(" AND create_time >= ?");
-            binds.push(start_time.to_string());
-        }
-        if !end_time.is_empty() {
-            conditions.push_str(" AND create_time <= ?");
-            binds.push(end_time.to_string());
-        }
-
-        let count_sql = format!("SELECT COUNT(*) FROM gb_log WHERE 1=1{}", conditions);
-        let mut count_query = sqlx::query_scalar::<_, i64>(&count_sql);
-        for bind in &binds {
-            count_query = count_query.bind(bind);
-        }
-        let total: i64 = count_query.fetch_one(&state.pool).await.unwrap_or(0);
-
-        let data_sql = format!("SELECT id, name, type, create_time FROM gb_log WHERE 1=1{} ORDER BY id DESC LIMIT ? OFFSET ?", conditions);
-        let mut data_query = sqlx::query_as::<_, LogRow>(&data_sql);
-        for bind in &binds {
-            data_query = data_query.bind(bind);
-        }
-        data_query = data_query.bind(count as i64).bind(offset as i64);
-
-        let rows: Vec<LogRow> = data_query.fetch_all(&state.pool).await.unwrap_or_default();
-
-        let list: Vec<serde_json::Value> = rows
-            .into_iter()
-            .map(|r| {
-                serde_json::json!({
-                    "id": r.id,
-                    "name": r.name,
-                    "type": r.r#type,
-                    "createTime": r.create_time
-                })
-            })
-            .collect();
-
-        return Json(WVPResult::success(serde_json::json!({ "total": total, "list": list })));
     }
 }
 

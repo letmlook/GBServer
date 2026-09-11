@@ -1086,3 +1086,17 @@ CREATE TABLE IF NOT EXISTS gb_platform_catalog
     update_time    character varying(50)
 );
 CREATE INDEX IF NOT EXISTS idx_platform_catalog_platform ON gb_platform_catalog (platform_id);
+
+-- 系统日志（2026-09-12 新增，原因见 SQLite 注释）
+CREATE TABLE IF NOT EXISTS gb_log
+(
+    id      serial PRIMARY KEY,
+    time    character varying(50) NOT NULL,
+    level   character varying(16) NOT NULL,
+    logger  character varying(255),
+    thread  character varying(64),
+    message text,
+    source  character varying(255)
+);
+CREATE INDEX IF NOT EXISTS idx_log_time ON gb_log (time);
+CREATE INDEX IF NOT EXISTS idx_log_level ON gb_log (level);

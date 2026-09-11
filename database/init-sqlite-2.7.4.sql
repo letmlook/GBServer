@@ -438,6 +438,21 @@ CREATE TABLE IF NOT EXISTS gb_platform_catalog
 );
 CREATE INDEX IF NOT EXISTS idx_platform_catalog_platform ON gb_platform_catalog (platform_id);
 
+-- 系统日志（2026-09-12 新增：log_list 一直在查这张表但它从未被创建，
+-- 配合被吞掉的错误 -> GET /api/log/list 永远返回空列表）
+CREATE TABLE IF NOT EXISTS gb_log
+(
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    time    VARCHAR(50)  NOT NULL,
+    level   VARCHAR(16)  NOT NULL,
+    logger  VARCHAR(255),
+    thread  VARCHAR(64),
+    message TEXT,
+    source  VARCHAR(255)
+);
+CREATE INDEX IF NOT EXISTS idx_log_time ON gb_log (time);
+CREATE INDEX IF NOT EXISTS idx_log_level ON gb_log (level);
+
 -- ============================================
 -- 10. gb_cloud_record — 云端录像记录
 -- ============================================

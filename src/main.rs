@@ -9,6 +9,8 @@ async fn main() -> Result<()> {
             std::env::var("RUST_LOG").unwrap_or_else(|_| "info,gbserver=debug".into()),
         ))
         .with(tracing_subscriber::fmt::layer())
+        // 采集事件到内存队列，由 run() 中的后台任务落库到 gb_log，供 /api/log/list 查询
+        .with(gbserver::logging::CaptureLayer)
         .init();
 
     let cfg = load_config()?;

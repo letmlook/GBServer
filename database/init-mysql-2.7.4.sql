@@ -682,3 +682,16 @@ create table IF NOT EXISTS gb_platform_catalog (
     update_time    varchar(50) COMMENT '更新时间'
 );
 CREATE INDEX idx_platform_catalog_platform ON gb_platform_catalog (platform_id);
+
+-- 系统日志（2026-09-12 新增，原因见 SQLite 注释）
+create table IF NOT EXISTS gb_log (
+    id      bigint auto_increment primary key COMMENT '主键ID',
+    time    varchar(50) NOT NULL COMMENT '时间',
+    level   varchar(16) NOT NULL COMMENT '级别',
+    logger  varchar(255) COMMENT 'logger 名称',
+    thread  varchar(64) COMMENT '线程',
+    message text COMMENT '消息',
+    source  varchar(255) COMMENT '来源'
+);
+CREATE INDEX idx_log_time ON gb_log (time);
+CREATE INDEX idx_log_level ON gb_log (level);

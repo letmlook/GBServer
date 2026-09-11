@@ -13,6 +13,7 @@ pub mod zlm;
 pub mod jt1078;
 pub mod scheduler;
 pub mod cascade;
+pub mod logging;
 pub mod metrics;
 pub mod rpc;
 pub mod state_store;
@@ -274,6 +275,15 @@ async fn ensure_sqlite_upgrade_tables(pool: &db::Pool) -> anyhow::Result<()> {
             create_time     TEXT NOT NULL,
             update_time     TEXT NOT NULL
         )"#,
+        r#"CREATE TABLE IF NOT EXISTS gb_log (
+            id      INTEGER PRIMARY KEY AUTOINCREMENT,
+            time    VARCHAR(50)  NOT NULL,
+            level   VARCHAR(16)  NOT NULL,
+            logger  VARCHAR(255),
+            thread  VARCHAR(64),
+            message TEXT,
+            source  VARCHAR(255)
+        )"#,
         r#"CREATE TABLE IF NOT EXISTS gb_platform_catalog (
             id             INTEGER PRIMARY KEY AUTOINCREMENT,
             name           VARCHAR(255),
@@ -313,6 +323,27 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
         }
     }
     let pool = db::create_pool(&cfg).await?;
+
+    // ── 系统日志采集落库（2026-09-12）────────────────────────────────────
+    // tracing 事件由 `logging::CaptureLayer` 采集进内存队列，这里每秒批量落库。
+    // 队列有界且 `drain()` 用 try_lock，不会阻塞日志热路径。
+    // 落库失败用 eprintln（而非 tracing），避免重新进入采集层造成递归。
+    {
+        let log_pool = pool.clone();
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(1));
+            loop {
+                ticker.tick().await;
+                let batch = crate::logging::drain();
+                if batch.is_empty() {
+                    continue;
+                }
+                if let Err(e) = db::log::insert_batch(&log_pool, &batch).await {
+                    eprintln!("[gb_log] 写入系统日志失败（本轮 {} 条）: {}", batch.len(), e);
+                }
+            }
+        });
+    }
     let ws_state = Arc::new(crate::handlers::websocket::WsState::new());
 
     // SQLite 启动期设备数检查
