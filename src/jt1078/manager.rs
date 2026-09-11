@@ -26,6 +26,12 @@ pub struct Jt1078Manager {
     command_waiter: Arc<JtCommandWaiter>,
     /// 数据库连接池（终端注册/在线状态落库；`None` 时退化为仅内存）
     pool: std::sync::OnceLock<crate::db::Pool>,
+    /// **TCP 连接**终端的下行通道：对端地址 → 发送队列。
+    ///
+    /// `send_raw` 此前一律用 UDP 下发，因此**以 TCP 接入的终端永远收不到平台命令**
+    /// （命令只能等到超时）。真实部署里 JT/T 808 终端大量使用 TCP。
+    /// TCP 连接的写半由各自的任务持有，这里只保留一个 channel 发送端。
+    tcp_senders: Arc<Mutex<std::collections::HashMap<SocketAddr, tokio::sync::mpsc::UnboundedSender<Vec<u8>>>>>,
     /// 终端多媒体检索结果缓存（0x8802 请求 → 0x0802 应答）。
     ///
     /// 请求与应答是两条独立的上行/下行消息：HTTP 侧发完 0x8802 后需要等待
@@ -56,6 +62,7 @@ impl Jt1078Manager {
             pool: std::sync::OnceLock::new(),
             send_socket: std::sync::OnceLock::new(),
             media_search_results: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            tcp_senders: Arc::new(Mutex::new(std::collections::HashMap::new())),
             command_waiter: Arc::new(JtCommandWaiter::new().with_timeout(10)),
             media_session_manager: Arc::new(JtMediaSessionManager::new()),
         }
@@ -248,12 +255,35 @@ impl Jt1078Manager {
         let _ = self.send_socket.set(socket);
     }
 
+    /// 注册 TCP 终端的下行通道（连接建立时调用）。
+    pub async fn register_tcp_sender(
+        &self,
+        addr: SocketAddr,
+        tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+    ) {
+        self.tcp_senders.lock().await.insert(addr, tx);
+    }
+
+    /// TCP 连接断开时移除下行通道（避免往已关闭的连接写）。
+    pub async fn remove_tcp_sender(&self, addr: &SocketAddr) {
+        self.tcp_senders.lock().await.remove(addr);
+    }
+
     pub async fn send_raw(&self, phone: &str, data: &[u8]) -> Result<(), String> {
         let addr = self.get_terminal_addr(phone).await
             .ok_or_else(|| format!("终端 {} 未连接", phone))?;
 
-        // 优先用监听 socket 下发：来源地址必须是终端配置的服务器地址，
-        // 否则按源地址过滤的终端收不到命令（见 send_socket 字段说明）。
+        // 先看该对端是不是 TCP 接入：是就走同一条 TCP 连接下发。
+        // 此前一律走 UDP，TCP 终端因此收不到任何平台命令。
+        let tcp_tx = self.tcp_senders.lock().await.get(&addr).cloned();
+        if let Some(tx) = tcp_tx {
+            return tx
+                .send(data.to_vec())
+                .map_err(|_| "TCP 下行通道已关闭".to_string());
+        }
+
+        // UDP：优先用监听 socket 下发，来源地址必须是终端配置的服务器地址
+        // （否则按源地址过滤的终端收不到命令，见 send_socket 字段说明）。
         if let Some(socket) = self.send_socket.get() {
             return socket
                 .send_to(data, addr)
@@ -858,6 +888,75 @@ mod tests {
         manager.remove(&addr).await;
         assert!(!manager.is_terminal_online("13812345678").await);
     }
+    /// TCP 终端必须经**同一条 TCP 连接**收到下行命令。
+    ///
+    /// 回归：`send_raw` 此前一律用 UDP 下发，而 TCP 接入的终端只在 TCP 上监听，
+    /// 于是所有平台命令（注册应答/查询/控制）都收不到，只能等超时。
+    #[tokio::test]
+    async fn test_send_raw_prefers_tcp_channel() {
+        let manager = Jt1078Manager::new(
+            Duration::from_secs(60), Duration::from_millis(200), None, false,
+        );
+        let addr = make_addr(61000);
+        manager.register_terminal("13912345678", addr).await;
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+        manager.register_tcp_sender(addr, tx).await;
+
+        manager.send_raw("13912345678", b"HELLO-TCP").await.unwrap();
+        let got = tokio::time::timeout(Duration::from_millis(500), rx.recv())
+            .await
+            .expect("应收到下行数据")
+            .expect("channel 不应关闭");
+        assert_eq!(got, b"HELLO-TCP");
+
+        // 连接断开后必须移除通道，避免往死连接写
+        manager.remove_tcp_sender(&addr).await;
+        assert!(manager.tcp_senders.lock().await.get(&addr).is_none());
+    }
+
+    /// UDP 终端（没有 TCP 通道）走监听 socket 下发 —— 来源端口即服务端口。
+    #[tokio::test]
+    async fn test_send_raw_udp_uses_listen_socket() {
+        let manager = Jt1078Manager::new(
+            Duration::from_secs(60), Duration::from_millis(200), None, false,
+        );
+        // 终端侧 UDP socket（模拟终端监听端口）
+        let terminal = std::sync::Arc::new(
+            tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap(),
+        );
+        let terminal_addr = terminal.local_addr().unwrap();
+        // 平台侧"监听 socket"（下行必须用它，来源端口才是服务端口）
+        let server = std::sync::Arc::new(
+            tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap(),
+        );
+        let server_addr = server.local_addr().unwrap();
+        manager.set_send_socket(server.clone());
+        manager.register_terminal("13900000001", terminal_addr).await;
+
+        manager.send_raw("13900000001", b"HELLO-UDP").await.unwrap();
+        let mut buf = [0u8; 32];
+        let (n, from) = tokio::time::timeout(
+            Duration::from_millis(500),
+            terminal.recv_from(&mut buf),
+        )
+        .await
+        .expect("应收到下行数据")
+        .unwrap();
+        assert_eq!(&buf[..n], b"HELLO-UDP");
+        assert_eq!(from, server_addr, "来源必须是平台的监听端口");
+    }
+
+    /// 未连接的终端必须显式报错，不能静默丢弃命令。
+    #[tokio::test]
+    async fn test_send_raw_reports_unknown_terminal() {
+        let manager = Jt1078Manager::new(
+            Duration::from_secs(60), Duration::from_millis(200), None, false,
+        );
+        let err = manager.send_raw("13900000000", b"x").await.unwrap_err();
+        assert!(err.contains("未连接"), "{}", err);
+    }
+
     /// 多媒体检索结果：取走即清空，过期结果不被复用。
     #[tokio::test]
     async fn test_media_search_result_store_and_take() {

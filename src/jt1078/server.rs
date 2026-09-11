@@ -23,36 +23,22 @@ fn jt808_buffers() -> &'static Jt808Buffers {
 /// 1. 解析真实帧 → 拿到 `msg_id / 手机号 / 流水号 / 消息体`；
 /// 2. 交给 `process_jt_message`（登记会话、匹配命令等待器、落库）；
 /// 3. 按消息类型回通用应答 / 注册应答（终端据此认为注册成功）。
-async fn handle_jt808_bytes_udp(
+/// 处理一批真实 JT/T 808 字节，并把应答经**该终端自己的下行通道**发回。
+///
+/// 下行通道的选择统一交给 `Jt1078Manager::send_raw`：TCP 终端走它那条 TCP
+/// 连接，UDP 终端走监听 socket（来源端口 = 服务端口）。
+/// 此前 TCP 路径把应答直接写在读循环持有的 socket 上（拆读写后写不了），
+/// 结果 TCP 终端收不到 0x8100 注册应答、只能无限重注册。
+async fn handle_jt808_bytes(
     manager: &std::sync::Arc<crate::jt1078::manager::Jt1078Manager>,
-    socket: &tokio::net::UdpSocket,
     addr: std::net::SocketAddr,
     data: &[u8],
 ) -> bool {
     let (replies, handled) = feed_and_process(manager, addr, data).await;
     for (phone, reply) in replies {
-        if let Err(e) = socket.send_to(&reply, addr).await {
-            tracing::warn!("JT1078 应答发送失败 phone={} -> {}: {}", phone, addr, e);
-        } else {
-            tracing::debug!("JT1078 应答已发送 phone={} -> {}", phone, addr);
-        }
-    }
-    handled
-}
-
-async fn handle_jt808_bytes(
-    manager: &std::sync::Arc<crate::jt1078::manager::Jt1078Manager>,
-    addr: std::net::SocketAddr,
-    data: &[u8],
-    tcp: Option<&mut tokio::net::TcpStream>,
-) -> bool {
-    let (replies, handled) = feed_and_process(manager, addr, data).await;
-    if let Some(stream) = tcp {
-        for (phone, reply) in replies {
-            use tokio::io::AsyncWriteExt;
-            if let Err(e) = stream.write_all(&reply).await {
-                tracing::warn!("JT1078 TCP 应答写入失败 phone={}: {}", phone, e);
-            }
+        match manager.send_raw(&phone, &reply).await {
+            Ok(()) => tracing::debug!("JT1078 应答已发送 phone={} -> {}", phone, addr),
+            Err(e) => tracing::warn!("JT1078 应答发送失败 phone={} -> {}: {}", phone, addr, e),
         }
     }
     handled
@@ -183,13 +169,36 @@ pub async fn start(server: &Jt1078Server, cfg: Option<crate::config::Jt1078Confi
             tokio::spawn(async move {
                 loop {
                     match listener.accept().await {
-                        Ok((mut socket, addr)) => {
+                        Ok((socket, addr)) => {
                             tracing::info!("JT1078 TCP connection accepted from {}", addr);
                             let manager = manager_for_tcp.clone();
+                            // 读写拆开：写半交给独立任务消费下行队列，
+                            // 读循环不再独占 socket —— 否则平台无法经同一条
+                            // TCP 连接给终端下发命令（TCP 终端一直收不到命令）。
+                            let (mut read_half, mut write_half) = socket.into_split();
+                            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+                            manager.register_tcp_sender(addr, tx).await;
+                            let manager_writer = manager.clone();
+                            tokio::spawn(async move {
+                                use tokio::io::AsyncWriteExt;
+                                while let Some(bytes) = rx.recv().await {
+                                    if let Err(e) = write_half.write_all(&bytes).await {
+                                        tracing::warn!(
+                                            "JT1078 TCP 下行写入失败 {}: {}",
+                                            addr,
+                                            e
+                                        );
+                                        break;
+                                    }
+                                }
+                                let _ = write_half.shutdown().await;
+                                manager_writer.remove_tcp_sender(&addr).await;
+                                tracing::debug!("JT1078 TCP 下行通道关闭 {}", addr);
+                            });
                             tokio::spawn(async move {
                                 let mut read_buf = [0u8; 4096];
                                 loop {
-                                    match socket.read(&mut read_buf).await {
+                                    match read_half.read(&mut read_buf).await {
                                         Ok(0) => {
                                             tracing::info!("JT1078 TCP connection closed by {}", addr);
                                             break;
@@ -197,7 +206,7 @@ pub async fn start(server: &Jt1078Server, cfg: Option<crate::config::Jt1078Confi
                                         Ok(n) => {
                                             // 真实 JT/T 808 帧优先；自造的 demo 帧走旧路径
                                             if !handle_jt808_bytes(
-                                                &manager, addr, &read_buf[..n], Some(&mut socket),
+                                                &manager, addr, &read_buf[..n],
                                             )
                                             .await
                                             {
@@ -228,6 +237,7 @@ pub async fn start(server: &Jt1078Server, cfg: Option<crate::config::Jt1078Confi
                                         }
                                     }
                                 }
+                                manager.remove_tcp_sender(&addr).await;
                             });
                         }
                         Err(e) => {
@@ -256,7 +266,7 @@ pub async fn start(server: &Jt1078Server, cfg: Option<crate::config::Jt1078Confi
                     match socket_udp.recv_from(&mut buf).await {
                         Ok((n, addr)) => {
                             // 真实 JT/T 808 帧优先；自造的 demo 帧走旧路径
-                            if !handle_jt808_bytes_udp(&manager_udp, &socket_udp, addr, &buf[..n]).await {
+                            if !handle_jt808_bytes(&manager_udp, addr, &buf[..n]).await {
                                 let frames = manager_udp.feed_bytes(addr, &buf[..n]).await;
                                 for f in frames {
                                     let kind = manager_udp.process_payload_for(addr, &f).await;

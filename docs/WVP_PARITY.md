@@ -12,7 +12,7 @@
 | 总代码量（src/） | 69,619 行 Rust | `find src -name '*.rs' \| xargs wc -l` |
 | 已注册 HTTP 路由 | 383 条唯一 `/api/...` 路径 | `grep -oE '"/api/[^"]*"' src/router.rs \| sort -u \| wc -l` |
 | Handler 模块 | 29 个（含 `stub.rs` / `device_stub.rs` 两个兼容 shim） | `grep -c 'pub mod' src/handlers/mod.rs` |
-| 后端测试 | **567 通过** / 0 失败（第二十三轮后回填） | `cargo test --no-fail-fast` |
+| 后端测试 | **570 通过** / 0 失败（第二十四轮后回填） | `cargo test --no-fail-fast` |
 | 编译状态 | `cargo check` 0 error / **0 warning**；clippy 262；**deprecated 0** | `cargo check` / `cargo clippy --all-targets` |
 | 数据库 feature | SQLite（默认）/ PostgreSQL / MySQL **三者均编译通过** | CI `feature-matrix` job |
 | CI | ⏸️ 工作流已就绪但**按需暂停自动触发**（见 `.github/workflows/ci.yml`） | — |
@@ -1133,6 +1133,46 @@ cargo check --all-targets        warnings 0
 npx playwright test             25 passed / 0 failed / 0 skipped
 ```
 
+### JT1078 下行：TCP 接入的终端首次可被控制（2026-09-12 第二十四轮）
+
+上一轮把 JT1078 入站接通后，剩余缺口之一是"**命令只经 UDP 下发**"——而 JT/T 808
+终端大量以 **TCP** 接入。本轮补上，并顺手修掉 TCP 应答丢失：
+
+| # | 缺陷 | 证据 | 修复 |
+|---|------|------|------|
+| 1 | **TCP 终端永远收不到平台命令**：`send_raw` 一律 `UdpSocket::send_to` | 上一轮实测 UDP 终端注册/抓拍正常，但 TCP 终端（同一条链路）命令全部超时 | `Jt1078Manager` 增加 `tcp_senders`（对端地址 → mpsc 发送端）；TCP 连接建立时把写半交给独立任务消费队列；`send_raw` **优先走该终端的 TCP 通道**，无 TCP 通道才回落 UDP（仍用监听 socket 保证来源端口） |
+| 2 | **TCP 终端收不到 0x8100 注册应答**：读写拆分后，应答原本直接写在读循环持有的 socket 上 | 后端日志显示"终端注册成功"，但终端侧无限 "注册超时，重新注册" | 应答统一改走 `Jt1078Manager::send_raw`（即"该终端自己的下行通道"），TCP/UDP 共用一条下发路径 |
+| 3 | 连接断开后残留发送端 | —— | 读/写任务结束时 `remove_tcp_sender`，避免往死连接写 |
+
+**模拟器**：JT1078 终端 mock 新增 `--transport tcp`（JT/T 808 over TCP 与 UDP
+共用 `0x7E` 定界，因此只需按 `0x7E` 切帧、`sendall` 发送）。
+
+**实测**（同一后端同时接入 TCP 与 UDP 终端）：
+
+```
+TCP 终端：connect 127.0.0.1:60000 → TX 0x0100 → RX 0x8100 → ✅ 注册成功
+          /api/jt1078/link-detection → {"online":true,"reachable":true}
+          /api/jt1078/snap           → "抓拍命令已被终端应答"
+          终端日志：平台命令 0x8201 / 0x8801（均经 TCP 收到）
+UDP 终端：注册成功 + 抓拍成功（回归无破坏）
+终端列表：两个终端都在（status=true）
+```
+
+**新增单测**：`test_send_raw_prefers_tcp_channel`（TCP 通道优先且数据一致）、
+`test_send_raw_udp_uses_listen_socket`（UDP 来源端口必须是服务端口）、
+`test_send_raw_reports_unknown_terminal`（未连接要显式报错）。
+
+#### 第二十四轮基线
+
+```
+cargo test                      570 passed / 0 failed   (上轮 567；+3 下行通道测试)
+cargo build --features mysql     OK
+cargo build --features postgres  OK
+cargo check --all-targets        warnings 0
+npx playwright test             25 passed / 0 failed / 0 skipped
+JT1078 TCP + UDP 双通道（注册/查询/抓拍）PASS
+```
+
 ### 仍未解决 / 需真实设备核验
 
 以下是本轮**已定位但未改动**的项，均在代码中留有注释或在此登记，
@@ -1180,9 +1220,9 @@ npx playwright test             25 passed / 0 failed / 0 skipped
 9. ~~**JT1078 终端侧媒体列表（0x0802）未解析**~~ **已实现（第二十轮）**：
    按 JT/T 808-2013 §8.19 解析 0x0802，`/api/jt1078/media/list` 返回终端真实
    检索结果。**仍需真实终端核验**的是 2011/2019 版本差异（本实现按 2013）。
-10. **JT1078 命令只经 UDP 下发**：`send_raw` 用注入的监听 socket（UDP）。
-    以 TCP 注册的终端（`JT1078 TCP listener` 已能收帧）目前收不到平台命令，
-    需要按终端连接类型选择 TCP 连接下发。
+10. ~~**JT1078 命令只经 UDP 下发**~~ **已实现（第二十四轮）**：
+    `Jt1078Manager::send_raw` 现按终端接入方式选择 TCP 通道或 UDP 监听 socket；
+    模拟器新增 `--transport tcp`，TCP/UDP 两条链路的注册/查询/控制均已实测通过。
 11. **巡航/扫描/辅助开关的报文形态待核验**（2026-09-12 第二十三轮定位）：
     `handlers/front_end.rs` 当前发的是**属性式** XML：
     `<CruiseCmd id="1" preset="5" action="add" />`、`<ScanCmd id="1" action="start" />`。

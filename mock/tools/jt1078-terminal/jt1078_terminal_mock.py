@@ -277,9 +277,13 @@ class Jt1078TerminalMock:
         simulate_reorder: float = 0.0,
         auto_keepalive: int = 30,
         auto_location: int = 10,
+        transport: str = "udp",
     ):
         self.server_addr = server_addr
         self.local_port = local_port
+        # 传输方式：udp（默认）或 tcp。JT/T 808 终端大量使用 TCP 接入，
+        # 而平台此前只经 UDP 下发命令 —— 加这个开关才能验证 TCP 下行。
+        self.transport = transport.lower()
         self.phone = phone
         self.plate = plate
         self.manufacturer = manufacturer.encode("ascii")
@@ -306,13 +310,24 @@ class Jt1078TerminalMock:
     # ----- 网络 -----
 
     def start(self):
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.sock.settimeout(1.0)
-        self.sock.bind(("0.0.0.0", self.local_port))
-        self.sock.connect(self.server_addr)
+        if self.transport == "tcp":
+            # TCP 接入：JT/T 808 over TCP 与 UDP 用同一套 0x7E 定界，无需长度前缀
+            self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.sock.settimeout(5.0)
+            self.sock.bind(("0.0.0.0", self.local_port))
+            self.sock.connect(self.server_addr)
+            self.sock.settimeout(1.0)
+            self._tcp_buffer = b""
+            log.info("JT1078 mock 已 TCP 连接 %s:%d（本端端口 %d）",
+                     self.server_addr[0], self.server_addr[1], self.local_port)
+        else:
+            self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self.sock.settimeout(1.0)
+            self.sock.bind(("0.0.0.0", self.local_port))
+            self.sock.connect(self.server_addr)
+            log.info("JT1078 mock listening on UDP port %d, target %s:%d",
+                     self.local_port, self.server_addr[0], self.server_addr[1])
         self.running = True
-        log.info("JT1078 mock listening on UDP port %d, target %s:%d",
-                 self.local_port, self.server_addr[0], self.server_addr[1])
 
         # 注册
         threading.Thread(target=self._register, daemon=True).start()
@@ -326,12 +341,32 @@ class Jt1078TerminalMock:
         # 主循环
         while self.running:
             try:
-                data, addr = self.sock.recvfrom(4096)
+                if self.transport == "tcp":
+                    chunk = self.sock.recv(4096)
+                    if not chunk:
+                        log.info("TCP 连接已被平台关闭")
+                        break
+                    # 按 0x7E 定界切出完整帧（转义后的 0x7E 不会出现在帧内）
+                    self._tcp_buffer += chunk
+                    while True:
+                        start = self._tcp_buffer.find(b"\x7e")
+                        if start < 0:
+                            self._tcp_buffer = b""
+                            break
+                        end = self._tcp_buffer.find(b"\x7e", start + 1)
+                        if end < 0:
+                            self._tcp_buffer = self._tcp_buffer[start:]
+                            break
+                        frame = self._tcp_buffer[start:end + 1]
+                        self._tcp_buffer = self._tcp_buffer[end + 1:]
+                        self._on_frame(frame, self.server_addr)
+                else:
+                    data, addr = self.sock.recvfrom(4096)
+                    self._on_frame(data, addr)
             except socket.timeout:
                 continue
             except OSError:
                 break
-            self._on_frame(data, addr)
 
     def stop(self):
         self.running = False
@@ -390,7 +425,10 @@ class Jt1078TerminalMock:
         seq = self.next_seq()
         frame = build_frame(msg_id, self.phone, seq, body)
         try:
-            self.sock.send(frame)
+            if self.transport == "tcp":
+                self.sock.sendall(frame)
+            else:
+                self.sock.send(frame)
             log.info("TX msg_id=0x%04x seq=%d body_len=%d", msg_id, seq, len(body))
             with self.history_lock:
                 self.history_frames[(msg_id, seq)] = frame
@@ -481,7 +519,10 @@ class Jt1078TerminalMock:
         with self.history_lock:
             cached = self.history_frames.get((target_msg_id, target_seq))
         if cached:
-            self.sock.send(cached)
+            if self.transport == "tcp":
+                self.sock.sendall(cached)
+            else:
+                self.sock.send(cached)
             log.info("重传消息: msg_id=0x%04x seq=%d", target_msg_id, target_seq)
         else:
             log.warning("未找到可重传的消息: msg_id=0x%04x seq=%d", target_msg_id, target_seq)
@@ -542,6 +583,10 @@ def main():
     parser.add_argument("--manufacturer", default="MOCK")
     parser.add_argument("--model", default="MOCK-V100")
     parser.add_argument("--device-id", default="MOCK-DEVICE-001")
+    parser.add_argument(
+        "--transport", default="udp", choices=["udp", "tcp"],
+        help="接入方式：udp（默认）或 tcp",
+    )
     parser.add_argument("--simulate-loss", type=float, default=0.0,
                         help="丢包率 0.0~1.0（仅上行）")
     parser.add_argument("--simulate-reorder", type=float, default=0.0)
@@ -582,6 +627,7 @@ def main():
         device_id=args.device_id,
         simulate_loss=args.simulate_loss,
         simulate_reorder=args.simulate_reorder,
+        transport=args.transport,
         auto_keepalive=args.auto_keepalive,
         auto_location=args.auto_location,
     )
