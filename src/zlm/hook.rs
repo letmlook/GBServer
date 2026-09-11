@@ -611,17 +611,33 @@ async fn sync_stream_changed(state: &AppState, data: &StreamChangedData) {
         }
     }
 
-    // Phase 3.4: 如果该 stream 属于下载会话，触发下载进度更新。
-    // 通过 stream_id 包含 "download_" 前缀识别（与 3.4 中 stream_id 命名一致）。
-    if data.register && data.stream.starts_with("download_") {
+    // 下载会话的状态机：inviting → downloading →（流结束）completed。
+    //
+    // 通过 stream_id 的 `download_` 前缀识别（与 `gb_record_download_start`
+    // 的命名一致）。此前只处理了**上线**：流起来后置为 downloading，
+    // 而设备推完流下线（`regist=false`）时什么都不做 —— 下载会话永远停在
+    // "downloading"，前端进度条不会结束，用户也不知道文件已经就绪。
+    if data.stream.starts_with("download_") {
         if let Some(ref dm) = state.download_manager {
             if let Some(session) = dm.get_by_zlm_stream(&data.stream).await {
-                tracing::info!(
-                    "Download stream ready: session={} stream={}",
-                    session.stream_id, data.stream
-                );
-                // 状态从 inviting → downloading；进度仍待 ZLM MP4 落盘回调
-                dm.update_progress_percent(&session.stream_id, 0.0, "downloading").await;
+                if data.register {
+                    tracing::info!(
+                        "Download stream ready: session={} stream={}",
+                        session.stream_id, data.stream
+                    );
+                    dm.update_progress_percent(&session.stream_id, 0.0, "downloading")
+                        .await;
+                } else {
+                    // 流注销 == 设备推完。ZLM 侧的 MP4 收尾由
+                    // on_record_mp4 回调补齐（此处先把会话标记为完成，
+                    // 让 /progress 能给出终态）。
+                    tracing::info!(
+                        "Download stream finished: session={} stream={}",
+                        session.stream_id, data.stream
+                    );
+                    dm.update_progress_percent(&session.stream_id, 100.0, "completed")
+                        .await;
+                }
             }
         }
     }

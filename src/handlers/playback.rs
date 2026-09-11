@@ -708,6 +708,53 @@ pub async fn gb_record_download_start(
                                 call_id
                             );
                             used_gb28181 = true;
+                            // **必须让 ZLM 真的把收到的 RTP 录成 MP4**。
+                            //
+                            // 此前这里只发了 INVITE：设备把录像 RTP 推到 ZLM
+                            // 的收流端口后，ZLM 并没有在录像 —— `openRtpServer`
+                            // 只创建流，不落盘（需要 startRecord，或连接上
+                            // `protocol.enable_mp4` 全局开关）。结果是"下载成功"
+                            // 却永远没有文件，on_record_mp4 也永不触发，
+                            // 云录像列表里什么都不出现。
+                            if let Some(ref zlm) = state.zlm_client {
+                                // 流所在的 app 以 ZLM 实际注册的为准
+                                // （openRtpServer 默认建在 "rtp"）。
+                                let app = match zlm
+                                    .get_media_list(None, None, Some(&stream_id))
+                                    .await
+                                {
+                                    Ok(list) => list
+                                        .into_iter()
+                                        .next()
+                                        .map(|m| m.app)
+                                        .unwrap_or_else(|| "rtp".to_string()),
+                                    Err(e) => {
+                                        tracing::debug!(
+                                            "查询下载流 {} 的 app 失败（按 rtp 处理）: {}",
+                                            stream_id,
+                                            e
+                                        );
+                                        "rtp".to_string()
+                                    }
+                                };
+                                match zlm
+                                    .start_record("1", "__defaultVhost__", &app, &stream_id)
+                                    .await
+                                {
+                                    Ok(()) => tracing::info!(
+                                        "下载流已开始 MP4 录制 app={} stream={}",
+                                        app,
+                                        stream_id
+                                    ),
+                                    Err(e) => tracing::error!(
+                                        "下载流 MP4 录制启动失败 app={} stream={}: {} —— \
+                                         设备推流不会落盘，本次下载不会有文件",
+                                        app,
+                                        stream_id,
+                                        e
+                                    ),
+                                }
+                            }
                         }
                         Err(e) => {
                             tracing::warn!("Failed to send GB28181 DOWNLOAD INVITE: {}", e);
@@ -833,6 +880,31 @@ pub async fn gb_record_download_stop(
                     }
                 }
                 if let Some(ref zlm_client) = state.zlm_client {
+                    // 先停录制：ZLM 只有在停止录制时才会**写完 MP4 尾部并触发
+                    // on_record_mp4**。若直接 closeRtpServer，落盘文件不完整，
+                    // 云录像里也不会出现这条记录。
+                    let app = match zlm_client
+                        .get_media_list(None, None, Some(&stream_id))
+                        .await
+                    {
+                        Ok(list) => list
+                            .into_iter()
+                            .next()
+                            .map(|m| m.app)
+                            .unwrap_or_else(|| "rtp".to_string()),
+                        Err(_) => "rtp".to_string(),
+                    };
+                    if let Err(e) = zlm_client
+                        .stop_record("1", "__defaultVhost__", &app, &stream_id)
+                        .await
+                    {
+                        tracing::warn!(
+                            "停止下载流录制失败 app={} stream={}: {}",
+                            app,
+                            stream_id,
+                            e
+                        );
+                    }
                     let _ = zlm_client.close_rtp_server(&stream_id).await;
                 }
             } else if let Some(ref zlm_client) = state.zlm_client {
@@ -845,47 +917,84 @@ pub async fn gb_record_download_stop(
     Json(WVPResult::<()>::success_empty())
 }
 
+/// 录像下载进度。
+///
+/// 两种传输的状态来源完全不同，必须分开处理：
+///
+/// * **GB28181 下载**（`gb28181://`，设备把录像 RTP 推到 ZLM）：进度不在
+///   ZLM 的"下载列表"里（那里只有 ZLM 自己发起的 HTTP 拉流下载），
+///   状态由会话状态机维护（inviting → downloading → completed）。
+///   此前一律去查 ZLM 下载列表，查不到就返回 `status:"unknown"` ——
+///   前端因此永远看不到 GB28181 下载的任何状态变化。
+/// * **ZLM 本地下载**（http/ftp 拉取）：进度来自 ZLM 的下载列表。
 pub async fn gb_record_download_progress(
     State(state): State<AppState>,
     Path((_device_id, _channel_id, stream_id)): Path<(String, String, String)>,
 ) -> Json<WVPResult<serde_json::Value>> {
-    if let Some(ref zlm_client) = state.zlm_client {
-        if let Some(ref dm) = state.download_manager {
-            if let Some(session) = dm.get(&stream_id).await {
-                match zlm_client.get_download_list().await {
-                    Ok(downloads) => {
-                        for dl in downloads {
-                            if dl.file_name == session.file_name {
-                                let progress = dl.progress;
-                                let status = if progress >= 100.0 { "completed" } else { "downloading" };
+    let Some(dm) = state.download_manager.as_ref() else {
+        return err("下载管理未初始化");
+    };
+    let Some(session) = dm.get(&stream_id).await else {
+        return err("下载会话不存在或已结束");
+    };
 
-                                // Phase 3.4: ZLM MP4 下载进度用百分比更新（兼容路径）
-                                dm.update_progress_percent(&stream_id, progress, status).await;
-                                
-                                return Json(WVPResult::success(serde_json::json!({
-                                    "streamId": stream_id,
-                                    "fileName": dl.file_name,
-                                    "progress": progress,
-                                    "status": status,
-                                    "downloaded": dl.downloaded,
-                                    "totalSize": dl.size
-                                })));
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        tracing::error!("Failed to get download progress: {}", e);
+    if session.url.starts_with("gb28181://") {
+        // RTP 流没有"总长度"语义，无法给出百分比；如实报告字节数与状态。
+        return Json(WVPResult::success(serde_json::json!({
+            "streamId": session.stream_id,
+            "fileName": session.file_name,
+            "progress": session.progress,
+            "status": session.status,
+            "currentBytes": session.current_bytes,
+            "totalBytes": session.total_bytes,
+            "transport": "gb28181",
+        })));
+    }
+
+    if let Some(ref zlm_client) = state.zlm_client {
+        match zlm_client.get_download_list().await {
+            Ok(downloads) => {
+                for dl in downloads {
+                    if dl.file_name == session.file_name {
+                        let progress = dl.progress;
+                        let status = if progress >= 100.0 {
+                            "completed"
+                        } else {
+                            "downloading"
+                        };
+                        dm.update_progress_percent(&stream_id, progress, status).await;
+                        return Json(WVPResult::success(serde_json::json!({
+                            "streamId": stream_id,
+                            "fileName": dl.file_name,
+                            "progress": progress,
+                            "status": status,
+                            "downloaded": dl.downloaded,
+                            "totalSize": dl.size
+                        })));
                     }
                 }
+            }
+            Err(e) => {
+                tracing::error!("Failed to get download progress: {}", e);
             }
         }
     }
 
+    // 会话存在但 ZLM 列表里暂时没有（刚发起/已结束）—— 报告会话自身状态，
+    // 而不是伪造一个 "unknown" 让前端无从判断。
     Json(WVPResult::success(serde_json::json!({
-        "streamId": stream_id,
-        "progress": 0,
-        "status": "unknown"
+        "streamId": session.stream_id,
+        "fileName": session.file_name,
+        "progress": session.progress,
+        "status": session.status,
+        "currentBytes": session.current_bytes,
+        "totalBytes": session.total_bytes,
+        "transport": "zlm-local",
     })))
+}
+
+fn err(msg: &str) -> Json<WVPResult<serde_json::Value>> {
+    Json(WVPResult::<serde_json::Value>::error(msg.to_string()))
 }
 
 #[cfg(test)]
@@ -966,5 +1075,61 @@ mod download_manager_tests {
         assert!(dm.get("s3").await.is_some());
         dm.remove("s3").await;
         assert!(dm.get("s3").await.is_none());
+    }
+}
+
+#[cfg(test)]
+mod download_progress_tests {
+    use super::*;
+
+    /// GB28181 下载的状态由会话状态机维护（ZLM 的"下载列表"里没有它）。
+    /// 回归：此前一律去查 ZLM 下载列表，查不到就回 `status:"unknown"`。
+    #[tokio::test]
+    async fn test_download_manager_tracks_gb28181_state() {
+        let dm = DownloadManager::new();
+        dm.create(DownloadSession {
+            stream_id: "download_dev_ch_1".into(),
+            device_id: "dev".into(),
+            channel_id: "ch".into(),
+            file_name: "f.mp4".into(),
+            start_time: "2026-09-01T10:00:00".into(),
+            end_time: "2026-09-01T10:05:00".into(),
+            url: "gb28181://dev@ch/2026-09-01T10:00:00".into(),
+            status: "inviting".into(),
+            progress: 0.0,
+            created_at: Utc::now(),
+            zlm_stream_id: "download_dev_ch_1".into(),
+            zlm_app: "rtp".into(),
+            current_bytes: 0,
+            total_bytes: 0,
+        })
+        .await;
+
+        let s = dm.get("download_dev_ch_1").await.unwrap();
+        assert!(s.url.starts_with("gb28181://"), "应被识别为 GB28181 下载");
+        assert_eq!(s.status, "inviting");
+
+        // 流上线 → downloading
+        dm.update_progress_percent("download_dev_ch_1", 0.0, "downloading").await;
+        assert_eq!(dm.get("download_dev_ch_1").await.unwrap().status, "downloading");
+
+        // 流注销（设备推完）→ completed，且 progress 置 100
+        dm.update_progress_percent("download_dev_ch_1", 100.0, "completed").await;
+        let s = dm.get("download_dev_ch_1").await.unwrap();
+        assert_eq!(s.status, "completed");
+        assert_eq!(s.progress, 100.0);
+
+        // 通过 zlm_stream_id 反查（hook 里就是这么找会话的）
+        assert!(dm.get_by_zlm_stream("download_dev_ch_1").await.is_some());
+        assert!(dm.get_by_zlm_stream("不存在").await.is_none());
+    }
+
+    /// 未知 stream_id 必须明确报错，而不是返回一个"看起来正常"的 unknown。
+    #[test]
+    fn test_download_progress_error_helper() {
+        let v = err("下载会话不存在或已结束");
+        let json = serde_json::to_value(&v.0).unwrap();
+        assert_ne!(json["code"], 0);
+        assert_eq!(json["msg"], "下载会话不存在或已结束");
     }
 }

@@ -12,7 +12,7 @@
 | 总代码量（src/） | 69,619 行 Rust | `find src -name '*.rs' \| xargs wc -l` |
 | 已注册 HTTP 路由 | 383 条唯一 `/api/...` 路径 | `grep -oE '"/api/[^"]*"' src/router.rs \| sort -u \| wc -l` |
 | Handler 模块 | 29 个（含 `stub.rs` / `device_stub.rs` 两个兼容 shim） | `grep -c 'pub mod' src/handlers/mod.rs` |
-| 后端测试 | **539 通过** / 0 失败（第十四轮后回填） | `cargo test --no-fail-fast` |
+| 后端测试 | **541 通过** / 0 失败（第十五轮后回填） | `cargo test --no-fail-fast` |
 | 编译状态 | `cargo check` 0 error / **0 warning**；clippy 262；**deprecated 0** | `cargo check` / `cargo clippy --all-targets` |
 | 数据库 feature | SQLite（默认）/ PostgreSQL / MySQL **三者均编译通过** | CI `feature-matrix` job |
 | CI | ⏸️ 工作流已就绪但**按需暂停自动触发**（见 `.github/workflows/ci.yml`） | — |
@@ -655,6 +655,61 @@ cargo build --features postgres  OK
 cargo check --all-targets        warnings 0
 npx playwright test             25 passed / 0 failed / 0 skipped
 TCP 探针（纯 TCP 注册 + 平台主动请求）  PASS
+```
+
+### 回放 / 录像下载的真实链路核验 + 配置结构体去重（2026-09-12 第十五轮）
+
+前两轮修的是"信令与传输"，这一轮把**回放**与**录像下载**两条完整业务链真正跑一遍
+（真实服务 + ZLM 模拟器 + SIP 设备模拟器，全部按真实形态交互），发现下载链路
+"看起来成功、实际不产生任何文件"：
+
+| 问题 | 证据 | 修复 |
+|------|------|------|
+| **GB28181 录像下载从不落盘** | `gb_record_download_start` 只调了 `openRtpServer` 就发下载 INVITE —— ZLM 的 `openRtpServer`**只创建流、不录制**（录制需要 `startRecord` 或全局 `protocol.enable_mp4`）。于是设备把录像 RTP 推到端口后什么都不会写：`isRecording` 恒为 `false`，`on_record_mp4` 永不触发，云录像里永远没有这条下载 | 收到 200 OK 后按 ZLM 实际注册的 app 调 `startRecord(type=1)`；`gb_record_download_stop` 里**先 `stopRecord` 再 `closeRtpServer`**（ZLM 只在停止录制时写完 MP4 尾部并回调）。实测 `isRecording=true` → 停止后 `false` |
+| **下载进度永远 `unknown`** | `gb_record_download_progress` 一律去查 ZLM 的"下载列表"，而那里只有 ZLM 自己发起的 HTTP 拉流下载；GB28181 下载的会话不在其中 → 落到底部固定返回 `status:"unknown"`，前端看不到任何状态变化 | 按传输分流：`gb28181://` 会话直接报会话状态机（`inviting → downloading → completed`）与字节数；`zlm-local` 才查下载列表；会话存在但列表暂无时也报会话状态而**不是**伪造 `unknown` |
+| **下载会话的终态缺失** | `on_stream_changed` 只处理了 `register=true`（置 downloading）；设备推完流**注销**时什么都不做 → 会话永远停在 `downloading` | `register=false` 且 stream 属于下载会话 → `completed` / progress=100（配 `on_record_mp4` 落库） |
+
+**实测（关键片段）**：
+
+```
+POST/GET /api/gb_record/download/start/...   -> status=inviting, transport=gb28181
+日志: 下载流已开始 MP4 录制 app=rtp stream=download_...
+isRecording?                                 -> {"code":0,"exist":true}     ← 修复前恒为 false
+/progress（进行中）                          -> status=downloading, transport=gb28181
+触发 on_stream_changed regist=false          -> 日志 Download stream finished
+/progress（完成后）                          -> status=completed, progress=100.0
+/stop                                        -> 发 BYE（设备校验通过 valid=1）+ stopRecord
+isRecording?                                 -> {"code":0,"exist":false}
+```
+
+同轮一并核验通过的还有**回放链路**（此前只测到"能发出 INVITE"）：
+
+```
+/api/gb_record/query/...        -> count=20（多包 RecordInfo 解析正确，5 包 × 4 条）
+/api/playback/start/...         -> Sent PLAYBACK INVITE ... m=video 30000 → ACK → ZLM media ready
+                                   返回 playUrl/flvUrl/hls + source=gb28181_playback_invite
+/api/playback/stop/...          -> BYE CSeq=2（对话内正确递增），设备校验通过
+```
+
+**顺带清理**：删除 `src/sip/config.rs` —— 它定义了第二套 `SipConfig` /
+`ZlmServerConfig` / `ZlmConfig`（96 行），全仓**无人使用**，只在 `sip/mod.rs`
+里被 re-export。两个同名结构体是真实的踩坑源：上一轮的 `tcp_enabled` 缺陷
+就是因为我先改错了这个副本（改了不生效）。现在配置只有 `src/config.rs` 唯一一份。
+
+**模拟器保真度**：ZLM mock 的 `on_stream_changed` 触发器改为尊重
+`stream`/`app`/`register` 查询参数（此前写死 `stream=34020000001320000001`、
+`register=true`），否则"设备推完下线"这类状态机分支永远无法触发。
+
+#### 第十五轮基线
+
+```
+cargo test                      541 passed / 0 failed   (上轮 539)
+cargo build --features mysql     OK
+cargo build --features postgres  OK
+cargo check --all-targets        warnings 0
+npx playwright test             25 passed / 0 failed / 0 skipped
+回放链路（RecordInfo → INVITE → 媒体就绪 → BYE）  PASS
+录像下载链路（INVITE → startRecord → 完成 → stopRecord/BYE） PASS
 ```
 
 ### 仍未解决 / 需真实设备核验

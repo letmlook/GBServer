@@ -459,9 +459,12 @@ class ZlmMockHandler(http.server.BaseHTTPRequestHandler):
                 "ip": "127.0.0.1", "port": 554, "vhost": "__defaultVhost",
             })
         elif name in ("on_stream_changed",):
+            # 尊重查询参数：测试"设备推完下线"必须能触发 regist=false，
+            # 写死 register=True 会让"下载完成/流下线"这类状态机分支永远测不到。
+            register = params.get("register", ["1"])[0] not in ("0", "false", "False")
             base.update({
-                "schema": "rtsp", "app": "rtp", "stream": "34020000001320000001",
-                "vhost": "__defaultVhost", "register": True,
+                "schema": schema, "app": app, "stream": stream,
+                "vhost": "__defaultVhost", "regist": register,
             })
         elif name in ("on_stream_none_reader", "on_stream_not_found"):
             readers = int(params.get("readers", ["0"])[0])
