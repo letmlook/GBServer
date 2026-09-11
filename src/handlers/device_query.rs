@@ -62,7 +62,7 @@ pub async fn device_info(
                     sn,
                     async {
                         server
-                            .send_device_info_query(&device_id)
+                            .send_device_info_query(&device_id, sn)
                             .await
                             .map_err(|e| e.to_string())
                     },
@@ -144,7 +144,7 @@ pub async fn device_status(
                     sn,
                     async {
                         server
-                            .send_device_status_query(&device_id)
+                            .send_device_status_query(&device_id, sn)
                             .await
                             .map_err(|e| e.to_string())
                     },
@@ -205,59 +205,14 @@ pub async fn device_config_query(
     State(state): State<AppState>,
     Path((device_id, config_type)): Path<(String, String)>,
 ) -> impl IntoResponse {
-    let sn = chrono::Utc::now().timestamp_millis() as u32;
-
-    // 检查设备是否在线
-    if let Some(ref sip_server) = state.sip_server {
-        let server = &*sip_server;
-        if server.is_device_online(&device_id).await {
-            let commander = server.device_commander();
-            let (_req, rx) =
-                commander.register_device_config_with_receiver(&device_id, sn);
-            // 启动发送（不阻塞等待）
-            let server_send = server.clone();
-            let device_id_send = device_id.clone();
-            let config_type_send = config_type.clone();
-            let send_task = tokio::spawn(async move {
-                server_send
-                    .send_device_config_query(&device_id_send, &config_type_send)
-                    .await
-            });
-            // 等待响应（带 15s 超时）
-            return match commander.await_response(_req, rx, 15).await {
-                Ok(xml) => {
-                    // 不强解析 ConfigDownload 结构（多种配置类型结构差异大），把原始 XML 透传
-                    Json(WVPResult::success(serde_json::json!({
-                        "deviceId": device_id,
-                        "configType": config_type,
-                        "sn": sn,
-                        "xml": xml,
-                        "source": "live",
-                    })))
-                    .into_response()
-                }
-                Err(_) => {
-                    let _ = send_task.await;
-                    Json(WVPResult::success(serde_json::json!({
-                        "deviceId": device_id,
-                        "configType": config_type,
-                        "sn": sn,
-                        "status": "timeout",
-                        "message": "Device did not respond within 15s",
-                        "source": "live",
-                    })))
-                    .into_response()
-                }
-            };
-        }
-    }
-
-    Json(WVPResult::<()>::error("Device offline or not registered")).into_response()
+    // 与查询参数版（`device_control::device_config_query`）共用同一份实现，
+    // 避免"同一功能两处实现、且一处只发不等"的重复。
+    Json(WVPResult::success(
+        crate::handlers::device_control::query_config_and_wait(&state, &device_id, &config_type)
+            .await,
+    ))
+    .into_response()
 }
-
-/// ============================================================================
-/// SSRC 管理
-/// ============================================================================
 
 /// GET /api/play/ssrc/{device_id}/{channel_id}
 /// 获取播放的 SSRC 信息

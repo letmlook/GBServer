@@ -281,44 +281,87 @@ pub async fn device_config_query(
     }
 
     tracing::info!("Config query: device={}, type={}", device_id, config_type);
+    Json(WVPResult::success(
+        query_config_and_wait(&state, &device_id, &config_type).await,
+    ))
+}
 
-    if let Some(ref sip_server) = state.sip_server {
-        let server = &*sip_server;
-        if let Some(device) = server.device_manager().get(&device_id).await {
-            if device.online && device.addr.is_some() {
-                // 发送配置查询请求
-                let config_xml = format!(
-                    r#"<?xml version="1.0" encoding="UTF-8"?>
-<Query>
-<CmdType>ConfigDownload</CmdType>
-<SN>{}</SN>
-<DeviceID>{}</DeviceID>
-<ConfigType>{}</ConfigType>
-</Query>"#,
-                    chrono::Utc::now().timestamp() % 10000,
-                    device_id,
-                    config_type
-                );
-
-                match server.send_message_to_device(&device_id, crate::sip::SipMethod::Message,
-                    Some(&config_xml), Some("Application/MANSCDP+xml")).await {
-                    Ok(_) => {
-                        return Json(WVPResult::success(serde_json::json!({
-                            "deviceId": device_id,
-                            "configType": config_type,
-                            "result": "Config query sent"
-                        })));
-                    }
-                    Err(e) => {
-                        tracing::error!("Failed to send config query: {}", e);
-                        return Json(WVPResult::error(format!("Failed to send config query: {}", e)));
-                    }
-                }
-            }
-        }
+/// 下发 ConfigDownload 查询并**等待**设备应答，返回统一的 JSON 载荷。
+///
+/// 修正：`device_config_query`（查询参数版）此前自己拼 XML 直接
+/// `send_message_to_device` 就返回 `"Config query sent"` —— 既不登记 pending
+/// 请求（设备回来的应答会被当作 unsolicited 丢弃），也从不等待，等于把
+/// "查询设备配置"实现成了一个纯发送动作。同一份功能在
+/// `device_query::device_config_query`（路径参数版）里本来是**真的**在等，
+/// 两处实现并存且行为不同。现抽成本函数，两处共用，消除重复。
+pub(crate) async fn query_config_and_wait(
+    state: &AppState,
+    device_id: &str,
+    config_type: &str,
+) -> serde_json::Value {
+    let Some(ref sip_server) = state.sip_server else {
+        return serde_json::json!({
+            "deviceId": device_id,
+            "configType": config_type,
+            "status": "sip_unavailable",
+            "message": "SIP 服务未启动",
+        });
+    };
+    let server = &**sip_server;
+    let Some(device) = server.device_manager().get(device_id).await else {
+        return serde_json::json!({
+            "deviceId": device_id,
+            "configType": config_type,
+            "status": "not_registered",
+            "message": "设备未注册",
+        });
+    };
+    if !device.online {
+        return serde_json::json!({
+            "deviceId": device_id,
+            "configType": config_type,
+            "status": "offline",
+            "message": "设备不在线",
+        });
     }
 
-    Json(WVPResult::error("Device not online"))
+    // SN 必须"登记用哪个、发出就用哪个、设备回显也就是哪个" —— 这是
+    // Call-ID 不一致时唯一的关联依据（见 pending_request::extract_sn）。
+    let sn = chrono::Utc::now().timestamp_millis() as u32;
+    let commander = server.device_commander();
+    let (req, rx) = commander.register_device_config_with_receiver(device_id, sn);
+    if let Err(e) = server
+        .send_device_config_query(device_id, config_type, sn)
+        .await
+    {
+        tracing::error!("下发 ConfigDownload 失败 device={}: {}", device_id, e);
+        return serde_json::json!({
+            "deviceId": device_id,
+            "configType": config_type,
+            "sn": sn,
+            "status": "send_failed",
+            "message": format!("下发查询失败: {}", e),
+        });
+    }
+
+    match commander.await_response(req, rx, 15).await {
+        // ConfigDownload 各 ConfigType 的结构差异大，不做强解析，原样透传 XML
+        Ok(xml) => serde_json::json!({
+            "deviceId": device_id,
+            "configType": config_type,
+            "sn": sn,
+            "xml": xml,
+            "source": "live",
+        }),
+        Err(_) => serde_json::json!({
+            "deviceId": device_id,
+            "configType": config_type,
+            "sn": sn,
+            "status": "timeout",
+            "message": "Device did not respond within 15s",
+            "source": "live",
+        }),
+    }
 }
 
 /// 设备配置下发

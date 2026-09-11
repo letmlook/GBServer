@@ -583,6 +583,8 @@ class SipDeviceMock:
             self.transport.sendto(payload, addr)
         elif "<CmdType>DeviceStatus</CmdType>" in body:
             await self._reply_device_status(msg, addr)
+        elif "<CmdType>ConfigDownload</CmdType>" in body:
+            await self._reply_config_download(msg, addr)
         else:
             log.debug("未识别 MESSAGE body: %s", body[:200])
 
@@ -615,6 +617,52 @@ class SipDeviceMock:
             f"\r\n{body}"
         )
         self.transport.sendto(payload.encode(), addr)
+
+    async def _reply_config_download(self, msg: str, addr: tuple):
+        """应答 ConfigDownload（基本参数查询）。
+
+        平台侧登记 pending 用的 SN 与它发出去的 SN 现在是同一个，
+        且本应答**回显该 SN** —— 这正是平台把响应关联回等待中的请求所依赖的。
+        """
+        body_in = msg.split("\r\n\r\n", 1)[1] if "\r\n\r\n" in msg else ""
+        sn = self._extract_xml_value(body_in, "SN") or "1"
+        config_type = self._extract_xml_value(body_in, "ConfigType") or "BasicParam"
+        call_id = self._extract_header(msg, "Call-ID", "")
+        cseq = self.state.next_cseq()
+        realm = realm_from_device_id(self.cfg.device_id)
+        local = self.transport.get_extra_info("sockname")
+        body = (
+            '<?xml version="1.0" encoding="UTF-8"?>\r\n'
+            '<Response>\r\n'
+            '<CmdType>ConfigDownload</CmdType>\r\n'
+            f'<SN>{sn}</SN>\r\n'
+            f'<DeviceID>{self.cfg.device_id}</DeviceID>\r\n'
+            '<Result>OK</Result>\r\n'
+            '<BasicParam>\r\n'
+            f'<Name>{self.cfg.device_name}</Name>\r\n'
+            f'<Manufacturer>{self.cfg.manufacturer}</Manufacturer>\r\n'
+            f'<Model>{self.cfg.model}</Model>\r\n'
+            f'<Firmware>{self.cfg.firmware}</Firmware>\r\n'
+            '<Expiration>3600</Expiration>\r\n'
+            '<HeartBeatInterval>60</HeartBeatInterval>\r\n'
+            '<ConfigType>' + config_type + '</ConfigType>\r\n'
+            '</BasicParam>\r\n'
+            '</Response>\r\n'
+        )
+        branch = make_branch()
+        payload = (
+            f"MESSAGE sip:{realm}@{self.server_addr[0]}:{self.server_addr[1]} {SIP_VERSION}\r\n"
+            f"Via: {SIP_VERSION}/UDP {local[0]}:{local[1]};rport;branch={branch}\r\n"
+            f"From: <sip:{self.cfg.device_id}@{realm}>;tag={uuid.uuid4().hex[:8]}\r\n"
+            f"To: <sip:{realm}@{realm}>\r\n"
+            f"Call-ID: {call_id}\r\n"
+            f"CSeq: {cseq} MESSAGE\r\n"
+            f"Content-Type: Application/MANSCDP+XML\r\n"
+            f"Content-Length: {len(body.encode())}\r\n"
+            f"\r\n{body}"
+        )
+        self.transport.sendto(payload.encode(), addr)
+        log.info("ConfigDownload(%s) 应答已发送 sn=%s", config_type, sn)
 
     async def _on_invite(self, msg: str, addr: tuple):
         """处理 INVITE，发送 200 OK + SDP，3 秒后 BYE"""

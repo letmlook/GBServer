@@ -445,6 +445,26 @@ impl PendingRequestManager {
         self.by_call_id.len()
     }
 
+    /// 该 Call-ID 是否登记了等待中的请求（主索引）。
+    pub fn is_registered(&self, call_id: &str) -> bool {
+        self.by_call_id.contains_key(call_id)
+    }
+
+    /// 按 (device_id, sn) 取等待中的请求。
+    ///
+    /// 国标设备回 MESSAGE 响应时会**回显我们发出的 Call-ID**，但本仓库里
+    /// "发起查询"与"真正发 SIP 报文"是两段代码：前者按
+    /// `di_/ds_/dc_{device}_{sn}` 登记 pending，后者用
+    /// `msg_{device}_{时间戳}` 作为 Call-ID 发包。两者不一致 → 设备回显的
+    /// Call-ID 在 pending 里查不到，`/api/device/query/info` 与 `/status`
+    /// **必然超时**（日志表现为 "Unsolicited MESSAGE response"）。
+    ///
+    /// 设备在 XML 里一定回显 `<SN>`，因此按 (device_id, sn) 兜底关联才是稳的。
+    pub fn get_by_device_sn(&self, device_id: &str, sn: u32) -> Option<PendingRequest> {
+        let key = format!("{}:{}", device_id, sn);
+        self.by_device_sn.get(&key).map(|r| r.clone())
+    }
+
     /// 检查某个设备是否有等待中的请求
     pub fn has_pending_for_device(&self, device_id: &str) -> bool {
         self.by_device_sn.iter().any(|r| r.device_id == device_id)
@@ -746,6 +766,30 @@ impl ResponseRouter {
     /// Phase 3.3: RecordInfo 多包时由 `pending.push_record_info_packet` 累积，
     /// SumNum 达到后才返回累积 XML。
     pub fn route_message_response(&self, body: &str, call_id: &str) -> Option<(PendingCmdType, String)> {
+        self.route_message_response_inner(body, call_id, None)
+    }
+
+    /// 与 [`Self::route_message_response`] 相同，但在 Call-ID 匹配不上时，
+    /// 再用「设备 ID + 报文里的 `<SN>`」匹配一次。
+    ///
+    /// 这是设备信息/状态查询能真正拿到结果的必要条件：本仓库登记 pending 用的
+    /// 是 `di_/ds_{device}_{sn}`，而实际发出的 SIP MESSAGE 用的是
+    /// `msg_{device}_{时间戳}`，设备回显后者 —— 只按 Call-ID 关联永远失配。
+    pub fn route_message_response_with_device(
+        &self,
+        body: &str,
+        call_id: &str,
+        device_id: &str,
+    ) -> Option<(PendingCmdType, String)> {
+        self.route_message_response_inner(body, call_id, Some(device_id))
+    }
+
+    fn route_message_response_inner(
+        &self,
+        body: &str,
+        call_id: &str,
+        device_id: Option<&str>,
+    ) -> Option<(PendingCmdType, String)> {
         // 不依赖有 bug 的 XmlParser::parse（无法处理 Response 嵌套），
         // 直接用字符串匹配取 <CmdType>X</CmdType>，更稳。
         let cmd_type_str = extract_cmd_type(body);
@@ -761,11 +805,34 @@ impl ResponseRouter {
         };
 
         if let Some(pt) = pending_type {
+            // 先把 Call-ID 解析成"登记时用的那个 call_id"：
+            // 设备回显的是我们实际发出的 Call-ID（本仓库是 `msg_...`），而登记
+            // 用的是 `di_/ds_/dc_{device}_{sn}`；匹配不上时用 (device, SN) 兜底。
+            let mut effective_call_id = call_id.to_string();
+            if !self.pending.is_registered(call_id) {
+                if let Some(dev) = device_id {
+                    if let Some(sn) = extract_sn(body) {
+                        if let Some(req) = self.pending.get_by_device_sn(dev, sn) {
+                            tracing::debug!(
+                                "MESSAGE 响应按 (device={}, sn={}) 关联到 pending call_id={}（Call-ID {} 未命中）",
+                                dev,
+                                sn,
+                                req.call_id,
+                                call_id
+                            );
+                            effective_call_id = req.call_id;
+                        }
+                    }
+                }
+            }
+
             // Phase 3.3: RecordInfo 走多包路径（如果已注册 multi-packet）；
             // 若未注册多包（单包 RecordInfo 兼容），回退到原 complete 路径
             if pt == PendingCmdType::RecordInfo {
-                if self.pending.is_multi_packet_registered(call_id) {
-                    if let Some(accumulated) = self.pending.push_record_info_packet(call_id, body) {
+                if self.pending.is_multi_packet_registered(&effective_call_id) {
+                    if let Some(accumulated) =
+                        self.pending.push_record_info_packet(&effective_call_id, body)
+                    {
                         return Some((pt, accumulated));
                     }
                     // 多包已注册但未收齐：不返回（让调用方继续等待）
@@ -773,7 +840,7 @@ impl ResponseRouter {
                 }
                 // 未注册多包 → 走原 complete 路径（兼容单包 RecordInfo）
             }
-            if let Some(xml) = self.pending.complete(call_id, body) {
+            if let Some(xml) = self.pending.complete(&effective_call_id, body) {
                 return Some((pt, xml));
             }
         }
@@ -839,6 +906,18 @@ impl ResponseRouter {
 }
 
 /// 从 XML body 中提取 <CmdType>X</CmdType> 的值，兼容任意层级嵌套。
+/// 从报文里取 `<SN>`（数字）。
+///
+/// 与 [`extract_cmd_type`] 同样走字符串匹配而**不用 `XmlParser::parse`**：
+/// 设备的应答是 `<Response>` 里再嵌 `<CmdType>`/`<SN>`/...，而
+/// `XmlParser::parse` 处理不了这种嵌套（见文件内既有注释），拿它取 SN 会得到
+/// `None`，于是 (device, SN) 兜底关联失效、查询依旧超时。
+fn extract_sn(xml: &str) -> Option<u32> {
+    let open = xml.find("<SN>")? + "<SN>".len();
+    let close = xml[open..].find("</SN>")? + open;
+    xml[open..close].trim().parse::<u32>().ok()
+}
+
 fn extract_cmd_type(xml: &str) -> &str {
     let open = match xml.find("<CmdType>") {
         Some(idx) => idx,
@@ -1073,6 +1152,72 @@ mod response_router_tests {
         assert!(resolved.is_none());
         // 不应被错删
         assert_eq!(mgr.pending_count(), 1);
+    }
+
+    /// 回归守卫：登记用 `ds_{device}_{sn}`，实际发包用 `msg_...`，
+    /// 设备回显的是 `msg_...`。此前只按 Call-ID 关联 → 永远失配，
+    /// 设备信息/状态查询必然超时。现在应按 (device, SN) 兜底关联上。
+    /// extract_sn 必须能处理"<Response> 里嵌 <SN>"的嵌套结构
+    /// （`XmlParser::parse` 处理不了这种嵌套，因此这里刻意不复用它）。
+    #[test]
+    fn extract_sn_handles_nested_response_body() {
+        let body = "<?xml version=\"1.0\"?>\r\n<Response>\r\n<CmdType>DeviceStatus</CmdType>\r\n<SN>2446260257</SN>\r\n<DeviceID>34020000001320000001</DeviceID>\r\n<Online>ONLINE</Online>\r\n</Response>";
+        assert_eq!(extract_sn(body), Some(2446260257));
+        assert_eq!(extract_sn("<Response><SN>42</SN></Response>"), Some(42));
+        assert_eq!(extract_sn("<Response><CmdType>X</CmdType></Response>"), None);
+    }
+
+    #[tokio::test]
+    async fn route_message_response_matches_by_device_and_sn_when_call_id_differs() {
+        let mgr = PendingRequestManager::new();
+        // 登记时用的 call_id（device_commander 的约定）
+        let (_req, mut rx) = mgr.register_with_receiver(
+            "34020000001320000001",
+            4242,
+            PendingCmdType::DeviceStatus,
+            "ds_34020000001320000001_4242",
+            Some(5),
+        );
+
+        let router = ResponseRouter::new(Arc::new(mgr));
+        let body = "<Response><CmdType>DeviceStatus</CmdType><SN>4242</SN>\
+                    <DeviceID>34020000001320000001</DeviceID><Online>ONLINE</Online></Response>";
+
+        // 设备回显的 Call-ID 与登记时的不同
+        let resolved = router.route_message_response_with_device(
+            body,
+            "msg_34020000001320000001_1789152451451",
+            "34020000001320000001",
+        );
+        assert!(resolved.is_some(), "应按 (device, SN) 关联成功");
+        let (_pt, xml) = resolved.unwrap();
+        assert!(xml.contains("ONLINE"));
+
+        // 等待方确实被唤醒
+        let got = tokio::time::timeout(std::time::Duration::from_millis(200), &mut rx).await;
+        assert!(got.is_ok(), "oneshot 应被 complete 唤醒");
+    }
+
+    /// 只按 Call-ID 关联（旧行为）在同一场景下必须失败 —— 固化"为什么需要兜底"。
+    #[tokio::test]
+    async fn route_message_response_by_call_id_alone_misses_mismatched_id() {
+        let mgr = PendingRequestManager::new();
+        let (_req, _rx) = mgr.register_with_receiver(
+            "34020000001320000001",
+            4243,
+            PendingCmdType::DeviceStatus,
+            "ds_34020000001320000001_4243",
+            Some(5),
+        );
+        let router = ResponseRouter::new(Arc::new(mgr));
+        let body = "<Response><CmdType>DeviceStatus</CmdType><SN>4243</SN>\
+                    <DeviceID>34020000001320000001</DeviceID></Response>";
+        assert!(
+            router
+                .route_message_response(body, "msg_34020000001320000001_999")
+                .is_none(),
+            "Call-ID 不一致且未提供 device_id 时本就不该命中"
+        );
     }
 
     #[test]

@@ -327,6 +327,17 @@ pub async fn subscribe_mobile_position(
 /// GET /api/device/config/query/:device_id/BasicParam
 /// 获取设备基本参数
 /// 参数: device_id - 设备ID
+/// 从 XML 文本里取某个标签的文本值（字符串匹配，不用 `XmlParser::parse` —— 它对
+/// `<Response>` 这类嵌套结构不可靠，见 `pending_request::extract_sn` 的说明）。
+fn xml_tag_value(xml: &str, tag: &str) -> Option<String> {
+    let open = format!("<{}>", tag);
+    let close = format!("</{}>", tag);
+    let start = xml.find(&open)? + open.len();
+    let end = xml[start..].find(&close)? + start;
+    let v = xml[start..end].trim();
+    (!v.is_empty()).then(|| v.to_string())
+}
+
 /// 返回: 设备基本配置信息
 pub async fn config_basic_param(
     State(state): State<AppState>,
@@ -334,25 +345,92 @@ pub async fn config_basic_param(
 ) -> Json<WVPResult<serde_json::Value>> {
     tracing::info!("Config BasicParam query for: {}", device_id);
     let db_device = get_device_by_device_id(&state.pool, &device_id).await.ok().flatten();
+    let db_name = db_device.as_ref().and_then(|d| d.name.clone());
+    let db_manufacturer = db_device.as_ref().and_then(|d| d.manufacturer.clone());
+    let db_model = db_device.as_ref().and_then(|d| d.model.clone());
+    let db_transport = db_device
+        .as_ref()
+        .and_then(|d| d.transport.clone())
+        .unwrap_or_else(|| "UDP".to_string());
+    let db_stream_mode = db_device
+        .as_ref()
+        .and_then(|d| d.stream_mode.clone())
+        .unwrap_or_else(|| "UDP".to_string());
 
+    // 修正：这里此前只 `send_device_config_query(...)` 发出去就返回 DB 里的旧值，
+    // 并标一句"设备配置查询已发送" —— 既没有登记 pending 请求（设备回来的应答
+    // 会被当作 unsolicited 丢掉），也从不消费应答，本质是个延迟实现。
+    // 现在登记 + 等应答（15s），把设备返回的原始 XML 透传给调用方
+    // （ConfigDownload 各 ConfigType 结构差异大，不做强解析，与
+    //  /api/device/config/query 的处理保持一致）。
     if let Some(ref sip_server) = state.sip_server {
         let server = &*sip_server;
         if let Some(device) = server.device_manager().get(&device_id).await {
             if device.online {
-                match server.send_device_config_query(&device_id, "BasicParam").await {
-                    Ok(_) => {
-                        return Json(WVPResult::success(serde_json::json!({
-                            "deviceId": device_id,
-                            "name": device.name,
-                            "manufacturer": device.manufacturer,
-                            "model": device.model,
-                            "transport": db_device.as_ref().and_then(|item| item.transport.clone()).unwrap_or_else(|| "UDP".to_string()),
-                            "streamMode": db_device.as_ref().and_then(|item| item.stream_mode.clone()).unwrap_or_else(|| "UDP".to_string()),
-                            "message": "设备配置查询已发送"
-                        })));
-                    }
+                let sn = chrono::Utc::now().timestamp_millis() as u32;
+                let commander = server.device_commander();
+                let (req, rx) = commander.register_device_config_with_receiver(&device_id, sn);
+                match server
+                    .send_device_config_query(&device_id, "BasicParam", sn)
+                    .await
+                {
+                    Ok(_) => match commander.await_response(req, rx, 15).await {
+                        Ok(xml) => {
+                            // 解析设备上报的基本参数：库里的值可能是注册时写的、
+                            // 也可能为空，设备实测值才是权威。用字符串提取而不是
+                            // XmlParser（后者处理不了 `<Response>` 嵌套）。
+                            let name = xml_tag_value(&xml, "Name").or(db_name);
+                            let manufacturer =
+                                xml_tag_value(&xml, "Manufacturer").or(db_manufacturer);
+                            let model = xml_tag_value(&xml, "Model").or(db_model);
+                            let firmware = xml_tag_value(&xml, "Firmware");
+                            let heartbeat = xml_tag_value(&xml, "HeartBeatInterval");
+                            let expiration = xml_tag_value(&xml, "Expiration");
+                            return Json(WVPResult::success(serde_json::json!({
+                                "deviceId": device_id,
+                                "sn": sn,
+                                "name": name,
+                                "manufacturer": manufacturer,
+                                "model": model,
+                                "firmware": firmware,
+                                "heartBeatInterval": heartbeat,
+                                "expiration": expiration,
+                                "transport": db_transport,
+                                "streamMode": db_stream_mode,
+                                "xml": xml,
+                                "source": "live",
+                                "message": "设备基本参数查询完成"
+                            })));
+                        }
+                        Err(_) => {
+                            tracing::warn!("Config BasicParam 查询超时: {}", device_id);
+                            return Json(WVPResult::success(serde_json::json!({
+                                "deviceId": device_id,
+                                "sn": sn,
+                                "name": db_name,
+                                "manufacturer": db_manufacturer,
+                                "model": db_model,
+                                "transport": db_transport,
+                                "streamMode": db_stream_mode,
+                                "source": "db",
+                                "status": "timeout_or_error",
+                                "message": "设备未在超时内返回基本参数，以下为库中记录"
+                            })));
+                        }
+                    },
                     Err(e) => {
                         tracing::error!("Failed to send config query: {}", e);
+                        return Json(WVPResult::success(serde_json::json!({
+                            "deviceId": device_id,
+                            "name": db_name,
+                            "manufacturer": db_manufacturer,
+                            "model": db_model,
+                            "transport": db_transport,
+                            "streamMode": db_stream_mode,
+                            "source": "db",
+                            "status": "send_failed",
+                            "message": format!("下发查询失败: {}", e)
+                        })));
                     }
                 }
             }
@@ -361,16 +439,17 @@ pub async fn config_basic_param(
 
     Json(WVPResult::success(serde_json::json!({
         "deviceId": device_id,
-        "name": db_device.as_ref().and_then(|item| item.name.clone()),
-        "manufacturer": db_device.as_ref().and_then(|item| item.manufacturer.clone()),
-        "model": db_device.as_ref().and_then(|item| item.model.clone()),
+        "name": db_name,
+        "manufacturer": db_manufacturer,
+        "model": db_model,
         "firmware": null,
-        "transport": db_device.as_ref().and_then(|item| item.transport.clone()).unwrap_or_else(|| "UDP".to_string()),
-        "streamMode": db_device.as_ref().and_then(|item| item.stream_mode.clone()).unwrap_or_else(|| "UDP".to_string()),
-        "message": "设备配置查询功能"
+        "transport": db_transport,
+        "streamMode": db_stream_mode,
+        "source": "db",
+        "status": "device_offline",
+        "message": "设备不在线，以下为库中记录"
     })))
 }
-
 
 #[derive(Debug, Deserialize)]
 pub struct ChannelOneQuery {

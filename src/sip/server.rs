@@ -1523,7 +1523,13 @@ let renewal_pool = pool.clone();
             if is_response {
                 use crate::sip::gb28181::ResponseRouter;
                 let router = ResponseRouter::new(pending_request_manager.clone());
-                if let Some((cmd_type, xml)) = router.route_message_response(body, &call_id) {
+                // 传入 device_id：Call-ID 匹配不上时用 (device, SN) 兜底关联。
+                // 登记 pending 用的是 `di_/ds_/dc_{device}_{sn}`，而实际发包用的是
+                // `msg_{device}_{时间戳}`，设备回显后者 —— 只按 Call-ID 关联时
+                // 设备信息/状态查询必然超时（日志会打成 Unsolicited）。
+                if let Some((cmd_type, xml)) =
+                    router.route_message_response_with_device(body, &call_id, &device_id)
+                {
                     tracing::debug!(
                         "PendingRequest completed for CallID {}: {:?}",
                         call_id,
@@ -1538,6 +1544,38 @@ let renewal_pool = pool.clone();
         if let Some(body) = &req.body {
             let cmd_type = XmlParser::get_cmd_type(body);
             tracing::debug!("MESSAGE from {} - CmdType: {:?}", device_id, cmd_type);
+
+            // 这条 MESSAGE 是设备对**我们发出的查询**的应答，还是设备发起的查询？
+            //
+            // 修正：`DeviceInfo` / `DeviceStatus` / `MobilePosition` / `Alarm`
+            // 四个分支此前**无条件**按"查询"处理并回一条应答 —— 设备回给我们的
+            // `<Response>` 于是被当成新查询、我们再回一条……与真实设备（以及
+            // 仓库自带的 SIP 模拟器）形成**无限循环**：日志里会看到同一设备每
+            // 1.5~3 秒重复 DeviceInfo/DeviceStatus，既刷爆日志也不断重写 DB。
+            // 只有 `Catalog` 分支本来就正确地分别处理 Query 与 Response，
+            // 因此这里只对"纯查询型"的分支生效。
+            let body_is_response =
+                body.contains("<Response") || body.contains("<Response>");
+
+            /// 对设备的 MESSAGE（无论 Query 还是 Response）都必须回 200 OK。
+            macro_rules! ack_message {
+                () => {{
+                    let response = Parser::generate_response(
+                        200,
+                        "OK",
+                        &[
+                            ("Via", &via),
+                            ("From", &from),
+                            ("To", &to),
+                            ("Call-ID", &call_id),
+                            ("CSeq", &cseq),
+                        ],
+                        None,
+                    );
+                    Self::send_response(socket, addr, &response).await?;
+                    return Ok(());
+                }};
+            }
 
             // B2: detect upstream platform queries — when an enabled platform (registered
             // in gb_platform by device_gb_id) sends a Catalog/Info/Status query that
@@ -1703,6 +1741,10 @@ let renewal_pool = pool.clone();
                     return Ok(());
                 }
                 Some("DeviceInfo") => {
+                    // 设备对我们的查询的应答：只回 200 OK，**不要**再当成查询回一条
+                    if body_is_response {
+                        ack_message!();
+                    }
                     Self::handle_device_info(
                         body, &device_id, &sn, pool, addr, &from, &to, &via, &call_id, &cseq,
                         socket,
@@ -1711,6 +1753,10 @@ let renewal_pool = pool.clone();
                     return Ok(());
                 }
                 Some("DeviceStatus") => {
+                    // 设备对我们的查询的应答：只回 200 OK，**不要**再当成查询回一条
+                    if body_is_response {
+                        ack_message!();
+                    }
                     Self::handle_device_status(
                         body, &device_id, &sn, pool, addr, &from, &to, &via, &call_id, &cseq,
                         socket,
@@ -1719,6 +1765,10 @@ let renewal_pool = pool.clone();
                     return Ok(());
                 }
                 Some("MobilePosition") => {
+                    // 设备对我们的查询的应答：只回 200 OK，**不要**再当成查询回一条
+                    if body_is_response {
+                        ack_message!();
+                    }
                     Self::handle_mobile_position(
                         body, &device_id, &sn, pool, addr, &from, &to, &via, &call_id, &cseq,
                         socket,
@@ -1727,6 +1777,10 @@ let renewal_pool = pool.clone();
                     return Ok(());
                 }
                 Some("Alarm") => {
+                    // 同上：应答不再当成新告警上报处理
+                    if body_is_response {
+                        ack_message!();
+                    }
                     Self::handle_alarm(
                         body,
                         &device_id,
@@ -4128,8 +4182,16 @@ f=v/1/96/1/2/1/1/0
         .await
     }
 
-    pub async fn send_device_config_query(&self, device_id: &str, config_type: &str) -> Result<()> {
-        let sn = chrono::Utc::now().timestamp();
+    /// 发送 ConfigDownload 查询。
+    /// `sn` 必须与登记 pending 请求时一致（设备在应答里回显 SN），
+    /// 语义同 [`Self::send_device_info_query`]。
+    pub async fn send_device_config_query(
+        &self,
+        device_id: &str,
+        config_type: &str,
+        sn: u32,
+    ) -> Result<()> {
+        let sn = if sn == 0 { chrono::Utc::now().timestamp() as u32 } else { sn };
         let body = format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
 <Query>
@@ -4151,8 +4213,14 @@ f=v/1/96/1/2/1/1/0
     }
 
     ///发送设备信息查询
-    pub async fn send_device_info_query(&self, device_id: &str) -> Result<()> {
-        let sn = chrono::Utc::now().timestamp();
+    /// 发送 DeviceInfo 查询。
+    ///
+    /// `sn` 必须由调用方提供，且**与登记 pending 请求时用的是同一个值** ——
+    /// 设备会在应答 XML 里回显 SN，这是 Call-ID 对不上时唯一的关联依据。
+    /// 此前这里内部另取 `Utc::now().timestamp()`，与调用方登记的 SN 不同，
+    /// 于是 `/api/device/query/info` 与 `/status` **必然超时**。
+    pub async fn send_device_info_query(&self, device_id: &str, sn: u32) -> Result<()> {
+        let sn = if sn == 0 { chrono::Utc::now().timestamp() as u32 } else { sn };
         let body = format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
 <Query>
@@ -4173,8 +4241,9 @@ f=v/1/96/1/2/1/1/0
     }
 
     /// 发送设备状态查询
-    pub async fn send_device_status_query(&self, device_id: &str) -> Result<()> {
-        let sn = chrono::Utc::now().timestamp();
+    /// 发送 DeviceStatus 查询。`sn` 语义同 [`Self::send_device_info_query`]。
+    pub async fn send_device_status_query(&self, device_id: &str, sn: u32) -> Result<()> {
+        let sn = if sn == 0 { chrono::Utc::now().timestamp() as u32 } else { sn };
         let body = format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
 <Query>

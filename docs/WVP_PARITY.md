@@ -332,6 +332,35 @@ WS 握手: HTTP/1.1 101 Switching Protocols
 （`GuardQuery` / `SubscribeCatalogQuery`）；更正模块头那句已经过时的
 "其余保持兼容空实现（后续可对接 SIP/ZLM）"。
 
+### 设备查询/配置查询：三层 SN 关联缺陷 + 无限循环（2026-09-12 第十轮）
+
+这一轮改用**仓库自带的 SIP 设备模拟器**驱动真实设备查询，暴露出"接口能返回
+200，但结果永远是 timeout"这类只有真发报文才看得见的问题。
+
+| 问题 | 运行时证据 | 修复 |
+|------|-----------|------|
+| **pending 关联键与发出的 Call-ID 不一致** | 登记用 `di_/ds_/dc_{device}_{sn}`，实际发 SIP MESSAGE 用的是 `msg_{device}_{时间戳}`；设备**回显后者** → 日志 `Unsolicited MESSAGE response for CallID msg_...`，`/api/device/query/info` 与 `/status` 恒 `timeout_or_error` | `ResponseRouter` 增加 `route_message_response_with_device`：Call-ID 未命中时用 (device_id, `<SN>`) 兜底关联（管理器里本来就有 `by_device_sn` 索引，但**没有任何按它完成的路径**） |
+| **`XmlParser::get_sn` 取不到嵌套 Response 里的 SN** | 第一版兜底用了 `XmlParser::get_sn`，实测仍未命中（该文件里早就注明 `XmlParser::parse` 处理不了 `<Response>` 嵌套，所以才有字符串版 `extract_cmd_type`） | 新增同风格的 `extract_sn()`，并加"嵌套 Response 取 SN"的单测 |
+| **登记的 SN ≠ 发出的 SN** | 调用方生成 `sn` 去登记，而 `send_device_info_query` / `_status_query` / `_config_query` 内部**另取** `Utc::now().timestamp()` 写进 XML → 设备回显的 SN 与登记的对不上，兜底也失效 | 三个发送函数改为接受调用方传入的 `sn`，保证"登记 = 发出 = 设备回显" |
+| **设备的 `<Response>` 被当成新查询，形成无限循环** | `DeviceInfo` / `DeviceStatus` / `MobilePosition` / `Alarm` 四个分支**无条件**按查询处理并回一条 → 设备（以及模拟器）再回 → 日志每 1.5~3 秒重复同一设备报文，既刷日志又反复写库 | 分发前判定 `body_is_response`，这四个纯查询型分支遇到应答时只回 200 OK 并返回（`Catalog` 分支本来就地正确区分 Query/Response） |
+| **`/api/device/config/query/:id/BasicParam` 只发不等** | 返回 DB 旧值 + `"设备配置查询已发送"`，从不消费应答，等于把"查询设备配置"实现成一个纯发送动作 | 改为登记 pending + 用同一 SN 下发 + 等待 15s + **解析**设备上报的 `Name`/`Manufacturer`/`Model`/`Firmware`/`HeartBeatInterval`/`Expiration`（库值仅作兜底） |
+| **同一功能三处实现、其中一个只发不等** | `/api/device/config/query`（查询参数版，`device_control`）拼完 XML 直接发包并回 `"Config query sent"`；路径参数版（`device_query`）却是真的在等 | 抽出 `device_control::query_config_and_wait()` 共享实现，两个变体都委托它，消除重复 |
+
+**修复后的实测结果**（真实服务 + 模拟器真实发包）：
+
+```
+/api/device/query/info    -> {"device_name":"E2ECam","manufacturer":"MockVendor",
+                              "model":"MOCK-IPC-100","channel_count":3,"firmware":"1.0.0-mock"}
+/api/device/query/status  -> {"online":"ONLINE","status":"OK"}
+/api/device/config/query/…/BasicParam
+                          -> {"name":"E2ECam","manufacturer":"MockVendor","model":"MOCK-IPC-100",
+                              "firmware":"1.0.0-mock","heartBeatInterval":"60","expiration":"3600",
+                              "source":"live"}
+SN 兜底命中 2 次；Unsolicited 0 次（此前同一场景 17 次 / 5 秒）
+```
+
+模拟器同步补齐 `ConfigDownload` 应答（回显 SN），使成功路径可被验证。
+
 ### 仍未解决 / 需真实设备核验
 
 以下是本轮**已定位但未改动**的项，均在代码中留有注释或在此登记，
