@@ -9,11 +9,11 @@
 
 | 维度 | 数值 | 验证方式 |
 |------|------|----------|
-| 总代码量（src/） | 62,587 行 Rust | `find src -name '*.rs' \| xargs wc -l` |
+| 总代码量（src/） | 61,669 行 Rust | `find src -name '*.rs' \| xargs wc -l` |
 | 已注册 HTTP 路由 | 374 个 `.route()` / 370 条唯一 `/api/...` 路径 | `grep -cE '\.route\(' src/router.rs` |
 | Handler 模块 | 29 个（含 `stub.rs` / `device_stub.rs` 两个兼容 shim） | `grep -c 'pub mod' src/handlers/mod.rs` |
 | 后端测试 | **389 通过**（lib 342 + 集成 47）/ 2 忽略 / 0 失败 | `cargo test --no-fail-fast` |
-| 编译状态 | `cargo check` 0 error / 21 warning（`--all-targets` 为 30） | `cargo check` |
+| 编译状态 | `cargo check` 0 error / **17 warning**；clippy 292；**deprecated 0** | `cargo check` / `cargo clippy --all-targets` |
 | 数据库 feature | SQLite（默认）/ PostgreSQL / MySQL **三者均编译通过** | CI `feature-matrix` job |
 | CI | ✅ 已恢复（`.github/workflows/ci.yml`，2026-09-11 新增） | — |
 | 前端 | `web/` = **Vue 3 + Element Plus + Vite + TS**（本轮已转正，17 个业务视图）；`web-legacy-vue2/` 为归档参考 | `ls web/src/views` |
@@ -29,6 +29,9 @@
   `build:no-check` 正常，故长期潜伏）。已修复，见 commit `0434629`。
 - **删除 751 行死代码**：`sip/gb28181/cascade_service.rs` 实为零生产调用的 deprecated 模块，
   删除后 deprecated 告警 66 → 8、clippy 告警 329 → 297。
+- **状态源统一到 StateStore**：完成 cache → StateStore 迁移。`zlm/hook.rs` 4 处 legacy
+  Redis 写入中 3 处纯冗余、1 处（`on_flow_report`）改为覆盖 StateStore；连带发现整个
+  `src/cache.rs` 已零调用方，整体删除 140 行。**deprecated 告警归零**，clippy 297 → 292。
 
 ## 历史基线（2026-08-23）
 
@@ -188,13 +191,19 @@
     `#[allow(deprecated)] pub use`（那处 allow 正是此前压住告警的补丁）
   - 能力对照确认 `cascade/register.rs` + `cascade_forward.rs` 为超集（含 11 个
     `c3_*` / `phase5_*` 等价测试）
-- [ ] **8 条剩余 deprecated（cache → StateStore）**：
-  - `cache::set_media_server_streams` / `reset_media_server_streams`，调用点
-    `zlm/hook.rs:800,916,1036`
-  - ⚠️ **不是死代码**：`lib.rs:755` 的 `select_least_loaded` 会在 StateStore 不可用时
-    fallback 读取该 Redis 计数，属活跃的负载均衡逻辑 —— 迁移需连同 fallback 策略一起设计
-- [ ] **剩余 clippy 告警 297 条**（2026-09-11 实测，原 329）：主要为
-  `too_many_arguments` 108（handler 多参数，宜在 `Cargo.toml [lints]` 显式放行）、
+- [x] **cache → StateStore 迁移完成（deprecated 告警清零）**（2026-09-11）
+  - 原判断「8 条 warning，需连同 fallback 策略一起设计」方向正确，但**范围被低估**
+  - `zlm/hook.rs` 的 4 处 legacy Redis 写入中，3 处是纯冗余（StateStore 写入就在同一段
+    代码前面，Redis 那几行自带注释「will be removed in Phase 7.6」）；仅 `on_flow_report`
+    一处真需迁移 —— 已改为用 ZLM 上报的权威绝对计数覆盖 `StateStore.stream_count`
+  - `lib.rs::select_least_loaded` 的 Redis fallback（原 Step C）随之删除
+  - 连带发现：**整个 `src/cache.rs` 已零调用方**（StateStore 提供 device_online /
+    stream / media_server / recording 全部等价 API），已整体删除 140 行 + `pub mod cache;`
+  - ⚠️ 更正：原记录写「`lib.rs:755` fallback 读该 Redis 计数，属活跃负载均衡逻辑」——
+    该读取确实存在，但它读的正是上面那几处写入的**冗余副本**，与 Step A 的 StateStore
+    查询重复，因此可以安全删除（回退链改为 StateStore → ZLM 实时计数 → 首个节点）
+- [ ] **剩余 clippy 告警 292 条**（2026-09-11 实测，原 329）：主要为
+  `too_many_arguments` 106（handler 多参数，宜在 `Cargo.toml [lints]` 显式放行）、
   `borrow_deref_ref` 86、`unnecessary_unwrap` 40、`unnecessary_cast` 34 等机械项
   - 建议下一批：`cargo clippy --fix` 清机械项 + `[lints]` 配置结构性项，
     清零后再把 CI `hygiene` job 提升为硬门禁
@@ -271,8 +280,8 @@
 1. ~~`web-v3/` Phase 2 业务页迁移（前端，~5 周）~~ → ✅ 已完成（2026-08-23）
 2. ~~cascade_service → CascadeRegistrar 迁移（30 个 deprecated warning，独立 PR）~~
    → ✅ 2026-09-11 解决：实为**零调用的死代码**，直接删除模块（751 行）而非迁移
-3. cache::set_media_server_streams → StateStore 迁移（8 个 deprecated warning + 真正统一状态源）
-   —— ⚠️ 涉及活跃的负载均衡 fallback（`lib.rs:755`），需连同 fallback 策略一起设计
+3. ~~cache::set_media_server_streams → StateStore 迁移~~ → ✅ 2026-09-11 完成
+   （deprecated 归零；连带删除已零调用的整个 `src/cache.rs`）
 4. 清零 `cargo fmt` 差异（约 2.6 万行）与剩余 clippy warning，随后把 CI `hygiene` job 提升为门禁
 
 ## WVP-PRO 真实源码对照（2026-08-23 第 5 次推进）

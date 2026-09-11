@@ -355,7 +355,7 @@ cargo test --no-default-features --features mysql --lib           # MySQL
 > 默认 SQLite feature 下的测试**完全自包含**（不连接 Redis / PostgreSQL / MySQL / ZLM），
 > 因此 CI 无需任何 service 容器。
 >
-> `hygiene` 暂不设为门禁：当前基线尚有约 2.6 万行 `rustfmt` 差异与 297 条 clippy warning
+> `hygiene` 暂不设为门禁：当前基线尚有约 2.6 万行 `rustfmt` 差异与 292 条 clippy warning
 > （主要为 `too_many_arguments` / `borrow_deref_ref` 等，可机械修复）。清理完成后即可摘掉
 > `continue-on-error` 提升为硬约束。
 >
