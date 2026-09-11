@@ -27,7 +27,9 @@ struct OpenRtpServerResp {
     msg: Option<String>,
     #[serde(default)]
     port: Option<u16>,
+    // ZLM 响应字段：仅用于反序列化，代码不读取（保留以完整映射 API）
     #[serde(default)]
+    #[allow(dead_code)]
     cookie: Option<String>,
 }
 
@@ -445,7 +447,9 @@ impl ZlmClient {
         
         #[derive(Deserialize)]
         struct Resp {
+            // ZLM 响应字段：仅用于反序列化（保留以完整映射 API）
             #[serde(rename = "api.apiDebug")]
+            #[allow(dead_code)]
             api_debug: Option<String>,
             #[serde(flatten)]
             rest: HashMap<String, String>,

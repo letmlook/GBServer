@@ -1738,7 +1738,7 @@ mod phase71_state_tests {
 mod redis_backend_tests {
     use super::*;
 
-    fn make_device_state(id: &str) -> DeviceOnlineState {
+    fn make_device_state(_id: &str) -> DeviceOnlineState {
         DeviceOnlineState {
             online: true,
             ip: "127.0.0.1".to_string(),

@@ -1,11 +1,9 @@
 use std::net::SocketAddr;
 use tokio::net::UdpSocket as TokioUdpSocket;
-use bytes::BytesMut;
 use anyhow::Result;
 
 pub struct UdpSocket {
     socket: TokioUdpSocket,
-    buffer: BytesMut,
 }
 
 impl UdpSocket {
@@ -13,7 +11,6 @@ impl UdpSocket {
         let socket = TokioUdpSocket::bind(addr).await?;
         Ok(Self {
             socket,
-            buffer: BytesMut::with_capacity(65535),
         })
     }
 

@@ -62,7 +62,7 @@ fn test_register_message_format() {
 fn test_keepalive_message_format() {
     let device_id = "34020000001320000001";
     let sn = "0000000001";
-    let call_id = "sim-ka-1";
+    let _call_id = "sim-ka-1";
 
     let body = format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>

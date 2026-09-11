@@ -514,7 +514,7 @@ mod tests {
         assert!(mgr.get("call-1").is_some());
         assert_eq!(mgr.get("call-1").unwrap().upstream_ssrc, "0xAAAA");
 
-        let s2 = mgr.handle_upstream_invite(
+        let _s2 = mgr.handle_upstream_invite(
             "call-2".into(),
             "plat-a".into(),
             "ch-1".into(),

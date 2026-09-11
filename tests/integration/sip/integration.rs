@@ -166,7 +166,7 @@ fn test_response_router_message_response() {
     let router = ResponseRouter::new(mgr.clone());
 
     // 注册请求
-    let pending = mgr.register(
+    let _pending = mgr.register(
         "34020000001320000001",
         100,
         PendingCmdType::DeviceInfo,

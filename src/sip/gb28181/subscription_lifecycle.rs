@@ -47,15 +47,12 @@ impl SubscribeSession {
 pub struct SubscriptionLifecycle {
     /// 按 device_id + sub_type 索引的订阅会话
     sessions: Arc<DashMap<String, SubscribeSession>>,
-    /// 续期间隔（秒）
-    renew_interval_secs: u32,
 }
 
 impl SubscriptionLifecycle {
     pub fn new() -> Self {
         Self {
             sessions: Arc::new(DashMap::new()),
-            renew_interval_secs: 30,
         }
     }
 

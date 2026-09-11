@@ -47,7 +47,6 @@ impl TcpListener {
 pub struct TcpStream {
     stream: TokioTcpStream,
     read_buffer: BytesMut,
-    write_buffer: BytesMut,
 }
 
 impl TcpStream {
@@ -55,7 +54,6 @@ impl TcpStream {
         Self {
             stream,
             read_buffer: BytesMut::with_capacity(65535),
-            write_buffer: BytesMut::with_capacity(65535),
         }
     }
 

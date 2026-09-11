@@ -16,7 +16,6 @@ use dashmap::DashMap;
 
 use crate::db::device as db_device;
 use crate::db::Pool;
-use crate::sip::gb28181::CatalogSubscriptionManager;
 
 /// Catalog 同步会话状态
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -121,16 +120,13 @@ pub struct CatalogSyncManager {
     sessions: Arc<DashMap<String, CatalogSyncSession>>,
     /// 数据库连接池
     pool: Pool,
-    /// Catalog 订阅管理器引用
-    subscription_manager: Arc<CatalogSubscriptionManager>,
 }
 
 impl CatalogSyncManager {
-    pub fn new(pool: Pool, subscription_manager: Arc<CatalogSubscriptionManager>) -> Self {
+    pub fn new(pool: Pool) -> Self {
         Self {
             sessions: Arc::new(DashMap::new()),
             pool,
-            subscription_manager,
         }
     }
 
@@ -259,7 +255,7 @@ mod tests {
 
     #[test]
     fn test_catalog_sync_two_packets() {
-        let session = CatalogSyncSession::new("34020000001320000001".to_string(), 1);
+        let _session = CatalogSyncSession::new("34020000001320000001".to_string(), 1);
 
         let page1 = r#"<?xml version="1.0"?>
 <Response>

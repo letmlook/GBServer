@@ -597,11 +597,43 @@ mod share_token_tests {
 
     /// C6: token store 初始化是空的
     #[test]
-    fn test_share_store_initially_empty() {
-        let store = share_tokens_store();
-        let lock = store.lock().unwrap();
-        // 注意：测试间共享全局 state，断言长度只检查 >= 0
-        assert!(lock.len() >= 0);
+    fn test_share_store_lookup_and_expiry() {
+        // 原断言是 `lock.len() >= 0` —— usize 恒 ≥ 0，**断言恒真**，实为空测试。
+        // 现改为校验真实语义：未过期可查到、过期被 GC、伪造 token 不命中。
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let live = format!("test-live-{}", std::process::id());
+        let expired = format!("test-expired-{}", std::process::id());
+
+        {
+            let mut tokens = share_tokens_store().lock().unwrap();
+            tokens.push(ShareToken {
+                token: live.clone(),
+                device_id: "d".into(),
+                channel_id: "c".into(),
+                expires_at: now + 3600,
+            });
+            tokens.push(ShareToken {
+                token: expired.clone(),
+                device_id: "d".into(),
+                channel_id: "c".into(),
+                expires_at: now - 1,
+            });
+        }
+        {
+            let mut tokens = share_tokens_store().lock().unwrap();
+            tokens.retain(|t| t.expires_at > now);
+            assert!(tokens.iter().any(|t| t.token == live), "未过期 token 应可查到");
+            assert!(!tokens.iter().any(|t| t.token == expired), "过期 token 应被 GC");
+            assert!(
+                !tokens.iter().any(|t| t.token == "definitely-not-a-token"),
+                "伪造 token 不应命中"
+            );
+            // 清理本测试写入的数据，避免影响并行测试
+            tokens.retain(|t| t.token != live && t.token != expired);
+        }
     }
 
     /// C6: formatExpireTime 风格测试 — 验证 expires_at 与 now 的差值计算

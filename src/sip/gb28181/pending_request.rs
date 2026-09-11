@@ -523,7 +523,7 @@ mod tests {
     #[test]
     fn test_register_and_complete() {
         let mgr = PendingRequestManager::new();
-        let req = mgr.register(
+        let _req = mgr.register(
             "34020000001110000001",
             1,
             PendingCmdType::DeviceInfo,
@@ -642,7 +642,7 @@ mod tests {
     #[tokio::test]
     async fn test_register_record_info_multi_packet_completes_after_sum_num() {
         let mgr = PendingRequestManager::new();
-        let (_req, mut rx) = mgr.register_record_info_multi_packet(
+        let (_req, rx) = mgr.register_record_info_multi_packet(
             "34020000001110000001", 100, "call-mp-1", 15,
         );
         assert_eq!(mgr.pending_count(), 1);

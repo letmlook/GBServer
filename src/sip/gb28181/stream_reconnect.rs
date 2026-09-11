@@ -197,7 +197,6 @@ impl StreamReconnectManager {
                         None,
                     ).await;
 
-                    drop(sip);
 
                     match result {
                         Ok(_) => {

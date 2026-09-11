@@ -17,8 +17,7 @@ use crate::db::position_history as ph;
 use crate::handlers::websocket::WsState;
 use crate::sip::core::parser::Parser;
 use crate::sip::core::{
-    DialogManager, SipMessage, SipMethod, SipRequest, SipResponse, Transaction, TransactionManager,
-    TransportInfo,
+    SipMessage, SipMethod, SipRequest, SipResponse, Transaction, TransactionManager, TransportInfo,
 };
 use crate::sip::gb28181::catalog::{
     build_catalog_notify_body, CatalogSubscription, CatalogSubscriptionManager,
@@ -208,7 +207,6 @@ pub struct SipServer {
     broadcast_manager: Arc<BroadcastManager>,
     catalog_subscription_manager: Arc<CatalogSubscriptionManager>,
     transaction_manager: Arc<TransactionManager>,
-    dialog_manager: Arc<DialogManager>,
     socket: Arc<RwLock<Option<Arc<UdpSocket>>>>,
     tcp_enabled: bool,
     tcp_listener: Arc<RwLock<Option<TcpListener>>>,
@@ -260,7 +258,6 @@ impl SipServer {
             broadcast_manager: Arc::new(BroadcastManager::new()),
             catalog_subscription_manager: Arc::new(CatalogSubscriptionManager::new()),
             transaction_manager: Arc::new(TransactionManager::new()),
-            dialog_manager: Arc::new(DialogManager::new()),
             socket: Arc::new(RwLock::new(None)),
             tcp_enabled: false,
             tcp_listener: Arc::new(RwLock::new(None)),
@@ -3533,50 +3530,6 @@ let renewal_pool = pool.clone();
             }
         }
         socket.send_to(response.as_bytes(), addr).await?;
-        Ok(())
-    }
-
-    /// 发送 SIP MESSAGE 请求到设备
-    async fn send_request(
-        &self,
-        socket: &Arc<UdpSocket>,
-        addr: SocketAddr,
-        device_id: &str,
-        call_id: &str,
-        cseq: u32,
-        content_type: &str,
-        body: &str,
-    ) -> Result<()> {
-        let request = format!(
-            "MESSAGE sip:{}@{}:{} SIP/2.0\r\n\
-             Via: SIP/2.0/UDP {}:{};rport;branch=z9hG4bK{}\r\n\
-             From: <sip:{}@{}:{}>;tag={}\r\n\
-             To: <sip:{}@{}:{}>\r\n\
-             Call-ID: {}\r\n\
-             CSeq: {} MESSAGE\r\n\
-             Content-Type: {}\r\n\
-             Content-Length: {}\r\n\r\n\
-             {}",
-            device_id,
-            addr.ip(),
-            addr.port(),
-            self.config.ip,
-            self.config.port,
-            generate_branch(),
-            self.config.device_id,
-            self.config.ip,
-            self.config.port,
-            generate_tag(),
-            device_id,
-            addr.ip(),
-            addr.port(),
-            call_id,
-            cseq,
-            content_type,
-            body.len(),
-            body
-        );
-        socket.send_to(request.as_bytes(), addr).await?;
         Ok(())
     }
 

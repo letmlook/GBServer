@@ -164,7 +164,7 @@ mod tests {
             fn channel_id(&self) -> Option<&str> { self.ch.as_deref() }
         }
 
-        let mut m = MockState {
+        let m = MockState {
             id: "live/test".into(),
             app: "live".into(),
             st: StreamStatus::Ready,

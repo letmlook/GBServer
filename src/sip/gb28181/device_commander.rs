@@ -313,7 +313,7 @@ mod tests {
     #[test]
     fn test_register_and_parse_device_info() {
         let cmd = make_commander();
-        let req = cmd.query_device_info("34020000001320000001", 100);
+        let _req = cmd.query_device_info("34020000001320000001", 100);
         assert_eq!(cmd.pending_count(), 1);
         assert!(cmd.has_pending_for("34020000001320000001"));
 

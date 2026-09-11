@@ -57,21 +57,6 @@ pub(crate) async fn sqlite_pool_with_schema() -> db::Pool {
     pool
 }
 
-/// 建一个独立的临时目录，测试结束时请调用方自行清理。
-pub(crate) fn temp_dir(tag: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "gbserver-test-{}-{}-{}",
-        tag,
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("create temp dir");
-    dir
-}
 
 /// 最小可用 `AppConfig`（只填充测试关心的字段，其余为默认）
 pub(crate) fn app_config() -> crate::config::AppConfig {
