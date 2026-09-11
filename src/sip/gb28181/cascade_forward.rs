@@ -173,6 +173,23 @@ impl SendRtpManager {
         None
     }
 
+    /// 按上游 SSRC 关闭会话。
+    ///
+    /// `on_send_rtp_stopped` 回调里 `stream` 未必带上（不同 ZLM 版本字段集不同），
+    /// 但 `ssrc` 是推流标识，用它兜底才能保证级联会话一定被清掉，
+    /// 否则平台会一直以为"还在往上级推流"。
+    pub fn close_by_ssrc(&self, ssrc: &str) -> Option<SendRtpSession> {
+        if ssrc.is_empty() {
+            return None;
+        }
+        let matched_key: Option<String> = self
+            .sessions
+            .iter()
+            .find(|entry| entry.value().upstream_ssrc == ssrc)
+            .map(|entry| entry.key().clone());
+        matched_key.and_then(|k| self.close(&k))
+    }
+
     /// 按通道关闭所有会话
     pub fn close_by_channel(&self, channel_id: &str) -> Vec<SendRtpSession> {
         let snap: Vec<_> = self

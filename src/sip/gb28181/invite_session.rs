@@ -166,6 +166,24 @@ pub struct InviteSession {
     pub sdp_request: Option<String>,
     pub sdp_response: Option<String>,
     pub timeout_seconds: u64,
+    /// 本端 From 头的 tag。
+    ///
+    /// 发 BYE 时**必须**与 INVITE 的 From tag 一致（RFC 3261 §12.2.2：
+    /// 对话由 Call-ID + 本地 tag + 远端 tag 三元组标识）。此前
+    /// `send_session_bye` 每次重新 `generate_tag()`，设备侧匹配不到对话，
+    /// 典型响应是 `481 Call/Transaction Does Not Exist` —— 设备不会停止推流。
+    pub local_tag: Option<String>,
+    /// 对端 To 头的 tag（来自 200 OK 的 `To` 头）。
+    ///
+    /// 出站 INVITE 的对端 tag 只在 200 OK 里出现，必须回填进会话，
+    /// 否则 BYE 的 To 头 missing tag，同样会被设备判为 481。
+    pub remote_tag: Option<String>,
+    /// 本对话最近一次 INVITE 的 CSeq 序号。
+    ///
+    /// RFC 3261 §12.2.1.1：对话内请求的 CSeq 必须严格递增，
+    /// BYE 用 `invite_cseq + 1`（此前一律硬编码 `BYE 1`，与
+    /// `INVITE 1` 相等 → 设备按乱序请求拒绝）。
+    pub invite_cseq: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -206,6 +224,9 @@ impl InviteSession {
             sdp_request: None,
             sdp_response: None,
             timeout_seconds: 60,
+            local_tag: None,
+            remote_tag: None,
+            invite_cseq: 1,
         }
     }
 
@@ -233,9 +254,38 @@ impl InviteSession {
         self.sdp_request = Some(sdp.to_string());
     }
 
+    /// 记录设备在 200 OK 里返回的应答 SDP。
+    ///
+    /// 与 `set_sdp`（记录**请求** SDP）分开：应答里的 `m=` 端口代表设备
+    /// 实际推流的目标端口，TCP 被动模式下与请求端口不同，是不能互相覆盖的
+    /// 两条信息。
+    pub fn set_sdp_response(&mut self, sdp: &str) {
+        // 应答 SDP 里的 c=/m= 是设备侧信息；只记录文本，不覆盖请求侧的
+        // media_port/ssrc（请求侧是 ZLM 收流端口与 SSRC，二者语义不同）。
+        self.sdp_response = Some(sdp.to_string());
+    }
+
     pub fn set_zlm_stream(&mut self, stream_id: &str, app: &str) {
         self.zlm_stream_id = Some(stream_id.to_string());
         self.zlm_app = app.to_string();
+    }
+
+    /// 记录对话标识（本地 From tag / 对端 To tag / INVITE 的 CSeq 序号）。
+    ///
+    /// 出站 INVITE 发出后立刻记录本地 tag 与 CSeq；对端 tag 要等 200 OK
+    /// 到达时再回填（见 `SipServer::handle_response`）。
+    pub fn set_local_dialog(&mut self, local_tag: &str, invite_cseq: u32) {
+        self.local_tag = Some(local_tag.to_string());
+        self.invite_cseq = invite_cseq;
+    }
+
+    pub fn set_remote_tag(&mut self, remote_tag: &str) {
+        self.remote_tag = Some(remote_tag.to_string());
+    }
+
+    /// 构造 BYE 需要的 CSeq 序号：对话内必须严格递增。
+    pub fn bye_cseq(&self) -> u32 {
+        self.invite_cseq.saturating_add(1)
     }
 
     pub fn is_active(&self) -> bool {
@@ -345,6 +395,61 @@ impl InviteSessionManager {
             store.remove_invite_session(call_id);
         }
         self.sessions.write().await.remove(call_id)
+    }
+
+    /// 收到 200 OK 后回填对端 tag / 应答 SDP，并把会话置为 `Active`。
+    ///
+    /// 对端 tag 只出现在 200 OK 的 `To` 头里，必须在这里落库，
+    /// 否则后续 BYE 的 To 头缺 tag，设备按"对话不存在"处理。
+    pub async fn mark_answered(
+        &self,
+        call_id: &str,
+        remote_tag: Option<&str>,
+        sdp_response: Option<&str>,
+    ) -> bool {
+        let mut guard = self.sessions.write().await;
+        let Some(session) = guard.get_mut(call_id) else {
+            return false;
+        };
+        if let Some(tag) = remote_tag.filter(|t| !t.is_empty()) {
+            session.set_remote_tag(tag);
+        }
+        if let Some(sdp) = sdp_response {
+            session.set_sdp_response(sdp);
+        }
+        session.status = InviteSessionStatus::Active;
+        session.update_activity();
+        let snapshot = session.clone();
+        drop(guard);
+        self.sync_to_store(&snapshot);
+        true
+    }
+
+    /// 按设备/通道回填 ZLM 流标识。
+    ///
+    /// 出站 INVITE 发出时还不知道 ZLM 会给哪个 stream_id 收流
+    /// （要等 `openRtpServer` 之后的媒体到达），因此这条信息在
+    /// 媒体就绪后回填，供 BYE 时释放 RTP 端口使用。
+    pub async fn set_zlm_stream_by_device_channel(
+        &self,
+        device_id: &str,
+        channel_id: &str,
+        stream_id: &str,
+        app: &str,
+    ) -> bool {
+        let mut guard = self.sessions.write().await;
+        let Some(session) = guard.values_mut().find(|s| {
+            s.device_id == device_id
+                && s.channel_id == channel_id
+                && s.status != InviteSessionStatus::Terminated
+        }) else {
+            return false;
+        };
+        session.set_zlm_stream(stream_id, app);
+        let snapshot = session.clone();
+        drop(guard);
+        self.sync_to_store(&snapshot);
+        true
     }
 
     pub async fn get_by_device_channel(&self, device_id: &str, channel_id: &str) -> Option<InviteSession> {

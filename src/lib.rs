@@ -798,10 +798,29 @@ impl AppState {
         }
     }
 
+    /// 按 `mediaServerId` 取 ZLM 客户端；未知 id 回落到默认节点。
+    ///
+    /// 修正：此前未知 id 直接 `return None`。而 hook 载荷里的
+    /// `mediaServerId` 是 **ZLM 自己的 `general.mediaServerId`**，它与本平台
+    /// 数据库里的节点主键/配置键并不保证一致（默认值就是 `your_server_id`
+    /// 或随机串）。于是真实环境下 `get_zlm_client(Some(未知id))` 恒为
+    /// `None`，所有依赖它的逻辑（无人观看判定的 reader/录像校验、
+    /// flow report 的流数量、健康检查）都**静默退化成"没有媒体服务器"**，
+    /// 而日志上只会看到"保持既有值"这种看不出问题的记录。
+    ///
+    /// 语义应为"优先精确匹配，匹配不到就用默认节点"，与
+    /// `get_zlm_client_auto` 的兜底思路一致。
     pub fn get_zlm_client(&self, media_server_id: Option<&str>) -> Option<Arc<zlm::ZlmClient>> {
         if let Some(id) = media_server_id {
             if id != "auto" && !id.is_empty() {
-                return self.zlm_clients.get(id).cloned();
+                match self.zlm_clients.get(id) {
+                    Some(client) => return Some(client.clone()),
+                    None => tracing::debug!(
+                        "未知 mediaServerId '{}'，回落到默认 ZLM 节点（已知节点: {:?}）",
+                        id,
+                        self.zlm_clients.keys().collect::<Vec<_>>()
+                    ),
+                }
             }
         }
         self.zlm_client.clone()

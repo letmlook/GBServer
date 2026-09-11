@@ -14,7 +14,6 @@ use axum::{
     Json, Router,
 };
 
-use crate::response::WVPResult;
 use crate::AppState;
 use crate::zlm::hook::{handle_webhook_inner, ZlmHookEvent};
 
@@ -206,7 +205,7 @@ async fn handle_hook_event<T: HookEventTag>(
     State(state): State<AppState>,
     raw_query: Option<axum::extract::RawQuery>,
     Json(mut event): Json<serde_json::Value>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<serde_json::Value> {
     // **必须在这里把路由绑定的事件名注入请求体。**
     //
     // 真实 ZLMediaKit 的 hook 请求体是一个**扁平 JSON，且不含 `hook_name`

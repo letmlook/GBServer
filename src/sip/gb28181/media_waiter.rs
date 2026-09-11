@@ -94,7 +94,21 @@ pub struct MediaWaiterManager {
     receivers: Arc<DashMap<String, oneshot::Sender<MediaWaitResult>>>,
     /// 活跃的等待者（用于并发安全地删除）
     active_keys: Arc<DashMap<String, ()>>,
+    /// **先于等待者到达**的媒体就绪通知：`stream_id -> 通知时刻`。
+    ///
+    /// 竞态是真实存在的：`openRtpServer` 在 ZLM 内部创建流时就会触发
+    /// `on_rtp_server_started`，而调用方要等这个 HTTP 响应回来之后才注册
+    /// 等待者。通知先到、等待者后注册的情况下，原先会直接丢弃 ——
+    /// 结果是"媒体明明已经就绪，播放请求却要干等 15 秒超时失败"。
+    ///
+    /// 这里把这类通知暂存一小段时间：`register` 时若命中就立即完成，
+    /// 超过 `EARLY_READY_TTL` 的陈旧条目在登记/清理时被丢弃。
+    early_ready: Arc<DashMap<String, Instant>>,
 }
+
+/// 早到通知的有效期：超过它就不再对新的等待者生效（避免把上一次播放的
+/// 通知误配给下一次播放）。
+const EARLY_READY_TTL: Duration = Duration::from_secs(30);
 
 impl MediaWaiterManager {
     pub fn new() -> Self {
@@ -103,6 +117,7 @@ impl MediaWaiterManager {
             by_stream_id: Arc::new(DashMap::new()),
             receivers: Arc::new(DashMap::new()),
             active_keys: Arc::new(DashMap::new()),
+            early_ready: Arc::new(DashMap::new()),
         }
     }
 
@@ -125,6 +140,26 @@ impl MediaWaiterManager {
         self.by_call_id.insert(call_id.to_string(), waiter.clone());
         self.by_stream_id.insert(stream_id.to_string(), waiter);
         self.active_keys.insert(waiter_key.clone(), ());
+
+        // 通知早于注册：立刻完成，调用方拿到的是一个已就绪的 oneshot。
+        if let Some((_, at)) = self.early_ready.remove(stream_id) {
+            if at.elapsed() <= EARLY_READY_TTL {
+                if let Some((_, tx)) = self.receivers.remove(&waiter_key) {
+                    let _ = tx.send(MediaWaitResult::MediaReady {
+                        zlm_stream_id: stream_id.to_string(),
+                        app: app.to_string(),
+                    });
+                }
+                self.by_call_id.remove(call_id);
+                self.by_stream_id.remove(stream_id);
+                self.active_keys.remove(&waiter_key);
+                tracing::info!(
+                    "MediaWaiter: stream {} 的通知早于注册（{}ms），立即就绪",
+                    stream_id,
+                    at.elapsed().as_millis()
+                );
+            }
+        }
 
         (waiter_key, rx)
     }
@@ -154,6 +189,8 @@ impl MediaWaiterManager {
         if let Some(call_id) = call_id_opt {
             return self.resolve(&call_id, stream_id, app);
         }
+        // 没有等待者：暂存通知，供随后注册的等待者立刻命中
+        self.early_ready.insert(stream_id.to_string(), Instant::now());
         false
     }
 
@@ -209,6 +246,17 @@ impl MediaWaiterManager {
     /// 获取活跃等待者数量
     pub fn active_count(&self) -> usize {
         self.active_keys.len()
+    }
+
+    /// 丢弃过期的"早到通知"条目，避免长期运行后无界增长。
+    pub fn prune_early_ready(&self) {
+        self.early_ready
+            .retain(|_, at| at.elapsed() <= EARLY_READY_TTL);
+    }
+
+    /// 暂存的"早到通知"条目数（测试/诊断用）。
+    pub fn early_ready_count(&self) -> usize {
+        self.early_ready.len()
     }
 }
 
@@ -303,5 +351,58 @@ mod tests {
         // 二次 reject / 不存在的 call_id 不报错
         assert!(!mgr.reject_by_call_id("call-005", 486, "Busy Here"));
         assert!(!mgr.reject_by_call_id("nonexistent", 503, "x"));
+    }
+
+    /// 竞态回归：ZLM 的媒体就绪通知可能**早于**等待者注册
+    /// （`openRtpServer` 内部就会触发 `on_rtp_server_started`，
+    /// 而调用方要等响应回来才注册）。此前这种通知会被直接丢弃，
+    /// 播放请求只能干等 15 秒超时。
+    #[tokio::test]
+    async fn test_early_ready_notification_is_not_lost() {
+        let mgr = MediaWaiterManager::new();
+
+        // 通知先到，此时还没有等待者
+        assert!(!mgr.resolve_by_stream("stream-early", "rtp"));
+        assert_eq!(mgr.early_ready_count(), 1);
+
+        // 之后才注册：应立即拿到 MediaReady，而不是等超时
+        let (_key, rx) = mgr.register("call-early", "stream-early", "rtp", 60);
+        match tokio::time::timeout(Duration::from_secs(1), rx).await {
+            Ok(Ok(MediaWaitResult::MediaReady { zlm_stream_id, app })) => {
+                assert_eq!(zlm_stream_id, "stream-early");
+                assert_eq!(app, "rtp");
+            }
+            other => panic!("早到通知必须立即兑现，实际: {:?}", other),
+        }
+        // 兑现后不再残留
+        assert_eq!(mgr.early_ready_count(), 0);
+        assert_eq!(mgr.active_count(), 0);
+    }
+
+    /// 早到通知只对**同一个** stream 生效，不能串到别的流上。
+    #[tokio::test]
+    async fn test_early_ready_is_scoped_to_stream() {
+        let mgr = MediaWaiterManager::new();
+        assert!(!mgr.resolve_by_stream("stream-a", "rtp"));
+
+        let (_key, mut rx) = mgr.register("call-b", "stream-b", "rtp", 60);
+        // 别的流的等待者不应被 stream-a 的通知兑现
+        match tokio::time::timeout(Duration::from_millis(200), &mut rx).await {
+            Err(_) => {} // 仍然在等（符合预期）
+            other => panic!("不应被无关流的通知唤醒: {:?}", other),
+        }
+        // 该通知仍在，等 stream-a 的等待者来取
+        assert_eq!(mgr.early_ready_count(), 1);
+    }
+
+    /// 过期通知必须被清理，避免内存无界增长与跨次播放误配。
+    #[tokio::test]
+    async fn test_prune_early_ready_drops_stale_entries() {
+        let mgr = MediaWaiterManager::new();
+        assert!(!mgr.resolve_by_stream("stream-old", "rtp"));
+        assert_eq!(mgr.early_ready_count(), 1);
+        // 未过期：保留
+        mgr.prune_early_ready();
+        assert_eq!(mgr.early_ready_count(), 1);
     }
 }

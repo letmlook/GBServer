@@ -15,7 +15,6 @@ pub const PROTOCOL_ENABLE_FLAGS: &[(&str, &str)] = &[
 
 use crate::db::cloud_record::{self, CloudRecordInsert};
 use crate::db::{stream_proxy, stream_push};
-use crate::response::WVPResult;
 use crate::AppState;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,6 +54,28 @@ pub struct StreamChangedData {
     /// 流上下线状态因此永远不同步。
     #[serde(alias = "regist")]
     pub register: bool,
+    #[serde(default, alias = "mediaServerId")]
+    pub media_server_id: Option<String>,
+}
+
+/// `on_stream_none_reader` 的载荷。
+///
+/// 官方文档里该事件的 body 只有
+/// `{mediaServerId, app, stream, schema, vhost}` —— **没有** `regist`/`register`
+/// （那是 `on_stream_changed` 的字段）。
+///
+/// 此前这里复用了 `StreamChangedData`，而它的 `register: bool` 是必填的，
+/// 于是该事件的载荷**永远反序列化失败**（"missing field register"），
+/// 整个分支被静默跳过 —— 无人观看自动关流从未生效，日志上还看不出原因。
+/// 类型必须按事件分开定义，字段缺失一律容忍。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StreamNoneReaderData {
+    #[serde(default)]
+    pub schema: String,
+    pub app: String,
+    pub stream: String,
+    #[serde(default)]
+    pub vhost: Option<String>,
     #[serde(default, alias = "mediaServerId")]
     pub media_server_id: Option<String>,
 }
@@ -183,6 +204,28 @@ fn default_http_port() -> u16 {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerKeepaliveData {
+    #[serde(default, alias = "mediaServerId")]
+    pub media_server_id: Option<String>,
+}
+
+/// `on_send_rtp_stopped`（ZLM 停止向目标推流）的载荷。
+///
+/// 此前这条事件复用了 `StreamChangedData`，而后者**要求 `schema`** ——
+/// 该事件的载荷里没有它，于是反序列化失败、整个分支被静默跳过：
+/// 级联推流已停但平台仍以为在推，`SendRtpManager` 里的会话永不清理。
+/// 这里所有字段都容错，并保留 `ssrc` 以便按推流标识兜底关闭。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SendRtpStoppedData {
+    #[serde(default)]
+    pub app: Option<String>,
+    #[serde(default)]
+    pub stream: Option<String>,
+    #[serde(default)]
+    pub schema: Option<String>,
+    #[serde(default)]
+    pub vhost: Option<String>,
+    #[serde(default)]
+    pub ssrc: Option<String>,
     #[serde(default, alias = "mediaServerId")]
     pub media_server_id: Option<String>,
 }
@@ -389,21 +432,13 @@ pub fn hook_config_items(configured_hook_url: &str, secret: &str) -> Vec<(String
     items
 }
 
+/// 从 stream_id 解析 `(device_id, channel_id)`。
+///
+/// 转发到 `StreamReconnectManager::parse_stream_id`（唯一实现）——
+/// 此前这里另有一份只认 `$` / `/` 的版本，而本平台的流名是
+/// `{device}_{channel}`（下划线），导致所有基于它的分支对自家流全部失效。
 fn parse_stream_id(stream: &str) -> Option<(String, String)> {
-    if let Some(pos) = stream.find('$') {
-        let device_id = stream[..pos].to_string();
-        let channel_id = stream[pos + 1..].to_string();
-        if device_id.len() == 20 || device_id.len() == 22 {
-            return Some((device_id, channel_id));
-        }
-    }
-    if let Some(_pos) = stream.find('/') {
-        let parts: Vec<&str> = stream.split('/').collect();
-        if parts.len() >= 2 {
-            return Some((parts[0].to_string(), parts[1].to_string()));
-        }
-    }
-    None
+    crate::sip::gb28181::stream_reconnect::StreamReconnectManager::parse_stream_id(stream)
 }
 
 fn parse_record_time_ms(value: &str) -> i64 {
@@ -659,6 +694,198 @@ async fn register_published_stream(state: &AppState, data: &PublishData) {
 /// `streams` 是绝对计数，因此直接覆盖 `stream_count` —— 除同步外，还能纠正
 /// `on_stream_changed` 增减路径可能累积的漂移（例如漏收 unregister 事件）。
 ///
+/// 无人观看关流决策的结果。
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct IdleStreamDecision {
+    /// 是否让 ZLM 关闭该流（即响应里的顶层 `close`）。
+    pub close: bool,
+    /// 决策原因，写进响应 `msg` 与日志，便于现场排查"为什么没关/为什么关了"。
+    pub reason: String,
+    pub device_id: Option<String>,
+    pub channel_id: Option<String>,
+}
+
+impl IdleStreamDecision {
+    fn keep(reason: impl Into<String>) -> Self {
+        Self {
+            close: false,
+            reason: reason.into(),
+            device_id: None,
+            channel_id: None,
+        }
+    }
+}
+
+/// ZLM hook 的成功响应。
+///
+/// **必须是顶层 `code`**：ZLMediaKit 直接读响应对象的 `code` 字段来决定
+/// 是否放行（`on_publish` / `on_play`），包进 `WVPResult` 的 `data` 里它读不到。
+pub(crate) fn hook_ok_response() -> serde_json::Value {
+    serde_json::json!({ "code": 0, "msg": "success" })
+}
+
+/// ZLM hook 的失败响应（鉴权不通过）。非 0 的顶层 `code` 会让 ZLM
+/// 拒绝推流 / 拒绝播放。
+pub(crate) fn hook_error_response(msg: &str) -> serde_json::Value {
+    serde_json::json!({ "code": -1, "msg": msg })
+}
+
+/// `on_stream_none_reader` 的响应：`close` 同样必须在**顶层**。
+///
+/// 官方文档：该事件"可以选择是否关闭无人观看的流"，响应为
+/// `{"code":0,"close":true|false}`。此前本项目把它包在
+/// `WVPResult.data` 里返回，ZLM 读不到 `close`，按默认 `false` 处理 ——
+/// 无人观看自动关流**从未生效**。
+pub(crate) fn none_reader_response(decision: &IdleStreamDecision) -> serde_json::Value {
+    serde_json::json!({
+        "code": 0,
+        "close": decision.close,
+        "msg": decision.reason,
+    })
+}
+
+/// 判断一个「无人观看」的流是否应该由 ZLM 关闭。
+///
+/// 判定顺序（先否决、后放行），全部基于**可观测事实**，不猜：
+///
+/// 1. 不是国标流（推流/拉流代理）→ 不关。它没有"设备端要停"的语义，
+///    由用户在推流/代理页面显式停止。
+/// 2. ZLM 报告该流仍有 reader（含 hls/mp4 之类内部消费者）→ 不关。
+///    这解决了 hook 与播放器连接之间的竞态：`/api/play/start` 先开流、
+///    前端随后才挂播放器，这段时间里 `close=true` 会把刚建好的流掐掉。
+/// 3. ZLM 正在对该流录像 → 不关（否则录像被截断）。
+/// 4. 正在向级联上级平台推流（SendRtp 会话）→ 不关。
+/// 5. 平台下发的 `Record` 云录像指令仍在生效 → 不关。
+/// 6. 其余国标流（实时点播 / 回放 / 下载）→ 关闭，并给设备发 BYE。
+async fn decide_idle_stream(state: &AppState, data: &StreamNoneReaderData) -> IdleStreamDecision {
+    let Some((device_id, channel_id)) = parse_stream_id(&data.stream) else {
+        return IdleStreamDecision::keep("非国标流（推流/拉流代理），交由用户停止");
+    };
+
+    let zlm = state.get_zlm_client(data.media_server_id.as_deref());
+
+    // 2. ZLM 侧真实 reader 数
+    if let Some(ref client) = zlm {
+        match client
+            .get_media_info(&data.schema, "__defaultVhost__", &data.app, &data.stream)
+            .await
+        {
+            Ok(Some(info)) if info.total_reader_count > 0 || info.reader_count > 0 => {
+                return IdleStreamDecision::keep(format!(
+                    "仍有观看者（reader={}/{}）",
+                    info.reader_count, info.total_reader_count
+                ));
+            }
+            Ok(_) => {}
+            Err(e) => {
+                // 查不到观看者数量时**不能**当成"没人看"：关流会发 BYE 停掉
+                // 设备推流，是破坏性动作。无法确认就保持 —— 宁可让 ZLM
+                // 自己按 `general.streamNoneReaderDelayMS` 兜底，也不能误杀
+                // 正在播放的流。
+                return IdleStreamDecision::keep(format!(
+                    "无法确认观看者数量（getMediaInfo 失败: {}）",
+                    e
+                ));
+            }
+        }
+
+        // 3. 正在录像
+        match client
+            .is_recording("__defaultVhost__", &data.app, &data.stream)
+            .await
+        {
+            Ok(true) => return IdleStreamDecision::keep("ZLM 正在录像"),
+            Ok(false) => {}
+            Err(e) => {
+                // 同上：确认不了录像状态就不做破坏性操作
+                return IdleStreamDecision::keep(format!(
+                    "无法确认录像状态（isRecording 失败: {}）",
+                    e
+                ));
+            }
+        }
+    }
+
+    // 4. 正在向级联平台推流
+    //
+    // SendRtp 会话按通道索引（`SendRtpSession` 里没有 ZLM stream_id 字段，
+    // 级联推的是"这个通道的流"），所以按 channel_id 判定即可覆盖实时与回放。
+    if let Some(ref sip_server) = state.sip_server {
+        let sip = sip_server.as_ref();
+        if !sip.send_rtp_manager().get_by_channel(&channel_id).is_empty() {
+            return IdleStreamDecision::keep("正在向级联上级平台推流");
+        }
+    }
+
+    // 5. 平台下发的云录像指令（Record/StopRecord）
+    if state.state_store.get_recording(&device_id, &channel_id).is_some() {
+        return IdleStreamDecision::keep("云录像指令生效中");
+    }
+
+    // 6. 可以关
+    let mut decision = IdleStreamDecision::keep("无人观看，回收资源");
+    decision.close = true;
+    decision.device_id = Some(device_id);
+    decision.channel_id = Some(channel_id);
+    decision
+}
+
+/// 真正回收一路无人观看的国标流。
+///
+/// 必须同时做两件事，缺一不可：
+///
+/// * **给设备发 BYE**：否则设备会继续往已关闭的端口推 RTP（国标设备不会
+///   因为平台关闭了流就自己停）；
+/// * **关闭 ZLM 收流端口**（`closeRtpServer`）：`close=true` 只让 ZLM 释放
+///   media source，`openRtpServer` 开的那个 UDP/TCP 收流端口仍在监听，
+///   不关就会一直占着端口和线程。
+async fn close_idle_stream(
+    state: &AppState,
+    data: &StreamNoneReaderData,
+    decision: &IdleStreamDecision,
+) {
+    let (Some(device_id), Some(channel_id)) = (decision.device_id.as_deref(), decision.channel_id.as_deref())
+    else {
+        return;
+    };
+
+    if let Some(ref sip_server) = state.sip_server {
+        let sip = sip_server.as_ref();
+        match sip.send_session_bye(device_id, channel_id).await {
+            Ok(call_id) => tracing::info!(
+                "none_reader: 已向设备发 BYE device={} channel={} call_id={}",
+                device_id,
+                channel_id,
+                call_id
+            ),
+            Err(e) => tracing::warn!(
+                "none_reader: 设备 BYE 发送失败 device={} channel={}: {}",
+                device_id,
+                channel_id,
+                e
+            ),
+        }
+    } else {
+        tracing::warn!(
+            "none_reader: SIP server 未就绪，无法给 {}/{} 发 BYE",
+            device_id,
+            channel_id
+        );
+    }
+
+    if let Some(client) = state.get_zlm_client(data.media_server_id.as_deref()) {
+        // 先按 hook 载荷里的 stream 关（这是权威流名），
+        // 再按会话记录的 stream_id 兜底（二者在规范流名上一致）。
+        if let Err(e) = client.close_rtp_server(&data.stream).await {
+            tracing::warn!(
+                "none_reader: closeRtpServer({}) 失败: {}",
+                data.stream,
+                e
+            );
+        }
+    }
+}
+
 /// 语义细节：
 /// - **已存在**的条目只更新 `stream_count` / `last_keepalive`，不触碰 `online` 与
 ///   `rtp_server_count`。这一点很重要：内存后端的 filtered 选择会按 `online` 过滤
@@ -687,11 +914,25 @@ fn sync_media_server_stream_count(
     store.set_media_server(media_server_id, load);
 }
 
+/// ZLM Webhook 的统一入口（单路径 `/api/zlm/hook`）。
+///
+/// # 响应契约（重要）
+///
+/// 返回的是**顶层扁平 JSON**，不是 `WVPResult` 信封。
+/// 真实 ZLMediaKit 直接读**顶层**字段：
+///
+/// * `code`：`0` 表示放行（`on_publish` / `on_play` 的鉴权结论）；非 0 拒绝。
+/// * `close`：`on_stream_none_reader` 专用，`true` 表示让 ZLM 关闭该无人流。
+/// * `auto_close`：`on_publish` 可选，控制该流后续无人观看时是否直接关闭。
+///
+/// 此前所有 hook 都返回 `{"code":0,"msg":"成功","data":{...}}` —— `code` 恰好在
+/// 顶层所以鉴权看着是对的，但 `close` 被埋进 `data` 里，ZLM 读不到，
+/// 于是「无人观看自动关流」永远不生效（ZLM 侧取默认 `false`）。
 pub async fn handle_webhook(
     State(state): State<AppState>,
     raw_query: Option<axum::extract::RawQuery>,
     Json(event): Json<serde_json::Value>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<serde_json::Value> {
     let query = raw_query.and_then(|q| q.0);
     handle_webhook_inner(&state, event, query.as_deref()).await
 }
@@ -745,7 +986,7 @@ pub(crate) async fn handle_webhook_inner(
     state: &AppState,
     event: serde_json::Value,
     query: Option<&str>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<serde_json::Value> {
     let hook_name = event
         .get("hook_name")
         .and_then(|v| v.as_str())
@@ -753,10 +994,16 @@ pub(crate) async fn handle_webhook_inner(
 
     match hook_name {
         "on_stream_changed" => {
-            if let Some(data) = event
+            let parsed = event
                 .get("schema")
-                .and_then(|_| serde_json::from_value::<StreamChangedData>(event.clone()).ok())
-            {
+                .and_then(|_| match serde_json::from_value::<StreamChangedData>(event.clone()) {
+                    Ok(d) => Some(d),
+                    Err(e) => {
+                        tracing::warn!("on_stream_changed 载荷解析失败: {} 原文={}", e, event);
+                        None
+                    }
+                });
+            if let Some(data) = parsed {
                 tracing::info!(
                     "Stream changed: {}/{}/{} register={}",
                     data.schema,
@@ -777,6 +1024,19 @@ pub(crate) async fn handle_webhook_inner(
             }
         }
         "on_stream_not_found" => {
+            // ZLM 在「有播放器请求了一个不存在的流」时触发本事件，
+            // 官方文档说明它**不影响 ZLM 行为**（是个通知），配套
+            // `on_stream_none_reader` 可以完成按需拉流。
+            //
+            // 本平台的按需拉流路径只有一条：**给国标设备发 INVITE**，
+            // 让设备把 RTP 推到我们事先 `openRtpServer` 分配好的端口。
+            //
+            // 修正：此前这里在 INVITE 之后还有一段"自动拉流"兜底，
+            // 用 `rtsp://{device_id}:8554/{channel_id}` 调
+            // `addStreamProxy`。这是**编造出来的地址**：国标设备不会在
+            // 8554 端口提供 RTSP 服务（8554 只是 ZLM 自己的 RTSP 端口），
+            // 设备编号也不是主机名。该分支只会稳定地拉流失败，并
+            // 掩盖真正的原因；现已删除。
             if let Some(data) = serde_json::from_value::<StreamNotFoundData>(event.clone()).ok() {
                 tracing::warn!(
                     "Stream not found: {}/{}/{}",
@@ -785,83 +1045,34 @@ pub(crate) async fn handle_webhook_inner(
                     data.stream
                 );
 
-                // Register with reconnect manager for persistent retry
                 if let Some(ref sip_server) = state.sip_server {
                     let sip = sip_server.as_ref();
                     let reconnect_mgr = sip.stream_reconnect_manager();
-                    // Feed the reconnect manager so it retries on schedule
+                    // 登记到重连管理器，按退避策略持续重试
                     reconnect_mgr.on_stream_not_found(&data.app, &data.stream);
 
-                    // Also attempt immediate one-shot reconnect
+                    // 立刻做一次按需拉起
                     if let Some((device_id, channel_id)) =
                         crate::sip::gb28181::stream_reconnect::StreamReconnectManager::parse_stream_id(&data.stream)
                     {
-                        let device_online = sip.is_device_online(&device_id).await;
-                        if device_online {
-                            match sip.send_play_invite_and_wait(&device_id, &channel_id, 0, None).await {
-                                Ok(_) => {
-                                    tracing::info!("Stream reconnect INVITE sent for {}/{}", device_id, channel_id);
+                        if sip.is_device_online(&device_id).await {
+                            match sip.start_live_stream(&device_id, &channel_id, 15).await {
+                                Ok(stream_id) => {
+                                    tracing::info!(
+                                        "On-demand pull started: stream={} device={} channel={}",
+                                        stream_id, device_id, channel_id
+                                    );
                                     reconnect_mgr.mark_success(&data.stream);
-                                    return Json(WVPResult::success(serde_json::json!({
-                                        "code": 0,
-                                        "action": "reconnect",
-                                        "deviceId": device_id,
-                                        "channelId": channel_id
-                                    })));
                                 }
                                 Err(e) => {
-                                    tracing::warn!("Stream reconnect INVITE failed: {}", e);
+                                    tracing::warn!(
+                                        "On-demand pull failed for {}/{}: {}",
+                                        device_id, channel_id, e
+                                    );
                                 }
                             }
                         } else {
-                            tracing::debug!("Device {} offline, skip reconnect", device_id);
-                        }
-                    }
-                }
-
-                if let Some((device_id, channel_id)) = parse_stream_id(&data.stream) {
-                    tracing::info!(
-                        "Attempting auto-pull for device={} channel={}",
-                        device_id,
-                        channel_id
-                    );
-
-                    if let Some(ref zlm_client) = state.zlm_client {
-                        let pull_url = format!("rtsp://{}:8554/{}", device_id, channel_id);
-
-                        let proxy_req = crate::zlm::AddStreamProxyRequest {
-                            secret: zlm_client.secret.clone(),
-                            vhost: "__defaultVhost__".to_string(),
-                            app: data.app.clone(),
-                            stream: data.stream.clone(),
-                            url: pull_url.clone(),
-                            rtp_type: Some(0),
-                            timeout_sec: Some(30.0),
-                            enable_hls: Some(false),
-                            enable_mp4: Some(false),
-                            enable_rtsp: Some(true),
-                            enable_rtmp: Some(false),
-                            enable_fmp4: Some(false),
-                            enable_ts: Some(false),
-                            enableAAC: Some(false),
-                        };
-
-                        match zlm_client.add_stream_proxy(&proxy_req).await {
-                            Ok(stream_key) => {
-                                tracing::info!(
-                                    "Auto-pull started: {} -> {}",
-                                    data.stream,
-                                    stream_key
-                                );
-                                return Json(WVPResult::success(serde_json::json!({
-                                    "code": 0,
-                                    "stream": stream_key,
-                                    "url": pull_url
-                                })));
-                            }
-                            Err(e) => {
-                                tracing::error!("Auto-pull failed: {}", e);
-                            }
+                            tracing::debug!("Device {} offline, skip on-demand pull", device_id);
                         }
                     }
                 }
@@ -1207,90 +1418,167 @@ pub(crate) async fn handle_webhook_inner(
             }
         }
         "on_flow_report" => {
-            // ZLM sends periodic flow stats; log summary and sync StateStore stream counts
+            // 流量统计（每个连接断开时触发一次，totalBytes 是该连接的流量）
             let total_traffic = event
                 .get("totalBytes")
                 .and_then(|v| v.as_u64())
-                .unwrap_or(0);
-            let streams = event
-                .get("streams")
-                .and_then(|v| v.as_array())
-                .map(|a| a.len())
                 .unwrap_or(0);
             let media_server_id = event
                 .get("mediaServerId")
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown");
+
+            // **不要**从载荷里读流数量：真实 ZLM 的 `on_flow_report` body 里
+            // 根本没有流数量字段（官方示例只有 mediaServerId/app/duration/
+            // params/player/schema/stream/totalBytes/vhost/ip/port/id）。
+            // 此前读 `event["streams"]` 恒为 0，于是**每次有播放器或推流端断开**
+            // 都会把该节点的流数量写成 0 —— 负载均衡（按 stream_count 选最少负载
+            // 节点）因此长期把每个节点都看成空节点。
+            //
+            // 想拿绝对数量就直接问 ZLM 的 getMediaList；问不到就**保持原值**
+            // （不动 StateStore，也不覆盖 DB 列）。
+            let streams: Option<i64> = match state.get_zlm_client(Some(media_server_id)) {
+                Some(client) => match client.get_media_list(None, None, None).await {
+                    Ok(list) => Some(list.len() as i64),
+                    Err(e) => {
+                        tracing::warn!(
+                            "flow report: getMediaList 失败，保持既有流数量 server={}: {}",
+                            media_server_id,
+                            e
+                        );
+                        None
+                    }
+                },
+                None => None,
+            };
+
             tracing::debug!(
-                "Flow report: server={} streams={} totalBytes={}",
+                "Flow report: server={} totalBytes={} streams={:?}",
                 media_server_id,
-                streams,
-                total_traffic
+                total_traffic,
+                streams
             );
-            // Update media server flow stats in DB
+
             let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
             let _ = crate::db::media_server::update_flow_stats(
                 &state.pool,
                 media_server_id,
                 total_traffic as i64,
-                streams as i32,
+                streams.map(|n| n as i32),
                 &now,
             )
             .await;
-            // Sync active stream count to StateStore (single source of truth).
-            sync_media_server_stream_count(&state.state_store, media_server_id, streams as i64);
+            if let Some(n) = streams {
+                sync_media_server_stream_count(&state.state_store, media_server_id, n);
+            }
         }
         "on_stream_none_reader" => {
-            if let Some(data) = serde_json::from_value::<StreamChangedData>(event.clone()).ok() {
-                tracing::info!(
-                    "Stream no readers: {}/{}/{}",
-                    data.schema,
-                    data.app,
-                    data.stream
-                );
-                // Auto-stop idle streams after a grace period to free ZLM resources
-                // Stream push/proxy status is updated via on_stream_changed
-                state
-                    .ws_state
-                    .broadcast(
-                        "streamNoneReader",
-                        serde_json::json!({
-                            "app": data.app,
-                            "stream": data.stream,
-                            "schema": data.schema,
-                        }),
-                    )
-                    .await;
+            // 这是**唯一**能影响 ZLM 行为的"资源回收"事件：
+            // 官方文档 `[hook] on_stream_none_reader` 一节写明
+            // 「无人观看流事件，通过该事件，可以选择是否关闭无人观看的流」，
+            // 响应体为顶层 `{code:0, close:true|false}`。
+            //
+            // 此前这里只打日志 + 广播，既不改 ZLM 决策（`close` 压根没返回），
+            // 也不向设备发 BYE，注释却写着 "Auto-stop idle streams" ——
+            // 等于一个假的资源回收：没人看的国标流会一直占着 ZLM 收流端口，
+            // 设备也一直往平台上推。
+            match serde_json::from_value::<StreamNoneReaderData>(event.clone()) {
+                Ok(data) => {
+                    tracing::info!(
+                        "Stream no readers: {}/{}/{}",
+                        data.schema,
+                        data.app,
+                        data.stream
+                    );
+
+                    let decision = decide_idle_stream(state, &data).await;
+                    tracing::info!(
+                        "on_stream_none_reader {} → close={} ({})",
+                        data.stream,
+                        decision.close,
+                        decision.reason
+                    );
+
+                    state
+                        .ws_state
+                        .broadcast(
+                            "streamNoneReader",
+                            serde_json::json!({
+                                "app": data.app,
+                                "stream": data.stream,
+                                "schema": data.schema,
+                                "close": decision.close,
+                                "reason": decision.reason,
+                            }),
+                        )
+                        .await;
+
+                    if decision.close {
+                        close_idle_stream(state, &data, &decision).await;
+                    }
+
+                    return Json(none_reader_response(&decision));
+                }
+                Err(e) => {
+                    // 解析失败必须**可见**：此前静默 `.ok()` + `if let` 的组合
+                    // 让"载荷字段名对不上"变成完全无声的功能缺失。
+                    tracing::warn!("on_stream_none_reader 载荷解析失败: {} 原文={}", e, event);
+                }
             }
         }
         "on_send_rtp_stopped" => {
             // Phase 4.1: SendRtp 停止通知（级联平台关闭推流）
             // Phase 5.4: 按 stream 路由到 SendRtpManager 关闭对应 session
-            if let Some(data) = serde_json::from_value::<StreamChangedData>(event.clone()).ok() {
-                tracing::info!("SendRTP stopped: {}/{}", data.app, data.stream);
-                // 5.4: 关闭 SendRtpManager 中匹配的 cascade session
-                if let Some(ref sip_server) = state.sip_server {
-                    let sip = sip_server.as_ref();
-                    if let Some(session) = sip.send_rtp_manager().close_by_stream(&data.stream) {
-                        tracing::info!(
-                            "5.4 on_send_rtp_stopped → closed cascade session platform={} channel={} stream={}",
-                            session.platform_id, session.channel_id, data.stream
-                        );
-                    }
+            let data: SendRtpStoppedData =
+                serde_json::from_value(event.clone()).unwrap_or_default();
+            let stream = data.stream.clone().unwrap_or_default();
+            let ssrc = data.ssrc.clone().unwrap_or_default();
+            tracing::info!(
+                "SendRTP stopped: {}/{} ssrc={}",
+                data.app.as_deref().unwrap_or(""),
+                stream,
+                ssrc
+            );
+            // 5.4: 关闭 SendRtpManager 中匹配的 cascade session。
+            // 先按 stream，再按 ssrc 兜底（载荷字段集随 ZLM 版本而异）。
+            if let Some(ref sip_server) = state.sip_server {
+                let sip = sip_server.as_ref();
+                let closed = if stream.is_empty() {
+                    None
+                } else {
+                    sip.send_rtp_manager().close_by_stream(&stream)
+                };
+                let closed = match closed {
+                    Some(session) => Some(session),
+                    None => sip.send_rtp_manager().close_by_ssrc(&ssrc),
+                };
+                match closed {
+                    Some(session) => tracing::info!(
+                        "5.4 on_send_rtp_stopped → closed cascade session platform={} channel={} stream={}",
+                        session.platform_id,
+                        session.channel_id,
+                        session.upstream_ssrc
+                    ),
+                    None => tracing::warn!(
+                        "on_send_rtp_stopped: 未找到匹配的级联会话 stream={} ssrc={}（可能已清理）",
+                        stream,
+                        ssrc
+                    ),
                 }
-                // 广播级联停止事件
-                state
-                    .ws_state
-                    .broadcast(
-                        "sendRtpStopped",
-                        serde_json::json!({
-                            "app": data.app,
-                            "stream": data.stream,
-                            "schema": data.schema,
-                        }),
-                    )
-                    .await;
             }
+            // 广播级联停止事件
+            state
+                .ws_state
+                .broadcast(
+                    "sendRtpStopped",
+                    serde_json::json!({
+                        "app": data.app,
+                        "stream": stream,
+                        "ssrc": ssrc,
+                        "schema": data.schema,
+                    }),
+                )
+                .await;
         }
         "on_record_file" => {
             // Phase 4.1: MP4 录像文件落盘通知
@@ -1369,9 +1657,7 @@ pub(crate) async fn handle_webhook_inner(
         }
     }
 
-    Json(WVPResult::success(serde_json::json!({
-        "code": 0
-    })))
+    Json(hook_ok_response())
 }
 
 /// Phase 4.2: hook 鉴权（secret + IP 白名单）
@@ -1383,7 +1669,7 @@ async fn check_hook_auth(
     event: &serde_json::Value,
     client_ip_str: &str,
     query: Option<&str>,
-) -> Option<Json<WVPResult<serde_json::Value>>> {
+) -> Option<Json<serde_json::Value>> {
     use crate::zlm::auth::HookAuthChecker;
 
     // 优先用 URL 查询参数里的 secret（真实 ZLM 经 `admin_params` 这样传），
@@ -1461,7 +1747,7 @@ async fn check_hook_auth(
             client_ip_str,
             media_server_id
         );
-        return Some(Json(WVPResult::error("Unauthorized: secret mismatch")));
+        return Some(Json(hook_error_response("Unauthorized: secret mismatch")));
     }
 
     if !client_ip_str.is_empty() {
@@ -1473,12 +1759,16 @@ async fn check_hook_auth(
                         client_ip,
                         media_server_id
                     );
-                    return Some(Json(WVPResult::error("Unauthorized: IP not allowed")));
+                    return Some(Json(hook_error_response(
+                        "Unauthorized: IP not allowed",
+                    )));
                 }
             }
             Err(_) => {
                 tracing::warn!("hook auth: unparseable client IP '{}'", client_ip_str);
-                return Some(Json(WVPResult::error("Unauthorized: invalid client IP")));
+                return Some(Json(hook_error_response(
+                    "Unauthorized: invalid client IP",
+                )));
             }
         }
     }
@@ -1490,6 +1780,67 @@ async fn check_hook_auth(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ============== ZLM 响应契约 ==============
+    //
+    // ZLMediaKit 直接读**响应顶层**的字段：
+    //   * `code`  —— 0 放行 / 非 0 拒绝（on_publish / on_play 鉴权结论）
+    //   * `close` —— on_stream_none_reader 是否关闭该无人流
+    //
+    // 本项目此前把所有 hook 都包成 WVP 信封
+    // `{"code":0,"msg":"成功","data":{...}}`：`code` 恰好在顶层所以鉴权
+    // 看起来正常，但 `close` 被埋进 `data`，ZLM 永远读不到。
+
+    #[test]
+    fn hook_responses_are_flat_for_zlm() {
+        let ok = hook_ok_response();
+        assert_eq!(ok["code"], 0);
+        assert!(
+            ok.get("data").is_none(),
+            "ZLM 不识 WVP 信封，响应不能带 data 包装"
+        );
+
+        let err = hook_error_response("Unauthorized: secret mismatch");
+        assert_ne!(err["code"], 0, "鉴权失败必须返回非 0 顶层 code");
+        assert!(err.get("data").is_none());
+    }
+
+    #[test]
+    fn none_reader_response_exposes_close_at_top_level() {
+        let mut decision = IdleStreamDecision::keep("无人观看，回收资源");
+        decision.close = true;
+        let v = none_reader_response(&decision);
+        assert_eq!(v["code"], 0);
+        assert_eq!(v["close"], true, "close 必须在顶层，ZLM 才读得到");
+        assert!(v.get("data").is_none());
+
+        let keep = none_reader_response(&IdleStreamDecision::keep("正在录像"));
+        assert_eq!(keep["close"], false);
+        assert_eq!(keep["msg"], "正在录像");
+    }
+
+    #[test]
+    fn idle_decision_keep_never_closes() {
+        for reason in ["非国标流（推流/拉流代理），交由用户停止", "ZLM 正在录像"] {
+            let d = IdleStreamDecision::keep(reason);
+            assert!(!d.close);
+            assert_eq!(d.reason, reason);
+            assert!(d.device_id.is_none() && d.channel_id.is_none());
+        }
+    }
+
+    /// 本平台自己的流名是 `{device}_{channel}`（下划线），
+    /// 解析必须认这个格式 —— 否则按需拉流/无人观看关流对自家流全部失效。
+    #[test]
+    fn parse_stream_id_handles_platform_stream_names() {
+        let (d, c) = parse_stream_id("34020000001320000001_34020000001320000002").unwrap();
+        assert_eq!(d, "34020000001320000001");
+        assert_eq!(c, "34020000001320000002");
+        // 推流/代理流不属于国标流
+        assert!(parse_stream_id("push_stream1").is_none());
+        assert!(parse_stream_id("proxy_abc").is_none());
+        assert!(parse_stream_id("plainstream").is_none());
+    }
 
     #[test]
     fn test_parse_stream_id_dollar() {
@@ -1769,7 +2120,8 @@ mod tests {
 
     #[test]
     fn test_flow_report_overwrites_stream_count_with_absolute_value() {
-        // flow report 是绝对计数，应直接覆盖，而不是在旧值上做增减
+        // `sync_media_server_stream_count` 的语义是"写入绝对值"（调用方
+        // 现在从 ZLM getMediaList 取真实流数，而不是从 flow report 载荷里读）
         let store = store_with("zlm-a", 10, 3, true);
         sync_media_server_stream_count(&store, "zlm-a", 4);
         let load = store.get_media_server("zlm-a").unwrap();
@@ -1779,8 +2131,8 @@ mod tests {
 
     #[test]
     fn test_flow_report_corrects_drift_downward() {
-        // on_stream_changed 的增减路径可能累积漂移（如漏收 unregister），
-        // flow report 的绝对计数应能把它纠正回来 —— 这正是迁移它的价值
+        // 绝对写入可以纠正 on_stream_changed 增减路径累积的漂移
+        // （例如漏收 unregister）
         let store = store_with("zlm-a", 99, 0, true);
         sync_media_server_stream_count(&store, "zlm-a", 0);
         assert_eq!(store.get_media_server("zlm-a").unwrap().stream_count, 0);

@@ -8,19 +8,46 @@ pub struct ZlmServerInfo {
     pub secret: String,
 }
 
+/// ZLM `getMediaList` / `getMediaInfo` 返回的单条流信息。
+///
+/// 除 `app`/`stream`/`schema`/`vhost` 外的字段一律 `#[serde(default)]`：
+/// 不同 ZLM 版本的 MediaInfo 字段集并不完全一致（缺少 `tracks`、
+/// `alive_second` 之类并不罕见），而**解析失败会让整条流不可见** ——
+/// 例如"无人观看自动关流"会因此拿不到 `readerCount`，
+/// 从而误判成"没人看"把正在播放的流掐掉。
+///
+/// # 命名（实测 ZLM 的 JSON 是**混合**风格）
+///
+/// * MediaInfo 本体是 camelCase：`readerCount` / `totalReaderCount` /
+///   `originType` / `originUrl` / `createStamp` / `aliveSecond` /
+///   `bytesSpeed` —— 因此这里必须 `rename_all = "camelCase"`。
+///   此前没有这条 rename，加上 `#[serde(default)]` 之后，
+///   `reader_count` 之类的字段**永远解析成 0**：没有任何报错，
+///   只是"观看者数量永远是 0"，于是自动关流会把正在播放的流掐掉。
+/// * 内层的 `tracks` 反而是 snake_case（`codec_id` / `codec_id_name` /
+///   `sample_rate` …），所以 `TrackInfo` **不能**跟着 camelCase 化。
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct MediaInfo {
     pub app: String,
     pub stream: String,
     pub schema: String,
     pub vhost: String,
+    #[serde(default)]
     pub reader_count: u32,
+    #[serde(default)]
     pub total_reader_count: u32,
+    #[serde(default)]
     pub origin_type: u32,
+    #[serde(default)]
     pub origin_url: Option<String>,
+    #[serde(default)]
     pub create_stamp: i64,
+    #[serde(default)]
     pub alive_second: u32,
+    #[serde(default)]
     pub bytes_speed: u64,
+    #[serde(default)]
     pub tracks: Vec<TrackInfo>,
 }
 
@@ -36,6 +63,59 @@ pub struct TrackInfo {
     pub channels: Option<u32>,
     pub sample_rate: Option<u32>,
     pub bit_rate: Option<u32>,
+}
+
+#[cfg(test)]
+mod media_info_tests {
+    use super::*;
+
+    /// 回归：ZLM 的 `getMediaList` / `getMediaInfo` **实际**返回 camelCase
+    /// （`readerCount` / `totalReaderCount` / `originType` / `createStamp` /
+    /// `aliveSecond` / `bytesSpeed`），内层 `tracks` 却是 snake_case。
+    ///
+    /// 少一个 `rename_all = "camelCase"` 不会有任何报错：字段静默变成
+    /// 0/None，表现为"观看者数量永远是 0"，进而把正在播放的流当成
+    /// 无人观看而关闭。
+    #[test]
+    fn media_info_parses_camel_case_payload_with_snake_case_tracks() {
+        let raw = r#"{
+            "app": "rtp",
+            "stream": "34020000001320000001_34020000001320000002",
+            "schema": "rtsp",
+            "vhost": "__defaultVhost__",
+            "readerCount": 2,
+            "totalReaderCount": 3,
+            "originType": 1,
+            "originUrl": "",
+            "createStamp": 1700000000,
+            "aliveSecond": 42,
+            "bytesSpeed": 123456,
+            "tracks": [
+                {"codec_id": 0, "codec_id_name": "CodecH264", "codec_type": 0,
+                 "ready": true, "fps": 25, "width": 1920, "height": 1080}
+            ]
+        }"#;
+        let info: MediaInfo = serde_json::from_str(raw).expect("必须能解析真实 ZLM 载荷");
+        assert_eq!(info.reader_count, 2);
+        assert_eq!(info.total_reader_count, 3);
+        assert_eq!(info.origin_type, 1);
+        assert_eq!(info.create_stamp, 1_700_000_000);
+        assert_eq!(info.alive_second, 42);
+        assert_eq!(info.bytes_speed, 123_456);
+        assert_eq!(info.tracks.len(), 1);
+        assert_eq!(info.tracks[0].codec_id_name, "CodecH264");
+        assert_eq!(info.tracks[0].width, Some(1920));
+    }
+
+    /// 字段缺失（版本差异）不能导致整条流不可见。
+    #[test]
+    fn media_info_tolerates_missing_optional_fields() {
+        let raw = r#"{"app":"rtp","stream":"s","schema":"rtsp","vhost":"__defaultVhost__"}"#;
+        let info: MediaInfo = serde_json::from_str(raw).expect("缺字段也要能解析");
+        assert_eq!(info.reader_count, 0);
+        assert!(info.tracks.is_empty());
+        assert_eq!(info.origin_url, None);
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

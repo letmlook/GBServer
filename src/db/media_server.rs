@@ -608,16 +608,21 @@ pub async fn reset_miss_count_for_fresh_nodes(
 }
 
 /// Update flow statistics from flow report webhook
+/// 累加节点的流量统计。
+///
+/// `active_streams` 为 `None` 时**不改动** `active_stream_count`
+/// （SQL 用 `COALESCE(?, active_stream_count)`）。这一点很重要：真实 ZLM 的
+/// `on_flow_report` 载荷里没有流数量字段，此前传 0 会把该列写成 0。
 pub async fn update_flow_stats(
     pool: &Pool,
     id: &str,
     total_bytes: i64,
-    active_streams: i32,
+    active_streams: Option<i32>,
     now: &str,
 ) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
     let r = sqlx::query(
-        "UPDATE gb_media_server SET total_bytes = COALESCE(total_bytes, 0) + ?, active_stream_count = ?, update_time = ? WHERE id = ?"
+        "UPDATE gb_media_server SET total_bytes = COALESCE(total_bytes, 0) + ?, active_stream_count = COALESCE(?, active_stream_count), update_time = ? WHERE id = ?"
     )
     .bind(total_bytes)
     .bind(active_streams)
@@ -627,7 +632,7 @@ pub async fn update_flow_stats(
     .await?;
     #[cfg(feature = "postgres")]
     let r = sqlx::query(
-        "UPDATE gb_media_server SET total_bytes = COALESCE(total_bytes, 0) + $1, active_stream_count = $2, update_time = $3 WHERE id = $4"
+        "UPDATE gb_media_server SET total_bytes = COALESCE(total_bytes, 0) + $1, active_stream_count = COALESCE($2, active_stream_count), update_time = $3 WHERE id = $4"
     )
     .bind(total_bytes)
     .bind(active_streams)
@@ -637,7 +642,7 @@ pub async fn update_flow_stats(
     .await?;
     #[cfg(feature = "sqlite")]
     let r = sqlx::query(
-        "UPDATE gb_media_server SET total_bytes = COALESCE(total_bytes, 0) + ?, active_stream_count = ?, update_time = ? WHERE id = ?"
+        "UPDATE gb_media_server SET total_bytes = COALESCE(total_bytes, 0) + ?, active_stream_count = COALESCE(?, active_stream_count), update_time = ? WHERE id = ?"
     )
     .bind(total_bytes)
     .bind(active_streams)

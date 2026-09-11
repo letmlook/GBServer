@@ -125,6 +125,11 @@ fn build_ssrc(prefix: u8, device_id: &str) -> String {
     format!("{}{:0>9}", prefix, id_part)
 }
 
+/// 实时点播 SSRC（前缀 0）。
+pub(crate) fn build_play_ssrc(device_id: &str) -> String {
+    build_ssrc(0, device_id)
+}
+
 /// 回放 SSRC（前缀 1）。
 pub(crate) fn build_playback_ssrc(device_id: &str) -> String {
     build_ssrc(1, device_id)
@@ -207,6 +212,28 @@ fn extract_tag_text(xml: &str, tag: &str) -> Option<String> {
     } else {
         Some(trimmed.to_string())
     }
+}
+
+/// 从 `To` / `From` 头里取出 `tag=` 参数值。
+///
+/// 形如 `<sip:34020000001320000001@10.0.0.9:5060>;tag=abc123` → `Some("abc123")`。
+/// 参数名大小写不敏感（RFC 3261 头参数名不区分大小写），值允许带引号。
+/// 没有 tag 时返回 `None`（首个 200 OK 之前的响应本来就没有对端 tag）。
+fn extract_sip_tag(header: &str) -> Option<String> {
+    for part in header.split(';').skip(1) {
+        let part = part.trim();
+        let Some((k, v)) = part.split_once('=') else {
+            continue;
+        };
+        if !k.trim().eq_ignore_ascii_case("tag") {
+            continue;
+        }
+        let v = v.trim().trim_matches('"').trim();
+        if !v.is_empty() {
+            return Some(v.to_string());
+        }
+    }
+    None
 }
 
 use crate::sip::gb28181::catalog_sync::CatalogSyncManager;
@@ -522,6 +549,8 @@ impl SipServer {
         });
         // Phase 1.3: PendingRequest 超时清理后台任务
         let pending_mgr = self.pending_request_manager.clone();
+        // MediaWaiter 的"早到通知"缓存也需要定期修剪，否则长期运行会无界增长
+        let waiter_mgr = self.media_waiter_manager.clone();
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(Duration::from_secs(10)).await;
@@ -529,6 +558,7 @@ impl SipServer {
                 for call_id in removed {
                     tracing::warn!("PendingRequest timeout cleaned: {}", call_id);
                 }
+                waiter_mgr.prune_early_ready();
             }
         });
 
@@ -1215,6 +1245,7 @@ let renewal_pool = pool.clone();
                 Self::handle_response(
                     resp,
                     session_manager,
+                    invite_session_manager,
                     talk_manager,
                     pending_invites,
                     cascade_registrar,
@@ -2934,6 +2965,7 @@ let renewal_pool = pool.clone();
     async fn handle_response(
         resp: SipResponse,
         session_manager: &Arc<SessionManager>,
+        invite_session_manager: &Arc<InviteSessionManager>,
         talk_manager: &Arc<TalkManager>,
         pending_invites: &Arc<DashMap<String, oneshot::Sender<SipResponse>>>,
         cascade_registrar: &Option<Arc<CascadeRegistrar>>,
@@ -3098,6 +3130,21 @@ let renewal_pool = pool.clone();
                 session_manager
                     .update_status(&call_id, SessionStatus::Ringing)
                     .await;
+
+                // 回填业务会话的「对端 tag + 应答 SDP」并置为 Active。
+                //
+                // 对端 tag 只存在于这个 200 OK 的 `To` 头里，不落库就永远
+                // 补不回来：后续 BYE 的 To 头必须带它，否则设备按"对话不存在"
+                // 处理（481），不会停止推流。同时把响应 SDP 存档，供
+                // TCP 被动模式判断设备实际推流端口。
+                let to_header = resp.headers.get("to").cloned();
+                invite_session_manager
+                    .mark_answered(
+                        &call_id,
+                        to_header.as_deref().and_then(extract_sip_tag).as_deref(),
+                        resp.body.as_deref(),
+                    )
+                    .await;
                 if let Some((_, tx)) = pending_invites.remove(&call_id) {
                     // 把整个 200 OK 响应(含 SDP)发给调用方,
                     // 方便 play/playback 流程解析设备的 m= 端口并调
@@ -3141,7 +3188,7 @@ let renewal_pool = pool.clone();
                                 "sip:{}@{}:{}",
                                 invite_ctx.channel_id, device_addr.ip(), device_addr.port()
                             );
-                            let ack_cseq = format!("ACK {}", cseq_num);
+                            let ack_cseq = cseq_header(cseq_num, "ACK");
                             let ack = Parser::generate_ack(
                                 &ack_uri,
                                 &ack_via,
@@ -4015,7 +4062,7 @@ f=v/1/96/1/2/1/1/0
             chrono::Utc::now().timestamp_millis()
         );
         let branch = generate_branch();
-        let cseq = format!("{} {}", 1, method.as_str());
+        let cseq = cseq_header(1, method.as_str());
 
         let via = format!(
             "SIP/2.0/UDP {}:{};branch={};rport",
@@ -4438,7 +4485,7 @@ f=v/1/96/1/2/1/1/0
             chrono::Utc::now().timestamp_millis()
         );
         let branch = generate_branch();
-        let cseq = format!("INVITE {}", 1);
+        let cseq = cseq_header(1, "INVITE");
         let from_tag = generate_tag();
 
         // 2. 登记去话会话：此前只有「设备主动 INVITE 平台」这条入站路径
@@ -4555,7 +4602,7 @@ f=v/1/96/1/2/1/1/0
 
         let call_id = &session.call_id;
         let branch = generate_branch();
-        let cseq = "BYE 1".to_string();
+        let cseq = cseq_header(1, "BYE").to_string();
 
         let via = format!(
             "SIP/2.0/UDP {}:{};branch={};rport",
@@ -4652,7 +4699,7 @@ f=v/1/96/1/2/1/1/0
             .ok_or_else(|| anyhow::anyhow!("Device {} not registered", device_id))?;
         let call_id = session.call_id.clone();
         let branch = generate_branch();
-        let cseq = "INVITE 1".to_string();
+        let cseq = cseq_header(1, "INVITE").to_string();
 
         // SSRC 前缀 4 = Audio/Broadcast (与 WVP Java 一致)
         // 统一用 10 位 SSRC（此前是 "4" + id9 + "0" 共 11 位，不符合国标）
@@ -4708,7 +4755,7 @@ f=v/1/96/1/2/1/1/0
             .ok_or_else(|| anyhow::anyhow!("Device {} not registered", device_id))?;
         let call_id = &session.call_id;
         let branch = generate_branch();
-        let cseq = "BYE 1".to_string();
+        let cseq = cseq_header(1, "BYE").to_string();
 
         let via = format!("SIP/2.0/UDP {}:{};branch={};rport",
             self.config.ip, self.config.port, branch);
@@ -4743,7 +4790,21 @@ f=v/1/96/1/2/1/1/0
         Ok(())
     }
 
-    /// 根据 InviteSessionManager 中的 active session 发送 BYE（用于 Play/Playback/Download/Broadcast 停止）
+    /// 根据 InviteSessionManager 中的 active session 发送 BYE
+    /// （用于 Play/Playback/Download 停止）。
+    ///
+    /// # 必须是一个**对话内**请求
+    ///
+    /// RFC 3261 §12.2.2：对话由 `Call-ID + 本地 tag + 远端 tag` 三元组标识。
+    /// BYE 属于对话内请求，因此三样都必须与 INVITE 那次一致：
+    ///
+    /// * `From` 复用 INVITE 的本地 tag（此前每次 `generate_tag()` 生成新 tag）；
+    /// * `To` 必须带上 200 OK 里的远端 tag（此前完全不写）；
+    /// * `CSeq` 必须**严格大于** INVITE 的 CSeq（此前硬编码 `BYE 1`，
+    ///   与 `INVITE 1` 相等）。
+    ///
+    /// 三条任一不满足，设备侧都匹配不到对话，典型答复是
+    /// `481 Call/Transaction Does Not Exist`，**不会停止推流**。
     pub async fn send_session_bye(&self, device_id: &str, channel_id: &str) -> Result<String> {
         let session = self
             .invite_session_manager
@@ -4758,33 +4819,44 @@ f=v/1/96/1/2/1/1/0
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Socket not initialized"))?;
 
-        let device_addr = self
-            .device_manager
-            .get_address(device_id)
-            .await
-            .ok_or_else(|| anyhow::anyhow!("Device {} not registered", device_id))?;
+        // 设备可能刚刚掉线（正是要发 BYE 的常见场景），此时内存注册表里
+        // 已经没有它 —— 回落到会话记录的对端地址，别让"重发 BYE"失败。
+        let device_addr = match self.device_manager.get_address(device_id).await {
+            Some(addr) => addr,
+            None => session.peer_addr,
+        };
 
         let call_id = session.call_id.clone();
         let branch = generate_branch();
-        let cseq = "BYE 1".to_string();
+        // 对话内 CSeq 严格递增
+        let cseq = cseq_header(session.bye_cseq(), "BYE");
 
         let via = format!(
             "SIP/2.0/UDP {}:{};branch={};rport",
             self.config.ip, self.config.port, branch
         );
+        // From 必须与 INVITE 逐字一致（含 tag）；老会话没有记录 tag 时
+        // 才退回生成一个（否则连发出去的机会都没有）。
+        let from_tag = session
+            .local_tag
+            .clone()
+            .unwrap_or_else(generate_tag);
         let from = format!(
             "<sip:{}@{}:{}>;tag={}",
             self.config.device_id,
             self.config.ip,
             self.config.port,
-            generate_tag()
+            from_tag
         );
-        let to = format!(
+        let mut to = format!(
             "<sip:{}@{}:{}>",
             channel_id,
             device_addr.ip(),
             device_addr.port()
         );
+        if let Some(remote_tag) = session.remote_tag.as_deref() {
+            to = format!("{};tag={}", to, remote_tag);
+        }
 
         let headers: Vec<(&str, &str)> = vec![
             ("Via", &via),
@@ -4876,7 +4948,7 @@ f=v/1/96/1/2/1/1/0
             chrono::Utc::now().timestamp_millis()
         );
         let branch = generate_branch();
-        let cseq = "MESSAGE 1".to_string();
+        let cseq = cseq_header(1, "MESSAGE").to_string();
 
         // 注册 PendingRequest，让 A1 路由的 ResponseRouter 收到 RecordInfo
         // 响应时能 complete 此处注册的 entry；多包响应最终会聚合在 buffer 里
@@ -4973,7 +5045,7 @@ f=v/1/96/1/2/1/1/0
 
         let call_id = format!("recinfo_{}_{}", device_id, chrono::Utc::now().timestamp_millis());
         let branch = generate_branch();
-        let cseq = "MESSAGE 1".to_string();
+        let cseq = cseq_header(1, "MESSAGE").to_string();
 
         // 1. 注册多包 RecordInfo 等待
         let (_req, rx) = self
@@ -5056,6 +5128,53 @@ f=v/1/96/1/2/1/1/0
         }
     }
 
+    /// 出站 INVITE（Play / Playback / Download）的业务会话登记。
+    ///
+    /// # 为什么必须有这一步
+    ///
+    /// 项目里有**两张**会话表，职责不同、容易被混淆：
+    ///
+    /// * `session_manager`（`sip/gb28181/invite.rs`）：SIP 事务层上下文，
+    ///   只保存发 ACK 需要的东西（From 头、CSeq、设备地址）。
+    /// * `invite_session_manager`（`sip/gb28181/invite_session.rs`）：
+    ///   **业务会话表**，记录"谁在拉哪个设备的哪个通道、走哪个 ZLM 流、
+    ///   对话的本地/对端 tag"，是 BYE、无人观看自动关流、会话统计与
+    ///   清理的共同依据。
+    ///
+    /// 此前只有**入站** INVITE（设备呼入的 Talk/Broadcast）会写业务表，
+    /// 出站 Play/Playback/Download 一律不写。后果是实打实的功能缺失：
+    /// `send_session_bye()` 永远返回 "No active invite session"，
+    /// 于是 `/api/play/stop`、`/api/playback/stop` 只关掉 ZLM 的 RTP
+    /// 端口，**从不给设备发 BYE**，设备会一直往已关闭的端口推流；
+    /// 会话列表/统计把这些通道全部漏掉。
+    #[allow(clippy::too_many_arguments)]
+    async fn register_outbound_invite(
+        &self,
+        call_id: &str,
+        device_id: &str,
+        channel_id: &str,
+        stream_type: crate::sip::gb28181::invite_session::StreamType,
+        device_addr: SocketAddr,
+        from_tag: &str,
+        invite_cseq: u32,
+        media_port: u16,
+        ssrc: Option<&str>,
+    ) {
+        let mut session =
+            crate::sip::gb28181::invite_session::InviteSession::new(
+                call_id,
+                device_id,
+                channel_id,
+                stream_type,
+                device_addr,
+            );
+        session.set_device_info(&device_addr.ip().to_string(), device_addr.port());
+        session.set_local_dialog(from_tag, invite_cseq);
+        session.media_port = media_port;
+        session.ssrc = ssrc.map(|s| s.to_string());
+        self.invite_session_manager.create(session).await;
+    }
+
     /// 旧 fire-and-forget 接口（保留兼容）
     pub async fn send_play_invite(&self, device_id: &str, channel_id: &str) -> Result<()> {
         let _ = self
@@ -5094,13 +5213,16 @@ f=v/1/96/1/2/1/1/0
             chrono::Utc::now().timestamp_millis()
         );
         let branch = generate_branch();
-        let cseq = "INVITE 1".to_string();
+        let cseq = cseq_header(1, "INVITE").to_string();
         let from_tag = generate_tag();
 
-        // 生成合规 SSRC（20 位 GB28181 SSRC = 0 + CivilCode(10) + 通道序号（0 实时）)
+        // SSRC 统一由 `build_play_ssrc` 生成（10 位：1 位类型 + 设备号前 9 位）。
+        // 此处原先是 `format!("0{:0>9}0", …)`，多补了一个尾 0 ⇒ 11 位，
+        // 与 SsrcManager / build_playback_ssrc 的口径不一致，同一个设备在
+        // 不同路径会拿到不同长度的 SSRC。
         let ssrc_str = ssrc
             .map(|s| s.to_string())
-            .unwrap_or_else(|| format!("0{:0>9}0", &device_id[..device_id.len().min(9)]));
+            .unwrap_or_else(|| build_play_ssrc(device_id));
 
         let via = format!(
             "SIP/2.0/UDP {}:{};branch={};rport",
@@ -5153,6 +5275,19 @@ f=v/1/96/1/2/1/1/0
         self.session_manager
             .set_invite_context(&call_id, from.clone(), 1, device_addr)
             .await;
+        // 业务会话登记（BYE / 会话统计 / 无人观看关流的依据）
+        self.register_outbound_invite(
+            &call_id,
+            device_id,
+            channel_id,
+            crate::sip::gb28181::invite_session::StreamType::Play,
+            device_addr,
+            &from_tag,
+            1,
+            media_port,
+            Some(ssrc_str.as_str()),
+        )
+        .await;
 
         let uri = format!(
             "sip:{}@{}:{}",
@@ -5289,6 +5424,120 @@ f=v/1/96/1/2/1/1/0
         self.media_waiter_manager.resolve_by_stream(stream_id, app)
     }
 
+    /// 按需拉起一路实时流（国标设备 → ZLM），返回 ZLM 的 stream_id。
+    ///
+    /// 供 `on_stream_not_found` hook 的按需拉流与 `StreamReconnectManager`
+    /// 的自动重连复用，是与 `/api/play/start` 同一条媒体链路：
+    ///
+    /// 1. `openRtpServer` 让 ZLM 分配一个真实收流端口；
+    /// 2. 用**该端口**发 INVITE（`m=video 0` 等于禁用媒体，设备无处可推）；
+    /// 3. 等 SIP 200 OK + ZLM 媒体到达；
+    /// 4. 若设备 200 OK 宣告的 `m=` 端口与 ZLM 端口不同（TCP 被动模式的
+    ///    典型行为），用 `connectRtpServer` 让 ZLM 主动连过去接管。
+    ///
+    /// 修正：此前两个调用方都传 `media_port = 0`，SDP 里就是 `m=video 0`，
+    /// 于是"重连/按需拉流"永远只是发了一个设备无法使用的 INVITE，
+    /// 媒体永远不会到达 —— 功能形同虚设。
+    pub async fn start_live_stream(
+        &self,
+        device_id: &str,
+        channel_id: &str,
+        timeout_secs: u64,
+    ) -> Result<String> {
+        let zlm = self
+            .zlm_client
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("ZLM client not configured"))?;
+
+        let device = self
+            .device_manager
+            .get(device_id)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("Device {} not registered", device_id))?;
+        let is_tcp = device.transport == crate::sip::gb28181::device::TransportMode::TCP;
+
+        let stream_id = format!("{}_{}", device_id, channel_id);
+        let ssrc = build_play_ssrc(device_id);
+
+        let rtp_server = zlm
+            .open_rtp_server(&crate::zlm::OpenRtpServerRequest {
+                secret: zlm.secret.clone(),
+                stream_id: stream_id.clone(),
+                port: Some(0),
+                use_tcp: Some(is_tcp),
+                rtp_type: Some(if is_tcp { 1 } else { 0 }),
+                recv_port: None,
+            })
+            .await?;
+
+        tracing::info!(
+            "start_live_stream: opened ZLM RTP port {} for {}/{} (tcp={})",
+            rtp_server.port,
+            device_id,
+            channel_id,
+            is_tcp
+        );
+
+        let result = self
+            .send_play_invite_and_wait_media(
+                device_id,
+                channel_id,
+                rtp_server.port,
+                &stream_id,
+                Some(&ssrc),
+                timeout_secs,
+            )
+            .await;
+
+        match result {
+            Ok((_call_id, zlm_stream_id, resp)) => {
+                // 设备宣告的收流端口与 ZLM 监听端口不同 → 让 ZLM 主动连过去。
+                // 不先 closeRtpServer：那样 ZLM 里就没有 stream_id 对应的流，
+                // connectRtpServer 会报 "can not find the stream"。
+                if let Some(device_port) = resp
+                    .as_ref()
+                    .and_then(|r| r.body.as_deref())
+                    .and_then(crate::sip::gb28181::sdp_builder::parse_media_port)
+                {
+                    if device_port != rtp_server.port && device_port != 0 {
+                        let dst = format!(
+                            "rtp://{}:{}",
+                            device.ip.as_deref().unwrap_or("0.0.0.0"),
+                            device_port
+                        );
+                        match zlm
+                            .connect_rtp_server(&stream_id, &dst, device_port, None)
+                            .await
+                        {
+                            Ok(_) => tracing::info!(
+                                "start_live_stream: connectRtpServer -> {} (stream_id={})",
+                                dst,
+                                stream_id
+                            ),
+                            Err(e) => tracing::warn!(
+                                "start_live_stream: connectRtpServer {} failed: {}",
+                                dst,
+                                e
+                            ),
+                        }
+                    }
+                }
+                Ok(zlm_stream_id)
+            }
+            Err(e) => {
+                // 媒体没到位就把收流端口还回去，避免端口泄漏
+                if let Err(ce) = zlm.close_rtp_server(&stream_id).await {
+                    tracing::debug!(
+                        "start_live_stream: close_rtp_server({}) after failure: {}",
+                        stream_id,
+                        ce
+                    );
+                }
+                Err(e)
+            }
+        }
+    }
+
     /// 发送回放 INVITE。
     ///
     /// `media_port` 必须是**已由 ZLM `open_rtp_server` 分配好的收流端口**：
@@ -5320,7 +5569,7 @@ f=v/1/96/1/2/1/1/0
             chrono::Utc::now().timestamp_millis()
         );
         let branch = generate_branch();
-        let cseq = format!("INVITE {}", 1);
+        let cseq = cseq_header(1, "INVITE");
         let from_tag = generate_tag();
 
         let via = format!(
@@ -5381,9 +5630,29 @@ f=v/1/96/1/2/1/1/0
 
         // 保存 INVITE 上下文,handle_response 收到 200 OK 时发 ACK。
         // 设备 ack 后无 ACK 不推流 —— GB28181 三次握手必须完整。
+        //
+        // 必须先 `create` 带上真实的 device/channel：`set_invite_context`
+        // 在会话不存在时会用空字符串占位建条目，而 ACK 的 Request-URI
+        // 用的是 `invite_ctx.channel_id` —— 占位为空会发出 `sip:@ip:port`
+        // 这种畸形 URI，设备对不上对话自然不推流。
+        self.session_manager
+            .create(&call_id, device_id, channel_id, "Playback")
+            .await;
         self.session_manager
             .set_invite_context(&call_id, from.clone(), 1, device_addr)
             .await;
+        self.register_outbound_invite(
+            &call_id,
+            device_id,
+            channel_id,
+            crate::sip::gb28181::invite_session::StreamType::Playback,
+            device_addr,
+            &from_tag,
+            1,
+            media_port,
+            Some(ssrc.as_str()),
+        )
+        .await;
         // 注：socket 读锁在此作用域结束自动释放，不需手动 drop(&socket)。
 
         Ok(())
@@ -5428,11 +5697,15 @@ f=v/1/96/1/2/1/1/0
                 .await
                 .ok_or_else(|| anyhow::anyhow!("Device {} not registered", device_id))?;
             let branch = generate_branch();
-            let cseq = "INVITE 1".to_string();
+            let cseq = cseq_header(1, "INVITE").to_string();
             // 统一用 10 位 SSRC（前缀 1 = 回放）；此前这里是 11 位的
             // "1" + id9 + "0"，且算出来后并没有写进 SDP 的 y=
             // （y= 一直是硬编码的 0100000001）。
             let ssrc = build_playback_ssrc(device_id);
+            // 本地 tag 必须留存：BYE 的 From 头要与 INVITE 完全一致
+            // （此前这里 `generate_tag()` 随用随弃，BYE 只能另生成一个
+            // 新 tag，设备匹配不到对话 → 481）。
+            let from_tag = generate_tag();
 
             let via = format!(
                 "SIP/2.0/UDP {}:{};branch={};rport",
@@ -5440,7 +5713,7 @@ f=v/1/96/1/2/1/1/0
             );
             let from = format!(
                 "<sip:{}@{}:{}>;tag={}",
-                self.config.device_id, self.config.ip, self.config.port, generate_tag()
+                self.config.device_id, self.config.ip, self.config.port, from_tag
             );
             let to = format!(
                 "<sip:{}@{}:{}>",
@@ -5488,7 +5761,27 @@ f=v/1/96/1/2/1/1/0
             // 这里直接用 SipServer 自己的 session_manager 字段。
             let cseq_num: u32 = 1;
             self.session_manager
+                .create(&call_id, device_id, channel_id, "Playback")
+                .await;
+            self.session_manager
                 .set_invite_context(&call_id, from.clone(), cseq_num, device_addr)
+                .await;
+            // 业务会话登记 + 立刻回填 ZLM 流标识（此处 stream_id 已知），
+            // 供 BYE 时释放收流端口、以及无人观看自动关流判定使用。
+            self.register_outbound_invite(
+                &call_id,
+                device_id,
+                channel_id,
+                crate::sip::gb28181::invite_session::StreamType::Playback,
+                device_addr,
+                &from_tag,
+                cseq_num,
+                media_port,
+                Some(ssrc.as_str()),
+            )
+            .await;
+            self.invite_session_manager
+                .set_zlm_stream_by_device_channel(device_id, channel_id, zlm_stream_id, "rtp")
                 .await;
         }
 
@@ -5553,7 +5846,7 @@ f=v/1/96/1/2/1/1/0
             chrono::Utc::now().timestamp_millis()
         );
         let branch = generate_branch();
-        let cseq = format!("INVITE {}", 1);
+        let cseq = cseq_header(1, "INVITE");
         let from_tag = generate_tag();
 
         let via = format!(
@@ -5618,6 +5911,33 @@ f=v/1/96/1/2/1/1/0
             ssrc
         );
 
+        // ACK 上下文 + 业务会话登记。
+        //
+        // 修正：此前这里**什么都不登记** —— 既没有 `set_invite_context`，
+        // 也没有业务会话。`handle_response` 收到 200 OK 后因为查不到
+        // `session_manager` 上下文而**不发 ACK**，GB28181 三次握手缺一环，
+        // 设备不会推送录像文件；同时 `send_session_bye("download")`/
+        // 会话统计也完全看不到这个下载。
+        let cseq_num: u32 = 1;
+        self.session_manager
+            .create(&call_id, device_id, channel_id, "Download")
+            .await;
+        self.session_manager
+            .set_invite_context(&call_id, from.clone(), cseq_num, device_addr)
+            .await;
+        self.register_outbound_invite(
+            &call_id,
+            device_id,
+            channel_id,
+            crate::sip::gb28181::invite_session::StreamType::Download,
+            device_addr,
+            &from_tag,
+            cseq_num,
+            media_port,
+            Some(ssrc.as_str()),
+        )
+        .await;
+
         Ok(call_id)
     }
 
@@ -5648,7 +5968,7 @@ f=v/1/96/1/2/1/1/0
             chrono::Utc::now().timestamp_millis()
         );
         let branch = generate_branch();
-        let cseq = format!("INVITE {}", 1);
+        let cseq = cseq_header(1, "INVITE");
         let from_tag = generate_tag();
 
         let via = format!(
@@ -5772,7 +6092,7 @@ f=v/1/96/1/2/1/1/0
             chrono::Utc::now().timestamp_millis()
         );
         let branch = generate_branch();
-        let cseq = "MESSAGE 1".to_string();
+        let cseq = cseq_header(1, "MESSAGE").to_string();
 
         let via = format!(
             "SIP/2.0/UDP {}:{};branch={};rport",
@@ -6444,6 +6764,18 @@ fn generate_nonce() -> String {
         .collect()
 }
 
+/// 构造 `CSeq` 头的值：**序号在前、方法在后**。
+///
+/// RFC 3261 §20.16 的 `CSeq` 文法就是 `<digits> <method>`
+/// （例如 `CSeq: 2 BYE`）。此前有 6 处写成 `cseq_header(2, "BYE")` / `cseq_header(1, "INVITE")`，
+/// 生成出 `CSeq: BYE 2` 这种**非法**头：宽松的设备/解析器会取不到序号
+/// （于是把 BYE 当成 CSeq 不大于 INVITE 的乱序请求，回 481），
+/// 严格实现则直接按语法错误丢弃。方法顺序必须用类型化的方式固定下来，
+/// 不允许调用方自己拼字符串。
+fn cseq_header(num: u32, method: &str) -> String {
+    format!("{} {}", num, method)
+}
+
 fn generate_tag() -> String {
     let mut rng = rand::thread_rng();
     (0..8).map(|_| format!("{:02x}", rng.gen::<u8>())).collect()
@@ -6567,7 +6899,7 @@ async fn send_subscribe_internal(
         chrono::Utc::now().timestamp_millis()
     );
     let branch = generate_branch();
-    let cseq = format!("{} SUBSCRIBE", 1);
+    let cseq = cseq_header(1, "SUBSCRIBE");
 
     let via = format!(
         "SIP/2.0/UDP {}:{};branch={};rport",
@@ -6721,6 +7053,166 @@ pub fn build_upstream_device_status_response(sn: &str, local_device_id: &str, no
         r#"<?xml version="1.0" encoding="UTF-8"?><Response><CmdType>DeviceStatus</CmdType><SN>{}</SN><DeviceID>{}</DeviceID><Result>OK</Result><Online>ON</Online><Status>OK</Status><DeviceTime>{}</DeviceTime></Response>"#,
         sn, local_device_id, now
     )
+}
+
+#[cfg(test)]
+mod dialog_tag_tests {
+    use super::*;
+
+    /// 对端 tag 只出现在 200 OK 的 `To` 头里。BYE 的 To 头必须带上它，
+    /// 否则设备按"对话不存在"（481）处理，不会停止推流。
+    #[test]
+    fn extract_sip_tag_reads_to_header_tag() {
+        assert_eq!(
+            extract_sip_tag("<sip:34020000001320000001@10.0.0.9:5060>;tag=abc123"),
+            Some("abc123".to_string())
+        );
+        // 参数名大小写不敏感
+        assert_eq!(
+            extract_sip_tag("<sip:a@b:5060>;TAG=xyz"),
+            Some("xyz".to_string())
+        );
+        // 值可以带引号
+        assert_eq!(
+            extract_sip_tag("<sip:a@b:5060>;tag=\"q-1\""),
+            Some("q-1".to_string())
+        );
+        // 多参数：tag 不一定在第一个
+        assert_eq!(
+            extract_sip_tag("<sip:a@b:5060>;foo=bar;tag=t9;baz=1"),
+            Some("t9".to_string())
+        );
+        // 首个 200 OK 之前 / 没有 tag
+        assert_eq!(extract_sip_tag("<sip:a@b:5060>"), None);
+        assert_eq!(extract_sip_tag("<sip:a@b:5060>;tag="), None);
+        assert_eq!(extract_sip_tag(""), None);
+    }
+
+    /// BYE 的 CSeq 必须严格大于 INVITE 的 CSeq（RFC 3261 §12.2.1.1）。
+    /// 此前硬编码 `BYE 1`，与 `INVITE 1` 相等 —— 设备按乱序请求拒绝。
+    #[test]
+    fn bye_cseq_is_strictly_greater_than_invite_cseq() {
+        use crate::sip::gb28181::invite_session::{InviteSession, StreamType};
+        let addr: SocketAddr = "127.0.0.1:5060".parse().unwrap();
+        let mut s = InviteSession::new(
+            "play_dev_ch",
+            "34020000001320000001",
+            "34020000001320000002",
+            StreamType::Play,
+            addr,
+        );
+        assert_eq!(s.invite_cseq, 1, "默认 INVITE CSeq");
+        assert_eq!(s.bye_cseq(), 2);
+        s.set_local_dialog("tag-local", 7);
+        assert_eq!(s.bye_cseq(), 8);
+        // 极端值不应溢出 panic
+        s.set_local_dialog("tag-local", u32::MAX);
+        assert_eq!(s.bye_cseq(), u32::MAX);
+    }
+
+    /// 本地 tag / 对端 tag / 应答 SDP 三者互相独立，不能串味。
+    #[test]
+    fn invite_session_dialog_fields_are_independent() {
+        use crate::sip::gb28181::invite_session::{InviteSession, StreamType};
+        let addr: SocketAddr = "10.1.2.3:5060".parse().unwrap();
+        let mut s = InviteSession::new(
+            "play_dev_ch",
+            "dev",
+            "ch",
+            StreamType::Playback,
+            addr,
+        );
+        s.set_local_dialog("local-tag", 3);
+        s.set_remote_tag("remote-tag");
+        s.set_sdp_response("v=0\r\nm=video 11001 RTP/AVP 96\r\n");
+        assert_eq!(s.local_tag.as_deref(), Some("local-tag"));
+        assert_eq!(s.remote_tag.as_deref(), Some("remote-tag"));
+        assert_eq!(
+            s.sdp_response.as_deref(),
+            Some("v=0\r\nm=video 11001 RTP/AVP 96\r\n")
+        );
+        // 应答 SDP 不得覆盖请求侧信息
+        assert!(s.sdp_request.is_none());
+        assert_eq!(s.media_port, 0);
+    }
+
+    #[tokio::test]
+    async fn mark_answered_backfills_tags_and_activates() {
+        use crate::sip::gb28181::invite_session::{
+            InviteSession, InviteSessionManager, InviteSessionStatus, StreamType,
+        };
+        let mgr = InviteSessionManager::new();
+        let addr: SocketAddr = "10.1.2.3:5060".parse().unwrap();
+        let mut s = InviteSession::new("play_1", "dev", "ch", StreamType::Play, addr);
+        s.set_local_dialog("local-tag", 1);
+        mgr.create(s).await;
+
+        assert!(mgr.get("play_1").await.unwrap().remote_tag.is_none());
+        assert!(mgr
+            .mark_answered("play_1", Some("remote-tag"), Some("v=0\r\n"))
+            .await);
+        let got = mgr.get("play_1").await.unwrap();
+        assert_eq!(got.remote_tag.as_deref(), Some("remote-tag"));
+        assert_eq!(got.sdp_response.as_deref(), Some("v=0\r\n"));
+        assert_eq!(got.status, InviteSessionStatus::Active);
+        assert_eq!(got.bye_cseq(), 2);
+
+        // 未知 call_id 不应 panic，也不能凭空建会话
+        assert!(!mgr.mark_answered("nope", Some("t"), None).await);
+        // 空 tag 不应覆盖已有值
+        assert!(mgr.mark_answered("play_1", Some(""), None).await);
+        assert_eq!(
+            mgr.get("play_1").await.unwrap().remote_tag.as_deref(),
+            Some("remote-tag")
+        );
+    }
+
+    /// 出站会话必须能被 `send_session_bye` 的查询找到 ——
+    /// 这正是 `/api/play/stop` 此前"只关 ZLM 端口、不发 BYE"的根因。
+    #[tokio::test]
+    async fn outbound_session_is_visible_to_session_bye_lookup() {
+        use crate::sip::gb28181::invite_session::{
+            InviteSession, InviteSessionManager, InviteSessionStatus, StreamType,
+        };
+        let mgr = InviteSessionManager::new();
+        let addr: SocketAddr = "10.1.2.3:5060".parse().unwrap();
+        let mut s = InviteSession::new("play_dev_ch", "dev", "ch", StreamType::Play, addr);
+        s.set_local_dialog("lt", 1);
+        s.set_zlm_stream("dev_ch", "rtp");
+        mgr.create(s).await;
+
+        let found = mgr.get_by_device_channel("dev", "ch").await;
+        assert!(found.is_some(), "出站会话必须能被按 device/channel 查到");
+        assert_eq!(found.unwrap().zlm_stream_id.as_deref(), Some("dev_ch"));
+
+        // 终止后不再被查到（避免 BYE 重复发送 / 影响新的拉流）
+        mgr.update_status("play_dev_ch", InviteSessionStatus::Terminated)
+            .await;
+        assert!(mgr.get_by_device_channel("dev", "ch").await.is_none());
+    }
+
+    /// 播放中途才知道 ZLM 流名，要能回填（BYE 时用它关收流端口）。
+    #[tokio::test]
+    async fn zlm_stream_backfill_by_device_channel() {
+        use crate::sip::gb28181::invite_session::{
+            InviteSession, InviteSessionManager, StreamType,
+        };
+        let mgr = InviteSessionManager::new();
+        let addr: SocketAddr = "10.1.2.3:5060".parse().unwrap();
+        let s = InviteSession::new("playback_1", "dev", "ch", StreamType::Playback, addr);
+        mgr.create(s).await;
+
+        assert!(mgr
+            .set_zlm_stream_by_device_channel("dev", "ch", "dev_ch", "rtp")
+            .await);
+        let got = mgr.get("playback_1").await.unwrap();
+        assert_eq!(got.zlm_stream_id.as_deref(), Some("dev_ch"));
+        assert_eq!(got.zlm_app, "rtp");
+        // 未知设备不应创建/修改任何东西
+        assert!(!mgr
+            .set_zlm_stream_by_device_channel("other", "ch", "x", "rtp")
+            .await);
+    }
 }
 
 #[cfg(test)]

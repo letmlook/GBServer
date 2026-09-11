@@ -9,11 +9,11 @@
 
 | 维度 | 数值 | 验证方式 |
 |------|------|----------|
-| 总代码量（src/） | 64,914 行 Rust | `find src -name '*.rs' \| xargs wc -l` |
-| 已注册 HTTP 路由 | 380 条唯一 `/api/...` 路径 | `grep -oE '"/api/[^"]*"' src/router.rs \| sort -u \| wc -l` |
+| 总代码量（src/） | 69,619 行 Rust | `find src -name '*.rs' \| xargs wc -l` |
+| 已注册 HTTP 路由 | 383 条唯一 `/api/...` 路径 | `grep -oE '"/api/[^"]*"' src/router.rs \| sort -u \| wc -l` |
 | Handler 模块 | 29 个（含 `stub.rs` / `device_stub.rs` 两个兼容 shim） | `grep -c 'pub mod' src/handlers/mod.rs` |
-| 后端测试 | **478 通过** / 3 忽略 / 0 失败 | `cargo test --no-fail-fast` |
-| 编译状态 | `cargo check` 0 error / **0 warning**；clippy 261；**deprecated 0** | `cargo check` / `cargo clippy --all-targets` |
+| 后端测试 | **533 通过** / 0 失败（第十三轮后回填） | `cargo test --no-fail-fast` |
+| 编译状态 | `cargo check` 0 error / **0 warning**；clippy 262；**deprecated 0** | `cargo check` / `cargo clippy --all-targets` |
 | 数据库 feature | SQLite（默认）/ PostgreSQL / MySQL **三者均编译通过** | CI `feature-matrix` job |
 | CI | ⏸️ 工作流已就绪但**按需暂停自动触发**（见 `.github/workflows/ci.yml`） | — |
 | 前端 | `web/` = **Vue 3 + Element Plus + Vite + TS**（17 个业务视图）；`web-legacy-vue2/` 为归档参考 | `ls web/src/views` |
@@ -434,6 +434,170 @@ on_server_started（残缺载荷）        -> 日志 "ZLM hook URLs reconfigured
 自身配置里的 `hook.admin_params` 作为查询参数（真实 ZLM 行为），并且
 `openRtpServer`/`closeRtpServer` 会相应地创建/移除流。
 
+### 出站对话生命周期、无人观看关流与三处「静默 0 值」缺陷（2026-09-12 第十三轮）
+
+第十二轮解决了"事件能不能被分派、载荷能不能解析"；这一轮追"事件之后**有没有真的产生效果**"，
+结果发现：**整个"停止推流"链路从来没有真正生效过**，而且有四处缺陷只会表现成
+"字段值恒为 0/恒为空"，接口全是 `200 {"code":0}`。
+
+#### 1. 出站 INVITE 不登记业务会话 → BYE 永远发不出去
+
+仓库里有两张会话表，职责不同：
+
+* `SessionManager`（`sip/gb28181/invite.rs`）：发 ACK 用的底层事务上下文；
+* `InviteSessionManager`（`sip/gb28181/invite_session.rs`）：**业务会话表**，
+  记录"谁在拉哪个通道、走哪个 ZLM 流、对话的本地/对端 tag"。
+
+只有**入站** INVITE（设备呼入的 Talk/Broadcast）写业务表；出站
+Play / Playback / Download 一律不写。后果是实打实的：
+
+| 现象 | 根因 | 修复 |
+|------|------|------|
+| `/api/play/stop` 只关 ZLM 的 RTP 端口，**从不给设备发 BYE**（设备会继续往已关闭的端口推流），日志只有一句 `warn: No active invite session` | `send_session_bye()` 依赖 `InviteSessionManager.get_by_device_channel()`，而出站会话从未登记 | 新增 `SipServer::register_outbound_invite()`，在 Play / Playback / Download 三条出站路径统一登记；会话统计、`active_channel_count` 随之恢复正确 |
+| BYE 的 `From` tag 与 INVITE 不一致、`To` 缺对端 tag、`CSeq` 硬编码 `BYE 1`（与 `INVITE 1` 相等） | RFC 3261 §12.2.2 要求对话内请求必须复用 `Call-ID + 本地 tag + 远端 tag` 三元组，CSeq 必须**严格递增** | `InviteSession` 增加 `local_tag` / `remote_tag` / `invite_cseq`；200 OK 到达时由 `handle_response` 回填对端 tag（`extract_sip_tag`）并置 `Active`；BYE 用 `cseq_header(invite_cseq + 1, "BYE")` |
+| `send_download_invite()` **完全不登记** `session_manager` 上下文 → 收不到 ACK（国标三次握手缺一环），设备不会推回放文件；下载也没有业务会话 | 只有 INVITE 发出、没有上下文与业务登记 | 补登记（`create` + `set_invite_context` + `register_outbound_invite`）；`send_playback_invite` 的 `set_invite_context` 此前用空占位（ACK 的 Request-URI 会是 `sip:@ip:port`），改为先 `create` 带上真实 device/channel |
+
+**证据（SIP 设备模拟器现在会按 RFC 校验 BYE，失败即回 `481`）**：
+模拟器起初对任何 BYE 都回 200 OK，等于给"假 BYE"盖章。改成校验
+`From tag` / `To tag` / `CSeq` 后立刻抓到真实缺陷：
+
+```
+修复前：BYE CSeq=1, INVITE CSeq=1  → errors=['cseq-not-incremented'] → 481
+修复后：BYE 对话校验通过 call_id=play_…_1789156507418
+        BYE report: {'total': 2, 'valid': 2, 'invalid': 0}
+```
+
+#### 2. `CSeq` 头的**序号与方法顺序颠倒了**（10 处）
+
+RFC 3261 §20.16 的文法是 `<digits> <method>`（`CSeq: 2 BYE`）。
+此前 10 处写成 `format!("BYE {}", n)` / `"INVITE 1".to_string()`，
+生成出 **`CSeq: BYE 2`** 这种非法头：
+
+* 严格实现按语法错误丢弃请求；
+* 宽松实现（含本项目自己的 `transaction.rs`，它取 `cseq_parts[1]` 当方法名）
+  取不到序号 → BYE 被当成乱序请求 → `481`。
+
+修复：新增 `fn cseq_header(num: u32, method: &str)`，全仓 18 处统一走它，
+**不允许调用方拼字符串**。模拟器的 `parse_cseq` 同步改为解析失败即报
+`MalformedCSeq`（此前 `except: return 1` 把非法头伪装成"序号没递增"），
+实测修复后 `CSeq 头非法` 计数为 0。
+
+#### 3. `on_stream_none_reader`：从"只打日志"到真正关流
+
+官方文档明确该事件"可以选择是否关闭无人观看的流"，响应体是**顶层**
+`{"code":0,"close":true|false}`。此前本项目：
+
+* 把响应包成 WVP 信封 `{"code":0,"msg":"成功","data":{…}}` → `close` 埋在
+  `data` 里，ZLM **读不到**，按默认 `false` 处理；
+* 复用 `StreamChangedData` 解析载荷，而它的 `register: bool` 是必填的，
+  而该事件的真实 body **没有** `regist` → **反序列化必然失败、整个分支被静默跳过**；
+* 不向设备发 BYE、不关 ZLM 收流端口。
+
+现在：**所有 hook 响应改为顶层扁平 JSON**（`code` / `close` / `msg`，
+新增 `hook_ok_response` / `hook_error_response` / `none_reader_response` 并加单测），
+新增专用 `StreamNoneReaderData`（字段全容忍），并实现决策函数
+`decide_idle_stream()`（先否决后放行，全部基于可观测事实）：
+
+| 判定顺序 | 条件 | close |
+|---|---|---|
+| 1 | 不是国标流（`push_*` / `proxy_*`） | false |
+| 2 | ZLM 报告仍有 reader（`getMediaInfo` 的 `readerCount`/`totalReaderCount`） | false |
+| 3 | ZLM 正在录像（`isRecording`） | false |
+| 4 | 正在向级联上级平台推流（`SendRtpManager.get_by_channel`） | false |
+| 5 | 平台下发的 `Record` 云录像指令生效中 | false |
+| 6 | 其余国标流 | **true** → 发 BYE + `closeRtpServer` |
+
+第 2 条同时解决了"hook 与播放器连接之间的竞态"：`/api/play/start` 先开流、
+前端随后才挂播放器，这段时间里无脑 `close=true` 会把刚建好的流掐掉。
+第 2/3 条**查不到时保持不关**（关流是破坏性动作，确认不了就不做），
+而不是像以前那样把"查不到"当成"没人看"。
+
+**实测**（真实服务 + ZLM 模拟器按 ZLM 语义执行响应，`close:true` 即真的下架流）：
+
+```
+A) readers=2        -> {"close":false,"msg":"仍有观看者（reader=2/2）"}
+B) 录像中           -> {"close":false,"msg":"ZLM 正在录像"}
+C) push_x（非国标） -> {"close":false,"msg":"非国标流（推流/拉流代理），交由用户停止"}
+D) 无人观看         -> {"close":true}  → 模拟器下架该流（getMediaList 由 1 条变 0 条）
+                                        → 后端发 BYE，设备校验通过（valid=1/invalid=0）
+```
+
+#### 4. `on_stream_not_found`：删掉编造的 RTSP 拉流地址
+
+该事件是"播放器请求了不存在的流"的通知（官方文档：**不影响 ZLM 行为**）。
+此前在 INVITE 之后还有一段"自动拉流"兜底，用
+`rtsp://{device_id}:8554/{channel_id}` 调 `addStreamProxy` —— 这是**编造出来的地址**：
+国标设备不会在 8554（那是 ZLM 自己的 RTSP 端口）提供 RTSP 服务，设备编号也不是主机名。
+该分支只会稳定失败并掩盖真正原因，已删除。同时把两处按需拉流统一到新的
+`SipServer::start_live_stream()`（`openRtpServer` → 用真实端口发 INVITE →
+等媒体 → 端口不一致时 `connectRtpServer`），修掉了此前两处都传
+**`media_port = 0`** 的问题（`m=video 0` 表示媒体被禁用，设备无处可推，
+"自动重连/按需拉流"因此永远是空转）：
+
+```
+On-demand pull started: stream=…_… device=… channel=…
+请求 SDP: ['m=video 30000 RTP/AVP 96']     ← 修复前是 m=video 0
+```
+
+#### 5. 三处「静默 0 值」（都不报错，只是字段永远是 0/空）
+
+| 缺陷 | 后果 | 修复 |
+|------|------|------|
+| **`MediaInfo` 缺 `rename_all = "camelCase"`** | ZLM 实际返回 `readerCount`/`totalReaderCount`/`originType`/`createStamp`/`aliveSecond`/`bytesSpeed`（内层 `tracks` 却是 snake_case）。字段名对不上 → 整条 `MediaInfo` 反序列化失败 → `getMediaList`/`getMediaInfo` **永远报错或全 0**；表现为"观看者数量永远是 0"（正好会把正在播放的流当成无人观看关掉）、负载均衡流数永远为 0 | `MediaInfo` 加 `rename_all="camelCase"` + 各字段 `serde(default)`；`TrackInfo` **保持** snake_case；补两条真实载荷的解析单测 |
+| **`AppState::get_zlm_client(Some(未知id))` 返回 `None`** | hook 载荷里的 `mediaServerId` 是 **ZLM 自己的 `general.mediaServerId`**，与本地节点主键不保证一致（默认 `your_server_id`）。于是按 id 一律查不到节点 → 无人观看的 reader/录像校验被整段跳过、flow report 的流数量"保持既有值"、hook 鉴权取不到 secret —— 全都不报错 | 未知 id **回落到默认节点**（与 `get_zlm_client_auto` 同一思路）并打 debug 日志 |
+| **`isMediaExist` / `isRecording` 用 `ApiResponse<{exist}>` 解析** | ZLM 的"简单 API"用 `throw ApiRet("exist", …)` 返回**顶层** `{"code":0,"exist":true}`，不在 `data` 里 → 两个方法在真实 ZLM 上**恒为 false**（只有返回 `data:{exist:…}` 的 mock 上碰巧正确） | 新增 `exist_flag()` 兼容顶层/`data` 两种形态并加单测；`is_media_exist` / `is_recording` 改用它 |
+
+另外**必须把 ZLM 的 `general.mediaServerId` 设成本平台节点主键**（WVP 的
+autoConfig 也这么做）：`configure_zlm_hooks()` 现在会下发该键，否则上面第 2
+条的"回落到默认节点"只是兜底，多节点部署下会把 A 节点的通知记到 B 节点账上。
+实测：保存节点后 ZLM 的 `general.mediaServerId` = `media_server_1789156913766`，
+flow report 正确写入该行（`total_bytes=2097152`，`stream_count=Some(1)`）。
+
+#### 6. `media_server/check` 把「无人观看延迟」当成「流媒体流 IP」
+
+`streamIp` 取的是 `general.streamNoneReaderDelayMS`（默认 `20000`）。这个键
+**永远有值**，于是：
+
+1. 前端"添加流媒体节点"表单的**流媒体流IP**被自动填成 `20000`；
+2. 保存后写进 `gb_media_server.stream_ip`；
+3. `SipServer::new` 把它交给 `NatHelper` 当作对外流媒体 IP，
+   SDP 里就是 `c=INET IP4 20000` —— 设备往非法地址推流，播放必然失败，
+   而日志上看不出任何异常。
+
+ZLM 的 `config.ini` 里**没有**"流 IP"这个配置项（`[general]` 只有
+`enableVhost` / `flowThreshold` / `maxStreamWaitMS` / `streamNoneReaderDelayMS` /
+`resetWhenRePlay` / `mergeWriteMS` / `mediaServerId` / …），因此这里不再猜键，
+返回空串交由兜底逻辑填成节点配置 IP。映射逻辑抽成纯函数
+`media_server_probe_fields()` 并加 3 条单测（含"绝不等于 20000"的回归断言）。
+实测：mock 现在会返回 `general.streamNoneReaderDelayMS=20000`，
+而接口返回 `streamIp="127.0.0.1"`。
+
+#### 7. MediaWaiter 的竞态（顺带修复）
+
+`openRtpServer` 在 ZLM 内部创建流时就会触发 `on_rtp_server_started`，
+而调用方要等这个 HTTP 响应回来才注册等待者 —— 通知先到就**被直接丢弃**，
+表现为"媒体明明已就绪，播放请求却干等 15 秒超时"。现在
+`resolve_by_stream` 在找不到等待者时把通知**暂存 30 秒**，
+`register` 命中即立刻完成（`EARLY_READY_TTL` + `prune_early_ready()` 定期清理），
+补 3 条单测覆盖"早到不丢""只对同一条流生效""过期清理"。
+
+#### 8. 模拟器保真度（否则以上缺陷都会被掩盖）
+
+| 模拟器 | 改动 |
+|--------|------|
+| SIP 设备 | BYE **对话校验**（From tag / To tag / CSeq 递增），失败回 `481` 并落盘报告；`parse_cseq` 解析失败即报错（不再兜底成 1）；`--auto-bye-secs`（默认 3，测试平台侧 BYE 时用 0）；INVITE 日志打印请求 SDP 的 `m=` 行（`m=video 0` 一眼可见） |
+| ZLM | `isRecording`/`isMediaExist` 改回真实的**顶层** `exist`；MediaInfo 返回完整字段集（含 `readerCount`）与真实 camelCase；`getServerConfig` 增加 `general.streamNoneReaderDelayMS` / `protocol.auto_close` / `rtp_proxy.sdp_ip`；hook 载荷的 `mediaServerId` 取 `general.mediaServerId`（不再写死）；`on_stream_none_reader` 触发器**按 ZLM 语义执行**响应（`close:true` 即下架流）；新增 `on_flow_report` 触发器（载荷里刻意不含流数量字段）；新增 `/debug/hook_responses` 让"后端到底回了什么"可查 |
+
+#### 本轮基线
+
+```
+cargo test                      533 passed / 0 failed   (上轮 510)
+cargo build --features mysql     OK
+cargo build --features postgres  OK
+cargo check --all-targets        warnings 0
+npx playwright test             25 passed / 0 failed / 0 skipped
+```
+
 ### 仍未解决 / 需真实设备核验
 
 以下是本轮**已定位但未改动**的项，均在代码中留有注释或在此登记，
@@ -465,12 +629,22 @@ on_server_started（残缺载荷）        -> 日志 "ZLM hook URLs reconfigured
    `SumNum=N` 却只发更少的包，会话会一直停在 `Receiving`（`device_sync`
    8 秒后如实返回该状态）。已保留逐包 upsert 兜底，因此不会丢通道，
    但"同步完成"无法判定。
-6. **`SsrcManager` 与 `build_ssrc(prefix, id)` 两套 SSRC 机制并存**：
-   设备侧 INVITE 用后者（按设备号确定性推导），级联取流用前者（按会话分配）。
-   两者都能产出合法 10 位值，但未统一；统一前需确认回放/下载 SSRC
-   是否必须可复现（回放控制/停流需要按 SSRC 反查会话）。
+6. ~~**两套 SSRC 机制并存**~~ **已统一（第十三轮）**：新增唯一的
+   `build_ssrc(prefix, device_id)`（10 位 = 1 位类型 + 设备号前 9 位），
+   `build_play_ssrc`（实时，前缀 0）/ `build_playback_ssrc`（回放，前缀 1）/
+   `build_download_ssrc`（下载，前缀 2）/ `build_audio_ssrc`（对讲，前缀 4）
+   全部转发到它。此前 `send_play_invite_and_wait` 的兜底与 `handlers/play.rs`
+   各自算的是 `0{id9}0`（**11 位**），与 SsrcManager 口径不一致 ——
+   同一设备在不同路径会拿到不同长度的 SSRC。
 7. **TCP 信令**已与 UDP 统一分发，但 `handle_packet` 的参数已达 23 个，
    后续应改为上下文结构体，否则每次新增能力都要再穿一遍全部调用点。
+8. **`send_session_bye` 仍只走 UDP socket**：TCP 传输的设备收到 BYE 会走错
+   通道（TCP 信令已经统一分发到 `handle_packet`，但**出站**请求还没有统一的
+   传输抽象）。第十三轮已修好对话正确性（tag/CSeq），传输选择待补。
+9. **`on_rtp_playlist` / `on_record_progress` / `on_send_rtp_progress`**
+   的载荷结构未与真实样本核对（官方文档未给出示例）。
+10. **多节点下 `general.mediaServerId`** 现在会在 autoConfig 时下发为节点主键；
+    但**手工在 ZLM 侧改过该键**的既有部署仍需重新保存节点才会对齐。
 
 ### 工程问题
 

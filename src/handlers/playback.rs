@@ -741,6 +741,12 @@ pub async fn gb_record_download_start(
             let (_key, _rx) = sip
                 .media_waiter_manager()
                 .register(&format!("dlw_{}", stream_id), &stream_id, "rtp", 15);
+            // 把 ZLM 流名回填进业务会话：`send_download_invite` 发 INVITE 时
+            // 还不知道 stream_id（它只收 media_port），没有这一步，
+            // 之后停止下载 / 无人观看关流时找不到要释放的收流端口。
+            sip.invite_session_manager()
+                .set_zlm_stream_by_device_channel(&device_id, &channel_id, &stream_id, "rtp")
+                .await;
         }
         if let Some(ref dm) = state.download_manager {
             dm.create(session).await;

@@ -270,6 +270,33 @@ pub fn broadcast_sdp(ip: &str, audio_port: u16, ssrc: &str) -> String {
         .build()
 }
 
+/// 从设备 200 OK 的 SDP 里解析首个 `m=video` / `m=audio` 的端口号。
+///
+/// 例如 `m=video 11001 TCP/RTP/AVP 96` → `Some(11001)`。
+///
+/// GB28181 设备在 200 OK 里宣告的端口**未必**等于我们在 INVITE 里给的
+/// 端口：TCP 被动模式（`a=setup:passive` 语义）下设备宣告的是它自己的
+/// 监听端口，需要我们用 `connectRtpServer` 让 ZLM 主动去连。因此这个
+/// 解析是「按需接管」判定的依据，放在 SDP 的唯一真源模块里，
+/// 避免 hook / play 各写一份而行为漂移。
+pub fn parse_media_port(sdp: &str) -> Option<u16> {
+    for line in sdp.lines() {
+        let line = line.trim();
+        let Some(rest) = line.strip_prefix("m=") else {
+            continue;
+        };
+        let mut it = rest.split_whitespace();
+        let Some(media_type) = it.next() else { continue };
+        if media_type != "video" && media_type != "audio" {
+            continue;
+        }
+        if let Some(Ok(port)) = it.next().map(str::parse::<u16>) {
+            return Some(port);
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -426,5 +453,31 @@ mod tests {
         assert!(a.contains("y=0100000001"));
         assert!(b.contains("y=1100000002"));
         assert!(!b.contains("y=0100000001"));
+    }
+
+    #[test]
+    fn parse_media_port_reads_video_and_audio() {
+        assert_eq!(
+            parse_media_port("v=0\r\nm=video 11001 TCP/RTP/AVP 96\r\n"),
+            Some(11001)
+        );
+        assert_eq!(parse_media_port("m=audio 8000 RTP/AVP 8\r\n"), Some(8000));
+        // 多 track：取第一个可解析的
+        assert_eq!(
+            parse_media_port("m=audio 10002 RTP/AVP 8\r\nm=video 10003 RTP/AVP 96\r\n"),
+            Some(10002)
+        );
+        // 非法/缺失都要返回 None，而不是 panic 或编造 0
+        assert_eq!(parse_media_port(""), None);
+        assert_eq!(parse_media_port("m=video\r\n"), None);
+        assert_eq!(parse_media_port("m=video abc RTP/AVP 96\r\n"), None);
+        assert_eq!(parse_media_port("m=application 1234 udp\r\n"), None);
+    }
+
+    /// 设备可能把端口写成 0（`m=video 0`）—— 这不是合法收流端口，
+    /// 调用方必须能区分「解析到 0」和「解析到真实端口」之外的失败。
+    #[test]
+    fn parse_media_port_distinguishes_zero_port() {
+        assert_eq!(parse_media_port("m=video 0 RTP/AVP 96\r\n"), Some(0));
     }
 }

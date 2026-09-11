@@ -4,24 +4,11 @@ use crate::AppState;
 use crate::db::device as db_device;
 
 /// 从 SDP 文本里解析首个 m=video/m=audio 的端口号。
-/// 例如 `m=video 11001 TCP/RTP/AVP 96` 返回 Some(11001)。
+///
+/// 实现已统一到 `sip::gb28181::sdp_builder::parse_media_port`（SDP 的唯一真源），
+/// 这里只做转发，避免 hook / play 各写一份导致行为漂移。
 fn parse_sdp_media_port(sdp: &str) -> Option<u16> {
-    for line in sdp.lines() {
-        let line = line.trim();
-        if let Some(rest) = line.strip_prefix("m=") {
-            // 形如: "video 11001 TCP/RTP/AVP 96" / "audio 8000 RTP/AVP 0"
-            let mut it = rest.split_whitespace();
-            let media_type = it.next()?;
-            if media_type == "video" || media_type == "audio" {
-                if let Some(p) = it.next() {
-                    if let Ok(port) = p.parse::<u16>() {
-                        return Some(port);
-                    }
-                }
-            }
-        }
-    }
-    None
+    crate::sip::gb28181::sdp_builder::parse_media_port(sdp)
 }
 
 pub async fn play_start(
@@ -104,9 +91,11 @@ pub async fn play_start(
 
         // 调用 SIP Server 真正发送 INVITE，并等待设备回复 200 OK
         let sip = &*sip_server;
-        // 先生成规范 SSRC: 0 加上设备编号前9位加上0
+        // 先生成规范 SSRC（10 位：1 位类型前缀 + 设备号前 9 位），
+        // 与 SIP 层 `build_play_ssrc` 保持完全一致。
+        // 此前这里算的是 `0{id9}0`（11 位），两条路径口径不同。
         let id_part = if device_id.len() >= 9 { &device_id[0..9] } else { &device_id };
-        let ssrc = format!("0{:0>9}0", id_part);
+        let ssrc = format!("0{:0>9}", id_part);
 
         // TCP-PASSIVE 设备不走"等媒体到达"路径:它压根不会推流给 ZLM,
         // 等 ZLM 主动 connect 它的 listen 端口。把 SIP 200 OK 拿到后,

@@ -66,7 +66,22 @@ _state = {
     "server_config": {},
     "rtp_port_start": 30000,
     "rtp_port_end": 30100,
+    # 每次 hook 投递的 (事件, 请求体, 响应体) —— 供 /debug/hook_responses 查询。
+    # ZLM 会**读取响应里的 close/code**，所以"后端到底回了什么"必须是可观测的，
+    # 否则"无人观看自动关流"这类功能在测试里无法证伪。
+    "hook_responses": [],
 }
+
+
+def _media_server_id() -> str:
+    """当前 ZLM 节点自报的 mediaServerId。
+
+    取自 `general.mediaServerId`（平台 autoConfig 时会把它设成自己的节点主键，
+    就像真实部署里 WVP 做的那样）。hook 载荷与 getServerConfig 都用它 ——
+    写死一个常量会让"平台按 mediaServerId 反查节点"这条链路在测试里永远成立，
+    掩盖真实环境下的不匹配。
+    """
+    return _state.get("server_config", {}).get("general.mediaServerId") or "zlmediakit-mock-1"
 
 
 def _ok(data: Any = None) -> dict:
@@ -130,10 +145,17 @@ class ZlmMockHandler(http.server.BaseHTTPRequestHandler):
         只在 POST 里、而 close_streams 根本没实现），调用方一不小心就打到 404。
         """
         if path.startswith("/trigger/"):
-            self._handle_trigger(path[len("/trigger/"):])
+            self._handle_trigger(path[len("/trigger/"):], params)
             return
         if path == "/healthz":
             self._send_json(200, _ok({"alive": True}))
+            return
+        if path == "/debug/hook_responses":
+            self._send_json(200, _ok(_state["hook_responses"]))
+            return
+        if path == "/debug/reset_hook_responses":
+            _state["hook_responses"] = []
+            self._send_json(200, _ok({"cleared": True}))
             return
         handler = _ROUTES.get(path)
         if handler is None:
@@ -170,7 +192,7 @@ class ZlmMockHandler(http.server.BaseHTTPRequestHandler):
         if params:
             target = f"{target}?{params}"
         payload = dict(data)
-        payload.setdefault("mediaServerId", "zlmediakit-mock-1")
+        payload.setdefault("mediaServerId", _media_server_id())
         threading.Thread(target=_post_hook, args=(target, payload), daemon=True).start()
 
     # ----- 具体 handler -----
@@ -190,6 +212,13 @@ class ZlmMockHandler(http.server.BaseHTTPRequestHandler):
             "api.secret": _state["media_secret"],
             "general.mediaServerId": "zlmediakit-mock-1",
             "general.enableVhost": "1",
+            # 真实 ZLM 的 [general] 里的关键项。刻意保留 streamNoneReaderDelayMS：
+            # 它曾被 GBServer 误当成"流媒体对外 IP"（值 20000），
+            # 少返回这个键就掩盖了该缺陷。
+            "general.streamNoneReaderDelayMS": "20000",
+            "general.maxStreamWaitMS": "15000",
+            "protocol.auto_close": "0",
+            "rtp_proxy.sdp_ip": "",
             "hook.enable": "0",
             "hook.hookIp": "127.0.0.1",
             "protocol.enable_rtsp": "1",
@@ -260,11 +289,12 @@ class ZlmMockHandler(http.server.BaseHTTPRequestHandler):
                params.get("vhost", ["__defaultVhost"])[0],
                params.get("app", [None])[0],
                params.get("stream", [None])[0])
-        for m in _state["media_list"]:
-            if (m.get("schema"), m.get("vhost"), m.get("app"), m.get("stream")) == key:
-                self._send_json(200, _ok({"exist": True}))
-                return
-        self._send_json(200, _ok({"exist": False}))
+        exist = any(
+            (m.get("schema"), m.get("vhost"), m.get("app"), m.get("stream")) == key
+            for m in _state["media_list"]
+        )
+        # 真实 ZLM 用 `throw ApiRet("exist", …)`：字段在**顶层**，不在 data 里。
+        self._send_json(200, {"code": 0, "exist": exist})
 
     def _handle_add_stream_proxy(self, params: dict, payload: dict):
         url = params.get("url", [""])[0]
@@ -283,6 +313,13 @@ class ZlmMockHandler(http.server.BaseHTTPRequestHandler):
             "stream": stream,
             "duration": 0,
             "bytes_speed": 0,
+            "readerCount": 0,
+            "totalReaderCount": 0,
+            "originType": 1,
+            "originUrl": "",
+            "createStamp": int(time.time()),
+            "aliveSecond": 0,
+            "tracks": [],
         })
         log.info("addStreamProxy: %s -> %s", url, key)
         self._send_json(200, _ok({"key": key}))
@@ -329,6 +366,16 @@ class ZlmMockHandler(http.server.BaseHTTPRequestHandler):
             "stream": stream_id,
             "duration": 0,
             "bytes_speed": 0,
+            # ZLM 的 MediaInfo 一定带这些字段，后端用 readerCount 判断
+            # "是否真的没人看"。少给字段会让后端按"无法确认"处理而拒绝关流，
+            # 掩盖真正要验证的逻辑。
+            "readerCount": 0,
+            "totalReaderCount": 0,
+            "originType": 1,
+            "originUrl": "",
+            "createStamp": int(time.time()),
+            "aliveSecond": 0,
+            "tracks": [],
         })
         log.info("openRtpServer: port=%d stream_id=%s", port, stream_id)
         self._fire_hook("on_rtp_server_started", {
@@ -385,14 +432,27 @@ class ZlmMockHandler(http.server.BaseHTTPRequestHandler):
 
     # ----- 触发器 -----
 
-    def _handle_trigger(self, name: str):
-        """主动触发 Webhook，便于测试"""
+    def _handle_trigger(self, name: str, params: dict):
+        """主动触发 Webhook，便于测试。
+
+        `on_stream_none_reader` 与 `on_stream_not_found` 是本项目里
+        **唯一能改变 ZLM 行为**的两个 hook，因此这里同步投递并**按 ZLM 的
+        真实语义执行响应**：
+          * none_reader：响应 `close:true` ⇒ 关闭该流（media_source 下架）；
+          * not_found：响应被忽略（官方文档明确该事件"不影响 ZL 行为"）。
+        只有这样，"自动关流"才是一个可证伪的行为，而不是一句日志。
+        """
         if not self.server.hook_url:  # type: ignore
             log.warning("未配置 --hook-url，无法触发 Webhook")
             self._send_json(200, _ok({"triggered": False, "reason": "no hook_url"}))
             return
+
+        app = params.get("app", ["rtp"])[0]
+        stream = params.get("stream", ["34020000001320000001_34020000001320000002"])[0]
+        schema = params.get("schema", ["rtsp"])[0]
+
         # 构造对应 hook 负载
-        base = {"hook_name": name, "mediaServerId": "zlmediakit-mock-1"}
+        base = {"hook_name": name, "mediaServerId": _media_server_id()}
         if name in ("on_publish", "on_play"):
             base.update({
                 "schema": "rtsp", "app": "rtp", "stream": "34020000001320000001",
@@ -402,6 +462,16 @@ class ZlmMockHandler(http.server.BaseHTTPRequestHandler):
             base.update({
                 "schema": "rtsp", "app": "rtp", "stream": "34020000001320000001",
                 "vhost": "__defaultVhost", "register": True,
+            })
+        elif name in ("on_stream_none_reader", "on_stream_not_found"):
+            readers = int(params.get("readers", ["0"])[0])
+            for m in _state["media_list"]:
+                if m.get("app") == app and m.get("stream") == stream:
+                    m["readerCount"] = readers
+                    m["totalReaderCount"] = readers
+            base.update({
+                "schema": schema, "app": app, "stream": stream,
+                "vhost": "__defaultVhost",
             })
         elif name in ("on_record_mp4", "on_record_hls"):
             base.update({
@@ -414,6 +484,16 @@ class ZlmMockHandler(http.server.BaseHTTPRequestHandler):
                 "file_duration": 60.0,
                 "file_create_time": time.strftime("%Y-%m-%d %H:%M:%S"),
             })
+        elif name == "on_flow_report":
+            # 真实 ZLM 的 on_flow_report body **没有**流数量字段，只有流量总量。
+            # 后端必须自己向 getMediaList 要真实流数 —— 如果它改从载荷里读，
+            # 这个触发器就会暴露（载荷里根本没有那个键）。
+            base.update({
+                "mediaServerId": _media_server_id(),
+                "totalBytes": int(params.get("total_bytes", ["1048576"])[0]),
+                "schema": "rtsp", "app": app, "stream": stream,
+                "vhost": "__defaultVhost",
+            })
         elif name == "on_server_started":
             base.update({
                 "port": 554, "hook_port": 0, "rtsp_port": 554, "rtmp_port": 1935,
@@ -422,11 +502,38 @@ class ZlmMockHandler(http.server.BaseHTTPRequestHandler):
         # 与真实 ZLM 一致：POST 到该事件自己的 URL、body 扁平且不含 hook_name
         base.pop("hook_name", None)
         target = f"{_hook_base_url(self.server.hook_url)}/api/hook/{name}"  # type: ignore
-        params = _state.get("server_config", {}).get("hook.admin_params", "")
-        if params:
-            target = f"{target}?{params}"
-        threading.Thread(target=_post_hook, args=(target, base), daemon=True).start()
+        admin = _state.get("server_config", {}).get("hook.admin_params", "")
+        if admin:
+            target = f"{target}?{admin}"
         log.info("触发 Webhook: %s -> %s", name, target)
+
+        # 这两个事件会驱动后端做重活（发 BYE / 发 INVITE 并等媒体），
+        # 同步等待才能把 ZLM 的后续行为也一并模拟出来。
+        if name in ("on_stream_none_reader", "on_stream_not_found"):
+            body = _post_hook(target, base, timeout=25)
+            close = bool(body.get("close")) if isinstance(body, dict) else False
+            if name == "on_stream_none_reader" and close:
+                # ZLM 依据 close:true 关闭该无人流
+                before = len(_state["media_list"])
+                _state["media_list"] = [
+                    m for m in _state["media_list"]
+                    if not (m.get("app") == app and m.get("stream") == stream)
+                ]
+                _state["rtp_servers"].pop(stream, None)
+                log.info(
+                    "none_reader close=true → 已关闭流 %s/%s (media %d→%d)",
+                    app, stream, before, len(_state["media_list"]),
+                )
+            self._send_json(200, _ok({
+                "triggered": True,
+                "hook_name": name,
+                "hook_response": body,
+                "close": close,
+                "stream_closed": name == "on_stream_none_reader" and close,
+            }))
+            return
+
+        threading.Thread(target=_post_hook, args=(target, base), daemon=True).start()
         self._send_json(200, _ok({"triggered": True, "hook_name": name}))
 
 
@@ -551,8 +658,9 @@ class ZlmMockHandler(http.server.BaseHTTPRequestHandler):
 
     def _handle_is_recording(self, params: dict, payload: dict):
         key = (params.get("app", [""])[0], params.get("stream", [""])[0])
-        status = _state["recordings"].get(key)
-        self._send_json(200, _ok({"status": bool(status)}))
+        exist = bool(_state["recordings"].get(key))
+        # 同 isMediaExist：真实 ZLM 是顶层 `exist`
+        self._send_json(200, {"code": 0, "exist": exist})
 
     def _handle_get_mp4_record_file(self, params: dict, payload: dict):
         # GBServer 读的是 `data.list`（Mp4RecordResponse）
@@ -606,16 +714,38 @@ def _hook_base_url(configured: str) -> str:
     return trimmed
 
 
-def _post_hook(url: str, payload: dict):
-    """简易 POST 到 Webhook 接收器（用 urllib）"""
+def _post_hook(url: str, payload: dict, timeout: float = 5) -> Optional[dict]:
+    """POST 到 Webhook 接收器，并把**响应体**返回/记账。
+
+    真实 ZLM 会解析响应 JSON 并据此行动（`on_publish`/`on_play` 看 `code`，
+    `on_stream_none_reader` 看 `close`，`on_stream_not_found` 则忽略响应）。
+    因此 mock 不能只记 "POST 成功" —— 必须把响应存下来，让测试能验证
+    "后端确实回了 close:true"。
+    """
     import urllib.request
     data = json.dumps(payload).encode()
     req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
+    event = url.split("/api/hook/")[-1].split("?")[0]
+    body: Optional[dict] = None
+    status = 0
     try:
-        with urllib.request.urlopen(req, timeout=3) as resp:
-            log.info("Hook POST %s -> %d", url, resp.getcode())
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            status = resp.getcode()
+            raw = resp.read()
+            try:
+                body = json.loads(raw) if raw else None
+            except json.JSONDecodeError:
+                body = None
+            log.info("Hook POST %s -> %d %s", url, status, body)
     except Exception as e:
         log.warning("Hook POST 失败: %s", e)
+    _state["hook_responses"].append({
+        "event": event,
+        "request": payload,
+        "status": status,
+        "response": body,
+    })
+    return body
 
 
 # 路由表：GET/POST 共用

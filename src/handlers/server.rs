@@ -133,7 +133,20 @@ async fn configure_zlm_hooks(
     // `hook_routes::handle_hook_event` 的说明）。此前 11 个 hook 全部指向
     // 同一个 `/api/zlm/hook`，而该端点靠 body 里的 hook_name 分派 →
     // 真实 ZLM 下全部落到 "unknown"，整套 webhook 集成静默失效。
-    let config_items = crate::zlm::hook::hook_config_items(&hook_url, &client.secret);
+    let mut config_items = crate::zlm::hook::hook_config_items(&hook_url, &client.secret);
+
+    // 把 ZLM 自己的 `general.mediaServerId` 设成**本平台的节点主键**。
+    //
+    // 每个 hook 载荷里都带 `mediaServerId`，平台要靠它反查"这条通知来自哪个
+    // 节点"（hook 鉴权取 secret、flow report 记账、无人观看判定的
+    // reader/录像校验）。而 ZLM 的这个配置项默认是 `your_server_id`，
+    // 与我们的主键毫无关系 —— 不设置就会出现"所有节点都能收到通知，
+    // 但按 id 一律查不到节点"的静默失效（日志上只表现为"保持既有值"）。
+    // WVP 的做法也是在 autoConfig 时下发该键。
+    config_items.push((
+        "general.mediaServerId".to_string(),
+        media_server_id.to_string(),
+    ));
 
     // 并发下发 + 总超时（见 `ZlmClient::set_server_configs_batch`）。
     // 修正：此前 11 次**串行**调用，ZLM 不健康时本接口实测等 33 秒
@@ -991,37 +1004,9 @@ pub async fn media_server_check(
 
     if let Ok(configs) = temp_client.get_server_config().await {
         if let Some(obj) = payload.as_object_mut() {
-            let get_i32 = |key: &str| configs.get(key).and_then(|v| i32::from_str(v).ok());
-            let get_bool = |key: &str| {
-                configs
-                    .get(key)
-                    .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE"))
-            };
-            obj.insert(
-                "hookIp".to_string(),
-                json!(configs.get("hook.hookIp").cloned().unwrap_or_default()),
-            );
-            obj.insert(
-                "sdpIp".to_string(),
-                json!(configs.get("rtp_proxy.sdp_ip").cloned().unwrap_or_default()),
-            );
-            obj.insert(
-                "streamIp".to_string(),
-                json!(configs.get("general.streamNoneReaderDelayMS").cloned().unwrap_or_default()),
-            );
-            obj.insert("httpSSlPort".to_string(), json!(get_i32("http.sslport").unwrap_or(443)));
-            obj.insert("rtmpPort".to_string(), json!(get_i32("rtmp.port").unwrap_or(1935)));
-            obj.insert("rtmpSSlPort".to_string(), json!(get_i32("rtmp.sslport").unwrap_or(0)));
-            obj.insert("rtspPort".to_string(), json!(get_i32("rtsp.port").unwrap_or(554)));
-            obj.insert("rtspSSLPort".to_string(), json!(get_i32("rtsp.sslport").unwrap_or(0)));
-            obj.insert(
-                "recordAssistPort".to_string(),
-                json!(get_i32("record.port").unwrap_or(0)),
-            );
-            obj.insert(
-                "rtpEnable".to_string(),
-                json!(get_bool("rtp_proxy.port_range").unwrap_or(false)),
-            );
+            for (k, v) in media_server_probe_fields(&configs) {
+                obj.insert(k, v);
+            }
         }
     }
 
@@ -1491,4 +1476,137 @@ fn stream_state_to_json(kind: &str, s: &dyn StreamState) -> serde_json::Value {
         "device_id": s.device_id(),
         "channel_id": s.channel_id(),
     })
+}
+
+/// 从 ZLM `getServerConfig` 的扁平键值对里提取 `media_server/check` 的探测字段。
+///
+/// 独立成纯函数是为了能被单测直接覆盖：这里写错过一次 —— `streamIp` 取了
+/// `general.streamNoneReaderDelayMS`（"无人观看多久后触发 hook"，单位毫秒）。
+/// 那个键永远有值（默认 20000），于是：
+///
+/// 1. 前端"添加流媒体节点"表单里的 **流媒体流IP** 被自动填成 `20000`；
+/// 2. 保存后写进 `gb_media_server.stream_ip`；
+/// 3. `SipServer::new` 把它交给 `NatHelper` 当作对外流媒体 IP，
+///    SDP 的 `c=INET IP4 20000` 就这样下发给设备 —— 设备往一个非法地址推流，
+///    在 NAT/多网卡部署下播放必然失败，且日志上完全看不出原因。
+///
+/// 现在的口径：**ZLM 的 config.ini 里没有"流 IP"这个配置项**
+/// （`[general]` 只有 enableVhost / flowThreshold / maxStreamWaitMS /
+/// streamNoneReaderDelayMS / resetWhenRePlay / mergeWriteMS / mediaServerId /
+/// wait_track_ready_ms / wait_add_track_ms / unready_frame_cache），
+/// 因此这里返回空串，由调用方的兜底逻辑填成配置里的 ZLM 节点 IP。
+fn media_server_probe_fields(
+    configs: &std::collections::HashMap<String, String>,
+) -> Vec<(String, serde_json::Value)> {
+    let get_i32 = |key: &str| configs.get(key).and_then(|v| i32::from_str(v).ok());
+    let get_bool = |key: &str| {
+        configs
+            .get(key)
+            .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE"))
+    };
+
+    vec![
+        (
+            "hookIp".to_string(),
+            json!(configs.get("hook.hookIp").cloned().unwrap_or_default()),
+        ),
+        (
+            "sdpIp".to_string(),
+            json!(configs.get("rtp_proxy.sdp_ip").cloned().unwrap_or_default()),
+        ),
+        // 语义上"流媒体对外 IP"由部署环境决定（ZLM 并不知道自己被 NAT 成了
+        // 什么地址），只能由用户填写或由节点配置兜底 —— 不猜 ZLM 的键。
+        (
+            "streamIp".to_string(),
+            json!(configs.get("general.streamip").cloned().unwrap_or_default()),
+        ),
+        ("httpSSlPort".to_string(), json!(get_i32("http.sslport").unwrap_or(443))),
+        ("rtmpPort".to_string(), json!(get_i32("rtmp.port").unwrap_or(1935))),
+        ("rtmpSSlPort".to_string(), json!(get_i32("rtmp.sslport").unwrap_or(0))),
+        ("rtspPort".to_string(), json!(get_i32("rtsp.port").unwrap_or(554))),
+        ("rtspSSLPort".to_string(), json!(get_i32("rtsp.sslport").unwrap_or(0))),
+        (
+            "recordAssistPort".to_string(),
+            json!(get_i32("record.port").unwrap_or(0)),
+        ),
+        (
+            "rtpEnable".to_string(),
+            json!(get_bool("rtp_proxy.port_range").unwrap_or(false)),
+        ),
+    ]
+}
+
+#[cfg(test)]
+mod media_server_probe_tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn cfg(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    fn field<'a>(
+        fields: &'a [(String, serde_json::Value)],
+        name: &str,
+    ) -> &'a serde_json::Value {
+        &fields
+            .iter()
+            .find(|(k, _)| k == name)
+            .unwrap_or_else(|| panic!("缺少探测字段 {}", name))
+            .1
+    }
+
+    /// 回归：`streamNoneReaderDelayMS` 是"无人观看延迟(ms)"，
+    /// 绝不能被当成流媒体 IP。
+    #[test]
+    fn stream_ip_is_never_the_none_reader_delay() {
+        let c = cfg(&[
+            ("general.streamNoneReaderDelayMS", "20000"),
+            ("hook.hookIp", "10.0.0.5"),
+            ("rtp_proxy.sdp_ip", "203.0.113.7"),
+        ]);
+        let fields = media_server_probe_fields(&c);
+        assert_eq!(field(&fields, "streamIp"), &json!(""));
+        assert_ne!(field(&fields, "streamIp"), &json!("20000"));
+        // 相邻字段不能被"顺手"写错
+        assert_eq!(field(&fields, "hookIp"), &json!("10.0.0.5"));
+        assert_eq!(field(&fields, "sdpIp"), &json!("203.0.113.7"));
+    }
+
+    #[test]
+    fn probe_fields_map_ports_and_flags() {
+        let c = cfg(&[
+            ("http.sslport", "8443"),
+            ("rtmp.port", "1936"),
+            ("rtsp.port", "8554"),
+            ("record.port", "9102"),
+            ("rtp_proxy.port_range", "1"),
+        ]);
+        let fields = media_server_probe_fields(&c);
+        assert_eq!(field(&fields, "httpSSlPort"), &json!(8443));
+        assert_eq!(field(&fields, "rtmpPort"), &json!(1936));
+        assert_eq!(field(&fields, "rtspPort"), &json!(8554));
+        assert_eq!(field(&fields, "recordAssistPort"), &json!(9102));
+        assert_eq!(field(&fields, "rtpEnable"), &json!(true));
+    }
+
+    /// ZLM 没给的端口/开关必须有确定的默认值，而不是 null 或缺字段。
+    #[test]
+    fn probe_fields_have_stable_defaults() {
+        let fields = media_server_probe_fields(&cfg(&[]));
+        assert_eq!(field(&fields, "httpSSlPort"), &json!(443));
+        assert_eq!(field(&fields, "rtmpPort"), &json!(1935));
+        assert_eq!(field(&fields, "rtspPort"), &json!(554));
+        assert_eq!(field(&fields, "rtmpSSlPort"), &json!(0));
+        assert_eq!(field(&fields, "rtspSSLPort"), &json!(0));
+        assert_eq!(field(&fields, "recordAssistPort"), &json!(0));
+        assert_eq!(field(&fields, "rtpEnable"), &json!(false));
+        assert_eq!(field(&fields, "hookIp"), &json!(""));
+        assert_eq!(field(&fields, "sdpIp"), &json!(""));
+        assert_eq!(field(&fields, "streamIp"), &json!(""));
+        assert_eq!(fields.len(), 10);
+    }
 }

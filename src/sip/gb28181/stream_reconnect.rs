@@ -64,13 +64,32 @@ impl StreamReconnectManager {
         stream_id.contains('_') && !stream_id.starts_with("proxy_") && !stream_id.starts_with("push_")
     }
 
+    /// 从 ZLM 的 stream_id 解析出 `(device_id, channel_id)`。
+    ///
+    /// 这是**全局唯一**的解析实现（`zlm::hook` 里同名的私有函数只是转发到这里）。
+    /// 历史上存在三种写法，都要能认：
+    ///
+    /// * `{device}_{channel}` —— 本平台 `openRtpServer` 使用的规范写法；
+    /// * `{device}${channel}` —— 部分 WVP 版本 / 上级平台下发的写法；
+    /// * `{device}/{channel}` —— 拉流代理模板里的写法。
+    ///
+    /// 此前这里只认 `_`，而 `zlm::hook` 里另有一份只认 `$`/`/` 的实现 ——
+    /// 于是 `on_stream_not_found` 对**本平台自己**的流永远解析失败，
+    /// 按需拉流从未真正触发过。
     pub fn parse_stream_id(stream_id: &str) -> Option<(String, String)> {
-        let parts: Vec<&str> = stream_id.splitn(2, '_').collect();
-        if parts.len() == 2 && !parts[0].is_empty() && !parts[1].is_empty() {
-            Some((parts[0].to_string(), parts[1].to_string()))
-        } else {
-            None
+        // 明确的非国标流（推流/拉流代理）直接排除，避免把 `push_xxx` 拆成
+        // device="push" channel="xxx" 这种假阳性。
+        if stream_id.starts_with("proxy_") || stream_id.starts_with("push_") {
+            return None;
         }
+        for sep in ['_', '$', '/'] {
+            if let Some((device, channel)) = stream_id.split_once(sep) {
+                if !device.is_empty() && !channel.is_empty() {
+                    return Some((device.to_string(), channel.to_string()));
+                }
+            }
+        }
+        None
     }
 
     pub fn on_stream_not_found(&self, app: &str, stream_id: &str) -> Option<ReconnectEntry> {
@@ -190,12 +209,13 @@ impl StreamReconnectManager {
                         entry.stream_id, entry.retry_count + 1, entry.max_retries);
 
                     let sip = &*sip_server;
-                    let result = sip.send_play_invite_and_wait(
-                        &entry.device_id,
-                        &entry.channel_id,
-                        0,
-                        None,
-                    ).await;
+                    // 必须走 `start_live_stream`：它会先 `openRtpServer` 拿到
+                    // 真实收流端口再发 INVITE。此前这里传 `media_port = 0`，
+                    // SDP 里就是 `m=video 0`（表示禁用媒体），设备无处可推，
+                    // "自动重连"实际上永远不会成功。
+                    let result = sip
+                        .start_live_stream(&entry.device_id, &entry.channel_id, 15)
+                        .await;
 
 
                     match result {
@@ -234,6 +254,32 @@ mod tests {
         let (device, channel) = StreamReconnectManager::parse_stream_id("dev123_ch456").unwrap();
         assert_eq!(device, "dev123");
         assert_eq!(channel, "ch456");
+    }
+
+    /// 三种历史写法都要认，且必须排除非国标流。
+    ///
+    /// 这是全局唯一的解析实现：`zlm::hook` 里同名的私有函数转发到这里。
+    /// 只认 `_` 会让按需拉流对自家流失效；只认 `$`/`/` 同理。
+    #[test]
+    fn test_parse_stream_id_accepts_all_known_forms() {
+        for (input, dev, ch) in [
+            ("34020000001320000001_34020000001320000002", "34020000001320000001", "34020000001320000002"),
+            ("34020000001320000001$101", "34020000001320000001", "101"),
+            ("34020000001320000001/101", "34020000001320000001", "101"),
+        ] {
+            let (d, c) = StreamReconnectManager::parse_stream_id(input)
+                .unwrap_or_else(|| panic!("{} 应能解析", input));
+            assert_eq!(d, dev);
+            assert_eq!(c, ch);
+        }
+
+        // 非国标流：推流 / 拉流代理 / 无分隔符
+        assert!(StreamReconnectManager::parse_stream_id("push_stream1").is_none());
+        assert!(StreamReconnectManager::parse_stream_id("proxy_live").is_none());
+        assert!(StreamReconnectManager::parse_stream_id("justastream").is_none());
+        assert!(StreamReconnectManager::parse_stream_id("_ch").is_none());
+        assert!(StreamReconnectManager::parse_stream_id("dev_").is_none());
+        assert!(StreamReconnectManager::parse_stream_id("").is_none());
     }
 
     #[test]

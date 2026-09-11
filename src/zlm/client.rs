@@ -16,6 +16,30 @@ pub struct ZlmClient {
 }
 
 /// ZLM `/index/api/openRtpServer` 的真实响应：成功时 `port` / `cookie` 在
+/// 从 `isRecording` / `isMediaExist` 的响应里取布尔结论。
+///
+/// ZLMediaKit 的"简单 API"用 `throw ApiRet("exist", …)` 返回**扁平**结构：
+/// `{"code":0,"exist":true}` —— 字段在顶层，不在 `data` 里。此前这两个方法
+/// 都用 `ApiResponse<Resp>`（要求 `data.exist`）解析，于是**在真实 ZLM 上
+/// 恒为 false**，只有在返回 `data:{exist:...}` 的 mock 上才碰巧正确：
+///
+/// * `is_media_exist` 恒 false ⇒ "先起流再取地址"等判断全部走错分支；
+/// * `is_recording` 恒 false ⇒ 云录像是否在录的判定失真。
+///
+/// 这里兼容三种已知形态（顶层 `exist` / `data.exist` / 旧 mock 的 `status`）。
+fn exist_flag(resp: &serde_json::Value) -> bool {
+    let at = |v: &serde_json::Value, key: &str| v.get(key).and_then(|x| x.as_bool());
+    if let Some(b) = at(resp, "exist").or_else(|| at(resp, "status")) {
+        return b;
+    }
+    if let Some(data) = resp.get("data") {
+        if let Some(b) = at(data, "exist").or_else(|| at(data, "status")) {
+            return b;
+        }
+    }
+    false
+}
+
 /// 顶层而非 `data` 字段里（ZLM 简单 API 的惯例，区别于 listRtpServer
 /// 那种 `data: [...]` 形式）。用扁平结构接收，避免 `data: Some(RtpServerInfo)`
 /// 因 `RtpServerInfo.stream_id` 必填而整个反序列化失败、导致调用方
@@ -117,10 +141,8 @@ impl ZlmClient {
             ("stream", stream.to_string()),
         ];
 
-        #[derive(Deserialize)]
-        struct ExistResp { exist: bool }
-        let resp: ApiResponse<ExistResp> = self.request("/index/api/isMediaExist", &params).await?;
-        Ok(resp.data.map(|r| r.exist).unwrap_or(false))
+        let resp: serde_json::Value = self.request("/index/api/isMediaExist", &params).await?;
+        Ok(exist_flag(&resp))
     }
 
     pub async fn add_stream_proxy(&self, req: &AddStreamProxyRequest) -> Result<String> {
@@ -363,11 +385,9 @@ impl ZlmClient {
             ("app", app.to_string()),
             ("stream", stream.to_string()),
         ];
-        
-        #[derive(Deserialize)]
-        struct Resp { exist: bool }
-        let resp: ApiResponse<Resp> = self.request("/index/api/isRecording", &params).await?;
-        Ok(resp.data.map(|r| r.exist).unwrap_or(false))
+
+        let resp: serde_json::Value = self.request("/index/api/isRecording", &params).await?;
+        Ok(exist_flag(&resp))
     }
 
     pub async fn get_mp4_record_file(&self, app: &str, stream: &str, path: Option<&str>, start_time: Option<&str>, end_time: Option<&str>) -> Result<Vec<Mp4RecordFile>> {
@@ -852,6 +872,38 @@ impl ZlmClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `isRecording` / `isMediaExist`：官方 ZLM 返回**顶层** `exist`，
+    /// 不能用"要求 `data.exist`"的结构体去解析 —— 那样在真实 ZLM 上恒为
+    /// false，只有 mock 上碰巧正确。
+    #[test]
+    fn exist_flag_accepts_flat_and_wrapped_shapes() {
+        // 官方 ZLM 的扁平形态
+        assert!(exist_flag(&serde_json::json!({"code": 0, "exist": true})));
+        assert!(!exist_flag(&serde_json::json!({"code": 0, "exist": false})));
+        // 部分分支/兼容实现包在 data 里
+        assert!(exist_flag(
+            &serde_json::json!({"code": 0, "data": {"exist": true}})
+        ));
+        // 旧 mock 用的 status 字段
+        assert!(exist_flag(&serde_json::json!({"code": 0, "status": true})));
+        assert!(exist_flag(
+            &serde_json::json!({"code": 0, "data": {"status": true}})
+        ));
+        // 缺字段 / 非布尔 → false，绝不 panic
+        assert!(!exist_flag(&serde_json::json!({"code": 0})));
+        assert!(!exist_flag(&serde_json::json!({"code": -1})));
+        assert!(!exist_flag(&serde_json::json!({"exist": "yes"})));
+        assert!(!exist_flag(&serde_json::json!(null)));
+    }
+
+    /// 顶层优先：顶层给了结论就不看 data，避免两种形态给出矛盾答案时行为漂移。
+    #[test]
+    fn exist_flag_prefers_top_level() {
+        assert!(!exist_flag(
+            &serde_json::json!({"exist": false, "data": {"exist": true}})
+        ));
+    }
 
     #[test]
     fn test_parse_port_range_valid() {

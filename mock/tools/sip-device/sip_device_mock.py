@@ -32,6 +32,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import hashlib
+import json
 import logging
 import os
 import random
@@ -79,6 +80,9 @@ class DeviceConfig:
     expires_secs: int = 3600
     # 语音对讲时设备侧收发音频的 RTP 端口（200 OK 的 m=audio 里上报）
     talk_port: int = 10002
+    # 收到 INVITE 后自动挂断的秒数（0 = 不自动挂断）。
+    # 用于模拟"设备主动结束会话"；测试平台侧 BYE 时应设为 0。
+    auto_bye_secs: int = 3
 
 
 @dataclass
@@ -177,14 +181,75 @@ def parse_authorization(auth_header: str) -> dict:
     return result
 
 
+# 收到的 BYE 的对话校验结果。
+#
+# 真实国标设备会校验 BYE 是否属于既有对话：
+#   * From 的 tag 必须等于 INVITE 的 From tag；
+#   * To 必须带 200 OK 里给出的对端 tag；
+#   * CSeq 必须严格大于 INVITE 的 CSeq。
+# 三条任一不满足，设备回 `481 Call/Transaction Does Not Exist` 并**继续推流**。
+#
+# 这里把校验结果落盘，任何"停止播放/无人观看自动关流"的验证都能据此证明
+# BYE 是真的有效，而不是"发出去了就算成功"。
+BYE_REPORT = {"total": 0, "valid": 0, "invalid": 0, "late": 0, "failures": []}
+
+
+def _report_bye(
+    call_id: str,
+    errors: list,
+    cseq: int,
+    invite_cseq: Optional[int],
+    late: bool = False,
+) -> None:
+    BYE_REPORT["total"] += 1
+    if errors and late:
+        # 设备自己已经主动挂断（mock 的 auto-bye 模拟），平台随后再发 BYE
+        # 拿到 481 是正常现象，不算平台缺陷。
+        BYE_REPORT["late"] += 1
+        log.info("BYE 落在设备主动挂断之后（预期内）call_id=%s", call_id)
+        return
+    if errors:
+        BYE_REPORT["invalid"] += 1
+        BYE_REPORT["failures"].append({
+            "call_id": call_id, "errors": errors,
+            "bye_cseq": cseq, "invite_cseq": invite_cseq,
+        })
+        log.warning(
+            "BYE 对话校验失败 call_id=%s errors=%s (BYE CSeq=%s, INVITE CSeq=%s)",
+            call_id, errors, cseq, invite_cseq,
+        )
+    else:
+        BYE_REPORT["valid"] += 1
+        log.info("BYE 对话校验通过 call_id=%s", call_id)
+    path = os.environ.get("SIP_MOCK_BYE_REPORT")
+    if path:
+        try:
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(BYE_REPORT, fh, ensure_ascii=False, indent=2)
+        except OSError as e:  # pragma: no cover
+            log.warning("写 BYE 报告失败: %s", e)
+
+
+class MalformedCSeq(ValueError):
+    """`CSeq` 头不符合 RFC 3261 §20.16 的 `<digits> <method>` 文法。"""
+
+
 def parse_cseq(msg: str) -> int:
+    """解析 `CSeq` 序号。
+
+    **解析失败必须报错，不能兜底成 1。** 此前这里 `except: return 1`，
+    于是平台发出的非法 `CSeq: BYE 2`（序号与方法顺序颠倒）被静默当成
+    `CSeq=1`，与 INVITE 的 1 相等，只表现为"序号没递增"这种歧义信息 ——
+    真正的原因（头本身非法）完全看不到。
+    """
     for line in msg.splitlines():
         if line.lower().startswith("cseq:"):
-            try:
-                return int(line.split(":", 1)[1].strip().split()[0])
-            except (ValueError, IndexError):
-                return 1
-    return 1
+            raw = line.split(":", 1)[1].strip()
+            parts = raw.split()
+            if len(parts) < 2 or not parts[0].isdigit():
+                raise MalformedCSeq(f"CSeq 头非法: {raw!r}（应为 '<序号> <方法>'）")
+            return int(parts[0])
+    raise MalformedCSeq("缺少 CSeq 头")
 
 
 # ---------------- 消息构建 ----------------
@@ -474,6 +539,8 @@ class SipDeviceMock:
         self._keepalive_task: Optional[asyncio.Task] = None
         self._register_task: Optional[asyncio.Task] = None
         self._invite_state: dict = {}  # call_id -> {from_tag, to_tag, branch}
+        # 设备自己主动挂断过的 call_id（平台随后再发 BYE 拿到 481 属预期）
+        self._ended_by_device: set = set()
 
     # ----- UDP 收发 -----
 
@@ -726,7 +793,11 @@ class SipDeviceMock:
 
     async def _on_invite(self, msg: str, addr: tuple):
         """处理 INVITE，发送 200 OK + SDP，3 秒后 BYE"""
-        invite_cseq = parse_cseq(msg)
+        try:
+            invite_cseq = parse_cseq(msg)
+        except MalformedCSeq as e:
+            log.error("INVITE 的 CSeq 头非法: %s", e)
+            invite_cseq = 0
         call_id = self._extract_header(msg, "Call-ID", "") or make_call_id("sim-inv")
         branch = self._extract_via_branch(msg)
         from_tag = self._extract_from_tag(msg)
@@ -743,31 +814,90 @@ class SipDeviceMock:
             request_body=req_body, talk_port=self.cfg.talk_port,
         )
         self.transport.sendto(payload, addr)
+        # 把请求 SDP 的 m= 行打出来：`m=video 0` 表示媒体被禁用
+        # （设备无处可推），是"发了 INVITE 但永远收不到流"的典型症状，
+        # 必须在测试日志里一眼可见。
+        media_lines = [l.strip() for l in req_body.splitlines() if l.strip().startswith("m=")]
         log.info(
-            "INVITE 200 OK sent for call %s, ssrc=%s (%s)",
-            call_id, ssrc, "audio/Talk" if ("s=Talk" in req_body or "m=audio" in req_body) else "video/Play",
+            "INVITE 200 OK sent for call %s, ssrc=%s (%s) 请求SDP: %s",
+            call_id, ssrc,
+            "audio/Talk" if ("s=Talk" in req_body or "m=audio" in req_body) else "video/Play",
+            media_lines or ["<无 m= 行>"],
         )
-        # 模拟媒体会话：3 秒后主动 BYE
-        async def delayed_bye():
-            await asyncio.sleep(3)
-            state = self._invite_state.get(call_id)
-            if not state:
-                return
-            cseq = self.state.next_cseq()
-            payload = build_bye(self.cfg, local, addr, cseq, call_id, make_branch(), state["from_tag"], state["to_tag"])
-            self.transport.sendto(payload, addr)
-            log.info("BYE sent for call %s", call_id)
-        asyncio.create_task(delayed_bye())
+        # 模拟设备主动挂断（`--auto-bye-secs`，0 = 不自动挂断）。
+        #
+        # 之所以可配置：平台侧的 BYE 需要在对话仍然有效时才能被校验，
+        # 设备提前挂断会让平台的 BYE 拿到 481（预期内，但会淹没真正的缺陷）。
+        delay = self.cfg.auto_bye_secs
+        if delay > 0:
+            async def delayed_bye():
+                await asyncio.sleep(delay)
+                state = self._invite_state.get(call_id)
+                if not state:
+                    return
+                cseq = self.state.next_cseq()
+                payload = build_bye(self.cfg, local, addr, cseq, call_id, make_branch(), state["from_tag"], state["to_tag"])
+                self.transport.sendto(payload, addr)
+                self._ended_by_device.add(call_id)
+                log.info("BYE sent for call %s", call_id)
+            asyncio.create_task(delayed_bye())
 
     async def _on_bye(self, msg: str, addr: tuple):
-        # 回应 200 OK
-        cseq = parse_cseq(msg)
+        """处理 BYE：**先做对话校验**，再决定回 200 OK 还是 481。
+
+        此前这里无条件回 200 OK —— 那是把 BYE 当成孤立请求。真实设备按
+        RFC 3261 §12 的对话匹配，任何一条不满足就回 481 并继续推流，
+        于是"停止播放"在真机上其实是不生效的，而 mock 全绿掩盖了这一点。
+        """
+        try:
+            cseq = parse_cseq(msg)
+        except MalformedCSeq as e:
+            log.error("BYE 的 CSeq 头非法: %s", e)
+            cseq = 0
         call_id = self._extract_header(msg, "Call-ID", "")
-        branch = make_branch()
         from_tag = self._extract_from_tag(msg)
         to_tag = self._extract_to_tag(msg)
+        state = self._invite_state.get(call_id)
+
+        errors: list = []
+        late = False
+        if cseq == 0:
+            errors.append("malformed-cseq-header")
+        if state is None:
+            errors.append("unknown-dialog")
+            late = call_id in self._ended_by_device
+        else:
+            if not from_tag or from_tag != state.get("from_tag"):
+                errors.append("from-tag-mismatch")
+            if not to_tag or to_tag != state.get("to_tag"):
+                errors.append("to-tag-mismatch")
+            if cseq <= int(state.get("cseq") or 0):
+                errors.append("cseq-not-incremented")
+        _report_bye(
+            call_id, errors, cseq,
+            None if state is None else state.get("cseq"),
+            late=late,
+        )
+
+        branch = make_branch()
         realm = realm_from_device_id(self.cfg.device_id)
         local = self.transport.get_extra_info("sockname")
+        if errors:
+            # 481：对话不存在 / 无法匹配
+            payload = (
+                f"{SIP_VERSION} 481 Call/Transaction Does Not Exist\r\n"
+                f"Via: {SIP_VERSION}/UDP {addr[0]}:{addr[1]};rport;branch={branch}\r\n"
+                f"From: <sip:{self.cfg.device_id}@{realm}>;tag={from_tag}\r\n"
+                f"To: <sip:{realm}@{realm}>;tag={to_tag}\r\n"
+                f"Call-ID: {call_id}\r\n"
+                f"CSeq: {cseq} BYE\r\n"
+                f"Content-Length: 0\r\n"
+                f"\r\n"
+            )
+            self.transport.sendto(payload.encode(), addr)
+            # 对话无效 ⇒ 设备按"没收到停止指令"继续推流（不清理 invite 状态）
+            return
+
         payload = (
             f"{SIP_VERSION} 200 OK\r\n"
             f"Via: {SIP_VERSION}/UDP {addr[0]}:{addr[1]};rport;branch={branch}\r\n"
@@ -981,6 +1111,10 @@ def main():
     parser.add_argument("--auto-register", action="store_true", default=True)
     parser.add_argument("--no-auto-register", dest="auto_register", action="store_false")
     parser.add_argument("--auto-keepalive", type=int, default=30, help="keepalive interval seconds (0=off)")
+    parser.add_argument(
+        "--auto-bye-secs", type=int, default=3,
+        help="收到 INVITE 后自动挂断的秒数（0=不自动挂断，用于测试平台侧 BYE）",
+    )
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     args = parser.parse_args()
 
@@ -1000,6 +1134,7 @@ def main():
         password=args.password,
         realm=args.realm or realm_from_device_id(args.device_id),
         expires_secs=args.expires,
+        auto_bye_secs=args.auto_bye_secs,
     )
 
     mock = SipDeviceMock(cfg, server_addr, args.local_port, args.auto_register, args.auto_keepalive)
