@@ -1,5 +1,59 @@
 use super::invite_session::StreamType;
 
+/// GB28181 中 INVITE 未显式指定 SSRC 时的默认占位值。
+/// 国标要求 `y=` 行必须存在，设备在 200 OK 中回显同一值。
+pub const DEFAULT_SSRC: &str = "0100000001";
+
+/// 业务类型字符串 → [`StreamType`]。
+///
+/// SIP 信令层用字符串（`"Play"` / `"Playback"` / …）传递业务类型；这里集中做
+/// 一次归一化，避免各调用点各自 `match` 出一套互不相同的映射。
+pub fn stream_type_from_str(s: &str) -> StreamType {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "playback" | "play_back" | "history" => StreamType::Playback,
+        "download" => StreamType::Download,
+        "talk" | "audio" => StreamType::Talk,
+        "broadcast" => StreamType::Broadcast,
+        // 含 "play" 及一切未知取值都按实时流处理（与历史行为一致）
+        _ => StreamType::Play,
+    }
+}
+
+/// 把回放/下载时间参数归一化成 SDP `t=` 与 `a=range:npt=` 需要的 **UNIX 秒**。
+///
+/// 上游（前端 el-date-picker、RecordInfo 查询）传进来的是
+/// `YYYY-MM-DD HH:MM:SS` / `YYYY-MM-DDTHH:MM:SS`，而国标要求 SDP 的
+/// `t=` 与 `a=range:npt=` 用 UNIX 秒。此前把 ISO 串原样写进 SDP，
+/// 设备收到的是无法解析的时间区间。
+///
+/// 无法识别时返回 `None`，调用方回退成 `0 0`（不限时），
+/// 而不是把非法字符串发出去。
+pub fn to_unix_seconds(t: &str) -> Option<i64> {
+    let t = t.trim();
+    if t.is_empty() {
+        return None;
+    }
+    // 已经是 UNIX 秒（0 表示不限时）
+    if let Ok(v) = t.parse::<i64>() {
+        return Some(v);
+    }
+    for fmt in [
+        "%Y-%m-%dT%H:%M:%S%.f",
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%d %H:%M:%S%.f",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y/%m/%d %H:%M:%S",
+    ] {
+        if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(t, fmt) {
+            return Some(dt.and_utc().timestamp());
+        }
+    }
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(t) {
+        return Some(dt.timestamp());
+    }
+    None
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SdpDirection {
     SendOnly,
@@ -57,6 +111,10 @@ pub struct SdpBuilder {
 
 impl SdpBuilder {
     pub fn new(ip: &str, media_port: u16, stream_type: StreamType, ssrc: &str) -> Self {
+        // 方向语义（GB/T 28181-2016 附录示例）：
+        //   平台发出的 INVITE 请求点播/回放/下载 → 平台**收**，设备发 → recvonly
+        //   语音对讲/广播 → 平台既发又收（可视对讲）→ sendrecv
+        // 设备侧的 200 OK 才用 sendonly。
         let direction = match stream_type {
             StreamType::Play | StreamType::Playback | StreamType::Download => SdpDirection::RecvOnly,
             StreamType::Talk | StreamType::Broadcast => SdpDirection::SendRecv,
@@ -90,9 +148,13 @@ impl SdpBuilder {
         self
     }
 
+    /// 设置回放/下载时间区间。
+    ///
+    /// 入参可以是 UNIX 秒（已经是秒）或 ISO 时间串，内部统一归一化成 UNIX 秒，
+    /// 因为 `t=` 与 `a=range:npt=` 都必须是秒。
     pub fn time_range(mut self, start: &str, end: &str) -> Self {
-        self.start_time = Some(start.to_string());
-        self.end_time = Some(end.to_string());
+        self.start_time = to_unix_seconds(start).map(|v| v.to_string());
+        self.end_time = to_unix_seconds(end).map(|v| v.to_string());
         self
     }
 
@@ -265,5 +327,104 @@ mod tests {
             .direction(SdpDirection::SendOnly)
             .build();
         assert!(sdp.contains("a=sendonly"));
+    }
+
+    /// 平台发出的点播 INVITE 里平台是接收方，必须是 recvonly。
+    /// 写成 sendonly 等于告诉设备「我发你收」，与实时点播的实际数据流向相反。
+    #[test]
+    fn platform_invite_direction_is_recvonly_for_pull_streams() {
+        for st in [StreamType::Play, StreamType::Playback, StreamType::Download] {
+            let sdp = SdpBuilder::new("192.168.1.100", 50000, st.clone(), "0100000001").build();
+            assert!(
+                sdp.contains("a=recvonly"),
+                "{:?} 的 INVITE 应为 recvonly, 实际:\n{}",
+                st,
+                sdp
+            );
+            assert!(!sdp.contains("a=sendonly"), "{:?} 不应是 sendonly", st);
+        }
+    }
+
+    /// 对讲/广播是双向会话。
+    #[test]
+    fn talk_and_broadcast_are_sendrecv() {
+        for st in [StreamType::Talk, StreamType::Broadcast] {
+            let sdp = SdpBuilder::new("192.168.1.100", 50002, st.clone(), "0200005678").build();
+            assert!(sdp.contains("a=sendrecv"), "{:?} 应为 sendrecv", st);
+            assert!(sdp.contains("m=audio 50002 RTP/AVP 8 0 101"));
+        }
+    }
+
+    /// 回放时间必须是 UNIX 秒：ISO 串直接写进 t=/npt= 设备无法解析。
+    #[test]
+    fn playback_time_range_is_normalized_to_unix_seconds() {
+        let sdp = playback_sdp(
+            "192.168.1.100",
+            50000,
+            "0100000001",
+            "2024-01-01 10:00:00",
+            "2024-01-01 11:00:00",
+        );
+        // 1704103200 = 2024-01-01T10:00:00Z, 1704106800 = 11:00:00Z
+        assert!(sdp.contains("t=1704103200 1704106800"), "实际:\n{}", sdp);
+        assert!(
+            sdp.contains("a=range:npt=1704103200,1704106800"),
+            "实际:\n{}",
+            sdp
+        );
+        assert!(!sdp.contains("2024-01-01"), "不应残留 ISO 串:\n{}", sdp);
+    }
+
+    #[test]
+    fn playback_time_range_accepts_existing_unix_seconds() {
+        let sdp = playback_sdp("192.168.1.100", 50000, "0100000001", "1700000000", "1700003600");
+        assert!(sdp.contains("t=1700000000 1700003600"));
+    }
+
+    /// 起止时间无法解析时回退为不限时，而不是把非法串发出去。
+    #[test]
+    fn playback_time_range_falls_back_to_unbounded_on_garbage() {
+        let sdp = playback_sdp("192.168.1.100", 50000, "0100000001", "not-a-time", "also-bad");
+        assert!(sdp.contains("t=0 0"), "实际:\n{}", sdp);
+        assert!(!sdp.contains("a=range:npt"), "实际:\n{}", sdp);
+        assert!(!sdp.contains("not-a-time"));
+    }
+
+    #[test]
+    fn to_unix_seconds_handles_supported_forms() {
+        assert_eq!(to_unix_seconds("0"), Some(0));
+        assert_eq!(to_unix_seconds("1700000000"), Some(1700000000));
+        assert_eq!(to_unix_seconds("2024-01-01T10:00:00"), Some(1704103200));
+        assert_eq!(to_unix_seconds("2024-01-01 10:00:00"), Some(1704103200));
+        assert_eq!(
+            to_unix_seconds("2024-01-01T10:00:00Z"),
+            Some(1704103200)
+        );
+        assert_eq!(to_unix_seconds(""), None);
+        assert_eq!(to_unix_seconds("   "), None);
+        assert_eq!(to_unix_seconds("nonsense"), None);
+    }
+
+    #[test]
+    fn stream_type_from_str_normalizes_case_and_aliases() {
+        use super::stream_type_from_str as f;
+        assert_eq!(f("Play"), StreamType::Play);
+        assert_eq!(f("play"), StreamType::Play);
+        assert_eq!(f("Playback"), StreamType::Playback);
+        assert_eq!(f("Download"), StreamType::Download);
+        assert_eq!(f("Talk"), StreamType::Talk);
+        assert_eq!(f("Broadcast"), StreamType::Broadcast);
+        // 未知取值按实时流处理
+        assert_eq!(f("whatever"), StreamType::Play);
+    }
+
+    /// SSRC 必须来自调用方：所有回放会话共用同一个 y= 会让媒体面无法区分流。
+    #[test]
+    fn ssrc_is_taken_from_caller_not_hardcoded() {
+        let a = playback_sdp("10.0.0.1", 5000, "0100000001", "1700000000", "1700003600");
+        let b = playback_sdp("10.0.0.1", 5001, "1100000002", "1700000000", "1700003600");
+        assert!(a.contains("y=0100000001"));
+        assert!(b.contains("y=1100000002"));
+        assert!(!b.contains("y=0100000001"));
     }
 }

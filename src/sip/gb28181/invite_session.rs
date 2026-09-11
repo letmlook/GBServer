@@ -390,30 +390,60 @@ impl Default for InviteSessionManager {
     }
 }
 
+// ---------------------------------------------------------------------------
+// INVITE SDP 构造统一委托给 `sdp_builder`。
+//
+// 这里曾经有一份手写实现，与 `sdp_builder.rs`（同样存在但当时无人调用）
+// 以及 `talk.rs::build_talk_sdp` 三者并存，且互相矛盾：
+//   * 方向：本文件写死 `a=sendonly`，`sdp_builder` 对点播用 `a=recvonly`；
+//     按 GB/T 28181-2016 附录示例，平台发出的取流 INVITE 应为 recvonly
+//     （平台收、设备发），设备 200 OK 才是 sendonly。
+//   * 回放 `y=`：写死 `0100000001`，所有回放会话共用一个 SSRC。
+//   * 回放 `t=`：直接把 ISO 时间串写进去，而国标要求 UNIX 秒。
+//   * 对讲会话名大小写：本文件 `s=TALK`，`talk.rs` `s=Talk`。
+//
+// 现在只有 `sdp_builder` 一处实现，下面三个函数只做参数适配。
+// ---------------------------------------------------------------------------
+
 pub fn build_invite_sdp(
     local_ip: &str,
     media_port: u16,
     stream_type: &str,
     ssrc: Option<&str>,
 ) -> String {
-    let ssrc_str = ssrc.unwrap_or("0100000001");
-    format!("v=0\r\no=- 0 0 IN IP4 {}\r\ns={}\r\nc=IN IP4 {}\r\nt=0 0\r\nm=video {} RTP/AVP 96\r\na=rtpmap:96 PS/90000\r\na=sendonly\r\ny={}\r\nf=v/1/96/1/2/1/1/0\r\n",
-        local_ip, stream_type, local_ip, media_port, ssrc_str)
+    super::sdp_builder::SdpBuilder::new(
+        local_ip,
+        media_port,
+        super::sdp_builder::stream_type_from_str(stream_type),
+        ssrc.unwrap_or(super::sdp_builder::DEFAULT_SSRC),
+    )
+    .build()
 }
 
 pub fn build_talk_sdp(local_ip: &str, audio_port: u16) -> String {
-    format!("v=0\r\no=- 0 0 IN IP4 {}\r\ns=TALK\r\nc=IN IP4 {}\r\nt=0 0\r\nm=audio {} RTP/AVP 8 0 101\r\na=rtpmap:8 PCMA/8000\r\na=rtpmap:0 PCMU/8000\r\na=rtpmap:101 telephone-event/8000\r\na=sendrecv\r\ny=020000\r\n",
-        local_ip, local_ip, audio_port)
+    super::sdp_builder::talk_sdp(
+        local_ip,
+        audio_port,
+        super::sdp_builder::DEFAULT_SSRC,
+    )
 }
 
-pub fn build_playback_sdp(local_ip: &str, media_port: u16, start_time: &str, end_time: &str) -> String {
-    let t_field = if !start_time.is_empty() && start_time != "0" {
-        format!("{} {}", start_time, end_time)
-    } else {
-        "0 0".to_string()
-    };
-    format!("v=0\r\no=- 0 0 IN IP4 {}\r\ns=Playback\r\nc=IN IP4 {}\r\nt={}\r\nm=video {} RTP/AVP 96\r\na=rtpmap:96 PS/90000\r\na=sendonly\r\ny=0100000001\r\nf=v/1/96/1/2/1/1/0\r\n",
-        local_ip, local_ip, t_field, media_port)
+/// 回放 SDP。`ssrc` 由调用方提供（回放流的 SSRC 需与 Subject/`y=` 一致）。
+pub fn build_playback_sdp(
+    local_ip: &str,
+    media_port: u16,
+    start_time: &str,
+    end_time: &str,
+    ssrc: Option<&str>,
+) -> String {
+    super::sdp_builder::SdpBuilder::new(
+        local_ip,
+        media_port,
+        StreamType::Playback,
+        ssrc.unwrap_or(super::sdp_builder::DEFAULT_SSRC),
+    )
+    .time_range(start_time, end_time)
+    .build()
 }
 
 #[cfg(test)]

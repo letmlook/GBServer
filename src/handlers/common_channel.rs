@@ -1769,7 +1769,44 @@ pub async fn channel_playback_start(
                 let server = &*sip_server;
                 if let Some(device) = server.device_manager().get(&device_id).await {
                     if device.online {
-                        match server.send_playback_invite(&device_id, &gb_channel_id, &start_time, &end_time).await {
+                        // 先让 ZLM 分配收流端口，再把它写进 INVITE 的 m=video。
+                        // 此前这里直接发 INVITE，SDP 里 m=video 端口是 0
+                        // （SDP 中 0 表示媒体流被禁用），设备无从推流。
+                        let stream_id = format!("playback_{}_{}", device_id, channel_id);
+                        let media_port = match state.zlm_client.as_ref() {
+                            Some(zlm) => {
+                                match zlm
+                                    .open_rtp_server(&crate::zlm::OpenRtpServerRequest {
+                                        secret: zlm.secret.clone(),
+                                        stream_id: stream_id.clone(),
+                                        port: Some(0),
+                                        use_tcp: Some(false),
+                                        rtp_type: Some(0),
+                                        recv_port: None,
+                                    })
+                                    .await
+                                {
+                                    Ok(info) => info.port,
+                                    Err(e) => {
+                                        tracing::error!(
+                                            "openRtpServer for playback {}/{} failed: {}",
+                                            device_id, channel_id, e
+                                        );
+                                        return Json(serde_json::json!({
+                                            "code": 1,
+                                            "msg": format!("ZLM 收流端口分配失败: {}", e)
+                                        }));
+                                    }
+                                }
+                            }
+                            None => {
+                                return Json(serde_json::json!({
+                                    "code": 1,
+                                    "msg": "ZLM 未配置，无法建立回放收流"
+                                }));
+                            }
+                        };
+                        match server.send_playback_invite(&device_id, &gb_channel_id, &start_time, &end_time, media_port).await {
                             Ok(_) => {
                                 let stream_id = format!("playback_{}_{}", device_id, channel_id);
                                 return Json(serde_json::json!({

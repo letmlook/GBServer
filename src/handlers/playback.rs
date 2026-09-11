@@ -655,21 +655,48 @@ pub async fn gb_record_download_start(
         let sip = &*sip_server;
         if let Some(device) = sip.device_manager().get(&device_id).await {
             if device.online && device.addr.is_some() {
-                // 提前开 ZLM RTP server 监听设备推流
-                if let Some(ref zlm) = state.zlm_client {
-                    let _ = zlm
-                        .open_rtp_server(&crate::zlm::OpenRtpServerRequest {
-                            secret: zlm.secret.clone(),
-                            stream_id: stream_id.clone(),
-                            port: Some(0),
-                            use_tcp: Some(false),
-                            rtp_type: Some(0),
-                            recv_port: None,
-                        })
-                        .await;
+                // 提前开 ZLM RTP server 监听设备推流。
+                // 修正：此前把返回的端口整个丢掉（`let _ =`），随后发出
+                // 的 INVITE 里 m=video 端口是 0，设备根本收不到可推流的目标。
+                let media_port = match state.zlm_client.as_ref() {
+                    Some(zlm) => {
+                        match zlm
+                            .open_rtp_server(&crate::zlm::OpenRtpServerRequest {
+                                secret: zlm.secret.clone(),
+                                stream_id: stream_id.clone(),
+                                port: Some(0),
+                                use_tcp: Some(false),
+                                rtp_type: Some(0),
+                                recv_port: None,
+                            })
+                            .await
+                        {
+                            Ok(info) => info.port,
+                            Err(e) => {
+                                tracing::error!(
+                                    "openRtpServer for download {}/{} failed: {}",
+                                    device_id, channel_id, e
+                                );
+                                0
+                            }
+                        }
+                    }
+                    None => 0,
+                };
+                if media_port == 0 {
+                    tracing::warn!(
+                        "未取得 ZLM 收流端口，录像下载 INVITE 将不带可用 m= 端口 ({}/{})",
+                        device_id, channel_id
+                    );
                 }
                 match sip
-                    .send_download_invite(&device_id, &channel_id, &start_time, &end_time)
+                    .send_download_invite(
+                        &device_id,
+                        &channel_id,
+                        &start_time,
+                        &end_time,
+                        media_port,
+                    )
                     .await
                 {
                     Ok(call_id) => {

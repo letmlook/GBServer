@@ -112,15 +112,37 @@ pub(crate) fn build_playback_control_xml(
         )
     }
 }
-/// 构造 GB28181 下载 SSRC：前缀 2（实时=0 / 回放=1 / 下载=2）+
-/// 设备号前 9 位，不足 9 位右补 0；与 Java 参考实现兼容。
-pub(crate) fn build_download_ssrc(device_id: &str) -> String {
+/// 构造 GB28181 的 10 位 SSRC：1 位类型前缀 + 设备号前 9 位。
+///
+/// 类型前缀（国标）：`0` 实时点播 / `1` 回放 / `2` 下载。
+/// 设备号不足 9 位时右补 0（`{:0>9}`）。
+fn build_ssrc(prefix: u8, device_id: &str) -> String {
     let id_part = if device_id.len() >= 9 {
         &device_id[0..9]
     } else {
         device_id
     };
-    format!("2{:0>9}", id_part)
+    format!("{}{:0>9}", prefix, id_part)
+}
+
+/// 实时点播 SSRC（前缀 0）。
+pub(crate) fn build_live_ssrc(device_id: &str) -> String {
+    build_ssrc(0, device_id)
+}
+
+/// 回放 SSRC（前缀 1）。
+pub(crate) fn build_playback_ssrc(device_id: &str) -> String {
+    build_ssrc(1, device_id)
+}
+
+/// 下载 SSRC（前缀 2）；与 Java 参考实现兼容。
+pub(crate) fn build_download_ssrc(device_id: &str) -> String {
+    build_ssrc(2, device_id)
+}
+
+/// 语音广播/对讲 SSRC（前缀 4）。
+pub(crate) fn build_audio_ssrc(device_id: &str) -> String {
+    build_ssrc(4, device_id)
 }
 
 /// 构造下载 INVITE 的 Subject 头：
@@ -4079,7 +4101,40 @@ f=v/1/96/1/2/1/1/0
         Ok(())
     }
 
+    /// 发送语音对讲 INVITE（平台 → 设备）。
+    ///
+    /// 与 `send_broadcast_invite` 一样，先让 ZLM 开一个收流端口，再把该端口
+    /// 写进 `m=audio`。此前 `m=audio` 的端口固定为 0，而 SDP 中端口 0 表示
+    /// 该媒体流被禁用，设备没有可推流的目标。
     pub async fn send_talk_invite(&self, device_id: &str, channel_id: &str) -> Result<()> {
+        // 1. 先开 ZLM RTP server（端口交给 ZLM 自动分配）
+        let stream_id = format!("talk_{}_{}", device_id, channel_id);
+        let mut media_port: u16 = 0;
+        if let Some(ref zlm) = self.zlm_client {
+            match zlm
+                .open_rtp_server(&crate::zlm::OpenRtpServerRequest {
+                    secret: zlm.secret.clone(),
+                    stream_id: stream_id.clone(),
+                    port: Some(0),
+                    use_tcp: Some(false),
+                    rtp_type: Some(0),
+                    recv_port: None,
+                })
+                .await
+            {
+                Ok(info) => {
+                    media_port = info.port;
+                    tracing::info!(
+                        "ZLM RTP server opened for talk {} on port {}",
+                        stream_id, media_port
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to open ZLM RTP server for talk: {}", e);
+                }
+            }
+        }
+
         let socket = self.socket.read().await;
         let socket = socket
             .as_ref()
@@ -4100,6 +4155,19 @@ f=v/1/96/1/2/1/1/0
         let cseq = format!("INVITE {}", 1);
         let from_tag = generate_tag();
 
+        // 2. 登记去话会话：此前只有「设备主动 INVITE 平台」这条入站路径
+        //    会写 TalkManager，去话路径完全不登记，导致 /api/talk/list
+        //    与 /api/talk/session 查不到刚发起的对讲，local_port 永远是 0。
+        let mut session = self
+            .talk_manager
+            .create(&call_id, device_id, channel_id)
+            .await;
+        session.set_device_info(&device_addr.ip().to_string(), device_addr.port());
+        session.set_zlm_stream(&stream_id);
+        session.set_local_port(media_port);
+        session.status = TalkStatus::Inviting;
+        self.talk_manager.update(&session).await;
+
         let via = format!(
             "SIP/2.0/UDP {}:{};branch={};rport",
             self.config.ip, self.config.port, branch
@@ -4119,7 +4187,7 @@ f=v/1/96/1/2/1/1/0
             self.config.device_id, self.config.ip, self.config.port
         );
 
-        let sdp = build_audio_sdp(&self.config.ip, 0);
+        let sdp = build_audio_sdp(&self.config.ip, media_port);
 
         let subject = format!(
             "{}:{},{}:{}",
@@ -4280,7 +4348,8 @@ f=v/1/96/1/2/1/1/0
         let cseq = "INVITE 1".to_string();
 
         // SSRC 前缀 4 = Audio/Broadcast (与 WVP Java 一致)
-        let ssrc = format!("4{:0>9}0", &device_id[..device_id.len().min(9)]);
+        // 统一用 10 位 SSRC（此前是 "4" + id9 + "0" 共 11 位，不符合国标）
+        let ssrc = build_audio_ssrc(device_id);
 
         let via = format!("SIP/2.0/UDP {}:{};branch={};rport",
             self.config.ip, self.config.port, branch);
@@ -4291,7 +4360,7 @@ f=v/1/96/1/2/1/1/0
         // Subject: serverGbId:ssrc,deviceGbId:4
         let subject = format!("{}:{},{}:4", self.config.device_id, ssrc, channel_id);
 
-        // SDP s=Play（与 WVP 兼容）；port 用 0（实际媒体由 ZLM RTP server 收）
+        // SDP s=Play（与 WVP 兼容）；端口用刚分配好的 ZLM RTP server 端口
         let sdp = build_invite_sdp(&self.config.ip, session.local_port, "Play", Some(&ssrc));
 
         let headers: Vec<(&str, &str)> = vec![
@@ -4913,12 +4982,19 @@ f=v/1/96/1/2/1/1/0
         self.media_waiter_manager.resolve_by_stream(stream_id, app)
     }
 
+    /// 发送回放 INVITE。
+    ///
+    /// `media_port` 必须是**已由 ZLM `open_rtp_server` 分配好的收流端口**：
+    /// 国标要求 `m=video <port>` 告诉设备把 RTP 推到平台的哪个端口，
+    /// 此前固定传 0（`m=video 0` 在 SDP 里表示该媒体流被禁用），
+    /// 设备无处可推，回放不可能建立。
     pub async fn send_playback_invite(
         &self,
         device_id: &str,
         channel_id: &str,
         start_time: &str,
         end_time: &str,
+        media_port: u16,
     ) -> Result<()> {
         let socket = self.socket.read().await;
         let socket = socket
@@ -4959,7 +5035,14 @@ f=v/1/96/1/2/1/1/0
             self.config.device_id, self.config.ip, self.config.port
         );
 
-        let sdp = build_playback_sdp(&self.config.ip, 0, start_time, end_time);
+        let ssrc = build_playback_ssrc(device_id);
+        let sdp = build_playback_sdp(
+            &self.config.ip,
+            media_port,
+            start_time,
+            end_time,
+            Some(&ssrc),
+        );
         let subject = format!(
             "{}:{},{}:{}",
             self.config.device_id, channel_id, self.config.device_id, 1
@@ -5039,7 +5122,10 @@ f=v/1/96/1/2/1/1/0
                 .ok_or_else(|| anyhow::anyhow!("Device {} not registered", device_id))?;
             let branch = generate_branch();
             let cseq = "INVITE 1".to_string();
-            let ssrc = format!("1{:0>9}0", &device_id[..device_id.len().min(9)]);
+            // 统一用 10 位 SSRC（前缀 1 = 回放）；此前这里是 11 位的
+            // "1" + id9 + "0"，且算出来后并没有写进 SDP 的 y=
+            // （y= 一直是硬编码的 0100000001）。
+            let ssrc = build_playback_ssrc(device_id);
 
             let via = format!(
                 "SIP/2.0/UDP {}:{};branch={};rport",
@@ -5057,7 +5143,13 @@ f=v/1/96/1/2/1/1/0
                 "<sip:{}@{}:{}>",
                 self.config.device_id, self.config.ip, self.config.port
             );
-            let sdp = build_playback_sdp(&self.config.ip, media_port, start_time, end_time);
+            let sdp = build_playback_sdp(
+                &self.config.ip,
+                media_port,
+                start_time,
+                end_time,
+                Some(&ssrc),
+            );
             let subject = format!("{}:{},{}:1", self.config.device_id, ssrc, channel_id);
 
             let headers: Vec<(&str, &str)> = vec![
@@ -5125,12 +5217,17 @@ f=v/1/96/1/2/1/1/0
     /// 与 send_playback_invite 区别仅在 Subject 字段第 4 段（SSRC）前缀：
     /// 实时=0、回放=1、下载=2。SDP 内容相同。
     /// 设备回复 200 OK 后 ZLM 在 9102 端口接收 RTP 流并按 MP4 落盘。
+    /// 发送录像下载 INVITE。
+    ///
+    /// `media_port` 同 [`Self::send_playback_invite`]，必须是 ZLM 已分配好的
+    /// 收流端口；调用方此前虽然已经 `open_rtp_server`，却把句柄丢掉并传 0。
     pub async fn send_download_invite(
         &self,
         device_id: &str,
         channel_id: &str,
         start_time: &str,
         end_time: &str,
+        media_port: u16,
     ) -> Result<String> {
         let socket = self.socket.read().await;
         let socket = socket
@@ -5174,9 +5271,14 @@ f=v/1/96/1/2/1/1/0
         let subject = build_download_subject(&self.config.device_id, channel_id);
         let ssrc = build_download_ssrc(&self.config.device_id);
 
-        // SDP 与回放一致；ZLM 端口由调用方通过 OpenRtpServer 提前分配，
-        // 这里用占位 0 留给 ZLM 自行协商；客户端用 hold 方式发送.
-        let sdp = build_playback_sdp(&self.config.ip, 0, start_time, end_time);
+        // SDP 与回放一致，端口取自调用方提前 openRtpServer 分配的结果。
+        let sdp = build_playback_sdp(
+            &self.config.ip,
+            media_port,
+            start_time,
+            end_time,
+            Some(&ssrc),
+        );
 
         let headers: Vec<(&str, &str)> = vec![
             ("Via", &via),
@@ -5256,7 +5358,15 @@ f=v/1/96/1/2/1/1/0
             self.config.device_id, self.config.ip, self.config.port
         );
 
-        let sdp = build_playback_sdp(&self.config.ip, sdp_port, "0", "0");
+        // 这是向级联上级平台发起的**实时**取流请求：s=Play、t=0 0。
+        // 此前复用了 build_playback_sdp，生成的是 `s=Playback`，
+        // 上级平台会按回放处理，语义不符。
+        // SSRC 也改为按会话分配：所有通道共用常量 0100000001 时，
+        // 媒体面无法区分同时拉取的多路流。
+        let ssrc = self
+            .ssrc_manager()
+            .allocate(channel_id, channel_id, "play");
+        let sdp = build_invite_sdp(&self.config.ip, sdp_port, "Play", Some(&ssrc));
 
         let subject = format!(
             "{}:{},{}:{}",

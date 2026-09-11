@@ -108,16 +108,28 @@ pub async fn talk_invite(
             let local_ip = state.config.sip.as_ref()
                 .map(|c| c.ip.clone())
                 .unwrap_or_else(|| "0.0.0.0".to_string());
-            
+
+            // 展示用 SDP 必须用真实分配到的收流端口：此前固定传 0，
+            // 回给前端的是一份 m=audio 0（端口 0 = 媒体流被禁用）的无效 SDP。
+            let local_port = {
+                let sip = &*sip_server;
+                sip.talk_manager()
+                    .get_by_device_channel(&device_id, &channel_id)
+                    .await
+                    .map(|s| s.local_port)
+                    .unwrap_or(0)
+            };
+
             tracing::info!("[Talk] 邀请发送成功: call_id={}", call_id);
-            
+
             Ok(Json(WVPResult::success(serde_json::json!({
                 "callId": call_id,
                 "deviceId": device_id,
                 "channelId": channel_id,
                 "localIp": local_ip,
+                "localPort": local_port,
                 "status": "inviting",
-                "sdp": crate::sip::gb28181::build_talk_sdp(&local_ip, 0)
+                "sdp": crate::sip::gb28181::build_talk_sdp(&local_ip, local_port)
             }))))
         }
         Err(e) => {

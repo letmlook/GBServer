@@ -103,10 +103,40 @@ async fn push_platform_channels(
     let sip = &*sip_server;
     let mut pushed_count = 0;
     for channel_id in channel_ids {
-        if channel_id.trim().is_empty() {
+        let channel_id = channel_id.trim();
+        if channel_id.is_empty() {
             continue;
         }
-        if sip.send_platform_invite(server_gb_id, channel_id, 0).await.is_ok() {
+        // 为这一路级联取流分配 ZLM 收流端口，并写进 INVITE 的 m=video。
+        // 修正：此前固定传 0，而 SDP 中 m=video 0 表示该媒体流被禁用，
+        // 上级平台没有可推流的目标地址，级联取流不可能建立。
+        let Some(zlm) = state.zlm_client.as_ref() else {
+            tracing::error!("ZLM 未配置，无法为级联取流分配收流端口");
+            break;
+        };
+        let stream_id = format!("cascade_{}_{}", server_gb_id, channel_id);
+        let media_port = match zlm
+            .open_rtp_server(&crate::zlm::OpenRtpServerRequest {
+                secret: zlm.secret.clone(),
+                stream_id: stream_id.clone(),
+                port: Some(0),
+                use_tcp: Some(false),
+                rtp_type: Some(0),
+                recv_port: None,
+            })
+            .await
+        {
+            Ok(info) => info.port,
+            Err(e) => {
+                tracing::error!("openRtpServer for cascade {} failed: {}", stream_id, e);
+                continue;
+            }
+        };
+        if sip
+            .send_platform_invite(server_gb_id, channel_id, media_port)
+            .await
+            .is_ok()
+        {
             pushed_count += 1;
         }
     }
@@ -662,8 +692,36 @@ pub async fn platform_channel_push(
         if channel_id.is_empty() {
             continue;
         }
-        
-        match sip.send_platform_invite(&server_gb_id, channel_id, 0).await {
+
+        // 同 push_platform_channels：INVITE 里的 m=video 必须是真实可推流端口
+        let Some(zlm) = state.zlm_client.as_ref() else {
+            errors.push("ZLM 未配置，无法分配收流端口".to_string());
+            break;
+        };
+        let stream_id = format!("cascade_{}_{}", server_gb_id, channel_id);
+        let media_port = match zlm
+            .open_rtp_server(&crate::zlm::OpenRtpServerRequest {
+                secret: zlm.secret.clone(),
+                stream_id: stream_id.clone(),
+                port: Some(0),
+                use_tcp: Some(false),
+                rtp_type: Some(0),
+                recv_port: None,
+            })
+            .await
+        {
+            Ok(info) => info.port,
+            Err(e) => {
+                tracing::error!("openRtpServer for cascade {} failed: {}", stream_id, e);
+                errors.push(format!("{}: ZLM 收流端口分配失败: {}", channel_id, e));
+                continue;
+            }
+        };
+
+        match sip
+            .send_platform_invite(&server_gb_id, channel_id, media_port)
+            .await
+        {
             Ok(_) => {
                 tracing::info!("Sent platform INVITE for channel {} to {}", channel_id, server_gb_id);
                 pushed_count += 1;

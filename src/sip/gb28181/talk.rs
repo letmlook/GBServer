@@ -148,21 +148,13 @@ impl Default for TalkManager {
     }
 }
 
+/// 对讲 SDP。
+///
+/// 这里原本是第三份手写副本（与 `invite_session::build_talk_sdp`、
+/// `sdp_builder::talk_sdp` 并存，且 `y=` 取值各不相同）。
+/// 现在统一委托给 `sdp_builder`，只保留这个入口以兼容既有调用点。
 pub fn build_talk_sdp(local_ip: &str, media_port: u16) -> String {
-    format!(
-        "v=0\r\n\
-        o=- 0 0 IN IP4 {}\r\n\
-        s=Talk\r\n\
-        c=IN IP4 {}\r\n\
-        t=0 0\r\n\
-        m=audio {} RTP/AVP 8 0 101\r\n\
-        a=rtpmap:8 PCMA/8000\r\n\
-        a=rtpmap:0 PCMU/8000\r\n\
-        a=rtpmap:101 telephone-event/8000\r\n\
-        a=sendrecv\r\n\
-        y=020000\r\n",
-        local_ip, local_ip, media_port
-    )
+    super::sdp_builder::talk_sdp(local_ip, media_port, super::sdp_builder::DEFAULT_SSRC)
 }
 
 pub fn parse_talk_sdp(sdp: &str) -> Option<(String, u16)> {

@@ -107,6 +107,79 @@
 | **5 个 handler 只有 mysql/postgres 分支、无 sqlite 分支** | 默认部署下静默空转（含 `media_server_save` 的**扩展字段被丢弃**） | 按仓库既有约定扩为 `any(mysql, sqlite)`；写操作传播错误 |
 | **`gb_log` 三库都没有** + 无文件 appender + 前后端契约不匹配 | 「系统日志」功能整体不成立（`log_list` 永远返回空） | 建表 + 实现 tracing 采集层 + 按前端契约重写查询 |
 
+### 静默失败与 SDP 缺陷（2026-09-12 第四轮修复）
+
+**核查方法**：脚本化扫描 `src/` 中所有「`let _ = <写库调用>.await`」以及
+「写库后仍无条件返回成功」的模式，逐条判断是「可传播」还是「脱离请求上下文」。
+
+| 问题 | 影响 | 修复 |
+|------|------|------|
+| **`map_thin_save` / `map_thin_draw` 写库错误被吞** | 前端地图稀化/绘制：算法算完（Douglas-Peucker）却可能根本没落库，接口仍回「成功」；`draw` 还把入参原样回显成「已保存」 | 两条分支都传播错误，并补 `rows_affected == 0 → 404` |
+| **`map_thin_clear` 只有 postgres 分支吞错** | mysql/sqlite 分支本来就是传播的，唯独 PG 构造下报成功而没清 | 统一传播 |
+| **`platform_delete` 级联删除吞错** | 平台行删掉了，`gb_platform_channel` 里留下指向不存在平台的孤儿行 | 改为 `?` 传播 |
+| **`channel_audio` 是假的** | 对一个**只读**查询（`get_media_list`）的结果视而不见，却打印 `ZLM streams updated for audio mode`；真正的 `has_audio` 写入错误被吞，然后返回「已更新」 | 删掉假调用与谎言日志；如实落库并传播（该字段由 `sip/gb28181/catalog.rs` 作为 `<HasAudio>` 上报上级平台，**落库即生效**） |
+| **`channel_stream_identification_update` 吞错** | 写入失败仍返回「流标识更新成功」 | 传播 + 404 |
+| **`platform_delete` 以外的后台写入静默丢失** | JT1078 位置回写、ZLM 节点状态、ZLM keepalive、SIP `MobilePosition` 历史、审计日志 —— 都脱离请求上下文无法传播，但此前一声不吭 | 全部改为 `tracing::error`，不再静默 |
+| **`ensure_stream_status_column` 迁移错误被吞** | 建列失败会在启动时被略过，把问题推迟成运行期 `no such column` | 纳入 `?`，与相邻的 `ensure_columns` 一致 |
+
+#### SDP 构造：三份实现互相矛盾
+
+`invite_session.rs`（活跃）、`sdp_builder.rs`（**无任何调用者**）、`talk.rs` 各有一份
+SDP 构造，且取值互不相同：
+
+| 维度 | 活跃实现 | 死代码实现 | 国标/证据 |
+|------|----------|-----------|-----------|
+| 方向（点播/回放/下载） | `a=sendonly` | `a=recvonly` | **`recvonly`**：平台发出的取流 INVITE 中平台是接收方 |
+| 回放 `y=` | 写死 `0100000001` | 由调用方给 | 必须按会话唯一 |
+| 回放 `t=` / `npt=` | 直接写 ISO 时间串 | 同 | 必须是 **UNIX 秒** |
+| 对讲会话名 | `s=TALK` | `s=Talk` | `s=Talk` |
+
+方向依据（web 检索，见文末来源）：GB/T 28181-2016 附录示例中，平台→设备的点播
+INVITE 为 `a=recvonly`（平台收、设备发），设备 200 OK 才是 `a=sendonly`；
+`SDP详解-开源国标视频平台的工程实践` 明确"平台 INVITE 用 recvonly = 平台（MS）收，
+设备发……`Mode: sdp.ModeRecvOnly`"。
+
+**修复**：让 `sdp_builder.rs` 成为唯一实现，`invite_session.rs` 与 `talk.rs` 只做参数适配；
+方向统一为点播/回放/下载 `recvonly`、对讲/广播 `sendrecv`；新增
+`to_unix_seconds()` 把 ISO 时间归一化为 UNIX 秒（无法解析时回退 `t=0 0`，
+而不是把非法串发出去）；`build_playback_sdp` 增加 `ssrc` 参数，调用方传入真实 SSRC。
+新增 8 个测试锁住方向、时间归一化与 SSRC 来源。
+
+#### `m=` 端口为 0：SDP 里 0 表示「该媒体流被禁用」
+
+多条 INVITE 路径把 `m=video`/`m=audio` 端口写成 0（含
+`// 这里用占位 0 留给 ZLM 自行协商` 这类注释），设备没有可推流的目标，
+这些功能**从未真正可能建立**：
+
+| 路径 | 原状 | 修复 |
+|------|------|------|
+| `channel_playback_start` → `send_playback_invite` | 根本没开 ZLM RTP server，`m=video 0` | 先 `openRtpServer` 取真实端口再发 INVITE |
+| `gb_record_download_start` → `send_download_invite` | **已经** `openRtpServer`，但把返回句柄 `let _ =` 丢掉，仍传 0 | 取回端口传入 |
+| 级联取流 `push_platform_channels` / 推送处理器 → `send_platform_invite` | 两处都传 0；且复用 `build_playback_sdp` 导致**实时取流被标成 `s=Playback`** | 分配真实端口；改用 `build_invite_sdp(..., "Play", …)`；SSRC 走 `SsrcManager` 按会话分配 |
+| `send_talk_invite` | `m=audio 0`；且去话路径**从不登记 `TalkManager`**，`/api/talk/list` 永远查不到刚发起的对讲 | 先 `openRtpServer` 取端口；登记去话会话（含 `local_port`/对端地址/stream_id） |
+| `handlers/talk.rs` 回给前端的展示 SDP | 固定 `m=audio 0` | 改读会话的真实 `local_port` |
+| 广播 11 位 SSRC | `format!("4{:0>9}0", …)` 得到 11 位（国标是 10 位） | 统一 `build_ssrc(prefix, id)`：`0` 实时 / `1` 回放 / `2` 下载 / `4` 广播 |
+
+### 仍未解决 / 需真实设备核验
+
+以下是本轮**已定位但未改动**的项，均在代码中留有注释或在此登记，
+不应被视为"已实现"：
+
+1. **`f=` 媒体描述行的结构**：当前所有实现都发 `f=v/1/96/1/2/1/1/0`，
+   而国标模板是 `f=v/<编码>/<分辨率>/<帧率>/<码率类型>/<码率大小>a/<音频编码>/<码率>/<采样率>`
+   —— 该串**缺少 `a/` 音频段标记**，结构不完整。改动需要确定各字段取值，
+   在没有真实设备可核验前不宜臆造（`f=` 是建议性字段，设备可忽略）。
+2. **`Subject` 头形状**：仓库内存在两种写法，活跃实时点播路径用
+   `serverGbId:ssrc,deviceGbId:0`（代码内注释即如此），回放/下载路径用
+   `localId:channelId,localId:flag`。国标示例为
+   `<通道编码>:<发送端序列号>,<接收方编码>:<ssrc>`。实时点播路径可能正在实际互操作，
+   改动风险大于收益，故保留现状并在此登记。
+3. **对讲/广播的媒体面**：SDP 与信令已可用，但"浏览器音频 → ZLM → RTP → 设备"
+   的上行音频管线尚未实现（`TalkSession.zlm_stream_id` 已记录，无消费方）。
+4. **`gb_record_download_start`**：ZLM 端口分配失败时仍会继续发 INVITE
+   （此时 `m=video 0`），目前只记 `warn`；应改为直接失败。
+5. **`log_file_download`** 仍是文件路径下载；前端 `getLogFile` 定义了但从未调用。
+
 ### 工程问题
 
 - **16 个测试写了却从未运行**：`tests/integration/sip/{integration,cascade_integration_test}.rs`
