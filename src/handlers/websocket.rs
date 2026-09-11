@@ -15,16 +15,33 @@ type TxMap = Arc<RwLock<HashMap<String, mpsc::UnboundedSender<Message>>>>;
 
 pub struct WsState {
     pub tx_map: TxMap,
+    /// Phase 7.3+: 集群感知 hub。由 lib.rs 在 AppState 构造后 `set_hub` 注入；
+    /// 注入后 `broadcast` 统一走 hub（按客户端订阅过滤 + 集群外发），
+    /// 未注入时退回旧的本机无差别广播。
+    hub: RwLock<Option<Arc<crate::ws::WsHub>>>,
 }
 
 impl WsState {
     pub fn new() -> Self {
         Self {
             tx_map: Arc::new(RwLock::new(HashMap::new())),
+            hub: RwLock::new(None),
         }
     }
 
+    /// Late-bind the cluster-aware hub (AppState constructs WsState before WsHub).
+    pub async fn set_hub(&self, hub: Arc<crate::ws::WsHub>) {
+        *self.hub.write().await = Some(hub);
+    }
+
     pub async fn broadcast(&self, event: &str, data: serde_json::Value) {
+        // 统一经 hub：本地按订阅过滤投递 + 集群 outbound 广播。
+        // hub 缺失（极端时序）时退回旧的本机 tx_map 广播。
+        let hub = self.hub.read().await.clone();
+        if let Some(hub) = hub {
+            hub.broadcast_event(event, data).await;
+            return;
+        }
         let msg = json!({ "event": event, "data": data });
         let msg = Message::Text(msg.to_string());
         let map = self.tx_map.read().await;
@@ -98,10 +115,12 @@ pub async fn ws_handler(
     let user = claims.sub.clone();
     let events_csv = params.events.clone();
     ws.on_upgrade(move |socket| async move {
-        // Register in WsHub (cluster-aware)
-        let client_id = ws_hub.register(user.clone(), events_csv).await;
-        // Also register in legacy WsState (back-compat — used by older handlers)
-        let (legacy_tx, mut rx) = mpsc::unbounded_channel::<Message>();
+        // Register in WsHub (cluster-aware) — returns the rx that carries
+        // filtered hub events; the send loop below drains it into the socket.
+        let (client_id, mut hub_rx) = ws_hub.register(user.clone(), events_csv).await;
+        // Also register in legacy WsState (back-compat — used by older handlers
+        // and for ping/pong keyed by client_id).
+        let (legacy_tx, mut legacy_rx) = mpsc::unbounded_channel::<Message>();
         {
             let mut map = ws_state.tx_map.write().await;
             map.insert(client_id.clone(), legacy_tx);
@@ -111,9 +130,25 @@ pub async fn ws_handler(
 
         let (mut ws_tx, mut ws_rx) = socket.split();
         let send_task = tokio::spawn(async move {
-            while let Some(msg) = rx.recv().await {
-                if ws_tx.send(msg).await.is_err() {
-                    break;
+            // 合流两个来源：hub（按订阅过滤的业务事件）+ legacy tx_map（pong 等）
+            loop {
+                tokio::select! {
+                    msg = hub_rx.recv() => {
+                        match msg {
+                            Some(m) => {
+                                if ws_tx.send(m).await.is_err() { break; }
+                            }
+                            None => break,
+                        }
+                    }
+                    msg = legacy_rx.recv() => {
+                        match msg {
+                            Some(m) => {
+                                if ws_tx.send(m).await.is_err() { break; }
+                            }
+                            None => break,
+                        }
+                    }
                 }
             }
         });

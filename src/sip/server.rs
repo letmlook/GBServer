@@ -926,35 +926,27 @@ let renewal_pool = pool.clone();
                         let raw = format!("{}", msg);
                         let data_bytes = raw.as_bytes();
 
-                        // 创建一个尠1次性 UDP 通道代替博羘的 socket
-                        // 注意：这个临时 socket 不能真正回复 TCP
-                        // 正确方案：直接调用 conn_manager.send_to 发送回复
-                        let dummy_socket_result = tokio::net::UdpSocket::bind("0.0.0.0:0").await;
-                        if let Ok(udp) = dummy_socket_result {
-                            let _udp_arc = Arc::new(udp);
-                            let _conn_mgr_for_reply = conn_manager.clone();
-                            let _addr_for_reply = addr;
-                            // 包裃一个代理子结构使 handle_packet 宽心发送的所有内容代行路由到 TCP
-                            if let Err(e) = Self::process_tcp_message(
-                                data_bytes,
-                                addr,
-                                &config,
-                                &device_manager,
-                                &session_manager,
-                                &invite_session_manager,
-                                &talk_manager,
-                                &catalog_subscription_manager,
-                                &zlm_client,
-                                &pool,
-                                conn_manager.clone(),
-                                pending_request_manager,
-                                send_rtp_manager,
-                                sqlite_max_devices,
-                                media_waiter_manager,
-                                socket,
-                            ).await {
-                                tracing::error!("TCP SIP handler error: {}", e);
-                            }
+                        // 响应路由：process_tcp_message 会登记 (对端地址 → TCP 连接)，
+                        // send_response 优先经该 TCP 连接返回（RFC 3261 §18.2.2）
+                        if let Err(e) = Self::process_tcp_message(
+                            data_bytes,
+                            addr,
+                            &config,
+                            &device_manager,
+                            &session_manager,
+                            &invite_session_manager,
+                            &talk_manager,
+                            &catalog_subscription_manager,
+                            &zlm_client,
+                            &pool,
+                            conn_manager.clone(),
+                            pending_request_manager,
+                            send_rtp_manager,
+                            sqlite_max_devices,
+                            media_waiter_manager,
+                            socket,
+                        ).await {
+                            tracing::error!("TCP SIP handler error: {}", e);
                         }
                     }
                     Ok(None) => {
@@ -968,6 +960,7 @@ let renewal_pool = pool.clone();
                 }
             }
             conn_manager.remove_connection(&addr).await;
+            crate::sip::transport::tcp::tcp_response_routes().remove(&addr);
         }
     }
 
@@ -993,39 +986,12 @@ let renewal_pool = pool.clone();
         let msg = Parser::parse(data)?;
         match msg {
             SipMessage::Request(req) => {
-                // 生成回复内容存入 buffer，然后通过 TCP 发送
-                let (_response_tx, _response_rx) =
-                    tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
-                // 创建一个内部虚拟 socket，用于捕获回复
-                // 简化方式：创建一个局域 UDP socket 监听，得到地址后用于中转
-                let dummy_socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await?;
-                let dummy_local = dummy_socket.local_addr()?;
-                let dummy_arc = Arc::new(dummy_socket);
+                // RFC 3261 §18.2.2：经 TCP 到达的请求，响应应经同一 TCP 连接返回。
+                // 登记 (对端地址 → 连接管理器)，send_response 发送时优先查表走 TCP，
+                // 查不到（连接已断）再回落 UDP。连接关闭时由 accept 循环移除表项。
+                crate::sip::transport::tcp::tcp_response_routes()
+                    .insert(addr, conn_manager.clone());
 
-                // 异步启动: 监听 dummy socket 的内容并通过 TCP 发出
-                let conn_mgr_clone = conn_manager.clone();
-                let dummy_clone = dummy_arc.clone();
-                tokio::spawn(async move {
-                    let mut buf = vec![0u8; 65535];
-                    while let Ok((n, _)) = dummy_clone.recv_from(&mut buf).await {
-                        let data = buf[..n].to_vec();
-                        if let Err(e) = conn_mgr_clone
-                            .send_to(&addr, &String::from_utf8_lossy(&data))
-                            .await
-                        {
-                            tracing::error!("TCP send failed for {}: {}", addr, e);
-                            break;
-                        }
-                    }
-                });
-
-                // 将 socket 发送到自身，这样 handle_packet 的回复就会被上面的 spawn 捕获
-                dummy_arc.connect(dummy_local).await?;
-                dummy_arc.send_to(&[], dummy_local).await?; // 就绪
-
-                // 简化: 直接用 UDP 将回复发送到 TCP 代理
-                // 最终实现：将 dummy_arc 绑定到 addr，这样 send_to 就会发到 TCP socket
-                // 由于 UDP/TCP 工作机制不同，这里居中转发
                 Self::handle_request(
                     req,
                     addr,
@@ -1037,7 +1003,7 @@ let renewal_pool = pool.clone();
                     catalog_subscription_manager,
                     zlm_client,
                     pool,
-                    &dummy_arc,
+                    socket,
                     &None,
                     pending_request_manager,
                     send_rtp_manager,
@@ -3502,6 +3468,22 @@ let renewal_pool = pool.clone();
         addr: SocketAddr,
         response: &str,
     ) -> Result<()> {
+        // RFC 3261 §18.2.2: 请求经 TCP 到达时，响应经同一 TCP 连接返回；
+        // 无 TCP 路由（或 TCP 发送失败）时回落 UDP。
+        {
+            let routes = crate::sip::transport::tcp::tcp_response_routes();
+            if let Some(route) = routes.get(&addr) {
+                let mgr = route.value().clone();
+                drop(route);
+                match mgr.send_to(&addr, response).await {
+                    Ok(()) => return Ok(()),
+                    Err(e) => {
+                        tracing::warn!("TCP response to {} failed, falling back to UDP: {}", addr, e);
+                        routes.remove(&addr);
+                    }
+                }
+            }
+        }
         socket.send_to(response.as_bytes(), addr).await?;
         Ok(())
     }

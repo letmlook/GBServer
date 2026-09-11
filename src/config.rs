@@ -20,6 +20,11 @@ pub struct AppConfig {
     /// Phase 7.4: audit middleware config. When disabled, no audit log is written.
     #[serde(default)]
     pub audit: AuditConfig,
+    /// E2: 跨节点 RPC 配置（[rpc] 段落）。peer_endpoints 非空时启用 HTTP RPC
+    /// 出站传输（POST 各对端 /api/rpc）；Redis 可用时自动叠加 Redis Pub/Sub
+    /// 传输，两者可并存。node_id 缺省复用 cluster.node_id。
+    #[serde(default)]
+    pub rpc: RpcAppConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -278,6 +283,21 @@ impl ClusterAppConfig {
     pub fn heartbeat_ttl(&self) -> std::time::Duration {
         std::time::Duration::from_secs(self.heartbeat_ttl_secs)
     }
+}
+
+/// E2: 跨节点 RPC 配置（[rpc] 段落）。
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct RpcAppConfig {
+    /// 本节点 ID；缺省复用 [cluster].node_id
+    #[serde(default)]
+    pub node_id: Option<String>,
+    /// 对端节点 HTTP 端点，例如 ["http://node2:18080", "http://node3:18080"]。
+    /// 非空时启用 HttpRpc 出站广播（POST 对端 /api/rpc）。
+    #[serde(default)]
+    pub peer_endpoints: Vec<String>,
+    /// HTTP RPC 超时秒数（默认 5）
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
 }
 
 /// Phase 7.4: audit middleware configuration.

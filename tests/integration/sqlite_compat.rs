@@ -78,6 +78,24 @@ async fn sqlite_in_memory_schema_init_and_default_admin() {
         .fetch_one(&pool)
         .await
         .unwrap();
+    assert_eq!(role_count, 1, "default admin role must be seeded");
+
+    // 旧版脚本曾缺失、现已补齐的四张表（级联通道/分组/区域授权 + JT1078 通道）
+    for tbl in [
+        "gb_platform_channel",
+        "gb_platform_group",
+        "gb_platform_region",
+        "gb_jt_channel",
+    ] {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?)",
+        )
+        .bind(tbl)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!(exists, "table {} must exist after schema init", tbl);
+    }
     assert_eq!(role_count, 1, "admin role must be seeded");
 }
 

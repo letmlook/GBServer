@@ -3,18 +3,30 @@
 //! ## Redis 数据布局
 //! - `gb:cluster:nodes` (SET)        — 所有曾出现过 + 在 TTL 内的节点
 //! - `gb:cluster:heartbeat` (ZSET)   — 节点 → 最近心跳 unix_seconds 分数
+//! - `gb:cluster:node_info` (HASH)   — 节点 → JSON {addr, role} 元数据，
+//!                                     供 list_active / HttpRpc 定向调用使用
 //!
 //! ## 调用约定
-//! - `touch_node` 每 10s 由后台 task 调用一次，刷新本节点心跳
-//! - `evict_expired` 每次 touch 后调用，删除 60s 未刷新的节点（同时从 SET + ZSET）
+//! - `touch_node` 每 10s 由后台 task 调用一次，刷新本节点心跳 + 元数据
+//! - `evict_expired` 每次 touch 后调用，删除 60s 未刷新的节点（同时从 SET + ZSET + HASH）
 //! - `list_active_nodes` 任意线程调用，返回最近 60s 内有心跳的节点列表
 //! - 在 `single_node_mode = true` 时，list_active_nodes 仅返本节点，不依赖 Redis
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use redis::aio::ConnectionManager;
 use redis::AsyncCommands;
+
+/// `gb:cluster:node_info` HASH value 的反序列化载体
+#[derive(serde::Deserialize)]
+struct NodeMeta {
+    #[serde(default)]
+    addr: String,
+    #[serde(default)]
+    role: String,
+}
 
 /// Phase 7.2: 单个集群节点的元数据。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -61,6 +73,7 @@ fn uuid_like() -> String {
 
 const KEY_NODES: &str = "gb:cluster:nodes";
 const KEY_HEARTBEAT: &str = "gb:cluster:heartbeat";
+const KEY_NODE_INFO: &str = "gb:cluster:node_info";
 
 /// Phase 7.2: 集群注册表。
 pub struct ClusterRegistry {
@@ -86,11 +99,17 @@ impl ClusterRegistry {
             return;
         };
         let now = chrono::Utc::now().timestamp();
+        let node_meta = serde_json::json!({
+            "addr": self.config.addr,
+            "role": self.config.role,
+        })
+        .to_string();
         let mut conn = redis.lock().await.clone();
         let _: Result<(), _> = redis::pipe()
             .atomic()
             .sadd(KEY_NODES, &self.config.node_id).ignore()
             .zadd(KEY_HEARTBEAT, &self.config.node_id, now).ignore()
+            .hset(KEY_NODE_INFO, &self.config.node_id, node_meta).ignore()
             .query_async(&mut conn).await;
     }
 
@@ -111,6 +130,7 @@ impl ClusterRegistry {
                 .atomic()
                 .zrembyscore(KEY_HEARTBEAT, 0, cutoff).ignore()
                 .srem(KEY_NODES, &expired).ignore()
+                .hdel(KEY_NODE_INFO, &expired).ignore()
                 .query_async(&mut conn).await;
         }
         expired
@@ -118,6 +138,8 @@ impl ClusterRegistry {
 
     /// Phase 7.2: List active cluster nodes (heartbeat within ttl).
     /// In single_node_mode without Redis, returns only the local node.
+    /// 节点的 addr / role 从 `gb:cluster:node_info` HASH 读取（各节点 touch 时
+    /// 写入），读不到时本节点用本地配置、其他节点回退空串。
     pub async fn list_active(&self) -> Vec<ClusterNode> {
         if self.config.single_node_mode && self.redis.is_none() {
             return vec![self.local_node()];
@@ -132,11 +154,22 @@ impl ClusterRegistry {
             Ok(v) => v,
             Err(_) => return vec![self.local_node()],
         };
-        ids.into_iter().map(|id| ClusterNode {
-            addr: if id == self.config.node_id { self.config.addr.clone() } else { String::new() },
-            last_heartbeat_secs: now,
-            node_id: id,
-            role: self.config.role.clone(),
+        let infos: HashMap<String, String> = match conn.hgetall(KEY_NODE_INFO).await {
+            Ok(v) => v,
+            Err(_) => HashMap::new(),
+        };
+        ids.into_iter().map(|id| {
+            let meta = infos.get(&id).and_then(|s| serde_json::from_str::<NodeMeta>(s).ok());
+            ClusterNode {
+                addr: if id == self.config.node_id {
+                    self.config.addr.clone()
+                } else {
+                    meta.as_ref().map(|m| m.addr.clone()).unwrap_or_default()
+                },
+                last_heartbeat_secs: now,
+                node_id: id,
+                role: meta.as_ref().map(|m| m.role.clone()).unwrap_or_else(|| self.config.role.clone()),
+            }
         }).collect()
     }
 

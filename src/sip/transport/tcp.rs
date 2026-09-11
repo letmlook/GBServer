@@ -1,14 +1,26 @@
 use std::net::SocketAddr;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use tokio::net::TcpListener as TokioTcpListener;
 use tokio::net::TcpStream as TokioTcpStream;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::RwLock;
 use bytes::BytesMut;
+use dashmap::DashMap;
 
 use crate::sip::core::parser::Parser;
 use crate::sip::core::SipMessage;
+
+/// RFC 3261 §18.2.2：对经 TCP 到达的请求，响应必须经同一 TCP 连接返回。
+///
+/// `process_tcp_message` 处理请求前登记 (TCP 对端地址 → 连接管理器)，
+/// `SipServer::send_response` 发送响应时优先查此表走 TCP，查不到再走 UDP。
+/// 连接关闭时移除对应表项。
+static TCP_RESPONSE_ROUTES: OnceLock<DashMap<SocketAddr, TcpConnectionManager>> = OnceLock::new();
+
+pub fn tcp_response_routes() -> &'static DashMap<SocketAddr, TcpConnectionManager> {
+    TCP_RESPONSE_ROUTES.get_or_init(DashMap::new)
+}
 
 pub struct TcpListener {
     listener: TokioTcpListener,

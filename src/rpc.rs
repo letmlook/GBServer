@@ -94,9 +94,12 @@ impl RpcTransport for LocalRpc {
     fn node_id(&self) -> &str { &self.node_id }
 }
 
-/// RPC 路由器 — 将请求分发到本地处理器
+/// RPC 路由器 — 将请求分发到本地处理器，并可通过注册的出站传输
+/// （Redis Pub/Sub / HTTP 对端）向其他节点广播。
 pub struct RpcRouter {
     handlers: RwLock<HashMap<String, Box<dyn RpcHandler>>>,
+    /// 出站传输列表：broadcast_outbound / send_to_outbound 逐个尝试
+    outbound: RwLock<Vec<Arc<dyn RpcTransport>>>,
 }
 
 pub trait RpcHandler: Send + Sync {
@@ -106,12 +109,41 @@ pub trait RpcHandler: Send + Sync {
 
 impl RpcRouter {
     pub fn new() -> Self {
-        Self { handlers: RwLock::new(HashMap::new()) }
+        Self { handlers: RwLock::new(HashMap::new()), outbound: RwLock::new(Vec::new()) }
     }
 
     pub async fn register<H: RpcHandler + 'static>(&self, handler: H) {
         let name = handler.name().to_string();
         self.handlers.write().await.insert(name, Box::new(handler));
+    }
+
+    /// 注册出站传输（Redis Pub/Sub / HttpRpc 等），可叠加多个
+    pub async fn register_outbound(&self, transport: Arc<dyn RpcTransport>) {
+        self.outbound.write().await.push(transport);
+    }
+
+    /// 向所有已注册出站传输广播请求。各传输独立投递、错误仅记日志，
+    /// 不向上传播（跨节点通知是 best-effort 语义）。
+    pub async fn broadcast_outbound(&self, request: &RpcRequest) {
+        let out = self.outbound.read().await;
+        for t in out.iter() {
+            if let Err(e) = t.broadcast(request) {
+                tracing::warn!("RPC outbound broadcast via {} failed: {}", t.node_id(), e);
+            }
+        }
+    }
+
+    /// 定向发送到指定节点（逐个出站传输尝试，首个成功即返回）
+    pub async fn send_to_outbound(&self, node_id: &str, request: &RpcRequest) -> Result<(), String> {
+        let out = self.outbound.read().await;
+        let mut last_err = format!("no outbound transport registered (target={})", node_id);
+        for t in out.iter() {
+            match t.send_to(node_id, request) {
+                Ok(()) => return Ok(()),
+                Err(e) => last_err = e,
+            }
+        }
+        Err(last_err)
     }
 
     pub async fn route(&self, request: &RpcRequest) -> RpcResponse {
@@ -149,8 +181,11 @@ impl RpcRouter {
 
 impl Clone for RpcRouter {
     fn clone(&self) -> Self {
+        // 克隆仅保留 handler 注册能力（handlers 不随克隆复制，历史行为如此）；
+        // outbound 为空 —— spawn_listener 场景下克隆体不需要出站传输。
         Self {
             handlers: RwLock::new(HashMap::new()),
+            outbound: RwLock::new(Vec::new()),
         }
     }
 }
@@ -159,37 +194,15 @@ impl Default for RpcRouter {
     fn default() -> Self { Self::new() }
 }
 
-/// 注册标准 RPC 处理器
-pub async fn register_standard_handlers(router: &RpcRouter) {
-    // device_control 处理器
-    struct DeviceControlHandler;
-    impl RpcHandler for DeviceControlHandler {
-        fn name(&self) -> &str { "device_control" }
-        fn handle(&self, payload: serde_json::Value) -> RpcResponse {
-            RpcResponse { ok: true, result: Some(payload), error: None }
-        }
-    }
-    // play_stop 处理器
-    struct PlayStopHandler;
-    impl RpcHandler for PlayStopHandler {
-        fn name(&self) -> &str { "play_stop" }
-        fn handle(&self, payload: serde_json::Value) -> RpcResponse {
-            RpcResponse { ok: true, result: Some(payload), error: None }
-        }
-    }
-    // cloud_record_sync 处理器
-    struct CloudRecordHandler;
-    impl RpcHandler for CloudRecordHandler {
-        fn name(&self) -> &str { "cloud_record_sync" }
-        fn handle(&self, payload: serde_json::Value) -> RpcResponse {
-            RpcResponse { ok: true, result: Some(payload), error: None }
-        }
-    }
-
-    router.register(DeviceControlHandler).await;
-    router.register(PlayStopHandler).await;
-    router.register(CloudRecordHandler).await;
-}
+// 跨节点业务 RPC handler 注册说明：
+//
+// 历史版本在此注册 device_control / play_stop / cloud_record_sync 三个
+// "echo 占位" handler —— 它们把请求原样回显并返回 ok:true，从未执行任何
+// 实际动作，会向调用方伪装成功，现已移除。未注册方法的 route() 会显式
+// 返回 ok:false + "Unknown method"。当前唯一在用的跨节点方法是
+// `ws_broadcast`（由 lib.rs 注册，fanout 到本节点 WS 客户端）。
+// 后续跨节点业务流（设备指令转发、停止播放等）落地时，应在构造
+// RpcRouter 后用 `router.register(...)` 注册持有真实执行逻辑的 handler。
 
 // ---------------------------------------------------------------------------
 // E2: HTTP-over-JSON RPC 客户端
@@ -258,6 +271,59 @@ impl HttpRpc {
             .ok_or_else(|| format!("No endpoint for node_id={}", node_id))?;
         self.send_request(endpoint, request).await
     }
+}
+
+/// RpcTransport 适配：HttpRpc 的 broadcast/send_to 是异步 HTTP 调用，
+/// 与 RedisRpcTransport 相同采用 fire-and-forget（spawn 后台投递，
+/// 失败仅记日志）。receive() 返回永远静默的通道（HttpRpc 无入站侧，
+/// 入站统一走对端的 POST /api/rpc → RpcRouter::route）。
+impl RpcTransport for HttpRpc {
+    fn broadcast(&self, request: &RpcRequest) -> Result<(), String> {
+        let mut req = request.clone();
+        if req.from_node.is_none() {
+            req.from_node = Some(self.node_id.clone());
+        }
+        let http = self.http.clone();
+        let endpoints = self.config.peer_endpoints.clone();
+        if endpoints.is_empty() {
+            return Err("HttpRpc: no peer_endpoints configured".to_string());
+        }
+        tokio::spawn(async move {
+            for ep in &endpoints {
+                let url = format!("{}/api/rpc", ep.trim_end_matches('/'));
+                if let Err(e) = http.post(&url).json(&req).send().await {
+                    tracing::warn!("HttpRpc broadcast to {} failed: {}", url, e);
+                }
+            }
+        });
+        Ok(())
+    }
+
+    fn send_to(&self, node_id: &str, request: &RpcRequest) -> Result<(), String> {
+        let mut req = request.clone();
+        if req.from_node.is_none() {
+            req.from_node = Some(self.node_id.clone());
+        }
+        let endpoint = self.config.peer_endpoints.iter()
+            .find(|e| e.contains(node_id))
+            .ok_or_else(|| format!("HttpRpc: No endpoint for node_id={}", node_id))?
+            .clone();
+        let http = self.http.clone();
+        tokio::spawn(async move {
+            let url = format!("{}/api/rpc", endpoint.trim_end_matches('/'));
+            if let Err(e) = http.post(&url).json(&req).send().await {
+                tracing::warn!("HttpRpc send_to {} failed: {}", url, e);
+            }
+        });
+        Ok(())
+    }
+
+    fn receive(&self) -> broadcast::Receiver<RpcRequest> {
+        // HttpRpc 没有入站推送通道；返回一个无发送者的 receiver（永远 pending/关闭）
+        broadcast::channel(1).1
+    }
+
+    fn node_id(&self) -> &str { &self.node_id }
 }
 
 // ---------------------------------------------------------------------------
@@ -391,21 +457,88 @@ mod tests {
 
     #[tokio::test]
     async fn test_local_rpc_broadcast() {
+        struct PingHandler;
+        impl RpcHandler for PingHandler {
+            fn name(&self) -> &str { "ping" }
+            fn handle(&self, payload: serde_json::Value) -> RpcResponse {
+                RpcResponse { ok: true, result: Some(payload), error: None }
+            }
+        }
+
         let rpc = Arc::new(LocalRpc::new("node-1"));
         let router = Arc::new(RpcRouter::new());
 
-        register_standard_handlers(&router).await;
+        router.register(PingHandler).await;
         router.spawn_listener(rpc.clone()).await;
 
         rpc.broadcast(&RpcRequest {
-            method: "device_control".to_string(),
+            method: "ping".to_string(),
             target: "Broadcast".to_string(),
             payload: serde_json::json!({"device_id": "dev1", "cmd": "stop"}),
             reply_to: None,
             from_node: None,
         }).unwrap();
 
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        // 本地 route：已注册方法返回 ok + 原样 payload
+        let req = RpcRequest {
+            method: "ping".to_string(),
+            target: "local".to_string(),
+            payload: serde_json::json!({"k": 1}),
+            reply_to: None,
+            from_node: None,
+        };
+        let resp = router.route(&req).await;
+        assert!(resp.ok);
+        assert_eq!(resp.result, Some(serde_json::json!({"k": 1})));
+
+        // 未注册方法显式失败（历史上 echo handler 会伪装 ok:true）
+        let resp = router.route(&RpcRequest {
+            method: "play_stop".to_string(),
+            ..Default::default()
+        }).await;
+        assert!(!resp.ok);
+        assert!(resp.error.unwrap().contains("Unknown method"));
+    }
+
+    /// 出站传输注册 + broadcast_outbound 逐个投递
+    #[tokio::test]
+    async fn test_outbound_broadcast_delivers_via_registered_transports() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct CountingTransport {
+            hits: AtomicUsize,
+            local_tx: broadcast::Sender<RpcRequest>,
+        }
+        impl RpcTransport for CountingTransport {
+            fn broadcast(&self, _request: &RpcRequest) -> Result<(), String> {
+                self.hits.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+            fn send_to(&self, _node_id: &str, _request: &RpcRequest) -> Result<(), String> {
+                self.hits.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+            fn receive(&self) -> broadcast::Receiver<RpcRequest> { self.local_tx.subscribe() }
+            fn node_id(&self) -> &str { "counting" }
+        }
+
+        let t1 = Arc::new(CountingTransport { hits: AtomicUsize::new(0), local_tx: broadcast::channel(8).0 });
+        let t2 = Arc::new(CountingTransport { hits: AtomicUsize::new(0), local_tx: broadcast::channel(8).0 });
+        let router = RpcRouter::new();
+        router.register_outbound(t1.clone() as Arc<dyn RpcTransport>).await;
+        router.register_outbound(t2.clone() as Arc<dyn RpcTransport>).await;
+
+        router.broadcast_outbound(&RpcRequest {
+            method: "ws_broadcast".to_string(),
+            ..Default::default()
+        }).await;
+        assert_eq!(t1.hits.load(Ordering::SeqCst), 1);
+        assert_eq!(t2.hits.load(Ordering::SeqCst), 1);
+
+        router.send_to_outbound("node-9", &RpcRequest::default()).await.unwrap();
+        // send_to 命中首个传输即返回
+        assert_eq!(t1.hits.load(Ordering::SeqCst), 2);
+        assert_eq!(t2.hits.load(Ordering::SeqCst), 1);
     }
 
     #[test]

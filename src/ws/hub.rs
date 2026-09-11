@@ -22,7 +22,8 @@ pub struct WsQuery {
     #[serde(default)]
     pub token: Option<String>,
     /// Comma-separated list of subscribed events, or "*" for all.
-    /// Default: device_status, alarm, record_state, jt_position, jt_alarm.
+    /// Default (no param): "*" — receive everything (back-compat with the
+    /// legacy unfiltered WsState broadcast).
     #[serde(default)]
     pub events: Option<String>,
 }
@@ -56,45 +57,45 @@ impl WsHub {
         self.rpc_router = router;
     }
 
-    /// Register a new WS client. Returns the assigned client_id.
-    pub async fn register(&self, user: String, events_csv: Option<String>) -> String {
+    /// Register a new WS client. Returns the assigned client_id and the
+    /// receiver that the WS handler must drain into the socket send loop —
+    /// events dispatched by `broadcast_event` / `handle_rpc_broadcast`
+    /// arrive on this channel (filtered by the client's subscription).
+    pub async fn register(&self, user: String, events_csv: Option<String>) -> (String, mpsc::UnboundedReceiver<Message>) {
         let subscribed = parse_events(events_csv.as_deref());
-        let (tx, mut rx) = mpsc::unbounded_channel::<Message>();
+        let (tx, rx) = mpsc::unbounded_channel::<Message>();
         let client_id = format!("client_{}", uuid_like());
         let info = ClientInfo { user, subscribed, tx };
         self.clients.write().await.insert(client_id.clone(), info);
-
-        // Spawn a task that drains rx → nothing for now (legacy WsState did this in handler).
-        // The handler is responsible for wiring rx into the WS send_task; here we just
-        // hand out the tx and store the client.
-        let _ = rx; // suppress unused warning
-        client_id
+        (client_id, rx)
     }
 
     pub async fn unregister(&self, client_id: &str) {
         self.clients.write().await.remove(client_id);
     }
 
-    /// Broadcast an event to all matching local clients, and (if cluster is
-    /// enabled) to other nodes via RPC.
+    /// Broadcast an event to all matching local clients, and to other nodes
+    /// via the registered outbound RPC transports (Redis Pub/Sub / HttpRpc).
+    /// Local delivery happens exactly once here; the `ws_broadcast` local
+    /// handler only serves requests ARRIVING from other nodes.
     pub async fn broadcast_event(&self, event: &str, data: serde_json::Value) {
-        // 1) local dispatch
+        // 1) local dispatch (filtered by per-client subscription)
         self.local_dispatch(event, &data).await;
-        // 2) cluster broadcast
+        // 2) cluster broadcast —— Redis 自回声由 transport 侧 from_node 过滤，
+        //    HttpRpc 只发 peer 端点，均不会回环到本节点。
         if let Some(router) = self.rpc_router.as_ref() {
-            let payload = serde_json::json!({
-                "event": event,
-                "data": data,
-                "from_node": self.node_id,
-            });
             let req = RpcRequest {
                 method: "ws_broadcast".to_string(),
                 target: "broadcast".to_string(),
-                payload,
+                payload: serde_json::json!({
+                    "event": event,
+                    "data": data,
+                    "from_node": self.node_id,
+                }),
                 reply_to: None,
                 from_node: Some(self.node_id.clone()),
             };
-            let _ = router.route(&req).await;
+            router.broadcast_outbound(&req).await;
         }
     }
 
@@ -146,11 +147,10 @@ fn parse_events(csv: Option<&str>) -> HashSet<String> {
                 }
             }
         }
+        // 未显式订阅 → 全收（与旧 WsState 无差别广播行为保持一致，
+        // 避免默认过滤把 streamChanged 等事件挡掉造成回归）
         _ => {
-            // Default subscribed events
-            for ev in ["device_status", "alarm", "record_state", "jt_position", "jt_alarm"] {
-                out.insert(ev.to_string());
-            }
+            out.insert("*".to_string());
         }
     }
     out
@@ -172,8 +172,14 @@ mod tests {
     async fn test_register_and_client_count() {
         let hub = WsHub::new("node-1".into(), None);
         assert_eq!(hub.client_count().await, 0);
-        let id = hub.register("alice".into(), Some("*".into())).await;
+        let (id, mut rx) = hub.register("alice".into(), Some("*".into())).await;
         assert_eq!(hub.client_count().await, 1);
+        // register 返回的 rx 应能收到 hub 广播的事件（订阅过滤已接线）
+        hub.broadcast_event("alarm", serde_json::json!({"id": 1})).await;
+        match rx.recv().await {
+            Some(Message::Text(t)) => assert!(t.contains("\"alarm\"")),
+            other => panic!("expected Text message, got {:?}", other.is_some()),
+        }
         hub.unregister(&id).await;
         assert_eq!(hub.client_count().await, 0);
     }
@@ -246,10 +252,11 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_events_default() {
+    fn test_parse_events_default_wildcard() {
+        // 未显式订阅 → "*"（全收），保持与旧无差别广播行为兼容
         let set = parse_events(None);
-        assert!(set.contains("alarm"));
-        assert!(set.contains("jt_position"));
+        assert_eq!(set.len(), 1);
+        assert!(set.contains("*"));
     }
 
     #[test]

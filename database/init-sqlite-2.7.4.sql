@@ -351,6 +351,80 @@ CREATE TABLE IF NOT EXISTS gb_platform
 CREATE UNIQUE INDEX IF NOT EXISTS uk_platform_unique_server_gb_id ON gb_platform(server_gb_id);
 
 -- ============================================
+-- 9b. gb_platform_channel — 国标平台下发的通道映射关系
+-- （此前 SQLite 脚本缺失，导致 sqlite feature 下级联通道共享报表不存在；
+--   已有旧库由 lib.rs 的 ensure_sqlite_upgrade_tables 启动时幂等补建）
+-- ============================================
+CREATE TABLE IF NOT EXISTS gb_platform_channel
+(
+    id                           INTEGER PRIMARY KEY AUTOINCREMENT, -- 主键ID
+    platform_id                  INTEGER,                           -- 平台ID
+    device_channel_id            INTEGER,                           -- 本地通道表主键
+    custom_device_id             VARCHAR(50),                       -- 自定义国标编码
+    custom_name                  VARCHAR(255),                      -- 自定义名称
+    custom_manufacturer          VARCHAR(50),
+    custom_model                 VARCHAR(50),
+    custom_owner                 VARCHAR(50),
+    custom_civil_code            VARCHAR(50),
+    custom_block                 VARCHAR(50),
+    custom_address               VARCHAR(50),
+    custom_parental              INTEGER,
+    custom_parent_id             VARCHAR(50),
+    custom_safety_way            INTEGER,
+    custom_register_way          INTEGER,
+    custom_cert_num              VARCHAR(50),
+    custom_certifiable           INTEGER,
+    custom_err_code              INTEGER,
+    custom_end_time              VARCHAR(50),
+    custom_secrecy               INTEGER,
+    custom_ip_address            VARCHAR(50),
+    custom_port                  INTEGER,
+    custom_password              VARCHAR(255),
+    custom_status                VARCHAR(50),
+    custom_longitude             REAL,
+    custom_latitude              REAL,
+    custom_ptz_type              INTEGER,
+    custom_position_type         INTEGER,
+    custom_room_type             INTEGER,
+    custom_use_type              INTEGER,
+    custom_supply_light_type     INTEGER,
+    custom_direction_type        INTEGER,
+    custom_resolution            VARCHAR(255),
+    custom_business_group_id     VARCHAR(255),
+    custom_download_speed        VARCHAR(255),
+    custom_svc_space_support_mod INTEGER,
+    custom_svc_time_support_mode INTEGER
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uk_platform_gb_channel_platform_device
+    ON gb_platform_channel (platform_id, device_channel_id);
+CREATE UNIQUE INDEX IF NOT EXISTS uk_platform_gb_channel_custom_device
+    ON gb_platform_channel (custom_device_id);
+
+-- ============================================
+-- 9c. gb_platform_group — 平台与分组（行政区划/组织）关系
+-- ============================================
+CREATE TABLE IF NOT EXISTS gb_platform_group
+(
+    id          INTEGER PRIMARY KEY AUTOINCREMENT, -- 主键ID
+    platform_id INTEGER,                           -- 平台ID
+    group_id    INTEGER                            -- 分组ID
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uk_gb_platform_group_platform_id_group_id
+    ON gb_platform_group (platform_id, group_id);
+
+-- ============================================
+-- 9d. gb_platform_region — 平台与区域关系
+-- ============================================
+CREATE TABLE IF NOT EXISTS gb_platform_region
+(
+    id          INTEGER PRIMARY KEY AUTOINCREMENT, -- 主键ID
+    platform_id INTEGER,                           -- 平台ID
+    region_id   INTEGER                            -- 区域ID
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uk_gb_platform_region_platform_id_region_id
+    ON gb_platform_region (platform_id, region_id);
+
+-- ============================================
 -- 10. gb_cloud_record — 云端录像记录
 -- ============================================
 CREATE TABLE IF NOT EXISTS gb_cloud_record
@@ -548,6 +622,23 @@ CREATE TABLE IF NOT EXISTS gb_jt_terminal
 );
 CREATE UNIQUE INDEX IF NOT EXISTS uk_jt_device_id_device_id
     ON gb_jt_terminal (id, phone_number);
+
+-- ============================================
+-- Phase 6.1: JT/T 1078 终端通道（此前 SQLite 脚本缺失，补建；
+--   已有旧库由 lib.rs 的 ensure_sqlite_upgrade_tables 启动时幂等补建）
+-- ============================================
+CREATE TABLE IF NOT EXISTS gb_jt_channel
+(
+    id             INTEGER PRIMARY KEY AUTOINCREMENT, -- 主键ID
+    terminal_db_id INTEGER,                           -- 所属终端记录ID
+    channel_id     INTEGER,                           -- 通道号
+    has_audio      INTEGER DEFAULT 0,                 -- 是否有音频
+    name           VARCHAR(255),                      -- 通道名称
+    update_time    VARCHAR(50) NOT NULL,
+    create_time    VARCHAR(50) NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uk_jt_channel_terminal_channel
+    ON gb_jt_channel (terminal_db_id, channel_id);
 
 -- ============================================
 -- Phase 6.4: JT/T 1078 媒体项 (录像检索结果)

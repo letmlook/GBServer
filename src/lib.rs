@@ -32,6 +32,11 @@ async fn init_db_tables(pool: &db::Pool) -> anyhow::Result<()> {
     // Phase 4.5: 幂等迁移 —— 流状态统一字段
     let _ = db::stream_push::ensure_stream_status_column(pool).await;
     let _ = db::stream_proxy::ensure_stream_status_column(pool).await;
+    // 旧版 SQLite 库升级补建（幂等）：下列表曾缺失于 init-sqlite-2.7.4.sql，
+    // 旧库核心表齐全、不会触发全量 init，需启动时单独补建（仅 SQLite 需要，
+    // PG/MySQL init 脚本一直包含这些表）。
+    #[cfg(feature = "sqlite")]
+    ensure_sqlite_upgrade_tables(pool).await?;
 
     // Check if core tables exist; if not, run full schema init
     #[cfg(feature = "postgres")]
@@ -149,6 +154,91 @@ async fn init_db_tables(pool: &db::Pool) -> anyhow::Result<()> {
         }
     }
 
+    Ok(())
+}
+
+/// 旧版 SQLite 库升级补建：gb_platform_channel / gb_platform_group /
+/// gb_platform_region / gb_jt_channel 曾缺失于 init-sqlite-2.7.4.sql，
+/// 已有库因核心表检测通过而跳过全量 init，这里幂等补齐（列定义与
+/// PostgreSQL/MySQL 脚本对齐，见 db::platform_channel / db::jt1078）。
+#[cfg(feature = "sqlite")]
+async fn ensure_sqlite_upgrade_tables(pool: &db::Pool) -> anyhow::Result<()> {
+    const STMTS: &[&str] = &[
+        r#"CREATE TABLE IF NOT EXISTS gb_platform_channel (
+            id                           INTEGER PRIMARY KEY AUTOINCREMENT,
+            platform_id                  INTEGER,
+            device_channel_id            INTEGER,
+            custom_device_id             VARCHAR(50),
+            custom_name                  VARCHAR(255),
+            custom_manufacturer          VARCHAR(50),
+            custom_model                 VARCHAR(50),
+            custom_owner                 VARCHAR(50),
+            custom_civil_code            VARCHAR(50),
+            custom_block                 VARCHAR(50),
+            custom_address               VARCHAR(50),
+            custom_parental              INTEGER,
+            custom_parent_id             VARCHAR(50),
+            custom_safety_way            INTEGER,
+            custom_register_way          INTEGER,
+            custom_cert_num              VARCHAR(50),
+            custom_certifiable           INTEGER,
+            custom_err_code              INTEGER,
+            custom_end_time              VARCHAR(50),
+            custom_secrecy               INTEGER,
+            custom_ip_address            VARCHAR(50),
+            custom_port                  INTEGER,
+            custom_password              VARCHAR(255),
+            custom_status                VARCHAR(50),
+            custom_longitude             REAL,
+            custom_latitude              REAL,
+            custom_ptz_type              INTEGER,
+            custom_position_type         INTEGER,
+            custom_room_type             INTEGER,
+            custom_use_type              INTEGER,
+            custom_supply_light_type     INTEGER,
+            custom_direction_type        INTEGER,
+            custom_resolution            VARCHAR(255),
+            custom_business_group_id     VARCHAR(255),
+            custom_download_speed        VARCHAR(255),
+            custom_svc_space_support_mod INTEGER,
+            custom_svc_time_support_mode INTEGER
+        )"#,
+        "CREATE UNIQUE INDEX IF NOT EXISTS uk_platform_gb_channel_platform_device \
+         ON gb_platform_channel (platform_id, device_channel_id)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS uk_platform_gb_channel_custom_device \
+         ON gb_platform_channel (custom_device_id)",
+        r#"CREATE TABLE IF NOT EXISTS gb_platform_group (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            platform_id INTEGER,
+            group_id    INTEGER
+        )"#,
+        "CREATE UNIQUE INDEX IF NOT EXISTS uk_gb_platform_group_platform_id_group_id \
+         ON gb_platform_group (platform_id, group_id)",
+        r#"CREATE TABLE IF NOT EXISTS gb_platform_region (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            platform_id INTEGER,
+            region_id   INTEGER
+        )"#,
+        "CREATE UNIQUE INDEX IF NOT EXISTS uk_gb_platform_region_platform_id_region_id \
+         ON gb_platform_region (platform_id, region_id)",
+        r#"CREATE TABLE IF NOT EXISTS gb_jt_channel (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            terminal_db_id INTEGER,
+            channel_id     INTEGER,
+            has_audio      INTEGER DEFAULT 0,
+            name           VARCHAR(255),
+            update_time    VARCHAR(50) NOT NULL,
+            create_time    VARCHAR(50) NOT NULL
+        )"#,
+        "CREATE UNIQUE INDEX IF NOT EXISTS uk_jt_channel_terminal_channel \
+         ON gb_jt_channel (terminal_db_id, channel_id)",
+    ];
+    for stmt in STMTS {
+        if let Err(e) = sqlx::query(stmt).execute(pool).await {
+            // 语句均带 IF NOT EXISTS，唯一可能的失败是磁盘/权限问题，记录后继续
+            tracing::warn!("[sqlite] upgrade table stmt skip: {}", e);
+        }
+    }
     Ok(())
 }
 
@@ -416,18 +506,19 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
         },
     };
 
-    // E2: 注册标准 RPC 处理器（device_control / play_stop / cloud_record_sync）
-    if let Some(ref router) = state.rpc_router {
-        crate::rpc::register_standard_handlers(router).await;
-    }
-
-    // Phase 7.3: 注册 ws_broadcast RPC handler — 让其他节点的 ws_hub 能被本节点 fanout
+    // Phase 7.3: 注册 ws_broadcast RPC handler — 接收其他节点 fanout 来的
+    // WS 事件并分发到本节点客户端（出站方向由 WsHub::broadcast_event 经
+    // outbound 传输完成；from_node == 本节点时忽略，防回环）。
     if let Some(ref router) = state.rpc_router {
         let hub_clone = state.ws_hub.clone();
-        struct WsBroadcastHandler { hub: Arc<crate::ws::WsHub> }
+        let self_node = state.cluster_registry.config().node_id.clone();
+        struct WsBroadcastHandler { hub: Arc<crate::ws::WsHub>, self_node: String }
         impl crate::rpc::RpcHandler for WsBroadcastHandler {
             fn name(&self) -> &str { "ws_broadcast" }
             fn handle(&self, payload: serde_json::Value) -> crate::rpc::RpcResponse {
+                if payload.get("from_node").and_then(|v| v.as_str()) == Some(&self.self_node) {
+                    return crate::rpc::RpcResponse { ok: true, result: None, error: None };
+                }
                 let hub = self.hub.clone();
                 // Spawn async dispatch — RpcHandler is sync; use tokio::spawn.
                 tokio::spawn(async move {
@@ -436,7 +527,7 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
                 crate::rpc::RpcResponse { ok: true, result: None, error: None }
             }
         }
-        router.register(WsBroadcastHandler { hub: hub_clone }).await;
+        router.register(WsBroadcastHandler { hub: hub_clone, self_node }).await;
     }
 
     // Phase 7.3: 把 state.rpc_router 注入 ws_hub（让 hub 能 cluster 广播）
@@ -448,6 +539,23 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
         }
     }
 
+    // Phase 7.3+: WsState 广播统一委托给 WsHub（事件过滤 + 集群外发）。
+    // 生产方（sip/zlm/jt1078 等）保持调用 ws_state.broadcast 不变。
+    state.ws_state.set_hub(state.ws_hub.clone()).await;
+
+    // E2: [rpc].peer_endpoints 非空时启用 HttpRpc 出站传输（POST 对端 /api/rpc）
+    if let Some(ref router) = state.rpc_router {
+        if !cfg.rpc.peer_endpoints.is_empty() {
+            let node_id = cfg.rpc.node_id.clone()
+                .unwrap_or_else(|| state.cluster_registry.config().node_id.clone());
+            let http_rpc = crate::rpc::HttpRpc::new(&node_id, crate::rpc::HttpRpcConfig {
+                peer_endpoints: cfg.rpc.peer_endpoints.clone(),
+                timeout_secs: cfg.rpc.timeout_secs.unwrap_or(5),
+            });
+            router.register_outbound(Arc::new(http_rpc)).await;
+            tracing::info!("HttpRpc outbound enabled: {} peers", cfg.rpc.peer_endpoints.len());
+        }
+    }
 
     // Phase 7.2: 启动 cluster heartbeat task（自动 evict 过期节点）
     {
@@ -455,7 +563,8 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
         let _hb = registry.start_heartbeat_task();
     }
 
-    // Phase 7.2: 启动 Redis RPC subscriber（如果 Redis 已配置）
+    // Phase 7.2: 启动 Redis RPC（如果 Redis 已配置）——同时作为入站 subscriber
+    // 和出站 broadcast 传输
     if let (Some(ref router), Some(redis_manager)) = (&state.rpc_router, &state.redis) {
         let cfg_url = state.config.redis.as_ref().map(|r| r.url.clone());
         if let Some(url) = cfg_url {
@@ -473,7 +582,7 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
             ));
             let transport_clone = transport.clone();
             let router_clone = router.clone();
-            let _sub = transport.start_subscriber().await;
+            let _sub = transport.clone().start_subscriber().await;
             tokio::spawn(async move {
                 use crate::rpc::RpcTransport;
                 let mut rx = transport_clone.receive();
@@ -481,7 +590,8 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
                     let _ = router_clone.route(&req).await;
                 }
             });
-            tracing::info!("RedisRpcTransport subscriber started");
+            router.register_outbound(transport as Arc<dyn crate::rpc::RpcTransport>).await;
+            tracing::info!("RedisRpcTransport subscriber started (inbound + outbound)");
         }
     }
 
@@ -493,11 +603,13 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
     {
         let scheduler_pool = state.pool.clone();
         let scheduler_zlm = state.zlm_client.clone();
+        let scheduler_clients = state.zlm_clients.clone();
         tokio::spawn(async move {
-            let scheduler = crate::scheduler::record_plan::RecordPlanScheduler::new(
+            let mut scheduler = crate::scheduler::record_plan::RecordPlanScheduler::new(
                 scheduler_pool,
                 scheduler_zlm,
             );
+            scheduler.set_zlm_clients(scheduler_clients);
             scheduler.run().await;
         });
     }
@@ -790,6 +902,7 @@ mod tests {
             jt1078: None,
             cluster: crate::config::ClusterAppConfig::default(),
             audit: crate::config::AuditConfig::default(),
+            rpc: crate::config::RpcAppConfig::default(),
         }
     }
 

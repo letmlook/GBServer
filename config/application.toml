@@ -130,10 +130,13 @@ cache_max_size_mb = 256
 sub_channel_threshold = 50
 
 # Cross-node RPC 集群配置（多节点部署时启用）
+# peer_endpoints 非空时启用 HTTP RPC 出站广播（POST 各对端 /api/rpc），
+# 用于 WS 事件跨节点 fanout；Redis 可用时自动叠加 Redis Pub/Sub 传输，
+# 两者可并存。node_id 缺省复用 [cluster].node_id。
 [rpc]
-# 本节点 ID（hostname 或人工指定）
-node_id = "node-1"
-# 远端节点 endpoint 列表
+# 本节点 ID（缺省复用 [cluster].node_id；仅当需要与集群节点 ID 区分时才设置）
+# node_id = "node-1"
+# 远端节点 endpoint 列表（留空 = 不启用 HTTP RPC 出站）
 peer_endpoints = []
 # - "http://node2:18080"
 # - "http://node3:18080"

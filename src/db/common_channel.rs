@@ -1,6 +1,9 @@
 use crate::db::Pool;
 use crate::db::device::{DeviceChannel, DEVICE_CHANNEL_SELECT_COLUMNS};
 
+#[cfg(feature = "postgres")]
+use sqlx::Row;
+
 pub async fn get_by_id(pool: &Pool, id: i64) -> sqlx::Result<Option<DeviceChannel>> {
     #[cfg(feature = "mysql")]
     return sqlx::query_as::<_, DeviceChannel>(

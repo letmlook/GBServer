@@ -8,11 +8,13 @@
 //!   `gb_jt_area_rectangle` / `gb_jt_route` 表。
 //!   下发到终端仍依赖 JT/T 808/1078 协议栈通过 SIP 控制信道。
 //!
-//! - **协议操作层**（保留 stub）：
-//!   live_continue / live_pause / live_switch / record_start / record_stop /
-//!   snap / temp_position_tracking / confirmation_alarm / playback_download /
-//!   media_upload_delete —— 这些需要在线终端会话和 JT/T 协议栈，
-//!   HTTP 层只能发出"操作已受理"响应；实际终端交互由 `src/jt1078/` 处理。
+//! - **协议操作层**（2026-09-11 部分接线）：
+//!   live_continue / live_pause / live_switch / snap / media_upload_delete /
+//!   terminal_channel_delete 经 `src/jt1078/` 的 Jt1078Manager 真实下发
+//!   （0x9102 / 0x9101 / 0x8801 / 0x8803 / 落库删除），并等待终端通用应答。
+//!   record_start / record_stop / temp_position_tracking / confirmation_alarm /
+//!   playback_download —— 协议栈尚未提供对应原语（0x8202/0x8203/0x9205 等），
+//!   HTTP 层显式返回错误（不再伪装"已受理"成功）。
 
 use axum::{
     extract::{Path, Query, State},
@@ -341,127 +343,191 @@ pub async fn route_delete(
 }
 
 // ============================================================================
-// 协议操作层 — 以下端点需要在线终端 + JT/T 协议栈，HTTP 层仅返回"已受理"
+// 协议操作层 — 有对应 JT/T 协议原语的端点经 Jt1078Manager 真实下发；
+// 协议栈尚未提供的原语显式报错（不再伪装"已受理"成功）。
 // ============================================================================
 
-/// 直播续传
+use crate::handlers::jt1078::get_jt_manager;
+
+/// 校验 phone 并解析通道号（默认 1）
+fn phone_and_channel(q: &IdQuery) -> Result<(String, u8), Json<WVPResult<serde_json::Value>>> {
+    let phone = q.phone.clone().unwrap_or_default();
+    if phone.trim().is_empty() {
+        return Err(err("缺少 phone"));
+    }
+    Ok((phone, q.channel_id.unwrap_or(1).clamp(1, 255) as u8))
+}
+
+/// 直播继续（JT/T1078 0x9102 实时音视频控制，control=0 继续）
 pub async fn live_continue(
+    State(state): State<AppState>,
     Query(q): Query<IdQuery>,
 ) -> Json<WVPResult<serde_json::Value>> {
-    tracing::info!("JT1078 live continue: {:?}", q);
-    Json(WVPResult::success(serde_json::json!({
-        "phone": q.phone, "channelId": q.channel_id,
-        "msg": "直播续传命令已受理，等待终端 ACK"
-    })))
+    let (phone, channel) = match phone_and_channel(&q) {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    let mgr = match get_jt_manager(&state).await {
+        Ok(m) => m,
+        Err(_) => return err("JT1078服务未启动"),
+    };
+    match mgr.send_live_video_control_and_wait(&phone, channel, 0x00, false, 5).await {
+        Ok(0) => Json(WVPResult::success(serde_json::json!({
+            "phone": q.phone, "channelId": q.channel_id, "msg": "直播已继续"
+        }))),
+        Ok(result) => err(&format!("直播继续被终端拒绝 result={}", result)),
+        Err(e) => err(&format!("直播继续命令失败: {}", e)),
+    }
 }
 
-/// 直播暂停
+/// 直播暂停（JT/T1078 0x9102，control=1 暂停）
 pub async fn live_pause(
+    State(state): State<AppState>,
     Query(q): Query<IdQuery>,
 ) -> Json<WVPResult<serde_json::Value>> {
-    tracing::info!("JT1078 live pause: {:?}", q);
-    Json(WVPResult::success(serde_json::json!({
-        "phone": q.phone, "channelId": q.channel_id,
-        "msg": "直播暂停命令已受理"
-    })))
+    let (phone, channel) = match phone_and_channel(&q) {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    let mgr = match get_jt_manager(&state).await {
+        Ok(m) => m,
+        Err(_) => return err("JT1078服务未启动"),
+    };
+    match mgr.send_live_video_control_and_wait(&phone, channel, 0x01, false, 5).await {
+        Ok(0) => Json(WVPResult::success(serde_json::json!({
+            "phone": q.phone, "channelId": q.channel_id, "msg": "直播已暂停"
+        }))),
+        Ok(result) => err(&format!("直播暂停被终端拒绝 result={}", result)),
+        Err(e) => err(&format!("直播暂停命令失败: {}", e)),
+    }
 }
 
-/// 直播切换
+/// 直播切换（重新对目标通道发起 0x9101 实时音视频请求，close=false）
 pub async fn live_switch(
+    State(state): State<AppState>,
     Query(q): Query<IdQuery>,
 ) -> Json<WVPResult<serde_json::Value>> {
-    tracing::info!("JT1078 live switch: {:?}", q);
-    Json(WVPResult::success(serde_json::json!({
-        "phone": q.phone, "channelId": q.channel_id,
-        "msg": "直播切换命令已受理"
-    })))
+    let (phone, channel) = match phone_and_channel(&q) {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    let mgr = match get_jt_manager(&state).await {
+        Ok(m) => m,
+        Err(_) => return err("JT1078服务未启动"),
+    };
+    match mgr.send_live_video_and_wait(&phone, channel, 0, false, 5).await {
+        Ok(0) => Json(WVPResult::success(serde_json::json!({
+            "phone": q.phone, "channelId": q.channel_id, "msg": "直播切换命令已下发"
+        }))),
+        Ok(result) => err(&format!("直播切换被终端拒绝 result={}", result)),
+        Err(e) => err(&format!("直播切换命令失败: {}", e)),
+    }
 }
 
-/// 终端录像开始
+/// 终端录像开始 — 协议栈尚未提供对应原语（JT/T1078 终端录像控制），
+/// 显式报错而非伪装受理成功
 pub async fn record_start(
     Query(q): Query<IdQuery>,
 ) -> Json<WVPResult<serde_json::Value>> {
-    tracing::info!("JT1078 record start: {:?}", q);
-    Json(WVPResult::success(serde_json::json!({
-        "phone": q.phone, "channelId": q.channel_id,
-        "msg": "录像开始命令已受理"
-    })))
+    tracing::info!("JT1078 record start (unwired): {:?}", q);
+    err("终端录像开始指令依赖的 JT/T1078 协议原语尚未实现，命令未下发")
 }
 
-/// 终端录像停止
+/// 终端录像停止 — 同上，显式报错
 pub async fn record_stop(
     Query(q): Query<IdQuery>,
 ) -> Json<WVPResult<serde_json::Value>> {
-    tracing::info!("JT1078 record stop: {:?}", q);
-    Json(WVPResult::success(serde_json::json!({
-        "phone": q.phone, "channelId": q.channel_id,
-        "msg": "录像停止命令已受理"
-    })))
+    tracing::info!("JT1078 record stop (unwired): {:?}", q);
+    err("终端录像停止指令依赖的 JT/T1078 协议原语尚未实现，命令未下发")
 }
 
-/// 抓拍
+/// 抓拍（JT808 0x8801 拍照指令，等待终端通用应答）
 pub async fn snap(
+    State(state): State<AppState>,
     Query(q): Query<IdQuery>,
 ) -> Json<WVPResult<serde_json::Value>> {
-    tracing::info!("JT1078 snap: {:?}", q);
-    Json(WVPResult::success(serde_json::json!({
-        "phone": q.phone, "channelId": q.channel_id,
-        "msg": "抓拍命令已受理"
-    })))
+    let (phone, channel) = match phone_and_channel(&q) {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    let mgr = match get_jt_manager(&state).await {
+        Ok(m) => m,
+        Err(_) => return err("JT1078服务未启动"),
+    };
+    match mgr.send_take_photo_and_wait(&phone, channel, 5).await {
+        Ok(0) => Json(WVPResult::success(serde_json::json!({
+            "phone": q.phone, "channelId": q.channel_id,
+            "msg": "抓拍命令已被终端应答，媒体文件将经 0x1200 上报"
+        }))),
+        Ok(result) => err(&format!("抓拍被终端拒绝 result={}", result)),
+        Err(e) => err(&format!("抓拍命令失败: {}", e)),
+    }
 }
 
-/// 临时位置跟踪
+/// 临时位置跟踪 — JT808 0x8203 原语尚未实现，显式报错
 pub async fn temp_position_tracking(
     Query(q): Query<IdQuery>,
 ) -> Json<WVPResult<serde_json::Value>> {
-    tracing::info!("JT1078 temp position tracking: {:?}", q);
-    Json(WVPResult::success(serde_json::json!({
-        "phone": q.phone,
-        "msg": "临时位置跟踪命令已受理"
-    })))
+    tracing::info!("JT1078 temp position tracking (unwired): {:?}", q);
+    err("临时位置跟踪依赖的 JT/T808 0x8203 协议原语尚未实现，命令未下发")
 }
 
-/// 报警确认应答
+/// 报警确认应答 — JT808 0x8202 原语尚未实现，显式报错
 pub async fn confirmation_alarm(
     Json(b): Json<serde_json::Value>,
 ) -> Json<WVPResult<serde_json::Value>> {
-    tracing::info!("JT1078 confirmation alarm: {}", b);
-    Json(WVPResult::success(serde_json::json!({
-        "msg": "报警确认应答已受理"
-    })))
+    tracing::info!("JT1078 confirmation alarm (unwired): {}", b);
+    err("报警确认应答依赖的 JT/T808 0x8202 协议原语尚未实现，命令未下发")
 }
 
-/// 录像下载
+/// 录像下载 — JT/T1078 0x9205 回放上传原语尚未实现，显式报错
 pub async fn playback_download(
     Query(q): Query<IdQuery>,
 ) -> Json<WVPResult<serde_json::Value>> {
-    tracing::info!("JT1078 playback download: {:?}", q);
-    Json(WVPResult::success(serde_json::json!({
-        "phone": q.phone, "channelId": q.channel_id,
-        "msg": "录像下载命令已受理"
-    })))
+    tracing::info!("JT1078 playback download (unwired): {:?}", q);
+    err("录像下载依赖的 JT/T1078 0x9205 协议原语尚未实现，命令未下发")
 }
 
-/// 删除已上传的媒体项
+/// 删除已上传的媒体项（JT808 0x8803 delete_flag=1）
 pub async fn media_upload_delete(
+    State(state): State<AppState>,
     Query(q): Query<IdQuery>,
 ) -> Json<WVPResult<serde_json::Value>> {
-    tracing::info!("JT1078 media upload delete: {:?}", q);
-    Json(WVPResult::success(serde_json::json!({
-        "phone": q.phone,
-        "msg": "媒体删除命令已受理"
-    })))
+    let phone = match q.phone.clone() {
+        Some(p) if !p.trim().is_empty() => p,
+        _ => return err("缺少 phone"),
+    };
+    let media_id = match q.id.as_deref().and_then(|s| s.parse::<u32>().ok()) {
+        Some(v) => v,
+        None => return err("缺少或非法的媒体 id（数字）"),
+    };
+    let mgr = match get_jt_manager(&state).await {
+        Ok(m) => m,
+        Err(_) => return err("JT1078服务未启动"),
+    };
+    match mgr.send_media_delete(&phone, media_id).await {
+        Ok(()) => Json(WVPResult::success(serde_json::json!({
+            "phone": q.phone, "mediaId": media_id, "msg": "媒体删除命令已下发"
+        }))),
+        Err(e) => err(&format!("媒体删除命令失败: {}", e)),
+    }
 }
 
-/// 终端通道删除
+/// 终端通道删除（落库删除 gb_jt_channel 记录）
 pub async fn terminal_channel_delete(
+    State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Json<WVPResult<serde_json::Value>> {
-    tracing::info!("JT1078 terminal channel delete: {}", id);
-    Json(WVPResult::success(serde_json::json!({
-        "id": id,
-        "msg": "通道删除命令已受理"
-    })))
+    let Ok(ch_id) = id.parse::<i64>() else {
+        return err("非法的通道 id");
+    };
+    match jt_db::delete_channel(&state.pool, ch_id).await {
+        Ok(n) if n > 0 => Json(WVPResult::success(serde_json::json!({
+            "id": id, "msg": "通道已删除"
+        }))),
+        Ok(_) => err("通道不存在"),
+        Err(e) => err(&format!("删除通道失败: {}", e)),
+    }
 }
 
 /// 终端通道详情

@@ -6,6 +6,21 @@
 //! - `manager`: Session lifecycle + terminal registry + command dispatch
 //! - `command`: JT808/JT1078 command encoding
 //! - `server`: TCP/UDP listener lifecycle
+//!
+//! ## ⚠️ 与部标 JT/T 808 / JT/T 1078 规范的已知偏差（简化实现）
+//!
+//! 当前实现是"能跑通自有模拟器与联动链路"的简化版，接入真实部标终端前需对齐：
+//!
+//! 1. **媒体帧格式**（`frame.rs`）：使用 `0x7E 0x01` + u16 长度 / 4 字节 u32 长度
+//!    前缀的自定义分帧 + XOR 校验，**不是** JT/T 1078 规定的 RTP 头结构
+//!    （SIM 卡号 BCD + 通道号 + 数据类型 + 时间戳 + Seq 的 30 字节头）。
+//! 2. **终端接入认证**（`session.rs`）：明文 `AUTH:<token>` 与环境变量
+//!    `GBSERVER__JT1078__TOKEN` 比较，**不是** JT/T 808 的注册应答分配鉴权码
+//!    流程（0x0100 注册 → 0x8100 应答携带 AuthCode → 后续消息携带鉴权码校验）。
+//! 3. **命令下发传输**（`manager.rs`）：`send_command` 每次新建临时 UDP socket
+//!    发送，不复用终端已建立的 TCP 连接；NAT 场景下可能不可达。
+//! 4. 未实现的原语：0x8202 报警确认、0x8203 临时位置跟踪、0x9205 录像回放上传等
+//!    （对应 HTTP 端点显式报错，见 `handlers/jt1078_extra.rs`）。
 
 use std::sync::Arc;
 use tokio::sync::RwLock;

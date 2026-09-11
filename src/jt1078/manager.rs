@@ -252,6 +252,12 @@ impl Jt1078Manager {
         self.send_command(phone, 0x8803, &body).await
     }
 
+    /// 0x8803 存储多媒体文件删除（delete_flag=1）
+    pub async fn send_media_delete(&self, phone: &str, media_id: u32) -> Result<(), String> {
+        let body = command::build_media_upload(media_id, 1);
+        self.send_command(phone, 0x8803, &body).await
+    }
+
     /// Send set phone book (0x8401)
     pub async fn send_set_phone_book(&self, phone: &str, contacts: &[(String, String)]) -> Result<(), String> {
         let body = command::build_set_phone_book(contacts);

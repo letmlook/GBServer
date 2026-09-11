@@ -1,6 +1,8 @@
 //! 录像计划表 gb_record_plan, gb_record_plan_item
 
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "postgres")]
+use sqlx::Row;
 use sqlx::FromRow;
 
 use super::Pool;

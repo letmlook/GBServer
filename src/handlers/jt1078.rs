@@ -8,6 +8,9 @@ use axum::{
 use serde::Deserialize;
 use std::sync::Arc;
 
+#[cfg(feature = "postgres")]
+use sqlx::Row;
+
 use crate::db::jt1078 as jt_db;
 use crate::error::{AppError, ErrorCode};
 use crate::response::WVPResult;
@@ -246,7 +249,7 @@ fn build_error(msg: &str) -> serde_json::Value {
 }
 
 /// Helper to get JT1078 manager from state, returning an error JSON if unavailable.
-async fn get_jt_manager(state: &AppState) -> Result<Arc<crate::jt1078::manager::Jt1078Manager>, Json<serde_json::Value>> {
+pub(crate) async fn get_jt_manager(state: &AppState) -> Result<Arc<crate::jt1078::manager::Jt1078Manager>, Json<serde_json::Value>> {
     let guard = state.jt1078_manager.read().await;
     guard.clone().ok_or_else(|| Json(build_error("JT1078服务未启动")))
 }
