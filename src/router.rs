@@ -1017,6 +1017,21 @@ pub fn app(state: AppState) -> Router<AppState> {
     // Phase 7.4: alarm endpoints moved into api_protected (now require JWT).
     // The legacy public routes below are intentionally removed.
 
+    // 云录像 ZIP 打包产物：通过 /downloads/<file> 对外下载。
+    // 必须注册在下面的 `nest_service("/", ...)` 之前，否则会被 SPA 的
+    // index.html 兜底吞掉。文件名含随机段，避免被枚举遍历。
+    let download_dir = state.config.server.effective_download_dir();
+    let app = match std::fs::create_dir_all(&download_dir) {
+        Ok(()) => app.nest_service(
+            "/downloads",
+            tower_http::services::ServeDir::new(download_dir),
+        ),
+        Err(e) => {
+            tracing::warn!("无法创建下载目录（/downloads 不可用）: {}", e);
+            app
+        }
+    };
+
     // 静态资源：前端构建产物（与 Java 版 static 目录一致）
     let static_dir = state
         .config

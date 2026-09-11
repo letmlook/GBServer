@@ -1726,6 +1726,88 @@ pub async fn channel_playback_start(
     }
 }
 
+// ─────────────────────── 回放控制（GB28181 PlayBackCtrl） ───────────────────────
+//
+// 2026-09-11：以下端点是 WVP `/api/common/channel/playback/*` 兼容路径。
+// 此前 pause / resume / seek / speed 四个端点只 `tracing::info!` 便返回成功
+// （形参写成 `State(_state)`，故意不接收 state），属于「编造成功」；
+// 现按 GB28181 PlayBackCtrl 规范真正下发 SIP，并同步本地回放会话状态。
+
+/// 纯函数：从 `{prefix}_{deviceId}_{channelId}_{ts}` 解析设备/通道。
+///
+/// GB28181 回放流名形如 `playback_34020000001320000001_34020000001310000001_1700000000`。
+fn parse_playback_stream_id(stream: &str) -> Option<(String, String)> {
+    let parts: Vec<&str> = stream.split('_').collect();
+    if parts.len() >= 3 && !parts[1].is_empty() && !parts[2].is_empty() {
+        Some((parts[1].to_string(), parts[2].to_string()))
+    } else {
+        None
+    }
+}
+
+/// 解析回放控制的目标设备/通道。
+///
+/// 优先级：
+/// 1. `playback_manager` 中登记的会话（权威 —— 含真实 `device_id` / `channel_id`）
+/// 2. 从 stream 解析 `{prefix}_{deviceId}_{channelId}_{ts}` 形式
+async fn resolve_playback_target(state: &AppState, stream: &str) -> Option<(String, String)> {
+    if stream.is_empty() {
+        return None;
+    }
+    if let Some(ref pm) = state.playback_manager {
+        if let Some(session) = pm.get(stream).await {
+            if !session.device_id.is_empty() && !session.channel_id.is_empty() {
+                return Some((session.device_id, session.channel_id));
+            }
+        }
+    }
+    parse_playback_stream_id(stream)
+}
+
+/// 解析目标并下发 SIP `PlayBackCtrl`；成功返回 `(device_id, channel_id)`。
+async fn dispatch_playback_control(
+    state: &AppState,
+    stream: &str,
+    cmd: crate::sip::PlaybackControlCmd,
+) -> Result<(String, String), String> {
+    let (device_id, channel_id) = resolve_playback_target(state, stream)
+        .await
+        .ok_or_else(|| {
+            format!(
+                "无法解析 stream '{}' 的设备/通道：既无已登记的回放会话，也不符合 prefix_deviceId_channelId 格式",
+                stream
+            )
+        })?;
+
+    let sip_server = state
+        .sip_server
+        .as_ref()
+        .ok_or_else(|| "SIP 服务未启用，回放控制未能下发".to_string())?;
+
+    sip_server
+        .send_playback_control(&device_id, &channel_id, cmd)
+        .await
+        .map_err(|e| format!("SIP 下发失败: {}", e))?;
+
+    Ok((device_id, channel_id))
+}
+
+/// 统一成功响应体（保持 commonChannel 既有的 `code` / `msg` 契约）
+fn playback_control_ok(
+    stream: &str,
+    device_id: &str,
+    channel_id: &str,
+    msg: &str,
+) -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "code": 0,
+        "msg": msg,
+        "stream": stream,
+        "deviceId": device_id,
+        "channelId": channel_id,
+    }))
+}
+
 /// GET /api/common/channel/playback/stop
 #[derive(Debug, Deserialize)]
 pub struct ChannelPlaybackStopQ {
@@ -1733,20 +1815,71 @@ pub struct ChannelPlaybackStopQ {
     pub stream: Option<String>,
 }
 
+/// 停止回放：解析目标 → 关闭 ZLM 流 → 摘除本地会话 → 下发 SIP BYE。
 pub async fn channel_playback_stop(
     State(state): State<AppState>,
     Query(q): Query<ChannelPlaybackStopQ>,
 ) -> Json<serde_json::Value> {
-    let channel_id = q.channel_id.unwrap_or(0);
     let stream = q.stream.clone().unwrap_or_default();
-    tracing::info!("commonChannel playback stop: channel_id={}, stream={}", channel_id, stream);
+    tracing::info!(
+        "commonChannel playback stop: channel_id={}, stream={}",
+        q.channel_id.unwrap_or(0),
+        stream
+    );
+    if stream.is_empty() {
+        return Json(serde_json::json!({ "code": 1, "msg": "缺少 stream 参数" }));
+    }
 
-    if !stream.is_empty() {
-        if let Some(ref zlm_client) = state.zlm_client {
-            let _ = zlm_client.close_streams(None, None, Some(&stream), true).await;
+    // 1) 先解析目标（此时会话仍在，可拿到权威 device/channel）
+    let target = resolve_playback_target(&state, &stream).await;
+
+    // 2) 关闭 ZLM 流：优先按登记的会话（含 schema/app/stream 与 media_server_id）
+    if let Some(ref pm) = state.playback_manager {
+        if let Some(session) = pm.get(&stream).await {
+            if let Some(zlm_client) = state
+                .get_zlm_client(session.media_server_id.as_deref())
+                .or_else(|| state.zlm_client.clone())
+            {
+                let _ = zlm_client
+                    .close_streams(
+                        Some(&session.schema),
+                        Some(&session.app),
+                        Some(&session.stream),
+                        true,
+                    )
+                    .await;
+            }
+            pm.remove(&stream).await;
         }
     }
-    Json(serde_json::json!({ "code": 0, "msg": "回放停止成功" }))
+    // 兜底：无登记会话时按 stream 名关闭
+    if let Some(ref zlm_client) = state.zlm_client {
+        let _ = zlm_client
+            .close_streams(None, None, Some(&stream), true)
+            .await;
+    }
+
+    // 3) 下发 SIP BYE，真正让设备停止回放推流
+    let (device_id, channel_id) = match target {
+        Some(v) => v,
+        None => {
+            return Json(serde_json::json!({
+                "code": 1,
+                "msg": format!("无法解析 stream '{}' 的设备/通道：ZLM 流已清理，但未能下发 SIP BYE", stream)
+            }))
+        }
+    };
+    let Some(ref sip_server) = state.sip_server else {
+        return Json(serde_json::json!({
+            "code": 1,
+            "msg": "SIP 服务未启用：ZLM 流已清理，但未能下发 SIP BYE"
+        }));
+    };
+    if let Err(e) = sip_server.send_session_bye(&device_id, &channel_id).await {
+        return Json(serde_json::json!({ "code": 1, "msg": format!("SIP BYE 下发失败: {}", e) }));
+    }
+
+    playback_control_ok(&stream, &device_id, &channel_id, "回放停止成功")
 }
 
 /// GET /api/common/channel/playback/pause
@@ -1757,13 +1890,28 @@ pub struct ChannelPlaybackPauseQ {
 }
 
 pub async fn channel_playback_pause(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Query(q): Query<ChannelPlaybackPauseQ>,
 ) -> Json<serde_json::Value> {
-    let channel_id = q.channel_id.unwrap_or(0);
     let stream = q.stream.clone().unwrap_or_default();
-    tracing::info!("commonChannel playback pause: channel_id={}, stream={}", channel_id, stream);
-    Json(serde_json::json!({ "code": 0, "msg": "回放暂停成功" }))
+    tracing::info!(
+        "commonChannel playback pause: channel_id={}, stream={}",
+        q.channel_id.unwrap_or(0),
+        stream
+    );
+    if stream.is_empty() {
+        return Json(serde_json::json!({ "code": 1, "msg": "缺少 stream 参数" }));
+    }
+
+    if let Some(ref pm) = state.playback_manager {
+        pm.pause(&stream).await;
+    }
+    match dispatch_playback_control(&state, &stream, crate::sip::PlaybackControlCmd::Pause).await {
+        Ok((device_id, channel_id)) => {
+            playback_control_ok(&stream, &device_id, &channel_id, "回放暂停成功")
+        }
+        Err(msg) => Json(serde_json::json!({ "code": 1, "msg": msg })),
+    }
 }
 
 /// GET /api/common/channel/playback/resume
@@ -1774,13 +1922,28 @@ pub struct ChannelPlaybackResumeQ {
 }
 
 pub async fn channel_playback_resume(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Query(q): Query<ChannelPlaybackResumeQ>,
 ) -> Json<serde_json::Value> {
-    let channel_id = q.channel_id.unwrap_or(0);
     let stream = q.stream.clone().unwrap_or_default();
-    tracing::info!("commonChannel playback resume: channel_id={}, stream={}", channel_id, stream);
-    Json(serde_json::json!({ "code": 0, "msg": "回放恢复成功" }))
+    tracing::info!(
+        "commonChannel playback resume: channel_id={}, stream={}",
+        q.channel_id.unwrap_or(0),
+        stream
+    );
+    if stream.is_empty() {
+        return Json(serde_json::json!({ "code": 1, "msg": "缺少 stream 参数" }));
+    }
+
+    if let Some(ref pm) = state.playback_manager {
+        pm.resume(&stream).await;
+    }
+    match dispatch_playback_control(&state, &stream, crate::sip::PlaybackControlCmd::Resume).await {
+        Ok((device_id, channel_id)) => {
+            playback_control_ok(&stream, &device_id, &channel_id, "回放恢复成功")
+        }
+        Err(msg) => Json(serde_json::json!({ "code": 1, "msg": msg })),
+    }
 }
 
 /// GET /api/common/channel/playback/seek
@@ -1792,14 +1955,52 @@ pub struct ChannelPlaybackSeekQ {
 }
 
 pub async fn channel_playback_seek(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Query(q): Query<ChannelPlaybackSeekQ>,
 ) -> Json<serde_json::Value> {
-    let channel_id = q.channel_id.unwrap_or(0);
     let stream = q.stream.clone().unwrap_or_default();
     let seek_time = q.seek_time.clone().unwrap_or_default();
-    tracing::info!("commonChannel playback seek: channel_id={}, stream={}, seek={}", channel_id, stream, seek_time);
-    Json(serde_json::json!({ "code": 0, "msg": "回放跳转成功" }))
+    tracing::info!(
+        "commonChannel playback seek: channel_id={}, stream={}, seek={}",
+        q.channel_id.unwrap_or(0),
+        stream,
+        seek_time
+    );
+    if stream.is_empty() {
+        return Json(serde_json::json!({ "code": 1, "msg": "缺少 stream 参数" }));
+    }
+    if seek_time.is_empty() {
+        return Json(serde_json::json!({ "code": 1, "msg": "缺少 seek_time 参数" }));
+    }
+
+    if let Some(ref pm) = state.playback_manager {
+        pm.update_current_time(&stream, seek_time.clone()).await;
+    }
+    let cmd = crate::sip::PlaybackControlCmd::Seek {
+        seek_time: seek_time.clone(),
+    };
+    match dispatch_playback_control(&state, &stream, cmd).await {
+        Ok((device_id, channel_id)) => {
+            let mut body =
+                playback_control_ok(&stream, &device_id, &channel_id, "回放跳转成功");
+            if let Some(obj) = body.0.as_object_mut() {
+                obj.insert(
+                    "currentTime".to_string(),
+                    serde_json::Value::String(seek_time),
+                );
+            }
+            body
+        }
+        Err(msg) => Json(serde_json::json!({ "code": 1, "msg": msg })),
+    }
+}
+
+/// 纯函数：解析回放倍速，要求为正数。
+fn parse_playback_speed(raw: &str) -> Option<f64> {
+    match raw.trim().parse::<f64>() {
+        Ok(v) if v > 0.0 && v.is_finite() => Some(v),
+        _ => None,
+    }
 }
 
 /// GET /api/common/channel/playback/speed
@@ -1811,14 +2012,45 @@ pub struct ChannelPlaybackSpeedQ {
 }
 
 pub async fn channel_playback_speed(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Query(q): Query<ChannelPlaybackSpeedQ>,
 ) -> Json<serde_json::Value> {
-    let channel_id = q.channel_id.unwrap_or(0);
     let stream = q.stream.clone().unwrap_or_default();
-    let speed = q.speed.clone().unwrap_or_default();
-    tracing::info!("commonChannel playback speed: channel_id={}, stream={}, speed={}", channel_id, stream, speed);
-    Json(serde_json::json!({ "code": 0, "msg": "回放倍速设置成功" }))
+    let speed_raw = q.speed.clone().unwrap_or_default();
+    tracing::info!(
+        "commonChannel playback speed: channel_id={}, stream={}, speed={}",
+        q.channel_id.unwrap_or(0),
+        stream,
+        speed_raw
+    );
+    if stream.is_empty() {
+        return Json(serde_json::json!({ "code": 1, "msg": "缺少 stream 参数" }));
+    }
+    let speed: f64 = match parse_playback_speed(&speed_raw) {
+        Some(v) => v,
+        None => {
+            return Json(serde_json::json!({
+                "code": 1,
+                "msg": format!("无效的 speed 参数: '{}'（应为正数，如 0.5 / 1 / 2 / 4）", speed_raw)
+            }))
+        }
+    };
+
+    if let Some(ref pm) = state.playback_manager {
+        pm.update_speed(&stream, speed).await;
+    }
+    let cmd = crate::sip::PlaybackControlCmd::Scale { speed };
+    match dispatch_playback_control(&state, &stream, cmd).await {
+        Ok((device_id, channel_id)) => {
+            let mut body =
+                playback_control_ok(&stream, &device_id, &channel_id, "回放倍速设置成功");
+            if let Some(obj) = body.0.as_object_mut() {
+                obj.insert("speed".to_string(), serde_json::json!(speed));
+            }
+            body
+        }
+        Err(msg) => Json(serde_json::json!({ "code": 1, "msg": msg })),
+    }
 }
 
 /// DELETE /api/common/channel/delete?id=<i64>
@@ -1841,4 +2073,66 @@ pub async fn channel_delete(
 #[derive(Debug, Deserialize)]
 pub struct ChannelDeleteQ {
     pub id: Option<i64>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ============ 回放控制参数解析（2026-09-11 真实实现后补测） ============
+
+    #[test]
+    fn test_parse_playback_stream_id_standard_form() {
+        // 形如 playback_{deviceId}_{channelId}_{ts}
+        let got = parse_playback_stream_id("playback_34020000001320000001_34020000001310000001_1700000000");
+        assert_eq!(
+            got,
+            Some((
+                "34020000001320000001".to_string(),
+                "34020000001310000001".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn test_parse_playback_stream_id_without_timestamp() {
+        // 只有 3 段也应可解析（部分客户端不带时间戳）
+        let got = parse_playback_stream_id("playback_34020000001320000001_34020000001310000001");
+        assert_eq!(
+            got,
+            Some((
+                "34020000001320000001".to_string(),
+                "34020000001310000001".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn test_parse_playback_stream_id_rejects_malformed() {
+        assert_eq!(parse_playback_stream_id(""), None);
+        assert_eq!(parse_playback_stream_id("juststream"), None);
+        assert_eq!(parse_playback_stream_id("a_b"), None);
+        // 空段必须被拒绝，否则会下发到空 deviceId 的 SIP 消息
+        assert_eq!(parse_playback_stream_id("playback__34020000001310000001"), None);
+        assert_eq!(parse_playback_stream_id("playback_34020000001320000001_"), None);
+    }
+
+    #[test]
+    fn test_parse_playback_speed_accepts_valid() {
+        assert_eq!(parse_playback_speed("1"), Some(1.0));
+        assert_eq!(parse_playback_speed("0.5"), Some(0.5));
+        assert_eq!(parse_playback_speed(" 4 "), Some(4.0));
+        assert_eq!(parse_playback_speed("2.5"), Some(2.5));
+    }
+
+    #[test]
+    fn test_parse_playback_speed_rejects_invalid() {
+        // 负数 / 0 / 非数字 / 空 / 非有限值都必须拒绝 —— 否则会下发非法 Scale 指令
+        assert_eq!(parse_playback_speed("0"), None);
+        assert_eq!(parse_playback_speed("-1"), None);
+        assert_eq!(parse_playback_speed("abc"), None);
+        assert_eq!(parse_playback_speed(""), None);
+        assert_eq!(parse_playback_speed("inf"), None);
+        assert_eq!(parse_playback_speed("NaN"), None);
+    }
 }

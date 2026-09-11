@@ -9,6 +9,15 @@ static_dir = "web/dist"
 [server]
 port = 18080
 
+# 云录像 ZIP 打包产物目录，通过 /downloads/<file> 对外下载。
+# 相对路径按进程工作目录解析（因此需从仓库根目录启动）。缺省为 ./data/downloads
+# download_dir = "./data/downloads"
+
+# 录像文件根目录。当 gb_cloud_record.file_path 在本机不存在时（例如 ZLM 与
+# GBServer 容器内挂载点不同但共享卷），会用该记录的文件名在此目录下再找一次。
+# 缺省不启用（仅按 file_path 原样查找）。
+# record_root = "/mnt/zlm/media"
+
 # 数据库三选一：默认 SQLite（与 Cargo.toml default = ["sqlite"] 一致）
 # - SQLite（默认）：零依赖，文件即库；适合开发 / 演示 / 边缘 / 小规模（≤500 设备）
 # - PostgreSQL：生产主力；多实例需配 [redis] + [rpc] peer_endpoints

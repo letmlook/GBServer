@@ -2,6 +2,7 @@ pub mod config;
 pub mod error;
 pub mod response;
 pub mod auth;
+pub mod archive;
 pub mod db;
 pub mod handlers;
 pub mod router;
@@ -868,7 +869,11 @@ mod tests {
     /// `select_least_loaded` are populated.
     fn make_app_config() -> AppConfig {
         AppConfig {
-            server: ServerConfig { port: 18080 },
+            server: ServerConfig {
+                port: 18080,
+                download_dir: None,
+                record_root: None,
+            },
             database: DatabaseConfig {
                 url: "sqlite::memory:".into(),
                 sqlite_max_devices: None,

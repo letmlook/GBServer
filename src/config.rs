@@ -44,6 +44,26 @@ pub struct Jt1078Config {
 #[derive(Debug, Clone, Deserialize)]
 pub struct ServerConfig {
     pub port: u16,
+    /// 云录像 ZIP 打包产物的落地目录，通过 `/downloads/<file>` 对外提供下载。
+    /// 相对路径按进程工作目录解析（要求从仓库根目录启动）。默认 `./data/downloads`。
+    #[serde(default)]
+    pub download_dir: Option<String>,
+    /// 录像文件根目录。当 `gb_cloud_record.file_path` 在本机不存在时，
+    /// 会用该记录的文件名到本目录下再找一次 —— 用于 ZLM 与 GBServer
+    /// 容器内挂载点不同（但共享卷）的部署。默认不启用。
+    #[serde(default)]
+    pub record_root: Option<String>,
+}
+
+impl ServerConfig {
+    /// ZIP 打包产物目录（解析默认值）
+    pub fn effective_download_dir(&self) -> std::path::PathBuf {
+        std::path::PathBuf::from(
+            self.download_dir
+                .clone()
+                .unwrap_or_else(|| "./data/downloads".to_string()),
+        )
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
