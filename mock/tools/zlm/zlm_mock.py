@@ -142,6 +142,31 @@ class ZlmMockHandler(http.server.BaseHTTPRequestHandler):
             return
         handler(self, params, payload)
 
+    def _fire_hook(self, hook_name: str, data: dict) -> None:
+        """按**真实 ZLM 的形态**异步投递一个 hook（未配置 `--hook-url` 则跳过）。
+
+        两点必须与真实 ZLM 一致（见
+        https://docs.zlmediakit.com/guide/media_server/web_hook_api.html 的
+        `[hook]` 配置预览与各事件示例 body）：
+
+        1. **事件类型由 URL 决定**：`on_play` / `on_publish` / …
+           各自有独立地址，所以这里 POST 到 `{base}/api/hook/{hook_name}`。
+        2. **请求体是扁平 JSON，且不含 `hook_name`**：body 里只有
+           `mediaServerId` / `app` / `stream` / `schema` … 这些业务字段。
+
+        此前 mock 把字段嵌在 `data` 里、还带着 `hook_name`，因此既掩盖了
+        "后端靠 body 里的 hook_name 分派、真实 ZLM 根本不发它"这个致命缺陷，
+        也让数据相关的事件分支全部取不到值。
+        """
+        url = getattr(self.server, "hook_url", None)
+        if not url:
+            return
+        base = _hook_base_url(url)
+        target = f"{base}/api/hook/{hook_name}"
+        payload = dict(data)
+        payload.setdefault("mediaServerId", "zlmediakit-mock-1")
+        threading.Thread(target=_post_hook, args=(target, payload), daemon=True).start()
+
     # ----- 具体 handler -----
 
     def _handle_get_server_config(self, params: dict, payload: dict):
@@ -282,7 +307,28 @@ class ZlmMockHandler(http.server.BaseHTTPRequestHandler):
             "port": port,
             "tcp": tcp,
         }
+        # 真实 ZLM 在 openRtpServer 成功时**随即创建该流**，因此紧接着的
+        # getMediaList / isMediaExist 都能看到它。此前 mock 只登记了 RTP server，
+        # 导致 GBServer 里"先起流、再取地址"的第二个请求会误判为"流尚未建立"。
+        app = params.get("app", ["rtp"])[0]
+        vhost = params.get("vhost", ["__defaultVhost__"])[0]
+        _state["media_list"] = [
+            m for m in _state["media_list"]
+            if not (m.get("app") == app and m.get("stream") == stream_id)
+        ]
+        _state["media_list"].append({
+            "schema": "rtsp",
+            "vhost": vhost,
+            "app": app,
+            "stream": stream_id,
+            "duration": 0,
+            "bytes_speed": 0,
+        })
         log.info("openRtpServer: port=%d stream_id=%s", port, stream_id)
+        self._fire_hook("on_rtp_server_started", {
+            "stream_id": stream_id,
+            "port": port,
+        })
         # ZLM 真实行为：成功时 port/cookie 在顶层
         body = {
             "code": 0,
@@ -296,6 +342,10 @@ class ZlmMockHandler(http.server.BaseHTTPRequestHandler):
         stream_id = params.get("stream_id", [""])[0]
         if stream_id in _state["rtp_servers"]:
             del _state["rtp_servers"][stream_id]
+            # 与真实 ZLM 一致：关掉 RTP server 时对应流也随之消失
+            _state["media_list"] = [
+                m for m in _state["media_list"] if m.get("stream") != stream_id
+            ]
             self._send_json(200, _ok(None))
         else:
             self._send_json(200, _err(-1, "stream_id not found"))
@@ -363,9 +413,11 @@ class ZlmMockHandler(http.server.BaseHTTPRequestHandler):
                 "port": 554, "hook_port": 0, "rtsp_port": 554, "rtmp_port": 1935,
                 "http_port": 8080, "https_port": 8443,
             })
-        # 异步 POST（不阻塞 HTTP 响应）
-        threading.Thread(target=_post_hook, args=(self.server.hook_url, base), daemon=True).start()  # type: ignore
-        log.info("触发 Webhook: %s -> %s", name, self.server.hook_url)  # type: ignore
+        # 与真实 ZLM 一致：POST 到该事件自己的 URL、body 扁平且不含 hook_name
+        base.pop("hook_name", None)
+        target = f"{_hook_base_url(self.server.hook_url)}/api/hook/{name}"  # type: ignore
+        threading.Thread(target=_post_hook, args=(target, base), daemon=True).start()
+        log.info("触发 Webhook: %s -> %s", name, target)
         self._send_json(200, _ok({"triggered": True, "hook_name": name}))
 
 
@@ -534,6 +586,16 @@ class ZlmMockHandler(http.server.BaseHTTPRequestHandler):
 
     def _handle_restart_server(self, params: dict, payload: dict):
         self._send_json(200, _ok(None))
+
+def _hook_base_url(configured: str) -> str:
+    """把配置里的单个 hook 地址归一化成服务器根地址。"""
+    trimmed = configured.strip().rstrip("/")
+    for suffix in ("/api/zlm/hook", "/api/hook"):
+        pos = trimmed.rfind(suffix)
+        if pos != -1:
+            return trimmed[:pos].rstrip("/")
+    return trimmed
+
 
 def _post_hook(url: str, payload: dict):
     """简易 POST 到 Webhook 接收器（用 urllib）"""

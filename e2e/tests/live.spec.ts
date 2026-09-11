@@ -106,6 +106,67 @@ test.describe('Live page (/live) — Vue 3 features', () => {
     }
   });
 
+  /// 回归守卫：选中通道必须**先拉起流**（/api/play/start → SIP INVITE +
+  /// ZLM RTP server），再播放它返回的地址。
+  ///
+  /// 此前的实现只调用 `/api/media/getPlayUrl` 拼一个地址，从不拉起流 ——
+  /// 于是画面永远出不来，而接口本身并不报错（`getPlayUrl` 现在会明确报
+  /// "流尚未建立，请先调用 /api/play/start"）。这条用例保证"点通道 → 起流"
+  /// 这个动作真的发生。
+  test('selecting a channel starts the stream via /api/play/start', async ({ page }) => {
+    const startCalls: string[] = []
+    const startResults: Array<{ code?: number; msg?: string; url?: string }> = []
+    page.on('request', (r) => {
+      if (r.url().includes('/api/play/start/') || r.url().includes('/dev-api/play/start/')) {
+        startCalls.push(r.url())
+      }
+    })
+    page.on('response', async (r) => {
+      const u = r.url()
+      if (!u.includes('/play/start/')) return
+      try {
+        const body = (await r.json()) as { code?: number; msg?: string; data?: { hls?: string; playUrl?: string } }
+        startResults.push({
+          code: body.code,
+          msg: body.msg,
+          url: body.data?.hls ?? body.data?.playUrl,
+        })
+      } catch {
+        /* 非 JSON（例如被 SPA 兜底成 HTML）—— 由下面的断言暴露 */
+      }
+    })
+
+    await gotoLive(page)
+    // 必须点**通道**（设备节点的子节点）：设备节点没有 `raw`；且接口在设备
+    // 无通道时会把设备自身当作一行返回（channel_id == device_id），点它只会
+    // 去点播一个不存在的通道。
+    const channelNode = page
+      .locator('.el-tree-node__children .el-tree-node__content')
+      .first()
+    if ((await channelNode.count()) === 0) {
+      test.skip(true, '数据库中没有通道，无法验证起流');
+      return;
+    }
+
+    await channelNode.click();
+    // 必须发出起流请求（这是本用例的核心断言）
+    await expect
+      .poll(() => startCalls.length, { timeout: 10_000 })
+      .toBeGreaterThan(0);
+
+    // 起流成功时应拿到播放地址；若环境里没有可用的 ZLM/设备，代码路径本身
+    // 仍然正确，这里只记录而不误判为失败。
+    await expect
+      .poll(() => startResults.length, { timeout: 10_000 })
+      .toBeGreaterThan(0);
+    const r0 = startResults[0];
+    if (r0?.code === 0) {
+      expect(r0.url, '起流成功后应返回可播放地址').toBeTruthy();
+    } else {
+      console.warn(`[live] 起流未成功（环境缺少 ZLM/在线设备？）: code=${r0?.code} msg=${r0?.msg}`);
+    }
+  });
+
   test('PTZ bar renders after selecting a channel (7 PTZ + 对讲)', async ({ page }) => {
     await gotoLive(page);
 
@@ -113,7 +174,12 @@ test.describe('Live page (/live) — Vue 3 features', () => {
     // 才允许跳过 —— 但必须先尝试选中，否则这个用例会**永远**被跳过、
     // 等于什么都没断言（此前就是这样：只看 .video-grid 是否可见，
     // 而它只在选中通道后才渲染，于是从未执行过按钮计数断言）。
-    const channelNode = page.locator('.el-tree-node__content').filter({ hasText: 'ON' }).first();
+    // 必须点**通道**（设备节点的子节点）：设备节点没有 `raw`；且接口在设备
+    // 无通道时会把设备自身当作一行返回（channel_id == device_id），点它只会
+    // 去点播一个不存在的通道。
+    const channelNode = page
+      .locator('.el-tree-node__children .el-tree-node__content')
+      .first();
     if ((await channelNode.count()) === 0) {
       test.skip(true, '数据库中没有通道；PTZ 工具条需要先选中通道');
       return;

@@ -1,8 +1,32 @@
 import { request } from '@/utils/request'
 import type { WvpResult } from '@/types/api'
 
+/** /api/play/start 的实际返回（后端 play.rs 一次给出全部可用地址）。 */
+export interface PlayStartResult {
+  app: string
+  stream: string
+  streamId?: string
+  playUrl: string
+  flvUrl?: string
+  wsUrl?: string
+  ws_flv?: string
+  hls?: string
+  webrtc?: string
+  deviceId?: string
+  channelId?: string
+  hasAudio?: boolean
+  ssrc?: string
+  transport?: string
+}
+
+/**
+ * 拉起实时流：后端会发 SIP INVITE、开 ZLM RTP server，并返回各协议播放地址。
+ *
+ * 注意：**必须先调用本接口**再播放 —— `/api/media/getPlayUrl` 只是拼地址，
+ * 它不会拉起流（流不存在时后端会明确报错）。
+ */
 export function startPlay(deviceId: string, channelId: string) {
-  return request<WvpResult<{ streamId: string; playUrl: string }>>({
+  return request<WvpResult<PlayStartResult>>({
     method: 'get',
     url: `/play/start/${deviceId}/${channelId}`
   })

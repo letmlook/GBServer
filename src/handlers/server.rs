@@ -128,30 +128,23 @@ async fn configure_zlm_hooks(
         .filter(|url| !url.trim().is_empty())
         .unwrap_or_else(|| format!("http://127.0.0.1:{}/api/zlm/hook", state.config.server.port));
 
-    let config_items = [
-        ("hook.enable", "1".to_string()),
-        ("hook.on_server_started", hook_url.clone()),
-        ("hook.on_server_keepalive", hook_url.clone()),
-        ("hook.on_stream_changed", hook_url.clone()),
-        ("hook.on_stream_not_found", hook_url.clone()),
-        ("hook.on_record_mp4", hook_url.clone()),
-        ("hook.on_record_hls", hook_url.clone()),
-        ("hook.on_publish", hook_url.clone()),
-        ("hook.on_play", hook_url.clone()),
-        ("hook.on_flow_report", hook_url.clone()),
-        ("hook.on_rtp_server_timeout", hook_url.clone()),
-    ];
+    // 每个事件用**各自的 URL**：真实 ZLMediaKit 的 hook body 里没有
+    // `hook_name`，事件类型完全由 URL 决定（官方文档；亦见
+    // `hook_routes::handle_hook_event` 的说明）。此前 11 个 hook 全部指向
+    // 同一个 `/api/zlm/hook`，而该端点靠 body 里的 hook_name 分派 →
+    // 真实 ZLM 下全部落到 "unknown"，整套 webhook 集成静默失效。
+    let config_items = crate::zlm::hook::hook_config_items(&hook_url);
 
     // 并发下发 + 总超时（见 `ZlmClient::set_server_configs_batch`）。
     // 修正：此前 11 次**串行**调用，ZLM 不健康时本接口实测等 33 秒
     // （最坏 30s × 11），普通后台管理操作变成"卡死"。
     const HOOK_CONFIG_BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
-    let items: Vec<(String, String)> = config_items
-        .into_iter()
-        .map(|(k, v)| (k.to_string(), v))
-        .collect();
     let errors = client
-        .set_server_configs_batch(&client.secret, items, HOOK_CONFIG_BUDGET)
+        .set_server_configs_batch(
+            &client.secret,
+            config_items,
+            HOOK_CONFIG_BUDGET,
+        )
         .await;
     for e in &errors {
         tracing::warn!("Failed to configure ZLM hook {}", e);

@@ -367,6 +367,38 @@ SN 兜底命中 2 次；Unsolicited 0 次（此前同一场景 17 次 / 5 秒）
 `total` 才是结果总数；与其它列表接口一致，不是缺陷。该路径的 SN 与 Call-ID
 在 `send_record_info_query_and_wait` 内部由同一个变量产生，本就一致。）
 
+### ZLM Webhook 集成与实时点播链路（2026-09-12 第十一轮）
+
+这一轮从"点开实时直播页什么都不动"往回追，发现**整套 ZLM webhook 集成在真实环境下
+完全不生效**，以及实时点播的前端流程从来没有真正拉起过流。
+
+| 问题 | 证据 | 修复 |
+|------|------|------|
+| **hook 分派依赖 body 里的 `hook_name`，而真实 ZLM 根本不发它** | [ZLM 官方文档](https://docs.zlmediakit.com/guide/media_server/web_hook_api.html) 的 `[hook]` 默认配置显示 `on_play` / `on_publish` / `on_record_mp4` … **各有独立 URL**，且各事件的示例 body 是**扁平 JSON**（只有 `mediaServerId`/`app`/`stream`/`schema`…）。而 `handle_webhook` 按 `event["hook_name"]` 分派，缺失时取 `"unknown"` → 全部落到 "Unhandled webhook"；多路径路由 `handle_hook_event::<T>` 也只做了一次"不一致就 warn"的校验就原样转发，**从不注入路由绑定的事件名** | `handle_hook_event::<T>` 改为把路由的事件名注入 body（URL 才是权威来源）；`handle_webhook` 因此对所有事件生效 |
+| **所有 hook 都指向同一个 URL** | `configure_zlm_hooks` 把 11 个（`hook.rs` 里 13 个）hook 全部设成同一个 `/api/zlm/hook` | 新增 `hook::hook_config_items()`：每个事件配置**各自的** `…/api/hook/<event>`；两处配置点共用 |
+| **5 个事件有分派分支却没有路由** | `on_record_hls` / `on_record_file` / `on_rtp_playlist` / `on_record_progress` / `on_send_rtp_progress` 在 `handle_webhook` 里都有 arm，但 `hook_routes()` 只暴露 12 条 | 补齐 5 条路由；新增交叉校验测试：**配给 ZLM 的每个事件都必须有路由**，有路由的必须是已配置项或显式登记的别名（`on_record_file` 是别名，真实 ZLM 无此配置键） |
+| **实时直播页从不拉起流** | `playChannel()` 只调用 `/api/media/getPlayUrl` 拼地址 —— 既没有 SIP INVITE，也没有 `openRtpServer`，于是画面永远出不来 | 改为先 `startPlay()`（后端发 INVITE + 开 ZLM RTP server）再播放其返回的 HLS/FLV/RTSP 地址；`onStop` 真正调用 `stopPlay()`（发 BYE + 清理 ZLM）；新增 e2e 守卫断言"点通道必须发出 `/api/play/start`" |
+| **`getPlayUrl` 返回的地址是错的** | RTSP 用了 **http_port**（`rtsp://host:8080/…`）、app 写成 `live`、HLS 路径写成 `hls/{stream}.m3u8`、WebRTC 缺 `index/api/webrtc?…`；且流不存在时也返回一个播不出来的 URL | 改用 `rtp` app 与正确路径；RTSP/RTMP 端口取库中媒体服务器配置；**先向 ZLM 确认流存在**，不存在则明确报"流尚未建立，请先调用 /api/play/start" |
+| **设备被当成通道返回** | `/api/sy/camera/list-with-child` 在设备没有任何通道时把**设备自身**作为一行返回（`channel_id == device_id`），且 `device_to_row` 一律用**设备**的 `id`/`name` 填通道行 → 同一设备下通道 id 全部相同、通道名为空 | 有通道时用通道自己的 `id`/`name`；新增 `is_device` 标记；前端 live 树过滤掉设备行 |
+| 孤儿假实现 | `stub::server_shutdown` 无路由、无实现，却返回 "Shutdown signal sent. Server will stop gracefully." | 删除（并在注释里说明将来要做应端到端实现）；`parity_extras` 里 `assert_eq!("auto", "auto")` 的同义反复测试替换为真实断言 |
+
+**端到端实测**（真实服务 + SIP 模拟器 + ZLM 模拟器按真实形态回调）：
+
+```
+POST /api/hook/on_rtp_server_started   ← mock 以扁平 body（无 hook_name）回调
+/api/play/start/…  -> {"code":0,"playUrl":"rtsp://127.0.0.1:554/rtp/…",
+                       "hls":"http://127.0.0.1:8080/rtp/…/hls.m3u8",
+                       "flvUrl":…, "webrtc":…}
+/api/media/getPlayUrl -> 与上面一致的 HLS 地址（并会校验流是否存在）
+/api/play/stop/…   -> {"code":0}
+npx playwright test -> 25 passed / 0 failed（含新增的"点通道必须起流"守卫）
+```
+
+**同时修正了 ZLM 模拟器的三处保真度问题**（否则上述缺陷会被掩盖）：
+hook body 之前嵌在 `data` 里且带 `hook_name`（现改为真实 ZLM 的扁平、无 `hook_name`、
+POST 到各自事件 URL）；`openRtpServer` 之前不创建流（真实 ZLM 会，导致"先起流再取地址"
+的第二个请求误判）；`closeRtpServer` 之前不移除流。
+
 ### 仍未解决 / 需真实设备核验
 
 以下是本轮**已定位但未改动**的项，均在代码中留有注释或在此登记，

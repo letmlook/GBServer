@@ -263,6 +263,65 @@ impl ZlmHookEvent {
     }
 }
 
+/// 把配置里的"单个 hook 地址"归一化成服务器根地址。
+///
+/// 配置项 `hook_url` 历史上是**一个**地址（默认 `…/api/zlm/hook`），但真实
+/// ZLMediaKit 的 hook 请求体里**没有 `hook_name`**，事件类型完全由 URL 决定
+/// （见 `hook_routes::handle_hook_event` 的说明与官方文档）。因此必须为每个
+/// 事件生成各自的 `/api/hook/<event>` 地址。
+pub fn hook_base_url(configured: &str) -> String {
+    let trimmed = configured.trim().trim_end_matches('/');
+    for suffix in ["/api/zlm/hook", "/api/hook"] {
+        if let Some(pos) = trimmed.rfind(suffix) {
+            return trimmed[..pos].trim_end_matches('/').to_string();
+        }
+    }
+    trimmed.to_string()
+}
+
+/// 某个 hook 事件的回调地址。
+pub fn hook_event_url(base: &str, event: &str) -> String {
+    format!("{}/api/hook/{}", base.trim_end_matches('/'), event)
+}
+
+/// 需要下发配置给 ZLM 的全部 hook 事件。
+///
+/// 与 `hook_routes::hook_routes()` 暴露的路由**一一对应**：每个事件都有自己的
+/// URL，ZLM 才知道自己在触发什么；配了却没人处理的事件（或反之）都会造成
+/// "接口回 200 但什么也没发生"。
+pub const CONFIGURED_HOOK_EVENTS: &[&str] = &[
+    "on_server_started",
+    "on_server_keepalive",
+    "on_stream_changed",
+    "on_stream_not_found",
+    "on_stream_none_reader",
+    "on_stream_started",
+    "on_publish",
+    "on_play",
+    "on_rtp_server_started",
+    "on_rtp_server_timeout",
+    "on_send_rtp_stopped",
+    "on_record_mp4",
+    "on_record_hls",
+    "on_flow_report",
+    "on_rtp_playlist",
+    "on_record_progress",
+    "on_send_rtp_progress",
+];
+
+/// 构造 `<hook.xxx, url>` 配置项列表（含 `hook.enable`）。
+pub fn hook_config_items(configured_hook_url: &str) -> Vec<(String, String)> {
+    let base = hook_base_url(configured_hook_url);
+    let mut items = vec![("hook.enable".to_string(), "1".to_string())];
+    for event in CONFIGURED_HOOK_EVENTS {
+        items.push((
+            format!("hook.{}", event),
+            hook_event_url(&base, event),
+        ));
+    }
+    items
+}
+
 fn parse_stream_id(stream: &str) -> Option<(String, String)> {
     if let Some(pos) = stream.find('$') {
         let device_id = stream[..pos].to_string();
@@ -838,24 +897,15 @@ pub async fn handle_webhook(
                         });
 
                     let secret = zlm_client.secret.clone();
-                    let config_items = vec![
-                        ("hook.enable", "1".to_string()),
-                        ("hook.on_server_started", hook_url.clone()),
-                        ("hook.on_stream_changed", hook_url.clone()),
-                        ("hook.on_stream_not_found", hook_url.clone()),
-                        ("hook.on_record_mp4", hook_url.clone()),
-                        ("hook.on_publish", hook_url.clone()),
-                        ("hook.on_play", hook_url.clone()),
-                        ("hook.on_rtp_server_started", hook_url.clone()),
-                        ("hook.on_stream_started", hook_url.clone()),
-                        ("hook.on_rtp_server_timeout", hook_url.clone()),
-                        // ABL 钩子（设计文档 §6.3 阶段 0 缺口 1）
-                        ("hook.on_rtp_playlist", hook_url.clone()),
-                        ("hook.on_record_progress", hook_url.clone()),
-                        ("hook.on_send_rtp_progress", hook_url.clone()),
-                    ];
-                    for (key, value) in config_items {
-                        if let Err(e) = zlm_client.set_server_config(&secret, key, &value).await {
+                    // 每个事件用**各自的 URL**（真实 ZLM 靠 URL 区分事件，
+                    // body 里没有 hook_name）。此前这里把所有 hook 都指向
+                    // 同一个 hook_url，且 on_server_keepalive 缺失 ——
+                    // ZLM 收到后无法区分事件，等于整套 hook 都不生效。
+                    let config_items = crate::zlm::hook::hook_config_items(&hook_url);
+                    for (key, value) in &config_items {
+                        if let Err(e) =
+                            zlm_client.set_server_config(&secret, key, value).await
+                        {
                             tracing::warn!("Failed to set ZLM config {}={}: {}", key, value, e);
                         }
                     }
@@ -1586,5 +1636,77 @@ mod tests {
         let load = store.get_media_server("zlm-a").unwrap();
         assert_eq!(load.stream_count, 5, "计数仍应更新");
         assert!(!load.online, "已有条目的 online 不应被 flow report 覆盖");
+    }
+}
+
+#[cfg(test)]
+mod hook_config_tests {
+    use super::*;
+
+    #[test]
+    fn hook_base_url_normalizes_known_shapes() {
+        assert_eq!(
+            hook_base_url("http://127.0.0.1:18080/api/zlm/hook"),
+            "http://127.0.0.1:18080"
+        );
+        assert_eq!(
+            hook_base_url("http://127.0.0.1:18080/api/hook/on_play"),
+            "http://127.0.0.1:18080"
+        );
+        assert_eq!(
+            hook_base_url("http://example.com:9000/"),
+            "http://example.com:9000"
+        );
+        assert_eq!(
+            hook_base_url("http://example.com:9000"),
+            "http://example.com:9000"
+        );
+    }
+
+    #[test]
+    fn hook_event_url_appends_api_hook_path() {
+        assert_eq!(
+            hook_event_url("http://h:1", "on_play"),
+            "http://h:1/api/hook/on_play"
+        );
+        // 结尾多余斜杠不应产生空段
+        assert_eq!(
+            hook_event_url("http://h:1/", "on_publish"),
+            "http://h:1/api/hook/on_publish"
+        );
+    }
+
+    /// 每个事件都必须拿到**不同**的 URL —— 真实 ZLM 靠 URL 区分事件，
+    /// 共用同一个地址会让 body（无 hook_name）无法判别类型。
+    #[test]
+    fn hook_config_items_use_distinct_per_event_urls() {
+        let items = hook_config_items("http://127.0.0.1:18080/api/zlm/hook");
+        assert_eq!(items[0], ("hook.enable".to_string(), "1".to_string()));
+        // 1 个 enable + 每个事件 1 项
+        assert_eq!(items.len(), 1 + CONFIGURED_HOOK_EVENTS.len());
+
+        let mut urls: Vec<&String> = items
+            .iter()
+            .filter(|(k, _)| k.starts_with("hook.on_"))
+            .map(|(_, v)| v)
+            .collect();
+        let total = urls.len();
+        urls.sort();
+        urls.dedup();
+        assert_eq!(urls.len(), total, "每个事件的回调 URL 必须互不相同");
+
+        for (key, value) in &items {
+            if let Some(event) = key.strip_prefix("hook.") {
+                if event != "enable" {
+                    assert!(
+                        value.ends_with(&format!("/api/hook/{}", event)),
+                        "{} 的 URL 应以 /api/hook/{} 结尾，实际 {}",
+                        key,
+                        event,
+                        value
+                    );
+                }
+            }
+        }
     }
 }

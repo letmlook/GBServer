@@ -290,42 +290,115 @@ pub async fn get_play_url(
     State(state): State<AppState>,
     Query(params): Query<serde_json::Value>,
 ) -> impl IntoResponse {
-    let device_id = params.get("deviceId")
+    let device_id = params
+        .get("deviceId")
         .and_then(|v| v.as_str())
         .unwrap_or_default();
-    let channel_id = params.get("channelId")
+    let channel_id = params
+        .get("channelId")
         .and_then(|v| v.as_str())
         .unwrap_or(device_id);
-    let protocol = params.get("protocol")
+    let protocol = params
+        .get("protocol")
         .and_then(|v| v.as_str())
         .unwrap_or("rtsp");
-    
-    // 获取 ZLM 配置
-    if let Some(ref zlm_client) = state.zlm_client {
-        let host = zlm_client.ip.as_str();
-        let http_port = zlm_client.http_port;
-        let rtmp_port = 1935u16; // default RTMP port
-        
-        // 生成流 ID
-        let stream_id = format!("{}_{}", device_id, channel_id);
-        let play_url = match protocol {
-            "rtsp" => format!("rtsp://{}:{}/{}/{}", host, http_port, "live", stream_id),
-            "rtmp" => format!("rtmp://{}:{}/live/{}", host, rtmp_port, stream_id),
-            "hls" => format!("http://{}:{}/hls/{}.m3u8", host, http_port, stream_id),
-            "webrtc" => format!("webrtc://{}:{}/{}", host, http_port, stream_id),
-            _ => format!("rtsp://{}:{}/live/{}", host, http_port, stream_id),
-        };
-        
-        return Json(WVPResult::success(serde_json::json!({
-            "deviceId": device_id,
-            "channelId": channel_id,
-            "streamId": stream_id,
-            "url": play_url,
-            "protocol": protocol,
-        }))).into_response();
+
+    let Some(ref zlm_client) = state.zlm_client else {
+        return Json(WVPResult::<()>::error("ZLM not configured")).into_response();
+    };
+
+    let host = zlm_client.ip.as_str();
+    let http_port = zlm_client.http_port;
+    // 流 ID 与 /api/play/start 保持一致：`{deviceId}_{channelId}`，
+    // 且 ZLM 的 RTP server 把流建在 **app = "rtp"** 下。
+    let stream_id = format!("{}_{}", device_id, channel_id);
+    let app = "rtp";
+
+    // RTSP / RTMP 端口优先取该媒体服务器在库里的配置，取不到再用协议默认值。
+    // 此前 RTSP URL 直接用了 **http_port**（8080），生成的是连不上的地址。
+    let (rtsp_port, rtmp_port) = media_server_ports(&state, host).await;
+
+    // 诚实性：这个接口只是"给出某个通道的播放地址"，它**不会**去拉起流。
+    // 若流尚未建立（没人调用 /api/play/start），返回的地址其实是播不出来的 ——
+    // 因此这里先向 ZLM 确认该流是否存在，不存在就明确报错并指路，
+    // 而不是给前端一个永远转圈的 URL。
+    match zlm_client
+        .is_media_exist("rtsp", "__defaultVhost__", app, &stream_id)
+        .await
+    {
+        Ok(false) => {
+            return Json(WVPResult::<()>::error(format!(
+                "流 {} 尚未建立：请先调用 /api/play/start/{}/{} 拉起实时流，再取播放地址",
+                stream_id, device_id, channel_id
+            )))
+            .into_response();
+        }
+        Err(e) => {
+            tracing::warn!("查询 ZLM 流是否存在失败（按已存在处理）: {}", e);
+        }
+        Ok(true) => {}
     }
-    
-    Json(WVPResult::<()>::error("ZLM not configured")).into_response()
+
+    let url = match protocol {
+        "rtsp" => format!("rtsp://{}:{}/{}/{}", host, rtsp_port, app, stream_id),
+        "rtmp" => format!("rtmp://{}:{}/{}/{}", host, rtmp_port, app, stream_id),
+        "hls" => format!(
+            "http://{}:{}/{}/{}/hls.m3u8",
+            host, http_port, app, stream_id
+        ),
+        "flv" => format!("http://{}:{}/{}/{}.flv", host, http_port, app, stream_id),
+        "ws_flv" => format!(
+            "ws://{}:{}/{}/{}.flv",
+            host, http_port, app, stream_id
+        ),
+        "webrtc" => format!(
+            "webrtc://{}:{}/index/api/webrtc?app={}&stream={}&type=play",
+            host, http_port, app, stream_id
+        ),
+        other => {
+            return Json(WVPResult::<()>::error(format!(
+                "不支持的 protocol: {}（可选 rtsp/rtmp/hls/flv/ws_flv/webrtc）",
+                other
+            )))
+            .into_response();
+        }
+    };
+
+    Json(WVPResult::success(serde_json::json!({
+        "deviceId": device_id,
+        "channelId": channel_id,
+        "streamId": stream_id,
+        "app": app,
+        "url": url,
+        "protocol": protocol,
+        "rtspPort": rtsp_port,
+        "rtmpPort": rtmp_port,
+        "httpPort": http_port,
+    })))
+    .into_response()
+}
+
+/// 取某台媒体服务器的 RTSP / RTMP 端口：按 IP 在库中匹配，取不到用协议默认值。
+async fn media_server_ports(state: &AppState, host: &str) -> (u16, u16) {
+    const DEFAULT_RTSP: u16 = 554;
+    const DEFAULT_RTMP: u16 = 1935;
+    match crate::db::media_server::list_media_servers(&state.pool).await {
+        Ok(list) => {
+            if let Some(row) = list.into_iter().find(|m| m.ip.as_deref() == Some(host)) {
+                let rtsp = row
+                    .rtsp_port
+                    .and_then(|p| u16::try_from(p).ok())
+                    .unwrap_or(DEFAULT_RTSP);
+                let rtmp = row
+                    .rtmp_port
+                    .and_then(|p| u16::try_from(p).ok())
+                    .unwrap_or(DEFAULT_RTMP);
+                return (rtsp, rtmp);
+            }
+        }
+        Err(e) => tracing::warn!("读取媒体服务器端口配置失败: {}", e),
+    }
+    (DEFAULT_RTSP, DEFAULT_RTMP)
 }
 
 /// GET /api/media/stream_info_by_app_and_stream

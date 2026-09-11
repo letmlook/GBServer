@@ -312,10 +312,16 @@ pub async fn server_version() -> Json<WVPResult<serde_json::Value>> {
 mod tests {
     use super::*;
 
+    /// 该用例此前是 `assert_eq!("auto".to_string(), "auto".to_string())` ——
+    /// 同义反复，什么都没测。改成对 PlayUrlQuery 的默认值做真实断言
+    /// （transport 缺省为 None，由上层回退到 auto）。
     #[test]
-    fn test_play_url_default_transport() {
-        // Just verify the helper returns sensible default
-        assert_eq!("auto".to_string(), "auto".to_string());
+    fn test_play_url_query_transport_defaults_to_none() {
+        let q = PlayUrlQuery::default();
+        assert!(q.transport.is_none(), "transport 未传时应为 None");
+        assert!(q.device_id.is_none());
+        assert!(q.channel_id.is_none());
+        assert!(q.stream.is_none());
     }
 
     #[test]
@@ -380,12 +386,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_play_url_query_default() {
-        let q = PlayUrlQuery::default();
-        assert!(q.device_id.is_none());
-        assert!(q.channel_id.is_none());
-        assert!(q.stream.is_none());
-        assert!(q.transport.is_none());
-    }
 }

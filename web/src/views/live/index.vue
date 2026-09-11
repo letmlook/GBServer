@@ -171,9 +171,10 @@ import {
   VideoPlay
 } from '@element-plus/icons-vue'
 import {
-  getPlayUrl,
   playSnap,
   sendPtz as sendPtzApi,
+  startPlay,
+  stopPlay,
 } from '@/api/live'
 import { cameraListWithChild } from '@/api/syCamera'
 import TalkPanel from '@/components/TalkPanel/index.vue'
@@ -224,7 +225,9 @@ async function loadData() {
     const res = await cameraListWithChild({ page: 1, count: 1000 })
     const list = res.data?.list ?? []
     channels.value = list
-      .filter((c: any) => c.channel_id)
+      // 过滤掉"设备本身"的行：接口在设备没有任何通道时会返回它自己
+      // （channel_id == device_id），那不是可点播的通道。
+      .filter((c: any) => c.channel_id && !c.is_device)
       .map((c: any) => ({
         deviceId: c.device_id,
         channelId: c.channel_id,
@@ -260,35 +263,34 @@ async function onNodeClick(node: any) {
 async function playChannel(s: { deviceId: string; channelId: string; name?: string }) {
   playError.value = ''
   playerStatus.value = 'loading'
+  const label = { deviceId: s.deviceId, channelId: s.channelId, name: s.name ?? s.channelId }
   try {
-    // 优先尝试 HLS（浏览器 + hls.js）
-    const res = await getPlayUrl({ deviceId: s.deviceId, channelId: s.channelId, protocol: 'hls' })
-    const url = res.data?.url ?? ''
-    if (!url) {
-      // 回退到 RTSP / FLV
-      const rtspRes = await getPlayUrl({ deviceId: s.deviceId, channelId: s.channelId, protocol: 'rtsp' }).catch(() => null)
-      const fallback = rtspRes?.data?.url
-      if (!fallback) {
-        playError.value = `通道 ${s.channelId} 暂无可用播放地址（确认 GBServer 已注册 + ZLM 已上线 + HLS 启用）`
-        playerStatus.value = 'error'
-        currentChannel.value = { deviceId: s.deviceId, channelId: s.channelId, name: s.name ?? s.channelId }
-        buildGrid({ ...s, name: s.name ?? s.channelId }, '')
-        return
-      }
-      currentChannel.value = { deviceId: s.deviceId, channelId: s.channelId, name: s.name ?? s.channelId }
-      buildGrid({ ...s, name: s.name ?? s.channelId }, fallback)
-      await nextTick()
-      await attachVideo(fallback)
-      return
+    // 关键：先拉起流（后端发 SIP INVITE + 开 ZLM RTP server），再拿它返回的
+    // 播放地址。此前这里直接调 getPlayUrl 拼地址 —— **从未拉起流**，
+    // 于是返回的是一个不存在的东西的地址，画面永远出不来。
+    if (currentChannel.value?.channelId && currentChannel.value.channelId !== s.channelId) {
+      // 切换通道时先停掉上一路，避免设备侧与 ZLM 侧残留
+      await stopPlay(currentChannel.value.deviceId, currentChannel.value.channelId).catch(() => {})
     }
-    currentChannel.value = { deviceId: s.deviceId, channelId: s.channelId, name: s.name ?? s.channelId }
-    buildGrid({ ...s, name: s.name ?? s.channelId }, url)
+    const res = await startPlay(s.deviceId, s.channelId)
+    const data = res.data as any
+    if (!data) {
+      throw new Error(res.msg || '拉起实时流失败')
+    }
+    // 优先 HLS（浏览器 + hls.js 兼容性最好），其次 flv / rtsp
+    const url = data.hls || data.flvUrl || data.playUrl || ''
+    if (!url) {
+      throw new Error('后端未返回可用的播放地址')
+    }
+    currentChannel.value = label
+    buildGrid({ ...s, name: label.name }, url)
     await nextTick()
     await attachVideo(url)
   } catch (e: any) {
-    playError.value = e?.message ?? '获取播放地址失败'
+    const msg = e?.message ?? '拉起实时流失败'
+    playError.value = msg
     playerStatus.value = 'error'
-    ElMessage.error(playError.value)
+    ElMessage.error(`通道 ${s.channelId} 播放失败：${msg}`)
   }
 }
 
@@ -407,6 +409,13 @@ async function onStop(cell: any) {
   if (flvPlayer) { try { flvPlayer.destroy() } catch {} flvPlayer = null }
   if (primaryVideoRef.value) { primaryVideoRef.value.src = ''; primaryVideoRef.value.style.display = 'none' }
   if (flvVideoRef.value) { flvVideoRef.value.src = ''; flvVideoRef.value.style.display = 'none' }
+  // 真正停流：后端会发 SIP BYE 并关闭 ZLM RTP server / 收流
+  const target = cell?.deviceId && cell?.channelId ? cell : currentChannel.value
+  if (target?.deviceId && target?.channelId && target.deviceId !== 'DEMO') {
+    await stopPlay(target.deviceId, target.channelId).catch((e) => {
+      ElMessage.warning(`停止流失败：${e instanceof Error ? e.message : String(e)}`)
+    })
+  }
   buildGrid(cell, '')
   playerStatus.value = 'idle'
   ElMessage.success('已停止')

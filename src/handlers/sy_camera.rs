@@ -30,6 +30,10 @@ pub struct CameraRow {
     pub has_audio: bool,
     pub sub_count: i32,
     pub parent_device_id: Option<String>,
+    /// 该行代表"设备本身"（设备没有任何通道时，它自己就是一路摄像头），
+    /// 而不是某个通道。前端据此把这类行与真正的通道区分开 ——
+    /// 否则会拿 `channel_id == device_id` 去点播，必然失败。
+    pub is_device: bool,
 }
 
 /// Mobile-friendly subset (fewer fields, smaller payload).
@@ -113,24 +117,42 @@ fn opt_to_string(s: &Option<String>) -> String {
 }
 
 fn device_to_row(d: &db::Device, ch: Option<&db::DeviceChannel>) -> CameraRow {
-    let (channel_id, sub_count, has_audio, longitude, latitude, civil_code, address) = if let Some(c) = ch {
-        (
-            opt_to_string(&c.gb_device_id),
-            c.sub_count.unwrap_or(0),
-            c.has_audio.unwrap_or(false),
-            c.longitude,
-            c.latitude,
-            c.civil_code.clone(),
-            c.address.clone(),
-        )
-    } else {
-        (d.device_id.clone(), 0, false, None, None, None, None)
-    };
+    // 修正：此前无论有没有通道，`id` 与 `name` 都取**设备**的 —— 于是同一设备下
+    // 的每个通道行 id 都等于设备 id（列表里出现重复 id），通道名也退化成设备名
+    // （设备名为空时通道名就变成空串）。现在有通道时用通道自己的 id/name。
+    let (id, channel_id, name, sub_count, has_audio, longitude, latitude, civil_code, address) =
+        if let Some(c) = ch {
+            let ch_name = opt_to_string(&c.name);
+            (
+                c.id,
+                opt_to_string(&c.gb_device_id),
+                if ch_name.is_empty() { opt_to_string(&d.name) } else { ch_name },
+                c.sub_count.unwrap_or(0),
+                c.has_audio.unwrap_or(false),
+                c.longitude,
+                c.latitude,
+                c.civil_code.clone(),
+                c.address.clone(),
+            )
+        } else {
+            (
+                d.id,
+                d.device_id.clone(),
+                opt_to_string(&d.name),
+                0,
+                false,
+                None,
+                None,
+                None,
+                None,
+            )
+        };
     CameraRow {
-        id: d.id,
+        id,
+        is_device: ch.is_none(),
         device_id: d.device_id.clone(),
         channel_id,
-        name: opt_to_string(&d.name),
+        name,
         status: if d.on_line.unwrap_or(false) { "ON".into() } else { "OFF".into() },
         online: d.on_line.unwrap_or(false),
         longitude,

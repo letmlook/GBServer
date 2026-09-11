@@ -2121,14 +2121,15 @@ pub struct PositionHistoryQuery {
 // Phase 7.3: 运维 API 路由处理器
 // ============================================================================
 
-use axum::response::IntoResponse;
 
 /// /api/server/shutdown — 服务关闭
-pub async fn server_shutdown() -> impl IntoResponse {
-    Json(WVPResult::success(serde_json::json!({
-        "msg": "Shutdown signal sent. Server will stop gracefully."
-    }))).into_response()
-}
+// 注：这里曾有 `server_shutdown`，返回 "Shutdown signal sent. Server will stop
+// gracefully."，但**没有任何实现** —— 既不发信号、也不停服务，而路由也早已
+// 被移除（见 router.rs 中 "Removing legacy public stubs for
+// /api/server/{shutdown,version,config}" 的说明；version/config 有真实实现，
+// shutdown 没有）。它是一个"只会说谎"的孤儿函数，已删除。
+// 若将来要做远程关停，应端到端实现（鉴权 + axum graceful shutdown + SIP/ZLM 清理），
+// 而不是恢复这个空壳。
 
 #[cfg(test)]
 mod log_export_tests {
