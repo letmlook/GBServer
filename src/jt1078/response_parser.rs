@@ -19,14 +19,22 @@ use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 pub struct RegisterRequest {
     pub province_id: u16,
     pub city_id: u16,
-    pub manufacturer: String,  // 5 bytes ASCII
+    pub manufacturer: String,   // 5 bytes ASCII
     pub terminal_model: String, // 20 bytes ASCII
     pub terminal_id: String,    // 7 bytes ASCII
-    pub iccid: String,          // 10 bytes BCD
-    pub hardware_version: String, // variable length
+    /// 车牌颜色（JT/T 808-2013 §8.8）
+    pub plate_color: u8,
+    /// 车牌字符串（GBK，不定长，剩余全部字节）
+    pub plate: String,
+    /// JT/T 808-2019 才有的可选字段：ICCID（BCD，10 字节）
+    pub iccid: String,
+    /// JT/T 808-2019 才有的可选字段：硬件版本
+    pub hardware_version: String,
 }
 
-const REGISTER_MIN_LEN: usize = 2 + 2 + 5 + 20 + 7 + 10; // = 46
+/// JT/T 808-2013 注册消息体最小长度：
+/// 省域ID(2) + 市县域ID(2) + 制造商ID(5) + 终端型号(20) + 终端ID(7) + 车牌颜色(1) = 37
+const REGISTER_MIN_LEN: usize = 2 + 2 + 5 + 20 + 7 + 1;
 
 /// Parse 0x0100 terminal register body.
 /// Layout (JT/T 808 §4.5.1.1):
@@ -46,24 +54,31 @@ pub fn parse_register_request(body: &[u8]) -> Result<RegisterRequest, String> {
     let manufacturer = read_ascii_field(&body[4..9])?;
     let terminal_model = read_ascii_field(&body[9..29])?;
     let terminal_id = read_ascii_field(&body[29..36])?;
-    let iccid = read_bcd_field(&body[36..46])?;
-    let hardware_version = if body.len() > 46 {
-        // Optional hardware_version with leading length byte
-        let len = body[46] as usize;
-        if 47 + len <= body.len() {
-            read_ascii_field(&body[47..(47 + len)])?
-        } else {
-            String::new()
-        }
-    } else {
-        String::new()
-    };
+    let plate_color = body[36];
+    // 车牌为剩余字节（GBK）。真实终端会补 0x00 填充，去掉尾部填充再解码。
+    let plate_raw = &body[37..];
+    let plate_end = plate_raw
+        .iter()
+        .rposition(|b| *b != 0x00)
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    let plate = String::from_utf8_lossy(&plate_raw[..plate_end]).trim().to_string();
+
+    // JT/T 808-2019 在车牌之后追加了 ICCID / 硬件版本，但**车牌本身不定长**
+    // （GBK），在不知道车牌字节长度的前提下无法可靠定位 ICCID 的起点。
+    // 与其猜一个偏移（会把车牌尾部/ICCID 混成垃圾串），不如如实留空：
+    // 本平台的 JT1078 实现以 JT/T 808-2013 为基准（1078-2016 亦基于 2013）。
+    let iccid = String::new();
+    let hardware_version = String::new();
+
     Ok(RegisterRequest {
         province_id,
         city_id,
         manufacturer,
         terminal_model,
         terminal_id,
+        plate_color,
+        plate,
         iccid,
         hardware_version,
     })
@@ -344,15 +359,17 @@ mod tests {
         assert!(read_bcd_field(&bcd).is_err());
     }
 
+    /// 构造一份 **JT/T 808-2013** 的 0x0100 注册消息体：
+    /// 省域ID(2)+市县域ID(2)+制造商ID(5)+终端型号(20)+终端ID(7)+车牌颜色(1)+车牌(GBK)
     fn build_register_body() -> Vec<u8> {
-        // 2+2+5+20+7+10 = 46 minimum, no hardware_version
         let mut b = Vec::new();
         b.extend_from_slice(&0x0100u16.to_be_bytes()); // province
         b.extend_from_slice(&0x0200u16.to_be_bytes()); // city
         b.extend_from_slice(b"AAAAA");                // manufacturer
         b.extend_from_slice(&vec![b'B'; 20]);          // terminal_model
         b.extend_from_slice(b"1234567");              // terminal_id
-        b.extend_from_slice(&[0x12, 0x34, 0x56, 0x78, 0x90, 0x12, 0x34, 0x56, 0x78, 0x90]); // ICCID
+        b.push(2);                                    // plate_color = 黄牌
+        b.extend_from_slice("京A12345".as_bytes());    // plate（真实终端为 GBK）
         b
     }
 
@@ -365,17 +382,32 @@ mod tests {
         assert_eq!(req.manufacturer, "AAAAA");
         assert_eq!(req.terminal_model, "B".repeat(20).trim_end().to_string());
         assert_eq!(req.terminal_id, "1234567");
-        assert_eq!(req.iccid, "12345678901234567890");
+        assert_eq!(req.plate_color, 2);
+        assert_eq!(req.plate, "京A12345");
+        assert_eq!(req.iccid, "", "2013 报文没有 ICCID，不能凭空解析出内容");
         assert_eq!(req.hardware_version, "");
     }
 
+    /// 尾部 0x00 填充必须去掉（真实终端会把定长字段补齐）。
     #[test]
-    fn test_parse_register_request_with_hw_version() {
+    fn test_parse_register_request_strips_plate_padding() {
         let mut body = build_register_body();
-        body.push(5u8); // length 5
-        body.extend_from_slice(b"v1.00");
+        body.extend_from_slice(&[0u8; 8]);
         let req = parse_register_request(&body).unwrap();
-        assert_eq!(req.hardware_version, "v1.00");
+        assert_eq!(req.plate, "京A12345");
+    }
+
+    #[test]
+    /// 2019 追加字段（ICCID / 硬件版本）不解析：车牌不定长，无法定位其起点。
+    /// 这里确认"多余字节不会被误读成车牌内容"，而不是凭空解析出垃圾串。
+    #[test]
+    fn test_parse_register_request_ignores_2019_extras() {
+        let mut body = build_register_body();
+        body.extend_from_slice(&[0x12, 0x34, 0x56, 0x78, 0x90, 0x12, 0x34, 0x56, 0x78, 0x90]);
+        let req = parse_register_request(&body).unwrap();
+        assert_eq!(req.plate_color, 2);
+        assert_eq!(req.iccid, "");
+        assert_eq!(req.hardware_version, "");
     }
 
     #[test]

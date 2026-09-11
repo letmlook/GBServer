@@ -40,11 +40,22 @@ use crate::jt1078::manager::Jt1078Manager;
 #[derive(Clone)]
 pub struct Jt1078Server {
     pub manager: Arc<RwLock<Option<Arc<Jt1078Manager>>>>,
+    /// 数据库连接池（终端注册需要落库到 `gb_jt_terminal`，
+    /// 否则 `/api/jt1078/terminal/list` 永远是空列表）。
+    pool: Option<crate::db::Pool>,
 }
 
 impl Jt1078Server {
     pub fn new() -> Self {
-        Self { manager: Arc::new(RwLock::new(None)) }
+        Self { manager: Arc::new(RwLock::new(None)), pool: None }
+    }
+
+    pub fn with_pool(pool: crate::db::Pool) -> Self {
+        Self { manager: Arc::new(RwLock::new(None)), pool: Some(pool) }
+    }
+
+    pub fn pool(&self) -> Option<crate::db::Pool> {
+        self.pool.clone()
     }
 
     pub async fn set_manager(&self, mgr: Arc<Jt1078Manager>) {

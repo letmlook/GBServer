@@ -623,7 +623,7 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
 
     let mut state = AppState {
         config: Arc::new(cfg.clone()),
-        pool,
+        pool: pool.clone(),
         sip_server: sip_server.clone(),
         zlm_client,
         zlm_clients,
@@ -800,7 +800,7 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
             }
         }
 
-        let jt = crate::jt1078::Jt1078Server::new();
+        let jt = crate::jt1078::Jt1078Server::with_pool(pool.clone());
         let jcfg = cfg.jt1078.clone();
         let jt_mgr_for_state = jt1078_manager.clone();
         tokio::spawn(async move {

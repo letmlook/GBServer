@@ -24,6 +24,15 @@ pub struct Jt1078Manager {
     retransmit_send_to_device: bool,
     /// Phase 6.2: command → response correlation
     command_waiter: Arc<JtCommandWaiter>,
+    /// 数据库连接池（终端注册/在线状态落库；`None` 时退化为仅内存）
+    pool: std::sync::OnceLock<crate::db::Pool>,
+    /// 下发命令用的 UDP socket（与监听同一端口）。
+    ///
+    /// 此前 `send_raw` 每条命令都 `UdpSocket::bind("0.0.0.0:0")` 新建临时端口，
+    /// 终端看到的来源地址**不是**它配置的服务器地址，于是按源地址过滤的终端
+    /// （含本仓库的模拟器：它用 `connect()` 到平台地址）**一条命令都收不到**
+    /// —— 表现为平台侧命令全部超时。真实平台都用同一个监听端口下发。
+    send_socket: std::sync::OnceLock<Arc<tokio::net::UdpSocket>>,
     /// Phase 6.3: media session manager (live/playback/download)
     media_session_manager: Arc<JtMediaSessionManager>,
 }
@@ -38,6 +47,8 @@ impl Jt1078Manager {
             retransmit_wait,
             retransmit_hook,
             retransmit_send_to_device,
+            pool: std::sync::OnceLock::new(),
+            send_socket: std::sync::OnceLock::new(),
             command_waiter: Arc::new(JtCommandWaiter::new().with_timeout(10)),
             media_session_manager: Arc::new(JtMediaSessionManager::new()),
         }
@@ -114,6 +125,61 @@ impl Jt1078Manager {
         self.terminal_addrs.lock().await.insert(phone.to_string(), addr);
     }
 
+    /// 绑定数据库连接池（由 `jt1078::server::start` 注入）。
+    pub fn set_pool(&self, pool: crate::db::Pool) {
+        let _ = self.pool.set(pool);
+    }
+
+    /// 终端注册/心跳时落库并把状态置为在线。
+    ///
+    /// 此前只在内存里登记地址，`gb_jt_terminal` 永远没有记录 ——
+    /// `/api/jt1078/terminal/list` 因此恒为空，终端管理页看不到任何设备。
+    pub async fn persist_terminal_online(&self, phone: &str, reg: Option<&crate::jt1078::response_parser::RegisterRequest>) {
+        let Some(pool) = self.pool.get() else { return };
+        let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        let existing = crate::db::jt1078::get_terminal_by_phone(pool, phone).await.ok().flatten();
+        match (existing, reg) {
+            (None, Some(r)) => {
+                if let Err(e) = crate::db::jt1078::insert_terminal(
+                    pool,
+                    phone,
+                    Some(r.terminal_id.as_str()),
+                    Some(r.plate.as_str()),
+                    Some(r.plate_color as i32),
+                    Some(r.manufacturer.as_str()),
+                    Some(r.terminal_model.as_str()),
+                    None,
+                    &now,
+                )
+                .await
+                {
+                    tracing::warn!("JT1078 终端入库失败 phone={}: {}", phone, e);
+                }
+            }
+            (Some(_), Some(r)) => {
+                if let Err(e) = crate::db::jt1078::update_terminal(
+                    pool,
+                    phone,
+                    Some(r.terminal_id.as_str()),
+                    Some(r.plate.as_str()),
+                    Some(r.plate_color as i32),
+                    Some(r.manufacturer.as_str()),
+                    Some(r.terminal_model.as_str()),
+                    None,
+                    &now,
+                )
+                .await
+                {
+                    tracing::warn!("JT1078 终端更新失败 phone={}: {}", phone, e);
+                }
+            }
+            _ => {}
+        }
+        if let Err(e) = crate::db::jt1078::update_terminal_status(pool, phone, true).await {
+            tracing::warn!("JT1078 终端在线状态写入失败 phone={}: {}", phone, e);
+        }
+    }
+
     /// Get the SocketAddr for a registered terminal by phone number.
     pub async fn get_terminal_addr(&self, phone: &str) -> Option<SocketAddr> {
         self.terminal_addrs.lock().await.get(phone).copied()
@@ -139,9 +205,24 @@ impl Jt1078Manager {
     }
 
     /// Send a raw byte payload to a connected terminal by phone number.
+    /// 绑定下发用的 socket（由 `jt1078::server::start` 注入监听 socket）。
+    pub fn set_send_socket(&self, socket: Arc<tokio::net::UdpSocket>) {
+        let _ = self.send_socket.set(socket);
+    }
+
     pub async fn send_raw(&self, phone: &str, data: &[u8]) -> Result<(), String> {
         let addr = self.get_terminal_addr(phone).await
             .ok_or_else(|| format!("终端 {} 未连接", phone))?;
+
+        // 优先用监听 socket 下发：来源地址必须是终端配置的服务器地址，
+        // 否则按源地址过滤的终端收不到命令（见 send_socket 字段说明）。
+        if let Some(socket) = self.send_socket.get() {
+            return socket
+                .send_to(data, addr)
+                .await
+                .map(|_| ())
+                .map_err(|e| format!("发送失败: {}", e));
+        }
 
         let socket = tokio::net::UdpSocket::bind("0.0.0.0:0")
             .await
@@ -335,9 +416,23 @@ impl Jt1078Manager {
                 .try_resolve_by_response(phone, reply_msg_id, reply_serial, result);
         }
         // Dispatch via session.process_jt_message
-        let mut map = self.sessions.lock().await;
-        let session = map.entry(addr).or_insert_with(|| Jt1078Session::new(addr));
-        session.process_jt_message(msg_id, serial, body)
+        let parsed = {
+            let mut map = self.sessions.lock().await;
+            let session = map.entry(addr).or_insert_with(|| Jt1078Session::new(addr));
+            session.process_jt_message(msg_id, serial, body)
+        };
+
+        // 注册/心跳时落库并置为在线（终端列表页依赖 gb_jt_terminal）
+        match &parsed {
+            crate::jt1078::session::ParsedMessage::Register(reg) => {
+                self.persist_terminal_online(phone, Some(reg)).await;
+            }
+            crate::jt1078::session::ParsedMessage::Heartbeat => {
+                self.persist_terminal_online(phone, None).await;
+            }
+            _ => {}
+        }
+        parsed
     }
 
     pub async fn cleanup_once(&self) -> usize {

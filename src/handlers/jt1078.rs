@@ -1206,14 +1206,31 @@ pub async fn link_detection(
     };
 
     let online = mgr.is_terminal_online(&phone).await;
+    // `reachable` 必须反映**真实下发结果**，而不是"内存里认为在线"。
+    // 此前这里 `let _ = send_query_location(...)` 丢掉结果，再把 online 直接
+    // 当成 reachable 返回 —— 终端离线/无会话时也照样报"可达"。
+    let mut reachable = false;
+    let mut probe_error: Option<String> = None;
     if online {
-        // Send heartbeat check - query location to verify link
-        let _ = mgr.send_query_location(&phone).await;
+        match mgr.send_query_location(&phone).await {
+            Ok(()) => reachable = true,
+            Err(e) => {
+                tracing::warn!("链路检测：向 {} 下发位置查询失败: {}", phone, e);
+                probe_error = Some(e);
+            }
+        }
+    } else {
+        probe_error = Some("终端不在线".to_string());
     }
 
     Json(serde_json::json!({
         "code": 0,
-        "data": { "phoneNumber": phone, "online": online, "reachable": online }
+        "data": {
+            "phoneNumber": phone,
+            "online": online,
+            "reachable": reachable,
+            "error": probe_error,
+        }
     }))
 }
 
@@ -1438,7 +1455,10 @@ pub async fn driver_info(
 
     let online = mgr.is_terminal_online(&phone).await;
     if online {
-        let _ = mgr.send_query_attributes_and_wait(&phone, 5).await;
+        // 尽力刷新终端属性；失败必须可见（否则"刷新过"是假的）
+        if let Err(e) = mgr.send_query_attributes_and_wait(&phone, 5).await {
+            tracing::warn!("驾驶员信息：刷新终端属性失败 phone={}: {}", phone, e);
+        }
     }
 
     // Read driver info from DB
@@ -1624,7 +1644,22 @@ pub async fn media_list(
             let channel_id: u8 = body.get("channelId").and_then(|v| v.as_u64()).unwrap_or(0) as u8;
             let start_time = body.get("startTime").and_then(|v| v.as_str()).unwrap_or("2000-01-01T00:00:00");
             let end_time = body.get("endTime").and_then(|v| v.as_str()).unwrap_or("2099-12-31T23:59:59");
-            let _ = mgr.send_media_search_and_wait(phone, channel_id, start_time, end_time, 30).await;
+            // 下发 0x8802 多媒体数据检索请求。终端检索结果走 0x0802
+            // （多媒体数据检索应答）单独上行，**本平台尚未解析该消息**
+            // （见 docs/WVP_PARITY.md 的"仍未解决"清单），因此这里只保证
+            // "请求确实下发了"，并把失败如实返回给调用方 —— 此前是
+            // `let _ =` 吞掉结果后再返回 ZLM 的流列表，看起来像"检索成功"。
+            if let Err(e) = mgr
+                .send_media_search_and_wait(phone, channel_id, start_time, end_time, 30)
+                .await
+            {
+                tracing::warn!("多媒体检索下发失败 phone={}: {}", phone, e);
+                return Json(serde_json::json!({
+                    "code": 1,
+                    "msg": format!("终端多媒体检索失败: {}", e),
+                    "data": { "list": [], "total": 0 }
+                }));
+            }
         }
     }
 
@@ -1727,8 +1762,24 @@ pub async fn talk_start(
     // Start bidirectional talk: send live video with audio and open bidirectional talk control
     match mgr.send_live_video_and_wait(&phone, channel_id, 0, false, 5).await {
         Ok(_) => {
-            let _ = mgr.send_live_video_control_and_wait(&phone, channel_id, 5, false, 5).await; // 5=open bidirectional talk
-            Json(serde_json::json!({ "code": 0, "msg": "success", "data": { "phoneNumber": phone, "channelId": channel_id } }))
+            // 0x9102 control=5：开启双向对讲。**失败必须上报** ——
+            // 此前 `let _ =` 吞掉结果，即使终端拒绝控制也返回 success，
+            // 用户以为对讲已建立。
+            match mgr
+                .send_live_video_control_and_wait(&phone, channel_id, 5, false, 5)
+                .await
+            {
+                Ok(0) => Json(serde_json::json!({
+                    "code": 0,
+                    "msg": "success",
+                    "data": { "phoneNumber": phone, "channelId": channel_id }
+                })),
+                Ok(result) => Json(build_error(&format!(
+                    "双向对讲开启被终端拒绝 result={}",
+                    result
+                ))),
+                Err(e) => Json(build_error(&format!("双向对讲开启失败: {}", e))),
+            }
         }
         Err(e) => Json(build_error(&e)),
     }

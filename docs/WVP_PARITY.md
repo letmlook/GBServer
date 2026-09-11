@@ -12,7 +12,7 @@
 | 总代码量（src/） | 69,619 行 Rust | `find src -name '*.rs' \| xargs wc -l` |
 | 已注册 HTTP 路由 | 383 条唯一 `/api/...` 路径 | `grep -oE '"/api/[^"]*"' src/router.rs \| sort -u \| wc -l` |
 | Handler 模块 | 29 个（含 `stub.rs` / `device_stub.rs` 两个兼容 shim） | `grep -c 'pub mod' src/handlers/mod.rs` |
-| 后端测试 | **545 通过** / 0 失败（第十八轮后回填） | `cargo test --no-fail-fast` |
+| 后端测试 | **552 通过** / 0 失败（第十九轮后回填） | `cargo test --no-fail-fast` |
 | 编译状态 | `cargo check` 0 error / **0 warning**；clippy 262；**deprecated 0** | `cargo check` / `cargo clippy --all-targets` |
 | 数据库 feature | SQLite（默认）/ PostgreSQL / MySQL **三者均编译通过** | CI `feature-matrix` job |
 | CI | ⏸️ 工作流已就绪但**按需暂停自动触发**（见 `.github/workflows/ci.yml`） | — |
@@ -875,6 +875,58 @@ npx playwright test             25 passed / 0 failed / 0 skipped
 级联拉流（上级 INVITE → 200 OK SDP → 按需拉流 → startSendRtp → BYE stopSendRtp）PASS
 ```
 
+### JT1078 入站链路：从未处理过任何真实终端消息 + 三处吞结果（2026-09-12 第十九轮）
+
+顺"还有哪些吞掉结果的命令下发"查 `let _ =` 时，发现 JT1078 的**入站链路整体没接线**：
+
+| # | 缺陷 | 证据 | 修复 |
+|---|------|------|------|
+| 1 | **`process_jt_message` 没有任何运行时调用点** | 两个监听器都只调 `feed_bytes` + `process_payload_for`，后者处理的是**自造的** `AUTH:x`/`HEARTBEAT` 文本协议，只做分类不做解析。于是：0x0100 注册不落库、不回 0x8100、终端永远注册不上；0x0001 通用应答不匹配命令等待器 ⇒ **所有 `*_and_wait` 命令必然超时** | 新增真实 JT/T 808 帧解析 `frame::parse_jt808_frame` / `split_jt808`（`7E` 定界、`7D 02/7D 01` 反转义、XOR 校验、按体属性 bit13 处理分包），两个监听器都改为解析 → `process_jt_message` → 按消息类型回 0x8100 注册应答 / 0x8001 通用应答 |
+| 2 | **`send_raw` 每条命令新建临时 UDP 端口** | 终端看到的**来源地址**不是它配置的服务器地址；按源地址过滤的终端（含本仓库模拟器，它 `connect()` 到平台）**一条命令都收不到**，平台侧全部超时 | `Jt1078Manager` 增加 `send_socket`，由 `server::start` 注入**监听 socket**，下发共用同一端口（与真实平台一致） |
+| 3 | **`let _ =` 吞掉命令结果** | `link_detection` 丢掉位置查询结果后把 `online` 直接当成 `reachable`（离线/无会话也报"可达"）；`talk_start` 丢掉 0x9102 结果，即使终端拒绝也返回 success；`media_list` 丢掉检索失败后返回 ZLM 列表，看起来像"检索成功" | `reachable` 改为**真实下发结果**（并回传 error）；对讲控制失败上报；多媒体检索失败如实返回错误 |
+| 4 | **注册不落库** | 终端只登记在内存 `terminal_addrs`，`gb_jt_terminal` 没有记录 ⇒ `/api/jt1078/terminal/list` **恒为空**，终端管理页看不到任何设备 | `Jt1078Manager` 注入连接池，注册/心跳时 `insert_terminal` / `update_terminal` + `update_terminal_status(online)` |
+| 5 | **应答乒乓** | 平台对终端的 0x0001 通用应答又回 0x8001，模拟器也回 0x0001 ⇒ 双方无限互刷（实测日志刷屏） | 终端通用应答**不再回** 0x8001（命令匹配已在 `process_jt_message` 内完成） |
+
+**模拟器保真度**（此前是"平台和 mock 一起错"）：
+
+* 帧格式从自造（`SYNC+msg_id+attr+phone+seq+total+packet_no+reserved(6)+CRC16`、
+  `byte^0x20` 转义）改为**国标格式**：`7E | msgId(2) 体属性(2) 手机号(6 BCD) 流水号(2)
+  [分包(4)] 消息体 XOR(1) | 7E`，转义 `0x7E→7D 02` / `0x7D→7D 01`；
+* 手机号从 `int(x).to_bytes(6)`（**二进制**，平台按 BCD 解码得到
+  `00033=3=8<4>` 乱码）改为 **BCD 编码**；
+* 注册消息体从自造 88 字节改为 **JT/T 808-2013 §8.8** 布局
+  （省2+市2+制造商5+终端型号20+终端ID7+车牌颜色1+车牌GBK）；
+* `MSG_REGISTER_ACK` 从 `0x0101` 改为 **`0x8100`**、`MSG_LIVE_STREAM` 从 `0x0102`
+  改为 **`0x9101`**；解析注册应答从 `!HH`（4 字节）改为 `流水号(2)+结果(1)+鉴权码`；
+* 对平台的其它 0x8xxx 命令统一回 0x0001 通用应答（真实终端行为），
+  否则"平台能不能收到终端应答"这条链路无法验证。
+
+平台的注册解析同步按 808-2013 修正（车牌颜色/车牌取代原先臆造的 ICCID 字段；
+2019 追加的 ICCID/硬件版本**不猜偏移**，因为车牌不定长、无法定位其起点，
+已在代码注释中说明）。
+
+**实测（真实服务 + 终端模拟器）**：
+
+```
+终端 TX 0x0100（BCD phone=13912345678, body=45B）
+平台 解析成功 → 登记终端 → 回 0x8100（流水号+结果0+鉴权码）
+终端 RX 0x8100 → ✅ 注册成功          （修复前：无限"注册超时，重新注册"）
+/api/jt1078/terminal/list            → 1 条记录（phoneNumber/plate/model/status=true）
+/api/jt1078/link-detection           → {"online":true,"reachable":true}   ← 真实下发结果
+/api/jt1078/snap                     → {"code":0,"msg":"抓拍命令已被终端应答"}  ← 命令往返成功
+```
+
+#### 第十九轮基线
+
+```
+cargo test                      552 passed / 0 failed   (上轮 545；+5 JT808 入站解析测试)
+cargo build --features mysql     OK
+cargo build --features postgres  OK
+cargo check --all-targets        warnings 0
+npx playwright test             25 passed / 0 failed / 0 skipped
+JT1078 端到端（注册 → 落库 → 列表 → 链路检测 → 命令往返）PASS
+```
+
 ### 仍未解决 / 需真实设备核验
 
 以下是本轮**已定位但未改动**的项，均在代码中留有注释或在此登记，
@@ -919,7 +971,15 @@ npx playwright test             25 passed / 0 failed / 0 skipped
    新增 `sip::transport::tcp::send_sip_out()` 作为**出站请求的唯一发送口**，
    按对端地址选 TCP/UDP；`send_session_bye` / `send_talk_bye` / `send_broadcast_bye`
    / INVITE / ACK / MESSAGE / SUBSCRIBE 与设备心跳全部改走它。
-9. **`on_rtp_playlist` / `on_record_progress` / `on_send_rtp_progress`**
+9. **JT1078 终端侧媒体列表（0x0802 多媒体数据检索应答）未解析**：
+   `/api/jt1078/media/list` 能真实下发 0x8802 检索请求（失败会如实报错），但终端
+   返回的 0x0802 结果尚未解析入库，因此该接口目前只能确认"请求已下发"。
+   0x0802 的字段布局随 JT/T 808 版本（2011/2013/2019）变化，
+   在没有真实终端样本前不宜臆造 —— 需要一份真实报文再实现。
+10. **JT1078 命令只经 UDP 下发**：`send_raw` 用注入的监听 socket（UDP）。
+    以 TCP 注册的终端（`JT1078 TCP listener` 已能收帧）目前收不到平台命令，
+    需要按终端连接类型选择 TCP 连接下发。
+11. **`on_rtp_playlist` / `on_record_progress` / `on_send_rtp_progress`**
    的载荷结构未与真实样本核对（官方文档未给出示例）。
 10. **多节点下 `general.mediaServerId`** 现在会在 autoConfig 时下发为节点主键；
     但**手工在 ZLM 侧改过该键**的既有部署仍需重新保存节点才会对齐。

@@ -50,22 +50,31 @@ log = logging.getLogger("jt1078-mock")
 
 # ---------------- JT1078 协议常量 ----------------
 
-# 消息头格式（22 字节，body 不含）
-# JT1078 头部字段：SYNC(1) + msg_id(2) + body_attr(2) + phone(6) +
-#                   seq(2) + total_packets(2) + packet_no(2) + reserved(6) + CRC(2) = 25 bytes
-HEAD_FMT = "!BHH6sHHH6sH"
-HEAD_LEN = struct.calcsize(HEAD_FMT)  # 25
+# 真实 JT/T 808-2013 消息头（去转义后）：
+#   msg_id(2) + 体属性(2) + 终端手机号(6,BCD) + 流水号(2) [+ 分包(4)]
+# 帧边界为 0x7E，校验码为 XOR（1 字节），紧跟在消息体之后。
+#
+# 此前这里用的是**自造格式**：SYNC(1)+msg_id+attr+phone+seq+total+packet_no+
+# reserved(6)+CRC16(2)，且转义用 `byte ^ 0x20`、校验用 CRC16 —— 真实终端
+# 一条消息都发不出来（这也让平台侧"解析不出来"的缺陷被掩盖）。现已改为国标格式。
+HEAD_FMT = "!HH6sH"          # msg_id, body_attr, phone, seq
+HEAD_LEN = struct.calcsize(HEAD_FMT)  # 12（不含分包字段）
 
-# 帧起始
+# 帧起始/转义
 SYNC = 0x7E
 ESCAPE = 0x7D
 
 # 常用消息 ID
 MSG_REGISTER = 0x0100
-MSG_REGISTER_ACK = 0x0101
+# JT/T 808-2013：0x8100 = 终端注册应答（此前写 0x0101，平台回的是 0x8100，
+# 于是平台明明回了"注册成功"，mock 却永远认为注册超时）。
+MSG_REGISTER_ACK = 0x8100
 MSG_HEARTBEAT = 0x0002
+# 0x0001 = 终端通用应答（终端→平台）；0x8001 = 平台通用应答（平台→终端）
 MSG_COMMON_ACK = 0x0001
-MSG_LIVE_STREAM = 0x0102
+MSG_PLATFORM_ACK = 0x8001
+# 0x9101 = 平台下发的实时音视频传输请求（此前写 0x0102，那是终端鉴权）
+MSG_LIVE_STREAM = 0x9101
 MSG_RECORD_QUERY_ACK = 0x0801
 MSG_TEXT_MSG = 0x8300
 MSG_ALARM = 0x1006
@@ -86,24 +95,28 @@ ALARM_SUBTYPES = {
 # ---------------- 帧编解码 ----------------
 
 def escape_bytes(data: bytes) -> bytes:
-    """转义 0x7E/0x7D/0x01/0x02（按 JT/T 1078 标准：仅 0x7E 和 0x7D）"""
+    """按 JT/T 808-2013 §4.4.2 转义：0x7E → 0x7D 0x02，0x7D → 0x7D 0x01。"""
     out = bytearray()
     for byte in data:
-        if byte in (0x7E, 0x7D, 0x01, 0x02):
+        if byte == 0x7E:
             out.append(0x7D)
-            out.append(byte ^ 0x20)
+            out.append(0x02)
+        elif byte == 0x7D:
+            out.append(0x7D)
+            out.append(0x01)
         else:
             out.append(byte)
     return bytes(out)
 
 
 def unescape_bytes(data: bytes) -> bytes:
-    """反转义"""
+    """反转义：0x7D 0x02 → 0x7E，0x7D 0x01 → 0x7D。"""
     out = bytearray()
     i = 0
     while i < len(data):
         if data[i] == 0x7D and i + 1 < len(data):
-            out.append(data[i + 1] ^ 0x20)
+            code = data[i + 1]
+            out.append(0x7E if code == 0x02 else (0x7D if code == 0x01 else code))
             i += 2
         else:
             out.append(data[i])
@@ -111,43 +124,29 @@ def unescape_bytes(data: bytes) -> bytes:
     return bytes(out)
 
 
-def crc16_jt1078(data: bytes) -> int:
-    """简化的 CRC16（占位实现，仅用于长度校验）。生产应使用真实 CRC-ITU 查表。"""
-    crc = 0xFFFF
+def xor_checksum(data: bytes) -> int:
+    """JT/T 808 校验码 = 起始符之后、校验码之前所有字节的异或。"""
+    acc = 0
     for b in data:
-        crc ^= b
-        for _ in range(8):
-            if crc & 0x0001:
-                crc = (crc >> 1) ^ 0xA001
-            else:
-                crc >>= 1
-    return crc & 0xFFFF
+        acc ^= b
+    return acc
 
 
 def build_frame(msg_id: int, phone: bytes, seq: int, body: bytes,
                 total_packets: int = 1, packet_no: int = 1) -> bytes:
-    """构造完整 JT1078 帧"""
-    # 体属性：bit15 = 0（无分包）；body 长度 10 bit
+    """构造完整 JT/T 808 帧（国标格式 + XOR 校验）。
+
+    转义只作用于起始符之间；起始符本身不转义。
+    """
     body_attr = len(body) & 0x03FF
     if total_packets > 1:
-        body_attr |= (1 << 13)  # 分包标志位
-    # 头部字段（不含 CRC）：SYNC + msg_id + body_attr + phone + seq + total + packet_no + reserved
-    head_no_crc = struct.pack(
-        HEAD_FMT[:-1],  # 去掉末尾的 CRC 'H'
-        SYNC,
-        msg_id,
-        body_attr,
-        phone,
-        seq,
-        total_packets,
-        packet_no,
-        b"\x00" * 6,
-    )
-    # CRC：从 msg_id 开始到 body 结束
-    crc_data = head_no_crc[1:] + body  # 去掉 SYNC（标准 CRC 范围）
-    crc = crc16_jt1078(crc_data)
-    head = head_no_crc + struct.pack("!H", crc)
-    return escape_bytes(head + body) + bytes([SYNC])
+        body_attr |= (1 << 13)  # 分包标志
+    inner = struct.pack(HEAD_FMT, msg_id, body_attr, phone, seq)
+    if total_packets > 1:
+        inner += struct.pack("!HH", total_packets, packet_no)
+    inner += body
+    checksum = xor_checksum(inner)
+    return bytes([SYNC]) + escape_bytes(inner + bytes([checksum])) + bytes([SYNC])
 
 
 def parse_frame(raw: bytes) -> Optional[dict]:
@@ -162,29 +161,30 @@ def parse_frame(raw: bytes) -> Optional[dict]:
     if raw[-1] != SYNC:
         return None
     inner = unescape_bytes(raw[1:-1])
-    if len(inner) < HEAD_LEN:
+    if len(inner) < HEAD_LEN + 1:
         return None
-    head = inner[:HEAD_LEN]
-    body_with_crc = inner[HEAD_LEN:]
-    # CRC 占最后 2 字节
-    body = body_with_crc[:-2] if len(body_with_crc) > 2 else b""
-    # 解析头部字段
-    sync = head[0]
-    msg_id = struct.unpack("!H", head[1:3])[0]
-    body_attr = struct.unpack("!H", head[3:5])[0]
-    body_len = body_attr & 0x03FF
-    phone = head[5:11]
-    seq = struct.unpack("!H", head[11:13])[0]
-    total = struct.unpack("!H", head[13:15])[0]
-    packet_no = struct.unpack("!H", head[15:17])[0]
-    body = body[:body_len]
+    # 校验码 = 最后一字节
+    checksum = inner[-1]
+    if xor_checksum(inner[:-1]) != checksum:
+        log.warning("校验码不匹配（按国标 XOR 校验）")
+        return None
+    msg_id, body_attr, phone, seq = struct.unpack(HEAD_FMT, inner[:HEAD_LEN])
+    has_sub = bool(body_attr & 0x2000)
+    pos = HEAD_LEN
+    total, packet_no = 1, 1
+    if has_sub:
+        if len(inner) < HEAD_LEN + 4 + 1:
+            return None
+        total, packet_no = struct.unpack("!HH", inner[pos:pos + 4])
+        pos += 4
+    body = inner[pos:-1]
     return {
         "msg_id": msg_id,
         "phone": phone,
         "seq": seq,
         "total": total,
         "packet_no": packet_no,
-        "body": body,
+        "body": body[: body_attr & 0x03FF],
     }
 
 
@@ -192,15 +192,21 @@ def parse_frame(raw: bytes) -> Optional[dict]:
 
 def build_register_body(province: int, city: int, manufacturer_id: bytes, model: bytes,
                         device_id: bytes, plate_color: int, plate: str) -> bytes:
-    """构造 0x0100 注册消息体（占位 76 字节）"""
-    # 实际字段按 JT/T 1078-2016 表 12；这里用占位结构
+    """构造 0x0100 注册消息体（JT/T 808-2013 §8.8 真实字段布局）。
+
+    省域ID(2) + 市县域ID(2) + 制造商ID(5) + 终端型号(20) + 终端ID(7)
+    + 车牌颜色(1) + 车牌(GBK, 剩余)
+
+    此前这里是自造的 88 字节布局（制造商 11 / 型号 30 / 终端ID 30 / 车牌 12），
+    平台按国标偏移解析必然失败 —— 于是"终端永远注册不上"被 mock 掩盖。
+    """
     body = bytearray()
     body += struct.pack("!HH", province, city)
-    body += manufacturer_id.ljust(11, b"\x00")[:11]
-    body += model.ljust(30, b"\x00")[:30]
-    body += device_id.ljust(30, b"\x00")[:30]
+    body += manufacturer_id.ljust(5, b"\x00")[:5]
+    body += model.ljust(20, b"\x00")[:20]
+    body += device_id.ljust(7, b"\x00")[:7]
     body += struct.pack("!B", plate_color)
-    body += plate.encode("gbk")[:12].ljust(12, b"\x00")
+    body += plate.encode("gbk")
     return bytes(body)
 
 
@@ -343,8 +349,19 @@ class Jt1078TerminalMock:
             self._handle_record_query(frame)
         elif frame["msg_id"] == MSG_TEXT_MSG:
             self._handle_text_msg(frame)
+        elif 0x8000 <= frame["msg_id"] <= 0x8FFF and frame["msg_id"] != MSG_PLATFORM_ACK:
+            # 平台下发的其它命令：真实终端一律回通用应答 0x0001（结果 0），
+            # 否则平台的 `*_and_wait` 只能等到超时。此前 mock 只处理极少数
+            # 消息，"平台能不能收到终端应答"这条链路无法验证。
+            log.info("  平台命令 0x%04x → 回通用应答", frame["msg_id"])
+            self._send_common_ack(frame["seq"], frame["msg_id"], 0)
         else:
             log.debug("未处理 msg_id=0x%04x", frame["msg_id"])
+
+    def _send_common_ack(self, reply_seq: int, reply_msg_id: int, result: int):
+        """0x0001 终端通用应答：<应答流水号><应答ID><结果>"""
+        body = struct.pack("!HHB", reply_seq, reply_msg_id, result)
+        self._send(MSG_COMMON_ACK, body)
 
     # ----- 上行 -----
 
@@ -424,10 +441,12 @@ class Jt1078TerminalMock:
     # ----- 下行处理 -----
 
     def _handle_register_ack(self, frame: dict):
-        # 解析 result 字段（body 前 4 字节：seq + result）
-        if len(frame["body"]) < 4:
+        # 0x8100 应答体：应答流水号(WORD) + 结果(BYTE) + 鉴权码(不定长)
+        # 此前按 `!HH` 读 4 字节，把"结果(1 字节)+鉴权码首字节"当成 WORD，
+        # 于是平台回了 result=0 的成功应答，终端也永远认为注册超时。
+        if len(frame["body"]) < 3:
             return
-        _, result = struct.unpack("!HH", frame["body"][:4])
+        result = frame["body"][2]
         if result == 0:
             self.registered = True
             log.info("✅ 注册成功")
@@ -499,13 +518,21 @@ def main():
     host, _, port = args.server.partition(":")
     server_addr = (host, int(port))
 
-    # 解析手机号
-    if isinstance(args.phone, bytes):
+    # 解析手机号：**BCD 编码**（JT/T 808 规定终端手机号为 6 字节 BCD）。
+    #
+    # 此前用 `int(x).to_bytes(6, "big")` 写成**二进制**，而平台按 BCD 解码，
+    # 得到的是 "00033=3=8<4>" 这种乱码 —— 终端注册必然失败。
+    if hasattr(args, "phone_decimal") and args.phone_decimal:
+        digits = [int(c) for c in args.phone_decimal if c.isdigit()][:12]
+        while len(digits) < 12:
+            digits.append(0)
+        phone = bytes(
+            (digits[i * 2] << 4) | digits[i * 2 + 1] for i in range(6)
+        )
+    elif isinstance(args.phone, bytes):
         phone = args.phone
     else:
         phone = args.phone.encode()
-    if hasattr(args, "phone_decimal") and args.phone_decimal:
-        phone = int(args.phone_decimal).to_bytes(6, "big")
 
     mock = Jt1078TerminalMock(
         server_addr=server_addr,
