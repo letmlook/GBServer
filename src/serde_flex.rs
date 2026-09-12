@@ -109,6 +109,33 @@ where
     }
 }
 
+/// `Option<bool>`，接受布尔 / `"true"|"false"` / `1|0`（空串按"未提供"）。
+///
+/// 前端把开关值放在查询串里时常常是 `"true"`/`"1"`；只认 `bool` 会 422。
+pub fn de_opt_bool<'de, D>(de: D) -> Result<Option<bool>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    match Option::<AnyScalar>::deserialize(de)? {
+        None => Ok(None),
+        Some(AnyScalar::Bool(b)) => Ok(Some(b)),
+        Some(AnyScalar::Int(i)) => Ok(Some(i != 0)),
+        Some(AnyScalar::Float(f)) => Ok(Some(f != 0.0)),
+        Some(AnyScalar::Str(s)) => {
+            let t = s.trim().to_ascii_lowercase();
+            match t.as_str() {
+                "" => Ok(None),
+                "true" | "1" | "on" | "yes" => Ok(Some(true)),
+                "false" | "0" | "off" | "no" => Ok(Some(false)),
+                other => Err(D::Error::custom(format!(
+                    "期望布尔值（true/false/1/0），得到 {:?}",
+                    other
+                ))),
+            }
+        }
+    }
+}
+
 /// `Option<Vec<i64>>`，元素接受数字 / 数字字符串（空串元素被丢弃）。
 pub fn de_opt_i64_vec<'de, D>(de: D) -> Result<Option<Vec<i64>>, D::Error>
 where

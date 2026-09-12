@@ -4819,16 +4819,25 @@ f=v/1/96/1/2/1/1/0
         body: &str,
     ) -> Result<()> {
         let sn = chrono::Utc::now().timestamp();
+        // 国标 `DeviceControl` 只有 **一个** `<DeviceID>`，且通道级命令
+        // （PTZ/录像/布防…）里它必须填**通道编码**；设备级命令
+        // （TeleBoot / DeviceConfig）才填设备编码。此前固定填 device_id
+        // 并额外附一个非标 `<ChannelID>`：多通道设备会把 PTZ/录像下发到
+        // 设备本身，严格的设备端还会因未知元素直接丢弃报文。
+        let target = if channel_id.is_empty() {
+            device_id
+        } else {
+            channel_id
+        };
         let xml_body = format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
 <Control>
 <CmdType>{}</CmdType>
 <SN>{}</SN>
 <DeviceID>{}</DeviceID>
-<ChannelID>{}</ChannelID>
 {}
 </Control>"#,
-            cmd_type, sn, device_id, channel_id, body
+            cmd_type, sn, target, body
         );
 
         self.send_message_to_device(

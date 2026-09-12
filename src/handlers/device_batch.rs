@@ -61,11 +61,20 @@ pub async fn batch_control(
                 if let Some(ref channel_id) = req.channel_id {
                     // 停止云台：用国标 8 字节 PTZCmd（0xA5 起始 + 累加校验），
                     // 此前硬编码的 "A500000000AF" 既不是 8 字节、校验也不对。
+                    //
+                    // 报文结构也必须对：`CmdType` 是 `DeviceControl`，8 字节指令要包在
+                    // `<PTZCmd>` 元素里。此前传的是 `cmd_type="PTZCmd"` + **裸十六进制串**
+                    // 当 body —— 生成出来的 XML 既没有 `<PTZCmd>` 元素、CmdType 也不是
+                    // 合法设备控制类型，真实设备只会丢弃。
                     let stop_cmd = crate::sip::gb28181::front_end_control::build_ptz_cmd(
                         crate::sip::gb28181::front_end_control::PtzAction::Stop,
                         0,
                     );
-                    match sip.send_device_control(device_id, channel_id, "PTZCmd", &stop_cmd).await {
+                    let body = format!("<PTZCmd>{}</PTZCmd>", stop_cmd);
+                    match sip
+                        .send_device_control(device_id, channel_id, "DeviceControl", &body)
+                        .await
+                    {
                         Ok(_) => DeviceControlResult { device_id: device_id.clone(), success: true, message: None },
                         Err(e) => DeviceControlResult { device_id: device_id.clone(), success: false, message: Some(format!("{}", e)) },
                     }
@@ -80,19 +89,29 @@ pub async fn batch_control(
                 }
             }
             BatchCommand::Reboot => {
-                match sip.send_device_control(device_id, device_id, "Reboot", "").await {
+                // 远程启动：`<CmdType>DeviceControl</CmdType>` + `<TeleBoot>Boot</TeleBoot>`。
+                // 此前是 `cmd_type="Reboot"` + 空 body —— 设备端既认不出 CmdType，
+                // 也没有 TeleBoot 元素，"批量重启"实际什么都不会发生。
+                match sip
+                    .send_device_control(device_id, device_id, "DeviceControl", "<TeleBoot>Boot</TeleBoot>")
+                    .await
+                {
                     Ok(_) => DeviceControlResult { device_id: device_id.clone(), success: true, message: None },
                     Err(e) => DeviceControlResult { device_id: device_id.clone(), success: false, message: Some(format!("{}", e)) },
                 }
             }
             BatchCommand::QueryDeviceInfo => {
-                match sip.send_catalog_query(device_id).await {
+                // 此前与 DeviceStatus / SyncCatalog 共用 `send_catalog_query`：
+                // 三个不同的批量按钮下发的是同一条目录查询。现在各发各的。
+                let sn = (chrono::Utc::now().timestamp_millis() % 900_000 + 100_000) as u32;
+                match sip.send_device_info_query(device_id, sn).await {
                     Ok(_) => DeviceControlResult { device_id: device_id.clone(), success: true, message: None },
                     Err(e) => DeviceControlResult { device_id: device_id.clone(), success: false, message: Some(format!("{}", e)) },
                 }
             }
             BatchCommand::QueryDeviceStatus => {
-                match sip.send_catalog_query(device_id).await {
+                let sn = (chrono::Utc::now().timestamp_millis() % 900_000 + 100_000) as u32;
+                match sip.send_device_status_query(device_id, sn).await {
                     Ok(_) => DeviceControlResult { device_id: device_id.clone(), success: true, message: None },
                     Err(e) => DeviceControlResult { device_id: device_id.clone(), success: false, message: Some(format!("{}", e)) },
                 }

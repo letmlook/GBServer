@@ -927,17 +927,45 @@ class SipDeviceMock:
             await self._reply_config_download(msg, addr)
         elif "<CmdType>RecordInfo</CmdType>" in body:
             await self._reply_record_info(msg, addr)
+        elif "<CmdType>DeviceConfig</CmdType>" in body:
+            # 配置下发（BasicParam / SnapConfig / 通用）：真实设备解析后回 200 OK，
+            # 部分还会回一条 DeviceControl 应答。这里把关键字段打出来，
+            # 让"平台到底下发了什么"可核对（此前该 CmdType 没有任何分支，
+            # 报文被静默丢弃，看不出配置是否有下发）。
+            fields = []
+            for name in ("SIPServerID", "SIPServerPort", "SIPServerDomain",
+                         "Transport", "CharSet", "SnapInterval", "ConfigType"):
+                value = self._extract_xml_value(body, name)
+                if value:
+                    fields.append(f"{name}={value}")
+            log.info("DeviceConfig 收到: %s", " ".join(fields) or body[:160])
+            await self._reply_empty_ok(msg, addr)
         elif "<CmdType>DeviceControl</CmdType>" in body:
             # 设备控制（云台/镜头/预置位/录像/布防…）：真实设备按国标解析
             # PTZCmd/FICmd/PresetCmd。这里把控制元素原样打到日志，
             # 让"下发的指令到底是什么"可被外部核对（否则只能看平台自己的日志）。
+            #
+            # 除元素取值外还要看**报文结构**：`<DeviceID>` 是否填的是通道编码、
+            # 有没有出现嵌套的 `<Control>`（平台曾把整份 `<Control>` 文档
+            # 又套进一层外壳，报文里于是夹着第二个 XML 声明 —— 非法 XML）。
+            # 因此这里把这几个结构点也一并报出来。
             elem = ""
             for name in ("PTZCmd", "FICmd", "PresetCmd", "PresetIndex", "RecordCmd",
-                         "GuardCmd", "WiperCmd", "AuxCmd", "AlarmCmd"):
+                         "GuardCmd", "WiperCmd", "AuxCmd", "AlarmCmd",
+                         "TeleBoot", "IFrameCmd", "Enabled", "ResetTime", "Enabled",
+                         "DragZoomIn", "DragZoomOut"):
                 value = self._extract_xml_value(body, name)
                 if value:
                     elem += f"{name}={value} "
-            log.info("DeviceControl 收到: %s", elem or body[:120])
+            struct = ""
+            devid = self._extract_xml_value(body, "DeviceID")
+            if devid:
+                struct += f"DeviceID={devid} "
+            if "ChannelID" in body:
+                struct += "含非标<ChannelID> "
+            if body.count("<Control>") > 1 or "<?xml" in body.split("<Control>", 1)[-1]:
+                struct += "!!嵌套Control/内层XML声明 "
+            log.info("DeviceControl 收到: %s| %s", elem or body[:120], struct)
             cseq = self.state.next_cseq()
             branch = self._extract_via_branch(msg)
             call_id = self._extract_header(msg, "Call-ID", "")
@@ -957,6 +985,26 @@ class SipDeviceMock:
             self.transport.sendto(resp.encode(), addr)
         else:
             log.debug("未识别 MESSAGE body: %s", body[:200])
+
+    async def _reply_empty_ok(self, msg: str, addr: tuple) -> None:
+        """对一条 MESSAGE 回 `200 OK`（无正文），用于配置下发这类
+        "设备只需确认收到"的命令。"""
+        cseq = self.state.next_cseq()
+        branch = self._extract_via_branch(msg)
+        call_id = self._extract_header(msg, "Call-ID", "")
+        from_h = self._extract_header(msg, "From", "")
+        to_h = self._extract_header(msg, "To", "")
+        local = self.transport.get_extra_info("sockname")
+        resp = (
+            f"{SIP_VERSION} 200 OK\r\n"
+            f"Via: {SIP_VERSION}/UDP {local[0]}:{local[1]};rport;branch={branch}\r\n"
+            f"From: {from_h}\r\n"
+            f"To: {to_h};tag={uuid.uuid4().hex[:8]}\r\n"
+            f"Call-ID: {call_id}\r\n"
+            f"CSeq: {cseq} MESSAGE\r\n"
+            f"Content-Length: 0\r\n\r\n"
+        )
+        self.transport.sendto(resp.encode(), addr)
 
     async def _reply_device_status(self, msg: str, addr: tuple):
         sn = self._extract_xml_value(msg.split("\r\n\r\n", 1)[1], "SN") or "1"

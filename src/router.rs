@@ -122,6 +122,32 @@ pub fn app(state: AppState) -> Router<AppState> {
             "/api/device/control/reboot",
             get(device_control::device_reboot),
         )
+        // WVP `DeviceControl.java` 的其余真实端点：此前完全未挂载，
+        // 按 WVP 路径调用会落到 SPA 兜底拿到 index.html。
+        .route(
+            "/api/device/control/teleboot/:device_id",
+            get(device_control::device_teleboot),
+        )
+        .route(
+            "/api/device/control/reset_alarm",
+            get(device_control::device_reset_alarm),
+        )
+        .route(
+            "/api/device/control/i_frame",
+            get(device_control::device_iframe),
+        )
+        .route(
+            "/api/device/control/home_position",
+            get(device_control::device_home_position),
+        )
+        .route(
+            "/api/device/control/drag_zoom/zoom_in",
+            get(device_control::device_drag_zoom_in),
+        )
+        .route(
+            "/api/device/control/drag_zoom/zoom_out",
+            get(device_control::device_drag_zoom_out),
+        )
         .route(
             "/api/device/config/query",
             get(device_control::device_config_query),

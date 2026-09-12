@@ -399,22 +399,13 @@ pub async fn device_config_update(
                         let charset = config_data.get("charset")
                             .and_then(|v| v.as_str()).unwrap_or("GB2312");
                         
+                        // 只给**内层元素**：外壳（`<Control>`/CmdType/SN/DeviceID）
+                        // 由 `send_device_control` 统一生成。此前这里又拼了一整份
+                        // `<Control>` 文档再交给它包装，报文里出现**嵌套的 Control**
+                        // 和夹在元素中间的 `<?xml ...?>` 声明 —— 非法 XML，
+                        // 真实设备解析失败即丢弃（配置下发/重启因此从未真正生效）。
                         format!(
-                            r#"<?xml version="1.0" encoding="UTF-8"?>
-<Control>
-<CmdType>DeviceConfig</CmdType>
-<SN>{}</SN>
-<DeviceID>{}</DeviceID>
-<BasicParam>
-<SIPServerID>{}</SIPServerID>
-<SIPServerPort>{}</SIPServerPort>
-<SIPServerDomain>{}</SIPServerDomain>
-<Transport>{}</Transport>
-<CharSet>{}</CharSet>
-</BasicParam>
-</Control>"#,
-                            chrono::Utc::now().timestamp() % 10000,
-                            device_id,
+                            "<BasicParam>\n<SIPServerID>{}</SIPServerID>\n<SIPServerPort>{}</SIPServerPort>\n<SIPServerDomain>{}</SIPServerDomain>\n<Transport>{}</Transport>\n<CharSet>{}</CharSet>\n</BasicParam>",
                             sip_server_id,
                             sip_server_port,
                             sip_server_domain,
@@ -426,35 +417,16 @@ pub async fn device_config_update(
                         let snap_interval = config_data.get("snapInterval")
                             .and_then(|v| v.as_u64()).unwrap_or(0);
                         format!(
-                            r#"<?xml version="1.0" encoding="UTF-8"?>
-<Control>
-<CmdType>DeviceConfig</CmdType>
-<SN>{}</SN>
-<DeviceID>{}</DeviceID>
-<SnapConfig>
-<SnapInterval>{}</SnapInterval>
-</SnapConfig>
-</Control>"#,
-                            chrono::Utc::now().timestamp() % 10000,
-                            device_id,
+                            "<SnapConfig>\n<SnapInterval>{}</SnapInterval>\n</SnapConfig>",
                             snap_interval
                         )
                     }
                     _ => {
                         // 通用配置，直接使用传入的JSON
                         format!(
-                            r#"<?xml version="1.0" encoding="UTF-8"?>
-<Control>
-<CmdType>DeviceConfig</CmdType>
-<SN>{}</SN>
-<DeviceID>{}</DeviceID>
-<ConfigType>{}</ConfigType>
-<ConfigData>{}</ConfigData>
-</Control>"#,
-                            chrono::Utc::now().timestamp() % 10000,
-                            device_id,
+                            "<ConfigType>{}</ConfigType>\n<ConfigData>{}</ConfigData>",
                             config_type,
-                            config_data.to_string()
+                            config_data
                         )
                     }
                 };
@@ -502,19 +474,10 @@ pub async fn device_reboot(
         let server = &*sip_server;
         if let Some(device) = server.device_manager().get(&device_id).await {
             if device.online && device.addr.is_some() {
-                let reboot_xml = format!(
-                    r#"<?xml version="1.0" encoding="UTF-8"?>
-<Control>
-<CmdType>DeviceControl</CmdType>
-<SN>{}</SN>
-<DeviceID>{}</DeviceID>
-<Restart>
-<ChannelID>0</ChannelID>
-</Restart>
-</Control>"#,
-                    chrono::Utc::now().timestamp() % 10000,
-                    device_id
-                );
+                // 国标远程启动是 `<TeleBoot>Boot</TeleBoot>`（WVP `teleBootCmd` 同）。
+                // 此前发的是非标的 `<Restart><ChannelID>0</ChannelID></Restart>`，
+                // 而且外面又套了一层 `<Control>`（嵌套 + 元素中间夹 XML 声明 = 非法 XML）。
+                let reboot_xml = "<TeleBoot>Boot</TeleBoot>".to_string();
 
                 match server.send_device_control(&device_id, &device_id, "DeviceControl", &reboot_xml).await {
                     Ok(_) => {
@@ -533,4 +496,441 @@ pub async fn device_reboot(
     }
 
     Json(WVPResult::error("Device not online"))
+}
+
+// ============================================================================
+// WVP `DeviceControl` 控制器剩余端点：远程启动 / 报警复位 / 强制关键帧 /
+// 看守位 / 拉框放大缩小。
+//
+// 这些端点在 WVP-PRO 的 `DeviceControl.java` 里都是真实下发的设备控制命令，
+// 本平台此前**完全没有挂载**：第三方（或 WVP 的原生前端）按 WVP 的路径调用时
+// 会落到 SPA 兜底拿到 index.html，看起来像"接口不存在"。
+// ============================================================================
+
+/// 统一的"设备在线 → 下发 DeviceControl → 返回结果"流程。
+///
+/// `element` 是 `<Control>` 内部的控制元素（外壳由 `send_device_control` 生成）。
+async fn send_control_element(
+    state: &AppState,
+    device_id: &str,
+    channel_id: &str,
+    element: &str,
+    extra: serde_json::Value,
+) -> Json<WVPResult<serde_json::Value>> {
+    if device_id.is_empty() {
+        return Json(WVPResult::error("device_id is required"));
+    }
+    let Some(ref sip_server) = state.sip_server else {
+        return Json(WVPResult::error("SIP server not available"));
+    };
+    let server = &**sip_server;
+    let Some(device) = server.device_manager().get(device_id).await else {
+        return Json(WVPResult::error(format!("设备不存在或未注册: {device_id}")));
+    };
+    if !device.online || device.addr.is_none() {
+        return Json(WVPResult::error(format!("设备不在线: {device_id}")));
+    }
+    if let Err(e) = server
+        .send_device_control(device_id, channel_id, "DeviceControl", element)
+        .await
+    {
+        tracing::error!("DeviceControl 下发失败 device={}: {}", device_id, e);
+        return Json(WVPResult::error(format!("命令发送失败: {e}")));
+    }
+
+    let mut data = serde_json::json!({
+        "deviceId": device_id,
+        "channelId": channel_id,
+        "result": "command sent",
+        "xml": element,
+    });
+    if let (Some(obj), Some(extra_obj)) = (data.as_object_mut(), extra.as_object()) {
+        for (k, v) in extra_obj {
+            obj.insert(k.clone(), v.clone());
+        }
+    }
+    Json(WVPResult::success(data))
+}
+
+/// GET /api/device/control/teleboot/:device_id —— 远程启动（WVP 路径形式）
+pub async fn device_teleboot(
+    State(state): State<AppState>,
+    axum::extract::Path(device_id): axum::extract::Path<String>,
+) -> Json<WVPResult<serde_json::Value>> {
+    tracing::info!("Device teleboot: device={}", device_id);
+    send_control_element(
+        &state,
+        &device_id,
+        &device_id,
+        "<TeleBoot>Boot</TeleBoot>",
+        serde_json::json!({}),
+    )
+    .await
+}
+
+/// GET /api/device/control/reset_alarm —— 报警复位
+#[derive(Debug, Default, Deserialize)]
+pub struct ResetAlarmQuery {
+    #[serde(alias = "deviceId")]
+    pub device_id: Option<String>,
+    #[serde(alias = "channelId")]
+    pub channel_id: Option<String>,
+    #[serde(alias = "alarmMethod")]
+    pub alarm_method: Option<String>,
+    #[serde(alias = "alarmType")]
+    pub alarm_type: Option<String>,
+}
+
+/// 构造报警复位的控制元素（与 WVP `alarmResetCmd` 一致）：
+/// `<AlarmCmd>ResetAlarm</AlarmCmd>`，可选 `<Info><AlarmMethod/><AlarmType/></Info>`。
+pub(crate) fn build_alarm_reset_element(
+    alarm_method: Option<&str>,
+    alarm_type: Option<&str>,
+) -> String {
+    let method = alarm_method.map(str::trim).filter(|s| !s.is_empty());
+    let atype = alarm_type.map(str::trim).filter(|s| !s.is_empty());
+    let mut xml = String::from("<AlarmCmd>ResetAlarm</AlarmCmd>");
+    if method.is_some() || atype.is_some() {
+        xml.push_str("\n<Info>");
+        if let Some(m) = method {
+            xml.push_str(&format!("\n<AlarmMethod>{}</AlarmMethod>", m));
+        }
+        if let Some(t) = atype {
+            xml.push_str(&format!("\n<AlarmType>{}</AlarmType>", t));
+        }
+        xml.push_str("\n</Info>");
+    }
+    xml
+}
+
+pub async fn device_reset_alarm(
+    State(state): State<AppState>,
+    Query(q): Query<ResetAlarmQuery>,
+) -> Json<WVPResult<serde_json::Value>> {
+    let device_id = q.device_id.clone().unwrap_or_default();
+    let channel_id = q.channel_id.clone().unwrap_or_default();
+    let element =
+        build_alarm_reset_element(q.alarm_method.as_deref(), q.alarm_type.as_deref());
+    tracing::info!(
+        "Device reset_alarm: device={}, channel={}, method={:?}, type={:?}",
+        device_id,
+        channel_id,
+        q.alarm_method,
+        q.alarm_type
+    );
+    send_control_element(
+        &state,
+        &device_id,
+        &channel_id,
+        &element,
+        serde_json::json!({
+            "alarmMethod": q.alarm_method,
+            "alarmType": q.alarm_type,
+        }),
+    )
+    .await
+}
+
+/// GET /api/device/control/i_frame —— 强制关键帧
+#[derive(Debug, Default, Deserialize)]
+pub struct IFrameQuery {
+    #[serde(alias = "deviceId")]
+    pub device_id: Option<String>,
+    #[serde(alias = "channelId")]
+    pub channel_id: Option<String>,
+}
+
+pub async fn device_iframe(
+    State(state): State<AppState>,
+    Query(q): Query<IFrameQuery>,
+) -> Json<WVPResult<serde_json::Value>> {
+    let device_id = q.device_id.clone().unwrap_or_default();
+    let channel_id = q.channel_id.clone().unwrap_or_default();
+    tracing::info!("Device i_frame: device={}, channel={}", device_id, channel_id);
+    // GB/T 28181-2016 §9.3.1：`<IFrameCmd>IFrame</IFrameCmd>`。
+    // （WVP 源码里是 `<IFameCmd>Send</IFameCmd>` —— 元素名少一个 r 且取值不同，
+    //  那是 WVP 的笔误，严格解析的设备认不出来，这里按国标下发。）
+    send_control_element(
+        &state,
+        &device_id,
+        &channel_id,
+        "<IFrameCmd>IFrame</IFrameCmd>",
+        serde_json::json!({}),
+    )
+    .await
+}
+
+/// GET /api/device/control/home_position —— 看守位设置
+#[derive(Debug, Default, Deserialize)]
+pub struct HomePositionQuery {
+    #[serde(alias = "deviceId")]
+    pub device_id: Option<String>,
+    #[serde(alias = "channelId")]
+    pub channel_id: Option<String>,
+    /// 是否开启看守位（前端可能是 true/false，也可能是 1/0）
+    #[serde(default, deserialize_with = "crate::serde_flex::de_opt_bool")]
+    pub enabled: Option<bool>,
+    #[serde(alias = "resetTime", default, deserialize_with = "crate::serde_flex::de_opt_i64")]
+    pub reset_time: Option<i64>,
+    #[serde(alias = "presetIndex", default, deserialize_with = "crate::serde_flex::de_opt_i64")]
+    pub preset_index: Option<i64>,
+}
+
+/// 构造看守位的控制元素（与 WVP `homePositionCmd` 一致）：
+/// 开启时带 `<ResetTime>`/`<PresetIndex>`，关闭时只带 `<Enabled>0</Enabled>`。
+pub(crate) fn build_home_position_element(
+    enabled: bool,
+    reset_time: Option<i64>,
+    preset_index: Option<i64>,
+) -> String {
+    if enabled {
+        format!(
+            "<HomePosition>\n<Enabled>1</Enabled>\n<ResetTime>{}</ResetTime>\n<PresetIndex>{}</PresetIndex>\n</HomePosition>",
+            reset_time.unwrap_or(0),
+            preset_index.unwrap_or(0)
+        )
+    } else {
+        "<HomePosition>\n<Enabled>0</Enabled>\n</HomePosition>".to_string()
+    }
+}
+
+pub async fn device_home_position(
+    State(state): State<AppState>,
+    Query(q): Query<HomePositionQuery>,
+) -> Json<WVPResult<serde_json::Value>> {
+    let device_id = q.device_id.clone().unwrap_or_default();
+    let channel_id = q.channel_id.clone().unwrap_or_default();
+    let enabled = q.enabled.unwrap_or(false);
+    let element = build_home_position_element(enabled, q.reset_time, q.preset_index);
+    tracing::info!(
+        "Device home_position: device={}, channel={}, enabled={}, resetTime={:?}, presetIndex={:?}",
+        device_id,
+        channel_id,
+        enabled,
+        q.reset_time,
+        q.preset_index
+    );
+    send_control_element(
+        &state,
+        &device_id,
+        &channel_id,
+        &element,
+        serde_json::json!({
+            "enabled": enabled,
+            "resetTime": q.reset_time,
+            "presetIndex": q.preset_index,
+        }),
+    )
+    .await
+}
+
+/// GET /api/device/control/drag_zoom/zoom_in | zoom_out —— 拉框放大/缩小
+#[derive(Debug, Default, Deserialize)]
+pub struct DragZoomQuery {
+    #[serde(alias = "deviceId")]
+    pub device_id: Option<String>,
+    #[serde(alias = "channelId")]
+    pub channel_id: Option<String>,
+    #[serde(default, deserialize_with = "crate::serde_flex::de_opt_i64")]
+    pub length: Option<i64>,
+    #[serde(default, deserialize_with = "crate::serde_flex::de_opt_i64")]
+    pub width: Option<i64>,
+    #[serde(alias = "midPointX", default, deserialize_with = "crate::serde_flex::de_opt_i64")]
+    pub mid_point_x: Option<i64>,
+    #[serde(alias = "midPointY", default, deserialize_with = "crate::serde_flex::de_opt_i64")]
+    pub mid_point_y: Option<i64>,
+    #[serde(alias = "lengthX", default, deserialize_with = "crate::serde_flex::de_opt_i64")]
+    pub length_x: Option<i64>,
+    #[serde(alias = "lengthY", default, deserialize_with = "crate::serde_flex::de_opt_i64")]
+    pub length_y: Option<i64>,
+}
+
+/// 构造拉框放大/缩小的控制元素（元素名与 WVP `DeviceServiceImpl` 一致）。
+pub(crate) fn build_drag_zoom_element(
+    zoom_in: bool,
+    length: i64,
+    width: i64,
+    mid_point_x: i64,
+    mid_point_y: i64,
+    length_x: i64,
+    length_y: i64,
+) -> String {
+    let tag = if zoom_in { "DragZoomIn" } else { "DragZoomOut" };
+    format!(
+        "<{tag}>\n<Length>{length}</Length>\n<Width>{width}</Width>\n<MidPointX>{mid_point_x}</MidPointX>\n<MidPointY>{mid_point_y}</MidPointY>\n<LengthX>{length_x}</LengthX>\n<LengthY>{length_y}</LengthY>\n</{tag}>"
+    )
+}
+
+async fn drag_zoom(
+    state: &AppState,
+    q: &DragZoomQuery,
+    zoom_in: bool,
+) -> Json<WVPResult<serde_json::Value>> {
+    let device_id = q.device_id.clone().unwrap_or_default();
+    let channel_id = q.channel_id.clone().unwrap_or_default();
+    // WVP 把六个参数都声明成 required；缺参时明确报错，而不是下发一个全 0 的框
+    let missing: Vec<&str> = [
+        ("length", q.length),
+        ("width", q.width),
+        ("midPointX", q.mid_point_x),
+        ("midPointY", q.mid_point_y),
+        ("lengthX", q.length_x),
+        ("lengthY", q.length_y),
+    ]
+    .iter()
+    .filter(|(_, v)| v.is_none())
+    .map(|(k, _)| *k)
+    .collect();
+    if !missing.is_empty() {
+        return Json(WVPResult::error(format!(
+            "缺少参数: {}",
+            missing.join(", ")
+        )));
+    }
+    let element = build_drag_zoom_element(
+        zoom_in,
+        q.length.unwrap_or(0),
+        q.width.unwrap_or(0),
+        q.mid_point_x.unwrap_or(0),
+        q.mid_point_y.unwrap_or(0),
+        q.length_x.unwrap_or(0),
+        q.length_y.unwrap_or(0),
+    );
+    tracing::info!(
+        "Device drag_zoom({}): device={}, channel={}",
+        if zoom_in { "in" } else { "out" },
+        device_id,
+        channel_id
+    );
+    send_control_element(
+        state,
+        &device_id,
+        &channel_id,
+        &element,
+        serde_json::json!({ "zoomIn": zoom_in }),
+    )
+    .await
+}
+
+pub async fn device_drag_zoom_in(
+    State(state): State<AppState>,
+    Query(q): Query<DragZoomQuery>,
+) -> Json<WVPResult<serde_json::Value>> {
+    drag_zoom(&state, &q, true).await
+}
+
+pub async fn device_drag_zoom_out(
+    State(state): State<AppState>,
+    Query(q): Query<DragZoomQuery>,
+) -> Json<WVPResult<serde_json::Value>> {
+    drag_zoom(&state, &q, false).await
+}
+
+#[cfg(test)]
+mod control_element_tests {
+    use super::*;
+
+    /// 报警复位：无条件带 `<AlarmCmd>ResetAlarm</AlarmCmd>`；
+    /// 有 alarmMethod/alarmType 时才补 `<Info>`（与 WVP `alarmResetCmd` 一致）。
+    #[test]
+    fn alarm_reset_element_shape() {
+        assert_eq!(
+            build_alarm_reset_element(None, None),
+            "<AlarmCmd>ResetAlarm</AlarmCmd>"
+        );
+        // 空串按"未提供"，不能生成空元素
+        assert_eq!(
+            build_alarm_reset_element(Some(""), Some("  ")),
+            "<AlarmCmd>ResetAlarm</AlarmCmd>"
+        );
+        let xml = build_alarm_reset_element(Some("5"), Some("1"));
+        assert!(xml.contains("<AlarmCmd>ResetAlarm</AlarmCmd>"), "{xml}");
+        assert!(xml.contains("<Info>") && xml.contains("</Info>"), "{xml}");
+        assert!(xml.contains("<AlarmMethod>5</AlarmMethod>"), "{xml}");
+        assert!(xml.contains("<AlarmType>1</AlarmType>"), "{xml}");
+    }
+
+    /// 看守位：开启时带 resetTime/presetIndex，关闭时只带 Enabled=0
+    /// （与 WVP `homePositionCmd` 完全一致）。
+    #[test]
+    fn home_position_element_shape() {
+        let on = build_home_position_element(true, Some(30), Some(2));
+        assert_eq!(
+            on,
+            "<HomePosition>\n<Enabled>1</Enabled>\n<ResetTime>30</ResetTime>\n<PresetIndex>2</PresetIndex>\n</HomePosition>"
+        );
+        let off = build_home_position_element(false, Some(30), Some(2));
+        assert_eq!(
+            off,
+            "<HomePosition>\n<Enabled>0</Enabled>\n</HomePosition>"
+        );
+        // 缺省值补 0，不能出现空标签
+        let defaulted = build_home_position_element(true, None, None);
+        assert!(defaulted.contains("<ResetTime>0</ResetTime>"), "{defaulted}");
+        assert!(defaulted.contains("<PresetIndex>0</PresetIndex>"), "{defaulted}");
+    }
+
+    /// 拉框放大/缩小的元素名与六个字段必须与 WVP 一致。
+    #[test]
+    fn drag_zoom_element_shape() {
+        let zin = build_drag_zoom_element(true, 100, 200, 1, 2, 3, 4);
+        assert!(zin.starts_with("<DragZoomIn>"), "{zin}");
+        assert!(zin.ends_with("</DragZoomIn>"), "{zin}");
+        for frag in [
+            "<Length>100</Length>",
+            "<Width>200</Width>",
+            "<MidPointX>1</MidPointX>",
+            "<MidPointY>2</MidPointY>",
+            "<LengthX>3</LengthX>",
+            "<LengthY>4</LengthY>",
+        ] {
+            assert!(zin.contains(frag), "{zin} 缺 {frag}");
+        }
+        let zout = build_drag_zoom_element(false, 1, 2, 3, 4, 5, 6);
+        assert!(zout.starts_with("<DragZoomOut>") && zout.ends_with("</DragZoomOut>"), "{zout}");
+    }
+
+    /// 前端把开关放在查询串里时可能是 `"true"`/`"1"`，都必须能反序列化。
+    #[test]
+    fn home_position_query_accepts_flexible_bool() {
+        let parse = |v: serde_json::Value| -> HomePositionQuery {
+            serde_json::from_value(v).unwrap()
+        };
+        assert_eq!(
+            parse(serde_json::json!({"deviceId": "d", "enabled": true})).enabled,
+            Some(true)
+        );
+        assert_eq!(
+            parse(serde_json::json!({"deviceId": "d", "enabled": "true"})).enabled,
+            Some(true)
+        );
+        assert_eq!(
+            parse(serde_json::json!({"deviceId": "d", "enabled": 1})).enabled,
+            Some(true)
+        );
+        assert_eq!(
+            parse(serde_json::json!({"deviceId": "d", "enabled": "0"})).enabled,
+            Some(false)
+        );
+        assert_eq!(parse(serde_json::json!({"deviceId": "d"})).enabled, None);
+
+        let q = parse(serde_json::json!({
+            "deviceId": "d", "channelId": "c",
+            "enabled": "1", "resetTime": "30", "presetIndex": 2
+        }));
+        assert_eq!(q.reset_time, Some(30));
+        assert_eq!(q.preset_index, Some(2));
+
+        // 拉框缩放的六个数字同样接受字符串
+        let dz: DragZoomQuery = serde_json::from_value(serde_json::json!({
+            "deviceId": "d", "channelId": "c",
+            "length": "100", "width": 200, "midPointX": "1",
+            "midPointY": 2, "lengthX": "3", "lengthY": 4
+        }))
+        .unwrap();
+        assert_eq!(dz.length, Some(100));
+        assert_eq!(dz.width, Some(200));
+        assert_eq!(dz.mid_point_x, Some(1));
+        assert_eq!(dz.length_y, Some(4));
+    }
 }

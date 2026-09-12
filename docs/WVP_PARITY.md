@@ -12,7 +12,7 @@
 | 总代码量（src/） | 79,179 行 Rust | `find src -name '*.rs' \| xargs wc -l` |
 | 已注册 HTTP 路由 | 386 条唯一 `/api/...` 路径 | `grep -oE '"/api/[^"]*"' src/router.rs \| sort -u \| wc -l` |
 | Handler 模块 | 29 个（含 `stub.rs` / `device_stub.rs` 两个兼容 shim） | `grep -c 'pub mod' src/handlers/mod.rs` |
-| 后端测试 | **731 通过 / 0 失败**（第五十五轮刷新） | `cargo test` |
+| 后端测试 | **735 通过 / 0 失败**（第五十六轮刷新） | `cargo test` |
 | 编译状态 | `cargo check` 0 error / **0 warning**；clippy 262；**deprecated 0** | `cargo check` / `cargo clippy --all-targets` |
 | 数据库 feature | SQLite（默认）/ PostgreSQL / MySQL **三者均编译通过** | CI `feature-matrix` job |
 | CI | ⏸️ 工作流已就绪但**按需暂停自动触发**（见 `.github/workflows/ci.yml`） | — |
@@ -2740,6 +2740,109 @@ terminal/query by deviceId        ✅ 手机号与终端号都能查到（三种
 platform/delete                   ✅ 真删行；删不到时 404，不再假成功
 ```
 
+### WVP `DeviceControl` 缺失端点 + 报文结构缺陷（2026-09-13 第五十六轮）
+
+本轮把 WVP-PRO 的真实源码（`gb28181/controller/DeviceControl.java`、
+`service/impl/DeviceServiceImpl.java`、`transmit/cmd/impl/SIPCommander.java`）
+逐行对照本平台，发现两类问题：**整族端点根本没挂**、**已挂的端点报文结构不合国标**。
+
+#### 1. 五个 WVP 端点完全未挂载
+
+| WVP 端点 | 作用 | 之前的表现 |
+|---|---|---|
+| `GET /api/device/control/teleboot/{deviceId}` | 远程启动 | 无路由 → 落到 SPA 兜底返回 index.html |
+| `GET /api/device/control/reset_alarm` | 报警复位 | 同上 |
+| `GET /api/device/control/i_frame` | 强制关键帧 | 同上 |
+| `GET /api/device/control/home_position` | 看守位设置 | 同上 |
+| `GET /api/device/control/drag_zoom/zoom_{in,out}` | 拉框放大/缩小 | 同上 |
+
+现已全部实装（`handlers/device_control.rs`），控制元素与 WVP 逐字段一致：
+
+```
+teleboot   → <TeleBoot>Boot</TeleBoot>
+reset_alarm→ <AlarmCmd>ResetAlarm</AlarmCmd> [+ <Info><AlarmMethod/><AlarmType/></Info>]
+i_frame    → <IFrameCmd>IFrame</IFrameCmd>
+home_position → <HomePosition><Enabled>1|0</Enabled>[<ResetTime/><PresetIndex/>]</HomePosition>
+drag_zoom  → <DragZoomIn|Out><Length/><Width/><MidPointX/><MidPointY/><LengthX/><LengthY/></…>
+```
+
+（`i_frame` 按**国标**下发 `<IFrameCmd>IFrame</IFrameCmd>`：WVP 源码里写的是
+`<IFameCmd>Send</IFameCmd>` —— 元素名少一个 `r` 且取值不同，属 WVP 笔误，
+严格解析的设备认不出来。此处刻意不 bug-for-bug 对齐。）
+`home_position` 的 `enabled` 收 `true/"true"/1/"0"` 等形态（新增
+`serde_flex::de_opt_bool`）；`drag_zoom` 六个参数缺任何一个都明确报错，
+不会下发一个全 0 的框。
+
+#### 2. `DeviceConfig` / `Reboot` 报文是**非法 XML**（嵌套 `<Control>`）
+
+`device_config_update` 与 `device_reboot` 各自拼了一整份 `<Control>` 文档，
+再交给 `send_device_control` —— 后者会**再包一层**外壳。设备实际收到：
+
+```xml
+<Control>
+<CmdType>DeviceConfig</CmdType>
+<SN>…</SN>
+<DeviceID>…</DeviceID>
+<?xml version="1.0" encoding="UTF-8"?>   ← 元素中间夹 XML 声明
+<Control>…</Control>                      ← 嵌套的第二个 Control
+</Control>
+```
+
+非法 XML，真实设备解析即丢弃；而这两个接口一律回 `code:0`（假成功）。
+现在两个 handler 只提供**内层元素**；`Reboot` 同时按国标改成
+`<TeleBoot>Boot</TeleBoot>`（此前是非标的 `<Restart><ChannelID>0</ChannelID></Restart>`）。
+
+实测（假设备侧打印结构与取值）：
+
+```
+DeviceConfig 收到: SIPServerID=34020000002000000001 SIPServerPort=5060 \
+                   SIPServerDomain=3402000000 Transport=UDP CharSet=GB2312
+DeviceConfig 收到: SnapInterval=10
+DeviceControl 收到: TeleBoot=Boot | DeviceID=34020000001320000001
+（无"含非标<ChannelID>"、无"嵌套Control/内层XML声明"告警）
+```
+
+#### 3. `DeviceControl` 的 `<DeviceID>` 必须是**通道编码**
+
+`send_device_control` 早先固定写 `<DeviceID>{device_id}</DeviceID>`，
+还额外附了一个非标 `<ChannelID>`。国标里 `DeviceControl` 只有**一个** `DeviceID`：
+通道级命令（PTZ/录像/布防/关键帧…）填通道编码，设备级命令（TeleBoot/DeviceConfig）
+填设备编码。现在：`channel_id` 非空则填通道、否则填设备，并去掉非标 `<ChannelID>`。
+（实测 PTZ/录像报文里 `DeviceID=34020000001320000001` —— 通道编码。）
+
+#### 4. 批量控制三个按钮发的是同一条目录查询
+
+`POST /api/device/batch/control`：
+
+* `ptzStop`：`CmdType` 写的是 `PTZCmd`、body 是**裸十六进制串**（没有
+  `<PTZCmd>` 元素）—— 报文结构不合法。现为 `CmdType=DeviceControl` +
+  `<PTZCmd>{8 字节}</PTZCmd>`；
+* `reboot`：`CmdType=Reboot` + 空 body —— 现为 `<TeleBoot>Boot</TeleBoot>`；
+* `queryDeviceInfo` / `queryDeviceStatus`：**都调用 `send_catalog_query`**，
+  两个不同的按钮下发的是同一条目录查询。现在分别发 DeviceInfo / DeviceStatus 查询。
+
+#### 5. 假设备（mock）补齐可核对性
+
+* `_on_message` 新增 `DeviceConfig` 分支（此前该 CmdType 没有任何分支，报文被
+  静默丢弃，"配置到底下发了没"看不出来），打印关键字段并回 200 OK（新增
+  `_reply_empty_ok`）；
+* `DeviceControl` 日志除控制元素取值外，还输出结构点：`DeviceID=`、是否含
+  非标 `<ChannelID>`、是否出现**嵌套 `<Control>`/内层 XML 声明** ——
+  上面第 2、3 条缺陷就是靠这三个标记被抓住的。
+
+#### 第五十六轮基线
+
+```
+cargo test                       735 passed / 0 failed（+4）
+cargo build --features postgres/mysql  OK
+npx playwright test              66 passed / 0 failed
+dialect_smoke（sqlite/pg/mysql）  仅剩 2 项已记录的"预期为真"项
+WVP DeviceControl 端点            ✅ teleboot/reset_alarm/i_frame/home_position/drag_zoom 全部实装
+设备控制报文                      ✅ TeleBoot/AlarmCmd/IFrameCmd/HomePosition/DragZoom 元素正确，
+                                    DeviceID=通道编码、无 ChannelID、无嵌套 Control
+批量控制                          ✅ 四个命令各发各的（此前三个按钮同发目录查询）
+```
+
 ### 前端↔后端契约审计：**16 个模块 130 条全部修完**（2026-09-12 第三十九轮）
 
 第二十六轮用"一个模块一个 agent"的方式把 16 个前端 API 模块逐个对后端路由/DTO
@@ -3200,6 +3303,7 @@ vue-tsc --noEmit                 通过
 - 2026-09-12 第五十三轮：`cargo test` —— **722 通过 / 0 失败**（GB28181 录像下载真正打通：on_publish 下发 enable_mp4、on_record_mp4 登记会话文件、新增 /download/file 端点支持 Range、stop 不再提前删会话；实测产出 176KB MP4 并可 206 分段下载）
 - 2026-09-13 第五十四轮：`cargo test` —— **728 通过 / 0 失败**（远程录像控制取值语义修正（前端发 Record 却下发 StopRecord）、对讲/广播 BYE 改为对话内请求并补 ACK、对讲会话结束即回收、SSRC 与 WVP SSRCFactory 对齐（类型位 4 的 10 位数不再溢出 u32）；新增假设备对讲音频接收器与标准库 WS 探针，实测 SDP `y=` == RTP 包头 SSRC == 4200000001）
 - 2026-09-13 第五十五轮：`cargo test` —— **731 通过 / 0 失败**（`/jt1078/terminal/query?deviceId=` 此前恒返回 null（只读 phoneNumber），现按 手机号→终端号→主键 依次回落并新增按终端号查询的方言 SQL；`/api/platform/delete?serverGBId=` 此前是「一行没删却回删除成功」的假成功，现真正删除、删不到即 404；冒烟脚本补幂等前置清理与 3 条新断言）
+- 2026-09-13 第五十六轮：`cargo test` —— **735 通过 / 0 失败**（对照 WVP `DeviceControl.java`/`DeviceServiceImpl`/`SIPCommander` 源码补齐国标设备控制：teleboot/reset_alarm/i_frame/home_position/drag_zoom 五个端点此前完全未挂载；DeviceConfig 与 Reboot 报文此前嵌套两层 `<Control>` 且元素中间夹 `<?xml?>` 声明（非法 XML）；`send_device_control` 的 `<DeviceID>` 固定填设备号并附非标 `<ChannelID>`；批量控制三个按钮同发目录查询。假设备新增 DeviceConfig 分支与报文结构告警）
 - 2026-09-12 第三十一轮：`cargo test` —— **641 通过 / 0 失败**（JT1078 终端/围栏 13 条）
 - 2026-09-12 第三十轮：`cargo test` —— **637 通过 / 0 失败**（设备页 7 条）
 - 2026-09-12 第二十九轮：`cargo test` —— **634 通过 / 0 失败**（云端录像全链路）
