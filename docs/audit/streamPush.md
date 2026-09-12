@@ -1,5 +1,8 @@
 # streamPush.ts 契约审计
 
+> **状态：已修复（2026-09-12 第三十二轮）**。修复中发现 `save_to_gb`/`remove_form_gb`
+> 更新的是**不存在的列**（`gb_stream_push.device_id/channel_id`）→ 接口稳定 500。
+
 审计范围：`web/src/api/streamPush.ts` 的 11 个函数（`/api/push/list`、`/add`、`/update`、`/remove`、`/batchRemove`、`/start`、`/stop`、`/upload`、`/save_to_gb`、`/remove_form_gb`、`/forceClose`）。
 
 路由核对：`src/router.rs:271`（list，get）、`:272`（add，post）、`:273`（update，post）、`:274`（start，get）、`:277`（stop，get）、`:278`（remove，**post**）、`:279`（upload，post）、`:280`（batchRemove，delete）、`:281`（save_to_gb，post）、`:282-285`（remove_form_gb，**delete**）、`:917`（forceClose，get）。前端的 method 声明在 `web/src/api/streamPush.ts:18-100`：`getStreamPushList`(get)、`addStreamPush`(post)、`updateStreamPush`(post)、`deleteStreamPush`(**delete**)、`batchDeleteStreamPush`(delete)、`startStreamPush`(get)、`stopStreamPush`(get)、`uploadStreamPush`(post)、`saveToGb`(post)、`removeFromGb`(**get**)、`forceClose`(get)。**存在 2 处 HTTP method 不一致**（第 1、8 条），其余为字段/体型不一致。已确认无误的端点：`GET /api/push/start`、`GET /api/push/stop`、`GET /api/push/forceClose`（前端只传 `id`，后端 `src/handlers/stream.rs:983-986`、`:1060-1062` 同样只收 `id`）。

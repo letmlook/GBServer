@@ -7,14 +7,11 @@
       <el-form-item label="Stream" prop="stream">
         <el-input v-model="form.stream" />
       </el-form-item>
-      <el-form-item label="源 URL" prop="url">
-        <el-input v-model="form.url" placeholder="rtsp://... 或 rtmp://..." />
-      </el-form-item>
       <el-form-item label="媒体节点">
         <el-input v-model="form.mediaServerId" placeholder="auto / 节点 ID" />
       </el-form-item>
-      <el-form-item label="国标ID">
-        <el-input v-model="form.gbId" placeholder="(可选) 关联到国标设备" />
+      <el-form-item label="拉起离线推流">
+        <el-switch v-model="form.startOfflinePush" />
       </el-form-item>
     </el-form>
     <template #footer>
@@ -48,24 +45,25 @@ const isEdit = computed(() => !!props.push?.id)
 const saving = ref(false)
 const formRef = ref<FormInstance>()
 
+// 与 WVP 的推流编辑框一致：只有 App / Stream / 媒体节点 / 拉起离线推流。
+// 「源 URL」在 WVP 里并不存在（列表展示的是**推流地址**，由 app/stream/节点算出来）。
 const form = reactive<Partial<StreamPush>>({
   app: '',
   stream: '',
-  url: '',
-  mediaServerId: 'auto'
+  mediaServerId: 'auto',
+  startOfflinePush: true
 })
 
 const rules: FormRules = {
   app: [{ required: true, message: '请输入 App', trigger: 'blur' }],
-  stream: [{ required: true, message: '请输入 Stream', trigger: 'blur' }],
-  url: [{ required: true, message: '请输入源 URL', trigger: 'blur' }]
+  stream: [{ required: true, message: '请输入 Stream', trigger: 'blur' }]
 }
 
 function onOpen() {
   if (props.push) {
     Object.assign(form, props.push)
   } else {
-    Object.assign(form, { app: '', stream: '', url: '', mediaServerId: 'auto' })
+    Object.assign(form, { app: '', stream: '', mediaServerId: 'auto', startOfflinePush: true })
   }
 }
 

@@ -951,8 +951,10 @@ pub async fn resource_info(State(state): State<AppState>) -> Json<WVPResult<serd
     let online_channels = db::count_online_channels(&state.pool).await.unwrap_or(0);
 
     // Stream push / proxy counts
-    let push_total = db::stream_push::count_all(&state.pool, None, None).await.unwrap_or(0);
-    let push_online = db::stream_push::count_all(&state.pool, None, Some(true)).await.unwrap_or(0);
+    let push_total = db::stream_push::count_all(&state.pool, None, None, None).await.unwrap_or(0);
+    let push_online = db::stream_push::count_all(&state.pool, None, Some(true), None)
+        .await
+        .unwrap_or(0);
     let proxy_total = db::stream_proxy::count_all(&state.pool, None, None).await.unwrap_or(0);
     let proxy_online = db::stream_proxy::count_all(&state.pool, None, Some(true)).await.unwrap_or(0);
 
@@ -1353,7 +1355,7 @@ pub async fn media_server_load(State(state): State<AppState>) -> Json<WVPResult<
     for server_id in state.list_zlm_servers() {
         // 每节点的推流 / 拉流代理数来自数据库（由 ZLM on_stream_changed 钩子
         // 写入 media_server_id），是真实且按节点归属的。
-        let push = db::stream_push::count_all(&state.pool, Some(&server_id), Some(true))
+        let push = db::stream_push::count_all(&state.pool, Some(&server_id), Some(true), None)
             .await
             .unwrap_or(0);
         let proxy = db::stream_proxy::count_all(&state.pool, Some(&server_id), Some(true))
@@ -1408,7 +1410,7 @@ pub async fn list_all_streams(
     let mut unified: Vec<serde_json::Value> = Vec::new();
 
     // 1) 推流表
-    match stream_push::list_paged(&state.pool, 1, 200, None, None).await {
+    match stream_push::list_paged(&state.pool, 1, 200, None, None, None).await {
         Ok(pushes) => {
             for s in pushes {
                 unified.push(stream_state_to_json("push", &s));

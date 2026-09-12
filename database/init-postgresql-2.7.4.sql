@@ -681,6 +681,8 @@ create table IF NOT EXISTS gb_stream_push
     pushing            bool default false,
     self               bool default false,
     start_offline_push bool default true,
+    gb_device_id       character varying(50),
+    gb_channel_id      character varying(50),
     constraint uk_stream_push_app_stream unique (app, stream)
 );
 COMMENT ON TABLE gb_stream_push IS '推流会话记录';

@@ -288,7 +288,9 @@ CREATE TABLE IF NOT EXISTS gb_stream_push
     pushing            INTEGER     DEFAULT 0,
     self               INTEGER     DEFAULT 0,
     start_offline_push INTEGER     DEFAULT 1,
-    stream_status      TEXT        DEFAULT 'ready'
+    stream_status      TEXT        DEFAULT 'ready',
+    gb_device_id       VARCHAR(50),
+    gb_channel_id      VARCHAR(50)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS uk_stream_push_app_stream ON gb_stream_push(app, stream);
 

@@ -12,7 +12,7 @@
 | 总代码量（src/） | 76,612 行 Rust | `find src -name '*.rs' \| xargs wc -l` |
 | 已注册 HTTP 路由 | 383 条唯一 `/api/...` 路径 | `grep -oE '"/api/[^"]*"' src/router.rs \| sort -u \| wc -l` |
 | Handler 模块 | 29 个（含 `stub.rs` / `device_stub.rs` 两个兼容 shim） | `grep -c 'pub mod' src/handlers/mod.rs` |
-| 后端测试 | **641 通过** / 0 失败（第三十一轮刷新） | `cargo test` |
+| 后端测试 | **644 通过** / 0 失败（第三十二轮刷新） | `cargo test` |
 | 编译状态 | `cargo check` 0 error / **0 warning**；clippy 262；**deprecated 0** | `cargo check` / `cargo clippy --all-targets` |
 | 数据库 feature | SQLite（默认）/ PostgreSQL / MySQL **三者均编译通过** | CI `feature-matrix` job |
 | CI | ⏸️ 工作流已就绪但**按需暂停自动触发**（见 `.github/workflows/ci.yml`） | — |
@@ -1407,6 +1407,43 @@ cargo check --features mysql/postgres  OK
 npx playwright test              34 passed / 0 failed / 0 skipped（真实 ZLM）
 ```
 
+### 推流管理：方法/体型错位 + 一个稳定 500（2026-09-12 第三十二轮）
+
+`streamPush` 模块 12 条修完：
+
+| # | 缺陷 | 修复 / 证据 |
+|---|------|------|
+| 1 | 删除用 `DELETE /api/push/remove`，后端（与 WVP）只注册 POST + query id | 405，推流记录删不掉。前端改 POST |
+| 2 | 「批量删除」把 ids 放 query，后端要求 DELETE + **JSON body** | 415。前端改 `data: {ids}` |
+| 3 | 状态列读 `row.status === 1`，后端返回**布尔** | 永远显示"停止"、「停止」按钮恒禁用。前端改按布尔判断 |
+| 4 | 列表读 `mediaServerId`/`url`，后端是 snake_case 且**没有 url 列** | 「媒体节点」列空白、「源 URL」列空白。后端结构体改 camelCase；前端不再假装有"源 URL"，改为展示后端算出的**推流地址**（`rtmp://<节点>:1935/app/stream`） |
+| 5 | 编辑框要求必填"源 URL"，而 WVP 的推流编辑框只有 App/Stream/节点/拉起离线推流 | 去掉该字段（WVP 里不存在），并补上"拉起离线推流"开关 |
+| 6 | `query` 参数被 DTO 收下却从未用于过滤 | 已实现（`app`/`stream` 模糊匹配，行查询与计数共用一套 WHERE） |
+| 7 | `save_to_gb` / `remove_form_gb` **更新不存在的列** → 稳定 500 `no such column: device_id` | 改为写入真实存在的 `gb_device_id`/`gb_channel_id`（三份 schema 补列 + 启动时 ALTER 兼容旧库），并在列表返回 |
+| 8 | `remove_from_gb` 用 GET、`save_to_gb` 只发 query；`upload` 发 JSON 而后端要 multipart | 前端分别改为 DELETE+body / POST+body / multipart(`file`) |
+
+**实测**（真实后端）：
+
+```
+POST /api/push/add                → 成功
+GET  /api/push/list               → camelCase：mediaServerId/status(false)/startOfflinePush(true)/pushUrl=rtmp://127.0.0.1:1935/push/cam1
+query=cam1 → 1 条；query=nope → 0 条（此前 query 被忽略）
+DELETE /api/push/batchRemove {ids:[1]} → removed:1
+POST /api/push/remove?id=2        → 成功（此前 DELETE 405）
+POST /api/push/save_to_gb {id,deviceId,channelId} → saved:1，列表出现 gbDeviceId/gbChannelId
+DELETE /api/push/remove_form_gb {id} → removed:1，绑定清空（此前两者都 500）
+Playwright                        → 新增 streamPush.spec.ts 2 个；整套 36 passed
+```
+
+#### 第三十二轮基线
+
+```
+cargo test                       644 passed / 0 failed
+cargo check --all-targets        本项目 0 warning
+cargo check --features mysql/postgres  OK
+npx playwright test              36 passed / 0 failed / 0 skipped（真实 ZLM）
+```
+
 ### 前端↔后端契约审计：已完成 4 个模块，剩余 12 个模块（2026-09-12 第二十七轮）
 
 第二十六轮用"一个模块一个 agent"的方式把 16 个前端 API 模块逐个对后端路由/DTO
@@ -1428,7 +1465,7 @@ npx playwright test              34 passed / 0 failed / 0 skipped（真实 ZLM�
 | playback | 3 | ❌ 未修 |
 | region | 9 | ❌ 未修 |
 | streamProxy | 10 | ❌ 未修 |
-| streamPush | 12 | ❌ 未修 |
+| streamPush | 12 | ✅ 已修（第三十二轮） |
 | syCamera | 6 | ❌ 未修 |
 | talk | 1 | ❌ 未修 |
 
@@ -1795,6 +1832,7 @@ vue-tsc --noEmit                 通过
 
 ## 测试基线（每次推进后回填）
 
+- 2026-09-12 第三十二轮：`cargo test` —— **644 通过 / 0 失败**（推流 12 条）
 - 2026-09-12 第三十一轮：`cargo test` —— **641 通过 / 0 失败**（JT1078 终端/围栏 13 条）
 - 2026-09-12 第三十轮：`cargo test` —— **637 通过 / 0 失败**（设备页 7 条）
 - 2026-09-12 第二十九轮：`cargo test` —— **634 通过 / 0 失败**（云端录像全链路）

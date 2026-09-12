@@ -170,6 +170,7 @@ async fn init_db_tables(pool: &db::Pool) -> anyhow::Result<()> {
     // 这两列是 gb_stream_push / gb_stream_proxy 查询的必需列，建列失败
     // 必须如实传播，否则只会推迟成运行期的 "no such column"。
     db::stream_push::ensure_stream_status_column(pool).await?;
+    db::stream_push::ensure_gb_binding_columns(pool).await?;
     db::stream_proxy::ensure_stream_status_column(pool).await?;
 
     // ---- 阶段 4：旧版 SQLite 库升级补建（幂等） ----

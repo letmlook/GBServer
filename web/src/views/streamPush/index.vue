@@ -20,21 +20,21 @@
         <el-table-column prop="stream" label="Stream" min-width="160">
           <template #default="{ row }"><span class="mono">{{ row.stream }}</span></template>
         </el-table-column>
-        <el-table-column prop="url" label="源 URL" min-width="280" show-overflow-tooltip>
-          <template #default="{ row }"><span class="mono">{{ row.url }}</span></template>
+        <el-table-column label="推流地址" min-width="300" show-overflow-tooltip>
+          <template #default="{ row }"><span class="mono">{{ row.pushUrl ?? '-' }}</span></template>
         </el-table-column>
         <el-table-column prop="mediaServerId" label="媒体节点" min-width="140" />
         <el-table-column label="状态" width="100">
           <template #default="{ row }">
-            <el-tag :type="row.status === 1 ? 'success' : 'info'" size="small">
-              {{ row.status === 1 ? '推送中' : '停止' }}
+            <el-tag :type="row.status ? 'success' : 'info'" size="small">
+              {{ row.status ? '推送中' : '停止' }}
             </el-tag>
           </template>
         </el-table-column>
         <el-table-column label="操作" width="320" fixed="right">
           <template #default="{ row }">
-            <el-button link type="success" :disabled="row.status === 1" @click="onStart(row)">启动</el-button>
-            <el-button link type="warning" :disabled="row.status !== 1" @click="onStop(row)">停止</el-button>
+            <el-button link type="success" :disabled="!!row.status" @click="onStart(row)">启动</el-button>
+            <el-button link type="warning" :disabled="!row.status" @click="onStop(row)">停止</el-button>
             <el-button link type="primary" @click="onEdit(row)">编辑</el-button>
             <el-button link type="danger" @click="onRemove(row)">删除</el-button>
           </template>

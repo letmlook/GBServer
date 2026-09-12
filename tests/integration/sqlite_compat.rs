@@ -360,7 +360,7 @@ async fn test_list_all_streams_unified_format() {
         .await
         .expect("stream_push add");
     // Fetch it back and update stream_status to pushing
-    let pushes = stream_push::list_paged(&pool, 1, 10, None, None)
+    let pushes = stream_push::list_paged(&pool, 1, 10, None, None, None)
         .await
         .expect("list_paged push");
     assert!(!pushes.is_empty(), "should have at least one push row");
@@ -389,7 +389,7 @@ async fn test_list_all_streams_unified_format() {
         .expect("update proxy stream_status");
 
     // Re-fetch and verify unified format fields
-    let pushes = stream_push::list_paged(&pool, 1, 10, None, None)
+    let pushes = stream_push::list_paged(&pool, 1, 10, None, None, None)
         .await
         .expect("list_paged push re-fetch");
     let proxies = stream_proxy::list_paged(&pool, 1, 10, None, None)

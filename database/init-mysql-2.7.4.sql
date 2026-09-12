@@ -392,6 +392,8 @@ create table IF NOT EXISTS gb_stream_push
     self               bool default false COMMENT '是否本地发起',
     start_offline_push bool default true COMMENT '是否离线后自动重推',
     stream_status      varchar(32) default 'ready' COMMENT 'Phase 4.5 统一流状态: ready|pushing|active|stopped|failed',
+    gb_device_id       varchar(50) COMMENT '绑定的国标设备ID',
+    gb_channel_id      varchar(50) COMMENT '绑定的国标通道ID',
     constraint uk_stream_push_app_stream unique (app, stream)
 );
 

@@ -29,30 +29,68 @@ pub struct PushListQuery {
 pub async fn push_list(
     State(state): State<AppState>,
     Query(q): Query<PushListQuery>,
-) -> Result<Json<WVPResult<PushListPage>>, AppError> {
+) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
     let page = q.page.unwrap_or(1);
     let count = q.count.unwrap_or(10).min(100);
     let pushing = q.pushing.as_deref().and_then(|s| s.parse().ok());
-    let total = stream_push::count_all(
-        &state.pool,
-        q.mediaServerId.as_deref(),
-        pushing,
-    )
-    .await?;
+    // 关键字过滤此前被 DTO 收下却从未使用（页面按签名传 query 会静默忽略）
+    let query = q.query.as_deref().filter(|s| !s.trim().is_empty());
+    let total = stream_push::count_all(&state.pool, q.mediaServerId.as_deref(), pushing, query).await?;
     let list = stream_push::list_paged(
         &state.pool,
         page,
         count,
         q.mediaServerId.as_deref(),
         pushing,
+        query,
     )
     .await?;
-    Ok(Json(WVPResult::success(PushListPage {
-        total: total as u64,
-        list,
-        page: page as u64,
-        size: count as u64,
-    })))
+    // 每行补一个**推流地址**：WVP 的表里没有 url 列，前端"源 URL"那一列
+    // 在我们这里应该展示"往哪里推"（rtmp://<媒体节点>:1935/<app>/<stream>）。
+    let rows: Vec<serde_json::Value> = list
+        .iter()
+        .map(|p| {
+            let mut v = serde_json::to_value(p).unwrap_or(serde_json::Value::Null);
+            if let Some(obj) = v.as_object_mut() {
+                obj.insert(
+                    "pushUrl".to_string(),
+                    serde_json::json!(build_push_url(&state, p)),
+                );
+            }
+            v
+        })
+        .collect();
+    Ok(Json(WVPResult::success(serde_json::json!({
+        "total": total,
+        "list": rows,
+        "page": page,
+        "size": count,
+    }))))
+}
+
+/// 推流地址：`rtmp://<媒体节点 ip>:1935/<app>/<stream>`。
+///
+/// 媒体节点 ip 取配置里该节点的 ip，取不到就用默认 ZLM 客户端的 ip。
+fn build_push_url(state: &AppState, p: &StreamPush) -> String {
+    let ip = p
+        .media_server_id
+        .as_deref()
+        .and_then(|id| {
+            state
+                .config
+                .zlm
+                .as_ref()
+                .and_then(|cfg| cfg.servers.iter().find(|s| s.id == id))
+                .map(|s| s.ip.clone())
+        })
+        .or_else(|| state.zlm_client.as_ref().map(|c| c.ip.clone()))
+        .unwrap_or_else(|| "127.0.0.1".to_string());
+    format!(
+        "rtmp://{}:1935/{}/{}",
+        ip,
+        p.app.as_deref().unwrap_or("push"),
+        p.stream.as_deref().unwrap_or("")
+    )
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -146,7 +184,7 @@ pub async fn push_update(
     }
 }
 
-/// POST /api/push/remove 请求体
+/// POST /api/push/remove 请求体 / 查询参数（两种都接受）
 #[derive(Debug, Deserialize)]
 pub struct PushRemoveBody {
     pub id: Option<i64>,
@@ -357,33 +395,17 @@ pub async fn push_save_to_gb(
         return Ok(Json(WVPResult::error("缺少必要参数".to_string())));
     }
     
+    // 此前更新的是**不存在的列**（`gb_stream_push.device_id/channel_id`）→
+    // 接口稳定报 500 "no such column: device_id"。现在写入真实存在的
+    // `gb_device_id` / `gb_channel_id`。
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    #[cfg(any(feature = "mysql", feature = "sqlite"))]
-    {
-        sqlx::query(
-            "UPDATE gb_stream_push SET device_id = ?, channel_id = ?, update_time = ? WHERE id = ?",
-        )
-        .bind(device_id)
-        .bind(channel_id)
-        .bind(&now)
-        .bind(id)
-        .execute(&state.pool)
-        .await
-        .map_err(|e| AppError::business(ErrorCode::Error500, format!("绑定国标设备失败: {}", e)))?;
+    let affected =
+        stream_push::set_gb_binding(&state.pool, id, Some(device_id), Some(channel_id), &now).await
+            .map_err(|e| AppError::business(ErrorCode::Error500, format!("绑定国标设备失败: {e}")))?;
+    if affected == 0 {
+        return Err(AppError::business(ErrorCode::Error404, format!("推流不存在: {id}")));
     }
-    #[cfg(feature = "postgres")]
-    {
-        let _ = sqlx::query(
-            "UPDATE gb_stream_push SET device_id = $1, channel_id = $2, update_time = $3 WHERE id = $4",
-        )
-        .bind(device_id)
-        .bind(channel_id)
-        .bind(&now)
-        .bind(id)
-        .execute(&state.pool)
-        .await;
-    }
-    
+
     Ok(Json(WVPResult::success(serde_json::json!({
         "saved": 1,
         "message": "推流已保存到国标"
@@ -403,29 +425,15 @@ pub async fn push_remove_form_gb(
         return Ok(Json(WVPResult::error("缺少必要参数".to_string())));
     }
     
+    // 同 save_to_gb：原来更新的是不存在的列 → 稳定 500。现在清空真实列。
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    #[cfg(any(feature = "mysql", feature = "sqlite"))]
-    {
-        sqlx::query(
-            "UPDATE gb_stream_push SET device_id = NULL, channel_id = NULL, update_time = ? WHERE id = ?",
-        )
-        .bind(&now)
-        .bind(id)
-        .execute(&state.pool)
+    let affected = stream_push::set_gb_binding(&state.pool, id, None, None, &now)
         .await
-        .map_err(|e| AppError::business(ErrorCode::Error500, format!("解绑国标设备失败: {}", e)))?;
+        .map_err(|e| AppError::business(ErrorCode::Error500, format!("解绑国标设备失败: {e}")))?;
+    if affected == 0 {
+        return Err(AppError::business(ErrorCode::Error404, format!("推流不存在: {id}")));
     }
-    #[cfg(feature = "postgres")]
-    {
-        let _ = sqlx::query(
-            "UPDATE gb_stream_push SET device_id = NULL, channel_id = NULL, update_time = $1 WHERE id = $2",
-        )
-        .bind(&now)
-        .bind(id)
-        .execute(&state.pool)
-        .await;
-    }
-    
+
     Ok(Json(WVPResult::success(serde_json::json!({
         "removed": 1,
         "message": "推流已从国标移除"
