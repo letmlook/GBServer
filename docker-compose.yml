@@ -83,12 +83,20 @@ services:
       - "9000:9000/udp"
       # RTP media for GB28181 (UDP)
       #
-      # ⚠️ 必须覆盖 ZLM 实际用于收流的端口池：镜像里 `rtp_proxy.port_range`
-      # 默认为 30000-35000，且该端口池是 **ZLM 启动时**根据 config.ini 建立的
-      # —— 运行期用 setServerConfig 改它不会让已建好的池生效。所以这里发布的
-      # 范围要和 config.ini 里的值一致，否则 ZLM 会把收流端口开在未映射的端口上，
-      # 表现就是"INVITE 200 OK，但平台一直等不到媒体流"。
-      - "30000-35000:30000-35000/udp"
+      # ⚠️ 这里发布的范围**必须**与 ZLM 的 `rtp_proxy.port_range` 一致。
+      # 镜像里的默认值是 30000-35000，而那个端口池是 **ZLM 启动时**按 config.ini
+      # 建立的 —— 运行期用 setServerConfig 改它不会让已建好的池生效。
+      # 两种做法二选一：
+      #   (a) 把这里的范围放开到与 ZLM 一致（如 30000-35000，注意 Docker Desktop
+      #       对上千个端口映射会很吃力，本仓库实测会卡住 daemon）；
+      #   (b) 【推荐】挂一份 config.ini 把 ZLM 的 rtp_proxy.port_range 收窄到
+      #       与本文件一致，例如：
+      #         volumes:
+      #           - ./docker/zlm/config.ini:/opt/media/conf/config.ini:ro
+      # 后端在节点上线时会核对两者并把不一致**明确告警**（见
+      # zlm/health_checker.rs 与 handlers/play.rs 的端口校验），不会再出现
+      # "INVITE 200 OK 但永远收不到媒体"却毫无提示的情况。
+      - "30000-30100:30000-30100/udp"
     environment:
       ZLM_HTTP_SECRET: S63648HLbxckv7YjpPTXXRTOsAVGo0Ia
     networks: [gbservernet]

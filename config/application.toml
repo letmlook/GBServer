@@ -123,11 +123,14 @@ http_port = 8080
 # 后端会在节点上线时把逐事件的 hook URL 自动下发（见 zlm::hook::hook_config_items）。
 hook_url = "http://host.docker.internal:18080/api/zlm/hook"
 # 设备→平台收流的 UDP 端口范围（后端会下发给 ZLM 的 rtp_proxy.port_range）。
-# 必须与 docker-compose 里 zlm 服务发布的 "30000-35000:30000-35000/udp" 一致
-# （也就是镜像 config.ini 里 rtp_proxy.port_range 的默认值），
-# 否则 ZLM 会把收流端口开到未映射的端口上，设备发的 RTP 到不了容器，
+# 必须与 docker-compose 里 zlm 服务发布的 UDP 端口范围一致
+# （compose 默认 "30000-30100:30000-30100/udp"）。
+# 注意：ZLM 镜像 config.ini 里 rtp_proxy.port_range 默认 30000-35000，
+# 而端口池是**启动时**建立的 —— 后端下发的这个值只在 ZLM 启动前写入
+# config.ini 时才会真正决定端口池；运行期下发会被记为"与端口池不一致"并告警。
+# 不一致时 ZLM 可能把收流端口开到未映射的端口上，设备 RTP 到不了容器，
 # 表现为"INVITE 200 OK 但一直等不到媒体"。
-rtp_port_range = "30000-35000"
+rtp_port_range = "30000-30100"
 # 与 docker-compose 当前 ZLM 镜像 conf/config.ini 里实际生效的 api.secret 对齐：
 # `docker exec gbserver-zlm cat /opt/media/conf/config.ini | grep secret=`
 # 镜像版本(2026-06 master)不识别 ZLM_HTTP_SECRET 环境变量,所以容器启动时

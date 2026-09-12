@@ -89,6 +89,32 @@ pub async fn play_start(
 
         tracing::info!("ZLM RTP server opened on port {} (transport={})", rtp_server.port, transport_mode);
 
+        // 端口是否落在"对外发布的收流范围"内。ZLM 的端口池是**启动时**按
+        // config.ini 的 rtp_proxy.port_range 建立的；如果 compose 只发布了
+        // 其中一段（例如 30000-30100 而池子到 35000），ZLM 可能把端口开在
+        // 未映射的端口上 —— 设备 RTP 到不了 ZLM，表现为"INVITE 200 OK 但
+        // 永远等不到媒体"，而且完全没有提示。这里把它变成一条明确的告警。
+        // 按 ip+http_port 找到该客户端对应的节点记录（play 路径用的是默认客户端）
+        if let Ok(servers) = crate::db::media_server::list_media_servers(&state.pool).await {
+            let matched = servers.into_iter().find(|m| {
+                m.ip.as_deref() == Some(zlm_client.ip.as_str())
+                    && m.http_port == Some(zlm_client.http_port as i32)
+            });
+            if let Some(range) = matched.and_then(|m| m.rtp_port_range) {
+                if let Ok((start, end)) = crate::zlm::client::parse_port_range(&range) {
+                    if rtp_server.port != 0 && !(start..=end).contains(&rtp_server.port) {
+                        tracing::error!(
+                            "ZLM 分配的收流端口 {} 不在配置的范围 {} 内：\
+                             容器端口映射与 ZLM 的 rtp_proxy.port_range 不一致，\
+                             设备发出的 RTP 到不了 ZLM（会表现为收流超时）",
+                            rtp_server.port,
+                            range
+                        );
+                    }
+                }
+            }
+        }
+
         // 调用 SIP Server 真正发送 INVITE，并等待设备回复 200 OK
         let sip = &*sip_server;
         // 先生成规范 SSRC（10 位：1 位类型前缀 + 设备号前 9 位），
