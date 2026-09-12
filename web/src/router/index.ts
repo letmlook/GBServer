@@ -91,6 +91,12 @@ const constantRoutes: RouteRecordRaw[] = [
         meta: { title: '推流列表', icon: 'upload' }
       },
       {
+        path: 'region',
+        name: 'Region',
+        component: () => import('@/views/region/index.vue'),
+        meta: { title: '行政区划', icon: 'location' }
+      },
+      {
         path: 'map',
         name: 'Map',
         component: () => import('@/views/map/index.vue'),

@@ -27,7 +27,12 @@ pub struct RegionAdd {
     pub parent_device_id: Option<String>,
 }
 
+/// 更新请求体。前端（与 WVP 的 `Region.java`）用 camelCase，
+/// 这里必须与 `RegionAdd` 一样带别名 —— 否则 `deviceId`/`parentId`/`parentDeviceId`
+/// 全部绑定失败，只有 `name` 生效，而 `parent_id` 会被写成 NULL
+/// （`build_region_tree` 把 `parent_id.is_none()` 当根节点 → 节点被抬到根级）。
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RegionUpdate {
     pub id: Option<i64>,
     pub device_id: Option<String>,
@@ -174,7 +179,7 @@ pub async fn update(
 ) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
     let r = sqlx::query(
-        "UPDATE gb_common_region SET device_id = COALESCE(?, device_id), name = COALESCE(?, name), parent_id = ?, parent_device_id = COALESCE(?, parent_device_id), update_time = ? WHERE id = ?",
+        "UPDATE gb_common_region SET device_id = COALESCE(?, device_id), name = COALESCE(?, name), parent_id = COALESCE(?, parent_id), parent_device_id = COALESCE(?, parent_device_id), update_time = ? WHERE id = ?",
     )
     .bind(device_id)
     .bind(name)
@@ -186,7 +191,7 @@ pub async fn update(
     .await?;
     #[cfg(feature = "postgres")]
     let r = sqlx::query(
-        "UPDATE gb_common_region SET device_id = COALESCE($1, device_id), name = COALESCE($2, name), parent_id = $3, parent_device_id = COALESCE($4, parent_device_id), update_time = $5 WHERE id = $6",
+        "UPDATE gb_common_region SET device_id = COALESCE($1, device_id), name = COALESCE($2, name), parent_id = COALESCE($3, parent_id), parent_device_id = COALESCE($4, parent_device_id), update_time = $5 WHERE id = $6",
     )
     .bind(device_id)
     .bind(name)
@@ -198,7 +203,7 @@ pub async fn update(
     .await?;
     #[cfg(feature = "sqlite")]
     let r = sqlx::query(
-        "UPDATE gb_common_region SET device_id = COALESCE(?, device_id), name = COALESCE(?, name), parent_id = ?, parent_device_id = COALESCE(?, parent_device_id), update_time = ? WHERE id = ?",
+        "UPDATE gb_common_region SET device_id = COALESCE(?, device_id), name = COALESCE(?, name), parent_id = COALESCE(?, parent_id), parent_device_id = COALESCE(?, parent_device_id), update_time = ? WHERE id = ?",
     )
     .bind(device_id)
     .bind(name)

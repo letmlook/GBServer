@@ -77,7 +77,7 @@ const isCollapse = computed(
 
 const ROOT_GROUPS: Array<{ title: string; paths: string[] }> = [
   { title: '监控中心', paths: ['/dashboard', '/live', '/playback', '/cloudRecord', '/map'] },
-  { title: '资源管理', paths: ['/device', '/channel', '/mediaServer', '/recordPlan', '/streamProxy', '/streamPush'] },
+  { title: '资源管理', paths: ['/device', '/channel', '/region', '/mediaServer', '/recordPlan', '/streamProxy', '/streamPush'] },
   { title: '运维中心', paths: ['/platform', '/alarm', '/jtDevice', '/user', '/operations'] }
 ]
 

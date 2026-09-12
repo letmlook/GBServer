@@ -9,10 +9,10 @@
 
 | 维度 | 数值 | 验证方式 |
 |------|------|----------|
-| 总代码量（src/） | 77,768 行 Rust | `find src -name '*.rs' \| xargs wc -l` |
-| 已注册 HTTP 路由 | 385 条唯一 `/api/...` 路径 | `grep -oE '"/api/[^"]*"' src/router.rs \| sort -u \| wc -l` |
+| 总代码量（src/） | 78,106 行 Rust | `find src -name '*.rs' \| xargs wc -l` |
+| 已注册 HTTP 路由 | 386 条唯一 `/api/...` 路径 | `grep -oE '"/api/[^"]*"' src/router.rs \| sort -u \| wc -l` |
 | Handler 模块 | 29 个（含 `stub.rs` / `device_stub.rs` 两个兼容 shim） | `grep -c 'pub mod' src/handlers/mod.rs` |
-| 后端测试 | **665 通过** / 0 失败（第三十四轮刷新） | `cargo test` |
+| 后端测试 | **670 通过** / 0 失败（第三十五轮刷新） | `cargo test` |
 | 编译状态 | `cargo check` 0 error / **0 warning**；clippy 262；**deprecated 0** | `cargo check` / `cargo clippy --all-targets` |
 | 数据库 feature | SQLite（默认）/ PostgreSQL / MySQL **三者均编译通过** | CI `feature-matrix` job |
 | CI | ⏸️ 工作流已就绪但**按需暂停自动触发**（见 `.github/workflows/ci.yml`） | — |
@@ -1554,12 +1554,56 @@ cargo check --features mysql/postgres  OK
 npx playwright test              44 passed / 0 failed / 0 skipped（真实 ZLM）
 ```
 
-### 前端↔后端契约审计：已完成 11 个模块，剩余 6 个模块 / 33 条（2026-09-12 第三十四轮刷新）
+### 行政区划 / 业务分组：删除 405 + 编辑抬根 + 模块没有界面（2026-09-12 第三十五轮）
+
+`region` 模块 8 条契约修完，另外**把这个模块缺失的界面补上了** —— 此前 12 个 API
+函数里只有 `getRegionTreeList` 有调用方（地图页），区域/分组的增删改在 Vue3 前端不可达。
+
+| # | 缺陷 | 修复 / 证据 |
+|---|------|------|
+| 1/2 | `deleteRegion` / `deleteGroup` 用 GET，后端只注册 DELETE | 405，删除永远失败。前端改 DELETE（实测 `GET=405 / DELETE=200`） |
+| 3/4 | `RegionUpdate`/`GroupUpdate` 没有 camelCase 别名 → 只有 `name` 生效；`parent_id = ?` 直接把 NULL 写进去 | **只改名字会把节点从子级抬到根级**。DTO 加 camelCase；`parent_id` 改 `COALESCE`；移到顶级用前端既有的 `-1` 哨兵（`build_region_tree` 本来就认） |
+| 5/6 | `tree/query` 的参数 DTO 只有 page/count，前端传的 `parentId` 被静默丢弃 | 永远返回"全量第 1 页"。新增 `TreeNodeQuery`（`parentId` + WVP 的 `query`），真正按父节点/关键字过滤并分页 |
+| 7/8 | 前端把 `tree/query` 的返回类型声明成数组，实际是 `{total, list}` | 改 `TreeNodePage<T>`；后端补 `pageNum/pageSize/pages`（与 WVP 的 `PageInfo` 一致） |
+| + | `GET /api/group/one` 不存在（只有 `region/one`） | 补上 |
+| + | **整个模块没有界面** | 新增 `web/src/views/region/`（两个 tab、树形增删改、过滤、一键同步行政区划）+ 路由 `/region` + 侧边栏入口 |
+
+**实测**（真实后端）：
+
+```
+POST /api/region/add  顶级(parentId=-1) + 子级(parentId=1) → 成功
+GET  /api/region/tree/query?parentId=-1   → total 1（只有顶级）
+GET  /api/region/tree/query?parentId=1    → total 1（只有子级）
+GET  /api/region/tree/query?query=测试市  → total 1（关键字）
+POST /api/region/update {id, name}        → parent_id 仍为 1（此前被清成 NULL）
+POST /api/region/update {id, deviceId, parentDeviceId} → 两个字段都真的落库
+GET  /api/region/delete?id=2 → 405；DELETE → 200
+GET  /api/group/one?id=1 → 真实行（此前 404）
+POST /api/group/update {businessGroup:"3", civilCode:"340200"} → 落库且 parent_id 保留
+GET  /api/region/sync → {"count":1,...}（真实同步行政区划）
+Playwright → 新增 region.spec.ts 5 条；整套 50 passed
+```
+
+新页面在真渲染下还暴露了两个只在浏览器里才看得见的问题（已一并修掉）：两个 tab 的
+`el-tree` 不能共用一个 `ref` 名（Vue 只保留最后注册的那个，`filter()` 会作用在隐藏的
+那棵树上，搜索框看起来完全没反应），也不能共用一个 `data`（`el-tabs` 两个 pane 同时
+存在于 DOM，切换后隐藏的树也会跟着渲染另一棵树的数据）。
+
+#### 第三十五轮基线
+
+```
+cargo test                       670 passed / 0 failed
+cargo check --all-targets        本项目 0 warning
+cargo check --features mysql/postgres  OK
+npx playwright test              50 passed / 0 failed / 0 skipped（真实 ZLM）
+```
+
+### 前端↔后端契约审计：已完成 12 个模块，剩余 5 个模块 / 24 条（2026-09-12 第三十五轮刷新）
 
 第二十六轮用"一个模块一个 agent"的方式把 16 个前端 API 模块逐个对后端路由/DTO
 做了一遍审计（证据文件在 `docs/audit/*.md`，共 **130 条**），并按影响排序逐批修复。
-当前已修 11 个模块（97 条），剩 `log`(7) / `mediaServer`(7) /
-`playback`(3) / `region`(9) / `syCamera`(6) / `talk`(1) 共 **33 条**：
+当前已修 12 个模块（106 条），剩 `log`(7) / `mediaServer`(7) /
+`playback`(3) / `syCamera`(6) / `talk`(1) 共 **24 条**：
 
 | 模块 | 条数 | 状态 |
 |------|------|------|
@@ -1575,7 +1619,7 @@ npx playwright test              44 passed / 0 failed / 0 skipped（真实 ZLM�
 | mediaServer | 7 | ❌ 未修 |
 | platform | 11 | ✅ 已修（第三十四轮） |
 | playback | 3 | ❌ 未修 |
-| region | 9 | ❌ 未修 |
+| region | 9 | ✅ 已修（第三十五轮，另补了整块缺失的界面） |
 | streamProxy | 10 | ✅ 已修（第三十三轮） |
 | streamPush | 12 | ✅ 已修（第三十二轮） |
 | syCamera | 6 | ❌ 未修 |
@@ -1602,10 +1646,12 @@ npx playwright test              44 passed / 0 failed / 0 skipped（真实 ZLM�
 5. ~~`platform`~~：✅ 已于第三十四轮修复（`serverGbId` 拼写、`expires` 数字/字符串、
    `realm`→`serverGBDomain`、心跳三参数换成真实的 `expires`/`keepTimeout`、
    注销改为真的发 `Expires: 0` REGISTER、列表与详情统一字段）。
-6. `log` / `mediaServer` / `syCamera` / `playback` / `region` / `talk`：
+6. `log` / `mediaServer` / `syCamera` / `playback` / `talk`：
    主要是响应键名与筛选参数不匹配（系统信息页内存/磁盘/版本恒为 0 或 '-'、
    媒体节点“检测”探测错地址、仪表盘“重点通道”卡片跳转失败、
-   录像列表“名称”列空白、区域/分组删除 405、对讲起播与音频 WS 的时序竞争）。
+   录像列表“名称”列空白、对讲起播与音频 WS 的时序竞争）。
+   ~~`region`~~：✅ 第三十五轮已修（删除 405、update 抬根、tree/query 忽略 parentId，
+   并补上了整块缺失的行政区划/业务分组管理界面）。
    其中 region/playback/mediaServer 的多项**当前无调用方**。
 
 **运行期核验缺口（本轮新增/仍未闭环）**：
@@ -1947,6 +1993,7 @@ vue-tsc --noEmit                 通过
 - 2026-09-12 第三十二轮：`cargo test` —— **644 通过 / 0 失败**（推流 12 条）
 - 2026-09-12 第三十三轮：`cargo test` —— **658 通过 / 0 失败**（拉流代理 10 条 + `enable_audio`/`TerminalQuery` 连带修复；e2e 40）
 - 2026-09-12 第三十四轮：`cargo test` —— **665 通过 / 0 失败**（级联平台 11 条；e2e 44）
+- 2026-09-12 第三十五轮：`cargo test` —— **670 通过 / 0 失败**（行政区划/业务分组 8 条 + 补全管理界面；e2e 50）
 - 2026-09-12 第三十一轮：`cargo test` —— **641 通过 / 0 失败**（JT1078 终端/围栏 13 条）
 - 2026-09-12 第三十轮：`cargo test` —— **637 通过 / 0 失败**（设备页 7 条）
 - 2026-09-12 第二十九轮：`cargo test` —— **634 通过 / 0 失败**（云端录像全链路）

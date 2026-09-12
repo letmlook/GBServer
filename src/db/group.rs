@@ -33,7 +33,10 @@ pub struct GroupAdd {
     pub civil_code: Option<String>,
 }
 
+/// 更新请求体（同 `RegionUpdate`：必须带 camelCase 别名，
+/// 否则只有 `name` 生效、`parent_id` 被清成 NULL → 分组被抬到根级）。
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GroupUpdate {
     pub id: Option<i64>,
     pub device_id: Option<String>,
@@ -192,7 +195,7 @@ pub async fn update(
 ) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
     let r = sqlx::query(
-        "UPDATE gb_common_group SET device_id = COALESCE(?, device_id), name = COALESCE(?, name), parent_id = ?, parent_device_id = COALESCE(?, parent_device_id), business_group = COALESCE(?, business_group), civil_code = COALESCE(?, civil_code), update_time = ? WHERE id = ?",
+        "UPDATE gb_common_group SET device_id = COALESCE(?, device_id), name = COALESCE(?, name), parent_id = COALESCE(?, parent_id), parent_device_id = COALESCE(?, parent_device_id), business_group = COALESCE(?, business_group), civil_code = COALESCE(?, civil_code), update_time = ? WHERE id = ?",
     )
     .bind(device_id)
     .bind(name)
@@ -206,7 +209,7 @@ pub async fn update(
     .await?;
     #[cfg(feature = "postgres")]
     let r = sqlx::query(
-        "UPDATE gb_common_group SET device_id = COALESCE($1, device_id), name = COALESCE($2, name), parent_id = $3, parent_device_id = COALESCE($4, parent_device_id), business_group = COALESCE($5, business_group), civil_code = COALESCE($6, civil_code), update_time = $7 WHERE id = $8",
+        "UPDATE gb_common_group SET device_id = COALESCE($1, device_id), name = COALESCE($2, name), parent_id = COALESCE($3, parent_id), parent_device_id = COALESCE($4, parent_device_id), business_group = COALESCE($5, business_group), civil_code = COALESCE($6, civil_code), update_time = $7 WHERE id = $8",
     )
     .bind(device_id)
     .bind(name)
@@ -220,7 +223,7 @@ pub async fn update(
     .await?;
     #[cfg(feature = "sqlite")]
     let r = sqlx::query(
-        "UPDATE gb_common_group SET device_id = COALESCE(?, device_id), name = COALESCE(?, name), parent_id = ?, parent_device_id = COALESCE(?, parent_device_id), business_group = COALESCE(?, business_group), civil_code = COALESCE(?, civil_code), update_time = ? WHERE id = ?",
+        "UPDATE gb_common_group SET device_id = COALESCE(?, device_id), name = COALESCE(?, name), parent_id = COALESCE(?, parent_id), parent_device_id = COALESCE(?, parent_device_id), business_group = COALESCE(?, business_group), civil_code = COALESCE(?, civil_code), update_time = ? WHERE id = ?",
     )
     .bind(device_id)
     .bind(name)

@@ -1,5 +1,25 @@
 # region.ts 契约审计
 
+> **状态：已修复（2026-09-12 第三十五轮）**。9 条全部落地，并补上了**整个模块缺失的界面**：
+> 此前 12 个 API 函数里只有 `getRegionTreeList` 有调用方（地图页），行政区划/业务分组的
+> 增删改在 Vue3 前端**完全不可达**。本轮新增 `web/src/views/region/`（行政区划 + 业务分组
+> 两个 tab、树形展示、增删改、按名称/国标编码过滤、一键同步行政区划），并接到路由与侧边栏。
+>
+> 契约层面：
+> * `deleteRegion` / `deleteGroup` 改用 DELETE（实测 GET→405、DELETE→200）；
+> * `getRegionTreeQuery` / `getGroupTreeQuery` 返回类型改为分页对象
+>   `{total, list, pageNum, pageSize, pages}`（与 WVP 的 `PageInfo` 一致）；
+> * `RegionUpdate` / `GroupUpdate` 补 camelCase；`parent_id` 改为 `COALESCE(?, parent_id)`
+>   —— 此前"只改名字"会把节点从子级抬到根级（`parent_id` 被写成 NULL），
+>   移到顶级改用前端既有的 `-1` 哨兵（`build_region_tree` 本来就认它）；
+> * `tree/query` 补齐 `parentId`（并支持 WVP 的 `query` 关键字）与分页；
+> * 顺带补 `GET /api/group/one`（此前只有 region 有 one 接口）。
+>
+> 新页面还暴露了两个只有真渲染才看得见的问题（已修）：两个 tab 的 `el-tree`
+> 不能共用一个 `ref` 名（Vue 只保留最后注册的那个，`filter()` 会作用在隐藏的那棵树上），
+> 也不能共用一个 `data`（`el-tabs` 两个 pane 同时存在 DOM 里，切换后隐藏的树也会
+> 跟着渲染另一棵树的数据）。
+
 审计对象：`web/src/api/region.ts`（12 个导出函数：8 个 region + 4 个 group）。
 后端路由：`src/router.rs`（`api_protected` 链，`src/router.rs:69` 起）。
 真值交叉验证：WVP-PRO Java 源码 `/tmp/wvpsrc/wvp-GB28181-pro-master`。
@@ -81,3 +101,27 @@
 - `POST /api/group/add`（`web/src/api/region.ts:106-112` ↔ `src/db/group.rs:22-34`）：`GroupAdd` 已带 camelCase alias，一致。
 - `GET /api/region/path`（`web/src/api/region.ts:32-38`，参数 `id` ↔ `src/handlers/stub.rs:434-437` 的 `RegionQuery { id }`）：后端接受 `id`，一致。
 - `GET /api/region/sync`（`web/src/api/region.ts:72-77` 期望 `{ count }` ↔ `src/handlers/region.rs:142-146` 返回 `count`）：一致。
+
+
+---
+
+## 修复对照（第三十五轮）
+
+| # | 问题 | 修复 |
+|---|------|------|
+| 1 | `deleteRegion` 用 GET，后端只注册 DELETE → 405 | 前端改 DELETE（实测 `GET=405 / DELETE=200`） |
+| 2 | `deleteGroup` 同上 | 同上 |
+| 3 | `RegionUpdate` 无 camelCase 别名 → 只有 `name` 生效，`parent_id` 被写 NULL（节点被抬到根级） | DTO 加 `rename_all = "camelCase"`；`parent_id` 改 `COALESCE(?, parent_id)`；移到顶级用 `-1` 哨兵 |
+| 4 | `GroupUpdate` 同上（另有 `businessGroup`/`civilCode` 丢失） | 同上 |
+| 5 | `tree/query` 的 DTO 只有 page/count，`parentId` 被静默丢弃 | 新增 `TreeNodeQuery`（`parentId` 别名 + WVP 的 `query`），真正按父节点/关键字过滤 |
+| 6 | 同上（group） | 同上 |
+| 7 | `getRegionTreeQuery` 声明返回 `Region[]`，实际是 `{total,list}` | 前端类型改 `TreeNodePage<Region>`；后端补 `pageNum/pageSize/pages` |
+| 8 | 同上（group） | 同上 |
+
+本轮另外补上的两项（审计里没有单列，但属于"功能不完整"）：
+
+* `GET /api/group/one?id=` 此前**不存在**（只有 `region/one`），已按同样形状补上；
+* **整个模块没有界面**：12 个 API 里 11 个无调用方。新增
+  `web/src/views/region/index.vue` + `NodeEditDialog.vue`（行政区划 / 业务分组两个 tab、
+  树形展示、新增子节点、编辑、删除、按名称或国标编码过滤、一键同步行政区划），
+  注册路由 `/region` 与侧边栏入口；Playwright 新增 `region.spec.ts` 5 条。

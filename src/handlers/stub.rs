@@ -573,24 +573,68 @@ pub async fn region_path(
     Ok(Json(WVPResult::success(serde_json::Value::Array(path))))
 }
 
-/// GET /api/region/tree/query
+/// 树查询（`/region/tree/query`、`/group/tree/query`）的查询参数。
+///
+/// WVP 用 `query` 关键字；本平台前端历史上传 `parentId`。两个都支持：
+/// 给了 `parentId` 即"取该父节点下的子节点"（`-1` 是前端的"顶级"哨兵，
+/// 与 `build_region_tree` 一致），否则返回全量。
 #[derive(Debug, Deserialize)]
-pub struct PageQuery {
+pub struct TreeNodeQuery {
     pub page: Option<u32>,
     pub count: Option<u32>,
+    pub query: Option<String>,
+    #[serde(alias = "parentId")]
+    pub parent_id: Option<i32>,
+}
+
+/// 分页窗口：page 从 1 开始，count 上限 100。返回 (page, count, start, end)。
+fn page_bounds(page: Option<u32>, count: Option<u32>, len: usize) -> (u32, u32, usize, usize) {
+    let page = page.unwrap_or(1).max(1);
+    let count = count.unwrap_or(10).min(100);
+    let start = ((page - 1) as usize)
+        .saturating_mul(count as usize)
+        .min(len);
+    let end = (start + count as usize).min(len);
+    (page, count, start, end)
+}
+
+/// 关键字 / 父节点筛选（区域与分组共用）。
+fn tree_node_matches(
+    parent_id: Option<i32>,
+    query: Option<&str>,
+    node_parent: Option<i32>,
+    device_id: &str,
+    name: &str,
+) -> bool {
+    let parent_ok = match parent_id {
+        // `-1` = 前端的"顶级"哨兵
+        Some(-1) => node_parent.is_none() || node_parent == Some(-1),
+        Some(pid) => node_parent == Some(pid),
+        None => true,
+    };
+    if !parent_ok {
+        return false;
+    }
+    match query.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(kw) => name.contains(kw) || device_id.contains(kw),
+        None => true,
+    }
 }
 
 pub async fn region_tree_query(
     State(state): State<AppState>,
-    Query(q): Query<PageQuery>,
+    Query(q): Query<TreeNodeQuery>,
 ) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
-    let list: Vec<Region> = region::list_all(&state.pool).await?;
-    let total = list.len() as u64;
-    let page = q.page.unwrap_or(1);
-    let count = q.count.unwrap_or(10).min(100);
-    let start = ((page - 1) * count) as usize;
-    let end = (start + count as usize).min(list.len());
-    let list: Vec<serde_json::Value> = list[start..end]
+    let all: Vec<Region> = region::list_all(&state.pool).await?;
+    let filtered: Vec<&Region> = all
+        .iter()
+        .filter(|r| {
+            tree_node_matches(q.parent_id, q.query.as_deref(), r.parent_id, &r.device_id, &r.name)
+        })
+        .collect();
+    let total = filtered.len() as u64;
+    let (page, count, start, end) = page_bounds(q.page, q.count, filtered.len());
+    let list: Vec<serde_json::Value> = filtered[start..end]
         .iter()
         .map(|r| {
             serde_json::json!({
@@ -604,9 +648,13 @@ pub async fn region_tree_query(
             })
         })
         .collect();
+    // PageInfo 兼容字段：WVP 这两个接口返回的就是 PageHelper 的 PageInfo
     Ok(Json(WVPResult::success(serde_json::json!({
         "total": total,
-        "list": list
+        "list": list,
+        "pageNum": page,
+        "pageSize": count,
+        "pages": if count == 0 { 0 } else { (total as u32 + count - 1) / count }
     }))))
 }
 
@@ -692,6 +740,34 @@ pub async fn group_update(
     Ok(Json(WVPResult::<()>::success_empty()))
 }
 
+/// GET /api/group/one?id= —— 与 `/api/region/one` 对齐（此前只有 region 有，
+/// 前端想按 id 读单个分组只能拉全量树再自己找）。
+pub async fn group_one(
+    State(state): State<AppState>,
+    Query(q): Query<IdQuery>,
+) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+    let id = q
+        .id
+        .ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id"))?;
+    let g: Option<Group> = group::get_by_id(&state.pool, id).await?;
+    Ok(Json(WVPResult::success(
+        g.map(|x| {
+            serde_json::json!({
+                "id": x.id,
+                "deviceId": x.device_id,
+                "name": x.name,
+                "parentId": x.parent_id,
+                "parentDeviceId": x.parent_device_id,
+                "businessGroup": x.business_group,
+                "civilCode": x.civil_code,
+                "createTime": x.create_time,
+                "updateTime": x.update_time
+            })
+        })
+        .unwrap_or(serde_json::Value::Null),
+    )))
+}
+
 /// DELETE /api/group/delete?id=
 #[derive(Debug, Deserialize)]
 pub struct IdQuery {
@@ -736,18 +812,21 @@ pub async fn group_path(
     Ok(Json(WVPResult::success(serde_json::Value::Array(path))))
 }
 
-/// GET /api/group/tree/query
+/// GET /api/group/tree/query（参数同 `region_tree_query`）
 pub async fn group_tree_query(
     State(state): State<AppState>,
-    Query(q): Query<PageQuery>,
+    Query(q): Query<TreeNodeQuery>,
 ) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
-    let list: Vec<Group> = group::list_all(&state.pool).await?;
-    let total = list.len() as u64;
-    let page = q.page.unwrap_or(1);
-    let count = q.count.unwrap_or(10).min(100);
-    let start = ((page - 1) * count) as usize;
-    let end = (start + count as usize).min(list.len());
-    let list: Vec<serde_json::Value> = list[start..end]
+    let all: Vec<Group> = group::list_all(&state.pool).await?;
+    let filtered: Vec<&Group> = all
+        .iter()
+        .filter(|g| {
+            tree_node_matches(q.parent_id, q.query.as_deref(), g.parent_id, &g.device_id, &g.name)
+        })
+        .collect();
+    let total = filtered.len() as u64;
+    let (page, count, start, end) = page_bounds(q.page, q.count, filtered.len());
+    let list: Vec<serde_json::Value> = filtered[start..end]
         .iter()
         .map(|g| {
             serde_json::json!({
@@ -765,7 +844,10 @@ pub async fn group_tree_query(
         .collect();
     Ok(Json(WVPResult::success(serde_json::json!({
         "total": total,
-        "list": list
+        "list": list,
+        "pageNum": page,
+        "pageSize": count,
+        "pages": if count == 0 { 0 } else { (total as u32 + count - 1) / count }
     }))))
 }
 
@@ -3215,5 +3297,252 @@ mod cloud_record_url_tests {
     #[test]
     fn test_url_encode_component_keeps_slashes() {
         assert_eq!(url_encode_component("record/a b.mp4"), "record/a%20b.mp4");
+    }
+}
+
+#[cfg(test)]
+mod region_group_contract_tests {
+    use super::*;
+    use crate::test_support::app_state;
+
+    async fn seed(state: &AppState, prefix: &str, is_region: bool) -> (i32, i32) {
+        // 顶级 + 子级，用于验证 parentId 过滤与"部分更新不改动上级"
+        let root_dev = format!("{prefix}000000000000000001");
+        let child_dev = format!("{prefix}000000000000000002");
+        let now = "2026-01-01 00:00:00";
+        if is_region {
+            region::add(&state.pool, &root_dev, "顶级区域", None, None, now)
+                .await
+                .unwrap();
+            let root = region::get_by_device_id(&state.pool, &root_dev)
+                .await
+                .unwrap()
+                .unwrap();
+            region::add(
+                &state.pool,
+                &child_dev,
+                "子区域",
+                Some(root.id),
+                Some(&root_dev),
+                now,
+            )
+            .await
+            .unwrap();
+            let child = region::get_by_device_id(&state.pool, &child_dev)
+                .await
+                .unwrap()
+                .unwrap();
+            (root.id, child.id)
+        } else {
+            group::add(&state.pool, &root_dev, "顶级分组", None, None, "0", now, None)
+                .await
+                .unwrap();
+            let root = group::get_by_device_id(&state.pool, &root_dev)
+                .await
+                .unwrap()
+                .unwrap();
+            group::add(
+                &state.pool,
+                &child_dev,
+                "子分组",
+                Some(root.id),
+                Some(&root_dev),
+                "1",
+                now,
+                None,
+            )
+            .await
+            .unwrap();
+            let child = group::get_by_device_id(&state.pool, &child_dev)
+                .await
+                .unwrap()
+                .unwrap();
+            (root.id, child.id)
+        }
+    }
+
+    /// `RegionUpdate` / `GroupUpdate` 必须收 camelCase（前端与 WVP 的字段名），
+    /// 否则只有 `name` 生效、`parent_id` 被清成 NULL，节点被抬到根级。
+    #[test]
+    fn update_dtos_accept_camel_case() {
+        let r: region::RegionUpdate = serde_json::from_value(serde_json::json!({
+            "id": 3, "deviceId": "34020000001320000009", "name": "x",
+            "parentId": 7, "parentDeviceId": "34020000001320000008"
+        }))
+        .unwrap();
+        assert_eq!(r.id, Some(3));
+        assert_eq!(r.device_id.as_deref(), Some("34020000001320000009"));
+        assert_eq!(r.parent_id, Some(7));
+        assert_eq!(r.parent_device_id.as_deref(), Some("34020000001320000008"));
+
+        let g: group::GroupUpdate = serde_json::from_value(serde_json::json!({
+            "id": 4, "deviceId": "34020000001320000007", "name": "y",
+            "parentId": 8, "businessGroup": "2", "civilCode": "340200"
+        }))
+        .unwrap();
+        assert_eq!(g.device_id.as_deref(), Some("34020000001320000007"));
+        assert_eq!(g.parent_id, Some(8));
+        assert_eq!(g.business_group.as_deref(), Some("2"));
+        assert_eq!(g.civil_code.as_deref(), Some("340200"));
+    }
+
+    /// 只改名字不能把节点搬走（此前 `parent_id = ?` 直接写 NULL）。
+    #[tokio::test]
+    async fn region_update_keeps_parent_when_not_provided() {
+        let state = app_state().await;
+        let (root_id, child_id) = seed(&state, "34", true).await;
+
+        let body: region::RegionUpdate =
+            serde_json::from_value(serde_json::json!({"id": child_id, "name": "改名了"})).unwrap();
+        let _ = region_update(State(state.clone()), Json(body)).await.unwrap();
+
+        let child = region::get_by_id(&state.pool, child_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(child.name, "改名了");
+        assert_eq!(child.parent_id, Some(root_id), "未提供 parentId 不能被清空");
+
+        // 显式移到顶级：前端用 -1 哨兵
+        let body: region::RegionUpdate =
+            serde_json::from_value(serde_json::json!({"id": child_id, "parentId": -1})).unwrap();
+        let _ = region_update(State(state.clone()), Json(body)).await.unwrap();
+        let child = region::get_by_id(&state.pool, child_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(child.parent_id, Some(-1));
+    }
+
+    #[tokio::test]
+    async fn group_update_keeps_parent_when_not_provided() {
+        let state = app_state().await;
+        let (root_id, child_id) = seed(&state, "35", false).await;
+
+        let body: group::GroupUpdate =
+            serde_json::from_value(serde_json::json!({"id": child_id, "name": "改名了", "businessGroup": "9"}))
+                .unwrap();
+        let _ = group_update(State(state.clone()), Json(body)).await.unwrap();
+
+        let child = group::get_by_id(&state.pool, child_id).await.unwrap().unwrap();
+        assert_eq!(child.name, "改名了");
+        assert_eq!(child.parent_id, Some(root_id));
+        assert_eq!(child.business_group, "9");
+        assert_eq!(all_group_count(&state).await, 2);
+    }
+
+    async fn all_group_count(state: &AppState) -> usize {
+        group::list_all(&state.pool).await.unwrap().len()
+    }
+
+    /// `tree/query` 此前只认 page/count：前端传的 `parentId` 被静默丢弃，
+    /// 永远返回"全量第 1 页"。
+    #[tokio::test]
+    async fn tree_query_filters_by_parent_and_keyword() {
+        let state = app_state().await;
+        let (root_id, _child_id) = seed(&state, "36", true).await;
+
+        // 全量
+        let all = region_tree_query(
+            State(state.clone()),
+            Query(TreeNodeQuery { page: None, count: None, query: None, parent_id: None }),
+        )
+        .await
+        .unwrap();
+        let data = all.0.data.unwrap();
+        assert_eq!(data["total"], 2);
+        assert_eq!(data["pageNum"], 1);
+        assert_eq!(data["pages"], 1);
+
+        // 顶级（-1 哨兵）
+        let roots = region_tree_query(
+            State(state.clone()),
+            Query(TreeNodeQuery {
+                page: None,
+                count: None,
+                query: None,
+                parent_id: Some(-1),
+            }),
+        )
+        .await
+        .unwrap();
+        let data = roots.0.data.unwrap();
+        assert_eq!(data["total"], 1);
+        assert_eq!(data["list"][0]["id"], root_id);
+        assert_eq!(data["list"][0]["parentId"], serde_json::Value::Null);
+
+        // 某个父节点下的子节点
+        let children = region_tree_query(
+            State(state.clone()),
+            Query(TreeNodeQuery {
+                page: None,
+                count: None,
+                query: None,
+                parent_id: Some(root_id),
+            }),
+        )
+        .await
+        .unwrap();
+        let data = children.0.data.unwrap();
+        assert_eq!(data["total"], 1);
+        assert_eq!(data["list"][0]["name"], "子区域");
+
+        // 关键字（WVP 的 query）
+        let kw = region_tree_query(
+            State(state.clone()),
+            Query(TreeNodeQuery {
+                page: None,
+                count: None,
+                query: Some("子区域".to_string()),
+                parent_id: None,
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(kw.0.data.unwrap()["total"], 1);
+
+        // 分页
+        let paged = region_tree_query(
+            State(state.clone()),
+            Query(TreeNodeQuery {
+                page: Some(2),
+                count: Some(1),
+                query: None,
+                parent_id: None,
+            }),
+        )
+        .await
+        .unwrap();
+        let data = paged.0.data.unwrap();
+        assert_eq!(data["total"], 2);
+        assert_eq!(data["list"].as_array().unwrap().len(), 1);
+
+        // group 同款
+        let _ = seed(&state, "37", false).await;
+        let g = group_tree_query(
+            State(state.clone()),
+            Query(TreeNodeQuery {
+                page: None,
+                count: None,
+                query: Some("顶级分组".to_string()),
+                parent_id: None,
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(g.0.data.unwrap()["total"], 1);
+    }
+
+    /// `/api/group/one` 此前不存在（只有 region 有）。
+    #[tokio::test]
+    async fn group_one_returns_real_row() {
+        let state = app_state().await;
+        let (root_id, _) = seed(&state, "38", false).await;
+        let res = group_one(State(state.clone()), Query(IdQuery { id: Some(root_id), plan_id: None, page: None, count: None }))
+            .await
+            .expect("group_one");
+        let data = res.0.data.unwrap();
+        assert_eq!(data["id"], root_id);
+        assert_eq!(data["name"], "顶级分组");
     }
 }

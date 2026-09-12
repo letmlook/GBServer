@@ -39,6 +39,7 @@ const ADMIN_PAGES: ReadonlyArray<{ name: string; path: string }> = [
   { name: 'platform',     path: '/platform' },
   { name: 'streamProxy',  path: '/streamProxy' },
   { name: 'streamPush',   path: '/streamPush' },
+  { name: 'region',       path: '/region' },
   { name: 'map',          path: '/map' },
   { name: 'alarm',        path: '/alarm' },
   { name: 'jtDevice',     path: '/jtDevice' },

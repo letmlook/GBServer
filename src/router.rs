@@ -382,6 +382,7 @@ pub fn app(state: AppState) -> Router<AppState> {
         .route("/api/region/path", get(stub::region_path))
         .route("/api/region/tree/query", get(stub::region_tree_query))
         .route("/api/group/tree/list", get(stub::group_tree_list))
+        .route("/api/group/one", get(stub::group_one))
         .route("/api/group/add", post(stub::group_add))
         .route("/api/group/update", post(stub::group_update))
         .route("/api/group/delete", delete(stub::group_delete))
