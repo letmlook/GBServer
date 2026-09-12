@@ -98,6 +98,33 @@ impl CatalogSyncSession {
         self.received_num >= self.total_num
     }
 
+    /// 超时收尾：把会话从"等待/接收中"推进到一个**确定**的终态。
+    ///
+    /// 每个分页到达时都已**逐包 upsert 入库**，所以少收几页不等于数据全丢；
+    /// 但会话若一直停在 `Receiving`，调用方只能永远报"同步进行中"，
+    /// 前端无法判断这次同步到底结束没有。
+    ///
+    /// * 一页都没收到 → `Failed`（设备没响应）
+    /// * 收到部分页     → `Done`，并在 `error` 里说明"声明 N 页、实收 M 页"
+    ///
+    /// 返回 `true` 表示本次调用确实改写了状态。
+    pub fn finalize_partial(&mut self, timeout_secs: u64) -> bool {
+        if !matches!(self.state, SyncState::Waiting | SyncState::Receiving) {
+            return false;
+        }
+        if self.received_num == 0 {
+            self.state = SyncState::Failed;
+            self.error = Some(format!("设备在 {timeout_secs} 秒内未返回任何目录分页"));
+        } else {
+            self.state = SyncState::Done;
+            self.error = Some(format!(
+                "设备声明 {} 个分页、实收 {} 个；各分页已逐包入库，目录可能不完整",
+                self.total_num, self.received_num
+            ));
+        }
+        true
+    }
+
     /// 标记同步失败
     pub fn set_failed(&mut self, err: String) {
         self.state = SyncState::Failed;
@@ -227,6 +254,14 @@ impl CatalogSyncManager {
         Ok(count)
     }
 
+    /// 超时收尾（见 [`CatalogSyncSession::finalize_partial`]）。
+    pub fn finalize_partial(&self, device_id: &str, timeout_secs: u64) -> bool {
+        match self.sessions.get_mut(device_id) {
+            Some(mut s) => s.value_mut().finalize_partial(timeout_secs),
+            None => false,
+        }
+    }
+
     /// 获取同步会话状态
     pub fn get_session(&self, device_id: &str) -> Option<CatalogSyncSession> {
         self.sessions.get(device_id).map(|r| r.value().clone())
@@ -252,6 +287,54 @@ impl CatalogSyncManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 设备声明 3 页却只发 1 页时，会话必须能被**确定性收尾**：
+    /// 收到部分 → Done（并说明差异），一页没收到 → Failed。
+    #[test]
+    fn finalize_partial_makes_state_deterministic() {
+        let mut sess = CatalogSyncSession::new("dev-1".to_string(), 1);
+        let page = r#"<?xml version="1.0"?>
+<Response><CmdType>Catalog</CmdType><SN>1</SN><SumNum>3</SumNum><Num>1</Num>
+<DeviceList Num="1"><Item><DeviceID>ch-1</DeviceID><Name>c1</Name></Item></DeviceList></Response>"#;
+        assert!(!sess.add_packet(page), "只收到 1/3 页，不该判定收齐");
+        assert_eq!(sess.state, SyncState::Receiving);
+
+        assert!(sess.finalize_partial(8), "应改写成终态");
+        assert_eq!(sess.state, SyncState::Done);
+        let err = sess.error.clone().unwrap();
+        assert!(err.contains("声明 3 个分页、实收 1 个"), "{err}");
+        // 已经收尾过就不再改写
+        assert!(!sess.finalize_partial(8));
+
+        // 一页都没收到 → Failed
+        let mut none = CatalogSyncSession::new("dev-2".to_string(), 2);
+        assert_eq!(none.state, SyncState::Waiting);
+        assert!(none.finalize_partial(8));
+        assert_eq!(none.state, SyncState::Failed);
+        assert!(none.error.unwrap().contains("未返回任何目录分页"));
+    }
+
+    /// 管理器层面的收尾：`finalize_partial` 必须真的改写 map 里的会话状态。
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
+    async fn manager_finalize_partial_rewrites_session() {
+        let pool = crate::test_support::sqlite_pool_with_schema().await;
+        let mgr = CatalogSyncManager::new(pool);
+        mgr.start_sync("dev-x", 7);
+        let page = r#"<Response><CmdType>Catalog</CmdType><SN>7</SN><SumNum>9</SumNum><Num>1</Num>
+<DeviceList Num="1"><Item><DeviceID>ch-1</DeviceID><Name>c1</Name></Item></DeviceList></Response>"#;
+        mgr.handle_packet("dev-x", page).await;
+        let sess = mgr.get_session("dev-x").unwrap();
+        assert_eq!(sess.received_num, 1);
+        assert_eq!(sess.state, SyncState::Receiving);
+
+        assert!(mgr.finalize_partial("dev-x", 8), "应收尾成功");
+        let sess = mgr.get_session("dev-x").unwrap();
+        assert_eq!(sess.state, SyncState::Done, "必须真的落成 Done");
+        assert!(sess.error.unwrap().contains("声明 9 个分页、实收 1 个"));
+        // 不存在的设备不做任何事
+        assert!(!mgr.finalize_partial("nope", 8));
+    }
 
     #[test]
     fn test_catalog_sync_two_packets() {

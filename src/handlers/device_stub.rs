@@ -172,6 +172,26 @@ pub async fn device_sync(
                             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
                         }
 
+                        // 超时后把会话**确定性收尾**：设备声明 SumNum 页却只发了几页
+                        // （甚至一页都不发）时，会话不能永远停在 receiving ——
+                        // 各分页已逐包入库，这里按"已完成（可能不完整）"或"失败"收尾，
+                        // 并把差异写进 error，前端才判断得出结果。
+                        if matches!(sync_state.as_str(), "waiting" | "receiving") {
+                            manager.finalize_partial(&device_id, 8);
+                            if let Some(sess) = manager.get_session(&device_id) {
+                                total = sess.total_num;
+                                received = sess.received_num;
+                                error = sess.error.clone();
+                                sync_state = match sess.state {
+                                    crate::sip::gb28181::SyncState::Waiting => "waiting",
+                                    crate::sip::gb28181::SyncState::Receiving => "receiving",
+                                    crate::sip::gb28181::SyncState::Done => "done",
+                                    crate::sip::gb28181::SyncState::Failed => "failed",
+                                }
+                                .to_string();
+                            }
+                        }
+
                         // 统计本次同步后该设备名下的通道数，便于前端直接展示结果
                         let channel_count =
                             crate::db::device::list_channels_for_device(&state.pool, &device_id)
@@ -180,6 +200,7 @@ pub async fn device_sync(
                                 .unwrap_or(0);
 
                         let message = match sync_state.as_str() {
+                            "done" if error.is_some() => "设备目录同步完成（分页不完整，见 error）",
                             "done" => "设备目录同步完成",
                             "failed" => "设备目录同步失败",
                             "receiving" => "设备目录同步进行中（未在超时前收齐分页）",

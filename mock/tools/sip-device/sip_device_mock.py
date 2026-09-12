@@ -86,6 +86,9 @@ class DeviceConfig:
     # 收到 INVITE 后自动挂断的秒数（0 = 不自动挂断）。
     # 用于模拟"设备主动结束会话"；测试平台侧 BYE 时应设为 0。
     auto_bye_secs: int = 3
+    # 目录应答里声明的总包数（0 = 按实际分页数）。
+    # 设成比实际发包数更大的值，可验证平台侧"分页不完整"的超时收尾。
+    catalog_sum_num_override: int = 0
     # 收到 PLAY INVITE 后是否**真的推 RTP/PS**到平台宣告的收流端口。
     # 关掉时只做信令，平台会一直等媒体（用于单独验证信令链路的场景）。
     send_rtp: bool = False
@@ -801,10 +804,13 @@ class SipDeviceMock:
         body = msg.split("\r\n\r\n", 1)[1] if "\r\n\r\n" in msg else ""
         if "<CmdType>Catalog</CmdType>" in body:
             sn = self._extract_xml_value(body, "SN") or "1"
-            sum_num = self.cfg.channel_count
+            channels = self.cfg.channel_count
             # 多包聚合：按 8 个一分包
             chunk_size = 8
-            chunks = [list(range(i, min(i + chunk_size, sum_num))) for i in range(0, sum_num, chunk_size)]
+            chunks = [list(range(i, min(i + chunk_size, channels))) for i in range(0, channels, chunk_size)]
+            # 声明的总包数可以与实际发包数**不同**：用于验证平台侧
+            # 「设备声明 N 页、实收 M 页」的超时收尾逻辑（--catalog-sum-num-override）
+            sum_num = self.cfg.catalog_sum_num_override or len(chunks)
             for idx, chunk in enumerate(chunks):
                 cseq = self.state.next_cseq()
                 local = self.transport.get_extra_info("sockname")
@@ -1401,6 +1407,13 @@ def main():
         "--auto-bye-secs", type=int, default=3,
         help="收到 INVITE 后自动挂断的秒数（0=不自动挂断，用于测试平台侧 BYE）",
     )
+    parser.add_argument(
+        "--catalog-sum-num-override",
+        type=int,
+        default=0,
+        help="目录应答里声明的总包数（0=按实际分页数）。"
+        "设成比实际更大的值可验证平台侧「分页不完整」的超时收尾逻辑",
+    )
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     args = parser.parse_args()
 
@@ -1421,6 +1434,7 @@ def main():
         realm=args.realm or realm_from_device_id(args.device_id),
         expires_secs=args.expires,
         auto_bye_secs=args.auto_bye_secs,
+        catalog_sum_num_override=args.catalog_sum_num_override,
     )
 
     cfg.send_rtp = args.send_rtp

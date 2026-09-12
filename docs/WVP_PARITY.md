@@ -12,7 +12,7 @@
 | 总代码量（src/） | 79,179 行 Rust | `find src -name '*.rs' \| xargs wc -l` |
 | 已注册 HTTP 路由 | 386 条唯一 `/api/...` 路径 | `grep -oE '"/api/[^"]*"' src/router.rs \| sort -u \| wc -l` |
 | Handler 模块 | 29 个（含 `stub.rs` / `device_stub.rs` 两个兼容 shim） | `grep -c 'pub mod' src/handlers/mod.rs` |
-| 后端测试 | **691 通过 / 0 失败**（第四十一轮刷新） | `cargo test` |
+| 后端测试 | **693 通过 / 0 失败**（第四十一轮刷新） | `cargo test` |
 | 编译状态 | `cargo check` 0 error / **0 warning**；clippy 262；**deprecated 0** | `cargo check` / `cargo clippy --all-targets` |
 | 数据库 feature | SQLite（默认）/ PostgreSQL / MySQL **三者均编译通过** | CI `feature-matrix` job |
 | CI | ⏸️ 工作流已就绪但**按需暂停自动触发**（见 `.github/workflows/ci.yml`） | — |
@@ -1840,6 +1840,18 @@ cargo check --features mysql/postgres  OK
 npx playwright test              61 passed / 0 failed（云端录像 2 例按环境显式 skip）
 ```
 
+### 目录同步的完成判定改为确定性收尾（2026-09-12 第四十一轮）
+
+设备声明 `SumNum` 却少发包时，会话此前永远停在 `Receiving`。新增
+`finalize_partial`：收到部分页 → `Done` + 差异说明；一页没收到 → `Failed`。
+配合模拟器新增的 `--catalog-sum-num-override`（声明 9 页、实发 4 页）实测通过。
+
+#### 第四十一轮补充基线
+
+```
+cargo test                       693 passed / 0 failed
+```
+
 > **环境限制（本机，非仓库缺陷）**：Docker Desktop 出现容器 → 宿主机网络不通
 > （`host.docker.internal` 只解析出 IPv6 ULA，`192.168.65.254` / `172.18.0.1` /
 > 宿主机 LAN IP 均不可达，连 redis 容器也连不上后端）。因此 ZLM 的全部 hook
@@ -2005,10 +2017,15 @@ vue-tsc --noEmit                 通过
    `[A-Za-z0-9._-]`、不以点开头、不含 `..`），非法名返回 400 而非静默 404；
    读取错误不再一律伪装成 404，IO/权限错误如实返回 500。
    新增 3 个测试（含穿越用例与 CSV 转义）。
-5. **`catalog_sync` 的完成判定依赖设备如实上报 `SumNum`**：若设备声明
-   `SumNum=N` 却只发更少的包，会话会一直停在 `Receiving`（`device_sync`
-   8 秒后如实返回该状态）。已保留逐包 upsert 兜底，因此不会丢通道，
-   但"同步完成"无法判定。
+5. ~~**`catalog_sync` 的完成判定依赖设备如实上报 `SumNum`**~~ **已修复（第四十一轮）**：
+   设备声明 `SumNum=N` 却只发 M<N 包（甚至一包不发）时，会话此前会**永远**停在
+   `Receiving`，调用方只能一直报"同步进行中"。现在超时后会做**确定性收尾**
+   （`CatalogSyncManager::finalize_partial`）：
+   * 收到部分页 → `Done`，并在 `error` 里写明"设备声明 N 个分页、实收 M 个；
+     各分页已逐包入库，目录可能不完整"；
+   * 一页都没收到 → `Failed`（设备未响应）。
+   模拟器新增 `--catalog-sum-num-override` 用于制造这种不一致，实测：
+   `syncState=done`、`totalPackets=9`、`receivedPackets=5`、`error=设备声明 9 个分页、实收 5 个…`。
 6. ~~**两套 SSRC 机制并存**~~ **已统一（第十三轮）**：新增唯一的
    `build_ssrc(prefix, device_id)`（10 位 = 1 位类型 + 设备号前 9 位），
    `build_play_ssrc`（实时，前缀 0）/ `build_playback_ssrc`（回放，前缀 1）/
