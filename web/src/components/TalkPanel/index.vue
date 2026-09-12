@@ -115,8 +115,13 @@ async function start() {
   busy.value = true
   stats.error = ''
   try {
-    // 1) 先让后端发 SIP INVITE 并等设备 200 OK（会话变 active 才会有 media 地址）
-    await startTalk(deviceId.value, channelId.value)
+    // 1) 后端发 SIP INVITE 并等设备 200 OK（返回 status=active + 设备音频地址）；
+    //    设备不应答时这里会抛出明确的错误信息
+    const talk = await startTalk(deviceId.value, channelId.value)
+    const talkData = talk.data
+    if (!talkData || talkData.status !== 'active') {
+      throw new Error(`对讲未建立（status=${talkData?.status ?? 'unknown'}）`)
+    }
 
     // 2) 建立上行音频 WebSocket
     const url = talkAudioWsUrl(deviceId.value, channelId.value)
@@ -130,7 +135,7 @@ async function start() {
       }
       ws!.onerror = () => {
         window.clearTimeout(timer)
-        reject(new Error('WebSocket 连接失败（服务端可能还没协商出设备音频地址）'))
+        reject(new Error('WebSocket 连接失败（音频通道未建立）'))
       }
     })
     ws.onmessage = (ev) => {

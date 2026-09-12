@@ -69,7 +69,8 @@
           </template>
 
           <div v-if="playUrl" class="player-body">
-            <video :src="playUrl" controls autoplay class="video" />
+            <!-- 浏览器不能直接播 RTSP：后端同时给了 hls/flv，这里按同一约定播放 -->
+            <video ref="videoRef" controls autoplay class="video" />
             <el-slider
               v-model="seekPos"
               :max="duration"
@@ -77,6 +78,7 @@
               class="seek"
               @change="onSeek"
             />
+            <div class="play-url mono" :title="playUrl">{{ playUrl }}</div>
           </div>
           <el-empty v-else description="从左侧选择录像片段开始回放" />
         </el-card>
@@ -86,7 +88,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { nextTick, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import {
   startPlayback,
@@ -106,6 +108,75 @@ const currentStreamId = ref('')
 const playUrl = ref('')
 const seekPos = ref(0)
 const duration = ref(3600)
+const videoRef = ref<HTMLVideoElement>()
+
+// 与实时预览页同一套播放约定：HLS(hls.js) → FLV(flv.js) → 原生
+let hlsInstance: any = null
+let flvPlayer: any = null
+let playIndex = 0
+const PLAY_SEQ = ++playIndex
+
+function destroyPlayers() {
+  try { hlsInstance?.destroy?.() } catch {}
+  hlsInstance = null
+  try { flvPlayer?.destroy?.() } catch {}
+  flvPlayer = null
+  const v = videoRef.value
+  if (v) {
+    v.removeAttribute('src')
+    v.load()
+  }
+}
+
+async function attachVideo(url: string) {
+  await nextTick()
+  const video = videoRef.value
+  if (!video || !url) return
+  destroyPlayers()
+  const seq = PLAY_SEQ
+
+  // Safari 原生 HLS
+  if (video.canPlayType('application/vnd.apple.mpegurl') !== '' && url.includes('.m3u8')) {
+    video.src = url
+    return
+  }
+  if (url.includes('.m3u8')) {
+    try {
+      const Hls = (await import('hls.js')).default
+      if (seq !== PLAY_SEQ) return
+      if (Hls.isSupported()) {
+        const hls = new Hls({ enableWorker: true })
+        hls.loadSource(url)
+        hls.attachMedia(video)
+        hls.on(Hls.Events.ERROR, (_e: any, data: any) => {
+          if (data?.fatal) ElMessage.error(`HLS 播放失败: ${data?.details ?? data?.type ?? 'unknown'}`)
+        })
+        hlsInstance = hls
+        return
+      }
+    } catch (e: any) {
+      ElMessage.warning(`hls.js 不可用: ${e?.message ?? e}`)
+    }
+  }
+  if (url.includes('.flv')) {
+    try {
+      const flvjs = (await import('flv.js')).default
+      if (seq !== PLAY_SEQ) return
+      if (flvjs.isSupported()) {
+        const player = flvjs.createPlayer({ type: 'flv', url, isLive: false })
+        player.attachMediaElement(video)
+        player.load()
+        player.play()
+        flvPlayer = player
+        return
+      }
+    } catch (e: any) {
+      ElMessage.warning(`flv.js 不可用: ${e?.message ?? e}`)
+    }
+  }
+  // 最后兜底：交给浏览器（mp4 等）
+  video.src = url
+}
 
 const form = reactive({
   deviceId: '',
@@ -143,9 +214,18 @@ async function onSelect(row: any) {
       startTime: row.startTime,
       endTime: row.endTime
     })
-    const data = res.data ?? { streamId: '', playUrl: '' }
+    const data = res.data
+    if (!data?.streamId) {
+      throw new Error(res.msg || '后端未返回回放流')
+    }
+    // 优先 HLS（浏览器兼容性最好），其次 FLV；RTSP 仅作最后兜底
+    const url = data.hls || data.flvUrl || data.playUrl || ''
+    if (!url) {
+      throw new Error('后端未返回可用的播放地址')
+    }
     currentStreamId.value = data.streamId
-    playUrl.value = data.playUrl
+    playUrl.value = url
+    await attachVideo(url)
   } catch (e: any) {
     ElMessage.error(e?.message ?? '回放启动失败')
   } finally {
@@ -177,10 +257,12 @@ async function onStop() {
   currentStreamId.value = ''
   playUrl.value = ''
   currentRecord.value = null
+  destroyPlayers()
   ElMessage.success('已停止')
 }
 
 onMounted(() => {})
+onUnmounted(destroyPlayers)
 </script>
 
 <style scoped>
@@ -196,5 +278,6 @@ onMounted(() => {})
 .player-body { padding: 12px; }
 .video { width: 100%; aspect-ratio: 16/9; background: #000; border-radius: 6px; }
 .seek { margin-top: 8px; }
+.play-url { margin-top: 6px; color: var(--el-text-color-secondary); font-size: 12px; word-break: break-all; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
 </style>

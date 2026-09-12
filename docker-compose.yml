@@ -97,6 +97,13 @@ services:
       - "30000-30100:30000-30100/udp"
     environment:
       ZLM_HTTP_SECRET: S63648HLbxckv7YjpPTXXRTOsAVGo0Ia
+    # 让容器内的 `host.docker.internal` **稳定解析到宿主机的 IPv4 网关**。
+    # Docker Desktop 上该名字可能只解析出 IPv6 ULA（实测 `fdc4:f303:9324::254`），
+    # 于是 ZLM 的 hook 请求（on_publish / on_record_mp4 / on_server_keepalive …）
+    # 全部连不上后端 —— 平台侧表现为"录像永远不落库""节点心跳不刷新"，
+    # 而两个方向的 HTTP 探测都正常，极难排查。
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       # 用仓库里的 config.ini 覆盖镜像默认配置：**只**为把 rtp_proxy.port_range
       # 收窄到与上面发布的 UDP 范围一致（镜像默认 30000-35000，而该端口池是

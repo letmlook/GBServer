@@ -41,13 +41,55 @@ pub async fn talk_start(
             // 现在统一使用 send_talk_invite 返回的真实 call_id。
             tracing::info!("[Talk] INVITE 发送成功: call_id={}", call_id);
 
-            Ok(Json(WVPResult::success(serde_json::json!({
-                "callId": call_id,
-                "deviceId": device_id,
-                "channelId": channel_id,
-                "status": "inviting",
-                "msg": "对讲请求已发送，等待设备响应"
-            }))))
+            // 必须**等设备 200 OK**（会话变 Active）再返回：
+            // 前端拿到 200 后会立刻连 `/api/talk/audio/...`，而那个 WS 只认 Active
+            // 会话并校验设备音频地址 —— 立即返回的话握手必然抢在 200 OK 之前，
+            // 用户看到的是「开启对讲失败」，随后连 BYE 都发不出去（会话还是 Inviting）。
+            let manager = sip_server.talk_manager();
+            let wait_ms = 8_000;
+            match manager.wait_active(&device_id, &channel_id, wait_ms).await {
+                Some(session) => {
+                    tracing::info!(
+                        "[Talk] 会话已激活: call_id={} device_audio={}:{}",
+                        session.call_id,
+                        session.device_ip,
+                        session.device_port
+                    );
+                    Ok(Json(WVPResult::success(serde_json::json!({
+                        "callId": session.call_id,
+                        "deviceId": device_id,
+                        "channelId": channel_id,
+                        "status": "active",
+                        "localPort": session.local_port,
+                        "deviceIp": session.device_ip,
+                        "devicePort": session.device_port,
+                        "msg": "对讲已建立，可以发送音频"
+                    }))))
+                }
+                None => {
+                    // 超时：清理掉这个半成品会话（先按不限状态找到它再移除），
+                    // 否则它会以 Inviting 状态残留在 TalkManager 里。
+                    if let Some(stale) =
+                        manager.get_any_by_device_channel(&device_id, &channel_id).await
+                    {
+                        let _ = manager.remove(&stale.call_id).await;
+                    }
+                    let _ = {
+                        let sip = &*sip_server;
+                        sip.send_talk_bye(&device_id, &channel_id).await
+                    };
+                    tracing::warn!(
+                        "[Talk] 等待设备 200 OK 超时（{}ms）: device={} channel={}",
+                        wait_ms,
+                        device_id,
+                        channel_id
+                    );
+                    Err(AppError::business(
+                        ErrorCode::Error500,
+                        "对讲失败：设备未在 8 秒内应答（200 OK）",
+                    ))
+                }
+            }
         }
         Err(e) => {
             tracing::error!("[Talk] INVITE 发送失败: {}", e);
@@ -80,7 +122,19 @@ pub async fn talk_stop(
             Ok(Json(WVPResult::<()>::success_empty()))
         }
         Err(e) => {
-            tracing::error!("[Talk] BYE 发送失败: {}", e);
+            // 对讲可能已经结束（BYE 本身不报错），但**残留会话必须清掉**：
+            // 此前这里只记一条日志就返回成功，于是 `Inviting`/未激活的会话
+            // 永远留在 TalkManager 里（`cleanup_expired` 只清理 Terminated），
+            // 后续同一通道再次对讲会拿到脏会话。
+            tracing::warn!("[Talk] BYE 发送失败（仍清理会话）: {}", e);
+            if let Some(stale) = sip_server
+                .talk_manager()
+                .get_any_by_device_channel(&device_id, &channel_id)
+                .await
+            {
+                let _ = sip_server.talk_manager().remove(&stale.call_id).await;
+                tracing::info!("[Talk] 已移除残留会话 call_id={}", stale.call_id);
+            }
             // 对讲可能已经结束，返回成功以避免前端报错
             Ok(Json(WVPResult::<()>::success_empty()))
         }
@@ -361,11 +415,19 @@ pub async fn talk_audio_ws(
     let Some(ref sip) = state.sip_server else {
         return (StatusCode::SERVICE_UNAVAILABLE, "SIP 服务未启动").into_response();
     };
-    let talk = sip.talk_manager().get_by_device_channel(&device_id, &channel_id).await;
-    let Some(session) = talk else {
+    // 容忍"客户端比设备 200 OK 更早连上来"：在 6 秒内轮询会话状态，
+    // 而不是立刻 404。`/api/talk/start` 现在自己会等，但浏览器重连/刷新、
+    // 或第三方客户端先连 WS 的场景仍会走到这里。
+    let manager = sip.talk_manager();
+    let Some(session) = manager.wait_active(&device_id, &channel_id, 6_000).await else {
+        let any = manager.get_any_by_device_channel(&device_id, &channel_id).await;
         return (
             StatusCode::NOT_FOUND,
-            "没有进行中的对讲会话（请先调用 /api/talk/start）",
+            if any.is_some() {
+                "对讲会话尚未激活（设备还没回 200 OK）"
+            } else {
+                "没有进行中的对讲会话（请先调用 /api/talk/start）"
+            },
         )
             .into_response();
     };
@@ -470,4 +532,65 @@ pub async fn talk_audio_ws(
         );
     })
     .into_response()
+}
+
+#[cfg(test)]
+mod talk_contract_tests {
+    use crate::sip::gb28181::talk::{TalkManager, TalkStatus};
+    use crate::test_support::app_state;
+
+    /// `wait_active` 应在设备 200 OK（会话转 Active）后立刻返回，
+    /// 而不是让调用方（`/api/talk/start`）提前返回 `inviting`。
+    #[tokio::test]
+    async fn wait_active_returns_session_once_activated() {
+        let mgr = TalkManager::new();
+        let session = mgr.create("call-1", "dev-1", "ch-1").await;
+        assert!(!session.is_active(), "新建会话是 Inviting");
+
+        // 后台 300ms 后模拟设备 200 OK
+        let mgr2 = std::sync::Arc::new(mgr);
+        let m = mgr2.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            m.update_status("call-1", TalkStatus::Active).await;
+        });
+
+        let got = mgr2.wait_active("dev-1", "ch-1", 3_000).await;
+        assert!(got.is_some(), "会话激活后应返回");
+        assert!(got.unwrap().is_active());
+
+        // 未激活的通道应超时返回 None，且 get_any_by_device_channel 仍能看到它
+        let none = mgr2.wait_active("dev-1", "ch-404", 200).await;
+        assert!(none.is_none());
+        assert!(mgr2.get_any_by_device_channel("dev-1", "ch-404").await.is_none());
+    }
+
+    /// 停止对讲时要能按**不限状态**取到会话 —— `send_talk_bye` 用的是
+    /// `get_by_device_channel`（只认 Active），`Inviting` 的会话它取不到，
+    /// 于是清理会静默失败、会话残留。
+    #[tokio::test]
+    async fn get_any_by_device_channel_sees_inviting_sessions() {
+        let mgr = TalkManager::new();
+        mgr.create("call-2", "dev-2", "ch-2").await;
+        assert!(
+            mgr.get_by_device_channel("dev-2", "ch-2").await.is_none(),
+            "Active-only 查询看不到 Inviting 会话"
+        );
+        let any = mgr.get_any_by_device_channel("dev-2", "ch-2").await;
+        assert!(any.is_some(), "不限状态查询必须能看到它");
+        assert_eq!(any.unwrap().call_id, "call-2");
+    }
+
+    /// 没有 SIP 时 `/api/talk/start` 明确报错（不返回假会话）。
+    #[tokio::test]
+    async fn talk_start_without_sip_errors() {
+        let state = app_state().await;
+        let err = super::talk_start(
+            axum::extract::State(state.clone()),
+            axum::extract::Path(("34020000001320000001".to_string(), "34020000001310000001".to_string())),
+        )
+        .await
+        .expect_err("SIP 未启用应报错");
+        assert!(matches!(err, crate::error::AppError::Business(_, _)));
+    }
 }

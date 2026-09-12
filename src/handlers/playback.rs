@@ -4,6 +4,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use chrono::{DateTime, Utc};
 
+use crate::error::{AppError, ErrorCode};
 use crate::response::WVPResult;
 use crate::AppState;
 
@@ -182,7 +183,7 @@ pub async fn playback_start(
     State(state): State<AppState>,
     Path((device_id, channel_id)): Path<(String, String)>,
     Query(q): Query<PlaybackQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
     let start_time = q.start_time.clone().unwrap_or_else(|| {
         chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string()
     });
@@ -193,9 +194,9 @@ pub async fn playback_start(
     let stream_id = format!("playback_{}_{}_{}", device_id, channel_id,
         chrono::Utc::now().timestamp());
     let app = "playback".to_string();
-    let stream = format!("{}${}", device_id, channel_id);
     let media_server_id = state.list_zlm_servers().into_iter().next();
-    let mut source = "zlm_proxy".to_string();
+    // 只有真实成功的分支才会返回 session，`source` 恒为 INVITE 路径
+    let source = "gb28181_playback_invite";
 
     // Phase 3.2: 走真实 GB28181 Playback INVITE + ZLM RTP server 媒体等待
     if let Some(ref sip_server) = state.sip_server {
@@ -222,7 +223,6 @@ pub async fn playback_start(
                         .await
                     {
                         Ok((_call_id, _zlm_stream_id)) => {
-                            source = "gb28181_playback_invite".to_string();
                             let media_ip = zlm_client.ip.clone();
                             let http_port = zlm_client.http_port;
                             let play_url = format!("rtsp://{}:554/{}/{}", media_ip, app, stream_id);
@@ -242,10 +242,10 @@ pub async fn playback_start(
                                     current_time: start_time.clone(),
                                     speed: 1.0,
                                     paused: false,
-                                    source: source.clone(),
+                                    source: source.to_string(),
                                 }).await;
                             }
-                            return Json(WVPResult::success(serde_json::json!({
+                            return Ok(Json(WVPResult::success(serde_json::json!({
                                 "streamId": stream_id,
                                 "deviceId": device_id,
                                 "channelId": channel_id,
@@ -259,7 +259,7 @@ pub async fn playback_start(
                                 "currentTime": start_time,
                                 "speed": 1.0,
                                 "source": source
-                            })));
+                            }))));
                         }
                         Err(e) => {
                             tracing::error!("Playback INVITE + media wait failed: {}", e);
@@ -277,37 +277,26 @@ pub async fn playback_start(
         }
     }
 
-    if let Some(ref playback_manager) = state.playback_manager {
-        playback_manager.create(PlaybackSession {
-            stream_id: stream_id.clone(),
-            device_id: device_id.clone(),
-            channel_id: channel_id.clone(),
-            app: app.clone(),
-            stream: stream.clone(),
-            media_server_id: media_server_id.clone(),
-            schema: "rtsp".to_string(),
-            start_time: start_time.clone(),
-            end_time: end_time.clone(),
-            current_time: start_time.clone(),
-            speed: 1.0,
-            paused: false,
-            source: source.clone(),
-        }).await;
-    }
-
-    Json(WVPResult::success(serde_json::json!({
-        "streamId": stream_id,
-        "deviceId": device_id,
-        "channelId": channel_id,
-        "app": app,
-        "stream": stream,
-        "startTime": start_time,
-        "endTime": end_time,
-        "currentTime": start_time,
-        "speed": 1.0,
-        "source": source,
-        "msg": "Playback session created"
-    })))
+    // 走到这里说明**没有任何一路回放流被真正拉起来**：SIP 未启用 / ZLM 未配置 /
+    // GB28181 回放 INVITE 失败。此前这里仍然 `code: 0` 返回一个没有 `playUrl` 的
+    // "会话已创建"，前端 `v-if="playUrl"` 为假 → 用户点了片段却什么都不发生、
+    // 也没有任何失败提示（失败只落在后端日志），而 `currentStreamId` 已被赋值，
+    // 暂停/停止按钮会对一个空会话说谎。
+    let reason = if state.sip_server.is_none() {
+        "SIP 未启用，无法向设备发起回放 INVITE"
+    } else if state.zlm_client.is_none() {
+        "未配置可用的 ZLM 媒体节点"
+    } else {
+        "GB28181 回放 INVITE 失败或等待媒体超时（详见服务端日志）"
+    };
+    tracing::warn!(
+        "回放启动失败 device={} channel={} start={}: {}",
+        device_id, channel_id, start_time, reason
+    );
+    Err(AppError::business(
+        ErrorCode::Error500,
+        format!("回放启动失败：{reason}"),
+    ))
 }
 
 pub async fn playback_resume(
@@ -556,6 +545,7 @@ pub async fn gb_record_query(
                             .map(|it| {
                                 serde_json::json!({
                                     "deviceId": it.device_id,
+                                    "channelId": channel_id,
                                     "name": it.name,
                                     "filePath": it.file_path,
                                     "startTime": it.start_time,
@@ -597,7 +587,13 @@ pub async fn gb_record_query(
                     .skip(offset)
                     .take(count as usize)
                     .map(|f| {
+                        // `name` 是前端「名称」列读的键，此前只给了 `fileName`
+                        // → 该列整列空白；`deviceId`/`channelId` 是 RecordItem
+                        // 声明的必填字段，两个分支此前都没给。
                         serde_json::json!({
+                            "deviceId": device_id,
+                            "channelId": channel_id,
+                            "name": f.name,
                             "fileName": f.name,
                             "filePath": f.path,
                             "fileSize": f.size,
@@ -1131,5 +1127,58 @@ mod download_progress_tests {
         let json = serde_json::to_value(&v.0).unwrap();
         assert_ne!(json["code"], 0);
         assert_eq!(json["msg"], "下载会话不存在或已结束");
+    }
+}
+
+#[cfg(test)]
+mod playback_contract_tests {
+    use crate::error::ErrorCode;
+    use crate::test_support::app_state;
+    use axum::extract::{Path, Query};
+
+    /// 回放拉不起来时必须**明确报错**。此前无论 SIP/ZLM 是否可用都返回
+    /// `code: 0` + 一个没有 `playUrl` 的"会话已创建"，前端 `v-if="playUrl"` 为假
+    /// → 用户点了片段什么都不发生，也没有失败提示。
+    #[tokio::test]
+    async fn start_without_sip_or_zlm_returns_error() {
+        let state = app_state().await; // 无 SIP / 无 ZLM
+        let err = super::playback_start(
+            axum::extract::State(state.clone()),
+            Path(("34020000001320000001".to_string(), "34020000001310000001".to_string())),
+            Query(super::PlaybackQuery {
+                start_time: Some("2026-01-01T00:00:00".to_string()),
+                end_time: Some("2026-01-01T00:05:00".to_string()),
+            }),
+        )
+        .await
+        .expect_err("没有任何回放通路时应报错");
+        match err {
+            crate::error::AppError::Business(code, msg) => {
+                assert!(matches!(code, ErrorCode::Error500), "code={code:?}");
+                assert!(msg.contains("回放启动失败"), "msg={msg}");
+            }
+            other => panic!("期望业务错误，得到 {other:?}"),
+        }
+    }
+
+    /// ZLM MP4 兜底分支必须给出 `name`/`deviceId`/`channelId`
+    /// —— 此前只有 `fileName`，「名称」列整列空白，两个分支都没有 `channelId`。
+    #[test]
+    fn zlm_fallback_row_has_name_and_ids() {
+        // 直接校验 JSON 形状（与 handler 里的字面量保持一致）
+        let device_id = "34020000001320000001";
+        let channel_id = "34020000001310000001";
+        let row = serde_json::json!({
+            "deviceId": device_id,
+            "channelId": channel_id,
+            "name": "20260101_000000.mp4",
+            "fileName": "20260101_000000.mp4",
+            "filePath": "/record/2026-01-01/20260101_000000.mp4",
+            "startTime": "2026-01-01 00:00:00",
+            "endTime": "2026-01-01 00:00:00",
+        });
+        assert_eq!(row["name"], "20260101_000000.mp4");
+        assert_eq!(row["deviceId"], device_id);
+        assert_eq!(row["channelId"], channel_id);
     }
 }

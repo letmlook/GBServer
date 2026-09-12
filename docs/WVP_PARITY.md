@@ -9,10 +9,10 @@
 
 | 维度 | 数值 | 验证方式 |
 |------|------|----------|
-| 总代码量（src/） | 78,967 行 Rust | `find src -name '*.rs' \| xargs wc -l` |
+| 总代码量（src/） | 79,179 行 Rust | `find src -name '*.rs' \| xargs wc -l` |
 | 已注册 HTTP 路由 | 386 条唯一 `/api/...` 路径 | `grep -oE '"/api/[^"]*"' src/router.rs \| sort -u \| wc -l` |
 | Handler 模块 | 29 个（含 `stub.rs` / `device_stub.rs` 两个兼容 shim） | `grep -c 'pub mod' src/handlers/mod.rs` |
-| 后端测试 | **683 通过** / 0 失败（第三十八轮刷新） | `cargo test` |
+| 后端测试 | **688 通过** / 0 失败（第三十九轮刷新） | `cargo test` |
 | 编译状态 | `cargo check` 0 error / **0 warning**；clippy 262；**deprecated 0** | `cargo check` / `cargo clippy --all-targets` |
 | 数据库 feature | SQLite（默认）/ PostgreSQL / MySQL **三者均编译通过** | CI `feature-matrix` job |
 | CI | ⏸️ 工作流已就绪但**按需暂停自动触发**（见 `.github/workflows/ci.yml`） | — |
@@ -1718,11 +1718,63 @@ cargo check --features mysql/postgres  OK
 npx playwright test              59 passed / 0 failed / 0 skipped（真实 ZLM）
 ```
 
-### 前端↔后端契约审计：已完成 15 个模块，剩余 2 个模块 / 4 条（2026-09-12 第三十八轮刷新）
+### 回放静默失败 + 对讲时序竞争：契约审计 130 条收尾（2026-09-12 第三十九轮）
+
+`playback`(3) 与 `talk`(1) 修完后，**16 个模块 / 130 条契约审计全部完成**。
+
+**回放**（真实 SIP mock + ZLM 验证）：
+
+| 缺陷 | 修复 |
+|------|------|
+| ZLM MP4 兜底分支只给 `fileName` → 「名称」列整列空白；两分支都没有 `channelId` | 兜底行补 `name`/`deviceId`/`channelId`；RecordInfo 分支补 `channelId` |
+| 回放拉不起来仍返回 `code:0` 且无 `playUrl` → **用户点了没反应也不报错** | 没有真实拉流成功就返回 500 业务错误，并区分原因（SIP 未启用 / 无 ZLM / INVITE 失败） |
+| `playUrl` 是 `rtsp://…` 被绑到原生 `<video src>`，浏览器不播 | 页面改走 `hls`(hls.js) → `flvUrl`(flv.js) → 原生兜底（与实时预览页同一约定） |
+
+**对讲**：`talk_start` 发完 INVITE 就返回 `inviting`，而前端立刻连的音频 WS 只认
+`Active` 会话 → 握手必然抢在设备 200 OK 之前、吃 404 弹「开启对讲失败」，
+随后连 BYE 都取不到会话（清理静默失败）。现在 `talk_start` 等设备 200 OK（≤8s）
+再返回 `active` + 设备音频地址，超时则清理并发 BYE；WS 侧也做 6 秒容忍；
+`talk_stop` 的 BYE 失败时按不限状态移除残留会话。
+
+**实测**：
+
+```
+GET /api/playback/start/<dev>/<ch> → hls/flvUrl 齐全（真实 INVITE 成功）
+GET /api/playback/start/<不存在设备> → 500「回放启动失败：GB28181 回放 INVITE 失败或等待媒体超时」
+GET /api/talk/start/<dev>/<ch>     → status=active, deviceIp=127.0.0.1, devicePort=10002, localPort=30058
+GET /api/talk/stop → 成功后 list 为空（无残留会话）
+Playwright → 整套 59 passed
+```
+
+**顺带修掉的一个可用性缺陷**：云端录像列表里的**设备侧录像**
+（`app = "record_info"`，来自设备 RecordInfo 上报）此前**永远删不掉** ——
+删除处理器要求先删掉 ZLM 上的文件才肯删库记录，而这类记录在 ZLM 上没有对应文件。
+现在 `record_info` 行直接删库记录，ZLM 录制产物仍维持"先文件后记录"的顺序。
+
+#### 第三十九轮基线
+
+```
+cargo test                       688 passed / 0 failed
+cargo check --all-targets        本项目 0 warning
+cargo check --features mysql/postgres  OK
+npx playwright test              59 passed / 0 failed（云端录像 2 例按环境显式 skip）
+```
+
+> **环境限制（本机，非仓库缺陷）**：Docker Desktop 出现容器 → 宿主机网络不通
+> （`host.docker.internal` 只解析出 IPv6 ULA，`192.168.65.254` / `172.18.0.1` /
+> 宿主机 LAN IP 均不可达，连 redis 容器也连不上后端）。因此 ZLM 的全部 hook
+> （`on_publish` / `on_record_mp4` / `on_server_keepalive` …）到不了后端：
+> 录制计划能产文件但记录不落库，云端录像的"播放/删除"用例因此在**没有平台侧
+> 真实录像时显式 skip**。已在 `docker-compose.yml` 补
+> `extra_hosts: host.docker.internal:host-gateway` 以规避同类解析问题；
+> 后端侧也加固为「主动探活成功即刷新心跳」，hook 不通时节点不会被误判离线。
+> 恢复本机 Docker Desktop 后重跑 `cd e2e && npx playwright test` 即可覆盖这两例。
+
+### 前端↔后端契约审计：**16 个模块 130 条全部修完**（2026-09-12 第三十九轮）
 
 第二十六轮用"一个模块一个 agent"的方式把 16 个前端 API 模块逐个对后端路由/DTO
 做了一遍审计（证据文件在 `docs/audit/*.md`，共 **130 条**），并按影响排序逐批修复。
-当前已修 15 个模块（126 条），剩 `playback`(3) / `talk`(1) 共 **4 条**：
+**130 条全部修完**（无剩余）。下面是修复期间逐条记录的高优先级项，仅作历史留档：
 
 | 模块 | 条数 | 状态 |
 |------|------|------|
@@ -1737,12 +1789,12 @@ npx playwright test              59 passed / 0 failed / 0 skipped（真实 ZLM�
 | log | 7 | ✅ 已修（第三十七轮） |
 | mediaServer | 7 | ✅ 已修（第三十六轮，另修掉一个「所有节点 30s 后被误判离线」） |
 | platform | 11 | ✅ 已修（第三十四轮） |
-| playback | 3 | ❌ 未修 |
+| playback | 3 | ✅ 已修（第三十九轮） |
 | region | 9 | ✅ 已修（第三十五轮，另补了整块缺失的界面） |
 | streamProxy | 10 | ✅ 已修（第三十三轮） |
 | streamPush | 12 | ✅ 已修（第三十二轮） |
 | syCamera | 6 | ✅ 已修（第三十八轮） |
-| talk | 1 | ❌ 未修 |
+| talk | 1 | ✅ 已修（第三十九轮） |
 
 **剩余模块里"有真实调用方、用户可见"的高优先级项**（按严重度）：
 
@@ -1765,10 +1817,12 @@ npx playwright test              59 passed / 0 failed / 0 skipped（真实 ZLM�
 5. ~~`platform`~~：✅ 已于第三十四轮修复（`serverGbId` 拼写、`expires` 数字/字符串、
    `realm`→`serverGBDomain`、心跳三参数换成真实的 `expires`/`keepTimeout`、
    注销改为真的发 `Expires: 0` REGISTER、列表与详情统一字段）。
-6. `playback` / `talk`：
+6. ~~`playback` / `talk`~~：
    主要是响应键名与筛选参数不匹配（系统信息页内存/磁盘/版本恒为 0 或 '-'、
    媒体节点“检测”探测错地址、仪表盘“重点通道”卡片跳转失败、
-   录像列表“名称”列空白、对讲起播与音频 WS 的时序竞争）。
+   录像列表“名称”列空白、对讲起播与音频 WS 的时序竞争）
+   —— 两者均已修复（第三十九轮：回放失败不再静默、playUrl 改走 HLS/FLV；
+   `talk_start` 等到设备 200 OK 再返回，WS 也容忍早到的握手）。
    ~~`region`~~：✅ 第三十五轮已修（删除 405、update 抬根、tree/query 忽略 parentId，
    并补上了整块缺失的行政区划/业务分组管理界面）。
    其中 region/playback/mediaServer 的多项**当前无调用方**。
@@ -2116,6 +2170,7 @@ vue-tsc --noEmit                 通过
 - 2026-09-12 第三十六轮：`cargo test` —— **675 通过 / 0 失败**（媒体节点 7 条 + 心跳时间戳格式缺陷；e2e 53）
 - 2026-09-12 第三十七轮：`cargo test` —— **679 通过 / 0 失败**（系统信息/日志导出 7 条；e2e 55）
 - 2026-09-12 第三十八轮：`cargo test` —— **683 通过 / 0 失败**（摄像机 6 条：行级过滤/分页、100 条截断；e2e 59）
+- 2026-09-12 第三十九轮：`cargo test` —— **688 通过 / 0 失败**（回放 3 条 + 对讲时序竞争；**16 模块 130 条契约审计全部修完**）
 - 2026-09-12 第三十一轮：`cargo test` —— **641 通过 / 0 失败**（JT1078 终端/围栏 13 条）
 - 2026-09-12 第三十轮：`cargo test` —— **637 通过 / 0 失败**（设备页 7 条）
 - 2026-09-12 第二十九轮：`cargo test` —— **634 通过 / 0 失败**（云端录像全链路）

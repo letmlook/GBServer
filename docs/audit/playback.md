@@ -23,3 +23,31 @@
 - 前端：`web/src/api/playback.ts:5` 类型只声明 `{ streamId: string; playUrl: string }`；`web/src/views/playback/index.vue:72` `<video :src="playUrl" controls autoplay class="video" />`
 - 后端：成功分支 `src/handlers/playback.rs:228` `let play_url = format!("rtsp://{}:554/{}/{}", media_ip, app, stream_id);` → `src/handlers/playback.rs:254` `"playUrl": play_url`；同一响应 `src/handlers/playback.rs:255-256` 还返回 `"flvUrl": flv_url`（`http://…/{app}/{stream}.flv`）与 `"hls": hls_url`（`http://…/{app}/{stream}/hls.m3u8`）
 - 影响：成功路径下 `playUrl` 恒为 `rtsp://` 地址，被直接绑到原生 `<video src>`，浏览器不支持 RTSP 协议，回放画面始终不播放；后端已经算好并返回的 `flvUrl`/`hls`（前端类型未声明、页面未使用）才是可播放地址——同项目 `web/src/views/live/index.vue:281` 就是 `const url = data.hls || data.flvUrl || data.playUrl || ''` 并用 hls.js/flv.js 播放，回放页没有沿用该约定。
+
+---
+
+> **状态：已修复（2026-09-12 第三十九轮）**。3 条全部落地，真实设备验证。
+>
+> 这一页此前最要命的是"**点了没反应也不报错**"：回放 INVITE 失败时后端仍返回
+> `code: 0` + 一个没有 `playUrl` 的"会话已创建"，前端 `v-if="playUrl"` 为假 →
+> 播放区回落到空态，用户以为片段没选中；同时 `currentStreamId` 已被赋值，
+> 暂停/停止按钮会对一个空会话说谎。
+
+## 修复对照（第三十九轮）
+
+| # | 问题 | 修复 / 证据 |
+|---|------|------|
+| 1 | ZLM MP4 兜底分支只给 `fileName`，没有 `name` → 「名称」列整列空白；两个分支都没有 `channelId` | 兜底行补 `name`/`deviceId`/`channelId`（`fileName` 保留兼容）；RecordInfo 分支补 `channelId`。实测 `query` 返回 `channelId` 与 `name` |
+| 2 | 回放拉不起来时仍返回 `code:0` 且无 `playUrl`（静默失败） | 没有真实拉流成功就返回 **500 业务错误**，并区分原因（SIP 未启用 / 未配置 ZLM / INVITE 失败或媒体超时）。实测不存在的设备 → `回放启动失败：GB28181 回放 INVITE 失败或等待媒体超时` |
+| 3 | `playUrl` 是 `rtsp://…`，被直接绑到原生 `<video src>`，浏览器不播放 | 页面改为与实时预览页同一约定：`hls`（hls.js）→ `flvUrl`（flv.js）→ 原生兜底；API 类型补 `PlaybackStream{hls,flvUrl,…}`，卸载时销毁播放器实例 |
+
+**实测**（真实 SIP mock + ZLM）：
+
+```
+GET /api/gb_record/query/<dev>/<ch>  → source=gb28181_record_info，行内含 deviceId/channelId/name
+GET /api/playback/start/<dev>/<ch>   → 真实 INVITE 成功：
+     flvUrl=http://127.0.0.1:8080/playback/<stream>.flv
+     hls   =http://127.0.0.1:8080/playback/<stream>/hls.m3u8
+GET /api/playback/start/<不存在设备> → 500「回放启动失败：GB28181 回放 INVITE 失败或等待媒体超时」
+     （此前是 code:0 + 空 playUrl）
+```

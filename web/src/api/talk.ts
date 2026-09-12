@@ -13,9 +13,24 @@ export interface TalkSession {
   startTime?: string
 }
 
-/** 开始语音对讲（发送 SIP INVITE，等设备 200 OK 后会话变为 active）。 */
+/**
+ * 开始语音对讲。
+ *
+ * 后端发完 INVITE 后会**等设备 200 OK（最多 8 秒）**再把会话置为 `active` 并返回
+ * 设备音频地址；设备不应答时返回业务错误。
+ * 此前它发完 INVITE 就立刻返回 `inviting`，而前端紧接着连的音频 WebSocket
+ * 只认 active 会话 → 握手必然 404，用户看到「开启对讲失败」。
+ */
 export function startTalk(deviceId: string, channelId: string) {
-  return request<WvpResult<{ callId: string; status: string }>>({
+  return request<
+    WvpResult<{
+      callId: string
+      status: string
+      localPort?: number
+      deviceIp?: string
+      devicePort?: number
+    }>
+  >({
     method: 'get',
     url: `/talk/start/${encodeURIComponent(deviceId)}/${encodeURIComponent(channelId)}`
   })

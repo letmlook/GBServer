@@ -1777,16 +1777,26 @@ pub async fn cloud_record_delete(
                 }
             })
             .unwrap_or_default();
-        let file_ok = match state.get_zlm_client(Some(&media_server_id)) {
-            Some(zlm) if !period.is_empty() => zlm
-                .delete_record_file(&app, &stream, &period, &file_name)
-                .await
-                .map_err(|e| {
-                    tracing::warn!("删除录像文件 {app}/{stream}/{file_name} 失败: {e}");
-                    file_failures.push(format!("{file_name}: {e}"));
-                })
-                .is_ok(),
-            _ => false,
+        // 平台侧**有没有**一个要删的文件？
+        //   * `app == "record_info"`：这是设备通过 RecordInfo 上报的**设备侧**录像，
+        //     文件在设备上，平台/ZLM 侧不存在同名文件（名字也不是 ZLM 的
+        //     `<起始>-<结束>.mp4` 形态）→ 只能删库记录，否则这行永远删不掉；
+        //   * 其余是 ZLM 录制产物 → 先删文件，成功后再删库记录。
+        let has_platform_file = app != "record_info" && !period.is_empty();
+        let file_ok = if has_platform_file {
+            match state.get_zlm_client(Some(&media_server_id)) {
+                Some(zlm) => zlm
+                    .delete_record_file(&app, &stream, &period, &file_name)
+                    .await
+                    .map_err(|e| {
+                        tracing::warn!("删除录像文件 {app}/{stream}/{file_name} 失败: {e}");
+                        file_failures.push(format!("{file_name}: {e}"));
+                    })
+                    .is_ok(),
+                None => false,
+            }
+        } else {
+            true
         };
         if file_ok {
             if let Some(id) = db_id {

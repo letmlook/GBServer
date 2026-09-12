@@ -52,11 +52,16 @@ async function api(page: Page, request: APIRequestContext) {
 
 async function ensureRecording(page: Page, request: APIRequestContext): Promise<boolean> {
   const a = await api(page, request);
-  const list = await a.get('/cloud/record/list?page=1&count=1');
-  if (list.ok()) {
-    const body = (await list.json()) as { data?: { total?: number } };
-    if ((body.data?.total ?? 0) > 0) return true;
-  }
+  // 只认**平台侧真实录制产物**：`app == 'record_info'` 的行是设备通过
+  // RecordInfo 上报的设备侧录像（名字形如「录像片段1」），本机没有对应文件、
+  // 也无法播放；用它做断言会得到与契约无关的失败。
+  const hasRealRecord = async () => {
+    const l = await a.get('/cloud/record/list?page=1&count=50');
+    if (!l.ok()) return false;
+    const b = (await l.json()) as { data?: { list?: Array<{ app?: string }> } };
+    return (b.data?.list ?? []).some((r) => r.app !== 'record_info');
+  };
+  if (await hasRealRecord()) return true;
 
   // 找一个可用通道
   const channels = await a.get('/common/channel/list?page=1&count=5&online=true');
@@ -81,15 +86,10 @@ async function ensureRecording(page: Page, request: APIRequestContext): Promise<
   await a.post('/record/plan/link', { planId, channelIds: [channelId] });
 
   // 等录制产生文件（设备 INVITE + 收流 + 首帧 + ZLM 切片）
-  const hasRecord = async () => {
-    const l = await a.get('/cloud/record/list?page=1&count=1');
-    const b = (await l.json()) as { data?: { total?: number } };
-    return (b.data?.total ?? 0) > 0;
-  };
   let ok = false;
   for (let i = 0; i < 25; i++) {
     await new Promise((r) => setTimeout(r, 2000));
-    if (await hasRecord()) {
+    if (await hasRealRecord()) {
       ok = true;
       break;
     }
@@ -104,7 +104,7 @@ async function ensureRecording(page: Page, request: APIRequestContext): Promise<
   await a.delete(`/record/plan/delete?planId=${planId}`);
   for (let i = 0; i < 15 && !ok; i++) {
     await new Promise((r) => setTimeout(r, 2000));
-    if (await hasRecord()) {
+    if (await hasRealRecord()) {
       ok = true;
       break;
     }

@@ -120,6 +120,46 @@ impl TalkManager {
             .cloned()
     }
 
+    /// 等会话进入 `Active`（设备 200 OK 时由 SIP 响应处理写入）。
+    ///
+    /// 存在的意义：`/api/talk/start` 发完 INVITE 就返回的话，前端会在同一微任务里
+    /// 立刻去连语音 WebSocket，而 WS 只认 `Active` 会话 —— 设备 200 OK 至少要再走
+    /// 一个 SIP 往返，于是**握手必然抢在 200 OK 之前**，吃 404、弹「开启对讲失败」，
+    /// 且此时 `send_talk_bye` 也取不到会话（会话还是 Inviting），清理静默失败。
+    /// 现在 start 会等到 Active（或超时）再返回。
+    pub async fn wait_active(
+        &self,
+        device_id: &str,
+        channel_id: &str,
+        timeout_ms: u64,
+    ) -> Option<TalkSession> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+        loop {
+            if let Some(s) = self.get_by_device_channel(device_id, channel_id).await {
+                return Some(s);
+            }
+            if std::time::Instant::now() >= deadline {
+                return None;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    }
+
+    /// 按 device/channel 取会话（**不限状态**）。用于停止对讲时清理 `Inviting`
+    /// 这类还没激活的会话 —— `get_by_device_channel` 只认 Active。
+    pub async fn get_any_by_device_channel(
+        &self,
+        device_id: &str,
+        channel_id: &str,
+    ) -> Option<TalkSession> {
+        self.sessions
+            .read()
+            .await
+            .values()
+            .find(|s| s.device_id == device_id && s.channel_id == channel_id)
+            .cloned()
+    }
+
     pub async fn get_active_sessions(&self) -> Vec<TalkSession> {
         self.sessions.read().await
             .values()

@@ -100,3 +100,39 @@
 - 前端：`web/src/api/cloudRecord.ts:40` 声明 `WvpResult<{ total: number; list: CloudRecord[] }>`，即列表项按 `CloudRecord`（`cloudRecord.ts:4-17`：`id/app/stream/callId/mediaServerId/startTime/endTime/filePath/folder/size/createTime`）解析
 - 后端：`src/handlers/cloud_record_extra.rs:74-84` 每项实际只给 `id/app/stream/fileName/url/startTime/endTime/duration/fileSize`，`callId`、`mediaServerId`、`filePath`、`size`、`createTime`、`folder` **均不存在**（`size` 被命名为 `fileSize`）
 - 影响：任何按 `CloudRecord` 声明读取 `row.size`/`row.filePath`/`row.callId` 的消费方会拿到 `undefined`（`CloudRecord` 字段全为可选，故 TS 不报错，属静默失效）。前端函数**当前无调用方**（`grep -rn "getCloudRecordListUrl" web/src` 仅命中定义处）。
+
+---
+
+## 第三十九轮补充修复：设备侧录像删不掉
+
+验证「回放」模块时发现：`/api/cloud/record/list` 会把**设备通过 RecordInfo 上报的
+设备侧录像**（`app = "record_info"`，文件名形如「录像片段1」，`file_path` 是设备上的路径）
+也列出来，而删除处理器要求"先删掉 ZLM 上的文件"才肯删库记录
+（`period` 从 ZLM 的 `<起始>-<结束>.mp4` 文件名解析；这类记录解析不出 period）
+→ 这些行**永远删不掉**（返回 `failed`，库记录保留）。
+
+修复：区分"平台侧有没有文件"。
+
+* `app == "record_info"`（设备侧录像）→ 平台/ZLM 侧不存在同名文件 → **只删库记录**；
+* 其余（ZLM 录制产物）→ 维持原顺序：先删文件、成功后再删库记录，
+  文件删不掉时保留记录并在 `message` 里说明需人工清理。
+
+实测：`DELETE /api/cloud/record/delete {"ids":["27"]}`（record_info 行）
+由 `{"deleted":[],"failed":["27"]}` 变为 `{"deleted":["27"],"failed":[]}`。
+
+### 环境限制（本轮无法端到端验证的部分）
+
+本机 Docker Desktop 出现**容器 → 宿主机网络不通**（`host.docker.internal` 解析到
+IPv6 ULA `fdc4:f303:9324::254`，`192.168.65.254`、`172.18.0.1`、宿主机 LAN IP 全部
+连接失败；`gbserver-redis` 容器同样连不上宿主机的 18080）。后果是 **ZLM 的所有 hook
+（`on_publish` / `on_record_mp4` / `on_server_keepalive` …）都到不了后端**：
+
+* 录制计划能拉起流、ZLM 也产出了 MP4 文件，但 `on_record_mp4` 不触发
+  → `gb_cloud_record` 里没有新记录；
+* 云端录像的 `播放`/`删除` 用例因此**在"没有平台侧真实录像"时显式 skip**，
+  而不是拿设备侧上报的记录去断言契约（那样只会得到与契约无关的失败）。
+
+这不是仓库缺陷：`docker-compose.yml` 已补 `extra_hosts: host.docker.internal:host-gateway`
+（让该名字稳定解析到 IPv4 网关，避免同类问题），但本机这次是 Docker Desktop 自身的
+主机网络故障，需要重启 Docker Desktop 才能恢复。后端侧已做加固：主动探活成功即刷新
+`last_keepalive_time`，即使 hook 通路不通，节点也不会被误判离线（见第三十六轮）。
