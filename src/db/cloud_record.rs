@@ -697,6 +697,34 @@ pub async fn delete_by_app_stream(pool: &Pool, app: &str, stream: &str) -> sqlx:
     Ok(r.rows_affected())
 }
 
+/// 删除"某条流 + 某个日期目录"下的**全部**录像记录。
+///
+/// 为什么需要它：ZLM 的 `deleteRecordDirectory` 是**按目录**删的 —— 只给
+/// `vhost/app/stream` 就会删掉该流的整个录像目录；**即使传了 `period` 与
+/// `file_name`，实测依然把该日期目录下的所有 mp4 一起删掉**
+/// （响应里回的就是目录路径）。因此平台侧如果只删被点的那一行，
+/// 同目录下的其它行就成了"列表里还在、点开必 404"的孤儿记录。
+pub async fn delete_by_app_stream_period(
+    pool: &Pool,
+    app: &str,
+    stream: &str,
+    period: &str,
+) -> sqlx::Result<u64> {
+    let name_like = format!("{period}%");
+    let path_like = format!("%/{period}/%");
+    let r = sqlx::query(&crate::dyn_where::dialect_sql(
+        "DELETE FROM gb_cloud_record WHERE app = ? AND stream = ? \
+         AND (file_name LIKE ? OR file_path LIKE ?)",
+    ))
+    .bind(app)
+    .bind(stream)
+    .bind(&name_like)
+    .bind(&path_like)
+    .execute(pool)
+    .await?;
+    Ok(r.rows_affected())
+}
+
 /// 获取收藏的录像
 pub async fn get_collect_records(pool: &Pool) -> sqlx::Result<Vec<CloudRecord>> {
     #[cfg(feature = "postgres")]
@@ -1007,6 +1035,28 @@ mod tests {
         )
         .await
         .expect("insert record")
+    }
+
+    /// ZLM 的 `deleteRecordDirectory` 是**按目录**删的（传 file_name 也删整个日期目录），
+    /// 所以平台必须把同 (app, stream, 日期) 下的记录一起删；别的日期目录不受影响。
+    #[tokio::test]
+    async fn delete_by_app_stream_period_only_touches_that_date() {
+        let pool = sqlite_pool_with_schema().await;
+        insert_rec(&pool, "ch1", "2026-09-14-10-00-00-0.mp4", 10).await;
+        insert_rec(&pool, "ch1", "2026-09-14-10-05-00-0.mp4", 20).await;
+        insert_rec(&pool, "ch1", "2026-09-15-09-00-00-0.mp4", 30).await;
+
+        let n = delete_by_app_stream_period(&pool, "record", "ch1", "2026-09-14")
+            .await
+            .expect("按目录删除");
+        assert_eq!(n, 2, "同一天的两条应一起删除");
+
+        let left: Vec<String> =
+            sqlx::query_scalar("SELECT file_name FROM gb_cloud_record ORDER BY id")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(left, vec!["2026-09-15-09-00-00-0.mp4".to_string()]);
     }
 
     /// `find_latest_by_stream_like` 用于「设备最近一次抓拍/录像」查询（alarm_snap）。

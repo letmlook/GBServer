@@ -604,7 +604,7 @@ impl ProxyBody {
 }
 
 /// 落库用的当前时间（与推流记录一致，本地时区）。
-fn local_now_str() -> String {
+pub(crate) fn local_now_str() -> String {
     chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string()
 }
 

@@ -37,6 +37,12 @@ pub struct ZipQuery {
 }
 
 /// GET /api/cloud/record/collect/delete?id=<i64>
+///
+/// 前端「取消收藏」走的就是这条：它必须**同时**做两件事，否则界面上的
+/// "收藏列表"永远删不掉 —— 收藏写的是 `wvp_record_collect` 表
+/// （`/api/cloud/record/collect/add`），而这里此前只把
+/// `gb_cloud_record.collect` 标志清掉（WVP 的另一种收藏语义），
+/// 两个存储互不相干（第四十九轮实测发现）。
 pub async fn collect_delete(
     State(state): State<AppState>,
     Query(q): Query<CollectQuery>,
@@ -45,11 +51,28 @@ pub async fn collect_delete(
         Some(i) if i > 0 => i,
         _ => return Json(WVPResult::error("missing id")),
     };
+    // 1) 清 `gb_cloud_record.collect` 标志（WVP 语义）
     match db::cloud_record::set_collect(&state.pool, id, false).await {
-        Ok(true) => Json(WVPResult::success(serde_json::json!({"id": id, "collect": false}))),
-        Ok(false) => Json(WVPResult::error("record not found")),
-        Err(e) => Json(WVPResult::error(format!("DB error: {}", e))),
+        Ok(true) => {}
+        Ok(false) => return Json(WVPResult::error("record not found")),
+        Err(e) => return Json(WVPResult::error(format!("DB error: {}", e))),
     }
+    // 2) 同一条录像如果在收藏表里，也一并删掉（组合串口径）
+    if let Some((m, a, st, f, _)) =
+        crate::handlers::stub::resolve_cloud_record(&state, &id.to_string()).await
+    {
+        let record_id = crate::handlers::stub::build_cloud_record_id(&m, &a, &st, &f);
+        if let Err(e) = sqlx::query(&crate::dyn_where::dialect_sql(
+            "DELETE FROM wvp_record_collect WHERE record_id = ?",
+        ))
+        .bind(&record_id)
+        .execute(&state.pool)
+        .await
+        {
+            tracing::warn!("取消收藏时删除收藏表记录失败 record_id={}: {}", record_id, e);
+        }
+    }
+    Json(WVPResult::success(serde_json::json!({"id": id, "collect": false})))
 }
 
 /// GET /api/cloud/record/list-url?device_id=&channel_id=

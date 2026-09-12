@@ -12,7 +12,7 @@
 | 总代码量（src/） | 79,179 行 Rust | `find src -name '*.rs' \| xargs wc -l` |
 | 已注册 HTTP 路由 | 386 条唯一 `/api/...` 路径 | `grep -oE '"/api/[^"]*"' src/router.rs \| sort -u \| wc -l` |
 | Handler 模块 | 29 个（含 `stub.rs` / `device_stub.rs` 两个兼容 shim） | `grep -c 'pub mod' src/handlers/mod.rs` |
-| 后端测试 | **717 通过 / 0 失败**（第五十一轮刷新） | `cargo test` |
+| 后端测试 | **719 通过 / 0 失败**（第五十二轮刷新） | `cargo test` |
 | 编译状态 | `cargo check` 0 error / **0 warning**；clippy 262；**deprecated 0** | `cargo check` / `cargo clippy --all-targets` |
 | 数据库 feature | SQLite（默认）/ PostgreSQL / MySQL **三者均编译通过** | CI `feature-matrix` job |
 | CI | ⏸️ 工作流已就绪但**按需暂停自动触发**（见 `.github/workflows/ci.yml`） | — |
@@ -2431,6 +2431,72 @@ npx playwright test              66 passed / 0 failed
 级联推流真机验证                  ✅ 864 个 RTP 包到达上级
 ```
 
+### 收藏录像 & 云端录像删除：**"按目录删"的 ZLM 语义 + 三方言静默坏掉**（2026-09-12 第五十二轮）
+
+继续沿"零调用函数 / 写而不读"排查，`cloud_record::get_collect_records` 零调用
+把注意力引到**收藏录像**这条扩展接口上，结果三处都是真缺陷：
+
+**一、`wvp_record_collect`（收藏列表）在 SQLite / MySQL 上静默坏掉**
+
+| 位置 | 问题 | 后果 |
+|------|------|------|
+| 建表 DDL | 只有 PostgreSQL 一份写法（`id SERIAL`、`create_time TIMESTAMP`） | SQLite 上 `SERIAL` 既非 `INTEGER PRIMARY KEY` 也非自增 → 插入后 `id` 是 **NULL**；MySQL 上展开成 `BIGINT UNSIGNED` → sqlx 的 `i32` 拒绝解码 |
+| 列表 SQL | `create_time::text`（pg 专有） | SQLite/MySQL 直接语法错误 |
+| 列表错误处理 | `.unwrap_or_default()` | 上面的错误被吞成**空列表**，"收藏恒为空"没有任何日志 |
+| 插入/删除 SQL | `$1` + `ON CONFLICT`（pg 专有） | MySQL 必然报错，而 `Err` 被当成"已收藏"静默吞掉 |
+
+修复：三种方言各自的建表语句（pg `BIGSERIAL` / mysql `BIGINT AUTO_INCREMENT` /
+sqlite `INTEGER PRIMARY KEY AUTOINCREMENT`）+ **既有库的类型迁移**（SQLite 用
+`pragma_table_info` 检测后重建并保留数据、MySQL 用 information_schema + `MODIFY`）；
+列表去掉 `::text` 并把 `id` 按 i64 解码、错误如实返回并记日志；插入分方言
+（pg/sqlite `ON CONFLICT DO NOTHING`、MySQL `INSERT IGNORE`）、删除走 `dialect_sql`。
+
+**二、"取消收藏"删的是另一个存储**
+
+前端「取消收藏」走 `GET /cloud/record/collect/delete?id=`，而那个 handler 只把
+`gb_cloud_record.collect` 标志清掉（WVP 的另一种收藏语义），**从不删
+`wvp_record_collect` 里的行** —— 于是收藏列表里的条目永远删不掉。现在两条路径
+都做：清标志 + 按组合串 `recordId` 删收藏表记录。
+
+**三、ZLM 的 `deleteRecordDirectory` 是"按目录删"，平台只删一行会留孤儿**
+
+实测（往 ZLM 录像目录放两个假文件再调 API）：
+
+```
+deleteRecordDirectory?vhost=…&app=rtp&stream=zteststream&period=2026-09-13&file_name=a.mp4
+  → {"code":0,"path":"/opt/media/bin/www/record/rtp/zteststream/2026-09-13/"}
+  → 目录里 a.mp4 **和 b.mp4 一起消失**
+```
+
+也就是说用户点"删除"一条录像，**同一条流同一天的所有文件都被删掉**，而平台只删
+被点的那一行 → 其余行成为"列表里还在、点开 404"的孤儿
+（本轮就是先在自己环境里看到 22 行这种孤儿数据才定位到的）。
+
+修复：新增 `db::cloud_record::delete_by_app_stream_period(app, stream, period)`，
+文件删除成功后把**同 (app, stream, 日期) 下的所有库记录**一起删掉并记日志
+（"ZLM 按目录删除了 N 条记录"），不再产生孤儿。
+
+**实测**：
+
+```
+SQLite  ：启动日志 "[schema] wvp_record_collect.id 当前类型为 SERIAL（应为 INTEGER），迁移中（保留数据）"
+          → 表变 INTEGER PRIMARY KEY AUTOINCREMENT、旧收藏保留（id=1）、列表能读出来
+MySQL   ：add → collected；重复 add → already_collected；list 1 条；GET delete → 列表清空
+          SHOW COLUMNS → id bigint auto_increment（有符号）
+PostgreSQL：list 正常解码（id i64）、DELETE 路由按 recordId 删除成功
+云端录像：两个假文件 + 两行 → 删其中一条 → ZLM 目录空、**两行都清掉**
+          （日志："ZLM 按目录删除了 2 条记录（同日期目录下的文件已一并删除）"）
+```
+
+#### 第五十二轮基线
+
+```
+cargo test                       719 passed / 0 failed（+1 收藏契约、+1 按目录删除）
+cargo build --features postgres/mysql  OK
+npx playwright test              66 passed / 0 failed
+pg / mysql 运行期冒烟            仍只剩 3 项预期项
+```
+
 ### 前端↔后端契约审计：**16 个模块 130 条全部修完**（2026-09-12 第三十九轮）
 
 第二十六轮用"一个模块一个 agent"的方式把 16 个前端 API 模块逐个对后端路由/DTO
@@ -2887,6 +2953,7 @@ vue-tsc --noEmit                 通过
 - 2026-09-12 第四十九轮：`cargo test` —— **716 通过 / 0 失败**（ZLM 接口对照：`isMediaExist`/`sendRtpInfo`/下载接口族 5 个不存在；`dst_url` 必须裸主机 —— 级联推流此前从未成功；实测 RTP 收到 365 包）
 - 2026-09-12 第五十轮：`cargo test` —— **716 通过 / 0 失败**（**级联推流首次端到端打通**：释放发送端口占位、流复用/残留 RTP server 处理、媒体等待器早到通知作废、源流未就绪重试；实测上级收到 864 个 RTP 包）
 - 2026-09-12 第五十一轮：`cargo test` —— **717 通过 / 0 失败**（删除 JT1078 终端连带清理其通道；`delete_channels_by_terminal` 此前零调用留下孤儿行）
+- 2026-09-12 第五十二轮：`cargo test` —— **719 通过 / 0 失败**（收藏录像三方言静默坏掉 + 既有库迁移；取消收藏与收藏列表打通；云端录像删除按 ZLM 的按目录语义连带清理同目录记录，消除孤儿行）
 - 2026-09-12 第三十一轮：`cargo test` —— **641 通过 / 0 失败**（JT1078 终端/围栏 13 条）
 - 2026-09-12 第三十轮：`cargo test` —— **637 通过 / 0 失败**（设备页 7 条）
 - 2026-09-12 第二十九轮：`cargo test` —— **634 通过 / 0 失败**（云端录像全链路）

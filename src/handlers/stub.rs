@@ -102,7 +102,7 @@ fn record_duration_ms(duration: Option<f64>) -> i64 {
         .unwrap_or(0)
 }
 
-fn build_cloud_record_id(media_server_id: &str, app: &str, stream: &str, file_name: &str) -> String {
+pub(crate) fn build_cloud_record_id(media_server_id: &str, app: &str, stream: &str, file_name: &str) -> String {
     format!("{media_server_id}::{app}::{stream}::{file_name}")
 }
 
@@ -786,6 +786,7 @@ pub async fn group_one(
 
 /// DELETE /api/group/delete?id=
 #[derive(Debug, Deserialize)]
+#[derive(Default)]
 pub struct IdQuery {
     pub id: Option<i32>,
     #[serde(alias = "planId")]
@@ -1312,6 +1313,7 @@ pub struct CloudRecordDeleteBody {
 }
 
 #[derive(Debug, Deserialize)]
+#[derive(Default)]
 pub struct CloudRecordCollectQuery {
     /// 数字主键（列表返回的 id）与组合串 recordId 都接受
     pub id: Option<String>,
@@ -1406,7 +1408,7 @@ async fn resolve_cloud_record_id_string(
 ///
 /// 此前 play/path 只认 `recordId`/`cloudRecordId`（前端发的是 `id`）→ 参数绑不上
 /// → 直接返回三个空字符串，用户点「播放」永远只看到"无可播放路径"。
-async fn resolve_cloud_record(
+pub(crate) async fn resolve_cloud_record(
     state: &AppState,
     id_raw: &str,
 ) -> Option<(String, String, String, String, Option<i64>)> {
@@ -1817,13 +1819,30 @@ pub async fn cloud_record_delete(
             true
         };
         if file_ok {
-            if let Some(id) = db_id {
-                // 库记录删除失败**不能算成功** —— 否则前端列表移除、刷新又回来，
-                // 用户以为删干净了。此前是 `let _ =`。
-                if let Err(e) = crate::db::cloud_record::delete(&state.pool, id).await {
-                    tracing::error!("删除云端录像记录失败 id={id}: {e}");
-                    failed.push(record_id);
-                    continue;
+            if db_id.is_some() {
+                // ZLM 的 `deleteRecordDirectory` 按**目录**删：同一个 (app, stream, 日期)
+                // 下的文件已经全部没了，因此这里必须把同目录的**所有**库记录一起删，
+                // 否则剩下的行会指向不存在的文件（列表里还在、点开必 404）。
+                // 只删被点的那一行是"文件没了、记录留着"的孤儿来源。
+                match crate::db::cloud_record::delete_by_app_stream_period(
+                    &state.pool, &app, &stream, &period,
+                )
+                .await
+                {
+                    Ok(n) => {
+                        if n > 1 {
+                            tracing::info!(
+                                "删除录像 {app}/{stream}/{file_name}: ZLM 按目录删除了 {n} 条记录（同日期目录下的文件已一并删除）"
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            "删除云端录像记录失败 app={app} stream={stream} period={period}: {e}"
+                        );
+                        failed.push(record_id);
+                        continue;
+                    }
                 }
             }
             deleted.push(record_id);
@@ -2103,17 +2122,110 @@ async fn cloud_record_scan_zlm(
 /// ============================================================================
 
 /// 确保收藏表存在
+/// 收藏录像表 `wvp_record_collect`（GBServer 扩展，WVP 本身没有这个功能）。
+///
+/// **三种方言都要各自的建表语句**：早期这里只有一份 PostgreSQL 写法
+/// （`id SERIAL`、`create_time TIMESTAMP`），在 SQLite / MySQL 上的后果是
+/// **静默坏掉**：
+///
+/// * SQLite：`SERIAL PRIMARY KEY` 既不是 `INTEGER PRIMARY KEY` 也不是自增，
+///   插入后 `id` 是 **NULL**（实测 `typeof(id)='null'`），随后列表查询
+///   解码 `id: i32` 直接失败 → 收藏列表**永远为空**；
+/// * MySQL：`SERIAL` 会展开成 `BIGINT UNSIGNED AUTO_INCREMENT`，而 sqlx 的
+///   `i32` 拒绝解码 UNSIGNED 列 → 同样是空列表；
+/// * 建表失败/类型不对时只有 `let _ =`，日志里一个字都没有。
+///
+/// 因此这里按方言建表，并对**既有库**做一次类型迁移（保留已有收藏数据）。
 async fn ensure_record_collect_table(pool: &crate::db::Pool) {
-    let _ = sqlx::query(
-        r#"CREATE TABLE IF NOT EXISTS wvp_record_collect (
-            id SERIAL PRIMARY KEY,
+    #[cfg(feature = "postgres")]
+    const DDL: &str = r#"CREATE TABLE IF NOT EXISTS wvp_record_collect (
+            id BIGSERIAL PRIMARY KEY,
             record_id VARCHAR(255) NOT NULL UNIQUE,
             device_id VARCHAR(64),
             channel_id VARCHAR(64),
             name VARCHAR(255),
-            create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )"#
-    ).execute(pool).await;
+            create_time VARCHAR(50)
+        )"#;
+    #[cfg(feature = "mysql")]
+    const DDL: &str = r#"CREATE TABLE IF NOT EXISTS wvp_record_collect (
+            id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            record_id VARCHAR(255) NOT NULL UNIQUE,
+            device_id VARCHAR(64),
+            channel_id VARCHAR(64),
+            name VARCHAR(255),
+            create_time VARCHAR(50)
+        )"#;
+    #[cfg(feature = "sqlite")]
+    const DDL: &str = r#"CREATE TABLE IF NOT EXISTS wvp_record_collect (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            record_id VARCHAR(255) NOT NULL UNIQUE,
+            device_id VARCHAR(64),
+            channel_id VARCHAR(64),
+            name VARCHAR(255),
+            create_time VARCHAR(50)
+        )"#;
+
+    // ---- 既有库的类型迁移 ----
+    #[cfg(feature = "sqlite")]
+    {
+        let id_type: Option<String> = sqlx::query_scalar(
+            "SELECT type FROM pragma_table_info('wvp_record_collect') WHERE name = 'id'",
+        )
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten();
+        if let Some(t) = id_type.filter(|t| !t.eq_ignore_ascii_case("INTEGER")) {
+            tracing::warn!(
+                "[schema] wvp_record_collect.id 当前类型为 {}（应为 INTEGER），迁移中（保留数据）",
+                t
+            );
+            let old = "wvp_record_collect_legacy";
+            for stmt in [
+                format!("ALTER TABLE wvp_record_collect RENAME TO {old}"),
+                DDL.to_string(),
+                format!(
+                    "INSERT INTO wvp_record_collect (record_id, device_id, channel_id, name, create_time) \
+                     SELECT record_id, device_id, channel_id, name, create_time FROM {old}"
+                ),
+                format!("DROP TABLE {old}"),
+            ] {
+                if let Err(e) = sqlx::query(&stmt).execute(pool).await {
+                    tracing::error!("[schema] wvp_record_collect 迁移失败: {} | {}", e, stmt);
+                    return;
+                }
+            }
+        }
+    }
+    #[cfg(feature = "mysql")]
+    {
+        if let Ok(Some(t)) = sqlx::query_scalar::<_, String>(
+            "SELECT data_type FROM information_schema.columns \
+             WHERE table_schema = DATABASE() AND table_name = 'wvp_record_collect' AND column_name = 'id'",
+        )
+        .fetch_optional(pool)
+        .await
+        {
+            if t != "bigint" {
+                tracing::warn!("[schema] wvp_record_collect.id 类型为 {}，迁移为有符号 BIGINT", t);
+                if let Err(e) = sqlx::query(
+                    "ALTER TABLE wvp_record_collect MODIFY id BIGINT NOT NULL AUTO_INCREMENT",
+                )
+                .execute(pool)
+                .await
+                {
+                    tracing::error!("[schema] wvp_record_collect.id 迁移失败: {}", e);
+                }
+            }
+        }
+    }
+
+    if let Err(e) = sqlx::query(DDL).execute(pool).await {
+        let msg = e.to_string();
+        if !msg.contains("already exists") {
+            tracing::error!("创建 wvp_record_collect 失败（收藏功能不可用）: {}", msg);
+        }
+    }
 }
 
 /// GET /api/cloud/record/collect/add
@@ -2143,22 +2255,39 @@ pub async fn cloud_record_collect_add(
     let channel_id = q.channel_id.clone().unwrap_or_default();
     let name = q.name.clone().unwrap_or_else(|| "收藏录像".to_string());
     
-    let result = sqlx::query(
-        "INSERT INTO wvp_record_collect (record_id, device_id, channel_id, name) VALUES ($1, $2, $3, $4) ON CONFLICT (record_id) DO NOTHING"
-    )
-    .bind(&record_id)
-    .bind(&device_id)
-    .bind(&channel_id)
-    .bind(&name)
-    .execute(&state.pool)
-    .await;
-    
-    match result {
+    // 冲突处理同样分方言：SQLite / PostgreSQL 用 `ON CONFLICT DO NOTHING`，
+    // MySQL 用 `INSERT IGNORE`（此前只有 pg 写法，MySQL 上必然报错，
+    // 而 `Err` 又被当成"已收藏"静默吞掉）。
+    let now = crate::handlers::stream::local_now_str();
+    #[cfg(any(feature = "postgres", feature = "sqlite"))]
+    let sql = crate::dyn_where::dialect_sql(
+        "INSERT INTO wvp_record_collect (record_id, device_id, channel_id, name, create_time) \
+         VALUES (?, ?, ?, ?, ?) ON CONFLICT (record_id) DO NOTHING",
+    );
+    #[cfg(feature = "mysql")]
+    let sql = std::borrow::Cow::Borrowed(
+        "INSERT IGNORE INTO wvp_record_collect (record_id, device_id, channel_id, name, create_time) \
+         VALUES (?, ?, ?, ?, ?)",
+    );
+
+    match sqlx::query(&sql)
+        .bind(&record_id)
+        .bind(&device_id)
+        .bind(&channel_id)
+        .bind(&name)
+        .bind(&now)
+        .execute(&state.pool)
+        .await
+    {
         Ok(r) if r.rows_affected() > 0 => {
             Json(WVPResult::success(serde_json::json!({"recordId": record_id, "status": "collected"})))
         }
-        _ => {
-            Json(WVPResult::success(serde_json::json!({"recordId": record_id, "status": "already_collected"})))
+        Ok(_) => Json(WVPResult::success(
+            serde_json::json!({"recordId": record_id, "status": "already_collected"}),
+        )),
+        Err(e) => {
+            tracing::error!("收藏录像失败 record_id={}: {}", record_id, e);
+            Json(WVPResult::error(format!("收藏失败: {e}")))
         }
     }
 }
@@ -2176,11 +2305,15 @@ pub async fn cloud_record_collect_delete(
         return Json(WVPResult::error("record_id is required"));
     }
     
-    sqlx::query("DELETE FROM wvp_record_collect WHERE record_id = $1")
-        .bind(&record_id)
-        .execute(&state.pool)
-        .await
-        .ok();
+    if let Err(e) = sqlx::query(&crate::dyn_where::dialect_sql(
+        "DELETE FROM wvp_record_collect WHERE record_id = ?",
+    ))
+    .bind(&record_id)
+    .execute(&state.pool)
+    .await
+    {
+        tracing::error!("取消收藏失败 record_id={}: {}", record_id, e);
+    }
     
     Json(WVPResult::success(serde_json::json!({"recordId": record_id, "status": "deleted"})))
 }
@@ -2197,22 +2330,35 @@ pub async fn cloud_record_collect_list(
     let count = q.count.unwrap_or(20).min(100);
     let offset = (page.saturating_sub(1) * count) as i64;
     
-    let records: Vec<(i32, String, String, String, String, String)> = sqlx::query_as(
-        "SELECT id, record_id, device_id, channel_id, name, create_time::text FROM wvp_record_collect ORDER BY id DESC LIMIT $1 OFFSET $2"
-    )
-    .bind(count as i64)
-    .bind(offset)
-    .fetch_all(&state.pool)
-    .await
-    .unwrap_or_default();
+    // 不再用 `create_time::text`（PostgreSQL 专有），也不再用
+    // `unwrap_or_default()` 把错误吞成空列表 —— 那让"收藏列表恒为空"
+    // 在 sqlite/mysql 上静默存在了很久。
+    // `id` 用 i64 解码：postgres 建表是 `BIGSERIAL`（INT8），用 i32 会直接
+    // `mismatched types ... INT4 vs INT8`；MySQL/SQLite 的 64 位整数同样兼容。
+    let records: Vec<(i64, String, Option<String>, Option<String>, Option<String>, Option<String>)> =
+        match sqlx::query_as(&crate::dyn_where::dialect_sql(
+            "SELECT id, record_id, device_id, channel_id, name, create_time \
+             FROM wvp_record_collect ORDER BY id DESC LIMIT ? OFFSET ?",
+        ))
+        .bind(count as i64)
+        .bind(offset)
+        .fetch_all(&state.pool)
+        .await
+        {
+            Ok(rows) => rows,
+            Err(e) => {
+                tracing::error!("查询收藏列表失败: {}", e);
+                return Json(WVPResult::error(format!("查询收藏列表失败: {e}")));
+            }
+        };
     
     let list: Vec<serde_json::Value> = records.into_iter().map(|r| {
         serde_json::json!({
             "id": r.0,
             "recordId": r.1,
-            "deviceId": r.2,
-            "channelId": r.3,
-            "name": r.4,
+            "deviceId": r.2.clone().unwrap_or_default(),
+            "channelId": r.3.clone().unwrap_or_default(),
+            "name": r.4.clone(),
             "createTime": r.5
         })
     }).collect();
@@ -3354,6 +3500,89 @@ mod cloud_record_url_tests {
     #[test]
     fn test_url_encode_component_keeps_slashes() {
         assert_eq!(url_encode_component("record/a b.mp4"), "record/a%20b.mp4");
+    }
+}
+
+/// 收藏录像（`wvp_record_collect`）契约：建表/插入/列表/取消收藏三种方言都要能用。
+///
+/// 回归点（第四十九轮实测到的静默坏掉）：
+/// * 建表语句曾经是 PostgreSQL 专有（`id SERIAL`）→ SQLite 上 id 为 NULL、
+///   MySQL 上是 UNSIGNED 列，列表解码失败后又被 `unwrap_or_default()` 吞成空列表；
+/// * 列表 SQL 里的 `create_time::text` 是 pg 专有；
+/// * 插入/删除只有 pg 的 `$1` + `ON CONFLICT` 写法。
+#[cfg(all(test, feature = "sqlite"))]
+mod record_collect_tests {
+    use super::*;
+    use crate::test_support::app_state;
+
+    async fn seed_record(state: &AppState) -> i64 {
+        sqlx::query(
+            "INSERT INTO gb_cloud_record (app, stream, start_time, end_time, file_name, file_path, media_server_id) \
+             VALUES ('rtp', 'dev_ch', 1, 2, 'a.mp4', '/tmp/a.mp4', 'zlm-1')",
+        )
+        .execute(&state.pool)
+        .await
+        .expect("seed cloud record");
+        sqlx::query_scalar("SELECT id FROM gb_cloud_record ORDER BY id DESC LIMIT 1")
+            .fetch_one(&state.pool)
+            .await
+            .expect("record id")
+    }
+
+    #[tokio::test]
+    async fn collect_add_list_delete_roundtrip() {
+        let state = app_state().await;
+        let record_pk = seed_record(&state).await;
+
+        // 列表初始为空（建表成功、id 可用）
+        let list = cloud_record_collect_list(
+            State(state.clone()),
+            Query(IdQuery {
+                page: Some(1),
+                count: Some(10),
+                ..Default::default()
+            }),
+        )
+        .await;
+        assert_eq!(list.0.data.unwrap()["total"], 0);
+
+        // 收藏数字主键 → 后端换算成组合串
+        let add = cloud_record_collect_add(
+            State(state.clone()),
+            Query(CloudRecordCollectQuery {
+                id: Some(record_pk.to_string()),
+                name: Some("我的收藏".into()),
+                ..Default::default()
+            }),
+        )
+        .await;
+        assert_eq!(add.0.data.unwrap()["status"], "collected");
+
+        // 重复收藏是幂等的（ON CONFLICT / INSERT IGNORE）
+        let again = cloud_record_collect_add(
+            State(state.clone()),
+            Query(CloudRecordCollectQuery {
+                id: Some(record_pk.to_string()),
+                ..Default::default()
+            }),
+        )
+        .await;
+        assert_eq!(again.0.data.unwrap()["status"], "already_collected");
+
+        // 列表必须能读出来（回归：此前恒为空）
+        let list = cloud_record_collect_list(
+            State(state.clone()),
+            Query(IdQuery {
+                page: Some(1),
+                count: Some(10),
+                ..Default::default()
+            }),
+        )
+        .await;
+        let data = list.0.data.unwrap();
+        assert_eq!(data["total"], 1, "收藏后列表必须有一条");
+        assert!(data["list"][0]["id"].as_i64().unwrap_or(0) > 0, "id 不能是 NULL");
+        assert_eq!(data["list"][0]["name"], "我的收藏");
     }
 }
 
