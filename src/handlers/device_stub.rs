@@ -77,13 +77,25 @@ pub async fn sync_status(
             }
         };
         let active_count = subscriptions.len();
+        // `total/current/errorMsg/syncIng` 是 WVP `SyncStatus` 的字段，
+        // 前端（含 legacy 的同步进度弹窗）靠它们算百分比并显示错误。
+        // 此前这几个键一个都没有 → 进度条恒为 0/空。
+        let total = db_device
+            .as_ref()
+            .and_then(|item| item.channel_count)
+            .unwrap_or(0) as i64;
+        let syncing = active_count > 0;
         Json(WVPResult::success(serde_json::json!({
             "deviceId": if requested_device_id.is_empty() { serde_json::Value::Null } else { serde_json::json!(requested_device_id) },
-            "status": if active_count > 0 { "active" } else { "idle" },
+            "status": if syncing { "active" } else { "idle" },
             "activeSubscriptions": active_count,
             "online": db_device.as_ref().and_then(|item| item.on_line).unwrap_or(false),
             "streamMode": db_device.as_ref().and_then(|item| item.stream_mode.clone()),
-            "message": "设备同步状态正常"
+            "syncIng": syncing,
+            "total": total,
+            "current": if syncing { 0 } else { total },
+            "errorMsg": serde_json::Value::Null,
+            "message": if syncing { "正在同步设备目录" } else { "同步完成" }
         })))
     } else {
         Json(WVPResult::success(serde_json::json!({
@@ -91,6 +103,10 @@ pub async fn sync_status(
             "status": "idle",
             "online": db_device.as_ref().and_then(|item| item.on_line).unwrap_or(false),
             "streamMode": db_device.as_ref().and_then(|item| item.stream_mode.clone()),
+            "syncIng": false,
+            "total": 0,
+            "current": 0,
+            "errorMsg": "SIP服务未初始化",
             "message": "SIP服务未初始化"
         })))
     }
@@ -864,6 +880,16 @@ pub struct DeviceAddBody {
     pub media_server_id: Option<String>,
     #[serde(alias = "customName")]
     pub custom_name: Option<String>,
+    /// 设备 IP / 端口 / 密码 / 注册有效期 / 心跳参数。
+    /// 这些列**一直存在**，但后端 DTO 里没有 → 前端填了也静默丢弃（接口还回成功）。
+    pub ip: Option<String>,
+    pub port: Option<i32>,
+    pub password: Option<String>,
+    pub expires: Option<i32>,
+    #[serde(alias = "heartBeatInterval")]
+    pub heart_beat_interval: Option<i32>,
+    #[serde(alias = "heartBeatCount")]
+    pub heart_beat_count: Option<i32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -880,36 +906,14 @@ pub struct DeviceUpdateBody {
     pub media_server_id: Option<String>,
     #[serde(alias = "customName")]
     pub custom_name: Option<String>,
-}
-
-/// POST /api/device/query/device/update
-pub async fn device_update(
-    State(state): State<AppState>,
-    Json(body): Json<DeviceUpdateBody>,
-) -> Result<Json<WVPResult<()>>, AppError> {
-    let device_id = body
-        .device_id
-        .as_deref()
-        .unwrap_or("")
-        .trim();
-    if device_id.is_empty() {
-        return Err(AppError::business(ErrorCode::Error400, "缺少 deviceId"));
-    }
-    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    update_device(
-        &state.pool,
-        device_id,
-        body.name.as_deref(),
-        body.manufacturer.as_deref(),
-        body.model.as_deref(),
-        body.transport.as_deref(),
-        body.stream_mode.as_deref(),
-        body.media_server_id.as_deref(),
-        body.custom_name.as_deref(),
-        &now,
-    )
-    .await?;
-    Ok(Json(WVPResult::<()>::success_empty()))
+    pub ip: Option<String>,
+    pub port: Option<i32>,
+    pub password: Option<String>,
+    pub expires: Option<i32>,
+    #[serde(alias = "heartBeatInterval")]
+    pub heart_beat_interval: Option<i32>,
+    #[serde(alias = "heartBeatCount")]
+    pub heart_beat_count: Option<i32>,
 }
 
 /// POST /api/device/query/device/add
@@ -926,19 +930,59 @@ pub async fn device_add(
         return Err(AppError::business(ErrorCode::Error400, "缺少 deviceId"));
     }
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    insert_device(
-        &state.pool,
-        device_id,
-        body.name.as_deref(),
-        body.manufacturer.as_deref(),
-        body.model.as_deref(),
-        body.transport.as_deref(),
-        body.stream_mode.as_deref(),
-        body.media_server_id.as_deref(),
-        body.custom_name.as_deref(),
-        &now,
-    )
-    .await?;
+    let fields = crate::db::device::DeviceWriteFields {
+        name: body.name.as_deref(),
+        manufacturer: body.manufacturer.as_deref(),
+        model: body.model.as_deref(),
+        transport: body.transport.as_deref(),
+        stream_mode: body.stream_mode.as_deref(),
+        media_server_id: body.media_server_id.as_deref(),
+        custom_name: body.custom_name.as_deref(),
+        ip: body.ip.as_deref(),
+        port: body.port,
+        // 空密码视为"未填写"，不要写空串
+        password: body.password.as_deref().filter(|s| !s.is_empty()),
+        expires: body.expires,
+        heart_beat_interval: body.heart_beat_interval,
+        heart_beat_count: body.heart_beat_count,
+    };
+    insert_device(&state.pool, device_id, &fields, &now).await?;
+    Ok(Json(WVPResult::<()>::success_empty()))
+}
+
+/// POST /api/device/query/device/update
+pub async fn device_update(
+    State(state): State<AppState>,
+    Json(body): Json<DeviceUpdateBody>,
+) -> Result<Json<WVPResult<()>>, AppError> {
+    let device_id = body.device_id.as_deref().unwrap_or("").trim();
+    if device_id.is_empty() {
+        return Err(AppError::business(ErrorCode::Error400, "缺少 deviceId"));
+    }
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let fields = crate::db::device::DeviceWriteFields {
+        name: body.name.as_deref(),
+        manufacturer: body.manufacturer.as_deref(),
+        model: body.model.as_deref(),
+        transport: body.transport.as_deref(),
+        stream_mode: body.stream_mode.as_deref(),
+        media_server_id: body.media_server_id.as_deref(),
+        custom_name: body.custom_name.as_deref(),
+        ip: body.ip.as_deref(),
+        port: body.port,
+        // 前端编辑时不回填密码（传空串）→ 必须视为"不修改"
+        password: body.password.as_deref().filter(|s| !s.is_empty()),
+        expires: body.expires,
+        heart_beat_interval: body.heart_beat_interval,
+        heart_beat_count: body.heart_beat_count,
+    };
+    let affected = update_device(&state.pool, device_id, &fields, &now).await?;
+    if affected == 0 {
+        return Err(AppError::business(
+            ErrorCode::Error404,
+            format!("设备不存在: {device_id}"),
+        ));
+    }
     Ok(Json(WVPResult::<()>::success_empty()))
 }
 
@@ -947,33 +991,19 @@ pub async fn device_one(
     State(state): State<AppState>,
     Path(device_id): Path<String>,
 ) -> Json<WVPResult<serde_json::Value>> {
-    tracing::info!("DEBUG_DEVICE_ONE: query for device_id={:?}", device_id);
-    let result = get_device_by_device_id(&state.pool, &device_id).await;
-    tracing::info!("DEBUG_DEVICE_ONE: query result is_ok={} is_some={}",
-        result.is_ok(), result.as_ref().map(|r| r.is_some()).unwrap_or(false));
-    if let Err(ref e) = result {
-        tracing::error!("DEBUG_DEVICE_ONE: query error: {:?}", e);
-    }
-    match result {
-        Ok(Some(d)) => {
-            let v = serde_json::json!({
-                "deviceId": d.device_id,
-                "name": d.name,
-                "manufacturer": d.manufacturer,
-                "model": d.model,
-                "transport": d.transport,
-                "streamMode": d.stream_mode,
-                "onLine": d.on_line,
-                "ip": d.ip,
-                "port": d.port,
-                "createTime": d.create_time,
-                "updateTime": d.update_time,
-                "mediaServerId": d.media_server_id,
-                "customName": d.custom_name
-            });
-            Json(WVPResult::success(v))
+    // 直接序列化 `Device`（`#[serde(rename_all = "camelCase")]`），
+    // 与列表接口**同源**：此前手写了一份只有 12 个键的 JSON，缺
+    // `id/firmware/expires/heartBeat*/registerTime/channelCount` 等，
+    // 编辑弹窗靠 `props.device?.id` 判断"新增还是编辑"，缺 id 会把编辑变成新增。
+    match get_device_by_device_id(&state.pool, &device_id).await {
+        Ok(Some(d)) => Json(WVPResult::success(
+            serde_json::to_value(&d).unwrap_or(serde_json::Value::Null),
+        )),
+        Ok(None) => Json(WVPResult::success(serde_json::json!(null))),
+        Err(e) => {
+            tracing::warn!("查询设备 {device_id} 失败: {e}");
+            Json(WVPResult::error(format!("查询设备失败: {e}")))
         }
-        _ => Json(WVPResult::success(serde_json::json!(null))),
     }
 }
 
@@ -1069,5 +1099,112 @@ mod stream_row_tests {
             assert_eq!(row["deviceId"], "", "{name} 不应有 deviceId");
             assert_eq!(row["channelId"], "", "{name} 不应有 channelId");
         }
+    }
+}
+
+#[cfg(all(test, feature = "sqlite"))]
+mod device_write_tests {
+    use super::*;
+    use crate::test_support::app_state;
+
+    /// 前端编辑框里的 IP / 端口 / 密码 / 注册有效期 / 心跳参数此前**后端 DTO 里
+    /// 根本没有**（接口回成功、库里仍为空）。这条测试逐字段验证真的落库。
+    #[tokio::test]
+    async fn test_device_add_and_update_persist_all_form_fields() {
+        let state = app_state().await;
+
+        let add: DeviceAddBody = serde_json::from_value(serde_json::json!({
+            "deviceId": "34020000001320000001",
+            "name": "前门",
+            "manufacturer": "MockVendor",
+            "model": "IPC-1",
+            "transport": "UDP",
+            "streamMode": "TCP-PASSIVE",
+            "ip": "192.168.1.10",
+            "port": 5060,
+            "password": "admin123",
+            "expires": 3600,
+            "heartBeatInterval": 60,
+            "heartBeatCount": 3
+        }))
+        .expect("camelCase 必须能反序列化");
+
+        let _ = device_add(State(state.clone()), Json(add)).await.expect("新增应成功");
+
+        let d = crate::db::device::get_device_by_device_id(&state.pool, "34020000001320000001")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(d.ip.as_deref(), Some("192.168.1.10"));
+        assert_eq!(d.port, Some(5060));
+        assert_eq!(d.password.as_deref(), Some("admin123"));
+        assert_eq!(d.expires, Some(3600));
+        assert_eq!(d.heart_beat_interval, Some(60));
+        assert_eq!(d.heart_beat_count, Some(3));
+        assert_eq!(d.stream_mode.as_deref(), Some("TCP-PASSIVE"));
+
+        // 编辑：改 IP/端口，且**空密码不能把已有密码清掉**
+        let upd: DeviceUpdateBody = serde_json::from_value(serde_json::json!({
+            "deviceId": "34020000001320000001",
+            "name": "后门",
+            "ip": "10.0.0.5",
+            "port": 5070,
+            "password": ""
+        }))
+        .unwrap();
+        let _ = device_update(State(state.clone()), Json(upd)).await.expect("更新应成功");
+
+        let d = crate::db::device::get_device_by_device_id(&state.pool, "34020000001320000001")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(d.name.as_deref(), Some("后门"));
+        assert_eq!(d.ip.as_deref(), Some("10.0.0.5"));
+        assert_eq!(d.port, Some(5070));
+        assert_eq!(d.password.as_deref(), Some("admin123"), "空密码表示不修改");
+        assert_eq!(d.expires, Some(3600), "未提交的字段保持原值");
+        assert_eq!(d.heart_beat_count, Some(3));
+    }
+
+    /// 设备详情必须返回**完整行**（含 id）：编辑弹窗靠 `id` 判断新增/编辑。
+    #[tokio::test]
+    async fn test_device_one_returns_full_row() {
+        let state = app_state().await;
+        let add: DeviceAddBody = serde_json::from_value(serde_json::json!({
+            "deviceId": "34020000001320000002",
+            "name": "设备2",
+            "expires": 1800
+        }))
+        .unwrap();
+        let _ = device_add(State(state.clone()), Json(add)).await.unwrap();
+
+        let resp = device_one(
+            State(state.clone()),
+            axum::extract::Path("34020000001320000002".to_string()),
+        )
+        .await;
+        let d = resp.0.data.unwrap();
+        assert!(d.get("id").and_then(|v| v.as_i64()).unwrap_or(0) > 0, "必须带 id: {d}");
+        assert_eq!(d["deviceId"], "34020000001320000002");
+        assert_eq!(d["expires"], 1800);
+        assert!(d.get("onLine").is_some(), "在线状态键名是 onLine（与 WVP 一致）");
+    }
+
+    /// `sync_status` 必须有 total/current/errorMsg（WVP `SyncStatus`），
+    /// 否则同步进度弹窗算不出百分比、也看不到错误。
+    #[tokio::test]
+    async fn test_sync_status_exposes_wvp_fields() {
+        let state = app_state().await;
+        let resp = sync_status(
+            State(state.clone()),
+            Query(SyncStatusQuery {
+                device_id: Some("34020000001320000001".into()),
+            }),
+        )
+        .await;
+        let d = resp.0.data.unwrap();
+        assert!(d.get("total").is_some(), "缺 total: {d}");
+        assert!(d.get("current").is_some(), "缺 current: {d}");
+        assert!(d.get("errorMsg").is_some(), "缺 errorMsg: {d}");
     }
 }

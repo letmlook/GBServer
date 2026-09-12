@@ -12,7 +12,7 @@
 | 总代码量（src/） | 75,846 行 Rust | `find src -name '*.rs' \| xargs wc -l` |
 | 已注册 HTTP 路由 | 383 条唯一 `/api/...` 路径 | `grep -oE '"/api/[^"]*"' src/router.rs \| sort -u \| wc -l` |
 | Handler 模块 | 29 个（含 `stub.rs` / `device_stub.rs` 两个兼容 shim） | `grep -c 'pub mod' src/handlers/mod.rs` |
-| 后端测试 | **634 通过** / 0 失败（第二十九轮刷新） | `cargo test` |
+| 后端测试 | **637 通过** / 0 失败（第三十轮刷新） | `cargo test` |
 | 编译状态 | `cargo check` 0 error / **0 warning**；clippy 262；**deprecated 0** | `cargo check` / `cargo clippy --all-targets` |
 | 数据库 feature | SQLite（默认）/ PostgreSQL / MySQL **三者均编译通过** | CI `feature-matrix` job |
 | CI | ⏸️ 工作流已就绪但**按需暂停自动触发**（见 `.github/workflows/ci.yml`） | — |
@@ -1338,6 +1338,39 @@ cargo check --features mysql/postgres  OK
 npx playwright test              34 passed / 0 failed / 0 skipped（真实 ZLM）
 ```
 
+### 设备页：在线状态键名、设备表单字段、同步状态、通道过滤（2026-09-12 第三十轮）
+
+`device` 模块 7 条修完，都是"接口回成功但数据不对/没写进去"：
+
+| # | 缺陷 | 修复 / 证据 |
+|---|------|------|
+| 1 | **在线设备显示"离线"**：前端读 `row.online`/`row.status`，后端（与 WVP `Device.onLine` 一致）返回 `onLine` | 前端按 `onLine` 读取（保留 `online` 兼容）。连带把"撤防"按钮不可达一并修好（按钮本来靠 `isOnline` 判断） |
+| 2 | 新增/编辑设备的 `ip/port/password/expires/heartBeatInterval/heartBeatCount` **后端 DTO 里没有** | 六列在有 `gb_device` 表里一直存在，但 DTO 与 INSERT/UPDATE 都没有 → 填了静默丢弃。现在全部落库；UPDATE 用 `COALESCE(NULLIF(?, ''), password)` 保证"编辑时不回填密码"不会把已有密码清空 |
+| 3 | 设备详情只返回 12 个键（无 `id`） | 编辑弹窗靠 `props.device?.id` 判断新增/编辑，缺 `id` 会把"编辑"退化成"新增"。改为直接序列化 `Device`（与列表同源） |
+| 4 | `heartBeatInterval/heartBeatCount` 永远读不到 | 列在库里，但 `Device` 结构体与 `DEVICE_SELECT_COLUMNS` 都没有 → 前端类型声明是空的。已补进结构体与全部 15 处显式 SELECT |
+| 5 | `sync_status` 无 `total/current/errorMsg` | 前端（含 legacy 同步进度弹窗）靠它们算百分比。现按 WVP `SyncStatus` 补齐（另有 `syncIng`） |
+| 6 | 设备通道列表忽略 `query`/`online`/`channelType` | 三个参数被静默忽略（返回该设备全部通道）。已实现（`substr`/LIKE 参数化，行查询与计数共用一套 WHERE） |
+| 7 | `update` 对不存在的设备回成功 | 现在返回 404（affected == 0），不再假装成功 |
+
+**实测**：
+
+```
+POST /api/device/query/device/add {ip,port,password,expires,heartBeat*} → 读回全部字段
+列表         → onLine:false（键名正确）、heartBeatInterval:45、heartBeatCount:2
+详情         → 带 id=27 与 expires/heartBeatInterval
+sync_status  → {total:0,current:0,errorMsg:null,status:"idle"}
+通道过滤     → query=通道2 → 1 条；online=false → 0 条
+Playwright   → 34 passed（无回归）
+```
+
+#### 第三十轮基线
+
+```
+cargo test                       637 passed / 0 failed
+cargo check --all-targets        本项目 0 warning
+npx playwright test              34 passed / 0 failed / 0 skipped（真实 ZLM）
+```
+
 ### 前端↔后端契约审计：已完成 4 个模块，剩余 12 个模块（2026-09-12 第二十七轮）
 
 第二十六轮用"一个模块一个 agent"的方式把 16 个前端 API 模块逐个对后端路由/DTO
@@ -1351,7 +1384,7 @@ npx playwright test              34 passed / 0 failed / 0 skipped（真实 ZLM�
 | channel | 8 | ✅ 已修（新增/编辑全字段落库 + schema 缺列；三个下拉 {name,code}；真实点播） |
 | alarm | 10 | ✅ 已修（清除/批量清除/处理/级别/时间筛选/关键字；handle_result 落库） |
 | cloudRecord | 14 | ✅ 已修（第二十九轮，另发现 5 个深层缺陷） |
-| device | 7 | ❌ 未修 |
+| device | 7 | ✅ 已修（第三十轮） |
 | jtDevice | 13 | ❌ 未修 |
 | log | 7 | ❌ 未修 |
 | mediaServer | 7 | ❌ 未修 |

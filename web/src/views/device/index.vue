@@ -135,8 +135,21 @@ const query = reactive({
   status: ''
 })
 
+/**
+ * 设备是否在线。
+ *
+ * 后端（`Device`，`#[serde(rename_all = "camelCase")]`）返回的键是 **`onLine`**，
+ * 与 WVP 的 `Device.onLine` 一致；早期这里读 `row.online`/`row.status` →
+ * 恒为 undefined → **在线设备也显示"离线"**、按钮恒显示"布防"（撤防不可达）。
+ */
 function isOnline(row: any): boolean {
-  return row.online === true || row.online === 1 || row.status === 'ON'
+  return (
+    row?.onLine === true ||
+    row?.onLine === 1 ||
+    row?.online === true ||
+    row?.online === 1 ||
+    row?.status === 'ON'
+  )
 }
 
 async function loadData() {

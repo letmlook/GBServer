@@ -122,16 +122,6 @@ impl ZlmClient {
         Ok(body)
     }
 
-    async fn request_post<R: for<'de> serde::Deserialize<'de>, B: serde::Serialize>(&self, path: &str, body: &B) -> Result<R> {
-        let url = format!("{}{}", self.base_url, path);
-        let resp = self.http.post(&url).json(body).send().await?;
-        if !resp.status().is_success() {
-            return Err(anyhow!("HTTP error: {}", resp.status()));
-        }
-        let body: R = resp.json().await?;
-        Ok(body)
-    }
-
     pub async fn get_media_list(&self, schema: Option<&str>, app: Option<&str>, stream: Option<&str>) -> Result<Vec<MediaInfo>> {
         let mut params = vec![("secret", self.secret.clone())];
         if let Some(s) = schema { params.push(("schema", s.to_string())); }

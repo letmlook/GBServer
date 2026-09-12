@@ -1,5 +1,8 @@
 # device.ts 契约审计
 
+> **状态：已修复（2026-09-12 第三十轮）**。第 1 条（在线状态键名）同时修正了
+> 前端读取键与后端 `heart_beat_*` 列的缺失（列在库里、结构体与 SELECT 都没有）。
+
 范围：`web/src/api/device.ts`（15 个 API 函数）对后端 `src/router.rs` / `src/handlers/*.rs` 的路径、method、请求字段、响应键名。15 个 URL 全部在 `src/router.rs` 中注册且 HTTP method 一致（逐条见文末"核对说明"），因此下列条目均为**字段级**不一致。
 
 ## 1. response-field GET /api/device/query/devices

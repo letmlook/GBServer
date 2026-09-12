@@ -6,7 +6,7 @@ use axum::{
 };
 use serde::Deserialize;
 
-use crate::db::{count_channels, count_devices, list_channels_paged, list_devices_paged, Device};
+use crate::db::{count_devices, list_channels_filtered, list_devices_paged, Device};
 use crate::error::AppError;
 use crate::response::WVPResult;
 
@@ -57,6 +57,11 @@ pub struct DevicePage {
 pub struct ChannelsQuery {
     pub page: Option<u32>,
     pub count: Option<u32>,
+    /// 关键字（名称/通道编号）
+    pub query: Option<String>,
+    pub online: Option<bool>,
+    #[serde(alias = "channelType")]
+    pub channel_type: Option<i32>,
 }
 
 /// GET /api/device/query/devices/:deviceId/channels
@@ -67,8 +72,18 @@ pub async fn query_channels(
 ) -> Result<Json<WVPResult<ChannelPage>>, AppError> {
     let page = q.page.unwrap_or(1);
     let count = q.count.unwrap_or(10).min(100);
-    let total = count_channels(&state.pool, &device_id).await?;
-    let list = list_channels_paged(&state.pool, &device_id, page, count).await?;
+    // 三个过滤参数此前被完全忽略（返回该设备全部通道）——通道多的设备上
+    // 搜索/在线筛选看起来完全无效。
+    let (list, total) = list_channels_filtered(
+        &state.pool,
+        &device_id,
+        q.query.as_deref(),
+        q.online,
+        q.channel_type,
+        page,
+        count,
+    )
+    .await?;
     // Phase 5: 同时输出 camelCase + gb_* + ptzTypeText,前端 /device/channel、
     // 地图信息窗等都用同一份数据。
     let rows: Vec<serde_json::Value> = list

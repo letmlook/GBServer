@@ -156,6 +156,9 @@ export interface DeviceRecord {
   registerTime?: string
   updateTime?: string
   createTime?: string
+  /** 后端（WVP `Device.onLine`）返回的键名就是 `onLine` */
+  onLine?: number | boolean
+  /** 兼容其它来源；页面 isOnline() 两个都认 */
   online?: number | boolean
   channelCount?: number
   mediaServerId?: string

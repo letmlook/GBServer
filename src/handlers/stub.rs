@@ -205,6 +205,7 @@ fn record_rel_path(
 }
 
 /// 极简 percent-encoding（用于把绝对路径放进查询串）。
+#[allow(dead_code)]
 fn url_encode_component(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
