@@ -12,7 +12,7 @@
 | 总代码量（src/） | 79,179 行 Rust | `find src -name '*.rs' \| xargs wc -l` |
 | 已注册 HTTP 路由 | 386 条唯一 `/api/...` 路径 | `grep -oE '"/api/[^"]*"' src/router.rs \| sort -u \| wc -l` |
 | Handler 模块 | 29 个（含 `stub.rs` / `device_stub.rs` 两个兼容 shim） | `grep -c 'pub mod' src/handlers/mod.rs` |
-| 后端测试 | **719 通过 / 0 失败**（第五十二轮刷新） | `cargo test` |
+| 后端测试 | **722 通过 / 0 失败**（第五十三轮刷新） | `cargo test` |
 | 编译状态 | `cargo check` 0 error / **0 warning**；clippy 262；**deprecated 0** | `cargo check` / `cargo clippy --all-targets` |
 | 数据库 feature | SQLite（默认）/ PostgreSQL / MySQL **三者均编译通过** | CI `feature-matrix` job |
 | CI | ⏸️ 工作流已就绪但**按需暂停自动触发**（见 `.github/workflows/ci.yml`） | — |
@@ -2497,6 +2497,60 @@ npx playwright test              66 passed / 0 failed
 pg / mysql 运行期冒烟            仍只剩 3 项预期项
 ```
 
+### GB28181 录像下载：从"有接口、没文件"到**真能下载**（2026-09-12 第五十三轮）
+
+`/api/gb_record/download/{start,stop,progress}` 一直存在、也有会话状态机，
+但整条链路**产不出文件** —— 端到端实测（真实模拟设备 + 真实 ZLM）逐个暴露：
+
+| # | 缺陷 | 现象 |
+|---|------|------|
+| 1 | `on_publish` 响应**不带 `enable_mp4`** | ZLM 不会为这一路流录制 MP4 → 下载目录里永远没有文件，而 `on_stream_changed` 注销时还把会话判成 `completed`（假完成） |
+| 2 | `downloadUrl` 是 `/download/<平台自己编的文件名>` | **没有这个路由**（只有 `/downloads`，且那是 ZIP 产物目录），且和 ZLM 实际写出的文件名无关 |
+| 3 | `on_record_mp4` 只走云录像落库 | 下载产物（`download_` 前缀）没有登记到下载会话，`/progress` 拿不到文件与真实字节数 |
+| 4 | `/download/stop` 立刻 `dm.remove()` | 而 ZLM 是**停止录制后**才写完 MP4 尾部并回调 `on_record_mp4` —— 会话已被删，文件信息无处可落，用户永远拿不到刚下载的文件 |
+
+修复：
+
+* `on_publish` 的响应按流写入 `enable_mp4` / `enable_audio`（与 WVP 的
+  `HookResultForOnPublish` 一致）：`download_` 前缀 → `enable_mp4=true`；
+  对讲/广播 → `enable_audio=true, enable_mp4=false`；其余按 `gb_stream_proxy`
+  的配置下发（等价于 `addStreamProxy` 的参数，流被重新发布时同样生效）；
+* `on_record_mp4` 遇到 `download_` 流：登记到下载会话
+  （新增 `DownloadManager::set_zlm_file`，同时写满 `current_bytes/total_bytes`
+  与 `completed`），**不再**进云端录像列表；
+* 新增 `GET /api/gb_record/download/file/:stream_id`：把刚下好的 MP4 交给调用方
+  （复用云录像那套 ZLM 文件代理，**Range 透传**）；文件未生成时给出明确原因；
+* `/download/stop` 改为只标记 `finalizing`（**保留会话**），文件由回调补齐；
+  新增 `cleanup_finished(ttl)` 回收已结束的历史会话，避免内存堆积；
+* `start`/`progress` 的 `downloadUrl` 指向新端点，并附 `zlmFileName`。
+
+**实测（模拟设备 → ZLM → 平台）**：
+
+```
+GET /api/gb_record/download/start/<dev>/<ch>?startTime=…&endTime=…
+  → {"status":"inviting","downloadUrl":"/api/gb_record/download/file/download_…"}
+（设备推流；ZLM 目录里出现 .2026-09-13-06-13-23-0.mp4 录制中文件）
+GET …/download/stop/<dev>/<ch>/<stream>
+GET …/download/progress/<dev>/<ch>/<stream>
+  → {"status":"completed","currentBytes":176434,"totalBytes":176434,
+     "zlmFileName":"2026-09-13-06-14-43-0.mp4",
+     "downloadUrl":"/api/gb_record/download/file/download_…"}
+后端日志: 下载完成: session=download_… file=2026-09-13-06-14-43-0.mp4 size=176434
+
+GET /api/gb_record/download/file/<stream>
+  → 200, 176434 bytes, content-type video/mp4，首 16 字节 "…ftypisom"（真 MP4）
+  → Range: bytes=0-99 → **206** + 100 bytes（可拖动/续传）
+```
+
+#### 第五十三轮基线
+
+```
+cargo test                       722 passed / 0 failed（+3 下载会话）
+cargo build --features postgres/mysql  OK
+npx playwright test              66 passed / 0 failed
+GB28181 录像下载                  ✅ 真产出 MP4、真能下载（含 Range）
+```
+
 ### 前端↔后端契约审计：**16 个模块 130 条全部修完**（2026-09-12 第三十九轮）
 
 第二十六轮用"一个模块一个 agent"的方式把 16 个前端 API 模块逐个对后端路由/DTO
@@ -2954,6 +3008,7 @@ vue-tsc --noEmit                 通过
 - 2026-09-12 第五十轮：`cargo test` —— **716 通过 / 0 失败**（**级联推流首次端到端打通**：释放发送端口占位、流复用/残留 RTP server 处理、媒体等待器早到通知作废、源流未就绪重试；实测上级收到 864 个 RTP 包）
 - 2026-09-12 第五十一轮：`cargo test` —— **717 通过 / 0 失败**（删除 JT1078 终端连带清理其通道；`delete_channels_by_terminal` 此前零调用留下孤儿行）
 - 2026-09-12 第五十二轮：`cargo test` —— **719 通过 / 0 失败**（收藏录像三方言静默坏掉 + 既有库迁移；取消收藏与收藏列表打通；云端录像删除按 ZLM 的按目录语义连带清理同目录记录，消除孤儿行）
+- 2026-09-12 第五十三轮：`cargo test` —— **722 通过 / 0 失败**（GB28181 录像下载真正打通：on_publish 下发 enable_mp4、on_record_mp4 登记会话文件、新增 /download/file 端点支持 Range、stop 不再提前删会话；实测产出 176KB MP4 并可 206 分段下载）
 - 2026-09-12 第三十一轮：`cargo test` —— **641 通过 / 0 失败**（JT1078 终端/围栏 13 条）
 - 2026-09-12 第三十轮：`cargo test` —— **637 通过 / 0 失败**（设备页 7 条）
 - 2026-09-12 第二十九轮：`cargo test` —— **634 通过 / 0 失败**（云端录像全链路）

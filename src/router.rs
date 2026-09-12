@@ -437,6 +437,11 @@ pub fn app(state: AppState) -> Router<AppState> {
             "/api/gb_record/download/progress/:device_id/:channel_id/:stream_id",
             get(playback::gb_record_download_progress),
         )
+        // 下载产物（ZLM 落盘的 MP4）本体：支持 Range，供前端直接保存/拖动
+        .route(
+            "/api/gb_record/download/file/:stream_id",
+            get(playback::gb_record_download_file),
+        )
         .route(
             "/api/cloud/record/play/path",
             get(stub::cloud_record_play_path),

@@ -1087,6 +1087,11 @@ pub(crate) async fn handle_webhook_inner(
         .and_then(|v| v.as_str())
         .unwrap_or("unknown");
 
+    // hook 的响应体可以携带"让 ZLM 做什么"的指令（顶层扁平字段）。
+    // 多数事件用默认的成功响应，个别事件（on_publish）需要按流补 `enable_mp4`
+    // / `enable_audio` —— 见下面的分支。
+    let mut response = hook_ok_response();
+
     match hook_name {
         "on_stream_changed" => {
             let parsed = event
@@ -1186,19 +1191,43 @@ pub(crate) async fn handle_webhook_inner(
                     .unwrap_or_else(|| {
                         chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string()
                     });
-                save_record(
-                    &state,
-                    data.media_server_id,
-                    data.app,
-                    data.stream,
-                    data.file_name,
-                    data.folder,
-                    data.file_path,
-                    data.file_size,
-                    data.file_duration,
-                    created,
-                )
-                .await;
+                // GB28181 录像下载的产物：只登记到下载会话（供 /progress 与
+                // 下载地址使用），**不进云端录像列表** —— 它是用户要的文件，
+                // 不是平台录制的云录像。
+                if data.stream.starts_with("download_") {
+                    if let Some(ref dm) = state.download_manager {
+                        if let Some(session) = dm.get_by_zlm_stream(&data.stream).await {
+                            dm.set_zlm_file(
+                                &session.stream_id,
+                                data.file_name.clone(),
+                                Some(data.file_path.clone()).filter(|p| !p.is_empty()),
+                                data.folder.clone().filter(|f| !f.is_empty()),
+                                data.file_size as i64,
+                            )
+                            .await;
+                            tracing::info!(
+                                "下载完成: session={} file={} size={}",
+                                session.stream_id,
+                                data.file_name,
+                                data.file_size
+                            );
+                        }
+                    }
+                } else {
+                    save_record(
+                        &state,
+                        data.media_server_id,
+                        data.app,
+                        data.stream,
+                        data.file_name,
+                        data.folder,
+                        data.file_path,
+                        data.file_size,
+                        data.file_duration,
+                        created,
+                    )
+                    .await;
+                }
             }
         }
         "on_record_hls" => {
@@ -1279,6 +1308,28 @@ pub(crate) async fn handle_webhook_inner(
                             }
                         }
                     }
+                }
+                // 与 WVP 一致：`on_publish` 的响应可以带 `enable_mp4` / `enable_audio`，
+                // ZLM 据此决定是否为这一路流录制 MP4 / 转音频。
+                //
+                //   * `download_` 前缀 = GB28181 录像下载会话 → **必须**录制 MP4，
+                //     否则下载目录里永远不会出现文件（进度恒 0，最后却被
+                //     on_stream_changed 判成 completed，用户拿到死链）；
+                //   * 其余流按代理配置下发（等价于 addStreamProxy 的 enable_mp4
+                //     / enable_audio，流被重新发布时同样生效）；
+                //   * 对讲/广播不能录音（WVP 同样显式置 false）。
+                if data.stream.starts_with("download_") {
+                    response["enable_mp4"] = serde_json::json!(true);
+                } else if matches!(data.app.as_str(), "gb_talk" | "gb_broadcast" | "talk") {
+                    response["enable_mp4"] = serde_json::json!(false);
+                    response["enable_audio"] = serde_json::json!(true);
+                } else if let Ok(Some(proxy)) =
+                    crate::db::stream_proxy::get_by_app_stream(&state.pool, &data.app, &data.stream)
+                        .await
+                {
+                    response["enable_mp4"] = serde_json::json!(proxy.enable_mp4.unwrap_or(false));
+                    response["enable_audio"] =
+                        serde_json::json!(proxy.enable_audio.unwrap_or(false));
                 }
                 register_published_stream(&state, &data).await;
             }
@@ -1812,7 +1863,7 @@ pub(crate) async fn handle_webhook_inner(
         }
     }
 
-    Json(hook_ok_response())
+    Json(response)
 }
 
 /// Phase 4.2: hook 鉴权（secret + IP 白名单）

@@ -99,6 +99,16 @@ pub struct DownloadSession {
     pub current_bytes: i64,
     /// Phase 3.4: 目标字节数（来自 ZLM 估算或 start/end_time 推算）
     pub total_bytes: i64,
+    /// 设备推完流后 ZLM 落盘的 MP4 文件名（来自 `on_record_mp4`）。
+    ///
+    /// 有了它才能在下载结束后**真的把文件给出去**：此前响应里的
+    /// `downloadUrl` 固定是 `/download/<平台自己编的文件名>`，既没有对应路由、
+    /// 也和 ZLM 实际写出的文件名无关 —— 用户点下载必然 404。
+    pub zlm_file_name: Option<String>,
+    /// ZLM 写出的文件绝对路径（容器内路径，仅用于日志/推导相对路径）
+    pub zlm_file_path: Option<String>,
+    /// ZLM 写出的文件所在目录
+    pub zlm_folder: Option<String>,
 }
 
 pub struct DownloadManager {
@@ -113,6 +123,12 @@ impl DownloadManager {
     }
 
     pub async fn create(&self, session: DownloadSession) {
+        // 每发起一次下载顺手回收一次历史会话（1 小时 TTL），
+        // 避免长期运行后内存里堆积已完成/已失败的下载。
+        let removed = self.cleanup_finished(3600).await;
+        if removed > 0 {
+            tracing::debug!("下载会话清理: 移除 {} 条已结束的会话", removed);
+        }
         self.sessions.write().await.insert(session.stream_id.clone(), session);
     }
 
@@ -144,6 +160,51 @@ impl DownloadManager {
             s.progress = progress;
             s.status = status.to_string();
         }
+    }
+
+
+    /// 记录设备推流结束后 ZLM 落盘的 MP4（`on_record_mp4` 钩子调用）。
+    ///
+    /// 同时把字节数写满，让 `/progress` 能给出终态与真实大小
+    /// （此前只把进度写成 100% 而没有任何文件信息，`downloadUrl` 也指向不存在的路由）。
+    pub async fn set_zlm_file(
+        &self,
+        stream_id: &str,
+        file_name: String,
+        file_path: Option<String>,
+        folder: Option<String>,
+        size: i64,
+    ) {
+        if let Some(s) = self.sessions.write().await.get_mut(stream_id) {
+            s.zlm_file_name = Some(file_name);
+            s.zlm_file_path = file_path;
+            s.zlm_folder = folder;
+            s.current_bytes = size;
+            s.total_bytes = size;
+            s.progress = 100.0;
+            s.status = "completed".to_string();
+        }
+    }
+
+    /// 只改状态，不动进度/字节数（停止下载后进入 `finalizing`，等 ZLM 落盘回调）。
+    pub async fn set_status(&self, stream_id: &str, status: &str) {
+        if let Some(s) = self.sessions.write().await.get_mut(stream_id) {
+            s.status = status.to_string();
+        }
+    }
+
+    /// 清理"已结束且很久没人看"的会话，避免长期运行后内存里堆满历史下载。
+    /// `ttl_secs` 按 `created_at` 计算（保守：只清 completed/finalizing/failed）。
+    pub async fn cleanup_finished(&self, ttl_secs: i64) -> usize {
+        let now = Utc::now();
+        let mut map = self.sessions.write().await;
+        let before = map.len();
+        map.retain(|_, s| {
+            let finished = matches!(s.status.as_str(), "completed" | "finalizing" | "failed");
+            let expired = (now - s.created_at).num_seconds() > ttl_secs;
+            !(finished && expired)
+        });
+        before - map.len()
     }
 
     pub async fn remove(&self, stream_id: &str) {
@@ -785,6 +846,9 @@ pub async fn gb_record_download_start(
             zlm_app: "rtp".to_string(),
             current_bytes: 0,
             total_bytes: 0,
+            zlm_file_name: None,
+            zlm_file_path: None,
+            zlm_folder: None,
         };
         // Phase 3.4: 注册 media waiter，等设备推流到达；流到达后状态从 inviting → downloading
         if let Some(ref sip_server) = state.sip_server {
@@ -805,7 +869,10 @@ pub async fn gb_record_download_start(
         return Json(WVPResult::success(serde_json::json!({
             "streamId": stream_id,
             "fileName": file_name,
-            "downloadUrl": format!("/download/{}", file_name),
+            "downloadUrl": format!(
+                "/api/gb_record/download/file/{}",
+                stream_id
+            ),
             "transport": "gb28181",
             "progress": 0,
             "status": "inviting"
@@ -835,6 +902,9 @@ pub async fn gb_record_download_start(
                     zlm_app: "rtp".to_string(),
                     current_bytes: 0,
                     total_bytes: 0,
+                    zlm_file_name: None,
+                    zlm_file_path: None,
+                    zlm_folder: None,
                 };
 
                 if let Some(ref dm) = state.download_manager {
@@ -844,7 +914,10 @@ pub async fn gb_record_download_start(
                 return Json(WVPResult::success(serde_json::json!({
                     "streamId": stream_id,
                     "fileName": file_name,
-                    "downloadUrl": format!("/download/{}", file_name),
+                    "downloadUrl": format!(
+                "/api/gb_record/download/file/{}",
+                stream_id
+            ),
                     "savePath": download_path,
                     "transport": "zlm-local",
                     "progress": 0,
@@ -861,6 +934,52 @@ pub async fn gb_record_download_start(
         "streamId": stream_id,
         "msg": "Download not available"
     })))
+}
+
+/// GET /api/gb_record/download/file/:stream_id
+///
+/// 把 GB28181 录像下载**真正产出的那个 MP4** 交给调用方（支持 Range）。
+///
+/// 此前的 `downloadUrl` 是 `/download/<平台自己编的文件名>`：既没有对应路由，
+/// 又和 ZLM 实际写出的文件名无关 —— 用户点下载必然拿不到文件。
+/// 现在改为本端点：按 `stream_id` 找到下载会话 → 用 `on_record_mp4` 登记的
+/// ZLM 文件路径代理回来（文件还没生成时给出明确原因，而不是 404 HTML）。
+pub async fn gb_record_download_file(
+    State(state): State<AppState>,
+    Path(stream_id): Path<String>,
+    headers: axum::http::HeaderMap,
+) -> Result<axum::response::Response, AppError> {
+    let Some(dm) = state.download_manager.as_ref() else {
+        return Err(AppError::business(ErrorCode::Error500, "下载管理器未初始化"));
+    };
+    let Some(session) = dm.get(&stream_id).await else {
+        return Err(AppError::business(
+            ErrorCode::Error404,
+            format!("下载会话不存在或已结束: {stream_id}"),
+        ));
+    };
+    let Some(file_name) = session.zlm_file_name.clone() else {
+        return Err(AppError::business(
+            ErrorCode::Error404,
+            format!("录像文件尚未生成（当前状态: {}）", session.status),
+        ));
+    };
+    let media_server_id = state
+        .list_zlm_servers()
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| "default".to_string());
+    // 下载产物固定落在 `rtp/download_*` 这个 app/stream 下
+    crate::handlers::cloud_record_extra::proxy_zlm_file(
+        &state,
+        &media_server_id,
+        session.zlm_file_path.as_deref(),
+        &session.zlm_app,
+        &session.zlm_stream_id,
+        &file_name,
+        &headers,
+    )
+    .await
 }
 
 pub async fn gb_record_download_stop(
@@ -914,7 +1033,11 @@ pub async fn gb_record_download_stop(
             } else if let Some(ref zlm_client) = state.zlm_client {
                 let _ = zlm_client.stop_download(&session.file_name).await;
             }
-            dm.remove(&stream_id).await;
+            // **不能立刻删会话**：停止录制后 ZLM 才写完 MP4 尾部并回调
+            // `on_record_mp4`，文件信息要靠那个回调登记到会话里；删早了
+            // 用户就永远拿不到刚下载的文件（进度接口只会回"会话不存在"）。
+            // 这里只标记终态，文件由回调补齐；过期的会话由 cleanup_finished 回收。
+            dm.set_status(&stream_id, "finalizing").await;
         }
     }
 
@@ -943,7 +1066,8 @@ pub async fn gb_record_download_progress(
     };
 
     if session.url.starts_with("gb28181://") {
-        // RTP 流没有"总长度"语义，无法给出百分比；如实报告字节数与状态。
+        // 设备推完流后 ZLM 会落盘 MP4（on_record_mp4），此时给出真实文件与下载地址；
+        // 还没落盘时如实报告状态（文件为 null，前端据此继续轮询）。
         return Json(WVPResult::success(serde_json::json!({
             "streamId": session.stream_id,
             "fileName": session.file_name,
@@ -952,6 +1076,10 @@ pub async fn gb_record_download_progress(
             "currentBytes": session.current_bytes,
             "totalBytes": session.total_bytes,
             "transport": "gb28181",
+            "zlmFileName": session.zlm_file_name,
+            "downloadUrl": session.zlm_file_name.as_ref().map(|_| {
+                format!("/api/gb_record/download/file/{}", session.stream_id)
+            }),
         })));
     }
 
@@ -991,6 +1119,10 @@ pub async fn gb_record_download_progress(
         "fileName": session.file_name,
         "progress": session.progress,
         "status": session.status,
+        "zlmFileName": session.zlm_file_name,
+        "downloadUrl": session.zlm_file_name.as_ref().map(|_| {
+            format!("/api/gb_record/download/file/{}", session.stream_id)
+        }),
         "currentBytes": session.current_bytes,
         "totalBytes": session.total_bytes,
         "transport": "zlm-local",
@@ -1021,7 +1153,64 @@ mod download_manager_tests {
             zlm_app: "rtp".to_string(),
             current_bytes: 0,
             total_bytes: 0,
+            zlm_file_name: None,
+            zlm_file_path: None,
+            zlm_folder: None,
         }
+    }
+
+    /// 设备推完流后 `on_record_mp4` 登记的 ZLM 文件必须写进会话：
+    /// `/progress` 靠它给出终态与真实字节数，`/download/file` 靠它取文件。
+    #[tokio::test]
+    async fn test_download_session_records_zlm_file() {
+        let dm = DownloadManager::new();
+        dm.create(make_session("download_dev_ch_1", "download_dev_ch_1")).await;
+
+        dm.set_zlm_file(
+            "download_dev_ch_1",
+            "2026-09-13-06-14-43-0.mp4".into(),
+            Some("/opt/media/bin/www/record/rtp/download_dev_ch_1/2026-09-13/2026-09-13-06-14-43-0.mp4".into()),
+            Some("/opt/media/bin/www/record/rtp/download_dev_ch_1/".into()),
+            176434,
+        )
+        .await;
+
+        let s = dm.get("download_dev_ch_1").await.expect("会话应存在");
+        assert_eq!(s.status, "completed");
+        assert_eq!(s.current_bytes, 176434);
+        assert_eq!(s.total_bytes, 176434);
+        assert_eq!(s.progress, 100.0);
+        assert_eq!(s.zlm_file_name.as_deref(), Some("2026-09-13-06-14-43-0.mp4"));
+    }
+
+    /// 停止下载只标记 `finalizing`，不能把会话删掉 —— 文件信息随后才由
+    /// `on_record_mp4` 回调补上（删早了用户永远拿不到文件）。
+    #[tokio::test]
+    async fn test_download_session_survives_stop_until_file_arrives() {
+        let dm = DownloadManager::new();
+        dm.create(make_session("download_dev_ch_2", "download_dev_ch_2")).await;
+        dm.set_status("download_dev_ch_2", "finalizing").await;
+        assert!(dm.get("download_dev_ch_2").await.is_some(), "停止后会话不应消失");
+
+        dm.set_zlm_file("download_dev_ch_2", "f.mp4".into(), None, None, 10).await;
+        let s = dm.get("download_dev_ch_2").await.unwrap();
+        assert_eq!(s.status, "completed");
+        assert!(s.zlm_file_name.is_some());
+    }
+
+    /// 已结束且超期的会话会被回收，正在进行的不受影响。
+    #[tokio::test]
+    async fn test_download_session_cleanup_finished() {
+        let dm = DownloadManager::new();
+        dm.create(make_session("done", "z1")).await;
+        dm.set_zlm_file("done", "f.mp4".into(), None, None, 1).await;
+        dm.create(make_session("running", "z2")).await;
+
+        // TTL 取负 → 所有"已结束"的立即算超期
+        let removed = dm.cleanup_finished(-1).await;
+        assert_eq!(removed, 1);
+        assert!(dm.get("done").await.is_none());
+        assert!(dm.get("running").await.is_some(), "进行中的会话不能被清理");
     }
 
     /// Phase 3.4: 进度 0 → 50% → 100% 字节更新
@@ -1106,6 +1295,9 @@ mod download_progress_tests {
             zlm_app: "rtp".into(),
             current_bytes: 0,
             total_bytes: 0,
+            zlm_file_name: None,
+            zlm_file_path: None,
+            zlm_folder: None,
         })
         .await;
 

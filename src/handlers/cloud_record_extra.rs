@@ -411,26 +411,47 @@ async fn proxy_record_from_zlm(
     rec: &db::cloud_record::CloudRecord,
     headers: &axum::http::HeaderMap,
 ) -> Result<axum::response::Response, AppError> {
-    use axum::body::Body;
-    use axum::http::{header, Response, StatusCode};
-
     let media_server_id = rec
         .media_server_id
         .clone()
         .unwrap_or_else(|| "default".to_string());
-    let Some(zlm) = state.get_zlm_client(Some(&media_server_id)) else {
+    let file_name = rec.file_name.clone().unwrap_or_default();
+    proxy_zlm_file(
+        state,
+        &media_server_id,
+        rec.file_path.as_deref(),
+        &rec.app,
+        &rec.stream,
+        &file_name,
+        headers,
+    )
+    .await
+}
+
+/// 把 ZLM 上的录像文件**代理**给调用方（Range 头一并透传，视频才能拖动）。
+///
+/// 同时服务两类调用方：
+/// * 云录像（`/api/cloud/record/download/:id`，文件在 ZLM 的 record 目录）；
+/// * GB28181 录像下载的产物（`/api/gb_record/download/file/:stream_id`）。
+pub(crate) async fn proxy_zlm_file(
+    state: &AppState,
+    media_server_id: &str,
+    file_path: Option<&str>,
+    app: &str,
+    stream: &str,
+    file_name: &str,
+    headers: &axum::http::HeaderMap,
+) -> Result<axum::response::Response, AppError> {
+    use axum::body::Body;
+    use axum::http::{header, Response, StatusCode};
+
+    let Some(zlm) = state.get_zlm_client(Some(media_server_id)) else {
         return Err(AppError::business(
             ErrorCode::Error404,
             format!("媒体节点不可用: {media_server_id}"),
         ));
     };
-    let file_name = rec.file_name.clone().unwrap_or_default();
-    let rel = crate::handlers::stub::cloud_record_rel_path_for(
-        rec.file_path.as_deref(),
-        &rec.app,
-        &rec.stream,
-        &file_name,
-    );
+    let rel = crate::handlers::stub::cloud_record_rel_path_for(file_path, app, stream, file_name);
     if rel.is_empty() {
         return Err(AppError::business(
             ErrorCode::Error404,
