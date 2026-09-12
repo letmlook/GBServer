@@ -16,7 +16,7 @@ use crate::AppState;
 
 /// Hikvision-style camera row. Combines a `gb_device` row with its first
 /// channel (or itself when the device has no children).
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct CameraRow {
     pub id: i32,
     pub device_id: String,
@@ -109,8 +109,18 @@ pub struct PageQuery {
     pub page: Option<u32>,
     #[serde(default)]
     pub count: Option<u32>,
-    #[serde(default)]
+    /// 关键字。WVP 的参数名是 `query`；`keyword` 是本平台历史拼写，两者都收
+    /// —— 此前只认 `keyword`，前端按签名传 `query` 时被静默丢弃，搜索框毫无反应。
+    #[serde(default, alias = "query")]
     pub keyword: Option<String>,
+    /// 在线过滤。WVP 叫 `status`；本平台前端叫 `online`。
+    /// 此前 DTO 里根本没有这个字段，handler 还把这个参数**硬编码为 None**，
+    /// 于是"只看在线"完全无效。
+    #[serde(default, alias = "status")]
+    pub online: Option<bool>,
+    /// 行政区划前缀过滤（作用于通道的 `civil_code`）
+    #[serde(default, alias = "civilCode")]
+    pub civil_code: Option<String>,
 }
 
 // ---------- helpers ----------
@@ -184,21 +194,111 @@ fn channel_to_mobile(ch: &db::DeviceChannel) -> CameraMobile {
 
 // ---------- handlers ----------
 
+/// 摄像机行集合（`/camera/list` 与 `/camera/list-with-child` 共用）。
+///
+/// **行级过滤 + 行级分页**：WVP 的同名接口是在**通道**维度过滤和分页的
+/// （`ChannelProvider.queryListWithChildForSy`：`query` 匹配通道的
+/// `gb_device_id`/`gb_name`，`status` 过滤通道在线状态，PageHelper 作用于通道查询）。
+/// 此前这里按**设备**维度分页 + 过滤，于是：
+///   * 按通道名搜索永远 0 结果（设备的 `name` 里没有通道名）；
+///   * `count=1000` 被 db 层截到 100，第 101 台设备及其通道静默消失；
+///   * `total` 返回的是"本页展开出的行数"，分页器永远只有一页。
+async fn camera_rows(state: &AppState, q: &PageQuery) -> (Vec<CameraRow>, u64, u32, u32) {
+    let page = q.page.unwrap_or(1).max(1);
+    let count = q.count.unwrap_or(100).clamp(1, 1000);
+
+    // 设备一次取到上限（SQLite 部署的设备上限本就是 500），通道一次取全量后按设备分组，
+    // 避免 N+1 查询。
+    let devices = db::device::list_devices_paged(&state.pool, 1, 1000, None, None)
+        .await
+        .unwrap_or_default();
+    let channels = db::device::list_all_channels(&state.pool)
+        .await
+        .unwrap_or_default();
+    let mut by_device: std::collections::HashMap<String, Vec<db::DeviceChannel>> =
+        std::collections::HashMap::new();
+    for ch in channels {
+        by_device
+            .entry(ch.device_id.clone().unwrap_or_default())
+            .or_default()
+            .push(ch);
+    }
+
+    let mut rows: Vec<CameraRow> = Vec::with_capacity(devices.len());
+    for d in &devices {
+        match by_device.get(&d.device_id) {
+            Some(chs) if !chs.is_empty() => {
+                for ch in chs {
+                    let mut row = device_to_row(d, Some(ch));
+                    row.parent_device_id = Some(d.device_id.clone());
+                    rows.push(row);
+                }
+            }
+            // 没有通道的设备：用它自己那一行（`is_device = true`），
+            // 否则这类设备在预览页会完全消失。
+            _ => rows.push(device_to_row(d, None)),
+        }
+    }
+
+    // ---- 行级过滤 ----
+    let kw = q
+        .keyword
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
+    let civil = q
+        .civil_code
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
+    rows.retain(|r| {
+        if let Some(ref kw) = kw {
+            let hit = r.name.contains(kw.as_str())
+                || r.device_id.contains(kw.as_str())
+                || r.channel_id.contains(kw.as_str());
+            if !hit {
+                return false;
+            }
+        }
+        if let Some(on) = q.online {
+            if r.online != on {
+                return false;
+            }
+        }
+        if let Some(ref prefix) = civil {
+            // 行政区划是**通道**属性；没有通道的设备行不参与该过滤
+            match r.civil_code.as_deref() {
+                Some(c) if c.starts_with(prefix.as_str()) => {}
+                _ => return false,
+            }
+        }
+        true
+    });
+
+    let total = rows.len() as u64;
+    let start = (((page - 1) as usize) * count as usize).min(rows.len());
+    let end = (start + count as usize).min(rows.len());
+    (rows[start..end].to_vec(), total, page, count)
+}
+
 /// GET /api/sy/camera/list
+///
+/// WVP 的同名端点返回的是**通道**列表（`CameraChannel`）。此前这里返回的是
+/// 设备行（`is_device = true`、`channel_id == device_id`），照 live 页既有的
+/// 过滤口径（`!c.is_device`）会被整批滤掉 → 通道树为空；默认 `count=15`
+/// 还会进一步截断。现在与 `/list-with-child` 共用同一套通道行。
 pub async fn camera_list(
     State(state): State<AppState>,
     Query(q): Query<PageQuery>,
 ) -> Json<WVPResult<serde_json::Value>> {
-    let page = q.page.unwrap_or(1).max(1);
-    let count = q.count.unwrap_or(15);
-    let kw = q.keyword.as_deref();
-    let devices = db::device::list_devices_paged(&state.pool, page, count, kw, None)
-        .await.unwrap_or_default();
-    let rows: Vec<CameraRow> = devices.iter().map(|d| device_to_row(d, None)).collect();
-    let total = db::device::count_devices(&state.pool, kw, None).await.unwrap_or(0);
+    let (rows, total, page, count) = camera_rows(&state, &q).await;
+    let list_total = rows.len();
     Json(WVPResult::success(serde_json::json!({
         "list": rows,
         "total": total,
+        "listTotal": list_total,
         "page": page,
         "count": count,
     })))
@@ -209,29 +309,12 @@ pub async fn camera_list_with_child(
     State(state): State<AppState>,
     Query(q): Query<PageQuery>,
 ) -> Json<WVPResult<serde_json::Value>> {
-    let page = q.page.unwrap_or(1).max(1);
-    let count = q.count.unwrap_or(15);
-    let kw = q.keyword.as_deref();
-    let devices = db::device::list_devices_paged(&state.pool, page, count, kw, None)
-        .await.unwrap_or_default();
-    let mut rows: Vec<CameraRow> = Vec::with_capacity(devices.len());
-    for d in &devices {
-        let parent_id = d.device_id.clone();
-        let channels = db::device::list_channels_for_device(&state.pool, &parent_id)
-            .await.unwrap_or_default();
-        if channels.is_empty() {
-            rows.push(device_to_row(d, None));
-        } else {
-            for ch in &channels {
-                let mut row = device_to_row(d, Some(ch));
-                row.parent_device_id = Some(parent_id.clone());
-                rows.push(row);
-            }
-        }
-    }
+    let (rows, total, page, count) = camera_rows(&state, &q).await;
+    let list_total = rows.len();
     Json(WVPResult::success(serde_json::json!({
         "list": rows,
-        "total": rows.len(),
+        "total": total,
+        "listTotal": list_total,
         "page": page,
         "count": count,
     })))
@@ -609,5 +692,176 @@ mod camera_control_tests {
         assert!(q.command.is_none());
         assert!(q.speed.is_none());
         assert!(q.preset.is_none());
+    }
+}
+
+#[cfg(test)]
+mod camera_contract_tests {
+    use super::*;
+    use crate::test_support::app_state;
+
+    async fn seed(state: &AppState) -> (String, String) {
+        let now = "2026-01-01 00:00:00";
+        // 一台在线设备（2 个通道）+ 一台离线设备（无通道）
+        sqlx::query(
+            "INSERT INTO gb_device (device_id, name, on_line, create_time, update_time) \
+             VALUES ('34020000001320000001', '在线设备', 1, ?1, ?1)",
+        )
+        .bind(now)
+        .execute(&state.pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO gb_device (device_id, name, on_line, create_time, update_time) \
+             VALUES ('34020000001320000002', '离线设备', 0, ?1, ?1)",
+        )
+        .bind(now)
+        .execute(&state.pool)
+        .await
+        .unwrap();
+        for (ch, name) in [
+            ("34020000001310000001", "通道一"),
+            ("34020000001310000002", "通道二"),
+        ] {
+            sqlx::query(
+                "INSERT INTO gb_device_channel (device_id, gb_device_id, name, civil_code, status, data_type, data_device_id, create_time, update_time) \
+                 VALUES ('34020000001320000001', ?1, ?2, '340200', 'ON', 1, 1, ?3, ?3)",
+            )
+            .bind(ch)
+            .bind(name)
+            .bind(now)
+            .execute(&state.pool)
+            .await
+            .unwrap();
+        }
+        ("34020000001320000001".to_string(), "34020000001320000002".to_string())
+    }
+
+    fn q(v: serde_json::Value) -> PageQuery {
+        serde_json::from_value(v).expect("PageQuery")
+    }
+
+    /// 前端（WVP）用 `query` 做关键字，本平台历史拼写是 `keyword`；`online`/`status`
+    /// 与 `civilCode` 也必须能绑上 —— 此前这些参数全部被静默丢弃。
+    #[test]
+    fn page_query_accepts_frontend_param_names() {
+        let p = q(serde_json::json!({
+            "page": 1, "count": 1000, "query": "在线", "online": true, "civilCode": "340201"
+        }));
+        assert_eq!(p.keyword.as_deref(), Some("在线"));
+        assert_eq!(p.online, Some(true));
+        assert_eq!(p.civil_code.as_deref(), Some("340201"));
+
+        // 旧拼写仍然可用
+        let legacy = q(serde_json::json!({"keyword": "k", "status": false, "civil_code": "34"}));
+        assert_eq!(legacy.keyword.as_deref(), Some("k"));
+        assert_eq!(legacy.online, Some(false));
+        assert_eq!(legacy.civil_code.as_deref(), Some("34"));
+    }
+
+    /// `list-with-child` 必须返回**通道级**行，并带上设备维度真实 total。
+    #[tokio::test]
+    async fn list_with_child_expands_channels_and_reports_device_total() {
+        let state = app_state().await;
+        let (_dev, _off) = seed(&state).await;
+
+        let res = camera_list_with_child(
+            State(state.clone()),
+            Query(q(serde_json::json!({"page": 1, "count": 1000}))),
+        )
+        .await;
+        let d = res.0.data.unwrap();
+        // 2 个通道 + 1 个无通道设备自身那一行
+        assert_eq!(d["listTotal"], 3);
+        assert_eq!(d["total"], 3, "total 是匹配的行数（WVP 在通道维度分页）");
+        let list = d["list"].as_array().unwrap();
+        assert!(list.iter().any(|r| r["channel_id"] == "34020000001310000001"));
+        assert!(list.iter().any(|r| r["is_device"] == true));
+
+        // 关键字过滤（前端参数名 query）
+        let res = camera_list_with_child(
+            State(state.clone()),
+            Query(q(serde_json::json!({"query": "通道一"}))),
+        )
+        .await;
+        let d = res.0.data.unwrap();
+        assert_eq!(d["listTotal"], 1);
+        assert_eq!(d["list"][0]["name"], "通道一");
+
+        // online 过滤：离线设备（及其行）不该出现
+        let res = camera_list_with_child(
+            State(state.clone()),
+            Query(q(serde_json::json!({"online": true, "count": 1000}))),
+        )
+        .await;
+        let d = res.0.data.unwrap();
+        // 在线设备有 2 个通道行；离线设备（无通道）那一行被滤掉
+        assert_eq!(d["total"], 2, "只看在线设备");
+        assert!(d["list"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|r| r["device_id"] == "34020000001320000001"));
+
+        // 行政区划前缀过滤（作用在通道上）
+        let res = camera_list_with_child(
+            State(state.clone()),
+            Query(q(serde_json::json!({"civilCode": "340201"}))),
+        )
+        .await;
+        assert_eq!(res.0.data.unwrap()["listTotal"], 0);
+        let res = camera_list_with_child(
+            State(state.clone()),
+            Query(q(serde_json::json!({"civilCode": "3402"}))),
+        )
+        .await;
+        assert_eq!(res.0.data.unwrap()["listTotal"], 2);
+    }
+
+    /// `count=1000` 不能被静默截成 100（前端建树依赖它）。
+    #[tokio::test]
+    async fn count_1000_is_not_truncated_to_100() {
+        let state = app_state().await;
+        let now = "2026-01-01 00:00:00";
+        for i in 1..=150 {
+            sqlx::query(
+                "INSERT INTO gb_device (device_id, name, on_line, create_time, update_time) \
+                 VALUES (?1, ?2, 1, ?3, ?3)",
+            )
+            .bind(format!("3402000000132{:06}", i))
+            .bind(format!("设备{i}"))
+            .bind(now)
+            .execute(&state.pool)
+            .await
+            .unwrap();
+        }
+        let res = camera_list_with_child(
+            State(state.clone()),
+            Query(q(serde_json::json!({"page": 1, "count": 1000}))),
+        )
+        .await;
+        let d = res.0.data.unwrap();
+        assert_eq!(d["listTotal"], 150, "1000 条上限内不应被截断");
+        assert_eq!(d["total"], 150);
+    }
+
+    /// `/camera/list` 也必须是通道级行（此前是纯设备行，live 页的
+    /// `!is_device` 过滤会把它们全滤掉 → 通道树为空）。
+    #[tokio::test]
+    async fn camera_list_returns_channel_level_rows() {
+        let state = app_state().await;
+        let _ = seed(&state).await;
+        let res = camera_list(
+            State(state.clone()),
+            Query(q(serde_json::json!({"page": 1, "count": 1000}))),
+        )
+        .await;
+        let d = res.0.data.unwrap();
+        let list = d["list"].as_array().unwrap();
+        assert!(
+            list.iter().any(|r| r["is_device"] == false),
+            "应包含真正的通道行，而不是只有设备行"
+        );
+        assert_eq!(d["listTotal"], 3);
     }
 }

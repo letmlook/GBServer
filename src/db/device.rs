@@ -343,7 +343,10 @@ pub async fn list_devices_paged(
     status: Option<bool>,
 ) -> sqlx::Result<Vec<Device>> {
     let offset = (page.saturating_sub(1)) * count;
-    let limit = count.min(100) as i64;
+    // 上限 1000：摄像机树一次要 1000 条。此前硬截到 100，第 101 台设备及其通道
+    // 会静默消失（响应里的 count 还是请求值）。想限制页大小的接口自行 clamp
+    // （`/api/device/query/devices` 就是 `.min(100)`）。
+    let limit = count.min(1000) as i64;
     let offset = offset as i64;
     let q = query.unwrap_or("").trim();
     let has_query = !q.is_empty();

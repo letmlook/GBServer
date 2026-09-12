@@ -49,3 +49,37 @@
 - 后端：`src/router.rs:918` 注册到 `sy_camera::camera_list`；`src/handlers/sy_camera.rs:197` `let rows: Vec<CameraRow> = devices.iter().map(|d| device_to_row(d, None)).collect();` —— 第二个参数传 `None` 表示**不展开通道**，每行都是设备自身：`channel_id` 取 `d.device_id`、`is_device` 为 `true`（`src/handlers/sy_camera.rs:141-151` 与第 155 行 `is_device: ch.is_none()`）；且它仍是分页接口，默认 `count = 15`（第 193 行）
 - 交叉验证：WVP Java 同名端点返回的是**通道**（`CameraChannelService.java:390` `channelMapper.queryListForSy(groupDeviceId, status)` 返回 `List<CameraChannel>`，`CameraChannel` 继承通道 Bean `CommonGBChannel`）
 - 影响：**当前无调用方**（`grep -rnw "cameraList" web/src` 只命中定义处 `web/src/api/syCamera.ts:51`，无任何 import）。若后续页面按注释调用它取通道，会拿到一列 `is_device=true`、`channel_id == device_id` 的设备行；照 live 页既有的过滤口径（`web/src/views/live/index.vue:230` `.filter((c: any) => c.channel_id && !c.is_device)`）会被全部滤掉 → **通道树为空**，且因默认 `count=15`，设备多时只会拿到 15 行。
+
+---
+
+> **状态：已修复（2026-09-12 第三十八轮）**。6 条全部落地，真实后端验证。
+>
+> 修复的关键认识：WVP 的同名接口是在**通道**维度过滤与分页的
+> （`ChannelProvider.queryListWithChildForSy`：`query` 匹配通道的 `gb_device_id`/`gb_name`，
+> `status` 过滤通道在线状态，PageHelper 作用于通道查询）。本仓库此前一律按**设备**维度
+> 分页 + 过滤，于是"按通道名搜索"永远 0 结果，`total` 变成"本页展开出的行数"。
+
+## 修复对照（第三十八轮）
+
+| # | 问题 | 修复 / 证据 |
+|---|------|------|
+| 1 | 关键字参数名是 `keyword`，前端/WVP 传 `query` | DTO 加 `alias = "query"`；过滤到**行级**（通道名 / 设备名 / 设备号 / 通道号），实测按通道名搜索命中 1 条（此前 0 条） |
+| 2 | DTO 没有 `online`，handler 还把状态过滤硬编码为 `None` | DTO 加 `online`（别名 `status`），作用于行级；实测 `online=true` 5 条、`online=false` 0 条、两者之和等于全量 |
+| 3 | DTO 没有 `civil_code` 字段 | 加 `civilCode` 别名，按通道 `civil_code` 前缀过滤 |
+| 4 | `count=1000` 被 db 层静默截到 **100** | `list_devices_paged` 上限提到 1000（接口自行 clamp 的仍照旧）；摄像机接口改为行级分页，`count` 回显真实生效值 |
+| 5 | `total` 是"本页展开出的行数" | 改为匹配的**行总数**（WVP 的 PageInfo 语义），另给 `listTotal` = 本次返回行数 |
+| 6 | `/camera/list` 返回纯设备行，照 live 页 `!is_device` 过滤会全被滤掉 → 通道树为空 | 与 `/list-with-child` 共用同一套通道级行（设备无通道时仍给设备自身那一行） |
+| 附带 | `count` 默认值 | `/list` 语义是"取全量通道"，默认 1000；`/list-with-child` 默认 100（与 WVP 的 `defaultValue=100` 一致） |
+
+**实测**（真实后端）：
+
+```
+GET /api/sy/camera/list-with-child?count=1000
+  → count=1000, total=5, listTotal=5（1 个无通道设备行 + 4 个通道行）
+GET /api/sy/camera/list-with-child?query=MockCamera-01-通道2 → total=1（此前 0）
+GET /api/sy/camera/list-with-child?online=true  → total=5
+GET /api/sy/camera/list-with-child?online=false → total=0（两者之和 = 全量）
+GET /api/sy/camera/list-with-child?civilCode=3402 → total=4
+GET /api/sy/camera/list?count=1000 → 含通道行（此前 is_device 全为 true）
+Playwright → 新增 syCamera.spec.ts 4 条；整套 59 passed
+```

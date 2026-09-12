@@ -9,10 +9,10 @@
 
 | 维度 | 数值 | 验证方式 |
 |------|------|----------|
-| 总代码量（src/） | 78,710 行 Rust | `find src -name '*.rs' \| xargs wc -l` |
+| 总代码量（src/） | 78,967 行 Rust | `find src -name '*.rs' \| xargs wc -l` |
 | 已注册 HTTP 路由 | 386 条唯一 `/api/...` 路径 | `grep -oE '"/api/[^"]*"' src/router.rs \| sort -u \| wc -l` |
 | Handler 模块 | 29 个（含 `stub.rs` / `device_stub.rs` 两个兼容 shim） | `grep -c 'pub mod' src/handlers/mod.rs` |
-| 后端测试 | **679 通过** / 0 失败（第三十七轮刷新） | `cargo test` |
+| 后端测试 | **683 通过** / 0 失败（第三十八轮刷新） | `cargo test` |
 | 编译状态 | `cargo check` 0 error / **0 warning**；clippy 262；**deprecated 0** | `cargo check` / `cargo clippy --all-targets` |
 | 数据库 feature | SQLite（默认）/ PostgreSQL / MySQL **三者均编译通过** | CI `feature-matrix` job |
 | CI | ⏸️ 工作流已就绪但**按需暂停自动触发**（见 `.github/workflows/ci.yml`） | — |
@@ -1684,12 +1684,45 @@ cargo check --features mysql/postgres  OK
 npx playwright test              55 passed / 0 failed / 0 skipped（真实 ZLM）
 ```
 
-### 前端↔后端契约审计：已完成 14 个模块，剩余 3 个模块 / 10 条（2026-09-12 第三十七轮刷新）
+### 摄像机接口：按设备维度过滤/分页导致搜索失效 + 100 条静默截断（2026-09-12 第三十八轮）
+
+`syCamera` 模块 6 条修完。关键认识：WVP 的这个接口是在**通道**维度过滤与分页的
+（`ChannelProvider.queryListWithChildForSy`），本仓库一律按**设备**维度处理，于是：
+
+| # | 缺陷 | 修复 / 证据 |
+|---|------|------|
+| 1 | 关键字参数名是 `keyword`，前端/WVP 传 `query` → 静默丢弃 | DTO 加别名；过滤下沉到**行级**（通道名/设备名/设备号/通道号）。实测按通道名搜索命中 1 条（此前 0 条） |
+| 2 | DTO 无 `online`，handler 还把状态过滤硬编码为 `None` | 加 `online`（别名 `status`），行级生效 |
+| 3 | DTO 无 `civil_code` | 加 `civilCode` 别名，按通道 civil_code 前缀过滤 |
+| 4 | `count=1000` 被 db 层**静默截到 100** → 第 101 台设备及其通道在预览页消失，响应里 count 仍回显 1000 | db 层上限提到 1000；接口改行级分页 |
+| 5 | `total` = 本页展开出的行数 → 分页器永远一页 | 改为匹配行总数（PageInfo 语义），另给 `listTotal` |
+| 6 | `/camera/list` 返回纯设备行，live 页的 `!is_device` 过滤会全部滤掉 → 通道树为空 | 两个端点共用通道级行 |
+
+**实测**：
+
+```
+?count=1000 → count=1000, total=5, listTotal=5（1 设备行 + 4 通道行）
+?query=MockCamera-01-通道2 → total=1（此前 0）
+?online=true → 5；?online=false → 0（之和 = 全量）
+?civilCode=3402 → 4
+/camera/list?count=1000 → 含通道行
+Playwright → 新增 syCamera.spec.ts 4 条；整套 59 passed
+```
+
+#### 第三十八轮基线
+
+```
+cargo test                       683 passed / 0 failed
+cargo check --all-targets        本项目 0 warning
+cargo check --features mysql/postgres  OK
+npx playwright test              59 passed / 0 failed / 0 skipped（真实 ZLM）
+```
+
+### 前端↔后端契约审计：已完成 15 个模块，剩余 2 个模块 / 4 条（2026-09-12 第三十八轮刷新）
 
 第二十六轮用"一个模块一个 agent"的方式把 16 个前端 API 模块逐个对后端路由/DTO
 做了一遍审计（证据文件在 `docs/audit/*.md`，共 **130 条**），并按影响排序逐批修复。
-当前已修 14 个模块（120 条），剩 `playback`(3) / `syCamera`(6) /
-`talk`(1) 共 **10 条**：
+当前已修 15 个模块（126 条），剩 `playback`(3) / `talk`(1) 共 **4 条**：
 
 | 模块 | 条数 | 状态 |
 |------|------|------|
@@ -1708,7 +1741,7 @@ npx playwright test              55 passed / 0 failed / 0 skipped（真实 ZLM�
 | region | 9 | ✅ 已修（第三十五轮，另补了整块缺失的界面） |
 | streamProxy | 10 | ✅ 已修（第三十三轮） |
 | streamPush | 12 | ✅ 已修（第三十二轮） |
-| syCamera | 6 | ❌ 未修 |
+| syCamera | 6 | ✅ 已修（第三十八轮） |
 | talk | 1 | ❌ 未修 |
 
 **剩余模块里"有真实调用方、用户可见"的高优先级项**（按严重度）：
@@ -1732,7 +1765,7 @@ npx playwright test              55 passed / 0 failed / 0 skipped（真实 ZLM�
 5. ~~`platform`~~：✅ 已于第三十四轮修复（`serverGbId` 拼写、`expires` 数字/字符串、
    `realm`→`serverGBDomain`、心跳三参数换成真实的 `expires`/`keepTimeout`、
    注销改为真的发 `Expires: 0` REGISTER、列表与详情统一字段）。
-6. `syCamera` / `playback` / `talk`：
+6. `playback` / `talk`：
    主要是响应键名与筛选参数不匹配（系统信息页内存/磁盘/版本恒为 0 或 '-'、
    媒体节点“检测”探测错地址、仪表盘“重点通道”卡片跳转失败、
    录像列表“名称”列空白、对讲起播与音频 WS 的时序竞争）。
@@ -2082,6 +2115,7 @@ vue-tsc --noEmit                 通过
 - 2026-09-12 第三十五轮：`cargo test` —— **670 通过 / 0 失败**（行政区划/业务分组 8 条 + 补全管理界面；e2e 50）
 - 2026-09-12 第三十六轮：`cargo test` —— **675 通过 / 0 失败**（媒体节点 7 条 + 心跳时间戳格式缺陷；e2e 53）
 - 2026-09-12 第三十七轮：`cargo test` —— **679 通过 / 0 失败**（系统信息/日志导出 7 条；e2e 55）
+- 2026-09-12 第三十八轮：`cargo test` —— **683 通过 / 0 失败**（摄像机 6 条：行级过滤/分页、100 条截断；e2e 59）
 - 2026-09-12 第三十一轮：`cargo test` —— **641 通过 / 0 失败**（JT1078 终端/围栏 13 条）
 - 2026-09-12 第三十轮：`cargo test` —— **637 通过 / 0 失败**（设备页 7 条）
 - 2026-09-12 第二十九轮：`cargo test` —— **634 通过 / 0 失败**（云端录像全链路）

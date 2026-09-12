@@ -21,7 +21,10 @@ export interface CameraItem {
 }
 
 export interface CameraListResponse {
+  /** 匹配的**设备**总数（与 page/count 同为设备维度；带 civilCode 时是匹配行数） */
   total: number
+  /** 本次实际返回的行数（设备展开成通道后） */
+  listTotal?: number
   count: number
   page: number
   list: CameraItem[]
@@ -46,7 +49,11 @@ export function cameraListWithChild(params: {
 }
 
 /**
- * 取所有摄像机（含通道）的另一别名（不带分页）
+ * 取摄像机通道列表（WVP 同名端点返回的也是通道）。
+ *
+ * 注意：后端现在返回的是**通道级**行（设备没有通道时用设备自身那一行，
+ * `is_device = true`）。此前它返回的是纯设备行，照 live 页的
+ * `!c.is_device` 口径会被整批滤掉 → 通道树为空。
  */
 export function cameraList(params: {
   page?: number
