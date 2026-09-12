@@ -12,7 +12,7 @@
 | 总代码量（src/） | 79,179 行 Rust | `find src -name '*.rs' \| xargs wc -l` |
 | 已注册 HTTP 路由 | 386 条唯一 `/api/...` 路径 | `grep -oE '"/api/[^"]*"' src/router.rs \| sort -u \| wc -l` |
 | Handler 模块 | 29 个（含 `stub.rs` / `device_stub.rs` 两个兼容 shim） | `grep -c 'pub mod' src/handlers/mod.rs` |
-| 后端测试 | **710 通过 / 0 失败**（第四十四轮刷新） | `cargo test` |
+| 后端测试 | **714 通过 / 0 失败**（第四十六轮刷新） | `cargo test` |
 | 编译状态 | `cargo check` 0 error / **0 warning**；clippy 262；**deprecated 0** | `cargo check` / `cargo clippy --all-targets` |
 | 数据库 feature | SQLite（默认）/ PostgreSQL / MySQL **三者均编译通过** | CI `feature-matrix` job |
 | CI | ⏸️ 工作流已就绪但**按需暂停自动触发**（见 `.github/workflows/ci.yml`） | — |
@@ -1924,6 +1924,10 @@ npx playwright test              62 passed / 0 failed（云端录像 2 例按环
 > `extra_hosts: host.docker.internal:host-gateway` 以规避同类解析问题；
 > 后端侧也加固为「主动探活成功即刷新心跳」，hook 不通时节点不会被误判离线。
 > 恢复本机 Docker Desktop 后重跑 `cd e2e && npx playwright test` 即可覆盖这两例。
+>
+> **已解决（第四十六轮，2026-09-12）**：`extra_hosts: host.docker.internal:host-gateway`
+> 生效后 hook 已能到达后端，`cloudRecord.spec.ts` 的 3 条用例在**本机真实跑通**
+> （不再 skip），并且验证到"删除接口真的让 ZLM 删掉了录制文件"。详见第四十六轮。
 
 ### PostgreSQL 运行时验证：**5 类只在 postgres 上炸的缺陷**（2026-09-12 第四十三轮）
 
@@ -2126,6 +2130,57 @@ cargo test                       710 passed / 0 failed
 cargo build --features postgres/mysql  OK
 mysql 运行期冒烟（真实 MySQL 8）  2 项预期项，连跑 3 次一致
 postgres 运行期冒烟              3 项预期项
+```
+
+### ZLM hook 全链路在真实环境重新验证 + `ids` 数字/字符串兼容（2026-09-12 第四十六轮）
+
+第四十二轮曾记录一条**环境限制**：Docker Desktop 下容器 → 宿主机网络不通，
+ZLM 的全部 hook（`on_publish` / `on_record_mp4` / `on_server_keepalive` …）到不了
+后端，因此云端录像的"播放/删除"用例只能**显式 skip**。本轮复核时该问题已随
+`docker-compose.yml` 里的 `extra_hosts: host.docker.internal:host-gateway` 解决
+—— hook 现在**真的到达后端**，一整条"设备推流 → ZLM 录制 → 落库 → 播放 → 删除"
+链路可以在本机端到端跑通：
+
+```
+# 后端日志（真实 hook）
+INFO  gbserver::zlm::hook: on_stream_changed rtp/34020000001320000001_… register=true
+INFO  gbserver::zlm::hook: MP4 recorded: 2026-09-13-04-19-17-0.mp4 (532914 bytes)
+INFO  gbserver::zlm::hook: on_stream_none_reader … → close=true（无人观看，回收资源）
+INFO  gbserver::zlm::hook: none_reader: 已向设备发 BYE …
+
+# 由 ZLM 录出来的文件真实存在（容器内）
+/opt/media/bin/www/record/rtp/34020000001320000001_…/2026-09-13/2026-09-13-04-19-17-0.mp4
+
+# 删除接口（真删文件）
+GET /index/api/deleteRecordDirectory?…      ← 后端真的调了 ZLM
+→ 容器内 record 目录消失、库里 total=0
+```
+
+于是第四十二轮 caveat 里"云端录像 2 例按环境显式 skip"**不再成立**：
+`e2e/tests/cloudRecord.spec.ts` 的 3 条用例（列表 / 播放含 Range / 删除）
+在本机全绿，且**自己造真实录像**（建计划 → link → 拉流 → 录制 → 落库 → 删计划）。
+
+**顺带修一个只有第三方调用方才会撞上的契约缺陷**：
+`DELETE /api/cloud/record/delete` 的 `ids` 之前只收字符串
+（本仓库前端主动 `map(String)` 规避了），WVP 的 Java 客户端/手工脚本按整数发
+`{"ids":[43]}` 会直接 **422** `invalid type: integer 43, expected a string`。
+本轮把它改成数字/字符串都收，并抽出**共享的反序列化助手**
+`src/serde_flex.rs`（数字↔字符串，含空串、布尔、浮点整数值等边界 + 4 条单测），
+同一套助手也用在：
+
+* `PushBatchRemoveBody.ids`（`Vec<i64>`，此前字符串会 422）；
+* `/api/position/*` 的 `channelId`（此前 `channelId=` 空串会 422）；
+* `POST /api/jt1078/terminal/add` 的 `plateColor`（数字）/ `provinceId`（字符串）；
+* `platform.rs` 的 `deserialize_opt_int_string`（改为委托同一实现，去掉第三份拷贝）。
+
+#### 第四十六轮基线
+
+```
+cargo test                       714 passed / 0 failed（+4 serde_flex）
+cargo build --features postgres/mysql  OK
+npx playwright test              66 passed / 0 failed（**0 skip**：云端录像 3 例真跑）
+ZLM hook 链路                    on_stream_changed / on_record_mp4 /
+                                 on_stream_none_reader → 真实 MP4 → 库 → 播放 → 删除
 ```
 
 ### 前端↔后端契约审计：**16 个模块 130 条全部修完**（2026-09-12 第三十九轮）
@@ -2577,6 +2632,7 @@ vue-tsc --noEmit                 通过
 - 2026-09-12 第四十三轮：`cargo test` —— **702 通过 / 0 失败**（**首次 PostgreSQL 运行时验证**：`?` 占位符 23 处 / 11 张表列宽 / `plate_color` 契约 / ZLM `openRtpServer` 缺 `port` / sqlx 语句缓存参数类型冲突；e2e 66）
 - 2026-09-12 第四十四轮：`cargo test` —— **710 通过 / 0 失败**（移动位置 `/api/position/*` 补齐 latest/realtime/subscribe + history 支持 WVP 的 channelId；`gb_device_mobile_position` 双写打通）
 - 2026-09-12 第四十五轮：`cargo test` —— **710 通过 / 0 失败**（**首次 MySQL 运行时验证**：`CREATE INDEX IF NOT EXISTS` / `CAST(.. AS INTEGER|TEXT)` / `INSERT ... RETURNING` 四类 mysql 语法缺陷；新增 `scripts/dialect_smoke.py` 与 profile 隔离的 mysql 服务）
+- 2026-09-12 第四十六轮：`cargo test` —— **714 通过 / 0 失败**（ZLM hook 全链路在真实环境重新验证：录制文件/落库/播放/删除真删文件；`/cloud/record/delete` 的 `ids` 兼容数字；新增共享 `src/serde_flex.rs`）
 - 2026-09-12 第三十一轮：`cargo test` —— **641 通过 / 0 失败**（JT1078 终端/围栏 13 条）
 - 2026-09-12 第三十轮：`cargo test` —— **637 通过 / 0 失败**（设备页 7 条）
 - 2026-09-12 第二十九轮：`cargo test` —— **634 通过 / 0 失败**（云端录像全链路）

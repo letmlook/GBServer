@@ -40,44 +40,13 @@ use crate::response::WVPResult;
 use crate::sip::gb28181::XmlParser;
 use crate::AppState;
 
-/// 查询参数里的可选整数：**空串按"未提供"处理**，同时接受数字与数字字符串。
-///
-/// 前端把未填写的筛选条件发成 `channelId=`（空串），serde 默认会直接
-/// 422 `cannot parse integer from empty string` —— 一个"没填"的筛选条件
-/// 不该让整个请求失败。
-fn de_opt_i64<'de, D>(de: D) -> Result<Option<i64>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum Raw {
-        Num(i64),
-        Str(String),
-    }
-    match Option::<Raw>::deserialize(de)? {
-        None => Ok(None),
-        Some(Raw::Num(n)) => Ok(Some(n)),
-        Some(Raw::Str(s)) => {
-            let t = s.trim();
-            if t.is_empty() {
-                Ok(None)
-            } else {
-                t.parse::<i64>()
-                    .map(Some)
-                    .map_err(serde::de::Error::custom)
-            }
-        }
-    }
-}
-
 /// `/api/position/latest` 查询参数。
 ///
 /// WVP 只接受 `channelId`（**通道的数据库主键**）。为了便于直接按国标编号调试，
 /// 这里额外接受 `deviceId`（设备国标编号）与 `gbChannelId`（通道国标编号）。
 #[derive(Debug, Deserialize, Default)]
 pub struct LatestQuery {
-    #[serde(alias = "channelId", default, deserialize_with = "de_opt_i64")]
+    #[serde(alias = "channelId", default, deserialize_with = "crate::serde_flex::de_opt_i64")]
     pub channel_id: Option<i64>,
     #[serde(alias = "deviceId")]
     pub device_id: Option<String>,
@@ -89,7 +58,7 @@ pub struct LatestQuery {
 #[derive(Debug, Deserialize, Default)]
 pub struct HistoryQuery {
     /// 通道数据库主键（WVP 口径）。给了它就按通道查 `gb_device_mobile_position`。
-    #[serde(alias = "channelId", default, deserialize_with = "de_opt_i64")]
+    #[serde(alias = "channelId", default, deserialize_with = "crate::serde_flex::de_opt_i64")]
     pub channel_id: Option<i64>,
     /// 通道国标编号（可选，配合 deviceId 使用）。
     #[serde(alias = "gbChannelId")]

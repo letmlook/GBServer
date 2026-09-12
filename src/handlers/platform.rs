@@ -752,18 +752,8 @@ fn deserialize_opt_int_string<'de, D>(d: D) -> Result<Option<String>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    use serde::Deserialize;
-    let v = Option::<serde_json::Value>::deserialize(d)?;
-    Ok(match v {
-        None | Some(serde_json::Value::Null) => None,
-        Some(serde_json::Value::Number(n)) => Some(n.to_string()),
-        Some(serde_json::Value::String(s)) => Some(s),
-        Some(other) => {
-            return Err(serde::de::Error::custom(format!(
-                "需要数字或字符串，收到 {other}"
-            )))
-        }
-    })
+    // 统一实现见 `crate::serde_flex`（同时接受数字/字符串/null）
+    crate::serde_flex::de_opt_string(d)
 }
 
 /// 回给前端的数值：能解析成整数就给整数（与 WVP 的 `int expires` 一致），

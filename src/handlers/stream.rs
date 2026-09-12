@@ -336,6 +336,8 @@ pub async fn push_start(
 /// POST /api/push/batch_remove 请求体
 #[derive(Debug, Deserialize)]
 pub struct PushBatchRemoveBody {
+    /// 推流主键列表：数字与数字字符串都收（不同调用方编码习惯不同）。
+    #[serde(default, deserialize_with = "crate::serde_flex::de_opt_i64_vec")]
     pub ids: Option<Vec<i64>>,
 }
 

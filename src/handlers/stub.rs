@@ -1305,6 +1305,9 @@ pub struct CloudRecordQuery {
 
 #[derive(Debug, Deserialize)]
 pub struct CloudRecordDeleteBody {
+    /// 录像主键列表。本仓库前端发字符串（`map(String)`），
+    /// WVP / 第三方客户端发整数 —— 两种都要收（否则后者直接 422）。
+    #[serde(default, deserialize_with = "crate::serde_flex::de_opt_string_vec")]
     pub ids: Option<Vec<String>>,
 }
 

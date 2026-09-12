@@ -16,22 +16,15 @@ use crate::error::{AppError, ErrorCode};
 use crate::response::WVPResult;
 use crate::AppState;
 
-/// 兼容"字符串或数字"的查询参数（`terminalDbId` 既可能是主键数字、也可能是手机号）。
+/// 兼容"字符串或数字"的字段（`terminalDbId` 既可能是主键数字、也可能是手机号；
+/// 车牌颜色前端发数字、省域/市域发字符串）。
+///
+/// 实现统一放在 [`crate::serde_flex`]，避免每个模块各抄一份（含空值/布尔等边界）。
 fn opt_string_flexible<'de, D>(de: D) -> Result<Option<String>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum StrOrNum {
-        Str(String),
-        Num(i64),
-    }
-    Ok(match Option::<StrOrNum>::deserialize(de)? {
-        Some(StrOrNum::Str(s)) => Some(s),
-        Some(StrOrNum::Num(n)) => Some(n.to_string()),
-        None => None,
-    })
+    crate::serde_flex::de_opt_string(de)
 }
 
 /// 去掉首尾空白；空串视作"未提供"（前端 `el-input` 未填写时就是 `""`）。

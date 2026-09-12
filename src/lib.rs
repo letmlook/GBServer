@@ -1,5 +1,6 @@
 pub mod config;
 pub mod dyn_where;
+pub mod serde_flex;
 pub mod error;
 pub mod response;
 pub mod auth;
