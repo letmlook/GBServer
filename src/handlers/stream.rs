@@ -834,10 +834,7 @@ pub async fn proxy_start(
     // 此前这里不查存在性 → `/api/proxy/start` 报 500 并把自己标成 failed，
     // 而实际上流是好的（`is_media_exist` 一度恒 false 也是同一个洞的一部分）。
     if !is_ffmpeg {
-        let exists = zlm
-            .is_media_exist("rtsp", "__defaultVhost__", &app, &stream)
-            .await
-            .unwrap_or(false);
+        let exists = zlm.is_stream_online(&app, &stream).await.unwrap_or(false);
         if exists {
             if let Err(e) =
                 stream_proxy::update_play_state(&state.pool, rec.id as i64, true, "active").await

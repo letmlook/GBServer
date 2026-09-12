@@ -221,6 +221,19 @@ impl ZlmClient {
     ///
     /// 注：ZLM 要求 `schema` / `vhost` / `app` / `stream` **四个参数都传**，
     /// 少一个会直接 `-300 Required parameter missed`。
+    /// 该 `app/stream` 在 ZLM 上是否存在 —— **不关心 schema**。
+    ///
+    /// 为什么需要它：`isMediaOnline` 要求指定 schema，而 **RTP 收流产生的流
+    /// 并没有 `rtp` 这个 schema**（实测它的 schema 是 ts/rtsp/rtmp/fmp4/hls 等）。
+    /// 用 `schema="rtp"` 去判断"设备流是否已存在"因此恒为 false，于是
+    /// `openRtpServer` 会回 `-300 This stream already exists`（媒体确实还在），
+    /// 表现为"上级平台第二次点播必失败"。
+    /// 这里改用 `getMediaList(app, stream)`：只要有任何一条返回就算在线。
+    pub async fn is_stream_online(&self, app: &str, stream: &str) -> Result<bool> {
+        let list = self.get_media_list(None, Some(app), Some(stream)).await?;
+        Ok(list.iter().any(|m| m.stream == stream))
+    }
+
     pub async fn is_media_exist(&self, schema: &str, vhost: &str, app: &str, stream: &str) -> Result<bool> {
         let params = vec![
             ("secret", self.secret.clone()),
@@ -849,7 +862,9 @@ impl ZlmClient {
             ("is_udp", (if is_udp { 1 } else { 0 }).to_string()),
             ("use_ps", (if use_ps { 1 } else { 0 }).to_string()),
         ];
-        if let Some(p) = src_port {
+        // `src_port=0` 表示"未指定"（由 ZLM 自行 bind）；显式传 0 会被 ZLM 当成
+        // 真的要求绑定 0 号端口。调用方沿用 `Some(0)` 的历史写法，这里统一过滤。
+        if let Some(p) = src_port.filter(|p| *p != 0) {
             params.push(("src_port", p.to_string()));
         }
 

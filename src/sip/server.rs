@@ -529,20 +529,61 @@ impl SipServer {
                 // 回 `dns resolution failed: rtp://host:port`（实测），
                 // 于是**级联推流从来没有成功过**。
                 let dst_url = req.upstream_host.clone();
-                match zlm
-                    .start_send_rtp(
-                        "__defaultVhost__",
-                        "rtp",
-                        &stream_id,
-                        &req.upstream_ssrc,
-                        &dst_url,
-                        req.upstream_port,
-                        true,
-                        Some(req.local_send_port).filter(|p| *p != 0),
-                        // 国标级联要求 PS 封装，上级平台按 PS 解复用
-                        true,
-                    )
-                    .await
+                // 此前为了"让上级看到的源端口与 200 OK SDP 一致"，先
+                // `openRtpServer` 占了一个端口 P 并写进 SDP，再让
+                // `startSendRtp(src_port=P)` 用它作源端口 —— 但那个 server
+                // **仍然占着 P**，ZLM 会回
+                // `open udp active client failed on port: P, err: address already in use`
+                // （实测），于是级联推流始终起不来。
+                // 正确做法：先把占位 server 关掉释放 P，再让 startSendRtp 以 P 为源端口 bind。
+                if req.local_send_port != 0 {
+                    let send_stream_id =
+                        format!("cascade_{}_{}", req.platform_id, req.channel_id);
+                    if let Err(e) = zlm.close_rtp_server(&send_stream_id).await {
+                        tracing::warn!(
+                            "级联推流：释放发送端口占位 {} 失败（继续尝试）: {}",
+                            send_stream_id,
+                            e
+                        );
+                    }
+                }
+                // 设备刚收到 INVITE，RTP 往往还没到 ZLM：此时 `startSendRtp` 会报
+                // `can not find the source stream`（实测约 30~100ms 后才到）。
+                // 这里对**这一种**可恢复错误做有限重试（0.5s × 16 ≈ 8s），
+                // 其余错误立刻上报。
+                let mut attempt = 0u32;
+                let send_result = loop {
+                    match zlm
+                        .start_send_rtp(
+                            "__defaultVhost__",
+                            "rtp",
+                            &stream_id,
+                            &req.upstream_ssrc,
+                            &dst_url,
+                            req.upstream_port,
+                            true,
+                            Some(req.local_send_port).filter(|p| *p != 0),
+                            // 国标级联要求 PS 封装，上级平台按 PS 解复用
+                            true,
+                        )
+                        .await
+                    {
+                        Ok(()) => break Ok(()),
+                        Err(e)
+                            if attempt < 16
+                                && e.to_string().contains("can not find the source stream") =>
+                        {
+                            attempt += 1;
+                            tracing::info!(
+                                "级联推流：源流尚未就绪，500ms 后重试（第 {} 次）",
+                                attempt
+                            );
+                            tokio::time::sleep(Duration::from_millis(500)).await;
+                        }
+                        Err(e) => break Err(e),
+                    }
+                };
+                match send_result
                 {
                     Ok(()) => {
                         self.send_rtp_manager
@@ -6096,6 +6137,42 @@ f=v/1/96/1/2/1/1/0
 
         let stream_id = format!("{}_{}", device_id, channel_id);
         let ssrc = build_play_ssrc(device_id);
+
+        // 该通道的流**已经在 ZLM 上**（上一次点播还没结束、或另一个观看者刚拉起）
+        // 时直接复用：否则 `openRtpServer` 会回 `-300 This stream already exists`，
+        // 于是「级联点播 / 再次播放」直接失败 —— 实测：上级平台点播一次后，
+        // 第二次点播因为上一条流还在而被拒。
+        if zlm
+            .is_stream_online("rtp", &stream_id)
+            .await
+            .unwrap_or(false)
+        {
+            tracing::info!(
+                "start_live_stream: {}/{} 的流已存在于 ZLM，直接复用",
+                device_id,
+                channel_id
+            );
+            return Ok(stream_id);
+        }
+
+        // 媒体没了但 **RTP server 还占着同一个 stream_id**（上一次点播异常结束/
+        // 刚被无人观看关流）：`openRtpServer` 同样会回
+        // `-300 This stream already exists`，但这次没有任何媒体可复用 ——
+        // 必须先把残留的收流 server 关掉再重新申请端口。
+        // `get_rtp_info` 返回 Some 即表示该 stream_id 上确实还有一个收流会话。
+        if let Ok(Some(info)) = zlm.get_rtp_info(&stream_id).await {
+            tracing::warn!(
+                "start_live_stream: {} 存在残留的 RTP server（端口 {:?}），先关闭再重开",
+                stream_id,
+                info.local_port
+            );
+            if let Err(e) = zlm.close_rtp_server(&stream_id).await {
+                tracing::warn!("关闭残留 RTP server {} 失败: {}", stream_id, e);
+            }
+            // 上一轮遗留的"媒体已就绪"通知必须作废：否则下面的等待方会立刻
+            // 就绪，抢在新媒体到达前返回，导致后续 startSendRtp 找不到源流。
+            self.media_waiter_manager().forget_early_ready(&stream_id);
+        }
 
         let rtp_server = zlm
             .open_rtp_server(&crate::zlm::OpenRtpServerRequest {

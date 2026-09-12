@@ -121,6 +121,18 @@ impl MediaWaiterManager {
         }
     }
 
+    /// 作废某条流的"通知早于注册"缓存。
+    ///
+    /// 用于**同一条流被重新拉起**的场景（例如先关掉 ZLM 上残留的 RTP server，
+    /// 再重新申请端口并 INVITE 设备）：上一轮遗留的通知必须失效，否则等待方
+    /// 会立刻以为媒体已就绪，抢在真正的媒体到达之前继续执行 ——
+    /// 实测表现为级联推流 `startSendRtp` 报 `can not find the source stream`。
+    pub fn forget_early_ready(&self, stream_id: &str) {
+        if self.early_ready.remove(stream_id).is_some() {
+            tracing::debug!("MediaWaiter: 已作废 {} 的早期就绪通知（流将被重新拉起）", stream_id);
+        }
+    }
+
     /// 注册一个媒体等待器，同时创建 oneshot channel
     /// 返回 (waiter_key, oneshot::Receiver)
     pub fn register(

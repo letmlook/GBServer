@@ -2379,6 +2379,58 @@ npx playwright test              66 passed / 0 failed
 RTP 推送                          实测收到 365 个 RTP 包（修复前必然失败）
 ```
 
+### 级联推流（上级平台点播本级）**首次端到端打通**（2026-09-12 第五十轮）
+
+第四十九轮修掉了 `dst_url` 必须裸主机之后，用级联模拟器
+（`mock/tools/cascade-platform`，`/trigger/invite` 主动向上级点播）验证
+"上级点播 → 本级拉设备流 → 推 RTP 给上级"这条链路，又连撞四个缺陷：
+
+| # | 缺陷 | 真实报错 |
+|---|------|---------|
+| 1 | 为"源端口与 SDP 一致"先 `openRtpServer` 占了端口 P，却**没释放**就 `startSendRtp(src_port=P)` | `open udp active client failed on port: P, err: address already in use` |
+| 2 | 上一次点播残留的媒体流仍在 ZLM，`start_live_stream` 不判断存在性直接 `openRtpServer` | `-300 This stream already exists` |
+| 3 | 残留的 **RTP server 占位**（媒体已消失）同样让 `openRtpServer` 失败，而 `get_rtp_info` 看不到它 | 同上 |
+| 4 | 媒体等待器把 **`on_stream_changed register=true`** 当作"媒体就绪"，但那只是 ZLM 建了流条目；设备 RTP 还要几百毫秒才到 | `startSendRtp` → `can not find the source stream` |
+
+另外 `is_media_exist("rtp", …)` 对 **RTP 收流**是恒 false —— RTP 流没有 `rtp`
+这个 schema（实测是 ts/rtsp/rtmp/fmp4/hls）。这就是第 2 条迟迟修不掉的原因。
+
+修复：
+
+* 级联推流前先 `close_rtp_server("cascade_{platform}_{channel}")` **释放**占位端口，
+  再让 `startSendRtp` 以它作为源端口 bind（源端口与 200 OK SDP 一致）；
+* `start_live_stream` 三步检查：媒体已在线 → 直接复用（新增
+  `ZlmClient::is_stream_online(app, stream)`，按 `getMediaList` 判断，**与 schema 无关**）；
+  只剩 RTP server 占位 → 先 `close_rtp_server` 再重开；重开时同时
+  **作废媒体等待器的"早到通知"缓存**（新增 `forget_early_ready`），
+  避免用上一轮的通知误判就绪；
+* `start_live_stream` 复用分支同样受益：`proxy/start`、`play` 重复点播不再报
+  "already exists"；
+* 级联推流对"源流尚未就绪"这一种**可恢复**错误做有限重试（0.5s × 16 ≈ 8s），
+  其余错误立刻上报；
+* `start_send_rtp` 把 `src_port=0` 视为"未指定"（此前会显式要求 ZLM 绑定 0 端口）。
+
+**实测（真实级联模拟器 + 真实设备模拟器 + 真实 ZLM）**：
+
+```
+POST /trigger/invite  (mock 上级平台向上级点播)
+backend 日志:
+  级联点播：platform=34020000002000000099 通道=… → 上级 host.docker.internal:12106 ssrc=0200000021 本端发送端口=30026
+  级联推流：源流尚未就绪，500ms 后重试（第 1..6 次）
+  级联拉流：startSendRtp stream=… -> host.docker.internal ssrc=0200000021 src_port=30026
+上级侧（宿主机 UDP 监听，即 mock 的 SDP 收流地址）:
+  收到 RTP 包数: 864         ← 修复前：0（必然失败）
+```
+
+#### 第五十轮基线
+
+```
+cargo test                       716 passed / 0 failed
+cargo build --features postgres/mysql  OK
+npx playwright test              66 passed / 0 failed
+级联推流真机验证                  ✅ 864 个 RTP 包到达上级
+```
+
 ### 前端↔后端契约审计：**16 个模块 130 条全部修完**（2026-09-12 第三十九轮）
 
 第二十六轮用"一个模块一个 agent"的方式把 16 个前端 API 模块逐个对后端路由/DTO
@@ -2597,7 +2649,8 @@ vue-tsc --noEmit                 通过
     记一条 WARN 并立即重新下发 + 回读验证。
     实测：手工把 ZLM 侧改成 `hacked-id` → 下一次探活日志
     "general.mediaServerId 被改成了 \"hacked-id\"，将重新对齐" → 配置恢复为 `zlmediakit-1`。
-15. ~~**上级平台点播本级（级联拉流）尚未接线**~~ **已实现并端到端验证（第十八轮）**：
+15. ~~**上级平台点播本级（级联拉流）尚未接线**~~ **已实现并端到端验证（第十八轮）**；
+    **推流媒体面在第五十轮首次真机打通**（此前 `dst_url` 带 `rtp://` 前缀、发送端口占位未释放等问题让 RTP 从未到达上级，实测修复后上级收到 864 个 RTP 包）：
     见上方第十八轮小节。当前实现用进程级队列 + `Arc<SipServer>` 后台任务
     解耦静态信令路径与 `&self` 媒体路径；后续若继续加级联能力（如上级云台控制
     转发、级联录像回放），建议把 `start_live_stream` 抽成"按部件调用"的自由函数，
@@ -2832,6 +2885,7 @@ vue-tsc --noEmit                 通过
 - 2026-09-12 第四十七轮：`cargo test` —— **715 通过 / 0 失败**（**双 ZLM 节点真机验证**：显式落点/最少负载选择/离线剔除；修掉 `mediaServerId=auto` 从不负载均衡 + 选中节点不回写导致 stop 杀不掉流）
 - 2026-09-12 第四十八轮：`cargo test` —— **716 通过 / 0 失败**（JT1078 位置（0x0200/0x8201）与多媒体检索（0x8802→0x0802）整条链路打通；BCD 本地时间语义；模拟器位置报文占位实现修正）
 - 2026-09-12 第四十九轮：`cargo test` —— **716 通过 / 0 失败**（ZLM 接口对照：`isMediaExist`/`sendRtpInfo`/下载接口族 5 个不存在；`dst_url` 必须裸主机 —— 级联推流此前从未成功；实测 RTP 收到 365 包）
+- 2026-09-12 第五十轮：`cargo test` —— **716 通过 / 0 失败**（**级联推流首次端到端打通**：释放发送端口占位、流复用/残留 RTP server 处理、媒体等待器早到通知作废、源流未就绪重试；实测上级收到 864 个 RTP 包）
 - 2026-09-12 第三十一轮：`cargo test` —— **641 通过 / 0 失败**（JT1078 终端/围栏 13 条）
 - 2026-09-12 第三十轮：`cargo test` —— **637 通过 / 0 失败**（设备页 7 条）
 - 2026-09-12 第二十九轮：`cargo test` —— **634 通过 / 0 失败**（云端录像全链路）
