@@ -12,7 +12,7 @@
 //! - Phase 6.4: media items first 0x0801, location report 0x0200, attribute report 0x0102
 //! - Phase 6.5: query terminal params response 0x0107
 
-use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
+use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, NaiveTime, TimeZone};
 
 /// Terminal register request 0x0100
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -94,7 +94,8 @@ pub struct LocationReport {
     pub altitude: u16,
     pub speed: u16,
     pub direction: u16,
-    pub time: DateTime<Utc>,
+    /// 设备上报的**本地时间**（JT/T 808 的 BCD 时间是本地墙钟）
+    pub time: DateTime<Local>,
 }
 
 const LOCATION_BASIC_LEN: usize = 28;
@@ -180,8 +181,8 @@ pub struct MediaItem {
     pub channel_id: u8,
     pub event_code: u8,
     pub position: Option<LocationReport>,
-    pub start_time: DateTime<Utc>,
-    pub end_time: DateTime<Utc>,
+    pub start_time: DateTime<Local>,
+    pub end_time: DateTime<Local>,
 }
 
 /// Parse 0x0801 first frame body (1 item per packet per JT/T 1078 §7.4.4).
@@ -245,8 +246,8 @@ pub struct MediaSearchItem {
     pub media_type: u8,
     pub channel_id: u8,
     pub event_code: u8,
-    pub start_time: DateTime<Utc>,
-    pub end_time: DateTime<Utc>,
+    pub start_time: DateTime<Local>,
+    pub end_time: DateTime<Local>,
     pub longitude: Option<f64>,
     pub latitude: Option<f64>,
 }
@@ -382,7 +383,7 @@ fn decimal_nibble(n: u8) -> Result<char, String> {
     }
 }
 
-fn parse_bcd_datetime(bcd: &[u8]) -> Result<DateTime<Utc>, String> {
+fn parse_bcd_datetime(bcd: &[u8]) -> Result<DateTime<Local>, String> {
     if bcd.len() != 6 {
         return Err(format!("BCD datetime must be 6 bytes, got {}", bcd.len()));
     }
@@ -403,7 +404,16 @@ fn parse_bcd_datetime(bcd: &[u8]) -> Result<DateTime<Utc>, String> {
     let time = NaiveTime::from_hms_opt(hh, mi, ss)
         .ok_or_else(|| format!("invalid time {}:{}:{}", hh, mi, ss))?;
     let dt = NaiveDateTime::new(date, time);
-    Ok(DateTime::<Utc>::from_naive_utc_and_offset(dt, Utc))
+    // JT/T 808 的 BCD 时间是**设备本地时间**（国内即北京时间），不是 UTC。
+    // 此前用 `from_naive_utc_and_offset(dt, Utc)` 直接贴 UTC 标签，于是
+    // `/api/jt1078/position-info` 返回的 `time` 把北京时间标成 `+00:00`（差 8 小时）。
+    // 这里按本地时区解释：`.format("%Y-%m-%d %H:%M:%S")` 落库仍是设备上报的
+    // 墙钟数字，`to_rfc3339()` 出来带 +08:00。
+    Ok(Local.from_local_datetime(&dt).single().unwrap_or_else(|| {
+        // 本地时区无法唯一解释（夏令时缝隙）时退回固定偏移，保证不 panic
+        let offset = *Local::now().offset();
+        DateTime::<Local>::from_naive_utc_and_offset(dt - offset, offset)
+    }))
 }
 
 fn read_length_prefixed_ascii(body: &[u8], pos: usize) -> Result<(String, usize), String> {
@@ -528,6 +538,12 @@ mod tests {
         assert_eq!(loc.time.year(), 2026);
         assert_eq!(loc.time.month(), 6);
         assert_eq!(loc.time.day(), 20);
+        // BCD 时间是**设备本地时间**：落库用 `%Y-%m-%d %H:%M:%S` 必须仍是设备上报的
+        // 墙钟数字（此前按 UTC 解释会让 `to_rfc3339()` 少 8 小时）。
+        assert_eq!(
+            loc.time.format("%Y-%m-%d %H:%M:%S").to_string(),
+            "2026-06-20 14:30:00"
+        );
     }
 
     #[test]

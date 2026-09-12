@@ -236,14 +236,20 @@ def build_common_ack_body(seq: int, msg_id: int, result: int) -> bytes:
 
 
 def build_location_body(alarm_flag: int, status: int, lat: int, lon: int, speed: int) -> bytes:
-    """构造 0x0200 位置上报（占位实现）"""
-    body = struct.pack("!I", alarm_flag)         # 报警标志
-    body += struct.pack("!I", status)            # 状态
-    body += struct.pack("!I", lat)               # 纬度（*1e6）
-    body += struct.pack("!I", lon)               # 经度
-    body += struct.pack("!H", speed)            # 速度（km/h）
-    body += struct.pack("!H", 0)                 # 方向
-    body += b"\x00" * 12                         # 时间 + 预留
+    """构造 0x0200 位置汇报 / 0x0201 位置查询应答的消息体（JT/T 808-2013 §8.18）。
+
+    布局：报警标志(4) 状态(4) 纬度(4) 经度(4) **高程(2)** 速度(2) 方向(2) 时间(BCD 6)。
+
+    此前这里是"占位实现"：**漏了高程字段**、时间写成 12 个零字节，导致平台侧
+    `parse_location_report` 每次都报 `invalid date Y=2000 M=0 D=0` ——
+    位置上报这条链路在 mock 上永远解析失败，问题被完全掩盖（第四十八轮发现）。
+    """
+    body = struct.pack("!II", alarm_flag, status)  # 报警标志 + 状态
+    body += struct.pack("!II", lat, lon)           # 纬度 / 经度（*1e6）
+    body += struct.pack("!H", 0)                   # 高程（米）
+    body += struct.pack("!H", speed)               # 速度（km/h）
+    body += struct.pack("!H", 0)                   # 方向
+    body += encode_time_bcd(time.strftime("%Y-%m-%d %H:%M:%S"))
     return body
 
 
@@ -397,6 +403,8 @@ class Jt1078TerminalMock:
             self._handle_record_query(frame)
         elif frame["msg_id"] == 0x8802:  # 多媒体数据检索（平台下发）
             self._handle_media_search(frame)
+        elif frame["msg_id"] == 0x8201:  # 位置信息查询（平台下发）
+            self._handle_query_location(frame)
         elif frame["msg_id"] == MSG_TEXT_MSG:
             self._handle_text_msg(frame)
         elif 0x8000 <= frame["msg_id"] <= 0x8FFF and frame["msg_id"] != MSG_PLATFORM_ACK:
@@ -415,14 +423,17 @@ class Jt1078TerminalMock:
 
     # ----- 上行 -----
 
-    def _send(self, msg_id: int, body: bytes):
+    def _send(self, msg_id: int, body: bytes, seq: int | None = None):
+        """发送一帧。`seq` 显式给出时回显该流水号（应答报文必须回显请求流水号，
+        平台侧靠它把 0x0201 之类的**独立应答报文**交回等待中的命令）。"""
         if not self.sock:
             return
         # 模拟丢包
         if random.random() < self.simulate_loss:
             log.warning("模拟丢包: msg_id=0x%04x", msg_id)
             return
-        seq = self.next_seq()
+        if seq is None:
+            seq = self.next_seq()
         frame = build_frame(msg_id, self.phone, seq, body)
         try:
             if self.transport == "tcp":
@@ -563,6 +574,23 @@ class Jt1078TerminalMock:
             body += encode_time_bcd(end)
             body += struct.pack("!II", lon, lat)
         self._send(0x0802, body)
+
+    def _handle_query_location(self, frame: dict):
+        """0x8201 位置信息查询 → 回 0x0201 位置信息查询应答（JT/T 808-2013 §8.19）。
+
+        0x0201 的消息体与 0x0200 位置汇报**完全相同**，且流水号必须回显请求流水号
+        —— 平台侧按流水号把应答交回等待中的 `send_query_location_and_wait`。
+        """
+        self._send_common_ack(frame["seq"], frame["msg_id"], 0)
+        body = build_location_body(
+            0xFFFFFFFF,
+            0x03,
+            int(39.916527 * 1e6),
+            int(116.397128 * 1e6),
+            60,
+        )
+        self._send(0x0201, body, seq=frame["seq"])
+        log.info("已应答位置查询 0x8201（seq=%s）", frame["seq"])
 
     def _handle_text_msg(self, frame: dict):
         # 文本下发，回应通用应答

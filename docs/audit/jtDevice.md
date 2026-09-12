@@ -15,6 +15,18 @@
 >    三方言统一为 `INTEGER`（postgres 下 varchar 会让 `/terminal/list` 整表 500）。
 >    回归覆盖：`e2e/tests/jtTerminal.spec.ts`（4 例）。
 
+> **第四十八轮补充（JT1078 位置/多媒体检索整条链路）**：
+> 1. `RecordListQuery` 缺 `channelId`/`startTime`/`endTime` alias → 参数被静默丢弃
+>    （日志实锤 `channel=0, -`），`0x8802` 多媒体检索**从未下发**，录像列表恒空；
+> 2. `0x0200` 位置汇报被 `process_jt_message` 的 `_ => {}` **丢弃**
+>    （`update_terminal_position` 零调用），`0x0201` 落 `Unknown`，
+>    `send_query_location_and_wait` 发完请求就返回 `Err("not yet wired")`；
+> 3. `0x0001` 通用应答会**抢先完成** `0x8201` 的等待方（1 字节结果码），
+>    真正的 `0x0201` 数据到达时无人接收；
+> 4. `0x0802` 检索结果没有任何落库方（`insert_media_item` 零调用）；
+> 5. BCD 时间被当 UTC（JT/T 808 是设备本地时间），接口返回的 `time` 差 8 小时。
+> 现已全部修复并实测（0x0200 落库 / 0x8201 实时查询 / 0x8802→0x0802 检索）。
+
 审计对象：`web/src/api/jtDevice.ts`（21 个导出函数）。
 后端路由：`src/router.rs`（`api_protected` 链，JT1078 段从 `src/router.rs:818` 起）。
 真值交叉验证：WVP-PRO Java 源码 `/tmp/wvpsrc/wvp-GB28181-pro-master`。

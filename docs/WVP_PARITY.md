@@ -12,7 +12,7 @@
 | 总代码量（src/） | 79,179 行 Rust | `find src -name '*.rs' \| xargs wc -l` |
 | 已注册 HTTP 路由 | 386 条唯一 `/api/...` 路径 | `grep -oE '"/api/[^"]*"' src/router.rs \| sort -u \| wc -l` |
 | Handler 模块 | 29 个（含 `stub.rs` / `device_stub.rs` 两个兼容 shim） | `grep -c 'pub mod' src/handlers/mod.rs` |
-| 后端测试 | **715 通过 / 0 失败**（第四十七轮刷新） | `cargo test` |
+| 后端测试 | **716 通过 / 0 失败**（第四十八轮刷新） | `cargo test` |
 | 编译状态 | `cargo check` 0 error / **0 warning**；clippy 262；**deprecated 0** | `cargo check` / `cargo clippy --all-targets` |
 | 数据库 feature | SQLite（默认）/ PostgreSQL / MySQL **三者均编译通过** | CI `feature-matrix` job |
 | CI | ⏸️ 工作流已就绪但**按需暂停自动触发**（见 `.github/workflows/ci.yml`） | — |
@@ -2257,6 +2257,78 @@ npx playwright test              66 passed / 0 failed
 双 ZLM 真机验证                  显式落点 / 最少负载选择 / 离线剔除 / 每节点 hook 全部通过
 ```
 
+### JT1078 位置与多媒体检索：**整条链路此前是断的**（2026-09-12 第四十八轮）
+
+沿着"哪些数据写进去了却读不出来 / 哪些函数零调用"继续查（第四十四轮用这招找到了
+移动位置），`src/db/` 里剩下的一批"零外部调用"函数直接指向**没接线**的功能。
+JT1078 有两个完整功能属于这类：
+
+**一、位置（0x0200 上报 / 0x8201 查询）**
+
+| 环节 | 此前 |
+|------|------|
+| 0x0200 位置汇报 | 解析成功后被**直接丢弃**（`process_jt_message` 只处理 Register/Heartbeat/MediaSearchResult，其余落 `_ => {}`）→ `db::jt1078::update_terminal_position` **零调用**，`gb_jt_terminal` 位置与 `gb_position_history` 永远没有 JT1078 数据 |
+| 0x0201 位置查询应答 | 落到 `Unknown`：`send_query_location_and_wait` 发完 0x8201 就 `Err("not yet wired")`，终端答了也没用 |
+| 实时查询的等待方 | 终端**先回 0x0001 通用应答**再回 0x0201，而 0x0001 会按 (reply_msg_id, serial) **抢先完成**等待方（用 1 字节结果码），真正的 0x0201 到达时已无人等待 |
+| 时间语义 | BCD 时间被贴成 UTC 标签，而 JT/T 808 的 BCD 是**设备本地时间** → `/api/jt1078/position-info` 返回的 `time` 差 8 小时 |
+
+**二、多媒体检索（0x8802 → 0x0802）**
+
+* `GET /api/jt1078/record/list` 的 `RecordListQuery` **没有 camelCase alias**：
+  前端发 `channelId`/`startTime`/`endTime`，后端只认 snake_case → 三个参数被静默丢弃
+  （日志实锤 `record list: phone=…, channel=0, -`），于是条件判断
+  "start/end 非空才下发 0x8802" **永远不成立**，检索从未发生；
+* `db::jt1078::insert_media_item` **零调用**：`gb_jt_media_item` 没有任何写入方，
+  接口"先查库"的分支恒为空，只能退化成 ZLM/云录像兜底 —— 终端自己检索到的
+  录像列表在平台上拿不到；
+* 兜底 SQL 还写死了 PostgreSQL 的 `$1` 占位符（无方言分支）→ mysql/sqlite 上必然失败。
+
+修复：
+
+* `process_jt_message` 新增 `LocationReport` 分支：写 `gb_jt_terminal` 位置 +
+  `gb_position_history`（地图打点/轨迹用）；
+* `session` 增加 `0x0201 → LocationReport`（消息体与 0x0200 相同）；
+* 新增常量 `COMMANDS_WITH_DATA_REPLY = [0x8201]`：这类"先 0x0001 再数据报文"的命令
+  **不让通用应答完成等待方**，改由回显流水号的 0x0201 完成；
+  `send_query_location_and_wait` 拿回消息体后 `parse_location_report` 返回真实位置；
+* `parse_bcd_datetime` 按**本地时区**解释（落库仍是设备墙钟数字，`to_rfc3339()`
+  带 +08:00）；`LocationReport.time` / `MediaSearchItem.start_time/end_time`
+  类型改为 `DateTime<Local>`；
+* 0x0802 应答落库（新增调用 `insert_media_item`）+ `record/list` 轮询几秒等落库，
+  并把兜底 SQL 改成 `dialect_sql`；
+* `RecordListQuery` 补 `channelId`/`startTime`/`endTime` alias；
+* 模拟器：`build_location_body` 此前是**占位实现**（漏了高程字段、时间写成 12 个零字节，
+  于是平台侧恒报 `invalid date Y=2000 M=0 D=0` —— 这条链路在 mock 上从来跑不通），
+  改为规范布局并按本地时间填 BCD；新增 0x8201 → 0x0201 应答（回显请求流水号），
+  `_send` 支持显式 seq。
+
+**实测（真实 JT1078 模拟终端）**：
+
+```
+# 0x0200 自动上报（--auto-location 5）
+gb_jt_terminal:      13912345678  116.397081  39.916483
+gb_position_history: 3 行（含 speed/direction）
+GET /api/jt1078/position-info → {"source":"db","latitude":39.916528,"longitude":116.397107}
+
+# 0x8201 实时查询（清空库内位置后走实时分支）
+mock 日志: RX 0x8201 → TX 0x0001 → TX 0x0201(seq 回显)
+GET /api/jt1078/position-info → {"source":"device","latitude":39.916527,"longitude":116.397128,"speed":60}
+
+# 0x8802 多媒体检索（camelCase 参数）
+GET /api/jt1078/record/list?phoneNumber=…&channelId=1&startTime=…&endTime=…
+  → 2 条 source=device（mediaId 1001/1002），并已落库 gb_jt_media_item
+POST /api/jt1078/media/list → 同样 2 条（含 mediaTypeName）
+```
+
+#### 第四十八轮基线
+
+```
+cargo test                       716 passed / 0 failed（+1 record_list camelCase；位置时间断言加固）
+cargo build --features postgres/mysql  OK
+npx playwright test              66 passed / 0 failed
+JT1078 真机（模拟终端）           0x0200 落库 / 0x8201 实时查询 / 0x8802→0x0802 检索全部打通
+```
+
 ### 前端↔后端契约审计：**16 个模块 130 条全部修完**（2026-09-12 第三十九轮）
 
 第二十六轮用"一个模块一个 agent"的方式把 16 个前端 API 模块逐个对后端路由/DTO
@@ -2708,6 +2780,7 @@ vue-tsc --noEmit                 通过
 - 2026-09-12 第四十五轮：`cargo test` —— **710 通过 / 0 失败**（**首次 MySQL 运行时验证**：`CREATE INDEX IF NOT EXISTS` / `CAST(.. AS INTEGER|TEXT)` / `INSERT ... RETURNING` 四类 mysql 语法缺陷；新增 `scripts/dialect_smoke.py` 与 profile 隔离的 mysql 服务）
 - 2026-09-12 第四十六轮：`cargo test` —— **714 通过 / 0 失败**（ZLM hook 全链路在真实环境重新验证：录制文件/落库/播放/删除真删文件；`/cloud/record/delete` 的 `ids` 兼容数字；新增共享 `src/serde_flex.rs`）
 - 2026-09-12 第四十七轮：`cargo test` —— **715 通过 / 0 失败**（**双 ZLM 节点真机验证**：显式落点/最少负载选择/离线剔除；修掉 `mediaServerId=auto` 从不负载均衡 + 选中节点不回写导致 stop 杀不掉流）
+- 2026-09-12 第四十八轮：`cargo test` —— **716 通过 / 0 失败**（JT1078 位置（0x0200/0x8201）与多媒体检索（0x8802→0x0802）整条链路打通；BCD 本地时间语义；模拟器位置报文占位实现修正）
 - 2026-09-12 第三十一轮：`cargo test` —— **641 通过 / 0 失败**（JT1078 终端/围栏 13 条）
 - 2026-09-12 第三十轮：`cargo test` —— **637 通过 / 0 失败**（设备页 7 条）
 - 2026-09-12 第二十九轮：`cargo test` —— **634 通过 / 0 失败**（云端录像全链路）

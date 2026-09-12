@@ -11,6 +11,11 @@ use crate::jt1078::command;
 use crate::jt1078::command_waiter::JtCommandWaiter;
 use crate::jt1078::jt_media_session::JtMediaSessionManager;
 
+/// 那些"数据应答是独立报文"的命令：终端会**先**回 0x0001 通用应答，**再**回
+/// 一条数据报文（如 0x8201 → 0x0201）。通用应答只能代表"收到"，
+/// 不能让等待方提前完成，否则真正的数据会被丢弃。
+const COMMANDS_WITH_DATA_REPLY: &[u16] = &[0x8201]; // 位置信息查询 → 0x0201
+
 #[derive(Clone)]
 pub struct Jt1078Manager {
     sessions: Arc<Mutex<HashMap<SocketAddr, Jt1078Session>>>,
@@ -475,13 +480,31 @@ impl Jt1078Manager {
             let session = map.entry(addr).or_insert_with(|| Jt1078Session::new(addr));
             session.last_heartbeat = std::time::Instant::now();
         }
+        // 0x0201（位置信息查询应答）是一条**独立报文**，不是 0x0001 通用应答，
+        // 因此这里按回显的流水号把消息体交回等待中的 `0x8201` 命令。
+        if msg_id == 0x0201 {
+            if self.command_waiter.complete_by_serial(serial, body.to_vec()) {
+                tracing::debug!("JT1078 0x0201 位置应答已交回等待中的 0x8201 命令 serial={}", serial);
+            }
+        }
         // Resolve command waiter for 0x0001 general common response
         if msg_id == 0x0001 && body.len() >= 5 {
             let reply_serial = u16::from_be_bytes([body[0], body[1]]);
             let reply_msg_id = u16::from_be_bytes([body[2], body[3]]);
             let result = body[4];
-            self.command_waiter
-                .try_resolve_by_response(phone, reply_msg_id, reply_serial, result);
+            // 有些命令的**数据**应答是一条独立报文（先回 0x0001 通用应答，
+            // 再回数据报文）。若用 0x0001 去 complete，等待方会拿到 1 字节的
+            // 结果码；真正的数据报文到达时等待方已经不在了 ——
+            // 实测：0x8201 位置查询就是这样被"抢答"成失败，接口只能走兜底。
+            if !COMMANDS_WITH_DATA_REPLY.contains(&reply_msg_id) {
+                self.command_waiter
+                    .try_resolve_by_response(phone, reply_msg_id, reply_serial, result);
+            } else {
+                tracing::debug!(
+                    "JT1078 0x0001 通用应答（reply_msg_id=0x{:04X}）不完成等待方：该命令有独立数据应答报文",
+                    reply_msg_id
+                );
+            }
         }
         // Dispatch via session.process_jt_message
         let parsed = {
@@ -498,12 +521,77 @@ impl Jt1078Manager {
             crate::jt1078::session::ParsedMessage::Heartbeat => {
                 self.persist_terminal_online(phone, None).await;
             }
+            crate::jt1078::session::ParsedMessage::LocationReport(loc) => {
+                // 位置汇报（0x0200）/ 位置查询应答（0x0201）此前**被直接丢弃**：
+                // `process_jt_message` 只处理 Register/Heartbeat/MediaSearchResult，
+                // 其余落 `_ => {}`，于是 `gb_jt_terminal.longitude/latitude` 与
+                // `gb_position_history` 永远没有 JT1078 的数据
+                // （`db::jt1078::update_terminal_position` 零调用），
+                // `/api/jt1078/position-info` 只能返回空。第四十八轮修复。
+                if let Some(pool) = self.pool.get() {
+                    if let Err(e) = crate::db::jt1078::update_terminal_position(
+                        pool,
+                        phone,
+                        loc.longitude,
+                        loc.latitude,
+                    )
+                    .await
+                    {
+                        tracing::warn!("JT1078 位置回写 gb_jt_terminal 失败 phone={}: {}", phone, e);
+                    }
+                    // 同一份位置也写进 `gb_position_history`（地图打点/轨迹用）
+                    let ts = loc.time.format("%Y-%m-%d %H:%M:%S").to_string();
+                    if let Err(e) = crate::db::position_history::insert_position(
+                        pool,
+                        phone,
+                        &ts,
+                        loc.longitude,
+                        loc.latitude,
+                        loc.altitude as f64,
+                        loc.speed as f64,
+                        loc.direction as f64,
+                    )
+                    .await
+                    {
+                        tracing::warn!("JT1078 位置写 gb_position_history 失败 phone={}: {}", phone, e);
+                    }
+                }
+            }
             crate::jt1078::session::ParsedMessage::MediaSearchResult(items) => {
                 tracing::info!(
                     "JT1078 收到多媒体检索应答 phone={} items={}",
                     phone,
                     items.len()
                 );
+                // 落库：`gb_jt_media_item` 此前后**没有任何写入方**
+                // （`db::jt1078::insert_media_item` 零调用），于是
+                // `/api/jt1078/record/list` 的"先查库"分支永远为空，只能退化成
+                // ZLM/云录像兜底 —— 终端自己检索到的录像列表在平台上拿不到
+                // （第四十八轮发现）。
+                if let Some(pool) = self.pool.get() {
+                    for it in items.iter() {
+                        if let Err(e) = crate::db::jt1078::insert_media_item(
+                            pool,
+                            phone,
+                            it.channel_id as i32,
+                            it.media_id,
+                            it.media_type as i32,
+                            0, // 0x0802 报文里没有"媒体格式"字段
+                            it.event_code as i32,
+                            &it.start_time.format("%Y-%m-%d %H:%M:%S").to_string(),
+                            &it.end_time.format("%Y-%m-%d %H:%M:%S").to_string(),
+                        )
+                        .await
+                        {
+                            tracing::warn!(
+                                "JT1078 多媒体检索结果落库失败 phone={} media_id={}: {}",
+                                phone,
+                                it.media_id,
+                                e
+                            );
+                        }
+                    }
+                }
                 self.store_media_search_result(phone, items.clone()).await;
             }
             _ => {}
@@ -693,14 +781,17 @@ impl Jt1078Manager {
     }
 
     /// 0x8201 Query location (waits for 0x0201 response)
+    ///
+    /// 终端回的是 **0x0201**（消息体与 0x0200 一致），由
+    /// `process_jt_message` 按回显流水号交回这里的等待方；此前这里发完请求就
+    /// 直接返回 `Err("not yet wired")`，于是 `/api/jt1078/position-info` 的
+    /// 实时查询分支永远失败。
     pub async fn send_query_location_and_wait(
         &self, phone: &str, timeout_secs: u64,
     ) -> Result<crate::jt1078::response_parser::LocationReport, String> {
         let body = command::build_query_location();
-        let _ = self.send_command_and_wait(phone, 0x8201, &body, timeout_secs).await?;
-        // The 0x0201 message body is delivered through process_jt_message.
-        // For now we return a default location (full impl in Phase 6.5).
-        Err("location response not yet wired to handler — use process_jt_message".to_string())
+        let resp = self.send_command_and_wait(phone, 0x8201, &body, timeout_secs).await?;
+        crate::jt1078::response_parser::parse_location_report(&resp)
     }
 
     /// 0x8300 Text message dispatch
@@ -974,8 +1065,8 @@ mod tests {
                 media_type: 2,
                 channel_id: 1,
                 event_code: 0,
-                start_time: chrono::Utc::now(),
-                end_time: chrono::Utc::now(),
+                start_time: chrono::Local::now(),
+                end_time: chrono::Local::now(),
                 longitude: None,
                 latitude: None,
             }])

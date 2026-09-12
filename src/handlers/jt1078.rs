@@ -160,8 +160,15 @@ pub struct PlaybackQuery {
 pub struct RecordListQuery {
     #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
+    /// 前端（与 WVP）发的是 camelCase：`channelId` / `startTime` / `endTime`。
+    /// 此前没有 alias → 三个参数被**静默丢弃**，`channel=0`、时间范围为空，
+    /// 于是 `0x8802` 多媒体检索**从未下发过**，接口只能走 ZLM/云录像兜底
+    /// （第四十八轮实测：日志 `record list: phone=…, channel=0, -`）。
+    #[serde(alias = "channelId")]
     pub channel_id: Option<i32>,
+    #[serde(alias = "startTime")]
     pub start_time: Option<String>,
+    #[serde(alias = "endTime")]
     pub end_time: Option<String>,
 }
 
@@ -1176,13 +1183,25 @@ pub async fn record_list(
                     &phone, channel_id as u8, &start_time, &end_time, 30,
                 ).await {
                     Ok(_) => {
-                        // 终端应答 - 实际的多包 0x0801 通过 process_jt_message 接收
-                        // 此处返回时先尝试从 DB 读已落库的 items
+                        // 0x8802 的**通用应答**（0x0001）到达后，真正的检索结果
+                        // （0x0802）是稍后单独上行的一条消息 —— 它会被解析并落库
+                        // （`gb_jt_media_item`）。这里轮询几秒等它落库，避免
+                        // "检索其实成功了但接口抢先查库拿到空列表"。
                         drop(mgr_guard);
-                        match jt_db::list_media_items_by_terminal(
-                            &state.pool, &phone,
-                            Some(&start_time), Some(&end_time), 50,
-                        ).await {
+                        let mut items = Vec::new();
+                        for _ in 0..10 {
+                            items = jt_db::list_media_items_by_terminal(
+                                &state.pool, &phone,
+                                Some(&start_time), Some(&end_time), 50,
+                            )
+                            .await
+                            .unwrap_or_default();
+                            if !items.is_empty() {
+                                break;
+                            }
+                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                        }
+                        match Ok::<_, sqlx::Error>(items) {
                             Ok(items) if !items.is_empty() => {
                                 let list: Vec<serde_json::Value> = items.iter().map(|i| {
                                     serde_json::json!({
@@ -1247,7 +1266,9 @@ pub async fn record_list(
 
     // Final fallback: cloud_record DB
     if let Ok(records) = sqlx::query_as::<_, crate::db::cloud_record::CloudRecord>(
-        "SELECT * FROM gb_cloud_record WHERE stream = $1 ORDER BY start_time DESC LIMIT 50"
+        &crate::dyn_where::dialect_sql(
+            "SELECT * FROM gb_cloud_record WHERE stream = ? ORDER BY start_time DESC LIMIT 50",
+        ),
     )
     .bind(&phone)
     .fetch_all(&state.pool)
@@ -1470,7 +1491,7 @@ pub async fn position_info(
                 let phone_owned = phone.clone();
                 let lng = loc.longitude;
                 let lat = loc.latitude;
-                let time = loc.time;
+                let time = loc.time.with_timezone(&chrono::Utc);
                 tokio::spawn(async move {
                     if let Err(e) =
                         jt_db::update_last_position(&pool, &phone_owned, lng, lat, time).await
@@ -1838,10 +1859,11 @@ pub async fn media_list(
             let start_time = body.get("startTime").and_then(|v| v.as_str()).unwrap_or("2000-01-01T00:00:00");
             let end_time = body.get("endTime").and_then(|v| v.as_str()).unwrap_or("2099-12-31T23:59:59");
             // 下发 0x8802 多媒体数据检索请求。终端检索结果走 0x0802
-            // （多媒体数据检索应答）单独上行，**本平台尚未解析该消息**
-            // （见 docs/WVP_PARITY.md 的"仍未解决"清单），因此这里只保证
-            // "请求确实下发了"，并把失败如实返回给调用方 —— 此前是
-            // `let _ =` 吞掉结果后再返回 ZLM 的流列表，看起来像"检索成功"。
+            // （多媒体数据检索应答）**单独上行**：本平台会解析它、落库
+            // （`gb_jt_media_item`）并放进内存缓存，下面 5s 内取缓存返回。
+            // 此前注释写的"尚未解析该消息"是过时描述（解析早已实现），
+            // 而真正的旧实现是 `let _ =` 吞掉结果后返回 ZLM 流列表，
+            // 看起来像"检索成功"—— 已修为如实返回。
             if let Err(e) = mgr
                 .send_media_search_and_wait(phone, channel_id, start_time, end_time, 30)
                 .await
@@ -2117,6 +2139,31 @@ mod channel_dto_tests {
 
         let q: ChannelListQuery = serde_json::from_value(serde_json::json!({})).unwrap();
         assert!(q.device_id.is_none() && q.terminal_db_id.is_none());
+    }
+
+    /// `GET /api/jt1078/record/list` 的参数此前没有 camelCase alias →
+    /// `channelId`/`startTime`/`endTime` 被静默丢弃（`channel=0`、时间范围为空），
+    /// 于是 0x8802 多媒体检索从未下发过。
+    #[test]
+    fn record_list_query_accepts_camel_case_params() {
+        let q: RecordListQuery = serde_json::from_value(serde_json::json!({
+            "phoneNumber": "13912345678",
+            "channelId": 1,
+            "startTime": "2026-09-01 00:00:00",
+            "endTime": "2026-09-02 00:00:00"
+        }))
+        .unwrap();
+        assert_eq!(q.phone_number.as_deref(), Some("13912345678"));
+        assert_eq!(q.channel_id, Some(1));
+        assert_eq!(q.start_time.as_deref(), Some("2026-09-01 00:00:00"));
+        assert_eq!(q.end_time.as_deref(), Some("2026-09-02 00:00:00"));
+
+        // 历史 snake_case 仍然可用
+        let q: RecordListQuery = serde_json::from_value(serde_json::json!({
+            "phone_number": "13912345678", "channel_id": 2
+        }))
+        .unwrap();
+        assert_eq!(q.channel_id, Some(2));
     }
 
     #[test]

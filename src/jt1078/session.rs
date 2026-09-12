@@ -246,6 +246,16 @@ impl Jt1078Session {
                     ParsedMessage::Unknown { msg_id, serial, body: body.to_vec() }
                 }
             },
+            // 0x0201 位置信息查询应答：消息体与 0x0200 **完全相同**
+            // （JT/T 808-2013 §8.19）。此前落到 Unknown，于是
+            // `/api/jt1078/position-info` 的"实时查终端"分支恒失败（第四十八轮）。
+            0x0201 => match response_parser::parse_location_report(body) {
+                Ok(l) => ParsedMessage::LocationReport(l),
+                Err(e) => {
+                    tracing::warn!("parse_location_report(0x0201) failed: {}", e);
+                    ParsedMessage::Unknown { msg_id, serial, body: body.to_vec() }
+                }
+            },
             0x0802 => match response_parser::parse_media_search_response(body) {
                 Ok(items) => ParsedMessage::MediaSearchResult(items),
                 Err(e) => {
