@@ -3,7 +3,7 @@ use super::Pool;
 pub async fn ensure_table(pool: &Pool) -> sqlx::Result<()> {
     #[cfg(feature = "postgres")]
     {
-        let _ = sqlx::query(
+        if let Err(e) = sqlx::query(
             r#"CREATE TABLE IF NOT EXISTS gb_audit_log (
                 id BIGSERIAL PRIMARY KEY,
                 username VARCHAR(100),
@@ -18,13 +18,20 @@ pub async fn ensure_table(pool: &Pool) -> sqlx::Result<()> {
             )"#
         )
         .execute(pool)
-        .await;
+        .await
+        {
+            tracing::error!("创建 gb_audit_log 表失败（审计日志将不可用）: {}", e);
+        }
 
-        let _ = sqlx::query(
+        // 索引是可选优化：建不出来只告警
+        if let Err(e) = sqlx::query(
             "CREATE INDEX IF NOT EXISTS idx_audit_log_create_time ON gb_audit_log(create_time)"
         )
         .execute(pool)
-        .await;
+        .await
+        {
+            tracing::warn!("创建审计日志索引 idx_audit_log_create_time 失败: {}", e);
+        }
 
         let _ = sqlx::query(
             "CREATE INDEX IF NOT EXISTS idx_audit_log_username ON gb_audit_log(username)"
@@ -35,7 +42,7 @@ pub async fn ensure_table(pool: &Pool) -> sqlx::Result<()> {
 
     #[cfg(feature = "mysql")]
     {
-        let _ = sqlx::query(
+        if let Err(e) = sqlx::query(
             r#"CREATE TABLE IF NOT EXISTS gb_audit_log (
                 id BIGINT AUTO_INCREMENT PRIMARY KEY,
                 username VARCHAR(100),
@@ -50,25 +57,35 @@ pub async fn ensure_table(pool: &Pool) -> sqlx::Result<()> {
             )"#
         )
         .execute(pool)
-        .await;
+        .await
+        {
+            tracing::error!("创建 gb_audit_log 表失败（审计日志将不可用）: {}", e);
+        }
 
-        let _ = sqlx::query(
+        // 索引属于可选优化：建不出来只告警
+        if let Err(e) = sqlx::query(
             "CREATE INDEX IF NOT EXISTS idx_audit_log_create_time ON gb_audit_log(create_time)"
         )
         .execute(pool)
-        .await;
+        .await
+        {
+            tracing::warn!("创建审计日志索引 idx_audit_log_create_time 失败: {}", e);
+        }
 
-        let _ = sqlx::query(
+        if let Err(e) = sqlx::query(
             "CREATE INDEX IF NOT EXISTS idx_audit_log_username ON gb_audit_log(username)"
         )
         .execute(pool)
-        .await;
+        .await
+        {
+            tracing::warn!("创建审计日志索引 idx_audit_log_username 失败: {}", e);
+        }
     }
 
     #[cfg(feature = "sqlite")]
     {
         // SQLite 使用 DATETIME + CURRENT_TIMESTAMP；status_code 用 INTEGER
-        let _ = sqlx::query(
+        if let Err(e) = sqlx::query(
             r#"CREATE TABLE IF NOT EXISTS gb_audit_log (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 username VARCHAR(100),
@@ -84,19 +101,29 @@ pub async fn ensure_table(pool: &Pool) -> sqlx::Result<()> {
             )"#
         )
         .execute(pool)
-        .await;
+        .await
+        {
+            tracing::error!("创建 gb_audit_log 表失败（审计日志将不可用）: {}", e);
+        }
 
-        let _ = sqlx::query(
+        // 索引属于可选优化：建不出来只告警
+        if let Err(e) = sqlx::query(
             "CREATE INDEX IF NOT EXISTS idx_audit_log_create_time ON gb_audit_log(create_time)"
         )
         .execute(pool)
-        .await;
+        .await
+        {
+            tracing::warn!("创建审计日志索引 idx_audit_log_create_time 失败: {}", e);
+        }
 
-        let _ = sqlx::query(
+        if let Err(e) = sqlx::query(
             "CREATE INDEX IF NOT EXISTS idx_audit_log_username ON gb_audit_log(username)"
         )
         .execute(pool)
-        .await;
+        .await
+        {
+            tracing::warn!("创建审计日志索引 idx_audit_log_username 失败: {}", e);
+        }
     }
 
     Ok(())

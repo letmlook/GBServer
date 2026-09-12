@@ -1095,9 +1095,10 @@ let renewal_pool = pool.clone();
                             .set_online(&device.device_id, false)
                             .await;
 
-                        // Update DB
+                        // Update DB：写库失败必须可见，否则库里设备仍显示在线，
+                        // 而内存里已经判离线 —— 两处状态长期不一致。
                         let now_str = now.format("%Y-%m-%d %H:%M:%S").to_string();
-                        let _ = crate::db::device::update_device_online(
+                        if let Err(e) = crate::db::device::update_device_online(
                             &heartbeat_pool,
                             &device.device_id,
                             false,
@@ -1105,7 +1106,14 @@ let renewal_pool = pool.clone();
                             None,
                             &now_str,
                         )
-                        .await;
+                        .await
+                        {
+                            tracing::error!(
+                                "心跳超时后把设备 {} 置离线失败: {}",
+                                device.device_id,
+                                e
+                            );
+                        }
 
                         // Push WebSocket notification
                         if let Some(ref ws) = heartbeat_ws {

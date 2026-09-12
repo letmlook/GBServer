@@ -1800,7 +1800,13 @@ pub async fn cloud_record_delete(
         };
         if file_ok {
             if let Some(id) = db_id {
-                let _ = crate::db::cloud_record::delete(&state.pool, id).await;
+                // 库记录删除失败**不能算成功** —— 否则前端列表移除、刷新又回来，
+                // 用户以为删干净了。此前是 `let _ =`。
+                if let Err(e) = crate::db::cloud_record::delete(&state.pool, id).await {
+                    tracing::error!("删除云端录像记录失败 id={id}: {e}");
+                    failed.push(record_id);
+                    continue;
+                }
             }
             deleted.push(record_id);
         } else {

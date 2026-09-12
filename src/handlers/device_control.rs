@@ -232,25 +232,17 @@ pub async fn subscribe_mobile_position(
 #[allow(non_snake_case)]
 /// 构造 `<Control>` 的子元素体（云台/镜头/预置位）。
 ///
-/// 统一走 `sip::gb28181::front_end_control`：`PTZCmd` 是国标 8 字节格式
-/// （0xA5 起始 + 累加校验），聚焦/光圈用 `<FICmd>`，预置位用
-/// `<PresetCmd>`+`<PresetIndex>`。
+/// 统一走 `sip::gb28181::front_end_control`：**全部**是 `PTZCmd` 8 字节格式
+/// （0xA5 起始 + 指令码 + 累加校验）—— 聚焦/光圈、预置位也走指令码，
+/// 与 WVP 的 `SourcePTZServiceForGbImpl` 和 GB/T 28181-2022 §A.3 一致。
 ///
 /// 修正：此前这里生成 `05 01 00 00 00 ss FF`（6 字节、非 A5 起始、无校验），
 /// 且把聚焦/光圈/预置位一律塞进 `<PTZCmd>` —— 真实设备按国标解析时
 /// 得到的都是无效指令。
 fn build_ptz_xml(command: &str, speed: u8, preset: u32, _dwStop: u32) -> String {
+    // 云台/聚焦光圈/预置位统一是 `PTZCmd` 8 字节指令（与 WVP 一致）
     match crate::sip::gb28181::front_end_control::control_element(command, speed, preset) {
-        Some(("PTZCmd", v)) => format!(r#"<PTZCmd>{}</PTZCmd>"#, v),
-        Some(("FICmd", v)) => format!(r#"<FICmd>{}</FICmd>"#, v),
-        Some(("PresetCmd", v)) => {
-            // `PresetCmd` 的取值形如 `CallPreset|7`，需拆成两个元素
-            let (cmd_value, index) = v.split_once('|').unwrap_or((v.as_str(), "0"));
-            format!(
-                r#"<PresetCmd>{}</PresetCmd><PresetIndex>{}</PresetIndex>"#,
-                cmd_value, index
-            )
-        }
+        Some((_, v)) => format!(r#"<PTZCmd>{}</PTZCmd>"#, v),
         _ => format!(r#"<PTZCmd>{}</PTZCmd>"#, crate::sip::gb28181::front_end_control::build_ptz_cmd(
             crate::sip::gb28181::front_end_control::PtzAction::Stop, 0)),
     }

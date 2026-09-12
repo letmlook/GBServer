@@ -470,7 +470,9 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
                 zlm_clients.insert(server.id.clone(), client.clone());
                 tracing::info!("ZLM client initialized: {} ({}:{})", server.id, server.ip, server.http_port);
 
-                let _ = db::media_server::sync_from_config_full(
+                // 写库失败要可见：节点行同步不进去的话，媒体节点页 / 节点选择
+                // 都会少一个节点，而启动日志里什么异常都看不到。
+                if let Err(e) = db::media_server::sync_from_config_full(
                     &pool,
                     &server.id,
                     &server.ip,
@@ -479,7 +481,9 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
                     server.rtp_port_range.as_deref(),
                     server.send_rtp_port_range.as_deref(),
                     &now,
-                ).await;
+                ).await {
+                    tracing::error!("同步媒体节点 {} 到数据库失败: {}", server.id, e);
+                }
 
                 if zlm_client.is_none() {
                     zlm_client = Some(client);

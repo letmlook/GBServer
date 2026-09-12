@@ -1252,8 +1252,11 @@ pub(crate) async fn handle_webhook_inner(
                     .unwrap_or("zlmediakit-1");
 
                 // Phase 4.2: 重置节点状态（on_server_started 时）
-                let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-                let _ = crate::db::media_server::update_ports(
+                //
+                // 写库失败必须**可见**：端口写不进去的话，后续按端口拼出来的
+                // 播放地址全是错的，而现场只会看到"播放不了"，查不到根因。
+                let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+                if let Err(e) = crate::db::media_server::update_ports(
                     &state.pool,
                     media_server_id,
                     data.http_port as i32,
@@ -1262,7 +1265,14 @@ pub(crate) async fn handle_webhook_inner(
                     Some(data.rtmp_port as i32),
                     &now,
                 )
-                .await;
+                .await
+                {
+                    tracing::error!(
+                        "on_server_started: 更新媒体节点 {} 的端口失败（播放地址可能不正确）: {}",
+                        media_server_id,
+                        e
+                    );
+                }
                 // 重置流计数（在 on_server_started 时清零，避免旧数据残留）
                 // Phase 7.1: route through StateStore (single source of truth).
                 state.state_store.set_media_server(
@@ -1516,15 +1526,22 @@ pub(crate) async fn handle_webhook_inner(
                 streams
             );
 
-            let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-            let _ = crate::db::media_server::update_flow_stats(
+            let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+            if let Err(e) = crate::db::media_server::update_flow_stats(
                 &state.pool,
                 media_server_id,
                 total_traffic as i64,
                 streams.map(|n| n as i32),
                 &now,
             )
-            .await;
+            .await
+            {
+                tracing::warn!(
+                    "on_flow_report: 更新媒体节点 {} 的流量统计失败: {}",
+                    media_server_id,
+                    e
+                );
+            }
             if let Some(n) = streams {
                 sync_media_server_stream_count(&state.state_store, media_server_id, n);
             }
@@ -1645,15 +1662,32 @@ pub(crate) async fn handle_webhook_inner(
                     data.file_path.as_str(),
                     data.file_duration
                 );
-                // 同步录像文件信息到 DB（cloud_record）
+                // 同步录像文件信息到 DB（cloud_record）。
+                //
+                // **不能吞错误**：插入失败就意味着"ZLM 录了文件但云端录像列表里没有"，
+                // 而此前这里 `let _ =` 把错误丢掉，现场完全看不出原因。
                 let duration = data.file_duration as i64;
-                let _ = crate::db::cloud_record::insert_from_hook(
+                match crate::db::cloud_record::insert_from_hook(
                     &state.pool,
                     &data.stream,
                     &data.file_path,
                     duration,
                 )
-                .await;
+                .await
+                {
+                    Ok(id) => tracing::info!(
+                        "录像已入库: stream={} file={} id={}",
+                        data.stream,
+                        data.file_path,
+                        id
+                    ),
+                    Err(e) => tracing::error!(
+                        "录像入库失败（文件已存在但列表里看不到）: stream={} file={} err={}",
+                        data.stream,
+                        data.file_path,
+                        e
+                    ),
+                }
             }
         }
         // ============ ABL 钩子（设计文档 §6.3 阶段 0 缺口 1）============
@@ -1682,13 +1716,19 @@ pub(crate) async fn handle_webhook_inner(
                 );
                 // 更新 DB 中的录像进度（cloud_record），供前端轮询
                 if let (Some(app), Some(stream)) = (data.app.as_deref(), data.stream.as_deref()) {
-                    let _ = crate::db::cloud_record::update_recording_progress(
+                    if let Err(e) = crate::db::cloud_record::update_recording_progress(
                         &state.pool,
                         stream,
                         app,
                         data.current_duration.unwrap_or(0.0),
                         data.current_size.unwrap_or(0),
-                    ).await;
+                    )
+                    .await
+                    {
+                        tracing::warn!(
+                            "on_record_progress: 更新录像进度失败 {app}/{stream}: {e}"
+                        );
+                    }
                 }
             }
         }

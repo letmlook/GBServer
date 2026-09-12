@@ -12,7 +12,7 @@
 | 总代码量（src/） | 79,179 行 Rust | `find src -name '*.rs' \| xargs wc -l` |
 | 已注册 HTTP 路由 | 386 条唯一 `/api/...` 路径 | `grep -oE '"/api/[^"]*"' src/router.rs \| sort -u \| wc -l` |
 | Handler 模块 | 29 个（含 `stub.rs` / `device_stub.rs` 两个兼容 shim） | `grep -c 'pub mod' src/handlers/mod.rs` |
-| 后端测试 | **688 通过** / 0 失败（第三十九轮刷新） | `cargo test` |
+| 后端测试 | **690 通过** / 0 失败（第四十轮刷新） | `cargo test` |
 | 编译状态 | `cargo check` 0 error / **0 warning**；clippy 262；**deprecated 0** | `cargo check` / `cargo clippy --all-targets` |
 | 数据库 feature | SQLite（默认）/ PostgreSQL / MySQL **三者均编译通过** | CI `feature-matrix` job |
 | CI | ⏸️ 工作流已就绪但**按需暂停自动触发**（见 `.github/workflows/ci.yml`） | — |
@@ -1760,6 +1760,56 @@ cargo check --features mysql/postgres  OK
 npx playwright test              59 passed / 0 failed（云端录像 2 例按环境显式 skip）
 ```
 
+### 前端设备控制：报文形态对齐 WVP 的 8 字节 PTZCmd（2026-09-12 第四十轮）
+
+核对 WVP 源码后发现，此前的"2016 独立元素 + 属性式 XML"两种写法**都不是 WVP 的形态**：
+WVP 的 `SIPCommander.frontEndCmdString` 把云台/聚焦光圈/预置位/巡航/扫描/辅助/雨刷
+**全部**编成 8 字节 `PTZCmd`（它那几个 `FrontEndControlCodeFor*.encode()` 全部 `return ""`，
+从不参与下发路径）。
+
+| 功能 | WVP 指令码（字节4） | 数据1 | 数据2 | 组合码2 |
+|------|--------------------|-------|-------|---------|
+| 聚焦近/远 | 0x42 / 0x41 | 聚焦速度 | — | — |
+| 光圈开/关 | 0x48 / 0x44 | — | 光圈速度 | — |
+| 预置位 设置/调用/删除 | 0x81 / 0x82 / 0x83 | — | 预置位号 | — |
+| 巡航 加点/删点/速度/停留/开始 | 0x84 / 0x85 / 0x86 / 0x87 / 0x88 | 巡航组号 | 预置位号 | 速度/停留时间 |
+| 扫描 开始/左边界/右边界/速度 | 0x89 / 0x89(p2=1) / 0x89(p2=2) / 0x8A | 扫描组号 | — / 速度 | — |
+| 辅助开关 开/关 | 0x8C / 0x8D | 开关号 | — | — |
+| 雨刷 开/关 | 0x8C / 0x8D | 1（固定） | — | — |
+
+顺带修正：
+
+* `/fi/focus` 现在接受 WVP 的 `near`/`far`/`stop`（此前只认 on/off/open/close，
+  WVP 前端发 `near` 会被直接拒掉）；`/fi/iris` 接受 `in`/`out`/`stop`；
+  `stop` 按 WVP 的分支下发 `0x40` + 速度 0。
+* 兼容端点 `/api/ptz/front_end_command` 的 `combindCode2`（WVP 口径 0-15）
+  现在左移 4 位写入字节7 —— 此前直接当字节7 写，等于少移了 4 位。
+* `control_element`（云台/聚焦/预置位的唯一决策点）统一返回 `PTZCmd`，
+  三个调用方（`front_end.rs` / `common_channel.rs` / `device_control.rs`）不再各写一套。
+
+**实测**（SIP 模拟器收到并打印的报文）：
+
+```
+A50F0108003200EF  云台向上(速度50)
+A50F01421E000015  聚焦近(速度30)      A50F01411E000014  聚焦远
+A50F014800140011  光圈开(速度20)      A50F01440014000D  光圈关
+A50F0140000000F5  聚焦/光圈停止(0x40)
+A50F01810005003B  设置预置位5         A50F01820005003C  调用预置位5
+A50F01840105003F  巡航加点(组1 点5)   A50F01860100306C  巡航速度(3)
+A50F018902000040  扫描开始(组2)       A50F018C03000044  辅助开(3)
+A50F018D01000043  雨刷关(编号1)
+Playwright → 新增 frontEnd.spec.ts 2 条（逐个端点断言 code:0 / 非法值 code:1）
+```
+
+#### 第四十轮基线
+
+```
+cargo test                       690 passed / 0 failed
+cargo check --all-targets        本项目 0 warning
+cargo check --features mysql/postgres  OK
+npx playwright test              61 passed / 0 failed（云端录像 2 例按环境显式 skip）
+```
+
 > **环境限制（本机，非仓库缺陷）**：Docker Desktop 出现容器 → 宿主机网络不通
 > （`host.docker.internal` 只解析出 IPv6 ULA，`192.168.65.254` / `172.18.0.1` /
 > 宿主机 LAN IP 均不可达，连 redis 容器也连不上后端）。因此 ZLM 的全部 hook
@@ -1938,21 +1988,26 @@ vue-tsc --noEmit                 通过
 10. ~~**JT1078 命令只经 UDP 下发**~~ **已实现（第二十四轮）**：
     `Jt1078Manager::send_raw` 现按终端接入方式选择 TCP 通道或 UDP 监听 socket；
     模拟器新增 `--transport tcp`，TCP/UDP 两条链路的注册/查询/控制均已实测通过。
-11. **巡航/扫描/辅助开关的报文形态待核验**（2026-09-12 第二十三轮定位）：
-    `handlers/front_end.rs` 当前发的是**属性式** XML：
-    `<CruiseCmd id="1" preset="5" action="add" />`、`<ScanCmd id="1" action="start" />`。
-    GB/T 28181-**2022** §A.3.5/A.3.6/A.3.7 把巡航/扫描/辅助开关规定为
-    **8 字节二进制 PTZCmd**（字节4 指令码：0x84~0x88 巡航 / 0x89、0x8A 扫描 /
-    0x8C、0x8D 辅助），与 2016 的 XML 元素风格都**不是**属性式写法。
-    在没有真实设备或权威 2016 元素表可核对前不臆造 —— 现在这批端点的报文
-    形态**明确登记为未核验**，不作为已实现。
-12. **FI（聚焦/光圈）与预置位存在两套并存编码**（同上）：
-    本实现按 **GB/T 28181-2016** 用独立元素 `<FICmd>` / `<PresetCmd>`+`<PresetIndex>`
-    （与 WVP 参考实现一致，因此满足平替目标）；
-    **2022** §A.3.3/A.3.4 则把它们并入 8 字节 `PTZCmd`
-    （字节4 高 2 位=01 表示 FI；预置位用字节4=0x81/0x82/0x83、编号在数据2，
-    例如调用预置位 5 = `A50F0182000500xx`）。
-    部分 2022 设备可能只认后者 —— 需要真实设备确认后再决定是否追加兼容分支。
+11. ~~**巡航/扫描/辅助开关的报文形态待核验**~~ **已修复（第四十轮）**：
+    此前发的是属性式 XML（`<CruiseCmd id="1" preset="5" action="add" />`），
+    既不是国标形态、也**不是 WVP 的形态**。核对 WVP 源码后确认：
+    WVP 的 `SIPCommander.frontEndCmdString` 把所有前端控制都编成
+    **8 字节二进制 PTZCmd**（`A5 0F 01 <指令码> <数据1> <数据2> <组合码2<<4> <校验>`），
+    指令码来自 `SourcePTZServiceForGbImpl::{tour,scan,auxiliary,wiper}`：
+    巡航 0x84 加点/0x85 删点/0x86 速度/0x87 停留/0x88 开始、
+    扫描 0x89 开始(数据2=1 左边界/2 右边界)/0x8A 速度、辅助 0x8C 开/0x8D 关（雨刷编号固定 1）。
+    现在全部按这套指令码下发，并已用 SIP 模拟器在**报文层**核对（模拟器打印收到的 PTZCmd）。
+12. ~~**FI（聚焦/光圈）与预置位存在两套并存编码**~~ **已修复（第四十轮）**：
+    现在与 WVP 完全一致地走 `PTZCmd`：聚焦近 0x42 / 远 0x41（速度在数据1），
+    光圈开 0x48 / 关 0x44（速度在数据2），预置位 0x81 设置 / 0x82 调用 / 0x83 删除
+    （编号在数据2）。顺带修正两处契约：
+    `/fi/focus` 接受 WVP 的 `near`/`far`/`stop`（此前只认 on/off/open/close，
+    WVP 前端发 `near` 会被拒），`/fi/iris` 接受 `in`/`out`/`stop`；
+    兼容端点 `/api/ptz/front_end_command` 的 `combindCode2` 按 WVP 口径
+    左移 4 位写入字节7（此前直接当字节7 写，少移了 4 位）。
+    实测（SIP 模拟器日志）：`A50F01421E000015`(聚焦近) `A50F014800140011`(光圈开)
+    `A50F01820005003C`(调用预置位5) `A50F01840105003F`(巡航加点) `A50F018902000040`(扫描开始)
+    `A50F018C03000044`(辅助开) `A50F018D01000043`(雨刷关)。
 13. **`on_rtp_playlist` / `on_record_progress` / `on_send_rtp_progress`**
    的载荷结构未与真实样本核对（官方文档未给出示例）。
 14. **多节点下 `general.mediaServerId`** 现在会在 autoConfig 时下发为节点主键；
@@ -2171,6 +2226,7 @@ vue-tsc --noEmit                 通过
 - 2026-09-12 第三十七轮：`cargo test` —— **679 通过 / 0 失败**（系统信息/日志导出 7 条；e2e 55）
 - 2026-09-12 第三十八轮：`cargo test` —— **683 通过 / 0 失败**（摄像机 6 条：行级过滤/分页、100 条截断；e2e 59）
 - 2026-09-12 第三十九轮：`cargo test` —— **688 通过 / 0 失败**（回放 3 条 + 对讲时序竞争；**16 模块 130 条契约审计全部修完**）
+- 2026-09-12 第四十轮：`cargo test` —— **690 通过 / 0 失败**（前端控制报文对齐 WVP 的 8 字节 PTZCmd；e2e 61）
 - 2026-09-12 第三十一轮：`cargo test` —— **641 通过 / 0 失败**（JT1078 终端/围栏 13 条）
 - 2026-09-12 第三十轮：`cargo test` —— **637 通过 / 0 失败**（设备页 7 条）
 - 2026-09-12 第二十九轮：`cargo test` —— **634 通过 / 0 失败**（云端录像全链路）

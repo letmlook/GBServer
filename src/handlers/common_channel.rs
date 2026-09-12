@@ -74,18 +74,10 @@ fn build_fi_xml(cmd_type: &str, command: &str, _speed: u8) -> String {
 
 /// 统一把动作名翻成国标元素（`PTZCmd` / `FICmd` / `PresetCmd`）。
 fn front_end_element(command: &str, speed: u8, preset_index: u32) -> String {
-    use crate::sip::gb28181::front_end_control::{
-        build_ptz_cmd, control_element, preset_index_element, PtzAction,
-    };
+    use crate::sip::gb28181::front_end_control::{build_ptz_cmd, control_element, PtzAction};
+    // `control_element` 现在对云台/聚焦光圈/预置位统一返回 `PTZCmd` 的 8 字节指令串
     match control_element(command, speed, preset_index) {
-        Some(("PTZCmd", v)) => format!(r#"<PTZCmd>{}</PTZCmd>"#, v),
-        Some(("FICmd", v)) => format!(r#"<FICmd>{}</FICmd>"#, v),
-        Some((_, v)) => {
-            let (cmd_value, index) = v.split_once('|').unwrap_or((v.as_str(), "0"));
-            let idx = preset_index_element(command, preset_index)
-                .unwrap_or_else(|| format!("<PresetIndex>{}</PresetIndex>", index));
-            format!(r#"<PresetCmd>{}</PresetCmd>{}"#, cmd_value, idx)
-        }
+        Some((_, v)) => format!(r#"<PTZCmd>{}</PTZCmd>"#, v),
         // 未知动作按"停止"下发，避免设备停在不可预期的状态
         None => format!(
             r#"<PTZCmd>{}</PTZCmd>"#,

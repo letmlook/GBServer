@@ -7,7 +7,11 @@ use axum::{
 };
 use serde::Deserialize;
 
-use crate::sip::gb28181::front_end_control::{build_ptz_cmd, FiAction, PresetAction, PtzAction};
+use crate::sip::gb28181::front_end_control::{
+    build_auxiliary_cmd, build_fi_cmd, build_preset_cmd, build_ptz_cmd, build_ptz_cmd_raw,
+    build_scan_cmd, build_tour_cmd, build_wiper_cmd, FiAction, PresetAction, PtzAction, ScanAction,
+    TourAction,
+};
 use crate::AppState;
 
 #[derive(Debug, Deserialize)]
@@ -94,72 +98,93 @@ fn ptz_speed(q: &PtzQuery, action: PtzAction) -> u8 {
     raw.clamp(0, 255) as u8
 }
 
-/// 聚焦/光圈：国标里是**独立的 `<FICmd>` 元素**，不能塞进 `PTZCmd`。
+/// 聚焦/光圈：**与 WVP 一致地走 8 字节 `PTZCmd`**。
 ///
-/// 返回 `(元素名, 元素内容)`，交给 `send_via_sip` 包进 `<Control>`。
-fn fi_element(cmd: &str) -> Option<(&'static str, String)> {
-    FiAction::parse(cmd).map(|fi| ("FICmd", fi.as_cmd_value().to_string()))
-}
+/// 此前这里发的是 2016 风格的独立元素 `<FICmd>IrisOpen</FICmd>`。
+/// 但 WVP-PRO（平替目标）的聚焦/光圈是 `PTZCmd` 二进制指令码
+/// （`SourcePTZServiceForGbImpl::fi`：基址 `1<<6`，聚焦 bit1/bit0、光圈 bit3/bit2），
+/// GB/T 28181-**2022** §A.3.3/A.3.4 也是同样的二进制编码 —— 只发独立元素的实现
+/// 在只认 PTZCmd 的设备上完全无效。
 
-/// 预置位：`<PresetCmd>` + `<PresetIndex>`。
-fn preset_elements(cmd: &str, preset_index: u32) -> Option<String> {
+/// 预置位：同样走 `PTZCmd`（`0x81` 设置 / `0x82` 调用 / `0x83` 删除，
+/// 编号在**数据2**），与 WVP 的 `preset` 分支一致。
+fn preset_body(cmd: &str, preset_index: u32) -> Option<String> {
     let action = PresetAction::parse(cmd)?;
     Some(format!(
-        "<PresetCmd>{}</PresetCmd><PresetIndex>{}</PresetIndex>",
-        action.as_cmd_value(),
-        preset_index
+        "<PTZCmd>{}</PTZCmd>",
+        build_preset_cmd(action, preset_index)
     ))
 }
 
-/// 兼容端点用：调用方已经算好了 4 个字节，这里补 `A5 0F 01` 前缀与**累加校验**。
+/// 兼容端点用：调用方给的是「指令码/数据1/数据2/组合码2」四段，
+/// 这里补 `A5 0F 01` 前缀、把组合码2 移入高 4 位并计算**累加校验**。
+///
+/// 组合码2 的口径与 WVP 的 `/api/ptz/front_end/{...}` 一致：取值 0-15，
+/// 由本函数左移 4 位写入字节7（此前直接当字节7 写，等于少移了 4 位）。
 fn build_raw_front_end_xml(cmd_code: i32, parameter1: i32, parameter2: i32, combind_code2: i32) -> String {
-    let body = [
-        0xA5u8,
-        0x0F,
-        0x01,
+    build_ptz_cmd_raw(
         (cmd_code & 0xff) as u8,
         (parameter1 & 0xff) as u8,
         (parameter2 & 0xff) as u8,
-        (combind_code2 & 0xff) as u8,
-    ];
-    let checksum = body.iter().fold(0u8, |acc, x| acc.wrapping_add(*x));
-    let mut bytes = body.to_vec();
-    bytes.push(checksum);
-    let hex: String = bytes.iter().map(|x| format!("{:02X}", x)).collect();
-    format!(r#"<PTZCmd>{}</PTZCmd>"#, hex)
+        (combind_code2.clamp(0, 15)) as u8,
+    )
+    .pipe_ptz_xml()
+}
+
+/// 把 8 字节指令串包成 `<PTZCmd>…</PTZCmd>`。
+trait PipePtzXml {
+    fn pipe_ptz_xml(self) -> String;
+}
+impl PipePtzXml for String {
+    fn pipe_ptz_xml(self) -> String {
+        format!("<PTZCmd>{}</PTZCmd>", self)
+    }
+}
+
+fn aux_is_on(command: &str) -> bool {
+    command.eq_ignore_ascii_case("on")
 }
 
 fn build_auxiliary_xml(command: &str, switch_id: u32) -> String {
-    let aux_cmd = if command.to_lowercase() == "on" { "Set" } else { "Reset" };
-    format!(r#"<AuxiliaryCmd><cmd>{}</cmd><index>{}</index></AuxiliaryCmd>"#, aux_cmd, switch_id)
+    build_auxiliary_cmd(aux_is_on(command), (switch_id & 0xff) as u8).pipe_ptz_xml()
 }
 
 fn build_wiper_xml(command: &str) -> String {
-    let wiper_cmd = if command.to_lowercase() == "on" { "Open" } else { "Close" };
-    format!(r#"<WiperCmd>{}</WiperCmd>"#, wiper_cmd)
+    build_wiper_cmd(aux_is_on(command)).pipe_ptz_xml()
 }
 
 fn build_scan_xml(cmd: &str, scan_id: u32, speed: u8) -> String {
-    match cmd {
-        "setSpeed" => format!(r#"<ScanSpeed id="{}" speed="{}" />"#, scan_id, speed),
-        "setLeft" => format!(r#"<ScanSet id="{}" type="left" />"#, scan_id),
-        "setRight" => format!(r#"<ScanSet id="{}" type="right" />"#, scan_id),
-        "start" => format!(r#"<ScanCmd id="{}" action="start" />"#, scan_id),
-        "stop" => format!(r#"<ScanCmd id="{}" action="stop" />"#, scan_id),
-        _ => format!(r#"<ScanCmd id="{}" />"#, scan_id),
-    }
+    let action = match cmd {
+        "setSpeed" => ScanAction::SetSpeed,
+        "setLeft" => ScanAction::SetLeft,
+        "setRight" => ScanAction::SetRight,
+        "stop" => ScanAction::Stop,
+        _ => ScanAction::Start,
+    };
+    build_scan_cmd(action, (scan_id & 0xff) as u8, speed).pipe_ptz_xml()
 }
 
 fn build_cruise_xml(cmd: &str, cruise_id: u32, preset_id: u32, speed: u8, time: u32) -> String {
-    match cmd {
-        "addPoint" => format!(r#"<CruiseCmd id="{}" preset="{}" action="add" />"#, cruise_id, preset_id),
-        "deletePoint" => format!(r#"<CruiseCmd id="{}" preset="{}" action="delete" />"#, cruise_id, preset_id),
-        "speed" => format!(r#"<CruiseSpeed id="{}" speed="{}" />"#, cruise_id, speed),
-        "time" => format!(r#"<CruiseTime id="{}" time="{}" />"#, cruise_id, time),
-        "start" => format!(r#"<CruiseCmd id="{}" action="start" />"#, cruise_id),
-        "stop" => format!(r#"<CruiseCmd id="{}" action="stop" />"#, cruise_id),
-        _ => format!(r#"<CruiseCmd id="{}" />"#, cruise_id),
-    }
+    let action = match cmd {
+        "deletePoint" => TourAction::DeletePoint,
+        "speed" => TourAction::SetSpeed,
+        "time" => TourAction::SetTime,
+        "start" => TourAction::Start,
+        "stop" => TourAction::Stop,
+        _ => TourAction::AddPoint,
+    };
+    let value = match action {
+        TourAction::SetSpeed => speed as u16,
+        TourAction::SetTime => time as u16,
+        _ => 0,
+    };
+    build_tour_cmd(
+        action,
+        (cruise_id & 0xff) as u8,
+        (preset_id & 0xff) as u8,
+        value,
+    )
+    .pipe_ptz_xml()
 }
 
 async fn send_via_sip(
@@ -292,25 +317,32 @@ pub async fn iris(
 
     // 国标 2016：聚焦/光圈是 <FICmd> 独立元素，内容为 IrisOpen/IrisClose。
     // 老前端发的 "on"/"off"/"open"/"close" 都归一到同一个元素值。
-    let lower = command.to_ascii_lowercase();
-    let normalized: &str = match lower.as_str() {
-        "on" | "open" | "iris_in" => "IRIS_OPEN",
-        "off" | "close" | "iris_out" => "IRIS_CLOSE",
-        other => other,
-    };
-    let Some((elem, value)) = fi_element(normalized) else {
-        return Json(serde_json::json!({
-            "code": 1,
-            "msg": format!("不支持的光圈命令: {command:?}（可用: on/off/open/close）")
-        }));
+    // WVP 的 `/fi/iris` 取值是 `in` / `out` / `stop`（本平台老前端发 on/off/open/close）
+    let lower = command.trim().to_ascii_lowercase();
+    let speed = q.speed.unwrap_or(50).clamp(0, 255) as u8;
+    let body = match lower.as_str() {
+        "in" | "open" | "on" | "iris_in" => {
+            format!("<PTZCmd>{}</PTZCmd>", build_fi_cmd(FiAction::IrisOpen, speed))
+        }
+        "out" | "close" | "off" | "iris_out" => {
+            format!("<PTZCmd>{}</PTZCmd>", build_fi_cmd(FiAction::IrisClose, speed))
+        }
+        // 停止：WVP 的 stop 分支两个方向都不置位，于是指令码停在基址 0x40、速度为 0
+        "stop" => format!("<PTZCmd>{}</PTZCmd>", build_ptz_cmd_raw(0x40, 0, 0, 0)),
+        _ => {
+            return Json(serde_json::json!({
+                "code": 1,
+                "msg": format!("不支持的光圈命令: {command:?}（可用: in/out/stop）")
+            }))
+        }
     };
 
     tracing::info!(
-        "Iris control: device={}, channel={}, cmd={}, element={}",
-        device_id, channel_id, command, elem
+        "Iris control: device={}, channel={}, cmd={}",
+        device_id,
+        channel_id,
+        command
     );
-
-    let body = format!("<{elem}>{value}</{elem}>");
     match send_via_sip(&state, &device_id, &channel_id, "DeviceControl", &body).await {
         Ok(()) => Json(success_json("光圈控制命令已发送")),
         Err(e) => Json(serde_json::json!({ "code": 1, "msg": e })),
@@ -325,25 +357,32 @@ pub async fn focus(
 ) -> Json<serde_json::Value> {
     let command = q.command.clone().unwrap_or_default();
 
-    let lower = command.to_ascii_lowercase();
-    let normalized: &str = match lower.as_str() {
-        "on" | "open" | "focus_in" => "FOCUS_IN",
-        "off" | "close" | "focus_out" => "FOCUS_OUT",
-        other => other,
-    };
-    let Some((elem, value)) = fi_element(normalized) else {
-        return Json(serde_json::json!({
-            "code": 1,
-            "msg": format!("不支持的聚焦命令: {command:?}（可用: on/off/open/close）")
-        }));
+    // WVP 的 `/fi/focus` 取值是 `near` / `far` / `stop`
+    // （此前只认 on/off/open/close/focus_in/focus_out，WVP 前端发 near/far 会被拒）
+    let lower = command.trim().to_ascii_lowercase();
+    let speed = q.speed.unwrap_or(50).clamp(0, 255) as u8;
+    let body = match lower.as_str() {
+        "near" | "focus_in" | "on" | "open" => {
+            format!("<PTZCmd>{}</PTZCmd>", build_fi_cmd(FiAction::FocusNear, speed))
+        }
+        "far" | "focus_out" | "off" | "close" => {
+            format!("<PTZCmd>{}</PTZCmd>", build_fi_cmd(FiAction::FocusFar, speed))
+        }
+        "stop" => format!("<PTZCmd>{}</PTZCmd>", build_ptz_cmd_raw(0x40, 0, 0, 0)),
+        _ => {
+            return Json(serde_json::json!({
+                "code": 1,
+                "msg": format!("不支持的聚焦命令: {command:?}（可用: near/far/stop）")
+            }))
+        }
     };
 
     tracing::info!(
-        "Focus control: device={}, channel={}, cmd={}, element={}",
-        device_id, channel_device_id, command, elem
+        "Focus control: device={}, channel={}, cmd={}",
+        device_id,
+        channel_device_id,
+        command
     );
-
-    let body = format!("<{elem}>{value}</{elem}>");
     match send_via_sip(&state, &device_id, &channel_device_id, "DeviceControl", &body).await {
         Ok(()) => Json(success_json("焦距控制命令已发送")),
         Err(e) => Json(serde_json::json!({ "code": 1, "msg": e })),
@@ -384,7 +423,7 @@ pub async fn preset_add(
         device_id, channel_device_id, preset_id
     );
 
-    let Some(body) = preset_elements("SET_PRESET", preset_id as u32) else {
+    let Some(body) = preset_body("SET_PRESET", preset_id as u32) else {
         return Json(serde_json::json!({ "code": 1, "msg": "预置位命令构造失败" }));
     };
     match send_via_sip(&state, &device_id, &channel_device_id, "DeviceControl", &body).await {
@@ -405,7 +444,7 @@ pub async fn preset_call(
         device_id, channel_device_id, preset_id
     );
 
-    let Some(body) = preset_elements("GOTO_PRESET", preset_id as u32) else {
+    let Some(body) = preset_body("GOTO_PRESET", preset_id as u32) else {
         return Json(serde_json::json!({ "code": 1, "msg": "预置位命令构造失败" }));
     };
     match send_via_sip(&state, &device_id, &channel_device_id, "DeviceControl", &body).await {
@@ -426,7 +465,7 @@ pub async fn preset_delete(
         device_id, channel_device_id, preset_id
     );
 
-    let Some(body) = preset_elements("CLEAR_PRESET", preset_id as u32) else {
+    let Some(body) = preset_body("CLEAR_PRESET", preset_id as u32) else {
         return Json(serde_json::json!({ "code": 1, "msg": "预置位命令构造失败" }));
     };
     match send_via_sip(&state, &device_id, &channel_device_id, "DeviceControl", &body).await {
@@ -712,42 +751,159 @@ mod front_end_wire_tests {
         assert_eq!(bytes[7], sum, "末字节必须是前 7 字节累加和");
     }
 
-    /// 聚焦/光圈必须用 `<FICmd>`（国标独立元素），不能塞进 `PTZCmd`。
-    #[test]
-    fn test_fi_uses_separate_element() {
-        assert_eq!(fi_element("IRIS_OPEN"), Some(("FICmd", "IrisOpen".to_string())));
-        assert_eq!(fi_element("FOCUS_OUT"), Some(("FICmd", "FocusFar".to_string())));
-        assert_eq!(fi_element("bogus"), None);
-    }
-
-    /// 预置位用 `<PresetCmd>` + `<PresetIndex>`，且动作名是国标枚举值。
-    #[test]
-    fn test_preset_elements() {
-        assert_eq!(
-            preset_elements("SET_PRESET", 5).unwrap(),
-            "<PresetCmd>SetPreset</PresetCmd><PresetIndex>5</PresetIndex>"
-        );
-        assert_eq!(
-            preset_elements("GOTO_PRESET", 7).unwrap(),
-            "<PresetCmd>CallPreset</PresetCmd><PresetIndex>7</PresetIndex>"
-        );
-        assert_eq!(
-            preset_elements("CLEAR_PRESET", 3).unwrap(),
-            "<PresetCmd>DelPreset</PresetCmd><PresetIndex>3</PresetIndex>"
-        );
-    }
-
-    /// 兼容端点：调用方给的 4 个字节要补 A5 0F 01 前缀并**计算校验和**。
-    #[test]
-    fn test_raw_front_end_command_has_checksum() {
-        let xml = build_raw_front_end_xml(0x08, 0x00, 0x1F, 0x00);
-        let hex = xml.trim_start_matches("<PTZCmd>").trim_end_matches("</PTZCmd>");
+    /// 校验一个 `<PTZCmd>…</PTZCmd>` 体：8 字节、A5 开头、末字节为累加和。
+    fn assert_valid_ptzcmd(body: &str) -> Vec<u8> {
+        let hex = body
+            .trim_start_matches("<PTZCmd>")
+            .trim_end_matches("</PTZCmd>");
+        assert_eq!(hex.len(), 16, "必须是 8 字节: {body}");
+        assert!(hex.starts_with("A50F01"), "{body}");
         let bytes: Vec<u8> = (0..8)
             .map(|i| u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).unwrap())
             .collect();
+        assert_eq!(
+            bytes[7],
+            bytes[..7].iter().fold(0u8, |a, b| a.wrapping_add(*b)),
+            "校验和不对: {body}"
+        );
+        bytes
+    }
+
+    /// 聚焦/光圈与 WVP 一致地走 **8 字节 PTZCmd**（不是 2016 的 `<FICmd>` 元素）：
+    /// 聚焦近 0x42 / 远 0x41（速度在数据1），光圈开 0x48 / 关 0x44（速度在数据2）。
+    #[test]
+    fn test_fi_uses_ptzcmd_binary() {
+        let near = assert_valid_ptzcmd(&build_fi_cmd(FiAction::FocusNear, 0x1F).pipe_ptz_xml());
+        assert_eq!(&near[..6], &[0xA5, 0x0F, 0x01, 0x42, 0x1F, 0x00]);
+        let far = assert_valid_ptzcmd(&build_fi_cmd(FiAction::FocusFar, 0x1F).pipe_ptz_xml());
+        assert_eq!(&far[..6], &[0xA5, 0x0F, 0x01, 0x41, 0x1F, 0x00]);
+        let open = assert_valid_ptzcmd(&build_fi_cmd(FiAction::IrisOpen, 0x20).pipe_ptz_xml());
+        assert_eq!(&open[..6], &[0xA5, 0x0F, 0x01, 0x48, 0x00, 0x20]);
+        let close = assert_valid_ptzcmd(&build_fi_cmd(FiAction::IrisClose, 0x20).pipe_ptz_xml());
+        assert_eq!(&close[..6], &[0xA5, 0x0F, 0x01, 0x44, 0x00, 0x20]);
+    }
+
+    /// 预置位同样走 PTZCmd：0x81 设置 / 0x82 调用 / 0x83 删除，编号在数据2。
+    #[test]
+    fn test_preset_uses_ptzcmd_binary() {
+        let set = assert_valid_ptzcmd(&preset_body("SET_PRESET", 5).unwrap());
+        assert_eq!(&set[..6], &[0xA5, 0x0F, 0x01, 0x81, 0x00, 0x05]);
+        let call = assert_valid_ptzcmd(&preset_body("GOTO_PRESET", 7).unwrap());
+        assert_eq!(&call[..6], &[0xA5, 0x0F, 0x01, 0x82, 0x00, 0x07]);
+        let del = assert_valid_ptzcmd(&preset_body("CLEAR_PRESET", 3).unwrap());
+        assert_eq!(&del[..6], &[0xA5, 0x0F, 0x01, 0x83, 0x00, 0x03]);
+        assert!(preset_body("bogus", 1).is_none());
+    }
+
+    /// 聚焦/光圈的**命令取值**必须与 WVP 一致（`near`/`far`/`stop`、`in`/`out`/`stop`）
+    /// —— 此前只认 on/off/open/close 之类，WVP 前端发 `near` 会被直接拒掉。
+    ///
+    /// 这里逐个取值跑一遍归一化逻辑（与 handler 中的 match 分支保持一致）。
+    #[test]
+    fn test_fi_command_values_accepted() {
+        fn focus_body(cmd: &str, speed: u8) -> Option<String> {
+            match cmd.trim().to_ascii_lowercase().as_str() {
+                "near" | "focus_in" | "on" | "open" => {
+                    Some(build_fi_cmd(FiAction::FocusNear, speed).pipe_ptz_xml())
+                }
+                "far" | "focus_out" | "off" | "close" => {
+                    Some(build_fi_cmd(FiAction::FocusFar, speed).pipe_ptz_xml())
+                }
+                "stop" => Some(build_ptz_cmd_raw(0x40, 0, 0, 0).pipe_ptz_xml()),
+                _ => None,
+            }
+        }
+        fn iris_body(cmd: &str, speed: u8) -> Option<String> {
+            match cmd.trim().to_ascii_lowercase().as_str() {
+                "in" | "open" | "on" | "iris_in" => {
+                    Some(build_fi_cmd(FiAction::IrisOpen, speed).pipe_ptz_xml())
+                }
+                "out" | "close" | "off" | "iris_out" => {
+                    Some(build_fi_cmd(FiAction::IrisClose, speed).pipe_ptz_xml())
+                }
+                "stop" => Some(build_ptz_cmd_raw(0x40, 0, 0, 0).pipe_ptz_xml()),
+                _ => None,
+            }
+        }
+
+        // WVP 的取值
+        let near = assert_valid_ptzcmd(&focus_body("near", 30).unwrap());
+        assert_eq!(near[3], 0x42);
+        let far = assert_valid_ptzcmd(&focus_body("far", 30).unwrap());
+        assert_eq!(far[3], 0x41);
+        let inb = assert_valid_ptzcmd(&iris_body("in", 30).unwrap());
+        assert_eq!(inb[3], 0x48);
+        let out = assert_valid_ptzcmd(&iris_body("out", 30).unwrap());
+        assert_eq!(out[3], 0x44);
+        // stop → 基址 0x40、速度 0
+        let fstop = assert_valid_ptzcmd(&focus_body("stop", 30).unwrap());
+        assert_eq!(&fstop[..6], &[0xA5, 0x0F, 0x01, 0x40, 0x00, 0x00]);
+        let istop = assert_valid_ptzcmd(&iris_body("stop", 30).unwrap());
+        assert_eq!(&istop[..6], &[0xA5, 0x0F, 0x01, 0x40, 0x00, 0x00]);
+        // 旧前端的取值继续可用
+        assert_eq!(assert_valid_ptzcmd(&focus_body("focus_in", 1).unwrap())[3], 0x42);
+        assert_eq!(assert_valid_ptzcmd(&iris_body("close", 1).unwrap())[3], 0x44);
+        // 拼错要报错，而不是静默下发错误指令
+        assert!(focus_body("nope", 1).is_none());
+        assert!(iris_body("nope", 1).is_none());
+    }
+
+    /// 巡航/扫描/辅助/雨刷：WVP 的指令码表（都是 8 字节 PTZCmd）。
+    #[test]
+    fn test_cruise_scan_aux_ptzcmd_codes() {
+        let add = assert_valid_ptzcmd(&build_cruise_xml("addPoint", 1, 5, 0, 0));
+        assert_eq!(&add[..6], &[0xA5, 0x0F, 0x01, 0x84, 0x01, 0x05]);
+        let del = assert_valid_ptzcmd(&build_cruise_xml("deletePoint", 1, 5, 0, 0));
+        assert_eq!(&del[..6], &[0xA5, 0x0F, 0x01, 0x85, 0x01, 0x05]);
+        let spd = assert_valid_ptzcmd(&build_cruise_xml("speed", 1, 5, 3, 0));
+        assert_eq!(&spd[..6], &[0xA5, 0x0F, 0x01, 0x86, 0x01, 0x05]);
+        assert_eq!(spd[6] >> 4, 3, "巡航速度写组合码2 高 4 位");
+        let time = assert_valid_ptzcmd(&build_cruise_xml("time", 1, 5, 0, 7));
+        assert_eq!(&time[..6], &[0xA5, 0x0F, 0x01, 0x87, 0x01, 0x05]);
+        assert_eq!(time[6] >> 4, 7);
+        let start = assert_valid_ptzcmd(&build_cruise_xml("start", 1, 0, 0, 0));
+        assert_eq!(&start[..6], &[0xA5, 0x0F, 0x01, 0x88, 0x01, 0x00]);
+        // 停止：国标/WVP 都没有单独指令码 → 0x00（停止所有动作）
+        let stop = assert_valid_ptzcmd(&build_cruise_xml("stop", 1, 0, 0, 0));
+        assert_eq!(&stop[..6], &[0xA5, 0x0F, 0x01, 0x00, 0x00, 0x00]);
+
+        let s_start = assert_valid_ptzcmd(&build_scan_xml("start", 2, 0));
+        assert_eq!(&s_start[..6], &[0xA5, 0x0F, 0x01, 0x89, 0x02, 0x00]);
+        let s_left = assert_valid_ptzcmd(&build_scan_xml("setLeft", 2, 0));
+        assert_eq!(&s_left[..6], &[0xA5, 0x0F, 0x01, 0x89, 0x02, 0x01]);
+        let s_right = assert_valid_ptzcmd(&build_scan_xml("setRight", 2, 0));
+        assert_eq!(&s_right[..6], &[0xA5, 0x0F, 0x01, 0x89, 0x02, 0x02]);
+        let s_speed = assert_valid_ptzcmd(&build_scan_xml("setSpeed", 2, 9));
+        assert_eq!(&s_speed[..6], &[0xA5, 0x0F, 0x01, 0x8A, 0x02, 0x09]);
+
+        let a_on = assert_valid_ptzcmd(&build_auxiliary_xml("on", 3));
+        assert_eq!(&a_on[..6], &[0xA5, 0x0F, 0x01, 0x8C, 0x03, 0x00]);
+        let a_off = assert_valid_ptzcmd(&build_auxiliary_xml("off", 3));
+        assert_eq!(&a_off[..6], &[0xA5, 0x0F, 0x01, 0x8D, 0x03, 0x00]);
+        // 雨刷 = 辅助开关编号固定 1
+        let w_on = assert_valid_ptzcmd(&build_wiper_xml("on"));
+        assert_eq!(&w_on[..6], &[0xA5, 0x0F, 0x01, 0x8C, 0x01, 0x00]);
+        let w_off = assert_valid_ptzcmd(&build_wiper_xml("off"));
+        assert_eq!(&w_off[..6], &[0xA5, 0x0F, 0x01, 0x8D, 0x01, 0x00]);
+    }
+
+    /// 兼容端点：调用方给的 4 段要补 `A5 0F 01` 前缀、把**组合码2 左移 4 位**
+    /// 写入字节7（WVP 口径：combindCode2 取值 0-15），并计算累加校验和。
+    #[test]
+    fn test_raw_front_end_command_has_checksum() {
+        let xml = build_raw_front_end_xml(0x08, 0x00, 0x1F, 0x00);
+        let bytes = assert_valid_ptzcmd(&xml);
         assert_eq!(&bytes[..4], &[0xA5, 0x0F, 0x01, 0x08]);
         assert_eq!(&bytes[4..7], &[0x00, 0x1F, 0x00]);
-        assert_eq!(bytes[7], bytes[..7].iter().fold(0u8, |a, b| a.wrapping_add(*b)));
+
+        // 组合码2 = 1 → 字节7 = 0x10（此前直接写 0x01，少移了 4 位）
+        let zoom = build_raw_front_end_xml(0x10, 0x00, 0x00, 0x01);
+        let bytes = assert_valid_ptzcmd(&zoom);
+        assert_eq!(bytes[6], 0x10);
+        // 超范围（>15）被夹取，不会污染地址高 4 位
+        let clamped = build_raw_front_end_xml(0x10, 0x00, 0x00, 99);
+        let bytes = assert_valid_ptzcmd(&clamped);
+        assert_eq!(bytes[6], 0xF0);
     }
 }
 
