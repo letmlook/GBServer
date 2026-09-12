@@ -2642,7 +2642,7 @@ let renewal_pool = pool.clone();
                         enable_rtmp: Some(false),
                         enable_fmp4: Some(false),
                         enable_ts: Some(false),
-                        enableAAC: Some(true),
+                        enable_audio: Some(true),
                     };
 
                     match zlm.add_stream_proxy(&add_proxy_req).await {

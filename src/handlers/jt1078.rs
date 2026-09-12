@@ -62,8 +62,13 @@ pub struct TerminalListQuery {
 
 #[derive(Debug, Deserialize)]
 pub struct TerminalQuery {
-    /// 终端手机号；`deviceId`/`phoneNumber` 都是历史别名
-    #[serde(alias = "deviceId", alias = "phoneNumber")]
+    /// 终端标识（历史字段）；WVP 侧叫 `deviceId`。
+    ///
+    /// 这里**不能**再给 `phoneNumber` 做别名：`phone_number` 已经占了它，
+    /// serde 的重复别名会让后声明的那个变成不可达分支 —— 结果是
+    /// `?phoneNumber=` 落进 `device_id`，而 `phone_number` 恒为 None，
+    /// `/api/jt1078/terminal/query` 直接返回 null（静默查不到）。
+    #[serde(alias = "deviceId")]
     pub device_id: Option<String>,
     #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,

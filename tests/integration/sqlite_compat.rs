@@ -373,11 +373,21 @@ async fn test_list_all_streams_unified_format() {
         .expect("update push stream_status");
 
     // Insert one gb_stream_proxy row (pulling=false, stream_status='active')
-    stream_proxy::add(&pool, "live", "proxy-test", "rtsp://foo", "ms-1", "ProxyTest", now)
+    let w = stream_proxy::StreamProxyWrite {
+        app: Some("live"),
+        stream: Some("proxy-test"),
+        src_url: Some("rtsp://foo"),
+        media_server_id: Some("ms-1"),
+        name: Some("ProxyTest"),
+        r#type: Some("default"),
+        enable: Some(true),
+        ..Default::default()
+    };
+    stream_proxy::add(&pool, &w, now)
         .await
         .expect("stream_proxy add");
     // Update stream_status to 'active'
-    let proxies = stream_proxy::list_paged(&pool, 1, 10, None, None)
+    let proxies = stream_proxy::list_paged(&pool, 1, 10, None, None, None)
         .await
         .expect("list_paged proxy");
     assert!(!proxies.is_empty(), "should have at least one proxy row");
@@ -392,7 +402,7 @@ async fn test_list_all_streams_unified_format() {
     let pushes = stream_push::list_paged(&pool, 1, 10, None, None, None)
         .await
         .expect("list_paged push re-fetch");
-    let proxies = stream_proxy::list_paged(&pool, 1, 10, None, None)
+    let proxies = stream_proxy::list_paged(&pool, 1, 10, None, None, None)
         .await
         .expect("list_paged proxy re-fetch");
 

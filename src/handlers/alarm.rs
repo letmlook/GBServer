@@ -110,6 +110,7 @@ pub async fn alarm_list(
             BindValue::Text(v) => query.bind(v.as_str()),
             BindValue::Int(v) => query.bind(*v),
             BindValue::Big(v) => query.bind(*v),
+            BindValue::Bool(v) => query.bind(*v),
         };
     }
     let rows: Vec<AlarmRow> = query
@@ -126,6 +127,7 @@ pub async fn alarm_list(
             BindValue::Text(v) => query.bind(v.as_str()),
             BindValue::Int(v) => query.bind(*v),
             BindValue::Big(v) => query.bind(*v),
+            BindValue::Bool(v) => query.bind(*v),
         };
     }
     let total: i64 = query
@@ -386,6 +388,7 @@ pub async fn alarm_clear(
             BindValue::Text(v) => v.clone(),
             BindValue::Int(v) => v.to_string(),
             BindValue::Big(v) => v.to_string(),
+            BindValue::Bool(v) => v.to_string(),
         })
         .collect();
     let where_sql = if w.conds.is_empty() {

@@ -9,10 +9,10 @@
 
 | 维度 | 数值 | 验证方式 |
 |------|------|----------|
-| 总代码量（src/） | 76,612 行 Rust | `find src -name '*.rs' \| xargs wc -l` |
-| 已注册 HTTP 路由 | 383 条唯一 `/api/...` 路径 | `grep -oE '"/api/[^"]*"' src/router.rs \| sort -u \| wc -l` |
+| 总代码量（src/） | 77,367 行 Rust | `find src -name '*.rs' \| xargs wc -l` |
+| 已注册 HTTP 路由 | 385 条唯一 `/api/...` 路径 | `grep -oE '"/api/[^"]*"' src/router.rs \| sort -u \| wc -l` |
 | Handler 模块 | 29 个（含 `stub.rs` / `device_stub.rs` 两个兼容 shim） | `grep -c 'pub mod' src/handlers/mod.rs` |
-| 后端测试 | **644 通过** / 0 失败（第三十二轮刷新） | `cargo test` |
+| 后端测试 | **658 通过** / 0 失败（第三十三轮刷新） | `cargo test` |
 | 编译状态 | `cargo check` 0 error / **0 warning**；clippy 262；**deprecated 0** | `cargo check` / `cargo clippy --all-targets` |
 | 数据库 feature | SQLite（默认）/ PostgreSQL / MySQL **三者均编译通过** | CI `feature-matrix` job |
 | CI | ⏸️ 工作流已就绪但**按需暂停自动触发**（见 `.github/workflows/ci.yml`） | — |
@@ -1444,10 +1444,76 @@ cargo check --features mysql/postgres  OK
 npx playwright test              36 passed / 0 failed / 0 skipped（真实 ZLM）
 ```
 
-### 前端↔后端契约审计：已完成 4 个模块，剩余 12 个模块（2026-09-12 第二十七轮）
+### 拉流代理：字段名全线错位，功能整块不可用（2026-09-12 第三十三轮）
+
+`streamProxy` 模块 10 条修完。这一页此前**从"新增"到"状态显示"没有一步是对的**：
+
+| # | 缺陷 | 修复 / 证据 |
+|---|------|------|
+| 1 | 弹窗提交 `{url, enabled, destUrl}`，后端 DTO 只有 `src_url`/`srcUrl` | 新增必失败（`Stream and src_url are required`）。后端 DTO 加 `url` 别名，前端改用 WVP 的 `srcUrl` |
+| 2 | 编辑保存时 `src_url` 为 NULL → `COALESCE` 保留旧值 | 「源 URL 静默改不动」。同 1 |
+| 3 | `enable` 未落库；`add` 还写死 `enable = false` | 「启用」开关保存无效。DTO 收 `enable`（别名 `enabled`），`add` 写真实值 |
+| 4 | `type`/`timeout`/`ffmpegCmdKey`/`rtspType`/`enableAudio`/`enableMp4`/`noneReader` 全部无处安放；`destUrl` 是前端虚构字段 | 后端换 `StreamProxyWrite`（14 列，新增/更新共用），`update` 的 SQL 从 5 列补到 14 列；前端删掉"目标 URL"，按 WVP 补齐真实字段 |
+| 5 | 列表读 `row.url`，后端返回 `src_url` | 「源 URL」整列空白。`StreamProxy` 加 `rename_all = "camelCase"` |
+| 6 | 列表读 `row.enabled`，后端返回 `enable` | 启用列恒关 |
+| 7 | 列表读 `row.status === 1`，后端只有布尔 `pulling` | 状态恒"停止"、**「停止」按钮恒禁用**。前端改读 `pulling`；`start`/`stop` 真实维护 `pulling` + `stream_status`（active/ready/failed） |
+| 8 | `/save` 复用只认 `srcUrl` 的 DTO，一旦被调用必失败 | `proxy_save` 改 upsert（存在则更新） |
+| 9 | `/one` 不查库，凭空拼 `proxy-{id}` 与假 URL | 支持 `?id=` 与 WVP 的 `?app=&stream=`，返回真实行，无则 404 |
+| 10 | `query` 被 DTO 收下却从未使用 | `DynWhere` 统一 WHERE（app/stream/name/srcUrl/type 模糊匹配），行查询与计数共用；前端补搜索框 |
+
+**连带发现并修掉的缺陷**：
+
+* `ZlmClient::add_stream_proxy` 发的是 `enable_aac`，而 ZLM 只认 **`enable_audio`**
+  （对未知参数**静默忽略**）→ 勾了"开启音频"从未生效。已核对镜像内
+  `/opt/media/bin/www/swagger/openapi.json` 与二进制字符串。
+* `gb_stream_push` 的 `query` 同样被忽略；且 postgres 下 `pushing = ?` 绑 `Int`
+  会 `operator does not exist: boolean = integer` → 整个推流列表 500。
+  为此给 `dyn_where::BindValue` 增加 `Bool` 变体，`pulling`/`pushing` 一并改用。
+* `GET /api/proxy/ffmpeg_cmd/list` 返回 4 条硬编码中文说明（"默认转码模板"…），
+  并不是 ZLM 的模板键 —— 用户选中的 key 在 ZLM 上不存在。改为真实读节点
+  `getServerConfig` 的 `ffmpeg.cmd*`，并补 `DELETE /api/proxy/del?app=&stream=`（WVP 签名）。
+* `ProxyListPage` 补 `pageNum`/`pageSize`/`pages`（PageHelper `PageInfo` 兼容）。
+* `TerminalQuery` 里 `phoneNumber` 被 `device_id` 与 `phone_number` 同时声明为别名，
+  serde 生成的重复分支让后者**不可达** → `/api/jt1078/terminal/query?phoneNumber=`
+  恒返回 null。改为各自只认一个键，并消除该编译警告。
+
+**实测**（真实后端 + 真实 ZLM，源流由 ffmpeg 推到 `live/src`）：
+
+```
+GET  /api/proxy/ffmpeg_cmd/list?mediaServerId=zlmediakit-1
+     → {"ffmpeg.cmd":"%s -re -i %s -c:a aac …"}   （真实 ZLM 配置）
+POST /api/proxy/add {url:"rtsp://127.0.0.1:554/live/src", enabled:true}
+     → 成功，返回 camelCase：srcUrl/enable/type/streamStatus=ready
+POST /api/proxy/add（同 app+stream）      → APP+STREAM 已存在
+POST /api/proxy/add（缺 srcUrl）          → 源 URL(srcUrl) 不能为空
+GET  /api/proxy/start?id=1
+     → streamKey=__defaultVhost__/proxy/legacy1
+     → ZLM getMediaList: proxy/legacy1 (rtsp/rtmp/fmp4), originUrl=rtsp://127.0.0.1:554/live/src
+     → 列表 pulling=true / streamStatus=active
+GET  /api/proxy/stop?id=1                 → pulling=false，ZLM 侧流数 0
+POST /api/proxy/add {type:"ffmpeg", ffmpegCmdKey:"ffmpeg.cmd", stream:"fe1"} + start
+     → ZLM originTypeStr = ffmpeg_pull（走 addFfmpegSource 分支）
+GET  /api/proxy/list?query=…/pulling=true/false → 过滤真实生效
+GET  /api/proxy/one?id=1 与 ?app=proxy&stream=legacy1 → 同一真实行
+DELETE /api/proxy/del?app=&stream= 与 /api/proxy/delete?id= → 各删 1 行
+Playwright                                → 新增 streamProxy.spec.ts 4 个；整套 40 passed
+```
+
+#### 第三十三轮基线
+
+```
+cargo test                       658 passed / 0 failed
+cargo check --all-targets        本项目 0 warning
+cargo check --features mysql/postgres  OK
+npx playwright test              40 passed / 0 failed / 0 skipped（真实 ZLM）
+```
+
+### 前端↔后端契约审计：已完成 10 个模块，剩余 7 个模块 / 44 条（2026-09-12 第三十三轮刷新）
 
 第二十六轮用"一个模块一个 agent"的方式把 16 个前端 API 模块逐个对后端路由/DTO
-做了一遍审计（证据文件在 `docs/audit/*.md`，共 **130 条**），并按影响排序逐批修复：
+做了一遍审计（证据文件在 `docs/audit/*.md`，共 **130 条**），并按影响排序逐批修复。
+当前已修 10 个模块（86 条），剩 `log`(7) / `mediaServer`(7) / `platform`(11) /
+`playback`(3) / `region`(9) / `syCamera`(6) / `talk`(1) 共 **44 条**：
 
 | 模块 | 条数 | 状态 |
 |------|------|------|
@@ -1464,7 +1530,7 @@ npx playwright test              36 passed / 0 failed / 0 skipped（真实 ZLM�
 | platform | 11 | ❌ 未修 |
 | playback | 3 | ❌ 未修 |
 | region | 9 | ❌ 未修 |
-| streamProxy | 10 | ❌ 未修 |
+| streamProxy | 10 | ✅ 已修（第三十三轮） |
 | streamPush | 12 | ✅ 已修（第三十二轮） |
 | syCamera | 6 | ❌ 未修 |
 | talk | 1 | ❌ 未修 |
@@ -1484,9 +1550,9 @@ npx playwright test              36 passed / 0 failed / 0 skipped（真实 ZLM�
    `channelName/phoneNumber/status`；区域/路线四个接口的请求字段名
    （前端 `phoneNumber/radiusM/pointsJson/waypointsJson` vs 后端 `phone/radius/points/waypoints`）
    → **新增围栏/路线必然失败**；区域查询响应是 snake_case（表格多列空白）。
-4. `streamPush` / `streamProxy`：删除/批量删除方法或体型不符（405/415）；
-   新增必填的 `url`/`gbId` 后端 DTO 里不存在 → 保存后无源地址；列表读
-   `mediaServerId`/`url`/`status` 而后端返回 `media_server_id`/无 url/bool。
+4. ~~`streamPush` / `streamProxy`~~：✅ 已分别于第三十二/三十三轮修复
+   （删除/批量删除方法或体型不符 405/415、`url`/`gbId` 后端 DTO 不存在、
+   列表字段名错位；拉流代理还补齐了真实 `start`/`stop` 与 `query` 过滤）。
 5. `platform`：列表/详情键 `serverGBId` 被前端写成 `serverGbId` → 列表国标ID空白、
    「注销」按钮被守卫静默拦掉；新增平台的 `expires` 前端发数字、后端要字符串
    → **422，平台加不上**；`realm` 对应后端 `serverGBDomain`；心跳三参数无落点。
@@ -1833,6 +1899,7 @@ vue-tsc --noEmit                 通过
 ## 测试基线（每次推进后回填）
 
 - 2026-09-12 第三十二轮：`cargo test` —— **644 通过 / 0 失败**（推流 12 条）
+- 2026-09-12 第三十三轮：`cargo test` —— **658 通过 / 0 失败**（拉流代理 10 条 + `enable_audio`/`TerminalQuery` 连带修复；e2e 40）
 - 2026-09-12 第三十一轮：`cargo test` —— **641 通过 / 0 失败**（JT1078 终端/围栏 13 条）
 - 2026-09-12 第三十轮：`cargo test` —— **637 通过 / 0 失败**（设备页 7 条）
 - 2026-09-12 第二十九轮：`cargo test` —— **634 通过 / 0 失败**（云端录像全链路）

@@ -25,6 +25,12 @@ pub(crate) enum BindValue {
     Int(i32),
     /// 64 位整数（时间戳毫秒等，i32 会溢出截断）
     Big(i64),
+    /// 布尔列（`pulling` / `pushing` / `enable` …）。
+    ///
+    /// 必须单独一个变体：postgres 里这些列是 `bool`，用 `Int(1)` 绑定会得到
+    /// `operator does not exist: boolean = integer`，整个查询 500 ——
+    /// 而 sqlite 上（`INTEGER` 列）却完全正常，所以这个洞只在 postgres 构建里炸。
+    Bool(bool),
 }
 
 impl DynWhere {

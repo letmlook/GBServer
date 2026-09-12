@@ -955,8 +955,8 @@ pub async fn resource_info(State(state): State<AppState>) -> Json<WVPResult<serd
     let push_online = db::stream_push::count_all(&state.pool, None, Some(true), None)
         .await
         .unwrap_or(0);
-    let proxy_total = db::stream_proxy::count_all(&state.pool, None, None).await.unwrap_or(0);
-    let proxy_online = db::stream_proxy::count_all(&state.pool, None, Some(true)).await.unwrap_or(0);
+    let proxy_total = db::stream_proxy::count_all(&state.pool, None, None, None).await.unwrap_or(0);
+    let proxy_online = db::stream_proxy::count_all(&state.pool, None, Some(true), None).await.unwrap_or(0);
 
     let data = serde_json::json!({
         "device":  {"total": total_devices,  "online": online_devices},
@@ -1358,7 +1358,7 @@ pub async fn media_server_load(State(state): State<AppState>) -> Json<WVPResult<
         let push = db::stream_push::count_all(&state.pool, Some(&server_id), Some(true), None)
             .await
             .unwrap_or(0);
-        let proxy = db::stream_proxy::count_all(&state.pool, Some(&server_id), Some(true))
+        let proxy = db::stream_proxy::count_all(&state.pool, Some(&server_id), Some(true), None)
             .await
             .unwrap_or(0);
 
@@ -1422,7 +1422,7 @@ pub async fn list_all_streams(
     }
 
     // 2) 代理拉流表
-    match stream_proxy::list_paged(&state.pool, 1, 200, None, None).await {
+    match stream_proxy::list_paged(&state.pool, 1, 200, None, None, None).await {
         Ok(proxies) => {
             for s in proxies {
                 unified.push(stream_state_to_json("proxy", &s));

@@ -139,7 +139,7 @@ async fn smoke_user_and_stream_reads() {
     db::stream_proxy::get_by_app_stream(&pool, "proxy", "s1")
         .await
         .expect("stream_proxy::get_by_app_stream");
-    let proxies = db::stream_proxy::list_paged(&pool, 1, 10, None, None)
+    let proxies = db::stream_proxy::list_paged(&pool, 1, 10, None, None, None)
         .await
         .expect("stream_proxy::list_paged");
     assert!(!proxies.is_empty());

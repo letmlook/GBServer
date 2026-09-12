@@ -45,7 +45,7 @@ pub use user_api_key::*;
 #[allow(ambiguous_glob_reexports)]
 pub use record_plan::*;
 pub use stream_push::StreamPush;
-pub use stream_proxy::StreamProxy;
+pub use stream_proxy::{StreamProxy, StreamProxyWrite};
 pub use platform::Platform;
 pub use jt1078::{JtTerminal, JtChannel};
 pub use position_history::PositionHistory;

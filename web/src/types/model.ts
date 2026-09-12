@@ -148,16 +148,31 @@ export interface RecordPlanVO {
 
 // ============= 流 / 报警 =============
 
+/**
+ * 拉流代理视图模型。
+ *
+ * 字段与后端 `gb_stream_proxy` / WVP `StreamProxy` 一致；此前这里是
+ * `url` / `destUrl` / `enabled` / `status` —— 后端没有这四个键，
+ * 用它渲染出来的列表源地址为空、状态恒为"停止"。
+ */
 export interface StreamProxyVO {
   id?: number
   name: string
-  type?: 'rtsp' | 'rtmp' | 'hls'
+  type?: 'default' | 'ffmpeg'
   app?: string
   stream?: string
-  url?: string
-  destUrl?: string
-  enabled?: boolean
-  status?: number
+  srcUrl?: string
+  relatesMediaServerId?: string
+  mediaServerId?: string
+  timeout?: number
+  ffmpegCmdKey?: string
+  rtspType?: string
+  enable?: boolean
+  enableAudio?: boolean
+  enableMp4?: boolean
+  enableDisableNoneReader?: boolean
+  pulling?: boolean
+  streamStatus?: string
   createTime?: string
   updateTime?: string
 }

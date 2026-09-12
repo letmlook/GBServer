@@ -294,6 +294,8 @@ pub fn app(state: AppState) -> Router<AppState> {
         .route("/api/proxy/start", get(stream::proxy_start))
         .route("/api/proxy/stop", get(stream::proxy_stop))
         .route("/api/proxy/delete", delete(stream::proxy_delete))
+        // WVP 的 `del` 用 app+stream 定位（`/api/proxy/delete` 用 id）
+        .route("/api/proxy/del", delete(stream::proxy_delete))
         .route("/api/platform/query", get(platform::platform_query))
         .route(
             "/api/platform/server_config",

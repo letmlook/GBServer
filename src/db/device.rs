@@ -604,6 +604,7 @@ pub async fn list_channels_filtered(
             BindValue::Text(v) => q.bind(v.as_str()),
             BindValue::Int(v) => q.bind(*v),
             BindValue::Big(v) => q.bind(*v),
+            BindValue::Bool(v) => q.bind(*v),
         };
     }
     let rows = q.bind(count as i64).bind(offset).fetch_all(pool).await?;
@@ -615,6 +616,7 @@ pub async fn list_channels_filtered(
             BindValue::Text(v) => cq.bind(v.as_str()),
             BindValue::Int(v) => cq.bind(*v),
             BindValue::Big(v) => cq.bind(*v),
+            BindValue::Bool(v) => cq.bind(*v),
         };
     }
     let total = cq.fetch_one(pool).await?;

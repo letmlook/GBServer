@@ -914,6 +914,18 @@ impl AppState {
         self.zlm_clients.keys().cloned().collect()
     }
 
+    /// 反查某个 ZLM 客户端对应的节点 ID（按 `ip:http_port` 匹配配置）。
+    ///
+    /// `ZlmClient` 自身不持有节点 ID，而 `get_zlm_client(None/"auto")` 会回落到
+    /// 默认节点 —— 调用方想知道"最终落到哪个节点"只能反查，否则只能把入参
+    /// 原样回显（入参是 "auto" 时回显出来的就是假的节点名）。
+    pub fn zlm_server_id(&self, client: &zlm::ZlmClient) -> Option<String> {
+        self.zlm_clients
+            .iter()
+            .find(|(_, c)| c.ip == client.ip && c.http_port == client.http_port)
+            .map(|(id, _)| id.clone())
+    }
+
     /// 选择流数量最少的 ZLM 节点（最少连接数策略）
     ///
     /// 回退链（从优到次）：

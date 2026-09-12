@@ -397,6 +397,7 @@ pub async fn list_paged(
             crate::dyn_where::BindValue::Text(v) => q.bind(v.as_str()),
             crate::dyn_where::BindValue::Int(v) => q.bind(*v),
             crate::dyn_where::BindValue::Big(v) => q.bind(*v),
+            crate::dyn_where::BindValue::Bool(v) => q.bind(*v),
         };
     }
     q.bind(limit).bind(offset).fetch_all(pool).await
@@ -414,7 +415,8 @@ fn push_filter(
         w.add("media_server_id = ?", vec![BindValue::Text(mid.to_string())]);
     }
     if let Some(p) = pushing {
-        w.add("pushing = ?", vec![BindValue::Int(if p { 1 } else { 0 })]);
+        // postgres 的 `pushing` 是 bool 列，绑 Int 会 `boolean = integer` 直接 500。
+        w.add("pushing = ?", vec![BindValue::Bool(p)]);
     }
     if let Some(kw) = query.map(str::trim).filter(|s| !s.is_empty()) {
         let like = format!("%{kw}%");
@@ -440,6 +442,7 @@ pub async fn count_all(
             crate::dyn_where::BindValue::Text(v) => q.bind(v.as_str()),
             crate::dyn_where::BindValue::Int(v) => q.bind(*v),
             crate::dyn_where::BindValue::Big(v) => q.bind(*v),
+            crate::dyn_where::BindValue::Bool(v) => q.bind(*v),
         };
     }
     q.fetch_one(pool).await

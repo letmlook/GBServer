@@ -371,6 +371,7 @@ pub async fn list_filtered(
             crate::dyn_where::BindValue::Text(v) => q.bind(v.as_str()),
             crate::dyn_where::BindValue::Int(v) => q.bind(*v),
             crate::dyn_where::BindValue::Big(v) => q.bind(*v),
+            crate::dyn_where::BindValue::Bool(v) => q.bind(*v),
         };
     }
     let rows = q.bind(count).bind(offset).fetch_all(pool).await?;
@@ -382,6 +383,7 @@ pub async fn list_filtered(
             crate::dyn_where::BindValue::Text(v) => cq.bind(v.as_str()),
             crate::dyn_where::BindValue::Int(v) => cq.bind(*v),
             crate::dyn_where::BindValue::Big(v) => cq.bind(*v),
+            crate::dyn_where::BindValue::Bool(v) => cq.bind(*v),
         };
     }
     let total = cq.fetch_one(pool).await?;

@@ -180,7 +180,8 @@ impl ZlmClient {
         if let Some(v) = req.enable_rtmp { params.push(("enable_rtmp", if v { "1" } else { "0" }.to_string())); }
         if let Some(v) = req.enable_fmp4 { params.push(("enable_fmp4", if v { "1" } else { "0" }.to_string())); }
         if let Some(v) = req.enable_ts { params.push(("enable_ts", if v { "1" } else { "0" }.to_string())); }
-        if let Some(v) = req.enableAAC { params.push(("enable_aac", if v { "1" } else { "0" }.to_string())); }
+        // 参数名必须是 `enable_audio`（ZLM 对未知参数静默忽略 → 之前勾了"开启音频"也没用）
+        if let Some(v) = req.enable_audio { params.push(("enable_audio", if v { "1" } else { "0" }.to_string())); }
 
         #[derive(Deserialize)]
         struct Resp { key: String }

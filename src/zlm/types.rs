@@ -153,7 +153,11 @@ pub struct AddStreamProxyRequest {
     pub enable_rtmp: Option<bool>,
     pub enable_fmp4: Option<bool>,
     pub enable_ts: Option<bool>,
-    pub enableAAC: Option<bool>,
+    /// ZLM `addStreamProxy` 的音频开关，参数名是 **`enable_audio`**。
+    ///
+    /// 此前发的是 `enable_aac` —— ZLM 对未知参数静默忽略（不报错），
+    /// 于是"开启音频"这个勾选框从来没有生效过。
+    pub enable_audio: Option<bool>,
 }
 
 impl Default for AddStreamProxyRequest {
@@ -172,7 +176,7 @@ impl Default for AddStreamProxyRequest {
             enable_rtmp: Some(false),
             enable_fmp4: Some(false),
             enable_ts: Some(false),
-            enableAAC: Some(false),
+            enable_audio: Some(false),
         }
     }
 }

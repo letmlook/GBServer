@@ -641,6 +641,7 @@ create table IF NOT EXISTS gb_stream_proxy
     server_id                  character varying(50),
     enable_disable_none_reader bool default false,
     relates_media_server_id    character varying(50),
+    stream_status              character varying(32) default 'ready',
     constraint uk_stream_proxy_app_stream unique (app, stream)
 );
 COMMENT ON TABLE gb_stream_proxy IS '拉流代理/转推配置';
@@ -664,6 +665,7 @@ COMMENT ON COLUMN gb_stream_proxy.stream_key IS '唯一流标识';
 COMMENT ON COLUMN gb_stream_proxy.server_id IS '信令服务器ID';
 COMMENT ON COLUMN gb_stream_proxy.enable_disable_none_reader IS '是否无人观看时自动停流';
 COMMENT ON COLUMN gb_stream_proxy.relates_media_server_id IS '关联的媒体服务器ID';
+COMMENT ON COLUMN gb_stream_proxy.stream_status IS 'Phase 4.5 统一流状态: ready|pushing|active|stopped|failed';
 
 
 drop table IF EXISTS gb_stream_push;

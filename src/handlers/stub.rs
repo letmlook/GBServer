@@ -2361,6 +2361,7 @@ pub async fn record_plan_channel_list(
             BindValue::Text(v) => q_rows.bind(v.as_str()),
             BindValue::Int(v) => q_rows.bind(v),
             BindValue::Big(v) => q_rows.bind(*v),
+            BindValue::Bool(v) => q_rows.bind(*v),
         };
     }
     let rows: Vec<RecordPlanChannelRow> = q_rows.bind(count as i64).bind(offset).fetch_all(&state.pool).await?;
@@ -2372,6 +2373,7 @@ pub async fn record_plan_channel_list(
             BindValue::Text(v) => q_count.bind(v.as_str()),
             BindValue::Int(v) => q_count.bind(v),
             BindValue::Big(v) => q_count.bind(*v),
+            BindValue::Bool(v) => q_count.bind(*v),
         };
     }
     let total: i64 = q_count.fetch_one(&state.pool).await?;
