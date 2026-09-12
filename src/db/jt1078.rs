@@ -206,6 +206,34 @@ pub async fn get_terminal_by_phone(pool: &Pool, phone: &str) -> sqlx::Result<Opt
         .bind(phone).fetch_optional(pool).await;
 }
 
+/// 根据终端 ID（JT/T 808 终端号，非手机号）查询终端。
+///
+/// `/api/jt1078/terminal/query?deviceId=` 的历史语义既可能是手机号也可能是
+/// 终端号，只按手机号查会静默返回 null。
+pub async fn get_terminal_by_terminal_id(
+    pool: &Pool,
+    terminal_id: &str,
+) -> sqlx::Result<Option<JtTerminal>> {
+    #[cfg(any(feature = "mysql", feature = "sqlite"))]
+    return sqlx::query_as::<_, JtTerminal>(
+        "SELECT id, phone_number, terminal_id, CAST(province_id AS CHAR) AS province_id, \
+         province_text, CAST(city_id AS CHAR) AS city_id, city_text, maker_id, model, \
+         plate_color, plate_no, longitude, latitude, status, register_time, update_time, \
+         create_time, geo_coord_sys, media_server_id, sdp_ip, auth_code \
+         FROM gb_jt_terminal WHERE terminal_id = ?",
+    )
+        .bind(terminal_id).fetch_optional(pool).await;
+    #[cfg(feature = "postgres")]
+    return sqlx::query_as::<_, JtTerminal>(
+        "SELECT id, phone_number, terminal_id, CAST(province_id AS TEXT) AS province_id, \
+         province_text, CAST(city_id AS TEXT) AS city_id, city_text, maker_id, model, \
+         plate_color, plate_no, longitude, latitude, status, register_time, update_time, \
+         create_time, geo_coord_sys, media_server_id, sdp_ip, auth_code \
+         FROM gb_jt_terminal WHERE terminal_id = $1",
+    )
+        .bind(terminal_id).fetch_optional(pool).await;
+}
+
 /// 根据ID查询终端
 pub async fn get_terminal_by_id(pool: &Pool, id: i32) -> sqlx::Result<Option<JtTerminal>> {
     #[cfg(any(feature = "mysql", feature = "sqlite"))]

@@ -187,6 +187,12 @@ r = check('POST', '/jt1078/terminal/add',
           {'phoneNumber': PHONE, 'terminalId': 'T-PG-1', 'plateNo': '浙A00001', 'channelCount': 1},
           label='terminal/add')
 check('GET', f'/jt1078/terminal/query?phoneNumber={PHONE}', label='terminal/query')
+# `deviceId` 是旧前端的查询键（既可能是手机号也可能是终端号）；两条都必须命中，
+# 否则接口返回 200 但 data=null，"按 ID 查终端"静默失效。
+check('GET', f'/jt1078/terminal/query?deviceId={PHONE}', label='terminal/query(deviceId=手机号)',
+      expect_data=lambda d: bool(d) and d.get('phoneNumber') == PHONE)
+check('GET', '/jt1078/terminal/query?deviceId=T-PG-1', label='terminal/query(deviceId=终端号)',
+      expect_data=lambda d: bool(d) and d.get('phoneNumber') == PHONE)
 check('POST', '/jt1078/terminal/update',
       {'phoneNumber': PHONE, 'plateNo': '浙A00002'}, label='terminal/update')
 
@@ -198,6 +204,15 @@ check('GET', f'/jt1078/route/delete?id={rtid}', label='route/delete')
 check('DELETE', f'/jt1078/terminal/delete?phoneNumber={PHONE}', label='terminal/delete')
 
 # ---------------- 平台：新增 → 目录 → 注销 → 删除 ----------------
+# 幂等前置清理：上一轮被中断时残留的同名平台会让 platform/add 报
+# "平台国标ID已存在"，看起来像缺陷其实是脏数据（本轮把它清掉，
+# 于是脚本可以连续跑）。
+_prev = call('GET', '/platform/query?page=1&count=200')
+for _row in (_prev.get('data') or {}).get('list') or []:
+    if _row.get('serverGBId') == '34020000002000009999':
+        print('   预清理残留平台 id =', _row.get('id'))
+        call('DELETE', '/platform/delete?serverGBId=34020000002000009999')
+
 r = check('POST', '/platform/add',
           {'name': 'pg-smoke-plat', 'serverGBId': '34020000002000009999', 'serverIp': '127.0.0.1',
            'serverPort': 5060, 'deviceGBId': '34020000001320000001', 'username': 'admin',
@@ -208,12 +223,23 @@ check('GET', '/platform/query?page=1&count=10&query=pg-smoke', label='platform/q
 check('POST', '/platform/update',
       {'serverGBId': '34020000002000009999', 'name': 'pg-smoke-plat-2'}, label='platform/update')
 check('GET', '/platform/exit/34020000002000009999', label='platform/exit')
-check('DELETE', '/platform/delete?serverGBId=34020000002000009999', label='platform/delete')
-check('DELETE', '/platform/delete?serverGbId=34020000002000009999', label='platform/delete(alias)')
+# 用 `serverGBId` 删除必须**真的删掉那一行**并回真实 id
+# （曾经这里是"假成功"：只认 id，返回 code=0 但一行都没删）
+check('DELETE', '/platform/delete?serverGBId=34020000002000009999',
+      label='platform/delete(by serverGBId)', expect_data=lambda d: d.get('id', 0) > 0)
+# 已删除再删一次必须报错，不能又回一个"删除成功"
+r = call('DELETE', '/platform/delete?serverGbId=34020000002000009999')
+if r['code'] == 0:
+    print('BAD  platform/delete(重复删除) ->', r['st'], r['code'], '应为失败却报成功')
+    FAIL.append(('platform/delete(重复删除)', r['st'], r['code'], '删除不存在的平台却报成功'))
+else:
+    print('OK   platform/delete(重复删除) -> 正确报错:', str(r['msg'])[:60])
 
 # ---------------- 拉流代理：新增 → 启动 → 停止 → 删除 ----------------
 APP, STREAM = 'pg-smoke', 's1'
 DUMMY = 'rtsp://127.0.0.1:554/nonexistent'
+# 幂等前置清理：残留的同 app/stream 代理会让 proxy/add 冲突
+call('DELETE', f'/proxy/delete?app={APP}&stream={STREAM}')
 check('POST', '/proxy/add',
       {'app': APP, 'stream': STREAM, 'url': DUMMY, 'name': 'pg-smoke', 'type': 'default',
        'rtspType': '0', 'enable': True},

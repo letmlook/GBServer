@@ -68,6 +68,8 @@ pub struct TerminalQuery {
     /// `/api/jt1078/terminal/query` 直接返回 null（静默查不到）。
     #[serde(alias = "deviceId")]
     pub device_id: Option<String>,
+    #[serde(alias = "terminalId")]
+    pub terminal_id: Option<String>,
     #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
     /// 数据库主键（前端终端列表传的就是 `row.id`）
@@ -284,6 +286,10 @@ pub struct TerminalAddBody {
     #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
     pub name: Option<String>,
+    /// 终端号。前端（与 `web/src/api/jtDevice.ts::JtTerminal`）叫 `terminalId`，
+    /// 旧 WVP 风格叫 `deviceId`/`vehicleNo` —— 三个名字都要认，
+    /// 否则填了终端号会被静默丢弃（`terminal/add` 写进去的是 NULL）。
+    #[serde(alias = "deviceId", alias = "terminalId", alias = "vehicleNo")]
     pub device_id: Option<String>,
     pub manufacturer: Option<String>,
     pub model: Option<String>,
@@ -320,6 +326,10 @@ pub struct TerminalUpdateBody {
     #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
     pub name: Option<String>,
+    /// 终端号。前端（与 `web/src/api/jtDevice.ts::JtTerminal`）叫 `terminalId`，
+    /// 旧 WVP 风格叫 `deviceId`/`vehicleNo` —— 三个名字都要认，
+    /// 否则填了终端号会被静默丢弃（`terminal/add` 写进去的是 NULL）。
+    #[serde(alias = "deviceId", alias = "terminalId", alias = "vehicleNo")]
     pub device_id: Option<String>,
     pub manufacturer: Option<String>,
     pub model: Option<String>,
@@ -454,16 +464,44 @@ pub async fn terminal_list(
 }
 
 /// GET /api/jt1078/terminal/query
+///
+/// 查询键依次尝试：`phoneNumber` → `deviceId`（可能是手机号、终端号或主键 id）
+/// → `terminalId` → 主键 `id`。此前只读 `phoneNumber`，而旧前端
+/// （`web-legacy-vue2/src/api/jtDevice.js::queryDeviceById`）发的是
+/// `deviceId` —— 请求能通、永远返回 `null`，"按 ID 查终端"实际不可用。
 pub async fn terminal_query(
     State(state): State<AppState>,
     Query(q): Query<TerminalQuery>,
 ) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
-    let phone = q.phone_number.clone().unwrap_or_default();
-    if phone.is_empty() {
+    // 兼容：`deviceId` 先当手机号，再当终端号，最后当主键。`terminalId` 同理。
+    let key = q
+        .phone_number
+        .clone()
+        .or_else(|| q.device_id.clone())
+        .or_else(|| q.terminal_id.clone())
+        .unwrap_or_default();
+    if key.is_empty() && q.id.is_none() {
         return Ok(Json(WVPResult::success(serde_json::Value::Null)));
     }
 
-    let terminal = jt_db::get_terminal_by_phone(&state.pool, &phone).await?;
+    let mut terminal = None;
+    if !key.is_empty() {
+        terminal = jt_db::get_terminal_by_phone(&state.pool, &key).await?;
+        if terminal.is_none() {
+            terminal = jt_db::get_terminal_by_terminal_id(&state.pool, &key).await?;
+        }
+        if terminal.is_none() {
+            if let Ok(as_id) = key.parse::<i32>() {
+                terminal = jt_db::get_terminal_by_id(&state.pool, as_id).await?;
+            }
+        }
+    }
+    if terminal.is_none() {
+        if let Some(id) = q.id {
+            terminal = jt_db::get_terminal_by_id(&state.pool, id as i32).await?;
+        }
+    }
+
     let out = terminal.map(|t| {
         serde_json::json!({
             "id": t.id,
@@ -472,6 +510,11 @@ pub async fn terminal_query(
             "plateNo": t.plate_no,
             "plateColor": t.plate_color,
             "makerId": t.maker_id,
+            // 与 /terminal/list 的行结构保持一致：编辑框依赖这四个字段
+            "provinceId": t.province_id,
+            "provinceText": t.province_text,
+            "cityId": t.city_id,
+            "cityText": t.city_text,
             "model": t.model,
             "status": t.status,
             "longitude": t.longitude,
@@ -2116,6 +2159,28 @@ pub async fn media_upload_one(
 mod channel_dto_tests {
     use super::*;
 
+    /// `terminal/query` 的查询键必须接受旧前端的 `deviceId`
+    /// （`web-legacy-vue2/src/api/jtDevice.js::queryDeviceById`），
+    /// 也要接受终端号。此前只读 `phoneNumber`，`?deviceId=` 恒返回 null。
+    #[test]
+    fn terminal_query_accepts_device_id_and_terminal_id() {
+        let q: TerminalQuery =
+            serde_json::from_value(serde_json::json!({"deviceId": "13912345678"})).unwrap();
+        assert_eq!(q.device_id.as_deref(), Some("13912345678"));
+        assert!(q.phone_number.is_none());
+
+        let q: TerminalQuery =
+            serde_json::from_value(serde_json::json!({"terminalId": "013912345678"})).unwrap();
+        assert_eq!(q.terminal_id.as_deref(), Some("013912345678"));
+
+        let q: TerminalQuery =
+            serde_json::from_value(serde_json::json!({"phoneNumber": "13912345678"})).unwrap();
+        assert_eq!(q.phone_number.as_deref(), Some("13912345678"));
+
+        let q: TerminalQuery = serde_json::from_value(serde_json::json!({"id": 7})).unwrap();
+        assert_eq!(q.id, Some(7));
+    }
+
     /// 前端 JT 设备页的字段名必须被接受：
     /// `channel/list` 传 `terminalDbId`，`channel/add` 传 `phoneNumber` + `channelName`。
     ///
@@ -2216,6 +2281,75 @@ mod channel_dto_tests {
 mod terminal_write_tests {
     use super::*;
     use crate::test_support::app_state;
+
+    /// `terminal/query?deviceId=` 必须真的查得到终端（此前只读 `phoneNumber`，
+    /// 请求 200 但 `data: null`，"按 ID 查终端"静默失效）。
+    /// `deviceId` 既可能是手机号，也可能是终端号，两种都要能查到。
+    #[tokio::test]
+    async fn terminal_query_by_device_id_finds_terminal() {
+        let state = app_state().await;
+        let phone = format!("139{:08}", std::process::id() % 100_000_000);
+        // terminal_id 是设备注册（0x0100）时写入的列，这里直接落库，
+        // 以便验证 `?deviceId=<终端号>` 这条查询分支。
+        jt_db::insert_terminal(
+            &state.pool,
+            &phone,
+            &jt_db::JtTerminalWrite {
+                terminal_id: Some("T-QUERY-1"),
+                plate_no: Some("测A00001"),
+                plate_color: Some(1),
+                ..Default::default()
+            },
+            "2026-09-13 00:00:00",
+        )
+        .await
+        .expect("insert terminal");
+
+        // 手机号形式
+        let by_phone = terminal_query(
+            State(state.clone()),
+            Query(
+                serde_json::from_value::<TerminalQuery>(
+                    serde_json::json!({"deviceId": phone.clone()}),
+                )
+                .unwrap(),
+            ),
+        )
+        .await
+        .unwrap();
+        let d = by_phone.0.data.clone().unwrap();
+        assert_eq!(d["phoneNumber"], phone, "deviceId=手机号 必须能查到: {d}");
+        assert_eq!(d["plateNo"], "测A00001");
+
+        // 终端号形式
+        let by_terminal_id = terminal_query(
+            State(state.clone()),
+            Query(
+                serde_json::from_value::<TerminalQuery>(
+                    serde_json::json!({"deviceId": "T-QUERY-1"}),
+                )
+                .unwrap(),
+            ),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            by_terminal_id.0.data.clone().unwrap()["phoneNumber"],
+            phone,
+            "deviceId=终端号 也必须能查到"
+        );
+
+        let _ = terminal_delete(
+            State(state.clone()),
+            Query(TerminalQuery {
+                device_id: None,
+                terminal_id: None,
+                phone_number: Some(phone),
+                id: None,
+            }),
+        )
+        .await;
+    }
 
     /// 前端编辑框的字段（车牌/颜色/厂商/省域/市域）此前后端 DTO 里没有 →
     /// 填了静默丢弃。这条测试逐字段验证真的落库。
@@ -2320,6 +2454,7 @@ mod terminal_write_tests {
             State(state.clone()),
             Query(TerminalQuery {
                 device_id: None,
+                terminal_id: None,
                 phone_number: None,
                 id: Some(999),
             }),
@@ -2332,6 +2467,7 @@ mod terminal_write_tests {
             State(state.clone()),
             Query(TerminalQuery {
                 device_id: None,
+                terminal_id: None,
                 phone_number: None,
                 id: Some(1),
             }),
@@ -2373,6 +2509,7 @@ mod terminal_write_tests {
             State(state.clone()),
             Query(TerminalQuery {
                 device_id: None,
+                terminal_id: None,
                 phone_number: None,
                 id: Some(t.id as i64),
             }),

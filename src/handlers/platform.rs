@@ -1323,35 +1323,64 @@ pub async fn platform_update(
 #[derive(Debug, Deserialize)]
 pub struct PlatformDeleteQuery {
     pub id: Option<i64>,
+    /// 兼容按国标 ID 删除（本仓库的冒烟脚本/旧调用方会传它）。
+    ///
+    /// 此前这里只声明了 `id`，传 `serverGBId` 会被 serde 静默忽略，
+    /// 而 handler 又无条件回 `{"code":0,"message":"平台删除成功","id":0}`
+    /// —— **一个什么都没删的假成功**（实测删前删后 `gb_platform` 行数不变）。
+    #[serde(alias = "serverGBId", alias = "serverGbId", alias = "serverGBID")]
+    pub server_gb_id: Option<String>,
 }
 
 pub async fn platform_delete(
     State(state): State<AppState>,
     Query(q): Query<PlatformDeleteQuery>,
 ) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
-    let id = q.id.unwrap_or(0);
-    if id > 0 {
-        if let Some(platform) = platform_db::get_by_id(&state.pool, id).await? {
-            if platform.status.unwrap_or(false) {
-                let _ = sync_platform_registration(
-                    &state,
-                    &Platform {
-                        enable: Some(false),
-                        ..platform.clone()
-                    },
-                )
-                .await;
-            }
-        }
-        // 修正：级联删除失败被 `let _ =` 吞掉时，平台行会被删掉但 gb_platform_channel
-        // 里还留着一批指向不存在平台的孤儿行。必须传播。
-        platform_channel::batch_delete_by_platform(&state.pool, id)
-            .await
-            .map_err(|e| {
-                AppError::business(ErrorCode::Error500, format!("删除平台通道关联失败: {}", e))
-            })?;
-        platform_db::delete_by_id(&state.pool, id).await?;
+    // 先按主键、再按国标 ID 定位；两者都定位不到就直接报错，
+    // 绝不返回"删除成功"。
+    let mut platform = None;
+    if let Some(id) = q.id.filter(|id| *id > 0) {
+        platform = platform_db::get_by_id(&state.pool, id).await?;
     }
+    if platform.is_none() {
+        if let Some(gb_id) = q
+            .server_gb_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            platform = platform_db::get_by_server_gb_id(&state.pool, gb_id).await?;
+        }
+    }
+    let platform = platform.ok_or_else(|| {
+        AppError::business(
+            ErrorCode::Error404,
+            format!(
+                "平台不存在: id={:?} serverGBId={:?}",
+                q.id, q.server_gb_id
+            ),
+        )
+    })?;
+    let id = platform.id as i64;
+
+    if platform.status.unwrap_or(false) {
+        let _ = sync_platform_registration(
+            &state,
+            &Platform {
+                enable: Some(false),
+                ..platform.clone()
+            },
+        )
+        .await;
+    }
+    // 修正：级联删除失败被 `let _ =` 吞掉时，平台行会被删掉但 gb_platform_channel
+    // 里还留着一批指向不存在平台的孤儿行。必须传播。
+    platform_channel::batch_delete_by_platform(&state.pool, id)
+        .await
+        .map_err(|e| {
+            AppError::business(ErrorCode::Error500, format!("删除平台通道关联失败: {}", e))
+        })?;
+    platform_db::delete_by_id(&state.pool, id).await?;
     Ok(Json(WVPResult::success(serde_json::json!({
         "id": id,
         "message": "平台删除成功",
@@ -2173,5 +2202,60 @@ mod platform_contract_tests {
         assert_eq!(name, "目录A-改名");
         assert_eq!(parent, "0", "未提供的 parent 不能被空串覆盖");
         assert_eq!(civil, "340200", "未提供的 civil_code 不能被空串覆盖");
+    }
+
+    /// `platform/delete` 必须真的删掉行，并且**删不到时不能报成功**。
+    ///
+    /// 回归：此前 DTO 只认 `id`，`?serverGBId=` 被静默忽略，handler 却无条件回
+    /// `{"code":0,"message":"平台删除成功","id":0}` —— 行数一点没变。
+    #[tokio::test]
+    async fn platform_delete_by_server_gb_id_really_deletes() {
+        let state = app_state().await;
+        let body = add_body(serde_json::json!({
+            "name": "待删平台",
+            "serverGBId": "34020000002000000777",
+            "serverIp": "127.0.0.1",
+            "serverPort": 5060
+        }));
+        let _ = platform_add(State(state.clone()), Json(body)).await.unwrap();
+        let created = platform_db::get_by_server_gb_id(&state.pool, "34020000002000000777")
+            .await
+            .unwrap()
+            .expect("平台应已创建");
+
+        // 按国标 ID 删除
+        let resp = platform_delete(
+            State(state.clone()),
+            Query(PlatformDeleteQuery {
+                id: None,
+                server_gb_id: Some("34020000002000000777".into()),
+            }),
+        )
+        .await
+        .expect("按 serverGBId 删除应成功");
+        assert_eq!(
+            resp.0.data.clone().unwrap()["id"],
+            created.id as i64,
+            "返回的 id 必须是被删的那一行"
+        );
+        assert!(
+            platform_db::get_by_id(&state.pool, created.id as i64)
+                .await
+                .unwrap()
+                .is_none(),
+            "行必须真的被删掉"
+        );
+
+        // 删不存在的平台 → 报错，而不是假成功
+        let err = platform_delete(
+            State(state.clone()),
+            Query(PlatformDeleteQuery {
+                id: Some(999_999),
+                server_gb_id: None,
+            }),
+        )
+        .await
+        .expect_err("不存在的平台必须报错");
+        assert!(matches!(err, AppError::Business(_, _)));
     }
 }

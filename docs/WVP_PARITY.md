@@ -12,7 +12,7 @@
 | 总代码量（src/） | 79,179 行 Rust | `find src -name '*.rs' \| xargs wc -l` |
 | 已注册 HTTP 路由 | 386 条唯一 `/api/...` 路径 | `grep -oE '"/api/[^"]*"' src/router.rs \| sort -u \| wc -l` |
 | Handler 模块 | 29 个（含 `stub.rs` / `device_stub.rs` 两个兼容 shim） | `grep -c 'pub mod' src/handlers/mod.rs` |
-| 后端测试 | **728 通过 / 0 失败**（第五十四轮刷新） | `cargo test` |
+| 后端测试 | **731 通过 / 0 失败**（第五十五轮刷新） | `cargo test` |
 | 编译状态 | `cargo check` 0 error / **0 warning**；clippy 262；**deprecated 0** | `cargo check` / `cargo clippy --all-targets` |
 | 数据库 feature | SQLite（默认）/ PostgreSQL / MySQL **三者均编译通过** | CI `feature-matrix` job |
 | CI | ⏸️ 工作流已就绪但**按需暂停自动触发**（见 `.github/workflows/ci.yml`） | — |
@@ -2682,6 +2682,64 @@ npx playwright test              66 passed / 0 failed
 对讲音频                          ✅ SDP y= == RTP SSRC == 4200000001，50 包 0 丢序
 ```
 
+### 「按 ID 查不到」与「删了却报成功」：两处静默失效（2026-09-13 第五十五轮）
+
+第五十四轮的经验是"接口返回 200 不等于功能生效"，本轮用**参数名/取值对照**与
+**删前删后行数比对**继续扫，又抓到两条同一类型的缺陷（都由冒烟脚本暴露）。
+
+#### 1. `/api/jt1078/terminal/query?deviceId=` 恒返回 null
+
+`TerminalQuery` 里 `device_id`（别名 `deviceId`）是"历史字段"，但 handler
+**只读 `phone_number`**：旧前端 `queryDeviceById(deviceId)`
+（`web-legacy-vue2/src/api/jtDevice.js`）发的正是 `deviceId`，于是
+"按 ID 查终端"请求 200、`data: null`，页面上永远查不到设备。
+
+修复：查询键依次回落 `phoneNumber` → `deviceId`（先当手机号，再当终端号，
+最后当主键）→ `terminalId` → 主键 `id`；新增
+`db::jt1078::get_terminal_by_terminal_id`（三种方言各一份 SQL）。
+顺带把返回结构对齐 `/terminal/list`（补 `provinceId/provinceText/cityId/cityText`，
+编辑框依赖这四个字段）；`terminal/add|update` 的终端号字段补
+`deviceId`/`terminalId`/`vehicleNo` 三个别名。
+
+实测（同一手机号，修复前 `?deviceId=` 是 null）：
+
+```
+?deviceId=13941636334  → {"phoneNumber":"13941636334","plateNo":...}
+?deviceId=<终端号>      → {"phoneNumber":"13941636334",...}
+?id=2                  → 同上
+```
+
+#### 2. `/api/platform/delete?serverGBId=` 是**假成功**
+
+`PlatformDeleteQuery` 只声明了 `id`；传 `serverGBId` 会被 serde 静默忽略，
+而 handler 无条件回 `{"code":0,"message":"平台删除成功","id":0}` ——
+实测删前删后 `gb_platform` 行数不变（`SELECT id FROM gb_platform` 仍有该行）。
+本仓库的冒烟脚本连这条都判成 OK，因为它只断言 `code == 0`。
+
+修复：`serverGBId`/`serverGbId` 也认；先按主键、再按国标 ID 定位，
+**都定位不到就 404**，绝不返回"删除成功"；返回体带真实被删的 `id`。
+冒烟脚本同时改为「按 serverGBId 删除必须回真实 id」+「重复删除必须报错」，
+并给平台/代理加了幂等前置清理（此前中断的运行会留下脏行，把
+`platform/add` 的"已存在"误报成缺陷）。
+
+#### 3. 冒烟脚本自身的两处盲点
+
+* 平台/代理新增前先清理残留行（否则连续跑必现 `平台国标ID已存在`）；
+* 新增 `/jt1078/terminal/query?deviceId=` 两条断言（手机号 / 终端号），
+  覆盖第五十五轮新增的按终端号查询方言分支。
+
+#### 第五十五轮基线
+
+```
+cargo test                       731 passed / 0 failed（+3）
+cargo build --features postgres/mysql  OK
+npx playwright test              66 passed / 0 failed
+dialect_smoke（sqlite/pg/mysql）  仅剩 2 项已记录的"预期为真"项
+                                  （CSV 不是 JSON、dummy RTSP 代理启动 404）
+terminal/query by deviceId        ✅ 手机号与终端号都能查到（三种方言）
+platform/delete                   ✅ 真删行；删不到时 404，不再假成功
+```
+
 ### 前端↔后端契约审计：**16 个模块 130 条全部修完**（2026-09-12 第三十九轮）
 
 第二十六轮用"一个模块一个 agent"的方式把 16 个前端 API 模块逐个对后端路由/DTO
@@ -3141,6 +3199,7 @@ vue-tsc --noEmit                 通过
 - 2026-09-12 第五十二轮：`cargo test` —— **719 通过 / 0 失败**（收藏录像三方言静默坏掉 + 既有库迁移；取消收藏与收藏列表打通；云端录像删除按 ZLM 的按目录语义连带清理同目录记录，消除孤儿行）
 - 2026-09-12 第五十三轮：`cargo test` —— **722 通过 / 0 失败**（GB28181 录像下载真正打通：on_publish 下发 enable_mp4、on_record_mp4 登记会话文件、新增 /download/file 端点支持 Range、stop 不再提前删会话；实测产出 176KB MP4 并可 206 分段下载）
 - 2026-09-13 第五十四轮：`cargo test` —— **728 通过 / 0 失败**（远程录像控制取值语义修正（前端发 Record 却下发 StopRecord）、对讲/广播 BYE 改为对话内请求并补 ACK、对讲会话结束即回收、SSRC 与 WVP SSRCFactory 对齐（类型位 4 的 10 位数不再溢出 u32）；新增假设备对讲音频接收器与标准库 WS 探针，实测 SDP `y=` == RTP 包头 SSRC == 4200000001）
+- 2026-09-13 第五十五轮：`cargo test` —— **731 通过 / 0 失败**（`/jt1078/terminal/query?deviceId=` 此前恒返回 null（只读 phoneNumber），现按 手机号→终端号→主键 依次回落并新增按终端号查询的方言 SQL；`/api/platform/delete?serverGBId=` 此前是「一行没删却回删除成功」的假成功，现真正删除、删不到即 404；冒烟脚本补幂等前置清理与 3 条新断言）
 - 2026-09-12 第三十一轮：`cargo test` —— **641 通过 / 0 失败**（JT1078 终端/围栏 13 条）
 - 2026-09-12 第三十轮：`cargo test` —— **637 通过 / 0 失败**（设备页 7 条）
 - 2026-09-12 第二十九轮：`cargo test` —— **634 通过 / 0 失败**（云端录像全链路）
