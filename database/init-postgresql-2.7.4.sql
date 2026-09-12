@@ -353,6 +353,7 @@ create table IF NOT EXISTS gb_media_server
     send_rtp_port_range character varying(50),
     record_assist_port  integer,
     default_server      bool                  default false,
+    enabled             bool                  default true,
     create_time         character varying(50),
     update_time         character varying(50),
     hook_alive_interval integer,
@@ -400,6 +401,7 @@ COMMENT ON COLUMN gb_media_server.rtp_port_range IS 'RTP端口范围';
 COMMENT ON COLUMN gb_media_server.send_rtp_port_range IS '发送RTP端口范围';
 COMMENT ON COLUMN gb_media_server.record_assist_port IS '录像辅助端口';
 COMMENT ON COLUMN gb_media_server.default_server IS '是否默认节点';
+COMMENT ON COLUMN gb_media_server.enabled IS '是否参与选路（false=暂时下线）';
 COMMENT ON COLUMN gb_media_server.create_time IS '创建时间';
 COMMENT ON COLUMN gb_media_server.update_time IS '更新时间';
 COMMENT ON COLUMN gb_media_server.hook_alive_interval IS 'hook心跳间隔';

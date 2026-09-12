@@ -171,6 +171,7 @@ async fn init_db_tables(pool: &db::Pool) -> anyhow::Result<()> {
     // 必须如实传播，否则只会推迟成运行期的 "no such column"。
     db::stream_push::ensure_stream_status_column(pool).await?;
     db::stream_push::ensure_gb_binding_columns(pool).await?;
+    db::media_server::ensure_columns(pool).await?;
     db::stream_proxy::ensure_stream_status_column(pool).await?;
 
     // ---- 阶段 4：旧版 SQLite 库升级补建（幂等） ----
@@ -981,9 +982,30 @@ impl AppState {
         // 该计数由 `zlm/hook.rs` 维护，与 StateStore 完全重复（Phase 7.1 起 hook
         // 已同时写 StateStore），且 Step A 的 StateStore 查询已覆盖它；删除后
         // 唯一状态源收敛为 StateStore，本步用 ZLM 实时数据兜底。
+        // 停用的节点（`enabled = false`）即使在 ZLM 侧可达也不能被选中 ——
+        // 否则"暂时下线一个节点"在它仍在线时完全没有效果。
+        let enabled_ids: Option<std::collections::HashSet<String>> =
+            match crate::db::media_server::list_media_servers(&self.pool).await {
+                Ok(rows) => Some(
+                    rows.into_iter()
+                        .filter(|m| m.enabled.unwrap_or(true))
+                        .map(|m| m.id)
+                        .collect(),
+                ),
+                Err(e) => {
+                    tracing::warn!("list_media_servers failed, 无法过滤停用节点: {}", e);
+                    None
+                }
+            };
+
         let mut min_count = usize::MAX;
         let mut best: Option<(String, Arc<zlm::ZlmClient>)> = None;
         for (id, client) in &self.zlm_clients {
+            if let Some(ref ids) = enabled_ids {
+                if !ids.contains(id) {
+                    continue;
+                }
+            }
             let count = client.get_active_stream_count().await.unwrap_or(usize::MAX);
             if count < min_count {
                 min_count = count;
@@ -996,6 +1018,12 @@ impl AppState {
 
         // Safety net: if all upstream signals fail (ZLM unreachable or all offline in DB),
         // return the first configured client rather than leaving callers with None.
+        // 仍优先挑未被停用的节点。
+        if let Some(ref ids) = enabled_ids {
+            if let Some((id, c)) = self.zlm_clients.iter().find(|(id, _)| ids.contains(*id)) {
+                return Some((id.clone(), c.clone()));
+            }
+        }
         self.zlm_clients.iter().next().map(|(id, c)| (id.clone(), c.clone()))
     }
 }

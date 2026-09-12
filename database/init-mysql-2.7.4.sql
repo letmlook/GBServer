@@ -209,6 +209,7 @@ create table IF NOT EXISTS gb_media_server
     send_rtp_port_range varchar(50) COMMENT '发送RTP端口范围',
     record_assist_port  integer COMMENT '录像辅助端口',
     default_server      bool                  default false COMMENT '是否默认节点',
+    enabled             bool                  default true COMMENT '是否参与选路（0=暂时下线）',
     create_time         varchar(50) COMMENT '创建时间',
     update_time         varchar(50) COMMENT '更新时间',
     hook_alive_interval integer COMMENT 'hook心跳间隔',

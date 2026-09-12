@@ -9,10 +9,10 @@
 
 | 维度 | 数值 | 验证方式 |
 |------|------|----------|
-| 总代码量（src/） | 78,106 行 Rust | `find src -name '*.rs' \| xargs wc -l` |
+| 总代码量（src/） | 78,448 行 Rust | `find src -name '*.rs' \| xargs wc -l` |
 | 已注册 HTTP 路由 | 386 条唯一 `/api/...` 路径 | `grep -oE '"/api/[^"]*"' src/router.rs \| sort -u \| wc -l` |
 | Handler 模块 | 29 个（含 `stub.rs` / `device_stub.rs` 两个兼容 shim） | `grep -c 'pub mod' src/handlers/mod.rs` |
-| 后端测试 | **670 通过** / 0 失败（第三十五轮刷新） | `cargo test` |
+| 后端测试 | **675 通过** / 0 失败（第三十六轮刷新） | `cargo test` |
 | 编译状态 | `cargo check` 0 error / **0 warning**；clippy 262；**deprecated 0** | `cargo check` / `cargo clippy --all-targets` |
 | 数据库 feature | SQLite（默认）/ PostgreSQL / MySQL **三者均编译通过** | CI `feature-matrix` job |
 | CI | ⏸️ 工作流已就绪但**按需暂停自动触发**（见 `.github/workflows/ci.yml`） | — |
@@ -1598,12 +1598,61 @@ cargo check --features mysql/postgres  OK
 npx playwright test              50 passed / 0 failed / 0 skipped（真实 ZLM）
 ```
 
-### 前端↔后端契约审计：已完成 12 个模块，剩余 5 个模块 / 24 条（2026-09-12 第三十五轮刷新）
+### 媒体节点：检测串节点 + load 配错 + enabled 从未实现（2026-09-12 第三十六轮）
+
+`mediaServer` 模块 7 条修完。修复过程中挖出一个**更严重**的缺陷：
+
+> `gb_media_server.last_keepalive_time` 由 hook / 健康检查写成
+> `%Y-%m-%d %H:%M:%S`（本地时区），而 `media_node` 的被动健康检查拿
+> `to_rfc3339()` 当阈值（`2026-09-12T16:47:29+00:00`）做**字符串比较**。
+> 两者第 11 个字符是 `' '`(0x20) 与 `'T'`(0x54) → 任何时间戳都"小于"阈值
+> → **每个节点在启动约 30s 后被判离线**（日志：
+> `Marked 1 media nodes offline (keepalive timeout=30s × 3 grace)`），
+> 而同一时刻主动探活（每 10s 一次 HTTP）报告节点完全可达。
+> 后果：`online/list`、节点选择、负载均衡全部失效。
+> 关联缺陷：主动探活只在**状态变化**时写库，一旦「ZLM → 平台」的 hook 通路不通
+> （NAT / 反向代理 / `host.docker.internal` 解析异常），心跳时间戳不再更新，
+> 被动判定同样把可连通节点判离线。现在探活成功即刷新心跳 + 复位丢失计数。
+
+| # | 缺陷 | 修复 / 证据 |
+|---|------|------|
+| 1 | `check` DTO 没有 `id`，前端传的 `id` 被静默丢弃 → 永远探测 `127.0.0.1:80` | 先用 id 查库拿真实 ip/端口/secret 再探测；未知 id 404 |
+| 2 | `check` 返回节点信息 payload，前端按 `data.code === 0` 判断 → 必然弹「检测失败」 | 后端显式回 `reachable`，失败时返回业务错误（前端提示真实原因） |
+| 3 | `load` 忽略 `id`，前端取 `arr[0]` → 每张卡片的流量都是第一个节点的 | 支持 `?id=` 过滤；控制台按 id 配对 |
+| 4 | `getMediaLoad` 声明 `{load:number}`，实际是数组 | 类型改 `MediaServerLoad[]` |
+| 5 | `getMediaInfo(id)` 只发 `id`，后端要 app+stream → 恒 400 | 签名改 `(app, stream, mediaServerId?)` |
+| 6 | `getMediaInfo` 声明 `{mediaServerId, mediaList}`，实际是单条 `MediaInfo` | 类型改真实形状 |
+| 7 | 「启用」开关提交 `enabled`，DTO/结构体/schema 都没有 → 静默丢弃 | **真正实现**：三份 schema + 幂等补列 + DTO + 选路排除（`list_online_servers`、`select_least_loaded`） |
+
+**实测**（真实 ZLM）：
+
+```
+GET  /api/server/media_server/check?id=zlmediakit-1 → reachable=true, rtpPortRange=30000,30100
+GET  /api/server/media_server/check?id=nope         → 404 流媒体节点不存在
+GET  /api/server/media_server/check?ip=127.0.0.1&port=1 → 业务错误「检测失败: HTTP error: 502」
+GET  /api/server/media_server/load            → [{id,push,proxy,gbReceive,gbSend}]
+GET  /api/server/media_server/load?id=zzz     → []（此前忽略 id 返回全量）
+POST /api/server/media_server/save {enabled:false} → 落库；online/list 变空
+POST /api/server/media_server/save {enabled:true}  → 恢复；online/list 重新包含该节点
+启动 75s 后仍 status=true / online:['zlmediakit-1']（修复前 30s 即被判离线）
+Playwright → 新增 mediaServer.spec.ts 3 条；整套 53 passed
+```
+
+#### 第三十六轮基线
+
+```
+cargo test                       675 passed / 0 failed
+cargo check --all-targets        本项目 0 warning
+cargo check --features mysql/postgres  OK
+npx playwright test              53 passed / 0 failed / 0 skipped（真实 ZLM）
+```
+
+### 前端↔后端契约审计：已完成 13 个模块，剩余 4 个模块 / 17 条（2026-09-12 第三十六轮刷新）
 
 第二十六轮用"一个模块一个 agent"的方式把 16 个前端 API 模块逐个对后端路由/DTO
 做了一遍审计（证据文件在 `docs/audit/*.md`，共 **130 条**），并按影响排序逐批修复。
-当前已修 12 个模块（106 条），剩 `log`(7) / `mediaServer`(7) /
-`playback`(3) / `syCamera`(6) / `talk`(1) 共 **24 条**：
+当前已修 13 个模块（113 条），剩 `log`(7) / `playback`(3) / `syCamera`(6) /
+`talk`(1) 共 **17 条**：
 
 | 模块 | 条数 | 状态 |
 |------|------|------|
@@ -1616,7 +1665,7 @@ npx playwright test              50 passed / 0 failed / 0 skipped（真实 ZLM�
 | device | 7 | ✅ 已修（第三十轮） |
 | jtDevice | 13 | ✅ 已修（第三十一轮） |
 | log | 7 | ❌ 未修 |
-| mediaServer | 7 | ❌ 未修 |
+| mediaServer | 7 | ✅ 已修（第三十六轮，另修掉一个「所有节点 30s 后被误判离线」） |
 | platform | 11 | ✅ 已修（第三十四轮） |
 | playback | 3 | ❌ 未修 |
 | region | 9 | ✅ 已修（第三十五轮，另补了整块缺失的界面） |
@@ -1646,7 +1695,7 @@ npx playwright test              50 passed / 0 failed / 0 skipped（真实 ZLM�
 5. ~~`platform`~~：✅ 已于第三十四轮修复（`serverGbId` 拼写、`expires` 数字/字符串、
    `realm`→`serverGBDomain`、心跳三参数换成真实的 `expires`/`keepTimeout`、
    注销改为真的发 `Expires: 0` REGISTER、列表与详情统一字段）。
-6. `log` / `mediaServer` / `syCamera` / `playback` / `talk`：
+6. `log` / `syCamera` / `playback` / `talk`：
    主要是响应键名与筛选参数不匹配（系统信息页内存/磁盘/版本恒为 0 或 '-'、
    媒体节点“检测”探测错地址、仪表盘“重点通道”卡片跳转失败、
    录像列表“名称”列空白、对讲起播与音频 WS 的时序竞争）。
@@ -1994,6 +2043,7 @@ vue-tsc --noEmit                 通过
 - 2026-09-12 第三十三轮：`cargo test` —— **658 通过 / 0 失败**（拉流代理 10 条 + `enable_audio`/`TerminalQuery` 连带修复；e2e 40）
 - 2026-09-12 第三十四轮：`cargo test` —— **665 通过 / 0 失败**（级联平台 11 条；e2e 44）
 - 2026-09-12 第三十五轮：`cargo test` —— **670 通过 / 0 失败**（行政区划/业务分组 8 条 + 补全管理界面；e2e 50）
+- 2026-09-12 第三十六轮：`cargo test` —— **675 通过 / 0 失败**（媒体节点 7 条 + 心跳时间戳格式缺陷；e2e 53）
 - 2026-09-12 第三十一轮：`cargo test` —— **641 通过 / 0 失败**（JT1078 终端/围栏 13 条）
 - 2026-09-12 第三十轮：`cargo test` —— **637 通过 / 0 失败**（设备页 7 条）
 - 2026-09-12 第二十九轮：`cargo test` —— **634 通过 / 0 失败**（云端录像全链路）

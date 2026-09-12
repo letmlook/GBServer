@@ -57,20 +57,42 @@ impl ZlmHealthChecker {
                 Err(_) => ZlmServerStatus::Offline,
             };
 
+            // 与 last_keepalive_time 的比较/展示口径保持本地时区
+            let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+
+            if new_status == ZlmServerStatus::Online {
+                // **探活成功就是"这个节点活着"**，必须刷新 `last_keepalive_time`。
+                //
+                // 平台里有两条独立的健康判定：这条主动探活（每 10s HTTP 一次）和
+                // `media_node` 的被动判定（拿 `last_keepalive_time` 与 now-timeout 比）。
+                // 此前只有状态**变化**时才写库，于是当「ZLM → 平台」的 hook 通路不通时
+                // （NAT / 反向代理 / `host.docker.internal` 解析异常都很常见），
+                // 被动判定会因为时间戳不再更新而把**明明可以连通的节点**标记 offline，
+                // `online/list`、节点选择与负载均衡随之全部失效。
+                if let Some(ref pool) = self.pool {
+                    if let Err(e) =
+                        crate::db::media_server::update_last_keepalive(pool, id, &now).await
+                    {
+                        tracing::error!("ZLM 节点 {} 心跳刷新失败: {}", id, e);
+                    }
+                }
+            }
+
             if *status != new_status {
                 tracing::info!("ZLM server {} status changed: {:?} -> {:?}", id, status, new_status);
                 *status = new_status;
 
                 if let Some(ref pool) = self.pool {
-                    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-                    let online = new_status == ZlmServerStatus::Online;
-                    if let Err(e) =
-                        crate::db::media_server::update_status(pool, id, online, &now).await
-                    {
-                        tracing::error!(
-                            "ZLM 节点 {} 状态写库失败 (online={}): {}",
-                            id, online, e
-                        );
+                    if new_status == ZlmServerStatus::Offline {
+                        let online = false;
+                        if let Err(e) =
+                            crate::db::media_server::update_status(pool, id, online, &now).await
+                        {
+                            tracing::error!(
+                                "ZLM 节点 {} 状态写库失败 (online={}): {}",
+                                id, online, e
+                            );
+                        }
                     }
                 }
                 if new_status == ZlmServerStatus::Online {

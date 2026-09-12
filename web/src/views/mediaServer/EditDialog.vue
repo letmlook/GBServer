@@ -21,6 +21,14 @@
       </el-form-item>
       <el-form-item label="启用">
         <el-switch v-model="form.enabled" />
+        <span class="hint">关闭后该节点不再接收新流（健康检查照常，已在线状态显示在列表里）</span>
+      </el-form-item>
+      <el-form-item label="默认节点">
+        <el-switch v-model="form.defaultServer" />
+      </el-form-item>
+      <el-form-item label="自动配置">
+        <el-switch v-model="form.autoConfig" />
+        <span class="hint">保存后自动向该节点下发 hook / mediaServerId / RTP 端口范围</span>
       </el-form-item>
     </el-form>
     <template #footer>
@@ -61,7 +69,9 @@ const form = reactive<MediaServer>({
   rtmpPort: 1935,
   rtspPort: 554,
   secret: '',
-  enabled: true
+  enabled: true,
+  defaultServer: false,
+  autoConfig: true
 })
 
 const rules: FormRules = {
@@ -82,7 +92,9 @@ function onOpen() {
       rtmpPort: 1935,
       rtspPort: 554,
       secret: '',
-      enabled: true
+      enabled: true,
+      defaultServer: false,
+      autoConfig: true
     })
   }
 }
@@ -105,3 +117,7 @@ async function onSave() {
 
 watch(() => props.modelValue, (v) => v && onOpen())
 </script>
+
+<style scoped>
+.hint { margin-left: 10px; color: var(--el-text-color-secondary); font-size: 12px; }
+</style>

@@ -208,8 +208,11 @@ async function loadAll() {
     for (let i = 0; i < msList.length && i < loadRes.length; i++) {
       const r = loadRes[i]
       if (r.status === 'fulfilled') {
-        const arr = ((r.value.data as unknown) as any[]) ?? []
-        if (arr[0]) loadMap.set(msList[i].id ?? '', arr[0])
+        // 按 id 取自己那一项：后端返回的是数组，此前取 `arr[0]`
+        // 会把第一个节点的流量显示到每一张卡片上
+        const arr = (r.value.data as any[]) ?? []
+        const item = arr.find((x) => x?.id === msList[i].id) ?? arr[0]
+        if (item) loadMap.set(msList[i].id ?? '', item)
       }
     }
     const sysCpu = info.value.cpu_usage ?? 0

@@ -208,6 +208,8 @@ CREATE TABLE IF NOT EXISTS gb_media_server
     send_rtp_port_range VARCHAR(50),
     record_assist_port  INTEGER,
     default_server      INTEGER     DEFAULT 0,
+    -- 是否参与选路（0 = 暂时下线，不接收新流；健康检查仍继续）
+    enabled             INTEGER     DEFAULT 1,
     create_time         VARCHAR(50),
     update_time         VARCHAR(50),
     hook_alive_interval INTEGER,

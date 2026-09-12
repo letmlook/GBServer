@@ -646,8 +646,12 @@ pub async fn media_server_list(State(state): State<AppState>) -> Result<Json<WVP
 }
 
 /// GET /api/server/media_server/online/list — 与 list 同结构，可过滤在线（当前返回全部）
-pub async fn media_server_online_list(State(state): State<AppState>) -> Result<Json<WVPResult<Vec<MediaServer>>>, AppError> {
-    let list = list_media_servers(&state.pool).await?;
+pub async fn media_server_online_list(
+    State(state): State<AppState>,
+) -> Result<Json<WVPResult<Vec<MediaServer>>>, AppError> {
+    // 路径叫 online/list，此前却把**所有**节点（含离线、含已停用）都返回：
+    // 拉流代理 / 录像计划的"节点选择"下拉因此会列出不可用节点。
+    let list = media_server::list_online_servers(&state.pool).await?;
     Ok(Json(WVPResult::success(list)))
 }
 
@@ -972,8 +976,16 @@ pub async fn resource_info(State(state): State<AppState>) -> Json<WVPResult<serd
 //   都是真实实现：探测走 ZLM getServerConfig、load 走各节点真实统计、
 //   list_all_streams 聚合四类流。标题已按实际内容更正。）
 /// GET /api/server/media_server/check
+///
+/// 支持两种调用方式：
+/// * `?id=<节点ID>` —— 前端媒体节点页「检测」按钮传的就是它：从这里查出该节点真实的
+///   `ip`/`httpPort`/`secret` 再探测。此前 DTO 里**根本没有 `id` 字段**，未知 query 被
+///   serde 静默丢弃，于是无论点哪个节点都在探测兜底的 `127.0.0.1:80`（secret 为空）——
+///   本机恰好有 ZLM 时还会把那个错误节点的结果当成被检测节点的结果。
+/// * `?ip=&port=&secret=&type=` —— WVP 的原始签名，新增节点时用于"先探测再保存"。
 #[derive(Debug, Deserialize)]
 pub struct MediaServerCheckQuery {
+    pub id: Option<String>,
     pub ip: Option<String>,
     #[serde(alias = "httpPort")]
     pub port: Option<i32>,
@@ -985,11 +997,37 @@ pub struct MediaServerCheckQuery {
 pub async fn media_server_check(
     State(state): State<AppState>,
     Query(q): Query<MediaServerCheckQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
-    let ip = q.ip.unwrap_or_else(|| "127.0.0.1".to_string());
-    let http_port = q.port.unwrap_or(80);
-    let secret = q.secret.unwrap_or_default();
-    let type_ = q.type_.unwrap_or_else(|| "zlm".to_string());
+) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+    // 先按 id 解析节点；解析不到再退回显式参数。
+    let stored = match q.id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(id) => Some(
+            get_media_server_by_id(&state.pool, id)
+                .await?
+                .ok_or_else(|| {
+                    AppError::business(ErrorCode::Error404, format!("流媒体节点不存在: {id}"))
+                })?,
+        ),
+        None => None,
+    };
+    let ip = q
+        .ip
+        .clone()
+        .or_else(|| stored.as_ref().and_then(|m| m.ip.clone()))
+        .unwrap_or_else(|| "127.0.0.1".to_string());
+    let http_port = q
+        .port
+        .or_else(|| stored.as_ref().and_then(|m| m.http_port))
+        .unwrap_or(80);
+    let secret = q
+        .secret
+        .clone()
+        .or_else(|| stored.as_ref().and_then(|m| m.secret.clone()))
+        .unwrap_or_default();
+    let type_ = q
+        .type_
+        .clone()
+        .or_else(|| stored.as_ref().and_then(|m| m.type_.clone()))
+        .unwrap_or_else(|| "zlm".to_string());
     let temp_client = crate::zlm::ZlmClient::new(&ip, http_port as u16, &secret);
 
     let mut payload = serde_json::json!({
@@ -1004,11 +1042,33 @@ pub async fn media_server_check(
         "sendRtpPortRange": "50000,60000"
     });
 
-    if let Ok(configs) = temp_client.get_server_config().await {
-        if let Some(obj) = payload.as_object_mut() {
-            for (k, v) in media_server_probe_fields(&configs) {
-                obj.insert(k, v);
+    // 探测结果必须**显式**表达成功/失败：此前无论成功与否都返回 `WVPResult::success`，
+    // data 里既没有 `code` 也没有 `msg`，而前端按 `data.code === 0` 判断
+    // → 永远弹「检测失败」（哪怕节点完全正常）。
+    let mut reachable = false;
+    match temp_client.get_server_config().await {
+        Ok(configs) => {
+            reachable = true;
+            if let Some(obj) = payload.as_object_mut() {
+                for (k, v) in media_server_probe_fields(&configs) {
+                    obj.insert(k, v);
+                }
             }
+        }
+        Err(e) => {
+            if let Some(obj) = payload.as_object_mut() {
+                obj.insert("reachable".to_string(), json!(false));
+                obj.insert("probeError".to_string(), json!(e.to_string()));
+            }
+        }
+    }
+    if let Some(obj) = payload.as_object_mut() {
+        obj.insert("reachable".to_string(), json!(reachable));
+        if !reachable && !obj.contains_key("probeError") {
+            obj.insert(
+                "probeError".to_string(),
+                json!("无法读取节点配置（secret 或端口可能不正确）"),
+            );
         }
     }
 
@@ -1033,7 +1093,20 @@ pub async fn media_server_check(
         }
     }
 
-    Json(WVPResult::success(payload))
+    if !reachable {
+        // 返回 data 的同时给出**HTTP 层错误**：前端拦截器会把 msg 弹出来，
+        // 用户能直接看到是"连不上"还是"secret 不对"。
+        let msg = payload
+            .get("probeError")
+            .and_then(|v| v.as_str())
+            .unwrap_or("节点不可达")
+            .to_string();
+        return Err(AppError::business(
+            ErrorCode::Error500,
+            format!("媒体节点 {ip}:{http_port} 检测失败: {msg}"),
+        ));
+    }
+    Ok(Json(WVPResult::success(payload)))
 }
 
 /// GET /api/server/media_server/record/check
@@ -1103,6 +1176,8 @@ pub struct MediaServerSaveBody {
     pub record_assist_port: Option<i32>,
     #[serde(alias = "defaultServer")]
     pub default_server: Option<bool>,
+    /// 是否参与选路（前端媒体节点编辑弹窗里的"启用"开关）
+    pub enabled: Option<bool>,
 }
 
 pub async fn media_server_save(
@@ -1157,8 +1232,9 @@ pub async fn media_server_save(
            rtp_proxy_port = COALESCE($15, rtp_proxy_port),
            record_assist_port = COALESCE($16, record_assist_port),
            default_server = COALESCE($17, default_server),
-           update_time = $18
-           WHERE id = $19"#,
+           enabled = COALESCE($18, enabled),
+           update_time = $19
+           WHERE id = $20"#,
     )
     .bind(body.hook_ip.as_deref())
     .bind(body.sdp_ip.as_deref())
@@ -1177,6 +1253,7 @@ pub async fn media_server_save(
     .bind(body.rtp_proxy_port)
     .bind(body.record_assist_port)
     .bind(body.default_server)
+    .bind(body.enabled)
     .bind(&now)
     .bind(&id)
     .execute(&state.pool)
@@ -1204,6 +1281,7 @@ pub async fn media_server_save(
            rtp_proxy_port = COALESCE(?, rtp_proxy_port),
            record_assist_port = COALESCE(?, record_assist_port),
            default_server = COALESCE(?, default_server),
+           enabled = COALESCE(?, enabled),
            update_time = ?
            WHERE id = ?"#,
     )
@@ -1224,6 +1302,7 @@ pub async fn media_server_save(
     .bind(body.rtp_proxy_port)
     .bind(body.record_assist_port)
     .bind(body.default_server)
+    .bind(body.enabled)
     .bind(&now)
     .bind(&id)
     .execute(&state.pool)
@@ -1332,7 +1411,18 @@ pub async fn media_server_media_info(
 /// - `proxy`   : 当前在线的拉流代理数（同上）
 /// - `gbReceive`: 国标收流数（从 ZLM getServerStats 中取常见键，找不到为 0）
 /// - `gbSend`   : 国标推流数（同上）
-pub async fn media_server_load(State(state): State<AppState>) -> Json<WVPResult<serde_json::Value>> {
+#[derive(Debug, Deserialize)]
+pub struct MediaServerLoadQuery {
+    /// 只看某个节点。WVP 的 `getMediaLoad()` 无入参（返回全部节点），
+    /// 但本平台控制台是**按节点逐张卡片**取值的，不给 id 就只能拿到整个数组，
+    /// 调用方再 `arr[0]` 就会把第一个节点的流量显示到每一张卡片上。
+    pub id: Option<String>,
+}
+
+pub async fn media_server_load(
+    State(state): State<AppState>,
+    Query(q): Query<MediaServerLoadQuery>,
+) -> Json<WVPResult<serde_json::Value>> {
     // gbReceive / gbSend 改用**本进程内存里的权威计数**：
     //   * gbReceive = 活跃的 GB28181 INVITE 会话（设备 → 平台收流）
     //   * gbSend    = 活跃的级联 SendRtp 会话（平台 → 上级推流）
@@ -1351,8 +1441,14 @@ pub async fn media_server_load(State(state): State<AppState>) -> Json<WVPResult<
         None => (0, 0),
     };
 
+    let wanted = q.id.as_deref().map(str::trim).filter(|s| !s.is_empty());
     let mut server_loads = Vec::new();
     for server_id in state.list_zlm_servers() {
+        if let Some(w) = wanted {
+            if w != server_id {
+                continue;
+            }
+        }
         // 每节点的推流 / 拉流代理数来自数据库（由 ZLM on_stream_changed 钩子
         // 写入 media_server_id），是真实且按节点归属的。
         let push = db::stream_push::count_all(&state.pool, Some(&server_id), Some(true), None)
@@ -1610,5 +1706,135 @@ mod media_server_probe_tests {
         assert_eq!(field(&fields, "sdpIp"), &json!(""));
         assert_eq!(field(&fields, "streamIp"), &json!(""));
         assert_eq!(fields.len(), 10);
+    }
+}
+
+#[cfg(test)]
+mod media_server_contract_tests {
+    use super::*;
+    use crate::test_support::app_state;
+
+    /// `check` 必须能用 `id` 定位节点；此前 DTO 里没有这个字段，
+    /// 前端点哪个节点都在探测兜底的 127.0.0.1:80。
+    #[test]
+    fn check_query_accepts_id_and_explicit_params() {
+        let by_id: MediaServerCheckQuery =
+            serde_json::from_value(serde_json::json!({"id": "ms-1"})).unwrap();
+        assert_eq!(by_id.id.as_deref(), Some("ms-1"));
+
+        let explicit: MediaServerCheckQuery = serde_json::from_value(serde_json::json!({
+            "ip": "10.0.0.1", "httpPort": 8080, "secret": "s", "type": "zlm"
+        }))
+        .unwrap();
+        assert_eq!(explicit.ip.as_deref(), Some("10.0.0.1"));
+        assert_eq!(explicit.port, Some(8080));
+    }
+
+    /// 不存在的 id 应 404，而不是静默去探测 127.0.0.1。
+    #[tokio::test]
+    async fn check_unknown_id_returns_404() {
+        let state = app_state().await;
+        let err = media_server_check(
+            State(state.clone()),
+            Query(MediaServerCheckQuery {
+                id: Some("nope".to_string()),
+                ip: None,
+                port: None,
+                secret: None,
+                type_: None,
+            }),
+        )
+        .await
+        .expect_err("未知节点应报错");
+        assert!(matches!(err, AppError::Business(_, _)));
+    }
+
+    /// 节点不可达时必须**报错**（前端据此提示原因），而不是回一个"成功"的空壳
+    /// ——此前 data 里既没有 code 也没有 msg，前端按 `data.code === 0` 判断，
+    /// 于是无论连通与否都弹「检测失败」。
+    #[tokio::test]
+    async fn check_unreachable_node_reports_error() {
+        let state = app_state().await;
+        media_server::add(&state.pool, "ms-1", "127.0.0.1", 1, "2026-01-01 00:00:00")
+            .await
+            .unwrap();
+        let err = media_server_check(
+            State(state.clone()),
+            Query(MediaServerCheckQuery {
+                id: Some("ms-1".to_string()),
+                ip: None,
+                port: None,
+                secret: None,
+                type_: None,
+            }),
+        )
+        .await
+        .expect_err("端口 1 上不可能有 ZLM");
+        match err {
+            AppError::Business(_, msg) => {
+                assert!(msg.contains("127.0.0.1:1"), "错误信息应指出探测目标: {msg}");
+            }
+            other => panic!("期望业务错误，得到 {other:?}"),
+        }
+    }
+
+    /// `enabled` 必须真的落库：此前 DTO、结构体、schema 都没有这一列，
+    /// 编辑弹窗里的"启用"开关保存后被静默丢弃。
+    #[tokio::test]
+    async fn save_persists_enabled_flag() {
+        let state = app_state().await;
+        media_server::ensure_columns(&state.pool).await.unwrap();
+
+        let body: MediaServerSaveBody = serde_json::from_value(serde_json::json!({
+            "id": "ms-1", "ip": "127.0.0.1", "httpPort": 8080, "secret": "s",
+            "enabled": false, "autoConfig": false
+        }))
+        .unwrap();
+        let _ = media_server_save(State(state.clone()), Json(body)).await.unwrap();
+
+        let row = get_media_server_by_id(&state.pool, "ms-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.enabled, Some(false), "禁用状态必须落库");
+
+        // 停用后不应出现在"在线可选节点"里（node 选择/负载均衡都会用它）
+        let online = media_server::list_online_servers(&state.pool).await.unwrap();
+        assert!(online.iter().all(|m| m.id != "ms-1"), "停用节点不该被选路");
+    }
+
+    /// `load` 支持按 id 过滤（此前忽略入参，调用方取 `arr[0]` 会把第一个节点的
+    /// 流量显示到每一张卡片上）。
+    #[tokio::test]
+    async fn load_can_filter_by_id() {
+        let state = app_state().await;
+        let all = media_server_load(
+            State(state.clone()),
+            Query(MediaServerLoadQuery { id: None }),
+        )
+        .await;
+        let arr = all.0.data.unwrap();
+        let total = arr.as_array().map(|a| a.len()).unwrap_or(0);
+
+        let filtered = media_server_load(
+            State(state.clone()),
+            Query(MediaServerLoadQuery {
+                id: Some("does-not-exist".to_string()),
+            }),
+        )
+        .await;
+        assert_eq!(
+            filtered.0.data.unwrap().as_array().unwrap().len(),
+            0,
+            "过滤不存在的 id 应返回空数组（而不是全量 {total} 条）"
+        );
+
+        // 每个元素都必须带 id（前端按 id 配对）
+        if let Some(list) = arr.as_array() {
+            for item in list {
+                assert!(item.get("id").is_some());
+                assert!(item.get("gbReceive").is_some());
+            }
+        }
     }
 }

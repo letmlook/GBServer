@@ -13,7 +13,7 @@
 
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Local, Utc};
 
 /// Keepalive 超时阈值：默认 30 秒（来自 [zlm.keepalive].timeout_secs）
 pub const DEFAULT_KEEPALIVE_TIMEOUT_SECS: i64 = 30;
@@ -81,8 +81,17 @@ pub async fn run_health_check_once_with_config(
     config: &HealthCheckConfig,
 ) -> anyhow::Result<usize> {
     use crate::db::media_server;
-    let offline_threshold = Utc::now() - chrono::Duration::seconds(config.timeout_secs);
-    let threshold_str = offline_threshold.to_rfc3339();
+    // 阈值必须与 `gb_media_server.last_keepalive_time` **同格式同时区**做字符串比较。
+    //
+    // 此前这里是 `to_rfc3339()`（`2026-09-12T16:47:29+00:00`），而写入方
+    // （hook 的 on_server_keepalive / health_checker）写的是 `%Y-%m-%d %H:%M:%S`。
+    // 两者在第 11 个字符处 `' ' (0x20) < 'T' (0x54)`，于是**任何** keepalive 时间戳
+    // 都小于阈值 → 每个节点在启动约 `interval × grace`（默认 30s）后都被错误地
+    // 标记为 offline，`online/list`、节点选择、负载均衡随之失效。
+    // 立即可复现：真实 ZLM 在线且探活成功，日志里依然打出
+    // "Marked 1 media nodes offline (keepalive timeout=30s × 3 grace)"。
+    let offline_threshold = Local::now() - chrono::Duration::seconds(config.timeout_secs);
+    let threshold_str = offline_threshold.format("%Y-%m-%d %H:%M:%S").to_string();
 
     // Step 1: 递增过期节点的连续丢失计数
     let _ = media_server::increment_miss_count_if_expired(
@@ -212,9 +221,15 @@ mod tests {
         // 插两行：
         //  - expired: status=1, keepalive 是 2 分钟前 → 应该被切 offline
         //  - fresh:   status=1, keepalive 是 5 秒前 → 应该保持 online
-        let expired_ts =
-            (Utc::now() - ChronoDuration::seconds(120)).to_rfc3339();
-        let fresh_ts = (Utc::now() - ChronoDuration::seconds(5)).to_rfc3339();
+        // 用**生产写入格式**（本地时区 + `%Y-%m-%d %H:%M:%S`）。
+        // 此前测试用的是 rfc3339，与真实写入格式不同 —— 因此这个
+        // "所有节点 30s 后都被判离线" 的缺陷在测试里完全看不见。
+        let expired_ts = (Local::now() - ChronoDuration::seconds(120))
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+        let fresh_ts = (Local::now() - ChronoDuration::seconds(5))
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
 
         sqlx::query(
             "INSERT INTO gb_media_server (id, ip, http_port, status, last_keepalive_time, consecutive_misses) VALUES (?, ?, ?, ?, ?, ?)",
@@ -296,7 +311,9 @@ mod tests {
         .expect("create table");
 
         // 插一行已过期的在线节点
-        let expired_ts = (Utc::now() - ChronoDuration::seconds(120)).to_rfc3339();
+        let expired_ts = (Local::now() - ChronoDuration::seconds(120))
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
         sqlx::query(
             "INSERT INTO gb_media_server (id, ip, http_port, status, last_keepalive_time, consecutive_misses) VALUES (?, ?, ?, ?, ?, ?)",
         )
@@ -358,7 +375,9 @@ mod tests {
         .expect("create table");
 
         // 插一行已过期的在线节点，consecutive_misses=2（差一次就达 3）
-        let expired_ts = (Utc::now() - ChronoDuration::seconds(120)).to_rfc3339();
+        let expired_ts = (Local::now() - ChronoDuration::seconds(120))
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
         sqlx::query(
             "INSERT INTO gb_media_server (id, ip, http_port, status, last_keepalive_time, consecutive_misses) VALUES (?, ?, ?, ?, ?, ?)",
         )
@@ -411,7 +430,7 @@ mod tests {
         .await
         .expect("create table");
 
-        let now_ts = Utc::now().to_rfc3339();
+        let now_ts = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
         sqlx::query(
             "INSERT INTO gb_media_server (id, ip, http_port, status, last_keepalive_time, consecutive_misses) VALUES (?, ?, ?, ?, ?, ?)",
         )

@@ -44,6 +44,8 @@ pub struct MediaServer {
     pub send_rtp_port_range: Option<String>,
     pub record_assist_port: Option<i32>,
     pub default_server: Option<bool>,
+    /// 是否参与选路。false = 暂时下线（健康检查照常跑，但不接收新流）。
+    pub enabled: Option<bool>,
     pub create_time: Option<String>,
     pub update_time: Option<String>,
     pub hook_alive_interval: Option<i32>,
@@ -382,19 +384,19 @@ pub async fn update_status(pool: &Pool, id: &str, status: bool, last_keepalive: 
 pub async fn list_online_servers(pool: &Pool) -> sqlx::Result<Vec<MediaServer>> {
     #[cfg(feature = "mysql")]
     return sqlx::query_as::<_, MediaServer>(
-        "SELECT * FROM gb_media_server WHERE status = 1 ORDER BY id",
+        "SELECT * FROM gb_media_server WHERE status = 1 AND COALESCE(enabled, 1) = 1 ORDER BY id",
     )
     .fetch_all(pool)
     .await;
     #[cfg(feature = "postgres")]
     return sqlx::query_as::<_, MediaServer>(
-        "SELECT * FROM gb_media_server WHERE status = true ORDER BY id",
+        "SELECT * FROM gb_media_server WHERE status = true AND COALESCE(enabled, true) = true ORDER BY id",
     )
     .fetch_all(pool)
     .await;
     #[cfg(feature = "sqlite")]
     return sqlx::query_as::<_, MediaServer>(
-        "SELECT * FROM gb_media_server WHERE status = 1 ORDER BY id",
+        "SELECT * FROM gb_media_server WHERE status = 1 AND COALESCE(enabled, 1) = 1 ORDER BY id",
     )
     .fetch_all(pool)
     .await;
@@ -509,7 +511,8 @@ pub async fn update_last_keepalive(
 /// Mark media servers as offline if their last keepalive is older than `before_time`.
 ///
 /// Only rows currently with `status = 1` are eligible; the timestamp is
-/// compared against `last_keepalive_time` (stored as RFC3339 string).
+/// compared against `last_keepalive_time` **as a string**, so `before_time`
+/// 必须与写入方同格式同时区（`%Y-%m-%d %H:%M:%S`，本地时区）。
 ///
 /// Returns the number of rows updated (i.e. newly-offline nodes).
 pub async fn mark_offline_if_expired(
@@ -796,4 +799,47 @@ pub async fn remove_white_list_cidr(
     .execute(pool)
     .await?;
     Ok(r.rows_affected())
+}
+
+/// 幂等迁移：为已存在的 `gb_media_server` 表补 `enabled` 列。
+///
+/// 三份 schema 都已加列，但老库不会自己长出来 —— 不补的话
+/// `SELECT *` 里没有 `enabled`，结构体的 `enabled` 恒为 None，
+/// 界面上的"启用"开关读回来永远是关的。
+pub async fn ensure_columns(pool: &Pool) -> sqlx::Result<()> {
+    #[cfg(feature = "postgres")]
+    {
+        let _ = sqlx::query("ALTER TABLE gb_media_server ADD COLUMN IF NOT EXISTS enabled bool DEFAULT true")
+            .execute(pool)
+            .await?;
+    }
+    #[cfg(feature = "sqlite")]
+    {
+        let exists: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pragma_table_info('gb_media_server') WHERE name = 'enabled'",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0);
+        if exists == 0 {
+            let _ = sqlx::query("ALTER TABLE gb_media_server ADD COLUMN enabled INTEGER DEFAULT 1")
+                .execute(pool)
+                .await?;
+        }
+    }
+    #[cfg(feature = "mysql")]
+    {
+        let exists: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'gb_media_server' AND column_name = 'enabled'",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0);
+        if exists == 0 {
+            let _ = sqlx::query("ALTER TABLE gb_media_server ADD COLUMN enabled bool DEFAULT true")
+                .execute(pool)
+                .await?;
+        }
+    }
+    Ok(())
 }

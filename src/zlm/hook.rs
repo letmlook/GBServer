@@ -1392,7 +1392,8 @@ pub(crate) async fn handle_webhook_inner(
                 let server_id = data.media_server_id.as_deref().unwrap_or("zlmediakit-1");
                 tracing::debug!("ZLM server keepalive: {}", server_id);
                 // Update last keepalive time in DB
-                let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+                // 本地时区：与 create_time/update_time 及健康检查的阈值比较口径一致
+                let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
                 if let Err(e) =
                     crate::db::media_server::update_last_keepalive(&state.pool, server_id, &now)
                         .await

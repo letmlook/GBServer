@@ -22,6 +22,13 @@
         <el-table-column prop="httpPort" label="HTTP 端口" width="120" />
         <el-table-column prop="rtmpPort" label="RTMP" width="80" />
         <el-table-column prop="rtspPort" label="RTSP" width="80" />
+        <el-table-column label="启用" width="80">
+          <template #default="{ row }">
+            <el-tag :type="row.enabled === false ? 'info' : 'success'" size="small">
+              {{ row.enabled === false ? '已停用' : '启用中' }}
+            </el-tag>
+          </template>
+        </el-table-column>
         <el-table-column label="在线" width="80">
           <template #default="{ row }">
             <el-tag :type="row.status ? 'success' : 'info'" size="small">{{ row.status ? '在线' : '离线' }}</el-tag>
@@ -81,13 +88,18 @@ function onEdit(row: any) {
 
 async function onCheck(row: any) {
   if (!row.id) return
-  const res = await checkMediaServer(row.id)
-  if ((res.data as any)?.code === 0) {
-    ElMessage.success('连通正常')
-  } else {
-    ElMessage.error(`检测失败: ${(res.data as any)?.msg ?? ''}`)
+  // 此前按 `data.code === 0` 判断，而后端返回的是节点信息 payload（没有 code/msg）
+  // → 无论节点是否连通都弹「检测失败」。现在：节点不可达时后端返回业务错误
+  // （拦截器抛出并提示原因），成功则这里给出明确的连通信息。
+  try {
+    const res = await checkMediaServer({ id: row.id })
+    const probe = res.data ?? {}
+    ElMessage.success(
+      probe.rtpPortRange ? `连通正常（RTP ${probe.rtpPortRange}）` : '连通正常'
+    )
+  } finally {
+    loadData()
   }
-  loadData()
 }
 
 async function onDelete(row: any) {
