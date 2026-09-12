@@ -346,11 +346,8 @@ pub async fn get_play_url(
             "http://{}:{}/{}/{}/hls.m3u8",
             host, http_port, app, stream_id
         ),
-        "flv" => format!("http://{}:{}/{}/{}.flv", host, http_port, app, stream_id),
-        "ws_flv" => format!(
-            "ws://{}:{}/{}/{}.flv",
-            host, http_port, app, stream_id
-        ),
+        "flv" => crate::zlm::address_builder::http_flv_url(&host, http_port, &app, &stream_id),
+        "ws_flv" => crate::zlm::address_builder::ws_flv_url(&host, http_port, &app, &stream_id),
         "webrtc" => format!(
             "webrtc://{}:{}/index/api/webrtc?app={}&stream={}&type=play",
             host, http_port, app, stream_id

@@ -868,6 +868,9 @@ pub async fn proxy_start(
     let media_ip = zlm.ip.clone();
     let http_port = zlm.http_port;
     let stream_url = format!("{app}/{stream}");
+    // 代理流的 `enable_hls` 由创建时的参数决定（默认 false）→ 没有 hls 源时
+    // 不要给出 404 地址（前端优先用 hls）
+    let hls_available = zlm.has_schema(&app, &stream, "hls").await;
     Ok(Json(WVPResult::success(serde_json::json!({
         "id": rec.id,
         "app": app,
@@ -876,9 +879,14 @@ pub async fn proxy_start(
         "streamKey": key,
         "mediaServerId": resolved_media_server_id,
         "playUrl": format!("rtsp://{media_ip}:554/{stream_url}"),
-        "flvUrl": format!("http://{media_ip}:{http_port}/{stream_url}.flv"),
-        "wsUrl": format!("ws://{media_ip}:{http_port}/{stream_url}.live.flv"),
-        "hlsUrl": format!("http://{media_ip}:{http_port}/{stream_url}/hls.m3u8"),
+        "flvUrl": crate::zlm::address_builder::http_flv_url(&media_ip, http_port, &app, &stream),
+        "wsUrl": crate::zlm::address_builder::ws_flv_url(&media_ip, http_port, &app, &stream),
+        "hlsAvailable": hls_available,
+        "hlsUrl": if hls_available {
+            serde_json::json!(crate::zlm::address_builder::hls_url(&media_ip, http_port, &app, &stream))
+        } else {
+            serde_json::Value::Null
+        },
         "message": "拉流代理已启动"
     }))))
 }

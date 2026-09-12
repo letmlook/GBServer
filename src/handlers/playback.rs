@@ -226,7 +226,7 @@ pub async fn playback_start(
                             let media_ip = zlm_client.ip.clone();
                             let http_port = zlm_client.http_port;
                             let play_url = format!("rtsp://{}:554/{}/{}", media_ip, app, stream_id);
-                            let flv_url = format!("http://{}:{}/{}/{}.flv", media_ip, http_port, app, stream_id);
+                            let flv_url = crate::zlm::address_builder::http_flv_url(&media_ip, http_port, &app, &stream_id);
                             let hls_url = format!("http://{}:{}/{}/{}/hls.m3u8", media_ip, http_port, app, stream_id);
                             if let Some(ref playback_manager) = state.playback_manager {
                                 playback_manager.create(PlaybackSession {
@@ -245,7 +245,11 @@ pub async fn playback_start(
                                     source: source.to_string(),
                                 }).await;
                             }
-                            return Ok(Json(WVPResult::success(serde_json::json!({
+                            // `hls` 同样只在真的有源时给出（回放流在多数 ZLM 版本上
+                            // 没有 hls 源，给出 404 地址会让前端优先选它而播不出来）
+                            let hls_available =
+                                zlm_client.has_schema(&app, &stream_id, "hls").await;
+                            let mut payload = serde_json::json!({
                                 "streamId": stream_id,
                                 "deviceId": device_id,
                                 "channelId": channel_id,
@@ -253,13 +257,17 @@ pub async fn playback_start(
                                 "stream": stream_id,
                                 "playUrl": play_url,
                                 "flvUrl": flv_url,
-                                "hls": hls_url,
+                                "hlsAvailable": hls_available,
                                 "startTime": start_time,
                                 "endTime": end_time,
                                 "currentTime": start_time,
                                 "speed": 1.0,
                                 "source": source
-                            }))));
+                            });
+                            if hls_available {
+                                payload["hls"] = serde_json::json!(hls_url);
+                            }
+                            return Ok(Json(WVPResult::success(payload)));
                         }
                         Err(e) => {
                             tracing::error!("Playback INVITE + media wait failed: {}", e);

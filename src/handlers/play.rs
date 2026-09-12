@@ -12,7 +12,11 @@ fn parse_sdp_media_port(sdp: &str) -> Option<u16> {
 }
 
 /// 统一的"播放地址" JSON：所有成功分支都用它，避免同一组 URL 拼在多处漂移。
-fn play_urls_json(
+///
+/// `hls` **只在 ZLM 真的有 hls 源时才给出**：实测本仓库镜像上 GB28181 的
+/// RTP/PS 流没有 hls 源（RTMP 推流才有），无条件给出会得到一个 404 地址，
+/// 而实时预览页优先用它 → 画面出不来还看不出原因。
+async fn play_urls_json(
     zlm_client: &crate::zlm::ZlmClient,
     stream_id: &str,
     device_id: &str,
@@ -23,21 +27,26 @@ fn play_urls_json(
 ) -> serde_json::Value {
     let ip = &zlm_client.ip;
     let http = zlm_client.http_port;
-    serde_json::json!({
+    let hls_available = zlm_client.has_schema("rtp", stream_id, "hls").await;
+    let mut out = serde_json::json!({
         "app": "rtp",
         "stream": stream_id,
         "playUrl": format!("rtsp://{ip}:554/rtp/{stream_id}"),
-        "flvUrl": format!("http://{ip}:{http}/rtp/{stream_id}.flv"),
-        "wsUrl": format!("ws://{ip}:{http}/rtp/{stream_id}.flv"),
-        "ws_flv": format!("ws://{ip}:{http}/rtp/{stream_id}.flv"),
-        "hls": format!("http://{ip}:{http}/rtp/{stream_id}/hls.m3u8"),
+        "flvUrl": crate::zlm::address_builder::http_flv_url(ip, http, "rtp", stream_id),
+        "wsUrl": crate::zlm::address_builder::ws_flv_url(ip, http, "rtp", stream_id),
+        "ws_flv": crate::zlm::address_builder::ws_flv_url(ip, http, "rtp", stream_id),
         "webrtc": format!("webrtc://{ip}:{http}/index/api/webrtc?app=rtp&stream={stream_id}&type=play"),
+        "hlsAvailable": hls_available,
         "deviceId": device_id,
         "channelId": channel_id,
         "hasAudio": has_audio,
         "ssrc": ssrc,
         "transport": transport,
-    })
+    });
+    if hls_available {
+        out["hls"] = serde_json::json!(crate::zlm::address_builder::hls_url(ip, http, "rtp", stream_id));
+    }
+    out
 }
 
 pub async fn play_start(
@@ -139,7 +148,8 @@ pub async fn play_start(
                                 channel.has_audio.unwrap_or(false),
                                 &ssrc,
                                 &transport_mode,
-                            )));
+                            )
+                            .await));
                         }
                         Ok(None) => {
                             tracing::warn!(
@@ -258,21 +268,20 @@ pub async fn play_start(
 
             // 等几秒让 ZLM connect 后拿到媒体再返回成功(此时 ZLM 应在
             // 通过 hook 通知 media-ready,但客户端只关心 stream_id/play_url)
-            return Json(WVPResult::success(serde_json::json!({
-                "app": "rtp",
-                "stream": stream_id,
-                "playUrl": format!("rtsp://{}:554/rtp/{}", zlm_client.ip, stream_id),
-                "flvUrl": format!("http://{}:{}/{}.flv", zlm_client.ip, zlm_client.http_port, stream_id),
-                "wsUrl": format!("ws://{}:{}/{}.flv", zlm_client.ip, zlm_client.http_port, stream_id),
-                "ws_flv": format!("ws://{}:{}/{}.flv", zlm_client.ip, zlm_client.http_port, stream_id),
-                "hls": format!("http://{}:{}/rtp/{}/hls.m3u8", zlm_client.ip, zlm_client.http_port, stream_id),
-                "webrtc": format!("webrtc://{}:{}/index/api/webrtc?app=rtp&stream={}&type=play", zlm_client.ip, zlm_client.http_port, stream_id),
-                "deviceId": device_id,
-                "channelId": channel_id,
-                "hasAudio": channel.has_audio.unwrap_or(false),
-                "ssrc": ssrc,
-                "transport": "TCP-PASSIVE",
-            })));
+            // 复用统一构造器：FLV 后缀 .live.flv、hls 仅在真的有源时给出
+            let mut payload = play_urls_json(
+                zlm_client,
+                &stream_id,
+                &device_id,
+                &channel_id,
+                channel.has_audio.unwrap_or(false),
+                &ssrc,
+                "TCP-PASSIVE",
+            )
+            .await;
+            payload["playUrl"] =
+                serde_json::json!(format!("rtsp://{}:554/rtp/{}", zlm_client.ip, stream_id));
+            return Json(WVPResult::success(payload));
         }
 
         match sip.send_play_invite_and_wait_media(
@@ -325,25 +334,20 @@ pub async fn play_start(
                 let http_port = zlm_client.http_port;
                 // 注意这里假设了几个默认端口（如果在配置里解析过可以替换），这里为了快速回掉先用通配协议配置
 
-                let play_url = format!("rtsp://{}:554/{}", media_ip, stream_url);
-                let flv_url = format!("http://{}:{}/{}.flv", media_ip, http_port, stream_url);
-                let ws_url = format!("ws://{}:{}/{}.flv", media_ip, http_port, stream_url);
-                let hls_url = format!("http://{}:{}/{}/hls.m3u8", media_ip, http_port, stream_url);
-
-                return Json(WVPResult::success(serde_json::json!({
-                    "app": "rtp",
-                    "stream": stream_id,
-                    "playUrl": play_url,
-                    "flvUrl": flv_url,
-                    "wsUrl": ws_url,
-                    "ws_flv": ws_url,
-                    "hls": hls_url,
-                    "webrtc": format!("webrtc://{}:{}/index/api/webrtc?app=rtp&stream={}&type=play", media_ip, http_port, stream_id),
-                    "deviceId": device_id,
-                    "channelId": channel_id,
-                    "hasAudio": channel.has_audio.unwrap_or(false),
-                    "ssrc": ssrc,
-                })));
+                let _ = (media_ip, http_port, stream_url);
+                // 与其它成功分支共用同一份 URL（FLV 后缀 .live.flv、hls 需探测）
+                return Json(WVPResult::success(
+                    play_urls_json(
+                        zlm_client,
+                        &stream_id,
+                        &device_id,
+                        &channel_id,
+                        channel.has_audio.unwrap_or(false),
+                        &ssrc,
+                        &transport_mode,
+                    )
+                    .await,
+                ));
             }
             Err(e) => {
                 tracing::error!("SIP INVITE or media wait failed: {}", e);

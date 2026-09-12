@@ -833,19 +833,26 @@ pub async fn channel_play(
 
     let ip = &zlm_client.ip;
     let http = zlm_client.http_port;
-    Json(WVPResult::success(serde_json::json!({
+    // `hls` 只在 ZLM 真的有 hls 源时才给（RTP/PS 流通常没有），
+    // 否则返回的是一个 404 地址，而前端优先用它。
+    let hls_available = zlm_client.has_schema("rtp", &stream_id, "hls").await;
+    let mut out = serde_json::json!({
         "app": "rtp",
         "stream": stream_id,
         "playUrl": format!("rtsp://{ip}:554/rtp/{stream_id}"),
-        "flvUrl": format!("http://{ip}:{http}/rtp/{stream_id}.flv"),
-        "wsUrl": format!("ws://{ip}:{http}/rtp/{stream_id}.flv"),
-        "ws_flv": format!("ws://{ip}:{http}/rtp/{stream_id}.flv"),
-        "hls": format!("http://{ip}:{http}/rtp/{stream_id}/hls.m3u8"),
+        "flvUrl": crate::zlm::address_builder::http_flv_url(ip, http, "rtp", &stream_id),
+        "wsUrl": crate::zlm::address_builder::ws_flv_url(ip, http, "rtp", &stream_id),
+        "ws_flv": crate::zlm::address_builder::ws_flv_url(ip, http, "rtp", &stream_id),
         "webrtc": format!("webrtc://{ip}:{http}/index/api/webrtc?app=rtp&stream={stream_id}&type=play"),
+        "hlsAvailable": hls_available,
         "deviceId": device_id,
         "channelId": gb_channel_id,
         "hasAudio": ch.has_audio.unwrap_or(false),
-    })))
+    });
+    if hls_available {
+        out["hls"] = serde_json::json!(crate::zlm::address_builder::hls_url(ip, http, "rtp", &stream_id));
+    }
+    Json(WVPResult::success(out))
 }
 
 /// GET /api/common/channel/play/stop?channelId=

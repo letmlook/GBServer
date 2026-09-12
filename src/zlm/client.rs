@@ -151,6 +151,36 @@ impl ZlmClient {
         Ok(resp.data.filter(|d| d.schema == schema && d.app == app && d.stream == stream))
     }
 
+    /// 该流当前是否真的有某个 schema 的源（rtsp/rtmp/hls/ts/fmp4…）。
+    ///
+    /// 用 `getMediaList` 精确查询 app+stream：ZLM 并非对每一路流都生成所有协议
+    /// （本仓库实测的镜像上，GB28181 的 RTP/PS 流**没有 hls 源**，而 RTMP 推流有）。
+    /// 调用方据此决定要不要把某个播放地址放进响应，避免"给了地址但 404"。
+    pub async fn has_schema(&self, app: &str, stream: &str, schema: &str) -> bool {
+        let params = vec![
+            ("secret", self.secret.clone()),
+            ("app", app.to_string()),
+            ("stream", stream.to_string()),
+        ];
+        match self
+            .request::<serde_json::Value>("/index/api/getMediaList", &params)
+            .await
+        {
+            Ok(resp) => resp
+                .get("data")
+                .and_then(|d| d.as_array())
+                .map(|arr| {
+                    arr.iter().any(|m| {
+                        m.get("app").and_then(|v| v.as_str()) == Some(app)
+                            && m.get("stream").and_then(|v| v.as_str()) == Some(stream)
+                            && m.get("schema").and_then(|v| v.as_str()) == Some(schema)
+                    })
+                })
+                .unwrap_or(false),
+            Err(_) => false,
+        }
+    }
+
     pub async fn is_media_exist(&self, schema: &str, vhost: &str, app: &str, stream: &str) -> Result<bool> {
         let params = vec![
             ("secret", self.secret.clone()),

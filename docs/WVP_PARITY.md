@@ -12,7 +12,7 @@
 | 总代码量（src/） | 79,179 行 Rust | `find src -name '*.rs' \| xargs wc -l` |
 | 已注册 HTTP 路由 | 386 条唯一 `/api/...` 路径 | `grep -oE '"/api/[^"]*"' src/router.rs \| sort -u \| wc -l` |
 | Handler 模块 | 29 个（含 `stub.rs` / `device_stub.rs` 两个兼容 shim） | `grep -c 'pub mod' src/handlers/mod.rs` |
-| 后端测试 | **695 通过 / 0 失败**（第四十一轮刷新） | `cargo test` |
+| 后端测试 | **696 通过 / 0 失败**（第四十二轮刷新） | `cargo test` |
 | 编译状态 | `cargo check` 0 error / **0 warning**；clippy 262；**deprecated 0** | `cargo check` / `cargo clippy --all-targets` |
 | 数据库 feature | SQLite（默认）/ PostgreSQL / MySQL **三者均编译通过** | CI `feature-matrix` job |
 | CI | ⏸️ 工作流已就绪但**按需暂停自动触发**（见 `.github/workflows/ci.yml`） | — |
@@ -1871,6 +1871,50 @@ cargo check --features mysql/postgres  OK
 npx playwright test              61 passed / 0 failed（云端录像 2 例按环境显式 skip）
 ```
 
+### 实时播放地址：FLV 后缀写错 + HLS 无条件返回（2026-09-12 第四十二轮）
+
+验证 HLS/FLV 播放链路时发现两条**浏览器唯一能用**的地址都是坏的：
+
+| 地址 | 此前 | 实测结果 |
+|------|------|---------|
+| `flvUrl` | `http://ip:8080/rtp/<stream>.flv` | ZLM 返回 **404 的 HTML 页面** |
+| `flvUrl`（正确） | `http://ip:8080/rtp/<stream>.live.flv` | `FLV…` 真正的流 |
+| `hls` | 无条件返回 `…/<stream>/hls.m3u8` | GB28181 的 RTP/PS 流在 ZLM 上**根本没有 hls 源** → 404（RTMP 推流才有） |
+
+实时预览页的兜底顺序是 `hls → flvUrl → playUrl`，而 `playUrl` 是 rtsp
+（浏览器播不了）—— 于是**画面永远出不来，前端还拿不到任何报错线索**
+（此前的 e2e 只断言"按钮存在"，从未验证过地址可用）。
+
+修复：
+
+* 新增唯一的 URL 构造器 `zlm::address_builder::{http_flv_url, ws_flv_url, hls_url}`，
+  HTTP-FLV/WS-FLV 后缀固定 `.live.flv`，并替换 `play.rs`（3 处分支）/
+  `common_channel.rs` / `playback.rs` / `device_query.rs` / `stream.rs` 里的手拼串；
+* 新增 `ZlmClient::has_schema(app, stream, schema)`（读 `getMediaList`），
+  **只在真的有 hls 源时**才把 `hls` 放进响应，并附带 `hlsAvailable` 供前端判断；
+  三个分支（新建/复用/TCP-PASSIVE）现在共用同一个 `play_urls_json`。
+
+**实测**（真实 ZLM）：
+
+```
+GET /api/play/start/<dev>/<ch>
+  flvUrl = http://127.0.0.1:8080/rtp/<stream>.live.flv     → 首 3 字节 "FLV"（真流）
+  hls    = （不返回）  hlsAvailable=false                  → 前端回退到 FLV，可播
+GET /api/common/channel/play?channelId=1                    → 同上
+GET /api/proxy/start?id=N（代理流 enable_hls=false）        → hlsUrl=null，flvUrl 可用
+Playwright → 新增 playUrls.spec.ts（断言 flvUrl 真能取到 FLV 字节、
+             返回了 hls 就必须可用）；整套 62 passed
+```
+
+#### 第四十二轮基线
+
+```
+cargo test                       696 passed / 0 failed
+cargo check --all-targets        本项目 0 warning
+cargo check --features mysql/postgres  OK
+npx playwright test              62 passed / 0 failed（云端录像 2 例按环境显式 skip）
+```
+
 > **环境限制（本机，非仓库缺陷）**：Docker Desktop 出现容器 → 宿主机网络不通
 > （`host.docker.internal` 只解析出 IPv6 ULA，`192.168.65.254` / `172.18.0.1` /
 > 宿主机 LAN IP 均不可达，连 redis 容器也连不上后端）。因此 ZLM 的全部 hook
@@ -2315,6 +2359,7 @@ vue-tsc --noEmit                 通过
 - 2026-09-12 第三十九轮：`cargo test` —— **688 通过 / 0 失败**（回放 3 条 + 对讲时序竞争；**16 模块 130 条契约审计全部修完**）
 - 2026-09-12 第四十轮：`cargo test` —— **690 通过 / 0 失败**（前端控制报文对齐 WVP 的 8 字节 PTZCmd；e2e 61）
 - 2026-09-12 第四十一轮：`cargo test` —— **691 通过 / 0 失败**（邀请报文 `f=`/`Subject` 对齐国标与 WVP；e2e 61）
+- 2026-09-12 第四十二轮：`cargo test` —— **696 通过 / 0 失败**（实时播放地址：FLV 后缀 `.live.flv`、HLS 可用性探测；e2e 62）
 - 2026-09-12 第三十一轮：`cargo test` —— **641 通过 / 0 失败**（JT1078 终端/围栏 13 条）
 - 2026-09-12 第三十轮：`cargo test` —— **637 通过 / 0 失败**（设备页 7 条）
 - 2026-09-12 第二十九轮：`cargo test` —— **634 通过 / 0 失败**（云端录像全链路）
