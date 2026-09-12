@@ -202,6 +202,21 @@ impl DeviceCommander {
         )
     }
 
+    /// 注册 MobilePosition 查询并保留 receiver（`/api/position/realtime/:deviceId`）。
+    ///
+    /// GB/T 28181 A.2.4.3：设备对「移动位置查询」的应答是一份带
+    /// `<Longitude>/<Latitude>/<Speed>/<Direction>` 的 MESSAGE。响应路由
+    /// （`PendingResponseRouter::route_message_response`）已支持
+    /// `CmdType=MobilePosition`，这里只需按同样的 call_id 规约注册。
+    pub fn register_mobile_position_with_receiver(
+        &self, device_id: &str, sn: u32,
+    ) -> (PendingRequest, tokio::sync::oneshot::Receiver<String>) {
+        let call_id = format!("mp_{}_{}", device_id, sn);
+        self.pending.register_with_receiver(
+            device_id, sn, PendingCmdType::MobilePosition, &call_id, None,
+        )
+    }
+
     /// 等待 receiver 响应（带超时）
     pub async fn await_response(
         &self,

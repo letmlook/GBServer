@@ -4020,6 +4020,34 @@ let renewal_pool = pool.clone();
             tracing::error!("设备 {} 的 MobilePosition 历史写库失败: {}", device_id, e);
         }
 
+        // 同一份位置也要写进 **WVP 对齐**的 `gb_device_mobile_position`：
+        // 这条 MESSAGE-响应路径与 SUBSCRIBE 的 NOTIFY 路径此前各写一张表，
+        // 而对外接口（`/api/position/*`）读的是后者 —— 只写 `gb_position_history`
+        // 的话，用 MESSAGE 上报位置的设备在 API 上**永远查不到位置**。
+        {
+            use crate::db::mobile_position as pos_db;
+            let record = pos_db::MobilePositionInsert {
+                device_id: device_id.to_string(),
+                channel_id: device_id.to_string(),
+                device_name: None,
+                time: Some(time.clone()),
+                longitude: Some(longitude),
+                latitude: Some(latitude),
+                altitude: Some(altitude),
+                speed: Some(speed),
+                direction: Some(direction),
+                report_source: Some("message".to_string()),
+                create_time: chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+            };
+            if let Err(e) = pos_db::insert(pool, &record).await {
+                tracing::error!(
+                    "设备 {} 的 MobilePosition 写入 gb_device_mobile_position 失败: {}",
+                    device_id,
+                    e
+                );
+            }
+        }
+
         let response_body = format!(
             r#"<?xml version="1.0" encoding="UTF-8"?><Response><CmdType>MobilePosition</CmdType><SN>{}</SN><DeviceID>{}</DeviceID><Result>OK</Result></Response>"#,
             sn, device_id
@@ -4817,6 +4845,32 @@ f=v/1/96/1/2/1/1/0
     }
 
     /// 发送设备状态查询
+    /// 发送「移动位置查询」（GB/T 28181 A.2.4.3）。
+    ///
+    /// 设备会用同一 SN 回一份带 `<Longitude>/<Latitude>/<Speed>/<Direction>` 的
+    /// MESSAGE；`PendingResponseRouter` 按 `CmdType=MobilePosition` + SN 命中
+    /// `register_mobile_position_with_receiver` 注册的等待方。
+    pub async fn send_mobile_position_query(&self, device_id: &str, sn: u32) -> Result<()> {
+        let sn = if sn == 0 { chrono::Utc::now().timestamp() as u32 } else { sn };
+        let body = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<Query>
+<CmdType>MobilePosition</CmdType>
+<SN>{}</SN>
+<DeviceID>{}</DeviceID>
+</Query>"#,
+            sn, device_id
+        );
+
+        self.send_message_to_device(
+            device_id,
+            SipMethod::Message,
+            Some(&body),
+            Some("Application/MANSCDP+xml"),
+        )
+        .await
+    }
+
     /// 发送 DeviceStatus 查询。`sn` 语义同 [`Self::send_device_info_query`]。
     pub async fn send_device_status_query(&self, device_id: &str, sn: u32) -> Result<()> {
         let sn = if sn == 0 { chrono::Utc::now().timestamp() as u32 } else { sn };

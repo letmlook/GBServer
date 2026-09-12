@@ -94,6 +94,9 @@ class DeviceConfig:
     send_rtp: bool = False
     # 每路流的 RTP 负载类型（GB28181 常用 96 = PS）
     rtp_payload_type: int = 96
+    # 应答「移动位置查询」时上报的经纬度（/api/position/realtime 用它验证解析与落库）
+    mock_longitude: float = 120.123456
+    mock_latitude: float = 30.654321
 
 
 @dataclass
@@ -828,6 +831,8 @@ class SipDeviceMock:
             self.transport.sendto(payload, addr)
         elif "<CmdType>DeviceStatus</CmdType>" in body:
             await self._reply_device_status(msg, addr)
+        elif "<CmdType>MobilePosition</CmdType>" in body:
+            await self._reply_mobile_position(msg, addr)
         elif "<CmdType>ConfigDownload</CmdType>" in body:
             await self._reply_config_download(msg, addr)
         elif "<CmdType>RecordInfo</CmdType>" in body:
@@ -892,6 +897,50 @@ class SipDeviceMock:
             f"\r\n{body}"
         )
         self.transport.sendto(payload.encode(), addr)
+
+    async def _reply_mobile_position(self, msg: str, addr: tuple):
+        """应答「移动位置查询」（GB/T 28181 A.2.4.3）。
+
+        平台侧 /api/position/realtime/:deviceId 会等待这个响应；
+        回显 SN 是关键（Call-ID 是平台实际发出的 `msg_...`，平台按 (device, SN)
+        兜底关联 pending）。
+        """
+        body_in = msg.split("\r\n\r\n", 1)[1] if "\r\n\r\n" in msg else ""
+        sn = self._extract_xml_value(body_in, "SN") or "1"
+        call_id = self._extract_header(msg, "Call-ID", "")
+        cseq = self.state.next_cseq()
+        realm = realm_from_device_id(self.cfg.device_id)
+        local = self.transport.get_extra_info("sockname")
+        now = time.strftime("%Y-%m-%d %H:%M:%S")
+        body = (
+            '<?xml version="1.0" encoding="UTF-8"?>\r\n'
+            '<Response>\r\n'
+            '<CmdType>MobilePosition</CmdType>\r\n'
+            f'<SN>{sn}</SN>\r\n'
+            f'<DeviceID>{self.cfg.device_id}</DeviceID>\r\n'
+            '<Result>OK</Result>\r\n'
+            f'<Time>{now}</Time>\r\n'
+            f'<Longitude>{self.cfg.mock_longitude}</Longitude>\r\n'
+            f'<Latitude>{self.cfg.mock_latitude}</Latitude>\r\n'
+            '<Speed>12.5</Speed>\r\n'
+            '<Direction>180.0</Direction>\r\n'
+            '<Altitude>15.0</Altitude>\r\n'
+            '</Response>\r\n'
+        )
+        branch = make_branch()
+        payload = (
+            f"MESSAGE sip:{realm}@{self.server_addr[0]}:{self.server_addr[1]} {SIP_VERSION}\r\n"
+            f"Via: {SIP_VERSION}/UDP {local[0]}:{local[1]};rport;branch={branch}\r\n"
+            f"From: <sip:{self.cfg.device_id}@{realm}>;tag={uuid.uuid4().hex[:8]}\r\n"
+            f"To: <sip:{realm}@{realm}>\r\n"
+            f"Call-ID: {call_id}\r\n"
+            f"CSeq: {cseq} MESSAGE\r\n"
+            "Content-Type: Application/MANSCDP+XML\r\n"
+            f"Content-Length: {len(body.encode())}\r\n"
+            f"\r\n{body}"
+        )
+        self.transport.sendto(payload.encode(), addr)
+        log.info("已应答 MobilePosition 查询（sn=%s）", sn)
 
     async def _reply_config_download(self, msg: str, addr: tuple):
         """应答 ConfigDownload（基本参数查询）。

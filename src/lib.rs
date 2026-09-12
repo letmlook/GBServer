@@ -110,6 +110,7 @@ async fn ensure_missing_tables(pool: &db::Pool) -> anyhow::Result<()> {
 ///
 /// `using` 是 PostgreSQL `ALTER COLUMN … TYPE … USING <expr>` 的表达式
 /// （旧列与目标类型不兼容时必须给；空的表示可隐式转换）。
+#[cfg(feature = "postgres")]
 struct PgColumnFix {
     table: &'static str,
     column: &'static str,

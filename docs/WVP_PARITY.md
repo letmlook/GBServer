@@ -12,7 +12,7 @@
 | 总代码量（src/） | 79,179 行 Rust | `find src -name '*.rs' \| xargs wc -l` |
 | 已注册 HTTP 路由 | 386 条唯一 `/api/...` 路径 | `grep -oE '"/api/[^"]*"' src/router.rs \| sort -u \| wc -l` |
 | Handler 模块 | 29 个（含 `stub.rs` / `device_stub.rs` 两个兼容 shim） | `grep -c 'pub mod' src/handlers/mod.rs` |
-| 后端测试 | **702 通过 / 0 失败**（第四十三轮刷新） | `cargo test` |
+| 后端测试 | **710 通过 / 0 失败**（第四十四轮刷新） | `cargo test` |
 | 编译状态 | `cargo check` 0 error / **0 warning**；clippy 262；**deprecated 0** | `cargo check` / `cargo clippy --all-targets` |
 | 数据库 feature | SQLite（默认）/ PostgreSQL / MySQL **三者均编译通过** | CI `feature-matrix` job |
 | CI | ⏸️ 工作流已就绪但**按需暂停自动触发**（见 `.github/workflows/ci.yml`） | — |
@@ -1996,6 +1996,77 @@ postgres 运行时冒烟              45 GET + 全部写路径，0 个 5xx（除
 > 同时新增 [docs/DB_DIALECT_NOTES.md](DB_DIALECT_NOTES.md)：把"写 SQL 时必须遵守的三条规则"
 > （占位符、列宽/列类型、同文本 SQL 参数类型一致）固化成文档，避免同类缺陷再被 SQLite 掩盖。
 
+### 移动位置 `/api/position/*`：补齐 WVP 三个端点 + 打通两张位置表（2026-09-12 第四十四轮）
+
+第四十三轮把 postgres 跑通后，顺着"哪些数据写进去了却读不出来"排查，发现
+**移动位置是"只写不读"的典型**：
+
+| WVP `MobilePositionController` | 本轮之前 |
+|------|---------|
+| `GET /api/position/history/{deviceId}?channelId=&start=&end=` | ⚠️ 路由在，但读的是**另一张表** `gb_position_history`，且不认 WVP 的 `channelId` |
+| `GET /api/position/latest?channelId=` | ❌ 不存在 |
+| `GET /api/position/realtime/{deviceId}` | ❌ 不存在 |
+| `GET /api/position/subscribe/{deviceId}?expires=&interval=` | ❌ 不存在 |
+
+设备上报的位置其实**一直在落库**：SUBSCRIBE 后的 NOTIFY 会写
+`gb_device_mobile_position`（`sip/gb28181/subscription_lifecycle.rs`），
+DB 层也早有 `list_paged` / `count` / `get_latest_position`，但**没有任何 HTTP
+端点把它读出来**；而 `/api/position/history/:device_id` 读的是本平台自建的
+宽表 `gb_position_history`。于是"位置进了库、API 上永远查不到"。
+
+本轮实现（`src/handlers/position.rs`，12 条单测）：
+
+* **四个端点全部落地**，`MobilePosition` 按 WVP 的 Java bean 序列化成
+  **camelCase**（`deviceId`/`channelId`/`reportSource`/`createTime`）：
+  * `latest`：`channelId`（通道**数据库主键**，WVP 口径）→ 查
+    `gb_device_channel` 换算出设备/通道国标编号 → 取最新一条；
+    也接受 `deviceId`(+`gbChannelId`) 便于直接按国标编号调试。
+  * `history`：带 `channelId` 走 WVP 口径（`gb_device_mobile_position` + 时间过滤 +
+    分页）；不带则保持旧行为（`gb_position_history` 宽表），不破坏既有调用方。
+  * `realtime`：**真的下发 SIP MESSAGE**
+    （`<Query><CmdType>MobilePosition</CmdType>`，GB/T 28181 A.2.4.3），
+    等 5 秒响应 → 解析 → **落库** → 返回 `source: "live"`；
+    设备离线/超时则回退到库里最新一条并给出 `source: "cache"` + 原因
+    （不返回空壳让调用方猜）。
+  * `subscribe`：写 `subscribe_cycle_for_mobile_position` /
+    `mobile_position_submission_interval`（WVP 语义），并**立即下发一次
+    SUBSCRIBE**让用户点完即生效；`subscribeSent` 如实反映是否真的发出去了。
+* **两条写入路径都写 WVP 对齐表**：此前 MESSAGE 查询响应只写
+  `gb_position_history`，用这种方式上报位置的设备在对外 API 上永远没有数据
+  —— 现已双写 `gb_device_mobile_position`（`report_source` 区分
+  `message` / `realtime`）。两张表的定位也在模块头注释里写清了：
+  `gb_device_mobile_position` = WVP 对齐的对外表，
+  `gb_position_history` = 电子地图打点/轨迹抽稀用的宽表。
+* 顺带修一处参数鲁棒性：`?channelId=`（空串）此前直接 422
+  `cannot parse integer from empty string`，现在空串按"未提供"处理
+  （数字字符串仍然接受，非法值仍报错）。
+
+**实测证据**（SQLite 18080 + SIP 模拟器）：
+
+```
+GET /api/position/subscribe/34020000001320000001?expires=600&interval=10
+  → {"subscribeSent":true,"expires":600,"interval":10}        （真发 SUBSCRIBE）
+GET /api/position/realtime/34020000001320000001
+  → {"source":"live","position":{"longitude":120.123456,"latitude":30.654321,...}}
+    模拟器日志：`已应答 MobilePosition 查询（sn=2536349708）`
+GET /api/position/latest?deviceId=34020000001320000001        → 上面那条（已落库）
+GET /api/position/history/…?channelId=1                       → {"total":2,"list":[…]}
+```
+
+postgres 侧同样验证：`latest` / `history`（空串 `channelId=` 也不再 422）/
+`subscribe`（写入设备订阅字段 + 真发 SUBSCRIBE）均正常。
+模拟器新增对 `<CmdType>MobilePosition</CmdType>` 的应答
+（`--mock-longitude/--mock-latitude` 可调），使这条链路可端到端复现。
+
+#### 第四十四轮基线
+
+```
+cargo test                       710 passed / 0 failed（上轮 702；+8 移动位置）
+cargo build --features postgres/mysql  OK
+npx playwright test              66 passed / 0 failed
+postgres 运行时冒烟              /api/position/{latest,history,subscribe} 全通
+```
+
 ### 前端↔后端契约审计：**16 个模块 130 条全部修完**（2026-09-12 第三十九轮）
 
 第二十六轮用"一个模块一个 agent"的方式把 16 个前端 API 模块逐个对后端路由/DTO
@@ -2219,16 +2290,12 @@ vue-tsc --noEmit                 通过
     解耦静态信令路径与 `&self` 媒体路径；后续若继续加级联能力（如上级云台控制
     转发、级联录像回放），建议把 `start_live_stream` 抽成"按部件调用"的自由函数，
     让静态路径可以直接复用，而不再绕队列。
-16. **移动位置（`gb_device_mobile_position`）只有写、没有对外读接口**（第四十三轮发现）：
-    设备上报的 MobilePosition NOTIFY 会落库
-    （`src/sip/gb28181/subscription_lifecycle.rs::handle_position_notify`
-    → `db::mobile_position::insert`），DB 层也已经有
-    `list_paged` / `get_latest_position` / `get_by_id` / `delete_by_device`，
-    但**没有任何 HTTP 端点暴露它**：`/api/position/history/:device_id` 读的是另一张表
-    `gb_position_history`（`db::position_history`，地图打点用）。
-    对照 WVP 的 `MobilePositionController`（`/api/position/{history/{deviceId},latest,
-    realtime/{deviceId},subscribe/{deviceId}}`），本平台缺 `latest` / `realtime` /
-    `subscribe` 三个。当前 Vue3 前端没有位置页面，故无可见故障，但属于 WVP 能力缺口。
+16. ~~**移动位置（`gb_device_mobile_position`）只有写、没有对外读接口**~~
+    **已实现（第四十四轮）**：补齐 `/api/position/{latest,realtime/:deviceId,
+    subscribe/:deviceId}`，`history` 支持 WVP 的 `channelId`（通道数据库主键），
+    并把 MESSAGE 查询响应路径也双写到 `gb_device_mobile_position`。
+    实测：`realtime` 真下发 `<CmdType>MobilePosition</CmdType>` 查询并落库
+    （`source=live`）、`subscribe` 真发 SUBSCRIBE。
 17. **MySQL 尚未做运行时冒烟**：第四十三轮验证的是 PostgreSQL（真实实例 + 45 GET +
     全部写路径）；MySQL 目前只有编译期保证（`--features mysql` 构建通过）与
     "宽进严出"的类型宽松性推断。环境具备时应补一轮同样的冒烟。
@@ -2445,6 +2512,7 @@ vue-tsc --noEmit                 通过
 - 2026-09-12 第四十一轮：`cargo test` —— **691 通过 / 0 失败**（邀请报文 `f=`/`Subject` 对齐国标与 WVP；e2e 61）
 - 2026-09-12 第四十二轮：`cargo test` —— **696 通过 / 0 失败**（实时播放地址：FLV 后缀 `.live.flv`、HLS 可用性探测；e2e 62）
 - 2026-09-12 第四十三轮：`cargo test` —— **702 通过 / 0 失败**（**首次 PostgreSQL 运行时验证**：`?` 占位符 23 处 / 11 张表列宽 / `plate_color` 契约 / ZLM `openRtpServer` 缺 `port` / sqlx 语句缓存参数类型冲突；e2e 66）
+- 2026-09-12 第四十四轮：`cargo test` —— **710 通过 / 0 失败**（移动位置 `/api/position/*` 补齐 latest/realtime/subscribe + history 支持 WVP 的 channelId；`gb_device_mobile_position` 双写打通）
 - 2026-09-12 第三十一轮：`cargo test` —— **641 通过 / 0 失败**（JT1078 终端/围栏 13 条）
 - 2026-09-12 第三十轮：`cargo test` —— **637 通过 / 0 失败**（设备页 7 条）
 - 2026-09-12 第二十九轮：`cargo test` —— **634 通过 / 0 失败**（云端录像全链路）

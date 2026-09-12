@@ -22,7 +22,6 @@ use crate::db::{
     count_common_channels, list_common_channels_paged, group, record_plan, region, role,
     user_api_key, DeviceChannel, Group, Region, Role,
 };
-use crate::db::position_history as ph;
 use crate::error::{AppError, ErrorCode};
 use crate::response::WVPResult;
 use crate::AppState;
@@ -2709,31 +2708,11 @@ pub async fn record_plan_link(
     Err(AppError::business(ErrorCode::Error400, "缺少关联参数"))
 }
 
-/// GET /api/position/history/:deviceId (used in queryTrace.vue, map/queryTrace.vue)
-pub async fn position_history(
-    State(state): State<AppState>,
-    Path(device_id): Path<String>,
-    Query(q): Query<PositionHistoryQuery>,
-) -> Json<serde_json::Value> {
-    let start = q.start.clone().unwrap_or_default();
-    let end = q.end.clone().unwrap_or_default();
-    tracing::info!("position history: device={}, start={}, end={}", device_id, start, end);
-    // Fetch from DB
-    let list = ph::list_by_device_and_time(&state.pool, &device_id, Some(&start), Some(&end)).await.unwrap_or_default();
-    Json(serde_json::json!({
-        "code": 0,
-        "msg": "查询成功",
-        "data": list
-    }))
-}
-
-#[derive(Debug, Deserialize)]
-pub struct PositionHistoryQuery {
-    #[serde(alias = "startTime")]
-    pub start: Option<String>,
-    #[serde(alias = "endTime")]
-    pub end: Option<String>,
-}
+// `/api/position/history/:deviceId` 已移到 `handlers::position`（第四十四轮）：
+// 它现在同时支持 WVP 的 `channelId`（读 gb_device_mobile_position）与旧的
+// 设备编号口径（读 gb_position_history 宽表），并补齐 latest/realtime/subscribe。
+// 原来的 `stub::position_history` 返回的是手拼 JSON（不是 WVPResult），
+// 且 `start`/`end` 空串会被当成"过滤条件为空字符串" —— 已一并去掉。
 
 // ============================================================================
 // Phase 7.3: 运维 API 路由处理器

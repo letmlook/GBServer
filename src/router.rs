@@ -12,7 +12,7 @@ use crate::auth::auth_middleware;
 use crate::middleware::audit_middleware;
 use crate::handlers::{
     alarm, common_channel, device, device_control, device_query, device_stub, front_end, health, jt1078, platform, play,
-    cloud_record_extra, jt1078_extra, parity_extras, playback, rtp_control, server, stream, stub, sy_camera, system, talk, user, websocket, webrtc, device_batch, region, role,
+    cloud_record_extra, jt1078_extra, parity_extras, playback, position, rtp_control, server, stream, stub, sy_camera, system, talk, user, websocket, webrtc, device_batch, region, role,
 };
 use crate::handlers::metrics as metrics_handler;
 use crate::rpc::{RpcRequest, RpcResponse};
@@ -502,9 +502,21 @@ pub fn app(state: AppState) -> Router<AppState> {
             get(stub::record_plan_channel_list),
         )
         .route("/api/record/plan/link", post(stub::record_plan_link))
+        // ========== 移动位置（对齐 WVP MobilePositionController） ==========
+        // history 带 `channelId` 时按 WVP 口径读 gb_device_mobile_position；
+        // 不带时保持旧行为（gb_position_history 宽表）。
         .route(
             "/api/position/history/:device_id",
-            get(stub::position_history),
+            get(position::position_history),
+        )
+        .route("/api/position/latest", get(position::position_latest))
+        .route(
+            "/api/position/realtime/:device_id",
+            get(position::position_realtime),
+        )
+        .route(
+            "/api/position/subscribe/:device_id",
+            get(position::position_subscribe),
         )
         // ========== 通用通道 common_channel ==========
         .route("/api/common/channel/one", get(common_channel::channel_one))
