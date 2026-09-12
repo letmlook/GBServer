@@ -50,18 +50,65 @@ fn err(msg: &str) -> Json<WVPResult<serde_json::Value>> {
 // 区域 — circle（圆形围栏）
 // ============================================================================
 
+/// 取字符串字段，**同时接受 WVP/前端的 camelCase 与后端历史 snake_case 名**。
+///
+/// 前端（与 WVP 的 `SetAreaParam`）用的键是 `phoneNumber`/`radiusM`/`pointsJson`/
+/// `waypointsJson`/`ltLat`/`ltLon`/`rbLat`/`rbLon`，而后端只读 `phone`/`radius`/
+/// `points`/`waypoints`/`leftTopLat`... —— 于是"新增围栏/路线"**必然失败**，
+/// 报的还是含糊的"phone 必填"。
+fn get_str<'a>(b: &'a serde_json::Value, keys: &[&str]) -> &'a str {
+    for k in keys {
+        if let Some(v) = b.get(*k).and_then(|v| v.as_str()) {
+            if !v.trim().is_empty() {
+                return v;
+            }
+        }
+    }
+    ""
+}
+
+fn get_f64(b: &serde_json::Value, keys: &[&str]) -> f64 {
+    for k in keys {
+        if let Some(v) = b.get(*k).and_then(|v| v.as_f64()) {
+            return v;
+        }
+    }
+    0.0
+}
+
+/// 取"可能是 JSON 值、也可能是 JSON 字符串"的点位/途经点字段。
+///
+/// 前端发的是 `pointsJson: '[]'`（字符串）或直接数组，两种都要接受；
+/// 字符串还会再尝试解析成 JSON，避免把 `"[...]"` 当字符串存进去。
+fn get_json_or_str(b: &serde_json::Value, keys: &[&str]) -> serde_json::Value {
+    for k in keys {
+        match b.get(*k) {
+            Some(serde_json::Value::String(s)) => {
+                let trimmed = s.trim();
+                if trimmed.is_empty() {
+                    return serde_json::json!([]);
+                }
+                return serde_json::from_str(trimmed).unwrap_or_else(|_| serde_json::json!([]));
+            }
+            Some(v) if !v.is_null() => return v.clone(),
+            _ => {}
+        }
+    }
+    serde_json::json!([])
+}
+
 /// POST /api/jt1078/area/circle/add
 pub async fn area_circle_add(
     State(state): State<AppState>,
     Json(b): Json<serde_json::Value>,
 ) -> Json<WVPResult<serde_json::Value>> {
-    let phone = b.get("phone").and_then(|v| v.as_str()).unwrap_or_default();
+    let phone = get_str(&b, &["phoneNumber", "phone", "deviceId"]);
     let label = b.get("label").and_then(|v| v.as_str());
-    let lat = b.get("centerLat").and_then(|v| v.as_f64()).unwrap_or(0.0);
-    let lon = b.get("centerLon").and_then(|v| v.as_f64()).unwrap_or(0.0);
-    let radius = b.get("radius").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+    let lat = get_f64(&b, &["centerLat", "center_lat"]);
+    let lon = get_f64(&b, &["centerLon", "center_lon"]);
+    let radius = get_f64(&b, &["radiusM", "radius", "radius_m"]) as i32;
     if phone.is_empty() || radius <= 0 {
-        return err("phone / radius 必填且 radius>0");
+        return err("phoneNumber / radiusM 必填且 radiusM>0");
     }
     match jt_db::insert_area_circle(&state.pool, phone, label, lat, lon, radius).await {
         Ok(id) => Json(WVPResult::success(serde_json::json!({
@@ -147,12 +194,12 @@ pub async fn area_polygon_set(
     State(state): State<AppState>,
     Json(b): Json<serde_json::Value>,
 ) -> Json<WVPResult<serde_json::Value>> {
-    let phone = b.get("phone").and_then(|v| v.as_str()).unwrap_or_default();
+    let phone = get_str(&b, &["phoneNumber", "phone", "deviceId"]);
     let label = b.get("label").and_then(|v| v.as_str());
-    let points = b.get("points").cloned().unwrap_or(serde_json::json!([]));
+    let points = get_json_or_str(&b, &["pointsJson", "points", "points_json"]);
     let points_json = serde_json::to_string(&points).unwrap_or_else(|_| "[]".to_string());
     if phone.is_empty() {
-        return err("phone 必填");
+        return err("phoneNumber 必填");
     }
     match jt_db::insert_area_polygon(&state.pool, phone, label, &points_json).await {
         Ok(id) => Json(WVPResult::success(serde_json::json!({
@@ -206,14 +253,14 @@ pub async fn area_rectangle_add(
     State(state): State<AppState>,
     Json(b): Json<serde_json::Value>,
 ) -> Json<WVPResult<serde_json::Value>> {
-    let phone = b.get("phone").and_then(|v| v.as_str()).unwrap_or_default();
+    let phone = get_str(&b, &["phoneNumber", "phone", "deviceId"]);
     let label = b.get("label").and_then(|v| v.as_str());
-    let lt_lat = b.get("leftTopLat").and_then(|v| v.as_f64()).unwrap_or(0.0);
-    let lt_lon = b.get("leftTopLon").and_then(|v| v.as_f64()).unwrap_or(0.0);
-    let rb_lat = b.get("rightBottomLat").and_then(|v| v.as_f64()).unwrap_or(0.0);
-    let rb_lon = b.get("rightBottomLon").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let lt_lat = get_f64(&b, &["ltLat", "leftTopLat", "left_top_lat"]);
+    let lt_lon = get_f64(&b, &["ltLon", "leftTopLon", "left_top_lon"]);
+    let rb_lat = get_f64(&b, &["rbLat", "rightBottomLat", "right_bottom_lat"]);
+    let rb_lon = get_f64(&b, &["rbLon", "rightBottomLon", "right_bottom_lon"]);
     if phone.is_empty() {
-        return err("phone 必填");
+        return err("phoneNumber 必填");
     }
     match jt_db::insert_area_rectangle(&state.pool, phone, label, lt_lat, lt_lon, rb_lat, rb_lon).await {
         Ok(id) => Json(WVPResult::success(serde_json::json!({
@@ -301,12 +348,12 @@ pub async fn route_set(
     State(state): State<AppState>,
     Json(b): Json<serde_json::Value>,
 ) -> Json<WVPResult<serde_json::Value>> {
-    let phone = b.get("phone").and_then(|v| v.as_str()).unwrap_or_default();
+    let phone = get_str(&b, &["phoneNumber", "phone", "deviceId"]);
     let label = b.get("label").and_then(|v| v.as_str());
-    let waypoints = b.get("waypoints").cloned().unwrap_or(serde_json::json!([]));
+    let waypoints = get_json_or_str(&b, &["waypointsJson", "waypoints", "waypoints_json"]);
     let waypoints_json = serde_json::to_string(&waypoints).unwrap_or_else(|_| "[]".to_string());
     if phone.is_empty() {
-        return err("phone 必填");
+        return err("phoneNumber 必填");
     }
     match jt_db::insert_route(&state.pool, phone, label, &waypoints_json).await {
         Ok(id) => Json(WVPResult::success(serde_json::json!({
@@ -716,5 +763,56 @@ pub async fn terminal_channel_one(
         }))),
         Ok(None) => err(&format!("通道不存在: {}", id_num)),
         Err(e) => err(&format!("查询通道失败: {}", e)),
+    }
+}
+#[cfg(test)]
+mod field_alias_tests {
+    use super::{get_f64, get_json_or_str, get_str};
+
+    /// 前端（与 WVP `SetAreaParam`）用的是 camelCase，后端历史字段是 snake_case——
+    /// 只认后者会让"新增围栏/路线"必然失败。
+    #[test]
+    fn test_accepts_frontend_and_legacy_names() {
+        let frontend = serde_json::json!({
+            "phoneNumber": "13912345678",
+            "radiusM": 100,
+            "centerLat": 39.9,
+            "centerLon": 116.4,
+            "pointsJson": "[{\"lat\":1,\"lon\":2}]",
+            "waypointsJson": "[]",
+            "ltLat": 1.0, "ltLon": 2.0, "rbLat": 3.0, "rbLon": 4.0
+        });
+        assert_eq!(get_str(&frontend, &["phoneNumber", "phone"]), "13912345678");
+        assert_eq!(get_f64(&frontend, &["radiusM", "radius"]), 100.0);
+        assert_eq!(get_f64(&frontend, &["ltLat", "leftTopLat"]), 1.0);
+        assert_eq!(
+            get_json_or_str(&frontend, &["pointsJson", "points"]),
+            serde_json::json!([{"lat":1,"lon":2}]),
+            "JSON 字符串要解析成数组，而不是原样存字符串"
+        );
+
+        let legacy = serde_json::json!({
+            "phone": "13900000000",
+            "radius": 50,
+            "points": [{"lat": 3, "lon": 4}]
+        });
+        assert_eq!(get_str(&legacy, &["phoneNumber", "phone"]), "13900000000");
+        assert_eq!(get_f64(&legacy, &["radiusM", "radius"]), 50.0);
+        assert_eq!(
+            get_json_or_str(&legacy, &["pointsJson", "points"]),
+            serde_json::json!([{"lat": 3, "lon": 4}])
+        );
+    }
+
+    #[test]
+    fn test_missing_or_empty_falls_back() {
+        let empty = serde_json::json!({"phoneNumber": "   "});
+        assert_eq!(get_str(&empty, &["phoneNumber", "phone"]), "", "空白视为未填");
+        assert_eq!(get_f64(&empty, &["radiusM", "radius"]), 0.0);
+        assert_eq!(get_json_or_str(&empty, &["pointsJson"]), serde_json::json!([]));
+        assert_eq!(
+            get_json_or_str(&serde_json::json!({"pointsJson": ""}), &["pointsJson"]),
+            serde_json::json!([])
+        );
     }
 }

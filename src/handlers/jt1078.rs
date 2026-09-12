@@ -16,6 +16,42 @@ use crate::error::{AppError, ErrorCode};
 use crate::response::WVPResult;
 use crate::AppState;
 
+/// 兼容"字符串或数字"的查询参数（`terminalDbId` 既可能是主键数字、也可能是手机号）。
+fn opt_string_flexible<'de, D>(de: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum StrOrNum {
+        Str(String),
+        Num(i64),
+    }
+    Ok(match Option::<StrOrNum>::deserialize(de)? {
+        Some(StrOrNum::Str(s)) => Some(s),
+        Some(StrOrNum::Num(n)) => Some(n.to_string()),
+        None => None,
+    })
+}
+
+/// 车牌颜色：前端可能是数字字符串（GB/T 808 的颜色码）或中文名。
+fn parse_plate_color(raw: Option<&str>) -> Option<i32> {
+    let v = raw?.trim();
+    if v.is_empty() {
+        return None;
+    }
+    if let Ok(n) = v.parse::<i32>() {
+        return Some(n);
+    }
+    Some(match v {
+        "蓝" | "蓝色" => 1,
+        "黄" | "黄色" => 2,
+        "黑" | "黑色" => 3,
+        "白" | "白色" => 4,
+        _ => 9,
+    })
+}
+
 #[derive(Debug, Deserialize)]
 pub struct TerminalListQuery {
     pub page: Option<u32>,
@@ -26,10 +62,13 @@ pub struct TerminalListQuery {
 
 #[derive(Debug, Deserialize)]
 pub struct TerminalQuery {
-    #[serde(alias = "deviceId")]
+    /// 终端手机号；`deviceId`/`phoneNumber` 都是历史别名
+    #[serde(alias = "deviceId", alias = "phoneNumber")]
     pub device_id: Option<String>,
     #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
+    /// 数据库主键（前端终端列表传的就是 `row.id`）
+    pub id: Option<i64>,
 }
 
 /// GET /api/jt1078/terminal/one?id=
@@ -86,8 +125,11 @@ pub struct ChannelListQuery {
     /// 此前只认 `device_id`（手机号），而 JT 设备页传的是 `terminalDbId` ——
     /// 参数绑定不上就被当成"没传 device_id"直接返回空列表，
     /// 页面上"终端通道"永远是空的。
-    #[serde(alias = "terminalDbId")]
-    pub terminal_db_id: Option<i32>,
+    /// 前端传 `terminalDbId`（主键）；但页面的筛选框允许填手机号，
+    /// 那个值超出 i32 会让查询串反序列化直接 400。这里收成字符串，
+    /// handler 内部再判断是主键还是手机号。
+    #[serde(alias = "terminalDbId", default, deserialize_with = "opt_string_flexible")]
+    pub terminal_db_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -237,6 +279,16 @@ pub struct TerminalAddBody {
     pub model: Option<String>,
     pub sim: Option<String>,
     pub vehicle_no: Option<String>,
+    #[serde(alias = "plateNo")]
+    pub plate_no: Option<String>,
+    #[serde(alias = "plateColor")]
+    pub plate_color: Option<String>,
+    #[serde(alias = "makerId")]
+    pub maker_id: Option<String>,
+    #[serde(alias = "provinceId")]
+    pub province_id: Option<i32>,
+    #[serde(alias = "cityId")]
+    pub city_id: Option<i32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -249,6 +301,16 @@ pub struct TerminalUpdateBody {
     pub model: Option<String>,
     pub sim: Option<String>,
     pub vehicle_no: Option<String>,
+    #[serde(alias = "plateNo")]
+    pub plate_no: Option<String>,
+    #[serde(alias = "plateColor")]
+    pub plate_color: Option<String>,
+    #[serde(alias = "makerId")]
+    pub maker_id: Option<String>,
+    #[serde(alias = "provinceId")]
+    pub province_id: Option<i32>,
+    #[serde(alias = "cityId")]
+    pub city_id: Option<i32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -338,6 +400,11 @@ pub async fn terminal_list(
             "plateNo": t.plate_no,
             "plateColor": t.plate_color,
             "makerId": t.maker_id,
+            // 省域/市域编码（编辑框里有这两个字段，不返回就等于每次打开都是空的）
+            "provinceId": t.province_id,
+            "provinceText": t.province_text,
+            "cityId": t.city_id,
+            "cityText": t.city_text,
             "model": t.model,
             "status": t.status,
             "longitude": t.longitude,
@@ -398,11 +465,23 @@ pub async fn terminal_add(
         return Err(AppError::business(ErrorCode::Error400, "缺少 phoneNumber"));
     }
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    jt_db::insert_terminal(
-        &state.pool, phone, body.device_id.as_deref(), body.vehicle_no.as_deref(),
-        None, body.manufacturer.as_deref(), body.model.as_deref(),
-        None, &now,
-    ).await?;
+    // 前端编辑框的字段（车牌/车牌颜色/厂商/省域/市域）此前后端 DTO 里没有，
+    // 填了静默丢弃；现在如实落库。`device_id` 作为 regist 的 terminal_id 保留。
+    // 库里 province_id/city_id 是 TEXT 列：这里把数字码转成字符串再写，
+    // 避免"整数写进 TEXT 列后整行解码失败、列表 500"。
+    let province_id = body.province_id.map(|v| v.to_string());
+    let city_id = body.city_id.map(|v| v.to_string());
+    let fields = jt_db::JtTerminalWrite {
+        terminal_id: body.device_id.as_deref().or(body.vehicle_no.as_deref()),
+        plate_no: body.plate_no.as_deref().or(body.vehicle_no.as_deref()),
+        plate_color: parse_plate_color(body.plate_color.as_deref()),
+        maker_id: body.maker_id.as_deref().or(body.manufacturer.as_deref()),
+        model: body.model.as_deref(),
+        media_server_id: None,
+        province_id: province_id.as_deref(),
+        city_id: city_id.as_deref(),
+    };
+    jt_db::insert_terminal(&state.pool, phone, &fields, &now).await?;
     Ok(Json(WVPResult::<()>::success_empty()))
 }
 
@@ -418,11 +497,25 @@ pub async fn terminal_update(
         return Err(AppError::business(ErrorCode::Error400, "缺少 phoneNumber"));
     }
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    jt_db::update_terminal(
-        &state.pool, phone, body.device_id.as_deref(), body.vehicle_no.as_deref(),
-        None, body.manufacturer.as_deref(), body.model.as_deref(),
-        None, &now,
-    ).await?;
+    let province_id = body.province_id.map(|v| v.to_string());
+    let city_id = body.city_id.map(|v| v.to_string());
+    let fields = jt_db::JtTerminalWrite {
+        terminal_id: body.device_id.as_deref().or(body.vehicle_no.as_deref()),
+        plate_no: body.plate_no.as_deref().or(body.vehicle_no.as_deref()),
+        plate_color: parse_plate_color(body.plate_color.as_deref()),
+        maker_id: body.maker_id.as_deref().or(body.manufacturer.as_deref()),
+        model: body.model.as_deref(),
+        media_server_id: None,
+        province_id: province_id.as_deref(),
+        city_id: city_id.as_deref(),
+    };
+    let affected = jt_db::update_terminal(&state.pool, phone, &fields, &now).await?;
+    if affected == 0 {
+        return Err(AppError::business(
+            ErrorCode::Error404,
+            format!("终端不存在: {phone}"),
+        ));
+    }
     Ok(Json(WVPResult::<()>::success_empty()))
 }
 
@@ -433,11 +526,34 @@ pub async fn terminal_delete(
     State(state): State<AppState>,
     Query(q): Query<TerminalQuery>,
 ) -> Result<Json<WVPResult<()>>, AppError> {
-    let phone = q.phone_number.as_deref().unwrap_or("").trim();
+    // 前端（JT 设备页）传的是**数据库主键** `id`；WVP 契约是手机号。
+    // 早期只认 phoneNumber → 前端既发 GET（405）又发错参数名，删除必然失败。
+    let phone = q
+        .phone_number
+        .clone()
+        .or(q.device_id.clone())
+        .unwrap_or_default();
+    let phone = phone.trim().to_string();
     if phone.is_empty() {
-        return Err(AppError::business(ErrorCode::Error400, "缺少 phoneNumber"));
+        if let Some(id) = q.id {
+            let affected = jt_db::delete_terminal_by_id(&state.pool, id).await?;
+            if affected == 0 {
+                return Err(AppError::business(
+                    ErrorCode::Error404,
+                    format!("终端不存在: id={id}"),
+                ));
+            }
+            return Ok(Json(WVPResult::<()>::success_empty()));
+        }
+        return Err(AppError::business(ErrorCode::Error400, "缺少 phoneNumber 或 id"));
     }
-    jt_db::delete_terminal_by_phone(&state.pool, phone).await?;
+    let affected = jt_db::delete_terminal_by_phone(&state.pool, &phone).await?;
+    if affected == 0 {
+        return Err(AppError::business(
+            ErrorCode::Error404,
+            format!("终端不存在: {phone}"),
+        ));
+    }
     Ok(Json(WVPResult::<()>::success_empty()))
 }
 
@@ -450,29 +566,54 @@ pub async fn channel_list(
     Query(q): Query<ChannelListQuery>,
 ) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
     let device_id = q.device_id.clone().unwrap_or_default();
+    let raw_terminal_ref = q.terminal_db_id.clone().unwrap_or_default();
+    let raw_terminal_ref = raw_terminal_ref.trim();
 
-    // 终端定位：优先用主键（前端传 terminalDbId），其次按手机号
-    let terminal = match q.terminal_db_id {
-        Some(id) => jt_db::get_terminal_by_id(&state.pool, id).await?,
-        None if !device_id.is_empty() => jt_db::get_terminal_by_phone(&state.pool, &device_id).await?,
-        None => None,
+    // 终端定位：`terminalDbId` 既可能是主键、也可能是手机号（筛选框允许填手机号）
+    let terminal = if let Ok(id) = raw_terminal_ref.parse::<i64>() {
+        match jt_db::get_terminal_by_id(&state.pool, id as i32).await? {
+            Some(t) => Some(t),
+            // 主键查不到时，把纯数字当手机号再试一次
+            None => jt_db::get_terminal_by_phone(&state.pool, raw_terminal_ref).await?,
+        }
+    } else if !raw_terminal_ref.is_empty() {
+        jt_db::get_terminal_by_phone(&state.pool, raw_terminal_ref).await?
+    } else if !device_id.is_empty() {
+        jt_db::get_terminal_by_phone(&state.pool, &device_id).await?
+    } else {
+        None
     };
-    if terminal.is_none() && device_id.is_empty() && q.terminal_db_id.is_none() {
+    if terminal.is_none() && device_id.is_empty() && raw_terminal_ref.is_empty() {
         return Ok(Json(WVPResult::success(
             serde_json::json!({ "list": [], "total": 0 }),
         )));
     }
-    let channels = match terminal {
-        Some(t) => jt_db::list_channels_by_terminal(&state.pool, t.id).await?,
-        None => vec![],
+    if terminal.is_none() {
+        return Err(AppError::business(
+            ErrorCode::Error404,
+            format!("终端不存在: {}", if raw_terminal_ref.is_empty() { &device_id } else { raw_terminal_ref }),
+        ));
+    }
+    let terminal_id = terminal.as_ref().map(|t| t.id).unwrap_or_default();
+    let terminal_phone = terminal.as_ref().map(|t| t.phone_number.clone()).unwrap_or_default();
+    let channels = if terminal.is_some() {
+        jt_db::list_channels_by_terminal(&state.pool, terminal_id).await?
+    } else {
+        vec![]
     };
     let total = channels.len() as u64;
 
+    let online = terminal.as_ref().and_then(|t| t.status).unwrap_or(false);
     let rows: Vec<serde_json::Value> = channels.iter().map(|c| {
         serde_json::json!({
             "id": c.id,
             "channelId": c.channel_id,
+            // 后端/WVP 的字段名是 `name`；前端历史代码读 `channelName`，两个都给
             "name": c.name,
+            "channelName": c.name,
+            // 终端归属与在线状态：此前两个键都没有 → 表格整列空白
+            "phoneNumber": terminal_phone,
+            "status": online,
             "hasAudio": c.has_audio,
             "createTime": c.create_time,
             "updateTime": c.update_time,
@@ -1930,11 +2071,16 @@ mod channel_dto_tests {
     fn channel_list_query_accepts_frontend_and_legacy_names() {
         let q: ChannelListQuery =
             serde_json::from_value(serde_json::json!({"terminalDbId": 7})).unwrap();
-        assert_eq!(q.terminal_db_id, Some(7));
+        assert_eq!(q.terminal_db_id.as_deref(), Some("7"));
 
         let q: ChannelListQuery =
             serde_json::from_value(serde_json::json!({"terminal_db_id": 7})).unwrap();
-        assert_eq!(q.terminal_db_id, Some(7));
+        assert_eq!(q.terminal_db_id.as_deref(), Some("7"));
+
+        // 筛选框里填手机号（超出 i32）也必须能反序列化，不能 400
+        let q: ChannelListQuery =
+            serde_json::from_value(serde_json::json!({"terminalDbId": "13912345678"})).unwrap();
+        assert_eq!(q.terminal_db_id.as_deref(), Some("13912345678"));
 
         let q: ChannelListQuery =
             serde_json::from_value(serde_json::json!({"phoneNumber": "13912345678"})).unwrap();
@@ -1983,5 +2129,106 @@ mod channel_dto_tests {
         assert_eq!(b.id, Some(5));
         assert_eq!(b.channel_id, Some(1));
         assert_eq!(b.name.as_deref(), Some("改名"));
+    }
+}
+
+#[cfg(all(test, feature = "sqlite"))]
+mod terminal_write_tests {
+    use super::*;
+    use crate::test_support::app_state;
+
+    /// 前端编辑框的字段（车牌/颜色/厂商/省域/市域）此前后端 DTO 里没有 →
+    /// 填了静默丢弃。这条测试逐字段验证真的落库。
+    #[tokio::test]
+    async fn test_terminal_add_update_persist_edit_form_fields() {
+        let state = app_state().await;
+        let add: TerminalAddBody = serde_json::from_value(serde_json::json!({
+            "phoneNumber": "13912345678",
+            "deviceId": "T-1",
+            "plateNo": "A12345",
+            "plateColor": "2",
+            "makerId": "M-9",
+            "model": "JT-1",
+            "provinceId": 110000,
+            "cityId": 110100
+        }))
+        .expect("camelCase 必须能反序列化");
+        let _ = terminal_add(State(state.clone()), Json(add)).await.expect("新增应成功");
+
+        let t = jt_db::get_terminal_by_phone(&state.pool, "13912345678")
+            .await
+            .unwrap()
+            .expect("终端应存在");
+        assert_eq!(t.plate_no.as_deref(), Some("A12345"));
+        assert_eq!(t.plate_color, Some(2));
+        assert_eq!(t.maker_id.as_deref(), Some("M-9"));
+        assert_eq!(t.model.as_deref(), Some("JT-1"));
+        // 库里这两列是 TEXT，读回来是字符串（写整数会整行解码失败 → 列表 500）
+        assert_eq!(t.province_id.as_deref(), Some("110000"));
+        assert_eq!(t.city_id.as_deref(), Some("110100"));
+
+        // 列表能正常读出（回归：整数写进 TEXT 列会让 /terminal/list 直接 500）
+        let resp = terminal_list(
+            State(state.clone()),
+            Query(TerminalListQuery {
+                page: Some(1),
+                count: Some(10),
+                query: None,
+                online: None,
+            }),
+        )
+        .await
+        .expect("列表必须能读");
+        assert_eq!(resp.0.data.unwrap()["total"], 1);
+
+        // 更新：只改车牌，其它字段保持
+        let upd: TerminalUpdateBody = serde_json::from_value(serde_json::json!({
+            "phoneNumber": "13912345678",
+            "plateNo": "B54321"
+        }))
+        .unwrap();
+        let _ = terminal_update(State(state.clone()), Json(upd)).await.expect("更新应成功");
+        let t = jt_db::get_terminal_by_phone(&state.pool, "13912345678")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(t.plate_no.as_deref(), Some("B54321"));
+        assert_eq!(t.maker_id.as_deref(), Some("M-9"), "未提交的字段保持原值");
+        assert_eq!(t.province_id.as_deref(), Some("110000"));
+    }
+
+    /// 删除：前端传数据库主键（`id`）也要能删；不存在的 id 报 404 而不是成功。
+    #[tokio::test]
+    async fn test_terminal_delete_by_id() {
+        let state = app_state().await;
+        let add: TerminalAddBody = serde_json::from_value(serde_json::json!({
+            "phoneNumber": "13900000001"
+        }))
+        .unwrap();
+        let _ = terminal_add(State(state.clone()), Json(add)).await.unwrap();
+
+        let err = terminal_delete(
+            State(state.clone()),
+            Query(TerminalQuery {
+                device_id: None,
+                phone_number: None,
+                id: Some(999),
+            }),
+        )
+        .await
+        .expect_err("不存在的 id 应报错");
+        assert!(matches!(err, AppError::Business(_, _)));
+
+        let _ = terminal_delete(
+            State(state.clone()),
+            Query(TerminalQuery {
+                device_id: None,
+                phone_number: None,
+                id: Some(1),
+            }),
+        )
+        .await
+        .expect("按主键删除应成功");
+        assert_eq!(jt_db::count_terminals(&state.pool, None, None).await.unwrap(), 0);
     }
 }

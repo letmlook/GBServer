@@ -24,7 +24,9 @@
             <el-table-column prop="manufacturer" label="厂商" width="100" />
             <el-table-column label="在线" width="80">
               <template #default="{ row }">
-                <el-tag :type="row.status === 1 ? 'success' : 'info'" size="small">{{ row.status === 1 ? '在线' : '离线' }}</el-tag>
+                <el-tag :type="row.status ? 'success' : 'info'" size="small">
+                  {{ row.status ? '在线' : '离线' }}
+                </el-tag>
               </template>
             </el-table-column>
             <el-table-column label="操作" width="200" fixed="right">
@@ -129,7 +131,9 @@
             <el-table-column prop="id" label="ID" width="60" />
             <el-table-column prop="phoneNumber" label="手机号" min-width="140" />
             <el-table-column prop="channelId" label="通道号" width="80" />
-            <el-table-column prop="channelName" label="通道名" min-width="160" />
+            <el-table-column label="通道名" min-width="160">
+              <template #default="{ row }">{{ row.name ?? row.channelName ?? '-' }}</template>
+            </el-table-column>
             <el-table-column label="状态" width="100">
               <template #default="{ row }">
                 <el-tag :type="row.status ? 'success' : 'info'" size="small">
@@ -248,6 +252,7 @@ const channels = ref<Array<{
   terminalDbId?: number
   phoneNumber?: string
   channelId?: number
+  name?: string
   channelName?: string
   hasAudio?: boolean
   status?: boolean

@@ -11,11 +11,13 @@ export interface JtTerminal {
   cityText?: string
   makerId?: string
   model?: string
-  plateColor?: number
+  plateColor?: number | string
   plateNo?: string
   longitude?: number
   latitude?: number
-  status?: number
+  /** 后端（与 WVP `JTDevice.status`）是**布尔**；早期声明成 number，
+   *  页面用 `row.status === 1` 比较 → 在线终端也显示"离线"。 */
+  status?: boolean
   mediaServerId?: string
   sdpIp?: string
   authCode?: string
@@ -56,11 +58,18 @@ export function updateJtTerminal(data: Partial<JtTerminal>) {
   })
 }
 
-export function deleteJtTerminal(id: number | string) {
+/**
+ * 删除终端（WVP 契约：`DELETE /api/jt1078/terminal/delete`）。
+ *
+ * 早期用 GET → 后端只注册 DELETE，必然 405；参数名也应为 `phoneNumber`
+ * （后端同时兼容数据库主键 `id`，JT 设备页传的就是它）。
+ */
+export function deleteJtTerminal(idOrPhone: number | string) {
+  const isNumericId = typeof idOrPhone === 'number' || /^\d{1,10}$/.test(String(idOrPhone))
   return request<WvpResult>({
-    method: 'get',
+    method: 'delete',
     url: '/jt1078/terminal/delete',
-    params: { id }
+    params: isNumericId ? { id: idOrPhone } : { phoneNumber: idOrPhone }
   })
 }
 
@@ -69,6 +78,8 @@ export interface JtChannel {
   terminalDbId?: number
   phoneNumber?: string
   channelId: number
+  /** 后端（与 WVP `JTChannel.name`）的字段名是 `name`；`channelName` 是兼容别名 */
+  name?: string
   channelName?: string
   hasAudio?: boolean
   hasVideo?: boolean

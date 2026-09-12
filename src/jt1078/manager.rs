@@ -185,34 +185,34 @@ impl Jt1078Manager {
         let existing = crate::db::jt1078::get_terminal_by_phone(pool, phone).await.ok().flatten();
         match (existing, reg) {
             (None, Some(r)) => {
-                if let Err(e) = crate::db::jt1078::insert_terminal(
-                    pool,
-                    phone,
-                    Some(r.terminal_id.as_str()),
-                    Some(r.plate.as_str()),
-                    Some(r.plate_color as i32),
-                    Some(r.manufacturer.as_str()),
-                    Some(r.terminal_model.as_str()),
-                    None,
-                    &now,
-                )
+                let fields = crate::db::jt1078::JtTerminalWrite {
+                    terminal_id: Some(r.terminal_id.as_str()),
+                    plate_no: Some(r.plate.as_str()),
+                    plate_color: Some(r.plate_color as i32),
+                    maker_id: Some(r.manufacturer.as_str()),
+                    model: Some(r.terminal_model.as_str()),
+                    media_server_id: None,
+                    province_id: None,
+                    city_id: None,
+                };
+                if let Err(e) = crate::db::jt1078::insert_terminal(pool, phone, &fields, &now)
                 .await
                 {
                     tracing::warn!("JT1078 终端入库失败 phone={}: {}", phone, e);
                 }
             }
             (Some(_), Some(r)) => {
-                if let Err(e) = crate::db::jt1078::update_terminal(
-                    pool,
-                    phone,
-                    Some(r.terminal_id.as_str()),
-                    Some(r.plate.as_str()),
-                    Some(r.plate_color as i32),
-                    Some(r.manufacturer.as_str()),
-                    Some(r.terminal_model.as_str()),
-                    None,
-                    &now,
-                )
+                let fields = crate::db::jt1078::JtTerminalWrite {
+                    terminal_id: Some(r.terminal_id.as_str()),
+                    plate_no: Some(r.plate.as_str()),
+                    plate_color: Some(r.plate_color as i32),
+                    maker_id: Some(r.manufacturer.as_str()),
+                    model: Some(r.terminal_model.as_str()),
+                    media_server_id: None,
+                    province_id: None,
+                    city_id: None,
+                };
+                if let Err(e) = crate::db::jt1078::update_terminal(pool, phone, &fields, &now)
                 .await
                 {
                     tracing::warn!("JT1078 终端更新失败 phone={}: {}", phone, e);

@@ -9,10 +9,10 @@
 
 | 维度 | 数值 | 验证方式 |
 |------|------|----------|
-| 总代码量（src/） | 75,846 行 Rust | `find src -name '*.rs' \| xargs wc -l` |
+| 总代码量（src/） | 76,612 行 Rust | `find src -name '*.rs' \| xargs wc -l` |
 | 已注册 HTTP 路由 | 383 条唯一 `/api/...` 路径 | `grep -oE '"/api/[^"]*"' src/router.rs \| sort -u \| wc -l` |
 | Handler 模块 | 29 个（含 `stub.rs` / `device_stub.rs` 两个兼容 shim） | `grep -c 'pub mod' src/handlers/mod.rs` |
-| 后端测试 | **637 通过** / 0 失败（第三十轮刷新） | `cargo test` |
+| 后端测试 | **641 通过** / 0 失败（第三十一轮刷新） | `cargo test` |
 | 编译状态 | `cargo check` 0 error / **0 warning**；clippy 262；**deprecated 0** | `cargo check` / `cargo clippy --all-targets` |
 | 数据库 feature | SQLite（默认）/ PostgreSQL / MySQL **三者均编译通过** | CI `feature-matrix` job |
 | CI | ⏸️ 工作流已就绪但**按需暂停自动触发**（见 `.github/workflows/ci.yml`） | — |
@@ -1371,6 +1371,42 @@ cargo check --all-targets        本项目 0 warning
 npx playwright test              34 passed / 0 failed / 0 skipped（真实 ZLM）
 ```
 
+### JT1078 终端与围栏/路线：字段名全线错位 + 一个 500（2026-09-12 第三十一轮）
+
+`jtDevice` 模块 13 条修完。除契约错位外，还连带发现一个更严重的类型缺陷：
+
+| # | 缺陷 | 修复 / 证据 |
+|---|------|------|
+| 1 | 终端删除用 GET（后端只有 DELETE）+ 传 `id`（后端只认 `phoneNumber`） | 前端改 DELETE；后端同时接受 `id`（前端列表传的主键）与 `phoneNumber`，不存在的 id 返回 404 而不是成功 |
+| 2 | 终端 `plateNo/plateColor/makerId/provinceId/cityId` 后端 DTO 里没有 | 编辑框填了静默丢弃。已补齐并落库（车牌颜色兼容数字码与中文名） |
+| 3 | **`/terminal/list` 会 500** | `gb_jt_terminal.province_id/city_id` 是 **TEXT** 列，而结构体是 `Option<i32>` —— NULL 能解码，写入真实值后整行解码失败。已把字段改成字符串、写入时把数字码转成字符串，并把 16 处 `SELECT *` 换成显式列（`CAST(... AS TEXT)`） |
+| 4 | 列表 `status` 是布尔，前端按 `=== 1` 比较 | 在线终端永远显示"离线"。前端改按布尔判断 |
+| 5 | 通道列表缺 `phoneNumber`/`status`，键名是 `name` 而前端读 `channelName` | 后端补 `phoneNumber`/`status` 并同时给出 `name`+`channelName`；前端优先读 `name` |
+| 6 | 通道列表 `terminalDbId` 是 `i32`：筛选框填手机号直接 400 | 改成字符串并兼容"主键或手机号"（`opt_string_flexible` 同时接受数字与字符串） |
+| 7 | **围栏/路线新建必然失败**：前端发 `phoneNumber/radiusM/pointsJson/waypointsJson`，后端只读 `phone/radius/points/waypoints` | 四个端点全部改成"两种命名都收"，错误文案也改成前端字段名；`pointsJson` 是 JSON 字符串时会解析成数组再存 |
+| 8 | 区域/路线查询响应是 snake_case | 前端表格"手机号/中心经纬度/半径/点位"整列空白。给四个结构体加 `#[serde(rename_all = "camelCase")]` |
+
+**实测**：
+
+```
+终端列表      → status:true（布尔）、plateNo/plateColor/makerId/provinceId/cityId 全部有值
+编辑终端      → 车牌/颜色/厂商/省域/市域真的落库；未提交字段保持原值
+DELETE ?id=1  → code:0，终端列表归零（不存在的 id → 404）
+通道列表      → terminalDbId 传手机号不再 400
+围栏/路线     → phoneNumber/radiusM/pointsJson/waypointsJson 全部接受并落库
+查询响应      → circle: [centerLat, centerLon, phoneNumber, radiusM...]；route: waypointsJson
+Playwright    → 34 passed（无回归）
+```
+
+#### 第三十一轮基线
+
+```
+cargo test                       641 passed / 0 failed
+cargo check --all-targets        本项目 0 warning
+cargo check --features mysql/postgres  OK
+npx playwright test              34 passed / 0 failed / 0 skipped（真实 ZLM）
+```
+
 ### 前端↔后端契约审计：已完成 4 个模块，剩余 12 个模块（2026-09-12 第二十七轮）
 
 第二十六轮用"一个模块一个 agent"的方式把 16 个前端 API 模块逐个对后端路由/DTO
@@ -1385,7 +1421,7 @@ npx playwright test              34 passed / 0 failed / 0 skipped（真实 ZLM�
 | alarm | 10 | ✅ 已修（清除/批量清除/处理/级别/时间筛选/关键字；handle_result 落库） |
 | cloudRecord | 14 | ✅ 已修（第二十九轮，另发现 5 个深层缺陷） |
 | device | 7 | ✅ 已修（第三十轮） |
-| jtDevice | 13 | ❌ 未修 |
+| jtDevice | 13 | ✅ 已修（第三十一轮） |
 | log | 7 | ❌ 未修 |
 | mediaServer | 7 | ❌ 未修 |
 | platform | 11 | ❌ 未修 |
@@ -1759,6 +1795,7 @@ vue-tsc --noEmit                 通过
 
 ## 测试基线（每次推进后回填）
 
+- 2026-09-12 第三十一轮：`cargo test` —— **641 通过 / 0 失败**（JT1078 终端/围栏 13 条）
 - 2026-09-12 第三十轮：`cargo test` —— **637 通过 / 0 失败**（设备页 7 条）
 - 2026-09-12 第二十九轮：`cargo test` —— **634 通过 / 0 失败**（云端录像全链路）
   - 同时：`npx playwright test` 34 通过 / 0 失败 / 0 跳过

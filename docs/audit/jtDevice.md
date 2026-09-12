@@ -1,5 +1,10 @@
 # jtDevice.ts 契约审计
 
+> **状态：已修复（2026-09-12 第三十一轮）**。修复中发现一个更严重的连带问题：
+> `gb_jt_terminal.province_id/city_id` 是 TEXT 列，而 Rust 结构体声明成 `Option<i32>`
+> —— 一旦真的写入值，整行解码失败会让 `/terminal/list` 直接 **500**（此前因为
+> 从来没写过这两列才没暴露）。
+
 审计对象：`web/src/api/jtDevice.ts`（21 个导出函数）。
 后端路由：`src/router.rs`（`api_protected` 链，JT1078 段从 `src/router.rs:818` 起）。
 真值交叉验证：WVP-PRO Java 源码 `/tmp/wvpsrc/wvp-GB28181-pro-master`。
