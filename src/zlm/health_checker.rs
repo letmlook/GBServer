@@ -21,6 +21,30 @@ pub struct ZlmHealthChecker {
     pool: Option<crate::db::Pool>,
 }
 
+/// `general.mediaServerId` 与本平台登记的节点主键是否不一致。
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum DriftKind {
+    /// 值存在但与本平台登记的不一致
+    Mismatch(String),
+    /// 键缺失（或被清空）
+    Missing,
+}
+
+/// 核对节点配置里的 `general.mediaServerId`。
+///
+/// 该键决定 ZLM 在每个 hook 请求里带什么 `mediaServerId`：不一致时后端认不出事件
+/// 来源、只能"回落到默认节点"，多节点部署下会把事件记到错误的节点上。
+pub(crate) fn media_server_id_drift(
+    expected: &str,
+    cfg: &std::collections::HashMap<String, String>,
+) -> Option<DriftKind> {
+    match cfg.get("general.mediaServerId").map(|s| s.trim()) {
+        None | Some("") => Some(DriftKind::Missing),
+        Some(v) if v != expected => Some(DriftKind::Mismatch(v.to_string())),
+        Some(_) => None,
+    }
+}
+
 impl ZlmHealthChecker {
     pub fn new(check_interval_secs: u64) -> Self {
         Self {
@@ -52,8 +76,38 @@ impl ZlmHealthChecker {
         let mut reconfigure: Vec<(String, Arc<crate::zlm::ZlmClient>)> = Vec::new();
 
         for (id, client, status) in clients.iter_mut() {
+            // 探活同时拿配置：这样可以在**不额外发请求**的前提下核对
+            // `general.mediaServerId` 是否仍与本平台登记的节点主键一致。
+            //
+            // 该键决定 ZLM 在每个 hook 请求里带什么 `mediaServerId`。此前只在
+            // "节点上线"那一次下发，一旦有人在 ZLM 侧手工改掉它（或节点一直在线
+            // 从未发生状态跃迁），后端收到的事件就会带着一个认不出的 id，
+            // 于是所有事件都"回落到默认节点" —— 多节点部署下会把事件记到错误的
+            // 节点上，而日志里看不出异常。现在每次探活都会发现并纠正。
+            let mut id_drift = false;
             let new_status = match client.get_server_config().await {
-                Ok(_) => ZlmServerStatus::Online,
+                Ok(cfg) => {
+                    match media_server_id_drift(id, &cfg) {
+                        Some(DriftKind::Mismatch(v)) => {
+                            id_drift = true;
+                            tracing::warn!(
+                                "ZLM 节点 {} 的 general.mediaServerId 被改成了 {:?}，将重新对齐",
+                                id,
+                                v
+                            );
+                        }
+                        Some(DriftKind::Missing) => {
+                            id_drift = true;
+                            tracing::warn!(
+                                "ZLM 节点 {} 缺少 general.mediaServerId，将重新下发 {}",
+                                id,
+                                id
+                            );
+                        }
+                        None => {}
+                    }
+                    ZlmServerStatus::Online
+                }
                 Err(_) => ZlmServerStatus::Offline,
             };
 
@@ -98,6 +152,10 @@ impl ZlmHealthChecker {
                 if new_status == ZlmServerStatus::Online {
                     reconfigure.push((id.clone(), client.clone()));
                 }
+            }
+
+            if id_drift && new_status == ZlmServerStatus::Online && !reconfigure.iter().any(|(rid, _)| rid == id) {
+                reconfigure.push((id.clone(), client.clone()));
             }
 
             results.push((id.clone(), new_status));
@@ -202,5 +260,38 @@ impl ZlmHealthChecker {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod media_server_id_tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    /// 每次探活都会核对 `general.mediaServerId`：被手工改掉要能发现并纠正。
+    #[test]
+    fn detects_media_server_id_drift() {
+        let mut cfg = HashMap::new();
+        cfg.insert("general.mediaServerId".to_string(), "zlmediakit-1".to_string());
+        assert_eq!(media_server_id_drift("zlmediakit-1", &cfg), None);
+
+        cfg.insert("general.mediaServerId".to_string(), "hacked".to_string());
+        assert_eq!(
+            media_server_id_drift("zlmediakit-1", &cfg),
+            Some(DriftKind::Mismatch("hacked".to_string()))
+        );
+
+        // 空串按缺失处理
+        cfg.insert("general.mediaServerId".to_string(), "  ".to_string());
+        assert_eq!(
+            media_server_id_drift("zlmediakit-1", &cfg),
+            Some(DriftKind::Missing)
+        );
+
+        cfg.remove("general.mediaServerId");
+        assert_eq!(
+            media_server_id_drift("zlmediakit-1", &cfg),
+            Some(DriftKind::Missing)
+        );
     }
 }

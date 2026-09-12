@@ -12,7 +12,7 @@
 | 总代码量（src/） | 79,179 行 Rust | `find src -name '*.rs' \| xargs wc -l` |
 | 已注册 HTTP 路由 | 386 条唯一 `/api/...` 路径 | `grep -oE '"/api/[^"]*"' src/router.rs \| sort -u \| wc -l` |
 | Handler 模块 | 29 个（含 `stub.rs` / `device_stub.rs` 两个兼容 shim） | `grep -c 'pub mod' src/handlers/mod.rs` |
-| 后端测试 | **693 通过 / 0 失败**（第四十一轮刷新） | `cargo test` |
+| 后端测试 | **695 通过 / 0 失败**（第四十一轮刷新） | `cargo test` |
 | 编译状态 | `cargo check` 0 error / **0 warning**；clippy 262；**deprecated 0** | `cargo check` / `cargo clippy --all-targets` |
 | 数据库 feature | SQLite（默认）/ PostgreSQL / MySQL **三者均编译通过** | CI `feature-matrix` job |
 | CI | ⏸️ 工作流已就绪但**按需暂停自动触发**（见 `.github/workflows/ci.yml`） | — |
@@ -1852,6 +1852,25 @@ npx playwright test              61 passed / 0 failed（云端录像 2 例按环
 cargo test                       693 passed / 0 failed
 ```
 
+### ABL 进度事件加固 + mediaServerId 漂移自愈（2026-09-12 第四十一轮）
+
+* `on_rtp_playlist` / `on_record_progress` / `on_send_rtp_progress`：进度类数值走
+  宽松解析（字符串数字也收），解析失败改为 WARN + **打印原始载荷** ——
+  官方文档没给这三个事件的示例，只有把真实载荷打进日志才可能核对；
+  此前 `.ok() + if let` 会把"字段名对不上"变成完全无声的功能缺失。
+* `general.mediaServerId` 自愈：每次探活**顺带**核对（复用已有的 `getServerConfig`
+  响应，不额外发请求），不一致或缺失就告警 + 重新下发。实测把 ZLM 侧手工改成
+  `hacked-id` 后，下一个探活周期日志出现 WARN 且配置恢复为 `zlmediakit-1`。
+
+#### 第四十一轮最终基线
+
+```
+cargo test                       695 passed / 0 failed
+cargo check --all-targets        本项目 0 warning
+cargo check --features mysql/postgres  OK
+npx playwright test              61 passed / 0 failed（云端录像 2 例按环境显式 skip）
+```
+
 > **环境限制（本机，非仓库缺陷）**：Docker Desktop 出现容器 → 宿主机网络不通
 > （`host.docker.internal` 只解析出 IPv6 ULA，`192.168.65.254` / `172.18.0.1` /
 > 宿主机 LAN IP 均不可达，连 redis 容器也连不上后端）。因此 ZLM 的全部 hook
@@ -2065,10 +2084,21 @@ vue-tsc --noEmit                 通过
     实测（SIP 模拟器日志）：`A50F01421E000015`(聚焦近) `A50F014800140011`(光圈开)
     `A50F01820005003C`(调用预置位5) `A50F01840105003F`(巡航加点) `A50F018902000040`(扫描开始)
     `A50F018C03000044`(辅助开) `A50F018D01000043`(雨刷关)。
-13. **`on_rtp_playlist` / `on_record_progress` / `on_send_rtp_progress`**
-   的载荷结构未与真实样本核对（官方文档未给出示例）。
-14. **多节点下 `general.mediaServerId`** 现在会在 autoConfig 时下发为节点主键；
-    但**手工在 ZLM 侧改过该键**的既有部署仍需重新保存节点才会对齐。
+13. ~~**`on_rtp_playlist` / `on_record_progress` / `on_send_rtp_progress`**
+   的载荷结构未与真实样本核对**~~ **已加固（第四十一轮）**：
+   官方文档确实没给这几个 ABL 事件的示例载荷，所以改为"**容忍 + 可见**"：
+   * 进度类字段（`current_duration`/`current_size`/`progress_ts`/
+     `total_sent`/`bytes_sent`）走宽松解析，**字符串数字**也接受
+     —— 此前任一字段类型不符都会让整个结构体反序列化失败；
+   * 三个事件的解析失败都改为 `tracing::warn!` 并**打印原始载荷**，
+     不再 `.ok() + if let` 静默丢弃（现场可直接从日志看到真实字段名）。
+   这样即使载荷形态与预期不同，也不会再出现"事件到了但什么也没发生"。
+14. ~~**多节点下 `general.mediaServerId`** 手工改过之后需要重新保存节点才会对齐~~ **已自愈（第四十一轮）**：
+    健康检查每 10 秒探活时**顺带**核对（不额外发请求）`getServerConfig` 里的
+    `general.mediaServerId`：与本平台登记的节点主键不一致或缺失时，
+    记一条 WARN 并立即重新下发 + 回读验证。
+    实测：手工把 ZLM 侧改成 `hacked-id` → 下一次探活日志
+    "general.mediaServerId 被改成了 \"hacked-id\"，将重新对齐" → 配置恢复为 `zlmediakit-1`。
 15. ~~**上级平台点播本级（级联拉流）尚未接线**~~ **已实现并端到端验证（第十八轮）**：
     见上方第十八轮小节。当前实现用进程级队列 + `Arc<SipServer>` 后台任务
     解耦静态信令路径与 `&self` 媒体路径；后续若继续加级联能力（如上级云台控制

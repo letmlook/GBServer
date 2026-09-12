@@ -246,6 +246,48 @@ pub struct RtpServerTimeoutData {
 // 会使用这些事件，本实现补齐 on_rtp_playlist / on_record_progress。
 // =====================================================================
 
+/// 宽松数字解析：ZLM 的进度类事件里数值可能是 JSON number，也可能是字符串
+/// （例如 `"current_size": "12345"`）。任一字段类型不符都会让**整个**结构体
+/// 反序列化失败，从而静默丢掉整条进度事件 —— 所以这些字段统一走宽松解析。
+fn lenient_opt_f64<'de, D>(d: D) -> Result<Option<f64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::Deserialize;
+    Ok(match Option::<serde_json::Value>::deserialize(d)? {
+        None | Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::Number(n)) => n.as_f64(),
+        Some(serde_json::Value::String(s)) => s.trim().parse::<f64>().ok(),
+        Some(_) => None,
+    })
+}
+
+fn lenient_opt_u64<'de, D>(d: D) -> Result<Option<u64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::Deserialize;
+    Ok(match Option::<serde_json::Value>::deserialize(d)? {
+        None | Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::Number(n)) => n.as_u64().or_else(|| n.as_f64().map(|f| f as u64)),
+        Some(serde_json::Value::String(s)) => s.trim().parse::<u64>().ok(),
+        Some(_) => None,
+    })
+}
+
+fn lenient_opt_i64<'de, D>(d: D) -> Result<Option<i64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::Deserialize;
+    Ok(match Option::<serde_json::Value>::deserialize(d)? {
+        None | Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::Number(n)) => n.as_i64().or_else(|| n.as_f64().map(|f| f as i64)),
+        Some(serde_json::Value::String(s)) => s.trim().parse::<i64>().ok(),
+        Some(_) => None,
+    })
+}
+
 /// ABL `on_rtp_playlist` 事件：RTP 推流端开始 / 停止推 playlist 时触发
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RtpPlaylistData {
@@ -267,10 +309,13 @@ pub struct RecordProgressData {
     #[serde(default, alias = "mediaServerId")]
     pub media_server_id: Option<String>,
     /// 当前累计录制时长（秒）
+    #[serde(default, deserialize_with = "lenient_opt_f64")]
     pub current_duration: Option<f64>,
     /// 当前累计文件大小（字节）
+    #[serde(default, deserialize_with = "lenient_opt_u64")]
     pub current_size: Option<u64>,
     /// 进度时间戳（毫秒）
+    #[serde(default, deserialize_with = "lenient_opt_i64")]
     pub progress_ts: Option<i64>,
 }
 
@@ -281,7 +326,9 @@ pub struct SendRtpProgressData {
     pub stream: Option<String>,
     #[serde(default, alias = "mediaServerId")]
     pub media_server_id: Option<String>,
+    #[serde(default, deserialize_with = "lenient_opt_u64")]
     pub total_sent: Option<u64>,
+    #[serde(default, deserialize_with = "lenient_opt_u64")]
     pub bytes_sent: Option<u64>,
 }
 
@@ -1692,7 +1739,8 @@ pub(crate) async fn handle_webhook_inner(
         }
         // ============ ABL 钩子（设计文档 §6.3 阶段 0 缺口 1）============
         "on_rtp_playlist" => {
-            if let Some(data) = serde_json::from_value::<RtpPlaylistData>(event.clone()).ok() {
+            match serde_json::from_value::<RtpPlaylistData>(event.clone()) {
+                Ok(data) => {
                 tracing::info!(
                     "ABL rtp_playlist: app={:?} stream={:?} ssrc={:?} action={:?}",
                     data.app, data.stream, data.ssrc, data.action
@@ -1704,10 +1752,15 @@ pub(crate) async fn handle_webhook_inner(
                     "ssrc": data.ssrc,
                     "action": data.action,
                 })).await;
+                }
+                // 解析失败必须可见：此前 `.ok()` + `if let` 让"载荷字段名对不上"
+                // 变成完全无声的功能缺失（官方文档没给这几个 ABL 事件的示例载荷）。
+                Err(e) => tracing::warn!("on_rtp_playlist 载荷解析失败: {} 原文={}", e, event),
             }
         }
         "on_record_progress" => {
-            if let Some(data) = serde_json::from_value::<RecordProgressData>(event.clone()).ok() {
+            match serde_json::from_value::<RecordProgressData>(event.clone()) {
+                Ok(data) => {
                 tracing::debug!(
                     "ABL record_progress: {}/{} duration={:?}s size={:?}B ts={:?}",
                     data.app.as_deref().unwrap_or(""),
@@ -1730,10 +1783,13 @@ pub(crate) async fn handle_webhook_inner(
                         );
                     }
                 }
+                }
+                Err(e) => tracing::warn!("on_record_progress 载荷解析失败: {} 原文={}", e, event),
             }
         }
         "on_send_rtp_progress" => {
-            if let Some(data) = serde_json::from_value::<SendRtpProgressData>(event.clone()).ok() {
+            match serde_json::from_value::<SendRtpProgressData>(event.clone()) {
+                Ok(data) => {
                 tracing::debug!(
                     "ABL send_rtp_progress: {}/{} total={:?} bytes={:?}",
                     data.app.as_deref().unwrap_or(""),
@@ -1747,6 +1803,8 @@ pub(crate) async fn handle_webhook_inner(
                     "total_sent": data.total_sent,
                     "bytes_sent": data.bytes_sent,
                 })).await;
+                }
+                Err(e) => tracing::warn!("on_send_rtp_progress 载荷解析失败: {} 原文={}", e, event),
             }
         }
         _ => {
@@ -1872,6 +1930,57 @@ async fn check_hook_auth(
 
     // 走到这里：secret 通过，且（若有 IP）白名单也通过
     None
+}
+
+#[cfg(test)]
+mod abl_payload_tests {
+    use super::*;
+
+    /// 进度类事件里数值可能是字符串（ZLM 不同版本/不同事件不一致）。
+    /// 此前任一字段类型不符都会让**整个**结构体反序列化失败，
+    /// 于是 `.ok() + if let` 静默丢掉整条事件。
+    #[test]
+    fn progress_payloads_accept_string_numbers() {
+        let as_numbers: RecordProgressData = serde_json::from_value(serde_json::json!({
+            "app": "record", "stream": "ch-1",
+            "current_duration": 12.5, "current_size": 4096, "progress_ts": 1700000000000_i64
+        }))
+        .unwrap();
+        assert_eq!(as_numbers.current_duration, Some(12.5));
+        assert_eq!(as_numbers.current_size, Some(4096));
+        assert_eq!(as_numbers.progress_ts, Some(1700000000000));
+
+        let as_strings: RecordProgressData = serde_json::from_value(serde_json::json!({
+            "app": "record", "stream": "ch-1",
+            "current_duration": "12.5", "current_size": "4096", "progress_ts": "1700000000000"
+        }))
+        .expect("字符串数字也要能解析");
+        assert_eq!(as_strings.current_duration, Some(12.5));
+        assert_eq!(as_strings.current_size, Some(4096));
+        assert_eq!(as_strings.progress_ts, Some(1700000000000));
+
+        // null / 缺失字段不报错
+        let sparse: RecordProgressData =
+            serde_json::from_value(serde_json::json!({"app": "record"})).unwrap();
+        assert_eq!(sparse.current_size, None);
+
+        // 推流进度同样宽松
+        let send: SendRtpProgressData = serde_json::from_value(serde_json::json!({
+            "app": "rtp", "stream": "s1", "total_sent": "120", "bytes_sent": 2048
+        }))
+        .unwrap();
+        assert_eq!(send.total_sent, Some(120));
+        assert_eq!(send.bytes_sent, Some(2048));
+
+        // playlist 事件的字段名（媒体节点 id 有两个拼写）
+        let pl: RtpPlaylistData = serde_json::from_value(serde_json::json!({
+            "app": "rtp", "stream": "s1", "ssrc": "0100000001",
+            "action": "start", "mediaServerId": "zlm-1"
+        }))
+        .unwrap();
+        assert_eq!(pl.action.as_deref(), Some("start"));
+        assert_eq!(pl.media_server_id.as_deref(), Some("zlm-1"));
+    }
 }
 
 #[cfg(test)]
