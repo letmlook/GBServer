@@ -12,7 +12,7 @@
 | 总代码量（src/） | 79,179 行 Rust | `find src -name '*.rs' \| xargs wc -l` |
 | 已注册 HTTP 路由 | 386 条唯一 `/api/...` 路径 | `grep -oE '"/api/[^"]*"' src/router.rs \| sort -u \| wc -l` |
 | Handler 模块 | 29 个（含 `stub.rs` / `device_stub.rs` 两个兼容 shim） | `grep -c 'pub mod' src/handlers/mod.rs` |
-| 后端测试 | **714 通过 / 0 失败**（第四十六轮刷新） | `cargo test` |
+| 后端测试 | **715 通过 / 0 失败**（第四十七轮刷新） | `cargo test` |
 | 编译状态 | `cargo check` 0 error / **0 warning**；clippy 262；**deprecated 0** | `cargo check` / `cargo clippy --all-targets` |
 | 数据库 feature | SQLite（默认）/ PostgreSQL / MySQL **三者均编译通过** | CI `feature-matrix` job |
 | CI | ⏸️ 工作流已就绪但**按需暂停自动触发**（见 `.github/workflows/ci.yml`） | — |
@@ -2183,6 +2183,80 @@ ZLM hook 链路                    on_stream_changed / on_record_mp4 /
                                  on_stream_none_reader → 真实 MP4 → 库 → 播放 → 删除
 ```
 
+### 多节点（双 ZLM）负载均衡：**首次真机验证**，并修掉 `mediaServerId=auto` 从不负载均衡（2026-09-12 第四十七轮）
+
+此前所有验证都只有**一个** ZLM 节点，"按负载选节点 / 节点离线剔除"这条链路的
+代码（`select_least_loaded` / `select_least_loaded_server_filtered` / 每节点 hook URL /
+`general.mediaServerId` 自愈）从未在**两个真实节点**上跑过。本轮起第二个 ZLM
+（`docker run` 一份改过 `rtp_proxy.port_range=30200-30300` 的 config.ini，
+HTTP 发布到 `18089`），后端临时配置两个节点（`zlmediakit-1/2`）并各自下发 hook URL。
+
+**抓到的真缺陷**：`mediaServerId = auto`（前端/WVP 新建拉流代理的默认值）
+**从来没有走过负载均衡**。`proxy_start` 的写法是
+
+```rust
+let ms_hint = rec.media_server_id.filter(|s| s != "auto")...;   // "auto" 被过滤掉
+let zlm = state.get_zlm_client(ms_hint.as_deref())               // None → 默认节点
+```
+
+`get_zlm_client(None)` 恒等于 `state.zlm_client`（**第一个配置的节点**），
+`select_least_loaded` 在代理启动路径上一次都没被调用过。实测：node1 上有一条
+真实直播流、node2 空载，连续三次 auto 代理**全部落在 node1**。
+
+更隐蔽的连带问题：启动时选中的节点**不回写**库（行里仍是 `"auto"`），
+于是 `/api/proxy/stop`、`/api/proxy/delete` 会**再选一次** —— 完全可能选到另一个
+节点，真正在拉流的那台上的流永远关不掉，变成野流。
+
+修复（`handlers/stream.rs` + `db/stream_proxy.rs`）：
+
+* `proxy_start` 改用 `get_zlm_client_auto()`（明确指定节点 → 用它；`auto`/空
+  → 按负载选最少负载的**在线**节点）；
+* 选中后**回写** `gb_stream_proxy.media_server_id`（新增
+  `stream_proxy::set_media_server_id`），stop/delete/界面展示据此定位；
+* `proxy_stop` 用同一套选择逻辑（兼容历史 `"auto"` 数据行）；
+* 新增单测：`proxy_start_records_chosen_media_server_id`。
+
+**实测（两个真实 ZLM 节点 + 真实 ffmpeg 推送源）**：
+
+```
+# 显式指定节点
+POST /api/proxy/add {mediaServerId: zlmediakit-2} → 行内 mediaServerId=zlmediakit-2
+GET  /api/proxy/start                              → flvUrl = http://127.0.0.1:18089/lb/pinned-n2.live.flv
+node2 getMediaList → lb/pinned-n2 (rtsp/rtmp/fmp4)；node1 上没有它
+
+# 负载均衡（node1 有一条真实直播流、node2 空载）
+auto-x1                                  → zlmediakit-2   ← 选了空载节点
+（在 node2 上再钉 2 条流后）
+auto-x2                                  → zlmediakit-1   ← 避开负载更高的节点
+
+# 节点离线
+docker stop gbserver-zlm2 → 45s 后
+  media_server/list: zlmediakit-2 status=False（节点1 仍 True）
+  日志: "ZLM server zlmediakit-2 status changed: Online -> Offline"
+  auto-off 代理                        → zlmediakit-1   ← 离线节点被剔除
+
+# 库内落点（全部为具体节点，不再有 "auto"）
+('auto-x1','zlmediakit-2') ('pin-p1','zlmediakit-2') ('pin-p2','zlmediakit-2')
+('auto-x2','zlmediakit-1') ('auto-off','zlmediakit-1')
+```
+
+顺带确认：两个节点的 hook **都**到达后端（每节点独立 hook URL），
+`general.mediaServerId` 自愈对第二个节点同样生效
+（`your_server_id` → `zlmediakit-2`），`rtp_proxy.port_range` 按节点分别核对。
+
+> 测试脚手架说明：验证时把 node1 的 hook_url 临时指向双节点实例（18083），
+> 否则 node1 的流计数会落在另一个后端实例的 StateStore 里，负载均衡无从判断。
+> 验证后已用 `git checkout -- config/application.toml` 还原。
+
+#### 第四十七轮基线
+
+```
+cargo test                       715 passed / 0 failed（+1 代理落点回写）
+cargo build --features postgres/mysql  OK
+npx playwright test              66 passed / 0 failed
+双 ZLM 真机验证                  显式落点 / 最少负载选择 / 离线剔除 / 每节点 hook 全部通过
+```
+
 ### 前端↔后端契约审计：**16 个模块 130 条全部修完**（2026-09-12 第三十九轮）
 
 第二十六轮用"一个模块一个 agent"的方式把 16 个前端 API 模块逐个对后端路由/DTO
@@ -2633,6 +2707,7 @@ vue-tsc --noEmit                 通过
 - 2026-09-12 第四十四轮：`cargo test` —— **710 通过 / 0 失败**（移动位置 `/api/position/*` 补齐 latest/realtime/subscribe + history 支持 WVP 的 channelId；`gb_device_mobile_position` 双写打通）
 - 2026-09-12 第四十五轮：`cargo test` —— **710 通过 / 0 失败**（**首次 MySQL 运行时验证**：`CREATE INDEX IF NOT EXISTS` / `CAST(.. AS INTEGER|TEXT)` / `INSERT ... RETURNING` 四类 mysql 语法缺陷；新增 `scripts/dialect_smoke.py` 与 profile 隔离的 mysql 服务）
 - 2026-09-12 第四十六轮：`cargo test` —— **714 通过 / 0 失败**（ZLM hook 全链路在真实环境重新验证：录制文件/落库/播放/删除真删文件；`/cloud/record/delete` 的 `ids` 兼容数字；新增共享 `src/serde_flex.rs`）
+- 2026-09-12 第四十七轮：`cargo test` —— **715 通过 / 0 失败**（**双 ZLM 节点真机验证**：显式落点/最少负载选择/离线剔除；修掉 `mediaServerId=auto` 从不负载均衡 + 选中节点不回写导致 stop 杀不掉流）
 - 2026-09-12 第三十一轮：`cargo test` —— **641 通过 / 0 失败**（JT1078 终端/围栏 13 条）
 - 2026-09-12 第三十轮：`cargo test` —— **637 通过 / 0 失败**（设备页 7 条）
 - 2026-09-12 第二十九轮：`cargo test` —— **634 通过 / 0 失败**（云端录像全链路）

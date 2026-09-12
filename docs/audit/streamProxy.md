@@ -14,6 +14,15 @@
 > `pushing = ?` 绑 `Int` 会 `boolean = integer` 500 —— 为此给 `dyn_where::BindValue`
 > 补了 `Bool` 变体。
 
+> **第四十七轮（双节点真机验证）补充**：`mediaServerId = auto`（新建代理的
+> 默认值）此前**从不负载均衡** —— `proxy_start` 用 `get_zlm_client(ms_hint)`
+> 而它遇到 `auto`/空直接返回**第一个配置的节点**，`select_least_loaded` 从未被调用。
+> 连带问题：选中的节点不回写库，`proxy/stop`、`proxy/delete` 会再选一次，
+> 可能选到另一个节点 → 真正在拉流的节点上的流关不掉（野流）。
+> 现已改为 `get_zlm_client_auto()` + 回写 `media_server_id`（新增
+> `stream_proxy::set_media_server_id`），并在两个真实 ZLM 节点上验证：
+> 空载节点优先、负载高的节点被避开、离线节点被剔除。
+
 审计范围：`web/src/api/streamProxy.ts` 的 8 个函数（`/api/proxy/list`、`/one`、`/add`、`/update`、`/save`、`/start`、`/stop`、`/delete`）。
 
 路由与方法先做一次核对：`src/router.rs:286`（list，get）、`:291`（add，post）、`:292`（update，post）、`:293`（save，post）、`:294`（start，get）、`:295`（stop，get）、`:296`（delete，delete）、`:916`（one，get）——与前端 `web/src/api/streamProxy.ts:24-86` 声明的 method 全部一致，**不存在路径缺失或 HTTP method 不一致**。以下问题全部出在字段名绑定上。

@@ -797,9 +797,33 @@ pub async fn proxy_start(
         .filter(|s| !s.is_empty() && s != "auto")
         .or_else(|| rec.relates_media_server_id.clone())
         .or_else(|| q.media_server_id.clone());
-    let zlm = state.get_zlm_client(ms_hint.as_deref()).ok_or_else(|| {
-        AppError::business(ErrorCode::Error100, "ZLM 未配置，无法启动拉流代理")
-    })?;
+    // `mediaServerId = auto`（前端/WVP 新建代理的默认值）必须走**负载均衡**，
+    // 而不是回落到 `state.zlm_client`（那恒定是第一个配置的节点）。
+    // 此前用 `get_zlm_client`：它遇到 "auto"/None 时直接返回默认节点，
+    // 于是 `select_least_loaded` 从未被代理启动路径用过 —— 多节点下所有
+    // auto 代理都挤在同一个 ZLM 上。
+    let (chosen_ms_id, zlm) = match state.get_zlm_client_auto(ms_hint.as_deref()).await {
+        Some((id, client)) => (id, client),
+        None => {
+            return Err(AppError::business(
+                ErrorCode::Error100,
+                match ms_hint.as_deref() {
+                    Some(id) => format!("流媒体节点不可用: {id}"),
+                    None => "ZLM 未配置，无法启动拉流代理".to_string(),
+                },
+            ))
+        }
+    };
+    // 把选中的节点**落库**：stop/delete/界面展示都要用同一个节点，
+    // 否则 "auto" 会让它们各自再选一次，可能选到别的节点 → 野流。
+    if rec.media_server_id.as_deref() != Some(chosen_ms_id.as_str()) {
+        let now = local_now_str();
+        if let Err(e) =
+            stream_proxy::set_media_server_id(&state.pool, rec.id as i64, &chosen_ms_id, &now).await
+        {
+            tracing::warn!("回写拉流代理 {}/{} 的 mediaServerId 失败: {}", app, stream, e);
+        }
+    }
 
     let timeout_sec = rec.timeout.unwrap_or(30).max(1) as f64;
     let is_ffmpeg = rec.r#type.as_deref() == Some("ffmpeg");
@@ -914,7 +938,12 @@ pub async fn proxy_stop(
         .or_else(|| rec.relates_media_server_id.clone())
         .or_else(|| q.media_server_id.clone());
     let mut zlm_error: Option<String> = None;
-    if let Some(zlm) = state.get_zlm_client(ms_hint.as_deref()) {
+    // 与 `proxy_start` 同一套选择逻辑（老数据里 media_server_id 可能还是 "auto"）
+    let stop_target = match ms_hint.as_deref() {
+        Some(id) => state.get_zlm_client_auto(Some(id)).await,
+        None => state.get_zlm_client_auto(None).await,
+    };
+    if let Some((_, zlm)) = stop_target {
         if let Err(e) = zlm
             .close_streams(Some("rtsp"), Some(&app), Some(&stream), true)
             .await
@@ -1197,6 +1226,47 @@ mod proxy_tests {
 
     fn body(v: serde_json::Value) -> ProxyBody {
         serde_json::from_value(v).expect("ProxyBody 反序列化")
+    }
+
+    /// `mediaServerId = auto` 的代理在**启动**时必须把实际选中的节点回写进库。
+    ///
+    /// 不回写的后果（第四十七轮实测）：`/api/proxy/stop` 会再按 auto 选一次节点，
+    /// 可能选到**另一个**节点 → 真正在拉流的那台永远关不掉，成为野流。
+    #[tokio::test]
+    async fn proxy_start_records_chosen_media_server_id() {
+        let state = app_state().await;
+        let w = stream_proxy::StreamProxyWrite {
+            app: Some("lb"),
+            stream: Some("auto-1"),
+            src_url: Some("rtsp://cam/1"),
+            media_server_id: Some("auto"),
+            name: Some("auto"),
+            r#type: Some("default"),
+            timeout: None,
+            ffmpeg_cmd_key: None,
+            rtsp_type: None,
+            enable: Some(true),
+            enable_audio: None,
+            enable_mp4: None,
+            enable_disable_none_reader: None,
+            relates_media_server_id: None,
+        };
+        stream_proxy::add(&state.pool, &w, &local_now_str()).await.unwrap();
+        let rec = stream_proxy::get_by_app_stream(&state.pool, "lb", "auto-1")
+            .await
+            .unwrap()
+            .expect("代理行应存在");
+        assert_eq!(rec.media_server_id.as_deref(), Some("auto"));
+
+        // 回写为具体节点后，读取必须拿到具体节点（stop/delete 依据它工作）
+        stream_proxy::set_media_server_id(&state.pool, rec.id as i64, "zlmediakit-2", &local_now_str())
+            .await
+            .unwrap();
+        let rec = stream_proxy::get_by_app_stream(&state.pool, "lb", "auto-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(rec.media_server_id.as_deref(), Some("zlmediakit-2"));
     }
 
     /// 旧版前端字段名（`url` / `enabled`）与 WVP 字段名（`srcUrl` / `enable`）都必须能解析。

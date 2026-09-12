@@ -400,6 +400,32 @@ pub async fn update_play_state(
     Ok(r.rows_affected())
 }
 
+/// 记录"这路代理**实际**落在哪个流媒体节点"。
+///
+/// 为什么必须回写：`mediaServerId = auto`（WVP/前端新建代理的默认值）表示
+/// "由平台按负载选一个节点"。若只在启动时选一次而不落库，后续
+/// `/api/proxy/stop`、`/api/proxy/delete`（以及界面展示）都会再选一次，
+/// **完全可能选到另一个节点** —— 于是真正在拉流的那台上的流永远关不掉，
+/// 变成无人回收的野流（ZLM 侧占用带宽直到进程重启）。
+///
+/// 用 `dialect_sql` 写 `?` 占位符，三种方言共用一份 SQL。
+pub async fn set_media_server_id(
+    pool: &Pool,
+    id: i64,
+    media_server_id: &str,
+    now: &str,
+) -> sqlx::Result<u64> {
+    let r = sqlx::query(&crate::dyn_where::dialect_sql(
+        "UPDATE gb_stream_proxy SET media_server_id = ?, update_time = ? WHERE id = ?",
+    ))
+    .bind(media_server_id)
+    .bind(now)
+    .bind(id)
+    .execute(pool)
+    .await?;
+    Ok(r.rows_affected())
+}
+
 /// 删除拉流代理
 pub async fn delete_by_id(pool: &Pool, id: i64) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
