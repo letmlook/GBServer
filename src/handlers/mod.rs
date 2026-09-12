@@ -17,6 +17,7 @@ pub mod websocket;
 pub mod alarm;
 pub mod webrtc;
 pub mod device_batch;
+pub mod dyn_where;
 pub mod metrics;
 pub mod role;
 pub mod region;

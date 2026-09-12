@@ -537,7 +537,11 @@ CREATE TABLE IF NOT EXISTS gb_device_alarm
     longitude         REAL,
     latitude          REAL,
     alarm_type        VARCHAR(50),
-    create_time       VARCHAR(50)  NOT NULL
+    create_time       VARCHAR(50)  NOT NULL,
+    handled           INTEGER      NOT NULL DEFAULT 0,
+    handle_user       VARCHAR(50),
+    handle_time       VARCHAR(50),
+    handle_result     VARCHAR(255)
 );
 
 -- ============================================

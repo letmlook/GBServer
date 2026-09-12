@@ -64,7 +64,10 @@
           <ul class="donut-legend">
             <li><i class="gb-dot gb-dot--success" />在线 <span class="mono">{{ deviceOnline }}</span></li>
             <li><i class="gb-dot gb-dot--info" />直播中 <span class="mono">{{ activeStreamCount }}</span></li>
-            <li><i class="gb-dot gb-dot--warning" />弱信号 <span class="mono">{{ recentAlarms.filter(a => a.alarmLevel === '警告').length }}</span></li>
+            <li>
+              <i class="gb-dot gb-dot--warning" />一级/二级告警
+              <span class="mono">{{ recentAlarms.filter(a => ['1', '2'].includes(String(a.alarmPriority ?? ''))).length }}</span>
+            </li>
             <li><i class="gb-dot" style="background: var(--text-disabled)" />离线 <span class="mono">{{ Math.max(deviceTotal - deviceOnline, 0) }}</span></li>
           </ul>
         </div>
@@ -121,12 +124,14 @@
         </header>
         <ul class="alarms">
           <li v-for="a in recentAlarms" :key="a.id" class="alarm">
-            <span :class="['gb-dot', toneLevel(a.alarmLevel)]" />
+            <span :class="['gb-dot', toneLevel(a.alarmPriority)]" />
             <div class="flex-1">
               <div class="text-sm text-bold">{{ a.alarmDescription ?? a.deviceId }}</div>
               <div class="text-xs text-tertiary">{{ a.deviceId }} · {{ a.alarmTime }}</div>
             </div>
-            <span :class="['gb-chip', 'gb-chip--' + toneLevel(a.alarmLevel)]">{{ a.alarmLevel ?? '信息' }}</span>
+            <span :class="['gb-chip', 'gb-chip--' + toneLevel(a.alarmPriority)]">
+              {{ alarmPriorityLabel(a.alarmPriority) }}
+            </span>
           </li>
           <li v-if="!recentAlarms.length" class="alarm text-tertiary text-xs">暂无告警</li>
         </ul>
@@ -145,7 +150,7 @@ import { getSystemInfo, type SystemInfo } from '@/api/log'
 import { queryDevices } from '@/api/device'
 import { queryStreams } from '@/api/live'
 import { getMediaServerList, getMediaLoad } from '@/api/mediaServer'
-import { getAlarmList } from '@/api/alarm'
+import { getAlarmList, alarmPriorityLabel } from '@/api/alarm'
 
 const router = useRouter()
 
@@ -156,7 +161,13 @@ const channelTotal = ref(0)
 const activeStreamCount = ref(0)
 const streams = ref<Array<{ mediaServerId?: string; app?: string; stream?: string; deviceId?: string; channelId?: string }>>([])
 const mediaServerCount = ref(0)
-const recentAlarms = ref<{ id?: number; alarmTime?: string; alarmDescription?: string; deviceId?: string; alarmLevel?: string }[]>([])
+const recentAlarms = ref<{
+  id?: number
+  alarmTime?: string
+  alarmDescription?: string
+  deviceId?: string
+  alarmPriority?: string
+}[]>([])
 const nodes = ref<{ id: string; name: string; region: string; cpu: number; mem: number; bw: number; status: string; tone: string }[]>([])
 const channels = ref<Array<{ id: number; title: string; no: string; state: 'live' | 'rec' | 'mute' | 'offline'; deviceId?: string; channelId?: string }>>([])
 
@@ -304,10 +315,15 @@ function tone(v: number) {
   if (v >= 70) return 'bar-fill--warning'
   return 'bar-fill--success'
 }
-function toneLevel(level?: string): string {
-  const lv = (level ?? '').toUpperCase()
-  if (lv.includes('紧急') || lv === 'ERROR' || lv === 'CRITICAL') return 'error'
-  if (lv.includes('警告') || lv === 'WARN' || lv === 'WARNING') return 'warning'
+/**
+ * 告警级别 → 色调。入参是后端的 `alarmPriority`（GB/T 28181 报警优先级：
+ * 1 一级/紧急、2 二级/重要、3 三级/一般、4 四级/提示），
+ * 同时兼容历史数据里可能出现的文字值。
+ */
+function toneLevel(priority?: string | number | null): string {
+  const lv = String(priority ?? '').toUpperCase()
+  if (lv === '1' || lv.includes('紧急') || lv === 'ERROR' || lv === 'CRITICAL') return 'error'
+  if (lv === '2' || lv.includes('警告') || lv === 'WARN' || lv === 'WARNING') return 'warning'
   return 'info'
 }
 function goMedia() { router.push('/mediaServer') }

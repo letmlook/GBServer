@@ -21,16 +21,6 @@ use crate::AppState;
 
 // ===================== D3: Alarm clear / snap =====================
 
-/// DELETE /api/alarm/clear — wipe all alarms (returns count)
-pub async fn alarm_clear(
-    State(state): State<AppState>,
-) -> Json<WVPResult<serde_json::Value>> {
-    match db::alarm::delete_all(&state.pool).await {
-        Ok(n) => Json(WVPResult::success(serde_json::json!({"cleared": n}))),
-        Err(e) => Json(WVPResult::error(format!("DB error: {}", e))),
-    }
-}
-
 /// GET /api/alarm/snap/:param — 返回该设备/通道最近一次抓拍/录像的**真实**地址
 ///
 /// 2026-09-11：此前返回 `snapUrl = /api/alarm/snap/{param}/latest` —— 一个指向

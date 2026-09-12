@@ -902,6 +902,8 @@ pub fn app(state: AppState) -> Router<AppState> {
         .route("/api/alarm/handle", post(alarm::alarm_handle))
         .route("/api/alarm/delete/:id", delete(alarm::alarm_delete))
         .route("/api/alarm/batch", delete(alarm::alarm_batch_delete))
+        // WVP 契约：DELETE body 是裸数组 [1,2,3]
+        .route("/api/alarm/delete", delete(alarm::alarm_delete_batch_wvp))
         .route("/api/alarm/device/:device_id", delete(alarm::alarm_delete_by_device))
         .route("/api/alarm/before/:time", delete(alarm::alarm_delete_before_time))
         // Phase 7.6: system info/stats/version/online-users
@@ -933,7 +935,7 @@ pub fn app(state: AppState) -> Router<AppState> {
         .route("/api/cloud/record/download/:id", get(cloud_record_extra::download_file))
         .route("/api/cloud/record/list-url", get(cloud_record_extra::list_url))
         .route("/api/cloud/record/zip", get(cloud_record_extra::zip))
-        .route("/api/alarm/clear", delete(parity_extras::alarm_clear))
+        .route("/api/alarm/clear", delete(alarm::alarm_clear))
         .route("/api/alarm/snap/:param", get(parity_extras::alarm_snap))
         .route("/api/common/channel/map/tile/:z/:x/:y", get(parity_extras::channel_map_tile))
         .route("/api/common/channel/map/thin/tile/:z/:x/:y", get(parity_extras::channel_map_thin_tile))

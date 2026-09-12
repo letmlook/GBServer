@@ -90,7 +90,11 @@ create table IF NOT EXISTS gb_device_alarm
     longitude         double precision,
     latitude          double precision,
     alarm_type        character varying(50),
-    create_time       character varying(50) not null
+    create_time       character varying(50) not null,
+    handled           integer not null default 0,
+    handle_user       character varying(50),
+    handle_time       character varying(50),
+    handle_result     character varying(255)
 );
 COMMENT ON TABLE gb_device_alarm IS '记录各设备上报的报警信息';
 COMMENT ON COLUMN gb_device_alarm.id IS '主键ID';

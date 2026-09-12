@@ -467,12 +467,14 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
                 zlm_clients.insert(server.id.clone(), client.clone());
                 tracing::info!("ZLM client initialized: {} ({}:{})", server.id, server.ip, server.http_port);
 
-                let _ = db::media_server::sync_from_config(
+                let _ = db::media_server::sync_from_config_full(
                     &pool,
                     &server.id,
                     &server.ip,
                     server.http_port as i32,
                     Some(server.secret.as_str()),
+                    server.rtp_port_range.as_deref(),
+                    server.send_rtp_port_range.as_deref(),
                     &now,
                 ).await;
 
@@ -487,6 +489,20 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
     if !zlm_clients.is_empty() {
         let mut health_checker = zlm::ZlmHealthChecker::new(30);
         health_checker.set_pool(pool.clone());
+        // 每个节点的 hook 回调地址：优先用配置里的 hook_url，否则回落到本机地址
+        // （容器化部署必须配成容器可达的地址，如 http://host.docker.internal:18080/...）。
+        {
+            let mut urls = std::collections::HashMap::new();
+            if let Some(ref zcfg) = cfg.zlm {
+                for server in &zcfg.servers {
+                    let url = server.hook_url.clone().unwrap_or_else(|| {
+                        format!("http://127.0.0.1:{}/api/zlm/hook", cfg.server.port)
+                    });
+                    urls.insert(server.id.clone(), url);
+                }
+            }
+            health_checker.set_hook_urls(urls);
+        }
         for (id, client) in zlm_clients.iter() {
             health_checker.add_client(id, client.clone()).await;
         }

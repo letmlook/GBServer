@@ -8,6 +8,7 @@
       <div class="page-actions">
         <el-button @click="loadData">刷新</el-button>
         <el-button type="danger" @click="onBatchClear" :disabled="!selection.length">批量清除</el-button>
+        <el-button type="warning" @click="onClearByFilter">按条件清空</el-button>
       </div>
     </div>
 
@@ -37,7 +38,9 @@
         <el-table-column prop="channelId" label="通道ID" min-width="180">
           <template #default="{ row }"><span class="mono">{{ row.channelId }}</span></template>
         </el-table-column>
-        <el-table-column prop="alarmLevel" label="级别" width="100" />
+        <el-table-column label="级别" width="120">
+          <template #default="{ row }">{{ alarmPriorityLabel(row.alarmPriority) }}</template>
+        </el-table-column>
         <el-table-column prop="alarmType" label="类型" width="120" />
         <el-table-column prop="alarmDescription" label="描述" min-width="240" show-overflow-tooltip />
         <el-table-column label="状态" width="100">
@@ -74,7 +77,15 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { getAlarmList, clearAlarm, deleteAlarm, handleAlarm, batchAlarm, type Alarm } from '@/api/alarm'
+import {
+  getAlarmList,
+  deleteAlarm,
+  deleteAlarms,
+  clearAlarms,
+  handleAlarm,
+  alarmPriorityLabel,
+  type Alarm
+} from '@/api/alarm'
 
 const loading = ref(false)
 const rows = ref<Alarm[]>([])
@@ -87,7 +98,8 @@ const query = reactive({
   count: 20,
   query: '',
   startTime: undefined as string | undefined,
-  endTime: undefined as string | undefined
+  endTime: undefined as string | undefined,
+  alarmType: undefined as string | undefined
 })
 
 watch(timeRange, (v) => {
@@ -107,7 +119,8 @@ async function loadData() {
       page: query.page,
       count: query.count,
       query: query.query,
-      startTime: query.startTime,
+      // 后端参数名是 beginTime（WVP 同款）
+      beginTime: query.startTime,
       endTime: query.endTime
     })
     rows.value = res.data?.list ?? []
@@ -123,7 +136,10 @@ function onSelection(arr: Alarm[]) {
 
 function onView(row: Alarm) {
   ElMessageBox.alert(
-    `设备: ${row.deviceId}\n通道: ${row.channelId}\n级别: ${row.alarmLevel}\n类型: ${row.alarmType}\n时间: ${row.alarmTime}\n描述: ${row.alarmDescription}`,
+    `设备: ${row.deviceId}\n通道: ${row.channelId}\n级别: ${alarmPriorityLabel(row.alarmPriority)}\n` +
+      `类型: ${row.alarmType}\n时间: ${row.alarmTime}\n描述: ${row.alarmDescription}\n` +
+      `处理: ${row.handled ? `${row.handleUser ?? ''} ${row.handleTime ?? ''}` : '未处理'}` +
+      (row.handleResult ? `\n处理结论: ${row.handleResult}` : ''),
     '报警详情'
   )
 }
@@ -137,10 +153,22 @@ async function onHandle(row: Alarm) {
   loadData()
 }
 
+/**
+ * 「清除」= 删除这一条。
+ *
+ * 早期这里调的是 `/api/alarm/clear`（GET）：该路由只注册了 DELETE，
+ * 必然 405；而且后端那个 handler 是**无条件清空整张表**——一旦方法对上，
+ * 点单行「清除」会把所有设备的告警一起删掉。
+ */
 async function onClear(row: Alarm) {
-  await clearAlarm(row.id ?? 0)
-  ElMessage.success('已清除')
-  loadData()
+  await ElMessageBox.confirm(`确认清除该报警？`, '确认', { type: 'warning' })
+  try {
+    await deleteAlarm(row.id ?? 0)
+    ElMessage.success('已清除')
+    loadData()
+  } catch (e: any) {
+    ElMessage.error(e?.message ?? '清除失败')
+  }
 }
 
 async function onDelete(row: Alarm) {
@@ -150,11 +178,45 @@ async function onDelete(row: Alarm) {
   loadData()
 }
 
+/**
+ * 「批量清除」= 删除选中的若干条（WVP `DELETE /api/alarm/delete` + 裸数组 body）。
+ * 早期是 `POST /api/alarm/batch` + `{ids, action}`：方法不匹配 405，
+ * 且后端不认 `action`（"清除"会被当成永久删除）。
+ */
 async function onBatchClear() {
-  await ElMessageBox.confirm(`确认批量清除 ${selection.value.length} 条？`, '确认', { type: 'warning' })
-  await batchAlarm({ ids: selection.value.map((r) => r.id ?? 0), action: 'clear' })
-  ElMessage.success('已批量清除')
-  loadData()
+  if (selection.value.length === 0) {
+    ElMessage.warning('请先选择要清除的告警')
+    return
+  }
+  await ElMessageBox.confirm(`确认清除选中的 ${selection.value.length} 条？`, '确认', { type: 'warning' })
+  try {
+    await deleteAlarms(selection.value.map((r) => r.id ?? 0))
+    ElMessage.success('已批量清除')
+    loadData()
+  } catch (e: any) {
+    ElMessage.error(e?.message ?? '批量清除失败')
+  }
+}
+
+/**
+ * 「按条件清空」= WVP 的 `DELETE /api/alarm/clear`：清空当前筛选条件下的全部告警
+ * （不带条件就是清空全部，二次确认里写清楚条数）。
+ */
+async function onClearByFilter() {
+  const scope = query.query || query.startTime || query.endTime || query.alarmType ? '当前筛选条件下的' : '全部'
+  await ElMessageBox.confirm(`确认清空${scope}告警？此操作不可恢复。`, '确认', { type: 'warning' })
+  try {
+    const res = await clearAlarms({
+      query: query.query || undefined,
+      beginTime: query.startTime || undefined,
+      endTime: query.endTime || undefined,
+      alarmType: query.alarmType || undefined
+    })
+    ElMessage.success(`已清空 ${res.data?.cleared ?? 0} 条`)
+    loadData()
+  } catch (e: any) {
+    ElMessage.error(e?.message ?? '清空失败')
+  }
 }
 
 onMounted(loadData)

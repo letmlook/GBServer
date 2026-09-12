@@ -462,6 +462,23 @@ impl ZlmClient {
         Ok(resp.data.map(|r| r.key).unwrap_or_default())
     }
 
+    /// 下发并**回读验证**：ZLM 各版本键名不同（例如 master 用
+    /// `rtp_proxy.port_range`，旧版用 `rtp.port_range`），不存在的键
+    /// `setServerConfig` 会返回 `code:0` 但什么也不做 —— 静默无效最难排查。
+    ///
+    /// 返回 `Ok(true)` 表示回读值已生效；`Ok(false)` 表示 ZLM 未接受该键
+    /// （调用方应告警，而不是当成成功）。
+    pub async fn set_server_config_verified(
+        &self,
+        secret: &str,
+        key: &str,
+        value: &str,
+    ) -> Result<bool> {
+        self.set_server_config(secret, key, value).await?;
+        let cfg = self.get_server_config().await?;
+        Ok(cfg.get(key).map(|v| v.trim() == value.trim()).unwrap_or(false))
+    }
+
     pub async fn get_server_config(&self) -> Result<HashMap<String, String>> {
         let params = vec![("secret", self.secret.clone())];
         
@@ -540,30 +557,37 @@ impl ZlmClient {
         errors
     }
 
+    /// 下发一项 ZLM 配置。
+    ///
+    /// ZLMediaKit 的 `/index/api/setServerConfig` 只认**查询参数/表单**形式的
+    /// `键=值`（它内部读的是 URL args），**不认** `{"key":..,"value":..}` 这种
+    /// JSON body。此前这里发的就是 `{secret, key, value}` JSON：ZLM 忽略 body、
+    /// 因为 secret 合法而返回 `code:0`，于是**所有 autoConfig 都静默无效** ——
+    /// hook 地址（收不到任何事件）、`rtp.port_range`、`protocol.*`、
+    /// `general.mediaServerId` 全都下发不进去。
     pub async fn set_server_config(&self, secret: &str, key: &str, value: &str) -> Result<()> {
-        #[derive(serde::Serialize)]
-        struct SetConfigReq {
-            secret: String,
-            #[serde(rename = "key")]
-            key_: String,
-            value: String,
-        }
-        let req = SetConfigReq {
-            secret: secret.to_string(),
-            key_: key.to_string(),
-            value: value.to_string(),
-        };
         #[derive(Deserialize)]
         struct Resp {
             code: i32,
+            #[serde(default)]
+            msg: Option<String>,
         }
-        let resp: Resp = self.request_post("/index/api/setServerConfig", &req).await?;
+        let params = vec![
+            ("secret", secret.to_string()),
+            (key, value.to_string()),
+        ];
+        let resp: Resp = self.request("/index/api/setServerConfig", &params).await?;
         if resp.code == 0 {
             Ok(())
         } else {
-            Err(anyhow!("setServerConfig failed with code {}", resp.code))
+            Err(anyhow!(
+                "setServerConfig {key}={value} failed: code={} msg={}",
+                resp.code,
+                resp.msg.unwrap_or_default()
+            ))
         }
     }
+
 
     pub async fn get_server_stats(&self) -> Result<HashMap<String, serde_json::Value>> {
         let params = vec![("secret", self.secret.clone())];
@@ -782,10 +806,15 @@ impl std::fmt::Debug for ZlmClient {
 /// The output format expected by ZLM's `setServerConfig("rtp.port_range", ...)`
 /// is `"start-end"` (dash-separated), so callers typically do:
 /// `format!("{}-{}", start, end)`.
+/// 解析端口范围，**同时接受 ZLM 的 `start-end` 与历史配置的 `start,end`**。
+///
+/// 此前只认逗号：而 `gb_media_server.rtp_port_range` 里存的是 ZLM 风格的
+/// `30000-30100`（与 `getServerConfig` 回读一致），于是下发一律失败。
 pub fn parse_port_range(s: &str) -> Result<(u16, u16)> {
-    let parts: Vec<&str> = s.split(',').collect();
+    let normalized = s.trim().replace('-', ",");
+    let parts: Vec<&str> = normalized.split(',').map(str::trim).collect();
     if parts.len() != 2 {
-        return Err(anyhow!("Invalid port range: {} (expected 'start,end')", s));
+        return Err(anyhow!("Invalid port range: {} (expected 'start-end' or 'start,end')", s));
     }
     let start: u16 = parts[0].parse().map_err(|e| {
         anyhow!("Invalid port range start '{}': {}", parts[0], e)
@@ -812,6 +841,31 @@ pub async fn set_rtp_port_range(
     let (start, end) = parse_port_range(raw)?;
     let value = format!("{}-{}", start, end);
     zlm.set_server_config(secret, key, &value).await
+}
+
+/// 依次尝试多个候选键名，**回读验证**后返回真正生效的那个键。
+///
+/// ZLM 各版本端口范围键名不同（`rtp_proxy.port_range` / `rtp.port_range`），
+/// 不存在的键会返回 `code:0` 但什么都不做 —— 必须回读才能确认。
+pub async fn set_rtp_port_range_verified(
+    zlm: &ZlmClient,
+    secret: &str,
+    candidate_keys: &[&str],
+    raw: &str,
+) -> Result<String> {
+    let (start, end) = parse_port_range(raw)?;
+    let value = format!("{}-{}", start, end);
+    let mut last_err = anyhow!("没有可用的端口范围配置键");
+    for key in candidate_keys {
+        match zlm.set_server_config_verified(secret, key, &value).await {
+            Ok(true) => return Ok((*key).to_string()),
+            Ok(false) => {
+                last_err = anyhow!("{key} 下发后回读值不一致（该 ZLM 版本可能不支持）")
+            }
+            Err(e) => last_err = e,
+        }
+    }
+    Err(last_err)
 }
 
 // ============================================================================
@@ -974,7 +1028,8 @@ mod tests {
         async fn test_set_rtp_port_range_calls_set_server_config() {
             let mock_server = MockServer::start().await;
 
-            Mock::given(method("POST"))
+            // setServerConfig 走 GET + 查询参数（ZLM 不认 JSON body）
+            Mock::given(method("GET"))
                 .and(path("/index/api/setServerConfig"))
                 .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                     "code": 0
@@ -1001,12 +1056,27 @@ mod tests {
 
             let received = mock_server.received_requests().await.unwrap_or_default();
             assert_eq!(received.len(), 1, "expected exactly 1 request");
-            let body = String::from_utf8_lossy(&received[0].body).to_string();
+            // 端口范围走**查询参数**（ZLM 只认 URL args，不认 {key,value} JSON body）
+            let url = received[0].url.as_str();
             assert!(
-                body.contains("\"key\":\"rtp.port_range\"") && body.contains("30000-30200"),
-                "expected key='rtp.port_range' and value='30000-30200', got: {}",
-                body
+                url.contains("rtp.port_range=30000-30200"),
+                "expected rtp.port_range=30000-30200 in query, got: {url}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod port_range_tests {
+    use super::parse_port_range;
+
+    /// ZLM 自己的格式是 `start-end`，历史配置写过 `start,end`，两种都要认。
+    #[test]
+    fn test_parse_port_range_accepts_both_separators() {
+        assert_eq!(parse_port_range("30000-30100").unwrap(), (30000, 30100));
+        assert_eq!(parse_port_range("30000,30100").unwrap(), (30000, 30100));
+        assert_eq!(parse_port_range(" 30000 - 30100 ").unwrap(), (30000, 30100));
+        assert!(parse_port_range("30000").is_err());
+        assert!(parse_port_range("a-b").is_err());
     }
 }

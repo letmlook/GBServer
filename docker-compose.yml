@@ -82,7 +82,13 @@ services:
       # SRT (UDP)
       - "9000:9000/udp"
       # RTP media for GB28181 (UDP)
-      - "30000-30100:30000-30100/udp"
+      #
+      # ⚠️ 必须覆盖 ZLM 实际用于收流的端口池：镜像里 `rtp_proxy.port_range`
+      # 默认为 30000-35000，且该端口池是 **ZLM 启动时**根据 config.ini 建立的
+      # —— 运行期用 setServerConfig 改它不会让已建好的池生效。所以这里发布的
+      # 范围要和 config.ini 里的值一致，否则 ZLM 会把收流端口开在未映射的端口上，
+      # 表现就是"INVITE 200 OK，但平台一直等不到媒体流"。
+      - "30000-35000:30000-35000/udp"
     environment:
       ZLM_HTTP_SECRET: S63648HLbxckv7YjpPTXXRTOsAVGo0Ia
     networks: [gbservernet]

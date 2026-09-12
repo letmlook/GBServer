@@ -319,6 +319,58 @@ def build_keepalive(cfg: DeviceConfig, local_addr: tuple, server_addr: tuple, cs
     return msg.encode()
 
 
+def build_alarm_notify(
+    cfg: DeviceConfig,
+    local_addr: tuple,
+    server_addr: tuple,
+    cseq: int,
+    alarm_type: str = "1",
+    alarm_priority: str = "1",
+    channel_id: Optional[str] = None,
+) -> bytes:
+    """构造报警通知（MESSAGE / Notify，GB/T 28181 A.2.6）。
+
+    平台侧应把 Alarm 通知落库并在 /api/alarm/list 可见；
+    `--auto-alarm-secs N` 用它周期性造数据，让告警页有真实的端到端数据可测。
+    """
+    realm = realm_from_device_id(cfg.device_id)
+    sn = f"{cseq:010d}"
+    channel = channel_id or cfg.device_id
+    now = time.strftime("%Y-%m-%d %H:%M:%S")
+    body = (
+        '<?xml version="1.0" encoding="UTF-8"?>\r\n'
+        '<Notify>\r\n'
+        '<CmdType>Alarm</CmdType>\r\n'
+        f'<SN>{sn}</SN>\r\n'
+        f'<DeviceID>{channel}</DeviceID>\r\n'
+        f'<AlarmPriority>{alarm_priority}</AlarmPriority>\r\n'
+        f'<AlarmMethod>1</AlarmMethod>\r\n'
+        f'<AlarmTime>{now}</AlarmTime>\r\n'
+        f'<AlarmDescription>mock 报警 {alarm_type}</AlarmDescription>\r\n'
+        '<Longitude>116.397128</Longitude>\r\n'
+        '<Latitude>39.916527</Latitude>\r\n'
+        f'<AlarmType>{alarm_type}</AlarmType>\r\n'
+        '</Notify>\r\n'
+    )
+    branch = make_branch()
+    call_id = make_call_id("sim-alarm")
+    msg = (
+        f"MESSAGE sip:{realm}@{server_addr[0]}:{server_addr[1]} {SIP_VERSION}\r\n"
+        f"Via: {SIP_VERSION}/UDP {local_addr[0]}:{local_addr[1]};rport;branch={branch}\r\n"
+        f"From: <sip:{cfg.device_id}@{realm}>;tag={uuid.uuid4().hex[:8]}\r\n"
+        f"To: <sip:{realm}@{realm}>\r\n"
+        f"Call-ID: {call_id}\r\n"
+        f"CSeq: {cseq} MESSAGE\r\n"
+        "Content-Type: Application/MANSCDP+XML\r\n"
+        "Max-Forwards: 70\r\n"
+        f"User-Agent: {USER_AGENT}\r\n"
+        f"Content-Length: {len(body.encode())}\r\n"
+        "\r\n"
+        f"{body}"
+    )
+    return msg.encode()
+
+
 def build_catalog_response(
     cfg: DeviceConfig,
     local_addr: tuple,
@@ -522,12 +574,16 @@ class SipDeviceMock:
         local_port: int = DEFAULT_PORT,
         auto_register: bool = True,
         auto_keepalive: int = 0,
+        auto_alarm_secs: int = 0,
     ):
         self.cfg = cfg
         self.server_addr = server_addr
         self.local_port = local_port
         self.auto_register = auto_register
         self.auto_keepalive_interval = auto_keepalive
+        self.auto_alarm_interval = auto_alarm_secs
+        self._alarm_task: Optional[asyncio.Task] = None
+        self.alarm_count = 0
 
         self.state = DeviceState()
         self.transport: Optional[asyncio.DatagramTransport] = None
@@ -610,6 +666,8 @@ class SipDeviceMock:
             log.info("设备已注册到 %s", addr)
             if self.auto_keepalive_interval > 0 and self._keepalive_task is None:
                 self._keepalive_task = asyncio.create_task(self._keepalive_loop())
+            if self.auto_alarm_interval > 0 and self._alarm_task is None:
+                self._alarm_task = asyncio.create_task(self._alarm_loop())
 
     async def _on_407(self, msg: str, addr: tuple):
         # 同 401，代理鉴权
@@ -1048,6 +1106,24 @@ class SipDeviceMock:
             self.state.keepalive_count += 1
             log.info("Keepalive #%d sent", self.state.keepalive_count)
 
+    async def _alarm_loop(self):
+        """周期性发送报警通知（让告警页有真实数据）。"""
+        while self.state.registered:
+            await asyncio.sleep(self.auto_alarm_interval)
+            if not self.transport or not self.state.registered:
+                continue
+            cseq = self.state.next_cseq()
+            local = self.transport.get_extra_info("sockname")
+            # 交替使用不同类型/优先级，方便验证筛选与"级别"显示
+            self.alarm_count += 1
+            atype = str((self.alarm_count % 3) + 1)
+            priority = str((self.alarm_count % 4) + 1)
+            payload = build_alarm_notify(
+                self.cfg, local, self.server_addr, cseq, atype, priority
+            )
+            self.transport.sendto(payload, self.server_addr)
+            log.info("Alarm #%d sent (type=%s priority=%s)", self.alarm_count, atype, priority)
+
     # ----- Header / XML 解析辅助 -----
 
     def _extract_header(self, msg: str, name: str, default: str = "") -> str:
@@ -1140,6 +1216,10 @@ def main():
     parser.add_argument("--no-auto-register", dest="auto_register", action="store_false")
     parser.add_argument("--auto-keepalive", type=int, default=30, help="keepalive interval seconds (0=off)")
     parser.add_argument(
+        "--auto-alarm-secs", type=int, default=0,
+        help="periodically send Alarm notifications every N seconds (0=off)",
+    )
+    parser.add_argument(
         "--auto-bye-secs", type=int, default=3,
         help="收到 INVITE 后自动挂断的秒数（0=不自动挂断，用于测试平台侧 BYE）",
     )
@@ -1165,7 +1245,10 @@ def main():
         auto_bye_secs=args.auto_bye_secs,
     )
 
-    mock = SipDeviceMock(cfg, server_addr, args.local_port, args.auto_register, args.auto_keepalive)
+    mock = SipDeviceMock(
+        cfg, server_addr, args.local_port, args.auto_register, args.auto_keepalive,
+        args.auto_alarm_secs,
+    )
 
     async def run():
         await mock.start()

@@ -237,16 +237,39 @@ pub async fn sync_from_config(
     secret: Option<&str>,
     now: &str,
 ) -> sqlx::Result<u64> {
+    sync_from_config_full(pool, id, ip, http_port, secret, None, None, now).await
+}
+
+/// 同 `sync_from_config`，额外写入 RTP 端口范围（配置里给了就覆盖）。
+pub async fn sync_from_config_full(
+    pool: &Pool,
+    id: &str,
+    ip: &str,
+    http_port: i32,
+    secret: Option<&str>,
+    rtp_port_range: Option<&str>,
+    send_rtp_port_range: Option<&str>,
+    now: &str,
+) -> sqlx::Result<u64> {
+    // 端口范围只在配置里显式给了才覆盖（None = 保持库里已有值）
     #[cfg(feature = "mysql")]
     let r = sqlx::query(
-        r#"INSERT INTO gb_media_server (id, ip, http_port, secret, create_time, update_time, auto_config, rtp_enable, default_server, server_id, type)
-           VALUES (?, ?, ?, ?, ?, ?, false, false, true, ?, 'zlm')
-           ON DUPLICATE KEY UPDATE ip = VALUES(ip), http_port = VALUES(http_port), secret = VALUES(secret), update_time = VALUES(update_time)"#
+        r#"INSERT INTO gb_media_server
+           (id, ip, http_port, secret, rtp_port_range, send_rtp_port_range,
+            create_time, update_time, auto_config, rtp_enable, default_server, server_id, type)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, false, false, true, ?, 'zlm')
+           ON DUPLICATE KEY UPDATE ip = VALUES(ip), http_port = VALUES(http_port),
+            secret = VALUES(secret),
+            rtp_port_range = COALESCE(VALUES(rtp_port_range), rtp_port_range),
+            send_rtp_port_range = COALESCE(VALUES(send_rtp_port_range), send_rtp_port_range),
+            update_time = VALUES(update_time)"#
     )
     .bind(id)
     .bind(ip)
     .bind(http_port)
     .bind(secret)
+    .bind(rtp_port_range)
+    .bind(send_rtp_port_range)
     .bind(now)
     .bind(now)
     .bind(id)
@@ -254,28 +277,44 @@ pub async fn sync_from_config(
     .await?;
     #[cfg(feature = "postgres")]
     let r = sqlx::query(
-        r#"INSERT INTO gb_media_server (id, ip, http_port, secret, create_time, update_time, auto_config, rtp_enable, default_server, server_id, type)
-           VALUES ($1, $2, $3, $4, $5, $6, false, false, true, $1, 'zlm')
-           ON CONFLICT (id) DO UPDATE SET ip = EXCLUDED.ip, http_port = EXCLUDED.http_port, secret = EXCLUDED.secret, update_time = EXCLUDED.update_time"#
+        r#"INSERT INTO gb_media_server
+           (id, ip, http_port, secret, rtp_port_range, send_rtp_port_range,
+            create_time, update_time, auto_config, rtp_enable, default_server, server_id, type)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, false, false, true, $1, 'zlm')
+           ON CONFLICT (id) DO UPDATE SET ip = EXCLUDED.ip, http_port = EXCLUDED.http_port,
+            secret = EXCLUDED.secret,
+            rtp_port_range = COALESCE(EXCLUDED.rtp_port_range, gb_media_server.rtp_port_range),
+            send_rtp_port_range = COALESCE(EXCLUDED.send_rtp_port_range, gb_media_server.send_rtp_port_range),
+            update_time = EXCLUDED.update_time"#
     )
     .bind(id)
     .bind(ip)
     .bind(http_port)
     .bind(secret)
+    .bind(rtp_port_range)
+    .bind(send_rtp_port_range)
     .bind(now)
     .bind(now)
     .execute(pool)
     .await?;
     #[cfg(feature = "sqlite")]
     let r = sqlx::query(
-        r#"INSERT INTO gb_media_server (id, ip, http_port, secret, create_time, update_time, auto_config, rtp_enable, default_server, server_id, type)
-           VALUES (?, ?, ?, ?, ?, ?, 0, 0, 1, ?, 'zlm')
-           ON CONFLICT(id) DO UPDATE SET ip = excluded.ip, http_port = excluded.http_port, secret = excluded.secret, update_time = excluded.update_time"#
+        r#"INSERT INTO gb_media_server
+           (id, ip, http_port, secret, rtp_port_range, send_rtp_port_range,
+            create_time, update_time, auto_config, rtp_enable, default_server, server_id, type)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 1, ?, 'zlm')
+           ON CONFLICT(id) DO UPDATE SET ip = excluded.ip, http_port = excluded.http_port,
+            secret = excluded.secret,
+            rtp_port_range = COALESCE(excluded.rtp_port_range, rtp_port_range),
+            send_rtp_port_range = COALESCE(excluded.send_rtp_port_range, send_rtp_port_range),
+            update_time = excluded.update_time"#
     )
     .bind(id)
     .bind(ip)
     .bind(http_port)
     .bind(secret)
+    .bind(rtp_port_range)
+    .bind(send_rtp_port_range)
     .bind(now)
     .bind(now)
     .bind(id)

@@ -58,7 +58,11 @@ create table IF NOT EXISTS gb_device_alarm
     longitude         double COMMENT '报警经度',
     latitude          double COMMENT '报警纬度',
     alarm_type        varchar(50) COMMENT '报警类型',
-    create_time       varchar(50) not null COMMENT '数据入库时间'
+    create_time       varchar(50) not null COMMENT '数据入库时间',
+    handled           tinyint(1) not null default 0 COMMENT '是否已处理',
+    handle_user       varchar(50) COMMENT '处理人',
+    handle_time       varchar(50) COMMENT '处理时间',
+    handle_result     varchar(255) COMMENT '处理结论'
 );
 
 -- 存储移动位置订阅上报的数据

@@ -1285,33 +1285,41 @@ pub(crate) async fn handle_webhook_inner(
                         &state.pool, media_server_id,
                     ).await {
                         Ok(Some(server_config)) => {
-                            // rtp.port_range（设备推送端口）
+                            // 设备→平台收流端口范围。
+                            //
+                            // 键名必须是 ZLM **实际存在的**那个：master 用
+                            // `rtp_proxy.port_range`，旧版才是 `rtp.port_range`。
+                            // 不存在的键 setServerConfig 会回 code:0 却什么都不做，
+                            // 结果 ZLM 把收流端口开到未映射的端口上 —— 表现就是
+                            // "INVITE 200 OK 但永远等不到媒体"。
                             if let Some(ref rtp_range) = server_config.rtp_port_range {
-                                match crate::zlm::client::set_rtp_port_range(
-                                    zlm_client, &secret, "rtp.port_range", rtp_range,
+                                match crate::zlm::client::set_rtp_port_range_verified(
+                                    zlm_client, &secret,
+                                    &["rtp_proxy.port_range", "rtp.port_range"],
+                                    rtp_range,
                                 ).await {
-                                    Ok(()) => tracing::info!(
-                                        "ZLM rtp.port_range set to {} for server {}",
-                                        rtp_range, media_server_id,
+                                    Ok(key) => tracing::info!(
+                                        "ZLM {key} set to {rtp_range} for server {media_server_id}"
                                     ),
                                     Err(e) => tracing::warn!(
-                                        "Failed to set ZLM rtp.port_range={}: {}",
-                                        rtp_range, e,
+                                        "Failed to set ZLM rtp 端口范围={rtp_range}: {e}"
                                     ),
                                 }
                             }
-                            // send_rtp.port_range（推送上级平台端口）
+                            // 平台→上级平台推流端口范围。新版 ZLM 已无独立键
+                            // （统一走 rtp_proxy.port_range），此时明确告警而不是假装成功。
                             if let Some(ref srtp_range) = server_config.send_rtp_port_range {
-                                match crate::zlm::client::set_rtp_port_range(
-                                    zlm_client, &secret, "send_rtp.port_range", srtp_range,
+                                match crate::zlm::client::set_rtp_port_range_verified(
+                                    zlm_client, &secret,
+                                    &["send_rtp.port_range"],
+                                    srtp_range,
                                 ).await {
-                                    Ok(()) => tracing::info!(
-                                        "ZLM send_rtp.port_range set to {} for server {}",
-                                        srtp_range, media_server_id,
+                                    Ok(key) => tracing::info!(
+                                        "ZLM {key} set to {srtp_range} for server {media_server_id}"
                                     ),
                                     Err(e) => tracing::warn!(
-                                        "Failed to set ZLM send_rtp.port_range={}: {}",
-                                        srtp_range, e,
+                                        "ZLM 不支持独立的推流端口范围配置（{srtp_range}）: {e}；\
+                                         新版 ZLM 把收流与推流端口都放在 rtp_proxy.port_range 里"
                                     ),
                                 }
                             }
@@ -2007,7 +2015,8 @@ mod tests {
         let mock_server = MockServer::start().await;
 
         // 2. 注册 setServerConfig 端点：返回 code=0
-        Mock::given(method("POST"))
+        //    ZLM 只认 GET + 查询参数（`?key=value`），不接受 JSON body
+        Mock::given(method("GET"))
             .and(path("/index/api/setServerConfig"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "code": 0
@@ -2068,16 +2077,19 @@ mod tests {
             received.len()
         );
 
-        // 6. 验证每个关键 key 都被正确设置（key 字段在 wiremock 这里我们从 body 解析）
+        // 6. 验证每个关键 key 都被正确设置。
+        //    注意：ZLM 的 setServerConfig 只认**查询参数**（`?key=value`），
+        //    所以这里必须看 URL 而不是 body —— 早先的实现发 JSON body，
+        //    ZLM 会返回 code:0 但什么都不改（autoConfig 静默失效）。
         let mut found_rtp_port_range = false;
         let mut found_send_rtp_port_range = false;
         let mut protocol_flags = std::collections::HashSet::new();
         for req in &received {
-            let body = String::from_utf8_lossy(&req.body).to_string();
-            if body.contains("\"key\":\"rtp.port_range\"") && body.contains("30000-30200") {
+            let body = req.url.query().unwrap_or_default().to_string();
+            if body.contains("rtp.port_range=30000-30200") {
                 found_rtp_port_range = true;
             }
-            if body.contains("\"key\":\"send_rtp.port_range\"") && body.contains("40000-40200") {
+            if body.contains("send_rtp.port_range=40000-40200") {
                 found_send_rtp_port_range = true;
             }
             for flag in [
@@ -2088,7 +2100,7 @@ mod tests {
                 "protocol.enable_ws",
                 "protocol.enable_rtp",
             ] {
-                if body.contains(&format!("\"key\":\"{}\"", flag)) {
+                if body.contains(&format!("{flag}=")) {
                     protocol_flags.insert(flag.to_string());
                 }
             }

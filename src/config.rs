@@ -199,6 +199,15 @@ pub struct ZlmServerConfig {
     pub secret: String,
     pub enabled: bool,
     pub hook_url: Option<String>,
+    /// 设备→平台收流端口范围（下发给 ZLM 的 `rtp_proxy.port_range`）。
+    /// **必须与 ZLM 容器对外发布的 UDP 端口范围一致**，否则媒体发到未映射的
+    /// 端口上，表现为"INVITE 成功但永远收不到流"。
+    #[serde(default)]
+    pub rtp_port_range: Option<String>,
+    /// 平台→上级平台推流端口范围（旧版 ZLM 的 `send_rtp.port_range`；
+    /// 新版统一走 `rtp_proxy.port_range`）。
+    #[serde(default)]
+    pub send_rtp_port_range: Option<String>,
 }
 
 /// ZLM 节点健康检查配置（Phase 4 follow-up）
@@ -253,6 +262,8 @@ impl Default for ZlmConfig {
                 secret: "035c73f7-bb6b-4889-a715-d9eb2d1925cc".to_string(),
                 enabled: true,
                 hook_url: None,
+                rtp_port_range: None,
+                send_rtp_port_range: None,
             }],
             stream_timeout: 10,
             hook_enabled: true,

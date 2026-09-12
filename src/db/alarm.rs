@@ -434,6 +434,7 @@ pub async fn ensure_columns(pool: &Pool) -> sqlx::Result<()> {
         "ALTER TABLE gb_device_alarm ADD COLUMN handled INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE gb_device_alarm ADD COLUMN handle_user VARCHAR(50)",
         "ALTER TABLE gb_device_alarm ADD COLUMN handle_time VARCHAR(50)",
+        "ALTER TABLE gb_device_alarm ADD COLUMN handle_result VARCHAR(255)",
     ] {
         // Swallow "duplicate column" errors so the migration is idempotent.
         let _ = sqlx::query(stmt).execute(pool).await;
@@ -447,14 +448,29 @@ pub async fn set_handled(
     id: i64,
     handle_user: Option<&str>,
     handle_time: &str,
+    handle_result: Option<&str>,
 ) -> sqlx::Result<u64> {
     let r = sqlx::query(
-        "UPDATE gb_device_alarm SET handled = 1, handle_user = ?, handle_time = ? WHERE id = ?"
+        "UPDATE gb_device_alarm SET handled = 1, handle_user = ?, handle_time = ?, \
+         handle_result = COALESCE(?, handle_result) WHERE id = ?",
     )
     .bind(handle_user)
     .bind(handle_time)
+    .bind(handle_result)
     .bind(id)
     .execute(pool)
     .await?;
+    Ok(r.rows_affected())
+}
+
+/// 按条件清空（WVP `clearAlarmsByCondition`）。`where_sql` 由 handler 用
+/// `DynWhere` 生成并保证是参数化的；空条件表示清空整表。
+pub async fn delete_where(pool: &Pool, where_sql: &str, binds: &[String]) -> sqlx::Result<u64> {
+    let sql = format!("DELETE FROM gb_device_alarm{where_sql}");
+    let mut q = sqlx::query(&sql);
+    for b in binds {
+        q = q.bind(b.as_str());
+    }
+    let r = q.execute(pool).await?;
     Ok(r.rows_affected())
 }

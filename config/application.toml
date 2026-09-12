@@ -115,6 +115,19 @@ check_interval_secs = 10
 id = "zlmediakit-1"
 ip = "127.0.0.1"
 http_port = 8080
+# 平台接收 ZLM 事件回调的地址。**必须填"ZLM 能访问到后端"的地址**：
+#   * docker compose 部署（ZLM 在容器里，后端在宿主机）→ host.docker.internal
+#   * ZLM 与后端在同一台机器上直接跑 → http://127.0.0.1:18080/api/zlm/hook
+# 留空时后端回落到 http://127.0.0.1:<server.port>/api/zlm/hook，
+# 那种情况下容器内的 ZLM 会把 hook 发到它自己，平台收不到任何事件。
+# 后端会在节点上线时把逐事件的 hook URL 自动下发（见 zlm::hook::hook_config_items）。
+hook_url = "http://host.docker.internal:18080/api/zlm/hook"
+# 设备→平台收流的 UDP 端口范围（后端会下发给 ZLM 的 rtp_proxy.port_range）。
+# 必须与 docker-compose 里 zlm 服务发布的 "30000-35000:30000-35000/udp" 一致
+# （也就是镜像 config.ini 里 rtp_proxy.port_range 的默认值），
+# 否则 ZLM 会把收流端口开到未映射的端口上，设备发的 RTP 到不了容器，
+# 表现为"INVITE 200 OK 但一直等不到媒体"。
+rtp_port_range = "30000-35000"
 # 与 docker-compose 当前 ZLM 镜像 conf/config.ini 里实际生效的 api.secret 对齐：
 # `docker exec gbserver-zlm cat /opt/media/conf/config.ini | grep secret=`
 # 镜像版本(2026-06 master)不识别 ZLM_HTTP_SECRET 环境变量,所以容器启动时
