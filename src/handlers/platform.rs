@@ -308,50 +308,7 @@ pub async fn platform_query(
         let channel_count = platform_channel::count_by_platform_id(&state.pool, item.id as i64)
             .await
             .unwrap_or(0);
-        list.push(serde_json::json!({
-            "id": item.id,
-            "enable": item.enable.unwrap_or(false),
-            "name": item.name,
-            "serverGBId": item.server_gb_id,
-            "serverGBDomain": item.server_gb_domain,
-            "serverIp": item.server_ip,
-            "serverPort": item.server_port,
-            "deviceGBId": item.device_gb_id,
-            "deviceIp": item.device_ip,
-            "devicePort": item.device_port,
-            "username": item.username,
-            "password": item.password,
-            "expires": item.expires,
-            "keepTimeout": item.keep_timeout,
-            "transport": item.transport,
-            "civilCode": item.civil_code,
-            "manufacturer": item.manufacturer,
-            "model": item.model,
-            "address": item.address,
-            "characterSet": item.character_set,
-            "ptz": item.ptz.unwrap_or(false),
-            "rtcp": item.rtcp.unwrap_or(false),
-            "status": item.status.unwrap_or(false),
-            "catalogGroup": item.catalog_group,
-            "registerWay": item.register_way,
-            "secrecy": item.secrecy,
-            "createTime": item.create_time,
-            "updateTime": item.update_time,
-            "asMessageChannel": item.as_message_channel.unwrap_or(false),
-            "catalogWithPlatform": item.catalog_with_platform.unwrap_or(0),
-            "catalogWithGroup": item.catalog_with_group.unwrap_or(0),
-            "catalogWithRegion": item.catalog_with_region.unwrap_or(0),
-            "autoPushChannel": item.auto_push_channel.unwrap_or(false),
-            "sendStreamIp": item.send_stream_ip,
-            "serverId": item.server_id,
-            "channelCount": channel_count,
-            "alarmSubscribe": item.as_message_channel.unwrap_or(false) && item.enable.unwrap_or(false),
-            "catalogSubscribe": item.enable.unwrap_or(false)
-                && (item.catalog_with_platform.unwrap_or(0) > 0
-                    || item.catalog_with_group.unwrap_or(0) > 0
-                    || item.catalog_with_region.unwrap_or(0) > 0),
-            "mobilePositionSubscribe": item.enable.unwrap_or(false) && item.status.unwrap_or(false)
-        }));
+        list.push(platform_row_json(&item, channel_count));
     }
     Ok(Json(WVPResult::success(serde_json::json!({
         "total": total as u64,
@@ -367,11 +324,24 @@ pub async fn platform_server_config(State(state): State<AppState>) -> Json<WVPRe
     let device_ip = sip
         .map(|cfg| cfg.ip.clone())
         .unwrap_or_else(|| "127.0.0.1".to_string());
+    // `serverGBId` 是**本平台的 20 位国标编码**（sip.device_id），
+    // `serverGBDomain` 才是域（sip.realm）。此前两者都填 realm
+    // —— 拿它去上级平台登记会用错编号。
+    let local_gb_id = sip
+        .map(|cfg| cfg.device_id.clone())
+        .unwrap_or_else(|| "34020000002000000001".to_string());
+    let realm = sip
+        .map(|cfg| cfg.realm.clone())
+        .unwrap_or_else(|| "3402000000".to_string());
     Json(WVPResult::success(serde_json::json!({
         "id": null,
         "name": "本地平台",
-        "serverGBId": sip.as_ref().map(|cfg| cfg.realm.clone()).unwrap_or_else(|| "34020000002000000001".to_string()),
-        "serverGBDomain": sip.as_ref().map(|cfg| cfg.realm.clone()).unwrap_or_else(|| "3402000000".to_string()),
+        "serverGBId": local_gb_id,
+        "serverGBDomain": realm,
+        // 旧前端/旧接口声明的字段名
+        "realm": realm,
+        "ip": sip.as_ref().map(|cfg| cfg.ip.clone()).unwrap_or_else(|| "127.0.0.1".to_string()),
+        "port": sip.as_ref().map(|cfg| cfg.port as i32).unwrap_or(5060),
         "serverHost": device_ip,
         "serverIp": sip.as_ref().map(|cfg| cfg.ip.clone()).unwrap_or_else(|| "127.0.0.1".to_string()),
         "serverPort": sip.as_ref().map(|cfg| cfg.port as i32).unwrap_or(5060),
@@ -773,12 +743,102 @@ pub async fn platform_channel_push(
 
 // ========== 平台 CRUD ==========
 
+/// 数字列（`expires` / `keep_timeout`）在体里可能是 `3600` 也可能是 `"3600"`。
+///
+/// WVP 的 Java 端是 `int`，Vue3 的 `el-input-number` 输出 number，而本仓库这两列
+/// 是 varchar —— 只认字符串会在反序列化阶段 422（请求根本进不到 handler），
+/// 只认数字又会让老客户端挂。这里两者都收，统一存成字符串。
+fn deserialize_opt_int_string<'de, D>(d: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::Deserialize;
+    let v = Option::<serde_json::Value>::deserialize(d)?;
+    Ok(match v {
+        None | Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::Number(n)) => Some(n.to_string()),
+        Some(serde_json::Value::String(s)) => Some(s),
+        Some(other) => {
+            return Err(serde::de::Error::custom(format!(
+                "需要数字或字符串，收到 {other}"
+            )))
+        }
+    })
+}
+
+/// 回给前端的数值：能解析成整数就给整数（与 WVP 的 `int expires` 一致），
+/// 否则原样回字符串。
+fn int_or_string(v: &Option<String>) -> serde_json::Value {
+    match v.as_deref().map(str::trim) {
+        None | Some("") => serde_json::Value::Null,
+        Some(s) => match s.parse::<i64>() {
+            Ok(n) => serde_json::Value::from(n),
+            Err(_) => serde_json::Value::from(s),
+        },
+    }
+}
+
+/// 平台行的统一 JSON —— 列表与详情**共用同一份**，避免两处字段漂移
+/// （此前 `/info/:id` 只回 10 个字段，`serverGBDomain`/`expires`/`keepTimeout`
+/// 等全缺，任何按完整类型取值的调用方都会拿到 undefined）。
+fn platform_row_json(item: &Platform, channel_count: i64) -> serde_json::Value {
+    serde_json::json!({
+        "id": item.id,
+        "enable": item.enable.unwrap_or(false),
+        "name": item.name,
+        "serverGBId": item.server_gb_id,
+        "serverGBDomain": item.server_gb_domain,
+        "serverIp": item.server_ip,
+        "serverPort": item.server_port,
+        "deviceGBId": item.device_gb_id,
+        "deviceIp": item.device_ip,
+        "devicePort": item.device_port,
+        "username": item.username,
+        "password": item.password,
+        "expires": int_or_string(&item.expires),
+        // 只回 WVP 的 `keepTimeout`，**不要**再回一个 `heartBeatInterval` 同义键：
+        // 前端会把整行原样提交回 /platform/update，而 DTO 两个键都收
+        // → serde 报 "duplicate field"，更新稳定 422。
+        "keepTimeout": int_or_string(&item.keep_timeout),
+        "transport": item.transport,
+        "civilCode": item.civil_code,
+        "manufacturer": item.manufacturer,
+        "model": item.model,
+        "address": item.address,
+        "characterSet": item.character_set,
+        "ptz": item.ptz.unwrap_or(false),
+        "rtcp": item.rtcp.unwrap_or(false),
+        "status": item.status.unwrap_or(false),
+        "catalogGroup": item.catalog_group,
+        "registerWay": item.register_way,
+        "secrecy": item.secrecy,
+        "createTime": item.create_time,
+        "updateTime": item.update_time,
+        "asMessageChannel": item.as_message_channel.unwrap_or(false),
+        "catalogWithPlatform": item.catalog_with_platform.unwrap_or(0),
+        "catalogWithGroup": item.catalog_with_group.unwrap_or(0),
+        "catalogWithRegion": item.catalog_with_region.unwrap_or(0),
+        "autoPushChannel": item.auto_push_channel.unwrap_or(false),
+        "sendStreamIp": item.send_stream_ip,
+        "serverId": item.server_id,
+        "channelCount": channel_count,
+        "alarmSubscribe": item.as_message_channel.unwrap_or(false) && item.enable.unwrap_or(false),
+        "catalogSubscribe": item.enable.unwrap_or(false)
+            && (item.catalog_with_platform.unwrap_or(0) > 0
+                || item.catalog_with_group.unwrap_or(0) > 0
+                || item.catalog_with_region.unwrap_or(0) > 0),
+        "mobilePositionSubscribe": item.enable.unwrap_or(false) && item.status.unwrap_or(false)
+    })
+}
+
 /// POST /api/platform/add 请求体
 #[derive(Debug, Deserialize)]
 pub struct PlatformAddBody {
     pub id: Option<i64>,
     pub name: Option<String>,
-    #[serde(alias = "serverGBId")]
+    // 前端（与 WVP 的 `Platform.java`）用的是 `serverGBId`；`serverGbId` 是
+    // 本仓库 Vue3 前端历史上的错误拼写，仍然收下，避免旧客户端静默写空串。
+    #[serde(alias = "serverGBId", alias = "serverGbId")]
     pub server_gb_id: Option<String>,
     #[serde(alias = "serverIp", alias = "serverHost")]
     pub server_host: Option<String>,
@@ -787,7 +847,7 @@ pub struct PlatformAddBody {
     pub transport: Option<String>,
     pub password: Option<String>,
     // 扩展字段
-    #[serde(alias = "serverGBDomain")]
+    #[serde(alias = "serverGBDomain", alias = "realm")]
     pub server_gb_domain: Option<String>,
     #[serde(alias = "deviceGBId")]
     pub device_gb_id: Option<String>,
@@ -825,8 +885,15 @@ pub struct PlatformAddBody {
     #[serde(alias = "sendStreamIp")]
     pub send_stream_ip: Option<String>,
     pub enable: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_opt_int_string")]
     pub expires: Option<String>,
-    #[serde(alias = "keepTimeout")]
+    // 心跳周期：WVP 叫 `keepTimeout`，旧前端叫 `heartBeatInterval`，两者都收
+    #[serde(
+        default,
+        alias = "keepTimeout",
+        alias = "heartBeatInterval",
+        deserialize_with = "deserialize_opt_int_string"
+    )]
     pub keep_timeout: Option<String>,
 }
 
@@ -835,9 +902,33 @@ pub async fn platform_add(
     State(state): State<AppState>,
     Json(body): Json<PlatformAddBody>,
 ) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
-    let name = body.name.clone().unwrap_or_default();
-    let server_gb_id = body.server_gb_id.clone().unwrap_or_default();
-    let server_ip = body.server_host.clone().unwrap_or_default();
+    // 必填校验：此前 `server_gb_id` 绑不上（键名 serverGbId 被忽略）时会写空串，
+    // 接口照样回「平台添加成功」，但库里 `server_gb_id` 为空 ⇒ 级联注册、
+    // `get_by_server_gb_id` 全部以空串为键，平台**实际不可用**。
+    let name = body.name.clone().unwrap_or_default().trim().to_string();
+    let server_gb_id = body.server_gb_id.clone().unwrap_or_default().trim().to_string();
+    let server_ip = body.server_host.clone().unwrap_or_default().trim().to_string();
+    if name.is_empty() {
+        return Err(AppError::business(ErrorCode::Error400, "平台名称不能为空"));
+    }
+    if server_gb_id.is_empty() {
+        return Err(AppError::business(
+            ErrorCode::Error400,
+            "国标ID(serverGBId)不能为空",
+        ));
+    }
+    if server_ip.is_empty() {
+        return Err(AppError::business(ErrorCode::Error400, "平台 IP 不能为空"));
+    }
+    if platform_db::get_by_server_gb_id(&state.pool, &server_gb_id)
+        .await?
+        .is_some()
+    {
+        return Err(AppError::business(
+            ErrorCode::Error400,
+            format!("平台国标ID已存在: {server_gb_id}"),
+        ));
+    }
     let server_port = body.server_port.unwrap_or(5060);
     let device_gb_id = body.device_gb_id.clone().unwrap_or_default();
     let transport = body.transport.clone().unwrap_or_else(|| "TCP".to_string());
@@ -1272,14 +1363,61 @@ pub async fn platform_delete(
     }))))
 }
 
-/// GET /api/platform/exit/:deviceGbId
+/// GET /api/platform/exit/:serverGBId —— 向上级平台发送 **Expires: 0** 的注销 REGISTER
+///
+/// 此前这里按 `device_gb_id` 查库、只回一个"是否存在"的布尔值，**没有任何注销动作**；
+/// 而前端按钮写的是「注销」并始终弹「注销请求已发送」，参数传的又是 `serverGBId`，
+/// 两列对不上 ⇒ 恒为 false、功能完全对不上号。
+///
+/// WVP 的同名接口确实只做"国标ID是否已存在"的校验（前端用它防重复），但本平台的
+/// 按钮语义就是真注销，因此这里做实事：发注销报文 + 把 `enable`/`status` 落成 false
+/// —— 只发报文不改 `enable` 的话，下一个注册周期会立刻把它注册回去，
+/// 用户看到"注销成功"却仍然在线。
 pub async fn platform_exit(
     State(state): State<AppState>,
-    Path(device_gb_id): Path<String>,
-) -> Json<WVPResult<serde_json::Value>> {
-    let maybe_platform = platform_db::get_by_device_gb_id(&state.pool, &device_gb_id).await;
-    let exists = matches!(maybe_platform, Ok(Some(_)));
-    Json(WVPResult::success(serde_json::json!(exists)))
+    Path(server_gb_id): Path<String>,
+) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+    let server_gb_id = server_gb_id.trim().to_string();
+    let platform = platform_db::get_by_server_gb_id(&state.pool, &server_gb_id)
+        .await?
+        .ok_or_else(|| {
+            AppError::business(
+                ErrorCode::Error404,
+                format!("平台不存在: {server_gb_id}"),
+            )
+        })?;
+
+    let mut sip_warning: Option<String> = None;
+    match state.sip_server.as_ref().and_then(|sip| sip.cascade_registrar()) {
+        Some(registrar) => {
+            if let Err(e) = registrar.unregister_and_remove(&server_gb_id, 0).await {
+                tracing::warn!("向 {} 发送注销 REGISTER 失败（仍置为停用）: {}", server_gb_id, e);
+                sip_warning = Some(e);
+            }
+        }
+        None => {
+            tracing::warn!("级联注册器未就绪，{} 仅置为停用", server_gb_id);
+            sip_warning = Some("级联注册器未就绪".to_string());
+        }
+    }
+
+    // 停用 + 离线：不用 `sync_platform_registration` 是因为它会在 enable=false 时
+    // 再调一次 unregister（我们已经发过了），这里只需要落库状态。
+    sqlx::query("UPDATE gb_platform SET enable = ?, status = ? WHERE id = ?")
+        .bind(false)
+        .bind(false)
+        .bind(platform.id)
+        .execute(&state.pool)
+        .await
+        .map_err(|e| AppError::business(ErrorCode::Error500, format!("更新平台状态失败: {e}")))?;
+
+    Ok(Json(WVPResult::success(serde_json::json!({
+        "id": platform.id,
+        "serverGBId": server_gb_id,
+        "exited": true,
+        "sipWarning": sip_warning,
+        "message": "注销请求已发送，平台已置为停用"
+    }))))
 }
 
 // ========== 平台通道操作 ==========
@@ -1604,10 +1742,13 @@ pub async fn platform_channel_custom_update(
 
 /// POST /api/platform/catalog/add (used in catalogEdit.vue, commonChannelEditDialog.vue)
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CatalogAddBody {
     pub id: Option<i64>,
     pub name: Option<String>,
-    pub parent: Option<String>,
+    /// 前端（含归档的 legacy 前端）提交的是 `parentId`
+    #[serde(alias = "parent")]
+    pub parent_id: Option<String>,
     pub civil_code: Option<String>,
     pub business_group: Option<String>,
     pub platform_id: Option<i64>,
@@ -1624,7 +1765,7 @@ pub async fn catalog_add(
     Json(body): Json<CatalogAddBody>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let name = body.name.clone().unwrap_or_default();
-    let parent = body.parent.clone().unwrap_or_default();
+    let parent = body.parent_id.clone().unwrap_or_default();
     let civil_code = body.civil_code.clone().unwrap_or_default();
     let business_group = body.business_group.clone().unwrap_or_default();
     let platform_id = body.platform_id.unwrap_or(0);
@@ -1674,10 +1815,12 @@ pub async fn catalog_add(
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CatalogAddBodyEdit {
     pub id: Option<i64>,
     pub name: Option<String>,
-    pub parent: Option<String>,
+    #[serde(alias = "parent")]
+    pub parent_id: Option<String>,
     pub civil_code: Option<String>,
     pub business_group: Option<String>,
     pub platform_id: Option<i64>,
@@ -1697,7 +1840,7 @@ pub async fn catalog_edit(
         let add_body = CatalogAddBody {
             id: None,
             name: body.name.clone(),
-            parent: body.parent.clone(),
+            parent_id: body.parent_id.clone(),
             civil_code: body.civil_code.clone(),
             business_group: body.business_group.clone(),
             platform_id: body.platform_id,
@@ -1705,11 +1848,14 @@ pub async fn catalog_edit(
         let Json(_) = catalog_add(State(state.clone()), Json(add_body)).await?;
         return Ok(Json(serde_json::json!({ "code": 0, "msg": "目录编辑成功" })));
     }
-    let name = body.name.clone().unwrap_or_default();
-    let parent = body.parent.clone().unwrap_or_default();
-    let civil_code = body.civil_code.clone().unwrap_or_default();
-    let business_group = body.business_group.clone().unwrap_or_default();
-    let platform_id = body.platform_id.unwrap_or(0);
+    // 保留 Option：`unwrap_or_default()` 会把没传的字段变成**空串**，而空串不是
+    // NULL —— `COALESCE(?, col)` 于是把库里已有的值清空（编辑弹窗只要没带
+    // `parentId` 就把上级目录清掉）。
+    let name = body.name.clone();
+    let parent = body.parent_id.clone();
+    let civil_code = body.civil_code.clone();
+    let business_group = body.business_group.clone();
+    let platform_id = body.platform_id;
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
 
     let sql = if cfg!(feature = "postgres") {
@@ -1722,10 +1868,10 @@ pub async fn catalog_edit(
          platform_id = COALESCE(?, platform_id), update_time = ? WHERE id = ?"
     };
     let affected = sqlx::query(sql)
-        .bind(&name)
-        .bind(&parent)
-        .bind(&civil_code)
-        .bind(&business_group)
+        .bind(name.as_deref())
+        .bind(parent.as_deref())
+        .bind(civil_code.as_deref())
+        .bind(business_group.as_deref())
         .bind(platform_id)
         .bind(&now)
         .bind(id)
@@ -1740,8 +1886,8 @@ pub async fn catalog_edit(
             format!("目录不存在: id={}", id),
         ));
     }
-    if platform_id > 0 {
-        if let Err(e) = refresh_platform_catalog(&state, platform_id).await {
+    if let Some(pid) = platform_id.filter(|v| *v > 0) {
+        if let Err(e) = refresh_platform_catalog(&state, pid).await {
             tracing::warn!("目录已更新，但刷新上级平台目录失败: {}", e);
         }
     }
@@ -1759,20 +1905,275 @@ pub async fn platform_info(
 ) -> Json<WVPResult<serde_json::Value>> {
     let pid = id.parse::<i64>().unwrap_or(0);
     match crate::db::platform::get_by_id(&state.pool, pid).await {
-        Ok(Some(p)) => Json(WVPResult::success(serde_json::json!({
-            "id": p.id,
-            "name": p.name,
-            "serverGBId": p.server_gb_id,
-            "deviceGBId": p.device_gb_id,
-            "serverIp": p.server_ip,
-            "serverPort": p.server_port,
-            "deviceIp": p.device_ip,
-            "devicePort": p.device_port,
-            "username": p.username,
-            "enable": p.enable.unwrap_or(false),
-            "status": p.status.unwrap_or(false),
-        }))),
+        // 与列表共用同一份 JSON（此前只回 10 个字段，编辑弹窗按完整类型取值时
+        // serverGBDomain / expires / keepTimeout 等全是 undefined）
+        Ok(Some(p)) => {
+            let channel_count = platform_channel::count_by_platform_id(&state.pool, p.id as i64)
+                .await
+                .unwrap_or(0);
+            Json(WVPResult::success(platform_row_json(&p, channel_count)))
+        }
         Ok(None) => Json(WVPResult::error("Platform not found")),
         Err(e) => Json(WVPResult::error(format!("DB error: {}", e))),
+    }
+}
+
+#[cfg(test)]
+mod platform_contract_tests {
+    use super::*;
+    use crate::test_support::app_state;
+
+    fn add_body(v: serde_json::Value) -> PlatformAddBody {
+        serde_json::from_value(v).expect("PlatformAddBody 反序列化")
+    }
+
+    /// 前端（与 WVP）用的是 `serverGBId`；历史上还出现过 `serverGbId` 的错误拼写。
+    /// 三种写法都必须能绑上，否则库里写的是空串 —— 接口报成功、平台却不可用。
+    #[test]
+    fn add_body_binds_server_gb_id_and_realm_and_heartbeat() {
+        let b = add_body(serde_json::json!({
+            "name": "上级", "serverGBId": "34020000002000000009",
+            "serverGBDomain": "3402000000", "serverIp": "10.0.0.9", "serverPort": 5060
+        }));
+        assert_eq!(b.server_gb_id.as_deref(), Some("34020000002000000009"));
+        assert_eq!(b.server_gb_domain.as_deref(), Some("3402000000"));
+
+        // 旧错误拼写仍然收下
+        let legacy = add_body(serde_json::json!({
+            "name": "x", "serverGbId": "34020000002000000008", "realm": "3402000001"
+        }));
+        assert_eq!(legacy.server_gb_id.as_deref(), Some("34020000002000000008"));
+        assert_eq!(legacy.server_gb_domain.as_deref(), Some("3402000001"));
+
+        // 心跳周期：WVP 的 keepTimeout 与旧前端的 heartBeatInterval 都要认
+        let hb = add_body(serde_json::json!({"name": "x", "heartBeatInterval": 45}));
+        assert_eq!(hb.keep_timeout.as_deref(), Some("45"));
+        let kt = add_body(serde_json::json!({"name": "x", "keepTimeout": "90"}));
+        assert_eq!(kt.keep_timeout.as_deref(), Some("90"));
+    }
+
+    /// `expires` 在 WVP 里是 int，Vue3 的 el-input-number 输出 number，
+    /// 而这一列是 varchar —— 只认字符串会 422（请求进不到 handler）。
+    #[test]
+    fn add_body_accepts_numeric_and_string_expires() {
+        let numeric = add_body(serde_json::json!({"name": "x", "expires": 3600}));
+        assert_eq!(numeric.expires.as_deref(), Some("3600"));
+        let stringy = add_body(serde_json::json!({"name": "x", "expires": "1800"}));
+        assert_eq!(stringy.expires.as_deref(), Some("1800"));
+        let missing = add_body(serde_json::json!({"name": "x"}));
+        assert_eq!(missing.expires, None);
+
+        let bad = serde_json::from_value::<PlatformAddBody>(serde_json::json!({
+            "name": "x", "expires": {"nope": 1}
+        }));
+        assert!(bad.is_err(), "对象既不是数字也不是字符串，应报错而不是静默丢弃");
+    }
+
+    #[test]
+    fn int_or_string_emits_numbers_for_numeric_columns() {
+        assert_eq!(int_or_string(&Some("3600".to_string())), serde_json::json!(3600));
+        assert_eq!(
+            int_or_string(&Some("weird".to_string())),
+            serde_json::json!("weird")
+        );
+        assert_eq!(int_or_string(&None), serde_json::Value::Null);
+    }
+
+    /// 新增：必填校验 + 重复国标ID 拒绝（此前空 server_gb_id 也回"成功"）。
+    #[tokio::test]
+    async fn platform_add_validates_and_persists_real_fields() {
+        let state = app_state().await;
+
+        let missing_gb = platform_add(
+            State(state.clone()),
+            Json(add_body(serde_json::json!({"name": "没有国标ID", "serverIp": "10.0.0.1"}))),
+        )
+        .await
+        .expect_err("缺国标ID 应报错");
+        assert!(matches!(missing_gb, AppError::Business(_, _)));
+
+        let missing_ip = platform_add(
+            State(state.clone()),
+            Json(add_body(serde_json::json!({
+                "name": "x", "serverGBId": "34020000002000000009"
+            }))),
+        )
+        .await
+        .expect_err("缺 IP 应报错");
+        assert!(matches!(missing_ip, AppError::Business(_, _)));
+
+        let created = platform_add(
+            State(state.clone()),
+            Json(add_body(serde_json::json!({
+                "name": "上级平台", "serverGBId": "34020000002000000009",
+                "serverGBDomain": "3402000000", "serverIp": "10.0.0.9", "serverPort": 5060,
+                "deviceGBId": "34020000001320000001", "username": "u", "password": "p",
+                "transport": "TCP", "expires": 1800, "keepTimeout": 45,
+                "civilCode": "340200", "enable": true, "autoPushChannel": true
+            }))),
+        )
+        .await
+        .expect("新增平台");
+        assert_eq!(created.0.code, 0, "msg={}", created.0.msg);
+
+        let row = platform_db::get_by_server_gb_id(&state.pool, "34020000002000000009")
+            .await
+            .unwrap()
+            .expect("库里有行");
+        assert_eq!(row.server_gb_domain.as_deref(), Some("3402000000"));
+        assert_eq!(row.server_ip.as_deref(), Some("10.0.0.9"));
+        assert_eq!(row.device_gb_id.as_deref(), Some("34020000001320000001"));
+        assert_eq!(row.transport.as_deref(), Some("TCP"));
+        assert_eq!(row.expires.as_deref(), Some("1800"));
+        assert_eq!(row.keep_timeout.as_deref(), Some("45"));
+        assert_eq!(row.civil_code.as_deref(), Some("340200"));
+        assert_eq!(row.enable, Some(true));
+
+        let dup = platform_add(
+            State(state.clone()),
+            Json(add_body(serde_json::json!({
+                "name": "重复", "serverGBId": "34020000002000000009", "serverIp": "10.0.0.2"
+            }))),
+        )
+        .await
+        .expect_err("重复国标ID 应报错");
+        assert!(matches!(dup, AppError::Business(_, _)));
+    }
+
+    /// 列表与详情必须给出同一套 camelCase 键（此前详情只有 10 个字段）。
+    #[tokio::test]
+    async fn platform_list_and_info_share_the_same_keys() {
+        let state = app_state().await;
+        let _ = platform_add(
+            State(state.clone()),
+            Json(add_body(serde_json::json!({
+                "name": "p1", "serverGBId": "34020000002000000007",
+                "serverGBDomain": "3402000000", "serverIp": "10.0.0.7",
+                "expires": 900, "keepTimeout": 30
+            }))),
+        )
+        .await
+        .unwrap();
+
+        let id = platform_db::get_by_server_gb_id(&state.pool, "34020000002000000007")
+            .await
+            .unwrap()
+            .unwrap()
+            .id;
+        let info = platform_info(State(state.clone()), Path(id.to_string())).await;
+        let data = info.0.data.expect("info data");
+        assert_eq!(data["serverGBId"], "34020000002000000007");
+        assert_eq!(data["serverGBDomain"], "3402000000");
+        // expires / keepTimeout 回的是数字（与 WVP 的 int 字段一致）
+        assert_eq!(data["expires"], 900);
+        assert_eq!(data["keepTimeout"], 30);
+        // 不能同时回同义键，否则前端回提交时会 "duplicate field" 422
+        assert!(data.get("heartBeatInterval").is_none());
+        assert!(data.get("channelCount").is_some());
+
+        let list = platform_query(
+            State(state.clone()),
+            Query(PlatformQuery { page: Some(1), count: Some(10), query: None }),
+        )
+        .await
+        .unwrap();
+        let body = list.0.data.unwrap();
+        let first = &body["list"][0];
+        for key in [
+            "serverGBId",
+            "serverGBDomain",
+            "expires",
+            "keepTimeout",
+            "channelCount",
+            "civilCode",
+            "autoPushChannel",
+        ] {
+            assert_eq!(first.get(key), data.get(key), "列表与详情的 {key} 应一致");
+        }
+
+        // 回提交护栏：编辑弹窗会把整行原样 POST 回 /platform/update。
+        // 只要响应用了两个互为别名的键（例如 keepTimeout + heartBeatInterval），
+        // serde 就会报 "duplicate field" → 更新稳定 422。
+        serde_json::from_value::<PlatformAddBody>(first.clone()).expect(
+            "列表行必须能原样反序列化成 PlatformAddBody（否则编辑保存必 422）",
+        );
+    }
+
+    /// 注销：按 serverGBId 定位（此前按 device_gb_id 查、只回布尔，且无任何动作）。
+    #[tokio::test]
+    async fn platform_exit_unregisters_by_server_gb_id() {
+        let state = app_state().await;
+        let _ = platform_add(
+            State(state.clone()),
+            Json(add_body(serde_json::json!({
+                "name": "p2", "serverGBId": "34020000002000000006",
+                "serverIp": "10.0.0.6", "enable": true
+            }))),
+        )
+        .await
+        .unwrap();
+
+        let missing = platform_exit(State(state.clone()), Path("99999999999999999999".to_string()))
+            .await
+            .expect_err("不存在的平台应 404");
+        assert!(matches!(missing, AppError::Business(_, _)));
+
+        let exited = platform_exit(
+            State(state.clone()),
+            Path("34020000002000000006".to_string()),
+        )
+        .await
+        .expect("注销");
+        let data = exited.0.data.unwrap();
+        assert_eq!(data["exited"], true);
+        assert_eq!(data["serverGBId"], "34020000002000000006");
+
+        let row = platform_db::get_by_server_gb_id(&state.pool, "34020000002000000006")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.enable, Some(false), "注销后必须停用，否则下一个周期会注册回来");
+        assert_eq!(row.status, Some(false));
+    }
+
+    /// 目录：前端提交的是 `platformId`/`parentId`/`civilCode`/`businessGroup`；
+    /// 编辑时**未提供的字段不能被空串清掉**。
+    #[tokio::test]
+    async fn catalog_add_edit_use_frontend_field_names_without_clobbering() {
+        let state = app_state().await;
+        let add: CatalogAddBody = serde_json::from_value(serde_json::json!({
+            "platformId": 7, "name": "目录A", "parentId": "0",
+            "civilCode": "340200", "businessGroup": "1"
+        }))
+        .unwrap();
+        assert_eq!(add.platform_id, Some(7));
+        assert_eq!(add.parent_id.as_deref(), Some("0"));
+        assert_eq!(add.civil_code.as_deref(), Some("340200"));
+        assert_eq!(add.business_group.as_deref(), Some("1"));
+
+        let _ = catalog_add(State(state.clone()), Json(add)).await.unwrap();
+        let catalog_id: i64 = sqlx::query_scalar("SELECT id FROM gb_platform_catalog LIMIT 1")
+            .fetch_one(&state.pool)
+            .await
+            .unwrap();
+
+        // 只改名字：parent / civil_code / business_group 应保持原值
+        let edit: CatalogAddBodyEdit = serde_json::from_value(serde_json::json!({
+            "id": catalog_id, "name": "目录A-改名"
+        }))
+        .unwrap();
+        assert_eq!(edit.parent_id, None);
+        let _ = catalog_edit(State(state.clone()), Json(edit)).await.unwrap();
+
+        let (name, parent, civil): (String, String, String) = sqlx::query_as(
+            "SELECT name, parent, civil_code FROM gb_platform_catalog WHERE id = ?",
+        )
+        .bind(catalog_id)
+        .fetch_one(&state.pool)
+        .await
+        .unwrap();
+        assert_eq!(name, "目录A-改名");
+        assert_eq!(parent, "0", "未提供的 parent 不能被空串覆盖");
+        assert_eq!(civil, "340200", "未提供的 civil_code 不能被空串覆盖");
     }
 }

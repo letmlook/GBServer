@@ -9,10 +9,10 @@
 
 | 维度 | 数值 | 验证方式 |
 |------|------|----------|
-| 总代码量（src/） | 77,367 行 Rust | `find src -name '*.rs' \| xargs wc -l` |
+| 总代码量（src/） | 77,768 行 Rust | `find src -name '*.rs' \| xargs wc -l` |
 | 已注册 HTTP 路由 | 385 条唯一 `/api/...` 路径 | `grep -oE '"/api/[^"]*"' src/router.rs \| sort -u \| wc -l` |
 | Handler 模块 | 29 个（含 `stub.rs` / `device_stub.rs` 两个兼容 shim） | `grep -c 'pub mod' src/handlers/mod.rs` |
-| 后端测试 | **658 通过** / 0 失败（第三十三轮刷新） | `cargo test` |
+| 后端测试 | **665 通过** / 0 失败（第三十四轮刷新） | `cargo test` |
 | 编译状态 | `cargo check` 0 error / **0 warning**；clippy 262；**deprecated 0** | `cargo check` / `cargo clippy --all-targets` |
 | 数据库 feature | SQLite（默认）/ PostgreSQL / MySQL **三者均编译通过** | CI `feature-matrix` job |
 | CI | ⏸️ 工作流已就绪但**按需暂停自动触发**（见 `.github/workflows/ci.yml`） | — |
@@ -1508,12 +1508,58 @@ cargo check --features mysql/postgres  OK
 npx playwright test              40 passed / 0 failed / 0 skipped（真实 ZLM）
 ```
 
-### 前端↔后端契约审计：已完成 10 个模块，剩余 7 个模块 / 44 条（2026-09-12 第三十三轮刷新）
+### 级联平台：国标ID 拼写 + expires 类型 + 三个虚构字段（2026-09-12 第三十四轮）
+
+`platform` 模块 11 条修完。这一页此前**新增平台必然 422**、列表国标ID空白、「注销」静默失效：
+
+| # | 缺陷 | 修复 / 证据 |
+|---|------|------|
+| 1 | 前端 `serverGbId`（小写 b）vs 后端/WVP `serverGBId` | 列表国标ID空白、「注销」被 `if (!row.serverGbId) return` 静默拦掉。前端改回 `serverGBId`，后端兼容两种拼写 |
+| 2 | 新增时国标ID 绑不上 → 写空串，仍回"成功" | 平台不可用（级联注册/`get_by_server_gb_id` 全以空串为键）。加必填 + 唯一性校验，空值 400 |
+| 3 | `expires` 前端发 number、后端 DTO 只要 string | 反序列化 422，**请求进不到 handler**。`deserialize_opt_int_string` 两者都收，响应回数字（WVP `int expires`） |
+| 4 | 「域名」用 `realm`，后端字段 `serverGBDomain` | 静默丢弃、重开编辑框域名消失。前端改 `serverGBDomain`，后端加 `realm` 别名 |
+| 5/6 | 「注册间隔/心跳间隔/心跳次数」是**凭空发明**的字段（WVP `Platform.java` 与本仓库 schema 都没有） | 换成真实的 `expires`（注册周期）+ `keepTimeout`（心跳周期，列 `keep_timeout` 本就存在）；列表/详情统一输出 |
+| 7/8 | `catalog/add`/`catalog/edit` 无 alias，`platformId`/`parentId`/`civilCode`/`businessGroup` 全绑不上；编辑还因 `unwrap_or_default()` 用空串**清空**已有值 | DTO 改 camelCase + `parent` 别名；更新改为 `Option` 直接绑定（未传 = NULL） |
+| 9 | `/platform/exit/:deviceGbId` 按 `device_gb_id` 查、只回布尔、**没有任何注销动作** | 改按 `serverGBId` 定位，发 `Expires: 0` REGISTER + `enable/status=false`；不存在 404 |
+| 10 | `server_config` 声明类型 `{ip,port,id,realm}` 与实际键完全不符 | 前端类型对齐；后端修正 `serverGBId`（此前填的是 `realm`，本平台 20 位编码从未暴露） |
+| 11 | `/platform/info/:id` 只回 10 个字段 | 与列表共用 `platform_row_json` |
+
+**实测**（真实后端）：
+
+```
+POST /api/platform/add  {serverGbId + realm + heartBeatInterval + expires:3600}
+     → 成功；列表回 serverGBId=34020000002000000901 / serverGBDomain=3402000901
+       / expires=3600(数字) / keepTimeout=45 / heartBeatInterval 不再重复输出
+POST /api/platform/add  {serverGBId:…902}（WVP 字段 + expires:"1800", keepTimeout:"30"）→ 成功
+POST /api/platform/add  重复国标ID → 400 平台国标ID已存在
+POST /api/platform/add  缺国标ID   → 400 国标ID(serverGBId)不能为空
+POST /api/platform/update {id, serverGBDomain, keepTimeout:77, expires:1200} → 成功并落库
+GET  /api/platform/info/1  → 与列表同一套键（serverGBDomain/expires/keepTimeout/channelCount…）
+GET  /api/platform/exit/34020000002000000901 → sipWarning=null，
+     日志：Cascade platform 34020000002000000901 unregistered and removed；
+     之后 enable=false status=false（此前只回一个布尔且无动作）
+GET  /api/platform/exit/<不存在>            → 404
+POST /api/platform/catalog/add {platformId,parentId,civilCode,businessGroup} → affected:1 且字段真的落库
+POST /api/platform/catalog/edit {id,name}    → parent/civil_code/business_group 保持原值（不再被清空）
+GET  /api/platform/server_config → serverGBId=34020000002000000001 / serverGBDomain=3402000000
+Playwright → 新增 platform.spec.ts 4 个；整套 44 passed
+```
+
+#### 第三十四轮基线
+
+```
+cargo test                       665 passed / 0 failed
+cargo check --all-targets        本项目 0 warning
+cargo check --features mysql/postgres  OK
+npx playwright test              44 passed / 0 failed / 0 skipped（真实 ZLM）
+```
+
+### 前端↔后端契约审计：已完成 11 个模块，剩余 6 个模块 / 33 条（2026-09-12 第三十四轮刷新）
 
 第二十六轮用"一个模块一个 agent"的方式把 16 个前端 API 模块逐个对后端路由/DTO
 做了一遍审计（证据文件在 `docs/audit/*.md`，共 **130 条**），并按影响排序逐批修复。
-当前已修 10 个模块（86 条），剩 `log`(7) / `mediaServer`(7) / `platform`(11) /
-`playback`(3) / `region`(9) / `syCamera`(6) / `talk`(1) 共 **44 条**：
+当前已修 11 个模块（97 条），剩 `log`(7) / `mediaServer`(7) /
+`playback`(3) / `region`(9) / `syCamera`(6) / `talk`(1) 共 **33 条**：
 
 | 模块 | 条数 | 状态 |
 |------|------|------|
@@ -1527,7 +1573,7 @@ npx playwright test              40 passed / 0 failed / 0 skipped（真实 ZLM�
 | jtDevice | 13 | ✅ 已修（第三十一轮） |
 | log | 7 | ❌ 未修 |
 | mediaServer | 7 | ❌ 未修 |
-| platform | 11 | ❌ 未修 |
+| platform | 11 | ✅ 已修（第三十四轮） |
 | playback | 3 | ❌ 未修 |
 | region | 9 | ❌ 未修 |
 | streamProxy | 10 | ✅ 已修（第三十三轮） |
@@ -1553,9 +1599,9 @@ npx playwright test              40 passed / 0 failed / 0 skipped（真实 ZLM�
 4. ~~`streamPush` / `streamProxy`~~：✅ 已分别于第三十二/三十三轮修复
    （删除/批量删除方法或体型不符 405/415、`url`/`gbId` 后端 DTO 不存在、
    列表字段名错位；拉流代理还补齐了真实 `start`/`stop` 与 `query` 过滤）。
-5. `platform`：列表/详情键 `serverGBId` 被前端写成 `serverGbId` → 列表国标ID空白、
-   「注销」按钮被守卫静默拦掉；新增平台的 `expires` 前端发数字、后端要字符串
-   → **422，平台加不上**；`realm` 对应后端 `serverGBDomain`；心跳三参数无落点。
+5. ~~`platform`~~：✅ 已于第三十四轮修复（`serverGbId` 拼写、`expires` 数字/字符串、
+   `realm`→`serverGBDomain`、心跳三参数换成真实的 `expires`/`keepTimeout`、
+   注销改为真的发 `Expires: 0` REGISTER、列表与详情统一字段）。
 6. `log` / `mediaServer` / `syCamera` / `playback` / `region` / `talk`：
    主要是响应键名与筛选参数不匹配（系统信息页内存/磁盘/版本恒为 0 或 '-'、
    媒体节点“检测”探测错地址、仪表盘“重点通道”卡片跳转失败、
@@ -1900,6 +1946,7 @@ vue-tsc --noEmit                 通过
 
 - 2026-09-12 第三十二轮：`cargo test` —— **644 通过 / 0 失败**（推流 12 条）
 - 2026-09-12 第三十三轮：`cargo test` —— **658 通过 / 0 失败**（拉流代理 10 条 + `enable_audio`/`TerminalQuery` 连带修复；e2e 40）
+- 2026-09-12 第三十四轮：`cargo test` —— **665 通过 / 0 失败**（级联平台 11 条；e2e 44）
 - 2026-09-12 第三十一轮：`cargo test` —— **641 通过 / 0 失败**（JT1078 终端/围栏 13 条）
 - 2026-09-12 第三十轮：`cargo test` —— **637 通过 / 0 失败**（设备页 7 条）
 - 2026-09-12 第二十九轮：`cargo test` —— **634 通过 / 0 失败**（云端录像全链路）

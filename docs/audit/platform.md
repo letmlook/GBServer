@@ -1,5 +1,23 @@
 # platform.ts 契约审计
 
+> **状态：已修复（2026-09-12 第三十四轮）**。11 条全部落地，并用真实后端验证：
+> `serverGBId`/`serverGbId`/`realm` 三种写法都能绑定、`expires` 数字与字符串都能反序列化、
+> 列表与详情返回同一套键、`expires`/`keepTimeout` 回的是数字（与 WVP 的 `int` 一致）、
+> 「注销」按 `serverGBId` 定位并真的发出 `Expires: 0` 的注销 REGISTER
+> （后端日志出现 `Cascade platform … unregistered and removed`）并把平台置为停用。
+>
+> 修复过程中的额外发现：
+> 1. `GET /api/platform/server_config` 把 `serverGBId` 与 `serverGBDomain` **都填成了
+>    `sip.realm`** —— 本平台的 20 位国标编码（`sip.device_id`）从未对外暴露，
+>    拿它去上级平台登记会用错编号。已修正，并补 `realm`/`ip`/`port` 兼容键。
+> 2. 新增平台原先是"先 INSERT、再按 `server_gb_id` 补 UPDATE 扩展字段"。一旦
+>    `server_gb_id` 为空（第 2 条），这条 UPDATE 会**打到所有空国标ID的行**上。
+>    现在必填校验 + 唯一性校验在前，这条路径不可达。
+> 3. `platform_row_json` 一度同时输出 `keepTimeout` 与 `heartBeatInterval`（互为 DTO 别名），
+>    而编辑弹窗会把整行原样回提交 → serde `duplicate field` → 更新稳定 422。
+>    已只保留 WVP 的 `keepTimeout`，并加了"列表行必须能原样反序列化成 `PlatformAddBody`"
+>    的回归测试。
+
 > 路由/方法层面：`web/src/api/platform.ts` 的 9 个 url + method 与 `src/router.rs:297-338,913` 全部对得上
 > （`/platform/query` get、`/platform/info/:id` get、`/platform/add` post、`/platform/update` post、
 > `/platform/delete` delete、`/platform/exit/:device_gb_id` get、`/platform/server_config` get、
@@ -71,3 +89,22 @@
 - 前端：`web/src/api/platform.ts:38-43` 返回类型 `WvpResult<Platform>`，而 `Platform`（`platform.ts:12`）用的是 `serverGbId`
 - 后端：`src/handlers/platform.rs:1765` `"serverGBId": p.server_gb_id,`
 - 影响：与条目 1 同源的拼写问题——调用方按类型读 `data.serverGbId` 会得到 `undefined`。当前无调用方：`web/src` 内除 `api/platform.ts:38` 的定义外无引用。
+
+
+---
+
+## 修复对照（第三十四轮）
+
+| # | 问题 | 修复 |
+|---|------|------|
+| 1 | 前端 `serverGbId`（小写 b）vs 后端/WVP `serverGBId` → 列表国标ID空白、「注销」被守卫静默拦掉 | 前端改用 `serverGBId`；后端同时收 `serverGBId`/`serverGbId` 两种拼写 |
+| 2 | 新增时国标ID 绑不上 → 写空串，接口仍回"成功"，平台实际不可用 | 同 1；并加必填校验（名称/国标ID/IP）与国标ID 唯一性校验，空值直接 400 |
+| 3 | `expires` 用 el-input-number 发数字，后端 DTO 只要字符串 → 反序列化 422，新增平台必失败 | `deserialize_opt_int_string` 数字/字符串都收；响应统一回数字（WVP `int expires`） |
+| 4 | 「域名」用 `realm`，后端字段是 `serverGBDomain` → 静默丢弃 | 前端改用 `serverGBDomain`；后端加 `realm` 别名 |
+| 5 | 「注册间隔/心跳间隔/心跳次数」三个输入框是凭空发明的字段（WVP 与 DB 都没有） | 换成真实存在的 `expires`（注册周期）与 `keepTimeout`（心跳周期）；后端 `keepTimeout` 落 `keep_timeout` 列 |
+| 6 | 列表 `heartBeatInterval` 恒为 `-` | 列表/详情统一由 `platform_row_json` 输出，含 `keepTimeout` |
+| 7 | `catalog/add` 无 alias，`platformId`/`parentId`/`civilCode`/`businessGroup` 全绑不上 → 目录写进空 platform_id | DTO 改 `rename_all = "camelCase"` + `parent` 别名 |
+| 8 | `catalog/edit` 同样绑不上，且 `unwrap_or_default()` 把未传字段变成空串 → **清空**已有值 | 同 7；并改为 `Option` 直接绑定，未传即 NULL（COALESCE 保留原值） |
+| 9 | `/platform/exit/:deviceGbId` 按错误列查询、只回布尔、无任何注销动作 | 改为按 `serverGBId` 定位，发 `Expires: 0` REGISTER 并落 `enable=false/status=false`；不存在则 404 |
+| 10 | `server_config` 返回类型声明 `{ip, port, id, realm}` 与实际键完全不符 | 前端类型对齐真实键；后端修正 `serverGBId`（本平台 20 位编码）并用 `realm`/`ip`/`port` 兼容旧声明 |
+| 11 | `/platform/info/:id` 只回 10 个字段，与列表不一致 | 与列表共用 `platform_row_json` |
