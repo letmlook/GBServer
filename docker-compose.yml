@@ -89,16 +89,21 @@ services:
       # 两种做法二选一：
       #   (a) 把这里的范围放开到与 ZLM 一致（如 30000-35000，注意 Docker Desktop
       #       对上千个端口映射会很吃力，本仓库实测会卡住 daemon）；
-      #   (b) 【推荐】挂一份 config.ini 把 ZLM 的 rtp_proxy.port_range 收窄到
-      #       与本文件一致，例如：
-      #         volumes:
-      #           - ./docker/zlm/config.ini:/opt/media/conf/config.ini:ro
+      #   (b) 【本仓库采用】挂一份 config.ini 把 ZLM 的 rtp_proxy.port_range
+      #       收窄到与本文件一致 —— 见下面 zlm 服务的 volumes 挂载。
       # 后端在节点上线时会核对两者并把不一致**明确告警**（见
       # zlm/health_checker.rs 与 handlers/play.rs 的端口校验），不会再出现
       # "INVITE 200 OK 但永远收不到媒体"却毫无提示的情况。
       - "30000-30100:30000-30100/udp"
     environment:
       ZLM_HTTP_SECRET: S63648HLbxckv7YjpPTXXRTOsAVGo0Ia
+    volumes:
+      # 用仓库里的 config.ini 覆盖镜像默认配置：**只**为把 rtp_proxy.port_range
+      # 收窄到与上面发布的 UDP 范围一致（镜像默认 30000-35000，而该端口池是
+      # ZLM 启动时建立的，运行期改不生效）。不同步这份文件，GB28181 收流端口
+      # 就可能落在未映射的端口上 —— 现象是 "INVITE 200 OK 但一直等不到媒体"。
+      # 后端启动时会核对并告警（见 handlers/play.rs）。
+      - ./docker/zlm/config.ini:/opt/media/conf/config.ini:ro
     networks: [gbservernet]
     restart: unless-stopped
 

@@ -9,10 +9,10 @@
 
 | 维度 | 数值 | 验证方式 |
 |------|------|----------|
-| 总代码量（src/） | 73,712 行 Rust | `find src -name '*.rs' \| xargs wc -l` |
+| 总代码量（src/） | 74,764 行 Rust | `find src -name '*.rs' \| xargs wc -l` |
 | 已注册 HTTP 路由 | 383 条唯一 `/api/...` 路径 | `grep -oE '"/api/[^"]*"' src/router.rs \| sort -u \| wc -l` |
 | Handler 模块 | 29 个（含 `stub.rs` / `device_stub.rs` 两个兼容 shim） | `grep -c 'pub mod' src/handlers/mod.rs` |
-| 后端测试 | **595 通过** / 0 失败（第二十六轮刷新；lib 532 + 集成 63） | `cargo test` |
+| 后端测试 | **626 通过** / 0 失败（第二十八轮刷新） | `cargo test` |
 | 编译状态 | `cargo check` 0 error / **0 warning**；clippy 262；**deprecated 0** | `cargo check` / `cargo clippy --all-targets` |
 | 数据库 feature | SQLite（默认）/ PostgreSQL / MySQL **三者均编译通过** | CI `feature-matrix` job |
 | CI | ⏸️ 工作流已就绪但**按需暂停自动触发**（见 `.github/workflows/ci.yml`） | — |
@@ -1296,6 +1296,119 @@ npx playwright test              27 passed / 0 failed / 0 skipped  (上轮 25；
 录像计划（新增/编辑/列表/关联/删除 + 立即录像）PASS
 ```
 
+### 前端↔后端契约审计：已完成 4 个模块，剩余 12 个模块（2026-09-12 第二十七轮）
+
+第二十六轮用"一个模块一个 agent"的方式把 16 个前端 API 模块逐个对后端路由/DTO
+做了一遍审计（证据文件在 `docs/audit/*.md`，共 **130 条**），并按影响排序逐批修复：
+
+| 模块 | 条数 | 状态 |
+|------|------|------|
+| recordPlan（第二十五/二十六轮，非审计产物） | — | ✅ 已修（含真实调度录像） |
+| user | 6 | ✅ 已修（口令写入约定 → 新建/重置账号能登录；role 列；分页） |
+| live | 6 | ✅ 已修（PTZ 参数名 + 8 字节报文；streams 的 deviceId/channelId；webrtc 方法） |
+| channel | 8 | ✅ 已修（新增/编辑全字段落库 + schema 缺列；三个下拉 {name,code}；真实点播） |
+| alarm | 10 | ✅ 已修（清除/批量清除/处理/级别/时间筛选/关键字；handle_result 落库） |
+| cloudRecord | 14 | ❌ 未修 |
+| device | 7 | ❌ 未修 |
+| jtDevice | 13 | ❌ 未修 |
+| log | 7 | ❌ 未修 |
+| mediaServer | 7 | ❌ 未修 |
+| platform | 11 | ❌ 未修 |
+| playback | 3 | ❌ 未修 |
+| region | 9 | ❌ 未修 |
+| streamProxy | 10 | ❌ 未修 |
+| streamPush | 12 | ❌ 未修 |
+| syCamera | 6 | ❌ 未修 |
+| talk | 1 | ❌ 未修 |
+
+**剩余模块里"有真实调用方、用户可见"的高优先级项**（按严重度）：
+
+1. `cloudRecord`：删除走 GET（后端只有 DELETE → 405）；`play/path` 传 `id`
+   而后端只认 `recordId`（点播放永远拿不到地址）；`list` 的 `startTime/endTime`
+   发 ISO 串被解析成 0（选择结束时间后列表整页空白）；`download/zip` 把
+   组合串当数字 id（ZIP 永远不生成）；`deviceId/channelId` 过滤被丢弃。
+2. `device`：列表在线状态读 `online` 而后端返回 `onLine` → **在线列恒为离线**、
+   撤防按钮不可达；新增/编辑设备的 `ip/port/password/expires` 后端 DTO 里没有
+   （填了不落库）；`sync_status` 缺 total/current/errorMsg；`channels` 的
+   query/online/channelType 过滤被忽略。
+3. `jtDevice`：终端删除方法+参数双错（405 / 缺 phoneNumber）；终端
+   `plateNo/plateColor/makerId/provinceId/cityId` 被静默丢弃；通道列表缺
+   `channelName/phoneNumber/status`；区域/路线四个接口的请求字段名
+   （前端 `phoneNumber/radiusM/pointsJson/waypointsJson` vs 后端 `phone/radius/points/waypoints`）
+   → **新增围栏/路线必然失败**；区域查询响应是 snake_case（表格多列空白）。
+4. `streamPush` / `streamProxy`：删除/批量删除方法或体型不符（405/415）；
+   新增必填的 `url`/`gbId` 后端 DTO 里不存在 → 保存后无源地址；列表读
+   `mediaServerId`/`url`/`status` 而后端返回 `media_server_id`/无 url/bool。
+5. `platform`：列表/详情键 `serverGBId` 被前端写成 `serverGbId` → 列表国标ID空白、
+   「注销」按钮被守卫静默拦掉；新增平台的 `expires` 前端发数字、后端要字符串
+   → **422，平台加不上**；`realm` 对应后端 `serverGBDomain`；心跳三参数无落点。
+6. `log` / `mediaServer` / `syCamera` / `playback` / `region` / `talk`：
+   主要是响应键名与筛选参数不匹配（系统信息页内存/磁盘/版本恒为 0 或 '-'、
+   媒体节点“检测”探测错地址、仪表盘“重点通道”卡片跳转失败、
+   录像列表“名称”列空白、区域/分组删除 405、对讲起播与音频 WS 的时序竞争）。
+   其中 region/playback/mediaServer 的多项**当前无调用方**。
+
+**运行期核验缺口（本轮新增/仍未闭环）**：
+
+- ~~**真实 ZLM 收流链路尚未端到端跑通**~~ **已跑通（第二十八轮）**：
+  详见上方第二十八轮小节。剩余未在真实 ZLM 上验证的：级联向上推流
+  （startSendRtp 到上级平台）、HLS/WebRTC 的实际播放、多节点负载均衡。
+- MySQL/PostgreSQL 仍只做**编译**验证（无实例可跑运行期 SQL）。
+- `docs/audit/*.md` 里的"无调用方"条目虽已定位，但为保持 API 契约正确仍应修完。
+
+### 真实 ZLMediaKit 上的端到端媒体验证跑通了（2026-09-12 第二十八轮）
+
+此前所有媒体相关验证都跑在自研 ZLM mock 上（mock 只回 HTTP，不做真实收流），
+所以"配置下发到底生效没有""真实 ZLM 能不能收到设备的 RTP"这类问题一直没被覆盖。
+本轮把真实容器（`docker compose` 里的 `zlmediakit/zlmediakit:master`）接通，
+一路修到 **真实的 SIP INVITE → 设备 RTP/PS → ZLM 出流 → hook → 播放地址/录像文件**
+全链路跑通：
+
+| # | 缺陷（都是"静默无效/静默超时"型） | 证据与修复 |
+|---|------|------|
+| 1 | **setServerConfig 全部静默失效** | ZLM 只认查询参数/表单的 `键=值`，客户端发的是 `{secret,key,value}` JSON body → ZLM 忽略 body、因 secret 合法回 `code:0`。所有 autoConfig（hook 地址、端口范围、protocol、mediaServerId）都下发不进去。改为 GET + 查询参数，并加 `set_server_config_verified` 回读校验（不支持的键明确告警） |
+| 2 | **hook secret 下发不到** | 官方靠 `[hook] admin_params`，而该镜像的 config.ini **没有这个键**（回读为空）→ 钩子请求不带 secret → 后端 `hook auth: secret mismatch` 拒掉 → 媒体就绪事件永远收不到（表现为 INVITE 200 OK 后收流超时）。现在 secret 直接写在**每个事件 URL** 的查询串上 |
+| 3 | **general.mediaServerId 是占位串** | 镜像默认 `your_server_id`，钩子全被标成未知节点。节点上线时下发为节点主键（`zlmediakit-1`），已回读确认 |
+| 4 | **收流端口池与容器映射不一致** | 镜像 `rtp_proxy.port_range` 默认 30000-35000，compose 只发布 30000-30100，且端口池**启动时**建立（运行期改不生效）。实测端口落在 33842 → 设备 RTP 到不了容器。现在仓库挂载 `docker/zlm/config.ini`（收窄为 30000-30100，并把 api.secret 对齐），`handlers/play.rs` 在端口越界时 error 级告警 |
+| 5 | **getRtpInfo 的响应形态解析错** | 真实 ZLM 返回**扁平**结构（`exist`/`identifier`/`local_port`…），代码按 `data.stream_id` 解析 → 恒为 None。导致"流已存在就复用"永远走不通：第二个观看者拿到 `-300 This stream already exists` 而失败。已兼容两种形态 + 单测 |
+| 6 | **同一通道第二个观看者必失败** | 上面两条修完后，`/api/play/start` 对已存在的流改为**复用并直接返回播放地址**（幂等），不再把正常情况当失败 |
+| 7 | 测试替身不发媒体 | `mock/tools/sip-device/sip_device_mock.py` 新增 `--send-rtp`：收到 PLAY INVITE 后用 ffmpeg 合成 H264，按 `-f mpeg`(PS) 切片成 RTP 发给平台宣告的地址，BYE 时停止。这样"设备不推流"类问题才可能被发现 |
+
+**实测（真实 ZLM 容器 + 真实 redis + SIP mock --send-rtp）**：
+
+```
+GET  /index/api/getServerConfig → general.mediaServerId=zlmediakit-1，
+     hook.enable=1，11 个 on_* URL 带 secret，rtp_proxy.port_range=30000-30100
+POST /api/play/start/...        → code:0，返回 rtsp/flv/hls/webrtc 地址
+GET  /index/api/getMediaList    → rtp/34020000001320000001_34020000001320000001，2 条 track
+第二次 play/start               → code:0（复用现有流，不再 -300）
+录像计划：新增+关联通道 → 到点拉起 INVITE → isRecording status:true
+     容器内落盘 /opt/media/bin/www/record/rtp/<dev>_<ch>/2026-09-12/2026-09-12-22-09-45-0.mp4
+删计划后 isRecording → cannot find the stream（录制已停止，文件保留）
+npx playwright test            → 31 passed / 0 failed（跑在真实 ZLM 上）
+```
+
+#### 第二十八轮基线
+
+```
+cargo test                       626 passed / 0 failed
+cargo check --all-targets        本项目 0 warning
+npx playwright test              31 passed / 0 failed / 0 skipped（真实 ZLM）
+真实 ZLM：点播（含第二个观看者复用）/ 收流 / 出流 / 录像文件 全链路 PASS
+```
+
+#### 第二十七轮基线
+
+```
+cargo test                       623 passed / 0 failed   (上轮 595；+28)
+cargo check --all-targets        本项目 0 warning
+npx playwright test              31 passed / 0 failed / 0 skipped  (上轮 27；+4)
+vue-tsc --noEmit                 通过
+真实 ZLM（容器 zlmediakit/zlmediakit:master）实测：
+  setServerConfig 改为查询参数后可下发（13/20 项生效，7 项该版本无此键并明确告警）
+  rtp_proxy.port_range 已按配置写入；收流端口不在发布范围时 error 级告警
+```
+
 ### 仍未解决 / 需真实设备核验
 
 以下是本轮**已定位但未改动**的项，均在代码中留有注释或在此登记，
@@ -1571,6 +1684,8 @@ npx playwright test              27 passed / 0 failed / 0 skipped  (上轮 25；
 
 ## 测试基线（每次推进后回填）
 
+- 2026-09-12 第二十七轮：`cargo test` —— **623 通过 / 0 失败**（+28：契约修复与真实 ZLM 集成）
+  - 同时：`npx playwright test` 31 通过 / 0 失败 / 0 跳过
 - 2026-09-12 第二十六轮：`cargo test` —— **595 通过 / 0 失败**（lib 532 + 集成 63；+22 录像计划）
   - 同时：`npx playwright test` 27 通过 / 0 失败 / 0 跳过；mysql/postgres feature 构建 OK
 - 2026-09-12 第二十五轮：`cargo test` —— **573 通过 / 0 失败**（lib 510 + 集成 63；+3 录像计划调度匹配）

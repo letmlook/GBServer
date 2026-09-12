@@ -185,7 +185,18 @@ test.describe('Live page (/live) — Vue 3 features', () => {
       return;
     }
     await channelNode.click();
-    await expect(page.locator('.video-grid')).toBeVisible();
+    // 起流是异步的（真实 ZLM 上还要等 SIP INVITE + 收流）：先等播放请求发出，
+    // 再等画面网格出现。若因为上一个用例的流正在回收而没出现，重选一次通道。
+    const grid = page.locator('.video-grid');
+    if (!(await grid.isVisible().catch(() => false))) {
+      await expect
+        .poll(() => grid.isVisible().catch(() => false), { timeout: 8_000 })
+        .toBe(true)
+        .catch(async () => {
+          await channelNode.click();
+        });
+    }
+    await expect(grid).toBeVisible({ timeout: 15_000 });
 
     // 上 / 下 / 左 / 右 / 停止 / 放大 / 缩小 = 7 个 PTZ 按钮，
     // 外加工具条右侧的「对讲」按钮（components/TalkPanel）= 8 个。

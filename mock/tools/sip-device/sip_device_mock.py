@@ -39,7 +39,10 @@ import random
 import re
 import signal
 import socket
+import struct
+import subprocess
 import sys
+import threading
 import time
 import uuid
 import xml.etree.ElementTree as ET
@@ -83,6 +86,11 @@ class DeviceConfig:
     # 收到 INVITE 后自动挂断的秒数（0 = 不自动挂断）。
     # 用于模拟"设备主动结束会话"；测试平台侧 BYE 时应设为 0。
     auto_bye_secs: int = 3
+    # 收到 PLAY INVITE 后是否**真的推 RTP/PS**到平台宣告的收流端口。
+    # 关掉时只做信令，平台会一直等媒体（用于单独验证信令链路的场景）。
+    send_rtp: bool = False
+    # 每路流的 RTP 负载类型（GB28181 常用 96 = PS）
+    rtp_payload_type: int = 96
 
 
 @dataclass
@@ -564,6 +572,110 @@ def build_bye(cfg: DeviceConfig, local_addr: tuple, server_addr: tuple, cseq: in
 
 # ---------------- 主类 ----------------
 
+class RtpSender:
+    """把 ffmpeg 产出的 MPEG-PS 打成 RTP 包发给平台。
+
+    此前 mock 只回 SIP 200 OK、**一帧媒体都不发**，所以"平台收不到流"这类
+    问题在 mock 上永远暴露不出来（只能靠真实摄像头）。这里用 ffmpeg 合成
+    H264 → `-f mpeg`(PS) → 本类按 1400 字节切片 + RTP 头发出，
+    于是真实 ZLMediaKit 能解析出真正的流，整条
+    「INVITE → 设备推流 → ZLM 出流 → hook → 播放地址/录像」链路都能被验证。
+
+    RTP 用独立 socket 发送，避免和 SIP 的 UDP 端口混在一起。
+    """
+
+    def __init__(self, cfg: "DeviceConfig") -> None:
+        self.cfg = cfg
+        self._proc: Optional[subprocess.Popen] = None
+        self._sock: Optional[socket.socket] = None
+        self._thread: Optional[threading.Thread] = None
+        self._stop = threading.Event()
+        self.packets_sent = 0
+        self.bytes_sent = 0
+
+    def start(self, dst_ip: str, dst_port: int, ssrc: int) -> bool:
+        self.stop()
+        if dst_port <= 0:
+            log.warning("平台宣告的收流端口为 0（m=video 0），不推流")
+            return False
+        cmd = [
+            "ffmpeg", "-hide_banner", "-loglevel", "error",
+            "-re",
+            "-f", "lavfi", "-i", "testsrc=size=352x288:rate=25",
+            "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
+            "-profile:v", "baseline", "-pix_fmt", "yuv420p",
+            # 关键帧间隔 1s，并保证每个关键帧都带 SPS/PPS，
+            # 否则 ZLM 解析不出编码参数、不会建流
+            "-x264-params", "repeat-headers=1:keyint=25",
+            "-an", "-f", "mpeg", "-",
+        ]
+        try:
+            self._proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            )
+        except FileNotFoundError:
+            log.error("找不到 ffmpeg，无法推流（--send-rtp 需要 ffmpeg）")
+            return False
+        self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self._stop.clear()
+        self._thread = threading.Thread(
+            target=self._pump, args=(dst_ip, dst_port, ssrc), daemon=True,
+        )
+        self._thread.start()
+        log.info("开始向 %s:%s 推 RTP/PS（ssrc=%08X）", dst_ip, dst_port, ssrc)
+        return True
+
+    def _pump(self, dst_ip: str, dst_port: int, ssrc: int) -> None:
+        seq = 0
+        ts = 0
+        pt = self.cfg.rtp_payload_type
+        assert self._proc is not None and self._proc.stdout is not None
+        try:
+            while not self._stop.is_set():
+                chunk = self._proc.stdout.read(1400)
+                if not chunk:
+                    break
+                header = struct.pack(
+                    "!BBHII", 0x80, pt, seq & 0xFFFF, ts & 0xFFFFFFFF, ssrc & 0xFFFFFFFF,
+                )
+                assert self._sock is not None
+                self._sock.sendto(header + chunk, (dst_ip, dst_port))
+                seq += 1
+                # 25fps、90kHz：每包推进 144 tick（单调递增即可，ZLM 以 PS PTS 为准）
+                ts += 144
+                self.packets_sent += 1
+                self.bytes_sent += len(chunk)
+        except Exception as e:  # noqa: BLE001 - 推流线程不能让 mock 挂掉
+            log.warning("RTP 发送线程退出: %s", e)
+        finally:
+            log.info(
+                "RTP 推流结束（%s 包 / %s 字节）",
+                self.packets_sent, self.bytes_sent,
+            )
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._proc is not None:
+            try:
+                self._proc.terminate()
+                self._proc.wait(timeout=3)
+            except Exception:  # noqa: BLE001
+                try:
+                    self._proc.kill()
+                except Exception:  # noqa: BLE001
+                    pass
+            self._proc = None
+        if self._sock is not None:
+            try:
+                self._sock.close()
+            except Exception:  # noqa: BLE001
+                pass
+            self._sock = None
+        if self._thread is not None:
+            self._thread.join(timeout=2)
+            self._thread = None
+
+
 class SipDeviceMock:
     """SIP GB28181 设备模拟器"""
 
@@ -584,6 +696,8 @@ class SipDeviceMock:
         self.auto_alarm_interval = auto_alarm_secs
         self._alarm_task: Optional[asyncio.Task] = None
         self.alarm_count = 0
+        self.rtp = RtpSender(cfg)
+        self._rtp_ssrc = 0
 
         self.state = DeviceState()
         self.transport: Optional[asyncio.DatagramTransport] = None
@@ -904,12 +1018,27 @@ class SipDeviceMock:
         # （设备无处可推），是"发了 INVITE 但永远收不到流"的典型症状，
         # 必须在测试日志里一眼可见。
         media_lines = [l.strip() for l in req_body.splitlines() if l.strip().startswith("m=")]
+        is_talk = ("s=Talk" in req_body or "m=audio" in req_body)
         log.info(
             "INVITE 200 OK sent for call %s, ssrc=%s (%s) 请求SDP: %s",
             call_id, ssrc,
-            "audio/Talk" if ("s=Talk" in req_body or "m=audio" in req_body) else "video/Play",
+            "audio/Talk" if is_talk else "video/Play",
             media_lines or ["<无 m= 行>"],
         )
+
+        # 真正把媒体推给平台（可选，`--send-rtp`）。
+        # 平台在请求 SDP 里宣告了收流地址：`c=IN IP4 <ip>` + `m=video <port>`，
+        # ssrc 在 `y=` 行；GB28181 要求设备按这个地址发 RTP。
+        if self.cfg.send_rtp and not is_talk:
+            dst_ip, dst_port, ssrc_hex = self._parse_platform_media(req_body)
+            if dst_ip and dst_port:
+                self._rtp_ssrc = int(ssrc_hex, 16) if ssrc_hex else int(ssrc, 16)
+                self.rtp.start(dst_ip, dst_port, self._rtp_ssrc)
+            else:
+                log.warning(
+                    "请求 SDP 里没有可用的收流地址（c=/m=），无法推流：%s",
+                    media_lines,
+                )
         # 模拟设备主动挂断（`--auto-bye-secs`，0 = 不自动挂断）。
         #
         # 之所以可配置：平台侧的 BYE 需要在对话仍然有效时才能被校验，
@@ -984,6 +1113,8 @@ class SipDeviceMock:
             # 对话无效 ⇒ 设备按"没收到停止指令"继续推流（不清理 invite 状态）
             return
 
+        # 对话有效 ⇒ 停止推流（真实设备收到 BYE 就停发 RTP）
+        self.rtp.stop()
         payload = (
             f"{SIP_VERSION} 200 OK\r\n"
             f"Via: {SIP_VERSION}/UDP {addr[0]}:{addr[1]};rport;branch={branch}\r\n"
@@ -1124,6 +1255,24 @@ class SipDeviceMock:
             self.transport.sendto(payload, self.server_addr)
             log.info("Alarm #%d sent (type=%s priority=%s)", self.alarm_count, atype, priority)
 
+    @staticmethod
+    def _parse_platform_media(sdp: str) -> tuple:
+        """从请求 SDP 里取平台收流地址：`c=IN IP4 <ip>` / `m=video <port>` / `y=<ssrc>`。"""
+        dst_ip = ""
+        dst_port = 0
+        ssrc_hex = ""
+        for line in sdp.splitlines():
+            line = line.strip()
+            if line.startswith("c=IN IP4 "):
+                dst_ip = line.split("c=IN IP4 ", 1)[1].strip()
+            elif line.startswith("m=video ") or line.startswith("m=audio "):
+                parts = line.split()
+                if len(parts) >= 2 and parts[1].isdigit():
+                    dst_port = int(parts[1])
+            elif line.startswith("y="):
+                ssrc_hex = line[2:].strip()
+        return dst_ip, dst_port, ssrc_hex
+
     # ----- Header / XML 解析辅助 -----
 
     def _extract_header(self, msg: str, name: str, default: str = "") -> str:
@@ -1220,6 +1369,11 @@ def main():
         help="periodically send Alarm notifications every N seconds (0=off)",
     )
     parser.add_argument(
+        "--send-rtp", action="store_true",
+        help="收到 PLAY INVITE 后用 ffmpeg 合成 H264/PS 并按 RTP 推给平台"
+             "（需要 ffmpeg；用于对真实 ZLMediaKit 做端到端媒体验证）",
+    )
+    parser.add_argument(
         "--auto-bye-secs", type=int, default=3,
         help="收到 INVITE 后自动挂断的秒数（0=不自动挂断，用于测试平台侧 BYE）",
     )
@@ -1245,6 +1399,7 @@ def main():
         auto_bye_secs=args.auto_bye_secs,
     )
 
+    cfg.send_rtp = args.send_rtp
     mock = SipDeviceMock(
         cfg, server_addr, args.local_port, args.auto_register, args.auto_keepalive,
         args.auto_alarm_secs,

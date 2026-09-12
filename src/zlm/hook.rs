@@ -424,12 +424,44 @@ pub fn hook_config_items(configured_hook_url: &str, secret: &str) -> Vec<(String
         ("hook.timeoutSec".to_string(), "5".to_string()),
     ];
     for event in CONFIGURED_HOOK_EVENTS {
+        // secret 直接放进**每个事件 URL** 的查询串。
+        //
+        // 官方文档里 ZLM 用 `[hook] admin_params` 把 secret 附到 hook 请求上，
+        // 但**当前镜像（master, 2026-08）的 config.ini 里没有 admin_params 这个键**
+        // —— 下发它会被 ZLM 忽略（回读值为空），于是钩子请求不带 secret，
+        // 被后端以 "hook auth: secret mismatch" 拒掉，
+        // 表现为"INVITE 200 OK 之后永远等不到媒体就绪"。
         items.push((
             format!("hook.{}", event),
-            hook_event_url(&base, event),
+            hook_event_url_with_secret(&base, event, secret),
         ));
     }
     items
+}
+
+/// 事件 URL 上带 secret：`<base>/api/hook/<event>?secret=<urlencoded>`。
+///
+/// 与 `hook_event_url` 分开是为了让"不带鉴权的 URL"仍然可用于日志/测试断言。
+pub fn hook_event_url_with_secret(base: &str, event: &str, secret: &str) -> String {
+    format!(
+        "{}?secret={}",
+        hook_event_url(base, event),
+        url_encode(secret)
+    )
+}
+
+/// 极简 percent-encoding（只处理会破坏查询串的字符）。
+fn url_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
 }
 
 /// 从 stream_id 解析 `(device_id, channel_id)`。
@@ -2282,7 +2314,7 @@ mod hook_config_tests {
         for (key, value) in &items {
             if let Some(event) = key.strip_prefix("hook.on_") {
                 assert!(
-                    value.ends_with(&format!("/api/hook/on_{}", event)),
+                    value.contains(&format!("/api/hook/on_{}", event)),
                     "{} 的 URL 应以 /api/hook/on_{} 结尾，实际 {}",
                     key,
                     event,

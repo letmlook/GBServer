@@ -68,6 +68,9 @@ test.describe('Alarm page (/alarm)', () => {
       return;
     }
 
+    // 记下这一行的「报警时间」：mock 会持续上报新告警，处理完后它未必还在第一行，
+    // 必须按这个时间找回同一行（否则"查看"打开的是另一条，处理结论当然看不到）。
+    const targetTime = (await rows.first().locator('td').nth(1).innerText()).trim();
     const handleBody: unknown[] = [];
     page.on('request', async (r) => {
       if (r.url().includes('/alarm/handle')) handleBody.push(r.postDataJSON());
@@ -85,7 +88,9 @@ test.describe('Alarm page (/alarm)', () => {
     expect(JSON.stringify(handleBody[0])).toContain('已通过 E2E 确认');
 
     // 重新打开「查看」弹窗，应能看到刚提交的处理结论
-    await rows.first().getByRole('button', { name: '查看' }).click();
+    const handledRow = page.locator('tr', { hasText: targetTime }).first();
+    await expect(handledRow).toBeVisible({ timeout: 10_000 });
+    await handledRow.getByRole('button', { name: '查看' }).click();
     await expect(page.getByText(/已通过 E2E 确认/).first()).toBeVisible({ timeout: 10_000 });
   });
 });

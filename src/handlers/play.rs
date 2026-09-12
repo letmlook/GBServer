@@ -11,6 +11,35 @@ fn parse_sdp_media_port(sdp: &str) -> Option<u16> {
     crate::sip::gb28181::sdp_builder::parse_media_port(sdp)
 }
 
+/// 统一的"播放地址" JSON：所有成功分支都用它，避免同一组 URL 拼在多处漂移。
+fn play_urls_json(
+    zlm_client: &crate::zlm::ZlmClient,
+    stream_id: &str,
+    device_id: &str,
+    channel_id: &str,
+    has_audio: bool,
+    ssrc: &str,
+    transport: &str,
+) -> serde_json::Value {
+    let ip = &zlm_client.ip;
+    let http = zlm_client.http_port;
+    serde_json::json!({
+        "app": "rtp",
+        "stream": stream_id,
+        "playUrl": format!("rtsp://{ip}:554/rtp/{stream_id}"),
+        "flvUrl": format!("http://{ip}:{http}/rtp/{stream_id}.flv"),
+        "wsUrl": format!("ws://{ip}:{http}/rtp/{stream_id}.flv"),
+        "ws_flv": format!("ws://{ip}:{http}/rtp/{stream_id}.flv"),
+        "hls": format!("http://{ip}:{http}/rtp/{stream_id}/hls.m3u8"),
+        "webrtc": format!("webrtc://{ip}:{http}/index/api/webrtc?app=rtp&stream={stream_id}&type=play"),
+        "deviceId": device_id,
+        "channelId": channel_id,
+        "hasAudio": has_audio,
+        "ssrc": ssrc,
+        "transport": transport,
+    })
+}
+
 pub async fn play_start(
     State(state): State<AppState>,
     Path((device_id, channel_id)): Path<(String, String)>,
@@ -51,6 +80,11 @@ pub async fn play_start(
     if let Some(ref zlm_client) = state.zlm_client {
         // 创建 ZLM 的流。stream_id 使用规范格式: 设备ID_通道ID
         let stream_id = format!("{}_{}", device_id, channel_id);
+        // 规范 SSRC（10 位：1 位类型前缀 + 设备号前 9 位），
+        // 与 SIP 层 `build_play_ssrc` 保持完全一致。
+        // 此前这里算的是 `0{id9}0`（11 位），两条路径口径不同。
+        let id_part = if device_id.len() >= 9 { &device_id[0..9] } else { &device_id };
+        let ssrc = format!("0{:0>9}", id_part);
 
         let transport_mode = device
             .transport
@@ -79,9 +113,44 @@ pub async fn play_start(
             recv_port: None,
         };
 
+        // 同一通道可能已经被另一个观看者（或上一次请求）打开：
+        // ZLM 的 openRtpServer 会返回 `-300 This stream already exists`。
+        // 这是**正常情况**，不是失败 —— 设备已经在推流，直接把已有的
+        // 播放地址返回即可（多观看者/页面重进都靠这条路径）。
+        // 此前一律按失败返回，导致"第一个看的人正常、第二个看的人报错"。
         let rtp_server = match zlm_client.open_rtp_server(&rtp_req).await {
             Ok(s) => s,
             Err(e) => {
+                let msg = e.to_string();
+                let already_exists = msg.contains("-300")
+                    || msg.to_lowercase().contains("already exist");
+                if already_exists {
+                    match zlm_client.get_rtp_info(&stream_id).await {
+                        Ok(Some(info)) => {
+                            tracing::info!(
+                                "流 {stream_id} 已存在（local_port={} peer={}:{}），复用现有流",
+                                info.local_port, info.peer_ip, info.peer_port
+                            );
+                            return Json(WVPResult::success(play_urls_json(
+                                zlm_client,
+                                &stream_id,
+                                &device_id,
+                                &channel_id,
+                                channel.has_audio.unwrap_or(false),
+                                &ssrc,
+                                &transport_mode,
+                            )));
+                        }
+                        Ok(None) => {
+                            tracing::warn!(
+                                "openRtpServer 报流已存在，但 getRtpInfo 查不到 {stream_id}，按失败处理"
+                            );
+                        }
+                        Err(qe) => {
+                            tracing::warn!("查询已存在流的 RTP 信息失败: {qe}");
+                        }
+                    }
+                }
                 tracing::error!("Failed to open RTP server: {}", e);
                 return Json(WVPResult::error(format!("Media Server error: {}", e)));
             }
@@ -117,11 +186,6 @@ pub async fn play_start(
 
         // 调用 SIP Server 真正发送 INVITE，并等待设备回复 200 OK
         let sip = &*sip_server;
-        // 先生成规范 SSRC（10 位：1 位类型前缀 + 设备号前 9 位），
-        // 与 SIP 层 `build_play_ssrc` 保持完全一致。
-        // 此前这里算的是 `0{id9}0`（11 位），两条路径口径不同。
-        let id_part = if device_id.len() >= 9 { &device_id[0..9] } else { &device_id };
-        let ssrc = format!("0{:0>9}", id_part);
 
         // TCP-PASSIVE 设备不走"等媒体到达"路径:它压根不会推流给 ZLM,
         // 等 ZLM 主动 connect 它的 listen 端口。把 SIP 200 OK 拿到后,

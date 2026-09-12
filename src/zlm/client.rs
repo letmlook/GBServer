@@ -27,6 +27,35 @@ pub struct ZlmClient {
 /// * `is_recording` 恒 false ⇒ 云录像是否在录的判定失真。
 ///
 /// 这里兼容三种已知形态（顶层 `exist` / `data.exist` / 旧 mock 的 `status`）。
+/// 解析 `getRtpInfo` 的响应，兼容扁平与嵌套两种形态。
+fn parse_rtp_info(stream_id: &str, raw: &serde_json::Value) -> Option<RtpInfo> {
+    let get_str = |k: &str| raw.get(k).and_then(|v| v.as_str()).map(str::to_string);
+    let get_u16 = |k: &str| raw.get(k).and_then(|v| v.as_u64()).map(|v| v as u16);
+    let get_u32 = |k: &str| raw.get(k).and_then(|v| v.as_u64()).map(|v| v as u32);
+
+    // 扁平形态（真实 ZLM master）
+    if let Some(exist) = raw.get("exist").and_then(|v| v.as_bool()) {
+        if !exist {
+            return None;
+        }
+        return Some(RtpInfo {
+            stream_id: get_str("identifier").unwrap_or_else(|| stream_id.to_string()),
+            ssrc: get_str("ssrc")
+                .or_else(|| raw.get("ssrc").map(|v| v.to_string()))
+                .unwrap_or_default(),
+            peer_ip: get_str("peer_ip").unwrap_or_default(),
+            peer_port: get_u16("peer_port").unwrap_or(0),
+            local_port: get_u16("local_port").unwrap_or(0),
+            alive_second: get_u32("alive_second").unwrap_or(0),
+            rtt: get_u32("rtt").unwrap_or(0),
+        });
+    }
+
+    // 嵌套形态（部分版本/旧 mock）：{"code":0,"data":{...}}
+    let data = raw.get("data").filter(|d| !d.is_null())?;
+    serde_json::from_value::<RtpInfo>(data.clone()).ok()
+}
+
 fn exist_flag(resp: &serde_json::Value) -> bool {
     let at = |v: &serde_json::Value, key: &str| v.get(key).and_then(|x| x.as_bool());
     if let Some(b) = at(resp, "exist").or_else(|| at(resp, "status")) {
@@ -327,14 +356,25 @@ impl ZlmClient {
         Ok(())
     }
 
+    /// 查询某个 RTP 收流会话。
+    ///
+    /// 真实 ZLM（master）返回的是**扁平**结构，字段名也和 `RtpInfo` 不同：
+    ///
+    /// ```json
+    /// {"code":0,"exist":true,"identifier":"<stream_id>","local_ip":"::",
+    ///  "local_port":30052,"peer_ip":"172.18.0.1","peer_port":65288}
+    /// ```
+    ///
+    /// 此前用 `ApiResponse<RtpInfo>`（要求 `data.stream_id`）解析 ——
+    /// 真实 ZLM 上**恒定返回 None**，于是"流已存在就复用"这类判断永远走不通，
+    /// 第二个观看者会拿到 `-300 This stream already exists` 而失败。
     pub async fn get_rtp_info(&self, stream_id: &str) -> Result<Option<RtpInfo>> {
         let params = vec![
             ("secret", self.secret.clone()),
             ("stream_id", stream_id.to_string()),
         ];
-
-        let resp: ApiResponse<RtpInfo> = self.request("/index/api/getRtpInfo", &params).await?;
-        Ok(resp.data)
+        let raw: serde_json::Value = self.request("/index/api/getRtpInfo", &params).await?;
+        Ok(parse_rtp_info(stream_id, &raw))
     }
 
     pub async fn list_rtp_servers(&self) -> Result<Vec<RtpServerInfo>> {
@@ -1078,5 +1118,51 @@ mod port_range_tests {
         assert_eq!(parse_port_range(" 30000 - 30100 ").unwrap(), (30000, 30100));
         assert!(parse_port_range("30000").is_err());
         assert!(parse_port_range("a-b").is_err());
+    }
+}
+
+#[cfg(test)]
+mod rtp_info_tests {
+    use super::parse_rtp_info;
+
+    /// 真实 ZLM master 的扁平响应必须能解析出来。
+    #[test]
+    fn test_parse_rtp_info_flat_response() {
+        let raw = serde_json::json!({
+            "code": 0,
+            "exist": true,
+            "identifier": "34020000001320000001_34020000001310000001",
+            "local_ip": "::",
+            "local_port": 30052,
+            "peer_ip": "172.18.0.1",
+            "peer_port": 65288
+        });
+        let info = parse_rtp_info("fallback", &raw).expect("扁平响应应解析出 RTP 信息");
+        assert_eq!(info.stream_id, "34020000001320000001_34020000001310000001");
+        assert_eq!(info.local_port, 30052);
+        assert_eq!(info.peer_ip, "172.18.0.1");
+        assert_eq!(info.peer_port, 65288);
+    }
+
+    #[test]
+    fn test_parse_rtp_info_absent_stream_is_none() {
+        let raw = serde_json::json!({"code": 0, "exist": false});
+        assert!(parse_rtp_info("s", &raw).is_none());
+        let empty = serde_json::json!({"code": 0, "data": null});
+        assert!(parse_rtp_info("s", &empty).is_none());
+    }
+
+    #[test]
+    fn test_parse_rtp_info_nested_response() {
+        let raw = serde_json::json!({
+            "code": 0,
+            "data": {
+                "stream_id": "s", "ssrc": "1", "peer_ip": "1.2.3.4",
+                "peer_port": 5, "local_port": 6, "alive_second": 7, "rtt": 8
+            }
+        });
+        let info = parse_rtp_info("fallback", &raw).expect("嵌套响应也要兼容");
+        assert_eq!(info.stream_id, "s");
+        assert_eq!(info.local_port, 6);
     }
 }

@@ -91,6 +91,21 @@ impl ZlmHealthChecker {
                 );
                 continue;
             };
+            // 节点身份：ZLM 在每个 hook 请求里带上 `mediaServerId`，值取自
+            // `general.mediaServerId`。镜像默认是占位串 "your_server_id"，
+            // 不改的话后端每次都要"按未知 id 回落到默认节点"，
+            // 多节点部署时事件会被记到错误的节点上。
+            match client
+                .set_server_config_verified(&client.secret, "general.mediaServerId", &id)
+                .await
+            {
+                Ok(true) => tracing::info!("ZLM 节点 {id} 的 general.mediaServerId 已对齐"),
+                Ok(false) => tracing::warn!(
+                    "ZLM 节点 {id} 的 general.mediaServerId 未生效（该版本键名可能不同）"
+                ),
+                Err(e) => tracing::warn!("ZLM 节点 {id} 下发 mediaServerId 失败: {e}"),
+            }
+
             let items = crate::zlm::hook::hook_config_items(hook_url, &client.secret);
             let mut failed = 0usize;
             let mut unsupported: Vec<String> = Vec::new();
