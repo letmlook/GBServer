@@ -1,5 +1,10 @@
 # cloudRecord.ts 契约审计
 
+> **状态：已全部修复（2026-09-12 第二十九轮）**。修复中还发现 5 个审计没覆盖到的
+> 深层缺陷（ZLM 文件列表 API 名大小写错、缺 vhost、响应结构想当然、
+> `deleteRecord` 端点在新版 ZLM 不存在、容器化部署下按本机路径找文件）。
+> 详见 `docs/WVP_PARITY.md` 第二十九轮小节。
+
 审计对象：`web/src/api/cloudRecord.ts`（14 个导出函数）× `src/router.rs` × `src/handlers/stub.rs` × `src/handlers/cloud_record_extra.rs` × 唯一消费方 `web/src/views/cloudRecord/index.vue`。
 
 真值来源：WVP-PRO Java 源码 `/tmp/wvpsrc/wvp-GB28181-pro-master/src/main/java/com/genersoft/iot/vmp/vmanager/cloudRecord/CloudRecordController.java`（下文简称 WVP 控制器）。

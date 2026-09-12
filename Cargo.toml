@@ -52,7 +52,9 @@ dashmap = "5"
 quick-xml = "0.31"
 
 # ZLM HTTP API
-reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls"] }
+# `stream` 用于把 ZLM 的录像文件**边收边转发**（云录像下载/播放代理），
+# 避免把整个 MP4 读进内存
+reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls", "stream"] }
 
 # Redis
 redis = { version = "0.25", features = ["aio", "tokio-comp", "connection-manager"] }

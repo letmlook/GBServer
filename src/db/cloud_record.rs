@@ -271,6 +271,123 @@ pub async fn list_paged(
     }
 }
 
+/// 云端录像列表的筛选条件（全部可选；`None` = 不过滤）。
+#[derive(Debug, Default, Clone)]
+pub struct CloudRecordFilter<'a> {
+    pub app: Option<&'a str>,
+    pub stream: Option<&'a str>,
+    pub media_server_id: Option<&'a str>,
+    pub call_id: Option<&'a str>,
+    /// 关键字：文件名/流名/App 模糊匹配
+    pub query: Option<&'a str>,
+    /// 国标设备号 / 通道号 —— 本平台的录像流名是 `{deviceId}_{channelId}`，
+    /// 因此按 `stream` 前缀匹配（`deviceId_%` / `%_channelId`）。
+    pub device_id: Option<&'a str>,
+    pub channel_id: Option<&'a str>,
+    /// 起始/结束时间（毫秒）
+    pub start_time: Option<i64>,
+    pub end_time: Option<i64>,
+}
+
+impl<'a> CloudRecordFilter<'a> {
+    fn to_where(&self) -> crate::dyn_where::DynWhere {
+        use crate::dyn_where::{BindValue, DynWhere};
+        let mut w = DynWhere::new();
+        if let Some(v) = self.app.filter(|s| !s.is_empty()) {
+            w.add("app = ?", vec![BindValue::Text(v.to_string())]);
+        }
+        if let Some(v) = self.stream.filter(|s| !s.is_empty()) {
+            w.add("stream = ?", vec![BindValue::Text(v.to_string())]);
+        }
+        if let Some(v) = self.media_server_id.filter(|s| !s.is_empty()) {
+            w.add("media_server_id = ?", vec![BindValue::Text(v.to_string())]);
+        }
+        if let Some(v) = self.call_id.filter(|s| !s.is_empty()) {
+            w.add("call_id LIKE ?", vec![BindValue::Text(format!("%{v}%"))]);
+        }
+        // 用 substr 做**精确**的前缀/后缀匹配：LIKE 里的 `_` 是通配符，
+        // `dev_%` 会连 `devX...` 一起匹配上，不是我们想要的语义。
+        if let Some(v) = self.device_id.filter(|s| !s.is_empty()) {
+            w.add(
+                "substr(stream, 1, length(?)) = ?",
+                vec![BindValue::Text(v.to_string()), BindValue::Text(v.to_string())],
+            );
+        }
+        if let Some(v) = self.channel_id.filter(|s| !s.is_empty()) {
+            w.add(
+                "substr(stream, length(stream) - length(?) + 1) = ?",
+                vec![BindValue::Text(v.to_string()), BindValue::Text(v.to_string())],
+            );
+        }
+        if let Some(v) = self.query.map(str::trim).filter(|s| !s.is_empty()) {
+            let like = format!("%{v}%");
+            w.add(
+                "(file_name LIKE ? OR stream LIKE ? OR app LIKE ?)",
+                vec![
+                    BindValue::Text(like.clone()),
+                    BindValue::Text(like.clone()),
+                    BindValue::Text(like),
+                ],
+            );
+        }
+        if let Some(v) = self.start_time {
+            // 与录像有交集：录像结束时间 >= 查询起点
+            w.add(
+                "COALESCE(end_time, start_time) >= ?",
+                vec![BindValue::Big(v)],
+            );
+        }
+        if let Some(v) = self.end_time {
+            w.add("start_time <= ?", vec![BindValue::Big(v)]);
+        }
+        w
+    }
+}
+
+/// 按筛选条件分页查询云端录像（行查询 + 计数共用同一套 WHERE）。
+pub async fn list_filtered(
+    pool: &Pool,
+    f: &CloudRecordFilter<'_>,
+    page: i64,
+    count: i64,
+) -> sqlx::Result<(Vec<CloudRecord>, i64)> {
+    let w = f.to_where();
+    let offset = (page.max(1) - 1) * count;
+
+    const COLS: &str = "SELECT id, app, stream, call_id, start_time, end_time, media_server_id, \
+         server_id, file_name, folder, file_path, collect, file_size, time_len \
+         FROM gb_cloud_record";
+    const COUNT_BASE: &str = "SELECT COUNT(*) FROM gb_cloud_record";
+
+    let limit_ph = if cfg!(feature = "postgres") {
+        format!(" LIMIT ${} OFFSET ${}", w.binds.len() + 1, w.binds.len() + 2)
+    } else {
+        " LIMIT ? OFFSET ?".to_string()
+    };
+    let sql_rows = format!("{}{} ORDER BY start_time DESC{limit_ph}", w.sql(COLS), "");
+    let mut q = sqlx::query_as::<_, CloudRecord>(&sql_rows);
+    for b in &w.binds {
+        q = match b {
+            crate::dyn_where::BindValue::Text(v) => q.bind(v.as_str()),
+            crate::dyn_where::BindValue::Int(v) => q.bind(*v),
+            crate::dyn_where::BindValue::Big(v) => q.bind(*v),
+        };
+    }
+    let rows = q.bind(count).bind(offset).fetch_all(pool).await?;
+
+    let count_sql = w.sql(COUNT_BASE);
+    let mut cq = sqlx::query_scalar::<_, i64>(&count_sql);
+    for b in &w.binds {
+        cq = match b {
+            crate::dyn_where::BindValue::Text(v) => cq.bind(v.as_str()),
+            crate::dyn_where::BindValue::Int(v) => cq.bind(*v),
+            crate::dyn_where::BindValue::Big(v) => cq.bind(*v),
+        };
+    }
+    let total = cq.fetch_one(pool).await?;
+    Ok((rows, total))
+}
+
 /// 统计云端录像数量
 pub async fn count_all(
     pool: &Pool,

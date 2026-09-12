@@ -232,9 +232,34 @@ pub struct Mp4RecordFile {
     pub duration: Option<f64>,
 }
 
+/// 从 `2026-09-12-22-09-45-0.mp4` 反推录制起始时间（本地时间字符串）。
+pub fn parse_mp4_file_name_time(name: &str) -> Option<String> {
+    let stem = name.trim_end_matches(".mp4");
+    let parts: Vec<&str> = stem.split('-').collect();
+    if parts.len() < 6 {
+        return None;
+    }
+    Some(format!(
+        "{}-{}-{} {}:{}:{}",
+        parts[0], parts[1], parts[2], parts[3], parts[4], parts[5]
+    ))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Mp4RecordResponse {
     pub list: Vec<Mp4RecordFile>,
+}
+
+/// `getMP4RecordFile` 的**真实**响应结构。
+///
+/// 不传 `period` 时 `paths` 是日期目录（`2026-09-12`），
+/// 传了 `period` 时 `paths` 是文件名（`2026-09-12-22-09-45-0.mp4`）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Mp4RecordPaths {
+    #[serde(rename = "rootPath", default)]
+    pub root_path: String,
+    #[serde(default)]
+    pub paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -382,5 +407,19 @@ impl Default for DownloadRequest {
             file_name: String::new(),
             save_path: Some("./".to_string()),
         }
+    }
+}
+
+#[cfg(test)]
+mod mp4_name_tests {
+    use super::parse_mp4_file_name_time;
+
+    #[test]
+    fn test_parse_mp4_file_name_time() {
+        assert_eq!(
+            parse_mp4_file_name_time("2026-09-12-22-09-45-0.mp4").as_deref(),
+            Some("2026-09-12 22:09:45")
+        );
+        assert_eq!(parse_mp4_file_name_time("bad.mp4"), None);
     }
 }

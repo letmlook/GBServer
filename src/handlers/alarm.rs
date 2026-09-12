@@ -5,7 +5,7 @@ use axum::{
 use serde::Deserialize;
 
 use crate::error::{AppError, ErrorCode};
-use crate::handlers::dyn_where::{BindValue, DynWhere};
+use crate::dyn_where::{BindValue, DynWhere};
 use crate::response::WVPResult;
 use crate::AppState;
 
@@ -109,6 +109,7 @@ pub async fn alarm_list(
         query = match b {
             BindValue::Text(v) => query.bind(v.as_str()),
             BindValue::Int(v) => query.bind(*v),
+            BindValue::Big(v) => query.bind(*v),
         };
     }
     let rows: Vec<AlarmRow> = query
@@ -124,6 +125,7 @@ pub async fn alarm_list(
         query = match b {
             BindValue::Text(v) => query.bind(v.as_str()),
             BindValue::Int(v) => query.bind(*v),
+            BindValue::Big(v) => query.bind(*v),
         };
     }
     let total: i64 = query
@@ -383,6 +385,7 @@ pub async fn alarm_clear(
         .map(|b| match b {
             BindValue::Text(v) => v.clone(),
             BindValue::Int(v) => v.to_string(),
+            BindValue::Big(v) => v.to_string(),
         })
         .collect();
     let where_sql = if w.conds.is_empty() {

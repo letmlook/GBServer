@@ -16,7 +16,7 @@ use axum::{
 use chrono::Datelike;
 use serde::Deserialize;
 
-use crate::handlers::dyn_where::{BindValue, DynWhere};
+use crate::dyn_where::{BindValue, DynWhere};
 use crate::db::{
     count_common_channels, list_common_channels_paged, group, record_plan, region, role,
     user_api_key, DeviceChannel, Group, Region, Role,
@@ -28,20 +28,72 @@ use crate::AppState;
 use std::collections::HashSet;
 use sqlx::Row;
 
+/// 把各种时间写法归一成毫秒时间戳。
+///
+/// 支持的输入（前端 `el-date-picker` 默认给的是 `Date`，`toISOString()` 出来
+/// 是 `2024-05-01T03:00:00.000Z`；WVP 文档要求 `yyyy-MM-dd HH:mm:ss`）：
+///
+/// * 纯数字：秒 / 毫秒
+/// * `%Y-%m-%d %H:%M:%S`（本地时间）
+/// * `%Y-%m-%d %H:%M`、`%Y-%m-%d`（本地）
+/// * RFC3339 / ISO8601，含小数秒与 `Z`（UTC）
+///
+/// **此前只认前两种、且失败时返回 0** —— 带毫秒和 Z 的 ISO 串全部变成 0，
+/// 于是"选了结束时间就把所有录像过滤光"（用户看到列表整页空白），
+/// 而且完全没有提示。现在解析失败会记 warn 并返回 `None`（调用方不做过滤），
+/// 宁可不过滤也不要静默清空结果。
 fn normalize_record_time_ms(value: &str) -> i64 {
-    if let Ok(ts) = value.parse::<i64>() {
-        if ts > 1_000_000_000_000 {
-            return ts;
-        }
-        if ts > 1_000_000_000 {
-            return ts * 1000;
+    match parse_record_time_ms(value) {
+        Some(ms) => ms,
+        None => {
+            tracing::warn!("无法解析时间参数 {value:?}，该条件将被忽略（此前会被当成 0）");
+            0
         }
     }
+}
 
-    chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S")
-        .or_else(|_| chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S"))
-        .map(|dt| dt.and_utc().timestamp_millis())
-        .unwrap_or_default()
+/// `normalize_record_time_ms` 的可测内核：解析失败返回 `None`。
+fn parse_record_time_ms(value: &str) -> Option<i64> {
+    let v = value.trim();
+    if v.is_empty() {
+        return None;
+    }
+    if let Ok(ts) = v.parse::<i64>() {
+        if ts > 1_000_000_000_000 {
+            return Some(ts);
+        }
+        if ts > 1_000_000_000 {
+            return Some(ts * 1000);
+        }
+        return None;
+    }
+
+    // RFC3339 / ISO8601：2024-05-01T03:00:00Z、2024-05-01T03:00:00.000Z、
+    // 2024-05-01T11:00:00+08:00
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(v) {
+        return Some(dt.timestamp_millis());
+    }
+    for fmt in [
+        "%Y-%m-%d %H:%M:%S%.f",
+        "%Y-%m-%dT%H:%M:%S%.f",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%Y-%m-%dT%H:%M",
+        "%Y-%m-%d",
+    ] {
+        if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(v, fmt) {
+            // 无时区信息 ⇒ 按**本地时间**解释（页面上选的就是本地时间）
+            return dt.and_local_timezone(chrono::Local).single().map(|d| d.timestamp_millis());
+        }
+        if let Ok(d) = chrono::NaiveDate::parse_from_str(v, fmt) {
+            return d
+                .and_hms_opt(0, 0, 0)
+                .and_then(|dt| dt.and_local_timezone(chrono::Local).single())
+                .map(|d| d.timestamp_millis());
+        }
+    }
+    None
 }
 
 fn record_duration_ms(duration: Option<f64>) -> i64 {
@@ -63,12 +115,23 @@ fn parse_cloud_record_id(record_id: &str) -> Option<(String, String, String, Str
     Some((media_server_id, app, stream, file_name))
 }
 
-fn build_cloud_record_urls(
+/// 云端录像（已落盘的 MP4）的可访问地址。
+///
+/// 关键点：`fallback_path` 是**文件系统路径**（`/opt/media/bin/www/record/...`），
+/// 直接当 URL 返回是打不开的 —— 早期就是这么返回的（`httpPath` = 绝对路径），
+/// 前端"点播放"只会打开一个不存在的地址。
+///
+/// 正确做法：ZLM 的 HTTP 服务把 `<www>` 暴露在根路径上，所以磁盘上的
+/// `<www>/record/{app}/{stream}/{date}/{file}` 对应
+/// `http://{ip}:{port}/record/{app}/{stream}/{date}/{file}`。
+/// 另外给出 ZLM 的下载 API（`/index/api/downloadFile`），用于打包/强制下载。
+fn build_cloud_record_file_urls(
     state: &AppState,
     media_server_id: &str,
     app: &str,
     stream: &str,
-    fallback_path: Option<&str>,
+    abs_path: Option<&str>,
+    file_name: &str,
 ) -> serde_json::Value {
     let config_server = state
         .config
@@ -82,25 +145,77 @@ fn build_cloud_record_urls(
     let https_port = config_server
         .and_then(|sv| sv.https_port.map(|port| port as i32))
         .unwrap_or(443);
-    let ws_port = http_port;
-    let wss_port = https_port;
-    let rtsp_port = 554;
+    let secret = config_server.map(|sv| sv.secret.clone()).unwrap_or_default();
 
-    let http_flv = format!("http://{}:{}/{}/{}.live.flv", server_ip, http_port, app, stream);
-    let https_flv = format!("https://{}:{}/{}/{}.live.flv", server_ip, https_port, app, stream);
-    let ws_flv = format!("ws://{}:{}/{}/{}.live.flv", server_ip, ws_port, app, stream);
-    let wss_flv = format!("wss://{}:{}/{}/{}.live.flv", server_ip, wss_port, app, stream);
-    let rtsp = format!("rtsp://{}:{}/{}/{}", server_ip, rtsp_port, app, stream);
+    let rel = record_rel_path(abs_path, app, stream, file_name);
+
+    let http_path = if rel.is_empty() {
+        String::new()
+    } else {
+        format!("http://{server_ip}:{http_port}/{rel}")
+    };
+    let https_path = if rel.is_empty() {
+        String::new()
+    } else {
+        format!("https://{server_ip}:{https_port}/{rel}")
+    };
+    // 下载地址就是同一个静态 URL：ZLM 的 `/record/...` 是可直接 GET 的
+    // （实测 200/344108 字节）。它的 `downloadFile` API 反而要求 file_path 相对
+    // `api.downloadRoot` 且会回 401，不如静态地址可靠。
+    let _ = &secret;
+    let download_path = http_path.clone();
 
     serde_json::json!({
-        "httpPath": fallback_path.unwrap_or(&http_flv),
-        "httpsPath": fallback_path.unwrap_or(&https_flv),
-        "http_flv": http_flv,
-        "https_flv": https_flv,
-        "ws_flv": ws_flv,
-        "wss_flv": wss_flv,
-        "rtsp": rtsp
+        "playPath": http_path,
+        "httpPath": http_path,
+        "httpsPath": https_path,
+        "downloadPath": download_path,
     })
+}
+
+/// 磁盘路径 → ZLM HTTP 根下的相对路径。
+///
+/// `www/record/{app}/{stream}/{date}/{file}` ⇒ `record/{app}/{stream}/{date}/{file}`；
+/// 路径里没有 `/record/` 时按 `record/{app}/{stream}/{file}` 兜底。
+pub(crate) fn cloud_record_rel_path_for(
+    abs_path: Option<&str>,
+    app: &str,
+    stream: &str,
+    file_name: &str,
+) -> String {
+    record_rel_path(abs_path, app, stream, file_name)
+}
+
+fn record_rel_path(
+    abs_path: Option<&str>,
+    app: &str,
+    stream: &str,
+    file_name: &str,
+) -> String {
+    if let Some(p) = abs_path {
+        if let Some(i) = p.find("/record/") {
+            return p[i + 1..].to_string();
+        }
+    }
+    if app.is_empty() || stream.is_empty() || file_name.is_empty() {
+        String::new()
+    } else {
+        format!("record/{app}/{stream}/{file_name}")
+    }
+}
+
+/// 极简 percent-encoding（用于把绝对路径放进查询串）。
+fn url_encode_component(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
 }
 
 // ========== common channel ==========
@@ -1013,7 +1128,15 @@ pub async fn user_api_key_add(
 #[derive(Debug, Deserialize)]
 pub struct CloudRecordQuery {
     pub app: Option<String>,
+    /// WVP 的参数名是 stream；前端部分接口发的是 streamId，两种都收
+    #[serde(alias = "streamId")]
     pub stream: Option<String>,
+    /// 单条录像：既接受数字主键 `id`，也接受组合串 `recordId`
+    pub id: Option<String>,
+    #[serde(alias = "deviceId")]
+    pub device_id: Option<String>,
+    #[serde(alias = "channelId")]
+    pub channel_id: Option<String>,
     #[serde(alias = "recordId")]
     pub record_id: Option<String>,
     #[serde(alias = "cloudRecordId")]
@@ -1037,6 +1160,8 @@ pub struct CloudRecordQuery {
     pub is_end: Option<bool>,
     pub schema: Option<String>,
     pub seek: Option<i64>,
+    #[serde(alias = "seekTime")]
+    pub seek_time: Option<i64>,
     pub speed: Option<f64>,
 }
 
@@ -1047,6 +1172,8 @@ pub struct CloudRecordDeleteBody {
 
 #[derive(Debug, Deserialize)]
 pub struct CloudRecordCollectQuery {
+    /// 数字主键（列表返回的 id）与组合串 recordId 都接受
+    pub id: Option<String>,
     #[serde(alias = "recordId")]
     pub record_id: Option<String>,
     #[serde(alias = "cloudRecordId")]
@@ -1107,32 +1234,102 @@ async fn ensure_cloud_record_task_table(pool: &crate::db::Pool) {
     let _ = sqlx::query(query).execute(pool).await;
 }
 
+/// 把查询参数里的录像标识统一成**组合串**（seek/speed/collect 需要它做会话 key）。
+async fn resolve_cloud_record_id_string(
+    state: &AppState,
+    q: &CloudRecordQuery,
+) -> String {
+    let raw = q
+        .record_id
+        .clone()
+        .or(q.cloud_record_id.clone())
+        .or(q.id.clone())
+        .unwrap_or_default();
+    if raw.is_empty() {
+        return raw;
+    }
+    if raw.parse::<i64>().is_ok() {
+        if let Some((m, a, s, f, _)) = resolve_cloud_record(state, &raw).await {
+            return build_cloud_record_id(&m, &a, &s, &f);
+        }
+        return String::new();
+    }
+    raw
+}
+
+/// 把调用方给的"单条录像标识"解析成 `(media_server_id, app, stream, file_name, 数字主键)`。
+///
+/// 两种形态都支持：
+/// * **数字主键** `id`（`/cloud/record/list` 现在返回的就是它，也是删除/打包用的口径）
+/// * **组合串** `媒体节点::app::stream::文件名`（历史格式，外部脚本可能还在用）
+///
+/// 此前 play/path 只认 `recordId`/`cloudRecordId`（前端发的是 `id`）→ 参数绑不上
+/// → 直接返回三个空字符串，用户点「播放」永远只看到"无可播放路径"。
+async fn resolve_cloud_record(
+    state: &AppState,
+    id_raw: &str,
+) -> Option<(String, String, String, String, Option<i64>)> {
+    let id_raw = id_raw.trim();
+    if id_raw.is_empty() {
+        return None;
+    }
+    if let Ok(id) = id_raw.parse::<i64>() {
+        if let Ok(Some(row)) = crate::db::cloud_record::get_by_id(&state.pool, id).await {
+            return Some((
+                row.media_server_id.unwrap_or_else(|| "default".to_string()),
+                row.app,
+                row.stream,
+                row.file_name.unwrap_or_default(),
+                Some(id),
+            ));
+        }
+        return None;
+    }
+    parse_cloud_record_id(id_raw).map(|(m, a, s, f)| (m, a, s, f, None))
+}
+
 pub async fn cloud_record_play_path(
     State(state): State<AppState>,
     Query(q): Query<CloudRecordQuery>,
 ) -> Json<WVPResult<serde_json::Value>> {
-    let record_id = q.record_id.or(q.cloud_record_id).unwrap_or_default();
-    let Some((media_server_id, app, stream, file_name)) = parse_cloud_record_id(&record_id) else {
+    let raw_id = q
+        .record_id
+        .clone()
+        .or(q.cloud_record_id.clone())
+        .or(q.id.clone())
+        .unwrap_or_default();
+    let Some((media_server_id, app, stream, file_name, _db_id)) =
+        resolve_cloud_record(&state, &raw_id).await
+    else {
         return Json(WVPResult::success(serde_json::json!({
             "playPath": "",
             "httpPath": "",
             "httpsPath": ""
         })));
     };
+    let record_id = build_cloud_record_id(&media_server_id, &app, &stream, &file_name);
 
-    let mut payload = build_cloud_record_urls(&state, &media_server_id, &app, &stream, None);
+    let mut payload = build_cloud_record_file_urls(
+        &state,
+        &media_server_id,
+        &app,
+        &stream,
+        None,
+        &file_name,
+    );
     if let Some(zlm) = state.get_zlm_client(Some(&media_server_id)) {
         if let Ok(records) = zlm.get_mp4_record_file(&app, &stream, None, None, None).await {
             if let Some(record) = records.into_iter().find(|item| item.name == file_name) {
-                payload = build_cloud_record_urls(
+                payload = build_cloud_record_file_urls(
                     &state,
                     &media_server_id,
                     &app,
                     &stream,
                     Some(record.path.as_str()),
+                    &file_name,
                 );
                 if let Some(obj) = payload.as_object_mut() {
-                    obj.insert("playPath".to_string(), serde_json::json!(record.path));
+                    // filePath 是**磁盘路径**（供排查/下载 API 用），不要当播放地址
                     obj.insert("filePath".to_string(), serde_json::json!(record.file_path));
                     obj.insert("fileName".to_string(), serde_json::json!(record.name));
                     obj.insert("stream".to_string(), serde_json::json!(stream));
@@ -1208,7 +1405,13 @@ pub async fn cloud_record_load(
     State(state): State<AppState>,
     Query(q): Query<CloudRecordQuery>,
 ) -> Json<WVPResult<serde_json::Value>> {
-    let record_id = q.cloud_record_id.unwrap_or_default();
+    // 接受 `id`（列表给的是数字主键）、`recordId`/`cloudRecordId`
+    let record_id = q
+        .cloud_record_id
+        .clone()
+        .or(q.record_id.clone())
+        .or(q.id.clone())
+        .unwrap_or_default();
     let Some((media_server_id, app, stream, file_name)) = parse_cloud_record_id(&record_id) else {
         return Json(WVPResult::success(serde_json::json!({})));
     };
@@ -1219,8 +1422,14 @@ pub async fn cloud_record_load(
                 let start_time = normalize_record_time_ms(&record.create_time);
                 let duration = record_duration_ms(record.duration);
                 let end_time = start_time + duration;
-                let mut payload =
-                    build_cloud_record_urls(&state, &media_server_id, &app, &stream, Some(record.path.as_str()));
+                let mut payload = build_cloud_record_file_urls(
+                    &state,
+                    &media_server_id,
+                    &app,
+                    &stream,
+                    Some(record.path.as_str()),
+                    &file_name,
+                );
                 if let Some(obj) = payload.as_object_mut() {
                     obj.insert("id".to_string(), serde_json::json!(record_id));
                     obj.insert("key".to_string(), serde_json::json!(file_name));
@@ -1261,11 +1470,12 @@ pub async fn cloud_record_seek(
     State(state): State<AppState>,
     Query(q): Query<CloudRecordQuery>,
 ) -> Json<WVPResult<serde_json::Value>> {
-    let record_id = q.record_id.clone().or(q.cloud_record_id.clone()).unwrap_or_default();
+    let record_id = resolve_cloud_record_id_string(&state, &q).await;
+    let seek = q.seek.or(q.seek_time).unwrap_or_default();
     if let Some(ref playback_manager) = state.playback_manager {
         if !record_id.is_empty() {
             playback_manager
-                .update_current_time(&record_id, q.seek.unwrap_or_default().to_string())
+                .update_current_time(&record_id, seek.to_string())
                 .await;
         }
     }
@@ -1275,7 +1485,7 @@ pub async fn cloud_record_seek(
         "app": q.app,
         "stream": q.stream,
         "schema": q.schema.unwrap_or_else(|| "fmp4".to_string()),
-        "seek": q.seek.unwrap_or_default()
+        "seek": seek
     })))
 }
 
@@ -1283,7 +1493,7 @@ pub async fn cloud_record_speed(
     State(state): State<AppState>,
     Query(q): Query<CloudRecordQuery>,
 ) -> Json<WVPResult<serde_json::Value>> {
-    let record_id = q.record_id.clone().or(q.cloud_record_id.clone()).unwrap_or_default();
+    let record_id = resolve_cloud_record_id_string(&state, &q).await;
     let speed = q.speed.unwrap_or(1.0);
     if let Some(ref playback_manager) = state.playback_manager {
         if !record_id.is_empty() {
@@ -1422,45 +1632,221 @@ pub async fn cloud_record_delete(
     let mut deleted = Vec::new();
     let mut failed = Vec::new();
 
+    // 先删媒体文件、成功后再删库记录。
+    // 反过来的话，一旦 ZLM 拒绝删除，库里已经没有这行了 —— 文件变成谁也删不掉的
+    // 孤儿（列表里看不到、磁盘上还在），这正是第一版的错误顺序。
+    let mut file_failures: Vec<String> = Vec::new();
     for record_id in ids {
-        let Some((media_server_id, app, stream, file_name)) = parse_cloud_record_id(&record_id) else {
+        // 数字主键（/cloud/record/list 的 id）与组合串都接受
+        let resolved = resolve_cloud_record(&state, &record_id).await;
+        let Some((media_server_id, app, stream, file_name, db_id)) = resolved else {
             failed.push(record_id);
             continue;
         };
-        let Some(zlm) = state.get_zlm_client(Some(&media_server_id)) else {
-            failed.push(record_id);
-            continue;
-        };
-        match zlm.get_mp4_record_file(&app, &stream, None, None, None).await {
-            Ok(records) => {
-                if let Some(record) = records.into_iter().find(|item| item.name == file_name) {
-                    let target = record.file_path.unwrap_or(record.path);
-                    if zlm.delete_mp4_file(&target).await.is_ok() {
-                        deleted.push(record_id);
-                    } else {
-                        failed.push(record_id);
-                    }
+        let period = file_name
+            .strip_suffix(".mp4")
+            .and_then(|stem| {
+                let parts: Vec<&str> = stem.split('-').collect();
+                if parts.len() >= 3 {
+                    Some(format!("{}-{}-{}", parts[0], parts[1], parts[2]))
                 } else {
-                    failed.push(record_id);
+                    None
                 }
+            })
+            .unwrap_or_default();
+        let file_ok = match state.get_zlm_client(Some(&media_server_id)) {
+            Some(zlm) if !period.is_empty() => zlm
+                .delete_record_file(&app, &stream, &period, &file_name)
+                .await
+                .map_err(|e| {
+                    tracing::warn!("删除录像文件 {app}/{stream}/{file_name} 失败: {e}");
+                    file_failures.push(format!("{file_name}: {e}"));
+                })
+                .is_ok(),
+            _ => false,
+        };
+        if file_ok {
+            if let Some(id) = db_id {
+                let _ = crate::db::cloud_record::delete(&state.pool, id).await;
             }
-            Err(_) => failed.push(record_id),
+            deleted.push(record_id);
+        } else {
+            // 文件没删掉 → 库记录**保留**，并在 message 里说明原因，
+            // 让用户知道去媒体服务器上人工清理，而不是以为已经删干净了
+            failed.push(record_id);
         }
     }
 
     Json(WVPResult::success(serde_json::json!({
         "deleted": deleted,
-        "failed": failed
+        "failed": failed,
+        "message": if file_failures.is_empty() {
+            String::new()
+        } else {
+            format!("部分录像文件删除失败（记录已保留，需在媒体服务器侧清理）：{}", file_failures.join("; "))
+        }
     })))
 }
 
+/// GET /api/cloud/record/list — 云端录像检索
+///
+/// **以数据库 `gb_cloud_record` 为准**（WVP 的 CloudRecordController./list 也是读
+/// 自己的表）：录像由 `on_record_mp4` 钩子落库，所以 GB28181 录像（app=rtp、
+/// stream=`设备_通道`）才查得到。
+///
+/// 此前这里只按 `app=record&stream=record` 去问 ZLM 的文件列表 —— 那是"云端
+/// 录像任务"的固定 app/stream，**设备录像一条都查不到**；同时 `deviceId`/
+/// `channelId` 两个筛选参数在 DTO 里根本不存在（被 serde 静默丢弃），
+/// ISO 格式的 `startTime/endTime`（带毫秒和 Z）解析成 0 会把结果全部过滤掉。
+///
+/// 现在：
+/// * `id` = 数据库主键（数字），删除/播放/打包下载都用它；
+///   另给一个 `recordId`（组合串 `媒体节点::app::stream::文件名`）保持兼容；
+/// * `deviceId`/`channelId` 从流名 `{设备}_{通道}` 精确匹配；
+/// * 时间参数支持 `yyyy-MM-dd HH:mm:ss`、`yyyy-MM-ddTHH:mm:ss(.SSS)(Z)` 与毫秒数；
+/// * 数据库没有命中且显式指定了 app+stream 时，退回原来的 ZLM 文件列表扫描
+///   （兼容"平台之外录的、还没落库"的文件）。
 pub async fn cloud_record_list(
     State(state): State<AppState>,
     Query(q): Query<CloudRecordQuery>,
 ) -> Json<WVPResult<serde_json::Value>> {
-    let app = q.app.clone().unwrap_or_else(|| "record".to_string());
-    let stream = q.stream.clone().unwrap_or_else(|| "record".to_string());
-    let media_server_ids = if let Some(id) = q.media_server_id.clone() {
+    let page = q.page.unwrap_or(1).max(1);
+    let count = q.count.unwrap_or(15).clamp(1, 1000);
+
+    let app = q.app.clone().filter(|s| !s.is_empty());
+    let stream = q.stream.clone().filter(|s| !s.is_empty());
+    let start_filter = q.start_time.as_deref().map(normalize_record_time_ms);
+    let end_filter = q.end_time.as_deref().map(normalize_record_time_ms);
+
+    let filter = crate::db::cloud_record::CloudRecordFilter {
+        app: app.as_deref(),
+        stream: stream.as_deref(),
+        media_server_id: q.media_server_id.as_deref().filter(|s| !s.is_empty()),
+        call_id: q.call_id.as_deref().filter(|s| !s.is_empty()),
+        query: q.query.as_deref().filter(|s| !s.is_empty()),
+        device_id: q.device_id.as_deref().filter(|s| !s.is_empty()),
+        channel_id: q.channel_id.as_deref().filter(|s| !s.is_empty()),
+        start_time: start_filter,
+        end_time: end_filter,
+    };
+
+    let (rows, total) = match crate::db::cloud_record::list_filtered(
+        &state.pool,
+        &filter,
+        page as i64,
+        count as i64,
+    )
+    .await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!("查询云端录像失败: {e}");
+            (Vec::new(), 0)
+        }
+    };
+
+    if !rows.is_empty() {
+        let list: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|r| cloud_record_row_json(&state, r))
+            .collect();
+        return Json(WVPResult::success(serde_json::json!({
+            "total": total,
+            "list": list
+        })));
+    }
+
+    // 回退：库里没有，且调用方明确给了 app+stream → 直接问 ZLM 的文件列表
+    // （例如 ZLM 侧手工配置的录像任务，钩子没跑到本平台）。
+    if app.is_some() || stream.is_some() {
+        let legacy = cloud_record_scan_zlm(
+            &state,
+            app.as_deref().unwrap_or("record"),
+            stream.as_deref().unwrap_or("record"),
+            &q,
+            start_filter,
+            end_filter,
+            page,
+            count,
+        )
+        .await;
+        if let Some(v) = legacy {
+            return Json(WVPResult::success(v));
+        }
+    }
+
+    Json(WVPResult::success(serde_json::json!({
+        "total": total,
+        "list": Vec::<serde_json::Value>::new()
+    })))
+}
+
+/// 数据库行 → 前端 JSON：把路径/URL/国标编号都补齐。
+fn cloud_record_row_json(
+    state: &AppState,
+    r: &crate::db::cloud_record::CloudRecord,
+) -> serde_json::Value {
+    let media_server_id = r.media_server_id.clone().unwrap_or_else(|| "default".to_string());
+    let file_name = r.file_name.clone().unwrap_or_default();
+    let (device_id, channel_id) = parse_stream_device_channel(&r.stream);
+    let mut payload = build_cloud_record_file_urls(
+        state,
+        &media_server_id,
+        &r.app,
+        &r.stream,
+        r.file_path.as_deref(),
+        &file_name,
+    );
+    let record_id = build_cloud_record_id(&media_server_id, &r.app, &r.stream, &file_name);
+    if let Some(obj) = payload.as_object_mut() {
+        obj.insert("id".to_string(), serde_json::json!(r.id));
+        // 兼容旧的组合串 id（外部脚本可能还在用）
+        obj.insert("recordId".to_string(), serde_json::json!(record_id));
+        obj.insert("app".to_string(), serde_json::json!(r.app));
+        obj.insert("stream".to_string(), serde_json::json!(r.stream));
+        obj.insert("deviceId".to_string(), serde_json::json!(device_id));
+        obj.insert("channelId".to_string(), serde_json::json!(channel_id));
+        obj.insert("callId".to_string(), serde_json::json!(r.call_id));
+        obj.insert("startTime".to_string(), serde_json::json!(r.start_time));
+        obj.insert("endTime".to_string(), serde_json::json!(r.end_time));
+        obj.insert(
+            "timeLen".to_string(),
+            serde_json::json!(record_duration_ms(r.time_len)),
+        );
+        obj.insert("fileName".to_string(), serde_json::json!(file_name));
+        obj.insert("folder".to_string(), serde_json::json!(r.folder));
+        obj.insert("filePath".to_string(), serde_json::json!(r.file_path));
+        obj.insert("size".to_string(), serde_json::json!(r.file_size));
+        obj.insert("collect".to_string(), serde_json::json!(r.collect.unwrap_or(false)));
+        obj.insert(
+            "mediaServerId".to_string(),
+            serde_json::json!(r.media_server_id),
+        );
+    }
+    payload
+}
+
+/// 流名 `{设备}_{通道}` → `(设备, 通道)`；解析不出时都返回空串。
+fn parse_stream_device_channel(stream: &str) -> (String, String) {
+    match crate::sip::gb28181::stream_reconnect::StreamReconnectManager::parse_stream_id(stream) {
+        Some((d, c)) => (d, c),
+        None => (String::new(), String::new()),
+    }
+}
+
+/// 旧行为：直接问 ZLM 的 MP4 文件列表（DB 里查不到时的兜底）。
+#[allow(clippy::too_many_arguments)]
+async fn cloud_record_scan_zlm(
+    state: &AppState,
+    app: &str,
+    stream: &str,
+    q: &CloudRecordQuery,
+    start_filter: Option<i64>,
+    end_filter: Option<i64>,
+    page: u32,
+    count: u32,
+) -> Option<serde_json::Value> {
+    let media_server_ids = if let Some(id) = q.media_server_id.clone().filter(|s| !s.is_empty()) {
         vec![id]
     } else {
         let ids = state.list_zlm_servers();
@@ -1472,24 +1858,27 @@ pub async fn cloud_record_list(
     };
     let search = q.query.clone().unwrap_or_default().to_lowercase();
     let call_id = q.call_id.clone().unwrap_or_default().to_lowercase();
-    let start_filter = q.start_time.as_deref().map(normalize_record_time_ms);
-    let end_filter = q.end_time.as_deref().map(normalize_record_time_ms);
     let mut list = Vec::new();
+    let mut any_ok = false;
 
     for media_server_id in media_server_ids {
-        if let Some(zlm) = state.get_zlm_client(Some(&media_server_id)) {
-            if let Ok(records) = zlm.get_mp4_record_file(&app, &stream, None, None, None).await {
+        let Some(zlm) = state.get_zlm_client(Some(&media_server_id)) else {
+            continue;
+        };
+        match zlm.get_mp4_record_file(app, stream, None, None, None).await {
+            Ok(records) => {
+                any_ok = true;
                 for record in records {
                     let start_time = normalize_record_time_ms(&record.create_time);
                     let time_len = record_duration_ms(record.duration);
                     let end_time = start_time + time_len;
-                    if let Some(filter_start) = start_filter {
-                        if end_time < filter_start {
+                    if let Some(fs) = start_filter {
+                        if end_time < fs {
                             continue;
                         }
                     }
-                    if let Some(filter_end) = end_filter {
-                        if start_time > filter_end {
+                    if let Some(fe) = end_filter {
+                        if start_time > fe {
                             continue;
                         }
                     }
@@ -1501,16 +1890,17 @@ pub async fn cloud_record_list(
                     if !call_id.is_empty() && !file_name_lc.contains(&call_id) {
                         continue;
                     }
-                    let record_id = build_cloud_record_id(&media_server_id, &app, &stream, &file_name);
-                    let mut payload = build_cloud_record_urls(
-                        &state,
+                    let record_id = build_cloud_record_id(&media_server_id, app, stream, &file_name);
+                    let mut payload = build_cloud_record_file_urls(
+                        state,
                         &media_server_id,
-                        &app,
-                        &stream,
-                        Some(record.path.as_str()),
+                        app,
+                        stream,
+                        Some(&record.path),
+                        &file_name,
                     );
                     if let Some(obj) = payload.as_object_mut() {
-                        obj.insert("id".to_string(), serde_json::json!(record_id));
+                        obj.insert("recordId".to_string(), serde_json::json!(record_id));
                         obj.insert("app".to_string(), serde_json::json!(app));
                         obj.insert("stream".to_string(), serde_json::json!(stream));
                         obj.insert("callId".to_string(), serde_json::json!(file_name));
@@ -1520,13 +1910,20 @@ pub async fn cloud_record_list(
                         obj.insert("fileName".to_string(), serde_json::json!(file_name));
                         obj.insert("createTime".to_string(), serde_json::json!(record.create_time));
                         obj.insert("size".to_string(), serde_json::json!(record.size));
-                        obj.insert("mediaServerId".to_string(), serde_json::json!(media_server_id));
+                        obj.insert(
+                            "mediaServerId".to_string(),
+                            serde_json::json!(media_server_id),
+                        );
                         obj.insert("filePath".to_string(), serde_json::json!(record.file_path));
                     }
                     list.push(payload);
                 }
             }
+            Err(e) => tracing::warn!("查询 ZLM {media_server_id} 的录像文件失败: {e}"),
         }
+    }
+    if !any_ok {
+        return None;
     }
 
     list.sort_by(|a, b| {
@@ -1537,22 +1934,11 @@ pub async fn cloud_record_list(
     if q.asc_order != Some(true) {
         list.reverse();
     }
-
     let total = list.len();
-    let page = q.page.unwrap_or(1);
-    let count = q.count.unwrap_or(15).min(1000);
-    let start = (page.saturating_sub(1) * count) as usize;
+    let start = ((page.max(1) - 1) * count) as usize;
     let end = (start + count as usize).min(total);
-    let paged = if start >= total {
-        Vec::new()
-    } else {
-        list[start..end].to_vec()
-    };
-
-    Json(WVPResult::success(serde_json::json!({
-        "total": total,
-        "list": paged
-    })))
+    let paged = if start >= total { Vec::new() } else { list[start..end].to_vec() };
+    Some(serde_json::json!({ "total": total, "list": paged }))
 }
 
 /// ============================================================================
@@ -1581,7 +1967,17 @@ pub async fn cloud_record_collect_add(
 ) -> Json<WVPResult<serde_json::Value>> {
     ensure_record_collect_table(&state.pool).await;
     
-    let record_id = q.record_id.clone().or(q.cloud_record_id).unwrap_or_default();
+    // collect 的 DTO 是独立的（多了 name/deviceId/channelId），单独解析
+    let raw_id = q
+        .id
+        .clone()
+        .or(q.record_id.clone())
+        .or(q.cloud_record_id.clone())
+        .unwrap_or_default();
+    let record_id = match resolve_cloud_record(&state, &raw_id).await {
+        Some((m, a, st, f, _)) => build_cloud_record_id(&m, &a, &st, &f),
+        None => raw_id,
+    };
     if record_id.is_empty() {
         return Json(WVPResult::error("record_id is required"));
     }
@@ -1963,6 +2359,7 @@ pub async fn record_plan_channel_list(
         q_rows = match b {
             BindValue::Text(v) => q_rows.bind(v.as_str()),
             BindValue::Int(v) => q_rows.bind(v),
+            BindValue::Big(v) => q_rows.bind(*v),
         };
     }
     let rows: Vec<RecordPlanChannelRow> = q_rows.bind(count as i64).bind(offset).fetch_all(&state.pool).await?;
@@ -1973,6 +2370,7 @@ pub async fn record_plan_channel_list(
         q_count = match b {
             BindValue::Text(v) => q_count.bind(v.as_str()),
             BindValue::Int(v) => q_count.bind(v),
+            BindValue::Big(v) => q_count.bind(*v),
         };
     }
     let total: i64 = q_count.fetch_one(&state.pool).await?;
@@ -2736,5 +3134,83 @@ mod record_plan_handler_tests {
         .unwrap();
         assert_eq!(resp.0.data.as_ref().unwrap()["total"], 1);
         assert_eq!(resp.0.data.as_ref().unwrap()["list"][0]["name"], "大厅夜间");
+    }
+}
+
+#[cfg(test)]
+mod record_time_tests {
+    use super::parse_record_time_ms;
+
+    /// 前端 `el-date-picker` 的 `Date.toISOString()` 形态：带毫秒和 Z。
+    /// 此前这种输入会被解析成 0，导致"填了结束时间后列表整页空白"。
+    #[test]
+    fn test_parse_iso_with_millis_and_z() {
+        assert_eq!(
+            parse_record_time_ms("2024-05-01T03:00:00.000Z"),
+            Some(1714532400000)
+        );
+        assert_eq!(parse_record_time_ms("2024-05-01T03:00:00Z"), Some(1714532400000));
+    }
+
+    /// 带时区偏移的 RFC3339。
+    #[test]
+    fn test_parse_rfc3339_with_offset() {
+        assert_eq!(
+            parse_record_time_ms("2024-05-01T11:00:00+08:00"),
+            Some(1714532400000)
+        );
+    }
+
+    /// WVP 文档要求的本地时间格式，以及秒/毫秒时间戳。
+    #[test]
+    fn test_parse_local_formats_and_epoch() {
+        let naive = parse_record_time_ms("2024-05-01 03:00:00").expect("本地时间应可解析");
+        assert_eq!(naive, parse_record_time_ms("2024-05-01T03:00:00").unwrap());
+        assert_eq!(parse_record_time_ms("1714532400000"), Some(1714532400000));
+        assert_eq!(parse_record_time_ms("1714532400"), Some(1714532400000));
+        assert!(parse_record_time_ms("2024-05-01").is_some(), "只有日期也要能解析");
+    }
+
+    /// 解析不了时返回 None（调用方会忽略该条件），而不是静默当成 0。
+    #[test]
+    fn test_unparseable_returns_none() {
+        assert_eq!(parse_record_time_ms(""), None);
+        assert_eq!(parse_record_time_ms("not-a-time"), None);
+        assert_eq!(parse_record_time_ms("2024-13-45 99:99:99"), None);
+    }
+}
+
+#[cfg(test)]
+mod cloud_record_url_tests {
+    use super::{record_rel_path, url_encode_component};
+
+    /// 磁盘路径 → ZLM HTTP 根下的相对路径（前端就是靠它播放/下载 MP4 的）。
+    #[test]
+    fn test_record_rel_path_from_abs() {
+        assert_eq!(
+            record_rel_path(
+                Some("/opt/media/bin/www/record/rtp/dev_ch/2026-09-12/a.mp4"),
+                "rtp",
+                "dev_ch",
+                "a.mp4"
+            ),
+            "record/rtp/dev_ch/2026-09-12/a.mp4"
+        );
+    }
+
+    /// 没有磁盘路径时按 app/stream/文件名兜底；信息不全则给空串（不拼出坏 URL）。
+    #[test]
+    fn test_record_rel_path_fallback() {
+        assert_eq!(
+            record_rel_path(None, "rtp", "dev_ch", "a.mp4"),
+            "record/rtp/dev_ch/a.mp4"
+        );
+        assert_eq!(record_rel_path(None, "", "x", "a.mp4"), "");
+        assert_eq!(record_rel_path(Some("/tmp/a.mp4"), "", "", ""), "");
+    }
+
+    #[test]
+    fn test_url_encode_component_keeps_slashes() {
+        assert_eq!(url_encode_component("record/a b.mp4"), "record/a%20b.mp4");
     }
 }

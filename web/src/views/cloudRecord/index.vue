@@ -45,11 +45,20 @@
         <el-table-column prop="stream" label="Stream" min-width="160">
           <template #default="{ row }"><span class="mono">{{ row.stream }}</span></template>
         </el-table-column>
-        <el-table-column prop="startTime" label="开始" min-width="170">
-          <template #default="{ row }"><span class="mono">{{ row.startTime }}</span></template>
+        <el-table-column label="开始" min-width="170">
+          <template #default="{ row }">
+            <span class="mono">{{ formatTs(row.startTime) }}</span>
+          </template>
         </el-table-column>
-        <el-table-column prop="endTime" label="结束" min-width="170">
-          <template #default="{ row }"><span class="mono">{{ row.endTime }}</span></template>
+        <el-table-column label="结束" min-width="170">
+          <template #default="{ row }">
+            <span class="mono">{{ formatTs(row.endTime) }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="设备/通道" min-width="220">
+          <template #default="{ row }">
+            <span class="mono">{{ row.deviceId || '-' }} / {{ row.channelId || '-' }}</span>
+          </template>
         </el-table-column>
         <el-table-column prop="size" label="大小" width="100">
           <template #default="{ row }">{{ formatSize(row.size) }}</template>
@@ -114,14 +123,31 @@ async function loadData() {
       channelId: query.channelId,
       app: query.app,
       stream: query.stream,
-      startTime: query.startTime?.toISOString(),
-      endTime: query.endTime?.toISOString()
+      // 后端/WVP 的时间格式是本地 `yyyy-MM-dd HH:mm:ss`；
+      // 早期发 `toISOString()`（带毫秒和 Z）会被解析失败，选完时间列表就空了。
+      startTime: formatLocal(query.startTime),
+      endTime: formatLocal(query.endTime)
     })
     rows.value = res.data?.list ?? []
     total.value = res.data?.total ?? 0
   } finally {
     loading.value = false
   }
+}
+
+/** Date → 本地 `yyyy-MM-dd HH:mm:ss`（WVP 契约） */
+function formatLocal(d?: Date): string | undefined {
+  if (!d) return undefined
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(
+    d.getMinutes()
+  )}:${p(d.getSeconds())}`
+}
+
+/** 毫秒时间戳 → 本地可读时间 */
+function formatTs(ms?: number): string {
+  if (!ms) return '-'
+  return formatLocal(new Date(Number(ms))) ?? '-'
 }
 
 function formatSize(byte?: number): string {
@@ -173,15 +199,35 @@ async function onDownload(row: CloudRecord) {
 
 async function onDelete(row: CloudRecord) {
   await ElMessageBox.confirm('确认删除该云端录像？', '确认', { type: 'warning' })
-  await deleteCloudRecord(row.id ?? 0)
-  ElMessage.success('已删除')
-  loadData()
+  try {
+    // DELETE + {ids:[...]}（后端从 body 读 ids；早期用 GET 会 405）
+    const res = await deleteCloudRecord([row.id ?? 0])
+    const failed = res.data?.failed ?? []
+    if (failed.length > 0) {
+      ElMessage.warning(`部分录像删除失败：${failed.join(', ')}`)
+    } else {
+      ElMessage.success('已删除')
+    }
+    loadData()
+  } catch (e: any) {
+    ElMessage.error(e?.message ?? '删除失败')
+  }
 }
 
 async function onDownloadZip() {
-  const res = await downloadCloudRecordZip(selection.value.map((r) => r.id ?? 0))
-  const url = (res.data as any)?.url
-  if (url) window.open(url, '_blank')
+  if (selection.value.length === 0) {
+    ElMessage.warning('请先选择要下载的录像')
+    return
+  }
+  try {
+    // 必须是数字主键（后端按 i64 解析 ids）
+    const res = await downloadCloudRecordZip(selection.value.map((r) => r.id ?? 0))
+    const url = (res.data as any)?.url
+    if (url) window.open(url, '_blank')
+    else ElMessage.warning('后端未返回 ZIP URL，请检查 ZLM 存储配置')
+  } catch (e: any) {
+    ElMessage.error(e?.message ?? 'ZIP 下载请求失败')
+  }
 }
 
 onMounted(loadData)

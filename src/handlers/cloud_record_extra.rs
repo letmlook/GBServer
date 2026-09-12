@@ -165,11 +165,78 @@ pub(crate) struct ZipBuildOutcome {
     pub skipped: Vec<serde_json::Value>,
 }
 
+/// 从 ZLM 的 HTTP 服务把录像文件抓到本地缓存目录。
+///
+/// 容器化部署（docker compose）下 ZLM 与后端**不共享文件系统**，
+/// `record.file_path` 是容器内路径（`/opt/media/bin/www/record/...`），
+/// 本机 `is_file()` 永远为假 —— 于是"打包下载"必然全部 `skipped`。
+/// 这里改成走 ZLM 的静态 HTTP 路径（`http://ip:port/record/...`）把文件取回来。
+///
+/// 返回本地缓存文件路径。
+async fn fetch_record_from_zlm(
+    state: &AppState,
+    rec: &db::cloud_record::CloudRecord,
+    cache_dir: &std::path::Path,
+) -> Result<std::path::PathBuf, String> {
+    let media_server_id = rec
+        .media_server_id
+        .clone()
+        .unwrap_or_else(|| "default".to_string());
+    let (Some(zlm), Some(file_name)) = (
+        state.get_zlm_client(Some(&media_server_id)),
+        rec.file_name.clone().filter(|s| !s.is_empty()),
+    ) else {
+        return Err("缺少媒体节点或文件名".to_string());
+    };
+
+    // 与列表接口同一套相对路径推导
+    let rel = crate::handlers::stub::cloud_record_rel_path_for(
+        rec.file_path.as_deref(),
+        &rec.app,
+        &rec.stream,
+        &file_name,
+    );
+    if rel.is_empty() {
+        return Err("无法推导录像相对路径".to_string());
+    }
+    let url = format!("http://{}:{}/{}", zlm.ip, zlm.http_port, rel);
+
+    std::fs::create_dir_all(cache_dir).map_err(|e| format!("创建缓存目录失败: {e}"))?;
+    let out = cache_dir.join(format!("{}-{}", rec.id, file_name));
+    if out.is_file() {
+        return Ok(out);
+    }
+
+    let resp = reqwest::get(&url)
+        .await
+        .map_err(|e| format!("从 ZLM 拉取 {url} 失败: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("从 ZLM 拉取 {url} 返回 HTTP {}", resp.status()));
+    }
+    let mut resp = resp;
+    let mut file = tokio::fs::File::create(&out)
+        .await
+        .map_err(|e| format!("创建缓存文件失败: {e}"))?;
+    use tokio::io::AsyncWriteExt;
+    while let Some(chunk) = resp
+        .chunk()
+        .await
+        .map_err(|e| format!("读取 ZLM 响应失败: {e}"))?
+    {
+        file.write_all(&chunk)
+            .await
+            .map_err(|e| format!("写缓存文件失败: {e}"))?;
+    }
+    file.flush().await.map_err(|e| format!("flush 失败: {e}"))?;
+    Ok(out)
+}
+
 /// 打包核心：按 id 取记录 → 定位磁盘文件 → 写 ZIP。
 ///
 /// 刻意不接收 `AppState`，只依赖 `pool` 与路径，便于用真实 SQLite 做端到端测试。
 /// 不可用的记录进入 `skipped` 如实回报；全部不可用时返回 `Err`（而不是假装成功）。
 pub(crate) async fn build_cloud_record_zip(
+    state: Option<&AppState>,
     pool: &db::Pool,
     ids: &[i64],
     record_root: Option<&std::path::Path>,
@@ -177,6 +244,7 @@ pub(crate) async fn build_cloud_record_zip(
 ) -> Result<ZipBuildOutcome, String> {
     let mut files: Vec<(String, std::path::PathBuf)> = Vec::new();
     let mut skipped: Vec<serde_json::Value> = Vec::new();
+    let cache_dir = download_dir.join(".cloud-record-cache");
 
     for id in ids {
         match db::cloud_record::get_by_id(pool, *id).await {
@@ -185,13 +253,26 @@ pub(crate) async fn build_cloud_record_zip(
                     .file_name
                     .clone()
                     .unwrap_or_else(|| format!("record-{}.mp4", rec.id));
-                match resolve_record_file(&rec, record_root) {
+                let local = resolve_record_file(&rec, record_root);
+                // 本机没有（容器化 ZLM）→ 从媒体服务器的 HTTP 服务拉回来再打包
+                let resolved = match (local, state) {
+                    (Some(p), _) => Some(p),
+                    (None, Some(st)) => match fetch_record_from_zlm(st, &rec, &cache_dir).await {
+                        Ok(p) => Some(p),
+                        Err(e) => {
+                            tracing::warn!("打包时拉取录像失败 id={}: {e}", rec.id);
+                            None
+                        }
+                    },
+                    (None, None) => None,
+                };
+                match resolved {
                     Some(path) => files.push((format!("record/{}", display), path)),
                     None => skipped.push(serde_json::json!({
                         "id": rec.id,
                         "fileName": display,
                         "status": "file_missing",
-                        "reason": "记录中的 file_path 在本机不存在；若 ZLM 挂载点不同，可设置 server.record_root",
+                        "reason": "本机找不到该文件，且无法从媒体服务器拉取；可设置 server.record_root 或检查 ZLM 是否可达",
                     })),
                 }
             }
@@ -253,7 +334,14 @@ pub async fn download_zip(
         .map(std::path::PathBuf::from);
     let dir = state.config.server.effective_download_dir();
 
-    let outcome = match build_cloud_record_zip(&state.pool, &ids, record_root.as_deref(), &dir).await
+    let outcome = match build_cloud_record_zip(
+        Some(&state),
+        &state.pool,
+        &ids,
+        record_root.as_deref(),
+        &dir,
+    )
+    .await
     {
         Ok(o) => o,
         Err(msg) => return Json(WVPResult::error(msg)),
@@ -294,6 +382,78 @@ pub async fn zip(
 ///
 /// 内部用 `tower_http::services::ServeFile`，因此**自动支持 HTTP Range** ——
 /// `<video>` 标签才可能拖动进度条。
+/// 把 ZLM 的录像文件 HTTP 响应原样代理给客户端（支持 Range 透传）。
+async fn proxy_record_from_zlm(
+    state: &AppState,
+    rec: &db::cloud_record::CloudRecord,
+    headers: &axum::http::HeaderMap,
+) -> Result<axum::response::Response, AppError> {
+    use axum::body::Body;
+    use axum::http::{header, Response, StatusCode};
+
+    let media_server_id = rec
+        .media_server_id
+        .clone()
+        .unwrap_or_else(|| "default".to_string());
+    let Some(zlm) = state.get_zlm_client(Some(&media_server_id)) else {
+        return Err(AppError::business(
+            ErrorCode::Error404,
+            format!("媒体节点不可用: {media_server_id}"),
+        ));
+    };
+    let file_name = rec.file_name.clone().unwrap_or_default();
+    let rel = crate::handlers::stub::cloud_record_rel_path_for(
+        rec.file_path.as_deref(),
+        &rec.app,
+        &rec.stream,
+        &file_name,
+    );
+    if rel.is_empty() {
+        return Err(AppError::business(
+            ErrorCode::Error404,
+            "无法推导录像文件路径".to_string(),
+        ));
+    }
+    let url = format!("http://{}:{}/{}", zlm.ip, zlm.http_port, rel);
+
+    let client = reqwest::Client::new();
+    let mut req = client.get(&url);
+    if let Some(range) = headers.get(header::RANGE).and_then(|v| v.to_str().ok()) {
+        // axum 与 reqwest 各自依赖不同版本的 http crate，这里按字符串转换
+        req = req.header("range", range.to_string());
+    }
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| AppError::business(ErrorCode::Error500, format!("请求 ZLM 失败: {e}")))?;
+    let status = resp.status();
+    // 注意：axum 与 reqwest 依赖不同版本的 http crate，头名字符串比常量更稳
+    let header_str = |name: &str| -> Option<String> {
+        resp.headers()
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string)
+    };
+    let content_type = header_str("content-type").unwrap_or_else(|| "video/mp4".to_string());
+    let content_range = header_str("content-range");
+    let content_length = header_str("content-length");
+
+    let mut out = Response::builder()
+        .status(StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::OK))
+        .header(header::CONTENT_TYPE, content_type)
+        .header(header::ACCEPT_RANGES, "bytes");
+    if let Some(v) = content_range {
+        out = out.header(header::CONTENT_RANGE, v);
+    }
+    if let Some(v) = content_length {
+        out = out.header(header::CONTENT_LENGTH, v);
+    }
+    let stream = resp.bytes_stream();
+    Ok(out
+        .body(Body::from_stream(stream))
+        .map_err(|e| AppError::business(ErrorCode::Error500, format!("构造响应失败: {e}")))?)
+}
+
 pub async fn download_file(
     State(state): State<AppState>,
     Path(id): Path<i64>,
@@ -313,15 +473,13 @@ pub async fn download_file(
         .record_root
         .as_deref()
         .map(std::path::PathBuf::from);
-    let path = resolve_record_file(&rec, record_root.as_deref()).ok_or_else(|| {
-        AppError::business(
-            ErrorCode::Error404,
-            format!(
-                "录像文件在本机不存在（记录 file_path={:?}）；若 ZLM 挂载点不同，请设置 server.record_root",
-                rec.file_path
-            ),
-        )
-    })?;
+    // 本机没有该文件时（容器化部署最常见）**代理 ZLM 的 HTTP 响应**，
+    // 而不是 404 —— 否则 /api/cloud/record/download/:id 与 list-url 给出的
+    // url 全是死链。Range 头一起透传，视频才能拖动进度条。
+    let local = resolve_record_file(&rec, record_root.as_deref());
+    let Some(path) = local else {
+        return proxy_record_from_zlm(&state, &rec, &headers).await;
+    };
 
     // 把 Range 头透传给 ServeFile，以获得 206 分片响应
     let mut req = Request::builder()
@@ -527,7 +685,7 @@ mod tests {
         .expect("insert record 2");
 
         // 真实执行打包
-        let outcome = build_cloud_record_zip(&pool, &[id1, id2], None, &out_dir)
+        let outcome = build_cloud_record_zip(None, &pool, &[id1, id2], None, &out_dir)
             .await
             .expect("打包应成功");
 
@@ -571,13 +729,13 @@ mod tests {
         )
         .await
         .unwrap();
-        let err = build_cloud_record_zip(&pool, &[id], None, &out_dir)
+        let err = build_cloud_record_zip(None, &pool, &[id], None, &out_dir)
             .await
             .expect_err("文件缺失时必须报错");
         assert!(err.contains("没有可打包"), "错误信息应说明原因: {}", err);
 
         // 2) 记录本身不存在
-        let err2 = build_cloud_record_zip(&pool, &[999_999], None, &out_dir)
+        let err2 = build_cloud_record_zip(None, &pool, &[999_999], None, &out_dir)
             .await
             .expect_err("记录不存在时必须报错");
         assert!(err2.contains("没有可打包"), "错误信息应说明原因: {}", err2);
@@ -617,7 +775,7 @@ mod tests {
         .await
         .unwrap();
 
-        let outcome = build_cloud_record_zip(&pool, &[ok_id, bad_id], None, &work)
+        let outcome = build_cloud_record_zip(None, &pool, &[ok_id, bad_id], None, &work)
             .await
             .expect("有一条可用即应成功");
 

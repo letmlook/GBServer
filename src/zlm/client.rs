@@ -430,31 +430,121 @@ impl ZlmClient {
         Ok(exist_flag(&resp))
     }
 
-    pub async fn get_mp4_record_file(&self, app: &str, stream: &str, path: Option<&str>, start_time: Option<&str>, end_time: Option<&str>) -> Result<Vec<Mp4RecordFile>> {
+    /// 列出某路流在 ZLM 上的 MP4 录像文件。
+    ///
+    /// 三个此前的**静默失效点**：
+    /// 1. 路径大小写写错：真实 API 是 `/index/api/getMP4RecordFile`（MP4 全大写），
+    ///    写成 `getMp4RecordFile` 直接 404 → 永远返回空列表；
+    /// 2. 少传 `vhost`：ZLM 会回 `-300 Required parameter missed: "vhost", "app", "stream"`；
+    /// 3. 响应结构想当然：真实返回是 `{"code":0,"data":{"rootPath":"<录像目录>","paths":[...]}}`
+    ///    —— `paths` 在**不传 period** 时是**日期目录**，传了 period 才是文件名。
+    ///    原来按 `data.list[{name,path,...}]` 解析，即使前两点修好也拿不到数据。
+    ///
+    /// `period`（本函数的 `path` 参数）为空时会先取日期目录再逐个展开成文件列表。
+    pub async fn get_mp4_record_file(
+        &self,
+        app: &str,
+        stream: &str,
+        period: Option<&str>,
+        _start_time: Option<&str>,
+        _end_time: Option<&str>,
+    ) -> Result<Vec<Mp4RecordFile>> {
+        match period {
+            Some(p) => self.list_mp4_files(app, stream, p).await,
+            None => {
+                let mut all = Vec::new();
+                for day in self.list_mp4_periods(app, stream).await? {
+                    all.extend(self.list_mp4_files(app, stream, &day).await?);
+                }
+                Ok(all)
+            }
+        }
+    }
+
+    /// 某个流的录像日期目录（`YYYY-MM-DD`）。
+    pub async fn list_mp4_periods(&self, app: &str, stream: &str) -> Result<Vec<String>> {
+        let resp = self.get_mp4_record_paths(app, stream, None).await?;
+        Ok(resp.paths)
+    }
+
+    /// 某个日期目录下的录像文件。
+    pub async fn list_mp4_files(&self, app: &str, stream: &str, period: &str) -> Result<Vec<Mp4RecordFile>> {
+        let resp = self.get_mp4_record_paths(app, stream, Some(period)).await?;
+        let root = resp.root_path.clone();
+        Ok(resp
+            .paths
+            .into_iter()
+            .map(|name| {
+                // 文件名形如 `2026-09-12-22-09-45-0.mp4`，可反推录制起始时间
+                let create_time = parse_mp4_file_name_time(&name).unwrap_or_default();
+                Mp4RecordFile {
+                    name: name.clone(),
+                    size: 0,
+                    create_time,
+                    path: format!("{root}{name}"),
+                    file_path: Some(root.clone()),
+                    duration: None,
+                }
+            })
+            .collect())
+    }
+
+    async fn get_mp4_record_paths(
+        &self,
+        app: &str,
+        stream: &str,
+        period: Option<&str>,
+    ) -> Result<Mp4RecordPaths> {
         let mut params = vec![
             ("secret", self.secret.clone()),
+            ("vhost", "__defaultVhost__".to_string()),
             ("app", app.to_string()),
             ("stream", stream.to_string()),
         ];
-        if let Some(p) = path { params.push(("path", p.to_string())); }
-        if let Some(s) = start_time { params.push(("start_time", s.to_string())); }
-        if let Some(e) = end_time { params.push(("end_time", e.to_string())); }
-
-        let resp: ApiResponse<Mp4RecordResponse> = self.request("/index/api/getMp4RecordFile", &params).await?;
-        Ok(resp.data.map(|r| r.list).unwrap_or_default())
+        if let Some(p) = period {
+            params.push(("period", p.to_string()));
+        }
+        let resp: ApiResponse<Mp4RecordPaths> =
+            self.request("/index/api/getMP4RecordFile", &params).await?;
+        resp.data.ok_or_else(|| {
+            anyhow!(
+                "getMP4RecordFile 无数据: code={} msg={}",
+                resp.code,
+                resp.msg.unwrap_or_default()
+            )
+        })
     }
 
-    pub async fn delete_mp4_file(&self, file_path: &str) -> Result<()> {
+    /// 删除一个录像文件。
+    ///
+    /// 真实 ZLM（master）**没有** `/index/api/deleteRecord`（实测 404），
+    /// 正确的是 `/index/api/deleteRecordDirectory`，参数
+    /// `vhost/app/stream/period(=日期目录)/file_name`。
+    /// 传 `file_name` 时只删该文件；不传则删掉整个日期目录。
+    pub async fn delete_record_file(
+        &self,
+        app: &str,
+        stream: &str,
+        period: &str,
+        file_name: &str,
+    ) -> Result<()> {
         let params = vec![
             ("secret", self.secret.clone()),
-            ("file_path", file_path.to_string()),
+            ("vhost", "__defaultVhost__".to_string()),
+            ("app", app.to_string()),
+            ("stream", stream.to_string()),
+            ("period", period.to_string()),
+            ("file_name", file_name.to_string()),
         ];
-
         #[derive(Deserialize)]
-        #[allow(dead_code)]
-        struct Resp { code: i32 }
-        let resp: ApiResponse<Resp> = self.request("/index/api/deleteRecord", &params).await?;
-        
+        struct Resp {
+            code: i32,
+            #[serde(default)]
+            msg: Option<String>,
+        }
+        let resp: Resp = self
+            .request("/index/api/deleteRecordDirectory", &params)
+            .await?;
         if resp.code != 0 {
             return Err(anyhow!("ZLM error: {}", resp.msg.unwrap_or_default()));
         }

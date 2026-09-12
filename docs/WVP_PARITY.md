@@ -9,10 +9,10 @@
 
 | 维度 | 数值 | 验证方式 |
 |------|------|----------|
-| 总代码量（src/） | 74,764 行 Rust | `find src -name '*.rs' \| xargs wc -l` |
+| 总代码量（src/） | 75,846 行 Rust | `find src -name '*.rs' \| xargs wc -l` |
 | 已注册 HTTP 路由 | 383 条唯一 `/api/...` 路径 | `grep -oE '"/api/[^"]*"' src/router.rs \| sort -u \| wc -l` |
 | Handler 模块 | 29 个（含 `stub.rs` / `device_stub.rs` 两个兼容 shim） | `grep -c 'pub mod' src/handlers/mod.rs` |
-| 后端测试 | **626 通过** / 0 失败（第二十八轮刷新） | `cargo test` |
+| 后端测试 | **634 通过** / 0 失败（第二十九轮刷新） | `cargo test` |
 | 编译状态 | `cargo check` 0 error / **0 warning**；clippy 262；**deprecated 0** | `cargo check` / `cargo clippy --all-targets` |
 | 数据库 feature | SQLite（默认）/ PostgreSQL / MySQL **三者均编译通过** | CI `feature-matrix` job |
 | CI | ⏸️ 工作流已就绪但**按需暂停自动触发**（见 `.github/workflows/ci.yml`） | — |
@@ -1296,6 +1296,48 @@ npx playwright test              27 passed / 0 failed / 0 skipped  (上轮 25；
 录像计划（新增/编辑/列表/关联/删除 + 立即录像）PASS
 ```
 
+### 云端录像全链路打通（2026-09-12 第二十九轮）
+
+`cloudRecord` 是契约审计里条数最多（14 条）且**有真实调用方**的模块，
+本轮全部修完，并顺带挖出 5 个审计没覆盖到的深层缺陷：
+
+| # | 缺陷 | 修复 / 证据 |
+|---|------|------|
+| 1 | 删除走 `GET /cloud/record/delete?id=` | 后端只注册 DELETE 且从 **body** 读 `{ids:[...]}` → 405 + 参数进不去。前端改 DELETE + body；后端同时接受**数字主键**与历史组合串，并**先删文件再删库**（反了会留下谁也删不掉的孤儿文件） |
+| 2 | 列表只扫 ZLM 的 `app=record&stream=record` | **设备录像一条都查不到**。改为**以 `gb_cloud_record` 为准**（WVP 也是读自己的表），`on_record_mp4` 钩子落库的记录才查得到；显式给了 app+stream 时仍保留 ZLM 文件扫描兜底 |
+| 3 | `play/path` 传 `id`，后端只认 `recordId` | 永远返回空路径 → 点播放只看到"无可播放路径"。现同时接受 `id`/`recordId`/`cloudRecordId`（数字主键与组合串都能解析） |
+| 4 | 列表里的 `httpPath` 是**磁盘绝对路径** | 前端点播放打开的是 `/opt/media/bin/www/...`，必然打不开。现按 ZLM 的 HTTP 根推导：`http://ip:port/record/{app}/{stream}/{date}/{file}`（实测 **200 / 532944 字节**），并给出 https 与下载地址 |
+| 5 | ISO 时间参数被解析成 0 | 前端发 `toISOString()`（带毫秒和 Z），旧解析只认两种格式 → 失败返回 0 → **选了结束时间列表整页空白**。现支持 RFC3339/ISO/本地时间/秒/毫秒时间戳，且解析失败时**忽略该条件并告警**（不再静默清空结果） |
+| 6 | `deviceId`/`channelId` 后端 DTO 里没有 | 被 serde 静默丢弃。现已实现，按流名 `{设备}_{通道}` 用 `substr` **精确**前后缀匹配（不用 LIKE，避免 `_` 通配符误匹配） |
+| 7 | 打包下载传组合串 → "missing ids" | 列表现在返回**数字主键**，打包/删除/播放口径统一；`/list-url` 与 `download/:id` 的地址也真的可用 |
+| 8 | 容器化部署下按**本机路径**找文件 | ZLM 在容器里、后端在宿主机，`file_path` 在本机永远不存在 → 打包"全部不可用"、单条下载 404。现改为**从 ZLM 的 HTTP 服务回拉**：打包时流式落盘再压缩，单条下载直接**代理转发**（透传 Range，实测 206 + 1024 字节，视频可拖动进度条） |
+| 9 | ZLM 文件列表 API 根本调不通 | 端点名大小写错（真实是 `getMP4RecordFile`）、缺 `vhost` 参数、且响应结构是 `{rootPath, paths[]}`（不传 period 是日期目录、传了才是文件名）—— 三处任一都让列表恒空。已按真实响应重写并支持"先取日期再展开文件" |
+| 10 | 删除文件的 API 在新版 ZLM 不存在 | `/index/api/deleteRecord` 实测 404；正确的是 `/index/api/deleteRecordDirectory`（`vhost/app/stream/period/file_name`）。已切换并实测删除成功 |
+| 11 | `task/add` 前端 POST、后端只有 GET；`date/list`/`list-url`/`loadRecord` 的返回类型声明与后端不符 | 前端全部对齐 WVP 契约（task/add 改 GET；date/list 是裸字符串数组；list-url 用 `CloudRecordFile`；loadRecord 返回单条流对象） |
+| 12 | 页面把毫秒时间戳直接渲染 | 「开始/结束」列改为 `yyyy-MM-dd HH:mm:ss`，并新增「设备/通道」列（从流名解析） |
+
+**实测（真实 ZLM + 真实录像文件）**：
+
+```
+列表         → total 1，id=3，deviceId/channelId 已解析，size=532914
+play/path    → httpPath=http://127.0.0.1:8080/record/rtp/<dev>_<ch>/2026-09-12/xxx.mp4
+               实测 HTTP 200 / 532944 字节；Range 请求 206 / 1024 字节
+打包下载     → fileCount 1 / totalBytes 502944，ZIP 可下载并用 unzip -l 校验内容
+删除         → DELETE {ids:["3"]} → deleted:["3"]，容器内文件与库记录同时消失
+Playwright   → 新增 cloudRecord.spec.ts 3 个用例：列表可读时间、播放地址可访问
+               （含后端代理 2xx）、删除走 DELETE 且真的移除；空环境会**自建一段录像**
+               （建计划→拉流→录制→落库→停录），跑完整套 34 passed
+```
+
+#### 第二十九轮基线
+
+```
+cargo test                       634 passed / 0 failed
+cargo check --all-targets        本项目 0 warning
+cargo check --features mysql/postgres  OK
+npx playwright test              34 passed / 0 failed / 0 skipped（真实 ZLM）
+```
+
 ### 前端↔后端契约审计：已完成 4 个模块，剩余 12 个模块（2026-09-12 第二十七轮）
 
 第二十六轮用"一个模块一个 agent"的方式把 16 个前端 API 模块逐个对后端路由/DTO
@@ -1308,7 +1350,7 @@ npx playwright test              27 passed / 0 failed / 0 skipped  (上轮 25；
 | live | 6 | ✅ 已修（PTZ 参数名 + 8 字节报文；streams 的 deviceId/channelId；webrtc 方法） |
 | channel | 8 | ✅ 已修（新增/编辑全字段落库 + schema 缺列；三个下拉 {name,code}；真实点播） |
 | alarm | 10 | ✅ 已修（清除/批量清除/处理/级别/时间筛选/关键字；handle_result 落库） |
-| cloudRecord | 14 | ❌ 未修 |
+| cloudRecord | 14 | ✅ 已修（第二十九轮，另发现 5 个深层缺陷） |
 | device | 7 | ❌ 未修 |
 | jtDevice | 13 | ❌ 未修 |
 | log | 7 | ❌ 未修 |
@@ -1684,6 +1726,8 @@ vue-tsc --noEmit                 通过
 
 ## 测试基线（每次推进后回填）
 
+- 2026-09-12 第二十九轮：`cargo test` —— **634 通过 / 0 失败**（云端录像全链路）
+  - 同时：`npx playwright test` 34 通过 / 0 失败 / 0 跳过
 - 2026-09-12 第二十七轮：`cargo test` —— **623 通过 / 0 失败**（+28：契约修复与真实 ZLM 集成）
   - 同时：`npx playwright test` 31 通过 / 0 失败 / 0 跳过
 - 2026-09-12 第二十六轮：`cargo test` —— **595 通过 / 0 失败**（lib 532 + 集成 63；+22 录像计划）

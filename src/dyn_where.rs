@@ -2,12 +2,12 @@
 //!
 //! 统一用 `?` 写条件，postgres 下按顺序把第 k 个 `?` 改写成 `$k`。
 //!
-//! 背景：alarm / 通道列表这些查询此前把"同一份带全部条件分支的 SQL"抄了
+//! 背景：alarm / 通道列表 / 云录像这些查询此前把"同一份带全部条件分支的 SQL"抄了
 //! 6 遍（3 方言 × 行查询/计数），改一个筛选条件要改 6 处——漏改就是某个
 //! 方言上静默失效（`startTime`/`endTime` 被接收却在 WHERE 里从未使用，
 //! 就是这么来的）。
 //!
-//! 只放这一份，`stub.rs` 与 `alarm.rs` 共用。
+//! 只放这一份：`stub.rs` / `alarm.rs` / `db::cloud_record` 共用。
 
 /// 动态 WHERE 构造器（录像计划通道列表用）。
 ///
@@ -23,6 +23,8 @@ pub(crate) struct DynWhere {
 pub(crate) enum BindValue {
     Text(String),
     Int(i32),
+    /// 64 位整数（时间戳毫秒等，i32 会溢出截断）
+    Big(i64),
 }
 
 impl DynWhere {
