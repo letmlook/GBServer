@@ -13,8 +13,8 @@
     <el-row :gutter="12" v-loading="loading">
       <el-col :xs="24" :md="6"><el-card class="metric-card">
         <div class="metric-label">CPU</div>
-        <div class="metric-value">{{ info.cpu ?? 0 }}%</div>
-        <el-progress :percentage="info.cpu ?? 0" :stroke-width="6" :show-text="false" :color="cpuColor(info.cpu ?? 0)" />
+        <div class="metric-value">{{ cpuPercent }}%</div>
+        <el-progress :percentage="cpuPercent" :stroke-width="6" :show-text="false" :color="cpuColor(cpuPercent)" />
       </el-card></el-col>
 
       <el-col :xs="24" :md="6"><el-card class="metric-card">
@@ -71,6 +71,9 @@ import { getSystemInfo, type SystemInfo } from '@/api/log'
 
 const loading = ref(false)
 const info = ref<SystemInfo>({})
+
+// `info.cpu` 是折线图的历史采样数组；当前使用率在 `cpu_usage`
+const cpuPercent = computed(() => Math.round(info.value.cpu_usage ?? 0))
 
 const memPercent = computed(() => {
   const m = info.value.memory

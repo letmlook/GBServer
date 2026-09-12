@@ -9,6 +9,7 @@
 //! - 当前所有 entry 函数未标 `#[deprecated]`，是为了不影响前端调用；待前端
 //!   切到新 API 后再做 deprecation 警告 + 隔离
 
+use axum::response::IntoResponse;
 use axum::{
     extract::{Path, Query, State},
     Json,
@@ -865,6 +866,8 @@ pub struct LogListQuery {
     pub end_time: Option<String>,
     /// 级别过滤（前端 historyLog 使用 `level` 参数）
     pub level: Option<String>,
+    /// `csv` = 直接导出当前筛选条件下的全部日志（「历史日志」页的"导出"按钮）
+    pub format: Option<String>,
 }
 
 /// GET /api/log/list — 查询系统日志（可按 message / level / 时间范围过滤）
@@ -879,13 +882,49 @@ pub struct LogListQuery {
 pub async fn log_list(
     State(state): State<AppState>,
     Query(q): Query<LogListQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Result<axum::response::Response, AppError> {
     let page = q.page.unwrap_or(1).max(1);
     let count = q.count.unwrap_or(15).clamp(1, 500);
     // 前端 historyLog 用 level 过滤；旧结构体里叫 log_type，这里两者都接受
     let level = q.level.as_deref().or(q.log_type.as_deref());
 
-    match crate::db::log::list_paged(
+    // `?format=csv` —— 「历史日志」页的"导出"按钮走的就是这里。
+    //
+    // 此前 `format` 被 serde 静默丢弃，接口照样返回 JSON，而前端把它
+    // 原样存成 `.csv`：用户拿到一个内容是 JSON 的"CSV 文件"，
+    // 因为 HTTP 200 让 `r.ok` 为真，失败提示也不会触发。
+    if q
+        .format
+        .as_deref()
+        .map(|f| f.eq_ignore_ascii_case("csv"))
+        .unwrap_or(false)
+    {
+        let rows = crate::db::log::export(
+            &state.pool,
+            q.query.as_deref(),
+            level,
+            q.start_time.as_deref(),
+            q.end_time.as_deref(),
+            50_000,
+        )
+        .await
+        .map_err(|e| AppError::business(ErrorCode::Error500, format!("导出日志失败: {e}")))?;
+        let file_name = format!(
+            "gbserver-log-{}.csv",
+            chrono::Local::now().format("%Y%m%d%H%M%S")
+        );
+        return axum::response::Response::builder()
+            .status(axum::http::StatusCode::OK)
+            .header(axum::http::header::CONTENT_TYPE, "text/csv; charset=utf-8")
+            .header(
+                axum::http::header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{}\"", file_name),
+            )
+            .body(axum::body::Body::from(logs_to_csv(&rows)))
+            .map_err(|e| AppError::business(ErrorCode::Error500, format!("构造响应失败: {e}")));
+    }
+
+    let (total, list) = crate::db::log::list_paged(
         &state.pool,
         q.query.as_deref(),
         level,
@@ -895,19 +934,19 @@ pub async fn log_list(
         count,
     )
     .await
-    {
-        Ok((total, list)) => Json(WVPResult::success(serde_json::json!({
-            "total": total,
-            "list": list,
-            "page": page,
-            "count": count,
-        }))),
-        Err(e) => {
-            // 不再把错误吞成"空列表"：明确返回错误，让调用方知道查询失败
-            tracing::error!("查询系统日志失败: {}", e);
-            Json(WVPResult::error(format!("查询系统日志失败: {}", e)))
-        }
-    }
+    .map_err(|e| {
+        // 不再把错误吞成"空列表"：明确返回错误，让调用方知道查询失败
+        tracing::error!("查询系统日志失败: {}", e);
+        AppError::business(ErrorCode::Error500, format!("查询系统日志失败: {e}"))
+    })?;
+
+    Ok(axum::Json(WVPResult::success(serde_json::json!({
+        "total": total,
+        "list": list,
+        "page": page,
+        "count": count,
+    })))
+    .into_response())
 }
 
 /// GET /api/log/file/{fileName} - 下载日志文件
@@ -1040,7 +1079,8 @@ fn logs_to_csv(rows: &[crate::db::log::LogEntry]) -> Vec<u8> {
         let s = v.unwrap_or("");
         format!("\"{}\"", s.replace('"', "\"\""))
     }
-    let mut out = String::from("id,time,level,logger,thread,source,message\n");
+    // UTF-8 BOM：Excel 打开带中文的 CSV 不会乱码
+    let mut out = String::from("\u{feff}id,time,level,logger,thread,source,message\n");
     for r in rows {
         out.push_str(&format!(
             "{},{},{},{},{},{},{}\n",
@@ -2726,7 +2766,10 @@ mod log_export_tests {
             source: Some("src/x.rs:1".to_string()),
         }];
         let csv = String::from_utf8(logs_to_csv(&rows)).unwrap();
-        assert!(csv.starts_with("id,time,level,logger,thread,source,message\n"));
+        assert!(
+            csv.starts_with("\u{feff}id,time,level,logger,thread,source,message\n"),
+            "CSV 应以 UTF-8 BOM + 表头开头"
+        );
         // 引号被转义成两个引号，且整段仍包在一对引号里
         assert!(csv.contains("\"a,\"\"quoted\"\" line\nsecond line\""), "{csv}");
         // 数据行数 = 表头 + 1；正文里的 \n 在引号内，不应被当成新行分隔

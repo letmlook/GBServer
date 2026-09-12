@@ -43,3 +43,47 @@
 ---
 
 已核对未发现不一致：`GET /api/log/list` 的 `page/count/query/level/startTime/endTime` 与 `LogListQuery`（`src/handlers/stub.rs:656-669`，`start_time`/`end_time` 有 `#[serde(alias="startTime"/"endTime")]`）一致，响应 `total/list`（`src/handlers/stub.rs:700-705`）与 `LogListQuery` 调用方读取方式（`web/src/views/operations/historyLog.vue:110-111`、`web/src/views/operations/realLog.vue:72,97`）一致，`LogEntry` 的 `id/time/level/logger/thread/message/source`（`src/db/log.rs:18-26`）与 `LogRecord`（`web/src/api/log.ts:4-13`）一致；`GET /api/log/file/:file_name`（`src/router.rs:389` / `src/handlers/stub.rs:725`）、`GET /api/server/system/configInfo`（`src/router.rs:255`）、`GET /api/server/resource/info`（`src/router.rs:265`）、`GET /api/server/info`（`src/router.rs:264`）的 method 与路径均与前端一致，后三个的 API 函数（`web/src/api/log.ts:74,81,88`）当前无调用方。`netTotal`（`web/src/api/log.ts:56` 对 `src/handlers/server.rs:882`）一致。
+
+---
+
+> **状态：已修复（2026-09-12 第三十七轮）**。7 条全部落地，真实后端验证。
+>
+> 「系统信息」页此前**四个卡片全部读不到值**：CPU 卡片把历史采样数组当数字渲染
+> （显示 `[object Object]`、进度条 percentage 收到数组而失效）、内存卡片读后端
+> 根本不存在的 `memory` 键（恒 0%）、磁盘卡片读 `disk[].total/used` 而后端只有
+> `use`(GB)（恒 0%）、版本/构建时间恒 `-`、资源统计三行恒 0；
+> dashboard 的「在线设备」也因此恒 0。
+>
+> 另有一个"用户拿到假 CSV"的问题：「历史日志」页的「导出」按钮发
+> `?format=csv`，后端把 `format` 当未知参数静默丢弃、照样返回 JSON，
+> 而前端把它存成 `.csv` —— 因为 HTTP 200 让 `r.ok` 为真，失败提示也不会触发。
+
+## 修复对照（第三十七轮）
+
+| # | 问题 | 修复 / 证据 |
+|---|------|------|
+| 1 | 前端把 `cpu`（历史采样数组）当 number | 前端类型改为 `{time,data}[]`；页面卡片改读标量 `cpu_usage` |
+| 2 | 后端没有 `memory` 键 → 内存卡片恒 0% | 新增 `memory: {total, used, free, mem[]}`（字节 + 历史采样数组） |
+| 3 | `disk[]` 只有 `use`(GB)/`free`(GB)，前端读 `used`/`total` | 每个挂载点同时给 `total`/`used`（字节，系统信息页）与 `use`/`free`（GB，dashboard 柱状图） |
+| 4 | 前端声明 `network`，后端返回 `net` | 后端补 `network: [{name, rx, tx}]`（真实的聚合速率） |
+| 5 | 响应没有 `version`/`buildTime` → 恒 `-`、副标题恒「加载中...」 | 补 `version`（`CARGO_PKG_VERSION`）与 `buildTime`（当前 exe 的真实 mtime） |
+| 6 | 响应没有资源计数 → 资源统计恒 0、dashboard 在线设备恒 0 | 补 `mediaServerCount` / `deviceOnline` / `deviceTotal` / `channelOnline` / `channelTotal`（真实 DB 计数） |
+| 7 | `log/list?format=csv` 返回 JSON，前端存成 `.csv` | `log_list` 支持 `format=csv`：返回 `text/csv` + `Content-Disposition: attachment`，正文带 UTF-8 BOM（Excel 不乱码），内容为**当前筛选条件下的全部**日志（复用 `db::log::export`） |
+
+**实测**（真实后端）：
+
+```
+GET /api/server/system/info
+  cpu_usage=35.1  mem_usage=48.5  disk_usage=1.27
+  memory={total:17179869184, used:8333033472, free:8846835712, mem:[…]}
+  disk[0]={path:"/", total:994662584320, used:12633366528, use:11.77(GB), free:914.59(GB)}
+  network=[{name:"total", rx:0.00048, tx:1.0728}]
+  version="0.1.0"  buildTime="2026-09-13 01:05:59"
+  mediaServerCount=1 deviceOnline=2 deviceTotal=2 channelOnline=4 channelTotal=4
+GET /api/log/list?format=csv&level=INFO
+  content-type: text/csv; charset=utf-8
+  content-disposition: attachment; filename="gbserver-log-20260913010620.csv"
+  正文以 UTF-8 BOM 开头，4960 行（当前筛选下的全部 INFO 日志）
+GET /api/log/list?page=1&count=3 → 仍是 JSON 分页契约
+Playwright → 新增 operations.spec.ts 2 条；整套 55 passed
+```

@@ -9,10 +9,10 @@
 
 | 维度 | 数值 | 验证方式 |
 |------|------|----------|
-| 总代码量（src/） | 78,448 行 Rust | `find src -name '*.rs' \| xargs wc -l` |
+| 总代码量（src/） | 78,710 行 Rust | `find src -name '*.rs' \| xargs wc -l` |
 | 已注册 HTTP 路由 | 386 条唯一 `/api/...` 路径 | `grep -oE '"/api/[^"]*"' src/router.rs \| sort -u \| wc -l` |
 | Handler 模块 | 29 个（含 `stub.rs` / `device_stub.rs` 两个兼容 shim） | `grep -c 'pub mod' src/handlers/mod.rs` |
-| 后端测试 | **675 通过** / 0 失败（第三十六轮刷新） | `cargo test` |
+| 后端测试 | **679 通过** / 0 失败（第三十七轮刷新） | `cargo test` |
 | 编译状态 | `cargo check` 0 error / **0 warning**；clippy 262；**deprecated 0** | `cargo check` / `cargo clippy --all-targets` |
 | 数据库 feature | SQLite（默认）/ PostgreSQL / MySQL **三者均编译通过** | CI `feature-matrix` job |
 | CI | ⏸️ 工作流已就绪但**按需暂停自动触发**（见 `.github/workflows/ci.yml`） | — |
@@ -1647,12 +1647,49 @@ cargo check --features mysql/postgres  OK
 npx playwright test              53 passed / 0 failed / 0 skipped（真实 ZLM）
 ```
 
-### 前端↔后端契约审计：已完成 13 个模块，剩余 4 个模块 / 17 条（2026-09-12 第三十六轮刷新）
+### 系统信息 / 历史日志：四个卡片全部读不到值 + 假 CSV 导出（2026-09-12 第三十七轮）
+
+`log` 模块 7 条修完。这一组页面此前**每个数字都是占位**：
+
+| # | 缺陷 | 修复 / 证据 |
+|---|------|------|
+| 1 | 前端把 `cpu`（折线图历史采样**数组**）当 number | CPU 卡片显示 `[object Object]`、`el-progress` 的 percentage 收到数组而失效。类型改为 `{time,data}[]`，卡片改读标量 `cpu_usage` |
+| 2 | 后端没有 `memory` 键 | 内存卡片恒 0%、明细恒 `- / -`。补 `memory:{total,used,free,mem[]}`（字节） |
+| 3 | `disk[]` 只有 `use`/`free`（GB），前端读 `used`/`total` | 磁盘卡片恒 0%。每个挂载点同时给字节与 GB 两套字段 |
+| 4 | 前端声明 `network`，后端返回 `net` | 补 `network:[{name,rx,tx}]` |
+| 5 | 响应没有 `version`/`buildTime` | 版本恒「加载中...」/ `-`。补 `CARGO_PKG_VERSION` 与 exe 真实 mtime |
+| 6 | 响应没有资源计数 | 资源统计恒 0、dashboard「在线设备」恒 0。补真实 DB 计数 |
+| 7 | `log/list?format=csv` 被静默忽略，返回 JSON 却被存成 `.csv` | 实现 `format=csv`：`text/csv` + `attachment` + UTF-8 BOM，导出当前筛选下的**全部**日志（实测 4960 行） |
+
+**实测**：
+
+```
+GET /api/server/system/info
+  cpu_usage=35.1 mem_usage=48.5 disk_usage=1.27
+  memory={total:17179869184, used:8333033472, free:8846835712}
+  disk[0]={path:"/", total:994662584320, used:12633366528, use:11.77, free:914.59}
+  version=0.1.0 buildTime=2026-09-13 01:05:59
+  mediaServerCount=1 deviceOnline=2 deviceTotal=2 channelOnline=4 channelTotal=4
+GET /api/log/list?format=csv&level=INFO → text/csv + attachment + BOM，4960 行
+GET /api/log/list?page=1&count=3       → 仍是 JSON 分页
+Playwright → 新增 operations.spec.ts 2 条；整套 55 passed
+```
+
+#### 第三十七轮基线
+
+```
+cargo test                       679 passed / 0 failed
+cargo check --all-targets        本项目 0 warning
+cargo check --features mysql/postgres  OK
+npx playwright test              55 passed / 0 failed / 0 skipped（真实 ZLM）
+```
+
+### 前端↔后端契约审计：已完成 14 个模块，剩余 3 个模块 / 10 条（2026-09-12 第三十七轮刷新）
 
 第二十六轮用"一个模块一个 agent"的方式把 16 个前端 API 模块逐个对后端路由/DTO
 做了一遍审计（证据文件在 `docs/audit/*.md`，共 **130 条**），并按影响排序逐批修复。
-当前已修 13 个模块（113 条），剩 `log`(7) / `playback`(3) / `syCamera`(6) /
-`talk`(1) 共 **17 条**：
+当前已修 14 个模块（120 条），剩 `playback`(3) / `syCamera`(6) /
+`talk`(1) 共 **10 条**：
 
 | 模块 | 条数 | 状态 |
 |------|------|------|
@@ -1664,7 +1701,7 @@ npx playwright test              53 passed / 0 failed / 0 skipped（真实 ZLM�
 | cloudRecord | 14 | ✅ 已修（第二十九轮，另发现 5 个深层缺陷） |
 | device | 7 | ✅ 已修（第三十轮） |
 | jtDevice | 13 | ✅ 已修（第三十一轮） |
-| log | 7 | ❌ 未修 |
+| log | 7 | ✅ 已修（第三十七轮） |
 | mediaServer | 7 | ✅ 已修（第三十六轮，另修掉一个「所有节点 30s 后被误判离线」） |
 | platform | 11 | ✅ 已修（第三十四轮） |
 | playback | 3 | ❌ 未修 |
@@ -1695,7 +1732,7 @@ npx playwright test              53 passed / 0 failed / 0 skipped（真实 ZLM�
 5. ~~`platform`~~：✅ 已于第三十四轮修复（`serverGbId` 拼写、`expires` 数字/字符串、
    `realm`→`serverGBDomain`、心跳三参数换成真实的 `expires`/`keepTimeout`、
    注销改为真的发 `Expires: 0` REGISTER、列表与详情统一字段）。
-6. `log` / `syCamera` / `playback` / `talk`：
+6. `syCamera` / `playback` / `talk`：
    主要是响应键名与筛选参数不匹配（系统信息页内存/磁盘/版本恒为 0 或 '-'、
    媒体节点“检测”探测错地址、仪表盘“重点通道”卡片跳转失败、
    录像列表“名称”列空白、对讲起播与音频 WS 的时序竞争）。
@@ -2044,6 +2081,7 @@ vue-tsc --noEmit                 通过
 - 2026-09-12 第三十四轮：`cargo test` —— **665 通过 / 0 失败**（级联平台 11 条；e2e 44）
 - 2026-09-12 第三十五轮：`cargo test` —— **670 通过 / 0 失败**（行政区划/业务分组 8 条 + 补全管理界面；e2e 50）
 - 2026-09-12 第三十六轮：`cargo test` —— **675 通过 / 0 失败**（媒体节点 7 条 + 心跳时间戳格式缺陷；e2e 53）
+- 2026-09-12 第三十七轮：`cargo test` —— **679 通过 / 0 失败**（系统信息/日志导出 7 条；e2e 55）
 - 2026-09-12 第三十一轮：`cargo test` —— **641 通过 / 0 失败**（JT1078 终端/围栏 13 条）
 - 2026-09-12 第三十轮：`cargo test` —— **637 通过 / 0 失败**（设备页 7 条）
 - 2026-09-12 第二十九轮：`cargo test` —— **634 通过 / 0 失败**（云端录像全链路）

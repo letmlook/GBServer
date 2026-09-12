@@ -806,7 +806,7 @@ fn push_truncated<T>(dq: &mut VecDeque<T>, item: T) {
 /// - `disk`：`[{path, free, use}]`，单位 GB
 /// - `net`：`[{time, out, in}]`，单位 Mbps（列顺序必须与前端 columns 一致）
 /// - `netTotal`：`number`，是 `out`/`in` 峰值向上取整（前端直接赋给 yAxis.max）
-pub async fn system_info(State(_state): State<AppState>) -> Json<WVPResult<serde_json::Value>> {
+pub async fn system_info(State(state): State<AppState>) -> Json<WVPResult<serde_json::Value>> {
     let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
 
     // CPU: 0.0-1.0 fraction (not 0-100)
@@ -823,11 +823,17 @@ pub async fn system_info(State(_state): State<AppState>) -> Json<WVPResult<serde
     // dashboard 期望多根柱子（每根挂载点一个），所以不写入 ring buffer——
     // 直接返回当前所有挂载点即可（磁盘容量不按秒变化）。
     let disks = read_all_disk_usage();
+    // 每个挂载点同时给出两套单位，因为有两个消费者：
+    //   * dashboard 的柱状图读 `use` / `free`（**GB**）
+    //   * 「系统信息」页的卡片读 `used` / `total`（**字节**，交给 formatSize）
+    // 此前只有前一套，系统信息页的磁盘卡片因此恒为 0%（读 `used`/`total` 恒 undefined）。
     let disk_data: Vec<serde_json::Value> = if disks.is_empty() {
         vec![serde_json::json!({
             "path": "/",
             "free": 50.0_f64,
             "use":  50.0_f64,
+            "total": 100.0 * 1024.0 * 1024.0 * 1024.0_f64,
+            "used": 50.0 * 1024.0 * 1024.0 * 1024.0_f64,
         })]
     } else {
         disks.iter().map(|(path, total, used)| {
@@ -838,6 +844,8 @@ pub async fn system_info(State(_state): State<AppState>) -> Json<WVPResult<serde
                 "path": path,
                 "free": free_gb,
                 "use":  used_gb,
+                "total": *total as f64,
+                "used":  *used as f64,
             })
         }).collect()
     };
@@ -878,6 +886,35 @@ pub async fn system_info(State(_state): State<AppState>) -> Json<WVPResult<serde
 
     let uptime = read_uptime().unwrap_or(3600.0) as u64;
 
+    // ---- 标量字段：前端「系统信息」页与 dashboard 读的就是这些 ----
+    //
+    // `cpu` / `mem` / `net` 是**折线图的历史采样数组**，标量百分比在
+    // `cpu_usage` / `mem_usage` / `disk_usage`。此前响应里没有
+    // `memory` / `version` / 资源计数，于是系统信息页的内存卡片恒 0%、
+    // 版本恒「加载中...」、资源统计恒 0，dashboard 的"在线设备"恒 0。
+    let memory_json = match read_memory_info() {
+        Some((total, _avail, used)) => serde_json::json!({
+            "total": total as f64,
+            "used": used as f64,
+            "free": total.saturating_sub(used) as f64,
+            "mem": mem_data,
+        }),
+        None => serde_json::json!({ "total": 0.0, "used": 0.0, "free": 0.0, "mem": mem_data }),
+    };
+
+    // 网络：按声明的 `{name, rx, tx}` 形状给出本进程测得的聚合速率（Mbps）
+    let network_json = serde_json::json!([{
+        "name": "total",
+        "rx": net_rx_mbps,
+        "tx": net_tx_mbps,
+    }]);
+
+    let total_devices = db::count_devices(&state.pool, None, None).await.unwrap_or(0);
+    let online_devices = db::count_devices(&state.pool, None, Some(true)).await.unwrap_or(0);
+    let total_channels = db::count_all_channels(&state.pool).await.unwrap_or(0);
+    let online_channels = db::count_online_channels(&state.pool).await.unwrap_or(0);
+    let media_server_count = crate::db::media_server::count_all(&state.pool).await.unwrap_or(0);
+
     let data = serde_json::json!({
         "cpu": cpu_data,
         "mem": mem_data,
@@ -888,8 +925,33 @@ pub async fn system_info(State(_state): State<AppState>) -> Json<WVPResult<serde
         "cpu_usage": cpu_usage_pct,
         "mem_usage": mem_pct,
         "disk_usage": disk_pct,
+        "memory": memory_json,
+        "network": network_json,
+        "version": env!("CARGO_PKG_VERSION"),
+        "buildTime": build_time_string(),
+        "mediaServerCount": media_server_count,
+        "deviceOnline": online_devices,
+        "deviceTotal": total_devices,
+        "channelOnline": online_channels,
+        "channelTotal": total_channels,
     });
     Json(WVPResult::success(data))
+}
+
+/// 可执行文件的构建时间（真实值：取当前 exe 的 mtime）。
+///
+/// 没有 vergen/build.rs，用 exe 的修改时间是最诚实且稳定的近似；
+/// 拿不到时返回 `"-"`，而不是编一个时间。
+fn build_time_string() -> String {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| std::fs::metadata(p).ok())
+        .and_then(|m| m.modified().ok())
+        .map(|t| {
+            let dt: chrono::DateTime<chrono::Local> = t.into();
+            dt.format("%Y-%m-%d %H:%M:%S").to_string()
+        })
+        .unwrap_or_else(|| "-".to_string())
 }
 
 /// GET /api/server/map/config
@@ -1836,5 +1898,162 @@ mod media_server_contract_tests {
                 assert!(item.get("gbReceive").is_some());
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod system_info_contract_tests {
+    use super::*;
+    use crate::test_support::app_state;
+
+    /// 前端「系统信息」页与 dashboard 读的是**标量**字段：
+    /// `cpu_usage` / `memory` / `disk[].total|used` / `version` / `buildTime` /
+    /// 资源计数。`cpu`/`mem`/`net` 是折线图的历史采样数组，不是标量。
+    #[tokio::test]
+    async fn system_info_returns_scalars_and_arrays() {
+        let state = app_state().await;
+        let res = system_info(State(state.clone())).await;
+        let d = res.0.data.expect("data");
+
+        // 折线图数组
+        assert!(d["cpu"].is_array(), "cpu 应是历史采样数组");
+        assert!(d["mem"].is_array());
+        assert!(d["net"].is_array());
+        assert!(d["netTotal"].is_number());
+
+        // 标量使用率
+        assert!(d["cpu_usage"].is_number(), "cpu_usage 是当前 CPU 百分比");
+        assert!(d["mem_usage"].is_number());
+        assert!(d["disk_usage"].is_number());
+
+        // 「系统信息」页内存卡片：memory.total/used 是字节
+        assert!(d["memory"]["total"].is_number(), "memory.total 缺失 → 卡片恒 0%");
+        assert!(d["memory"]["used"].is_number());
+        assert!(d["memory"]["free"].is_number());
+        assert!(d["memory"]["mem"].is_array(), "memory.mem 是历史采样数组");
+
+        // 磁盘卡片：total/used 字节；dashboard 柱状图用 use/free（GB）
+        let disk0 = &d["disk"][0];
+        assert!(disk0["total"].is_number(), "disk[].total 缺失 → 磁盘卡片恒 0%");
+        assert!(disk0["used"].is_number());
+        assert!(disk0["use"].is_number(), "dashboard 柱状图读 use(GB)");
+
+        assert!(d["version"].is_string());
+        assert!(d["buildTime"].is_string());
+        assert!(d["network"].is_array());
+
+        // 资源统计（页面三行 + dashboard 在线设备）
+        for key in [
+            "mediaServerCount",
+            "deviceOnline",
+            "deviceTotal",
+            "channelOnline",
+            "channelTotal",
+        ] {
+            assert!(d[key].is_number(), "{key} 应为数字");
+        }
+    }
+
+    /// 资源计数必须是**真实**的设备/通道/节点数，而不是恒 0。
+    #[tokio::test]
+    async fn system_info_resource_counts_match_db() {
+        let state = app_state().await;
+        sqlx::query(
+            "INSERT INTO gb_device (device_id, name, on_line, create_time, update_time) \
+             VALUES ('34020000001320000001', 'dev1', 1, '2026-01-01 00:00:00', '2026-01-01 00:00:00')",
+        )
+        .execute(&state.pool)
+        .await
+        .unwrap();
+
+        let res = system_info(State(state.clone())).await;
+        let d = res.0.data.unwrap();
+        assert_eq!(d["deviceTotal"], 1);
+        assert_eq!(d["deviceOnline"], 1);
+        assert_eq!(
+            d["mediaServerCount"],
+            crate::db::media_server::count_all(&state.pool).await.unwrap()
+        );
+    }
+}
+
+#[cfg(test)]
+mod log_export_contract_tests {
+    use super::*;
+    use crate::test_support::app_state;
+
+    /// `?format=csv` 必须真的返回 CSV 附件 —— 此前 `format` 被静默丢弃，
+    /// 接口回 JSON 而前端把它存成 `.csv`。
+    #[tokio::test]
+    async fn log_list_format_csv_returns_csv_attachment() {
+        let state = app_state().await;
+        sqlx::query(
+            "INSERT INTO gb_log (time, level, logger, thread, message, source) \
+             VALUES ('2026-01-01 00:00:00.000', 'ERROR', 'gbserver::x', 't1', 'boom, \"quoted\"', 'src/x.rs:1')",
+        )
+        .execute(&state.pool)
+        .await
+        .unwrap();
+
+        let res = crate::handlers::stub::log_list(
+            State(state.clone()),
+            Query(crate::handlers::stub::LogListQuery {
+                page: None,
+                count: None,
+                query: None,
+                log_type: None,
+                start_time: None,
+                end_time: None,
+                level: None,
+                format: Some("csv".to_string()),
+            }),
+        )
+        .await
+        .expect("csv export");
+
+        assert_eq!(
+            res.headers().get(axum::http::header::CONTENT_TYPE).unwrap(),
+            "text/csv; charset=utf-8"
+        );
+        assert!(res
+            .headers()
+            .get(axum::http::header::CONTENT_DISPOSITION)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .contains("gbserver-log-"));
+        let bytes = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
+        let text = String::from_utf8(bytes.to_vec()).unwrap();
+        assert!(text.starts_with('\u{feff}'), "CSV 应带 UTF-8 BOM");
+        assert!(text.contains("id,time,level,logger,thread,source,message"));
+        assert!(text.contains("\"boom, \"\"quoted\"\"\""));
+    }
+
+    /// 不传 format 时仍然是原来的 JSON 分页契约。
+    #[tokio::test]
+    async fn log_list_without_format_still_returns_json() {
+        let state = app_state().await;
+        let res = crate::handlers::stub::log_list(
+            State(state.clone()),
+            Query(crate::handlers::stub::LogListQuery {
+                page: Some(1),
+                count: Some(10),
+                query: None,
+                log_type: None,
+                start_time: None,
+                end_time: None,
+                level: None,
+                format: None,
+            }),
+        )
+        .await
+        .expect("json list");
+        assert!(res
+            .headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .starts_with("application/json"));
     }
 }
