@@ -10,20 +10,15 @@ pub struct SsrcAllocation {
 }
 
 pub struct SsrcManager {
-    device_prefix: String,
+    domain_part: String,
     counter: AtomicU32,
     allocations: DashMap<String, SsrcAllocation>,
 }
 
 impl SsrcManager {
     pub fn new(sip_device_id: &str) -> Self {
-        let prefix = if sip_device_id.len() >= 9 {
-            &sip_device_id[..9]
-        } else {
-            sip_device_id
-        };
         Self {
-            device_prefix: prefix.to_string(),
+            domain_part: crate::sip::server::ssrc_domain_part(sip_device_id),
             counter: AtomicU32::new(1),
             allocations: DashMap::new(),
         }
@@ -35,6 +30,12 @@ impl SsrcManager {
     /// 此前这里是 `format!("0{}{:04}0", prefix9, seq)` —— 前缀 9 位再加 4 位
     /// 序号加尾随 0，得到的是 **15 位**字符串，写进 INVITE 的 `y=` 即为非法值
     /// （单元测试还把 15 位当成期望值固化了下来）。
+    ///
+    /// 域标识取 SIP 域标识的第 4~8 位（WVP `SSRCFactory` 的
+    /// `sipDomain.substring(3, 8)`），`3402000000` → `20000`。
+    /// 早期实现取 SIP 设备号前 5 位（`34020`）：类型位为 `4`（对讲/广播）时
+    /// 得到 `4340200001` = 4,340,200,001 > `u32::MAX`，RTP 头装不下，
+    /// 平台只能回落到另一个 SSRC，与 `y=` 不一致。
     pub fn allocate(&self, device_id: &str, channel_id: &str, stream_type: &str) -> String {
         let seq = self.counter.fetch_add(1, Ordering::Relaxed);
         // 类型位：0 实时 / 1 回放 / 2 下载 / 4 广播(含对讲)
@@ -44,9 +45,12 @@ impl SsrcManager {
             "broadcast" | "talk" | "audio" => '4',
             _ => '0',
         };
-        // 域标识取 SIP 设备号前 5 位（不足 5 位左补 0）
-        let domain: String = self.device_prefix.chars().take(5).collect();
-        let ssrc = format!("{}{:0<5}{:04}", type_digit, domain, seq % 10000);
+        let ssrc = format!("{}{}{:04}", type_digit, self.domain_part, seq % 10000);
+        debug_assert!(
+            ssrc.parse::<u32>().is_ok(),
+            "SSRC 必须能被 u32 表示（RTP 头 32 位）：{}",
+            ssrc
+        );
 
         self.allocations.insert(ssrc.clone(), SsrcAllocation {
             ssrc: ssrc.clone(),

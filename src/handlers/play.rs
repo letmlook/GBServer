@@ -89,11 +89,10 @@ pub async fn play_start(
     if let Some(ref zlm_client) = state.zlm_client {
         // 创建 ZLM 的流。stream_id 使用规范格式: 设备ID_通道ID
         let stream_id = format!("{}_{}", device_id, channel_id);
-        // 规范 SSRC（10 位：1 位类型前缀 + 设备号前 9 位），
-        // 与 SIP 层 `build_play_ssrc` 保持完全一致。
-        // 此前这里算的是 `0{id9}0`（11 位），两条路径口径不同。
-        let id_part = if device_id.len() >= 9 { &device_id[0..9] } else { &device_id };
-        let ssrc = format!("0{:0>9}", id_part);
+        // 规范 SSRC（10 位：1 位类型 + 5 位域标识 + 4 位序号），
+        // 与 SIP 层 `build_play_ssrc` 共用同一实现 —— 两边各算一份时
+        // 一旦口径不同，INVITE 的 `y=` 与 ZLM/前端拿到的就不是同一个值。
+        let ssrc = crate::sip::server::build_play_ssrc(&device_id);
 
         let transport_mode = device
             .transport

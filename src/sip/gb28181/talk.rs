@@ -28,6 +28,12 @@ pub struct TalkSession {
     pub start_time: DateTime<Utc>,
     pub last_activity: DateTime<Utc>,
     pub timeout_seconds: u64,
+    /// 本端 From 头的 tag（INVITE 时生成，BYE 必须逐字复用）。
+    pub local_tag: Option<String>,
+    /// 对端 To 头的 tag（来自 200 OK 的 `To` 头，BYE 必须带上）。
+    pub remote_tag: Option<String>,
+    /// 本次 INVITE 的 CSeq（BYE 必须严格大于它）。
+    pub invite_cseq: u32,
 }
 
 impl TalkSession {
@@ -45,6 +51,9 @@ impl TalkSession {
             start_time: Utc::now(),
             last_activity: Utc::now(),
             timeout_seconds: 60,
+            local_tag: None,
+            remote_tag: None,
+            invite_cseq: 1,
         }
     }
 
@@ -63,6 +72,24 @@ impl TalkSession {
 
     pub fn set_ssrc(&mut self, ssrc: &str) {
         self.ssrc = Some(ssrc.to_string());
+    }
+
+    /// 记录对话标识（本地 From tag / INVITE CSeq）。
+    pub fn set_local_dialog(&mut self, local_tag: &str, invite_cseq: u32) {
+        self.local_tag = Some(local_tag.to_string());
+        self.invite_cseq = invite_cseq;
+    }
+
+    /// 回填 200 OK 里对端 To 头的 tag。
+    pub fn set_remote_tag(&mut self, remote_tag: &str) {
+        if !remote_tag.is_empty() {
+            self.remote_tag = Some(remote_tag.to_string());
+        }
+    }
+
+    /// BYE 的 CSeq：对话内必须严格递增。
+    pub fn bye_cseq(&self) -> u32 {
+        self.invite_cseq.saturating_add(1)
     }
 
     /// SSRC 的数值形式（RTP 头要 u32）。SSRC 按国标是 10 位十进制。
@@ -118,6 +145,24 @@ impl TalkManager {
             .values()
             .find(|s| s.device_id == device_id && s.channel_id == channel_id && s.is_active())
             .cloned()
+    }
+
+    /// 收到设备 200 OK：回填对端 To tag，并把会话置为 `Active`。
+    ///
+    /// 对端 tag 只出现在这个 200 OK 的 `To` 头里，不落库就补不回来：
+    /// 后续 BYE 的 `To` 缺 tag 会被设备判为"对话不存在"（481），
+    /// 设备不会停止发送音频。
+    pub async fn mark_answered(&self, call_id: &str, remote_tag: Option<&str>) -> bool {
+        let mut guard = self.sessions.write().await;
+        let Some(session) = guard.get_mut(call_id) else {
+            return false;
+        };
+        if let Some(tag) = remote_tag.filter(|t| !t.is_empty()) {
+            session.set_remote_tag(tag);
+        }
+        session.status = TalkStatus::Active;
+        session.update_activity();
+        true
     }
 
     /// 等会话进入 `Active`（设备 200 OK 时由 SIP 响应处理写入）。
@@ -249,5 +294,39 @@ mod tests {
         let (ip, port) = parse_talk_sdp(&sdp).unwrap();
         assert_eq!(ip, "192.168.1.1");
         assert_eq!(port, 8000);
+    }
+
+    /// BYE 必须是对话内请求：From tag 复用 INVITE 的、CSeq 严格递增。
+    #[test]
+    fn talk_bye_cseq_increments_after_invite() {
+        let mut s = TalkSession::new("talk_x", "dev", "ch");
+        assert_eq!(s.bye_cseq(), 2, "默认 INVITE CSeq=1 → BYE 必须为 2");
+        s.set_local_dialog("local-tag", 7);
+        assert_eq!(s.bye_cseq(), 8);
+        assert_eq!(s.local_tag.as_deref(), Some("local-tag"));
+        s.set_local_dialog("local-tag", u32::MAX);
+        assert_eq!(s.bye_cseq(), u32::MAX, "极端值不应溢出 panic");
+    }
+
+    /// 200 OK 到达时必须回填对端 To tag 并置 Active；空 tag 不覆盖旧值。
+    #[tokio::test]
+    async fn talk_mark_answered_backfills_remote_tag() {
+        let mgr = TalkManager::new();
+        mgr.create("talk_1", "dev", "ch").await;
+        assert!(!mgr.get("talk_1").await.unwrap().is_active());
+
+        assert!(mgr.mark_answered("talk_1", Some("remote-tag")).await);
+        let s = mgr.get("talk_1").await.unwrap();
+        assert!(s.is_active(), "200 OK 后会话必须 Active");
+        assert_eq!(s.remote_tag.as_deref(), Some("remote-tag"));
+
+        // 空 tag 不应覆盖已记录的值
+        assert!(mgr.mark_answered("talk_1", Some("")).await);
+        assert_eq!(
+            mgr.get("talk_1").await.unwrap().remote_tag.as_deref(),
+            Some("remote-tag")
+        );
+        // 未知 call_id 返回 false
+        assert!(!mgr.mark_answered("nope", Some("t")).await);
     }
 }

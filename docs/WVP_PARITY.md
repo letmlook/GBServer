@@ -12,7 +12,7 @@
 | 总代码量（src/） | 79,179 行 Rust | `find src -name '*.rs' \| xargs wc -l` |
 | 已注册 HTTP 路由 | 386 条唯一 `/api/...` 路径 | `grep -oE '"/api/[^"]*"' src/router.rs \| sort -u \| wc -l` |
 | Handler 模块 | 29 个（含 `stub.rs` / `device_stub.rs` 两个兼容 shim） | `grep -c 'pub mod' src/handlers/mod.rs` |
-| 后端测试 | **722 通过 / 0 失败**（第五十三轮刷新） | `cargo test` |
+| 后端测试 | **728 通过 / 0 失败**（第五十四轮刷新） | `cargo test` |
 | 编译状态 | `cargo check` 0 error / **0 warning**；clippy 262；**deprecated 0** | `cargo check` / `cargo clippy --all-targets` |
 | 数据库 feature | SQLite（默认）/ PostgreSQL / MySQL **三者均编译通过** | CI `feature-matrix` job |
 | CI | ⏸️ 工作流已就绪但**按需暂停自动触发**（见 `.github/workflows/ci.yml`） | — |
@@ -274,6 +274,15 @@ INVITE 为 `a=recvonly`（平台收、设备发），设备 200 OK 才是 `a=sen
   与 `/api/ws` 一致，由 handler 内部用 `?token=` 校验。
 * 对讲 SDP 的 `y=` 与实际 RTP 包的 SSRC 现在同一个值（`build_audio_ssrc`，
   前缀 4；会话记录该 SSRC）。
+
+> **⚠️ 第五十四轮更正**：上面这条与下面的"端到端验证"当时**结论下错了**。
+> 记录的 `ssrc=4000000000` 其实是 `TalkAudioSender` 的**回落值** —— 因为
+> `build_ssrc(4, "34020000001320000001")` 生成的是 `4340200000`
+> = 4,340,200,000 > `u32::MAX`，`ssrc_u32()` 解析失败才回落到 4000000000，
+> 而 SDP 里发出去的 `y=` 一直是 `4340200000`。当时的假设备 Listener 只打印了
+> RTP 包的 SSRC、没有和 SDP 比对，所以"同一个值"是**未经核对的推断**。
+> 第五十四轮已按 WVP `SSRCFactory` 改为「1 位类型 + 5 位域标识(第 4~8 位) +
+> 4 位序号」，并**同时抓 `y=` 与 RTP 包**做逐字段比对（见第五十四轮）。
 
 **端到端验证**（真实服务 + 真实 SIP 发包 + 手写最小 WS 客户端 + 假设备 UDP 监听）：
 
@@ -2551,6 +2560,128 @@ npx playwright test              66 passed / 0 failed
 GB28181 录像下载                  ✅ 真产出 MP4、真能下载（含 Range）
 ```
 
+### 出站对话生命周期、录像控制取值与 SSRC：三处"能用假成功掩盖"的缺陷（2026-09-13 第五十四轮）
+
+本轮从"接口返回 200"之外的角度继续找真实缺陷：**把报文抓出来逐字段核对**。
+两条线索来自模拟设备侧的严格校验/监听，一条来自前端实际发送的取值。
+
+#### 1. `/api/device/control/record`：前端点"开始录像"，实际下发的是**停止录像**
+
+前端（`web/src/api/device.ts`、`web-legacy-vue2/src/api/device.js`）发的是
+`recordCmdStr=Record|StopRecord`（WVP 文档里写作 `recordCmd`），而后端判据是
+`record_cmd.to_lowercase() == "start"` —— `"record" != "start"`，于是
+**任何** `Record` 请求都会走到 `else` 分支下发 `<RecordCmd>StopRecord</RecordCmd>`，
+返回值里的 `recording` 也永远是 `false`。
+
+实测（修复前）：
+
+```
+GET /api/device/control/record?...&recordCmd=Record
+→ {"recordCmd":"","recording":false}          假设备收到: RecordCmd=StopRecord
+```
+
+修复：接受 `recordCmdStr` / `recordCmd` / `cmd` 三个参数名，取值同时接受
+`Record|StopRecord|start|stop|on|off|1|0`（大小写/空白容错）；
+**无法识别的取值直接报错**，不再退化成功。
+
+实测（修复后）：
+
+```
+recordCmdStr=Record      → RecordCmd=Record       recording=true
+recordCmdStr=StopRecord  → RecordCmd=StopRecord   recording=false
+recordCmdStr=Bogus       → {"code":-1,"msg":"recordCmdStr 只能为 Record 或 StopRecord"}
+```
+
+#### 2. 对讲/广播的 BYE **不是对话内请求**，真实设备会回 481 并继续推流
+
+`send_talk_bye` / `send_broadcast_bye` 是两份"手写"报文：`CSeq` 硬编码 `1`
+（与 INVITE 相同）、`From` 每次 `generate_tag()` 新生成、`To` **完全不带 tag**。
+RFC 3261 §12.2.2 要求 BYE 必须落在 INVITE 建立的对话里，三条任一不满足，
+设备按"对话不存在"处理并**不停止音频**。同一份缺陷在 play/playback 路径
+此前已修，但对讲/广播是独立的 manager + 独立的报文构造，漏了。
+
+同时发现：`talk_` / `bc_` 的 call_id 不在 `handle_response` 的 `is_invite`
+判据里，因此**这两类 INVITE 收到 200 OK 后从不发 ACK**（国标三次握手不完整），
+`talk_` 也从不回填对端 To tag（BYE 必然缺 tag）。
+
+修复：
+
+* `TalkSession` / `BroadcastSession` 增加 `local_tag` / `remote_tag` /
+  `invite_cseq`（`set_local_dialog` / `set_remote_tag` / `bye_cseq`），
+  INVITE 时记录本地 tag 与 CSeq，200 OK 时回填对端 tag 并置 `Active`
+  （`TalkManager::mark_answered` / `BroadcastManager::mark_answered`）；
+* 两处 BYE 改用 `bye_cseq()`（= INVITE CSeq + 1）、复用 INVITE 的 From tag、
+  带上 200 OK 的 To tag；
+* `handle_response` 的 `is_invite` 判据补上 `talk_` / `bc_` 前缀 →
+  ACK 与 200 OK 等待通道对这两类对话同样生效；
+* 广播 INVITE 补齐 `session_manager` 事务上下文（此前广播**从来不发 ACK**）；
+* `send_talk_bye` 收尾时把会话置 `Terminated` 并移出 `TalkManager`
+  —— 此前只置 `Terminating`，而 `cleanup_expired` 只清 `Terminated`，
+  每个结束的对讲都会永久留在内存里。
+
+模拟设备对 BYE 本来就有**对话校验**（From tag / To tag / CSeq），修复前后：
+
+```
+修复前: BYE 对话校验失败 call_id=talk_… errors=['from-tag-mismatch',
+        'to-tag-mismatch','cseq-not-incremented'] (BYE CSeq=1, INVITE CSeq=1)
+修复后: bye_report.json → {"total":4,"valid":4,"invalid":0,"failures":[]}
+        后端日志: Sent ACK to device for call_id=talk_… / bc_…
+                  SIP Response: 200 OK - CallID: talk_… cseq=2 BYE
+```
+
+（校验器与报告：`mock/tools/sip-device/sip_device_mock.py` 的 `_on_bye` /
+`SIP_MOCK_BYE_REPORT`。）
+
+#### 3. 对讲 SSRC：`y=` 发的是 **u32 装不下**的值，实际 RTP 用的是另一个
+
+`build_ssrc(prefix, device_id)` 取"类型位 + 设备号前 9 位"：
+`4` + `340200000` = `4340200000` = 4,340,200,000 > `u32::MAX` (4,294,967,295)。
+于是 `TalkSession::ssrc_u32()` 解析失败 → `TalkAudioSender` 回落到
+`fallback_ssrc` = 4000000000，**SDP/Subject 宣告的 SSRC 与实际 RTP 包头不一致**
+（GB28181 要求 `y=` 即 RTP 的 SSRC；接收方按它关联媒体流）。
+
+修复：与 WVP `SSRCFactory` 对齐 —— SSRC = `1 位类型 + 5 位域标识 + 4 位序号`，
+域标识取 SIP 域标识的**第 4~8 位**（`sipDomain.substring(3, 8)`，
+`3402000000` → `20000`），使类型位 `4` 时 10 位数仍 < 2^32。
+`SsrcManager` 同步改用同一域标识规则（此前取设备号前 5 位 `34020`，
+类型位 4 时同样溢出）。`handlers/play.rs` 里那份**重复实现**的 SSRC
+也改为调用 `crate::sip::server::build_play_ssrc`，避免两处口径漂移。
+
+新增/更新的测试：
+`all_ssrc_types_fit_in_u32`、`download_ssrc_uses_type_domain_and_sequence`。
+
+实测（修复后，一把抓齐 `y=` 与 RTP 包头）：
+
+```
+INVITE 收到: Subject=34020000001320000001:4200000001,…  s=Talk y=4200000001
+对讲音频 RTP 首包: PT=8 ssrc=FA56EA01(hex) = 4200000001  seq=0 len=172
+talk_report.json → {"packets":50,"bytes":8600,"out_of_order":0,
+                    "first":{"payload_type":8,"ssrc":4200000001}}
+MATCH = True
+实时点播/回放同样合法: s=Play y=0200000001 / s=Playback y=1200000001
+```
+
+#### 4. 顺手补上的验证工具（此前"对讲可用"无法自证）
+
+* `mock/tools/sip-device/sip_device_mock.py`：收到 Talk INVITE 后**真的绑定**
+  设备 `m=audio` 端口（`TalkAudioReceiver`），解析 RTP 头（版本/PT/序号/
+  时间戳/SSRC）、统计丢序，并写 `SIP_MOCK_TALK_REPORT`；
+  此前 mock 只上报端口、从不监听，"平台发了音频没有"完全没被验证。
+* `mock/tools/talk-audio-probe.py`：**标准库**实现的 WebSocket 客户端
+  （不依赖 `websockets` 包），按 20ms/帧推 8kHz 小端 i16 PCM，
+  并打印服务端回报的 `{packets,bytes}`。
+
+#### 第五十四轮基线
+
+```
+cargo test                       728 passed / 0 failed（+6）
+cargo build --features postgres/mysql  OK（各自独立 target 目录，避免覆盖 sqlite 二进制）
+npx playwright test              66 passed / 0 failed
+录像控制                          ✅ Record/StopRecord 与下发 XML 一致，非法取值报错
+对讲/广播 BYE                     ✅ 对话内请求（4/4 校验通过）+ 真的发 ACK
+对讲音频                          ✅ SDP y= == RTP SSRC == 4200000001，50 包 0 丢序
+```
+
 ### 前端↔后端契约审计：**16 个模块 130 条全部修完**（2026-09-12 第三十九轮）
 
 第二十六轮用"一个模块一个 agent"的方式把 16 个前端 API 模块逐个对后端路由/DTO
@@ -3009,6 +3140,7 @@ vue-tsc --noEmit                 通过
 - 2026-09-12 第五十一轮：`cargo test` —— **717 通过 / 0 失败**（删除 JT1078 终端连带清理其通道；`delete_channels_by_terminal` 此前零调用留下孤儿行）
 - 2026-09-12 第五十二轮：`cargo test` —— **719 通过 / 0 失败**（收藏录像三方言静默坏掉 + 既有库迁移；取消收藏与收藏列表打通；云端录像删除按 ZLM 的按目录语义连带清理同目录记录，消除孤儿行）
 - 2026-09-12 第五十三轮：`cargo test` —— **722 通过 / 0 失败**（GB28181 录像下载真正打通：on_publish 下发 enable_mp4、on_record_mp4 登记会话文件、新增 /download/file 端点支持 Range、stop 不再提前删会话；实测产出 176KB MP4 并可 206 分段下载）
+- 2026-09-13 第五十四轮：`cargo test` —— **728 通过 / 0 失败**（远程录像控制取值语义修正（前端发 Record 却下发 StopRecord）、对讲/广播 BYE 改为对话内请求并补 ACK、对讲会话结束即回收、SSRC 与 WVP SSRCFactory 对齐（类型位 4 的 10 位数不再溢出 u32）；新增假设备对讲音频接收器与标准库 WS 探针，实测 SDP `y=` == RTP 包头 SSRC == 4200000001）
 - 2026-09-12 第三十一轮：`cargo test` —— **641 通过 / 0 失败**（JT1078 终端/围栏 13 条）
 - 2026-09-12 第三十轮：`cargo test` —— **637 通过 / 0 失败**（设备页 7 条）
 - 2026-09-12 第二十九轮：`cargo test` —— **634 通过 / 0 失败**（云端录像全链路）

@@ -181,17 +181,52 @@ pub(crate) fn build_playback_control_xml(
         )
     }
 }
-/// 构造 GB28181 的 10 位 SSRC：1 位类型前缀 + 设备号前 9 位。
+/// 构造 GB28181 的 10 位 SSRC：`1 位类型 + 5 位域标识 + 4 位序号`。
 ///
-/// 类型前缀（国标）：`0` 实时点播 / `1` 回放 / `2` 下载。
-/// 设备号不足 9 位时右补 0（`{:0>9}`）。
+/// 类型前缀（国标）：`0` 实时点播 / `1` 回放 / `2` 下载 / `3` 广播 / `4` 对讲。
+/// 域标识取 SIP 域标识的第 4~8 位（与 WVP `SSRCFactory`
+/// 的 `sipDomain.substring(3, 8)` 一致）。
+///
+/// **不能**用「类型位 + 设备号前 9 位」：设备号以 `3402` 开头时，类型位 `4`
+/// （对讲/广播）会得到 `4340200000` = 4,340,200,000 > `u32::MAX`
+/// （4,294,967,295），RTP 头根本装不下 —— 实测 `y=` 发的是 4340200000，
+/// 而平台实际发出的 RTP 包里 SSRC 只能是回落值 4000000000，两者不一致。
+/// 域标识取第 4~8 位（`3402000000` → `20000`）后，1 位类型 + 5 位域 + 4 位序号
+/// 恒小于 2^32（4.2 亿级），`y=`、`Subject`、ZLM `ssrc` 参数与 RTP 包头得以统一。
 fn build_ssrc(prefix: u8, device_id: &str) -> String {
-    let id_part = if device_id.len() >= 9 {
-        &device_id[0..9]
+    let domain = ssrc_domain_part(device_id);
+    // 4 位序号：取设备号后 4 位数字，保证同一设备稳定、不同设备基本不冲突。
+    // 需要严格唯一的场景（级联 startSendRtp，ZLM 按 ssrc 选流）走
+    // `SsrcManager::allocate`（自增计数器 + 占用表）。
+    let digits: String = device_id.chars().filter(|c| c.is_ascii_digit()).collect();
+    let tail: String = if digits.len() >= 4 {
+        digits[digits.len() - 4..].to_string()
     } else {
-        device_id
+        format!("{:0>4}", digits)
     };
-    format!("{}{:0>9}", prefix, id_part)
+    let ssrc = format!("{}{}{}", prefix, domain, tail);
+    // 防御：任何输入下都必须能被 u32 表示，否则宁可给出确定性的合法值。
+    match ssrc.parse::<u32>() {
+        Ok(_) => ssrc,
+        Err(_) => {
+            let fallback = format!("{}{:0<5}{:0>4}", prefix, "0", "0");
+            debug_assert!(fallback.parse::<u32>().is_ok());
+            fallback
+        }
+    }
+}
+
+/// SSRC 的 5 位域标识：SIP 域标识的第 4~8 位（WVP `sipDomain.substring(3, 8)`）。
+///
+/// `3402000000` → `20000`；长度不足 8 时退化为前 5 位并按需左补 0。
+pub(crate) fn ssrc_domain_part(sip_id: &str) -> String {
+    let raw: String = sip_id.chars().filter(|c| c.is_ascii_digit()).collect();
+    let part: String = if raw.len() >= 8 {
+        raw.chars().skip(3).take(5).collect()
+    } else {
+        raw.chars().take(5).collect()
+    };
+    format!("{:0<5}", part)
 }
 
 /// 实时点播 SSRC（前缀 0）。
@@ -3596,6 +3631,10 @@ let renewal_pool = pool.clone();
         // 填的信令地址，不是媒体地址）。
         if call_id.starts_with("talk_") {
             if resp.status_code() == 200 {
+                // 对端 To tag 只在这个 200 OK 里出现一次：先落库再解析 SDP，
+                // 即使 SDP 解析失败（部分设备不回 SDP）BYE 也仍是合法对话内请求。
+                let remote_tag = resp.headers.get("to").and_then(|t| extract_sip_tag(t));
+                talk_manager.mark_answered(&call_id, remote_tag.as_deref()).await;
                 match resp.body.as_deref().and_then(|b| {
                     crate::sip::gb28181::talk::parse_talk_sdp(b)
                 }) {
@@ -3668,7 +3707,12 @@ let renewal_pool = pool.clone();
             let is_invite = cseq.contains("INVITE")
                 || call_id.starts_with("play_")
                 || call_id.starts_with("playback_")
-                || call_id.starts_with("download_");
+                || call_id.starts_with("download_")
+                // 语音对讲 / 广播同样是 INVITE 对话：它们也需要 ACK
+                // （缺 ACK 真实设备不推流/不收音）与 200 OK 的对端 tag
+                // （BYE 必须带上，否则设备回 481 继续推流）。
+                || call_id.starts_with("talk_")
+                || call_id.starts_with("bc_");
             if is_invite {
                 session_manager
                     .update_status(&call_id, SessionStatus::Ringing)
@@ -5120,6 +5164,9 @@ f=v/1/96/1/2/1/1/0
         // SSRC 前缀 4 = 音频/广播；SDP 的 y= 与后续 RTP 包都用它
         let talk_ssrc = build_audio_ssrc(device_id);
         session.set_ssrc(&talk_ssrc);
+        // 对话标识：BYE 必须复用同一个 From tag、且 CSeq 严格递增，
+        // 否则真实设备按 481 拒绝，音频不会停。
+        session.set_local_dialog(&from_tag, 1);
         session.status = TalkStatus::Inviting;
         self.talk_manager.update(&session).await;
 
@@ -5217,7 +5264,10 @@ f=v/1/96/1/2/1/1/0
 
         let call_id = &session.call_id;
         let branch = generate_branch();
-        let cseq = cseq_header(1, "BYE").to_string();
+        // 对话内请求（RFC 3261 §12.2.2）：From tag 必须复用 INVITE 的本地 tag，
+        // To 必须带 200 OK 给出的对端 tag，CSeq 必须严格大于 INVITE 的 CSeq。
+        // 三条任一不满足，真实设备回 481 并**继续发送音频**。
+        let cseq = cseq_header(session.bye_cseq(), "BYE").to_string();
 
         let via = format!(
             "SIP/2.0/UDP {}:{};branch={};rport",
@@ -5228,14 +5278,17 @@ f=v/1/96/1/2/1/1/0
             self.config.device_id,
             self.config.ip,
             self.config.port,
-            generate_tag()
+            session.local_tag.clone().unwrap_or_else(generate_tag)
         );
-        let to = format!(
+        let mut to = format!(
             "<sip:{}@{}:{}>",
             channel_id,
             device_addr.ip(),
             device_addr.port()
         );
+        if let Some(remote_tag) = session.remote_tag.as_deref() {
+            to = format!("{};tag={}", to, remote_tag);
+        }
 
         let headers: Vec<(&str, &str)> = vec![
             ("Via", &via),
@@ -5264,6 +5317,15 @@ f=v/1/96/1/2/1/1/0
                 let _ = zlm.close_rtp_server(stream_id).await;
             }
         }
+
+        // 会话生命周期收尾：BYE 已发出、RTP 端口已关，会话必须置为 Terminated
+        // 并移出 TalkManager。此前只置 Terminating，而 `cleanup_expired` 只清理
+        // Terminated —— 每个结束的对讲都会永久留在内存里，而且
+        // `get_any_by_device_channel`（不限状态）可能取到这些僵尸会话。
+        self.talk_manager
+            .update_status(call_id, TalkStatus::Terminated)
+            .await;
+        self.talk_manager.remove(call_id).await;
 
         Ok(())
     }
@@ -5320,8 +5382,9 @@ f=v/1/96/1/2/1/1/0
 
         let via = format!("SIP/2.0/UDP {}:{};branch={};rport",
             self.config.ip, self.config.port, branch);
+        let from_tag = generate_tag();
         let from = format!("<sip:{}@{}:{}>;tag={}",
-            self.config.device_id, self.config.ip, self.config.port, generate_tag());
+            self.config.device_id, self.config.ip, self.config.port, from_tag);
         let to = format!("<sip:{}@{}:{}>", channel_id, device_addr.ip(), device_addr.port());
         let contact = format!("<sip:{}@{}:{}>", self.config.device_id, self.config.ip, self.config.port);
         // Subject（与 WVP 一致）：`<通道编码>:<SSRC>,<本级编码>:0`
@@ -5345,13 +5408,69 @@ f=v/1/96/1/2/1/1/0
 
         let uri = format!("sip:{}@{}:{}", channel_id, device_addr.ip(), device_addr.port());
         let message = Parser::generate_request("INVITE", &uri, &headers, Some(&sdp));
+
+        // 对话标识 + SIP 事务上下文：
+        // * `set_local_dialog`：BYE 复用 From tag、CSeq 递增（否则 481）；
+        // * `session_manager`：200 OK 后要发 ACK，缺上下文就不发 ACK，
+        //   国标三次握手不完整，设备不会推流。
+        session.set_local_dialog(&from_tag, 1);
+        self.session_manager
+            .create(&call_id, device_id, channel_id, "Broadcast")
+            .await;
+        self.session_manager
+            .set_invite_context(&call_id, from.clone(), 1, device_addr)
+            .await;
+
+        // 注册 200 OK 等待通道（必须在发包之前，防止竞态）。
+        // 广播是"发完即返回"的接口，因此由后台任务消费这个响应：
+        // 只做一件事 —— 把 200 OK 里对端 To tag 回填到 BroadcastSession，
+        // 供 BYE 使用（不带 tag 的 BYE 会被设备判为 481 且继续推流）。
+        let (tx, rx) = oneshot::channel::<SipResponse>();
+        self.pending_invites.insert(call_id.clone(), tx);
+
         self.send_request_to(device_addr, &message).await?;
         tracing::info!("Sent BROADCAST INVITE to device={} channel={} call_id={}",
             device_id, channel_id, call_id);
 
-        // 3. 注册会话到 BroadcastManager
+        // 3. 注册会话到 BroadcastManager（状态仍为 Pending，等 200 OK 置 Active）
         self.broadcast_manager.create(session.clone()).await;
-        self.broadcast_manager.activate(&call_id).await;
+
+        {
+            let manager = self.broadcast_manager.clone();
+            let pending = self.pending_invites.clone();
+            let waiter_call_id = call_id.clone();
+            tokio::spawn(async move {
+                match tokio::time::timeout(Duration::from_secs(15), rx).await {
+                    Ok(Ok(resp)) if resp.status_code() == 200 => {
+                        let tag = resp.headers.get("to").and_then(|t| extract_sip_tag(t));
+                        manager.mark_answered(&waiter_call_id, tag.as_deref()).await;
+                        tracing::debug!(
+                            "BROADCAST 200 OK call_id={} remote_tag={:?}",
+                            waiter_call_id,
+                            tag
+                        );
+                    }
+                    Ok(Ok(resp)) => {
+                        tracing::warn!(
+                            "BROADCAST INVITE 被拒绝 call_id={} status={} {}",
+                            waiter_call_id,
+                            resp.status_code(),
+                            resp.reason
+                        );
+                    }
+                    Ok(Err(_)) => {}
+                    Err(_) => {
+                        // 超时：没有 200 OK。清掉等待槽位，避免泄漏；
+                        // 会话保持 Pending，由调用方/bye 路径处理。
+                        pending.remove(&waiter_call_id);
+                        tracing::warn!(
+                            "BROADCAST INVITE 超时未收到 200 OK call_id={}",
+                            waiter_call_id
+                        );
+                    }
+                }
+            });
+        }
 
         Ok(call_id)
     }
@@ -5366,13 +5485,18 @@ f=v/1/96/1/2/1/1/0
             .ok_or_else(|| anyhow::anyhow!("Device {} not registered", device_id))?;
         let call_id = &session.call_id;
         let branch = generate_branch();
-        let cseq = cseq_header(1, "BYE").to_string();
+        // 与 talk/play 同理：BYE 必须是对话内请求，否则设备回 481 继续推流。
+        let cseq = cseq_header(session.bye_cseq(), "BYE").to_string();
 
         let via = format!("SIP/2.0/UDP {}:{};branch={};rport",
             self.config.ip, self.config.port, branch);
         let from = format!("<sip:{}@{}:{}>;tag={}",
-            self.config.device_id, self.config.ip, self.config.port, generate_tag());
-        let to = format!("<sip:{}@{}:{}>", channel_id, device_addr.ip(), device_addr.port());
+            self.config.device_id, self.config.ip, self.config.port,
+            session.local_tag.clone().unwrap_or_else(generate_tag));
+        let mut to = format!("<sip:{}@{}:{}>", channel_id, device_addr.ip(), device_addr.port());
+        if let Some(remote_tag) = session.remote_tag.as_deref() {
+            to = format!("{};tag={}", to, remote_tag);
+        }
 
         let headers: Vec<(&str, &str)> = vec![
             ("Via", &via),
@@ -7872,20 +7996,42 @@ mod playback_control_tests {
     }
 
     #[test]
-    fn download_ssrc_uses_prefix_2_padded_9_chars() {
+    fn download_ssrc_uses_type_domain_and_sequence() {
         let ssrc = build_download_ssrc("34020000001320000001");
-        // prefix "2" + 9 digit ID = 10 chars total
+        // 类型位 "2" + 域标识 "20000"(SIP 域第 4~8 位) + 序号 "0001" = 10 位
         assert_eq!(ssrc.len(), 10);
         assert!(ssrc.starts_with('2'));
-        // device_id 前 9 位是 "340200000"，与前缀 2 拼接 = "2340200000"
-        assert_eq!(ssrc, "2340200000");
+        assert_eq!(ssrc, "2200000001");
+        // RTP 头只有 32 位，SSRC 必须能被 u32 表示
+        assert!(ssrc.parse::<u32>().is_ok(), "{ssrc} 超出 u32");
+    }
+
+    /// 四种类型位的 SSRC 都必须落进 u32：类型位 `4`（对讲/广播）用
+    /// 「设备号前 9 位」会得到 4340200000 > u32::MAX，RTP 装不下，
+    /// 导致 `y=` 与实际 RTP 包 SSRC 不一致。
+    #[test]
+    fn all_ssrc_types_fit_in_u32() {
+        for device in [
+            "34020000001320000001",
+            "34020000002000000001",
+            "34020000001310000099",
+        ] {
+            for (prefix, _name) in [(0u8, "play"), (1, "playback"), (2, "download"), (4, "talk")] {
+                let ssrc = build_ssrc(prefix, device);
+                assert_eq!(ssrc.len(), 10, "{device} prefix={prefix} -> {ssrc}");
+                let n: u32 = ssrc
+                    .parse()
+                    .unwrap_or_else(|_| panic!("{device} prefix={prefix} -> {ssrc} 不是合法 u32"));
+                assert!(n <= u32::MAX);
+            }
+        }
     }
 
     #[test]
-    fn download_ssrc_pads_short_device_id() {
+    fn download_ssrc_handles_short_device_id() {
         let ssrc = build_download_ssrc("123");
-        // 不足 9 位左补 0（{:0>9} 是右对齐，所以短串左补）：prefix "2" + "000000123"
-        assert_eq!(ssrc, "2000000123");
+        assert_eq!(ssrc.len(), 10);
+        assert!(ssrc.parse::<u32>().is_ok(), "{ssrc}");
     }
 
     /// Subject 必须与 WVP 一致：`<通道编码>:<SSRC>,<本级编码>:0`。

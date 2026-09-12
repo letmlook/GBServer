@@ -633,16 +633,31 @@ fn stream_row_json(media_server_id: &str, s: &crate::zlm::types::MediaInfo) -> s
 
 /// GET /api/device/control/record
 /// 设备远程录像控制
-/// 参数: deviceId, channelId, recordCmdStr (Start/Stop)
+///
+/// 参数: deviceId, channelId, recordCmdStr / recordCmd (Record|StopRecord)
 /// 返回: 录像控制结果
+///
+/// 前端（`web/src/api/device.ts` 与 `web-legacy-vue2/src/api/device.js`）发送的是
+/// `recordCmdStr=Record|StopRecord`；WVP-PRO 的对外 API 文档写的是 `recordCmd`。
+/// 两种参数名、以及 `start/stop/on/off` 之类的宽松取值都接受，
+/// 空值或无法识别的取值直接返回错误（而不是默默按“停止录像”下发）。
 #[derive(Debug, Deserialize)]
 pub struct RecordControlQuery {
     #[serde(alias = "deviceId")]
     pub device_id: Option<String>,
     #[serde(alias = "channelId")]
     pub channel_id: Option<String>,
-    #[serde(alias = "recordCmdStr")]
+    #[serde(alias = "recordCmdStr", alias = "recordCmd", alias = "cmd")]
     pub record_cmd_str: Option<String>,
+}
+
+/// 解析远程录像控制取值，返回 `true` 表示开始录像。
+fn parse_record_cmd(raw: &str) -> Option<bool> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "record" | "start" | "startrecord" | "on" | "1" | "true" => Some(true),
+        "stoprecord" | "stop" | "off" | "0" | "false" => Some(false),
+        _ => None,
+    }
 }
 
 pub async fn control_record(
@@ -657,9 +672,17 @@ pub async fn control_record(
         return Json(WVPResult::error("device_id and channel_id are required"));
     }
 
-    tracing::info!("Record control: device={}, channel={}, cmd={}", device_id, channel_id, record_cmd);
+    let is_start = match parse_record_cmd(&record_cmd) {
+        Some(v) => v,
+        None => {
+            return Json(WVPResult::error(
+                "recordCmdStr 只能为 Record 或 StopRecord",
+            ))
+        }
+    };
 
-    let is_start = record_cmd.to_lowercase() == "start";
+    tracing::info!("Record control: device={}, channel={}, cmd={}, start={}", device_id, channel_id, record_cmd, is_start);
+
     let record_cmd_xml = if is_start {
         "<RecordCmd>Record</RecordCmd>".to_string()
     } else {
@@ -1209,6 +1232,22 @@ mod device_write_tests {
         assert_eq!(d["deviceId"], "34020000001320000002");
         assert_eq!(d["expires"], 1800);
         assert!(d.get("onLine").is_some(), "在线状态键名是 onLine（与 WVP 一致）");
+    }
+
+    /// 远程录像控制取值解析：前端发 `recordCmdStr=Record|StopRecord`，
+    /// 旧实现只认小写 `start`，导致“开始录像”按钮实际下发 StopRecord。
+    #[test]
+    fn test_parse_record_cmd_accepts_frontend_values() {
+        assert_eq!(parse_record_cmd("Record"), Some(true));
+        assert_eq!(parse_record_cmd("StopRecord"), Some(false));
+        // WVP 风格 / 宽松取值
+        assert_eq!(parse_record_cmd(" start "), Some(true));
+        assert_eq!(parse_record_cmd("stop"), Some(false));
+        assert_eq!(parse_record_cmd("On"), Some(true));
+        assert_eq!(parse_record_cmd("off"), Some(false));
+        // 无法识别的取值必须被拒绝，而不是退化成 StopRecord
+        assert_eq!(parse_record_cmd(""), None);
+        assert_eq!(parse_record_cmd("bogus"), None);
     }
 
     /// `sync_status` 必须有 total/current/errorMsg（WVP `SyncStatus`），

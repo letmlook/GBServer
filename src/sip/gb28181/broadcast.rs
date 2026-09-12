@@ -35,6 +35,12 @@ pub struct BroadcastSession {
     pub start_time: DateTime<Utc>,
     pub last_activity: DateTime<Utc>,
     pub timeout_seconds: u64,
+    /// 本端 From 头的 tag（INVITE 时生成，BYE 必须逐字复用）。
+    pub local_tag: Option<String>,
+    /// 对端 To 头的 tag（来自 200 OK 的 `To` 头，BYE 必须带上）。
+    pub remote_tag: Option<String>,
+    /// 本次 INVITE 的 CSeq（BYE 必须严格大于它）。
+    pub invite_cseq: u32,
 }
 
 impl BroadcastSession {
@@ -51,6 +57,9 @@ impl BroadcastSession {
             start_time: Utc::now(),
             last_activity: Utc::now(),
             timeout_seconds: 60,
+            local_tag: None,
+            remote_tag: None,
+            invite_cseq: 1,
         }
     }
 
@@ -65,6 +74,24 @@ impl BroadcastSession {
 
     pub fn set_local_port(&mut self, port: u16) {
         self.local_port = port;
+    }
+
+    /// 记录对话标识（本地 From tag / INVITE CSeq）。
+    pub fn set_local_dialog(&mut self, local_tag: &str, invite_cseq: u32) {
+        self.local_tag = Some(local_tag.to_string());
+        self.invite_cseq = invite_cseq;
+    }
+
+    /// 回填 200 OK 里对端 To 头的 tag。
+    pub fn set_remote_tag(&mut self, remote_tag: &str) {
+        if !remote_tag.is_empty() {
+            self.remote_tag = Some(remote_tag.to_string());
+        }
+    }
+
+    /// BYE 的 CSeq：对话内必须严格递增。
+    pub fn bye_cseq(&self) -> u32 {
+        self.invite_cseq.saturating_add(1)
     }
 
     pub fn is_active(&self) -> bool {
@@ -118,6 +145,23 @@ impl BroadcastManager {
             s.status = BroadcastStatus::Active;
             s.update_activity();
         }
+    }
+
+    /// 收到设备 200 OK：回填对端 To tag，并把会话置为 `Active`。
+    ///
+    /// 对端 tag 只在 200 OK 的 `To` 头里出现，BYE 的 `To` 缺它会被设备
+    /// 判为"对话不存在"（481），设备继续推流。
+    pub async fn mark_answered(&self, call_id: &str, remote_tag: Option<&str>) -> bool {
+        let mut guard = self.sessions.write().await;
+        let Some(s) = guard.get_mut(call_id) else {
+            return false;
+        };
+        if let Some(tag) = remote_tag.filter(|t| !t.is_empty()) {
+            s.set_remote_tag(tag);
+        }
+        s.status = BroadcastStatus::Active;
+        s.update_activity();
+        true
     }
 
     pub async fn start_terminating(&self, call_id: &str) {
@@ -178,6 +222,35 @@ mod tests {
         assert_eq!(got.status, BroadcastStatus::Pending);
         mgr.remove("call-1").await;
         assert_eq!(mgr.count().await, 0);
+    }
+
+    /// BYE 必须是对话内请求：CSeq 严格大于 INVITE 的。
+    #[test]
+    fn broadcast_bye_cseq_increments_after_invite() {
+        let mut s = make_session("bc_x", "dev", "ch");
+        assert_eq!(s.bye_cseq(), 2);
+        s.set_local_dialog("local-tag", 5);
+        assert_eq!(s.bye_cseq(), 6);
+        assert_eq!(s.local_tag.as_deref(), Some("local-tag"));
+    }
+
+    /// 200 OK 回填对端 To tag（BYE 必须带）；空 tag 不覆盖旧值。
+    #[tokio::test]
+    async fn broadcast_mark_answered_backfills_remote_tag() {
+        let mgr = BroadcastManager::new();
+        mgr.create(make_session("bc_1", "dev", "ch")).await;
+
+        assert!(mgr.mark_answered("bc_1", Some("remote-tag")).await);
+        let s = mgr.get("bc_1").await.unwrap();
+        assert_eq!(s.status, BroadcastStatus::Active);
+        assert_eq!(s.remote_tag.as_deref(), Some("remote-tag"));
+
+        assert!(mgr.mark_answered("bc_1", None).await);
+        assert_eq!(
+            mgr.get("bc_1").await.unwrap().remote_tag.as_deref(),
+            Some("remote-tag")
+        );
+        assert!(!mgr.mark_answered("nope", Some("t")).await);
     }
 
     /// Phase 3.5: 状态机：Pending → Active → Terminating → Terminated

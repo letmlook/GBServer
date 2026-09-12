@@ -682,6 +682,74 @@ class RtpSender:
             self._thread = None
 
 
+class TalkAudioReceiver(asyncio.DatagramProtocol):
+    """接收平台发往设备 `m=audio` 端口的 RTP，验证"对讲音频真的发出去了"。
+
+    此前 mock 只在 200 OK 里上报一个音频端口，**并不监听它**，所以
+    「/api/talk/start 返回成功」只能证明信令通了 —— 平台有没有真的把麦克风
+    音频编码成 RTP 发到设备完全没被验证。这里绑定该端口、统计 RTP 包，
+    并把结果写到 `SIP_MOCK_TALK_REPORT`（含首包解析出的 PT/SSRC/序号），
+    于是"对讲可用"有了报文级证据。
+    """
+
+    def __init__(self, port: int) -> None:
+        self.port = port
+        self.packets = 0
+        self.bytes = 0
+        self.first: Optional[dict] = None
+        self.last_seq: Optional[int] = None
+        self.out_of_order = 0
+        self.report_path = os.environ.get("SIP_MOCK_TALK_REPORT")
+
+    def datagram_received(self, data: bytes, addr: tuple) -> None:
+        self.packets += 1
+        self.bytes += len(data)
+        if len(data) >= 12:
+            version = data[0] >> 6
+            pt = data[1] & 0x7F
+            seq, ts, ssrc = struct.unpack("!HII", data[2:12])
+            if self.first is None:
+                self.first = {
+                    "version": version,
+                    "payload_type": pt,
+                    "seq": seq,
+                    "timestamp": ts,
+                    "ssrc": ssrc,
+                    "from": f"{addr[0]}:{addr[1]}",
+                    "length": len(data),
+                }
+                log.info(
+                    "对讲音频 RTP 首包: from %s:%d PT=%d ssrc=%08X seq=%d len=%d",
+                    addr[0], addr[1], pt, ssrc, seq, len(data),
+                )
+            if self.last_seq is not None and seq < self.last_seq:
+                self.out_of_order += 1
+            self.last_seq = seq
+        if self.packets in (50, 200, 500) or self.packets % 500 == 0:
+            log.info("对讲音频 RTP 已收 %d 包 / %d 字节", self.packets, self.bytes)
+        self._write_report()
+
+    def _write_report(self) -> None:
+        if not self.report_path:
+            return
+        try:
+            with open(self.report_path, "w", encoding="utf-8") as fh:
+                json.dump(
+                    {
+                        "port": self.port,
+                        "packets": self.packets,
+                        "bytes": self.bytes,
+                        "out_of_order": self.out_of_order,
+                        "first": self.first,
+                    },
+                    fh,
+                    ensure_ascii=False,
+                    indent=2,
+                )
+        except OSError as e:  # pragma: no cover - 报告写入失败不影响 mock
+            log.warning("写对讲音频报告失败: %s", e)
+
+
 class SipDeviceMock:
     """SIP GB28181 设备模拟器"""
 
@@ -717,8 +785,30 @@ class SipDeviceMock:
         self._invite_state: dict = {}  # call_id -> {from_tag, to_tag, branch}
         # 设备自己主动挂断过的 call_id（平台随后再发 BYE 拿到 481 属预期）
         self._ended_by_device: set = set()
+        # 对讲音频接收器（收到 Talk INVITE 后按需绑定 m=audio 端口）
+        self._talk_receiver: Optional[TalkAudioReceiver] = None
 
     # ----- UDP 收发 -----
+
+    async def _ensure_talk_receiver(self) -> None:
+        """按需把设备 m=audio 端口绑定成 RTP 接收器（幂等）。"""
+        if self._talk_receiver is not None:
+            return
+        loop = asyncio.get_running_loop()
+        try:
+            _transport, proto = await loop.create_datagram_endpoint(
+                lambda: TalkAudioReceiver(self.cfg.talk_port),
+                local_addr=("0.0.0.0", self.cfg.talk_port),
+            )
+        except OSError as e:
+            log.error(
+                "绑定对讲音频端口 %d 失败：%s（无法验证平台是否真的发音频）",
+                self.cfg.talk_port,
+                e,
+            )
+            return
+        self._talk_receiver = proto  # type: ignore[assignment]
+        log.info("对讲音频接收器已监听 UDP %d，等待平台 RTP", self.cfg.talk_port)
 
     async def start(self):
         loop = asyncio.get_running_loop()
@@ -1108,6 +1198,10 @@ class SipDeviceMock:
         # 真正把媒体推给平台（可选，`--send-rtp`）。
         # 平台在请求 SDP 里宣告了收流地址：`c=IN IP4 <ip>` + `m=video <port>`，
         # ssrc 在 `y=` 行；GB28181 要求设备按这个地址发 RTP。
+        if is_talk:
+            # 对讲方向相反：平台把麦克风音频发到**设备**的 m=audio 端口，
+            # 所以要在这里监听该端口，才能证明音频真的到达设备。
+            await self._ensure_talk_receiver()
         if self.cfg.send_rtp and not is_talk:
             dst_ip, dst_port, ssrc_hex = self._parse_platform_media(req_body)
             if dst_ip and dst_port:
