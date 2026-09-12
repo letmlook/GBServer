@@ -49,6 +49,29 @@ services:
     networks: [gbservernet]
     restart: unless-stopped
 
+  # MySQL 方言（可选）。默认 **不启动** —— 用 profile 隔离，
+  # 需要验证 mysql 构建时执行：`docker compose --profile mysql up -d mysql`
+  mysql:
+    profiles: ["mysql"]
+    image: mysql:8
+    container_name: gbserver-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpw
+      MYSQL_DATABASE: gbserver
+    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
+    volumes:
+      - mysqldata:/var/lib/mysql
+      - ./database/init-mysql-2.7.4.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ports:
+      - "3306:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-prootpw"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks: [gbservernet]
+    restart: unless-stopped
+
   redis:
     image: redis:7-alpine
     container_name: gbserver-redis
@@ -115,6 +138,7 @@ services:
     restart: unless-stopped
 
 volumes:
+  mysqldata:
   pgdata: {}
   redisdata: {}
 

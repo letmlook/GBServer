@@ -1101,14 +1101,20 @@ pub async fn platform_add(
     .execute(&state.pool)
     .await?;
 
+    let mut created_id: Option<i32> = None;
     if let Some(platform) = platform_db::get_by_server_gb_id(&state.pool, &server_gb_id).await? {
+        created_id = Some(platform.id);
         let registered = sync_platform_registration(&state, &platform).await?;
         if registered && platform.auto_push_channel.unwrap_or(false) {
             refresh_platform_catalog(&state, platform.id as i64).await?;
         }
     }
-    
+
     Ok(Json(WVPResult::success(serde_json::json!({
+        // 回传新建平台的标识：前端拿到后可直接定位/刷新该行，
+        // 也便于脚本化验证（此前只回 name）。
+        "id": created_id,
+        "serverGBId": server_gb_id,
         "name": name,
         "message": "平台添加成功",
         "code": 0

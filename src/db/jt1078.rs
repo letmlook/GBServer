@@ -60,13 +60,13 @@ pub async fn list_terminals_paged(
     #[cfg(feature = "mysql")]
     {
         let sql = if has_query && online.is_some() {
-            "SELECT id, phone_number, terminal_id, CAST(province_id AS TEXT) AS province_id, province_text, CAST(city_id AS TEXT) AS city_id, city_text, maker_id, model, plate_color, plate_no, longitude, latitude, status, register_time, update_time, create_time, geo_coord_sys, media_server_id, sdp_ip, auth_code FROM gb_jt_terminal WHERE (phone_number LIKE ? OR plate_no LIKE ?) AND status = ? ORDER BY id LIMIT ? OFFSET ?"
+            "SELECT id, phone_number, terminal_id, CAST(province_id AS CHAR) AS province_id, province_text, CAST(city_id AS CHAR) AS city_id, city_text, maker_id, model, plate_color, plate_no, longitude, latitude, status, register_time, update_time, create_time, geo_coord_sys, media_server_id, sdp_ip, auth_code FROM gb_jt_terminal WHERE (phone_number LIKE ? OR plate_no LIKE ?) AND status = ? ORDER BY id LIMIT ? OFFSET ?"
         } else if has_query {
-            "SELECT id, phone_number, terminal_id, CAST(province_id AS TEXT) AS province_id, province_text, CAST(city_id AS TEXT) AS city_id, city_text, maker_id, model, plate_color, plate_no, longitude, latitude, status, register_time, update_time, create_time, geo_coord_sys, media_server_id, sdp_ip, auth_code FROM gb_jt_terminal WHERE (phone_number LIKE ? OR plate_no LIKE ?) ORDER BY id LIMIT ? OFFSET ?"
+            "SELECT id, phone_number, terminal_id, CAST(province_id AS CHAR) AS province_id, province_text, CAST(city_id AS CHAR) AS city_id, city_text, maker_id, model, plate_color, plate_no, longitude, latitude, status, register_time, update_time, create_time, geo_coord_sys, media_server_id, sdp_ip, auth_code FROM gb_jt_terminal WHERE (phone_number LIKE ? OR plate_no LIKE ?) ORDER BY id LIMIT ? OFFSET ?"
         } else if online.is_some() {
-            "SELECT id, phone_number, terminal_id, CAST(province_id AS TEXT) AS province_id, province_text, CAST(city_id AS TEXT) AS city_id, city_text, maker_id, model, plate_color, plate_no, longitude, latitude, status, register_time, update_time, create_time, geo_coord_sys, media_server_id, sdp_ip, auth_code FROM gb_jt_terminal WHERE status = ? ORDER BY id LIMIT ? OFFSET ?"
+            "SELECT id, phone_number, terminal_id, CAST(province_id AS CHAR) AS province_id, province_text, CAST(city_id AS CHAR) AS city_id, city_text, maker_id, model, plate_color, plate_no, longitude, latitude, status, register_time, update_time, create_time, geo_coord_sys, media_server_id, sdp_ip, auth_code FROM gb_jt_terminal WHERE status = ? ORDER BY id LIMIT ? OFFSET ?"
         } else {
-            "SELECT id, phone_number, terminal_id, CAST(province_id AS TEXT) AS province_id, province_text, CAST(city_id AS TEXT) AS city_id, city_text, maker_id, model, plate_color, plate_no, longitude, latitude, status, register_time, update_time, create_time, geo_coord_sys, media_server_id, sdp_ip, auth_code FROM gb_jt_terminal ORDER BY id LIMIT ? OFFSET ?"
+            "SELECT id, phone_number, terminal_id, CAST(province_id AS CHAR) AS province_id, province_text, CAST(city_id AS CHAR) AS city_id, city_text, maker_id, model, plate_color, plate_no, longitude, latitude, status, register_time, update_time, create_time, geo_coord_sys, media_server_id, sdp_ip, auth_code FROM gb_jt_terminal ORDER BY id LIMIT ? OFFSET ?"
         };
         let rows = if has_query && online.is_some() {
             sqlx::query_as::<_, JtTerminal>(sql).bind(&like).bind(&like).bind(online.unwrap()).bind(limit).bind(offset).fetch_all(pool).await?
@@ -188,8 +188,8 @@ pub async fn count_terminals(
 pub async fn get_terminal_by_phone(pool: &Pool, phone: &str) -> sqlx::Result<Option<JtTerminal>> {
     #[cfg(any(feature = "mysql", feature = "sqlite"))]
     return sqlx::query_as::<_, JtTerminal>(
-        "SELECT id, phone_number, terminal_id, CAST(province_id AS TEXT) AS province_id, \
-         province_text, CAST(city_id AS TEXT) AS city_id, city_text, maker_id, model, \
+        "SELECT id, phone_number, terminal_id, CAST(province_id AS CHAR) AS province_id, \
+         province_text, CAST(city_id AS CHAR) AS city_id, city_text, maker_id, model, \
          plate_color, plate_no, longitude, latitude, status, register_time, update_time, \
          create_time, geo_coord_sys, media_server_id, sdp_ip, auth_code \
          FROM gb_jt_terminal WHERE phone_number = ?",
@@ -209,7 +209,7 @@ pub async fn get_terminal_by_phone(pool: &Pool, phone: &str) -> sqlx::Result<Opt
 /// 根据ID查询终端
 pub async fn get_terminal_by_id(pool: &Pool, id: i32) -> sqlx::Result<Option<JtTerminal>> {
     #[cfg(any(feature = "mysql", feature = "sqlite"))]
-    return sqlx::query_as::<_, JtTerminal>("SELECT id, phone_number, terminal_id, CAST(province_id AS TEXT) AS province_id, province_text, CAST(city_id AS TEXT) AS city_id, city_text, maker_id, model, plate_color, plate_no, longitude, latitude, status, register_time, update_time, create_time, geo_coord_sys, media_server_id, sdp_ip, auth_code FROM gb_jt_terminal WHERE id = ?")
+    return sqlx::query_as::<_, JtTerminal>("SELECT id, phone_number, terminal_id, CAST(province_id AS CHAR) AS province_id, province_text, CAST(city_id AS CHAR) AS city_id, city_text, maker_id, model, plate_color, plate_no, longitude, latitude, status, register_time, update_time, create_time, geo_coord_sys, media_server_id, sdp_ip, auth_code FROM gb_jt_terminal WHERE id = ?")
         .bind(id).fetch_optional(pool).await;
     #[cfg(feature = "postgres")]
     return sqlx::query_as::<_, JtTerminal>("SELECT id, phone_number, terminal_id, CAST(province_id AS TEXT) AS province_id, province_text, CAST(city_id AS TEXT) AS city_id, city_text, maker_id, model, plate_color, plate_no, longitude, latitude, status, register_time, update_time, create_time, geo_coord_sys, media_server_id, sdp_ip, auth_code FROM gb_jt_terminal WHERE id = $1")
@@ -229,7 +229,7 @@ pub async fn get_channel_by_id(pool: &Pool, id: i32) -> sqlx::Result<Option<JtCh
 /// 获取所有在线终端
 pub async fn get_online_terminals(pool: &Pool) -> sqlx::Result<Vec<JtTerminal>> {
     #[cfg(any(feature = "mysql", feature = "sqlite"))]
-    return sqlx::query_as::<_, JtTerminal>("SELECT id, phone_number, terminal_id, CAST(province_id AS TEXT) AS province_id, province_text, CAST(city_id AS TEXT) AS city_id, city_text, maker_id, model, plate_color, plate_no, longitude, latitude, status, register_time, update_time, create_time, geo_coord_sys, media_server_id, sdp_ip, auth_code FROM gb_jt_terminal WHERE status = 1 ORDER BY id")
+    return sqlx::query_as::<_, JtTerminal>("SELECT id, phone_number, terminal_id, CAST(province_id AS CHAR) AS province_id, province_text, CAST(city_id AS CHAR) AS city_id, city_text, maker_id, model, plate_color, plate_no, longitude, latitude, status, register_time, update_time, create_time, geo_coord_sys, media_server_id, sdp_ip, auth_code FROM gb_jt_terminal WHERE status = 1 ORDER BY id")
         .fetch_all(pool).await;
     #[cfg(feature = "postgres")]
     return sqlx::query_as::<_, JtTerminal>("SELECT id, phone_number, terminal_id, CAST(province_id AS TEXT) AS province_id, province_text, CAST(city_id AS TEXT) AS city_id, city_text, maker_id, model, plate_color, plate_no, longitude, latitude, status, register_time, update_time, create_time, geo_coord_sys, media_server_id, sdp_ip, auth_code FROM gb_jt_terminal WHERE status = true ORDER BY id")
@@ -752,14 +752,27 @@ pub async fn insert_area_circle(
     radius_m: i32,
 ) -> sqlx::Result<i64> {
     let now = chrono::Utc::now().to_rfc3339();
-    let row: (i64,) = sqlx::query_as(
-        &crate::dyn_where::dialect_sql("INSERT INTO gb_jt_area_circle (phone_number, label, center_lat, center_lon, radius_m, create_time, update_time)
-         VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id")
-    )
-    .bind(phone_number).bind(label).bind(center_lat).bind(center_lon)
-    .bind(radius_m).bind(&now).bind(&now)
-    .fetch_one(pool).await?;
-    Ok(row.0)
+    let sql = "INSERT INTO gb_jt_area_circle (phone_number, label, center_lat, center_lon, \
+               radius_m, create_time, update_time) VALUES (?, ?, ?, ?, ?, ?, ?)";
+    // `RETURNING` 只有 PostgreSQL / SQLite(≥3.35) 支持，**MySQL 不支持**
+    // （会报 1064 语法错误）—— MySQL 走 `execute` + `last_insert_id()`。
+    #[cfg(feature = "mysql")]
+    {
+        let r = sqlx::query(sql)
+            .bind(phone_number).bind(label).bind(center_lat).bind(center_lon)
+            .bind(radius_m).bind(&now).bind(&now)
+            .execute(pool).await?;
+        return Ok(r.last_insert_id() as i64);
+    }
+    #[cfg(not(feature = "mysql"))]
+    {
+        let with_returning = format!("{sql} RETURNING id");
+        let row: (i64,) = sqlx::query_as(&crate::dyn_where::dialect_sql(&with_returning))
+            .bind(phone_number).bind(label).bind(center_lat).bind(center_lon)
+            .bind(radius_m).bind(&now).bind(&now)
+            .fetch_one(pool).await?;
+        Ok(row.0)
+    }
 }
 
 pub async fn update_area_circle(
@@ -799,13 +812,24 @@ pub async fn insert_area_polygon(
     pool: &Pool, phone_number: &str, label: Option<&str>, points_json: &str,
 ) -> sqlx::Result<i64> {
     let now = chrono::Utc::now().to_rfc3339();
-    let row: (i64,) = sqlx::query_as(
-        &crate::dyn_where::dialect_sql("INSERT INTO gb_jt_area_polygon (phone_number, label, points_json, create_time, update_time)
-         VALUES (?, ?, ?, ?, ?) RETURNING id")
-    )
-    .bind(phone_number).bind(label).bind(points_json).bind(&now).bind(&now)
-    .fetch_one(pool).await?;
-    Ok(row.0)
+    let sql = "INSERT INTO gb_jt_area_polygon (phone_number, label, points_json, create_time, \
+               update_time) VALUES (?, ?, ?, ?, ?)";
+    // 同 `insert_area_circle`：MySQL 没有 `RETURNING`。
+    #[cfg(feature = "mysql")]
+    {
+        let r = sqlx::query(sql)
+            .bind(phone_number).bind(label).bind(points_json).bind(&now).bind(&now)
+            .execute(pool).await?;
+        return Ok(r.last_insert_id() as i64);
+    }
+    #[cfg(not(feature = "mysql"))]
+    {
+        let with_returning = format!("{sql} RETURNING id");
+        let row: (i64,) = sqlx::query_as(&crate::dyn_where::dialect_sql(&with_returning))
+            .bind(phone_number).bind(label).bind(points_json).bind(&now).bind(&now)
+            .fetch_one(pool).await?;
+        Ok(row.0)
+    }
 }
 
 pub async fn delete_area_polygon(pool: &Pool, id: i64) -> sqlx::Result<u64> {
@@ -832,14 +856,27 @@ pub async fn insert_area_rectangle(
     lt_lat: f64, lt_lon: f64, rb_lat: f64, rb_lon: f64,
 ) -> sqlx::Result<i64> {
     let now = chrono::Utc::now().to_rfc3339();
-    let row: (i64,) = sqlx::query_as(
-        &crate::dyn_where::dialect_sql("INSERT INTO gb_jt_area_rectangle (phone_number, label, left_top_lat, left_top_lon, right_bottom_lat, right_bottom_lon, create_time, update_time)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id")
-    )
-    .bind(phone_number).bind(label).bind(lt_lat).bind(lt_lon).bind(rb_lat).bind(rb_lon)
-    .bind(&now).bind(&now)
-    .fetch_one(pool).await?;
-    Ok(row.0)
+    let sql = "INSERT INTO gb_jt_area_rectangle (phone_number, label, left_top_lat, left_top_lon, \
+               right_bottom_lat, right_bottom_lon, create_time, update_time) \
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
+    // 同 `insert_area_circle`：MySQL 没有 `RETURNING`。
+    #[cfg(feature = "mysql")]
+    {
+        let r = sqlx::query(sql)
+            .bind(phone_number).bind(label).bind(lt_lat).bind(lt_lon).bind(rb_lat).bind(rb_lon)
+            .bind(&now).bind(&now)
+            .execute(pool).await?;
+        return Ok(r.last_insert_id() as i64);
+    }
+    #[cfg(not(feature = "mysql"))]
+    {
+        let with_returning = format!("{sql} RETURNING id");
+        let row: (i64,) = sqlx::query_as(&crate::dyn_where::dialect_sql(&with_returning))
+            .bind(phone_number).bind(label).bind(lt_lat).bind(lt_lon).bind(rb_lat).bind(rb_lon)
+            .bind(&now).bind(&now)
+            .fetch_one(pool).await?;
+        Ok(row.0)
+    }
 }
 
 pub async fn update_area_rectangle(
@@ -879,13 +916,24 @@ pub async fn insert_route(
     pool: &Pool, phone_number: &str, label: Option<&str>, waypoints_json: &str,
 ) -> sqlx::Result<i64> {
     let now = chrono::Utc::now().to_rfc3339();
-    let row: (i64,) = sqlx::query_as(
-        &crate::dyn_where::dialect_sql("INSERT INTO gb_jt_route (phone_number, label, waypoints_json, create_time, update_time)
-         VALUES (?, ?, ?, ?, ?) RETURNING id")
-    )
-    .bind(phone_number).bind(label).bind(waypoints_json).bind(&now).bind(&now)
-    .fetch_one(pool).await?;
-    Ok(row.0)
+    let sql = "INSERT INTO gb_jt_route (phone_number, label, waypoints_json, create_time, \
+               update_time) VALUES (?, ?, ?, ?, ?)";
+    // 同 `insert_area_circle`：MySQL 没有 `RETURNING`。
+    #[cfg(feature = "mysql")]
+    {
+        let r = sqlx::query(sql)
+            .bind(phone_number).bind(label).bind(waypoints_json).bind(&now).bind(&now)
+            .execute(pool).await?;
+        return Ok(r.last_insert_id() as i64);
+    }
+    #[cfg(not(feature = "mysql"))]
+    {
+        let with_returning = format!("{sql} RETURNING id");
+        let row: (i64,) = sqlx::query_as(&crate::dyn_where::dialect_sql(&with_returning))
+            .bind(phone_number).bind(label).bind(waypoints_json).bind(&now).bind(&now)
+            .fetch_one(pool).await?;
+        Ok(row.0)
+    }
 }
 
 pub async fn delete_route(pool: &Pool, id: i64) -> sqlx::Result<u64> {

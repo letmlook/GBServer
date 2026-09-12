@@ -79,6 +79,21 @@ sqlx::query("DELETE FROM gb_record_plan_item WHERE plan_id = $1").bind(plan_id /
 `PgConnectOptions::statement_cache_capacity(0)`（关闭缓存），因此**当前所有**
 这类冲突都不会再触发；但缓存一旦被重新打开，上面的写法就会复现，所以仍应保持一致。
 
+## 规则 4：方言专属语法要按分支写，别以为"占位符统一"就完事
+
+`dialect_sql` 只解决**占位符**。这些语法**必须**按方言分支
+（第四十五轮在真实 MySQL 上一次性踩全）：
+
+| 写法 | PostgreSQL | MySQL | SQLite |
+|------|-----------|-------|--------|
+| `INSERT … RETURNING id` | ✅ | ❌ 1064（用 `execute` + `last_insert_id()`） | ✅（≥3.35） |
+| `CREATE INDEX IF NOT EXISTS` | ✅ | ❌ 1064（去掉 `IF NOT EXISTS`，把 1061 当幂等） | ✅ |
+| `CAST(x AS INTEGER)` | ✅ | ❌（用 `SIGNED`/`UNSIGNED`） | ✅（亲和性） |
+| `CAST(x AS TEXT)` | ✅ | ❌（用 `CHAR`） | ✅（亲和性） |
+| `x ILIKE y` | ✅ | ❌（用 `LIKE`，注意 MySQL 默认排序规则不区分大小写） | ❌ |
+| `ON CONFLICT … DO UPDATE` | ✅ | ❌（用 `ON DUPLICATE KEY UPDATE`） | ✅ |
+| `?` 占位符 | ❌（要 `$n`） | ✅ | ✅ |
+
 ## 验证要求
 
 * `cargo test`（SQLite）**不能**证明 postgres 可用；
@@ -86,4 +101,29 @@ sqlx::query("DELETE FROM gb_record_plan_item WHERE plan_id = $1").bind(plan_id /
   `cargo build --no-default-features --features postgres`（编译期能抓类型/语法错误的一部分）
   **以及** 真实 postgres 运行时冒烟（`docker compose up -d postgres`，用
   `GBSERVER__DATABASE__URL=postgres://…` 起第二个实例，跑读+写路径）；
-* MySQL 同理：`--no-default-features --features mysql` 构建 + 运行时冒烟。
+* MySQL 同理：`cargo build --no-default-features --features mysql` 构建 + 运行时冒烟。
+
+### 一条命令的方言冒烟
+
+```bash
+docker compose up -d postgres
+docker compose --profile mysql up -d mysql        # 首次会拉 mysql:8 并执行 init-mysql-2.7.4.sql
+
+# 用对应 feature 起一个实例（端口自定；SIP/JT1078 端口要和已有实例错开）
+cargo build --no-default-features --features postgres   # 或 mysql
+GBSERVER__DATABASE__URL='postgres://postgres:postgrespw@127.0.0.1:5432/gbserver' \
+  GBSERVER__SERVER__PORT=18081 \
+  GBSERVER__SIP__PORT=25060 GBSERVER__SIP__TCP_PORT=25061 \
+  GBSERVER__JT1078__TCP_PORT=60001 GBSERVER__JT1078__UDP_PORT=60002 \
+  ./target/debug/gbserver &
+
+TOKEN=$(curl -s 'http://127.0.0.1:18081/api/user/login?username=admin&password=21232f297a57a5a743894a0e4a801fc3' \
+  | python3 -c 'import json,sys;print(json.load(sys.stdin)["data"]["accessToken"])')
+python3 scripts/dialect_smoke.py --base http://127.0.0.1:18081/api --token "$TOKEN"
+```
+
+预期只剩这些"非缺陷"项：CSV 导出不是 JSON、`proxy/start` 指向不存在的 RTSP 源
+被真实 ZLM 404 拒绝、以及第二次运行时"重复数据被正确拒绝"。
+
+> ⚠️ **构建/运行完记得把 `target/debug/gbserver` 用默认 sqlite feature 重建**，
+> 否则本机起的是 mysql/pg 方言的二进制（"stale binary trap"）。

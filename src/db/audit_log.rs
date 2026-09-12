@@ -62,24 +62,17 @@ pub async fn ensure_table(pool: &Pool) -> sqlx::Result<()> {
             tracing::error!("创建 gb_audit_log 表失败（审计日志将不可用）: {}", e);
         }
 
-        // 索引属于可选优化：建不出来只告警
-        if let Err(e) = sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_audit_log_create_time ON gb_audit_log(create_time)"
-        )
-        .execute(pool)
-        .await
-        {
-            tracing::warn!("创建审计日志索引 idx_audit_log_create_time 失败: {}", e);
-        }
-
-        if let Err(e) = sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_audit_log_username ON gb_audit_log(username)"
-        )
-        .execute(pool)
-        .await
-        {
-            tracing::warn!("创建审计日志索引 idx_audit_log_username 失败: {}", e);
-        }
+        // **MySQL 的 `CREATE INDEX` 不支持 `IF NOT EXISTS`**（会报
+        // `1064 ... near 'IF NOT EXISTS idx_...'` 语法错误 —— 只有 MariaDB 支持）。
+        // 因此这里不带 `IF NOT EXISTS`，把重复键（1061）当成幂等重放的正常结果。
+        // 实测：2026-09-12 首次在真实 MySQL 上跑后端时，两条索引都因语法错误
+        //       没建出来（只有 WARN），审计日志表因此长期缺索引。
+        let _ = sqlx::query("CREATE INDEX idx_audit_log_create_time ON gb_audit_log(create_time)")
+            .execute(pool)
+            .await;
+        let _ = sqlx::query("CREATE INDEX idx_audit_log_username ON gb_audit_log(username)")
+            .execute(pool)
+            .await;
     }
 
     #[cfg(feature = "sqlite")]

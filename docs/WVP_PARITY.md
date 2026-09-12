@@ -2067,6 +2067,67 @@ npx playwright test              66 passed / 0 failed
 postgres 运行时冒烟              /api/position/{latest,history,subscribe} 全通
 ```
 
+### MySQL 运行时验证：**4 类只在 MySQL 上炸的缺陷**（2026-09-12 第四十五轮）
+
+第四十三轮验证了 PostgreSQL，本轮把同一套冒烟搬到真实 **MySQL 8**
+（`docker compose --profile mysql up -d mysql`，容器内跑 `init-mysql-2.7.4.sql`，
+31 张表），一上来就是 **22 个失败**。MySQL 既不是 SQLite（动态类型）、也不是
+PostgreSQL（严格类型），它有**自己的一套语法限制**：
+
+| # | 缺陷 | 真实报错 | 影响面 |
+|---|------|---------|--------|
+| 1 | `CREATE INDEX IF NOT EXISTS` —— **MySQL 不支持**（只有 MariaDB 支持） | `1064 ... near 'IF NOT EXISTS idx_audit_log_...'` | `gb_audit_log` 的两条索引**从未建出来**，且只有一条 WARN |
+| 2 | `CAST(... AS INTEGER)` 出现在 **mysql 分支**（第四十三轮为修 pg 时误加的） | `1064 ... near 'INTEGER) AS channel_count ...'` | `/api/device/query/devices`、启动时"恢复在线设备"全部失败 |
+| 3 | `CAST(province_id AS TEXT)` 出现在 **mysql 分支** | `1064 ... near ...` | `/api/jt1078/terminal/list`、`/terminal/query` 500 |
+| 4 | `INSERT ... RETURNING id` 无方言分支 | `1064 ... near 'RETURNING id'` | JT1078 圆形/多边形/矩形围栏 + 路线**新增全部失败** |
+
+**第 2 条尤其值得记一笔**：它是我在第四十三轮为修 PostgreSQL 而加的
+`CAST(... AS INTEGER)` —— MySQL 的 `CAST` 只认 `SIGNED`/`UNSIGNED`，
+于是"修好 pg、弄坏 mysql"。这正是本轮存在的意义：
+**改一个方言的 SQL，必须三个方言都跑一遍。**
+
+修复：
+
+* **#1**：mysql 分支去掉 `IF NOT EXISTS`，并把 `1061 Duplicate key name`
+  视为幂等重放的正常结果（与 `ensure_missing_tables` 的口径一致）。
+* **#2**：`CAST(... AS INTEGER)` **只保留在 postgres 分支**；mysql/sqlite
+  分支直接 `(SELECT COUNT(*) ...) AS channel_count`
+  （mysql 的 `COUNT()` 本来就是 BIGINT，sqlx-mysql 的 i32 能直接读；
+  sqlite 动态类型同理）。`src/db/device.rs` 16 处逐处按方言归位。
+* **#3**：mysql 分支（含 `cfg(any(mysql, sqlite))` 的共用分支）改用
+  `CAST(x AS CHAR)`（SQLite 也认，CHAR 走 TEXT 亲和性；PostgreSQL 保持 `TEXT`，
+  写成 `CHAR` 会被截成 `char(1)`）。
+* **#4**：给 4 个插入函数加 mysql 分支 —— `execute` + `last_insert_id()`，
+  其余方言继续 `RETURNING id`。**这才是第四十三轮 `dialect_sql` 之后仍缺的一半**：
+  占位符修好了，`RETURNING` 这类的**语法差异**还得按方言分支。
+
+同时落地两件让这类验证可复现的东西：
+
+* `docker-compose.yml` 增加 **profile 隔离**的 `mysql` 服务
+  （`docker compose --profile mysql up -d mysql`），并挂载 `init-mysql-2.7.4.sql`；
+* 新增 `scripts/dialect_smoke.py`（本次与 pg/mysql 两轮用的就是它，含用法说明）：
+  45 个 GET + 全部写路径，把"换方言再跑一遍"变成一条命令；
+* 顺手把 `/api/platform/add` 的响应补上 `id` / `serverGBId`（此前只回 `name`，
+  脚本/前端拿不到新建平台的主键）。
+
+**实测**：
+
+```
+MySQL  冒烟首次 22 项失败 → 修复后 2 项（CSV 不是 JSON、代理指向不存在的 RTSP 源）
+PostgreSQL 冒烟复跑       3 项（同上 + 上一轮留下的重复平台被正确拒绝）
+cargo test               710 passed / 0 failed
+npx playwright test      66 passed / 0 failed
+```
+
+#### 第四十五轮基线
+
+```
+cargo test                       710 passed / 0 failed
+cargo build --features postgres/mysql  OK
+mysql 运行期冒烟（真实 MySQL 8）  2 项预期项，连跑 3 次一致
+postgres 运行期冒烟              3 项预期项
+```
+
 ### 前端↔后端契约审计：**16 个模块 130 条全部修完**（2026-09-12 第三十九轮）
 
 第二十六轮用"一个模块一个 agent"的方式把 16 个前端 API 模块逐个对后端路由/DTO
@@ -2296,9 +2357,11 @@ vue-tsc --noEmit                 通过
     并把 MESSAGE 查询响应路径也双写到 `gb_device_mobile_position`。
     实测：`realtime` 真下发 `<CmdType>MobilePosition</CmdType>` 查询并落库
     （`source=live`）、`subscribe` 真发 SUBSCRIBE。
-17. **MySQL 尚未做运行时冒烟**：第四十三轮验证的是 PostgreSQL（真实实例 + 45 GET +
-    全部写路径）；MySQL 目前只有编译期保证（`--features mysql` 构建通过）与
-    "宽进严出"的类型宽松性推断。环境具备时应补一轮同样的冒烟。
+17. ~~**MySQL 尚未做运行时冒烟**~~ **已完成（第四十五轮）**：真实 MySQL 8 +
+    `scripts/dialect_smoke.py`，抓到并修掉 4 类 mysql 专属语法缺陷
+    （`CREATE INDEX IF NOT EXISTS`、`CAST(.. AS INTEGER|TEXT)`、
+    `INSERT ... RETURNING id`）。复现命令见
+    [docs/DB_DIALECT_NOTES.md](DB_DIALECT_NOTES.md)。
 
 ### 工程问题
 
@@ -2513,6 +2576,7 @@ vue-tsc --noEmit                 通过
 - 2026-09-12 第四十二轮：`cargo test` —— **696 通过 / 0 失败**（实时播放地址：FLV 后缀 `.live.flv`、HLS 可用性探测；e2e 62）
 - 2026-09-12 第四十三轮：`cargo test` —— **702 通过 / 0 失败**（**首次 PostgreSQL 运行时验证**：`?` 占位符 23 处 / 11 张表列宽 / `plate_color` 契约 / ZLM `openRtpServer` 缺 `port` / sqlx 语句缓存参数类型冲突；e2e 66）
 - 2026-09-12 第四十四轮：`cargo test` —— **710 通过 / 0 失败**（移动位置 `/api/position/*` 补齐 latest/realtime/subscribe + history 支持 WVP 的 channelId；`gb_device_mobile_position` 双写打通）
+- 2026-09-12 第四十五轮：`cargo test` —— **710 通过 / 0 失败**（**首次 MySQL 运行时验证**：`CREATE INDEX IF NOT EXISTS` / `CAST(.. AS INTEGER|TEXT)` / `INSERT ... RETURNING` 四类 mysql 语法缺陷；新增 `scripts/dialect_smoke.py` 与 profile 隔离的 mysql 服务）
 - 2026-09-12 第三十一轮：`cargo test` —— **641 通过 / 0 失败**（JT1078 终端/围栏 13 条）
 - 2026-09-12 第三十轮：`cargo test` —— **637 通过 / 0 失败**（设备页 7 条）
 - 2026-09-12 第二十九轮：`cargo test` —— **634 通过 / 0 失败**（云端录像全链路）
