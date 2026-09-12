@@ -216,9 +216,33 @@ pub(crate) fn build_audio_ssrc(device_id: &str) -> String {
 
 /// 构造下载 INVITE 的 Subject 头：
 /// `<local_id>:<channel_id>,<local_id>:<ssrc>`，其中 ssrc 来自 `build_download_ssrc`。
+/// **设备侧**邀请（实时/回放/下载/对讲/广播）的 `Subject` 头：
+/// `<通道编码>:<SSRC>,<本级编码>:0`。
+///
+/// 这是唯一实现：国标示例与 WVP 的 `SIPRequestHeaderProvider`
+/// （`channelId:ssrc,sipConfig.getId():0`）都是这个形态。
+/// 此前 6 处各自拼串，其中 4 处把通道与本级写反、SSRC 段放了通道编码。
+pub(crate) fn build_device_invite_subject(channel_id: &str, ssrc: &str, local_id: &str) -> String {
+    format!("{}:{},{}:0", channel_id, ssrc, local_id)
+}
+
+/// **平台侧**（向级联上级发起）邀请的 `Subject` 头：
+/// `<本级来源编码>:<SSRC>,<目标通道编码>:0`
+/// （对应 WVP `SIPRequestHeaderPlarformProvider` 的 `sourceId:ssrc,channelId:0`）。
+pub(crate) fn build_platform_invite_subject(
+    local_source_id: &str,
+    ssrc: &str,
+    channel_id: &str,
+) -> String {
+    format!("{}:{},{}:0", local_source_id, ssrc, channel_id)
+}
+
 pub(crate) fn build_download_subject(local_id: &str, channel_id: &str) -> String {
     let ssrc = build_download_ssrc(local_id);
-    format!("{}:{},{}:{}", local_id, channel_id, local_id, ssrc)
+    // 与回放/实时一致（WVP 的下载也走 `createPlaybackInviteRequest`）：
+    // `<通道编码>:<SSRC>,<本级编码>:0`。
+    // 此前是 `<本级>:<通道>,<本级>:<ssrc>`，前两段与国标/WVP 都不同。
+    format!("{}:{},{}:0", channel_id, ssrc, local_id)
 }
 
 /// GB28181 RecordInfo 响应里 Item 的解析结果。
@@ -5036,10 +5060,11 @@ f=v/1/96/1/2/1/1/0
             &talk_ssrc,
         );
 
-        let subject = format!(
-            "{}:{},{}:{}",
-            self.config.device_id, channel_id, self.config.device_id, 0
-        );
+        // 国标/WVP 的 Subject 形如 `<通道编码>:<SSRC>,<本级编码>:0`
+        // （WVP `SIPRequestHeaderProvider`：`channelId:ssrc,sipConfig.getId():0`）。
+        // 此前把"本级编码"与"通道编码"写反了，且 SSRC 段放的是通道编码。
+        let subject =
+            build_device_invite_subject(channel_id, &talk_ssrc, &self.config.device_id);
 
         let headers: Vec<(&str, &str)> = vec![
             ("Via", &via),
@@ -5199,8 +5224,8 @@ f=v/1/96/1/2/1/1/0
             self.config.device_id, self.config.ip, self.config.port, generate_tag());
         let to = format!("<sip:{}@{}:{}>", channel_id, device_addr.ip(), device_addr.port());
         let contact = format!("<sip:{}@{}:{}>", self.config.device_id, self.config.ip, self.config.port);
-        // Subject: serverGbId:ssrc,deviceGbId:4
-        let subject = format!("{}:{},{}:4", self.config.device_id, ssrc, channel_id);
+        // Subject（与 WVP 一致）：`<通道编码>:<SSRC>,<本级编码>:0`
+        let subject = build_device_invite_subject(channel_id, &ssrc, &self.config.device_id);
 
         // SDP s=Play（与 WVP 兼容）；端口用刚分配好的 ZLM RTP server 端口
         let sdp = build_invite_sdp(&self.config.ip, session.local_port, "Play", Some(&ssrc));
@@ -5795,8 +5820,9 @@ f=v/1/96/1/2/1/1/0
             "<sip:{}@{}:{}>",
             self.config.device_id, self.config.ip, self.config.port
         );
-        // Subject: serverGbId:ssrc,deviceGbId:0
-        let subject = format!("{}:{},{}:0", self.config.device_id, ssrc_str, channel_id);
+        // Subject（与 WVP 一致）：`<通道编码>:<SSRC>,<本级编码>:0`
+        let subject =
+            build_device_invite_subject(channel_id, &ssrc_str, &self.config.device_id);
 
         // 规范 SDP – s=Play，使用真实 RTP 端口
         let sdp = build_invite_sdp(&self.config.ip, media_port, "Play", Some(&ssrc_str));
@@ -6147,10 +6173,8 @@ f=v/1/96/1/2/1/1/0
             end_time,
             Some(&ssrc),
         );
-        let subject = format!(
-            "{}:{},{}:{}",
-            self.config.device_id, channel_id, self.config.device_id, 1
-        );
+        // Subject（与 WVP 的 `createPlaybackInviteRequest` 一致）
+        let subject = build_device_invite_subject(channel_id, &ssrc, &self.config.device_id);
 
         let headers: Vec<(&str, &str)> = vec![
             ("Via", &via),
@@ -6274,7 +6298,7 @@ f=v/1/96/1/2/1/1/0
                 end_time,
                 Some(&ssrc),
             );
-            let subject = format!("{}:{},{}:1", self.config.device_id, ssrc, channel_id);
+            let subject = build_device_invite_subject(channel_id, &ssrc, &self.config.device_id);
 
             let headers: Vec<(&str, &str)> = vec![
                 ("Via", &via),
@@ -6529,10 +6553,10 @@ f=v/1/96/1/2/1/1/0
             .allocate(channel_id, channel_id, "play");
         let sdp = build_invite_sdp(&self.config.ip, sdp_port, "Play", Some(&ssrc));
 
-        let subject = format!(
-            "{}:{},{}:{}",
-            self.config.device_id, channel_id, platform_gb_id, 0
-        );
+        // 平台侧（WVP `SIPRequestHeaderPlarformProvider`）：
+        // `<本级来源编码>:<SSRC>,<目标通道编码>:0`
+        let subject =
+            build_platform_invite_subject(&self.config.device_id, &ssrc, channel_id);
 
         let headers: Vec<(&str, &str)> = vec![
             ("Via", &via),
@@ -7728,12 +7752,40 @@ mod playback_control_tests {
         assert_eq!(ssrc, "2000000123");
     }
 
+    /// Subject 必须与 WVP 一致：`<通道编码>:<SSRC>,<本级编码>:0`。
+    ///
+    /// 此前是 `<本级>:<通道>,<本级>:<ssrc>` —— 前两段与国标示例、WVP
+    /// （`SIPRequestHeaderProvider` 的 `channelId:ssrc,sipConfig.getId():0`）都不同。
     #[test]
     fn download_subject_format_matches_reference() {
         let subject = build_download_subject("34020000002000000001", "34020000001320000002");
-        // 形如 "<local>:<channel>,<local>:2<deviceid9>"
-        assert!(subject.contains(":34020000001320000002,"));
-        assert!(subject.ends_with(":2340200000"));
+        let parts: Vec<&str> = subject.split(',').collect();
+        assert_eq!(parts.len(), 2, "{subject}");
+        // 第 1 段：通道编码 : SSRC
+        let (first_id, ssrc) = parts[0].split_once(':').unwrap();
+        assert_eq!(first_id, "34020000001320000002");
+        assert_eq!(ssrc, build_download_ssrc("34020000002000000001"));
+        // 第 2 段：本级编码 : 0
+        let (local, tail) = parts[1].split_once(':').unwrap();
+        assert_eq!(local, "34020000002000000001");
+        assert_eq!(tail, "0");
+    }
+
+    /// 设备侧/平台侧 Subject 的唯一构造器：形态固定为
+    /// `<通道编码>:<SSRC>,<本级编码>:0`（平台侧为 `<本级>:<SSRC>,<通道>:0`）。
+    #[test]
+    fn invite_subject_builders_have_fixed_shape() {
+        let dev = build_device_invite_subject("34020000001320000002", "0100000001", "34020000002000000001");
+        assert_eq!(dev, "34020000001320000002:0100000001,34020000002000000001:0");
+        let plat = build_platform_invite_subject("34020000002000000001", "0100000001", "34020000001320000002");
+        assert_eq!(plat, "34020000002000000001:0100000001,34020000001320000002:0");
+        // 两段、四个字段、末字段恒为 0
+        for s in [&dev, &plat] {
+            let parts: Vec<&str> = s.split(',').collect();
+            assert_eq!(parts.len(), 2);
+            assert!(parts[1].ends_with(":0"), "{s}");
+            assert!(parts[0].contains(':'), "{s}");
+        }
     }
 
     #[test]

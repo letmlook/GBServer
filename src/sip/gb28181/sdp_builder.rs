@@ -235,7 +235,17 @@ impl SdpBuilder {
         match self.stream_type {
             StreamType::Talk | StreamType::Broadcast => {}
             _ => {
-                sdp.push_str("f=v/1/96/1/2/1/1/0\r\n");
+                // `f=` 是国标附录的**媒体描述行**，模板为
+                // `f=v/<视频编码>/<分辨率>/<帧率>/<码率类型>/<码率大小>a/<音频编码>/<音频码率>/<采样率>`。
+                //
+                // 此前这里写的是 `f=v/1/96/1/2/1/1/0` —— **缺了分隔音频段的字面量 `a`**，
+                // 按模板解析时第 6 个字段会变成 `1/0` 这样的畸形值；
+                // 而且没有任何音频段，等于对设备声明"只有视频"。
+                //
+                // 现在与 WVP-PRO 的设备侧邀请**逐字符一致**（`SIPCommander`：
+                // `f=v/////a/1/8/1`）：视频各字段留空（该行是建议性字段，留空最安全），
+                // 音频段 = G.711A / 8kbps / 8kHz —— 正是本平台 PS 音频通路支持的编码。
+                sdp.push_str("f=v/////a/1/8/1\r\n");
             }
         }
 
@@ -309,7 +319,8 @@ mod tests {
         assert!(sdp.contains("m=video 50000 RTP/AVP 96"));
         assert!(sdp.contains("a=recvonly"));
         assert!(sdp.contains("y=0100000001"));
-        assert!(sdp.contains("f=v/1/96/1/2/1/1/0"));
+        // 媒体描述行必须带音频段分隔符 `a`（此前缺了它，且完全没有音频段）
+        assert!(sdp.contains("f=v/////a/1/8/1"), "{sdp}");
     }
 
     #[test]
@@ -334,7 +345,7 @@ mod tests {
         assert!(sdp.contains("m=audio 50002 RTP/AVP 8 0 101"));
         assert!(sdp.contains("a=sendrecv"));
         assert!(sdp.contains("y=0200005678"));
-        assert!(!sdp.contains("f=v/1"));
+        assert!(!sdp.contains("f="));
     }
 
     #[test]

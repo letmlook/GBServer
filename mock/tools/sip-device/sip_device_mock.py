@@ -1007,6 +1007,30 @@ class SipDeviceMock:
             "from_tag": from_tag, "to_tag": to_tag, "branch": branch,
             "cseq": invite_cseq, "started": time.time(),
         }
+        # 记录 INVITE 的 Subject 与 s= 行：Subject 的字段顺序
+        # （`<通道编码>:<SSRC>,<本级编码>:0`）是国标/WVP 契约的一部分，
+        # 只有报文层能看到才算验证过。
+        subject = self._extract_header(msg, "Subject", "")
+        session_name = ""
+        ssrc_y = ""
+        f_line = ""
+        for _line in msg.splitlines():
+            _t = _line.strip()
+            if _t.startswith("s=") and not session_name:
+                session_name = _t[2:]
+            elif _t.startswith("y=") and not ssrc_y:
+                # `y=` 在 **SDP 正文**里（不是 SIP 头），此前按头去取永远是空
+                ssrc_y = _t[2:]
+            elif _t.startswith("f=") and not f_line:
+                # 媒体描述行（国标附录 A.2.3），与 Subject 一样属于契约的一部分
+                f_line = _t
+        log.info(
+            "INVITE 收到: Subject=%s s=%s y=%s %s",
+            subject or "(无)",
+            session_name or "(无)",
+            ssrc_y or "(无)",
+            f_line or "(无 f=)",
+        )
         local = self.transport.get_extra_info("sockname")
         req_body = msg.split("\r\n\r\n", 1)[1] if "\r\n\r\n" in msg else ""
         payload = build_invite_ok(

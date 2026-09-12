@@ -12,7 +12,7 @@
 | 总代码量（src/） | 79,179 行 Rust | `find src -name '*.rs' \| xargs wc -l` |
 | 已注册 HTTP 路由 | 386 条唯一 `/api/...` 路径 | `grep -oE '"/api/[^"]*"' src/router.rs \| sort -u \| wc -l` |
 | Handler 模块 | 29 个（含 `stub.rs` / `device_stub.rs` 两个兼容 shim） | `grep -c 'pub mod' src/handlers/mod.rs` |
-| 后端测试 | **690 通过** / 0 失败（第四十轮刷新） | `cargo test` |
+| 后端测试 | **691 通过 / 0 失败**（第四十一轮刷新） | `cargo test` |
 | 编译状态 | `cargo check` 0 error / **0 warning**；clippy 262；**deprecated 0** | `cargo check` / `cargo clippy --all-targets` |
 | 数据库 feature | SQLite（默认）/ PostgreSQL / MySQL **三者均编译通过** | CI `feature-matrix` job |
 | CI | ⏸️ 工作流已就绪但**按需暂停自动触发**（见 `.github/workflows/ci.yml`） | — |
@@ -1810,6 +1810,36 @@ cargo check --features mysql/postgres  OK
 npx playwright test              61 passed / 0 failed（云端录像 2 例按环境显式 skip）
 ```
 
+### 邀请报文：`f=` 媒体描述行 + `Subject` 头对齐国标/WVP（2026-09-12 第四十一轮）
+
+| 项 | 此前 | 现在（与 WVP 一致） |
+|----|------|--------------------|
+| SDP `f=` 行 | `f=v/1/96/1/2/1/1/0`（缺音频段分隔符 `a`，无音频段） | `f=v/////a/1/8/1`（视频段留空 + G.711A/8kbps/8kHz 音频段） |
+| 设备侧 INVITE `Subject` | 4 处把"通道/本级"写反、SSRC 段放通道编码；下载是 `<本级>:<通道>,<本级>:<ssrc>` | 统一 `<通道编码>:<SSRC>,<本级编码>:0` |
+| 平台侧（级联上级）`Subject` | `<本级>:<目标通道>,<上级平台>:0` | `<本级>:<SSRC>,<目标通道>:0`（WVP `SIPRequestHeaderPlarformProvider`） |
+
+6 处拼串收敛成两个构造器（`build_device_invite_subject` /
+`build_platform_invite_subject`），并给 SIP 模拟器加了 Subject/`y=`/`f=` 的报文日志。
+
+**实测**（模拟器打印收到的 INVITE）：
+
+```
+实时   Subject=34020000001320000001:0340200000,34020000002000000001:0  s=Play     y=0340200000 f=v/////a/1/8/1
+对讲   Subject=34020000001320000001:4340200000,34020000002000000001:0  s=Talk     y=4340200000
+广播   Subject=34020000001320000001:4340200000,34020000002000000001:0  s=Play     y=4340200000
+回放   Subject=34020000001320000001:1340200000,34020000002000000001:0  s=Playback y=1340200000
+Playwright → 61 passed
+```
+
+#### 第四十一轮基线
+
+```
+cargo test                       691 passed / 0 failed
+cargo check --all-targets        本项目 0 warning
+cargo check --features mysql/postgres  OK
+npx playwright test              61 passed / 0 failed（云端录像 2 例按环境显式 skip）
+```
+
 > **环境限制（本机，非仓库缺陷）**：Docker Desktop 出现容器 → 宿主机网络不通
 > （`host.docker.internal` 只解析出 IPv6 ULA，`192.168.65.254` / `172.18.0.1` /
 > 宿主机 LAN IP 均不可达，连 redis 容器也连不上后端）。因此 ZLM 的全部 hook
@@ -1943,15 +1973,25 @@ vue-tsc --noEmit                 通过
 以下是本轮**已定位但未改动**的项，均在代码中留有注释或在此登记，
 不应被视为"已实现"：
 
-1. **`f=` 媒体描述行的结构**：当前所有实现都发 `f=v/1/96/1/2/1/1/0`，
-   而国标模板是 `f=v/<编码>/<分辨率>/<帧率>/<码率类型>/<码率大小>a/<音频编码>/<码率>/<采样率>`
-   —— 该串**缺少 `a/` 音频段标记**，结构不完整。改动需要确定各字段取值，
-   在没有真实设备可核验前不宜臆造（`f=` 是建议性字段，设备可忽略）。
-2. **`Subject` 头形状**：仓库内存在两种写法，活跃实时点播路径用
-   `serverGbId:ssrc,deviceGbId:0`（代码内注释即如此），回放/下载路径用
-   `localId:channelId,localId:flag`。国标示例为
-   `<通道编码>:<发送端序列号>,<接收方编码>:<ssrc>`。实时点播路径可能正在实际互操作，
-   改动风险大于收益，故保留现状并在此登记。
+1. ~~**`f=` 媒体描述行的结构**~~ **已修复（第四十一轮）**：
+    此前写的是 `f=v/1/96/1/2/1/1/0` —— 按国标模板
+    `f=v/<视频编码>/<分辨率>/<帧率>/<码率类型>/<码率大小>a/<音频编码>/<音频码率>/<采样率>`
+    解析，它**缺了分隔音频段的字面量 `a`**，第 6 段会变成 `1/0` 这种畸形值，
+    而且完全没有音频段（等于对设备声明"只有视频"）。
+    现在与 WVP 的设备侧邀请**逐字符一致**：`f=v/////a/1/8/1`
+    （视频各段留空——该行是建议性字段；音频段 = G.711A/8kbps/8kHz，
+    正是本平台 PS 音频通路支持的编码）。
+2. ~~**`Subject` 头形状**~~ **已修复（第四十一轮）**：
+    核对 WVP 后确认设备侧邀请**统一**是
+    `<通道编码>:<SSRC>,<本级编码>:0`
+    （`SIPRequestHeaderProvider`：`channelId:ssrc,sipConfig.getId():0`；
+    平台侧是 `sourceId:ssrc,channelId:0`）。
+    此前 6 处各自拼串，其中 4 处把通道与本级写反、SSRC 段放的是通道编码，
+    下载更是 `<本级>:<通道>,<本级>:<ssrc>`。现在收敛成两个唯一构造器
+    `build_device_invite_subject` / `build_platform_invite_subject`，
+    实测（SIP 模拟器打印收到的报文）：
+    实时 `34020000001320000001:0340200000,34020000002000000001:0`、
+    对讲/广播 `…:4340200000,…`、回放 `…:1340200000,…`。
 3. ~~对讲/广播的媒体面~~ **已实现（第八轮）**：见下方「语音对讲」小节。
 4. ~~**`log_file_download`** 仍是文件路径下载；前端 `getLogFile` 定义了但从未调用。~~
    **已修复（第七轮）**：该端点此前固定去 `./logs/<name>` 找文件，而本进程
@@ -2227,6 +2267,7 @@ vue-tsc --noEmit                 通过
 - 2026-09-12 第三十八轮：`cargo test` —— **683 通过 / 0 失败**（摄像机 6 条：行级过滤/分页、100 条截断；e2e 59）
 - 2026-09-12 第三十九轮：`cargo test` —— **688 通过 / 0 失败**（回放 3 条 + 对讲时序竞争；**16 模块 130 条契约审计全部修完**）
 - 2026-09-12 第四十轮：`cargo test` —— **690 通过 / 0 失败**（前端控制报文对齐 WVP 的 8 字节 PTZCmd；e2e 61）
+- 2026-09-12 第四十一轮：`cargo test` —— **691 通过 / 0 失败**（邀请报文 `f=`/`Subject` 对齐国标与 WVP；e2e 61）
 - 2026-09-12 第三十一轮：`cargo test` —— **641 通过 / 0 失败**（JT1078 终端/围栏 13 条）
 - 2026-09-12 第三十轮：`cargo test` —— **637 通过 / 0 失败**（设备页 7 条）
 - 2026-09-12 第二十九轮：`cargo test` —— **634 通过 / 0 失败**（云端录像全链路）
