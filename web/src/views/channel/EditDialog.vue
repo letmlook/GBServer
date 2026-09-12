@@ -15,17 +15,17 @@
       </el-form-item>
       <el-form-item label="行业">
         <el-select v-model="form.manufacturer" placeholder="行业类型" clearable style="width: 100%">
-          <el-option v-for="x in industryList" :key="x" :label="x" :value="x" />
+          <el-option v-for="x in industryList" :key="x.code" :label="x.name" :value="x.code" />
         </el-select>
       </el-form-item>
       <el-form-item label="网络标识">
         <el-select v-model="form.streamIdentification" placeholder="码流" clearable style="width: 100%">
-          <el-option v-for="x in networkList" :key="x" :label="x" :value="x" />
+          <el-option v-for="x in networkList" :key="x.code" :label="x.name" :value="x.code" />
         </el-select>
       </el-form-item>
       <el-form-item label="类型">
         <el-select v-model="form.channelType" placeholder="类型" clearable style="width: 100%">
-          <el-option v-for="x in typeList" :key="x" :label="x" :value="x" />
+          <el-option v-for="x in typeList" :key="x.code" :label="x.name" :value="x.code" />
         </el-select>
       </el-form-item>
       <el-form-item label="安装地址">
@@ -42,14 +42,14 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
 import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
-import { addChannel, updateChannel } from '@/api/channel'
+import { addChannel, updateChannel, type ChannelCodeType } from '@/api/channel'
 
 const props = defineProps<{
   modelValue: boolean
   channel?: any
-  industryList?: string[]
-  typeList?: string[]
-  networkList?: string[]
+  industryList?: ChannelCodeType[]
+  typeList?: ChannelCodeType[]
+  networkList?: ChannelCodeType[]
 }>()
 
 const emit = defineEmits<{

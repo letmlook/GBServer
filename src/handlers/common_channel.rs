@@ -163,7 +163,9 @@ pub struct CommonChannelQuery {
 
 #[derive(Debug, Deserialize)]
 pub struct ChannelIdQuery {
-    #[serde(alias = "channelId")]
+    /// WVP 的 `ChannelController.getOne(int id)` / `play` 用的都是 `id`；
+    /// 前端（含 legacy）也发 `id`。三个名字都接受。
+    #[serde(alias = "channelId", alias = "id")]
     pub channel_id: Option<i64>,
 }
 
@@ -291,43 +293,48 @@ pub async fn channel_one(
 
 /// GET /api/common/channel/industry/list
 pub async fn industry_list() -> Json<WVPResult<Vec<serde_json::Value>>> {
+    // WVP 的 `IndustryCodeType` 是 `{name, code, notes}`（见 bean/IndustryCodeType.java）；
+    // 前端按 `item.name` 显示、`item.code` 提交。此前返回 `{value,label}`，
+    // 前端当成 string[] 用 → 下拉显示 "[object Object]"。
     let industries = vec![
-        serde_json::json!({"value": "01", "label": "危险化学品"}),
-        serde_json::json!({"value": "02", "label": "煤矿"}),
-        serde_json::json!({"value": "03", "label": "非煤矿山"}),
-        serde_json::json!({"value": "04", "label": "烟花爆竹"}),
-        serde_json::json!({"value": "05", "label": "工贸"}),
-        serde_json::json!({"value": "99", "label": "其他"}),
+        serde_json::json!({"name": "危险化学品", "code": "01", "notes": ""}),
+        serde_json::json!({"name": "煤矿", "code": "02", "notes": ""}),
+        serde_json::json!({"name": "非煤矿山", "code": "03", "notes": ""}),
+        serde_json::json!({"name": "烟花爆竹", "code": "04", "notes": ""}),
+        serde_json::json!({"name": "工贸", "code": "05", "notes": ""}),
+        serde_json::json!({"name": "其他", "code": "99", "notes": ""}),
     ];
     Json(WVPResult::success(industries))
 }
 
 /// GET /api/common/channel/type/list
 pub async fn type_list() -> Json<WVPResult<Vec<serde_json::Value>>> {
+    // WVP `DeviceType` = `{name, code, ownerName}`
     let types = vec![
-        serde_json::json!({"value": 1, "label": "摄像机"}),
-        serde_json::json!({"value": 2, "label": "半球"}),
-        serde_json::json!({"value": 3, "label": "快球"}),
-        serde_json::json!({"value": 4, "label": "云台"}),
-        serde_json::json!({"value": 5, "label": "红外枪机"}),
-        serde_json::json!({"value": 6, "label": "广播"}),
-        serde_json::json!({"value": 7, "label": "报警"}),
-        serde_json::json!({"value": 8, "label": "存储设备"}),
-        serde_json::json!({"value": 9, "label": "移动设备"}),
-        serde_json::json!({"value": 10, "label": "门禁"}),
-        serde_json::json!({"value": 11, "label": "智能检测"}),
-        serde_json::json!({"value": 12, "label": "安全监测"}),
+        serde_json::json!({"name": "摄像机", "code": "1"}),
+        serde_json::json!({"name": "半球", "code": "2"}),
+        serde_json::json!({"name": "快球", "code": "3"}),
+        serde_json::json!({"name": "云台", "code": "4"}),
+        serde_json::json!({"name": "红外枪机", "code": "5"}),
+        serde_json::json!({"name": "广播", "code": "6"}),
+        serde_json::json!({"name": "报警", "code": "7"}),
+        serde_json::json!({"name": "存储设备", "code": "8"}),
+        serde_json::json!({"name": "移动设备", "code": "9"}),
+        serde_json::json!({"name": "门禁", "code": "10"}),
+        serde_json::json!({"name": "智能检测", "code": "11"}),
+        serde_json::json!({"name": "安全监测", "code": "12"}),
     ];
     Json(WVPResult::success(types))
 }
 
 /// GET /api/common/channel/network/identification/list
 pub async fn network_identification_list() -> Json<WVPResult<Vec<serde_json::Value>>> {
+    // WVP `NetworkIdentificationType` = `{name, code}`
     let list = vec![
-        serde_json::json!({"value": "IP", "label": "IP"}),
-        serde_json::json!({"value": "MAC", "label": "MAC"}),
-        serde_json::json!({"value": "E1", "label": "E1"}),
-        serde_json::json!({"value": "ADSL", "label": "ADSL"}),
+        serde_json::json!({"name": "IP", "code": "IP"}),
+        serde_json::json!({"name": "MAC", "code": "MAC"}),
+        serde_json::json!({"name": "E1", "code": "E1"}),
+        serde_json::json!({"name": "ADSL", "code": "ADSL"}),
     ];
     Json(WVPResult::success(list))
 }
@@ -337,12 +344,26 @@ pub async fn network_identification_list() -> Json<WVPResult<Vec<serde_json::Val
 pub struct ChannelUpdateBody {
     pub id: Option<i64>,
     pub name: Option<String>,
+    #[serde(alias = "channelId")]
     pub channel_id: Option<String>,
+    #[serde(alias = "civilCode")]
     pub civil_code: Option<String>,
+    #[serde(alias = "parentId")]
     pub parent_id: Option<i64>,
+    #[serde(alias = "businessGroup")]
     pub business_group: Option<String>,
+    #[serde(alias = "ptzType")]
     pub ptz_type: Option<i32>,
+    #[serde(alias = "customName")]
     pub custom_name: Option<String>,
+    pub manufacturer: Option<String>,
+    pub model: Option<String>,
+    pub owner: Option<String>,
+    pub address: Option<String>,
+    #[serde(alias = "streamIdentification")]
+    pub stream_identification: Option<String>,
+    #[serde(alias = "channelType")]
+    pub channel_type: Option<i32>,
 }
 
 pub async fn channel_update(
@@ -350,20 +371,28 @@ pub async fn channel_update(
     Json(body): Json<ChannelUpdateBody>,
 ) -> Result<Json<WVPResult<()>>, AppError> {
     let id = body.id.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id"))?;
+    // WVP `ChannelController.update` 要求"至少改了一个字段"，否则报错；
+    // 这里只做"必须传 id"，其余字段一律 COALESCE（None = 保持原值）。
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    common_channel::update(
-        &state.pool,
-        id,
-        body.name.as_deref(),
-        body.channel_id.as_deref(),
-        body.civil_code.as_deref(),
-        body.parent_id,
-        body.business_group.as_deref(),
-        body.ptz_type,
-        body.custom_name.as_deref(),
-        &now,
-    )
-    .await?;
+    let fields = common_channel::ChannelWriteFields {
+        device_id: "",
+        // 只有客户端真的传了才覆盖（COALESCE），否则会把名称清空
+        channel_id: body.channel_id.as_deref(),
+        name: body.name.as_deref(),
+        data_device_id: None,
+        civil_code: body.civil_code.as_deref(),
+        parent_id: body.parent_id,
+        business_group: body.business_group.as_deref(),
+        ptz_type: body.ptz_type,
+        custom_name: body.custom_name.as_deref(),
+        manufacturer: body.manufacturer.as_deref(),
+        model: body.model.as_deref(),
+        owner: body.owner.as_deref(),
+        address: body.address.as_deref(),
+        stream_identification: body.stream_identification.as_deref(),
+        channel_type: body.channel_type,
+    };
+    common_channel::update(&state.pool, id, &fields, &now).await?;
     Ok(Json(WVPResult::<()>::success_empty()))
 }
 
@@ -384,16 +413,38 @@ pub async fn channel_reset(
 }
 
 /// POST /api/common/channel/add
+///
+/// 前端（`web/src/views/channel/EditDialog.vue`）发的是 camelCase；缺 alias 时
+/// serde 静默丢字段 → `deviceId`/`channelId` 为空 → 400「必填」，
+/// **新增通道 100% 不可用**。
 #[derive(Debug, Deserialize)]
 pub struct ChannelAddBody {
+    #[serde(alias = "deviceId")]
     pub device_id: Option<String>,
     pub name: Option<String>,
+    #[serde(alias = "channelId")]
     pub channel_id: Option<String>,
+    #[serde(alias = "civilCode")]
     pub civil_code: Option<String>,
+    #[serde(alias = "parentId")]
     pub parent_id: Option<i64>,
+    #[serde(alias = "businessGroup")]
     pub business_group: Option<String>,
+    #[serde(alias = "ptzType")]
     pub ptz_type: Option<i32>,
+    #[serde(alias = "customName")]
     pub custom_name: Option<String>,
+    // --- 编辑框里有、此前后端根本没有的列（改完静默丢失） ---
+    /// 厂商（前端「行业」下拉绑定的就是它，沿用 WVP legacy `DeviceChannel.manufacturer`）
+    pub manufacturer: Option<String>,
+    pub model: Option<String>,
+    pub owner: Option<String>,
+    /// 安装地址
+    pub address: Option<String>,
+    #[serde(alias = "streamIdentification")]
+    pub stream_identification: Option<String>,
+    #[serde(alias = "channelType")]
+    pub channel_type: Option<i32>,
 }
 
 pub async fn channel_add(
@@ -408,20 +459,38 @@ pub async fn channel_add(
         return Err(AppError::business(ErrorCode::Error400, "deviceId 和 channelId 必填"));
     }
 
-    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    let id = common_channel::add(
-        &state.pool,
-        device_id,
-        name,
-        channel_id,
-        body.civil_code.as_deref(),
-        body.parent_id,
-        body.business_group.as_deref(),
-        body.ptz_type,
-        body.custom_name.as_deref(),
-        &now,
+    // 手工新增的通道必须挂到父设备的自增主键上：录像计划的"按设备关联"
+    // 与 `channel_ids_by_device_db_id` 都依赖 `data_device_id`。
+    let data_device_id: Option<i32> = sqlx::query_scalar(
+        #[cfg(feature = "postgres")]
+        { "SELECT id FROM gb_device WHERE device_id = $1" },
+        #[cfg(not(feature = "postgres"))]
+        { "SELECT id FROM gb_device WHERE device_id = ?" },
     )
-    .await?;
+    .bind(device_id)
+    .fetch_optional(&state.pool)
+    .await
+    .unwrap_or(None);
+
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let fields = common_channel::ChannelWriteFields {
+        device_id,
+        channel_id: Some(channel_id),
+        name: Some(name),
+        data_device_id,
+        civil_code: body.civil_code.as_deref(),
+        parent_id: body.parent_id,
+        business_group: body.business_group.as_deref(),
+        ptz_type: body.ptz_type,
+        custom_name: body.custom_name.as_deref(),
+        manufacturer: body.manufacturer.as_deref(),
+        model: body.model.as_deref(),
+        owner: body.owner.as_deref(),
+        address: body.address.as_deref(),
+        stream_identification: body.stream_identification.as_deref(),
+        channel_type: body.channel_type,
+    };
+    let id = common_channel::add(&state.pool, &fields, &now).await?;
 
     Ok(Json(WVPResult::success(serde_json::json!({
         "id": id,
@@ -733,114 +802,105 @@ pub async fn device_group_delete(
     Ok(Json(WVPResult::<()>::success_empty()))
 }
 
-// ========== 通道播放控制 ==========
+/// GET /api/common/channel/play?channelId=
+///
+/// 真实点播：走 SIP INVITE + ZLM 收流（与 `/api/play/start` 同一条链路）。
+///
+/// 此前的实现是**伪造**的：拼一个 `rtsp://127.0.0.1:554/<通道主键>` 去
+/// `addStreamProxy` —— 那个地址既不是 ZLM 的流也不是设备的地址，
+/// 必然拿不到任何媒体，却会返回一组看起来正常的 playUrl/flvUrl。
 pub async fn channel_play(
     State(state): State<AppState>,
     Query(q): Query<ChannelIdQuery>,
 ) -> Json<WVPResult<serde_json::Value>> {
     let channel_id = match q.channel_id {
-        Some(id) => id,
-        None => return Json(WVPResult::error("缺少 channelId")),
+        Some(id) if id > 0 => id,
+        _ => return Json(WVPResult::error("缺少 channelId")),
     };
-    
-    match common_channel::get_by_id(&state.pool, channel_id).await {
-        Ok(Some(ch)) => {
-            let device_id = match &ch.device_id {
-                Some(id) => id.clone(),
-                None => return Json(WVPResult::error("通道无设备ID")),
-            };
-            let gb_channel_id = match &ch.gb_device_id {
-                Some(id) => id.clone(),
-                None => return Json(WVPResult::error("通道无国标ID")),
-            };
-            
-            if let Some(ref zlm_client) = state.zlm_client {
-                let rtsp_url = format!("rtsp://127.0.0.1:{}/{}", 554u16, channel_id);
-                // Use similar approach as play_start to proxy the stream
-                let request = crate::zlm::AddStreamProxyRequest {
-                    secret: zlm_client.secret.clone(),
-                    vhost: "__defaultVhost__".to_string(),
-                    app: "gb".to_string(),
-                    stream: format!("{}${}", device_id, channel_id),
-                    url: rtsp_url.clone(),
-                    rtp_type: Some(0),
-                    timeout_sec: Some(30.0),
-                    enable_hls: Some(false),
-                    enable_mp4: Some(false),
-                    enable_rtsp: Some(true),
-                    enable_rtmp: Some(true),
-                    enable_fmp4: Some(true),
-                    enable_ts: Some(false),
-                    enableAAC: Some(false),
-                };
-                match zlm_client.add_stream_proxy(&request).await {
-                    Ok(key) => {
-                        let stream_url = format!("gb/{}${}", device_id, channel_id);
-                        // Phase 3.6: 用真实 ZLM 节点 IP（不再 hardcode 127.0.0.1）
-                        let media_ip = zlm_client.ip.clone();
-                        let http_port = zlm_client.http_port;
-                        let play_url = format!("rtsp://{}:554/{}", media_ip, stream_url);
-                        let flv_url = format!("http://{}:{}/{}.flv", media_ip, http_port, stream_url);
-                        let data = serde_json::json!({
-                            "app": "gb",
-                            "stream": key,
-                            "playUrl": play_url,
-                            "flvUrl": flv_url,
-                            "wsUrl": format!("ws://{}:{}/{}.flv", media_ip, http_port, stream_url),
-                            "deviceId": device_id,
-                            "channelId": gb_channel_id,
-                            "hasAudio": ch.has_audio.unwrap_or(false),
-                            "rtspUrl": rtsp_url,
-                        });
-                        return Json(WVPResult::success(data));
-                    }
-                    Err(e) => {
-                        return Json(WVPResult::error(format!("ZLM error: {}", e)));
-                    }
-                }
-            }
-            Json(WVPResult::success(serde_json::json!({
-                "app": "",
-                "stream": "",
-                "tracks": [],
-                "msg": "ZLM not configured or unavailable"
-            })))
-        }
-        Ok(None) => Json(WVPResult::error("通道不存在".to_string() )),
-        Err(_) => Json(WVPResult::error("数据库错误")),
+    let ch = match common_channel::get_by_id(&state.pool, channel_id).await {
+        Ok(Some(ch)) => ch,
+        Ok(None) => return Json(WVPResult::error("通道不存在")),
+        Err(e) => return Json(WVPResult::error(format!("数据库错误: {e}"))),
+    };
+    let device_id = ch.device_id.clone().unwrap_or_default();
+    let gb_channel_id = ch.gb_device_id.clone().unwrap_or_default();
+    if device_id.is_empty() || gb_channel_id.is_empty() {
+        return Json(WVPResult::error("通道缺少设备ID或国标ID"));
     }
+    let Some(sip_server) = state.sip_server.clone() else {
+        return Json(WVPResult::error("SIP 服务未初始化"));
+    };
+    let Some(zlm_client) = state.zlm_client.clone() else {
+        return Json(WVPResult::error("ZLM 未配置"));
+    };
+
+    let stream_id = match sip_server.start_live_stream(&device_id, &gb_channel_id, 15).await {
+        Ok(sid) => sid,
+        Err(e) => return Json(WVPResult::error(format!("点播失败: {e}"))),
+    };
+
+    let ip = &zlm_client.ip;
+    let http = zlm_client.http_port;
+    Json(WVPResult::success(serde_json::json!({
+        "app": "rtp",
+        "stream": stream_id,
+        "playUrl": format!("rtsp://{ip}:554/rtp/{stream_id}"),
+        "flvUrl": format!("http://{ip}:{http}/rtp/{stream_id}.flv"),
+        "wsUrl": format!("ws://{ip}:{http}/rtp/{stream_id}.flv"),
+        "ws_flv": format!("ws://{ip}:{http}/rtp/{stream_id}.flv"),
+        "hls": format!("http://{ip}:{http}/rtp/{stream_id}/hls.m3u8"),
+        "webrtc": format!("webrtc://{ip}:{http}/index/api/webrtc?app=rtp&stream={stream_id}&type=play"),
+        "deviceId": device_id,
+        "channelId": gb_channel_id,
+        "hasAudio": ch.has_audio.unwrap_or(false),
+    })))
 }
 
+/// GET /api/common/channel/play/stop?channelId=
+///
+/// 与 `/api/play/stop` 同一条清理链路：关 ZLM 收流 + 查会话发 BYE。
 pub async fn channel_play_stop(
     State(state): State<AppState>,
     Query(q): Query<ChannelIdQuery>,
-) -> Json<serde_json::Value> {
+) -> Json<WVPResult<serde_json::Value>> {
     let channel_id = match q.channel_id {
-        Some(id) => id,
-        None => return Json(serde_json::json!({"code": 1, "msg": "缺少 channelId"})),
+        Some(id) if id > 0 => id,
+        _ => return Json(WVPResult::error("缺少 channelId")),
     };
-    
-    match common_channel::get_by_id(&state.pool, channel_id).await {
-        Ok(Some(_ch)) => {
-            if let Some(ref zlm_client) = state.zlm_client {
-                // Stop the specific stream for this channel
-                let stream_key = format!("__defaultVhost__/gb/{}@{}", _ch.device_id.clone().unwrap_or_default(), channel_id);
-                let _ = zlm_client.close_streams(Some("rtsp"), Some("gb"), Some(&format!("{}@{}", _ch.device_id.clone().unwrap_or_default(), channel_id)), true).await;
-                let resp = serde_json::json!({
-                    "code": 0,
-                    "msg": "停止播放请求已发送",
-                    "data": {"stream": stream_key}
-                });
-                return Json(resp);
-            }
-            Json(serde_json::json!({"code": 0, "msg": "停止播放请求已发送"}))
-        }
-        Ok(None) => Json(serde_json::json!({"code": 1, "msg": "通道不存在"})),
-        Err(_) => Json(serde_json::json!({"code": 1, "msg": "数据库错误"})),
+    let ch = match common_channel::get_by_id(&state.pool, channel_id).await {
+        Ok(Some(ch)) => ch,
+        Ok(None) => return Json(WVPResult::error("通道不存在")),
+        Err(e) => return Json(WVPResult::error(format!("数据库错误: {e}"))),
+    };
+    let device_id = ch.device_id.clone().unwrap_or_default();
+    let gb_channel_id = ch.gb_device_id.clone().unwrap_or_default();
+    if device_id.is_empty() || gb_channel_id.is_empty() {
+        return Json(WVPResult::error("通道缺少设备ID或国标ID"));
     }
+    let stream_id = format!("{device_id}_{gb_channel_id}");
+
+    // 1) 释放 ZLM 侧的收流端口与流
+    if let Some((_, client)) = state.get_zlm_client_auto(None).await {
+        let _ = client.close_rtp_server(&stream_id).await;
+        let _ = client
+            .close_streams(None, Some("rtp"), Some(&stream_id), true)
+            .await;
+    }
+    // 2) 给设备发 BYE（不回 BYE 的设备会一直往已关闭的端口推流）
+    if let Some(sip_server) = state.sip_server.clone() {
+        match sip_server.send_session_bye(&device_id, &gb_channel_id).await {
+            Ok(call_id) => {
+                return Json(WVPResult::success(serde_json::json!({
+                    "callId": call_id,
+                    "stream": stream_id
+                })))
+            }
+            Err(e) => tracing::warn!("channel_play_stop BYE 失败 {device_id}/{gb_channel_id}: {e}"),
+        }
+    }
+    Json(WVPResult::success(serde_json::json!({ "stream": stream_id })))
 }
 
-// ========== 地图相关 ==========
 /// GET /api/common/channel/map/list
 #[derive(Debug, Deserialize)]
 pub struct MapChannelQuery {
@@ -2333,5 +2393,125 @@ mod tests {
         assert_eq!(parse_playback_speed(""), None);
         assert_eq!(parse_playback_speed("inf"), None);
         assert_eq!(parse_playback_speed("NaN"), None);
+    }
+}
+
+#[cfg(all(test, feature = "sqlite"))]
+mod channel_crud_contract_tests {
+    use super::*;
+    use crate::test_support::app_state;
+
+    async fn seed_device(state: &AppState, device_id: &str) -> i32 {
+        sqlx::query(
+            "INSERT INTO gb_device (device_id, name, on_line, create_time, update_time) \
+             VALUES (?, 'dev', 1, '2026-01-01 00:00:00', '2026-01-01 00:00:00')",
+        )
+        .bind(device_id)
+        .execute(&state.pool)
+        .await
+        .expect("insert device");
+        sqlx::query_scalar::<_, i32>("SELECT id FROM gb_device WHERE device_id = ?")
+            .bind(device_id)
+            .fetch_one(&state.pool)
+            .await
+            .unwrap()
+    }
+
+    /// 前端 `EditDialog.vue` 发的是 camelCase。缺 alias 时
+    /// `deviceId`/`channelId` 全丢 → 400「必填」，**新增通道 100% 失败**。
+    #[tokio::test]
+    async fn test_channel_add_accepts_frontend_camel_case_and_persists_all_fields() {
+        let state = app_state().await;
+        let dev_pk = seed_device(&state, "34020000001320000001").await;
+
+        let body: ChannelAddBody = serde_json::from_value(serde_json::json!({
+            "deviceId": "34020000001320000001",
+            "channelId": "34020000001310000001",
+            "name": "前门",
+            "civilCode": "340200",
+            "manufacturer": "05",
+            "streamIdentification": "IP",
+            "channelType": 3,
+            "address": "1 号楼"
+        }))
+        .expect("camelCase 必须能反序列化");
+
+        let _ = channel_add(State(state.clone()), Json(body)).await.expect("新增应成功");
+
+        let ch = common_channel::get_by_id(&state.pool, 1).await.unwrap().unwrap();
+        assert_eq!(ch.name.as_deref(), Some("前门"));
+        assert_eq!(ch.gb_device_id.as_deref(), Some("34020000001310000001"));
+        assert_eq!(ch.civil_code.as_deref(), Some("340200"));
+        // 这三列此前后端 DTO 里根本没有，改了静默丢失
+        assert_eq!(ch.manufacturer.as_deref(), Some("05"), "行业/厂商必须落库");
+        assert_eq!(ch.stream_identification.as_deref(), Some("IP"), "网络标识必须落库");
+        assert_eq!(ch.channel_type, Some(3), "类型必须落库");
+        assert_eq!(ch.address.as_deref(), Some("1 号楼"), "安装地址必须落库");
+        // 手工新增的通道要挂到父设备主键上（录像计划"按设备关联"依赖它）
+        let stored_dev_pk: Option<i32> =
+            sqlx::query_scalar("SELECT data_device_id FROM gb_device_channel WHERE id = 1")
+                .fetch_one(&state.pool)
+                .await
+                .unwrap();
+        assert_eq!(stored_dev_pk, Some(dev_pk), "data_device_id 必须是父设备主键");
+    }
+
+    /// 编辑：只传要改的字段，其余保持原值（COALESCE），不能把名称清空。
+    #[tokio::test]
+    async fn test_channel_update_partial_keeps_other_fields() {
+        let state = app_state().await;
+        seed_device(&state, "34020000001320000001").await;
+        let add: ChannelAddBody = serde_json::from_value(serde_json::json!({
+            "deviceId": "34020000001320000001",
+            "channelId": "34020000001310000001",
+            "name": "前门",
+            "manufacturer": "05",
+            "address": "1 号楼"
+        }))
+        .unwrap();
+        let _ = channel_add(State(state.clone()), Json(add)).await.unwrap();
+
+        let upd: ChannelUpdateBody = serde_json::from_value(serde_json::json!({
+            "id": 1,
+            "name": "后门",
+            "channelType": 4
+        }))
+        .unwrap();
+        let _ = channel_update(State(state.clone()), Json(upd)).await.expect("更新应成功");
+
+        let ch = common_channel::get_by_id(&state.pool, 1).await.unwrap().unwrap();
+        assert_eq!(ch.name.as_deref(), Some("后门"));
+        assert_eq!(ch.channel_type, Some(4));
+        // 未提交的字段必须保持原值
+        assert_eq!(ch.manufacturer.as_deref(), Some("05"));
+        assert_eq!(ch.address.as_deref(), Some("1 号楼"));
+        assert_eq!(ch.gb_device_id.as_deref(), Some("34020000001310000001"), "未提交时不得清空国标ID");
+    }
+
+    /// `id` 是 WVP/前端的参数名；`channelId` 是后端历史上的名字。两个都要能绑。
+    #[test]
+    fn test_channel_id_query_accepts_id_and_channel_id() {
+        let q: ChannelIdQuery = serde_json::from_value(serde_json::json!({"id": 7})).unwrap();
+        assert_eq!(q.channel_id, Some(7), "`id` 必须能绑定（WVP 契约）");
+        let q: ChannelIdQuery = serde_json::from_value(serde_json::json!({"channelId": 8})).unwrap();
+        assert_eq!(q.channel_id, Some(8));
+        let q: ChannelIdQuery = serde_json::from_value(serde_json::json!({"channel_id": 9})).unwrap();
+        assert_eq!(q.channel_id, Some(9));
+    }
+
+    /// 行业/类型/网络标识必须是 WVP 的 `{name, code}`，前端按下拉的
+    /// `:label="x.name" :value="x.code"` 渲染。
+    #[tokio::test]
+    async fn test_code_lists_are_name_code_objects() {
+        let industries = industry_list().await.0.data.unwrap();
+        assert!(industries.iter().all(|i| i.get("name").is_some() && i.get("code").is_some()));
+        assert!(industries.iter().any(|i| i["name"] == "危险化学品"));
+
+        let types = type_list().await.0.data.unwrap();
+        assert!(types.iter().all(|t| t.get("name").is_some() && t.get("code").is_some()));
+        assert!(types.iter().any(|t| t["name"] == "摄像机"));
+
+        let networks = network_identification_list().await.0.data.unwrap();
+        assert!(networks.iter().all(|n| n.get("name").is_some() && n.get("code").is_some()));
     }
 }

@@ -28,21 +28,21 @@ export function getChannelOne(id: string | number) {
 }
 
 export function getIndustryList() {
-  return request<WvpResult<string[]>>({
+  return request<WvpResult<ChannelCodeType[]>>({
     method: 'get',
     url: '/common/channel/industry/list'
   })
 }
 
 export function getTypeList() {
-  return request<WvpResult<string[]>>({
+  return request<WvpResult<ChannelCodeType[]>>({
     method: 'get',
     url: '/common/channel/type/list'
   })
 }
 
 export function getNetworkIdentificationList() {
-  return request<WvpResult<string[]>>({
+  return request<WvpResult<ChannelCodeType[]>>({
     method: 'get',
     url: '/common/channel/network/identification/list'
   })
@@ -84,12 +84,31 @@ export function resetChannel(data: Partial<Channel>) {
   })
 }
 
-export function changeAudio(channelId: string, audio: boolean) {
+/**
+ * 播放通道（WVP `/api/common/channel/play` 是 **GET**，参数为通道**主键**）。
+ * 此前写成 POST + 字符串国标 ID：方法不匹配直接 405。
+ */
+export function playChannel(channelId: number | string) {
   return request<WvpResult>({
-    method: 'post',
+    method: 'get',
     url: '/common/channel/play',
-    params: { channelId, audio }
+    params: { channelId }
   })
+}
+
+export function stopChannelPlay(channelId: number | string) {
+  return request<WvpResult>({
+    method: 'get',
+    url: '/common/channel/play/stop',
+    params: { channelId }
+  })
+}
+
+/** 行业 / 类型 / 网络标识 都是 `{name, code}`（WVP `IndustryCodeType` 等） */
+export interface ChannelCodeType {
+  name: string
+  code: string
+  notes?: string
 }
 
 export function updateStreamIdentification(params: { deviceDbId: number | string; id: string | number; streamIdentification: string }) {

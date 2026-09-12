@@ -98,7 +98,14 @@
 import { onMounted, reactive, ref } from 'vue'
 import { Plus } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { getChannelList, getIndustryList, getTypeList, getNetworkIdentificationList, deleteChannel } from '@/api/channel'
+import {
+  getChannelList,
+  getIndustryList,
+  getTypeList,
+  getNetworkIdentificationList,
+  deleteChannel,
+  type ChannelCodeType
+} from '@/api/channel'
 import { startPlay, playSnap } from '@/api/live'
 import { useRouter } from 'vue-router'
 import Pagination from '@/components/Pagination/index.vue'
@@ -114,9 +121,12 @@ const router = useRouter()
 const loading = ref(false)
 const rows = ref<any[]>([])
 const total = ref(0)
-const industryList = ref<string[]>([])
-const typeList = ref<string[]>([])
-const networkList = ref<string[]>([])
+// 这三个接口返回的是 `{name, code}`（WVP `IndustryCodeType`/`DeviceType`/
+// `NetworkIdentificationType`），不是字符串数组 —— 早期按 string[] 用，
+// 下拉里显示的是 "[object Object]"。
+const industryList = ref<ChannelCodeType[]>([])
+const typeList = ref<ChannelCodeType[]>([])
+const networkList = ref<ChannelCodeType[]>([])
 const editVisible = ref(false)
 const currentRow = ref<any>({})
 
@@ -202,9 +212,9 @@ async function onDelete(row: any) {
 onMounted(async () => {
   await Promise.all([
     loadData(),
-    getIndustryList().then((r) => (industryList.value = (r.data as string[]) ?? [])).catch(() => {}),
-    getTypeList().then((r) => (typeList.value = (r.data as string[]) ?? [])).catch(() => {}),
-    getNetworkIdentificationList().then((r) => (networkList.value = (r.data as string[]) ?? [])).catch(() => {})
+    getIndustryList().then((r) => (industryList.value = r.data ?? [])).catch(() => {}),
+    getTypeList().then((r) => (typeList.value = r.data ?? [])).catch(() => {}),
+    getNetworkIdentificationList().then((r) => (networkList.value = r.data ?? [])).catch(() => {})
   ])
 })
 </script>

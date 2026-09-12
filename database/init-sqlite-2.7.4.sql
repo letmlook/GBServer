@@ -100,6 +100,7 @@ CREATE TABLE IF NOT EXISTS gb_device_channel
     has_audio                    INTEGER     DEFAULT 0,
     gps_time                     VARCHAR(50),
     stream_identification        VARCHAR(50),
+    custom_name                  VARCHAR(255),
     channel_type                 INTEGER     DEFAULT 0 NOT NULL,
     map_level                    INTEGER     DEFAULT 0,
     gb_device_id                 VARCHAR(50),

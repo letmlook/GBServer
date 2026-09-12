@@ -125,6 +125,7 @@ create table IF NOT EXISTS gb_device_channel
     has_audio                    bool default false COMMENT '是否有音频',
     gps_time                     varchar(50) COMMENT 'GPS定位时间',
     stream_identification        varchar(50) COMMENT '流标识',
+    custom_name                  varchar(255) COMMENT '自定义名称',
     channel_type                 int  default 0 not null COMMENT '通道类型',
     map_level                    int  default 0 COMMENT '地图层级',
     gb_device_id                 varchar(50) COMMENT 'GB内的设备ID',

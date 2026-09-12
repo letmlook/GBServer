@@ -28,78 +28,135 @@ pub async fn get_by_id(pool: &Pool, id: i64) -> sqlx::Result<Option<DeviceChanne
     .await;
 }
 
+/// 通道可写字段（表单里出现的全部列）。
+///
+/// 用一个结构体而不是十几个形参：此前每加一个字段都要改 3 个方言分支 + handler
+/// 调用点，于是前端表单里的 `manufacturer`/`channelType`/`address`/
+/// `streamIdentification` 四列**从来没有被写过**（改了静默丢失）。
+#[derive(Debug, Default, Clone)]
+pub struct ChannelWriteFields<'a> {
+    /// 仅新增用（必填）
+    pub device_id: &'a str,
+    /// 国标通道编号；`None` 表示更新时不改动（COALESCE）
+    pub channel_id: Option<&'a str>,
+    pub name: Option<&'a str>,
+    /// 新增时写入 `data_device_id`（设备表的自增主键）
+    pub data_device_id: Option<i32>,
+    // 可选/可更新
+    pub civil_code: Option<&'a str>,
+    pub parent_id: Option<i64>,
+    pub business_group: Option<&'a str>,
+    pub ptz_type: Option<i32>,
+    pub custom_name: Option<&'a str>,
+    pub manufacturer: Option<&'a str>,
+    pub model: Option<&'a str>,
+    pub owner: Option<&'a str>,
+    pub address: Option<&'a str>,
+    pub stream_identification: Option<&'a str>,
+    pub channel_type: Option<i32>,
+}
+
 pub async fn update(
     pool: &Pool,
     id: i64,
-    name: Option<&str>,
-    channel_id: Option<&str>,
-    civil_code: Option<&str>,
-    parent_id: Option<i64>,
-    business_group: Option<&str>,
-    ptz_type: Option<i32>,
-    custom_name: Option<&str>,
+    f: &ChannelWriteFields<'_>,
     now: &str,
 ) -> sqlx::Result<u64> {
+    // 全部 COALESCE：None = 保持原值
+    let set = "name = COALESCE({p1}, name), \
+               gb_device_id = COALESCE({p2}, gb_device_id), \
+               civil_code = COALESCE({p3}, civil_code), \
+               parent_id = COALESCE({p4}, parent_id), \
+               business_group_id = COALESCE({p5}, business_group_id), \
+               ptz_type = COALESCE({p6}, ptz_type), \
+               custom_name = COALESCE({p7}, custom_name), \
+               manufacturer = COALESCE({p8}, manufacturer), \
+               model = COALESCE({p9}, model), \
+               owner = COALESCE({p10}, owner), \
+               address = COALESCE({p11}, address), \
+               stream_identification = COALESCE({p12}, stream_identification), \
+               channel_type = COALESCE({p13}, channel_type), \
+               update_time = {p14} \
+               WHERE id = {p15}";
     #[cfg(feature = "mysql")]
-    {
-        let r = sqlx::query(
-            r#"UPDATE gb_device_channel SET 
-               name = COALESCE(?, name),
-               gb_device_id = COALESCE(?, gb_device_id),
-               civil_code = COALESCE(?, civil_code),
-               parent_id = COALESCE(?, parent_id),
-               business_group_id = COALESCE(?, business_group),
-               ptz_type = COALESCE(?, ptz_type),
-               custom_name = COALESCE(?, custom_name),
-               update_time = ?
-               WHERE id = ?"#,
-        )
-        .bind(name).bind(channel_id).bind(civil_code).bind(parent_id)
-        .bind(business_group).bind(ptz_type).bind(custom_name).bind(now).bind(id)
-        .execute(pool)
-        .await?;
-        Ok(r.rows_affected())
-    }
+    let r = {
+        let sql = set.replace("{p1}","?").replace("{p2}","?").replace("{p3}","?")
+            .replace("{p4}","?").replace("{p5}","?").replace("{p6}","?")
+            .replace("{p7}","?").replace("{p8}","?").replace("{p9}","?")
+            .replace("{p10}","?").replace("{p11}","?").replace("{p12}","?")
+            .replace("{p13}","?").replace("{p14}","?").replace("{p15}","?");
+        sqlx::query(&format!("UPDATE gb_device_channel SET {sql}"))
+            .bind(f.name)
+            .bind(f.channel_id)
+            .bind(f.civil_code)
+            .bind(f.parent_id)
+            .bind(f.business_group)
+            .bind(f.ptz_type)
+            .bind(f.custom_name)
+            .bind(f.manufacturer)
+            .bind(f.model)
+            .bind(f.owner)
+            .bind(f.address)
+            .bind(f.stream_identification)
+            .bind(f.channel_type)
+            .bind(now)
+            .bind(id)
+            .execute(pool)
+            .await?
+    };
     #[cfg(feature = "postgres")]
-    {
-        let r = sqlx::query(
-            r#"UPDATE gb_device_channel SET
-               name = COALESCE($1, name),
-               gb_device_id = COALESCE($2, gb_device_id),
-               civil_code = COALESCE($3, civil_code),
-               parent_id = COALESCE($4, parent_id),
-               business_group_id = COALESCE($5, business_group),
-               ptz_type = COALESCE($6, ptz_type),
-               custom_name = COALESCE($7, custom_name),
-               update_time = $8
-               WHERE id = $9"#,
-        )
-        .bind(name).bind(channel_id).bind(civil_code).bind(parent_id)
-        .bind(business_group).bind(ptz_type).bind(custom_name).bind(now).bind(id)
-        .execute(pool)
-        .await?;
-        Ok(r.rows_affected())
-    }
+    let r = {
+        let sql = set.replace("{p1}","$1").replace("{p2}","$2").replace("{p3}","$3")
+            .replace("{p4}","$4").replace("{p5}","$5").replace("{p6}","$6")
+            .replace("{p7}","$7").replace("{p8}","$8").replace("{p9}","$9")
+            .replace("{p10}","$10").replace("{p11}","$11").replace("{p12}","$12")
+            .replace("{p13}","$13").replace("{p14}","$14").replace("{p15}","$15");
+        sqlx::query(&format!("UPDATE gb_device_channel SET {sql}"))
+            .bind(f.name)
+            .bind(f.channel_id)
+            .bind(f.civil_code)
+            .bind(f.parent_id)
+            .bind(f.business_group)
+            .bind(f.ptz_type)
+            .bind(f.custom_name)
+            .bind(f.manufacturer)
+            .bind(f.model)
+            .bind(f.owner)
+            .bind(f.address)
+            .bind(f.stream_identification)
+            .bind(f.channel_type)
+            .bind(now)
+            .bind(id)
+            .execute(pool)
+            .await?
+    };
     #[cfg(feature = "sqlite")]
-    {
-        let r = sqlx::query(
-            r#"UPDATE gb_device_channel SET
-               name = COALESCE(?, name),
-               gb_device_id = COALESCE(?, gb_device_id),
-               civil_code = COALESCE(?, civil_code),
-               parent_id = COALESCE(?, parent_id),
-               business_group_id = COALESCE(?, business_group),
-               ptz_type = COALESCE(?, ptz_type),
-               custom_name = COALESCE(?, custom_name),
-               update_time = ?
-               WHERE id = ?"#,
-        )
-        .bind(name).bind(channel_id).bind(civil_code).bind(parent_id)
-        .bind(business_group).bind(ptz_type).bind(custom_name).bind(now).bind(id)
-        .execute(pool)
-        .await?;
-        Ok(r.rows_affected())
-    }
+    let r = {
+        let sql = set.replace("{p1}","?").replace("{p2}","?").replace("{p3}","?")
+            .replace("{p4}","?").replace("{p5}","?").replace("{p6}","?")
+            .replace("{p7}","?").replace("{p8}","?").replace("{p9}","?")
+            .replace("{p10}","?").replace("{p11}","?").replace("{p12}","?")
+            .replace("{p13}","?").replace("{p14}","?").replace("{p15}","?");
+        sqlx::query(&format!("UPDATE gb_device_channel SET {sql}"))
+            .bind(f.name)
+            .bind(f.channel_id)
+            .bind(f.civil_code)
+            .bind(f.parent_id)
+            .bind(f.business_group)
+            .bind(f.ptz_type)
+            .bind(f.custom_name)
+            .bind(f.manufacturer)
+            .bind(f.model)
+            .bind(f.owner)
+            .bind(f.address)
+            .bind(f.stream_identification)
+            .bind(f.channel_type)
+            .bind(now)
+            .bind(id)
+            .execute(pool)
+            .await?
+    };
+    Ok(r.rows_affected())
 }
 
 pub async fn reset(pool: &Pool, id: i64, now: &str) -> sqlx::Result<u64> {
@@ -121,58 +178,93 @@ pub async fn reset(pool: &Pool, id: i64, now: &str) -> sqlx::Result<u64> {
     Ok(r.rows_affected())
 }
 
-pub async fn add(
-    pool: &Pool,
-    device_id: &str,
-    name: &str,
-    channel_id: &str,
-    civil_code: Option<&str>,
-    parent_id: Option<i64>,
-    business_group: Option<&str>,
-    ptz_type: Option<i32>,
-    custom_name: Option<&str>,
-    now: &str,
-) -> sqlx::Result<i64> {
+pub async fn add(pool: &Pool, f: &ChannelWriteFields<'_>, now: &str) -> sqlx::Result<i64> {
+    // channel_type 是 NOT NULL DEFAULT 0：显式绑 NULL 会直接违反约束
+    let channel_type = f.channel_type.unwrap_or(0);
+    let cols = "device_id, name, gb_device_id, civil_code, parent_id, business_group_id, \
+                ptz_type, custom_name, manufacturer, model, owner, address, \
+                stream_identification, channel_type, create_time, update_time, data_type, data_device_id";
     #[cfg(feature = "mysql")]
     {
-        let result = sqlx::query(
-            r#"INSERT INTO gb_device_channel (device_id, name, gb_device_id, civil_code, parent_id, business_group_id, ptz_type, custom_name, create_time, update_time)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
-        )
-        .bind(device_id).bind(name).bind(channel_id).bind(civil_code).bind(parent_id)
-        .bind(business_group).bind(ptz_type).bind(custom_name).bind(now).bind(now)
-        .execute(pool)
-        .await?;
+        let sql = format!(
+            "INSERT INTO gb_device_channel ({cols}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?)"
+        );
+        let result = sqlx::query(&sql)
+            .bind(f.device_id)
+            .bind(f.name.unwrap_or(""))
+            .bind(f.channel_id.unwrap_or(""))
+            .bind(f.civil_code)
+            .bind(f.parent_id)
+            .bind(f.business_group)
+            .bind(f.ptz_type)
+            .bind(f.custom_name)
+            .bind(f.manufacturer)
+            .bind(f.model)
+            .bind(f.owner)
+            .bind(f.address)
+            .bind(f.stream_identification)
+            .bind(channel_type)
+            .bind(now)
+            .bind(now)
+            .bind(f.data_device_id.unwrap_or(0))
+            .execute(pool)
+            .await?;
         Ok(result.last_insert_id() as i64)
     }
     #[cfg(feature = "postgres")]
     {
-        let row = sqlx::query(
-            r#"INSERT INTO gb_device_channel (device_id, name, gb_device_id, civil_code, parent_id, business_group_id, ptz_type, custom_name, create_time, update_time)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-               RETURNING id"#,
-        )
-        .bind(device_id).bind(name).bind(channel_id).bind(civil_code).bind(parent_id)
-        .bind(business_group).bind(ptz_type).bind(custom_name).bind(now).bind(now)
-        .fetch_one(pool)
-        .await?;
+        let sql = format!(
+            "INSERT INTO gb_device_channel ({cols}) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,0,$17) RETURNING id"
+        );
+        let row = sqlx::query(&sql)
+            .bind(f.device_id)
+            .bind(f.name.unwrap_or(""))
+            .bind(f.channel_id.unwrap_or(""))
+            .bind(f.civil_code)
+            .bind(f.parent_id)
+            .bind(f.business_group)
+            .bind(f.ptz_type)
+            .bind(f.custom_name)
+            .bind(f.manufacturer)
+            .bind(f.model)
+            .bind(f.owner)
+            .bind(f.address)
+            .bind(f.stream_identification)
+            .bind(channel_type)
+            .bind(now)
+            .bind(now)
+            .bind(f.data_device_id.unwrap_or(0))
+            .fetch_one(pool)
+            .await?;
         Ok(row.get::<i32, _>("id") as i64)
     }
     #[cfg(feature = "sqlite")]
     {
-        // SQLite schema requires data_type and data_device_id (NOT NULL).
-        // We default them to 0 / the row's id when not provided; the caller
-        // can update them later via the proper update_* functions.
-        let result = sqlx::query(
-            r#"INSERT INTO gb_device_channel
-               (device_id, name, gb_device_id, civil_code, parent_id, business_group_id, ptz_type, custom_name, create_time, update_time, data_type, data_device_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)"#,
-        )
-        .bind(device_id).bind(name).bind(channel_id).bind(civil_code).bind(parent_id)
-        .bind(business_group).bind(ptz_type).bind(custom_name).bind(now).bind(now)
-        .execute(pool)
-        .await?;
-        Ok(result.last_insert_rowid() as i64)
+        let sql = format!(
+            "INSERT INTO gb_device_channel ({cols}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?)"
+        );
+        let result = sqlx::query(&sql)
+            .bind(f.device_id)
+            .bind(f.name.unwrap_or(""))
+            .bind(f.channel_id.unwrap_or(""))
+            .bind(f.civil_code)
+            .bind(f.parent_id)
+            .bind(f.business_group)
+            .bind(f.ptz_type)
+            .bind(f.custom_name)
+            .bind(f.manufacturer)
+            .bind(f.model)
+            .bind(f.owner)
+            .bind(f.address)
+            .bind(f.stream_identification)
+            .bind(channel_type)
+            .bind(now)
+            .bind(now)
+            .bind(f.data_device_id.unwrap_or(0))
+            .execute(pool)
+            .await?;
+        Ok(result.last_insert_rowid())
     }
 }
 

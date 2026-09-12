@@ -182,6 +182,7 @@ create table IF NOT EXISTS gb_device_channel
     has_audio                    bool default false,
     gps_time                     character varying(50),
     stream_identification        character varying(50),
+    custom_name                  character varying(255),
     channel_type                 int  default 0  not null,
     map_level                    int  default 0,
     gb_device_id                 character varying(50),
