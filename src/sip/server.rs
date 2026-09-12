@@ -524,7 +524,11 @@ impl SipServer {
             };
 
             if let Some(zlm) = self.zlm_client.as_ref() {
-                let dst_url = format!("rtp://{}:{}", req.upstream_host, req.upstream_port);
+                // ZLM 的 `startSendRtp` 要求 `dst_url` 是**裸主机/IP**：
+                // 端口由 `dst_port` 单独传。写成 `rtp://host:port` 时真实 ZLM 会
+                // 回 `dns resolution failed: rtp://host:port`（实测），
+                // 于是**级联推流从来没有成功过**。
+                let dst_url = req.upstream_host.clone();
                 match zlm
                     .start_send_rtp(
                         "__defaultVhost__",
@@ -2332,7 +2336,8 @@ let renewal_pool = pool.clone();
                 let rtp_app = "rtp".to_string();
                 let stream_id = stream_key.clone();
                 let ssrc = session.upstream_ssrc.clone();
-                let dst_url = format!("rtp://{}:{}", session.upstream_host, session.upstream_port);
+                // 同上：`dst_url` 只放主机，端口走 `dst_port`
+                let dst_url = session.upstream_host.clone();
                 let dst_port = session.upstream_port;
                 let upstream_host = session.upstream_host.clone();
                 let upstream_port = session.upstream_port;

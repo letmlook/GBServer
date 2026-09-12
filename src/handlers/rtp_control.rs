@@ -69,6 +69,10 @@ pub struct SendRtpBody {
     pub ssrc: Option<String>,
     pub target_ip: Option<String>,
     pub target_port: Option<u16>,
+    /// 可选：ZLM 上的 app / stream（`startSendRtp` 必需）。
+    /// 缺省时按本平台 GB28181 流的约定取 `app=rtp`、`stream=stream_id`。
+    pub app: Option<String>,
+    pub stream: Option<String>,
 }
 
 /// POST /api/rtp/send/start — push our stream to a remote RTP receiver
@@ -86,9 +90,40 @@ pub async fn rtp_send_start(
     if stream_id.is_empty() || ssrc.is_empty() || target_ip.is_empty() || target_port == 0 {
         return Json(WVPResult::error("missing stream_id/ssrc/target_ip/target_port"));
     }
-    match zlm.send_rtp_info(&stream_id, &ssrc, &target_ip, target_port).await {
+    // **真实 ZLM 没有 `/index/api/sendRtpInfo`**（`getApiList` 里没有，直接调用
+    // 返回 404 的 HTML）—— 此前这个端点必然失败。真正的"把流推到远端"接口是
+    // `startSendRtp`（本客户端已有 `start_send_rtp`），参数
+    // `vhost/app/stream/ssrc/dst_url/dst_port/is_udp`。
+    //
+    // 这里按调用方给的信息组装：`app`/`stream` 可用请求体里的可选字段覆盖
+    // （默认 app=`rtp`、stream=`stream_id`，与本平台 GB28181 流的命名一致）。
+    let app = b.app.clone().unwrap_or_else(|| "rtp".to_string());
+    let stream = b.stream.clone().unwrap_or_else(|| stream_id.clone());
+    // ZLM 要求 `dst_url` 是**裸主机名/IP**（`dst_port` 单独传）。
+    // 实测：带 `rtp://` 前缀会得到 `dns resolution failed: rtp://host...`，
+    // 带端口同理 —— 此前级联推流处也是这么写的（已一并修正）。
+    let dst_url = target_ip.clone();
+    match zlm
+        .start_send_rtp(
+            "__defaultVhost__",
+            &app,
+            &stream,
+            &ssrc,
+            &dst_url,
+            target_port,
+            true,  // is_udp
+            None,  // src_port：由 ZLM 自动分配
+            false, // use_ps：仅在级联 PS 封装时置真
+        )
+        .await
+    {
         Ok(()) => Json(WVPResult::success(serde_json::json!({
-            "streamId": stream_id, "targetIp": target_ip, "targetPort": target_port,
+            "streamId": stream_id,
+            "app": app,
+            "stream": stream,
+            "targetIp": target_ip,
+            "targetPort": target_port,
+            "dstUrl": dst_url,
         }))),
         Err(e) => Json(WVPResult::error(format!("ZLM error: {}", e))),
     }

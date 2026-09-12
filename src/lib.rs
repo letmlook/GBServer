@@ -1085,6 +1085,65 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
     // is wired up, so the run() task is the second Arc clone (and after
     // cascade init, no other mutators run on the SipServer).
 
+    // ---- 拉流代理的 `pulling` 状态对账（启动一次） ----
+    // `pulling` 是**运行期状态**，但库里是持久化的：后端重启（或 ZLM 重启）后
+    // 它可能仍是 1，而 ZLM 上那条流早已不存在 —— 界面显示"拉流中"、
+    // `pulling=true` 的筛选也多出幽灵行。WVP 不做开机自动拉起，
+    // 因此这里只做**保守对账**：流还在 → 保持 pulling=1；不在 → 复位为
+    // pulling=0 / stream_status=ready 并记一条日志。
+    {
+        let proxy_pool = state.pool.clone();
+        let proxy_clients = state.zlm_clients.clone();
+        let proxy_default = state.zlm_client.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            let rows = match db::stream_proxy::get_all_pulling_proxies(&proxy_pool).await {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::warn!("拉流代理状态对账：读取 pulling=1 记录失败: {}", e);
+                    return;
+                }
+            };
+            if rows.is_empty() {
+                return;
+            }
+            let mut reset = 0usize;
+            for rec in rows {
+                let app = rec.app.clone().unwrap_or_default();
+                let stream = rec.stream.clone().unwrap_or_default();
+                if app.is_empty() || stream.is_empty() {
+                    continue;
+                }
+                let client = rec
+                    .media_server_id
+                    .as_deref()
+                    .and_then(|id| proxy_clients.get(id).cloned())
+                    .or_else(|| proxy_default.clone());
+                let Some(client) = client else { continue };
+                let alive = client
+                    .is_media_exist("rtsp", "__defaultVhost__", &app, &stream)
+                    .await
+                    .unwrap_or(false);
+                if !alive {
+                    if let Err(e) =
+                        db::stream_proxy::update_play_state(&proxy_pool, rec.id as i64, false, "ready")
+                            .await
+                    {
+                        tracing::warn!("拉流代理 {}/{} 状态复位失败: {}", app, stream, e);
+                    } else {
+                        reset += 1;
+                    }
+                }
+            }
+            if reset > 0 {
+                tracing::info!(
+                    "拉流代理状态对账：{} 条记录在 ZLM 上已不存在，pulling 已复位为 0",
+                    reset
+                );
+            }
+        });
+    }
+
     // Start RecordPlanScheduler
     {
         let scheduler_pool = state.pool.clone();

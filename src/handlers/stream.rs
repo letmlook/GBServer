@@ -827,6 +827,52 @@ pub async fn proxy_start(
 
     let timeout_sec = rec.timeout.unwrap_or(30).max(1) as f64;
     let is_ffmpeg = rec.r#type.as_deref() == Some("ffmpeg");
+
+    // 目标节点上**已经有同名流**时直接复用：此时再调 `addStreamProxy` /
+    // `addFFmpegSource`，ZLM 会回 `-1 This stream already exists`，而这条流
+    // 往往正是本平台之前拉起来的（或另一个客户端已经在看）。
+    // 此前这里不查存在性 → `/api/proxy/start` 报 500 并把自己标成 failed，
+    // 而实际上流是好的（`is_media_exist` 一度恒 false 也是同一个洞的一部分）。
+    if !is_ffmpeg {
+        let exists = zlm
+            .is_media_exist("rtsp", "__defaultVhost__", &app, &stream)
+            .await
+            .unwrap_or(false);
+        if exists {
+            if let Err(e) =
+                stream_proxy::update_play_state(&state.pool, rec.id as i64, true, "active").await
+            {
+                tracing::warn!("复用已有流后回写 pulling 失败 id={}: {}", rec.id, e);
+            }
+            let resolved_media_server_id =
+                state.zlm_server_id(&zlm).or(ms_hint).unwrap_or_default();
+            let media_ip = zlm.ip.clone();
+            let http_port = zlm.http_port;
+            let hls_available = zlm.has_schema(&app, &stream, "hls").await;
+            tracing::info!("拉流代理 {app}/{stream} 在节点上已存在，直接复用");
+            return Ok(Json(WVPResult::success(serde_json::json!({
+                "id": rec.id,
+                "app": app,
+                "stream": stream,
+                "srcUrl": src_url,
+                "reused": true,
+                "mediaServerId": resolved_media_server_id,
+                "pulling": true,
+                "streamStatus": "active",
+                "playUrl": format!("rtsp://{media_ip}:554/{app}/{stream}"),
+                "flvUrl": crate::zlm::address_builder::http_flv_url(&media_ip, http_port, &app, &stream),
+                "wsUrl": crate::zlm::address_builder::ws_flv_url(&media_ip, http_port, &app, &stream),
+                "hlsAvailable": hls_available,
+                "hlsUrl": if hls_available {
+                    serde_json::json!(crate::zlm::address_builder::hls_url(&media_ip, http_port, &app, &stream))
+                } else {
+                    serde_json::Value::Null
+                },
+                "message": "拉流代理已在运行（复用现有流）"
+            }))));
+        }
+    }
+
     let stream_key = if is_ffmpeg {
         let dst_url = format!("rtmp://127.0.0.1:1935/{app}/{stream}");
         let req = crate::zlm::AddFFmpegSourceRequest {

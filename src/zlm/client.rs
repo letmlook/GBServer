@@ -209,6 +209,18 @@ impl ZlmClient {
         }
     }
 
+    /// 流是否在线（指定 schema）。
+    ///
+    /// **真实 ZLM（本仓库 docker 镜像，git fdaec26）没有 `/index/api/isMediaExist`**
+    /// —— `getApiList` 里没有它，直接请求返回 404 的 HTML 页面。等价接口是
+    /// `/index/api/isMediaOnline`，返回**顶层** `{"code":0,"online":true}`。
+    ///
+    /// 影响面（实测）：任何依赖它的判断都恒为 false —— 例如启动期"拉流代理
+    /// `pulling` 状态对账"会把**正在拉流**的代理也复位成未拉流；
+    /// 播放前"流已存在就复用"的分支同样永远走不进去。
+    ///
+    /// 注：ZLM 要求 `schema` / `vhost` / `app` / `stream` **四个参数都传**，
+    /// 少一个会直接 `-300 Required parameter missed`。
     pub async fn is_media_exist(&self, schema: &str, vhost: &str, app: &str, stream: &str) -> Result<bool> {
         let params = vec![
             ("secret", self.secret.clone()),
@@ -218,8 +230,11 @@ impl ZlmClient {
             ("stream", stream.to_string()),
         ];
 
-        let resp: serde_json::Value = self.request("/index/api/isMediaExist", &params).await?;
-        Ok(exist_flag(&resp))
+        let resp: serde_json::Value = self.request("/index/api/isMediaOnline", &params).await?;
+        Ok(resp
+            .get("online")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false))
     }
 
     pub async fn add_stream_proxy(&self, req: &AddStreamProxyRequest) -> Result<String> {
@@ -898,50 +913,31 @@ impl ZlmClient {
         Ok(())
     }
 
+    /// ZLM 自带的"下载文件（拉流写盘）"接口族 —— **本仓库使用的 ZLM 版本没有它们**。
+    ///
+    /// 实测（`getApiList`，2026-09-12）：`/index/api/{createDownload,getDownloadList,
+    /// close_download}` 都不存在，直接请求会得到 **404 的 HTML 页面**。
+    /// 因此 `/api/playback/download/*` 的"ZLM 本地录像拉流"兜底分支在真实 ZLM 上
+    /// **不可能成功**：这里直接返回明确原因（而不是让调用方看到
+    /// `HTTP error: 404` 这种无从判断的报错）。GB28181 的录像下载走
+    /// **设备侧 INVITE 下载**（`download_sdp` + RTP 收流），那条路径与 ZLM 无关。
     pub async fn create_download(&self, url: &str, file_name: &str, save_path: Option<&str>) -> Result<String> {
-        let params = vec![
-            ("secret", self.secret.clone()),
-            ("url", url.to_string()),
-            ("file_name", file_name.to_string()),
-            ("save_path", save_path.unwrap_or("./").to_string()),
-        ];
-
-        #[derive(Deserialize)]
-        struct Resp { path: String }
-        let resp: ApiResponse<Resp> = self.request("/index/api/createDownload", &params).await?;
-        
-        if resp.code != 0 {
-            return Err(anyhow!("ZLM error: {}", resp.msg.unwrap_or_default()));
-        }
-        Ok(resp.data.map(|r| r.path).unwrap_or_default())
+        let _ = (url, file_name, save_path);
+        Err(anyhow!(
+            "当前 ZLM 版本没有 /index/api/createDownload（不在 getApiList 中）；             请使用 GB28181 设备侧录像下载（要求设备在线）"
+        ))
     }
 
+    /// 见 [`Self::create_download`]：本 ZLM 版本没有该接口，恒返回空列表
+    /// （调用方据此如实报告"进度不可用"，而不是伪造 100%）。
     pub async fn get_download_list(&self) -> Result<Vec<DownloadInfo>> {
-        let params = vec![("secret", self.secret.clone())];
-        
-        #[derive(Deserialize)]
-        struct Resp {
-            list: Vec<DownloadInfo>
-        }
-        
-        let resp: ApiResponse<Resp> = self.request("/index/api/getDownloadList", &params).await?;
-        Ok(resp.data.map(|r| r.list).unwrap_or_default())
+        Ok(Vec::new())
     }
 
+    /// 见 [`Self::create_download`]：本 ZLM 版本没有 `close_download` 接口，
+    /// 这里如实返回 Ok 但**不假装**停止了一个不存在的下载任务。
     pub async fn stop_download(&self, file_name: &str) -> Result<()> {
-        let params = vec![
-            ("secret", self.secret.clone()),
-            ("file_name", file_name.to_string()),
-        ];
-
-        #[derive(Deserialize)]
-        #[allow(dead_code)]
-        struct Resp { code: i32 }
-        let resp: ApiResponse<Resp> = self.request("/index/api/close_download", &params).await?;
-        
-        if resp.code != 0 {
-            return Err(anyhow!("ZLM error: {}", resp.msg.unwrap_or_default()));
-        }
+        let _ = file_name;
         Ok(())
     }
 }

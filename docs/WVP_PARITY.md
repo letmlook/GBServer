@@ -2329,6 +2329,56 @@ npx playwright test              66 passed / 0 failed
 JT1078 真机（模拟终端）           0x0200 落库 / 0x8201 实时查询 / 0x8802→0x0802 检索全部打通
 ```
 
+### ZLM 接口对照：**5 个我们调用但真实 ZLM 并不存在的接口**（2026-09-12 第四十九轮）
+
+第四十六轮起 ZLM 的 hook 已经能到达后端，于是可以做一件此前没做过的事：
+把**我们调用的每个 ZLM HTTP 接口**与真实 ZLM 的 `getApiList` 逐一对照
+（`/index/api/getApiList`，本仓库镜像是 git `fdaec26`，共 74 个接口）。
+结果：**8 个路径对不上**，其中 5 个是"调用必然失败"的真缺陷：
+
+| 我们的调用 | 真实 ZLM | 影响 |
+|-----------|---------|------|
+| `/index/api/isMediaExist` | **不存在**（等价的是 `isMediaOnline`） | 一切"流是否在线"判断恒为 false：启动期拉流代理状态对账会把**正在拉流**的代理复位成未拉流；`proxy/start` 对已存在的流不复用 |
+| `/index/api/sendRtpInfo` | **不存在** | `/api/rtp/send/start` 必然失败（应为 `startSendRtp`） |
+| `/index/api/createDownload` | **不存在** | `/api/playback/download/*` 的"ZLM 本地录像拉流"兜底分支永远失败 |
+| `/index/api/getDownloadList` | **不存在** | 下载进度永远拿不到 |
+| `/index/api/close_download` | **不存在** | 停止下载是空操作 |
+
+另外 `getNetWorkApi` / `getServerStats` 也不存在（这两个包装函数当前无调用方），
+`addFfmpegSource` 虽与官方名 `addFFmpegSource` 大小写不同但实测可用。
+
+修复与验证：
+
+* **`is_media_exist` → `isMediaOnline`**（返回顶层 `online`；四个参数
+  `schema/vhost/app/stream` 都必须传，否则 `-300`）。实测：
+  存在 → `true`、不存在 → `false`；
+  连带把 `proxy_start` 补上"流已存在则复用"分支 —— 此前对已存在的流会
+  `-1 This stream already exists` 报 500 并把自己标成 `failed`，
+  现在返回 `reused: true` + `pulling=1/active`；
+  启动期对账也修正为"流还在就保持 pulling=1"（此前会把好流复位）。
+* **`/api/rtp/send/start` → `startSendRtp`**（`vhost/app/stream/ssrc/dst_url/
+  dst_port/is_udp`；`dst_url` 缺省按平台约定取 `app=rtp`、`stream=stream_id`，
+  可用请求体里的 `app`/`stream` 覆盖）。
+* **`dst_url` 必须是裸主机**（端口走 `dst_port`）：级联推流处写的是
+  `rtp://host:port`，真实 ZLM 会回 `dns resolution failed: rtp://host:port`
+  —— 也就是说**级联推流此前从未成功过**（`sip/server.rs` 两处、`rtp_control` 一处，
+  已一并改为裸主机）。实测：`/api/rtp/send/start` 返回 `code:0`，
+  宿主机 UDP 监听**真的收到 365 个 RTP 包**（首包 39B 头 + 1400B 载荷）。
+* **下载接口族**：既然本 ZLM 版本没有这些接口，`create_download` 改为直接返回
+  明确原因（不再让调用方看到 `HTTP error: 404`），`get_download_list` 返回空、
+  `stop_download` 不假装停止；GB28181 的录像下载走**设备侧 INVITE 下载**，与 ZLM 无关。
+* `rtp_send_start` 的请求体新增可选 `app`/`stream`（`startSendRtp` 必需）。
+
+#### 第四十九轮基线
+
+```
+cargo test                       716 passed / 0 failed
+cargo build --features postgres/mysql  OK
+npx playwright test              66 passed / 0 failed
+真实 ZLM 接口对照                 74 个官方接口 vs 30 个我们的调用，逐个实测
+RTP 推送                          实测收到 365 个 RTP 包（修复前必然失败）
+```
+
 ### 前端↔后端契约审计：**16 个模块 130 条全部修完**（2026-09-12 第三十九轮）
 
 第二十六轮用"一个模块一个 agent"的方式把 16 个前端 API 模块逐个对后端路由/DTO
@@ -2781,6 +2831,7 @@ vue-tsc --noEmit                 通过
 - 2026-09-12 第四十六轮：`cargo test` —— **714 通过 / 0 失败**（ZLM hook 全链路在真实环境重新验证：录制文件/落库/播放/删除真删文件；`/cloud/record/delete` 的 `ids` 兼容数字；新增共享 `src/serde_flex.rs`）
 - 2026-09-12 第四十七轮：`cargo test` —— **715 通过 / 0 失败**（**双 ZLM 节点真机验证**：显式落点/最少负载选择/离线剔除；修掉 `mediaServerId=auto` 从不负载均衡 + 选中节点不回写导致 stop 杀不掉流）
 - 2026-09-12 第四十八轮：`cargo test` —— **716 通过 / 0 失败**（JT1078 位置（0x0200/0x8201）与多媒体检索（0x8802→0x0802）整条链路打通；BCD 本地时间语义；模拟器位置报文占位实现修正）
+- 2026-09-12 第四十九轮：`cargo test` —— **716 通过 / 0 失败**（ZLM 接口对照：`isMediaExist`/`sendRtpInfo`/下载接口族 5 个不存在；`dst_url` 必须裸主机 —— 级联推流此前从未成功；实测 RTP 收到 365 包）
 - 2026-09-12 第三十一轮：`cargo test` —— **641 通过 / 0 失败**（JT1078 终端/围栏 13 条）
 - 2026-09-12 第三十轮：`cargo test` —— **637 通过 / 0 失败**（设备页 7 条）
 - 2026-09-12 第二十九轮：`cargo test` —— **634 通过 / 0 失败**（云端录像全链路）
