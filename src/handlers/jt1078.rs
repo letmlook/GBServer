@@ -568,6 +568,10 @@ pub async fn terminal_delete(
     let phone = phone.trim().to_string();
     if phone.is_empty() {
         if let Some(id) = q.id {
+            // 先清掉该终端的通道，否则 `gb_jt_channel` 会留下指向已删终端的孤儿行，
+            // 「终端通道」页按 terminal_db_id 仍能查到它们（第四十九轮实测）。
+            // `db::jt1078::delete_channels_by_terminal` 此前零调用，就是为此准备的。
+            jt_db::delete_channels_by_terminal(&state.pool, id as i32).await?;
             let affected = jt_db::delete_terminal_by_id(&state.pool, id).await?;
             if affected == 0 {
                 return Err(AppError::business(
@@ -578,6 +582,10 @@ pub async fn terminal_delete(
             return Ok(Json(WVPResult::<()>::success_empty()));
         }
         return Err(AppError::business(ErrorCode::Error400, "缺少 phoneNumber 或 id"));
+    }
+    // 同上：按手机号删除时也要清通道（先查主键，再按主键清）。
+    if let Ok(Some(t)) = jt_db::get_terminal_by_phone(&state.pool, &phone).await {
+        jt_db::delete_channels_by_terminal(&state.pool, t.id).await?;
     }
     let affected = jt_db::delete_terminal_by_phone(&state.pool, &phone).await?;
     if affected == 0 {
@@ -2331,5 +2339,50 @@ mod terminal_write_tests {
         .await
         .expect("按主键删除应成功");
         assert_eq!(jt_db::count_terminals(&state.pool, None, None).await.unwrap(), 0);
+    }
+
+    /// 删除终端必须连带清掉它的通道：否则 `gb_jt_channel` 会留下指向已删终端的
+    /// 孤儿行，「终端通道」页按 terminal_db_id 仍能查到（此前实测 1 → 1）。
+    #[tokio::test]
+    async fn test_terminal_delete_removes_channels() {
+        let state = app_state().await;
+        let add: TerminalAddBody = serde_json::from_value(serde_json::json!({
+            "phoneNumber": "13900000007"
+        }))
+        .unwrap();
+        let _ = terminal_add(State(state.clone()), Json(add)).await.unwrap();
+        let t = jt_db::get_terminal_by_phone(&state.pool, "13900000007")
+            .await
+            .unwrap()
+            .expect("终端应存在");
+
+        let ch: ChannelAddBody = serde_json::from_value(serde_json::json!({
+            "phoneNumber": "13900000007",
+            "channelId": 1,
+            "channelName": "ch-1"
+        }))
+        .unwrap();
+        let _ = channel_add(State(state.clone()), Json(ch)).await;
+        assert_eq!(
+            jt_db::count_channels_by_terminal(&state.pool, t.id).await.unwrap(),
+            1
+        );
+
+        // 按主键删除 → 通道应一并消失
+        let _ = terminal_delete(
+            State(state.clone()),
+            Query(TerminalQuery {
+                device_id: None,
+                phone_number: None,
+                id: Some(t.id as i64),
+            }),
+        )
+        .await
+        .expect("删除应成功");
+        assert_eq!(
+            jt_db::count_channels_by_terminal(&state.pool, t.id).await.unwrap(),
+            0,
+            "终端删除后不应残留通道"
+        );
     }
 }

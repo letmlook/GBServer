@@ -27,6 +27,11 @@
 > 5. BCD 时间被当 UTC（JT/T 808 是设备本地时间），接口返回的 `time` 差 8 小时。
 > 现已全部修复并实测（0x0200 落库 / 0x8201 实时查询 / 0x8802→0x0802 检索）。
 
+> **第五十一轮补充**：删除 JT1078 终端时**不会清理它的通道** ——
+> `db::jt1078::delete_channels_by_terminal` 此前零调用，`gb_jt_channel` 里会留下
+> 指向已删终端的孤儿行（实测删除后通道数 1 → 1）。现按主键/手机号两条删除路径
+> 都先清通道（新增回归测试）。
+
 审计对象：`web/src/api/jtDevice.ts`（21 个导出函数）。
 后端路由：`src/router.rs`（`api_protected` 链，JT1078 段从 `src/router.rs:818` 起）。
 真值交叉验证：WVP-PRO Java 源码 `/tmp/wvpsrc/wvp-GB28181-pro-master`。

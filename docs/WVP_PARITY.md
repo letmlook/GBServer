@@ -12,7 +12,7 @@
 | 总代码量（src/） | 79,179 行 Rust | `find src -name '*.rs' \| xargs wc -l` |
 | 已注册 HTTP 路由 | 386 条唯一 `/api/...` 路径 | `grep -oE '"/api/[^"]*"' src/router.rs \| sort -u \| wc -l` |
 | Handler 模块 | 29 个（含 `stub.rs` / `device_stub.rs` 两个兼容 shim） | `grep -c 'pub mod' src/handlers/mod.rs` |
-| 后端测试 | **716 通过 / 0 失败**（第四十八轮刷新） | `cargo test` |
+| 后端测试 | **717 通过 / 0 失败**（第五十一轮刷新） | `cargo test` |
 | 编译状态 | `cargo check` 0 error / **0 warning**；clippy 262；**deprecated 0** | `cargo check` / `cargo clippy --all-targets` |
 | 数据库 feature | SQLite（默认）/ PostgreSQL / MySQL **三者均编译通过** | CI `feature-matrix` job |
 | CI | ⏸️ 工作流已就绪但**按需暂停自动触发**（见 `.github/workflows/ci.yml`） | — |
@@ -2886,6 +2886,7 @@ vue-tsc --noEmit                 通过
 - 2026-09-12 第四十八轮：`cargo test` —— **716 通过 / 0 失败**（JT1078 位置（0x0200/0x8201）与多媒体检索（0x8802→0x0802）整条链路打通；BCD 本地时间语义；模拟器位置报文占位实现修正）
 - 2026-09-12 第四十九轮：`cargo test` —— **716 通过 / 0 失败**（ZLM 接口对照：`isMediaExist`/`sendRtpInfo`/下载接口族 5 个不存在；`dst_url` 必须裸主机 —— 级联推流此前从未成功；实测 RTP 收到 365 包）
 - 2026-09-12 第五十轮：`cargo test` —— **716 通过 / 0 失败**（**级联推流首次端到端打通**：释放发送端口占位、流复用/残留 RTP server 处理、媒体等待器早到通知作废、源流未就绪重试；实测上级收到 864 个 RTP 包）
+- 2026-09-12 第五十一轮：`cargo test` —— **717 通过 / 0 失败**（删除 JT1078 终端连带清理其通道；`delete_channels_by_terminal` 此前零调用留下孤儿行）
 - 2026-09-12 第三十一轮：`cargo test` —— **641 通过 / 0 失败**（JT1078 终端/围栏 13 条）
 - 2026-09-12 第三十轮：`cargo test` —— **637 通过 / 0 失败**（设备页 7 条）
 - 2026-09-12 第二十九轮：`cargo test` —— **634 通过 / 0 失败**（云端录像全链路）
