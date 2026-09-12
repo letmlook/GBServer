@@ -1,5 +1,12 @@
 # log.ts 契约审计
 
+> **状态：已修复（2026-09-12 第四十三轮补充）**：`gb_log.id` 在 postgres 脚本里是
+> `serial`（INT4），而 `LogEntry.id` 是 `i64` → postgres 下 `/api/log/list` 恒定
+> 500（`mismatched types; Rust type i64 ... not compatible with SQL type INT4`），
+> CSV 导出同样失败。已把该列改为 `bigserial` 并补启动期幂等迁移
+> `ensure_pg_column_types()`；`gb_audit_log` 的 `elapsed_ms` 写入也去掉了
+> postgres 下必失败的 `?` 版本。详见 [docs/DB_DIALECT_NOTES.md](../DB_DIALECT_NOTES.md)。
+
 ## 1. response-field GET /api/server/system/info
 - 前端：`web/src/api/log.ts:41` `cpu?: number`
 - 前端消费：`web/src/views/operations/systemInfo.vue:16` `{{ info.cpu ?? 0 }}%`，`:17` `:percentage="info.cpu ?? 0"`

@@ -12,7 +12,7 @@
 | 总代码量（src/） | 79,179 行 Rust | `find src -name '*.rs' \| xargs wc -l` |
 | 已注册 HTTP 路由 | 386 条唯一 `/api/...` 路径 | `grep -oE '"/api/[^"]*"' src/router.rs \| sort -u \| wc -l` |
 | Handler 模块 | 29 个（含 `stub.rs` / `device_stub.rs` 两个兼容 shim） | `grep -c 'pub mod' src/handlers/mod.rs` |
-| 后端测试 | **696 通过 / 0 失败**（第四十二轮刷新） | `cargo test` |
+| 后端测试 | **702 通过 / 0 失败**（第四十三轮刷新） | `cargo test` |
 | 编译状态 | `cargo check` 0 error / **0 warning**；clippy 262；**deprecated 0** | `cargo check` / `cargo clippy --all-targets` |
 | 数据库 feature | SQLite（默认）/ PostgreSQL / MySQL **三者均编译通过** | CI `feature-matrix` job |
 | CI | ⏸️ 工作流已就绪但**按需暂停自动触发**（见 `.github/workflows/ci.yml`） | — |
@@ -1925,6 +1925,77 @@ npx playwright test              62 passed / 0 failed（云端录像 2 例按环
 > 后端侧也加固为「主动探活成功即刷新心跳」，hook 不通时节点不会被误判离线。
 > 恢复本机 Docker Desktop 后重跑 `cd e2e && npx playwright test` 即可覆盖这两例。
 
+### PostgreSQL 运行时验证：**5 类只在 postgres 上炸的缺陷**（2026-09-12 第四十三轮）
+
+此前所有运行时冒烟都在 **SQLite**（默认 feature）上做，而三种方言里
+**只有 PostgreSQL 严格校验占位符语法与列类型**（SQLite 动态类型、MySQL 宽进严出）。
+本轮第一次把后端跑在 **真实 PostgreSQL 16** 上（`docker compose up -d postgres`，
+端口 18081，schema 由 `ensure_missing_tables` 在既有库上补齐 27 → 33 张表），
+对 **45 个 GET + 全部写路径** 做冒烟，抓到的都是"SQLite 上永远看不到"的真缺陷。
+
+| # | 缺陷 | 真实报错 | 影响面 |
+|---|------|---------|--------|
+| 1 | **未加方言分支的 `?` 占位符**（pg 只认 `$1`） | `syntax error at or near ","` | **23 处**：JT1078 围栏/路线 16 个端点 + 媒体检索 + 鉴权码 + 推流国标绑定 + `platform/exit` + `alarm/handle` + 审计日志 |
+| 2 | **列宽不匹配**：Rust 按 `i64` 解码、pg 列是 `integer` | `Rust type i64 (as SQL type INT8) is not compatible with SQL type INT4` | 11 张表（`gb_log` / `gb_device_alarm` / `gb_device_mobile_position` / `gb_cloud_record` / `gb_platform_{region,group,catalog}` / `gb_jt_area_*` / `gb_jt_route`）→ `/api/log/list` 直接 500 |
+| 3 | **`plate_color` 类型与前端载荷形状双双不匹配** | 写入：`COALESCE types integer and character varying cannot be matched`；读取：`i32 ... not compatible with VARCHAR`；反序列化：`invalid type: integer 0, expected a string` | 前端「新增/编辑 JT1078 终端」**必然 422**；只要有非空车牌颜色，`/terminal/list` 整表 500 |
+| 4 | **调 ZLM `openRtpServer` 时省略了 `port`** | ZLM：`-300 Required parameter missed: "port", "stream_id"` | `/api/push/start`、对讲收流、部分 INVITE 的收流端口申请**全部失败**（`port: Some(0)` 的调用正常，所以长期潜伏） |
+| 5 | **sqlx 语句缓存按 SQL 文本命中且不校验参数类型** | `insufficient data left in message` / `incorrect binary data format in bind parameter 1` | `/api/record/plan/delete`、`/api/record/plan/update` 500（同文本 `DELETE … WHERE plan_id = $1` 一处绑 `i32`、一处绑 `i64`） |
+
+修复（都是"改一处、通一类"，不是逐点打补丁）：
+
+* **#1**：`dyn_where.rs` 新增 `dialect_sql()`（`?` → `$1..$n`，**跳过引号内的 `?`**；
+  `DynWhere::sql` 复用同一实现），23 处固定 SQL 统一走它 —— 三种方言继续共用**同一份 SQL 文本**，
+  不再抄三遍。新增 3 条单测（编号顺序 / 引号内不改写 / 与 `DynWhere` 同源）。
+* **#2**：`init-postgresql-2.7.4.sql` 把这 11 张表的 `id` 改成 `bigserial`；新增启动期幂等迁移
+  `ensure_pg_column_types()`（查 `information_schema` 后 `ALTER COLUMN … TYPE bigint`，
+  并把自增序列一并提升为 `bigint`）。同时把 `PlatformChannel.platform_id/device_channel_id`
+  从 `Option<i64>` 收回 `Option<i32>`（对应列本来就是 `integer`）。
+* **#3**：`plate_color` 三方言统一为 `INTEGER`（pg/mysql 脚本 + `ensure_pg_column_types`/
+  `ensure_mysql_column_types` 迁移，带 `USING NULLIF(BTRIM(...),'')::integer`）；后端 DTO 用
+  `opt_string_flexible` **同时接受数字与字符串**（`plateColor` 是 `el-select` 的数字、
+  `provinceId`/`cityId` 是 `el-input` 的字符串），空串按"未填写"落 NULL。
+* **#4**：`ZlmClient::open_rtp_server` 的 `port` 改为**无条件发送**（`None` → `0`，"由 ZLM
+  从 `rtp_proxy.port_range` 自动分配"）。抽出 `open_rtp_server_params()` 并补 1 条纯函数单测
+  + 1 条 wiremock 真 HTTP 断言。
+* **#5**：`db::create_pool` 的 postgres 分支关闭语句缓存
+  （`PgConnectOptions::statement_cache_capacity(0)`，命中不校验参数类型是 sqlx 的既定行为）；
+  同时把 `record_plan` 里同文本 DELETE 的参数类型统一为 `i32` 作为第二道防线。
+* 顺带：`/api/region/add`、`/api/group/add` 的国标编码重复从**唯一约束冲突抛 500**
+  改成明确的 400「该区域/分组国标编码已存在」；`IdQuery.phone` 增加 `phoneNumber` 别名（WVP 参数名）。
+
+**实测证据**（postgres 18081 + 真实 ZLM `:8080`）：
+
+```
+# 修复前 → 修复后
+POST /api/jt1078/area/circle/add        → {"code":500,"msg":"DB error: syntax error at or near \",\""}
+                                        → {"code":0,...,"id":1}
+GET  /api/log/list?page=1&count=5       → 500 mismatched types ... INT4
+                                        → {"code":0,"msg":"成功"}（CSV 导出同样可用）
+POST /api/jt1078/terminal/add {plateColor:0, provinceId:"340200"}
+                                        → 422 invalid type: integer 0, expected a string
+                                        → 200；随后 /terminal/list 能读出该行
+GET  /api/push/start?id=1               → ZLM -300 Required parameter missed: "port","stream_id"
+                                        → {"code":0,"port":30020,"message":"Push stream started successfully"}
+                                        （ZLM 日志确认 `openRtpServer?...&stream_id=p1&port=0`）
+DELETE /api/record/plan/delete?id=N     → 500 insufficient data left in message
+                                        → {"code":0,"msg":"成功"}
+```
+
+冒烟脚本连跑 3 次结果一致：仅剩 3 项"非缺陷"（CSV 不是 JSON、重复平台被明确拒绝、
+代理指向不存在的 RTSP 源被 ZLM 404 拒绝）。
+
+#### 第四十三轮基线
+
+```
+cargo test                       702 passed / 0 failed（上轮 696；+3 dyn_where、+2 ZLM、+1 JT1078 DTO）
+cargo check --features postgres/mysql  OK
+npx playwright test              66 passed / 0 failed（新增 jtTerminal.spec.ts 4 例）
+postgres 运行时冒烟              45 GET + 全部写路径，0 个 5xx（除 3 项预期）
+```
+
+> 同时新增 [docs/DB_DIALECT_NOTES.md](DB_DIALECT_NOTES.md)：把"写 SQL 时必须遵守的三条规则"
+> （占位符、列宽/列类型、同文本 SQL 参数类型一致）固化成文档，避免同类缺陷再被 SQLite 掩盖。
+
 ### 前端↔后端契约审计：**16 个模块 130 条全部修完**（2026-09-12 第三十九轮）
 
 第二十六轮用"一个模块一个 agent"的方式把 16 个前端 API 模块逐个对后端路由/DTO
@@ -2148,6 +2219,19 @@ vue-tsc --noEmit                 通过
     解耦静态信令路径与 `&self` 媒体路径；后续若继续加级联能力（如上级云台控制
     转发、级联录像回放），建议把 `start_live_stream` 抽成"按部件调用"的自由函数，
     让静态路径可以直接复用，而不再绕队列。
+16. **移动位置（`gb_device_mobile_position`）只有写、没有对外读接口**（第四十三轮发现）：
+    设备上报的 MobilePosition NOTIFY 会落库
+    （`src/sip/gb28181/subscription_lifecycle.rs::handle_position_notify`
+    → `db::mobile_position::insert`），DB 层也已经有
+    `list_paged` / `get_latest_position` / `get_by_id` / `delete_by_device`，
+    但**没有任何 HTTP 端点暴露它**：`/api/position/history/:device_id` 读的是另一张表
+    `gb_position_history`（`db::position_history`，地图打点用）。
+    对照 WVP 的 `MobilePositionController`（`/api/position/{history/{deviceId},latest,
+    realtime/{deviceId},subscribe/{deviceId}}`），本平台缺 `latest` / `realtime` /
+    `subscribe` 三个。当前 Vue3 前端没有位置页面，故无可见故障，但属于 WVP 能力缺口。
+17. **MySQL 尚未做运行时冒烟**：第四十三轮验证的是 PostgreSQL（真实实例 + 45 GET +
+    全部写路径）；MySQL 目前只有编译期保证（`--features mysql` 构建通过）与
+    "宽进严出"的类型宽松性推断。环境具备时应补一轮同样的冒烟。
 
 ### 工程问题
 
@@ -2360,6 +2444,7 @@ vue-tsc --noEmit                 通过
 - 2026-09-12 第四十轮：`cargo test` —— **690 通过 / 0 失败**（前端控制报文对齐 WVP 的 8 字节 PTZCmd；e2e 61）
 - 2026-09-12 第四十一轮：`cargo test` —— **691 通过 / 0 失败**（邀请报文 `f=`/`Subject` 对齐国标与 WVP；e2e 61）
 - 2026-09-12 第四十二轮：`cargo test` —— **696 通过 / 0 失败**（实时播放地址：FLV 后缀 `.live.flv`、HLS 可用性探测；e2e 62）
+- 2026-09-12 第四十三轮：`cargo test` —— **702 通过 / 0 失败**（**首次 PostgreSQL 运行时验证**：`?` 占位符 23 处 / 11 张表列宽 / `plate_color` 契约 / ZLM `openRtpServer` 缺 `port` / sqlx 语句缓存参数类型冲突；e2e 66）
 - 2026-09-12 第三十一轮：`cargo test` —— **641 通过 / 0 失败**（JT1078 终端/围栏 13 条）
 - 2026-09-12 第三十轮：`cargo test` —— **637 通过 / 0 失败**（设备页 7 条）
 - 2026-09-12 第二十九轮：`cargo test` —— **634 通过 / 0 失败**（云端录像全链路）
@@ -2515,4 +2600,4 @@ WVP-PRO 提供 LiveGBS 兼容的 `/api/v1/device/{list,channellist,...}` 端点�
 
 ⚠️ **前端业务页已全部迁移完成**（2026-08-23），当前无 UI 平替阻塞项；仅剩少量体验类收尾（见 P4 节）。
 
-⚠️ **CI 已恢复**（2026-09-11），但 `fmt` / `clippy` 仍为非门禁 —— 基线未清零前不设为硬约束。
+⏸️ **CI 工作流已就绪但自动触发已暂停**（2026-09-11 建立，2026-09-12 按要求改为仅 `workflow_dispatch` 手动触发，见 `.github/workflows/ci.yml`）；`fmt` / `clippy` 仍为非门禁。

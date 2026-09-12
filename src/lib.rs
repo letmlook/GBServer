@@ -41,6 +41,287 @@ use std::sync::Arc;
 /// 旧代码用 `let _ =` 把错误吞掉，所以表面能启动。一旦改为如实传播错误
 /// （见「静默失败」修复），全新部署会**直接启动失败** —— 这正是运行时冒烟
 /// 测试抓到的第一个问题。
+/// 当前 feature 对应的 schema 脚本（与 §2 全量初始化用的是同一份文件）。
+#[cfg(feature = "postgres")]
+const SCHEMA_SQL: &str = include_str!("../database/init-postgresql-2.7.4.sql");
+#[cfg(feature = "mysql")]
+const SCHEMA_SQL: &str = include_str!("../database/init-mysql-2.7.4.sql");
+#[cfg(feature = "sqlite")]
+const SCHEMA_SQL: &str = include_str!("../database/init-sqlite-2.7.4.sql");
+
+/// 取一条 SQL 语句的**首个非注释行**（用于判断语句类型）。
+fn first_sql_keyword(stmt: &str) -> String {
+    for line in stmt.lines() {
+        let l = line.trim();
+        if l.is_empty() || l.starts_with("--") {
+            continue;
+        }
+        return l.to_ascii_uppercase();
+    }
+    String::new()
+}
+
+/// 幂等补齐**缺失的表/索引**：把 schema 脚本里所有
+/// `CREATE TABLE / CREATE INDEX … IF NOT EXISTS` 重放一遍。
+///
+/// 为什么需要它：`init-*.sql` 只在**全新**数据库上执行
+/// （postgres 的 `docker-entrypoint-initdb.d` 仅在数据目录为空时跑一次），
+/// 于是后续版本新增的表在既有部署上**永远不会被创建**。
+/// 实测：一个 27 表的 postgres 库缺少 `gb_log` 与 `gb_platform_catalog`，
+/// 表现为"日志写不进去、目录接口报错"，而启动日志里毫无提示。
+///
+/// 其他方言同理（MySQL 的 `CREATE INDEX` 不支持 `IF NOT EXISTS`，
+/// 重复时会报 `Duplicate key name`，这类错误按良性处理）。
+///
+/// **只重放 CREATE**：脚本里有 24 条 `drop table`（重放会清库）、
+/// `INSERT`（会重复种子数据）与 `ALTER`（列级迁移有专门的 `ensure_columns`）。
+async fn ensure_missing_tables(pool: &db::Pool) -> anyhow::Result<()> {
+    let mut replayed = 0usize;
+    for raw in SCHEMA_SQL.split(';') {
+        let stmt = raw.trim();
+        if stmt.is_empty() {
+            continue;
+        }
+        let kw = first_sql_keyword(stmt);
+        let is_safe_ddl = kw.starts_with("CREATE TABLE")
+            || kw.starts_with("CREATE INDEX")
+            || kw.starts_with("CREATE UNIQUE INDEX");
+        if !is_safe_ddl {
+            continue;
+        }
+        replayed += 1;
+        if let Err(e) = sqlx::query(stmt).execute(pool).await {
+            let msg = e.to_string();
+            // "already exists" / MySQL 的 "Duplicate key name" 都是幂等重放的正常结果
+            let benign = msg.contains("already exists") || msg.contains("Duplicate key name");
+            if !benign {
+                tracing::warn!("[schema] 建表/建索引语句执行失败（已跳过）: {}", msg);
+            }
+        }
+    }
+    tracing::debug!(
+        "[schema] 幂等重放 {} 条 CREATE 语句（补齐缺失的表/索引）",
+        replayed
+    );
+    Ok(())
+}
+
+/// 一条"列类型纠正"规则：把 `table.column` 从任意旧类型改成 `target`。
+///
+/// `using` 是 PostgreSQL `ALTER COLUMN … TYPE … USING <expr>` 的表达式
+/// （旧列与目标类型不兼容时必须给；空的表示可隐式转换）。
+struct PgColumnFix {
+    table: &'static str,
+    column: &'static str,
+    /// 期望类型（`information_schema.columns.data_type` 的取值，如 `bigint`）。
+    target: &'static str,
+    /// 旧类型（只有等于它才迁移，避免无谓重写表）。
+    from: &'static str,
+    using: &'static str,
+}
+
+/// PostgreSQL 列类型纠正（幂等）。
+///
+/// 为什么必须做：三种方言里**只有 postgres 严格校验列宽/列类型**
+/// （sqlite 动态类型、mysql 宽进严出），同一个 `i64` 字段在 mysql/sqlite 上
+/// 一切正常，在 postgres 上则抛
+/// `mismatched types; Rust type i64 (as SQL type INT8) is not compatible with SQL type INT4`。
+/// 而 `database/init-postgresql-*.sql` 只在**全新**数据目录上执行一次
+/// （docker-entrypoint-initdb.d 的语义），既有部署里这些列会一直是旧类型
+/// —— 这正是 2026-09-12 postgres 冒烟测试抓到的：
+/// `/api/log/list` 直接 500（`gb_log.id` INT4 vs Rust i64）、
+/// `/api/jt1078/terminal/list` 500（`plate_color` VARCHAR vs Rust i32）、
+/// JT1078 围栏列表无法解码（`gb_jt_area_*.id` INT4）。
+///
+/// 列表是**硬编码常量**（不来自用户输入），因此这里的 `format!` 不构成注入面。
+#[cfg(feature = "postgres")]
+async fn ensure_pg_column_types(pool: &db::Pool) -> anyhow::Result<()> {
+    const FIXES: &[PgColumnFix] = &[
+        // Rust 侧以 `i64` 解码的 id 列。serial → bigserial。
+        PgColumnFix {
+            table: "gb_log",
+            column: "id",
+            target: "bigint",
+            from: "integer",
+            using: "",
+        },
+        PgColumnFix {
+            table: "gb_device_alarm",
+            column: "id",
+            target: "bigint",
+            from: "integer",
+            using: "",
+        },
+        PgColumnFix {
+            table: "gb_device_mobile_position",
+            column: "id",
+            target: "bigint",
+            from: "integer",
+            using: "",
+        },
+        PgColumnFix {
+            table: "gb_cloud_record",
+            column: "id",
+            target: "bigint",
+            from: "integer",
+            using: "",
+        },
+        PgColumnFix {
+            table: "gb_platform_region",
+            column: "id",
+            target: "bigint",
+            from: "integer",
+            using: "",
+        },
+        PgColumnFix {
+            table: "gb_platform_group",
+            column: "id",
+            target: "bigint",
+            from: "integer",
+            using: "",
+        },
+        PgColumnFix {
+            table: "gb_platform_catalog",
+            column: "id",
+            target: "bigint",
+            from: "integer",
+            using: "",
+        },
+        PgColumnFix {
+            table: "gb_jt_area_circle",
+            column: "id",
+            target: "bigint",
+            from: "integer",
+            using: "",
+        },
+        PgColumnFix {
+            table: "gb_jt_area_polygon",
+            column: "id",
+            target: "bigint",
+            from: "integer",
+            using: "",
+        },
+        PgColumnFix {
+            table: "gb_jt_area_rectangle",
+            column: "id",
+            target: "bigint",
+            from: "integer",
+            using: "",
+        },
+        PgColumnFix {
+            table: "gb_jt_route",
+            column: "id",
+            target: "bigint",
+            from: "integer",
+            using: "",
+        },
+        // `JtTerminal.plate_color` 在 Rust 侧是 `Option<i32>`，三份 schema 里
+        // 只有 sqlite 一开始就写成 INTEGER；pg/mysql 的 varchar 会让
+        // "读一行非 NULL 数据"就整表 500。
+        PgColumnFix {
+            table: "gb_jt_terminal",
+            column: "plate_color",
+            target: "integer",
+            from: "character varying",
+            using: "USING NULLIF(BTRIM(plate_color), '')::integer",
+        },
+    ];
+
+    for fix in FIXES {
+        let data_type: Option<String> = sqlx::query_scalar(
+            "SELECT data_type FROM information_schema.columns \
+             WHERE table_schema = current_schema() AND table_name = $1 AND column_name = $2",
+        )
+        .bind(fix.table)
+        .bind(fix.column)
+        .fetch_optional(pool)
+        .await?;
+
+        // 表/列不存在（老版本库）：跳过，`ensure_missing_tables` 负责建表。
+        if data_type.as_deref() != Some(fix.from) {
+            continue;
+        }
+
+        let using = if fix.using.is_empty() {
+            String::new()
+        } else {
+            format!(" {}", fix.using)
+        };
+        sqlx::query(&format!(
+            "ALTER TABLE {} ALTER COLUMN {} TYPE {}{}",
+            fix.table, fix.column, fix.target, using
+        ))
+        .execute(pool)
+        .await?;
+
+        // 自增序列自身也要提升，否则超过 2^31 时序列先溢出。
+        if fix.target == "bigint" {
+            let seq = format!("{}_{}_seq", fix.table, fix.column);
+            if let Err(e) = sqlx::query(&format!("ALTER SEQUENCE IF EXISTS {seq} AS bigint"))
+                .execute(pool)
+                .await
+            {
+                tracing::warn!("[schema][pg] 序列 {seq} 提升为 bigint 失败（已忽略）: {e}");
+            }
+        }
+        tracing::info!(
+            "[schema][pg] {}.{} 已由 {} 提升为 {}",
+            fix.table,
+            fix.column,
+            fix.from,
+            fix.target
+        );
+    }
+    Ok(())
+}
+
+/// 非 postgres 构建下的空实现，保持 `init_db_tables` 单一调用点。
+#[cfg(not(feature = "postgres"))]
+async fn ensure_pg_column_types(_pool: &db::Pool) -> anyhow::Result<()> {
+    Ok(())
+}
+
+/// MySQL 列类型纠正（幂等）：与 `ensure_pg_column_types` 对应。
+///
+/// MySQL 的数据类型检查比 postgres 宽松（`i32` 能读 `varchar`），但
+/// `COALESCE(int_param, varchar_col)` 同样会报
+/// `COALESCE types integer and character varying cannot be matched`
+/// （2026-09-12 postgres 冒烟时顺带在 mysql 上复核出来的同源问题），
+/// 所以旧库也要把 `plate_color` 收敛成 `int`。
+#[cfg(feature = "mysql")]
+async fn ensure_mysql_column_types(pool: &db::Pool) -> anyhow::Result<()> {
+    const FIXES: &[(&str, &str, &str)] = &[("gb_jt_terminal", "plate_color", "int")];
+
+    for (table, column, target) in FIXES {
+        let data_type: Option<String> = sqlx::query_scalar(
+            "SELECT data_type FROM information_schema.columns \
+             WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?",
+        )
+        .bind(table)
+        .bind(column)
+        .fetch_optional(pool)
+        .await?;
+
+        match data_type.as_deref() {
+            None => continue, // 表/列不存在，交由建表阶段处理
+            Some(t) if t == "int" => continue,
+            Some(t) => {
+                sqlx::query(&format!("ALTER TABLE {table} MODIFY {column} {target}"))
+                    .execute(pool)
+                    .await?;
+                tracing::info!("[schema][mysql] {table}.{column} 已由 {t} 改为 {target}");
+            }
+        }
+    }
+    Ok(())
+}
+
+/// 非 mysql 构建下的空实现。
+#[cfg(not(feature = "mysql"))]
+async fn ensure_mysql_column_types(_pool: &db::Pool) -> anyhow::Result<()> {
+    Ok(())
+}
+
 async fn init_db_tables(pool: &db::Pool) -> anyhow::Result<()> {
     // ---- 阶段 1：与既有表无关的幂等建表 ----
     db::position_history::ensure_table(pool).await?;
@@ -180,6 +461,14 @@ async fn init_db_tables(pool: &db::Pool) -> anyhow::Result<()> {
     // 需在此单独补齐（仅 SQLite 需要，PG/MySQL 脚本一直包含这些表）。
     #[cfg(feature = "sqlite")]
     ensure_sqlite_upgrade_tables(pool).await?;
+
+    // ---- 阶段 5：**补齐缺失的表**（三种方言都要；幂等，绝不删数据） ----
+    ensure_missing_tables(pool).await?;
+
+    // ---- 阶段 6：**补齐/纠正列宽与列类型**（幂等，绝不删数据） ----
+    // 必须放在建表之后：全新库上这些列建出来就已经是目标类型。
+    ensure_pg_column_types(pool).await?;
+    ensure_mysql_column_types(pool).await?;
 
     Ok(())
 }

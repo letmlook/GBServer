@@ -603,8 +603,13 @@ pub async fn replace_items(
     }
     #[cfg(feature = "postgres")]
     {
+        // 参数类型必须与 `delete_by_id` 里的同文本 DELETE 一致（都是 i32）：
+        // sqlx-postgres 的语句缓存以 SQL 文本为 key 且命中时不校验参数类型，
+        // i32 / i64 混绑会让后一次按错误的 OID 发送二进制参数，服务端报
+        // `insufficient data left in message`。缓存已在 `db::create_pool`
+        // 关闭以兜住全仓同类问题，这里保持类型一致作为第二道防线。
         let _ = sqlx::query("DELETE FROM gb_record_plan_item WHERE plan_id = $1")
-            .bind(plan_id)
+            .bind(plan_id as i32)
             .execute(pool)
             .await?;
         let mut affected = 0;

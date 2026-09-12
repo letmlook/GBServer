@@ -1,5 +1,9 @@
 # alarm.ts 契约审计
 
+> **第四十三轮（postgres 运行时验证）补充**：`set_handled`（告警处置）的
+> `UPDATE gb_device_alarm SET handled = 1, … WHERE id = ?` 没有方言分支 →
+> postgres 下 `/api/alarm/handle` 500。已改走 `dyn_where::dialect_sql()`。
+
 审计对象：`web/src/api/alarm.ts`（8 个导出函数）与 `src/router.rs` / `src/handlers/alarm.rs` / `src/handlers/parity_extras.rs`。
 真值交叉验证：WVP-PRO Java `src/main/java/com/genersoft/iot/vmp/vmanager/alarm/AlarmController.java`。
 

@@ -5,6 +5,16 @@
 > —— 一旦真的写入值，整行解码失败会让 `/terminal/list` 直接 **500**（此前因为
 > 从来没写过这两列才没暴露）。
 
+> **第四十三轮（postgres 运行时验证）补充**：本模块还有两个**只在 postgres 上炸**的缺陷。
+> 1. 围栏/路线/媒体检索等 16+ 个 SQL 用了 `?` 占位符且没有方言分支 → postgres 直接
+>    `syntax error at or near ","`，页面「新增圆形/多边形/路线区域」全部失败。
+>    已统一改走 `dyn_where::dialect_sql()`。
+> 2. 「新增终端」在前端**必然 422**：表单里车牌颜色是 `el-select` 的**数字**（0..4）、
+>    省域/市域是 `el-input` 的**字符串**，而后端 DTO 恰好相反（颜色要 String、省域要 i32）。
+>    已改为 `opt_string_flexible` 同时接受数字与字符串，并把 `plate_color`
+>    三方言统一为 `INTEGER`（postgres 下 varchar 会让 `/terminal/list` 整表 500）。
+>    回归覆盖：`e2e/tests/jtTerminal.spec.ts`（4 例）。
+
 审计对象：`web/src/api/jtDevice.ts`（21 个导出函数）。
 后端路由：`src/router.rs`（`api_protected` 链，JT1078 段从 `src/router.rs:818` 起）。
 真值交叉验证：WVP-PRO Java 源码 `/tmp/wvpsrc/wvp-GB28181-pro-master`。

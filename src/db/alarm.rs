@@ -450,10 +450,10 @@ pub async fn set_handled(
     handle_time: &str,
     handle_result: Option<&str>,
 ) -> sqlx::Result<u64> {
-    let r = sqlx::query(
+    let r = sqlx::query(&crate::dyn_where::dialect_sql(
         "UPDATE gb_device_alarm SET handled = 1, handle_user = ?, handle_time = ?, \
          handle_result = COALESCE(?, handle_result) WHERE id = ?",
-    )
+    ))
     .bind(handle_user)
     .bind(handle_time)
     .bind(handle_result)

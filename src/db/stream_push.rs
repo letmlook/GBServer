@@ -456,9 +456,9 @@ pub async fn set_gb_binding(
     channel_id: Option<&str>,
     now: &str,
 ) -> sqlx::Result<u64> {
-    let r = sqlx::query(
+    let r = sqlx::query(&crate::dyn_where::dialect_sql(
         "UPDATE gb_stream_push SET gb_device_id = ?, gb_channel_id = ?, update_time = ? WHERE id = ?",
-    )
+    ))
     .bind(device_id.filter(|s| !s.is_empty()))
     .bind(channel_id.filter(|s| !s.is_empty()))
     .bind(now)

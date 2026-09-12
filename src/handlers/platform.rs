@@ -1403,13 +1403,15 @@ pub async fn platform_exit(
 
     // 停用 + 离线：不用 `sync_platform_registration` 是因为它会在 enable=false 时
     // 再调一次 unregister（我们已经发过了），这里只需要落库状态。
-    sqlx::query("UPDATE gb_platform SET enable = ?, status = ? WHERE id = ?")
-        .bind(false)
-        .bind(false)
-        .bind(platform.id)
-        .execute(&state.pool)
-        .await
-        .map_err(|e| AppError::business(ErrorCode::Error500, format!("更新平台状态失败: {e}")))?;
+    sqlx::query(&crate::dyn_where::dialect_sql(
+        "UPDATE gb_platform SET enable = ?, status = ? WHERE id = ?",
+    ))
+    .bind(false)
+    .bind(false)
+    .bind(platform.id)
+    .execute(&state.pool)
+    .await
+    .map_err(|e| AppError::business(ErrorCode::Error500, format!("更新平台状态失败: {e}")))?;
 
     Ok(Json(WVPResult::success(serde_json::json!({
         "id": platform.id,
@@ -1729,7 +1731,7 @@ pub async fn platform_channel_custom_update(
     }
     if let Ok(Some(ch)) = platform_channel::get_by_id(&state.pool, id).await {
         if let Some(platform_id) = ch.platform_id {
-            refresh_platform_catalog(&state, platform_id).await?;
+            refresh_platform_catalog(&state, platform_id as i64).await?;
         }
     }
     

@@ -58,12 +58,9 @@ pub async fn insert_batch(pool: &Pool, rows: &[NewLogEntry]) -> sqlx::Result<u64
     let mut affected = 0u64;
     // 逐条插入：日志表写入频率低（秒级批量），且可避免三种方言的批量语法差异
     for r in rows {
-        let sql = if cfg!(feature = "postgres") {
-            "INSERT INTO gb_log (time, level, logger, thread, message, source) VALUES ($1, $2, $3, $4, $5, $6)"
-        } else {
-            "INSERT INTO gb_log (time, level, logger, thread, message, source) VALUES (?, ?, ?, ?, ?, ?)"
-        };
-        affected += sqlx::query(sql)
+        affected += sqlx::query(&crate::dyn_where::dialect_sql(
+            "INSERT INTO gb_log (time, level, logger, thread, message, source) VALUES (?, ?, ?, ?, ?, ?)",
+        ))
             .bind(&r.time)
             .bind(&r.level)
             .bind(r.logger.as_deref())
@@ -194,16 +191,13 @@ pub async fn list_paged(
 
 /// 保留策略：删除 `time < before` 的日志，返回删除行数。
 pub async fn delete_before(pool: &Pool, before: &str) -> sqlx::Result<u64> {
-    let sql = if cfg!(feature = "postgres") {
-        "DELETE FROM gb_log WHERE time < $1"
-    } else {
-        "DELETE FROM gb_log WHERE time < ?"
-    };
-    Ok(sqlx::query(sql)
-        .bind(before)
-        .execute(pool)
-        .await?
-        .rows_affected())
+    Ok(sqlx::query(&crate::dyn_where::dialect_sql(
+        "DELETE FROM gb_log WHERE time < ?",
+    ))
+    .bind(before)
+    .execute(pool)
+    .await?
+    .rows_affected())
 }
 
 #[cfg(all(test, feature = "sqlite"))]

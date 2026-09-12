@@ -1,4 +1,4 @@
-/*建表*/
+﻿/*建表*/
 drop table IF EXISTS gb_device;
 create table IF NOT EXISTS gb_device
 (
@@ -80,7 +80,7 @@ COMMENT ON COLUMN gb_device.server_id IS '所属信令服务器ID';
 drop table IF EXISTS gb_device_alarm;
 create table IF NOT EXISTS gb_device_alarm
 (
-    id                serial primary key,
+    id                bigserial primary key,
     device_id         character varying(50) not null,
     channel_id        character varying(50) not null,
     alarm_priority    character varying(50),
@@ -113,7 +113,7 @@ COMMENT ON COLUMN gb_device_alarm.create_time IS '数据入库时间';
 drop table IF EXISTS gb_device_mobile_position;
 create table IF NOT EXISTS gb_device_mobile_position
 (
-    id              serial primary key,
+    id              bigserial primary key,
     device_id       character varying(50) not null,
     channel_id      character varying(50) not null,
     device_name     character varying(255),
@@ -320,8 +320,8 @@ COMMENT ON COLUMN gb_device_channel.gps_direction IS 'GPS方向';
 COMMENT ON COLUMN gb_device_channel.enable_broadcast IS '是否支持广播';
 
 
-CREATE INDEX idx_data_type ON gb_device_channel (data_type);
-CREATE INDEX idx_data_device_id ON gb_device_channel (data_device_id);
+CREATE INDEX IF NOT EXISTS idx_data_type ON gb_device_channel (data_type);
+CREATE INDEX IF NOT EXISTS idx_data_device_id ON gb_device_channel (data_device_id);
 
 drop table IF EXISTS gb_media_server;
 create table IF NOT EXISTS gb_media_server
@@ -422,7 +422,7 @@ create table IF NOT EXISTS gb_media_server_white_list
     cidr            character varying(50)  not null,
     create_time     character varying(50)
 );
-CREATE INDEX idx_media_server_white_list_server_id
+CREATE INDEX IF NOT EXISTS idx_media_server_white_list_server_id
     ON gb_media_server_white_list(media_server_id);
 COMMENT ON TABLE gb_media_server_white_list IS '媒体服务器 IP 白名单（hook 鉴权）';
 COMMENT ON COLUMN gb_media_server_white_list.id IS '主键ID';
@@ -595,7 +595,7 @@ COMMENT ON COLUMN gb_platform_channel.custom_svc_time_support_mode IS '自定义
 drop table IF EXISTS gb_platform_group;
 create table IF NOT EXISTS gb_platform_group
 (
-    id          serial primary key,
+    id          bigserial primary key,
     platform_id integer,
     group_id    integer,
     constraint uk_gb_platform_group_platform_id_group_id unique (platform_id, group_id)
@@ -609,7 +609,7 @@ COMMENT ON COLUMN gb_platform_group.group_id IS '分组ID';
 drop table IF EXISTS gb_platform_region;
 create table IF NOT EXISTS gb_platform_region
 (
-    id          serial primary key,
+    id          bigserial primary key,
     platform_id integer,
     region_id   integer,
     constraint uk_gb_platform_region_platform_id_group_id unique (platform_id, region_id)
@@ -740,7 +740,7 @@ COMMENT ON TABLE gb_cluster_node IS '集群节点表（Phase 7.6 补齐）';
 drop table IF EXISTS gb_cloud_record;
 create table IF NOT EXISTS gb_cloud_record
 (
-    id              serial primary key,
+    id              bigserial primary key,
     app             character varying(255),
     stream          character varying(255),
     call_id         character varying(255),
@@ -943,7 +943,7 @@ create table IF NOT EXISTS gb_jt_terminal (
                                  city_text character varying(100),
                                  maker_id character varying(50),
                                  model character varying(50),
-                                 plate_color character varying(50),
+                                 plate_color integer,
                                  plate_no character varying(50),
                                  longitude double precision,
                                  latitude double precision,
@@ -1036,7 +1036,7 @@ COMMENT ON TABLE gb_jt_media_item IS 'Phase 6.4: JT/T 1078 录像检索结果';
 -- 导致 PostgreSQL 部署下 JT1078 区域/路线 CRUD 全部 "table does not exist"）
 CREATE TABLE IF NOT EXISTS gb_jt_area_circle
 (
-    id           serial PRIMARY KEY,
+    id           bigserial PRIMARY KEY,
     phone_number character varying(50) NOT NULL,
     label        character varying(255),
     center_lat   double precision NOT NULL,
@@ -1049,7 +1049,7 @@ CREATE INDEX IF NOT EXISTS idx_jt_area_circle_phone ON gb_jt_area_circle (phone_
 
 CREATE TABLE IF NOT EXISTS gb_jt_area_polygon
 (
-    id           serial PRIMARY KEY,
+    id           bigserial PRIMARY KEY,
     phone_number character varying(50) NOT NULL,
     label        character varying(255),
     points_json  text NOT NULL,
@@ -1060,7 +1060,7 @@ CREATE INDEX IF NOT EXISTS idx_jt_area_polygon_phone ON gb_jt_area_polygon (phon
 
 CREATE TABLE IF NOT EXISTS gb_jt_area_rectangle
 (
-    id               serial PRIMARY KEY,
+    id               bigserial PRIMARY KEY,
     phone_number     character varying(50) NOT NULL,
     label            character varying(255),
     left_top_lat     double precision NOT NULL,
@@ -1074,7 +1074,7 @@ CREATE INDEX IF NOT EXISTS idx_jt_area_rectangle_phone ON gb_jt_area_rectangle (
 
 CREATE TABLE IF NOT EXISTS gb_jt_route
 (
-    id             serial PRIMARY KEY,
+    id             bigserial PRIMARY KEY,
     phone_number   character varying(50) NOT NULL,
     label          character varying(255),
     waypoints_json text NOT NULL,
@@ -1087,7 +1087,7 @@ CREATE INDEX IF NOT EXISTS idx_jt_route_phone ON gb_jt_route (phone_number);
 -- 但它此前在三份 schema 中都不存在，配合被忽略的错误形成了"必然失败却报成功"）
 CREATE TABLE IF NOT EXISTS gb_platform_catalog
 (
-    id             serial PRIMARY KEY,
+    id             bigserial PRIMARY KEY,
     name           character varying(255),
     parent         character varying(255),
     civil_code     character varying(50),
@@ -1101,7 +1101,7 @@ CREATE INDEX IF NOT EXISTS idx_platform_catalog_platform ON gb_platform_catalog 
 -- 系统日志（2026-09-12 新增，原因见 SQLite 注释）
 CREATE TABLE IF NOT EXISTS gb_log
 (
-    id      serial PRIMARY KEY,
+    id      bigserial PRIMARY KEY,
     time    character varying(50) NOT NULL,
     level   character varying(16) NOT NULL,
     logger  character varying(255),

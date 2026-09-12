@@ -197,9 +197,9 @@ pub async fn insert_with_metrics(
     // Try extended schema first (gb_audit_log + elapsed_ms), fall back to basic schema.
     // We do this with INSERT IGNORE-style fallback: attempt to insert with elapsed_ms;
     // if the column doesn't exist, retry without it.
-    let with_elapsed_result = sqlx::query(
+    let with_elapsed_result = sqlx::query(&crate::dyn_where::dialect_sql(
         "INSERT INTO gb_audit_log (username, action, resource, method, path, ip, status_code, elapsed_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
-    )
+    ))
     .bind(username).bind(action).bind(resource).bind(method).bind(path).bind(ip).bind(status_code).bind(elapsed_ms)
     .execute(pool).await;
     if with_elapsed_result.is_ok() {

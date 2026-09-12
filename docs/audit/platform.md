@@ -24,6 +24,11 @@
 > `/platform/catalog/add` post、`/platform/catalog/edit` post），无 route-missing / http-method 问题。
 > 以下为字段级不一致。
 
+> **第四十三轮（postgres 运行时验证）补充**：`platform_exit` 里停用平台状态的
+> `UPDATE gb_platform SET enable = ?, status = ? WHERE id = ?` 没有方言分支 →
+> postgres 下注销接口 500（发完注销报文却置不了停用状态，下一轮注册又会注册回去）。
+> 已改走 `dyn_where::dialect_sql()`。
+
 ## 1. response-field GET /api/platform/query
 
 - 前端：`web/src/api/platform.ts:12` `serverGbId: string`；消费处 `web/src/views/platform/index.vue:17` `prop="serverGbId"`、`index.vue:18` `{{ row.serverGbId }}`、`index.vue:83` `if (!row.serverGbId) return`

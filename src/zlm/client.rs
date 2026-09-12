@@ -86,6 +86,34 @@ struct OpenRtpServerResp {
     cookie: Option<String>,
 }
 
+/// 组装 `openRtpServer` 的查询参数。
+///
+/// `port` **必须**出现：ZLM（master，2026-09-12 实测）在缺省 `port` 时直接回
+/// `-300 Required parameter missed: "port", "stream_id"` —— 即使 `stream_id`
+/// 已传也一样。于是所有 `port: None` 的调用（`/api/push/start`、对讲收流、
+/// 部分 INVITE）在真实 ZLM 上**全部失败**，而 `port: Some(0)` 的调用正常，
+/// 所以问题一直藏在"有些调用能跑通"里。
+///
+/// `port=0` 的语义正是"由 ZLM 从 `rtp_proxy.port_range` 自动分配"，
+/// 与 `None` 想表达的一致，因此统一补 0。
+fn open_rtp_server_params(secret: &str, req: &OpenRtpServerRequest) -> Vec<(&'static str, String)> {
+    let mut params = vec![
+        ("secret", secret.to_string()),
+        ("stream_id", req.stream_id.clone()),
+        ("port", req.port.unwrap_or(0).to_string()),
+    ];
+    if let Some(use_tcp) = req.use_tcp {
+        params.push(("tcp", if use_tcp { "1" } else { "0" }.to_string()));
+    }
+    if let Some(rtp_type) = req.rtp_type {
+        params.push(("rtp_type", rtp_type.to_string()));
+    }
+    if let Some(recv_port) = req.recv_port {
+        params.push(("recv_port", recv_port.to_string()));
+    }
+    params
+}
+
 impl ZlmClient {
     pub fn new(ip: &str, port: u16, secret: &str) -> Self {
         Self {
@@ -288,23 +316,7 @@ impl ZlmClient {
     }
 
     pub async fn open_rtp_server(&self, req: &OpenRtpServerRequest) -> Result<RtpServerInfo> {
-        let mut params = vec![
-            ("secret", self.secret.clone()),
-            ("stream_id", req.stream_id.clone()),
-        ];
-
-        if let Some(port) = req.port {
-            params.push(("port", port.to_string()));
-        }
-        if let Some(use_tcp) = req.use_tcp {
-            params.push(("tcp", if use_tcp { "1" } else { "0" }.to_string()));
-        }
-        if let Some(rtp_type) = req.rtp_type {
-            params.push(("rtp_type", rtp_type.to_string()));
-        }
-        if let Some(recv_port) = req.recv_port {
-            params.push(("recv_port", recv_port.to_string()));
-        }
+        let params = open_rtp_server_params(&self.secret, req);
 
         let resp: OpenRtpServerResp = self.request("/index/api/openRtpServer", &params).await?;
 
@@ -1102,6 +1114,46 @@ impl ZlmClient {
 mod tests {
     use super::*;
 
+    /// 回归：`port` 必须无条件出现在 `openRtpServer` 参数里。
+    ///
+    /// 真实 ZLM 在缺 `port` 时返回
+    /// `-300 Required parameter missed: "port", "stream_id"`，
+    /// 因此 `port: None` 必须被翻译成 `port=0`（自动分配），
+    /// 而不是"省略该参数"。
+    #[test]
+    fn open_rtp_server_always_sends_port() {
+        let req = OpenRtpServerRequest {
+            secret: "s".into(),
+            stream_id: "34020000001320000001".into(),
+            port: None,
+            use_tcp: Some(false),
+            rtp_type: Some(0),
+            recv_port: None,
+        };
+        let params = open_rtp_server_params("sec", &req);
+        let map: std::collections::HashMap<&str, String> = params.iter().cloned().collect();
+        assert_eq!(
+            map.get("port").map(String::as_str),
+            Some("0"),
+            "port 不能省略"
+        );
+        assert_eq!(
+            map.get("stream_id").map(String::as_str),
+            Some("34020000001320000001")
+        );
+        assert_eq!(map.get("tcp").map(String::as_str), Some("0"));
+        assert_eq!(map.get("rtp_type").map(String::as_str), Some("0"));
+
+        // 显式指定端口时按原值传
+        let req2 = OpenRtpServerRequest {
+            port: Some(30050),
+            ..req.clone()
+        };
+        let map2: std::collections::HashMap<&str, String> =
+            open_rtp_server_params("sec", &req2).into_iter().collect();
+        assert_eq!(map2.get("port").map(String::as_str), Some("30050"));
+    }
+
     /// `isRecording` / `isMediaExist`：官方 ZLM 返回**顶层** `exist`，
     /// 不能用"要求 `data.exist`"的结构体去解析 —— 那样在真实 ZLM 上恒为
     /// false，只有 mock 上碰巧正确。
@@ -1175,6 +1227,8 @@ mod tests {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
+        use crate::zlm::types::OpenRtpServerRequest;
+
         #[tokio::test]
         async fn test_set_rtp_port_range_calls_set_server_config() {
             let mock_server = MockServer::start().await;
@@ -1213,6 +1267,54 @@ mod tests {
                 url.contains("rtp.port_range=30000-30200"),
                 "expected rtp.port_range=30000-30200 in query, got: {url}"
             );
+        }
+
+        /// 回归：真实 ZLM 在 `openRtpServer` 缺 `port` 参数时回
+        /// `-300 Required parameter missed: "port", "stream_id"`。
+        /// 这条测试走**真实 HTTP**（wiremock）验证 `port: None` 会被补成 `port=0`。
+        #[tokio::test]
+        async fn test_open_rtp_server_sends_port_even_when_none() {
+            let mock_server = MockServer::start().await;
+
+            Mock::given(method("GET"))
+                .and(path("/index/api/openRtpServer"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "code": 0,
+                    "port": 30077
+                })))
+                .expect(1)
+                .mount(&mock_server)
+                .await;
+
+            let uri = mock_server.uri();
+            let stripped = uri.trim_start_matches("http://");
+            let mut parts = stripped.splitn(2, ':');
+            let ip = parts.next().unwrap_or("127.0.0.1").to_string();
+            let port: u16 = parts.next().and_then(|p| p.parse().ok()).unwrap_or(80);
+
+            let zlm_client = crate::zlm::ZlmClient::new(&ip, port, "test-secret");
+            let info = zlm_client
+                .open_rtp_server(&OpenRtpServerRequest {
+                    secret: "test-secret".into(),
+                    stream_id: "push-smoke".into(),
+                    port: None,
+                    use_tcp: Some(true),
+                    rtp_type: Some(0),
+                    recv_port: None,
+                })
+                .await
+                .expect("openRtpServer 应成功");
+            assert_eq!(info.port, 30077);
+
+            let received = mock_server.received_requests().await.unwrap_or_default();
+            assert_eq!(received.len(), 1, "expected exactly 1 request");
+            let url = received[0].url.as_str();
+            assert!(
+                url.contains("port=0"),
+                "port 必须出现（0=自动分配），got: {url}"
+            );
+            assert!(url.contains("stream_id=push-smoke"), "got: {url}");
+            assert!(url.contains("tcp=1"), "got: {url}");
         }
     }
 }

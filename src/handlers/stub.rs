@@ -535,6 +535,15 @@ pub async fn region_add(
     if device_id.is_empty() || name.is_empty() {
         return Err(AppError::business(ErrorCode::Error400, "deviceId 与 name 必填"));
     }
+    // 国标编码唯一：直接插会撞 `uk_common_region_device_id`，把
+    // `duplicate key value violates unique constraint` 原样抛成 **HTTP 500**
+    // （前端只看到一串数据库英文）。这里先查一次，给出明确的 400。
+    if region::get_by_device_id(&state.pool, device_id).await?.is_some() {
+        return Err(AppError::business(
+            ErrorCode::Error400,
+            format!("该区域国标编码已存在: {device_id}"),
+        ));
+    }
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     region::add(
         &state.pool,
@@ -703,6 +712,13 @@ pub async fn group_add(
     let business_group = body.business_group.as_deref().unwrap_or("0");
     if device_id.is_empty() || name.is_empty() {
         return Err(AppError::business(ErrorCode::Error400, "deviceId 与 name 必填"));
+    }
+    // 同 region_add：先查重，避免把唯一约束冲突抛成 HTTP 500。
+    if group::get_by_device_id(&state.pool, device_id).await?.is_some() {
+        return Err(AppError::business(
+            ErrorCode::Error400,
+            format!("该分组国标编码已存在: {device_id}"),
+        ));
     }
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     group::add(

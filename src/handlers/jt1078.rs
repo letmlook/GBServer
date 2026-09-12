@@ -34,6 +34,11 @@ where
     })
 }
 
+/// 去掉首尾空白；空串视作"未提供"（前端 `el-input` 未填写时就是 `""`）。
+fn opt_trimmed(v: Option<&str>) -> Option<&str> {
+    v.map(str::trim).filter(|s| !s.is_empty())
+}
+
 /// 车牌颜色：前端可能是数字字符串（GB/T 808 的颜色码）或中文名。
 fn parse_plate_color(raw: Option<&str>) -> Option<i32> {
     let v = raw?.trim();
@@ -286,14 +291,28 @@ pub struct TerminalAddBody {
     pub vehicle_no: Option<String>,
     #[serde(alias = "plateNo")]
     pub plate_no: Option<String>,
-    #[serde(alias = "plateColor")]
+    /// 前端车牌颜色是 **el-select 的数字**（0..4），WVP 的 Java 参数也是整数；
+    /// 而历史实现把它声明成 `Option<String>`，于是 `plateColor: 0` 直接 422
+    /// `invalid type: integer 0, expected a string` —— 前端"新增终端"必然失败。
+    /// 这里两种都收（`opt_string_flexible`）。
+    #[serde(
+        alias = "plateColor",
+        deserialize_with = "opt_string_flexible",
+        default
+    )]
     pub plate_color: Option<String>,
     #[serde(alias = "makerId")]
     pub maker_id: Option<String>,
-    #[serde(alias = "provinceId")]
-    pub province_id: Option<i32>,
-    #[serde(alias = "cityId")]
-    pub city_id: Option<i32>,
+    /// 省域/市域编码前端是 **文本输入框**（`el-input`，值形如 `"340200"`），
+    /// 早期声明成 `Option<i32>` 会 422。两种都收。
+    #[serde(
+        alias = "provinceId",
+        deserialize_with = "opt_string_flexible",
+        default
+    )]
+    pub province_id: Option<String>,
+    #[serde(alias = "cityId", deserialize_with = "opt_string_flexible", default)]
+    pub city_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -308,14 +327,22 @@ pub struct TerminalUpdateBody {
     pub vehicle_no: Option<String>,
     #[serde(alias = "plateNo")]
     pub plate_no: Option<String>,
-    #[serde(alias = "plateColor")]
+    #[serde(
+        alias = "plateColor",
+        deserialize_with = "opt_string_flexible",
+        default
+    )]
     pub plate_color: Option<String>,
     #[serde(alias = "makerId")]
     pub maker_id: Option<String>,
-    #[serde(alias = "provinceId")]
-    pub province_id: Option<i32>,
-    #[serde(alias = "cityId")]
-    pub city_id: Option<i32>,
+    #[serde(
+        alias = "provinceId",
+        deserialize_with = "opt_string_flexible",
+        default
+    )]
+    pub province_id: Option<String>,
+    #[serde(alias = "cityId", deserialize_with = "opt_string_flexible", default)]
+    pub city_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -472,10 +499,10 @@ pub async fn terminal_add(
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     // 前端编辑框的字段（车牌/车牌颜色/厂商/省域/市域）此前后端 DTO 里没有，
     // 填了静默丢弃；现在如实落库。`device_id` 作为 regist 的 terminal_id 保留。
-    // 库里 province_id/city_id 是 TEXT 列：这里把数字码转成字符串再写，
-    // 避免"整数写进 TEXT 列后整行解码失败、列表 500"。
-    let province_id = body.province_id.map(|v| v.to_string());
-    let city_id = body.city_id.map(|v| v.to_string());
+    // 库里 province_id/city_id 是 TEXT 列：前端 `el-input` 给的本来就是字符串，
+    // 空串按"未填写"处理（否则会把 '' 写进库、前端显示成空白行）。
+    let province_id = opt_trimmed(body.province_id.as_deref());
+    let city_id = opt_trimmed(body.city_id.as_deref());
     let fields = jt_db::JtTerminalWrite {
         terminal_id: body.device_id.as_deref().or(body.vehicle_no.as_deref()),
         plate_no: body.plate_no.as_deref().or(body.vehicle_no.as_deref()),
@@ -483,8 +510,8 @@ pub async fn terminal_add(
         maker_id: body.maker_id.as_deref().or(body.manufacturer.as_deref()),
         model: body.model.as_deref(),
         media_server_id: None,
-        province_id: province_id.as_deref(),
-        city_id: city_id.as_deref(),
+        province_id,
+        city_id,
     };
     jt_db::insert_terminal(&state.pool, phone, &fields, &now).await?;
     Ok(Json(WVPResult::<()>::success_empty()))
@@ -502,8 +529,8 @@ pub async fn terminal_update(
         return Err(AppError::business(ErrorCode::Error400, "缺少 phoneNumber"));
     }
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    let province_id = body.province_id.map(|v| v.to_string());
-    let city_id = body.city_id.map(|v| v.to_string());
+    let province_id = opt_trimmed(body.province_id.as_deref());
+    let city_id = opt_trimmed(body.city_id.as_deref());
     let fields = jt_db::JtTerminalWrite {
         terminal_id: body.device_id.as_deref().or(body.vehicle_no.as_deref()),
         plate_no: body.plate_no.as_deref().or(body.vehicle_no.as_deref()),
@@ -511,8 +538,8 @@ pub async fn terminal_update(
         maker_id: body.maker_id.as_deref().or(body.manufacturer.as_deref()),
         model: body.model.as_deref(),
         media_server_id: None,
-        province_id: province_id.as_deref(),
-        city_id: city_id.as_deref(),
+        province_id,
+        city_id,
     };
     let affected = jt_db::update_terminal(&state.pool, phone, &fields, &now).await?;
     if affected == 0 {
@@ -2144,6 +2171,11 @@ mod terminal_write_tests {
 
     /// 前端编辑框的字段（车牌/颜色/厂商/省域/市域）此前后端 DTO 里没有 →
     /// 填了静默丢弃。这条测试逐字段验证真的落库。
+    ///
+    /// 入参刻意用**前端真实形状**：车牌颜色是 `el-select` 的**数字**（0..4），
+    /// 省域/市域是 `el-input` 的**字符串**。早期 DTO 恰好相反
+    /// （颜色要 String、省域要 i32），于是 UI 上"新增终端"必然 422：
+    /// `invalid type: integer 0, expected a string`。
     #[tokio::test]
     async fn test_terminal_add_update_persist_edit_form_fields() {
         let state = app_state().await;
@@ -2151,13 +2183,13 @@ mod terminal_write_tests {
             "phoneNumber": "13912345678",
             "deviceId": "T-1",
             "plateNo": "A12345",
-            "plateColor": "2",
+            "plateColor": 2,
             "makerId": "M-9",
             "model": "JT-1",
-            "provinceId": 110000,
-            "cityId": 110100
+            "provinceId": "110000",
+            "cityId": "110100"
         }))
-        .expect("camelCase 必须能反序列化");
+        .expect("前端形状（数字颜色 + 字符串行政区划码）必须能反序列化");
         let _ = terminal_add(State(state.clone()), Json(add)).await.expect("新增应成功");
 
         let t = jt_db::get_terminal_by_phone(&state.pool, "13912345678")
@@ -2200,6 +2232,30 @@ mod terminal_write_tests {
         assert_eq!(t.plate_no.as_deref(), Some("B54321"));
         assert_eq!(t.maker_id.as_deref(), Some("M-9"), "未提交的字段保持原值");
         assert_eq!(t.province_id.as_deref(), Some("110000"));
+    }
+
+    /// 未填写的省域/市域（`el-input` 给的是空串）必须落成 NULL，
+    /// 而不是把 `''` 写进库（列表里会显示成空白行）。
+    #[tokio::test]
+    async fn test_terminal_add_treats_blank_codes_as_null() {
+        let state = app_state().await;
+        let add: TerminalAddBody = serde_json::from_value(serde_json::json!({
+            "phoneNumber": "13912345000",
+            "plateColor": 0,
+            "provinceId": "",
+            "cityId": "   "
+        }))
+        .unwrap();
+        let _ = terminal_add(State(state.clone()), Json(add))
+            .await
+            .expect("新增应成功");
+        let t = jt_db::get_terminal_by_phone(&state.pool, "13912345000")
+            .await
+            .unwrap()
+            .expect("终端应存在");
+        assert_eq!(t.province_id, None);
+        assert_eq!(t.city_id, None);
+        assert_eq!(t.plate_color, Some(0));
     }
 
     /// 删除：前端传数据库主键（`id`）也要能删；不存在的 id 报 404 而不是成功。

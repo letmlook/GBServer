@@ -9,8 +9,13 @@ use super::Pool;
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub struct PlatformChannel {
     pub id: i32,
-    pub platform_id: Option<i64>,
-    pub device_channel_id: Option<i64>,
+    // `gb_platform_channel.platform_id` / `device_channel_id` 在 postgres 里是
+    // `integer`（对应 `gb_platform.id` / `gb_device_channel.id`，两者 Rust 侧都是
+    // i32）。这里曾经写成 `Option<i64>`，sqlite（动态类型）和 mysql（宽进严出）
+    // 都不报错，只有 postgres 会在解码时抛
+    // `Rust type i64 is not compatible with SQL type INT4`。
+    pub platform_id: Option<i32>,
+    pub device_channel_id: Option<i32>,
     pub custom_device_id: Option<String>,
     pub custom_name: Option<String>,
     pub custom_manufacturer: Option<String>,

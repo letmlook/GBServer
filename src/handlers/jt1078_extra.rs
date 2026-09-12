@@ -37,6 +37,10 @@ use crate::AppState;
 #[derive(Deserialize, Default, Debug)]
 pub struct IdQuery {
     pub id: Option<String>,
+    /// 终端手机号。前端查询页发的是 `phone`，而 WVP 的 Java 参数名是
+    /// `phoneNumber`（新增/设置接口也用后者）—— 两个名字都接受，
+    /// 否则用 `phoneNumber` 调用围栏/路线查询会得到含糊的"phone 必填"。
+    #[serde(alias = "phoneNumber")]
     pub phone: Option<String>,
     #[serde(alias = "channelId")]
     pub channel_id: Option<i32>,

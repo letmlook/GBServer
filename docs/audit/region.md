@@ -20,6 +20,11 @@
 > 也不能共用一个 `data`（`el-tabs` 两个 pane 同时存在 DOM 里，切换后隐藏的树也会
 > 跟着渲染另一棵树的数据）。
 
+> **第四十三轮（postgres 运行时验证）补充**：`/api/region/add`、`/api/group/add`
+> 传入已存在的国标编码时，唯一约束冲突被原样抛成 **HTTP 500**
+> （`duplicate key value violates unique constraint …`），前端只看到一串数据库英文。
+> 已加显式查重，返回 400「该区域/分组国标编码已存在」。
+
 审计对象：`web/src/api/region.ts`（12 个导出函数：8 个 region + 4 个 group）。
 后端路由：`src/router.rs`（`api_protected` 链，`src/router.rs:69` 起）。
 真值交叉验证：WVP-PRO Java 源码 `/tmp/wvpsrc/wvp-GB28181-pro-master`。

@@ -535,7 +535,7 @@ create table IF NOT EXISTS gb_jt_terminal (
                                  city_text varchar(100) COMMENT '所在城市名称',
                                  maker_id varchar(50) COMMENT '厂商ID',
                                  model varchar(50) COMMENT '终端型号',
-                                 plate_color varchar(50) COMMENT '车牌颜色',
+                                 plate_color int COMMENT '车牌颜色',
                                  plate_no varchar(50) COMMENT '车牌号码',
                                  longitude double COMMENT '经度',
                                  latitude double COMMENT '纬度',
