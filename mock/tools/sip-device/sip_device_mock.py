@@ -927,6 +927,10 @@ class SipDeviceMock:
             await self._reply_config_download(msg, addr)
         elif "<CmdType>RecordInfo</CmdType>" in body:
             await self._reply_record_info(msg, addr)
+        elif "<CmdType>Alarm</CmdType>" in body:
+            # 设备当前报警查询（A.2.4.4）：回一份带 AlarmList 的 Response，
+            # 让 `/api/device/query/alarm`（WVP `DeviceQuery.alarm`）能被验证。
+            await self._reply_alarm_query(msg, addr)
         elif "<CmdType>DeviceConfig</CmdType>" in body:
             # 配置下发（BasicParam / SnapConfig / 通用）：真实设备解析后回 200 OK，
             # 部分还会回一条 DeviceControl 应答。这里把关键字段打出来，
@@ -934,7 +938,9 @@ class SipDeviceMock:
             # 报文被静默丢弃，看不出配置是否有下发）。
             fields = []
             for name in ("SIPServerID", "SIPServerPort", "SIPServerDomain",
-                         "Transport", "CharSet", "SnapInterval", "ConfigType"):
+                         "Transport", "CharSet", "SnapInterval", "ConfigType",
+                         "Name", "Expiration", "HeartBeatInterval", "HeartBeatCount",
+                         "Resolution", "DownloadSpeed"):
                 value = self._extract_xml_value(body, name)
                 if value:
                     fields.append(f"{name}={value}")
@@ -1125,6 +1131,64 @@ class SipDeviceMock:
         )
         self.transport.sendto(payload.encode(), addr)
         log.info("ConfigDownload(%s) 应答已发送 sn=%s", config_type, sn)
+
+    async def _reply_alarm_query(self, msg: str, addr: tuple):
+        """应答「设备当前报警查询」，返回两条报警（覆盖解析与过滤验证）。"""
+        body_in = msg.split("\r\n\r\n", 1)[1] if "\r\n\r\n" in msg else ""
+        sn = self._extract_xml_value(body_in, "SN") or "1"
+        call_id = self._extract_header(msg, "Call-ID", "")
+        cseq = self.state.next_cseq()
+        realm = realm_from_device_id(self.cfg.device_id)
+        local = self.transport.get_extra_info("sockname")
+        cid = self.cfg.device_id
+        body = (
+            '<?xml version="1.0" encoding="UTF-8"?>\r\n'
+            '<Response>\r\n'
+            '<CmdType>Alarm</CmdType>\r\n'
+            f'<SN>{sn}</SN>\r\n'
+            f'<DeviceID>{cid}</DeviceID>\r\n'
+            '<AlarmList Num="2">\r\n'
+            '<Item>\r\n'
+            f'<DeviceID>{cid}</DeviceID>\r\n'
+            '<AlarmPriority>1</AlarmPriority>\r\n'
+            '<AlarmMethod>5</AlarmMethod>\r\n'
+            '<AlarmTime>2026-09-13T07:00:00</AlarmTime>\r\n'
+            '<AlarmDescription>mock 移动侦测</AlarmDescription>\r\n'
+            '</Item>\r\n'
+            '<Item>\r\n'
+            f'<DeviceID>{cid}</DeviceID>\r\n'
+            '<AlarmPriority>2</AlarmPriority>\r\n'
+            '<AlarmMethod>2</AlarmMethod>\r\n'
+            '<AlarmTime>2026-09-13T07:01:00</AlarmTime>\r\n'
+            '<AlarmDescription>mock 设备报警</AlarmDescription>\r\n'
+            '</Item>\r\n'
+            '</AlarmList>\r\n'
+            '</Response>\r\n'
+        )
+        payload = (
+            f"{SIP_VERSION} 200 OK\r\n"
+            f"Via: {SIP_VERSION}/UDP {addr[0]}:{addr[1]};rport;branch={self._extract_via_branch(msg)}\r\n"
+            f"From: <sip:{cid}@{realm}>;tag={self._extract_from_tag(msg)}\r\n"
+            f"To: <sip:{realm}@{realm}>;tag={self._extract_to_tag(msg)}\r\n"
+            f"Call-ID: {call_id}\r\n"
+            f"CSeq: {cseq} MESSAGE\r\n"
+            f"Content-Type: Application/MANSCDP+XML\r\n"
+            f"Content-Length: {len(body.encode())}\r\n\r\n{body}"
+        )
+        # 设备先回 200 OK 给 MESSAGE，再单独发一条 MESSAGE（报警应答）
+        self.transport.sendto(payload.encode(), addr)
+        ack = (
+            f"MESSAGE sip:{realm}@{self.server_addr[0]}:{self.server_addr[1]} {SIP_VERSION}\r\n"
+            f"Via: {SIP_VERSION}/UDP {local[0]}:{local[1]};rport;branch={make_branch()}\r\n"
+            f"From: <sip:{cid}@{realm}>;tag={uuid.uuid4().hex[:8]}\r\n"
+            f"To: <sip:{realm}@{realm}>\r\n"
+            f"Call-ID: {call_id}\r\n"
+            f"CSeq: {self.state.next_cseq()} MESSAGE\r\n"
+            f"Content-Type: Application/MANSCDP+XML\r\n"
+            f"Content-Length: {len(body.encode())}\r\n\r\n{body}"
+        )
+        self.transport.sendto(ack.encode(), self.server_addr)
+        log.info("Alarm 查询应答已发送 sn=%s（2 条）", sn)
 
     async def _reply_record_info(self, msg: str, addr: tuple, pages: int = 2):
         """应答 RecordInfo（录像查询），**按多包**返回以覆盖平台的分页聚合。

@@ -156,6 +156,31 @@ pub fn app(state: AppState) -> Router<AppState> {
             "/api/device/config/update",
             post(device_control::device_config_update),
         )
+        // WVP `DeviceConfig.java` 端点（查询返回解析后的字段；下发按国标 ConfigDownload）
+        .route(
+            "/api/device/config/query/basicParam",
+            get(device_control::wvp_config_query_basic_param),
+        )
+        .route(
+            "/api/device/config/query/videoParamOpt",
+            get(device_control::wvp_config_query_video_param),
+        )
+        .route(
+            "/api/device/config/query/svacEncodeConfig",
+            get(device_control::wvp_config_query_svac_encode),
+        )
+        .route(
+            "/api/device/config/query/svacDecodeConfig",
+            get(device_control::wvp_config_query_svac_decode),
+        )
+        .route(
+            "/api/device/config/set/basicParam",
+            get(device_control::wvp_config_set_basic_param),
+        )
+        .route(
+            "/api/device/config/set/videoParamOpt",
+            get(device_control::wvp_config_set_video_param),
+        )
         .route(
             "/api/device/query/subscribe/catalog",
             get(device_control::subscribe_catalog),
@@ -215,6 +240,28 @@ pub fn app(state: AppState) -> Router<AppState> {
             "/api/device/query/info/:device_id",
             get(device_query::device_info),
         )
+        // WVP `DeviceQuery.java` 的路径/参数风格入口（与本平台的历史形式并存）
+        .route("/api/device/query/info", get(device_query::device_info_query))
+        .route(
+            "/api/device/query/devices/:device_id/status",
+            get(device_query::device_status_path),
+        )
+        .route(
+            "/api/device/query/:device_id/sync_status",
+            get(device_query::sync_status_path),
+        )
+        .route(
+            "/api/device/query/snap/:device_id/:channel_id",
+            get(device_query::snap_path),
+        )
+        .route(
+            "/api/device/query/channel/raw",
+            get(device_query::channel_raw),
+        )
+        .route(
+            "/api/device/query/alarm",
+            get(device_query::device_alarm_query),
+        )
         .route(
             "/api/device/query/status/:device_id",
             get(device_query::device_status),
@@ -227,10 +274,12 @@ pub fn app(state: AppState) -> Router<AppState> {
             "/api/play/ssrc/:device_id/:channel_id",
             get(device_query::get_ssrc),
         )
+        .route("/api/play/ssrc", get(device_query::ssrc_query))
         .route(
             "/api/play/snap/:device_id/:channel_id",
             get(device_query::get_snap),
         )
+        .route("/api/play/snap", get(device_query::snap_query))
         .route(
             "/api/media/getPlayUrl",
             get(device_query::get_play_url),
@@ -379,6 +428,10 @@ pub fn app(state: AppState) -> Router<AppState> {
         .route(
             "/api/play/broadcast/stop/:device_id/:channel_id",
             get(play::broadcast_stop),
+        )
+        .route(
+            "/api/play/convertStop/:key",
+            post(play::play_convert_stop),
         )
         .route(
             "/api/play/webrtc",
@@ -774,6 +827,35 @@ pub fn app(state: AppState) -> Router<AppState> {
         .route(
             "/api/common/channel/playback/speed",
             get(common_channel::channel_playback_speed),
+        )
+        // WVP `ChannelController` / `ChannelFrontEndController` 的其余端点
+        .route(
+            "/api/common/channel/talk/start",
+            get(common_channel::channel_talk_start),
+        )
+        .route(
+            "/api/common/channel/talk/stop",
+            get(common_channel::channel_talk_stop),
+        )
+        .route(
+            "/api/common/channel/broadcast/start",
+            get(common_channel::channel_broadcast_start),
+        )
+        .route(
+            "/api/common/channel/broadcast/stop",
+            get(common_channel::channel_broadcast_stop),
+        )
+        .route(
+            "/api/common/channel/front-end/home_position",
+            get(common_channel::front_end_home_position),
+        )
+        .route(
+            "/api/common/channel/front-end/drag_zoom_in",
+            get(common_channel::front_end_drag_zoom_in),
+        )
+        .route(
+            "/api/common/channel/front-end/drag_zoom_out",
+            get(common_channel::front_end_drag_zoom_out),
         )
         // ========== 前端控制 front_end ==========
         .route(

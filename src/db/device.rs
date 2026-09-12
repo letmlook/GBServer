@@ -667,6 +667,37 @@ pub async fn get_channel_by_device_and_channel_id(
     .fetch_optional(pool).await;
 }
 
+/// 按**主键 id** 取通道行（`/api/device/query/channel/raw?id=` 的数据源）。
+///
+/// WVP 的通道编辑弹窗先按主键拉原始行做回显；此前本平台没有按主键取通道的
+/// 查询，该端点在路由里根本不存在。
+pub async fn get_channel_by_id(pool: &Pool, id: i64) -> sqlx::Result<Option<DeviceChannel>> {
+    #[cfg(feature = "mysql")]
+    return sqlx::query_as::<_, DeviceChannel>(&format!(
+        "SELECT {} FROM gb_device_channel WHERE id = ?",
+        DEVICE_CHANNEL_SELECT_COLUMNS,
+    ))
+    .bind(id)
+    .fetch_optional(pool)
+    .await;
+    #[cfg(feature = "postgres")]
+    return sqlx::query_as::<_, DeviceChannel>(&format!(
+        "SELECT {} FROM gb_device_channel WHERE id = $1",
+        DEVICE_CHANNEL_SELECT_COLUMNS,
+    ))
+    .bind(id)
+    .fetch_optional(pool)
+    .await;
+    #[cfg(feature = "sqlite")]
+    return sqlx::query_as::<_, DeviceChannel>(&format!(
+        "SELECT {} FROM gb_device_channel WHERE id = ?",
+        DEVICE_CHANNEL_SELECT_COLUMNS,
+    ))
+    .bind(id)
+    .fetch_optional(pool)
+    .await;
+}
+
 /// 按**通道国标 ID** 反查通道（不限设备）。
 ///
 /// 级联场景下上级平台只给出本级通道编码，平台必须据此找到它挂在哪个

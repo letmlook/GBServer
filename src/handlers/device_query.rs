@@ -429,3 +429,309 @@ pub async fn stream_info(
     
     Json(WVPResult::<()>::error("ZLM not configured")).into_response()
 }
+// ============================================================================
+// WVP `DeviceQuery.java` 兼容入口
+//
+// WVP 用的是混合风格（部分路径参数、部分查询参数），与本平台早期的
+// `/api/device/query/info/{id}` 形式不同。这里把 WVP 的路径/参数风格接上，
+// 复用同一批真实实现（同样是"注册 pending → 发 SIP → 等应答"）。
+// ============================================================================
+
+/// `GET /api/device/query/info?deviceId=` → 同 `device_info`（路径参数版）。
+pub async fn device_info_query(
+    State(state): State<AppState>,
+    Query(q): Query<DeviceIdQuery>,
+) -> impl IntoResponse {
+    device_info(State(state), Path(q.device_id.unwrap_or_default())).await
+}
+
+/// `GET /api/device/query/devices/{deviceId}/status` → 同 `device_status`。
+pub async fn device_status_path(
+    State(state): State<AppState>,
+    Path(device_id): Path<String>,
+) -> impl IntoResponse {
+    device_status(State(state), Path(device_id)).await
+}
+
+/// `GET /api/device/query/{deviceId}/sync_status` → 同 `device_stub::sync_status`。
+pub async fn sync_status_path(
+    State(state): State<AppState>,
+    Path(device_id): Path<String>,
+) -> impl IntoResponse {
+    crate::handlers::device_stub::sync_status(
+        State(state),
+        Query(crate::handlers::device_stub::SyncStatusQuery {
+            device_id: Some(device_id),
+        }),
+    )
+    .await
+}
+
+/// `GET /api/device/query/snap/{deviceId}/{channelId}` → 同 `/api/play/snap/...`。
+pub async fn snap_path(
+    State(state): State<AppState>,
+    Path((device_id, channel_id)): Path<(String, String)>,
+) -> impl IntoResponse {
+    get_snap(State(state), Path((device_id, channel_id))).await
+}
+
+/// `GET /api/play/ssrc?deviceId=&channelId=` → 同 `/api/play/ssrc/{d}/{c}`。
+pub async fn ssrc_query(
+    State(state): State<AppState>,
+    Query(q): Query<DeviceChannelQuery>,
+) -> impl IntoResponse {
+    get_ssrc(
+        State(state),
+        Path((
+            q.device_id.unwrap_or_default(),
+            q.channel_id.unwrap_or_default(),
+        )),
+    )
+    .await
+}
+
+/// `GET /api/play/snap?deviceId=&channelId=` → 同 `/api/play/snap/{d}/{c}`。
+pub async fn snap_query(
+    State(state): State<AppState>,
+    Query(q): Query<DeviceChannelQuery>,
+) -> impl IntoResponse {
+    get_snap(
+        State(state),
+        Path((
+            q.device_id.unwrap_or_default(),
+            q.channel_id.unwrap_or_default(),
+        )),
+    )
+    .await
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct DeviceIdQuery {
+    #[serde(alias = "deviceId")]
+    pub device_id: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct DeviceChannelQuery {
+    #[serde(alias = "deviceId")]
+    pub device_id: Option<String>,
+    #[serde(alias = "channelId")]
+    pub channel_id: Option<String>,
+}
+
+/// `GET /api/device/query/channel/raw?id=` —— 国标通道编辑时的原始行回显。
+///
+/// WVP 直接返回 `DeviceChannel` 行；这里返回同源的通道行（含 gb_* 兼容字段）。
+pub async fn channel_raw(
+    State(state): State<AppState>,
+    Query(q): Query<ChannelRawQuery>,
+) -> impl IntoResponse {
+    let Some(id) = q.id else {
+        return Json(WVPResult::<serde_json::Value>::error("缺少 id 参数")).into_response();
+    };
+    match crate::db::device::get_channel_by_id(&state.pool, id).await {
+        Ok(Some(ch)) => Json(WVPResult::success(
+            crate::handlers::device_stub::channel_to_json(&ch),
+        ))
+        .into_response(),
+        Ok(None) => Json(WVPResult::<serde_json::Value>::error(format!(
+            "通道不存在: {id}"
+        )))
+        .into_response(),
+        Err(e) => {
+            tracing::error!("channel/raw 查询失败 id={}: {}", id, e);
+            Json(WVPResult::<serde_json::Value>::error(format!(
+                "查询通道失败: {e}"
+            )))
+            .into_response()
+        }
+    }
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct ChannelRawQuery {
+    #[serde(default, deserialize_with = "crate::serde_flex::de_opt_i64")]
+    pub id: Option<i64>,
+}
+
+/// `GET /api/device/query/alarm` —— **向设备查询当前报警**（不是 DB 历史列表）。
+///
+/// 支持 WVP 的全部过滤条件：报警级别区间 / 报警方式 / 报警类型 / 时间区间。
+pub async fn device_alarm_query(
+    State(state): State<AppState>,
+    Query(q): Query<DeviceAlarmQuery>,
+) -> impl IntoResponse {
+    let device_id = q.device_id.clone().unwrap_or_default();
+    if device_id.is_empty() {
+        return Json(WVPResult::<serde_json::Value>::error("deviceId 必须存在")).into_response();
+    }
+    let Some(ref sip_server) = state.sip_server else {
+        return Json(WVPResult::<serde_json::Value>::error("SIP server not available"))
+            .into_response();
+    };
+    let server = &**sip_server;
+    if !server.is_device_online(&device_id).await {
+        return Json(WVPResult::<serde_json::Value>::error(format!(
+            "设备不在线: {device_id}"
+        )))
+        .into_response();
+    }
+
+    let sn = chrono::Utc::now().timestamp_millis() as u32;
+    let commander = server.device_commander();
+    let (req, rx) = commander.register_alarm_query_with_receiver(&device_id, sn);
+    if let Err(e) = server
+        .send_alarm_query(
+            &device_id,
+            q.start_priority.as_deref(),
+            q.end_priority.as_deref(),
+            q.alarm_method.as_deref(),
+            q.alarm_type.as_deref(),
+            q.start_time.as_deref(),
+            q.end_time.as_deref(),
+            sn,
+        )
+        .await
+    {
+        tracing::error!("报警查询下发失败 device={}: {}", device_id, e);
+        return Json(WVPResult::<serde_json::Value>::error(format!(
+            "下发报警查询失败: {e}"
+        )))
+        .into_response();
+    }
+
+    match commander.await_response(req, rx, 15).await {
+        Ok(xml) => Json(WVPResult::success(serde_json::json!({
+            "deviceId": device_id,
+            "sn": sn,
+            "xml": xml,
+            "alarms": parse_alarm_list(&xml),
+            "source": "live",
+        })))
+        .into_response(),
+        Err(_) => Json(WVPResult::<serde_json::Value>::error(
+            "设备未在 15 秒内应答报警查询",
+        ))
+        .into_response(),
+    }
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct DeviceAlarmQuery {
+    #[serde(alias = "deviceId")]
+    pub device_id: Option<String>,
+    #[serde(alias = "startPriority")]
+    pub start_priority: Option<String>,
+    #[serde(alias = "endPriority")]
+    pub end_priority: Option<String>,
+    #[serde(alias = "alarmMethod")]
+    pub alarm_method: Option<String>,
+    #[serde(alias = "alarmType")]
+    pub alarm_type: Option<String>,
+    #[serde(alias = "startTime")]
+    pub start_time: Option<String>,
+    #[serde(alias = "endTime")]
+    pub end_time: Option<String>,
+}
+
+/// 解析设备应答里的 `<AlarmList>` 各 `<Item>`（GB/T 28181 A.2.4.4）。
+pub fn parse_alarm_list(xml: &str) -> Vec<serde_json::Value> {
+    use crate::sip::gb28181::xml_parser::XmlParser;
+    let mut out = Vec::new();
+    let mut rest = xml;
+    while let Some(start) = rest.find("<Item>") {
+        let after = &rest[start + "<Item>".len()..];
+        let Some(end) = after.find("</Item>") else {
+            break;
+        };
+        let item = &after[..end];
+        let mut obj = serde_json::Map::new();
+        for tag in [
+            "DeviceID",
+            "AlarmPriority",
+            "AlarmMethod",
+            "AlarmTime",
+            "AlarmDescription",
+            "Longitude",
+            "Latitude",
+        ] {
+            if let Some(v) = XmlParser::find_first_element(item, tag) {
+                obj.insert(tag.to_string(), serde_json::Value::String(v));
+            }
+        }
+        out.push(serde_json::Value::Object(obj));
+        rest = &after[end + "</Item>".len()..];
+    }
+    out
+}
+
+#[cfg(test)]
+mod wvp_compat_tests {
+    use super::*;
+
+    /// 设备应答里的 AlarmList 必须逐条解析出来（WVP `deviceService.alarm` 的形状）。
+    #[test]
+    fn parse_alarm_list_extracts_items() {
+        let xml = r#"<?xml version="1.0"?>
+<Response>
+<CmdType>Alarm</CmdType>
+<SN>123</SN>
+<DeviceID>34020000001320000001</DeviceID>
+<AlarmList Num="2">
+<Item>
+<DeviceID>34020000001320000001</DeviceID>
+<AlarmPriority>1</AlarmPriority>
+<AlarmMethod>5</AlarmMethod>
+<AlarmTime>2026-09-13T07:00:00</AlarmTime>
+<AlarmDescription>移动侦测</AlarmDescription>
+</Item>
+<Item>
+<AlarmPriority>2</AlarmPriority>
+<AlarmMethod>2</AlarmMethod>
+<AlarmTime>2026-09-13T07:01:00</AlarmTime>
+</Item>
+</AlarmList>
+</Response>"#;
+        let items = parse_alarm_list(xml);
+        assert_eq!(items.len(), 2, "{items:?}");
+        assert_eq!(items[0]["AlarmPriority"], "1");
+        assert_eq!(items[0]["AlarmMethod"], "5");
+        assert_eq!(items[0]["AlarmDescription"], "移动侦测");
+        assert_eq!(items[1]["AlarmPriority"], "2");
+        // 第二条没写 DeviceID，不应凭空造一个
+        assert!(items[1].get("DeviceID").is_none(), "{:?}", items[1]);
+    }
+
+    #[test]
+    fn parse_alarm_list_empty_is_empty() {
+        assert!(parse_alarm_list("<Response></Response>").is_empty());
+        assert!(parse_alarm_list("").is_empty());
+    }
+
+    /// WVP 的查询参数风格 DTO（camelCase + 数字型 id）都必须能反序列化。
+    #[test]
+    fn wvp_query_dtos_accept_frontend_shapes() {
+        let q: DeviceIdQuery = serde_json::from_value(serde_json::json!({"deviceId": "d"})).unwrap();
+        assert_eq!(q.device_id.as_deref(), Some("d"));
+
+        let q: DeviceChannelQuery =
+            serde_json::from_value(serde_json::json!({"deviceId": "d", "channelId": "c"})).unwrap();
+        assert_eq!(q.device_id.as_deref(), Some("d"));
+        assert_eq!(q.channel_id.as_deref(), Some("c"));
+
+        let q: ChannelRawQuery = serde_json::from_value(serde_json::json!({"id": 7})).unwrap();
+        assert_eq!(q.id, Some(7));
+        let q: ChannelRawQuery = serde_json::from_value(serde_json::json!({"id": "7"})).unwrap();
+        assert_eq!(q.id, Some(7));
+
+        let q: DeviceAlarmQuery = serde_json::from_value(serde_json::json!({
+            "deviceId": "d", "startPriority": "1", "endPriority": "4",
+            "alarmMethod": "5", "alarmType": "1",
+            "startTime": "2026-09-13T00:00:00", "endTime": "2026-09-13T23:59:59"
+        }))
+        .unwrap();
+        assert_eq!(q.start_priority.as_deref(), Some("1"));
+        assert_eq!(q.alarm_method.as_deref(), Some("5"));
+        assert_eq!(q.end_time.as_deref(), Some("2026-09-13T23:59:59"));
+    }
+}

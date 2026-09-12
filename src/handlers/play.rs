@@ -1,4 +1,4 @@
-use axum::{extract::Path, Json, extract::State};
+use axum::{extract::Path, extract::Query, extract::State, Json};
 use crate::response::WVPResult;
 use crate::AppState;
 use crate::db::device as db_device;
@@ -732,4 +732,67 @@ mod share_token_tests {
         assert!(expires > now);
         assert_eq!(expires - now, 3600);
     }
+}
+
+/// `POST /api/play/convertStop/{key}`（WVP `PlayController.playConvertStop`）
+///
+/// 停止并删除一个 ffmpeg 转码/转推源：`key` 是 `addFFmpegSource` 返回的键。
+/// 此前该端点未挂载，转码流停止时 ZLM 会一直重试拉流。
+pub async fn play_convert_stop(
+    State(state): State<AppState>,
+    axum::extract::Path(key): axum::extract::Path<String>,
+    Query(q): Query<ConvertStopQuery>,
+) -> Json<WVPResult<serde_json::Value>> {
+    let media_server_id = q.media_server_id.clone().unwrap_or_default();
+    // WVP 要求显式给 mediaServerId；缺省时按"所有节点都试一遍"更实用，
+    // 但要在响应里说清楚是哪个节点删掉的。
+    let clients: Vec<(String, std::sync::Arc<crate::zlm::ZlmClient>)> = if media_server_id
+        .is_empty()
+    {
+        state
+            .zlm_clients
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
+    } else {
+        match state.zlm_clients.get(&media_server_id) {
+            Some(c) => vec![(media_server_id.clone(), c.clone())],
+            None => {
+                return Json(WVPResult::error(format!(
+                    "流媒体不存在: {media_server_id}"
+                )))
+            }
+        }
+    };
+    if clients.is_empty() {
+        return Json(WVPResult::error("没有可用的流媒体节点"));
+    }
+
+    let mut errors = Vec::new();
+    for (id, client) in &clients {
+        match client.del_ffmpeg_source(&key).await {
+            Ok(_) => {
+                tracing::info!("convertStop: 已删除 ffmpeg 源 key={} node={}", key, id);
+                return Json(WVPResult::success(serde_json::json!({
+                    "key": key,
+                    "mediaServerId": id,
+                    "deleted": true,
+                })));
+            }
+            Err(e) => {
+                tracing::warn!("convertStop: 节点 {} 删除失败: {}", id, e);
+                errors.push(format!("{id}: {e}"));
+            }
+        }
+    }
+    Json(WVPResult::error(format!(
+        "删除 ffmpeg 源失败: {}",
+        errors.join("; ")
+    )))
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+pub struct ConvertStopQuery {
+    #[serde(alias = "mediaServerId")]
+    pub media_server_id: Option<String>,
 }

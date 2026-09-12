@@ -653,6 +653,27 @@ impl ZlmClient {
         Ok(resp.data.map(|r| r.key).unwrap_or_default())
     }
 
+    /// 删除一个 ffmpeg 拉流/转码源（ZLM `/index/api/delFFmpegSource`）。
+    ///
+    /// WVP 的 `POST /api/play/convertStop/{key}` 就是它：转码/转推的流停止时
+    /// 必须把 ffmpeg 源删掉，否则 ZLM 会一直重试拉流。
+    pub async fn del_ffmpeg_source(&self, key: &str) -> Result<()> {
+        let params = vec![
+            ("secret", self.secret.clone()),
+            ("key", key.to_string()),
+        ];
+        let resp: ApiResponse<serde_json::Value> =
+            self.request("/index/api/delFFmpegSource", &params).await?;
+        if resp.code != 0 {
+            return Err(anyhow!(
+                "ZLM error: {} - {}",
+                resp.code,
+                resp.msg.unwrap_or_default()
+            ));
+        }
+        Ok(())
+    }
+
     /// 下发并**回读验证**：ZLM 各版本键名不同（例如 master 用
     /// `rtp_proxy.port_range`，旧版用 `rtp.port_range`），不存在的键
     /// `setServerConfig` 会返回 `code:0` 但什么也不做 —— 静默无效最难排查。

@@ -4970,6 +4970,61 @@ f=v/1/96/1/2/1/1/0
         .await
     }
 
+    /// 发送"设备当前报警查询"（GB/T 28181 A.2.4.4）。
+    ///
+    /// 与 DB 里的 `/api/alarm/list`（历史告警列表）**不是**一回事：这里真的向
+    /// 设备下发 `<Query><CmdType>Alarm</CmdType>`，可选携带
+    /// 报警级别区间 / 报警方式 / 报警类型 / 时间区间过滤条件，
+    /// 设备回的 `Response/AlarmList` 由调用方解析。
+    #[allow(clippy::too_many_arguments)]
+    pub async fn send_alarm_query(
+        &self,
+        device_id: &str,
+        start_priority: Option<&str>,
+        end_priority: Option<&str>,
+        alarm_method: Option<&str>,
+        alarm_type: Option<&str>,
+        start_time: Option<&str>,
+        end_time: Option<&str>,
+        sn: u32,
+    ) -> Result<()> {
+        let sn = if sn == 0 {
+            chrono::Utc::now().timestamp() as u32
+        } else {
+            sn
+        };
+        let mut extra = String::new();
+        let mut push = |tag: &str, v: Option<&str>| {
+            if let Some(v) = v.map(str::trim).filter(|s| !s.is_empty()) {
+                extra.push_str(&format!("<{tag}>{v}</{tag}>\n"));
+            }
+        };
+        push("StartPriority", start_priority);
+        push("EndPriority", end_priority);
+        push("AlarmMethod", alarm_method);
+        push("AlarmType", alarm_type);
+        push("StartTime", start_time);
+        push("EndTime", end_time);
+
+        let body = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<Query>
+<CmdType>Alarm</CmdType>
+<SN>{}</SN>
+<DeviceID>{}</DeviceID>
+{}</Query>"#,
+            sn, device_id, extra
+        );
+
+        self.send_message_to_device(
+            device_id,
+            SipMethod::Message,
+            Some(&body),
+            Some("Application/MANSCDP+xml"),
+        )
+        .await
+    }
+
     /// 发送 DeviceStatus 查询。`sn` 语义同 [`Self::send_device_info_query`]。
     pub async fn send_device_status_query(&self, device_id: &str, sn: u32) -> Result<()> {
         let sn = if sn == 0 { chrono::Utc::now().timestamp() as u32 } else { sn };

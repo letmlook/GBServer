@@ -934,3 +934,287 @@ mod control_element_tests {
         assert_eq!(dz.length_y, Some(4));
     }
 }
+
+// ============================================================================
+// WVP `DeviceConfig.java` 端点：设备配置的查询与下发。
+//
+// WVP 用一组语义化路径（而非本平台早期的 `?configType=`）：
+//   GET /api/device/config/query/{basicParam,videoParamOpt,svacEncodeConfig,svacDecodeConfig}
+//   GET /api/device/config/set/{basicParam,videoParamOpt}
+// 前端（WVP 的通道/设备配置弹窗）直接按这些路径调用，此前全部 404。
+// 返回值按 WVP 的形状给出**解析后的字段**（同时保留原始 XML，便于排查）。
+// ============================================================================
+
+/// 从 ConfigDownload 应答 XML 里抽出基本配置字段。
+pub(crate) fn parse_basic_param_xml(xml: &str) -> serde_json::Value {
+    use crate::sip::gb28181::xml_parser::XmlParser;
+    let mut obj = serde_json::Map::new();
+    for tag in [
+        "Name",
+        "Manufacturer",
+        "Model",
+        "Firmware",
+        "Expiration",
+        "HeartBeatInterval",
+        "HeartBeatCount",
+        "ConfigType",
+    ] {
+        if let Some(v) = XmlParser::find_first_element(xml, tag) {
+            obj.insert(tag.to_string(), serde_json::Value::String(v));
+        }
+    }
+    serde_json::Value::Object(obj)
+}
+
+/// 从 ConfigDownload 应答 XML 里抽出视频参数（`<VideoParamOpt>`）。
+pub(crate) fn parse_video_param_xml(xml: &str) -> serde_json::Value {
+    use crate::sip::gb28181::xml_parser::XmlParser;
+    let mut obj = serde_json::Map::new();
+    for tag in ["Resolution", "DownloadSpeed", "VideoFormat"] {
+        if let Some(v) = XmlParser::find_first_element(xml, tag) {
+            obj.insert(tag.to_string(), serde_json::Value::String(v));
+        }
+    }
+    serde_json::Value::Object(obj)
+}
+
+/// 统一的 WVP 配置查询实现：`config_type` 是国标 ConfigType
+/// （BasicParam / VideoParamOpt / SVACEncodeConfig / SVACDecodeConfig）。
+pub(crate) async fn wvp_config_query(
+    state: &AppState,
+    device_id: &str,
+    channel_id: Option<&str>,
+    config_type: &str,
+) -> Json<WVPResult<serde_json::Value>> {
+    if device_id.trim().is_empty() {
+        return Json(WVPResult::error("deviceId 必须存在"));
+    }
+    let raw = query_config_and_wait(state, device_id, config_type).await;
+    // 设备没应答（离线/超时/发送失败）时如实返回错误原因，不要假装查到了配置
+    if let Some(status) = raw.get("status").and_then(|v| v.as_str()) {
+        let msg = raw
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or(status);
+        return Json(WVPResult::error(format!("查询设备配置失败: {msg}")));
+    }
+    let xml = raw.get("xml").and_then(|v| v.as_str()).unwrap_or("");
+    let parsed = match config_type {
+        "BasicParam" => parse_basic_param_xml(xml),
+        "VideoParamOpt" => parse_video_param_xml(xml),
+        _ => serde_json::json!({}),
+    };
+    let mut data = serde_json::json!({
+        "deviceId": device_id,
+        "channelId": channel_id,
+        "configType": config_type,
+        "xml": xml,
+        "source": raw.get("source").cloned().unwrap_or(serde_json::json!("live")),
+    });
+    if let (Some(dst), Some(src)) = (data.as_object_mut(), parsed.as_object()) {
+        for (k, v) in src {
+            dst.insert(k.clone(), v.clone());
+        }
+    }
+    Json(WVPResult::success(data))
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct WvpConfigQuery {
+    #[serde(alias = "deviceId")]
+    pub device_id: Option<String>,
+    #[serde(alias = "channelId")]
+    pub channel_id: Option<String>,
+}
+
+pub async fn wvp_config_query_basic_param(
+    State(state): State<AppState>,
+    Query(q): Query<WvpConfigQuery>,
+) -> Json<WVPResult<serde_json::Value>> {
+    let device_id = q.device_id.clone().unwrap_or_default();
+    wvp_config_query(&state, &device_id, q.channel_id.as_deref(), "BasicParam").await
+}
+
+pub async fn wvp_config_query_video_param(
+    State(state): State<AppState>,
+    Query(q): Query<WvpConfigQuery>,
+) -> Json<WVPResult<serde_json::Value>> {
+    let device_id = q.device_id.clone().unwrap_or_default();
+    wvp_config_query(&state, &device_id, q.channel_id.as_deref(), "VideoParamOpt").await
+}
+
+pub async fn wvp_config_query_svac_encode(
+    State(state): State<AppState>,
+    Query(q): Query<WvpConfigQuery>,
+) -> Json<WVPResult<serde_json::Value>> {
+    let device_id = q.device_id.clone().unwrap_or_default();
+    wvp_config_query(&state, &device_id, q.channel_id.as_deref(), "SVACEncodeConfig").await
+}
+
+pub async fn wvp_config_query_svac_decode(
+    State(state): State<AppState>,
+    Query(q): Query<WvpConfigQuery>,
+) -> Json<WVPResult<serde_json::Value>> {
+    let device_id = q.device_id.clone().unwrap_or_default();
+    wvp_config_query(&state, &device_id, q.channel_id.as_deref(), "SVACDecodeConfig").await
+}
+
+/// `GET /api/device/config/set/basicParam` 的查询参数（WVP `BasicParam`）。
+#[derive(Debug, Default, Deserialize)]
+pub struct BasicParamQuery {
+    #[serde(alias = "deviceId")]
+    pub device_id: Option<String>,
+    pub name: Option<String>,
+    #[serde(default, deserialize_with = "crate::serde_flex::de_opt_string")]
+    pub expiration: Option<String>,
+    #[serde(alias = "heartBeatInterval", default, deserialize_with = "crate::serde_flex::de_opt_string")]
+    pub heart_beat_interval: Option<String>,
+    #[serde(alias = "heartBeatCount", default, deserialize_with = "crate::serde_flex::de_opt_string")]
+    pub heart_beat_count: Option<String>,
+}
+
+/// 基本配置下发的控制元素（WVP `deviceBasicConfigCmd`：只发非空项）。
+pub(crate) fn build_basic_param_set_element(q: &BasicParamQuery) -> String {
+    let mut xml = String::from("<BasicParam>");
+    if let Some(v) = q.name.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        xml.push_str(&format!("\n<Name>{}</Name>", v));
+    }
+    if let Some(v) = q
+        .expiration
+        .as_deref()
+        .and_then(|s| s.trim().parse::<i64>().ok())
+        .filter(|n| *n > 0)
+    {
+        xml.push_str(&format!("\n<Expiration>{}</Expiration>", v));
+    }
+    if let Some(v) = q
+        .heart_beat_interval
+        .as_deref()
+        .and_then(|s| s.trim().parse::<i64>().ok())
+        .filter(|n| *n > 0)
+    {
+        xml.push_str(&format!("\n<HeartBeatInterval>{}</HeartBeatInterval>", v));
+    }
+    if let Some(v) = q
+        .heart_beat_count
+        .as_deref()
+        .and_then(|s| s.trim().parse::<i64>().ok())
+        .filter(|n| *n > 0)
+    {
+        xml.push_str(&format!("\n<HeartBeatCount>{}</HeartBeatCount>", v));
+    }
+    xml.push_str("\n</BasicParam>");
+    xml
+}
+
+/// `GET /api/device/config/set/videoParamOpt` 的查询参数。
+#[derive(Debug, Default, Deserialize)]
+pub struct VideoParamOptQuery {
+    #[serde(alias = "deviceId")]
+    pub device_id: Option<String>,
+    pub resolution: Option<String>,
+    #[serde(alias = "downloadSpeed", default, deserialize_with = "crate::serde_flex::de_opt_string")]
+    pub download_speed: Option<String>,
+}
+
+pub(crate) fn build_video_param_set_element(q: &VideoParamOptQuery) -> String {
+    let mut xml = String::from("<VideoParamOpt>");
+    if let Some(v) = q.resolution.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        xml.push_str(&format!("\n<Resolution>{}</Resolution>", v));
+    }
+    if let Some(v) = q
+        .download_speed
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        xml.push_str(&format!("\n<DownloadSpeed>{}</DownloadSpeed>", v));
+    }
+    xml.push_str("\n</VideoParamOpt>");
+    xml
+}
+
+pub async fn wvp_config_set_basic_param(
+    State(state): State<AppState>,
+    Query(q): Query<BasicParamQuery>,
+) -> Json<WVPResult<serde_json::Value>> {
+    let device_id = q.device_id.clone().unwrap_or_default();
+    if device_id.trim().is_empty() {
+        return Json(WVPResult::error("设备ID必须存在"));
+    }
+    let element = build_basic_param_set_element(&q);
+    // WVP 对 BasicParam 一律用**设备编码**（源码注释：大华必须用设备 ID）
+    send_control_element_with_type(
+        &state,
+        &device_id,
+        &device_id,
+        "DeviceConfig",
+        &element,
+        serde_json::json!({ "configType": "BasicParam" }),
+    )
+    .await
+}
+
+pub async fn wvp_config_set_video_param(
+    State(state): State<AppState>,
+    Query(q): Query<VideoParamOptQuery>,
+) -> Json<WVPResult<serde_json::Value>> {
+    let device_id = q.device_id.clone().unwrap_or_default();
+    if device_id.trim().is_empty() {
+        return Json(WVPResult::error("设备ID必须存在"));
+    }
+    let element = build_video_param_set_element(&q);
+    send_control_element_with_type(
+        &state,
+        &device_id,
+        &device_id,
+        "DeviceConfig",
+        &element,
+        serde_json::json!({ "configType": "VideoParamOpt" }),
+    )
+    .await
+}
+
+/// 与 [`send_control_element`] 相同，但允许指定 `CmdType`
+/// （设备配置下发用 `DeviceConfig` 而不是 `DeviceControl`）。
+pub(crate) async fn send_control_element_with_type(
+    state: &AppState,
+    device_id: &str,
+    channel_id: &str,
+    cmd_type: &str,
+    element: &str,
+    extra: serde_json::Value,
+) -> Json<WVPResult<serde_json::Value>> {
+    if device_id.is_empty() {
+        return Json(WVPResult::error("device_id is required"));
+    }
+    let Some(ref sip_server) = state.sip_server else {
+        return Json(WVPResult::error("SIP server not available"));
+    };
+    let server = &**sip_server;
+    let Some(device) = server.device_manager().get(device_id).await else {
+        return Json(WVPResult::error(format!("设备不存在或未注册: {device_id}")));
+    };
+    if !device.online || device.addr.is_none() {
+        return Json(WVPResult::error(format!("设备不在线: {device_id}")));
+    }
+    if let Err(e) = server
+        .send_device_control(device_id, channel_id, cmd_type, element)
+        .await
+    {
+        tracing::error!("{cmd_type} 下发失败 device={}: {}", device_id, e);
+        return Json(WVPResult::error(format!("命令发送失败: {e}")));
+    }
+    let mut data = serde_json::json!({
+        "deviceId": device_id,
+        "channelId": channel_id,
+        "result": "command sent",
+        "xml": element,
+    });
+    if let (Some(obj), Some(extra_obj)) = (data.as_object_mut(), extra.as_object()) {
+        for (k, v) in extra_obj {
+            obj.insert(k.clone(), v.clone());
+        }
+    }
+    Json(WVPResult::success(data))
+}

@@ -30,6 +30,8 @@ pub enum PendingCmdType {
     RecordInfo,
     /// 查询移动位置
     MobilePosition,
+    /// 查询设备当前报警（`<Query><CmdType>Alarm</CmdType>`，A.2.4.4）
+    Alarm,
     /// 通用 SIP MESSAGE
     GenericMessage,
 }
@@ -43,6 +45,7 @@ impl PendingCmdType {
             PendingCmdType::Catalog => "Catalog",
             PendingCmdType::RecordInfo => "RecordInfo",
             PendingCmdType::MobilePosition => "MobilePosition",
+            PendingCmdType::Alarm => "Alarm",
             PendingCmdType::GenericMessage => "Message",
         }
     }
@@ -801,6 +804,8 @@ impl ResponseRouter {
             "Catalog" => Some(PendingCmdType::Catalog),
             "RecordInfo" => Some(PendingCmdType::RecordInfo),
             "MobilePosition" => Some(PendingCmdType::MobilePosition),
+            // 设备对报警查询的应答同样是 `Response/CmdType=Alarm`
+            "Alarm" => Some(PendingCmdType::Alarm),
             _ => None,
         };
 

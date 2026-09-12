@@ -217,6 +217,19 @@ impl DeviceCommander {
         )
     }
 
+    /// 注册设备报警查询（`<Query><CmdType>Alarm</CmdType>`）并保留 receiver。
+    ///
+    /// 与其它查询一样，SN 必须"登记即所发"：设备应答里回显的 SN 是
+    /// Call-ID 不一致时唯一的关联依据。
+    pub fn register_alarm_query_with_receiver(
+        &self, device_id: &str, sn: u32,
+    ) -> (PendingRequest, tokio::sync::oneshot::Receiver<String>) {
+        let call_id = format!("al_{}_{}", device_id, sn);
+        self.pending.register_with_receiver(
+            device_id, sn, PendingCmdType::Alarm, &call_id, None,
+        )
+    }
+
     /// 等待 receiver 响应（带超时）
     pub async fn await_response(
         &self,

@@ -10,9 +10,9 @@
 | 维度 | 数值 | 验证方式 |
 |------|------|----------|
 | 总代码量（src/） | 79,179 行 Rust | `find src -name '*.rs' \| xargs wc -l` |
-| 已注册 HTTP 路由 | 386 条唯一 `/api/...` 路径 | `grep -oE '"/api/[^"]*"' src/router.rs \| sort -u \| wc -l` |
+| 已注册 HTTP 路由 | 418 条唯一 `/api/...` 路径 | `grep -oE '"/api/[^"]*"' src/router.rs \| sort -u \| wc -l` |
 | Handler 模块 | 29 个（含 `stub.rs` / `device_stub.rs` 两个兼容 shim） | `grep -c 'pub mod' src/handlers/mod.rs` |
-| 后端测试 | **735 通过 / 0 失败**（第五十六轮刷新） | `cargo test` |
+| 后端测试 | **738 通过 / 0 失败**（第五十七轮刷新） | `cargo test` |
 | 编译状态 | `cargo check` 0 error / **0 warning**；clippy 262；**deprecated 0** | `cargo check` / `cargo clippy --all-targets` |
 | 数据库 feature | SQLite（默认）/ PostgreSQL / MySQL **三者均编译通过** | CI `feature-matrix` job |
 | CI | ⏸️ 工作流已就绪但**按需暂停自动触发**（见 `.github/workflows/ci.yml`） | — |
@@ -2843,6 +2843,84 @@ WVP DeviceControl 端点            ✅ teleboot/reset_alarm/i_frame/home_positi
 批量控制                          ✅ 四个命令各发各的（此前三个按钮同发目录查询）
 ```
 
+### WVP 控制器端点全量对照：又补 20 个真实端点（2026-09-13 第五十七轮）
+
+把 WVP-PRO 的 19 个核心控制器源码（`DeviceQuery` / `DeviceConfig` / `GBRecord` /
+`MobilePosition` / `PlayController` / `PlaybackController` / `PtzController` /
+`ChannelController` / `ChannelFrontEndController` / `GroupController` /
+`RegionController` / `MediaController` / `PlatformController` / `StreamProxyController` /
+`StreamPushController` / `web/Api*`）**用脚本抽出全部 `@*Mapping`**（剔除注释掉的），
+再与本仓库 `router.rs` 的路由做归一化比对（`{x}` 与 `:x` 视为同一占位符）。
+
+结果：**34 条 WVP 端点没有对应路由**，其中 11 条属 LiveGBS 兼容的 `/api/v1/*`
+（本仓库已明确不在范围内），1 条是脚本拼接假象（`/api/pushupload`），
+**其余 22 条全部补齐**：
+
+| 分组 | 补齐的端点 |
+|---|---|
+| 设备查询 | `/api/device/query/devices/{deviceId}/status`、`/api/device/query/info?deviceId=`、`/api/device/query/{deviceId}/sync_status`、`/api/device/query/snap/{deviceId}/{channelId}`、`/api/device/query/channel/raw?id=`、`/api/device/query/alarm` |
+| 设备配置 | `/api/device/config/query/{basicParam,videoParamOpt,svacEncodeConfig,svacDecodeConfig}`、`/api/device/config/set/{basicParam,videoParamOpt}` |
+| 通用通道 | `/api/common/channel/talk/{start,stop}`、`/api/common/channel/broadcast/{start,stop}`、`/api/common/channel/front-end/{home_position,drag_zoom_in,drag_zoom_out}` |
+| 播放 | `/api/play/ssrc?deviceId=&channelId=`、`/api/play/snap?deviceId=&channelId=`、`POST /api/play/convertStop/{key}` |
+
+**不是简单挂个路由**，每条都按 WVP 的语义做实事：
+
+* **`/api/device/query/alarm` 是"向设备查询当前报警"**，与 DB 里的
+  `/api/alarm/list`（历史告警）完全不同：真的下发
+  `<Query><CmdType>Alarm</CmdType>` 并带
+  `StartPriority/EndPriority/AlarmMethod/AlarmType/StartTime/EndTime` 过滤。
+  为此新增 `PendingCmdType::Alarm`（响应路由识别 `CmdType=Alarm`）、
+  `register_alarm_query_with_receiver`、`SipServer::send_alarm_query`，
+  以及 `<AlarmList><Item>` 的逐条解析（`parse_alarm_list`）。
+* **设备配置查询**返回**解析后的字段**（BasicParam 的
+  Name/Manufacturer/Model/Firmware/Expiration/HeartBeatInterval/HeartBeatCount、
+  VideoParamOpt 的 Resolution/DownloadSpeed），同时保留原始 XML；
+  设备离线/超时**如实报错**而不是回一个空配置。
+* **设备配置下发**按国标 `<CmdType>DeviceConfig</CmdType>` +
+  `<BasicParam>`/`<VideoParamOpt>`（WVP `deviceBasicConfigCmd` 只发非空项；
+  BasicParam 的 DeviceID 用**设备编码** —— WVP 源码注明"大华必须用设备 ID"）。
+* **通道路径版对讲/喊话**（`?channelId=` 是通道主键）复用
+  `send_talk_invite/bye`、`send_broadcast_invite/bye`，与国标编码版行为一致
+  （对讲同样等设备 200 OK 再返回，避免前端 WS 抢跑）。
+* **`convertStop`** 真的调 ZLM `delFFmpegSource`（新增
+  `ZlmClient::del_ffmpeg_source`）：不删的话 ZLM 会一直重试拉流。
+* `channel/raw` 需要按**主键**取通道行 —— 本仓库此前没有这个查询，
+  新增 `db::device::get_channel_by_id`（三种方言）。
+
+**实测**（真实服务 + 假设备）：
+
+```
+/device/query/alarm?deviceId=…&startPriority=1&endPriority=4
+  → {"alarms":[{"AlarmPriority":"1","AlarmMethod":"5","AlarmDescription":"mock 移动侦测"},
+                {"AlarmPriority":"2","AlarmMethod":"2",…}],"source":"live"}
+/device/config/set/basicParam?name=Cam-1&expiration=3600&heartBeatInterval=60
+  → 假设备: DeviceConfig 收到: Name=Cam-1 Expiration=3600 HeartBeatInterval=60
+/device/config/set/videoParamOpt?resolution=1920x1080&downloadSpeed=4
+  → 假设备: DeviceConfig 收到: Resolution=1920x1080 DownloadSpeed=4
+/common/channel/talk/start?channelId=1 → status=active, BYE 校验 2/2 valid
+/common/channel/front-end/home_position?enabled=true&resetTime=30&presetIndex=2
+  → 假设备: PresetIndex=2 Enabled=1 ResetTime=30 | DeviceID=<通道编码>
+/play/ssrc?deviceId=…&channelId=… → ssrc=0200000001
+```
+
+（假设备新增「报警查询应答」：回一份带两条 `<Item>` 的 `AlarmList`，
+否则该端点只能验证到"15 秒超时"。）
+
+**仍未对齐（有意保留）**：`/api/v1/*` 共 11 条 —— LiveGBS 兼容接口，
+用的是 `sign` 签名鉴权而非本平台的 JWT/API-Key，属另一套集成协议，
+第五十三轮已记录为范围外。
+
+#### 第五十七轮基线
+
+```
+cargo test                       738 passed / 0 failed（+3）
+cargo build --features postgres/mysql  OK
+npx playwright test              66 passed / 0 failed
+dialect_smoke（sqlite/pg/mysql）  仅剩 2 项已记录的"预期为真"项
+WVP 控制器端点对照                34 条缺失 → 22 条已补齐，11 条 LiveGBS 范围外，1 条脚本假象
+/api/… 唯一路由数                 418（第五十六轮为 386 → +32 条路径/别名）
+```
+
 ### 前端↔后端契约审计：**16 个模块 130 条全部修完**（2026-09-12 第三十九轮）
 
 第二十六轮用"一个模块一个 agent"的方式把 16 个前端 API 模块逐个对后端路由/DTO
@@ -3304,6 +3382,7 @@ vue-tsc --noEmit                 通过
 - 2026-09-13 第五十四轮：`cargo test` —— **728 通过 / 0 失败**（远程录像控制取值语义修正（前端发 Record 却下发 StopRecord）、对讲/广播 BYE 改为对话内请求并补 ACK、对讲会话结束即回收、SSRC 与 WVP SSRCFactory 对齐（类型位 4 的 10 位数不再溢出 u32）；新增假设备对讲音频接收器与标准库 WS 探针，实测 SDP `y=` == RTP 包头 SSRC == 4200000001）
 - 2026-09-13 第五十五轮：`cargo test` —— **731 通过 / 0 失败**（`/jt1078/terminal/query?deviceId=` 此前恒返回 null（只读 phoneNumber），现按 手机号→终端号→主键 依次回落并新增按终端号查询的方言 SQL；`/api/platform/delete?serverGBId=` 此前是「一行没删却回删除成功」的假成功，现真正删除、删不到即 404；冒烟脚本补幂等前置清理与 3 条新断言）
 - 2026-09-13 第五十六轮：`cargo test` —— **735 通过 / 0 失败**（对照 WVP `DeviceControl.java`/`DeviceServiceImpl`/`SIPCommander` 源码补齐国标设备控制：teleboot/reset_alarm/i_frame/home_position/drag_zoom 五个端点此前完全未挂载；DeviceConfig 与 Reboot 报文此前嵌套两层 `<Control>` 且元素中间夹 `<?xml?>` 声明（非法 XML）；`send_device_control` 的 `<DeviceID>` 固定填设备号并附非标 `<ChannelID>`；批量控制三个按钮同发目录查询。假设备新增 DeviceConfig 分支与报文结构告警）
+- 2026-09-13 第五十七轮：`cargo test` —— **738 通过 / 0 失败**（用脚本抽出 WVP-PRO 19 个核心控制器的全部 `@*Mapping` 并做归一化比对：34 条缺路由中 22 条真实端点已补齐 —— 设备查询 6 条、设备配置 6 条、通道路径版对讲/喊话/看守位/拉框缩放 7 条、播放 3 条；`/api/device/query/alarm` 是真的向设备下发 `<Query><CmdType>Alarm</CmdType>` 并解析 `<AlarmList>`（新增 PendingCmdType::Alarm 与 send_alarm_query），`convertStop` 真的调 ZLM delFFmpegSource；余 11 条为 LiveGBS `/api/v1/*` 范围外）
 - 2026-09-12 第三十一轮：`cargo test` —— **641 通过 / 0 失败**（JT1078 终端/围栏 13 条）
 - 2026-09-12 第三十轮：`cargo test` —— **637 通过 / 0 失败**（设备页 7 条）
 - 2026-09-12 第二十九轮：`cargo test` —— **634 通过 / 0 失败**（云端录像全链路）

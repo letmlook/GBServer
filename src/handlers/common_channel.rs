@@ -2514,3 +2514,286 @@ mod channel_crud_contract_tests {
         assert!(networks.iter().all(|n| n.get("name").is_some() && n.get("code").is_some()));
     }
 }
+
+// ============================================================================
+// WVP `ChannelController` / `ChannelFrontEndController` 的其余端点
+//
+// 这两个控制器用**通道路径 id**（`?channelId=`，即本平台 `gb_device_channel.id`）
+// 作为入口，与 `/api/talk/start/{deviceId}/{channelId}`、`/api/device/control/*`
+// 那套"国标编码"入口并存。此前只实现了 play/playback/PTZ/预置位等一部分，
+// 对讲、喊话、看守位、拉框缩放在通道路径下完全没挂。
+// ============================================================================
+
+#[derive(Debug, Default, Deserialize)]
+pub struct CommonChannelIdQuery {
+    #[serde(
+        alias = "channelId",
+        default,
+        deserialize_with = "crate::serde_flex::de_opt_i64"
+    )]
+    pub channel_id: Option<i64>,
+}
+
+/// 把通道路径 id 解析成 `(device_id, gb_channel_id)`；失败时返回可直接返回的 JSON。
+#[allow(clippy::result_large_err)]
+async fn resolve_common_channel(
+    state: &AppState,
+    channel_id: i64,
+) -> Result<(String, String), Json<serde_json::Value>> {
+    if channel_id <= 0 {
+        return Err(Json(serde_json::json!({
+            "code": 1,
+            "msg": "参数异常：缺少 channelId",
+        })));
+    }
+    match common_channel::get_by_id(&state.pool, channel_id).await {
+        Ok(Some(ch)) => {
+            let device_id = ch
+                .device_id
+                .clone()
+                .ok_or_else(|| Json(serde_json::json!({ "code": 1, "msg": "通道无设备ID" })))?;
+            let gb_channel_id = ch.gb_device_id.clone().unwrap_or_default();
+            Ok((device_id, gb_channel_id))
+        }
+        Ok(None) => Err(Json(
+            serde_json::json!({ "code": 1, "msg": "通道不存在" }),
+        )),
+        Err(e) => Err(Json(serde_json::json!({
+            "code": 1,
+            "msg": format!("数据库错误: {e}"),
+        }))),
+    }
+}
+
+fn sip_for_common_channel(
+    state: &AppState,
+) -> Result<std::sync::Arc<crate::sip::SipServer>, Json<serde_json::Value>> {
+    state
+        .sip_server
+        .clone()
+        .ok_or_else(|| Json(serde_json::json!({ "code": 1, "msg": "SIP服务未启动" })))
+}
+
+/// GET /api/common/channel/talk/start?channelId=
+pub async fn channel_talk_start(
+    State(state): State<AppState>,
+    Query(q): Query<CommonChannelIdQuery>,
+) -> Json<serde_json::Value> {
+    let (device_id, gb_channel_id) =
+        match resolve_common_channel(&state, q.channel_id.unwrap_or(0)).await {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+    let sip = match sip_for_common_channel(&state) {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
+    match sip.send_talk_invite(&device_id, &gb_channel_id).await {
+        Ok(call_id) => {
+            // 与 `/api/talk/start` 一致：等设备 200 OK，避免前端紧接着连
+            // 语音 WebSocket 时抢在会话激活之前（会吃 404）。
+            let session = sip
+                .talk_manager()
+                .wait_active(&device_id, &gb_channel_id, 8_000)
+                .await;
+            Json(serde_json::json!({
+                "code": 0,
+                "msg": "对讲已建立，可以发送音频",
+                "data": {
+                    "callId": call_id,
+                    "deviceId": device_id,
+                    "channelId": gb_channel_id,
+                    "channelDbId": q.channel_id,
+                    "status": if session.is_some() { "active" } else { "inviting" },
+                    "localPort": session.as_ref().map(|s| s.local_port).unwrap_or(0),
+                    "deviceIp": session.as_ref().map(|s| s.device_ip.clone()).unwrap_or_default(),
+                    "devicePort": session.as_ref().map(|s| s.device_port).unwrap_or(0),
+                }
+            }))
+        }
+        Err(e) => Json(serde_json::json!({ "code": 1, "msg": format!("对讲请求失败: {e}") })),
+    }
+}
+
+/// GET /api/common/channel/talk/stop?channelId=
+pub async fn channel_talk_stop(
+    State(state): State<AppState>,
+    Query(q): Query<CommonChannelIdQuery>,
+) -> Json<serde_json::Value> {
+    let (device_id, gb_channel_id) =
+        match resolve_common_channel(&state, q.channel_id.unwrap_or(0)).await {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+    let sip = match sip_for_common_channel(&state) {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
+    match sip.send_talk_bye(&device_id, &gb_channel_id).await {
+        Ok(_) => Json(serde_json::json!({ "code": 0, "msg": "对讲已停止" })),
+        Err(e) => {
+            // 会话可能已经结束：清掉残留会话并如实说明
+            if let Some(stale) = sip
+                .talk_manager()
+                .get_any_by_device_channel(&device_id, &gb_channel_id)
+                .await
+            {
+                let _ = sip.talk_manager().remove(&stale.call_id).await;
+            }
+            Json(serde_json::json!({ "code": 1, "msg": format!("停止对讲失败: {e}") }))
+        }
+    }
+}
+
+/// GET /api/common/channel/broadcast/start?channelId=
+pub async fn channel_broadcast_start(
+    State(state): State<AppState>,
+    Query(q): Query<CommonChannelIdQuery>,
+) -> Json<serde_json::Value> {
+    let (device_id, gb_channel_id) =
+        match resolve_common_channel(&state, q.channel_id.unwrap_or(0)).await {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+    let sip = match sip_for_common_channel(&state) {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
+    match sip.send_broadcast_invite(&device_id, &gb_channel_id).await {
+        Ok(call_id) => Json(serde_json::json!({
+            "code": 0,
+            "msg": "喊话已开始",
+            "data": {
+                "callId": call_id,
+                "deviceId": device_id,
+                "channelId": gb_channel_id,
+                "channelDbId": q.channel_id,
+            }
+        })),
+        Err(e) => Json(serde_json::json!({ "code": 1, "msg": format!("喊话请求失败: {e}") })),
+    }
+}
+
+/// GET /api/common/channel/broadcast/stop?channelId=
+pub async fn channel_broadcast_stop(
+    State(state): State<AppState>,
+    Query(q): Query<CommonChannelIdQuery>,
+) -> Json<serde_json::Value> {
+    let (device_id, gb_channel_id) =
+        match resolve_common_channel(&state, q.channel_id.unwrap_or(0)).await {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+    let sip = match sip_for_common_channel(&state) {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
+    match sip.send_broadcast_bye(&device_id, &gb_channel_id).await {
+        Ok(_) => Json(serde_json::json!({ "code": 0, "msg": "喊话已停止" })),
+        Err(e) => Json(serde_json::json!({ "code": 1, "msg": format!("停止喊话失败: {e}") })),
+    }
+}
+
+/// `GET /api/common/channel/front-end/home_position?channelId=&enabled=&resetTime=&presetIndex=`
+#[derive(Debug, Default, Deserialize)]
+pub struct CommonChannelHomePositionQuery {
+    #[serde(alias = "channelId", default, deserialize_with = "crate::serde_flex::de_opt_i64")]
+    pub channel_id: Option<i64>,
+    #[serde(default, deserialize_with = "crate::serde_flex::de_opt_bool")]
+    pub enabled: Option<bool>,
+    #[serde(alias = "resetTime", default, deserialize_with = "crate::serde_flex::de_opt_i64")]
+    pub reset_time: Option<i64>,
+    #[serde(alias = "presetIndex", default, deserialize_with = "crate::serde_flex::de_opt_i64")]
+    pub preset_index: Option<i64>,
+}
+
+pub async fn front_end_home_position(
+    State(state): State<AppState>,
+    Query(q): Query<CommonChannelHomePositionQuery>,
+) -> Json<serde_json::Value> {
+    let body = crate::handlers::device_control::build_home_position_element(
+        q.enabled.unwrap_or(false),
+        q.reset_time,
+        q.preset_index,
+    );
+    lookup_channel_and_send(&state, q.channel_id.unwrap_or(0), move |_ch| {
+        (
+            "DeviceControl".to_string(),
+            body.clone(),
+            "看守位设置成功".to_string(),
+        )
+    })
+    .await
+}
+
+/// `GET /api/common/channel/front-end/drag_zoom_{in,out}` 的公共查询参数。
+#[derive(Debug, Default, Deserialize)]
+pub struct CommonChannelDragZoomQuery {
+    #[serde(alias = "channelId", default, deserialize_with = "crate::serde_flex::de_opt_i64")]
+    pub channel_id: Option<i64>,
+    #[serde(default, deserialize_with = "crate::serde_flex::de_opt_i64")]
+    pub length: Option<i64>,
+    #[serde(default, deserialize_with = "crate::serde_flex::de_opt_i64")]
+    pub width: Option<i64>,
+    #[serde(alias = "midPointX", default, deserialize_with = "crate::serde_flex::de_opt_i64")]
+    pub mid_point_x: Option<i64>,
+    #[serde(alias = "midPointY", default, deserialize_with = "crate::serde_flex::de_opt_i64")]
+    pub mid_point_y: Option<i64>,
+    #[serde(alias = "lengthX", default, deserialize_with = "crate::serde_flex::de_opt_i64")]
+    pub length_x: Option<i64>,
+    #[serde(alias = "lengthY", default, deserialize_with = "crate::serde_flex::de_opt_i64")]
+    pub length_y: Option<i64>,
+}
+
+async fn common_channel_drag_zoom(
+    state: &AppState,
+    q: &CommonChannelDragZoomQuery,
+    zoom_in: bool,
+) -> Json<serde_json::Value> {
+    let missing: Vec<&str> = [
+        ("length", q.length),
+        ("width", q.width),
+        ("midPointX", q.mid_point_x),
+        ("midPointY", q.mid_point_y),
+        ("lengthX", q.length_x),
+        ("lengthY", q.length_y),
+    ]
+    .iter()
+    .filter(|(_, v)| v.is_none())
+    .map(|(k, _)| *k)
+    .collect();
+    if !missing.is_empty() {
+        return Json(serde_json::json!({
+            "code": 1,
+            "msg": format!("缺少参数: {}", missing.join(", ")),
+        }));
+    }
+    let body = crate::handlers::device_control::build_drag_zoom_element(
+        zoom_in,
+        q.length.unwrap_or(0),
+        q.width.unwrap_or(0),
+        q.mid_point_x.unwrap_or(0),
+        q.mid_point_y.unwrap_or(0),
+        q.length_x.unwrap_or(0),
+        q.length_y.unwrap_or(0),
+    );
+    let msg = if zoom_in { "拉框放大成功" } else { "拉框缩小成功" };
+    lookup_channel_and_send(state, q.channel_id.unwrap_or(0), move |_ch| {
+        ("DeviceControl".to_string(), body.clone(), msg.to_string())
+    })
+    .await
+}
+
+pub async fn front_end_drag_zoom_in(
+    State(state): State<AppState>,
+    Query(q): Query<CommonChannelDragZoomQuery>,
+) -> Json<serde_json::Value> {
+    common_channel_drag_zoom(&state, &q, true).await
+}
+
+pub async fn front_end_drag_zoom_out(
+    State(state): State<AppState>,
+    Query(q): Query<CommonChannelDragZoomQuery>,
+) -> Json<serde_json::Value> {
+    common_channel_drag_zoom(&state, &q, false).await
+}
