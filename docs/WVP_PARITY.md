@@ -12,7 +12,7 @@
 | 总代码量（src/） | 79,179 行 Rust | `find src -name '*.rs' \| xargs wc -l` |
 | 已注册 HTTP 路由 | 418 条唯一 `/api/...` 路径 | `grep -oE '"/api/[^"]*"' src/router.rs \| sort -u \| wc -l` |
 | Handler 模块 | 29 个（含 `stub.rs` / `device_stub.rs` 两个兼容 shim） | `grep -c 'pub mod' src/handlers/mod.rs` |
-| 后端测试 | **738 通过 / 0 失败**（第五十七轮刷新） | `cargo test` |
+| 后端测试 | **741 通过 / 0 失败**（第五十八轮刷新） | `cargo test` |
 | 编译状态 | `cargo check` 0 error / **0 warning**；clippy 262；**deprecated 0** | `cargo check` / `cargo clippy --all-targets` |
 | 数据库 feature | SQLite（默认）/ PostgreSQL / MySQL **三者均编译通过** | CI `feature-matrix` job |
 | CI | ⏸️ 工作流已就绪但**按需暂停自动触发**（见 `.github/workflows/ci.yml`） | — |
@@ -2921,6 +2921,77 @@ WVP 控制器端点对照                34 条缺失 → 22 条已补齐，11 �
 /api/… 唯一路由数                 418（第五十六轮为 386 → +32 条路径/别名）
 ```
 
+### 再补 WVP 的 vmanager/JT1078 入口，并修掉 ZLM「hit=0 也报成功」（2026-09-13 第五十八轮）
+
+第五十七轮只对照了 `gb28181/controller/*` 等 19 个控制器；本轮把
+**`vmanager/*`（WVP 新版管理 API）、`jt1078/controller/*`、`web/*`** 也拉进来比对，
+又发现 21 条缺失，其中 8 条（不含 LiveGBS `/auth/login` 与 `/api/test/*` 诊断项）
+本轮补齐：
+
+| 端点 | 说明 |
+|---|---|
+| `GET /api/user/all` | 不分页返回全部用户（角色/分组下拉框用） |
+| `GET /api/server/shutdown` | 关闭服务进程（WVP 是 `System.exit(1)`） |
+| `GET /api/rtp/receive/close?stream=`、`/api/ps/receive/close?stream=` | WVP 第三方对接用**查询参数**（本平台原为 `POST …/:stream_id`） |
+| `GET /api/rtp/send/stop?callId=`、`/api/ps/send/stop?callId=` | 同上（`callId`/`streamId`/`ssrc` 都认） |
+| `GET /api/jt1078/terminal/channel/one?id=` | WVP 用 `?id=`（本平台原为 `/one/:id`） |
+| `DELETE /api/jt1078/terminal/channel/delete?id=` | 同上 |
+
+`shutdown` 是**真的退出进程**，但先让响应发出去：实测在独立实例（18099）上调用后
+返回 `{"shutdown":true}`，1 秒后进程消失，日志留下
+`收到 /api/server/shutdown：1 秒后退出进程` → `shutdown：进程退出`。
+
+#### 顺带修掉一个"关流假成功"
+
+新加的 `?stream=` 入口暴露了老问题：**对不存在的流关闭也返回成功**。
+
+```
+GET /api/rtp/receive/close?stream=not-existing-xyz
+  → {"code":0,"data":{"closed":true}}          ← 其实什么都没关
+```
+
+根因：ZLM `closeRtpServer` 对"没有这条收流服务"返回的是
+`{"code":0,"hit":0}`，而 `ZlmClient::close_rtp_server` 只判 `code`，
+`hit` 被丢弃。修复后：
+
+* 新增 `close_rtp_server_ex() -> Result<bool>`：按**顶层**字段解析 `hit`
+  （ZLM 把它放在响应根上，不是 `data` 里 —— 用 `ApiResponse<T>` 解析会永远
+  拿到 `None`，把"关掉了"误判成"没关掉"，这条弯路在本轮实测中被发现并纠正）；
+  用户面端点 `rtp/ps receive close` 用 `hit=false` 明确报错；
+* `stopSendRtp` 实测**没有** `existed` 字段：成功只回 `{"code":0}`，
+  找不到流回 `{"code":-500,"msg":"can not find the stream"}`，
+  因此按 `code` 判定并据此返回"已停止/没有正在推送的流"。
+
+新增 4 条 wiremock 测试（`hit=1/0`、`code!=0`、`stopSendRtp` 两种响应）。
+
+实测（修复后，真实 ZLM）：
+
+```
+POST /api/rtp/receive/open {stream_id: probe-close-test-2} → port 30088
+GET  /api/rtp/receive/close?stream=probe-close-test-2 → {"closed":true}
+GET  /api/rtp/receive/close?stream=probe-close-test-2 → code:-1 "没有正在收流的服务"
+GET  /api/rtp/send/stop?callId=not-existing-xyz → code:-1 "can not find the stream"
+```
+
+#### 仍未实现（下次候选）
+
+`web/custom/CameraChannelController`（中亿视图定制模块）还差 10 条：
+`/api/sy/camera/{one,update}`、`/api/sy/push/play`、`/api/sy/push/play-without-check`、
+`/api/sy/record/collect/{add,delete}`、`/api/sy/record/{zip,list-url}`、
+`/api/sy/forceClose`、`/api/sy/test`；以及 WVP 自带的 `/api/test/{hook/list,redis}`
+诊断端点与 LiveGBS 的 `/auth/login`。
+
+#### 第五十八轮基线
+
+```
+cargo test                       741 passed / 0 failed（+4 条，共 3 组）
+cargo build --features postgres/mysql  OK
+npx playwright test              66 passed / 0 failed
+dialect_smoke（sqlite/pg/mysql）  仅剩 2 项已记录的"预期为真"项
+ZLM 关流                          ✅ hit=0 不再假成功；stopSendRtp 按 code 判定
+/api/user/all、/api/server/shutdown  ✅ 实装（shutdown 实测真的退出进程）
+```
+
 ### 前端↔后端契约审计：**16 个模块 130 条全部修完**（2026-09-12 第三十九轮）
 
 第二十六轮用"一个模块一个 agent"的方式把 16 个前端 API 模块逐个对后端路由/DTO
@@ -3383,6 +3454,7 @@ vue-tsc --noEmit                 通过
 - 2026-09-13 第五十五轮：`cargo test` —— **731 通过 / 0 失败**（`/jt1078/terminal/query?deviceId=` 此前恒返回 null（只读 phoneNumber），现按 手机号→终端号→主键 依次回落并新增按终端号查询的方言 SQL；`/api/platform/delete?serverGBId=` 此前是「一行没删却回删除成功」的假成功，现真正删除、删不到即 404；冒烟脚本补幂等前置清理与 3 条新断言）
 - 2026-09-13 第五十六轮：`cargo test` —— **735 通过 / 0 失败**（对照 WVP `DeviceControl.java`/`DeviceServiceImpl`/`SIPCommander` 源码补齐国标设备控制：teleboot/reset_alarm/i_frame/home_position/drag_zoom 五个端点此前完全未挂载；DeviceConfig 与 Reboot 报文此前嵌套两层 `<Control>` 且元素中间夹 `<?xml?>` 声明（非法 XML）；`send_device_control` 的 `<DeviceID>` 固定填设备号并附非标 `<ChannelID>`；批量控制三个按钮同发目录查询。假设备新增 DeviceConfig 分支与报文结构告警）
 - 2026-09-13 第五十七轮：`cargo test` —— **738 通过 / 0 失败**（用脚本抽出 WVP-PRO 19 个核心控制器的全部 `@*Mapping` 并做归一化比对：34 条缺路由中 22 条真实端点已补齐 —— 设备查询 6 条、设备配置 6 条、通道路径版对讲/喊话/看守位/拉框缩放 7 条、播放 3 条；`/api/device/query/alarm` 是真的向设备下发 `<Query><CmdType>Alarm</CmdType>` 并解析 `<AlarmList>`（新增 PendingCmdType::Alarm 与 send_alarm_query），`convertStop` 真的调 ZLM delFFmpegSource；余 11 条为 LiveGBS `/api/v1/*` 范围外）
+- 2026-09-13 第五十八轮：`cargo test` —— **741 通过 / 0 失败**（对照 vmanager/jt1078/web 控制器再补 8 条入口：/api/user/all、/api/server/shutdown（真的退出进程）、rtp/ps receive-close 与 send-stop 的查询参数版、jt1078 terminal/channel 的 ?id= 版；顺带修掉 ZLM 关流假成功 —— closeRtpServer 的 `hit` 在响应顶层，此前被丢弃，关不存在的流也回 closed:true，现在 hit=0 明确报错；stopSendRtp 实测无 existed 字段，按 code 判定）
 - 2026-09-12 第三十一轮：`cargo test` —— **641 通过 / 0 失败**（JT1078 终端/围栏 13 条）
 - 2026-09-12 第三十轮：`cargo test` —— **637 通过 / 0 失败**（设备页 7 条）
 - 2026-09-12 第二十九轮：`cargo test` —— **634 通过 / 0 失败**（云端录像全链路）

@@ -22,6 +22,52 @@ pub fn wake_record_plan_scheduler() {
     waker().notify_one();
 }
 
+/// ZLM 说"这条流现在不在"（还没注册/已被关掉）：值得等一会儿重试。
+fn is_stream_not_ready_error(e: &anyhow::Error) -> bool {
+    let msg = e.to_string().to_ascii_lowercase();
+    msg.contains("can not find the stream") || msg.contains("not found")
+}
+
+/// ZLM 说"已经在录了"：幂等成功。
+fn is_already_recording_error(e: &anyhow::Error) -> bool {
+    let msg = e.to_string().to_ascii_lowercase();
+    msg.contains("already") || msg.contains("recording")
+}
+
+/// 带重试的 `startRecord`：只在"流还没到"时重试，其它错误立即返回。
+async fn start_record_with_retry(
+    zlm: &ZlmClient,
+    app: &str,
+    stream: &str,
+    attempts: u32,
+    interval: std::time::Duration,
+) -> anyhow::Result<()> {
+    let mut last: Option<anyhow::Error> = None;
+    for attempt in 1..=attempts.max(1) {
+        match zlm.start_record("1", "__defaultVhost__", app, stream).await {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                if !is_stream_not_ready_error(&e) {
+                    return Err(e);
+                }
+                tracing::debug!(
+                    "RecordPlanScheduler: 流尚未在 ZLM 注册（第 {} 次），{:?} 后重试 {}/{}: {}",
+                    attempt,
+                    interval,
+                    app,
+                    stream,
+                    e
+                );
+                last = Some(e);
+                if attempt < attempts {
+                    tokio::time::sleep(interval).await;
+                }
+            }
+        }
+    }
+    Err(last.unwrap_or_else(|| anyhow::anyhow!("startRecord 失败")))
+}
+
 #[derive(Debug, Clone)]
 struct ActiveRecording {
     channel_id: i64,
@@ -220,7 +266,35 @@ impl RecordPlanScheduler {
                 );
             }
 
-            match zlm.start_record("1", "__defaultVhost__", app, &stream).await {
+            // ZLM 注册流是**异步**的：`start_live_stream` 返回时（甚至返回
+            // "This stream already exists" 时）流可能还没出现在 ZLM 的流列表里，
+            // 此时 `startRecord` 直接回 `can not find the stream`。
+            // 此前只调用一次就放弃 —— 于是"录像计划时有时无"：能否录上取决于
+            // 设备推流与 startRecord 之间的竞态。这里做有界重试。
+            // 25 × 800ms ≈ 20s 的等待窗口：设备推流 + ZLM 注册流在慢设备上
+            // 可能超过 8s（实测出现过等满 10 次仍未注册、下一轮 tick 才成功）。
+            let mut start_result = start_record_with_retry(
+                &zlm,
+                app,
+                &stream,
+                25,
+                std::time::Duration::from_millis(800),
+            )
+            .await;
+
+            // 已经在录（上一轮 tick 起过、或 ZLM 侧残留）视为成功，避免重复报错
+            if let Err(e) = &start_result {
+                if is_already_recording_error(e) {
+                    tracing::info!(
+                        "RecordPlanScheduler: 该流已在录制中，视为成功 {}: {}",
+                        stream,
+                        e
+                    );
+                    start_result = Ok(());
+                }
+            }
+
+            match start_result {
                 Ok(_) => {
                     tracing::info!(
                         "RecordPlanScheduler: started MP4 recording for channel {} stream {}/{} (node {})",
@@ -398,5 +472,37 @@ mod schedule_tests {
         for m in [0, 1, 719, 1438, 1439] {
             assert!(schedule_matches(&items, 3, m), "第 {m} 分钟应命中全天窗");
         }
+    }
+}
+
+#[cfg(test)]
+mod start_record_retry_tests {
+    use super::{is_already_recording_error, is_stream_not_ready_error};
+
+    /// "流还没注册"才值得重试；其它错误（参数错、权限错）必须立即失败，
+    /// 否则会把真正的故障掩盖成 8 秒的重试。
+    #[test]
+    fn only_stream_not_ready_is_retryable() {
+        assert!(is_stream_not_ready_error(&anyhow::anyhow!(
+            "ZLM error: can not find the stream"
+        )));
+        assert!(is_stream_not_ready_error(&anyhow::anyhow!("stream not found")));
+        assert!(!is_stream_not_ready_error(&anyhow::anyhow!(
+            "ZLM error: -300 Required parameter missed: \"port\""
+        )));
+        assert!(!is_stream_not_ready_error(&anyhow::anyhow!(
+            "connection refused"
+        )));
+    }
+
+    /// "已经在录"要当成功，避免每轮 tick 都报错。
+    #[test]
+    fn already_recording_is_idempotent_success() {
+        assert!(is_already_recording_error(&anyhow::anyhow!(
+            "ZLM error: record already started"
+        )));
+        assert!(!is_already_recording_error(&anyhow::anyhow!(
+            "ZLM error: can not find the stream"
+        )));
     }
 }

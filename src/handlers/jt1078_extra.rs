@@ -820,3 +820,39 @@ mod field_alias_tests {
         );
     }
 }
+
+// ============================================================================
+// WVP `JT1078TerminalController` 用查询参数（`?id=`）而不是路径参数
+// ============================================================================
+
+#[derive(Debug, Default, Deserialize)]
+pub struct TerminalChannelIdQuery {
+    #[serde(
+        alias = "channelId",
+        default,
+        deserialize_with = "crate::serde_flex::de_opt_i64"
+    )]
+    pub id: Option<i64>,
+}
+
+/// `GET /api/jt1078/terminal/channel/one?id=`
+pub async fn terminal_channel_one_query(
+    State(state): State<AppState>,
+    axum::extract::Query(q): axum::extract::Query<TerminalChannelIdQuery>,
+) -> Json<WVPResult<serde_json::Value>> {
+    match q.id {
+        Some(id) => terminal_channel_one(State(state), Path(id.to_string())).await,
+        None => err("缺少 id 参数"),
+    }
+}
+
+/// `DELETE /api/jt1078/terminal/channel/delete?id=`
+pub async fn terminal_channel_delete_query(
+    State(state): State<AppState>,
+    axum::extract::Query(q): axum::extract::Query<TerminalChannelIdQuery>,
+) -> Json<WVPResult<serde_json::Value>> {
+    match q.id {
+        Some(id) => terminal_channel_delete(State(state), Path(id.to_string())).await,
+        None => err("缺少 id 参数"),
+    }
+}

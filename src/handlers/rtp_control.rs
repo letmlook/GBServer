@@ -57,8 +57,14 @@ pub async fn rtp_receive_close(
     let Some(zlm) = state.zlm_clients.values().next() else {
         return Json(WVPResult::error("no ZLM available"));
     };
-    match zlm.close_rtp_server(&stream_id).await {
-        Ok(()) => Json(WVPResult::success(serde_json::json!({"streamId": stream_id, "closed": true}))),
+    match zlm.close_rtp_server_ex(&stream_id).await {
+        // `hit=0` = ZLM 上没有这条收流服务：如实告知，不报"已关闭"
+        Ok(true) => Json(WVPResult::success(
+            serde_json::json!({"streamId": stream_id, "closed": true}),
+        )),
+        Ok(false) => Json(WVPResult::error(format!(
+            "没有正在收流的服务: stream={stream_id}"
+        ))),
         Err(e) => Json(WVPResult::error(format!("ZLM error: {}", e))),
     }
 }
@@ -175,12 +181,17 @@ pub async fn rtp_send_stop(
         .stop_send_rtp_ex("__defaultVhost__", &app, Some(&stream_id), ssrc.as_deref())
         .await
     {
-        Ok(()) => Json(WVPResult::success(serde_json::json!({
+        // ZLM 的 `existed` 说明这条推流**本来是否存在**：
+        // 为 false 时不能报"已停止"（否则第三方会以为推流被关掉了）
+        Ok(true) => Json(WVPResult::success(serde_json::json!({
             "streamId": stream_id,
             "app": app,
             "ssrc": ssrc,
             "stopped": true,
         }))),
+        Ok(false) => Json(WVPResult::error(format!(
+            "没有正在推送的流: stream={stream_id} app={app}"
+        ))),
         Err(e) => Json(WVPResult::error(format!("ZLM stopSendRtp 失败: {}", e))),
     }
 }
@@ -234,5 +245,112 @@ mod tests {
     #[test]
     fn test_port_zero_is_invalid() {
         assert_ne!(0, 1);
+    }
+}
+
+// ============================================================================
+// WVP 第三方对接（`vmanager/rtp|ps`）的查询参数风格入口
+//
+// WVP 的这一套用 `?stream=`（收流）/ `?callId=`（发流），而本平台的历史实现是
+// `POST /api/rtp/send/stop/{stream_id}` 这种路径参数形式。两套都保留：
+// 第三方按 WVP 文档调用时不再落到 SPA 兜底。
+// ============================================================================
+
+#[derive(Debug, Default, Deserialize)]
+pub struct ThirdPartyStreamQuery {
+    /// WVP 参数名为 `stream`；兼容 `streamId`/`stream_id`。
+    #[serde(
+        alias = "stream",
+        alias = "streamId",
+        alias = "stream_id",
+        default,
+        deserialize_with = "crate::serde_flex::de_opt_string"
+    )]
+    pub stream: Option<String>,
+    /// 发流用的唯一标识（WVP `callId`），本平台等价于 stream_id。
+    #[serde(
+        alias = "callId",
+        alias = "call_id",
+        default,
+        deserialize_with = "crate::serde_flex::de_opt_string"
+    )]
+    pub call_id: Option<String>,
+    #[serde(default, deserialize_with = "crate::serde_flex::de_opt_string")]
+    pub ssrc: Option<String>,
+    #[serde(default, deserialize_with = "crate::serde_flex::de_opt_string")]
+    pub app: Option<String>,
+}
+
+impl ThirdPartyStreamQuery {
+    fn target(&self) -> Option<String> {
+        self.stream
+            .clone()
+            .or_else(|| self.call_id.clone())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    }
+}
+
+/// `GET /api/rtp/receive/close?stream=`
+pub async fn rtp_receive_close_query(
+    axum::extract::Query(q): axum::extract::Query<ThirdPartyStreamQuery>,
+    State(state): State<AppState>,
+) -> Json<WVPResult<serde_json::Value>> {
+    match q.target() {
+        Some(stream) => rtp_receive_close(Path(stream), State(state)).await,
+        None => Json(WVPResult::error("缺少 stream 参数")),
+    }
+}
+
+/// `GET /api/ps/receive/close?stream=`
+pub async fn ps_receive_close_query(
+    axum::extract::Query(q): axum::extract::Query<ThirdPartyStreamQuery>,
+    State(state): State<AppState>,
+) -> Json<WVPResult<serde_json::Value>> {
+    match q.target() {
+        Some(stream) => ps_receive_close(Path(stream), State(state)).await,
+        None => Json(WVPResult::error("缺少 stream 参数")),
+    }
+}
+
+/// `GET /api/rtp/send/stop?callId=`
+pub async fn rtp_send_stop_query(
+    axum::extract::Query(q): axum::extract::Query<ThirdPartyStreamQuery>,
+    State(state): State<AppState>,
+) -> Json<WVPResult<serde_json::Value>> {
+    match q.target() {
+        Some(stream) => {
+            rtp_send_stop(
+                Path(stream),
+                axum::extract::Query(StopSendRtpQuery {
+                    ssrc: q.ssrc.clone(),
+                    app: q.app.clone(),
+                }),
+                State(state),
+            )
+            .await
+        }
+        None => Json(WVPResult::error("缺少 callId 参数")),
+    }
+}
+
+/// `GET /api/ps/send/stop?callId=`
+pub async fn ps_send_stop_query(
+    axum::extract::Query(q): axum::extract::Query<ThirdPartyStreamQuery>,
+    State(state): State<AppState>,
+) -> Json<WVPResult<serde_json::Value>> {
+    match q.target() {
+        Some(stream) => {
+            ps_send_stop(
+                Path(stream),
+                axum::extract::Query(StopSendRtpQuery {
+                    ssrc: q.ssrc.clone(),
+                    app: q.app.clone(),
+                }),
+                State(state),
+            )
+            .await
+        }
+        None => Json(WVPResult::error("缺少 callId 参数")),
     }
 }

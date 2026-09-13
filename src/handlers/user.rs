@@ -499,3 +499,28 @@ mod password_flow_tests {
         assert!(crate::auth::verify_password_flexible(&md5("plain123"), &s), "口令不应被改动");
     }
 }
+
+/// `GET /api/user/all`（WVP `UserController.all`）—— 不分页返回全部用户，
+/// 供「角色/分组分配」等下拉框使用。
+pub async fn all_users(
+    State(state): State<AppState>,
+) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+    let users = db::get_all_users(&state.pool).await?;
+    let rows: Vec<serde_json::Value> = users
+        .iter()
+        .map(|u| {
+            serde_json::json!({
+                "id": u.id,
+                "username": u.username,
+                "roleId": u.role_id,
+                "createTime": u.create_time,
+                "updateTime": u.update_time,
+                "pushKey": u.push_key,
+            })
+        })
+        .collect();
+    Ok(Json(WVPResult::success(serde_json::json!({
+        "list": rows,
+        "total": rows.len(),
+    }))))
+}

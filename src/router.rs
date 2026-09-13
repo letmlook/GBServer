@@ -72,6 +72,7 @@ pub fn app(state: AppState) -> Router<AppState> {
             get(user::user_info).post(user::user_info),
         )
         .route("/api/user/users", get(user::users))
+        .route("/api/user/all", get(user::all_users))
         .route("/api/user/add", post(user::add_user))
         .route("/api/user/delete", delete(user::delete_user))
         .route("/api/user/changePassword", post(user::change_password))
@@ -1038,6 +1039,7 @@ pub fn app(state: AppState) -> Router<AppState> {
         .route("/api/system/info", get(system::system_info))
         .route("/api/system/stats", get(system::system_stats))
         .route("/api/system/version", get(system::system_version))
+        .route("/api/server/shutdown", get(server::server_shutdown))
         .route("/api/system/online-users", get(system::online_users))
         .route("/api/user/logout", get(user::logout))
         .route("/api/platform/info/:id", get(platform::platform_info))
@@ -1079,6 +1081,23 @@ pub fn app(state: AppState) -> Router<AppState> {
         .route("/api/ps/send/start", post(rtp_control::ps_send_start))
         .route("/api/ps/send/stop/:stream_id", post(rtp_control::ps_send_stop))
         .route("/api/ps/getTestPort", get(rtp_control::ps_get_test_port))
+        // WVP 第三方对接（vmanager/rtp|ps）的查询参数风格入口
+        .route(
+            "/api/rtp/receive/close",
+            get(rtp_control::rtp_receive_close_query),
+        )
+        .route(
+            "/api/rtp/send/stop",
+            get(rtp_control::rtp_send_stop_query),
+        )
+        .route(
+            "/api/ps/receive/close",
+            get(rtp_control::ps_receive_close_query),
+        )
+        .route(
+            "/api/ps/send/stop",
+            get(rtp_control::ps_send_stop_query),
+        )
         .route("/api/jt1078/area/circle/add", post(jt1078_extra::area_circle_add))
         .route("/api/jt1078/area/circle/edit", post(jt1078_extra::area_circle_edit))
         .route("/api/jt1078/area/circle/delete", get(jt1078_extra::area_circle_delete))
@@ -1106,7 +1125,16 @@ pub fn app(state: AppState) -> Router<AppState> {
         .route("/api/jt1078/playback/download", get(jt1078_extra::playback_download))
         .route("/api/jt1078/media/upload/one/delete", get(jt1078_extra::media_upload_delete))
         .route("/api/jt1078/terminal/channel/delete/:id", delete(jt1078_extra::terminal_channel_delete))
+        .route(
+            "/api/jt1078/terminal/channel/delete",
+            delete(jt1078_extra::terminal_channel_delete_query),
+        )
         .route("/api/jt1078/terminal/channel/one/:id", get(jt1078_extra::terminal_channel_one))
+        // WVP 用查询参数（`?id=`）而不是路径参数
+        .route(
+            "/api/jt1078/terminal/channel/one",
+            get(jt1078_extra::terminal_channel_one_query),
+        )
         .route("/api/region/one", get(region::region_one))
         .route("/api/region/page/list", get(region::region_page_list))
         .route("/api/region/sync", get(region::region_sync))

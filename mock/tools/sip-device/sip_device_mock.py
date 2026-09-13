@@ -827,6 +827,18 @@ class SipDeviceMock:
     def connection_made(self, transport):
         pass
 
+    # asyncio 的 DatagramProtocol 在传输关闭/出错时会回调这两个方法。
+    # 此前没有实现：一旦 socket 因端口冲突或关闭而断开，asyncio 直接抛
+    # `AttributeError: 'SipDeviceMock' object has no attribute 'connection_lost'`，
+    # 整个 mock 进程崩溃 —— 表现为"设备还在线（平台内存里），但一帧 RTP 都不发"，
+    # 排查时极易误判成平台侧缺陷。
+    def connection_lost(self, exc):
+        if exc:
+            log.warning("SIP mock 传输关闭: %s", exc)
+
+    def error_received(self, exc):
+        log.warning("SIP mock 传输错误: %s", exc)
+
     def datagram_received(self, data: bytes, addr: tuple):
         msg = data.decode(errors="replace")
         first_line = msg.splitlines()[0] if msg else ""

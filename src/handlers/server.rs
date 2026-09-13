@@ -2057,3 +2057,22 @@ mod log_export_contract_tests {
             .starts_with("application/json"));
     }
 }
+
+/// `GET /api/server/shutdown`（WVP `ServerController.shutdown`）—— 关闭服务进程。
+///
+/// WVP 的实现是 `System.exit(1)`。这里同样真的退出进程，但**先让响应发出去**：
+/// 直接 `exit` 会让客户端拿到连接被重置而不是"已受理"。
+/// 用一个短延时任务退出，业务数据（SQLite WAL / Redis）在进程退出时由
+/// SQLx/连接池正常收尾。
+pub async fn server_shutdown() -> Json<WVPResult<serde_json::Value>> {
+    tracing::warn!("收到 /api/server/shutdown：1 秒后退出进程");
+    tokio::spawn(async {
+        tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+        tracing::warn!("shutdown：进程退出");
+        std::process::exit(0);
+    });
+    Json(WVPResult::success(serde_json::json!({
+        "message": "服务将在 1 秒后关闭",
+        "shutdown": true,
+    })))
+}

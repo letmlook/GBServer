@@ -368,21 +368,39 @@ impl ZlmClient {
         })
     }
 
+    /// 关闭 ZLM 上的一路 RTP 收流服务。
+    ///
+    /// **注意**：ZLM 对"这个 stream_id 根本没有收流服务"返回的是
+    /// `{"code":0,"hit":0}` —— 只判 `code` 会把"什么都没关"当成成功。
+    /// 需要区分时用 [`Self::close_rtp_server_ex`]（返回 `hit`）。
     pub async fn close_rtp_server(&self, stream_id: &str) -> Result<()> {
+        let _ = self.close_rtp_server_ex(stream_id).await?;
+        Ok(())
+    }
+
+    /// 同上，但返回 ZLM 的 `hit`：`true` 表示确实关掉了一路收流服务。
+    pub async fn close_rtp_server_ex(&self, stream_id: &str) -> Result<bool> {
         let params = vec![
             ("secret", self.secret.clone()),
             ("stream_id", stream_id.to_string()),
         ];
 
+        // ZLM 把这个字段放在**顶层**（`{"code":0,"hit":1}`），不是 `data` 里 ——
+        // 用 `ApiResponse<T>` 解析会永远拿到 None，从而把"关掉了"误判成"没关掉"。
         #[derive(Deserialize)]
-        #[allow(dead_code)]
-        struct Resp { code: i32 }
-        let resp: ApiResponse<Resp> = self.request("/index/api/closeRtpServer", &params).await?;
+        struct Resp {
+            code: i32,
+            #[serde(default)]
+            msg: Option<String>,
+            #[serde(default)]
+            hit: i32,
+        }
+        let resp: Resp = self.request("/index/api/closeRtpServer", &params).await?;
 
         if resp.code != 0 {
             return Err(anyhow!("ZLM error: {}", resp.msg.unwrap_or_default()));
         }
-        Ok(())
+        Ok(resp.hit > 0)
     }
 
     /// 让 ZLM 主动连接远端的 RTP 服务器(`设备` 侧 GB28181 INVITE 200 OK
@@ -912,7 +930,8 @@ impl ZlmClient {
         app: &str,
         stream: &str,
     ) -> Result<()> {
-        self.stop_send_rtp_ex(vhost, app, Some(stream), None).await
+        let _ = self.stop_send_rtp_ex(vhost, app, Some(stream), None).await?;
+        Ok(())
     }
 
     /// 同上，但可显式给出 `ssrc`（两者任一即可定位会话）。
@@ -922,7 +941,7 @@ impl ZlmClient {
         app: &str,
         stream: Option<&str>,
         ssrc: Option<&str>,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let mut params = vec![
             ("secret", self.secret.clone()),
             ("vhost", vhost.to_string()),
@@ -938,16 +957,24 @@ impl ZlmClient {
             return Err(anyhow!("stopSendRtp 需要 stream 或 ssrc 之一"));
         }
 
+        // 实测（本仓库用的 ZLM master）`stopSendRtp` 成功时只回
+        // `{"code":0}`，**没有** `existed` 字段；找不到流时是
+        // `{"code":-500,"msg":"can not find the stream"}`。
+        // 因此"是否存在"只能靠 code 判断：code==0 即为真的停掉了一路。
         #[derive(Deserialize)]
-        #[allow(dead_code)]
-        struct Resp { code: i32 }
-        let resp: ApiResponse<Resp> = self.request("/index/api/stopSendRtp", &params).await?;
+        struct Resp {
+            code: i32,
+            #[serde(default)]
+            msg: Option<String>,
+        }
+        let resp: Resp = self.request("/index/api/stopSendRtp", &params).await?;
 
         if resp.code != 0 {
             return Err(anyhow!("ZLM stopSendRtp error: {}", resp.msg.unwrap_or_default()));
         }
-        Ok(())
+        Ok(true)
     }
+
 
     /// ZLM 自带的"下载文件（拉流写盘）"接口族 —— **本仓库使用的 ZLM 版本没有它们**。
     ///
@@ -1347,6 +1374,93 @@ mod tests {
             );
             assert!(url.contains("stream_id=push-smoke"), "got: {url}");
             assert!(url.contains("tcp=1"), "got: {url}");
+        }
+
+        /// `closeRtpServer` 的 `hit` 在**顶层**（`{"code":0,"hit":1}`），
+        /// 必须真的解析出来：hit=0 表示"没有这条收流服务"，
+        /// 不能当成"已关闭"（假成功）。
+        #[tokio::test]
+        async fn test_close_rtp_server_reports_hit_flag() {
+            for (hit, expected) in [(1, true), (0, false)] {
+                let mock_server = MockServer::start().await;
+                Mock::given(method("GET"))
+                    .and(path("/index/api/closeRtpServer"))
+                    .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                        "code": 0,
+                        "hit": hit
+                    })))
+                    .expect(1)
+                    .mount(&mock_server)
+                    .await;
+                let client = client_for(&mock_server);
+                let got = client
+                    .close_rtp_server_ex("s1")
+                    .await
+                    .expect("closeRtpServer 应成功");
+                assert_eq!(got, expected, "hit={hit} 的解析结果不对");
+            }
+        }
+
+        /// `closeRtpServer` 返回 code!=0 时必须报错（而不是 Ok(false) 静默）。
+        #[tokio::test]
+        async fn test_close_rtp_server_error_code_is_error() {
+            let mock_server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/index/api/closeRtpServer"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "code": -1,
+                    "msg": "boom"
+                })))
+                .mount(&mock_server)
+                .await;
+            let client = client_for(&mock_server);
+            assert!(client.close_rtp_server_ex("s1").await.is_err());
+        }
+
+        /// `stopSendRtp`：真实 ZLM 成功时只回 `{"code":0}`（**没有** existed 字段），
+        /// 找不到流时回 `{"code":-500,"msg":"can not find the stream"}`。
+        #[tokio::test]
+        async fn test_stop_send_rtp_treats_code_zero_as_stopped() {
+            let mock_server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/index/api/stopSendRtp"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "code": 0
+                })))
+                .mount(&mock_server)
+                .await;
+            let client = client_for(&mock_server);
+            assert!(client
+                .stop_send_rtp_ex("__defaultVhost__", "rtp", Some("s1"), None)
+                .await
+                .expect("stopSendRtp 应成功"));
+
+            let mock_server2 = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/index/api/stopSendRtp"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "code": -500,
+                    "msg": "can not find the stream"
+                })))
+                .mount(&mock_server2)
+                .await;
+            let client2 = client_for(&mock_server2);
+            assert!(
+                client2
+                    .stop_send_rtp_ex("__defaultVhost__", "rtp", Some("s1"), None)
+                    .await
+                    .is_err(),
+                "code!=0 必须报错"
+            );
+        }
+
+        fn client_for(server: &MockServer) -> crate::zlm::ZlmClient {
+            let uri = server.uri();
+            let stripped = uri.trim_start_matches("http://");
+            let mut parts = stripped.splitn(2, ':');
+            let ip = parts.next().unwrap_or("127.0.0.1").to_string();
+            let port: u16 = parts.next().and_then(|p| p.parse().ok()).unwrap_or(80);
+            crate::zlm::ZlmClient::new(&ip, port, "test-secret")
         }
     }
 }
