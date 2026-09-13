@@ -36,6 +36,10 @@
 | B4 | 环境 | 后台进程"静默退出"= 同组 job 被中止连带杀进程（已定性，非缺陷） | ⚪ |
 | B5 | 测试 | `cloudRecord` e2e 仍有时序耦合（本轮 3/3 通过） | 🔵 |
 | B6 | 缺陷 | `send_session_bye` 只按 设备+通道 定位会话 →**跨类型误停**（停直播会停掉同通道回放） | 🟠 |
+| B7 | 缺陷 | `/api/play/webrtc` 调 ZLM 的形态错误 → 恒失败（**已修，普通流真实浏览器验证可播**） | ✅ 已修 |
+| B8 | 缺陷 | **GB28181 流走 WebRTC 解不出帧**（收 358KB RTP 但 `framesReceived=0`；普通流正常） | 🟠 |
+| B9 | 配置 | `rtc.externIP` 平台未下发 → 容器部署下浏览器 ICE 永远连不上 | 🟠 |
+| A4 | 前端 | 直播页没有 WebRTC 播放入口（`postWebrtcPlay` 无调用方） | 🔴 |
 | C1 | 代码债 | `handle_packet` 23 个参数 | 🔵 |
 | C2 | 代码债 | 32 个无引用的 `db::` 函数（逐条判定删除/接上） | 🔵 |
 | C3 | 缺陷/代码债 | JT1078 鉴权码只存不用 + 注册应答写死 `"GBServer"` + 0x0102 语义存疑 | 🟠 |
@@ -248,6 +252,86 @@ GET /api/play/stop/34020000001320000001/34020000001320000001
 **影响评估**：不阻塞主流程（每个流程单独跑都通，e2e 66 项全绿），
 但"直播 + 同通道回放/下载并发"以及"无人观看自动关流"场景会**停错流**。
 
+### B7 ✅ `/api/play/webrtc` 调 ZLM 的形态错误（已修并验证）
+
+**原实现**：把 `{secret, app, stream, type, sdp}` 整体当 **JSON body** POST 给
+ZLM `/index/api/webrtc` → ZLM 一律回
+`Required parameter missed: "type"` —— **该接口从来没有成功过一次**。
+
+**根因**：ZLM 只从 **URL 查询参数**（或表单）里取 `app/stream/type`，
+SDP 必须放在 **请求体**（`Content-Type: application/sdp`）。实测三种形态：
+
+| 调用形态 | ZLM 响应 |
+|---|---|
+| query 参数 + SDP 作为 body | ✅ 进入 SDP 校验（`Assertion failed: … 只支持 group BUNDLE 模式` —— 说明参数已接受） |
+| 全 JSON body（原实现） | ❌ `Required parameter missed: "type"` |
+| `POST /index/api/whep`（query + body） | ✅ 返回纯 SDP 文本 |
+
+**修复**（`src/handlers/webrtc.rs`）：改为 `reqwest::Url` + `query_pairs` 拼参数、
+SDP 作为 body；兼容 ZLM 回 JSON（`{code, sdp, id}`）与回纯 SDP 文本两种形态；
+补 `stream`/`sdp` 缺失与 `type` 取值（play/push）校验。
+
+**验证（真实 Chromium + 真实 ZLM，2026-09-13）**：
+
+```
+浏览器（bundled Chromium）: H264 支持 = true
+POST /api/play/webrtc {app:'rtp', stream:<GB流>, type:'offer', sdp:<真实 offer>}
+  → code=0，answer 2881 字节，候选 127.0.0.1:8000
+  → connectionState=connected  iceConnectionState=connected
+
+对照：普通流 recon/p1（非 GB 源）
+  → videoWidth=320 videoHeight=240 currentTime=10.27s
+  → framesReceived=281 framesDecoded=281 framesDropped=0 pli=0   ✅ 真的在播
+```
+
+### B8 🟠 GB28181 流走 WebRTC **解不出帧**（未解决）
+
+同一套代码，把 `stream` 换成国标流 `rtp/34020000001320000001_34020000001320000001`：
+
+```
+ICE/DTLS：connected
+浏览器收到：packetsReceived=466, bytesReceived=358757, packetsLost=0
+但：framesReceived=0, framesDecoded=0, keyFramesDecoded=0, pliCount=44（PLI 风暴）
+Chromium 的 getStats 里 **没有任何 codec 统计**（codecs: []）
+```
+
+对照普通流有 codec 统计（PT/H264 关联成功）。**即：浏览器收到 RTP，但那些包
+与协商出来的 H264（PT 103）关联不上，因此永远组不出帧。**
+
+ZLM 侧该流是健康的：`rtp/<dev>_<ch>` 的 video track 为 H264 352x288@25fps、
+`key_frames=527`，FLV/RTSP/HLS 播放都正常（e2e 全绿）。所以问题在
+**「PS/RTP 源 → WebRTC」这段的 RTP 封装/PT 改写**，候选原因：
+1. ZLM 对 RTP/PS 源流做 WebRTC 时未把负载 PT 改写为协商值（透传了源 PT 96）；
+2. PS 解封装后的 H264 未按 RFC 6184 重新打包（缺 `sprop-parameter-sets`/FU-A 分片）；
+3. 该 ZLM 构建对 PS 源流的 rtc 支持依赖额外配置（如先经 `addFFmpegSource` 转一路）。
+
+**下一步（择一，需实验）**：
+* 抓一次 8000/udp 的包，看实际 PT 与 NAL 头（最直接）；
+* 换一个 ZLM tag 试（`zlmediakit/zlmediakit:master` 是最新 master，可能存在回归）；
+* 平台侧兜底：把 GB 流先经 ffmpeg 重封装/转码成标准 H264 再交给 WebRTC；
+* 或明确"WebRTC 仅用于非国标/代理流"，国标流继续用 FLV/HLS/WS。
+
+### B9 🟠 `rtc.externIP` 未下发（容器部署下 WebRTC 必失败）
+
+实测：ZLM 的 answer 候选地址默认是 **`172.18.0.2:8000`**（容器网段），
+宿主浏览器不可达 → `iceConnectionState` 永远停在 `checking`、0 字节；
+用 ZLM `setServerConfig?rtc.externIP=127.0.0.1` 后候选变成 `127.0.0.1:8000`，
+**ICE 立刻 connected 并开始收流**。
+
+平台目前在启动时只自动下发 hook 配置与 `rtp_proxy.port_range`
+（`zlm/health_checker.rs`），**没有任何 rtc.externIP 的设置**。
+**下一步**：加一个可配置项（例如 `zlm.rtc_extern_ip`，缺省用 `sip.stream_ip`
+或 `server.public_ip`），在节点上线时用 `set_server_config_verified` 下发并回读校验；
+同时文档里写清"域名/公网 IP + `rtc.port`(8000/udp) 必须在防火墙放行"。
+
+### A4 🔴 直播页没有 WebRTC 播放入口
+
+`web/src/api/live.ts::postWebrtcPlay` 已按后端契约写好（POST + JSON body），
+但**全仓库没有任何调用方**（注释里也写明"当前无页面调用方，直播页用 flv/hls/ws"）。
+要真正"用 WebRTC 看画面"，还需要：播放器组件增加 `webrtc` 分支
+（`RTCPeerConnection` + `<video>`，断开时调 ZLM `delete_webrtc`）、
+直播页协议切换（FLV/HLS/WS/WebRTC），以及 B8/B9 先修好。
+
 ---
 
 ## C. 代码债与清理
@@ -459,5 +543,6 @@ cd e2e && npx playwright test
 | 日期 | 变更 |
 |---|---|
 | 2026-09-13 | 建立本文档：登记 A1–A3、B1–B5、C1–C4、D1–D3、E1–E4 |
+| 2026-09-13 | 新增 B7/B8/B9 与 A4（WebRTC：接口调用形态已修+真实浏览器验证；国标流解不出帧；rtc.externIP 未下发；前端无入口） |
 | 2026-09-13 | 新增 B6（`send_session_bye` 跨类型误停，实测证据 + 修复方向）；B5 保持 🔵 |
 | 2026-09-13 | 复验并关闭 B2（录像计划 `startRecord` 竞态）、B3（mock `connection_lost` 崩溃）、B4（定性为同组 job 被杀的副作用）；新增 E2（ZLM 缺 7 个 hook 键）、E3（长驻服务启动方式与顺序）；C3 升级为 🟠（鉴权码只存不用 + 注册应答写死 `"GBServer"` + 0x0102 语义存疑） |
