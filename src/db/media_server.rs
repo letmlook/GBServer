@@ -42,6 +42,9 @@ pub struct MediaServer {
     pub rtp_enable: Option<bool>,
     pub rtp_port_range: Option<String>,
     pub send_rtp_port_range: Option<String>,
+    /// WebRTC 对外通告 IP（下发给 ZLM 的 `rtc.externIP`）。
+    /// 桥接/容器部署下必填，否则浏览器拿到的 ICE 候选是 ZLM 的内网地址。
+    pub rtc_extern_ip: Option<String>,
     pub record_assist_port: Option<i32>,
     pub default_server: Option<bool>,
     /// 是否参与选路。false = 暂时下线（健康检查照常跑，但不接收新流）。
@@ -164,7 +167,7 @@ pub async fn update(
         r#"UPDATE gb_media_server SET
            ip = COALESCE(?, ip),
            hook_ip = COALESCE(?, hook_ip),
-           http_port = COALESCE(?, http_port),
+           http_port = CASE WHEN http_port IS NULL OR http_port = 0 THEN ? ELSE http_port END,
            update_time = ?
            WHERE id = ?"#
     )
@@ -196,7 +199,7 @@ pub async fn update(
         r#"UPDATE gb_media_server SET
            ip = COALESCE(?, ip),
            hook_ip = COALESCE(?, hook_ip),
-           http_port = COALESCE(?, http_port),
+           http_port = CASE WHEN http_port IS NULL OR http_port = 0 THEN ? ELSE http_port END,
            update_time = ?
            WHERE id = ?"#
     )
@@ -239,10 +242,11 @@ pub async fn sync_from_config(
     secret: Option<&str>,
     now: &str,
 ) -> sqlx::Result<u64> {
-    sync_from_config_full(pool, id, ip, http_port, secret, None, None, now).await
+    sync_from_config_full(pool, id, ip, http_port, secret, None, None, None, now).await
 }
 
 /// 同 `sync_from_config`，额外写入 RTP 端口范围（配置里给了就覆盖）。
+#[allow(clippy::too_many_arguments)]
 pub async fn sync_from_config_full(
     pool: &Pool,
     id: &str,
@@ -251,19 +255,21 @@ pub async fn sync_from_config_full(
     secret: Option<&str>,
     rtp_port_range: Option<&str>,
     send_rtp_port_range: Option<&str>,
+    rtc_extern_ip: Option<&str>,
     now: &str,
 ) -> sqlx::Result<u64> {
     // 端口范围只在配置里显式给了才覆盖（None = 保持库里已有值）
     #[cfg(feature = "mysql")]
     let r = sqlx::query(
         r#"INSERT INTO gb_media_server
-           (id, ip, http_port, secret, rtp_port_range, send_rtp_port_range,
+           (id, ip, http_port, secret, rtp_port_range, send_rtp_port_range, rtc_extern_ip,
             create_time, update_time, auto_config, rtp_enable, default_server, server_id, type)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, false, false, true, ?, 'zlm')
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, false, false, true, ?, 'zlm')
            ON DUPLICATE KEY UPDATE ip = VALUES(ip), http_port = VALUES(http_port),
             secret = VALUES(secret),
             rtp_port_range = COALESCE(VALUES(rtp_port_range), rtp_port_range),
             send_rtp_port_range = COALESCE(VALUES(send_rtp_port_range), send_rtp_port_range),
+            rtc_extern_ip = COALESCE(VALUES(rtc_extern_ip), rtc_extern_ip),
             update_time = VALUES(update_time)"#
     )
     .bind(id)
@@ -272,6 +278,7 @@ pub async fn sync_from_config_full(
     .bind(secret)
     .bind(rtp_port_range)
     .bind(send_rtp_port_range)
+    .bind(rtc_extern_ip)
     .bind(now)
     .bind(now)
     .bind(id)
@@ -280,13 +287,14 @@ pub async fn sync_from_config_full(
     #[cfg(feature = "postgres")]
     let r = sqlx::query(
         r#"INSERT INTO gb_media_server
-           (id, ip, http_port, secret, rtp_port_range, send_rtp_port_range,
+           (id, ip, http_port, secret, rtp_port_range, send_rtp_port_range, rtc_extern_ip,
             create_time, update_time, auto_config, rtp_enable, default_server, server_id, type)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, false, false, true, $1, 'zlm')
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, false, false, true, $1, 'zlm')
            ON CONFLICT (id) DO UPDATE SET ip = EXCLUDED.ip, http_port = EXCLUDED.http_port,
             secret = EXCLUDED.secret,
             rtp_port_range = COALESCE(EXCLUDED.rtp_port_range, gb_media_server.rtp_port_range),
             send_rtp_port_range = COALESCE(EXCLUDED.send_rtp_port_range, gb_media_server.send_rtp_port_range),
+            rtc_extern_ip = COALESCE(EXCLUDED.rtc_extern_ip, gb_media_server.rtc_extern_ip),
             update_time = EXCLUDED.update_time"#
     )
     .bind(id)
@@ -295,6 +303,7 @@ pub async fn sync_from_config_full(
     .bind(secret)
     .bind(rtp_port_range)
     .bind(send_rtp_port_range)
+    .bind(rtc_extern_ip)
     .bind(now)
     .bind(now)
     .execute(pool)
@@ -302,13 +311,14 @@ pub async fn sync_from_config_full(
     #[cfg(feature = "sqlite")]
     let r = sqlx::query(
         r#"INSERT INTO gb_media_server
-           (id, ip, http_port, secret, rtp_port_range, send_rtp_port_range,
+           (id, ip, http_port, secret, rtp_port_range, send_rtp_port_range, rtc_extern_ip,
             create_time, update_time, auto_config, rtp_enable, default_server, server_id, type)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 1, ?, 'zlm')
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 1, ?, 'zlm')
            ON CONFLICT(id) DO UPDATE SET ip = excluded.ip, http_port = excluded.http_port,
             secret = excluded.secret,
             rtp_port_range = COALESCE(excluded.rtp_port_range, rtp_port_range),
             send_rtp_port_range = COALESCE(excluded.send_rtp_port_range, send_rtp_port_range),
+            rtc_extern_ip = COALESCE(excluded.rtc_extern_ip, rtc_extern_ip),
             update_time = excluded.update_time"#
     )
     .bind(id)
@@ -317,6 +327,7 @@ pub async fn sync_from_config_full(
     .bind(secret)
     .bind(rtp_port_range)
     .bind(send_rtp_port_range)
+    .bind(rtc_extern_ip)
     .bind(now)
     .bind(now)
     .bind(id)
@@ -415,7 +426,7 @@ pub async fn update_ports(
     #[cfg(feature = "mysql")]
     let r = sqlx::query(
         r#"UPDATE gb_media_server SET
-           http_port = COALESCE(?, http_port),
+           http_port = CASE WHEN http_port IS NULL OR http_port = 0 THEN ? ELSE http_port END,
            http_ssl_port = COALESCE(?, http_ssl_port),
            rtsp_port = COALESCE(?, rtsp_port),
            rtmp_port = COALESCE(?, rtmp_port),
@@ -453,7 +464,7 @@ pub async fn update_ports(
     #[cfg(feature = "sqlite")]
     let r = sqlx::query(
         r#"UPDATE gb_media_server SET
-           http_port = COALESCE(?, http_port),
+           http_port = CASE WHEN http_port IS NULL OR http_port = 0 THEN ? ELSE http_port END,
            http_ssl_port = COALESCE(?, http_ssl_port),
            rtsp_port = COALESCE(?, rtsp_port),
            rtmp_port = COALESCE(?, rtmp_port),
@@ -837,6 +848,46 @@ pub async fn ensure_columns(pool: &Pool) -> sqlx::Result<()> {
         .unwrap_or(0);
         if exists == 0 {
             let _ = sqlx::query("ALTER TABLE gb_media_server ADD COLUMN enabled bool DEFAULT true")
+                .execute(pool)
+                .await?;
+        }
+    }
+
+    // WebRTC 对外通告 IP（旧库补列）。不补的话节点上线时的
+    // `get_media_server_by_id` 会因为结构体多了一个字段而整行解码失败，
+    // 连带 rtp_port_range 的下发也一起失效。
+    #[cfg(feature = "postgres")]
+    {
+        let _ = sqlx::query(
+            "ALTER TABLE gb_media_server ADD COLUMN IF NOT EXISTS rtc_extern_ip varchar(100)",
+        )
+        .execute(pool)
+        .await?;
+    }
+    #[cfg(feature = "sqlite")]
+    {
+        let exists: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pragma_table_info('gb_media_server') WHERE name = 'rtc_extern_ip'",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0);
+        if exists == 0 {
+            let _ = sqlx::query("ALTER TABLE gb_media_server ADD COLUMN rtc_extern_ip VARCHAR(100)")
+                .execute(pool)
+                .await?;
+        }
+    }
+    #[cfg(feature = "mysql")]
+    {
+        let exists: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'gb_media_server' AND column_name = 'rtc_extern_ip'",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0);
+        if exists == 0 {
+            let _ = sqlx::query("ALTER TABLE gb_media_server ADD COLUMN rtc_extern_ip VARCHAR(100)")
                 .execute(pool)
                 .await?;
         }

@@ -771,6 +771,7 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
                     Some(server.secret.as_str()),
                     server.rtp_port_range.as_deref(),
                     server.send_rtp_port_range.as_deref(),
+                    server.rtc_extern_ip.as_deref(),
                     &now,
                 ).await {
                     tracing::error!("同步媒体节点 {} 到数据库失败: {}", server.id, e);
@@ -1438,6 +1439,7 @@ mod tests {
                 rtp_enable INTEGER,
                 rtp_port_range VARCHAR(50),
                 send_rtp_port_range VARCHAR(50),
+                rtc_extern_ip VARCHAR(100),
                 record_assist_port INTEGER,
                 default_server INTEGER,
                 create_time VARCHAR(50),

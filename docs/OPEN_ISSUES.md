@@ -38,7 +38,9 @@
 | B6 | 缺陷 | `send_session_bye` 只按 设备+通道 定位会话 →**跨类型误停**（停直播会停掉同通道回放） | 🟠 |
 | B7 | 缺陷 | `/api/play/webrtc` 调 ZLM 的形态错误 → 恒失败（**已修，普通流真实浏览器验证可播**） | ✅ 已修 |
 | B8 | 缺陷 | **GB28181 流走 WebRTC 解不出帧**（收 358KB RTP 但 `framesReceived=0`；普通流正常） | 🟠 |
-| B9 | 配置 | `rtc.externIP` 平台未下发 → 容器部署下浏览器 ICE 永远连不上 | 🟠 |
+| B10 | 缺陷 | ZLM 流列表反序列化失败（`"fps": 25.0` 浮点 vs `u32`）→ 流列表恒为空 | ✅ 已修 |
+| B11 | 缺陷 | `on_server_started` 用 ZLM **内部** HTTP 端口覆盖库里的对外端口（80 覆盖 8080）→ 后端所有 ZLM 调用 502 | ✅ 已修 |
+| B9 | 配置 | `rtc.externIP` 平台未下发 → 容器部署下浏览器 ICE 永远连不上 | ✅ 已修 |
 | A4 | 前端 | 直播页没有 WebRTC 播放入口（`postWebrtcPlay` 无调用方） | 🔴 |
 | C1 | 代码债 | `handle_packet` 23 个参数 | 🔵 |
 | C2 | 代码债 | 32 个无引用的 `db::` 函数（逐条判定删除/接上） | 🔵 |
@@ -51,6 +53,7 @@
 | E2 | 环境 | 本 ZLM 版本缺 7 个 hook 事件键（已如实告警） | ⚪ |
 | E3 | 环境 | 长驻服务需单独 job 启动（同组 job 中止会连带杀掉） | ⚪ |
 | E4 | 环境 | CI 自动触发按用户要求保持关闭（`workflow_dispatch`） | ⚪ |
+| E5 | 部署 | ZLM 改 host 网络 + 配置文件只读管理 + mac 叠加文件 | ✅ 已改 |
 
 ---
 
@@ -311,18 +314,25 @@ ZLM 侧该流是健康的：`rtp/<dev>_<ch>` 的 video track 为 H264 352x288@25
 * 平台侧兜底：把 GB 流先经 ffmpeg 重封装/转码成标准 H264 再交给 WebRTC；
 * 或明确"WebRTC 仅用于非国标/代理流"，国标流继续用 FLV/HLS/WS。
 
-### B9 🟠 `rtc.externIP` 未下发（容器部署下 WebRTC 必失败）
+### B9 ✅ `rtc.externIP` 未下发（已修复：可配置 + 三处自动下发）
 
 实测：ZLM 的 answer 候选地址默认是 **`172.18.0.2:8000`**（容器网段），
 宿主浏览器不可达 → `iceConnectionState` 永远停在 `checking`、0 字节；
 用 ZLM `setServerConfig?rtc.externIP=127.0.0.1` 后候选变成 `127.0.0.1:8000`，
 **ICE 立刻 connected 并开始收流**。
 
-平台目前在启动时只自动下发 hook 配置与 `rtp_proxy.port_range`
-（`zlm/health_checker.rs`），**没有任何 rtc.externIP 的设置**。
-**下一步**：加一个可配置项（例如 `zlm.rtc_extern_ip`，缺省用 `sip.stream_ip`
-或 `server.public_ip`），在节点上线时用 `set_server_config_verified` 下发并回读校验；
-同时文档里写清"域名/公网 IP + `rtc.port`(8000/udp) 必须在防火墙放行"。
+**已修复（2026-09-13）**：新增可配置项 `[[zlm.servers]] rtc_extern_ip`
+（也写入 `gb_media_server.rtc_extern_ip`，媒体节点页保存即可设置），并在**三处**
+用 `set_server_config_verified` 下发 + 回读校验：
+
+1. 节点上线（`zlm/health_checker.rs`）；
+2. **ZLM 每次启动**（`on_server_started` hook）—— ZLM 重启后运行期配置会丢，
+   这一处是自愈的关键；
+3. 媒体节点保存接口（改完立即生效，不用等下一轮健康检查）。
+
+实测：ZLM 重启后 `rtc.externIP` 从空自动恢复为 `127.0.0.1`（日志
+`ZLM rtc.externIP set to 127.0.0.1 for server zlmediakit-1`），浏览器
+ICE 立即 `connected`。**host 网络部署无需配置该项**（见「ZLM 网络模式」一节）。
 
 ### A4 🔴 直播页没有 WebRTC 播放入口
 
@@ -331,6 +341,69 @@ ZLM 侧该流是健康的：`rtp/<dev>_<ch>` 的 video track 为 H264 352x288@25
 要真正"用 WebRTC 看画面"，还需要：播放器组件增加 `webrtc` 分支
 （`RTCPeerConnection` + `<video>`，断开时调 ZLM `delete_webrtc`）、
 直播页协议切换（FLV/HLS/WS/WebRTC），以及 B8/B9 先修好。
+
+### E5 ✅ ZLM 网络模式改为 host + 配置文件管理（2026-09-13）
+
+**改动**：
+
+| 文件 | 内容 |
+|---|---|
+| `docker-compose.yml` | ZLM 改 `network_mode: host`，**删除全部端口映射**与 `extra_hosts`；gbserver 侧加 `extra_hosts`（用 `host.docker.internal` 访问宿主上的 ZLM），并通过 env 指定 `ZLM__SERVERS__0__IP/HOOK_URL/RTC_EXTERN_IP`；config.ini **只读**挂载 |
+| `docker-compose.mac.yml`（新） | Docker Desktop（macOS/Windows）叠加文件：ZLM 切回桥接 + 端口映射 + `extra_hosts`，并下发 `rtc_extern_ip=127.0.0.1`。用法 `docker compose -f docker-compose.yml -f docker-compose.mac.yml up -d` |
+| `docker/zlm/config.ini` | `[rtc] externIP` 保持**留空**并加注释说明；`[rtp_proxy] port_range=30000-30100`；`[http] port` 由镜像默认 80 改为 **8080**（内外一致，见 B11） |
+| `docker-compose*.yml` | 新增命名卷 `zlmrecord` / `zlmsnap`：录像与截图**持久化**。默认写在容器文件系统里，`--force-recreate` 或镜像升级会把 MP4 全删掉，而 `gb_cloud_record` 里的记录还在 —— 现象是"列表里有录像、点开 404/500"（本轮实测踩到过一次） |
+| `src/config.rs` / `db/media_server.rs` / `handlers/server.rs` / `zlm/health_checker.rs` / `zlm/hook.rs` | 新增 `rtc_extern_ip` 配置项、DB 列（含旧库迁移）、保存接口字段与三处下发逻辑 |
+
+**为什么改用 host 网络**：收流端口池（`rtp_proxy.port_range`）与 WebRTC ICE 候选
+都要求 ZLM 直接使用宿主地址；桥接模式必须逐口映射整段 UDP（Docker Desktop 对上
+百个端口映射极慢，实测会卡住 daemon），且候选地址会是容器内网 IP。
+
+**踩坑记录（重要）**：**ZLM 收到 `setServerConfig` 会把整份 config.ini 重写**
+—— 实测把仓库里 700+ 行中文注释全部抹掉，并把 hook URL（`host.docker.internal`）、
+`mediaServerId`、`rtc.externIP` 写进文件。因此 config.ini **必须只读挂载**，
+运行期配置全部由平台下发（节点上线 / `on_server_started` / 保存接口）。
+
+**验证（本机 macOS，用 mac 叠加文件）**：ZLM 重建后
+`rtc.externIP=127.0.0.1`、`rtp_proxy.port_range=30000-30100`、
+`mediaServerId=zlmediakit-1` 自动恢复；hook 13/20 生效；
+实时点播 FLV 拉流 237KB；WebRTC `iceConnectionState=connected`；
+录像计划→MP4→落库（69395 字节）正常；`cargo test` 743 通过、`playwright` 66 通过。
+
+**未在本机验证的部分**：host 网络本身 —— Docker Desktop **不支持** host 网络
+（实测容器端口在宿主不可达），只能在 Linux 服务器上验证；compose 两种形态均已
+通过 `docker compose config` 校验。**上线前请在 Linux 上确认**：
+① 30000-30100/udp 与 8000/udp 已放行；② 后端（容器）能通过
+`host.docker.internal` 访问宿主上的 8080；③ hook URL 用 `127.0.0.1` 还是
+宿主内网 IP（取决于后端是否也在 host 网络）。
+
+### B10 ✅ ZLM 流列表因 `fps` 浮点解析失败（已修）
+
+**现象**：真实 ZLM 对国标流返回 `"fps": 25.0`（JSON 带小数点），而
+`zlm::types::TrackInfo.fps` 声明为 `Option<u32>` → **整个 `getMediaList`
+反序列化失败**：`/api/device/query/streams` 恒为空、`/api/server/stream/all` 报错，
+日志只有 `invalid type: floating point 25.0, expected u32`。
+
+**修复**：`fps` 改为 `Option<f64>`（整数与浮点都能解析），并补回归测试
+（`25.0` / `25` / 缺省三种形态）。
+
+### B11 ✅ `on_server_started` 覆盖对外的 HTTP 端口（已修）
+
+**现象**：媒体节点检测返回
+`媒体节点 127.0.0.1:80 检测失败: HTTP error: 502 Bad Gateway`，随后所有
+ZLM 相关功能（流列表、录像删除、截图…）一起 500 —— 因为
+`on_server_started` 把 ZLM **容器内部**的 http 端口（80）写进了
+`gb_media_server.http_port`，而后端访问 ZLM 用的是**对外映射**端口（8080）。
+
+**修复**：
+1. `update_ports` 不再无条件覆盖 `http_port`，只在该列为空/0 时填充
+   （`CASE WHEN http_port IS NULL OR http_port = 0 THEN ? ELSE http_port END`）——
+   这个字段是"后端访问 ZLM 的地址"，必须由配置决定，不能被节点自报覆盖；
+2. `docker/zlm/config.ini` 的 `[http] port` 固定为 **8080**（原来镜像默认 80，
+   桥接映射 8080:80 时内外不一致），`docker-compose.mac.yml` 相应改为
+   `8080:8080`。这样一来 host 网络与桥接两种模式下内外端口都一致。
+
+**实测**：ZLM 重建后 DB 里 `http_port` 保持 8080，节点检测
+`{"code":0,"reachable":true,"httpPort":8080}`。
 
 ---
 
@@ -543,6 +616,8 @@ cd e2e && npx playwright test
 | 日期 | 变更 |
 |---|---|
 | 2026-09-13 | 建立本文档：登记 A1–A3、B1–B5、C1–C4、D1–D3、E1–E4 |
+| 2026-09-13 | 关闭 B10（fps 浮点）、B11（on_server_started 覆盖对外 http 端口）；ZLM `[http] port` 固定 8080 |
+| 2026-09-13 | 关闭 B9（rtc_extern_ip 三处自动下发）；新增 E5（ZLM host 网络 / 只读 config.ini / mac 叠加文件；记录 ZLM 会重写 config.ini 的坑） |
 | 2026-09-13 | 新增 B7/B8/B9 与 A4（WebRTC：接口调用形态已修+真实浏览器验证；国标流解不出帧；rtc.externIP 未下发；前端无入口） |
 | 2026-09-13 | 新增 B6（`send_session_bye` 跨类型误停，实测证据 + 修复方向）；B5 保持 🔵 |
 | 2026-09-13 | 复验并关闭 B2（录像计划 `startRecord` 竞态）、B3（mock `connection_lost` 崩溃）、B4（定性为同组 job 被杀的副作用）；新增 E2（ZLM 缺 7 个 hook 键）、E3（长驻服务启动方式与顺序）；C3 升级为 🟠（鉴权码只存不用 + 注册应答写死 `"GBServer"` + 0x0102 语义存疑） |

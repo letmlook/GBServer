@@ -206,6 +206,7 @@ CREATE TABLE IF NOT EXISTS gb_media_server
     rtp_enable          INTEGER     DEFAULT 0,
     rtp_port_range      VARCHAR(50),
     send_rtp_port_range VARCHAR(50),
+    rtc_extern_ip VARCHAR(100),
     record_assist_port  INTEGER,
     default_server      INTEGER     DEFAULT 0,
     -- 是否参与选路（0 = 暂时下线，不接收新流；健康检查仍继续）

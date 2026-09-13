@@ -1463,6 +1463,33 @@ pub(crate) async fn handle_webhook_inner(
                                     ),
                                 }
                             }
+                            // WebRTC 对外通告 IP：ZLM **重启后**运行期下发的
+                            // 值会丢（写在内存里；`setServerConfig` 也会把它写回
+                            // config.ini，但那只对同一份文件生效）。
+                            // 桥接/容器部署必须重新下发，否则 ZLM 一重启，
+                            // 浏览器拿到的 ICE 候选又变回容器内网 IP。
+                            if let Some(ip) = server_config
+                                .rtc_extern_ip
+                                .as_deref()
+                                .map(str::trim)
+                                .filter(|s| !s.is_empty())
+                            {
+                                match zlm_client
+                                    .set_server_config_verified(&secret, "rtc.externIP", ip)
+                                    .await
+                                {
+                                    Ok(true) => tracing::info!(
+                                        "ZLM rtc.externIP set to {ip} for server {media_server_id}"
+                                    ),
+                                    Ok(false) => tracing::warn!(
+                                        "ZLM rtc.externIP 未生效（本版本键名可能不同）: {ip}"
+                                    ),
+                                    Err(e) => {
+                                        tracing::warn!("Failed to set ZLM rtc.externIP={ip}: {e}")
+                                    }
+                                }
+                            }
+
                             // 协议开关（与 ZLM 默认对齐：全部启用）
                             for (key, value) in PROTOCOL_ENABLE_FLAGS {
                                 if let Err(e) = zlm_client.set_server_config(

@@ -170,6 +170,16 @@ GBSERVER_SIP_PASSWORD=<your-sip-password>
 
 ### 2.3 ZLMediaKit
 
+> **部署方式**：`docker-compose.yml` 默认让 ZLM 使用 **host 网络**，上表这些端口
+> 由 ZLM 直接绑定在宿主机上，**不需要**在 compose 里逐口映射。
+> 好处：GB28181 收流端口池（`rtp_proxy.port_range`）与 WebRTC ICE 候选都直接
+> 使用宿主地址，不存在"端口没映射到 → INVITE 成功但收不到流"和
+> "候选是容器内网 IP → WebRTC 连不上"两类问题。
+>
+> ⚠️ Docker Desktop（macOS / Windows）不支持 host 网络，本机开发用叠加文件：
+> `docker compose -f docker-compose.yml -f docker-compose.mac.yml up -d`
+> （ZLM 切回桥接 + 端口映射，并由后端下发 `rtc_extern_ip`）。
+
 | 端口 | 协议 | 用途 |
 |------|------|------|
 | 8080 | TCP | ZLM HTTP API（`zlm.servers[0].http_port`） |
@@ -177,9 +187,19 @@ GBSERVER_SIP_PASSWORD=<your-sip-password>
 | 554 | TCP | ZLM RTSP |
 | 322 | TCP | ZLM RTSPS |
 | 1935 | TCP | ZLM RTMP |
-| 8000 | UDP | ZLM WebRTC |
+| 8000 | UDP | ZLM WebRTC（单端口 ICE） |
 | 9000 | UDP | ZLM SRT |
-| 30000–30100 | UDP | ZLM RTP 媒体端口范围（GB28181 流） |
+| 30000–30100 | UDP | ZLM RTP 媒体端口范围（GB28181 流），与 `docker/zlm/config.ini` 的 `[rtp_proxy] port_range` 一致 |
+
+**防火墙**：host 网络下这些端口必须由系统防火墙放行（`firewalld` / `ufw` /
+安全组），尤其是 `30000-30100/udp`（设备 RTP 推流）与 `8000/udp`（WebRTC）。
+
+**数据卷**：`docker-compose.yml` 为 ZLM 挂了两个命名卷 ——
+`zlmrecord`（`/opt/media/bin/www/record`，云录像/下载产物）与
+`zlmsnap`（`/opt/media/bin/www/snap`，截图）。**不要**去掉它们：录像默认写在
+容器文件系统里，`docker compose up -d --force-recreate zlm` 或升级镜像会把
+已录的 MP4 全部删掉，而数据库 `gb_cloud_record` 里的记录仍在 ——
+表现为"录像列表里有条目，点开播放 404/500"。
 
 ### 2.4 端口冲突排查
 
@@ -244,7 +264,17 @@ hook_enabled = true
 hook_url = "http://127.0.0.1:18080/api/zlm/hook"
 ```
 
-ZLM 必须配置 hook 回调到 `/api/zlm/hook`，配置项：`[hook] enable=1, root_url=http://gbserver:18080`。
+`[[zlm.servers]]` 的两个网络相关字段（host 网络部署时按需）：
+
+| 字段 | 作用 | host 网络 | 桥接 / 容器 |
+|------|------|-----------|-------------|
+| `hook_url` | 平台接收 ZLM 事件回调的地址，**必须是 ZLM 能访问到的地址** | `http://127.0.0.1:18080/api/zlm/hook`（ZLM 在 host 命名空间） | `http://host.docker.internal:18080/api/zlm/hook`（需给 ZLM 加 `extra_hosts`） |
+| `rtc_extern_ip` | 下发 ZLM 的 `rtc.externIP`，即浏览器看到的 ICE 候选地址 | 留空（ZLM 直接通告宿主网卡） | **必填**（本机调试 `127.0.0.1`，服务器填公网 IP / 域名） |
+
+`rtc_extern_ip` 也可以在「媒体节点」页保存，后端会在保存与节点上线时下发并回读校验。
+
+ZLM 必须配置 hook 回调到 `/api/zlm/hook`（后端会在节点上线时自动下发逐事件配置；
+`docker/zlm/config.ini` 里也可手写 `[hook] enable=1, root_url=...`，改完 `docker compose restart zlm`）。
 
 多节点 ZLM：设置 `redis.url` 后，`play_start` / `playback_start` / `send_play_invite` 等请求按 Redis ZSET 最小连接数选路。
 

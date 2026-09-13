@@ -208,6 +208,19 @@ pub struct ZlmServerConfig {
     /// 新版统一走 `rtp_proxy.port_range`）。
     #[serde(default)]
     pub send_rtp_port_range: Option<String>,
+    /// **WebRTC 对外通告 IP**（下发 ZLM 的 `rtc.externIP`）。
+    ///
+    /// 浏览器拿到的 ICE 候选来自 ZLM。容器/桥接网络下 ZLM 只会通告自己的
+    /// 内网地址（实测 Docker 里是 `172.18.0.2`），宿主浏览器根本连不上 ——
+    /// 表现为 `iceConnectionState` 永远停在 `checking`、一个字节都收不到。
+    ///
+    /// * **ZLM 用 host 网络部署**（`docker-compose.yml` 默认）→ 不需要填，
+    ///   ZLM 通告的就是宿主真实网卡地址；
+    /// * **ZLM 在桥接/容器里，浏览器在宿主或外网** → 必须填宿主可达地址
+    ///   （本机调试填 `127.0.0.1`，服务器填公网 IP 或域名），
+    ///   节点上线时由健康检查回读校验下发结果。
+    #[serde(default)]
+    pub rtc_extern_ip: Option<String>,
 }
 
 /// ZLM 节点健康检查配置（Phase 4 follow-up）
@@ -264,6 +277,7 @@ impl Default for ZlmConfig {
                 hook_url: None,
                 rtp_port_range: None,
                 send_rtp_port_range: None,
+                rtc_extern_ip: None,
             }],
             stream_timeout: 10,
             hook_enabled: true,

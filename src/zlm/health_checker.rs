@@ -233,6 +233,39 @@ impl ZlmHealthChecker {
                     Err(e) => tracing::warn!("读取媒体节点 {id} 的端口范围失败: {e}"),
                 }
             }
+
+            // WebRTC 对外通告地址：桥接/容器部署下 ZLM 只会通告自己的内网 IP
+            // （实测 172.18.0.2），宿主浏览器的 ICE 永远连不上；这里按配置
+            // 下发 `rtc.externIP` 并回读校验。host 网络部署时无需配置该值。
+            if let Some(ref pool) = self.pool {
+                match crate::db::media_server::get_media_server_by_id(pool, &id).await {
+                    Ok(Some(sv)) => {
+                        if let Some(ip) = sv
+                            .rtc_extern_ip
+                            .as_deref()
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                        {
+                            match client
+                                .set_server_config_verified(&client.secret, "rtc.externIP", ip)
+                                .await
+                            {
+                                Ok(true) => {
+                                    tracing::info!("ZLM 节点 {id} 的 rtc.externIP 已设为 {ip}")
+                                }
+                                Ok(false) => tracing::warn!(
+                                    "ZLM 节点 {id} 的 rtc.externIP 未生效（本版本键名可能不同）：{ip}"
+                                ),
+                                Err(e) => {
+                                    tracing::warn!("ZLM 节点 {id} 下发 rtc.externIP 失败: {e}")
+                                }
+                            }
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(e) => tracing::warn!("读取媒体节点 {id} 的 rtc.externIP 失败: {e}"),
+                }
+            }
         }
 
         results

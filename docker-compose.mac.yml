@@ -1,0 +1,68 @@
+# ============================================================================
+# Docker Desktop（macOS / Windows）叠加文件
+#
+# 用法：
+#   docker compose -f docker-compose.yml -f docker-compose.mac.yml up -d
+#
+# 为什么需要它：`docker-compose.yml` 默认让 ZLM 用 **host 网络**（Linux 服务器上
+# 这是正确做法：收流端口池、WebRTC 候选、RTSP/RTMP 端口都直接落在宿主）。
+# 但 Docker Desktop 不支持 host 网络 —— 容器端口在宿主上**不可达**
+# （实测 `curl 127.0.0.1:8080` 无响应），所以本机开发必须把 ZLM 切回桥接 +
+# 端口映射，并通过 `rtc_extern_ip` 让 WebRTC 也能连上。
+#
+# 与基础文件的差异：
+#   1. zlm 从 `network_mode: host` 切回桥接网络，重新发布各端口；
+#   2. zlm 恢复 `extra_hosts`（容器内 `host.docker.internal` 需要稳定解析到
+#      宿主的 IPv4 网关：Docker Desktop 上该名字可能只解析出 IPv6 ULA，
+#      导致 ZLM 的 hook 回调全部连不上后端）；
+#   3. 后端把 ZLM 当"宿主上的服务"访问（host.docker.internal:8080），
+#      hook 回调走宿主回环；
+#   4. **给节点下发 `rtc_extern_ip=127.0.0.1`** —— WebRTC 的 ICE 候选必须是
+#      浏览器可达的地址，否则只会拿到 ZLM 的容器内网 IP（172.18.x.x），
+#      `iceConnectionState` 永远停在 checking。
+# ============================================================================
+services:
+  gbserver:
+    environment:
+      # 桥接模式下 ZLM 的端口发布在宿主上：后端（容器或宿主进程）都从这里访问
+      GBSERVER__ZLM__SERVERS__0__IP: host.docker.internal
+      GBSERVER__ZLM__SERVERS__0__HOOK_URL: http://host.docker.internal:18080/api/zlm/hook
+      # 本机调试：浏览器也在同一台机器上，候选填 127.0.0.1 即可
+      # （服务器同理换成公网 IP / 域名）
+      GBSERVER__ZLM__SERVERS__0__RTC_EXTERN_IP: 127.0.0.1
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  zlm:
+    # 覆盖基础文件的 host 网络（`!reset` 是 Compose 的"删除本键"语法；
+    # 只写 `network_mode: bridge` 会与下面的 networks 冲突：
+    # "mutually exclusive network_mode and networks"）
+    network_mode: !reset null
+    networks: [gbservernet]
+    ports:
+      # HTTP API（后端与浏览器都用它）
+      - "8080:8080"
+      - "8443:8443"
+      # RTSP / RTSPS
+      - "554:554"
+      - "322:322"
+      # RTMP
+      - "1935:1935"
+      # WebRTC（UDP 单端口）
+      - "8000:8000/udp"
+      # SRT（UDP）
+      - "9000:9000/udp"
+      # GB28181 收流端口池（UDP）
+      #
+      # ⚠️ 必须与 `docker/zlm/config.ini` 的 `[rtp_proxy] port_range` 一致。
+      # 镜像默认是 30000-35000；Docker Desktop 对上千个端口映射极慢（实测会卡住
+      # daemon），所以仓库里的 config.ini 把端口池收窄到 30000-30100 与本文件对齐。
+      # 两者不一致时，ZLM 可能把收流端口开在未映射的端口上 —— 现象是
+      # "INVITE 200 OK 但一直等不到媒体"（后端启动时会核对并告警）。
+      - "30000-30100:30000-30100/udp"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  zlmrecord: {}
+  zlmsnap: {}

@@ -131,6 +131,15 @@ hook_url = "http://host.docker.internal:18080/api/zlm/hook"
 # 不一致时 ZLM 可能把收流端口开到未映射的端口上，设备 RTP 到不了容器，
 # 表现为"INVITE 200 OK 但一直等不到媒体"。
 rtp_port_range = "30000-30100"
+# WebRTC 对外通告 IP（下发给 ZLM 的 `rtc.externIP`）。
+#   * ZLM 用 **host 网络**部署（docker-compose.yml 默认）→ 留空即可，
+#     ZLM 会通告宿主的真实网卡地址；
+#   * ZLM 在 **桥接/容器**里、浏览器在宿主或外网 → 必须填宿主可达地址
+#     （本机调试 "127.0.0.1"，服务器填公网 IP / 域名），否则浏览器拿到的
+#     ICE 候选是容器内网地址（实测 172.18.0.2），iceConnectionState 永远
+#     停在 checking、一个字节都收不到。
+# 节点上线与"保存媒体节点"时都会下发并回读校验。
+# rtc_extern_ip = "127.0.0.1"
 # 与 docker-compose 当前 ZLM 镜像 conf/config.ini 里实际生效的 api.secret 对齐：
 # `docker exec gbserver-zlm cat /opt/media/conf/config.ini | grep secret=`
 # 镜像版本(2026-06 master)不识别 ZLM_HTTP_SECRET 环境变量,所以容器启动时

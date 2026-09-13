@@ -30,7 +30,8 @@ cargo build --release --no-default-features --features postgres
 cargo test --no-default-features --features postgres
 
 # Local services used by the default config
-docker compose up -d          # PostgreSQL + Redis + ZLMediaKit
+docker compose up -d          # PostgreSQL + Redis + ZLMediaKit（ZLM 用 host 网络）
+docker compose -f docker-compose.yml -f docker-compose.mac.yml up -d   # macOS/Windows 用这条
 docker compose ps
 docker compose down           # keeps volumes
 ```

@@ -207,6 +207,7 @@ create table IF NOT EXISTS gb_media_server
     rtp_enable          bool                  default false COMMENT '是否开启RTP',
     rtp_port_range      varchar(50) COMMENT 'RTP端口范围',
     send_rtp_port_range varchar(50) COMMENT '发送RTP端口范围',
+    rtc_extern_ip varchar(100) COMMENT 'WebRTC对外通告IP(rtc.externIP)',
     record_assist_port  integer COMMENT '录像辅助端口',
     default_server      bool                  default false COMMENT '是否默认节点',
     enabled             bool                  default true COMMENT '是否参与选路（0=暂时下线）',

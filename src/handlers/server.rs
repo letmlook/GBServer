@@ -1232,6 +1232,10 @@ pub struct MediaServerSaveBody {
     pub rtp_port_range: Option<String>,
     #[serde(alias = "sendRtpPortRange")]
     pub send_rtp_port_range: Option<String>,
+    /// WebRTC 对外通告 IP（ZLM `rtc.externIP`）。桥接/容器部署下必填：
+    /// 不填的话浏览器拿到的 ICE 候选是 ZLM 内网地址，WebRTC 永远连不上。
+    #[serde(alias = "rtcExternIp", alias = "rtcExternIP")]
+    pub rtc_extern_ip: Option<String>,
     #[serde(alias = "rtpProxyPort")]
     pub rtp_proxy_port: Option<i32>,
     #[serde(alias = "recordAssistPort")]
@@ -1295,8 +1299,9 @@ pub async fn media_server_save(
            record_assist_port = COALESCE($16, record_assist_port),
            default_server = COALESCE($17, default_server),
            enabled = COALESCE($18, enabled),
-           update_time = $19
-           WHERE id = $20"#,
+           rtc_extern_ip = COALESCE($19, rtc_extern_ip),
+           update_time = $20
+           WHERE id = $21"#,
     )
     .bind(body.hook_ip.as_deref())
     .bind(body.sdp_ip.as_deref())
@@ -1316,6 +1321,7 @@ pub async fn media_server_save(
     .bind(body.record_assist_port)
     .bind(body.default_server)
     .bind(body.enabled)
+    .bind(body.rtc_extern_ip.as_deref())
     .bind(&now)
     .bind(&id)
     .execute(&state.pool)
@@ -1344,6 +1350,7 @@ pub async fn media_server_save(
            record_assist_port = COALESCE(?, record_assist_port),
            default_server = COALESCE(?, default_server),
            enabled = COALESCE(?, enabled),
+           rtc_extern_ip = COALESCE(?, rtc_extern_ip),
            update_time = ?
            WHERE id = ?"#,
     )
@@ -1365,6 +1372,7 @@ pub async fn media_server_save(
     .bind(body.record_assist_port)
     .bind(body.default_server)
     .bind(body.enabled)
+    .bind(body.rtc_extern_ip.as_deref())
     .bind(&now)
     .bind(&id)
     .execute(&state.pool)
@@ -1381,6 +1389,23 @@ pub async fn media_server_save(
                 body.secret.as_deref().unwrap_or_default(),
             )));
         zlm_hook_errors = configure_zlm_hooks(&state, &id, &client).await;
+        // 保存即生效：rtc.externIP 变化后立刻下发并回读校验，
+        // 否则要等下一轮健康检查（最长 10s，且节点已在线时不会重新推送配置）。
+        if let Some(ip) = body
+            .rtc_extern_ip
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            match client
+                .set_server_config_verified(&client.secret, "rtc.externIP", ip)
+                .await
+            {
+                Ok(true) => tracing::info!("媒体节点 {id} 的 rtc.externIP 已设为 {ip}"),
+                Ok(false) => tracing::warn!("媒体节点 {id} 的 rtc.externIP 未生效: {ip}"),
+                Err(e) => tracing::warn!("媒体节点 {id} 下发 rtc.externIP 失败: {e}"),
+            }
+        }
     }
     
     Ok(Json(WVPResult::success(serde_json::json!({

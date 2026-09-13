@@ -57,7 +57,11 @@ pub struct TrackInfo {
     pub codec_id_name: String,
     pub codec_type: u32,
     pub ready: bool,
-    pub fps: Option<u32>,
+    /// 帧率。**必须是浮点**：真实 ZLM 对国标流返回 `"fps": 25.0`
+    /// （JSON 里带小数点），声明成 `u32` 会让整个 `getMediaList` 反序列化失败 ——
+    /// 现象是 `/api/device/query/streams` 恒为空、`/api/server/stream/all` 报错，
+    /// 日志里只有一句 "invalid type: floating point 25.0, expected u32"。
+    pub fps: Option<f64>,
     pub width: Option<u32>,
     pub height: Option<u32>,
     pub channels: Option<u32>,
@@ -425,5 +429,36 @@ mod mp4_name_tests {
             Some("2026-09-12 22:09:45")
         );
         assert_eq!(parse_mp4_file_name_time("bad.mp4"), None);
+    }
+}
+
+#[cfg(test)]
+mod track_fps_tests {
+    use super::*;
+
+    /// 回归：真实 ZLM 对国标流返回 `"fps": 25.0`（浮点）。
+    /// 声明成 `u32` 时整个 `getMediaList` 反序列化失败 → 流列表恒为空，
+    /// 日志只有 "invalid type: floating point 25.0, expected u32"。
+    #[test]
+    fn track_fps_accepts_float_and_int() {
+        let float_json = serde_json::json!({
+            "codec_id": 0, "codec_id_name": "H264", "codec_type": 0, "ready": true,
+            "fps": 25.0, "width": 352, "height": 288
+        });
+        let t: TrackInfo = serde_json::from_value(float_json).expect("fps=25.0 必须能解析");
+        assert_eq!(t.fps, Some(25.0));
+
+        let int_json = serde_json::json!({
+            "codec_id": 0, "codec_id_name": "H264", "codec_type": 0, "ready": true,
+            "fps": 25, "width": 352, "height": 288
+        });
+        let t: TrackInfo = serde_json::from_value(int_json).expect("fps=25 也要能解析");
+        assert_eq!(t.fps, Some(25.0));
+
+        let missing = serde_json::json!({
+            "codec_id": 2, "codec_id_name": "AAC", "codec_type": 1, "ready": true
+        });
+        let t: TrackInfo = serde_json::from_value(missing).expect("fps 缺失要容忍");
+        assert_eq!(t.fps, None);
     }
 }

@@ -243,7 +243,14 @@ GBServer/
 cargo run
 
 # Or with PostgreSQL/Redis/ZLM via Docker Compose
+#
+# ZLM 默认用 **host 网络**（Linux 服务器：收流端口池 / WebRTC 候选 / RTSP-RTMP
+# 都直接落在宿主，不需要逐口映射）：
 docker compose up -d
+#
+# Docker Desktop（macOS / Windows）**不支持 host 网络**，本机开发必须叠加
+# 桥接文件（把 ZLM 切回桥接 + 端口映射，并给后端下发 rtc_extern_ip）：
+docker compose -f docker-compose.yml -f docker-compose.mac.yml up -d
 
 # Import PostgreSQL schema (if not auto-initialized)
 docker exec -i gbserver-postgres psql -U postgres -d gbserver < database/init-postgresql-2.7.4.sql

@@ -212,15 +212,49 @@ cargo run --release
 
 服务默认监听 `http://0.0.0.0:18080`。
 
-### 5. 一键 Docker 启动（仅 PostgreSQL + Redis）
+### 5. 一键 Docker 启动（PostgreSQL + Redis + ZLMediaKit）
 
 ```bash
-docker compose up -d          # PostgreSQL 16 + Redis 7
+docker compose up -d          # ZLM 用 host 网络（推荐，见下）
 docker compose ps
 docker compose down           # 保留数据卷；加 -v 彻底清空
 ```
 
 MySQL 通过 profile 启动：`docker compose --profile mysql up -d`。
+
+#### ZLM 的网络模式（重要）
+
+`docker-compose.yml` 默认让 **ZLM 使用 host 网络**，不再逐口映射：
+
+* GB28181 的收流端口池（`rtp_proxy.port_range`，默认 `30000-30100`）是 ZLM
+  **启动时**建立的，桥接模式必须把整段 UDP 逐个发布 —— 端口池与映射一旦不一致
+  就会"INVITE 200 OK 但永远等不到媒体"；
+* WebRTC 需要浏览器能连上 ZLM 通告的 ICE 候选。桥接模式 ZLM 只知道自己的容器
+  内网 IP，浏览器会一直卡在 `checking`；
+* RTSP(554) / RTMP(1935) / HTTP(8080) / SRT(9000) 在 host 网络下直接绑定宿主，
+  外部设备与上级平台无需穿透映射。
+
+> ⚠️ **Docker Desktop（macOS / Windows）不支持 host 网络**（容器端口在宿主上不可达）。
+> 在这两个平台上开发请叠加桥接文件：
+> ```bash
+> docker compose -f docker-compose.yml -f docker-compose.mac.yml up -d
+> ```
+> 该叠加文件会把 ZLM 切回桥接 + 端口映射，并给后端下发
+
+> `rtc_extern_ip=127.0.0.1`，使 WebRTC 在本机也能连通。
+
+#### 修改 ZLM 配置
+
+ZLM 的配置文件就是仓库里的 `docker/zlm/config.ini`（已挂进容器，可读可写）：
+
+```bash
+vim docker/zlm/config.ini      # 改 rtp_proxy.port_range / rtc.port / api.secret 等
+docker compose restart zlm     # 端口池类配置是启动时建立的，必须重启
+```
+
+WebRTC 的对外通告 IP（`rtc.externIP`）**不需要手改**：在 `config/application.toml`
+的 `[[zlm.servers]]` 里配 `rtc_extern_ip`，或在媒体节点页保存该字段，
+后端会在节点上线时下发并回读校验（host 网络下留空即可）。
 
 ---
 

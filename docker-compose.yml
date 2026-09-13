@@ -18,7 +18,22 @@ services:
       GBSERVER__REDIS__URL: redis://redis:6379
       GBSERVER__JWT__SECRET: ${GBSERVER_JWT_SECRET:-a7f3c9e2b1d84f6a0e8c5b2d9f1a4e7c0b3d6f9a2e5c8b1d4f7a0e3c6b9d2f5}
       GBSERVER__SIP__PASSWORD: ${GBSERVER_SIP_PASSWORD:-admin123}
+      # ---- ZLM 节点地址（默认 compose：ZLM 用 host 网络）----
+      # ZLM 与后端不在同一个网络命名空间：后端在桥接网络里，ZLM 直接占用宿主端口。
+      #   * 后端 → ZLM：host.docker.internal:8080（由下面的 extra_hosts 保证解析）
+      #   * ZLM → 后端 hook：127.0.0.1:18080（ZLM 在 host 命名空间，后端把 18080
+      #     发布在宿主上，因此回环地址就是正确地址）
+      GBSERVER__ZLM__SERVERS__0__IP: ${GBSERVER_ZLM_IP:-host.docker.internal}
+      GBSERVER__ZLM__SERVERS__0__HTTP_PORT: ${GBSERVER_ZLM_HTTP_PORT:-8080}
+      GBSERVER__ZLM__SERVERS__0__HOOK_URL: ${GBSERVER_ZLM_HOOK_URL:-http://127.0.0.1:18080/api/zlm/hook}
+      # host 网络下 ZLM 会通告宿主真实网卡地址，**不要**设 rtc_extern_ip；
+      # 桥接/容器部署才需要（见 docker-compose.mac.yml）。
+      GBSERVER__ZLM__SERVERS__0__RTC_EXTERN_IP: ${GBSERVER_ZLM_RTC_EXTERN_IP:-}
       RUST_LOG: info,gbserver=debug
+    # ZLM 用 host 网络时，容器内的 `host.docker.internal` 必须能解析到宿主机。
+    # Docker Desktop 自带该名字；Linux 上要靠 host-gateway（缺了它后端连不上 ZLM）。
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       postgres:
         condition: service_healthy
@@ -88,59 +103,66 @@ services:
     networks: [gbservernet]
     restart: unless-stopped
 
+  # ==========================================================================
+  # ZLMediaKit：**host 网络**（不再逐口映射）
+  #
+  # 为什么用 host 网络（都是实测踩出来的）：
+  #   1. GB28181 收流端口池（`rtp_proxy.port_range`，默认 30000-30100）是
+  #      **启动时**按 config.ini 建立的。桥接模式必须把整段 UDP 逐个映射
+  #      （`-p 30000-30100:30000-30100/udp`）；Docker Desktop 对上百个端口映射
+  #      极慢（实测会卡住 daemon），而端口池与映射一旦不一致，就会表现为
+  #      "INVITE 200 OK 但永远等不到媒体"。
+  #   2. WebRTC 需要 ZLM 通告**浏览器可达**的地址。桥接模式下 ZLM 只知道自己的
+  #      容器内网 IP（实测 172.18.0.2），宿主浏览器的 ICE 永远停在 checking。
+  #      两种解法：给节点配 `rtc_extern_ip`（后端会下发到 ZLM 的 rtc.externIP），
+  #      或者用 host 网络让 ZLM 直接看到宿主网卡 —— 这里用后者。
+  #   3. RTSP(554) / RTMP(1935) / HTTP(8080) / SRT(9000) 在 host 网络下直接绑定
+  #      宿主端口，外部设备与上级平台无需穿透映射。
+  #
+  # ⚠️ Docker Desktop（macOS / Windows）**不支持** host 网络：容器端口在宿主上
+  #    不可达（实测 `curl 127.0.0.1:<port>` 无响应）。在这两个平台上开发请叠加
+  #    桥接文件：
+  #        docker compose -f docker-compose.yml -f docker-compose.mac.yml up -d
+  #    （该文件把 ZLM 切回桥接 + 端口映射，并给后端下发 rtc_extern_ip，
+  #      使 WebRTC 在本机也能连通。）
+  # ==========================================================================
   zlm:
     image: zlmediakit/zlmediakit:master
     container_name: gbserver-zlm
-    ports:
-      # HTTP / HTTPS API
-      - "8080:80"
-      - "8443:8443"
-      # RTSP / RTSPS
-      - "554:554"
-      - "322:322"
-      # RTMP
-      - "1935:1935"
-      # WebRTC (UDP)
-      - "8000:8000/udp"
-      # SRT (UDP)
-      - "9000:9000/udp"
-      # RTP media for GB28181 (UDP)
-      #
-      # ⚠️ 这里发布的范围**必须**与 ZLM 的 `rtp_proxy.port_range` 一致。
-      # 镜像里的默认值是 30000-35000，而那个端口池是 **ZLM 启动时**按 config.ini
-      # 建立的 —— 运行期用 setServerConfig 改它不会让已建好的池生效。
-      # 两种做法二选一：
-      #   (a) 把这里的范围放开到与 ZLM 一致（如 30000-35000，注意 Docker Desktop
-      #       对上千个端口映射会很吃力，本仓库实测会卡住 daemon）；
-      #   (b) 【本仓库采用】挂一份 config.ini 把 ZLM 的 rtp_proxy.port_range
-      #       收窄到与本文件一致 —— 见下面 zlm 服务的 volumes 挂载。
-      # 后端在节点上线时会核对两者并把不一致**明确告警**（见
-      # zlm/health_checker.rs 与 handlers/play.rs 的端口校验），不会再出现
-      # "INVITE 200 OK 但永远收不到媒体"却毫无提示的情况。
-      - "30000-30100:30000-30100/udp"
+    # host 网络：与宿主共用网络命名空间，不再需要 ports / extra_hosts。
+    network_mode: host
     environment:
       ZLM_HTTP_SECRET: S63648HLbxckv7YjpPTXXRTOsAVGo0Ia
-    # 让容器内的 `host.docker.internal` **稳定解析到宿主机的 IPv4 网关**。
-    # Docker Desktop 上该名字可能只解析出 IPv6 ULA（实测 `fdc4:f303:9324::254`），
-    # 于是 ZLM 的 hook 请求（on_publish / on_record_mp4 / on_server_keepalive …）
-    # 全部连不上后端 —— 平台侧表现为"录像永远不落库""节点心跳不刷新"，
-    # 而两个方向的 HTTP 探测都正常，极难排查。
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     volumes:
-      # 用仓库里的 config.ini 覆盖镜像默认配置：**只**为把 rtp_proxy.port_range
-      # 收窄到与上面发布的 UDP 范围一致（镜像默认 30000-35000，而该端口池是
-      # ZLM 启动时建立的，运行期改不生效）。不同步这份文件，GB28181 收流端口
-      # 就可能落在未映射的端口上 —— 现象是 "INVITE 200 OK 但一直等不到媒体"。
-      # 后端启动时会核对并告警（见 handlers/play.rs）。
+      # ZLM 配置文件由本仓库维护，**只读**挂载：改完 `docker compose restart zlm`
+      # 生效（`rtp_proxy.port_range` / `rtc.port` 这类端口池是启动时建立的，
+      # 运行期用 setServerConfig 改它不生效）。
+      #
+      # 为什么只读：ZLM 收到 setServerConfig 后会把**整份** config.ini 重写一遍，
+      # 我们文件里的注释与中文说明会被它抹掉（实测 700+ 行注释全被重写）。
+      # hook / mediaServerId / rtp 端口范围 / rtc.externIP 这些**运行期**配置
+      # 一律由后端下发（节点上线、ZLM 启动 on_server_started、以及每轮健康检查），
+      # 所以容器不需要写这份文件。
+      #
+      # 关键项（见 docker/zlm/config.ini）：
+      #   [api] secret               与 config/application.toml 的 zlm secret 一致
+      #   [rtp_proxy] port_range     收流端口池；host 网络下无需再映射
+      #   [rtc] port                 WebRTC 单端口（默认 8000/udp）
+      #   [rtc] externIP             桥接部署才需要，由后端按 rtc_extern_ip 下发
       - ./docker/zlm/config.ini:/opt/media/conf/config.ini:ro
-    networks: [gbservernet]
+      # 录像与截图**必须持久化**：它们默认写在容器文件系统里，`docker compose
+      # up -d --force-recreate zlm`（或镜像升级）会把已录的 MP4 全部删掉，
+      # 而库里 gb_cloud_record 仍留着记录 —— 表现为"列表里有录像但点开 404/500"。
+      - zlmrecord:/opt/media/bin/www/record
+      - zlmsnap:/opt/media/bin/www/snap
     restart: unless-stopped
 
 volumes:
   mysqldata:
   pgdata: {}
   redisdata: {}
+  zlmrecord: {}
+  zlmsnap: {}
 
 networks:
   gbservernet:

@@ -351,6 +351,7 @@ create table IF NOT EXISTS gb_media_server
     rtp_enable          bool                  default false,
     rtp_port_range      character varying(50),
     send_rtp_port_range character varying(50),
+    rtc_extern_ip character varying(100),
     record_assist_port  integer,
     default_server      bool                  default false,
     enabled             bool                  default true,
@@ -399,6 +400,7 @@ COMMENT ON COLUMN gb_media_server.type IS '节点类型';
 COMMENT ON COLUMN gb_media_server.rtp_enable IS '是否开启RTP';
 COMMENT ON COLUMN gb_media_server.rtp_port_range IS 'RTP端口范围';
 COMMENT ON COLUMN gb_media_server.send_rtp_port_range IS '发送RTP端口范围';
+COMMENT ON COLUMN gb_media_server.rtc_extern_ip IS 'WebRTC对外通告IP(rtc.externIP)；桥接/容器部署必填';
 COMMENT ON COLUMN gb_media_server.record_assist_port IS '录像辅助端口';
 COMMENT ON COLUMN gb_media_server.default_server IS '是否默认节点';
 COMMENT ON COLUMN gb_media_server.enabled IS '是否参与选路（false=暂时下线）';
