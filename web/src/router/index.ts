@@ -34,79 +34,79 @@ const constantRoutes: RouteRecordRaw[] = [
         path: 'device',
         name: 'Device',
         component: () => import('@/views/device/index.vue'),
-        meta: { title: '国标设备', icon: 'video-camera' }
+        meta: { title: '国标设备', icon: 'device' }
       },
       {
         path: 'channel',
         name: 'Channel',
         component: () => import('@/views/channel/index.vue'),
-        meta: { title: '通道列表', icon: 'list' }
+        meta: { title: '通道列表', icon: 'channel' }
       },
       {
         path: 'live',
         name: 'Live',
         component: () => import('@/views/live/index.vue'),
-        meta: { title: '实时直播', icon: 'video-play' }
+        meta: { title: '实时直播', icon: 'live' }
       },
       {
         path: 'playback',
         name: 'Playback',
         component: () => import('@/views/playback/index.vue'),
-        meta: { title: '录像回放', icon: 'video-camera-filled' }
+        meta: { title: '录像回放', icon: 'playback' }
       },
       {
         path: 'cloudRecord',
         name: 'CloudRecord',
         component: () => import('@/views/cloudRecord/index.vue'),
-        meta: { title: '云端录像', icon: 'folder' }
+        meta: { title: '云端录像', icon: 'cloudRecord' }
       },
       {
         path: 'mediaServer',
         name: 'MediaServer',
         component: () => import('@/views/mediaServer/index.vue'),
-        meta: { title: '媒体节点', icon: 'cpu' }
+        meta: { title: '媒体节点', icon: 'mediaServerList' }
       },
       {
         path: 'recordPlan',
         name: 'RecordPlan',
         component: () => import('@/views/recordPlan/index.vue'),
-        meta: { title: '录像计划', icon: 'calendar' }
+        meta: { title: '录像计划', icon: 'recordPlan' }
       },
       {
         path: 'platform',
         name: 'Platform',
         component: () => import('@/views/platform/index.vue'),
-        meta: { title: '上级平台', icon: 'connection' }
+        meta: { title: '上级平台', icon: 'platform' }
       },
       {
         path: 'streamProxy',
         name: 'StreamProxy',
         component: () => import('@/views/streamProxy/index.vue'),
-        meta: { title: '拉流代理', icon: 'refresh' }
+        meta: { title: '拉流代理', icon: 'streamProxy' }
       },
       {
         path: 'streamPush',
         name: 'StreamPush',
         component: () => import('@/views/streamPush/index.vue'),
-        meta: { title: '推流列表', icon: 'upload' }
+        meta: { title: '推流列表', icon: 'streamPush' }
       },
       {
         path: 'region',
         name: 'Region',
         component: () => import('@/views/region/index.vue'),
-        meta: { title: '行政区划', icon: 'location' }
+        meta: { title: '行政区划', icon: 'region' }
       },
       {
         path: 'map',
         name: 'Map',
         component: () => import('@/views/map/index.vue'),
-        meta: { title: '电子地图', icon: 'map-location' }
+        meta: { title: '电子地图', icon: 'map' }
       },
       {
         path: 'alarm',
         name: 'Alarm',
         component: () => import('@/views/alarm/index.vue'),
-        meta: { title: '报警管理', icon: 'warning' }
+        meta: { title: '报警管理', icon: 'alarm' }
       },
       {
         path: 'user',
@@ -118,7 +118,7 @@ const constantRoutes: RouteRecordRaw[] = [
         path: 'jtDevice',
         name: 'JtDevice',
         component: () => import('@/views/jtDevice/index.vue'),
-        meta: { title: 'JT1078 终端', icon: 'van' }
+        meta: { title: 'JT1078 终端', icon: 'jtDevice' }
       },
       {
         path: 'operations/realLog',
