@@ -714,7 +714,7 @@ pub async fn list_media_items_by_terminal(
 // Phase 6.5: 区域/路线 持久化（GBServer 扩展，JT/T 808/1078 围栏管理）
 // ============================================================================
 
-/// 序列化成 **camelCase**：前端（与 WVP 的 Java bean）读的是 `phoneNumber`/
+/// 序列化成 **camelCase**：前端读的是 `phoneNumber`/
 /// `centerLat`/`radiusM`/`pointsJson` 等，snake_case 会让表格整列空白。
 #[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]
 #[serde(rename_all = "camelCase")]
@@ -729,7 +729,7 @@ pub struct JtAreaCircle {
     pub update_time: String,
 }
 
-/// 序列化成 **camelCase**：前端（与 WVP 的 Java bean）读的是 `phoneNumber`/
+/// 序列化成 **camelCase**：前端读的是 `phoneNumber`/
 /// `centerLat`/`radiusM`/`pointsJson` 等，snake_case 会让表格整列空白。
 #[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]
 #[serde(rename_all = "camelCase")]
@@ -742,7 +742,7 @@ pub struct JtAreaPolygon {
     pub update_time: String,
 }
 
-/// 序列化成 **camelCase**：前端（与 WVP 的 Java bean）读的是 `phoneNumber`/
+/// 序列化成 **camelCase**：前端读的是 `phoneNumber`/
 /// `centerLat`/`radiusM`/`pointsJson` 等，snake_case 会让表格整列空白。
 #[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]
 #[serde(rename_all = "camelCase")]
@@ -758,7 +758,7 @@ pub struct JtAreaRectangle {
     pub update_time: String,
 }
 
-/// 序列化成 **camelCase**：前端（与 WVP 的 Java bean）读的是 `phoneNumber`/
+/// 序列化成 **camelCase**：前端读的是 `phoneNumber`/
 /// `centerLat`/`radiusM`/`pointsJson` 等，snake_case 会让表格整列空白。
 #[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]
 #[serde(rename_all = "camelCase")]

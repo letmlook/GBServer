@@ -90,7 +90,7 @@ const isEdit = computed(() => !!props.platform?.id)
 const saving = ref(false)
 const formRef = ref<FormInstance>()
 
-// 字段名与后端 / WVP 的 Platform.java 一致。此前用的 `serverGbId`(小写 b) /
+// 字段名与后端 `gb_platform` 表一致。此前用的 `serverGbId`(小写 b) /
 // `realm` / `registerInterval` / `heartBeatInterval` / `heartBeatCount`
 // 后端全都不认（前两个是拼写错，后三个字段根本不存在）。
 const form = reactive<Partial<Platform>>({

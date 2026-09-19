@@ -1,6 +1,6 @@
-//! WVP-Pro 兼容的多路径 hook 路由（Phase 4.1）
+//! 多路径 hook 路由（Phase 4.1）
 //!
-//! 背景：WVP-Pro / 部分前端实现对每个 hook 事件订阅单独路径，便于
+//! 背景：部分前端实现要求对每个 hook 事件订阅单独路径，便于
 //! "按需订阅、零反射"地集成。本模块暴露 `/api/hook/<event>` 多路径路由，
 //! 与既有 `/api/zlm/hook` 单路径入口并存（后者在 router.rs 中以
 //! `zlm_hook::handle_webhook` 形式注册，Phase 0 已就绪）。
@@ -168,7 +168,7 @@ impl HookEventTag for SendRtpProgress {
 /// 少配 → 该事件收不到；多配 → ZLM 会 404 且我们白等。两者由单元测试交叉校验。
 /// 只有路由、但**不下发给 ZLM** 的事件名（别名/兼容名）。
 ///
-/// `on_record_file` 只存在于 `handle_webhook` 的分派器与部分 WVP 分支/魔改版
+/// `on_record_file` 只存在于 `handle_webhook` 的分派器与部分魔改版
 /// ZLM 中；ZLM 官方配置项里只有 `on_record_mp4` / `on_record_hls`
 /// （见 https://docs.zlmediakit.com/guide/media_server/web_hook_api.html 的
 /// `[hook]` 默认配置）。因此我们保留路由以兼容那些会发该名字的实现，
@@ -254,7 +254,7 @@ async fn handle_hook_event<T: HookEventTag>(
     handle_webhook_inner(&state, event, query.as_deref()).await
 }
 
-/// WVP-Pro 多路径 hook 路由集合
+/// 多路径 hook 路由集合
 ///
 /// 暴露 13 条 `/api/hook/<event>` POST 路径。`/api/zlm/hook` 单路径入口
 /// 由 `router.rs` 直接注册 `zlm_hook::handle_webhook`，不在此处重复。

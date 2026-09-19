@@ -7,13 +7,13 @@
 //! * 本仓库 Vue3 前端：有的地方 `map(String)` 发字符串（如云端录像删除的 `ids`），
 //!   有的地方直接发 `el-input` 的字符串（如区域国标编码），
 //!   还有的地方发 `el-select` 的数字；
-//! * WVP 的 Java 客户端 / 第三方集成：按 WVP bean 的类型发（多为整数）；
+//! * 第三方集成 / 脚本化客户端：按各自 DTO 的类型发（多为整数）；
 //! * 手工 curl / 脚本：随手写 `1` 或 `"1"`。
 //!
 //! 严格的 `Option<i64>` / `Vec<String>` 会让其中一类调用方直接 **422**
 //! （`invalid type: integer 43, expected a string` 之类），而这类失败
 //! **只在特定调用方上出现**，很容易长期潜伏 —— 2026-09-12 就在
-//! `DELETE /api/cloud/record/delete`（前端 `map(String)`，WVP 发整数）与
+//! `DELETE /api/cloud/record/delete`（前端 `map(String)`，脚本发整数）与
 //! `/api/jt1078/terminal/add`（颜色发数字、省域发字符串）上各踩了一次。
 //!
 //! 因此：**编号/ID 类字段一律用本模块的助手**，把"数字还是字符串"这种
@@ -64,7 +64,7 @@ where
 
 /// `Option<Vec<String>>`，元素接受字符串 / 数字 / 布尔。
 ///
-/// 典型场景：`DELETE /api/cloud/record/delete` body `{"ids":[43]}`（WVP/脚本）
+/// 典型场景：`DELETE /api/cloud/record/delete` body `{"ids":[43]}`（脚本/第三方集成）
 /// 与 `{"ids":["43"]}`（本仓库前端）都要能用。
 pub fn de_opt_string_vec<'de, D>(de: D) -> Result<Option<Vec<String>>, D::Error>
 where
@@ -210,7 +210,7 @@ mod tests {
         }
     }
 
-    /// 回归：`DELETE /api/cloud/record/delete` 的 `{"ids":[43]}`（WVP/脚本发整数）
+    /// 回归：`DELETE /api/cloud/record/delete` 的 `{"ids":[43]}`（脚本发整数）
     /// 与 `{"ids":["43"]}`（本仓库前端 `map(String)`）都必须能解析。
     #[test]
     fn string_vec_accepts_mixed_scalars() {

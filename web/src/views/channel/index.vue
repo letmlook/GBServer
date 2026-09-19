@@ -170,8 +170,7 @@ function onPageChange(page: number, size: number) {
 const loading = ref(false)
 const rows = ref<any[]>([])
 const total = ref(0)
-// 这三个接口返回的是 `{name, code}`（WVP `IndustryCodeType`/`DeviceType`/
-// `NetworkIdentificationType`），不是字符串数组 —— 早期按 string[] 用，
+// 这三个接口返回的是 `{name, code}` 对象（不是字符串数组）—— 早期按 string[] 用，
 // 下拉里显示的是 "[object Object]"。
 const industryList = ref<ChannelCodeType[]>([])
 const typeList = ref<ChannelCodeType[]>([])

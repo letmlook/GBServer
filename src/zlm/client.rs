@@ -412,7 +412,7 @@ impl ZlmClient {
     /// 让 ZLM 主动连接远端的 RTP 服务器(`设备` 侧 GB28181 INVITE 200 OK
     /// SDP 里的 m= 端口 —— 设备宣告自己将从该端口发送流)。
     /// 解决了"设备按 200 OK SDP 推流而不是按 INVITE m= 推流"的非标准
-    /// gbcpp/1.0 mock 行为;WVP2.6.9 同样依赖此机制。
+    /// gbcpp/1.0 mock 行为;本平台的转码/转推链路同样依赖此机制。
     pub async fn connect_rtp_server(
         &self,
         stream_id: &str,
@@ -718,7 +718,7 @@ impl ZlmClient {
 
     /// 删除一个 ffmpeg 拉流/转码源（ZLM `/index/api/delFFmpegSource`）。
     ///
-    /// WVP 的 `POST /api/play/convertStop/{key}` 就是它：转码/转推的流停止时
+    /// 本平台的 `POST /api/play/convertStop/{key}` 走的就是它：转码/转推的流停止时
     /// 必须把 ffmpeg 源删掉，否则 ZLM 会一直重试拉流。
     pub async fn del_ffmpeg_source(&self, key: &str) -> Result<()> {
         let params = vec![

@@ -463,7 +463,7 @@ pub async fn set_handled(
     Ok(r.rows_affected())
 }
 
-/// 按条件清空（WVP `clearAlarmsByCondition`）。`where_sql` 由 handler 用
+/// 按条件清空。`where_sql` 由 handler 用
 /// `DynWhere` 生成并保证是参数化的；空条件表示清空整表。
 pub async fn delete_where(pool: &Pool, where_sql: &str, binds: &[String]) -> sqlx::Result<u64> {
     let sql = format!("DELETE FROM gb_device_alarm{where_sql}");

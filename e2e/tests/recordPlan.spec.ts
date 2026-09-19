@@ -4,13 +4,13 @@
  * 这一页此前**完全是坏的**，而且坏得毫无提示：
  *
  *   1. 前端把计划存成 `startTime/endTime/mon..sun`，后端只认 `planItemList`
- *      （WVP 契约）→ "新增计划"返回成功，但库里一条时段都没有，计划永不录像；
+ *      → "新增计划"返回成功，但库里一条时段都没有，计划永不录像；
  *   2. 列表渲染 `planType/startTime/endTime` 等后端从不返回的字段 → 整列空白；
  *   3. 删除用 HTTP GET 调 `/api/record/plan/delete`，而后端只注册了 DELETE
  *      → 稳定 405，删除功能不可用。
  *
  * 所以这里必须测"真实数据往返"，而不是"页面能渲染"：
- *   - 断言**发出的请求体**是 WVP 契约（`planItemList` + 分钟 + ISO 星期）；
+ *   - 断言**发出的请求体**符合后端契约（`planItemList` + 分钟 + ISO 星期）；
  *   - 断言列表能读回时段（说明后端确实存下来了）；
  *   - 断言删除真的成功（走 DELETE）。
  */
@@ -27,7 +27,7 @@ async function gotoRecordPlan(page: Page) {
 }
 
 test.describe('Record plan page (/recordPlan)', () => {
-  test('add → list → edit → delete 全链路使用 WVP 契约', async ({ page }) => {
+  test('add → list → edit → delete 全链路使用后端契约', async ({ page }) => {
     await gotoRecordPlan(page);
     await expect(page.getByRole('button', { name: '新增计划' })).toBeVisible();
 

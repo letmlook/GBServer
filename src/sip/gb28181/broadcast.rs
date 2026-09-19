@@ -3,7 +3,7 @@
 //! 与 TalkManager 的区别：
 //! - Talk：客户端 → 设备（一对一，客户端对讲）
 //! - Broadcast：设备 → 客户端（一对多，设备广播声音给多个客户端）
-//! - Subject 第 4 段 SSRC 前缀：Talk=3，Broadcast=4（与 WVP Java 兼容）
+//! - Subject 第 4 段 SSRC 前缀：Talk=3，Broadcast=4
 //!
 //! Phase 3.5: 把 broadcast 与 talk 拆分为独立 manager，避免 BYE 走错方向
 

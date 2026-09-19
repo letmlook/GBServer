@@ -115,7 +115,7 @@ async function load() {
   if (!props.planId) return
   loading.value = true
   try {
-    // 列表接口返回的 total/list 与 WVP PageInfo 同构
+    // 列表接口返回的 total/list 是分页对象同构
     const res = await queryPlanChannels({
       page: page.value,
       count: count.value,
@@ -190,7 +190,7 @@ async function onUnlinkSelected() {
     ElMessage.warning('请选择要移除的通道')
     return
   }
-  // 不带 planId 的 channelIds = 取消关联（WVP 语义）
+  // 不带 planId 的 channelIds = 取消关联（接口语义）
   await doLink(
     { channelIds: selected.value.map((c) => c.gbId) },
     `已移除 ${selected.value.length} 个通道`

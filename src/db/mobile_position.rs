@@ -6,10 +6,10 @@ use super::Pool;
 
 /// 移动位置信息结构体
 ///
-/// 序列化成 **camelCase**：与 WVP 的 `MobilePosition` Java bean 以及
-/// `/api/position/*` 的对外契约一致（`deviceId` / `channelId` / `deviceName` /
+/// 序列化成 **camelCase**：与 `/api/position/*` 的对外契约一致
+/// （`deviceId` / `channelId` / `deviceName` /
 /// `reportSource` / `createTime`）。此前是 snake_case，对外会暴露 `channel_id`
-/// 这类键，与 WVP 不一致。
+/// 这类键，与契约不一致。
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 #[serde(rename_all = "camelCase")]
 pub struct MobilePosition {

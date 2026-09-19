@@ -118,7 +118,7 @@ async function loadData() {
       channelId: query.channelId,
       app: query.app,
       stream: query.stream,
-      // 后端/WVP 的时间格式是本地 `yyyy-MM-dd HH:mm:ss`；
+      // 后端的时间格式是本地 `yyyy-MM-dd HH:mm:ss`；
       // 早期发 `toISOString()`（带毫秒和 Z）会被解析失败，选完时间列表就空了。
       startTime: formatLocal(query.startTime),
       endTime: formatLocal(query.endTime)
@@ -130,7 +130,7 @@ async function loadData() {
   }
 }
 
-/** Date → 本地 `yyyy-MM-dd HH:mm:ss`（WVP 契约） */
+/** Date → 本地 `yyyy-MM-dd HH:mm:ss`（后端契约） */
 function formatLocal(d?: Date): string | undefined {
   if (!d) return undefined
   const p = (n: number) => String(n).padStart(2, '0')

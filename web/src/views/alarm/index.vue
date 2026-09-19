@@ -118,7 +118,7 @@ async function loadData() {
       page: query.page,
       count: query.count,
       query: query.query,
-      // 后端参数名是 beginTime（WVP 同款）
+      // 后端参数名是 beginTime
       beginTime: query.startTime,
       endTime: query.endTime
     })
@@ -178,7 +178,7 @@ async function onDelete(row: Alarm) {
 }
 
 /**
- * 「批量清除」= 删除选中的若干条（WVP `DELETE /api/alarm/delete` + 裸数组 body）。
+ * 「批量清除」= 删除选中的若干条（`DELETE /api/alarm/delete` + 裸数组 body）。
  * 早期是 `POST /api/alarm/batch` + `{ids, action}`：方法不匹配 405，
  * 且后端不认 `action`（"清除"会被当成永久删除）。
  */
@@ -198,7 +198,7 @@ async function onBatchClear() {
 }
 
 /**
- * 「按条件清空」= WVP 的 `DELETE /api/alarm/clear`：清空当前筛选条件下的全部告警
+ * 「按条件清空」= `DELETE /api/alarm/clear`：清空当前筛选条件下的全部告警
  * （不带条件就是清空全部，二次确认里写清楚条数）。
  */
 async function onClearByFilter() {

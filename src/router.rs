@@ -128,8 +128,8 @@ pub fn app(state: AppState) -> Router<AppState> {
             "/api/device/control/reboot",
             get(device_control::device_reboot),
         )
-        // WVP `DeviceControl.java` 的其余真实端点：此前完全未挂载，
-        // 按 WVP 路径调用会落到 SPA 兜底拿到 index.html。
+        // 这些端点此前完全未挂载，
+        // 按此路径调用会落到 SPA 兜底拿到 index.html。
         .route(
             "/api/device/control/teleboot/:device_id",
             get(device_control::device_teleboot),
@@ -162,30 +162,30 @@ pub fn app(state: AppState) -> Router<AppState> {
             "/api/device/config/update",
             post(device_control::device_config_update),
         )
-        // WVP `DeviceConfig.java` 端点（查询返回解析后的字段；下发按国标 ConfigDownload）
+        // 设备配置端点（查询返回解析后的字段；下发按国标 ConfigDownload）
         .route(
             "/api/device/config/query/basicParam",
-            get(device_control::wvp_config_query_basic_param),
+            get(device_control::config_query_basic_param),
         )
         .route(
             "/api/device/config/query/videoParamOpt",
-            get(device_control::wvp_config_query_video_param),
+            get(device_control::config_query_video_param),
         )
         .route(
             "/api/device/config/query/svacEncodeConfig",
-            get(device_control::wvp_config_query_svac_encode),
+            get(device_control::config_query_svac_encode),
         )
         .route(
             "/api/device/config/query/svacDecodeConfig",
-            get(device_control::wvp_config_query_svac_decode),
+            get(device_control::config_query_svac_decode),
         )
         .route(
             "/api/device/config/set/basicParam",
-            get(device_control::wvp_config_set_basic_param),
+            get(device_control::config_set_basic_param),
         )
         .route(
             "/api/device/config/set/videoParamOpt",
-            get(device_control::wvp_config_set_video_param),
+            get(device_control::config_set_video_param),
         )
         .route(
             "/api/device/query/subscribe/catalog",
@@ -246,7 +246,7 @@ pub fn app(state: AppState) -> Router<AppState> {
             "/api/device/query/info/:device_id",
             get(device_query::device_info),
         )
-        // WVP `DeviceQuery.java` 的路径/参数风格入口（与本平台的历史形式并存）
+        // 路径/参数风格入口（与本平台的历史形式并存）
         .route("/api/device/query/info", get(device_query::device_info_query))
         .route(
             "/api/device/query/devices/:device_id/status",
@@ -257,7 +257,7 @@ pub fn app(state: AppState) -> Router<AppState> {
             get(device_query::sync_status_path),
         )
         .route(
-            // 立即抓一帧刷新缩略图（WVP 兼容路径）。GET/POST 都收 ——
+            // 立即抓一帧刷新缩略图（历史前端兼容路径）。GET/POST 都收 ——
             // 老前端用 GET 调，新前端用 POST。
             "/api/device/query/snap/:device_id/:channel_id",
             get(device_query::snap_path).post(device_query::snap_path),
@@ -390,7 +390,7 @@ pub fn app(state: AppState) -> Router<AppState> {
         .route("/api/proxy/start", get(stream::proxy_start))
         .route("/api/proxy/stop", get(stream::proxy_stop))
         .route("/api/proxy/delete", delete(stream::proxy_delete))
-        // WVP 的 `del` 用 app+stream 定位（`/api/proxy/delete` 用 id）
+        // `del` 用 app+stream 定位（`/api/proxy/delete` 用 id）
         .route("/api/proxy/del", delete(stream::proxy_delete))
         .route("/api/platform/query", get(platform::platform_query))
         .route(
@@ -607,8 +607,8 @@ pub fn app(state: AppState) -> Router<AppState> {
             get(stub::record_plan_channel_list),
         )
         .route("/api/record/plan/link", post(stub::record_plan_link))
-        // ========== 移动位置（对齐 WVP MobilePositionController） ==========
-        // history 带 `channelId` 时按 WVP 口径读 gb_device_mobile_position；
+        // ========== 移动位置 ==========
+        // history 带 `channelId` 时读 gb_device_mobile_position；
         // 不带时保持旧行为（gb_position_history 宽表）。
         .route(
             "/api/position/history/:device_id",
@@ -849,7 +849,7 @@ pub fn app(state: AppState) -> Router<AppState> {
             "/api/common/channel/playback/speed",
             get(common_channel::channel_playback_speed),
         )
-        // WVP `ChannelController` / `ChannelFrontEndController` 的其余端点
+        // 通道级（对讲/广播）与前端通道（front-end/*）的其余端点
         .route(
             "/api/common/channel/talk/start",
             get(common_channel::channel_talk_start),
@@ -1051,8 +1051,8 @@ pub fn app(state: AppState) -> Router<AppState> {
         .route("/api/alarm/handle", post(alarm::alarm_handle))
         .route("/api/alarm/delete/:id", delete(alarm::alarm_delete))
         .route("/api/alarm/batch", delete(alarm::alarm_batch_delete))
-        // WVP 契约：DELETE body 是裸数组 [1,2,3]
-        .route("/api/alarm/delete", delete(alarm::alarm_delete_batch_wvp))
+        // 本端点契约：DELETE body 是裸数组 [1,2,3]
+        .route("/api/alarm/delete", delete(alarm::alarm_delete_batch))
         .route("/api/alarm/device/:device_id", delete(alarm::alarm_delete_by_device))
         .route("/api/alarm/before/:time", delete(alarm::alarm_delete_before_time))
         // Phase 7.6: system info/stats/version/online-users
@@ -1101,7 +1101,7 @@ pub fn app(state: AppState) -> Router<AppState> {
         .route("/api/ps/send/start", post(rtp_control::ps_send_start))
         .route("/api/ps/send/stop/:stream_id", post(rtp_control::ps_send_stop))
         .route("/api/ps/getTestPort", get(rtp_control::ps_get_test_port))
-        // WVP 第三方对接（vmanager/rtp|ps）的查询参数风格入口
+        // 第三方对接（vmanager/rtp|ps）的查询参数风格入口
         .route(
             "/api/rtp/receive/close",
             get(rtp_control::rtp_receive_close_query),
@@ -1150,7 +1150,7 @@ pub fn app(state: AppState) -> Router<AppState> {
             delete(jt1078_extra::terminal_channel_delete_query),
         )
         .route("/api/jt1078/terminal/channel/one/:id", get(jt1078_extra::terminal_channel_one))
-        // WVP 用查询参数（`?id=`）而不是路径参数
+        // 该入口用查询参数（`?id=`）而不是路径参数
         .route(
             "/api/jt1078/terminal/channel/one",
             get(jt1078_extra::terminal_channel_one_query),
@@ -1202,7 +1202,7 @@ pub fn app(state: AppState) -> Router<AppState> {
     let app = Router::new()
         .merge(api)
         .merge(zlm_protected)
-        // Phase 4.1: WVP-Pro 兼容多路径 hook 路由（/api/hook/*）
+        // Phase 4.1: 兼容多路径 hook 路由（/api/hook/*）
         // 公共端点，与既有 /api/zlm/hook 单路径并存
         .merge(zlm_hook_routes::hook_routes())
         .with_state(state.clone());
@@ -1239,7 +1239,7 @@ pub fn app(state: AppState) -> Router<AppState> {
         }
     };
 
-    // 静态资源：前端构建产物（与 Java 版 static 目录一致）
+    // 静态资源：前端构建产物目录（`static_dir`，默认 web/dist）
     let static_dir = state
         .config
         .static_dir

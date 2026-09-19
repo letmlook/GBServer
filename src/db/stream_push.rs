@@ -9,7 +9,7 @@ use std::str::FromStr;
 
 /// 推流记录结构体。
 ///
-/// 序列化成 **camelCase**：前端（与 WVP 的 `StreamPush` bean）读的是
+/// 序列化成 **camelCase**：前端读的是
 /// `mediaServerId`/`createTime`/`startOfflinePush`，snake_case 会让"媒体节点"等列空白。
 #[derive(Debug, Clone, Serialize, FromRow)]
 #[serde(rename_all = "camelCase")]
@@ -33,7 +33,7 @@ pub struct StreamPush {
     /// Phase 4.5: 统一流状态字段（与 `pushing` bool 并存，不替换）
     #[serde(default)]
     pub stream_status: Option<String>,
-    /// 绑定的国标设备/通道（`/api/push/save_to_gb` 写入；WVP 用通道行表达，
+    /// 绑定的国标设备/通道（`/api/push/save_to_gb` 写入；早期实现在通道行上表达，
     /// 这里落在推流表上，语义等价且不引入新的 data_type 约定）
     pub gb_device_id: Option<String>,
     pub gb_channel_id: Option<String>,
@@ -634,7 +634,7 @@ mod push_filter_tests {
     }
 
     /// 列表序列化成 camelCase（前端读 mediaServerId/createTime），
-    /// 且带 `pushUrl`（WVP 表里没有 url 列，前端"推流地址"是算出来的）。
+    /// 且带 `pushUrl`（表里没有 url 列，前端"推流地址"是算出来的）。
     #[tokio::test]
     async fn test_list_serializes_camel_case() {
         let pool = sqlite_pool_with_schema().await;

@@ -3,7 +3,7 @@ use sqlx::FromRow;
 
 use super::Pool;
 
-/// gb_user + gb_user_role 联合查询结果（与 Java User 含 Role 一致）
+/// gb_user + gb_user_role 联合查询结果（`role` 是嵌套对象，不是扁平的 roleId/roleName）
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub struct User {
     pub id: i32,
@@ -27,7 +27,7 @@ impl User {
     }
 }
 
-/// 前端需要的 LoginUser 结构（与 Java LoginUser 兼容），字段名 camelCase 与前端一致
+/// 登录后返回给前端的用户结构（含嵌套 `role`），字段名 camelCase 与前端一致
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LoginUserResponse {

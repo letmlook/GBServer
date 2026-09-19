@@ -110,8 +110,8 @@ pub fn build_ptz_cmd(action: PtzAction, speed: u8) -> String {
     b.iter().map(|x| format!("{:02X}", x)).collect()
 }
 
-/// 组装**任意** 8 字节 `PTZCmd`（等价于 WVP 的
-/// `SIPCommander.frontEndCmdString(cmdCode, parameter1, parameter2, combineCode2)`）：
+/// 组装**任意** 8 字节 `PTZCmd`（等价于
+/// `frontEndCmdString(cmdCode, parameter1, parameter2, combineCode2)`）：
 ///
 /// ```text
 /// A5 | 0F | 01 | 指令码 | 数据1 | 数据2 | 组合码2<<4 | 校验和
@@ -119,7 +119,7 @@ pub fn build_ptz_cmd(action: PtzAction, speed: u8) -> String {
 ///
 /// 聚焦/光圈、预置位、巡航、扫描、辅助开关/雨刷在 **GB/T 28181-2022 附录 A.3**
 /// 里都是这 8 字节 PTZCmd 的不同指令码，**不是**独立 XML 元素；
-/// WVP-PRO 也是全部走这个构造器（它那几个 `FrontEndControlCodeFor*.encode()`
+/// 本平台也是全部走这个构造器（那套 `FrontEndControlCodeFor*.encode()`
 /// 全部 `return ""`，从不参与下发路径）。
 pub fn build_ptz_cmd_raw(
     cmd_code: u8,
@@ -140,7 +140,7 @@ pub fn build_ptz_cmd_raw(
     b.iter().map(|x| format!("{:02X}", x)).collect()
 }
 
-/// 聚焦 / 光圈。WVP 的指令码：基址 `1<<6`，
+/// 聚焦 / 光圈。基址 `1<<6`，
 /// 聚焦 bit1=近、bit0=远；光圈 bit3=开、bit2=关。
 ///
 /// | 动作 | 指令码 | 数据1 | 数据2 |
@@ -171,7 +171,7 @@ pub fn build_preset_cmd(action: PresetAction, preset_index: u32) -> String {
     build_ptz_cmd_raw(cmd_code, 0, (preset_index & 0xFF) as u8, 0)
 }
 
-/// 巡航动作（对照 WVP `SourcePTZServiceForGbImpl::tour` 的指令码表）。
+/// 巡航动作（指令码表）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TourAction {
     /// 0x84：添加预置位到巡航组（数据1=巡航组号，数据2=预置位号）
@@ -184,14 +184,14 @@ pub enum TourAction {
     SetTime,
     /// 0x88：开始巡航
     Start,
-    /// 停止：国标与 WVP 都没有单独的停止指令码（WVP 的 code 6 不设指令码，
+    /// 停止：国标没有单独的停止指令码（停止动作不设指令码，
     /// 实际下发的是 0x00「停止所有动作」），这里保持同样行为。
     Stop,
 }
 
 /// 巡航控制。`value` 是速度或停留时间（1-4095，写入组合码2 的高 4 位）。
 pub fn build_tour_cmd(action: TourAction, tour_id: u8, preset_id: u8, value: u16) -> String {
-    // 组合码2 只有 4 位（0-15）：按 WVP 的口径夹取
+    // 组合码2 只有 4 位（0-15）：按此口径夹取
     let c2 = (value.min(15)) as u8;
     match action {
         TourAction::AddPoint => build_ptz_cmd_raw(0x84, tour_id, preset_id, 0),
@@ -203,7 +203,7 @@ pub fn build_tour_cmd(action: TourAction, tour_id: u8, preset_id: u8, value: u16
     }
 }
 
-/// 扫描动作（对照 WVP `SourcePTZServiceForGbImpl::scan`）。
+/// 扫描动作（指令码表）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScanAction {
     /// 0x89：开始自动扫描
@@ -214,7 +214,7 @@ pub enum ScanAction {
     SetRight,
     /// 0x8A：设置扫描速度（数据2=速度）
     SetSpeed,
-    /// 同巡航：国标/WVP 都没有单独停止码，下发 0x00
+    /// 同巡航：国标没有单独停止码，下发 0x00
     Stop,
 }
 
@@ -302,13 +302,12 @@ impl PresetAction {
 /// 设备控制（MANSCDP）里 `<Control>` 的子元素：`(元素名, 元素内容)`。
 ///
 /// **云台、聚焦/光圈、预置位全部是 `PTZCmd`**（8 字节二进制指令码）——
-/// 这与 GB/T 28181-2022 §A.3 以及 WVP-PRO 的下发实现一致
-/// （WVP 的 `SourcePTZServiceForGbImpl` 把 fi/preset 也走
-/// `frontEndCommand(channel, cmdCode, p1, p2, p3)`）。
+/// 这与 GB/T 28181-2022 §A.3 的指令码定义一致
+/// （相同指令码统一由 `frontEndCommand(channel, cmdCode, p1, p2, p3)` 下发）。
 ///
 /// 2016 版的 `<FICmd>` / `<PresetCmd>`+`<PresetIndex>` 独立元素**不再下发**：
 /// 只认 2022 指令码的设备会把旧写法整条忽略，而只认 2016 元素的设备同样
-/// 存在于存量部署中 —— 这里按平替目标（WVP）取二进制形态，并在文档中登记。
+/// 存在于存量部署中 —— 这里取二进制形态，并在文档中登记。
 pub fn control_element(cmd: &str, speed: u8, preset_index: u32) -> Option<(&'static str, String)> {
     if let Some(action) = PtzAction::parse(cmd) {
         return Some(("PTZCmd", build_ptz_cmd(action, speed)));
@@ -372,7 +371,7 @@ mod tests {
     /// 三种动作都必须产出 `PTZCmd`，且是合法 8 字节（A5 起始 + 累加校验）。
     #[test]
     fn control_element_uses_correct_element_names() {
-        // 全部走 PTZCmd（与 WVP 一致）
+        // 三种动作全部走 PTZCmd
         assert_eq!(control_element("UP", 0x40, 0).unwrap().0, "PTZCmd");
         assert_eq!(control_element("ZOOM_IN", 1, 0).unwrap().0, "PTZCmd");
         assert_eq!(

@@ -961,21 +961,13 @@ impl StateBackend for RedisBackend {
         });
     }
     fn active_recording_get(&self, channel_id: i64) -> Option<ActiveRecordingState> {
-        // 优先读新键(GBServer 命名空间);fallback 读旧键(wvp:recording:*)以兼容历史部署
-        let new_key = format!("gbserver:recording:{}", channel_id);
-        let legacy_key = format!("wvp:recording:{}", channel_id);
+        let key = format!("gbserver:recording:{}", channel_id);
         let value: Option<String> = if let Ok(handle) = tokio::runtime::Handle::try_current() {
             tokio::task::block_in_place(|| {
                 handle.block_on(async {
                     use redis::AsyncCommands;
                     match self.get_conn().await {
-                        Some(mut conn) => {
-                            if let Some(v) = conn.get::<_, Option<String>>(&new_key).await.unwrap_or(None) {
-                                Some(v)
-                            } else {
-                                conn.get::<_, Option<String>>(&legacy_key).await.unwrap_or(None)
-                            }
-                        }
+                        Some(mut conn) => conn.get::<_, Option<String>>(&key).await.unwrap_or(None),
                         None => None,
                     }
                 })
@@ -986,19 +978,16 @@ impl StateBackend for RedisBackend {
         value.and_then(|s| serde_json::from_str(&s).ok())
     }
     fn active_recording_del(&self, channel_id: i64) {
-        // 同时清理新键和遗留旧键
-        let new_key = format!("gbserver:recording:{}", channel_id);
-        let legacy_key = format!("wvp:recording:{}", channel_id);
+        let key = format!("gbserver:recording:{}", channel_id);
         block_on_run(async {
             use redis::AsyncCommands;
             if let Some(mut conn) = self.get_conn().await {
-                let _: Result<(), _> = conn.del::<_, ()>(&[&new_key, &legacy_key]).await;
+                let _: Result<(), _> = conn.del::<_, ()>(&key).await;
             }
         });
     }
     fn active_recordings_count(&self) -> usize {
-        // 同时统计新键和遗留旧键
-        let patterns = ["gbserver:recording:*", "wvp:recording:*"];
+        let patterns = ["gbserver:recording:*"];
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             tokio::task::block_in_place(|| {
                 handle.block_on(async {

@@ -13,7 +13,7 @@
 
       <el-form-item label="定时截图">
         <el-switch v-model="form.snap" />
-        <span class="hint">（该字段与 WVP 保持一致，服务端暂未接线，不影响录像）</span>
+        <span class="hint">（该字段与后端契约保持一致，服务端暂未接线，不影响录像）</span>
       </el-form-item>
 
       <el-form-item label="录像时段">

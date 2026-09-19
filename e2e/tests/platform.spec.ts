@@ -2,14 +2,14 @@
  * 级联平台页（/#/platform）契约端到端测试。
  *
  * 这一页此前有三个"用户看得见"的硬伤：
- *   1. 前端字段名写成 `serverGbId`（小写 b），而 WVP 与后端都是 `serverGBId`
+ *   1. 前端字段名写成 `serverGbId`（小写 b），而后端要求 `serverGBId`
  *      → 新增平台时国标ID 绑不上、库里写空串（接口还回"成功"，平台实际不可用）；
  *      列表"国标ID"列空白；「注销」按钮被 `if (!row.serverGbId) return` 静默拦掉。
  *   2. `expires` 用 el-input-number 提交 JSON 数字，而后端 DTO 只认字符串
  *      → 反序列化阶段 422，**新增平台直接报错**。
  *   3. 「域名」写的是 `realm`（后端字段是 `serverGBDomain`）、
- *      「注册间隔/心跳间隔/心跳次数」三个输入框是凭空发明的字段（WVP 与数据库
- *      都没有）→ 填了静默丢弃，重新打开又变回默认值。
+ *      「注册间隔/心跳间隔/心跳次数」三个输入框是凭空发明的字段（数据库里
+ *      没有）→ 填了静默丢弃，重新打开又变回默认值。
  */
 
 import { test, expect, type Page } from '@playwright/test';

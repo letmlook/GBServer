@@ -5,7 +5,7 @@
  *   * `list-with-child` 请求 `count=1000`（live 页建树时一次取全量），
  *     但 db 层把任何 count 都**静默截到 100** → 第 101 台设备及其通道
  *     在实时预览页彻底看不到，而响应里的 count 仍回显 1000；
- *   * 搜索关键字参数名是 `keyword`，前端/WVP 传的是 `query` → 静默丢弃；
+ *   * 搜索关键字参数名是 `keyword`，早期前端传的是 `query` → 静默丢弃；
  *     `online`（只看在线）与 `civilCode` 连 DTO 字段都没有；
  *   * `total` 返回的是"本页展开出的行数"，分页器永远只有一页；
  *   * `/camera/list` 返回的是**设备行**（`is_device=true`），而 live 页按

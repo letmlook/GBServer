@@ -26,7 +26,7 @@ pub const BUILTIN_ADMIN_ROLE_ID: i32 = 1;
 
 /// 角色是否为管理员。
 ///
-/// `authority == "0"` 即管理员（与 WVP 的 `Role.authority` 口径一致）；
+/// `authority == "0"` 即管理员；
 /// 内置 admin 角色（id=1）无论 authority 为何都视为管理员。
 pub fn is_admin_role(role_id: Option<i32>, authority: Option<&str>) -> bool {
     if role_id == Some(BUILTIN_ADMIN_ROLE_ID) {
@@ -71,7 +71,7 @@ mod tests {
     use super::*;
 
     /// 判定口径必须同时覆盖两种数据形态：
-    /// * `authority = "0"` —— WVP 口径的管理员（不依赖 id）
+    /// * `authority = "0"` —— 按 authority 判定的管理员（不依赖 id）
     /// * 内置角色 id = 1 —— 历史种子数据里 authority 可能缺失
     #[test]
     fn admin_judgement_covers_authority_and_builtin_role() {

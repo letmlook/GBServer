@@ -9,7 +9,7 @@ use std::str::FromStr;
 
 /// 拉流代理结构体。
 ///
-/// 序列化成 **camelCase**：前端（与 WVP 的 `StreamProxy` bean）读的是
+/// 序列化成 **camelCase**：前端读的是
 /// `srcUrl`/`mediaServerId`/`streamStatus`，snake_case 会让"源 URL""媒体节点"整列空白。
 #[derive(Debug, Clone, Serialize, FromRow)]
 #[serde(rename_all = "camelCase")]
@@ -402,7 +402,7 @@ pub async fn update_play_state(
 
 /// 记录"这路代理**实际**落在哪个流媒体节点"。
 ///
-/// 为什么必须回写：`mediaServerId = auto`（WVP/前端新建代理的默认值）表示
+/// 为什么必须回写：`mediaServerId = auto`（前端新建代理的默认值）表示
 /// "由平台按负载选一个节点"。若只在启动时选一次而不落库，后续
 /// `/api/proxy/stop`、`/api/proxy/delete`（以及界面展示）都会再选一次，
 /// **完全可能选到另一个节点** —— 于是真正在拉流的那台上的流永远关不掉，

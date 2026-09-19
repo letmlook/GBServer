@@ -56,14 +56,14 @@ pub struct RecordPlanItemPayload {
 
 /// 计划条目里 `start`/`stop` 的合法范围：**当天第几分钟**（0..1440）。
 ///
-/// 与 WVP 一致：`RecordPlanItem.start/stop` 是分钟数（`hour*60+minute`），
+/// `RecordPlanItem.start/stop` 是分钟数（`hour*60+minute`），
 /// 不是秒。`stop` 允许等于 1440（24:00），此时与"全天"等价。
 pub const MAX_MINUTE_OF_DAY: i32 = 1440;
 
 impl RecordPlanItemPayload {
     /// 校验一个计划条目，返回中文错误信息（`None` = 合法）。
     ///
-    /// 这里比 WVP **更严**：WVP 的 `update()` 会静默丢弃字段不全的条目，
+    /// 这里比早期实现 **更严**：它只静默丢弃字段不全的条目，
     /// 而 `start > stop` 的条目会被存下来但**永远不会触发**（SQL 是
     /// `start <= index and stop >= index`）——那正是"保存成功却从不录像"
     /// 这类静默失败。前端也不会给你反着的区间，所以直接报错更有用。
@@ -72,7 +72,7 @@ impl RecordPlanItemPayload {
             return Some("录制计划时段必须同时包含 start/stop/weekDay".to_string());
         };
         if !(1..=7).contains(&day) {
-            // WVP 用 ISO 口径：LocalDateTime.getDayOfWeek().getValue() → 1=周一 … 7=周日
+            // ISO 口径：1=周一 … 7=周日
             return Some(format!("weekDay 必须是 1(周一)~7(周日)，收到 {day}"));
         }
         if !(0..=MAX_MINUTE_OF_DAY).contains(&start) {
@@ -95,7 +95,7 @@ impl RecordPlanItemPayload {
         None
     }
 
-    /// WVP `update()` 的行为：三个字段有一个为空就丢弃该条目。
+    /// 早期实现的行为：三个字段有一个为空就丢弃该条目。
     pub fn is_complete(&self) -> bool {
         self.start.is_some() && self.stop.is_some() && self.week_day.is_some()
     }
@@ -125,7 +125,7 @@ pub async fn get_by_id(pool: &Pool, id: i32) -> sqlx::Result<Option<RecordPlan>>
     .await;
 }
 
-/// 分页查询计划；`query` 为名称模糊匹配（WVP `/api/record/plan/query` 的
+/// 分页查询计划；`query` 为名称模糊匹配（`/api/record/plan/query` 的
 /// `query` 参数，`escape '/'` 语义在本实现里用参数化 `LIKE` 直接表达）。
 pub async fn list_paged(
     pool: &Pool,
@@ -200,8 +200,8 @@ pub async fn count_all(pool: &Pool, query: Option<&str>) -> sqlx::Result<i64> {
 
 /// 计划关联的通道数。
 ///
-/// WVP `/api/record/plan/query` 返回 `channelCount`（SQL 里的
-/// `(select count(1) from wvp_device_channel where record_plan_id = wrp.id)`），
+/// `/api/record/plan/query` 返回 `channelCount`（SQL 里的
+/// `(select count(1) from gb_device_channel where record_plan_id = wrp.id)`），
 /// 前端"关联通道"那一列直接显示它。
 pub async fn count_linked_channels(pool: &Pool, plan_id: i64) -> sqlx::Result<i64> {
     #[cfg(feature = "mysql")]
@@ -369,8 +369,8 @@ pub async fn update(
 
 /// 删除计划：**同时**清掉它下面的时段条目和通道关联。
 ///
-/// WVP `delete()` 做三件事：`removeRecordPlanByPlanId`（清通道关联）、
-/// `cleanItems`、`delete`。只删主表会留下指向已删计划的 `record_plan_id`，
+/// 删除必须做三件事：清通道关联、清时段条目、删主表。
+/// 只删主表会留下指向已删计划的 `record_plan_id`，
 /// 通道列表里就会显示"已关联到不存在的计划"。
 pub async fn delete_by_id(pool: &Pool, id: i32) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
@@ -423,9 +423,9 @@ pub async fn delete_by_id(pool: &Pool, id: i32) -> sqlx::Result<u64> {
     }
 }
 
-/// 按**通道主键**（`gb_device_channel.id`，即 WVP 前端里的 `gbId`）关联/取消关联。
+/// 按**通道主键**（`gb_device_channel.id`，即前端里的 `gbId`）关联/取消关联。
 ///
-/// `plan_id = None` 表示取消关联（WVP `link(channelIds, null)`）。
+/// `plan_id = None` 表示取消关联。
 pub async fn link_channel(
     pool: &Pool,
     channel_id: i64,
@@ -454,7 +454,7 @@ pub async fn link_channel(
 
 /// 按**国标通道编号**（`gb_device_id`）解析出通道主键。
 ///
-/// WVP 的 `link` 只认主键，但更早版本的调用方传的是国标编号字符串，
+/// 关联只认主键，但更早版本的调用方传的是国标编号字符串，
 /// 所以这里两种都能解析（先在 handler 里尝试按主键命中，再退回这里）。
 pub async fn channel_id_by_gb_id(pool: &Pool, gb_device_id: &str) -> sqlx::Result<Option<i64>> {
     #[cfg(feature = "mysql")]
@@ -501,7 +501,7 @@ pub async fn channel_exists(pool: &Pool, channel_id: i64) -> sqlx::Result<bool> 
     Ok(n > 0)
 }
 
-/// 某设备（`gb_device.id`，WVP 的 `deviceDbIds`）下的所有通道主键。
+/// 某设备（`gb_device.id`，即 `deviceDbIds`）下的所有通道主键。
 pub async fn channel_ids_by_device_db_id(pool: &Pool, device_db_id: i64) -> sqlx::Result<Vec<i64>> {
     #[cfg(feature = "mysql")]
     let rows = sqlx::query("SELECT id FROM gb_device_channel WHERE data_device_id = ?")
@@ -547,7 +547,7 @@ pub async fn all_channel_ids(pool: &Pool) -> sqlx::Result<Vec<i64>> {
         .collect())
 }
 
-/// 清掉某个计划下所有通道的关联（WVP `cleanAll`）。
+/// 清掉某个计划下所有通道的关联。
 pub async fn unlink_all_channels(pool: &Pool, plan_id: i64) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
     let r = sqlx::query("UPDATE gb_device_channel SET record_plan_id = NULL WHERE record_plan_id = ?")
@@ -569,8 +569,8 @@ pub async fn unlink_all_channels(pool: &Pool, plan_id: i64) -> sqlx::Result<u64>
 
 /// 覆盖写入计划的全部时段条目。
 ///
-/// 与 WVP `update()` 一致：`start`/`stop`/`weekDay` 任一为空的条目**跳过**
-/// （WVP 里是 `continue`）。否则会写入一条永远不可能命中的记录。
+/// `start`/`stop`/`weekDay` 任一为空的条目**跳过**
+/// （直接 `continue`，与早期实现一致）。否则会写入一条永远不可能命中的记录。
 pub async fn replace_items(
     pool: &Pool,
     plan_id: i64,
@@ -683,7 +683,7 @@ mod plan_db_tests {
         }
     }
 
-    /// `start > stop` 的时段在 WVP 里能存下来但**永远不会触发**
+    /// `start > stop` 的时段在早期实现里能存下来但**永远不会触发**
     /// （SQL 是 `start <= index and stop >= index`）。保存成功却没有任何效果
     /// 正是本项目要消灭的静默失败，所以直接拒绝。
     #[test]
@@ -709,7 +709,7 @@ mod plan_db_tests {
         assert!(!p.is_complete());
     }
 
-    /// 回归保护：写入时应跳过字段不全的条目（WVP `update()` 的 `continue` 行为），
+    /// 回归保护：写入时应跳过字段不全的条目（早期实现的 `continue` 行为），
     /// 否则库里会留下永远命中的不了的记录。
     #[tokio::test]
     async fn test_replace_items_skips_incomplete() {

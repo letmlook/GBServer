@@ -8,7 +8,7 @@ use crate::zlm::ZlmClient;
 
 /// 全局唤醒句柄。
 ///
-/// WVP 在 `RecordPlanServiceImpl.link()` 里**同步**调用一次 `execution()`，
+/// 早期实现在 `link()` 里**同步**触发一次调度，
 /// 所以"关联通道"后立刻就开始录像。我们的调度是 60 秒一轮，若不唤醒，
 /// 用户关联完通道最长要等一分钟才见效果（且看起来像没生效）。
 static WAKE: OnceLock<Arc<Notify>> = OnceLock::new();
@@ -172,10 +172,9 @@ impl RecordPlanScheduler {
         // "本地时间的星期几 / 当天第几分钟"（前端按本地时间生成）。
         // 此前用 `Utc::now()`，在 UTC+8 部署下整条计划会**偏移 8 小时**。
         let now = chrono::Local::now();
-        // WVP `RecordPlanServiceImpl.queryCurrentChannelRecord()` 用
-        // `LocalDateTime.now().getDayOfWeek().getValue()`：ISO 口径，周一=1 … 周日=7
+        // ISO 口径的星期：周一=1 … 周日=7（`number_from_monday()`）
         let current_weekday = now.weekday().number_from_monday() as i32;
-        // WVP 用 `now.getHour() * 60 + now.getMinute()`：**当天第几分钟**（0..1439），
+        // 口径是 **当天第几分钟**（0..1439，即 `hour*60 + minute`），
         // 不是秒。早期实现按"当天第几秒"比对，任何计划都不可能命中。
         let current_minutes = now.hour() as i32 * 60 + now.minute() as i32;
 
@@ -370,7 +369,7 @@ impl RecordPlanScheduler {
 
 /// 判断某个计划条目集合是否覆盖 `(weekday, minutes_of_day)`。
 ///
-/// 口径与 WVP `RecordPlanMapper.queryRecordIng` 完全一致：
+/// 判定口径：
 ///
 /// ```sql
 /// where wrpi.week_day = #{week} and wrpi.start <= #{index} and stop >= #{index}
@@ -381,7 +380,7 @@ impl RecordPlanScheduler {
 /// * 区间**闭区间** `[start, stop]`（两端都含），不是秒、也不是半开区间。
 ///
 /// 三个字段缺一不可：`start`/`stop`/`week_day` 任一为 `NULL` 的条目在
-/// WVP 的 SQL 里也永远不匹配（`NULL <= x` 为 unknown），这里显式返回 false。
+/// SQL 里也永远不匹配（`NULL <= x` 为 unknown），这里显式返回 false。
 fn schedule_matches(items: &[record_plan::RecordPlanItem], weekday: i32, minutes: i32) -> bool {
     items.iter().any(|item| {
         let (Some(start), Some(stop), Some(day)) = (item.start, item.stop, item.week_day) else {
@@ -413,7 +412,7 @@ mod schedule_tests {
         let items = vec![item(600, 660, 2)];
         assert!(schedule_matches(&items, 2, 600), "起点 10:00 应包含");
         assert!(schedule_matches(&items, 2, 659), "10:59 应包含");
-        assert!(schedule_matches(&items, 2, 660), "终点 11:00 闭区间应包含（与 WVP stop >= index 一致）");
+        assert!(schedule_matches(&items, 2, 660), "终点 11:00 闭区间应包含（stop >= index）");
         assert!(!schedule_matches(&items, 2, 599), "09:59 不应包含");
         assert!(!schedule_matches(&items, 2, 661));
         // 周几不匹配（周一）

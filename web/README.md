@@ -86,7 +86,7 @@ src/
 ├── store/              # Pinia store
 ├── styles/             # 全局样式 + Element Plus 主题
 ├── types/              # TypeScript 类型定义
-│   ├── api.ts          # WvpResult<T> / PageQuery / PageResult
+│   ├── api.ts          # ApiResult<T> / PageQuery / PageResult
 │   └── model.ts        # DeviceVO / ChannelVO / PlatformVO 等 VO
 ├── utils/              # request / auth / validate / get-page-title
 ├── views/              # 业务页面（18 个目录 + 404.vue / redirect.vue）
@@ -95,10 +95,10 @@ src/
 
 ## API 类型化约定
 
-所有 API 返回 `WvpResult<T>`：
+所有 API 返回 `ApiResult<T>`：
 
 ```ts
-interface WvpResult<T> {
+interface ApiResult<T> {
   code: number      // 0 = 成功，其他为业务错误
   msg: string
   data: T

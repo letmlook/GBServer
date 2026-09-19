@@ -981,7 +981,7 @@ class SipDeviceMock:
             await self._reply_record_info(msg, addr)
         elif "<CmdType>Alarm</CmdType>" in body:
             # 设备当前报警查询（A.2.4.4）：回一份带 AlarmList 的 Response，
-            # 让 `/api/device/query/alarm`（WVP `DeviceQuery.alarm`）能被验证。
+            # 让 `/api/device/query/alarm` 能被验证。
             await self._reply_alarm_query(msg, addr)
         elif "<CmdType>DeviceConfig</CmdType>" in body:
             # 配置下发（BasicParam / SnapConfig / 通用）：真实设备解析后回 200 OK，
@@ -1317,7 +1317,7 @@ class SipDeviceMock:
             "cseq": invite_cseq, "started": time.time(),
         }
         # 记录 INVITE 的 Subject 与 s= 行：Subject 的字段顺序
-        # （`<通道编码>:<SSRC>,<本级编码>:0`）是国标/WVP 契约的一部分，
+        # （`<通道编码>:<SSRC>,<本级编码>:0`）是国标契约的一部分，
         # 只有报文层能看到才算验证过。
         subject = self._extract_header(msg, "Subject", "")
         session_name = ""

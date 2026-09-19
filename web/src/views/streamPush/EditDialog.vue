@@ -45,8 +45,8 @@ const isEdit = computed(() => !!props.push?.id)
 const saving = ref(false)
 const formRef = ref<FormInstance>()
 
-// 与 WVP 的推流编辑框一致：只有 App / Stream / 媒体节点 / 拉起离线推流。
-// 「源 URL」在 WVP 里并不存在（列表展示的是**推流地址**，由 app/stream/节点算出来）。
+// 字段就这些：只有 App / Stream / 媒体节点 / 拉起离线推流。
+// 「源 URL」并不存在（列表展示的是**推流地址**，由 app/stream/节点算出来）。
 const form = reactive<Partial<StreamPush>>({
   app: '',
   stream: '',

@@ -151,7 +151,7 @@ export interface RecordPlanVO {
 /**
  * 拉流代理视图模型。
  *
- * 字段与后端 `gb_stream_proxy` / WVP `StreamProxy` 一致；此前这里是
+ * 字段与后端 `gb_stream_proxy` / `StreamProxy` 一致；此前这里是
  * `url` / `destUrl` / `enabled` / `status` —— 后端没有这四个键，
  * 用它渲染出来的列表源地址为空、状态恒为"停止"。
  */

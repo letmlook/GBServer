@@ -1,14 +1,14 @@
 /**
  * 前端设备控制（云台/聚焦光圈/预置位/巡航/扫描/辅助开关/雨刷）契约端到端测试。
  *
- * 这一组接口此前的报文形态与 WVP / GB/T 28181-2022 **都不一致**：
+ * 这一组接口此前的报文形态与 GB/T 28181-2022 **不一致**：
  *   * 聚焦/光圈发的是 2016 风格的独立元素 `<FICmd>IrisOpen</FICmd>`；
  *   * 预置位发 `<PresetCmd>CallPreset</PresetCmd><PresetIndex>7</PresetIndex>`；
  *   * 巡航/扫描/辅助/雨刷发的是**属性式 XML**（`<CruiseCmd id="1" preset="5" action="add" />`）
- *     —— 国标与 WVP 里这些全都是 8 字节 `PTZCmd` 的二进制指令码
- *     （WVP `SIPCommander.frontEndCmdString`），只认 PTZCmd 的设备会把旧写法整条忽略。
- *   * 另外 `/fi/focus` 的命令取值 WVP 是 `near`/`far`/`stop`、`/fi/iris` 是 `in`/`out`/`stop`，
- *     旧实现只认 on/off/open/close，WVP 前端发 `near` 会被直接拒掉。
+ *     —— 国标里这些全都是 8 字节 `PTZCmd` 的二进制指令码，只认 PTZCmd 的
+ *     设备会把旧写法整条忽略。
+ *   * 另外 `/fi/focus` 的命令取值是 `near`/`far`/`stop`、`/fi/iris` 是 `in`/`out`/`stop`，
+ *     旧实现只认 on/off/open/close，发 `near` 会被直接拒掉。
  *
  * 本 spec 通过页内请求逐个下发，断言：合法取值全部 `code:0`、非法取值明确报错。
  */
@@ -40,20 +40,20 @@ test.describe('Front-end control (/api/front-end/*)', () => {
     await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => {});
   });
 
-  test('云台与聚焦/光圈：WVP 的取值全部接受，拼错明确报错', async ({ page }) => {
+  test('云台与聚焦/光圈：合法取值全部接受，拼错明确报错', async ({ page }) => {
     // 云台方向 + 变倍
     for (const cmd of ['up', 'down', 'left', 'right', 'zoom_in', 'zoom_out', 'stop']) {
       expect(await post(page, `ptz/${DEVICE}/${CHANNEL}?command=${cmd}&speed=50`), cmd).toBe(0);
     }
     expect(await post(page, `ptz/${DEVICE}/${CHANNEL}?command=nope&speed=50`)).toBe(1);
 
-    // 聚焦：WVP 的 near/far/stop（此前 near/far 会被拒）
+    // 聚焦：near/far/stop（此前 near/far 会被拒）
     for (const cmd of ['near', 'far', 'stop', 'focus_in', 'focus_out']) {
       expect(await post(page, `fi/focus/${DEVICE}/${CHANNEL}?command=${cmd}&speed=30`), cmd).toBe(0);
     }
     expect(await post(page, `fi/focus/${DEVICE}/${CHANNEL}?command=nope`)).toBe(1);
 
-    // 光圈：WVP 的 in/out/stop（此前 in/out 会被拒）
+    // 光圈：in/out/stop（此前 in/out 会被拒）
     for (const cmd of ['in', 'out', 'stop', 'open', 'close']) {
       expect(await post(page, `fi/iris/${DEVICE}/${CHANNEL}?command=${cmd}&speed=20`), cmd).toBe(0);
     }

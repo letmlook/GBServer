@@ -1089,7 +1089,7 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
     // ---- 拉流代理的 `pulling` 状态对账（启动一次） ----
     // `pulling` 是**运行期状态**，但库里是持久化的：后端重启（或 ZLM 重启）后
     // 它可能仍是 1，而 ZLM 上那条流早已不存在 —— 界面显示"拉流中"、
-    // `pulling=true` 的筛选也多出幽灵行。WVP 不做开机自动拉起，
+    // `pulling=true` 的筛选也多出幽灵行。本平台不做开机自动拉起，
     // 因此这里只做**保守对账**：流还在 → 保持 pulling=1；不在 → 复位为
     // pulling=0 / stream_status=ready 并记一条日志。
     {

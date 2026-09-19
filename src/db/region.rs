@@ -27,7 +27,7 @@ pub struct RegionAdd {
     pub parent_device_id: Option<String>,
 }
 
-/// 更新请求体。前端（与 WVP 的 `Region.java`）用 camelCase，
+/// 更新请求体。前端用 camelCase，
 /// 这里必须与 `RegionAdd` 一样带别名 —— 否则 `deviceId`/`parentId`/`parentDeviceId`
 /// 全部绑定失败，只有 `name` 生效，而 `parent_id` 会被写成 NULL
 /// （`build_region_tree` 把 `parent_id.is_none()` 当根节点 → 节点被抬到根级）。

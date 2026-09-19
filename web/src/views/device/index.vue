@@ -244,7 +244,7 @@ const playingChannel = ref<{ deviceId: string; channelId: string; name: string }
  *   * `TCP-PASSIVE` —— 平台被动：设备主动连平台的 TCP 端口推流
  *   * `TCP-ACTIVE`  —— 平台主动：平台去连设备的 TCP 端口拉流
  *
- * 值保持 WVP 的拼写（`TCP-PASSIVE` / `TCP-ACTIVE`），后端
+ * 值保持早期实现以来的拼写（`TCP-PASSIVE` / `TCP-ACTIVE`），后端
  * `/api/device/query/transport/:id/:mode` 就是按这个集合校验的。
  */
 const STREAM_MODES = [

@@ -2,10 +2,10 @@
  * 推流管理页（/#/streamPush）契约端到端测试。
  *
  * 这一页此前 3 个动作是错的：
- *   1. 删除用 `DELETE /api/push/remove`，后端只注册 POST（WVP 也是 POST+query）
+ *   1. 删除用 `DELETE /api/push/remove`，后端只注册 POST + query
  *      → 405，推流记录删不掉；
  *   2. 「批量删除」把 ids 放 query，后端要求 DELETE + JSON body → 415；
- *   3. 状态列读 `row.status === 1`，而后端（与 WVP）返回**布尔** → 永远显示"停止"，
+ *   3. 状态列读 `row.status === 1`，而后端返回**布尔** → 永远显示"停止"，
  *      「停止」按钮恒为禁用。
  * 另外列表读 `mediaServerId`/`url`，而后端返回 snake_case 且根本没有 url 列
  * →「媒体节点」列空白、「源 URL」列空白。
@@ -27,7 +27,7 @@ test.describe.serial('Stream push page (/streamPush)', () => {
     const dialog = page.getByRole('dialog');
     await expect(dialog).toBeVisible();
 
-    // 与 WVP 一致：只有 App / Stream / 媒体节点（没有"源 URL"输入）
+    // 只有 App / Stream / 媒体节点（没有"源 URL"输入）
     await expect(dialog.getByPlaceholder('rtsp://... 或 rtmp://...')).toHaveCount(0);
     const inputs = dialog.locator('input');
     await inputs.nth(0).fill('push');

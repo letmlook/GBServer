@@ -86,7 +86,7 @@ const formRef = ref<FormInstance>()
 const mediaServers = ref<MediaServer[]>([])
 const ffmpegCmdList = ref<Record<string, string>>({})
 
-// 字段名与后端 / WVP 的 StreamProxy 完全一致（此前用的 url/enabled/destUrl 后端都不认）
+// 字段名与后端 `gb_stream_proxy` 完全一致（此前用的 url/enabled/destUrl 后端都不认）
 const form = reactive<Partial<StreamProxy>>({
   name: '',
   type: 'default',

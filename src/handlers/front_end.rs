@@ -16,7 +16,7 @@ use crate::AppState;
 
 #[derive(Debug, Deserialize)]
 pub struct PtzQuery {
-    /// WVP 的查询参数名是 `command`；老版前端（含本仓库 Vue3 直播页）发的是 `cmd`。
+    /// 查询参数名是 `command`；老版前端（含本仓库 Vue3 直播页）发的是 `cmd`。
     #[serde(alias = "cmd")]
     pub command: Option<String>,
     #[serde(alias = "horizonSpeed")]
@@ -51,7 +51,7 @@ pub struct CruiseQuery {
 
 #[derive(Debug, Deserialize)]
 pub struct PresetQuery {
-    /// WVP 的查询参数名是 `presetId`（camelCase）
+    /// 查询参数名是 `presetId`（camelCase）
     #[serde(alias = "presetId")]
     pub preset_id: Option<i32>,
 }
@@ -86,7 +86,7 @@ pub struct LegacyFrontEndCommandQuery {
 /// 指令码位置也不是国标定义的位置，设备收到等于乱码 —— 而 handler 还返回
 /// `code:0`「已下发」，前端于是提示成功、云台不动。
 ///
-/// 速度取值：WVP 的查询参数是 `horizonSpeed`/`verticalSpeed`/`zoomSpeed`，
+/// 速度取值：查询参数是 `horizonSpeed`/`verticalSpeed`/`zoomSpeed`，
 /// 国标里水平/垂直速度各一个字节、变倍速度放在组合码2 高 4 位。前端只给一个
 /// `speed` 时三个方向共用它（老前端就是只发 `speed`）。
 fn ptz_speed(q: &PtzQuery, action: PtzAction) -> u8 {
@@ -98,16 +98,16 @@ fn ptz_speed(q: &PtzQuery, action: PtzAction) -> u8 {
     raw.clamp(0, 255) as u8
 }
 
-/// 聚焦/光圈：**与 WVP 一致地走 8 字节 `PTZCmd`**。
+/// 聚焦/光圈：**走 8 字节 `PTZCmd`**。
 ///
 /// 此前这里发的是 2016 风格的独立元素 `<FICmd>IrisOpen</FICmd>`。
-/// 但 WVP-PRO（平替目标）的聚焦/光圈是 `PTZCmd` 二进制指令码
-/// （`SourcePTZServiceForGbImpl::fi`：基址 `1<<6`，聚焦 bit1/bit0、光圈 bit3/bit2），
+/// 但本实现改用 `PTZCmd` 二进制指令码
+/// （基址 `1<<6`，聚焦 bit1/bit0、光圈 bit3/bit2），
 /// GB/T 28181-**2022** §A.3.3/A.3.4 也是同样的二进制编码 —— 只发独立元素的实现
 /// 在只认 PTZCmd 的设备上完全无效。
 
 /// 预置位：同样走 `PTZCmd`（`0x81` 设置 / `0x82` 调用 / `0x83` 删除，
-/// 编号在**数据2**），与 WVP 的 `preset` 分支一致。
+/// 编号在**数据2**）。
 fn preset_body(cmd: &str, preset_index: u32) -> Option<String> {
     let action = PresetAction::parse(cmd)?;
     Some(format!(
@@ -119,7 +119,7 @@ fn preset_body(cmd: &str, preset_index: u32) -> Option<String> {
 /// 兼容端点用：调用方给的是「指令码/数据1/数据2/组合码2」四段，
 /// 这里补 `A5 0F 01` 前缀、把组合码2 移入高 4 位并计算**累加校验**。
 ///
-/// 组合码2 的口径与 WVP 的 `/api/ptz/front_end/{...}` 一致：取值 0-15，
+/// 组合码2 的口径：取值 0-15，
 /// 由本函数左移 4 位写入字节7（此前直接当字节7 写，等于少移了 4 位）。
 fn build_raw_front_end_xml(cmd_code: i32, parameter1: i32, parameter2: i32, combind_code2: i32) -> String {
     build_ptz_cmd_raw(
@@ -317,7 +317,7 @@ pub async fn iris(
 
     // 国标 2016：聚焦/光圈是 <FICmd> 独立元素，内容为 IrisOpen/IrisClose。
     // 老前端发的 "on"/"off"/"open"/"close" 都归一到同一个元素值。
-    // WVP 的 `/fi/iris` 取值是 `in` / `out` / `stop`（本平台老前端发 on/off/open/close）
+    // 光圈取值是 `in` / `out` / `stop`（本平台老前端发 on/off/open/close）
     let lower = command.trim().to_ascii_lowercase();
     let speed = q.speed.unwrap_or(50).clamp(0, 255) as u8;
     let body = match lower.as_str() {
@@ -327,7 +327,7 @@ pub async fn iris(
         "out" | "close" | "off" | "iris_out" => {
             format!("<PTZCmd>{}</PTZCmd>", build_fi_cmd(FiAction::IrisClose, speed))
         }
-        // 停止：WVP 的 stop 分支两个方向都不置位，于是指令码停在基址 0x40、速度为 0
+        // 停止：stop 分支两个方向都不置位，于是指令码停在基址 0x40、速度为 0
         "stop" => format!("<PTZCmd>{}</PTZCmd>", build_ptz_cmd_raw(0x40, 0, 0, 0)),
         _ => {
             return Json(serde_json::json!({
@@ -357,8 +357,8 @@ pub async fn focus(
 ) -> Json<serde_json::Value> {
     let command = q.command.clone().unwrap_or_default();
 
-    // WVP 的 `/fi/focus` 取值是 `near` / `far` / `stop`
-    // （此前只认 on/off/open/close/focus_in/focus_out，WVP 前端发 near/far 会被拒）
+    // 聚焦取值是 `near` / `far` / `stop`
+    // （此前只认 on/off/open/close/focus_in/focus_out，前端发 near/far 会被拒）
     let lower = command.trim().to_ascii_lowercase();
     let speed = q.speed.unwrap_or(50).clamp(0, 255) as u8;
     let body = match lower.as_str() {
@@ -716,7 +716,7 @@ mod front_end_wire_tests {
         out
     }
 
-    /// 老前端只发 `speed`，三个方向共用；WVP 的三个独立参数优先。
+    /// 老前端只发 `speed`，三个方向共用；三个独立参数优先。
     #[test]
     fn test_ptz_speed_selection() {
         assert_eq!(ptz_speed(&q(&[("speed", 50)]), PtzAction::Up), 50);
@@ -769,7 +769,7 @@ mod front_end_wire_tests {
         bytes
     }
 
-    /// 聚焦/光圈与 WVP 一致地走 **8 字节 PTZCmd**（不是 2016 的 `<FICmd>` 元素）：
+    /// 聚焦/光圈走 **8 字节 PTZCmd**（不是 2016 的 `<FICmd>` 元素）：
     /// 聚焦近 0x42 / 远 0x41（速度在数据1），光圈开 0x48 / 关 0x44（速度在数据2）。
     #[test]
     fn test_fi_uses_ptzcmd_binary() {
@@ -795,8 +795,8 @@ mod front_end_wire_tests {
         assert!(preset_body("bogus", 1).is_none());
     }
 
-    /// 聚焦/光圈的**命令取值**必须与 WVP 一致（`near`/`far`/`stop`、`in`/`out`/`stop`）
-    /// —— 此前只认 on/off/open/close 之类，WVP 前端发 `near` 会被直接拒掉。
+    /// 聚焦/光圈的**命令取值**（`near`/`far`/`stop`、`in`/`out`/`stop`）
+    /// —— 此前只认 on/off/open/close 之类，前端发 `near` 会被直接拒掉。
     ///
     /// 这里逐个取值跑一遍归一化逻辑（与 handler 中的 match 分支保持一致）。
     #[test]
@@ -826,7 +826,7 @@ mod front_end_wire_tests {
             }
         }
 
-        // WVP 的取值
+        // 现行取值
         let near = assert_valid_ptzcmd(&focus_body("near", 30).unwrap());
         assert_eq!(near[3], 0x42);
         let far = assert_valid_ptzcmd(&focus_body("far", 30).unwrap());
@@ -848,7 +848,7 @@ mod front_end_wire_tests {
         assert!(iris_body("nope", 1).is_none());
     }
 
-    /// 巡航/扫描/辅助/雨刷：WVP 的指令码表（都是 8 字节 PTZCmd）。
+    /// 巡航/扫描/辅助/雨刷：指令码表（都是 8 字节 PTZCmd）。
     #[test]
     fn test_cruise_scan_aux_ptzcmd_codes() {
         let add = assert_valid_ptzcmd(&build_cruise_xml("addPoint", 1, 5, 0, 0));
@@ -863,7 +863,7 @@ mod front_end_wire_tests {
         assert_eq!(time[6] >> 4, 7);
         let start = assert_valid_ptzcmd(&build_cruise_xml("start", 1, 0, 0, 0));
         assert_eq!(&start[..6], &[0xA5, 0x0F, 0x01, 0x88, 0x01, 0x00]);
-        // 停止：国标/WVP 都没有单独指令码 → 0x00（停止所有动作）
+        // 停止：国标没有单独指令码 → 0x00（停止所有动作）
         let stop = assert_valid_ptzcmd(&build_cruise_xml("stop", 1, 0, 0, 0));
         assert_eq!(&stop[..6], &[0xA5, 0x0F, 0x01, 0x00, 0x00, 0x00]);
 
@@ -888,7 +888,7 @@ mod front_end_wire_tests {
     }
 
     /// 兼容端点：调用方给的 4 段要补 `A5 0F 01` 前缀、把**组合码2 左移 4 位**
-    /// 写入字节7（WVP 口径：combindCode2 取值 0-15），并计算累加校验和。
+    /// 写入字节7（combindCode2 取值 0-15），并计算累加校验和。
     #[test]
     fn test_raw_front_end_command_has_checksum() {
         let xml = build_raw_front_end_xml(0x08, 0x00, 0x1F, 0x00);
@@ -911,7 +911,7 @@ mod front_end_wire_tests {
 mod front_end_query_alias_tests {
     use super::*;
 
-    /// 前端（含 WVP 的 frontEnd.js）一律发 camelCase。缺 alias 时 serde 会**静默**
+    /// 前端一律发 camelCase。缺 alias 时 serde 会**静默**
     /// 丢弃参数——例如预置位编号绑不上，设备收到的是 `PresetIndex=0`。
     /// 这里逐个端点的 DTO 用 camelCase 键反序列化一遍。
     ///

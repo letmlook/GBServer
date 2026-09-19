@@ -70,7 +70,7 @@ impl StreamReconnectManager {
     /// 历史上存在三种写法，都要能认：
     ///
     /// * `{device}_{channel}` —— 本平台 `openRtpServer` 使用的规范写法；
-    /// * `{device}${channel}` —— 部分 WVP 版本 / 上级平台下发的写法；
+    /// * `{device}${channel}` —— 部分早期实现 / 上级平台下发的写法；
     /// * `{device}/{channel}` —— 拉流代理模板里的写法。
     ///
     /// 此前这里只认 `_`，而 `zlm::hook` 里另有一份只认 `$`/`/` 的实现 ——

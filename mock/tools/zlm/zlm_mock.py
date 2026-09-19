@@ -77,7 +77,7 @@ def _media_server_id() -> str:
     """当前 ZLM 节点自报的 mediaServerId。
 
     取自 `general.mediaServerId`（平台 autoConfig 时会把它设成自己的节点主键，
-    就像真实部署里 WVP 做的那样）。hook 载荷与 getServerConfig 都用它 ——
+    就像真实部署里做的那样）。hook 载荷与 getServerConfig 都用它 ——
     写死一个常量会让"平台按 mediaServerId 反查节点"这条链路在测试里永远成立，
     掩盖真实环境下的不匹配。
     """

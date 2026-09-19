@@ -192,8 +192,8 @@ pub(crate) fn build_playback_control_xml(
 /// 构造 GB28181 的 10 位 SSRC：`1 位类型 + 5 位域标识 + 4 位序号`。
 ///
 /// 类型前缀（国标）：`0` 实时点播 / `1` 回放 / `2` 下载 / `3` 广播 / `4` 对讲。
-/// 域标识取 SIP 域标识的第 4~8 位（与 WVP `SSRCFactory`
-/// 的 `sipDomain.substring(3, 8)` 一致）。
+/// 域标识取 SIP 域标识的第 4~8 位（即
+/// `sipDomain.substring(3, 8)`）。
 ///
 /// **不能**用「类型位 + 设备号前 9 位」：设备号以 `3402` 开头时，类型位 `4`
 /// （对讲/广播）会得到 `4340200000` = 4,340,200,000 > `u32::MAX`
@@ -224,7 +224,7 @@ fn build_ssrc(prefix: u8, device_id: &str) -> String {
     }
 }
 
-/// SSRC 的 5 位域标识：SIP 域标识的第 4~8 位（WVP `sipDomain.substring(3, 8)`）。
+/// SSRC 的 5 位域标识：SIP 域标识的第 4~8 位（`sipDomain.substring(3, 8)`）。
 ///
 /// `3402000000` → `20000`；长度不足 8 时退化为前 5 位并按需左补 0。
 pub(crate) fn ssrc_domain_part(sip_id: &str) -> String {
@@ -247,7 +247,7 @@ pub(crate) fn build_playback_ssrc(device_id: &str) -> String {
     build_ssrc(1, device_id)
 }
 
-/// 下载 SSRC（前缀 2）；与 Java 参考实现兼容。
+/// 下载 SSRC（前缀 2）。
 pub(crate) fn build_download_ssrc(device_id: &str) -> String {
     build_ssrc(2, device_id)
 }
@@ -262,8 +262,7 @@ pub(crate) fn build_audio_ssrc(device_id: &str) -> String {
 /// **设备侧**邀请（实时/回放/下载/对讲/广播）的 `Subject` 头：
 /// `<通道编码>:<SSRC>,<本级编码>:0`。
 ///
-/// 这是唯一实现：国标示例与 WVP 的 `SIPRequestHeaderProvider`
-/// （`channelId:ssrc,sipConfig.getId():0`）都是这个形态。
+/// 这是唯一实现：`channelId:ssrc,sipConfig.getId():0` 就是这个形态。
 /// 此前 6 处各自拼串，其中 4 处把通道与本级写反、SSRC 段放了通道编码。
 pub(crate) fn build_device_invite_subject(channel_id: &str, ssrc: &str, local_id: &str) -> String {
     format!("{}:{},{}:0", channel_id, ssrc, local_id)
@@ -271,7 +270,7 @@ pub(crate) fn build_device_invite_subject(channel_id: &str, ssrc: &str, local_id
 
 /// **平台侧**（向级联上级发起）邀请的 `Subject` 头：
 /// `<本级来源编码>:<SSRC>,<目标通道编码>:0`
-/// （对应 WVP `SIPRequestHeaderPlarformProvider` 的 `sourceId:ssrc,channelId:0`）。
+/// （即 `sourceId:ssrc,channelId:0`）。
 pub(crate) fn build_platform_invite_subject(
     local_source_id: &str,
     ssrc: &str,
@@ -282,9 +281,9 @@ pub(crate) fn build_platform_invite_subject(
 
 pub(crate) fn build_download_subject(local_id: &str, channel_id: &str) -> String {
     let ssrc = build_download_ssrc(local_id);
-    // 与回放/实时一致（WVP 的下载也走 `createPlaybackInviteRequest`）：
+    // 与回放/实时一致（下载同样走回放邀请路径）：
     // `<通道编码>:<SSRC>,<本级编码>:0`。
-    // 此前是 `<本级>:<通道>,<本级>:<ssrc>`，前两段与国标/WVP 都不同。
+    // 此前是 `<本级>:<通道>,<本级>:<ssrc>`，前两段与国标都不同。
     format!("{}:{},{}:0", channel_id, ssrc, local_id)
 }
 
@@ -2805,7 +2804,7 @@ let renewal_pool = pool.clone();
     /// 从 `Subject` 头取本级通道 ID。
     ///
     /// 国标级联的 Subject 形如 `<通道编码>:<发送端序列号>,<接收方编码>:<ssrc>`
-    /// （WVP 与多数设备都按这个形状发）。取第 1 段冒号前的部分。
+    /// （多数设备都按这个形状发）。取第 1 段冒号前的部分。
     fn extract_channel_from_subject(req: &SipRequest) -> Option<String> {
         let subject = req.header("subject")?;
         let first = subject.split(',').next()?.trim();
@@ -4279,10 +4278,11 @@ let renewal_pool = pool.clone();
             tracing::error!("设备 {} 的 MobilePosition 历史写库失败: {}", device_id, e);
         }
 
-        // 同一份位置也要写进 **WVP 对齐**的 `gb_device_mobile_position`：
+        // 同一份位置也要写进 `gb_device_mobile_position`：
         // 这条 MESSAGE-响应路径与 SUBSCRIBE 的 NOTIFY 路径此前各写一张表，
-        // 而对外接口（`/api/position/*`）读的是后者 —— 只写 `gb_position_history`
-        // 的话，用 MESSAGE 上报位置的设备在 API 上**永远查不到位置**。
+        // 而对外接口（`/api/position/*`）读的是后者（`gb_device_mobile_position`）
+        // —— 只写 `gb_position_history` 的话，用 MESSAGE 上报位置的设备在 API 上
+        // **永远查不到位置**。
         {
             use crate::db::mobile_position as pos_db;
             let record = pos_db::MobilePositionInsert {
@@ -5456,8 +5456,8 @@ f=v/1/96/1/2/1/1/0
             &talk_ssrc,
         );
 
-        // 国标/WVP 的 Subject 形如 `<通道编码>:<SSRC>,<本级编码>:0`
-        // （WVP `SIPRequestHeaderProvider`：`channelId:ssrc,sipConfig.getId():0`）。
+        // 国标的 Subject 形如 `<通道编码>:<SSRC>,<本级编码>:0`
+        // （即 `channelId:ssrc,sipConfig.getId():0`）。
         // 此前把"本级编码"与"通道编码"写反了，且 SSRC 段放的是通道编码。
         let subject =
             build_device_invite_subject(channel_id, &talk_ssrc, &self.config.device_id);
@@ -5625,7 +5625,7 @@ f=v/1/96/1/2/1/1/0
         let branch = generate_branch();
         let cseq = cseq_header(1, "INVITE").to_string();
 
-        // SSRC 前缀 4 = Audio/Broadcast (与 WVP Java 一致)
+        // SSRC 前缀 4 = Audio/Broadcast
         // 统一用 10 位 SSRC（此前是 "4" + id9 + "0" 共 11 位，不符合国标）
         let ssrc = build_audio_ssrc(device_id);
 
@@ -5636,10 +5636,10 @@ f=v/1/96/1/2/1/1/0
             self.config.device_id, self.config.ip, self.config.port, from_tag);
         let to = format!("<sip:{}@{}:{}>", channel_id, device_addr.ip(), device_addr.port());
         let contact = format!("<sip:{}@{}:{}>", self.config.device_id, self.config.ip, self.config.port);
-        // Subject（与 WVP 一致）：`<通道编码>:<SSRC>,<本级编码>:0`
+        // Subject：`<通道编码>:<SSRC>,<本级编码>:0`
         let subject = build_device_invite_subject(channel_id, &ssrc, &self.config.device_id);
 
-        // SDP s=Play（与 WVP 兼容）；端口用刚分配好的 ZLM RTP server 端口
+        // SDP s=Play；端口用刚分配好的 ZLM RTP server 端口
         let sdp = build_invite_sdp(&self.config.ip, session.local_port, "Play", Some(&ssrc));
 
         let headers: Vec<(&str, &str)> = vec![
@@ -6293,7 +6293,7 @@ f=v/1/96/1/2/1/1/0
             "<sip:{}@{}:{}>",
             self.config.device_id, self.config.ip, self.config.port
         );
-        // Subject（与 WVP 一致）：`<通道编码>:<SSRC>,<本级编码>:0`
+        // Subject：`<通道编码>:<SSRC>,<本级编码>:0`
         let subject =
             build_device_invite_subject(channel_id, &ssrc_str, &self.config.device_id);
 
@@ -6682,7 +6682,7 @@ f=v/1/96/1/2/1/1/0
             end_time,
             Some(&ssrc),
         );
-        // Subject（与 WVP 的 `createPlaybackInviteRequest` 一致）
+        // Subject：`<通道编码>:<SSRC>,<本级编码>:0`
         let subject = build_device_invite_subject(channel_id, &ssrc, &self.config.device_id);
 
         let headers: Vec<(&str, &str)> = vec![
@@ -7062,8 +7062,9 @@ f=v/1/96/1/2/1/1/0
             .allocate(channel_id, channel_id, "play");
         let sdp = build_invite_sdp(&self.config.ip, sdp_port, "Play", Some(&ssrc));
 
-        // 平台侧（WVP `SIPRequestHeaderPlarformProvider`）：
+        // 平台侧：
         // `<本级来源编码>:<SSRC>,<目标通道编码>:0`
+        // （即 `sourceId:ssrc,channelId:0`）
         let subject =
             build_platform_invite_subject(&self.config.device_id, &ssrc, channel_id);
 
@@ -7221,7 +7222,7 @@ f=v/1/96/1/2/1/1/0
     /// 触发位置：`handle_message` 收到设备的 MobilePosition Notify 后
     /// 调用本方法自动广播。
     ///
-    /// XML 格式（与 WVP-Pro Java 兼容）：
+    /// XML 格式（级联上级普遍按此形状解析）：
     /// ```xml
     /// <?xml version="1.0" encoding="UTF-8"?>
     /// <Notify>
@@ -7307,7 +7308,7 @@ f=v/1/96/1/2/1/1/0
     ///
     /// 触发位置：`handle_message` 收到设备的 Alarm Notify 后调用。
     ///
-    /// XML 格式（与 WVP-Pro Java 兼容）：
+    /// XML 格式（级联上级普遍按此形状解析）：
     /// ```xml
     /// <?xml version="1.0" encoding="UTF-8"?>
     /// <Notify>
@@ -7552,7 +7553,7 @@ f=v/1/96/1/2/1/1/0
     /// 流程：
     /// 1. 解析 SIP MESSAGE body 拿到 (channel_id, start_time, end_time, sn)
     /// 2. 复用 `handle_record_info` 的 ZLM MP4 查询路径（兜底）
-    /// 3. 拼装 WVP-Pro 兼容的 Response XML 并回送
+    /// 3. 拼装上游 RecordInfo Response XML 并回送
     ///
     /// 设计选择：当前实现用 ZLM MP4 兜底而非设备 SIP RecordInfo 多包等待，
     /// 原因：设备侧 RecordInfo 多包响应需要 SipServer 上下文（`send_record_info_query_and_wait`），
@@ -7712,12 +7713,12 @@ fn generate_branch() -> String {
     format!("z9hG4bK{:08x}", rng.gen::<u32>())
 }
 
-/// Phase 5.3: 解析 WVP-Pro 上级 INVITE SDP，提取媒体端点
+/// Phase 5.3: 解析级联上级的 INVITE SDP，提取媒体端点
 ///
 /// 输入：标准的 GB28181 INVITE SDP body（RFC 4566）
 /// 输出：`(upstream_host, upstream_port, upstream_ssrc)` 三元组
 ///
-/// 解析规则（与 WVP-Pro Java 兼容）：
+/// 解析规则（逐行解析，容忍字段顺序差异）：
 /// - `c=IN IP4 <ip>` 取 connection address
 /// - `m=video <port> RTP/AVP ...` 取首个 m=video 行的端口
 /// - `y=<ssrc>` 取 10 位 SSRC（GB28181 规定）
@@ -7725,7 +7726,7 @@ fn generate_branch() -> String {
 /// 失败模式：
 /// - 缺 c= 或 m=video → 返回 "SDP missing c= or m=video"
 /// - 端口非法 → 返回 "bad port: ..."
-/// - 缺 y= → ssrc 默认 0000000000（与 WVP 兼容）
+/// - 缺 y= → ssrc 默认 0000000000
 pub fn parse_cascade_invite_sdp(sdp: &str) -> Result<(String, u16, String), String> {
     let mut media_ip = String::new();
     let mut media_port: u16 = 0;
@@ -8057,9 +8058,9 @@ pub fn build_upstream_device_info_response(sn: &str, local_device_id: &str) -> S
     )
 }
 
-/// Phase 5.2: 拼装上游 RecordInfo Response XML（WVP-Pro 兼容）
+/// Phase 5.2: 拼装上游 RecordInfo Response XML
 ///
-/// 格式（与 WVP-Pro Java 兼容）：
+/// 格式：
 /// ```xml
 /// <Response>
 ///   <CmdType>RecordInfo</CmdType>
@@ -8417,10 +8418,9 @@ mod playback_control_tests {
         assert!(ssrc.parse::<u32>().is_ok(), "{ssrc}");
     }
 
-    /// Subject 必须与 WVP 一致：`<通道编码>:<SSRC>,<本级编码>:0`。
+    /// Subject 的形态固定为：`<通道编码>:<SSRC>,<本级编码>:0`。
     ///
-    /// 此前是 `<本级>:<通道>,<本级>:<ssrc>` —— 前两段与国标示例、WVP
-    /// （`SIPRequestHeaderProvider` 的 `channelId:ssrc,sipConfig.getId():0`）都不同。
+    /// 此前是 `<本级>:<通道>,<本级>:<ssrc>` —— 前两段与国标示例都不同。
     #[test]
     fn download_subject_format_matches_reference() {
         let subject = build_download_subject("34020000002000000001", "34020000001320000002");
@@ -8653,7 +8653,7 @@ mod upstream_message_tests {
 
     // ============ Phase 5.3: parse_cascade_invite_sdp 单测 ============
 
-    /// 标准 WVP-Pro 上级 INVITE SDP
+    /// 标准级联上级 INVITE SDP
     #[test]
     fn phase5_parse_cascade_invite_sdp_standard() {
         let sdp = "v=0\r\n\
@@ -8917,7 +8917,7 @@ mod upstream_message_tests {
         assert!(xml.contains("</Response>"));
     }
 
-    /// 含 items → 生成完整 WVP-Pro 兼容 XML
+    /// 含 items → 生成完整的上游兼容 XML
     #[test]
     fn phase5_build_upstream_record_info_response_with_items() {
         let items = vec![

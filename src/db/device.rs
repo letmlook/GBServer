@@ -55,7 +55,7 @@ pub struct Device {
 /// Phase 7 audit fix: full column list matching the Device struct above.
 /// Used by query_devices_paged and related endpoints to avoid
 /// "no column found for name: firmware" 500 errors when callers
-/// (e.g. WVP-Pro frontend) request all device fields.
+/// (e.g. the web frontend) request all device fields.
 pub const DEVICE_SELECT_COLUMNS: &str = "id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, heart_beat_interval, heart_beat_count, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval, host_address, channel_count, server_id";
 
 /// 设备通道完整列名集合,与 [`DeviceChannel`] 字段一一对应。
@@ -737,7 +737,7 @@ pub async fn get_channel_by_device_and_channel_id(
 
 /// 按**主键 id** 取通道行（`/api/device/query/channel/raw?id=` 的数据源）。
 ///
-/// WVP 的通道编辑弹窗先按主键拉原始行做回显；此前本平台没有按主键取通道的
+/// 通道编辑弹窗先按主键拉原始行做回显；此前本平台没有按主键取通道的
 /// 查询，该端点在路由里根本不存在。
 pub async fn get_channel_by_id(pool: &Pool, id: i64) -> sqlx::Result<Option<DeviceChannel>> {
     #[cfg(feature = "mysql")]
