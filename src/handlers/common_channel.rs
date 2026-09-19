@@ -9,7 +9,7 @@ use serde::Deserialize;
 use crate::db::common_channel;
 use crate::db::{count_common_channels, delete_channel_by_id, list_common_channels_paged, DeviceChannel};
 use crate::error::{AppError, ErrorCode};
-use crate::response::WVPResult;
+use crate::response::ApiResult;
 use crate::AppState;
 
 pub(crate) async fn lookup_channel_and_send(
@@ -155,8 +155,8 @@ pub struct CommonChannelQuery {
 
 #[derive(Debug, Deserialize)]
 pub struct ChannelIdQuery {
-    /// WVP 的 `ChannelController.getOne(int id)` / `play` 用的都是 `id`；
-    /// 前端（含 legacy）也发 `id`。三个名字都接受。
+    /// 前端（含 legacy）发的都是 `id`；
+    /// `channel_id` / `channelId` / `id` 三个名字都接受。
     #[serde(alias = "channelId", alias = "id")]
     pub channel_id: Option<i64>,
 }
@@ -172,7 +172,7 @@ pub struct ClearChannelBody {
 pub async fn channel_list(
     State(state): State<AppState>,
     Query(q): Query<CommonChannelQuery>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let page = q.page.unwrap_or(1);
     let count = q.count.unwrap_or(15).min(100);
     let online = match q.online.as_deref() {
@@ -205,7 +205,7 @@ pub async fn channel_list(
         "list": rows,
         "total": total,
     });
-    Ok(Json(WVPResult::success(data)))
+    Ok(Json(ApiResult::success(data)))
 }
 
 pub(crate) fn channel_to_json(c: &DeviceChannel) -> serde_json::Value {
@@ -270,22 +270,22 @@ fn ptz_type_text(ptz: Option<i32>) -> Option<String> {
 pub async fn channel_one(
     State(state): State<AppState>,
     Query(q): Query<ChannelIdQuery>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let id = q.channel_id.unwrap_or(0);
     if id <= 0 {
-        return Ok(Json(WVPResult::success(serde_json::Value::Null)));
+        return Ok(Json(ApiResult::success(serde_json::Value::Null)));
     }
     let ch = common_channel::get_by_id(&state.pool, id).await?;
     let out = match ch {
         Some(c) => channel_to_json(&c),
         None => serde_json::Value::Null,
     };
-    Ok(Json(WVPResult::success(out)))
+    Ok(Json(ApiResult::success(out)))
 }
 
 /// GET /api/common/channel/industry/list
-pub async fn industry_list() -> Json<WVPResult<Vec<serde_json::Value>>> {
-    // WVP 的 `IndustryCodeType` 是 `{name, code, notes}`（见 bean/IndustryCodeType.java）；
+pub async fn industry_list() -> Json<ApiResult<Vec<serde_json::Value>>> {
+    // 返回形状是 `{name, code, notes}`；
     // 前端按 `item.name` 显示、`item.code` 提交。此前返回 `{value,label}`，
     // 前端当成 string[] 用 → 下拉显示 "[object Object]"。
     let industries = vec![
@@ -296,12 +296,12 @@ pub async fn industry_list() -> Json<WVPResult<Vec<serde_json::Value>>> {
         serde_json::json!({"name": "工贸", "code": "05", "notes": ""}),
         serde_json::json!({"name": "其他", "code": "99", "notes": ""}),
     ];
-    Json(WVPResult::success(industries))
+    Json(ApiResult::success(industries))
 }
 
 /// GET /api/common/channel/type/list
-pub async fn type_list() -> Json<WVPResult<Vec<serde_json::Value>>> {
-    // WVP `DeviceType` = `{name, code, ownerName}`
+pub async fn type_list() -> Json<ApiResult<Vec<serde_json::Value>>> {
+    // 类型项形状 = `{name, code, ownerName}`
     let types = vec![
         serde_json::json!({"name": "摄像机", "code": "1"}),
         serde_json::json!({"name": "半球", "code": "2"}),
@@ -316,19 +316,19 @@ pub async fn type_list() -> Json<WVPResult<Vec<serde_json::Value>>> {
         serde_json::json!({"name": "智能检测", "code": "11"}),
         serde_json::json!({"name": "安全监测", "code": "12"}),
     ];
-    Json(WVPResult::success(types))
+    Json(ApiResult::success(types))
 }
 
 /// GET /api/common/channel/network/identification/list
-pub async fn network_identification_list() -> Json<WVPResult<Vec<serde_json::Value>>> {
-    // WVP `NetworkIdentificationType` = `{name, code}`
+pub async fn network_identification_list() -> Json<ApiResult<Vec<serde_json::Value>>> {
+    // 网络标识项形状 = `{name, code}`
     let list = vec![
         serde_json::json!({"name": "IP", "code": "IP"}),
         serde_json::json!({"name": "MAC", "code": "MAC"}),
         serde_json::json!({"name": "E1", "code": "E1"}),
         serde_json::json!({"name": "ADSL", "code": "ADSL"}),
     ];
-    Json(WVPResult::success(list))
+    Json(ApiResult::success(list))
 }
 
 /// POST /api/common/channel/update
@@ -361,10 +361,10 @@ pub struct ChannelUpdateBody {
 pub async fn channel_update(
     State(state): State<AppState>,
     Json(body): Json<ChannelUpdateBody>,
-) -> Result<Json<WVPResult<()>>, AppError> {
+) -> Result<Json<ApiResult<()>>, AppError> {
     let id = body.id.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id"))?;
-    // WVP `ChannelController.update` 要求"至少改了一个字段"，否则报错；
-    // 这里只做"必须传 id"，其余字段一律 COALESCE（None = 保持原值）。
+    // 这里只做"必须传 id"，不额外要求"至少改了一个字段"（那会直接报错）；
+    // 其余字段一律 COALESCE（None = 保持原值）。
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let fields = common_channel::ChannelWriteFields {
         device_id: "",
@@ -385,7 +385,7 @@ pub async fn channel_update(
         channel_type: body.channel_type,
     };
     common_channel::update(&state.pool, id, &fields, &now).await?;
-    Ok(Json(WVPResult::<()>::success_empty()))
+    Ok(Json(ApiResult::<()>::success_empty()))
 }
 
 /// POST /api/common/channel/reset
@@ -397,11 +397,11 @@ pub struct ChannelResetBody {
 pub async fn channel_reset(
     State(state): State<AppState>,
     Json(body): Json<ChannelResetBody>,
-) -> Result<Json<WVPResult<()>>, AppError> {
+) -> Result<Json<ApiResult<()>>, AppError> {
     let id = body.id.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id"))?;
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     common_channel::reset(&state.pool, id, &now).await?;
-    Ok(Json(WVPResult::<()>::success_empty()))
+    Ok(Json(ApiResult::<()>::success_empty()))
 }
 
 /// POST /api/common/channel/add
@@ -427,7 +427,7 @@ pub struct ChannelAddBody {
     #[serde(alias = "customName")]
     pub custom_name: Option<String>,
     // --- 编辑框里有、此前后端根本没有的列（改完静默丢失） ---
-    /// 厂商（前端「行业」下拉绑定的就是它，沿用 WVP legacy `DeviceChannel.manufacturer`）
+    /// 厂商（前端「行业」下拉绑定的就是它，字段名是 `manufacturer`）
     pub manufacturer: Option<String>,
     pub model: Option<String>,
     pub owner: Option<String>,
@@ -442,7 +442,7 @@ pub struct ChannelAddBody {
 pub async fn channel_add(
     State(state): State<AppState>,
     Json(body): Json<ChannelAddBody>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let device_id = body.device_id.as_deref().unwrap_or("").trim();
     let channel_id = body.channel_id.as_deref().unwrap_or("").trim();
     let name = body.name.as_deref().unwrap_or("").trim();
@@ -484,7 +484,7 @@ pub async fn channel_add(
     };
     let id = common_channel::add(&state.pool, &fields, &now).await?;
 
-    Ok(Json(WVPResult::success(serde_json::json!({
+    Ok(Json(ApiResult::success(serde_json::json!({
         "id": id,
         "message": "通道添加成功"
     }))))
@@ -494,7 +494,7 @@ pub async fn channel_add(
 pub async fn civilcode_list(
     State(state): State<AppState>,
     Query(q): Query<CommonChannelQuery>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let page = q.page.unwrap_or(1);
     let count = q.count.unwrap_or(15).min(100);
     let online = match q.online.as_deref() {
@@ -523,7 +523,7 @@ pub async fn civilcode_list(
         .map(|c| channel_to_json(c))
         .collect();
 
-    Ok(Json(WVPResult::success(serde_json::json!({
+    Ok(Json(ApiResult::success(serde_json::json!({
         "list": rows,
         "total": total,
     }))))
@@ -533,7 +533,7 @@ pub async fn civilcode_list(
 pub async fn unusual_civilcode_list(
     State(state): State<AppState>,
     Query(q): Query<CommonChannelQuery>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     // 返回 civiCode 为空或异常的通道
     let page = q.page.unwrap_or(1);
     let count = q.count.unwrap_or(15).min(100);
@@ -546,7 +546,7 @@ pub async fn unusual_civilcode_list(
         .map(|c| channel_to_json(c))
         .collect();
 
-    Ok(Json(WVPResult::success(serde_json::json!({
+    Ok(Json(ApiResult::success(serde_json::json!({
         "list": rows,
         "total": total,
     }))))
@@ -556,7 +556,7 @@ pub async fn unusual_civilcode_list(
 pub async fn unusual_parent_list(
     State(state): State<AppState>,
     Query(q): Query<CommonChannelQuery>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let page = q.page.unwrap_or(1);
     let count = q.count.unwrap_or(15).min(100);
 
@@ -568,7 +568,7 @@ pub async fn unusual_parent_list(
         .map(|c| channel_to_json(c))
         .collect();
 
-    Ok(Json(WVPResult::success(serde_json::json!({
+    Ok(Json(ApiResult::success(serde_json::json!({
         "list": rows,
         "total": total,
     }))))
@@ -578,31 +578,31 @@ pub async fn unusual_parent_list(
 pub async fn clear_unusual_civilcode(
     State(state): State<AppState>,
     Json(body): Json<ClearChannelBody>,
-) -> Result<Json<WVPResult<()>>, AppError> {
+) -> Result<Json<ApiResult<()>>, AppError> {
     let channel_ids = body.channel_ids.unwrap_or_default();
     for id in channel_ids {
         common_channel::clear_unusual_civilcode(&state.pool, id).await?;
     }
-    Ok(Json(WVPResult::<()>::success_empty()))
+    Ok(Json(ApiResult::<()>::success_empty()))
 }
 
 /// POST /api/common/channel/parent/unusual/clear
 pub async fn clear_unusual_parent(
     State(state): State<AppState>,
     Json(body): Json<ClearChannelBody>,
-) -> Result<Json<WVPResult<()>>, AppError> {
+) -> Result<Json<ApiResult<()>>, AppError> {
     let channel_ids = body.channel_ids.unwrap_or_default();
     for id in channel_ids {
         common_channel::clear_unusual_parent(&state.pool, id).await?;
     }
-    Ok(Json(WVPResult::<()>::success_empty()))
+    Ok(Json(ApiResult::<()>::success_empty()))
 }
 
 /// GET /api/common/channel/parent/list
 pub async fn parent_list(
     State(state): State<AppState>,
     Query(q): Query<CommonChannelQuery>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let page = q.page.unwrap_or(1);
     let count = q.count.unwrap_or(15).min(100);
     let online = match q.online.as_deref() {
@@ -625,7 +625,7 @@ pub async fn parent_list(
         .map(|c| channel_to_json(c))
         .collect();
 
-    Ok(Json(WVPResult::success(serde_json::json!({
+    Ok(Json(ApiResult::success(serde_json::json!({
         "list": rows,
         "total": total,
     }))))
@@ -642,7 +642,7 @@ pub struct ChannelRegionBody {
 pub async fn channel_region_add(
     State(state): State<AppState>,
     Json(body): Json<ChannelRegionBody>,
-) -> Result<Json<WVPResult<()>>, AppError> {
+) -> Result<Json<ApiResult<()>>, AppError> {
     let civil_code = body.civil_code.as_deref().unwrap_or("").trim();
     if civil_code.is_empty() {
         return Err(AppError::business(ErrorCode::Error400, "缺少 civilCode"));
@@ -652,7 +652,7 @@ pub async fn channel_region_add(
     for id in channel_ids {
         common_channel::update_civil_code(&state.pool, id, civil_code, &now).await?;
     }
-    Ok(Json(WVPResult::<()>::success_empty()))
+    Ok(Json(ApiResult::<()>::success_empty()))
 }
 
 /// POST /api/common/channel/region/delete
@@ -664,13 +664,13 @@ pub struct ChannelRegionDeleteBody {
 pub async fn channel_region_delete(
     State(state): State<AppState>,
     Json(body): Json<ChannelRegionDeleteBody>,
-) -> Result<Json<WVPResult<()>>, AppError> {
+) -> Result<Json<ApiResult<()>>, AppError> {
     let channel_ids = body.channel_ids.unwrap_or_default();
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     for id in channel_ids {
         common_channel::clear_civil_code(&state.pool, id, &now).await?;
     }
-    Ok(Json(WVPResult::<()>::success_empty()))
+    Ok(Json(ApiResult::<()>::success_empty()))
 }
 
 /// POST /api/common/channel/region/device/add
@@ -683,7 +683,7 @@ pub struct DeviceRegionBody {
 pub async fn device_region_add(
     State(state): State<AppState>,
     Json(body): Json<DeviceRegionBody>,
-) -> Result<Json<WVPResult<()>>, AppError> {
+) -> Result<Json<ApiResult<()>>, AppError> {
     let civil_code = body.civil_code.as_deref().unwrap_or("").trim();
     if civil_code.is_empty() {
         return Err(AppError::business(ErrorCode::Error400, "缺少 civilCode"));
@@ -693,7 +693,7 @@ pub async fn device_region_add(
     for device_id in device_ids {
         common_channel::update_device_civil_code(&state.pool, &device_id, civil_code, &now).await?;
     }
-    Ok(Json(WVPResult::<()>::success_empty()))
+    Ok(Json(ApiResult::<()>::success_empty()))
 }
 
 /// POST /api/common/channel/region/device/delete
@@ -705,13 +705,13 @@ pub struct DeviceRegionDeleteBody {
 pub async fn device_region_delete(
     State(state): State<AppState>,
     Json(body): Json<DeviceRegionDeleteBody>,
-) -> Result<Json<WVPResult<()>>, AppError> {
+) -> Result<Json<ApiResult<()>>, AppError> {
     let device_ids = body.device_ids.unwrap_or_default();
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     for device_id in device_ids {
         common_channel::clear_device_civil_code(&state.pool, &device_id, &now).await?;
     }
-    Ok(Json(WVPResult::<()>::success_empty()))
+    Ok(Json(ApiResult::<()>::success_empty()))
 }
 
 /// POST /api/common/channel/group/add
@@ -725,7 +725,7 @@ pub struct ChannelGroupBody {
 pub async fn channel_group_add(
     State(state): State<AppState>,
     Json(body): Json<ChannelGroupBody>,
-) -> Result<Json<WVPResult<()>>, AppError> {
+) -> Result<Json<ApiResult<()>>, AppError> {
     let parent_id = body.parent_id.unwrap_or(0);
     let business_group = body.business_group.as_deref().unwrap_or("0");
     let channel_ids = body.channel_ids.unwrap_or_default();
@@ -733,7 +733,7 @@ pub async fn channel_group_add(
     for id in channel_ids {
         common_channel::update_group(&state.pool, id, parent_id, business_group, &now).await?;
     }
-    Ok(Json(WVPResult::<()>::success_empty()))
+    Ok(Json(ApiResult::<()>::success_empty()))
 }
 
 /// POST /api/common/channel/group/delete
@@ -745,13 +745,13 @@ pub struct ChannelGroupDeleteBody {
 pub async fn channel_group_delete(
     State(state): State<AppState>,
     Json(body): Json<ChannelGroupDeleteBody>,
-) -> Result<Json<WVPResult<()>>, AppError> {
+) -> Result<Json<ApiResult<()>>, AppError> {
     let channel_ids = body.channel_ids.unwrap_or_default();
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     for id in channel_ids {
         common_channel::clear_group(&state.pool, id, &now).await?;
     }
-    Ok(Json(WVPResult::<()>::success_empty()))
+    Ok(Json(ApiResult::<()>::success_empty()))
 }
 
 /// POST /api/common/channel/group/device/add
@@ -765,7 +765,7 @@ pub struct DeviceGroupBody {
 pub async fn device_group_add(
     State(state): State<AppState>,
     Json(body): Json<DeviceGroupBody>,
-) -> Result<Json<WVPResult<()>>, AppError> {
+) -> Result<Json<ApiResult<()>>, AppError> {
     let parent_id = body.parent_id.unwrap_or(0);
     let business_group = body.business_group.as_deref().unwrap_or("0");
     let device_ids = body.device_ids.unwrap_or_default();
@@ -773,7 +773,7 @@ pub async fn device_group_add(
     for device_id in device_ids {
         common_channel::update_device_group(&state.pool, &device_id, parent_id, business_group, &now).await?;
     }
-    Ok(Json(WVPResult::<()>::success_empty()))
+    Ok(Json(ApiResult::<()>::success_empty()))
 }
 
 /// POST /api/common/channel/group/device/delete
@@ -785,13 +785,13 @@ pub struct DeviceGroupDeleteBody {
 pub async fn device_group_delete(
     State(state): State<AppState>,
     Json(body): Json<DeviceGroupDeleteBody>,
-) -> Result<Json<WVPResult<()>>, AppError> {
+) -> Result<Json<ApiResult<()>>, AppError> {
     let device_ids = body.device_ids.unwrap_or_default();
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     for device_id in device_ids {
         common_channel::clear_device_group(&state.pool, &device_id, &now).await?;
     }
-    Ok(Json(WVPResult::<()>::success_empty()))
+    Ok(Json(ApiResult::<()>::success_empty()))
 }
 
 /// GET /api/common/channel/play?channelId=
@@ -804,31 +804,31 @@ pub async fn device_group_delete(
 pub async fn channel_play(
     State(state): State<AppState>,
     Query(q): Query<ChannelIdQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let channel_id = match q.channel_id {
         Some(id) if id > 0 => id,
-        _ => return Json(WVPResult::error("缺少 channelId")),
+        _ => return Json(ApiResult::error("缺少 channelId")),
     };
     let ch = match common_channel::get_by_id(&state.pool, channel_id).await {
         Ok(Some(ch)) => ch,
-        Ok(None) => return Json(WVPResult::error("通道不存在")),
-        Err(e) => return Json(WVPResult::error(format!("数据库错误: {e}"))),
+        Ok(None) => return Json(ApiResult::error("通道不存在")),
+        Err(e) => return Json(ApiResult::error(format!("数据库错误: {e}"))),
     };
     let device_id = ch.device_id.clone().unwrap_or_default();
     let gb_channel_id = ch.gb_device_id.clone().unwrap_or_default();
     if device_id.is_empty() || gb_channel_id.is_empty() {
-        return Json(WVPResult::error("通道缺少设备ID或国标ID"));
+        return Json(ApiResult::error("通道缺少设备ID或国标ID"));
     }
     let Some(sip_server) = state.sip_server.clone() else {
-        return Json(WVPResult::error("SIP 服务未初始化"));
+        return Json(ApiResult::error("SIP 服务未初始化"));
     };
     let Some(zlm_client) = state.zlm_client.clone() else {
-        return Json(WVPResult::error("ZLM 未配置"));
+        return Json(ApiResult::error("ZLM 未配置"));
     };
 
     let stream_id = match sip_server.start_live_stream(&device_id, &gb_channel_id, 15).await {
         Ok(sid) => sid,
-        Err(e) => return Json(WVPResult::error(format!("点播失败: {e}"))),
+        Err(e) => return Json(ApiResult::error(format!("点播失败: {e}"))),
     };
 
     let ip = &zlm_client.ip;
@@ -852,7 +852,7 @@ pub async fn channel_play(
     if hls_available {
         out["hls"] = serde_json::json!(crate::zlm::address_builder::hls_url(ip, http, "rtp", &stream_id));
     }
-    Json(WVPResult::success(out))
+    Json(ApiResult::success(out))
 }
 
 /// GET /api/common/channel/play/stop?channelId=
@@ -861,20 +861,20 @@ pub async fn channel_play(
 pub async fn channel_play_stop(
     State(state): State<AppState>,
     Query(q): Query<ChannelIdQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let channel_id = match q.channel_id {
         Some(id) if id > 0 => id,
-        _ => return Json(WVPResult::error("缺少 channelId")),
+        _ => return Json(ApiResult::error("缺少 channelId")),
     };
     let ch = match common_channel::get_by_id(&state.pool, channel_id).await {
         Ok(Some(ch)) => ch,
-        Ok(None) => return Json(WVPResult::error("通道不存在")),
-        Err(e) => return Json(WVPResult::error(format!("数据库错误: {e}"))),
+        Ok(None) => return Json(ApiResult::error("通道不存在")),
+        Err(e) => return Json(ApiResult::error(format!("数据库错误: {e}"))),
     };
     let device_id = ch.device_id.clone().unwrap_or_default();
     let gb_channel_id = ch.gb_device_id.clone().unwrap_or_default();
     if device_id.is_empty() || gb_channel_id.is_empty() {
-        return Json(WVPResult::error("通道缺少设备ID或国标ID"));
+        return Json(ApiResult::error("通道缺少设备ID或国标ID"));
     }
     let stream_id = format!("{device_id}_{gb_channel_id}");
 
@@ -889,7 +889,7 @@ pub async fn channel_play_stop(
     if let Some(sip_server) = state.sip_server.clone() {
         match sip_server.send_session_bye(&device_id, &gb_channel_id).await {
             Ok(call_id) => {
-                return Json(WVPResult::success(serde_json::json!({
+                return Json(ApiResult::success(serde_json::json!({
                     "callId": call_id,
                     "stream": stream_id
                 })))
@@ -897,7 +897,7 @@ pub async fn channel_play_stop(
             Err(e) => tracing::warn!("channel_play_stop BYE 失败 {device_id}/{gb_channel_id}: {e}"),
         }
     }
-    Json(WVPResult::success(serde_json::json!({ "stream": stream_id })))
+    Json(ApiResult::success(serde_json::json!({ "stream": stream_id })))
 }
 
 /// GET /api/common/channel/map/list
@@ -912,7 +912,7 @@ pub struct MapChannelQuery {
 pub async fn map_channel_list(
     State(state): State<AppState>,
     Query(q): Query<MapChannelQuery>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let online = match q.online.as_deref() {
         Some("true") => Some(true),
         Some("false") => Some(false),
@@ -941,7 +941,7 @@ pub async fn map_channel_list(
         })
         .collect();
 
-    Ok(Json(WVPResult::success(serde_json::json!({
+    Ok(Json(ApiResult::success(serde_json::json!({
         "list": rows,
         "total": rows.len(),
     }))))
@@ -957,28 +957,28 @@ pub struct MapLevelBody {
 pub async fn map_save_level(
     State(state): State<AppState>,
     Json(body): Json<MapLevelBody>,
-) -> Result<Json<WVPResult<()>>, AppError> {
+) -> Result<Json<ApiResult<()>>, AppError> {
     let level = body.level.unwrap_or(0);
     let channels = body.channels.unwrap_or_default();
     
     if channels.is_empty() {
-        return Ok(Json(WVPResult::<()>::success_empty()));
+        return Ok(Json(ApiResult::<()>::success_empty()));
     }
     
     let result: sqlx::Result<u64> = common_channel::update_map_level(&state.pool, &channels, level).await;
     result.map_err(|e| AppError::business(ErrorCode::Error500, format!("更新地图级别失败: {}", e)))?;
     
-    Ok(Json(WVPResult::<()>::success_empty()))
+    Ok(Json(ApiResult::<()>::success_empty()))
 }
 
 /// POST /api/common/channel/map/reset-level
 pub async fn map_reset_level(
     State(state): State<AppState>,
-) -> Result<Json<WVPResult<()>>, AppError> {
+) -> Result<Json<ApiResult<()>>, AppError> {
     let result: sqlx::Result<u64> = common_channel::reset_map_level(&state.pool).await;
     result.map_err(|e| AppError::business(ErrorCode::Error500, format!("重置地图级别失败: {}", e)))?;
     
-    Ok(Json(WVPResult::<()>::success_empty()))
+    Ok(Json(ApiResult::<()>::success_empty()))
 }
 
 /// GET /api/common/channel/map/thin/clear?id=
@@ -987,7 +987,7 @@ pub async fn map_reset_level(
 pub async fn map_thin_clear(
     State(state): State<AppState>,
     Query(q): Query<ChannelIdQuery>,
-) -> Result<Json<WVPResult<()>>, AppError> {
+) -> Result<Json<ApiResult<()>>, AppError> {
     let channel_id = q.channel_id.unwrap_or(0);
     if channel_id > 0 {
         #[cfg(feature = "postgres")]
@@ -1004,14 +1004,14 @@ pub async fn map_thin_clear(
             .map_err(|e| AppError::business(ErrorCode::Error500, format!("清除稀化数据失败: {}", e)))?;
         tracing::info!("Cleared thinned geojson for channel {}", channel_id);
     }
-    Ok(Json(WVPResult::<()>::success_empty()))
+    Ok(Json(ApiResult::<()>::success_empty()))
 }
 
 /// GET /api/common/channel/map/thin/progress?id=
 pub async fn map_thin_progress(
     State(state): State<AppState>,
     Query(q): Query<ChannelIdQuery>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let channel_id = q.channel_id.unwrap_or(0);
     if channel_id > 0 {
         #[cfg(feature = "postgres")]
@@ -1037,11 +1037,11 @@ pub async fn map_thin_progress(
         .unwrap_or(false);
 
         let progress = if has_geojson { 100 } else { 0 };
-        return Ok(Json(WVPResult::success(serde_json::json!({
+        return Ok(Json(ApiResult::success(serde_json::json!({
             "progress": progress
         }))));
     }
-    Ok(Json(WVPResult::success(serde_json::json!({
+    Ok(Json(ApiResult::success(serde_json::json!({
         "progress": 0
     }))))
 }
@@ -1051,10 +1051,10 @@ pub async fn map_thin_progress(
 pub async fn map_thin_save(
     State(state): State<AppState>,
     Query(q): Query<ChannelIdQuery>,
-) -> Result<Json<WVPResult<()>>, AppError> {
+) -> Result<Json<ApiResult<()>>, AppError> {
     let channel_id = q.channel_id.unwrap_or(0);
     if channel_id <= 0 {
-        return Ok(Json(WVPResult::<()>::success_empty()));
+        return Ok(Json(ApiResult::<()>::success_empty()));
     }
 
     // Get channel's device_id and gb_device_id to look up position history
@@ -1063,12 +1063,12 @@ pub async fn map_thin_save(
     
     let channel = match channel {
         Some(c) => c,
-        None => return Ok(Json(WVPResult::<()>::success_empty())),
+        None => return Ok(Json(ApiResult::<()>::success_empty())),
     };
 
     let device_id = match &channel.device_id {
         Some(id) if !id.is_empty() => id.clone(),
-        _ => return Ok(Json(WVPResult::<()>::success_empty())),
+        _ => return Ok(Json(ApiResult::<()>::success_empty())),
     };
 
     // Get position history points
@@ -1097,7 +1097,7 @@ pub async fn map_thin_save(
     .unwrap_or_default();
 
     if points.len() < 2 {
-        return Ok(Json(WVPResult::<()>::success_empty()));
+        return Ok(Json(ApiResult::<()>::success_empty()));
     }
 
     // Douglas-Peucker simplification with epsilon = 0.0001 degrees (~11m)
@@ -1160,7 +1160,7 @@ pub async fn map_thin_save(
 
     tracing::info!("Map thin saved for channel {}: {} -> {} points", channel_id, coords.len(), simplified.len());
 
-    Ok(Json(WVPResult::<()>::success_empty()))
+    Ok(Json(ApiResult::<()>::success_empty()))
 }
 
 /// POST /api/common/channel/map/thin/draw
@@ -1173,10 +1173,10 @@ pub struct MapThinDrawBody {
 pub async fn map_thin_draw(
     State(state): State<AppState>,
     Json(body): Json<MapThinDrawBody>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let channel_id = body.id.unwrap_or(0);
     if channel_id <= 0 {
-        return Ok(Json(WVPResult::success(serde_json::json!({
+        return Ok(Json(ApiResult::success(serde_json::json!({
             "type": "Feature",
             "geometry": { "type": "LineString", "coordinates": [] },
             "properties": {}
@@ -1209,7 +1209,7 @@ pub async fn map_thin_draw(
                 format!("通道不存在: id={}", channel_id),
             ));
         }
-        return Ok(Json(WVPResult::success(geojson.clone())));
+        return Ok(Json(ApiResult::success(geojson.clone())));
     }
 
     // Otherwise return stored thinned geojson
@@ -1246,7 +1246,7 @@ pub async fn map_thin_draw(
             "properties": {}
         }));
 
-    Ok(Json(WVPResult::success(geojson)))
+    Ok(Json(ApiResult::success(geojson)))
 }
 
 /// Douglas-Peucker line simplification algorithm
@@ -1325,7 +1325,7 @@ pub struct CameraListQuery {
 pub async fn camera_list_ids(
     State(state): State<AppState>,
     Query(q): Query<CameraListQuery>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let device_ids: Vec<String> = q
         .device_ids
         .as_ref()
@@ -1355,7 +1355,7 @@ pub async fn camera_list_ids(
         }
     }
 
-    Ok(Json(WVPResult::success(serde_json::json!({
+    Ok(Json(ApiResult::success(serde_json::json!({
         "list": result,
         "total": result.len()
     }))))
@@ -1940,7 +1940,7 @@ pub async fn channel_playback_start(
 
 // ─────────────────────── 回放控制（GB28181 PlayBackCtrl） ───────────────────────
 //
-// 2026-09-11：以下端点是 WVP `/api/common/channel/playback/*` 兼容路径。
+// 2026-09-11：以下端点是 `/api/common/channel/playback/*` 兼容路径。
 // 此前 pause / resume / seek / speed 四个端点只 `tracing::info!` 便返回成功
 // （形参写成 `State(_state)`，故意不接收 state），属于「编造成功」；
 // 现按 GB28181 PlayBackCtrl 规范真正下发 SIP，并同步本地回放会话状态。
@@ -2270,7 +2270,7 @@ pub async fn channel_playback_speed(
 pub async fn channel_delete(
     State(state): State<AppState>,
     Query(q): Query<ChannelDeleteQ>,
-) -> Result<Json<WVPResult<()>>, AppError> {
+) -> Result<Json<ApiResult<()>>, AppError> {
     let id = q.id.unwrap_or(0);
     if id <= 0 {
         return Err(AppError::business(ErrorCode::Error400, "缺少通道 id"));
@@ -2279,7 +2279,7 @@ pub async fn channel_delete(
     if n == 0 {
         return Err(AppError::business(ErrorCode::Error400, "通道不存在"));
     }
-    Ok(Json(WVPResult::<()>::success_empty()))
+    Ok(Json(ApiResult::<()>::success_empty()))
 }
 
 #[derive(Debug, Deserialize)]
@@ -2487,18 +2487,18 @@ mod channel_crud_contract_tests {
         assert_eq!(ch.gb_device_id.as_deref(), Some("34020000001310000001"), "未提交时不得清空国标ID");
     }
 
-    /// `id` 是 WVP/前端的参数名；`channelId` 是后端历史上的名字。两个都要能绑。
+    /// `id` 是前端的参数名；`channelId` 是后端历史上的名字。两个都要能绑。
     #[test]
     fn test_channel_id_query_accepts_id_and_channel_id() {
         let q: ChannelIdQuery = serde_json::from_value(serde_json::json!({"id": 7})).unwrap();
-        assert_eq!(q.channel_id, Some(7), "`id` 必须能绑定（WVP 契约）");
+        assert_eq!(q.channel_id, Some(7), "`id` 必须能绑定");
         let q: ChannelIdQuery = serde_json::from_value(serde_json::json!({"channelId": 8})).unwrap();
         assert_eq!(q.channel_id, Some(8));
         let q: ChannelIdQuery = serde_json::from_value(serde_json::json!({"channel_id": 9})).unwrap();
         assert_eq!(q.channel_id, Some(9));
     }
 
-    /// 行业/类型/网络标识必须是 WVP 的 `{name, code}`，前端按下拉的
+    /// 行业/类型/网络标识必须是 `{name, code}` 对象，前端按下拉的
     /// `:label="x.name" :value="x.code"` 渲染。
     #[tokio::test]
     async fn test_code_lists_are_name_code_objects() {
@@ -2516,9 +2516,9 @@ mod channel_crud_contract_tests {
 }
 
 // ============================================================================
-// WVP `ChannelController` / `ChannelFrontEndController` 的其余端点
+// 其余通道端点
 //
-// 这两个控制器用**通道路径 id**（`?channelId=`，即本平台 `gb_device_channel.id`）
+// 这组端点用**通道路径 id**（`?channelId=`，即本平台 `gb_device_channel.id`）
 // 作为入口，与 `/api/talk/start/{deviceId}/{channelId}`、`/api/device/control/*`
 // 那套"国标编码"入口并存。此前只实现了 play/playback/PTZ/预置位等一部分，
 // 对讲、喊话、看守位、拉框缩放在通道路径下完全没挂。

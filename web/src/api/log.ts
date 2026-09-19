@@ -1,5 +1,5 @@
 import { request } from '@/utils/request'
-import type { WvpResult } from '@/types/api'
+import type { ApiResult } from '@/types/api'
 
 export interface LogRecord {
   id?: number
@@ -22,7 +22,7 @@ export interface LogQueryParams {
 }
 
 export function getLogList(params: LogQueryParams) {
-  return request<WvpResult<{ total: number; list: LogRecord[] }>>({
+  return request<ApiResult<{ total: number; list: LogRecord[] }>>({
     method: 'get',
     url: '/log/list',
     params
@@ -115,28 +115,28 @@ export interface SystemInfo {
 }
 
 export function getSystemInfo() {
-  return request<WvpResult<SystemInfo>>({
+  return request<ApiResult<SystemInfo>>({
     method: 'get',
     url: '/server/system/info'
   })
 }
 
 export function getSystemConfigInfo() {
-  return request<WvpResult<Record<string, unknown>>>({
+  return request<ApiResult<Record<string, unknown>>>({
     method: 'get',
     url: '/server/system/configInfo'
   })
 }
 
 export function getResourceInfo() {
-  return request<WvpResult<Record<string, unknown>>>({
+  return request<ApiResult<Record<string, unknown>>>({
     method: 'get',
     url: '/server/resource/info'
   })
 }
 
 export function getServerInfo() {
-  return request<WvpResult<Record<string, unknown>>>({
+  return request<ApiResult<Record<string, unknown>>>({
     method: 'get',
     url: '/server/info'
   })

@@ -10,7 +10,7 @@ use serde::Deserialize;
 use crate::auth::JwtKeys;
 use crate::db::{self, LoginUserResponse, RoleInfo, UserListRow};
 use crate::error::{AppError, ErrorCode};
-use crate::response::WVPResult;
+use crate::response::ApiResult;
 use crate::AppState;
 
 fn md5_hex(s: &str) -> String {
@@ -86,7 +86,7 @@ pub async fn login(
         server_id: state.config.user_settings.as_ref().and_then(|u| u.server_id.clone()),
     };
 
-    let mut response = (StatusCode::OK, Json(WVPResult::success(login_user))).into_response();
+    let mut response = (StatusCode::OK, Json(ApiResult::success(login_user))).into_response();
     response.headers_mut().insert(
         axum::http::header::HeaderName::from_static("access-token"),
         axum::http::HeaderValue::from_str(&token).unwrap_or(axum::http::HeaderValue::from_static("")),
@@ -121,14 +121,14 @@ where
 
 /// GET /api/user/logout  仅返回 200
 pub async fn logout() -> impl IntoResponse {
-    (StatusCode::OK, Json(WVPResult::<()>::success_empty()))
+    (StatusCode::OK, Json(ApiResult::<()>::success_empty()))
 }
 
 /// POST /api/user/userInfo  需 access-token，返回当前用户信息
 pub async fn user_info(
     State(state): State<AppState>,
     headers: HeaderMap,
-) -> Result<Json<WVPResult<LoginUserResponse>>, AppError> {
+) -> Result<Json<ApiResult<LoginUserResponse>>, AppError> {
     let token = crate::auth::extract_token_from_headers(&headers).ok_or(AppError::Unauthorized)?;
     let keys = JwtKeys::new(state.config.jwt.secret.as_bytes());
     let claims = keys.verify_token(&token).ok_or(AppError::Unauthorized)?;
@@ -150,7 +150,7 @@ pub async fn user_info(
         access_token: None,
         server_id: state.config.user_settings.as_ref().and_then(|u| u.server_id.clone()),
     };
-    Ok(Json(WVPResult::success(login_user)))
+    Ok(Json(ApiResult::success(login_user)))
 }
 
 #[derive(Debug, Deserialize)]
@@ -169,7 +169,7 @@ pub async fn users(
     State(state): State<AppState>,
     headers: HeaderMap,
     Query(q): Query<UsersQuery>,
-) -> Result<Json<WVPResult<PageUsers>>, AppError> {
+) -> Result<Json<ApiResult<PageUsers>>, AppError> {
     authz::require_admin(&state, &headers).await?;
     let page = q.page.unwrap_or(1).max(1);
     let count = q.count.unwrap_or(10).clamp(1, 100);
@@ -208,7 +208,7 @@ pub async fn users(
         page: page as u64,
         size: count as u64,
     };
-    Ok(Json(WVPResult::success(out)))
+    Ok(Json(ApiResult::success(out)))
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -237,7 +237,7 @@ pub async fn update_user(
     State(state): State<AppState>,
     headers: HeaderMap,
     Query(params): Query<UpdateUserParams>,
-) -> Result<Json<WVPResult<()>>, AppError> {
+) -> Result<Json<ApiResult<()>>, AppError> {
     authz::require_admin(&state, &headers).await?;
     let user_id = params
         .user_id
@@ -278,7 +278,7 @@ pub async fn update_user(
     if n == 0 {
         return Err(AppError::business(ErrorCode::Error100, "用户不存在或更新失败"));
     }
-    Ok(Json(WVPResult::<()>::success_empty()))
+    Ok(Json(ApiResult::<()>::success_empty()))
 }
 
 /// POST /api/user/add?username=xx&password=xx&roleId=1
@@ -286,7 +286,7 @@ pub async fn add_user(
     State(state): State<AppState>,
     headers: HeaderMap,
     Query(params): Query<AddUserParams>,
-) -> Result<Json<WVPResult<()>>, AppError> {
+) -> Result<Json<ApiResult<()>>, AppError> {
     authz::require_admin(&state, &headers).await?;
     let username = params
         .username
@@ -332,7 +332,7 @@ pub async fn add_user(
     if n == 0 {
         return Err(AppError::business(ErrorCode::Error100, "添加失败"));
     }
-    Ok(Json(WVPResult::<()>::success_empty()))
+    Ok(Json(ApiResult::<()>::success_empty()))
 }
 
 #[derive(Debug, Deserialize)]
@@ -348,7 +348,7 @@ pub async fn delete_user(
     State(state): State<AppState>,
     headers: HeaderMap,
     Query(q): Query<DeleteQuery>,
-) -> Result<Json<WVPResult<()>>, AppError> {
+) -> Result<Json<ApiResult<()>>, AppError> {
     authz::require_admin(&state, &headers).await?;
     let id = q.id.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id"))?;
     let (_, me) = authz::current_user(&state, &headers).await?;
@@ -364,7 +364,7 @@ pub async fn delete_user(
             "删除失败（用户不存在，或为受保护的内置账号）",
         ));
     }
-    Ok(Json(WVPResult::<()>::success_empty()))
+    Ok(Json(ApiResult::<()>::success_empty()))
 }
 
 #[derive(Debug, Deserialize)]
@@ -377,7 +377,7 @@ pub async fn change_password(
     State(state): State<AppState>,
     headers: HeaderMap,
     Query(params): Query<ChangePasswordParams>,
-) -> Result<Json<WVPResult<()>>, AppError> {
+) -> Result<Json<ApiResult<()>>, AppError> {
     let token = crate::auth::extract_token_from_headers(&headers).ok_or(AppError::Unauthorized)?;
     let keys = JwtKeys::new(state.config.jwt.secret.as_bytes());
     let claims = keys.verify_token(&token).ok_or(AppError::Unauthorized)?;
@@ -399,7 +399,7 @@ pub async fn change_password(
     if n == 0 {
         return Err(AppError::business(ErrorCode::Error100, "修改失败"));
     }
-    Ok(Json(WVPResult::<()>::success_empty()))
+    Ok(Json(ApiResult::<()>::success_empty()))
 }
 
 /// 旧写法是「再声明一个 camelCase 同义字段 + `#[serde(rename)]`」，
@@ -417,7 +417,7 @@ pub async fn change_password_for_admin(
     State(state): State<AppState>,
     headers: HeaderMap,
     Query(params): Query<ChangePasswordForAdminParams>,
-) -> Result<Json<WVPResult<()>>, AppError> {
+) -> Result<Json<ApiResult<()>>, AppError> {
     authz::require_admin(&state, &headers).await?;
     let user_id = params.user_id.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 userId"))?;
     let password = params.password.as_deref().ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 password"))?;
@@ -429,7 +429,7 @@ pub async fn change_password_for_admin(
     if n == 0 {
         return Err(AppError::business(ErrorCode::Error100, "修改失败"));
     }
-    Ok(Json(WVPResult::<()>::success_empty()))
+    Ok(Json(ApiResult::<()>::success_empty()))
 }
 
 #[derive(Debug, Deserialize)]
@@ -444,7 +444,7 @@ pub async fn change_push_key(
     State(state): State<AppState>,
     headers: HeaderMap,
     Query(params): Query<ChangePushKeyParams>,
-) -> Result<Json<WVPResult<()>>, AppError> {
+) -> Result<Json<ApiResult<()>>, AppError> {
     authz::require_admin(&state, &headers).await?;
     let user_id = params.user_id.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 userId"))?;
     let push_key = params.push_key.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 pushKey"))?;
@@ -452,7 +452,7 @@ pub async fn change_push_key(
     if n == 0 {
         return Err(AppError::business(ErrorCode::Error100, "修改失败"));
     }
-    Ok(Json(WVPResult::<()>::success_empty()))
+    Ok(Json(ApiResult::<()>::success_empty()))
 }
 
 #[derive(Debug, Deserialize)]
@@ -635,12 +635,12 @@ mod password_flow_tests {
     }
 }
 
-/// `GET /api/user/all`（WVP `UserController.all`）—— 不分页返回全部用户，
+/// `GET /api/user/all` —— 不分页返回全部用户，
 /// 供「角色/分组分配」等下拉框使用。
 pub async fn all_users(
     State(state): State<AppState>,
     headers: HeaderMap,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     // 同样涉及 pushKey 等敏感字段，仅管理员可取。
     authz::require_admin(&state, &headers).await?;
     let users = db::get_all_users(&state.pool).await?;
@@ -657,7 +657,7 @@ pub async fn all_users(
             })
         })
         .collect();
-    Ok(Json(WVPResult::success(serde_json::json!({
+    Ok(Json(ApiResult::success(serde_json::json!({
         "list": rows,
         "total": rows.len(),
     }))))

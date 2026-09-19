@@ -1,5 +1,5 @@
 import { request } from '@/utils/request'
-import type { WvpResult } from '@/types/api'
+import type { ApiResult } from '@/types/api'
 
 /**
  * 云端录像。
@@ -55,7 +55,7 @@ export interface CloudRecordListParams {
   query?: string
   app?: string
   stream?: string
-  /** WVP 的时间格式：`yyyy-MM-dd HH:mm:ss`（后端也接受 ISO/毫秒） */
+  /** 时间格式：`yyyy-MM-dd HH:mm:ss`（后端也接受 ISO/毫秒） */
   startTime?: string
   endTime?: string
   deviceId?: string
@@ -64,7 +64,7 @@ export interface CloudRecordListParams {
 }
 
 export function getCloudRecordList(params: CloudRecordListParams) {
-  return request<WvpResult<{ total: number; list: CloudRecord[] }>>({
+  return request<ApiResult<{ total: number; list: CloudRecord[] }>>({
     method: 'get',
     url: '/cloud/record/list',
     params
@@ -72,31 +72,31 @@ export function getCloudRecordList(params: CloudRecordListParams) {
 }
 
 export function getCloudRecordListUrl(params: CloudRecordListParams) {
-  return request<WvpResult<{ total: number; list: CloudRecordFile[] }>>({
+  return request<ApiResult<{ total: number; list: CloudRecordFile[] }>>({
     method: 'get',
     url: '/cloud/record/list-url',
     params
   })
 }
 
-/** 后端（与 WVP 一致）返回**裸字符串数组** `["2024-05-01", ...]` */
+/** 后端返回**裸字符串数组** `["2024-05-01", ...]` */
 export function getCloudRecordDateList(params: {
   deviceId?: string
   channelId?: string
   app?: string
   stream?: string
 }) {
-  return request<WvpResult<string[]>>({
+  return request<ApiResult<string[]>>({
     method: 'get',
     url: '/cloud/record/date/list',
     params
   })
 }
 
-/** WVP 的参数名是 `recordId`（后端也接受 `id`） */
+/** 参数名是 `recordId`（后端也接受 `id`） */
 export function getCloudRecordPlayPath(recordId: number | string) {
   return request<
-    WvpResult<{ playPath: string; httpPath: string; httpsPath: string; filePath?: string }>
+    ApiResult<{ playPath: string; httpPath: string; httpsPath: string; filePath?: string }>
   >({
     method: 'get',
     url: '/cloud/record/play/path',
@@ -111,7 +111,7 @@ export function getCloudRecordLoad(params: {
   startTime?: string
   endTime?: string
 }) {
-  return request<WvpResult<Record<string, unknown>>>({
+  return request<ApiResult<Record<string, unknown>>>({
     method: 'get',
     url: '/cloud/record/loadRecord',
     params
@@ -119,7 +119,7 @@ export function getCloudRecordLoad(params: {
 }
 
 export function seekCloudRecord(recordId: number | string, seekTime: number | string) {
-  return request<WvpResult>({
+  return request<ApiResult>({
     method: 'get',
     url: '/cloud/record/seek',
     params: { recordId, seek: seekTime }
@@ -127,7 +127,7 @@ export function seekCloudRecord(recordId: number | string, seekTime: number | st
 }
 
 export function speedCloudRecord(recordId: number | string, speed: number | string) {
-  return request<WvpResult>({
+  return request<ApiResult>({
     method: 'get',
     url: '/cloud/record/speed',
     params: { recordId, speed }
@@ -135,13 +135,13 @@ export function speedCloudRecord(recordId: number | string, speed: number | stri
 }
 
 /**
- * 删除云端录像（WVP 契约：`DELETE /api/cloud/record/delete`，body `{ids:[...]}`）。
+ * 删除云端录像（契约：`DELETE /api/cloud/record/delete`，body `{ids:[...]}`）。
  *
  * 早期实现是 `GET /cloud/record/delete?id=...`：该 path 只注册了 DELETE → 405，
  * 而且后端从 **body** 读 `ids`，query 上的 `id` 根本进不去。
  */
 export function deleteCloudRecord(ids: (number | string) | (number | string)[]) {
-  return request<WvpResult<{ deleted: string[]; failed: string[] }>>({
+  return request<ApiResult<{ deleted: string[]; failed: string[] }>>({
     method: 'delete',
     url: '/cloud/record/delete',
     data: { ids: Array.isArray(ids) ? ids.map(String) : [String(ids)] }
@@ -149,7 +149,7 @@ export function deleteCloudRecord(ids: (number | string) | (number | string)[]) 
 }
 
 /**
- * 建云端录像任务。后端（与 WVP 一致）是 **GET**，参数走 query。
+ * 建云端录像任务。后端是 **GET**，参数走 query。
  * 早期写成 POST + JSON body：405，且参数也进不了 `Query`。
  */
 export function addCloudRecordTask(params: {
@@ -159,7 +159,7 @@ export function addCloudRecordTask(params: {
   startTime?: string
   endTime?: string
 }) {
-  return request<WvpResult>({
+  return request<ApiResult>({
     method: 'get',
     url: '/cloud/record/task/add',
     params
@@ -167,7 +167,7 @@ export function addCloudRecordTask(params: {
 }
 
 export function getCloudRecordTaskList(params: { page?: number; count?: number }) {
-  return request<WvpResult<{ total: number; list: CloudRecord[] }>>({
+  return request<ApiResult<{ total: number; list: CloudRecord[] }>>({
     method: 'get',
     url: '/cloud/record/task/list',
     params
@@ -179,7 +179,7 @@ export function getCloudRecordTaskList(params: { page?: number; count?: number }
  * 所以必须传 `CloudRecord.id`（组合串 `recordId` 解析不出数字）。
  */
 export function downloadCloudRecordZip(ids: (number | string)[]) {
-  return request<WvpResult<{ url: string }>>({
+  return request<ApiResult<{ url: string }>>({
     method: 'get',
     url: '/cloud/record/download/zip',
     params: { ids: ids.join(',') }
@@ -187,7 +187,7 @@ export function downloadCloudRecordZip(ids: (number | string)[]) {
 }
 
 export function getCloudRecordCollectList() {
-  return request<WvpResult<{ total: number; list: Record<string, unknown>[] }>>({
+  return request<ApiResult<{ total: number; list: Record<string, unknown>[] }>>({
     method: 'get',
     url: '/cloud/record/collect/list'
   })
@@ -199,7 +199,7 @@ export function addCloudRecordCollect(recordId: number | string, extra?: {
   channelId?: string
   name?: string
 }) {
-  return request<WvpResult>({
+  return request<ApiResult>({
     method: 'get',
     url: '/cloud/record/collect/add',
     params: { recordId, ...extra }
@@ -207,7 +207,7 @@ export function addCloudRecordCollect(recordId: number | string, extra?: {
 }
 
 export function deleteCloudRecordCollect(id: number | string) {
-  return request<WvpResult>({
+  return request<ApiResult>({
     method: 'get',
     url: '/cloud/record/collect/delete',
     params: { id }

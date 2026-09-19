@@ -24,7 +24,7 @@ use crate::db::{
     user_api_key, DeviceChannel, Group, Region,
 };
 use crate::error::{AppError, ErrorCode};
-use crate::response::WVPResult;
+use crate::response::ApiResult;
 use crate::AppState;
 use std::collections::HashSet;
 use sqlx::Row;
@@ -32,7 +32,7 @@ use sqlx::Row;
 /// 把各种时间写法归一成毫秒时间戳。
 ///
 /// 支持的输入（前端 `el-date-picker` 默认给的是 `Date`，`toISOString()` 出来
-/// 是 `2024-05-01T03:00:00.000Z`；WVP 文档要求 `yyyy-MM-dd HH:mm:ss`）：
+/// 是 `2024-05-01T03:00:00.000Z`；接口约定的是 `yyyy-MM-dd HH:mm:ss`）：
 ///
 /// * 纯数字：秒 / 毫秒
 /// * `%Y-%m-%d %H:%M:%S`（本地时间）
@@ -242,7 +242,7 @@ pub struct CommonChannelListQuery {
 pub async fn common_channel_list(
     State(state): State<AppState>,
     Query(q): Query<CommonChannelListQuery>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let page = q.page.unwrap_or(1);
     let count = q.count.unwrap_or(15).min(100);
     let query = q.query.as_deref().filter(|s| !s.is_empty());
@@ -330,7 +330,7 @@ pub async fn common_channel_list(
         "list": rows,
         "total": total,
     });
-    Ok(Json(WVPResult::success(data)))
+    Ok(Json(ApiResult::success(data)))
 }
 
 // ========== role ==========
@@ -347,10 +347,10 @@ pub struct RegionQuery {
 /// GET /api/region/tree/list
 pub async fn region_tree_list(
     State(state): State<AppState>,
-) -> Result<Json<WVPResult<Vec<serde_json::Value>>>, AppError> {
+) -> Result<Json<ApiResult<Vec<serde_json::Value>>>, AppError> {
     let list: Vec<Region> = region::list_all(&state.pool).await?;
     let tree = build_region_tree(&list, None);
-    Ok(Json(WVPResult::success(tree)))
+    Ok(Json(ApiResult::success(tree)))
 }
 
 fn build_region_tree(list: &[Region], parent_id: Option<i32>) -> Vec<serde_json::Value> {
@@ -383,7 +383,7 @@ fn build_region_tree(list: &[Region], parent_id: Option<i32>) -> Vec<serde_json:
 pub async fn region_delete(
     State(state): State<AppState>,
     Query(q): Query<RegionQuery>,
-) -> Result<Json<WVPResult<()>>, AppError> {
+) -> Result<Json<ApiResult<()>>, AppError> {
     if let Some(id) = q.id {
         region::delete_by_id(&state.pool, id).await?;
     } else if let Some(ref device_id) = q.device_id {
@@ -391,17 +391,17 @@ pub async fn region_delete(
     } else {
         return Err(AppError::business(ErrorCode::Error400, "缺少 id 或 deviceId"));
     }
-    Ok(Json(WVPResult::<()>::success_empty()))
+    Ok(Json(ApiResult::<()>::success_empty()))
 }
 
 /// GET /api/region/description?id=
 pub async fn region_description(
     State(state): State<AppState>,
     Query(q): Query<RegionQuery>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let id = q.id.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id"))?;
     let r: Option<Region> = region::get_by_id(&state.pool, id).await?;
-    Ok(Json(WVPResult::success(
+    Ok(Json(ApiResult::success(
         r.map(|x| {
             serde_json::json!({
                 "id": x.id,
@@ -426,7 +426,7 @@ pub struct RegionCivilCodeQuery {
 pub async fn region_add_by_civil_code(
     State(state): State<AppState>,
     Query(q): Query<RegionCivilCodeQuery>,
-) -> Result<Json<WVPResult<()>>, AppError> {
+) -> Result<Json<ApiResult<()>>, AppError> {
     let civil_code = q.civil_code.as_deref().unwrap_or("").trim();
     if civil_code.is_empty() {
         return Err(AppError::business(ErrorCode::Error400, "缺少 civilCode"));
@@ -434,14 +434,14 @@ pub async fn region_add_by_civil_code(
 
     // If region already exists with this civil_code as device_id, do nothing
     if let Ok(Some(_existing)) = region::get_by_device_id(&state.pool, civil_code).await {
-        return Ok(Json(WVPResult::<()>::success_empty()));
+        return Ok(Json(ApiResult::<()>::success_empty()));
     }
 
     // Create a new region with auto-generated device_id and name derived from civil_code
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let name = format!("区域 {}", civil_code);
     region::add(&state.pool, civil_code, &name, None, None, &now).await?;
-    Ok(Json(WVPResult::<()>::success_empty()))
+    Ok(Json(ApiResult::<()>::success_empty()))
 }
 
 /// GET /api/region/queryChildListInBase?parentId=
@@ -453,7 +453,7 @@ pub struct RegionChildQuery {
 pub async fn region_query_child(
     State(state): State<AppState>,
     Query(q): Query<RegionChildQuery>,
-) -> Result<Json<WVPResult<Vec<serde_json::Value>>>, AppError> {
+) -> Result<Json<ApiResult<Vec<serde_json::Value>>>, AppError> {
     let parent_id = q.parent_id.unwrap_or(0);
     let list: Vec<Region> = region::list_children(&state.pool, parent_id).await?;
     let out: Vec<serde_json::Value> = list
@@ -470,13 +470,13 @@ pub async fn region_query_child(
             })
         })
         .collect();
-    Ok(Json(WVPResult::success(out)))
+    Ok(Json(ApiResult::success(out)))
 }
 
 /// GET /api/region/base/child/list
 pub async fn region_base_child_list(
     State(state): State<AppState>,
-) -> Result<Json<WVPResult<Vec<serde_json::Value>>>, AppError> {
+) -> Result<Json<ApiResult<Vec<serde_json::Value>>>, AppError> {
     let list: Vec<Region> = region::list_children(&state.pool, 0).await?;
     let out: Vec<serde_json::Value> = list
         .iter()
@@ -492,14 +492,14 @@ pub async fn region_base_child_list(
             })
         })
         .collect();
-    Ok(Json(WVPResult::success(out)))
+    Ok(Json(ApiResult::success(out)))
 }
 
 /// POST /api/region/update
 pub async fn region_update(
     State(state): State<AppState>,
     Json(body): Json<region::RegionUpdate>,
-) -> Result<Json<WVPResult<()>>, AppError> {
+) -> Result<Json<ApiResult<()>>, AppError> {
     let id = body.id.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id"))?;
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     region::update(
@@ -512,14 +512,14 @@ pub async fn region_update(
         &now,
     )
     .await?;
-    Ok(Json(WVPResult::<()>::success_empty()))
+    Ok(Json(ApiResult::<()>::success_empty()))
 }
 
 /// POST /api/region/add
 pub async fn region_add(
     State(state): State<AppState>,
     Json(body): Json<region::RegionAdd>,
-) -> Result<Json<WVPResult<()>>, AppError> {
+) -> Result<Json<ApiResult<()>>, AppError> {
     let device_id = body
         .device_id
         .as_deref()
@@ -548,14 +548,14 @@ pub async fn region_add(
         &now,
     )
     .await?;
-    Ok(Json(WVPResult::<()>::success_empty()))
+    Ok(Json(ApiResult::<()>::success_empty()))
 }
 
 /// GET /api/region/path?id=（可省略，若省略则返回空路径）
 pub async fn region_path(
     State(state): State<AppState>,
     Query(q): Query<RegionQuery>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     // 允许缺少 id，若未传则返回空路径，提升友好度
     let id = q.id.unwrap_or(0);
     let all: Vec<Region> = region::list_all(&state.pool).await?;
@@ -574,12 +574,12 @@ pub async fn region_path(
         }
     }
     path.reverse();
-    Ok(Json(WVPResult::success(serde_json::Value::Array(path))))
+    Ok(Json(ApiResult::success(serde_json::Value::Array(path))))
 }
 
 /// 树查询（`/region/tree/query`、`/group/tree/query`）的查询参数。
 ///
-/// WVP 用 `query` 关键字；本平台前端历史上传 `parentId`。两个都支持：
+/// `query` 是查询关键字；本平台前端历史上传 `parentId`。两个都支持：
 /// 给了 `parentId` 即"取该父节点下的子节点"（`-1` 是前端的"顶级"哨兵，
 /// 与 `build_region_tree` 一致），否则返回全量。
 #[derive(Debug, Deserialize)]
@@ -628,7 +628,7 @@ fn tree_node_matches(
 pub async fn region_tree_query(
     State(state): State<AppState>,
     Query(q): Query<TreeNodeQuery>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let all: Vec<Region> = region::list_all(&state.pool).await?;
     let filtered: Vec<&Region> = all
         .iter()
@@ -652,8 +652,8 @@ pub async fn region_tree_query(
             })
         })
         .collect();
-    // PageInfo 兼容字段：WVP 这两个接口返回的就是 PageHelper 的 PageInfo
-    Ok(Json(WVPResult::success(serde_json::json!({
+    // 分页元数据别名：这两个接口返回 {total, list, pageNum, pageSize, pages} 形状
+    Ok(Json(ApiResult::success(serde_json::json!({
         "total": total,
         "list": list,
         "pageNum": page,
@@ -690,17 +690,17 @@ fn build_group_tree(list: &[Group], parent_id: Option<i32>) -> Vec<serde_json::V
 /// GET /api/group/tree/list
 pub async fn group_tree_list(
     State(state): State<AppState>,
-) -> Result<Json<WVPResult<Vec<serde_json::Value>>>, AppError> {
+) -> Result<Json<ApiResult<Vec<serde_json::Value>>>, AppError> {
     let list: Vec<Group> = group::list_all(&state.pool).await?;
     let tree = build_group_tree(&list, None);
-    Ok(Json(WVPResult::success(tree)))
+    Ok(Json(ApiResult::success(tree)))
 }
 
 /// POST /api/group/add
 pub async fn group_add(
     State(state): State<AppState>,
     Json(body): Json<group::GroupAdd>,
-) -> Result<Json<WVPResult<()>>, AppError> {
+) -> Result<Json<ApiResult<()>>, AppError> {
     let device_id = body.device_id.as_deref().unwrap_or("").trim();
     let name = body.name.as_deref().unwrap_or("").trim();
     let business_group = body.business_group.as_deref().unwrap_or("0");
@@ -726,14 +726,14 @@ pub async fn group_add(
         body.civil_code.as_deref(),
     )
     .await?;
-    Ok(Json(WVPResult::<()>::success_empty()))
+    Ok(Json(ApiResult::<()>::success_empty()))
 }
 
 /// POST /api/group/update
 pub async fn group_update(
     State(state): State<AppState>,
     Json(body): Json<group::GroupUpdate>,
-) -> Result<Json<WVPResult<()>>, AppError> {
+) -> Result<Json<ApiResult<()>>, AppError> {
     let id = body.id.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id"))?;
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     group::update(
@@ -748,7 +748,7 @@ pub async fn group_update(
         &now,
     )
     .await?;
-    Ok(Json(WVPResult::<()>::success_empty()))
+    Ok(Json(ApiResult::<()>::success_empty()))
 }
 
 /// GET /api/group/one?id= —— 与 `/api/region/one` 对齐（此前只有 region 有，
@@ -756,12 +756,12 @@ pub async fn group_update(
 pub async fn group_one(
     State(state): State<AppState>,
     Query(q): Query<IdQuery>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let id = q
         .id
         .ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id"))?;
     let g: Option<Group> = group::get_by_id(&state.pool, id).await?;
-    Ok(Json(WVPResult::success(
+    Ok(Json(ApiResult::success(
         g.map(|x| {
             serde_json::json!({
                 "id": x.id,
@@ -793,17 +793,17 @@ pub struct IdQuery {
 pub async fn group_delete(
     State(state): State<AppState>,
     Query(q): Query<IdQuery>,
-) -> Result<Json<WVPResult<()>>, AppError> {
+) -> Result<Json<ApiResult<()>>, AppError> {
     let id = q.id.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id"))?;
     group::delete_by_id(&state.pool, id).await?;
-    Ok(Json(WVPResult::<()>::success_empty()))
+    Ok(Json(ApiResult::<()>::success_empty()))
 }
 
 /// GET /api/group/path?id=
 pub async fn group_path(
     State(state): State<AppState>,
     Query(q): Query<IdQuery>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let id = q.id.unwrap_or(0);
     let all: Vec<Group> = group::list_all(&state.pool).await?;
     let mut path = Vec::new();
@@ -821,14 +821,14 @@ pub async fn group_path(
         }
     }
     path.reverse();
-    Ok(Json(WVPResult::success(serde_json::Value::Array(path))))
+    Ok(Json(ApiResult::success(serde_json::Value::Array(path))))
 }
 
 /// GET /api/group/tree/query（参数同 `region_tree_query`）
 pub async fn group_tree_query(
     State(state): State<AppState>,
     Query(q): Query<TreeNodeQuery>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let all: Vec<Group> = group::list_all(&state.pool).await?;
     let filtered: Vec<&Group> = all
         .iter()
@@ -854,7 +854,7 @@ pub async fn group_tree_query(
             })
         })
         .collect();
-    Ok(Json(WVPResult::success(serde_json::json!({
+    Ok(Json(ApiResult::success(serde_json::json!({
         "total": total,
         "list": list,
         "pageNum": page,
@@ -951,7 +951,7 @@ pub async fn log_list(
         AppError::business(ErrorCode::Error500, format!("查询系统日志失败: {e}"))
     })?;
 
-    Ok(axum::Json(WVPResult::success(serde_json::json!({
+    Ok(axum::Json(ApiResult::success(serde_json::json!({
         "total": total,
         "list": list,
         "page": page,
@@ -1142,7 +1142,7 @@ pub async fn user_api_key_list(
     State(state): State<AppState>,
     Query(q): Query<UserApiKeyQuery>,
     headers: HeaderMap,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     crate::handlers::authz::require_admin(&state, &headers).await?;
     let page = q.page.unwrap_or(1);
     let count = q.count.unwrap_or(10).min(100);
@@ -1164,7 +1164,7 @@ pub async fn user_api_key_list(
             })
         })
         .collect();
-    Ok(Json(WVPResult::success(serde_json::json!({
+    Ok(Json(ApiResult::success(serde_json::json!({
         "total": total,
         "list": list
     }))))
@@ -1175,13 +1175,13 @@ pub async fn user_api_key_remark(
     State(state): State<AppState>,
     Query(q): Query<UserApiKeyMutateQuery>,
     headers: HeaderMap,
-) -> Result<Json<WVPResult<()>>, AppError> {
+) -> Result<Json<ApiResult<()>>, AppError> {
     crate::handlers::authz::require_admin(&state, &headers).await?;
     let id = q.id.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id"))?;
     let remark = q.remark.as_deref().unwrap_or("");
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     user_api_key::update_remark(&state.pool, id as i64, remark, &now).await?;
-    Ok(Json(WVPResult::<()>::success_empty()))
+    Ok(Json(ApiResult::<()>::success_empty()))
 }
 
 /// POST /api/userApiKey/enable
@@ -1194,37 +1194,37 @@ pub async fn user_api_key_enable(
     State(state): State<AppState>,
     Query(q): Query<UserApiKeyMutateQuery>,
     headers: HeaderMap,
-) -> Result<Json<WVPResult<()>>, AppError> {
+) -> Result<Json<ApiResult<()>>, AppError> {
     crate::handlers::authz::require_admin(&state, &headers).await?;
     let id = q.id.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id"))?;
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     user_api_key::set_enable(&state.pool, id, true, &now).await?;
-    Ok(Json(WVPResult::<()>::success_empty()))
+    Ok(Json(ApiResult::<()>::success_empty()))
 }
 
 pub async fn user_api_key_disable(
     State(state): State<AppState>,
     Query(q): Query<UserApiKeyMutateQuery>,
     headers: HeaderMap,
-) -> Result<Json<WVPResult<()>>, AppError> {
+) -> Result<Json<ApiResult<()>>, AppError> {
     crate::handlers::authz::require_admin(&state, &headers).await?;
     let id = q.id.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id"))?;
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     user_api_key::set_enable(&state.pool, id, false, &now).await?;
-    Ok(Json(WVPResult::<()>::success_empty()))
+    Ok(Json(ApiResult::<()>::success_empty()))
 }
 
 pub async fn user_api_key_reset(
     State(state): State<AppState>,
     Query(q): Query<UserApiKeyMutateQuery>,
     headers: HeaderMap,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     crate::handlers::authz::require_admin(&state, &headers).await?;
     let id = q.id.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id"))?;
     let new_key = format!("{:032x}", rand::random::<u128>());
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     user_api_key::reset_api_key(&state.pool, id, &new_key, &now).await?;
-    Ok(Json(WVPResult::success(serde_json::json!({ "apiKey": new_key }))))
+    Ok(Json(ApiResult::success(serde_json::json!({ "apiKey": new_key }))))
 }
 
 /// DELETE /api/userApiKey/delete?id=
@@ -1232,11 +1232,11 @@ pub async fn user_api_key_delete(
     State(state): State<AppState>,
     Query(q): Query<IdQuery>,
     headers: HeaderMap,
-) -> Result<Json<WVPResult<()>>, AppError> {
+) -> Result<Json<ApiResult<()>>, AppError> {
     crate::handlers::authz::require_admin(&state, &headers).await?;
     let id = q.id.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id"))?;
     user_api_key::delete_by_id(&state.pool, id).await?;
-    Ok(Json(WVPResult::<()>::success_empty()))
+    Ok(Json(ApiResult::<()>::success_empty()))
 }
 
 /// POST /api/userApiKey/add
@@ -1244,7 +1244,7 @@ pub async fn user_api_key_add(
     State(state): State<AppState>,
     Query(q): Query<UserApiKeyMutateQuery>,
     headers: HeaderMap,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     crate::handlers::authz::require_admin(&state, &headers).await?;
     let user_id = q.user_id.unwrap_or(1);
     let app = q.app.as_deref().unwrap_or("default").to_string();
@@ -1264,7 +1264,7 @@ pub async fn user_api_key_add(
         &now,
     )
     .await?;
-    Ok(Json(WVPResult::success(serde_json::json!({
+    Ok(Json(ApiResult::success(serde_json::json!({
         "apiKey": api_key,
         "enable": enable,
         "expiredAt": expired_at
@@ -1276,7 +1276,7 @@ pub async fn user_api_key_add(
 #[derive(Debug, Deserialize)]
 pub struct CloudRecordQuery {
     pub app: Option<String>,
-    /// WVP 的参数名是 stream；前端部分接口发的是 streamId，两种都收
+    /// 参数名是 stream；前端部分接口发的是 streamId，两种都收
     #[serde(alias = "streamId")]
     pub stream: Option<String>,
     /// 单条录像：既接受数字主键 `id`，也接受组合串 `recordId`
@@ -1316,7 +1316,7 @@ pub struct CloudRecordQuery {
 #[derive(Debug, Deserialize)]
 pub struct CloudRecordDeleteBody {
     /// 录像主键列表。本仓库前端发字符串（`map(String)`），
-    /// WVP / 第三方客户端发整数 —— 两种都要收（否则后者直接 422）。
+    /// 第三方客户端发整数 —— 两种都要收（否则后者直接 422）。
     #[serde(default, deserialize_with = "crate::serde_flex::de_opt_string_vec")]
     pub ids: Option<Vec<String>>,
 }
@@ -1443,7 +1443,7 @@ pub(crate) async fn resolve_cloud_record(
 pub async fn cloud_record_play_path(
     State(state): State<AppState>,
     Query(q): Query<CloudRecordQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let raw_id = q
         .record_id
         .clone()
@@ -1453,7 +1453,7 @@ pub async fn cloud_record_play_path(
     let Some((media_server_id, app, stream, file_name, _db_id)) =
         resolve_cloud_record(&state, &raw_id).await
     else {
-        return Json(WVPResult::success(serde_json::json!({
+        return Json(ApiResult::success(serde_json::json!({
             "playPath": "",
             "httpPath": "",
             "httpsPath": ""
@@ -1508,13 +1508,13 @@ pub async fn cloud_record_play_path(
             }
         }
     }
-    Json(WVPResult::success(payload))
+    Json(ApiResult::success(payload))
 }
 
 pub async fn cloud_record_date_list(
     State(state): State<AppState>,
     Query(q): Query<CloudRecordQuery>,
-) -> Json<WVPResult<Vec<String>>> {
+) -> Json<ApiResult<Vec<String>>> {
     let app = q.app.clone().unwrap_or_else(|| "record".to_string());
     let stream = q.stream.clone().unwrap_or_else(|| "record".to_string());
     let media_server_ids = if let Some(id) = q.media_server_id.clone() {
@@ -1550,13 +1550,13 @@ pub async fn cloud_record_date_list(
     }
     let mut result = dates.into_iter().collect::<Vec<_>>();
     result.sort();
-    Json(WVPResult::success(result))
+    Json(ApiResult::success(result))
 }
 
 pub async fn cloud_record_load(
     State(state): State<AppState>,
     Query(q): Query<CloudRecordQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     // 接受 `id`（列表给的是数字主键）、`recordId`/`cloudRecordId`
     let record_id = q
         .cloud_record_id
@@ -1565,7 +1565,7 @@ pub async fn cloud_record_load(
         .or(q.id.clone())
         .unwrap_or_default();
     let Some((media_server_id, app, stream, file_name)) = parse_cloud_record_id(&record_id) else {
-        return Json(WVPResult::success(serde_json::json!({})));
+        return Json(ApiResult::success(serde_json::json!({})));
     };
 
     if let Some(zlm) = state.get_zlm_client(Some(&media_server_id)) {
@@ -1611,17 +1611,17 @@ pub async fn cloud_record_load(
                         source: "cloud_record".to_string(),
                     }).await;
                 }
-                return Json(WVPResult::success(payload));
+                return Json(ApiResult::success(payload));
             }
         }
     }
-    Json(WVPResult::success(serde_json::json!({})))
+    Json(ApiResult::success(serde_json::json!({})))
 }
 
 pub async fn cloud_record_seek(
     State(state): State<AppState>,
     Query(q): Query<CloudRecordQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let record_id = resolve_cloud_record_id_string(&state, &q).await;
     let seek = q.seek.or(q.seek_time).unwrap_or_default();
     if let Some(ref playback_manager) = state.playback_manager {
@@ -1631,7 +1631,7 @@ pub async fn cloud_record_seek(
                 .await;
         }
     }
-    Json(WVPResult::success(serde_json::json!({
+    Json(ApiResult::success(serde_json::json!({
         "id": record_id,
         "mediaServerId": q.media_server_id,
         "app": q.app,
@@ -1644,7 +1644,7 @@ pub async fn cloud_record_seek(
 pub async fn cloud_record_speed(
     State(state): State<AppState>,
     Query(q): Query<CloudRecordQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let record_id = resolve_cloud_record_id_string(&state, &q).await;
     let speed = q.speed.unwrap_or(1.0);
     if let Some(ref playback_manager) = state.playback_manager {
@@ -1652,7 +1652,7 @@ pub async fn cloud_record_speed(
             playback_manager.update_speed(&record_id, speed).await;
         }
     }
-    Json(WVPResult::success(serde_json::json!({
+    Json(ApiResult::success(serde_json::json!({
         "id": record_id,
         "mediaServerId": q.media_server_id,
         "app": q.app,
@@ -1665,7 +1665,7 @@ pub async fn cloud_record_speed(
 pub async fn cloud_record_task_add(
     State(state): State<AppState>,
     Query(q): Query<CloudRecordQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     ensure_cloud_record_task_table(&state.pool).await;
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let app = q.app.unwrap_or_else(|| "record".to_string());
@@ -1727,7 +1727,7 @@ pub async fn cloud_record_task_add(
     .await;
 
     let inserted = result.ok().map(|res| res.rows_affected()).unwrap_or_default();
-    Json(WVPResult::success(serde_json::json!({
+    Json(ApiResult::success(serde_json::json!({
         "app": app,
         "stream": stream,
         "mediaServerId": media_server_id,
@@ -1740,7 +1740,7 @@ pub async fn cloud_record_task_add(
 pub async fn cloud_record_task_list(
     State(state): State<AppState>,
     Query(q): Query<CloudRecordQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     ensure_cloud_record_task_table(&state.pool).await;
     let rows = sqlx::query(
         "SELECT id, app, stream, media_server_id, start_time, end_time, status, progress, create_time, update_time FROM gb_cloud_record_task ORDER BY id DESC",
@@ -1773,13 +1773,13 @@ pub async fn cloud_record_task_list(
         })
         .collect();
     let total = list.len();
-    Json(WVPResult::success(serde_json::json!({"total": total, "list": list})))
+    Json(ApiResult::success(serde_json::json!({"total": total, "list": list})))
 }
 
 pub async fn cloud_record_delete(
     State(state): State<AppState>,
     Json(body): Json<CloudRecordDeleteBody>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let ids = body.ids.unwrap_or_default();
     let mut deleted = Vec::new();
     let mut failed = Vec::new();
@@ -1862,7 +1862,7 @@ pub async fn cloud_record_delete(
         }
     }
 
-    Json(WVPResult::success(serde_json::json!({
+    Json(ApiResult::success(serde_json::json!({
         "deleted": deleted,
         "failed": failed,
         "message": if file_failures.is_empty() {
@@ -1875,8 +1875,8 @@ pub async fn cloud_record_delete(
 
 /// GET /api/cloud/record/list — 云端录像检索
 ///
-/// **以数据库 `gb_cloud_record` 为准**（WVP 的 CloudRecordController./list 也是读
-/// 自己的表）：录像由 `on_record_mp4` 钩子落库，所以 GB28181 录像（app=rtp、
+/// **以数据库 `gb_cloud_record` 为准**（列表接口读的就是这张表本身）：
+/// 录像由 `on_record_mp4` 钩子落库，所以 GB28181 录像（app=rtp、
 /// stream=`设备_通道`）才查得到。
 ///
 /// 此前这里只按 `app=record&stream=record` 去问 ZLM 的文件列表 —— 那是"云端
@@ -1894,7 +1894,7 @@ pub async fn cloud_record_delete(
 pub async fn cloud_record_list(
     State(state): State<AppState>,
     Query(q): Query<CloudRecordQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let page = q.page.unwrap_or(1).max(1);
     let count = q.count.unwrap_or(15).clamp(1, 1000);
 
@@ -1935,7 +1935,7 @@ pub async fn cloud_record_list(
             .iter()
             .map(|r| cloud_record_row_json(&state, r))
             .collect();
-        return Json(WVPResult::success(serde_json::json!({
+        return Json(ApiResult::success(serde_json::json!({
             "total": total,
             "list": list
         })));
@@ -1956,11 +1956,11 @@ pub async fn cloud_record_list(
         )
         .await;
         if let Some(v) = legacy {
-            return Json(WVPResult::success(v));
+            return Json(ApiResult::success(v));
         }
     }
 
-    Json(WVPResult::success(serde_json::json!({
+    Json(ApiResult::success(serde_json::json!({
         "total": total,
         "list": Vec::<serde_json::Value>::new()
     })))
@@ -2131,7 +2131,7 @@ async fn cloud_record_scan_zlm(
 /// ============================================================================
 
 /// 确保收藏表存在
-/// 收藏录像表 `wvp_record_collect`（GBServer 扩展，WVP 本身没有这个功能）。
+/// 收藏录像表 `gb_record_collect`（本平台扩展能力）。
 ///
 /// **三种方言都要各自的建表语句**：早期这里只有一份 PostgreSQL 写法
 /// （`id SERIAL`、`create_time TIMESTAMP`），在 SQLite / MySQL 上的后果是
@@ -2147,7 +2147,7 @@ async fn cloud_record_scan_zlm(
 /// 因此这里按方言建表，并对**既有库**做一次类型迁移（保留已有收藏数据）。
 async fn ensure_record_collect_table(pool: &crate::db::Pool) {
     #[cfg(feature = "postgres")]
-    const DDL: &str = r#"CREATE TABLE IF NOT EXISTS wvp_record_collect (
+    const DDL: &str = r#"CREATE TABLE IF NOT EXISTS gb_record_collect (
             id BIGSERIAL PRIMARY KEY,
             record_id VARCHAR(255) NOT NULL UNIQUE,
             device_id VARCHAR(64),
@@ -2156,7 +2156,7 @@ async fn ensure_record_collect_table(pool: &crate::db::Pool) {
             create_time VARCHAR(50)
         )"#;
     #[cfg(feature = "mysql")]
-    const DDL: &str = r#"CREATE TABLE IF NOT EXISTS wvp_record_collect (
+    const DDL: &str = r#"CREATE TABLE IF NOT EXISTS gb_record_collect (
             id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
             record_id VARCHAR(255) NOT NULL UNIQUE,
             device_id VARCHAR(64),
@@ -2165,7 +2165,7 @@ async fn ensure_record_collect_table(pool: &crate::db::Pool) {
             create_time VARCHAR(50)
         )"#;
     #[cfg(feature = "sqlite")]
-    const DDL: &str = r#"CREATE TABLE IF NOT EXISTS wvp_record_collect (
+    const DDL: &str = r#"CREATE TABLE IF NOT EXISTS gb_record_collect (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             record_id VARCHAR(255) NOT NULL UNIQUE,
             device_id VARCHAR(64),
@@ -2178,7 +2178,7 @@ async fn ensure_record_collect_table(pool: &crate::db::Pool) {
     #[cfg(feature = "sqlite")]
     {
         let id_type: Option<String> = sqlx::query_scalar(
-            "SELECT type FROM pragma_table_info('wvp_record_collect') WHERE name = 'id'",
+            "SELECT type FROM pragma_table_info('gb_record_collect') WHERE name = 'id'",
         )
         .fetch_optional(pool)
         .await
@@ -2186,21 +2186,21 @@ async fn ensure_record_collect_table(pool: &crate::db::Pool) {
         .flatten();
         if let Some(t) = id_type.filter(|t| !t.eq_ignore_ascii_case("INTEGER")) {
             tracing::warn!(
-                "[schema] wvp_record_collect.id 当前类型为 {}（应为 INTEGER），迁移中（保留数据）",
+                "[schema] gb_record_collect.id 当前类型为 {}（应为 INTEGER），迁移中（保留数据）",
                 t
             );
-            let old = "wvp_record_collect_legacy";
+            let old = "gb_record_collect_legacy";
             for stmt in [
-                format!("ALTER TABLE wvp_record_collect RENAME TO {old}"),
+                format!("ALTER TABLE gb_record_collect RENAME TO {old}"),
                 DDL.to_string(),
                 format!(
-                    "INSERT INTO wvp_record_collect (record_id, device_id, channel_id, name, create_time) \
+                    "INSERT INTO gb_record_collect (record_id, device_id, channel_id, name, create_time) \
                      SELECT record_id, device_id, channel_id, name, create_time FROM {old}"
                 ),
                 format!("DROP TABLE {old}"),
             ] {
                 if let Err(e) = sqlx::query(&stmt).execute(pool).await {
-                    tracing::error!("[schema] wvp_record_collect 迁移失败: {} | {}", e, stmt);
+                    tracing::error!("[schema] gb_record_collect 迁移失败: {} | {}", e, stmt);
                     return;
                 }
             }
@@ -2210,20 +2210,20 @@ async fn ensure_record_collect_table(pool: &crate::db::Pool) {
     {
         if let Ok(Some(t)) = sqlx::query_scalar::<_, String>(
             "SELECT data_type FROM information_schema.columns \
-             WHERE table_schema = DATABASE() AND table_name = 'wvp_record_collect' AND column_name = 'id'",
+             WHERE table_schema = DATABASE() AND table_name = 'gb_record_collect' AND column_name = 'id'",
         )
         .fetch_optional(pool)
         .await
         {
             if t != "bigint" {
-                tracing::warn!("[schema] wvp_record_collect.id 类型为 {}，迁移为有符号 BIGINT", t);
+                tracing::warn!("[schema] gb_record_collect.id 类型为 {}，迁移为有符号 BIGINT", t);
                 if let Err(e) = sqlx::query(
-                    "ALTER TABLE wvp_record_collect MODIFY id BIGINT NOT NULL AUTO_INCREMENT",
+                    "ALTER TABLE gb_record_collect MODIFY id BIGINT NOT NULL AUTO_INCREMENT",
                 )
                 .execute(pool)
                 .await
                 {
-                    tracing::error!("[schema] wvp_record_collect.id 迁移失败: {}", e);
+                    tracing::error!("[schema] gb_record_collect.id 迁移失败: {}", e);
                 }
             }
         }
@@ -2232,7 +2232,7 @@ async fn ensure_record_collect_table(pool: &crate::db::Pool) {
     if let Err(e) = sqlx::query(DDL).execute(pool).await {
         let msg = e.to_string();
         if !msg.contains("already exists") {
-            tracing::error!("创建 wvp_record_collect 失败（收藏功能不可用）: {}", msg);
+            tracing::error!("创建 gb_record_collect 失败（收藏功能不可用）: {}", msg);
         }
     }
 }
@@ -2242,7 +2242,7 @@ async fn ensure_record_collect_table(pool: &crate::db::Pool) {
 pub async fn cloud_record_collect_add(
     State(state): State<AppState>,
     Query(q): Query<CloudRecordCollectQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     ensure_record_collect_table(&state.pool).await;
     
     // collect 的 DTO 是独立的（多了 name/deviceId/channelId），单独解析
@@ -2257,7 +2257,7 @@ pub async fn cloud_record_collect_add(
         None => raw_id,
     };
     if record_id.is_empty() {
-        return Json(WVPResult::error("record_id is required"));
+        return Json(ApiResult::error("record_id is required"));
     }
     
     let device_id = q.device_id.clone().unwrap_or_default();
@@ -2270,12 +2270,12 @@ pub async fn cloud_record_collect_add(
     let now = crate::handlers::stream::local_now_str();
     #[cfg(any(feature = "postgres", feature = "sqlite"))]
     let sql = crate::dyn_where::dialect_sql(
-        "INSERT INTO wvp_record_collect (record_id, device_id, channel_id, name, create_time) \
+        "INSERT INTO gb_record_collect (record_id, device_id, channel_id, name, create_time) \
          VALUES (?, ?, ?, ?, ?) ON CONFLICT (record_id) DO NOTHING",
     );
     #[cfg(feature = "mysql")]
     let sql = std::borrow::Cow::Borrowed(
-        "INSERT IGNORE INTO wvp_record_collect (record_id, device_id, channel_id, name, create_time) \
+        "INSERT IGNORE INTO gb_record_collect (record_id, device_id, channel_id, name, create_time) \
          VALUES (?, ?, ?, ?, ?)",
     );
 
@@ -2289,14 +2289,14 @@ pub async fn cloud_record_collect_add(
         .await
     {
         Ok(r) if r.rows_affected() > 0 => {
-            Json(WVPResult::success(serde_json::json!({"recordId": record_id, "status": "collected"})))
+            Json(ApiResult::success(serde_json::json!({"recordId": record_id, "status": "collected"})))
         }
-        Ok(_) => Json(WVPResult::success(
+        Ok(_) => Json(ApiResult::success(
             serde_json::json!({"recordId": record_id, "status": "already_collected"}),
         )),
         Err(e) => {
             tracing::error!("收藏录像失败 record_id={}: {}", record_id, e);
-            Json(WVPResult::error(format!("收藏失败: {e}")))
+            Json(ApiResult::error(format!("收藏失败: {e}")))
         }
     }
 }
@@ -2306,16 +2306,16 @@ pub async fn cloud_record_collect_add(
 pub async fn cloud_record_collect_delete(
     State(state): State<AppState>,
     Json(body): Json<CloudRecordCollectQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     ensure_record_collect_table(&state.pool).await;
     
     let record_id = body.record_id.clone().or(body.cloud_record_id).unwrap_or_default();
     if record_id.is_empty() {
-        return Json(WVPResult::error("record_id is required"));
+        return Json(ApiResult::error("record_id is required"));
     }
     
     if let Err(e) = sqlx::query(&crate::dyn_where::dialect_sql(
-        "DELETE FROM wvp_record_collect WHERE record_id = ?",
+        "DELETE FROM gb_record_collect WHERE record_id = ?",
     ))
     .bind(&record_id)
     .execute(&state.pool)
@@ -2324,7 +2324,7 @@ pub async fn cloud_record_collect_delete(
         tracing::error!("取消收藏失败 record_id={}: {}", record_id, e);
     }
     
-    Json(WVPResult::success(serde_json::json!({"recordId": record_id, "status": "deleted"})))
+    Json(ApiResult::success(serde_json::json!({"recordId": record_id, "status": "deleted"})))
 }
 
 /// GET /api/cloud/record/collect/list
@@ -2332,7 +2332,7 @@ pub async fn cloud_record_collect_delete(
 pub async fn cloud_record_collect_list(
     State(state): State<AppState>,
     Query(q): Query<IdQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     ensure_record_collect_table(&state.pool).await;
     
     let page = q.page.unwrap_or(1);
@@ -2347,7 +2347,7 @@ pub async fn cloud_record_collect_list(
     let records: Vec<(i64, String, Option<String>, Option<String>, Option<String>, Option<String>)> =
         match sqlx::query_as(&crate::dyn_where::dialect_sql(
             "SELECT id, record_id, device_id, channel_id, name, create_time \
-             FROM wvp_record_collect ORDER BY id DESC LIMIT ? OFFSET ?",
+             FROM gb_record_collect ORDER BY id DESC LIMIT ? OFFSET ?",
         ))
         .bind(count as i64)
         .bind(offset)
@@ -2357,7 +2357,7 @@ pub async fn cloud_record_collect_list(
             Ok(rows) => rows,
             Err(e) => {
                 tracing::error!("查询收藏列表失败: {}", e);
-                return Json(WVPResult::error(format!("查询收藏列表失败: {e}")));
+                return Json(ApiResult::error(format!("查询收藏列表失败: {e}")));
             }
         };
     
@@ -2372,12 +2372,12 @@ pub async fn cloud_record_collect_list(
         })
     }).collect();
     
-    Json(WVPResult::success(serde_json::json!({"total": list.len(), "list": list})))
+    Json(ApiResult::success(serde_json::json!({"total": list.len(), "list": list})))
 }
 
 // ========== record_plan ==========
 
-/// WVP `DateUtil.getNow()` 用的是本地时间；录像计划的时段本身也是本地时间，
+/// 这里取的是本地时间；录像计划的时段本身也是本地时间，
 /// 时间戳跟着本地走，前端显示才不会差 8 小时。
 fn local_now_str() -> String {
     chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string()
@@ -2385,7 +2385,7 @@ fn local_now_str() -> String {
 
 /// 校验一组计划时段，出错直接返回 400。
 ///
-/// 比 WVP 严的一点：`start > stop` 会被拒绝。WVP 允许保存但那条时段
+/// 校验更严的一点：`start > stop` 会被拒绝。早期实现允许保存但那条时段
 /// 永远不会命中（SQL `start <= index and stop >= index`），属于静默失败。
 fn validate_record_plan_items(
     items: &[record_plan::RecordPlanItemPayload],
@@ -2411,10 +2411,10 @@ fn validate_record_plan_items(
 pub async fn record_plan_get(
     State(state): State<AppState>,
     Query(q): Query<IdQuery>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let id = q.id.or(q.plan_id).unwrap_or(0);
     if id == 0 {
-        return Ok(Json(WVPResult::success(serde_json::Value::Null)));
+        return Ok(Json(ApiResult::success(serde_json::Value::Null)));
     }
     let plan = record_plan::get_by_id(&state.pool, id).await?;
     let items = record_plan::list_items(&state.pool, id as i64).await?;
@@ -2439,17 +2439,17 @@ pub async fn record_plan_get(
         }),
         None => serde_json::Value::Null,
     };
-    Ok(Json(WVPResult::success(out)))
+    Ok(Json(ApiResult::success(out)))
 }
 
 /// POST /api/record/plan/add
 pub async fn record_plan_add(
     State(state): State<AppState>,
     Json(body): Json<record_plan::RecordPlanAdd>,
-) -> Result<Json<WVPResult<()>>, AppError> {
+) -> Result<Json<ApiResult<()>>, AppError> {
     let name = body.name.as_deref().map(str::trim).filter(|s| !s.is_empty())
         .ok_or_else(|| AppError::business(ErrorCode::Error400, "计划名称不可为空"))?;
-    // WVP `RecordPlanController.add()`：planItemList 为空直接报错
+    // planItemList 为空直接报错
     // "添加录制计划时，录制计划不可为空"。此前我们静默建了一条**没有时段**的
     // 计划：列表里看得见，调度器永远不会命中 —— 保存成功但功能为零。
     let items = body
@@ -2463,14 +2463,14 @@ pub async fn record_plan_add(
     let plan_id = record_plan::add_with_id(&state.pool, name, snap, &now).await?;
     record_plan::replace_items(&state.pool, plan_id, items, &now).await?;
     crate::scheduler::record_plan::wake_record_plan_scheduler();
-    Ok(Json(WVPResult::<()>::success_empty()))
+    Ok(Json(ApiResult::<()>::success_empty()))
 }
 
 /// POST /api/record/plan/update
 pub async fn record_plan_update(
     State(state): State<AppState>,
     Json(body): Json<record_plan::RecordPlanUpdate>,
-) -> Result<Json<WVPResult<()>>, AppError> {
+) -> Result<Json<ApiResult<()>>, AppError> {
     let id = body.id.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id"))?;
     if id == 0 {
         return Err(AppError::business(ErrorCode::Error400, "计划 ID 不可为空"));
@@ -2487,14 +2487,14 @@ pub async fn record_plan_update(
     let now = local_now_str();
     record_plan::update(&state.pool, id, body.name.as_deref(), body.snap, &now).await?;
     if let Some(ref items) = body.plan_item_list {
-        // WVP `update()`：先清后写；空列表等价于"清空所有时段"
+        // 先清后写；空列表等价于"清空所有时段"
         record_plan::replace_items(&state.pool, id, items, &now).await?;
     }
     crate::scheduler::record_plan::wake_record_plan_scheduler();
-    Ok(Json(WVPResult::<()>::success_empty()))
+    Ok(Json(ApiResult::<()>::success_empty()))
 }
 
-/// GET /api/record/plan/query 的查询参数（WVP: page/count/query）
+/// GET /api/record/plan/query 的查询参数（page / count / query）
 #[derive(Debug, Deserialize)]
 pub struct RecordPlanQuery {
     pub page: Option<u32>,
@@ -2506,7 +2506,7 @@ pub struct RecordPlanQuery {
 pub async fn record_plan_query(
     State(state): State<AppState>,
     Query(q): Query<RecordPlanQuery>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let page = q.page.unwrap_or(1);
     let count = q.count.unwrap_or(15).min(100);
     let search = q
@@ -2537,7 +2537,7 @@ pub async fn record_plan_query(
             "updateTime": p.update_time
         }));
     }
-    Ok(Json(WVPResult::success(serde_json::json!({
+    Ok(Json(ApiResult::success(serde_json::json!({
         "total": total,
         "list": list
     }))))
@@ -2547,15 +2547,15 @@ pub async fn record_plan_query(
 pub async fn record_plan_delete(
     State(state): State<AppState>,
     Query(q): Query<IdQuery>,
-) -> Result<Json<WVPResult<()>>, AppError> {
-    // WVP 的参数名是 **planId**（`RecordPlanController.delete(Integer planId)`），
-    // `IdQuery` 已经 alias 到 `plan_id`。早期实现只读 `id`，
-    // 于是前端按 WVP 契约传 planId 时稳定得到 400「缺少 id」——删除功能不可用。
+) -> Result<Json<ApiResult<()>>, AppError> {
+    // 查询参数名是 **planId**，`IdQuery` 已经 alias 到 `plan_id`。
+    // 早期实现只读 `id`，于是前端传 planId 时稳定得到
+    // 400「缺少 id」——删除功能不可用。
     let id = q
         .id
         .or(q.plan_id)
         .ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 planId"))?;
-    // WVP `delete()`：计划不存在时报 "录制计划不存在"，而不是静默成功
+    // 计划不存在时报 "录制计划不存在"，而不是静默成功
     if record_plan::get_by_id(&state.pool, id as i32).await?.is_none() {
         return Err(AppError::business(
             ErrorCode::Error400,
@@ -2564,7 +2564,7 @@ pub async fn record_plan_delete(
     }
     record_plan::delete_by_id(&state.pool, id as i32).await?;
     crate::scheduler::record_plan::wake_record_plan_scheduler();
-    Ok(Json(WVPResult::<()>::success_empty()))
+    Ok(Json(ApiResult::<()>::success_empty()))
 }
 
 /// 录像计划通道列表的一行。
@@ -2586,7 +2586,7 @@ struct RecordPlanChannelRow {
 impl RecordPlanChannelRow {
     fn to_json(&self) -> serde_json::Value {
         serde_json::json!({
-            // WVP: `wdc.id as gb_id` —— 前端 link 时把 gbId 当 channelIds 回传，
+            // `gbId` 直接取通道主键（`id`）——前端 link 时把 gbId 当 channelIds 回传，
             // 所以这里必须是**通道主键**，不能是国标编号。
             "id": self.id,
             "gbId": self.id,
@@ -2603,18 +2603,18 @@ impl RecordPlanChannelRow {
 
 /// GET /api/record/plan/channel/list
 ///
-/// 与 WVP `CommonGBChannelMapper.queryForRecordPlanForWebList` 对齐：
+/// 列表口径与字段如下：
 ///
 /// * **只列国标通道**（`channel_type = 0`）—— 录像计划要能真的拉起设备流，
 ///   把推流/代理/车载通道放进来只会得到一条永远录不到东西的计划；
 /// * `gbId` 是通道**主键**（`gb_device_channel.id`）；
 /// * `hasLink=true` → `record_plan_id = planId`；`hasLink=false` → `IS NULL`
-///   （WVP 语义：未关联 = 不属于任何计划）；
+///   （未关联 = 不属于任何计划）；
 /// * 名称/编号/在线状态都走 `coalesce(gb_xxx, xxx)`。
 pub async fn record_plan_channel_list(
     State(state): State<AppState>,
     Query(q): Query<CommonChannelListQuery>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let page = q.page.unwrap_or(1).max(1);
     let count = q.count.unwrap_or(15).clamp(1, 500);
     let offset = ((page - 1) * count) as i64;
@@ -2640,7 +2640,7 @@ pub async fn record_plan_channel_list(
     if let Some(t) = channel_type {
         w.add("c.data_type = ?", vec![BindValue::Int(t)]);
     }
-    // 只列国标设备通道（WVP 同样硬编码 channel_type = 0）
+    // 只列国标设备通道（硬编码 channel_type = 0）
     w.add("c.channel_type = 0", vec![]);
     if let Some(p) = plan_id {
         match has_link {
@@ -2690,7 +2690,7 @@ pub async fn record_plan_channel_list(
     let total: i64 = q_count.fetch_one(&state.pool).await?;
 
     let list: Vec<serde_json::Value> = rows.iter().map(|r| r.to_json()).collect();
-    Ok(Json(WVPResult::success(serde_json::json!({
+    Ok(Json(ApiResult::success(serde_json::json!({
         "total": total,
         "list": list
     }))))
@@ -2703,7 +2703,7 @@ pub struct RecordPlanLink {
     pub channel_id: Option<i64>,
     #[serde(alias = "planId")]
     pub plan_id: Option<i64>,
-    /// WVP 前端传的是通道**主键**（`CommonGBChannel.gbId`，即
+    /// 前端传的是通道**主键**（`gbId`，即
     /// `gb_device_channel.id`）；早期调用方传的是国标编号字符串。
     /// 两种都收（见 `resolve_channel_ids`）。
     #[serde(alias = "channelIds")]
@@ -2717,7 +2717,7 @@ pub struct RecordPlanLink {
 /// 把一个"通道标识"解析成通道主键。
 ///
 /// 支持两种输入：
-/// 1. 数字/数字字符串 → 通道主键（WVP 语义）；
+/// 1. 数字/数字字符串 → 通道主键；
 /// 2. 其它字符串 → `gb_device_id` 反查主键。
 ///
 /// 显式区分两者很重要：早期实现**只**把输入当国标编号去查
@@ -2755,8 +2755,8 @@ async fn resolve_channel_id(
 pub async fn record_plan_link(
     State(state): State<AppState>,
     Json(body): Json<RecordPlanLink>,
-) -> Result<Json<WVPResult<()>>, AppError> {
-    // WVP `link()`：channelIds 为空直接报错
+) -> Result<Json<ApiResult<()>>, AppError> {
+    // channelIds 为空直接报错
     if body.channel_ids.as_ref().is_some_and(|v| v.is_empty())
         && body.channel_id.is_none()
         && body.device_db_ids.as_ref().is_none_or(|v| v.is_empty())
@@ -2784,7 +2784,7 @@ pub async fn record_plan_link(
             ));
         }
         crate::scheduler::record_plan::wake_record_plan_scheduler();
-        return Ok(Json(WVPResult::<()>::success_empty()));
+        return Ok(Json(ApiResult::<()>::success_empty()));
     }
 
     // 2) 通道列表
@@ -2806,7 +2806,7 @@ pub async fn record_plan_link(
         for id in &resolved {
             record_plan::link_channel(&state.pool, *id, body.plan_id).await?;
         }
-        // 取消关联用 null；关联传 planId（WVP 的 `link(channelIds, null)` 语义）
+        // 取消关联用 null，关联传 planId（关联与取消关联走同一个入口）
         tracing::info!(
             "record_plan_link: {} 个通道 {} 计划 {:?}",
             resolved.len(),
@@ -2814,7 +2814,7 @@ pub async fn record_plan_link(
             body.plan_id
         );
         crate::scheduler::record_plan::wake_record_plan_scheduler();
-        return Ok(Json(WVPResult::<()>::success_empty()));
+        return Ok(Json(ApiResult::<()>::success_empty()));
     }
 
     // 3) 按设备关联（设备下所有通道）
@@ -2840,12 +2840,12 @@ pub async fn record_plan_link(
             ));
         }
         crate::scheduler::record_plan::wake_record_plan_scheduler();
-        return Ok(Json(WVPResult::<()>::success_empty()));
+        return Ok(Json(ApiResult::<()>::success_empty()));
     }
 
     // 4) 全部关联 / 全部取消关联
     if let Some(all_link) = body.all_link {
-        // WVP `linkAll(planId)` / `cleanAll(planId)` 两个分支都要 planId
+        // 全部关联 / 全部取消关联两个分支都要 planId
         let plan_id = body
             .plan_id
             .ok_or_else(|| AppError::business(ErrorCode::Error400, "全部关联/取消关联时必须提供 planId"))?;
@@ -2860,16 +2860,16 @@ pub async fn record_plan_link(
             tracing::info!("record_plan_link: 计划 {} 移除全部关联（{} 个通道）", plan_id, n);
         }
         crate::scheduler::record_plan::wake_record_plan_scheduler();
-        return Ok(Json(WVPResult::<()>::success_empty()));
+        return Ok(Json(ApiResult::<()>::success_empty()));
     }
 
     Err(AppError::business(ErrorCode::Error400, "缺少关联参数"))
 }
 
 // `/api/position/history/:deviceId` 已移到 `handlers::position`（第四十四轮）：
-// 它现在同时支持 WVP 的 `channelId`（读 gb_device_mobile_position）与旧的
+// 它现在同时支持 `channelId`（读 gb_device_mobile_position）与旧的
 // 设备编号口径（读 gb_position_history 宽表），并补齐 latest/realtime/subscribe。
-// 原来的 `stub::position_history` 返回的是手拼 JSON（不是 WVPResult），
+// 原来的 `stub::position_history` 返回的是手拼 JSON（不是 ApiResult），
 // 且 `start`/`end` 空串会被当成"过滤条件为空字符串" —— 已一并去掉。
 
 // ============================================================================
@@ -3051,7 +3051,7 @@ mod record_plan_handler_tests {
         r.last_insert_rowid()
     }
 
-    /// WVP `RecordPlanController.add()` 对空 `planItemList` 直接报错。
+    /// 对空 `planItemList` 直接报错。
     /// 早期实现会静默建一条**没有任何时段**的计划：列表里看得见，
     /// 调度器永远不命中 —— 保存成功但功能为零。
     #[tokio::test]
@@ -3153,8 +3153,8 @@ mod record_plan_handler_tests {
         }
     }
 
-    /// WVP 契约：`DELETE /api/record/plan/delete?planId=`。
-    /// 早期实现只读 `id`，前端按 WVP 传 planId 时稳定 400「缺少 id」。
+    /// 接口形如 `DELETE /api/record/plan/delete?planId=`。
+    /// 早期实现只读 `id`，前端传 planId 时稳定 400「缺少 id」。
     #[tokio::test]
     async fn test_delete_accepts_plan_id_param() {
         let state = app_state().await;
@@ -3274,7 +3274,7 @@ mod record_plan_handler_tests {
         assert!(matches!(err, AppError::Business(_, _)));
     }
 
-    /// `hasLink=false` 表示"不属于任何计划"（WVP 语义）；
+    /// `hasLink=false` 表示"不属于任何计划"；
     /// `gbId` 必须是通道主键，前端 link 时原样回传。
     #[tokio::test]
     async fn test_channel_list_returns_numeric_gb_id_and_unlinked_semantics() {
@@ -3458,7 +3458,7 @@ mod record_time_tests {
         );
     }
 
-    /// WVP 文档要求的本地时间格式，以及秒/毫秒时间戳。
+    /// 接口约定的本地时间格式，以及秒/毫秒时间戳。
     #[test]
     fn test_parse_local_formats_and_epoch() {
         let naive = parse_record_time_ms("2024-05-01 03:00:00").expect("本地时间应可解析");
@@ -3512,7 +3512,7 @@ mod cloud_record_url_tests {
     }
 }
 
-/// 收藏录像（`wvp_record_collect`）契约：建表/插入/列表/取消收藏三种方言都要能用。
+/// 收藏录像（`gb_record_collect`）契约：建表/插入/列表/取消收藏三种方言都要能用。
 ///
 /// 回归点（第四十九轮实测到的静默坏掉）：
 /// * 建表语句曾经是 PostgreSQL 专有（`id SERIAL`）→ SQLite 上 id 为 NULL、
@@ -3656,7 +3656,7 @@ mod region_group_contract_tests {
         }
     }
 
-    /// `RegionUpdate` / `GroupUpdate` 必须收 camelCase（前端与 WVP 的字段名），
+    /// `RegionUpdate` / `GroupUpdate` 必须收 camelCase（前端使用的字段名），
     /// 否则只有 `name` 生效、`parent_id` 被清成 NULL，节点被抬到根级。
     #[test]
     fn update_dtos_accept_camel_case() {
@@ -3782,7 +3782,7 @@ mod region_group_contract_tests {
         assert_eq!(data["total"], 1);
         assert_eq!(data["list"][0]["name"], "子区域");
 
-        // 关键字（WVP 的 query）
+        // 关键字筛选（`query` 参数）
         let kw = region_tree_query(
             State(state.clone()),
             Query(TreeNodeQuery {

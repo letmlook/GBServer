@@ -2,7 +2,7 @@ use axum::{extract::{Query, State}, Json};
 use serde::Deserialize;
 
 use crate::db::update_device_catalog_subscription;
-use crate::response::WVPResult;
+use crate::response::ApiResult;
 use crate::AppState;
 
 #[derive(Debug, Default, Deserialize)]
@@ -22,14 +22,14 @@ pub struct PtzQuery {
 pub async fn device_ptz(
     State(state): State<AppState>,
     Query(q): Query<PtzQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let device_id = q.device_id.clone().unwrap_or_default();
     let channel_id = q.channel_id.clone().unwrap_or_default();
     let command = q.command.clone().unwrap_or_default();
     let speed = q.speed.unwrap_or(1);
 
     if device_id.is_empty() || channel_id.is_empty() {
-        return Json(WVPResult::error("device_id and channel_id are required"));
+        return Json(ApiResult::error("device_id and channel_id are required"));
     }
 
     tracing::info!("PTZ control: device={}, channel={}, cmd={}, speed={}",
@@ -43,7 +43,7 @@ pub async fn device_ptz(
                 match server.send_device_control(&device_id, &channel_id, "DeviceControl", &ptz_cmd).await {
                     Ok(_) => {
                         tracing::info!("PTZ command sent via SIP: {}", device_id);
-                        return Json(WVPResult::success(serde_json::json!({
+                        return Json(ApiResult::success(serde_json::json!({
                             "deviceId": device_id,
                             "channelId": channel_id,
                             "command": command,
@@ -59,20 +59,20 @@ pub async fn device_ptz(
         }
     }
 
-    Json(WVPResult::error("Device not online"))
+    Json(ApiResult::error("Device not online"))
 }
 
 pub async fn device_preset(
     State(state): State<AppState>,
     Query(q): Query<PtzQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let device_id = q.device_id.clone().unwrap_or_default();
     let channel_id = q.channel_id.clone().unwrap_or_default();
     let command = q.command.clone().unwrap_or_default();
     let preset_index = q.preset_index.unwrap_or(0);
 
     if device_id.is_empty() {
-        return Json(WVPResult::error("device_id is required"));
+        return Json(ApiResult::error("device_id is required"));
     }
 
     tracing::info!("Preset control: device={}, channel={}, cmd={}, preset={}",
@@ -85,7 +85,7 @@ pub async fn device_preset(
                 let preset_cmd = build_preset_xml(&command, preset_index);
                 match server.send_device_control(&device_id, &channel_id, "DeviceControl", &preset_cmd).await {
                     Ok(_) => {
-                        return Json(WVPResult::success(serde_json::json!({
+                        return Json(ApiResult::success(serde_json::json!({
                             "deviceId": device_id,
                             "channelId": channel_id,
                             "command": command,
@@ -101,18 +101,18 @@ pub async fn device_preset(
         }
     }
 
-    Json(WVPResult::error("Device not online"))
+    Json(ApiResult::error("Device not online"))
 }
 
 pub async fn device_guard(
     State(state): State<AppState>,
     Query(q): Query<PtzQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let device_id = q.device_id.clone().unwrap_or_default();
     let guard_cmd = q.guard_cmd.clone().unwrap_or_default();
 
     if device_id.is_empty() {
-        return Json(WVPResult::error("device_id is required"));
+        return Json(ApiResult::error("device_id is required"));
     }
 
     let cmd_type = if guard_cmd == "SetGuard" { "设防" } else { "撤防" };
@@ -125,7 +125,7 @@ pub async fn device_guard(
                 let guard_xml = format!(r#"<GuardCmd>{}</GuardCmd>"#, guard_cmd);
                 match server.send_device_control(&device_id, &device_id, "DeviceControl", &guard_xml).await {
                     Ok(_) => {
-                        return Json(WVPResult::success(serde_json::json!({
+                        return Json(ApiResult::success(serde_json::json!({
                             "deviceId": device_id,
                             "guardCmd": guard_cmd,
                             "result": format!("{} command sent", cmd_type)
@@ -139,7 +139,7 @@ pub async fn device_guard(
         }
     }
 
-    Json(WVPResult::error("Device not online"))
+    Json(ApiResult::error("Device not online"))
 }
 
 #[derive(Debug, Deserialize)]
@@ -152,7 +152,7 @@ pub struct SubscribeQuery {
 pub async fn subscribe_catalog(
     State(state): State<AppState>,
     Query(q): Query<SubscribeQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let device_id = q.id.clone().unwrap_or_default();
     let cycle = q.cycle.unwrap_or(3600) as u32;
     let updated = update_device_catalog_subscription(&state.pool, &device_id, cycle as i32)
@@ -167,7 +167,7 @@ pub async fn subscribe_catalog(
             if device.online {
                 match server.send_subscribe(&device_id, "Catalog", cycle).await {
                     Ok(_) => {
-                        return Json(WVPResult::success(serde_json::json!({
+                        return Json(ApiResult::success(serde_json::json!({
                             "deviceId": device_id,
                             "cycle": cycle,
                             "updated": updated,
@@ -183,7 +183,7 @@ pub async fn subscribe_catalog(
     }
 
     if updated > 0 {
-        return Json(WVPResult::success(serde_json::json!({
+        return Json(ApiResult::success(serde_json::json!({
             "deviceId": device_id,
             "cycle": cycle,
             "updated": updated,
@@ -191,13 +191,13 @@ pub async fn subscribe_catalog(
         })));
     }
 
-    Json(WVPResult::error("Device not online or subscription failed"))
+    Json(ApiResult::error("Device not online or subscription failed"))
 }
 
 pub async fn subscribe_mobile_position(
     State(state): State<AppState>,
     Query(q): Query<SubscribeQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let device_id = q.id.clone().unwrap_or_default();
     let cycle = q.cycle.unwrap_or(5) as u32;
     let interval = q.interval.unwrap_or(5);
@@ -211,7 +211,7 @@ pub async fn subscribe_mobile_position(
             if device.online {
                 match server.send_subscribe(&device_id, "MobilePosition", cycle).await {
                     Ok(_) => {
-                        return Json(WVPResult::success(serde_json::json!({
+                        return Json(ApiResult::success(serde_json::json!({
                             "deviceId": device_id,
                             "cycle": cycle,
                             "interval": interval,
@@ -226,7 +226,7 @@ pub async fn subscribe_mobile_position(
         }
     }
 
-    Json(WVPResult::error("Device not online or subscription failed"))
+    Json(ApiResult::error("Device not online or subscription failed"))
 }
 
 #[allow(non_snake_case)]
@@ -234,13 +234,13 @@ pub async fn subscribe_mobile_position(
 ///
 /// 统一走 `sip::gb28181::front_end_control`：**全部**是 `PTZCmd` 8 字节格式
 /// （0xA5 起始 + 指令码 + 累加校验）—— 聚焦/光圈、预置位也走指令码，
-/// 与 WVP 的 `SourcePTZServiceForGbImpl` 和 GB/T 28181-2022 §A.3 一致。
+/// 与 GB/T 28181-2022 §A.3 一致。
 ///
 /// 修正：此前这里生成 `05 01 00 00 00 ss FF`（6 字节、非 A5 起始、无校验），
 /// 且把聚焦/光圈/预置位一律塞进 `<PTZCmd>` —— 真实设备按国标解析时
 /// 得到的都是无效指令。
 fn build_ptz_xml(command: &str, speed: u8, preset: u32, _dwStop: u32) -> String {
-    // 云台/聚焦光圈/预置位统一是 `PTZCmd` 8 字节指令（与 WVP 一致）
+    // 云台/聚焦光圈/预置位统一是 `PTZCmd` 8 字节指令
     match crate::sip::gb28181::front_end_control::control_element(command, speed, preset) {
         Some((_, v)) => format!(r#"<PTZCmd>{}</PTZCmd>"#, v),
         _ => format!(r#"<PTZCmd>{}</PTZCmd>"#, crate::sip::gb28181::front_end_control::build_ptz_cmd(
@@ -264,16 +264,16 @@ pub struct ConfigQuery {
 pub async fn device_config_query(
     State(state): State<AppState>,
     Query(q): Query<ConfigQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let device_id = q.device_id.clone().unwrap_or_default();
     let config_type = q.config_type.clone().unwrap_or_else(|| "BasicParam".to_string());
 
     if device_id.is_empty() {
-        return Json(WVPResult::error("device_id is required"));
+        return Json(ApiResult::error("device_id is required"));
     }
 
     tracing::info!("Config query: device={}, type={}", device_id, config_type);
-    Json(WVPResult::success(
+    Json(ApiResult::success(
         query_config_and_wait(&state, &device_id, &config_type).await,
     ))
 }
@@ -370,13 +370,13 @@ pub struct ConfigUpdate {
 pub async fn device_config_update(
     State(state): State<AppState>,
     Json(body): Json<ConfigUpdate>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let device_id = body.device_id.clone().unwrap_or_default();
     let config_type = body.config_type.clone().unwrap_or_else(|| "BasicParam".to_string());
     let config_data = body.config_data.clone().unwrap_or(serde_json::json!({}));
 
     if device_id.is_empty() {
-        return Json(WVPResult::error("device_id is required"));
+        return Json(ApiResult::error("device_id is required"));
     }
 
     tracing::info!("Config update: device={}, type={}", device_id, config_type);
@@ -433,7 +433,7 @@ pub async fn device_config_update(
 
                 match server.send_device_control(&device_id, &device_id, "DeviceConfig", &config_xml).await {
                     Ok(_) => {
-                        return Json(WVPResult::success(serde_json::json!({
+                        return Json(ApiResult::success(serde_json::json!({
                             "deviceId": device_id,
                             "configType": config_type,
                             "result": "Config update sent"
@@ -441,14 +441,14 @@ pub async fn device_config_update(
                     }
                     Err(e) => {
                         tracing::error!("Failed to send config update: {}", e);
-                        return Json(WVPResult::error(format!("Failed to send config update: {}", e)));
+                        return Json(ApiResult::error(format!("Failed to send config update: {}", e)));
                     }
                 }
             }
         }
     }
 
-    Json(WVPResult::error("Device not online"))
+    Json(ApiResult::error("Device not online"))
 }
 
 /// 设备重启
@@ -461,11 +461,11 @@ pub struct RebootQuery {
 pub async fn device_reboot(
     State(state): State<AppState>,
     Query(q): Query<RebootQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let device_id = q.device_id.clone().unwrap_or_default();
 
     if device_id.is_empty() {
-        return Json(WVPResult::error("device_id is required"));
+        return Json(ApiResult::error("device_id is required"));
     }
 
     tracing::info!("Device reboot: device={}", device_id);
@@ -474,36 +474,36 @@ pub async fn device_reboot(
         let server = &*sip_server;
         if let Some(device) = server.device_manager().get(&device_id).await {
             if device.online && device.addr.is_some() {
-                // 国标远程启动是 `<TeleBoot>Boot</TeleBoot>`（WVP `teleBootCmd` 同）。
+                // 国标远程启动是 `<TeleBoot>Boot</TeleBoot>`。
                 // 此前发的是非标的 `<Restart><ChannelID>0</ChannelID></Restart>`，
                 // 而且外面又套了一层 `<Control>`（嵌套 + 元素中间夹 XML 声明 = 非法 XML）。
                 let reboot_xml = "<TeleBoot>Boot</TeleBoot>".to_string();
 
                 match server.send_device_control(&device_id, &device_id, "DeviceControl", &reboot_xml).await {
                     Ok(_) => {
-                        return Json(WVPResult::success(serde_json::json!({
+                        return Json(ApiResult::success(serde_json::json!({
                             "deviceId": device_id,
                             "result": "Reboot command sent"
                         })));
                     }
                     Err(e) => {
                         tracing::error!("Failed to send reboot command: {}", e);
-                        return Json(WVPResult::error(format!("Failed to send reboot command: {}", e)));
+                        return Json(ApiResult::error(format!("Failed to send reboot command: {}", e)));
                     }
                 }
             }
         }
     }
 
-    Json(WVPResult::error("Device not online"))
+    Json(ApiResult::error("Device not online"))
 }
 
 // ============================================================================
-// WVP `DeviceControl` 控制器剩余端点：远程启动 / 报警复位 / 强制关键帧 /
+// 设备控制剩余端点：远程启动 / 报警复位 / 强制关键帧 /
 // 看守位 / 拉框放大缩小。
 //
-// 这些端点在 WVP-PRO 的 `DeviceControl.java` 里都是真实下发的设备控制命令，
-// 本平台此前**完全没有挂载**：第三方（或 WVP 的原生前端）按 WVP 的路径调用时
+// 这些端点都是真实下发的设备控制命令，
+// 本平台此前**完全没有挂载**：第三方前端按这些路径调用时
 // 会落到 SPA 兜底拿到 index.html，看起来像"接口不存在"。
 // ============================================================================
 
@@ -516,26 +516,26 @@ async fn send_control_element(
     channel_id: &str,
     element: &str,
     extra: serde_json::Value,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     if device_id.is_empty() {
-        return Json(WVPResult::error("device_id is required"));
+        return Json(ApiResult::error("device_id is required"));
     }
     let Some(ref sip_server) = state.sip_server else {
-        return Json(WVPResult::error("SIP server not available"));
+        return Json(ApiResult::error("SIP server not available"));
     };
     let server = &**sip_server;
     let Some(device) = server.device_manager().get(device_id).await else {
-        return Json(WVPResult::error(format!("设备不存在或未注册: {device_id}")));
+        return Json(ApiResult::error(format!("设备不存在或未注册: {device_id}")));
     };
     if !device.online || device.addr.is_none() {
-        return Json(WVPResult::error(format!("设备不在线: {device_id}")));
+        return Json(ApiResult::error(format!("设备不在线: {device_id}")));
     }
     if let Err(e) = server
         .send_device_control(device_id, channel_id, "DeviceControl", element)
         .await
     {
         tracing::error!("DeviceControl 下发失败 device={}: {}", device_id, e);
-        return Json(WVPResult::error(format!("命令发送失败: {e}")));
+        return Json(ApiResult::error(format!("命令发送失败: {e}")));
     }
 
     let mut data = serde_json::json!({
@@ -549,14 +549,14 @@ async fn send_control_element(
             obj.insert(k.clone(), v.clone());
         }
     }
-    Json(WVPResult::success(data))
+    Json(ApiResult::success(data))
 }
 
-/// GET /api/device/control/teleboot/:device_id —— 远程启动（WVP 路径形式）
+/// GET /api/device/control/teleboot/:device_id —— 远程启动
 pub async fn device_teleboot(
     State(state): State<AppState>,
     axum::extract::Path(device_id): axum::extract::Path<String>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     tracing::info!("Device teleboot: device={}", device_id);
     send_control_element(
         &state,
@@ -581,7 +581,7 @@ pub struct ResetAlarmQuery {
     pub alarm_type: Option<String>,
 }
 
-/// 构造报警复位的控制元素（与 WVP `alarmResetCmd` 一致）：
+/// 构造报警复位的控制元素：
 /// `<AlarmCmd>ResetAlarm</AlarmCmd>`，可选 `<Info><AlarmMethod/><AlarmType/></Info>`。
 pub(crate) fn build_alarm_reset_element(
     alarm_method: Option<&str>,
@@ -606,7 +606,7 @@ pub(crate) fn build_alarm_reset_element(
 pub async fn device_reset_alarm(
     State(state): State<AppState>,
     Query(q): Query<ResetAlarmQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let device_id = q.device_id.clone().unwrap_or_default();
     let channel_id = q.channel_id.clone().unwrap_or_default();
     let element =
@@ -643,13 +643,13 @@ pub struct IFrameQuery {
 pub async fn device_iframe(
     State(state): State<AppState>,
     Query(q): Query<IFrameQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let device_id = q.device_id.clone().unwrap_or_default();
     let channel_id = q.channel_id.clone().unwrap_or_default();
     tracing::info!("Device i_frame: device={}, channel={}", device_id, channel_id);
     // GB/T 28181-2016 §9.3.1：`<IFrameCmd>IFrame</IFrameCmd>`。
-    // （WVP 源码里是 `<IFameCmd>Send</IFameCmd>` —— 元素名少一个 r 且取值不同，
-    //  那是 WVP 的笔误，严格解析的设备认不出来，这里按国标下发。）
+    // （早期实现里是 `<IFameCmd>Send</IFameCmd>` —— 元素名少一个 r 且取值不同，
+    //  那是笔误，严格解析的设备认不出来，这里按国标下发。）
     send_control_element(
         &state,
         &device_id,
@@ -676,7 +676,7 @@ pub struct HomePositionQuery {
     pub preset_index: Option<i64>,
 }
 
-/// 构造看守位的控制元素（与 WVP `homePositionCmd` 一致）：
+/// 构造看守位的控制元素：
 /// 开启时带 `<ResetTime>`/`<PresetIndex>`，关闭时只带 `<Enabled>0</Enabled>`。
 pub(crate) fn build_home_position_element(
     enabled: bool,
@@ -697,7 +697,7 @@ pub(crate) fn build_home_position_element(
 pub async fn device_home_position(
     State(state): State<AppState>,
     Query(q): Query<HomePositionQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let device_id = q.device_id.clone().unwrap_or_default();
     let channel_id = q.channel_id.clone().unwrap_or_default();
     let enabled = q.enabled.unwrap_or(false);
@@ -745,7 +745,7 @@ pub struct DragZoomQuery {
     pub length_y: Option<i64>,
 }
 
-/// 构造拉框放大/缩小的控制元素（元素名与 WVP `DeviceServiceImpl` 一致）。
+/// 构造拉框放大/缩小的控制元素。
 pub(crate) fn build_drag_zoom_element(
     zoom_in: bool,
     length: i64,
@@ -765,10 +765,10 @@ async fn drag_zoom(
     state: &AppState,
     q: &DragZoomQuery,
     zoom_in: bool,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let device_id = q.device_id.clone().unwrap_or_default();
     let channel_id = q.channel_id.clone().unwrap_or_default();
-    // WVP 把六个参数都声明成 required；缺参时明确报错，而不是下发一个全 0 的框
+    // 前端把六个参数都声明成 required；缺参时明确报错，而不是下发一个全 0 的框
     let missing: Vec<&str> = [
         ("length", q.length),
         ("width", q.width),
@@ -782,7 +782,7 @@ async fn drag_zoom(
     .map(|(k, _)| *k)
     .collect();
     if !missing.is_empty() {
-        return Json(WVPResult::error(format!(
+        return Json(ApiResult::error(format!(
             "缺少参数: {}",
             missing.join(", ")
         )));
@@ -815,14 +815,14 @@ async fn drag_zoom(
 pub async fn device_drag_zoom_in(
     State(state): State<AppState>,
     Query(q): Query<DragZoomQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     drag_zoom(&state, &q, true).await
 }
 
 pub async fn device_drag_zoom_out(
     State(state): State<AppState>,
     Query(q): Query<DragZoomQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     drag_zoom(&state, &q, false).await
 }
 
@@ -831,7 +831,7 @@ mod control_element_tests {
     use super::*;
 
     /// 报警复位：无条件带 `<AlarmCmd>ResetAlarm</AlarmCmd>`；
-    /// 有 alarmMethod/alarmType 时才补 `<Info>`（与 WVP `alarmResetCmd` 一致）。
+    /// 有 alarmMethod/alarmType 时才补 `<Info>`。
     #[test]
     fn alarm_reset_element_shape() {
         assert_eq!(
@@ -851,7 +851,7 @@ mod control_element_tests {
     }
 
     /// 看守位：开启时带 resetTime/presetIndex，关闭时只带 Enabled=0
-    /// （与 WVP `homePositionCmd` 完全一致）。
+    /// （元素名与字段顺序固定为下述形状）。
     #[test]
     fn home_position_element_shape() {
         let on = build_home_position_element(true, Some(30), Some(2));
@@ -870,7 +870,7 @@ mod control_element_tests {
         assert!(defaulted.contains("<PresetIndex>0</PresetIndex>"), "{defaulted}");
     }
 
-    /// 拉框放大/缩小的元素名与六个字段必须与 WVP 一致。
+    /// 拉框放大/缩小的元素名与六个字段必须保持下述形状。
     #[test]
     fn drag_zoom_element_shape() {
         let zin = build_drag_zoom_element(true, 100, 200, 1, 2, 3, 4);
@@ -936,13 +936,13 @@ mod control_element_tests {
 }
 
 // ============================================================================
-// WVP `DeviceConfig.java` 端点：设备配置的查询与下发。
+// 设备配置的查询与下发端点。
 //
-// WVP 用一组语义化路径（而非本平台早期的 `?configType=`）：
+// 这里用一组语义化路径（而非本平台早期的 `?configType=`）：
 //   GET /api/device/config/query/{basicParam,videoParamOpt,svacEncodeConfig,svacDecodeConfig}
 //   GET /api/device/config/set/{basicParam,videoParamOpt}
-// 前端（WVP 的通道/设备配置弹窗）直接按这些路径调用，此前全部 404。
-// 返回值按 WVP 的形状给出**解析后的字段**（同时保留原始 XML，便于排查）。
+// 前端（通道/设备配置弹窗）直接按这些路径调用，此前全部 404。
+// 返回值给出**解析后的字段**形状（同时保留原始 XML，便于排查）。
 // ============================================================================
 
 /// 从 ConfigDownload 应答 XML 里抽出基本配置字段。
@@ -978,16 +978,16 @@ pub(crate) fn parse_video_param_xml(xml: &str) -> serde_json::Value {
     serde_json::Value::Object(obj)
 }
 
-/// 统一的 WVP 配置查询实现：`config_type` 是国标 ConfigType
+/// 统一的设备配置查询实现：`config_type` 是国标 ConfigType
 /// （BasicParam / VideoParamOpt / SVACEncodeConfig / SVACDecodeConfig）。
-pub(crate) async fn wvp_config_query(
+pub(crate) async fn config_query(
     state: &AppState,
     device_id: &str,
     channel_id: Option<&str>,
     config_type: &str,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     if device_id.trim().is_empty() {
-        return Json(WVPResult::error("deviceId 必须存在"));
+        return Json(ApiResult::error("deviceId 必须存在"));
     }
     let raw = query_config_and_wait(state, device_id, config_type).await;
     // 设备没应答（离线/超时/发送失败）时如实返回错误原因，不要假装查到了配置
@@ -996,7 +996,7 @@ pub(crate) async fn wvp_config_query(
             .get("message")
             .and_then(|v| v.as_str())
             .unwrap_or(status);
-        return Json(WVPResult::error(format!("查询设备配置失败: {msg}")));
+        return Json(ApiResult::error(format!("查询设备配置失败: {msg}")));
     }
     let xml = raw.get("xml").and_then(|v| v.as_str()).unwrap_or("");
     let parsed = match config_type {
@@ -1016,50 +1016,50 @@ pub(crate) async fn wvp_config_query(
             dst.insert(k.clone(), v.clone());
         }
     }
-    Json(WVPResult::success(data))
+    Json(ApiResult::success(data))
 }
 
 #[derive(Debug, Default, Deserialize)]
-pub struct WvpConfigQuery {
+pub struct ConfigQueryParams {
     #[serde(alias = "deviceId")]
     pub device_id: Option<String>,
     #[serde(alias = "channelId")]
     pub channel_id: Option<String>,
 }
 
-pub async fn wvp_config_query_basic_param(
+pub async fn config_query_basic_param(
     State(state): State<AppState>,
-    Query(q): Query<WvpConfigQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+    Query(q): Query<ConfigQueryParams>,
+) -> Json<ApiResult<serde_json::Value>> {
     let device_id = q.device_id.clone().unwrap_or_default();
-    wvp_config_query(&state, &device_id, q.channel_id.as_deref(), "BasicParam").await
+    config_query(&state, &device_id, q.channel_id.as_deref(), "BasicParam").await
 }
 
-pub async fn wvp_config_query_video_param(
+pub async fn config_query_video_param(
     State(state): State<AppState>,
-    Query(q): Query<WvpConfigQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+    Query(q): Query<ConfigQueryParams>,
+) -> Json<ApiResult<serde_json::Value>> {
     let device_id = q.device_id.clone().unwrap_or_default();
-    wvp_config_query(&state, &device_id, q.channel_id.as_deref(), "VideoParamOpt").await
+    config_query(&state, &device_id, q.channel_id.as_deref(), "VideoParamOpt").await
 }
 
-pub async fn wvp_config_query_svac_encode(
+pub async fn config_query_svac_encode(
     State(state): State<AppState>,
-    Query(q): Query<WvpConfigQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+    Query(q): Query<ConfigQueryParams>,
+) -> Json<ApiResult<serde_json::Value>> {
     let device_id = q.device_id.clone().unwrap_or_default();
-    wvp_config_query(&state, &device_id, q.channel_id.as_deref(), "SVACEncodeConfig").await
+    config_query(&state, &device_id, q.channel_id.as_deref(), "SVACEncodeConfig").await
 }
 
-pub async fn wvp_config_query_svac_decode(
+pub async fn config_query_svac_decode(
     State(state): State<AppState>,
-    Query(q): Query<WvpConfigQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+    Query(q): Query<ConfigQueryParams>,
+) -> Json<ApiResult<serde_json::Value>> {
     let device_id = q.device_id.clone().unwrap_or_default();
-    wvp_config_query(&state, &device_id, q.channel_id.as_deref(), "SVACDecodeConfig").await
+    config_query(&state, &device_id, q.channel_id.as_deref(), "SVACDecodeConfig").await
 }
 
-/// `GET /api/device/config/set/basicParam` 的查询参数（WVP `BasicParam`）。
+/// `GET /api/device/config/set/basicParam` 的查询参数。
 #[derive(Debug, Default, Deserialize)]
 pub struct BasicParamQuery {
     #[serde(alias = "deviceId")]
@@ -1073,7 +1073,7 @@ pub struct BasicParamQuery {
     pub heart_beat_count: Option<String>,
 }
 
-/// 基本配置下发的控制元素（WVP `deviceBasicConfigCmd`：只发非空项）。
+/// 基本配置下发的控制元素（只发非空项）。
 pub(crate) fn build_basic_param_set_element(q: &BasicParamQuery) -> String {
     let mut xml = String::from("<BasicParam>");
     if let Some(v) = q.name.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
@@ -1134,16 +1134,16 @@ pub(crate) fn build_video_param_set_element(q: &VideoParamOptQuery) -> String {
     xml
 }
 
-pub async fn wvp_config_set_basic_param(
+pub async fn config_set_basic_param(
     State(state): State<AppState>,
     Query(q): Query<BasicParamQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let device_id = q.device_id.clone().unwrap_or_default();
     if device_id.trim().is_empty() {
-        return Json(WVPResult::error("设备ID必须存在"));
+        return Json(ApiResult::error("设备ID必须存在"));
     }
     let element = build_basic_param_set_element(&q);
-    // WVP 对 BasicParam 一律用**设备编码**（源码注释：大华必须用设备 ID）
+    // BasicParam 一律用**设备编码**（大华设备必须用设备 ID）
     send_control_element_with_type(
         &state,
         &device_id,
@@ -1155,13 +1155,13 @@ pub async fn wvp_config_set_basic_param(
     .await
 }
 
-pub async fn wvp_config_set_video_param(
+pub async fn config_set_video_param(
     State(state): State<AppState>,
     Query(q): Query<VideoParamOptQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let device_id = q.device_id.clone().unwrap_or_default();
     if device_id.trim().is_empty() {
-        return Json(WVPResult::error("设备ID必须存在"));
+        return Json(ApiResult::error("设备ID必须存在"));
     }
     let element = build_video_param_set_element(&q);
     send_control_element_with_type(
@@ -1184,26 +1184,26 @@ pub(crate) async fn send_control_element_with_type(
     cmd_type: &str,
     element: &str,
     extra: serde_json::Value,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     if device_id.is_empty() {
-        return Json(WVPResult::error("device_id is required"));
+        return Json(ApiResult::error("device_id is required"));
     }
     let Some(ref sip_server) = state.sip_server else {
-        return Json(WVPResult::error("SIP server not available"));
+        return Json(ApiResult::error("SIP server not available"));
     };
     let server = &**sip_server;
     let Some(device) = server.device_manager().get(device_id).await else {
-        return Json(WVPResult::error(format!("设备不存在或未注册: {device_id}")));
+        return Json(ApiResult::error(format!("设备不存在或未注册: {device_id}")));
     };
     if !device.online || device.addr.is_none() {
-        return Json(WVPResult::error(format!("设备不在线: {device_id}")));
+        return Json(ApiResult::error(format!("设备不在线: {device_id}")));
     }
     if let Err(e) = server
         .send_device_control(device_id, channel_id, cmd_type, element)
         .await
     {
         tracing::error!("{cmd_type} 下发失败 device={}: {}", device_id, e);
-        return Json(WVPResult::error(format!("命令发送失败: {e}")));
+        return Json(ApiResult::error(format!("命令发送失败: {e}")));
     }
     let mut data = serde_json::json!({
         "deviceId": device_id,
@@ -1216,5 +1216,5 @@ pub(crate) async fn send_control_element_with_type(
             obj.insert(k.clone(), v.clone());
         }
     }
-    Json(WVPResult::success(data))
+    Json(ApiResult::success(data))
 }

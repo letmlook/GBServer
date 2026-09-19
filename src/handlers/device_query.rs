@@ -13,7 +13,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 
 use crate::AppState;
-use crate::response::WVPResult;
+use crate::response::ApiResult;
 use crate::sip::gb28181::device_query::{DeviceInfoResponse, DeviceStatusResponse};
 
 /// 查询参数
@@ -73,7 +73,7 @@ pub async fn device_info(
                 .await
             {
                 crate::sip::gb28181::device_commander::DeviceInfoResult::Ok(info) => {
-                    Json(WVPResult::success(serde_json::json!({
+                    Json(ApiResult::success(serde_json::json!({
                         "deviceId": device_id,
                         "sn": sn,
                         "data": info,
@@ -82,7 +82,7 @@ pub async fn device_info(
                     .into_response()
                 }
                 crate::sip::gb28181::device_commander::DeviceInfoResult::ParseError(msg) => {
-                    Json(WVPResult::success(serde_json::json!({
+                    Json(ApiResult::success(serde_json::json!({
                         "deviceId": device_id,
                         "sn": sn,
                         "status": "timeout_or_error",
@@ -106,7 +106,7 @@ pub async fn device_info(
                 channel_count: None,
                 serial_number: None,
             };
-            Json(WVPResult::success(serde_json::json!({
+            Json(ApiResult::success(serde_json::json!({
                 "deviceId": device_id,
                 "sn": sn,
                 "data": info,
@@ -116,7 +116,7 @@ pub async fn device_info(
         }
         _ => (
             axum::http::StatusCode::NOT_FOUND,
-            Json(WVPResult::<()>::error("Device not found")),
+            Json(ApiResult::<()>::error("Device not found")),
         )
             .into_response(),
     }
@@ -155,7 +155,7 @@ pub async fn device_status(
                 .await
             {
                 crate::sip::gb28181::device_commander::DeviceStatusResult::Ok(status) => {
-                    Json(WVPResult::success(serde_json::json!({
+                    Json(ApiResult::success(serde_json::json!({
                         "deviceId": device_id,
                         "sn": sn,
                         "data": status,
@@ -164,7 +164,7 @@ pub async fn device_status(
                     .into_response()
                 }
                 crate::sip::gb28181::device_commander::DeviceStatusResult::ParseError(msg) => {
-                    Json(WVPResult::success(serde_json::json!({
+                    Json(ApiResult::success(serde_json::json!({
                         "deviceId": device_id,
                         "sn": sn,
                         "status": "timeout_or_error",
@@ -188,7 +188,7 @@ pub async fn device_status(
         storage_space: None,
     };
 
-    Json(WVPResult::success(serde_json::json!({
+    Json(ApiResult::success(serde_json::json!({
         "deviceId": device_id,
         "sn": sn,
         "data": status,
@@ -209,7 +209,7 @@ pub async fn device_config_query(
 ) -> impl IntoResponse {
     // 与查询参数版（`device_control::device_config_query`）共用同一份实现，
     // 避免"同一功能两处实现、且一处只发不等"的重复。
-    Json(WVPResult::success(
+    Json(ApiResult::success(
         crate::handlers::device_control::query_config_and_wait(&state, &device_id, &config_type)
             .await,
     ))
@@ -226,13 +226,13 @@ pub async fn get_ssrc(
         let server = &*sip_server;
         let ssrc_mgr = server.ssrc_manager();
         let ssrc = ssrc_mgr.allocate(&device_id, &channel_id, "live");
-        return Json(WVPResult::success(serde_json::json!({
+        return Json(ApiResult::success(serde_json::json!({
             "deviceId": device_id,
             "channelId": channel_id,
             "ssrc": ssrc,
         }))).into_response();
     }
-    Json(WVPResult::<()>::error("SIP server not available")).into_response()
+    Json(ApiResult::<()>::error("SIP server not available")).into_response()
 }
 
 /// ============================================================================
@@ -418,7 +418,7 @@ pub async fn capture_snapshot_now(
     Path((device_id, channel_id)): Path<(String, String)>,
 ) -> Response {
     match capture_snapshot(&state, &device_id, &channel_id).await {
-        Ok(version) => Json(WVPResult::success(serde_json::json!({
+        Ok(version) => Json(ApiResult::success(serde_json::json!({
             "deviceId": device_id,
             "channelId": channel_id,
             "version": version,
@@ -525,7 +525,7 @@ pub async fn list_snapshots(
         }
     }
 
-    Json(WVPResult::success(serde_json::Value::Object(out))).into_response()
+    Json(ApiResult::success(serde_json::Value::Object(out))).into_response()
 }
 
 #[derive(Debug, Deserialize)]
@@ -566,7 +566,7 @@ pub async fn get_play_url(
         .unwrap_or("rtsp");
 
     let Some(ref zlm_client) = state.zlm_client else {
-        return Json(WVPResult::<()>::error("ZLM not configured")).into_response();
+        return Json(ApiResult::<()>::error("ZLM not configured")).into_response();
     };
 
     let host = zlm_client.ip.as_str();
@@ -589,7 +589,7 @@ pub async fn get_play_url(
         .await
     {
         Ok(false) => {
-            return Json(WVPResult::<()>::error(format!(
+            return Json(ApiResult::<()>::error(format!(
                 "流 {} 尚未建立：请先调用 /api/play/start/{}/{} 拉起实时流，再取播放地址",
                 stream_id, device_id, channel_id
             )))
@@ -615,7 +615,7 @@ pub async fn get_play_url(
             host, http_port, app, stream_id
         ),
         other => {
-            return Json(WVPResult::<()>::error(format!(
+            return Json(ApiResult::<()>::error(format!(
                 "不支持的 protocol: {}（可选 rtsp/rtmp/hls/flv/ws_flv/webrtc）",
                 other
             )))
@@ -623,7 +623,7 @@ pub async fn get_play_url(
         }
     };
 
-    Json(WVPResult::success(serde_json::json!({
+    Json(ApiResult::success(serde_json::json!({
         "deviceId": device_id,
         "channelId": channel_id,
         "streamId": stream_id,
@@ -676,7 +676,7 @@ pub async fn stream_info(
     if let Some(ref zlm_client) = state.zlm_client {
         match zlm_client.get_media_list(None, Some(app), Some(stream)).await {
             Ok(list) => {
-                return Json(WVPResult::success(serde_json::json!({
+                return Json(ApiResult::success(serde_json::json!({
                     "app": app,
                     "stream": stream,
                     "count": list.len(),
@@ -684,18 +684,18 @@ pub async fn stream_info(
                 }))).into_response();
             }
             Err(e) => {
-                return Json(WVPResult::<()>::error(format!("ZLM error: {}", e))).into_response();
+                return Json(ApiResult::<()>::error(format!("ZLM error: {}", e))).into_response();
             }
         }
     }
     
-    Json(WVPResult::<()>::error("ZLM not configured")).into_response()
+    Json(ApiResult::<()>::error("ZLM not configured")).into_response()
 }
 // ============================================================================
-// WVP `DeviceQuery.java` 兼容入口
+// 设备查询兼容入口
 //
-// WVP 用的是混合风格（部分路径参数、部分查询参数），与本平台早期的
-// `/api/device/query/info/{id}` 形式不同。这里把 WVP 的路径/参数风格接上，
+// 这里用的是混合风格（部分路径参数、部分查询参数），与本平台早期的
+// `/api/device/query/info/{id}` 形式不同。以下兼容路径接上这套路径/参数风格，
 // 复用同一批真实实现（同样是"注册 pending → 发 SIP → 等应答"）。
 // ============================================================================
 
@@ -785,26 +785,26 @@ pub struct DeviceChannelQuery {
 
 /// `GET /api/device/query/channel/raw?id=` —— 国标通道编辑时的原始行回显。
 ///
-/// WVP 直接返回 `DeviceChannel` 行；这里返回同源的通道行（含 gb_* 兼容字段）。
+/// 返回同源的通道行（含 gb_* 兼容字段）。
 pub async fn channel_raw(
     State(state): State<AppState>,
     Query(q): Query<ChannelRawQuery>,
 ) -> impl IntoResponse {
     let Some(id) = q.id else {
-        return Json(WVPResult::<serde_json::Value>::error("缺少 id 参数")).into_response();
+        return Json(ApiResult::<serde_json::Value>::error("缺少 id 参数")).into_response();
     };
     match crate::db::device::get_channel_by_id(&state.pool, id).await {
-        Ok(Some(ch)) => Json(WVPResult::success(
+        Ok(Some(ch)) => Json(ApiResult::success(
             crate::handlers::device_stub::channel_to_json(&ch),
         ))
         .into_response(),
-        Ok(None) => Json(WVPResult::<serde_json::Value>::error(format!(
+        Ok(None) => Json(ApiResult::<serde_json::Value>::error(format!(
             "通道不存在: {id}"
         )))
         .into_response(),
         Err(e) => {
             tracing::error!("channel/raw 查询失败 id={}: {}", id, e);
-            Json(WVPResult::<serde_json::Value>::error(format!(
+            Json(ApiResult::<serde_json::Value>::error(format!(
                 "查询通道失败: {e}"
             )))
             .into_response()
@@ -820,22 +820,22 @@ pub struct ChannelRawQuery {
 
 /// `GET /api/device/query/alarm` —— **向设备查询当前报警**（不是 DB 历史列表）。
 ///
-/// 支持 WVP 的全部过滤条件：报警级别区间 / 报警方式 / 报警类型 / 时间区间。
+/// 支持全部过滤条件：报警级别区间 / 报警方式 / 报警类型 / 时间区间。
 pub async fn device_alarm_query(
     State(state): State<AppState>,
     Query(q): Query<DeviceAlarmQuery>,
 ) -> impl IntoResponse {
     let device_id = q.device_id.clone().unwrap_or_default();
     if device_id.is_empty() {
-        return Json(WVPResult::<serde_json::Value>::error("deviceId 必须存在")).into_response();
+        return Json(ApiResult::<serde_json::Value>::error("deviceId 必须存在")).into_response();
     }
     let Some(ref sip_server) = state.sip_server else {
-        return Json(WVPResult::<serde_json::Value>::error("SIP server not available"))
+        return Json(ApiResult::<serde_json::Value>::error("SIP server not available"))
             .into_response();
     };
     let server = &**sip_server;
     if !server.is_device_online(&device_id).await {
-        return Json(WVPResult::<serde_json::Value>::error(format!(
+        return Json(ApiResult::<serde_json::Value>::error(format!(
             "设备不在线: {device_id}"
         )))
         .into_response();
@@ -858,14 +858,14 @@ pub async fn device_alarm_query(
         .await
     {
         tracing::error!("报警查询下发失败 device={}: {}", device_id, e);
-        return Json(WVPResult::<serde_json::Value>::error(format!(
+        return Json(ApiResult::<serde_json::Value>::error(format!(
             "下发报警查询失败: {e}"
         )))
         .into_response();
     }
 
     match commander.await_response(req, rx, 15).await {
-        Ok(xml) => Json(WVPResult::success(serde_json::json!({
+        Ok(xml) => Json(ApiResult::success(serde_json::json!({
             "deviceId": device_id,
             "sn": sn,
             "xml": xml,
@@ -873,7 +873,7 @@ pub async fn device_alarm_query(
             "source": "live",
         })))
         .into_response(),
-        Err(_) => Json(WVPResult::<serde_json::Value>::error(
+        Err(_) => Json(ApiResult::<serde_json::Value>::error(
             "设备未在 15 秒内应答报警查询",
         ))
         .into_response(),
@@ -930,10 +930,10 @@ pub fn parse_alarm_list(xml: &str) -> Vec<serde_json::Value> {
 }
 
 #[cfg(test)]
-mod wvp_compat_tests {
+mod compat_tests {
     use super::*;
 
-    /// 设备应答里的 AlarmList 必须逐条解析出来（WVP `deviceService.alarm` 的形状）。
+    /// 设备应答里的 AlarmList 必须逐条解析出来。
     #[test]
     fn parse_alarm_list_extracts_items() {
         let xml = r#"<?xml version="1.0"?>
@@ -972,9 +972,9 @@ mod wvp_compat_tests {
         assert!(parse_alarm_list("").is_empty());
     }
 
-    /// WVP 的查询参数风格 DTO（camelCase + 数字型 id）都必须能反序列化。
+    /// 查询参数风格 DTO（camelCase + 数字型 id）都必须能反序列化。
     #[test]
-    fn wvp_query_dtos_accept_frontend_shapes() {
+    fn query_dtos_accept_frontend_shapes() {
         let q: DeviceIdQuery = serde_json::from_value(serde_json::json!({"deviceId": "d"})).unwrap();
         assert_eq!(q.device_id.as_deref(), Some("d"));
 

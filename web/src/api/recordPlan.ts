@@ -1,11 +1,10 @@
 import { request } from '@/utils/request'
-import type { WvpResult } from '@/types/api'
+import type { ApiResult } from '@/types/api'
 
 /**
  * 录像计划时段。
  *
- * 口径与 WVP-PRO 完全一致（`RecordPlanMapper.queryRecordIng`：
- * `week_day = #{week} and start <= #{index} and stop >= #{index}`）：
+ * 口径（时段匹配条件 `week_day = #{week} and start <= #{index} and stop >= #{index}`）：
  *
  * - `start` / `stop`：**当天第几分钟**（0..1440，`hour*60+minute`），
  *   `1440` 表示 24:00；区间是**闭区间**，两端都含；
@@ -25,7 +24,7 @@ export interface RecordPlanItem {
 export interface RecordPlan {
   id?: number
   name?: string
-  /** 是否开启定时截图（WVP 保留了该字段，但服务端目前未接线） */
+  /** 是否开启定时截图（保留了该字段，但服务端目前未接线） */
   snap?: boolean
   /** 关联通道数（服务端聚合返回） */
   channelCount?: number
@@ -34,10 +33,10 @@ export interface RecordPlan {
   planItemList?: RecordPlanItem[]
 }
 
-/** `/api/record/plan/channel/list` 返回的通道（WVP `CommonGBChannel` 子集） */
+/** `/api/record/plan/channel/list` 返回的通道（`gb_device_channel` 行的子集） */
 export interface RecordPlanChannel {
   id: number
-  /** 通道主键；`link` 时原样回传（WVP 的前端就是这样用的） */
+  /** 通道主键；`link` 时原样回传（早期前端就是这样用的） */
   gbId: number
   gbDeviceId?: string | null
   gbName?: string | null
@@ -55,16 +54,16 @@ export interface RecordPlanQueryParams {
 }
 
 export function getRecordPlanList(params: RecordPlanQueryParams) {
-  return request<WvpResult<{ total: number; list: RecordPlan[] }>>({
+  return request<ApiResult<{ total: number; list: RecordPlan[] }>>({
     method: 'get',
     url: '/record/plan/query',
     params
   })
 }
 
-/** WVP 的查询参数名是 `planId`（不是 `id`） */
+/** 查询参数名是 `planId`（不是 `id`） */
 export function getRecordPlanOne(planId: number | string) {
-  return request<WvpResult<RecordPlan | null>>({
+  return request<ApiResult<RecordPlan | null>>({
     method: 'get',
     url: '/record/plan/get',
     params: { planId }
@@ -76,7 +75,7 @@ export function addRecordPlan(data: {
   snap?: boolean
   planItemList: RecordPlanItem[]
 }) {
-  return request<WvpResult>({
+  return request<ApiResult>({
     method: 'post',
     url: '/record/plan/add',
     data
@@ -89,7 +88,7 @@ export function updateRecordPlan(data: {
   snap?: boolean
   planItemList?: RecordPlanItem[]
 }) {
-  return request<WvpResult>({
+  return request<ApiResult>({
     method: 'post',
     url: '/record/plan/update',
     data
@@ -101,7 +100,7 @@ export function updateRecordPlan(data: {
  * 早期前端用 GET 调用，线上稳定返回 405，删除功能实际不可用。
  */
 export function deleteRecordPlan(planId: number | string) {
-  return request<WvpResult>({
+  return request<ApiResult>({
     method: 'delete',
     url: '/record/plan/delete',
     params: { planId }
@@ -119,7 +118,7 @@ export interface PlanChannelQueryParams {
 }
 
 export function queryPlanChannels(params: PlanChannelQueryParams) {
-  return request<WvpResult<{ total: number; list: RecordPlanChannel[] }>>({
+  return request<ApiResult<{ total: number; list: RecordPlanChannel[] }>>({
     method: 'get',
     url: '/record/plan/channel/list',
     params
@@ -140,7 +139,7 @@ export function linkPlan(data: {
   deviceDbIds?: number[]
   allLink?: boolean
 }) {
-  return request<WvpResult>({
+  return request<ApiResult>({
     method: 'post',
     url: '/record/plan/link',
     data

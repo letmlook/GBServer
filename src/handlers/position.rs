@@ -1,16 +1,15 @@
-//! 移动位置（GB28181 `MobilePosition`）HTTP 接口 —— 对齐 WVP 的
-//! `MobilePositionController`。
+//! 移动位置（GB28181 `MobilePosition`）HTTP 接口。
+//!
+//! ## 本模块提供的端点
+//!
+//! | 端点 | 说明 |
+//! |------|------|
+//! | `GET /api/position/history/{deviceId}?channelId=&start=&end=` | 带 `channelId` 时读 `gb_device_mobile_position`；不带时读**另一张表** `gb_position_history` |
+//! | `GET /api/position/latest?channelId=` | 返回该通道**最新一条**移动位置 |
+//! | `GET /api/position/realtime/{deviceId}` | 向设备实时查询一次并落库；设备离线/超时回退库里最新一条（附 `source`） |
+//! | `GET /api/position/subscribe/{deviceId}?expires=&interval=` | 写入订阅参数并**立即下发一次** SUBSCRIBE |
 //!
 //! ## 为什么单独一个模块
-//!
-//! WVP 提供 4 个端点（`.../gb28181/controller/MobilePositionController.java`）：
-//!
-//! | WVP | 本平台此前 |
-//! |-----|-----------|
-//! | `GET /api/position/history/{deviceId}?channelId=&start=&end=` | ⚠️ 有路由，但读的是**另一张表** `gb_position_history` |
-//! | `GET /api/position/latest?channelId=` | ❌ 缺失 |
-//! | `GET /api/position/realtime/{deviceId}` | ❌ 缺失 |
-//! | `GET /api/position/subscribe/{deviceId}?expires=&interval=` | ❌ 缺失 |
 //!
 //! 平台里其实**一直在写**移动位置：设备上报的 NOTIFY 会落进
 //! `gb_device_mobile_position`（`sip/gb28181/subscription_lifecycle.rs`），
@@ -19,8 +18,8 @@
 //!
 //! ## 两张位置表的关系（不是重复）
 //!
-//! * `gb_device_mobile_position`：**WVP 对齐**的移动位置表，本模块对外暴露的
-//!   就是它（字段与 WVP `MobilePosition` 一致）。
+//! * `gb_device_mobile_position`：移动位置表，本模块对外暴露的
+//!   就是它（字段与国标 `MobilePosition` 报文一致）。
 //! * `gb_position_history`：本平台自己的宽表，供「电子地图打点/轨迹抽稀」
 //!   （`handlers/common_channel.rs::map_thin_save`）与 JT1078 `position-info` 使用。
 //!
@@ -36,13 +35,13 @@ use serde::Deserialize;
 use crate::db;
 use crate::db::mobile_position as pos_db;
 use crate::error::{AppError, ErrorCode};
-use crate::response::WVPResult;
+use crate::response::ApiResult;
 use crate::sip::gb28181::XmlParser;
 use crate::AppState;
 
 /// `/api/position/latest` 查询参数。
 ///
-/// WVP 只接受 `channelId`（**通道的数据库主键**）。为了便于直接按国标编号调试，
+/// 基础契约只接受 `channelId`（**通道的数据库主键**）。为了便于直接按国标编号调试，
 /// 这里额外接受 `deviceId`（设备国标编号）与 `gbChannelId`（通道国标编号）。
 #[derive(Debug, Deserialize, Default)]
 pub struct LatestQuery {
@@ -57,7 +56,7 @@ pub struct LatestQuery {
 /// `/api/position/history/:device_id` 查询参数。
 #[derive(Debug, Deserialize, Default)]
 pub struct HistoryQuery {
-    /// 通道数据库主键（WVP 口径）。给了它就按通道查 `gb_device_mobile_position`。
+    /// 通道数据库主键。给了它就按通道查 `gb_device_mobile_position`。
     #[serde(alias = "channelId", default, deserialize_with = "crate::serde_flex::de_opt_i64")]
     pub channel_id: Option<i64>,
     /// 通道国标编号（可选，配合 deviceId 使用）。
@@ -74,9 +73,9 @@ pub struct HistoryQuery {
 /// `/api/position/subscribe/:device_id` 查询参数。
 #[derive(Debug, Deserialize, Default)]
 pub struct SubscribeQuery {
-    /// 订阅有效期（秒）。WVP 的 `expires` 参数。
+    /// 订阅有效期（秒），对应 `expires` 参数。
     pub expires: Option<i32>,
-    /// 位置上报间隔（秒）。WVP 的 `interval` 参数。
+    /// 位置上报间隔（秒），对应 `interval` 参数。
     pub interval: Option<i32>,
 }
 
@@ -87,7 +86,7 @@ fn opt_trimmed(v: Option<&str>) -> Option<&str> {
 
 /// 把「通道数据库主键」解析成 `(设备国标编号, 通道国标编号)`。
 ///
-/// WVP 的 `channelId` 是 `gb_device_channel.id`（不是国标编号），因此必须先
+/// `channelId` 是 `gb_device_channel.id`（不是国标编号），因此必须先
 /// 查库换算出 `device_id` / `gb_device_id` —— 移动位置表里存的是这两个国标字段。
 async fn resolve_channel(
     state: &AppState,
@@ -118,12 +117,12 @@ async fn resolve_channel(
 
 /// GET /api/position/latest
 ///
-/// 与 WVP 一致：返回该通道**最新一条**移动位置。三种入参（优先级从高到低）：
+/// 返回该通道**最新一条**移动位置。三种入参（优先级从高到低）：
 /// `channelId`（数据库主键）/ `deviceId`+`gbChannelId` / 仅 `deviceId`。
 pub async fn position_latest(
     State(state): State<AppState>,
     Query(q): Query<LatestQuery>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let (device_id, channel_id) = if let Some(cid) = q.channel_id.filter(|v| *v > 0) {
         let (dev, ch) = resolve_channel(&state, cid).await?;
         (dev, Some(ch))
@@ -137,24 +136,24 @@ pub async fn position_latest(
     };
 
     let latest = pos_db::get_latest_position(&state.pool, &device_id, channel_id.as_deref()).await?;
-    // `data` 直接就是位置对象（与 WVP 的 `latestPosition` 一致），
+    // `data` 直接就是位置对象，
     // 查不到时为 null。设备/通道编号本来就在对象里。
-    Ok(Json(WVPResult::success(
+    Ok(Json(ApiResult::success(
         serde_json::to_value(latest).unwrap_or(serde_json::Value::Null),
     )))
 }
 
 /// GET /api/position/history/:device_id
 ///
-/// * 传了 `channelId`（通道数据库主键）→ 按 WVP 口径查
-///   `gb_device_mobile_position`（这是 WVP `MobilePositionController.history` 的语义）。
+/// * 传了 `channelId`（通道数据库主键）→ 查国标设备位置表
+///   `gb_device_mobile_position`（每通道保留一条最新位置）；
 /// * 未传 → 保持本平台原有行为：按设备国标编号查 `gb_position_history`
 ///   （电子地图轨迹用的宽表），避免破坏既有调用方。
 pub async fn position_history(
     State(state): State<AppState>,
     Path(device_id): Path<String>,
     Query(q): Query<HistoryQuery>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let start = opt_trimmed(q.start.as_deref());
     let end = opt_trimmed(q.end.as_deref());
 
@@ -174,7 +173,7 @@ pub async fn position_history(
             count,
         )
         .await?;
-        return Ok(Json(WVPResult::success(serde_json::json!({
+        return Ok(Json(ApiResult::success(serde_json::json!({
             "deviceId": dev,
             "channelId": gb_channel,
             "total": total,
@@ -187,7 +186,7 @@ pub async fn position_history(
     // 未指定通道：兼容旧行为（gb_position_history 宽表）
     let list = db::position_history::list_by_device_and_time(&state.pool, &device_id, start, end)
         .await?;
-    Ok(Json(WVPResult::success(serde_json::json!({
+    Ok(Json(ApiResult::success(serde_json::json!({
         "deviceId": device_id,
         "source": "position_history",
         "total": list.len(),
@@ -231,7 +230,7 @@ fn parse_position_xml(xml: &str) -> Option<pos_db::MobilePositionInsert> {
 pub async fn position_realtime(
     State(state): State<AppState>,
     Path(device_id): Path<String>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let device_id = device_id.trim().to_string();
     if device_id.is_empty() {
         return Err(AppError::business(ErrorCode::Error400, "缺少 deviceId"));
@@ -253,7 +252,7 @@ pub async fn position_realtime(
                             if let Err(e) = pos_db::insert(&state.pool, &insert).await {
                                 tracing::warn!("实时位置落库失败（仍返回给调用方）: {}", e);
                             }
-                            return Ok(Json(WVPResult::success(serde_json::json!({
+                            return Ok(Json(ApiResult::success(serde_json::json!({
                                 "deviceId": device_id,
                                 "source": "live",
                                 "position": {
@@ -283,7 +282,7 @@ pub async fn position_realtime(
 
     // 回退：库里最新一条
     let latest = pos_db::get_latest_position(&state.pool, &device_id, None).await?;
-    Ok(Json(WVPResult::success(serde_json::json!({
+    Ok(Json(ApiResult::success(serde_json::json!({
         "deviceId": device_id,
         "source": "cache",
         "message": note,
@@ -293,14 +292,14 @@ pub async fn position_realtime(
 
 /// GET /api/position/subscribe/:device_id?expires=&interval=
 ///
-/// WVP 的语义：把 `subscribeCycleForMobilePosition` / `mobilePositionSubmissionInterval`
+/// 语义：把 `subscribeCycleForMobilePosition` / `mobilePositionSubmissionInterval`
 /// 写进设备表，由订阅循环周期下发 SUBSCRIBE。这里额外**立即下发一次** SUBSCRIBE，
 /// 让用户点完马上生效（否则要等到下一个订阅周期）。
 pub async fn position_subscribe(
     State(state): State<AppState>,
     Path(device_id): Path<String>,
     Query(q): Query<SubscribeQuery>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let device_id = device_id.trim().to_string();
     if device_id.is_empty() {
         return Err(AppError::business(ErrorCode::Error400, "缺少 deviceId"));
@@ -343,7 +342,7 @@ pub async fn position_subscribe(
         None => sip_message = Some("SIP 服务未启动".to_string()),
     }
 
-    Ok(Json(WVPResult::success(serde_json::json!({
+    Ok(Json(ApiResult::success(serde_json::json!({
         "deviceId": device_id,
         "expires": expires,
         "interval": interval,
@@ -394,7 +393,7 @@ mod position_contract_tests {
         }
     }
 
-    /// `/position/latest`：WVP 用通道数据库主键，必须能换算成国标编号并取到最新一条。
+    /// `/position/latest`：入参是通道数据库主键，必须能换算成国标编号并取到最新一条。
     #[tokio::test]
     async fn test_position_latest_resolves_channel_db_id() {
         let state = app_state().await;
@@ -455,7 +454,7 @@ mod position_contract_tests {
         assert!(matches!(e, AppError::Business(_, _)));
     }
 
-    /// history 带 `channelId` → WVP 口径（gb_device_mobile_position + 时间过滤）。
+    /// history 带 `channelId` → 按通道查（gb_device_mobile_position + 时间过滤）。
     #[tokio::test]
     async fn test_position_history_by_channel_id_filters_time() {
         let state = app_state().await;

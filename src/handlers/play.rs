@@ -1,5 +1,5 @@
 use axum::{extract::Path, extract::Query, extract::State, Json};
-use crate::response::WVPResult;
+use crate::response::ApiResult;
 use crate::AppState;
 use crate::db::device as db_device;
 
@@ -52,38 +52,38 @@ async fn play_urls_json(
 pub async fn play_start(
     State(state): State<AppState>,
     Path((device_id, channel_id)): Path<(String, String)>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     tracing::info!("Play request: device={}, channel={}", device_id, channel_id);
 
     let device = match db_device::get_device_by_device_id(&state.pool, &device_id).await {
         Ok(Some(d)) => d,
         Ok(None) => {
-            return Json(WVPResult::error("Device not found"));
+            return Json(ApiResult::error("Device not found"));
         }
         Err(e) => {
             tracing::error!("Failed to query device: {}", e);
-            return Json(WVPResult::error("Database error"));
+            return Json(ApiResult::error("Database error"));
         }
     };
 
     let channel = match db_device::get_channel_by_device_and_channel_id(&state.pool, &device_id, &channel_id).await {
         Ok(Some(c)) => c,
         Ok(None) => {
-            return Json(WVPResult::error("Channel not found"));
+            return Json(ApiResult::error("Channel not found"));
         }
         Err(e) => {
             tracing::error!("Failed to query channel: {}", e);
-            return Json(WVPResult::error("Database error"));
+            return Json(ApiResult::error("Database error"));
         }
     };
 
     if !device.on_line.unwrap_or(false) {
-        return Json(WVPResult::error("Device is offline"));
+        return Json(ApiResult::error("Device is offline"));
     }
 
     let sip_server = match &state.sip_server {
         Some(s) => s.clone(),
-        None => return Json(WVPResult::error("SIP server not available")),
+        None => return Json(ApiResult::error("SIP server not available")),
     };
 
     if let Some(ref zlm_client) = state.zlm_client {
@@ -152,7 +152,7 @@ pub async fn play_start(
                                 device_id.clone(),
                                 channel_id.clone(),
                             );
-                            return Json(WVPResult::success(play_urls_json(
+                            return Json(ApiResult::success(play_urls_json(
                                 zlm_client,
                                 &stream_id,
                                 &device_id,
@@ -176,7 +176,7 @@ pub async fn play_start(
                                     tracing::error!(
                                         "openRtpServer 重试仍失败 {stream_id}: {e2}"
                                     );
-                                    return Json(WVPResult::error(format!(
+                                    return Json(ApiResult::error(format!(
                                         "Media Server error: {}",
                                         e2
                                     )));
@@ -193,7 +193,7 @@ pub async fn play_start(
                                     tracing::error!(
                                         "openRtpServer 重试仍失败 {stream_id}: {e2}"
                                     );
-                                    return Json(WVPResult::error(format!(
+                                    return Json(ApiResult::error(format!(
                                         "Media Server error: {}",
                                         e2
                                     )));
@@ -203,7 +203,7 @@ pub async fn play_start(
                     }
                 } else {
                     tracing::error!("Failed to open RTP server: {}", e);
-                    return Json(WVPResult::error(format!("Media Server error: {}", e)));
+                    return Json(ApiResult::error(format!("Media Server error: {}", e)));
                 }
             }
         };
@@ -253,7 +253,7 @@ pub async fn play_start(
                     tracing::error!("SIP INVITE for TCP-PASSIVE failed: {}", e);
                     let _ = zlm_client.close_rtp_server(&stream_id).await;
                     let _ = sip.send_session_bye(&device_id, &channel_id).await;
-                    return Json(WVPResult::error(format!("SIP error: {}", e)));
+                    return Json(ApiResult::error(format!("SIP error: {}", e)));
                 }
             };
             tracing::info!(
@@ -278,7 +278,7 @@ pub async fn play_start(
                 Err(e) => {
                     let _ = zlm_client.close_rtp_server(&stream_id).await;
                     let _ = sip.send_session_bye(&device_id, &channel_id).await;
-                    return Json(WVPResult::error(e));
+                    return Json(ApiResult::error(e));
                 }
             };
 
@@ -300,7 +300,7 @@ pub async fn play_start(
                 );
                 let _ = zlm_client.close_rtp_server(&stream_id).await;
                 let _ = sip.send_session_bye(&device_id, &channel_id).await;
-                return Json(WVPResult::error(format!("ZLM connect error: {}", e)));
+                return Json(ApiResult::error(format!("ZLM connect error: {}", e)));
             }
             tracing::info!(
                 "ZLM connectRtpServer (TCP-PASSIVE) -> {} (stream_id={})",
@@ -329,7 +329,7 @@ pub async fn play_start(
                 device_id.clone(),
                 channel_id.clone(),
             );
-            return Json(WVPResult::success(payload));
+            return Json(ApiResult::success(payload));
         }
 
         match sip.send_play_invite_and_wait_media(
@@ -377,7 +377,7 @@ pub async fn play_start(
                 // 构建播放地址返回给前端
                 let stream_url = format!("rtp/{}", stream_id);
                 // 这里 zlm_client 中尚未获取自身的配置公网 IP/Port
-                // 因为 WVP 接口通常提供各个协议的地址，我们可以用 127.0.0.1 或者 media server 配置地址
+                // 因为播放接口通常提供各个协议的地址，我们可以用 127.0.0.1 或者 media server 配置地址
                 let media_ip = zlm_client.ip.clone();
                 let http_port = zlm_client.http_port;
                 // 注意这里假设了几个默认端口（如果在配置里解析过可以替换），这里为了快速回掉先用通配协议配置
@@ -391,7 +391,7 @@ pub async fn play_start(
                     channel_id.clone(),
                 );
                 // 与其它成功分支共用同一份 URL（FLV 后缀 .live.flv、hls 需探测）
-                return Json(WVPResult::success(
+                return Json(ApiResult::success(
                     play_urls_json(
                         zlm_client,
                         &stream_id,
@@ -410,12 +410,12 @@ pub async fn play_start(
                 let _ = zlm_client.close_rtp_server(&stream_id).await;
                 // 兜底再发一次 BYE，确保设备端不会持续推流
                 let _ = sip.send_session_bye(&device_id, &channel_id).await;
-                return Json(WVPResult::error(format!("SIP error: {}", e)));
+                return Json(ApiResult::error(format!("SIP error: {}", e)));
             }
         }
     }
 
-    Json(WVPResult::success(serde_json::json!({
+    Json(ApiResult::success(serde_json::json!({
         "app": "",
         "stream": "",
         "tracks": [],
@@ -426,12 +426,12 @@ pub async fn play_start(
 pub async fn play_stop(
     State(state): State<AppState>,
     Path((device_id, channel_id)): Path<(String, String)>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     tracing::info!("Stop play: device={}, channel={}", device_id, channel_id);
 
     let sip_server = match &state.sip_server {
         Some(s) => s.clone(),
-        None => return Json(WVPResult::error("SIP server not available")),
+        None => return Json(ApiResult::error("SIP server not available")),
     };
 
     let stream_id = format!("{}_{}", device_id, channel_id);
@@ -452,41 +452,41 @@ pub async fn play_stop(
         Ok(call_id) => {
             tracing::info!("Session BYE sent for stream {} call_id={}", stream_id, call_id);
             // 返回 call_id 给调用方以便排查
-            return Json(WVPResult::success(serde_json::json!({"callId": call_id})));
+            return Json(ApiResult::success(serde_json::json!({"callId": call_id})));
         }
         Err(e) => {
             tracing::warn!("Failed to send session BYE for stream {}: {}", stream_id, e);
         }
     }
 
-    Json(WVPResult::success(serde_json::json!({})))
+    Json(ApiResult::success(serde_json::json!({})))
 }
 
 pub async fn broadcast_start(
     State(state): State<AppState>,
     Path((device_id, channel_id)): Path<(String, String)>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     tracing::info!("Broadcast start: device={}, channel={}", device_id, channel_id);
 
     let device = match db_device::get_device_by_device_id(&state.pool, &device_id).await {
         Ok(Some(d)) => d,
         Ok(None) => {
-            return Json(WVPResult::error("Device not found"));
+            return Json(ApiResult::error("Device not found"));
         }
         Err(e) => {
             tracing::error!("Failed to query device: {}", e);
-            return Json(WVPResult::error("Database error"));
+            return Json(ApiResult::error("Database error"));
         }
     };
 
     if !device.on_line.unwrap_or(false) {
-        return Json(WVPResult::error("Device is offline"));
+        return Json(ApiResult::error("Device is offline"));
     }
 
     let sip_server = match &state.sip_server {
         Some(s) => s.clone(),
         None => {
-            return Json(WVPResult::error("SIP server not available"));
+            return Json(ApiResult::error("SIP server not available"));
         }
     };
 
@@ -495,7 +495,7 @@ pub async fn broadcast_start(
     match sip.send_broadcast_invite(&device_id, &channel_id).await {
         Ok(call_id) => {
             tracing::info!("Broadcast INVITE sent to {}/{} call_id={}", device_id, channel_id, call_id);
-            Json(WVPResult::success(serde_json::json!({
+            Json(ApiResult::success(serde_json::json!({
                 "deviceId": device_id,
                 "channelId": channel_id,
                 "callId": call_id,
@@ -504,7 +504,7 @@ pub async fn broadcast_start(
         }
         Err(e) => {
             tracing::error!("Failed to send broadcast INVITE: {}", e);
-            Json(WVPResult::error(format!("SIP error: {}", e)))
+            Json(ApiResult::error(format!("SIP error: {}", e)))
         }
     }
 }
@@ -512,13 +512,13 @@ pub async fn broadcast_start(
 pub async fn broadcast_stop(
     State(state): State<AppState>,
     Path((device_id, channel_id)): Path<(String, String)>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     tracing::info!("Broadcast stop: device={}, channel={}", device_id, channel_id);
 
     let sip_server = match &state.sip_server {
         Some(s) => s.clone(),
         None => {
-            return Json(WVPResult::error("SIP server not available"));
+            return Json(ApiResult::error("SIP server not available"));
         }
     };
 
@@ -527,7 +527,7 @@ pub async fn broadcast_stop(
     match sip.send_broadcast_bye(&device_id, &channel_id).await {
         Ok(_) => {
             tracing::info!("Broadcast BYE sent to {}/{}", device_id, channel_id);
-            Json(WVPResult::success(serde_json::json!({
+            Json(ApiResult::success(serde_json::json!({
                 "deviceId": device_id,
                 "channelId": channel_id,
                 "message": "Broadcast stopped"
@@ -535,7 +535,7 @@ pub async fn broadcast_stop(
         }
         Err(e) => {
             tracing::error!("Failed to send broadcast BYE: {}", e);
-            Json(WVPResult::error(format!("SIP error: {}", e)))
+            Json(ApiResult::error(format!("SIP error: {}", e)))
         }
     }
 }
@@ -576,11 +576,11 @@ fn share_tokens_store() -> &'static Mutex<Vec<ShareToken>> {
 /// 调用 /api/play/start/{device}/{channel}（前端 share.vue 落地页用）。
 pub async fn play_share_create(
     axum::extract::Query(q): axum::extract::Query<ShareCreateQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let device_id = q.device_id.unwrap_or_default();
     let channel_id = q.channel_id.unwrap_or_default();
     if device_id.is_empty() || channel_id.is_empty() {
-        return Json(WVPResult::error("deviceId and channelId required"));
+        return Json(ApiResult::error("deviceId and channelId required"));
     }
     let ttl = q.ttl.unwrap_or(3600).clamp(60, 86400); // 1 min - 24 h
 
@@ -609,7 +609,7 @@ pub async fn play_share_create(
         tokens.push(entry);
     }
 
-    Json(WVPResult::success(serde_json::json!({
+    Json(ApiResult::success(serde_json::json!({
         "token": token,
         "deviceId": device_id,
         "channelId": channel_id,
@@ -621,10 +621,10 @@ pub async fn play_share_create(
 /// GET /api/play/share/info?token=... — 校验 token，返回 deviceId/channelId
 pub async fn play_share_info(
     axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let token = match q.get("token") {
         Some(t) => t.clone(),
-        None => return Json(WVPResult::error("token required")),
+        None => return Json(ApiResult::error("token required")),
     };
 
     let now = SystemTime::now()
@@ -635,7 +635,7 @@ pub async fn play_share_info(
     if let Ok(mut tokens) = share_tokens_store().lock() {
         tokens.retain(|t| t.expires_at > now);
         if let Some(t) = tokens.iter().find(|t| t.token == token) {
-            return Json(WVPResult::success(serde_json::json!({
+            return Json(ApiResult::success(serde_json::json!({
                 "deviceId": t.device_id,
                 "channelId": t.channel_id,
                 "expiresAt": t.expires_at,
@@ -643,17 +643,17 @@ pub async fn play_share_info(
         }
     }
 
-    Json(WVPResult::error("Invalid or expired token"))
+    Json(ApiResult::error("Invalid or expired token"))
 }
 
 /// GET /api/play/share/start?token=... — 凭 share token 启动播放（无 JWT 鉴权）
 pub async fn play_share_start(
     State(state): State<AppState>,
     axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let token = match q.get("token") {
         Some(t) => t.clone(),
-        None => return Json(WVPResult::error("token required")),
+        None => return Json(ApiResult::error("token required")),
     };
 
     let now = SystemTime::now()
@@ -667,24 +667,24 @@ pub async fn play_share_start(
                 tokens.retain(|t| t.expires_at > now);
                 match tokens.iter().find(|t| t.token == token) {
                     Some(t) => (t.device_id.clone(), t.channel_id.clone()),
-                    None => return Json(WVPResult::error("Invalid or expired token")),
+                    None => return Json(ApiResult::error("Invalid or expired token")),
                 }
             }
-            Err(_) => return Json(WVPResult::error("Token store unavailable")),
+            Err(_) => return Json(ApiResult::error("Token store unavailable")),
         }
     };
 
     // 复用 play_start 逻辑（提取 URL）
     let device = match db_device::get_device_by_device_id(&state.pool, &device_id).await {
         Ok(Some(d)) => d,
-        _ => return Json(WVPResult::error("Device not found")),
+        _ => return Json(ApiResult::error("Device not found")),
     };
 
     let stream_id = format!("{}_{}", device_id, channel_id);
     let _ = device;
     let _ = stream_id;
 
-    Json(WVPResult::success(serde_json::json!({
+    Json(ApiResult::success(serde_json::json!({
         "deviceId": device_id,
         "channelId": channel_id,
         "app": "rtp",
@@ -790,7 +790,7 @@ mod share_token_tests {
     }
 }
 
-/// `POST /api/play/convertStop/{key}`（WVP `PlayController.playConvertStop`）
+/// `POST /api/play/convertStop/{key}`
 ///
 /// 停止并删除一个 ffmpeg 转码/转推源：`key` 是 `addFFmpegSource` 返回的键。
 /// 此前该端点未挂载，转码流停止时 ZLM 会一直重试拉流。
@@ -798,9 +798,9 @@ pub async fn play_convert_stop(
     State(state): State<AppState>,
     axum::extract::Path(key): axum::extract::Path<String>,
     Query(q): Query<ConvertStopQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let media_server_id = q.media_server_id.clone().unwrap_or_default();
-    // WVP 要求显式给 mediaServerId；缺省时按"所有节点都试一遍"更实用，
+    // 接口要求显式给 mediaServerId；缺省时按"所有节点都试一遍"更实用，
     // 但要在响应里说清楚是哪个节点删掉的。
     let clients: Vec<(String, std::sync::Arc<crate::zlm::ZlmClient>)> = if media_server_id
         .is_empty()
@@ -814,14 +814,14 @@ pub async fn play_convert_stop(
         match state.zlm_clients.get(&media_server_id) {
             Some(c) => vec![(media_server_id.clone(), c.clone())],
             None => {
-                return Json(WVPResult::error(format!(
+                return Json(ApiResult::error(format!(
                     "流媒体不存在: {media_server_id}"
                 )))
             }
         }
     };
     if clients.is_empty() {
-        return Json(WVPResult::error("没有可用的流媒体节点"));
+        return Json(ApiResult::error("没有可用的流媒体节点"));
     }
 
     let mut errors = Vec::new();
@@ -829,7 +829,7 @@ pub async fn play_convert_stop(
         match client.del_ffmpeg_source(&key).await {
             Ok(_) => {
                 tracing::info!("convertStop: 已删除 ffmpeg 源 key={} node={}", key, id);
-                return Json(WVPResult::success(serde_json::json!({
+                return Json(ApiResult::success(serde_json::json!({
                     "key": key,
                     "mediaServerId": id,
                     "deleted": true,
@@ -841,7 +841,7 @@ pub async fn play_convert_stop(
             }
         }
     }
-    Json(WVPResult::error(format!(
+    Json(ApiResult::error(format!(
         "删除 ffmpeg 源失败: {}",
         errors.join("; ")
     )))

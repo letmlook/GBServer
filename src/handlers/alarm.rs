@@ -6,7 +6,7 @@ use serde::Deserialize;
 
 use crate::error::{AppError, ErrorCode};
 use crate::dyn_where::{BindValue, DynWhere};
-use crate::response::WVPResult;
+use crate::response::ApiResult;
 use crate::AppState;
 
 #[derive(Debug, Deserialize)]
@@ -56,7 +56,7 @@ impl AlarmRow {
             "id": self.id,
             "deviceId": self.device_id,
             "channelId": self.channel_id,
-            // 前端读的是 alarmPriority（WVP `Alarm` 同名字段）；
+            // 前端读的是 alarmPriority；
             // 早期前端读 `alarmLevel`，后端从不返回该键 → 级别列恒为空。
             "alarmPriority": self.alarm_priority,
             "alarmMethod": self.alarm_method,
@@ -76,8 +76,8 @@ impl AlarmRow {
 
 /// GET /api/alarm/list - 查询告警列表
 ///
-/// 筛选（WVP `AlarmController.list` 是 alarmType/beginTime/endTime，
-/// 这里额外支持 deviceId/channelId/alarmMethod/handled/query）：
+/// 筛选（alarmType/beginTime/endTime，
+/// 另外还支持 deviceId/channelId/alarmMethod/handled/query）：
 ///
 /// * `beginTime`/`endTime`（也接受 `startTime`）—— **此前这两个参数被 DTO
 ///   收下，却在三个方言的 SQL 里从未使用**：选了时间范围结果完全不变；
@@ -85,7 +85,7 @@ impl AlarmRow {
 pub async fn alarm_list(
     State(state): State<AppState>,
     Query(q): Query<AlarmQuery>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let page = q.page.unwrap_or(1).max(1);
     let count = q.count.unwrap_or(10).clamp(1, 500);
     let offset = ((page - 1) * count) as i64;
@@ -136,7 +136,7 @@ pub async fn alarm_list(
         .map_err(|e| AppError::business(ErrorCode::Error500, format!("数据库查询失败: {e}")))?;
 
     let list: Vec<serde_json::Value> = rows.iter().map(|r| r.to_json()).collect();
-    Ok(Json(WVPResult::success(serde_json::json!({
+    Ok(Json(ApiResult::success(serde_json::json!({
         "total": total,
         "list": list
     }))))
@@ -152,7 +152,7 @@ fn alarm_filter(q: &AlarmQuery) -> DynWhere {
         w.add("channel_id = ?", vec![BindValue::Text(v.to_string())]);
     }
     if let Some(v) = q.alarm_type.as_deref().filter(|s| !s.is_empty()) {
-        // 兼容逗号分隔的多个类型（WVP 的 `List<AlarmType>` 会重复同名参数）
+        // 兼容逗号分隔的多个类型（早期前端会对同名参数重复传多次）
         let types: Vec<&str> = v.split(',').map(str::trim).filter(|s| !s.is_empty()).collect();
         match types.len() {
             0 => {}
@@ -207,7 +207,7 @@ fn alarm_filter(q: &AlarmQuery) -> DynWhere {
 pub async fn alarm_detail(
     State(state): State<AppState>,
     axum::extract::Path(id): axum::extract::Path<i64>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     #[cfg(feature = "postgres")]
     let row: Option<AlarmRow> = sqlx::query_as("SELECT id, device_id, channel_id, alarm_priority, \
         alarm_method, alarm_type, alarm_time, alarm_description, longitude, latitude, \
@@ -229,8 +229,8 @@ pub async fn alarm_detail(
         .map_err(|e| AppError::business(ErrorCode::Error500, format!("数据库查询失败: {e}")))?;
 
     match row {
-        Some(r) => Ok(Json(WVPResult::success(r.to_json()))),
-        None => Ok(Json(WVPResult::error("告警不存在"))),
+        Some(r) => Ok(Json(ApiResult::success(r.to_json()))),
+        None => Ok(Json(ApiResult::error("告警不存在"))),
     }
 }
 
@@ -250,10 +250,10 @@ pub struct AlarmHandleBody {
 pub async fn alarm_handle(
     State(state): State<AppState>,
     Json(body): Json<AlarmHandleBody>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let id = body.id.unwrap_or(0);
     if id <= 0 {
-        return Ok(Json(WVPResult::error("缺少告警ID".to_string())));
+        return Ok(Json(ApiResult::error("缺少告警ID".to_string())));
     }
 
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
@@ -271,10 +271,10 @@ pub async fn alarm_handle(
     .await?;
 
     if rows == 0 {
-        return Ok(Json(WVPResult::error("告警不存在".to_string())));
+        return Ok(Json(ApiResult::error("告警不存在".to_string())));
     }
 
-    Ok(Json(WVPResult::success(serde_json::json!({
+    Ok(Json(ApiResult::success(serde_json::json!({
         "id": id,
         "handled": true,
         "handleUser": handle_user,
@@ -288,7 +288,7 @@ pub async fn alarm_handle(
 pub async fn alarm_delete(
     State(state): State<AppState>,
     axum::extract::Path(id): axum::extract::Path<i64>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     #[cfg(feature = "postgres")]
     let r = sqlx::query("DELETE FROM gb_device_alarm WHERE id = $1")
         .bind(id)
@@ -307,9 +307,9 @@ pub async fn alarm_delete(
     // 而不是靠刷新后的行数（列表可能同时在增长）。
     let deleted = r.rows_affected();
     if deleted == 0 {
-        return Ok(Json(WVPResult::error("告警不存在")));
+        return Ok(Json(ApiResult::error("告警不存在")));
     }
-    Ok(Json(WVPResult::success(serde_json::json!({ "deleted": deleted }))))
+    Ok(Json(ApiResult::success(serde_json::json!({ "deleted": deleted }))))
 }
 
 /// DELETE /api/alarm/batch - 批量删除告警（body `{"ids":[...]}`）
@@ -321,28 +321,27 @@ pub struct AlarmBatchDelete {
 pub async fn alarm_batch_delete(
     State(state): State<AppState>,
     Json(body): Json<AlarmBatchDelete>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     delete_alarm_ids(&state.pool, &body.ids).await
 }
 
-/// DELETE /api/alarm/delete - 批量删除告警（WVP 契约：body 是**裸数组** `[1,2,3]`）
+/// DELETE /api/alarm/delete - 批量删除告警（契约：body 是**裸数组** `[1,2,3]`）
 ///
-/// WVP 的 `AlarmController.delete(@RequestBody List<Long> ids)` 收的就是裸数组，
-/// 其前端 `deleteAlarms(ids)` 也是 `data: ids`。只提供 `/batch` 会让按 WVP
-/// 契约写的调用方拿不到端点。
-pub async fn alarm_delete_batch_wvp(
+/// 本端点收的就是裸数组，前端 `deleteAlarms(ids)` 传的也是 `data: ids`。
+/// 只提供 `/batch` 会让按该契约写的调用方拿不到端点。
+pub async fn alarm_delete_batch(
     State(state): State<AppState>,
     Json(ids): Json<Vec<i64>>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     delete_alarm_ids(&state.pool, &ids).await
 }
 
 async fn delete_alarm_ids(
     pool: &crate::db::Pool,
     ids: &[i64],
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     if ids.is_empty() {
-        return Ok(Json(WVPResult::success(serde_json::json!({ "deleted": 0 }))));
+        return Ok(Json(ApiResult::success(serde_json::json!({ "deleted": 0 }))));
     }
 
     let mut deleted = 0u64;
@@ -363,12 +362,12 @@ async fn delete_alarm_ids(
         deleted += r.rows_affected();
     }
 
-    Ok(Json(WVPResult::success(serde_json::json!({ "deleted": deleted }))))
+    Ok(Json(ApiResult::success(serde_json::json!({ "deleted": deleted }))))
 }
 
-/// DELETE /api/alarm/clear - 按筛选条件清空告警（WVP `clearAlarmsByCondition`）
+/// DELETE /api/alarm/clear - 按筛选条件清空告警
 ///
-/// 关键差异：WVP 的这个接口**不接受单个 id**，只按 alarmType/beginTime/endTime
+/// 关键点：本接口**不接受单个 id**，只按 alarmType/beginTime/endTime
 /// 清空；而此前的实现是 `delete_all()` —— 忽略全部参数、**清空整张表**。
 /// 前端在单行点「清除」调的就是它，等于一次误删全库告警。
 ///
@@ -378,7 +377,7 @@ async fn delete_alarm_ids(
 pub async fn alarm_clear(
     State(state): State<AppState>,
     Query(q): Query<AlarmQuery>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let w = alarm_filter(&q);
     // delete_where 只接受文本绑定；本函数的筛选条件全部是文本（无 Int 条件）
     let binds: Vec<String> = w
@@ -400,14 +399,14 @@ pub async fn alarm_clear(
         .await
         .map_err(|e| AppError::business(ErrorCode::Error500, format!("清空失败: {e}")))?;
     tracing::info!("alarm_clear: 清空 {cleared} 条告警（条件: {where_sql}）");
-    Ok(Json(WVPResult::success(serde_json::json!({ "cleared": cleared }))))
+    Ok(Json(ApiResult::success(serde_json::json!({ "cleared": cleared }))))
 }
 
 /// DELETE /api/alarm/device/:device_id - 删除设备的所有告警
 pub async fn alarm_delete_by_device(
     State(state): State<AppState>,
     axum::extract::Path(device_id): axum::extract::Path<String>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     #[cfg(feature = "postgres")]
     let r = sqlx::query("DELETE FROM gb_device_alarm WHERE device_id = $1")
         .bind(&device_id)
@@ -422,14 +421,14 @@ pub async fn alarm_delete_by_device(
         .await
         .map_err(|e| AppError::business(ErrorCode::Error500, format!("数据库删除失败: {}", e)))?;
 
-    Ok(Json(WVPResult::success(serde_json::json!({ "deleted": r.rows_affected() }))))
+    Ok(Json(ApiResult::success(serde_json::json!({ "deleted": r.rows_affected() }))))
 }
 
 /// DELETE /api/alarm/before/:time - 删除指定时间之前的告警
 pub async fn alarm_delete_before_time(
     State(state): State<AppState>,
     axum::extract::Path(before_time): axum::extract::Path<String>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     #[cfg(feature = "postgres")]
     let r = sqlx::query("DELETE FROM gb_device_alarm WHERE create_time < $1")
         .bind(&before_time)
@@ -444,7 +443,7 @@ pub async fn alarm_delete_before_time(
         .await
         .map_err(|e| AppError::business(ErrorCode::Error500, format!("数据库删除失败: {}", e)))?;
 
-    Ok(Json(WVPResult::success(serde_json::json!({ "deleted": r.rows_affected() }))))
+    Ok(Json(ApiResult::success(serde_json::json!({ "deleted": r.rows_affected() }))))
 }
 
 #[cfg(all(test, feature = "sqlite"))]
@@ -597,16 +596,16 @@ mod alarm_contract_tests {
         assert_eq!(pending.0.data.unwrap()["total"], 0);
     }
 
-    /// WVP 的批量删除是 `DELETE /api/alarm/delete` + **裸数组** body。
+    /// 批量删除用 `DELETE /api/alarm/delete` + **裸数组** body。
     #[tokio::test]
-    async fn test_wvp_batch_delete_accepts_bare_array() {
+    async fn test_alarm_batch_delete_accepts_bare_array() {
         let state = app_state().await;
         seed(&state, "d1", "1", "2026-09-01 08:00:00", "1").await;
         seed(&state, "d2", "1", "2026-09-02 08:00:00", "1").await;
         seed(&state, "d3", "1", "2026-09-03 08:00:00", "1").await;
 
         let body: Vec<i64> = serde_json::from_value(serde_json::json!([1, 3])).unwrap();
-        let res = alarm_delete_batch_wvp(State(state.clone()), Json(body)).await.unwrap();
+        let res = alarm_delete_batch(State(state.clone()), Json(body)).await.unwrap();
         assert_eq!(res.0.data.unwrap()["deleted"], 2);
 
         let left = alarm_list(State(state.clone()), Query(q(serde_json::json!({"page":1,"count":10}))))

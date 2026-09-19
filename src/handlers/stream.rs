@@ -10,7 +10,7 @@ use std::path::PathBuf;
 
 use crate::db::{stream_push, stream_proxy, StreamPush, StreamProxy};
 use crate::error::{AppError, ErrorCode};
-use crate::response::WVPResult;
+use crate::response::ApiResult;
 use crate::zlm::OpenRtpServerRequest;
 
 use crate::AppState;
@@ -29,7 +29,7 @@ pub struct PushListQuery {
 pub async fn push_list(
     State(state): State<AppState>,
     Query(q): Query<PushListQuery>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let page = q.page.unwrap_or(1);
     let count = q.count.unwrap_or(10).min(100);
     let pushing = q.pushing.as_deref().and_then(|s| s.parse().ok());
@@ -45,7 +45,7 @@ pub async fn push_list(
         query,
     )
     .await?;
-    // 每行补一个**推流地址**：WVP 的表里没有 url 列，前端"源 URL"那一列
+    // 每行补一个**推流地址**：推流记录表里没有 url 列，前端"源 URL"那一列
     // 在我们这里应该展示"往哪里推"（rtmp://<媒体节点>:1935/<app>/<stream>）。
     let rows: Vec<serde_json::Value> = list
         .iter()
@@ -60,7 +60,7 @@ pub async fn push_list(
             v
         })
         .collect();
-    Ok(Json(WVPResult::success(serde_json::json!({
+    Ok(Json(ApiResult::success(serde_json::json!({
         "total": total,
         "list": rows,
         "page": page,
@@ -114,20 +114,20 @@ pub struct PushAddBody {
 pub async fn push_add(
     State(state): State<AppState>,
     Json(body): Json<PushAddBody>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let app = body.app.unwrap_or_else(|| "push".to_string());
     let stream = body.stream.unwrap_or_default();
     let media_server_id = body.media_server_id.unwrap_or_default();
     
     if stream.is_empty() {
-        return Ok(Json(WVPResult::error("Stream ID is required")));
+        return Ok(Json(ApiResult::error("Stream ID is required")));
     }
     
     let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
     
     match stream_push::add(&state.pool, &app, &stream, &media_server_id, &now).await {
         Ok(_) => {
-            Ok(Json(WVPResult::success(serde_json::json!({
+            Ok(Json(ApiResult::success(serde_json::json!({
                 "app": app,
                 "stream": stream,
                 "mediaServerId": media_server_id,
@@ -136,7 +136,7 @@ pub async fn push_add(
         }
         Err(e) => {
             tracing::error!("Failed to add push stream: {}", e);
-            Ok(Json(WVPResult::error(format!("Database error: {}", e))))
+            Ok(Json(ApiResult::error(format!("Database error: {}", e))))
         }
     }
 }
@@ -155,10 +155,10 @@ pub struct PushUpdateBody {
 pub async fn push_update(
     State(state): State<AppState>,
     Json(body): Json<PushUpdateBody>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let id = body.id.unwrap_or(0);
     if id <= 0 {
-        return Ok(Json(WVPResult::error("Push stream ID is required")));
+        return Ok(Json(ApiResult::error("Push stream ID is required")));
     }
     
     let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
@@ -172,14 +172,14 @@ pub async fn push_update(
         &now,
     ).await {
         Ok(_) => {
-            Ok(Json(WVPResult::success(serde_json::json!({
+            Ok(Json(ApiResult::success(serde_json::json!({
                 "id": id,
                 "message": "Push stream updated successfully"
             }))))
         }
         Err(e) => {
             tracing::error!("Failed to update push stream: {}", e);
-            Ok(Json(WVPResult::error(format!("Database error: {}", e))))
+            Ok(Json(ApiResult::error(format!("Database error: {}", e))))
         }
     }
 }
@@ -194,10 +194,10 @@ pub struct PushRemoveBody {
 pub async fn push_remove(
     State(state): State<AppState>,
     Query(body): Query<PushRemoveBody>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let id = body.id.unwrap_or(0);
     if id <= 0 {
-        return Ok(Json(WVPResult::error("Push stream ID is required")));
+        return Ok(Json(ApiResult::error("Push stream ID is required")));
     }
     
     // Get the push stream info first to close ZLM connection
@@ -216,14 +216,14 @@ pub async fn push_remove(
     
     match stream_push::delete_by_id(&state.pool, id as i64).await {
         Ok(_) => {
-            Ok(Json(WVPResult::success(serde_json::json!({
+            Ok(Json(ApiResult::success(serde_json::json!({
                 "id": id,
                 "message": "Push stream removed successfully"
             }))))
         }
         Err(e) => {
             tracing::error!("Failed to remove push stream: {}", e);
-            Ok(Json(WVPResult::error(format!("Database error: {}", e))))
+            Ok(Json(ApiResult::error(format!("Database error: {}", e))))
         }
     }
 }
@@ -243,7 +243,7 @@ pub struct PushStartBody {
 pub async fn push_start(
     State(state): State<AppState>,
     Query(body): Query<PushStartBody>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let id = body.id.unwrap_or(0);
     let stream_id = body.stream.clone().unwrap_or_default();
     
@@ -258,7 +258,7 @@ pub async fn push_start(
             Ok(None) => (None, None),
             Err(e) => {
                 tracing::error!("Failed to get push info: {}", e);
-                return Ok(Json(WVPResult::error("Database error")));
+                return Ok(Json(ApiResult::error("Database error")));
             }
         }
     } else {
@@ -269,7 +269,7 @@ pub async fn push_start(
     let ms_id = media_server_id.unwrap_or_default();
     
     if stream.is_empty() {
-        return Ok(Json(WVPResult::error("Stream ID is required")));
+        return Ok(Json(ApiResult::error("Stream ID is required")));
     }
     
     // Get ZLM client
@@ -282,7 +282,7 @@ pub async fn push_start(
     let zlm = match zlm_client {
         Some(c) => c,
         None => {
-            return Ok(Json(WVPResult::error("ZLM client not available")));
+            return Ok(Json(ApiResult::error("ZLM client not available")));
         }
     };
     
@@ -316,7 +316,7 @@ pub async fn push_start(
                     })?;
             }
             
-            Ok(Json(WVPResult::success(serde_json::json!({
+            Ok(Json(ApiResult::success(serde_json::json!({
                 "stream": stream,
                 "port": rtp_info.port,
                 "ssrc": rtp_info.ssrc,
@@ -328,7 +328,7 @@ pub async fn push_start(
         }
         Err(e) => {
             tracing::error!("Failed to open RTP server: {}", e);
-            Ok(Json(WVPResult::error(format!("ZLM error: {}", e))))
+            Ok(Json(ApiResult::error(format!("ZLM error: {}", e))))
         }
     }
 }
@@ -345,7 +345,7 @@ pub struct PushBatchRemoveBody {
 pub async fn push_batch_remove(
     State(state): State<AppState>,
     Json(body): Json<PushBatchRemoveBody>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let ids = body.ids.unwrap_or_default();
     let mut removed = 0;
     let mut errors = Vec::new();
@@ -375,7 +375,7 @@ pub async fn push_batch_remove(
         }
     }
     
-    Ok(Json(WVPResult::success(serde_json::json!({
+    Ok(Json(ApiResult::success(serde_json::json!({
         "removed": removed,
         "errors": errors,
         "message": if errors.is_empty() { "Batch remove successful" } else { "Batch remove completed with errors" }
@@ -388,13 +388,13 @@ pub async fn push_batch_remove(
 pub async fn push_save_to_gb(
     State(state): State<AppState>,
     Json(body): Json<serde_json::Value>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let id = body.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
     let device_id = body.get("deviceId").and_then(|v| v.as_str()).unwrap_or("");
     let channel_id = body.get("channelId").and_then(|v| v.as_str()).unwrap_or("");
     
     if id <= 0 || device_id.is_empty() {
-        return Ok(Json(WVPResult::error("缺少必要参数".to_string())));
+        return Ok(Json(ApiResult::error("缺少必要参数".to_string())));
     }
     
     // 此前更新的是**不存在的列**（`gb_stream_push.device_id/channel_id`）→
@@ -408,7 +408,7 @@ pub async fn push_save_to_gb(
         return Err(AppError::business(ErrorCode::Error404, format!("推流不存在: {id}")));
     }
 
-    Ok(Json(WVPResult::success(serde_json::json!({
+    Ok(Json(ApiResult::success(serde_json::json!({
         "saved": 1,
         "message": "推流已保存到国标"
     }))))
@@ -420,11 +420,11 @@ pub async fn push_save_to_gb(
 pub async fn push_remove_form_gb(
     State(state): State<AppState>,
     Json(body): Json<serde_json::Value>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let id = body.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
     
     if id <= 0 {
-        return Ok(Json(WVPResult::error("缺少必要参数".to_string())));
+        return Ok(Json(ApiResult::error("缺少必要参数".to_string())));
     }
     
     // 同 save_to_gb：原来更新的是不存在的列 → 稳定 500。现在清空真实列。
@@ -436,7 +436,7 @@ pub async fn push_remove_form_gb(
         return Err(AppError::business(ErrorCode::Error404, format!("推流不存在: {id}")));
     }
 
-    Ok(Json(WVPResult::success(serde_json::json!({
+    Ok(Json(ApiResult::success(serde_json::json!({
         "removed": 1,
         "message": "推流已从国标移除"
     }))))
@@ -452,7 +452,7 @@ pub struct ProxyListQuery {
     pub mediaServerId: Option<String>,
 }
 
-/// `pulling` 查询参数是字符串（WVP 前端发 "true"/"false"，也有传 "1"/"0" 的）。
+/// `pulling` 查询参数是字符串（前端发 "true"/"false"，也有传 "1"/"0" 的）。
 /// 空串表示"全部"，不是 `false` —— 用 `parse::<bool>()` 的话 "1" 会被静默当成不过滤。
 fn parse_opt_bool(s: &str) -> Option<bool> {
     match s.trim().to_ascii_lowercase().as_str() {
@@ -466,7 +466,7 @@ fn parse_opt_bool(s: &str) -> Option<bool> {
 pub async fn proxy_list(
     State(state): State<AppState>,
     Query(q): Query<ProxyListQuery>,
-) -> Result<Json<WVPResult<ProxyListPage>>, AppError> {
+) -> Result<Json<ApiResult<ProxyListPage>>, AppError> {
     let page = q.page.unwrap_or(1);
     let count = q.count.unwrap_or(10).min(100);
     let pulling = q.pulling.as_deref().and_then(parse_opt_bool);
@@ -488,7 +488,7 @@ pub async fn proxy_list(
     } else {
         (total as u64 + count as u64 - 1) / count as u64
     };
-    Ok(Json(WVPResult::success(ProxyListPage {
+    Ok(Json(ApiResult::success(ProxyListPage {
         total: total as u64,
         list,
         page: page as u64,
@@ -506,7 +506,8 @@ pub struct ProxyListPage {
     pub list: Vec<StreamProxy>,
     pub page: u64,
     pub size: u64,
-    /// PageHelper 的 `PageInfo` 兼容字段（WVP 返回的就是 PageInfo）
+    /// 分页元数据别名：除本平台惯用的 `page`/`size` 外，再给一组
+    /// `pageNum`/`pageSize`/`pages`（部分第三方对接按这组键名读取）
     pub page_num: u64,
     pub page_size: u64,
     pub pages: u64,
@@ -520,7 +521,7 @@ pub struct ProxyListPage {
 pub async fn proxy_ffmpeg_cmd_list(
     State(state): State<AppState>,
     Query(q): Query<ProxyListQuery>,
-) -> Result<Json<WVPResult<HashMap<String, String>>>, AppError> {
+) -> Result<Json<ApiResult<HashMap<String, String>>>, AppError> {
     let media_server_id = q.mediaServerId.unwrap_or_else(|| "auto".to_string());
     let zlm = state.get_zlm_client(Some(&media_server_id)).ok_or_else(|| {
         AppError::business(
@@ -538,12 +539,12 @@ pub async fn proxy_ffmpeg_cmd_list(
         .into_iter()
         .filter(|(k, _)| k.starts_with("ffmpeg.cmd"))
         .collect();
-    Ok(Json(WVPResult::success(cmds)))
+    Ok(Json(ApiResult::success(cmds)))
 }
 
 /// 拉流代理的新增/更新请求体。
 ///
-/// 字段名与 WVP 的 `StreamProxy` bean 一致（camelCase）；额外兼容本平台旧版
+/// 字段名是 camelCase；额外兼容本平台旧版
 /// 前端用的 `url` / `enabled` 别名。此前 DTO 只认 `src_url`/`srcUrl`，
 /// 前端提交的 `url` 被 serde 静默忽略 → 新增必失败、编辑保存静默不生效。
 #[derive(Debug, Deserialize)]
@@ -568,7 +569,7 @@ pub struct ProxyBody {
     pub enable_audio: Option<bool>,
     pub enable_mp4: Option<bool>,
     pub enable_disable_none_reader: Option<bool>,
-    /// WVP 旧前端用 0/1/2 的 `noneReader` 单选表达无人观看策略（1 = 自动停流）
+    /// 旧前端用 0/1/2 的 `noneReader` 单选表达无人观看策略（1 = 自动停流）
     pub none_reader: Option<i32>,
 }
 
@@ -584,7 +585,7 @@ impl ProxyBody {
             app: opt_trim(&self.app),
             stream: opt_trim(&self.stream),
             src_url: opt_trim(&self.src_url),
-            // WVP 里用户选的是 relatesMediaServerId；mediaServerId 是运行期解析结果
+            // 前端选的是 relatesMediaServerId；mediaServerId 是运行期解析结果
             media_server_id: opt_trim(&self.media_server_id)
                 .or_else(|| opt_trim(&self.relates_media_server_id)),
             name: opt_trim(&self.name),
@@ -629,7 +630,7 @@ async fn proxy_row_json(
     state: &AppState,
     app: &str,
     stream: &str,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let rec = stream_proxy::get_by_app_stream(&state.pool, app, stream)
         .await?
         .ok_or_else(|| {
@@ -640,23 +641,23 @@ async fn proxy_row_json(
         })?;
     let value = serde_json::to_value(&rec)
         .map_err(|e| AppError::business(ErrorCode::Error500, format!("序列化代理失败: {e}")))?;
-    Ok(Json(WVPResult::success(value)))
+    Ok(Json(ApiResult::success(value)))
 }
 
-/// POST /api/proxy/add —— 新增（APP+STREAM 已存在时报错，与 WVP 一致）
+/// POST /api/proxy/add —— 新增（APP+STREAM 已存在时报错）
 pub async fn proxy_add(
     State(state): State<AppState>,
     Json(body): Json<ProxyBody>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let (app, stream, name) = match normalize_proxy_body(&body) {
         Ok(v) => v,
-        Err(e) => return Ok(Json(WVPResult::error(e))),
+        Err(e) => return Ok(Json(ApiResult::error(e))),
     };
     if stream_proxy::get_by_app_stream(&state.pool, &app, &stream)
         .await?
         .is_some()
     {
-        return Ok(Json(WVPResult::error(format!(
+        return Ok(Json(ApiResult::error(format!(
             "APP+STREAM 已存在: {app}/{stream}"
         ))));
     }
@@ -675,10 +676,10 @@ pub async fn proxy_add(
 pub async fn proxy_save(
     State(state): State<AppState>,
     Json(body): Json<ProxyBody>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let (app, stream, name) = match normalize_proxy_body(&body) {
         Ok(v) => v,
-        Err(e) => return Ok(Json(WVPResult::error(e))),
+        Err(e) => return Ok(Json(ApiResult::error(e))),
     };
     let mut w = body.to_write();
     w.app = Some(app.as_str());
@@ -704,20 +705,20 @@ pub async fn proxy_save(
 pub async fn proxy_update(
     State(state): State<AppState>,
     Json(body): Json<ProxyBody>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let id = body.id.unwrap_or(0);
     if id <= 0 {
-        return Ok(Json(WVPResult::error("缺少代理 ID".to_string())));
+        return Ok(Json(ApiResult::error("缺少代理 ID".to_string())));
     }
     // 部分更新：只有真正提供的字段才写库，其余 COALESCE 保留旧值。
     if let Some(s) = &body.stream {
         if s.trim().is_empty() {
-            return Ok(Json(WVPResult::error("流 ID(stream) 不能为空".to_string())));
+            return Ok(Json(ApiResult::error("流 ID(stream) 不能为空".to_string())));
         }
     }
     if let Some(u) = &body.src_url {
         if u.trim().is_empty() {
-            return Ok(Json(WVPResult::error(
+            return Ok(Json(ApiResult::error(
                 "源 URL(srcUrl) 不能为空".to_string(),
             )));
         }
@@ -738,7 +739,7 @@ pub async fn proxy_update(
     proxy_row_json(&state, &app, &stream).await
 }
 
-/// 启动 / 停止 / 删除共用的定位参数（WVP 的 start/stop 只认 id，del 认 app+stream）。
+/// 启动 / 停止 / 删除共用的定位参数（start/stop 只认 id，del 认 app+stream）。
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProxyActionQuery {
@@ -781,13 +782,13 @@ async fn resolve_proxy(
 pub async fn proxy_start(
     State(state): State<AppState>,
     Query(q): Query<ProxyActionQuery>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let rec = resolve_proxy(&state, &q).await?;
     let app = rec.app.clone().unwrap_or_else(|| "proxy".to_string());
     let stream = rec.stream.clone().unwrap_or_default();
     let src_url = rec.src_url.clone().unwrap_or_default();
     if stream.is_empty() || src_url.is_empty() {
-        return Ok(Json(WVPResult::error(
+        return Ok(Json(ApiResult::error(
             "代理记录缺少 stream 或 srcUrl，无法启动".to_string(),
         )));
     }
@@ -797,7 +798,7 @@ pub async fn proxy_start(
         .filter(|s| !s.is_empty() && s != "auto")
         .or_else(|| rec.relates_media_server_id.clone())
         .or_else(|| q.media_server_id.clone());
-    // `mediaServerId = auto`（前端/WVP 新建代理的默认值）必须走**负载均衡**，
+    // `mediaServerId = auto`（前端新建代理的默认值）必须走**负载均衡**，
     // 而不是回落到 `state.zlm_client`（那恒定是第一个配置的节点）。
     // 此前用 `get_zlm_client`：它遇到 "auto"/None 时直接返回默认节点，
     // 于是 `select_least_loaded` 从未被代理启动路径用过 —— 多节点下所有
@@ -847,7 +848,7 @@ pub async fn proxy_start(
             let http_port = zlm.http_port;
             let hls_available = zlm.has_schema(&app, &stream, "hls").await;
             tracing::info!("拉流代理 {app}/{stream} 在节点上已存在，直接复用");
-            return Ok(Json(WVPResult::success(serde_json::json!({
+            return Ok(Json(ApiResult::success(serde_json::json!({
                 "id": rec.id,
                 "app": app,
                 "stream": stream,
@@ -940,7 +941,7 @@ pub async fn proxy_start(
     // 代理流的 `enable_hls` 由创建时的参数决定（默认 false）→ 没有 hls 源时
     // 不要给出 404 地址（前端优先用 hls）
     let hls_available = zlm.has_schema(&app, &stream, "hls").await;
-    Ok(Json(WVPResult::success(serde_json::json!({
+    Ok(Json(ApiResult::success(serde_json::json!({
         "id": rec.id,
         "app": app,
         "stream": stream,
@@ -967,12 +968,12 @@ pub async fn proxy_start(
 pub async fn proxy_stop(
     State(state): State<AppState>,
     Query(q): Query<ProxyActionQuery>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let rec = resolve_proxy(&state, &q).await?;
     let app = rec.app.clone().unwrap_or_else(|| "proxy".to_string());
     let stream = rec.stream.clone().unwrap_or_default();
     if stream.is_empty() {
-        return Ok(Json(WVPResult::error("代理记录缺少 stream，无法停止".to_string())));
+        return Ok(Json(ApiResult::error("代理记录缺少 stream，无法停止".to_string())));
     }
     let ms_hint = rec
         .media_server_id
@@ -1001,7 +1002,7 @@ pub async fn proxy_stop(
         .await
         .map_err(|e| AppError::business(ErrorCode::Error500, format!("更新代理状态失败: {e}")))?;
     tracing::info!("拉流代理已停止: {app}/{stream}");
-    Ok(Json(WVPResult::success(serde_json::json!({
+    Ok(Json(ApiResult::success(serde_json::json!({
         "id": rec.id,
         "app": app,
         "stream": stream,
@@ -1015,7 +1016,7 @@ pub async fn proxy_stop(
 pub async fn proxy_delete(
     State(state): State<AppState>,
     Query(q): Query<ProxyActionQuery>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let rec = resolve_proxy(&state, &q).await?;
     // 先停流再删行：反过来的话正在拉的流会变成 ZLM 上的野流，永远无人回收。
     if rec.pulling.unwrap_or(false) {
@@ -1039,7 +1040,7 @@ pub async fn proxy_delete(
             format!("代理不存在: {}", rec.id),
         ));
     }
-    Ok(Json(WVPResult::success(serde_json::json!({
+    Ok(Json(ApiResult::success(serde_json::json!({
         "id": rec.id,
         "deleted": affected,
         "message": "拉流代理已删除"
@@ -1050,7 +1051,7 @@ pub async fn proxy_delete(
 pub async fn push_upload(
     State(state): State<AppState>,
     mut multipart: Multipart,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let upload_dir = PathBuf::from("uploads");
     if !upload_dir.exists() {
         let _ = std::fs::create_dir_all(&upload_dir);
@@ -1106,7 +1107,7 @@ pub async fn push_upload(
     }
     
     if stream.is_empty() {
-        return Ok(Json(WVPResult::error("未提供文件或流名称")));
+        return Ok(Json(ApiResult::error("未提供文件或流名称")));
     }
     
     let media_server_id = "auto".to_string();
@@ -1114,7 +1115,7 @@ pub async fn push_upload(
     
     match stream_push::add(&state.pool, &app, &stream, &media_server_id, &now).await {
         Ok(_) => {
-            Ok(Json(WVPResult::success(serde_json::json!({
+            Ok(Json(ApiResult::success(serde_json::json!({
                 "app": app,
                 "stream": stream,
                 "url": saved_path,
@@ -1124,7 +1125,7 @@ pub async fn push_upload(
         }
         Err(e) => {
             tracing::error!("Failed to add push stream record: {}", e);
-            Ok(Json(WVPResult::error(format!("数据库错误: {}", e))))
+            Ok(Json(ApiResult::error(format!("数据库错误: {}", e))))
         }
     }
 }
@@ -1132,22 +1133,22 @@ pub async fn push_upload(
 /// GET /api/proxy/one —— 按 id 或 app+stream 返回真实的代理行
 ///
 /// 此前不查库、凭空拼 `name = "proxy-{id}"`、`url = rtsp://<ip>:554/live/proxy{id}`，
-/// 与真实记录毫无关系；WVP 的签名是 `?app=&stream=`，本平台前端用 `?id=`，两者都支持。
+/// 与真实记录毫无关系；`?app=&stream=` 与 `?id=` 两种签名都支持（本平台前端用后者）。
 pub async fn proxy_one(
     State(state): State<AppState>,
     Query(q): Query<ProxyActionQuery>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let rec = resolve_proxy(&state, &q).await?;
     let value = serde_json::to_value(&rec)
         .map_err(|e| AppError::business(ErrorCode::Error500, format!("序列化代理失败: {e}")))?;
-    Ok(Json(WVPResult::success(value)))
+    Ok(Json(ApiResult::success(value)))
 }
 
 /// GET /api/push/forceClose?id=...
 pub async fn push_force_close(
     State(state): State<AppState>,
     axum::extract::Query(q): axum::extract::Query<PushForceCloseQuery>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let Some(ref zlm) = state.zlm_client else {
         return Err(AppError::business(
             ErrorCode::Error100,
@@ -1173,7 +1174,7 @@ pub async fn push_force_close(
         tracing::warn!("关闭推流后更新 pushing 状态失败 id={}: {}", q.id, e);
     }
 
-    Ok(Json(WVPResult::success(serde_json::json!({
+    Ok(Json(ApiResult::success(serde_json::json!({
         "id": q.id,
         "stream": stream,
         "closed": true,
@@ -1194,7 +1195,7 @@ pub struct PushStopQuery {
 pub async fn push_stop(
     State(state): State<AppState>,
     Query(q): Query<PushStopQuery>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let id = q.id.unwrap_or(0);
 
     // 解析要关闭的 stream：优先用请求里的，其次查库
@@ -1249,7 +1250,7 @@ pub async fn push_stop(
             })?;
     }
 
-    Ok(Json(WVPResult::success(serde_json::json!({
+    Ok(Json(ApiResult::success(serde_json::json!({
         "id": id,
         "stream": stream,
         "stopped": true,
@@ -1312,9 +1313,9 @@ mod proxy_tests {
         assert_eq!(rec.media_server_id.as_deref(), Some("zlmediakit-2"));
     }
 
-    /// 旧版前端字段名（`url` / `enabled`）与 WVP 字段名（`srcUrl` / `enable`）都必须能解析。
+    /// 旧版前端字段名（`url` / `enabled`）与现行字段名（`srcUrl` / `enable`）都必须能解析。
     #[test]
-    fn proxy_body_accepts_legacy_and_wvp_field_names() {
+    fn proxy_body_accepts_legacy_and_current_field_names() {
         let legacy = body(serde_json::json!({
             "name": "p1", "type": "rtsp", "app": "live", "stream": "s1",
             "url": "rtsp://cam/1", "enabled": true, "destUrl": "rtmp://x"
@@ -1322,23 +1323,23 @@ mod proxy_tests {
         assert_eq!(legacy.src_url.as_deref(), Some("rtsp://cam/1"));
         assert_eq!(legacy.enable, Some(true));
 
-        let wvp = body(serde_json::json!({
+        let current = body(serde_json::json!({
             "name": "p1", "type": "ffmpeg", "app": "live", "stream": "s1",
             "srcUrl": "rtsp://cam/1", "enable": true, "enableAudio": true,
             "enableMp4": true, "rtspType": "0", "timeout": 15,
             "ffmpegCmdKey": "ffmpeg.cmd", "relatesMediaServerId": "ms-1",
             "noneReader": 1
         }));
-        assert_eq!(wvp.src_url.as_deref(), Some("rtsp://cam/1"));
-        assert_eq!(wvp.r#type.as_deref(), Some("ffmpeg"));
-        assert_eq!(wvp.enable_audio, Some(true));
-        assert_eq!(wvp.enable_mp4, Some(true));
-        assert_eq!(wvp.timeout, Some(15));
-        assert_eq!(wvp.ffmpeg_cmd_key.as_deref(), Some("ffmpeg.cmd"));
-        assert_eq!(wvp.relates_media_server_id.as_deref(), Some("ms-1"));
+        assert_eq!(current.src_url.as_deref(), Some("rtsp://cam/1"));
+        assert_eq!(current.r#type.as_deref(), Some("ffmpeg"));
+        assert_eq!(current.enable_audio, Some(true));
+        assert_eq!(current.enable_mp4, Some(true));
+        assert_eq!(current.timeout, Some(15));
+        assert_eq!(current.ffmpeg_cmd_key.as_deref(), Some("ffmpeg.cmd"));
+        assert_eq!(current.relates_media_server_id.as_deref(), Some("ms-1"));
         // `noneReader`（0/1/2 单选）在 to_write 里折算成 enableDisableNoneReader
-        assert_eq!(wvp.none_reader, Some(1));
-        assert_eq!(wvp.to_write().enable_disable_none_reader, Some(true));
+        assert_eq!(current.none_reader, Some(1));
+        assert_eq!(current.to_write().enable_disable_none_reader, Some(true));
     }
 
     #[test]

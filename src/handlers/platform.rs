@@ -11,7 +11,7 @@ use crate::db::platform as platform_db;
 use crate::db::platform_channel;
 use crate::db::{Platform, device as db_device};
 use crate::error::{AppError, ErrorCode};
-use crate::response::WVPResult;
+use crate::response::ApiResult;
 
 /// Deserialize a port field that may be either a JSON number (Vue's default)
 /// or a JSON string (some legacy frontend forms). Returns the value as a String.
@@ -196,7 +196,7 @@ pub struct PlatformQuery {
 pub async fn platform_query(
     State(state): State<AppState>,
     Query(q): Query<PlatformQuery>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let page = q.page.unwrap_or(1);
     let count = q.count.unwrap_or(10).min(100);
     let search = q.query.as_deref().unwrap_or("").trim().to_string();
@@ -310,7 +310,7 @@ pub async fn platform_query(
             .unwrap_or(0);
         list.push(platform_row_json(&item, channel_count));
     }
-    Ok(Json(WVPResult::success(serde_json::json!({
+    Ok(Json(ApiResult::success(serde_json::json!({
         "total": total as u64,
         "list": list,
         "page": page as u64,
@@ -319,7 +319,7 @@ pub async fn platform_query(
 }
 
 /// GET /api/platform/server_config
-pub async fn platform_server_config(State(state): State<AppState>) -> Json<WVPResult<serde_json::Value>> {
+pub async fn platform_server_config(State(state): State<AppState>) -> Json<ApiResult<serde_json::Value>> {
     let sip = state.config.sip.as_ref();
     let device_ip = sip
         .map(|cfg| cfg.ip.clone())
@@ -333,7 +333,7 @@ pub async fn platform_server_config(State(state): State<AppState>) -> Json<WVPRe
     let realm = sip
         .map(|cfg| cfg.realm.clone())
         .unwrap_or_else(|| "3402000000".to_string());
-    Json(WVPResult::success(serde_json::json!({
+    Json(ApiResult::success(serde_json::json!({
         "id": null,
         "name": "本地平台",
         "serverGBId": local_gb_id,
@@ -374,13 +374,13 @@ pub struct PlatformChannelQuery {
 pub async fn platform_channel_list(
     State(state): State<AppState>,
     Query(q): Query<PlatformChannelQuery>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let page = q.page.unwrap_or(1);
     let count = q.count.unwrap_or(10).min(100);
     let platform_id = q.platform_id.unwrap_or(0);
     
     if platform_id <= 0 {
-        return Ok(Json(WVPResult::success(serde_json::json!({
+        return Ok(Json(ApiResult::success(serde_json::json!({
             "total": 0,
             "list": []
         }))));
@@ -578,7 +578,7 @@ pub async fn platform_channel_list(
         })
     }).collect();
     
-    Ok(Json(WVPResult::success(serde_json::json!({
+    Ok(Json(ApiResult::success(serde_json::json!({
         "total": total,
         "list": rows
     }))))
@@ -600,10 +600,10 @@ pub struct PlatformChannelPushQuery {
 pub async fn platform_channel_push(
     State(state): State<AppState>,
     Query(q): Query<PlatformChannelPushQuery>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let platform_id = q.platform_id.unwrap_or(0);
     if platform_id <= 0 {
-        return Ok(Json(WVPResult::success(serde_json::json!({
+        return Ok(Json(ApiResult::success(serde_json::json!({
             "message": "平台ID无效",
             "code": 1
         }))));
@@ -612,21 +612,21 @@ pub async fn platform_channel_push(
     let platform = match platform_db::get_by_id(&state.pool, platform_id as i64).await {
         Ok(Some(p)) => p,
         Ok(None) => {
-            return Ok(Json(WVPResult::success(serde_json::json!({
+            return Ok(Json(ApiResult::success(serde_json::json!({
                 "message": "平台不存在",
                 "code": 1
             }))));
         }
         Err(e) => {
             tracing::error!("Failed to get platform: {}", e);
-            return Ok(Json(WVPResult::error("Database error")));
+            return Ok(Json(ApiResult::error("Database error")));
         }
     };
     
     let server_gb_id = match platform.server_gb_id.clone() {
         Some(id) => id,
         None => {
-            return Ok(Json(WVPResult::success(serde_json::json!({
+            return Ok(Json(ApiResult::success(serde_json::json!({
                 "message": "平台国标ID未设置",
                 "code": 1
             }))));
@@ -640,7 +640,7 @@ pub async fn platform_channel_push(
     let sip_server = match &state.sip_server {
         Some(s) => s.clone(),
         None => {
-            return Ok(Json(WVPResult::success(serde_json::json!({
+            return Ok(Json(ApiResult::success(serde_json::json!({
                 "message": "SIP服务器未启动",
                 "code": 1
             }))));
@@ -732,7 +732,7 @@ pub async fn platform_channel_push(
     
     refresh_platform_catalog(&state, platform_id).await?;
 
-    Ok(Json(WVPResult::success(serde_json::json!({
+    Ok(Json(ApiResult::success(serde_json::json!({
         "platformId": platform_id,
         "pushedCount": pushed_count,
         "errors": errors,
@@ -745,9 +745,10 @@ pub async fn platform_channel_push(
 
 /// 数字列（`expires` / `keep_timeout`）在体里可能是 `3600` 也可能是 `"3600"`。
 ///
-/// WVP 的 Java 端是 `int`，Vue3 的 `el-input-number` 输出 number，而本仓库这两列
-/// 是 varchar —— 只认字符串会在反序列化阶段 422（请求根本进不到 handler），
-/// 只认数字又会让老客户端挂。这里两者都收，统一存成字符串。
+/// 成因有两层：Vue3 前端 `el-input-number` 输出的是 **number**，而这两列在库里是
+/// **varchar**；此前还有客户端/脚本按字符串下发。只认字符串会在反序列化阶段直接
+/// 422（请求根本进不到 handler），只认数字又会让按字符串下发的调用方挂掉。
+/// 这里两者都收，统一存成字符串。
 fn deserialize_opt_int_string<'de, D>(d: D) -> Result<Option<String>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -756,7 +757,7 @@ where
     crate::serde_flex::de_opt_string(d)
 }
 
-/// 回给前端的数值：能解析成整数就给整数（与 WVP 的 `int expires` 一致），
+/// 回给前端的数值：能解析成整数就给整数，
 /// 否则原样回字符串。
 fn int_or_string(v: &Option<String>) -> serde_json::Value {
     match v.as_deref().map(str::trim) {
@@ -786,7 +787,7 @@ fn platform_row_json(item: &Platform, channel_count: i64) -> serde_json::Value {
         "username": item.username,
         "password": item.password,
         "expires": int_or_string(&item.expires),
-        // 只回 WVP 的 `keepTimeout`，**不要**再回一个 `heartBeatInterval` 同义键：
+        // 只回 `keepTimeout`，**不要**再回一个 `heartBeatInterval` 同义键：
         // 前端会把整行原样提交回 /platform/update，而 DTO 两个键都收
         // → serde 报 "duplicate field"，更新稳定 422。
         "keepTimeout": int_or_string(&item.keep_timeout),
@@ -826,7 +827,7 @@ fn platform_row_json(item: &Platform, channel_count: i64) -> serde_json::Value {
 pub struct PlatformAddBody {
     pub id: Option<i64>,
     pub name: Option<String>,
-    // 前端（与 WVP 的 `Platform.java`）用的是 `serverGBId`；`serverGbId` 是
+    // 前端用的是 `serverGBId`；`serverGbId` 是
     // 本仓库 Vue3 前端历史上的错误拼写，仍然收下，避免旧客户端静默写空串。
     #[serde(alias = "serverGBId", alias = "serverGbId")]
     pub server_gb_id: Option<String>,
@@ -877,7 +878,7 @@ pub struct PlatformAddBody {
     pub enable: Option<bool>,
     #[serde(default, deserialize_with = "deserialize_opt_int_string")]
     pub expires: Option<String>,
-    // 心跳周期：WVP 叫 `keepTimeout`，旧前端叫 `heartBeatInterval`，两者都收
+    // 心跳周期：规范键名是 `keepTimeout`，旧前端叫 `heartBeatInterval`，两者都收
     #[serde(
         default,
         alias = "keepTimeout",
@@ -891,7 +892,7 @@ pub struct PlatformAddBody {
 pub async fn platform_add(
     State(state): State<AppState>,
     Json(body): Json<PlatformAddBody>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     // 必填校验：此前 `server_gb_id` 绑不上（键名 serverGbId 被忽略）时会写空串，
     // 接口照样回「平台添加成功」，但库里 `server_gb_id` 为空 ⇒ 级联注册、
     // `get_by_server_gb_id` 全部以空串为键，平台**实际不可用**。
@@ -1100,7 +1101,7 @@ pub async fn platform_add(
         }
     }
 
-    Ok(Json(WVPResult::success(serde_json::json!({
+    Ok(Json(ApiResult::success(serde_json::json!({
         // 回传新建平台的标识：前端拿到后可直接定位/刷新该行，
         // 也便于脚本化验证（此前只回 name）。
         "id": created_id,
@@ -1115,10 +1116,10 @@ pub async fn platform_add(
 pub async fn platform_update(
     State(state): State<AppState>,
     Json(body): Json<PlatformAddBody>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let id = body.id.unwrap_or(0);
     if id <= 0 {
-        return Ok(Json(WVPResult::success(serde_json::json!({
+        return Ok(Json(ApiResult::success(serde_json::json!({
             "message": "平台ID无效",
             "code": 1
         }))));
@@ -1313,7 +1314,7 @@ pub async fn platform_update(
         }
     }
     
-    Ok(Json(WVPResult::success(serde_json::json!({
+    Ok(Json(ApiResult::success(serde_json::json!({
         "message": "平台更新成功",
         "code": 0
     }))))
@@ -1335,7 +1336,7 @@ pub struct PlatformDeleteQuery {
 pub async fn platform_delete(
     State(state): State<AppState>,
     Query(q): Query<PlatformDeleteQuery>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     // 先按主键、再按国标 ID 定位；两者都定位不到就直接报错，
     // 绝不返回"删除成功"。
     let mut platform = None;
@@ -1381,7 +1382,7 @@ pub async fn platform_delete(
             AppError::business(ErrorCode::Error500, format!("删除平台通道关联失败: {}", e))
         })?;
     platform_db::delete_by_id(&state.pool, id).await?;
-    Ok(Json(WVPResult::success(serde_json::json!({
+    Ok(Json(ApiResult::success(serde_json::json!({
         "id": id,
         "message": "平台删除成功",
         "code": 0
@@ -1394,14 +1395,14 @@ pub async fn platform_delete(
 /// 而前端按钮写的是「注销」并始终弹「注销请求已发送」，参数传的又是 `serverGBId`，
 /// 两列对不上 ⇒ 恒为 false、功能完全对不上号。
 ///
-/// WVP 的同名接口确实只做"国标ID是否已存在"的校验（前端用它防重复），但本平台的
+/// 早期实现的同名接口确实只做"国标ID是否已存在"的校验（前端用它防重复），但本平台的
 /// 按钮语义就是真注销，因此这里做实事：发注销报文 + 把 `enable`/`status` 落成 false
 /// —— 只发报文不改 `enable` 的话，下一个注册周期会立刻把它注册回去，
 /// 用户看到"注销成功"却仍然在线。
 pub async fn platform_exit(
     State(state): State<AppState>,
     Path(server_gb_id): Path<String>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let server_gb_id = server_gb_id.trim().to_string();
     let platform = platform_db::get_by_server_gb_id(&state.pool, &server_gb_id)
         .await?
@@ -1438,7 +1439,7 @@ pub async fn platform_exit(
     .await
     .map_err(|e| AppError::business(ErrorCode::Error500, format!("更新平台状态失败: {e}")))?;
 
-    Ok(Json(WVPResult::success(serde_json::json!({
+    Ok(Json(ApiResult::success(serde_json::json!({
         "id": platform.id,
         "serverGBId": server_gb_id,
         "exited": true,
@@ -1462,10 +1463,10 @@ pub struct PlatformChannelAddBody {
 pub async fn platform_channel_add(
     State(state): State<AppState>,
     Json(body): Json<PlatformChannelAddBody>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let platform_id = body.platform_id.unwrap_or(0);
     if platform_id <= 0 {
-        return Ok(Json(WVPResult::success(serde_json::json!({
+        return Ok(Json(ApiResult::success(serde_json::json!({
             "message": "平台ID无效",
             "code": 1
         }))));
@@ -1550,7 +1551,7 @@ pub async fn platform_channel_add(
         }
     }
     
-    Ok(Json(WVPResult::success(serde_json::json!({
+    Ok(Json(ApiResult::success(serde_json::json!({
         "platformId": platform_id,
         "addedCount": added_count,
         "message": "通道添加成功",
@@ -1570,10 +1571,10 @@ pub struct PlatformChannelDeviceBody {
 pub async fn platform_channel_device_add(
     State(state): State<AppState>,
     Json(body): Json<PlatformChannelDeviceBody>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let platform_id = body.platform_id.unwrap_or(0);
     if platform_id <= 0 {
-        return Ok(Json(WVPResult::success(serde_json::json!({
+        return Ok(Json(ApiResult::success(serde_json::json!({
             "message": "平台ID无效",
             "code": 1
         }))));
@@ -1609,7 +1610,7 @@ pub async fn platform_channel_device_add(
         }
     }
     
-    Ok(Json(WVPResult::success(serde_json::json!({
+    Ok(Json(ApiResult::success(serde_json::json!({
         "platformId": platform_id,
         "addedCount": added_count,
         "message": "设备通道添加成功",
@@ -1621,10 +1622,10 @@ pub async fn platform_channel_device_add(
 pub async fn platform_channel_device_remove(
     State(state): State<AppState>,
     Json(body): Json<PlatformChannelDeviceBody>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let platform_id = body.platform_id.unwrap_or(0);
     if platform_id <= 0 {
-        return Ok(Json(WVPResult::success(serde_json::json!({
+        return Ok(Json(ApiResult::success(serde_json::json!({
             "message": "平台ID无效",
             "code": 1
         }))));
@@ -1648,7 +1649,7 @@ pub async fn platform_channel_device_remove(
         refresh_platform_catalog(&state, platform_id).await?;
     }
     
-    Ok(Json(WVPResult::success(serde_json::json!({
+    Ok(Json(ApiResult::success(serde_json::json!({
         "platformId": platform_id,
         "removedCount": removed_count,
         "message": "设备通道移除成功",
@@ -1660,10 +1661,10 @@ pub async fn platform_channel_device_remove(
 pub async fn platform_channel_remove(
     State(state): State<AppState>,
     Json(body): Json<PlatformChannelAddBody>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let platform_id = body.platform_id.unwrap_or(0);
     if platform_id <= 0 {
-        return Ok(Json(WVPResult::success(serde_json::json!({
+        return Ok(Json(ApiResult::success(serde_json::json!({
             "message": "平台ID无效",
             "code": 1
         }))));
@@ -1702,7 +1703,7 @@ pub async fn platform_channel_remove(
         refresh_platform_catalog(&state, platform_id).await?;
     }
     
-    Ok(Json(WVPResult::success(serde_json::json!({
+    Ok(Json(ApiResult::success(serde_json::json!({
         "platformId": platform_id,
         "removedCount": removed_count,
         "message": "通道移除成功",
@@ -1727,10 +1728,10 @@ pub struct PlatformChannelCustomUpdate {
 pub async fn platform_channel_custom_update(
     State(state): State<AppState>,
     Json(body): Json<PlatformChannelCustomUpdate>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let id = body.id.unwrap_or(0);
     if id <= 0 {
-        return Ok(Json(WVPResult::success(serde_json::json!({
+        return Ok(Json(ApiResult::success(serde_json::json!({
             "message": "通道ID无效",
             "code": 1
         }))));
@@ -1760,7 +1761,7 @@ pub async fn platform_channel_custom_update(
         }
     }
     
-    Ok(Json(WVPResult::success(serde_json::json!({
+    Ok(Json(ApiResult::success(serde_json::json!({
         "id": id,
         "message": "自定义通道更新成功",
         "code": 0
@@ -1929,7 +1930,7 @@ pub async fn catalog_edit(
 pub async fn platform_info(
     State(state): State<AppState>,
     Path(id): Path<String>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let pid = id.parse::<i64>().unwrap_or(0);
     match crate::db::platform::get_by_id(&state.pool, pid).await {
         // 与列表共用同一份 JSON（此前只回 10 个字段，编辑弹窗按完整类型取值时
@@ -1938,10 +1939,10 @@ pub async fn platform_info(
             let channel_count = platform_channel::count_by_platform_id(&state.pool, p.id as i64)
                 .await
                 .unwrap_or(0);
-            Json(WVPResult::success(platform_row_json(&p, channel_count)))
+            Json(ApiResult::success(platform_row_json(&p, channel_count)))
         }
-        Ok(None) => Json(WVPResult::error("Platform not found")),
-        Err(e) => Json(WVPResult::error(format!("DB error: {}", e))),
+        Ok(None) => Json(ApiResult::error("Platform not found")),
+        Err(e) => Json(ApiResult::error(format!("DB error: {}", e))),
     }
 }
 
@@ -1954,7 +1955,7 @@ mod platform_contract_tests {
         serde_json::from_value(v).expect("PlatformAddBody 反序列化")
     }
 
-    /// 前端（与 WVP）用的是 `serverGBId`；历史上还出现过 `serverGbId` 的错误拼写。
+    /// 前端用的是 `serverGBId`；历史上还出现过 `serverGbId` 的错误拼写。
     /// 三种写法都必须能绑上，否则库里写的是空串 —— 接口报成功、平台却不可用。
     #[test]
     fn add_body_binds_server_gb_id_and_realm_and_heartbeat() {
@@ -1972,14 +1973,14 @@ mod platform_contract_tests {
         assert_eq!(legacy.server_gb_id.as_deref(), Some("34020000002000000008"));
         assert_eq!(legacy.server_gb_domain.as_deref(), Some("3402000001"));
 
-        // 心跳周期：WVP 的 keepTimeout 与旧前端的 heartBeatInterval 都要认
+        // 心跳周期：`keepTimeout` 与旧前端的 `heartBeatInterval` 都要认
         let hb = add_body(serde_json::json!({"name": "x", "heartBeatInterval": 45}));
         assert_eq!(hb.keep_timeout.as_deref(), Some("45"));
         let kt = add_body(serde_json::json!({"name": "x", "keepTimeout": "90"}));
         assert_eq!(kt.keep_timeout.as_deref(), Some("90"));
     }
 
-    /// `expires` 在 WVP 里是 int，Vue3 的 el-input-number 输出 number，
+    /// `expires` 在请求体里可能是 int，Vue3 的 el-input-number 输出 number，
     /// 而这一列是 varchar —— 只认字符串会 422（请求进不到 handler）。
     #[test]
     fn add_body_accepts_numeric_and_string_expires() {
@@ -2091,7 +2092,7 @@ mod platform_contract_tests {
         let data = info.0.data.expect("info data");
         assert_eq!(data["serverGBId"], "34020000002000000007");
         assert_eq!(data["serverGBDomain"], "3402000000");
-        // expires / keepTimeout 回的是数字（与 WVP 的 int 字段一致）
+        // expires / keepTimeout 回的是数字（不是字符串）
         assert_eq!(data["expires"], 900);
         assert_eq!(data["keepTimeout"], 30);
         // 不能同时回同义键，否则前端回提交时会 "duplicate field" 422

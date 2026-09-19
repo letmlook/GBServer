@@ -5,7 +5,7 @@ use tokio::sync::RwLock;
 use chrono::{DateTime, Utc};
 
 use crate::error::{AppError, ErrorCode};
-use crate::response::WVPResult;
+use crate::response::ApiResult;
 use crate::AppState;
 
 #[derive(Debug, Clone)]
@@ -244,7 +244,7 @@ pub async fn playback_start(
     State(state): State<AppState>,
     Path((device_id, channel_id)): Path<(String, String)>,
     Query(q): Query<PlaybackQuery>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let start_time = q.start_time.clone().unwrap_or_else(|| {
         chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string()
     });
@@ -328,7 +328,7 @@ pub async fn playback_start(
                             if hls_available {
                                 payload["hls"] = serde_json::json!(hls_url);
                             }
-                            return Ok(Json(WVPResult::success(payload)));
+                            return Ok(Json(ApiResult::success(payload)));
                         }
                         Err(e) => {
                             tracing::error!("Playback INVITE + media wait failed: {}", e);
@@ -371,7 +371,7 @@ pub async fn playback_start(
 pub async fn playback_resume(
     State(state): State<AppState>,
     Path(stream_id): Path<String>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     tracing::info!("Playback resume: stream={}", stream_id);
     if let Some(ref playback_manager) = state.playback_manager {
         playback_manager.resume(&stream_id).await;
@@ -394,12 +394,12 @@ pub async fn playback_resume(
                 .await
             {
                 tracing::error!("Failed to send resume command: {}", e);
-                return Json(WVPResult::error(format!("SIP error: {}", e)));
+                return Json(ApiResult::error(format!("SIP error: {}", e)));
             }
         }
     }
 
-    Json(WVPResult::success(serde_json::json!({
+    Json(ApiResult::success(serde_json::json!({
         "streamId": stream_id,
         "status": "playing",
         "message": "Playback resumed"
@@ -409,7 +409,7 @@ pub async fn playback_resume(
 pub async fn playback_pause(
     State(state): State<AppState>,
     Path(stream_id): Path<String>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     tracing::info!("Playback pause: stream={}", stream_id);
     if let Some(ref playback_manager) = state.playback_manager {
         playback_manager.pause(&stream_id).await;
@@ -432,12 +432,12 @@ pub async fn playback_pause(
                 .await
             {
                 tracing::error!("Failed to send pause command: {}", e);
-                return Json(WVPResult::error(format!("SIP error: {}", e)));
+                return Json(ApiResult::error(format!("SIP error: {}", e)));
             }
         }
     }
 
-    Json(WVPResult::success(serde_json::json!({
+    Json(ApiResult::success(serde_json::json!({
         "streamId": stream_id,
         "status": "paused",
         "message": "Playback paused"
@@ -447,7 +447,7 @@ pub async fn playback_pause(
 pub async fn playback_speed(
     State(state): State<AppState>,
     Path((stream_id, speed)): Path<(String, String)>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let speed: f64 = speed.parse().unwrap_or(1.0);
     tracing::info!("Playback speed: stream={}, speed={}", stream_id, speed);
     if let Some(ref playback_manager) = state.playback_manager {
@@ -469,12 +469,12 @@ pub async fn playback_speed(
                 )
                 .await {
                 tracing::error!("Failed to send speed command: {}", e);
-                return Json(WVPResult::error(format!("SIP error: {}", e)));
+                return Json(ApiResult::error(format!("SIP error: {}", e)));
             }
         }
     }
     
-    Json(WVPResult::success(serde_json::json!({
+    Json(ApiResult::success(serde_json::json!({
         "streamId": stream_id,
         "speed": speed,
         "message": "Playback speed updated"
@@ -485,7 +485,7 @@ pub async fn playback_speed(
 pub async fn playback_seek(
     State(state): State<AppState>,
     Path((stream_id, seek_time)): Path<(String, String)>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     tracing::info!("Playback seek: stream={}, time={}", stream_id, seek_time);
     
     // 更新本地会话状态
@@ -511,12 +511,12 @@ pub async fn playback_seek(
                 )
                 .await {
                 tracing::error!("Failed to send seek command: {}", e);
-                return Json(WVPResult::error(format!("SIP error: {}", e)));
+                return Json(ApiResult::error(format!("SIP error: {}", e)));
             }
         }
     }
     
-    Json(WVPResult::success(serde_json::json!({
+    Json(ApiResult::success(serde_json::json!({
         "streamId": stream_id,
         "currentTime": seek_time,
         "message": "Playback seeked"
@@ -526,7 +526,7 @@ pub async fn playback_seek(
 pub async fn playback_stop(
     State(state): State<AppState>,
     Path((device_id, channel_id, stream_id)): Path<(String, String, String)>,
-) -> Json<WVPResult<()>> {
+) -> Json<ApiResult<()>> {
     tracing::info!("Playback stop: device={}, channel={}, stream={}", device_id, channel_id, stream_id);
 
     if let Some(ref playback_manager) = state.playback_manager {
@@ -553,7 +553,7 @@ pub async fn playback_stop(
                 }
             }
 
-            return Json(WVPResult::<()>::success_empty());
+            return Json(ApiResult::<()>::success_empty());
         }
     }
 
@@ -566,7 +566,7 @@ pub async fn playback_stop(
         ).await;
     }
 
-    Json(WVPResult::<()>::success_empty())
+    Json(ApiResult::<()>::success_empty())
 }
 
 #[derive(Debug, Deserialize)]
@@ -583,7 +583,7 @@ pub async fn gb_record_query(
     State(state): State<AppState>,
     Path((device_id, channel_id)): Path<(String, String)>,
     Query(q): Query<RecordQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     tracing::info!("Record query: device={}, channel={}", device_id, channel_id);
 
     let start_time = q.start_time.clone().unwrap_or_default();
@@ -625,7 +625,7 @@ pub async fn gb_record_query(
                                 })
                             })
                             .collect();
-                        return Json(WVPResult::success(serde_json::json!({
+                        return Json(ApiResult::success(serde_json::json!({
                             "list": paged,
                             "total": total,
                             "page": page,
@@ -673,7 +673,7 @@ pub async fn gb_record_query(
                     })
                     .collect();
 
-                return Json(WVPResult::success(serde_json::json!({
+                return Json(ApiResult::success(serde_json::json!({
                     "list": records,
                     "total": total,
                     "page": page,
@@ -687,7 +687,7 @@ pub async fn gb_record_query(
         }
     }
 
-    Json(WVPResult::success(serde_json::json!({
+    Json(ApiResult::success(serde_json::json!({
         "list": [],
         "total": 0,
         "page": page,
@@ -699,7 +699,7 @@ pub async fn gb_record_download_start(
     State(state): State<AppState>,
     Path((device_id, channel_id)): Path<(String, String)>,
     Query(q): Query<RecordQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let start_time = q.start_time.clone().unwrap_or_default();
     let end_time = q.end_time.clone().unwrap_or_default();
 
@@ -866,7 +866,7 @@ pub async fn gb_record_download_start(
         if let Some(ref dm) = state.download_manager {
             dm.create(session).await;
         }
-        return Json(WVPResult::success(serde_json::json!({
+        return Json(ApiResult::success(serde_json::json!({
             "streamId": stream_id,
             "fileName": file_name,
             "downloadUrl": format!(
@@ -911,7 +911,7 @@ pub async fn gb_record_download_start(
                     dm.create(session).await;
                 }
 
-                return Json(WVPResult::success(serde_json::json!({
+                return Json(ApiResult::success(serde_json::json!({
                     "streamId": stream_id,
                     "fileName": file_name,
                     "downloadUrl": format!(
@@ -930,7 +930,7 @@ pub async fn gb_record_download_start(
         }
     }
 
-    Json(WVPResult::success(serde_json::json!({
+    Json(ApiResult::success(serde_json::json!({
         "streamId": stream_id,
         "msg": "Download not available"
     })))
@@ -985,7 +985,7 @@ pub async fn gb_record_download_file(
 pub async fn gb_record_download_stop(
     State(state): State<AppState>,
     Path((device_id, channel_id, stream_id)): Path<(String, String, String)>,
-) -> Json<WVPResult<()>> {
+) -> Json<ApiResult<()>> {
     tracing::info!("Record download stop: device={}, channel={}, stream={}",
         device_id, channel_id, stream_id);
 
@@ -1041,7 +1041,7 @@ pub async fn gb_record_download_stop(
         }
     }
 
-    Json(WVPResult::<()>::success_empty())
+    Json(ApiResult::<()>::success_empty())
 }
 
 /// 录像下载进度。
@@ -1057,7 +1057,7 @@ pub async fn gb_record_download_stop(
 pub async fn gb_record_download_progress(
     State(state): State<AppState>,
     Path((_device_id, _channel_id, stream_id)): Path<(String, String, String)>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let Some(dm) = state.download_manager.as_ref() else {
         return err("下载管理未初始化");
     };
@@ -1068,7 +1068,7 @@ pub async fn gb_record_download_progress(
     if session.url.starts_with("gb28181://") {
         // 设备推完流后 ZLM 会落盘 MP4（on_record_mp4），此时给出真实文件与下载地址；
         // 还没落盘时如实报告状态（文件为 null，前端据此继续轮询）。
-        return Json(WVPResult::success(serde_json::json!({
+        return Json(ApiResult::success(serde_json::json!({
             "streamId": session.stream_id,
             "fileName": session.file_name,
             "progress": session.progress,
@@ -1095,7 +1095,7 @@ pub async fn gb_record_download_progress(
                             "downloading"
                         };
                         dm.update_progress_percent(&stream_id, progress, status).await;
-                        return Json(WVPResult::success(serde_json::json!({
+                        return Json(ApiResult::success(serde_json::json!({
                             "streamId": stream_id,
                             "fileName": dl.file_name,
                             "progress": progress,
@@ -1114,7 +1114,7 @@ pub async fn gb_record_download_progress(
 
     // 会话存在但 ZLM 列表里暂时没有（刚发起/已结束）—— 报告会话自身状态，
     // 而不是伪造一个 "unknown" 让前端无从判断。
-    Json(WVPResult::success(serde_json::json!({
+    Json(ApiResult::success(serde_json::json!({
         "streamId": session.stream_id,
         "fileName": session.file_name,
         "progress": session.progress,
@@ -1129,8 +1129,8 @@ pub async fn gb_record_download_progress(
     })))
 }
 
-fn err(msg: &str) -> Json<WVPResult<serde_json::Value>> {
-    Json(WVPResult::<serde_json::Value>::error(msg.to_string()))
+fn err(msg: &str) -> Json<ApiResult<serde_json::Value>> {
+    Json(ApiResult::<serde_json::Value>::error(msg.to_string()))
 }
 
 #[cfg(test)]

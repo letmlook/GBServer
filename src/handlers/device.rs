@@ -8,7 +8,7 @@ use serde::Deserialize;
 
 use crate::db::{count_devices, list_channels_filtered, list_devices_paged, Device};
 use crate::error::AppError;
-use crate::response::WVPResult;
+use crate::response::ApiResult;
 
 use crate::AppState;
 
@@ -26,7 +26,7 @@ pub struct DevicesQuery {
 pub async fn query_devices(
     State(state): State<AppState>,
     Query(q): Query<DevicesQuery>,
-) -> Result<Json<WVPResult<DevicePage>>, AppError> {
+) -> Result<Json<ApiResult<DevicePage>>, AppError> {
     let page = q.page.unwrap_or(1);
     let count = q.count.unwrap_or(10).min(100);
     let online = match q.status.as_deref() {
@@ -42,7 +42,7 @@ pub async fn query_devices(
         page: page as u64,
         size: count as u64,
     };
-    Ok(Json(WVPResult::success(out)))
+    Ok(Json(ApiResult::success(out)))
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -75,7 +75,7 @@ pub struct LatencyQuery {
 pub async fn query_device_latency(
     State(_state): State<AppState>,
     Query(q): Query<LatencyQuery>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let reg = crate::sip::gb28181::latency_registry();
     let list = match q.device_ids.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         Some(ids) => ids
@@ -84,7 +84,7 @@ pub async fn query_device_latency(
             .collect::<Vec<_>>(),
         None => reg.snapshot(),
     };
-    Ok(Json(WVPResult::success(serde_json::json!({
+    Ok(Json(ApiResult::success(serde_json::json!({
         "list": list,
         // 0 = 探针未启用（配置里关掉了），前端据此显示"未启用"而不是"测量中"。
         "probeIntervalSecs": reg.interval_secs(),
@@ -107,7 +107,7 @@ pub async fn query_channels(
     State(state): State<AppState>,
     Path(device_id): Path<String>,
     Query(q): Query<ChannelsQuery>,
-) -> Result<Json<WVPResult<ChannelPage>>, AppError> {
+) -> Result<Json<ApiResult<ChannelPage>>, AppError> {
     let page = q.page.unwrap_or(1);
     let count = q.count.unwrap_or(10).min(100);
     // 三个过滤参数此前被完全忽略（返回该设备全部通道）——通道多的设备上
@@ -134,7 +134,7 @@ pub async fn query_channels(
         page: page as u64,
         size: count as u64,
     };
-    Ok(Json(WVPResult::success(out)))
+    Ok(Json(ApiResult::success(out)))
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -149,16 +149,16 @@ pub struct ChannelPage {
 /// 设备保活统计
 pub async fn device_keepalive_statistics(
     State(state): State<AppState>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let online_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM wvp_device WHERE on_line = true"
+        "SELECT COUNT(*) FROM gb_device WHERE on_line = true"
     )
     .fetch_one(&state.pool)
     .await
     .unwrap_or(0);
 
     let offline_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM wvp_device WHERE on_line = false OR on_line IS NULL"
+        "SELECT COUNT(*) FROM gb_device WHERE on_line = false OR on_line IS NULL"
     )
     .fetch_one(&state.pool)
     .await
@@ -166,7 +166,7 @@ pub async fn device_keepalive_statistics(
 
     let total = online_count + offline_count;
 
-    Json(WVPResult::success(serde_json::json!({
+    Json(ApiResult::success(serde_json::json!({
         "online": online_count,
         "offline": offline_count,
         "total": total,
@@ -178,29 +178,29 @@ pub async fn device_keepalive_statistics(
 /// 设备注册统计
 pub async fn device_register_statistics(
     State(state): State<AppState>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let today_register: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM wvp_device WHERE DATE(create_time) = CURRENT_DATE"
+        "SELECT COUNT(*) FROM gb_device WHERE DATE(create_time) = CURRENT_DATE"
     )
     .fetch_one(&state.pool)
     .await
     .unwrap_or(0);
 
     let total_devices: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM wvp_device"
+        "SELECT COUNT(*) FROM gb_device"
     )
     .fetch_one(&state.pool)
     .await
     .unwrap_or(0);
 
     let active_devices: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM wvp_device WHERE on_line = true"
+        "SELECT COUNT(*) FROM gb_device WHERE on_line = true"
     )
     .fetch_one(&state.pool)
     .await
     .unwrap_or(0);
 
-    Json(WVPResult::success(serde_json::json!({
+    Json(ApiResult::success(serde_json::json!({
         "todayRegister": today_register,
         "totalDevices": total_devices,
         "activeDevices": active_devices,

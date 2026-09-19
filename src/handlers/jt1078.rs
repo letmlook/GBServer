@@ -13,7 +13,7 @@ use sqlx::Row;
 
 use crate::db::jt1078 as jt_db;
 use crate::error::{AppError, ErrorCode};
-use crate::response::WVPResult;
+use crate::response::ApiResult;
 use crate::AppState;
 
 /// 兼容"字符串或数字"的字段（`terminalDbId` 既可能是主键数字、也可能是手机号；
@@ -60,7 +60,7 @@ pub struct TerminalListQuery {
 
 #[derive(Debug, Deserialize)]
 pub struct TerminalQuery {
-    /// 终端标识（历史字段）；WVP 侧叫 `deviceId`。
+    /// 终端标识（历史字段）；请求参数别名 `deviceId`。
     ///
     /// 这里**不能**再给 `phoneNumber` 做别名：`phone_number` 已经占了它，
     /// serde 的重复别名会让后声明的那个变成不可达分支 —— 结果是
@@ -83,7 +83,7 @@ pub struct TerminalQuery {
 pub async fn terminal_one(
     State(state): State<AppState>,
     Query(q): Query<TerminalOneQuery>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let id = q
         .id
         .ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id 参数"))?;
@@ -95,7 +95,7 @@ pub async fn terminal_one(
         ));
     };
 
-    Ok(Json(WVPResult::success(serde_json::json!({
+    Ok(Json(ApiResult::success(serde_json::json!({
         "id": t.id,
         "phoneNumber": t.phone_number,
         "terminalId": t.terminal_id,
@@ -162,7 +162,7 @@ pub struct PlaybackQuery {
 pub struct RecordListQuery {
     #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
-    /// 前端（与 WVP）发的是 camelCase：`channelId` / `startTime` / `endTime`。
+    /// 前端发的是 camelCase：`channelId` / `startTime` / `endTime`。
     /// 此前没有 alias → 三个参数被**静默丢弃**，`channel=0`、时间范围为空，
     /// 于是 `0x8802` 多媒体检索**从未下发过**，接口只能走 ZLM/云录像兜底
     /// （第四十八轮实测：日志 `record list: phone=…, channel=0, -`）。
@@ -287,7 +287,7 @@ pub struct TerminalAddBody {
     pub phone_number: Option<String>,
     pub name: Option<String>,
     /// 终端号。前端（与 `web/src/api/jtDevice.ts::JtTerminal`）叫 `terminalId`，
-    /// 旧 WVP 风格叫 `deviceId`/`vehicleNo` —— 三个名字都要认，
+    /// 历史命名也叫 `deviceId`/`vehicleNo` —— 三个名字都要认，
     /// 否则填了终端号会被静默丢弃（`terminal/add` 写进去的是 NULL）。
     #[serde(alias = "deviceId", alias = "terminalId", alias = "vehicleNo")]
     pub device_id: Option<String>,
@@ -297,7 +297,7 @@ pub struct TerminalAddBody {
     pub vehicle_no: Option<String>,
     #[serde(alias = "plateNo")]
     pub plate_no: Option<String>,
-    /// 前端车牌颜色是 **el-select 的数字**（0..4），WVP 的 Java 参数也是整数；
+    /// 前端车牌颜色是 **el-select 的数字**（0..4），提交上来的也是整数；
     /// 而历史实现把它声明成 `Option<String>`，于是 `plateColor: 0` 直接 422
     /// `invalid type: integer 0, expected a string` —— 前端"新增终端"必然失败。
     /// 这里两种都收（`opt_string_flexible`）。
@@ -327,7 +327,7 @@ pub struct TerminalUpdateBody {
     pub phone_number: Option<String>,
     pub name: Option<String>,
     /// 终端号。前端（与 `web/src/api/jtDevice.ts::JtTerminal`）叫 `terminalId`，
-    /// 旧 WVP 风格叫 `deviceId`/`vehicleNo` —— 三个名字都要认，
+    /// 历史命名也叫 `deviceId`/`vehicleNo` —— 三个名字都要认，
     /// 否则填了终端号会被静默丢弃（`terminal/add` 写进去的是 NULL）。
     #[serde(alias = "deviceId", alias = "terminalId", alias = "vehicleNo")]
     pub device_id: Option<String>,
@@ -422,7 +422,7 @@ pub(crate) async fn get_jt_manager(state: &AppState) -> Result<Arc<crate::jt1078
 pub async fn terminal_list(
     State(state): State<AppState>,
     Query(q): Query<TerminalListQuery>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let page = q.page.unwrap_or(1);
     let count = q.count.unwrap_or(15).min(100);
     let online = match q.online.as_deref() {
@@ -457,7 +457,7 @@ pub async fn terminal_list(
         })
     }).collect();
 
-    Ok(Json(WVPResult::success(serde_json::json!({
+    Ok(Json(ApiResult::success(serde_json::json!({
         "list": rows,
         "total": total,
     }))))
@@ -472,7 +472,7 @@ pub async fn terminal_list(
 pub async fn terminal_query(
     State(state): State<AppState>,
     Query(q): Query<TerminalQuery>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     // 兼容：`deviceId` 先当手机号，再当终端号，最后当主键。`terminalId` 同理。
     let key = q
         .phone_number
@@ -481,7 +481,7 @@ pub async fn terminal_query(
         .or_else(|| q.terminal_id.clone())
         .unwrap_or_default();
     if key.is_empty() && q.id.is_none() {
-        return Ok(Json(WVPResult::success(serde_json::Value::Null)));
+        return Ok(Json(ApiResult::success(serde_json::Value::Null)));
     }
 
     let mut terminal = None;
@@ -525,7 +525,7 @@ pub async fn terminal_query(
         })
     });
 
-    Ok(Json(WVPResult::success(out.unwrap_or(serde_json::Value::Null))))
+    Ok(Json(ApiResult::success(out.unwrap_or(serde_json::Value::Null))))
 }
 
 /// POST /api/jt1078/terminal/add
@@ -534,7 +534,7 @@ pub async fn terminal_query(
 pub async fn terminal_add(
     State(state): State<AppState>,
     Json(body): Json<TerminalAddBody>,
-) -> Result<Json<WVPResult<()>>, AppError> {
+) -> Result<Json<ApiResult<()>>, AppError> {
     let phone = body.phone_number.as_deref().unwrap_or("").trim();
     if phone.is_empty() {
         return Err(AppError::business(ErrorCode::Error400, "缺少 phoneNumber"));
@@ -557,7 +557,7 @@ pub async fn terminal_add(
         city_id,
     };
     jt_db::insert_terminal(&state.pool, phone, &fields, &now).await?;
-    Ok(Json(WVPResult::<()>::success_empty()))
+    Ok(Json(ApiResult::<()>::success_empty()))
 }
 
 /// POST /api/jt1078/terminal/update
@@ -566,7 +566,7 @@ pub async fn terminal_add(
 pub async fn terminal_update(
     State(state): State<AppState>,
     Json(body): Json<TerminalUpdateBody>,
-) -> Result<Json<WVPResult<()>>, AppError> {
+) -> Result<Json<ApiResult<()>>, AppError> {
     let phone = body.phone_number.as_deref().unwrap_or("").trim();
     if phone.is_empty() {
         return Err(AppError::business(ErrorCode::Error400, "缺少 phoneNumber"));
@@ -591,7 +591,7 @@ pub async fn terminal_update(
             format!("终端不存在: {phone}"),
         ));
     }
-    Ok(Json(WVPResult::<()>::success_empty()))
+    Ok(Json(ApiResult::<()>::success_empty()))
 }
 
 /// DELETE /api/jt1078/terminal/delete
@@ -600,8 +600,8 @@ pub async fn terminal_update(
 pub async fn terminal_delete(
     State(state): State<AppState>,
     Query(q): Query<TerminalQuery>,
-) -> Result<Json<WVPResult<()>>, AppError> {
-    // 前端（JT 设备页）传的是**数据库主键** `id`；WVP 契约是手机号。
+) -> Result<Json<ApiResult<()>>, AppError> {
+    // 前端（JT 设备页）传的是**数据库主键** `id`；接口契约是手机号。
     // 早期只认 phoneNumber → 前端既发 GET（405）又发错参数名，删除必然失败。
     let phone = q
         .phone_number
@@ -622,7 +622,7 @@ pub async fn terminal_delete(
                     format!("终端不存在: id={id}"),
                 ));
             }
-            return Ok(Json(WVPResult::<()>::success_empty()));
+            return Ok(Json(ApiResult::<()>::success_empty()));
         }
         return Err(AppError::business(ErrorCode::Error400, "缺少 phoneNumber 或 id"));
     }
@@ -637,7 +637,7 @@ pub async fn terminal_delete(
             format!("终端不存在: {phone}"),
         ));
     }
-    Ok(Json(WVPResult::<()>::success_empty()))
+    Ok(Json(ApiResult::<()>::success_empty()))
 }
 
 // ========== 通道管理 ==========
@@ -647,7 +647,7 @@ pub async fn terminal_delete(
 pub async fn channel_list(
     State(state): State<AppState>,
     Query(q): Query<ChannelListQuery>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let device_id = q.device_id.clone().unwrap_or_default();
     let raw_terminal_ref = q.terminal_db_id.clone().unwrap_or_default();
     let raw_terminal_ref = raw_terminal_ref.trim();
@@ -667,7 +667,7 @@ pub async fn channel_list(
         None
     };
     if terminal.is_none() && device_id.is_empty() && raw_terminal_ref.is_empty() {
-        return Ok(Json(WVPResult::success(
+        return Ok(Json(ApiResult::success(
             serde_json::json!({ "list": [], "total": 0 }),
         )));
     }
@@ -691,7 +691,7 @@ pub async fn channel_list(
         serde_json::json!({
             "id": c.id,
             "channelId": c.channel_id,
-            // 后端/WVP 的字段名是 `name`；前端历史代码读 `channelName`，两个都给
+            // 后端的字段名是 `name`；前端历史代码读 `channelName`，两个都给
             "name": c.name,
             "channelName": c.name,
             // 终端归属与在线状态：此前两个键都没有 → 表格整列空白
@@ -703,7 +703,7 @@ pub async fn channel_list(
         })
     }).collect();
 
-    Ok(Json(WVPResult::success(serde_json::json!({
+    Ok(Json(ApiResult::success(serde_json::json!({
         "list": rows,
         "total": total,
     }))))

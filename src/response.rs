@@ -1,14 +1,17 @@
 use serde::Serialize;
 
-/// 与 Java WVPResult 一致：前端通过 code===0 判断成功
+/// 全平台统一响应信封：`{ code, msg, data }`。
+///
+/// `code == 0` 表示成功（前端 `web/src/utils/request.ts` 据此判断），
+/// 非 0 一律按业务错误处理；错误响应由 `AppError::into_response()` 生成。
 #[derive(Debug, Serialize)]
-pub struct WVPResult<T> {
+pub struct ApiResult<T> {
     pub code: i32,
     pub msg: String,
     pub data: Option<T>,
 }
 
-impl<T> WVPResult<T> {
+impl<T> ApiResult<T> {
     pub fn success(data: T) -> Self {
         Self {
             code: 0,
@@ -17,16 +20,16 @@ impl<T> WVPResult<T> {
         }
     }
 
-    pub fn success_empty() -> WVPResult<()> {
-        WVPResult {
+    pub fn success_empty() -> ApiResult<()> {
+        ApiResult {
             code: 0,
             msg: "成功".to_string(),
             data: None,
         }
     }
 
-    pub fn error(msg: impl Into<String>) -> WVPResult<T> {
-        WVPResult {
+    pub fn error(msg: impl Into<String>) -> ApiResult<T> {
+        ApiResult {
             code: -1,
             msg: msg.into(),
             data: None,
@@ -34,9 +37,9 @@ impl<T> WVPResult<T> {
     }
 }
 
-impl WVPResult<()> {
+impl ApiResult<()> {
     pub fn fail(code: i32, msg: impl Into<String>) -> Self {
-        WVPResult {
+        ApiResult {
             code,
             msg: msg.into(),
             data: None,

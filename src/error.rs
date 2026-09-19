@@ -4,9 +4,9 @@ use axum::{
     Json,
 };
 use thiserror::Error;
-use crate::response::WVPResult;
+use crate::response::ApiResult;
 
-/// 与 Java ErrorCode 对齐的业务错误码
+/// 全平台统一业务错误码（HTTP 状态码 + 业务码双层表达）。
 #[derive(Debug, Clone, Copy)]
 pub enum ErrorCode {
     Success = 0,
@@ -74,7 +74,7 @@ impl IntoResponse for AppError {
             AppError::Db(e) => (ErrorCode::Error500.code(), StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
             AppError::Config(e) => (ErrorCode::Error500.code(), StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
         };
-        let body = Json(WVPResult::<()>::fail(code, msg));
+        let body = Json(ApiResult::<()>::fail(code, msg));
         (status, body).into_response()
     }
 }

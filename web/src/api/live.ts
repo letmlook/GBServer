@@ -1,5 +1,5 @@
 import { request } from '@/utils/request'
-import type { WvpResult } from '@/types/api'
+import type { ApiResult } from '@/types/api'
 
 /** /api/play/start 的实际返回（后端 play.rs 一次给出全部可用地址）。 */
 export interface PlayStartResult {
@@ -26,14 +26,14 @@ export interface PlayStartResult {
  * 它不会拉起流（流不存在时后端会明确报错）。
  */
 export function startPlay(deviceId: string, channelId: string) {
-  return request<WvpResult<PlayStartResult>>({
+  return request<ApiResult<PlayStartResult>>({
     method: 'get',
     url: `/play/start/${deviceId}/${channelId}`
   })
 }
 
 export function stopPlay(deviceId: string, channelId: string) {
-  return request<WvpResult>({
+  return request<ApiResult>({
     method: 'get',
     url: `/play/stop/${deviceId}/${channelId}`
   })
@@ -52,7 +52,7 @@ export function stopPlay(deviceId: string, channelId: string) {
  * 没有数据），否则后端会返回错误。
  */
 export function captureSnap(deviceId: string, channelId: string) {
-  return request<WvpResult<{ deviceId: string; channelId: string; version: number }>>({
+  return request<ApiResult<{ deviceId: string; channelId: string; version: number }>>({
     method: 'post',
     url: `/play/snap/${deviceId}/${channelId}`
   })
@@ -68,7 +68,7 @@ export function captureSnap(deviceId: string, channelId: string) {
  * 一次请求铺满整页缩略图，不用逐通道发请求。
  */
 export function listSnapshots(keys: string[]) {
-  return request<WvpResult<Record<string, string>>>({
+  return request<ApiResult<Record<string, string>>>({
     method: 'get',
     url: '/play/snapshot/list',
     params: { keys: keys.join(',') }
@@ -81,28 +81,28 @@ export function snapshotKey(deviceId: string, channelId: string): string {
 }
 
 export function getSsrc(deviceId: string, channelId: string) {
-  return request<WvpResult<{ ssrc: string }>>({
+  return request<ApiResult<{ ssrc: string }>>({
     method: 'get',
     url: `/play/ssrc/${deviceId}/${channelId}`
   })
 }
 
 export function startBroadcast(deviceId: string, channelId: string) {
-  return request<WvpResult>({
+  return request<ApiResult>({
     method: 'get',
     url: `/play/broadcast/${deviceId}/${channelId}`
   })
 }
 
 export function stopBroadcast(deviceId: string, channelId: string) {
-  return request<WvpResult>({
+  return request<ApiResult>({
     method: 'get',
     url: `/play/broadcast/stop/${deviceId}/${channelId}`
   })
 }
 
 export function getPlayUrl(params: { deviceId: string; channelId?: string; protocol?: 'rtsp' | 'rtmp' | 'hls' | 'webrtc' }) {
-  return request<WvpResult<{ url: string; streamId: string }>>({
+  return request<ApiResult<{ url: string; streamId: string }>>({
     method: 'get',
     url: '/media/getPlayUrl',
     params
@@ -124,7 +124,7 @@ export function postWebrtcPlay(params: {
   sdp: string
   type?: string
 }) {
-  return request<WvpResult<{ sdp: string; type: string; app: string; stream: string }>>({
+  return request<ApiResult<{ sdp: string; type: string; app: string; stream: string }>>({
     method: 'post',
     url: '/play/webrtc',
     data: { ...params, type: params.type ?? 'offer' }
@@ -149,7 +149,7 @@ export interface MediaStreamRow {
 }
 
 export function queryStreams(params: { page?: number; count?: number; query?: string }) {
-  return request<WvpResult<{ total: number; list: MediaStreamRow[] }>>({
+  return request<ApiResult<{ total: number; list: MediaStreamRow[] }>>({
     method: 'get',
     url: '/device/query/streams',
     params
@@ -172,10 +172,10 @@ export function sendPtz(params: {
   zoomSpeed?: number
 }) {
   const speed = params.speed ?? 50
-  return request<WvpResult>({
+  return request<ApiResult>({
     method: 'get',
     url: `/front-end/ptz/${params.deviceId}/${params.channelId}`,
-    // 参数名必须与 WVP/后端一致：command + 三个 *Speed。
+    // 参数名必须与后端一致：command + 三个 *Speed。
     // 早期发的是 `cmd`/`speed`，后端一个都绑不上 —— 命令变成"无动作"，
     // 接口却返回成功，云台按钮点了没反应。
     params: {

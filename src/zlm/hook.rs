@@ -242,8 +242,8 @@ pub struct RtpServerTimeoutData {
 // ABL 钩子支持（设计文档 §6.3 阶段 0 缺口 1）
 //
 // ABL（Another Live media Broadcaster）是 ZLMediaKit 兼容的开源分支，
-// 暴露额外的 hook 事件用于细粒度控制。参考 Java 实现在生产部署中
-// 会使用这些事件，本实现补齐 on_rtp_playlist / on_record_progress。
+// 暴露额外的 hook 事件用于细粒度控制。生产部署会使用这些事件，
+// 本实现补齐 on_rtp_playlist / on_record_progress。
 // =====================================================================
 
 /// 宽松数字解析：ZLM 的进度类事件里数值可能是 JSON number，也可能是字符串
@@ -352,11 +352,11 @@ pub struct StreamChangedByAppData {
 }
 
 // =====================================================================
-// ZlmHookEvent 枚举（Phase 4.1，WVP-Pro 兼容）
+// ZlmHookEvent 枚举（Phase 4.1）
 //
 // 所有 ZLM hook 事件以枚举形式表达，便于 dispatcher 严格匹配及前端按需订阅。
 // `from_hook_name` 将 ZLM 字符串 hook 名（如 "on_stream_changed"）解析为枚举；
-// `default_response` 返回 WVP-Pro 兼容的成功响应结构。
+// `default_response` 返回统一的成功响应结构。
 // =====================================================================
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -399,7 +399,7 @@ impl ZlmHookEvent {
         }
     }
 
-    /// WVP-Pro 兼容的默认成功响应：前端只需 `code === 0` 即视为成功。
+    /// 统一的默认成功响应：前端只需 `code === 0` 即视为成功。
     pub fn default_response(&self) -> serde_json::Value {
         serde_json::json!({"code": 0, "msg": "success"})
     }
@@ -814,7 +814,7 @@ impl IdleStreamDecision {
 /// ZLM hook 的成功响应。
 ///
 /// **必须是顶层 `code`**：ZLMediaKit 直接读响应对象的 `code` 字段来决定
-/// 是否放行（`on_publish` / `on_play`），包进 `WVPResult` 的 `data` 里它读不到。
+/// 是否放行（`on_publish` / `on_play`），包进 `ApiResult` 的 `data` 里它读不到。
 pub(crate) fn hook_ok_response() -> serde_json::Value {
     serde_json::json!({ "code": 0, "msg": "success" })
 }
@@ -829,7 +829,7 @@ pub(crate) fn hook_error_response(msg: &str) -> serde_json::Value {
 ///
 /// 官方文档：该事件"可以选择是否关闭无人观看的流"，响应为
 /// `{"code":0,"close":true|false}`。此前本项目把它包在
-/// `WVPResult.data` 里返回，ZLM 读不到 `close`，按默认 `false` 处理 ——
+/// `ApiResult.data` 里返回，ZLM 读不到 `close`，按默认 `false` 处理 ——
 /// 无人观看自动关流**从未生效**。
 pub(crate) fn none_reader_response(decision: &IdleStreamDecision) -> serde_json::Value {
     serde_json::json!({
@@ -1013,7 +1013,7 @@ fn sync_media_server_stream_count(
 ///
 /// # 响应契约（重要）
 ///
-/// 返回的是**顶层扁平 JSON**，不是 `WVPResult` 信封。
+/// 返回的是**顶层扁平 JSON**，不是 `ApiResult` 信封。
 /// 真实 ZLMediaKit 直接读**顶层**字段：
 ///
 /// * `code`：`0` 表示放行（`on_publish` / `on_play` 的鉴权结论）；非 0 拒绝。
@@ -1309,7 +1309,7 @@ pub(crate) async fn handle_webhook_inner(
                         }
                     }
                 }
-                // 与 WVP 一致：`on_publish` 的响应可以带 `enable_mp4` / `enable_audio`，
+                // `on_publish` 的响应可以带 `enable_mp4` / `enable_audio`，
                 // ZLM 据此决定是否为这一路流录制 MP4 / 转音频。
                 //
                 //   * `download_` 前缀 = GB28181 录像下载会话 → **必须**录制 MP4，
@@ -1317,7 +1317,7 @@ pub(crate) async fn handle_webhook_inner(
                 //     on_stream_changed 判成 completed，用户拿到死链）；
                 //   * 其余流按代理配置下发（等价于 addStreamProxy 的 enable_mp4
                 //     / enable_audio，流被重新发布时同样生效）；
-                //   * 对讲/广播不能录音（WVP 同样显式置 false）。
+                //   * 对讲/广播不能录音（此处同样显式置 false）。
                 if data.stream.starts_with("download_") {
                     response["enable_mp4"] = serde_json::json!(true);
                 } else if matches!(data.app.as_str(), "gb_talk" | "gb_broadcast" | "talk") {
@@ -2071,7 +2071,7 @@ mod tests {
     //   * `code`  —— 0 放行 / 非 0 拒绝（on_publish / on_play 鉴权结论）
     //   * `close` —— on_stream_none_reader 是否关闭该无人流
     //
-    // 本项目此前把所有 hook 都包成 WVP 信封
+    // 本项目早期实现把所有 hook 都包成统一信封
     // `{"code":0,"msg":"成功","data":{...}}`：`code` 恰好在顶层所以鉴权
     // 看起来正常，但 `close` 被埋进 `data`，ZLM 永远读不到。
 
@@ -2081,7 +2081,7 @@ mod tests {
         assert_eq!(ok["code"], 0);
         assert!(
             ok.get("data").is_none(),
-            "ZLM 不识 WVP 信封，响应不能带 data 包装"
+            "ZLM 不识统一信封，响应不能带 data 包装"
         );
 
         let err = hook_error_response("Unauthorized: secret mismatch");
@@ -2247,7 +2247,7 @@ mod tests {
             ZlmHookEvent::from_hook_name("on_something_made_up"),
             ZlmHookEvent::Unknown
         );
-        // default_response 始终是 WVP-Pro 兼容的成功结构
+        // default_response 始终是统一的成功结构
         let resp = ZlmHookEvent::StreamChanged.default_response();
         assert_eq!(resp["code"], 0);
         assert_eq!(resp["msg"], "success");

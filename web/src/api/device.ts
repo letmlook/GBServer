@@ -1,5 +1,5 @@
 import { request } from '@/utils/request'
-import type { WvpResult } from '@/types/api'
+import type { ApiResult } from '@/types/api'
 
 export interface DeviceQueryParams {
   page?: number
@@ -9,7 +9,7 @@ export interface DeviceQueryParams {
 }
 
 export function queryDevices(params: DeviceQueryParams) {
-  return request<WvpResult<{ total: number; list: DeviceRecord[] }>>({
+  return request<ApiResult<{ total: number; list: DeviceRecord[] }>>({
     method: 'get',
     url: '/device/query/devices',
     params
@@ -17,28 +17,28 @@ export function queryDevices(params: DeviceQueryParams) {
 }
 
 export function queryDeviceOne(deviceId: string) {
-  return request<WvpResult<DeviceRecord>>({
+  return request<ApiResult<DeviceRecord>>({
     method: 'get',
     url: `/device/query/devices/${deviceId}`
   })
 }
 
 export function deleteDevice(deviceId: string) {
-  return request<WvpResult>({
+  return request<ApiResult>({
     method: 'delete',
     url: `/device/query/devices/${deviceId}/delete`
   })
 }
 
 export function sync(deviceId: string) {
-  return request<WvpResult>({
+  return request<ApiResult>({
     method: 'get',
     url: `/device/query/devices/${deviceId}/sync`
   })
 }
 
 export function syncStatus(deviceId: string) {
-  return request<WvpResult<{ total: number; current: number; errorMsg?: string }>>({
+  return request<ApiResult<{ total: number; current: number; errorMsg?: string }>>({
     method: 'get',
     url: '/device/query/sync_status',
     params: { deviceId }
@@ -46,14 +46,14 @@ export function syncStatus(deviceId: string) {
 }
 
 export function updateDeviceTransport(deviceId: string, streamMode: string) {
-  return request<WvpResult>({
+  return request<ApiResult>({
     method: 'post',
     url: `/device/query/transport/${deviceId}/${streamMode}`
   })
 }
 
 export function setGuard(deviceId: string) {
-  return request<WvpResult>({
+  return request<ApiResult>({
     method: 'get',
     url: '/device/control/guard',
     params: { deviceId, guardCmd: 'SetGuard' }
@@ -61,7 +61,7 @@ export function setGuard(deviceId: string) {
 }
 
 export function resetGuard(deviceId: string) {
-  return request<WvpResult>({
+  return request<ApiResult>({
     method: 'get',
     url: '/device/control/guard',
     params: { deviceId, guardCmd: 'ResetGuard' }
@@ -69,7 +69,7 @@ export function resetGuard(deviceId: string) {
 }
 
 export function subscribeCatalog(params: { id: string; cycle?: number }) {
-  return request<WvpResult>({
+  return request<ApiResult>({
     method: 'get',
     url: '/device/query/subscribe/catalog',
     params
@@ -77,7 +77,7 @@ export function subscribeCatalog(params: { id: string; cycle?: number }) {
 }
 
 export function subscribeMobilePosition(params: { id: string; cycle?: number; interval?: number }) {
-  return request<WvpResult>({
+  return request<ApiResult>({
     method: 'get',
     url: '/device/query/subscribe/mobile-position',
     params
@@ -85,14 +85,14 @@ export function subscribeMobilePosition(params: { id: string; cycle?: number; in
 }
 
 export function queryBasicParam(deviceId: string) {
-  return request<WvpResult>({
+  return request<ApiResult>({
     method: 'get',
     url: `/device/config/query/${deviceId}/BasicParam`
   })
 }
 
 export function add(data: Partial<DeviceRecord>) {
-  return request<WvpResult>({
+  return request<ApiResult>({
     method: 'post',
     url: '/device/query/device/add',
     data
@@ -100,7 +100,7 @@ export function add(data: Partial<DeviceRecord>) {
 }
 
 export function update(data: Partial<DeviceRecord>) {
-  return request<WvpResult>({
+  return request<ApiResult>({
     method: 'post',
     url: '/device/query/device/update',
     data
@@ -108,7 +108,7 @@ export function update(data: Partial<DeviceRecord>) {
 }
 
 export function queryChannels(deviceId: string, params: DeviceQueryParams & { online?: boolean; channelType?: number }) {
-  return request<WvpResult<{ total: number; list: ChannelRecord[] }>>({
+  return request<ApiResult<{ total: number; list: ChannelRecord[] }>>({
     method: 'get',
     url: `/device/query/devices/${deviceId}/channels`,
     params
@@ -116,7 +116,7 @@ export function queryChannels(deviceId: string, params: DeviceQueryParams & { on
 }
 
 export function queryChannelTree(deviceId: string, params: DeviceQueryParams & { parentId?: string; onlyCatalog?: boolean }) {
-  return request<WvpResult<{ total: number; list: ChannelRecord[] }>>({
+  return request<ApiResult<{ total: number; list: ChannelRecord[] }>>({
     method: 'get',
     url: `/device/query/tree/${deviceId}`,
     params
@@ -124,7 +124,7 @@ export function queryChannelTree(deviceId: string, params: DeviceQueryParams & {
 }
 
 export function queryDeviceTree(deviceId: string, params: DeviceQueryParams & { parentId?: string; onlyCatalog?: boolean }) {
-  return request<WvpResult<{ total: number; list: ChannelRecord[] }>>({
+  return request<ApiResult<{ total: number; list: ChannelRecord[] }>>({
     method: 'get',
     url: `/device/query/tree/${deviceId}`,
     params
@@ -132,7 +132,7 @@ export function queryDeviceTree(deviceId: string, params: DeviceQueryParams & { 
 }
 
 export function deviceRecord(params: { deviceId: string; channelId: string; recordCmdStr: string }) {
-  return request<WvpResult>({
+  return request<ApiResult>({
     method: 'get',
     url: '/device/control/record',
     params
@@ -146,7 +146,7 @@ export function deviceRecord(params: { deviceId: string; channelId: string; reco
  * 设备的样本（不传则返回全部）—— 设备上千时轮询体量才不会失控。
  */
 export function queryDeviceLatency(deviceIds?: string[]) {
-  return request<WvpResult<{ list: DeviceLatency[]; probeIntervalSecs: number }>>({
+  return request<ApiResult<{ list: DeviceLatency[]; probeIntervalSecs: number }>>({
     method: 'get',
     url: '/device/query/latency',
     params: deviceIds && deviceIds.length ? { deviceIds: deviceIds.join(',') } : undefined
@@ -188,7 +188,7 @@ export interface DeviceRecord {
   registerTime?: string
   updateTime?: string
   createTime?: string
-  /** 后端（WVP `Device.onLine`）返回的键名就是 `onLine` */
+  /** 后端返回的键名就是 `onLine`（大写 `L`） */
   onLine?: number | boolean
   /** 兼容其它来源；页面 isOnline() 两个都认 */
   online?: number | boolean

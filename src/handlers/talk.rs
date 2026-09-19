@@ -9,7 +9,7 @@ use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 
 use crate::error::{AppError, ErrorCode};
-use crate::response::WVPResult;
+use crate::response::ApiResult;
 use crate::AppState;
 
 // ========== Talk 对讲功能 ==========
@@ -19,7 +19,7 @@ use crate::AppState;
 pub async fn talk_start(
     State(state): State<AppState>,
     Path((device_id, channel_id)): Path<(String, String)>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     tracing::info!("[Talk] 开始对讲: device={}, channel={}", device_id, channel_id);
 
     // 获取 SIP 服务器
@@ -55,7 +55,7 @@ pub async fn talk_start(
                         session.device_ip,
                         session.device_port
                     );
-                    Ok(Json(WVPResult::success(serde_json::json!({
+                    Ok(Json(ApiResult::success(serde_json::json!({
                         "callId": session.call_id,
                         "deviceId": device_id,
                         "channelId": channel_id,
@@ -103,7 +103,7 @@ pub async fn talk_start(
 pub async fn talk_stop(
     State(state): State<AppState>,
     Path((device_id, channel_id)): Path<(String, String)>,
-) -> Result<Json<WVPResult<()>>, AppError> {
+) -> Result<Json<ApiResult<()>>, AppError> {
     tracing::info!("[Talk] 停止对讲: device={}, channel={}", device_id, channel_id);
 
     // 获取 SIP 服务器
@@ -119,7 +119,7 @@ pub async fn talk_stop(
     match result {
         Ok(_) => {
             tracing::info!("[Talk] BYE 发送成功");
-            Ok(Json(WVPResult::<()>::success_empty()))
+            Ok(Json(ApiResult::<()>::success_empty()))
         }
         Err(e) => {
             // 对讲可能已经结束（BYE 本身不报错），但**残留会话必须清掉**：
@@ -136,7 +136,7 @@ pub async fn talk_stop(
                 tracing::info!("[Talk] 已移除残留会话 call_id={}", stale.call_id);
             }
             // 对讲可能已经结束，返回成功以避免前端报错
-            Ok(Json(WVPResult::<()>::success_empty()))
+            Ok(Json(ApiResult::<()>::success_empty()))
         }
     }
 }
@@ -146,7 +146,7 @@ pub async fn talk_stop(
 pub async fn talk_invite(
     State(state): State<AppState>,
     Path((device_id, channel_id)): Path<(String, String)>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     tracing::info!("[Talk] 邀请对讲: device={}, channel={}", device_id, channel_id);
 
     // 获取 SIP 服务器
@@ -181,7 +181,7 @@ pub async fn talk_invite(
 
             tracing::info!("[Talk] 邀请发送成功: call_id={}", call_id);
 
-            Ok(Json(WVPResult::success(serde_json::json!({
+            Ok(Json(ApiResult::success(serde_json::json!({
                 "callId": call_id,
                 "deviceId": device_id,
                 "channelId": channel_id,
@@ -213,7 +213,7 @@ pub struct TalkAckQuery {
 pub async fn talk_ack(
     State(_state): State<AppState>,
     Query(q): Query<TalkAckQuery>,
-) -> Result<Json<WVPResult<()>>, AppError> {
+) -> Result<Json<ApiResult<()>>, AppError> {
     let call_id = q.call_id.as_deref()
         .or(q.device_id.as_deref())
         .ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 callId 或 deviceId"))?;
@@ -223,7 +223,7 @@ pub async fn talk_ack(
     // ACK 主要由 SIP 层处理，这里只做日志记录
     // SIP 服务器收到设备的 200 OK 后会自动发送 ACK
     
-    Ok(Json(WVPResult::<()>::success_empty()))
+    Ok(Json(ApiResult::<()>::success_empty()))
 }
 
 /// POST /api/talk/bye — 结束语音对讲
@@ -231,7 +231,7 @@ pub async fn talk_ack(
 pub async fn talk_bye(
     State(state): State<AppState>,
     Json(body): Json<TalkAckQuery>,
-) -> Result<Json<WVPResult<()>>, AppError> {
+) -> Result<Json<ApiResult<()>>, AppError> {
     let device_id = body.device_id.as_deref()
         .ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 deviceId"))?;
     let channel_id = body.channel_id.as_deref()
@@ -252,12 +252,12 @@ pub async fn talk_bye(
     match result {
         Ok(_) => {
             tracing::info!("[Talk] BYE 发送成功");
-            Ok(Json(WVPResult::<()>::success_empty()))
+            Ok(Json(ApiResult::<()>::success_empty()))
         }
         Err(e) => {
             tracing::error!("[Talk] BYE 发送失败: {}", e);
             // 仍然返回成功，避免前端报错
-            Ok(Json(WVPResult::<()>::success_empty()))
+            Ok(Json(ApiResult::<()>::success_empty()))
         }
     }
 }
@@ -266,7 +266,7 @@ pub async fn talk_bye(
 pub async fn talk_status(
     State(state): State<AppState>,
     Path((device_id, channel_id)): Path<(String, String)>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     tracing::debug!("[Talk] 查询状态: device={}, channel={}", device_id, channel_id);
 
     let sip_server = state.sip_server.as_ref()
@@ -288,7 +288,7 @@ pub async fn talk_status(
                 crate::sip::gb28181::talk::TalkStatus::Terminated => "terminated",
             };
             
-            Ok(Json(WVPResult::success(serde_json::json!({
+            Ok(Json(ApiResult::success(serde_json::json!({
                 "callId": session.call_id,
                 "deviceId": session.device_id,
                 "channelId": session.channel_id,
@@ -302,7 +302,7 @@ pub async fn talk_status(
             }))))
         }
         None => {
-            Ok(Json(WVPResult::success(serde_json::json!({
+            Ok(Json(ApiResult::success(serde_json::json!({
                 "deviceId": device_id,
                 "channelId": channel_id,
                 "status": "idle",
@@ -315,7 +315,7 @@ pub async fn talk_status(
 /// GET /api/talk/list — 获取所有活跃对讲会话列表
 pub async fn talk_list(
     State(state): State<AppState>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     tracing::debug!("[Talk] 获取对讲列表");
 
     // 获取 SIP 服务器和 TalkManager
@@ -351,7 +351,7 @@ pub async fn talk_list(
         })
     }).collect();
 
-    Ok(Json(WVPResult::success(serde_json::json!({
+    Ok(Json(ApiResult::success(serde_json::json!({
         "total": list.len(),
         "list": list
     }))))

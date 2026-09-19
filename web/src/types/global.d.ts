@@ -18,11 +18,11 @@ declare module 'vue-router' {
 
 declare global {
   /**
-   * 后端 WVPResult 响应：{ code, msg, data }
+   * 后端 ApiResult 响应：{ code, msg, data }
    * 全局可用，无需重复 import。
    */
   // eslint-disable-next-line @typescript-eslint/no-empty-object-type
-  interface WvpResult<T = unknown> {
+  interface ApiResult<T = unknown> {
     code: number
     msg: string
     data: T

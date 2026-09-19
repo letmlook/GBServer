@@ -1,4 +1,4 @@
-//! D2: RTP/PS control endpoints (parity with reference Java controllers).
+//! RTP/PS 收流与发流控制端点。
 //! Each endpoint forwards to ZLM's `openRtpServer`, `closeRtpServer`,
 //! `sendRtp` / `stopSendRtp` family of API calls.
 
@@ -8,7 +8,7 @@ use axum::{
 };
 use serde::Deserialize;
 
-use crate::response::WVPResult;
+use crate::response::ApiResult;
 use crate::AppState;
 use crate::zlm::OpenRtpServerRequest;
 
@@ -26,9 +26,9 @@ pub struct OpenRtpQuery {
 pub async fn rtp_receive_open(
     State(state): State<AppState>,
     Json(q): Json<OpenRtpQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let Some(zlm) = state.zlm_clients.values().next() else {
-        return Json(WVPResult::error("no ZLM available"));
+        return Json(ApiResult::error("no ZLM available"));
     };
     let stream_id = q.stream_id.unwrap_or_else(|| {
         format!("rtp_recv_{}", chrono::Utc::now().timestamp_millis())
@@ -42,10 +42,10 @@ pub async fn rtp_receive_open(
         recv_port: None,
     };
     match zlm.open_rtp_server(&req).await {
-        Ok(info) => Json(WVPResult::success(serde_json::json!({
+        Ok(info) => Json(ApiResult::success(serde_json::json!({
             "streamId": stream_id, "port": info.port, "ssrc": info.ssrc,
         }))),
-        Err(e) => Json(WVPResult::error(format!("ZLM error: {}", e))),
+        Err(e) => Json(ApiResult::error(format!("ZLM error: {}", e))),
     }
 }
 
@@ -53,19 +53,19 @@ pub async fn rtp_receive_open(
 pub async fn rtp_receive_close(
     Path(stream_id): Path<String>,
     State(state): State<AppState>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let Some(zlm) = state.zlm_clients.values().next() else {
-        return Json(WVPResult::error("no ZLM available"));
+        return Json(ApiResult::error("no ZLM available"));
     };
     match zlm.close_rtp_server_ex(&stream_id).await {
         // `hit=0` = ZLM 上没有这条收流服务：如实告知，不报"已关闭"
-        Ok(true) => Json(WVPResult::success(
+        Ok(true) => Json(ApiResult::success(
             serde_json::json!({"streamId": stream_id, "closed": true}),
         )),
-        Ok(false) => Json(WVPResult::error(format!(
+        Ok(false) => Json(ApiResult::error(format!(
             "没有正在收流的服务: stream={stream_id}"
         ))),
-        Err(e) => Json(WVPResult::error(format!("ZLM error: {}", e))),
+        Err(e) => Json(ApiResult::error(format!("ZLM error: {}", e))),
     }
 }
 
@@ -85,16 +85,16 @@ pub struct SendRtpBody {
 pub async fn rtp_send_start(
     State(state): State<AppState>,
     Json(b): Json<SendRtpBody>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let Some(zlm) = state.zlm_clients.values().next() else {
-        return Json(WVPResult::error("no ZLM available"));
+        return Json(ApiResult::error("no ZLM available"));
     };
     let stream_id = b.stream_id.unwrap_or_default();
     let ssrc = b.ssrc.unwrap_or_default();
     let target_ip = b.target_ip.unwrap_or_default();
     let target_port = b.target_port.unwrap_or(0);
     if stream_id.is_empty() || ssrc.is_empty() || target_ip.is_empty() || target_port == 0 {
-        return Json(WVPResult::error("missing stream_id/ssrc/target_ip/target_port"));
+        return Json(ApiResult::error("missing stream_id/ssrc/target_ip/target_port"));
     }
     // **真实 ZLM 没有 `/index/api/sendRtpInfo`**（`getApiList` 里没有，直接调用
     // 返回 404 的 HTML）—— 此前这个端点必然失败。真正的"把流推到远端"接口是
@@ -123,7 +123,7 @@ pub async fn rtp_send_start(
         )
         .await
     {
-        Ok(()) => Json(WVPResult::success(serde_json::json!({
+        Ok(()) => Json(ApiResult::success(serde_json::json!({
             "streamId": stream_id,
             "app": app,
             "stream": stream,
@@ -131,7 +131,7 @@ pub async fn rtp_send_start(
             "targetPort": target_port,
             "dstUrl": dst_url,
         }))),
-        Err(e) => Json(WVPResult::error(format!("ZLM error: {}", e))),
+        Err(e) => Json(ApiResult::error(format!("ZLM error: {}", e))),
     }
 }
 
@@ -157,9 +157,9 @@ pub async fn rtp_send_stop(
     Path(stream_id): Path<String>,
     axum::extract::Query(q): axum::extract::Query<StopSendRtpQuery>,
     State(state): State<AppState>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let Some(zlm) = state.zlm_clients.values().next() else {
-        return Json(WVPResult::error("no ZLM available"));
+        return Json(ApiResult::error("no ZLM available"));
     };
     let app = q.app.unwrap_or_else(|| "rtp".to_string());
 
@@ -183,16 +183,16 @@ pub async fn rtp_send_stop(
     {
         // ZLM 的 `existed` 说明这条推流**本来是否存在**：
         // 为 false 时不能报"已停止"（否则第三方会以为推流被关掉了）
-        Ok(true) => Json(WVPResult::success(serde_json::json!({
+        Ok(true) => Json(ApiResult::success(serde_json::json!({
             "streamId": stream_id,
             "app": app,
             "ssrc": ssrc,
             "stopped": true,
         }))),
-        Ok(false) => Json(WVPResult::error(format!(
+        Ok(false) => Json(ApiResult::error(format!(
             "没有正在推送的流: stream={stream_id} app={app}"
         ))),
-        Err(e) => Json(WVPResult::error(format!("ZLM stopSendRtp 失败: {}", e))),
+        Err(e) => Json(ApiResult::error(format!("ZLM stopSendRtp 失败: {}", e))),
     }
 }
 
@@ -202,7 +202,7 @@ pub async fn rtp_send_stop(
 pub async fn ps_receive_open(
     State(state): State<AppState>,
     Json(q): Json<OpenRtpQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     rtp_receive_open(State(state), Json(q)).await
 }
 
@@ -210,7 +210,7 @@ pub async fn ps_receive_open(
 pub async fn ps_receive_close(
     Path(stream_id): Path<String>,
     State(state): State<AppState>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     rtp_receive_close(Path(stream_id), State(state)).await
 }
 
@@ -218,7 +218,7 @@ pub async fn ps_receive_close(
 pub async fn ps_send_start(
     State(state): State<AppState>,
     Json(b): Json<SendRtpBody>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     rtp_send_start(State(state), Json(b)).await
 }
 
@@ -227,17 +227,17 @@ pub async fn ps_send_stop(
     Path(stream_id): Path<String>,
     axum::extract::Query(q): axum::extract::Query<StopSendRtpQuery>,
     State(state): State<AppState>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     rtp_send_stop(Path(stream_id), axum::extract::Query(q), State(state)).await
 }
 
 /// GET /api/ps/getTestPort — return a free UDP port for testing
-pub async fn ps_get_test_port() -> Json<WVPResult<serde_json::Value>> {
+pub async fn ps_get_test_port() -> Json<ApiResult<serde_json::Value>> {
     use std::net::UdpSocket;
     let port = UdpSocket::bind("127.0.0.1:0").ok()
         .and_then(|s| s.local_addr().ok().map(|a| a.port()))
         .unwrap_or(0);
-    Json(WVPResult::success(serde_json::json!({"port": port})))
+    Json(ApiResult::success(serde_json::json!({"port": port})))
 }
 
 #[cfg(test)]
@@ -249,16 +249,16 @@ mod tests {
 }
 
 // ============================================================================
-// WVP 第三方对接（`vmanager/rtp|ps`）的查询参数风格入口
+// 第三方对接（`vmanager/rtp|ps`）的查询参数风格入口
 //
-// WVP 的这一套用 `?stream=`（收流）/ `?callId=`（发流），而本平台的历史实现是
+// 这一套用 `?stream=`（收流）/ `?callId=`（发流），而本平台的历史实现是
 // `POST /api/rtp/send/stop/{stream_id}` 这种路径参数形式。两套都保留：
-// 第三方按 WVP 文档调用时不再落到 SPA 兜底。
+// 第三方按既有文档调用时不再落到 SPA 兜底。
 // ============================================================================
 
 #[derive(Debug, Default, Deserialize)]
 pub struct ThirdPartyStreamQuery {
-    /// WVP 参数名为 `stream`；兼容 `streamId`/`stream_id`。
+    /// 参数名为 `stream`；兼容 `streamId`/`stream_id`。
     #[serde(
         alias = "stream",
         alias = "streamId",
@@ -267,7 +267,7 @@ pub struct ThirdPartyStreamQuery {
         deserialize_with = "crate::serde_flex::de_opt_string"
     )]
     pub stream: Option<String>,
-    /// 发流用的唯一标识（WVP `callId`），本平台等价于 stream_id。
+    /// 发流用的唯一标识（`callId`），本平台等价于 stream_id。
     #[serde(
         alias = "callId",
         alias = "call_id",
@@ -295,10 +295,10 @@ impl ThirdPartyStreamQuery {
 pub async fn rtp_receive_close_query(
     axum::extract::Query(q): axum::extract::Query<ThirdPartyStreamQuery>,
     State(state): State<AppState>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     match q.target() {
         Some(stream) => rtp_receive_close(Path(stream), State(state)).await,
-        None => Json(WVPResult::error("缺少 stream 参数")),
+        None => Json(ApiResult::error("缺少 stream 参数")),
     }
 }
 
@@ -306,10 +306,10 @@ pub async fn rtp_receive_close_query(
 pub async fn ps_receive_close_query(
     axum::extract::Query(q): axum::extract::Query<ThirdPartyStreamQuery>,
     State(state): State<AppState>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     match q.target() {
         Some(stream) => ps_receive_close(Path(stream), State(state)).await,
-        None => Json(WVPResult::error("缺少 stream 参数")),
+        None => Json(ApiResult::error("缺少 stream 参数")),
     }
 }
 
@@ -317,7 +317,7 @@ pub async fn ps_receive_close_query(
 pub async fn rtp_send_stop_query(
     axum::extract::Query(q): axum::extract::Query<ThirdPartyStreamQuery>,
     State(state): State<AppState>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     match q.target() {
         Some(stream) => {
             rtp_send_stop(
@@ -330,7 +330,7 @@ pub async fn rtp_send_stop_query(
             )
             .await
         }
-        None => Json(WVPResult::error("缺少 callId 参数")),
+        None => Json(ApiResult::error("缺少 callId 参数")),
     }
 }
 
@@ -338,7 +338,7 @@ pub async fn rtp_send_stop_query(
 pub async fn ps_send_stop_query(
     axum::extract::Query(q): axum::extract::Query<ThirdPartyStreamQuery>,
     State(state): State<AppState>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     match q.target() {
         Some(stream) => {
             ps_send_stop(
@@ -351,6 +351,6 @@ pub async fn ps_send_stop_query(
             )
             .await
         }
-        None => Json(WVPResult::error("缺少 callId 参数")),
+        None => Json(ApiResult::error("缺少 callId 参数")),
     }
 }

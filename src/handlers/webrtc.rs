@@ -1,7 +1,7 @@
 use axum::{extract::State, Json};
 use serde::Deserialize;
 
-use crate::response::WVPResult;
+use crate::response::ApiResult;
 use crate::AppState;
 
 #[derive(Debug, Deserialize)]
@@ -21,7 +21,7 @@ pub struct WebRtcOfferRequest {
 pub async fn webrtc_play(
     State(state): State<AppState>,
     Json(req): Json<WebRtcOfferRequest>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let app = req.app.as_deref().unwrap_or("rtp");
     let stream = req.stream.clone().unwrap_or_else(|| {
         match (&req.device_id, &req.channel_id) {
@@ -30,12 +30,12 @@ pub async fn webrtc_play(
         }
     });
     if stream.is_empty() {
-        return Json(WVPResult::error("缺少 stream（或 deviceId+channelId）"));
+        return Json(ApiResult::error("缺少 stream（或 deviceId+channelId）"));
     }
     let Some(ref sdp_offer) = req.sdp.clone().filter(|s| !s.trim().is_empty()) else {
-        return Json(WVPResult::error("缺少 sdp（WebRTC offer）"));
+        return Json(ApiResult::error("缺少 sdp（WebRTC offer）"));
     };
-    // WVP 的语义：`type=play` 拉流、`type=push` 推流；缺省拉流。
+    // 参数语义：`type=play` 拉流、`type=push` 推流；缺省拉流。
     let offer_type = req
         .offer_type
         .as_deref()
@@ -55,7 +55,7 @@ pub async fn webrtc_play(
         let mut url = match reqwest::Url::parse(&format!("{}/index/api/webrtc", zlm_client.base_url()))
         {
             Ok(u) => u,
-            Err(e) => return Json(WVPResult::error(format!("ZLM 地址非法: {e}"))),
+            Err(e) => return Json(ApiResult::error(format!("ZLM 地址非法: {e}"))),
         };
         url.query_pairs_mut()
             .append_pair("secret", &zlm_client.secret)
@@ -86,11 +86,11 @@ pub async fn webrtc_play(
                             let answer_sdp =
                                 body.get("sdp").and_then(|v| v.as_str()).unwrap_or("");
                             if answer_sdp.is_empty() {
-                                return Json(WVPResult::error(
+                                return Json(ApiResult::error(
                                     "ZLM 返回成功但没有 answer SDP",
                                 ));
                             }
-                            return Json(WVPResult::success(serde_json::json!({
+                            return Json(ApiResult::success(serde_json::json!({
                                 "sdp": answer_sdp,
                                 "type": "answer",
                                 "app": app,
@@ -103,11 +103,11 @@ pub async fn webrtc_play(
                             .get("msg")
                             .and_then(|v| v.as_str())
                             .unwrap_or("Unknown error");
-                        return Json(WVPResult::error(format!("ZLM WebRTC error: {}", msg)));
+                        return Json(ApiResult::error(format!("ZLM WebRTC error: {}", msg)));
                     }
                     // 有些 ZLM 版本/接口（whep）直接回 SDP 文本
                     Err(_) if raw.trim_start().starts_with("v=") => {
-                        return Json(WVPResult::success(serde_json::json!({
+                        return Json(ApiResult::success(serde_json::json!({
                             "sdp": raw,
                             "type": "answer",
                             "app": app,
@@ -115,7 +115,7 @@ pub async fn webrtc_play(
                         })));
                     }
                     Err(e) => {
-                        return Json(WVPResult::error(format!(
+                        return Json(ApiResult::error(format!(
                             "解析 ZLM WebRTC 响应失败（HTTP {status}）: {e}; body={}",
                             raw.chars().take(200).collect::<String>()
                         )));
@@ -123,10 +123,10 @@ pub async fn webrtc_play(
                 }
             }
             Err(e) => {
-                return Json(WVPResult::error(format!("WebRTC request failed: {}", e)));
+                return Json(ApiResult::error(format!("WebRTC request failed: {}", e)));
             }
         }
     }
 
-    Json(WVPResult::error("ZLM not configured"))
+    Json(ApiResult::error("ZLM not configured"))
 }

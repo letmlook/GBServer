@@ -9,7 +9,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 
 use crate::db;
-use crate::response::WVPResult;
+use crate::response::ApiResult;
 use crate::AppState;
 
 // ---------- shared DTOs ----------
@@ -116,11 +116,11 @@ pub struct PageQuery {
     pub page: Option<u32>,
     #[serde(default)]
     pub count: Option<u32>,
-    /// 关键字。WVP 的参数名是 `query`；`keyword` 是本平台历史拼写，两者都收
+    /// 关键字。参数别名 `query`；`keyword` 是本平台历史拼写，两者都收
     /// —— 此前只认 `keyword`，前端按签名传 `query` 时被静默丢弃，搜索框毫无反应。
     #[serde(default, alias = "query")]
     pub keyword: Option<String>,
-    /// 在线过滤。WVP 叫 `status`；本平台前端叫 `online`。
+    /// 在线过滤。参数别名 `status`；本平台前端叫 `online`。
     /// 此前 DTO 里根本没有这个字段，handler 还把这个参数**硬编码为 None**，
     /// 于是"只看在线"完全无效。
     #[serde(default, alias = "status")]
@@ -209,9 +209,8 @@ fn channel_to_mobile(ch: &db::DeviceChannel) -> CameraMobile {
 
 /// 摄像机行集合（`/camera/list` 与 `/camera/list-with-child` 共用）。
 ///
-/// **行级过滤 + 行级分页**：WVP 的同名接口是在**通道**维度过滤和分页的
-/// （`ChannelProvider.queryListWithChildForSy`：`query` 匹配通道的
-/// `gb_device_id`/`gb_name`，`status` 过滤通道在线状态，PageHelper 作用于通道查询）。
+/// **行级过滤 + 行级分页**：过滤和分页都在**通道**维度进行（`query` 匹配通道的
+/// `gb_device_id`/`gb_name`，`status` 过滤通道在线状态，分页作用于通道查询）。
 /// 此前这里按**设备**维度分页 + 过滤，于是：
 ///   * 按通道名搜索永远 0 结果（设备的 `name` 里没有通道名）；
 ///   * `count=1000` 被 db 层截到 100，第 101 台设备及其通道静默消失；
@@ -298,17 +297,17 @@ async fn camera_rows(state: &AppState, q: &PageQuery) -> (Vec<CameraRow>, u64, u
 
 /// GET /api/sy/camera/list
 ///
-/// WVP 的同名端点返回的是**通道**列表（`CameraChannel`）。此前这里返回的是
+/// 本端点返回的是**通道**列表。此前这里返回的是
 /// 设备行（`is_device = true`、`channel_id == device_id`），照 live 页既有的
 /// 过滤口径（`!c.is_device`）会被整批滤掉 → 通道树为空；默认 `count=15`
 /// 还会进一步截断。现在与 `/list-with-child` 共用同一套通道行。
 pub async fn camera_list(
     State(state): State<AppState>,
     Query(q): Query<PageQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let (rows, total, page, count) = camera_rows(&state, &q).await;
     let list_total = rows.len();
-    Json(WVPResult::success(serde_json::json!({
+    Json(ApiResult::success(serde_json::json!({
         "list": rows,
         "total": total,
         "listTotal": list_total,
@@ -321,10 +320,10 @@ pub async fn camera_list(
 pub async fn camera_list_with_child(
     State(state): State<AppState>,
     Query(q): Query<PageQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let (rows, total, page, count) = camera_rows(&state, &q).await;
     let list_total = rows.len();
-    Json(WVPResult::success(serde_json::json!({
+    Json(ApiResult::success(serde_json::json!({
         "list": rows,
         "total": total,
         "listTotal": list_total,
@@ -336,10 +335,10 @@ pub async fn camera_list_with_child(
 /// GET /api/sy/camera/list-for-mobile — slim rows, channels only
 pub async fn camera_list_for_mobile(
     State(state): State<AppState>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let channels = db::device::list_all_channels(&state.pool).await.unwrap_or_default();
     let rows: Vec<CameraMobile> = channels.iter().map(channel_to_mobile).collect();
-    Json(WVPResult::success(serde_json::json!({
+    Json(ApiResult::success(serde_json::json!({
         "list": rows,
         "total": rows.len(),
     })))
@@ -349,7 +348,7 @@ pub async fn camera_list_for_mobile(
 pub async fn camera_cont_with_child(
     State(state): State<AppState>,
     Query(q): Query<PageQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     camera_list_with_child(State(state), Query(q)).await
 }
 
@@ -357,7 +356,7 @@ pub async fn camera_cont_with_child(
 pub async fn camera_list_box(
     State(state): State<AppState>,
     Query(q): Query<BoxQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let channels = db::device::list_all_channels(&state.pool).await.unwrap_or_default();
     let min_lng = q.min_lng.unwrap_or(f64::MIN);
     let min_lat = q.min_lat.unwrap_or(f64::MIN);
@@ -369,7 +368,7 @@ pub async fn camera_list_box(
             _ => false,
         }
     }).map(channel_to_mobile).collect();
-    Json(WVPResult::success(serde_json::json!({
+    Json(ApiResult::success(serde_json::json!({
         "list": out,
         "total": out.len(),
     })))
@@ -379,7 +378,7 @@ pub async fn camera_list_box(
 pub async fn camera_list_circle(
     State(state): State<AppState>,
     Query(q): Query<CircleQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let channels = db::device::list_all_channels(&state.pool).await.unwrap_or_default();
     let (cx, cy, r) = (q.lng.unwrap_or(0.0), q.lat.unwrap_or(0.0), q.radius.unwrap_or(0.0));
     let out: Vec<CameraMobile> = channels.iter().filter(|c| {
@@ -389,7 +388,7 @@ pub async fn camera_list_circle(
             (dx * dx + dy * dy).sqrt() <= r
         } else { false }
     }).map(channel_to_mobile).collect();
-    Json(WVPResult::success(serde_json::json!({
+    Json(ApiResult::success(serde_json::json!({
         "list": out,
         "total": out.len(),
     })))
@@ -399,7 +398,7 @@ pub async fn camera_list_circle(
 pub async fn camera_list_polygon(
     State(state): State<AppState>,
     Query(q): Query<PolygonQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let points_str = q.points.unwrap_or_default();
     let polygon: Vec<(f64, f64)> = points_str.split(';').filter_map(|p| {
         let mut parts = p.split(',');
@@ -413,7 +412,7 @@ pub async fn camera_list_polygon(
             point_in_polygon(lng, lat, &polygon)
         } else { false }
     }).map(channel_to_mobile).collect();
-    Json(WVPResult::success(serde_json::json!({
+    Json(ApiResult::success(serde_json::json!({
         "list": out,
         "total": out.len(),
     })))
@@ -441,7 +440,7 @@ fn point_in_polygon(lng: f64, lat: f64, polygon: &[(f64, f64)]) -> bool {
 pub async fn camera_list_address(
     State(state): State<AppState>,
     Query(q): Query<AddressQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let code = q.civil_code.unwrap_or_default();
     let channels = db::device::list_all_channels(&state.pool).await.unwrap_or_default();
     let out: Vec<CameraMobile> = if code.is_empty() {
@@ -452,7 +451,7 @@ pub async fn camera_list_address(
             .map(channel_to_mobile)
             .collect()
     };
-    Json(WVPResult::success(serde_json::json!({
+    Json(ApiResult::success(serde_json::json!({
         "list": out,
         "total": out.len(),
     })))
@@ -462,7 +461,7 @@ pub async fn camera_list_address(
 pub async fn camera_list_ids(
     State(state): State<AppState>,
     Query(q): Query<IdsQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let ids_str = q.ids.unwrap_or_default();
     let wanted: Vec<&str> = ids_str.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
     let channels = db::device::list_all_channels(&state.pool).await.unwrap_or_default();
@@ -473,7 +472,7 @@ pub async fn camera_list_ids(
         })
         .map(channel_to_mobile)
         .collect();
-    Json(WVPResult::success(serde_json::json!({
+    Json(ApiResult::success(serde_json::json!({
         "list": out,
         "total": out.len(),
     })))
@@ -482,7 +481,7 @@ pub async fn camera_list_ids(
 /// GET /api/sy/camera/meeting/list — channels with sub_count >= 1 (multi-channel devices)
 pub async fn camera_meeting_list(
     State(state): State<AppState>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let channels = db::device::list_all_channels(&state.pool).await.unwrap_or_default();
     let devices = db::device::list_devices_paged(&state.pool, 1, 1, None, None).await.unwrap_or_default();
     let _ = devices; // devices not strictly needed; meeting = devices with sub_count > 0
@@ -499,7 +498,7 @@ pub async fn camera_meeting_list(
             "status": c.status,
         })
     }).collect();
-    Json(WVPResult::success(serde_json::json!({
+    Json(ApiResult::success(serde_json::json!({
         "list": out,
         "total": out.len(),
     })))
@@ -592,11 +591,11 @@ pub struct CameraControlQuery {
 pub async fn camera_control_play(
     State(state): State<AppState>,
     axum::extract::Query(q): axum::extract::Query<CameraControlQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let device_id = q.device_id.clone().unwrap_or_default();
     let channel_id = q.channel_id.clone().unwrap_or_default();
     if device_id.is_empty() || channel_id.is_empty() {
-        return Json(WVPResult::error("deviceId and channelId required"));
+        return Json(ApiResult::error("deviceId and channelId required"));
     }
     tracing::info!(
         "sy/camera/control/play → play_start {}/{}",
@@ -612,11 +611,11 @@ pub async fn camera_control_play(
 pub async fn camera_control_stop(
     State(state): State<AppState>,
     axum::extract::Query(q): axum::extract::Query<CameraControlQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let device_id = q.device_id.clone().unwrap_or_default();
     let channel_id = q.channel_id.clone().unwrap_or_default();
     if device_id.is_empty() || channel_id.is_empty() {
-        return Json(WVPResult::error("deviceId and channelId required"));
+        return Json(ApiResult::error("deviceId and channelId required"));
     }
     tracing::info!(
         "sy/camera/control/stop → play_stop {}/{}",
@@ -632,12 +631,12 @@ pub async fn camera_control_stop(
 pub async fn camera_control_ptz(
     State(state): State<AppState>,
     axum::extract::Query(q): axum::extract::Query<CameraControlQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let device_id = q.device_id.clone().unwrap_or_default();
     let channel_id = q.channel_id.clone().unwrap_or_default();
     let command = q.command.clone().unwrap_or_default();
     if device_id.is_empty() || channel_id.is_empty() || command.is_empty() {
-        return Json(WVPResult::error("deviceId, channelId and command required"));
+        return Json(ApiResult::error("deviceId, channelId and command required"));
     }
     tracing::info!(
         "sy/camera/control/ptz → device_ptz {}/{} cmd={} speed={:?} preset={:?}",
@@ -754,7 +753,7 @@ mod camera_contract_tests {
         serde_json::from_value(v).expect("PageQuery")
     }
 
-    /// 前端（WVP）用 `query` 做关键字，本平台历史拼写是 `keyword`；`online`/`status`
+    /// 前端用 `query` 做关键字，本平台历史拼写是 `keyword`；`online`/`status`
     /// 与 `civilCode` 也必须能绑上 —— 此前这些参数全部被静默丢弃。
     #[test]
     fn page_query_accepts_frontend_param_names() {
@@ -786,7 +785,7 @@ mod camera_contract_tests {
         let d = res.0.data.unwrap();
         // 2 个通道 + 1 个无通道设备自身那一行
         assert_eq!(d["listTotal"], 3);
-        assert_eq!(d["total"], 3, "total 是匹配的行数（WVP 在通道维度分页）");
+        assert_eq!(d["total"], 3, "total 是匹配的行数（本平台在通道维度分页）");
         let list = d["list"].as_array().unwrap();
         assert!(list.iter().any(|r| r["channel_id"] == "34020000001310000001"));
         assert!(list.iter().any(|r| r["is_device"] == true));

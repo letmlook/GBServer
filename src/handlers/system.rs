@@ -1,6 +1,6 @@
 //! Phase 7.6: System info / stats / online users endpoints.
 //!
-//! Designed to mirror WVP-Pro's `SystemController` endpoints for frontend
+//! Designed to serve the frontend's system-management endpoints for
 //! compatibility. Returns basic runtime + cluster + DB aggregate counts.
 
 use std::sync::OnceLock;
@@ -8,7 +8,7 @@ use std::sync::OnceLock;
 use axum::extract::State;
 use axum::Json;
 
-use crate::response::WVPResult;
+use crate::response::ApiResult;
 use crate::state::StreamStateRepository;
 use crate::AppState;
 
@@ -19,10 +19,10 @@ fn started_at() -> chrono::DateTime<chrono::Utc> {
 }
 
 /// GET /api/system/info — version + uptime + features + cluster node id
-pub async fn system_info(State(state): State<AppState>) -> Json<WVPResult<serde_json::Value>> {
+pub async fn system_info(State(state): State<AppState>) -> Json<ApiResult<serde_json::Value>> {
     let now = chrono::Utc::now();
     let uptime = now.signed_duration_since(started_at()).num_seconds();
-    Json(WVPResult::success(serde_json::json!({
+    Json(ApiResult::success(serde_json::json!({
         "version": env!("CARGO_PKG_VERSION"),
         "nodeId": state.cluster_registry.config().node_id,
         "startedAt": started_at().to_rfc3339(),
@@ -38,7 +38,7 @@ pub async fn system_info(State(state): State<AppState>) -> Json<WVPResult<serde_
 }
 
 /// GET /api/system/stats — aggregate counts (devices / streams / invites / JT / WS)
-pub async fn system_stats(State(state): State<AppState>) -> Json<WVPResult<serde_json::Value>> {
+pub async fn system_stats(State(state): State<AppState>) -> Json<ApiResult<serde_json::Value>> {
     // DB-side count (best-effort, never error)
     let devices_total = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_device")
         .fetch_one(&state.pool)
@@ -61,7 +61,7 @@ pub async fn system_stats(State(state): State<AppState>) -> Json<WVPResult<serde
     // Cluster
     let cluster_nodes = state.cluster_registry.list_active().await;
 
-    Json(WVPResult::success(serde_json::json!({
+    Json(ApiResult::success(serde_json::json!({
         "devices": { "total": devices_total, "online": online },
         "channels": { "total": channels_total },
         "streams": { "active": streams },
@@ -78,15 +78,15 @@ pub async fn system_stats(State(state): State<AppState>) -> Json<WVPResult<serde
 }
 
 /// GET /api/system/version — minimal version endpoint
-pub async fn system_version() -> Json<WVPResult<serde_json::Value>> {
-    Json(WVPResult::success(serde_json::json!({
+pub async fn system_version() -> Json<ApiResult<serde_json::Value>> {
+    Json(ApiResult::success(serde_json::json!({
         "version": env!("CARGO_PKG_VERSION"),
         "name": "GBServer",
     })))
 }
 
 /// GET /api/system/online-users — Phase 7.6: list online users (basic impl)
-pub async fn online_users(State(state): State<AppState>) -> Json<WVPResult<serde_json::Value>> {
+pub async fn online_users(State(state): State<AppState>) -> Json<ApiResult<serde_json::Value>> {
     // Without a gb_online_user table yet, derive from active WebSocket clients.
     // This is a best-effort approximation; the full implementation requires a
     // gb_online_user table (Phase 8 follow-up).
@@ -98,7 +98,7 @@ pub async fn online_users(State(state): State<AppState>) -> Json<WVPResult<serde
             "source": "ws",
         }))
         .collect();
-    Json(WVPResult::success(serde_json::json!({
+    Json(ApiResult::success(serde_json::json!({
         "list": users,
         "total": users.len(),
         "note": "approximate count via WS clients; full gb_online_user table pending",

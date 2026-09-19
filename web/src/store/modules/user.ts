@@ -33,7 +33,7 @@ export const useUserStore = defineStore('user', {
   }),
   actions: {
     async login(userInfo: LoginPayload & { remember?: boolean }) {
-      const res = (await login(userInfo)) as unknown as WvpResult<LoginResult>
+      const res = (await login(userInfo)) as unknown as ApiResult<LoginResult>
       const data = res.data
       this.token = data.accessToken
       this.name = data.username
@@ -49,7 +49,7 @@ export const useUserStore = defineStore('user', {
     },
     async userInfo() {
       try {
-        const res = (await getUserInfo()) as unknown as WvpResult<UserInfoResult>
+        const res = (await getUserInfo()) as unknown as ApiResult<UserInfoResult>
         if (res?.data) {
           this.userId = res.data.id ?? this.userId
           if (res.data.username) this.name = res.data.username

@@ -1,5 +1,5 @@
 import { request } from '@/utils/request'
-import type { WvpResult } from '@/types/api'
+import type { ApiResult } from '@/types/api'
 
 export interface CameraItem {
   id: number
@@ -39,7 +39,7 @@ export interface CameraListResponse {
 
 /**
  * 取所有摄像机（含通道），构建设备 / 通道树用
- * 与原 WVP Java 版 /api/sy/camera/list-with-child 兼容
+ * 与早期前端的 /api/sy/camera/list-with-child 兼容
  */
 export function cameraListWithChild(params: {
   page?: number
@@ -48,7 +48,7 @@ export function cameraListWithChild(params: {
   online?: boolean
   civilCode?: string
 } = {}) {
-  return request<WvpResult<CameraListResponse>>({
+  return request<ApiResult<CameraListResponse>>({
     method: 'get',
     url: '/sy/camera/list-with-child',
     params,
@@ -56,7 +56,7 @@ export function cameraListWithChild(params: {
 }
 
 /**
- * 取摄像机通道列表（WVP 同名端点返回的也是通道）。
+ * 取摄像机通道列表（同名端点返回的也是通道）。
  *
  * 注意：后端现在返回的是**通道级**行（设备没有通道时用设备自身那一行，
  * `is_device = true`）。此前它返回的是纯设备行，照 live 页的
@@ -68,7 +68,7 @@ export function cameraList(params: {
   query?: string
   online?: boolean
 } = {}) {
-  return request<WvpResult<CameraListResponse>>({
+  return request<ApiResult<CameraListResponse>>({
     method: 'get',
     url: '/sy/camera/list',
     params,

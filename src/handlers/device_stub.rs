@@ -35,7 +35,7 @@ use crate::db::{
     update_device_stream_mode,
 };
 use crate::error::{AppError, ErrorCode};
-use crate::response::WVPResult;
+use crate::response::ApiResult;
 use crate::state::StreamStateRepository;
 use crate::AppState;
 use std::time::Duration;
@@ -53,7 +53,7 @@ pub struct SyncStatusQuery {
 pub async fn sync_status(
     State(state): State<AppState>,
     Query(q): Query<SyncStatusQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let requested_device_id = q.device_id.unwrap_or_default();
     let db_device = if requested_device_id.is_empty() {
         None
@@ -77,7 +77,7 @@ pub async fn sync_status(
             }
         };
         let active_count = subscriptions.len();
-        // `total/current/errorMsg/syncIng` 是 WVP `SyncStatus` 的字段，
+        // `total/current/errorMsg/syncIng` 是同步状态接口的固定键名，
         // 前端（含 legacy 的同步进度弹窗）靠它们算百分比并显示错误。
         // 此前这几个键一个都没有 → 进度条恒为 0/空。
         let total = db_device
@@ -85,7 +85,7 @@ pub async fn sync_status(
             .and_then(|item| item.channel_count)
             .unwrap_or(0) as i64;
         let syncing = active_count > 0;
-        Json(WVPResult::success(serde_json::json!({
+        Json(ApiResult::success(serde_json::json!({
             "deviceId": if requested_device_id.is_empty() { serde_json::Value::Null } else { serde_json::json!(requested_device_id) },
             "status": if syncing { "active" } else { "idle" },
             "activeSubscriptions": active_count,
@@ -98,7 +98,7 @@ pub async fn sync_status(
             "message": if syncing { "正在同步设备目录" } else { "同步完成" }
         })))
     } else {
-        Json(WVPResult::success(serde_json::json!({
+        Json(ApiResult::success(serde_json::json!({
             "deviceId": if requested_device_id.is_empty() { serde_json::Value::Null } else { serde_json::json!(requested_device_id) },
             "status": "idle",
             "online": db_device.as_ref().and_then(|item| item.on_line).unwrap_or(false),
@@ -116,12 +116,12 @@ pub async fn sync_status(
 pub async fn device_delete(
     State(state): State<AppState>,
     Path(device_id): Path<String>,
-) -> Result<Json<WVPResult<()>>, AppError> {
+) -> Result<Json<ApiResult<()>>, AppError> {
     delete_device_cascade(&state.pool, &device_id).await?;
     // 连带清掉该设备的延迟样本：设备没了，注册表里的历史值再留着只会在
     // 同 ID 重新注册时冒充成"当前延迟"。
     crate::sip::gb28181::latency_registry().forget(&device_id);
-    Ok(Json(WVPResult::<()>::success_empty()))
+    Ok(Json(ApiResult::<()>::success_empty()))
 }
 
 /// GET /api/device/query/devices/:device_id/sync
@@ -131,7 +131,7 @@ pub async fn device_delete(
 pub async fn device_sync(
     State(state): State<AppState>,
     Path(device_id): Path<String>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     tracing::info!("Device sync requested for: {}", device_id);
 
     if let Some(ref sip_server) = state.sip_server {
@@ -210,7 +210,7 @@ pub async fn device_sync(
                             _ => "已发送目录查询，设备尚未响应",
                         };
 
-                        return Json(WVPResult::success(serde_json::json!({
+                        return Json(ApiResult::success(serde_json::json!({
                             "deviceId": device_id,
                             "syncState": sync_state,
                             "totalPackets": total,
@@ -223,16 +223,16 @@ pub async fn device_sync(
                     }
                     Err(e) => {
                         tracing::error!("Failed to send catalog query: {}", e);
-                        return Json(WVPResult::error(&format!("发送同步命令失败: {}", e)));
+                        return Json(ApiResult::error(&format!("发送同步命令失败: {}", e)));
                     }
                 }
             } else {
-                return Json(WVPResult::error("设备不在线"));
+                return Json(ApiResult::error("设备不在线"));
             }
         }
     }
 
-    Json(WVPResult::error("设备未注册或SIP服务未初始化"))
+    Json(ApiResult::error("设备未注册或SIP服务未初始化"))
 }
 
 
@@ -243,11 +243,11 @@ pub async fn device_sync(
 pub async fn device_transport(
     State(state): State<AppState>,
     Path((device_id, stream_mode)): Path<(String, String)>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let normalized_mode = stream_mode.to_uppercase();
     let valid_modes = ["TCP", "UDP", "TCP-ACTIVE", "TCP-PASSIVE"];
     if !valid_modes.contains(&normalized_mode.as_str()) {
-        return Ok(Json(WVPResult::error(format!(
+        return Ok(Json(ApiResult::error(format!(
             "不支持的传输模式: {}（必须是 TCP/UDP/TCP-ACTIVE/TCP-PASSIVE）",
             stream_mode
         ))));
@@ -264,7 +264,7 @@ pub async fn device_transport(
             AppError::business(ErrorCode::Error500, format!("更新传输模式失败: {}", e))
         })?;
     if updated == 0 {
-        return Ok(Json(WVPResult::error(format!("设备不存在: {}", device_id))));
+        return Ok(Json(ApiResult::error(format!("设备不存在: {}", device_id))));
     }
     tracing::info!("Transport mode change: device={}, mode={}", device_id, normalized_mode);
 
@@ -284,7 +284,7 @@ pub async fn device_transport(
         }
     }
 
-    Ok(Json(WVPResult::success(serde_json::json!({
+    Ok(Json(ApiResult::success(serde_json::json!({
         "deviceId": device_id,
         "streamMode": normalized_mode,
         "updated": updated,
@@ -321,7 +321,7 @@ pub struct SubscribeAlarmQuery {
 pub async fn subscribe_mobile_position(
     State(state): State<AppState>,
     Query(q): Query<SubscribePositionQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let device_id = q.id.clone().unwrap_or_default();
     let cycle = q.cycle.unwrap_or(5) as u32;
     let interval = q.interval.unwrap_or(5);
@@ -344,7 +344,7 @@ pub async fn subscribe_mobile_position(
             if device.online {
                 match server.send_subscribe(&device_id, "MobilePosition", cycle).await {
                     Ok(_) => {
-                        return Json(WVPResult::success(serde_json::json!({
+                        return Json(ApiResult::success(serde_json::json!({
                             "deviceId": device_id,
                             "cycle": cycle,
                             "interval": interval,
@@ -361,7 +361,7 @@ pub async fn subscribe_mobile_position(
         }
     }
 
-    Json(WVPResult::error("设备不在线或订阅失败"))
+    Json(ApiResult::error("设备不在线或订阅失败"))
 }
 
 /// GET /api/device/config/query/:device_id/BasicParam
@@ -382,7 +382,7 @@ fn xml_tag_value(xml: &str, tag: &str) -> Option<String> {
 pub async fn config_basic_param(
     State(state): State<AppState>,
     Path(device_id): Path<String>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     tracing::info!("Config BasicParam query for: {}", device_id);
     let db_device = get_device_by_device_id(&state.pool, &device_id).await.ok().flatten();
     let db_name = db_device.as_ref().and_then(|d| d.name.clone());
@@ -426,7 +426,7 @@ pub async fn config_basic_param(
                             let firmware = xml_tag_value(&xml, "Firmware");
                             let heartbeat = xml_tag_value(&xml, "HeartBeatInterval");
                             let expiration = xml_tag_value(&xml, "Expiration");
-                            return Json(WVPResult::success(serde_json::json!({
+                            return Json(ApiResult::success(serde_json::json!({
                                 "deviceId": device_id,
                                 "sn": sn,
                                 "name": name,
@@ -444,7 +444,7 @@ pub async fn config_basic_param(
                         }
                         Err(_) => {
                             tracing::warn!("Config BasicParam 查询超时: {}", device_id);
-                            return Json(WVPResult::success(serde_json::json!({
+                            return Json(ApiResult::success(serde_json::json!({
                                 "deviceId": device_id,
                                 "sn": sn,
                                 "name": db_name,
@@ -460,7 +460,7 @@ pub async fn config_basic_param(
                     },
                     Err(e) => {
                         tracing::error!("Failed to send config query: {}", e);
-                        return Json(WVPResult::success(serde_json::json!({
+                        return Json(ApiResult::success(serde_json::json!({
                             "deviceId": device_id,
                             "name": db_name,
                             "manufacturer": db_manufacturer,
@@ -477,7 +477,7 @@ pub async fn config_basic_param(
         }
     }
 
-    Json(WVPResult::success(serde_json::json!({
+    Json(ApiResult::success(serde_json::json!({
         "deviceId": device_id,
         "name": db_name,
         "manufacturer": db_manufacturer,
@@ -503,7 +503,7 @@ pub struct ChannelOneQuery {
 pub async fn channel_one(
     State(state): State<AppState>,
     Query(q): Query<ChannelOneQuery>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let device_id = q
         .device_id
         .as_deref()
@@ -511,21 +511,21 @@ pub async fn channel_one(
         .trim();
     let channel_id = q.channel_id.as_deref().unwrap_or("").trim();
     if device_id.is_empty() || channel_id.is_empty() {
-        return Ok(Json(WVPResult::success(serde_json::Value::Null)));
+        return Ok(Json(ApiResult::success(serde_json::Value::Null)));
     }
     let ch = get_channel_by_device_and_channel_id(&state.pool, device_id, channel_id).await?;
     let out = match ch {
         Some(c) => channel_to_json(&c),
         None => serde_json::Value::Null,
     };
-    Ok(Json(WVPResult::success(out)))
+    Ok(Json(ApiResult::success(out)))
 }
 
 /// GET /api/device/query/streams
 ///
 /// 返回**正在推流**的通道列表（数据源是 ZLM `/index/api/getMediaList`，逐节点汇总）。
 ///
-/// 与 WVP 的 `DeviceQuery./streams`（返回 `PageInfo<DeviceChannel>`）对齐的关键点：
+/// 该接口的响应契约关键点（对齐前端既有调用习惯）：
 /// * 每行必须带 `deviceId`/`channelId` —— 前端要靠它跳转到实时预览；此前只把
 ///   ZLM 的流信息原样透出，`deviceId` 不存在，仪表盘 6 张卡片全是死链；
 /// * `mediaServerId` 标注该流属于哪个节点（多节点部署时前端/排查都需要）；
@@ -534,7 +534,7 @@ pub async fn channel_one(
 pub async fn query_streams(
     State(state): State<AppState>,
     Query(q): Query<StreamQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let page = q.page.unwrap_or(1).max(1);
     let count = q.count.unwrap_or(50).clamp(1, 1000);
     let keyword = q
@@ -586,7 +586,7 @@ pub async fn query_streams(
     let offset = ((page - 1) * count) as usize;
     let list: Vec<serde_json::Value> = rows.into_iter().skip(offset).take(count as usize).collect();
 
-    Json(WVPResult::success(serde_json::json!({
+    Json(ApiResult::success(serde_json::json!({
         "total": total,
         "list": list
     })))
@@ -641,7 +641,7 @@ fn stream_row_json(media_server_id: &str, s: &crate::zlm::types::MediaInfo) -> s
 /// 返回: 录像控制结果
 ///
 /// 前端（`web/src/api/device.ts` 与 `web-legacy-vue2/src/api/device.js`）发送的是
-/// `recordCmdStr=Record|StopRecord`；WVP-PRO 的对外 API 文档写的是 `recordCmd`。
+/// `recordCmdStr=Record|StopRecord`；对外 API 文档里写的参数名是 `recordCmd`。
 /// 两种参数名、以及 `start/stop/on/off` 之类的宽松取值都接受，
 /// 空值或无法识别的取值直接返回错误（而不是默默按“停止录像”下发）。
 #[derive(Debug, Deserialize)]
@@ -666,19 +666,19 @@ fn parse_record_cmd(raw: &str) -> Option<bool> {
 pub async fn control_record(
     State(state): State<AppState>,
     Query(q): Query<RecordControlQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let device_id = q.device_id.clone().unwrap_or_default();
     let channel_id = q.channel_id.clone().unwrap_or_default();
     let record_cmd = q.record_cmd_str.clone().unwrap_or_default();
 
     if device_id.is_empty() || channel_id.is_empty() {
-        return Json(WVPResult::error("device_id and channel_id are required"));
+        return Json(ApiResult::error("device_id and channel_id are required"));
     }
 
     let is_start = match parse_record_cmd(&record_cmd) {
         Some(v) => v,
         None => {
-            return Json(WVPResult::error(
+            return Json(ApiResult::error(
                 "recordCmdStr 只能为 Record 或 StopRecord",
             ))
         }
@@ -712,7 +712,7 @@ pub async fn control_record(
                             "recordCmd": record_cmd,
                         })).await;
                         
-                        return Json(WVPResult::success(serde_json::json!({
+                        return Json(ApiResult::success(serde_json::json!({
                             "deviceId": device_id,
                             "channelId": channel_id,
                             "recordCmd": record_cmd,
@@ -729,18 +729,18 @@ pub async fn control_record(
         }
     }
 
-    Json(WVPResult::error("设备不在线或命令发送失败"))
+    Json(ApiResult::error("设备不在线或命令发送失败"))
 }
 
 /// GET /api/device/query/sub_channels/:device_id/:parent_channel_id/channels
 pub async fn sub_channels(
     State(state): State<AppState>,
     Path((device_id, parent_channel_id)): Path<(String, String)>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let list = list_channels_by_parent(&state.pool, &device_id, &parent_channel_id).await?;
     let total = list.len() as u64;
     let list: Vec<serde_json::Value> = list.iter().map(channel_to_json).collect();
-    Ok(Json(WVPResult::success(serde_json::json!({
+    Ok(Json(ApiResult::success(serde_json::json!({
         "total": total,
         "list": list
     }))))
@@ -807,10 +807,10 @@ pub(crate) fn ptz_type_text(ptz: Option<i32>) -> Option<String> {
 pub async fn tree_channel(
     State(state): State<AppState>,
     Path(device_id): Path<String>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let list = list_channels_for_device(&state.pool, &device_id).await?;
     let tree: Vec<serde_json::Value> = list.iter().map(channel_to_json).collect();
-    Ok(Json(WVPResult::success(serde_json::Value::Array(tree))))
+    Ok(Json(ApiResult::success(serde_json::Value::Array(tree))))
 }
 
 /// POST /api/device/query/channel/audio
@@ -827,12 +827,12 @@ pub struct ChannelAudioQuery {
 pub async fn channel_audio(
     State(state): State<AppState>,
     Query(q): Query<ChannelAudioQuery>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let channel_id = q.channel_id.unwrap_or(0);
     let audio = q.audio.unwrap_or(false);
 
     if channel_id == 0 {
-        return Ok(Json(WVPResult::error("channel_id is required")));
+        return Ok(Json(ApiResult::error("channel_id is required")));
     }
 
     tracing::info!("Channel audio update: channel_id={}, audio={}", channel_id, audio);
@@ -856,7 +856,7 @@ pub async fn channel_audio(
         ));
     }
 
-    Ok(Json(WVPResult::success(serde_json::json!({
+    Ok(Json(ApiResult::success(serde_json::json!({
         "channelId": channel_id,
         "audio": audio,
         "message": "通道音频设置已更新（将在上报上级平台的目录中体现）",
@@ -881,13 +881,13 @@ pub struct StreamIdentificationUpdate {
 pub async fn channel_stream_identification_update(
     State(state): State<AppState>,
     Query(body): Query<StreamIdentificationUpdate>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let device_db_id = body.device_db_id.unwrap_or(0);
     let id = body.id.unwrap_or(0);
     let stream_identification = body.stream_identification.unwrap_or_default();
 
     if id == 0 {
-        return Ok(Json(WVPResult::error("id is required")));
+        return Ok(Json(ApiResult::error("id is required")));
     }
 
     tracing::info!("Stream identification update: id={}, stream={}", id, stream_identification);
@@ -904,7 +904,7 @@ pub async fn channel_stream_identification_update(
         ));
     }
 
-    Ok(Json(WVPResult::success(serde_json::json!({
+    Ok(Json(ApiResult::success(serde_json::json!({
         "deviceDbId": device_db_id,
         "id": id,
         "streamIdentification": stream_identification,
@@ -967,7 +967,7 @@ pub struct DeviceUpdateBody {
 pub async fn device_add(
     State(state): State<AppState>,
     Json(body): Json<DeviceAddBody>,
-) -> Result<Json<WVPResult<()>>, AppError> {
+) -> Result<Json<ApiResult<()>>, AppError> {
     let device_id = body
         .device_id
         .as_deref()
@@ -994,14 +994,14 @@ pub async fn device_add(
         heart_beat_count: body.heart_beat_count,
     };
     insert_device(&state.pool, device_id, &fields, &now).await?;
-    Ok(Json(WVPResult::<()>::success_empty()))
+    Ok(Json(ApiResult::<()>::success_empty()))
 }
 
 /// POST /api/device/query/device/update
 pub async fn device_update(
     State(state): State<AppState>,
     Json(body): Json<DeviceUpdateBody>,
-) -> Result<Json<WVPResult<()>>, AppError> {
+) -> Result<Json<ApiResult<()>>, AppError> {
     let device_id = body.device_id.as_deref().unwrap_or("").trim();
     if device_id.is_empty() {
         return Err(AppError::business(ErrorCode::Error400, "缺少 deviceId"));
@@ -1030,26 +1030,26 @@ pub async fn device_update(
             format!("设备不存在: {device_id}"),
         ));
     }
-    Ok(Json(WVPResult::<()>::success_empty()))
+    Ok(Json(ApiResult::<()>::success_empty()))
 }
 
 /// GET /api/device/query/devices/:device_id
 pub async fn device_one(
     State(state): State<AppState>,
     Path(device_id): Path<String>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     // 直接序列化 `Device`（`#[serde(rename_all = "camelCase")]`），
     // 与列表接口**同源**：此前手写了一份只有 12 个键的 JSON，缺
     // `id/firmware/expires/heartBeat*/registerTime/channelCount` 等，
     // 编辑弹窗靠 `props.device?.id` 判断"新增还是编辑"，缺 id 会把编辑变成新增。
     match get_device_by_device_id(&state.pool, &device_id).await {
-        Ok(Some(d)) => Json(WVPResult::success(
+        Ok(Some(d)) => Json(ApiResult::success(
             serde_json::to_value(&d).unwrap_or(serde_json::Value::Null),
         )),
-        Ok(None) => Json(WVPResult::success(serde_json::json!(null))),
+        Ok(None) => Json(ApiResult::success(serde_json::json!(null))),
         Err(e) => {
             tracing::warn!("查询设备 {device_id} 失败: {e}");
-            Json(WVPResult::error(format!("查询设备失败: {e}")))
+            Json(ApiResult::error(format!("查询设备失败: {e}")))
         }
     }
 }
@@ -1058,11 +1058,11 @@ pub async fn device_one(
 pub async fn device_tree(
     State(state): State<AppState>,
     Path(device_id): Path<String>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let channels = list_channels_for_device(&state.pool, &device_id).await?;
     let total = channels.len() as u64;
     let list: Vec<serde_json::Value> = channels.iter().map(channel_to_json).collect();
-    Ok(Json(WVPResult::success(serde_json::json!({
+    Ok(Json(ApiResult::success(serde_json::json!({
         "total": total,
         "list": list
     }))))
@@ -1074,21 +1074,21 @@ pub async fn device_tree(
 pub async fn subscribe_alarm(
     State(state): State<AppState>,
     Query(q): Query<crate::handlers::device_stub::SubscribeAlarmQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let device_id = q.id.clone().unwrap_or_default();
     let expires = q.expires.unwrap_or(3600) as u32;
     if device_id.is_empty() {
-        return Json(WVPResult::error("device_id is required"));
+        return Json(ApiResult::error("device_id is required"));
     }
     let sip_server = match state.sip_server.as_ref() {
         Some(s) => s,
-        None => return Json(WVPResult::error("SIP server not initialized")),
+        None => return Json(ApiResult::error("SIP server not initialized")),
     };
     let server = &**sip_server;
     if let Err(e) = server.send_alarm_subscribe(&device_id, expires).await {
-        return Json(WVPResult::error(format!("SIP error: {}", e)));
+        return Json(ApiResult::error(format!("SIP error: {}", e)));
     }
-    Json(WVPResult::success(serde_json::json!({
+    Json(ApiResult::success(serde_json::json!({
         "deviceId": device_id,
         "expires": expires,
         "message": "Alarm subscription sent"
@@ -1234,7 +1234,7 @@ mod device_write_tests {
         assert!(d.get("id").and_then(|v| v.as_i64()).unwrap_or(0) > 0, "必须带 id: {d}");
         assert_eq!(d["deviceId"], "34020000001320000002");
         assert_eq!(d["expires"], 1800);
-        assert!(d.get("onLine").is_some(), "在线状态键名是 onLine（与 WVP 一致）");
+        assert!(d.get("onLine").is_some(), "在线状态键名是 onLine");
     }
 
     /// 远程录像控制取值解析：前端发 `recordCmdStr=Record|StopRecord`，
@@ -1243,7 +1243,7 @@ mod device_write_tests {
     fn test_parse_record_cmd_accepts_frontend_values() {
         assert_eq!(parse_record_cmd("Record"), Some(true));
         assert_eq!(parse_record_cmd("StopRecord"), Some(false));
-        // WVP 风格 / 宽松取值
+        // 宽松取值
         assert_eq!(parse_record_cmd(" start "), Some(true));
         assert_eq!(parse_record_cmd("stop"), Some(false));
         assert_eq!(parse_record_cmd("On"), Some(true));
@@ -1253,10 +1253,10 @@ mod device_write_tests {
         assert_eq!(parse_record_cmd("bogus"), None);
     }
 
-    /// `sync_status` 必须有 total/current/errorMsg（WVP `SyncStatus`），
+    /// `sync_status` 必须有 total/current/errorMsg 这组同步状态键，
     /// 否则同步进度弹窗算不出百分比、也看不到错误。
     #[tokio::test]
-    async fn test_sync_status_exposes_wvp_fields() {
+    async fn test_sync_status_exposes_compat_fields() {
         let state = app_state().await;
         let resp = sync_status(
             State(state.clone()),

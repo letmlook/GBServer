@@ -1,10 +1,10 @@
 import { request } from '@/utils/request'
-import type { WvpResult } from '@/types/api'
+import type { ApiResult } from '@/types/api'
 
 /**
  * 拉流代理。
  *
- * 字段名与后端 `gb_stream_proxy` / WVP 的 `StreamProxy` bean **严格一致**
+ * 字段名与后端 `gb_stream_proxy` / `StreamProxy` bean **严格一致**
  * （camelCase）。早期这里用的是 `url` / `enabled` / `status` / `destUrl` 四个
  * 后端根本不存在的键，后果是：列表"源 URL"整列空白、启用开关与状态永远显示
  * 关闭、"目标 URL"填了也没人收。
@@ -60,7 +60,7 @@ export interface StreamProxyListPage {
 }
 
 export function getStreamProxyList(params: StreamProxyQueryParams) {
-  return request<WvpResult<StreamProxyListPage>>({
+  return request<ApiResult<StreamProxyListPage>>({
     method: 'get',
     url: '/proxy/list',
     params
@@ -68,16 +68,16 @@ export function getStreamProxyList(params: StreamProxyQueryParams) {
 }
 
 export function getStreamProxyOne(id: number | string) {
-  return request<WvpResult<StreamProxy>>({
+  return request<ApiResult<StreamProxy>>({
     method: 'get',
     url: '/proxy/one',
     params: { id }
   })
 }
 
-/** WVP 的 `/proxy/one` 签名是按 app+stream 查 */
+/** `/proxy/one` 的签名是按 app+stream 查 */
 export function getStreamProxyByAppStream(app: string, stream: string) {
-  return request<WvpResult<StreamProxy>>({
+  return request<ApiResult<StreamProxy>>({
     method: 'get',
     url: '/proxy/one',
     params: { app, stream }
@@ -86,7 +86,7 @@ export function getStreamProxyByAppStream(app: string, stream: string) {
 
 /** 节点上可用的 ffmpeg.cmd* 模板（真实读 ZLM getServerConfig） */
 export function getFfmpegCmdList(mediaServerId: string) {
-  return request<WvpResult<Record<string, string>>>({
+  return request<ApiResult<Record<string, string>>>({
     method: 'get',
     url: '/proxy/ffmpeg_cmd/list',
     params: { mediaServerId }
@@ -94,7 +94,7 @@ export function getFfmpegCmdList(mediaServerId: string) {
 }
 
 export function addStreamProxy(data: Partial<StreamProxy>) {
-  return request<WvpResult<StreamProxy>>({
+  return request<ApiResult<StreamProxy>>({
     method: 'post',
     url: '/proxy/add',
     data
@@ -102,7 +102,7 @@ export function addStreamProxy(data: Partial<StreamProxy>) {
 }
 
 export function updateStreamProxy(data: Partial<StreamProxy>) {
-  return request<WvpResult<StreamProxy>>({
+  return request<ApiResult<StreamProxy>>({
     method: 'post',
     url: '/proxy/update',
     data
@@ -111,7 +111,7 @@ export function updateStreamProxy(data: Partial<StreamProxy>) {
 
 /** 保存：同 app+stream 已存在则更新 */
 export function saveStreamProxy(data: Partial<StreamProxy>) {
-  return request<WvpResult<StreamProxy>>({
+  return request<ApiResult<StreamProxy>>({
     method: 'post',
     url: '/proxy/save',
     data
@@ -119,7 +119,7 @@ export function saveStreamProxy(data: Partial<StreamProxy>) {
 }
 
 export function startStreamProxy(id: number | string) {
-  return request<WvpResult>({
+  return request<ApiResult>({
     method: 'get',
     url: '/proxy/start',
     params: { id }
@@ -127,7 +127,7 @@ export function startStreamProxy(id: number | string) {
 }
 
 export function stopStreamProxy(id: number | string) {
-  return request<WvpResult>({
+  return request<ApiResult>({
     method: 'get',
     url: '/proxy/stop',
     params: { id }
@@ -135,16 +135,16 @@ export function stopStreamProxy(id: number | string) {
 }
 
 export function deleteStreamProxy(id: number | string) {
-  return request<WvpResult>({
+  return request<ApiResult>({
     method: 'delete',
     url: '/proxy/delete',
     params: { id }
   })
 }
 
-/** WVP 的 `/proxy/del`：按 app+stream 删除 */
+/** `/proxy/del`：按 app+stream 删除 */
 export function deleteStreamProxyByAppStream(app: string, stream: string) {
-  return request<WvpResult>({
+  return request<ApiResult>({
     method: 'delete',
     url: '/proxy/del',
     params: { app, stream }

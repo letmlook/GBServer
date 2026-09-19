@@ -1,16 +1,16 @@
 import { request } from '@/utils/request'
-import type { WvpResult } from '@/types/api'
+import type { ApiResult } from '@/types/api'
 
 /**
  * 级联平台。
  *
- * 字段名与后端 `gb_platform` / WVP 的 `Platform.java` **严格一致**（`serverGBId`
+ * 字段名与后端 `gb_platform` 表 **严格一致**（`serverGBId`
  * 里是大写 `B`）。此前这里写的是 `serverGbId`（小写 b），于是：
  * 新增时后端收不到国标ID（写空串，平台实际不可用）、列表"国标ID"列空白、
  * 「注销」按钮因为 `if (!row.serverGbId) return` 静默失效。
  *
- * 「注册间隔 / 心跳间隔 / 心跳次数」三个输入框是**凭空发明**的字段（WVP 与
- * 数据库都没有），已换成真实存在的 `expires`（注册周期）与 `keepTimeout`（心跳周期）。
+ * 「注册间隔 / 心跳间隔 / 心跳次数」三个输入框是**凭空发明**的字段（数据库里
+ * 没有），已换成真实存在的 `expires`（注册周期）与 `keepTimeout`（心跳周期）。
  */
 export interface PlatformQueryParams {
   page?: number
@@ -34,7 +34,7 @@ export interface Platform {
   password?: string
   /** 注册周期（秒） */
   expires?: number
-  /** 心跳周期（秒），WVP 字段名 keepTimeout */
+  /** 心跳周期（秒），字段名 keepTimeout */
   keepTimeout?: number
   transport?: string
   characterSet?: string
@@ -82,7 +82,7 @@ export interface PlatformServerConfig {
 }
 
 export function getPlatformList(params: PlatformQueryParams) {
-  return request<WvpResult<{ total: number; list: Platform[] }>>({
+  return request<ApiResult<{ total: number; list: Platform[] }>>({
     method: 'get',
     url: '/platform/query',
     params
@@ -90,14 +90,14 @@ export function getPlatformList(params: PlatformQueryParams) {
 }
 
 export function getPlatformOne(id: number | string) {
-  return request<WvpResult<Platform>>({
+  return request<ApiResult<Platform>>({
     method: 'get',
     url: `/platform/info/${id}`
   })
 }
 
 export function addPlatform(data: Partial<Platform>) {
-  return request<WvpResult>({
+  return request<ApiResult>({
     method: 'post',
     url: '/platform/add',
     data
@@ -105,7 +105,7 @@ export function addPlatform(data: Partial<Platform>) {
 }
 
 export function updatePlatform(data: Partial<Platform>) {
-  return request<WvpResult>({
+  return request<ApiResult>({
     method: 'post',
     url: '/platform/update',
     data
@@ -113,7 +113,7 @@ export function updatePlatform(data: Partial<Platform>) {
 }
 
 export function deletePlatform(id: number | string) {
-  return request<WvpResult>({
+  return request<ApiResult>({
     method: 'delete',
     url: '/platform/delete',
     params: { id }
@@ -122,14 +122,14 @@ export function deletePlatform(id: number | string) {
 
 /** 向上级平台发送 Expires:0 的注销 REGISTER，并把该平台置为停用 */
 export function platformExit(serverGBId: string) {
-  return request<WvpResult>({
+  return request<ApiResult>({
     method: 'get',
     url: `/platform/exit/${serverGBId}`
   })
 }
 
 export function getPlatformServerConfig() {
-  return request<WvpResult<PlatformServerConfig>>({
+  return request<ApiResult<PlatformServerConfig>>({
     method: 'get',
     url: '/platform/server_config'
   })
@@ -143,7 +143,7 @@ export interface PlatformCatalogBody {
 }
 
 export function addPlatformCatalog(data: PlatformCatalogBody & { platformId: number | string }) {
-  return request<WvpResult>({
+  return request<ApiResult>({
     method: 'post',
     url: '/platform/catalog/add',
     data
@@ -151,7 +151,7 @@ export function addPlatformCatalog(data: PlatformCatalogBody & { platformId: num
 }
 
 export function editPlatformCatalog(data: PlatformCatalogBody & { id: number | string }) {
-  return request<WvpResult>({
+  return request<ApiResult>({
     method: 'post',
     url: '/platform/catalog/edit',
     data

@@ -1,5 +1,5 @@
 import { request } from '@/utils/request'
-import type { WvpResult } from '@/types/api'
+import type { ApiResult } from '@/types/api'
 
 export interface ChannelListParams {
   page?: number
@@ -12,7 +12,7 @@ export interface ChannelListParams {
 }
 
 export function getChannelList(params: ChannelListParams) {
-  return request<WvpResult<{ total: number; list: Channel[] }>>({
+  return request<ApiResult<{ total: number; list: Channel[] }>>({
     method: 'get',
     url: '/common/channel/list',
     params
@@ -20,7 +20,7 @@ export function getChannelList(params: ChannelListParams) {
 }
 
 export function getChannelOne(id: string | number) {
-  return request<WvpResult<Channel>>({
+  return request<ApiResult<Channel>>({
     method: 'get',
     url: '/common/channel/one',
     params: { id }
@@ -28,28 +28,28 @@ export function getChannelOne(id: string | number) {
 }
 
 export function getIndustryList() {
-  return request<WvpResult<ChannelCodeType[]>>({
+  return request<ApiResult<ChannelCodeType[]>>({
     method: 'get',
     url: '/common/channel/industry/list'
   })
 }
 
 export function getTypeList() {
-  return request<WvpResult<ChannelCodeType[]>>({
+  return request<ApiResult<ChannelCodeType[]>>({
     method: 'get',
     url: '/common/channel/type/list'
   })
 }
 
 export function getNetworkIdentificationList() {
-  return request<WvpResult<ChannelCodeType[]>>({
+  return request<ApiResult<ChannelCodeType[]>>({
     method: 'get',
     url: '/common/channel/network/identification/list'
   })
 }
 
 export function addChannel(data: Partial<Channel>) {
-  return request<WvpResult>({
+  return request<ApiResult>({
     method: 'post',
     url: '/common/channel/add',
     data
@@ -61,7 +61,7 @@ export function addChannel(data: Partial<Channel>) {
  * 注意：依赖列表查询返回的 `id` 字段（数据库主键），不是 channelId（国标 ID）
  */
 export function deleteChannel(id: number | string) {
-  return request<WvpResult>({
+  return request<ApiResult>({
     method: 'delete',
     url: '/common/channel/delete',
     params: { id }
@@ -69,7 +69,7 @@ export function deleteChannel(id: number | string) {
 }
 
 export function updateChannel(data: Partial<Channel>) {
-  return request<WvpResult>({
+  return request<ApiResult>({
     method: 'post',
     url: '/common/channel/update',
     data
@@ -77,7 +77,7 @@ export function updateChannel(data: Partial<Channel>) {
 }
 
 export function resetChannel(data: Partial<Channel>) {
-  return request<WvpResult>({
+  return request<ApiResult>({
     method: 'post',
     url: '/common/channel/reset',
     data
@@ -85,11 +85,11 @@ export function resetChannel(data: Partial<Channel>) {
 }
 
 /**
- * 播放通道（WVP `/api/common/channel/play` 是 **GET**，参数为通道**主键**）。
+ * 播放通道（`/api/common/channel/play` 是 **GET**，参数为通道**主键**）。
  * 此前写成 POST + 字符串国标 ID：方法不匹配直接 405。
  */
 export function playChannel(channelId: number | string) {
-  return request<WvpResult>({
+  return request<ApiResult>({
     method: 'get',
     url: '/common/channel/play',
     params: { channelId }
@@ -97,14 +97,14 @@ export function playChannel(channelId: number | string) {
 }
 
 export function stopChannelPlay(channelId: number | string) {
-  return request<WvpResult>({
+  return request<ApiResult>({
     method: 'get',
     url: '/common/channel/play/stop',
     params: { channelId }
   })
 }
 
-/** 行业 / 类型 / 网络标识 都是 `{name, code}`（WVP `IndustryCodeType` 等） */
+/** 行业 / 类型 / 网络标识 都是 `{name, code}` */
 export interface ChannelCodeType {
   name: string
   code: string
@@ -112,7 +112,7 @@ export interface ChannelCodeType {
 }
 
 export function updateStreamIdentification(params: { deviceDbId: number | string; id: string | number; streamIdentification: string }) {
-  return request<WvpResult>({
+  return request<ApiResult>({
     method: 'post',
     url: '/device/query/channel/stream/identification/update/',
     params

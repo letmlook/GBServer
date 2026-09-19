@@ -1,5 +1,5 @@
 import { request } from '@/utils/request'
-import type { WvpResult } from '@/types/api'
+import type { ApiResult } from '@/types/api'
 
 /**
  * 流媒体节点。
@@ -88,28 +88,28 @@ export interface MediaInfo {
 }
 
 export function getMediaServerList() {
-  return request<WvpResult<MediaServer[]>>({
+  return request<ApiResult<MediaServer[]>>({
     method: 'get',
     url: '/server/media_server/list'
   })
 }
 
 export function getMediaServerOnlineList() {
-  return request<WvpResult<MediaServer[]>>({
+  return request<ApiResult<MediaServer[]>>({
     method: 'get',
     url: '/server/media_server/online/list'
   })
 }
 
 export function getMediaServerOne(id: string) {
-  return request<WvpResult<MediaServer>>({
+  return request<ApiResult<MediaServer>>({
     method: 'get',
     url: `/server/media_server/one/${id}`
   })
 }
 
 export function saveMediaServer(data: Partial<MediaServer>) {
-  return request<WvpResult>({
+  return request<ApiResult>({
     method: 'post',
     url: '/server/media_server/save',
     data
@@ -117,7 +117,7 @@ export function saveMediaServer(data: Partial<MediaServer>) {
 }
 
 export function deleteMediaServer(id: string) {
-  return request<WvpResult>({
+  return request<ApiResult>({
     method: 'delete',
     url: '/server/media_server/delete',
     params: { id }
@@ -136,7 +136,7 @@ export function checkMediaServer(params: {
   secret?: string
   type?: string
 }) {
-  return request<WvpResult<MediaServerProbe>>({
+  return request<ApiResult<MediaServerProbe>>({
     method: 'get',
     url: '/server/media_server/check',
     params
@@ -144,11 +144,11 @@ export function checkMediaServer(params: {
 }
 
 /**
- * 节点负载。不传 `id` 返回全部节点（WVP 语义），传 `id` 只返回该节点。
+ * 节点负载。不传 `id` 返回全部节点，传 `id` 只返回该节点。
  * 返回的是**数组**，调用方按 `id` 取自己那一项。
  */
 export function getMediaLoad(id?: string) {
-  return request<WvpResult<MediaServerLoad[]>>({
+  return request<ApiResult<MediaServerLoad[]>>({
     method: 'get',
     url: '/server/media_server/load',
     params: id ? { id } : undefined
@@ -157,7 +157,7 @@ export function getMediaLoad(id?: string) {
 
 /** 单条流信息（后端返回的就是一条 MediaInfo，不是列表） */
 export function getMediaInfo(app: string, stream: string, mediaServerId?: string) {
-  return request<WvpResult<MediaInfo>>({
+  return request<ApiResult<MediaInfo>>({
     method: 'get',
     url: '/server/media_server/media_info',
     params: { app, stream, mediaServerId }

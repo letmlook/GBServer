@@ -1,4 +1,4 @@
-//! JT1078 region/route/control endpoints (parity with reference Java controllers).
+//! JT1078 区域围栏 / 路线 / 多媒体与车辆控制端点。
 //!
 //! ## 实现分级
 //!
@@ -31,14 +31,14 @@ use axum::{
 use serde::Deserialize;
 
 use crate::db::jt1078 as jt_db;
-use crate::response::WVPResult;
+use crate::response::ApiResult;
 use crate::AppState;
 
 #[derive(Deserialize, Default, Debug)]
 pub struct IdQuery {
     pub id: Option<String>,
-    /// 终端手机号。前端查询页发的是 `phone`，而 WVP 的 Java 参数名是
-    /// `phoneNumber`（新增/设置接口也用后者）—— 两个名字都接受，
+    /// 终端手机号。前端查询页发的是 `phone`，而新增/设置类接口用的是
+    /// `phoneNumber` —— 两个名字都接受，
     /// 否则用 `phoneNumber` 调用围栏/路线查询会得到含糊的"phone 必填"。
     #[serde(alias = "phoneNumber")]
     pub phone: Option<String>,
@@ -46,17 +46,17 @@ pub struct IdQuery {
     pub channel_id: Option<i32>,
 }
 
-fn err(msg: &str) -> Json<WVPResult<serde_json::Value>> {
-    Json(WVPResult::<serde_json::Value>::error(msg.to_string()))
+fn err(msg: &str) -> Json<ApiResult<serde_json::Value>> {
+    Json(ApiResult::<serde_json::Value>::error(msg.to_string()))
 }
 
 // ============================================================================
 // 区域 — circle（圆形围栏）
 // ============================================================================
 
-/// 取字符串字段，**同时接受 WVP/前端的 camelCase 与后端历史 snake_case 名**。
+/// 取字符串字段，**同时接受前端的 camelCase 与后端历史 snake_case 名**。
 ///
-/// 前端（与 WVP 的 `SetAreaParam`）用的键是 `phoneNumber`/`radiusM`/`pointsJson`/
+/// 前端用的键是 `phoneNumber`/`radiusM`/`pointsJson`/
 /// `waypointsJson`/`ltLat`/`ltLon`/`rbLat`/`rbLon`，而后端只读 `phone`/`radius`/
 /// `points`/`waypoints`/`leftTopLat`... —— 于是"新增围栏/路线"**必然失败**，
 /// 报的还是含糊的"phone 必填"。
@@ -105,7 +105,7 @@ fn get_json_or_str(b: &serde_json::Value, keys: &[&str]) -> serde_json::Value {
 pub async fn area_circle_add(
     State(state): State<AppState>,
     Json(b): Json<serde_json::Value>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let phone = get_str(&b, &["phoneNumber", "phone", "deviceId"]);
     let label = b.get("label").and_then(|v| v.as_str());
     let lat = get_f64(&b, &["centerLat", "center_lat"]);
@@ -115,7 +115,7 @@ pub async fn area_circle_add(
         return err("phoneNumber / radiusM 必填且 radiusM>0");
     }
     match jt_db::insert_area_circle(&state.pool, phone, label, lat, lon, radius).await {
-        Ok(id) => Json(WVPResult::success(serde_json::json!({
+        Ok(id) => Json(ApiResult::success(serde_json::json!({
             "id": id, "phone": phone, "label": label,
             "centerLat": lat, "centerLon": lon, "radius": radius,
             "msg": "圆形区域已新增"
@@ -124,11 +124,11 @@ pub async fn area_circle_add(
     }
 }
 
-/// POST /api/jt1078/area/circle/edit  (WVP 别名：与 update 同义)
+/// POST /api/jt1078/area/circle/edit  (与 update 同义的别名)
 pub async fn area_circle_edit(
     State(state): State<AppState>,
     Json(b): Json<serde_json::Value>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let id = b.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
     let label = b.get("label").and_then(|v| v.as_str());
     let lat = b.get("centerLat").and_then(|v| v.as_f64()).unwrap_or(0.0);
@@ -138,7 +138,7 @@ pub async fn area_circle_edit(
         return err("id 必填且 >0");
     }
     match jt_db::update_area_circle(&state.pool, id, label, lat, lon, radius).await {
-        Ok(n) if n > 0 => Json(WVPResult::success(serde_json::json!({
+        Ok(n) if n > 0 => Json(ApiResult::success(serde_json::json!({
             "id": id, "updated": n, "msg": "圆形区域已编辑"
         }))),
         Ok(_) => err("未找到该 id"),
@@ -150,13 +150,13 @@ pub async fn area_circle_edit(
 pub async fn area_circle_delete(
     State(state): State<AppState>,
     Query(q): Query<IdQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let id = q.id.as_deref().and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
     if id <= 0 {
         return err("id 必填且 >0");
     }
     match jt_db::delete_area_circle(&state.pool, id).await {
-        Ok(n) => Json(WVPResult::success(serde_json::json!({
+        Ok(n) => Json(ApiResult::success(serde_json::json!({
             "id": id, "deleted": n, "msg": "圆形区域已删除"
         }))),
         Err(e) => err(&format!("DB error: {}", e)),
@@ -167,13 +167,13 @@ pub async fn area_circle_delete(
 pub async fn area_circle_query(
     State(state): State<AppState>,
     Query(q): Query<IdQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let phone = q.phone.clone().unwrap_or_default();
     if phone.is_empty() {
         return err("phone 必填");
     }
     match jt_db::list_area_circles_by_phone(&state.pool, &phone).await {
-        Ok(items) => Json(WVPResult::success(serde_json::json!({
+        Ok(items) => Json(ApiResult::success(serde_json::json!({
             "phone": phone, "shape": "circle", "count": items.len(), "items": items,
         }))),
         Err(e) => err(&format!("DB error: {}", e)),
@@ -184,8 +184,8 @@ pub async fn area_circle_query(
 pub async fn area_circle_update(
     State(state): State<AppState>,
     Json(b): Json<serde_json::Value>,
-) -> Json<WVPResult<serde_json::Value>> {
-    // 与 edit 同义（WVP 区分 edit/update 是历史命名差异）
+) -> Json<ApiResult<serde_json::Value>> {
+    // 与 edit 同义（区分 edit/update 是历史命名差异）
     area_circle_edit(State(state), Json(b)).await
 }
 
@@ -197,7 +197,7 @@ pub async fn area_circle_update(
 pub async fn area_polygon_set(
     State(state): State<AppState>,
     Json(b): Json<serde_json::Value>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let phone = get_str(&b, &["phoneNumber", "phone", "deviceId"]);
     let label = b.get("label").and_then(|v| v.as_str());
     let points = get_json_or_str(&b, &["pointsJson", "points", "points_json"]);
@@ -206,7 +206,7 @@ pub async fn area_polygon_set(
         return err("phoneNumber 必填");
     }
     match jt_db::insert_area_polygon(&state.pool, phone, label, &points_json).await {
-        Ok(id) => Json(WVPResult::success(serde_json::json!({
+        Ok(id) => Json(ApiResult::success(serde_json::json!({
             "id": id, "phone": phone, "label": label,
             "msg": "多边形区域已设置"
         }))),
@@ -218,13 +218,13 @@ pub async fn area_polygon_set(
 pub async fn area_polygon_delete(
     State(state): State<AppState>,
     Query(q): Query<IdQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let id = q.id.as_deref().and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
     if id <= 0 {
         return err("id 必填且 >0");
     }
     match jt_db::delete_area_polygon(&state.pool, id).await {
-        Ok(n) => Json(WVPResult::success(serde_json::json!({
+        Ok(n) => Json(ApiResult::success(serde_json::json!({
             "id": id, "deleted": n, "msg": "多边形区域已删除"
         }))),
         Err(e) => err(&format!("DB error: {}", e)),
@@ -235,13 +235,13 @@ pub async fn area_polygon_delete(
 pub async fn area_polygon_query(
     State(state): State<AppState>,
     Query(q): Query<IdQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let phone = q.phone.clone().unwrap_or_default();
     if phone.is_empty() {
         return err("phone 必填");
     }
     match jt_db::list_area_polygons_by_phone(&state.pool, &phone).await {
-        Ok(items) => Json(WVPResult::success(serde_json::json!({
+        Ok(items) => Json(ApiResult::success(serde_json::json!({
             "phone": phone, "shape": "polygon", "count": items.len(), "items": items,
         }))),
         Err(e) => err(&format!("DB error: {}", e)),
@@ -256,7 +256,7 @@ pub async fn area_polygon_query(
 pub async fn area_rectangle_add(
     State(state): State<AppState>,
     Json(b): Json<serde_json::Value>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let phone = get_str(&b, &["phoneNumber", "phone", "deviceId"]);
     let label = b.get("label").and_then(|v| v.as_str());
     let lt_lat = get_f64(&b, &["ltLat", "leftTopLat", "left_top_lat"]);
@@ -267,7 +267,7 @@ pub async fn area_rectangle_add(
         return err("phoneNumber 必填");
     }
     match jt_db::insert_area_rectangle(&state.pool, phone, label, lt_lat, lt_lon, rb_lat, rb_lon).await {
-        Ok(id) => Json(WVPResult::success(serde_json::json!({
+        Ok(id) => Json(ApiResult::success(serde_json::json!({
             "id": id, "phone": phone, "label": label,
             "leftTopLat": lt_lat, "leftTopLon": lt_lon,
             "rightBottomLat": rb_lat, "rightBottomLon": rb_lon,
@@ -281,7 +281,7 @@ pub async fn area_rectangle_add(
 pub async fn area_rectangle_edit(
     State(state): State<AppState>,
     Json(b): Json<serde_json::Value>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let id = b.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
     let label = b.get("label").and_then(|v| v.as_str());
     let lt_lat = b.get("leftTopLat").and_then(|v| v.as_f64()).unwrap_or(0.0);
@@ -292,7 +292,7 @@ pub async fn area_rectangle_edit(
         return err("id 必填且 >0");
     }
     match jt_db::update_area_rectangle(&state.pool, id, label, lt_lat, lt_lon, rb_lat, rb_lon).await {
-        Ok(n) if n > 0 => Json(WVPResult::success(serde_json::json!({
+        Ok(n) if n > 0 => Json(ApiResult::success(serde_json::json!({
             "id": id, "updated": n, "msg": "矩形区域已编辑"
         }))),
         Ok(_) => err("未找到该 id"),
@@ -304,13 +304,13 @@ pub async fn area_rectangle_edit(
 pub async fn area_rectangle_delete(
     State(state): State<AppState>,
     Query(q): Query<IdQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let id = q.id.as_deref().and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
     if id <= 0 {
         return err("id 必填且 >0");
     }
     match jt_db::delete_area_rectangle(&state.pool, id).await {
-        Ok(n) => Json(WVPResult::success(serde_json::json!({
+        Ok(n) => Json(ApiResult::success(serde_json::json!({
             "id": id, "deleted": n, "msg": "矩形区域已删除"
         }))),
         Err(e) => err(&format!("DB error: {}", e)),
@@ -321,13 +321,13 @@ pub async fn area_rectangle_delete(
 pub async fn area_rectangle_query(
     State(state): State<AppState>,
     Query(q): Query<IdQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let phone = q.phone.clone().unwrap_or_default();
     if phone.is_empty() {
         return err("phone 必填");
     }
     match jt_db::list_area_rectangles_by_phone(&state.pool, &phone).await {
-        Ok(items) => Json(WVPResult::success(serde_json::json!({
+        Ok(items) => Json(ApiResult::success(serde_json::json!({
             "phone": phone, "shape": "rectangle", "count": items.len(), "items": items,
         }))),
         Err(e) => err(&format!("DB error: {}", e)),
@@ -338,7 +338,7 @@ pub async fn area_rectangle_query(
 pub async fn area_rectangle_update(
     State(state): State<AppState>,
     Json(b): Json<serde_json::Value>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     // 与 edit 同义
     area_rectangle_edit(State(state), Json(b)).await
 }
@@ -351,7 +351,7 @@ pub async fn area_rectangle_update(
 pub async fn route_set(
     State(state): State<AppState>,
     Json(b): Json<serde_json::Value>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let phone = get_str(&b, &["phoneNumber", "phone", "deviceId"]);
     let label = b.get("label").and_then(|v| v.as_str());
     let waypoints = get_json_or_str(&b, &["waypointsJson", "waypoints", "waypoints_json"]);
@@ -360,7 +360,7 @@ pub async fn route_set(
         return err("phoneNumber 必填");
     }
     match jt_db::insert_route(&state.pool, phone, label, &waypoints_json).await {
-        Ok(id) => Json(WVPResult::success(serde_json::json!({
+        Ok(id) => Json(ApiResult::success(serde_json::json!({
             "id": id, "phone": phone, "label": label,
             "msg": "路线已设置"
         }))),
@@ -372,13 +372,13 @@ pub async fn route_set(
 pub async fn route_query(
     State(state): State<AppState>,
     Query(q): Query<IdQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let phone = q.phone.clone().unwrap_or_default();
     if phone.is_empty() {
         return err("phone 必填");
     }
     match jt_db::list_routes_by_phone(&state.pool, &phone).await {
-        Ok(items) => Json(WVPResult::success(serde_json::json!({
+        Ok(items) => Json(ApiResult::success(serde_json::json!({
             "phone": phone, "count": items.len(), "items": items,
         }))),
         Err(e) => err(&format!("DB error: {}", e)),
@@ -389,13 +389,13 @@ pub async fn route_query(
 pub async fn route_delete(
     State(state): State<AppState>,
     Query(q): Query<IdQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let id = q.id.as_deref().and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
     if id <= 0 {
         return err("id 必填且 >0");
     }
     match jt_db::delete_route(&state.pool, id).await {
-        Ok(n) => Json(WVPResult::success(serde_json::json!({
+        Ok(n) => Json(ApiResult::success(serde_json::json!({
             "id": id, "deleted": n, "msg": "路线已删除"
         }))),
         Err(e) => err(&format!("DB error: {}", e)),
@@ -410,7 +410,7 @@ pub async fn route_delete(
 use crate::handlers::jt1078::get_jt_manager;
 
 /// 校验 phone 并解析通道号（默认 1）
-fn phone_and_channel(q: &IdQuery) -> Result<(String, u8), Json<WVPResult<serde_json::Value>>> {
+fn phone_and_channel(q: &IdQuery) -> Result<(String, u8), Json<ApiResult<serde_json::Value>>> {
     let phone = q.phone.clone().unwrap_or_default();
     if phone.trim().is_empty() {
         return Err(err("缺少 phone"));
@@ -422,7 +422,7 @@ fn phone_and_channel(q: &IdQuery) -> Result<(String, u8), Json<WVPResult<serde_j
 pub async fn live_continue(
     State(state): State<AppState>,
     Query(q): Query<IdQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let (phone, channel) = match phone_and_channel(&q) {
         Ok(v) => v,
         Err(e) => return e,
@@ -432,7 +432,7 @@ pub async fn live_continue(
         Err(_) => return err("JT1078服务未启动"),
     };
     match mgr.send_live_video_control_and_wait(&phone, channel, 0x00, false, 5).await {
-        Ok(0) => Json(WVPResult::success(serde_json::json!({
+        Ok(0) => Json(ApiResult::success(serde_json::json!({
             "phone": q.phone, "channelId": q.channel_id, "msg": "直播已继续"
         }))),
         Ok(result) => err(&format!("直播继续被终端拒绝 result={}", result)),
@@ -444,7 +444,7 @@ pub async fn live_continue(
 pub async fn live_pause(
     State(state): State<AppState>,
     Query(q): Query<IdQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let (phone, channel) = match phone_and_channel(&q) {
         Ok(v) => v,
         Err(e) => return e,
@@ -454,7 +454,7 @@ pub async fn live_pause(
         Err(_) => return err("JT1078服务未启动"),
     };
     match mgr.send_live_video_control_and_wait(&phone, channel, 0x01, false, 5).await {
-        Ok(0) => Json(WVPResult::success(serde_json::json!({
+        Ok(0) => Json(ApiResult::success(serde_json::json!({
             "phone": q.phone, "channelId": q.channel_id, "msg": "直播已暂停"
         }))),
         Ok(result) => err(&format!("直播暂停被终端拒绝 result={}", result)),
@@ -466,7 +466,7 @@ pub async fn live_pause(
 pub async fn live_switch(
     State(state): State<AppState>,
     Query(q): Query<IdQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let (phone, channel) = match phone_and_channel(&q) {
         Ok(v) => v,
         Err(e) => return e,
@@ -476,7 +476,7 @@ pub async fn live_switch(
         Err(_) => return err("JT1078服务未启动"),
     };
     match mgr.send_live_video_and_wait(&phone, channel, 0, false, 5).await {
-        Ok(0) => Json(WVPResult::success(serde_json::json!({
+        Ok(0) => Json(ApiResult::success(serde_json::json!({
             "phone": q.phone, "channelId": q.channel_id, "msg": "直播切换命令已下发"
         }))),
         Ok(result) => err(&format!("直播切换被终端拒绝 result={}", result)),
@@ -490,7 +490,7 @@ async fn record_control(
     state: &AppState,
     q: &IdQuery,
     start: bool,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let (phone, channel) = match phone_and_channel(q) {
         Ok(v) => v,
         Err(e) => return e,
@@ -504,7 +504,7 @@ async fn record_control(
         .send_record_control_and_wait(&phone, channel, start, 0, 5)
         .await
     {
-        Ok(0) => Json(WVPResult::success(serde_json::json!({
+        Ok(0) => Json(ApiResult::success(serde_json::json!({
             "phone": q.phone,
             "channelId": q.channel_id,
             "recording": start,
@@ -519,7 +519,7 @@ async fn record_control(
 pub async fn record_start(
     State(state): State<AppState>,
     Query(q): Query<IdQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     record_control(&state, &q, true).await
 }
 
@@ -527,7 +527,7 @@ pub async fn record_start(
 pub async fn record_stop(
     State(state): State<AppState>,
     Query(q): Query<IdQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     record_control(&state, &q, false).await
 }
 
@@ -535,7 +535,7 @@ pub async fn record_stop(
 pub async fn snap(
     State(state): State<AppState>,
     Query(q): Query<IdQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let (phone, channel) = match phone_and_channel(&q) {
         Ok(v) => v,
         Err(e) => return e,
@@ -545,7 +545,7 @@ pub async fn snap(
         Err(_) => return err("JT1078服务未启动"),
     };
     match mgr.send_take_photo_and_wait(&phone, channel, 5).await {
-        Ok(0) => Json(WVPResult::success(serde_json::json!({
+        Ok(0) => Json(ApiResult::success(serde_json::json!({
             "phone": q.phone, "channelId": q.channel_id,
             "msg": "抓拍命令已被终端应答，媒体文件将经 0x1200 上报"
         }))),
@@ -569,7 +569,7 @@ pub struct TempPositionTrackingQuery {
 pub async fn temp_position_tracking(
     State(state): State<AppState>,
     Query(q): Query<TempPositionTrackingQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let phone = q.phone.clone().unwrap_or_default().trim().to_string();
     if phone.is_empty() {
         return err("缺少 phone");
@@ -585,7 +585,7 @@ pub async fn temp_position_tracking(
         .send_temp_position_tracking_and_wait(&phone, interval, expires, 5)
         .await
     {
-        Ok(0) => Json(WVPResult::success(serde_json::json!({
+        Ok(0) => Json(ApiResult::success(serde_json::json!({
             "phone": phone,
             "interval": interval,
             "expires": expires,
@@ -600,7 +600,7 @@ pub async fn temp_position_tracking(
 pub async fn confirmation_alarm(
     State(state): State<AppState>,
     Json(b): Json<serde_json::Value>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let phone = b
         .get("phone")
         .and_then(|v| v.as_str())
@@ -632,7 +632,7 @@ pub async fn confirmation_alarm(
         .send_confirm_alarm_and_wait(&phone, alarm_seq, alarm_type, 5)
         .await
     {
-        Ok(0) => Json(WVPResult::success(serde_json::json!({
+        Ok(0) => Json(ApiResult::success(serde_json::json!({
             "phone": phone,
             "alarmId": alarm_seq,
             "alarmType": alarm_type,
@@ -658,7 +658,7 @@ pub struct PlaybackDownloadQuery {
 pub async fn playback_download(
     State(state): State<AppState>,
     Query(q): Query<PlaybackDownloadQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let phone = q.phone.clone().unwrap_or_default().trim().to_string();
     if phone.is_empty() {
         return err("缺少 phone");
@@ -686,7 +686,7 @@ pub async fn playback_download(
         .send_file_upload_and_wait(&phone, channel, &start, &end, 5)
         .await
     {
-        Ok(0) => Json(WVPResult::success(serde_json::json!({
+        Ok(0) => Json(ApiResult::success(serde_json::json!({
             "phone": phone,
             "channelId": channel,
             "startTime": start,
@@ -702,7 +702,7 @@ pub async fn playback_download(
 pub async fn media_upload_delete(
     State(state): State<AppState>,
     Query(q): Query<IdQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let phone = match q.phone.clone() {
         Some(p) if !p.trim().is_empty() => p,
         _ => return err("缺少 phone"),
@@ -716,7 +716,7 @@ pub async fn media_upload_delete(
         Err(_) => return err("JT1078服务未启动"),
     };
     match mgr.send_media_delete(&phone, media_id).await {
-        Ok(()) => Json(WVPResult::success(serde_json::json!({
+        Ok(()) => Json(ApiResult::success(serde_json::json!({
             "phone": q.phone, "mediaId": media_id, "msg": "媒体删除命令已下发"
         }))),
         Err(e) => err(&format!("媒体删除命令失败: {}", e)),
@@ -727,12 +727,12 @@ pub async fn media_upload_delete(
 pub async fn terminal_channel_delete(
     State(state): State<AppState>,
     Path(id): Path<String>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let Ok(ch_id) = id.parse::<i64>() else {
         return err("非法的通道 id");
     };
     match jt_db::delete_channel(&state.pool, ch_id).await {
-        Ok(n) if n > 0 => Json(WVPResult::success(serde_json::json!({
+        Ok(n) if n > 0 => Json(ApiResult::success(serde_json::json!({
             "id": id, "msg": "通道已删除"
         }))),
         Ok(_) => err("通道不存在"),
@@ -750,13 +750,13 @@ pub async fn terminal_channel_delete(
 pub async fn terminal_channel_one(
     State(state): State<AppState>,
     Path(id): Path<String>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let id_num: i32 = match id.parse() {
         Ok(v) => v,
         Err(_) => return err(&format!("通道 id 非法: {}", id)),
     };
     match jt_db::get_channel_by_id(&state.pool, id_num).await {
-        Ok(Some(c)) => Json(WVPResult::success(serde_json::json!({
+        Ok(Some(c)) => Json(ApiResult::success(serde_json::json!({
             "id": c.id,
             "terminalDbId": c.terminal_db_id,
             "channelId": c.channel_id,
@@ -773,7 +773,7 @@ pub async fn terminal_channel_one(
 mod field_alias_tests {
     use super::{get_f64, get_json_or_str, get_str};
 
-    /// 前端（与 WVP `SetAreaParam`）用的是 camelCase，后端历史字段是 snake_case——
+    /// 前端用的是 camelCase，后端历史字段是 snake_case——
     /// 只认后者会让"新增围栏/路线"必然失败。
     #[test]
     fn test_accepts_frontend_and_legacy_names() {
@@ -822,7 +822,7 @@ mod field_alias_tests {
 }
 
 // ============================================================================
-// WVP `JT1078TerminalController` 用查询参数（`?id=`）而不是路径参数
+// 终端通道接口用查询参数（`?id=`）而不是路径参数
 // ============================================================================
 
 #[derive(Debug, Default, Deserialize)]
@@ -839,7 +839,7 @@ pub struct TerminalChannelIdQuery {
 pub async fn terminal_channel_one_query(
     State(state): State<AppState>,
     axum::extract::Query(q): axum::extract::Query<TerminalChannelIdQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     match q.id {
         Some(id) => terminal_channel_one(State(state), Path(id.to_string())).await,
         None => err("缺少 id 参数"),
@@ -850,7 +850,7 @@ pub async fn terminal_channel_one_query(
 pub async fn terminal_channel_delete_query(
     State(state): State<AppState>,
     axum::extract::Query(q): axum::extract::Query<TerminalChannelIdQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     match q.id {
         Some(id) => terminal_channel_delete(State(state), Path(id.to_string())).await,
         None => err("缺少 id 参数"),

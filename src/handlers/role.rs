@@ -14,7 +14,7 @@ use serde::Deserialize;
 use crate::db;
 use crate::error::{AppError, ErrorCode};
 use crate::handlers::authz;
-use crate::response::WVPResult;
+use crate::response::ApiResult;
 use crate::AppState;
 
 /// POST /api/role/add
@@ -22,7 +22,7 @@ pub async fn role_add(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(body): Json<RoleAddBody>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     authz::require_admin(&state, &headers).await?;
 
     let name = body.name.trim();
@@ -45,7 +45,7 @@ pub async fn role_add(
         create_time: chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
     };
     let id = db::role::add(&state.pool, &role).await?;
-    Ok(Json(WVPResult::success(serde_json::json!({
+    Ok(Json(ApiResult::success(serde_json::json!({
         "id": id,
         "name": role.name,
     }))))
@@ -65,7 +65,7 @@ pub async fn role_delete(
     State(state): State<AppState>,
     headers: HeaderMap,
     Query(q): Query<DeleteRole>,
-) -> Result<Json<WVPResult<()>>, AppError> {
+) -> Result<Json<ApiResult<()>>, AppError> {
     authz::require_admin(&state, &headers).await?;
 
     if q.id == authz::BUILTIN_ADMIN_ROLE_ID {
@@ -84,7 +84,7 @@ pub async fn role_delete(
     }
 
     match db::role::delete(&state.pool, q.id).await {
-        Ok(true) => Ok(Json(WVPResult::<()>::success_empty())),
+        Ok(true) => Ok(Json(ApiResult::<()>::success_empty())),
         Ok(false) => Err(AppError::business(ErrorCode::Error404, "角色不存在")),
         Err(e) => Err(AppError::business(
             ErrorCode::Error100,
@@ -97,10 +97,10 @@ pub async fn role_delete(
 pub async fn role_all(
     State(state): State<AppState>,
     headers: HeaderMap,
-) -> Result<Json<WVPResult<Vec<db::role::Role>>>, AppError> {
+) -> Result<Json<ApiResult<Vec<db::role::Role>>>, AppError> {
     authz::require_admin(&state, &headers).await?;
     let roles = db::role::list_all(&state.pool).await?;
-    Ok(Json(WVPResult::success(roles)))
+    Ok(Json(ApiResult::success(roles)))
 }
 
 #[derive(Deserialize)]

@@ -1,7 +1,7 @@
 use axum::{extract::State, Json};
 use serde::Deserialize;
 
-use crate::response::WVPResult;
+use crate::response::ApiResult;
 use crate::AppState;
 
 #[derive(Debug, Deserialize)]
@@ -44,13 +44,13 @@ pub struct DeviceControlResult {
 pub async fn batch_control(
     State(state): State<AppState>,
     Json(req): Json<BatchControlRequest>,
-) -> Json<WVPResult<BatchControlResult>> {
+) -> Json<ApiResult<BatchControlResult>> {
     let total = req.device_ids.len();
     let mut results = Vec::new();
 
     let sip_server = match &state.sip_server {
         Some(s) => s.clone(),
-        None => return Json(WVPResult::error("SIP server not available")),
+        None => return Json(ApiResult::error("SIP server not available")),
     };
 
     let sip = &*sip_server;
@@ -123,7 +123,7 @@ pub async fn batch_control(
     let success = results.iter().filter(|r| r.success).count();
     let failed = total - success;
 
-    Json(WVPResult::success(BatchControlResult {
+    Json(ApiResult::success(BatchControlResult {
         total,
         success,
         failed,

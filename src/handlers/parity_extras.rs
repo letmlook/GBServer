@@ -16,7 +16,7 @@ use serde::Deserialize;
 
 use crate::db;
 use crate::error::{AppError, ErrorCode};
-use crate::response::WVPResult;
+use crate::response::ApiResult;
 use crate::AppState;
 
 // ===================== D3: Alarm clear / snap =====================
@@ -32,15 +32,15 @@ use crate::AppState;
 pub async fn alarm_snap(
     Path(param): Path<String>,
     State(state): State<AppState>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let needle = param.trim();
     if needle.is_empty() {
-        return Json(WVPResult::error("missing device/channel id"));
+        return Json(ApiResult::error("missing device/channel id"));
     }
 
     let rec = match db::cloud_record::find_latest_by_stream_like(&state.pool, needle).await {
         Ok(v) => v,
-        Err(e) => return Json(WVPResult::error(format!("查询录像失败: {}", e))),
+        Err(e) => return Json(ApiResult::error(format!("查询录像失败: {}", e))),
     };
 
     match rec {
@@ -51,12 +51,12 @@ pub async fn alarm_snap(
                 .map(|p| !p.is_empty())
                 .unwrap_or(false);
             if !has_file {
-                return Json(WVPResult::error(format!(
+                return Json(ApiResult::error(format!(
                     "找到 {} 的录像记录（id={}）但未记录文件路径",
                     needle, rec.id
                 )));
             }
-            Json(WVPResult::success(serde_json::json!({
+            Json(ApiResult::success(serde_json::json!({
                 "deviceId": param,
                 "recordId": rec.id,
                 "fileName": rec.file_name,
@@ -65,7 +65,7 @@ pub async fn alarm_snap(
                 "endTime": rec.end_time,
             })))
         }
-        None => Json(WVPResult::error(format!(
+        None => Json(ApiResult::error(format!(
             "未找到与 '{}' 关联的抓拍/录像文件；告警抓拍依赖部署侧配置 ZLM 录像 hook",
             param
         ))),
@@ -130,7 +130,7 @@ async fn channels_in_tile(
     x: i32,
     y: i32,
     thin: bool,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let bounds = tile_bounds(z, x, y).ok_or_else(|| {
         AppError::business(
             ErrorCode::Error400,
@@ -169,7 +169,7 @@ async fn channels_in_tile(
         })
         .collect();
 
-    Ok(Json(WVPResult::success(serde_json::json!({
+    Ok(Json(ApiResult::success(serde_json::json!({
         "z": z, "x": x, "y": y,
         "count": items.len(),
         "items": items,
@@ -186,7 +186,7 @@ async fn channels_in_tile(
 pub async fn channel_map_tile(
     Path((z, x, y)): Path<(i32, i32, i32)>,
     State(state): State<AppState>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     channels_in_tile(&state, z, x, y, false).await
 }
 
@@ -194,7 +194,7 @@ pub async fn channel_map_tile(
 pub async fn channel_map_thin_tile(
     Path((z, x, y)): Path<(i32, i32, i32)>,
     State(state): State<AppState>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     channels_in_tile(&state, z, x, y, true).await
 }
 
@@ -206,11 +206,11 @@ pub async fn channel_map_thin_tile(
 pub async fn front_end_common(
     Path((cmd, ch)): Path<(String, String)>,
     State(state): State<AppState>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let channel_id: i64 = match ch.trim().parse() {
         Ok(v) if v > 0 => v,
         _ => {
-            return Json(WVPResult::error(format!(
+            return Json(ApiResult::error(format!(
                 "无法解析通道 id '{}'：该兼容路径按内部通道 id 定位",
                 ch
             )))
@@ -220,7 +220,7 @@ pub async fn front_end_common(
     let Some((sip_cmd_type, body)) =
         crate::handlers::common_channel::front_end_command_body(&cmd_upper)
     else {
-        return Json(WVPResult::error(format!(
+        return Json(ApiResult::error(format!(
             "不支持的前端指令 '{}'；支持：{}",
             cmd,
             crate::handlers::common_channel::SUPPORTED_FRONT_END_COMMANDS.join(", ")
@@ -229,7 +229,7 @@ pub async fn front_end_common(
 
     let success_msg = format!("指令 {} 已下发", cmd_upper);
     // lookup_channel_and_send 采用 commonChannel 的 {code,msg} 契约；
-    // 这里转成 WVPResult 信封，并把真实的失败原因透传出去
+    // 这里转成 ApiResult 信封，并把真实的失败原因透传出去
     let Json(inner) = crate::handlers::common_channel::lookup_channel_and_send(
         &state,
         channel_id,
@@ -238,14 +238,14 @@ pub async fn front_end_common(
     .await;
 
     if inner.get("code").and_then(|c| c.as_i64()) == Some(0) {
-        Json(WVPResult::success(inner))
+        Json(ApiResult::success(inner))
     } else {
         let msg = inner
             .get("msg")
             .and_then(|m| m.as_str())
             .unwrap_or("前端指令下发失败")
             .to_string();
-        Json(WVPResult::error(msg))
+        Json(ApiResult::error(msg))
     }
 }
 
@@ -265,7 +265,7 @@ pub struct PlayUrlQuery {
 /// GET /api/server/config — current sanitized config snapshot
 pub async fn server_config(
     State(state): State<AppState>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let cfg = state.config.clone();
     let sip = cfg.sip.as_ref().map(|s| serde_json::json!({
         "enabled": s.enabled,
@@ -280,7 +280,7 @@ pub async fn server_config(
             "id": m.id, "ip": m.ip, "httpPort": m.http_port, "secret": "***",
         })).collect::<Vec<_>>()
     }).unwrap_or_default();
-    Json(WVPResult::success(serde_json::json!({
+    Json(ApiResult::success(serde_json::json!({
         "sip": sip,
         "zlm": zlm,
         "database": { "url": "***" },
@@ -290,8 +290,8 @@ pub async fn server_config(
 }
 
 /// GET /api/server/version — package version
-pub async fn server_version() -> Json<WVPResult<serde_json::Value>> {
-    Json(WVPResult::success(serde_json::json!({
+pub async fn server_version() -> Json<ApiResult<serde_json::Value>> {
+    Json(ApiResult::success(serde_json::json!({
         "version": env!("CARGO_PKG_VERSION"),
         "name": env!("CARGO_PKG_NAME"),
         "rustc": "rustc (compiled)",

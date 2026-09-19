@@ -1,7 +1,7 @@
 /**
- * 后端 WVPResult 标准响应：{ code, msg, data }
+ * 后端 ApiResult 标准响应：{ code, msg, data }
  */
-export interface WvpResult<T = unknown> {
+export interface ApiResult<T = unknown> {
   code: number
   msg: string
   data: T

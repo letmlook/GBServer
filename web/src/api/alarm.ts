@@ -1,12 +1,12 @@
 import { request } from '@/utils/request'
-import type { WvpResult } from '@/types/api'
+import type { ApiResult } from '@/types/api'
 
 export interface AlarmQueryParams {
   page?: number
   count?: number
-  /** 关键字：设备号/通道号/描述（后端扩展，WVP 无此参数） */
+  /** 关键字：设备号/通道号/描述（后端扩展，早期接口无此参数） */
   query?: string
-  /** WVP 的时间参数名是 beginTime/endTime（后端同时接受 startTime） */
+  /** 时间参数名是 beginTime/endTime（后端同时接受 startTime） */
   beginTime?: string
   endTime?: string
   alarmType?: string
@@ -40,7 +40,7 @@ export interface Alarm {
 }
 
 export function getAlarmList(params: AlarmQueryParams) {
-  return request<WvpResult<{ total: number; list: Alarm[] }>>({
+  return request<ApiResult<{ total: number; list: Alarm[] }>>({
     method: 'get',
     url: '/alarm/list',
     params
@@ -55,23 +55,23 @@ export function getAlarmList(params: AlarmQueryParams) {
  * 即使改成 DELETE 也读不到列表（它本来就是删除接口）。
  */
 export function deleteAlarmsBefore(time: string) {
-  return request<WvpResult<{ deleted: number }>>({
+  return request<ApiResult<{ deleted: number }>>({
     method: 'delete',
     url: `/alarm/before/${encodeURIComponent(time)}`
   })
 }
 
 export function getAlarmDetail(id: number | string) {
-  return request<WvpResult<Alarm>>({
+  return request<ApiResult<Alarm>>({
     method: 'get',
     url: `/alarm/detail/${id}`
   })
 }
 
 /**
- * 按筛选条件清空告警（WVP `DELETE /api/alarm/clear?alarmType&beginTime&endTime`）。
+ * 按筛选条件清空告警（`DELETE /api/alarm/clear?alarmType&beginTime&endTime`）。
  *
- * 注意：这个接口**不接受单个 id**（WVP 也不接受）；清空某一类/某段时间的
+ * 注意：这个接口**不接受单个 id**；清空某一类/某段时间的
  * 告警用它，删除「选中的若干条」用 `deleteAlarms(ids)`。
  * 此前前端用 GET 调它 → 405；而后端实现又是无条件的全表删除。
  */
@@ -83,7 +83,7 @@ export function clearAlarms(params?: {
   channelId?: string
   query?: string
 }) {
-  return request<WvpResult<{ cleared: number }>>({
+  return request<ApiResult<{ cleared: number }>>({
     method: 'delete',
     url: '/alarm/clear',
     params: params ?? {}
@@ -91,7 +91,7 @@ export function clearAlarms(params?: {
 }
 
 export function deleteAlarm(id: number | string) {
-  return request<WvpResult>({
+  return request<ApiResult>({
     method: 'delete',
     url: `/alarm/delete/${id}`
   })
@@ -107,7 +107,7 @@ export function handleAlarm(data: {
   handleUser?: string
   handled?: boolean
 }) {
-  return request<WvpResult>({
+  return request<ApiResult>({
     method: 'post',
     url: '/alarm/handle',
     data: { handled: true, ...data }
@@ -115,14 +115,14 @@ export function handleAlarm(data: {
 }
 
 /**
- * 批量删除告警（WVP 契约：`DELETE /api/alarm/delete`，body 是**裸数组**）。
+ * 批量删除告警（契约：`DELETE /api/alarm/delete`，body 是**裸数组**）。
  *
  * 早期实现是 `POST /alarm/batch` + `{ids, action}`：后端只注册了 DELETE，
  * 必然 405；而且后端根本不认 `action`，「批量清除」会变成永久删除。
- * 这里只保留"删除"语义，方法/端点/体型全部对齐 WVP。
+ * 这里只保留"删除"语义，方法/端点/体型全部对齐后端契约。
  */
 export function deleteAlarms(ids: (number | string)[]) {
-  return request<WvpResult<{ deleted: number }>>({
+  return request<ApiResult<{ deleted: number }>>({
     method: 'delete',
     url: '/alarm/delete',
     data: ids
@@ -143,7 +143,7 @@ export function alarmPriorityLabel(priority?: string | number | null): string {
 }
 
 export function getAlarmSnapUrl(param: string) {
-  return request<WvpResult<{ snapUrl: string }>>({
+  return request<ApiResult<{ snapUrl: string }>>({
     method: 'get',
     url: `/alarm/snap/${encodeURIComponent(param)}`
   })

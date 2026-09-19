@@ -14,7 +14,7 @@ use std::sync::{Mutex, OnceLock};
 
 use crate::db::{get_media_server_by_id, list_media_servers, media_server, stream_push, stream_proxy, MediaServer};
 use crate::error::{AppError, ErrorCode};
-use crate::response::WVPResult;
+use crate::response::ApiResult;
 use crate::state::StreamState;
 
 use crate::AppState;
@@ -145,7 +145,7 @@ async fn configure_zlm_hooks(
     // reader/录像校验）。而 ZLM 的这个配置项默认是 `your_server_id`，
     // 与我们的主键毫无关系 —— 不设置就会出现"所有节点都能收到通知，
     // 但按 id 一律查不到节点"的静默失效（日志上只表现为"保持既有值"）。
-    // WVP 的做法也是在 autoConfig 时下发该键。
+    // 该键在 autoConfig 时下发。
     config_items.push((
         "general.mediaServerId".to_string(),
         media_server_id.to_string(),
@@ -710,29 +710,29 @@ fn detect_outbound_ip_cached() -> Option<IpAddr> {
 }
 
 /// GET /api/server/media_server/list
-pub async fn media_server_list(State(state): State<AppState>) -> Result<Json<WVPResult<Vec<MediaServer>>>, AppError> {
+pub async fn media_server_list(State(state): State<AppState>) -> Result<Json<ApiResult<Vec<MediaServer>>>, AppError> {
     let list = list_media_servers(&state.pool).await?;
-    Ok(Json(WVPResult::success(list)))
+    Ok(Json(ApiResult::success(list)))
 }
 
 /// GET /api/server/media_server/online/list — 与 list 同结构，可过滤在线（当前返回全部）
 pub async fn media_server_online_list(
     State(state): State<AppState>,
-) -> Result<Json<WVPResult<Vec<MediaServer>>>, AppError> {
+) -> Result<Json<ApiResult<Vec<MediaServer>>>, AppError> {
     // 路径叫 online/list，此前却把**所有**节点（含离线、含已停用）都返回：
     // 拉流代理 / 录像计划的"节点选择"下拉因此会列出不可用节点。
     let list = media_server::list_online_servers(&state.pool).await?;
-    Ok(Json(WVPResult::success(list)))
+    Ok(Json(ApiResult::success(list)))
 }
 
 /// GET /api/server/media_server/one/:id
 pub async fn media_server_one(
     State(state): State<AppState>,
     Path(id): Path<String>,
-) -> Result<Json<WVPResult<MediaServer>>, AppError> {
+) -> Result<Json<ApiResult<MediaServer>>, AppError> {
     let one = get_media_server_by_id(&state.pool, &id).await?;
     let one = one.ok_or_else(|| crate::error::AppError::business(crate::error::ErrorCode::Error404, "流媒体不存在"))?;
-    Ok(Json(WVPResult::success(one)))
+    Ok(Json(ApiResult::success(one)))
 }
 
 /// GET /api/server/system/configInfo
@@ -747,7 +747,7 @@ pub async fn media_server_one(
 ///                      兜底取 SIP device_id 末 8 位
 ///
 /// 同时保留原 `enabled/tcpPort/realm/...` 字段供其它页面使用。
-pub async fn system_config_info(State(state): State<AppState>) -> Json<WVPResult<serde_json::Value>> {
+pub async fn system_config_info(State(state): State<AppState>) -> Json<ApiResult<serde_json::Value>> {
     let cfg = &state.config;
 
     // SIP config: 用前端 dialog 期望的字段命名
@@ -832,7 +832,7 @@ pub async fn system_config_info(State(state): State<AppState>) -> Json<WVPResult
         "build": env!("CARGO_PKG_NAME"),
         "addOn": {"serverId": add_on_server_id},
     });
-    Json(WVPResult::success(data))
+    Json(ApiResult::success(data))
 }
 
 // ── 控制台图表 ring buffer ──
@@ -880,7 +880,7 @@ fn push_truncated<T>(dq: &mut VecDeque<T>, item: T) {
 /// - `disk`：`[{path, free, use}]`，单位 GB
 /// - `net`：`[{time, out, in}]`，单位 Mbps（列顺序必须与前端 columns 一致）
 /// - `netTotal`：`number`，是 `out`/`in` 峰值向上取整（前端直接赋给 yAxis.max）
-pub async fn system_info(State(state): State<AppState>) -> Json<WVPResult<serde_json::Value>> {
+pub async fn system_info(State(state): State<AppState>) -> Json<ApiResult<serde_json::Value>> {
     let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
 
     // CPU: 0.0-1.0 fraction (not 0-100)
@@ -1092,7 +1092,7 @@ pub async fn system_info(State(state): State<AppState>) -> Json<WVPResult<serde_
         "jt1078_config": jt_cfg.unwrap_or(serde_json::json!(null)),
         "host_ip": host_ip,
     });
-    Json(WVPResult::success(data))
+    Json(ApiResult::success(data))
 }
 
 /// 可执行文件的构建时间（真实值：取当前 exe 的 mtime）。
@@ -1126,17 +1126,17 @@ fn build_time_string() -> String {
 /// 保留此空数组返回是为了：
 ///   1. 与前端 `MapComponent.vue` 期望的 array schema 对齐
 ///   2. 未来 [map] 配置扩展（多瓦片源、代理）时只改 handler 即可
-pub async fn map_config(State(_state): State<AppState>) -> Json<WVPResult<Vec<serde_json::Value>>> {
-    Json(WVPResult::success(Vec::new()))
+pub async fn map_config(State(_state): State<AppState>) -> Json<ApiResult<Vec<serde_json::Value>>> {
+    Json(ApiResult::success(Vec::new()))
 }
 
 /// GET /api/server/info
 ///
-/// Returns a *nested* structure that matches the legacy WVP frontend's
+/// Returns a *nested* structure that matches the frontend's
 /// `v-for="(value, key) in systemInfoList"` in `systemInfo.vue` — the outer
 /// object maps a category name (e.g. "服务器") to a sub-object of
 /// `key: value` pairs the page renders as a description list.
-pub async fn server_info(State(_state): State<AppState>) -> Json<WVPResult<serde_json::Value>> {
+pub async fn server_info(State(_state): State<AppState>) -> Json<ApiResult<serde_json::Value>> {
     // Persist a simple start time reference via a static OnceLock
     use std::sync::OnceLock;
     static START_TIME: OnceLock<SystemTime> = OnceLock::new();
@@ -1145,7 +1145,7 @@ pub async fn server_info(State(_state): State<AppState>) -> Json<WVPResult<serde
     // Simple uptime calculation from start time
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
     let uptime = now.saturating_sub(start_ts);
-    Json(WVPResult::success(serde_json::json!({
+    Json(ApiResult::success(serde_json::json!({
         "服务器": {
             "启动时间": chrono::Local.timestamp_opt(start_ts as i64, 0)
                 .single().map(|t| t.format("%Y-%m-%d %H:%M:%S").to_string())
@@ -1166,7 +1166,7 @@ pub async fn server_info(State(_state): State<AppState>) -> Json<WVPResult<serde
 ///     push:    {total, online},   // 推流总数 / 在线推流数
 ///     proxy:   {total, online},   // 拉流代理总数 / 在线的拉流代理
 ///   }
-pub async fn resource_info(State(state): State<AppState>) -> Json<WVPResult<serde_json::Value>> {
+pub async fn resource_info(State(state): State<AppState>) -> Json<ApiResult<serde_json::Value>> {
     // Device / channel counts from DB
     let total_devices = db::count_devices(&state.pool, None, None).await.unwrap_or(0);
     let online_devices = db::count_devices(&state.pool, None, Some(true)).await.unwrap_or(0);
@@ -1187,7 +1187,7 @@ pub async fn resource_info(State(state): State<AppState>) -> Json<WVPResult<serd
         "push":    {"total": push_total,     "online": push_online},
         "proxy":   {"total": proxy_total,    "online": proxy_online},
     });
-    Json(WVPResult::success(data))
+    Json(ApiResult::success(data))
 }
 
 // ---------- 媒体节点探测 / 保存 / 统一流视图 ----------
@@ -1201,7 +1201,7 @@ pub async fn resource_info(State(state): State<AppState>) -> Json<WVPResult<serd
 ///   `ip`/`httpPort`/`secret` 再探测。此前 DTO 里**根本没有 `id` 字段**，未知 query 被
 ///   serde 静默丢弃，于是无论点哪个节点都在探测兜底的 `127.0.0.1:80`（secret 为空）——
 ///   本机恰好有 ZLM 时还会把那个错误节点的结果当成被检测节点的结果。
-/// * `?ip=&port=&secret=&type=` —— WVP 的原始签名，新增节点时用于"先探测再保存"。
+/// * `?ip=&port=&secret=&type=` —— 早期实现的签名，新增节点时用于"先探测再保存"。
 #[derive(Debug, Deserialize)]
 pub struct MediaServerCheckQuery {
     pub id: Option<String>,
@@ -1216,7 +1216,7 @@ pub struct MediaServerCheckQuery {
 pub async fn media_server_check(
     State(state): State<AppState>,
     Query(q): Query<MediaServerCheckQuery>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     // 先按 id 解析节点；解析不到再退回显式参数。
     let stored = match q.id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         Some(id) => Some(
@@ -1261,7 +1261,7 @@ pub async fn media_server_check(
         "sendRtpPortRange": "50000,60000"
     });
 
-    // 探测结果必须**显式**表达成功/失败：此前无论成功与否都返回 `WVPResult::success`，
+    // 探测结果必须**显式**表达成功/失败：此前无论成功与否都返回 `ApiResult::success`，
     // data 里既没有 `code` 也没有 `msg`，而前端按 `data.code === 0` 判断
     // → 永远弹「检测失败」（哪怕节点完全正常）。
     let mut reachable = false;
@@ -1325,7 +1325,7 @@ pub async fn media_server_check(
             format!("媒体节点 {ip}:{http_port} 检测失败: {msg}"),
         ));
     }
-    Ok(Json(WVPResult::success(payload)))
+    Ok(Json(ApiResult::success(payload)))
 }
 
 /// GET /api/server/media_server/record/check
@@ -1338,13 +1338,13 @@ pub struct MediaServerRecordCheckQuery {
 pub async fn media_server_record_check(
     State(state): State<AppState>,
     Query(q): Query<MediaServerRecordCheckQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     let reachable = state
         .zlm_client
         .as_ref()
         .map(|_| true)
         .unwrap_or(false);
-    Json(WVPResult::success(serde_json::json!({
+    Json(ApiResult::success(serde_json::json!({
         "success": reachable,
         "ip": q.ip,
         "port": q.port,
@@ -1406,7 +1406,7 @@ pub struct MediaServerSaveBody {
 pub async fn media_server_save(
     State(state): State<AppState>,
     Json(body): Json<MediaServerSaveBody>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let id = body.id.unwrap_or_else(|| format!("media_server_{}", chrono::Utc::now().timestamp_millis()));
     let ip = body.ip.unwrap_or_else(|| "127.0.0.1".to_string());
     let http_port = body.http_port.unwrap_or(8080);
@@ -1565,7 +1565,7 @@ pub async fn media_server_save(
         }
     }
     
-    Ok(Json(WVPResult::success(serde_json::json!({
+    Ok(Json(ApiResult::success(serde_json::json!({
         "id": id,
         "autoConfig": auto_config,
         "hookConfigured": auto_config && zlm_hook_errors.is_empty(),
@@ -1583,7 +1583,7 @@ pub struct MediaServerDeleteQuery {
 pub async fn media_server_delete(
     State(state): State<AppState>,
     Query(q): Query<MediaServerDeleteQuery>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let id = q
         .id
         .as_deref()
@@ -1594,7 +1594,7 @@ pub async fn media_server_delete(
         return Err(AppError::business(ErrorCode::Error400, "缺少 id 参数"));
     }
     media_server::delete_by_id(&state.pool, &id).await?;
-    Ok(Json(WVPResult::success(serde_json::json!({
+    Ok(Json(ApiResult::success(serde_json::json!({
         "id": id,
         "message": "删除成功"
     }))))
@@ -1612,7 +1612,7 @@ pub struct MediaInfoQuery {
 pub async fn media_server_media_info(
     State(state): State<AppState>,
     Query(q): Query<MediaInfoQuery>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let app = q.app.as_deref().unwrap_or("");
     let stream = q.stream.as_deref().unwrap_or("");
     if app.is_empty() || stream.is_empty() {
@@ -1637,9 +1637,9 @@ pub async fn media_server_media_info(
     match client.get_media_info(schema, vhost, app, stream).await {
         Ok(Some(info)) => {
             let value = serde_json::to_value(info).unwrap_or(serde_json::Value::Null);
-            Ok(Json(WVPResult::success(value)))
+            Ok(Json(ApiResult::success(value)))
         }
-        Ok(None) => Ok(Json(WVPResult::success(serde_json::Value::Null))),
+        Ok(None) => Ok(Json(ApiResult::success(serde_json::Value::Null))),
         Err(e) => Err(AppError::business(ErrorCode::Error500, format!("ZLM 请求失败: {}", e))),
     }
 }
@@ -1657,7 +1657,7 @@ pub async fn media_server_media_info(
 /// - `gbSend`   : 国标推流数（同上）
 #[derive(Debug, Deserialize)]
 pub struct MediaServerLoadQuery {
-    /// 只看某个节点。WVP 的 `getMediaLoad()` 无入参（返回全部节点），
+    /// 只看某个节点。早期实现的 `getMediaLoad()` 无入参（返回全部节点），
     /// 但本平台控制台是**按节点逐张卡片**取值的，不给 id 就只能拿到整个数组，
     /// 调用方再 `arr[0]` 就会把第一个节点的流量显示到每一张卡片上。
     pub id: Option<String>,
@@ -1666,7 +1666,7 @@ pub struct MediaServerLoadQuery {
 pub async fn media_server_load(
     State(state): State<AppState>,
     Query(q): Query<MediaServerLoadQuery>,
-) -> Json<WVPResult<serde_json::Value>> {
+) -> Json<ApiResult<serde_json::Value>> {
     // gbReceive / gbSend 改用**本进程内存里的权威计数**：
     //   * gbReceive = 活跃的 GB28181 INVITE 会话（设备 → 平台收流）
     //   * gbSend    = 活跃的级联 SendRtp 会话（平台 → 上级推流）
@@ -1716,12 +1716,12 @@ pub async fn media_server_load(
     }
 
     // Return array directly for frontend
-    Json(WVPResult::success(serde_json::Value::Array(server_loads)))
+    Json(ApiResult::success(serde_json::Value::Array(server_loads)))
 }
 
 /// GET /api/server/map/model-icon/list
-pub async fn map_model_icon_list() -> Json<WVPResult<Vec<serde_json::Value>>> {
-    Json(WVPResult::success(vec![
+pub async fn map_model_icon_list() -> Json<ApiResult<Vec<serde_json::Value>>> {
+    Json(ApiResult::success(vec![
         serde_json::json!({
             "id": "camera",
             "name": "标准枪机",
@@ -1746,7 +1746,7 @@ pub async fn map_model_icon_list() -> Json<WVPResult<Vec<serde_json::Value>>> {
 /// GET /api/server/stream/all
 pub async fn list_all_streams(
     State(state): State<AppState>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let mut unified: Vec<serde_json::Value> = Vec::new();
 
     // 1) 推流表
@@ -1799,7 +1799,7 @@ pub async fn list_all_streams(
         })
         .count();
 
-    Ok(Json(WVPResult::success(serde_json::json!({
+    Ok(Json(ApiResult::success(serde_json::json!({
         "total": unified.len(),
         "active": active_count,
         "items": unified,
@@ -2240,20 +2240,20 @@ mod log_export_contract_tests {
     }
 }
 
-/// `GET /api/server/shutdown`（WVP `ServerController.shutdown`）—— 关闭服务进程。
+/// `GET /api/server/shutdown` —— 关闭服务进程。
 ///
-/// WVP 的实现是 `System.exit(1)`。这里同样真的退出进程，但**先让响应发出去**：
+/// 早期实现是 `System.exit(1)`。这里同样真的退出进程，但**先让响应发出去**：
 /// 直接 `exit` 会让客户端拿到连接被重置而不是"已受理"。
 /// 用一个短延时任务退出，业务数据（SQLite WAL / Redis）在进程退出时由
 /// SQLx/连接池正常收尾。
-pub async fn server_shutdown() -> Json<WVPResult<serde_json::Value>> {
+pub async fn server_shutdown() -> Json<ApiResult<serde_json::Value>> {
     tracing::warn!("收到 /api/server/shutdown：1 秒后退出进程");
     tokio::spawn(async {
         tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
         tracing::warn!("shutdown：进程退出");
         std::process::exit(0);
     });
-    Json(WVPResult::success(serde_json::json!({
+    Json(ApiResult::success(serde_json::json!({
         "message": "服务将在 1 秒后关闭",
         "shutdown": true,
     })))

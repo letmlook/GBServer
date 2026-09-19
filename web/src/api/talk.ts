@@ -1,6 +1,6 @@
 import { request } from '@/utils/request'
 import { getToken } from '@/utils/auth'
-import type { WvpResult } from '@/types/api'
+import type { ApiResult } from '@/types/api'
 
 export interface TalkSession {
   callId: string
@@ -23,7 +23,7 @@ export interface TalkSession {
  */
 export function startTalk(deviceId: string, channelId: string) {
   return request<
-    WvpResult<{
+    ApiResult<{
       callId: string
       status: string
       localPort?: number
@@ -38,7 +38,7 @@ export function startTalk(deviceId: string, channelId: string) {
 
 /** 停止语音对讲（发送 SIP BYE）。 */
 export function stopTalk(deviceId: string, channelId: string) {
-  return request<WvpResult>({
+  return request<ApiResult>({
     method: 'get',
     url: `/talk/stop/${encodeURIComponent(deviceId)}/${encodeURIComponent(channelId)}`
   })
@@ -46,7 +46,7 @@ export function stopTalk(deviceId: string, channelId: string) {
 
 /** 当前所有活跃对讲会话（含本地收流端口与设备音频地址）。 */
 export function listTalk() {
-  return request<WvpResult<{ total: number; list: TalkSession[] }>>({
+  return request<ApiResult<{ total: number; list: TalkSession[] }>>({
     method: 'get',
     url: '/talk/list'
   })

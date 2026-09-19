@@ -18,7 +18,7 @@ use serde::Deserialize;
 use crate::db;
 use crate::db::region::Region;
 use crate::error::{AppError, ErrorCode};
-use crate::response::WVPResult;
+use crate::response::ApiResult;
 use crate::AppState;
 
 /// 把 `Region` 行转成前端 `Region` 接口期望的字段。
@@ -111,22 +111,22 @@ pub(crate) async fn sync_regions_from_civil_codes(pool: &db::Pool) -> sqlx::Resu
 pub async fn region_one(
     State(state): State<AppState>,
     Query(q): Query<RegionOne>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let detail = load_region_detail(&state.pool, q.id as i32)
         .await?
         .ok_or_else(|| AppError::business(ErrorCode::Error404, "区域不存在"))?;
-    Ok(Json(WVPResult::success(detail)))
+    Ok(Json(ApiResult::success(detail)))
 }
 
 /// GET /api/region/page/list?page=&count=
 pub async fn region_page_list(
     State(state): State<AppState>,
     Query(q): Query<PageList>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let page = q.page.unwrap_or(1).max(1);
     let count = q.count.unwrap_or(15).max(1);
     let (list, total) = load_region_page(&state.pool, page, count).await?;
-    Ok(Json(WVPResult::success(serde_json::json!({
+    Ok(Json(ApiResult::success(serde_json::json!({
         "list": list,
         "total": total,
         "page": page,
@@ -137,9 +137,9 @@ pub async fn region_page_list(
 /// GET /api/region/sync
 pub async fn region_sync(
     State(state): State<AppState>,
-) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let created = sync_regions_from_civil_codes(&state.pool).await?;
-    Ok(Json(WVPResult::success(serde_json::json!({
+    Ok(Json(ApiResult::success(serde_json::json!({
         "count": created,
         "synced": created,
         "msg": format!("区域同步完成，新增 {} 个区域", created),

@@ -30,7 +30,7 @@ service.interceptors.response.use(
     if (response.config.url?.includes('/api/user/logout')) {
       return response.data
     }
-    const res = response.data as WvpResult
+    const res = response.data as ApiResult
     if (res && typeof res === 'object' && 'code' in res && res.code !== 0) {
       ElMessage.error({ message: res.msg, showClose: true })
       return Promise.reject(new Error(res.msg || 'Error'))
