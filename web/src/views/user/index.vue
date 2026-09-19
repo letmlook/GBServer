@@ -21,7 +21,21 @@
       </div>
     </div>
 
-    <el-card>
+    <el-card v-if="!authChecked">
+      <el-skeleton :rows="4" animated />
+    </el-card>
+
+    <!--
+      非管理员：后端对列表/角色接口均返回 403（用户列表含每人 pushKey，属敏感数据）。
+      此时不再展示空表格，而是给出明确说明 —— 否则页面看起来像"加载失败"。
+    -->
+    <el-card v-else-if="!isAdmin">
+      <el-empty description="需要管理员权限才能查看用户列表">
+        <el-button @click="router.push('/dashboard')">返回控制台</el-button>
+      </el-empty>
+    </el-card>
+
+    <el-card v-else>
       <el-table :data="rows" v-loading="loading" stripe border>
         <el-table-column prop="id" label="ID" width="60" />
         <el-table-column prop="username" label="用户名" min-width="160" />
@@ -37,24 +51,23 @@
           <template #default="{ row }"><span class="mono">{{ row.createTime ?? '-' }}</span></template>
         </el-table-column>
         <!--
-          操作列按权限区分：
-          * 非管理员只保留「改密（我自己）」—— 其余按钮点了必然 403，不如不显示。
-          * 管理员对**自己**那一行也只给改密 / 编辑，不给重置与删除（后端也会拦自删）。
+          操作列：
+          * 自己那一行 —— 改密（后端 changePassword 只认 token，改的必然是本人）+ 编辑。
+          * 其他行（仅管理员）—— 编辑 / 重置密码 / 重置 PushKey / 删除。
         -->
-        <el-table-column label="操作" :width="isAdmin ? 340 : 140" fixed="right">
+        <el-table-column label="操作" width="340" fixed="right">
           <template #default="{ row }">
             <div class="row-actions">
               <template v-if="isSelf(row)">
                 <el-button link type="primary" @click="onChangeMyPwd(row)">改密</el-button>
-                <el-button v-if="isAdmin" link type="primary" @click="onEdit(row)">编辑</el-button>
+                <el-button link type="primary" @click="onEdit(row)">编辑</el-button>
               </template>
-              <template v-else-if="isAdmin">
+              <template v-else>
                 <el-button link type="primary" @click="onEdit(row)">编辑</el-button>
                 <el-button link type="primary" @click="onResetPwd(row)">重置密码</el-button>
                 <el-button link type="warning" @click="onRegenKey(row)">重置 PushKey</el-button>
                 <el-button link type="danger" @click="onDelete(row)">删除</el-button>
               </template>
-              <span v-else class="mono muted">—</span>
             </div>
           </template>
         </el-table-column>
@@ -112,6 +125,7 @@
 
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { Plus, Search } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'element-plus'
 import {
@@ -127,11 +141,14 @@ import UserAddDialog from './AddDialog.vue'
 import UserEditDialog from './EditDialog.vue'
 
 const loading = ref(false)
+/** 身份确认前不渲染表格，避免非管理员先看到一次 403 报错。 */
+const authChecked = ref(false)
 const rows = ref<any[]>([])
 const roles = ref<{ id: number; name: string }[]>([])
 const addVisible = ref(false)
 const editVisible = ref(false)
 const editTarget = ref<any>(null)
+const router = useRouter()
 
 /** 当前登录账号。后端 changePassword 只认 token，所以「改密」只作用于它。 */
 const myUserId = ref<number>()
@@ -285,7 +302,7 @@ async function onDelete(row: any) {
 }
 
 onMounted(async () => {
-  // 先认人再拉列表：决定操作列展示哪些按钮。
+  // 先认人再拉列表：决定整页是否可访问、以及操作列展示哪些按钮。
   try {
     const me = await getUserInfo()
     const data: any = me?.data
@@ -295,14 +312,15 @@ onMounted(async () => {
   } catch {
     isAdmin.value = false
   }
+  authChecked.value = true
+
+  if (!isAdmin.value) return
 
   await loadData()
 
-  if (isAdmin.value) {
-    getRoleAll()
-      .then((r) => (roles.value = (r.data as any[]) ?? []))
-      .catch(() => {})
-  }
+  getRoleAll()
+    .then((r) => (roles.value = (r.data as any[]) ?? []))
+    .catch(() => {})
 })
 </script>
 
