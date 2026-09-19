@@ -18,7 +18,7 @@
 | 后端代码量 | 87,662 行 Rust | `find src -name '*.rs' \| xargs wc -l` |
 | 已注册路由 | 430 条唯一 `/api/...` 路径（`router.rs` 425 处 `.route(`） | `grep -oE '"/api/[^"]*"' src/router.rs \| sort -u \| wc -l` |
 | Handler 模块 | 31 个（`stub.rs` / `device_stub.rs` **是真实实现**，非兼容 shim，见 §3） | `grep -c 'pub mod' src/handlers/mod.rs` |
-| 后端测试 | **746 通过 / 0 失败 / 3 忽略**（15 个测试二进制） | `cargo test --no-fail-fast` |
+| 后端测试 | **750 通过 / 0 失败 / 3 忽略**（15 个测试二进制） | `cargo test --no-fail-fast` |
 | 编译 | `cargo check` 0 error；clippy 272 条告警（2026-09-19 早测，本轮未重测） | `cargo check` / `cargo clippy --all-targets` |
 | 前端 | 18 个业务视图目录（另有 `404.vue` / `redirect.vue` 两个顶层文件）、17 个 API 模块、13 个通用组件、42 个 SVG 图标、**174** 处 `url:` 字面量 | `find web/src/views -mindepth 1 -maxdepth 1 -type d \| wc -l`；`grep -oE "url[[:space:]]*:[[:space:]]*[\`'\"]" web/src/api/*.ts \| wc -l` |
 | e2e | 17 个 spec（59 条 `test()` / 9 条 `test.describe()`）；最近一次运行 **35 通过 / 0 失败 / 0 跳过** | `ls e2e/tests/*.spec.ts \| wc -l`；`e2e/test-results/.last-run.json` |
@@ -62,6 +62,17 @@
 
 保留这些结论是为了避免后人重复论证同一个问题。
 
+- **接口文档：代码优先的 OpenAPI（2026-09-19 新增）**。全部 **416** 条路由都由
+  handler 上的 `#[utoipa::path]` 注解驱动：`routes!()` 一次注册同时产出 axum 路由与
+  OpenAPI path，**结构上不可能「加了路由忘写文档」**。`/swagger-ui` 交互式文档（右上角
+  Authorize 填 JWT / API Key 即可直接调用），`/api/openapi.json` 出 OpenAPI 3.1 规范。
+  实现与运维见 [`OPENAPI_GUIDE.md`](OPENAPI_GUIDE.md)。
+  - 受保护路由（403 条）挂 `auth_middleware` + 审计；公开路由（13 条：登录、health、
+    ready、metrics、ZLM hook、RPC、分享播放、缩略图、WebSocket、对讲音频）不挂鉴权。
+  - 覆盖门禁：`test_every_documented_path_is_routable` 遍历 spec 每条路径真实发请求并
+    断言非 404 —— 文档与实现漂移、迁移丢路由都会在 CI 暴露。
+  - 为此把 axum 从 0.7.9 升到 0.8.9（`utoipa-axum` 要求），84 条路由的路径参数
+    语法 `:param` → `{param}`；`tower 0.5` / `tower-http 0.6`（http 1.x）。
 - **项目自 2026-09-19 起独立演进，不再保留任何外部实现（WVP / LiveGBS 等）的命名与引用**。
   已完成的实体改名（**API 契约不变**，只是内部命名）：
   - 响应信封类型改名为 `ApiResult<T>`（`src/response.rs`，888 处调用点、前端
@@ -168,7 +179,7 @@ C8（通道 `hasAudio` 与实际流不符：流里有 G.711A，接口却报 `has
   数十处只在非 SQLite 上炸的缺陷（占位符语法、列类型、`INSERT ... RETURNING`、
   `CAST` 等）。
 - **真实 ZLM 集成**：hook 全链路、流列表、录制文件落盘/删除、多节点负载均衡。
-- **测试基线（2026-09-19 实测）**：`cargo test --no-fail-fast` **746 通过 / 0 失败 / 3 忽略**。
+- **测试基线（2026-09-19 实测）**：`cargo test --no-fail-fast` **750 通过 / 0 失败 / 3 忽略**。
 - **e2e 体系**：Playwright 17 个 spec / 59 条 `test()`，覆盖设备/通道/直播/回放/云录像/
   推流/代理/平台/区域/媒体节点/终端/日志/报警/控制台等页面；最近一次运行
   **35 通过 / 0 失败**（`e2e/test-results/.last-run.json` 为 `status: passed`）。

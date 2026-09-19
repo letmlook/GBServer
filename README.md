@@ -211,7 +211,17 @@ cd e2e && npm install && npx playwright install chromium && npx playwright test 
 ## 🌐 API 概览
 
 统一响应格式（对应后端 `ApiResult<T>`）：`{ "code": 0, "msg": "成功", "data": ... }`；
-鉴权请求头 `access-token`（JWT）或 `X-API-Key` / `apiKey`。完整路由见 `src/router.rs`。
+鉴权请求头 `access-token`（JWT）或 `X-API-Key` / `apiKey`。
+
+**完整接口文档（416 条路由全覆盖，可交互调用）**：
+
+| 入口 | 内容 |
+|------|------|
+| `/swagger-ui` | 交互式文档；右上角 **Authorize** 填 JWT 或 API Key 后可直接调接口 |
+| `/api/openapi.json` | OpenAPI 3.1 规范；可导入 Postman / Apifox，或生成前端 TS 客户端 |
+
+文档由 handler 上的 `#[utoipa::path]` 注解驱动，路由注册与文档生成是同一个动作，
+因此不存在「加了路由忘写文档」。维护方式见 [`docs/OPENAPI_GUIDE.md`](docs/OPENAPI_GUIDE.md)。
 
 | 域 | 主要端点 |
 |----|----------|
