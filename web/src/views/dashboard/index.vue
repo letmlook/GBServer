@@ -131,42 +131,6 @@
 
       <article class="gb-card gb-card--chart">
         <header class="gb-card-title">
-          <span>磁盘使用率</span>
-          <span class="meta">{{ diskMounts }} 个挂载点 · 阈值 80%</span>
-        </header>
-        <div class="disk-bars">
-          <div v-for="(m, i) in diskMountList" :key="m.path + i" class="disk-row">
-            <span class="disk-path" :title="m.path">{{ shortPath(m.path) }}</span>
-            <div class="disk-track">
-              <div class="disk-fill" :style="{ width: Math.min(m.pct, 100) + '%' }" :class="diskTone(m.pct)" />
-              <div class="disk-mark" />
-            </div>
-            <span class="disk-pct mono" :class="diskTone(m.pct)">{{ m.pct }}%</span>
-            <span class="disk-size text-tertiary text-xs">{{ m.usedGb }} / {{ m.totalGb }} GB</span>
-          </div>
-          <div v-if="diskMountList.length === 0" class="disk-empty text-tertiary text-xs">暂无磁盘数据</div>
-        </div>
-      </article>
-
-      <article class="gb-card gb-card--chart">
-        <header class="gb-card-title">
-          <span>服务健康</span>
-          <span class="meta">实时状态</span>
-        </header>
-        <ul class="health-grid">
-          <li v-for="s in healthList" :key="s.key" class="health-row">
-            <el-icon class="health-icon" :size="18"><component :is="s.icon" /></el-icon>
-            <span class="health-name">{{ s.label }}</span>
-            <span class="health-detail text-tertiary text-xs">{{ s.detail }}</span>
-            <span :class="['health-pill', s.tone]">
-              <i class="health-dot" /> {{ s.status }}
-            </span>
-          </li>
-        </ul>
-      </article>
-
-      <article class="gb-card gb-card--chart">
-        <header class="gb-card-title">
           <span>协议接入</span>
           <span class="meta">GB28181 · JT1078</span>
         </header>
@@ -277,6 +241,42 @@
             </dl>
             <div v-else class="disk-empty text-tertiary text-xs">未配置 JT1078</div>
           </section>
+        </div>
+      </article>
+
+      <article class="gb-card gb-card--chart">
+        <header class="gb-card-title">
+          <span>服务健康</span>
+          <span class="meta">实时状态</span>
+        </header>
+        <ul class="health-grid">
+          <li v-for="s in healthList" :key="s.key" class="health-row">
+            <el-icon class="health-icon" :size="18"><component :is="s.icon" /></el-icon>
+            <span class="health-name">{{ s.label }}</span>
+            <span class="health-detail text-tertiary text-xs">{{ s.detail }}</span>
+            <span :class="['health-pill', s.tone]">
+              <i class="health-dot" /> {{ s.status }}
+            </span>
+          </li>
+        </ul>
+      </article>
+
+      <article class="gb-card gb-card--chart">
+        <header class="gb-card-title">
+          <span>磁盘使用率</span>
+          <span class="meta">{{ diskMounts }} 个挂载点 · 阈值 80%</span>
+        </header>
+        <div class="disk-bars">
+          <div v-for="(m, i) in diskMountList" :key="m.path + i" class="disk-row">
+            <span class="disk-path" :title="m.path">{{ shortPath(m.path) }}</span>
+            <div class="disk-track">
+              <div class="disk-fill" :style="{ width: Math.min(m.pct, 100) + '%' }" :class="diskTone(m.pct)" />
+              <div class="disk-mark" />
+            </div>
+            <span class="disk-pct mono" :class="diskTone(m.pct)">{{ m.pct }}%</span>
+            <span class="disk-size text-tertiary text-xs">{{ m.usedGb }} / {{ m.totalGb }} GB</span>
+          </div>
+          <div v-if="diskMountList.length === 0" class="disk-empty text-tertiary text-xs">暂无磁盘数据</div>
         </div>
       </article>
     </section>
