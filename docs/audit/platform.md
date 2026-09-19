@@ -1,5 +1,7 @@
 # platform.ts 契约审计
 
+> 📦 **归档说明（2026-09-19，代码功能冻结）**：本文档是冻结前的模块契约审计快照，记录当时的缺陷与修复轮次；文中引用的 `web-legacy-vue2/` 路径已于 2026-09-19 从仓库删除，仅作历史参照。**当前未完成事项以 [`../OPEN_ISSUES.md`](../OPEN_ISSUES.md) 为准**。
+
 > **状态：已修复（2026-09-12 第三十四轮）**。11 条全部落地，并用真实后端验证：
 > `serverGBId`/`serverGbId`/`realm` 三种写法都能绑定、`expires` 数字与字符串都能反序列化、
 > 列表与详情返回同一套键、`expires`/`keepTimeout` 回的是数字（与 WVP 的 `int` 一致）、
@@ -94,7 +96,6 @@
 - 前端：`web/src/api/platform.ts:38-43` 返回类型 `WvpResult<Platform>`，而 `Platform`（`platform.ts:12`）用的是 `serverGbId`
 - 后端：`src/handlers/platform.rs:1765` `"serverGBId": p.server_gb_id,`
 - 影响：与条目 1 同源的拼写问题——调用方按类型读 `data.serverGbId` 会得到 `undefined`。当前无调用方：`web/src` 内除 `api/platform.ts:38` 的定义外无引用。
-
 
 ---
 

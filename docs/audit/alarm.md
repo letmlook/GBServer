@@ -1,5 +1,7 @@
 # alarm.ts 契约审计
 
+> 📦 **归档说明（2026-09-19，代码功能冻结）**：本文档是冻结前的模块契约审计快照，记录当时的缺陷与修复轮次；文中引用的 `web-legacy-vue2/` 路径已于 2026-09-19 从仓库删除，仅作历史参照。**当前未完成事项以 [`../OPEN_ISSUES.md`](../OPEN_ISSUES.md) 为准**。
+
 > **第四十三轮（postgres 运行时验证）补充**：`set_handled`（告警处置）的
 > `UPDATE gb_device_alarm SET handled = 1, … WHERE id = ?` 没有方言分支 →
 > postgres 下 `/api/alarm/handle` 500。已改走 `dyn_where::dialect_sql()`。

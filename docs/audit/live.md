@@ -1,5 +1,7 @@
 # live.ts 契约审计
 
+> 📦 **归档说明（2026-09-19，代码功能冻结）**：本文档是冻结前的模块契约审计快照，记录当时的缺陷与修复轮次；文中引用的 `web-legacy-vue2/` 路径已于 2026-09-19 从仓库删除，仅作历史参照。**当前未完成事项以 [`../OPEN_ISSUES.md`](../OPEN_ISSUES.md) 为准**。
+
 审计对象：`web/src/api/live.ts`（10 个导出函数）对后端 Axum 路由 / handler DTO / 响应键名。
 
 审计方法：读 `web/src/api/live.ts` → 在 `src/router.rs` 核对 path 与 method → 读 `src/handlers/*.rs` 的 Query/Json DTO 与 `json!({...})` 键名 → `grep -rn` 找页面调用方确认影响 → 用 WVP-PRO Java 源码（`/tmp/wvpsrc/wvp-GB28181-pro-master`）交叉验证真值。

@@ -1,5 +1,7 @@
 # log.ts 契约审计
 
+> 📦 **归档说明（2026-09-19，代码功能冻结）**：本文档是冻结前的模块契约审计快照，记录当时的缺陷与修复轮次；文中引用的 `web-legacy-vue2/` 路径已于 2026-09-19 从仓库删除，仅作历史参照。**当前未完成事项以 [`../OPEN_ISSUES.md`](../OPEN_ISSUES.md) 为准**。
+
 > **状态：已修复（2026-09-12 第四十三轮补充）**：`gb_log.id` 在 postgres 脚本里是
 > `serial`（INT4），而 `LogEntry.id` 是 `i64` → postgres 下 `/api/log/list` 恒定
 > 500（`mismatched types; Rust type i64 ... not compatible with SQL type INT4`），

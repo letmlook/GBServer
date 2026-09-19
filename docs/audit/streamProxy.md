@@ -1,5 +1,7 @@
 # streamProxy.ts 契约审计
 
+> 📦 **归档说明（2026-09-19，代码功能冻结）**：本文档是冻结前的模块契约审计快照，记录当时的缺陷与修复轮次；文中引用的 `web-legacy-vue2/` 路径已于 2026-09-19 从仓库删除，仅作历史参照。**当前未完成事项以 [`../OPEN_ISSUES.md`](../OPEN_ISSUES.md) 为准**。
+
 > **状态：已修复（2026-09-12 第三十三轮）**。10 条全部落地，且用真实 ZLM 验证过：
 > `POST /api/proxy/add`（旧字段 `url`/`enabled` 与 WVP 字段 `srcUrl`/`enable` 都收）
 > → 落库 → `GET /api/proxy/list?query=…&pulling=…` 真实过滤 → `GET /api/proxy/start`

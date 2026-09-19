@@ -1,5 +1,7 @@
 # user.ts 契约审计
 
+> 📦 **归档说明（2026-09-19，代码功能冻结）**：本文档是冻结前的模块契约审计快照，记录当时的缺陷与修复轮次；文中引用的 `web-legacy-vue2/` 路径已于 2026-09-19 从仓库删除，仅作历史参照。**当前未完成事项以 [`../OPEN_ISSUES.md`](../OPEN_ISSUES.md) 为准**。
+
 审计对象：`web/src/api/user.ts`（12 个导出函数/接口）× `src/router.rs` × `src/handlers/user.rs` × `src/db/user.rs` × `src/auth.rs`。
 
 路由与 method 全部核对通过：`/api/user/login`(get+post, `src/router.rs:995`)、`/api/user/logout`(get, `src/router.rs:912`)、`/api/user/userInfo`(get+post, `src/router.rs:71-73`)、`/api/user/users`(get, `src/router.rs:74`)、`/api/user/add`(post, `src/router.rs:75`)、`/api/user/delete`(delete, `src/router.rs:76`)、`/api/user/changePassword`(post, `src/router.rs:77`)、`/api/user/changePasswordForAdmin`(post, `src/router.rs:78-81`)、`/api/user/changePushKey`(post, `src/router.rs:82`)、`/api/role/all`(get, `src/router.rs:217`)，前端 method 与后端注册一致，**无 route-missing / http-method 类问题**。

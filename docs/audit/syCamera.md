@@ -1,5 +1,7 @@
 # syCamera.ts 契约审计
 
+> 📦 **归档说明（2026-09-19，代码功能冻结）**：本文档是冻结前的模块契约审计快照，记录当时的缺陷与修复轮次；文中引用的 `web-legacy-vue2/` 路径已于 2026-09-19 从仓库删除，仅作历史参照。**当前未完成事项以 [`../OPEN_ISSUES.md`](../OPEN_ISSUES.md) 为准**。
+
 审计对象：`web/src/api/syCamera.ts`（2 个导出函数：`cameraListWithChild`、`cameraList`）× `src/router.rs` × `src/handlers/sy_camera.rs` × `src/db/device.rs`。
 
 **路由与 method 核对通过，无 route-missing / http-method 问题**：前端两处均为 `method: 'get'`（`web/src/api/syCamera.ts:42`、`web/src/api/syCamera.ts:58`），后端均注册为 GET（`src/router.rs:919` `/api/sy/camera/list-with-child` → `get(sy_camera::camera_list_with_child)`；`src/router.rs:918` `/api/sy/camera/list` → `get(sy_camera::camera_list)`），都在 `api_protected` 内受鉴权保护（`src/router.rs:1226` 的鉴权回归测试同时断言 `/api/sy/camera/list` 未鉴权返回 401）。URL 前缀也对得上：dev 下 axios `baseURL='/dev-api'`（`web/.env.development:2`）经 Vite `rewrite: /dev-api → /api`（`web/vite.config.ts:58`），prod 下 `baseURL='/api'`（`web/.env.production:2`）。

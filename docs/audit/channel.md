@@ -1,5 +1,7 @@
 # channel.ts 契约审计
 
+> 📦 **归档说明（2026-09-19，代码功能冻结）**：本文档是冻结前的模块契约审计快照，记录当时的缺陷与修复轮次；文中引用的 `web-legacy-vue2/` 路径已于 2026-09-19 从仓库删除，仅作历史参照。**当前未完成事项以 [`../OPEN_ISSUES.md`](../OPEN_ISSUES.md) 为准**。
+
 审计对象：`web/src/api/channel.ts` 的 11 个导出函数（GET/POST/DELETE 方法、query 参数名、body 字段名、响应字段名）。
 已核对一致、不列入问题清单的：`deleteChannel`（DELETE `?id=` ↔ `ChannelDeleteQ.id`）、`resetChannel`（只需 `id`，`Partial<Channel>` 里的 `id` 能绑定）、`updateStreamIdentification`（`deviceDbId`/`streamIdentification` 后端已有 `#[serde(alias)]`，`src/handlers/device_stub.rs:739-750`）。
 真值参考：WVP-PRO Java `ChannelController.java` 与 WVP/legacy 前端 API 模块（`/tmp/wvpsrc/wvp-GB28181-pro-master/...`、`web-legacy-vue2/src/api/commonChannel.js`）。

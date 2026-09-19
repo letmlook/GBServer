@@ -1,5 +1,7 @@
 # streamPush.ts 契约审计
 
+> 📦 **归档说明（2026-09-19，代码功能冻结）**：本文档是冻结前的模块契约审计快照，记录当时的缺陷与修复轮次；文中引用的 `web-legacy-vue2/` 路径已于 2026-09-19 从仓库删除，仅作历史参照。**当前未完成事项以 [`../OPEN_ISSUES.md`](../OPEN_ISSUES.md) 为准**。
+
 > **状态：已修复（2026-09-12 第三十二轮）**。修复中发现 `save_to_gb`/`remove_form_gb`
 > 更新的是**不存在的列**（`gb_stream_push.device_id/channel_id`）→ 接口稳定 500。
 

@@ -1,5 +1,7 @@
 # region.ts 契约审计
 
+> 📦 **归档说明（2026-09-19，代码功能冻结）**：本文档是冻结前的模块契约审计快照，记录当时的缺陷与修复轮次；文中引用的 `web-legacy-vue2/` 路径已于 2026-09-19 从仓库删除，仅作历史参照。**当前未完成事项以 [`../OPEN_ISSUES.md`](../OPEN_ISSUES.md) 为准**。
+
 > **状态：已修复（2026-09-12 第三十五轮）**。9 条全部落地，并补上了**整个模块缺失的界面**：
 > 此前 12 个 API 函数里只有 `getRegionTreeList` 有调用方（地图页），行政区划/业务分组的
 > 增删改在 Vue3 前端**完全不可达**。本轮新增 `web/src/views/region/`（行政区划 + 业务分组
@@ -106,7 +108,6 @@
 - `POST /api/group/add`（`web/src/api/region.ts:106-112` ↔ `src/db/group.rs:22-34`）：`GroupAdd` 已带 camelCase alias，一致。
 - `GET /api/region/path`（`web/src/api/region.ts:32-38`，参数 `id` ↔ `src/handlers/stub.rs:434-437` 的 `RegionQuery { id }`）：后端接受 `id`，一致。
 - `GET /api/region/sync`（`web/src/api/region.ts:72-77` 期望 `{ count }` ↔ `src/handlers/region.rs:142-146` 返回 `count`）：一致。
-
 
 ---
 

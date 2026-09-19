@@ -1,5 +1,7 @@
 # playback.ts 契约审计
 
+> 📦 **归档说明（2026-09-19，代码功能冻结）**：本文档是冻结前的模块契约审计快照，记录当时的缺陷与修复轮次；文中引用的 `web-legacy-vue2/` 路径已于 2026-09-19 从仓库删除，仅作历史参照。**当前未完成事项以 [`../OPEN_ISSUES.md`](../OPEN_ISSUES.md) 为准**。
+
 调用方：仅 `web/src/views/playback/index.vue:92-99`（路由 `/playback`，见 `web/src/router/index.ts:52-54`）。
 路径与方法已逐个核对：`web/src/api/playback.ts` 的 6 条 `/api/playback/*` 与 `/api/gb_record/query/*`，
 后端全部注册为 `get`（`src/router.rs:398-423`），路径参数个数、名称顺序一致；`PlaybackQuery` /
