@@ -264,7 +264,7 @@
       <article class="gb-card gb-card--chart">
         <header class="gb-card-title">
           <span>磁盘使用率</span>
-          <span class="meta">{{ diskMounts }} 个挂载点 · 阈值 80%</span>
+          <span class="meta">{{ diskMountList.length }} / {{ diskMounts }} 个挂载点（≥1GB 真实磁盘）· 阈值 80%</span>
         </header>
         <div class="disk-bars">
           <div v-for="(m, i) in diskMountList" :key="m.path + i" class="disk-row">
@@ -673,21 +673,36 @@ const loadCoreMarkY = computed(() => yOfThreshold((cpuCores.value / loadYMax.val
 
 // ---- 磁盘 ----
 // 磁盘面板用横向柱状图（每根 = 一个真实挂载点）。
-// 数据来自 disk[] 快照（path / used bytes / total bytes / use GB），
-// disk_history 仍在 backend ring buffer 里，但前端这一版不画线，
-// 留作未来升级空间。
-const diskMounts = computed(() => {
+// 磁盘面板过滤：只显示大容量的真实磁盘。
+//
+// 过滤规则（任一不过滤都丢弃）：
+//   1. fs 不是虚拟文件系统（tmpfs / devtmpfs / efivarfs / overlay /
+//      squashfs / aufs / proc / sysfs / cgroup* / debugfs / tracefs /
+//      ramfs / devpts / fusectl / configfs / ...）
+//   2. total >= 1 GB（小于 1GB 的 EFI 分区、挂载的小卷都丢掉）
+const MIN_DISK_BYTES = 1024 ** 3 // 1 GB
+const VIRTUAL_FS = new Set([
+  'tmpfs', 'devtmpfs', 'efivarfs', 'overlay', 'overlayfs',
+  'squashfs', 'aufs', 'proc', 'sysfs', 'devpts', 'securityfs',
+  'selinuxfs', 'binfmt_misc', 'hugetlbfs', 'mqueue', 'pstore',
+  'ramfs', 'fusectl', 'configfs', 'debugfs', 'tracefs',
+  'fuse.gvfsd-fuse', 'rpc_pipefs', 'nsfs', 'autofs',
+  'bpf', 'cgroup', 'cgroup2'
+])
+function isRealDiskFs(fs: string | undefined): boolean {
+  if (!fs) return true // 未知 fs 不过滤（保守）
+  const f = fs.toLowerCase()
+  return !VIRTUAL_FS.has(f)
+}
+
+const diskRawList = computed(() => {
   const arr = (info.value.disk_all ?? info.value.disk ?? []) as Array<unknown>
-  return arr.length || 0
+  return arr as Array<{ fs?: string; path?: string; used?: number; total?: number }>
 })
+const diskMounts = computed(() => diskRawList.value.length)
 const diskMountList = computed<Array<{ path: string; pct: number; usedGb: string; totalGb: string }>>(() => {
-  // 优先用 disk_all（不过滤的全量），fallback 到 disk（curated 列表）
-  const arr = ((info.value.disk_all ?? info.value.disk ?? []) as Array<{
-    path?: string
-    used?: number
-    total?: number
-  }>)
-  return arr
+  return diskRawList.value
+    .filter((d) => isRealDiskFs(d.fs) && Number(d.total ?? 0) >= MIN_DISK_BYTES)
     .map((d) => {
       const total = Number(d.total ?? 0)
       const used = Number(d.used ?? 0)
