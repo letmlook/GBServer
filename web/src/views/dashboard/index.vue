@@ -127,131 +127,7 @@
       </article>
     </section>
 
-    <section class="gb-grid gb-grid--3col">
-
-      <article class="gb-card gb-card--chart">
-        <header class="gb-card-title">
-          <span>协议接入</span>
-          <span class="meta">GB28181 · JT1078</span>
-        </header>
-        <div class="proto-stack">
-          <section class="proto-block">
-            <h4 class="proto-title">
-              <el-icon :size="14"><Connection /></el-icon>
-              <span>GB28181 / SIP</span>
-              <span v-if="sipCfg?.enabled" class="health-pill ok" style="margin-left: auto">
-                <i class="health-dot" /> 已启用
-              </span>
-              <span v-else class="health-pill err" style="margin-left: auto">
-                <i class="health-dot" /> 已禁用
-              </span>
-            </h4>
-            <dl v-if="sipCfg" class="proto-list">
-              <div class="proto-row">
-                <dt>SIP 服务器 ID</dt>
-                <dd class="proto-value mono">{{ sipCfg.device_id }}
-                  <button class="proto-copy" @click="copy(sipCfg.device_id ?? '', 'SIP 服务器 ID')" title="复制 SIP 服务器 ID">
-                    <el-icon :size="12"><DocumentCopy /></el-icon>
-                  </button>
-                </dd>
-              </div>
-              <div class="proto-row">
-                <dt>SIP 服务器域</dt>
-                <dd class="proto-value mono">{{ sipCfg.realm }}
-                  <button class="proto-copy" @click="copy(sipCfg.realm ?? '', 'SIP 服务器域')" title="复制 SIP 服务器域">
-                    <el-icon :size="12"><DocumentCopy /></el-icon>
-                  </button>
-                </dd>
-              </div>
-              <div class="proto-row">
-                <dt>SIP 用户名</dt>
-                <dd class="proto-value mono">
-                  {{ sipCfg.username ?? sipCfg.device_id }}
-                  <button class="proto-copy" @click="copy(sipCfg.username ?? sipCfg.device_id ?? '', 'SIP 用户名')" title="复制 SIP 用户名">
-                    <el-icon :size="12"><DocumentCopy /></el-icon>
-                  </button>
-                </dd>
-              </div>
-              <div class="proto-row">
-                <dt>SIP 密码</dt>
-                <dd class="proto-value mono">{{ sipCfg.password }}
-                  <button class="proto-copy" @click="copy(sipCfg.password ?? '', 'SIP 密码')" title="复制 SIP 密码">
-                    <el-icon :size="12"><DocumentCopy /></el-icon>
-                  </button>
-                </dd>
-              </div>
-              <div class="proto-row">
-                <dt>监听</dt>
-                <dd class="proto-value mono">
-                  {{ listenAddr(sipCfg.bind_ip || sipCfg.ip) }}:{{ sipCfg.port }}
-                  <span class="meta">{{ sipCfg.tcp_enabled ? 'UDP/TCP' : 'UDP' }}</span>
-                  <button class="proto-copy" @click="copy(listenAddr(sipCfg.bind_ip || sipCfg.ip) + ':' + sipCfg.port, '监听地址')" title="复制监听地址">
-                    <el-icon :size="12"><DocumentCopy /></el-icon>
-                  </button>
-                </dd>
-              </div>
-              <div class="proto-row">
-                <dt>心跳</dt>
-                <dd class="proto-value mono">{{ sipCfg.keepalive_timeout }}s</dd>
-              </div>
-              <div class="proto-row">
-                <dt>注册</dt>
-                <dd class="proto-value mono">{{ sipCfg.register_timeout }}s</dd>
-              </div>
-              <div class="proto-row">
-                <dt>字符集</dt>
-                <dd class="proto-value mono">{{ sipCfg.charset }}</dd>
-              </div>
-            </dl>
-            <div v-else class="disk-empty text-tertiary text-xs">未配置 SIP</div>
-          </section>
-
-          <section class="proto-block">
-            <h4 class="proto-title">
-              <el-icon :size="14"><VideoPlay /></el-icon>
-              <span>JT1078 / 车载</span>
-              <span v-if="jtCfg" class="health-pill ok" style="margin-left: auto">
-                <i class="health-dot" /> 已配置
-              </span>
-            </h4>
-            <dl v-if="jtCfg" class="proto-list">
-              <div class="proto-row">
-                <dt>TCP</dt>
-                <dd class="proto-value mono">{{ listenAddr(null) }}:{{ jtCfg.tcp_port }}
-                  <button class="proto-copy" @click="copy(listenAddr(null) + ':' + jtCfg.tcp_port, 'JT1078 TCP')" title="复制 JT1078 TCP 地址">
-                    <el-icon :size="12"><DocumentCopy /></el-icon>
-                  </button>
-                </dd>
-              </div>
-              <div class="proto-row">
-                <dt>UDP</dt>
-                <dd class="proto-value mono">{{ listenAddr(null) }}:{{ jtCfg.udp_port }}
-                  <button class="proto-copy" @click="copy(listenAddr(null) + ':' + jtCfg.udp_port, 'JT1078 UDP')" title="复制 JT1078 UDP 地址">
-                    <el-icon :size="12"><DocumentCopy /></el-icon>
-                  </button>
-                </dd>
-              </div>
-              <div class="proto-row" v-if="jtCfg.timeout_ms">
-                <dt>会话超时</dt>
-                <dd class="proto-value mono">{{ (jtCfg.timeout_ms / 1000).toFixed(1) }}s</dd>
-              </div>
-              <div class="proto-row" v-if="jtCfg.retransmit_wait_ms">
-                <dt>重传等待</dt>
-                <dd class="proto-value mono">{{ jtCfg.retransmit_wait_ms }}ms</dd>
-              </div>
-              <div class="proto-row" v-if="jtCfg.retransmit_hook_url">
-                <dt>重传回调</dt>
-                <dd class="proto-value mono">{{ jtCfg.retransmit_hook_url }}
-                  <button class="proto-copy" @click="copy(jtCfg.retransmit_hook_url, '重传回调')" title="复制重传回调 URL">
-                    <el-icon :size="12"><DocumentCopy /></el-icon>
-                  </button>
-                </dd>
-              </div>
-            </dl>
-            <div v-else class="disk-empty text-tertiary text-xs">未配置 JT1078</div>
-          </section>
-        </div>
-      </article>
+    <section class="gb-grid gb-grid--4col">
 
       <article class="gb-card gb-card--chart">
         <header class="gb-card-title">
@@ -288,52 +164,45 @@
           <div v-if="diskMountList.length === 0" class="disk-empty text-tertiary text-xs">暂无磁盘数据</div>
         </div>
       </article>
-    </section>
 
-    <section class="gb-card">
-      <header class="gb-card-title">
-        <span>重点通道</span>
-        <span class="meta">点击播放预览</span>
-      </header>
-      <div class="gb-grid" style="grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); padding: 14px;">
-        <VideoCell v-for="cell in channels" :key="cell.id" v-bind="cell" @click="onCellClick(cell)" />
-      </div>
-    </section>
-
-    <section class="gb-grid gb-grid--2col">
-      <article class="gb-card">
+      <article class="gb-card gb-card--chart">
         <header class="gb-card-title">
           <span>节点负载 Top 5</span>
           <button class="gb-btn-link" @click="goMedia">查看全部</button>
         </header>
-        <table class="native-tbl">
-          <thead>
-            <tr><th>节点</th><th>CPU</th><th>内存</th><th>带宽</th><th class="ta-r">状态</th></tr>
-          </thead>
-          <tbody>
-            <tr v-for="n in nodes" :key="n.name">
-              <td>
-                <div class="cell-strong">{{ n.name }}</div>
-                <div class="text-tertiary text-xs">{{ n.region }}</div>
-              </td>
-              <td>
-                <div class="bar"><div class="bar-fill" :class="tone(n.cpu)" :style="{ width: n.cpu + '%' }" /></div>
-                <div class="text-xs text-tertiary mt-1">{{ n.cpu }}%</div>
-              </td>
-              <td>
-                <div class="bar"><div class="bar-fill" :class="tone(n.mem)" :style="{ width: n.mem + '%' }" /></div>
-                <div class="text-xs text-tertiary mt-1">{{ n.mem }}%</div>
-              </td>
-              <td class="mono text-xs">{{ n.bw }} Mbps</td>
-              <td class="ta-r">
-                <span :class="['gb-chip', 'gb-chip--' + n.tone]">{{ n.status }}</span>
-              </td>
-            </tr>
-          </tbody>
-        </table>
+        <div class="native-tbl-wrap">
+          <table class="native-tbl">
+            <thead>
+              <tr><th>节点</th><th>CPU</th><th>内存</th><th>带宽</th><th class="ta-r">状态</th></tr>
+            </thead>
+            <tbody>
+              <tr v-for="n in nodes" :key="n.name">
+                <td>
+                  <div class="cell-strong">{{ n.name }}</div>
+                  <div class="text-tertiary text-xs">{{ n.region }}</div>
+                </td>
+                <td>
+                  <div class="bar"><div class="bar-fill" :class="tone(n.cpu)" :style="{ width: n.cpu + '%' }" /></div>
+                  <div class="text-xs text-tertiary mt-1">{{ n.cpu }}%</div>
+                </td>
+                <td>
+                  <div class="bar"><div class="bar-fill" :class="tone(n.mem)" :style="{ width: n.mem + '%' }" /></div>
+                  <div class="text-xs text-tertiary mt-1">{{ n.mem }}%</div>
+                </td>
+                <td class="mono text-xs">{{ n.bw }} Mbps</td>
+                <td class="ta-r">
+                  <span :class="['gb-chip', 'gb-chip--' + n.tone]">{{ n.status }}</span>
+                </td>
+              </tr>
+              <tr v-if="!nodes.length">
+                <td colspan="5" class="text-tertiary text-xs" style="text-align:center">暂无节点数据</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
       </article>
 
-      <article class="gb-card">
+      <article class="gb-card gb-card--chart">
         <header class="gb-card-title">
           <span>最近告警</span>
           <button class="gb-btn-link" @click="goAlarm">查看告警</button>
@@ -352,7 +221,19 @@
           <li v-if="!recentAlarms.length" class="alarm text-tertiary text-xs">暂无告警</li>
         </ul>
       </article>
+
     </section>
+
+    <section class="gb-card">
+      <header class="gb-card-title">
+        <span>重点通道</span>
+        <span class="meta">点击播放预览</span>
+      </header>
+      <div class="gb-grid" style="grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); padding: 14px;">
+        <VideoCell v-for="cell in channels" :key="cell.id" v-bind="cell" @click="onCellClick(cell)" />
+      </div>
+    </section>
+
 
     <!-- 通道播放对话框：取代跳转 /live -->
     <ChannelPlayDialog v-model="playVisible" :channel="playingChannel" />
@@ -378,7 +259,7 @@ import VideoCell from '@/components/VideoCell/index.vue'
 import ChannelPlayDialog from '@/components/ChannelPlayDialog/index.vue'
 import { getSystemInfo, type SystemInfo } from '@/api/log'
 import { queryDevices } from '@/api/device'
-import { queryStreams, playSnap } from '@/api/live'
+import { listSnapshots, queryStreams, snapshotKey } from '@/api/live'
 import { getMediaServerList, getMediaLoad } from '@/api/mediaServer'
 import { getAlarmList, alarmPriorityLabel } from '@/api/alarm'
 
@@ -754,48 +635,8 @@ interface HealthRow {
   status: string
   tone: 'ok' | 'warn' | 'err'
 }
-// 协议接入配置（SIP / JT1078），从 system_info 响应里取（密码已后端脱敏）
-const sipCfg = computed(() => (info.value.sip_config ?? null) as NonNullable<SystemInfo['sip_config']> | null)
-const jtCfg = computed(() => (info.value.jt1078_config ?? null) as NonNullable<SystemInfo['jt1078_config']> | null)
-// 本机对外 IP（自动探测；用作设备/下级平台的「服务器地址」）
-const hostIp = computed(() => info.value.host_ip ?? null)
-
-// 监听地址：cfg 里写 0.0.0.0（通配）时回退到 host_ip，
-// 让 admin 看到真实可路由地址而不是通配符。
-function listenAddr(raw: string | null | undefined): string {
-  if (raw && raw !== '0.0.0.0' && raw !== '::') return raw
-  return hostIp.value ?? '0.0.0.0'
-}
-
-// 复制到剪贴板。navigator.clipboard 需要 HTTPS 或 localhost，
-// 我们部署在 127.0.0.1 / 内网 IP 上，所以是 OK 的；旧浏览器或
-// 非安全上下文下用 textarea + execCommand 兜底。
-async function copy(text: string, label = '') {
-  const ok = await (async () => {
-    try {
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(text)
-        return true
-      }
-    } catch { /* fall through */ }
-    try {
-      const ta = document.createElement('textarea')
-      ta.value = text
-      ta.style.position = 'fixed'
-      ta.style.opacity = '0'
-      document.body.appendChild(ta)
-      ta.select()
-      const r = document.execCommand('copy')
-      document.body.removeChild(ta)
-      return r
-    } catch { return false }
-  })()
-  ElMessage({
-    message: ok ? `已复制${label ? ' ' + label : ''}` : '复制失败，请手动选择文本',
-    type: ok ? 'success' : 'error',
-    duration: 1500
-  })
-}
+// 协议接入（SIP / JT1078）的展示已挪到顶栏「平台信息」弹层
+// （components/PlatformInfo），控制台不再持有这部分数据与复制逻辑。
 
 const healthList = computed<HealthRow[]>(() => {
   const ok = apiOk.value
@@ -978,29 +819,27 @@ function rebuildChannels() {
 }
 
 /**
- * 给"重点通道"每个格子拿一帧缩略图。
+ * 给"重点通道"每个格子铺上**已保存的**缩略图。
  *
- * - 后端没有"取最近一帧"端点；最低代价是调一次 /play/snap/{d}/{c}，
- *   抓的就是该通道的 JPEG 缩略图。
- * - 抓图会触发 ZLM 推一次 RTP 流（首次）或复用现有流；7 路并发足够轻。
- * - 失败/缺 deviceId/channelId 的格子保持 thumb 空 → 占位符显示。
- * - 卡片每 10s 自动刷新一次（与 loadAll 周期对齐），即视觉上每 10s 看一次最新画面。
+ * 缩略图由后端在点播时自动抓帧落盘，这里只批量读存量 —— 一次请求拿到
+ * 全部格子的图，不碰 ZLM、不唤醒设备。没被点播过的通道保持占位符。
  */
 async function refreshSnaps() {
-  const tasks = channels.value.map(async (c) => {
-    if (!c.deviceId || !c.channelId) return
-    try {
-      const res = await playSnap(c.deviceId, c.channelId)
-      const url = res?.data?.snapUrl
-      if (url) {
-        // 用 cache-busting 让浏览器重新拉（snap 是 JPEG，每次都是新文件但 URL 路径不变）
-        c.thumb = `${url}${url.includes('?') ? '&' : '?'}t=${Date.now()}`
-      }
-    } catch {
-      // 静默：拉不到图保留占位符
+  const keys = channels.value
+    .filter((c) => c.deviceId && c.channelId)
+    .map((c) => snapshotKey(c.deviceId!, c.channelId!))
+  if (keys.length === 0) return
+  try {
+    const res = await listSnapshots(keys)
+    const map = res?.data ?? {}
+    for (const c of channels.value) {
+      if (!c.deviceId || !c.channelId) continue
+      const url = map[snapshotKey(c.deviceId, c.channelId)]
+      if (url) c.thumb = url
     }
-  })
-  await Promise.allSettled(tasks)
+  } catch {
+    // 静默：拉不到图保留占位符
+  }
 }
 
 onBeforeUnmount(() => {
@@ -1044,7 +883,17 @@ onBeforeUnmount(() => {
   overflow-y: auto;
   overflow-x: hidden;
 }
-.disk-row { display: grid; grid-template-columns: 88px 1fr 38px 96px; gap: 8px; align-items: center; font-size: var(--text-xs); padding: 2px 0; }
+.disk-row {
+  display: grid;
+  /* 磁盘行要能塞进 1/4 宽的卡片（内容区 ~200px）：原来固定
+     88+38+96 = 222px 的列宽会把进度条压成 0。改成"路径可缩短、
+     进度条保底 36px、数值列收紧"。 */
+  grid-template-columns: minmax(40px, 72px) minmax(36px, 1fr) 32px 64px;
+  gap: 6px;
+  align-items: center;
+  font-size: var(--text-xs);
+  padding: 2px 0;
+}
 .disk-path { font-family: var(--font-mono); color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .disk-track {
   position: relative;
@@ -1077,9 +926,19 @@ onBeforeUnmount(() => {
 
 /* ---- 服务健康图标格 ---- */
 .health-grid { list-style: none; margin: 0; padding: 8px 14px 14px; display: flex; flex-direction: column; gap: 10px; min-height: 180px; }
-.health-row { display: grid; grid-template-columns: 22px 80px 1fr auto; gap: 10px; align-items: center; font-size: var(--text-xs); padding: 4px 0; }
+/* 健康行同样要能在 1/4 宽度里放下：名称列收窄，detail 允许省略号 */
+.health-row {
+  display: grid;
+  grid-template-columns: 20px minmax(52px, 68px) minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  font-size: var(--text-xs);
+  padding: 4px 0;
+}
 .health-icon { color: var(--brand-primary-500); display: inline-flex; }
 .health-name { color: var(--text-primary); font-weight: 500; }
+/* 窄卡下 detail（"1 / 1 在线"）优先让位，不换行也不挤压状态 pill */
+.health-detail { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .health-pill {
   display: inline-flex; align-items: center; gap: 5px;
   padding: 2px 10px;
@@ -1098,51 +957,14 @@ onBeforeUnmount(() => {
 .health-pill.warn { color: var(--state-warning); background: rgba(217, 119, 6, 0.10); }
 .health-pill.err { color: var(--state-error); background: rgba(220, 38, 38, 0.10); }
 
-/* ---- 协议接入 ---- */
-.proto-stack { padding: 10px 14px 14px; display: flex; flex-direction: column; gap: 12px; }
-.proto-block { padding: 10px 12px; background: var(--bg-elevated); border-radius: 6px; }
-.proto-title {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin: 0 0 8px;
-  font-size: var(--text-sm);
-  font-weight: 600;
-  color: var(--text-secondary);
-}
-.proto-list { margin: 0; padding: 0; display: grid; grid-template-columns: 1fr; gap: 4px; }
-.proto-row { display: grid; grid-template-columns: 80px 1fr; gap: 10px; align-items: center; font-size: var(--text-xs); }
-.proto-row dt { color: var(--text-tertiary); margin: 0; }
-.proto-row dd { color: var(--text-primary); margin: 0; word-break: break-all; }
-.proto-row .meta { margin-left: 6px; color: var(--text-tertiary); font-weight: 400; }
-/* dd 容器放 inline 内容 + 复制图标 */
-.proto-value {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-  flex-wrap: wrap;
-}
-.proto-copy {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 2px;
-  background: transparent;
-  border: 0;
-  color: var(--text-tertiary);
-  cursor: pointer;
-  border-radius: 3px;
-  transition: color 0.15s, background 0.15s;
-  line-height: 0;
-}
-.proto-copy:hover { color: var(--brand-primary-500); background: rgba(11, 138, 178, 0.10); }
-.proto-copy:active { transform: scale(0.9); }
-
+/* 节点负载表：搬到 1/4 宽的卡片后 5 列放不下，给容器横向滚动 + 收紧内边距，
+   宁可让它在卡内滚，也不要撑破整个 grid 行。 */
 .native-tbl { width: 100%; border-collapse: collapse; font-size: var(--text-xs); }
-.native-tbl th, .native-tbl td { padding: 8px 14px; border-bottom: 1px solid var(--border-subtle); text-align: left; }
+.native-tbl th, .native-tbl td { padding: 8px 10px; border-bottom: 1px solid var(--border-subtle); text-align: left; white-space: nowrap; }
 .native-tbl thead th { color: var(--text-tertiary); font-weight: 500; background: var(--bg-elevated); }
 .native-tbl .ta-r { text-align: right; }
+/* 窄卡内的表格：超出宽度时在卡内横向滚动，不撑破外层 grid */
+.native-tbl-wrap { overflow-x: auto; }
 .cell-strong { color: var(--text-primary); font-weight: 600; }
 .mt-1 { margin-top: 2px; }
 .bar { height: 4px; background: var(--bg-overlay); border-radius: 999px; overflow: hidden; }

@@ -65,8 +65,16 @@ div:focus { outline: none; }
 @include desktop {
   .gb-grid--2col { grid-template-columns: 2fr 1fr; }
   .gb-grid--3col { grid-template-columns: repeat(3, 1fr); }
-  .gb-grid--4col { grid-template-columns: repeat(4, 1fr); }
+  /* 4 列用 auto-fit + 240px 下限，而不是写死 repeat(4, 1fr)：
+     1280px 视口下内容区约 1030px，4 列每列仅 ~245px —— 写死 4 列会把
+     磁盘 / 节点负载这类内容压到溢出。auto-fit 在够宽时仍是 4 列
+     （4 × 240 + 3 × 14 gap = 1002 ≤ 1030 ✓），窄一点的桌面自动退成 3 列。
+     minmax 的下限同时保证列不会被内容顶宽。 */
+  .gb-grid--4col { grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
 }
+/* 网格子项默认 min-width:auto，长内容（表格、长路径）会把列撑破；
+   统一允许收缩，超出部分由卡片自己横向滚动处理。 */
+.gb-grid > * { min-width: 0; }
 
 .gb-filterbar {
   display: flex;

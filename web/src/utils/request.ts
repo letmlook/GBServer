@@ -39,7 +39,12 @@ service.interceptors.response.use(
   },
   (error) => {
     if (!error.response) {
-      ElMessage.error({ message: error.message, showClose: true })
+      // 网络层失败（后端在重启、连接被拒、断网）。
+      //
+      // 后端重启期间仪表盘每 2s 一次的轮询会连续失败，逐条弹红条会把
+      // 屏幕刷满，而且看起来像"登录挂了"。这里做去重节流：同一类错误
+      // 6 秒内只提示一次，并明确告知"后端可能正在重启"。
+      notifyNetworkOnce(error?.message ?? '网络异常')
       return Promise.reject(error)
     }
     const status = error.response.status
@@ -73,6 +78,27 @@ service.interceptors.response.use(
     return Promise.reject(error)
   }
 )
+
+/** 网络层错误的去重节流窗口（毫秒） */
+const NETWORK_TOAST_THROTTLE_MS = 6000
+let lastNetworkToastAt = 0
+let networkToastOpen = false
+
+function notifyNetworkOnce(message: string) {
+  const now = Date.now()
+  if (networkToastOpen || now - lastNetworkToastAt < NETWORK_TOAST_THROTTLE_MS) return
+  lastNetworkToastAt = now
+  networkToastOpen = true
+  ElMessage({
+    message: `无法连接服务器（${message}）。若后端正在重启，稍候会自动恢复。`,
+    type: 'warning',
+    showClose: true,
+    duration: 4000,
+    onClose: () => {
+      networkToastOpen = false
+    }
+  })
+}
 
 export interface RequestOptions extends AxiosRequestConfig {
   // 扩展点：loading / silent / retry 等

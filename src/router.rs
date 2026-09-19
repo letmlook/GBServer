@@ -252,8 +252,10 @@ pub fn app(state: AppState) -> Router<AppState> {
             get(device_query::sync_status_path),
         )
         .route(
+            // 立即抓一帧刷新缩略图（WVP 兼容路径）。GET/POST 都收 ——
+            // 老前端用 GET 调，新前端用 POST。
             "/api/device/query/snap/:device_id/:channel_id",
-            get(device_query::snap_path),
+            get(device_query::snap_path).post(device_query::snap_path),
         )
         .route(
             "/api/device/query/channel/raw",
@@ -277,10 +279,23 @@ pub fn app(state: AppState) -> Router<AppState> {
         )
         .route("/api/play/ssrc", get(device_query::ssrc_query))
         .route(
-            "/api/play/snap/:device_id/:channel_id",
-            get(device_query::get_snap),
+            // 批量查"哪些通道已有缩略图"（列表页一次请求铺满整页）。
+            // 必须注册在 `/:device_id/:channel_id` 之前语义才清晰 ——
+            // axum 的静态段优先级高于动态段，顺序其实无影响，但放这里
+            // 读者一眼能看出两者是"集合 vs 单条"。
+            "/api/play/snapshot/list",
+            get(device_query::list_snapshots),
         )
-        .route("/api/play/snap", get(device_query::snap_query))
+        .route(
+            // 立即抓一帧刷新通道缩略图（要求该通道当前有活跃流）。
+            // 画面由后端从流里取帧、自己存盘，见 `capture_snapshot_now`。
+            "/api/play/snap/:device_id/:channel_id",
+            get(device_query::snap_path).post(device_query::snap_path),
+        )
+        .route(
+            "/api/play/snap",
+            get(device_query::snap_query).post(device_query::snap_query),
+        )
         .route(
             "/api/media/getPlayUrl",
             get(device_query::get_play_url),
@@ -1160,12 +1175,16 @@ pub fn app(state: AppState) -> Router<AppState> {
         .route("/api/play/share", get(play::play_share_create))
         .route("/api/play/share/info", get(play::play_share_info))
         .route("/api/play/share/start", get(play::play_share_start))
-        // 通道缩略图（JPEG 字节）。浏览器 `<img src>` 无法设置请求头，
-        // 因此与 `/api/talk/audio/...` 同套做法：注册在鉴权中间件之外，
-        // 在 handler 内部用 `?token=` 校验 JWT。
+        // 通道缩略图（JPEG 字节，由本系统自己存盘）。浏览器 `<img src>`
+        // 无法设置请求头，因此与 `/api/talk/audio/...` 同套做法：
+        // 注册在鉴权中间件之外，在 handler 内部用 `?token=` 校验 JWT。
+        //
+        // 纯读盘：不触发抓帧、不碰 ZLM。抓帧由后端在**点播成功时**自动做
+        // （见 `device_query::spawn_snapshot_capture`）或调
+        // `POST /api/play/snap/{d}/{c}` 手动触发。
         .route(
-            "/api/play/snap.jpg/:device_id/:channel_id",
-            get(device_query::get_snap_image),
+            "/api/play/snapshot/:device_id/:channel_id",
+            get(device_query::get_snapshot_file),
         );
 
     let api = api_public.merge(api_protected);

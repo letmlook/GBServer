@@ -47,13 +47,21 @@
       <el-table :data="rows" v-loading="loading" stripe border>
         <el-table-column label="缩略图" width="120" align="center">
           <template #default="{ row }">
-            <div class="thumb-cell">
-              <img
+            <div class="thumb-cell" :class="{ 'thumb-cell--clickable': !!row.thumb }">
+              <!-- 用 el-image 而不是裸 <img>：点开就是内置大图预览器，
+                   带缩放 / 旋转 / ESC 关闭，无需自己写 lightbox。
+                   preview-teleported 让预览层挂到 body —— 否则会被
+                   表格容器的 overflow 裁掉。 -->
+              <el-image
                 v-if="row.thumb && !failedThumbs.has(row.channelId)"
                 :src="row.thumb"
-                class="thumb-cell__img"
+                :preview-src-list="[row.thumb]"
+                :initial-index="0"
+                fit="cover"
+                preview-teleported
+                hide-on-click-modal
                 :alt="row.name ?? row.channelId"
-                loading="lazy"
+                class="thumb-cell__img"
                 @error="onThumbError(row)"
               />
               <div v-else class="thumb-cell__placeholder">
@@ -155,7 +163,7 @@ import {
   deleteChannel,
   type ChannelCodeType
 } from '@/api/channel'
-import { playSnap, queryStreams } from '@/api/live'
+import { captureSnap, listSnapshots, snapshotKey } from '@/api/live'
 import Pagination from '@/components/Pagination/index.vue'
 import ChannelEditDialog from './EditDialog.vue'
 import SnapPreview from '@/components/SnapPreview/index.vue'
@@ -191,57 +199,32 @@ const query = reactive({
 })
 
 /**
- * 给当前 rows 批量抓缩略图（限制并发，避免一次性打爆后端）。
+ * 给当前页的通道铺上**已保存的**缩略图。
  *
- * **只对当前有活跃流的通道抓图**：
- * 国标设备是"按需推流"—— 没人在拉流时，ZLM 根本没有这路流，`getSnap`
- * 对不存在的流必然失败（而且每次要白等 ZLM 超时）。所以先用一次
- * `/api/device/query/streams` 拿到活跃流清单，只对命中的通道发抓图请求。
- *
- * 剩下的通道保持占位图标；用户点「播放」后 [ChannelPlayDialog] 会自动抓
- * 一帧并通过 `snap` 事件回填该行缩略图。
+ * 缩略图由后端在每次点播时自动抓帧落盘（见 `spawn_snapshot_capture`），
+ * 这里只是把存量读回来 —— 一次批量请求搞定整页，不碰 ZLM、不唤醒设备、
+ * 不等解码。没存过缩略图的通道保持占位图标，等它被点播过一次自然就有了。
  */
-async function refreshThumbs(list: any[]) {
-  // 1. 取活跃流清单（1 次请求，避免逐通道白等）
-  let activeKeys = new Set<string>()
+async function loadThumbs(list: any[]) {
+  const keys = list
+    .filter((ch) => ch?.deviceId && ch?.channelId)
+    .map((ch) => snapshotKey(ch.deviceId, ch.channelId))
+  if (keys.length === 0) return
   try {
-    const res = await queryStreams({ page: 1, count: 1000 })
-    const streams = res.data?.list ?? []
-    activeKeys = new Set(
-      streams
-        .filter((s: any) => s.deviceId && s.channelId)
-        .map((s: any) => `${s.deviceId}_${s.channelId}`)
-    )
-  } catch {
-    // 拿不到活跃流清单就不抓图（宁可全占位，也不要几十个请求各超时 10s）
-    return
-  }
-
-  // 2. 只对活跃流抓图，限并发 6
-  const tasks: Promise<void>[] = []
-  const pool = new Set<Promise<void>>()
-  const CONCURRENCY = 6
-  for (const ch of list) {
-    if (!ch?.deviceId || !ch?.channelId) continue
-    if (!activeKeys.has(`${ch.deviceId}_${ch.channelId}`)) continue
-    const p = (async () => {
-      try {
-        const res = await playSnap(ch.deviceId, ch.channelId)
-        const url = res?.data?.snapUrl
-        // snapUrl 是后端代理地址（/api/play/snap.jpg/...），已验证流存在
-        if (url) ch.thumb = `${url}${url.includes('?') ? '&' : '?'}t=${Date.now()}`
-      } catch {
-        // 静默：该行保持占位图标
+    const res = await listSnapshots(keys)
+    const map = res?.data ?? {}
+    for (const ch of list) {
+      if (!ch?.deviceId || !ch?.channelId) continue
+      const url = map[snapshotKey(ch.deviceId, ch.channelId)]
+      if (url) {
+        ch.thumb = url
+        // 拿到图就清掉之前的失败标记，让缩略图列重新渲染
+        failedThumbs.value.delete(ch.channelId)
       }
-    })()
-    pool.add(p)
-    p.finally(() => pool.delete(p))
-    if (pool.size >= CONCURRENCY) {
-      await Promise.race(pool)
     }
-    tasks.push(p)
+  } catch {
+    // 静默：全部保持占位图标
   }
-  await Promise.allSettled(tasks)
 }
 
 // 抓图预览：累积所有抓图快照，浮窗可放大
@@ -281,8 +264,8 @@ async function loadData() {
   } finally {
     loading.value = false
   }
-  // 列表渲染完后批量抓缩略图（限制并发 6，不阻塞 UI）
-  void refreshThumbs(rows.value)
+  // 列表渲染完后铺上已保存的缩略图（一次批量请求，不阻塞 UI）
+  void loadThumbs(rows.value)
 }
 
 function resetQuery() {
@@ -364,19 +347,31 @@ function onPlay(row: any) {
   playVisible.value = true
 }
 
-function onPlaySnap(snapUrl: string) {
+/**
+ * 播放对话框回传的抓图。
+ *
+ * `auto=true` 是"拉起流后后端自动抓的那一帧" —— 只用来填该行的缩略图，
+ * **不弹预览窗口**（用户只是点了播放，不该被一个抓图浮窗打断）。
+ * 用户在对话框里**手动点「抓图」**时才把图推进预览浮窗展示。
+ */
+function onPlaySnap(snapUrl: string, payload?: { auto?: boolean }) {
   if (!playingChannel.value || !snapUrl) return
-  // 同步缩略图到行
-  const row = rows.value.find(
-    (r) => r.deviceId === playingChannel.value!.deviceId && r.channelId === playingChannel.value!.channelId
-  )
+  const { deviceId, channelId, name } = playingChannel.value
+
+  // 同步缩略图到行（自动/手动都要做）。URL 已带版本号，不用再加 cache-busting。
+  const row = rows.value.find((r) => r.deviceId === deviceId && r.channelId === channelId)
   if (row) {
-    row.thumb = `${snapUrl}${snapUrl.includes('?') ? '&' : '?'}t=${Date.now()}`
+    row.thumb = snapUrl
+    // 之前加载失败被标记过的行，这次拿到真图就清掉标记重试
+    failedThumbs.value.delete(channelId)
   }
+
+  if (payload?.auto) return
+
   snapItems.value.unshift({
-    deviceId: playingChannel.value.deviceId,
-    channelId: playingChannel.value.channelId,
-    name: playingChannel.value.name ?? playingChannel.value.channelId,
+    deviceId,
+    channelId,
+    name: name ?? channelId,
     snapUrl,
     time: Date.now()
   })
@@ -384,13 +379,23 @@ function onPlaySnap(snapUrl: string) {
   snapVisible.value = true
 }
 
+/**
+ * 「抓图」按钮：让后端立刻从该通道当前流里抓一帧、覆盖保存为缩略图，
+ * 然后取回新 URL 弹预览窗。
+ *
+ * 该通道当前**必须有活跃的流**（国标设备按需推流），否则后端会明确报错
+ * 提示"要先播放一次" —— 这比返回一张过期图或干等超时更诚实。
+ */
 async function onSnapshot(row: any) {
+  if (!row?.deviceId || !row?.channelId) return
+  const key = snapshotKey(row.deviceId, row.channelId)
   try {
-    const res = await playSnap(row.deviceId, row.channelId)
-    const snapUrl = res.data?.snapUrl ?? ''
+    await captureSnap(row.deviceId, row.channelId)
+    const res = await listSnapshots([key])
+    const snapUrl = res?.data?.[key] ?? ''
     if (snapUrl) {
-      // 同步缩略图
-      row.thumb = `${snapUrl}${snapUrl.includes('?') ? '&' : '?'}t=${Date.now()}`
+      row.thumb = snapUrl
+      failedThumbs.value.delete(row.channelId)
       snapItems.value.unshift({
         deviceId: row.deviceId,
         channelId: row.channelId,
@@ -455,8 +460,14 @@ onMounted(async () => {
   margin: 0 auto;
   border: 1px solid var(--border-subtle);
 }
+/* 有图时给"可点击放大"的鼠标反馈 */
+.thumb-cell--clickable { cursor: zoom-in; }
 .thumb-cell__img {
-  width: 100%; height: 100%; object-fit: cover; display: block;
+  width: 100%; height: 100%; display: block;
+}
+/* el-image 内部包了一层 div，尺寸要跟着撑满 */
+.thumb-cell__img :deep(img) {
+  width: 100%; height: 100%; object-fit: cover;
 }
 .thumb-cell__placeholder {
   color: var(--text-tertiary);

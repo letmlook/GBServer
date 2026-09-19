@@ -116,13 +116,19 @@
         <el-table :data="channels" v-loading="channelLoading" stripe border>
           <el-table-column label="缩略图" width="120" align="center">
             <template #default="{ row: ch }">
-              <div class="thumb-cell">
-                <img
+              <div class="thumb-cell" :class="{ 'thumb-cell--clickable': !!ch.thumb }">
+                <!-- el-image 自带大图预览器（缩放/旋转/ESC）；
+                     preview-teleported 避免被表格 overflow 裁掉。 -->
+                <el-image
                   v-if="ch.thumb"
                   :src="ch.thumb"
-                  class="thumb-cell__img"
+                  :preview-src-list="[ch.thumb]"
+                  :initial-index="0"
+                  fit="cover"
+                  preview-teleported
+                  hide-on-click-modal
                   :alt="ch.name ?? ch.channelId"
-                  loading="lazy"
+                  class="thumb-cell__img"
                 />
                 <div v-else class="thumb-cell__placeholder">
                   <el-icon :size="18"><VideoCameraFilled /></el-icon>
@@ -178,7 +184,7 @@ import { onMounted, reactive, ref } from 'vue'
 import { Plus, VideoCameraFilled } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { queryDevices, deleteDevice, sync, setGuard, resetGuard, queryChannels } from '@/api/device'
-import { playSnap, queryStreams } from '@/api/live'
+import { captureSnap, listSnapshots, snapshotKey } from '@/api/live'
 import GbSearchForm from '@/components/GbSearchForm/index.vue'
 import DeviceEditDialog from './EditDialog.vue'
 import SnapPreview from '@/components/SnapPreview/index.vue'
@@ -263,8 +269,8 @@ async function showChannels(row: any) {
   try {
     const res = await queryChannels(row.deviceId ?? '', { page: 1, count: 500 })
     channels.value = res.data?.list ?? []
-    // 进二级页后批量抓缩略图（限制 6 并发），无需等所有图都回来就显示占位
-    void refreshThumbs(channels.value)
+    // 进二级页后铺上已保存的缩略图（一次批量请求，先显示占位再替换）
+    void loadThumbs(channels.value)
   } catch {
     channels.value = []
   } finally {
@@ -279,50 +285,28 @@ async function showChannels(row: any) {
  * - 失败静默
  */
 /**
- * 给某个设备下的通道批量抓缩略图。
+ * 给某个设备下的通道铺上**已保存的**缩略图。
  *
- * **只对当前有活跃流的通道抓图** —— 国标设备按需推流，没人在拉流时 ZLM
- * 里根本没有这路流，`getSnap` 必然失败且每次要白等超时 10s。先取一次
- * 活跃流清单，只对命中的通道发请求；其余保持占位图标，用户点播放后
- * 由 [ChannelPlayDialog] 自动回填。
+ * 缩略图由后端在每次点播时自动抓帧落盘，这里只批量读存量 ——
+ * 一次请求搞定，不碰 ZLM、不唤醒设备。没存过的通道保持占位图标，
+ * 等它被点播过一次自然就有了。
  */
-async function refreshThumbs(list: any[]) {
-  let activeKeys = new Set<string>()
+async function loadThumbs(list: any[]) {
+  const keys = list
+    .filter((ch) => ch?.deviceId && ch?.channelId)
+    .map((ch) => snapshotKey(ch.deviceId, ch.channelId))
+  if (keys.length === 0) return
   try {
-    const res = await queryStreams({ page: 1, count: 1000 })
-    const streams = res.data?.list ?? []
-    activeKeys = new Set(
-      streams
-        .filter((s: any) => s.deviceId && s.channelId)
-        .map((s: any) => `${s.deviceId}_${s.channelId}`)
-    )
-  } catch {
-    return
-  }
-
-  const tasks: Promise<void>[] = []
-  const pool = new Set<Promise<void>>()
-  const CONCURRENCY = 6
-  for (const ch of list) {
-    if (!ch?.deviceId || !ch?.channelId) continue
-    if (!activeKeys.has(`${ch.deviceId}_${ch.channelId}`)) continue
-    const p = (async () => {
-      try {
-        const res = await playSnap(ch.deviceId, ch.channelId)
-        const url = res?.data?.snapUrl
-        if (url) ch.thumb = `${url}${url.includes('?') ? '&' : '?'}t=${Date.now()}`
-      } catch {
-        // 静默：保持占位图标
-      }
-    })()
-    pool.add(p)
-    p.finally(() => pool.delete(p))
-    if (pool.size >= CONCURRENCY) {
-      await Promise.race(pool)
+    const res = await listSnapshots(keys)
+    const map = res?.data ?? {}
+    for (const ch of list) {
+      if (!ch?.deviceId || !ch?.channelId) continue
+      const url = map[snapshotKey(ch.deviceId, ch.channelId)]
+      if (url) ch.thumb = url
     }
-    tasks.push(p)
+  } catch {
+    // 静默：全部保持占位图标
   }
-  await Promise.allSettled(tasks)
 }
 
 const rowsSuggestion = ref<any[]>([])
@@ -404,15 +388,21 @@ function openPlay(deviceId: string, channelRow: any) {
   playVisible.value = true
 }
 
+/**
+ * 「抓图」按钮：让后端立刻从该通道当前流里抓一帧、覆盖保存为缩略图，
+ * 然后取回新 URL 弹预览窗。要求该通道当前**有活跃的流**（按需推流）。
+ */
 async function onSnapChannel(channelRow: any) {
   const deviceId = currentDeviceId.value
   const channelId = channelRow.channelId ?? channelRow.gbDeviceId ?? channelRow.deviceId
+  const key = snapshotKey(deviceId, channelId)
   try {
-    const res = await playSnap(deviceId, channelId)
-    const snapUrl = res.data?.snapUrl ?? ''
+    await captureSnap(deviceId, channelId)
+    const res = await listSnapshots([key])
+    const snapUrl = res?.data?.[key] ?? ''
     if (snapUrl) {
       // 同步缩略图到对应行
-      channelRow.thumb = `${snapUrl}${snapUrl.includes('?') ? '&' : '?'}t=${Date.now()}`
+      channelRow.thumb = snapUrl
       snapItems.value.unshift({
         deviceId,
         channelId,
@@ -429,17 +419,27 @@ async function onSnapChannel(channelRow: any) {
   }
 }
 
-function onPlaySnap(snapUrl: string) {
+/**
+ * 播放对话框回传的缩略图。
+ *
+ * `auto=true` 是"点播后后端自动抓的那一帧" —— 只用来填该行的缩略图，
+ * **不弹预览窗口**（用户只是点了播放，不该被一个抓图浮窗打断）。
+ * 用户在对话框里**手动点「抓图」**时才把图推进预览浮窗展示。
+ */
+function onPlaySnap(snapUrl: string, payload?: { auto?: boolean }) {
   if (!playingChannel.value || !snapUrl) return
-  // 同步缩略图到当前二级页的通道行
-  const row = channels.value.find(
-    (c) => c.channelId === playingChannel.value!.channelId
-  )
-  if (row) row.thumb = `${snapUrl}${snapUrl.includes('?') ? '&' : '?'}t=${Date.now()}`
+  const { deviceId, channelId, name } = playingChannel.value
+
+  // 同步缩略图到当前二级页的通道行（自动/手动都要做）
+  const row = channels.value.find((c) => c.channelId === channelId)
+  if (row) row.thumb = snapUrl
+
+  if (payload?.auto) return
+
   snapItems.value.unshift({
-    deviceId: playingChannel.value.deviceId,
-    channelId: playingChannel.value.channelId,
-    name: playingChannel.value.name ?? playingChannel.value.channelId,
+    deviceId,
+    channelId,
+    name: name ?? channelId,
     snapUrl,
     time: Date.now()
   })
@@ -478,8 +478,14 @@ onMounted(async () => {
   margin: 0 auto;
   border: 1px solid var(--border-subtle);
 }
+/* 有图时给"可点击放大"的鼠标反馈 */
+.thumb-cell--clickable { cursor: zoom-in; }
 .thumb-cell__img {
-  width: 100%; height: 100%; object-fit: cover; display: block;
+  width: 100%; height: 100%; display: block;
+}
+/* el-image 内部包了一层 div，尺寸要跟着撑满 */
+.thumb-cell__img :deep(img) {
+  width: 100%; height: 100%; object-fit: cover;
 }
 .thumb-cell__placeholder {
   color: var(--text-tertiary);

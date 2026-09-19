@@ -236,89 +236,211 @@ pub async fn get_ssrc(
 }
 
 /// ============================================================================
-/// 快照
+/// 通道缩略图 / 抓图
+///
+/// **本系统自己实现，不依赖 ZLM 的 `getSnap`。**
+///
+/// 取帧由前端完成：视频在浏览器里本来就已经解码好了（WebRTC 的 MediaStream、
+/// hls.js/flv.js 的 MSE 都是同源），`canvas.drawImage(video)` 直接就能拿到
+/// 当前帧，零额外开销。相比之下走 ZLM `getSnap` 要它再拉一路流、再解码一次，
+/// 而且**流一停就再也抓不到**（GB28181 设备按需推流）。
+///
+/// 后端只负责两件事：
+///   1. `POST /api/play/snapshot/{d}/{c}` —— 把前端传来的 JPEG 落盘（持久化）
+///   2. `GET  /api/play/snapshot/{d}/{c}` —— 把存过的图读回来
+///
+/// 这样页面刷新、流结束、后端重启都不会丢缩略图，也不再受 ZLM 版本/端口/
+/// app 名的影响。
 /// ============================================================================
 
-/// GET /api/play/snap/{device_id}/{channel_id}
-/// 获取通道快照 —— 返回一个**同源**的图片 URL（`/api/play/snap.jpg/...`）。
+/// 缩略图文件名。GB28181 的 device/channel 是 20 位数字，这里再做一次白名单
+/// 过滤，防止任何形式的路径穿越（`../`、分隔符、空字节）。
+fn snapshot_file_name(device_id: &str, channel_id: &str) -> String {
+    let clean = |s: &str| -> String {
+        s.chars()
+            .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+            .collect()
+    };
+    format!("{}_{}.jpg", clean(device_id), clean(channel_id))
+}
+
+fn snapshot_file_path(dir: &std::path::Path, device_id: &str, channel_id: &str) -> std::path::PathBuf {
+    dir.join(snapshot_file_name(device_id, channel_id))
+}
+
+/// 把 JPEG 原子写入缩略图目录（先写 `.tmp` 再 rename，避免读到写了一半的文件）。
+fn save_snapshot(
+    dir: &std::path::Path,
+    device_id: &str,
+    channel_id: &str,
+    bytes: &[u8],
+) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    let path = snapshot_file_path(dir, device_id, channel_id);
+    let tmp = path.with_extension("jpg.tmp");
+    std::fs::write(&tmp, bytes)?;
+    std::fs::rename(&tmp, &path)
+}
+
+/// 读取已落盘的缩略图；同时返回 mtime（秒）用作 URL 版本号，
+/// 让浏览器在缩略图更新后重新拉取而不是吃老缓存。
+fn load_snapshot(
+    dir: &std::path::Path,
+    device_id: &str,
+    channel_id: &str,
+) -> Option<(Vec<u8>, u64)> {
+    let path = snapshot_file_path(dir, device_id, channel_id);
+    let meta = std::fs::metadata(&path).ok()?;
+    if !meta.is_file() || meta.len() == 0 {
+        return None;
+    }
+    let version = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let bytes = std::fs::read(&path).ok()?;
+    Some((bytes, version))
+}
+
+/// 从该通道**当前正在推的流**里抓一帧，存成本地缩略图（覆盖旧图）。
 ///
-/// 为什么不直接把 ZLM 的图片地址给前端：
-/// * ZLM 这个版本的 `getSnap` 返回裸 JPEG 字节，**不给文件名/path**，
-///   后端拼不出 `http://zlm/snap/xxx.jpeg` 这种地址；
-/// * 即使拼得出来，也会把媒体节点暴露成浏览器的直连目标，遇到反代/防火墙
-///   就取不到图。
+/// 取帧这一步调 ZLM 的 `/index/api/getSnap`（它内部会拉流 + 解码一帧），
+/// 但**图片文件由本系统自己保存**：ZLM 返回的是裸 JPEG 字节，我们把它原子
+/// 写到 `{snapshot_dir}/{device}_{channel}.jpg`，对外只暴露本系统自己的
+/// `/api/play/snapshot/...`。这样与 ZLM 的 www 目录结构、反代、跨域都解耦，
+/// 换 ZLM 版本/换节点也不影响缩略图。
 ///
-/// 所以改为后端代理：本接口先确认流是否存在（GB28181 设备按需推流，没在
-/// 拉流时抓图必然失败），再把 URL 交回前端；真正的字节由
-/// [`get_snap_image`] 从 ZLM 取回转给浏览器。
-pub async fn get_snap(
-    State(state): State<AppState>,
-    headers: axum::http::HeaderMap,
-    Path((device_id, channel_id)): Path<(String, String)>,
-) -> impl IntoResponse {
+/// 流不存在时 ZLM 会等关键帧直到超时（默认 10s），所以调用方一般放在
+/// 后台任务里，别阻塞 HTTP 响应。
+pub async fn capture_snapshot(
+    state: &AppState,
+    device_id: &str,
+    channel_id: &str,
+) -> Result<u64, String> {
     let Some(ref zlm_client) = state.zlm_client else {
-        return Json(WVPResult::<()>::error("ZLM not configured")).into_response();
+        return Err("ZLM 未配置".to_string());
     };
 
+    let host = zlm_client.ip.as_str();
     let stream_id = format!("{}_{}", device_id, channel_id);
     // 与 /api/play/start 一致：ZLM 的 RTP server 把国标流建在 app = "rtp" 下。
     let app = "rtp";
+    let (rtsp_port, _) = media_server_ports(state, host).await;
+    let rtsp_url = format!("rtsp://{}:{}/{}/{}", host, rtsp_port, app, stream_id);
 
-    // 流不存在时不要硬等 getSnap 超时（默认 10s），直接给前端一个明确原因，
-    // 让缩略图列立即回落到占位图标。
-    match zlm_client
-        .is_media_exist("rtsp", "__defaultVhost__", app, &stream_id)
+    let bytes = zlm_client
+        .get_snap(&rtsp_url, Some(10.0))
         .await
-    {
-        Ok(false) => {
-            return Json(WVPResult::success(serde_json::json!({
-                "deviceId": device_id,
-                "channelId": channel_id,
-                "streamId": stream_id,
-                "snapUrl": null,
-                "error": "该通道当前没有活跃的流（国标设备按需推流，需先播放一次）",
-            })))
-            .into_response();
-        }
-        Err(e) => {
-            tracing::warn!("查询 ZLM 流是否存在失败（按已存在处理）: {}", e);
-        }
-        Ok(true) => {}
+        .map_err(|e| format!("ZLM 抓帧失败: {}", e))?;
+
+    // JPEG SOI 校验：ZLM 异常时可能回一小段错误页，别把垃圾写进缩略图目录。
+    if bytes.len() < 2 || bytes[0] != 0xFF || bytes[1] != 0xD8 {
+        return Err("ZLM 返回的不是 JPEG 数据".to_string());
     }
 
-    // 把调用方的 JWT 透传进图片 URL —— 浏览器 `<img>` 无法设置请求头，
-    // 图片端点靠 `?token=` 鉴权（与 /api/talk/audio 同一套模式）。
-    let token = crate::auth::extract_token_from_headers(&headers).unwrap_or_default();
-    let snap_url = if token.is_empty() {
-        format!("/api/play/snap.jpg/{}/{}", device_id, channel_id)
-    } else {
-        format!(
-            "/api/play/snap.jpg/{}/{}?token={}",
-            device_id, channel_id, token
-        )
-    };
+    let dir = state.config.server.effective_snapshot_dir();
+    save_snapshot(&dir, device_id, channel_id, &bytes).map_err(|e| {
+        tracing::warn!(
+            "缩略图落盘失败 {}/{} → {}: {}",
+            device_id,
+            channel_id,
+            dir.display(),
+            e
+        );
+        format!("写入缩略图失败: {}", e)
+    })?;
 
-    Json(WVPResult::success(serde_json::json!({
-        "deviceId": device_id,
-        "channelId": channel_id,
-        "streamId": stream_id,
-        "app": app,
-        "snapUrl": snap_url,
-    })))
-    .into_response()
+    let version = load_snapshot(&dir, device_id, channel_id)
+        .map(|(_, v)| v)
+        .unwrap_or(0);
+    Ok(version)
 }
 
-/// GET /api/play/snap.jpg/{device_id}/{channel_id}?token=<jwt>
+/// 点播成功后**在后台**抓一帧存成缩略图 —— 不阻塞 `/api/play/start` 的响应。
 ///
-/// 从 ZLM 捞一帧 JPEG 转发给浏览器。**注册在 `api_protected` 之外** ——
-/// 浏览器 `<img src>` 不能带 `access-token` 头，所以鉴权走 `?token=`
-/// （与 `/api/talk/audio/:device_id/:channel_id` 完全同一套模式）。
-pub async fn get_snap_image(
+/// 为什么要等一下再抓：`play_start` 返回时设备才刚开始往 ZLM 推 RTP，
+/// 此刻流里往往还没有可解码的关键帧，立刻抓会失败（getSnap 会白等到超时）。
+/// 这里先等 2s，失败再退避重试两次，覆盖慢设备/首帧来得晚的情况。
+///
+/// 每次点播都会**覆盖**上一次的缩略图，所以列表里看到的永远是该通道最近
+/// 一次被点播时的画面。
+pub fn spawn_snapshot_capture(state: AppState, device_id: String, channel_id: String) {
+    tokio::spawn(async move {
+        // 首次等待：给设备推流 + ZLM 出关键帧留时间
+        let delays_ms: [u64; 3] = [2_000, 3_000, 5_000];
+        for (i, delay) in delays_ms.iter().enumerate() {
+            tokio::time::sleep(std::time::Duration::from_millis(*delay)).await;
+            match capture_snapshot(&state, &device_id, &channel_id).await {
+                Ok(version) => {
+                    tracing::info!(
+                        "通道缩略图已更新 {}/{} (v={})",
+                        device_id,
+                        channel_id,
+                        version
+                    );
+                    return;
+                }
+                Err(e) => {
+                    if i + 1 == delays_ms.len() {
+                        // 最后一次也失败：只记日志，不影响点播本身
+                        tracing::warn!(
+                            "通道缩略图抓取失败（已重试 {} 次）{}/{}: {}",
+                            delays_ms.len(),
+                            device_id,
+                            channel_id,
+                            e
+                        );
+                    } else {
+                        tracing::debug!(
+                            "通道缩略图第 {} 次抓取失败，稍后重试 {}/{}: {}",
+                            i + 1,
+                            device_id,
+                            channel_id,
+                            e
+                        );
+                    }
+                }
+            }
+        }
+    });
+}
+
+/// `POST /api/play/snapshot/{device_id}/{channel_id}` —— 立即抓一帧刷新缩略图。
+///
+/// 供「抓图」按钮使用。要求该通道**当前有活跃的流**（国标设备按需推流，
+/// 没在点播时流里没有数据）；没有流会返回明确原因而不是干等超时。
+///
+/// 鉴权走外层 `auth_middleware`（axios 会带 `access-token` 头）。
+pub async fn capture_snapshot_now(
+    State(state): State<AppState>,
+    Path((device_id, channel_id)): Path<(String, String)>,
+) -> Response {
+    match capture_snapshot(&state, &device_id, &channel_id).await {
+        Ok(version) => Json(WVPResult::success(serde_json::json!({
+            "deviceId": device_id,
+            "channelId": channel_id,
+            "version": version,
+        })))
+        .into_response(),
+        Err(e) => snap_error(StatusCode::BAD_GATEWAY, &e),
+    }
+}
+
+/// `GET /api/play/snapshot/{device_id}/{channel_id}?token=<jwt>`
+///
+/// 返回**已保存**的通道缩略图。纯读盘：不触发抓图、不碰 ZLM、不等设备 ——
+/// 页面加载时批量取缩略图走这里，快且没有副作用。没存过图就 404，
+/// 前端保持占位图标。
+///
+/// **注册在 `api_protected` 之外**：浏览器 `<img src>` 不能带 `access-token`
+/// 头，所以鉴权走 `?token=`（与 `/api/talk/audio/:device_id/:channel_id` 同套）。
+pub async fn get_snapshot_file(
     State(state): State<AppState>,
     Query(q): Query<SnapImageQuery>,
     Path((device_id, channel_id)): Path<(String, String)>,
 ) -> Response {
-    // ---- 鉴权：?token= 或 Authorization: Bearer ----
     let Some(ref token) = q.token else {
         return snap_error(StatusCode::UNAUTHORIZED, "缺少 JWT（请用 ?token=）");
     };
@@ -326,35 +448,84 @@ pub async fn get_snap_image(
         return snap_error(StatusCode::UNAUTHORIZED, &format!("鉴权失败: {}", e));
     }
 
-    let Some(ref zlm_client) = state.zlm_client else {
-        return snap_error(StatusCode::SERVICE_UNAVAILABLE, "ZLM not configured");
-    };
-
-    let host = zlm_client.ip.as_str();
-    let stream_id = format!("{}_{}", device_id, channel_id);
-    let app = "rtp";
-    let (rtsp_port, _) = media_server_ports(&state, host).await;
-    // 用 RTSP 回环地址让 ZLM 从自己内部取流（不经过外部网络）。
-    // 此前写成 `rtsp://{ip}:{http_port}/live/{stream}` —— 端口和 app 都是错的。
-    let rtsp_url = format!("rtsp://{}:{}/{}/{}", host, rtsp_port, app, stream_id);
-
-    match zlm_client.get_snap(&rtsp_url, Some(10.0)).await {
-        Ok(bytes) => {
+    let dir = state.config.server.effective_snapshot_dir();
+    match load_snapshot(&dir, &device_id, &channel_id) {
+        Some((bytes, version)) => {
             let mut resp = Response::new(Body::from(bytes));
             resp.headers_mut()
                 .insert(header::CONTENT_TYPE, HeaderValue::from_static("image/jpeg"));
-            // 浏览器/中间层别缓存：流是活的，每次拿到的帧都不同。
+            // 缩略图内容只随抓图变化，版本号（mtime）变了 URL 也变 →
+            // 可以放心让浏览器缓存，减少重复拉取。
             resp.headers_mut().insert(
                 header::CACHE_CONTROL,
-                HeaderValue::from_static("no-store, max-age=0"),
+                HeaderValue::from_static("private, max-age=300"),
+            );
+            resp.headers_mut().insert(
+                header::ETAG,
+                HeaderValue::from_str(&format!("\"{}\"", version))
+                    .unwrap_or_else(|_| HeaderValue::from_static("\"0\"")),
             );
             resp
         }
-        Err(e) => {
-            tracing::warn!("Snap image failed for {}: {}", stream_id, e);
-            snap_error(StatusCode::NOT_FOUND, &format!("抓图失败: {}", e))
+        None => snap_error(StatusCode::NOT_FOUND, "该通道还没有缩略图"),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SnapshotListQuery {
+    /// 逗号分隔的 `deviceId_channelId` 列表（GB28181 编号是纯数字，`_` 不会歧义）
+    pub keys: Option<String>,
+    /// 调用方 JWT —— 会原样拼进返回的图片 URL（`<img>` 发不了请求头）
+    pub token: Option<String>,
+}
+
+/// `GET /api/play/snapshot/list?keys=a_b,c_d` —— 批量查"哪些通道已经有缩略图"。
+///
+/// 返回 `{ "a_b": "/api/play/snapshot/a/b?token=...&v=<mtime>" }`，
+/// 只包含**已落盘**的通道。前端列表页一次请求就能把整页缩略图铺上，
+/// 不用为每个通道单独发一次请求。
+///
+/// 鉴权靠外层 `auth_middleware`（axios 会带 `access-token` 头）。
+pub async fn list_snapshots(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    Query(q): Query<SnapshotListQuery>,
+) -> impl IntoResponse {
+    let dir = state.config.server.effective_snapshot_dir();
+    // token 直接用调用方自己的（拿不到就留空，前端会自己补）
+    let token = q
+        .token
+        .clone()
+        .or_else(|| crate::auth::extract_token_from_headers(&headers))
+        .unwrap_or_default();
+
+    let mut out = serde_json::Map::new();
+    if let Some(ref keys) = q.keys {
+        for key in keys.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+            // key = `{device_id}_{channel_id}`：按**第一个**下划线切分，
+            // 这样即使 channel_id 里带下划线也能正确还原。
+            let Some((device_id, channel_id)) = key.split_once('_') else {
+                continue;
+            };
+            if let Some((bytes, version)) = load_snapshot(&dir, device_id, channel_id) {
+                // 极端情况下读到 0 字节文件（load_snapshot 已挡，双保险）
+                if bytes.is_empty() {
+                    continue;
+                }
+                let url = if token.is_empty() {
+                    format!("/api/play/snapshot/{}/{}?v={}", device_id, channel_id, version)
+                } else {
+                    format!(
+                        "/api/play/snapshot/{}/{}?token={}&v={}",
+                        device_id, channel_id, token, version
+                    )
+                };
+                out.insert(key.to_string(), serde_json::Value::String(url));
+            }
         }
     }
+
+    Json(WVPResult::success(serde_json::Value::Object(out))).into_response()
 }
 
 #[derive(Debug, Deserialize)]
@@ -558,13 +729,13 @@ pub async fn sync_status_path(
     .await
 }
 
-/// `GET /api/device/query/snap/{deviceId}/{channelId}` → 同 `/api/play/snap/...`。
+/// `POST /api/device/query/snap/{deviceId}/{channelId}` → 同
+/// `POST /api/play/snapshot/{d}/{c}`（立即抓帧刷新缩略图）。
 pub async fn snap_path(
-    State(state): State<AppState>,
-    headers: axum::http::HeaderMap,
+    state: State<AppState>,
     Path((device_id, channel_id)): Path<(String, String)>,
-) -> impl IntoResponse {
-    get_snap(State(state), headers, Path((device_id, channel_id))).await
+) -> Response {
+    capture_snapshot_now(state, Path((device_id, channel_id))).await
 }
 
 /// `GET /api/play/ssrc?deviceId=&channelId=` → 同 `/api/play/ssrc/{d}/{c}`。
@@ -582,15 +753,14 @@ pub async fn ssrc_query(
     .await
 }
 
-/// `GET /api/play/snap?deviceId=&channelId=` → 同 `/api/play/snap/{d}/{c}`。
+/// `POST /api/play/snap?deviceId=&channelId=` → 同
+/// `POST /api/play/snapshot/{d}/{c}`。
 pub async fn snap_query(
-    State(state): State<AppState>,
-    headers: axum::http::HeaderMap,
+    state: State<AppState>,
     Query(q): Query<DeviceChannelQuery>,
-) -> impl IntoResponse {
-    get_snap(
-        State(state),
-        headers,
+) -> Response {
+    capture_snapshot_now(
+        state,
         Path((
             q.device_id.unwrap_or_default(),
             q.channel_id.unwrap_or_default(),

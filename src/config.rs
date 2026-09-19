@@ -50,6 +50,13 @@ pub struct ServerConfig {
     /// 相对路径按进程工作目录解析（要求从仓库根目录启动）。默认 `./data/downloads`。
     #[serde(default)]
     pub download_dir: Option<String>,
+    /// 通道缩略图（抓图）的落地目录。
+    ///
+    /// 抓图从活流里取一帧，流停了就再也拿不到同一帧；不落盘的话前端每次
+    /// 刷新页面缩略图都会丢。这里持久化 JPEG，页面加载时直接读盘返回，
+    /// 既不用唤醒设备、也不用等 ZLM 解码。默认 `./data/snapshots`。
+    #[serde(default)]
+    pub snapshot_dir: Option<String>,
     /// 录像文件根目录。当 `gb_cloud_record.file_path` 在本机不存在时，
     /// 会用该记录的文件名到本目录下再找一次 —— 用于 ZLM 与 GBServer
     /// 容器内挂载点不同（但共享卷）的部署。默认不启用。
@@ -64,6 +71,15 @@ impl ServerConfig {
             self.download_dir
                 .clone()
                 .unwrap_or_else(|| "./data/downloads".to_string()),
+        )
+    }
+
+    /// 通道缩略图目录（解析默认值）
+    pub fn effective_snapshot_dir(&self) -> std::path::PathBuf {
+        std::path::PathBuf::from(
+            self.snapshot_dir
+                .clone()
+                .unwrap_or_else(|| "./data/snapshots".to_string()),
         )
     }
 }
@@ -86,7 +102,23 @@ pub struct RedisConfig {
 #[derive(Debug, Clone, Deserialize)]
 pub struct JwtConfig {
     pub secret: String,
+    /// **普通会话**的 token 有效期（分钟）—— 对应登录页不勾"记住我"。
+    /// 前端此时写的是 session cookie（关浏览器即失效），所以这个值应该
+    /// cover 一个工作时段，默认 12 小时。
     pub expiration_minutes: i64,
+    /// **勾了「记住我」**时的 token 有效期（分钟），默认 7 天。
+    ///
+    /// 必须与前端 cookie 的 `expires: 7` 对齐：此前只有
+    /// `expiration_minutes = 30` 一个旋钮，勾了"7 天免登录"也只是 cookie
+    /// 活 7 天 —— **token 30 分钟就过期了**，之后每个请求都 401，
+    /// 前端弹"登录已到期，是否重新登录"。用户常在重启后端后第一次发请求时
+    /// 撞上这个时间点，于是误以为是"重启导致登录失效"。
+    #[serde(default = "default_remember_expiration_minutes")]
+    pub remember_expiration_minutes: i64,
+}
+
+fn default_remember_expiration_minutes() -> i64 {
+    7 * 24 * 60
 }
 
 #[derive(Debug, Clone, Deserialize)]

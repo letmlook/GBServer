@@ -12,6 +12,8 @@
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue'
+
 type TrendTone = 'success' | 'warning' | 'error' | 'neutral'
 type ValueTone = 'success' | 'warning' | 'error' | 'primary' | 'default'
 
@@ -52,14 +54,22 @@ const VALUE_COLOR: Record<ValueTone, string> = {
 // 数值毫无业务关联**，容易让用户误以为是"在线设备变化趋势"。
 // 现已从前端彻底移除：组件不再接受 spark prop，不再画 SVG 曲线。
 
-const formattedValue = (() => {
-  if (typeof props.value === 'number') return props.value.toLocaleString('en-US')
-  return props.value
-})()
-
-const valueColor = VALUE_COLOR[props.valueTone] || VALUE_COLOR.default
-const trendColor = TREND_COLOR[props.trendTone] || TREND_COLOR.neutral
-const containerStyle = props.style
+/**
+ * 下面这几个派生值**必须是 computed**。
+ *
+ * 移除 spark 时曾把它们简化成立即求值的常量（`(() => ...)()`），
+ * 结果是在 setup 阶段只算一次、拿到的是 props 的**初始值**
+ * （数字是 0、tone 是默认档），之后数据到位也不再重算 ——
+ * 表现就是控制台顶部 4 个卡片永远显示 0。
+ *
+ * props 是响应式的，任何依赖 props 的值都得走 computed 才能跟着更新。
+ */
+const formattedValue = computed(() =>
+  typeof props.value === 'number' ? props.value.toLocaleString('en-US') : props.value
+)
+const valueColor = computed(() => VALUE_COLOR[props.valueTone] || VALUE_COLOR.default)
+const trendColor = computed(() => TREND_COLOR[props.trendTone] || TREND_COLOR.neutral)
+const containerStyle = computed(() => props.style)
 </script>
 
 <style lang="scss" scoped>

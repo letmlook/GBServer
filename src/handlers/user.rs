@@ -55,8 +55,21 @@ pub async fn login(
     user.for_login();
 
     let keys = JwtKeys::new(state.config.jwt.secret.as_bytes());
+    // token 有效期跟着「记住我」走，与前端 cookie 的 expires 保持一致：
+    //   * 勾选 → remember_expiration_minutes（默认 7 天）
+    //   * 不勾 → expiration_minutes（普通会话，默认 12 小时）
+    //
+    // 此前无论勾不勾都只发 `expiration_minutes`（当时配的是 30 分钟），
+    // 于是"7 天免登录"名不副实：cookie 活 7 天但 token 半小时就过期，
+    // 之后每个请求 401 → 前端弹"登录已到期"。用户常在重启后端后第一次
+    // 发请求时撞上这个时间点，误以为是重启导致登录失效。
+    let ttl_minutes = if params.remember.unwrap_or(false) {
+        state.config.jwt.remember_expiration_minutes
+    } else {
+        state.config.jwt.expiration_minutes
+    };
     let token = keys
-        .create_token(username, state.config.jwt.expiration_minutes)
+        .create_token(username, ttl_minutes)
         .ok_or_else(|| AppError::business(ErrorCode::Error100, "生成 Token 失败"))?;
 
     let role_id = user.role_id.unwrap_or(0);
@@ -85,6 +98,25 @@ pub async fn login(
 pub struct LoginParams {
     pub username: Option<String>,
     pub password: Option<String>,
+    /// 「7 天免登录」勾选状态。true → 发长效 token（默认 7 天），
+    /// 与前端写 7 天 cookie 的行为对齐；缺省/false → 普通会话 token。
+    #[serde(default, deserialize_with = "deserialize_boolish")]
+    pub remember: Option<bool>,
+}
+
+/// 兼容 `?remember=true` / `1` / `yes` / `on` 等写法。
+/// 前端 query 里传布尔值必须序列化成字符串，这里统一解析。
+fn deserialize_boolish<'de, D>(de: D) -> Result<Option<bool>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = Option::<String>::deserialize(de)?;
+    Ok(raw.map(|s| {
+        matches!(
+            s.trim().to_ascii_lowercase().as_str(),
+            "true" | "1" | "yes" | "on"
+        )
+    }))
 }
 
 /// GET /api/user/logout  仅返回 200

@@ -419,9 +419,11 @@ const ArrowDownRight = () =>
   )
 import { ElMessage } from 'element-plus'
 import {
-  playSnap,
+  captureSnap,
+  listSnapshots,
   postWebrtcPlay,
   sendPtz as sendPtzApi,
+  snapshotKey,
   startPlay,
   stopPlay,
   type PlayStartResult
@@ -657,7 +659,9 @@ async function playChannel() {
       await attachVideo(url)
       currentProtocol.value = data.hls ? 'hls' : data.flvUrl ? 'flv' : data.playUrl.startsWith('rtsp') ? 'rtsp' : 'rtmp'
     }
-    void autoSnapOnPlay(deviceId, channelId)
+    // 后端已在 play_start 的后台任务里开始抓帧；这里等它完成并把
+    // 新缩略图回传给上层（仅回填缩略图，不弹预览窗）
+    void refreshThumbAfterPlay(deviceId, channelId)
   } catch (e: any) {
     const msg = e?.message ?? '拉起实时流失败'
     playerStatus.value = 'error'
@@ -713,13 +717,34 @@ async function switchProtocol(key: ProtocolKey) {
   }
 }
 
-async function autoSnapOnPlay(deviceId: string, channelId: string) {
-  try {
-    const res = await playSnap(deviceId, channelId)
-    const url = res?.data?.snapUrl
-    if (url) emit('snap', url, { auto: true })
-  } catch {
-    // 静默
+/**
+ * 点播成功后，等待**后端**自动抓帧完成，再把新的缩略图 URL 回传给上层。
+ *
+ * 抓帧在 `/api/play/start` 的后台任务里做（后端等 2s/3s/5s 三次机会从流里
+ * 取帧存盘），前端无从得知确切完成时间，所以这里轮询几次
+ * `listSnapshots`，拿到 URL 就回传。
+ *
+ * 上层收到 `auto: true` 时**不弹预览窗口** —— 用户只是点了播放，
+ * 不该被一个抓图浮窗打断；只有手动点「抓图」才弹。
+ */
+async function refreshThumbAfterPlay(deviceId: string, channelId: string) {
+  const key = snapshotKey(deviceId, channelId)
+  // 后端最早在 2s 后抓第一次；轮询窗口覆盖到它最后一次重试
+  const delays = [2500, 3000, 4000]
+  for (const d of delays) {
+    await new Promise((r) => setTimeout(r, d))
+    // 对话框可能已经被关掉了，别再骚扰上层
+    if (!props.modelValue || props.channel?.channelId !== channelId) return
+    try {
+      const res = await listSnapshots([key])
+      const url = res?.data?.[key]
+      if (url) {
+        emit('snap', url, { auto: true })
+        return
+      }
+    } catch {
+      // 忽略，继续下一次
+    }
   }
 }
 
@@ -927,13 +952,25 @@ function stopMove() {
   if (wasMoving && props.channel) void sendPtz('STOP')
 }
 
+/**
+ * 「抓图」按钮：让**后端**立刻从当前流里抓一帧、覆盖保存为该通道缩略图，
+ * 然后取回新 URL 交给上层弹预览窗。
+ *
+ * 后端在每次点播时已经自动抓过一帧了，这里的作用是"画面已经变了，
+ * 我要现在这一帧"。
+ */
 async function onSnap() {
   if (!props.channel) return
+  const { deviceId, channelId } = props.channel
+  const key = snapshotKey(deviceId, channelId)
   try {
-    const res = await playSnap(props.channel.deviceId, props.channel.channelId)
-    const url = res.data?.snapUrl ?? ''
+    await captureSnap(deviceId, channelId)
+    // 用 listSnapshots 取回带 token 的可用 URL（URL 形状属于后端细节，
+    // 前端不自己拼）
+    const res = await listSnapshots([key])
+    const url = res?.data?.[key]
     if (url) emit('snap', url)
-    ElMessage.success('抓图已保存')
+    else ElMessage.warning('抓图成功，但未取到缩略图地址')
   } catch (e: any) {
     ElMessage.error(e?.message ?? '抓图失败')
   }

@@ -168,8 +168,10 @@ import {
   VideoCameraFilled
 } from '@element-plus/icons-vue'
 import {
-  playSnap,
+  captureSnap,
+  listSnapshots,
   postWebrtcPlay,
+  snapshotKey,
   startPlay,
   stopPlay,
 } from '@/api/live'
@@ -543,11 +545,17 @@ function buildGrid(s: any, url: string) {
   cells.value = grid
 }
 
+/**
+ * 「抓图」按钮：让后端立刻从该通道当前流里抓一帧、覆盖保存为缩略图，
+ * 再取回新 URL 累积到预览浮窗。
+ */
 async function onSnap(cell: any) {
   if (!cell?.deviceId || !cell?.channelId) return
+  const key = snapshotKey(cell.deviceId, cell.channelId)
   try {
-    const res = await playSnap(cell.deviceId, cell.channelId)
-    const snapUrl = res.data?.snapUrl ?? ''
+    await captureSnap(cell.deviceId, cell.channelId)
+    const res = await listSnapshots([key])
+    const snapUrl = res?.data?.[key] ?? ''
     if (snapUrl) {
       // 累积到预览列表里（最近 8 张），让"抓了却看不到图"的体验变好
       snapItems.value.unshift({

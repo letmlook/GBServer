@@ -37,6 +37,43 @@
     </div>
 
     <div class="topbar-right">
+      <!-- 平台信息：点击在按钮正下方弹出浮层，展示 SIP / JT1078 的对外接入
+           参数（原来挂在控制台的「协议接入」卡片里，那里占一整张卡的位置，
+           而这些参数属于"偶尔要抄一次"的配置，放顶栏随取随看更合适）。 -->
+      <el-popover
+        v-model:visible="platformVisible"
+        placement="bottom-end"
+        :width="420"
+        trigger="click"
+        popper-class="platform-info-popper"
+      >
+        <template #reference>
+          <button
+            class="topbar-platform"
+            :class="{ 'is-active': platformVisible }"
+            aria-label="平台信息"
+          >
+            <svg viewBox="0 0 24 24" fill="none">
+              <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.6" />
+              <path d="M12 16v-4.5M12 8.2v.1" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+            </svg>
+            <span>平台信息</span>
+          </button>
+        </template>
+
+        <div class="platform-pop">
+          <header class="platform-pop__head">
+            <span class="platform-pop__title">接入协议信息</span>
+            <span class="platform-pop__meta mono">{{ info?.host_ip ?? '-' }}</span>
+          </header>
+          <PlatformInfo
+            :sip-config="info?.sip_config"
+            :jt1078-config="info?.jt1078_config"
+            :host-ip="info?.host_ip"
+          />
+        </div>
+      </el-popover>
+
       <div v-if="latency !== null" class="topbar-stat" :title="latencyTitle">
         <span :class="['gb-dot', latencyDot]" />
         <span class="mono">{{ latencyLabel }}</span>
@@ -124,6 +161,8 @@ import { ElMessage } from 'element-plus'
 import { useAppStore } from '@/store/modules/app'
 import { useUserStore } from '@/store/modules/user'
 import { getToken } from '@/utils/auth'
+import PlatformInfo from '@/components/PlatformInfo/index.vue'
+import type { SystemInfo } from '@/api/log'
 
 const appStore = useAppStore()
 const userStore = useUserStore()
@@ -138,6 +177,14 @@ const query = ref('')
  */
 const latency = ref<number | null>(null)
 let latencyTimer: number | null = null
+
+/**
+ * 「平台信息」弹层的开关，以及后端 system/info 的最新一次响应。
+ * 弹层里的 SIP / JT1078 接入参数直接取自这个响应 —— 与测延迟共用同一次
+ * 请求，不额外发接口。
+ */
+const platformVisible = ref(false)
+const info = ref<SystemInfo | null>(null)
 
 const latencyLabel = computed(() => {
   if (latency.value === null) return '--'
@@ -161,7 +208,10 @@ const latencyTitle = computed(() => {
 async function measureLatency() {
   // 用裸 fetch 测延迟：避开项目里 axios 的业务码拦截器（避免每 5s 弹
   // "Error" toast）。fetch 自带的网络失败走 reject，HTTP 4xx/5xx 不算失败，
-  // 我们只看 round-trip，不在乎 payload 内容。
+  // 我们只看 round-trip。
+  //
+  // 同一次请求顺带解析 body 存进 `info` —— 「平台信息」弹层要用里面的
+  // sip_config / jt1078_config / host_ip。一次请求两用，不再额外发一次。
   const baseURL = (import.meta.env.VITE_APP_BASE_API ?? '') as string
   const url = `${baseURL}/server/system/info`
   const t0 = performance.now()
@@ -171,10 +221,10 @@ async function measureLatency() {
       credentials: 'include',
       headers: { 'access-token': getToken() ?? '' }
     })
-    // 读 body（即使扔掉）让浏览器完成 TCP/TLS 握手 + 解析应答，
-    // 否则会低估延迟。
-    await res.text().catch(() => {})
+    // 必须读完 body 才算完整 round-trip，否则会低估延迟
+    const body = await res.json().catch(() => null)
     latency.value = Math.max(0, Math.round(performance.now() - t0))
+    if (body?.data) info.value = body.data as SystemInfo
   } catch {
     // 网络层失败：上一次延迟保留；首次测量就失败 → 标 -1，UI 走红点
     latency.value = latency.value ?? -1
@@ -306,6 +356,32 @@ onBeforeUnmount(() => {
 }
 
 .topbar-right { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+
+/* 「平台信息」按钮：文字 + 问号图标，与右侧图标按钮同高 */
+.topbar-platform {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  font-family: var(--font-sans);
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+
+  svg { width: 13px; height: 13px; }
+
+  &:hover,
+  &.is-active {
+    color: var(--brand-primary-500);
+    border-color: var(--brand-primary-300);
+    background: rgba(11, 138, 178, 0.08);
+  }
+}
 .topbar-stat {
   display: flex; align-items: center; gap: 6px;
   font-size: var(--text-xs);
@@ -343,4 +419,32 @@ onBeforeUnmount(() => {
 .user-info { line-height: 1.1; }
 .user-name { font-size: var(--text-xs); color: var(--text-primary); font-weight: 600; }
 .user-role { font-size: var(--text-xs); color: var(--text-tertiary); }
+
+/* Element Plus 的 popover 会被 teleport 到 body，scoped 选择器命中不到，
+   所以弹层内部的样式写在全局（.platform-info-popper 作为命名空间）。 */
+.platform-pop__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  padding-bottom: 10px;
+  margin-bottom: 10px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.platform-pop__title {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.platform-pop__meta {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
+</style>
+
+<style lang="scss">
+/* popover 容器本身：去掉默认内边距，让上面的 head 贴边 */
+.platform-info-popper.el-popover.el-popper {
+  padding: 14px;
+}
 </style>

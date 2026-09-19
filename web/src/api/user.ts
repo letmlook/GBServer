@@ -7,6 +7,14 @@ const md5 = (md5ns as unknown as { default?: (s: string) => string; (s: string):
 export interface LoginPayload {
   username: string
   password: string
+  /**
+   * 「7 天免登录」。后端据此决定 token 有效期：
+   * 勾选 → 7 天，不勾 → 普通会话（默认 12 小时）。
+   *
+   * 这个字段必须传给后端：只把 cookie 写成 7 天而 token 很短的话，
+   * cookie 还在但每个请求都 401 —— 表现就是"免登录是假的"。
+   */
+  remember?: boolean
 }
 
 export interface LoginResult {
@@ -31,7 +39,9 @@ export function login(payload: LoginPayload) {
     method: 'get',
     params: {
       username: payload.username.trim(),
-      password: md5(payload.password)
+      password: md5(payload.password),
+      // query 只能是字符串，后端按 true/1/yes/on 解析
+      remember: payload.remember === false ? 'false' : 'true'
     }
   })
 }

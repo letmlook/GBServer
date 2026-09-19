@@ -39,11 +39,45 @@ export function stopPlay(deviceId: string, channelId: string) {
   })
 }
 
-export function playSnap(deviceId: string, channelId: string) {
-  return request<WvpResult<{ snapUrl: string }>>({
-    method: 'get',
+/**
+ * 立即抓一帧刷新通道缩略图。
+ *
+ * 抓帧与存盘都在**后端**完成（后端调 ZLM 的 getSnap 拿到 JPEG 字节，写进
+ * 本系统自己的 `snapshot_dir`），前端只触发、不接触图片数据。
+ *
+ * 另外后端在**每次点播成功时**也会自动抓一帧存下（覆盖旧的），所以正常
+ * 情况下不需要前端调这个接口 —— 这里只服务于「抓图」按钮的"马上刷新"语义。
+ *
+ * 注意：该通道当前必须**有活跃的流**（国标设备按需推流，没在点播时流里
+ * 没有数据），否则后端会返回错误。
+ */
+export function captureSnap(deviceId: string, channelId: string) {
+  return request<WvpResult<{ deviceId: string; channelId: string; version: number }>>({
+    method: 'post',
     url: `/play/snap/${deviceId}/${channelId}`
   })
+}
+
+/**
+ * 批量查询已保存的通道缩略图。
+ *
+ * `keys` 是 `deviceId_channelId` 数组；返回只包含**已有缩略图**的通道：
+ * `{ "3402..._3402...": "/api/play/snapshot/3402.../3402...?token=...&v=1700000000" }`
+ *
+ * URL 里的 `v` 是文件 mtime，缩略图更新后 URL 会变，浏览器不会吃老缓存。
+ * 一次请求铺满整页缩略图，不用逐通道发请求。
+ */
+export function listSnapshots(keys: string[]) {
+  return request<WvpResult<Record<string, string>>>({
+    method: 'get',
+    url: '/play/snapshot/list',
+    params: { keys: keys.join(',') }
+  })
+}
+
+/** `{deviceId}_{channelId}` —— 缩略图批量查询的键 */
+export function snapshotKey(deviceId: string, channelId: string): string {
+  return `${deviceId}_${channelId}`
 }
 
 export function getSsrc(deviceId: string, channelId: string) {

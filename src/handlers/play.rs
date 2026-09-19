@@ -145,6 +145,13 @@ pub async fn play_start(
                                 "流 {stream_id} 已存在（local_port={} peer={}:{}），复用现有流",
                                 info.local_port, info.peer_ip, info.peer_port
                             );
+                            // 复用的流也刷新一次缩略图（可能已经播了很久，
+                            // 画面早就变了）
+                            crate::handlers::device_query::spawn_snapshot_capture(
+                                state.clone(),
+                                device_id.clone(),
+                                channel_id.clone(),
+                            );
                             return Json(WVPResult::success(play_urls_json(
                                 zlm_client,
                                 &stream_id,
@@ -316,6 +323,12 @@ pub async fn play_start(
             .await;
             payload["playUrl"] =
                 serde_json::json!(format!("rtsp://{}:554/rtp/{}", zlm_client.ip, stream_id));
+            // TCP-PASSIVE 分支同样是"点播成功"，照样刷新缩略图
+            crate::handlers::device_query::spawn_snapshot_capture(
+                state.clone(),
+                device_id.clone(),
+                channel_id.clone(),
+            );
             return Json(WVPResult::success(payload));
         }
 
@@ -370,6 +383,13 @@ pub async fn play_start(
                 // 注意这里假设了几个默认端口（如果在配置里解析过可以替换），这里为了快速回掉先用通配协议配置
 
                 let _ = (media_ip, http_port, stream_url);
+                // 点播成功 → 后台抓一帧存成该通道的缩略图（覆盖上一张）。
+                // 不阻塞本次响应；失败只记日志，不影响播放。
+                crate::handlers::device_query::spawn_snapshot_capture(
+                    state.clone(),
+                    device_id.clone(),
+                    channel_id.clone(),
+                );
                 // 与其它成功分支共用同一份 URL（FLV 后缀 .live.flv、hls 需探测）
                 return Json(WVPResult::success(
                     play_urls_json(
