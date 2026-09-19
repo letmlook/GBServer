@@ -58,12 +58,14 @@ div:focus { outline: none; }
 .gb-grid--kpi  { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
 .gb-grid--2col { grid-template-columns: 1fr; }
 .gb-grid--3col { grid-template-columns: 1fr; }
+.gb-grid--4col { grid-template-columns: 1fr; }
 .gb-grid--split { grid-template-columns: 2fr 1fr; }
 
 @include tablet { .gb-grid--split { grid-template-columns: 1fr; } }
 @include desktop {
   .gb-grid--2col { grid-template-columns: 2fr 1fr; }
-  .gb-grid--3col { grid-template-columns: 2fr 1fr 1fr; }
+  .gb-grid--3col { grid-template-columns: repeat(3, 1fr); }
+  .gb-grid--4col { grid-template-columns: repeat(4, 1fr); }
 }
 
 .gb-filterbar {
