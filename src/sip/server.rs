@@ -1772,6 +1772,18 @@ let renewal_pool = pool.clone();
                 .await;
             }
             tracing::info!("Device registered: {} (expires: {})", device_id, expires);
+
+            // 设备刚上线时 manufacturer/model/firmware 全是 NULL，主动下一条
+            // DeviceInfo 查询，等应答被 `persist_device_info_response` 落库。
+            // 设备拒答/丢包也不影响注册本身。
+            let sn = chrono::Utc::now().timestamp_millis() as u32;
+            spawn_device_info_query_after_register(
+                config.clone(),
+                device_manager.clone(),
+                socket.clone(),
+                device_id.clone(),
+                sn,
+            );
         }
 
         let to_tag = generate_tag();
@@ -2057,8 +2069,16 @@ let renewal_pool = pool.clone();
                     return Ok(());
                 }
                 Some("DeviceInfo") => {
-                    // 设备对我们的查询的应答：只回 200 OK，**不要**再当成查询回一条
+                    // 设备对我们的查询的应答：把厂家/型号/固件等落表，然后只回 200 OK，
+                    // 不要把应答再次当成新查询回一条（避免与设备无限循环）。
                     if body_is_response {
+                        if let Err(e) = persist_device_info_response(pool, &device_id, body).await {
+                            tracing::warn!(
+                                "DeviceInfo 应答落库失败 device={}: {}",
+                                device_id,
+                                e
+                            );
+                        }
                         ack_message!();
                     }
                     Self::handle_device_info(
@@ -7607,6 +7627,140 @@ async fn dbg_upsert_device(
     .await
     .map_err(|e| anyhow::anyhow!("{}", e))?;
     Ok(())
+}
+
+/// 从 DeviceInfo 应答 XML 里取 `<DeviceName>/<Manufacturer>/<Model>/<Firmware>`
+/// 写回 `gb_device`，让设备列表在设备下次应答时自动补全。
+///
+/// 仅在 handle_message 收到**应答**(`<Response>` 节点)时调用；查询方向由
+/// `handle_device_info` 负责生成应答体，无需落库。空值/缺字段一律 NULLIF 成
+/// NULL → COALESCE 保持原值，绝不把"设备没填的字段"写成空串。
+async fn persist_device_info_response(pool: &Pool, device_id: &str, body: &str) -> Result<()> {
+    use crate::sip::gb28181::xml_parser::XmlParser;
+
+    let name = XmlParser::find_first_element(body, "DeviceName");
+    let manufacturer = XmlParser::find_first_element(body, "Manufacturer");
+    let model = XmlParser::find_first_element(body, "Model");
+    let firmware = XmlParser::find_first_element(body, "Firmware");
+
+    if name.is_none() && manufacturer.is_none() && model.is_none() && firmware.is_none() {
+        return Ok(());
+    }
+
+    let now = Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    db_device::update_device_info_fields(
+        pool,
+        device_id,
+        name.as_deref(),
+        manufacturer.as_deref(),
+        model.as_deref(),
+        firmware.as_deref(),
+        &now,
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("{}", e))?;
+
+    tracing::info!(
+        "DeviceInfo 应答落库 device={} name={:?} manufacturer={:?} model={:?} firmware={:?}",
+        device_id, name, manufacturer, model, firmware
+    );
+    Ok(())
+}
+
+/// 设备 REGISTER 成功后异步下发一条 DeviceInfo Query，让厂家/型号/固件字段
+/// 在注册完成后自动补全。设备未应答 / 网络丢包也不影响注册本身（fire-and-forget）。
+///
+/// 这里**没有**走 `SipServer::send_device_info_query` 那条路径，因为它需要
+/// `&self` 来取 `transaction_manager`（用于 RFC 3261 §17 客户端事务重传）。
+/// 注册路径上没有 transaction_manager 的 Arc 句柄，且 DeviceInfo 查询属于
+/// "丢了再发下一次心跳" 的轻量操作，不做 UDP 重传是可接受的。
+fn spawn_device_info_query_after_register(
+    config: Arc<SipConfig>,
+    device_manager: Arc<DeviceManager>,
+    socket: Arc<UdpSocket>,
+    device_id: String,
+    sn: u32,
+) {
+    tokio::spawn(async move {
+        let device_addr = match device_manager.get_address(&device_id).await {
+            Some(a) => a,
+            None => {
+                tracing::debug!(
+                    "注册后自动 DeviceInfo 查询：设备地址已不可用 device={}",
+                    device_id
+                );
+                return;
+            }
+        };
+
+        let body = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<Query>
+<CmdType>DeviceInfo</CmdType>
+<SN>{}</SN>
+<DeviceID>{}</DeviceID>
+</Query>"#,
+            sn, device_id
+        );
+
+        let call_id = format!("msg_{}_{}", device_id, chrono::Utc::now().timestamp_millis());
+        let branch = generate_branch();
+        let cseq = cseq_header(1, "MESSAGE");
+        let via = format!(
+            "SIP/2.0/UDP {}:{};branch={};rport",
+            config.ip, config.port, branch
+        );
+        let from_tag = generate_tag();
+        let from = format!(
+            "<sip:{}@{}:{}>;tag={}",
+            config.device_id, config.ip, config.port, from_tag
+        );
+        let to = format!(
+            "<sip:{}@{}:{}>",
+            device_id,
+            device_addr.ip(),
+            device_addr.port()
+        );
+        let contact = format!(
+            "<sip:{}@{}:{}>",
+            config.device_id, config.ip, config.port
+        );
+        let content_length = body.len().to_string();
+        let headers: Vec<(&str, &str)> = vec![
+            ("Via", &via),
+            ("From", &from),
+            ("To", &to),
+            ("Call-ID", &call_id),
+            ("CSeq", &cseq),
+            ("Contact", &contact),
+            ("Max-Forwards", "70"),
+            ("Content-Type", "Application/MANSCDP+xml"),
+            ("Content-Length", &content_length),
+        ];
+        let uri = format!(
+            "sip:{}@{}:{}",
+            device_id,
+            device_addr.ip(),
+            device_addr.port()
+        );
+        let message = Parser::generate_request_from_method(
+            SipMethod::Message,
+            &uri,
+            &headers,
+            Some(&body),
+        );
+
+        match crate::sip::transport::tcp::send_sip_out(&socket, device_addr, &message).await {
+            Ok(_) => tracing::info!(
+                "注册后自动 DeviceInfo 查询已下发 device={} sn={}",
+                device_id, sn
+            ),
+            Err(e) => tracing::warn!(
+                "注册后自动 DeviceInfo 查询下发失败 device={}: {}",
+                device_id, e
+            ),
+        }
+    });
 }
 
 async fn send_subscribe_internal(

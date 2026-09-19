@@ -1436,6 +1436,59 @@ pub async fn update_device_online(
     Ok(r.rows_affected())
 }
 
+/// 把 SIP `DeviceInfo` 应答里的 `<DeviceName>/<Manufacturer>/<Model>/<Firmware>`
+/// 写回 `gb_device`（COALESCE：None 视为"不修改"，不会被空字符串覆盖）。
+///
+/// 此前 `handle_message` 对设备的 DeviceInfo 应答**只回 200 OK**，从未把
+/// 应答里的厂家/型号/固件写库 → 设备列表长期空白，运维只能手动逐条编辑。
+pub async fn update_device_info_fields(
+    pool: &Pool,
+    device_id: &str,
+    name: Option<&str>,
+    manufacturer: Option<&str>,
+    model: Option<&str>,
+    firmware: Option<&str>,
+    now: &str,
+) -> sqlx::Result<u64> {
+    #[cfg(feature = "mysql")]
+    let r = sqlx::query(
+        r#"UPDATE gb_device
+           SET name = COALESCE(NULLIF(?, ''), name),
+               manufacturer = COALESCE(NULLIF(?, ''), manufacturer),
+               model = COALESCE(NULLIF(?, ''), model),
+               firmware = COALESCE(NULLIF(?, ''), firmware),
+               update_time = ?
+           WHERE device_id = ?"#,
+    )
+    .bind(name).bind(manufacturer).bind(model).bind(firmware).bind(now).bind(device_id)
+    .execute(pool).await?;
+    #[cfg(feature = "postgres")]
+    let r = sqlx::query(
+        r#"UPDATE gb_device
+           SET name = COALESCE(NULLIF($1, ''), name),
+               manufacturer = COALESCE(NULLIF($2, ''), manufacturer),
+               model = COALESCE(NULLIF($3, ''), model),
+               firmware = COALESCE(NULLIF($4, ''), firmware),
+               update_time = $5
+           WHERE device_id = $6"#,
+    )
+    .bind(name).bind(manufacturer).bind(model).bind(firmware).bind(now).bind(device_id)
+    .execute(pool).await?;
+    #[cfg(feature = "sqlite")]
+    let r = sqlx::query(
+        r#"UPDATE gb_device
+           SET name = COALESCE(NULLIF(?, ''), name),
+               manufacturer = COALESCE(NULLIF(?, ''), manufacturer),
+               model = COALESCE(NULLIF(?, ''), model),
+               firmware = COALESCE(NULLIF(?, ''), firmware),
+               update_time = ?
+           WHERE device_id = ?"#,
+    )
+    .bind(name).bind(manufacturer).bind(model).bind(firmware).bind(now).bind(device_id)
+    .execute(pool).await?;
+    Ok(r.rows_affected())
+}
+
 pub async fn upsert_device(
     pool: &Pool,
     device_id: &str,
