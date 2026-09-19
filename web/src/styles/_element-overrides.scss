@@ -30,7 +30,7 @@
   border-color: var(--border-default);
   color: var(--text-primary);
   border-radius: var(--radius-sm);
-  font-size: var(--text-xs);
+  font-size: var(--text-sm);
   transition: border-color 0.15s, box-shadow 0.15s;
 }
 .el-input__inner:focus, .el-textarea__inner:focus {
@@ -40,31 +40,118 @@
 .el-input__inner::placeholder { color: var(--text-tertiary); }
 .el-select .el-input__inner,
 .el-select .el-input.is-focus .el-input__inner { border-color: var(--brand-primary-300); }
-.el-form-item__label { color: var(--text-secondary); font-size: var(--text-xs); font-weight: 500; }
+.el-form-item__label { color: var(--text-secondary); font-size: var(--text-sm); font-weight: 500; }
 
 .el-table {
   background: var(--bg-surface);
   color: var(--text-primary);
-  font-size: var(--text-xs);
+  font-size: var(--text-sm);
   border-radius: var(--layout-radius);
   overflow: hidden;
-  --el-table-border-color: var(--border-subtle);
+  /* table-layout: auto —— 浏览器按每一格内容算列宽。
+     table-layout: fixed（Element Plus 默认）会用首行宽度锁住列宽，
+     导致 GB 国标 ID、IPv4:端口、TCP-ACTIVE 这类长内容被挤压换行或截断。 */
+  table-layout: auto;
+  width: max-content;
+  min-width: 100%;
+  border: 1px solid var(--border-default);
+  border-collapse: separate;
+  border-spacing: 0;
+  --el-table-border-color: var(--border-default);
+  --el-table-border: 1px solid var(--border-default);
+  --el-table-row-hover-bg-color: var(--bg-hover);
+  --el-table-header-bg-color: var(--bg-elevated);
+  --el-table-header-text-color: var(--text-secondary);
+  --el-table-header-text-align: left;
+  --el-table-border-color-light: var(--border-subtle);
 }
+/* 真正的 <table> 元素：合并边框，相邻单元格共用一条边。 */
+.el-table > .el-table__inner-wrapper > .el-table__body-wrapper > table,
+.el-table > .el-table__inner-wrapper > table {
+  border-collapse: separate;
+  border-spacing: 0;
+  width: max-content;
+  min-width: 100%;
+}
+
 .el-table th.el-table__cell {
   background: var(--bg-elevated) !important;
-  color: var(--text-tertiary) !important;
-  font-weight: 500;
-  border-bottom: 1px solid var(--border-default);
+  color: var(--text-secondary) !important;
+  font-weight: 600;
+  font-size: var(--text-sm);
+  /* 顶/底/左 全部用稍深的 border-default，让表头与数据行明显分层 */
+  border-bottom: 2px solid var(--border-default) !important;
+  border-top: 1px solid var(--border-default);
+  border-right: 1px solid var(--border-subtle);
+  /* 不换行 —— 一行一格，列宽按内容自然撑开；不省略、不截断。 */
+  white-space: nowrap;
+  padding: 10px 12px;
 }
+.el-table th.el-table__cell.is-leaf:last-child,
+.el-table th.el-table__cell.is-leaf.is-fixed-right:last-child {
+  border-right: none;
+}
+
 .el-table td.el-table__cell {
   border-bottom: 1px solid var(--border-subtle);
+  border-right: 1px solid var(--border-subtle);
   color: var(--text-primary);
+  white-space: nowrap;
+  /* 行高 + 内边距让数据行呼吸顺畅；列宽交给浏览器按 th/td 内容自动算。 */
+  padding: 9px 12px;
+  transition: background-color 0.15s;
 }
+.el-table td.el-table__cell:last-child { border-right: none; }
+
+.el-table .cell {
+  /* 单行显示：nowrap 让内容撑开列；不再 ellipsis、不再 overflow:hidden，
+     整列按内容长度自动加宽，整张表可以超过父容器宽度（外层横向滚动）。 */
+  white-space: nowrap;
+  line-height: 20px;
+  padding: 0;
+}
+
 .el-table--enable-row-hover .el-table__body tr:hover > td.el-table__cell {
   background: var(--bg-hover) !important;
 }
-.el-table--striped .el-table__body tr.el-table__row--striped td { background: var(--bg-elevated); }
-.el-table .el-table__empty-text { color: var(--text-tertiary); font-size: var(--text-xs); }
+.el-table--striped .el-table__body tr.el-table__row--striped td { background: var(--bg-base); }
+.el-table .el-table__empty-text { color: var(--text-tertiary); font-size: var(--text-sm); }
+
+/* 排序图标、表头列分隔线 */
+.el-table .sort-caret.ascending { border-bottom-color: var(--brand-primary-500); }
+.el-table .sort-caret.descending { border-top-color: var(--brand-primary-500); }
+.el-table .caret-wrapper { margin-left: 4px; }
+.el-table__column-filter-trigger { margin-left: 4px; }
+
+/* 内嵌展开表格：缩进 + 灰色背景区分；边框与外层一致 */
+.el-table .el-table__expanded-cell {
+  background: var(--bg-base) !important;
+  padding: 12px 16px 16px 32px !important;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.el-table .el-table__expanded-cell > .el-table {
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+/* 行内展开的占位元素（按钮列放不开时） */
+.el-table .el-table__placeholder {
+  color: var(--text-tertiary);
+}
+
+/* 固定列分隔阴影 */
+.el-table__fixed-right-patch,
+.el-table__fixed-left-patch {
+  background: var(--bg-elevated) !important;
+  border-bottom: 2px solid var(--border-default) !important;
+}
+
+/* 选中行高亮（多选表格） */
+.el-table__body tr.current-row > td.el-table__cell,
+.el-table__body tr.el-table__row--current > td.el-table__cell {
+  background: rgba(11, 138, 178, 0.10) !important;
+}
 
 .el-card {
   border-radius: var(--layout-radius);
@@ -72,6 +159,10 @@
   box-shadow: var(--shadow-card);
   background: var(--bg-surface);
 }
+/* 直接包住 el-table 的卡片要允许横向滚动，否则列宽按内容撑开后会被
+   卡片裁掉。绝大多数表格外层都是 .table-card；少数页面（alarm / cloudRecord）
+   直接用 <el-card>，用这个全局规则兜底。 */
+.el-card:has(> .el-table) { overflow-x: auto; }
 
 .el-dialog {
   border-radius: var(--layout-radius);
@@ -92,7 +183,7 @@
   border-color: var(--border-subtle);
   background: var(--bg-elevated);
   color: var(--text-secondary);
-  font-size: var(--text-xs);
+  font-size: var(--text-sm);
 }
 
 .el-menu {
@@ -101,9 +192,9 @@
 }
 .el-menu-item, .el-sub-menu__title {
   color: var(--text-secondary) !important;
-  font-size: var(--text-xs) !important;
-  height: 38px !important;
-  line-height: 38px !important;
+  font-size: var(--text-sm) !important;
+  height: 40px !important;
+  line-height: 40px !important;
 }
 .el-menu-item:hover, .el-sub-menu__title:hover {
   background-color: var(--bg-hover) !important;

@@ -109,8 +109,10 @@ const query = reactive({
   channelId: '',
   app: '',
   stream: '',
-  startTime: undefined as Date | undefined,
-  endTime: undefined as Date | undefined
+  // 默认查最近 7 天（"开始/结束" 两个时间都未填时是空时间 = 不限），
+  // 这里给两个 ref 写初值，让页面进入即默认 7 天范围。
+  startTime: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) as Date | undefined,
+  endTime: new Date() as Date | undefined
 })
 
 async function loadData() {
@@ -237,8 +239,8 @@ onMounted(loadData)
 .cloud-record-page { padding: 16px; }
 .page-header { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 12px; }
 .page-title { font-size: 20px; font-weight: 600; margin: 0; }
-.page-subtitle { color: var(--el-text-color-secondary); font-size: 12px; margin-top: 4px; }
+.page-subtitle { color: var(--el-text-color-secondary); font-size: var(--text-sm); margin-top: 4px; }
 .filter-card { margin-bottom: 12px; }
 .pagination { margin-top: 16px; justify-content: flex-end; }
-.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: var(--text-sm); }
 </style>

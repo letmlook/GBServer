@@ -68,16 +68,16 @@
   --font-mono: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
   --font-display: "Inter", "PingFang SC", system-ui, sans-serif;
 
-  /* 字号 */
-  --text-xs:   11px;
-  --text-sm:   13px;
-  --text-base: 14px;
-  --text-md:   15px;
-  --text-lg:   17px;
-  --text-xl:   20px;
-  --text-2xl:  24px;
-  --text-3xl:  30px;
-  --text-display: 40px;
+  /* 字号（整体上调一档，原来 11-14px 段太紧凑，桌面管理后台至少 14-16px 才易读） */
+  --text-xs:   12px;
+  --text-sm:   14px;
+  --text-base: 16px;
+  --text-md:   18px;
+  --text-lg:   20px;
+  --text-xl:   24px;
+  --text-2xl:  28px;
+  --text-3xl:  36px;
+  --text-display: 48px;
 
   /* 阴影 */
   --shadow-card: 0 1px 0 0 rgba(11, 138, 178, 0.04) inset, 0 1px 2px rgba(15, 28, 45, 0.05);
@@ -126,6 +126,16 @@
   --el-border-radius-base: var(--radius-md);
   --el-border-radius-small: var(--radius-sm);
   --el-font-family: var(--font-sans);
+  /* 把 Element Plus 组件默认字号整体抬到我们的 sm/base 档位，避免它
+     走 12-13px 默认值让表格、菜单、按钮看起来"挤" */
+  --el-font-size-extra-small: 12px;
+  --el-font-size-small: 13px;
+  --el-font-size-base: 14px;
+  --el-font-size-medium: 16px;
+  --el-font-size-large: 18px;
+  --el-font-size-extra-large: 20px;
+  /* 全局根字号：让 rem / 表单 / 段落跟着放大 */
+  font-size: 16px;
 }
 
 /* ===========================================================

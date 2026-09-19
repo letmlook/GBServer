@@ -8,30 +8,10 @@
       <slot name="trend">{{ trend }}</slot>
     </div>
     <slot name="extra" />
-    <svg
-      v-if="sparkPoints"
-      class="gb-kpi__spark"
-      viewBox="0 0 200 38"
-      preserveAspectRatio="none"
-    >
-      <path
-        :d="`M0 38 L0 ${sparkPoints[0].y} ` + sparkPoints.map(p => `L ${p.x} ${p.y}`).join(' ') + ' L 200 38 Z'"
-        :fill="sparkFill"
-        opacity="0.20"
-      />
-      <path
-        :d="'M0 ' + sparkPoints[0].y + ' ' + sparkPoints.map(p => `L ${p.x} ${p.y}`).join(' ')"
-        :stroke="sparkStroke"
-        stroke-width="1.5"
-        fill="none"
-      />
-    </svg>
   </article>
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
-
 type TrendTone = 'success' | 'warning' | 'error' | 'neutral'
 type ValueTone = 'success' | 'warning' | 'error' | 'primary' | 'default'
 
@@ -42,7 +22,6 @@ const props = withDefaults(
     trend?: string
     trendTone?: TrendTone
     valueTone?: ValueTone
-    spark?: number[] | null
     style?: Record<string, string>
   }>(),
   {
@@ -50,7 +29,6 @@ const props = withDefaults(
     trend: '',
     trendTone: 'neutral',
     valueTone: 'default',
-    spark: null,
     style: () => ({})
   }
 )
@@ -70,38 +48,18 @@ const VALUE_COLOR: Record<ValueTone, string> = {
   default: 'var(--text-primary)'
 }
 
-const SPARK_STROKE: Record<ValueTone, string> = {
-  success: 'var(--state-success)',
-  warning: 'var(--state-warning)',
-  error: 'var(--state-error)',
-  primary: 'var(--brand-primary-400)',
-  default: 'var(--brand-primary-400)'
-}
+// spark 之前用 mem / net 历史给卡片画"小曲线"，但**这些数据与 KPI
+// 数值毫无业务关联**，容易让用户误以为是"在线设备变化趋势"。
+// 现已从前端彻底移除：组件不再接受 spark prop，不再画 SVG 曲线。
 
-const formattedValue = computed(() => {
+const formattedValue = (() => {
   if (typeof props.value === 'number') return props.value.toLocaleString('en-US')
   return props.value
-})
+})()
 
-const valueColor = computed(() => VALUE_COLOR[props.valueTone] || VALUE_COLOR.default)
-const trendColor = computed(() => TREND_COLOR[props.trendTone] || TREND_COLOR.neutral)
-const sparkStroke = computed(() => SPARK_STROKE[props.valueTone] || SPARK_STROKE.default)
-const sparkFill = computed(() => `url(#spark-grad-${props.valueTone})`)
-const containerStyle = computed(() => props.style)
-
-const sparkPoints = computed(() => {
-  if (!props.spark || props.spark.length < 2) return null
-  const min = Math.min(...props.spark)
-  const max = Math.max(...props.spark)
-  const range = max - min || 1
-  const w = 200
-  const h = 38
-  const step = w / (props.spark.length - 1)
-  return props.spark.map((v, i) => ({
-    x: i * step,
-    y: h - ((v - min) / range) * (h - 4) - 2
-  }))
-})
+const valueColor = VALUE_COLOR[props.valueTone] || VALUE_COLOR.default
+const trendColor = TREND_COLOR[props.trendTone] || TREND_COLOR.neutral
+const containerStyle = props.style
 </script>
 
 <style lang="scss" scoped>
@@ -132,13 +90,6 @@ const sparkPoints = computed(() => {
   &__trend {
     font-size: var(--text-xs);
     min-height: 16px;
-  }
-  &__spark {
-    position: absolute;
-    inset: auto 0 0 0;
-    width: 100%;
-    height: 38px;
-    pointer-events: none;
   }
 }
 </style>

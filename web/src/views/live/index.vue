@@ -7,12 +7,16 @@
       </div>
       <div class="page-actions">
         <el-button @click="loadData">刷新</el-button>
-        <el-button @click="playDemoStream" plain :icon="VideoPlay">测试播放</el-button>
-        <el-radio-group v-model="layout" size="small">
-          <el-radio-button label="2x2">2×2</el-radio-button>
-          <el-radio-button label="3x3">3×3</el-radio-button>
-          <el-radio-button label="4x4">4×4</el-radio-button>
-        </el-radio-group>
+        <!-- 布局切换：与「刷新」同款普通按钮（默认 size），仅用 type 区分选中态。
+             之前是 el-radio-group size="small"，比刷新按钮小一圈、样式也不同套。 -->
+        <el-button
+          v-for="opt in layoutOptions"
+          :key="opt.value"
+          :type="layout === opt.value ? 'primary' : 'default'"
+          @click="layout = opt.value"
+        >
+          {{ opt.label }}
+        </el-button>
       </div>
     </div>
 
@@ -39,9 +43,16 @@
           >
             <template #default="{ node, data }">
               <span class="tree-row">
-                <span class="tree-label">{{ node.label }}</span>
+                <!-- 设备节点用图标 + 加粗区分；通道节点用普通文字 -->
+                <el-icon v-if="data.isDevice" class="tree-icon"><Grid /></el-icon>
+                <el-icon v-else class="tree-icon tree-icon--channel"><VideoCamera /></el-icon>
+                <span :class="['tree-label', { 'tree-label--device': data.isDevice }]">
+                  {{ node.label }}
+                </span>
+                <!-- 设备节点显示通道数；通道节点显示在线状态 -->
+                <span v-if="data.isDevice" class="tree-count">{{ (data.children ?? []).length }}</span>
                 <el-tag
-                  v-if="data.status"
+                  v-else-if="data.status"
                   :type="data.status === 'ON' ? 'success' : 'info'"
                   size="small"
                 >
@@ -57,20 +68,24 @@
       <el-col :xs="24" :md="18">
         <el-card class="grid-card" v-loading="loading">
           <div v-if="!currentChannel" class="empty">
-            <el-empty description="请从左侧选择通道开始播放，或点击右上「测试播放」验证播放器" />
+            <el-empty description="请从左侧选择通道开始播放" />
           </div>
           <div v-else>
+            <!-- 通道信息条：只显示通道名 / 国标 ID / 播放状态。
+                 云台与对讲已从本页移除 —— 云台在「通道播放」对话框里提供。 -->
             <div class="player-bar">
-              <span class="player-title">{{ currentChannel.name }}</span>
-              <span class="player-meta mono small">
-                {{ currentChannel.deviceId }} / {{ currentChannel.channelId }}
-              </span>
-              <el-tag
-                :type="playerStatus === 'playing' ? 'success' : playerStatus === 'error' ? 'danger' : 'info'"
-                size="small"
-              >
-                {{ statusLabel }}
-              </el-tag>
+              <div class="player-bar__left">
+                <span class="player-title">{{ currentChannel.name }}</span>
+                <span class="player-meta mono small">
+                  {{ currentChannel.deviceId }} / {{ currentChannel.channelId }}
+                </span>
+                <el-tag
+                  :type="playerStatus === 'playing' ? 'success' : playerStatus === 'error' ? 'danger' : 'info'"
+                  size="small"
+                >
+                  {{ statusLabel }}
+                </el-tag>
+              </div>
             </div>
 
             <div :class="['video-grid', `video-grid--${layout}`]">
@@ -113,7 +128,7 @@
                   />
                   <div v-else class="video-placeholder">
                     <el-icon size="32"><VideoCameraFilled /></el-icon>
-                    <p class="placeholder-tip">点击通道或「测试播放」开始</p>
+                    <p class="placeholder-tip">点击通道开始</p>
                   </div>
                 </div>
                 <div class="video-cell__footer">
@@ -129,31 +144,17 @@
             <div v-if="playError" class="play-error">
               <el-alert :title="playError" type="warning" show-icon :closable="false" />
             </div>
-
-            <div class="ptz-bar">
-              <span class="ptz-title">PTZ:</span>
-              <el-button-group>
-                <el-button :icon="ArrowUp" @click="sendPtz(currentChannel, 'UP')" />
-                <el-button :icon="ArrowLeft" @click="sendPtz(currentChannel, 'LEFT')" />
-                <el-button :icon="VideoPause" @click="sendPtz(currentChannel, 'STOP')">停止</el-button>
-                <el-button :icon="ArrowRight" @click="sendPtz(currentChannel, 'RIGHT')" />
-                <el-button :icon="ArrowDown" @click="sendPtz(currentChannel, 'DOWN')" />
-              </el-button-group>
-              <el-button-group style="margin-left: 12px">
-                <el-button @click="sendPtz(currentChannel, 'ZOOM_IN')">放大</el-button>
-                <el-button @click="sendPtz(currentChannel, 'ZOOM_OUT')">缩小</el-button>
-              </el-button-group>
-              <span style="margin-left: 12px">
-                <TalkPanel
-                  :device-id="currentChannel?.deviceId"
-                  :channel-id="currentChannel?.channelId"
-                />
-              </span>
-            </div>
           </div>
         </el-card>
       </el-col>
     </el-row>
+
+    <!-- 抓图预览：成功后在右下角弹出最近一张抓图，点击放大；多张累积 -->
+    <SnapPreview
+      v-model="snapVisible"
+      :items="snapItems"
+      @clear="snapItems = []"
+    />
   </div>
 </template>
 
@@ -162,29 +163,32 @@ import { computed, nextTick, onMounted, onBeforeUnmount, reactive, ref, watch } 
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import {
-  ArrowUp,
-  ArrowDown,
-  ArrowLeft,
-  ArrowRight,
-  VideoPause,
-  VideoCameraFilled,
-  VideoPlay
+  Grid,
+  VideoCamera,
+  VideoCameraFilled
 } from '@element-plus/icons-vue'
 import {
   playSnap,
   postWebrtcPlay,
-  sendPtz as sendPtzApi,
   startPlay,
   stopPlay,
 } from '@/api/live'
 import { cameraListWithChild } from '@/api/syCamera'
-import TalkPanel from '@/components/TalkPanel/index.vue'
+import SnapPreview from '@/components/SnapPreview/index.vue'
 
 const route = useRoute()
 const router = useRouter()
 const loading = ref(false)
 const kw = ref('')
-const layout = ref<'2x2' | '3x3' | '4x4'>('2x2')
+// 默认单画面：多数场景是"选一路看"，1×1 让画面最大化；
+// 需要多路时用户再点 2×2 / 3×3 / 4×4。
+const layout = ref<'1x1' | '2x2' | '3x3' | '4x4'>('1x1')
+const layoutOptions = [
+  { value: '1x1' as const, label: '1×1' },
+  { value: '2x2' as const, label: '2×2' },
+  { value: '3x3' as const, label: '3×3' },
+  { value: '4x4' as const, label: '4×4' }
+]
 const tree = ref<any[]>([])
 const treeRef = ref<any>()
 const channels = ref<{ deviceId: string; channelId: string; name: string; status: string; online: boolean }[]>([])
@@ -192,8 +196,12 @@ const currentChannel = ref<{ deviceId: string; channelId: string; name: string }
 const cells = ref<any[]>([])
 const primaryVideoRef = ref<HTMLVideoElement | null>(null)
 const flvVideoRef = ref<HTMLVideoElement | null>(null)
-const playError = ref<string>('')
+const playError = ref('')
 const playerStatus = ref<'idle' | 'loading' | 'playing' | 'error'>('idle')
+
+// 抓图预览状态：抓图成功累积到列表里（最多保留 8 张），右下角浮窗可点开
+const snapVisible = ref(false)
+const snapItems = ref<{ deviceId: string; channelId: string; name: string; snapUrl: string; time: number }[]>([])
 
 // 适配器实例
 let hlsInstance: any = null
@@ -215,6 +223,12 @@ const statusLabel = computed(() => {
 })
 
 watch(kw, (v) => treeRef.value?.filter(v))
+// 切网格布局时重建格子（不要重新拉流，url 已经在当前主格子里）
+watch(layout, () => {
+  if (!currentChannel.value) return
+  const url = (cells.value.find((c) => c.primary)?.url) ?? ''
+  buildGrid(currentChannel.value, url)
+})
 
 function filterNode(value: string, data: any) {
   if (!value) return true
@@ -225,30 +239,68 @@ async function loadData() {
   loading.value = true
   try {
     const res = await cameraListWithChild({ page: 1, count: 1000 })
-    const list = res.data?.list ?? []
-    channels.value = list
-      // 过滤掉"设备本身"的行：接口在设备没有任何通道时会返回它自己
-      // （channel_id == device_id），那不是可点播的通道。
-      .filter((c: any) => c.channel_id && !c.is_device)
-      .map((c: any) => ({
-        deviceId: c.device_id,
-        channelId: c.channel_id,
-        name: c.name ?? c.channel_id,
-        status: c.status,
-        online: !!c.online,
-      }))
+    const list = (res.data?.list ?? []) as any[]
 
-    // 构建设备树
+    // 通道行（`is_device=false`）才是真正可点播的通道；
+    // 每行都带 `device_name`（后端 CameraRow.device_name），可直接当树的父节点名。
+    const channelRows = list.filter((c: any) => c.channel_id && !c.is_device)
+    channels.value = channelRows.map((c: any) => ({
+      deviceId: c.device_id,
+      channelId: c.channel_id,
+      name: c.name ?? c.channel_id,
+      status: c.status,
+      online: !!c.online,
+    }))
+
+    // 设备元信息：device_id → { name, status }。
+    // 设备名优先取通道行携带的 `device_name`；
+    // 对"无通道的设备"（is_device=true 的行），它自己的 name 就是设备名。
+    const deviceMeta = new Map<string, { name: string; status: string; online: boolean }>()
+    for (const r of list) {
+      const devId = r.device_id
+      if (!devId) continue
+      const candidate =
+        (r.device_name && String(r.device_name).trim()) ||
+        (r.is_device ? String(r.name ?? '').trim() : '') ||
+        devId
+      // 首次写入优先（同一个 device_id 的多行 device_name 相同，幂等）
+      if (!deviceMeta.has(devId)) {
+        deviceMeta.set(devId, {
+          name: candidate,
+          status: r.status,
+          online: !!r.online
+        })
+      }
+    }
+
+    // 构建设备 / 通道两级树：父节点 = 设备，子节点 = 该设备下的通道
     const grouped = new Map<string, any[]>()
     for (const ch of channels.value) {
       const arr = grouped.get(ch.deviceId) ?? []
       arr.push({ id: ch.channelId, name: ch.name, status: ch.status, raw: ch })
       grouped.set(ch.deviceId, arr)
     }
-    tree.value = Array.from(grouped.entries()).map(([deviceId, children]) => {
-      const devName = channels.value.find((c) => c.deviceId === deviceId)?.name ?? deviceId
-      return { id: deviceId, name: devName, children }
-    })
+    // 无通道的设备也保留在树里（展开后为空），避免设备从预览页消失
+    for (const devId of deviceMeta.keys()) {
+      if (!grouped.has(devId)) grouped.set(devId, [])
+    }
+
+    tree.value = Array.from(grouped.entries())
+      .map(([deviceId, children]) => {
+        const meta = deviceMeta.get(deviceId)
+        return {
+          id: deviceId,
+          name: meta?.name ?? deviceId,
+          // 标记为"设备节点"：模板据此换图标、加粗、显示通道数、不响应点播
+          isDevice: true,
+          // 设备级在线状态
+          status: meta?.status,
+          online: meta?.online,
+          children
+        }
+      })
+      // 设备按名字排序，便于快速定位
+      .sort((a, b) => a.name.localeCompare(b.name, 'zh-Hans-CN'))
   } catch (e: any) {
     ElMessage.error(e?.message ?? '通道列表加载失败')
     tree.value = []
@@ -483,7 +535,8 @@ function onVideoError(_e: Event) {
 }
 
 function buildGrid(s: any, url: string) {
-  const count = layout.value === '2x2' ? 4 : layout.value === '3x3' ? 9 : 16
+  // 1×1 单画面：只显示当前通道一个格子且占满
+  const count = layout.value === '1x1' ? 1 : layout.value === '2x2' ? 4 : layout.value === '3x3' ? 9 : 16
   const grid: any[] = []
   grid.push({ ...s, url, primary: true })
   while (grid.length < count) grid.push({})
@@ -493,7 +546,20 @@ function buildGrid(s: any, url: string) {
 async function onSnap(cell: any) {
   if (!cell?.deviceId || !cell?.channelId) return
   try {
-    await playSnap(cell.deviceId, cell.channelId)
+    const res = await playSnap(cell.deviceId, cell.channelId)
+    const snapUrl = res.data?.snapUrl ?? ''
+    if (snapUrl) {
+      // 累积到预览列表里（最近 8 张），让"抓了却看不到图"的体验变好
+      snapItems.value.unshift({
+        deviceId: cell.deviceId,
+        channelId: cell.channelId,
+        name: cell.name ?? cell.channelId,
+        snapUrl,
+        time: Date.now()
+      })
+      if (snapItems.value.length > 8) snapItems.value.length = 8
+      snapVisible.value = true
+    }
     ElMessage.success('抓图已保存')
   } catch (e: any) {
     ElMessage.error(e?.message ?? '抓图失败')
@@ -516,7 +582,7 @@ async function onStop(cell: any) {
   if (flvVideo) { flvVideo.src = ''; flvVideo.style.display = 'none' }
   // 真正停流：后端会发 SIP BYE 并关闭 ZLM RTP server / 收流
   const target = cell?.deviceId && cell?.channelId ? cell : currentChannel.value
-  if (target?.deviceId && target?.channelId && target.deviceId !== 'DEMO') {
+  if (target?.deviceId && target?.channelId) {
     await stopPlay(target.deviceId, target.channelId).catch((e) => {
       ElMessage.warning(`停止流失败：${e instanceof Error ? e.message : String(e)}`)
     })
@@ -524,39 +590,6 @@ async function onStop(cell: any) {
   buildGrid(cell, '')
   playerStatus.value = 'idle'
   ElMessage.success('已停止')
-}
-
-async function sendPtz(channel: any, cmd: string) {
-  if (!channel?.deviceId || !channel?.channelId) {
-    ElMessage.warning('请先选择播放通道')
-    return
-  }
-  try {
-    await sendPtzApi({ deviceId: channel.deviceId, channelId: channel.channelId, cmd })
-    ElMessage.success(`PTZ ${cmd} 已下发`)
-  } catch (e: any) {
-    ElMessage.error(e?.message ?? `PTZ ${cmd} 失败`)
-  }
-}
-
-/**
- * 播放公共测试流（不依赖 ZLM / SIP / 任何真实环境）
- * 用于验证浏览器播放器是否正常工作
- */
-async function playDemoStream() {
-  // 多个公共测试 HLS 流，按顺序尝试
-  const demoStreams = [
-    { url: 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8', name: 'Mux 测试 HLS' },
-    { url: 'https://demo.unified-streaming.com/k8s/features/stable/video/tears-of-steel/tears-of-steel.ism/.m3u8', name: 'Unified 测试 HLS' },
-    { url: 'https://flv.bn.nflxvideo.net/4b91eae.mp4', name: 'Big Buck Bunny (mp4)' },
-  ]
-  const first = demoStreams[0]
-  currentChannel.value = { deviceId: 'DEMO', channelId: 'DEMO', name: first.name }
-  buildGrid({ deviceId: 'DEMO', channelId: 'DEMO', name: first.name }, first.url)
-  await nextTick()
-  playerStatus.value = 'loading'
-  await attachVideo(first.url)
-  ElMessage.info(`播放公共测试流：${first.name}（如失败请尝试下一个）`)
 }
 
 onBeforeUnmount(() => {
@@ -578,36 +611,136 @@ onMounted(async () => {
 </script>
 
 <style scoped>
-.live-page { padding: 16px; }
-.page-header { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 12px; }
+/* 整体约束：直播页要"塞进一屏"。左侧设备树 + 右侧播放卡都不能撑破视口，
+   否则底部区域被滚出屏幕。 */
+.live-page {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  /* 顶部栏 56px + 上下 padding 32px + 头部区 ~60px ≈ 150px 留出；
+     ElRow 内部继续 flex 1 把剩余空间分给视频和设备列表。 */
+  height: calc(100vh - 16px);
+  box-sizing: border-box;
+}
+.page-header { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 12px; flex: 0 0 auto; }
 .page-title { font-size: 20px; font-weight: 600; margin: 0; }
-.page-subtitle { color: var(--el-text-color-secondary); font-size: 12px; margin-top: 4px; }
-.device-tree-card { height: calc(100vh - 200px); overflow: auto; }
-.grid-card { min-height: 600px; }
+.page-subtitle { color: var(--el-text-color-secondary); font-size: var(--text-sm); margin-top: 4px; }
+
+/* 主区：左侧设备栏 + 右侧播放卡 占满剩余高度；
+   关键是不让任一列把页面撑高导致整体出现竖向滚动条。 */
+.live-page :deep(.el-row),
+.live-page :deep(.el-row > .el-col) {
+  display: flex;
+}
+.live-page :deep(.el-row > .el-col) { min-height: 0; }
+
+.device-tree-card { flex: 1; overflow: auto; }
+.grid-card {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0; /* flex 子项允许收缩 */
+}
+/* 播放卡内部：信息条固定、视频区弹性占满剩余高度。 */
+.grid-card :deep(.el-card__body) {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
 .card-header { display: flex; justify-content: space-between; align-items: center; }
 .empty { padding: 80px 0; }
-.tree-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; width: 100%; }
+.tree-row { display: flex; align-items: center; gap: 6px; width: 100%; padding-right: 4px; }
 .tree-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.player-bar { display: flex; align-items: center; gap: 12px; padding: 8px 12px; background: #f7f7f7; border-radius: 4px; margin-bottom: 8px; }
+/* 设备节点（父）：加粗 + 深色，与通道子节点形成层级对比 */
+.tree-label--device { font-weight: 600; color: var(--text-primary); }
+.tree-icon { color: var(--brand-primary-500); flex: 0 0 auto; }
+.tree-icon--channel { color: var(--text-tertiary); }
+/* 设备节点右侧的通道数角标 */
+.tree-count {
+  flex: 0 0 auto;
+  min-width: 20px;
+  padding: 0 6px;
+  height: 18px;
+  line-height: 18px;
+  text-align: center;
+  border-radius: 999px;
+  background: var(--bg-elevated);
+  color: var(--text-tertiary);
+  font-size: 11px;
+  font-weight: 600;
+  font-family: var(--font-mono);
+}
+.player-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  background: #f7f7f7;
+  border-radius: 4px;
+  margin-bottom: 8px;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+}
+.player-bar__left {
+  display: flex; align-items: center; gap: 12px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
 .player-title { font-weight: 600; }
 .player-meta { color: var(--el-text-color-secondary); }
-.video-grid { display: grid; gap: 6px; }
+
+/* 视频区：吃掉播放卡除头尾外的所有空间，格子不再硬撑 480px。 */
+.video-grid {
+  display: grid;
+  gap: 6px;
+  flex: 1;
+  min-height: 0;
+}
+.video-grid--1x1 { grid-template-columns: 1fr; }
 .video-grid--2x2 { grid-template-columns: repeat(2, 1fr); }
 .video-grid--3x3 { grid-template-columns: repeat(3, 1fr); }
 .video-grid--4x4 { grid-template-columns: repeat(4, 1fr); }
-.video-cell { background: #0b0b0b; color: #fff; border-radius: 6px; overflow: hidden; aspect-ratio: 16/9; position: relative; display: flex; flex-direction: column; }
+
+/* 格子大小：按视频比例自适应，不超过容器。 */
+.video-cell {
+  background: #0b0b0b;
+  color: #fff;
+  border-radius: 6px;
+  overflow: hidden;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+.video-grid--1x1 .video-cell { aspect-ratio: 16 / 9; max-height: 100%; }
+.video-grid--2x2 .video-cell { aspect-ratio: 16 / 9; }
+.video-grid--3x3 .video-cell { aspect-ratio: 16 / 9; }
+.video-grid--4x4 .video-cell { aspect-ratio: 16 / 9; }
 .video-cell.is-primary { box-shadow: 0 0 0 2px var(--el-color-danger); }
-.video-cell__header { display: flex; gap: 8px; align-items: center; padding: 6px 10px; background: rgba(0,0,0,.6); font-size: 12px; }
+.video-cell__header { display: flex; gap: 8px; align-items: center; padding: 6px 10px; background: rgba(0,0,0,.6); font-size: var(--text-sm); flex: 0 0 auto; }
 .video-cell__no { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; opacity: 0.7; }
 .video-cell__title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.video-cell__body { flex: 1; display: flex; align-items: center; justify-content: center; background: #111; position: relative; }
-.video-cell__footer { display: flex; justify-content: space-between; align-items: center; padding: 4px 10px; background: rgba(0,0,0,.6); font-size: 11px; }
+.video-cell__body { flex: 1 1 auto; display: flex; align-items: center; justify-content: center; background: #111; position: relative; min-height: 0; }
+.video-cell__footer { display: flex; justify-content: space-between; align-items: center; padding: 4px 10px; background: rgba(0,0,0,.6); font-size: var(--text-xs); flex: 0 0 auto; }
 .video-element { width: 100%; height: 100%; object-fit: contain; background: #000; }
 .video-placeholder { color: #555; text-align: center; }
-.placeholder-tip { font-size: 12px; margin-top: 4px; opacity: 0.6; }
-.ptz-bar { padding: 12px; display: flex; align-items: center; }
-.ptz-title { margin-right: 8px; color: var(--el-text-color-secondary); }
+.placeholder-tip { font-size: var(--text-sm); margin-top: 4px; opacity: 0.6; }
+
+/* 错误提示也走收缩 */
+.play-error { padding: 0 16px 8px; flex: 0 0 auto; }
+
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-.small { font-size: 11px; }
-.play-error { padding: 0 16px 8px; }
+.small { font-size: var(--text-xs); }
+
+/* 窄屏：上下堆叠，左侧栏拿到自然高度，主区域继续 flex 1 */
+@media (max-width: 768px) {
+  .live-page { height: auto; }
+  .live-page :deep(.el-row),
+  .live-page :deep(.el-row > .el-col) { display: block; }
+  .grid-card { min-height: 540px; }
+}
 </style>

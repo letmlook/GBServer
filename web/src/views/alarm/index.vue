@@ -91,7 +91,13 @@ const loading = ref(false)
 const rows = ref<Alarm[]>([])
 const total = ref(0)
 const selection = ref<Alarm[]>([])
-const timeRange = ref<[Date, Date] | null>(null)
+// 默认查最近 7 天；用户手动清空则不限时间。
+function defaultLast7Days(): [Date, Date] {
+  const end = new Date()
+  const start = new Date(end.getTime() - 7 * 24 * 60 * 60 * 1000)
+  return [start, end]
+}
+const timeRange = ref<[Date, Date] | null>(defaultLast7Days())
 
 const query = reactive({
   page: 1,
@@ -219,15 +225,23 @@ async function onClearByFilter() {
   }
 }
 
-onMounted(loadData)
+onMounted(() => {
+  // 默认时间范围在 reactive 里已经设过，但需在首次加载前把时间同步到 query。
+  // 否则第一次 loadData() 不会带时间条件，与"默认 7 天"语义不符。
+  if (timeRange.value) {
+    query.startTime = timeRange.value[0].toISOString()
+    query.endTime = timeRange.value[1].toISOString()
+  }
+  loadData()
+})
 </script>
 
 <style scoped>
 .alarm-page { padding: 16px; }
 .page-header { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 12px; }
 .page-title { font-size: 20px; font-weight: 600; margin: 0; }
-.page-subtitle { color: var(--el-text-color-secondary); font-size: 12px; margin-top: 4px; }
+.page-subtitle { color: var(--el-text-color-secondary); font-size: var(--text-sm); margin-top: 4px; }
 .filter-card { margin-bottom: 12px; }
 .pagination { margin-top: 16px; justify-content: flex-end; }
-.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: var(--text-sm); }
 </style>

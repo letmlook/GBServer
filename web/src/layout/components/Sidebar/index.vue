@@ -143,7 +143,7 @@ function isLive(item: NavItem): boolean {
 .nav-group + .nav-group { margin-top: 14px; }
 
 .nav-group-title {
-  font-size: 10px;
+  font-size: var(--text-xs);
   font-weight: 600;
   letter-spacing: 0.5px;
   color: var(--text-tertiary);
@@ -195,7 +195,7 @@ function isLive(item: NavItem): boolean {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  font-size: 10px;
+  font-size: var(--text-xs);
   color: var(--text-tertiary);
 }
 .server-status-row { display: flex; align-items: center; gap: 6px; }

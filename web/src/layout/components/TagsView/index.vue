@@ -131,7 +131,7 @@ document.body.addEventListener('click', hideMenu)
     border-color: rgba(11, 138, 178, 0.30);
     font-weight: 600;
   }
-  .close { font-size: 10px; opacity: 0.6; }
+  .close { font-size: var(--text-xs); opacity: 0.6; }
   .close:hover { opacity: 1; }
 }
 

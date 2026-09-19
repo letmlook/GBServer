@@ -299,7 +299,7 @@ watch(
 .no-window {
   line-height: 32px;
   color: var(--el-text-color-placeholder);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .day-actions {
   flex: none;
@@ -314,6 +314,6 @@ watch(
 .hint {
   margin-left: 8px;
   color: var(--el-text-color-secondary);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 </style>

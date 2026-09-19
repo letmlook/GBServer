@@ -22,6 +22,13 @@ pub struct CameraRow {
     pub device_id: String,
     pub channel_id: String,
     pub name: String,
+    /// 所属设备名（`gb_device.name`）。
+    ///
+    /// 前端实时直播页要用它当**树的父节点名**。此前只有通道行、没有设备行，
+    /// 前端只能拿"该设备第一条通道的名字"当设备名 —— 于是树里父节点显示成
+    /// `channel1`、子节点也是 `channel1`，看起来像 bug。这里让每行都携带
+    /// 设备名，前端无需额外请求即可正确渲染两级树。
+    pub device_name: String,
     pub status: String,
     pub online: bool,
     pub longitude: Option<f64>,
@@ -166,6 +173,12 @@ fn device_to_row(d: &db::Device, ch: Option<&db::DeviceChannel>) -> CameraRow {
         device_id: d.device_id.clone(),
         channel_id,
         name,
+        // 设备名：设备表 `name` 为空时退化为设备国标 ID，
+        // 保证前端树的父节点永远有可读标签。
+        device_name: {
+            let dn = opt_to_string(&d.name);
+            if dn.is_empty() { d.device_id.clone() } else { dn }
+        },
         status: if d.on_line.unwrap_or(false) { "ON".into() } else { "OFF".into() },
         online: d.on_line.unwrap_or(false),
         longitude,

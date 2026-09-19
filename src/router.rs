@@ -1159,7 +1159,14 @@ pub fn app(state: AppState) -> Router<AppState> {
         // C6: play/share 公开访问（凭 share token 鉴权）
         .route("/api/play/share", get(play::play_share_create))
         .route("/api/play/share/info", get(play::play_share_info))
-        .route("/api/play/share/start", get(play::play_share_start));
+        .route("/api/play/share/start", get(play::play_share_start))
+        // 通道缩略图（JPEG 字节）。浏览器 `<img src>` 无法设置请求头，
+        // 因此与 `/api/talk/audio/...` 同套做法：注册在鉴权中间件之外，
+        // 在 handler 内部用 `?token=` 校验 JWT。
+        .route(
+            "/api/play/snap.jpg/:device_id/:channel_id",
+            get(device_query::get_snap_image),
+        );
 
     let api = api_public.merge(api_protected);
     let zlm_protected = Router::new()

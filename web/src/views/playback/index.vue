@@ -181,8 +181,9 @@ async function attachVideo(url: string) {
 const form = reactive({
   deviceId: '',
   channelId: '',
-  startTime: undefined as Date | undefined,
-  endTime: undefined as Date | undefined
+  // 默认时间窗口：最近 7 天（页面进入即可直接检索）
+  startTime: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) as Date | undefined,
+  endTime: new Date() as Date | undefined
 })
 
 async function onQuery() {
@@ -269,7 +270,7 @@ onUnmounted(destroyPlayers)
 .playback-page { padding: 16px; }
 .page-header { margin-bottom: 12px; }
 .page-title { font-size: 20px; font-weight: 600; margin: 0; }
-.page-subtitle { color: var(--el-text-color-secondary); font-size: 12px; margin-top: 4px; }
+.page-subtitle { color: var(--el-text-color-secondary); font-size: var(--text-sm); margin-top: 4px; }
 .filter-card { margin-bottom: 12px; }
 .result-card { min-height: 540px; }
 .player-card { min-height: 540px; }
@@ -278,6 +279,6 @@ onUnmounted(destroyPlayers)
 .player-body { padding: 12px; }
 .video { width: 100%; aspect-ratio: 16/9; background: #000; border-radius: 6px; }
 .seek { margin-top: 8px; }
-.play-url { margin-top: 6px; color: var(--el-text-color-secondary); font-size: 12px; word-break: break-all; }
-.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+.play-url { margin-top: 6px; color: var(--el-text-color-secondary); font-size: var(--text-sm); word-break: break-all; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: var(--text-sm); }
 </style>

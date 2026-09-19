@@ -13,15 +13,52 @@
 
     <el-card>
       <el-table :data="rows" v-loading="loading" stripe border>
-        <el-table-column prop="id" label="节点 ID" min-width="200">
+        <el-table-column prop="id" label="节点 ID" min-width="180">
           <template #default="{ row }"><span class="mono">{{ row.id }}</span></template>
         </el-table-column>
         <el-table-column prop="ip" label="IP" min-width="120">
           <template #default="{ row }"><span class="mono">{{ row.ip }}</span></template>
         </el-table-column>
-        <el-table-column prop="httpPort" label="HTTP 端口" width="120" />
-        <el-table-column prop="rtmpPort" label="RTMP" width="80" />
-        <el-table-column prop="rtspPort" label="RTSP" width="80" />
+        <el-table-column label="HTTP" width="90">
+          <template #default="{ row }">
+            <span class="mono">{{ row.httpPort ?? '-' }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="HTTPS" width="90">
+          <template #default="{ row }">
+            <span class="mono">{{ row.httpSslPort ?? '-' }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="RTMP" width="90">
+          <template #default="{ row }">
+            <span class="mono">{{ row.rtmpPort ?? '-' }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="RTSP" width="90">
+          <template #default="{ row }">
+            <span class="mono">{{ row.rtspPort ?? '-' }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="RTP 代理" width="100">
+          <template #default="{ row }">
+            <span class="mono">{{ row.rtpProxyPort ?? '-' }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="RTP 推流端口" min-width="140" show-overflow-tooltip>
+          <template #default="{ row }">
+            <span class="mono">{{ row.sendRtpPortRange ?? row.rtpPortRange ?? '-' }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="录像辅助" width="100">
+          <template #default="{ row }">
+            <span class="mono">{{ row.recordAssistPort ?? '-' }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="SDP IP" width="130" show-overflow-tooltip>
+          <template #default="{ row }">
+            <span class="mono">{{ row.sdpIp || row.ip || '-' }}</span>
+          </template>
+        </el-table-column>
         <el-table-column label="启用" width="80">
           <template #default="{ row }">
             <el-tag :type="row.enabled === false ? 'info' : 'success'" size="small">
@@ -34,7 +71,7 @@
             <el-tag :type="row.status ? 'success' : 'info'" size="small">{{ row.status ? '在线' : '离线' }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="lastKeepaliveTime" label="心跳时间" min-width="180">
+        <el-table-column prop="lastKeepaliveTime" label="心跳时间" min-width="170">
           <template #default="{ row }"><span class="mono">{{ row.lastKeepaliveTime ?? '-' }}</span></template>
         </el-table-column>
         <el-table-column label="操作" width="200" fixed="right">
@@ -116,6 +153,6 @@ onMounted(loadData)
 .media-server-page { padding: 16px; }
 .page-header { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 12px; }
 .page-title { font-size: 20px; font-weight: 600; margin: 0; }
-.page-subtitle { color: var(--el-text-color-secondary); font-size: 12px; margin-top: 4px; }
-.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+.page-subtitle { color: var(--el-text-color-secondary); font-size: var(--text-sm); margin-top: 4px; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: var(--text-sm); }
 </style>

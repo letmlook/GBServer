@@ -5,7 +5,7 @@
     <div class="gb-video-cell__overlay">
       <div class="gb-video-cell__overlay-top">
         <span :class="['gb-chip', 'gb-chip--' + chipTone]">{{ stateLabel }}</span>
-        <span class="mono" style="font-size: 11px">{{ no }}</span>
+        <span class="mono" style="font-size: var(--text-xs)">{{ no }}</span>
       </div>
       <div class="gb-video-cell__overlay-bottom">{{ title }}</div>
     </div>

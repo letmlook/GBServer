@@ -213,8 +213,8 @@ onMounted(() => {
 .stream-proxy-page { padding: 16px; }
 .page-header { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 12px; }
 .page-title { font-size: 20px; font-weight: 600; margin: 0; }
-.page-subtitle { color: var(--el-text-color-secondary); font-size: 12px; margin-top: 4px; }
+.page-subtitle { color: var(--el-text-color-secondary); font-size: var(--text-sm); margin-top: 4px; }
 .filter-bar { margin-bottom: 4px; }
 .pager { margin-top: 12px; justify-content: flex-end; }
-.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: var(--text-sm); }
 </style>

@@ -4,9 +4,11 @@
 //! 这些 API 通过 SIP MESSAGE 与设备通信，获取实时信息
 
 use axum::{
+    body::Body,
     extract::{Path, Query, State},
+    http::{header, HeaderValue, StatusCode},
+    response::{IntoResponse, Response},
     Json,
-    response::IntoResponse,
 };
 use serde::{Deserialize, Serialize};
 
@@ -238,46 +240,135 @@ pub async fn get_ssrc(
 /// ============================================================================
 
 /// GET /api/play/snap/{device_id}/{channel_id}
-/// 获取通道快照
+/// 获取通道快照 —— 返回一个**同源**的图片 URL（`/api/play/snap.jpg/...`）。
+///
+/// 为什么不直接把 ZLM 的图片地址给前端：
+/// * ZLM 这个版本的 `getSnap` 返回裸 JPEG 字节，**不给文件名/path**，
+///   后端拼不出 `http://zlm/snap/xxx.jpeg` 这种地址；
+/// * 即使拼得出来，也会把媒体节点暴露成浏览器的直连目标，遇到反代/防火墙
+///   就取不到图。
+///
+/// 所以改为后端代理：本接口先确认流是否存在（GB28181 设备按需推流，没在
+/// 拉流时抓图必然失败），再把 URL 交回前端；真正的字节由
+/// [`get_snap_image`] 从 ZLM 取回转给浏览器。
 pub async fn get_snap(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     Path((device_id, channel_id)): Path<(String, String)>,
 ) -> impl IntoResponse {
-    // 获取 ZLM 客户端
-    if let Some(ref zlm_client) = state.zlm_client {
-        // 构建 RTSP URL
-        let host = zlm_client.ip.as_str();
-        let port = zlm_client.http_port;
-        let stream_id = format!("{}_{}", device_id, channel_id);
-        let rtsp_url = format!("rtsp://{}:{}/live/{}", host, port, stream_id);
-        
-        // 调用 ZLM 抓图
-        match zlm_client.get_snap(&rtsp_url, Some(10.0), None).await {
-            Ok(snap_path) => {
-                // 返回相对路径，前端可以拼接完整 URL
-                let snap_url = format!("/static/snap/{}", snap_path.split('/').last().unwrap_or(&snap_path));
-                Json(WVPResult::success(serde_json::json!({
-                    "deviceId": device_id,
-                    "channelId": channel_id,
-                    "streamId": stream_id,
-                    "snapUrl": snap_url,
-                    "path": snap_path,
-                }))).into_response()
-            }
-            Err(e) => {
-                tracing::warn!("Snap failed for {}/{}: {}", device_id, channel_id, e);
-                Json(WVPResult::success(serde_json::json!({
-                    "deviceId": device_id,
-                    "channelId": channel_id,
-                    "streamId": stream_id,
-                    "error": format!("{}", e),
-                    "snapUrl": null,
-                }))).into_response()
-            }
+    let Some(ref zlm_client) = state.zlm_client else {
+        return Json(WVPResult::<()>::error("ZLM not configured")).into_response();
+    };
+
+    let stream_id = format!("{}_{}", device_id, channel_id);
+    // 与 /api/play/start 一致：ZLM 的 RTP server 把国标流建在 app = "rtp" 下。
+    let app = "rtp";
+
+    // 流不存在时不要硬等 getSnap 超时（默认 10s），直接给前端一个明确原因，
+    // 让缩略图列立即回落到占位图标。
+    match zlm_client
+        .is_media_exist("rtsp", "__defaultVhost__", app, &stream_id)
+        .await
+    {
+        Ok(false) => {
+            return Json(WVPResult::success(serde_json::json!({
+                "deviceId": device_id,
+                "channelId": channel_id,
+                "streamId": stream_id,
+                "snapUrl": null,
+                "error": "该通道当前没有活跃的流（国标设备按需推流，需先播放一次）",
+            })))
+            .into_response();
         }
-    } else {
-        Json(WVPResult::<()>::error("ZLM not configured")).into_response()
+        Err(e) => {
+            tracing::warn!("查询 ZLM 流是否存在失败（按已存在处理）: {}", e);
+        }
+        Ok(true) => {}
     }
+
+    // 把调用方的 JWT 透传进图片 URL —— 浏览器 `<img>` 无法设置请求头，
+    // 图片端点靠 `?token=` 鉴权（与 /api/talk/audio 同一套模式）。
+    let token = crate::auth::extract_token_from_headers(&headers).unwrap_or_default();
+    let snap_url = if token.is_empty() {
+        format!("/api/play/snap.jpg/{}/{}", device_id, channel_id)
+    } else {
+        format!(
+            "/api/play/snap.jpg/{}/{}?token={}",
+            device_id, channel_id, token
+        )
+    };
+
+    Json(WVPResult::success(serde_json::json!({
+        "deviceId": device_id,
+        "channelId": channel_id,
+        "streamId": stream_id,
+        "app": app,
+        "snapUrl": snap_url,
+    })))
+    .into_response()
+}
+
+/// GET /api/play/snap.jpg/{device_id}/{channel_id}?token=<jwt>
+///
+/// 从 ZLM 捞一帧 JPEG 转发给浏览器。**注册在 `api_protected` 之外** ——
+/// 浏览器 `<img src>` 不能带 `access-token` 头，所以鉴权走 `?token=`
+/// （与 `/api/talk/audio/:device_id/:channel_id` 完全同一套模式）。
+pub async fn get_snap_image(
+    State(state): State<AppState>,
+    Query(q): Query<SnapImageQuery>,
+    Path((device_id, channel_id)): Path<(String, String)>,
+) -> Response {
+    // ---- 鉴权：?token= 或 Authorization: Bearer ----
+    let Some(ref token) = q.token else {
+        return snap_error(StatusCode::UNAUTHORIZED, "缺少 JWT（请用 ?token=）");
+    };
+    if let Err(e) = crate::ws::verify_ws_jwt(token, &state.config.jwt.secret) {
+        return snap_error(StatusCode::UNAUTHORIZED, &format!("鉴权失败: {}", e));
+    }
+
+    let Some(ref zlm_client) = state.zlm_client else {
+        return snap_error(StatusCode::SERVICE_UNAVAILABLE, "ZLM not configured");
+    };
+
+    let host = zlm_client.ip.as_str();
+    let stream_id = format!("{}_{}", device_id, channel_id);
+    let app = "rtp";
+    let (rtsp_port, _) = media_server_ports(&state, host).await;
+    // 用 RTSP 回环地址让 ZLM 从自己内部取流（不经过外部网络）。
+    // 此前写成 `rtsp://{ip}:{http_port}/live/{stream}` —— 端口和 app 都是错的。
+    let rtsp_url = format!("rtsp://{}:{}/{}/{}", host, rtsp_port, app, stream_id);
+
+    match zlm_client.get_snap(&rtsp_url, Some(10.0)).await {
+        Ok(bytes) => {
+            let mut resp = Response::new(Body::from(bytes));
+            resp.headers_mut()
+                .insert(header::CONTENT_TYPE, HeaderValue::from_static("image/jpeg"));
+            // 浏览器/中间层别缓存：流是活的，每次拿到的帧都不同。
+            resp.headers_mut().insert(
+                header::CACHE_CONTROL,
+                HeaderValue::from_static("no-store, max-age=0"),
+            );
+            resp
+        }
+        Err(e) => {
+            tracing::warn!("Snap image failed for {}: {}", stream_id, e);
+            snap_error(StatusCode::NOT_FOUND, &format!("抓图失败: {}", e))
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SnapImageQuery {
+    pub token: Option<String>,
+}
+
+fn snap_error(status: StatusCode, msg: &str) -> Response {
+    let body = serde_json::json!({ "code": -1, "msg": msg, "data": null }).to_string();
+    let mut resp = Response::new(Body::from(body));
+    *resp.status_mut() = status;
+    resp.headers_mut()
+        .insert(header::CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    resp
 }
 
 /// ============================================================================
@@ -470,9 +561,10 @@ pub async fn sync_status_path(
 /// `GET /api/device/query/snap/{deviceId}/{channelId}` → 同 `/api/play/snap/...`。
 pub async fn snap_path(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     Path((device_id, channel_id)): Path<(String, String)>,
 ) -> impl IntoResponse {
-    get_snap(State(state), Path((device_id, channel_id))).await
+    get_snap(State(state), headers, Path((device_id, channel_id))).await
 }
 
 /// `GET /api/play/ssrc?deviceId=&channelId=` → 同 `/api/play/ssrc/{d}/{c}`。
@@ -493,10 +585,12 @@ pub async fn ssrc_query(
 /// `GET /api/play/snap?deviceId=&channelId=` → 同 `/api/play/snap/{d}/{c}`。
 pub async fn snap_query(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     Query(q): Query<DeviceChannelQuery>,
 ) -> impl IntoResponse {
     get_snap(
         State(state),
+        headers,
         Path((
             q.device_id.unwrap_or_default(),
             q.channel_id.unwrap_or_default(),

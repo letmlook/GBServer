@@ -140,11 +140,11 @@ const vAutoBottom = {
 .real-log-page { padding: 16px; }
 .page-header { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 12px; }
 .page-title { font-size: 20px; font-weight: 600; margin: 0; }
-.page-subtitle { color: var(--el-text-color-secondary); font-size: 12px; margin-top: 4px; }
+.page-subtitle { color: var(--el-text-color-secondary); font-size: var(--text-sm); margin-top: 4px; }
 .log-card { min-height: 600px; }
 .log-header { display: flex; align-items: center; gap: 12px; }
-.status { display: flex; align-items: center; gap: 4px; font-size: 12px; }
-.log-body { background: #0f172a; color: #e2e8f0; font-family: ui-monospace, monospace; font-size: 12px; padding: 12px; height: 540px; overflow-y: auto; border-radius: 4px; white-space: pre; line-height: 1.6; }
+.status { display: flex; align-items: center; gap: 4px; font-size: var(--text-sm); }
+.log-body { background: #0f172a; color: #e2e8f0; font-family: ui-monospace, monospace; font-size: var(--text-sm); padding: 12px; height: 540px; overflow-y: auto; border-radius: 4px; white-space: pre; line-height: 1.6; }
 .log-body.is-wrap { white-space: pre-wrap; word-break: break-all; }
 .empty { display: flex; align-items: center; justify-content: center; height: 100%; }
 .log-line { display: flex; gap: 8px; padding: 1px 0; }
@@ -160,7 +160,7 @@ const vAutoBottom = {
 .lv-warn .log-msg { color: #fde68a; }
 .mono { font-family: ui-monospace, monospace; }
 .text-tertiary { color: var(--el-text-color-secondary); }
-.text-xs { font-size: 12px; }
+.text-xs { font-size: var(--text-sm); }
 .flex-1 { flex: 1; }
 .gb-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; }
 .gb-dot--success { background: #16a34a; }

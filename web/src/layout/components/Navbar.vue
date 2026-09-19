@@ -37,9 +37,9 @@
     </div>
 
     <div class="topbar-right">
-      <div v-if="latency" class="topbar-stat">
-        <span class="gb-dot gb-dot--success" />
-        <span class="mono">{{ latency }}</span>
+      <div v-if="latency !== null" class="topbar-stat" :title="latencyTitle">
+        <span :class="['gb-dot', latencyDot]" />
+        <span class="mono">{{ latencyLabel }}</span>
         <span class="text-tertiary">延迟</span>
       </div>
       <button class="gb-icon-btn" aria-label="告警" @click="goAlarm">
@@ -118,11 +118,12 @@
 </template>
 
 <script setup lang="ts">
-import { computed, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { useAppStore } from '@/store/modules/app'
 import { useUserStore } from '@/store/modules/user'
+import { getToken } from '@/utils/auth'
 
 const appStore = useAppStore()
 const userStore = useUserStore()
@@ -130,7 +131,55 @@ const route = useRoute()
 const router = useRouter()
 
 const query = ref('')
-const latency = ref('12ms')
+/**
+ * 延迟（ms）= 浏览器 → 后端 → 浏览器的 round-trip。
+ * 真实测量而非硬编码 —— 之前的 `ref('12ms')` 永远不变，体验差。
+ * 每 5s ping 一次 `/api/server/system/info`（轻量、admin 一直在用）。
+ */
+const latency = ref<number | null>(null)
+let latencyTimer: number | null = null
+
+const latencyLabel = computed(() => {
+  if (latency.value === null) return '--'
+  return `${latency.value}ms`
+})
+const latencyDot = computed(() => {
+  const v = latency.value
+  if (v === null) return 'gb-dot--mute'
+  if (v > 300) return 'gb-dot--err'
+  if (v > 150) return 'gb-dot--warn'
+  return 'gb-dot--success'
+})
+const latencyTitle = computed(() => {
+  const v = latency.value
+  if (v === null) return '延迟测量中…'
+  if (v > 300) return `延迟 ${v}ms（高）`
+  if (v > 150) return `延迟 ${v}ms（一般）`
+  return `延迟 ${v}ms（健康）`
+})
+
+async function measureLatency() {
+  // 用裸 fetch 测延迟：避开项目里 axios 的业务码拦截器（避免每 5s 弹
+  // "Error" toast）。fetch 自带的网络失败走 reject，HTTP 4xx/5xx 不算失败，
+  // 我们只看 round-trip，不在乎 payload 内容。
+  const baseURL = (import.meta.env.VITE_APP_BASE_API ?? '') as string
+  const url = `${baseURL}/server/system/info`
+  const t0 = performance.now()
+  try {
+    // 加 `?` cache buster 防止 304 round-trip 太短显得"延迟只有 0ms"
+    const res = await fetch(`${url}${url.includes('?') ? '&' : '?'}_t=${Date.now()}`, {
+      credentials: 'include',
+      headers: { 'access-token': getToken() ?? '' }
+    })
+    // 读 body（即使扔掉）让浏览器完成 TCP/TLS 握手 + 解析应答，
+    // 否则会低估延迟。
+    await res.text().catch(() => {})
+    latency.value = Math.max(0, Math.round(performance.now() - t0))
+  } catch {
+    // 网络层失败：上一次延迟保留；首次测量就失败 → 标 -1，UI 走红点
+    latency.value = latency.value ?? -1
+  }
+}
 
 const parentTitle = computed(() => {
   const matched = route.matched
@@ -214,6 +263,19 @@ function onProfileSave() {
   ElMessage.success('设置已保存到本地（后端无 user/profile 端点）')
   profileVisible.value = false
 }
+
+onMounted(() => {
+  // 立即测一次，再每 5s 续测
+  measureLatency()
+  latencyTimer = window.setInterval(measureLatency, 5_000)
+})
+
+onBeforeUnmount(() => {
+  if (latencyTimer !== null) {
+    window.clearInterval(latencyTimer)
+    latencyTimer = null
+  }
+})
 </script>
 
 <style lang="scss" scoped>
@@ -236,7 +298,7 @@ function onProfileSave() {
 .topbar-center .gb-search { width: 100%; }
 .gb-search .kbd {
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--text-xs);
   background: var(--bg-overlay);
   border-radius: 2px;
   padding: 1px 4px;
@@ -250,6 +312,9 @@ function onProfileSave() {
   color: var(--text-secondary);
   padding: 0 8px;
   .mono { color: var(--text-primary); }
+  .gb-dot--mute { background: var(--text-tertiary); }
+  .gb-dot--warn { background: var(--state-warning); }
+  .gb-dot--err { background: var(--state-error); }
 }
 .badge-dot {
   position: absolute; top: 6px; right: 6px;
@@ -277,5 +342,5 @@ function onProfileSave() {
 }
 .user-info { line-height: 1.1; }
 .user-name { font-size: var(--text-xs); color: var(--text-primary); font-weight: 600; }
-.user-role { font-size: 10px; color: var(--text-tertiary); }
+.user-role { font-size: var(--text-xs); color: var(--text-tertiary); }
 </style>

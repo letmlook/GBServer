@@ -636,20 +636,59 @@ impl ZlmClient {
         Ok(())
     }
 
-    pub async fn get_snap(&self, url: &str, timeout_sec: Option<f64>, save_path: Option<&str>) -> Result<String> {
-        let mut params = vec![
+    /// ZLM `/index/api/getSnap` —— 从一路流里抓一张 JPEG，**直接返回图片字节**。
+    ///
+    /// 这个接口踩过两个坑，导致前端缩略图长期恒为占位图标：
+    ///
+    /// 1. **`expire_sec` 是必填**。这个 ZLM build 的 `getSnap` 三个参数
+    ///    `url` / `timeout_sec` / `expire_sec` 都没有默认值，缺一个就回
+    ///    `Required parameter missed: "url", "timeout_sec", "expire_sec"`。
+    /// 2. **返回值不是 JSON，而是 `Content-Type: image/jpeg` 的裸字节**
+    ///    （无论传不传 `save_path`）。此前按 `ApiResponse<SnapResponse>` 解析
+    ///    JSON 取 `data.path`，在真实 ZLM 上必然反序列化失败 → 抓图永远报错
+    ///    → `snapUrl` 恒为 null。
+    ///
+    /// `expire_sec` 是快照缓存有效期（秒）：同一路流在该窗口内重复抓图
+    /// 直接复用已解码的那一帧，列表页批量抓缩略图时能显著降低设备侧压力。
+    pub async fn get_snap(&self, url: &str, timeout_sec: Option<f64>) -> Result<Vec<u8>> {
+        let params = vec![
             ("secret", self.secret.clone()),
             ("url", url.to_string()),
+            ("timeout_sec", timeout_sec.unwrap_or(10.0).to_string()),
+            ("expire_sec", "5".to_string()),
         ];
-        if let Some(t) = timeout_sec { params.push(("timeout_sec", t.to_string())); }
-        if let Some(p) = save_path { params.push(("save_path", p.to_string())); }
 
-        let resp: ApiResponse<SnapResponse> = self.request("/index/api/getSnap", &params).await?;
-        
-        if resp.code != 0 {
-            return Err(anyhow!("ZLM error: {}", resp.msg.unwrap_or_default()));
+        let req_url = format!("{}{}", self.base_url, "/index/api/getSnap");
+        let mut req = self.http.get(&req_url);
+        for (k, v) in &params {
+            req = req.query(&[(k, v)]);
         }
-        Ok(resp.data.and_then(|r| r.path).unwrap_or_default())
+        let resp = req.send().await?;
+        if !resp.status().is_success() {
+            return Err(anyhow!("ZLM getSnap HTTP error: {}", resp.status()));
+        }
+
+        // 成功：image/jpeg 裸字节。失败：application/json 的 {"code":-1,"msg":"..."}
+        let content_type = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        let bytes = resp.bytes().await?;
+
+        if content_type.contains("json") {
+            // 把 ZLM 的错误信息原样带出来，便于定位（"stream not found" 等）
+            let msg = serde_json::from_slice::<serde_json::Value>(&bytes)
+                .ok()
+                .and_then(|v| v.get("msg").and_then(|m| m.as_str()).map(str::to_string))
+                .unwrap_or_else(|| String::from_utf8_lossy(&bytes).into_owned());
+            return Err(anyhow!("ZLM getSnap 失败: {}", msg));
+        }
+        if bytes.is_empty() {
+            return Err(anyhow!("ZLM getSnap 返回空图片"));
+        }
+        Ok(bytes.to_vec())
     }
 
     pub async fn add_ffmpeg_source(&self, req: &AddFFmpegSourceRequest) -> Result<String> {

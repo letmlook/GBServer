@@ -119,5 +119,5 @@ watch(() => props.modelValue, (v) => v && onOpen())
 </script>
 
 <style scoped>
-.hint { margin-left: 10px; color: var(--el-text-color-secondary); font-size: 12px; }
+.hint { margin-left: 10px; color: var(--el-text-color-secondary); font-size: var(--text-sm); }
 </style>

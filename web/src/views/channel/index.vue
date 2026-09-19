@@ -14,7 +14,15 @@
     <el-card class="filter-card">
       <el-form :inline="true" :model="query" @submit.prevent="loadData">
         <el-form-item label="关键字">
-          <el-input v-model="query.query" placeholder="国标ID / 名称" clearable @keyup.enter="loadData" />
+          <el-autocomplete
+            v-model="query.query"
+            :fetch-suggestions="searchSuggest"
+            placeholder="国标ID / 通道名 / 设备ID（输即搜）"
+            clearable
+            style="width: 280px"
+            @keyup.enter="loadData"
+            @select="onSelectSuggest"
+          />
         </el-form-item>
         <el-form-item label="状态">
           <el-select v-model="query.online" placeholder="全部" clearable style="width: 120px">
@@ -37,20 +45,37 @@
 
     <el-card class="table-card">
       <el-table :data="rows" v-loading="loading" stripe border>
+        <el-table-column label="缩略图" width="120" align="center">
+          <template #default="{ row }">
+            <div class="thumb-cell">
+              <img
+                v-if="row.thumb && !failedThumbs.has(row.channelId)"
+                :src="row.thumb"
+                class="thumb-cell__img"
+                :alt="row.name ?? row.channelId"
+                loading="lazy"
+                @error="onThumbError(row)"
+              />
+              <div v-else class="thumb-cell__placeholder">
+                <el-icon :size="20"><VideoCameraFilled /></el-icon>
+              </div>
+            </div>
+          </template>
+        </el-table-column>
         <el-table-column type="index" label="#" width="50" />
-        <el-table-column prop="channelId" label="通道国标ID" min-width="200">
+        <el-table-column prop="channelId" label="通道国标ID" min-width="180">
           <template #default="{ row }">
             <span class="mono">{{ row.channelId }}</span>
           </template>
         </el-table-column>
-        <el-table-column prop="name" label="通道名称" min-width="160" />
-        <el-table-column prop="deviceId" label="所属设备" min-width="180">
+        <el-table-column prop="name" label="通道名称" min-width="160" show-overflow-tooltip />
+        <el-table-column prop="deviceId" label="所属设备" min-width="160">
           <template #default="{ row }">
             <span class="mono">{{ row.deviceId }}</span>
           </template>
         </el-table-column>
-        <el-table-column prop="manufacturer" label="厂家" width="120" />
-        <el-table-column prop="model" label="型号" width="120" />
+        <el-table-column prop="manufacturer" label="厂家" width="100" show-overflow-tooltip />
+        <el-table-column prop="model" label="型号" width="100" show-overflow-tooltip />
         <el-table-column label="状态" width="80">
           <template #default="{ row }">
             <el-tag :type="row.status === 'ON' ? 'success' : 'info'" size="small">
@@ -58,14 +83,28 @@
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="civilCode" label="行政区划" width="120" />
-        <el-table-column prop="address" label="安装地址" min-width="200" show-overflow-tooltip />
-        <el-table-column prop="streamIdentification" label="码流" width="80">
+        <el-table-column prop="civilCode" label="行政区划" width="100" />
+        <el-table-column label="安装地址" min-width="200" show-overflow-tooltip>
           <template #default="{ row }">
-            {{ row.streamIdentification === '0' ? '主码流' : row.streamIdentification === '1' ? '子码流' : '-' }}
+            {{ formatAddress(row.address) }}
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="220" fixed="right">
+        <el-table-column label="码流" width="90">
+          <template #default="{ row }">
+            <el-tag
+              v-if="row.streamIdentification === '0'"
+              type="success"
+              size="small"
+            >主码流</el-tag>
+            <el-tag
+              v-else-if="row.streamIdentification === '1'"
+              type="warning"
+              size="small"
+            >子码流</el-tag>
+            <span v-else class="text-tertiary">-</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="240" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" @click="onEdit(row)">编辑</el-button>
             <el-button link type="primary" @click="onPlay(row)">播放</el-button>
@@ -91,12 +130,22 @@
       :network-list="networkList"
       @saved="loadData"
     />
+
+    <!-- 抓图预览：成功弹图 -->
+    <SnapPreview v-model="snapVisible" :items="snapItems" @clear="snapItems = []" />
+
+    <!-- 通道播放对话框：取代跳转 /live -->
+    <ChannelPlayDialog
+      v-model="playVisible"
+      :channel="playingChannel"
+      @snap="onPlaySnap"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
-import { Plus } from '@element-plus/icons-vue'
+import { Plus, VideoCameraFilled } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   getChannelList,
@@ -106,18 +155,17 @@ import {
   deleteChannel,
   type ChannelCodeType
 } from '@/api/channel'
-import { startPlay, playSnap } from '@/api/live'
-import { useRouter } from 'vue-router'
+import { playSnap, queryStreams } from '@/api/live'
 import Pagination from '@/components/Pagination/index.vue'
 import ChannelEditDialog from './EditDialog.vue'
+import SnapPreview from '@/components/SnapPreview/index.vue'
+import ChannelPlayDialog from '@/components/ChannelPlayDialog/index.vue'
 
 function onPageChange(page: number, size: number) {
   query.page = page
   query.count = size
   loadData()
 }
-
-const router = useRouter()
 const loading = ref(false)
 const rows = ref<any[]>([])
 const total = ref(0)
@@ -130,6 +178,10 @@ const networkList = ref<ChannelCodeType[]>([])
 const editVisible = ref(false)
 const currentRow = ref<any>({})
 
+// 通道播放对话框状态
+const playVisible = ref(false)
+const playingChannel = ref<{ deviceId: string; channelId: string; name: string } | null>(null)
+
 const query = reactive({
   page: 1,
   count: 20,
@@ -137,6 +189,79 @@ const query = reactive({
   online: undefined as boolean | undefined,
   channelType: undefined as number | undefined
 })
+
+/**
+ * 给当前 rows 批量抓缩略图（限制并发，避免一次性打爆后端）。
+ *
+ * **只对当前有活跃流的通道抓图**：
+ * 国标设备是"按需推流"—— 没人在拉流时，ZLM 根本没有这路流，`getSnap`
+ * 对不存在的流必然失败（而且每次要白等 ZLM 超时）。所以先用一次
+ * `/api/device/query/streams` 拿到活跃流清单，只对命中的通道发抓图请求。
+ *
+ * 剩下的通道保持占位图标；用户点「播放」后 [ChannelPlayDialog] 会自动抓
+ * 一帧并通过 `snap` 事件回填该行缩略图。
+ */
+async function refreshThumbs(list: any[]) {
+  // 1. 取活跃流清单（1 次请求，避免逐通道白等）
+  let activeKeys = new Set<string>()
+  try {
+    const res = await queryStreams({ page: 1, count: 1000 })
+    const streams = res.data?.list ?? []
+    activeKeys = new Set(
+      streams
+        .filter((s: any) => s.deviceId && s.channelId)
+        .map((s: any) => `${s.deviceId}_${s.channelId}`)
+    )
+  } catch {
+    // 拿不到活跃流清单就不抓图（宁可全占位，也不要几十个请求各超时 10s）
+    return
+  }
+
+  // 2. 只对活跃流抓图，限并发 6
+  const tasks: Promise<void>[] = []
+  const pool = new Set<Promise<void>>()
+  const CONCURRENCY = 6
+  for (const ch of list) {
+    if (!ch?.deviceId || !ch?.channelId) continue
+    if (!activeKeys.has(`${ch.deviceId}_${ch.channelId}`)) continue
+    const p = (async () => {
+      try {
+        const res = await playSnap(ch.deviceId, ch.channelId)
+        const url = res?.data?.snapUrl
+        // snapUrl 是后端代理地址（/api/play/snap.jpg/...），已验证流存在
+        if (url) ch.thumb = `${url}${url.includes('?') ? '&' : '?'}t=${Date.now()}`
+      } catch {
+        // 静默：该行保持占位图标
+      }
+    })()
+    pool.add(p)
+    p.finally(() => pool.delete(p))
+    if (pool.size >= CONCURRENCY) {
+      await Promise.race(pool)
+    }
+    tasks.push(p)
+  }
+  await Promise.allSettled(tasks)
+}
+
+// 抓图预览：累积所有抓图快照，浮窗可放大
+const snapVisible = ref(false)
+const snapItems = ref<{ deviceId: string; channelId: string; name: string; snapUrl: string; time: number }[]>([])
+
+/**
+ * 缩略图 `<img>` 加载失败（404/403/网络错）的通道集合 ——
+ * 失败的行立刻回落到占位图标，而不是显示浏览器默认的"碎图"。
+ * 用 channelId 做键，播放/抓图后会清掉这个标记重试。
+ */
+const failedThumbs = ref<Set<string>>(new Set())
+
+function onThumbError(row: any) {
+  const key = row?.channelId
+  if (!key) return
+  failedThumbs.value.add(key)
+  // 清掉 URL，让模板稳定走占位分支（否则 src 不变会反复触发 error）
+  row.thumb = ''
+}
 
 async function loadData() {
   loading.value = true
@@ -156,6 +281,8 @@ async function loadData() {
   } finally {
     loading.value = false
   }
+  // 列表渲染完后批量抓缩略图（限制并发 6，不阻塞 UI）
+  void refreshThumbs(rows.value)
 }
 
 function resetQuery() {
@@ -163,6 +290,58 @@ function resetQuery() {
   query.online = undefined
   query.channelType = undefined
   query.page = 1
+  loadData()
+}
+
+/**
+ * 安装地址占位：null/空/未配置 时显示 `-`。
+ * 历史数据里部分通道的 address 是 SQL 默认值 `'Address'`（早期
+ * 国标注册报文未携带 Address 字段，DB DEFAULT 留了字面量），这里一并
+ * 当作"无地址"处理。
+ */
+function formatAddress(v: unknown): string {
+  if (v === null || v === undefined) return '-'
+  const s = String(v).trim()
+  if (!s) return '-'
+  // 后端默认值字面量
+  if (s.toLowerCase() === 'address') return '-'
+  return s
+}
+
+/**
+ * 自动下拉建议：
+ * - 不打后端搜索接口（接口按全字段 LIKE 匹配，敲一个字就返 1000 行很重）
+ * - 直接用本地已加载的 rows 做"前端过滤 + 联想"。
+ * - 这意味着：第一次 query 后才有联想；为了一开始就有联想，进入页面时
+ *   静默拉一次 count=200 写入 rowsSuggestion（见 onMounted）。
+ */
+const rowsSuggestion = ref<any[]>([])
+
+function searchSuggest(kw: string, cb: (arr: any[]) => void) {
+  const k = (kw ?? '').trim().toLowerCase()
+  if (!k) {
+    cb(rowsSuggestion.value.slice(0, 30))
+    return
+  }
+  const matched = rowsSuggestion.value
+    .filter(
+      (r) =>
+        String(r.channelId ?? '').toLowerCase().includes(k) ||
+        String(r.deviceId ?? '').toLowerCase().includes(k) ||
+        String(r.name ?? '').toLowerCase().includes(k)
+    )
+    .slice(0, 30)
+    .map((r) => ({ value: formatSuggestLabel(r) }))
+  cb(matched)
+}
+
+function formatSuggestLabel(r: any): string {
+  return `${r.channelId} · ${r.name ?? '-'} (${r.deviceId ?? '-'})`
+}
+
+function onSelectSuggest(item: any) {
+  // 选中下拉项时把里面解出的 channelId 写回 input（el-autocomplete 默认会把 label 写回）
+  // 加载一次以确保过滤生效
   loadData()
 }
 
@@ -176,20 +355,53 @@ function onEdit(row: any) {
   editVisible.value = true
 }
 
-async function onPlay(row: any) {
-  try {
-    await startPlay(row.deviceId, row.channelId)
-    ElMessage.success('播放请求已发送')
-    router.push({ name: 'Live', query: { deviceId: row.deviceId, channelId: row.channelId } })
-  } catch (e: any) {
-    ElMessage.error(e?.message ?? '播放失败')
+function onPlay(row: any) {
+  playingChannel.value = {
+    deviceId: row.deviceId,
+    channelId: row.channelId,
+    name: row.name ?? row.channelId
   }
+  playVisible.value = true
+}
+
+function onPlaySnap(snapUrl: string) {
+  if (!playingChannel.value || !snapUrl) return
+  // 同步缩略图到行
+  const row = rows.value.find(
+    (r) => r.deviceId === playingChannel.value!.deviceId && r.channelId === playingChannel.value!.channelId
+  )
+  if (row) {
+    row.thumb = `${snapUrl}${snapUrl.includes('?') ? '&' : '?'}t=${Date.now()}`
+  }
+  snapItems.value.unshift({
+    deviceId: playingChannel.value.deviceId,
+    channelId: playingChannel.value.channelId,
+    name: playingChannel.value.name ?? playingChannel.value.channelId,
+    snapUrl,
+    time: Date.now()
+  })
+  if (snapItems.value.length > 8) snapItems.value.length = 8
+  snapVisible.value = true
 }
 
 async function onSnapshot(row: any) {
   try {
     const res = await playSnap(row.deviceId, row.channelId)
-    ElMessage.success(`抓图已保存: ${res.data?.snapUrl ?? ''}`)
+    const snapUrl = res.data?.snapUrl ?? ''
+    if (snapUrl) {
+      // 同步缩略图
+      row.thumb = `${snapUrl}${snapUrl.includes('?') ? '&' : '?'}t=${Date.now()}`
+      snapItems.value.unshift({
+        deviceId: row.deviceId,
+        channelId: row.channelId,
+        name: row.name ?? row.channelId,
+        snapUrl,
+        time: Date.now()
+      })
+      if (snapItems.value.length > 8) snapItems.value.length = 8
+      snapVisible.value = true
+    }
+    ElMessage.success('抓图已保存')
   } catch (e: any) {
     ElMessage.error(e?.message ?? '抓图失败')
   }
@@ -212,6 +424,10 @@ async function onDelete(row: any) {
 onMounted(async () => {
   await Promise.all([
     loadData(),
+    // 静默拉一份中等数量通道，写入下拉建议池
+    getChannelList({ page: 1, count: 200 })
+      .then((r) => (rowsSuggestion.value = r.data?.list ?? []))
+      .catch(() => {}),
     getIndustryList().then((r) => (industryList.value = r.data ?? [])).catch(() => {}),
     getTypeList().then((r) => (typeList.value = r.data ?? [])).catch(() => {}),
     getNetworkIdentificationList().then((r) => (networkList.value = r.data ?? [])).catch(() => {})
@@ -223,9 +439,29 @@ onMounted(async () => {
 .channel-page { padding: 16px; }
 .page-header { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 16px; }
 .page-title { font-size: 20px; font-weight: 600; margin: 0; }
-.page-subtitle { color: var(--el-text-color-secondary); font-size: 12px; margin-top: 4px; }
+.page-subtitle { color: var(--el-text-color-secondary); font-size: var(--text-sm); margin-top: 4px; }
 .filter-card { margin-bottom: 12px; }
-.table-card { min-height: 400px; }
+.table-card { min-height: 400px; overflow-x: auto; }
 .pagination { margin-top: 16px; justify-content: flex-end; }
-.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+
+/* 缩略图列：16:9 缩略图，加载前显示摄像头占位符 */
+.thumb-cell {
+  width: 96px;
+  aspect-ratio: 16 / 9;
+  border-radius: 4px;
+  overflow: hidden;
+  background: var(--bg-elevated);
+  display: flex; align-items: center; justify-content: center;
+  margin: 0 auto;
+  border: 1px solid var(--border-subtle);
+}
+.thumb-cell__img {
+  width: 100%; height: 100%; object-fit: cover; display: block;
+}
+.thumb-cell__placeholder {
+  color: var(--text-tertiary);
+  display: flex; align-items: center; justify-content: center;
+  width: 100%; height: 100%;
+}
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: var(--text-sm); }
 </style>

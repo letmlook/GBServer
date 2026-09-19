@@ -145,10 +145,10 @@ onMounted(loadData)
 .system-info-page { padding: 16px; }
 .page-header { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 12px; }
 .page-title { font-size: 20px; font-weight: 600; margin: 0; }
-.page-subtitle { color: var(--el-text-color-secondary); font-size: 12px; margin-top: 4px; }
+.page-subtitle { color: var(--el-text-color-secondary); font-size: var(--text-sm); margin-top: 4px; }
 .metric-card { text-align: center; }
-.metric-label { color: var(--el-text-color-secondary); font-size: 12px; }
+.metric-label { color: var(--el-text-color-secondary); font-size: var(--text-sm); }
 .metric-value { font-size: 28px; font-weight: 700; margin: 6px 0; }
-.metric-detail { font-size: 11px; color: var(--el-text-color-secondary); margin-top: 6px; }
-.mono { font-family: ui-monospace, monospace; font-size: 13px; }
+.metric-detail { font-size: var(--text-xs); color: var(--el-text-color-secondary); margin-top: 6px; }
+.mono { font-family: ui-monospace, monospace; font-size: var(--text-sm); }
 </style>

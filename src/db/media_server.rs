@@ -483,6 +483,141 @@ pub async fn update_ports(
     Ok(r.rows_affected())
 }
 
+/// 把 ZLM 上报的**全部协议端口**回写到节点记录。
+///
+/// 为什么需要它：此前端口只在 ZLM 触发一次 `on_server_started` hook 时才写库。
+/// 如果 ZLM 比后端先启动（很常见：容器先于进程）那唯一一次事件早就发完了，
+/// 记录里的 `rtsp_port` / `rtmp_port` / `flv_port` … 会**永远是 NULL** ——
+/// 媒体节点页的端口列全是 "-"，按端口拼出来的地址也不可靠。
+///
+/// 健康检查每次探活都会 `getServerConfig`，顺手把端口对齐，覆盖：
+/// ZLM 先启动、ZLM 中途重启、有人在 ZLM 侧改了配置。三种情况。
+///
+/// 传 `None` 表示"这个协议 ZLM 没启用"，此时**保留原值**（COALESCE 语义），
+/// 避免把人工填写的值擦成 NULL。
+#[allow(clippy::too_many_arguments)]
+pub async fn sync_ports_from_zlm(
+    pool: &Pool,
+    id: &str,
+    http_port: Option<i32>,
+    http_ssl_port: Option<i32>,
+    rtsp_port: Option<i32>,
+    rtsp_ssl_port: Option<i32>,
+    rtmp_port: Option<i32>,
+    rtmp_ssl_port: Option<i32>,
+    flv_port: Option<i32>,
+    flv_ssl_port: Option<i32>,
+    mp4_port: Option<i32>,
+    mp4_ssl_port: Option<i32>,
+    ws_flv_port: Option<i32>,
+    ws_flv_ssl_port: Option<i32>,
+    now: &str,
+) -> sqlx::Result<u64> {
+    #[cfg(feature = "mysql")]
+    let r = sqlx::query(
+        r#"UPDATE gb_media_server SET
+           http_port = COALESCE(?, http_port),
+           http_ssl_port = COALESCE(?, http_ssl_port),
+           rtsp_port = COALESCE(?, rtsp_port),
+           rtsp_ssl_port = COALESCE(?, rtsp_ssl_port),
+           rtmp_port = COALESCE(?, rtmp_port),
+           rtmp_ssl_port = COALESCE(?, rtmp_ssl_port),
+           flv_port = COALESCE(?, flv_port),
+           flv_ssl_port = COALESCE(?, flv_ssl_port),
+           mp4_port = COALESCE(?, mp4_port),
+           mp4_ssl_port = COALESCE(?, mp4_ssl_port),
+           ws_flv_port = COALESCE(?, ws_flv_port),
+           ws_flv_ssl_port = COALESCE(?, ws_flv_ssl_port),
+           update_time = ?
+           WHERE id = ?"#,
+    )
+    .bind(http_port)
+    .bind(http_ssl_port)
+    .bind(rtsp_port)
+    .bind(rtsp_ssl_port)
+    .bind(rtmp_port)
+    .bind(rtmp_ssl_port)
+    .bind(flv_port)
+    .bind(flv_ssl_port)
+    .bind(mp4_port)
+    .bind(mp4_ssl_port)
+    .bind(ws_flv_port)
+    .bind(ws_flv_ssl_port)
+    .bind(now)
+    .bind(id)
+    .execute(pool)
+    .await?;
+    #[cfg(feature = "postgres")]
+    let r = sqlx::query(
+        r#"UPDATE gb_media_server SET
+           http_port = COALESCE($1, http_port),
+           http_ssl_port = COALESCE($2, http_ssl_port),
+           rtsp_port = COALESCE($3, rtsp_port),
+           rtsp_ssl_port = COALESCE($4, rtsp_ssl_port),
+           rtmp_port = COALESCE($5, rtmp_port),
+           rtmp_ssl_port = COALESCE($6, rtmp_ssl_port),
+           flv_port = COALESCE($7, flv_port),
+           flv_ssl_port = COALESCE($8, flv_ssl_port),
+           mp4_port = COALESCE($9, mp4_port),
+           mp4_ssl_port = COALESCE($10, mp4_ssl_port),
+           ws_flv_port = COALESCE($11, ws_flv_port),
+           ws_flv_ssl_port = COALESCE($12, ws_flv_ssl_port),
+           update_time = $13
+           WHERE id = $14"#,
+    )
+    .bind(http_port)
+    .bind(http_ssl_port)
+    .bind(rtsp_port)
+    .bind(rtsp_ssl_port)
+    .bind(rtmp_port)
+    .bind(rtmp_ssl_port)
+    .bind(flv_port)
+    .bind(flv_ssl_port)
+    .bind(mp4_port)
+    .bind(mp4_ssl_port)
+    .bind(ws_flv_port)
+    .bind(ws_flv_ssl_port)
+    .bind(now)
+    .bind(id)
+    .execute(pool)
+    .await?;
+    #[cfg(feature = "sqlite")]
+    let r = sqlx::query(
+        r#"UPDATE gb_media_server SET
+           http_port = COALESCE(?, http_port),
+           http_ssl_port = COALESCE(?, http_ssl_port),
+           rtsp_port = COALESCE(?, rtsp_port),
+           rtsp_ssl_port = COALESCE(?, rtsp_ssl_port),
+           rtmp_port = COALESCE(?, rtmp_port),
+           rtmp_ssl_port = COALESCE(?, rtmp_ssl_port),
+           flv_port = COALESCE(?, flv_port),
+           flv_ssl_port = COALESCE(?, flv_ssl_port),
+           mp4_port = COALESCE(?, mp4_port),
+           mp4_ssl_port = COALESCE(?, mp4_ssl_port),
+           ws_flv_port = COALESCE(?, ws_flv_port),
+           ws_flv_ssl_port = COALESCE(?, ws_flv_ssl_port),
+           update_time = ?
+           WHERE id = ?"#,
+    )
+    .bind(http_port)
+    .bind(http_ssl_port)
+    .bind(rtsp_port)
+    .bind(rtsp_ssl_port)
+    .bind(rtmp_port)
+    .bind(rtmp_ssl_port)
+    .bind(flv_port)
+    .bind(flv_ssl_port)
+    .bind(mp4_port)
+    .bind(mp4_ssl_port)
+    .bind(ws_flv_port)
+    .bind(ws_flv_ssl_port)
+    .bind(now)
+    .bind(id)
+    .execute(pool)
+    .await?;
+    Ok(r.rows_affected())
+}
+
 /// Update last keepalive time
 ///
 /// Phase 4 follow-up: 同时 reset `consecutive_misses = 0`，避免 grace count

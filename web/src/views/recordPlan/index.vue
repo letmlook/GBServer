@@ -177,14 +177,14 @@ onMounted(loadData)
 }
 .page-subtitle {
   color: var(--el-text-color-secondary);
-  font-size: 12px;
+  font-size: var(--text-sm);
   margin-top: 4px;
 }
 .search-bar {
   margin-bottom: 8px;
 }
 .windows {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--el-text-color-regular);
   line-height: 1.5;
 }

@@ -5,6 +5,8 @@ export interface CameraItem {
   id: number
   device_id: string
   channel_id: string
+  /** 所属设备名（后端 `CameraRow.device_name`）—— 用于渲染设备/通道两级树的父节点 */
+  device_name?: string
   parent_device_id?: string
   name?: string
   manufacturer?: string
@@ -18,6 +20,11 @@ export interface CameraItem {
   longitude?: number
   latitude?: number
   sub_count?: number
+  /**
+   * 该行代表"设备本身"（设备无通道时返回自己那一行），不是通道。
+   * 前端点播时必须过滤掉，否则会拿 `channel_id == device_id` 去 INVITE。
+   */
+  is_device?: boolean
 }
 
 export interface CameraListResponse {

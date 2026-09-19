@@ -204,11 +204,11 @@ onMounted(loadData)
 .region-page { padding: 16px; }
 .page-header { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 12px; }
 .page-title { font-size: 20px; font-weight: 600; margin: 0; }
-.page-subtitle { color: var(--el-text-color-secondary); font-size: 12px; margin-top: 4px; }
+.page-subtitle { color: var(--el-text-color-secondary); font-size: var(--text-sm); margin-top: 4px; }
 .node-row { display: flex; align-items: center; gap: 10px; width: 100%; }
 .node-name { min-width: 140px; }
 .node-id { color: var(--el-text-color-secondary); }
 .node-ops { margin-left: auto; opacity: 0.35; transition: opacity 0.15s; }
 .node-row:hover .node-ops { opacity: 1; }
-.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: var(--text-sm); }
 </style>

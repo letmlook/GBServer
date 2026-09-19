@@ -103,7 +103,13 @@ async function onSubmit() {
   }
   loading.value = true
   try {
-    await userStore.login({ username: form.username, password: form.password })
+    await userStore.login({
+      username: form.username,
+      password: form.password,
+      // remember=false → session cookie（关浏览器即失效）；
+      // 勾选时才持久化（默认 7 天，详见 utils/auth.ts）
+      remember: form.remember,
+    })
     ElMessage.success('登录成功')
     const redirect = (route.query.redirect as string) || '/'
     await router.push(redirect)
@@ -166,14 +172,14 @@ function onForget() {
     svg { width: 22px; height: 22px; }
   }
   .brand-title { font-size: 26px; font-weight: 700; margin: 4px 0 0; }
-  .brand-sub { font-size: 13px; opacity: .85; margin: 0; }
+  .brand-sub { font-size: var(--text-sm); opacity: .85; margin: 0; }
   .brand-points {
     list-style: none; margin: 12px 0 0; padding: 0;
     display: flex; flex-direction: column; gap: 8px;
-    font-size: 12px; opacity: .9;
+    font-size: var(--text-sm); opacity: .9;
     li::before { content: '✓'; margin-right: 6px; opacity: .75; }
   }
-  .brand-foot { font-size: 11px; opacity: .65; margin-top: auto; }
+  .brand-foot { font-size: var(--text-xs); opacity: .65; margin-top: auto; }
 
   &__form {
     padding: 40px 44px;
@@ -181,7 +187,7 @@ function onForget() {
     flex-direction: column;
     justify-content: center;
     .form-head h2 { font-size: 20px; font-weight: 700; margin: 0; }
-    .form-head p { font-size: 12px; color: var(--text-tertiary); margin: 4px 0 24px; }
+    .form-head p { font-size: var(--text-sm); color: var(--text-tertiary); margin: 4px 0 24px; }
   }
   .form-row {
     display: flex; align-items: center; justify-content: space-between;

@@ -85,6 +85,8 @@ impl ZlmHealthChecker {
             // 于是所有事件都"回落到默认节点" —— 多节点部署下会把事件记到错误的
             // 节点上，而日志里看不出异常。现在每次探活都会发现并纠正。
             let mut id_drift = false;
+            // 探活成功时顺手带上 ZLM 的全量端口配置，供下面回写库。
+            let mut zlm_ports: Option<crate::zlm::address_builder::ZlmPortConfig> = None;
             let new_status = match client.get_server_config().await {
                 Ok(cfg) => {
                     match media_server_id_drift(id, &cfg) {
@@ -106,6 +108,7 @@ impl ZlmHealthChecker {
                         }
                         None => {}
                     }
+                    zlm_ports = Some(crate::zlm::address_builder::ZlmPortConfig::from_server_config(&cfg));
                     ZlmServerStatus::Online
                 }
                 Err(_) => ZlmServerStatus::Offline,
@@ -113,6 +116,35 @@ impl ZlmHealthChecker {
 
             // 与 last_keepalive_time 的比较/展示口径保持本地时区
             let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+
+            // 端口对齐：ZLM 比后端先启动时，唯一那次 `on_server_started` hook 早就
+            // 发完了，节点记录里的 rtsp/rtmp/flv/... 会**永远是 NULL**，媒体节点页
+            // 的端口列全显示 "-"。这里每次探活都把 ZLM 的真实端口补齐（COALESCE
+            // 语义，不覆盖人工填写过的值）。
+            if let (Some(ref pool), Some(ref ports)) = (&self.pool, &zlm_ports) {
+                let to_i32 = |p: Option<u16>| p.map(|v| v as i32);
+                if let Err(e) = crate::db::media_server::sync_ports_from_zlm(
+                    pool,
+                    id,
+                    to_i32(Some(ports.http_port)),
+                    to_i32(ports.https_port),
+                    to_i32(Some(ports.rtsp_port)),
+                    to_i32(ports.rtsps_port),
+                    to_i32(Some(ports.rtmp_port)),
+                    to_i32(ports.rtmps_port),
+                    to_i32(ports.flv_port),
+                    None,
+                    to_i32(ports.hls_port),
+                    None,
+                    to_i32(ports.ws_flv_port),
+                    None,
+                    &now,
+                )
+                .await
+                {
+                    tracing::warn!("ZLM 节点 {} 端口回写失败: {}", id, e);
+                }
+            }
 
             if new_status == ZlmServerStatus::Online {
                 // **探活成功就是"这个节点活着"**，必须刷新 `last_keepalive_time`。

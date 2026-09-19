@@ -13,10 +13,10 @@
     </header>
 
     <section class="gb-grid gb-grid--kpi">
-      <StatCard label="在线设备" :value="deviceOnline" :trend="`总 ${deviceTotal} 台`" trendTone="success" :spark="sparkDevice" />
-      <StatCard label="活跃通道" :value="channelTotal" :trend="`在线 ${channelOnline ?? 0} / 直播 ${activeStreamCount}`" :spark="sparkChannel" />
-      <StatCard label="媒体节点" :value="mediaServerCount" :trend="`ZLMediaKit 集群`" trendTone="success" :spark="sparkMedia" />
-      <StatCard label="设备在线率" :value="onlineRate + '%'" :trend="`告警 ${recentAlarms.length}`" :trendTone="recentAlarms.length > 0 ? 'warning' : 'neutral'" valueTone="primary" :spark="sparkDevice" />
+      <StatCard label="在线设备" :value="deviceOnline" :trend="`总 ${deviceTotal} 台`" trendTone="success" />
+      <StatCard label="活跃通道" :value="channelTotal" :trend="`在线 ${channelOnline ?? 0} / 直播 ${activeStreamCount}`" />
+      <StatCard label="媒体节点" :value="mediaServerCount" :trend="`ZLMediaKit 集群`" trendTone="success" />
+      <StatCard label="设备在线率" :value="onlineRate + '%'" :trend="`告警 ${recentAlarms.length}`" :trendTone="recentAlarms.length > 0 ? 'warning' : 'neutral'" valueTone="primary" />
     </section>
 
     <section class="gb-grid gb-grid--4col">
@@ -293,7 +293,7 @@
     <section class="gb-card">
       <header class="gb-card-title">
         <span>重点通道</span>
-        <span class="meta">点击进入实时预览</span>
+        <span class="meta">点击播放预览</span>
       </header>
       <div class="gb-grid" style="grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); padding: 14px;">
         <VideoCell v-for="cell in channels" :key="cell.id" v-bind="cell" @click="onCellClick(cell)" />
@@ -353,6 +353,9 @@
         </ul>
       </article>
     </section>
+
+    <!-- 通道播放对话框：取代跳转 /live -->
+    <ChannelPlayDialog v-model="playVisible" :channel="playingChannel" />
   </div>
 </template>
 
@@ -372,9 +375,10 @@ import {
 import { useRouter } from 'vue-router'
 import StatCard from '@/components/StatCard/index.vue'
 import VideoCell from '@/components/VideoCell/index.vue'
+import ChannelPlayDialog from '@/components/ChannelPlayDialog/index.vue'
 import { getSystemInfo, type SystemInfo } from '@/api/log'
 import { queryDevices } from '@/api/device'
-import { queryStreams } from '@/api/live'
+import { queryStreams, playSnap } from '@/api/live'
 import { getMediaServerList, getMediaLoad } from '@/api/mediaServer'
 import { getAlarmList, alarmPriorityLabel } from '@/api/alarm'
 
@@ -400,7 +404,11 @@ const recentAlarms = ref<{
 }[]>([])
 const mediaServerOnlineCount = ref(0)
 const nodes = ref<{ id: string; name: string; region: string; cpu: number; mem: number; bw: number; status: string; tone: string }[]>([])
-const channels = ref<Array<{ id: number; title: string; no: string; state: 'live' | 'rec' | 'mute' | 'offline'; deviceId?: string; channelId?: string }>>([])
+const channels = ref<Array<{ id: number; title: string; no: string; state: 'live' | 'rec' | 'mute' | 'offline'; deviceId?: string; channelId?: string; thumb?: string }>>([])
+
+// 通道播放对话框（重点通道点击 → 弹出播放）
+const playVisible = ref(false)
+const playingChannel = ref<{ deviceId: string; channelId: string; name: string } | null>(null)
 
 // 三个曲线面板的 gradient id 必须全局唯一（SVG <defs> 在同一文档里复用），
 // 用面板下标做后缀避免互相覆盖。
@@ -889,26 +897,9 @@ const trafficOutCurrent = computed(() => {
   return Number((o.value[o.value.length - 1] ?? 0).toFixed(2))
 })
 // statCard sparklines —— 设备/通道/在线率用 mem 历史；媒体节点用网络入向 Mbps * 10。
-// CPU / 内存的真实曲线已升级到顶部三个大面板，这里不再用 spark。
-// 设备/通道 spark 用 mem 历史（取整数百分比），
-// 因为 deviceOnline / channelTotal 后端没有 ring buffer，
-// 用 mem 0-100 数据做"系统活跃度"代理更贴近"在线/活跃"的语义。
-const sparkDevice = computed<number[]>(() => {
-  const mem = (info.value.mem as Array<{ data?: number }> | undefined) ?? []
-  const arr = mem.slice(-12).map((p) => Math.round((Number(p.data ?? 0)) * 100))
-  return arr.length ? arr : [memPercent.value]
-})
-const sparkChannel = computed<number[]>(() => {
-  // 通道活跃度用入向 Mbps（流量越大通道越忙）作为代理
-  return trafficInArr.value.map((v) => Math.round(v))
-})
-const sparkMedia = computed<number[]>(() => {
-  // 媒体节点数量本身就是单值，这里用 network[0].rx 的历史回放成一条线
-  // （让 spark 至少有动作；值大小无业务意义，仅视觉指示"流量在变"）
-  const net = (info.value.net as Array<{ in?: number }> | undefined) ?? []
-  const arr = net.slice(-12).map((p) => Math.round((Number(p.in ?? 0)) * 10))
-  return arr.length ? arr : [mediaServerCount.value]
-})
+// 4 个 KPI 卡片之前挂过 spark 线（用 mem/net 数据当代理画在设备/通道/在线率下面），
+// 但这些 spark **与 KPI 数值没有任何真实关联**，只是"系统活跃度"的代理曲线，
+// 用户看着误以为是"在线设备数变化趋势"。需求要求去掉 —— 已不再传 :spark。
 const make = (arr: number[]) => {
   const max = trafficYMax.value
   const w = 600 / Math.max(arr.length - 1, 1)
@@ -943,7 +934,13 @@ function onCellClick(c: typeof channels.value[number]) {
     ElMessage.warning('该通道暂无可用播放标识')
     return
   }
-  router.push({ name: 'Live', query: { deviceId: c.deviceId, channelId: c.channelId } })
+  // 重点通道点击不再跳 /live —— 直接弹播放对话框，留在仪表盘
+  playingChannel.value = {
+    deviceId: c.deviceId,
+    channelId: c.channelId,
+    name: c.title ?? c.channelId
+  }
+  playVisible.value = true
 }
 
 onMounted(async () => {
@@ -970,9 +967,40 @@ function rebuildChannels() {
     deviceId: s.deviceId ?? '',
     // 必须用后端解析出的 channelId（国标通道号），此前误用 ZLM 的流名，
     // 跳转过去必然找不到通道
-    channelId: s.channelId ?? ''
+    channelId: s.channelId ?? '',
+    thumb: '' as string
   }))
-  if (liveList.length > 0) channels.value = liveList
+  if (liveList.length > 0) {
+    channels.value = liveList
+    // 异步给每张卡片抓一帧缩略图；失败的不影响主流程
+    refreshSnaps()
+  }
+}
+
+/**
+ * 给"重点通道"每个格子拿一帧缩略图。
+ *
+ * - 后端没有"取最近一帧"端点；最低代价是调一次 /play/snap/{d}/{c}，
+ *   抓的就是该通道的 JPEG 缩略图。
+ * - 抓图会触发 ZLM 推一次 RTP 流（首次）或复用现有流；7 路并发足够轻。
+ * - 失败/缺 deviceId/channelId 的格子保持 thumb 空 → 占位符显示。
+ * - 卡片每 10s 自动刷新一次（与 loadAll 周期对齐），即视觉上每 10s 看一次最新画面。
+ */
+async function refreshSnaps() {
+  const tasks = channels.value.map(async (c) => {
+    if (!c.deviceId || !c.channelId) return
+    try {
+      const res = await playSnap(c.deviceId, c.channelId)
+      const url = res?.data?.snapUrl
+      if (url) {
+        // 用 cache-busting 让浏览器重新拉（snap 是 JPEG，每次都是新文件但 URL 路径不变）
+        c.thumb = `${url}${url.includes('?') ? '&' : '?'}t=${Date.now()}`
+      }
+    } catch {
+      // 静默：拉不到图保留占位符
+    }
+  })
+  await Promise.allSettled(tasks)
 }
 
 onBeforeUnmount(() => {
@@ -1056,7 +1084,7 @@ onBeforeUnmount(() => {
   display: inline-flex; align-items: center; gap: 5px;
   padding: 2px 10px;
   border-radius: 999px;
-  font-size: 11px;
+  font-size: var(--text-xs);
   font-weight: 500;
   background: var(--bg-overlay);
   color: var(--text-tertiary);
@@ -1078,7 +1106,7 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 6px;
   margin: 0 0 8px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-weight: 600;
   color: var(--text-secondary);
 }

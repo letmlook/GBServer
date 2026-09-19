@@ -43,7 +43,7 @@ defineProps<{ collapse: boolean }>()
 }
 .logo-text { line-height: 1.2; min-width: 0; }
 .logo-name { font-size: var(--text-sm); font-weight: 700; color: var(--text-primary); }
-.logo-sub  { font-size: 10px; color: var(--text-tertiary); }
+.logo-sub  { font-size: var(--text-xs); color: var(--text-tertiary); }
 .logo-pulse {
   margin-left: auto;
   font-family: var(--font-mono);

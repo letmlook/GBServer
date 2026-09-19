@@ -32,7 +32,7 @@ export const useUserStore = defineStore('user', {
     showConfirmBoxForLoginLose: true
   }),
   actions: {
-    async login(userInfo: LoginPayload) {
+    async login(userInfo: LoginPayload & { remember?: boolean }) {
       const res = (await login(userInfo)) as unknown as WvpResult<LoginResult>
       const data = res.data
       this.token = data.accessToken
@@ -40,9 +40,10 @@ export const useUserStore = defineStore('user', {
       this.userId = data.id ?? 0
       this.serverId = data.serverId
       this.showConfirmBoxForLoginLose = true
-      setToken(data.accessToken)
-      setName(data.username)
-      setServerId(data.serverId)
+      const cookieOpts = { remember: userInfo.remember !== false }
+      setToken(data.accessToken, cookieOpts)
+      setName(data.username, cookieOpts)
+      setServerId(data.serverId, cookieOpts)
       // 拉一次完整 userInfo 同步 id / role / pushKey
       this.userInfo().catch(() => {})
     },

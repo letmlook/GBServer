@@ -251,6 +251,6 @@ onBeforeUnmount(() => {
 }
 .talk-panel__hint {
   color: var(--el-text-color-secondary);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 </style>
