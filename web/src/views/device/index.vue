@@ -49,14 +49,11 @@
           <el-table-column prop="name" label="名称" min-width="140" show-overflow-tooltip />
           <el-table-column prop="manufacturer" label="厂家" width="100" show-overflow-tooltip />
           <el-table-column prop="model" label="型号" width="100" show-overflow-tooltip />
-          <el-table-column prop="ip" label="IP" width="120">
-            <template #default="{ row }"><span class="mono">{{ row.ip }}</span></template>
-          </el-table-column>
-          <!-- 信令：设备端的信令地址（注册来源 IP:端口）。
-               之前在"信令"列显示的是 UDP/TCP 传输层协议，那不是这一列该表达的
-               信息 —— 管理员要看的是"这台设备从哪个地址、哪个端口连过来的"，
-               用来核对 NAT 映射、排查注册问题。传输协议本身已经由"流模式"
-               下拉（以及设备编辑里的信令传输）覆盖。 -->
+          <!-- 不再单列 IP：设备端 IP 已经在下一列「信令地址」里以 ip:port
+               的形式给出，单独再放一个 IP 列是重复信息、白占宽度。 -->
+          <!-- 信令地址：设备端信令的注册来源 IP:端口。
+               管理员用它对 NAT 映射、排查注册问题。
+               （传输层协议 UDP/TCP 由「流模式」下拉体现，不在这里重复。） -->
           <el-table-column label="信令地址" min-width="150">
             <template #default="{ row }">
               <span v-if="row.ip" class="mono">{{ row.ip }}:{{ row.port ?? '-' }}</span>
