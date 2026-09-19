@@ -14,11 +14,10 @@
         <el-form-item label="Stream">
           <el-input v-model="query.stream" />
         </el-form-item>
-        <el-form-item label="开始">
-          <el-date-picker v-model="query.startTime" type="datetime" />
-        </el-form-item>
-        <el-form-item label="结束">
-          <el-date-picker v-model="query.endTime" type="datetime" />
+        <el-form-item label="时间">
+          <!-- 起止日期用日历、时分用下拉（15 分钟档）；v-model 仍落在
+               query.startTime / query.endTime 上，检索与本地时间格式化不变 -->
+          <GbDateTimeRange v-model="timeRange" />
         </el-form-item>
         <el-form-item>
           <el-button type="primary" @click="loadData">查询</el-button>
@@ -31,7 +30,7 @@
     </el-card>
 
     <el-card>
-      <el-table :data="rows" v-loading="loading" stripe border @selection-change="onSelection">
+      <el-table table-layout="auto" :data="rows" v-loading="loading" stripe border @selection-change="onSelection">
         <el-table-column type="selection" width="48" />
         <el-table-column prop="id" label="ID" width="60" />
         <el-table-column prop="app" label="App" width="100" />
@@ -80,8 +79,9 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import GbDateTimeRange from '@/components/GbDateTimeRange/index.vue'
 import {
   getCloudRecordList,
   deleteCloudRecord,
@@ -95,6 +95,12 @@ const rows = ref<CloudRecord[]>([])
 const total = ref(0)
 const selection = ref<CloudRecord[]>([])
 
+/** 本地时间的当天 00:00（offsetDays 为负表示往前） */
+function dayStart(offsetDays = 0): Date {
+  const now = new Date()
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate() + offsetDays, 0, 0, 0, 0)
+}
+
 const query = reactive({
   page: 1,
   count: 20,
@@ -102,10 +108,22 @@ const query = reactive({
   channelId: '',
   app: '',
   stream: '',
-  // 默认查最近 7 天（"开始/结束" 两个时间都未填时是空时间 = 不限），
-  // 这里给两个 ref 写初值，让页面进入即默认 7 天范围。
-  startTime: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) as Date | undefined,
-  endTime: new Date() as Date | undefined
+  // 默认查最近 7 天（起止都未填 = 不限时间），这里给初值让页面进入即有范围。
+  // 取「7 天前的 00:00 ~ 今天 24:00」而不是 now-7d ~ now：时间控件是 15 分钟
+  // 档的下拉，落在档位上的值才能正确回显（详见组件内注释）。
+  startTime: dayStart(-7) as Date | undefined,
+  endTime: dayStart(1) as Date | undefined
+})
+
+/** GbDateTimeRange 的 v-model 代理：值仍落在 query.startTime / query.endTime 上，
+    下面的检索与 formatLocal 序列化都不用改。 */
+const timeRange = computed<[Date, Date] | null>({
+  get: (): [Date, Date] | null =>
+    query.startTime && query.endTime ? [query.startTime, query.endTime] : null,
+  set: (v: [Date, Date] | null) => {
+    query.startTime = v?.[0]
+    query.endTime = v?.[1]
+  }
 })
 
 async function loadData() {

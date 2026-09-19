@@ -336,6 +336,24 @@ extending this one response.
 
 ## Gotchas for Common Edits
 
+- **新增 `<el-table>` 必须写 `table-layout="auto"`**。Element Plus 默认
+  `table-layout: fixed`，会把每列压到声明的 `min-width` 附近，于是国标 ID、
+  `IPv4:端口`、时间戳这类**不可断行**的内容被折成两行
+  （「3402000000131000 / 00001」）。**不要改用在 CSS 里把 `<table>` 设成
+  auto**：fixed 模式下 EP 把表头渲染成**另一张独立的 `<table>`**，两张表各自
+  按内容算列宽，表头与表体立刻错位；只有走 EP 自己的 auto 模式（表头渲染进同一张
+  表）列宽才对齐，`fixed="right"` 的固定列也才会走 EP 的 sticky + 投影逻辑。
+  另外长文本列（拼接串 / JSON / URL）要配 `show-overflow-tooltip`：列宽是内容
+  驱动的，不封顶的列会把整张表撑到几千像素宽。样式细则与原因见
+  `web/src/styles/_element-overrides.scss` 的「表格」段。
+- **要让用户选「时刻」就用 `web/src/components/GbTimeSelect/index.vue`，别用
+  `el-time-select`**。后者的 `end="24:00"` **选不出 24:00**：它内部用
+  `dayjs(current, 'HH:mm').format('HH:mm')` 生成选项，`24:00` 会被归一成次日
+  `00:00`，于是列表末尾多出一个**值为 `00:00` 的重复项** —— 用户以为选的是
+  「当天结束」，实际拿到的是「当天开始」（录像计划里写 `start='00:00',
+  stop='24:00'` 的时段就是这样被悄悄改掉的）。`GbTimeSelect` 自己生成 15 分钟
+  档选项，末档是字面量 `24:00`，且只有「结束时间」提供它。
+  「日期范围 + 起止时刻」的查询条件用 `web/src/components/GbDateTimeRange`。
 - **延迟只有一个来源：国标设备列表的「延迟」列**（`web/src/api/device.ts`
   `queryDeviceLatency`）。它是**平台 ↔ 设备**的 SIP 往返：平台按
   `sip.heartbeat.latency_probe_interval_secs`（默认 15s，0 = 关闭）

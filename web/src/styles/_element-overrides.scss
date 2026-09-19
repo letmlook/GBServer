@@ -42,18 +42,33 @@
 .el-select .el-input.is-focus .el-input__inner { border-color: var(--brand-primary-300); }
 .el-form-item__label { color: var(--text-secondary); font-size: var(--text-sm); font-weight: 500; }
 
+/* ===========================================================
+ * 表格
+ *
+ * ⚠️ 让列宽「按内容撑开」的是模板里的 `table-layout="auto"`，不是这里的 CSS。
+ *
+ *    Element Plus 默认 table-layout: fixed，会把每一列压到它算出来的宽度
+ *    （约等于声明的 min-width），于是国标 ID、IPv4:端口、时间戳这些
+ *    **不可断行**的内容被折成两行（「3402000000131000 / 00001」）——这就是
+ *    「表格内部换行多、不好看」的来源。
+ *
+ *    为什么不能在 CSS 里直接把 table-layout 改成 auto：fixed 模式下 EP 把
+ *    **表头渲染成另一张独立的 <table>**，两张表各自按内容算列宽，表头与表体
+ *    立刻错位。只有走 EP 自己的 auto 模式（表头渲染进同一张 <table>）列宽才
+ *    天然对齐，固定列（fixed="right"）也才会走 EP 的 sticky + 投影逻辑。
+ *    ⇒ 以后新增 <el-table>，请一并写上 table-layout="auto"。
+ *
+ * ⚠️ `.cell` 的 white-space 必须用 td/th 限定词提高优先级才能压住 EP：
+ *    EP 的 `.el-table .cell{white-space:normal}` 与本文件**同优先级**，而 EP 的
+ *    组件样式经 unplugin-vue-components 按需注入，排在主样式之后，同优先级
+ *    后者胜 —— 这正是此前这里写了 nowrap、单元格却依旧换行的原因。
+ * =========================================================== */
 .el-table {
   background: var(--bg-surface);
   color: var(--text-primary);
   font-size: var(--text-sm);
   border-radius: var(--layout-radius);
   overflow: hidden;
-  /* table-layout: auto —— 浏览器按每一格内容算列宽。
-     table-layout: fixed（Element Plus 默认）会用首行宽度锁住列宽，
-     导致 GB 国标 ID、IPv4:端口、TCP-ACTIVE 这类长内容被挤压换行或截断。 */
-  table-layout: auto;
-  width: max-content;
-  min-width: 100%;
   border: 1px solid var(--border-default);
   border-collapse: separate;
   border-spacing: 0;
@@ -64,13 +79,17 @@
   --el-table-header-text-color: var(--text-secondary);
   --el-table-header-text-align: left;
   --el-table-border-color-light: var(--border-subtle);
+  /* 横向滚动时固定列下方的投影：EP 在 .is-scrolling-left/right 时才绘制，
+     默认值几乎看不见，补一点让「操作」列浮起来。 */
+  --el-table-fixed-right-column: -6px 0 8px -6px rgba(15, 28, 45, 0.16);
+  --el-table-fixed-left-column: 6px 0 8px -6px rgba(15, 28, 45, 0.16);
 }
-/* 真正的 <table> 元素：合并边框，相邻单元格共用一条边。 */
-.el-table > .el-table__inner-wrapper > .el-table__body-wrapper > table,
-.el-table > .el-table__inner-wrapper > table {
+/* 真正的 <table> 元素：合并边框；内容不足时铺满容器，内容超宽时由
+   EP 的 el-scrollbar 横向滚动（列宽不会再被压缩）。 */
+.el-table > .el-table__inner-wrapper > table,
+.el-table > .el-table__inner-wrapper > .el-table__body-wrapper > table {
   border-collapse: separate;
   border-spacing: 0;
-  width: max-content;
   min-width: 100%;
 }
 
@@ -86,6 +105,7 @@
   /* 不换行 —— 一行一格，列宽按内容自然撑开；不省略、不截断。 */
   white-space: nowrap;
   padding: 10px 12px;
+  vertical-align: middle;
 }
 .el-table th.el-table__cell.is-leaf:last-child,
 .el-table th.el-table__cell.is-leaf.is-fixed-right:last-child {
@@ -99,22 +119,48 @@
   white-space: nowrap;
   /* 行高 + 内边距让数据行呼吸顺畅；列宽交给浏览器按 th/td 内容自动算。 */
   padding: 9px 12px;
+  vertical-align: middle;
   transition: background-color 0.15s;
 }
 .el-table td.el-table__cell:last-child { border-right: none; }
 
-.el-table .cell {
-  /* 单行显示：nowrap 让内容撑开列；不再 ellipsis、不再 overflow:hidden，
-     整列按内容长度自动加宽，整张表可以超过父容器宽度（外层横向滚动）。 */
+.el-table th.el-table__cell > .cell,
+.el-table td.el-table__cell > .cell {
+  /* 单行显示：nowrap 让内容撑开列；不省略、不截断，
+     整列按内容长度自动加宽，整张表可以超过父容器宽度（横向滚动）。 */
   white-space: nowrap;
+  overflow: visible;
+  text-overflow: clip;
   line-height: 20px;
   padding: 0;
+}
+
+/* show-overflow-tooltip 的列：内容再长也只占一屏宽度，超出省略 + 悬浮查看。
+   不给上限的话，日志消息 / 点位 JSON / 推流地址会把整张表撑到几千像素宽。 */
+.el-table td.el-table__cell > .cell.el-tooltip {
+  max-width: 360px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 单元格里的标签 / 按钮与文字基线对齐，避免一行里高低不齐 */
+.el-table .cell > .el-tag,
+.el-table .cell > .el-button,
+.el-table .cell > .el-link,
+.el-table .cell > .el-switch {
+  vertical-align: middle;
 }
 
 .el-table--enable-row-hover .el-table__body tr:hover > td.el-table__cell {
   background: var(--bg-hover) !important;
 }
-.el-table--striped .el-table__body tr.el-table__row--striped td { background: var(--bg-base); }
+/* 斑马纹：EP 默认用 --el-fill-color-lighter（浅色下 #fafafa，几乎看不出），
+   这里换成 token 的 --bg-base（暗色下本就映射到它），深浅两种主题观感一致。
+   选择器必须以 td.el-table__cell 收尾：EP 的组件样式排在主样式之后，
+   同优先级时是它赢（见文件头说明），少一个类就压不住。 */
+.el-table.el-table--striped .el-table__body tr.el-table__row--striped > td.el-table__cell {
+  background: var(--bg-base);
+}
 .el-table .el-table__empty-text { color: var(--text-tertiary); font-size: var(--text-sm); }
 
 /* 排序图标、表头列分隔线 */
@@ -151,6 +197,14 @@
 .el-table__body tr.current-row > td.el-table__cell,
 .el-table__body tr.el-table__row--current > td.el-table__cell {
   background: rgba(11, 138, 178, 0.10) !important;
+}
+
+/* 单元格内容被省略号截断后的悬浮提示：Element Plus 不限 popper 宽度，
+   长内容（如「录像时段」那种 7 天拼接串）会拉成整屏宽的一行。
+   给个上限让它折行。只作用于 is-dark —— el-tooltip 默认 effect="dark"，
+   下拉/弹层用的是 is-light，不受影响。 */
+.el-popper.is-dark {
+  max-width: 480px;
 }
 
 .el-card {

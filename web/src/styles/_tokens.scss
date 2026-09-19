@@ -227,6 +227,16 @@ html.dark {
   --el-border-color: var(--border-default);
   --el-border-color-light: var(--border-subtle);
   --el-border-color-lighter: var(--border-subtle);
+  /* `--el-border-color-extra-light` 此前**漏了覆盖**：EP 默认 #f2f6fc（近白）。
+     它并不只是「一条细边框」——还被 EP 当作**底色**用在几处，缺了它暗色下会
+     整片亮出来：
+       · `--el-datepicker-inrange-bg-color`（inrange-hover 同理）
+         → 日期 / 日期时间**范围**选择器里「区间内」那一整条，就是它；
+       · `--el-backtop-hover-bg-color`（返回顶部按钮悬浮底色）；
+       · 复选框 / 单选按钮的**禁用-选中**填充。
+     实测办法（可复用）：暗色下枚举 :root 上全部 --el-* 颜色变量、按亮度筛，
+     只有它和 --el-fill-color-extra-light（EP 里没有任何实际引用）仍是浅色。 */
+  --el-border-color-extra-light: var(--border-subtle);
   --el-fill-color-blank: var(--bg-surface);
   --el-fill-color-light: var(--bg-elevated);
   --el-fill-color-lighter: var(--bg-base);

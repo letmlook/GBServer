@@ -20,10 +20,13 @@
         </el-form-item>
       </el-form>
 
-      <el-table :data="rows" v-loading="loading" stripe border>
+      <el-table table-layout="auto" :data="rows" v-loading="loading" stripe border>
         <el-table-column prop="id" label="ID" width="70" />
         <el-table-column prop="name" label="计划名称" min-width="160" />
-        <el-table-column label="录像时段" min-width="320">
+        <!-- 录像时段是一周内所有时段的拼接串，长度没有上界（7 天 × 若干段），
+             必须 show-overflow-tooltip 封顶：表格是内容驱动列宽的，
+             不封顶这一列会把整张表撑到几千像素宽。省略的内容悬浮可见。 -->
+        <el-table-column label="录像时段" min-width="320" show-overflow-tooltip>
           <template #default="{ row }">
             <span class="windows">{{ summarizePlanItems(row.planItemList) }}</span>
           </template>

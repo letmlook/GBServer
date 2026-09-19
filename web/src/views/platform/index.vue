@@ -8,7 +8,7 @@
     </div>
 
     <el-card>
-      <el-table :data="rows" v-loading="loading" stripe border>
+      <el-table table-layout="auto" :data="rows" v-loading="loading" stripe border>
         <el-table-column prop="name" label="平台名称" min-width="150" show-overflow-tooltip />
         <el-table-column label="国标ID" min-width="200">
           <template #default="{ row }"><span class="mono">{{ row.serverGBId }}</span></template>

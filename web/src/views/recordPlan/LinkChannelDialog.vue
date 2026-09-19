@@ -42,7 +42,7 @@
       </el-form-item>
     </el-form>
 
-    <el-table
+    <el-table table-layout="auto"
       :data="rows"
       v-loading="loading"
       stripe

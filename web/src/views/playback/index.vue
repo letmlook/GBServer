@@ -8,11 +8,10 @@
         <el-form-item label="通道">
           <el-input v-model="form.channelId" placeholder="国标通道ID" />
         </el-form-item>
-        <el-form-item label="开始">
-          <el-date-picker v-model="form.startTime" type="datetime" placeholder="开始时间" />
-        </el-form-item>
-        <el-form-item label="结束">
-          <el-date-picker v-model="form.endTime" type="datetime" placeholder="结束时间" />
+        <el-form-item label="时间">
+          <!-- 起止日期用日历、时分用下拉（15 分钟档）；v-model 仍落在
+               form.startTime / form.endTime 上，检索逻辑不变 -->
+          <GbDateTimeRange v-model="timeRange" />
         </el-form-item>
         <el-form-item>
           <el-button type="primary" @click="onQuery">检索</el-button>
@@ -26,7 +25,7 @@
           <template #header>
             <span>录像列表 · 共 {{ records.length }} 条</span>
           </template>
-          <el-table :data="records" height="500" highlight-current-row @row-click="onSelect">
+          <el-table table-layout="auto" :data="records" height="500" highlight-current-row @row-click="onSelect">
             <el-table-column prop="startTime" label="开始" min-width="160">
               <template #default="{ row }">
                 <span class="mono">{{ row.startTime }}</span>
@@ -81,8 +80,9 @@
 </template>
 
 <script setup lang="ts">
-import { nextTick, onMounted, onUnmounted, reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
+import GbDateTimeRange from '@/components/GbDateTimeRange/index.vue'
 import {
   startPlayback,
   stopPlayback,
@@ -171,12 +171,31 @@ async function attachVideo(url: string) {
   video.src = url
 }
 
+/** 本地时间的当天 00:00（offsetDays 为负表示往前） */
+function dayStart(offsetDays = 0): Date {
+  const now = new Date()
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate() + offsetDays, 0, 0, 0, 0)
+}
+
 const form = reactive({
   deviceId: '',
   channelId: '',
-  // 默认时间窗口：最近 7 天（页面进入即可直接检索）
-  startTime: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) as Date | undefined,
-  endTime: new Date() as Date | undefined
+  // 默认时间窗口：最近 7 天（页面进入即可直接检索）。
+  // 取「7 天前的 00:00 ~ 今天 24:00」，而不是 now-7d ~ now：时间控件是
+  // 15 分钟档的下拉，落在档位上的值才能正确回显（详见组件内注释）。
+  startTime: dayStart(-7) as Date | undefined,
+  endTime: dayStart(1) as Date | undefined
+})
+
+/** GbDateTimeRange 的 v-model 代理：值仍落在 form.startTime / form.endTime 上，
+    下面的检索逻辑与序列化（toISOString）都不用改。 */
+const timeRange = computed<[Date, Date] | null>({
+  get: (): [Date, Date] | null =>
+    form.startTime && form.endTime ? [form.startTime, form.endTime] : null,
+  set: (v: [Date, Date] | null) => {
+    form.startTime = v?.[0]
+    form.endTime = v?.[1]
+  }
 })
 
 async function onQuery() {

@@ -22,20 +22,20 @@
             <div class="day-label">{{ day.label }}</div>
             <div class="day-windows">
               <div v-for="(w, idx) in windowsFor(day.value)" :key="idx" class="window-row">
-                <el-time-select
+                <!-- 用 GbTimeSelect 而不是 el-time-select：后者的 `end="24:00"`
+                     生成的那一项会被 dayjs 归一成值为 `00:00` 的重复项，
+                     也就是「结束 = 当天结束(24:00)」在界面上根本选不出来
+                     （setFullDay / addWindow 写进去的 '24:00' 反而显示不出选项）。
+                     GbTimeSelect 的末档是字面量 24:00，只有结束时间提供它。 -->
+                <GbTimeSelect
                   v-model="w.start"
-                  start="00:00"
-                  end="24:00"
-                  step="00:15"
                   placeholder="开始"
                   style="width: 110px"
                 />
                 <span class="dash">—</span>
-                <el-time-select
+                <GbTimeSelect
                   v-model="w.stop"
-                  start="00:00"
-                  end="24:00"
-                  step="00:15"
+                  include-day-end
                   placeholder="结束"
                   style="width: 110px"
                 />
@@ -67,6 +67,7 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
 import { ElMessage, type FormInstance } from 'element-plus'
+import GbTimeSelect from '@/components/GbTimeSelect/index.vue'
 import {
   addRecordPlan,
   getRecordPlanOne,

@@ -8,7 +8,7 @@
     </div>
 
     <el-card>
-      <el-table :data="rows" v-loading="loading" stripe border>
+      <el-table table-layout="auto" :data="rows" v-loading="loading" stripe border>
         <el-table-column prop="id" label="节点 ID" min-width="180">
           <template #default="{ row }"><span class="mono">{{ row.id }}</span></template>
         </el-table-column>

@@ -32,7 +32,7 @@
     </el-card>
 
     <el-card v-else>
-      <el-table :data="rows" v-loading="loading" stripe border>
+      <el-table table-layout="auto" :data="rows" v-loading="loading" stripe border>
         <el-table-column prop="id" label="ID" width="60" />
         <el-table-column prop="username" label="用户名" min-width="160" />
         <el-table-column label="角色" min-width="120">

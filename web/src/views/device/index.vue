@@ -30,7 +30,7 @@
       </GbSearchForm>
 
       <el-card class="table-card">
-        <el-table :data="rows" v-loading="loading" stripe border>
+        <el-table table-layout="auto" :data="rows" v-loading="loading" stripe border>
           <el-table-column type="index" label="#" width="50" />
           <el-table-column prop="deviceId" label="国标ID" min-width="180">
             <template #default="{ row }">
@@ -134,7 +134,7 @@
     <div v-else>
       <el-page-header @back="currentDeviceId = ''" />
       <el-card class="table-card" style="margin-top: 12px">
-        <el-table :data="channels" v-loading="channelLoading" stripe border>
+        <el-table table-layout="auto" :data="channels" v-loading="channelLoading" stripe border>
           <el-table-column label="缩略图" width="120" align="center">
             <template #default="{ row: ch }">
               <div class="thumb-cell" :class="{ 'thumb-cell--clickable': !!ch.thumb }">

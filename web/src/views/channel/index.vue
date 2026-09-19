@@ -37,7 +37,7 @@
     </el-card>
 
     <el-card class="table-card">
-      <el-table :data="rows" v-loading="loading" stripe border>
+      <el-table table-layout="auto" :data="rows" v-loading="loading" stripe border>
         <el-table-column label="缩略图" width="120" align="center">
           <template #default="{ row }">
             <div class="thumb-cell" :class="{ 'thumb-cell--clickable': !!row.thumb }">

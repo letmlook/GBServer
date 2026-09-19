@@ -10,7 +10,7 @@
     <el-tabs v-model="activeTab">
       <el-tab-pane label="终端列表" name="terminal">
         <el-card>
-          <el-table :data="terminals" v-loading="loading" stripe border>
+          <el-table table-layout="auto" :data="terminals" v-loading="loading" stripe border>
             <el-table-column prop="id" label="ID" width="60" />
             <el-table-column prop="phoneNumber" label="手机号" min-width="140">
               <template #default="{ row }"><span class="mono">{{ row.phoneNumber }}</span></template>
@@ -47,7 +47,7 @@
               <el-button @click="onAddCircle">新增</el-button>
             </el-form-item>
           </el-form>
-          <el-table :data="circles" stripe border>
+          <el-table table-layout="auto" :data="circles" stripe border>
             <el-table-column prop="id" label="ID" width="60" />
             <el-table-column prop="phoneNumber" label="手机号" min-width="140" />
             <el-table-column prop="label" label="标签" min-width="160" />
@@ -74,7 +74,7 @@
               <el-button @click="onAddPolygon">新增</el-button>
             </el-form-item>
           </el-form>
-          <el-table :data="polygons" stripe border>
+          <el-table table-layout="auto" :data="polygons" stripe border>
             <el-table-column prop="id" label="ID" width="60" />
             <el-table-column prop="phoneNumber" label="手机号" min-width="140" />
             <el-table-column prop="label" label="标签" min-width="160" />
@@ -99,7 +99,7 @@
               <el-button @click="onAddRoute">新增</el-button>
             </el-form-item>
           </el-form>
-          <el-table :data="routes" stripe border>
+          <el-table table-layout="auto" :data="routes" stripe border>
             <el-table-column prop="id" label="ID" width="60" />
             <el-table-column prop="phoneNumber" label="手机号" min-width="140" />
             <el-table-column prop="label" label="标签" min-width="160" />
@@ -123,7 +123,7 @@
               <el-button type="primary" @click="loadChannelsFor(channelPhone)">查询</el-button>
             </el-form-item>
           </el-form>
-          <el-table :data="channels" v-loading="channelLoading" stripe border>
+          <el-table table-layout="auto" :data="channels" v-loading="channelLoading" stripe border>
             <el-table-column prop="id" label="ID" width="60" />
             <el-table-column prop="phoneNumber" label="手机号" min-width="140" />
             <el-table-column prop="channelId" label="通道号" width="80" />

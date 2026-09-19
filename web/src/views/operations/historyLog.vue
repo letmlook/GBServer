@@ -14,7 +14,8 @@
           </el-select>
         </el-form-item>
         <el-form-item label="时间">
-          <el-date-picker v-model="timeRange" type="datetimerange" />
+          <!-- 日期用日历、起止时分用下拉（15 分钟档），见组件内注释 -->
+          <GbDateTimeRange v-model="timeRange" />
         </el-form-item>
         <el-form-item>
           <el-button type="primary" @click="loadData">查询</el-button>
@@ -28,7 +29,7 @@
     </el-card>
 
     <el-card>
-      <el-table :data="rows" v-loading="loading" stripe border>
+      <el-table table-layout="auto" :data="rows" v-loading="loading" stripe border>
         <el-table-column prop="time" label="时间" min-width="180">
           <template #default="{ row }"><span class="mono">{{ row.time }}</span></template>
         </el-table-column>
@@ -63,6 +64,7 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
+import GbDateTimeRange from '@/components/GbDateTimeRange/index.vue'
 import { getLogList, type LogRecord } from '@/api/log'
 
 const loading = ref(false)

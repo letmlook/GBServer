@@ -38,7 +38,7 @@
       <el-col :xs="24" :md="12">
         <el-card>
           <template #header><span>资源统计</span></template>
-          <el-table :data="resourceRows" stripe>
+          <el-table table-layout="auto" :data="resourceRows" stripe>
             <el-table-column prop="key" label="资源" min-width="160" />
             <el-table-column prop="value" label="数量" width="160">
               <template #default="{ row }"><span class="mono">{{ row.value }}</span></template>

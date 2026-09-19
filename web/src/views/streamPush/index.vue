@@ -9,7 +9,7 @@
     </div>
 
     <el-card>
-      <el-table :data="rows" v-loading="loading" stripe border @selection-change="onSelection">
+      <el-table table-layout="auto" :data="rows" v-loading="loading" stripe border @selection-change="onSelection">
         <el-table-column type="selection" width="48" />
         <el-table-column prop="id" label="ID" width="60" />
         <el-table-column prop="app" label="App" min-width="100" />

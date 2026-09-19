@@ -34,7 +34,7 @@
         </el-form-item>
       </el-form>
 
-      <el-table :data="rows" v-loading="loading" stripe border>
+      <el-table table-layout="auto" :data="rows" v-loading="loading" stripe border>
         <el-table-column prop="id" label="ID" width="60" />
         <el-table-column prop="name" label="名称" min-width="140" show-overflow-tooltip />
         <el-table-column label="代理方式" width="110">

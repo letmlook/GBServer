@@ -6,7 +6,8 @@
           <el-input v-model="query.query" placeholder="设备ID / 描述" clearable @keyup.enter="loadData" />
         </el-form-item>
         <el-form-item label="时间">
-          <el-date-picker v-model="timeRange" type="datetimerange" range-separator="-" />
+          <!-- 日期用日历、起止时分用下拉（15 分钟档），见组件内注释 -->
+          <GbDateTimeRange v-model="timeRange" />
         </el-form-item>
         <el-form-item>
           <el-button type="primary" @click="loadData">查询</el-button>
@@ -20,7 +21,7 @@
     </el-card>
 
     <el-card>
-      <el-table :data="rows" v-loading="loading" stripe border @selection-change="onSelection">
+      <el-table table-layout="auto" :data="rows" v-loading="loading" stripe border @selection-change="onSelection">
         <!-- 空状态区分两种情况：否则用户无法判断「真没有告警」还是「被筛选条件筛掉了」 -->
         <template #empty>
           <div v-if="timeRange" class="empty-hint">
@@ -77,6 +78,7 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import GbDateTimeRange from '@/components/GbDateTimeRange/index.vue'
 import {
   getAlarmList,
   deleteAlarm,
