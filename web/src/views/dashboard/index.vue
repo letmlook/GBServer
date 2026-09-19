@@ -229,9 +229,19 @@
         <span>重点通道</span>
         <span class="meta">点击播放预览</span>
       </header>
-      <div class="gb-grid" style="grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); padding: 14px;">
-        <VideoCell v-for="cell in channels" :key="cell.id" v-bind="cell" @click="onCellClick(cell)" />
+      <div
+        v-if="channels.length"
+        class="gb-grid"
+        style="grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); padding: 14px;"
+      >
+        <VideoCell
+          v-for="cell in channels"
+          :key="cell.deviceId + '_' + cell.channelId"
+          v-bind="cell"
+          @click="onCellClick(cell)"
+        />
       </div>
+      <EmptyState v-else text="暂无正在拉流的通道，去「实时直播」点播后这里会显示缩略图" />
     </section>
 
 
@@ -256,10 +266,13 @@ import {
 import { useRouter } from 'vue-router'
 import StatCard from '@/components/StatCard/index.vue'
 import VideoCell from '@/components/VideoCell/index.vue'
+import EmptyState from '@/components/EmptyState/index.vue'
 import ChannelPlayDialog from '@/components/ChannelPlayDialog/index.vue'
-import { getSystemInfo, type SystemInfo } from '@/api/log'
+import type { SystemInfo } from '@/api/log'
+import { loadSystemInfo } from '@/utils/systemInfo'
 import { queryDevices } from '@/api/device'
-import { listSnapshots, queryStreams, snapshotKey } from '@/api/live'
+import { listSnapshots, queryStreams, snapshotKey, type MediaStreamRow } from '@/api/live'
+import { dedupeMediaStreams, extractKeyChannels } from '@/utils/mediaStream'
 import { getMediaServerList, getMediaLoad } from '@/api/mediaServer'
 import { getAlarmList, alarmPriorityLabel } from '@/api/alarm'
 
@@ -274,7 +287,7 @@ const deviceTotal = ref(0)
 const deviceOnline = ref(0)
 const channelTotal = ref(0)
 const activeStreamCount = ref(0)
-const streams = ref<Array<{ mediaServerId?: string; app?: string; stream?: string; deviceId?: string; channelId?: string }>>([])
+const streams = ref<MediaStreamRow[]>([])
 const mediaServerCount = ref(0)
 const recentAlarms = ref<{
   id?: number
@@ -286,6 +299,15 @@ const recentAlarms = ref<{
 const mediaServerOnlineCount = ref(0)
 const nodes = ref<{ id: string; name: string; region: string; cpu: number; mem: number; bw: number; status: string; tone: string }[]>([])
 const channels = ref<Array<{ id: number; title: string; no: string; state: 'live' | 'rec' | 'mute' | 'offline'; deviceId?: string; channelId?: string; thumb?: string }>>([])
+
+/**
+ * 节点列表与节点流量的最近一次结果。它们不直接渲染，而是由 `applyNodeRows()`
+ * 和 `system_info` 的 CPU/内存合成节点卡片 —— 两个接口谁后到都要重算一次，
+ * 所以要留在模块作用域里（放局部变量时，system_info 到达后就再也补不上了）。
+ */
+type MediaServerRow = { id?: string; ip?: string; httpPort?: number; status?: boolean }
+let mediaServers: MediaServerRow[] = []
+let nodeLoad = new Map<string, any>()
 
 // 通道播放对话框（重点通道点击 → 弹出播放）
 const playVisible = ref(false)
@@ -327,86 +349,133 @@ const apiOk = ref<{ sys: boolean; devs: boolean; streams: boolean; media: boolea
   alarms: false
 })
 
+/**
+ * 控制台首屏数据装载。
+ *
+ * **每个面板各写各的**：5 个接口谁先回来谁先渲染，不再"等最慢的那个回来再统一赋值"。
+ *
+ * 为什么改：`/api/server/system/info` 在服务端要真采一次 CPU（60ms）与网络速率
+ * （2×100ms）+ 读磁盘，本机单次实测约 0.8s，浏览器里叠加侧边栏/导航栏的同名请求
+ * 常到 1.2~1.5s。此前是 `await Promise.allSettled([5 个接口])` 之后才逐项赋值，
+ * 于是 0.5s 就返回的设备数 / 流列表 / 告警 / 媒体节点也要陪着它一起等 ——
+ * 表现就是"打开控制台要等约 2s 才出数据"。
+ */
 async function loadAll() {
   loading.value = true
+  lastSyncAt.value = Date.now()
   try {
-    lastSyncAt.value = Date.now()
-    const [sys, devs, streamRes, mss, alarms] = await Promise.allSettled([
-      getSystemInfo(),
-      queryDevices({ page: 1, count: 1 }),
-      queryStreams({ page: 1, count: 1000 }),
-      getMediaServerList(),
+    await Promise.allSettled([
+      loadSystemInfo().then((data) => {
+        // 失败时保持上一次的值（不要把界面清成空）
+        if (data) {
+          info.value = data
+          apiOk.value.sys = true
+          applyInfoDerived()
+        } else {
+          apiOk.value.sys = false
+        }
+      }),
+      queryDevices({ page: 1, count: 1 })
+        .then((devs) => {
+          deviceTotal.value = devs.data?.total ?? 0
+          apiOk.value.devs = true
+        })
+        .catch(() => {
+          apiOk.value.devs = false
+        }),
+      queryStreams({ page: 1, count: 1000 })
+        .then((res) => {
+          const list = ((res.data as any)?.list ?? []) as MediaStreamRow[]
+          streams.value = list
+          // ZLM 对同一路流按协议各返回一行（rtsp/rtmp/hls/ts/fmp4），原始 list 的长度是
+          // 「行数」而不是「路数」：不去重的话卡片右侧的「直播 N」会虚高好几倍。
+          activeStreamCount.value = dedupeMediaStreams(list).length
+          apiOk.value.streams = true
+          // 流列表一到就重建重点通道，不必再等 system/info
+          rebuildChannels()
+          applyInfoDerived()
+        })
+        .catch(() => {
+          apiOk.value.streams = false
+        }),
+      getMediaServerList()
+        .then(async (mss) => {
+          mediaServers = ((mss.data as any[]) ?? []) as MediaServerRow[]
+          mediaServerCount.value = mediaServers.length
+          mediaServerOnlineCount.value = mediaServers.filter((m) => m.status === true).length
+          apiOk.value.media = true
+          // 节点流量只依赖节点列表，跟在它后面查即可，别被 system/info 拖住
+          await loadNodeTraffic()
+          applyNodeRows()
+        })
+        .catch(() => {
+          apiOk.value.media = false
+        }),
       getAlarmList({ page: 1, count: 5 })
+        .then((alarms) => {
+          recentAlarms.value = alarms.data?.list ?? []
+          apiOk.value.alarms = true
+        })
+        .catch(() => {
+          apiOk.value.alarms = false
+        })
     ])
-    if (sys.status === 'fulfilled') info.value = (sys.value.data as SystemInfo) ?? {}
-    if (devs.status === 'fulfilled') deviceTotal.value = devs.value.data?.total ?? 0
-    if (mss.status === 'fulfilled') {
-      const list = ((mss.value.data as any[]) ?? []) as Array<{ status?: boolean }>
-      mediaServerCount.value = list.length
-      mediaServerOnlineCount.value = list.filter((m) => m.status === true).length
-    }
-    apiOk.value = {
-      sys: sys.status === 'fulfilled',
-      devs: devs.status === 'fulfilled',
-      streams: streamRes.status === 'fulfilled',
-      media: mss.status === 'fulfilled',
-      alarms: alarms.status === 'fulfilled'
-    }
-    if (alarms.status === 'fulfilled') recentAlarms.value = alarms.value.data?.list ?? []
-    if (streamRes.status === 'fulfilled') {
-      const list = ((streamRes.value.data as any)?.list ?? []) as Array<{
-        mediaServerId?: string
-        app?: string
-        stream?: string
-        deviceId?: string
-        channelId?: string
-      }>
-      streams.value = list
-      activeStreamCount.value = list.length
-    }
-    // system_info 给的 channelTotal 是 DB 里的真实值（包含未在拉流的通道），
-    // streams.length 只是当前活跃拉流；以 system_info 为准，下游无值时回落到 streams
-    channelTotal.value =
-      (typeof info.value.channelTotal === 'number' ? info.value.channelTotal : undefined) ??
-      streams.value.length
-    channelOnline.value =
-      typeof info.value.channelOnline === 'number' ? info.value.channelOnline : undefined
-    // device online count from system info
-    deviceOnline.value = info.value.deviceOnline ?? 0
-    // map media servers to nodes（用 system_info 汇总 + load 流量真实数据）
-    const msList = (mss.status === 'fulfilled' ? ((mss.value.data as any[]) ?? []) : []) as Array<{ id?: string; ip?: string; httpPort?: number }>
-    const loadRes = mss.status === 'fulfilled' ? await Promise.allSettled(msList.slice(0, 6).map((m) => getMediaLoad(m.id ?? ''))) : []
-    const loadMap = new Map<string, any>()
-    for (let i = 0; i < msList.length && i < loadRes.length; i++) {
-      const r = loadRes[i]
-      if (r.status === 'fulfilled') {
-        // 按 id 取自己那一项：后端返回的是数组，此前取 `arr[0]`
-        // 会把第一个节点的流量显示到每一张卡片上
-        const arr = (r.value.data as any[]) ?? []
-        const item = arr.find((x) => x?.id === msList[i].id) ?? arr[0]
-        if (item) loadMap.set(msList[i].id ?? '', item)
-      }
-    }
-    const sysCpu = info.value.cpu_usage ?? 0
-    const sysMem = info.value.mem_usage ?? 0
-    nodes.value = msList.slice(0, 6).map((m, i) => {
-      const ld = loadMap.get(m.id ?? '')
-      const bw = Math.round(
-        ((ld?.gbReceive ?? 0) + (ld?.gbSend ?? 0)) * 100
-      ) / 100
-      return {
-        id: m.id ?? `node-${i}`,
-        name: m.id ?? `node-${i}`,
-        region: m.ip ?? '-',
-        cpu: Math.round(sysCpu),
-        mem: Math.round(sysMem),
-        bw,
-        status: bw > 50 || sysCpu > 90 ? '高负载' : '正常',
-        tone: bw > 50 || sysCpu > 90 ? 'warning' : 'success'
-      }
-    })
   } finally {
     loading.value = false
+  }
+}
+
+/**
+ * 把 `system_info` 派生出的标量铺到界面上（通道数/在线数/设备在线数 + 节点表）。
+ *
+ * 之所以要单独抽出来：这些值分别来自 `system/info` 与 `device/query/streams`，
+ * 两个接口谁先回来都要能用**当前已知的另一半**把界面刷新一次。
+ */
+function applyInfoDerived() {
+  // system_info 给的 channelTotal 是 DB 里的真实值（包含未在拉流的通道）；
+  // 拿不到时回落到当前活跃拉流的**路数**（去重后，不是 ZLM 的协议行数）
+  channelTotal.value =
+    (typeof info.value.channelTotal === 'number' ? info.value.channelTotal : undefined) ??
+    activeStreamCount.value
+  channelOnline.value =
+    typeof info.value.channelOnline === 'number' ? info.value.channelOnline : undefined
+  deviceOnline.value = info.value.deviceOnline ?? 0
+  applyNodeRows()
+}
+
+/** 节点列表 → 卡片。CPU/内存取自 system_info，两个接口任一到达都会重建一次。 */
+function applyNodeRows() {
+  const sysCpu = info.value.cpu_usage ?? 0
+  const sysMem = info.value.mem_usage ?? 0
+  nodes.value = mediaServers.slice(0, 6).map((m, i) => {
+    const ld = nodeLoad.get(m.id ?? '')
+    const bw = Math.round(((ld?.gbReceive ?? 0) + (ld?.gbSend ?? 0)) * 100) / 100
+    return {
+      id: m.id ?? `node-${i}`,
+      name: m.id ?? `node-${i}`,
+      region: m.ip ?? '-',
+      cpu: Math.round(sysCpu),
+      mem: Math.round(sysMem),
+      bw,
+      status: bw > 50 || sysCpu > 90 ? '高负载' : '正常',
+      tone: bw > 50 || sysCpu > 90 ? 'warning' : 'success'
+    }
+  })
+}
+
+/** 拉取各媒体节点的收/发流量（最多 6 个节点）。 */
+async function loadNodeTraffic() {
+  const picked = mediaServers.slice(0, 6)
+  nodeLoad = new Map<string, any>()
+  const loadRes = await Promise.allSettled(picked.map((m) => getMediaLoad(m.id ?? '')))
+  for (let i = 0; i < picked.length && i < loadRes.length; i++) {
+    const r = loadRes[i]
+    if (r.status !== 'fulfilled') continue
+    // 按 id 取自己那一项：后端返回的是数组，此前取 `arr[0]`
+    // 会把第一个节点的流量显示到每一张卡片上
+    const arr = (r.value.data as any[]) ?? []
+    const item = arr.find((x) => x?.id === picked[i].id) ?? arr[0]
+    if (item) nodeLoad.set(picked[i].id ?? '', item)
   }
 }
 
@@ -785,13 +854,13 @@ function onCellClick(c: typeof channels.value[number]) {
 }
 
 onMounted(async () => {
+  // 首屏立刻发请求（loadAll 内部各面板各自落地，不互相等待）；
+  // 重点通道由流列表那一支自己重建，这里不需要再等一轮。
   await loadAll()
-  // 从 queryStreams 真实数据派生最多 6 路重点通道（优先 live）
-  rebuildChannels()
-  // 启动自动刷新（10s 周期与后端 health_check 默认值对齐）。
+  // 启动自动刷新（2s 周期与后端 health_check 默认值对齐）。
   // 切页或组件卸载时由 onBeforeUnmount 清掉，避免泄漏。
   refreshTimer = window.setInterval(() => {
-    loadAll().then(rebuildChannels)
+    loadAll()
   }, REFRESH_INTERVAL_MS)
   // 1s 心跳让"最近同步：x 秒前"标签实时走动
   syncTicker = window.setInterval(() => {
@@ -800,19 +869,28 @@ onMounted(async () => {
 })
 
 function rebuildChannels() {
-  const liveList = streams.value.slice(0, 6).map((s, i) => ({
+  // 面板是「通道」口径，不能直接拿 ZLM 的原始行铺格子：
+  //  1) ZLM 对同一路流按协议各返回一行（rtsp/rtmp/hls/ts/fmp4），原始行数 ≈ 路数 × 5；
+  //  2) 同一通道可能同时有实时流与回放/下载流。
+  // extractKeyChannels 会依次消掉这两层倍数 —— 同一通道在面板上只占一个格子。
+  const picked = extractKeyChannels(streams.value, 6)
+  // 轮询重建时沿用上一次的缩略图，避免每 2s 闪一下占位符
+  const prevThumb = new Map(
+    channels.value.map((c) => [`${c.deviceId}_${c.channelId}`, c.thumb ?? ''])
+  )
+  channels.value = picked.map((c, i) => ({
     id: i + 1,
-    title: s.stream ?? 'Unknown',
+    title: c.stream || c.channelId,
     no: `C${String(i + 1).padStart(3, '0')}`,
-    state: 'live' as const,
-    deviceId: s.deviceId ?? '',
+    // 只有回放/下载流在跑的通道标 REC，不再一律显示 LIVE
+    state: c.live ? ('live' as const) : ('rec' as const),
+    deviceId: c.deviceId,
     // 必须用后端解析出的 channelId（国标通道号），此前误用 ZLM 的流名，
     // 跳转过去必然找不到通道
-    channelId: s.channelId ?? '',
-    thumb: '' as string
+    channelId: c.channelId,
+    thumb: prevThumb.get(c.key) ?? ''
   }))
-  if (liveList.length > 0) {
-    channels.value = liveList
+  if (channels.value.length > 0) {
     // 异步给每张卡片抓一帧缩略图；失败的不影响主流程
     refreshSnaps()
   }

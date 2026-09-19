@@ -44,6 +44,8 @@
 | B8 | 缺陷 | **GB28181 流走 WebRTC 解不出帧**（收 358KB RTP 但 `framesReceived=0`；普通流正常） | 🟠 |
 | B10 | 缺陷 | ZLM 流列表反序列化失败（`"fps": 25.0` 浮点 vs `u32`）→ 流列表恒为空 | ✅ 已修 |
 | B11 | 缺陷 | `on_server_started` 用 ZLM **内部** HTTP 端口覆盖库里的对外端口（80 覆盖 8080）→ 后端所有 ZLM 调用 502 | ✅ 已修 |
+| B12 | 缺陷 | ZLM 对同一路流**按协议各返回一行** → 控制台「重点通道」同一通道重复铺格子、「直播 N」虚高 | ✅ 已修并复验 |
+| B13 | 性能 | 控制台首屏"等最慢接口"才统一赋值 + `system/info` 被 3 个组件同时拉 → 卡片空等约 2s | ✅ 已修并复验 |
 | B9 | 配置 | `rtc.externIP` 平台未下发 → 容器部署下浏览器 ICE 永远连不上 | ✅ 已修 |
 | A4 | 前端 | 直播页 WebRTC 播放入口（`postWebrtcPlay` 原先无调用方） | ✅ 已接 (2026-09-19) |
 | C1 | 代码债 | `handle_packet` 23 个参数 | 🔵 |
@@ -415,6 +417,66 @@ ZLM 相关功能（流列表、录像删除、截图…）一起 500 —— 因�
 
 **实测**：ZLM 重建后 DB 里 `http_port` 保持 8080，节点检测
 `{"code":0,"reachable":true,"httpPort":8080}`。
+
+### B12 ✅ ZLM 每个协议一行 → 控制台「重点通道」同一通道重复铺格子（已修并复验）
+
+**现象**（用户报「控制台下面的重要通道里面相同的通道视频会出现多个」）：
+一路正在点播的通道在控制台「重点通道」面板里占了 3~5 个格子，标题都是同一个流名；
+卡片「活跃通道」右侧的「直播 N」也随之虚高（本机实测 1 路流显示成 `直播 5`）。
+
+**根因**：ZLM `getMediaList` 对**同一路流按协议各返回一行** —— 实测 ZLM master 上
+一路 `rtp/34020000001320128497_34020000001310000001` 返回
+`hls` / `rtsp` / `ts` / `rtmp` / `fmp4` **五行**（读者数只挂在被真正播放的那个协议行上）。
+`/api/device/query/streams` 原样透出这五行，而控制台
+`web/src/views/dashboard/index.vue::rebuildChannels` 直接 `streams.slice(0, 6)` 铺格子
+→ 同一个通道占满面板。同一通道还可能同时存在实时流与回放/下载流
+（`设备ID_通道ID_开始_结束`），同样会变成两个格子。
+
+**修复**：新增 `web/src/utils/mediaStream.ts`
+（`dedupeMediaStreams` 按 (mediaServerId, app, stream) 合并协议行并取最大读者数；
+`extractKeyChannels` 再按 `设备ID_通道ID` 归并通道、实时流优先、读者多的优先、
+顺序稳定），控制台改用它派生面板，并把「直播 N」改成去重后的**路数**；
+面板无流时改显示空态（此前会一直留着上一次的旧格子）。只有回放/下载流的通道标 `REC`。
+
+**复验**：新增回归用例 `e2e/tests/dashboard.spec.ts`（桩数据 11 行 → 必须只渲染 2 个通道格，
+另有一条对真实 ZLM 数据的"通道不重复"断言）；修复前该用例在真实环境实测
+`5 个格子 = 1 个通道` 失败，修复后 2/2 通过；`npm run build`（含 vue-tsc）通过、
+`smoke.spec.ts` 20/20 通过。
+
+**注意（同一根因的另一处，尚未修）**：后端把 `getMediaList().len()` 当"流数量"用的三处
+（`zlm/hook.rs` 的 `set_active_streams` 与 `update_flow_stats`、`zlm/client.rs::get_active_stream_count`
+的选路负载）也把 1 路流数成 5 路。前端没有展示 `stream_count`，选路是相对比较，
+故未在本次一并改动 —— 需要时同样按 (app, stream) 去重。
+
+### B13 ✅ 控制台首屏要等约 2s 才出数据（已修并复验）
+
+**现象**（用户报「控制台打开后立马查询数据，不要等 2s 再开始查询」）：
+打开控制台后卡片/面板先空着，约 1.5~2.5s 才一起出数。
+
+**根因（两个，叠加）**：
+1. **等最慢的接口**：`loadAll()` 是 `await Promise.allSettled([5 个接口])` **之后**才逐项
+   赋值 —— `/api/server/system/info` 在服务端要真采一次 CPU（60ms）与网络速率
+   （2×100ms）再读磁盘，本机单次实测 0.79s、浏览器里 1.2~2.5s，于是 0.5s 就回来的
+   设备数/流列表/告警/媒体节点也要陪着它等；节点流量（`media_server/load`）还被串在
+   它后面，再晚一截。
+2. **同一接口被 3 个组件同时拉**：控制台、侧边栏「存储」、导航栏「平台信息」都在
+   `onMounted` 里各发一次 `system/info`（实测浏览器里 3 个并发响应分别 1.2s / 1.5s /
+   2.3s），首屏最慢的那块因此被拖到 2.5s。
+
+**修复**：
+1. `dashboard/index.vue::loadAll` 改为**各面板各自落地**：每个接口 resolve 后立刻写自己
+   的 ref（抽了 `applyInfoDerived()` / `applyNodeRows()` / `loadNodeTraffic()`，让
+   `system/info` 与流列表任一先到都能刷新界面），重点通道由流列表那一支自己重建，
+   节点流量只跟在节点列表后面查；
+2. 新增 `web/src/utils/systemInfo.ts::loadSystemInfo()`：**并发合并在途请求**
+   （不落缓存、不返回旧值），控制台/侧边栏/导航栏共用一次网络往返。
+
+**复验**：新增回归用例 `e2e/tests/dashboard.spec.ts` 的
+「system/info 再慢也不能拖住其它面板」（把该接口永久挂起，断言重点通道仍渲染 ——
+旧实现下会一直等到超时失败）。实测首屏出数时刻：设备数/媒体节点 ~0.65s，
+重点通道 ~1.0s（此前要等 system/info），CPU/内存 ~1.2~1.4s（此前 2.5s）；
+`system/info` 4s 内请求数从 3 个并发降到 1 个挂载请求 + 1 次轮询。
+`npm run build`（含 vue-tsc）通过，`smoke.spec.ts` 20/20、`dashboard.spec.ts` 4/4 通过。
 
 ---
 

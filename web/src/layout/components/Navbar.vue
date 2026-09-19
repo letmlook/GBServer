@@ -155,7 +155,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { useAppStore } from '@/store/modules/app'
 import { useUserStore } from '@/store/modules/user'
-import { getToken } from '@/utils/auth'
+import { loadSystemInfo } from '@/utils/systemInfo'
 import PlatformInfo from '@/components/PlatformInfo/index.vue'
 import type { SystemInfo } from '@/api/log'
 
@@ -179,9 +179,10 @@ let infoTimer: number | null = null
  * 周期性拉一次 `system/info`，喂给「平台信息」弹层里的
  * sip_config / jt1078_config / host_ip。
  *
- * 用裸 fetch 而不是项目里的 axios：这只是一次后台静默刷新，
- * 走 axios 会被业务码拦截器弹出 "Error" toast，而这里失败无所谓
- * （弹层显示上一次的值即可）。
+ * 实际请求走 `@/utils/systemInfo`：导航栏、侧边栏、控制台会在挂载时同时拉这个接口，
+ * 而它服务端要真采一次 CPU/网络（约 0.8s），各拉各的会让控制台首屏 CPU/内存/磁盘
+ * 面板等到 2.5s。共享请求只合并"同一时刻的重复请求"，失败时返回 null，这里保留
+ * 上一次的值即可（也不会弹 axios 的业务码 toast）。
  *
  * 注意：这个请求以前兼任「顶部导航栏延迟」的探针（用 performance.now()
  * 掐往返时间显示 `287ms 延迟`）。那个数字测得的是浏览器↔后端的 HTTP
@@ -190,18 +191,8 @@ let infoTimer: number | null = null
  * 需要看平台↔设备的真实延迟，用「国标设备」列表的「延迟」列。
  */
 async function loadPlatformInfo() {
-  const baseURL = (import.meta.env.VITE_APP_BASE_API ?? '') as string
-  const url = `${baseURL}/server/system/info`
-  try {
-    const res = await fetch(`${url}${url.includes('?') ? '&' : '?'}_t=${Date.now()}`, {
-      credentials: 'include',
-      headers: { 'access-token': getToken() ?? '' }
-    })
-    const body = await res.json().catch(() => null)
-    if (body?.data) info.value = body.data as SystemInfo
-  } catch {
-    // 网络层失败：保留上一次的响应，弹层照旧显示旧值
-  }
+  const data = await loadSystemInfo()
+  if (data) info.value = data
 }
 
 const parentTitle = computed(() => {

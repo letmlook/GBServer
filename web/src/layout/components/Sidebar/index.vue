@@ -41,7 +41,7 @@ import Logo from './Logo.vue'
 import SvgIcon from '@/components/SvgIcon/index.vue'
 import { useAppStore } from '@/store/modules/app'
 import { getMediaServerList } from '@/api/mediaServer'
-import { getSystemInfo } from '@/api/log'
+import { loadSystemInfo } from '@/utils/systemInfo'
 
 const route = useRoute()
 const router = useRouter()
@@ -51,16 +51,18 @@ const mediaCount = ref(0)
 const diskPercent = ref(0)
 async function refreshSidebarStats() {
   try {
-    const [msRes, sysRes] = await Promise.allSettled([
+    // system/info 与控制台、导航栏共用一次在途请求（见 @/utils/systemInfo）——
+    // 该接口服务端要真采 CPU/网络，3 个组件同时各拉一次会把首屏拖到 2.5s
+    const [msRes, sysData] = await Promise.allSettled([
       getMediaServerList(),
-      getSystemInfo()
+      loadSystemInfo()
     ])
     if (msRes.status === 'fulfilled') {
       const list = (msRes.value.data as unknown[]) ?? []
       mediaCount.value = list.length
     }
-    if (sysRes.status === 'fulfilled') {
-      const data = sysRes.value.data as any
+    if (sysData.status === 'fulfilled') {
+      const data = sysData.value
       if (typeof data?.disk_usage === 'number') {
         diskPercent.value = Math.round(data.disk_usage)
       }
