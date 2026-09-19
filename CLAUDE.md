@@ -56,7 +56,7 @@ Configuration loads from `config/application.toml` plus environment overrides us
 
 ## Architecture
 
-This repository is the **GBServer** — a Rust-based GB/T 28181 video platform. The frontend in `web/` is Vue 3 + Element Plus + Vite + TypeScript (migrated from the archived Vue 2 app now kept in `web-legacy-vue2/` for reference). The backend uses Axum/Tower, SQLx, JWT/API-key auth, GB28181 SIP signaling, ZLMediaKit integration, optional Redis caching, platform cascade registration, record scheduling, and JT1078 vehicle terminal support.
+This repository is the **GBServer** — a Rust-based GB/T 28181 video platform. The frontend in `web/` is Vue 3 + Element Plus + Vite + TypeScript (migrated from the old Vue 2 app, which has since been deleted from the repo and survives only in git history). The backend uses Axum/Tower, SQLx, JWT/API-key auth, GB28181 SIP signaling, ZLMediaKit integration, optional Redis caching, platform cascade registration, record scheduling, and JT1078 vehicle terminal support.
 
 ### Startup flow (`src/lib.rs` → `run()`)
 

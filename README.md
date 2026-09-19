@@ -288,7 +288,6 @@ WebRTC 的对外通告 IP（`rtc.externIP`）**不需要手改**：在 `config/a
 | [docs/DEPLOYMENT_GUIDE.md](docs/DEPLOYMENT_GUIDE.md) | 构建、运行、部署分级、配置、监控、灾备、升级、FAQ（仓库唯一对外文档） |
 | [database/README.md](database/README.md) | 初始化脚本说明 |
 | [web/README.md](web/README.md) | 前端子项目（Vue 3 + Element Plus + Vite）说明 |
-| [web-legacy-vue2/README.md](web-legacy-vue2/README.md) | 旧 Vue 2 前端归档（仅历史保留，runtime 不再使用） |
 
 ---
 

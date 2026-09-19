@@ -5,7 +5,7 @@ Agent instructions for working on this GB28181 video platform server (Rust backe
 ## Project Overview
 
 - **Backend**: Rust with Axum 0.7, SQLx (SQLite default / PostgreSQL / MySQL via cargo features), JWT auth
-- **Frontend**: Vue 3 + Element Plus + Vite + TypeScript (in `web/` directory; archived Vue 2 app in `web-legacy-vue2/`, reference only)
+- **Frontend**: Vue 3 + Element Plus + Vite + TypeScript (in `web/` directory; the old Vue 2 app was deleted from the repo — it survives only in git history)
 - **Purpose**: GB28181 protocol video management platform (WVP-PRO compatible) with JT1078 vehicle terminal support
 
 ## Build Commands
@@ -216,7 +216,6 @@ GBServer/
 │   ├── ws/ + cluster/ + rpc/ + state_store.rs  # Cluster/WS/state infrastructure
 │   └── middleware/          # Audit logging
 ├── web/                     # Vue 3 frontend (active)
-├── web-legacy-vue2/         # Archived Vue 2 frontend (reference only)
 ├── e2e/                     # Playwright UI tests
 ├── mock/                    # Python simulators (SIP device / JT1078 terminal / cascade)
 ├── docs/                    # Deployment guide, WVP parity, stub retirement plan, UI designs
