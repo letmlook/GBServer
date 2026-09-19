@@ -21,6 +21,13 @@
 
     <el-card>
       <el-table :data="rows" v-loading="loading" stripe border @selection-change="onSelection">
+        <!-- 空状态区分两种情况：否则用户无法判断「真没有告警」还是「被筛选条件筛掉了」 -->
+        <template #empty>
+          <div v-if="timeRange" class="empty-hint">
+            当前时间范围内没有告警；<el-button link type="primary" @click="clearTimeRange">清空时间筛选</el-button>可查看全部
+          </div>
+          <div v-else class="empty-hint">暂无告警记录</div>
+        </template>
         <el-table-column type="selection" width="48" />
         <el-table-column prop="alarmTime" label="报警时间" min-width="180">
           <template #default="{ row }"><span class="mono">{{ row.alarmTime }}</span></template>
@@ -85,12 +92,14 @@ const rows = ref<Alarm[]>([])
 const total = ref(0)
 const selection = ref<Alarm[]>([])
 // 默认查最近 7 天；用户手动清空则不限时间。
-function defaultLast7Days(): [Date, Date] {
-  const end = new Date()
-  const start = new Date(end.getTime() - 7 * 24 * 60 * 60 * 1000)
-  return [start, end]
-}
-const timeRange = ref<[Date, Date] | null>(defaultLast7Days())
+// 默认**不加时间过滤**。
+//
+// 此前默认填「最近 7 天」，于是页面一进来就带着 beginTime/endTime 去查：
+// 只要告警都早于 7 天，列表就是「暂无数据」，而控制台的「最近告警」走同一个
+// 接口却不带时间参数、照样有数据 —— 两处不一致，且用户无法从界面上看出
+// 「是真的没有告警」还是「被默认筛选筛掉了」。
+// 列表本身按时间倒序分页，全量展示没有负担；需要收窄时用户自己选时间即可。
+const timeRange = ref<[Date, Date] | null>(null)
 
 const query = reactive({
   page: 1,
@@ -110,6 +119,13 @@ watch(timeRange, (v) => {
     query.endTime = undefined
   }
 })
+
+/// 清空时间筛选并重新查询（空状态里的快捷操作）
+function clearTimeRange() {
+  timeRange.value = null // watch 会把 startTime/endTime 置空
+  query.page = 1
+  loadData()
+}
 
 async function loadData() {
   loading.value = true
@@ -234,4 +250,11 @@ onMounted(() => {
 .filter-card { margin-bottom: 12px; }
 .pagination { margin-top: 16px; justify-content: flex-end; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: var(--text-sm); }
+</style>
+<style lang="scss" scoped>
+.empty-hint {
+  padding: 24px 12px;
+  color: var(--text-tertiary);
+  font-size: var(--text-sm);
+}
 </style>
