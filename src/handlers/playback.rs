@@ -391,7 +391,13 @@ pub async fn playback_start(
                             // 清理已开 RTP 端口
                             let _ = zlm_client.close_rtp_server(&stream_id).await;
                             // 兜底发 BYE
-                            let _ = sip.send_session_bye(&device_id, &channel_id).await;
+                            let _ = sip
+                                .send_session_bye_by_type(
+                                    &device_id,
+                                    &channel_id,
+                                    crate::sip::gb28181::invite_session::StreamType::Playback,
+                                )
+                                .await;
                         }
                     }
                 }
@@ -713,7 +719,14 @@ pub async fn playback_stop(
             // Send SIP BYE to stop device playback push
             if let Some(ref sip_server) = state.sip_server {
                 let sip = &*sip_server;
-                match sip.send_session_bye(&device_id, &channel_id).await {
+                match sip
+                    .send_session_bye_by_type(
+                        &device_id,
+                        &channel_id,
+                        crate::sip::gb28181::invite_session::StreamType::Playback,
+                    )
+                    .await
+                {
                     Ok(call_id) => tracing::info!("Playback BYE sent call_id={}", call_id),
                     Err(e) => tracing::warn!("Failed to send playback BYE: {}", e),
                 }
@@ -937,6 +950,7 @@ pub async fn gb_record_download_start(
     // 1) 优先走 GB28181 录像下载 INVITE（Subject SSRC 前缀 2），
     //    设备推送 9102 端口的 RTP 流，ZLM 自动 MP4 落盘
     let mut used_gb28181 = false;
+    let mut gb_invite_call_id = None;
     if let Some(ref sip_server) = state.sip_server {
         let sip = &*sip_server;
         if let Some(device) = sip.device_manager().get(&device_id).await {
@@ -994,6 +1008,7 @@ pub async fn gb_record_download_start(
                         Ok(call_id) => {
                             tracing::info!("GB28181 DOWNLOAD INVITE sent, call_id={}", call_id);
                             used_gb28181 = true;
+                            gb_invite_call_id = Some(call_id);
                             // **必须让 ZLM 真的把收到的 RTP 录成 MP4**。
                             //
                             // 此前这里只发了 INVITE：设备把录像 RTP 推到 ZLM
@@ -1070,7 +1085,9 @@ pub async fn gb_record_download_start(
             zlm_folder: None,
         };
         // Phase 3.4: 注册 media waiter，等设备推流到达；流到达后状态从 inviting → downloading
-        if let Some(ref sip_server) = state.sip_server {
+        if let (Some(sip_server), Some(call_id)) =
+            (state.sip_server.as_ref(), gb_invite_call_id.as_deref())
+        {
             let sip = &*sip_server;
             let (_key, _rx) = sip.media_waiter_manager().register(
                 &format!("dlw_{}", stream_id),
@@ -1082,7 +1099,7 @@ pub async fn gb_record_download_start(
             // 还不知道 stream_id（它只收 media_port），没有这一步，
             // 之后停止下载 / 无人观看关流时找不到要释放的收流端口。
             sip.invite_session_manager()
-                .set_zlm_stream_by_device_channel(&device_id, &channel_id, &stream_id, "rtp")
+                .set_zlm_stream_by_call_id(call_id, &stream_id, "rtp")
                 .await;
         }
         if let Some(ref dm) = state.download_manager {
@@ -1258,7 +1275,11 @@ pub async fn gb_record_download_stop(
                 if let Some(ref sip_server) = state.sip_server {
                     let sip = &*sip_server;
                     if let Err(e) = sip
-                        .send_session_bye(&session.device_id, &session.channel_id)
+                        .send_session_bye_by_type(
+                            &session.device_id,
+                            &session.channel_id,
+                            crate::sip::gb28181::invite_session::StreamType::Download,
+                        )
                         .await
                     {
                         tracing::warn!("GB28181 download BYE failed: {}", e);

@@ -284,7 +284,13 @@ pub async fn play_start(
                 Err(e) => {
                     tracing::error!("SIP INVITE for TCP-PASSIVE failed: {}", e);
                     let _ = zlm_client.close_rtp_server(&stream_id).await;
-                    let _ = sip.send_session_bye(&device_id, &channel_id).await;
+                    let _ = sip
+                        .send_session_bye_by_type(
+                            &device_id,
+                            &channel_id,
+                            crate::sip::gb28181::invite_session::StreamType::Play,
+                        )
+                        .await;
                     return Json(ApiResult::error(format!("SIP error: {}", e)));
                 }
             };
@@ -309,7 +315,13 @@ pub async fn play_start(
                 Ok(p) => p,
                 Err(e) => {
                     let _ = zlm_client.close_rtp_server(&stream_id).await;
-                    let _ = sip.send_session_bye(&device_id, &channel_id).await;
+                    let _ = sip
+                        .send_session_bye_by_type(
+                            &device_id,
+                            &channel_id,
+                            crate::sip::gb28181::invite_session::StreamType::Play,
+                        )
+                        .await;
                     return Json(ApiResult::error(e));
                 }
             };
@@ -334,7 +346,13 @@ pub async fn play_start(
                     e
                 );
                 let _ = zlm_client.close_rtp_server(&stream_id).await;
-                let _ = sip.send_session_bye(&device_id, &channel_id).await;
+                let _ = sip
+                    .send_session_bye_by_type(
+                        &device_id,
+                        &channel_id,
+                        crate::sip::gb28181::invite_session::StreamType::Play,
+                    )
+                    .await;
                 return Json(ApiResult::error(format!("ZLM connect error: {}", e)));
             }
             tracing::info!(
@@ -459,7 +477,13 @@ pub async fn play_start(
                 // 清理已开启的 RTP 端口
                 let _ = zlm_client.close_rtp_server(&stream_id).await;
                 // 兜底再发一次 BYE，确保设备端不会持续推流
-                let _ = sip.send_session_bye(&device_id, &channel_id).await;
+                let _ = sip
+                    .send_session_bye_by_type(
+                        &device_id,
+                        &channel_id,
+                        crate::sip::gb28181::invite_session::StreamType::Play,
+                    )
+                    .await;
                 return Json(ApiResult::error(format!("SIP error: {}", e)));
             }
         }
@@ -520,7 +544,14 @@ pub async fn play_stop(
     // Phase 3.1: 删除 talk BYE fallback —— live 与 talk 是不同 session，
     // talk BYE 走错语义；live 路径 3.1 保证 InviteSession 一定存在。
     let sip = &*sip_server;
-    match sip.send_session_bye(&device_id, &channel_id).await {
+    match sip
+        .send_session_bye_by_type(
+            &device_id,
+            &channel_id,
+            crate::sip::gb28181::invite_session::StreamType::Play,
+        )
+        .await
+    {
         Ok(call_id) => {
             tracing::info!(
                 "Session BYE sent for stream {} call_id={}",

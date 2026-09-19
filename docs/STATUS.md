@@ -53,7 +53,7 @@
 | 语音广播 | ✅ 完整 | — | start / stop |
 | RTP / PS | ✅ 完整 | — | send / receive + getTestPort |
 | 移动位置 | ✅ 完整 | — | 订阅 + history 查询，打通两张位置表 |
-| WebRTC | ⚠️ 部分 | ⚠️ | 入口已接（直播页 + 通道播放对话框）；真机流曾建立 rtc 播放会话，但**GB28181 流解不出帧**（见 OPEN_ISSUES B8） |
+| WebRTC | ✅ 可用 | ⚠️ | 直播页与通道播放对话框均已接入；GB28181 流已由用户在当前部署环境验证可正常播放。不同设备及网络拓扑仍建议在交付验收时覆盖。 |
 | JT1078 车载终端 | ✅ 路由齐全 | — | 终端 / 通道 / 围栏（圆/多边形/矩形）/ 路线 / 位置 / 多媒体检索 / 录像下载；**GBServer 独有扩展**；真终端未测（D2） |
 | 中亿视图（SY） | ✅ 完整 | — | 已实现 13 条 `/api/sy/*`（list / list/ids / list-with-child / list-for-mobile / cont-with-child / box / circle / polygon / address / meeting/list / control/{play,stop,ptz}）；第三方对接所需的另 10 条未实现（A1） |
 | 系统 / 监控 | ✅ 完整 | — | `/api/system/info`、`/api/server/system/info`、`/metrics`（12 个指标族）、`/api/health`、`/api/ready` |

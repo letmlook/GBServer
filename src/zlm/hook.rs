@@ -965,7 +965,7 @@ async fn close_idle_stream(
 
     if let Some(ref sip_server) = state.sip_server {
         let sip = sip_server.as_ref();
-        match sip.send_session_bye(device_id, channel_id).await {
+        match sip.send_session_bye_by_stream_id(&data.stream).await {
             Ok(call_id) => tracing::info!(
                 "none_reader: 已向设备发 BYE device={} channel={} call_id={}",
                 device_id,
@@ -1639,15 +1639,12 @@ pub(crate) async fn handle_webhook_inner(
                 // Clean up InviteSession associated with this stream
                 if let Some(ref sip_server) = state.sip_server {
                     let sip = sip_server.as_ref();
-                    // Parse device_id/channel_id from stream_id
-                    if let Some((device_id, channel_id)) = parse_stream_id(&data.stream_id) {
-                        if let Ok(_) = sip.send_session_bye(&device_id, &channel_id).await {
-                            tracing::info!(
-                                "Sent BYE for timed-out RTP session {}/{}",
-                                device_id,
-                                channel_id
-                            );
-                        }
+                    if let Ok(call_id) = sip.send_session_bye_by_stream_id(&data.stream_id).await {
+                        tracing::info!(
+                            "Sent BYE for timed-out RTP session stream={} call_id={}",
+                            data.stream_id,
+                            call_id
+                        );
                     }
                 }
             }

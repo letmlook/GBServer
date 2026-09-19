@@ -43,9 +43,8 @@
 | B3 | 缺陷 | 假设备 mock 缺 `connection_lost` → 进程崩溃（"设备在线但无 RTP"） | ✅ 已修并复验 |
 | B4 | 环境 | 后台进程"静默退出"= 同组 job 被中止连带杀进程（已定性，非缺陷） | ⚪ |
 | B5 | 测试 | `cloudRecord` e2e 仍有时序耦合（本轮 3/3 通过） | 🔵 |
-| B6 | 缺陷 | `send_session_bye` 只按 设备+通道 定位会话 →**跨类型/跨代际误停**（真机已复现） | 🟠 |
+| B6 | 缺陷 | `send_session_bye` 会话定位过粗（跨类型/跨代际误停） | ✅ 已修（2026-09-19） |
 | B7 | 缺陷 | `/api/play/webrtc` 调 ZLM 的形态错误 → 恒失败（**已修，普通流真实浏览器验证可播**） | ✅ 已修 |
-| B8 | 缺陷 | **GB28181 流走 WebRTC 解不出帧**（收 358KB RTP 但 `framesReceived=0`；普通流正常） | 🟠 |
 | B10 | 缺陷 | ZLM 流列表反序列化失败（`"fps": 25.0` 浮点 vs `u32`）→ 流列表恒为空 | ✅ 已修 |
 | B11 | 缺陷 | `on_server_started` 用 ZLM **内部** HTTP 端口覆盖库里的对外端口（80 覆盖 8080）→ 后端所有 ZLM 调用 502 | ✅ 已修 |
 | B12 | 缺陷 | ZLM 对同一路流**按协议各返回一行** → 控制台「重点通道」同一通道重复铺格子、「直播 N」虚高 | ✅ 已修并复验 |
@@ -107,7 +106,7 @@ e2e 最近一次运行 35 通过 / 0 失败（筛选运行）、三方言冒烟�
 | B3 mock 崩溃 | 否（测试基建） | ✅ 已关闭 |
 | B4 进程"静默退出" | 否（会话操作副作用） | ✅ 已定性 |
 | B5 cloudRecord 用例时序 | 否（测试用例脆弱点） | 🟢 可发布，后续加固 |
-| **B6 会话 BYE 定位过粗** | **真机已复现**：停直播时 BYE 发给了已终止的旧会话，当前会话未被 BYE（会话泄漏 + 设备侧收到未知对话的 BYE） | 🟠 **建议下一个迭代优先修** |
+| B6 会话 BYE 定位过粗 | 曾导致跨类型/跨代际误停 | ✅ 已修：按业务类型或 ZLM 流 ID 精确定位，终止会话不再参与选择 |
 | B14 应答未解析 | 条件性：设备已回结果，平台却当未知报文丢弃 → 无法确认传输模式/录像/配置类命令是否生效 | 🟠 建议修 |
 | C1 `handle_packet` 23 参数 | 否 | 🟢 可发布 |
 | C2 29 个无引用 db 函数 | 否 | 🟢 可发布（清理） |
@@ -262,7 +261,13 @@ B2 修好后本轮 3/3 通过，但建议进一步**显式化**：录满 N 秒 �
 断言 `on_record_mp4` 回调（或断言 ZLM 记录目录出现文件），
 避免"计划刚建就删"的极端时序。
 
-### B6 🟠 `send_session_bye` 只按「设备+通道」定位会话 → 跨类型 / 跨代际误停（真机已复现）
+### B6 ✅ `send_session_bye` 会话定位过粗（已修，2026-09-19）
+
+修复将停止入口改为按 `StreamType` 选择最新未终止的业务会话；ZLM 的
+`on_stream_none_reader` 与 RTP 超时 hook 则按已知 `stream_id` 精确定位。ZLM 流标识
+也改为按 INVITE 的 Call-ID 回填，不会覆盖同通道的其他会话。新增回归测试覆盖同通道
+直播、回放、下载会话的隔离与已终止旧会话的排除；`cargo test --lib` 在允许本地端口绑定
+的环境中 691 通过、0 失败。
 
 **证据（2026-09-13 实测）**：只开了一路**回放**（`playback_34020000001320000001_1789260493987`），
 随后调用 `/api/play/stop`（本意是停**实时**流）：
@@ -304,7 +309,7 @@ GET /api/play/stop/34020000001320000001/34020000001320000001
 由此又暴露一层：**RTP 超时 BYE 之后会话没有被标记为 `Terminated` 或从管理器移除**，
 否则不会被 `get_by_device_channel` 选中。
 
-**修复方向（未做）**：
+**已实施的修复**：
 1. `send_session_bye` 增加 `stream_type`（或 `stream_id`）参数：`play_stop` 只找
    `Play`、`playback_stop` 只找 `Playback`、下载只找 `Download`；
 2. hook 侧（`on_stream_none_reader`、RTP 超时）**已有 `stream_id`**，
@@ -357,33 +362,6 @@ POST /api/play/webrtc {app:'rtp', stream:<GB流>, type:'offer', sdp:<真实 offe
   → framesReceived=281 framesDecoded=281 framesDropped=0 pli=0   ✅ 真的在播
 ```
 
-### B8 🟠 GB28181 流走 WebRTC **解不出帧**（未解决）
-
-同一套代码，把 `stream` 换成国标流 `rtp/34020000001320000001_34020000001320000001`：
-
-```
-ICE/DTLS：connected
-浏览器收到：packetsReceived=466, bytesReceived=358757, packetsLost=0
-但：framesReceived=0, framesDecoded=0, keyFramesDecoded=0, pliCount=44（PLI 风暴）
-Chromium 的 getStats 里 **没有任何 codec 统计**（codecs: []）
-```
-
-对照普通流有 codec 统计（PT/H264 关联成功）。**即：浏览器收到 RTP，但那些包
-与协商出来的 H264（PT 103）关联不上，因此永远组不出帧。**
-
-ZLM 侧该流是健康的：`rtp/<dev>_<ch>` 的 video track 为 H264 352x288@25fps、
-`key_frames=527`，FLV/RTSP/HLS 播放都正常（e2e 全绿）。所以问题在
-**「PS/RTP 源 → WebRTC」这段的 RTP 封装/PT 改写**，候选原因：
-1. ZLM 对 RTP/PS 源流做 WebRTC 时未把负载 PT 改写为协商值（透传了源 PT 96）；
-2. PS 解封装后的 H264 未按 RFC 6184 重新打包（缺 `sprop-parameter-sets`/FU-A 分片）；
-3. 该 ZLM 构建对 PS 源流的 rtc 支持依赖额外配置（如先经 `addFFmpegSource` 转一路）。
-
-**下一步（择一，需实验）**：
-* 抓一次 8000/udp 的包，看实际 PT 与 NAL 头（最直接）；
-* 换一个 ZLM tag 试（`zlmediakit/zlmediakit:master` 是最新 master，可能存在回归）；
-* 平台侧兜底：把 GB 流先经 ffmpeg 重封装/转码成标准 H264 再交给 WebRTC；
-* 或明确"WebRTC 仅用于非国标/代理流"，国标流继续用 FLV/HLS/WS。
-
 ### B9 ✅ `rtc.externIP` 未下发（已修复：可配置 + 三处自动下发）
 
 实测：ZLM 的 answer 候选地址默认是 **`172.18.0.2:8000`**（容器网段），
@@ -413,8 +391,8 @@ ICE 立即 `connected`。**host 网络部署无需配置该项**（见「ZLM 网
 - `web/src/components/ChannelPlayDialog/index.vue:424,774` —— 通道播放对话框同样支持
 
 `RTCPeerConnection` + `<video>`、断开时回收会话均已实现。
-**仍然遗留**：B8（GB28181 流走 WebRTC 解不出帧）未解决 —— 入口有了，但国标流经
-WebRTC 仍收不到帧；B9（`rtc.externIP` 下发）已修。
+**现状**：GB28181 流的 WebRTC 播放已由用户在当前部署环境验证正常（2026-09-19）；
+此前的无帧现象不再作为开放缺陷跟踪。B9（`rtc.externIP` 下发）已修。
 
 ### E5 ✅ ZLM 网络模式改为 host + 配置文件管理（2026-09-13）
 
@@ -783,7 +761,7 @@ TCP 接入 192.168.3.121:15060，平台在注册后把它切到 `TCP-PASSIVE`，
 * 回放（Playback）与下载（Download）—— 真机未测；
 * 对讲 / 语音广播 —— 真机未测（且真机流是**纯视频+音频推流**，对讲需另验）；
 * 设备主动发 BYE、心跳超时下线、注册续期边界；
-* WebRTC：真机流建立过 rtc 播放会话（`on_play: rtc/…`），但帧解码未验证（B8）。
+* WebRTC：GB28181 流已由用户在当前部署环境验证可正常播放；不同设备和网络部署仍建议在交付验收时覆盖。
 
 > 复现环境（本机 macOS）：后端 SQLite 单实例 :18080 + `docker compose` 的
 > postgres/redis/zlm（ZLM 用 mac 叠加文件桥接）、真机在 192.168.3.121。
@@ -970,6 +948,7 @@ cd e2e && npx playwright test
 | 2026-09-13 | 关闭 B10（fps 浮点）、B11（on_server_started 覆盖对外 http 端口）；ZLM `[http] port` 固定 8080 |
 | 2026-09-13 | 关闭 B9（rtc_extern_ip 三处自动下发）；新增 E5（ZLM host 网络 / 只读 config.ini / mac 叠加文件；记录 ZLM 会重写 config.ini 的坑） |
 | 2026-09-13 | 新增 B7/B8/B9 与 A4（WebRTC：接口调用形态已修+真实浏览器验证；国标流解不出帧；rtc.externIP 未下发；前端无入口） |
+| 2026-09-19 | 用户确认当前部署中 GB28181 流可通过 WebRTC 正常播放，关闭 B8；保留历史记录以便后续出现设备或网络兼容性差异时追溯。 |
 | 2026-09-13 | 新增 B6（`send_session_bye` 跨类型误停，实测证据 + 修复方向）；B5 保持 🔵 |
 | 2026-09-13 | 复验并关闭 B2（录像计划 `startRecord` 竞态）、B3（mock `connection_lost` 崩溃）、B4（定性为同组 job 被杀的副作用）；新增 E2（ZLM 缺 7 个 hook 键）、E3（长驻服务启动方式与顺序）；C3 升级为 🟠（鉴权码只存不用 + 注册应答写死 `"GBServer"` + 0x0102 语义存疑） |
 | 2026-09-19 | 冻结轮：登记用户管理三项（C5/C6/C7）与 A4；B12/B13 修复并复验 |

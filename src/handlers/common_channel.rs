@@ -1211,7 +1211,11 @@ pub async fn channel_play_stop(
     // 2) 给设备发 BYE（不回 BYE 的设备会一直往已关闭的端口推流）
     if let Some(sip_server) = state.sip_server.clone() {
         match sip_server
-            .send_session_bye(&device_id, &gb_channel_id)
+            .send_session_bye_by_type(
+                &device_id,
+                &gb_channel_id,
+                crate::sip::gb28181::invite_session::StreamType::Play,
+            )
             .await
         {
             Ok(call_id) => {
@@ -3067,7 +3071,14 @@ pub async fn channel_playback_stop(
             "msg": "SIP 服务未启用：ZLM 流已清理，但未能下发 SIP BYE"
         }));
     };
-    if let Err(e) = sip_server.send_session_bye(&device_id, &channel_id).await {
+    if let Err(e) = sip_server
+        .send_session_bye_by_type(
+            &device_id,
+            &channel_id,
+            crate::sip::gb28181::invite_session::StreamType::Playback,
+        )
+        .await
+    {
         return Json(serde_json::json!({ "code": 1, "msg": format!("SIP BYE 下发失败: {}", e) }));
     }
 

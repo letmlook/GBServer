@@ -6040,14 +6040,43 @@ f=v/1/96/1/2/1/1/0
     ///
     /// 三条任一不满足，设备侧都匹配不到对话，典型答复是
     /// `481 Call/Transaction Does Not Exist`，**不会停止推流**。
-    pub async fn send_session_bye(&self, device_id: &str, channel_id: &str) -> Result<String> {
+    /// 按业务类型停止该设备通道最新的未终止会话。
+    pub async fn send_session_bye_by_type(
+        &self,
+        device_id: &str,
+        channel_id: &str,
+        stream_type: crate::sip::gb28181::invite_session::StreamType,
+    ) -> Result<String> {
         let session = self
             .invite_session_manager
-            .get_by_device_channel(device_id, channel_id)
+            .get_latest_by_device_channel_type(device_id, channel_id, stream_type)
             .await
             .ok_or_else(|| {
-                anyhow::anyhow!("No active invite session for {}/{}", device_id, channel_id)
+                anyhow::anyhow!(
+                    "No matching invite session for {}/{}",
+                    device_id,
+                    channel_id
+                )
             })?;
+        self.send_invite_session_bye(session).await
+    }
+
+    /// 按 ZLM 流标识停止会话，供流 hook 精确清理。
+    pub async fn send_session_bye_by_stream_id(&self, stream_id: &str) -> Result<String> {
+        let session = self
+            .invite_session_manager
+            .get_by_zlm_stream_id(stream_id)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("No invite session for ZLM stream {}", stream_id))?;
+        self.send_invite_session_bye(session).await
+    }
+
+    async fn send_invite_session_bye(
+        &self,
+        session: crate::sip::gb28181::invite_session::InviteSession,
+    ) -> Result<String> {
+        let device_id = &session.device_id;
+        let channel_id = &session.channel_id;
 
         // 设备可能刚刚掉线（正是要发 BYE 的常见场景），此时内存注册表里
         // 已经没有它 —— 回落到会话记录的对端地址，别让"重发 BYE"失败。
@@ -7154,7 +7183,7 @@ f=v/1/96/1/2/1/1/0
             )
             .await;
             self.invite_session_manager
-                .set_zlm_stream_by_device_channel(device_id, channel_id, zlm_stream_id, "rtp")
+                .set_zlm_stream_by_call_id(&call_id, zlm_stream_id, "rtp")
                 .await;
         }
 
