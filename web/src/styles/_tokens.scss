@@ -157,11 +157,21 @@ html.dark {
   --bg-overlay:    #2d3650;   /* 弹层/覆盖 */
   --bg-disabled:   #3a4258;
 
-  /* 文字层（暗底浅字） */
-  --text-primary:   #e2e8f0;
-  --text-secondary: #94a3b8;
-  --text-tertiary:  #64748b;
-  --text-disabled:  #475569;
+  /* 文字层（暗底浅字）
+   *
+   * 取值依据是**实测对比度**（WCAG 正文要求 ≥ 4.5:1），基准取最亮的面板色
+   * `--bg-elevated #232b40`（最差情况）。旧值在暗色下整体偏灰、看不清：
+   *   primary   #e2e8f0  11.4:1  → #f1f5f9  12.9:1
+   *   secondary #94a3b8   5.5:1  → #cbd5e1   9.5:1   ← 最常用（映射 el-text-color-regular）
+   *   tertiary  #64748b   3.0:1  → #a8b8cc   7.0:1   ← 提示/副标签（映射 el-text-color-secondary）
+   *   disabled  #475569   1.9:1  → #8b9bb4   5.0:1   ← placeholder（映射 el-text-color-placeholder）
+   * 注意：多处组件还会再叠 `opacity: .6~.7`（如 .placeholder-tip），
+   * 等效对比度会再降一档，所以 token 本身必须留足余量。
+   */
+  --text-primary:   #f1f5f9;
+  --text-secondary: #cbd5e1;
+  --text-tertiary:  #a8b8cc;
+  --text-disabled:  #8b9bb4;
   --text-on-primary: #0f172a;
 
   /* 状态色 */
@@ -170,10 +180,16 @@ html.dark {
   --state-error:   #ef4444;
   --state-info:    #38bdf8;
 
-  /* 边框 */
-  --border-default: #334155;
-  --border-subtle:  #1e293b;
-  --border-strong:  #475569;
+  /* 边框
+   *
+   * 旧值在暗色下几乎不可见（`--border-subtle #1e293b` 对面板底 `#1a2236`
+   * 只有 1.08:1），而它是 Element Plus 的 `--el-border-color-lighter`，
+   * 也就是**表格网格线**用的颜色 —— 结果表格像没有格线的一团文字。
+   * 提到可用对比度（1.45 / 2.13 / 2.97:1），仍属克制的分隔感。
+   */
+  --border-default: #46566f;
+  --border-subtle:  #2f3d55;
+  --border-strong:  #5b6c86;
 
   /* Element Plus 覆盖 */
   --el-bg-color: var(--bg-base);

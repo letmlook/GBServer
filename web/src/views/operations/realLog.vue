@@ -135,11 +135,11 @@ const vAutoBottom = {
 .log-card { min-height: 600px; }
 .log-header { display: flex; align-items: center; gap: 12px; }
 .status { display: flex; align-items: center; gap: 4px; font-size: var(--text-sm); }
-.log-body { background: #0f172a; color: #e2e8f0; font-family: ui-monospace, monospace; font-size: var(--text-sm); padding: 12px; height: 540px; overflow-y: auto; border-radius: 4px; white-space: pre; line-height: 1.6; }
+.log-body { background: #0f172a; color: #eef2f7; font-family: ui-monospace, monospace; font-size: var(--text-sm); padding: 12px; height: 540px; overflow-y: auto; border-radius: 4px; white-space: pre; line-height: 1.6; }
 .log-body.is-wrap { white-space: pre-wrap; word-break: break-all; }
 .empty { display: flex; align-items: center; justify-content: center; height: 100%; }
 .log-line { display: flex; gap: 8px; padding: 1px 0; }
-.log-time { color: #94a3b8; min-width: 140px; }
+.log-time { color: #a8b8cc; min-width: 140px; }
 .log-level { padding: 0 6px; border-radius: 3px; min-width: 50px; text-align: center; font-weight: 600; }
 .log-logger { color: #cbd5e1; min-width: 100px; }
 .log-msg { flex: 1; }
