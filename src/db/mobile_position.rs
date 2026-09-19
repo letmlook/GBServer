@@ -404,3 +404,44 @@ pub async fn get_by_id(pool: &Pool, id: i64) -> sqlx::Result<Option<MobilePositi
     .fetch_optional(pool)
     .await;
 }
+
+/// 把最新上报的位置**回写到通道行**，供地图与通道列表使用。
+///
+/// ## 为什么需要这一步
+///
+/// 设备上报的移动位置落在 `gb_device_mobile_position`（以及历史表
+/// `gb_position_history`），而**地图与通道列表读的是
+/// `gb_device_channel.longitude/latitude`** —— 两张表互不相通。结果是
+/// 「设备明明在持续上报位置，地图上却什么都看不到」。
+///
+/// ## 覆盖范围
+///
+/// 设备级上报时 `gb_device_mobile_position.channel_id` 等于 device_id，
+/// 因此这里按 `gb_device_channel.device_id = <设备国标编号>` 更新**该设备的所有通道**。
+///
+/// ## 守卫
+///
+/// 经纬度同时为 0（设备未带该字段 / 解析失败）时**不写库**：否则会把已有的
+/// 正确坐标覆盖成 (0,0)，地图上设备直接消失（前端会把 0,0 视为无效点过滤掉）。
+pub async fn sync_channel_coords(
+    pool: &Pool,
+    device_id: &str,
+    longitude: f64,
+    latitude: f64,
+) -> sqlx::Result<u64> {
+    if longitude == 0.0 && latitude == 0.0 {
+        return Ok(0);
+    }
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let result = sqlx::query(&crate::dyn_where::dialect_sql(
+        "UPDATE gb_device_channel SET longitude = ?, latitude = ?, update_time = ? \
+         WHERE device_id = ?",
+    ))
+    .bind(longitude)
+    .bind(latitude)
+    .bind(&now)
+    .bind(device_id)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected())
+}

@@ -4305,6 +4305,10 @@ let renewal_pool = pool.clone();
                     e
                 );
             }
+            // 同步回写通道坐标，让地图/通道列表能看到设备位置（0,0 由函数内部守卫）
+            if let Err(e) = pos_db::sync_channel_coords(pool, device_id, longitude, latitude).await {
+                tracing::warn!("回写通道坐标失败 device={}: {}", device_id, e);
+            }
         }
 
         let response_body = format!(

@@ -265,6 +265,13 @@ impl NotifyDispatcher {
                 .await
                 .map_err(|e| e.to_string())?;
 
+            // 打通「上报 → 地图可见」：地图/通道列表读的是
+            // `gb_device_channel.longitude/latitude`，只写位置表的话地图上永远看不到。
+            // 0,0 由该函数内部守卫（不覆盖已有坐标）。
+            if let Err(e) = db_pos::sync_channel_coords(&self.pool, &device_id, lon, lat).await {
+                tracing::warn!("回写通道坐标失败 device={}: {}", device_id, e);
+            }
+
             // Redis 发布
             if let Some(r) = redis {
                 let channel = format!("position:{}", device_id);
@@ -373,6 +380,83 @@ impl NotifyDispatcher {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    /// 端到端：设备上报 MobilePosition NOTIFY 后，
+    /// **位置表与通道坐标都要更新** —— 后者是地图/通道列表真正读的字段。
+    ///
+    /// 回归保护：此前只写 `gb_device_mobile_position`，而地图读
+    /// `gb_device_channel.longitude/latitude`，导致「设备在上报、地图上看不到」。
+    #[tokio::test]
+    async fn position_notify_syncs_channel_coords() {
+        use crate::test_support::sqlite_pool_with_schema;
+        let pool = sqlite_pool_with_schema().await;
+        let dev = "34020000001320128497";
+        let ch = "34020000001310000001";
+
+        sqlx::query("INSERT INTO gb_device (device_id, name, on_line) VALUES (?, ?, 1)")
+            .bind(dev).bind("test-dev").execute(&pool).await.unwrap();
+        sqlx::query(
+            "INSERT INTO gb_device_channel (device_id, gb_device_id, name, status, create_time, update_time, data_type, data_device_id) \
+             VALUES (?, ?, ?, 'ON', '2026-09-19 00:00:00', '2026-09-19 00:00:00', 0, 0)",
+        )
+        .bind(dev).bind(ch).bind("ch1").execute(&pool).await.unwrap();
+
+        let xml = format!(
+            r#"<?xml version="1.0" encoding="GB2312"?>
+<Notify><CmdType>MobilePosition</CmdType><SN>1</SN><DeviceID>{dev}</DeviceID>
+<Time>2026-09-19T20:00:00</Time><Longitude>116.397128</Longitude><Latitude>39.916527</Latitude>
+<Speed>0</Speed><Direction>0</Direction></Notify>"#
+        );
+        NotifyDispatcher::new(pool.clone())
+            .handle_position_notify(&xml, None, None)
+            .await
+            .expect("NOTIFY 处理应成功");
+
+        // 1) 位置表有记录
+        let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM gb_device_mobile_position")
+            .fetch_one(&pool).await.unwrap();
+        assert_eq!(n, 1, "位置表应有 1 条");
+
+        // 2) 通道坐标已回写（地图读的就是这两个字段）
+        let (lng, lat): (Option<f64>, Option<f64>) =
+            sqlx::query_as("SELECT longitude, latitude FROM gb_device_channel WHERE gb_device_id = ?")
+                .bind(ch).fetch_one(&pool).await.unwrap();
+        assert_eq!(lng, Some(116.397128), "通道经度应被回写");
+        assert_eq!(lat, Some(39.916527), "通道纬度应被回写");
+    }
+
+    /// 守卫：上报里没有经纬度（解析为 0,0）时**不得**覆盖已有正确坐标，
+    /// 否则地图上的设备会因为 (0,0) 被判为无效点而消失。
+    #[tokio::test]
+    async fn position_notify_zero_coords_does_not_overwrite() {
+        use crate::test_support::sqlite_pool_with_schema;
+        let pool = sqlite_pool_with_schema().await;
+        let dev = "34020000001320128497";
+        let ch = "34020000001310000001";
+
+        sqlx::query("INSERT INTO gb_device (device_id, name, on_line) VALUES (?, ?, 1)")
+            .bind(dev).bind("test-dev").execute(&pool).await.unwrap();
+        sqlx::query(
+            "INSERT INTO gb_device_channel (device_id, gb_device_id, name, status, longitude, latitude, create_time, update_time, data_type, data_device_id) \
+             VALUES (?, ?, ?, 'ON', 116.4, 39.9, '2026-09-19 00:00:00', '2026-09-19 00:00:00', 0, 0)",
+        )
+        .bind(dev).bind(ch).bind("ch1").execute(&pool).await.unwrap();
+
+        let xml = format!(
+            r#"<Notify><CmdType>MobilePosition</CmdType><SN>2</SN><DeviceID>{dev}</DeviceID>
+<Time>2026-09-19T20:00:01</Time><Longitude>0</Longitude><Latitude>0</Latitude></Notify>"#
+        );
+        NotifyDispatcher::new(pool.clone())
+            .handle_position_notify(&xml, None, None)
+            .await
+            .expect("NOTIFY 处理应成功");
+
+        let (lng, lat): (Option<f64>, Option<f64>) =
+            sqlx::query_as("SELECT longitude, latitude FROM gb_device_channel WHERE gb_device_id = ?")
+                .bind(ch).fetch_one(&pool).await.unwrap();
+        assert_eq!(lng, Some(116.4), "0,0 上报不得覆盖已有经度");
+        assert_eq!(lat, Some(39.9), "0,0 上报不得覆盖已有纬度");
+    }
 
     #[test]
     fn test_subscribe_register_and_renew() {
