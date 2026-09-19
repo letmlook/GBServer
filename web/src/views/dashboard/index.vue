@@ -171,10 +171,6 @@
           <span class="meta">GB28181 · JT1078</span>
         </header>
         <div class="proto-stack">
-          <div v-if="hostIp" class="host-ip-banner">
-            <div class="host-ip-label">本机 IP（填到设备 / 下级平台「服务器地址」里）</div>
-            <div class="host-ip-value mono">{{ hostIp }}</div>
-          </div>
           <section class="proto-block">
             <h4 class="proto-title">
               <el-icon :size="14"><Connection /></el-icon>
@@ -187,18 +183,52 @@
               </span>
             </h4>
             <dl v-if="sipCfg" class="proto-list">
-              <div class="proto-row"><dt>设备 ID</dt><dd class="mono">{{ sipCfg.device_id }}</dd></div>
-              <div class="proto-row"><dt>信令域</dt><dd class="mono">{{ sipCfg.realm }}</dd></div>
               <div class="proto-row">
-                <dt>监听</dt>
-                <dd class="mono">{{ listenAddr(sipCfg.bind_ip || sipCfg.ip) }}:{{ sipCfg.port }}
-                  <span class="meta">{{ sipCfg.tcp_enabled ? 'UDP/TCP' : 'UDP' }}</span>
+                <dt>设备 ID</dt>
+                <dd class="proto-value mono">{{ sipCfg.device_id }}
+                  <button class="proto-copy" @click="copy(sipCfg.device_id ?? '', '设备 ID')" title="复制设备 ID">
+                    <el-icon :size="12"><DocumentCopy /></el-icon>
+                  </button>
                 </dd>
               </div>
-              <div class="proto-row"><dt>密码</dt><dd class="mono">{{ sipCfg.password }}</dd></div>
-              <div class="proto-row"><dt>心跳</dt><dd class="mono">{{ sipCfg.keepalive_timeout }}s</dd></div>
-              <div class="proto-row"><dt>注册</dt><dd class="mono">{{ sipCfg.register_timeout }}s</dd></div>
-              <div class="proto-row"><dt>字符集</dt><dd class="mono">{{ sipCfg.charset }}</dd></div>
+              <div class="proto-row">
+                <dt>信令域</dt>
+                <dd class="proto-value mono">{{ sipCfg.realm }}
+                  <button class="proto-copy" @click="copy(sipCfg.realm ?? '', '信令域')" title="复制信令域">
+                    <el-icon :size="12"><DocumentCopy /></el-icon>
+                  </button>
+                </dd>
+              </div>
+              <div class="proto-row">
+                <dt>监听</dt>
+                <dd class="proto-value mono">
+                  {{ listenAddr(sipCfg.bind_ip || sipCfg.ip) }}:{{ sipCfg.port }}
+                  <span class="meta">{{ sipCfg.tcp_enabled ? 'UDP/TCP' : 'UDP' }}</span>
+                  <button class="proto-copy" @click="copy(listenAddr(sipCfg.bind_ip || sipCfg.ip) + ':' + sipCfg.port, '监听地址')" title="复制监听地址">
+                    <el-icon :size="12"><DocumentCopy /></el-icon>
+                  </button>
+                </dd>
+              </div>
+              <div class="proto-row">
+                <dt>密码</dt>
+                <dd class="proto-value mono">{{ sipCfg.password }}
+                  <button class="proto-copy" @click="copy(sipCfg.password ?? '', 'SIP 密码')" title="复制 SIP 密码">
+                    <el-icon :size="12"><DocumentCopy /></el-icon>
+                  </button>
+                </dd>
+              </div>
+              <div class="proto-row">
+                <dt>心跳</dt>
+                <dd class="proto-value mono">{{ sipCfg.keepalive_timeout }}s</dd>
+              </div>
+              <div class="proto-row">
+                <dt>注册</dt>
+                <dd class="proto-value mono">{{ sipCfg.register_timeout }}s</dd>
+              </div>
+              <div class="proto-row">
+                <dt>字符集</dt>
+                <dd class="proto-value mono">{{ sipCfg.charset }}</dd>
+              </div>
             </dl>
             <div v-else class="disk-empty text-tertiary text-xs">未配置 SIP</div>
           </section>
@@ -214,23 +244,35 @@
             <dl v-if="jtCfg" class="proto-list">
               <div class="proto-row">
                 <dt>TCP</dt>
-                <dd class="mono">{{ listenAddr(null) }}:{{ jtCfg.tcp_port }}</dd>
+                <dd class="proto-value mono">{{ listenAddr(null) }}:{{ jtCfg.tcp_port }}
+                  <button class="proto-copy" @click="copy(listenAddr(null) + ':' + jtCfg.tcp_port, 'JT1078 TCP')" title="复制 JT1078 TCP 地址">
+                    <el-icon :size="12"><DocumentCopy /></el-icon>
+                  </button>
+                </dd>
               </div>
               <div class="proto-row">
                 <dt>UDP</dt>
-                <dd class="mono">{{ listenAddr(null) }}:{{ jtCfg.udp_port }}</dd>
+                <dd class="proto-value mono">{{ listenAddr(null) }}:{{ jtCfg.udp_port }}
+                  <button class="proto-copy" @click="copy(listenAddr(null) + ':' + jtCfg.udp_port, 'JT1078 UDP')" title="复制 JT1078 UDP 地址">
+                    <el-icon :size="12"><DocumentCopy /></el-icon>
+                  </button>
+                </dd>
               </div>
               <div class="proto-row" v-if="jtCfg.timeout_ms">
                 <dt>会话超时</dt>
-                <dd class="mono">{{ (jtCfg.timeout_ms / 1000).toFixed(1) }}s</dd>
+                <dd class="proto-value mono">{{ (jtCfg.timeout_ms / 1000).toFixed(1) }}s</dd>
               </div>
               <div class="proto-row" v-if="jtCfg.retransmit_wait_ms">
                 <dt>重传等待</dt>
-                <dd class="mono">{{ jtCfg.retransmit_wait_ms }}ms</dd>
+                <dd class="proto-value mono">{{ jtCfg.retransmit_wait_ms }}ms</dd>
               </div>
               <div class="proto-row" v-if="jtCfg.retransmit_hook_url">
                 <dt>重传回调</dt>
-                <dd class="mono">{{ jtCfg.retransmit_hook_url }}</dd>
+                <dd class="proto-value mono">{{ jtCfg.retransmit_hook_url }}
+                  <button class="proto-copy" @click="copy(jtCfg.retransmit_hook_url, '重传回调')" title="复制重传回调 URL">
+                    <el-icon :size="12"><DocumentCopy /></el-icon>
+                  </button>
+                </dd>
               </div>
             </dl>
             <div v-else class="disk-empty text-tertiary text-xs">未配置 JT1078</div>
@@ -313,6 +355,7 @@ import {
   Connection,
   Cpu,
   DataLine,
+  DocumentCopy,
   Histogram,
   VideoCamera,
   VideoPlay
@@ -692,6 +735,36 @@ function listenAddr(raw: string | null | undefined): string {
   return hostIp.value ?? '0.0.0.0'
 }
 
+// 复制到剪贴板。navigator.clipboard 需要 HTTPS 或 localhost，
+// 我们部署在 127.0.0.1 / 内网 IP 上，所以是 OK 的；旧浏览器或
+// 非安全上下文下用 textarea + execCommand 兜底。
+async function copy(text: string, label = '') {
+  const ok = await (async () => {
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text)
+        return true
+      }
+    } catch { /* fall through */ }
+    try {
+      const ta = document.createElement('textarea')
+      ta.value = text
+      ta.style.position = 'fixed'
+      ta.style.opacity = '0'
+      document.body.appendChild(ta)
+      ta.select()
+      const r = document.execCommand('copy')
+      document.body.removeChild(ta)
+      return r
+    } catch { return false }
+  })()
+  ElMessage({
+    message: ok ? `已复制${label ? ' ' + label : ''}` : '复制失败，请手动选择文本',
+    type: ok ? 'success' : 'error',
+    duration: 1500
+  })
+}
+
 const healthList = computed<HealthRow[]>(() => {
   const ok = apiOk.value
   const total = mediaServerCount.value
@@ -975,15 +1048,6 @@ onBeforeUnmount(() => {
 
 /* ---- 协议接入 ---- */
 .proto-stack { padding: 10px 14px 14px; display: flex; flex-direction: column; gap: 12px; }
-/* 本机 IP 大字卡：放最顶上，最显眼 */
-.host-ip-banner {
-  padding: 12px 14px;
-  background: linear-gradient(135deg, rgba(11, 138, 178, 0.12), rgba(11, 138, 178, 0.04));
-  border: 1px solid rgba(11, 138, 178, 0.25);
-  border-radius: 8px;
-}
-.host-ip-label { font-size: var(--text-xs); color: var(--text-tertiary); margin-bottom: 4px; }
-.host-ip-value { font-size: 22px; font-weight: 700; color: var(--brand-primary-500); letter-spacing: 0.5px; }
 .proto-block { padding: 10px 12px; background: var(--bg-elevated); border-radius: 6px; }
 .proto-title {
   display: flex;
@@ -999,6 +1063,29 @@ onBeforeUnmount(() => {
 .proto-row dt { color: var(--text-tertiary); margin: 0; }
 .proto-row dd { color: var(--text-primary); margin: 0; word-break: break-all; }
 .proto-row .meta { margin-left: 6px; color: var(--text-tertiary); font-weight: 400; }
+/* dd 容器放 inline 内容 + 复制图标 */
+.proto-value {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+.proto-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px;
+  background: transparent;
+  border: 0;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  border-radius: 3px;
+  transition: color 0.15s, background 0.15s;
+  line-height: 0;
+}
+.proto-copy:hover { color: var(--brand-primary-500); background: rgba(11, 138, 178, 0.10); }
+.proto-copy:active { transform: scale(0.9); }
 
 .native-tbl { width: 100%; border-collapse: collapse; font-size: var(--text-xs); }
 .native-tbl th, .native-tbl td { padding: 8px 14px; border-bottom: 1px solid var(--border-subtle); text-align: left; }
