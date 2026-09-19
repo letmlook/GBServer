@@ -123,7 +123,13 @@ async fn smoke_user_and_stream_reads() {
 
     db::user::find_by_username(&pool, "admin").await.expect("find_by_username");
     db::user::find_by_id(&pool, 1).await.expect("find_by_id");
-    db::user::get_users_paged(&pool, 1, 10).await.expect("get_users_paged");
+    db::user::get_users_paged(&pool, 1, 10, None).await.expect("get_users_paged");
+    // 搜索路径单独走一遍：带 query 与不带是两条不同 SQL（LIKE + $n/? 占位符）。
+    db::user::get_users_paged(&pool, 1, 10, Some("adm"))
+        .await
+        .expect("get_users_paged(query)");
+    db::user::count_users(&pool, None).await.expect("count_users");
+    db::user::count_users(&pool, Some("adm")).await.expect("count_users(query)");
     db::user::get_all_users(&pool).await.expect("get_all_users");
 
     db::stream_proxy::get_by_id(&pool, 1).await.expect("stream_proxy::get_by_id");

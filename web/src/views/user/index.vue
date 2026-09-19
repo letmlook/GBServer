@@ -6,8 +6,18 @@
         <p class="page-subtitle">账号 · 角色 · 密码 · PushKey</p>
       </div>
       <div class="page-actions">
+        <el-input
+          v-model="keyword"
+          class="search"
+          placeholder="搜索用户名"
+          clearable
+          :prefix-icon="Search"
+          @keyup.enter="onSearch"
+          @clear="onSearch"
+        />
+        <el-button @click="onSearch">搜索</el-button>
         <el-button @click="loadData">刷新</el-button>
-        <el-button type="primary" :icon="Plus" @click="onAdd">新增用户</el-button>
+        <el-button v-if="isAdmin" type="primary" :icon="Plus" @click="onAdd">新增用户</el-button>
       </div>
     </div>
 
@@ -16,7 +26,7 @@
         <el-table-column prop="id" label="ID" width="60" />
         <el-table-column prop="username" label="用户名" min-width="160" />
         <el-table-column label="角色" min-width="120">
-          <template #default="{ row }">{{ row.role?.name ?? row.roleName ?? '-' }}</template>
+          <template #default="{ row }">{{ row.role?.name ?? '-' }}</template>
         </el-table-column>
         <el-table-column prop="pushKey" label="PushKey" min-width="280">
           <template #default="{ row }">
@@ -26,12 +36,26 @@
         <el-table-column prop="createTime" label="创建时间" min-width="180">
           <template #default="{ row }"><span class="mono">{{ row.createTime ?? '-' }}</span></template>
         </el-table-column>
-        <el-table-column label="操作" width="280" fixed="right">
+        <!--
+          操作列按权限区分：
+          * 非管理员只保留「改密（我自己）」—— 其余按钮点了必然 403，不如不显示。
+          * 管理员对**自己**那一行也只给改密 / 编辑，不给重置与删除（后端也会拦自删）。
+        -->
+        <el-table-column label="操作" :width="isAdmin ? 340 : 140" fixed="right">
           <template #default="{ row }">
-            <el-button link type="primary" @click="onChangePwd(row)">改密</el-button>
-            <el-button link type="primary" @click="onResetPwd(row)">重置</el-button>
-            <el-button link type="warning" @click="onRegenKey(row)">重置 PushKey</el-button>
-            <el-button link type="danger" @click="onDelete(row)">删除</el-button>
+            <div class="row-actions">
+              <template v-if="isSelf(row)">
+                <el-button link type="primary" @click="onChangeMyPwd(row)">改密</el-button>
+                <el-button v-if="isAdmin" link type="primary" @click="onEdit(row)">编辑</el-button>
+              </template>
+              <template v-else-if="isAdmin">
+                <el-button link type="primary" @click="onEdit(row)">编辑</el-button>
+                <el-button link type="primary" @click="onResetPwd(row)">重置密码</el-button>
+                <el-button link type="warning" @click="onRegenKey(row)">重置 PushKey</el-button>
+                <el-button link type="danger" @click="onDelete(row)">删除</el-button>
+              </template>
+              <span v-else class="mono muted">—</span>
+            </div>
           </template>
         </el-table-column>
       </el-table>
@@ -49,10 +73,24 @@
     </el-card>
 
     <user-add-dialog v-model="addVisible" :roles="roles" @saved="loadData" />
-    <el-dialog v-model="pwdVisible" title="修改密码" width="420px" @open="onPwdOpen">
+    <user-edit-dialog v-model="editVisible" :row="editTarget" :roles="roles" @saved="loadData" />
+
+    <!--
+      自助改密：后端 `POST /api/user/changePassword` **从 token 认人**、不接受
+      userId，所以这里只能改当前登录账号的密码。弹窗标题与提示都写明这一点，
+      避免管理员误以为在改别人（此前按钮对所有行都显示、标题还显示所选行的人）。
+    -->
+    <el-dialog v-model="pwdVisible" title="修改我的密码" width="420px" @open="onPwdOpen">
+      <el-alert
+        type="info"
+        :closable="false"
+        show-icon
+        title="此操作修改的是当前登录账号的密码，不是表格里其他人的。"
+        class="pwd-tip"
+      />
       <el-form ref="pwdFormRef" :model="pwdForm" :rules="pwdRules" label-width="100px">
-        <el-form-item label="用户名">
-          <span class="mono">{{ pwdTarget?.username ?? '-' }}</span>
+        <el-form-item label="账号">
+          <span class="mono">{{ myName || '-' }}</span>
         </el-form-item>
         <el-form-item label="原密码" prop="oldPassword">
           <el-input v-model="pwdForm.oldPassword" type="password" show-password />
@@ -74,19 +112,35 @@
 
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
-import { Plus } from '@element-plus/icons-vue'
+import { Plus, Search } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'element-plus'
-import { getUserList, deleteUser, changePassword, changePasswordForAdmin, changePushKey, getRoleAll } from '@/api/user'
+import {
+  getUserList,
+  getUserInfo,
+  deleteUser,
+  changePassword,
+  changePasswordForAdmin,
+  changePushKey,
+  getRoleAll
+} from '@/api/user'
 import UserAddDialog from './AddDialog.vue'
+import UserEditDialog from './EditDialog.vue'
 
 const loading = ref(false)
 const rows = ref<any[]>([])
 const roles = ref<{ id: number; name: string }[]>([])
 const addVisible = ref(false)
+const editVisible = ref(false)
+const editTarget = ref<any>(null)
+
+/** 当前登录账号。后端 changePassword 只认 token，所以「改密」只作用于它。 */
 const myUserId = ref<number>()
+const myName = ref('')
+const isAdmin = ref(false)
+
+const keyword = ref('')
 
 const pwdVisible = ref(false)
-const pwdTarget = ref<any>(null)
 const pwdSaving = ref(false)
 const pwdFormRef = ref<FormInstance>()
 const pwdForm = reactive({ oldPassword: '', password: '', password2: '' })
@@ -109,15 +163,24 @@ const pwdRules: FormRules = {
 }
 
 // 后端 `GET /api/user/users` 会把 count 截断到 100，所以这里必须真分页，
-// 否则第 101 个及之后的用户永远不可见（页面此前写死 count: 200 且没有分页器）。
+// 否则第 101 个及之后的用户永远不可见。
 const page = ref(1)
 const count = ref(20)
 const total = ref(0)
 
+/** 与后端 `authz::is_admin_role` 同口径：authority == '0' 视为管理员。 */
+function isSelf(row: any) {
+  return myUserId.value != null && row?.id === myUserId.value
+}
+
 async function loadData() {
   loading.value = true
   try {
-    const res = await getUserList({ page: page.value, count: count.value })
+    const res = await getUserList({
+      page: page.value,
+      count: count.value,
+      query: keyword.value.trim() || undefined
+    })
     rows.value = res.data?.list ?? []
     total.value = res.data?.total ?? 0
   } catch (e: any) {
@@ -127,6 +190,11 @@ async function loadData() {
   } finally {
     loading.value = false
   }
+}
+
+function onSearch() {
+  page.value = 1
+  loadData()
 }
 
 function onPageChange(p: number) {
@@ -142,6 +210,11 @@ function onSizeChange(c: number) {
 
 function onAdd() {
   addVisible.value = true
+}
+
+function onEdit(row: any) {
+  editTarget.value = row
+  editVisible.value = true
 }
 
 function onPwdOpen() {
@@ -168,8 +241,8 @@ async function onPwdSave() {
   }
 }
 
-function onChangePwd(row: any) {
-  pwdTarget.value = row
+function onChangeMyPwd(_row: any) {
+  // 忽略 row：接口只改当前登录账号，靶子由 token 决定。
   pwdVisible.value = true
 }
 
@@ -177,31 +250,59 @@ async function onResetPwd(row: any) {
   const { value } = await ElMessageBox.prompt('新密码（至少 6 位）', `重置 ${row.username} 的密码`, {
     inputValidator: (v) => (v && v.length >= 6 ? true : '密码至少 6 位')
   })
-  await changePasswordForAdmin({ userId: row.id, password: value })
-  ElMessage.success('密码已重置')
+  try {
+    await changePasswordForAdmin({ userId: row.id, password: value })
+    ElMessage.success('密码已重置')
+  } catch (e: any) {
+    ElMessage.error(e?.message ?? '重置失败')
+  }
 }
 
 async function onRegenKey(row: any) {
   await ElMessageBox.confirm(`确认重置用户 ${row.username} 的 PushKey？`, '确认', { type: 'warning' })
-  // 生成 32 字节随机 hex key（与服务端 pushKey 长度对齐）
+  // 生成 16 字节随机 hex key（与服务端 pushKey 长度对齐）
   const buf = new Uint8Array(16)
   crypto.getRandomValues(buf)
   const newKey = Array.from(buf).map((b) => b.toString(16).padStart(2, '0')).join('')
-  await changePushKey({ userId: row.id, pushKey: newKey })
-  ElMessage.success(`新 PushKey: ${newKey}`)
-  loadData()
+  try {
+    await changePushKey({ userId: row.id, pushKey: newKey })
+    ElMessage.success(`新 PushKey: ${newKey}`)
+    loadData()
+  } catch (e: any) {
+    ElMessage.error(e?.message ?? '重置失败')
+  }
 }
 
 async function onDelete(row: any) {
   await ElMessageBox.confirm(`确认删除用户 ${row.username} ？`, '确认', { type: 'warning' })
-  await deleteUser(row.id ?? 0)
-  ElMessage.success('已删除')
-  loadData()
+  try {
+    await deleteUser(row.id ?? 0)
+    ElMessage.success('已删除')
+    loadData()
+  } catch (e: any) {
+    ElMessage.error(e?.message ?? '删除失败')
+  }
 }
 
 onMounted(async () => {
+  // 先认人再拉列表：决定操作列展示哪些按钮。
+  try {
+    const me = await getUserInfo()
+    const data: any = me?.data
+    myUserId.value = data?.id
+    myName.value = data?.username ?? ''
+    isAdmin.value = data?.role?.authority === '0' || data?.role?.id === 1
+  } catch {
+    isAdmin.value = false
+  }
+
   await loadData()
-  getRoleAll().then((r) => (roles.value = (r.data as any[]) ?? [])).catch(() => {})
+
+  if (isAdmin.value) {
+    getRoleAll()
+      .then((r) => (roles.value = (r.data as any[]) ?? []))
+      .catch(() => {})
+  }
 })
 </script>
 
@@ -211,8 +312,15 @@ onMounted(async () => {
   justify-content: flex-end;
 }
 .user-page { padding: 16px; }
-.page-header { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 12px; }
+.page-header { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 12px; gap: 12px; }
 .page-title { font-size: 20px; font-weight: 600; margin: 0; }
 .page-subtitle { color: var(--el-text-color-secondary); font-size: var(--text-sm); margin-top: 4px; }
+.page-actions { display: flex; align-items: center; gap: 8px; }
+.search { width: 200px; }
+/* 操作列按单行排布：默认 el-button 之间的 margin 会让 4 个按钮换行错位。 */
+.row-actions { display: flex; align-items: center; flex-wrap: nowrap; white-space: nowrap; }
+.row-actions :deep(.el-button + .el-button) { margin-left: 8px; }
+.pwd-tip { margin-bottom: 12px; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: var(--text-sm); }
+.muted { color: var(--el-text-color-placeholder); }
 </style>

@@ -157,17 +157,25 @@ pub async fn user_info(
 pub struct UsersQuery {
     pub page: Option<u32>,
     pub count: Option<u32>,
+    /// 用户名模糊搜索。此前该字段不存在，前端 `UserQueryParams.query` 声明了却
+    /// 传了个寂寞（serde 静默忽略，搜索框看着能输、实际不过滤）。
+    pub query: Option<String>,
 }
 
-/// GET /api/user/users?page=1&count=10
+/// GET /api/user/users?page=1&count=10&query=xx
+///
+/// 需要管理员：返回的是**全部用户**（含每人 pushKey），普通用户不应看到。
 pub async fn users(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Query(q): Query<UsersQuery>,
 ) -> Result<Json<WVPResult<PageUsers>>, AppError> {
-    let page = q.page.unwrap_or(1);
-    let count = q.count.unwrap_or(10).min(100);
-    let list = db::get_users_paged(&state.pool, page, count).await?;
-    let total = db::count_users(&state.pool).await?;
+    authz::require_admin(&state, &headers).await?;
+    let page = q.page.unwrap_or(1).max(1);
+    let count = q.count.unwrap_or(10).clamp(1, 100);
+    let query = q.query.as_deref();
+    let list = db::get_users_paged(&state.pool, page, count, query).await?;
+    let total = db::count_users(&state.pool, query).await?;
     let rows: Vec<UserListRow> = list
         .into_iter()
         .map(|u| {
@@ -178,7 +186,15 @@ pub async fn users(
                 push_key: u.push_key.clone(),
                 role: RoleInfo {
                     id: role_id,
-                    name: u.role_name.clone(),
+                    // LEFT JOIN 后角色可能已不存在（悬空 role_id）—— 给显式占位，
+                    // 而不是让前端显示空白/undefined。
+                    name: u.role_name.clone().or_else(|| {
+                        Some(if u.role_id.is_some() {
+                            "(角色已删除)".to_string()
+                        } else {
+                            "(未分配)".to_string()
+                        })
+                    }),
                     authority: u.role_authority.clone(),
                 },
                 create_time: u.create_time.clone(),
@@ -203,15 +219,92 @@ pub struct PageUsers {
     pub size: u64,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct UpdateUserParams {
+    #[serde(alias = "userId")]
+    pub user_id: Option<i32>,
+    pub username: Option<String>,
+    #[serde(alias = "roleId")]
+    pub role_id: Option<i32>,
+}
+
+/// POST /api/user/update?userId=2&username=xx&roleId=2
+///
+/// 补齐「编辑用户 / 改角色」。此前既无该端点，`db::update_user_role` /
+/// `db::update_username` 也已沦为零调用死函数 —— 用户管理页只能新增和删除，
+/// 连改个角色都做不到。只更新传入的字段。
+pub async fn update_user(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<UpdateUserParams>,
+) -> Result<Json<WVPResult<()>>, AppError> {
+    authz::require_admin(&state, &headers).await?;
+    let user_id = params
+        .user_id
+        .ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 userId"))?;
+
+    let username = match params.username.as_deref() {
+        Some(raw) => {
+            let name = raw.trim();
+            if name.is_empty() {
+                return Err(AppError::business(ErrorCode::Error400, "用户名不可为空"));
+            }
+            if name.chars().count() > 64 {
+                return Err(AppError::business(
+                    ErrorCode::Error400,
+                    "用户名过长（最多 64 字符）",
+                ));
+            }
+            // 唯一索引 uk_user_username 会抛原始 SQL 错误（500）—— 先拦成 400。
+            if db::username_taken(&state.pool, name, Some(user_id)).await? {
+                return Err(AppError::business(ErrorCode::Error400, "用户名已存在"));
+            }
+            Some(name)
+        }
+        None => None,
+    };
+
+    if let Some(role_id) = params.role_id {
+        if !db::role_exists(&state.pool, role_id).await? {
+            return Err(AppError::business(ErrorCode::Error400, "角色不存在"));
+        }
+    }
+
+    if username.is_none() && params.role_id.is_none() {
+        return Err(AppError::business(ErrorCode::Error400, "没有要更新的字段"));
+    }
+
+    let n = db::update_user(&state.pool, user_id, username, params.role_id).await?;
+    if n == 0 {
+        return Err(AppError::business(ErrorCode::Error100, "用户不存在或更新失败"));
+    }
+    Ok(Json(WVPResult::<()>::success_empty()))
+}
+
 /// POST /api/user/add?username=xx&password=xx&roleId=1
 pub async fn add_user(
     State(state): State<AppState>,
     headers: HeaderMap,
     Query(params): Query<AddUserParams>,
 ) -> Result<Json<WVPResult<()>>, AppError> {
-    require_admin(&state, &headers).await?;
-    let username = params.username.as_deref().ok_or_else(|| AppError::business(ErrorCode::Error400, "参数不可为空"))?;
-    let password = params.password.as_deref().ok_or_else(|| AppError::business(ErrorCode::Error400, "参数不可为空"))?;
+    authz::require_admin(&state, &headers).await?;
+    let username = params
+        .username
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| AppError::business(ErrorCode::Error400, "用户名不可为空"))?;
+    if username.chars().count() > 64 {
+        return Err(AppError::business(
+            ErrorCode::Error400,
+            "用户名过长（最多 64 字符）",
+        ));
+    }
+    let password = params
+        .password
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| AppError::business(ErrorCode::Error400, "密码不可为空"))?;
     let role_id = params
         .role_id
         .ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 roleId"))?;
@@ -219,6 +312,13 @@ pub async fn add_user(
     let exists = db::role_exists(&state.pool, role_id).await?;
     if !exists {
         return Err(AppError::business(ErrorCode::Error400, "角色不存在"));
+    }
+
+    // 先查重名：`gb_user` 上有唯一索引 `uk_user_username`，此前不预检，
+    // 用户会收到 500 + 原始 SQL 报错（"UNIQUE constraint failed: gb_user.username"），
+    // 既泄漏库内部信息、前端也无法给出友好提示。
+    if db::username_taken(&state.pool, username, None).await? {
+        return Err(AppError::business(ErrorCode::Error400, "用户名已存在"));
     }
 
     // Phase 7.6: store password as Argon2id hash instead of plaintext MD5.
@@ -249,11 +349,20 @@ pub async fn delete_user(
     headers: HeaderMap,
     Query(q): Query<DeleteQuery>,
 ) -> Result<Json<WVPResult<()>>, AppError> {
-    require_admin(&state, &headers).await?;
+    authz::require_admin(&state, &headers).await?;
     let id = q.id.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id"))?;
+    let (_, me) = authz::current_user(&state, &headers).await?;
+    if me.id == id {
+        // 明确拦自己：此前靠 `db::delete_user` 里 SQL 的 `WHERE id != 1` 兜住，
+        // 报的还是含义不明的"删除失败"，且只保护了 id=1 这一个账号。
+        return Err(AppError::business(ErrorCode::Error400, "不能删除当前登录账号"));
+    }
     let n = db::delete_user(&state.pool, id).await?;
     if n == 0 {
-        return Err(AppError::business(ErrorCode::Error100, "删除失败"));
+        return Err(AppError::business(
+            ErrorCode::Error100,
+            "删除失败（用户不存在，或为受保护的内置账号）",
+        ));
     }
     Ok(Json(WVPResult::<()>::success_empty()))
 }
@@ -309,7 +418,7 @@ pub async fn change_password_for_admin(
     headers: HeaderMap,
     Query(params): Query<ChangePasswordForAdminParams>,
 ) -> Result<Json<WVPResult<()>>, AppError> {
-    let _claims = require_admin(&state, &headers).await?;
+    authz::require_admin(&state, &headers).await?;
     let user_id = params.user_id.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 userId"))?;
     let password = params.password.as_deref().ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 password"))?;
     // 管理员重置口令也存 Argon2id（此前写 MD5）；秘密值同样取 md5(明文)，
@@ -336,7 +445,7 @@ pub async fn change_push_key(
     headers: HeaderMap,
     Query(params): Query<ChangePushKeyParams>,
 ) -> Result<Json<WVPResult<()>>, AppError> {
-    require_admin(&state, &headers).await?;
+    authz::require_admin(&state, &headers).await?;
     let user_id = params.user_id.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 userId"))?;
     let push_key = params.push_key.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 pushKey"))?;
     let n = db::change_push_key(&state.pool, user_id, &push_key).await?;
@@ -354,16 +463,10 @@ pub struct ChangePushKeyParams {
     pub push_key: Option<String>,
 }
 
-async fn require_admin(state: &AppState, headers: &HeaderMap) -> Result<crate::auth::Claims, AppError> {
-    let token = crate::auth::extract_token_from_headers(headers).ok_or(AppError::Unauthorized)?;
-    let keys = JwtKeys::new(state.config.jwt.secret.as_bytes());
-    let claims = keys.verify_token(&token).ok_or(AppError::Unauthorized)?;
-    let user = db::find_by_username(&state.pool, &claims.userName).await?.ok_or(AppError::Unauthorized)?;
-    if user.role_id.unwrap_or(0) != 1 {
-        return Err(AppError::business(ErrorCode::Error400, "用户无权限"));
-    }
-    Ok(claims)
-}
+// 权限判定集中在 `handlers::authz`：原先这里内联的 `require_admin` 只认
+// `role_id == 1`，而 `/api/role/add` 允许创建 `authority="0"` 的角色 —— 那些
+// 角色的成员会被误判为非管理员。现按 `authority` 判定，内置角色 id=1 仍兜底。
+use crate::handlers::authz;
 
 #[cfg(all(test, feature = "sqlite"))]
 mod password_flow_tests {
@@ -536,7 +639,10 @@ mod password_flow_tests {
 /// 供「角色/分组分配」等下拉框使用。
 pub async fn all_users(
     State(state): State<AppState>,
+    headers: HeaderMap,
 ) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+    // 同样涉及 pushKey 等敏感字段，仅管理员可取。
+    authz::require_admin(&state, &headers).await?;
     let users = db::get_all_users(&state.pool).await?;
     let rows: Vec<serde_json::Value> = users
         .iter()

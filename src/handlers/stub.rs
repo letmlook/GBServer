@@ -12,6 +12,7 @@
 use axum::response::IntoResponse;
 use axum::{
     extract::{Path, Query, State},
+    http::HeaderMap,
     Json,
 };
 use chrono::Datelike;
@@ -19,8 +20,8 @@ use serde::Deserialize;
 
 use crate::dyn_where::{BindValue, DynWhere};
 use crate::db::{
-    count_common_channels, list_common_channels_paged, group, record_plan, region, role,
-    user_api_key, DeviceChannel, Group, Region, Role,
+    count_common_channels, list_common_channels_paged, group, record_plan, region,
+    user_api_key, DeviceChannel, Group, Region,
 };
 use crate::error::{AppError, ErrorCode};
 use crate::response::WVPResult;
@@ -333,12 +334,6 @@ pub async fn common_channel_list(
 }
 
 // ========== role ==========
-/// GET /api/role/all
-pub async fn role_all(State(state): State<AppState>) -> Result<Json<WVPResult<Vec<Role>>>, AppError> {
-    let list = role::list_all(&state.pool).await?;
-    Ok(Json(WVPResult::success(list)))
-}
-
 // ========== region ==========
 #[derive(Debug, Deserialize)]
 pub struct RegionQuery {
@@ -1146,7 +1141,9 @@ fn parse_expired_at(raw: Option<&str>) -> Option<i64> {
 pub async fn user_api_key_list(
     State(state): State<AppState>,
     Query(q): Query<UserApiKeyQuery>,
+    headers: HeaderMap,
 ) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+    crate::handlers::authz::require_admin(&state, &headers).await?;
     let page = q.page.unwrap_or(1);
     let count = q.count.unwrap_or(10).min(100);
     let list: Vec<crate::db::UserApiKey> = user_api_key::list_paged(&state.pool, page, count).await?;
@@ -1177,7 +1174,9 @@ pub async fn user_api_key_list(
 pub async fn user_api_key_remark(
     State(state): State<AppState>,
     Query(q): Query<UserApiKeyMutateQuery>,
+    headers: HeaderMap,
 ) -> Result<Json<WVPResult<()>>, AppError> {
+    crate::handlers::authz::require_admin(&state, &headers).await?;
     let id = q.id.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id"))?;
     let remark = q.remark.as_deref().unwrap_or("");
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
@@ -1194,7 +1193,9 @@ pub struct UserApiKeyId {
 pub async fn user_api_key_enable(
     State(state): State<AppState>,
     Query(q): Query<UserApiKeyMutateQuery>,
+    headers: HeaderMap,
 ) -> Result<Json<WVPResult<()>>, AppError> {
+    crate::handlers::authz::require_admin(&state, &headers).await?;
     let id = q.id.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id"))?;
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     user_api_key::set_enable(&state.pool, id, true, &now).await?;
@@ -1204,7 +1205,9 @@ pub async fn user_api_key_enable(
 pub async fn user_api_key_disable(
     State(state): State<AppState>,
     Query(q): Query<UserApiKeyMutateQuery>,
+    headers: HeaderMap,
 ) -> Result<Json<WVPResult<()>>, AppError> {
+    crate::handlers::authz::require_admin(&state, &headers).await?;
     let id = q.id.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id"))?;
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     user_api_key::set_enable(&state.pool, id, false, &now).await?;
@@ -1214,7 +1217,9 @@ pub async fn user_api_key_disable(
 pub async fn user_api_key_reset(
     State(state): State<AppState>,
     Query(q): Query<UserApiKeyMutateQuery>,
+    headers: HeaderMap,
 ) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+    crate::handlers::authz::require_admin(&state, &headers).await?;
     let id = q.id.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id"))?;
     let new_key = format!("{:032x}", rand::random::<u128>());
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
@@ -1226,7 +1231,9 @@ pub async fn user_api_key_reset(
 pub async fn user_api_key_delete(
     State(state): State<AppState>,
     Query(q): Query<IdQuery>,
+    headers: HeaderMap,
 ) -> Result<Json<WVPResult<()>>, AppError> {
+    crate::handlers::authz::require_admin(&state, &headers).await?;
     let id = q.id.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id"))?;
     user_api_key::delete_by_id(&state.pool, id).await?;
     Ok(Json(WVPResult::<()>::success_empty()))
@@ -1236,7 +1243,9 @@ pub async fn user_api_key_delete(
 pub async fn user_api_key_add(
     State(state): State<AppState>,
     Query(q): Query<UserApiKeyMutateQuery>,
+    headers: HeaderMap,
 ) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+    crate::handlers::authz::require_admin(&state, &headers).await?;
     let user_id = q.user_id.unwrap_or(1);
     let app = q.app.as_deref().unwrap_or("default").to_string();
     let remark = q.remark.clone();

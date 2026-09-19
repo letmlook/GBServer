@@ -74,6 +74,7 @@ pub fn app(state: AppState) -> Router<AppState> {
         .route("/api/user/users", get(user::users))
         .route("/api/user/all", get(user::all_users))
         .route("/api/user/add", post(user::add_user))
+        .route("/api/user/update", post(user::update_user))
         .route("/api/user/delete", delete(user::delete_user))
         .route("/api/user/changePassword", post(user::change_password))
         .route(
@@ -309,7 +310,7 @@ pub fn app(state: AppState) -> Router<AppState> {
             get(device_query::stream_info),
         )
         .route("/api/common/channel/list", get(stub::common_channel_list))
-        .route("/api/role/all", get(stub::role_all))
+        .route("/api/role/all", get(role::role_all))
         .route(
             "/api/server/media_server/online/list",
             get(server::media_server_online_list),

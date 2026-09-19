@@ -86,6 +86,19 @@ export function getUserList(params: UserQueryParams) {
 }
 
 /**
+ * 更新用户资料（用户名 / 角色）。
+ *
+ * 后端只更新传入的字段；两者都不传会被拒。
+ */
+export function updateUser(data: { userId: number | string; username?: string; roleId?: number }) {
+  return request<WvpResult>({
+    method: 'post',
+    url: '/user/update',
+    params: data
+  })
+}
+
+/**
  * 新增用户。
  *
  * 口令**不做** md5：WVP 的契约是 `add` 收明文、由服务端补 md5 再入库

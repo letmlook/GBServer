@@ -1,3 +1,4 @@
+pub mod authz;
 pub mod user;
 pub mod device;
 pub mod device_stub;

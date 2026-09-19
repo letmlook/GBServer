@@ -159,45 +159,122 @@ pub async fn find_by_username(pool: &Pool, username: &str) -> sqlx::Result<Optio
     .await;
 }
 
-pub async fn get_users_paged(pool: &Pool, page: u32, count: u32) -> sqlx::Result<Vec<User>> {
+/// 分页查询用户，可按用户名模糊搜索。
+///
+/// 两个关键点：
+///
+/// 1. **必须 `LEFT JOIN`**（历史缺陷）：此前是 `JOIN gb_user_role`，于是
+///    `role_id` 悬空（角色被删、用户还在）的行会被 SQL 直接丢掉 ——
+///    用户管理页看不到这些用户，但 `count_users` 仍把他们算进 total，
+///    表现为"共 N 条却只有 N-k 行"且翻页也找不回。改成 LEFT JOIN 后，
+///    悬空角色的用户仍会列出，角色名显示为占位值。
+/// 2. `query` 为 `Some(非空)` 时按 `username LIKE %q%` 过滤；`count_users`
+///    必须用同一条件，否则总数与列表不一致。
+pub async fn get_users_paged(
+    pool: &Pool,
+    page: u32,
+    count: u32,
+    query: Option<&str>,
+) -> sqlx::Result<Vec<User>> {
     let offset = (page - 1).max(0) * count;
+    let q = query.map(str::trim).filter(|s| !s.is_empty());
+    let like = q.map(|s| format!("%{}%", s));
+
     #[cfg(feature = "mysql")]
-    return sqlx::query_as::<_, User>(
-        r#"SELECT u.id, u.username, u.password, u.role_id, u.create_time, u.update_time, u.push_key,
+    {
+        return match &like {
+            Some(pat) => {
+                sqlx::query_as::<_, User>(
+                    r#"SELECT u.id, u.username, u.password, u.role_id, u.create_time, u.update_time, u.push_key,
                r.name AS role_name, r.authority AS role_authority
-        FROM gb_user u JOIN gb_user_role r ON u.role_id = r.id ORDER BY u.id LIMIT ? OFFSET ?"#,
-    )
-    .bind(count as i64)
-    .bind(offset as i64)
-    .fetch_all(pool)
-    .await;
+        FROM gb_user u LEFT JOIN gb_user_role r ON u.role_id = r.id
+        WHERE u.username LIKE ? ORDER BY u.id LIMIT ? OFFSET ?"#,
+                )
+                .bind(pat)
+                .bind(count as i64)
+                .bind(offset as i64)
+                .fetch_all(pool)
+                .await
+            }
+            None => {
+                sqlx::query_as::<_, User>(
+                    r#"SELECT u.id, u.username, u.password, u.role_id, u.create_time, u.update_time, u.push_key,
+               r.name AS role_name, r.authority AS role_authority
+        FROM gb_user u LEFT JOIN gb_user_role r ON u.role_id = r.id ORDER BY u.id LIMIT ? OFFSET ?"#,
+                )
+                .bind(count as i64)
+                .bind(offset as i64)
+                .fetch_all(pool)
+                .await
+            }
+        };
+    }
     #[cfg(feature = "postgres")]
-    return sqlx::query_as::<_, User>(
-        r#"SELECT u.id, u.username, u.password, u.role_id, u.create_time, u.update_time, u.push_key,
+    {
+        return match &like {
+            Some(pat) => {
+                sqlx::query_as::<_, User>(
+                    r#"SELECT u.id, u.username, u.password, u.role_id, u.create_time, u.update_time, u.push_key,
                r.name AS role_name, r.authority AS role_authority
-        FROM gb_user u JOIN gb_user_role r ON u.role_id = r.id ORDER BY u.id LIMIT $1 OFFSET $2"#,
-    )
-    .bind(count as i64)
-    .bind(offset as i64)
-    .fetch_all(pool)
-    .await;
+        FROM gb_user u LEFT JOIN gb_user_role r ON u.role_id = r.id
+        WHERE u.username LIKE $1 ORDER BY u.id LIMIT $2 OFFSET $3"#,
+                )
+                .bind(pat)
+                .bind(count as i64)
+                .bind(offset as i64)
+                .fetch_all(pool)
+                .await
+            }
+            None => {
+                sqlx::query_as::<_, User>(
+                    r#"SELECT u.id, u.username, u.password, u.role_id, u.create_time, u.update_time, u.push_key,
+               r.name AS role_name, r.authority AS role_authority
+        FROM gb_user u LEFT JOIN gb_user_role r ON u.role_id = r.id ORDER BY u.id LIMIT $1 OFFSET $2"#,
+                )
+                .bind(count as i64)
+                .bind(offset as i64)
+                .fetch_all(pool)
+                .await
+            }
+        };
+    }
     #[cfg(feature = "sqlite")]
-    return sqlx::query_as::<_, User>(
-        r#"SELECT u.id, u.username, u.password, u.role_id, u.create_time, u.update_time, u.push_key,
+    {
+        return match &like {
+            Some(pat) => {
+                sqlx::query_as::<_, User>(
+                    r#"SELECT u.id, u.username, u.password, u.role_id, u.create_time, u.update_time, u.push_key,
                r.name AS role_name, r.authority AS role_authority
-        FROM gb_user u JOIN gb_user_role r ON u.role_id = r.id ORDER BY u.id LIMIT ? OFFSET ?"#,
-    )
-    .bind(count as i64)
-    .bind(offset as i64)
-    .fetch_all(pool)
-    .await;
+        FROM gb_user u LEFT JOIN gb_user_role r ON u.role_id = r.id
+        WHERE u.username LIKE ? ORDER BY u.id LIMIT ? OFFSET ?"#,
+                )
+                .bind(pat)
+                .bind(count as i64)
+                .bind(offset as i64)
+                .fetch_all(pool)
+                .await
+            }
+            None => {
+                sqlx::query_as::<_, User>(
+                    r#"SELECT u.id, u.username, u.password, u.role_id, u.create_time, u.update_time, u.push_key,
+               r.name AS role_name, r.authority AS role_authority
+        FROM gb_user u LEFT JOIN gb_user_role r ON u.role_id = r.id ORDER BY u.id LIMIT ? OFFSET ?"#,
+                )
+                .bind(count as i64)
+                .bind(offset as i64)
+                .fetch_all(pool)
+                .await
+            }
+        };
+    }
 }
 
 pub async fn get_all_users(pool: &Pool) -> sqlx::Result<Vec<User>> {
+    // LEFT JOIN：理由同 `get_users_paged`（悬空 role_id 不能被丢掉）。
     sqlx::query_as::<_, User>(
         r#"SELECT u.id, u.username, u.password, u.role_id, u.create_time, u.update_time, u.push_key,
                r.name AS role_name, r.authority AS role_authority
-        FROM gb_user u JOIN gb_user_role r ON u.role_id = r.id ORDER BY u.id"#,
+        FROM gb_user u LEFT JOIN gb_user_role r ON u.role_id = r.id ORDER BY u.id"#,
     )
     .fetch_all(pool)
     .await
@@ -324,10 +401,116 @@ pub async fn change_push_key(pool: &Pool, user_id: i32, push_key: &str) -> sqlx:
     Ok(r.rows_affected())
 }
 
-pub async fn count_users(pool: &Pool) -> sqlx::Result<i64> {
-    sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_user")
+/// 统计用户数。`query` 必须与 `get_users_paged` 的过滤条件一致，
+/// 否则列表与「共 N 条」会对不上。
+pub async fn count_users(pool: &Pool, query: Option<&str>) -> sqlx::Result<i64> {
+    let q = query.map(str::trim).filter(|s| !s.is_empty());
+    match q {
+        Some(s) => {
+            let like = format!("%{}%", s);
+            #[cfg(feature = "postgres")]
+            let sql = "SELECT COUNT(*) FROM gb_user WHERE username LIKE $1";
+            #[cfg(not(feature = "postgres"))]
+            let sql = "SELECT COUNT(*) FROM gb_user WHERE username LIKE ?";
+            sqlx::query_scalar::<_, i64>(sql)
+                .bind(like)
+                .fetch_one(pool)
+                .await
+        }
+        None => {
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_user")
+                .fetch_one(pool)
+                .await
+        }
+    }
+}
+
+/// 统计仍引用某角色的用户数（删角色前的引用检查）。
+pub async fn count_users_by_role(pool: &Pool, role_id: i32) -> sqlx::Result<i64> {
+    #[cfg(feature = "postgres")]
+    let sql = "SELECT COUNT(*) FROM gb_user WHERE role_id = $1";
+    #[cfg(not(feature = "postgres"))]
+    let sql = "SELECT COUNT(*) FROM gb_user WHERE role_id = ?";
+    sqlx::query_scalar::<_, i64>(sql)
+        .bind(role_id)
         .fetch_one(pool)
         .await
+}
+
+/// 用户名是否已被占用（`exclude_id` 用于「改用户名」时排除自己）。
+pub async fn username_taken(pool: &Pool, username: &str, exclude_id: Option<i32>) -> sqlx::Result<bool> {
+    match exclude_id {
+        Some(id) => {
+            #[cfg(feature = "postgres")]
+            let sql = "SELECT COUNT(*) FROM gb_user WHERE username = $1 AND id != $2";
+            #[cfg(not(feature = "postgres"))]
+            let sql = "SELECT COUNT(*) FROM gb_user WHERE username = ? AND id != ?";
+            let n: i64 = sqlx::query_scalar(sql)
+                .bind(username)
+                .bind(id)
+                .fetch_one(pool)
+                .await?;
+            Ok(n > 0)
+        }
+        None => {
+            #[cfg(feature = "postgres")]
+            let sql = "SELECT COUNT(*) FROM gb_user WHERE username = $1";
+            #[cfg(not(feature = "postgres"))]
+            let sql = "SELECT COUNT(*) FROM gb_user WHERE username = ?";
+            let n: i64 = sqlx::query_scalar(sql)
+                .bind(username)
+                .fetch_one(pool)
+                .await?;
+            Ok(n > 0)
+        }
+    }
+}
+
+/// 更新用户资料（用户名 / 角色），只更新传入的字段。
+///
+/// 收敛了原先两个零调用死函数 `update_username` / `update_user_role`，
+/// 现在由 `POST /api/user/update` 真实使用。
+pub async fn update_user(
+    pool: &Pool,
+    user_id: i32,
+    username: Option<&str>,
+    role_id: Option<i32>,
+) -> sqlx::Result<u64> {
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    #[cfg(feature = "mysql")]
+    let r = sqlx::query(
+        "UPDATE gb_user SET username = COALESCE(?, username), role_id = COALESCE(?, role_id), \
+         update_time = ? WHERE id = ?",
+    )
+    .bind(username)
+    .bind(role_id)
+    .bind(&now)
+    .bind(user_id)
+    .execute(pool)
+    .await?;
+    #[cfg(feature = "postgres")]
+    let r = sqlx::query(
+        "UPDATE gb_user SET username = COALESCE($1, username), role_id = COALESCE($2, role_id), \
+         update_time = $3 WHERE id = $4",
+    )
+    .bind(username)
+    .bind(role_id)
+    .bind(&now)
+    .bind(user_id)
+    .execute(pool)
+    .await?;
+    #[cfg(feature = "sqlite")]
+    let r = sqlx::query(
+        "UPDATE gb_user SET username = COALESCE(?, username), role_id = COALESCE(?, role_id), \
+         update_time = ? WHERE id = ?",
+    )
+    .bind(username)
+    .bind(role_id)
+    .bind(&now)
+    .bind(user_id)
+    .execute(pool)
+    .await?;
+    Ok(r.rows_affected())
 }
 
 pub async fn role_exists(pool: &Pool, role_id: i32) -> sqlx::Result<bool> {
@@ -352,56 +535,3 @@ pub async fn role_exists(pool: &Pool, role_id: i32) -> sqlx::Result<bool> {
     Ok(row.0 > 0)
 }
 
-/// 更新用户角色
-pub async fn update_user_role(pool: &Pool, user_id: i32, role_id: i32) -> sqlx::Result<u64> {
-    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    #[cfg(feature = "mysql")]
-    let r = sqlx::query("UPDATE gb_user SET role_id = ?, update_time = ? WHERE id = ?")
-        .bind(role_id)
-        .bind(&now)
-        .bind(user_id)
-        .execute(pool)
-        .await?;
-    #[cfg(feature = "postgres")]
-    let r = sqlx::query("UPDATE gb_user SET role_id = $1, update_time = $2 WHERE id = $3")
-        .bind(role_id)
-        .bind(&now)
-        .bind(user_id)
-        .execute(pool)
-        .await?;
-    #[cfg(feature = "sqlite")]
-    let r = sqlx::query("UPDATE gb_user SET role_id = ?, update_time = ? WHERE id = ?")
-        .bind(role_id)
-        .bind(&now)
-        .bind(user_id)
-        .execute(pool)
-        .await?;
-    Ok(r.rows_affected())
-}
-
-/// 更新用户名
-pub async fn update_username(pool: &Pool, user_id: i32, username: &str) -> sqlx::Result<u64> {
-    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    #[cfg(feature = "mysql")]
-    let r = sqlx::query("UPDATE gb_user SET username = ?, update_time = ? WHERE id = ?")
-        .bind(username)
-        .bind(&now)
-        .bind(user_id)
-        .execute(pool)
-        .await?;
-    #[cfg(feature = "postgres")]
-    let r = sqlx::query("UPDATE gb_user SET username = $1, update_time = $2 WHERE id = $3")
-        .bind(username)
-        .bind(&now)
-        .bind(user_id)
-        .execute(pool)
-        .await?;
-    #[cfg(feature = "sqlite")]
-    let r = sqlx::query("UPDATE gb_user SET username = ?, update_time = ? WHERE id = ?")
-        .bind(username)
-        .bind(&now)
-        .bind(user_id)
-        .execute(pool)
-        .await?;
-    Ok(r.rows_affected())
-}
