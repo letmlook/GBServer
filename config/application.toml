@@ -135,9 +135,10 @@ id = "zlmediakit-1"
 #   * 前端「媒体节点」页直接展示这个值；
 #   * 它还会被拼进交付给浏览器/设备的播放地址 —— 写 127.0.0.1 时只有
 #     后端本机能连通，别的机器打开预览页一律连不上。
-# 本机就是媒体节点时填本机 LAN IP（下面这台是 192.168.3.87）；
-# ZLM 容器用 host 网络时同样是宿主 LAN IP。
-ip = "192.168.3.87"
+# 本机就是媒体节点时填本机 LAN IP（本机 macOS 开发盒为 192.168.3.88）；
+# ZLM 容器用 host 网络时同样是宿主 LAN IP；
+# Docker Desktop（macOS）下 ZLM 在桥接容器里但端口发布在宿主，填宿主 LAN IP 依然可达。
+ip = "192.168.3.88"
 http_port = 8080
 # 平台接收 ZLM 事件回调的地址。**必须填"ZLM 能访问到后端"的地址**：
 #   * docker compose 部署（ZLM 在容器里，后端在宿主机）→ host.docker.internal
@@ -145,7 +146,11 @@ http_port = 8080
 # 留空时后端回落到 http://127.0.0.1:<server.port>/api/zlm/hook，
 # 那种情况下容器内的 ZLM 会把 hook 发到它自己，平台收不到任何事件。
 # 后端会在节点上线时把逐事件的 hook URL 自动下发（见 zlm::hook::hook_config_items）。
-hook_url = "http://127.0.0.1:18080/api/zlm/hook"
+#
+# 本机 macOS + Docker Desktop：ZLM 在**桥接容器**里，后端是宿主原生进程，
+# 因此容器内的 127.0.0.1 是它自己 —— 必须用 host.docker.internal
+# （docker-compose.mac.yml 给 zlm 加了 `host.docker.internal:host-gateway`）。
+hook_url = "http://host.docker.internal:18080/api/zlm/hook"
 # 设备→平台收流的 UDP 端口范围（后端会下发给 ZLM 的 rtp_proxy.port_range）。
 # 必须与 docker-compose 里 zlm 服务发布的 UDP 端口范围一致
 # （compose 默认 "30000-30100:30000-30100/udp"）。
@@ -163,7 +168,11 @@ rtp_port_range = "30000-30100"
 #     ICE 候选是容器内网地址（实测 172.18.0.2），iceConnectionState 永远
 #     停在 checking、一个字节都收不到。
 # 节点上线与"保存媒体节点"时都会下发并回读校验。
-# rtc_extern_ip = "127.0.0.1"
+#
+# 本机 macOS + Docker Desktop（ZLM 在桥接容器）：必须填**真实设备可达的 IP**，
+# 即本机 LAN IP 192.168.3.88 —— 不能填 127.0.0.1（局域网内其他设备/手机拿到
+# 这个候选会连回自己）。服务器同理填公网 IP / 域名。
+rtc_extern_ip = "192.168.3.88"
 # 与 docker-compose 当前 ZLM 镜像 conf/config.ini 里实际生效的 api.secret 对齐：
 # `docker exec gbserver-zlm cat /opt/media/conf/config.ini | grep secret=`
 # 镜像版本(2026-06 master)不识别 ZLM_HTTP_SECRET 环境变量,所以容器启动时
