@@ -231,8 +231,66 @@ html.dark {
   --el-color-primary-light-3: var(--brand-primary-400);
   --el-color-primary-light-5: var(--brand-primary-300);
   --el-color-primary-light-7: var(--brand-primary-200);
+  --el-color-primary-light-8: rgba(62, 176, 212, 0.32);
   --el-color-primary-light-9: var(--brand-primary-100);
   --el-color-primary-dark-2: var(--brand-primary-600);
+
+  /* 语义色的「浅色档」（-light-3 / -5 / -7 / -8 / -9）
+   *
+   * Element Plus 把这些档位**直接当作实色**用在类型化组件上，而 EP 默认全是淡色：
+   *   el-tag--{type}      底色 = -light-9 （success #f0f9eb）、边框 = -light-8
+   *   el-button--{type}   禁用态底色 = -light-5（success #b3e19d、danger #fab6b6）
+   *                      禁用态边框 = -light-3；plain 按钮边框 = -light-7
+   * 我们此前只覆盖了 primary 一支，于是暗色下：
+   *   · 表格「状态」列、下拉里已选中的标签 → 发白
+   *   · 禁用的彩色按钮（如云录像的绿色按钮、告警的红色按钮）→ 一片淡色
+   * 这里统一换成深色半透明底。文字色仍走 `--el-color-{type}`（由暗色下的
+   * `--state-*` 提供，已是提亮值），因此对比度足够。
+   *
+   * 实测（Playwright 扫描暗色下所有页面、找计算背景亮度 > 0.5 的元素）：
+   * 修复前 device/channel/cloudRecord/platform/live/alarm/user/recordPlan 共 8 个
+   * 页面残留淡色元素；修复后仅剩品牌色按钮/头像/进度条这类**本就该亮**的元素。
+   */
+  --el-color-success-light-9: rgba(34, 197, 94, 0.16);
+  --el-color-success-light-8: rgba(34, 197, 94, 0.34);
+  --el-color-success-light-7: rgba(34, 197, 94, 0.28);
+  --el-color-success-light-5: rgba(34, 197, 94, 0.22);
+  --el-color-success-light-3: rgba(34, 197, 94, 0.40);
+  --el-color-danger-light-9:  rgba(239, 68, 68, 0.16);
+  --el-color-danger-light-8:  rgba(239, 68, 68, 0.34);
+  --el-color-danger-light-7:  rgba(239, 68, 68, 0.28);
+  --el-color-danger-light-5:  rgba(239, 68, 68, 0.22);
+  --el-color-danger-light-3:  rgba(239, 68, 68, 0.40);
+  --el-color-error-light-9:   rgba(239, 68, 68, 0.16);
+  --el-color-error-light-8:   rgba(239, 68, 68, 0.34);
+  --el-color-error-light-7:   rgba(239, 68, 68, 0.28);
+  --el-color-error-light-5:   rgba(239, 68, 68, 0.22);
+  --el-color-error-light-3:   rgba(239, 68, 68, 0.40);
+  --el-color-warning-light-9: rgba(245, 158, 11, 0.16);
+  --el-color-warning-light-8: rgba(245, 158, 11, 0.34);
+  --el-color-warning-light-7: rgba(245, 158, 11, 0.28);
+  --el-color-warning-light-5: rgba(245, 158, 11, 0.22);
+  --el-color-warning-light-3: rgba(245, 158, 11, 0.40);
+  --el-color-info-light-9:    rgba(148, 163, 184, 0.16);
+  --el-color-info-light-8:    rgba(148, 163, 184, 0.34);
+  --el-color-info-light-7:    rgba(148, 163, 184, 0.28);
+  --el-color-info-light-5:    rgba(148, 163, 184, 0.22);
+  --el-color-info-light-3:    rgba(148, 163, 184, 0.40);
+
+  /* 通用填充色
+   * `--el-fill-color`（EP 默认 #f0f2f5 浅灰）此前未覆盖 —— 基础 `el-tag`
+   * （无 type 的标签）与部分容器底色会发白。按「比卡片略亮一档」取值。 */
+  --el-fill-color:        #2a3348;
+  --el-fill-color-dark:   #333e56;
+  --el-fill-color-darker: #3d4964;
+
+  /* 禁用/只读输入框
+   * EP 的 `--el-disabled-bg-color` 默认取 `--el-fill-color-light`（暗色下 = #232b40），
+   * 结果**比普通输入框（#1a2236）更亮** —— 在暗色里"禁用"看起来像被高亮，
+   * 与浅色主题的语义（禁用 = 更灰更暗）正好相反，编辑弹窗里的只读字段尤其明显。
+   * 改成比页面底色更深一档，恢复「凹陷 = 不可编辑」的直觉。 */
+  --el-disabled-bg-color:     #0c1322;
+  --el-disabled-border-color: var(--border-subtle);
 }
 
 /* 暗色模式全局微调：页面背景随主题切换 */
