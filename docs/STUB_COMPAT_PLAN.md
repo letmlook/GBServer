@@ -1,7 +1,10 @@
 # stub.rs / device_stub.rs 兼容层退役路线
 
-> 本文件跟踪 `src/handlers/stub.rs`（2274 行 / 58 entry）与 `src/handlers/device_stub.rs`（868 行 / 22 entry）两个**前端兼容 shim** 的退役计划。
+> 本文件跟踪 `src/handlers/stub.rs`（3834 行 / 47 个 entry）与 `src/handlers/device_stub.rs`（1273 行 / 18 个 entry）两个**前端兼容 shim** 的退役计划。
 > 这两个模块不是技术债，是显式设计的向后兼容层；本计划用于在合适时机把它们清空。
+>
+> 🔒 **2026-09-19 更新（代码功能冻结）**：行数/entry 数已按冻结时刻实测刷新（原表停留在 2274/868 行、58/22 entry，与代码脱节约 1700 行）。
+> 代码冻结意味着**本计划在冻结期内不会被执行** —— 退役动作本身就是改代码。下方 §2 的启动条件仅作解除冻结后的参考。
 
 ---
 
@@ -9,10 +12,13 @@
 
 | 模块 | 行数 | entry 数 | 角色 |
 |------|------|----------|------|
-| `src/handlers/stub.rs` | 2274 | 58 | 角色 / 区域 / 分组 / 日志 / API Key / 录像计划 等「真实实现已迁出，但仍挂旧路径」的兼容性 shim |
-| `src/handlers/device_stub.rs` | 868 | 22 | 设备 / 通道 / 订阅 / 控制 等「占位接口」（返回空响应但保持前端不报错）的兼容性 shim |
+| `src/handlers/stub.rs` | 3834 | 47 | 角色 / 区域 / 分组 / 日志 / API Key / 录像计划 等「真实实现已迁出，但仍挂旧路径」的兼容性 shim |
+| `src/handlers/device_stub.rs` | 1273 | 18 | 设备 / 通道 / 订阅 / 控制 等「占位接口」（返回空响应但保持前端不报错）的兼容性 shim |
 
-两者总计 **3142 行 / 80 个 entry**，全部挂载在 `src/router.rs`（约 80 个 shim 路由）。
+两者总计 **5107 行 / 65 个 entry**，全部挂载在 `src/router.rs`（`grep -cE 'stub::|device_stub::' src/router.rs` = 65 处）。
+
+> 复现：`wc -l src/handlers/stub.rs src/handlers/device_stub.rs`；
+> `grep -cE '^\s*pub async fn ' src/handlers/stub.rs`。
 
 ---
 
@@ -58,7 +64,7 @@
 
 ## 5. 仍为占位（device_stub.rs 全集）
 
-`device_stub.rs` 22 个 entry 多数仍返回空响应（前端兼容 shim）。
+`device_stub.rs` 18 个 entry 多数仍返回空响应（前端兼容 shim）。
 
 | 类别 | entry | 真实实现位置（待） |
 |------|-------|--------------------|
@@ -95,3 +101,4 @@ cd web && grep -rnE "'/api/(device/sync_status|device/delete|subscribe/catalog)'
 | 日期 | 变更 |
 |------|------|
 | 2026-09-07 | 初版：定义兼容层范围、退役触发条件、四步流程 |
+| 2026-09-19 | 代码功能冻结；按实测刷新行数/entry 数（3834/1273 行、47/18 entry、65 条路由）；标注冻结期内本计划不执行 |

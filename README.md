@@ -15,10 +15,17 @@ Rust 全异步后端（Axum + SQLx + Tokio），前端为 Vue 3 + Element Plus +
 
 ---
 
+> 🔒 **状态：代码功能已冻结（2026-09-19）**
+> 不再新增功能、不再改动运行时行为；本仓库后续只做**文档维护**与状态同步。
+> 历史归档的 Vue 2 前端 `web-legacy-vue2/` 已于 2026-09-19 从仓库删除（commit `00ffff1`），仅存于 git 历史。
+> 当前状态与待办见 [`docs/OPEN_ISSUES.md`](docs/OPEN_ISSUES.md)，平替进度与逐轮证据见 [`docs/WVP_PARITY.md`](docs/WVP_PARITY.md)。
+
+---
+
 ## 📖 项目简介
 
 GBServer 是面向 **GB/T 28181-2016** 国标协议的流媒体接入与级联管理平台的 Rust 重写实现，
-目标是在保持 Java 原版前端 100% 兼容的前提下，提供：
+目标是**兼容 Java 原版（WVP-PRO）的前端与 API 契约**，提供：
 
 - **更高的单机吞吐**：基于 Tokio + Axum 异步运行时，IO 密集场景下资源占用显著下降。
 - **更现代的工程实践**：单一二进制部署、零依赖启动（SQLite 默认）、Cargo feature 切换数据库。
@@ -286,8 +293,13 @@ WebRTC 的对外通告 IP（`rtc.externIP`）**不需要手改**：在 `config/a
 | 文档 | 用途 |
 |------|------|
 | [docs/DEPLOYMENT_GUIDE.md](docs/DEPLOYMENT_GUIDE.md) | 构建、运行、部署分级、配置、监控、灾备、升级、FAQ（仓库唯一对外文档） |
+| [docs/OPEN_ISSUES.md](docs/OPEN_ISSUES.md) | **当前未完成/未验证事项**（只列没做完的） |
+| [docs/WVP_PARITY.md](docs/WVP_PARITY.md) | WVP-PRO 平替进度与逐轮验证证据（历史记录，事实基线） |
+| [docs/DB_DIALECT_NOTES.md](docs/DB_DIALECT_NOTES.md) | 写多方言 SQL（SQLite / MySQL / PostgreSQL）的注意事项 |
 | [database/README.md](database/README.md) | 初始化脚本说明 |
 | [web/README.md](web/README.md) | 前端子项目（Vue 3 + Element Plus + Vite）说明 |
+| [e2e/README.md](e2e/README.md) | Playwright 端到端测试说明 |
+| [mock/README.md](mock/README.md) | 模拟测试资源（SIP 设备 / JT1078 终端 / 级联平台） |
 
 ---
 
@@ -335,7 +347,7 @@ cd web && npm run dev
 # 浏览器打开 http://localhost:9528
 ```
 
-代理规则见 `web/vue.config.js`：`/dev-api` → `http://127.0.0.1:18080`。
+代理规则见 `web/vite.config.ts`：`/dev-api` → `http://127.0.0.1:18080`。
 
 ### 代码规范
 

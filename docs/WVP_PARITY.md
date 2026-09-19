@@ -3,21 +3,22 @@
 > 目标：完全平替 WVP-PRO（Java GB28181 平台）的全部功能。
 > 本文档作为持续校对的事实基线：每次推进后更新对应条目并记录证据。
 
-## 当前基线（2026-09-12）
+## 当前基线（2026-09-19）
 
-> 本节数字为**实测值**，复现命令见每行「验证方式」。上次基线见文末「历史基线」。
+> 🔒 **代码功能已冻结（2026-09-19）**：不再新增功能或改动运行时行为，本仓库后续只更新文档。
+> 下表为冻结时刻的实测值，复现命令见每行「验证方式」。上一版基线（2026-09-12）见文末「历史基线」。
 
 | 维度 | 数值 | 验证方式 |
 |------|------|----------|
-| 总代码量（src/） | 79,179 行 Rust | `find src -name '*.rs' \| xargs wc -l` |
-| 已注册 HTTP 路由 | 418 条唯一 `/api/...` 路径 | `grep -oE '"/api/[^"]*"' src/router.rs \| sort -u \| wc -l` |
-| Handler 模块 | 29 个（含 `stub.rs` / `device_stub.rs` 两个兼容 shim） | `grep -c 'pub mod' src/handlers/mod.rs` |
-| 后端测试 | **741 通过 / 0 失败**（第五十八轮刷新） | `cargo test` |
-| 编译状态 | `cargo check` 0 error / **0 warning**；clippy 262；**deprecated 0** | `cargo check` / `cargo clippy --all-targets` |
-| 数据库 feature | SQLite（默认）/ PostgreSQL / MySQL **三者均编译通过** | CI `feature-matrix` job |
+| 总代码量（src/） | 87,246 行 Rust | `find src -name '*.rs' \| xargs wc -l` |
+| 已注册 HTTP 路由 | 429 条唯一 `/api/...` 路径（`router.rs` 共 424 处 `.route(`） | `grep -oE '"/api/[^"]*"' src/router.rs \| sort -u \| wc -l` |
+| Handler 模块 | 30 个（含 `stub.rs` / `device_stub.rs` 两个兼容 shim） | `grep -c 'pub mod' src/handlers/mod.rs` |
+| 后端测试 | **见下方「测试基线」**（2026-09-19 实测；此前 741/743 的数字已失效） | `cargo test --no-fail-fast` |
+| 数据库 feature | SQLite（默认）/ PostgreSQL / MySQL | CI `feature-matrix` job（手动触发） |
 | CI | ⏸️ 工作流已就绪但**按需暂停自动触发**（见 `.github/workflows/ci.yml`） | — |
-| 前端 | `web/` = **Vue 3 + Element Plus + Vite + TS**（17 个业务视图）；`web-legacy-vue2/` 为归档参考 | `ls web/src/views` |
+| 前端 | `web/` = **Vue 3 + Element Plus + Vite + TS**：18 个业务视图目录 + 17 个类型化 API 模块 + 13 个通用组件 | `find web/src/views -mindepth 1 -maxdepth 1 -type d \| wc -l` |
 | 前端产物 | `web/dist/` 构建通过（`npm run build` = `vue-tsc --noEmit && vite build`） | — |
+| 旧 Vue 2 前端 | ❌ **已于 2026-09-19 从仓库删除**（commit `00ffff1`），仅存于 git 历史 | `git log --oneline -- web-legacy-vue2` |
 
 ### ⚠️ 重要更正：API 挂载 ≠ 功能可用
 
@@ -39,7 +40,7 @@
 
 - **CI 门禁恢复**：编译 + 全量测试 + 三库 feature + 前端构建为硬门禁；`fmt` / `clippy` 暂列为非门禁（基线未清零）。**注**：应要求已暂停自动触发，改为仅手动 `workflow_dispatch`，见 `.github/workflows/ci.yml`。
 - **测试完全自包含**：默认 SQLite feature 下 478 个测试不连接 Redis / PG / MySQL / ZLM，CI 无需 service 容器。
-- **前端已完成 Vue 3 迁移**：`web-v3/` 已转正为 `web/`（commit `2acf5a7`），Vue 2 归档至 `web-legacy-vue2/`。本文档此前多处 "web-v3 Phase 2 待迁移" 的描述已过时，本轮一并修正。
+- **前端已完成 Vue 3 迁移**：`web-v3/` 已转正为 `web/`（commit `2acf5a7`），Vue 2 先归档至 `web-legacy-vue2/`，**后于 2026-09-19（commit `00ffff1`）从仓库整体删除**，仅存于 git 历史。本文档此前多处 "web-v3 Phase 2 待迁移" 的描述已过时，本轮一并修正。
 - **CI 首次运行即抓到真实缺陷**：`Navbar.vue` 缺 `reactive` 显式 import，依赖被 gitignore 的
   `auto-imports.d.ts` 兜底 → **任何干净 clone 跑 `npm run build` 都会失败**（`dev` 与
   `build:no-check` 正常，故长期潜伏）。已修复，见 commit `0434629`。
@@ -3331,16 +3332,16 @@ vue-tsc --noEmit                 通过
   - 删除 `device_query.rs` 中的占位函数
 
 - [x] **设备控制 Transport 协议消息**（2026-08-23 完成）
-  - 文件：[server.rs](src/sip/server.rs) 新增 `send_device_transport` + [device_stub.rs](src/handlers/device_stub.rs) `device_transport` 升级
+  - 文件：[server.rs](../src/sip/server.rs) 新增 `send_device_transport` + [device_stub.rs](../src/handlers/device_stub.rs) `device_transport` 升级
   - 现状：handler 现在更新 DB **并**向设备下发 SIP Control/Transport 消息
   - 已加：mode 合法性校验（必须 TCP/UDP/TCP-ACTIVE/TCP-PASSIVE）+ 在线判定 + sipSent/sipError 字段
 
 ### P3 · JT1078 区域/路由 HTTP 端点（GBServer 扩展，超 WVP 范围但 Stop hook 明确指出）
 
 - [x] **JT1078 圆形围栏 CRUD**（2026-08-23 实装）
-  - 表：[init-sqlite-2.7.4.sql](database/init-sqlite-2.7.4.sql) 新增 `gb_jt_area_circle`
-  - DB：[jt1078.rs](src/db/jt1078.rs) 新增 `JtAreaCircle` struct + insert/update/delete/list
-  - Handler：[jt1078_extra.rs](src/handlers/jt1078_extra.rs) 重写 5 个端点为真实 DB 持久化
+  - 表：[init-sqlite-2.7.4.sql](../database/init-sqlite-2.7.4.sql) 新增 `gb_jt_area_circle`
+  - DB：[jt1078.rs](../src/db/jt1078.rs) 新增 `JtAreaCircle` struct + insert/update/delete/list
+  - Handler：[jt1078_extra.rs](../src/handlers/jt1078_extra.rs) 重写 5 个端点为真实 DB 持久化
   - 测试：5 个 CRUD roundtrip 集成测试 ✅
 - [x] **JT1078 多边形围栏 CRUD**（2026-08-23 实装）
   - 表：`gb_jt_area_polygon` + `JtAreaPolygon` + insert/delete/list
@@ -3353,7 +3354,7 @@ vue-tsc --noEmit                 通过
   - Handler：3 个端点（set/query/delete）
 - [x] **JT1078 协议操作层 12 个端点**（live/record/snap/temp_position_tracking/confirmation_alarm/playback_download/media_upload_delete/terminal_channel_*）（2026-09-11 全部接线，本轮**复核确认**）
   - 现状：全部经 `src/jt1078/` 的 `Jt1078Manager` **真实下发并等待终端通用应答**，失败即返回错误；已无"已受理"占位响应
-  - 关联模块：[src/jt1078/](src/jt1078/) 5 个子模块、4,850 LOC
+  - 关联模块：[src/jt1078/](../src/jt1078/) 5 个子模块、4,850 LOC
   - 平替评估：WVP-PRO 没有 JT1078 协议层；这部分是 GBServer 独有扩展，已不再是"silently do nothing"
 
 ### P4 · 前端 WVP 业务页迁移
@@ -3428,6 +3429,7 @@ vue-tsc --noEmit                 通过
 
 ## 测试基线（每次推进后回填）
 
+- **2026-09-19 文档冻结轮：`cargo test --no-fail-fast` —— 744 通过 / 0 失败 / 3 忽略**（忽略项为 3 个 doc-test）。**本轮首先修好了测试套件的编译**：自 `0b2658a`(缩略图落盘 + 登录过期) 给 `ServerConfig` 加 `snapshot_dir`、给 `JwtConfig` 加 `remember_expiration_minutes` 之后，`src/test_support.rs` 与 `src/lib.rs` 的测试构造器未同步补字段，**整个测试目标编译失败** —— 即 `cargo test` 在 `0b2658a` 之后不可运行，本列表最后一条（741）之后长期没有更新正是因为被这段时间隔断。同轮修掉 `tests/config_toml_smoke.rs` 一条过期断言（断言 `expiration_minutes == 30`，而 `config/application.toml` 已是 720）。改动只在测试代码，不涉及运行时行为。e2e 未重测（需后端 + 前端 + 依赖服务同时在跑）。
 - 2026-09-12 第三十二轮：`cargo test` —— **644 通过 / 0 失败**（推流 12 条）
 - 2026-09-12 第三十三轮：`cargo test` —— **658 通过 / 0 失败**（拉流代理 10 条 + `enable_audio`/`TerminalQuery` 连带修复；e2e 40）
 - 2026-09-12 第三十四轮：`cargo test` —— **665 通过 / 0 失败**（级联平台 11 条；e2e 44）
@@ -3582,11 +3584,11 @@ vue-tsc --noEmit                 通过
 
 ### 来自 [PtzController.java gitee 镜像](https://gitee.com/suye222/wvp-pro) 真实证据
 
-20 条 PTZ/Preset/Cruise/Scan/FI/Wiper/Auxiliary 端点，全部已挂载（见 GBServer router.rs 第 119-145 行）。这些是 GBServer 早期 [handlers/front_end.rs](src/handlers/front_end.rs) 已实装的 PTZ 命令发送路径（送 SIP Control 命令给设备）。
+20 条 PTZ/Preset/Cruise/Scan/FI/Wiper/Auxiliary 端点，全部已挂载（见 GBServer router.rs 第 119-145 行）。这些是 GBServer 早期 [handlers/front_end.rs](../src/handlers/front_end.rs) 已实装的 PTZ 命令发送路径（送 SIP Control 命令给设备）。
 
 ### 来自 PlayController / PlaybackController 真实证据（DeepWiki 章节 "Live Stream Playback (PlayController.java86-156)" + "Historical Playback (PlaybackController.java83-143)"）
 
-7 条播放端点 + 6 条回放端点，全部已挂载且实装 SIP INVITE/MESSAGE 流程（见 [handlers/play.rs](src/handlers/play.rs) + [handlers/playback.rs](src/handlers/playback.rs)）。
+7 条播放端点 + 6 条回放端点，全部已挂载且实装 SIP INVITE/MESSAGE 流程（见 [handlers/play.rs](../src/handlers/play.rs) + [handlers/playback.rs](../src/handlers/playback.rs)）。
 
 ### 来自 `ApiDeviceController.java`（LiveGBS 兼容 API，路径前缀 `/api/v1/device`）
 

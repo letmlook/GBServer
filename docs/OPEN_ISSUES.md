@@ -1,9 +1,13 @@
 # GBServer 遗留问题与进度（Open Issues）
 
 > 生成时间：2026-09-13（本地 08:3x）
-> 代码基线：第五十八轮（详见 `WVP_PARITY.md`）+ 本轮 `startRecord` 重试与 mock 加固
-> 测试基线：`cargo test` **743 通过 / 0 失败**、`npx playwright test` **66 通过**、
-> 三方言冒烟仅剩 2 项已记录的"预期为真"项（E1）
+> **最近更新：2026-09-19（文档冻结轮）** —— 代码功能自本日起冻结，本文档只同步状态，不再跟随功能推进。
+> 代码基线：第五十八轮（详见 `WVP_PARITY.md`）+ 2026-09-13~19 的 16 个功能提交（延迟列 / 通道播放对话框 / 缩略图落盘 / 直播页 WebRTC / 控制台改版）
+> 测试基线（2026-09-19 实测）：`cargo test --no-fail-fast` **744 通过 / 0 失败 / 3 忽略**（e2e 未重测，需后端+前端+依赖服务同时在跑）
+>
+> ⚠️ 注意：`743 通过` 等此前的数字**在本轮之前无法复现** —— 测试目标曾因
+> `test_support.rs` / `lib.rs` 的测试构造器缺字段而**编译失败**，本轮已修（详见
+> `WVP_PARITY.md` 测试基线第一条）。这是测试代码问题，不涉及运行时行为。
 >
 > 本文档**只列尚未完成/尚未验证的事项**，已完成的历史证据见
 > [`WVP_PARITY.md`](WVP_PARITY.md)（逐轮记录）与 [`audit/`](audit/)（模块审计）。
@@ -41,7 +45,7 @@
 | B10 | 缺陷 | ZLM 流列表反序列化失败（`"fps": 25.0` 浮点 vs `u32`）→ 流列表恒为空 | ✅ 已修 |
 | B11 | 缺陷 | `on_server_started` 用 ZLM **内部** HTTP 端口覆盖库里的对外端口（80 覆盖 8080）→ 后端所有 ZLM 调用 502 | ✅ 已修 |
 | B9 | 配置 | `rtc.externIP` 平台未下发 → 容器部署下浏览器 ICE 永远连不上 | ✅ 已修 |
-| A4 | 前端 | 直播页没有 WebRTC 播放入口（`postWebrtcPlay` 无调用方） | 🔴 |
+| A4 | 前端 | 直播页 WebRTC 播放入口（`postWebrtcPlay` 原先无调用方） | ✅ 已接 (2026-09-19) |
 | C1 | 代码债 | `handle_packet` 23 个参数 | 🔵 |
 | C2 | 代码债 | 32 个无引用的 `db::` 函数（逐条判定删除/接上） | 🔵 |
 | C3 | 缺陷/代码债 | JT1078 鉴权码只存不用 + 注册应答写死 `"GBServer"` + 0x0102 语义存疑 | 🟠 |
@@ -73,7 +77,7 @@
 | 8 | 级联平台 | ✅ | 平台记录在册（推流/点播已在此前轮次端到端验证） |
 | 9 | 云录像（计划→录制→落库→播放→删除） | ✅ | `cloudRecord` spec **3/3 通过**，落库 1.0MB MP4 |
 
-另有：`cargo test` **743 通过 / 0 失败**、`npx playwright test` **66 通过**、
+另有：`cargo test --no-fail-fast` **744 通过 / 0 失败 / 3 忽略**（2026-09-19 实测；e2e 本轮未重测）、
 三方言冒烟仅剩 2 项已记录预期项（E1）。
 
 ### 阻塞/非阻塞判定
@@ -334,13 +338,17 @@ ZLM 侧该流是健康的：`rtp/<dev>_<ch>` 的 video track 为 H264 352x288@25
 `ZLM rtc.externIP set to 127.0.0.1 for server zlmediakit-1`），浏览器
 ICE 立即 `connected`。**host 网络部署无需配置该项**（见「ZLM 网络模式」一节）。
 
-### A4 🔴 直播页没有 WebRTC 播放入口
+### A4 ✅ 直播页 WebRTC 播放入口（2026-09-19 已接）
 
-`web/src/api/live.ts::postWebrtcPlay` 已按后端契约写好（POST + JSON body），
-但**全仓库没有任何调用方**（注释里也写明"当前无页面调用方，直播页用 flv/hls/ws"）。
-要真正"用 WebRTC 看画面"，还需要：播放器组件增加 `webrtc` 分支
-（`RTCPeerConnection` + `<video>`，断开时调 ZLM `delete_webrtc`）、
-直播页协议切换（FLV/HLS/WS/WebRTC），以及 B8/B9 先修好。
+原先 `web/src/api/live.ts::postWebrtcPlay` 已按后端契约写好（POST + JSON body）
+但**全仓库没有调用方**。2026-09-19（commit `73e2175` "Live 视图支持 WebRTC"）已接上：
+
+- `web/src/views/live/index.vue:173,408` —— 直播页协议切换里的 WebRTC 分支
+- `web/src/components/ChannelPlayDialog/index.vue:424,774` —— 通道播放对话框同样支持
+
+`RTCPeerConnection` + `<video>`、断开时回收会话均已实现。
+**仍然遗留**：B8（GB28181 流走 WebRTC 解不出帧）未解决 —— 入口有了，但国标流经
+WebRTC 仍收不到帧；B9（`rtc.externIP` 下发）已修。
 
 ### E5 ✅ ZLM 网络模式改为 host + 配置文件管理（2026-09-13）
 

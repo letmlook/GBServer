@@ -158,7 +158,7 @@ GBSERVER_SIP_PASSWORD=<your-sip-password>
 | **18080** | TCP | GBServer | HTTP API + 静态前端 | `server.port` / `GBSERVER__SERVER__PORT` |
 | **5060** | UDP | GBServer | GB28181 SIP 信令 | `sip.port` |
 | **5061** | TCP | GBServer | GB28181 SIP 信令（TCP） | `sip.tcp_port` |
-| **9528** | TCP | Vue dev server | 前端开发模式 | `web/vue.config.js` |
+| **9528** | TCP | Vue dev server | 前端开发模式 | `web/vite.config.ts` |
 
 ### 2.2 数据库 / 缓存
 
@@ -524,14 +524,14 @@ GBSERVER__RPC__PEER_ENDPOINTS=["http://10.0.1.21:18080"] \
 
 | 端点 | 用途 |
 |------|------|
-| `GET /api/health` | JSON 状态（db / sip / zlm / redis），任一异常返 503 |
-| `GET /api/ready` | 200 仅当 DB + cluster + Redis 正常；单节点自动跳过 cluster |
+| `GET /api/health` | **存活探针**：只要进程活着就固定返回 200，返回 `{status:"alive"}`；**不查 DB/Redis**（避免 k8s 在 DB 抖动时误杀 Pod） |
+| `GET /api/ready` | **就绪探针**：DB 可连（+ 集群模式下至少一个节点在册 / 单节点模式跳过）才 200，否则 503；也检查 Redis（配了才查） |
 | `GET /metrics` | Prometheus 文本格式（14+ 指标） |
 | `GET /api/server/config` | 脱敏运行时配置（密码遮蔽） |
 | `GET /api/system/info` | 版本 + 启动时间 + 特性开关 |
 | `GET /api/system/stats` | 设备 / 通道 / 流 / 会话 / JT 终端 / cluster 统计 |
 
-> 区分：`/api/health` 永返 200（不查 DB/Redis，避免 k8s 误重启）；`/api/ready` 才做依赖检查。
+> 区分：`/api/health` 是 liveness，**无条件 200**；`/api/ready` 是 readiness，才做 DB/Redis 依赖检查。实现见 `src/handlers/health.rs`。
 
 ### 7.2 日志
 
@@ -628,7 +628,7 @@ DB schema 由 `init_db_tables` 在启动时自动执行缺失迁移（幂等）�
 2. 备份 DB：`pg_dump gbserver > backup_$(date +%F).sql`
 3. 拉取新版：`git pull && cargo build --release`
 4. 启动：`systemctl start gbserver`
-5. 验证：`curl http://localhost:18080/api/server/version`
+5. 验证：`curl http://localhost:18080/api/health`（存活）；`curl http://localhost:18080/api/ready`（就绪，依赖正常才 200）
 
 ### 9.3 数据库迁移
 

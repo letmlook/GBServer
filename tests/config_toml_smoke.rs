@@ -19,7 +19,11 @@ fn toml_config_loads_and_deserializes() {
         "database.url must be a SQL URL, got: {}",
         cfg.database.url
     );
-    assert_eq!(cfg.jwt.expiration_minutes, 30);
+    // 会话有效期：普通会话 12 小时（勾「7 天免登录」时另用 remember_*）。
+    // 与 config/application.toml 对齐 —— 该值从 30 调到 720 后此断言未同步，
+    // 因 `cargo test` 当时编译不过而被掩盖，2026-09-19 修正。
+    assert_eq!(cfg.jwt.expiration_minutes, 720);
+    assert_eq!(cfg.jwt.remember_expiration_minutes, 10080);
 
     // Optional 但已配置
     let redis = cfg.redis.as_ref().expect("redis should be present");

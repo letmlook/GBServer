@@ -2,8 +2,10 @@
 
 > 源分支：`feat-refactor-frontend-OcNoxC`（已含 Vue 2 + Element UI 的设计系统重构）
 > 目标：`web-v3/`（Vue 3 + Element Plus + Vite + TypeScript）
-> 状态：✅ **迁移已全部完成**（2026-08-23，commit `2acf5a7` web-v3 转正为 `web/`，Vue 2 归档至 `web-legacy-vue2/`）。
-> 下文的 Phase 2+ 表格仅作历史记录保留；当前真实状态以 [`web/README.md`](./README.md) 为准。
+> 状态：✅ **迁移已全部完成**（2026-08-23，commit `2acf5a7` web-v3 转正为 `web/`，Vue 2 先归档至 `web-legacy-vue2/`，后于 **2026-09-19（commit `00ffff1`）从仓库删除**，仅存于 git 历史）。
+> 🔒 代码功能已于 2026-09-19 冻结。
+> 下文的 Phase 2+ 表格仅作历史记录保留；**当前真实状态以 [`web/README.md`](./README.md) 为准**（`cd web`，dev 端口 9528）。
+> 下文出现的 `web-v3/` 均为历史路径名，该目录已不存在。
 
 ## Phase 1 ✅（本次 PR）
 
@@ -73,9 +75,9 @@
 ## 验证
 
 ```bash
-cd web-v3
+cd web
 npm install
-npm run dev          # 看到登录页 → 输入 admin/admin → 进入控制台
+npm run dev          # 看到登录页 → 输入 admin/admin → 进入控制台（http://localhost:9528）
 npm run build        # 验证 vue-tsc 类型检查通过
 ```
 

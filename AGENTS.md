@@ -2,6 +2,14 @@
 
 Agent instructions for working on this GB28181 video platform server (Rust backend + Vue 3 frontend).
 
+> 🔒 **代码功能已冻结（2026-09-19）。** 不再新增功能、不再改动运行时行为。
+> 本仓库后续只做**文档维护与状态同步**；除非用户显式解除冻结，否则不要提交功能性代码改动。
+> 当前未完成事项见 `docs/OPEN_ISSUES.md`，平替进度与逐轮证据见 `docs/WVP_PARITY.md`。
+>
+> **测试状态提醒**：`cargo test` 在 2026-09-19 曾因测试构造器缺字段而**整体编译失败**
+> （已于同日修复，见 `docs/WVP_PARITY.md` 测试基线第一条）。改动 `config` 结构体字段后
+> 务必同时检查 `src/test_support.rs` 与 `src/lib.rs` 的测试构造器。
+
 ## Project Overview
 
 - **Backend**: Rust with Axum 0.7, SQLx (SQLite default / PostgreSQL / MySQL via cargo features), JWT auth
@@ -205,7 +213,7 @@ GBServer/
 │   ├── error.rs             # AppError, ErrorCode
 │   ├── response.rs          # WVPResult
 │   ├── auth.rs              # JWT authentication
-│   ├── router.rs            # Route definitions (~374 routes)
+│   ├── router.rs            # Route definitions (424 处 .route(，429 条唯一 /api/ 路径)
 │   ├── db/                  # Database layer
 │   ├── handlers/            # HTTP handlers (incl. stub.rs / device_stub.rs compat shims)
 │   ├── sip/                 # GB28181 SIP stack (core/ transport/ gb28181/)

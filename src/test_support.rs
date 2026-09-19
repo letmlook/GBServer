@@ -68,6 +68,7 @@ pub(crate) fn app_config() -> crate::config::AppConfig {
         server: ServerConfig {
             port: 18080,
             download_dir: None,
+            snapshot_dir: None,
             record_root: None,
         },
         database: DatabaseConfig {
@@ -78,6 +79,7 @@ pub(crate) fn app_config() -> crate::config::AppConfig {
         jwt: JwtConfig {
             secret: "test-secret-test-secret-test-secret-1234".into(),
             expiration_minutes: 60,
+            remember_expiration_minutes: 7 * 24 * 60,
         },
         static_dir: None,
         user_settings: None,

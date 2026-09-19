@@ -26,7 +26,7 @@
 | `init-postgresql-2.7.4.sql` | 49 KB | PostgreSQL / KingbaseES | 含完整 GB28181 业务表结构 + COMMENT + 初始数据。 |
 | `init-mysql-2.7.4.sql` | 30 KB | MySQL 5.7+ / 8.x | MySQL 语法版本，结构与 PostgreSQL 版一致。 |
 
-> 🔍 三种后端的对比、限制与迁移路径见仓库根 [`docs/DATABASE_COMPATIBILITY.md`](../docs/DATABASE_COMPATIBILITY.md)。
+> 🔍 三种后端的对比、限制与迁移路径见 [`docs/DEPLOYMENT_GUIDE.md`](../docs/DEPLOYMENT_GUIDE.md)（§4 数据库后端选型）；写多方言 SQL 的注意事项见 [`docs/DB_DIALECT_NOTES.md`](../docs/DB_DIALECT_NOTES.md)。
 
 ---
 
@@ -208,6 +208,6 @@ A：本目录的 `init-postgresql-2.7.4.sql` 同时兼容 KingbaseES，按 PG �
 
 <div align="center">
 
-[← 返回仓库根 README](../README.md) · [数据库兼容性方案 →](../docs/DATABASE_COMPATIBILITY.md)
+[← 返回仓库根 README](../README.md) · [数据库后端选型 →](../docs/DEPLOYMENT_GUIDE.md) · [多方言 SQL 注意事项 →](../docs/DB_DIALECT_NOTES.md)
 
 </div>
