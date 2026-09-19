@@ -72,6 +72,9 @@ test.describe('GBServer admin UI smoke (Vue 3)', () => {
     await expect(page.locator(`input[placeholder="${LOGIN_USERNAME_PLACEHOLDER}"]`)).toBeVisible();
     await expect(page.locator(`input[placeholder="${LOGIN_PASSWORD_PLACEHOLDER}"]`)).toBeVisible();
     await expect(page.getByRole('button', { name: LOGIN_BUTTON_TEXT })).toBeVisible();
+    // 版权年份必须动态取当前年份（曾经硬编码 2025）；
+    // 这条断言只在"页面年份 = 运行测试时的年份"时通过，硬编码会在跨年后失败。
+    await expect(page.locator('.brand-foot')).toContainText(String(new Date().getFullYear()));
     await page.screenshot({ path: path.join(ARTIFACT_DIR, 'login.png'), fullPage: true });
     await context.close();
   });

@@ -19,7 +19,7 @@
           <li>云端级联 · 跨地域可视域组网</li>
           <li>智能录像 · 行为检测 / 帧级检索</li>
         </ul>
-        <footer class="brand-foot">© 2025 GBServer Team · 视频感知 · 行业互联</footer>
+        <footer class="brand-foot">© {{ currentYear }} GBServer Team · 视频感知 · 行业互联</footer>
       </div>
 
       <el-form
@@ -65,9 +65,6 @@
         >
           登 录
         </el-button>
-        <div class="hint">
-          演示账号：<span class="mono">admin / admin</span>
-        </div>
       </el-form>
     </section>
   </div>
@@ -87,7 +84,12 @@ const userStore = useUserStore()
 
 const formRef = ref<FormInstance>()
 const loading = ref(false)
-const form = reactive({ username: 'admin', password: 'admin', remember: true })
+// 版权年份取当前年份，不要在模板里写死 —— 写死的话每年都要改一次代码
+// （此前是硬编码的 2025）。
+const currentYear = new Date().getFullYear()
+// 不预填任何凭据：登录页此前把默认管理员账号密码预填进输入框、
+// 并在按钮下方印出"演示账号"，相当于对外公布默认口令。
+const form = reactive({ username: '', password: '', remember: true })
 
 const rules: FormRules = {
   username: [{ required: true, validator: (_, v: string, cb) => (validUsername(v) ? cb() : cb(new Error('请输入用户名'))) }],
@@ -195,6 +197,5 @@ function onForget() {
     .link { color: var(--brand-primary-500); cursor: pointer; }
   }
   .submit { width: 100%; height: 40px; font-size: 14px; letter-spacing: 4px; }
-  .hint { font-size: var(--text-xs); color: var(--text-tertiary); text-align: center; margin-top: 14px; }
 }
 </style>
