@@ -1,13 +1,19 @@
 use serde::Serialize;
+use utoipa::ToSchema;
 
 /// 全平台统一响应信封：`{ code, msg, data }`。
 ///
 /// `code == 0` 表示成功（前端 `web/src/utils/request.ts` 据此判断），
 /// 非 0 一律按业务错误处理；错误响应由 `AppError::into_response()` 生成。
-#[derive(Debug, Serialize)]
+///
+/// OpenAPI 文档里每个接口都写成 `ApiResult<具体类型>`，信封结构只描述这一次
+/// （见 `src/openapi.rs` 的 `ApiDoc`）。
+#[derive(Debug, Serialize, ToSchema)]
 pub struct ApiResult<T> {
+    /// 业务码：`0` = 成功，非 0 见 `ErrorCode`
     pub code: i32,
     pub msg: String,
+    /// 业务数据；出错时为 `null`
     pub data: Option<T>,
 }
 

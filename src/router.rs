@@ -7,12 +7,14 @@ use axum::{
 };
 use std::path::PathBuf;
 use tower_http::cors::{Any, CorsLayer};
+use utoipa::OpenApi;
+use utoipa_axum::routes;
 
 use crate::auth::auth_middleware;
 use crate::middleware::audit_middleware;
 use crate::handlers::{
     alarm, common_channel, device, device_control, device_query, device_stub, front_end, health, jt1078, platform, play,
-    cloud_record_extra, jt1078_extra, parity_extras, playback, position, rtp_control, server, stream, stub, sy_camera, system, talk, user, websocket, webrtc, device_batch, region, role,
+    cloud_record_extra, jt1078_extra, parity_extras, playback, position, rtp_control, server, stream, stub, sy_camera, system, talk, user, websocket, webrtc, device_batch, role,
 };
 use crate::handlers::metrics as metrics_handler;
 use crate::rpc::{RpcRequest, RpcResponse};
@@ -66,6 +68,9 @@ pub async fn rpc_endpoint(
 
 pub fn app(state: AppState) -> Router<AppState> {
     let state_clone = state.clone();
+    // 文档路由必须先于 `api_protected` 构造：它要并进受保护区，
+    // 才能继承鉴权与审计中间件。
+    let (doc_schemas, doc_paths, doc_router) = documented_region_routes();
     let api_protected = Router::new()
         .route(
             "/api/user/userInfo",
@@ -1155,9 +1160,15 @@ pub fn app(state: AppState) -> Router<AppState> {
             "/api/jt1078/terminal/channel/one",
             get(jt1078_extra::terminal_channel_one_query),
         )
-        .route("/api/region/one", get(region::region_one))
-        .route("/api/region/page/list", get(region::region_page_list))
-        .route("/api/region/sync", get(region::region_sync))
+        // ===== 已接入 OpenAPI 文档的路由（试点：区域 3 条）=====
+        // `routes!()` 一次产出 axum `MethodRouter` 与 OpenAPI path，路由表与文档
+        // 天然一致。**必须并在这里**（`api_protected` 内、`route_layer` 之前），
+        // 否则迁移过来的接口会丢掉鉴权与审计中间件 —— 这是迁移时最容易犯的错。
+        //
+        // 用 `.merge(..)` 而非 `.route(..)`：文档路由自带 path，再手写一遍字符串
+        // 就是两处维护，写错时只会在启动瞬间以 overlapping panic 暴露。
+        .merge(doc_router)
+
         // Phase 7.4: audit middleware outermost — captures all responses (including 401)
         .route_layer(middleware::from_fn_with_state(
             state_clone.clone(),
@@ -1206,6 +1217,30 @@ pub fn app(state: AppState) -> Router<AppState> {
         // 公共端点，与既有 /api/zlm/hook 单路径并存
         .merge(zlm_hook_routes::hook_routes())
         .with_state(state.clone());
+
+    // ===== OpenAPI 文档 =====
+    // 文档感知的路由用 `routes!()` 注册：一次注册同时产出 axum 路由与 OpenAPI path，
+    // 因此不存在「加了路由忘了写文档」的可能。未迁移的路由仍走上面的字符串注册，
+    // 它们不出现在文档里（迁移进度见 `documented_routes()`）。
+    let mut routes_openapi = utoipa::openapi::OpenApiBuilder::new()
+        .paths(doc_paths)
+        .build();
+    // `OpenApi` 是 `#[non_exhaustive]`，不能结构体字面量构造，改字段赋值。
+    let mut components = utoipa::openapi::Components::new();
+    components.schemas.extend(doc_schemas);
+    routes_openapi.components = Some(components);
+    // `info` / 安全方案 / 标签来自 `ApiDoc`；paths 与 schemas 来自 `routes!()`。
+    // `merge_from` 只补 `self` 中不存在的项，因此 Info 与 SecurityAddon 不会被覆盖。
+    let openapi = crate::openapi::ApiDoc::openapi().merge_from(routes_openapi);
+    let path_count = openapi.paths.paths.len();
+    let app = app.merge(
+        utoipa_swagger_ui::SwaggerUi::new("/swagger-ui")
+            .url("/api/openapi.json", openapi),
+    );
+    tracing::info!(
+        "OpenAPI 文档已挂载：/swagger-ui（规范：/api/openapi.json），当前已收录 {} 条路径（未迁移的路由暂不出现）",
+        path_count
+    );
 
     // WebSocket：设备状态实时通知 (Phase 7.3 + 7.4: JWT 校验在 ws_handler 内部)
     let app = app.route("/api/ws", get(websocket::ws_handler));
@@ -1263,6 +1298,61 @@ pub fn app(state: AppState) -> Router<AppState> {
     app.layer(cors)
 }
 
+/// `routes!()` 的产物：`(schemas, paths, MethodRouter)`。
+type RegionRoutes = (
+    Vec<(String, utoipa::openapi::RefOr<utoipa::openapi::schema::Schema>)>,
+    utoipa::openapi::path::Paths,
+    Router<AppState>,
+);
+
+/// 已接入 OpenAPI 文档的路由。
+///
+/// **迁移规则**：handler 上加 `#[utoipa::path(...)]` 后，把它从 `app()` 里的字符串
+/// 注册搬到这里用 `routes!()` 注册 —— 注意是**搬**，不是两处都注册，否则 axum 会在
+/// 启动时以 `Overlapping method route` panic（有 `test_router_builds_without_conflicts`
+/// 兜底，但别依赖它）。
+///
+/// `routes!()` 同时产出两样东西：真正的 axum `MethodRouter` 与 OpenAPI path 条目，
+/// 因此路由表与文档天然一致，不存在漏登记。
+///
+/// 返回类型是 `(schemas, paths, MethodRouter)` 三元组，由 `UtoipaMethodRouter` 定义。
+///
+/// 当前已迁移：区域（region）3 条。
+fn documented_region_routes() -> RegionRoutes {
+    // `routes!()` 一次只放**一条**路由：多个 handler 塞进同一次调用时，宏会为每个
+    // handler 注册一遍同一组 method，报
+    // `Overlapping method route. Cannot add two method routes that both handle GET`。
+    //
+    // 每条 route 的 MethodRouter 通过 `Router::route(path, ..)` 并入 —— 路径从宏产出的
+    // `paths` 里取，因此路由字符串与 `#[utoipa::path]` 不会各写一份而漂移。
+    let mut paths = utoipa::openapi::path::Paths::new();
+    let mut schemas = Vec::new();
+    let mut router: Router<AppState> = Router::new();
+
+    /// 把 `routes!()` 的单条产物并入 router 与文档集合。
+    macro_rules! add {
+        ($handler:path) => {{
+            let (s, mut p, m) = routes!($handler);
+            schemas.extend(s);
+            let path = p
+                .paths
+                .keys()
+                .next()
+                .expect("routes!() 必然产出一条 path")
+                .clone();
+            let item = p.paths.remove(&path).expect("path 一定存在");
+            paths.paths.insert(path.clone(), item);
+            router = router.route(&path, m);
+        }};
+    }
+
+    add!(crate::handlers::region::region_one);
+    add!(crate::handlers::region::region_page_list);
+    add!(crate::handlers::region::region_sync);
+
+    (schemas, paths, router)
+}
+
 #[cfg(all(test, feature = "sqlite"))]
 mod tests {
     use super::*;
@@ -1270,9 +1360,8 @@ mod tests {
 
     /// 在临时端口起一个真实 HTTP 服务，返回 base URL。
     ///
-    /// 不用 `axum-test`：其 7.x 依赖 axum 0.6，与本项目的 axum 0.7 不兼容
-    /// （会在依赖图里同时存在两个 axum 版本）。直接起服务 + 用已有的 reqwest 请求，
-    /// 既真实又不引入额外依赖。
+    /// 不用 `axum-test`：它会把另一个 axum 版本带进依赖图。直接起服务 +
+    /// 用已有的 reqwest 请求，既真实又不引入额外依赖。
     async fn spawn(state: AppState) -> String {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -1316,6 +1405,55 @@ mod tests {
     async fn test_router_builds_without_conflicts() {
         let state = app_state().await;
         let _ = app(state);
+    }
+
+    /// OpenAPI 文档必须可访问，且**已迁移的路由确实出现在 spec 里**。
+    ///
+    /// 这条测试是「文档与路由同步」的第一道闸：只注册路由、忘了 `routes!()`，
+    /// 或者只写注解、忘了从字符串注册里搬走（后者会 panic，由上面的测试兜），
+    /// 都会在这里暴露。
+    #[tokio::test]
+    async fn test_openapi_document_is_served_with_migrated_paths() {
+        let base = spawn(app_state().await).await;
+
+        let swagger = reqwest::get(format!("{}/swagger-ui", base))
+            .await
+            .expect("GET /swagger-ui");
+        assert_eq!(swagger.status().as_u16(), 200, "/swagger-ui 未挂载");
+
+        let resp = reqwest::get(format!("{}/api/openapi.json", base))
+            .await
+            .expect("GET /api/openapi.json");
+        assert_eq!(resp.status().as_u16(), 200, "/api/openapi.json 不可访问");
+        let doc: serde_json::Value = resp.json().await.expect("spec 必须是合法 JSON");
+
+        // 试点迁移的 3 条区域路由必须都在
+        for p in [
+            "/api/region/one",
+            "/api/region/page/list",
+            "/api/region/sync",
+        ] {
+            assert!(
+                doc["paths"].get(p).is_some(),
+                "已迁移路由 {p} 未出现在 OpenAPI paths 里"
+            );
+        }
+
+        // 安全方案必须存在，否则 Swagger UI 的 Authorize 按钮无法配置 token
+        for scheme in ["access_token", "bearer_auth", "api_key"] {
+            assert!(
+                doc["components"]["securitySchemes"].get(scheme).is_some(),
+                "缺少安全方案 {scheme}"
+            );
+        }
+
+        // 鉴权要求：区域接口必须声明 access_token
+        let declared = doc["paths"]["/api/region/one"]["get"]["security"]
+            .to_string();
+        assert!(
+            declared.contains("access_token"),
+            "区域接口未声明鉴权要求: {declared}"
+        );
     }
 
     #[tokio::test]

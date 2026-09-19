@@ -108,6 +108,19 @@ pub(crate) async fn sync_regions_from_civil_codes(pool: &db::Pool) -> sqlx::Resu
 }
 
 /// GET /api/region/one?id=...
+#[utoipa::path(
+    get,
+    path = "/api/region/one",
+    tag = "region",
+    summary = "区域详情",
+    params(RegionOne),
+    responses(
+        (status = 200, description = "区域详情（区域字段 + 子节点）", body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{"id":1,"name":"默认区域"}})),
+        (status = 404, description = "区域不存在"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn region_one(
     State(state): State<AppState>,
     Query(q): Query<RegionOne>,
@@ -119,6 +132,19 @@ pub async fn region_one(
 }
 
 /// GET /api/region/page/list?page=&count=
+#[utoipa::path(
+    get,
+    path = "/api/region/page/list",
+    tag = "region",
+    summary = "区域分页列表",
+    params(PageList),
+    responses(
+        (status = 200, description = "分页结果 `{list,total,page,count}`",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{"list":[],"total":0,"page":1,"count":15}})),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn region_page_list(
     State(state): State<AppState>,
     Query(q): Query<PageList>,
@@ -135,6 +161,18 @@ pub async fn region_page_list(
 }
 
 /// GET /api/region/sync
+#[utoipa::path(
+    get,
+    path = "/api/region/sync",
+    tag = "region",
+    summary = "从国标编码同步区域",
+    responses(
+        (status = 200, description = "同步结果 `{count,synced,msg}`",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{"count":0,"synced":0,"msg":"区域同步完成"}})),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn region_sync(
     State(state): State<AppState>,
 ) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
@@ -146,14 +184,17 @@ pub async fn region_sync(
     }))))
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::IntoParams)]
 pub struct RegionOne {
+    /// 区域主键（`gb_common_region.id`）
     pub id: i64,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::IntoParams)]
 pub struct PageList {
+    /// 页码，从 1 开始（默认 1）
     pub page: Option<u32>,
+    /// 每页条数（默认 15）
     pub count: Option<u32>,
 }
 

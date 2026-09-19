@@ -3,6 +3,7 @@ pub mod dyn_where;
 pub mod serde_flex;
 pub mod error;
 pub mod response;
+pub mod openapi;
 pub mod auth;
 pub mod archive;
 pub mod db;
