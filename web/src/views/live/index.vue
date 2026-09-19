@@ -675,7 +675,9 @@ onMounted(async () => {
   justify-content: space-between;
   gap: 12px;
   padding: 8px 12px;
-  background: #f7f7f7;
+  /* 此前是硬编码 #f7f7f7：暗色下整条工具条发亮，而标题文字用的是暗色主题的
+     浅字，压在上面几乎看不见。改用主题 token。 */
+  background: var(--bg-elevated);
   border-radius: 4px;
   margin-bottom: 8px;
   flex: 0 0 auto;

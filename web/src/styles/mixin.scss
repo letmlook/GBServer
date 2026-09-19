@@ -9,9 +9,11 @@
 }
 
 @mixin scrollBar {
-  &::-webkit-scrollbar-track-piece { background: #d3dce6; }
+  /* 原为硬编码 #d3dce6 / #99a9bf（浅色），暗色主题下会露出浅色滚动条。
+     改为主题 token，跟随明暗切换。 */
+  &::-webkit-scrollbar-track-piece { background: var(--bg-base); }
   &::-webkit-scrollbar { width: 6px; }
-  &::-webkit-scrollbar-thumb { background: #99a9bf; border-radius: 20px; }
+  &::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 20px; }
 }
 
 @mixin relative { position: relative; }

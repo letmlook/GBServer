@@ -4,6 +4,10 @@
  * =========================================================== */
 
 :root {
+  /* 让浏览器把**原生控件**（滚动条、video 控件、日期选择器内部、自动填充）
+     按浅色渲染。缺了它，暗色主题下这些原生部件仍会是浅色。 */
+  color-scheme: light;
+
   /* 主色调色板（identity）— 青蓝 */
   --brand-primary-50:  #e8f4f9;
   --brand-primary-100: #c6e4f0;
@@ -143,6 +147,11 @@
  * 切换由 appStore.toggleTheme() 控制 html.dark class
  * =========================================================== */
 html.dark {
+  /* 关键：暗色主题必须声明 `color-scheme: dark`，否则浏览器仍按浅色渲染
+     **原生部件** —— 滚动条、`<video controls>` 控件、日期选择器内部、
+     输入框自动填充背景等，都会是浅色（表现为"播放界面还有浅色"）。 */
+  color-scheme: dark;
+
   /* 主色阶（暗色下保持青蓝主色，但语义色提亮） */
   --brand-primary-50:  #0a2433;
   --brand-primary-100: #0d2f44;
@@ -291,6 +300,41 @@ html.dark {
    * 改成比页面底色更深一档，恢复「凹陷 = 不可编辑」的直觉。 */
   --el-disabled-bg-color:     #0c1322;
   --el-disabled-border-color: var(--border-subtle);
+}
+
+/* ===========================================================
+ * 暗色：**组件作用域**变量覆盖
+ *
+ * Element Plus 把一部分变量声明在组件自身的选择器里（如 `.el-empty{--el-empty-fill-color-3:…}`），
+ * 而不是 `:root`。自定义属性在**元素自身声明**优先于从祖先继承，所以在
+ * `html.dark { … }` 里写同名变量是**无效的** —— 必须用 `html.dark .el-xxx`
+ * 把选择器提到组件作用域之上。
+ *
+ * 实测方法：读 `.el-empty__image path` 的 computed `fill`，它取的是属性
+ * `fill="var(--el-empty-fill-color-3)"` 在该元素上解析出的值。
+ * =========================================================== */
+
+/* 空状态插图：EP 用这 10 档填充色画 SVG，默认全是近白（`-0` 甚至是
+ * `var(--el-color-white)`）。暗色下它会渲染成**一整块大白图** ——
+ * 直播页「请从左侧选择通道开始播放」、回放/区域/用户/日志的空状态都会出现。 */
+html.dark .el-empty {
+  --el-empty-fill-color-0: #333e56;
+  --el-empty-fill-color-1: #303a52;
+  --el-empty-fill-color-2: #2d3750;
+  --el-empty-fill-color-3: #2b344b;
+  --el-empty-fill-color-4: #283146;
+  --el-empty-fill-color-5: #262e41;
+  --el-empty-fill-color-6: #232b3c;
+  --el-empty-fill-color-7: #212837;
+  --el-empty-fill-color-8: #1e2433;
+  --el-empty-fill-color-9: #1b212e;
+  --el-empty-description-color: var(--text-tertiary);
+}
+
+/* 按钮组内的分隔线：EP 默认 `#ffffff`（纯白），暗色下会在两个按钮之间
+   露出一条白线。 */
+html.dark .el-button {
+  --el-button-divide-border-color: var(--border-default);
 }
 
 /* 暗色模式全局微调：页面背景随主题切换 */
