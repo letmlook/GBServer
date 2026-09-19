@@ -127,7 +127,7 @@ services:
   #      使 WebRTC 在本机也能连通。）
   # ==========================================================================
   zlm:
-    image: zlmediakit/zlmediakit:master
+    image: zlmediakit/zlmediakit:master_py
     container_name: gbserver-zlm
     # host 网络：与宿主共用网络命名空间，不再需要 ports / extra_hosts。
     network_mode: host

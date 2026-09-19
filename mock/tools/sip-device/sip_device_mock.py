@@ -83,6 +83,10 @@ class DeviceConfig:
     expires_secs: int = 3600
     # 语音对讲时设备侧收发音频的 RTP 端口（200 OK 的 m=audio 里上报）
     talk_port: int = 10002
+    # 实时/回放/下载时设备**主动发送 PS** 的本地 UDP 端口
+    # （200 OK 的 `m=video <port>` 上报；--send-rtp 启动的 ffmpeg 也从这里出）。
+    # 必须从平台可达——容器/通配地址场景下推荐显式指定局域网 IP+此端口。
+    video_send_port: int = 10000
     # 收到 INVITE 后自动挂断的秒数（0 = 不自动挂断）。
     # 用于模拟"设备主动结束会话"；测试平台侧 BYE 时应设为 0。
     auto_bye_secs: int = 3
@@ -501,6 +505,8 @@ def build_invite_ok(
     ssrc: str,
     request_body: Optional[str] = None,
     talk_port: int = 10002,
+    advertised_ip: Optional[str] = None,
+    video_send_port: int = 10000,
 ) -> bytes:
     """构造 INVITE 200 OK + SDP
 
@@ -508,17 +514,25 @@ def build_invite_ok(
       * `s=Talk` / `m=audio`  → 回 `m=audio`（PCMA）+ `a=sendrecv`
         —— 语音对讲时设备要在自己的端口上**收发**音频，平台据此把
         麦克风音频发到 `c=IN IP4 <device>` + `m=audio <port>`。
-      * 其它（实时/回放/下载）→ 回 `m=video`（PS）
+      * 其它（实时/回放/下载）→ 回 `m=video`（PS）+ `a=sendonly`
+        —— 设备是媒体**发送方**，`c=` 是平台的收流地址，`m=` 是设备
+        本地发送端口；SSRC 回显请求里的 y= 以便平台校验 RTP 包。
+
+    关键 bug 修复：此前 `c=IN IP4 {local_addr[0]}` 在绑定通配地址时会
+    写 `0.0.0.0`，平台就把收流指向一个无路由地址；`a=recvonly` 把方向
+    写反，导致即使 `--send-rtp` 起了 FFmpeg，平台也不知道往哪儿收。
     """
     realm = realm_from_device_id(cfg.device_id)
     req = request_body or ""
     is_talk = ("s=Talk" in req) or ("m=audio" in req)
+    # `local_addr[0]` 在绑定 0.0.0.0 时是 "0.0.0.0"——必须用真实出口 IP。
+    src_ip = advertised_ip or local_addr[0]
     if is_talk:
         sdp = (
             f"v=0\r\n"
-            f"o={cfg.device_id} 0 0 IN IP4 {local_addr[0]}\r\n"
+            f"o={cfg.device_id} 0 0 IN IP4 {src_ip}\r\n"
             f"s=Talk\r\n"
-            f"c=IN IP4 {local_addr[0]}\r\n"
+            f"c=IN IP4 {src_ip}\r\n"
             f"t=0 0\r\n"
             f"m=audio {talk_port} RTP/AVP 8 0 101\r\n"
             f"a=rtpmap:8 PCMA/8000\r\n"
@@ -530,12 +544,12 @@ def build_invite_ok(
     else:
         sdp = (
             f"v=0\r\n"
-            f"o={cfg.device_id} 0 0 IN IP4 {local_addr[0]}\r\n"
+            f"o={cfg.device_id} 0 0 IN IP4 {src_ip}\r\n"
             f"s=Play\r\n"
-            f"c=IN IP4 {local_addr[0]}\r\n"
+            f"c=IN IP4 {src_ip}\r\n"
             f"t=0 0\r\n"
-            f"m=video 10000 RTP/AVP 96 97 98\r\n"
-            f"a=recvonly\r\n"
+            f"m=video {video_send_port} RTP/AVP 96 97 98\r\n"
+            f"a=sendonly\r\n"
             f"a=rtpmap:96 PS/90000\r\n"
             f"a=rtpmap:97 MPEG4/90000\r\n"
             f"a=rtpmap:98 H264/90000\r\n"
@@ -608,12 +622,16 @@ class RtpSender:
             "ffmpeg", "-hide_banner", "-loglevel", "error",
             "-re",
             "-f", "lavfi", "-i", "testsrc=size=352x288:rate=25",
-            "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
-            "-profile:v", "baseline", "-pix_fmt", "yuv420p",
-            # 关键帧间隔 1s，并保证每个关键帧都带 SPS/PPS，
-            # 否则 ZLM 解析不出编码参数、不会建流
-            "-x264-params", "repeat-headers=1:keyint=25",
-            "-an", "-f", "mpeg", "-",
+            # 用 libopenh264（Cisco BSD 包，Fedora 默认就有）；
+            # 不要 libx264：Fedora/RHEL 仓库不带，且 `-x264-params` 在某些
+            # ffmpeg 版本会变 `-x264-params` 不识别。
+            "-c:v", "libopenh264", "-pix_fmt", "yuv420p",
+            # 关键帧 1s 且每个 IDR 带 SPS/PPS（ZLM 拿不到就建不了流）。
+            "-g", "25",
+            "-an",
+            # `mpeg` muxer 在 ffmpeg 5+ 改名 `dvd`（MPEG-2 PS），
+            # ZLM 把它当作 GB28181 标准的 PS（PT=96）来解。
+            "-f", "dvd", "-",
         ]
         try:
             self._proc = subprocess.Popen(
@@ -819,10 +837,32 @@ class SipDeviceMock:
         )
         self.transport = transport
         local = transport.get_extra_info("sockname")
-        log.info("SIP mock listening on %s:%d, targeting %s:%d",
-                 local[0], local[1], self.server_addr[0], self.server_addr[1])
+        # `local[0]` 是绑定通配地址时 OS 返回的 "0.0.0.0"——直接放进
+        # `c=IN IP4 ...` 会让平台把 RTP 推到一个无路由地址，设备永远收不到
+        # 反向流；用"假装连平台让 OS 选路"的标准做法解析出真实出口 IP。
+        advertised_ip = self._detect_outbound_ip() or local[0]
+        if advertised_ip in ("0.0.0.0", "::"):
+            advertised_ip = local[0]
+        self.advertised_ip = advertised_ip
+        log.info(
+            "SIP mock listening on %s:%d (advertised %s), targeting %s:%d",
+            local[0], local[1], advertised_ip,
+            self.server_addr[0], self.server_addr[1],
+        )
         if self.auto_register:
             self._register_task = asyncio.create_task(self._auto_register_loop())
+
+    def _detect_outbound_ip(self) -> Optional[str]:
+        """UDP 假装连平台，让 OS 选路，返回本机出口 IP。失败返回 None。"""
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                s.connect(self.server_addr)
+                return s.getsockname()[0]
+            finally:
+                s.close()
+        except OSError:
+            return None
 
     def connection_made(self, transport):
         pass
@@ -1302,9 +1342,16 @@ class SipDeviceMock:
         )
         local = self.transport.get_extra_info("sockname")
         req_body = msg.split("\r\n\r\n", 1)[1] if "\r\n\r\n" in msg else ""
+        # advertised_ip 是真实出口 IP（local[0] 在绑定通配地址时是 "0.0.0.0"）；
+        # video_send_port 是设备用来给 ZLM 推 PS 的本地端口（必须能从平台
+        # 路由过来，否则平台拿到的 SDP 把流指向不可达地址，设备永远等不到
+        # 反向媒体，--send-rtp 也白搭）。
         payload = build_invite_ok(
             self.cfg, local, addr, invite_cseq, call_id, branch, from_tag, to_tag, ssrc,
-            request_body=req_body, talk_port=self.cfg.talk_port,
+            request_body=req_body,
+            talk_port=self.cfg.talk_port,
+            advertised_ip=getattr(self, "advertised_ip", local[0]),
+            video_send_port=self.cfg.video_send_port,
         )
         self.transport.sendto(payload, addr)
         # 把请求 SDP 的 m= 行打出来：`m=video 0` 表示媒体被禁用
@@ -1671,6 +1718,10 @@ def main():
              "（需要 ffmpeg；用于对真实 ZLMediaKit 做端到端媒体验证）",
     )
     parser.add_argument(
+        "--video-send-port", type=int, default=10000,
+        help="实时/回放/下载时设备发送 PS 流的本地 UDP 端口（200 OK 的 m=video 上报）",
+    )
+    parser.add_argument(
         "--auto-bye-secs", type=int, default=3,
         help="收到 INVITE 后自动挂断的秒数（0=不自动挂断，用于测试平台侧 BYE）",
     )
@@ -1705,6 +1756,7 @@ def main():
     )
 
     cfg.send_rtp = args.send_rtp
+    cfg.video_send_port = args.video_send_port
     mock = SipDeviceMock(
         cfg, server_addr, args.local_port, args.auto_register, args.auto_keepalive,
         args.auto_alarm_secs,

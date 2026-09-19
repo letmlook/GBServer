@@ -45,7 +45,7 @@ services:
     restart: unless-stopped
 
   zlm:
-    image: zlmediakit/zlmediakit:master
+    image: zlmediakit/zlmediakit:master_py
     container_name: gbserver-zlm-sqlite
     ports:
       - "8080:80"
