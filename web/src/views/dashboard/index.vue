@@ -191,7 +191,7 @@
               <div class="proto-row"><dt>信令域</dt><dd class="mono">{{ sipCfg.realm }}</dd></div>
               <div class="proto-row">
                 <dt>监听</dt>
-                <dd class="mono">{{ sipCfg.bind_ip || sipCfg.ip }}:{{ sipCfg.port }}
+                <dd class="mono">{{ listenAddr(sipCfg.bind_ip || sipCfg.ip) }}:{{ sipCfg.port }}
                   <span class="meta">{{ sipCfg.tcp_enabled ? 'UDP/TCP' : 'UDP' }}</span>
                 </dd>
               </div>
@@ -214,11 +214,11 @@
             <dl v-if="jtCfg" class="proto-list">
               <div class="proto-row">
                 <dt>TCP</dt>
-                <dd class="mono">0.0.0.0:{{ jtCfg.tcp_port }}</dd>
+                <dd class="mono">{{ listenAddr(null) }}:{{ jtCfg.tcp_port }}</dd>
               </div>
               <div class="proto-row">
                 <dt>UDP</dt>
-                <dd class="mono">0.0.0.0:{{ jtCfg.udp_port }}</dd>
+                <dd class="mono">{{ listenAddr(null) }}:{{ jtCfg.udp_port }}</dd>
               </div>
               <div class="proto-row" v-if="jtCfg.timeout_ms">
                 <dt>会话超时</dt>
@@ -684,6 +684,13 @@ const sipCfg = computed(() => (info.value.sip_config ?? null) as NonNullable<Sys
 const jtCfg = computed(() => (info.value.jt1078_config ?? null) as NonNullable<SystemInfo['jt1078_config']> | null)
 // 本机对外 IP（自动探测；用作设备/下级平台的「服务器地址」）
 const hostIp = computed(() => info.value.host_ip ?? null)
+
+// 监听地址：cfg 里写 0.0.0.0（通配）时回退到 host_ip，
+// 让 admin 看到真实可路由地址而不是通配符。
+function listenAddr(raw: string | null | undefined): string {
+  if (raw && raw !== '0.0.0.0' && raw !== '::') return raw
+  return hostIp.value ?? '0.0.0.0'
+}
 
 const healthList = computed<HealthRow[]>(() => {
   const ok = apiOk.value
