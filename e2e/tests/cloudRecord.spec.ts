@@ -12,8 +12,7 @@
  *   5. 打包下载：传的是组合串 id，后端按 i64 解析 → "missing ids"；
  *      且容器化部署下按本机路径找文件，必然"全部不可用"。
  *
- * 需要环境里已经有一段真实录像（录像计划拉流录制即可，见 docs/WVP_PARITY.md
- * 第二十八轮的运行配方）。没有数据时跳过。
+ * 需要环境里已经有一段真实录像（录像计划拉流录制即可）。没有数据时跳过。
  */
 
 import { test, expect, type APIRequestContext, type Page } from '@playwright/test';

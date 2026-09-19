@@ -4,10 +4,10 @@ Agent instructions for working on this GB28181 video platform server (Rust backe
 
 > 🔒 **代码功能已冻结（2026-09-19）。** 不再新增功能、不再改动运行时行为。
 > 本仓库后续只做**文档维护与状态同步**；除非用户显式解除冻结，否则不要提交功能性代码改动。
-> 当前未完成事项见 `docs/OPEN_ISSUES.md`，平替进度与逐轮证据见 `docs/WVP_PARITY.md`。
+> 当前未完成事项见 `docs/OPEN_ISSUES.md`，已实现能力与设计决策见 `docs/STATUS.md`。
 >
 > **测试状态提醒**：`cargo test` 在 2026-09-19 曾因测试构造器缺字段而**整体编译失败**
-> （已于同日修复，见 `docs/WVP_PARITY.md` 测试基线第一条）。改动 `config` 结构体字段后
+> （已于同日修复）。改动 `config` 结构体字段后
 > 务必同时检查 `src/test_support.rs` 与 `src/lib.rs` 的测试构造器。
 
 ## Project Overview
@@ -226,7 +226,7 @@ GBServer/
 ├── web/                     # Vue 3 frontend (active)
 ├── e2e/                     # Playwright UI tests
 ├── mock/                    # Python simulators (SIP device / JT1078 terminal / cascade)
-├── docs/                    # Deployment guide, WVP parity, stub retirement plan, UI designs
+├── docs/                    # 当前状态 / 待办 / 部署指南 / 方言注意事项 / shim 退役计划
 ├── config/
 │   └── application.toml     # Default configuration
 ├── database/
@@ -381,8 +381,9 @@ extending this one response.
 
 - **`CLAUDE.md`** — build commands, architecture overview, cross-cutting
   conventions (sibling of this file, slightly different focus).
-- **`docs/`** — deployment guides, WVP parity status, stub retirement
-  plan, UI design specs. Worth skimming before refactoring large areas.
+- **`docs/`** — 当前状态（`STATUS.md`）、未完成事项（`OPEN_ISSUES.md`）、部署指南
+  （`DEPLOYMENT_GUIDE.md`）、多方言 SQL 注意事项（`DB_DIALECT_NOTES.md`）。
+  敏感改动前值得先扫一遍。
 - **`src/handlers/server.rs::system_info`** — the response shape for
   `/api/server/system/info` is the contract for the entire dashboard.
   Any new field added here almost always needs a matching change in

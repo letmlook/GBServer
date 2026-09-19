@@ -1,7 +1,7 @@
 # GBServer Web
 
 GBServer 管理后台前端，Vue 3 + Element Plus + Vite + TypeScript。
-由原 Vue 2 + Element UI + Webpack 实现迁移而来（迁移记录见 [`MIGRATION.md`](./MIGRATION.md)）。
+由原 Vue 2 + Element UI + Webpack 实现迁移而来（迁移过程记录见 git 历史）。
 
 > 🔒 **代码功能已冻结（2026-09-19）** —— 本目录不再新增功能；`web-legacy-vue2/`（原 Vue 2 前端）
 > 已于同日从仓库删除，仅存于 git 历史。

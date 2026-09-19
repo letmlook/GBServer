@@ -1309,7 +1309,7 @@ mod tests {
     /// 路由表必须能成功构建。
     ///
     /// axum 检测到重复路由时会在**启动瞬间 panic** —— 本仓库历史上正是被
-    /// `Overlapping method route` 打断过启动（见 `docs/debug/ISSUES.md`）。
+    /// `Overlapping method route` 打断过启动。
     /// 这条测试把该风险从「部署时才炸」前移到测试阶段。
     #[tokio::test]
     async fn test_router_builds_without_conflicts() {

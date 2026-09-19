@@ -6,8 +6,8 @@
 `cargo test` 跑的是默认的 **SQLite**，而三种方言里只有 PostgreSQL 严格校验
 占位符/列类型、MySQL 又有一批自己的语法限制（`RETURNING` / `IF NOT EXISTS`
 / `CAST(.. AS TEXT|INTEGER)` 都不支持）。本脚本就是"换一个方言再跑一遍全部接口"
-的自动化版本 —— 第四十三 / 四十五轮靠它分别抓出 5 类和 4 类只在 pg / mysql
-上炸的缺陷（见 docs/WVP_PARITY.md 对应小节）。
+的自动化版本 —— 首次在真实 pg / mysql 上跑时分别抓出 5 类和 4 类只在 pg / mysql
+上炸的缺陷。
 
 ## 用法
 

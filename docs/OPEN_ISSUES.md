@@ -2,15 +2,14 @@
 
 > 生成时间：2026-09-13（本地 08:3x）
 > **最近更新：2026-09-19（文档冻结轮）** —— 代码功能自本日起冻结，本文档只同步状态，不再跟随功能推进。
-> 代码基线：第五十八轮（详见 `WVP_PARITY.md`）+ 2026-09-13~19 的 16 个功能提交（延迟列 / 通道播放对话框 / 缩略图落盘 / 直播页 WebRTC / 控制台改版）
+> 代码基线：2026-09-13~19 的 16 个功能提交（延迟列 / 通道播放对话框 / 缩略图落盘 / 直播页 WebRTC / 控制台改版）
 > 测试基线（2026-09-19 实测）：`cargo test --no-fail-fast` **744 通过 / 0 失败 / 3 忽略**（e2e 未重测，需后端+前端+依赖服务同时在跑）
 >
 > ⚠️ 注意：`743 通过` 等此前的数字**在本轮之前无法复现** —— 测试目标曾因
-> `test_support.rs` / `lib.rs` 的测试构造器缺字段而**编译失败**，本轮已修（详见
-> `WVP_PARITY.md` 测试基线第一条）。这是测试代码问题，不涉及运行时行为。
+> `test_support.rs` / `lib.rs` 的测试构造器缺字段而**编译失败**，本轮已修。这是测试代码问题，不涉及运行时行为。
 >
-> 本文档**只列尚未完成/尚未验证的事项**，已完成的历史证据见
-> [`WVP_PARITY.md`](WVP_PARITY.md)（逐轮记录）与 [`audit/`](audit/)（模块审计）。
+> 本文档**只列尚未完成/尚未验证的事项**。已实现能力、设计决策与契约审计结论见
+> [`STATUS.md`](STATUS.md)；逐轮修复过程记录已按「只保留最新状态」清理，需要时走 git 历史。
 > 更新规则：每轮修完一批就把对应条目移出本文档；新增未完成项必须在这里登记，
 > 不允许只写在提交信息里。
 
@@ -50,6 +49,7 @@
 | C2 | 代码债 | 32 个无引用的 `db::` 函数（逐条判定删除/接上） | 🔵 |
 | C3 | 缺陷/代码债 | JT1078 鉴权码只存不用 + 注册应答写死 `"GBServer"` + 0x0102 语义存疑 | 🟠 |
 | C4 | 代码债 | API Key 过期记录不清理（鉴权已判过期，仅表数据堆积） | 🔵 |
+| C5 | 代码债 | `/api/user/users` 的 `UsersQuery` 无 `query` 字段 → 用户搜索会静默失效 | 🔵 |
 | D1 | 真机核验 | GB28181 真实设备（TCP 被动 / 401 鉴权 / SDP 端口差异 / 目录分页） | 🔴 |
 | D2 | 真机核验 | JT1078 真实终端（0x0802 变体 / 0x8100 鉴权 / 双向对讲） | 🔴 |
 | D3 | 真机核验 | 对讲音频互通（G.711A 时间戳/回声/抖动） | 🔴 |
@@ -105,8 +105,8 @@
 
 ### A1 🔴 中亿视图（SY）定制模块 10 条端点
 
-来源：WVP-PRO `web/custom/CameraChannelController.java`（对照脚本见 `WVP_PARITY.md`
-第五十七/五十八轮的方法：抽 `@*Mapping` + 归一化比对 `router.rs`）。
+来源：WVP-PRO `web/custom/CameraChannelController.java`（对照方法：抽 `@*Mapping` +
+归一化比对 `router.rs`）。
 
 缺失清单（本仓库 `/api/sy/*` 已实现 list / list-with-child / cont-with-child /
 box / circle / polygon / address / meeting / control/{play,stop,ptz} 等）：
@@ -419,8 +419,8 @@ ZLM 相关功能（流列表、录像删除、截图…）一起 500 —— 因�
 
 ### C1 🔵 `handle_packet` 23 个参数
 
-`src/sip/server.rs::handle_packet` 参数已达 23 个（历史登记项，见
-`WVP_PARITY.md`「仍未解决」第 7 条）。应抽 `SipPacketContext` 结构体。
+`src/sip/server.rs::handle_packet` 参数已达 23 个（历史登记项）。应抽
+`SipPacketContext` 结构体。
 **风险**：纯重构，但触及所有 SIP 入口，建议单独一轮 + 全量测试。
 
 ### C2 🔵 32 个无引用的 `db::` 函数
@@ -485,6 +485,18 @@ db/user_api_key.rs   : delete_expired_keys
 （长期运行堆积，列表页也会显示已过期条目）。
 **下一步**：接一个低频后台清理任务，或删掉该函数并在列表查询里过滤。
 
+### C5 🔵 用户列表缺少关键字搜索参数
+
+`src/handlers/user.rs:157` 的 `UsersQuery` 只有 `page` / `count`，没有 `query` 字段，
+而前端 `web/src/api/user.ts:64-68` 的 `UserQueryParams` 声明了 `query?: string`。
+
+**当前影响：无** —— 唯一调用点 `web/src/views/user/index.vue` 只传 `page` / `count`，
+没有传 `query`。但一旦接入搜索框，输入的关键字会被 serde 静默丢弃、页面看起来
+"搜了但没过滤"。
+
+**下一步**：要么在 `UsersQuery` 补 `query` 并接进 SQL 的 `LIKE` 条件（需要同步三方言），
+要么从前端类型里删掉该字段。来源：2026-09-12 的 `user.ts` 契约审计（原文已归档至 git 历史）。
+
 ---
 
 ## D. 需真实硬件核验
@@ -512,8 +524,7 @@ db/user_api_key.rs   : delete_expired_keys
 
 ### D3 🔴 对讲音频互通
 
-已验证到"假设备收到 50 个 RTP 包、`y=` 与 SSRC 一致、0 丢序"
-（见 `WVP_PARITY.md` 第五十四轮）。真机上还需验证：
+已验证到"假设备收到 50 个 RTP 包、`y=` 与 SSRC 一致、0 丢序"。真机上还需验证：
 G.711A 编解码互通、时间戳/抖动、回声与半双工行为、以及长时间通话的内存占用。
 
 ---
@@ -575,11 +586,11 @@ hook.on_send_rtp_progress
 | `src/router.rs` | 上述路由注册 | ✅ |
 | `src/scheduler/record_plan.rs` | `startRecord` 有界重试 + 2 条分类测试（B2） | ✅ cloudRecord 3/3 |
 | `mock/.../sip_device_mock.py` | `connection_lost`/`error_received`（B3）、报警查询应答、DeviceConfig 日志字段补全、`DeviceControl` 结构告警 | ✅ 整轮 e2e 未再退出 |
-| `docs/WVP_PARITY.md` | 第五十七/五十八轮记录 | ✅ |
+| `docs/STATUS.md` | 当前状态：能力矩阵 / 设计决策 / 契约审计结论 | — |
 
-**复验结果（2026-09-13）**：`cloudRecord` **3/3 通过**、
-`cargo test` **743 通过 / 0 失败**、`npx playwright test` **66 通过**、
-三方言冒烟仅剩 2 项已记录预期项 —— B2 / B3 转入"已修复并复验"。
+**复验结果（2026-09-13）**：`cloudRecord` **3/3 通过**、`cargo test` **743 通过 / 0 失败**、
+`npx playwright test` **66 通过**、三方言冒烟仅剩 2 项已记录预期项 —— B2 / B3 转入"已修复并复验"。
+（该 743 与 66 是当时的数字；冻结轮的测试基线见本文档开头。）
 
 ---
 
