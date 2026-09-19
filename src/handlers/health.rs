@@ -20,6 +20,16 @@ use axum::Json;
 use crate::AppState;
 
 /// Phase 7.5: Liveness — always 200.
+#[utoipa::path(
+    get,
+    path = "/api/health",
+    tag = "system",
+    operation_id = "health_liveness",
+    summary = "存活探针（始终 200，不检查依赖）",
+    responses(
+        (status = 200, description = "进程存活", body = serde_json::Value),
+    ),
+)]
 pub async fn liveness() -> (StatusCode, Json<serde_json::Value>) {
     (
         StatusCode::OK,
@@ -31,6 +41,17 @@ pub async fn liveness() -> (StatusCode, Json<serde_json::Value>) {
 }
 
 /// Phase 7.5: Readiness — 200 if DB + (cluster OR single_node_mode) are OK.
+#[utoipa::path(
+    get,
+    path = "/api/ready",
+    tag = "system",
+    operation_id = "health_readiness",
+    summary = "就绪探针（检查数据库等依赖，全部正常才 200）",
+    responses(
+        (status = 200, description = "依赖正常", body = serde_json::Value),
+        (status = 503, description = "依赖异常"),
+    ),
+)]
 pub async fn readiness(
     State(state): State<AppState>,
 ) -> (StatusCode, Json<serde_json::Value>) {

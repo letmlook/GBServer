@@ -16,7 +16,7 @@ use axum::{
     Json,
 };
 use chrono::Datelike;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::dyn_where::{BindValue, DynWhere};
 use crate::db::{
@@ -222,7 +222,7 @@ fn url_encode_component(s: &str) -> String {
 
 // ========== common channel ==========
 #[allow(non_snake_case)]
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct CommonChannelListQuery {
     pub page: Option<u32>,
     pub count: Option<u32>,
@@ -239,6 +239,21 @@ pub struct CommonChannelListQuery {
 }
 
 /// GET /api/common/channel/list — 通用通道列表，返回 JSON 避免未匹配时落到静态 index.html
+#[utoipa::path(
+    get,
+    path = "/api/common/channel/list",
+    tag = "channel",
+    operation_id = "api_common_channel_list",
+    summary = "通用通道列表（分页）",
+    params(
+        CommonChannelListQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn common_channel_list(
     State(state): State<AppState>,
     Query(q): Query<CommonChannelListQuery>,
@@ -335,7 +350,7 @@ pub async fn common_channel_list(
 
 // ========== role ==========
 // ========== region ==========
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct RegionQuery {
     pub page: Option<u32>,
     pub count: Option<u32>,
@@ -345,6 +360,18 @@ pub struct RegionQuery {
 }
 
 /// GET /api/region/tree/list
+#[utoipa::path(
+    get,
+    path = "/api/region/tree/list",
+    tag = "channel",
+    operation_id = "api_region_tree_list",
+    summary = "区域树（全量）",
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn region_tree_list(
     State(state): State<AppState>,
 ) -> Result<Json<ApiResult<Vec<serde_json::Value>>>, AppError> {
@@ -380,6 +407,21 @@ fn build_region_tree(list: &[Region], parent_id: Option<i32>) -> Vec<serde_json:
 }
 
 /// DELETE /api/region/delete?id= 或 deviceId=
+#[utoipa::path(
+    delete,
+    path = "/api/region/delete",
+    tag = "channel",
+    operation_id = "api_region_delete",
+    summary = "删除区域",
+    params(
+        RegionQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn region_delete(
     State(state): State<AppState>,
     Query(q): Query<RegionQuery>,
@@ -395,6 +437,21 @@ pub async fn region_delete(
 }
 
 /// GET /api/region/description?id=
+#[utoipa::path(
+    get,
+    path = "/api/region/description",
+    tag = "channel",
+    operation_id = "api_region_description",
+    summary = "区域描述 / 详情",
+    params(
+        RegionQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn region_description(
     State(state): State<AppState>,
     Query(q): Query<RegionQuery>,
@@ -418,11 +475,26 @@ pub async fn region_description(
 }
 
 /// GET /api/region/addByCivilCode
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct RegionCivilCodeQuery {
     pub civil_code: Option<String>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/region/addByCivilCode",
+    tag = "channel",
+    operation_id = "api_region_add_by_civil_code",
+    summary = "按行政区划编码新增区域（幂等）",
+    params(
+        RegionCivilCodeQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn region_add_by_civil_code(
     State(state): State<AppState>,
     Query(q): Query<RegionCivilCodeQuery>,
@@ -445,11 +517,26 @@ pub async fn region_add_by_civil_code(
 }
 
 /// GET /api/region/queryChildListInBase?parentId=
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct RegionChildQuery {
     pub parent_id: Option<i32>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/region/queryChildListInBase",
+    tag = "channel",
+    operation_id = "api_region_query_child_list_in_base",
+    summary = "查询区域下级节点",
+    params(
+        RegionChildQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn region_query_child(
     State(state): State<AppState>,
     Query(q): Query<RegionChildQuery>,
@@ -474,6 +561,18 @@ pub async fn region_query_child(
 }
 
 /// GET /api/region/base/child/list
+#[utoipa::path(
+    get,
+    path = "/api/region/base/child/list",
+    tag = "channel",
+    operation_id = "api_region_base_child_list",
+    summary = "查询根级区域子树",
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn region_base_child_list(
     State(state): State<AppState>,
 ) -> Result<Json<ApiResult<Vec<serde_json::Value>>>, AppError> {
@@ -496,6 +595,19 @@ pub async fn region_base_child_list(
 }
 
 /// POST /api/region/update
+#[utoipa::path(
+    post,
+    path = "/api/region/update",
+    tag = "channel",
+    operation_id = "api_region_update",
+    summary = "更新区域",
+    request_body = serde_json::Value,
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn region_update(
     State(state): State<AppState>,
     Json(body): Json<region::RegionUpdate>,
@@ -516,6 +628,19 @@ pub async fn region_update(
 }
 
 /// POST /api/region/add
+#[utoipa::path(
+    post,
+    path = "/api/region/add",
+    tag = "channel",
+    operation_id = "api_region_add",
+    summary = "新增区域",
+    request_body = serde_json::Value,
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn region_add(
     State(state): State<AppState>,
     Json(body): Json<region::RegionAdd>,
@@ -552,6 +677,21 @@ pub async fn region_add(
 }
 
 /// GET /api/region/path?id=（可省略，若省略则返回空路径）
+#[utoipa::path(
+    get,
+    path = "/api/region/path",
+    tag = "channel",
+    operation_id = "api_region_path",
+    summary = "区域路径（根到该节点）",
+    params(
+        RegionQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn region_path(
     State(state): State<AppState>,
     Query(q): Query<RegionQuery>,
@@ -582,7 +722,7 @@ pub async fn region_path(
 /// `query` 是查询关键字；本平台前端历史上传 `parentId`。两个都支持：
 /// 给了 `parentId` 即"取该父节点下的子节点"（`-1` 是前端的"顶级"哨兵，
 /// 与 `build_region_tree` 一致），否则返回全量。
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct TreeNodeQuery {
     pub page: Option<u32>,
     pub count: Option<u32>,
@@ -625,6 +765,21 @@ fn tree_node_matches(
     }
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/region/tree/query",
+    tag = "channel",
+    operation_id = "api_region_tree_query",
+    summary = "区域树查询（parentId / 关键字）",
+    params(
+        TreeNodeQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn region_tree_query(
     State(state): State<AppState>,
     Query(q): Query<TreeNodeQuery>,
@@ -688,6 +843,18 @@ fn build_group_tree(list: &[Group], parent_id: Option<i32>) -> Vec<serde_json::V
 }
 
 /// GET /api/group/tree/list
+#[utoipa::path(
+    get,
+    path = "/api/group/tree/list",
+    tag = "channel",
+    operation_id = "api_group_tree_list",
+    summary = "业务分组树（全量）",
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn group_tree_list(
     State(state): State<AppState>,
 ) -> Result<Json<ApiResult<Vec<serde_json::Value>>>, AppError> {
@@ -697,6 +864,19 @@ pub async fn group_tree_list(
 }
 
 /// POST /api/group/add
+#[utoipa::path(
+    post,
+    path = "/api/group/add",
+    tag = "channel",
+    operation_id = "api_group_add",
+    summary = "新增业务分组",
+    request_body = serde_json::Value,
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn group_add(
     State(state): State<AppState>,
     Json(body): Json<group::GroupAdd>,
@@ -730,6 +910,19 @@ pub async fn group_add(
 }
 
 /// POST /api/group/update
+#[utoipa::path(
+    post,
+    path = "/api/group/update",
+    tag = "channel",
+    operation_id = "api_group_update",
+    summary = "更新业务分组",
+    request_body = serde_json::Value,
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn group_update(
     State(state): State<AppState>,
     Json(body): Json<group::GroupUpdate>,
@@ -753,6 +946,21 @@ pub async fn group_update(
 
 /// GET /api/group/one?id= —— 与 `/api/region/one` 对齐（此前只有 region 有，
 /// 前端想按 id 读单个分组只能拉全量树再自己找）。
+#[utoipa::path(
+    get,
+    path = "/api/group/one",
+    tag = "channel",
+    operation_id = "api_group_one",
+    summary = "分组详情",
+    params(
+        IdQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn group_one(
     State(state): State<AppState>,
     Query(q): Query<IdQuery>,
@@ -780,7 +988,7 @@ pub async fn group_one(
 }
 
 /// DELETE /api/group/delete?id=
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 #[derive(Default)]
 pub struct IdQuery {
     pub id: Option<i32>,
@@ -790,6 +998,21 @@ pub struct IdQuery {
     pub count: Option<u32>,
 }
 
+#[utoipa::path(
+    delete,
+    path = "/api/group/delete",
+    tag = "channel",
+    operation_id = "api_group_delete",
+    summary = "删除业务分组",
+    params(
+        IdQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn group_delete(
     State(state): State<AppState>,
     Query(q): Query<IdQuery>,
@@ -800,6 +1023,21 @@ pub async fn group_delete(
 }
 
 /// GET /api/group/path?id=
+#[utoipa::path(
+    get,
+    path = "/api/group/path",
+    tag = "channel",
+    operation_id = "api_group_path",
+    summary = "分组路径（根到该节点）",
+    params(
+        IdQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn group_path(
     State(state): State<AppState>,
     Query(q): Query<IdQuery>,
@@ -825,6 +1063,21 @@ pub async fn group_path(
 }
 
 /// GET /api/group/tree/query（参数同 `region_tree_query`）
+#[utoipa::path(
+    get,
+    path = "/api/group/tree/query",
+    tag = "channel",
+    operation_id = "api_group_tree_query",
+    summary = "分组树查询（parentId / 关键字）",
+    params(
+        TreeNodeQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn group_tree_query(
     State(state): State<AppState>,
     Query(q): Query<TreeNodeQuery>,
@@ -864,7 +1117,7 @@ pub async fn group_tree_query(
 }
 
 // ========== log ==========
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct LogListQuery {
     pub page: Option<u32>,
     pub count: Option<u32>,
@@ -890,6 +1143,21 @@ pub struct LogListQuery {
 ///    渲染的是日志**条目**（time/level/logger/message/thread）—— 契约不匹配。
 ///
 /// 现按前端契约返回结构化日志条目，数据来自 `tracing` 采集层（见 `crate::logging`）。
+#[utoipa::path(
+    get,
+    path = "/api/log/list",
+    tag = "system",
+    operation_id = "api_log_list",
+    summary = "系统日志列表（分页，可按级别 / 时间过滤）",
+    params(
+        LogListQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn log_list(
     State(state): State<AppState>,
     Query(q): Query<LogListQuery>,
@@ -971,6 +1239,22 @@ pub async fn log_list(
 ///    所以此前固定去 `./logs/<fileName>` 找文件是必然 404 的死路径。
 /// 2. 运维自行放置/挂载在 `./logs/` 下的真实文件；文件名经过严格校验
 ///    （见 [`safe_log_file_name`]）。
+#[utoipa::path(
+    get,
+    path = "/api/log/file/{file_name}",
+    tag = "system",
+    operation_id = "api_log_file_download",
+    summary = "下载日志文件或导出 CSV",
+    params(
+        ("file_name" = String, Path, description = "日志文件名（单段，仅字母数字与 ._-）"),
+        LogExportQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn log_file_download(
     State(state): State<AppState>,
     Path(file_name): Path<String>,
@@ -1056,7 +1340,7 @@ pub async fn log_file_download(
 }
 
 /// 日志导出过滤条件。
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct LogExportQuery {
     pub query: Option<String>,
     pub level: Option<String>,
@@ -1108,13 +1392,13 @@ fn logs_to_csv(rows: &[crate::db::log::LogEntry]) -> Vec<u8> {
 }
 
 // ========== userApiKey ==========
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct UserApiKeyQuery {
     pub page: Option<u32>,
     pub count: Option<u32>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct UserApiKeyMutateQuery {
     pub id: Option<i32>,
     #[serde(alias = "userId")]
@@ -1138,6 +1422,21 @@ fn parse_expired_at(raw: Option<&str>) -> Option<i64> {
 }
 
 /// GET /api/userApiKey/userApiKeys
+#[utoipa::path(
+    get,
+    path = "/api/userApiKey/userApiKeys",
+    tag = "user",
+    operation_id = "api_user_api_key_list",
+    summary = "API Key 列表（分页，仅管理员）",
+    params(
+        UserApiKeyQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn user_api_key_list(
     State(state): State<AppState>,
     Query(q): Query<UserApiKeyQuery>,
@@ -1171,6 +1470,21 @@ pub async fn user_api_key_list(
 }
 
 /// POST /api/userApiKey/remark
+#[utoipa::path(
+    post,
+    path = "/api/userApiKey/remark",
+    tag = "user",
+    operation_id = "api_user_api_key_remark",
+    summary = "修改 API Key 备注（仅管理员）",
+    params(
+        UserApiKeyMutateQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn user_api_key_remark(
     State(state): State<AppState>,
     Query(q): Query<UserApiKeyMutateQuery>,
@@ -1185,11 +1499,26 @@ pub async fn user_api_key_remark(
 }
 
 /// POST /api/userApiKey/enable
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct UserApiKeyId {
     pub id: Option<i32>,
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/userApiKey/enable",
+    tag = "user",
+    operation_id = "api_user_api_key_enable",
+    summary = "启用 API Key（仅管理员）",
+    params(
+        UserApiKeyMutateQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn user_api_key_enable(
     State(state): State<AppState>,
     Query(q): Query<UserApiKeyMutateQuery>,
@@ -1202,6 +1531,21 @@ pub async fn user_api_key_enable(
     Ok(Json(ApiResult::<()>::success_empty()))
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/userApiKey/disable",
+    tag = "user",
+    operation_id = "api_user_api_key_disable",
+    summary = "停用 API Key（仅管理员）",
+    params(
+        UserApiKeyMutateQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn user_api_key_disable(
     State(state): State<AppState>,
     Query(q): Query<UserApiKeyMutateQuery>,
@@ -1214,6 +1558,21 @@ pub async fn user_api_key_disable(
     Ok(Json(ApiResult::<()>::success_empty()))
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/userApiKey/reset",
+    tag = "user",
+    operation_id = "api_user_api_key_reset",
+    summary = "重置 API Key（仅管理员）",
+    params(
+        UserApiKeyMutateQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn user_api_key_reset(
     State(state): State<AppState>,
     Query(q): Query<UserApiKeyMutateQuery>,
@@ -1228,6 +1587,21 @@ pub async fn user_api_key_reset(
 }
 
 /// DELETE /api/userApiKey/delete?id=
+#[utoipa::path(
+    delete,
+    path = "/api/userApiKey/delete",
+    tag = "user",
+    operation_id = "api_user_api_key_delete",
+    summary = "删除 API Key（仅管理员）",
+    params(
+        IdQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn user_api_key_delete(
     State(state): State<AppState>,
     Query(q): Query<IdQuery>,
@@ -1240,6 +1614,21 @@ pub async fn user_api_key_delete(
 }
 
 /// POST /api/userApiKey/add
+#[utoipa::path(
+    post,
+    path = "/api/userApiKey/add",
+    tag = "user",
+    operation_id = "api_user_api_key_add",
+    summary = "新增 API Key（仅管理员）",
+    params(
+        UserApiKeyMutateQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn user_api_key_add(
     State(state): State<AppState>,
     Query(q): Query<UserApiKeyMutateQuery>,
@@ -1273,7 +1662,7 @@ pub async fn user_api_key_add(
 
 // ========== cloud_record（已实现，查询 ZLM + DB） ==========
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct CloudRecordQuery {
     pub app: Option<String>,
     /// 参数名是 stream；前端部分接口发的是 streamId，两种都收
@@ -1313,7 +1702,7 @@ pub struct CloudRecordQuery {
     pub speed: Option<f64>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize, utoipa::ToSchema)]
 pub struct CloudRecordDeleteBody {
     /// 录像主键列表。本仓库前端发字符串（`map(String)`），
     /// 第三方客户端发整数 —— 两种都要收（否则后者直接 422）。
@@ -1321,7 +1710,7 @@ pub struct CloudRecordDeleteBody {
     pub ids: Option<Vec<String>>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize, utoipa::ToSchema, utoipa::IntoParams)]
 #[derive(Default)]
 pub struct CloudRecordCollectQuery {
     /// 数字主键（列表返回的 id）与组合串 recordId 都接受
@@ -1440,6 +1829,21 @@ pub(crate) async fn resolve_cloud_record(
     parse_cloud_record_id(id_raw).map(|(m, a, s, f)| (m, a, s, f, None))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/cloud/record/play/path",
+    tag = "cloud-record",
+    operation_id = "api_cloud_record_play_path",
+    summary = "云录像播放路径",
+    params(
+        CloudRecordQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn cloud_record_play_path(
     State(state): State<AppState>,
     Query(q): Query<CloudRecordQuery>,
@@ -1511,6 +1915,21 @@ pub async fn cloud_record_play_path(
     Json(ApiResult::success(payload))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/cloud/record/date/list",
+    tag = "cloud-record",
+    operation_id = "api_cloud_record_date_list",
+    summary = "云录像有录像的日期列表",
+    params(
+        CloudRecordQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn cloud_record_date_list(
     State(state): State<AppState>,
     Query(q): Query<CloudRecordQuery>,
@@ -1553,6 +1972,21 @@ pub async fn cloud_record_date_list(
     Json(ApiResult::success(result))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/cloud/record/loadRecord",
+    tag = "cloud-record",
+    operation_id = "api_cloud_record_load",
+    summary = "加载云录像播放地址",
+    params(
+        CloudRecordQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn cloud_record_load(
     State(state): State<AppState>,
     Query(q): Query<CloudRecordQuery>,
@@ -1618,6 +2052,21 @@ pub async fn cloud_record_load(
     Json(ApiResult::success(serde_json::json!({})))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/cloud/record/seek",
+    tag = "cloud-record",
+    operation_id = "api_cloud_record_seek",
+    summary = "云录像拖动定位",
+    params(
+        CloudRecordQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn cloud_record_seek(
     State(state): State<AppState>,
     Query(q): Query<CloudRecordQuery>,
@@ -1641,6 +2090,21 @@ pub async fn cloud_record_seek(
     })))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/cloud/record/speed",
+    tag = "cloud-record",
+    operation_id = "api_cloud_record_speed",
+    summary = "云录像倍速播放",
+    params(
+        CloudRecordQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn cloud_record_speed(
     State(state): State<AppState>,
     Query(q): Query<CloudRecordQuery>,
@@ -1662,6 +2126,21 @@ pub async fn cloud_record_speed(
     })))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/cloud/record/task/add",
+    tag = "cloud-record",
+    operation_id = "api_cloud_record_task_add",
+    summary = "新建云录像任务",
+    params(
+        CloudRecordQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn cloud_record_task_add(
     State(state): State<AppState>,
     Query(q): Query<CloudRecordQuery>,
@@ -1737,6 +2216,21 @@ pub async fn cloud_record_task_add(
     })))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/cloud/record/task/list",
+    tag = "cloud-record",
+    operation_id = "api_cloud_record_task_list",
+    summary = "云录像任务列表",
+    params(
+        CloudRecordQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn cloud_record_task_list(
     State(state): State<AppState>,
     Query(q): Query<CloudRecordQuery>,
@@ -1776,6 +2270,19 @@ pub async fn cloud_record_task_list(
     Json(ApiResult::success(serde_json::json!({"total": total, "list": list})))
 }
 
+#[utoipa::path(
+    delete,
+    path = "/api/cloud/record/delete",
+    tag = "cloud-record",
+    operation_id = "api_cloud_record_delete",
+    summary = "批量删除云录像（含媒体文件）",
+    request_body = CloudRecordDeleteBody,
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn cloud_record_delete(
     State(state): State<AppState>,
     Json(body): Json<CloudRecordDeleteBody>,
@@ -1891,6 +2398,21 @@ pub async fn cloud_record_delete(
 /// * 时间参数支持 `yyyy-MM-dd HH:mm:ss`、`yyyy-MM-ddTHH:mm:ss(.SSS)(Z)` 与毫秒数；
 /// * 数据库没有命中且显式指定了 app+stream 时，退回原来的 ZLM 文件列表扫描
 ///   （兼容"平台之外录的、还没落库"的文件）。
+#[utoipa::path(
+    get,
+    path = "/api/cloud/record/list",
+    tag = "cloud-record",
+    operation_id = "api_cloud_record_list",
+    summary = "云录像分页列表",
+    params(
+        CloudRecordQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn cloud_record_list(
     State(state): State<AppState>,
     Query(q): Query<CloudRecordQuery>,
@@ -2239,6 +2761,21 @@ async fn ensure_record_collect_table(pool: &crate::db::Pool) {
 
 /// GET /api/cloud/record/collect/add
 /// 收藏录像
+#[utoipa::path(
+    get,
+    path = "/api/cloud/record/collect/add",
+    tag = "cloud-record",
+    operation_id = "api_cloud_record_collect_add",
+    summary = "收藏云录像",
+    params(
+        CloudRecordCollectQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn cloud_record_collect_add(
     State(state): State<AppState>,
     Query(q): Query<CloudRecordCollectQuery>,
@@ -2303,6 +2840,19 @@ pub async fn cloud_record_collect_add(
 
 /// DELETE /api/cloud/record/collect/delete
 /// 取消收藏录像
+#[utoipa::path(
+    delete,
+    path = "/api/cloud/record/collect/delete",
+    tag = "cloud-record",
+    operation_id = "api_cloud_record_collect_delete",
+    summary = "取消收藏云录像",
+    request_body = CloudRecordCollectQuery,
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn cloud_record_collect_delete(
     State(state): State<AppState>,
     Json(body): Json<CloudRecordCollectQuery>,
@@ -2329,6 +2879,21 @@ pub async fn cloud_record_collect_delete(
 
 /// GET /api/cloud/record/collect/list
 /// 获取收藏列表
+#[utoipa::path(
+    get,
+    path = "/api/cloud/record/collect/list",
+    tag = "cloud-record",
+    operation_id = "api_cloud_record_collect_list",
+    summary = "云录像收藏列表",
+    params(
+        IdQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn cloud_record_collect_list(
     State(state): State<AppState>,
     Query(q): Query<IdQuery>,
@@ -2408,6 +2973,21 @@ fn validate_record_plan_items(
 }
 
 /// GET /api/record/plan/get?id=
+#[utoipa::path(
+    get,
+    path = "/api/record/plan/get",
+    tag = "cloud-record",
+    operation_id = "api_record_plan_get",
+    summary = "录像计划详情",
+    params(
+        IdQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn record_plan_get(
     State(state): State<AppState>,
     Query(q): Query<IdQuery>,
@@ -2443,6 +3023,19 @@ pub async fn record_plan_get(
 }
 
 /// POST /api/record/plan/add
+#[utoipa::path(
+    post,
+    path = "/api/record/plan/add",
+    tag = "cloud-record",
+    operation_id = "api_record_plan_add",
+    summary = "新增录像计划",
+    request_body = serde_json::Value,
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn record_plan_add(
     State(state): State<AppState>,
     Json(body): Json<record_plan::RecordPlanAdd>,
@@ -2467,6 +3060,19 @@ pub async fn record_plan_add(
 }
 
 /// POST /api/record/plan/update
+#[utoipa::path(
+    post,
+    path = "/api/record/plan/update",
+    tag = "cloud-record",
+    operation_id = "api_record_plan_update",
+    summary = "更新录像计划",
+    request_body = serde_json::Value,
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn record_plan_update(
     State(state): State<AppState>,
     Json(body): Json<record_plan::RecordPlanUpdate>,
@@ -2495,7 +3101,7 @@ pub async fn record_plan_update(
 }
 
 /// GET /api/record/plan/query 的查询参数（page / count / query）
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct RecordPlanQuery {
     pub page: Option<u32>,
     pub count: Option<u32>,
@@ -2503,6 +3109,21 @@ pub struct RecordPlanQuery {
 }
 
 /// GET /api/record/plan/query
+#[utoipa::path(
+    get,
+    path = "/api/record/plan/query",
+    tag = "cloud-record",
+    operation_id = "api_record_plan_query",
+    summary = "录像计划分页列表",
+    params(
+        RecordPlanQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn record_plan_query(
     State(state): State<AppState>,
     Query(q): Query<RecordPlanQuery>,
@@ -2544,6 +3165,21 @@ pub async fn record_plan_query(
 }
 
 /// DELETE /api/record/plan/delete?id=
+#[utoipa::path(
+    delete,
+    path = "/api/record/plan/delete",
+    tag = "cloud-record",
+    operation_id = "api_record_plan_delete",
+    summary = "删除录像计划",
+    params(
+        IdQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn record_plan_delete(
     State(state): State<AppState>,
     Query(q): Query<IdQuery>,
@@ -2611,6 +3247,21 @@ impl RecordPlanChannelRow {
 /// * `hasLink=true` → `record_plan_id = planId`；`hasLink=false` → `IS NULL`
 ///   （未关联 = 不属于任何计划）；
 /// * 名称/编号/在线状态都走 `coalesce(gb_xxx, xxx)`。
+#[utoipa::path(
+    get,
+    path = "/api/record/plan/channel/list",
+    tag = "cloud-record",
+    operation_id = "api_record_plan_channel_list",
+    summary = "录像计划关联 / 未关联通道列表",
+    params(
+        CommonChannelListQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn record_plan_channel_list(
     State(state): State<AppState>,
     Query(q): Query<CommonChannelListQuery>,
@@ -2697,7 +3348,7 @@ pub async fn record_plan_channel_list(
 }
 
 /// POST /api/record/plan/link
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize, utoipa::ToSchema)]
 pub struct RecordPlanLink {
     #[serde(alias = "channelId")]
     pub channel_id: Option<i64>,
@@ -2752,6 +3403,19 @@ async fn resolve_channel_id(
     Ok(None)
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/record/plan/link",
+    tag = "cloud-record",
+    operation_id = "api_record_plan_link",
+    summary = "批量关联通道到录像计划",
+    request_body = RecordPlanLink,
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn record_plan_link(
     State(state): State<AppState>,
     Json(body): Json<RecordPlanLink>,

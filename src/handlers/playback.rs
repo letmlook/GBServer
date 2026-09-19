@@ -3,6 +3,7 @@ use serde::Deserialize;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use chrono::{DateTime, Utc};
+use utoipa::IntoParams;
 
 use crate::error::{AppError, ErrorCode};
 use crate::response::ApiResult;
@@ -232,14 +233,39 @@ impl Default for DownloadManager {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, IntoParams)]
 pub struct PlaybackQuery {
+    /// 起始时间（RFC3339 / `YYYY-MM-DDTHH:MM:SS`），缺省时取当前时刻
     #[serde(alias = "startTime")]
     pub start_time: Option<String>,
+    /// 结束时间，缺省时与 `startTime` 相等
     #[serde(alias = "endTime")]
     pub end_time: Option<String>,
 }
 
+/// GET /api/playback/start/{device_id}/{channel_id}?startTime=&endTime=
+///
+/// 发起 GB28181 历史回放 INVITE + 等 ZLM 媒体到达。**任何失败都返回 500**，
+/// 不再伪装"会话已创建"误导前端。
+#[utoipa::path(
+    get,
+    path = "/api/playback/start/{device_id}/{channel_id}",
+    tag = "playback",
+    operation_id = "playback_start",
+    params(
+        ("device_id" = String, Path, description = "设备国标编号（20 位）"),
+        ("channel_id" = String, Path, description = "通道国标编号（20 位）"),
+        PlaybackQuery,
+    ),
+    responses(
+        (status = 200, description = "回放会话已建立",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{"streamId":"playback_dev_ch_1700000000","deviceId":"dev","channelId":"ch","app":"playback","stream":"playback_dev_ch_1700000000","playUrl":"rtsp://1.2.3.4:554/playback/...","flvUrl":"http://1.2.3.4:8080/live/playback/...","hlsAvailable":false,"startTime":"2026-01-01T00:00:00","endTime":null,"currentTime":"2026-01-01T00:00:00","speed":1.0,"source":"gb28181_playback_invite"}})),
+        (status = 500, description = "SIP 未启用 / ZLM 未配置 / INVITE 失败"),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn playback_start(
     State(state): State<AppState>,
     Path((device_id, channel_id)): Path<(String, String)>,
@@ -368,6 +394,25 @@ pub async fn playback_start(
     ))
 }
 
+/// GET /api/playback/resume/{stream_id}
+///
+/// 继续回放（发送 SIP PlaybackCtrl Resume）。
+#[utoipa::path(
+    get,
+    path = "/api/playback/resume/{stream_id}",
+    tag = "playback",
+    operation_id = "playback_resume",
+    params(
+        ("stream_id" = String, Path, description = "回放流 ID（`/start` 返回）"),
+    ),
+    responses(
+        (status = 200, description = "已发 Resume 命令",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{"streamId":"playback_dev_ch_1700000000","status":"playing","message":"Playback resumed"}})),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn playback_resume(
     State(state): State<AppState>,
     Path(stream_id): Path<String>,
@@ -406,6 +451,25 @@ pub async fn playback_resume(
     })))
 }
 
+/// GET /api/playback/pause/{stream_id}
+///
+/// 暂停回放（发送 SIP PlaybackCtrl Pause）。
+#[utoipa::path(
+    get,
+    path = "/api/playback/pause/{stream_id}",
+    tag = "playback",
+    operation_id = "playback_pause",
+    params(
+        ("stream_id" = String, Path, description = "回放流 ID"),
+    ),
+    responses(
+        (status = 200, description = "已发 Pause 命令",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{"streamId":"playback_dev_ch_1700000000","status":"paused","message":"Playback paused"}})),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn playback_pause(
     State(state): State<AppState>,
     Path(stream_id): Path<String>,
@@ -444,6 +508,26 @@ pub async fn playback_pause(
     })))
 }
 
+/// GET /api/playback/speed/{stream_id}/{speed}
+///
+/// 改变回放倍速（`speed` 是字符串形式的 f64；非法时按 1.0 处理）。
+#[utoipa::path(
+    get,
+    path = "/api/playback/speed/{stream_id}/{speed}",
+    tag = "playback",
+    operation_id = "playback_speed",
+    params(
+        ("stream_id" = String, Path, description = "回放流 ID"),
+        ("speed" = String, Path, description = "倍速，如 `0.5` / `2.0` / `4.0`"),
+    ),
+    responses(
+        (status = 200, description = "已改变倍速",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{"streamId":"playback_dev_ch_1700000000","speed":2.0,"message":"Playback speed updated"}})),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn playback_speed(
     State(state): State<AppState>,
     Path((stream_id, speed)): Path<(String, String)>,
@@ -481,7 +565,26 @@ pub async fn playback_speed(
     })))
 }
 
-/// 回放拖动定位（seek）
+/// GET /api/playback/seek/{stream_id}/{seek_time}
+///
+/// 回放拖动定位（seek）。`seek_time` 通常是 RFC3339 字符串。
+#[utoipa::path(
+    get,
+    path = "/api/playback/seek/{stream_id}/{seek_time}",
+    tag = "playback",
+    operation_id = "playback_seek",
+    params(
+        ("stream_id" = String, Path, description = "回放流 ID"),
+        ("seek_time" = String, Path, description = "目标时间点（RFC3339 或 `YYYY-MM-DDTHH:MM:SS`）"),
+    ),
+    responses(
+        (status = 200, description = "已 seek",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{"streamId":"playback_dev_ch_1700000000","currentTime":"2026-01-01T00:01:30","message":"Playback seeked"}})),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn playback_seek(
     State(state): State<AppState>,
     Path((stream_id, seek_time)): Path<(String, String)>,
@@ -523,6 +626,25 @@ pub async fn playback_seek(
     })))
 }
 
+/// GET /api/playback/stop/{device_id}/{channel_id}/{stream_id}
+///
+/// 停止一路历史回放：关 ZLM 流 + 发 SIP BYE + 移除会话。
+#[utoipa::path(
+    get,
+    path = "/api/playback/stop/{device_id}/{channel_id}/{stream_id}",
+    tag = "playback",
+    operation_id = "playback_stop",
+    params(
+        ("device_id" = String, Path, description = "设备国标编号（20 位）"),
+        ("channel_id" = String, Path, description = "通道国标编号（20 位）"),
+        ("stream_id" = String, Path, description = "回放流 ID"),
+    ),
+    responses(
+        (status = 200, description = "已停止", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn playback_stop(
     State(state): State<AppState>,
     Path((device_id, channel_id, stream_id)): Path<(String, String, String)>,
@@ -579,6 +701,21 @@ pub struct RecordQuery {
     pub count: Option<u32>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/gb_record/query/{device_id}/{channel_id}",
+    tag = "playback",
+    operation_id = "playback_gb_record_query",
+    params(
+        ("device_id" = String, Path, description = "路径参数 device_id"),
+        ("channel_id" = String, Path, description = "路径参数 channel_id"),
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn gb_record_query(
     State(state): State<AppState>,
     Path((device_id, channel_id)): Path<(String, String)>,
@@ -695,6 +832,21 @@ pub async fn gb_record_query(
     })))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/gb_record/download/start/{device_id}/{channel_id}",
+    tag = "playback",
+    operation_id = "playback_gb_record_download_start",
+    params(
+        ("device_id" = String, Path, description = "路径参数 device_id"),
+        ("channel_id" = String, Path, description = "路径参数 channel_id"),
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn gb_record_download_start(
     State(state): State<AppState>,
     Path((device_id, channel_id)): Path<(String, String)>,
@@ -944,6 +1096,20 @@ pub async fn gb_record_download_start(
 /// 又和 ZLM 实际写出的文件名无关 —— 用户点下载必然拿不到文件。
 /// 现在改为本端点：按 `stream_id` 找到下载会话 → 用 `on_record_mp4` 登记的
 /// ZLM 文件路径代理回来（文件还没生成时给出明确原因，而不是 404 HTML）。
+#[utoipa::path(
+    get,
+    path = "/api/gb_record/download/file/{stream_id}",
+    tag = "playback",
+    operation_id = "playback_gb_record_download_file",
+    params(
+        ("stream_id" = String, Path, description = "路径参数 stream_id"),
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn gb_record_download_file(
     State(state): State<AppState>,
     Path(stream_id): Path<String>,
@@ -982,6 +1148,22 @@ pub async fn gb_record_download_file(
     .await
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/gb_record/download/stop/{device_id}/{channel_id}/{stream_id}",
+    tag = "playback",
+    operation_id = "playback_gb_record_download_stop",
+    params(
+        ("device_id" = String, Path, description = "路径参数 device_id"),
+        ("channel_id" = String, Path, description = "路径参数 channel_id"),
+        ("stream_id" = String, Path, description = "路径参数 stream_id"),
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn gb_record_download_stop(
     State(state): State<AppState>,
     Path((device_id, channel_id, stream_id)): Path<(String, String, String)>,
@@ -1054,6 +1236,22 @@ pub async fn gb_record_download_stop(
 ///   此前一律去查 ZLM 下载列表，查不到就返回 `status:"unknown"` ——
 ///   前端因此永远看不到 GB28181 下载的任何状态变化。
 /// * **ZLM 本地下载**（http/ftp 拉取）：进度来自 ZLM 的下载列表。
+#[utoipa::path(
+    get,
+    path = "/api/gb_record/download/progress/{device_id}/{channel_id}/{stream_id}",
+    tag = "playback",
+    operation_id = "playback_gb_record_download_progress",
+    params(
+        ("device_id" = String, Path, description = "路径参数 device_id"),
+        ("channel_id" = String, Path, description = "路径参数 channel_id"),
+        ("stream_id" = String, Path, description = "路径参数 stream_id"),
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn gb_record_download_progress(
     State(state): State<AppState>,
     Path((_device_id, _channel_id, stream_id)): Path<(String, String, String)>,

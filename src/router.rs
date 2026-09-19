@@ -1,24 +1,10 @@
-use axum::{
-    extract::State,
-    middleware,
-    routing::{delete, get, post},
-    Json,
-    Router,
-};
+use axum::{extract::State, middleware, Json, Router};
 use std::path::PathBuf;
 use tower_http::cors::{Any, CorsLayer};
-use utoipa::OpenApi;
-use utoipa_axum::routes;
 
 use crate::auth::auth_middleware;
 use crate::middleware::audit_middleware;
-use crate::handlers::{
-    alarm, common_channel, device, device_control, device_query, device_stub, front_end, health, jt1078, platform, play,
-    cloud_record_extra, jt1078_extra, parity_extras, playback, position, rtp_control, server, stream, stub, sy_camera, system, talk, user, websocket, webrtc, device_batch, role,
-};
-use crate::handlers::metrics as metrics_handler;
 use crate::rpc::{RpcRequest, RpcResponse};
-use crate::zlm::hook as zlm_hook;
 use crate::zlm::hook_routes as zlm_hook_routes;
 use crate::AppState;
 
@@ -27,6 +13,19 @@ use crate::AppState;
 /// 2026-09-11：新增共享密钥校验。此前该端点**完全无鉴权**（出站也不带凭证），
 /// 任何能访问端口的人都能直接调用集群 RPC 方法。现在 `[rpc].secret` 非空时，
 /// 入站必须携带匹配的 `X-RPC-Secret`，否则 401。
+#[utoipa::path(
+    post,
+    path = "/api/rpc",
+    tag = "system",
+    operation_id = "rpc_endpoint",
+    summary = "集群节点间 RPC（公开端点，靠 X-RPC-Secret 校验）",
+    description = "`[rpc].secret` 非空时，入站请求必须携带匹配的 `X-RPC-Secret`，否则 401。",
+    request_body = serde_json::Value,
+    responses(
+        (status = 200, description = "RPC 响应"),
+        (status = 401, description = "共享密钥不匹配"),
+    ),
+)]
 pub async fn rpc_endpoint(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
@@ -68,1107 +67,11 @@ pub async fn rpc_endpoint(
 
 pub fn app(state: AppState) -> Router<AppState> {
     let state_clone = state.clone();
-    // 文档路由必须先于 `api_protected` 构造：它要并进受保护区，
-    // 才能继承鉴权与审计中间件。
-    let (doc_schemas, doc_paths, doc_router) = documented_routes();
-    let api_protected = Router::new()
-        .route(
-            "/api/user/userInfo",
-            get(user::user_info).post(user::user_info),
-        )
-        .route("/api/user/users", get(user::users))
-        .route("/api/user/all", get(user::all_users))
-        .route("/api/user/add", post(user::add_user))
-        .route("/api/user/update", post(user::update_user))
-        .route("/api/user/delete", delete(user::delete_user))
-        .route("/api/user/changePassword", post(user::change_password))
-        .route(
-            "/api/user/changePasswordForAdmin",
-            post(user::change_password_for_admin),
-        )
-        .route("/api/user/changePushKey", post(user::change_push_key))
-        .route("/api/device/query/devices", get(device::query_devices))
-        .route(
-            "/api/device/query/devices/{device_id}/channels",
-            get(device::query_channels),
-        )
-        .route(
-            "/api/device/query/statistics/keepalive",
-            get(device::device_keepalive_statistics),
-        )
-        .route(
-            "/api/device/query/latency",
-            get(device::query_device_latency),
-        )
-        .route(
-            "/api/device/query/statistics/register",
-            get(device::device_register_statistics),
-        )
-        .route(
-            "/api/device/query/sync_status",
-            get(device_stub::sync_status),
-        )
-        .route(
-            "/api/device/query/devices/{device_id}/delete",
-            delete(device_stub::device_delete),
-        )
-        .route(
-            "/api/device/query/devices/{device_id}/sync",
-            get(device_stub::device_sync),
-        )
-        .route(
-            "/api/device/query/transport/{device_id}/{stream_mode}",
-            post(device_stub::device_transport),
-        )
-        .route(
-            "/api/device/control/guard",
-            get(device_control::device_guard),
-        )
-        .route("/api/device/control/ptz", get(device_control::device_ptz))
-        .route(
-            "/api/device/control/preset",
-            get(device_control::device_preset),
-        )
-        .route(
-            "/api/device/control/reboot",
-            get(device_control::device_reboot),
-        )
-        // 这些端点此前完全未挂载，
-        // 按此路径调用会落到 SPA 兜底拿到 index.html。
-        .route(
-            "/api/device/control/teleboot/{device_id}",
-            get(device_control::device_teleboot),
-        )
-        .route(
-            "/api/device/control/reset_alarm",
-            get(device_control::device_reset_alarm),
-        )
-        .route(
-            "/api/device/control/i_frame",
-            get(device_control::device_iframe),
-        )
-        .route(
-            "/api/device/control/home_position",
-            get(device_control::device_home_position),
-        )
-        .route(
-            "/api/device/control/drag_zoom/zoom_in",
-            get(device_control::device_drag_zoom_in),
-        )
-        .route(
-            "/api/device/control/drag_zoom/zoom_out",
-            get(device_control::device_drag_zoom_out),
-        )
-        .route(
-            "/api/device/config/query",
-            get(device_control::device_config_query),
-        )
-        .route(
-            "/api/device/config/update",
-            post(device_control::device_config_update),
-        )
-        // 设备配置端点（查询返回解析后的字段；下发按国标 ConfigDownload）
-        .route(
-            "/api/device/config/query/basicParam",
-            get(device_control::config_query_basic_param),
-        )
-        .route(
-            "/api/device/config/query/videoParamOpt",
-            get(device_control::config_query_video_param),
-        )
-        .route(
-            "/api/device/config/query/svacEncodeConfig",
-            get(device_control::config_query_svac_encode),
-        )
-        .route(
-            "/api/device/config/query/svacDecodeConfig",
-            get(device_control::config_query_svac_decode),
-        )
-        .route(
-            "/api/device/config/set/basicParam",
-            get(device_control::config_set_basic_param),
-        )
-        .route(
-            "/api/device/config/set/videoParamOpt",
-            get(device_control::config_set_video_param),
-        )
-        .route(
-            "/api/device/query/subscribe/catalog",
-            get(device_control::subscribe_catalog),
-        )
-        .route(
-            "/api/device/query/subscribe/mobile-position",
-            get(device_stub::subscribe_mobile_position),
-        )
-        .route(
-            "/api/device/config/query/{device_id}/BasicParam",
-            get(device_stub::config_basic_param),
-        )
-        .route(
-            "/api/device/query/channel/one",
-            get(device_stub::channel_one),
-        )
-        .route("/api/device/query/streams", get(device_stub::query_streams))
-        .route("/api/device/query/subscribe/alarm", get(device_stub::subscribe_alarm))
-        .route(
-            "/api/device/control/record",
-            get(device_stub::control_record),
-        )
-        .route(
-            "/api/device/query/sub_channels/{device_id}/{parent_channel_id}/channels",
-            get(device_stub::sub_channels),
-        )
-        .route(
-            "/api/device/query/tree/channel/{device_id}",
-            get(device_stub::tree_channel),
-        )
-        .route(
-            "/api/device/query/channel/audio",
-            post(device_stub::channel_audio),
-        )
-        .route(
-            "/api/device/query/channel/stream/identification/update/",
-            post(device_stub::channel_stream_identification_update),
-        )
-        .route(
-            "/api/device/query/device/update",
-            post(device_stub::device_update),
-        )
-        .route(
-            "/api/device/query/device/add",
-            post(device_stub::device_add),
-        )
-        .route(
-            "/api/device/query/devices/{device_id}",
-            get(device_stub::device_one),
-        )
-        .route(
-            "/api/device/query/tree/{device_id}",
-            get(device_stub::device_tree),
-        )
-        // Device query APIs (Phase 1 - MESSAGE response routing)
-        .route(
-            "/api/device/query/info/{device_id}",
-            get(device_query::device_info),
-        )
-        // 路径/参数风格入口（与本平台的历史形式并存）
-        .route("/api/device/query/info", get(device_query::device_info_query))
-        .route(
-            "/api/device/query/devices/{device_id}/status",
-            get(device_query::device_status_path),
-        )
-        .route(
-            "/api/device/query/{device_id}/sync_status",
-            get(device_query::sync_status_path),
-        )
-        .route(
-            // 立即抓一帧刷新缩略图（历史前端兼容路径）。GET/POST 都收 ——
-            // 老前端用 GET 调，新前端用 POST。
-            "/api/device/query/snap/{device_id}/{channel_id}",
-            get(device_query::snap_path).post(device_query::snap_path),
-        )
-        .route(
-            "/api/device/query/channel/raw",
-            get(device_query::channel_raw),
-        )
-        .route(
-            "/api/device/query/alarm",
-            get(device_query::device_alarm_query),
-        )
-        .route(
-            "/api/device/query/status/{device_id}",
-            get(device_query::device_status),
-        )
-        .route(
-            "/api/device/config/query/{device_id}/{config_type}",
-            get(device_query::device_config_query),
-        )
-        .route(
-            "/api/play/ssrc/{device_id}/{channel_id}",
-            get(device_query::get_ssrc),
-        )
-        .route("/api/play/ssrc", get(device_query::ssrc_query))
-        .route(
-            // 批量查"哪些通道已有缩略图"（列表页一次请求铺满整页）。
-            // 必须注册在 `/:device_id/:channel_id` 之前语义才清晰 ——
-            // axum 的静态段优先级高于动态段，顺序其实无影响，但放这里
-            // 读者一眼能看出两者是"集合 vs 单条"。
-            "/api/play/snapshot/list",
-            get(device_query::list_snapshots),
-        )
-        .route(
-            // 立即抓一帧刷新通道缩略图（要求该通道当前有活跃流）。
-            // 画面由后端从流里取帧、自己存盘，见 `capture_snapshot_now`。
-            "/api/play/snap/{device_id}/{channel_id}",
-            get(device_query::snap_path).post(device_query::snap_path),
-        )
-        .route(
-            "/api/play/snap",
-            get(device_query::snap_query).post(device_query::snap_query),
-        )
-        .route(
-            "/api/media/getPlayUrl",
-            get(device_query::get_play_url),
-        )
-        .route(
-            "/api/media/stream_info_by_app_and_stream",
-            get(device_query::stream_info),
-        )
-        .route("/api/common/channel/list", get(stub::common_channel_list))
-        .route("/api/role/all", get(role::role_all))
-        .route(
-            "/api/server/media_server/online/list",
-            get(server::media_server_online_list),
-        )
-        .route(
-            "/api/server/media_server/list",
-            get(server::media_server_list),
-        )
-        .route(
-            "/api/server/media_server/one/{id}",
-            get(server::media_server_one),
-        )
-        .route(
-            "/api/server/media_server/check",
-            get(server::media_server_check),
-        )
-        .route(
-            "/api/server/media_server/record/check",
-            get(server::media_server_record_check),
-        )
-        .route(
-            "/api/server/media_server/save",
-            post(server::media_server_save),
-        )
-        .route(
-            "/api/server/media_server/delete",
-            delete(server::media_server_delete),
-        )
-        .route(
-            "/api/server/media_server/media_info",
-            get(server::media_server_media_info),
-        )
-        .route(
-            "/api/server/media_server/load",
-            get(server::media_server_load),
-        )
-        .route(
-            "/api/server/system/configInfo",
-            get(server::system_config_info),
-        )
-        .route("/api/server/system/info", get(server::system_info))
-        .route("/api/server/map/config", get(server::map_config))
-        .route(
-            "/api/server/map/model-icon/list",
-            get(server::map_model_icon_list),
-        )
-        .route("/api/server/info", get(server::server_info))
-        .route("/api/server/resource/info", get(server::resource_info))
-        // Phase 4.5: 流状态统一视图
-        .route("/api/server/stream/all", get(server::list_all_streams))
-        // Phase 7.3: 运维 API moved to api_protected (real impl). Removing legacy
-        // public stubs for /api/rtp/* /api/ps/* /api/server/{shutdown,version,config}
-        // to avoid route conflicts with the protected real implementations.
-        .route("/api/push/list", get(stream::push_list))
-        .route("/api/push/add", post(stream::push_add))
-        .route("/api/push/update", post(stream::push_update))
-        .route("/api/push/start", get(stream::push_start))
-        // 前端 web/src/api/streamPush.ts::stopStreamPush 一直调用该路径，
-        // 但后端此前未注册，「停止推流」按钮会落到 SPA 兜底拿到 index.html。
-        .route("/api/push/stop", get(stream::push_stop))
-        .route("/api/push/remove", post(stream::push_remove))
-        .route("/api/push/upload", post(stream::push_upload))
-        .route("/api/push/batchRemove", delete(stream::push_batch_remove))
-        .route("/api/push/save_to_gb", post(stream::push_save_to_gb))
-        .route(
-            "/api/push/remove_form_gb",
-            delete(stream::push_remove_form_gb),
-        )
-        .route("/api/proxy/list", get(stream::proxy_list))
-        .route(
-            "/api/proxy/ffmpeg_cmd/list",
-            get(stream::proxy_ffmpeg_cmd_list),
-        )
-        .route("/api/proxy/add", post(stream::proxy_add))
-        .route("/api/proxy/update", post(stream::proxy_update))
-        .route("/api/proxy/save", post(stream::proxy_save))
-        .route("/api/proxy/start", get(stream::proxy_start))
-        .route("/api/proxy/stop", get(stream::proxy_stop))
-        .route("/api/proxy/delete", delete(stream::proxy_delete))
-        // `del` 用 app+stream 定位（`/api/proxy/delete` 用 id）
-        .route("/api/proxy/del", delete(stream::proxy_delete))
-        .route("/api/platform/query", get(platform::platform_query))
-        .route(
-            "/api/platform/server_config",
-            get(platform::platform_server_config),
-        )
-        .route(
-            "/api/platform/channel/list",
-            get(platform::platform_channel_list),
-        )
-        .route(
-            "/api/platform/channel/push",
-            get(platform::platform_channel_push),
-        )
-        .route(
-            "/api/platform/channel/add",
-            post(platform::platform_channel_add),
-        )
-        .route(
-            "/api/platform/channel/device/add",
-            post(platform::platform_channel_device_add),
-        )
-        .route(
-            "/api/platform/channel/device/remove",
-            post(platform::platform_channel_device_remove),
-        )
-        .route(
-            "/api/platform/channel/remove",
-            delete(platform::platform_channel_remove),
-        )
-        .route(
-            "/api/platform/channel/custom/update",
-            post(platform::platform_channel_custom_update),
-        )
-        .route("/api/platform/add", post(platform::platform_add))
-        .route("/api/platform/update", post(platform::platform_update))
-        .route("/api/platform/delete", delete(platform::platform_delete))
-        .route(
-            "/api/platform/exit/{device_gb_id}",
-            get(platform::platform_exit),
-        )
-        .route("/api/platform/catalog/add", post(platform::catalog_add))
-        .route("/api/platform/catalog/edit", post(platform::catalog_edit))
-        .route(
-            "/api/play/start/{device_id}/{channel_id}",
-            get(play::play_start),
-        )
-        .route(
-            "/api/play/stop/{device_id}/{channel_id}",
-            get(play::play_stop),
-        )
-        .route(
-            "/api/play/broadcast/{device_id}/{channel_id}",
-            get(play::broadcast_start),
-        )
-        .route(
-            "/api/play/broadcast/stop/{device_id}/{channel_id}",
-            get(play::broadcast_stop),
-        )
-        .route(
-            "/api/play/convertStop/{key}",
-            post(play::play_convert_stop),
-        )
-        .route(
-            "/api/play/webrtc",
-            post(webrtc::webrtc_play),
-        )
-        .route(
-            "/api/device/batch/control",
-            post(device_batch::batch_control),
-        )
-        .route("/api/region/tree/list", get(stub::region_tree_list))
-        .route("/api/region/delete", delete(stub::region_delete))
-        .route("/api/region/description", get(stub::region_description))
-        .route(
-            "/api/region/addByCivilCode",
-            get(stub::region_add_by_civil_code),
-        )
-        .route(
-            "/api/region/queryChildListInBase",
-            get(stub::region_query_child),
-        )
-        .route(
-            "/api/region/base/child/list",
-            get(stub::region_base_child_list),
-        )
-        .route("/api/region/update", post(stub::region_update))
-        .route("/api/region/add", post(stub::region_add))
-        .route("/api/region/path", get(stub::region_path))
-        .route("/api/region/tree/query", get(stub::region_tree_query))
-        .route("/api/group/tree/list", get(stub::group_tree_list))
-        .route("/api/group/one", get(stub::group_one))
-        .route("/api/group/add", post(stub::group_add))
-        .route("/api/group/update", post(stub::group_update))
-        .route("/api/group/delete", delete(stub::group_delete))
-        .route("/api/group/path", get(stub::group_path))
-        .route("/api/group/tree/query", get(stub::group_tree_query))
-        .route("/api/log/list", get(stub::log_list))
-        .route("/api/log/file/{file_name}", get(stub::log_file_download))
-        .route("/api/userApiKey/remark", post(stub::user_api_key_remark))
-        .route("/api/userApiKey/userApiKeys", get(stub::user_api_key_list))
-        .route("/api/userApiKey/enable", post(stub::user_api_key_enable))
-        .route("/api/userApiKey/disable", post(stub::user_api_key_disable))
-        .route("/api/userApiKey/reset", post(stub::user_api_key_reset))
-        .route("/api/userApiKey/delete", delete(stub::user_api_key_delete))
-        .route("/api/userApiKey/add", post(stub::user_api_key_add))
-        .route(
-            "/api/playback/start/{device_id}/{channel_id}",
-            get(playback::playback_start),
-        )
-        .route(
-            "/api/playback/resume/{stream_id}",
-            get(playback::playback_resume),
-        )
-        .route(
-            "/api/playback/pause/{stream_id}",
-            get(playback::playback_pause),
-        )
-        .route(
-            "/api/playback/speed/{stream_id}/{speed}",
-            get(playback::playback_speed),
-        )
-        .route(
-            "/api/playback/seek/{stream_id}/{seek_time}",
-            get(playback::playback_seek),
-        )
-        .route(
-            "/api/playback/stop/{device_id}/{channel_id}/{stream_id}",
-            get(playback::playback_stop),
-        )
-        .route(
-            "/api/gb_record/query/{device_id}/{channel_id}",
-            get(playback::gb_record_query),
-        )
-        .route(
-            "/api/gb_record/download/start/{device_id}/{channel_id}",
-            get(playback::gb_record_download_start),
-        )
-        .route(
-            "/api/gb_record/download/stop/{device_id}/{channel_id}/{stream_id}",
-            get(playback::gb_record_download_stop),
-        )
-        .route(
-            "/api/gb_record/download/progress/{device_id}/{channel_id}/{stream_id}",
-            get(playback::gb_record_download_progress),
-        )
-        // 下载产物（ZLM 落盘的 MP4）本体：支持 Range，供前端直接保存/拖动
-        .route(
-            "/api/gb_record/download/file/{stream_id}",
-            get(playback::gb_record_download_file),
-        )
-        .route(
-            "/api/cloud/record/play/path",
-            get(stub::cloud_record_play_path),
-        )
-        .route(
-            "/api/cloud/record/date/list",
-            get(stub::cloud_record_date_list),
-        )
-        .route("/api/cloud/record/loadRecord", get(stub::cloud_record_load))
-        .route("/api/cloud/record/seek", get(stub::cloud_record_seek))
-        .route("/api/cloud/record/speed", get(stub::cloud_record_speed))
-        .route(
-            "/api/cloud/record/task/add",
-            get(stub::cloud_record_task_add),
-        )
-        .route(
-            "/api/cloud/record/task/list",
-            get(stub::cloud_record_task_list),
-        )
-        .route(
-            "/api/cloud/record/delete",
-            delete(stub::cloud_record_delete),
-        )
-        .route("/api/cloud/record/list", get(stub::cloud_record_list))
-        .route(
-            "/api/cloud/record/collect/add",
-            get(stub::cloud_record_collect_add),
-        )
-        .route(
-            "/api/cloud/record/collect/delete",
-            delete(stub::cloud_record_collect_delete),
-        )
-        .route(
-            "/api/cloud/record/collect/list",
-            get(stub::cloud_record_collect_list),
-        )
-        .route(
-            "/api/talk/start/{device_id}/{channel_id}",
-            get(talk::talk_start),
-        )
-        .route(
-            "/api/talk/stop/{device_id}/{channel_id}",
-            get(talk::talk_stop),
-        )
-        .route(
-            "/api/talk/invite/{device_id}/{channel_id}",
-            get(talk::talk_invite),
-        )
-        .route("/api/talk/ack", post(talk::talk_ack))
-        .route("/api/talk/bye", post(talk::talk_bye))
-        .route(
-            "/api/talk/status/{device_id}/{channel_id}",
-            get(talk::talk_status),
-        )
-        .route("/api/talk/list", get(talk::talk_list))
-        .route("/api/record/plan/get", get(stub::record_plan_get))
-        .route("/api/record/plan/add", post(stub::record_plan_add))
-        .route("/api/record/plan/update", post(stub::record_plan_update))
-        .route("/api/record/plan/query", get(stub::record_plan_query))
-        .route("/api/record/plan/delete", delete(stub::record_plan_delete))
-        .route(
-            "/api/record/plan/channel/list",
-            get(stub::record_plan_channel_list),
-        )
-        .route("/api/record/plan/link", post(stub::record_plan_link))
-        // ========== 移动位置 ==========
-        // history 带 `channelId` 时读 gb_device_mobile_position；
-        // 不带时保持旧行为（gb_position_history 宽表）。
-        .route(
-            "/api/position/history/{device_id}",
-            get(position::position_history),
-        )
-        .route("/api/position/latest", get(position::position_latest))
-        .route(
-            "/api/position/realtime/{device_id}",
-            get(position::position_realtime),
-        )
-        .route(
-            "/api/position/subscribe/{device_id}",
-            get(position::position_subscribe),
-        )
-        // ========== 通用通道 common_channel ==========
-        .route("/api/common/channel/one", get(common_channel::channel_one))
-        .route(
-            "/api/common/channel/industry/list",
-            get(common_channel::industry_list),
-        )
-        .route(
-            "/api/common/channel/type/list",
-            get(common_channel::type_list),
-        )
-        .route(
-            "/api/common/channel/network/identification/list",
-            get(common_channel::network_identification_list),
-        )
-        .route(
-            "/api/common/channel/update",
-            post(common_channel::channel_update),
-        )
-        .route(
-            "/api/common/channel/reset",
-            post(common_channel::channel_reset),
-        )
-        .route("/api/common/channel/add", post(common_channel::channel_add))
-        .route("/api/common/channel/delete", delete(common_channel::channel_delete))
-        .route(
-            "/api/common/channel/civilcode/list",
-            get(common_channel::civilcode_list),
-        )
-        .route(
-            "/api/common/channel/civilCode/unusual/list",
-            get(common_channel::unusual_civilcode_list),
-        )
-        .route(
-            "/api/common/channel/parent/unusual/list",
-            get(common_channel::unusual_parent_list),
-        )
-        .route(
-            "/api/common/channel/civilCode/unusual/clear",
-            post(common_channel::clear_unusual_civilcode),
-        )
-        .route(
-            "/api/common/channel/parent/unusual/clear",
-            post(common_channel::clear_unusual_parent),
-        )
-        .route(
-            "/api/common/channel/parent/list",
-            get(common_channel::parent_list),
-        )
-        .route(
-            "/api/common/channel/region/add",
-            post(common_channel::channel_region_add),
-        )
-        .route(
-            "/api/common/channel/region/delete",
-            post(common_channel::channel_region_delete),
-        )
-        .route(
-            "/api/common/channel/region/device/add",
-            post(common_channel::device_region_add),
-        )
-        .route(
-            "/api/common/channel/region/device/delete",
-            post(common_channel::device_region_delete),
-        )
-        .route(
-            "/api/common/channel/group/add",
-            post(common_channel::channel_group_add),
-        )
-        .route(
-            "/api/common/channel/group/delete",
-            post(common_channel::channel_group_delete),
-        )
-        .route(
-            "/api/common/channel/group/device/add",
-            post(common_channel::device_group_add),
-        )
-        .route(
-            "/api/common/channel/group/device/delete",
-            post(common_channel::device_group_delete),
-        )
-        .route(
-            "/api/common/channel/play",
-            get(common_channel::channel_play),
-        )
-        .route(
-            "/api/common/channel/play/stop",
-            get(common_channel::channel_play_stop),
-        )
-        .route(
-            "/api/common/channel/map/list",
-            get(common_channel::map_channel_list),
-        )
-        .route(
-            "/api/common/channel/map/save-level",
-            post(common_channel::map_save_level),
-        )
-        .route(
-            "/api/common/channel/map/reset-level",
-            post(common_channel::map_reset_level),
-        )
-        .route(
-            "/api/common/channel/map/thin/clear",
-            get(common_channel::map_thin_clear),
-        )
-        .route(
-            "/api/common/channel/map/thin/progress",
-            get(common_channel::map_thin_progress),
-        )
-        .route(
-            "/api/common/channel/map/thin/save",
-            get(common_channel::map_thin_save),
-        )
-        .route(
-            "/api/common/channel/map/thin/draw",
-            post(common_channel::map_thin_draw),
-        )
-        // ========== commonChannel 前端控制 ==========
-        .route(
-            "/api/common/channel/front-end/ptz",
-            get(common_channel::front_end_ptz),
-        )
-        .route(
-            "/api/common/channel/front-end/auxiliary",
-            get(common_channel::front_end_auxiliary),
-        )
-        .route(
-            "/api/common/channel/front-end/wiper",
-            get(common_channel::front_end_wiper),
-        )
-        .route(
-            "/api/common/channel/front-end/fi/iris",
-            get(common_channel::front_end_iris),
-        )
-        .route(
-            "/api/common/channel/front-end/fi/focus",
-            get(common_channel::front_end_focus),
-        )
-        .route(
-            "/api/common/channel/front-end/preset/query",
-            get(common_channel::front_end_preset_query),
-        )
-        .route(
-            "/api/common/channel/front-end/preset/add",
-            get(common_channel::front_end_preset_add),
-        )
-        .route(
-            "/api/common/channel/front-end/preset/call",
-            get(common_channel::front_end_preset_call),
-        )
-        .route(
-            "/api/common/channel/front-end/preset/delete",
-            get(common_channel::front_end_preset_delete),
-        )
-        .route(
-            "/api/common/channel/front-end/tour/point/add",
-            get(common_channel::front_end_tour_point_add),
-        )
-        .route(
-            "/api/common/channel/front-end/tour/point/delete",
-            get(common_channel::front_end_tour_point_delete),
-        )
-        .route(
-            "/api/common/channel/front-end/tour/speed",
-            get(common_channel::front_end_tour_speed),
-        )
-        .route(
-            "/api/common/channel/front-end/tour/time",
-            get(common_channel::front_end_tour_time),
-        )
-        .route(
-            "/api/common/channel/front-end/tour/start",
-            get(common_channel::front_end_tour_start),
-        )
-        .route(
-            "/api/common/channel/front-end/tour/stop",
-            get(common_channel::front_end_tour_stop),
-        )
-        .route(
-            "/api/common/channel/front-end/scan/set/speed",
-            get(common_channel::front_end_scan_set_speed),
-        )
-        .route(
-            "/api/common/channel/front-end/scan/set/left",
-            get(common_channel::front_end_scan_set_left),
-        )
-        .route(
-            "/api/common/channel/front-end/scan/set/right",
-            get(common_channel::front_end_scan_set_right),
-        )
-        .route(
-            "/api/common/channel/front-end/scan/start",
-            get(common_channel::front_end_scan_start),
-        )
-        .route(
-            "/api/common/channel/front-end/scan/stop",
-            get(common_channel::front_end_scan_stop),
-        )
-        // ========== commonChannel 回放 ==========
-        .route(
-            "/api/common/channel/playback/query",
-            get(common_channel::channel_playback_query),
-        )
-        .route(
-            "/api/common/channel/playback",
-            get(common_channel::channel_playback_start),
-        )
-        .route(
-            "/api/common/channel/playback/stop",
-            get(common_channel::channel_playback_stop),
-        )
-        .route(
-            "/api/common/channel/playback/pause",
-            get(common_channel::channel_playback_pause),
-        )
-        .route(
-            "/api/common/channel/playback/resume",
-            get(common_channel::channel_playback_resume),
-        )
-        .route(
-            "/api/common/channel/playback/seek",
-            get(common_channel::channel_playback_seek),
-        )
-        .route(
-            "/api/common/channel/playback/speed",
-            get(common_channel::channel_playback_speed),
-        )
-        // 通道级（对讲/广播）与前端通道（front-end/*）的其余端点
-        .route(
-            "/api/common/channel/talk/start",
-            get(common_channel::channel_talk_start),
-        )
-        .route(
-            "/api/common/channel/talk/stop",
-            get(common_channel::channel_talk_stop),
-        )
-        .route(
-            "/api/common/channel/broadcast/start",
-            get(common_channel::channel_broadcast_start),
-        )
-        .route(
-            "/api/common/channel/broadcast/stop",
-            get(common_channel::channel_broadcast_stop),
-        )
-        .route(
-            "/api/common/channel/front-end/home_position",
-            get(common_channel::front_end_home_position),
-        )
-        .route(
-            "/api/common/channel/front-end/drag_zoom_in",
-            get(common_channel::front_end_drag_zoom_in),
-        )
-        .route(
-            "/api/common/channel/front-end/drag_zoom_out",
-            get(common_channel::front_end_drag_zoom_out),
-        )
-        // ========== 前端控制 front_end ==========
-        .route(
-            "/api/front-end/ptz/{device_id}/{channel_id}",
-            get(front_end::ptz),
-        )
-        .route(
-            "/api/front-end/auxiliary/{device_id}/{channel_id}",
-            get(front_end::auxiliary),
-        )
-        .route(
-            "/api/front-end/wiper/{device_id}/{channel_id}",
-            get(front_end::wiper),
-        )
-        .route(
-            "/api/front-end/fi/iris/{device_id}/{channel_id}",
-            get(front_end::iris),
-        )
-        .route(
-            "/api/front-end/fi/focus/{device_id}/{channel_device_id}",
-            get(front_end::focus),
-        )
-        .route(
-            "/api/front-end/preset/query/{device_id}/{channel_device_id}",
-            get(front_end::preset_query),
-        )
-        .route(
-            "/api/front-end/preset/add/{device_id}/{channel_device_id}",
-            get(front_end::preset_add),
-        )
-        .route(
-            "/api/front-end/preset/call/{device_id}/{channel_device_id}",
-            get(front_end::preset_call),
-        )
-        .route(
-            "/api/front-end/preset/delete/{device_id}/{channel_device_id}",
-            get(front_end::preset_delete),
-        )
-        .route(
-            "/api/front-end/cruise/point/add/{device_id}/{channel_device_id}",
-            get(front_end::cruise_point_add),
-        )
-        .route(
-            "/api/front-end/cruise/point/delete/{device_id}/{channel_device_id}",
-            get(front_end::cruise_point_delete),
-        )
-        .route(
-            "/api/front-end/cruise/speed/{device_id}/{channel_device_id}",
-            get(front_end::cruise_speed),
-        )
-        .route(
-            "/api/front-end/cruise/time/{device_id}/{channel_device_id}",
-            get(front_end::cruise_time),
-        )
-        .route(
-            "/api/front-end/cruise/start/{device_id}/{channel_device_id}",
-            get(front_end::cruise_start),
-        )
-        .route(
-            "/api/front-end/cruise/stop/{device_id}/{channel_device_id}",
-            get(front_end::cruise_stop),
-        )
-        .route(
-            "/api/front-end/scan/set/speed/{device_id}/{channel_device_id}",
-            get(front_end::scan_set_speed),
-        )
-        .route(
-            "/api/front-end/scan/set/left/{device_id}/{channel_device_id}",
-            get(front_end::scan_set_left),
-        )
-        .route(
-            "/api/front-end/scan/set/right/{device_id}/{channel_device_id}",
-            get(front_end::scan_set_right),
-        )
-        .route(
-            "/api/front-end/scan/start/{device_id}/{channel_device_id}",
-            get(front_end::scan_start),
-        )
-        .route(
-            "/api/front-end/scan/stop/{device_id}/{channel_device_id}",
-            get(front_end::scan_stop),
-        )
-        .route(
-            "/api/ptz/front_end_command/{device_id}/{channel_id}",
-            post(front_end::legacy_front_end_command),
-        )
-        // ========== JT1078 部标设备 ==========
-        .route("/api/jt1078/terminal/list", get(jt1078::terminal_list))
-        .route("/api/jt1078/terminal/query", get(jt1078::terminal_query))
-        // 前端 jtDevice.ts::getJtTerminalOne 调用；此前未注册
-        .route("/api/jt1078/terminal/one", get(jt1078::terminal_one))
-        .route("/api/jt1078/terminal/add", post(jt1078::terminal_add))
-        .route("/api/jt1078/terminal/add/", post(jt1078::terminal_add))
-        .route("/api/jt1078/terminal/update", post(jt1078::terminal_update))
-        .route("/api/jt1078/terminal/update/", post(jt1078::terminal_update))
-        .route(
-            "/api/jt1078/terminal/delete",
-            delete(jt1078::terminal_delete),
-        )
-        .route(
-            "/api/jt1078/terminal/channel/list",
-            get(jt1078::channel_list),
-        )
-        .route(
-            "/api/jt1078/terminal/channel/update",
-            post(jt1078::channel_update),
-        )
-        .route(
-            "/api/jt1078/terminal/channel/update/",
-            post(jt1078::channel_update),
-        )
-        .route(
-            "/api/jt1078/terminal/channel/add",
-            post(jt1078::channel_add),
-        )
-        .route(
-            "/api/jt1078/terminal/channel/add/",
-            post(jt1078::channel_add),
-        )
-        .route("/api/jt1078/live/start", get(jt1078::live_start))
-        .route("/api/jt1078/live/stop", get(jt1078::live_stop))
-        .route("/api/jt1078/playback/start", get(jt1078::playback_start))
-        .route("/api/jt1078/playback/stop", get(jt1078::playback_stop))
-        .route(
-            "/api/jt1078/playback/control",
-            get(jt1078::playback_control),
-        )
-        .route(
-            "/api/jt1078/playback/downloadUrl",
-            get(jt1078::playback_download_url),
-        )
-        .route("/api/jt1078/ptz", get(jt1078::ptz))
-        .route("/api/jt1078/wiper", get(jt1078::wiper))
-        .route("/api/jt1078/fill-light", get(jt1078::fill_light))
-        .route("/api/jt1078/record/list", get(jt1078::record_list))
-        .route("/api/jt1078/config/get", get(jt1078::config_get))
-        .route("/api/jt1078/config/set", post(jt1078::config_set))
-        .route("/api/jt1078/attribute", get(jt1078::attribute))
-        .route("/api/jt1078/link-detection", get(jt1078::link_detection))
-        .route("/api/jt1078/position-info", get(jt1078::position_info))
-        .route("/api/jt1078/text-msg", post(jt1078::text_msg))
-        .route(
-            "/api/jt1078/telephone-callback",
-            get(jt1078::telephone_callback),
-        )
-        .route("/api/jt1078/driver-information", get(jt1078::driver_info))
-        .route(
-            "/api/jt1078/control/factory-reset",
-            post(jt1078::factory_reset),
-        )
-        .route("/api/jt1078/control/reset", post(jt1078::reset))
-        .route("/api/jt1078/control/connection", post(jt1078::connection))
-        .route("/api/jt1078/control/door", get(jt1078::door))
-        .route("/api/jt1078/media/attribute", get(jt1078::media_attribute))
-        .route("/api/jt1078/media/list", post(jt1078::media_list))
-        .route("/api/jt1078/set-phone-book", post(jt1078::set_phone_book))
-        .route("/api/jt1078/shooting", post(jt1078::shooting))
-        .route("/api/jt1078/talk/start", get(jt1078::talk_start))
-        .route("/api/jt1078/talk/stop", get(jt1078::talk_stop))
-        .route(
-            "/api/jt1078/media/upload/one/upload",
-            get(jt1078::media_upload_one),
-        )
-        // ========== 测试接口 ==========
-        .route(
-            "/api/sy/camera/list/ids",
-            get(common_channel::camera_list_ids),
-        )
-        // Phase 7.4: alarm endpoints now require JWT (moved from main-app merge below)
-        .route("/api/alarm/list", get(alarm::alarm_list))
-        .route("/api/alarm/detail/{id}", get(alarm::alarm_detail))
-        .route("/api/alarm/handle", post(alarm::alarm_handle))
-        .route("/api/alarm/delete/{id}", delete(alarm::alarm_delete))
-        .route("/api/alarm/batch", delete(alarm::alarm_batch_delete))
-        // 本端点契约：DELETE body 是裸数组 [1,2,3]
-        .route("/api/alarm/delete", delete(alarm::alarm_delete_batch))
-        .route("/api/alarm/device/{device_id}", delete(alarm::alarm_delete_by_device))
-        .route("/api/alarm/before/{time}", delete(alarm::alarm_delete_before_time))
-        // Phase 7.6: system info/stats/version/online-users
-        .route("/api/system/info", get(system::system_info))
-        .route("/api/system/stats", get(system::system_stats))
-        .route("/api/system/version", get(system::system_version))
-        .route("/api/server/shutdown", get(server::server_shutdown))
-        .route("/api/system/online-users", get(system::online_users))
-        .route("/api/user/logout", get(user::logout))
-        .route("/api/platform/info/{id}", get(platform::platform_info))
-        .route("/api/role/add", post(role::role_add))
-        .route("/api/role/delete", delete(role::role_delete))
-        .route("/api/proxy/one", get(stream::proxy_one))
-        .route("/api/push/forceClose", get(stream::push_force_close))
-        .route("/api/sy/camera/list", get(sy_camera::camera_list))
-        .route("/api/sy/camera/list-with-child", get(sy_camera::camera_list_with_child))
-        .route("/api/sy/camera/list-for-mobile", get(sy_camera::camera_list_for_mobile))
-        .route("/api/sy/camera/cont-with-child", get(sy_camera::camera_cont_with_child))
-        .route("/api/sy/camera/list/box", get(sy_camera::camera_list_box))
-        .route("/api/sy/camera/list/circle", get(sy_camera::camera_list_circle))
-        .route("/api/sy/camera/list/polygon", get(sy_camera::camera_list_polygon))
-        .route("/api/sy/camera/list/address", get(sy_camera::camera_list_address))
-        .route("/api/sy/camera/meeting/list", get(sy_camera::camera_meeting_list))
-        .route("/api/sy/camera/control/play", get(sy_camera::camera_control_play))
-        .route("/api/sy/camera/control/stop", get(sy_camera::camera_control_stop))
-        .route("/api/sy/camera/control/ptz", get(sy_camera::camera_control_ptz))
-        .route("/api/cloud/record/collect/delete", get(cloud_record_extra::collect_delete))
-        .route("/api/cloud/record/download/zip", get(cloud_record_extra::download_zip))
-        // 单条录像文件下载/播放（支持 HTTP Range，供 <video> 拖动）
-        .route("/api/cloud/record/download/{id}", get(cloud_record_extra::download_file))
-        .route("/api/cloud/record/list-url", get(cloud_record_extra::list_url))
-        .route("/api/cloud/record/zip", get(cloud_record_extra::zip))
-        .route("/api/alarm/clear", delete(alarm::alarm_clear))
-        .route("/api/alarm/snap/{param}", get(parity_extras::alarm_snap))
-        .route("/api/common/channel/map/tile/{z}/{x}/{y}", get(parity_extras::channel_map_tile))
-        .route("/api/common/channel/map/thin/tile/{z}/{x}/{y}", get(parity_extras::channel_map_thin_tile))
-        .route("/api/front-end/common/{cmd}/{ch}", get(parity_extras::front_end_common))
-        .route("/api/server/config", get(parity_extras::server_config))
-        .route("/api/server/version", get(parity_extras::server_version))
-        .route("/api/rtp/receive/open", post(rtp_control::rtp_receive_open))
-        .route("/api/rtp/receive/close/{stream_id}", post(rtp_control::rtp_receive_close))
-        .route("/api/rtp/send/start", post(rtp_control::rtp_send_start))
-        .route("/api/rtp/send/stop/{stream_id}", post(rtp_control::rtp_send_stop))
-        .route("/api/ps/receive/open", post(rtp_control::ps_receive_open))
-        .route("/api/ps/receive/close/{stream_id}", post(rtp_control::ps_receive_close))
-        .route("/api/ps/send/start", post(rtp_control::ps_send_start))
-        .route("/api/ps/send/stop/{stream_id}", post(rtp_control::ps_send_stop))
-        .route("/api/ps/getTestPort", get(rtp_control::ps_get_test_port))
-        // 第三方对接（vmanager/rtp|ps）的查询参数风格入口
-        .route(
-            "/api/rtp/receive/close",
-            get(rtp_control::rtp_receive_close_query),
-        )
-        .route(
-            "/api/rtp/send/stop",
-            get(rtp_control::rtp_send_stop_query),
-        )
-        .route(
-            "/api/ps/receive/close",
-            get(rtp_control::ps_receive_close_query),
-        )
-        .route(
-            "/api/ps/send/stop",
-            get(rtp_control::ps_send_stop_query),
-        )
-        .route("/api/jt1078/area/circle/add", post(jt1078_extra::area_circle_add))
-        .route("/api/jt1078/area/circle/edit", post(jt1078_extra::area_circle_edit))
-        .route("/api/jt1078/area/circle/delete", get(jt1078_extra::area_circle_delete))
-        .route("/api/jt1078/area/circle/query", get(jt1078_extra::area_circle_query))
-        .route("/api/jt1078/area/circle/update", post(jt1078_extra::area_circle_update))
-        .route("/api/jt1078/area/polygon/set", post(jt1078_extra::area_polygon_set))
-        .route("/api/jt1078/area/polygon/delete", get(jt1078_extra::area_polygon_delete))
-        .route("/api/jt1078/area/polygon/query", get(jt1078_extra::area_polygon_query))
-        .route("/api/jt1078/area/rectangle/add", post(jt1078_extra::area_rectangle_add))
-        .route("/api/jt1078/area/rectangle/edit", post(jt1078_extra::area_rectangle_edit))
-        .route("/api/jt1078/area/rectangle/delete", get(jt1078_extra::area_rectangle_delete))
-        .route("/api/jt1078/area/rectangle/query", get(jt1078_extra::area_rectangle_query))
-        .route("/api/jt1078/area/rectangle/update", post(jt1078_extra::area_rectangle_update))
-        .route("/api/jt1078/route/set", post(jt1078_extra::route_set))
-        .route("/api/jt1078/route/query", get(jt1078_extra::route_query))
-        .route("/api/jt1078/route/delete", get(jt1078_extra::route_delete))
-        .route("/api/jt1078/live/continue", get(jt1078_extra::live_continue))
-        .route("/api/jt1078/live/pause", get(jt1078_extra::live_pause))
-        .route("/api/jt1078/live/switch", get(jt1078_extra::live_switch))
-        .route("/api/jt1078/record/start", get(jt1078_extra::record_start))
-        .route("/api/jt1078/record/stop", get(jt1078_extra::record_stop))
-        .route("/api/jt1078/snap", get(jt1078_extra::snap))
-        .route("/api/jt1078/control/temp-position-tracking", get(jt1078_extra::temp_position_tracking))
-        .route("/api/jt1078/confirmation-alarm-message", post(jt1078_extra::confirmation_alarm))
-        .route("/api/jt1078/playback/download", get(jt1078_extra::playback_download))
-        .route("/api/jt1078/media/upload/one/delete", get(jt1078_extra::media_upload_delete))
-        .route("/api/jt1078/terminal/channel/delete/{id}", delete(jt1078_extra::terminal_channel_delete))
-        .route(
-            "/api/jt1078/terminal/channel/delete",
-            delete(jt1078_extra::terminal_channel_delete_query),
-        )
-        .route("/api/jt1078/terminal/channel/one/{id}", get(jt1078_extra::terminal_channel_one))
-        // 该入口用查询参数（`?id=`）而不是路径参数
-        .route(
-            "/api/jt1078/terminal/channel/one",
-            get(jt1078_extra::terminal_channel_one_query),
-        )
-        // ===== 已接入 OpenAPI 文档的路由（试点：区域 3 条）=====
-        // `routes!()` 一次产出 axum `MethodRouter` 与 OpenAPI path，路由表与文档
-        // 天然一致。**必须并在这里**（`api_protected` 内、`route_layer` 之前），
-        // 否则迁移过来的接口会丢掉鉴权与审计中间件 —— 这是迁移时最容易犯的错。
-        //
-        // 用 `.merge(..)` 而非 `.route(..)`：文档路由自带 path，再手写一遍字符串
-        // 就是两处维护，写错时只会在启动瞬间以 overlapping panic 暴露。
-        .merge(doc_router)
-
+    // 受保护路由完全由 handler 上的 `#[utoipa::path]` 注解驱动：`routes!()`
+    // 一次注册同时产出 axum 路由与 OpenAPI path，因此「加了路由忘写文档」
+    // 在结构上不可能发生。聚合文件见 `src/openapi/registry_protected_routes.rs`。
+    let (_, _, api_protected) = crate::openapi::registry_protected_routes::protected_routes();
+    let api_protected = api_protected
         // Phase 7.4: audit middleware outermost — captures all responses (including 401)
         .route_layer(middleware::from_fn_with_state(
             state_clone.clone(),
@@ -1179,40 +82,15 @@ pub fn app(state: AppState) -> Router<AppState> {
             auth_middleware,
         ));
 
-    let api_public = Router::new()
-
-        .route("/api/user/login", get(user::login).post(user::login))
-        .route("/api/zlm/hook", post(zlm_hook::handle_webhook))
-        .route("/api/rpc", post(rpc_endpoint))
-        .route("/api/health", get(health::liveness))
-        .route("/api/ready", get(health::readiness))
-        .route("/metrics", get(metrics_handler::metrics_handler))
-        // C6: play/share 公开访问（凭 share token 鉴权）
-        .route("/api/play/share", get(play::play_share_create))
-        .route("/api/play/share/info", get(play::play_share_info))
-        .route("/api/play/share/start", get(play::play_share_start))
-        // 通道缩略图（JPEG 字节，由本系统自己存盘）。浏览器 `<img src>`
-        // 无法设置请求头，因此与 `/api/talk/audio/...` 同套做法：
-        // 注册在鉴权中间件之外，在 handler 内部用 `?token=` 校验 JWT。
-        //
-        // 纯读盘：不触发抓帧、不碰 ZLM。抓帧由后端在**点播成功时**自动做
-        // （见 `device_query::spawn_snapshot_capture`）或调
-        // `POST /api/play/snap/{d}/{c}` 手动触发。
-        .route(
-            "/api/play/snapshot/{device_id}/{channel_id}",
-            get(device_query::get_snapshot_file),
-        );
+    // 公开路由同样由注解驱动，见 `registry_public_routes.rs`。
+    // 这些端点不挂鉴权中间件，各自的替代鉴权方式见 `src/openapi/routes_health_public.rs`。
+    let (_, _, api_public) = crate::openapi::registry_public_routes::public_routes();
 
     let api = api_public.merge(api_protected);
-    let zlm_protected = Router::new()
-        .route("/zlm/{media_server_id}/{*path}", get(server::zlm_proxy).post(server::zlm_proxy))
-        .route_layer(middleware::from_fn_with_state(
-            state_clone.clone(),
-            auth_middleware,
-        ));
-    let app = Router::new()
+    // 注：原 `zlm_protected`（ZLM 反向代理）已并入受保护注册表（`server::zlm_proxy`
+    // 的注解在 system 域），因此现在它与其它受保护接口一样会经过审计中间件。
+        let app = Router::new()
         .merge(api)
-        .merge(zlm_protected)
         // Phase 4.1: 兼容多路径 hook 路由（/api/hook/*）
         // 公共端点，与既有 /api/zlm/hook 单路径并存
         .merge(zlm_hook_routes::hook_routes())
@@ -1222,39 +100,18 @@ pub fn app(state: AppState) -> Router<AppState> {
     // 文档感知的路由用 `routes!()` 注册：一次注册同时产出 axum 路由与 OpenAPI path，
     // 因此不存在「加了路由忘了写文档」的可能。未迁移的路由仍走上面的字符串注册，
     // 它们不出现在文档里（迁移进度见 `documented_routes()`）。
-    let mut routes_openapi = utoipa::openapi::OpenApiBuilder::new()
-        .paths(doc_paths)
-        .build();
-    // `OpenApi` 是 `#[non_exhaustive]`，不能结构体字面量构造，改字段赋值。
-    let mut components = utoipa::openapi::Components::new();
-    components.schemas.extend(doc_schemas);
-    routes_openapi.components = Some(components);
-    // `info` / 安全方案 / 标签来自 `ApiDoc`；paths 与 schemas 来自 `routes!()`。
-    // `merge_from` 只补 `self` 中不存在的项，因此 Info 与 SecurityAddon 不会被覆盖。
-    let openapi = crate::openapi::ApiDoc::openapi().merge_from(routes_openapi);
+    let openapi = crate::openapi::build_openapi();
     let path_count = openapi.paths.paths.len();
     let app = app.merge(
         utoipa_swagger_ui::SwaggerUi::new("/swagger-ui")
             .url("/api/openapi.json", openapi),
     );
     tracing::info!(
-        "OpenAPI 文档已挂载：/swagger-ui（规范：/api/openapi.json），当前已收录 {} 条路径（未迁移的路由暂不出现）",
+        "OpenAPI 文档已挂载：/swagger-ui（规范：/api/openapi.json），当前已收录 {} 条路径",
         path_count
     );
 
     // WebSocket：设备状态实时通知 (Phase 7.3 + 7.4: JWT 校验在 ws_handler 内部)
-    let app = app.route("/api/ws", get(websocket::ws_handler));
-
-    // 语音对讲上行音频（浏览器 PCM → G.711A → RTP → 设备）。
-    //
-    // 必须注册在 `api_protected` **之外**：浏览器无法为 WebSocket 设置自定义
-    // 请求头，所以 `auth_middleware`（只认 `access-token`/`Bearer`）必然把
-    // 握手判成 401。这里与 `/api/ws` 保持一致 —— 路由公开，JWT 在 handler
-    // 内部用 `?token=` 校验（见 `handlers::talk::talk_audio_ws`）。
-    let app = app.route(
-        "/api/talk/audio/{device_id}/{channel_id}",
-        get(talk::talk_audio_ws),
-    );
 
     // Phase 7.4: alarm endpoints moved into api_protected (now require JWT).
     // The legacy public routes below are intentionally removed.
@@ -1296,18 +153,6 @@ pub fn app(state: AppState) -> Router<AppState> {
         .allow_methods(Any)
         .allow_headers(Any);
     app.layer(cors)
-}
-
-/// 已接入 OpenAPI 文档的路由，按域汇总。
-///
-/// 新增一个域：在 `src/openapi/` 下加 `routes_<域>.rs`（照 `routes_region.rs` 抄），
-/// 然后在这里 `acc.merge(..)` 一行。
-///
-/// 迁移做法见 `src/openapi/routes_region.rs` 的文件头注释（三个坑都在那里）。
-fn documented_routes() -> crate::openapi::DocumentedRoutes {
-    let mut acc = crate::openapi::RoutesAccumulator::default();
-    acc.merge(crate::openapi::routes_region::routes());
-    acc.finish()
 }
 
 #[cfg(all(test, feature = "sqlite"))]
@@ -1410,6 +255,56 @@ mod tests {
         assert!(
             declared.contains("access_token"),
             "区域接口未声明鉴权要求: {declared}"
+        );
+    }
+
+    /// **覆盖门禁**：OpenAPI 文档里的每条路径都必须真的能从路由表访问到。
+    ///
+    /// 这是「文档 ↔ 实现一致」的核心断言。有了它：
+    /// * 只写注解、忘了在域模块里登记 → 文档里有、路由没有 → 404 → 测试红
+    /// * 只登记路由、路径字符串写错 → 同上
+    /// * 迁移时丢了一条路由 → 立刻暴露，而不是等上线
+    ///
+    /// 只断言「不等于 404」：鉴权(401)、参数错误(400)、业务错误(500) 都算路由存在。
+    /// 含通配符（`{*path}`）的路径无法构造合法 URL，跳过。
+    #[tokio::test]
+    async fn test_every_documented_path_is_routable() {
+        let base = spawn(app_state().await).await;
+        let openapi = crate::openapi::build_openapi();
+        let paths: Vec<String> = openapi.paths.paths.keys().cloned().collect();
+        assert!(
+            paths.len() > 400,
+            "文档路径数异常偏少（{}），注册表可能没接上",
+            paths.len()
+        );
+
+        let mut unreachable = Vec::new();
+        for raw in &paths {
+            if raw.contains("{*") {
+                continue; // 通配路径跳过
+            }
+            // 路径参数替换为占位值（能让 Path 提取器通过即可）
+            let concrete = raw
+                .split('/')
+                .map(|seg| {
+                    if seg.starts_with('{') && seg.ends_with('}') {
+                        "1"
+                    } else {
+                        seg
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("/");
+            let status = status_of(&base, &concrete).await;
+            if status == 404 {
+                unreachable.push(format!("{} -> 404", raw));
+            }
+        }
+        assert!(
+            unreachable.is_empty(),
+            "以下 {} 条文档路径在路由表里不存在（404）：\n{}",
+            unreachable.len(),
+            unreachable.join("\n")
         );
     }
 

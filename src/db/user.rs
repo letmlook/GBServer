@@ -1,5 +1,6 @@
 use serde::Serialize;
 use sqlx::FromRow;
+use utoipa::ToSchema;
 
 use super::Pool;
 
@@ -28,7 +29,7 @@ impl User {
 }
 
 /// 登录后返回给前端的用户结构（含嵌套 `role`），字段名 camelCase 与前端一致
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct LoginUserResponse {
     pub id: i32,
@@ -39,7 +40,7 @@ pub struct LoginUserResponse {
     pub server_id: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct RoleInfo {
     pub id: i32,
     pub name: Option<String>,
@@ -47,7 +48,7 @@ pub struct RoleInfo {
 }
 
 /// 用户列表项：含嵌套 role、camelCase 字段，与前端表格 role.name / pushKey 一致
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct UserListRow {
     pub id: i32,

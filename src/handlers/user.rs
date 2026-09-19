@@ -6,6 +6,7 @@ use axum::{
 };
 use md5::{Digest, Md5};
 use serde::Deserialize;
+use utoipa::{IntoParams, ToSchema};
 
 use crate::auth::JwtKeys;
 use crate::db::{self, LoginUserResponse, RoleInfo, UserListRow};
@@ -27,6 +28,21 @@ fn md5_hex(s: &str) -> String {
 /// direct plaintext for migration convenience — passwords stored as
 /// Argon2 hashes (`$argon2id$...`) are validated against the plaintext;
 /// legacy MD5/plaintext passwords are validated by re-hashing the input.
+#[utoipa::path(
+    get,
+    post,
+    path = "/api/user/login",
+    tag = "user",
+    operation_id = "user_login",
+    params(LoginParams),
+    responses(
+        (status = 200, description = "登录成功：返回用户信息 + JWT；JWT 同时写入 `access-token` 响应头",
+         body = ApiResult<LoginUserResponse>,
+         example = json!({"code":0,"msg":"成功","data":{"id":1,"username":"admin","role":{"id":1,"name":"管理员","authority":"0"},"pushKey":"xxx","accessToken":"<jwt>","serverId":null}})),
+        (status = 400, description = "缺少 username / password"),
+        (status = 401, description = "用户名或密码错误"),
+    ),
+)]
 pub async fn login(
     State(state): State<AppState>,
     Query(params): Query<LoginParams>,
@@ -94,9 +110,11 @@ pub async fn login(
     Ok(response)
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, IntoParams)]
 pub struct LoginParams {
+    /// 用户名
     pub username: Option<String>,
+    /// 密码（前端发送 MD5(明文) 或明文均可；后端按 Argon2 ↔ MD5 ↔ 明文兼容校验）
     pub password: Option<String>,
     /// 「7 天免登录」勾选状态。true → 发长效 token（默认 7 天），
     /// 与前端写 7 天 cookie 的行为对齐；缺省/false → 普通会话 token。
@@ -120,11 +138,37 @@ where
 }
 
 /// GET /api/user/logout  仅返回 200
+#[utoipa::path(
+    get,
+    path = "/api/user/logout",
+    tag = "user",
+    operation_id = "user_logout",
+    responses(
+        (status = 200, description = "登出（前端清空 token）",
+         body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn logout() -> impl IntoResponse {
     (StatusCode::OK, Json(ApiResult::<()>::success_empty()))
 }
 
 /// POST /api/user/userInfo  需 access-token，返回当前用户信息
+#[utoipa::path(
+    get,
+    post,
+    path = "/api/user/userInfo",
+    tag = "user",
+    operation_id = "user_info",
+    responses(
+        (status = 200, description = "当前登录用户信息",
+         body = ApiResult<LoginUserResponse>,
+         example = json!({"code":0,"msg":"成功","data":{"id":1,"username":"admin","role":{"id":1,"name":"管理员","authority":"0"},"pushKey":"xxx","serverId":"node-1"}})),
+        (status = 401, description = "未鉴权或 token 失效"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn user_info(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -153,9 +197,11 @@ pub async fn user_info(
     Ok(Json(ApiResult::success(login_user)))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, IntoParams)]
 pub struct UsersQuery {
+    /// 页码，从 1 开始（默认 1）
     pub page: Option<u32>,
+    /// 每页条数（默认 10，最大 100）
     pub count: Option<u32>,
     /// 用户名模糊搜索。此前该字段不存在，前端 `UserQueryParams.query` 声明了却
     /// 传了个寂寞（serde 静默忽略，搜索框看着能输、实际不过滤）。
@@ -165,6 +211,21 @@ pub struct UsersQuery {
 /// GET /api/user/users?page=1&count=10&query=xx
 ///
 /// 需要管理员：返回的是**全部用户**（含每人 pushKey），普通用户不应看到。
+#[utoipa::path(
+    get,
+    path = "/api/user/users",
+    tag = "user",
+    operation_id = "user_list",
+    params(UsersQuery),
+    responses(
+        (status = 200, description = "分页用户列表（含每人的 pushKey）",
+         body = ApiResult<PageUsers>,
+         example = json!({"code":0,"msg":"成功","data":{"list":[],"total":0,"page":1,"size":10}})),
+        (status = 401, description = "未鉴权"),
+        (status = 403, description = "需要管理员"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn users(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -211,7 +272,7 @@ pub async fn users(
     Ok(Json(ApiResult::success(out)))
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, ToSchema)]
 pub struct PageUsers {
     pub list: Vec<UserListRow>,
     pub total: u64,
@@ -219,11 +280,14 @@ pub struct PageUsers {
     pub size: u64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, IntoParams)]
 pub struct UpdateUserParams {
+    /// 要修改的用户 ID（必填）
     #[serde(alias = "userId")]
     pub user_id: Option<i32>,
+    /// 新用户名（可选；非空且 ≤ 64 字符）
     pub username: Option<String>,
+    /// 新角色 ID（可选；必须存在）
     #[serde(alias = "roleId")]
     pub role_id: Option<i32>,
 }
@@ -233,6 +297,21 @@ pub struct UpdateUserParams {
 /// 补齐「编辑用户 / 改角色」。此前既无该端点，`db::update_user_role` /
 /// `db::update_username` 也已沦为零调用死函数 —— 用户管理页只能新增和删除，
 /// 连改个角色都做不到。只更新传入的字段。
+#[utoipa::path(
+    post,
+    path = "/api/user/update",
+    tag = "user",
+    operation_id = "user_update",
+    params(UpdateUserParams),
+    responses(
+        (status = 200, description = "更新成功",
+         body = ApiResult<serde_json::Value>),
+        (status = 400, description = "缺少 userId / 用户名为空 / 用户名重复 / 角色不存在 / 没有要更新的字段"),
+        (status = 401, description = "未鉴权"),
+        (status = 403, description = "需要管理员"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn update_user(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -282,6 +361,21 @@ pub async fn update_user(
 }
 
 /// POST /api/user/add?username=xx&password=xx&roleId=1
+#[utoipa::path(
+    post,
+    path = "/api/user/add",
+    tag = "user",
+    operation_id = "user_add",
+    params(AddUserParams),
+    responses(
+        (status = 200, description = "新增成功",
+         body = ApiResult<serde_json::Value>),
+        (status = 400, description = "用户名/密码为空、用户名过长、用户名已存在、缺少 roleId、角色不存在"),
+        (status = 401, description = "未鉴权"),
+        (status = 403, description = "需要管理员"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn add_user(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -335,15 +429,33 @@ pub async fn add_user(
     Ok(Json(ApiResult::<()>::success_empty()))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, IntoParams)]
 pub struct AddUserParams {
+    /// 用户名（≤ 64 字符，不允许重复）
     pub username: Option<String>,
+    /// 密码（前端可送明文或 MD5；服务端以 Argon2id 存储）
     pub password: Option<String>,
+    /// 角色 ID（必须已存在）
     #[serde(alias = "roleId")]
     pub role_id: Option<i32>,
 }
 
 /// DELETE /api/user/delete?id=1
+#[utoipa::path(
+    delete,
+    path = "/api/user/delete",
+    tag = "user",
+    operation_id = "user_delete",
+    params(DeleteQuery),
+    responses(
+        (status = 200, description = "删除成功",
+         body = ApiResult<serde_json::Value>),
+        (status = 400, description = "缺少 id / 不能删除当前登录账号"),
+        (status = 401, description = "未鉴权"),
+        (status = 403, description = "需要管理员"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn delete_user(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -367,12 +479,27 @@ pub async fn delete_user(
     Ok(Json(ApiResult::<()>::success_empty()))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, IntoParams)]
 pub struct DeleteQuery {
+    /// 要删除的用户 ID
     pub id: Option<i32>,
 }
 
 /// POST /api/user/changePassword?oldPassword=xx&password=xx
+#[utoipa::path(
+    post,
+    path = "/api/user/changePassword",
+    tag = "user",
+    operation_id = "user_change_password",
+    params(ChangePasswordParams),
+    responses(
+        (status = 200, description = "修改成功",
+         body = ApiResult<serde_json::Value>),
+        (status = 400, description = "缺少 oldPassword / password"),
+        (status = 401, description = "未鉴权 / 旧密码错误"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn change_password(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -405,14 +532,31 @@ pub async fn change_password(
 /// 旧写法是「再声明一个 camelCase 同义字段 + `#[serde(rename)]`」，
 /// 会出现两个字段映射到同一个 JSON 键（serde 报 unreachable pattern），
 /// 且调用方要靠 `a.or(b)` 兜。现已统一为 snake_case 主名 + camelCase alias。
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, IntoParams)]
 pub struct ChangePasswordParams {
+    /// 旧密码（前端送 MD5(明文)，与登录口径一致）
     #[serde(alias = "oldPassword")]
     pub old_password: Option<String>,
+    /// 新密码（明文或 MD5，服务端统一以 Argon2id 存储）
     pub password: Option<String>,
 }
 
 /// POST /api/user/changePasswordForAdmin?userId=2&password=xx
+#[utoipa::path(
+    post,
+    path = "/api/user/changePasswordForAdmin",
+    tag = "user",
+    operation_id = "user_change_password_admin",
+    params(ChangePasswordForAdminParams),
+    responses(
+        (status = 200, description = "重置成功",
+         body = ApiResult<serde_json::Value>),
+        (status = 400, description = "缺少 userId / password"),
+        (status = 401, description = "未鉴权"),
+        (status = 403, description = "需要管理员"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn change_password_for_admin(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -432,14 +576,31 @@ pub async fn change_password_for_admin(
     Ok(Json(ApiResult::<()>::success_empty()))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, IntoParams)]
 pub struct ChangePasswordForAdminParams {
+    /// 目标用户 ID
     #[serde(alias = "userId")]
     pub user_id: Option<i32>,
+    /// 新密码（明文或 MD5，服务端统一以 Argon2id 存储）
     pub password: Option<String>,
 }
 
 /// POST /api/user/changePushKey?userId=2&pushKey=xx
+#[utoipa::path(
+    post,
+    path = "/api/user/changePushKey",
+    tag = "user",
+    operation_id = "user_change_push_key",
+    params(ChangePushKeyParams),
+    responses(
+        (status = 200, description = "修改成功",
+         body = ApiResult<serde_json::Value>),
+        (status = 400, description = "缺少 userId / pushKey"),
+        (status = 401, description = "未鉴权"),
+        (status = 403, description = "需要管理员"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn change_push_key(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -455,10 +616,12 @@ pub async fn change_push_key(
     Ok(Json(ApiResult::<()>::success_empty()))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, IntoParams)]
 pub struct ChangePushKeyParams {
+    /// 目标用户 ID
     #[serde(alias = "userId")]
     pub user_id: Option<i32>,
+    /// 新 pushKey（用于推流鉴权）
     #[serde(alias = "pushKey")]
     pub push_key: Option<String>,
 }
@@ -637,6 +800,20 @@ mod password_flow_tests {
 
 /// `GET /api/user/all` —— 不分页返回全部用户，
 /// 供「角色/分组分配」等下拉框使用。
+#[utoipa::path(
+    get,
+    path = "/api/user/all",
+    tag = "user",
+    operation_id = "user_list_all",
+    responses(
+        (status = 200, description = "全部用户 `{list,total}`，含 pushKey",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{"list":[{"id":1,"username":"admin","roleId":1,"createTime":"2026-01-01 00:00:00","updateTime":"2026-01-01 00:00:00","pushKey":"xxx"}],"total":1}})),
+        (status = 401, description = "未鉴权"),
+        (status = 403, description = "需要管理员"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn all_users(
     State(state): State<AppState>,
     headers: HeaderMap,

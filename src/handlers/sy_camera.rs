@@ -16,7 +16,7 @@ use crate::AppState;
 
 /// Hikvision-style camera row. Combines a `gb_device` row with its first
 /// channel (or itself when the device has no children).
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, utoipa::ToSchema)]
 pub struct CameraRow {
     pub id: i32,
     pub device_id: String,
@@ -47,7 +47,7 @@ pub struct CameraRow {
 }
 
 /// Mobile-friendly subset (fewer fields, smaller payload).
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct CameraMobile {
     pub device_id: String,
     pub channel_id: String,
@@ -59,7 +59,7 @@ pub struct CameraMobile {
 }
 
 /// Filter by administrative code prefix.
-#[derive(Deserialize, Default)]
+#[derive(Deserialize, Default, utoipa::IntoParams)]
 pub struct AddressQuery {
     #[serde(alias = "civilCode")]
     pub civil_code: Option<String>,
@@ -70,7 +70,7 @@ pub struct AddressQuery {
 }
 
 /// Filter by bounding box (south-west + north-east corners).
-#[derive(Deserialize, Default)]
+#[derive(Deserialize, Default, utoipa::IntoParams)]
 pub struct BoxQuery {
     pub min_lng: Option<f64>,
     pub min_lat: Option<f64>,
@@ -83,7 +83,7 @@ pub struct BoxQuery {
 }
 
 /// Filter by circle (center + radius in meters).
-#[derive(Deserialize, Default)]
+#[derive(Deserialize, Default, utoipa::IntoParams)]
 pub struct CircleQuery {
     pub lng: Option<f64>,
     pub lat: Option<f64>,
@@ -95,7 +95,7 @@ pub struct CircleQuery {
 }
 
 /// Filter by polygon (lng/lat pairs alternating).
-#[derive(Deserialize, Default)]
+#[derive(Deserialize, Default, utoipa::IntoParams)]
 pub struct PolygonQuery {
     pub points: Option<String>,
     #[serde(default)]
@@ -105,12 +105,12 @@ pub struct PolygonQuery {
 }
 
 /// Bulk lookup by GB-IDs.
-#[derive(Deserialize, Default)]
+#[derive(Deserialize, Default, utoipa::IntoParams)]
 pub struct IdsQuery {
     pub ids: Option<String>,
 }
 
-#[derive(Deserialize, Default)]
+#[derive(Deserialize, Default, utoipa::IntoParams)]
 pub struct PageQuery {
     #[serde(default)]
     pub page: Option<u32>,
@@ -301,6 +301,19 @@ async fn camera_rows(state: &AppState, q: &PageQuery) -> (Vec<CameraRow>, u64, u
 /// 设备行（`is_device = true`、`channel_id == device_id`），照 live 页既有的
 /// 过滤口径（`!c.is_device`）会被整批滤掉 → 通道树为空；默认 `count=15`
 /// 还会进一步截断。现在与 `/list-with-child` 共用同一套通道行。
+#[utoipa::path(
+    get,
+    path = "/api/sy/camera/list",
+    tag = "channel",
+    operation_id = "sy_camera_list",
+    summary = "中亿视图：摄像机（通道）列表",
+    params(PageQuery),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn camera_list(
     State(state): State<AppState>,
     Query(q): Query<PageQuery>,
@@ -317,6 +330,19 @@ pub async fn camera_list(
 }
 
 /// GET /api/sy/camera/list-with-child — every device with its child channels flattened
+#[utoipa::path(
+    get,
+    path = "/api/sy/camera/list-with-child",
+    tag = "channel",
+    operation_id = "sy_camera_list_with_child",
+    summary = "中亿视图：设备及其子通道（平铺）",
+    params(PageQuery),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn camera_list_with_child(
     State(state): State<AppState>,
     Query(q): Query<PageQuery>,
@@ -333,6 +359,18 @@ pub async fn camera_list_with_child(
 }
 
 /// GET /api/sy/camera/list-for-mobile — slim rows, channels only
+#[utoipa::path(
+    get,
+    path = "/api/sy/camera/list-for-mobile",
+    tag = "channel",
+    operation_id = "sy_camera_list_for_mobile",
+    summary = "中亿视图：移动端精简通道列表",
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn camera_list_for_mobile(
     State(state): State<AppState>,
 ) -> Json<ApiResult<serde_json::Value>> {
@@ -345,6 +383,19 @@ pub async fn camera_list_for_mobile(
 }
 
 /// GET /api/sy/camera/cont-with-child — alias of list-with-child (contract variant)
+#[utoipa::path(
+    get,
+    path = "/api/sy/camera/cont-with-child",
+    tag = "channel",
+    operation_id = "sy_camera_cont_with_child",
+    summary = "中亿视图：设备及子通道（契约别名）",
+    params(PageQuery),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn camera_cont_with_child(
     State(state): State<AppState>,
     Query(q): Query<PageQuery>,
@@ -353,6 +404,19 @@ pub async fn camera_cont_with_child(
 }
 
 /// GET /api/sy/camera/list/box?min_lng=&min_lat=&max_lng=&max_lat=
+#[utoipa::path(
+    get,
+    path = "/api/sy/camera/list/box",
+    tag = "channel",
+    operation_id = "sy_camera_list_box",
+    summary = "中亿视图：按矩形范围查询通道",
+    params(BoxQuery),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn camera_list_box(
     State(state): State<AppState>,
     Query(q): Query<BoxQuery>,
@@ -375,6 +439,19 @@ pub async fn camera_list_box(
 }
 
 /// GET /api/sy/camera/list/circle?lng=&lat=&radius=
+#[utoipa::path(
+    get,
+    path = "/api/sy/camera/list/circle",
+    tag = "channel",
+    operation_id = "sy_camera_list_circle",
+    summary = "中亿视图：按圆形范围查询通道",
+    params(CircleQuery),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn camera_list_circle(
     State(state): State<AppState>,
     Query(q): Query<CircleQuery>,
@@ -395,6 +472,19 @@ pub async fn camera_list_circle(
 }
 
 /// GET /api/sy/camera/list/polygon?points=lng1,lat1;lng2,lat2;...
+#[utoipa::path(
+    get,
+    path = "/api/sy/camera/list/polygon",
+    tag = "channel",
+    operation_id = "sy_camera_list_polygon",
+    summary = "中亿视图：按多边形范围查询通道",
+    params(PolygonQuery),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn camera_list_polygon(
     State(state): State<AppState>,
     Query(q): Query<PolygonQuery>,
@@ -437,6 +527,19 @@ fn point_in_polygon(lng: f64, lat: f64, polygon: &[(f64, f64)]) -> bool {
 }
 
 /// GET /api/sy/camera/list/address?civil_code=...
+#[utoipa::path(
+    get,
+    path = "/api/sy/camera/list/address",
+    tag = "channel",
+    operation_id = "sy_camera_list_address",
+    summary = "中亿视图：按行政区划编码查询通道",
+    params(AddressQuery),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn camera_list_address(
     State(state): State<AppState>,
     Query(q): Query<AddressQuery>,
@@ -458,6 +561,11 @@ pub async fn camera_list_address(
 }
 
 /// GET /api/sy/camera/list/ids?ids=GB1,GB2,...
+///
+/// 注意：`src/router.rs` 中 `/api/sy/camera/list/ids` 实际挂的是
+/// `common_channel::camera_list_ids`（operation_id `sy_camera_list_ids`）。
+/// 本函数是历史遗留的未挂载版本，为保持「每个 handler 一条注解」而保留，
+/// operation_id 用 `_unrouted` 后缀避免与已挂载版本冲突。
 pub async fn camera_list_ids(
     State(state): State<AppState>,
     Query(q): Query<IdsQuery>,
@@ -479,6 +587,18 @@ pub async fn camera_list_ids(
 }
 
 /// GET /api/sy/camera/meeting/list — channels with sub_count >= 1 (multi-channel devices)
+#[utoipa::path(
+    get,
+    path = "/api/sy/camera/meeting/list",
+    tag = "channel",
+    operation_id = "sy_camera_meeting_list",
+    summary = "中亿视图：多通道设备（会议）列表",
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn camera_meeting_list(
     State(state): State<AppState>,
 ) -> Json<ApiResult<serde_json::Value>> {
@@ -566,7 +686,7 @@ mod tests {
 
 // ---------- C4: 海康/宇视定制 control/play, control/stop, control/ptz 别名 ----------
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct CameraControlQuery {
     // 前端/海康宇视客户端传的是 camelCase（`deviceId` / `channelId`），
     // 此前只认 snake_case —— 而旧实现无论参数是否解析成功都返回假成功，
@@ -588,6 +708,19 @@ pub struct CameraControlQuery {
 /// 修正：此前这三个别名端点只打一条日志然后返回 `status: "started"` ——
 /// 注释写着"转调 play_start"，代码里却**没有任何调用**：调用方以为已经开始
 /// 播放，实际设备既没收到 INVITE，ZLM 也没开收流端口。
+#[utoipa::path(
+    get,
+    path = "/api/sy/camera/control/play",
+    tag = "channel",
+    operation_id = "sy_camera_control_play",
+    summary = "中亿视图：开始实时点播（转调 play_start）",
+    params(CameraControlQuery),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn camera_control_play(
     State(state): State<AppState>,
     axum::extract::Query(q): axum::extract::Query<CameraControlQuery>,
@@ -608,6 +741,19 @@ pub async fn camera_control_play(
 /// GET /api/sy/camera/control/stop?deviceId=...&channelId=...
 ///
 /// 别名路由：真正转调 `play::play_stop`（含给设备发 BYE）。
+#[utoipa::path(
+    get,
+    path = "/api/sy/camera/control/stop",
+    tag = "channel",
+    operation_id = "sy_camera_control_stop",
+    summary = "中亿视图：停止实时点播（转调 play_stop）",
+    params(CameraControlQuery),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn camera_control_stop(
     State(state): State<AppState>,
     axum::extract::Query(q): axum::extract::Query<CameraControlQuery>,
@@ -628,6 +774,19 @@ pub async fn camera_control_stop(
 /// GET /api/sy/camera/control/ptz?deviceId=...&channelId=...&command=...&speed=...&preset=...
 ///
 /// 别名路由：真正转调 `device_control::device_ptz`（下发 SIP DeviceControl/PtzCmd）。
+#[utoipa::path(
+    get,
+    path = "/api/sy/camera/control/ptz",
+    tag = "channel",
+    operation_id = "sy_camera_control_ptz",
+    summary = "中亿视图：云台控制（转调 device_ptz）",
+    params(CameraControlQuery),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn camera_control_ptz(
     State(state): State<AppState>,
     axum::extract::Query(q): axum::extract::Query<CameraControlQuery>,

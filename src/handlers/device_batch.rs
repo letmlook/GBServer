@@ -1,22 +1,28 @@
 use axum::{extract::State, Json};
 use serde::Deserialize;
+use utoipa::ToSchema;
 
 use crate::response::ApiResult;
 use crate::AppState;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct BatchControlRequest {
+    /// 目标设备国标 ID 列表
     #[serde(alias = "deviceIds")]
     pub device_ids: Vec<String>,
+    /// 要下发的批量命令
     pub command: BatchCommand,
+    /// 通道 ID（PTZ 类命令必填；Reboot / SyncCatalog / Query* 类命令可省略）
     #[serde(alias = "channelId")]
     pub channel_id: Option<String>,
+    /// 云台转动速度（1-255），仅 PTZ 类命令使用
     pub speed: Option<u8>,
+    /// 预置位编号（0-255），仅 Preset 类命令使用
     #[serde(alias = "presetIndex")]
     pub preset_index: Option<u32>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum BatchCommand {
     PtzStop,
@@ -26,21 +32,45 @@ pub enum BatchCommand {
     QueryDeviceStatus,
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, ToSchema)]
 pub struct BatchControlResult {
+    /// 请求的设备总数
     pub total: usize,
+    /// 下发成功的设备数
     pub success: usize,
+    /// 下发失败的设备数
     pub failed: usize,
+    /// 每台设备的执行结果
     pub results: Vec<DeviceControlResult>,
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, ToSchema)]
 pub struct DeviceControlResult {
     pub device_id: String,
     pub success: bool,
     pub message: Option<String>,
 }
 
+/// POST /api/device/batch/control
+///
+/// 对一组设备批量下发控制命令（云台停止 / 远程重启 / 目录同步 / 信息查询 / 状态查询）。
+#[utoipa::path(
+    post,
+    path = "/api/device/batch/control",
+    tag = "device",
+    operation_id = "device_batch_control",
+    request_body = BatchControlRequest,
+    responses(
+        (status = 200, description = "批量命令下发结果（逐设备汇总 success/failed）",
+         body = ApiResult<BatchControlResult>,
+         example = json!({"code":0,"msg":"成功","data":{"total":2,"success":1,"failed":1,"results":[
+             {"deviceId":"34020000001320000001","success":true,"message":null},
+             {"deviceId":"34020000001320000002","success":false,"message":"设备不在线"}
+         ]}})),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn batch_control(
     State(state): State<AppState>,
     Json(req): Json<BatchControlRequest>,

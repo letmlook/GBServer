@@ -1,4 +1,4 @@
-//! `region` 域的 受保护 OpenAPI 路由注册。
+//! `cloud_record` 域的 受保护 OpenAPI 路由注册。
 //!
 //! 逐条 `routes!()` 注册（一次只能放一条）；迁移说明与三个坑见
 //! `src/openapi/routes_region.rs` 文件头。
@@ -12,9 +12,11 @@ use super::{DocumentedRoutes, RoutesAccumulator};
 
 pub fn routes() -> DocumentedRoutes {
     let mut acc = RoutesAccumulator::default();
-    acc.add(routes!(crate::handlers::region::region_one));
-    acc.add(routes!(crate::handlers::region::region_page_list));
-    acc.add(routes!(crate::handlers::region::region_sync));
+    acc.add(routes!(crate::handlers::cloud_record_extra::collect_delete));
+    acc.add(routes!(crate::handlers::cloud_record_extra::download_file));
+    acc.add(routes!(crate::handlers::cloud_record_extra::download_zip));
+    acc.add(routes!(crate::handlers::cloud_record_extra::list_url));
+    acc.add(routes!(crate::handlers::cloud_record_extra::zip));
 
     acc.finish()
 }

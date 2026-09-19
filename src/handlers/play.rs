@@ -1,4 +1,6 @@
 use axum::{extract::Path, extract::Query, extract::State, Json};
+use utoipa::IntoParams;
+
 use crate::response::ApiResult;
 use crate::AppState;
 use crate::db::device as db_device;
@@ -49,6 +51,27 @@ async fn play_urls_json(
     out
 }
 
+/// GET /api/play/start/{device_id}/{channel_id}
+///
+/// 发起 GB28181 实时点播（SIP INVITE + ZLM RTP server），返回 FLV/HLS/WebRTC
+/// 等播放地址。**TCP-PASSIVE** 设备会等待 200 OK SDP 后让 ZLM 反向 connect。
+#[utoipa::path(
+    get,
+    path = "/api/play/start/{device_id}/{channel_id}",
+    tag = "live",
+    operation_id = "play_start",
+    params(
+        ("device_id" = String, Path, description = "设备国标编号（20 位）"),
+        ("channel_id" = String, Path, description = "通道国标编号（20 位）"),
+    ),
+    responses(
+        (status = 200, description = "点播成功，返回多协议播放地址",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{"app":"rtp","stream":"dev_ch","playUrl":"rtsp://1.2.3.4:554/rtp/dev_ch","flvUrl":"http://1.2.3.4:8080/live/rtp/dev_ch.live.flv","hlsAvailable":false,"deviceId":"dev","channelId":"ch","hasAudio":true,"ssrc":"0100000001","transport":"UDP"}})),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn play_start(
     State(state): State<AppState>,
     Path((device_id, channel_id)): Path<(String, String)>,
@@ -423,6 +446,26 @@ pub async fn play_start(
     })))
 }
 
+/// GET /api/play/stop/{device_id}/{channel_id}
+///
+/// 停止一路实时点播：关 ZLM 收流端口 + 发 SIP BYE。
+#[utoipa::path(
+    get,
+    path = "/api/play/stop/{device_id}/{channel_id}",
+    tag = "live",
+    operation_id = "play_stop",
+    params(
+        ("device_id" = String, Path, description = "设备国标编号（20 位）"),
+        ("channel_id" = String, Path, description = "通道国标编号（20 位）"),
+    ),
+    responses(
+        (status = 200, description = "停止指令已发送",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{"callId":"abc-123"}})),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn play_stop(
     State(state): State<AppState>,
     Path((device_id, channel_id)): Path<(String, String)>,
@@ -462,6 +505,26 @@ pub async fn play_stop(
     Json(ApiResult::success(serde_json::json!({})))
 }
 
+/// GET /api/play/broadcast/{device_id}/{channel_id}
+///
+/// 发起国标语音广播：SIP INVITE + BroadcastManager（与 talk 互不共享）。
+#[utoipa::path(
+    get,
+    path = "/api/play/broadcast/{device_id}/{channel_id}",
+    tag = "live",
+    operation_id = "play_broadcast_start",
+    params(
+        ("device_id" = String, Path, description = "设备国标编号（20 位）"),
+        ("channel_id" = String, Path, description = "通道国标编号（20 位）"),
+    ),
+    responses(
+        (status = 200, description = "广播 INVITE 已发送",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{"deviceId":"dev","channelId":"ch","callId":"bc-1","message":"Broadcast started"}})),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn broadcast_start(
     State(state): State<AppState>,
     Path((device_id, channel_id)): Path<(String, String)>,
@@ -509,6 +572,26 @@ pub async fn broadcast_start(
     }
 }
 
+/// GET /api/play/broadcast/stop/{device_id}/{channel_id}
+///
+/// 结束一路语音广播：SIP BYE。
+#[utoipa::path(
+    get,
+    path = "/api/play/broadcast/stop/{device_id}/{channel_id}",
+    tag = "live",
+    operation_id = "play_broadcast_stop",
+    params(
+        ("device_id" = String, Path, description = "设备国标编号（20 位）"),
+        ("channel_id" = String, Path, description = "通道国标编号（20 位）"),
+    ),
+    responses(
+        (status = 200, description = "广播 BYE 已发送",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{"deviceId":"dev","channelId":"ch","message":"Broadcast stopped"}})),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn broadcast_stop(
     State(state): State<AppState>,
     Path((device_id, channel_id)): Path<(String, String)>,
@@ -559,7 +642,7 @@ pub struct ShareToken {
     pub expires_at: i64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, IntoParams)]
 pub struct ShareCreateQuery {
     pub device_id: Option<String>,
     pub channel_id: Option<String>,
@@ -572,8 +655,23 @@ fn share_tokens_store() -> &'static Mutex<Vec<ShareToken>> {
 }
 
 /// GET /api/play/share?deviceId=...&channelId=...&ttl=3600
+///
 /// 生成短期分享 token（默认 1 小时），客户端可用此 token 绕过 JWT 鉴权
 /// 调用 /api/play/start/{device}/{channel}（前端 share.vue 落地页用）。
+///
+/// **公开端点**（`api_public`）：仅凭 token 校验身份，无需 JWT。
+#[utoipa::path(
+    get,
+    path = "/api/play/share",
+    tag = "live",
+    operation_id = "play_share_create",
+    params(ShareCreateQuery),
+    responses(
+        (status = 200, description = "分享 token 已生成",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{"token":"share_xxx_yyyy","deviceId":"dev","channelId":"ch","expiresAt":1700000000,"ttl":3600}})),
+    ),
+)]
 pub async fn play_share_create(
     axum::extract::Query(q): axum::extract::Query<ShareCreateQuery>,
 ) -> Json<ApiResult<serde_json::Value>> {
@@ -618,7 +716,25 @@ pub async fn play_share_create(
     })))
 }
 
-/// GET /api/play/share/info?token=... — 校验 token，返回 deviceId/channelId
+/// GET /api/play/share/info?token=...
+///
+/// 校验 token，返回 deviceId/channelId/expiresAt。**公开端点**（`api_public`）。
+#[utoipa::path(
+    get,
+    path = "/api/play/share/info",
+    tag = "live",
+    operation_id = "play_share_info",
+    params(
+        ("token" = Option<String>, Query, description = "分享 token（`/api/play/share` 生成）"),
+    ),
+    responses(
+        (status = 200, description = "token 有效，返回目标通道信息",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{"deviceId":"dev","channelId":"ch","expiresAt":1700000000}})),
+        (status = 400, description = "token 缺失"),
+        (status = 401, description = "token 无效或已过期"),
+    ),
+)]
 pub async fn play_share_info(
     axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Json<ApiResult<serde_json::Value>> {
@@ -646,7 +762,24 @@ pub async fn play_share_info(
     Json(ApiResult::error("Invalid or expired token"))
 }
 
-/// GET /api/play/share/start?token=... — 凭 share token 启动播放（无 JWT 鉴权）
+/// GET /api/play/share/start?token=...
+///
+/// 凭 share token 启动播放（无 JWT 鉴权）。**公开端点**（`api_public`）。
+#[utoipa::path(
+    get,
+    path = "/api/play/share/start",
+    tag = "live",
+    operation_id = "play_share_start",
+    params(
+        ("token" = Option<String>, Query, description = "分享 token"),
+    ),
+    responses(
+        (status = 200, description = "播放会话已建立",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{"deviceId":"dev","channelId":"ch","app":"rtp","stream":"dev_ch","ssrc":"0100000001"}})),
+        (status = 401, description = "token 无效或已过期"),
+    ),
+)]
 pub async fn play_share_start(
     State(state): State<AppState>,
     axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
@@ -794,6 +927,23 @@ mod share_token_tests {
 ///
 /// 停止并删除一个 ffmpeg 转码/转推源：`key` 是 `addFFmpegSource` 返回的键。
 /// 此前该端点未挂载，转码流停止时 ZLM 会一直重试拉流。
+#[utoipa::path(
+    post,
+    path = "/api/play/convertStop/{key}",
+    tag = "live",
+    operation_id = "play_convert_stop",
+    params(
+        ("key" = String, Path, description = "ffmpeg 源 key（addFFmpegSource 返回）"),
+        ConvertStopQuery,
+    ),
+    responses(
+        (status = 200, description = "已删除 ffmpeg 源",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{"key":"key-1","mediaServerId":"zlm-1","deleted":true}})),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn play_convert_stop(
     State(state): State<AppState>,
     axum::extract::Path(key): axum::extract::Path<String>,
@@ -847,8 +997,9 @@ pub async fn play_convert_stop(
     )))
 }
 
-#[derive(Debug, Default, serde::Deserialize)]
+#[derive(Debug, Default, serde::Deserialize, IntoParams)]
 pub struct ConvertStopQuery {
+    /// 目标 ZLM 节点 ID；缺省时尝试所有节点
     #[serde(alias = "mediaServerId")]
     pub media_server_id: Option<String>,
 }

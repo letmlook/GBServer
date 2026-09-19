@@ -3,28 +3,38 @@ use axum::{
     Json,
 };
 use serde::Deserialize;
+use utoipa::{IntoParams, ToSchema};
 
 use crate::error::{AppError, ErrorCode};
 use crate::dyn_where::{BindValue, DynWhere};
 use crate::response::ApiResult;
 use crate::AppState;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, IntoParams)]
 pub struct AlarmQuery {
+    /// 页码，从 1 开始（默认 1）
     pub page: Option<u32>,
+    /// 每页条数（默认 10，最大 500）
     pub count: Option<u32>,
+    /// 按设备国标编号过滤
     #[serde(alias = "deviceId")]
     pub device_id: Option<String>,
+    /// 按通道国标编号过滤
     #[serde(alias = "channelId")]
     pub channel_id: Option<String>,
+    /// 按报警方式过滤
     #[serde(alias = "alarmMethod")]
     pub alarm_method: Option<String>,
+    /// 按报警类型过滤（可传逗号分隔的多个值）
     #[serde(alias = "alarmType")]
     pub alarm_type: Option<String>,
+    /// 起始时间（也接受 `startTime` 别名；格式 `YYYY-MM-DD HH:MM:SS`）
     #[serde(alias = "startTime", alias = "beginTime")]
     pub begin_time: Option<String>,
+    /// 结束时间（格式同上）
     #[serde(alias = "endTime")]
     pub end_time: Option<String>,
+    /// 是否已处理
     pub handled: Option<bool>,
     /// 关键字：设备号/通道号/描述（页面的搜索框）
     pub query: Option<String>,
@@ -82,6 +92,20 @@ impl AlarmRow {
 /// * `beginTime`/`endTime`（也接受 `startTime`）—— **此前这两个参数被 DTO
 ///   收下，却在三个方言的 SQL 里从未使用**：选了时间范围结果完全不变；
 /// * `query` —— 关键字，匹配设备号/通道号/描述（页面上的「关键字」输入框）。
+#[utoipa::path(
+    get,
+    path = "/api/alarm/list",
+    tag = "alarm",
+    operation_id = "alarm_list",
+    params(AlarmQuery),
+    responses(
+        (status = 200, description = "分页告警列表 `{total,list[]}`",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{"total":1,"list":[{"id":1,"deviceId":"34020000001320000001","channelId":"34020000001310000001","alarmPriority":"1","alarmMethod":"1","alarmType":"1","alarmTime":"2026-09-12 10:00:00","alarmDescription":"视频丢失","longitude":118.78,"latitude":32.04,"createTime":"2026-09-12 10:00:00","handled":false,"handleUser":null,"handleTime":null,"handleResult":null}]}})),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn alarm_list(
     State(state): State<AppState>,
     Query(q): Query<AlarmQuery>,
@@ -204,6 +228,20 @@ fn alarm_filter(q: &AlarmQuery) -> DynWhere {
 ///
 /// 用 `FromRow` 一次性取全列（此前手写 `SELECT *` + 15 个 `r.get(...)`，
 /// 三种方言各抄一遍，`handle_result` 这类新列很容易漏掉一个分支）。
+#[utoipa::path(
+    get,
+    path = "/api/alarm/detail/{id}",
+    tag = "alarm",
+    operation_id = "alarm_detail",
+    params(("id" = i64, Path, description = "告警 ID")),
+    responses(
+        (status = 200, description = "告警详情（与 list 同结构）",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{"id":1,"deviceId":"34020000001320000001","channelId":"34020000001310000001","alarmPriority":"1","alarmMethod":"1","alarmType":"1","alarmTime":"2026-09-12 10:00:00","alarmDescription":"视频丢失","longitude":118.78,"latitude":32.04,"createTime":"2026-09-12 10:00:00","handled":false}})),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn alarm_detail(
     State(state): State<AppState>,
     axum::extract::Path(id): axum::extract::Path<i64>,
@@ -234,11 +272,14 @@ pub async fn alarm_detail(
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct AlarmHandleBody {
+    /// 告警 ID（必填）
     pub id: Option<i64>,
+    /// 处理人
     #[serde(alias = "handleUser")]
     pub handle_user: Option<String>,
+    /// 是否已处理（一般总是 true）
     pub handled: Option<bool>,
     /// 处理结论（前端「处理结果」输入框）。**此前该字段后端 DTO 里不存在**，
     /// 用户填写的结论被 serde 静默丢弃，任何接口也读不回来。
@@ -247,6 +288,20 @@ pub struct AlarmHandleBody {
 }
 
 /// POST /api/alarm/handle - 处理告警
+#[utoipa::path(
+    post,
+    path = "/api/alarm/handle",
+    tag = "alarm",
+    operation_id = "alarm_handle",
+    request_body = AlarmHandleBody,
+    responses(
+        (status = 200, description = "处理成功（也用于\"告警不存在\"——返回 code:-1）",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{"id":1,"handled":true,"handleUser":"admin","handleTime":"2026-09-12 10:00:00","handleResult":"已电话确认","message":"告警已处理"}})),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn alarm_handle(
     State(state): State<AppState>,
     Json(body): Json<AlarmHandleBody>,
@@ -285,6 +340,20 @@ pub async fn alarm_handle(
 }
 
 /// DELETE /api/alarm/delete/:id - 删除告警
+#[utoipa::path(
+    delete,
+    path = "/api/alarm/delete/{id}",
+    tag = "alarm",
+    operation_id = "alarm_delete",
+    params(("id" = i64, Path, description = "告警 ID")),
+    responses(
+        (status = 200, description = "删除成功（也用于\"告警不存在\"——返回 code:-1）",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{"deleted":1}})),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn alarm_delete(
     State(state): State<AppState>,
     axum::extract::Path(id): axum::extract::Path<i64>,
@@ -313,11 +382,26 @@ pub async fn alarm_delete(
 }
 
 /// DELETE /api/alarm/batch - 批量删除告警（body `{"ids":[...]}`）
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct AlarmBatchDelete {
+    /// 告警 ID 列表
     pub ids: Vec<i64>,
 }
 
+#[utoipa::path(
+    delete,
+    path = "/api/alarm/batch",
+    tag = "alarm",
+    operation_id = "alarm_batch_delete",
+    request_body = AlarmBatchDelete,
+    responses(
+        (status = 200, description = "删除成功 `{deleted}`",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{"deleted":2}})),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn alarm_batch_delete(
     State(state): State<AppState>,
     Json(body): Json<AlarmBatchDelete>,
@@ -329,6 +413,20 @@ pub async fn alarm_batch_delete(
 ///
 /// 本端点收的就是裸数组，前端 `deleteAlarms(ids)` 传的也是 `data: ids`。
 /// 只提供 `/batch` 会让按该契约写的调用方拿不到端点。
+#[utoipa::path(
+    delete,
+    path = "/api/alarm/delete",
+    tag = "alarm",
+    operation_id = "alarm_delete_batch",
+    request_body(content = Vec<i64>, content_type = "application/json"),
+    responses(
+        (status = 200, description = "删除成功 `{deleted}`",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{"deleted":2}})),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn alarm_delete_batch(
     State(state): State<AppState>,
     Json(ids): Json<Vec<i64>>,
@@ -374,6 +472,20 @@ async fn delete_alarm_ids(
 /// 现在的语义：与 `GET /api/alarm/list` 用**同一套筛选**（`alarm_filter`），
 /// 清空的就是用户在页面上看到的那些；不带任何条件时才是清空全部，
 /// 并且会明确告知被清空的条数。
+#[utoipa::path(
+    delete,
+    path = "/api/alarm/clear",
+    tag = "alarm",
+    operation_id = "alarm_clear",
+    params(AlarmQuery),
+    responses(
+        (status = 200, description = "清空成功 `{cleared}`",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{"cleared":2}})),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn alarm_clear(
     State(state): State<AppState>,
     Query(q): Query<AlarmQuery>,
@@ -403,6 +515,20 @@ pub async fn alarm_clear(
 }
 
 /// DELETE /api/alarm/device/:device_id - 删除设备的所有告警
+#[utoipa::path(
+    delete,
+    path = "/api/alarm/device/{device_id}",
+    tag = "alarm",
+    operation_id = "alarm_delete_by_device",
+    params(("device_id" = String, Path, description = "设备国标 ID")),
+    responses(
+        (status = 200, description = "删除成功 `{deleted}`",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{"deleted":3}})),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn alarm_delete_by_device(
     State(state): State<AppState>,
     axum::extract::Path(device_id): axum::extract::Path<String>,
@@ -425,6 +551,20 @@ pub async fn alarm_delete_by_device(
 }
 
 /// DELETE /api/alarm/before/:time - 删除指定时间之前的告警
+#[utoipa::path(
+    delete,
+    path = "/api/alarm/before/{time}",
+    tag = "alarm",
+    operation_id = "alarm_delete_before_time",
+    params(("time" = String, Path, description = "截止时间（格式 `YYYY-MM-DD HH:MM:SS`），早于该时间的告警被删除")),
+    responses(
+        (status = 200, description = "删除成功 `{deleted}`",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{"deleted":3}})),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn alarm_delete_before_time(
     State(state): State<AppState>,
     axum::extract::Path(before_time): axum::extract::Path<String>,

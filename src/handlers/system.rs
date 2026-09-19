@@ -19,6 +19,18 @@ fn started_at() -> chrono::DateTime<chrono::Utc> {
 }
 
 /// GET /api/system/info — version + uptime + features + cluster node id
+#[utoipa::path(
+    get,
+    path = "/api/system/info",
+    tag = "system",
+    operation_id = "system_info",
+    summary = "系统信息（版本 / 运行时长 / 特性 / 集群节点）",
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn system_info(State(state): State<AppState>) -> Json<ApiResult<serde_json::Value>> {
     let now = chrono::Utc::now();
     let uptime = now.signed_duration_since(started_at()).num_seconds();
@@ -38,6 +50,18 @@ pub async fn system_info(State(state): State<AppState>) -> Json<ApiResult<serde_
 }
 
 /// GET /api/system/stats — aggregate counts (devices / streams / invites / JT / WS)
+#[utoipa::path(
+    get,
+    path = "/api/system/stats",
+    tag = "system",
+    operation_id = "system_stats",
+    summary = "系统统计（设备 / 通道 / 流 / 会话 / JT1078 / 集群）",
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn system_stats(State(state): State<AppState>) -> Json<ApiResult<serde_json::Value>> {
     // DB-side count (best-effort, never error)
     let devices_total = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_device")
@@ -78,6 +102,18 @@ pub async fn system_stats(State(state): State<AppState>) -> Json<ApiResult<serde
 }
 
 /// GET /api/system/version — minimal version endpoint
+#[utoipa::path(
+    get,
+    path = "/api/system/version",
+    tag = "system",
+    operation_id = "system_version",
+    summary = "系统版本",
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn system_version() -> Json<ApiResult<serde_json::Value>> {
     Json(ApiResult::success(serde_json::json!({
         "version": env!("CARGO_PKG_VERSION"),
@@ -86,6 +122,18 @@ pub async fn system_version() -> Json<ApiResult<serde_json::Value>> {
 }
 
 /// GET /api/system/online-users — Phase 7.6: list online users (basic impl)
+#[utoipa::path(
+    get,
+    path = "/api/system/online-users",
+    tag = "system",
+    operation_id = "system_online_users",
+    summary = "在线用户（当前按 WS 连接数近似）",
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn online_users(State(state): State<AppState>) -> Json<ApiResult<serde_json::Value>> {
     // Without a gb_online_user table yet, derive from active WebSocket clients.
     // This is a best-effort approximation; the full implementation requires a

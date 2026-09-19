@@ -23,6 +23,18 @@ pub struct OpenRtpQuery {
 }
 
 /// POST /api/rtp/receive/open
+#[utoipa::path(
+    post,
+    path = "/api/rtp/receive/open",
+    tag = "stream",
+    operation_id = "rtp_control_rtp_receive_open",
+    request_body = serde_json::Value,
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn rtp_receive_open(
     State(state): State<AppState>,
     Json(q): Json<OpenRtpQuery>,
@@ -50,6 +62,21 @@ pub async fn rtp_receive_open(
 }
 
 /// POST /api/rtp/receive/close/:stream_id
+#[utoipa::path(
+    post,
+    path = "/api/rtp/receive/close/{stream_id}",
+    tag = "stream",
+    operation_id = "rtp_control_rtp_receive_close",
+    params(
+        ("stream_id" = String, Path, description = "路径参数 stream_id"),
+    ),
+    request_body = serde_json::Value,
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn rtp_receive_close(
     Path(stream_id): Path<String>,
     State(state): State<AppState>,
@@ -82,6 +109,18 @@ pub struct SendRtpBody {
 }
 
 /// POST /api/rtp/send/start — push our stream to a remote RTP receiver
+#[utoipa::path(
+    post,
+    path = "/api/rtp/send/start",
+    tag = "stream",
+    operation_id = "rtp_control_rtp_send_start",
+    request_body = serde_json::Value,
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn rtp_send_start(
     State(state): State<AppState>,
     Json(b): Json<SendRtpBody>,
@@ -153,6 +192,21 @@ pub struct StopSendRtpQuery {
     pub app: Option<String>,
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/rtp/send/stop/{stream_id}",
+    tag = "stream",
+    operation_id = "rtp_control_rtp_send_stop",
+    params(
+        ("stream_id" = String, Path, description = "路径参数 stream_id"),
+    ),
+    request_body = serde_json::Value,
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn rtp_send_stop(
     Path(stream_id): Path<String>,
     axum::extract::Query(q): axum::extract::Query<StopSendRtpQuery>,
@@ -199,6 +253,18 @@ pub async fn rtp_send_stop(
 // ---------- PS aliases (PS is just RTP over MPEG-TS in reference impl) ----------
 
 /// POST /api/ps/receive/open — alias of /api/rtp/receive/open
+#[utoipa::path(
+    post,
+    path = "/api/ps/receive/open",
+    tag = "stream",
+    operation_id = "rtp_control_ps_receive_open",
+    request_body = serde_json::Value,
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn ps_receive_open(
     State(state): State<AppState>,
     Json(q): Json<OpenRtpQuery>,
@@ -207,6 +273,21 @@ pub async fn ps_receive_open(
 }
 
 /// POST /api/ps/receive/close/:stream_id
+#[utoipa::path(
+    post,
+    path = "/api/ps/receive/close/{stream_id}",
+    tag = "stream",
+    operation_id = "rtp_control_ps_receive_close",
+    params(
+        ("stream_id" = String, Path, description = "路径参数 stream_id"),
+    ),
+    request_body = serde_json::Value,
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn ps_receive_close(
     Path(stream_id): Path<String>,
     State(state): State<AppState>,
@@ -215,6 +296,18 @@ pub async fn ps_receive_close(
 }
 
 /// POST /api/ps/send/start
+#[utoipa::path(
+    post,
+    path = "/api/ps/send/start",
+    tag = "stream",
+    operation_id = "rtp_control_ps_send_start",
+    request_body = serde_json::Value,
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn ps_send_start(
     State(state): State<AppState>,
     Json(b): Json<SendRtpBody>,
@@ -223,6 +316,21 @@ pub async fn ps_send_start(
 }
 
 /// POST /api/ps/send/stop/:stream_id
+#[utoipa::path(
+    post,
+    path = "/api/ps/send/stop/{stream_id}",
+    tag = "stream",
+    operation_id = "rtp_control_ps_send_stop",
+    params(
+        ("stream_id" = String, Path, description = "路径参数 stream_id"),
+    ),
+    request_body = serde_json::Value,
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn ps_send_stop(
     Path(stream_id): Path<String>,
     axum::extract::Query(q): axum::extract::Query<StopSendRtpQuery>,
@@ -232,6 +340,17 @@ pub async fn ps_send_stop(
 }
 
 /// GET /api/ps/getTestPort — return a free UDP port for testing
+#[utoipa::path(
+    get,
+    path = "/api/ps/getTestPort",
+    tag = "stream",
+    operation_id = "rtp_control_ps_get_test_port",
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn ps_get_test_port() -> Json<ApiResult<serde_json::Value>> {
     use std::net::UdpSocket;
     let port = UdpSocket::bind("127.0.0.1:0").ok()
@@ -292,6 +411,17 @@ impl ThirdPartyStreamQuery {
 }
 
 /// `GET /api/rtp/receive/close?stream=`
+#[utoipa::path(
+    get,
+    path = "/api/rtp/receive/close",
+    tag = "stream",
+    operation_id = "rtp_control_rtp_receive_close_query",
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn rtp_receive_close_query(
     axum::extract::Query(q): axum::extract::Query<ThirdPartyStreamQuery>,
     State(state): State<AppState>,
@@ -303,6 +433,17 @@ pub async fn rtp_receive_close_query(
 }
 
 /// `GET /api/ps/receive/close?stream=`
+#[utoipa::path(
+    get,
+    path = "/api/ps/receive/close",
+    tag = "stream",
+    operation_id = "rtp_control_ps_receive_close_query",
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn ps_receive_close_query(
     axum::extract::Query(q): axum::extract::Query<ThirdPartyStreamQuery>,
     State(state): State<AppState>,
@@ -314,6 +455,17 @@ pub async fn ps_receive_close_query(
 }
 
 /// `GET /api/rtp/send/stop?callId=`
+#[utoipa::path(
+    get,
+    path = "/api/rtp/send/stop",
+    tag = "stream",
+    operation_id = "rtp_control_rtp_send_stop_query",
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn rtp_send_stop_query(
     axum::extract::Query(q): axum::extract::Query<ThirdPartyStreamQuery>,
     State(state): State<AppState>,
@@ -335,6 +487,17 @@ pub async fn rtp_send_stop_query(
 }
 
 /// `GET /api/ps/send/stop?callId=`
+#[utoipa::path(
+    get,
+    path = "/api/ps/send/stop",
+    tag = "stream",
+    operation_id = "rtp_control_ps_send_stop_query",
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn ps_send_stop_query(
     axum::extract::Query(q): axum::extract::Query<ThirdPartyStreamQuery>,
     State(state): State<AppState>,

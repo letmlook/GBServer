@@ -29,6 +29,20 @@ use crate::AppState;
 /// 现按真实数据实现：告警抓拍由 ZLM 录像 hook 落盘并写入 `gb_cloud_record`，
 /// 因此这里查该设备/通道最近一条录像，返回可用的下载地址；查不到则**明确报错**，
 /// 而不是给一个打不开的链接。
+#[utoipa::path(
+    get,
+    path = "/api/alarm/snap/{param}",
+    tag = "alarm",
+    operation_id = "alarm_snap_parity",
+    params(("param" = String, Path, description = "设备或通道标识（按 `stream` like 模糊匹配 `gb_cloud_record`）")),
+    responses(
+        (status = 200, description = "找到录像：`{recordId, snapUrl, ...}`（snapUrl 即 `/api/cloud/record/download/{recordId}`）",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{"deviceId":"34020000001320000001","recordId":1,"fileName":"xxx.mp4","snapUrl":"/api/cloud/record/download/1","startTime":"2026-09-12 10:00:00","endTime":"2026-09-12 10:05:00"}})),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn alarm_snap(
     Path(param): Path<String>,
     State(state): State<AppState>,
@@ -183,6 +197,25 @@ async fn channels_in_tile(
 }
 
 /// GET /api/common/channel/map/tile/:z/:x/:y — tile of channels for slippy map
+#[utoipa::path(
+    get,
+    path = "/api/common/channel/map/tile/{z}/{x}/{y}",
+    tag = "channel",
+    operation_id = "channel_map_tile",
+    params(
+        ("z" = i32, Path, description = "缩放级别 0..=22"),
+        ("x" = i32, Path, description = "瓦片 X 坐标"),
+        ("y" = i32, Path, description = "瓦片 Y 坐标"),
+    ),
+    responses(
+        (status = 200, description = "瓦片对应的通道列表 `{z,x,y,count,items[],bounds}`",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{"z":10,"x":1,"y":1,"count":2,"items":[{"id":1,"deviceId":"34020000001320000001","name":"前门","channelId":"34020000001310000001","longitude":118.78,"latitude":32.04,"status":1,"channelType":0,"mapLevel":0}],"thin":false,"excludedMerged":0,"bounds":{"lonMin":-180.0,"lonMax":0.0,"latMin":0.0,"latMax":85.05}}})),
+        (status = 400, description = "非法瓦片坐标"),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn channel_map_tile(
     Path((z, x, y)): Path<(i32, i32, i32)>,
     State(state): State<AppState>,
@@ -191,6 +224,24 @@ pub async fn channel_map_tile(
 }
 
 /// GET /api/common/channel/map/thin/tile/:z/:x/:y — thinned tile for large zoom levels
+#[utoipa::path(
+    get,
+    path = "/api/common/channel/map/thin/tile/{z}/{x}/{y}",
+    tag = "channel",
+    operation_id = "channel_map_thin_tile",
+    params(
+        ("z" = i32, Path, description = "缩放级别 0..=22"),
+        ("x" = i32, Path, description = "瓦片 X 坐标"),
+        ("y" = i32, Path, description = "瓦片 Y 坐标"),
+    ),
+    responses(
+        (status = 200, description = "稀化后的瓦片通道列表（已合并到上层级的代表点不算入内）",
+         body = ApiResult<serde_json::Value>),
+        (status = 400, description = "非法瓦片坐标"),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn channel_map_thin_tile(
     Path((z, x, y)): Path<(i32, i32, i32)>,
     State(state): State<AppState>,
@@ -203,6 +254,22 @@ pub async fn channel_map_thin_tile(
 /// 2026-09-11：此前只回显「前端指令 X 已下发到 Y」，**没有真正下发任何 SIP**。
 /// 现按 `cmd` 名映射为对应的 GB28181 设备控制消息并真实下发；无法识别的
 /// `cmd` 显式报错（列出受支持取值），不再假装成功。
+#[utoipa::path(
+    get,
+    path = "/api/front-end/common/{cmd}/{ch}",
+    tag = "control",
+    operation_id = "front_end_common",
+    params(
+        ("cmd" = String, Path, description = "前端指令名（如 PTZ_STOP / LEFT / RIGHT / ZOOM_IN 等）"),
+        ("ch" = String, Path, description = "内部通道 id（`gb_common_channel.id`），兼容路径按此定位"),
+    ),
+    responses(
+        (status = 200, description = "指令已下发",
+         body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn front_end_common(
     Path((cmd, ch)): Path<(String, String)>,
     State(state): State<AppState>,
@@ -263,6 +330,19 @@ pub struct PlayUrlQuery {
 }
 
 /// GET /api/server/config — current sanitized config snapshot
+#[utoipa::path(
+    get,
+    path = "/api/server/config",
+    tag = "system",
+    operation_id = "server_config_parity",
+    responses(
+        (status = 200, description = "脱敏后的服务端配置快照（敏感字段 password/secret/db url 统一占位 ***）",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{"sip":{"enabled":true,"ip":"127.0.0.1","port":5060,"deviceId":"44000000002000000001","realm":"4400000000","password":"***"},"zlm":[{"id":"zlmediakit-1","ip":"127.0.0.1","httpPort":80,"secret":"***"}],"database":{"url":"***"},"redis":false,"version":"0.1.0"}})),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn server_config(
     State(state): State<AppState>,
 ) -> Json<ApiResult<serde_json::Value>> {
@@ -290,6 +370,19 @@ pub async fn server_config(
 }
 
 /// GET /api/server/version — package version
+#[utoipa::path(
+    get,
+    path = "/api/server/version",
+    tag = "system",
+    operation_id = "server_version_parity",
+    responses(
+        (status = 200, description = "服务端版本信息 `{version, name, rustc}`",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{"version":"0.1.0","name":"gbserver","rustc":"rustc (compiled)"}})),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn server_version() -> Json<ApiResult<serde_json::Value>> {
     Json(ApiResult::success(serde_json::json!({
         "version": env!("CARGO_PKG_VERSION"),

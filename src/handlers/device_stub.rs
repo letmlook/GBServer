@@ -44,12 +44,34 @@ use tokio::time::timeout;
 /// GET /api/device/query/sync_status
 /// 参数: deviceId - 设备ID (可选)
 /// 返回: 同步状态信息
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct SyncStatusQuery {
+    /// 设备国标 ID（可选；不传表示查全局同步状态）
     #[serde(alias = "deviceId")]
     pub device_id: Option<String>,
 }
 
+/// 设备目录同步状态
+#[utoipa::path(
+    get,
+    path = "/api/device/query/sync_status",
+    tag = "device",
+    operation_id = "device_query_sync_status",
+    params(SyncStatusQuery),
+    responses(
+        (status = 200, description = "目录同步状态（活动订阅数 / 当前同步阶段 / 总条数等）",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{
+             "deviceId":"34020000001320000001",
+             "status":"active","activeSubscriptions":1,
+             "online":true,"streamMode":"UDP",
+             "syncIng":true,"total":4,"current":0,
+             "errorMsg":null,"message":"正在同步设备目录"
+         }})),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn sync_status(
     State(state): State<AppState>,
     Query(q): Query<SyncStatusQuery>,
@@ -112,7 +134,24 @@ pub async fn sync_status(
     }
 }
 
-/// DELETE /api/device/query/devices/:device_id/delete
+/// DELETE /api/device/query/devices/{device_id}/delete
+///
+/// 级联删除一台设备（包含它的通道表行 + 进程内的延迟样本）。
+#[utoipa::path(
+    delete,
+    path = "/api/device/query/devices/{device_id}/delete",
+    tag = "device",
+    operation_id = "device_query_device_delete",
+    params(("device_id" = String, Path, description = "设备国标 ID")),
+    responses(
+        (status = 200, description = "删除成功",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":null})),
+        (status = 401, description = "未鉴权"),
+        (status = 404, description = "设备不存在"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn device_delete(
     State(state): State<AppState>,
     Path(device_id): Path<String>,
@@ -124,10 +163,31 @@ pub async fn device_delete(
     Ok(Json(ApiResult::<()>::success_empty()))
 }
 
-/// GET /api/device/query/devices/:device_id/sync
+/// GET /api/device/query/devices/{device_id}/sync
 /// 触发设备同步
 /// 参数: device_id - 设备国标ID
 /// 返回: 同步结果
+///
+/// 触发 SIP `Catalog` 目录查询并等待设备把分页发完（最多 8s），
+/// 再统计入库的通道数 —— 不再只是「命令已发送」。
+#[utoipa::path(
+    get,
+    path = "/api/device/query/devices/{device_id}/sync",
+    tag = "device",
+    operation_id = "device_query_device_sync",
+    params(("device_id" = String, Path, description = "设备国标 ID")),
+    responses(
+        (status = 200, description = "目录同步进度（waiting/receiving/done/failed + 收包/总数/通道数）",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{
+             "deviceId":"34020000001320000001","syncState":"done",
+             "totalPackets":2,"receivedPackets":2,"channelCount":4,
+             "error":null,"message":"设备目录同步完成","code":0
+         }})),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn device_sync(
     State(state): State<AppState>,
     Path(device_id): Path<String>,
@@ -236,10 +296,33 @@ pub async fn device_sync(
 }
 
 
-/// POST /api/device/query/transport/:device_id/:stream_mode
+/// POST /api/device/query/transport/{device_id}/{stream_mode}
 /// 设置设备流传输模式
 /// 参数: device_id - 设备ID, stream_mode - 流模式 (TCP/UDP/TCP-ACTIVE/TCP-PASSIVE)
 /// 返回: 设置结果（同时更新 DB 并向设备下发 SIP Control/Transport 消息）
+#[utoipa::path(
+    post,
+    path = "/api/device/query/transport/{device_id}/{stream_mode}",
+    tag = "device",
+    operation_id = "device_query_device_transport",
+    params(
+        ("device_id" = String, Path, description = "设备国标 ID"),
+        ("stream_mode" = String, Path, description = "目标传输模式（TCP/UDP/TCP-ACTIVE/TCP-PASSIVE；大小写不敏感）"),
+    ),
+    responses(
+        (status = 200, description = "DB 与 SIP 下发结果",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{
+             "deviceId":"34020000001320000001","streamMode":"TCP-ACTIVE",
+             "updated":1,"sipSent":true,"sipError":null,
+             "message":"设备流传输模式设置成功","code":0
+         }})),
+        (status = 400, description = "不支持的 stream_mode"),
+        (status = 404, description = "设备不存在"),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn device_transport(
     State(state): State<AppState>,
     Path((device_id, stream_mode)): Path<(String, String)>,
@@ -304,20 +387,43 @@ pub async fn device_transport(
 /// 订阅设备移动位置
 /// 参数: id - 设备ID, cycle - 订阅周期(秒), interval - 上报间隔(秒)
 /// 返回: 订阅结果
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct SubscribePositionQuery {
+    /// 设备国标 ID
     pub id: Option<String>,
+    /// 订阅周期（秒；默认 5）
     pub cycle: Option<i32>,
+    /// 位置上报间隔（秒；默认 5）
     pub interval: Option<i32>,
 }
 
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct SubscribeAlarmQuery {
+    /// 设备国标 ID
     pub id: Option<String>,
+    /// 订阅有效期（秒；默认 3600）
     pub expires: Option<i32>,
 }
 
+/// GET /api/device/query/subscribe/mobile-position
+#[utoipa::path(
+    get,
+    path = "/api/device/query/subscribe/mobile-position",
+    tag = "device",
+    operation_id = "device_query_subscribe_mobile_position",
+    params(SubscribePositionQuery),
+    responses(
+        (status = 200, description = "订阅已下发（DB 已更新 + SIP 已发送）",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{
+             "deviceId":"34020000001320000001","cycle":5,"interval":5,"updated":1,
+             "message":"位置订阅已发送","code":0
+         }})),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn subscribe_mobile_position(
     State(state): State<AppState>,
     Query(q): Query<SubscribePositionQuery>,
@@ -364,7 +470,7 @@ pub async fn subscribe_mobile_position(
     Json(ApiResult::error("设备不在线或订阅失败"))
 }
 
-/// GET /api/device/config/query/:device_id/BasicParam
+/// GET /api/device/config/query/{device_id}/BasicParam
 /// 获取设备基本参数
 /// 参数: device_id - 设备ID
 /// 从 XML 文本里取某个标签的文本值（字符串匹配，不用 `XmlParser::parse` —— 它对
@@ -378,7 +484,29 @@ fn xml_tag_value(xml: &str, tag: &str) -> Option<String> {
     (!v.is_empty()).then(|| v.to_string())
 }
 
-/// 返回: 设备基本配置信息
+/// GET /api/device/config/query/{device_id}/BasicParam
+///
+/// 通过 SIP ConfigDownload 拉取并解析设备上报的 BasicParam；设备不在线时回退到 DB。
+#[utoipa::path(
+    get,
+    path = "/api/device/config/query/{device_id}/BasicParam",
+    tag = "device",
+    operation_id = "device_query_config_basic_param",
+    params(("device_id" = String, Path, description = "设备国标 ID")),
+    responses(
+        (status = 200, description = "设备 BasicParam（来自设备实时应答 + DB 兜底；带 source 字段标识）",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{
+             "deviceId":"34020000001320000001","sn":1700000000000_i64,
+             "name":"前门","manufacturer":"MockVendor","model":"IPC-1",
+             "firmware":"V2.0","heartBeatInterval":"60","expiration":"3600",
+             "transport":"UDP","streamMode":"UDP","xml":"<Response>...</Response>",
+             "source":"live","message":"设备基本参数查询完成"
+         }})),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn config_basic_param(
     State(state): State<AppState>,
     Path(device_id): Path<String>,
@@ -491,15 +619,37 @@ pub async fn config_basic_param(
     })))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct ChannelOneQuery {
+    /// 设备国标 ID
     #[serde(alias = "deviceId")]
     pub device_id: Option<String>,
+    /// 通道国标 ID（同时接受前端 `channelDeviceId` 别名）
     #[serde(alias = "channelId", alias = "channelDeviceId")]
     pub channel_id: Option<String>,
 }
 
-/// GET /api/device/query/channel/one?deviceId=&channelId=
+/// GET /api/device/query/channel/one
+///
+/// 按 (deviceId, channelId) 取单条通道详情（含 camelCase + gb_* 兼容字段）。
+/// 找不到时 `data` 为 `null`（不报错）。
+#[utoipa::path(
+    get,
+    path = "/api/device/query/channel/one",
+    tag = "device",
+    operation_id = "device_query_channel_one",
+    params(ChannelOneQuery),
+    responses(
+        (status = 200, description = "通道详情（找不到时 data=null）",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{
+             "id":1,"deviceId":"34020000001320000001",
+             "channelId":"34020000001310000001","name":"通道1","status":"ON"
+         }})),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn channel_one(
     State(state): State<AppState>,
     Query(q): Query<ChannelOneQuery>,
@@ -531,6 +681,25 @@ pub async fn channel_one(
 /// * `mediaServerId` 标注该流属于哪个节点（多节点部署时前端/排查都需要）；
 /// * 支持 `page`/`count`/`query`（`query` 匹配设备号/通道号/流名），`total` 是
 ///   **过滤后**的总数，而不是当前页条数。
+#[utoipa::path(
+    get,
+    path = "/api/device/query/streams",
+    tag = "live",
+    operation_id = "device_query_streams",
+    params(StreamQuery),
+    responses(
+        (status = 200, description = "正在推流的通道分页列表（含 deviceId/channelId/mediaServerId）",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{"total":2,"list":[
+             {"deviceId":"34020000001320000001","channelId":"34020000001310000001",
+              "mediaServerId":"zlmediakit-1","app":"rtp",
+              "stream":"34020000001320000001_34020000001310000001",
+              "schema":"rtsp","readerCount":3}
+         ]}})),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn query_streams(
     State(state): State<AppState>,
     Query(q): Query<StreamQuery>,
@@ -593,10 +762,13 @@ pub async fn query_streams(
 }
 
 /// `/api/device/query/streams` 的查询参数
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct StreamQuery {
+    /// 页码，从 1 开始（默认 1）
     pub page: Option<u32>,
+    /// 每页条数（默认 50，范围 1-1000）
     pub count: Option<u32>,
+    /// 关键字（匹配 deviceId/channelId/stream/app）
     pub query: Option<String>,
 }
 
@@ -644,12 +816,15 @@ fn stream_row_json(media_server_id: &str, s: &crate::zlm::types::MediaInfo) -> s
 /// `recordCmdStr=Record|StopRecord`；对外 API 文档里写的参数名是 `recordCmd`。
 /// 两种参数名、以及 `start/stop/on/off` 之类的宽松取值都接受，
 /// 空值或无法识别的取值直接返回错误（而不是默默按“停止录像”下发）。
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct RecordControlQuery {
+    /// 设备国标 ID
     #[serde(alias = "deviceId")]
     pub device_id: Option<String>,
+    /// 通道国标 ID
     #[serde(alias = "channelId")]
     pub channel_id: Option<String>,
+    /// 控制命令：`Record` / `StopRecord`（同时接受 `recordCmd`、`cmd`、以及 `start/stop/on/off` 等宽松取值）
     #[serde(alias = "recordCmdStr", alias = "recordCmd", alias = "cmd")]
     pub record_cmd_str: Option<String>,
 }
@@ -663,6 +838,28 @@ fn parse_record_cmd(raw: &str) -> Option<bool> {
     }
 }
 
+/// GET /api/device/control/record
+///
+/// 通过 SIP DeviceControl 下发 `<RecordCmd>Record</RecordCmd>` 或 `StopRecord`，
+/// 同时把结果写入 StateStore + 推 WebSocket `record_state` 通知前端。
+#[utoipa::path(
+    get,
+    path = "/api/device/control/record",
+    tag = "control",
+    operation_id = "device_control_record",
+    params(RecordControlQuery),
+    responses(
+        (status = 200, description = "录像命令下发结果（含 recording 状态）",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{
+             "deviceId":"34020000001320000001","channelId":"34020000001310000001",
+             "recordCmd":"Record","recording":true,
+             "message":"远程录像控制命令已发送","code":0
+         }})),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn control_record(
     State(state): State<AppState>,
     Query(q): Query<RecordControlQuery>,
@@ -732,7 +929,28 @@ pub async fn control_record(
     Json(ApiResult::error("设备不在线或命令发送失败"))
 }
 
-/// GET /api/device/query/sub_channels/:device_id/:parent_channel_id/channels
+/// GET /api/device/query/sub_channels/{device_id}/{parent_channel_id}/channels
+///
+/// 拉取某设备下指定父通道的所有子通道（前端通道树的二级展开用）。
+#[utoipa::path(
+    get,
+    path = "/api/device/query/sub_channels/{device_id}/{parent_channel_id}/channels",
+    tag = "device",
+    operation_id = "device_query_sub_channels",
+    params(
+        ("device_id" = String, Path, description = "设备国标 ID"),
+        ("parent_channel_id" = String, Path, description = "父通道国标 ID"),
+    ),
+    responses(
+        (status = 200, description = "子通道列表（每行带 camelCase + gb_* 兼容字段）",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{"total":2,"list":[
+             {"id":1,"deviceId":"34020000001320000001","channelId":"34020000001310000001","name":"通道1"}
+         ]}})),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn sub_channels(
     State(state): State<AppState>,
     Path((device_id, parent_channel_id)): Path<(String, String)>,
@@ -803,7 +1021,25 @@ pub(crate) fn ptz_type_text(ptz: Option<i32>) -> Option<String> {
     })
 }
 
-/// GET /api/device/query/tree/channel/:device_id
+/// GET /api/device/query/tree/channel/{device_id}
+///
+/// 取设备下的所有通道，作为树形结构展开的原始列表。
+#[utoipa::path(
+    get,
+    path = "/api/device/query/tree/channel/{device_id}",
+    tag = "device",
+    operation_id = "device_query_tree_channel",
+    params(("device_id" = String, Path, description = "设备国标 ID")),
+    responses(
+        (status = 200, description = "该设备下全部通道（数组形式，前端自行组装树）",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":[
+             {"id":1,"deviceId":"34020000001320000001","channelId":"34020000001310000001","name":"通道1"}
+         ]})),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn tree_channel(
     State(state): State<AppState>,
     Path(device_id): Path<String>,
@@ -817,13 +1053,39 @@ pub async fn tree_channel(
 /// 修改通道音频状态
 /// 参数: channelId, audio (true/false)
 /// 返回: 修改结果
-#[derive(Debug, Deserialize)]
+///
+/// 落库即生效（`<HasAudio>` 在下一次目录上报中体现给上级平台）。
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct ChannelAudioQuery {
+    /// 通道主键 ID（库表 id，非国标 ID）
     #[serde(alias = "channelId")]
     pub channel_id: Option<i64>,
+    /// 是否开启音频（`true` / `false`）
     pub audio: Option<bool>,
 }
 
+/// POST /api/device/query/channel/audio
+///
+/// 落库即生效（`<HasAudio>` 在下一次目录上报中体现给上级平台）。
+#[utoipa::path(
+    post,
+    path = "/api/device/query/channel/audio",
+    tag = "device",
+    operation_id = "device_query_channel_audio",
+    params(ChannelAudioQuery),
+    responses(
+        (status = 200, description = "音频开关已更新",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{
+             "channelId":1,"audio":true,
+             "message":"通道音频设置已更新（将在上报上级平台的目录中体现）","code":0
+         }})),
+        (status = 400, description = "缺少 channelId"),
+        (status = 404, description = "通道不存在"),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn channel_audio(
     State(state): State<AppState>,
     Query(q): Query<ChannelAudioQuery>,
@@ -869,15 +1131,42 @@ pub async fn channel_audio(
 /// 更新通道流标识
 /// 参数: deviceDbId, id, streamIdentification
 /// 返回: 更新结果
-#[derive(Debug, Deserialize)]
+///
+/// 写库表的 `stream_identification` 字段（决定向上级平台上报目录时携带的流标识）。
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct StreamIdentificationUpdate {
+    /// 设备库表 id（与 `id` 一起唯一定位通道行）
     #[serde(alias = "deviceDbId")]
     pub device_db_id: Option<i64>,
+    /// 通道库表 id（必填）
     pub id: Option<i64>,
+    /// 新的流标识（GB28181 `<StreamIdentification>` 字段）
     #[serde(alias = "streamIdentification")]
     pub stream_identification: Option<String>,
 }
 
+/// POST /api/device/query/channel/stream/identification/update/
+///
+/// 写库表的 `stream_identification` 字段（决定向上级平台上报目录时携带的流标识）。
+#[utoipa::path(
+    post,
+    path = "/api/device/query/channel/stream/identification/update/",
+    tag = "device",
+    operation_id = "device_query_channel_stream_identification_update",
+    params(StreamIdentificationUpdate),
+    responses(
+        (status = 200, description = "流标识已更新",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{
+             "deviceDbId":1,"id":1,"streamIdentification":"stream-001",
+             "message":"流标识更新成功","code":0
+         }})),
+        (status = 400, description = "缺少 id"),
+        (status = 404, description = "通道不存在"),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn channel_stream_identification_update(
     State(state): State<AppState>,
     Query(body): Query<StreamIdentificationUpdate>,
@@ -913,7 +1202,7 @@ pub async fn channel_stream_identification_update(
     }))))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct DeviceAddBody {
     #[serde(alias = "deviceId")]
     pub device_id: Option<String>,
@@ -939,7 +1228,7 @@ pub struct DeviceAddBody {
     pub heart_beat_count: Option<i32>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct DeviceUpdateBody {
     #[serde(alias = "deviceId")]
     pub device_id: Option<String>,
@@ -964,6 +1253,23 @@ pub struct DeviceUpdateBody {
 }
 
 /// POST /api/device/query/device/add
+///
+/// 新增一台设备到 `gb_device` 表。
+#[utoipa::path(
+    post,
+    path = "/api/device/query/device/add",
+    tag = "device",
+    operation_id = "device_query_device_add",
+    request_body = DeviceAddBody,
+    responses(
+        (status = 200, description = "新增成功",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":null})),
+        (status = 400, description = "缺少 deviceId"),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn device_add(
     State(state): State<AppState>,
     Json(body): Json<DeviceAddBody>,
@@ -998,6 +1304,24 @@ pub async fn device_add(
 }
 
 /// POST /api/device/query/device/update
+///
+/// 按 deviceId 更新 `gb_device` 行（空密码视为"不修改"）。
+#[utoipa::path(
+    post,
+    path = "/api/device/query/device/update",
+    tag = "device",
+    operation_id = "device_query_device_update",
+    request_body = DeviceUpdateBody,
+    responses(
+        (status = 200, description = "更新成功",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":null})),
+        (status = 400, description = "缺少 deviceId"),
+        (status = 404, description = "设备不存在"),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn device_update(
     State(state): State<AppState>,
     Json(body): Json<DeviceUpdateBody>,
@@ -1033,7 +1357,27 @@ pub async fn device_update(
     Ok(Json(ApiResult::<()>::success_empty()))
 }
 
-/// GET /api/device/query/devices/:device_id
+/// GET /api/device/query/devices/{device_id}
+///
+/// 取单台设备的完整行（含 `id` 等编辑表单需要的所有字段）。
+#[utoipa::path(
+    get,
+    path = "/api/device/query/devices/{device_id}",
+    tag = "device",
+    operation_id = "device_query_device_one",
+    params(("device_id" = String, Path, description = "设备国标 ID")),
+    responses(
+        (status = 200, description = "设备完整行（找不到时 data=null）",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{
+             "id":1,"deviceId":"34020000001320000001","name":"前门",
+             "manufacturer":"MockVendor","model":"IPC-1","onLine":true,
+             "expires":3600,"heartBeatInterval":60,"heartBeatCount":3
+         }})),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn device_one(
     State(state): State<AppState>,
     Path(device_id): Path<String>,
@@ -1054,7 +1398,25 @@ pub async fn device_one(
     }
 }
 
-/// GET /api/device/query/tree/:device_id
+/// GET /api/device/query/tree/{device_id}
+///
+/// 取某设备下所有通道（`{total, list[]}`，列表里每行带 camelCase + gb_* 字段）。
+#[utoipa::path(
+    get,
+    path = "/api/device/query/tree/{device_id}",
+    tag = "device",
+    operation_id = "device_query_device_tree",
+    params(("device_id" = String, Path, description = "设备国标 ID")),
+    responses(
+        (status = 200, description = "该设备下的全部通道",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{"total":2,"list":[
+             {"id":1,"deviceId":"34020000001320000001","channelId":"34020000001310000001","name":"通道1"}
+         ]}})),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn device_tree(
     State(state): State<AppState>,
     Path(device_id): Path<String>,
@@ -1069,8 +1431,26 @@ pub async fn device_tree(
 }
 
 
-/// GET /api/device/query/subscribe/alarm?deviceId=...&expires=3600
-/// 通过 SIP SUBSCRIBE 订阅设备报警事件
+/// GET /api/device/query/subscribe/alarm
+///
+/// 通过 SIP SUBSCRIBE 订阅设备报警事件（仅当下发命令，不等待/不解析设备应答）。
+#[utoipa::path(
+    get,
+    path = "/api/device/query/subscribe/alarm",
+    tag = "control",
+    operation_id = "device_query_subscribe_alarm",
+    params(SubscribeAlarmQuery),
+    responses(
+        (status = 200, description = "订阅已下发",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{
+             "deviceId":"34020000001320000001","expires":3600,
+             "message":"Alarm subscription sent"
+         }})),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn subscribe_alarm(
     State(state): State<AppState>,
     Query(q): Query<crate::handlers::device_stub::SubscribeAlarmQuery>,

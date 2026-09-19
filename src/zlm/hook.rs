@@ -1023,6 +1023,18 @@ fn sync_media_server_stream_count(
 /// 此前所有 hook 都返回 `{"code":0,"msg":"成功","data":{...}}` —— `code` 恰好在
 /// 顶层所以鉴权看着是对的，但 `close` 被埋进 `data` 里，ZLM 读不到，
 /// 于是「无人观看自动关流」永远不生效（ZLM 侧取默认 `false`）。
+#[utoipa::path(
+    post,
+    path = "/api/zlm/hook",
+    tag = "media-server",
+    operation_id = "zlm_hook",
+    summary = "ZLMediaKit 事件回调（公开端点，由 ZLM 调用）",
+    description = "请求体是 ZLM 的扁平 JSON，`hook_name` 可能缺失（事件类型由各自配置的 URL 决定）。\n响应**不是**统一信封：`code`/`close`/`auto_close` 必须在顶层，ZLM 才读得到。",
+    request_body = serde_json::Value,
+    responses(
+        (status = 200, description = "hook 处理结果（顶层 code/close）", body = serde_json::Value),
+    ),
+)]
 pub async fn handle_webhook(
     State(state): State<AppState>,
     raw_query: axum::extract::RawQuery,

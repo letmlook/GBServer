@@ -5,20 +5,46 @@ use crate::db::update_device_catalog_subscription;
 use crate::response::ApiResult;
 use crate::AppState;
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, utoipa::IntoParams)]
 pub struct PtzQuery {
+    /// 设备国标 ID
     #[serde(alias = "deviceId")]
     pub device_id: Option<String>,
+    /// 通道国标 ID（preset / guard 命令需要）
     #[serde(alias = "channelId")]
     pub channel_id: Option<String>,
+    /// PTZ 指令（左/右/上/下/放大/缩小/停止等）
     pub command: Option<String>,
+    /// 云台速度（1-255；默认 1）
     pub speed: Option<u8>,
+    /// 预置位编号（0-255；preset 命令必填）
     #[serde(alias = "presetIndex")]
     pub preset_index: Option<u32>,
+    /// 设防/撤防命令（`SetGuard` / `ResetGuard`；guard 命令专用）
     #[serde(alias = "guardCmd")]
     pub guard_cmd: Option<String>,
 }
 
+/// GET /api/device/control/ptz
+///
+/// 下发 8 字节 PTZ 指令（云台转动 / 镜头控制 / 预置位）。
+#[utoipa::path(
+    get,
+    path = "/api/device/control/ptz",
+    tag = "control",
+    operation_id = "device_control_ptz",
+    params(PtzQuery),
+    responses(
+        (status = 200, description = "PTZ 命令下发结果",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{
+             "deviceId":"34020000001320000001","channelId":"34020000001310000001",
+             "command":"right","speed":3,"result":"PTZ command sent"
+         }})),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn device_ptz(
     State(state): State<AppState>,
     Query(q): Query<PtzQuery>,
@@ -62,6 +88,26 @@ pub async fn device_ptz(
     Json(ApiResult::error("Device not online"))
 }
 
+/// GET /api/device/control/preset
+///
+/// 调用预置位（定位到指定 presetIndex）。`channel` 与 `presetIndex` 必填。
+#[utoipa::path(
+    get,
+    path = "/api/device/control/preset",
+    tag = "control",
+    operation_id = "device_control_preset",
+    params(PtzQuery),
+    responses(
+        (status = 200, description = "预置位命令下发结果",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{
+             "deviceId":"34020000001320000001","channelId":"34020000001310000001",
+             "command":"preset","presetIndex":3,"result":"Preset command sent"
+         }})),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn device_preset(
     State(state): State<AppState>,
     Query(q): Query<PtzQuery>,
@@ -104,6 +150,26 @@ pub async fn device_preset(
     Json(ApiResult::error("Device not online"))
 }
 
+/// GET /api/device/control/guard
+///
+/// 设防 / 撤防。`deviceId` 与 `guardCmd`（`SetGuard` / `ResetGuard`）必填。
+#[utoipa::path(
+    get,
+    path = "/api/device/control/guard",
+    tag = "control",
+    operation_id = "device_control_guard",
+    params(PtzQuery),
+    responses(
+        (status = 200, description = "设防/撤防命令下发结果",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{
+             "deviceId":"34020000001320000001","guardCmd":"SetGuard",
+             "result":"设防 command sent"
+         }})),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn device_guard(
     State(state): State<AppState>,
     Query(q): Query<PtzQuery>,
@@ -142,13 +208,36 @@ pub async fn device_guard(
     Json(ApiResult::error("Device not online"))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct SubscribeQuery {
+    /// 设备国标 ID
     pub id: Option<String>,
+    /// 订阅周期（秒；catalog 默认 3600，mobile-position 默认 5）
     pub cycle: Option<i32>,
+    /// 上报间隔（秒；仅 mobile-position 使用）
     pub interval: Option<i32>,
 }
 
+/// GET /api/device/query/subscribe/catalog
+///
+/// 通过 SIP SUBSCRIBE 订阅设备目录（写入 DB + 设备在线时再发 SIP）。
+#[utoipa::path(
+    get,
+    path = "/api/device/query/subscribe/catalog",
+    tag = "device",
+    operation_id = "device_control_subscribe_catalog",
+    params(SubscribeQuery),
+    responses(
+        (status = 200, description = "目录订阅结果（DB + SIP）",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{
+             "deviceId":"34020000001320000001","cycle":3600,"updated":1,
+             "result":"Catalog subscription sent"
+         }})),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn subscribe_catalog(
     State(state): State<AppState>,
     Query(q): Query<SubscribeQuery>,
@@ -194,6 +283,9 @@ pub async fn subscribe_catalog(
     Json(ApiResult::error("Device not online or subscription failed"))
 }
 
+/// GET /api/device/query/subscribe/mobile-position
+///
+/// 通过 SIP SUBSCRIBE 订阅设备移动位置。
 pub async fn subscribe_mobile_position(
     State(state): State<AppState>,
     Query(q): Query<SubscribeQuery>,
@@ -253,14 +345,36 @@ fn build_preset_xml(command: &str, preset_index: u32) -> String {
 }
 
 /// 设备配置查询
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct ConfigQuery {
+    /// 设备国标 ID（必填）
     #[serde(alias = "deviceId")]
     pub device_id: Option<String>,
+    /// 国标 ConfigType（BasicParam / VideoParamOpt / ...；默认 BasicParam）
     #[serde(alias = "configType")]
     pub config_type: Option<String>,
 }
 
+/// GET /api/device/config/query
+///
+/// 通过 SIP ConfigDownload 拉取设备的配置参数；与路径参数版共用实现。
+#[utoipa::path(
+    get,
+    path = "/api/device/config/query",
+    tag = "device",
+    operation_id = "device_control_config_query",
+    params(ConfigQuery),
+    responses(
+        (status = 200, description = "设备配置应答（xml 透传 + status / source 标识）",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{
+             "deviceId":"34020000001320000001","config_type":"BasicParam",
+             "sn":1700000000000_i64,"xml":"<Response>...</Response>","source":"live"
+         }})),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn device_config_query(
     State(state): State<AppState>,
     Query(q): Query<ConfigQuery>,
@@ -357,16 +471,40 @@ pub(crate) async fn query_config_and_wait(
 }
 
 /// 设备配置下发
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct ConfigUpdate {
+    /// 设备国标 ID（必填）
     #[serde(alias = "deviceId")]
     pub device_id: Option<String>,
+    /// 国标 ConfigType（BasicParam / SnapConfig / 其他自定义）
     #[serde(alias = "configType")]
     pub config_type: Option<String>,
+    /// 各 ConfigType 所需字段（BasicParam 需要 sipServerId/sipServerPort/sipServerDomain/transport/charset；
+    /// SnapConfig 需要 snapInterval；其他类型透传）
     #[serde(alias = "configData")]
     pub config_data: Option<serde_json::Value>,
 }
 
+/// POST /api/device/config/update
+///
+/// 通过 SIP DeviceConfig 下发配置参数（`CmdType = DeviceConfig`）。
+#[utoipa::path(
+    post,
+    path = "/api/device/config/update",
+    tag = "device",
+    operation_id = "device_control_config_update",
+    request_body = ConfigUpdate,
+    responses(
+        (status = 200, description = "配置下发结果",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{
+             "deviceId":"34020000001320000001","configType":"BasicParam",
+             "result":"Config update sent"
+         }})),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn device_config_update(
     State(state): State<AppState>,
     Json(body): Json<ConfigUpdate>,
@@ -452,12 +590,32 @@ pub async fn device_config_update(
 }
 
 /// 设备重启
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct RebootQuery {
+    /// 设备国标 ID（必填）
     #[serde(alias = "deviceId")]
     pub device_id: Option<String>,
 }
 
+/// GET /api/device/control/reboot
+///
+/// 通过 SIP DeviceControl 下发 `<TeleBoot>Boot</TeleBoot>` 远程启动设备。
+#[utoipa::path(
+    get,
+    path = "/api/device/control/reboot",
+    tag = "control",
+    operation_id = "device_control_reboot",
+    params(RebootQuery),
+    responses(
+        (status = 200, description = "远程启动命令下发结果",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{
+             "deviceId":"34020000001320000001","result":"Reboot command sent"
+         }})),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn device_reboot(
     State(state): State<AppState>,
     Query(q): Query<RebootQuery>,
@@ -552,7 +710,26 @@ async fn send_control_element(
     Json(ApiResult::success(data))
 }
 
-/// GET /api/device/control/teleboot/:device_id —— 远程启动
+/// GET /api/device/control/teleboot/{device_id} —— 远程启动
+///
+/// 与 `device_reboot` 同语义；这里用路径参数版。
+#[utoipa::path(
+    get,
+    path = "/api/device/control/teleboot/{device_id}",
+    tag = "control",
+    operation_id = "device_control_teleboot",
+    params(("device_id" = String, Path, description = "设备国标 ID")),
+    responses(
+        (status = 200, description = "远程启动命令下发结果",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{
+             "deviceId":"34020000001320000001","channelId":"34020000001320000001",
+             "result":"command sent","xml":"<TeleBoot>Boot</TeleBoot>"
+         }})),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn device_teleboot(
     State(state): State<AppState>,
     axum::extract::Path(device_id): axum::extract::Path<String>,
@@ -569,14 +746,18 @@ pub async fn device_teleboot(
 }
 
 /// GET /api/device/control/reset_alarm —— 报警复位
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, utoipa::IntoParams)]
 pub struct ResetAlarmQuery {
+    /// 设备国标 ID
     #[serde(alias = "deviceId")]
     pub device_id: Option<String>,
+    /// 通道国标 ID
     #[serde(alias = "channelId")]
     pub channel_id: Option<String>,
+    /// 报警方式（限定到某一类告警；可选）
     #[serde(alias = "alarmMethod")]
     pub alarm_method: Option<String>,
+    /// 报警类型（可选）
     #[serde(alias = "alarmType")]
     pub alarm_type: Option<String>,
 }
@@ -603,6 +784,28 @@ pub(crate) fn build_alarm_reset_element(
     xml
 }
 
+/// GET /api/device/control/reset_alarm
+///
+/// 通过 SIP DeviceControl 下发 `<AlarmCmd>ResetAlarm</AlarmCmd>` 复位告警。
+/// 可选 `<Info><AlarmMethod/><AlarmType/></Info>` 限定要复位的告警。
+#[utoipa::path(
+    get,
+    path = "/api/device/control/reset_alarm",
+    tag = "control",
+    operation_id = "device_control_reset_alarm",
+    params(ResetAlarmQuery),
+    responses(
+        (status = 200, description = "报警复位命令下发结果",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{
+             "deviceId":"34020000001320000001","channelId":"34020000001310000001",
+             "alarmMethod":"5","alarmType":"1",
+             "result":"command sent","xml":"<AlarmCmd>ResetAlarm</AlarmCmd>"
+         }})),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn device_reset_alarm(
     State(state): State<AppState>,
     Query(q): Query<ResetAlarmQuery>,
@@ -640,6 +843,17 @@ pub struct IFrameQuery {
     pub channel_id: Option<String>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/device/control/i_frame",
+    tag = "control",
+    operation_id = "device_control_device_iframe",
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn device_iframe(
     State(state): State<AppState>,
     Query(q): Query<IFrameQuery>,
@@ -694,6 +908,17 @@ pub(crate) fn build_home_position_element(
     }
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/device/control/home_position",
+    tag = "control",
+    operation_id = "device_control_device_home_position",
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn device_home_position(
     State(state): State<AppState>,
     Query(q): Query<HomePositionQuery>,
@@ -725,22 +950,30 @@ pub async fn device_home_position(
 }
 
 /// GET /api/device/control/drag_zoom/zoom_in | zoom_out —— 拉框放大/缩小
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, utoipa::IntoParams)]
 pub struct DragZoomQuery {
+    /// 设备国标 ID
     #[serde(alias = "deviceId")]
     pub device_id: Option<String>,
+    /// 通道国标 ID
     #[serde(alias = "channelId")]
     pub channel_id: Option<String>,
+    /// 拉框长度
     #[serde(default, deserialize_with = "crate::serde_flex::de_opt_i64")]
     pub length: Option<i64>,
+    /// 拉框宽度
     #[serde(default, deserialize_with = "crate::serde_flex::de_opt_i64")]
     pub width: Option<i64>,
+    /// 拉框中心 X 坐标
     #[serde(alias = "midPointX", default, deserialize_with = "crate::serde_flex::de_opt_i64")]
     pub mid_point_x: Option<i64>,
+    /// 拉框中心 Y 坐标
     #[serde(alias = "midPointY", default, deserialize_with = "crate::serde_flex::de_opt_i64")]
     pub mid_point_y: Option<i64>,
+    /// X 方向放大倍数
     #[serde(alias = "lengthX", default, deserialize_with = "crate::serde_flex::de_opt_i64")]
     pub length_x: Option<i64>,
+    /// Y 方向放大倍数
     #[serde(alias = "lengthY", default, deserialize_with = "crate::serde_flex::de_opt_i64")]
     pub length_y: Option<i64>,
 }
@@ -812,6 +1045,28 @@ async fn drag_zoom(
     .await
 }
 
+/// GET /api/device/control/drag_zoom/zoom_in
+///
+/// 通过 SIP DeviceControl 下发 `<DragZoomIn>...</DragZoomIn>` 在指定矩形区域放大。
+/// 6 个矩形参数（length/width/midPointX/midPointY/lengthX/lengthY）必须全部给出。
+#[utoipa::path(
+    get,
+    path = "/api/device/control/drag_zoom/zoom_in",
+    tag = "control",
+    operation_id = "device_control_drag_zoom_in",
+    params(DragZoomQuery),
+    responses(
+        (status = 200, description = "拉框放大命令下发结果",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{
+             "deviceId":"34020000001320000001","channelId":"34020000001310000001",
+             "result":"command sent","xml":"<DragZoomIn>...</DragZoomIn>","zoomIn":true
+         }})),
+        (status = 400, description = "缺少矩形参数"),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn device_drag_zoom_in(
     State(state): State<AppState>,
     Query(q): Query<DragZoomQuery>,
@@ -819,6 +1074,27 @@ pub async fn device_drag_zoom_in(
     drag_zoom(&state, &q, true).await
 }
 
+/// GET /api/device/control/drag_zoom/zoom_out
+///
+/// 通过 SIP DeviceControl 下发 `<DragZoomOut>...</DragZoomOut>` 在指定矩形区域缩小。
+#[utoipa::path(
+    get,
+    path = "/api/device/control/drag_zoom/zoom_out",
+    tag = "control",
+    operation_id = "device_control_drag_zoom_out",
+    params(DragZoomQuery),
+    responses(
+        (status = 200, description = "拉框缩小命令下发结果",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{
+             "deviceId":"34020000001320000001","channelId":"34020000001310000001",
+             "result":"command sent","xml":"<DragZoomOut>...</DragZoomOut>","zoomIn":false
+         }})),
+        (status = 400, description = "缺少矩形参数"),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn device_drag_zoom_out(
     State(state): State<AppState>,
     Query(q): Query<DragZoomQuery>,
@@ -1019,14 +1295,37 @@ pub(crate) async fn config_query(
     Json(ApiResult::success(data))
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, utoipa::IntoParams)]
 pub struct ConfigQueryParams {
+    /// 设备国标 ID（必填）
     #[serde(alias = "deviceId")]
     pub device_id: Option<String>,
+    /// 通道国标 ID（可选）
     #[serde(alias = "channelId")]
     pub channel_id: Option<String>,
 }
 
+/// GET /api/device/config/query/basicParam
+///
+/// 查询设备 BasicParam（同时返回解析后的字段 + 原始 XML）。
+#[utoipa::path(
+    get,
+    path = "/api/device/config/query/basicParam",
+    tag = "device",
+    operation_id = "device_control_config_query_basic_param",
+    params(ConfigQueryParams),
+    responses(
+        (status = 200, description = "BasicParam 解析结果 + 原始 XML",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{
+             "deviceId":"34020000001320000001","configType":"BasicParam",
+             "xml":"<Response>...</Response>","source":"live",
+             "Name":"前门","Manufacturer":"MockVendor","Model":"IPC-1"
+         }})),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn config_query_basic_param(
     State(state): State<AppState>,
     Query(q): Query<ConfigQueryParams>,
@@ -1035,6 +1334,27 @@ pub async fn config_query_basic_param(
     config_query(&state, &device_id, q.channel_id.as_deref(), "BasicParam").await
 }
 
+/// GET /api/device/config/query/videoParamOpt
+///
+/// 查询设备 VideoParamOpt（同时返回解析后的字段 + 原始 XML）。
+#[utoipa::path(
+    get,
+    path = "/api/device/config/query/videoParamOpt",
+    tag = "device",
+    operation_id = "device_control_config_query_video_param",
+    params(ConfigQueryParams),
+    responses(
+        (status = 200, description = "VideoParamOpt 解析结果 + 原始 XML",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{
+             "deviceId":"34020000001320000001","configType":"VideoParamOpt",
+             "xml":"<Response>...</Response>","source":"live",
+             "Resolution":"1080P","DownloadSpeed":"VBR","VideoFormat":"H264"
+         }})),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn config_query_video_param(
     State(state): State<AppState>,
     Query(q): Query<ConfigQueryParams>,
@@ -1043,6 +1363,26 @@ pub async fn config_query_video_param(
     config_query(&state, &device_id, q.channel_id.as_deref(), "VideoParamOpt").await
 }
 
+/// GET /api/device/config/query/svacEncodeConfig
+///
+/// 查询设备 SVACEncodeConfig（解析字段透传 + 原始 XML）。
+#[utoipa::path(
+    get,
+    path = "/api/device/config/query/svacEncodeConfig",
+    tag = "device",
+    operation_id = "device_control_config_query_svac_encode",
+    params(ConfigQueryParams),
+    responses(
+        (status = 200, description = "SVACEncodeConfig 原始 XML",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{
+             "deviceId":"34020000001320000001","configType":"SVACEncodeConfig",
+             "xml":"<Response>...</Response>","source":"live"
+         }})),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn config_query_svac_encode(
     State(state): State<AppState>,
     Query(q): Query<ConfigQueryParams>,
@@ -1051,6 +1391,26 @@ pub async fn config_query_svac_encode(
     config_query(&state, &device_id, q.channel_id.as_deref(), "SVACEncodeConfig").await
 }
 
+/// GET /api/device/config/query/svacDecodeConfig
+///
+/// 查询设备 SVACDecodeConfig（解析字段透传 + 原始 XML）。
+#[utoipa::path(
+    get,
+    path = "/api/device/config/query/svacDecodeConfig",
+    tag = "device",
+    operation_id = "device_control_config_query_svac_decode",
+    params(ConfigQueryParams),
+    responses(
+        (status = 200, description = "SVACDecodeConfig 原始 XML",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{
+             "deviceId":"34020000001320000001","configType":"SVACDecodeConfig",
+             "xml":"<Response>...</Response>","source":"live"
+         }})),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn config_query_svac_decode(
     State(state): State<AppState>,
     Query(q): Query<ConfigQueryParams>,
@@ -1060,15 +1420,20 @@ pub async fn config_query_svac_decode(
 }
 
 /// `GET /api/device/config/set/basicParam` 的查询参数。
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, utoipa::IntoParams)]
 pub struct BasicParamQuery {
+    /// 设备国标 ID（必填）
     #[serde(alias = "deviceId")]
     pub device_id: Option<String>,
+    /// 设备名称（可选；空值不修改）
     pub name: Option<String>,
+    /// 注册有效期（秒；只发正值，空值不修改）
     #[serde(default, deserialize_with = "crate::serde_flex::de_opt_string")]
     pub expiration: Option<String>,
+    /// 心跳间隔（秒；只发正值，空值不修改）
     #[serde(alias = "heartBeatInterval", default, deserialize_with = "crate::serde_flex::de_opt_string")]
     pub heart_beat_interval: Option<String>,
+    /// 心跳超时次数（只发正值，空值不修改）
     #[serde(alias = "heartBeatCount", default, deserialize_with = "crate::serde_flex::de_opt_string")]
     pub heart_beat_count: Option<String>,
 }
@@ -1108,11 +1473,14 @@ pub(crate) fn build_basic_param_set_element(q: &BasicParamQuery) -> String {
 }
 
 /// `GET /api/device/config/set/videoParamOpt` 的查询参数。
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, utoipa::IntoParams)]
 pub struct VideoParamOptQuery {
+    /// 设备国标 ID（必填）
     #[serde(alias = "deviceId")]
     pub device_id: Option<String>,
+    /// 分辨率（如 `1080P` / `4K`；空值不修改）
     pub resolution: Option<String>,
+    /// 下载速度模式（`CBR` / `VBR` / `QCIF` 等；空值不修改）
     #[serde(alias = "downloadSpeed", default, deserialize_with = "crate::serde_flex::de_opt_string")]
     pub download_speed: Option<String>,
 }
@@ -1134,6 +1502,27 @@ pub(crate) fn build_video_param_set_element(q: &VideoParamOptQuery) -> String {
     xml
 }
 
+/// GET /api/device/config/set/basicParam
+///
+/// 通过 SIP DeviceConfig 下发 `<BasicParam>...</BasicParam>`（CmdType=DeviceConfig）。
+/// 只下发改动字段（空值不修改）。
+#[utoipa::path(
+    get,
+    path = "/api/device/config/set/basicParam",
+    tag = "device",
+    operation_id = "device_control_config_set_basic_param",
+    params(BasicParamQuery),
+    responses(
+        (status = 200, description = "配置下发结果",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{
+             "deviceId":"34020000001320000001","channelId":"34020000001320000001",
+             "result":"command sent","xml":"<BasicParam>...</BasicParam>","configType":"BasicParam"
+         }})),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn config_set_basic_param(
     State(state): State<AppState>,
     Query(q): Query<BasicParamQuery>,
@@ -1155,6 +1544,26 @@ pub async fn config_set_basic_param(
     .await
 }
 
+/// GET /api/device/config/set/videoParamOpt
+///
+/// 通过 SIP DeviceConfig 下发 `<VideoParamOpt>...</VideoParamOpt>`（CmdType=DeviceConfig）。
+#[utoipa::path(
+    get,
+    path = "/api/device/config/set/videoParamOpt",
+    tag = "device",
+    operation_id = "device_control_config_set_video_param",
+    params(VideoParamOptQuery),
+    responses(
+        (status = 200, description = "视频参数下发结果",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{
+             "deviceId":"34020000001320000001","channelId":"34020000001320000001",
+             "result":"command sent","xml":"<VideoParamOpt>...</VideoParamOpt>","configType":"VideoParamOpt"
+         }})),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn config_set_video_param(
     State(state): State<AppState>,
     Query(q): Query<VideoParamOptQuery>,

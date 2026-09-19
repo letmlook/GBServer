@@ -10,6 +10,7 @@ use axum::{
     Json,
 };
 use serde::Deserialize;
+use utoipa::{IntoParams, ToSchema};
 
 use crate::db;
 use crate::error::{AppError, ErrorCode};
@@ -18,6 +19,22 @@ use crate::response::ApiResult;
 use crate::AppState;
 
 /// POST /api/role/add
+#[utoipa::path(
+    post,
+    path = "/api/role/add",
+    tag = "user",
+    operation_id = "role_add",
+    request_body = RoleAddBody,
+    responses(
+        (status = 200, description = "新增成功（返回新角色 id + name）",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{"id":2,"name":"操作员"}})),
+        (status = 400, description = "缺少 name / 角色名过长 / 角色名已存在"),
+        (status = 401, description = "未鉴权"),
+        (status = 403, description = "需要管理员"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn role_add(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -61,6 +78,22 @@ pub async fn role_add(
 ///    `gb_user` 与 `gb_user_role` 之间没有外键约束，所以库里会留下指向不存在
 ///    角色的用户；用户管理列表当时又是 `INNER JOIN`，这些用户直接被 SQL 丢掉 ——
 ///    表现为"数据库里有 4 个用户，页面只有 3 行，且翻页也找不回"。
+#[utoipa::path(
+    delete,
+    path = "/api/role/delete",
+    tag = "user",
+    operation_id = "role_delete",
+    params(DeleteRole),
+    responses(
+        (status = 200, description = "删除成功",
+         body = ApiResult<serde_json::Value>),
+        (status = 400, description = "内置管理员角色不可删除 / 该角色仍有用户引用"),
+        (status = 401, description = "未鉴权"),
+        (status = 403, description = "需要管理员"),
+        (status = 404, description = "角色不存在"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn role_delete(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -94,6 +127,20 @@ pub async fn role_delete(
 }
 
 /// GET /api/role/all
+#[utoipa::path(
+    get,
+    path = "/api/role/all",
+    tag = "user",
+    operation_id = "role_list",
+    responses(
+        (status = 200, description = "全部角色列表（含 authority / createTime / updateTime）",
+         body = ApiResult<Vec<db::role::Role>>,
+         example = json!({"code":0,"msg":"成功","data":[{"id":1,"name":"管理员","authority":"0","createTime":"2026-01-01 00:00:00","updateTime":"2026-01-01 00:00:00"}]})),
+        (status = 401, description = "未鉴权"),
+        (status = 403, description = "需要管理员"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn role_all(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -103,13 +150,16 @@ pub async fn role_all(
     Ok(Json(ApiResult::success(roles)))
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 pub struct RoleAddBody {
+    /// 角色名（≤ 50 字符，不允许重复）
     pub name: String,
+    /// 权限标识：`"0"` = 管理员；其他值由调用方定义
     pub authority: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, IntoParams)]
 pub struct DeleteRole {
+    /// 要删除的角色 ID
     pub id: i32,
 }

@@ -17,7 +17,7 @@ use crate::response::ApiResult;
 use crate::sip::gb28181::device_query::{DeviceInfoResponse, DeviceStatusResponse};
 
 /// 查询参数
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct DeviceQueryParams {
     /// 设备ID
     #[serde(alias = "deviceId")]
@@ -46,6 +46,27 @@ pub struct DeviceQueryResponse<T> {
 
 /// GET /api/device/query/info/{device_id}
 /// 查询设备基本信息
+///
+/// 在线时通过 SIP MESSAGE 实时拉取；离线/超时回退到 DB 缓存（`source` 字段标识）。
+#[utoipa::path(
+    get,
+    path = "/api/device/query/info/{device_id}",
+    tag = "device",
+    operation_id = "device_query_info",
+    params(("device_id" = String, Path, description = "设备国标 ID")),
+    responses(
+        (status = 200, description = "设备基本信息（live = SIP 应答；cache = DB 兜底）",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{
+             "deviceId":"34020000001320000001","sn":1700000000000_i64,
+             "data":{"deviceName":"前门","manufacturer":"MockVendor","model":"IPC-1"},
+             "source":"live"
+         }})),
+        (status = 404, description = "设备不存在"),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn device_info(
     State(state): State<AppState>,
     Path(device_id): Path<String>,
@@ -128,6 +149,26 @@ pub async fn device_info(
 
 /// GET /api/device/query/status/{device_id}
 /// 查询设备运行状态
+///
+/// 在线时通过 SIP MESSAGE 实时拉取；离线时回退到固定的 OFFLINE 占位。
+#[utoipa::path(
+    get,
+    path = "/api/device/query/status/{device_id}",
+    tag = "device",
+    operation_id = "device_query_status",
+    params(("device_id" = String, Path, description = "设备国标 ID")),
+    responses(
+        (status = 200, description = "设备运行状态（online / record / encode/decode/storage 计数）",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{
+             "deviceId":"34020000001320000001","sn":1700000000000_i64,
+             "data":{"online":"ON","status":"NORMAL","encodeChannelCount":4},
+             "source":"live"
+         }})),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn device_status(
     State(state): State<AppState>,
     Path(device_id): Path<String>,
@@ -203,6 +244,30 @@ pub async fn device_status(
 
 /// GET /api/device/config/query/{device_id}/{config_type}
 /// 查询设备配置参数
+///
+/// 与查询参数版共用 `device_control::query_config_and_wait`：
+/// 注册 pending → 发 SIP ConfigDownload → 等应答（15s）。
+/// `configType` 是国标 ConfigType（BasicParam / VideoParamOpt 等）。
+#[utoipa::path(
+    get,
+    path = "/api/device/config/query/{device_id}/{config_type}",
+    tag = "device",
+    operation_id = "device_query_device_config_query",
+    params(
+        ("device_id" = String, Path, description = "设备国标 ID"),
+        ("config_type" = String, Path, description = "国标 ConfigType（如 BasicParam / VideoParamOpt）"),
+    ),
+    responses(
+        (status = 200, description = "设备配置应答（xml 透传 + source / status 标识）",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{
+             "deviceId":"34020000001320000001","config_type":"BasicParam",
+             "sn":1700000000000_i64,"xml":"<Response>...</Response>","source":"live"
+         }})),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn device_config_query(
     State(state): State<AppState>,
     Path((device_id, config_type)): Path<(String, String)>,
@@ -218,6 +283,29 @@ pub async fn device_config_query(
 
 /// GET /api/play/ssrc/{device_id}/{channel_id}
 /// 获取播放的 SSRC 信息
+///
+/// 由 SIP server 的 `SsrcManager` 分配 SSRC —— 同一 (deviceId, channelId, 流类型)
+/// 重复调用可能拿到不同的 SSRC（点播开始时新分配、结束释放）。
+#[utoipa::path(
+    get,
+    path = "/api/play/ssrc/{device_id}/{channel_id}",
+    tag = "live",
+    operation_id = "device_query_get_ssrc",
+    params(
+        ("device_id" = String, Path, description = "设备国标 ID"),
+        ("channel_id" = String, Path, description = "通道国标 ID"),
+    ),
+    responses(
+        (status = 200, description = "分配到的 SSRC",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{
+             "deviceId":"34020000001320000001","channelId":"34020000001310000001",
+             "ssrc":"00000001"
+         }})),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn get_ssrc(
     State(state): State<AppState>,
     Path((device_id, channel_id)): Path<(String, String)>,
@@ -436,6 +524,24 @@ pub async fn capture_snapshot_now(
 ///
 /// **注册在 `api_protected` 之外**：浏览器 `<img src>` 不能带 `access-token`
 /// 头，所以鉴权走 `?token=`（与 `/api/talk/audio/:device_id/:channel_id` 同套）。
+/// 因此本接口**省略** `security(("access_token" = []))`。
+#[utoipa::path(
+    get,
+    path = "/api/play/snapshot/{device_id}/{channel_id}",
+    tag = "live",
+    operation_id = "device_query_get_snapshot_file",
+    params(
+        ("device_id" = String, Path, description = "设备国标 ID"),
+        ("channel_id" = String, Path, description = "通道国标 ID"),
+        SnapImageQuery,
+    ),
+    responses(
+        (status = 200, description = "JPEG 字节（`image/jpeg`）",
+         content_type = "image/jpeg"),
+        (status = 401, description = "缺少或失效的 ?token= JWT"),
+        (status = 404, description = "该通道还没保存缩略图"),
+    ),
+)]
 pub async fn get_snapshot_file(
     State(state): State<AppState>,
     Query(q): Query<SnapImageQuery>,
@@ -471,7 +577,7 @@ pub async fn get_snapshot_file(
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct SnapshotListQuery {
     /// 逗号分隔的 `deviceId_channelId` 列表（GB28181 编号是纯数字，`_` 不会歧义）
     pub keys: Option<String>,
@@ -486,6 +592,23 @@ pub struct SnapshotListQuery {
 /// 不用为每个通道单独发一次请求。
 ///
 /// 鉴权靠外层 `auth_middleware`（axios 会带 `access-token` 头）。
+#[utoipa::path(
+    get,
+    path = "/api/play/snapshot/list",
+    tag = "live",
+    operation_id = "device_query_list_snapshots",
+    params(SnapshotListQuery),
+    responses(
+        (status = 200, description = "已落盘的通道 ID → 图片 URL（带 mtime 版本号）",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{
+             "34020000001320000001_34020000001310000001":
+                 "/api/play/snapshot/34020000001320000001/34020000001310000001?token=xxx&v=1700000000"
+         }})),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn list_snapshots(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
@@ -528,8 +651,9 @@ pub async fn list_snapshots(
     Json(ApiResult::success(serde_json::Value::Object(out))).into_response()
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct SnapImageQuery {
+    /// 调用方 JWT（`?token=` 形式鉴权；`<img src>` 发不了请求头）
     pub token: Option<String>,
 }
 
@@ -548,6 +672,33 @@ fn snap_error(status: StatusCode, msg: &str) -> Response {
 
 /// GET /api/media/getPlayUrl
 /// 获取播放地址
+///
+/// 给出一个通道的播放 URL（rtsp/rtmp/hls/flv/ws_flv/webrtc 之一）。
+/// 调用前会先确认该流已在 ZLM 存在；不存在时明确报错，不会给前端一个永远转圈的 URL。
+#[utoipa::path(
+    get,
+    path = "/api/media/getPlayUrl",
+    tag = "live",
+    operation_id = "device_query_get_play_url",
+    params(
+        ("deviceId" = String, Query, description = "设备国标 ID"),
+        ("channelId" = String, Query, description = "通道国标 ID；缺省回落为 deviceId"),
+        ("protocol" = String, Query, description = "协议：rtsp/rtmp/hls/flv/ws_flv/webrtc（默认 rtsp）"),
+    ),
+    responses(
+        (status = 200, description = "URL 及配套端口",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{
+             "deviceId":"34020000001320000001","channelId":"34020000001310000001",
+             "streamId":"34020000001320000001_34020000001310000001","app":"rtp",
+             "url":"rtsp://192.168.1.10:554/rtp/34020000001320000001_34020000001310000001",
+             "protocol":"rtsp","rtspPort":554,"rtmpPort":1935,"httpPort":8080
+         }})),
+        (status = 400, description = "不支持的 protocol"),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn get_play_url(
     State(state): State<AppState>,
     Query(params): Query<serde_json::Value>,
@@ -662,6 +813,28 @@ async fn media_server_ports(state: &AppState, host: &str) -> (u16, u16) {
 
 /// GET /api/media/stream_info_by_app_and_stream
 /// 获取流信息
+///
+/// 按 app + stream 查 ZLM 上的流详情（`getMediaList` 透传）。
+#[utoipa::path(
+    get,
+    path = "/api/media/stream_info_by_app_and_stream",
+    tag = "live",
+    operation_id = "device_query_stream_info",
+    params(
+        ("app" = String, Query, description = "ZLM app（默认 `live`）"),
+        ("stream" = String, Query, description = "流 ID（必填）"),
+    ),
+    responses(
+        (status = 200, description = "匹配到的流列表 + 总数",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{
+             "app":"rtp","stream":"34020000001320000001_34020000001310000001",
+             "count":1,"streams":[{"app":"rtp","stream":"...","readerCount":3}]
+         }})),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn stream_info(
     State(state): State<AppState>,
     Query(params): Query<serde_json::Value>,
@@ -700,6 +873,25 @@ pub async fn stream_info(
 // ============================================================================
 
 /// `GET /api/device/query/info?deviceId=` → 同 `device_info`（路径参数版）。
+///
+/// 兼容入口：与 `/api/device/query/info/{device_id}` 行为一致，调用同一函数。
+#[utoipa::path(
+    get,
+    path = "/api/device/query/info",
+    tag = "device",
+    operation_id = "device_query_info_query",
+    params(DeviceIdQuery),
+    responses(
+        (status = 200, description = "同 `device_info`（live/cache）",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{
+             "deviceId":"34020000001320000001","sn":1700000000000_i64,
+             "data":{"deviceName":"前门"},"source":"live"
+         }})),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn device_info_query(
     State(state): State<AppState>,
     Query(q): Query<DeviceIdQuery>,
@@ -707,7 +899,26 @@ pub async fn device_info_query(
     device_info(State(state), Path(q.device_id.unwrap_or_default())).await
 }
 
-/// `GET /api/device/query/devices/{deviceId}/status` → 同 `device_status`。
+/// `GET /api/device/query/devices/{device_id}/status` → 同 `device_status`。
+///
+/// 兼容入口：与 `/api/device/query/status/{device_id}` 行为一致。
+#[utoipa::path(
+    get,
+    path = "/api/device/query/devices/{device_id}/status",
+    tag = "device",
+    operation_id = "device_query_status_path",
+    params(("device_id" = String, Path, description = "设备国标 ID")),
+    responses(
+        (status = 200, description = "同 `device_status`",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{
+             "deviceId":"34020000001320000001","sn":1700000000000_i64,
+             "data":{"online":"ON","status":"NORMAL"},"source":"live"
+         }})),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn device_status_path(
     State(state): State<AppState>,
     Path(device_id): Path<String>,
@@ -716,6 +927,26 @@ pub async fn device_status_path(
 }
 
 /// `GET /api/device/query/{deviceId}/sync_status` → 同 `device_stub::sync_status`。
+///
+/// 兼容入口：把路径参数装成 `SyncStatusQuery` 再调原函数。
+#[utoipa::path(
+    get,
+    path = "/api/device/query/{device_id}/sync_status",
+    tag = "device",
+    operation_id = "device_query_sync_status_path",
+    params(("device_id" = String, Path, description = "设备国标 ID")),
+    responses(
+        (status = 200, description = "同 `device_stub::sync_status`",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{
+             "deviceId":"34020000001320000001","status":"active",
+             "activeSubscriptions":1,"online":true,"streamMode":"UDP",
+             "syncIng":true,"total":4,"current":0,"errorMsg":null,"message":"正在同步设备目录"
+         }})),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn sync_status_path(
     State(state): State<AppState>,
     Path(device_id): Path<String>,
@@ -731,6 +962,30 @@ pub async fn sync_status_path(
 
 /// `POST /api/device/query/snap/{deviceId}/{channelId}` → 同
 /// `POST /api/play/snapshot/{d}/{c}`（立即抓帧刷新缩略图）。
+///
+/// 兼容入口：仅做透传。`/api/device/query/snap/{device_id}/{channel_id}` 同时接受
+/// GET 和 POST（老前端用 GET、新前端用 POST；handler 本身忽略 method）。
+#[utoipa::path(
+    get,
+    path = "/api/device/query/snap/{device_id}/{channel_id}",
+    tag = "live",
+    operation_id = "device_query_snap_path",
+    params(
+        ("device_id" = String, Path, description = "设备国标 ID"),
+        ("channel_id" = String, Path, description = "通道国标 ID"),
+    ),
+    responses(
+        (status = 200, description = "抓帧结果（新缩略图的 mtime 秒）",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{
+             "deviceId":"34020000001320000001","channelId":"34020000001310000001",
+             "version":1700000000_u64
+         }})),
+        (status = 502, description = "ZLM 抓帧失败 / 流尚未建立"),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn snap_path(
     state: State<AppState>,
     Path((device_id, channel_id)): Path<(String, String)>,
@@ -739,6 +994,25 @@ pub async fn snap_path(
 }
 
 /// `GET /api/play/ssrc?deviceId=&channelId=` → 同 `/api/play/ssrc/{d}/{c}`。
+///
+/// 兼容入口：把查询参数装成 Path 再调原函数。
+#[utoipa::path(
+    get,
+    path = "/api/play/ssrc",
+    tag = "live",
+    operation_id = "device_query_ssrc_query",
+    params(DeviceChannelQuery),
+    responses(
+        (status = 200, description = "同 `get_ssrc`（SSRC 是新分配的还是复用已有，取决于 SsrcManager）",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{
+             "deviceId":"34020000001320000001","channelId":"34020000001310000001",
+             "ssrc":"00000001"
+         }})),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn ssrc_query(
     State(state): State<AppState>,
     Query(q): Query<DeviceChannelQuery>,
@@ -755,6 +1029,27 @@ pub async fn ssrc_query(
 
 /// `POST /api/play/snap?deviceId=&channelId=` → 同
 /// `POST /api/play/snapshot/{d}/{c}`。
+///
+/// 兼容入口：把查询参数装成 Path 再调原函数。
+/// `/api/play/snap` 同时接受 GET 和 POST（handler 本身忽略 method）。
+#[utoipa::path(
+    get,
+    path = "/api/play/snap",
+    tag = "live",
+    operation_id = "device_query_snap_query",
+    params(DeviceChannelQuery),
+    responses(
+        (status = 200, description = "抓帧结果",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{
+             "deviceId":"34020000001320000001","channelId":"34020000001310000001",
+             "version":1700000000_u64
+         }})),
+        (status = 502, description = "ZLM 抓帧失败 / 流尚未建立"),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn snap_query(
     state: State<AppState>,
     Query(q): Query<DeviceChannelQuery>,
@@ -769,16 +1064,19 @@ pub async fn snap_query(
     .await
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, utoipa::IntoParams)]
 pub struct DeviceIdQuery {
+    /// 设备国标 ID
     #[serde(alias = "deviceId")]
     pub device_id: Option<String>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, utoipa::IntoParams)]
 pub struct DeviceChannelQuery {
+    /// 设备国标 ID
     #[serde(alias = "deviceId")]
     pub device_id: Option<String>,
+    /// 通道国标 ID
     #[serde(alias = "channelId")]
     pub channel_id: Option<String>,
 }
@@ -786,6 +1084,23 @@ pub struct DeviceChannelQuery {
 /// `GET /api/device/query/channel/raw?id=` —— 国标通道编辑时的原始行回显。
 ///
 /// 返回同源的通道行（含 gb_* 兼容字段）。
+#[utoipa::path(
+    get,
+    path = "/api/device/query/channel/raw",
+    tag = "device",
+    operation_id = "device_query_channel_raw",
+    params(ChannelRawQuery),
+    responses(
+        (status = 200, description = "通道原始行（找不到时 data=null）",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{
+             "id":1,"deviceId":"34020000001320000001",
+             "channelId":"34020000001310000001","name":"通道1","status":"ON"
+         }})),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn channel_raw(
     State(state): State<AppState>,
     Query(q): Query<ChannelRawQuery>,
@@ -812,8 +1127,9 @@ pub async fn channel_raw(
     }
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, utoipa::IntoParams)]
 pub struct ChannelRawQuery {
+    /// 通道库表 id（必填；接受字符串或数字）
     #[serde(default, deserialize_with = "crate::serde_flex::de_opt_i64")]
     pub id: Option<i64>,
 }
@@ -821,6 +1137,26 @@ pub struct ChannelRawQuery {
 /// `GET /api/device/query/alarm` —— **向设备查询当前报警**（不是 DB 历史列表）。
 ///
 /// 支持全部过滤条件：报警级别区间 / 报警方式 / 报警类型 / 时间区间。
+/// 通过 SIP Alarm 下发并等应答（15s）。
+#[utoipa::path(
+    get,
+    path = "/api/device/query/alarm",
+    tag = "alarm",
+    operation_id = "device_query_alarm",
+    params(DeviceAlarmQuery),
+    responses(
+        (status = 200, description = "设备当前报警（解析后的 alarms[] + 原始 xml）",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{
+             "deviceId":"34020000001320000001","sn":1700000000000_i64,
+             "xml":"<Response>...</Response>",
+             "alarms":[{"AlarmPriority":"1","AlarmMethod":"5","AlarmTime":"2026-09-13T07:00:00"}],
+             "source":"live"
+         }})),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn device_alarm_query(
     State(state): State<AppState>,
     Query(q): Query<DeviceAlarmQuery>,
@@ -880,20 +1216,27 @@ pub async fn device_alarm_query(
     }
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, utoipa::IntoParams)]
 pub struct DeviceAlarmQuery {
+    /// 设备国标 ID（必填）
     #[serde(alias = "deviceId")]
     pub device_id: Option<String>,
+    /// 报警级别下限（GB/T 28181 A.2.4.4）
     #[serde(alias = "startPriority")]
     pub start_priority: Option<String>,
+    /// 报警级别上限
     #[serde(alias = "endPriority")]
     pub end_priority: Option<String>,
+    /// 报警方式
     #[serde(alias = "alarmMethod")]
     pub alarm_method: Option<String>,
+    /// 报警类型
     #[serde(alias = "alarmType")]
     pub alarm_type: Option<String>,
+    /// 起始时间（ISO8601 字符串）
     #[serde(alias = "startTime")]
     pub start_time: Option<String>,
+    /// 截止时间（ISO8601 字符串）
     #[serde(alias = "endTime")]
     pub end_time: Option<String>,
 }

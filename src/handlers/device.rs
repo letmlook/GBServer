@@ -12,17 +12,38 @@ use crate::response::ApiResult;
 
 use crate::AppState;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct DevicesQuery {
+    /// 页码，从 1 开始（默认 1）
     pub page: Option<u32>,
+    /// 每页条数（默认 10，上限 100）
     pub count: Option<u32>,
+    /// 名称/编号模糊关键字
     pub query: Option<String>,
-    /// "ON" / "OFF" / "" (空 = 全部)
+    /// 设备在线状态过滤：`ON` / `OFF`；空值 = 全部
     #[serde(default)]
     pub status: Option<String>,
 }
 
 /// GET /api/device/query/devices
+///
+/// 设备分页列表（支持按名称/编号模糊匹配 + 在线状态过滤）。
+#[utoipa::path(
+    get,
+    path = "/api/device/query/devices",
+    tag = "device",
+    operation_id = "device_query_devices",
+    params(DevicesQuery),
+    responses(
+        (status = 200, description = "设备分页结果 `{total, list, page, size}` —— `list` 内为完整 `Device` 行（含 id/firmware/heartBeat*/registerTime/channelCount 等）",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{"total":42,"page":1,"size":10,"list":[
+             {"id":1,"deviceId":"34020000001320000001","name":"前门","onLine":true}
+         ]}})),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn query_devices(
     State(state): State<AppState>,
     Query(q): Query<DevicesQuery>,
@@ -54,7 +75,7 @@ pub struct DevicePage {
 }
 
 /// `GET /api/device/query/latency` 的查询参数。
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct LatencyQuery {
     /// 逗号分隔的设备 ID。给了就只返回这些设备 —— 列表页一页只有 20 行，
     /// 没必要每 5s 把**全部**设备的样本推下来（设备上千时那是几百 KB 的轮询）。
@@ -72,6 +93,22 @@ pub struct LatencyQuery {
 /// 重启后一轮探针就会重新填满。
 ///
 /// 前端每次带上当前页的 deviceId，返回里没有的设备就是"还没测出来"。
+#[utoipa::path(
+    get,
+    path = "/api/device/query/latency",
+    tag = "device",
+    operation_id = "device_query_latency",
+    params(LatencyQuery),
+    responses(
+        (status = 200, description = "每台设备最近一次 SIP 往返延迟（毫秒） + 探针周期",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{"probeIntervalSecs":15,"list":[
+             {"deviceId":"34020000001320000001","latencyMs":42,"updatedAt":"2026-09-13T07:00:00Z"}
+         ]}})),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn query_device_latency(
     State(_state): State<AppState>,
     Query(q): Query<LatencyQuery>,
@@ -91,18 +128,41 @@ pub async fn query_device_latency(
     }))))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct ChannelsQuery {
+    /// 页码，从 1 开始（默认 1）
     pub page: Option<u32>,
+    /// 每页条数（默认 10，上限 100）
     pub count: Option<u32>,
     /// 关键字（名称/通道编号）
     pub query: Option<String>,
+    /// 仅返回在线通道
     pub online: Option<bool>,
+    /// 通道类型（前端字段名 `channelType`）
     #[serde(alias = "channelType")]
     pub channel_type: Option<i32>,
 }
 
-/// GET /api/device/query/devices/:deviceId/channels
+/// GET /api/device/query/devices/{device_id}/channels
+#[utoipa::path(
+    get,
+    path = "/api/device/query/devices/{device_id}/channels",
+    tag = "device",
+    operation_id = "device_query_device_channels",
+    params(
+        ("device_id" = String, Path, description = "设备国标 ID（20 位）"),
+        ChannelsQuery,
+    ),
+    responses(
+        (status = 200, description = "该设备下的通道分页结果（每行带 camelCase + gb_* 兼容字段）",
+         body = ApiResult<ChannelPage>,
+         example = json!({"code":0,"msg":"成功","data":{"total":4,"page":1,"size":10,"list":[
+             {"id":1,"deviceId":"34020000001320000001","channelId":"34020000001310000001","name":"通道1","status":"ON"}
+         ]}})),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn query_channels(
     State(state): State<AppState>,
     Path(device_id): Path<String>,
@@ -137,7 +197,7 @@ pub async fn query_channels(
     Ok(Json(ApiResult::success(out)))
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
 pub struct ChannelPage {
     pub total: u64,
     pub list: Vec<serde_json::Value>,
@@ -147,6 +207,19 @@ pub struct ChannelPage {
 
 /// GET /api/device/query/statistics/keepalive
 /// 设备保活统计
+#[utoipa::path(
+    get,
+    path = "/api/device/query/statistics/keepalive",
+    tag = "device",
+    operation_id = "device_query_keepalive_statistics",
+    responses(
+        (status = 200, description = "在线/离线设备数 + 上线率",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{"online":18,"offline":4,"total":22,"onlineRate":81.82}})),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn device_keepalive_statistics(
     State(state): State<AppState>,
 ) -> Json<ApiResult<serde_json::Value>> {
@@ -176,6 +249,19 @@ pub async fn device_keepalive_statistics(
 
 /// GET /api/device/query/statistics/register
 /// 设备注册统计
+#[utoipa::path(
+    get,
+    path = "/api/device/query/statistics/register",
+    tag = "device",
+    operation_id = "device_query_register_statistics",
+    responses(
+        (status = 200, description = "今日新增 / 总数 / 在离线数",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{"todayRegister":3,"totalDevices":22,"activeDevices":18,"inactiveDevices":4}})),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn device_register_statistics(
     State(state): State<AppState>,
 ) -> Json<ApiResult<serde_json::Value>> {

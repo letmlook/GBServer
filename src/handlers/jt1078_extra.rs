@@ -34,7 +34,7 @@ use crate::db::jt1078 as jt_db;
 use crate::response::ApiResult;
 use crate::AppState;
 
-#[derive(Deserialize, Default, Debug)]
+#[derive(Deserialize, Default, Debug, utoipa::IntoParams)]
 pub struct IdQuery {
     pub id: Option<String>,
     /// 终端手机号。前端查询页发的是 `phone`，而新增/设置类接口用的是
@@ -102,6 +102,19 @@ fn get_json_or_str(b: &serde_json::Value, keys: &[&str]) -> serde_json::Value {
 }
 
 /// POST /api/jt1078/area/circle/add
+#[utoipa::path(
+    post,
+    path = "/api/jt1078/area/circle/add",
+    tag = "jt1078",
+    operation_id = "area_circle_add",
+    summary = "新增圆形区域围栏",
+    request_body = serde_json::Value,
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn area_circle_add(
     State(state): State<AppState>,
     Json(b): Json<serde_json::Value>,
@@ -125,6 +138,19 @@ pub async fn area_circle_add(
 }
 
 /// POST /api/jt1078/area/circle/edit  (与 update 同义的别名)
+#[utoipa::path(
+    post,
+    path = "/api/jt1078/area/circle/edit",
+    tag = "jt1078",
+    operation_id = "area_circle_edit",
+    summary = "编辑圆形区域围栏（与 update 同义）",
+    request_body = serde_json::Value,
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn area_circle_edit(
     State(state): State<AppState>,
     Json(b): Json<serde_json::Value>,
@@ -147,6 +173,21 @@ pub async fn area_circle_edit(
 }
 
 /// GET /api/jt1078/area/circle/delete?id=<i64>
+#[utoipa::path(
+    get,
+    path = "/api/jt1078/area/circle/delete",
+    tag = "jt1078",
+    operation_id = "area_circle_delete",
+    summary = "删除圆形区域围栏",
+    params(
+        IdQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn area_circle_delete(
     State(state): State<AppState>,
     Query(q): Query<IdQuery>,
@@ -164,6 +205,21 @@ pub async fn area_circle_delete(
 }
 
 /// GET /api/jt1078/area/circle/query?phone=<phone_number>
+#[utoipa::path(
+    get,
+    path = "/api/jt1078/area/circle/query",
+    tag = "jt1078",
+    operation_id = "area_circle_query",
+    summary = "按终端手机号查询圆形区域围栏",
+    params(
+        IdQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn area_circle_query(
     State(state): State<AppState>,
     Query(q): Query<IdQuery>,
@@ -181,6 +237,19 @@ pub async fn area_circle_query(
 }
 
 /// POST /api/jt1078/area/circle/update
+#[utoipa::path(
+    post,
+    path = "/api/jt1078/area/circle/update",
+    tag = "jt1078",
+    operation_id = "area_circle_update",
+    summary = "更新圆形区域围栏（与 edit 同义）",
+    request_body = serde_json::Value,
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn area_circle_update(
     State(state): State<AppState>,
     Json(b): Json<serde_json::Value>,
@@ -194,6 +263,19 @@ pub async fn area_circle_update(
 // ============================================================================
 
 /// POST /api/jt1078/area/polygon/set
+#[utoipa::path(
+    post,
+    path = "/api/jt1078/area/polygon/set",
+    tag = "jt1078",
+    operation_id = "area_polygon_set",
+    summary = "设置多边形区域围栏",
+    request_body = serde_json::Value,
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn area_polygon_set(
     State(state): State<AppState>,
     Json(b): Json<serde_json::Value>,
@@ -215,6 +297,21 @@ pub async fn area_polygon_set(
 }
 
 /// GET /api/jt1078/area/polygon/delete?id=<i64>
+#[utoipa::path(
+    get,
+    path = "/api/jt1078/area/polygon/delete",
+    tag = "jt1078",
+    operation_id = "area_polygon_delete",
+    summary = "删除多边形区域围栏",
+    params(
+        IdQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn area_polygon_delete(
     State(state): State<AppState>,
     Query(q): Query<IdQuery>,
@@ -232,6 +329,21 @@ pub async fn area_polygon_delete(
 }
 
 /// GET /api/jt1078/area/polygon/query?phone=<phone_number>
+#[utoipa::path(
+    get,
+    path = "/api/jt1078/area/polygon/query",
+    tag = "jt1078",
+    operation_id = "area_polygon_query",
+    summary = "按终端手机号查询多边形区域围栏",
+    params(
+        IdQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn area_polygon_query(
     State(state): State<AppState>,
     Query(q): Query<IdQuery>,
@@ -253,6 +365,19 @@ pub async fn area_polygon_query(
 // ============================================================================
 
 /// POST /api/jt1078/area/rectangle/add
+#[utoipa::path(
+    post,
+    path = "/api/jt1078/area/rectangle/add",
+    tag = "jt1078",
+    operation_id = "area_rectangle_add",
+    summary = "新增矩形区域围栏",
+    request_body = serde_json::Value,
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn area_rectangle_add(
     State(state): State<AppState>,
     Json(b): Json<serde_json::Value>,
@@ -278,6 +403,19 @@ pub async fn area_rectangle_add(
 }
 
 /// POST /api/jt1078/area/rectangle/edit
+#[utoipa::path(
+    post,
+    path = "/api/jt1078/area/rectangle/edit",
+    tag = "jt1078",
+    operation_id = "area_rectangle_edit",
+    summary = "编辑矩形区域围栏",
+    request_body = serde_json::Value,
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn area_rectangle_edit(
     State(state): State<AppState>,
     Json(b): Json<serde_json::Value>,
@@ -301,6 +439,21 @@ pub async fn area_rectangle_edit(
 }
 
 /// GET /api/jt1078/area/rectangle/delete?id=<i64>
+#[utoipa::path(
+    get,
+    path = "/api/jt1078/area/rectangle/delete",
+    tag = "jt1078",
+    operation_id = "area_rectangle_delete",
+    summary = "删除矩形区域围栏",
+    params(
+        IdQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn area_rectangle_delete(
     State(state): State<AppState>,
     Query(q): Query<IdQuery>,
@@ -318,6 +471,21 @@ pub async fn area_rectangle_delete(
 }
 
 /// GET /api/jt1078/area/rectangle/query?phone=<phone_number>
+#[utoipa::path(
+    get,
+    path = "/api/jt1078/area/rectangle/query",
+    tag = "jt1078",
+    operation_id = "area_rectangle_query",
+    summary = "按终端手机号查询矩形区域围栏",
+    params(
+        IdQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn area_rectangle_query(
     State(state): State<AppState>,
     Query(q): Query<IdQuery>,
@@ -335,6 +503,19 @@ pub async fn area_rectangle_query(
 }
 
 /// POST /api/jt1078/area/rectangle/update
+#[utoipa::path(
+    post,
+    path = "/api/jt1078/area/rectangle/update",
+    tag = "jt1078",
+    operation_id = "area_rectangle_update",
+    summary = "更新矩形区域围栏（与 edit 同义）",
+    request_body = serde_json::Value,
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn area_rectangle_update(
     State(state): State<AppState>,
     Json(b): Json<serde_json::Value>,
@@ -348,6 +529,19 @@ pub async fn area_rectangle_update(
 // ============================================================================
 
 /// POST /api/jt1078/route/set
+#[utoipa::path(
+    post,
+    path = "/api/jt1078/route/set",
+    tag = "jt1078",
+    operation_id = "route_set",
+    summary = "设置路线（途经点）",
+    request_body = serde_json::Value,
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn route_set(
     State(state): State<AppState>,
     Json(b): Json<serde_json::Value>,
@@ -369,6 +563,21 @@ pub async fn route_set(
 }
 
 /// GET /api/jt1078/route/query?phone=<phone_number>
+#[utoipa::path(
+    get,
+    path = "/api/jt1078/route/query",
+    tag = "jt1078",
+    operation_id = "route_query",
+    summary = "按终端手机号查询路线",
+    params(
+        IdQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn route_query(
     State(state): State<AppState>,
     Query(q): Query<IdQuery>,
@@ -386,6 +595,21 @@ pub async fn route_query(
 }
 
 /// GET /api/jt1078/route/delete?id=<i64>
+#[utoipa::path(
+    get,
+    path = "/api/jt1078/route/delete",
+    tag = "jt1078",
+    operation_id = "route_delete",
+    summary = "删除路线",
+    params(
+        IdQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn route_delete(
     State(state): State<AppState>,
     Query(q): Query<IdQuery>,
@@ -419,6 +643,21 @@ fn phone_and_channel(q: &IdQuery) -> Result<(String, u8), Json<ApiResult<serde_j
 }
 
 /// 直播继续（JT/T1078 0x9102 实时音视频控制，control=0 继续）
+#[utoipa::path(
+    get,
+    path = "/api/jt1078/live/continue",
+    tag = "jt1078",
+    operation_id = "live_continue",
+    summary = "直播继续（0x9102，control=0）",
+    params(
+        IdQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn live_continue(
     State(state): State<AppState>,
     Query(q): Query<IdQuery>,
@@ -441,6 +680,21 @@ pub async fn live_continue(
 }
 
 /// 直播暂停（JT/T1078 0x9102，control=1 暂停）
+#[utoipa::path(
+    get,
+    path = "/api/jt1078/live/pause",
+    tag = "jt1078",
+    operation_id = "live_pause",
+    summary = "直播暂停（0x9102，control=1）",
+    params(
+        IdQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn live_pause(
     State(state): State<AppState>,
     Query(q): Query<IdQuery>,
@@ -463,6 +717,21 @@ pub async fn live_pause(
 }
 
 /// 直播切换（重新对目标通道发起 0x9101 实时音视频请求，close=false）
+#[utoipa::path(
+    get,
+    path = "/api/jt1078/live/switch",
+    tag = "jt1078",
+    operation_id = "live_switch",
+    summary = "直播切换（重新发起 0x9101）",
+    params(
+        IdQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn live_switch(
     State(state): State<AppState>,
     Query(q): Query<IdQuery>,
@@ -516,6 +785,21 @@ async fn record_control(
 }
 
 /// GET /api/jt1078/record/start — 终端录像开始
+#[utoipa::path(
+    get,
+    path = "/api/jt1078/record/start",
+    tag = "jt1078",
+    operation_id = "record_start",
+    summary = "终端录像开始（0x8801，拍摄命令=1）",
+    params(
+        IdQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn record_start(
     State(state): State<AppState>,
     Query(q): Query<IdQuery>,
@@ -524,6 +808,21 @@ pub async fn record_start(
 }
 
 /// GET /api/jt1078/record/stop — 终端录像停止
+#[utoipa::path(
+    get,
+    path = "/api/jt1078/record/stop",
+    tag = "jt1078",
+    operation_id = "record_stop",
+    summary = "终端录像停止（0x8801，拍摄命令=0）",
+    params(
+        IdQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn record_stop(
     State(state): State<AppState>,
     Query(q): Query<IdQuery>,
@@ -532,6 +831,21 @@ pub async fn record_stop(
 }
 
 /// 抓拍（JT808 0x8801 拍照指令，等待终端通用应答）
+#[utoipa::path(
+    get,
+    path = "/api/jt1078/snap",
+    tag = "jt1078",
+    operation_id = "snap",
+    summary = "抓拍（0x8801 拍照指令）",
+    params(
+        IdQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn snap(
     State(state): State<AppState>,
     Query(q): Query<IdQuery>,
@@ -555,7 +869,7 @@ pub async fn snap(
 }
 
 /// 临时位置跟踪查询参数（JT/T808 0x8202）
-#[derive(Deserialize, Default, Debug)]
+#[derive(Deserialize, Default, Debug, utoipa::IntoParams)]
 pub struct TempPositionTrackingQuery {
     pub phone: Option<String>,
     /// 上报时间间隔（秒），默认 30
@@ -566,6 +880,21 @@ pub struct TempPositionTrackingQuery {
 }
 
 /// 临时位置跟踪控制 —— JT/T808 0x8202（时间间隔 + 有效期），等待终端通用应答
+#[utoipa::path(
+    get,
+    path = "/api/jt1078/control/temp-position-tracking",
+    tag = "jt1078",
+    operation_id = "temp_position_tracking",
+    summary = "临时位置跟踪控制（0x8202）",
+    params(
+        TempPositionTrackingQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn temp_position_tracking(
     State(state): State<AppState>,
     Query(q): Query<TempPositionTrackingQuery>,
@@ -597,6 +926,19 @@ pub async fn temp_position_tracking(
 }
 
 /// 人工确认报警消息 —— JT/T808 0x8203（报警流水号 + 确认类型位标志）
+#[utoipa::path(
+    post,
+    path = "/api/jt1078/confirmation-alarm-message",
+    tag = "jt1078",
+    operation_id = "confirmation_alarm",
+    summary = "人工确认报警消息（0x8203）",
+    request_body = serde_json::Value,
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn confirmation_alarm(
     State(state): State<AppState>,
     Json(b): Json<serde_json::Value>,
@@ -644,7 +986,7 @@ pub async fn confirmation_alarm(
 }
 
 /// 录像下载查询参数（JT/T1078 0x9205 文件上传指令）
-#[derive(Deserialize, Default, Debug)]
+#[derive(Deserialize, Default, Debug, utoipa::IntoParams)]
 pub struct PlaybackDownloadQuery {
     pub phone: Option<String>,
     pub channel_id: Option<i32>,
@@ -655,6 +997,21 @@ pub struct PlaybackDownloadQuery {
 }
 
 /// 录像下载 —— JT/T1078 0x9205：请求终端把指定时间段的音视频资源上传到平台
+#[utoipa::path(
+    get,
+    path = "/api/jt1078/playback/download",
+    tag = "jt1078",
+    operation_id = "playback_download",
+    summary = "录像下载（0x9205 文件上传指令）",
+    params(
+        PlaybackDownloadQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn playback_download(
     State(state): State<AppState>,
     Query(q): Query<PlaybackDownloadQuery>,
@@ -699,6 +1056,21 @@ pub async fn playback_download(
 }
 
 /// 删除已上传的媒体项（JT808 0x8803 delete_flag=1）
+#[utoipa::path(
+    get,
+    path = "/api/jt1078/media/upload/one/delete",
+    tag = "jt1078",
+    operation_id = "media_upload_delete",
+    summary = "删除已上传的媒体项（0x8803）",
+    params(
+        IdQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn media_upload_delete(
     State(state): State<AppState>,
     Query(q): Query<IdQuery>,
@@ -724,6 +1096,21 @@ pub async fn media_upload_delete(
 }
 
 /// 终端通道删除（落库删除 gb_jt_channel 记录）
+#[utoipa::path(
+    delete,
+    path = "/api/jt1078/terminal/channel/delete/{id}",
+    tag = "jt1078",
+    operation_id = "terminal_channel_delete",
+    summary = "删除终端通道（路径参数）",
+    params(
+        ("id" = String, Path, description = "通道 id（gb_jt_channel.id）"),
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn terminal_channel_delete(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -747,6 +1134,21 @@ pub async fn terminal_channel_delete(
 /// 修正：此前不查库，只回一句"请使用主 handler ..."的提示 ——
 /// 路由已经指向这里，等于该端点**永远拿不到数据**（提示里指向的
 /// "主 handler" 就是它自己）。
+#[utoipa::path(
+    get,
+    path = "/api/jt1078/terminal/channel/one/{id}",
+    tag = "jt1078",
+    operation_id = "terminal_channel_one",
+    summary = "终端通道详情（路径参数）",
+    params(
+        ("id" = String, Path, description = "通道 id（gb_jt_channel.id）"),
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn terminal_channel_one(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -825,7 +1227,7 @@ mod field_alias_tests {
 // 终端通道接口用查询参数（`?id=`）而不是路径参数
 // ============================================================================
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, utoipa::IntoParams)]
 pub struct TerminalChannelIdQuery {
     #[serde(
         alias = "channelId",
@@ -836,6 +1238,21 @@ pub struct TerminalChannelIdQuery {
 }
 
 /// `GET /api/jt1078/terminal/channel/one?id=`
+#[utoipa::path(
+    get,
+    path = "/api/jt1078/terminal/channel/one",
+    tag = "jt1078",
+    operation_id = "terminal_channel_one_query",
+    summary = "终端通道详情（查询参数入口）",
+    params(
+        TerminalChannelIdQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn terminal_channel_one_query(
     State(state): State<AppState>,
     axum::extract::Query(q): axum::extract::Query<TerminalChannelIdQuery>,
@@ -847,6 +1264,21 @@ pub async fn terminal_channel_one_query(
 }
 
 /// `DELETE /api/jt1078/terminal/channel/delete?id=`
+#[utoipa::path(
+    delete,
+    path = "/api/jt1078/terminal/channel/delete",
+    tag = "jt1078",
+    operation_id = "terminal_channel_delete_query",
+    summary = "删除终端通道（查询参数入口）",
+    params(
+        TerminalChannelIdQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn terminal_channel_delete_query(
     State(state): State<AppState>,
     axum::extract::Query(q): axum::extract::Query<TerminalChannelIdQuery>,

@@ -43,18 +43,22 @@ use crate::AppState;
 ///
 /// 基础契约只接受 `channelId`（**通道的数据库主键**）。为了便于直接按国标编号调试，
 /// 这里额外接受 `deviceId`（设备国标编号）与 `gbChannelId`（通道国标编号）。
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize, Default, utoipa::IntoParams)]
 pub struct LatestQuery {
+    /// 通道数据库主键（与 `deviceId` 二选一）
     #[serde(alias = "channelId", default, deserialize_with = "crate::serde_flex::de_opt_i64")]
+    #[param(example = 1)]
     pub channel_id: Option<i64>,
+    /// 设备国标编号
     #[serde(alias = "deviceId")]
     pub device_id: Option<String>,
+    /// 通道国标编号（配合 `deviceId` 使用）
     #[serde(alias = "gbChannelId")]
     pub gb_channel_id: Option<String>,
 }
 
 /// `/api/position/history/:device_id` 查询参数。
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize, Default, utoipa::IntoParams)]
 pub struct HistoryQuery {
     /// 通道数据库主键。给了它就按通道查 `gb_device_mobile_position`。
     #[serde(alias = "channelId", default, deserialize_with = "crate::serde_flex::de_opt_i64")]
@@ -71,7 +75,7 @@ pub struct HistoryQuery {
 }
 
 /// `/api/position/subscribe/:device_id` 查询参数。
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize, Default, utoipa::IntoParams)]
 pub struct SubscribeQuery {
     /// 订阅有效期（秒），对应 `expires` 参数。
     pub expires: Option<i32>,
@@ -119,6 +123,20 @@ async fn resolve_channel(
 ///
 /// 返回该通道**最新一条**移动位置。三种入参（优先级从高到低）：
 /// `channelId`（数据库主键）/ `deviceId`+`gbChannelId` / 仅 `deviceId`。
+#[utoipa::path(
+    get,
+    path = "/api/position/latest",
+    tag = "alarm",
+    operation_id = "position_latest",
+    params(LatestQuery),
+    responses(
+        (status = 200, description = "最新一条移动位置；查不到时 data=null",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{"deviceId":"34020000001320000001","channelId":"34020000001310000001","longitude":120.5,"latitude":30.5}})),
+        (status = 400, description = "缺少 channelId 或 deviceId"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn position_latest(
     State(state): State<AppState>,
     Query(q): Query<LatestQuery>,
@@ -149,6 +167,22 @@ pub async fn position_latest(
 ///   `gb_device_mobile_position`（每通道保留一条最新位置）；
 /// * 未传 → 保持本平台原有行为：按设备国标编号查 `gb_position_history`
 ///   （电子地图轨迹用的宽表），避免破坏既有调用方。
+#[utoipa::path(
+    get,
+    path = "/api/position/history/{device_id}",
+    tag = "alarm",
+    operation_id = "position_history",
+    params(
+        ("device_id" = String, Path, description = "设备国标编号"),
+        HistoryQuery,
+    ),
+    responses(
+        (status = 200, description = "位置历史分页结果 `{list,total,page,count}` 或宽表 `{list,total,source}`",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{"deviceId":"34020000001320000001","channelId":"34020000001310000001","total":2,"page":1,"count":100,"list":[]}})),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn position_history(
     State(state): State<AppState>,
     Path(device_id): Path<String>,
@@ -227,6 +261,20 @@ fn parse_position_xml(xml: &str) -> Option<pos_db::MobilePositionInsert> {
 /// 实时向设备要一次位置（SIP MESSAGE `<Query><CmdType>MobilePosition</CmdType>`），
 /// 等待响应并**落库**；设备离线或超时时回退到库里最新一条（附 `source` 说明），
 /// 而不是返回一个空响应让调用方猜。
+#[utoipa::path(
+    get,
+    path = "/api/position/realtime/{device_id}",
+    tag = "alarm",
+    operation_id = "position_realtime",
+    params(("device_id" = String, Path, description = "设备国标编号")),
+    responses(
+        (status = 200, description = "实时位置；`source=live` 表示刚拿到，`source=cache` 表示回退库内最新一条",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{"deviceId":"34020000001320000001","source":"live","position":{}}})),
+        (status = 400, description = "缺少 deviceId"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn position_realtime(
     State(state): State<AppState>,
     Path(device_id): Path<String>,
@@ -295,6 +343,24 @@ pub async fn position_realtime(
 /// 语义：把 `subscribeCycleForMobilePosition` / `mobilePositionSubmissionInterval`
 /// 写进设备表，由订阅循环周期下发 SUBSCRIBE。这里额外**立即下发一次** SUBSCRIBE，
 /// 让用户点完马上生效（否则要等到下一个订阅周期）。
+#[utoipa::path(
+    get,
+    path = "/api/position/subscribe/{device_id}",
+    tag = "alarm",
+    operation_id = "position_subscribe",
+    params(
+        ("device_id" = String, Path, description = "设备国标编号"),
+        SubscribeQuery,
+    ),
+    responses(
+        (status = 200, description = "订阅设置结果 `{deviceId,expires,interval,subscribeSent,message}`",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{"deviceId":"34020000001320000001","expires":3600,"interval":5,"subscribeSent":true,"message":null}})),
+        (status = 400, description = "参数异常（缺 deviceId / 非正整数）"),
+        (status = 404, description = "设备不存在"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn position_subscribe(
     State(state): State<AppState>,
     Path(device_id): Path<String>,

@@ -1,4 +1,4 @@
-//! `region` 域的 受保护 OpenAPI 路由注册。
+//! `live` 域的 公开 OpenAPI 路由注册。
 //!
 //! 逐条 `routes!()` 注册（一次只能放一条）；迁移说明与三个坑见
 //! `src/openapi/routes_region.rs` 文件头。
@@ -12,9 +12,10 @@ use super::{DocumentedRoutes, RoutesAccumulator};
 
 pub fn routes() -> DocumentedRoutes {
     let mut acc = RoutesAccumulator::default();
-    acc.add(routes!(crate::handlers::region::region_one));
-    acc.add(routes!(crate::handlers::region::region_page_list));
-    acc.add(routes!(crate::handlers::region::region_sync));
+    acc.add(routes!(crate::handlers::play::play_share_create));
+    acc.add(routes!(crate::handlers::play::play_share_info));
+    acc.add(routes!(crate::handlers::play::play_share_start));
+    acc.add(routes!(crate::handlers::talk::talk_audio_ws));
 
     acc.finish()
 }

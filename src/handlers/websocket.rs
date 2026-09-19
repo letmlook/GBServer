@@ -76,6 +76,22 @@ impl WsState {
 /// Phase 7.6: Uses `RawQuery` (string slice) instead of `Query<WsQuery>`
 /// so plain HTTP probes without any query string return 401 (not 400
 /// from Axum's Query extractor).
+#[utoipa::path(
+    get,
+    path = "/api/ws",
+    tag = "system",
+    operation_id = "websocket_events",
+    summary = "设备/告警实时事件推送（WebSocket 升级）",
+    description = "浏览器 WebSocket 无法设置自定义请求头，因此 JWT 走查询参数 `?token=`；\n也可以用 `Authorization: Bearer`。可用 `events=` 过滤事件类型。",
+    params(
+        ("token" = Option<String>, Query, description = "JWT（浏览器场景必填）"),
+        ("events" = Option<String>, Query, description = "逗号分隔的事件过滤，如 alarm,device"),
+    ),
+    responses(
+        (status = 101, description = "协议升级为 WebSocket"),
+        (status = 401, description = "缺少或无效的 JWT"),
+    ),
+)]
 pub async fn ws_handler(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,

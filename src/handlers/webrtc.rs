@@ -1,23 +1,44 @@
 use axum::{extract::State, Json};
 use serde::Deserialize;
+use utoipa::ToSchema;
 
 use crate::response::ApiResult;
 use crate::AppState;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct WebRtcOfferRequest {
+    /// ZLM 应用名（缺省 `rtp`）
     pub app: Option<String>,
+    /// ZLM 流名（缺省由 `deviceId_channelId` 拼出）
     pub stream: Option<String>,
+    /// 拉流/推流类型：`play`（默认）/ `push`
     #[serde(rename = "type")]
     #[serde(alias = "offerType")]
     pub offer_type: Option<String>,
+    /// SDP offer 文本
     pub sdp: Option<String>,
+    /// 设备国标 ID（与 channelId 一起用于拼 stream）
     #[serde(alias = "deviceId")]
     pub device_id: Option<String>,
+    /// 通道国标 ID
     #[serde(alias = "channelId")]
     pub channel_id: Option<String>,
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/play/webrtc",
+    tag = "live",
+    operation_id = "webrtc_play",
+    request_body = WebRtcOfferRequest,
+    responses(
+        (status = 200, description = "WebRTC 协商成功（返回 SDP answer）",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{"sdp":"v=0\\r\\n...","type":"answer","app":"rtp","stream":"34020000001320000001_34020000001310000001","id":"xxx"}})),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn webrtc_play(
     State(state): State<AppState>,
     Json(req): Json<WebRtcOfferRequest>,

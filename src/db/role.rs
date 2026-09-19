@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
+use utoipa::ToSchema;
 
 use super::Pool;
 
@@ -10,7 +11,7 @@ use super::Pool;
 /// 仅**序列化**方向改为 camelCase（前端 `Role` 接口用 `createTime`/`updateTime`，
 /// `/api/role/all` 此前返回 `create_time`，列表里的创建/更新时间列是空的）。
 /// 反序列化方向保持 snake_case 主名 + camelCase alias，不影响请求体兼容性。
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow, ToSchema)]
 #[serde(rename_all(serialize = "camelCase"))]
 pub struct Role {
     pub id: i32,

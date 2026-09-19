@@ -5,35 +5,68 @@ use axum::{
     extract::{Path, Query, State},
     Json,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use utoipa::{IntoParams, ToSchema};
 
 use crate::db;
 use crate::error::{AppError, ErrorCode};
 use crate::response::ApiResult;
 use crate::AppState;
 
-#[derive(Deserialize, Default)]
+#[derive(Deserialize, Default, IntoParams)]
 pub struct CollectQuery {
+    /// 云端录像主键（`gb_cloud_record.id`）
+    #[serde(default)]
     pub id: Option<i64>,
 }
 
-#[derive(Deserialize, Default)]
+#[derive(Deserialize, Default, IntoParams)]
 pub struct ListUrlQuery {
+    /// 页码，从 1 开始
     #[serde(default)]
     pub page: Option<u32>,
+    /// 每页条数
     #[serde(default)]
     pub count: Option<u32>,
-    #[serde(default)]
-    #[serde(alias = "deviceId")]
+    /// 按设备国标编号过滤
+    #[serde(default, alias = "deviceId")]
     pub device_id: Option<String>,
-    #[serde(default)]
-    #[serde(alias = "channelId")]
+    /// 按通道国标编号过滤
+    #[serde(default, alias = "channelId")]
     pub channel_id: Option<String>,
 }
 
-#[derive(Deserialize, Default)]
+#[derive(Deserialize, Default, IntoParams)]
 pub struct ZipQuery {
-    pub ids: Option<String>, // comma-separated CloudRecord ids
+    /// 逗号分隔的云端录像 ID 列表
+    #[serde(default)]
+    pub ids: Option<String>,
+}
+
+/// `collect_delete` 响应：`{id, collect}` 表示已清空收藏标志
+#[derive(Serialize, ToSchema)]
+pub struct CollectDeleteResp {
+    pub id: i64,
+    pub collect: bool,
+}
+
+/// `list_url` 响应：单条录像的 URL 集合（`{record_id, http_path, https_path, file_path}`）
+#[derive(Serialize, ToSchema)]
+pub struct RecordUrl {
+    pub record_id: String,
+    pub http_path: String,
+    pub https_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file_path: Option<String>,
+}
+
+/// `download_zip` / `zip` 响应：打包任务的执行结果
+#[derive(Serialize, ToSchema)]
+pub struct ZipTaskResp {
+    /// 实际打包的记录数
+    pub count: u32,
+    /// ZIP 文件的相对路径，前端用 `/downloads/<path>` 取
+    pub path: String,
 }
 
 /// GET /api/cloud/record/collect/delete?id=<i64>
@@ -43,6 +76,17 @@ pub struct ZipQuery {
 /// （`/api/cloud/record/collect/add`），而这里此前只把
 /// `gb_cloud_record.collect` 标志清掉（另一套收藏语义），
 /// 两个存储互不相干（第四十九轮实测发现）。
+#[utoipa::path(
+    get,
+    path = "/api/cloud/record/collect/delete",
+    tag = "cloud-record",
+    operation_id = "cloud_record_collect_delete",
+    params(CollectQuery),
+    responses(
+        (status = 200, description = "已清空收藏标志", body = ApiResult<CollectDeleteResp>),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn collect_delete(
     State(state): State<AppState>,
     Query(q): Query<CollectQuery>,
@@ -75,7 +119,30 @@ pub async fn collect_delete(
     Json(ApiResult::success(serde_json::json!({"id": id, "collect": false})))
 }
 
+/// `list_url` 响应：分页结果 `{list,total,page,count}`，
+/// 每条 list 元素为 `RecordUrl`（前端下载入口）
+#[derive(Serialize, ToSchema)]
+pub struct ListUrlResp {
+    pub list: Vec<RecordUrl>,
+    pub total: i64,
+    pub page: u32,
+    pub count: u32,
+}
+
 /// GET /api/cloud/record/list-url?device_id=&channel_id=
+#[utoipa::path(
+    get,
+    path = "/api/cloud/record/list-url",
+    tag = "cloud-record",
+    operation_id = "cloud_record_list_url",
+    params(ListUrlQuery),
+    responses(
+        (status = 200, description = "分页录像 URL 列表",
+         body = ApiResult<ListUrlResp>,
+         example = json!({"code":0,"msg":"成功","data":{"list":[],"total":0,"page":1,"count":15}})),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn list_url(
     State(state): State<AppState>,
     Query(q): Query<ListUrlQuery>,
@@ -340,6 +407,19 @@ pub(crate) async fn build_cloud_record_zip(
 /// 创建任何任务、也没有对应的查询端点。现改为**同步真实打包**：
 /// 录像多为 MP4/PS 已压缩格式，使用 ZIP stored 方式（见 `crate::archive`），
 /// 无需引入压缩依赖，速度也更快。
+#[utoipa::path(
+    get,
+    path = "/api/cloud/record/download/zip",
+    tag = "cloud-record",
+    operation_id = "cloud_record_download_zip",
+    params(ZipQuery),
+    responses(
+        (status = 200, description = "打包结果 `{count, path}`",
+         body = ApiResult<ZipTaskResp>,
+         example = json!({"code":0,"msg":"成功","data":{"count":0,"path":""}})),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn download_zip(
     State(state): State<AppState>,
     Query(q): Query<ZipQuery>,
@@ -391,6 +471,17 @@ pub async fn download_zip(
 }
 
 /// GET /api/cloud/record/zip?ids=1,2,3 — alias of download/zip
+#[utoipa::path(
+    get,
+    path = "/api/cloud/record/zip",
+    tag = "cloud-record",
+    operation_id = "cloud_record_zip",
+    params(ZipQuery),
+    responses(
+        (status = 200, description = "打包结果（与 download/zip 同形）", body = ApiResult<ZipTaskResp>),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn zip(
     State(state): State<AppState>,
     Query(q): Query<ZipQuery>,
@@ -501,6 +592,27 @@ pub(crate) async fn proxy_zlm_file(
         .map_err(|e| AppError::business(ErrorCode::Error500, format!("构造响应失败: {e}")))?)
 }
 
+/// GET /api/cloud/record/download/:id — 下载/播放单条录像文件
+///
+/// 支持 HTTP Range，浏览器 `<video>` / `<a download>` 直接可用。
+///
+/// 返回的是原始二进制流（`application/octet-stream`），不进 `ApiResult` 信封，
+/// 因此 Swagger 里**不声明 body schema** —— 调用方应直接用浏览器/下载工具打开。
+#[utoipa::path(
+    get,
+    path = "/api/cloud/record/download/{id}",
+    tag = "cloud-record",
+    operation_id = "cloud_record_download_one",
+    params(
+        ("id" = i64, Path, description = "云端录像主键"),
+    ),
+    responses(
+        (status = 200, description = "录像文件二进制流（支持 HTTP Range）",
+         content_type = "application/octet-stream"),
+        (status = 404, description = "录像文件不存在"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn download_file(
     State(state): State<AppState>,
     Path(id): Path<i64>,

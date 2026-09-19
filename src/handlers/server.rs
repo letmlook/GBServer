@@ -34,6 +34,24 @@ use {tokio::time::sleep, std::time::Duration};
 use {std::fs::File, std::io::Read};
 use std::process::Command;
 
+#[utoipa::path(
+    get,
+    post,
+    path = "/zlm/{media_server_id}/{*path}",
+    tag = "system",
+    operation_id = "server_zlm_proxy",
+    summary = "ZLM 反向代理（/zlm 前缀，需鉴权）",
+    params(
+        ("media_server_id" = String, Path, description = "媒体节点 ID"),
+        ("path" = String, Path, description = "转发到 ZLM 的子路径"),
+    ),
+    request_body(content = String, content_type = "application/octet-stream"),
+    responses(
+        (status = 200, description = "ZLM 原样响应（JSON/二进制）", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn zlm_proxy(
     method: Method,
     State(state): State<AppState>,
@@ -710,12 +728,36 @@ fn detect_outbound_ip_cached() -> Option<IpAddr> {
 }
 
 /// GET /api/server/media_server/list
+#[utoipa::path(
+    get,
+    path = "/api/server/media_server/list",
+    tag = "system",
+    operation_id = "server_media_server_list",
+    summary = "媒体节点列表",
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn media_server_list(State(state): State<AppState>) -> Result<Json<ApiResult<Vec<MediaServer>>>, AppError> {
     let list = list_media_servers(&state.pool).await?;
     Ok(Json(ApiResult::success(list)))
 }
 
 /// GET /api/server/media_server/online/list — 与 list 同结构，可过滤在线（当前返回全部）
+#[utoipa::path(
+    get,
+    path = "/api/server/media_server/online/list",
+    tag = "system",
+    operation_id = "server_media_server_online_list",
+    summary = "在线媒体节点列表",
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn media_server_online_list(
     State(state): State<AppState>,
 ) -> Result<Json<ApiResult<Vec<MediaServer>>>, AppError> {
@@ -726,6 +768,21 @@ pub async fn media_server_online_list(
 }
 
 /// GET /api/server/media_server/one/:id
+#[utoipa::path(
+    get,
+    path = "/api/server/media_server/one/{id}",
+    tag = "system",
+    operation_id = "server_media_server_one",
+    summary = "媒体节点详情",
+    params(
+        ("id" = String, Path, description = "媒体节点 ID"),
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn media_server_one(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -747,6 +804,18 @@ pub async fn media_server_one(
 ///                      兜底取 SIP device_id 末 8 位
 ///
 /// 同时保留原 `enabled/tcpPort/realm/...` 字段供其它页面使用。
+#[utoipa::path(
+    get,
+    path = "/api/server/system/configInfo",
+    tag = "system",
+    operation_id = "server_system_config_info",
+    summary = "系统配置信息（SIP / ZLM / 数据库 / addOn）",
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn system_config_info(State(state): State<AppState>) -> Json<ApiResult<serde_json::Value>> {
     let cfg = &state.config;
 
@@ -880,6 +949,18 @@ fn push_truncated<T>(dq: &mut VecDeque<T>, item: T) {
 /// - `disk`：`[{path, free, use}]`，单位 GB
 /// - `net`：`[{time, out, in}]`，单位 Mbps（列顺序必须与前端 columns 一致）
 /// - `netTotal`：`number`，是 `out`/`in` 峰值向上取整（前端直接赋给 yAxis.max）
+#[utoipa::path(
+    get,
+    path = "/api/server/system/info",
+    tag = "system",
+    operation_id = "server_system_info",
+    summary = "控制台系统信息（CPU/内存/磁盘/网络/负载/配置）",
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn system_info(State(state): State<AppState>) -> Json<ApiResult<serde_json::Value>> {
     let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
 
@@ -1126,6 +1207,18 @@ fn build_time_string() -> String {
 /// 保留此空数组返回是为了：
 ///   1. 与前端 `MapComponent.vue` 期望的 array schema 对齐
 ///   2. 未来 [map] 配置扩展（多瓦片源、代理）时只改 handler 即可
+#[utoipa::path(
+    get,
+    path = "/api/server/map/config",
+    tag = "system",
+    operation_id = "server_map_config",
+    summary = "地图配置（当前为空数组）",
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn map_config(State(_state): State<AppState>) -> Json<ApiResult<Vec<serde_json::Value>>> {
     Json(ApiResult::success(Vec::new()))
 }
@@ -1136,6 +1229,18 @@ pub async fn map_config(State(_state): State<AppState>) -> Json<ApiResult<Vec<se
 /// `v-for="(value, key) in systemInfoList"` in `systemInfo.vue` — the outer
 /// object maps a category name (e.g. "服务器") to a sub-object of
 /// `key: value` pairs the page renders as a description list.
+#[utoipa::path(
+    get,
+    path = "/api/server/info",
+    tag = "system",
+    operation_id = "server_info",
+    summary = "服务器信息（启动时间 / 运行时长 / 版本）",
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn server_info(State(_state): State<AppState>) -> Json<ApiResult<serde_json::Value>> {
     // Persist a simple start time reference via a static OnceLock
     use std::sync::OnceLock;
@@ -1166,6 +1271,18 @@ pub async fn server_info(State(_state): State<AppState>) -> Json<ApiResult<serde
 ///     push:    {total, online},   // 推流总数 / 在线推流数
 ///     proxy:   {total, online},   // 拉流代理总数 / 在线的拉流代理
 ///   }
+#[utoipa::path(
+    get,
+    path = "/api/server/resource/info",
+    tag = "system",
+    operation_id = "server_resource_info",
+    summary = "资源统计（设备 / 通道 / 推流 / 拉流代理）",
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn resource_info(State(state): State<AppState>) -> Json<ApiResult<serde_json::Value>> {
     // Device / channel counts from DB
     let total_devices = db::count_devices(&state.pool, None, None).await.unwrap_or(0);
@@ -1202,7 +1319,7 @@ pub async fn resource_info(State(state): State<AppState>) -> Json<ApiResult<serd
 ///   serde 静默丢弃，于是无论点哪个节点都在探测兜底的 `127.0.0.1:80`（secret 为空）——
 ///   本机恰好有 ZLM 时还会把那个错误节点的结果当成被检测节点的结果。
 /// * `?ip=&port=&secret=&type=` —— 早期实现的签名，新增节点时用于"先探测再保存"。
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct MediaServerCheckQuery {
     pub id: Option<String>,
     pub ip: Option<String>,
@@ -1213,6 +1330,19 @@ pub struct MediaServerCheckQuery {
     pub type_: Option<String>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/server/media_server/check",
+    tag = "system",
+    operation_id = "server_media_server_check",
+    summary = "探测媒体节点（ZLM getServerConfig）",
+    params(MediaServerCheckQuery),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn media_server_check(
     State(state): State<AppState>,
     Query(q): Query<MediaServerCheckQuery>,
@@ -1329,12 +1459,25 @@ pub async fn media_server_check(
 }
 
 /// GET /api/server/media_server/record/check
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct MediaServerRecordCheckQuery {
     pub ip: Option<String>,
     pub port: Option<i32>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/server/media_server/record/check",
+    tag = "system",
+    operation_id = "server_media_server_record_check",
+    summary = "媒体节点录像辅助端口检测",
+    params(MediaServerRecordCheckQuery),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn media_server_record_check(
     State(state): State<AppState>,
     Query(q): Query<MediaServerRecordCheckQuery>,
@@ -1353,7 +1496,7 @@ pub async fn media_server_record_check(
 }
 
 /// POST /api/server/media_server/save - 添加或更新媒体服务器
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, serde::Serialize, utoipa::ToSchema)]
 pub struct MediaServerSaveBody {
     pub id: Option<String>,
     pub ip: Option<String>,
@@ -1403,6 +1546,19 @@ pub struct MediaServerSaveBody {
     pub enabled: Option<bool>,
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/server/media_server/save",
+    tag = "system",
+    operation_id = "server_media_server_save",
+    summary = "新增或更新媒体节点",
+    request_body = MediaServerSaveBody,
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn media_server_save(
     State(state): State<AppState>,
     Json(body): Json<MediaServerSaveBody>,
@@ -1575,11 +1731,24 @@ pub async fn media_server_save(
 }
 
 /// DELETE /api/server/media_server/delete
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct MediaServerDeleteQuery {
     pub id: Option<String>,
 }
 
+#[utoipa::path(
+    delete,
+    path = "/api/server/media_server/delete",
+    tag = "system",
+    operation_id = "server_media_server_delete",
+    summary = "删除媒体节点",
+    params(MediaServerDeleteQuery),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn media_server_delete(
     State(state): State<AppState>,
     Query(q): Query<MediaServerDeleteQuery>,
@@ -1602,13 +1771,26 @@ pub async fn media_server_delete(
 
 /// GET /api/server/media_server/media_info
 #[allow(non_snake_case)]
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct MediaInfoQuery {
     pub app: Option<String>,
     pub stream: Option<String>,
     pub mediaServerId: Option<String>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/server/media_server/media_info",
+    tag = "system",
+    operation_id = "server_media_server_media_info",
+    summary = "查询 ZLM 媒体流信息（getMediaInfo）",
+    params(MediaInfoQuery),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn media_server_media_info(
     State(state): State<AppState>,
     Query(q): Query<MediaInfoQuery>,
@@ -1655,7 +1837,7 @@ pub async fn media_server_media_info(
 /// - `proxy`   : 当前在线的拉流代理数（同上）
 /// - `gbReceive`: 国标收流数（从 ZLM getServerStats 中取常见键，找不到为 0）
 /// - `gbSend`   : 国标推流数（同上）
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct MediaServerLoadQuery {
     /// 只看某个节点。早期实现的 `getMediaLoad()` 无入参（返回全部节点），
     /// 但本平台控制台是**按节点逐张卡片**取值的，不给 id 就只能拿到整个数组，
@@ -1663,6 +1845,19 @@ pub struct MediaServerLoadQuery {
     pub id: Option<String>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/server/media_server/load",
+    tag = "system",
+    operation_id = "server_media_server_load",
+    summary = "媒体节点负载（推流 / 代理 / 国标收流 / 国标推流）",
+    params(MediaServerLoadQuery),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn media_server_load(
     State(state): State<AppState>,
     Query(q): Query<MediaServerLoadQuery>,
@@ -1720,6 +1915,18 @@ pub async fn media_server_load(
 }
 
 /// GET /api/server/map/model-icon/list
+#[utoipa::path(
+    get,
+    path = "/api/server/map/model-icon/list",
+    tag = "system",
+    operation_id = "server_map_model_icon_list",
+    summary = "地图设备模型图标列表",
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn map_model_icon_list() -> Json<ApiResult<Vec<serde_json::Value>>> {
     Json(ApiResult::success(vec![
         serde_json::json!({
@@ -1744,6 +1951,18 @@ pub async fn map_model_icon_list() -> Json<ApiResult<Vec<serde_json::Value>>> {
 /// 通过 `StreamState` trait 屏蔽表差异，返回统一 JSON。
 ///
 /// GET /api/server/stream/all
+#[utoipa::path(
+    get,
+    path = "/api/server/stream/all",
+    tag = "system",
+    operation_id = "server_stream_all",
+    summary = "统一流视图（推流 / 拉流代理 / 国标会话 / 级联推流）",
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn list_all_streams(
     State(state): State<AppState>,
 ) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
@@ -2246,6 +2465,18 @@ mod log_export_contract_tests {
 /// 直接 `exit` 会让客户端拿到连接被重置而不是"已受理"。
 /// 用一个短延时任务退出，业务数据（SQLite WAL / Redis）在进程退出时由
 /// SQLx/连接池正常收尾。
+#[utoipa::path(
+    get,
+    path = "/api/server/shutdown",
+    tag = "system",
+    operation_id = "server_shutdown",
+    summary = "关闭服务（1 秒后退出进程）",
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn server_shutdown() -> Json<ApiResult<serde_json::Value>> {
     tracing::warn!("收到 /api/server/shutdown：1 秒后退出进程");
     tokio::spawn(async {

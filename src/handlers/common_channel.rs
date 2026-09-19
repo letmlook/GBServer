@@ -134,7 +134,7 @@ pub fn front_end_command_body(cmd_upper: &str) -> Option<(String, String)> {
 }
 
 // ========== 查询参数 ==========
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct CommonChannelQuery {
     pub page: Option<u32>,
     pub count: Option<u32>,
@@ -153,7 +153,7 @@ pub struct CommonChannelQuery {
     pub id: Option<i64>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct ChannelIdQuery {
     /// 前端（含 legacy）发的都是 `id`；
     /// `channel_id` / `channelId` / `id` 三个名字都接受。
@@ -161,7 +161,7 @@ pub struct ChannelIdQuery {
     pub channel_id: Option<i64>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct ClearChannelBody {
     pub all: Option<bool>,
     pub channel_ids: Option<Vec<i64>>,
@@ -267,6 +267,19 @@ fn ptz_type_text(ptz: Option<i32>) -> Option<String> {
 }
 
 /// GET /api/common/channel/one?id=
+#[utoipa::path(
+    get,
+    path = "/api/common/channel/one",
+    tag = "channel",
+    operation_id = "common_channel_one",
+    params(ChannelIdQuery),
+    responses(
+        (status = 200, description = "单个通道详情（字段兼容 camelCase + gb_*）；id 缺失或为 0 时 data=null",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{"id":1,"deviceId":"34020000001320000001","channelId":"34020000001310000001","name":"前门"}})),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn channel_one(
     State(state): State<AppState>,
     Query(q): Query<ChannelIdQuery>,
@@ -284,6 +297,18 @@ pub async fn channel_one(
 }
 
 /// GET /api/common/channel/industry/list
+#[utoipa::path(
+    get,
+    path = "/api/common/channel/industry/list",
+    tag = "channel",
+    operation_id = "common_channel_industry_list",
+    responses(
+        (status = 200, description = "行业列表 `[{name,code,notes}]`",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":[{"name":"危险化学品","code":"01","notes":""}]})),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn industry_list() -> Json<ApiResult<Vec<serde_json::Value>>> {
     // 返回形状是 `{name, code, notes}`；
     // 前端按 `item.name` 显示、`item.code` 提交。此前返回 `{value,label}`，
@@ -300,6 +325,18 @@ pub async fn industry_list() -> Json<ApiResult<Vec<serde_json::Value>>> {
 }
 
 /// GET /api/common/channel/type/list
+#[utoipa::path(
+    get,
+    path = "/api/common/channel/type/list",
+    tag = "channel",
+    operation_id = "common_channel_type_list",
+    responses(
+        (status = 200, description = "通道类型列表 `[{name,code}]`",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":[{"name":"摄像机","code":"1"}]})),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn type_list() -> Json<ApiResult<Vec<serde_json::Value>>> {
     // 类型项形状 = `{name, code, ownerName}`
     let types = vec![
@@ -320,6 +357,18 @@ pub async fn type_list() -> Json<ApiResult<Vec<serde_json::Value>>> {
 }
 
 /// GET /api/common/channel/network/identification/list
+#[utoipa::path(
+    get,
+    path = "/api/common/channel/network/identification/list",
+    tag = "channel",
+    operation_id = "common_channel_network_identification_list",
+    responses(
+        (status = 200, description = "网络标识列表 `[{name,code}]`",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":[{"name":"IP","code":"IP"}]})),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn network_identification_list() -> Json<ApiResult<Vec<serde_json::Value>>> {
     // 网络标识项形状 = `{name, code}`
     let list = vec![
@@ -332,7 +381,7 @@ pub async fn network_identification_list() -> Json<ApiResult<Vec<serde_json::Val
 }
 
 /// POST /api/common/channel/update
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct ChannelUpdateBody {
     pub id: Option<i64>,
     pub name: Option<String>,
@@ -358,6 +407,19 @@ pub struct ChannelUpdateBody {
     pub channel_type: Option<i32>,
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/common/channel/update",
+    tag = "channel",
+    operation_id = "common_channel_update",
+    request_body = ChannelUpdateBody,
+    responses(
+        (status = 200, description = "更新成功",
+         body = ApiResult<utoipa::TupleUnit>),
+        (status = 400, description = "缺少 id"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn channel_update(
     State(state): State<AppState>,
     Json(body): Json<ChannelUpdateBody>,
@@ -389,11 +451,24 @@ pub async fn channel_update(
 }
 
 /// POST /api/common/channel/reset
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct ChannelResetBody {
     pub id: Option<i64>,
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/common/channel/reset",
+    tag = "channel",
+    operation_id = "common_channel_reset",
+    request_body = ChannelResetBody,
+    responses(
+        (status = 200, description = "重置成功",
+         body = ApiResult<utoipa::TupleUnit>),
+        (status = 400, description = "缺少 id"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn channel_reset(
     State(state): State<AppState>,
     Json(body): Json<ChannelResetBody>,
@@ -409,7 +484,7 @@ pub async fn channel_reset(
 /// 前端（`web/src/views/channel/EditDialog.vue`）发的是 camelCase；缺 alias 时
 /// serde 静默丢字段 → `deviceId`/`channelId` 为空 → 400「必填」，
 /// **新增通道 100% 不可用**。
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct ChannelAddBody {
     #[serde(alias = "deviceId")]
     pub device_id: Option<String>,
@@ -439,6 +514,20 @@ pub struct ChannelAddBody {
     pub channel_type: Option<i32>,
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/common/channel/add",
+    tag = "channel",
+    operation_id = "common_channel_add",
+    request_body = ChannelAddBody,
+    responses(
+        (status = 200, description = "新增成功，返回新通道 `id`",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{"id":1,"message":"通道添加成功"}})),
+        (status = 400, description = "deviceId / channelId 必填"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn channel_add(
     State(state): State<AppState>,
     Json(body): Json<ChannelAddBody>,
@@ -491,6 +580,19 @@ pub async fn channel_add(
 }
 
 /// GET /api/common/channel/civilcode/list
+#[utoipa::path(
+    get,
+    path = "/api/common/channel/civilcode/list",
+    tag = "channel",
+    operation_id = "common_channel_civilcode_list",
+    params(CommonChannelQuery),
+    responses(
+        (status = 200, description = "按行政区划编码过滤的通道分页列表 `{list,total}`",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{"list":[],"total":0}})),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn civilcode_list(
     State(state): State<AppState>,
     Query(q): Query<CommonChannelQuery>,
@@ -530,6 +632,19 @@ pub async fn civilcode_list(
 }
 
 /// GET /api/common/channel/civilCode/unusual/list
+#[utoipa::path(
+    get,
+    path = "/api/common/channel/civilCode/unusual/list",
+    tag = "channel",
+    operation_id = "common_channel_unusual_civilcode_list",
+    params(CommonChannelQuery),
+    responses(
+        (status = 200, description = "civiCode 异常（空或非 6/8 位）的通道列表 `{list,total}`",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{"list":[],"total":0}})),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn unusual_civilcode_list(
     State(state): State<AppState>,
     Query(q): Query<CommonChannelQuery>,
@@ -553,6 +668,19 @@ pub async fn unusual_civilcode_list(
 }
 
 /// GET /api/common/channel/parent/unusual/list
+#[utoipa::path(
+    get,
+    path = "/api/common/channel/parent/unusual/list",
+    tag = "channel",
+    operation_id = "common_channel_unusual_parent_list",
+    params(CommonChannelQuery),
+    responses(
+        (status = 200, description = "parentId 异常的通道列表 `{list,total}`",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{"list":[],"total":0}})),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn unusual_parent_list(
     State(state): State<AppState>,
     Query(q): Query<CommonChannelQuery>,
@@ -575,6 +703,18 @@ pub async fn unusual_parent_list(
 }
 
 /// POST /api/common/channel/civilCode/unusual/clear
+#[utoipa::path(
+    post,
+    path = "/api/common/channel/civilCode/unusual/clear",
+    tag = "channel",
+    operation_id = "common_channel_clear_unusual_civilcode",
+    request_body = ClearChannelBody,
+    responses(
+        (status = 200, description = "清空成功",
+         body = ApiResult<utoipa::TupleUnit>),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn clear_unusual_civilcode(
     State(state): State<AppState>,
     Json(body): Json<ClearChannelBody>,
@@ -587,6 +727,18 @@ pub async fn clear_unusual_civilcode(
 }
 
 /// POST /api/common/channel/parent/unusual/clear
+#[utoipa::path(
+    post,
+    path = "/api/common/channel/parent/unusual/clear",
+    tag = "channel",
+    operation_id = "common_channel_clear_unusual_parent",
+    request_body = ClearChannelBody,
+    responses(
+        (status = 200, description = "清空成功",
+         body = ApiResult<utoipa::TupleUnit>),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn clear_unusual_parent(
     State(state): State<AppState>,
     Json(body): Json<ClearChannelBody>,
@@ -599,6 +751,19 @@ pub async fn clear_unusual_parent(
 }
 
 /// GET /api/common/channel/parent/list
+#[utoipa::path(
+    get,
+    path = "/api/common/channel/parent/list",
+    tag = "channel",
+    operation_id = "common_channel_parent_list",
+    params(CommonChannelQuery),
+    responses(
+        (status = 200, description = "父通道（parentId 非空）分页列表 `{list,total}`",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{"list":[],"total":0}})),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn parent_list(
     State(state): State<AppState>,
     Query(q): Query<CommonChannelQuery>,
@@ -633,12 +798,25 @@ pub async fn parent_list(
 
 // ========== 通道与区域/分组关联 ==========
 /// POST /api/common/channel/region/add
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct ChannelRegionBody {
     pub civil_code: Option<String>,
     pub channel_ids: Option<Vec<i64>>,
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/common/channel/region/add",
+    tag = "channel",
+    operation_id = "common_channel_region_add",
+    request_body = ChannelRegionBody,
+    responses(
+        (status = 200, description = "把指定通道划入 `civilCode` 区域",
+         body = ApiResult<utoipa::TupleUnit>),
+        (status = 400, description = "缺少 civilCode"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn channel_region_add(
     State(state): State<AppState>,
     Json(body): Json<ChannelRegionBody>,
@@ -656,11 +834,23 @@ pub async fn channel_region_add(
 }
 
 /// POST /api/common/channel/region/delete
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct ChannelRegionDeleteBody {
     pub channel_ids: Option<Vec<i64>>,
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/common/channel/region/delete",
+    tag = "channel",
+    operation_id = "common_channel_region_delete",
+    request_body = ChannelRegionDeleteBody,
+    responses(
+        (status = 200, description = "把指定通道从所属区域清空",
+         body = ApiResult<utoipa::TupleUnit>),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn channel_region_delete(
     State(state): State<AppState>,
     Json(body): Json<ChannelRegionDeleteBody>,
@@ -674,12 +864,25 @@ pub async fn channel_region_delete(
 }
 
 /// POST /api/common/channel/region/device/add
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct DeviceRegionBody {
     pub civil_code: Option<String>,
     pub device_ids: Option<Vec<String>>,
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/common/channel/region/device/add",
+    tag = "channel",
+    operation_id = "common_channel_device_region_add",
+    request_body = DeviceRegionBody,
+    responses(
+        (status = 200, description = "把指定设备（带通道）划入 `civilCode` 区域",
+         body = ApiResult<utoipa::TupleUnit>),
+        (status = 400, description = "缺少 civilCode"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn device_region_add(
     State(state): State<AppState>,
     Json(body): Json<DeviceRegionBody>,
@@ -697,11 +900,23 @@ pub async fn device_region_add(
 }
 
 /// POST /api/common/channel/region/device/delete
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct DeviceRegionDeleteBody {
     pub device_ids: Option<Vec<String>>,
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/common/channel/region/device/delete",
+    tag = "channel",
+    operation_id = "common_channel_device_region_delete",
+    request_body = DeviceRegionDeleteBody,
+    responses(
+        (status = 200, description = "把指定设备从所属区域清空",
+         body = ApiResult<utoipa::TupleUnit>),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn device_region_delete(
     State(state): State<AppState>,
     Json(body): Json<DeviceRegionDeleteBody>,
@@ -715,13 +930,25 @@ pub async fn device_region_delete(
 }
 
 /// POST /api/common/channel/group/add
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct ChannelGroupBody {
     pub parent_id: Option<i64>,
     pub business_group: Option<String>,
     pub channel_ids: Option<Vec<i64>>,
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/common/channel/group/add",
+    tag = "channel",
+    operation_id = "common_channel_group_add",
+    request_body = ChannelGroupBody,
+    responses(
+        (status = 200, description = "把指定通道划入 `businessGroup` 业务分组",
+         body = ApiResult<utoipa::TupleUnit>),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn channel_group_add(
     State(state): State<AppState>,
     Json(body): Json<ChannelGroupBody>,
@@ -737,11 +964,23 @@ pub async fn channel_group_add(
 }
 
 /// POST /api/common/channel/group/delete
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct ChannelGroupDeleteBody {
     pub channel_ids: Option<Vec<i64>>,
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/common/channel/group/delete",
+    tag = "channel",
+    operation_id = "common_channel_group_delete",
+    request_body = ChannelGroupDeleteBody,
+    responses(
+        (status = 200, description = "把指定通道从业务分组中清空",
+         body = ApiResult<utoipa::TupleUnit>),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn channel_group_delete(
     State(state): State<AppState>,
     Json(body): Json<ChannelGroupDeleteBody>,
@@ -755,13 +994,25 @@ pub async fn channel_group_delete(
 }
 
 /// POST /api/common/channel/group/device/add
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct DeviceGroupBody {
     pub parent_id: Option<i64>,
     pub business_group: Option<String>,
     pub device_ids: Option<Vec<String>>,
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/common/channel/group/device/add",
+    tag = "channel",
+    operation_id = "common_channel_device_group_add",
+    request_body = DeviceGroupBody,
+    responses(
+        (status = 200, description = "把指定设备（带通道）划入 `businessGroup` 业务分组",
+         body = ApiResult<utoipa::TupleUnit>),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn device_group_add(
     State(state): State<AppState>,
     Json(body): Json<DeviceGroupBody>,
@@ -777,11 +1028,23 @@ pub async fn device_group_add(
 }
 
 /// POST /api/common/channel/group/device/delete
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct DeviceGroupDeleteBody {
     pub device_ids: Option<Vec<String>>,
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/common/channel/group/device/delete",
+    tag = "channel",
+    operation_id = "common_channel_device_group_delete",
+    request_body = DeviceGroupDeleteBody,
+    responses(
+        (status = 200, description = "把指定设备从业务分组中清空",
+         body = ApiResult<utoipa::TupleUnit>),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn device_group_delete(
     State(state): State<AppState>,
     Json(body): Json<DeviceGroupDeleteBody>,
@@ -801,6 +1064,19 @@ pub async fn device_group_delete(
 /// 此前的实现是**伪造**的：拼一个 `rtsp://127.0.0.1:554/<通道主键>` 去
 /// `addStreamProxy` —— 那个地址既不是 ZLM 的流也不是设备的地址，
 /// 必然拿不到任何媒体，却会返回一组看起来正常的 playUrl/flvUrl。
+#[utoipa::path(
+    get,
+    path = "/api/common/channel/play",
+    tag = "live",
+    operation_id = "common_channel_play",
+    params(ChannelIdQuery),
+    responses(
+        (status = 200, description = "点播成功，返回 RTSP/FLV/WS-FLV/WebRTC/HLS 等播放地址",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{"app":"rtp","stream":"..._...","playUrl":"rtsp://...","flvUrl":"http://.../live.flv","webrtc":"webrtc://...","hlsAvailable":false,"deviceId":"...","channelId":"...","hasAudio":true}})),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn channel_play(
     State(state): State<AppState>,
     Query(q): Query<ChannelIdQuery>,
@@ -858,6 +1134,19 @@ pub async fn channel_play(
 /// GET /api/common/channel/play/stop?channelId=
 ///
 /// 与 `/api/play/stop` 同一条清理链路：关 ZLM 收流 + 查会话发 BYE。
+#[utoipa::path(
+    get,
+    path = "/api/common/channel/play/stop",
+    tag = "live",
+    operation_id = "common_channel_play_stop",
+    params(ChannelIdQuery),
+    responses(
+        (status = 200, description = "停止点播结果 `{code,msg,data}`",
+         body = serde_json::Value,
+         example = json!({"code":0,"msg":"success","data":{"callId":"...","stream":"..."}})),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn channel_play_stop(
     State(state): State<AppState>,
     Query(q): Query<ChannelIdQuery>,
@@ -901,7 +1190,7 @@ pub async fn channel_play_stop(
 }
 
 /// GET /api/common/channel/map/list
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct MapChannelQuery {
     pub query: Option<String>,
     pub online: Option<String>,
@@ -909,6 +1198,19 @@ pub struct MapChannelQuery {
     pub channel_type: Option<String>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/common/channel/map/list",
+    tag = "channel",
+    operation_id = "common_channel_map_list",
+    params(MapChannelQuery),
+    responses(
+        (status = 200, description = "地图打点用通道列表 `{list,total}`",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{"list":[],"total":0}})),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn map_channel_list(
     State(state): State<AppState>,
     Query(q): Query<MapChannelQuery>,
@@ -948,12 +1250,25 @@ pub async fn map_channel_list(
 }
 
 /// POST /api/common/channel/map/save-level
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct MapLevelBody {
     pub level: Option<i32>,
     pub channels: Option<Vec<i64>>,
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/common/channel/map/save-level",
+    tag = "channel",
+    operation_id = "common_channel_map_save_level",
+    request_body = MapLevelBody,
+    responses(
+        (status = 200, description = "更新地图层级",
+         body = ApiResult<utoipa::TupleUnit>),
+        (status = 500, description = "更新失败"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn map_save_level(
     State(state): State<AppState>,
     Json(body): Json<MapLevelBody>,
@@ -972,6 +1287,18 @@ pub async fn map_save_level(
 }
 
 /// POST /api/common/channel/map/reset-level
+#[utoipa::path(
+    post,
+    path = "/api/common/channel/map/reset-level",
+    tag = "channel",
+    operation_id = "common_channel_map_reset_level",
+    responses(
+        (status = 200, description = "重置所有通道的地图层级",
+         body = ApiResult<utoipa::TupleUnit>),
+        (status = 500, description = "重置失败"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn map_reset_level(
     State(state): State<AppState>,
 ) -> Result<Json<ApiResult<()>>, AppError> {
@@ -983,6 +1310,19 @@ pub async fn map_reset_level(
 
 /// GET /api/common/channel/map/thin/clear?id=
 /// 内部工具 — 按 feature 分发不同 SQL；sqlite 路径下部分参数仅在 cfg(postgres/mysql) 中使用
+#[utoipa::path(
+    get,
+    path = "/api/common/channel/map/thin/clear",
+    tag = "channel",
+    operation_id = "common_channel_map_thin_clear",
+    params(ChannelIdQuery),
+    responses(
+        (status = 200, description = "清除指定通道的稀化轨迹",
+         body = ApiResult<utoipa::TupleUnit>),
+        (status = 500, description = "清除失败"),
+    ),
+    security(("access_token" = [])),
+)]
 #[allow(unused_variables)]
 pub async fn map_thin_clear(
     State(state): State<AppState>,
@@ -1008,6 +1348,19 @@ pub async fn map_thin_clear(
 }
 
 /// GET /api/common/channel/map/thin/progress?id=
+#[utoipa::path(
+    get,
+    path = "/api/common/channel/map/thin/progress",
+    tag = "channel",
+    operation_id = "common_channel_map_thin_progress",
+    params(ChannelIdQuery),
+    responses(
+        (status = 200, description = "稀化进度 0~100",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{"progress":100}})),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn map_thin_progress(
     State(state): State<AppState>,
     Query(q): Query<ChannelIdQuery>,
@@ -1048,6 +1401,20 @@ pub async fn map_thin_progress(
 
 /// GET /api/common/channel/map/thin/save?id=
 /// Performs Douglas-Peucker thinning on the channel's position history and saves result
+#[utoipa::path(
+    get,
+    path = "/api/common/channel/map/thin/save",
+    tag = "channel",
+    operation_id = "common_channel_map_thin_save",
+    params(ChannelIdQuery),
+    responses(
+        (status = 200, description = "稀化落库成功",
+         body = ApiResult<utoipa::TupleUnit>),
+        (status = 404, description = "通道不存在"),
+        (status = 500, description = "稀化失败"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn map_thin_save(
     State(state): State<AppState>,
     Query(q): Query<ChannelIdQuery>,
@@ -1164,12 +1531,27 @@ pub async fn map_thin_save(
 }
 
 /// POST /api/common/channel/map/thin/draw
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct MapThinDrawBody {
     pub id: Option<i64>,
     pub geojson: Option<serde_json::Value>,
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/common/channel/map/thin/draw",
+    tag = "channel",
+    operation_id = "common_channel_map_thin_draw",
+    request_body = MapThinDrawBody,
+    responses(
+        (status = 200, description = "保存或回读 GeoJSON LineString（Feature）",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{"type":"Feature","geometry":{"type":"LineString","coordinates":[]},"properties":{}}})),
+        (status = 404, description = "通道不存在"),
+        (status = 500, description = "保存失败"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn map_thin_draw(
     State(state): State<AppState>,
     Json(body): Json<MapThinDrawBody>,
@@ -1304,7 +1686,7 @@ fn perpendicular_distance(point: (f64, f64), line_start: (f64, f64), line_end: (
 }
 
 /// GET /api/sy/camera/list/ids (测试接口)
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct CameraListQuery {
     // 查询串通常是 camelCase（`deviceIds`）——没有别名时参数不会绑定，
     // 而 handler 会把"没绑定"当成"没传"返回空列表，调用方看到的是
@@ -1322,6 +1704,19 @@ pub struct CameraListQuery {
 /// 修正：此前**完全不查库**，对每个入参 deviceId 直接返回
 /// `latitude: 39.9042, longitude: 116.4074, name: "Camera-<id>"` ——
 /// 天安门坐标 + 编造名称，调用方拿到的是假数据却看不出任何异常。
+#[utoipa::path(
+    get,
+    path = "/api/sy/camera/list/ids",
+    tag = "channel",
+    operation_id = "sy_camera_list_ids",
+    params(CameraListQuery),
+    responses(
+        (status = 200, description = "按设备返回真实通道 `{list,total}`",
+         body = ApiResult<serde_json::Value>,
+         example = json!({"code":0,"msg":"成功","data":{"list":[],"total":0}})),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn camera_list_ids(
     State(state): State<AppState>,
     Query(q): Query<CameraListQuery>,
@@ -1363,7 +1758,7 @@ pub async fn camera_list_ids(
 
 // ========== 前端控制 front-end (commonChannel.js 使用的 channelId 版本) ==========
 /// GET /api/common/channel/front-end/ptz
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct CommonChannelPtzQuery {
     pub channel_id: Option<i64>,
     pub command: Option<String>,
@@ -1372,6 +1767,19 @@ pub struct CommonChannelPtzQuery {
     pub zoom_speed: Option<i32>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/common/channel/front-end/ptz",
+    tag = "control",
+    operation_id = "common_channel_front_end_ptz",
+    params(CommonChannelPtzQuery),
+    responses(
+        (status = 200, description = "云台命令下发 `{code,msg}`（非 ApiResult 信封）",
+         body = serde_json::Value,
+         example = json!({"code":0,"msg":"PTZ控制命令已发送"})),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn front_end_ptz(
     State(state): State<AppState>,
     Query(q): Query<CommonChannelPtzQuery>,
@@ -1391,13 +1799,26 @@ pub async fn front_end_ptz(
 }
 
 /// GET /api/common/channel/front-end/auxiliary
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct AuxiliaryQuery {
     pub channel_id: Option<i64>,
     pub command: Option<String>,
     pub auxiliary_id: Option<i32>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/common/channel/front-end/auxiliary",
+    tag = "control",
+    operation_id = "common_channel_front_end_auxiliary",
+    params(AuxiliaryQuery),
+    responses(
+        (status = 200, description = "辅助开关命令下发",
+         body = serde_json::Value,
+         example = json!({"code":0,"msg":"辅助开关控制命令已发送"})),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn front_end_auxiliary(
     State(state): State<AppState>,
     Query(q): Query<AuxiliaryQuery>,
@@ -1414,12 +1835,25 @@ pub async fn front_end_auxiliary(
 }
 
 /// GET /api/common/channel/front-end/wiper
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct CommonWiperQuery {
     pub channel_id: Option<i64>,
     pub command: Option<String>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/common/channel/front-end/wiper",
+    tag = "control",
+    operation_id = "common_channel_front_end_wiper",
+    params(CommonWiperQuery),
+    responses(
+        (status = 200, description = "雨刷控制下发",
+         body = serde_json::Value,
+         example = json!({"code":0,"msg":"雨刷控制命令已发送"})),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn front_end_wiper(
     State(state): State<AppState>,
     Query(q): Query<CommonWiperQuery>,
@@ -1434,13 +1868,26 @@ pub async fn front_end_wiper(
 }
 
 /// GET /api/common/channel/front-end/fi/iris
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct IrisQuery {
     pub channel_id: Option<i64>,
     pub command: Option<String>,
     pub speed: Option<i32>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/common/channel/front-end/fi/iris",
+    tag = "control",
+    operation_id = "common_channel_front_end_iris",
+    params(IrisQuery),
+    responses(
+        (status = 200, description = "光圈控制下发",
+         body = serde_json::Value,
+         example = json!({"code":0,"msg":"光圈控制命令已发送"})),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn front_end_iris(
     State(state): State<AppState>,
     Query(q): Query<IrisQuery>,
@@ -1456,13 +1903,26 @@ pub async fn front_end_iris(
 }
 
 /// GET /api/common/channel/front-end/fi/focus
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct FocusQuery {
     pub channel_id: Option<i64>,
     pub command: Option<String>,
     pub speed: Option<i32>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/common/channel/front-end/fi/focus",
+    tag = "control",
+    operation_id = "common_channel_front_end_focus",
+    params(FocusQuery),
+    responses(
+        (status = 200, description = "聚焦控制下发",
+         body = serde_json::Value,
+         example = json!({"code":0,"msg":"聚焦控制命令已发送"})),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn front_end_focus(
     State(state): State<AppState>,
     Query(q): Query<FocusQuery>,
@@ -1479,11 +1939,24 @@ pub async fn front_end_focus(
 
 // ========== 预置位 ==========
 /// GET /api/common/channel/front-end/preset/query
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct PresetQueryQ {
     pub channel_id: Option<i64>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/common/channel/front-end/preset/query",
+    tag = "control",
+    operation_id = "common_channel_front_end_preset_query",
+    params(PresetQueryQ),
+    responses(
+        (status = 200, description = "预置位查询命令下发",
+         body = serde_json::Value,
+         example = json!({"code":0,"msg":"预置位查询命令已发送"})),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn front_end_preset_query(
     State(state): State<AppState>,
     Query(q): Query<PresetQueryQ>,
@@ -1497,13 +1970,26 @@ pub async fn front_end_preset_query(
 }
 
 /// GET /api/common/channel/front-end/preset/add
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct PresetAddQ {
     pub channel_id: Option<i64>,
     pub preset_id: Option<i32>,
     pub preset_name: Option<String>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/common/channel/front-end/preset/add",
+    tag = "control",
+    operation_id = "common_channel_front_end_preset_add",
+    params(PresetAddQ),
+    responses(
+        (status = 200, description = "预置位添加",
+         body = serde_json::Value,
+         example = json!({"code":0,"msg":"预置位添加成功"})),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn front_end_preset_add(
     State(state): State<AppState>,
     Query(q): Query<PresetAddQ>,
@@ -1518,12 +2004,25 @@ pub async fn front_end_preset_add(
 }
 
 /// GET /api/common/channel/front-end/preset/call
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct PresetCallQ {
     pub channel_id: Option<i64>,
     pub preset_id: Option<i32>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/common/channel/front-end/preset/call",
+    tag = "control",
+    operation_id = "common_channel_front_end_preset_call",
+    params(PresetCallQ),
+    responses(
+        (status = 200, description = "预置位调用",
+         body = serde_json::Value,
+         example = json!({"code":0,"msg":"预置位调用成功"})),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn front_end_preset_call(
     State(state): State<AppState>,
     Query(q): Query<PresetCallQ>,
@@ -1538,12 +2037,25 @@ pub async fn front_end_preset_call(
 }
 
 /// GET /api/common/channel/front-end/preset/delete
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct PresetDeleteQ {
     pub channel_id: Option<i64>,
     pub preset_id: Option<i32>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/common/channel/front-end/preset/delete",
+    tag = "control",
+    operation_id = "common_channel_front_end_preset_delete",
+    params(PresetDeleteQ),
+    responses(
+        (status = 200, description = "预置位删除",
+         body = serde_json::Value,
+         example = json!({"code":0,"msg":"预置位删除成功"})),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn front_end_preset_delete(
     State(state): State<AppState>,
     Query(q): Query<PresetDeleteQ>,
@@ -1559,13 +2071,26 @@ pub async fn front_end_preset_delete(
 
 // ========== 巡航 ==========
 /// GET /api/common/channel/front-end/tour/point/add
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct TourPointAddQ {
     pub channel_id: Option<i64>,
     pub tour_id: Option<i32>,
     pub preset_id: Option<i32>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/common/channel/front-end/tour/point/add",
+    tag = "control",
+    operation_id = "common_channel_front_end_tour_point_add",
+    params(TourPointAddQ),
+    responses(
+        (status = 200, description = "巡航点添加",
+         body = serde_json::Value,
+         example = json!({"code":0,"msg":"巡航点添加成功"})),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn front_end_tour_point_add(
     State(state): State<AppState>,
     Query(q): Query<TourPointAddQ>,
@@ -1581,13 +2106,26 @@ pub async fn front_end_tour_point_add(
 }
 
 /// GET /api/common/channel/front-end/tour/point/delete
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct TourPointDeleteQ {
     pub channel_id: Option<i64>,
     pub tour_id: Option<i32>,
     pub preset_id: Option<i32>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/common/channel/front-end/tour/point/delete",
+    tag = "control",
+    operation_id = "common_channel_front_end_tour_point_delete",
+    params(TourPointDeleteQ),
+    responses(
+        (status = 200, description = "巡航点删除",
+         body = serde_json::Value,
+         example = json!({"code":0,"msg":"巡航点删除成功"})),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn front_end_tour_point_delete(
     State(state): State<AppState>,
     Query(q): Query<TourPointDeleteQ>,
@@ -1603,7 +2141,7 @@ pub async fn front_end_tour_point_delete(
 }
 
 /// GET /api/common/channel/front-end/tour/speed
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct TourSpeedQ {
     pub channel_id: Option<i64>,
     pub tour_id: Option<i32>,
@@ -1611,6 +2149,19 @@ pub struct TourSpeedQ {
     pub speed: Option<i32>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/common/channel/front-end/tour/speed",
+    tag = "control",
+    operation_id = "common_channel_front_end_tour_speed",
+    params(TourSpeedQ),
+    responses(
+        (status = 200, description = "巡航速度设置",
+         body = serde_json::Value,
+         example = json!({"code":0,"msg":"巡航速度设置成功"})),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn front_end_tour_speed(
     State(state): State<AppState>,
     Query(q): Query<TourSpeedQ>,
@@ -1626,7 +2177,7 @@ pub async fn front_end_tour_speed(
 }
 
 /// GET /api/common/channel/front-end/tour/time
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct TourTimeQ {
     pub channel_id: Option<i64>,
     pub tour_id: Option<i32>,
@@ -1634,6 +2185,19 @@ pub struct TourTimeQ {
     pub time: Option<i32>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/common/channel/front-end/tour/time",
+    tag = "control",
+    operation_id = "common_channel_front_end_tour_time",
+    params(TourTimeQ),
+    responses(
+        (status = 200, description = "巡航停留时间设置",
+         body = serde_json::Value,
+         example = json!({"code":0,"msg":"巡航停留时间设置成功"})),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn front_end_tour_time(
     State(state): State<AppState>,
     Query(q): Query<TourTimeQ>,
@@ -1649,12 +2213,25 @@ pub async fn front_end_tour_time(
 }
 
 /// GET /api/common/channel/front-end/tour/start
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct TourStartQ {
     pub channel_id: Option<i64>,
     pub tour_id: Option<i32>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/common/channel/front-end/tour/start",
+    tag = "control",
+    operation_id = "common_channel_front_end_tour_start",
+    params(TourStartQ),
+    responses(
+        (status = 200, description = "巡航启动",
+         body = serde_json::Value,
+         example = json!({"code":0,"msg":"巡航启动成功"})),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn front_end_tour_start(
     State(state): State<AppState>,
     Query(q): Query<TourStartQ>,
@@ -1669,12 +2246,25 @@ pub async fn front_end_tour_start(
 }
 
 /// GET /api/common/channel/front-end/tour/stop
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct TourStopQ {
     pub channel_id: Option<i64>,
     pub tour_id: Option<i32>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/common/channel/front-end/tour/stop",
+    tag = "control",
+    operation_id = "common_channel_front_end_tour_stop",
+    params(TourStopQ),
+    responses(
+        (status = 200, description = "巡航停止",
+         body = serde_json::Value,
+         example = json!({"code":0,"msg":"巡航停止成功"})),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn front_end_tour_stop(
     State(state): State<AppState>,
     Query(q): Query<TourStopQ>,
@@ -1690,13 +2280,26 @@ pub async fn front_end_tour_stop(
 
 // ========== 扫描 ==========
 /// GET /api/common/channel/front-end/scan/set/speed
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct ScanSpeedQ {
     pub channel_id: Option<i64>,
     pub scan_id: Option<i32>,
     pub speed: Option<i32>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/common/channel/front-end/scan/set/speed",
+    tag = "control",
+    operation_id = "common_channel_front_end_scan_set_speed",
+    params(ScanSpeedQ),
+    responses(
+        (status = 200, description = "扫描速度设置",
+         body = serde_json::Value,
+         example = json!({"code":0,"msg":"扫描速度设置成功"})),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn front_end_scan_set_speed(
     State(state): State<AppState>,
     Query(q): Query<ScanSpeedQ>,
@@ -1712,12 +2315,25 @@ pub async fn front_end_scan_set_speed(
 }
 
 /// GET /api/common/channel/front-end/scan/set/left
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct ScanLeftQ {
     pub channel_id: Option<i64>,
     pub scan_id: Option<i32>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/common/channel/front-end/scan/set/left",
+    tag = "control",
+    operation_id = "common_channel_front_end_scan_set_left",
+    params(ScanLeftQ),
+    responses(
+        (status = 200, description = "扫描左边界设置",
+         body = serde_json::Value,
+         example = json!({"code":0,"msg":"扫描左边界设置成功"})),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn front_end_scan_set_left(
     State(state): State<AppState>,
     Query(q): Query<ScanLeftQ>,
@@ -1732,12 +2348,25 @@ pub async fn front_end_scan_set_left(
 }
 
 /// GET /api/common/channel/front-end/scan/set/right
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct ScanRightQ {
     pub channel_id: Option<i64>,
     pub scan_id: Option<i32>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/common/channel/front-end/scan/set/right",
+    tag = "control",
+    operation_id = "common_channel_front_end_scan_set_right",
+    params(ScanRightQ),
+    responses(
+        (status = 200, description = "扫描右边界设置",
+         body = serde_json::Value,
+         example = json!({"code":0,"msg":"扫描右边界设置成功"})),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn front_end_scan_set_right(
     State(state): State<AppState>,
     Query(q): Query<ScanRightQ>,
@@ -1752,12 +2381,25 @@ pub async fn front_end_scan_set_right(
 }
 
 /// GET /api/common/channel/front-end/scan/start
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct ScanStartQ {
     pub channel_id: Option<i64>,
     pub scan_id: Option<i32>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/common/channel/front-end/scan/start",
+    tag = "control",
+    operation_id = "common_channel_front_end_scan_start",
+    params(ScanStartQ),
+    responses(
+        (status = 200, description = "扫描启动",
+         body = serde_json::Value,
+         example = json!({"code":0,"msg":"扫描启动成功"})),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn front_end_scan_start(
     State(state): State<AppState>,
     Query(q): Query<ScanStartQ>,
@@ -1772,12 +2414,25 @@ pub async fn front_end_scan_start(
 }
 
 /// GET /api/common/channel/front-end/scan/stop
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct ScanStopQ {
     pub channel_id: Option<i64>,
     pub scan_id: Option<i32>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/common/channel/front-end/scan/stop",
+    tag = "control",
+    operation_id = "common_channel_front_end_scan_stop",
+    params(ScanStopQ),
+    responses(
+        (status = 200, description = "扫描停止",
+         body = serde_json::Value,
+         example = json!({"code":0,"msg":"扫描停止成功"})),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn front_end_scan_stop(
     State(state): State<AppState>,
     Query(q): Query<ScanStopQ>,
@@ -1793,13 +2448,26 @@ pub async fn front_end_scan_stop(
 
 // ========== 通道回放 (commonChannel.js 使用的 channelId 版本) ==========
 /// GET /api/common/channel/playback/query
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct ChannelPlaybackQueryQ {
     pub channel_id: Option<i64>,
     pub start_time: Option<String>,
     pub end_time: Option<String>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/common/channel/playback/query",
+    tag = "playback",
+    operation_id = "common_channel_playback_query",
+    params(ChannelPlaybackQueryQ),
+    responses(
+        (status = 200, description = "录像列表 `{code,msg,data}`",
+         body = serde_json::Value,
+         example = json!({"code":0,"msg":"查询成功","data":[{"fileName":"...","filePath":"...","fileSize":1234,"startTime":"...","duration":60}]})),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn channel_playback_query(
     State(state): State<AppState>,
     Query(q): Query<ChannelPlaybackQueryQ>,
@@ -1843,13 +2511,26 @@ pub async fn channel_playback_query(
 }
 
 /// GET /api/common/channel/playback
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct ChannelPlaybackStartQ {
     pub channel_id: Option<i64>,
     pub start_time: Option<String>,
     pub end_time: Option<String>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/common/channel/playback",
+    tag = "playback",
+    operation_id = "common_channel_playback_start",
+    params(ChannelPlaybackStartQ),
+    responses(
+        (status = 200, description = "回放启动结果 `{code,msg,data:{streamId,...}}`",
+         body = serde_json::Value,
+         example = json!({"code":0,"msg":"回放启动成功","data":{"streamId":"playback_..._...","deviceId":"34020000001320000001","channelId":"34020000001310000001","startTime":"2026-01-01 00:00:00","endTime":"2026-01-01 23:59:59"}})),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn channel_playback_start(
     State(state): State<AppState>,
     Query(q): Query<ChannelPlaybackStartQ>,
@@ -2021,13 +2702,26 @@ fn playback_control_ok(
 }
 
 /// GET /api/common/channel/playback/stop
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct ChannelPlaybackStopQ {
     pub channel_id: Option<i64>,
     pub stream: Option<String>,
 }
 
 /// 停止回放：解析目标 → 关闭 ZLM 流 → 摘除本地会话 → 下发 SIP BYE。
+#[utoipa::path(
+    get,
+    path = "/api/common/channel/playback/stop",
+    tag = "playback",
+    operation_id = "common_channel_playback_stop",
+    params(ChannelPlaybackStopQ),
+    responses(
+        (status = 200, description = "回放停止结果 `{code,msg,stream,deviceId,channelId}`",
+         body = serde_json::Value,
+         example = json!({"code":0,"msg":"回放停止成功","stream":"playback_...","deviceId":"34020000001320000001","channelId":"34020000001310000001"})),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn channel_playback_stop(
     State(state): State<AppState>,
     Query(q): Query<ChannelPlaybackStopQ>,
@@ -2095,12 +2789,25 @@ pub async fn channel_playback_stop(
 }
 
 /// GET /api/common/channel/playback/pause
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct ChannelPlaybackPauseQ {
     pub channel_id: Option<i64>,
     pub stream: Option<String>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/common/channel/playback/pause",
+    tag = "playback",
+    operation_id = "common_channel_playback_pause",
+    params(ChannelPlaybackPauseQ),
+    responses(
+        (status = 200, description = "回放暂停结果",
+         body = serde_json::Value,
+         example = json!({"code":0,"msg":"回放暂停成功","stream":"playback_...","deviceId":"...","channelId":"..."})),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn channel_playback_pause(
     State(state): State<AppState>,
     Query(q): Query<ChannelPlaybackPauseQ>,
@@ -2127,12 +2834,25 @@ pub async fn channel_playback_pause(
 }
 
 /// GET /api/common/channel/playback/resume
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct ChannelPlaybackResumeQ {
     pub channel_id: Option<i64>,
     pub stream: Option<String>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/common/channel/playback/resume",
+    tag = "playback",
+    operation_id = "common_channel_playback_resume",
+    params(ChannelPlaybackResumeQ),
+    responses(
+        (status = 200, description = "回放恢复结果",
+         body = serde_json::Value,
+         example = json!({"code":0,"msg":"回放恢复成功","stream":"playback_...","deviceId":"...","channelId":"..."})),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn channel_playback_resume(
     State(state): State<AppState>,
     Query(q): Query<ChannelPlaybackResumeQ>,
@@ -2159,13 +2879,26 @@ pub async fn channel_playback_resume(
 }
 
 /// GET /api/common/channel/playback/seek
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct ChannelPlaybackSeekQ {
     pub channel_id: Option<i64>,
     pub stream: Option<String>,
     pub seek_time: Option<String>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/common/channel/playback/seek",
+    tag = "playback",
+    operation_id = "common_channel_playback_seek",
+    params(ChannelPlaybackSeekQ),
+    responses(
+        (status = 200, description = "回放跳转结果（带 currentTime）",
+         body = serde_json::Value,
+         example = json!({"code":0,"msg":"回放跳转成功","stream":"playback_...","deviceId":"...","channelId":"...","currentTime":"2026-01-01 12:00:00"})),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn channel_playback_seek(
     State(state): State<AppState>,
     Query(q): Query<ChannelPlaybackSeekQ>,
@@ -2216,13 +2949,26 @@ fn parse_playback_speed(raw: &str) -> Option<f64> {
 }
 
 /// GET /api/common/channel/playback/speed
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct ChannelPlaybackSpeedQ {
     pub channel_id: Option<i64>,
     pub stream: Option<String>,
     pub speed: Option<String>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/common/channel/playback/speed",
+    tag = "playback",
+    operation_id = "common_channel_playback_speed",
+    params(ChannelPlaybackSpeedQ),
+    responses(
+        (status = 200, description = "回放倍速设置结果",
+         body = serde_json::Value,
+         example = json!({"code":0,"msg":"回放倍速设置成功","stream":"playback_...","deviceId":"...","channelId":"...","speed":2.0})),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn channel_playback_speed(
     State(state): State<AppState>,
     Query(q): Query<ChannelPlaybackSpeedQ>,
@@ -2267,6 +3013,19 @@ pub async fn channel_playback_speed(
 
 /// DELETE /api/common/channel/delete?id=<i64>
 /// 单条通用通道删除（与 device_id 解耦，仅按内部 id 删）
+#[utoipa::path(
+    delete,
+    path = "/api/common/channel/delete",
+    tag = "channel",
+    operation_id = "common_channel_delete",
+    params(ChannelDeleteQ),
+    responses(
+        (status = 200, description = "删除成功",
+         body = ApiResult<utoipa::TupleUnit>),
+        (status = 400, description = "缺少 id 或通道不存在"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn channel_delete(
     State(state): State<AppState>,
     Query(q): Query<ChannelDeleteQ>,
@@ -2282,7 +3041,7 @@ pub async fn channel_delete(
     Ok(Json(ApiResult::<()>::success_empty()))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct ChannelDeleteQ {
     pub id: Option<i64>,
 }
@@ -2524,7 +3283,7 @@ mod channel_crud_contract_tests {
 // 对讲、喊话、看守位、拉框缩放在通道路径下完全没挂。
 // ============================================================================
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, utoipa::IntoParams)]
 pub struct CommonChannelIdQuery {
     #[serde(
         alias = "channelId",
@@ -2575,6 +3334,19 @@ fn sip_for_common_channel(
 }
 
 /// GET /api/common/channel/talk/start?channelId=
+#[utoipa::path(
+    get,
+    path = "/api/common/channel/talk/start",
+    tag = "control",
+    operation_id = "common_channel_talk_start",
+    params(CommonChannelIdQuery),
+    responses(
+        (status = 200, description = "对讲启动结果 `{code,msg,data}`",
+         body = serde_json::Value,
+         example = json!({"code":0,"msg":"对讲已建立，可以发送音频","data":{"callId":"...","deviceId":"...","channelId":"...","status":"active","localPort":0,"deviceIp":"","devicePort":0}})),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn channel_talk_start(
     State(state): State<AppState>,
     Query(q): Query<CommonChannelIdQuery>,
@@ -2616,6 +3388,19 @@ pub async fn channel_talk_start(
 }
 
 /// GET /api/common/channel/talk/stop?channelId=
+#[utoipa::path(
+    get,
+    path = "/api/common/channel/talk/stop",
+    tag = "control",
+    operation_id = "common_channel_talk_stop",
+    params(CommonChannelIdQuery),
+    responses(
+        (status = 200, description = "对讲停止结果 `{code,msg}`",
+         body = serde_json::Value,
+         example = json!({"code":0,"msg":"对讲已停止"})),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn channel_talk_stop(
     State(state): State<AppState>,
     Query(q): Query<CommonChannelIdQuery>,
@@ -2646,6 +3431,19 @@ pub async fn channel_talk_stop(
 }
 
 /// GET /api/common/channel/broadcast/start?channelId=
+#[utoipa::path(
+    get,
+    path = "/api/common/channel/broadcast/start",
+    tag = "control",
+    operation_id = "common_channel_broadcast_start",
+    params(CommonChannelIdQuery),
+    responses(
+        (status = 200, description = "喊话启动结果 `{code,msg,data}`",
+         body = serde_json::Value,
+         example = json!({"code":0,"msg":"喊话已开始","data":{"callId":"...","deviceId":"...","channelId":"...","channelDbId":1}})),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn channel_broadcast_start(
     State(state): State<AppState>,
     Query(q): Query<CommonChannelIdQuery>,
@@ -2675,6 +3473,19 @@ pub async fn channel_broadcast_start(
 }
 
 /// GET /api/common/channel/broadcast/stop?channelId=
+#[utoipa::path(
+    get,
+    path = "/api/common/channel/broadcast/stop",
+    tag = "control",
+    operation_id = "common_channel_broadcast_stop",
+    params(CommonChannelIdQuery),
+    responses(
+        (status = 200, description = "喊话停止结果 `{code,msg}`",
+         body = serde_json::Value,
+         example = json!({"code":0,"msg":"喊话已停止"})),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn channel_broadcast_stop(
     State(state): State<AppState>,
     Query(q): Query<CommonChannelIdQuery>,
@@ -2695,7 +3506,7 @@ pub async fn channel_broadcast_stop(
 }
 
 /// `GET /api/common/channel/front-end/home_position?channelId=&enabled=&resetTime=&presetIndex=`
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, utoipa::IntoParams)]
 pub struct CommonChannelHomePositionQuery {
     #[serde(alias = "channelId", default, deserialize_with = "crate::serde_flex::de_opt_i64")]
     pub channel_id: Option<i64>,
@@ -2707,6 +3518,19 @@ pub struct CommonChannelHomePositionQuery {
     pub preset_index: Option<i64>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/common/channel/front-end/home_position",
+    tag = "control",
+    operation_id = "common_channel_front_end_home_position",
+    params(CommonChannelHomePositionQuery),
+    responses(
+        (status = 200, description = "看守位设置结果",
+         body = serde_json::Value,
+         example = json!({"code":0,"msg":"看守位设置成功"})),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn front_end_home_position(
     State(state): State<AppState>,
     Query(q): Query<CommonChannelHomePositionQuery>,
@@ -2727,7 +3551,7 @@ pub async fn front_end_home_position(
 }
 
 /// `GET /api/common/channel/front-end/drag_zoom_{in,out}` 的公共查询参数。
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, utoipa::IntoParams)]
 pub struct CommonChannelDragZoomQuery {
     #[serde(alias = "channelId", default, deserialize_with = "crate::serde_flex::de_opt_i64")]
     pub channel_id: Option<i64>,
@@ -2784,6 +3608,19 @@ async fn common_channel_drag_zoom(
     .await
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/common/channel/front-end/drag_zoom_in",
+    tag = "control",
+    operation_id = "common_channel_front_end_drag_zoom_in",
+    params(CommonChannelDragZoomQuery),
+    responses(
+        (status = 200, description = "拉框放大结果 `{code,msg}`",
+         body = serde_json::Value,
+         example = json!({"code":0,"msg":"拉框放大成功"})),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn front_end_drag_zoom_in(
     State(state): State<AppState>,
     Query(q): Query<CommonChannelDragZoomQuery>,
@@ -2791,6 +3628,19 @@ pub async fn front_end_drag_zoom_in(
     common_channel_drag_zoom(&state, &q, true).await
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/common/channel/front-end/drag_zoom_out",
+    tag = "control",
+    operation_id = "common_channel_front_end_drag_zoom_out",
+    params(CommonChannelDragZoomQuery),
+    responses(
+        (status = 200, description = "拉框缩小结果 `{code,msg}`",
+         body = serde_json::Value,
+         example = json!({"code":0,"msg":"拉框缩小成功"})),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn front_end_drag_zoom_out(
     State(state): State<AppState>,
     Query(q): Query<CommonChannelDragZoomQuery>,

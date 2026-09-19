@@ -16,6 +16,21 @@ use crate::AppState;
 
 /// GET /api/talk/start/:device_id/:channel_id — 开始语音对讲
 /// 发送 SIP INVITE 信令给设备，建立语音通话
+#[utoipa::path(
+    get,
+    path = "/api/talk/start/{device_id}/{channel_id}",
+    tag = "live",
+    operation_id = "talk_talk_start",
+    params(
+        ("device_id" = String, Path, description = "路径参数 device_id"),
+        ("channel_id" = String, Path, description = "路径参数 channel_id"),
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn talk_start(
     State(state): State<AppState>,
     Path((device_id, channel_id)): Path<(String, String)>,
@@ -100,6 +115,21 @@ pub async fn talk_start(
 
 /// GET /api/talk/stop/:device_id/:channel_id — 停止语音对讲
 /// 发送 SIP BYE 信令给设备，结束语音通话
+#[utoipa::path(
+    get,
+    path = "/api/talk/stop/{device_id}/{channel_id}",
+    tag = "live",
+    operation_id = "talk_talk_stop",
+    params(
+        ("device_id" = String, Path, description = "路径参数 device_id"),
+        ("channel_id" = String, Path, description = "路径参数 channel_id"),
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn talk_stop(
     State(state): State<AppState>,
     Path((device_id, channel_id)): Path<(String, String)>,
@@ -143,6 +173,21 @@ pub async fn talk_stop(
 
 /// GET /api/talk/invite/:device_id/:channel_id — 发起语音对讲邀请
 /// 与 start 类似，但用于明确的邀请流程
+#[utoipa::path(
+    get,
+    path = "/api/talk/invite/{device_id}/{channel_id}",
+    tag = "live",
+    operation_id = "talk_talk_invite",
+    params(
+        ("device_id" = String, Path, description = "路径参数 device_id"),
+        ("channel_id" = String, Path, description = "路径参数 channel_id"),
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn talk_invite(
     State(state): State<AppState>,
     Path((device_id, channel_id)): Path<(String, String)>,
@@ -210,6 +255,18 @@ pub struct TalkAckQuery {
     pub channel_id: Option<String>,
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/talk/ack",
+    tag = "live",
+    operation_id = "talk_talk_ack",
+    request_body = serde_json::Value,
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn talk_ack(
     State(_state): State<AppState>,
     Query(q): Query<TalkAckQuery>,
@@ -228,6 +285,18 @@ pub async fn talk_ack(
 
 /// POST /api/talk/bye — 结束语音对讲
 /// 与 stop 类似，用于明确的结束流程
+#[utoipa::path(
+    post,
+    path = "/api/talk/bye",
+    tag = "live",
+    operation_id = "talk_talk_bye",
+    request_body = serde_json::Value,
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn talk_bye(
     State(state): State<AppState>,
     Json(body): Json<TalkAckQuery>,
@@ -263,6 +332,21 @@ pub async fn talk_bye(
 }
 
 /// GET /api/talk/status/:device_id/:channel_id — 查询对讲状态
+#[utoipa::path(
+    get,
+    path = "/api/talk/status/{device_id}/{channel_id}",
+    tag = "live",
+    operation_id = "talk_talk_status",
+    params(
+        ("device_id" = String, Path, description = "路径参数 device_id"),
+        ("channel_id" = String, Path, description = "路径参数 channel_id"),
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn talk_status(
     State(state): State<AppState>,
     Path((device_id, channel_id)): Path<(String, String)>,
@@ -313,6 +397,17 @@ pub async fn talk_status(
 }
 
 /// GET /api/talk/list — 获取所有活跃对讲会话列表
+#[utoipa::path(
+    get,
+    path = "/api/talk/list",
+    tag = "live",
+    operation_id = "talk_talk_list",
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn talk_list(
     State(state): State<AppState>,
 ) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
@@ -383,6 +478,19 @@ fn ws_query_param(qstring: &str, key: &str) -> Option<String> {
 ///   不经过本端点。
 ///
 /// 这是此前完全缺失的那条链路：信令与 SDP 协商都通，但没有任何音频通路。
+#[utoipa::path(
+    get,
+    path = "/api/talk/audio/{device_id}/{channel_id}",
+    tag = "live",
+    operation_id = "talk_talk_audio_ws",
+    params(
+        ("device_id" = String, Path, description = "路径参数 device_id"),
+        ("channel_id" = String, Path, description = "路径参数 channel_id"),
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+    ),
+)]
 pub async fn talk_audio_ws(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,

@@ -4,7 +4,7 @@ use axum::{
     extract::{Path, Query, State},
     Json,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sqlx::Row;
 
 use crate::db::platform as platform_db;
@@ -185,7 +185,7 @@ async fn refresh_platform_catalog(state: &AppState, platform_id: i64) -> Result<
     Ok(())
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct PlatformQuery {
     pub page: Option<u32>,
     pub count: Option<u32>,
@@ -193,6 +193,21 @@ pub struct PlatformQuery {
 }
 
 /// GET /api/platform/query
+#[utoipa::path(
+    get,
+    path = "/api/platform/query",
+    tag = "platform",
+    operation_id = "api_platform_query",
+    summary = "分页查询级联平台",
+    params(
+        PlatformQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn platform_query(
     State(state): State<AppState>,
     Query(q): Query<PlatformQuery>,
@@ -319,6 +334,18 @@ pub async fn platform_query(
 }
 
 /// GET /api/platform/server_config
+#[utoipa::path(
+    get,
+    path = "/api/platform/server_config",
+    tag = "platform",
+    operation_id = "api_platform_server_config",
+    summary = "本平台作为下级平台的接入参数（供上级平台填写）",
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn platform_server_config(State(state): State<AppState>) -> Json<ApiResult<serde_json::Value>> {
     let sip = state.config.sip.as_ref();
     let device_ip = sip
@@ -356,7 +383,7 @@ pub async fn platform_server_config(State(state): State<AppState>) -> Json<ApiRe
 
 // ========== 平台通道相关 ==========
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct PlatformChannelQuery {
     pub page: Option<u32>,
     pub count: Option<u32>,
@@ -371,6 +398,21 @@ pub struct PlatformChannelQuery {
 }
 
 /// GET /api/platform/channel/list
+#[utoipa::path(
+    get,
+    path = "/api/platform/channel/list",
+    tag = "platform",
+    operation_id = "api_platform_channel_list",
+    summary = "级联平台已共享的通道分页列表",
+    params(
+        PlatformChannelQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn platform_channel_list(
     State(state): State<AppState>,
     Query(q): Query<PlatformChannelQuery>,
@@ -586,7 +628,7 @@ pub async fn platform_channel_list(
 
 /// POST /api/platform/channel/push
 /// 推送通道到平台（需要对接 SIP 信令）
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct PlatformChannelPushQuery {
     #[serde(alias = "id")]
     #[serde(alias = "platformId")]
@@ -597,6 +639,21 @@ pub struct PlatformChannelPushQuery {
     pub device_id_list: Option<String>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/platform/channel/push",
+    tag = "platform",
+    operation_id = "api_platform_channel_push",
+    summary = "查询通道推送状态",
+    params(
+        PlatformChannelPushQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn platform_channel_push(
     State(state): State<AppState>,
     Query(q): Query<PlatformChannelPushQuery>,
@@ -823,7 +880,7 @@ fn platform_row_json(item: &Platform, channel_count: i64) -> serde_json::Value {
 }
 
 /// POST /api/platform/add 请求体
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize, utoipa::ToSchema)]
 pub struct PlatformAddBody {
     pub id: Option<i64>,
     pub name: Option<String>,
@@ -889,6 +946,19 @@ pub struct PlatformAddBody {
 }
 
 /// POST /api/platform/add
+#[utoipa::path(
+    post,
+    path = "/api/platform/add",
+    tag = "platform",
+    operation_id = "api_platform_add",
+    summary = "新增级联平台（上级平台）",
+    request_body = PlatformAddBody,
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn platform_add(
     State(state): State<AppState>,
     Json(body): Json<PlatformAddBody>,
@@ -1113,6 +1183,19 @@ pub async fn platform_add(
 }
 
 /// POST /api/platform/update
+#[utoipa::path(
+    post,
+    path = "/api/platform/update",
+    tag = "platform",
+    operation_id = "api_platform_update",
+    summary = "更新级联平台配置",
+    request_body = PlatformAddBody,
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn platform_update(
     State(state): State<AppState>,
     Json(body): Json<PlatformAddBody>,
@@ -1321,7 +1404,7 @@ pub async fn platform_update(
 }
 
 /// DELETE /api/platform/delete
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct PlatformDeleteQuery {
     pub id: Option<i64>,
     /// 兼容按国标 ID 删除（本仓库的冒烟脚本/旧调用方会传它）。
@@ -1333,6 +1416,21 @@ pub struct PlatformDeleteQuery {
     pub server_gb_id: Option<String>,
 }
 
+#[utoipa::path(
+    delete,
+    path = "/api/platform/delete",
+    tag = "platform",
+    operation_id = "api_platform_delete",
+    summary = "删除级联平台",
+    params(
+        PlatformDeleteQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn platform_delete(
     State(state): State<AppState>,
     Query(q): Query<PlatformDeleteQuery>,
@@ -1399,6 +1497,21 @@ pub async fn platform_delete(
 /// 按钮语义就是真注销，因此这里做实事：发注销报文 + 把 `enable`/`status` 落成 false
 /// —— 只发报文不改 `enable` 的话，下一个注册周期会立刻把它注册回去，
 /// 用户看到"注销成功"却仍然在线。
+#[utoipa::path(
+    get,
+    path = "/api/platform/exit/{device_gb_id}",
+    tag = "platform",
+    operation_id = "api_platform_exit_device_gb_id",
+    summary = "向上级平台发送注销 REGISTER（Expires: 0）",
+    params(
+        ("device_gb_id" = String, Path, description = "路径参数 device_gb_id"),
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn platform_exit(
     State(state): State<AppState>,
     Path(server_gb_id): Path<String>,
@@ -1451,7 +1564,7 @@ pub async fn platform_exit(
 // ========== 平台通道操作 ==========
 
 /// POST /api/platform/channel/add
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize, utoipa::ToSchema)]
 pub struct PlatformChannelAddBody {
     #[serde(alias = "platformId")]
     pub platform_id: Option<i64>,
@@ -1460,6 +1573,19 @@ pub struct PlatformChannelAddBody {
     pub all: Option<bool>,
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/platform/channel/add",
+    tag = "platform",
+    operation_id = "api_platform_channel_add",
+    summary = "向级联平台添加（共享）通道",
+    request_body = PlatformChannelAddBody,
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn platform_channel_add(
     State(state): State<AppState>,
     Json(body): Json<PlatformChannelAddBody>,
@@ -1560,7 +1686,7 @@ pub async fn platform_channel_add(
 }
 
 /// POST /api/platform/channel/device/add - 添加设备的所有通道
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize, utoipa::ToSchema)]
 pub struct PlatformChannelDeviceBody {
     #[serde(alias = "platformId")]
     pub platform_id: Option<i64>,
@@ -1568,6 +1694,19 @@ pub struct PlatformChannelDeviceBody {
     pub device_ids: Option<Vec<String>>,
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/platform/channel/device/add",
+    tag = "platform",
+    operation_id = "api_platform_channel_device_add",
+    summary = "批量共享某设备的全部通道",
+    request_body = PlatformChannelDeviceBody,
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn platform_channel_device_add(
     State(state): State<AppState>,
     Json(body): Json<PlatformChannelDeviceBody>,
@@ -1619,6 +1758,19 @@ pub async fn platform_channel_device_add(
 }
 
 /// POST /api/platform/channel/device/remove - 移除设备的所有通道
+#[utoipa::path(
+    post,
+    path = "/api/platform/channel/device/remove",
+    tag = "platform",
+    operation_id = "api_platform_channel_device_remove",
+    summary = "取消共享某设备的全部通道",
+    request_body = PlatformChannelDeviceBody,
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn platform_channel_device_remove(
     State(state): State<AppState>,
     Json(body): Json<PlatformChannelDeviceBody>,
@@ -1658,6 +1810,19 @@ pub async fn platform_channel_device_remove(
 }
 
 /// DELETE /api/platform/channel/remove
+#[utoipa::path(
+    delete,
+    path = "/api/platform/channel/remove",
+    tag = "platform",
+    operation_id = "api_platform_channel_remove",
+    summary = "取消共享通道",
+    request_body = PlatformChannelAddBody,
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn platform_channel_remove(
     State(state): State<AppState>,
     Json(body): Json<PlatformChannelAddBody>,
@@ -1712,7 +1877,7 @@ pub async fn platform_channel_remove(
 }
 
 /// POST /api/platform/channel/custom/update
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize, utoipa::ToSchema)]
 pub struct PlatformChannelCustomUpdate {
     pub id: Option<i64>,
     pub name: Option<String>,
@@ -1725,6 +1890,19 @@ pub struct PlatformChannelCustomUpdate {
 
 /// 内部工具 — 按 feature 分发不同 SQL；sqlite 路径下部分参数仅在 cfg(postgres/mysql) 中使用
 #[allow(unused_variables)]
+#[utoipa::path(
+    post,
+    path = "/api/platform/channel/custom/update",
+    tag = "platform",
+    operation_id = "api_platform_channel_custom_update",
+    summary = "更新共享通道的自定义字段",
+    request_body = PlatformChannelCustomUpdate,
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn platform_channel_custom_update(
     State(state): State<AppState>,
     Json(body): Json<PlatformChannelCustomUpdate>,
@@ -1769,7 +1947,7 @@ pub async fn platform_channel_custom_update(
 }
 
 /// POST /api/platform/catalog/add (used in catalogEdit.vue, commonChannelEditDialog.vue)
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct CatalogAddBody {
     pub id: Option<i64>,
@@ -1788,6 +1966,19 @@ pub struct CatalogAddBody {
 /// 1. `gb_platform_catalog` 表在**三份 schema 中都不存在**
 /// 2. **没有 `sqlite` 分支** —— 默认 SQLite 部署下该端点什么都不做
 /// 3. INSERT 的错误被 `let _ =` 忽略，却始终返回「目录添加成功」
+#[utoipa::path(
+    post,
+    path = "/api/platform/catalog/add",
+    tag = "platform",
+    operation_id = "api_platform_catalog_add",
+    summary = "向级联平台添加目录节点",
+    request_body = CatalogAddBody,
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn catalog_add(
     State(state): State<AppState>,
     Json(body): Json<CatalogAddBody>,
@@ -1842,7 +2033,7 @@ pub async fn catalog_add(
     })))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct CatalogAddBodyEdit {
     pub id: Option<i64>,
@@ -1858,6 +2049,19 @@ pub struct CatalogAddBodyEdit {
 ///
 /// 与 `catalog_add` 同样的问题已一并修复：补 sqlite 分支、传播错误、不再空转报成功。
 #[allow(unused_variables)]
+#[utoipa::path(
+    post,
+    path = "/api/platform/catalog/edit",
+    tag = "platform",
+    operation_id = "api_platform_catalog_edit",
+    summary = "修改级联平台目录节点",
+    request_body = CatalogAddBodyEdit,
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn catalog_edit(
     State(state): State<AppState>,
     Json(body): Json<CatalogAddBodyEdit>,
@@ -1927,6 +2131,21 @@ pub async fn catalog_edit(
 }
 
 /// GET /api/platform/info/:id
+#[utoipa::path(
+    get,
+    path = "/api/platform/info/{id}",
+    tag = "platform",
+    operation_id = "api_platform_info_id",
+    summary = "查看单个级联平台详情",
+    params(
+        ("id" = String, Path, description = "路径参数 id"),
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn platform_info(
     State(state): State<AppState>,
     Path(id): Path<String>,

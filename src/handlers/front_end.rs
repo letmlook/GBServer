@@ -14,7 +14,7 @@ use crate::sip::gb28181::front_end_control::{
 };
 use crate::AppState;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct PtzQuery {
     /// 查询参数名是 `command`；老版前端（含本仓库 Vue3 直播页）发的是 `cmd`。
     #[serde(alias = "cmd")]
@@ -28,14 +28,14 @@ pub struct PtzQuery {
     pub speed: Option<i32>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct ScanQuery {
     #[serde(alias = "scanId")]
     pub scan_id: Option<String>,
     pub speed: Option<i32>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct CruiseQuery {
     #[serde(alias = "cruiseId")]
     pub cruise_id: Option<String>,
@@ -49,14 +49,14 @@ pub struct CruiseQuery {
     pub time: Option<i32>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct PresetQuery {
     /// 查询参数名是 `presetId`（camelCase）
     #[serde(alias = "presetId")]
     pub preset_id: Option<i32>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct AuxiliaryQuery {
     #[serde(alias = "cmd")]
     pub command: Option<String>,
@@ -64,13 +64,13 @@ pub struct AuxiliaryQuery {
     pub switch_id: Option<i32>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct WiperQuery {
     #[serde(alias = "cmd")]
     pub command: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct LegacyFrontEndCommandQuery {
     #[serde(alias = "cmdCode")]
     pub cmd_code: Option<i32>,
@@ -213,6 +213,24 @@ fn success_json(msg: &str) -> serde_json::Value {
 }
 
 // ========== PTZ ==========
+/// GET /api/front-end/ptz/{device_id}/{channel_id}
+#[utoipa::path(
+    get,
+    path = "/api/front-end/ptz/{device_id}/{channel_id}",
+    tag = "control",
+    operation_id = "front_end_ptz",
+    params(
+        ("device_id" = String, Path, description = "设备国标编号"),
+        ("channel_id" = String, Path, description = "通道国标编号"),
+        PtzQuery,
+    ),
+    responses(
+        (status = 200, description = "云台命令下发结果 `{code,msg}`（非 ApiResult 信封，0/1 表示成功/失败）",
+         body = serde_json::Value,
+         example = json!({"code":0,"msg":"PTZ 控制命令已发送"})),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn ptz(
     State(state): State<AppState>,
     Path((device_id, channel_id)): Path<(String, String)>,
@@ -247,6 +265,23 @@ pub async fn ptz(
 /// Compatibility endpoint used by older player components. They already
 /// calculate GB28181 front-end command bytes and pass them as decimal query
 /// parameters, so this handler only wraps those bytes in a DeviceControl XML.
+#[utoipa::path(
+    post,
+    path = "/api/ptz/front_end_command/{device_id}/{channel_id}",
+    tag = "control",
+    operation_id = "legacy_front_end_command",
+    params(
+        ("device_id" = String, Path, description = "设备国标编号"),
+        ("channel_id" = String, Path, description = "通道国标编号"),
+        LegacyFrontEndCommandQuery,
+    ),
+    responses(
+        (status = 200, description = "兼容端点：四段指令字节 + 累加校验后下发",
+         body = serde_json::Value,
+         example = json!({"code":0,"msg":"前端控制命令已发送"})),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn legacy_front_end_command(
     State(state): State<AppState>,
     Path((device_id, channel_id)): Path<(String, String)>,
@@ -270,6 +305,24 @@ pub async fn legacy_front_end_command(
 }
 
 // ========== Auxiliary ==========
+/// GET /api/front-end/auxiliary/{device_id}/{channel_id}
+#[utoipa::path(
+    get,
+    path = "/api/front-end/auxiliary/{device_id}/{channel_id}",
+    tag = "control",
+    operation_id = "front_end_auxiliary",
+    params(
+        ("device_id" = String, Path, description = "设备国标编号"),
+        ("channel_id" = String, Path, description = "通道国标编号"),
+        AuxiliaryQuery,
+    ),
+    responses(
+        (status = 200, description = "辅助开关（灯光/雨刷等）控制下发结果",
+         body = serde_json::Value,
+         example = json!({"code":0,"msg":"辅助开关控制命令已发送"})),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn auxiliary(
     State(state): State<AppState>,
     Path((device_id, channel_id)): Path<(String, String)>,
@@ -291,6 +344,24 @@ pub async fn auxiliary(
 }
 
 // ========== Wiper ==========
+/// GET /api/front-end/wiper/{device_id}/{channel_id}
+#[utoipa::path(
+    get,
+    path = "/api/front-end/wiper/{device_id}/{channel_id}",
+    tag = "control",
+    operation_id = "front_end_wiper",
+    params(
+        ("device_id" = String, Path, description = "设备国标编号"),
+        ("channel_id" = String, Path, description = "通道国标编号"),
+        WiperQuery,
+    ),
+    responses(
+        (status = 200, description = "雨刷开关控制下发结果",
+         body = serde_json::Value,
+         example = json!({"code":0,"msg":"雨刷控制命令已发送"})),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn wiper(
     State(state): State<AppState>,
     Path((device_id, channel_id)): Path<(String, String)>,
@@ -308,6 +379,24 @@ pub async fn wiper(
 }
 
 // ========== Iris ==========
+/// GET /api/front-end/fi/iris/{device_id}/{channel_id}
+#[utoipa::path(
+    get,
+    path = "/api/front-end/fi/iris/{device_id}/{channel_id}",
+    tag = "control",
+    operation_id = "front_end_iris",
+    params(
+        ("device_id" = String, Path, description = "设备国标编号"),
+        ("channel_id" = String, Path, description = "通道国标编号"),
+        PtzQuery,
+    ),
+    responses(
+        (status = 200, description = "光圈控制下发结果",
+         body = serde_json::Value,
+         example = json!({"code":0,"msg":"光圈控制命令已发送"})),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn iris(
     State(state): State<AppState>,
     Path((device_id, channel_id)): Path<(String, String)>,
@@ -350,6 +439,24 @@ pub async fn iris(
 }
 
 // ========== Focus ==========
+/// GET /api/front-end/fi/focus/{device_id}/{channel_device_id}
+#[utoipa::path(
+    get,
+    path = "/api/front-end/fi/focus/{device_id}/{channel_device_id}",
+    tag = "control",
+    operation_id = "front_end_focus",
+    params(
+        ("device_id" = String, Path, description = "设备国标编号"),
+        ("channel_device_id" = String, Path, description = "通道国标编号"),
+        PtzQuery,
+    ),
+    responses(
+        (status = 200, description = "焦距控制下发结果",
+         body = serde_json::Value,
+         example = json!({"code":0,"msg":"焦距控制命令已发送"})),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn focus(
     State(state): State<AppState>,
     Path((device_id, channel_device_id)): Path<(String, String)>,
@@ -390,6 +497,23 @@ pub async fn focus(
 }
 
 // ========== Preset ==========
+/// GET /api/front-end/preset/query/{device_id}/{channel_device_id}
+#[utoipa::path(
+    get,
+    path = "/api/front-end/preset/query/{device_id}/{channel_device_id}",
+    tag = "control",
+    operation_id = "front_end_preset_query",
+    params(
+        ("device_id" = String, Path, description = "设备国标编号"),
+        ("channel_device_id" = String, Path, description = "通道国标编号"),
+    ),
+    responses(
+        (status = 200, description = "下发预置位查询命令（设备不在线时也返回空列表）",
+         body = serde_json::Value,
+         example = json!({"code":0,"data":[],"msg":"预置位查询命令已发送"})),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn preset_query(
     State(state): State<AppState>,
     Path((device_id, channel_device_id)): Path<(String, String)>,
@@ -411,6 +535,24 @@ pub async fn preset_query(
     }
 }
 
+/// GET /api/front-end/preset/add/{device_id}/{channel_device_id}
+#[utoipa::path(
+    get,
+    path = "/api/front-end/preset/add/{device_id}/{channel_device_id}",
+    tag = "control",
+    operation_id = "front_end_preset_add",
+    params(
+        ("device_id" = String, Path, description = "设备国标编号"),
+        ("channel_device_id" = String, Path, description = "通道国标编号"),
+        PresetQuery,
+    ),
+    responses(
+        (status = 200, description = "预置位添加结果",
+         body = serde_json::Value,
+         example = json!({"code":0,"msg":"预置位添加成功"})),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn preset_add(
     State(state): State<AppState>,
     Path((device_id, channel_device_id)): Path<(String, String)>,
@@ -432,6 +574,24 @@ pub async fn preset_add(
     }
 }
 
+/// GET /api/front-end/preset/call/{device_id}/{channel_device_id}
+#[utoipa::path(
+    get,
+    path = "/api/front-end/preset/call/{device_id}/{channel_device_id}",
+    tag = "control",
+    operation_id = "front_end_preset_call",
+    params(
+        ("device_id" = String, Path, description = "设备国标编号"),
+        ("channel_device_id" = String, Path, description = "通道国标编号"),
+        PresetQuery,
+    ),
+    responses(
+        (status = 200, description = "预置位调用结果",
+         body = serde_json::Value,
+         example = json!({"code":0,"msg":"预置位调用成功"})),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn preset_call(
     State(state): State<AppState>,
     Path((device_id, channel_device_id)): Path<(String, String)>,
@@ -453,6 +613,24 @@ pub async fn preset_call(
     }
 }
 
+/// GET /api/front-end/preset/delete/{device_id}/{channel_device_id}
+#[utoipa::path(
+    get,
+    path = "/api/front-end/preset/delete/{device_id}/{channel_device_id}",
+    tag = "control",
+    operation_id = "front_end_preset_delete",
+    params(
+        ("device_id" = String, Path, description = "设备国标编号"),
+        ("channel_device_id" = String, Path, description = "通道国标编号"),
+        PresetQuery,
+    ),
+    responses(
+        (status = 200, description = "预置位删除结果",
+         body = serde_json::Value,
+         example = json!({"code":0,"msg":"预置位删除成功"})),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn preset_delete(
     State(state): State<AppState>,
     Path((device_id, channel_device_id)): Path<(String, String)>,
@@ -475,6 +653,24 @@ pub async fn preset_delete(
 }
 
 // ========== Cruise ==========
+/// GET /api/front-end/cruise/point/add/{device_id}/{channel_device_id}
+#[utoipa::path(
+    get,
+    path = "/api/front-end/cruise/point/add/{device_id}/{channel_device_id}",
+    tag = "control",
+    operation_id = "front_end_cruise_point_add",
+    params(
+        ("device_id" = String, Path, description = "设备国标编号"),
+        ("channel_device_id" = String, Path, description = "通道国标编号"),
+        CruiseQuery,
+    ),
+    responses(
+        (status = 200, description = "巡航点添加结果",
+         body = serde_json::Value,
+         example = json!({"code":0,"msg":"巡航点添加成功"})),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn cruise_point_add(
     State(state): State<AppState>,
     Path((device_id, channel_device_id)): Path<(String, String)>,
@@ -495,6 +691,24 @@ pub async fn cruise_point_add(
     }
 }
 
+/// GET /api/front-end/cruise/point/delete/{device_id}/{channel_device_id}
+#[utoipa::path(
+    get,
+    path = "/api/front-end/cruise/point/delete/{device_id}/{channel_device_id}",
+    tag = "control",
+    operation_id = "front_end_cruise_point_delete",
+    params(
+        ("device_id" = String, Path, description = "设备国标编号"),
+        ("channel_device_id" = String, Path, description = "通道国标编号"),
+        CruiseQuery,
+    ),
+    responses(
+        (status = 200, description = "巡航点删除结果",
+         body = serde_json::Value,
+         example = json!({"code":0,"msg":"巡航点删除成功"})),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn cruise_point_delete(
     State(state): State<AppState>,
     Path((device_id, channel_device_id)): Path<(String, String)>,
@@ -515,6 +729,24 @@ pub async fn cruise_point_delete(
     }
 }
 
+/// GET /api/front-end/cruise/speed/{device_id}/{channel_device_id}
+#[utoipa::path(
+    get,
+    path = "/api/front-end/cruise/speed/{device_id}/{channel_device_id}",
+    tag = "control",
+    operation_id = "front_end_cruise_speed",
+    params(
+        ("device_id" = String, Path, description = "设备国标编号"),
+        ("channel_device_id" = String, Path, description = "通道国标编号"),
+        CruiseQuery,
+    ),
+    responses(
+        (status = 200, description = "巡航速度设置结果",
+         body = serde_json::Value,
+         example = json!({"code":0,"msg":"巡航速度设置成功"})),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn cruise_speed(
     State(state): State<AppState>,
     Path((device_id, channel_device_id)): Path<(String, String)>,
@@ -535,6 +767,24 @@ pub async fn cruise_speed(
     }
 }
 
+/// GET /api/front-end/cruise/time/{device_id}/{channel_device_id}
+#[utoipa::path(
+    get,
+    path = "/api/front-end/cruise/time/{device_id}/{channel_device_id}",
+    tag = "control",
+    operation_id = "front_end_cruise_time",
+    params(
+        ("device_id" = String, Path, description = "设备国标编号"),
+        ("channel_device_id" = String, Path, description = "通道国标编号"),
+        CruiseQuery,
+    ),
+    responses(
+        (status = 200, description = "巡航停留时间设置结果",
+         body = serde_json::Value,
+         example = json!({"code":0,"msg":"巡航时间设置成功"})),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn cruise_time(
     State(state): State<AppState>,
     Path((device_id, channel_device_id)): Path<(String, String)>,
@@ -555,6 +805,24 @@ pub async fn cruise_time(
     }
 }
 
+/// GET /api/front-end/cruise/start/{device_id}/{channel_device_id}
+#[utoipa::path(
+    get,
+    path = "/api/front-end/cruise/start/{device_id}/{channel_device_id}",
+    tag = "control",
+    operation_id = "front_end_cruise_start",
+    params(
+        ("device_id" = String, Path, description = "设备国标编号"),
+        ("channel_device_id" = String, Path, description = "通道国标编号"),
+        CruiseQuery,
+    ),
+    responses(
+        (status = 200, description = "巡航启动结果",
+         body = serde_json::Value,
+         example = json!({"code":0,"msg":"巡航启动成功"})),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn cruise_start(
     State(state): State<AppState>,
     Path((device_id, channel_device_id)): Path<(String, String)>,
@@ -574,6 +842,24 @@ pub async fn cruise_start(
     }
 }
 
+/// GET /api/front-end/cruise/stop/{device_id}/{channel_device_id}
+#[utoipa::path(
+    get,
+    path = "/api/front-end/cruise/stop/{device_id}/{channel_device_id}",
+    tag = "control",
+    operation_id = "front_end_cruise_stop",
+    params(
+        ("device_id" = String, Path, description = "设备国标编号"),
+        ("channel_device_id" = String, Path, description = "通道国标编号"),
+        CruiseQuery,
+    ),
+    responses(
+        (status = 200, description = "巡航停止结果",
+         body = serde_json::Value,
+         example = json!({"code":0,"msg":"巡航停止成功"})),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn cruise_stop(
     State(state): State<AppState>,
     Path((device_id, channel_device_id)): Path<(String, String)>,
@@ -594,6 +880,24 @@ pub async fn cruise_stop(
 }
 
 // ========== Scan ==========
+/// GET /api/front-end/scan/set/speed/{device_id}/{channel_device_id}
+#[utoipa::path(
+    get,
+    path = "/api/front-end/scan/set/speed/{device_id}/{channel_device_id}",
+    tag = "control",
+    operation_id = "front_end_scan_set_speed",
+    params(
+        ("device_id" = String, Path, description = "设备国标编号"),
+        ("channel_device_id" = String, Path, description = "通道国标编号"),
+        ScanQuery,
+    ),
+    responses(
+        (status = 200, description = "扫描速度设置结果",
+         body = serde_json::Value,
+         example = json!({"code":0,"msg":"扫描速度设置成功"})),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn scan_set_speed(
     State(state): State<AppState>,
     Path((device_id, channel_device_id)): Path<(String, String)>,
@@ -614,6 +918,24 @@ pub async fn scan_set_speed(
     }
 }
 
+/// GET /api/front-end/scan/set/left/{device_id}/{channel_device_id}
+#[utoipa::path(
+    get,
+    path = "/api/front-end/scan/set/left/{device_id}/{channel_device_id}",
+    tag = "control",
+    operation_id = "front_end_scan_set_left",
+    params(
+        ("device_id" = String, Path, description = "设备国标编号"),
+        ("channel_device_id" = String, Path, description = "通道国标编号"),
+        ScanQuery,
+    ),
+    responses(
+        (status = 200, description = "扫描左边界设置结果",
+         body = serde_json::Value,
+         example = json!({"code":0,"msg":"左边界设置成功"})),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn scan_set_left(
     State(state): State<AppState>,
     Path((device_id, channel_device_id)): Path<(String, String)>,
@@ -633,6 +955,24 @@ pub async fn scan_set_left(
     }
 }
 
+/// GET /api/front-end/scan/set/right/{device_id}/{channel_device_id}
+#[utoipa::path(
+    get,
+    path = "/api/front-end/scan/set/right/{device_id}/{channel_device_id}",
+    tag = "control",
+    operation_id = "front_end_scan_set_right",
+    params(
+        ("device_id" = String, Path, description = "设备国标编号"),
+        ("channel_device_id" = String, Path, description = "通道国标编号"),
+        ScanQuery,
+    ),
+    responses(
+        (status = 200, description = "扫描右边界设置结果",
+         body = serde_json::Value,
+         example = json!({"code":0,"msg":"右边界设置成功"})),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn scan_set_right(
     State(state): State<AppState>,
     Path((device_id, channel_device_id)): Path<(String, String)>,
@@ -652,6 +992,24 @@ pub async fn scan_set_right(
     }
 }
 
+/// GET /api/front-end/scan/start/{device_id}/{channel_device_id}
+#[utoipa::path(
+    get,
+    path = "/api/front-end/scan/start/{device_id}/{channel_device_id}",
+    tag = "control",
+    operation_id = "front_end_scan_start",
+    params(
+        ("device_id" = String, Path, description = "设备国标编号"),
+        ("channel_device_id" = String, Path, description = "通道国标编号"),
+        ScanQuery,
+    ),
+    responses(
+        (status = 200, description = "扫描启动结果",
+         body = serde_json::Value,
+         example = json!({"code":0,"msg":"扫描启动成功"})),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn scan_start(
     State(state): State<AppState>,
     Path((device_id, channel_device_id)): Path<(String, String)>,
@@ -671,6 +1029,24 @@ pub async fn scan_start(
     }
 }
 
+/// GET /api/front-end/scan/stop/{device_id}/{channel_device_id}
+#[utoipa::path(
+    get,
+    path = "/api/front-end/scan/stop/{device_id}/{channel_device_id}",
+    tag = "control",
+    operation_id = "front_end_scan_stop",
+    params(
+        ("device_id" = String, Path, description = "设备国标编号"),
+        ("channel_device_id" = String, Path, description = "通道国标编号"),
+        ScanQuery,
+    ),
+    responses(
+        (status = 200, description = "扫描停止结果",
+         body = serde_json::Value,
+         example = json!({"code":0,"msg":"扫描停止成功"})),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn scan_stop(
     State(state): State<AppState>,
     Path((device_id, channel_device_id)): Path<(String, String)>,

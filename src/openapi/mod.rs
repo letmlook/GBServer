@@ -15,9 +15,28 @@ use utoipa::{Modify, OpenApi};
 
 use crate::AppState;
 
-pub mod routes_region;
 
 /// 一个域注册完的产物：`(schemas, paths, 真实 axum Router)`。
+pub mod registry_protected_routes;
+pub mod registry_public_routes;
+pub mod routes_channel;
+pub mod routes_cloud_record;
+pub mod routes_device;
+pub mod routes_device_public;
+pub mod routes_health_public;
+pub mod routes_jt1078;
+pub mod routes_live;
+pub mod routes_live_public;
+pub mod routes_misc;
+pub mod routes_platform;
+pub mod routes_public;
+pub mod routes_region;
+pub mod routes_stream;
+pub mod routes_sy;
+pub mod routes_system;
+pub mod routes_user;
+pub mod routes_user_public;
+
 pub type DocumentedRoutes = (Vec<(String, RefOr<Schema>)>, Paths, Router<AppState>);
 
 /// 各域 `routes!()` 的累加器。
@@ -146,6 +165,35 @@ impl Modify for SecurityAddon {
     ),
 )]
 pub struct ApiDoc;
+
+/// 组装完整 OpenAPI 文档：`ApiDoc`（info/安全方案/标签）+ 两个注册表的 paths/schemas。
+///
+/// `router.rs` 与「spec 路径可达性」测试都用它，避免两处各写一遍组装逻辑。
+pub fn build_openapi() -> utoipa::openapi::OpenApi {
+    let (prot_schemas, prot_paths, _) = registry_protected_routes::protected_routes();
+    let (pub_schemas, pub_paths, _) = registry_public_routes::public_routes();
+
+    let mut routes = utoipa::openapi::OpenApiBuilder::new().build();
+    let mut components = utoipa::openapi::Components::new();
+    components.schemas.extend(prot_schemas);
+    components.schemas.extend(pub_schemas);
+    routes.components = Some(components);
+
+    for (path, item) in prot_paths.paths {
+        routes.paths.paths.insert(path, item);
+    }
+    for (path, item) in pub_paths.paths {
+        match routes.paths.paths.get_mut(&path) {
+            Some(existing) => existing.merge_operations(item),
+            None => {
+                routes.paths.paths.insert(path, item);
+            }
+        }
+    }
+
+    // `merge_from` 只补 `self` 中不存在的项，因此 Info 与安全方案不会被覆盖。
+    ApiDoc::openapi().merge_from(routes)
+}
 
 #[cfg(test)]
 mod tests {

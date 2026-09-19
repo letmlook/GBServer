@@ -5,7 +5,7 @@ use axum::{
     extract::{Query, State},
     Json,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 #[cfg(feature = "postgres")]
@@ -50,7 +50,7 @@ fn parse_plate_color(raw: Option<&str>) -> Option<i32> {
     })
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct TerminalListQuery {
     pub page: Option<u32>,
     pub count: Option<u32>,
@@ -58,7 +58,7 @@ pub struct TerminalListQuery {
     pub online: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct TerminalQuery {
     /// 终端标识（历史字段）；请求参数别名 `deviceId`。
     ///
@@ -80,6 +80,21 @@ pub struct TerminalQuery {
 ///
 /// 前端 `web/src/api/jtDevice.ts::getJtTerminalOne` 调用该路径，但后端此前
 /// 未注册，请求会落到 SPA 兜底并拿到 index.html。
+#[utoipa::path(
+    get,
+    path = "/api/jt1078/terminal/one",
+    tag = "jt1078",
+    operation_id = "terminal_one",
+    summary = "查询单个 JT1078 终端详情",
+    params(
+        TerminalOneQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn terminal_one(
     State(state): State<AppState>,
     Query(q): Query<TerminalOneQuery>,
@@ -112,12 +127,12 @@ pub async fn terminal_one(
     }))))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct TerminalOneQuery {
     pub id: Option<i32>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct ChannelListQuery {
     pub page: Option<u32>,
     pub count: Option<u32>,
@@ -137,7 +152,7 @@ pub struct ChannelListQuery {
     pub terminal_db_id: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct LiveQuery {
     #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
@@ -145,7 +160,7 @@ pub struct LiveQuery {
     pub r#type: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct PlaybackQuery {
     #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
@@ -158,7 +173,7 @@ pub struct PlaybackQuery {
     pub playback_speed: Option<f64>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct RecordListQuery {
     #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
@@ -174,7 +189,7 @@ pub struct RecordListQuery {
     pub end_time: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct DownloadUrlQuery {
     #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
@@ -187,7 +202,7 @@ pub struct DownloadUrlQuery {
     pub storage_type: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct ControlQuery {
     #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
@@ -197,7 +212,7 @@ pub struct ControlQuery {
     pub time: Option<i64>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct PtzQuery {
     #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
@@ -206,7 +221,7 @@ pub struct PtzQuery {
     pub speed: Option<i32>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct WiperQuery {
     #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
@@ -214,7 +229,7 @@ pub struct WiperQuery {
     pub command: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct FillLightQuery {
     #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
@@ -222,38 +237,38 @@ pub struct FillLightQuery {
     pub command: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct PositionQuery {
     #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct LinkDetectionQuery {
     #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct AttributeQuery {
     #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct DriverInfoQuery {
     #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize, utoipa::ToSchema)]
 pub struct TextMsgBody {
     #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
     pub message: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct TerminalCallbackQuery {
     #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
@@ -261,27 +276,27 @@ pub struct TerminalCallbackQuery {
     pub dest_phone_number: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct DoorQuery {
     #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
     pub open: Option<bool>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct MediaAttributeQuery {
     #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct TalkQuery {
     #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
     pub channel_id: Option<i32>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize, utoipa::ToSchema)]
 pub struct TerminalAddBody {
     #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
@@ -321,7 +336,7 @@ pub struct TerminalAddBody {
     pub city_id: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize, utoipa::ToSchema)]
 pub struct TerminalUpdateBody {
     #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
@@ -355,7 +370,7 @@ pub struct TerminalUpdateBody {
     pub city_id: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize, utoipa::ToSchema)]
 pub struct ChannelUpdateBody {
     pub id: Option<i64>,
     /// 前端字段是 `channelName`，历史字段是 `name`
@@ -365,7 +380,7 @@ pub struct ChannelUpdateBody {
     pub channel_id: Option<i32>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize, utoipa::ToSchema)]
 pub struct ChannelAddBody {
     /// 终端手机号：前端传 `phoneNumber`，历史字段是 `device_id`/`deviceId`
     #[serde(alias = "phoneNumber", alias = "deviceId")]
@@ -378,7 +393,7 @@ pub struct ChannelAddBody {
     pub stream_type: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize, utoipa::ToSchema)]
 pub struct ConfigBody {
     #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
@@ -389,13 +404,13 @@ pub struct ConfigBody {
     pub password: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize, utoipa::ToSchema)]
 pub struct ResetBody {
     #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize, utoipa::ToSchema)]
 pub struct ConnectionBody {
     #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
@@ -419,6 +434,21 @@ pub(crate) async fn get_jt_manager(state: &AppState) -> Result<Arc<crate::jt1078
 
 // ========== 终端管理 ==========
 /// GET /api/jt1078/terminal/list
+#[utoipa::path(
+    get,
+    path = "/api/jt1078/terminal/list",
+    tag = "jt1078",
+    operation_id = "terminal_list",
+    summary = "分页查询 JT1078 终端列表",
+    params(
+        TerminalListQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn terminal_list(
     State(state): State<AppState>,
     Query(q): Query<TerminalListQuery>,
@@ -469,6 +499,21 @@ pub async fn terminal_list(
 /// → `terminalId` → 主键 `id`。此前只读 `phoneNumber`，而旧前端
 /// （`web-legacy-vue2/src/api/jtDevice.js::queryDeviceById`）发的是
 /// `deviceId` —— 请求能通、永远返回 `null`，"按 ID 查终端"实际不可用。
+#[utoipa::path(
+    get,
+    path = "/api/jt1078/terminal/query",
+    tag = "jt1078",
+    operation_id = "terminal_query",
+    summary = "按手机号/终端号/主键查询终端",
+    params(
+        TerminalQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn terminal_query(
     State(state): State<AppState>,
     Query(q): Query<TerminalQuery>,
@@ -531,6 +576,19 @@ pub async fn terminal_query(
 /// POST /api/jt1078/terminal/add
 /// 内部工具 — 按 feature 分发不同 SQL；sqlite 路径下部分参数仅在 cfg(postgres/mysql) 中使用
 #[allow(unused_variables)]
+#[utoipa::path(
+    post,
+    path = "/api/jt1078/terminal/add",
+    tag = "jt1078",
+    operation_id = "terminal_add",
+    summary = "新增 JT1078 终端",
+    request_body = TerminalAddBody,
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn terminal_add(
     State(state): State<AppState>,
     Json(body): Json<TerminalAddBody>,
@@ -563,6 +621,19 @@ pub async fn terminal_add(
 /// POST /api/jt1078/terminal/update
 /// 内部工具 — 按 feature 分发不同 SQL；sqlite 路径下部分参数仅在 cfg(postgres/mysql) 中使用
 #[allow(unused_variables)]
+#[utoipa::path(
+    post,
+    path = "/api/jt1078/terminal/update",
+    tag = "jt1078",
+    operation_id = "terminal_update",
+    summary = "更新 JT1078 终端",
+    request_body = TerminalUpdateBody,
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn terminal_update(
     State(state): State<AppState>,
     Json(body): Json<TerminalUpdateBody>,
@@ -597,6 +668,21 @@ pub async fn terminal_update(
 /// DELETE /api/jt1078/terminal/delete
 /// 内部工具 — 按 feature 分发不同 SQL；sqlite 路径下部分参数仅在 cfg(postgres/mysql) 中使用
 #[allow(unused_variables)]
+#[utoipa::path(
+    delete,
+    path = "/api/jt1078/terminal/delete",
+    tag = "jt1078",
+    operation_id = "terminal_delete",
+    summary = "删除 JT1078 终端",
+    params(
+        TerminalQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn terminal_delete(
     State(state): State<AppState>,
     Query(q): Query<TerminalQuery>,
@@ -644,6 +730,21 @@ pub async fn terminal_delete(
 /// GET /api/jt1078/terminal/channel/list
 /// 内部工具 — 按 feature 分发不同 SQL；sqlite 路径下部分参数仅在 cfg(postgres/mysql) 中使用
 #[allow(unused_variables)]
+#[utoipa::path(
+    get,
+    path = "/api/jt1078/terminal/channel/list",
+    tag = "jt1078",
+    operation_id = "channel_list",
+    summary = "查询终端的通道列表",
+    params(
+        ChannelListQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn channel_list(
     State(state): State<AppState>,
     Query(q): Query<ChannelListQuery>,
@@ -710,6 +811,19 @@ pub async fn channel_list(
 }
 
 /// POST /api/jt1078/terminal/channel/update
+#[utoipa::path(
+    post,
+    path = "/api/jt1078/terminal/channel/update",
+    tag = "jt1078",
+    operation_id = "channel_update",
+    summary = "更新终端通道",
+    request_body = ChannelUpdateBody,
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn channel_update(
     State(state): State<AppState>,
     Json(body): Json<ChannelUpdateBody>,
@@ -734,6 +848,19 @@ pub async fn channel_update(
 }
 
 /// POST /api/jt1078/terminal/channel/add
+#[utoipa::path(
+    post,
+    path = "/api/jt1078/terminal/channel/add",
+    tag = "jt1078",
+    operation_id = "channel_add",
+    summary = "新增终端通道",
+    request_body = ChannelAddBody,
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn channel_add(
     State(state): State<AppState>,
     Json(body): Json<ChannelAddBody>,
@@ -758,6 +885,21 @@ pub async fn channel_add(
 
 // ========== 实时视频 ==========
 /// GET /api/jt1078/live/start
+#[utoipa::path(
+    get,
+    path = "/api/jt1078/live/start",
+    tag = "jt1078",
+    operation_id = "live_start",
+    summary = "开始实时视频",
+    params(
+        LiveQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn live_start(
     State(state): State<AppState>,
     Query(q): Query<LiveQuery>,
@@ -847,6 +989,21 @@ pub async fn live_start(
 }
 
 /// GET /api/jt1078/live/stop
+#[utoipa::path(
+    get,
+    path = "/api/jt1078/live/stop",
+    tag = "jt1078",
+    operation_id = "live_stop",
+    summary = "停止实时视频",
+    params(
+        LiveQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn live_stop(
     State(state): State<AppState>,
     Query(q): Query<LiveQuery>,
@@ -882,6 +1039,21 @@ pub async fn live_stop(
 
 // ========== 录像回放 ==========
 /// GET /api/jt1078/playback/start
+#[utoipa::path(
+    get,
+    path = "/api/jt1078/playback/start",
+    tag = "jt1078",
+    operation_id = "jt1078_playback_start",
+    summary = "开始录像回放",
+    params(
+        PlaybackQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn playback_start(
     State(state): State<AppState>,
     Query(q): Query<PlaybackQuery>,
@@ -963,6 +1135,21 @@ pub async fn playback_start(
 }
 
 /// GET /api/jt1078/playback/stop
+#[utoipa::path(
+    get,
+    path = "/api/jt1078/playback/stop",
+    tag = "jt1078",
+    operation_id = "jt1078_playback_stop",
+    summary = "停止录像回放",
+    params(
+        ControlQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn playback_stop(
     State(state): State<AppState>,
     Query(q): Query<ControlQuery>,
@@ -995,6 +1182,21 @@ pub async fn playback_stop(
 }
 
 /// GET /api/jt1078/playback/control
+#[utoipa::path(
+    get,
+    path = "/api/jt1078/playback/control",
+    tag = "jt1078",
+    operation_id = "playback_control",
+    summary = "录像回放控制（暂停/继续/快进/拖动）",
+    params(
+        ControlQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn playback_control(
     State(state): State<AppState>,
     Query(q): Query<ControlQuery>,
@@ -1050,6 +1252,21 @@ pub async fn playback_control(
 }
 
 /// GET /api/jt1078/playback/downloadUrl
+#[utoipa::path(
+    get,
+    path = "/api/jt1078/playback/downloadUrl",
+    tag = "jt1078",
+    operation_id = "playback_download_url",
+    summary = "获取录像下载地址",
+    params(
+        DownloadUrlQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn playback_download_url(
     State(state): State<AppState>,
     Query(q): Query<DownloadUrlQuery>,
@@ -1132,6 +1349,21 @@ pub async fn playback_download_url(
 
 // ========== 设备控制 ==========
 /// GET /api/jt1078/ptz
+#[utoipa::path(
+    get,
+    path = "/api/jt1078/ptz",
+    tag = "jt1078",
+    operation_id = "ptz",
+    summary = "云台控制",
+    params(
+        PtzQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn ptz(
     State(state): State<AppState>,
     Query(q): Query<PtzQuery>,
@@ -1160,6 +1392,21 @@ pub async fn ptz(
 /// GET /api/jt1078/wiper
 /// 内部工具 — 按 feature 分发不同 SQL；sqlite 路径下部分参数仅在 cfg(postgres/mysql) 中使用
 #[allow(unused_variables)]
+#[utoipa::path(
+    get,
+    path = "/api/jt1078/wiper",
+    tag = "jt1078",
+    operation_id = "wiper",
+    summary = "雨刷控制",
+    params(
+        WiperQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn wiper(
     State(state): State<AppState>,
     Query(q): Query<WiperQuery>,
@@ -1185,6 +1432,21 @@ pub async fn wiper(
 }
 
 /// GET /api/jt1078/fill-light
+#[utoipa::path(
+    get,
+    path = "/api/jt1078/fill-light",
+    tag = "jt1078",
+    operation_id = "fill_light",
+    summary = "补光灯控制",
+    params(
+        FillLightQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn fill_light(
     State(state): State<AppState>,
     Query(q): Query<FillLightQuery>,
@@ -1210,6 +1472,21 @@ pub async fn fill_light(
 }
 
 /// GET /api/jt1078/record/list
+#[utoipa::path(
+    get,
+    path = "/api/jt1078/record/list",
+    tag = "jt1078",
+    operation_id = "record_list",
+    summary = "查询录像列表（0x8802 多媒体检索）",
+    params(
+        RecordListQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn record_list(
     State(state): State<AppState>,
     Query(q): Query<RecordListQuery>,
@@ -1349,6 +1626,21 @@ pub async fn record_list(
 
 // ========== 配置查询 ==========
 /// GET /api/jt1078/config/get
+#[utoipa::path(
+    get,
+    path = "/api/jt1078/config/get",
+    tag = "jt1078",
+    operation_id = "config_get",
+    summary = "查询终端参数配置",
+    params(
+        PositionQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn config_get(
     State(state): State<AppState>,
     Query(q): Query<PositionQuery>,
@@ -1385,6 +1677,19 @@ pub async fn config_get(
 }
 
 /// POST /api/jt1078/config/set
+#[utoipa::path(
+    post,
+    path = "/api/jt1078/config/set",
+    tag = "jt1078",
+    operation_id = "config_set",
+    summary = "设置终端参数配置",
+    request_body = ConfigBody,
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn config_set(
     State(state): State<AppState>,
     Json(body): Json<ConfigBody>,
@@ -1420,6 +1725,21 @@ pub async fn config_set(
 }
 
 /// GET /api/jt1078/attribute
+#[utoipa::path(
+    get,
+    path = "/api/jt1078/attribute",
+    tag = "jt1078",
+    operation_id = "attribute",
+    summary = "查询终端属性",
+    params(
+        AttributeQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn attribute(
     State(state): State<AppState>,
     Query(q): Query<AttributeQuery>,
@@ -1455,6 +1775,21 @@ pub async fn attribute(
 }
 
 /// GET /api/jt1078/link-detection
+#[utoipa::path(
+    get,
+    path = "/api/jt1078/link-detection",
+    tag = "jt1078",
+    operation_id = "link_detection",
+    summary = "链路检测",
+    params(
+        LinkDetectionQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn link_detection(
     State(state): State<AppState>,
     Query(q): Query<LinkDetectionQuery>,
@@ -1501,6 +1836,21 @@ pub async fn link_detection(
 
 // ========== 位置信息 ==========
 /// GET /api/jt1078/position-info
+#[utoipa::path(
+    get,
+    path = "/api/jt1078/position-info",
+    tag = "jt1078",
+    operation_id = "position_info",
+    summary = "查询终端位置信息",
+    params(
+        PositionQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn position_info(
     State(state): State<AppState>,
     Query(q): Query<PositionQuery>,
@@ -1653,6 +2003,19 @@ pub async fn position_info(
 
 // ========== 通信 ==========
 /// POST /api/jt1078/text-msg
+#[utoipa::path(
+    post,
+    path = "/api/jt1078/text-msg",
+    tag = "jt1078",
+    operation_id = "text_msg",
+    summary = "下发文本消息",
+    request_body = TextMsgBody,
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn text_msg(
     State(state): State<AppState>,
     Json(body): Json<TextMsgBody>,
@@ -1677,6 +2040,21 @@ pub async fn text_msg(
 }
 
 /// GET /api/jt1078/telephone-callback
+#[utoipa::path(
+    get,
+    path = "/api/jt1078/telephone-callback",
+    tag = "jt1078",
+    operation_id = "telephone_callback",
+    summary = "电话回拨",
+    params(
+        TerminalCallbackQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn telephone_callback(
     State(state): State<AppState>,
     Query(q): Query<TerminalCallbackQuery>,
@@ -1702,6 +2080,21 @@ pub async fn telephone_callback(
 }
 
 /// GET /api/jt1078/driver-information
+#[utoipa::path(
+    get,
+    path = "/api/jt1078/driver-information",
+    tag = "jt1078",
+    operation_id = "driver_info",
+    summary = "查询驾驶员信息",
+    params(
+        DriverInfoQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn driver_info(
     State(state): State<AppState>,
     Query(q): Query<DriverInfoQuery>,
@@ -1747,6 +2140,21 @@ pub async fn driver_info(
 
 // ========== 设备控制 ==========
 /// POST /api/jt1078/control/factory-reset
+#[utoipa::path(
+    post,
+    path = "/api/jt1078/control/factory-reset",
+    tag = "jt1078",
+    operation_id = "factory_reset",
+    summary = "恢复出厂设置",
+    params(
+        PositionQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn factory_reset(
     State(state): State<AppState>,
     Query(q): Query<PositionQuery>,
@@ -1770,6 +2178,19 @@ pub async fn factory_reset(
 }
 
 /// POST /api/jt1078/control/reset
+#[utoipa::path(
+    post,
+    path = "/api/jt1078/control/reset",
+    tag = "jt1078",
+    operation_id = "reset",
+    summary = "终端重启",
+    request_body = ResetBody,
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn reset(
     State(state): State<AppState>,
     Json(body): Json<ResetBody>,
@@ -1795,6 +2216,19 @@ pub async fn reset(
 /// POST /api/jt1078/control/connection
 /// 内部工具 — 按 feature 分发不同 SQL；sqlite 路径下部分参数仅在 cfg(postgres/mysql) 中使用
 #[allow(unused_variables)]
+#[utoipa::path(
+    post,
+    path = "/api/jt1078/control/connection",
+    tag = "jt1078",
+    operation_id = "connection",
+    summary = "连接控制（设置服务器地址与端口）",
+    request_body = ConnectionBody,
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn connection(
     State(state): State<AppState>,
     Json(body): Json<ConnectionBody>,
@@ -1823,6 +2257,21 @@ pub async fn connection(
 }
 
 /// GET /api/jt1078/control/door
+#[utoipa::path(
+    get,
+    path = "/api/jt1078/control/door",
+    tag = "jt1078",
+    operation_id = "door",
+    summary = "车门控制",
+    params(
+        DoorQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn door(
     State(state): State<AppState>,
     Query(q): Query<DoorQuery>,
@@ -1849,6 +2298,21 @@ pub async fn door(
 
 // ========== 媒体数据 ==========
 /// GET /api/jt1078/media/attribute
+#[utoipa::path(
+    get,
+    path = "/api/jt1078/media/attribute",
+    tag = "jt1078",
+    operation_id = "media_attribute",
+    summary = "查询终端媒体属性",
+    params(
+        MediaAttributeQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn media_attribute(
     State(state): State<AppState>,
     Query(q): Query<MediaAttributeQuery>,
@@ -1892,6 +2356,19 @@ pub async fn media_attribute(
 }
 
 /// POST /api/jt1078/media/list
+#[utoipa::path(
+    post,
+    path = "/api/jt1078/media/list",
+    tag = "jt1078",
+    operation_id = "media_list",
+    summary = "检索多媒体数据",
+    request_body = serde_json::Value,
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn media_list(
     State(state): State<AppState>,
     Json(body): Json<serde_json::Value>,
@@ -1993,6 +2470,19 @@ pub async fn media_list(
 
 // ========== 其他功能 ==========
 /// POST /api/jt1078/set-phone-book
+#[utoipa::path(
+    post,
+    path = "/api/jt1078/set-phone-book",
+    tag = "jt1078",
+    operation_id = "set_phone_book",
+    summary = "设置电话本",
+    request_body = serde_json::Value,
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn set_phone_book(
     State(state): State<AppState>,
     Json(body): Json<serde_json::Value>,
@@ -2026,6 +2516,19 @@ pub async fn set_phone_book(
 }
 
 /// POST /api/jt1078/shooting
+#[utoipa::path(
+    post,
+    path = "/api/jt1078/shooting",
+    tag = "jt1078",
+    operation_id = "shooting",
+    summary = "终端抓拍",
+    request_body = serde_json::Value,
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn shooting(
     State(state): State<AppState>,
     Json(body): Json<serde_json::Value>,
@@ -2051,6 +2554,21 @@ pub async fn shooting(
 
 // ========== 对讲 ==========
 /// GET /api/jt1078/talk/start
+#[utoipa::path(
+    get,
+    path = "/api/jt1078/talk/start",
+    tag = "jt1078",
+    operation_id = "talk_start",
+    summary = "开始双向对讲",
+    params(
+        TalkQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn talk_start(
     State(state): State<AppState>,
     Query(q): Query<TalkQuery>,
@@ -2094,6 +2612,21 @@ pub async fn talk_start(
 }
 
 /// GET /api/jt1078/talk/stop
+#[utoipa::path(
+    get,
+    path = "/api/jt1078/talk/stop",
+    tag = "jt1078",
+    operation_id = "talk_stop",
+    summary = "停止双向对讲",
+    params(
+        TalkQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn talk_stop(
     State(state): State<AppState>,
     Query(q): Query<TalkQuery>,
@@ -2118,13 +2651,29 @@ pub async fn talk_stop(
 }
 
 /// GET /api/jt1078/media/upload/one/upload (used in queryMediaList.vue direct fetch)
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct MediaUploadQuery {
     #[serde(alias = "phoneNumber")]
     pub phone_number: Option<String>,
     pub media_id: Option<String>,
 }
 
+/// GET /api/jt1078/media/upload/one/upload
+#[utoipa::path(
+    get,
+    path = "/api/jt1078/media/upload/one/upload",
+    tag = "jt1078",
+    operation_id = "media_upload_one",
+    summary = "单条媒体数据上传",
+    params(
+        MediaUploadQuery,
+    ),
+    responses(
+        (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 401, description = "未鉴权"),
+    ),
+    security(("access_token" = [])),
+)]
 pub async fn media_upload_one(
     State(state): State<AppState>,
     Query(q): Query<MediaUploadQuery>,
