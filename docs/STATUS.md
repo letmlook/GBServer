@@ -12,7 +12,7 @@
 |------|------|----------|
 | 后端代码量 | 87,246 行 Rust | `find src -name '*.rs' \| xargs wc -l` |
 | 已注册路由 | 429 条唯一 `/api/...` 路径（`router.rs` 424 处 `.route(`） | `grep -oE '"/api/[^"]*"' src/router.rs \| sort -u \| wc -l` |
-| Handler 模块 | 30 个（含 `stub.rs` / `device_stub.rs` 两个兼容 shim） | `grep -c 'pub mod' src/handlers/mod.rs` |
+| Handler 模块 | 30 个（`stub.rs` / `device_stub.rs` **是真实实现**，非兼容 shim，见 §3） | `grep -c 'pub mod' src/handlers/mod.rs` |
 | 后端测试 | **744 通过 / 0 失败 / 3 忽略** | `cargo test --no-fail-fast` |
 | 编译 | `cargo check` 0 error；clippy 272 条告警（未清零） | `cargo check` / `cargo clippy --all-targets` |
 | 前端 | 18 个业务视图目录、17 个类型化 API 模块、13 个通用组件、42 个 SVG 图标 | `ls web/src/views` |
@@ -20,7 +20,8 @@
 
 ## 2. 已实现能力矩阵
 
-按业务模块划分（`stub.rs` / `device_stub.rs` 中的条目为 WVP 兼容 shim，见 §4）。
+按业务模块划分。注意 `stub.rs` / `device_stub.rs` 承载的条目**不是 WVP 兼容 shim，
+而是真实实现**（见 §3）。
 
 | 模块 | 状态 | 说明 |
 |------|------|------|
@@ -54,8 +55,11 @@
 
 保留这些结论是为了避免后人重复论证同一个问题。
 
-- **`stub.rs` / `device_stub.rs` 保留不删**：它们已从「占位」演化为 WVP API 兼容层，
-  删掉会破坏前端路由兼容。退役路线见 [`STUB_COMPAT_PLAN.md`](STUB_COMPAT_PLAN.md)。
+- **`stub.rs` / `device_stub.rs` 是生产实现，不是待退役的兼容层**（2026-09-19 复核更正）：
+  这两个文件名为 `stub`，但 65 个 entry **全部是真实实现**（落库 / 下发 SIP / 调 ZLM），
+  没有空占位。其中 **49 条是当前 Vue 3 前端正在调用的活跃路径**。它们的自我描述
+  「真实实现已迁出、仅挂旧路径」与实际不符 —— 实现从未迁出，函数体就在文件内。
+  详见 [`STUB_COMPAT_PLAN.md`](STUB_COMPAT_PLAN.md)。
 - **JT1078 纳入平替范围**：WVP-PRO 没有 JT1078 协议层，这是本项目的**独有扩展**；
   协议操作层 12 个端点均为真实下发并等待终端通用应答，已无「已受理」占位响应。
 - **状态源统一到 `StateStore`**：`src/cache.rs` 与 `src/sip/gb28181/cascade_service.rs`
@@ -114,7 +118,7 @@
 | [`OPEN_ISSUES.md`](OPEN_ISSUES.md) | **未完成 / 未验证事项**（唯一待办表） |
 | [`DEPLOYMENT_GUIDE.md`](DEPLOYMENT_GUIDE.md) | 构建、运行、部署分级、配置、监控、灾备、升级 |
 | [`DB_DIALECT_NOTES.md`](DB_DIALECT_NOTES.md) | 写多方言 SQL 的注意事项 |
-| [`STUB_COMPAT_PLAN.md`](STUB_COMPAT_PLAN.md) | 兼容 shim 的退役路线（冻结期内不执行） |
+| [`STUB_COMPAT_PLAN.md`](STUB_COMPAT_PLAN.md) | `stub.rs` / `device_stub.rs` 的真实定位与清退评估（冻结期内不执行） |
 | [`../web/README.md`](../web/README.md) | 前端说明 |
 | [`../e2e/README.md`](../e2e/README.md) | 端到端测试说明 |
 | [`../mock/README.md`](../mock/README.md) | 模拟测试资源 |

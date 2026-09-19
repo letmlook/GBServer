@@ -46,7 +46,7 @@
 | B9 | 配置 | `rtc.externIP` 平台未下发 → 容器部署下浏览器 ICE 永远连不上 | ✅ 已修 |
 | A4 | 前端 | 直播页 WebRTC 播放入口（`postWebrtcPlay` 原先无调用方） | ✅ 已接 (2026-09-19) |
 | C1 | 代码债 | `handle_packet` 23 个参数 | 🔵 |
-| C2 | 代码债 | 32 个无引用的 `db::` 函数（逐条判定删除/接上） | 🔵 |
+| C2 | 代码债 | 36 个无引用的 `db::` 函数（逐条判定删除/接上） | 🔵 |
 | C3 | 缺陷/代码债 | JT1078 鉴权码只存不用 + 注册应答写死 `"GBServer"` + 0x0102 语义存疑 | 🟠 |
 | C4 | 代码债 | API Key 过期记录不清理（鉴权已判过期，仅表数据堆积） | 🔵 |
 | C5 | 代码债 | `/api/user/users` 的 `UsersQuery` 无 `query` 字段 → 用户搜索会静默失效 | 🔵 |
@@ -423,32 +423,38 @@ ZLM 相关功能（流列表、录像删除、截图…）一起 500 —— 因�
 `SipPacketContext` 结构体。
 **风险**：纯重构，但触及所有 SIP 入口，建议单独一轮 + 全量测试。
 
-### C2 🔵 32 个无引用的 `db::` 函数
+### C2 🔵 36 个无引用的 `db::` 函数
 
-用脚本扫出（全仓库仅出现一次定义、零引用）——**需要逐条判定"删除"还是"接上"**：
+2026-09-19 复核：用「标识符在 `src/` 全仓仅出现 1 次（即只有定义处）」判定，
+`src/db/` 下 231 个 `pub fn` 中有 **36 个零引用**（上一版记为 32 个，已过期）。
+**需要逐条判定"删除"还是"接上"**：
 
 ```
-db/alarm.rs          : batch_delete_alarms, count_alarms, delete_alarm, list_alarms_paged
-db/cloud_record.rs   : delete_by_app_stream, get_collect_records, query_by_device_channel
-db/device.rs         : batch_insert_channels, batch_update_channel_status,
-                       batch_upsert_channels, count_alive_devices, count_channels,
-                       count_registered_devices, delete_channels_by_device
-db/jt1078.rs         : count_online_terminals, get_auth_code_by_phone, update_auth_code
-db/media_server.rs   : add_white_list_cidr, remove_white_list_cidr, mark_offline_if_expired
-db/platform.rs       : update_enable
+db/alarm.rs           : batch_delete_alarms, count_alarms, delete_alarm, list_alarms_paged
+db/cloud_record.rs    : delete_by_app_stream, get_collect_records, query_by_device_channel
+db/common_channel.rs  : get_parent_channels, reset_map_level, update_map_level
+db/device.rs          : batch_insert_channels, batch_update_channel_status, batch_upsert_channels,
+                        count_alive_devices, count_channels, count_registered_devices,
+                        delete_channels_by_device
+db/jt1078.rs          : count_online_terminals, get_auth_code_by_phone, update_auth_code
+db/media_server.rs    : add_white_list_cidr, remove_white_list_cidr, mark_offline_if_expired
+db/platform.rs        : add, update_enable
 db/platform_channel.rs: batch_delete_channels, get_by_platform_and_channel, list_by_platform_id
-db/role.rs           : get_by_name
-db/stream_proxy.rs   : list_by_media_server, update_enable_status, update_pulling_status
-db/user.rs           : find_by_username_password, update_user_role, update_username
-db/user_api_key.rs   : delete_expired_keys
+db/role.rs            : get_by_name
+db/stream_proxy.rs    : list_by_media_server, update_enable_status, update_pulling_status
+db/user.rs            : find_by_username_password, update_user_role, update_username
+db/user_api_key.rs    : delete_expired_keys
 ```
 
 初步分类：
 * **删除候选（功能已由别的实现覆盖 / WVP 也没有）**：
-  `delete_by_app_stream`（第五十四轮已改为 `delete_by_app_stream_period`）、
-  `update_user_role` / `update_username`（WVP `UserController` 没有对应端点，
-  已核对）、`add_white_list_cidr` / `remove_white_list_cidr`（WVP 无白名单功能）、
-  `update_enable`（平台启停走 `/api/platform/update`）、`get_by_name`。
+  `delete_by_app_stream`（已改为 `delete_by_app_stream_period`）、
+  `update_user_role` / `update_username`（WVP `UserController` 没有对应端点，已核对）、
+  `add_white_list_cidr` / `remove_white_list_cidr`（WVP 无白名单功能）、
+  `update_enable`（平台启停走 `/api/platform/update`）、`get_by_name`、
+  `platform::add`（新增平台走别的路径）、
+  `common_channel::{get_parent_channels,update_map_level,reset_map_level}`、
+  `stream_proxy::update_pulling_status`（已被 `update_pulling_status_by_app_stream` 取代）。
 * **需要接上（可能是缺失的功能）**：`delete_expired_keys`（见 C4）、
   `get_auth_code_by_phone` / `update_auth_code`（见 C3）。
 * `mark_offline_if_expired`：已被 `media_server::mark_offline_if_miss_count_exceeded`
@@ -456,6 +462,9 @@ db/user_api_key.rs   : delete_expired_keys
 * **其余**（alarm/device/platform_channel/stream_proxy 的批量与计数函数）：
   要么被"合并查询"取代（`count_channels` vs `count_all_channels`），
   要么是早期分层遗留 —— 逐条确认后删除。
+
+> 注意：判定依据是「标识符零出现」。若某函数是通过 `db::module::*` 通配再以
+> 短名调用，会被误判 —— 复核时需确认调用形式。
 
 ### C3 🟠 JT1078 鉴权码：**只存不用**，注册应答里写死 `"GBServer"`
 
