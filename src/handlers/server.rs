@@ -296,6 +296,29 @@ fn read_memory_info_impl() -> Option<(u64, u64, u64)> {
     Some((16 * 1024 * 1024 * 1024, 8 * 1024 * 1024 * 1024, 8 * 1024 * 1024 * 1024))
 }
 
+// ── 系统负载（load average） ──
+//
+// `/proc/loadavg` 第一行格式：
+//   "1.23 0.95 0.80 1/234 5678"
+// 分别对应 1/5/15 分钟平均负载、当前运行/总进程数、最近 PID。
+#[cfg(target_os = "linux")]
+fn read_load_average() -> Option<(f64, f64, f64)> {
+    let mut s = String::new();
+    File::open("/proc/loadavg").ok()?.read_to_string(&mut s).ok()?;
+    let first = s.lines().next()?;
+    let mut parts = first.split_whitespace();
+    let l1: f64 = parts.next()?.parse().ok()?;
+    let l5: f64 = parts.next()?.parse().ok()?;
+    let l15: f64 = parts.next()?.parse().ok()?;
+    Some((l1, l5, l15))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn read_load_average() -> Option<(f64, f64, f64)> {
+    // macOS / Windows: 暂未实现，返回 None 让前端走兜底
+    None
+}
+
 /// 列出真实磁盘（每根 = 一个物理磁盘），返回 `(path, total_bytes, used_bytes)`。
 ///
 /// dashboard 磁盘图期望多根柱子（每根 = 一个真实物理磁盘）。我们解析
@@ -341,7 +364,11 @@ fn read_all_disk_usage() -> Vec<(String, u64, u64)> {
                 || fs.starts_with("/dev/nvme")
                 || fs.starts_with("/dev/vd")
                 || fs.starts_with("/dev/xvd")
-                || fs.starts_with("/dev/hd"))
+                || fs.starts_with("/dev/hd")
+                // Fedora / RHEL 默认 LVM root：/dev/mapper/<vg>-<lv>
+                // 是真块设备（dm-0 之类），不识别就会把所有 Fedora 机器
+                // 的磁盘使用率报告为 0。
+                || fs.starts_with("/dev/mapper/"))
             {
                 continue;
             }
@@ -386,13 +413,53 @@ fn read_all_disk_usage() -> Vec<(String, u64, u64)> {
     result
 }
 
+/// 不过滤的全量挂载点列表。
+///
+/// 与 `read_all_disk_usage()` 的区别：
+/// - 不按设备名前缀（sd/nvme/vd/...）过滤
+/// - 不按容量阈值过滤
+/// - 不去重合并同族挂载点
+///
+/// 仅用于 dashboard 的"全部磁盘"柱状图视图，给用户看 `df` 的原始视图。
+/// 返回 `(fs, mount_point, total_kb, used_kb)` 4 元组。
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn read_all_disks_raw() -> Vec<(String, String, u64, u64)> {
+    let output = match Command::new("df").arg("-kP").output() {
+        Ok(o) if o.status.success() => o,
+        _ => return Vec::new(),
+    };
+    let out = String::from_utf8_lossy(&output.stdout);
+    let mut rows: Vec<(String, String, u64, u64)> = Vec::new();
+    for (i, line) in out.lines().enumerate() {
+        if i == 0 { continue; } // 跳过 Filesystem 标题行
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() < 6 { continue; }
+        let fs = parts[0];
+        // 跳过 tmpfs / devtmpfs / overlay / squashfs 等明显非真实存储的伪 FS
+        // 但保留 LVM / sd / nvme / loop（loop 在容器里常见）
+        let total_kb = match parts[1].parse::<u64>() { Ok(n) => n, Err(_) => continue };
+        let used_kb  = match parts[2].parse::<u64>() { Ok(n) => n, Err(_) => continue };
+        let mount = parts.last().unwrap_or(&"/").to_string();
+        rows.push((fs.to_string(), mount, total_kb, used_kb));
+    }
+    rows
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn read_all_disks_raw() -> Vec<(String, String, u64, u64)> { Vec::new() }
+
 /// 把块设备名归一化为"物理磁盘族"标识：
 /// - `/dev/disk3s5` → `disk3` （去掉 `s[0-9]+` 后缀；APFS volume）
 /// - `/dev/disk0s2` → `disk0`
 /// - `/dev/sda2` → `sda` （去掉末尾数字）
 /// - `/dev/nvme0n1p2` → `nvme0n1`
 /// - `/dev/disk3s3s1` → `disk3` （去掉所有 `s[0-9]+` 后缀；APFS snapshot）
+/// - `/dev/mapper/fedora_x99-root` → `mapper/fedora_x99-root`（LVM 不再去重）
 fn disk_family(fs: &str) -> String {
+    // LVM device-mapper：每个 LV 都是独立逻辑盘，不要按 VG 折叠。
+    if fs.starts_with("/dev/mapper/") {
+        return fs.to_string();
+    }
     let s = fs.trim_start_matches("/dev/");
     // macOS APFS 子卷 / snapshot 后缀：去掉所有 sN 后缀
     let s = if let Some(stripped) = strip_apfs_suffixes(s) {
@@ -778,6 +845,8 @@ struct SampleBuffers {
     cpu: Mutex<VecDeque<(String, f64)>>,  // (time, fraction 0.0-1.0)
     mem: Mutex<VecDeque<(String, f64)>>,
     net: Mutex<VecDeque<(String, f64, f64)>>,  // (time, out_mbps, in_mbps)
+    load: Mutex<VecDeque<(String, f64)>>,      // (time, load1)
+    disk: Mutex<VecDeque<(String, f64)>>,      // (time, max_used_pct)
 }
 
 static BUFFERS: OnceLock<SampleBuffers> = OnceLock::new();
@@ -787,6 +856,8 @@ fn buffers() -> &'static SampleBuffers {
         cpu: Mutex::new(VecDeque::with_capacity(WINDOW_SIZE + 1)),
         mem: Mutex::new(VecDeque::with_capacity(WINDOW_SIZE + 1)),
         net: Mutex::new(VecDeque::with_capacity(WINDOW_SIZE + 1)),
+        load: Mutex::new(VecDeque::with_capacity(WINDOW_SIZE + 1)),
+        disk: Mutex::new(VecDeque::with_capacity(WINDOW_SIZE + 1)),
     })
 }
 
@@ -823,6 +894,10 @@ pub async fn system_info(State(state): State<AppState>) -> Json<WVPResult<serde_
     // dashboard 期望多根柱子（每根挂载点一个），所以不写入 ring buffer——
     // 直接返回当前所有挂载点即可（磁盘容量不按秒变化）。
     let disks = read_all_disk_usage();
+    // disk_all: 不过滤的全量列表（含 tmpfs / loop / overlay 等）。
+    // dashboard 的横排柱状图用它，把所有挂载点都展示出来（用户明确要求
+    // 看全量）。「系统信息」页仍然走上面的过滤版（curated）。
+    let disks_raw = read_all_disks_raw();
     // 每个挂载点同时给出两套单位，因为有两个消费者：
     //   * dashboard 的柱状图读 `use` / `free`（**GB**）
     //   * 「系统信息」页的卡片读 `used` / `total`（**字节**，交给 formatSize）
@@ -859,12 +934,20 @@ pub async fn system_info(State(state): State<AppState>) -> Json<WVPResult<serde_
     let net_rx_mbps = read_network_rx_mbps().await.unwrap_or(0.0);
     let net_tx_mbps = read_network_tx_mbps().await.unwrap_or(0.0);
 
+    // Load average (1/5/15 min) — Linux only via /proc/loadavg
+    let load_avg = read_load_average();
+
     // Push current sample into ring buffers and snapshot full window.
     // 这样前端 setData 用整个数组覆盖，就能画出滚动曲线。
     let bufs = buffers();
     push_truncated(&mut bufs.cpu.lock().unwrap(), (now.clone(), cpu_fraction));
     push_truncated(&mut bufs.mem.lock().unwrap(), (now.clone(), mem_fraction));
     push_truncated(&mut bufs.net.lock().unwrap(), (now.clone(), net_tx_mbps, net_rx_mbps));
+    push_truncated(
+        &mut bufs.load.lock().unwrap(),
+        (now.clone(), load_avg.map(|l| l.0).unwrap_or(0.0)),
+    );
+    push_truncated(&mut bufs.disk.lock().unwrap(), (now.clone(), disk_pct));
 
     let cpu_data: Vec<serde_json::Value> = bufs.cpu.lock().unwrap().iter()
         .map(|(t, v)| serde_json::json!({"time": t, "data": v}))
@@ -874,6 +957,12 @@ pub async fn system_info(State(state): State<AppState>) -> Json<WVPResult<serde_
         .collect();
     let net_data: Vec<serde_json::Value> = bufs.net.lock().unwrap().iter()
         .map(|(t, out, in_)| serde_json::json!({"time": t, "out": out, "in": in_}))
+        .collect();
+    let load_data: Vec<serde_json::Value> = bufs.load.lock().unwrap().iter()
+        .map(|(t, v)| serde_json::json!({"time": t, "data": v}))
+        .collect();
+    let disk_history: Vec<serde_json::Value> = bufs.disk.lock().unwrap().iter()
+        .map(|(t, v)| serde_json::json!({"time": t, "data": v}))
         .collect();
 
     // netTotal: yAxis max = peak of CURRENT sample rounded up to next 100 Mbps, min 100
@@ -885,6 +974,43 @@ pub async fn system_info(State(state): State<AppState>) -> Json<WVPResult<serde_
     };
 
     let uptime = read_uptime().unwrap_or(3600.0) as u64;
+
+    // 本机对外 IP：dashboard 的「协议接入」面板要展示给 admin
+    // 用来填到设备/下级平台里。如果 `cfg.sip.ip` 是通配地址，
+    // 这里返回的是 OS 自动选出的可路由 NIC IP，比 sip.ip 更直观。
+    let host_ip = detect_outbound_ip_cached().map(|ip| ip.to_string());
+
+    // ---- 协议接入配置（GB28181 / JT1078） ----
+    // dashboard 的「协议接入」面板直接展示本平台配置，供 admin 把
+    // 这些值填到设备 / 下级平台里完成对接 —— 因此密码必须明文返回，
+    // 不能脱敏。这只是给登录后的管理员看的，普通用户没有 access-token。
+    let sip_cfg = state.config.sip.as_ref().map(|sip| {
+        serde_json::json!({
+            "enabled": sip.enabled,
+            "ip": sip.ip,
+            "bind_ip": sip.bind_ip,
+            "port": sip.port,
+            "tcp_port": sip.tcp_port,
+            "tcp_enabled": sip.tcp_enabled,
+            "device_id": sip.device_id,
+            "realm": sip.realm,
+            "password": sip.password,
+            "keepalive_timeout": sip.keepalive_timeout,
+            "register_timeout": sip.register_timeout,
+            "charset": sip.charset,
+            "sdp_ip": sip.sdp_ip,
+            "stream_ip": sip.stream_ip,
+        })
+    });
+    let jt_cfg = state.config.jt1078.as_ref().map(|j| {
+        serde_json::json!({
+            "tcp_port": j.tcp_port.unwrap_or(60000),
+            "udp_port": j.udp_port.unwrap_or(60000),
+            "timeout_ms": j.timeout_ms,
+            "retransmit_wait_ms": j.retransmit_wait_ms,
+            "retransmit_hook_url": j.retransmit_hook_url,
+        })
+    });
 
     // ---- 标量字段：前端「系统信息」页与 dashboard 读的就是这些 ----
     //
@@ -915,11 +1041,31 @@ pub async fn system_info(State(state): State<AppState>) -> Json<WVPResult<serde_
     let online_channels = db::count_online_channels(&state.pool).await.unwrap_or(0);
     let media_server_count = crate::db::media_server::count_all(&state.pool).await.unwrap_or(0);
 
+    let disk_all_data: Vec<serde_json::Value> = disks_raw.iter()
+        .map(|(fs, mount, total_kb, used_kb)| {
+            let total_bytes = *total_kb * 1024;
+            let used_bytes = *used_kb * 1024;
+            serde_json::json!({
+                "fs": fs,
+                "path": mount,
+                "free": ((total_bytes as f64 - used_bytes as f64) / (1024.0 * 1024.0 * 1024.0)).max(0.0),
+                "use":  used_bytes as f64 / (1024.0 * 1024.0 * 1024.0),
+                "total": total_bytes as f64,
+                "used": used_bytes as f64,
+            })
+        })
+        .collect();
+
     let data = serde_json::json!({
         "cpu": cpu_data,
         "mem": mem_data,
         "disk": disk_data,
+        "disk_all": disk_all_data,
+        "disk_history": disk_history,
         "net": net_data,
+        "load": load_data,
+        "load_avg": load_avg.map(|(a, b, c)| serde_json::json!({"1": a, "5": b, "15": c}))
+            .unwrap_or_else(|| serde_json::json!(null)),
         "netTotal": net_total,
         "uptime": uptime,
         "cpu_usage": cpu_usage_pct,
@@ -934,6 +1080,9 @@ pub async fn system_info(State(state): State<AppState>) -> Json<WVPResult<serde_
         "deviceTotal": total_devices,
         "channelOnline": online_channels,
         "channelTotal": total_channels,
+        "sip_config": sip_cfg.unwrap_or(serde_json::json!(null)),
+        "jt1078_config": jt_cfg.unwrap_or(serde_json::json!(null)),
+        "host_ip": host_ip,
     });
     Json(WVPResult::success(data))
 }
