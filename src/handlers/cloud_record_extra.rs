@@ -460,7 +460,10 @@ pub(crate) async fn proxy_zlm_file(
     }
     let url = format!("http://{}:{}/{}", zlm.ip, zlm.http_port, rel);
 
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new());
     let mut req = client.get(&url);
     if let Some(range) = headers.get(header::RANGE).and_then(|v| v.to_str().ok()) {
         // axum 与 reqwest 各自依赖不同版本的 http crate，这里按字符串转换

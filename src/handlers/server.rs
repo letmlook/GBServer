@@ -58,7 +58,10 @@ pub async fn zlm_proxy(
         .or_insert_with(|| client.secret.clone());
 
     let target = format!("{}/{}", client.base_url().trim_end_matches('/'), path);
-    let http = reqwest::Client::new();
+    let http = reqwest::Client::builder()
+        .no_proxy()
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new());
     let req = if method == Method::POST {
         http.post(&target).query(&params).body(body)
     } else {

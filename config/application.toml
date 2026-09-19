@@ -125,7 +125,7 @@ http_port = 8080
 # 留空时后端回落到 http://127.0.0.1:<server.port>/api/zlm/hook，
 # 那种情况下容器内的 ZLM 会把 hook 发到它自己，平台收不到任何事件。
 # 后端会在节点上线时把逐事件的 hook URL 自动下发（见 zlm::hook::hook_config_items）。
-hook_url = "http://host.docker.internal:18080/api/zlm/hook"
+hook_url = "http://127.0.0.1:18080/api/zlm/hook"
 # 设备→平台收流的 UDP 端口范围（后端会下发给 ZLM 的 rtp_proxy.port_range）。
 # 必须与 docker-compose 里 zlm 服务发布的 UDP 端口范围一致
 # （compose 默认 "30000-30100:30000-30100/udp"）。

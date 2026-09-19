@@ -1263,7 +1263,10 @@ mod tests {
     }
 
     async fn post_status_of(base: &str, path: &str) -> u16 {
-        reqwest::Client::new()
+        reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new())
             .post(format!("{}{}", base, path))
             .json(&serde_json::json!({}))
             .send()
@@ -1310,7 +1313,10 @@ mod tests {
         state.config = std::sync::Arc::new(cfg);
         let base = spawn(state).await;
 
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
         let url = format!("{}/api/rpc", base);
 
         // 不带密钥 → 401
@@ -1342,7 +1348,10 @@ mod tests {
     #[tokio::test]
     async fn test_rpc_endpoint_allows_when_no_secret_configured() {
         let base = spawn(app_state().await).await;
-        let r = reqwest::Client::new()
+        let r = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new())
             .post(format!("{}/api/rpc", base))
             .json(&rpc_body())
             .send()

@@ -240,6 +240,7 @@ impl HttpRpc {
     pub fn new(node_id: &str, config: HttpRpcConfig) -> Self {
         let http = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(config.timeout_secs))
+            .no_proxy()
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
         Self { node_id: node_id.to_string(), config, http }

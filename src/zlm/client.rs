@@ -121,8 +121,14 @@ impl ZlmClient {
             secret: secret.to_string(),
             ip: ip.to_string(),
             http_port: port,
+            // ZLM 始终是本机/同网段媒体节点（127.0.0.1 或 LAN IP），永远不应该
+            // 走系统 HTTP 代理——本机开发环境的 `http_proxy=192.168.3.88:7892`
+            // 会把 127.0.0.1:8080 的调用拦下来并返回 502 Bad Gateway，表现为
+            // "play/start 报 'Media Server error: HTTP error: 502 Bad Gateway'"。
+            // reqwest 默认会读 env 里的 *_PROXY，因此显式 `.no_proxy()` 关掉。
             http: Client::builder()
                 .timeout(std::time::Duration::from_secs(30))
+                .no_proxy()
                 .build()
                 .unwrap_or_else(|_| Client::new()),
         }

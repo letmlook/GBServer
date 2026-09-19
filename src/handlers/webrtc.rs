@@ -63,7 +63,10 @@ pub async fn webrtc_play(
             .append_pair("stream", &stream)
             .append_pair("type", offer_type);
 
-        match reqwest::Client::new()
+        match reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new())
             .post(url)
             .header("Content-Type", "application/sdp")
             .body(sdp_offer.clone())

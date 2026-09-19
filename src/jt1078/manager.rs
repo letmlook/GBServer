@@ -640,7 +640,10 @@ impl Jt1078Manager {
                             let missing = timed_out.clone();
                             let hook_url = hook.clone();
                             tokio::spawn(async move {
-                                let client = reqwest::Client::new();
+                                let client = reqwest::Client::builder()
+                                    .no_proxy()
+                                    .build()
+                                    .unwrap_or_else(|_| reqwest::Client::new());
                                 #[derive(serde::Serialize)]
                                 struct MissingReport { addr: String, missing: Vec<u16>, timestamp_ms: u128 }
                                 let report = MissingReport { addr: addr_s, missing, timestamp_ms: chrono::Utc::now().timestamp_millis() as u128 };

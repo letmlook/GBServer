@@ -126,6 +126,12 @@ pub async fn play_start(
         // 这是**正常情况**，不是失败 —— 设备已经在推流，直接把已有的
         // 播放地址返回即可（多观看者/页面重进都靠这条路径）。
         // 此前一律按失败返回，导致"第一个看的人正常、第二个看的人报错"。
+        //
+        // 退化处理：ZLM 偶尔会进入"流登记在册但 RTP info 查不到"的不一致状态
+        // （常见于上一次 BYE 还没真正回收、或并发的两条 openRtpServer）。
+        // 此时 `get_rtp_info` 拿不到 info → 先 `closeRtpServer` 清掉残留登记
+        // 再 `openRtpServer` 重建。仅靠重试 openRtpServer 是没用的：ZLM 看到
+        // 内部有同名 stream 仍然直接 -300。
         let rtp_server = match zlm_client.open_rtp_server(&rtp_req).await {
             Ok(s) => s,
             Err(e) => {
@@ -152,16 +158,46 @@ pub async fn play_start(
                         }
                         Ok(None) => {
                             tracing::warn!(
-                                "openRtpServer 报流已存在，但 getRtpInfo 查不到 {stream_id}，按失败处理"
+                                "openRtpServer 报流已存在但 getRtpInfo 查不到 {stream_id}，先 closeRtpServer 清残留再 open"
                             );
+                            // 先关掉残留的 stream_id 登记 —— 不关直接重开
+                            // openRtpServer 仍会拿到 -300。
+                            let _ = zlm_client.close_rtp_server(&stream_id).await;
+                            match zlm_client.open_rtp_server(&rtp_req).await {
+                                Ok(s2) => s2,
+                                Err(e2) => {
+                                    tracing::error!(
+                                        "openRtpServer 重试仍失败 {stream_id}: {e2}"
+                                    );
+                                    return Json(WVPResult::error(format!(
+                                        "Media Server error: {}",
+                                        e2
+                                    )));
+                                }
+                            }
                         }
                         Err(qe) => {
-                            tracing::warn!("查询已存在流的 RTP 信息失败: {qe}");
+                            tracing::warn!("查询已存在流的 RTP 信息失败 {stream_id}: {qe}");
+                            // info 接口本身失败不代表流不存在 —— 关掉残留再开。
+                            let _ = zlm_client.close_rtp_server(&stream_id).await;
+                            match zlm_client.open_rtp_server(&rtp_req).await {
+                                Ok(s2) => s2,
+                                Err(e2) => {
+                                    tracing::error!(
+                                        "openRtpServer 重试仍失败 {stream_id}: {e2}"
+                                    );
+                                    return Json(WVPResult::error(format!(
+                                        "Media Server error: {}",
+                                        e2
+                                    )));
+                                }
+                            }
                         }
                     }
+                } else {
+                    tracing::error!("Failed to open RTP server: {}", e);
+                    return Json(WVPResult::error(format!("Media Server error: {}", e)));
                 }
-                tracing::error!("Failed to open RTP server: {}", e);
-                return Json(WVPResult::error(format!("Media Server error: {}", e)));
             }
         };
 
