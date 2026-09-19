@@ -724,8 +724,10 @@ onMounted(async () => {
 .video-cell__body { flex: 1 1 auto; display: flex; align-items: center; justify-content: center; background: #111; position: relative; min-height: 0; }
 .video-cell__footer { display: flex; justify-content: space-between; align-items: center; padding: 4px 10px; background: rgba(0,0,0,.6); font-size: var(--text-xs); flex: 0 0 auto; }
 .video-element { width: 100%; height: 100%; object-fit: contain; background: #000; }
-.video-placeholder { color: #555; text-align: center; }
-.placeholder-tip { font-size: var(--text-sm); margin-top: 4px; opacity: 0.6; }
+/* 视频格背景恒为深色（`.video-cell__body` 是 `#111`），与主题无关 ——
+   固定用浅灰，`#555` 或主题文字色在深底上都看不清。 */
+.video-placeholder { color: rgba(255, 255, 255, 0.6); text-align: center; }
+.placeholder-tip { font-size: var(--text-sm); margin-top: 4px; opacity: 0.7; }
 
 /* 错误提示也走收缩 */
 .play-error { padding: 0 16px 8px; flex: 0 0 auto; }

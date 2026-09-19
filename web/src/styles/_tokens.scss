@@ -189,7 +189,10 @@ html.dark {
   --el-fill-color-blank: var(--bg-surface);
   --el-fill-color-light: var(--bg-elevated);
   --el-fill-color-lighter: var(--bg-base);
-  --el-mask-bg: rgba(0, 0, 0, 0.6);
+  /* Element Plus 的 loading 遮罩用的是 `--el-mask-color`（默认 `#ffffffe6` 纯白），
+     **不是** `--el-mask-bg` —— 后者在 Element Plus 里根本不存在，写它是空操作。
+     不改这里，暗色下 `v-loading` 会盖一层白屏（例如弹出播放窗口时的等待遮罩）。 */
+  --el-mask-color: rgba(15, 23, 42, 0.75);
 
   /* 品牌色加深 */
   --el-color-primary: var(--brand-primary-500);

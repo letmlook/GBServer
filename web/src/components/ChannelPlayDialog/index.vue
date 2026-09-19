@@ -1102,9 +1102,12 @@ async function onSnap() {
 }
 .video-element { width: 100%; height: 100%; object-fit: contain; background: #000; }
 .play-dialog__placeholder {
-  color: #666; text-align: center;
+  /* 播放区背景恒为深色（见 .play-dialog__stage 的渐变），与主题无关，
+     所以这里必须用浅灰固定色；用 `#666` 或 `var(--text-*)` 都会看不清 ——
+     后者在浅色主题下是深灰、压在黑底上同样不可读。 */
+  color: rgba(255, 255, 255, 0.62); text-align: center;
   display: flex; flex-direction: column; align-items: center; gap: 8px;
-  .placeholder-text { font-size: 13px; opacity: 0.8; }
+  .placeholder-text { font-size: 13px; opacity: 0.85; }
 }
 .play-dialog__live-badge {
   position: absolute;
