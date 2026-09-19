@@ -90,6 +90,8 @@ export interface SystemInfo {
     tcp_port?: number
     tcp_enabled?: boolean
     device_id?: string
+    /** SIP 用户名：级联登录外部 SIP 网络时使用的账号；空时降级为 device_id */
+    username?: string
     realm?: string
     /** 明文：要给设备/下级平台填入 */
     password?: string

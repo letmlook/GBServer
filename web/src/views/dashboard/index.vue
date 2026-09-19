@@ -166,9 +166,8 @@
               <div class="proto-row">
                 <dt>SIP 用户名</dt>
                 <dd class="proto-value mono">
-                  {{ sipCfg.device_id }}
-                  <span class="meta">= 服务器 ID</span>
-                  <button class="proto-copy" @click="copy(sipCfg.device_id ?? '', 'SIP 用户名')" title="复制 SIP 用户名">
+                  {{ sipCfg.username ?? sipCfg.device_id }}
+                  <button class="proto-copy" @click="copy(sipCfg.username ?? sipCfg.device_id ?? '', 'SIP 用户名')" title="复制 SIP 用户名">
                     <el-icon :size="12"><DocumentCopy /></el-icon>
                   </button>
                 </dd>

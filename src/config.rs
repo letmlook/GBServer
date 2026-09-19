@@ -124,6 +124,15 @@ pub struct SipConfig {
     #[serde(skip)]
     pub bind_ip: Option<String>,
     pub device_id: String,
+    /// SIP 用户名：本平台向上级 / 下级平台发起级联注册时使用的 SIP 账号。
+    ///
+    /// 与 `device_id`（20 位国标编码，作为本平台 SIP 服务器标识）的区别：
+    ///  - `device_id` 是平台本身的身份（告诉设备/外部「我是谁」）
+    ///  - `username` 是平台登录外部 SIP 网络用的账号（告诉外部「我用什么名字登录」）
+    /// 实际部署中通常是 `admin` / `gbserver-001` 这种可读名；
+    /// 若留空则降级为 `device_id`，兼容旧配置。
+    #[serde(default)]
+    pub username: Option<String>,
     pub password: String,
     pub realm: String,
     pub keepalive_timeout: u64,
@@ -177,6 +186,7 @@ impl Default for SipConfig {
             tcp_enabled: true,
             bind_ip: None,
             device_id: "34020000002000000001".to_string(),
+            username: None,
             password: "admin123".to_string(),
             realm: "3402000000".to_string(),
             keepalive_timeout: 30,

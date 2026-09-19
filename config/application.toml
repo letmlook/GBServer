@@ -75,6 +75,10 @@ tcp_port = 5060
 # 是否启用 SIP TCP 监听（默认开）。TCP 设备只能通过 TCP 注册。
 tcp_enabled = true
 device_id = "34020000002000000001"
+# SIP 用户名：本平台向上级 / 下级平台发起级联注册时使用的 SIP 账号。
+# 与 device_id（20 位国标编码，本平台 SIP 服务器标识）不同；
+# 留空时降级为 device_id，兼容旧配置。
+username = "gbserver-001"
 password = "admin123"
 realm = "3402000000"
 keepalive_timeout = 30

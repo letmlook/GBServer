@@ -985,6 +985,10 @@ pub async fn system_info(State(state): State<AppState>) -> Json<WVPResult<serde_
     // 这些值填到设备 / 下级平台里完成对接 —— 因此密码必须明文返回，
     // 不能脱敏。这只是给登录后的管理员看的，普通用户没有 access-token。
     let sip_cfg = state.config.sip.as_ref().map(|sip| {
+        // username 配置为空时降级为 device_id（兼容旧 config）
+        let username = sip.username.clone()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| sip.device_id.clone());
         serde_json::json!({
             "enabled": sip.enabled,
             "ip": sip.ip,
@@ -993,6 +997,7 @@ pub async fn system_info(State(state): State<AppState>) -> Json<WVPResult<serde_
             "tcp_port": sip.tcp_port,
             "tcp_enabled": sip.tcp_enabled,
             "device_id": sip.device_id,
+            "username": username,
             "realm": sip.realm,
             "password": sip.password,
             "keepalive_timeout": sip.keepalive_timeout,
