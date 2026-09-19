@@ -156,6 +156,14 @@ html.dark {
   --bg-elevated:   #232b40;   /* 悬浮卡片 */
   --bg-overlay:    #2d3650;   /* 弹层/覆盖 */
   --bg-disabled:   #3a4258;
+  /* 交互态背景 —— **这两个此前漏了覆盖**，暗色下会沿用浅色值
+   * （--bg-hover #e1ecf5 近白、--bg-active #d4e4f1），后果是：
+   *   · 侧栏菜单/标签页/表格行的 hover 一片发白（「悬浮背景太亮」）
+   *   · 顶栏用户区等 hover 时，浅字压在近白底上 → 对比度仅 1.09:1（等于隐形）
+   * 现在取值保证：文字 `--text-primary` 11.5:1、侧栏 hover 用的品牌色
+   * `--brand-primary-500` 也 ≥4.5:1，同时与上一层面板仍保持克制的层次。 */
+  --bg-hover:      #2a3348;
+  --bg-active:     #2f3a52;
 
   /* 文字层（暗底浅字）
    *
@@ -190,6 +198,14 @@ html.dark {
   --border-default: #46566f;
   --border-subtle:  #2f3d55;
   --border-strong:  #5b6c86;
+
+  /* 阴影
+   * 浅色主题的阴影是「深蓝+低透明」（rgba(15,28,45,.05~.18)），压在暗底上
+   * 几乎不可见，导致弹层/下拉/悬浮卡片没有层次、像贴在背景上。暗色改用
+   * 更重的纯黑阴影，并加一圈极淡的内描边帮助边缘分离。 */
+  --shadow-card:    0 1px 2px rgba(0, 0, 0, 0.40);
+  --shadow-pop:     0 8px 24px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(255, 255, 255, 0.05) inset;
+  --shadow-overlay: 0 16px 48px rgba(0, 0, 0, 0.55);
 
   /* Element Plus 覆盖 */
   --el-bg-color: var(--bg-base);
