@@ -1,15 +1,19 @@
 # GBServer 遗留问题与进度（Open Issues）
 
 > 生成时间：2026-09-13（本地 08:3x）
-> **最近更新：2026-09-19（两轮）** —— 先做文档冻结轮；随后**解除冻结**，修复用户管理模块
-> （权限缺口 / 数据一致性 / 输入校验 / 用户编辑 / 搜索，commit `bfa65f8`）。
-> 代码基线：2026-09-13~19 的 16 个功能提交（延迟列 / 通道播放对话框 / 缩略图落盘 / 直播页 WebRTC / 控制台改版）+ 上述用户管理修复
-> 测试基线（2026-09-19 实测）：`cargo test --no-fail-fast` **746 通过 / 0 失败 / 3 忽略**（e2e 未重测，需后端+前端+依赖服务同时在跑）
+> **最近更新：2026-09-19（真实设备接入核验轮，HEAD `8ecec6a`）**
+> —— 本轮把第一台**真实国标设备**（EasyGBD `34020000001320128497`，TCP）接入平台并端到端实测，
+> 据此更新 D1（真机核验）、B1 / B6（真机复现的新证据）、C2（零引用 db 函数重算），
+> 并新增 B14 / C8 / C9 / E6 四项。
+> 代码基线：2026-09-13~19 的功能提交（延迟列 / 通道播放对话框 / 缩略图落盘 / 直播页 WebRTC /
+> 控制台改版 / 用户管理修复 `bfa65f8` / 主界面标题与按钮布局 `8ecec6a`）
+> 测试基线（2026-09-19 实测 @ `8ecec6a`）：`cargo test --no-fail-fast` **746 通过 / 0 失败 / 3 忽略**；
+> e2e 最近一次运行 35 通过 / 0 失败（筛选运行，非 59 条全量）。
 >
 > ⚠️ 注意：`743 通过` 等更早的数字**在修复前无法复现** —— 测试目标曾因
 > `test_support.rs` / `lib.rs` 的测试构造器缺字段而**编译失败**，同日已修。这是测试代码问题，不涉及运行时行为。
 >
-> 本文档**只列尚未完成/尚未验证的事项**。已实现能力、设计决策与契约审计结论见
+> 本文档**只列尚未完成/尚未验证的事项**。已实现能力、设计决策与真机核验结论见
 > [`STATUS.md`](STATUS.md)；逐轮修复过程记录已按「只保留最新状态」清理，需要时走 git 历史。
 > 更新规则：每轮修完一批就把对应条目移出本文档；新增未完成项必须在这里登记，
 > 不允许只写在提交信息里。
@@ -20,7 +24,7 @@
 |---|---|
 | 🔴 | 未实现（端点/功能缺失） |
 | 🟠 | 已定位的真实缺陷，尚未修复 |
-| 🟡 | 已修复，**尚未完成端到端复验/提交** |
+| 🟡 | **部分完成**：已修但未完全复验，或已核验但仍有未覆盖项 |
 | 🔵 | 代码债 / 待清理（不影响功能正确性） |
 | ⚪ | 明确范围外（记录在案，不计划实现） |
 | ❓ | 待复现/待确认，尚不能定性 |
@@ -34,28 +38,31 @@
 | A1 | 功能端点 | 中亿视图（SY）定制模块 10 条端点 | 🔴 |
 | A2 | 功能端点 | WVP 自带诊断端点 `/api/test/{hook/list,redis}` | 🔴 |
 | A3 | 功能端点 | LiveGBS 兼容 API（`/api/v1/*` 11 条 + `/auth/login`） | ⚪ |
-| B1 | 缺陷 | UDP 模式下 `connectRtpServer` 不可用（ZLM 报"仅支持tcp主动模式"） | 🟠 |
+| B1 | 缺陷 | UDP/TCP-PASSIVE 下 `connectRtpServer` 被 ZLM 拒绝（真机已复现） | 🟠 |
 | B2 | 缺陷 | 录像计划 `startRecord` 与设备推流的竞态 | ✅ 已修并复验 |
 | B3 | 缺陷 | 假设备 mock 缺 `connection_lost` → 进程崩溃（"设备在线但无 RTP"） | ✅ 已修并复验 |
 | B4 | 环境 | 后台进程"静默退出"= 同组 job 被中止连带杀进程（已定性，非缺陷） | ⚪ |
 | B5 | 测试 | `cloudRecord` e2e 仍有时序耦合（本轮 3/3 通过） | 🔵 |
-| B6 | 缺陷 | `send_session_bye` 只按 设备+通道 定位会话 →**跨类型误停**（停直播会停掉同通道回放） | 🟠 |
+| B6 | 缺陷 | `send_session_bye` 只按 设备+通道 定位会话 →**跨类型/跨代际误停**（真机已复现） | 🟠 |
 | B7 | 缺陷 | `/api/play/webrtc` 调 ZLM 的形态错误 → 恒失败（**已修，普通流真实浏览器验证可播**） | ✅ 已修 |
 | B8 | 缺陷 | **GB28181 流走 WebRTC 解不出帧**（收 358KB RTP 但 `framesReceived=0`；普通流正常） | 🟠 |
 | B10 | 缺陷 | ZLM 流列表反序列化失败（`"fps": 25.0` 浮点 vs `u32`）→ 流列表恒为空 | ✅ 已修 |
 | B11 | 缺陷 | `on_server_started` 用 ZLM **内部** HTTP 端口覆盖库里的对外端口（80 覆盖 8080）→ 后端所有 ZLM 调用 502 | ✅ 已修 |
 | B12 | 缺陷 | ZLM 对同一路流**按协议各返回一行** → 控制台「重点通道」同一通道重复铺格子、「直播 N」虚高 | ✅ 已修并复验 |
 | B13 | 性能 | 控制台首屏"等最慢接口"才统一赋值 + `system/info` 被 3 个组件同时拉 → 卡片空等约 2s | ✅ 已修并复验 |
+| B14 | 缺陷 | 设备 `DeviceControl` / `ConfigDownload` 等**应答未被解析**（真机实测落入 `Unhandled MESSAGE body`） | 🟠 |
 | B9 | 配置 | `rtc.externIP` 平台未下发 → 容器部署下浏览器 ICE 永远连不上 | ✅ 已修 |
 | A4 | 前端 | 直播页 WebRTC 播放入口（`postWebrtcPlay` 原先无调用方） | ✅ 已接 (2026-09-19) |
 | C1 | 代码债 | `handle_packet` 23 个参数 | 🔵 |
-| C2 | 代码债 | 36 个无引用的 `db::` 函数（逐条判定删除/接上） | 🔵 |
+| C2 | 代码债 | 29 个无引用的 `db::` 函数（逐条判定删除/接上；上一版记为 36 个） | 🔵 |
 | C3 | 缺陷/代码债 | JT1078 鉴权码只存不用 + 注册应答写死 `"GBServer"` + 0x0102 语义存疑 | 🟠 |
 | C4 | 代码债 | API Key 过期记录不清理（鉴权已判过期，仅表数据堆积） | 🔵 |
 | C5 | 代码债 | ~~`/api/user/users` 的 `UsersQuery` 无 `query` 字段~~ | ✅ 已修 (`bfa65f8`) |
 | C6 | 缺陷 | 用户管理权限缺口：9 个管理端点无角色校验（普通用户可造管理员级角色） | ✅ 已修 (`bfa65f8`) |
 | C7 | 缺陷 | 删角色不校验引用 → 悬空 `role_id` 用户被 INNER JOIN 静默吞掉 | ✅ 已修 (`bfa65f8`) |
-| D1 | 真机核验 | GB28181 真实设备（TCP 被动 / 401 鉴权 / SDP 端口差异 / 目录分页） | 🔴 |
+| C8 | 缺陷 | 通道 `hasAudio` 与实际流不符（真机流含 G.711A，接口仍报 `hasAudio=false`） | 🔵 |
+| C9 | 缺陷 | 前端用 GET 调 `DELETE /api/cloud/record/collect/delete` → 405 | 🔵 |
+| D1 | 真机核验 | GB28181 真实设备（TCP 被动 / 401 鉴权 / SDP 端口差异 / 目录分页） | 🟡 已接入并核验主链路，剩余项见 D1 |
 | D2 | 真机核验 | JT1078 真实终端（0x0802 变体 / 0x8100 鉴权 / 双向对讲） | 🔴 |
 | D3 | 真机核验 | 对讲音频互通（G.711A 时间戳/回声/抖动） | 🔴 |
 | E1 | 环境 | 冒烟脚本 2 项"预期为真"项（CSV 非 JSON、dummy 代理 404） | ⚪ |
@@ -63,27 +70,29 @@
 | E3 | 环境 | 长驻服务需单独 job 启动（同组 job 中止会连带杀掉） | ⚪ |
 | E4 | 环境 | CI 自动触发按用户要求保持关闭（`workflow_dispatch`） | ⚪ |
 | E5 | 部署 | ZLM 改 host 网络 + 配置文件只读管理 + mac 叠加文件 | ✅ 已改 |
+| E6 | 环境 | 后端访问 `192.168.3.88:8080`（ZLM）偶发 `error sending request`（本机 HTTP 代理同名主机） | ⚪ |
 
 ---
 
-## 核心闭环健康度（2026-09-13 实测）
+## 核心闭环健康度
 
-结论：**没有发现导致全流程跑不起来的阻塞问题**。9 条核心闭环逐条实测：
+结论：**没有发现导致全流程跑不起来的阻塞问题**。9 条核心闭环逐条实测
+（2026-09-13 模拟设备基线 + 2026-09-19 真机补充）：
 
 | # | 闭环 | 结果 | 证据 |
 |---|---|---|---|
-| 1 | 设备接入（注册/心跳/目录） | ✅ | 在线设备 2、通道 4 |
-| 2 | 实时点播 → ZLM → FLV | ✅ | FLV 实拉 **2,408,800 字节**；停止时发 BYE |
-| 3 | 历史回放 + 回放控制 | ✅ | pause/speed/seek 全 code=0，停回放正常 |
-| 4 | 对讲（含音频上行） | ✅ | 假设备收到 **150 个 RTP 包**，BYE 校验通过 |
-| 5 | 语音广播 | ✅ | start/stop code=0 |
-| 6 | 设备控制（PTZ/布防/录像/远程启动/配置查询） | ✅ | 5 项全 code=0 |
-| 7 | JT1078（终端/通道） | ✅ | 终端列表 total=4、通道列表 code=0 |
+| 1 | 设备接入（注册/心跳/目录） | ✅ | 2026-09-13：在线设备 2、通道 4。**2026-09-19 真机**：`34020000001320128497` 401 摘要注册成功、Keepalive 30s、目录 1 通道入库、注销后重注册 |
+| 2 | 实时点播 → ZLM → FLV | ✅ | 2026-09-13：FLV 实拉 **2,408,800 字节**；停止时发 BYE。**2026-09-19 真机**：FLV 实拉 **3,291,903 字节 / 6s**，`ffprobe` 识别 H264 1080×1920 + pcm_alaw |
+| 3 | 历史回放 + 回放控制 | ✅ | pause/speed/seek 全 code=0，停回放正常（未在真机验证） |
+| 4 | 对讲（含音频上行） | ✅ | 假设备收到 **150 个 RTP 包**，BYE 校验通过（未在真机验证） |
+| 5 | 语音广播 | ✅ | start/stop code=0（未在真机验证） |
+| 6 | 设备控制（PTZ/布防/录像/远程启动/配置查询） | ✅ | 5 项全 code=0（模拟设备）；**真机**仅验证传输模式切换，且应答未被解析（B14） |
+| 7 | JT1078（终端/通道） | ✅ | 终端列表 total=4、通道列表 code=0（未在真终端验证） |
 | 8 | 级联平台 | ✅ | 平台记录在册（推流/点播已在此前轮次端到端验证） |
 | 9 | 云录像（计划→录制→落库→播放→删除） | ✅ | `cloudRecord` spec **3/3 通过**，落库 1.0MB MP4 |
 
-另有：`cargo test --no-fail-fast` **746 通过 / 0 失败 / 3 忽略**（2026-09-19 实测；e2e 本轮未重测）、
-三方言冒烟仅剩 2 项已记录预期项（E1）。
+另有：`cargo test --no-fail-fast` **746 通过 / 0 失败 / 3 忽略**（2026-09-19 实测 @ `8ecec6a`）、
+e2e 最近一次运行 35 通过 / 0 失败（筛选运行）、三方言冒烟仅剩 2 项已记录预期项（E1）。
 
 ### 阻塞/非阻塞判定
 
@@ -92,17 +101,21 @@
 | A1 中亿视图 10 端点 | 否（第三方定制集成模块） | 🟢 可发布，后续迭代 |
 | A2 `/api/test/*` | 否（运维诊断） | 🟢 可发布，后续迭代 |
 | A3 LiveGBS `/api/v1/*` | 否（另一套协议/鉴权） | 🟢 范围外 |
-| B1 UDP `connectRtpServer` | **特定设备类**才有影响（标准设备按 INVITE 端口推流，正常） | 🟡 需真机确认设备画像 |
+| B1 端口不一致时的 `connectRtpServer` | **真机已复现**，但该设备仍按 INVITE 端口推流，流正常 → 目前只影响"不按 INVITE 端口推流"的设备类 | 🟡 建议补明确错误提示 |
 | B2 录像计划竞态 | 曾影响（已修已复验） | ✅ 已关闭 |
 | B3 mock 崩溃 | 否（测试基建） | ✅ 已关闭 |
 | B4 进程"静默退出" | 否（会话操作副作用） | ✅ 已定性 |
 | B5 cloudRecord 用例时序 | 否（测试用例脆弱点） | 🟢 可发布，后续加固 |
-| **B6 BYE 跨类型误停** | **条件性影响**：同一通道"直播+回放/下载"并发、或无人观看自动关流时可能停错流 | 🟠 **建议下一个迭代优先修** |
+| **B6 会话 BYE 定位过粗** | **真机已复现**：停直播时 BYE 发给了已终止的旧会话，当前会话未被 BYE（会话泄漏 + 设备侧收到未知对话的 BYE） | 🟠 **建议下一个迭代优先修** |
+| B14 应答未解析 | 条件性：设备已回结果，平台却当未知报文丢弃 → 无法确认传输模式/录像/配置类命令是否生效 | 🟠 建议修 |
 | C1 `handle_packet` 23 参数 | 否 | 🟢 可发布 |
-| C2 32 个无引用 db 函数 | 否 | 🟢 可发布（清理） |
+| C2 29 个无引用 db 函数 | 否 | 🟢 可发布（清理） |
 | C3 JT1078 鉴权码只存不用 | **仅真终端**有风险（平台自身不校验，mock 不校验） | 🟡 需真机确认 |
 | C4 API Key 过期记录不清理 | 否（鉴权已正确拒绝） | 🟢 可发布 |
-| D1–D3 真机核验缺口 | 未知风险（模拟器覆盖不到的行为） | 🟡 真机联调前不建议对外承诺 |
+| C8 `hasAudio` 与实际流不符 | 否（仅元数据/前端图标不准） | 🟢 可发布 |
+| C9 收藏删除方法不匹配 | 否（该按钮在 UI 未暴露时的调用才会 405） | 🟢 可发布 |
+| D1 真机剩余项 | 未知风险（模拟器覆盖不到的行为） | 🟡 主链路已通，其余项真机联调前不建议对外承诺 |
+| D2–D3 真机核验缺口 | 未知风险（模拟器覆盖不到的行为） | 🟡 真机联调前不建议对外承诺 |
 
 ---
 
@@ -113,24 +126,26 @@
 来源：WVP-PRO `web/custom/CameraChannelController.java`（对照方法：抽 `@*Mapping` +
 归一化比对 `router.rs`）。
 
-缺失清单（本仓库 `/api/sy/*` 已实现 list / list-with-child / cont-with-child /
-box / circle / polygon / address / meeting / control/{play,stop,ptz} 等）：
+缺失清单（本仓库 `/api/sy/*` 已实现 **13 条**：`camera/list`、`camera/list/ids`、
+`camera/list-with-child`、`camera/list-for-mobile`、`camera/cont-with-child`、
+`camera/list/{box,circle,polygon,address}`、`camera/meeting/list`、
+`camera/control/{play,stop,ptz}`）：
 
-| 端点 | WVP 语义 |
-|---|---|
-| `GET /api/sy/camera/one` | 单通道详情 |
-| `GET /api/sy/camera/update` | 更新通道 |
-| `GET /api/sy/push/play` | 推送播放（含校验） |
-| `GET /api/sy/push/play-without-check` | 推送播放（跳过校验） |
-| `GET /api/sy/record/collect/add` | 录像收藏/加入收藏夹 |
-| `GET /api/sy/record/collect/delete` | 取消收藏 |
-| `GET /api/sy/record/zip` | 录像打包下载（ZIP） |
-| `GET /api/sy/record/list-url` | 录像列表（仅 URL 形态） |
-| `GET /api/sy/forceClose` | 强制关闭流 |
-| `GET /api/sy/test` | 自检 |
+| 端点 | WVP 语义 | 本仓库等价实现 |
+|---|---|---|
+| `GET /api/sy/camera/one` | 单通道详情 | ❌ 无 |
+| `GET /api/sy/camera/update` | 更新通道 | ❌ 无 |
+| `GET /api/sy/push/play` | 推送播放（含校验） | ❌ 无 |
+| `GET /api/sy/push/play-without-check` | 推送播放（跳过校验） | ❌ 无 |
+| `GET /api/sy/record/collect/add` | 录像收藏/加入收藏夹 | ✅ `/api/cloud/record/collect/add`（`router.rs:569`） |
+| `GET /api/sy/record/collect/delete` | 取消收藏 | ✅ `/api/cloud/record/collect/delete`（`router.rs:573` / `1082`） |
+| `GET /api/sy/record/zip` | 录像打包下载（ZIP） | ✅ `/api/cloud/record/zip`（`router.rs:1087`） |
+| `GET /api/sy/record/list-url` | 录像列表（仅 URL 形态） | ✅ `/api/cloud/record/list-url`（`router.rs:1086`） |
+| `GET /api/sy/forceClose` | 强制关闭流 | ✅ `/api/push/forceClose`（`router.rs:1069`） |
+| `GET /api/sy/test` | 自检 | ❌ 无 |
 
-注意：`collect/add|delete` 与 `zip` 在本仓库已有**同名但不同前缀**的实现
-（`/api/gb_record/collect/*`、`/api/cloud/record/zip`），实现时应复用而不是重写。
+**实现时应复用已有实现、只加前缀别名，不要重写逻辑。**
+（注意：`/api/cloud/record/collect/delete` 自身还有一个前端方法不匹配的问题，见 C9。）
 
 ### A2 🔴 WVP 自带诊断端点
 
@@ -151,27 +166,43 @@ handler 上打补丁。
 
 ## B. 已定位的缺陷
 
-### B1 🟠 UDP 模式下 `connectRtpServer` 不可用
+### B1 🟠 UDP / TCP-PASSIVE 下 `connectRtpServer` 被 ZLM 拒绝（真机已复现）
 
-**现象**（实测日志，2026-09-13 08:28）：
+**现象**（2026-09-13 模拟设备，2026-09-19 真机两次复现）：
 
 ```
+# 2026-09-13 08:28（模拟设备）
 start_live_stream: connectRtpServer rtp://127.0.0.1:10000 failed:
   ZLM error: 仅支持tcp主动模式
+
+# 2026-09-19 13:49:30 / 14:56:11（真机 EasyGBD，TCP-PASSIVE）
+Device 200 OK m=20002 != ZLM RTP server port 30066. Switching to ZLM connectRtpServer to device:20002
+connectRtpServer to device:20002 failed: ZLM error: 仅支持tcp主动模式
+Device 200 OK m=20014 != ZLM RTP server port 30038. Switching to ZLM connectRtpServer to device:20014
+connectRtpServer to device:20014 failed: ZLM error: 仅支持tcp主动模式
 ```
 
-**背景**：非标准设备（如 `gbcpp/1.0` 风格）在 INVITE 的 200 OK SDP 里宣告**自己的**
-收流端口，此时平台需要调 ZLM `connectRtpServer` 让 ZLM 主动去连（TCP 主动模式）。
-但 ZLM 对 `rtp_type=0`（UDP）拒绝该调用。
+**背景**：设备在 INVITE 的 200 OK SDP 里宣告**自己的**收流端口（真机每次都不同：
+20002 / 20010 / 20014…），此时平台需要调 ZLM `connectRtpServer` 让 ZLM 主动去连
+（TCP 主动模式）；但 ZLM 对 `rtp_type=0`（UDP）拒绝该调用。
 
-**影响**：UDP 模式下这类设备**只能**依赖"按 INVITE 的 m= 端口推流"；
-若不按，实时流会一直等不到媒体（15s 后超时并回收端口）。当前只打 WARN。
+**代码位置**：`src/handlers/play.rs:344-375`。端口不一致只打 `tracing::warn!`，
+`connect_rtp_server` 失败只打 `tracing::error!`（362-364）并**不返回错误**，继续走
+下面的 `WVPResult::success`；对照 `play.rs:295-307` 的 TCP-PASSIVE 分支是
+**会返回错误**的（304）。
+
+**真机带来的新认识（改变了影响评估）**：这台真机**仍然把 RTP 推到了 INVITE 指定的
+ZLM 端口**（`on_publish from 192.168.65.1` → 流正常注册 → FLV 实拉 3.29MB）。
+也就是说：**该回退路径失败并没有挡住实时流**，只是平台白跑了一次必然失败的调用 +
+打了一条 ERROR 日志。真正受影响的只有"确实要求 ZLM 主动回连"的设备类。
 
 **候选方案**（择一，需要决策）：
-1. 检测到设备 200 OK 端口与 INVITE 端口不一致且传输是 UDP 时，**明确报错**并提示
-   "该设备要求 TCP 主动模式"，而不是静默等 15s；
+1. 检测到设备 200 OK 端口与 INVITE 端口不一致时，**记录一条明确的业务提示**
+   （设备画像：可能需要 TCP 主动模式），而不是打 ERROR 日志后静默继续；
 2. 对 UDP 设备改用"关掉原 RTP server → 在新端口重开 → 让设备按新端口推流"的方式；
-3. 强制这类设备走 TCP-PASSIVE（配置层约束）。
+3. 强制这类设备走 TCP-PASSIVE（配置层约束）；
+4. 若确认设备实际按 INVITE 端口推流（如本机真机），可把这次回连**降级为 INFO**
+   并在若干次成功推流后**跳过**该回退，减少无效调用与噪声。
 
 ### B2 ✅ 录像计划 `startRecord` 竞态（已修复并复验）
 
@@ -230,7 +261,7 @@ B2 修好后本轮 3/3 通过，但建议进一步**显式化**：录满 N 秒 �
 断言 `on_record_mp4` 回调（或断言 ZLM 记录目录出现文件），
 避免"计划刚建就删"的极端时序。
 
-### B6 🟠 `send_session_bye` 只按「设备+通道」定位会话 → 跨类型误停
+### B6 🟠 `send_session_bye` 只按「设备+通道」定位会话 → 跨类型 / 跨代际误停（真机已复现）
 
 **证据（2026-09-13 实测）**：只开了一路**回放**（`playback_34020000001320000001_1789260493987`），
 随后调用 `/api/play/stop`（本意是停**实时**流）：
@@ -254,15 +285,44 @@ GET /api/play/stop/34020000001320000001/34020000001320000001
 `valid=7 / invalid=4`，100% 是 `unknown-dialog`；后端日志同一 call_id 出现两次
 `Sent session BYE`），真实设备会回 481/400 并可能记录协议告警。
 
+**真机复现（2026-09-19，EasyGBD `34020000001320128497`）**：14:21 起了一路直播，
+14:44:02 因 RTP 超时自动 BYE（`Sent session BYE … call_id=play_…_1789798876484`）。
+14:56:10 重新点播（新 call_id `play_…_1789800970170`），14:56:33 调
+`/api/play/stop/34020000001320128497/34020000001310000001`：
+
+```
+{"code":0,"data":{"callId":"play_34020000001320128497_1789798876484"}}   ← 停掉的是 14:21 那条已终止会话
+14:56:33.538 Sent session BYE to device 34020000001320128497 channel 34020000001310000001
+              call_id=play_34020000001320128497_1789798876484
+14:56:33.554 Skip duplicate ACK for call_id=play_…_1789798876484 (already sent)
+```
+
+即：**当前这条会话（`1789800970170`）从未收到 BYE**（会话泄漏），平台把 BYE 发给了
+一条 34 分钟前就已终止的对话；真机对未知对话的 BYE 回了 200 OK（宽容），
+但严格实现的设备会回 481/400 并记协议告警。
+由此又暴露一层：**RTP 超时 BYE 之后会话没有被标记为 `Terminated` 或从管理器移除**，
+否则不会被 `get_by_device_channel` 选中。
+
 **修复方向（未做）**：
 1. `send_session_bye` 增加 `stream_type`（或 `stream_id`）参数：`play_stop` 只找
    `Play`、`playback_stop` 只找 `Playback`、下载只找 `Download`；
 2. hook 侧（`on_stream_none_reader`、RTP 超时）**已有 `stream_id`**，
    应按 stream_id 精确定位会话，而不是退回 `(device, channel)`；
-3. 同一类型多条时按 `created_at` 最新的一条停（或全部停并逐个发 BYE）。
+3. 同一类型多条时按 `created_at` 最新的一条停（或全部停并逐个发 BYE）；
+4. **会话终止后必须从管理器移除或置为 `Terminated`**（超时 BYE、收到设备 BYE、
+   481 之后都要做），否则下次 stop 仍会挑到尸体会话。
 
-**影响评估**：不阻塞主流程（每个流程单独跑都通，e2e 66 项全绿），
-但"直播 + 同通道回放/下载并发"以及"无人观看自动关流"场景会**停错流**。
+**调用面（2026-09-19 复核）**：`send_session_bye` 定义在 `src/sip/server.rs:5792`，
+签名仍是 `(device_id, channel_id)`；`get_by_device_channel` 实现在
+`src/sip/gb28181/invite_session.rs:455-461`，过滤条件只有
+`device_id` / `channel_id` / `status != Terminated`（`InviteSession.stream_type`
+字段存在但从未参与筛选）。**12 处调用**全部是 2 参数：
+`zlm/hook.rs:949,1601`；`handlers/play.rs:255,280,302,412,451`；
+`handlers/common_channel.rs:890,2090`；`handlers/playback.rs:338,550,999`。
+
+**影响评估**：不阻塞主流程（每个流程单独跑都通），
+但"直播 + 同通道回放/下载并发"、"无人观看自动关流"以及**同一通道反复点播**
+（真机实测）场景会**停错流或漏停流**。
 
 ### B7 ✅ `/api/play/webrtc` 调 ZLM 的形态错误（已修并验证）
 
@@ -478,6 +538,36 @@ ZLM 相关功能（流列表、录像删除、截图…）一起 500 —— 因�
 `system/info` 4s 内请求数从 3 个并发降到 1 个挂载请求 + 1 次轮询。
 `npm run build`（含 vue-tsc）通过，`smoke.spec.ts` 20/20、`dashboard.spec.ts` 4/4 通过。
 
+### B14 🟠 设备 `DeviceControl` 等应答未被解析（真机实测落入 `Unhandled MESSAGE body`）
+
+**现象**（2026-09-19 13:48:43，真机 EasyGBD）：
+
+```
+Transport mode change: device=34020000001320128497, mode=TCP-PASSIVE      ← 平台下发
+MESSAGE from 34020000001320128497 - CmdType: Some("DeviceControl")        ← 设备应答
+Unhandled MESSAGE body: <?xml version="1.0" encoding="GB2312"?>
+  <Response><CmdType>DeviceControl</CmdType><SN>1789796923</SN>
+  <DeviceID>34020000001320128497</DeviceID><Result>OK</Result></Response>
+```
+
+**根因**：`src/sip/server.rs::handle_message` 的 `CmdType` 分支只覆盖
+`Keepalive` / `Catalog` / `DeviceInfo` / `DeviceStatus` / `MobilePosition` /
+`Alarm` / `RecordInfo`（2081–2288 行），**没有 `DeviceControl`**，其余一律落到
+`_ => tracing::debug!("Unhandled MESSAGE body: {}", body)`（2286）。
+
+**影响**：
+- 传输模式切换、PTZ、布防、录像、重启等**指令类**下发后，设备回的 `Result=OK/ERROR`
+  被当作未知报文丢弃（DEBUG 级日志，生产 `RUST_LOG=info` 下**完全不可见**）；
+- 运维无法判断"命令到底生效没有"，只能靠设备行为反推；
+- 与 `STATUS.md`「设备配置查询/更新会等待设备响应（15s）」并不矛盾 ——
+  那条走的是 `register_device_config_with_receiver` + `await_response`
+  （`handlers/device_control.rs:339`、`device_stub.rs:417`），是**查询类**；
+  缺失的是**指令类应答**的统一解析与落库/回显。
+
+**下一步**：`handle_message` 增加 `DeviceControl` 分支，以及配置下载应答分支
+（平台下发 `ConfigDownload`，设备回的 `CmdType` 是 `DeviceConfig`），按 `SN`
+关联待确认命令；至少把 `Result != OK` 提升为 WARN。
+
 ---
 
 ## C. 代码债与清理
@@ -488,48 +578,54 @@ ZLM 相关功能（流列表、录像删除、截图…）一起 500 —— 因�
 `SipPacketContext` 结构体。
 **风险**：纯重构，但触及所有 SIP 入口，建议单独一轮 + 全量测试。
 
-### C2 🔵 36 个无引用的 `db::` 函数
+### C2 🔵 29 个无引用的 `db::` 函数
 
-2026-09-19 复核：用「标识符在 `src/` 全仓仅出现 1 次（即只有定义处）」判定，
-`src/db/` 下 231 个 `pub fn` 中有 **36 个零引用**（上一版记为 32 个，已过期）。
+2026-09-19 复核（@ `8ecec6a`）：用「标识符在 `src/` 全仓仅出现 1 次（即只有定义处）」判定，
+`src/db/` 下 232 个 `pub (async) fn` 中有 **29 个零引用**。
 **需要逐条判定"删除"还是"接上"**：
 
 ```
-db/alarm.rs           : batch_delete_alarms, count_alarms, delete_alarm, list_alarms_paged
-db/cloud_record.rs    : delete_by_app_stream, get_collect_records, query_by_device_channel
-db/common_channel.rs  : get_parent_channels, reset_map_level, update_map_level
-db/device.rs          : batch_insert_channels, batch_update_channel_status, batch_upsert_channels,
-                        count_alive_devices, count_channels, count_registered_devices,
-                        delete_channels_by_device
-db/jt1078.rs          : count_online_terminals, get_auth_code_by_phone, update_auth_code
-db/media_server.rs    : add_white_list_cidr, remove_white_list_cidr, mark_offline_if_expired
-db/platform.rs        : add, update_enable
-db/platform_channel.rs: batch_delete_channels, get_by_platform_and_channel, list_by_platform_id
-db/role.rs            : get_by_name
-db/stream_proxy.rs    : list_by_media_server, update_enable_status, update_pulling_status
-db/user.rs            : find_by_username_password, update_user_role, update_username
-db/user_api_key.rs    : delete_expired_keys
+db/device.rs (7)          : batch_insert_channels, batch_update_channel_status, batch_upsert_channels,
+                            count_alive_devices, count_channels, count_registered_devices,
+                            delete_channels_by_device
+db/alarm.rs (4)           : batch_delete_alarms, count_alarms, delete_alarm, list_alarms_paged
+db/stream_proxy.rs (3)    : list_by_media_server, update_enable_status, update_pulling_status
+db/platform_channel.rs (3): batch_delete_channels, get_by_platform_and_channel, list_by_platform_id
+db/media_server.rs (3)    : add_white_list_cidr, mark_offline_if_expired, remove_white_list_cidr
+db/jt1078.rs (3)          : count_online_terminals, get_auth_code_by_phone, update_auth_code
+db/cloud_record.rs (3)    : delete_by_app_stream, get_collect_records, query_by_device_channel
+db/user.rs (1)            : find_by_username_password
+db/user_api_key.rs (1)    : delete_expired_keys
+db/platform.rs (1)        : update_enable
 ```
 
 初步分类：
 * **删除候选（功能已由别的实现覆盖 / WVP 也没有）**：
   `delete_by_app_stream`（已改为 `delete_by_app_stream_period`）、
-  `update_user_role` / `update_username`（WVP `UserController` 没有对应端点，已核对）、
   `add_white_list_cidr` / `remove_white_list_cidr`（WVP 无白名单功能）、
-  `update_enable`（平台启停走 `/api/platform/update`）、`get_by_name`、
+  `update_enable`（平台启停走 `/api/platform/update`）、
   `platform::add`（新增平台走别的路径）、
-  `common_channel::{get_parent_channels,update_map_level,reset_map_level}`、
-  `stream_proxy::update_pulling_status`（已被 `update_pulling_status_by_app_stream` 取代）。
+  `stream_proxy::update_pulling_status`（已被 `update_pulling_status_by_app_stream` 取代）、
+  `mark_offline_if_expired`（已被 `media_server::mark_offline_if_miss_count_exceeded`，
+  健康检查按**连续丢失次数**判下线，`zlm/media_node.rs` 调用，取代）。
 * **需要接上（可能是缺失的功能）**：`delete_expired_keys`（见 C4）、
   `get_auth_code_by_phone` / `update_auth_code`（见 C3）。
-* `mark_offline_if_expired`：已被 `media_server::mark_offline_if_miss_count_exceeded`
-  （健康检查按**连续丢失次数**判下线，`zlm/media_node.rs` 调用）取代 → **删除候选**。
-* **其余**（alarm/device/platform_channel/stream_proxy 的批量与计数函数）：
+* **其余**（alarm/device/platform_channel 的批量与计数函数）：
   要么被"合并查询"取代（`count_channels` vs `count_all_channels`），
   要么是早期分层遗留 —— 逐条确认后删除。
 
-> 注意：判定依据是「标识符零出现」。若某函数是通过 `db::module::*` 通配再以
-> 短名调用，会被误判 —— 复核时需确认调用形式。
+**与上一版（36 个）的差异，以及本判定口径的两个坑**：
+
+| 上一版列出的函数 | 现状 | 原因 |
+|---|---|---|
+| `db/role.rs::get_by_name` | 已**接上** | `handlers/role.rs:38` 现在会调它做重名校验（`bfa65f8` 引入） |
+| `db/user.rs::update_user_role` / `update_username` | 已**删除** | 函数体已移除，只在注释里作为"零调用死函数"的教训被提及 |
+| `db/user.rs::find_by_username_password` | 仍是零引用 | — |
+
+> ⚠️ 口径坑 1：判定依据是「标识符零出现」。**不同模块下的同名函数会互相"救活"** ——
+> 若 `db/a.rs` 与 `db/b.rs` 都有 `get_by_name`，即使两个都没被调用，计数也 ≥2 而漏报。
+> 复核时务必按 `模块::函数` 精确 grep。
+> ⚠️ 口径坑 2：若某函数通过 `db::module::*` 通配后以短名调用，同样会被误判为"零引用"。
 
 ### C3 🟠 JT1078 鉴权码：**只存不用**，注册应答里写死 `"GBServer"`
 
@@ -605,23 +701,79 @@ db/user_api_key.rs    : delete_expired_keys
 **验证**：手工把某用户 `role_id` 改成不存在的 999 后，列表 `total` 与行数
 仍一致（4/4），该用户正常显示。
 
+### C8 🔵 通道 `hasAudio` 与实际流不符（真机实测）
+
+**现象**（2026-09-19 真机）：点播返回 `"hasAudio": false`，但同一路流在 ZLM 里
+的 track 明确带音频：
+
+```
+GET /api/play/start/34020000001320128497/34020000001310000001
+→ {"code":0,"data":{...,"hasAudio":false,...}}
+
+ZLM getMediaList → H264 1080x1920 fps 26.0 (ready) + PCMA (ready)
+本地 FLV 实拉 6s 后 ffprobe → Stream #0: h264 1080x1920 / Stream #1: pcm_alaw
+```
+
+`gb_device_channel.has_audio` 该行为空/0，平台没有从**实际流**（ZLM track 或
+PS 解封装结果）回填该字段，只沿用目录/入库时的值。
+
+**影响**：前端音频图标、`hasAudio` 相关的默认行为对真机不准；不影响播放本身
+（FLV 里音频照常下发）。
+**下一步**：在 `on_stream_changed` / 点播成功后按 ZLM track 列表回填
+`gb_device_channel.has_audio`（或至少在 play 响应里就本次流实时判定）。
+
+### C9 🔵 前端用 GET 调一个只注册了 DELETE 的端点
+
+**现象**：`/api/cloud/record/collect/delete` 在 `src/router.rs:573-576` 注册为
+`delete(...)`，而前端 `web/src/api/cloudRecord.ts:212`
+（`deleteCloudRecordCollect`）用的是 `method: 'get'` → 真实调用会 **405**。
+（同时 `router.rs:1082` 另有一条 `cloud_record_extra::collect_delete`，需一并核对口径。）
+
+**影响**：目前该入口在 UI 上未暴露为高频操作，但属真实契约不一致。
+**下一步**：统一方法（改前端为 delete，或按 WVP 契约在 GET 上也注册），并补一条契约测试。
+
 ---
 
 ## D. 需真实硬件核验
 
-### D1 🔴 GB28181 真实设备
+### D1 🟡 GB28181 真实设备（2026-09-19 已接入第一台；主链路通过，剩余项待覆盖）
 
-目前所有 GB28181 交互都是对着
-`mock/tools/sip-device/sip_device_mock.py`（可选 `--send-rtp` 真实推流）
-与真实 ZLMediaKit 验证的，**没有跑过真实摄像机/NVR**。真机上才暴露的差异：
+**已接入真机**：EasyGBD `34020000001320128497`（厂商 `easygbd`、型号=GB-ID、固件 V2.0），
+TCP 接入 192.168.3.121:15060，平台在注册后把它切到 `TCP-PASSIVE`，
+1 个通道（`34020000001310000001`）。真机流实测为 **H264 1080×1920@26fps + G.711A(PCMA)**。
 
-* 401/407 摘要鉴权（`realm`/`nonce`/`qop` 组合、`algorithm=MD5`）；
-* `TCP-PASSIVE` 设备的 `connectRtpServer` 行为（与 B1 相关）；
-* 200 OK SDP 端口与 INVITE 端口不一致的非标实现；
-* 目录（Catalog）分页 `SumNum` 不实、分包顺序乱序；
-* 设备主动发 BYE / 心跳超时下线 / 注册续期；
+**已核验通过**：
+
+| 项 | 结果 | 证据 |
+|---|---|---|
+| 401 摘要鉴权注册 / 续期 | ✅ | `REGISTER … Challenge sent` → `Device registered: … (expires: 3600)`，全天多次续期 |
+| 注销（expires=0）后重注册 | ✅ | `Device unregistered` → 25s 内再次 `Device registered` |
+| 注册后自动 DeviceInfo 查询 | ✅ | `注册后自动 DeviceInfo 查询已下发` → 应答落库 name/manufacturer/model/firmware |
+| Keepalive | ✅ | 每 30s 一条 `Keepalive from device` |
+| 目录（Catalog）同步 | ✅ | `Catalog RESPONSE … 1 channels (SumNum=Some(1))`，1 包 |
+| 平台→设备延迟探针 | ✅ | 每 15s 一条 MESSAGE，设备回 `200 OK - CallID: lat_…` |
+| 传输模式切换下发 | ⚠️ 半通过 | 平台发出、设备回 `Result=OK`，但**平台未解析该应答**（B14） |
+| 实时点播 + FLV 实拉 | ✅ | FLV **3,291,903 字节 / 6s**；`ffprobe` → h264 + pcm_alaw |
+| 通道缩略图落盘 | ✅ | `data/snapshots/34020000001320128497_34020000001310000001.jpg`（98,327 字节） |
+| 停止点播 | ✅（有缺陷） | ZLM 流与资源清空，但 BYE 发给了旧会话（B6） |
+
+**仍未覆盖（保持 🔴 级别的未知风险）**：
+
+* 401/407 摘要鉴权的**边界组合**（`qop`/`algorithm` 变体、407 代理鉴权）—— 只跑通了默认组合；
+* **目录分页**：本机 `SumNum=1` 单包，`SumNum` 不实、分包乱序、长时间分页未测；
+* `TCP-PASSIVE` 下 `connectRtpServer` 的行为 —— 已复现失败（B1），但**未确认**该设备类
+  在"不按 INVITE 端口推流"时平台能否出流；
 * `ConfigDownload` 各 `ConfigType` 的真实字段差异（当前只在 mock 上验证了
-  BasicParam / SnapConfig）。
+  BasicParam / SnapConfig）；
+* 设备控制类：PTZ / 预置位 / 布防 / 录像 / 重启 / 配置查询 —— 真机**一次都没下发过**；
+* 回放（Playback）与下载（Download）—— 真机未测；
+* 对讲 / 语音广播 —— 真机未测（且真机流是**纯视频+音频推流**，对讲需另验）；
+* 设备主动发 BYE、心跳超时下线、注册续期边界；
+* WebRTC：真机流建立过 rtc 播放会话（`on_play: rtc/…`），但帧解码未验证（B8）。
+
+> 复现环境（本机 macOS）：后端 SQLite 单实例 :18080 + `docker compose` 的
+> postgres/redis/zlm（ZLM 用 mac 叠加文件桥接）、真机在 192.168.3.121。
+> 详细命令见 §G。
 
 ### D2 🔴 JT1078 真实终端
 
@@ -680,29 +832,84 @@ hook.on_send_rtp_progress
 按用户要求（2026-09-12），`.github/workflows/ci.yml` 只保留 `workflow_dispatch`；
 `fmt` / `clippy` 为非门禁。**恢复自动触发前不要改这里。**
 
+### E6 ⚪ 后端访问 `192.168.3.88:8080` 偶发 `error sending request`（本机环境）
+
+2026-09-19 真机联调时观测到一次（`handlers/play.rs`）：
+
+```
+查询已存在流的 RTP 信息失败 34020000001320128497_…:
+  error sending request for url (http://192.168.3.88:8080/index/api/getRtpInfo?…)
+```
+
+`192.168.3.88` 是本机**同时**作为 ZLM 宿主 IP 与公司 HTTP 代理宿主 IP 的地址
+（代理 `192.168.3.88:7892`）。这类失败只在**裸跑后端**时出现，且重试即恢复，
+不是平台缺陷 —— 与 `AGENTS.md` 记录的 `NO_PROXY` 要求同源。
+**做法**：本机裸跑后端时设 `NO_PROXY=localhost,127.0.0.1,::1,192.168.3.88`
+（或干脆让后端也只走 127.0.0.1 访问 ZLM）。
+
 ---
 
 ## F. 本轮改动清单（随本文档一起提交）
 
 | 文件 | 内容 | 状态 |
 |---|---|---|
-| `src/zlm/client.rs` | `close_rtp_server_ex`（顶层 `hit`）、`stop_send_rtp_ex` 返回 `bool`、`del_ffmpeg_source`、4 条 wiremock 测试 | ✅ 测试通过 |
-| `src/handlers/rtp_control.rs` | `/api/{rtp,ps}/{receive/close,send/stop}` 查询参数版（`stream`/`callId`），`hit=0` 明确报错 | ✅ 实测 |
-| `src/handlers/user.rs` | `/api/user/all` | ✅ 实测 |
-| `src/handlers/server.rs` | `/api/server/shutdown`（真的退出进程，先回响应） | ✅ 实测（18099 独立实例） |
-| `src/handlers/jt1078_extra.rs` | `terminal/channel/{one,delete}?id=` | ✅ 实测 |
-| `src/router.rs` | 上述路由注册 | ✅ |
-| `src/scheduler/record_plan.rs` | `startRecord` 有界重试 + 2 条分类测试（B2） | ✅ cloudRecord 3/3 |
-| `mock/.../sip_device_mock.py` | `connection_lost`/`error_received`（B3）、报警查询应答、DeviceConfig 日志字段补全、`DeviceControl` 结构告警 | ✅ 整轮 e2e 未再退出 |
-| `docs/STATUS.md` | 当前状态：能力矩阵 / 设计决策 / 契约审计结论 | — |
+| `docs/STATUS.md` | 规模基线全量重测（@ `8ecec6a`）；新增 §4「真实设备接入核验」；能力矩阵加「真机」列；§6 验证证据补真机链路 | ✅ 本轮 |
+| `docs/OPEN_ISSUES.md` | D1 改 🟡 并拆「已核验 / 仍未覆盖」；B1、B6 补真机证据；C2 由 36 重算为 29 并列出差异；新增 B14 / C8 / C9 / E6；F 段由 2026-09-13 的改动清单换成本轮清单 | ✅ 本轮 |
+| `docs/STUB_COMPAT_PLAN.md` | 行数/entry/路由数按实测刷新（3843/46、1273/18、64 条）；活跃路由 49→48；无调用方清单更正（移除 `/api/group/delete`、补 `/api/device/query/channel/audio`） | ✅ 本轮 |
+| `docs/DEPLOYMENT_GUIDE.md` | 修正 SIP TCP 端口（5061→5060）、ZLM 端口与 config.ini 对齐、`vue.config.js`→`vite.config.ts`、删除已不存在的 `cache.rs`/`cascade_service.rs`、指标名与健康检查间隔按 `src/metrics.rs` / `config` 实测重写、`/api/server/system/info` 补入端点表 | ✅ 本轮 |
+| `docs/DB_DIALECT_NOTES.md` | 复核四条规则与 `statement_cache_capacity(0)`、`dialect_smoke.py` 路径仍然成立；补「真机联调不涉及方言」的范围说明 | ✅ 本轮 |
 
-**复验结果（2026-09-13）**：`cloudRecord` **3/3 通过**、`cargo test` **743 通过 / 0 失败**、
-`npx playwright test` **66 通过**、三方言冒烟仅剩 2 项已记录预期项 —— B2 / B3 转入"已修复并复验"。
-（该 743 与 66 是当时的数字；冻结轮的测试基线见本文档开头。）
+**本轮复验结果（2026-09-19 @ `8ecec6a`）**：`cargo test --no-fail-fast`
+**746 通过 / 0 失败 / 3 忽略**（15 个测试二进制）；
+真机点播 FLV 实拉 **3,291,903 字节 / 6s**（H264 1080×1920 + pcm_alaw）后正常停止；
+e2e 最近一次运行 35 通过 / 0 失败。**三方言冒烟与 e2e 全量本轮未重跑。**
 
 ---
 
 ## G. 复现环境
+
+### G.1 真机联调（2026-09-19 本轮，本机 macOS）
+
+```bash
+# 依赖服务：ZLM 用 mac 叠加文件（Docker Desktop 不支持 host 网络）
+docker compose -f docker-compose.yml -f docker-compose.mac.yml up -d
+
+# 后端：SQLite 单实例（默认配置即 data/gbserver.db），裸跑需绕开本机 HTTP 代理
+cd /Users/letmlook/code/GBServer
+NO_PROXY=localhost,127.0.0.1,::1,192.168.3.88 no_proxy=localhost,127.0.0.1,::1,192.168.3.88 \
+  RUST_LOG=info,gbserver=debug ./target/debug/gbserver
+
+# 真机接入（设备侧配置）：SIP 服务器 <本机 IP>:5060、传输 TCP、
+#   GB-ID 34020000001320128497、密码与 sip.password 一致（默认 admin123）
+
+# 登录取 token（注意：登录参数走 Query，不是 JSON body）
+TOKEN=$(curl -s --noproxy '*' \
+  'http://127.0.0.1:18080/api/user/login?username=admin&password=admin' \
+  | python3 -c 'import json,sys;print(json.load(sys.stdin)["data"]["accessToken"])')
+
+# 在线状态 / 点播 / FLV 实拉 / 停止
+curl -s --noproxy '*' 'http://127.0.0.1:18080/api/device/query/devices?page=1&count=20' \
+  -H "access-token: $TOKEN"
+curl -s --noproxy '*' \
+  'http://127.0.0.1:18080/api/play/start/34020000001320128497/34020000001310000001' \
+  -H "access-token: $TOKEN"
+curl -s --noproxy '*' --max-time 6 -o /tmp/real.flv \
+  'http://127.0.0.1:8080/rtp/34020000001320128497_34020000001310000001.live.flv'
+ffprobe -v error -show_entries stream=codec_name,width,height -of default=nw=1 /tmp/real.flv
+curl -s --noproxy '*' \
+  'http://127.0.0.1:18080/api/play/stop/34020000001320128497/34020000001310000001' \
+  -H "access-token: $TOKEN"
+
+# 平台侧日志：落库在 gb_log，按需查询比翻 stdout 更可靠
+sqlite3 -line data/gbserver.db \
+  "SELECT time,logger,message FROM gb_log WHERE message LIKE '%34020000001320128497%' ORDER BY id DESC LIMIT 40;"
+```
+
+> 真机排错要点：`/api/play/start` 返回 `code=0` 只代表 SIP INVITE 成功；
+> **是否真的出流**要看 `on_publish` / `on_stream_changed register=true` /
+> `Media ready` 三条日志，以及 FLV 实际字节数。
+
+### G.2 模拟设备 / 方言 / e2e（历史基线，2026-09-13）
 
 ```bash
 # sqlite 后端（18080，抓退出码）
@@ -735,6 +942,9 @@ cd e2e && npx playwright test
   先确认 `ps aux | grep sip_device_mock`。
 * `gb_cloud_record` 里的行会被 `cloudRecord` 的"删除"用例清掉；排查录像落库时
   先跑手动链路再看表，不要只看 spec 结论。
+* 本机 `192.168.3.88` 既是 ZLM 宿主 IP 又是 HTTP 代理宿主 IP → 裸跑后端要对它设
+  `NO_PROXY`（见 E6）。
+* e2e 需要前端 dev server（:9528）；只起后端跑 e2e 会大面积失败，不等于代码缺陷。
 
 ---
 
@@ -748,3 +958,6 @@ cd e2e && npx playwright test
 | 2026-09-13 | 新增 B7/B8/B9 与 A4（WebRTC：接口调用形态已修+真实浏览器验证；国标流解不出帧；rtc.externIP 未下发；前端无入口） |
 | 2026-09-13 | 新增 B6（`send_session_bye` 跨类型误停，实测证据 + 修复方向）；B5 保持 🔵 |
 | 2026-09-13 | 复验并关闭 B2（录像计划 `startRecord` 竞态）、B3（mock `connection_lost` 崩溃）、B4（定性为同组 job 被杀的副作用）；新增 E2（ZLM 缺 7 个 hook 键）、E3（长驻服务启动方式与顺序）；C3 升级为 🟠（鉴权码只存不用 + 注册应答写死 `"GBServer"` + 0x0102 语义存疑） |
+| 2026-09-19 | 冻结轮：登记用户管理三项（C5/C6/C7）与 A4；B12/B13 修复并复验 |
+| 2026-09-19 | 解冻并修复用户管理（`bfa65f8`）；C5/C6/C7 关闭 |
+| 2026-09-19 | **真实设备接入核验轮**：D1 🔴→🟡（真机 EasyGBD 已接入，主链路核验通过，剩余项列明）；B1 补真机复现（并更正影响评估：该设备仍按 INVITE 端口推流，流不受影响）；B6 补真机复现（stop 把 BYE 发给已终止的旧会话）；C2 由 36 重算为 29（`get_by_name` 已接上、`update_user_role`/`update_username` 已删除）；新增 B14（应答未解析）、C8（`hasAudio` 与实际流不符）、C9（收藏删除方法不匹配）、E6（本机代理导致的 ZLM 请求偶发失败）；F/G 段更新为真机联调口径 |

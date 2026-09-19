@@ -6,6 +6,13 @@
 > 2026-09-12 第一次把后端跑在真实 PostgreSQL 上做全量冒烟，
 > **一次抓到 5 类共 30+ 处**这类缺陷。
 > 下面三条规则是那次审计的沉淀，写 SQL 前请先读。
+>
+> 📌 **复核记录（2026-09-19 @ `8ecec6a`）**：四条规则与兜底措施经代码复核**仍然成立** ——
+> `src/dyn_where.rs:26` 的 `dialect_sql`、`src/db/mod.rs:148` 的
+> `PgConnectOptions::statement_cache_capacity(0)`、`src/lib.rs` 的
+> `ensure_pg_column_types` / `ensure_mysql_column_types` 均在位；`scripts/dialect_smoke.py` 路径有效。
+> **适用范围提醒**：`docs/STATUS.md` 记录的"真实设备接入核验"是 SIP/媒体面联调，
+> 运行库是 SQLite，**不构成任何方言验证**；改动 SQL 仍需按本文「验证要求」跑 PG/MySQL。
 
 ## 规则 1：固定 SQL 一律用 `?`，并交给 `dialect_sql()` 改写
 
