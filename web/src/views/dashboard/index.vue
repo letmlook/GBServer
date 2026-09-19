@@ -901,6 +901,9 @@ onBeforeUnmount(() => {
 }
 .gb-card--chart .traffic-svg { padding: 10px 14px; }
 .gb-card--chart .traffic-svg svg { width: 100%; height: 180px; display: block; }
+/* 让卡片成为 flex column，子项（标题 / 图表 / 图例）可以伸缩，
+   这样磁盘柱条列表就能撑满到兄弟卡片（协议接入）的高度。 */
+.gb-card--chart { display: flex; flex-direction: column; }
 .meta { color: var(--text-tertiary); }
 
 /* ---- 磁盘横排柱状图 ---- */
@@ -908,13 +911,15 @@ onBeforeUnmount(() => {
   padding: 10px 14px 14px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  /* 容器高度固定，挂载点多时垂直滚动；柱条紧凑些（22px 行高 + 8px 间隔） */
-  max-height: 220px;
+  gap: 6px;
+  /* 撑满父容器的高度（同行的服务健康 / 协议接入可能更高，磁盘
+     跟着 grid 子项的最大高度走）；挂载点多时内部滚动。 */
+  flex: 1 1 auto;
+  min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
 }
-.disk-row { display: grid; grid-template-columns: 80px 1fr 38px 100px; gap: 8px; align-items: center; font-size: var(--text-xs); padding: 1px 0; }
+.disk-row { display: grid; grid-template-columns: 88px 1fr 38px 96px; gap: 8px; align-items: center; font-size: var(--text-xs); padding: 2px 0; }
 .disk-path { font-family: var(--font-mono); color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .disk-track {
   position: relative;
