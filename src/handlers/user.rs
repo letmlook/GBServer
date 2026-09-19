@@ -20,7 +20,13 @@ fn md5_hex(s: &str) -> String {
     format!("{:x}", h.finalize())
 }
 
-/// GET/POST /api/user/login?username=xx&password=xx
+/// POST /api/user/login?username=xx&password=xx
+///
+/// **仅 POST**：路由由 `utoipa_axum::routes!` 依据下面的注解生成。此前注解写了
+/// `get, post`，但该宏只为 POST 生成路由 —— 规范里也只有 `post`，而实际路由
+/// 对 GET 返回 405。注解与行为不一致会误导前端（前端曾因此一直发 GET，
+/// 导致**登录完全不可用**），故这里只保留真实存在的方法。
+///
 /// Phase 7.6: Password is verified via Argon2 (preferred) with MD5 fallback
 /// to the historical plaintext/MD5 passwords still present in some DBs.
 /// Frontend is expected to send the MD5 hex of the plaintext password
@@ -29,7 +35,6 @@ fn md5_hex(s: &str) -> String {
 /// Argon2 hashes (`$argon2id$...`) are validated against the plaintext;
 /// legacy MD5/plaintext passwords are validated by re-hashing the input.
 #[utoipa::path(
-    get,
     post,
     path = "/api/user/login",
     tag = "user",

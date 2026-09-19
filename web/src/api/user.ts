@@ -36,7 +36,9 @@ export interface UserInfoResult {
 export function login(payload: LoginPayload) {
   return request<ApiResult<LoginResult>>({
     url: '/user/login',
-    method: 'get',
+    // 必须是 POST：后端该路由只注册了 POST（见 handler 的 `#[utoipa::path(post, ..)]`）。
+    // 同时这也是更正确的方式 —— 口令（哪怕是 MD5）不应出现在 URL / 访问日志里。
+    method: 'post',
     params: {
       username: payload.username.trim(),
       password: md5(payload.password),

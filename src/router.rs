@@ -117,8 +117,8 @@ pub fn app(state: AppState) -> Router<AppState> {
     // The legacy public routes below are intentionally removed.
 
     // 云录像 ZIP 打包产物：通过 /downloads/<file> 对外下载。
-    // 必须注册在下面的 `nest_service("/", ...)` 之前，否则会被 SPA 的
-    // index.html 兜底吞掉。文件名含随机段，避免被枚举遍历。
+    // 必须注册在下面的 `fallback_service(..)`（SPA 兜底）之前，否则会被
+    // index.html 吞掉。文件名含随机段，避免被枚举遍历。
     let download_dir = state.config.server.effective_download_dir();
     let app = match std::fs::create_dir_all(&download_dir) {
         Ok(()) => app.nest_service(
@@ -142,7 +142,10 @@ pub fn app(state: AppState) -> Router<AppState> {
         let index_path = dir.join("index.html");
         let serve_dir = tower_http::services::ServeDir::new(dir)
             .fallback(tower_http::services::ServeFile::new(index_path));
-        app.nest_service("/", serve_dir)
+        // axum 0.8 起**不再允许** `nest_service("/", ..)` —— 会在启动时 panic
+        // `Nesting at the root is no longer supported`。根路径必须改用
+        // `fallback_service`：未命中任何路由时才走它，与原 SPA 兜底语义一致。
+        app.fallback_service(serve_dir)
     } else {
         tracing::warn!("未配置 static_dir 或目录不存在，仅提供 API");
         app
@@ -306,6 +309,27 @@ mod tests {
             unreachable.len(),
             unreachable.join("\n")
         );
+    }
+
+    /// 启用 `static_dir`（SPA 静态资源）时路由表仍必须能构建。
+    ///
+    /// 回归保护：axum 0.8 **禁止** `nest_service("/", ..)`，根路径必须用
+    /// `fallback_service`，否则**启动瞬间 panic**（`Nesting at the root is no
+    /// longer supported`）。默认测试状态没配 `static_dir`，所以这个 panic
+    /// 只在真实部署时暴露 —— 本测试专门把它前移到测试阶段。
+    #[tokio::test]
+    async fn test_router_builds_with_static_dir_enabled() {
+        let mut state = app_state().await;
+        // web/dist 由 `npm run build` 产出；不存在时用当前目录兜底，同样能触发该分支。
+        let dir = if std::path::Path::new("web/dist").exists() {
+            "web/dist"
+        } else {
+            "."
+        };
+        let mut cfg = (*state.config).clone();
+        cfg.static_dir = Some(dir.to_string());
+        state.config = std::sync::Arc::new(cfg);
+        let _ = app(state);
     }
 
     #[tokio::test]
