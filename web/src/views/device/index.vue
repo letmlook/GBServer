@@ -103,6 +103,12 @@
           <el-table-column prop="civilCode" label="行政区划" width="100" />
           <el-table-column prop="address" label="地址" min-width="200" show-overflow-tooltip />
           <el-table-column prop="subCount" label="子通道" width="80" />
+          <el-table-column label="操作" width="220" fixed="right">
+            <template #default="{ row }">
+              <el-button link type="primary" @click="onPlayChannel(row)">播放</el-button>
+              <el-button link type="primary" @click="onSnapChannel(row)">抓图</el-button>
+            </template>
+          </el-table-column>
         </el-table>
       </el-card>
     </div>
@@ -113,9 +119,11 @@
 
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { Plus } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { queryDevices, deleteDevice, sync, setGuard, resetGuard, queryChannels, type DeviceRecord } from '@/api/device'
+import { startPlay, playSnap } from '@/api/live'
 import GbSearchForm from '@/components/GbSearchForm/index.vue'
 import DeviceEditDialog from './EditDialog.vue'
 
@@ -227,6 +235,30 @@ async function onDelete(row: any) {
   await deleteDevice(row.deviceId ?? '')
   ElMessage.success('已删除')
   loadData()
+}
+
+const router = useRouter()
+
+async function onPlayChannel(row: any) {
+  try {
+    await startPlay(currentDeviceId.value, row.channelId ?? row.gbDeviceId ?? row.deviceId)
+    ElMessage.success('播放请求已发送')
+    router.push({
+      name: 'Live',
+      query: { deviceId: currentDeviceId.value, channelId: row.channelId ?? row.gbDeviceId ?? row.deviceId }
+    })
+  } catch (e: any) {
+    ElMessage.error(e?.message ?? '播放失败')
+  }
+}
+
+async function onSnapChannel(row: any) {
+  try {
+    const res = await playSnap(currentDeviceId.value, row.channelId ?? row.gbDeviceId ?? row.deviceId)
+    ElMessage.success(`抓图已保存: ${res.data?.snapUrl ?? ''}`)
+  } catch (e: any) {
+    ElMessage.error(e?.message ?? '抓图失败')
+  }
 }
 
 onMounted(loadData)

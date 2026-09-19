@@ -172,6 +172,7 @@ import {
 } from '@element-plus/icons-vue'
 import {
   playSnap,
+  postWebrtcPlay,
   sendPtz as sendPtzApi,
   startPlay,
   stopPlay,
@@ -197,6 +198,7 @@ const playerStatus = ref<'idle' | 'loading' | 'playing' | 'error'>('idle')
 // 适配器实例
 let hlsInstance: any = null
 let flvPlayer: any = null
+let webrtcPc: RTCPeerConnection | null = null
 
 const stats = computed(() => ({
   total: channels.value.length,
@@ -277,20 +279,107 @@ async function playChannel(s: { deviceId: string; channelId: string; name?: stri
     if (!data) {
       throw new Error(res.msg || '拉起实时流失败')
     }
-    // 优先 HLS（浏览器 + hls.js 兼容性最好），其次 flv / rtsp
+    // 优先 WebRTC（最低延迟），失败回退到 HLS / FLV。
+    // WebRTC 不需要 URL —— 直接拿 deviceId+channelId 做 SDP 协商。
+    currentChannel.value = label
+    buildGrid({ ...s, name: label.name }, data.hls || data.flvUrl || data.playUrl || '')
+    await nextTick()
+    if (data.webrtc) {
+      try {
+        await attachVideoWebRTC(s.deviceId, s.channelId)
+        return
+      } catch (e: any) {
+        // WebRTC 协商失败时清理回退，再走 HLS/FLV 路径
+        const msg = e?.message ?? String(e)
+        playError.value = `WebRTC 协商失败，回退到 HLS/FLV：${msg}`
+        cleanupWebRTC()
+      }
+    }
     const url = data.hls || data.flvUrl || data.playUrl || ''
     if (!url) {
       throw new Error('后端未返回可用的播放地址')
     }
-    currentChannel.value = label
-    buildGrid({ ...s, name: label.name }, url)
-    await nextTick()
     await attachVideo(url)
   } catch (e: any) {
     const msg = e?.message ?? '拉起实时流失败'
     playError.value = msg
     playerStatus.value = 'error'
     ElMessage.error(`通道 ${s.channelId} 播放失败：${msg}`)
+  }
+}
+
+async function attachVideoWebRTC(deviceId: string, channelId: string) {
+  // 关掉任何残留
+  cleanupWebRTC()
+  hlsInstance?.destroy?.()
+  hlsInstance = null
+  if (flvPlayer) { try { flvPlayer.destroy() } catch {} flvPlayer = null }
+
+  // 同子网直连：host 网络下 ZLM ICE 候选里有 192.168.3.87，浏览器也在
+  // 192.168.3.x，能直接 host candidate 联通，**不需要 STUN**。空 iceServers
+  // 比错的 STUN URL 强（错的 STUN 会让浏览器忽略 host candidate 走 relay）。
+  const pc = new RTCPeerConnection({ iceServers: [] })
+
+  pc.addTransceiver('video', { direction: 'recvonly' })
+  pc.addTransceiver('audio', { direction: 'recvonly' })
+
+  // ref 在 v-for 里是数组，先拍平
+  const nativeVideo = (Array.isArray(primaryVideoRef.value)
+    ? primaryVideoRef.value.find((v: any) => v)
+    : primaryVideoRef.value) as HTMLVideoElement | null
+  if (!nativeVideo) throw new Error('video 元素未挂载')
+
+  // 视频流拿到就喂进 srcObject
+  pc.ontrack = (ev) => {
+    if (ev.streams && ev.streams[0] && nativeVideo) {
+      nativeVideo.srcObject = ev.streams[0]
+      nativeVideo.style.display = 'block'
+      nativeVideo.muted = true
+      nativeVideo.play().catch(() => { /* 静音自动播放被浏览器拒，没事 */ })
+      playerStatus.value = 'playing'
+      playError.value = ''
+    }
+  }
+  pc.oniceconnectionstatechange = () => {
+    if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected') {
+      playerStatus.value = 'error'
+      playError.value = `WebRTC ICE ${pc.iceConnectionState}（ZLM ${deviceId}/${channelId} 的 rtc 端口未开放或 ICE 候选不通）`
+    }
+  }
+
+  // SDP 协商
+  const offer = await pc.createOffer()
+  await pc.setLocalDescription(offer)
+
+  const res = await postWebrtcPlay({
+    deviceId,
+    channelId,
+    sdp: offer.sdp ?? '',
+    type: 'offer'
+  })
+  if (res.code !== 0) {
+    pc.close()
+    throw new Error(res.msg || 'WebRTC 协商失败')
+  }
+  await pc.setRemoteDescription({ type: 'answer', sdp: res.data.sdp })
+
+  webrtcPc = pc
+}
+
+function cleanupWebRTC() {
+  if (webrtcPc) {
+    try { webrtcPc.close() } catch { /* ignore */ }
+    webrtcPc = null
+  }
+  const nativeVideo = Array.isArray(primaryVideoRef.value)
+    ? primaryVideoRef.value.find((v: any) => v)
+    : primaryVideoRef.value
+  if (nativeVideo) {
+    try {
+      const ms = (nativeVideo as HTMLVideoElement).srcObject as MediaStream | null
+      if (ms) ms.getTracks().forEach((t) => t.stop())
+    } catch { /* ignore */ }
+    ;(nativeVideo as HTMLVideoElement).srcObject = null
   }
 }
 
@@ -302,8 +391,16 @@ async function attachVideo(url: string) {
     try { flvPlayer.destroy() } catch {}
     flvPlayer = null
   }
-  const nativeVideo = primaryVideoRef.value
-  const flvVideo = flvVideoRef.value
+  // ref 在 v-for 内时，Vue 会把它收成数组（即便只有一个元素挂上去）。
+  // primaryVideoRef.value 在多 cell 布局下可能是 `[videoEl, null, ...]`，
+  // 直接调 `.canPlayType()` 会抛 `e.canPlayType is not a function`——
+  // 这就是历史 "播放失败" 的隐性 bug，统一拍平成单个元素。
+  const nativeVideo = Array.isArray(primaryVideoRef.value)
+    ? primaryVideoRef.value.find((v: any) => v) ?? null
+    : primaryVideoRef.value
+  const flvVideo = Array.isArray(flvVideoRef.value)
+    ? flvVideoRef.value.find((v: any) => v) ?? null
+    : flvVideoRef.value
   if (!nativeVideo || !url) return
 
   // Safari 原生 HLS
@@ -407,8 +504,16 @@ async function onStop(cell: any) {
   hlsInstance?.destroy?.()
   hlsInstance = null
   if (flvPlayer) { try { flvPlayer.destroy() } catch {} flvPlayer = null }
-  if (primaryVideoRef.value) { primaryVideoRef.value.src = ''; primaryVideoRef.value.style.display = 'none' }
-  if (flvVideoRef.value) { flvVideoRef.value.src = ''; flvVideoRef.value.style.display = 'none' }
+  cleanupWebRTC()
+  // ref 在 v-for 里同样是数组；与 attachVideo 一致地取真实 video 元素
+  const nativeVideo = Array.isArray(primaryVideoRef.value)
+    ? primaryVideoRef.value.find((v: any) => v)
+    : primaryVideoRef.value
+  const flvVideo = Array.isArray(flvVideoRef.value)
+    ? flvVideoRef.value.find((v: any) => v)
+    : flvVideoRef.value
+  if (nativeVideo) { nativeVideo.src = ''; nativeVideo.style.display = 'none' }
+  if (flvVideo) { flvVideo.src = ''; flvVideo.style.display = 'none' }
   // 真正停流：后端会发 SIP BYE 并关闭 ZLM RTP server / 收流
   const target = cell?.deviceId && cell?.channelId ? cell : currentChannel.value
   if (target?.deviceId && target?.channelId && target.deviceId !== 'DEMO') {
@@ -457,6 +562,7 @@ async function playDemoStream() {
 onBeforeUnmount(() => {
   hlsInstance?.destroy?.()
   if (flvPlayer) { try { flvPlayer.destroy() } catch {} }
+  cleanupWebRTC()
 })
 
 onMounted(async () => {
