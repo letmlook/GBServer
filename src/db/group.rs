@@ -287,18 +287,24 @@ pub async fn delete_by_device_id(pool: &Pool, device_id: &str) -> sqlx::Result<u
 /// 获取子分组数量
 pub async fn count_children(pool: &Pool, parent_id: i32) -> sqlx::Result<i64> {
     #[cfg(feature = "mysql")]
-    return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_common_group WHERE parent_id = ?")
-        .bind(parent_id)
-        .fetch_one(pool)
-        .await;
+    return sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM gb_common_group WHERE parent_id = ?",
+    )
+    .bind(parent_id)
+    .fetch_one(pool)
+    .await;
     #[cfg(feature = "postgres")]
-    return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_common_group WHERE parent_id = $1")
-        .bind(parent_id)
-        .fetch_one(pool)
-        .await;
+    return sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM gb_common_group WHERE parent_id = $1",
+    )
+    .bind(parent_id)
+    .fetch_one(pool)
+    .await;
     #[cfg(feature = "sqlite")]
-    return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_common_group WHERE parent_id = ?")
-        .bind(parent_id)
-        .fetch_one(pool)
-        .await;
+    return sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM gb_common_group WHERE parent_id = ?",
+    )
+    .bind(parent_id)
+    .fetch_one(pool)
+    .await;
 }

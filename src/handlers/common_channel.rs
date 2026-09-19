@@ -7,7 +7,9 @@ use axum::{
 use serde::Deserialize;
 
 use crate::db::common_channel;
-use crate::db::{count_common_channels, delete_channel_by_id, list_common_channels_paged, DeviceChannel};
+use crate::db::{
+    count_common_channels, delete_channel_by_id, list_common_channels_paged, DeviceChannel,
+};
 use crate::error::{AppError, ErrorCode};
 use crate::response::ApiResult;
 use crate::AppState;
@@ -30,9 +32,18 @@ pub(crate) async fn lookup_channel_and_send(
                 let server = &*sip_server;
                 if let Some(device) = server.device_manager().get(&device_id).await {
                     if device.online && device.addr.is_some() {
-                        match server.send_device_control(&device_id, &gb_channel_id, &cmd_type, &body).await {
-                            Ok(_) => return Json(serde_json::json!({ "code": 0, "msg": success_msg })),
-                            Err(e) => return Json(serde_json::json!({ "code": 1, "msg": format!("SIP发送失败: {}", e) })),
+                        match server
+                            .send_device_control(&device_id, &gb_channel_id, &cmd_type, &body)
+                            .await
+                        {
+                            Ok(_) => {
+                                return Json(serde_json::json!({ "code": 0, "msg": success_msg }))
+                            }
+                            Err(e) => {
+                                return Json(
+                                    serde_json::json!({ "code": 1, "msg": format!("SIP发送失败: {}", e) }),
+                                )
+                            }
                         }
                     }
                 }
@@ -79,10 +90,7 @@ fn front_end_element(command: &str, speed: u8, preset_index: u32) -> String {
     match control_element(command, speed, preset_index) {
         Some((_, v)) => format!(r#"<PTZCmd>{}</PTZCmd>"#, v),
         // 未知动作按"停止"下发，避免设备停在不可预期的状态
-        None => format!(
-            r#"<PTZCmd>{}</PTZCmd>"#,
-            build_ptz_cmd(PtzAction::Stop, 0)
-        ),
+        None => format!(r#"<PTZCmd>{}</PTZCmd>"#, build_ptz_cmd(PtzAction::Stop, 0)),
     }
 }
 
@@ -194,12 +202,10 @@ pub async fn channel_list(
         channel_type,
     )
     .await?;
-    let total = count_common_channels(&state.pool, q.query.as_deref(), online, channel_type).await?;
+    let total =
+        count_common_channels(&state.pool, q.query.as_deref(), online, channel_type).await?;
 
-    let rows: Vec<serde_json::Value> = list
-        .iter()
-        .map(|c| channel_to_json(c))
-        .collect();
+    let rows: Vec<serde_json::Value> = list.iter().map(|c| channel_to_json(c)).collect();
 
     let data = serde_json::json!({
         "list": rows,
@@ -424,7 +430,9 @@ pub async fn channel_update(
     State(state): State<AppState>,
     Json(body): Json<ChannelUpdateBody>,
 ) -> Result<Json<ApiResult<()>>, AppError> {
-    let id = body.id.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id"))?;
+    let id = body
+        .id
+        .ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id"))?;
     // 这里只做"必须传 id"，不额外要求"至少改了一个字段"（那会直接报错）；
     // 其余字段一律 COALESCE（None = 保持原值）。
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
@@ -473,7 +481,9 @@ pub async fn channel_reset(
     State(state): State<AppState>,
     Json(body): Json<ChannelResetBody>,
 ) -> Result<Json<ApiResult<()>>, AppError> {
-    let id = body.id.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id"))?;
+    let id = body
+        .id
+        .ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id"))?;
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     common_channel::reset(&state.pool, id, &now).await?;
     Ok(Json(ApiResult::<()>::success_empty()))
@@ -537,16 +547,23 @@ pub async fn channel_add(
     let name = body.name.as_deref().unwrap_or("").trim();
 
     if device_id.is_empty() || channel_id.is_empty() {
-        return Err(AppError::business(ErrorCode::Error400, "deviceId 和 channelId 必填"));
+        return Err(AppError::business(
+            ErrorCode::Error400,
+            "deviceId 和 channelId 必填",
+        ));
     }
 
     // 手工新增的通道必须挂到父设备的自增主键上：录像计划的"按设备关联"
     // 与 `channel_ids_by_device_db_id` 都依赖 `data_device_id`。
     let data_device_id: Option<i32> = sqlx::query_scalar(
         #[cfg(feature = "postgres")]
-        { "SELECT id FROM gb_device WHERE device_id = $1" },
+        {
+            "SELECT id FROM gb_device WHERE device_id = $1"
+        },
         #[cfg(not(feature = "postgres"))]
-        { "SELECT id FROM gb_device WHERE device_id = ?" },
+        {
+            "SELECT id FROM gb_device WHERE device_id = ?"
+        },
     )
     .bind(device_id)
     .fetch_optional(&state.pool)
@@ -618,12 +635,10 @@ pub async fn civilcode_list(
         channel_type,
     )
     .await?;
-    let total = count_common_channels(&state.pool, q.query.as_deref(), online, channel_type).await?;
+    let total =
+        count_common_channels(&state.pool, q.query.as_deref(), online, channel_type).await?;
 
-    let rows: Vec<serde_json::Value> = list
-        .iter()
-        .map(|c| channel_to_json(c))
-        .collect();
+    let rows: Vec<serde_json::Value> = list.iter().map(|c| channel_to_json(c)).collect();
 
     Ok(Json(ApiResult::success(serde_json::json!({
         "list": rows,
@@ -653,13 +668,11 @@ pub async fn unusual_civilcode_list(
     let page = q.page.unwrap_or(1);
     let count = q.count.unwrap_or(15).min(100);
 
-    let list: Vec<DeviceChannel> = common_channel::get_unusual_civilcode(&state.pool, page, count).await?;
+    let list: Vec<DeviceChannel> =
+        common_channel::get_unusual_civilcode(&state.pool, page, count).await?;
     let total = common_channel::count_unusual_civilcode(&state.pool).await?;
 
-    let rows: Vec<serde_json::Value> = list
-        .iter()
-        .map(|c| channel_to_json(c))
-        .collect();
+    let rows: Vec<serde_json::Value> = list.iter().map(|c| channel_to_json(c)).collect();
 
     Ok(Json(ApiResult::success(serde_json::json!({
         "list": rows,
@@ -688,13 +701,11 @@ pub async fn unusual_parent_list(
     let page = q.page.unwrap_or(1);
     let count = q.count.unwrap_or(15).min(100);
 
-    let list: Vec<DeviceChannel> = common_channel::get_unusual_parent(&state.pool, page, count).await?;
+    let list: Vec<DeviceChannel> =
+        common_channel::get_unusual_parent(&state.pool, page, count).await?;
     let total = common_channel::count_unusual_parent(&state.pool).await?;
 
-    let rows: Vec<serde_json::Value> = list
-        .iter()
-        .map(|c| channel_to_json(c))
-        .collect();
+    let rows: Vec<serde_json::Value> = list.iter().map(|c| channel_to_json(c)).collect();
 
     Ok(Json(ApiResult::success(serde_json::json!({
         "list": rows,
@@ -780,15 +791,26 @@ pub async fn parent_list(
         .as_deref()
         .and_then(|s| s.parse::<i32>().ok());
 
-    let list: Vec<DeviceChannel> = common_channel::get_parent_channels(&state.pool, page, count, q.query.as_deref(), online, channel_type).await?;
-    let total = common_channel::count_parent_channels(&state.pool, q.query.as_deref(), online, channel_type).await?;
+    let list: Vec<DeviceChannel> = common_channel::get_parent_channels(
+        &state.pool,
+        page,
+        count,
+        q.query.as_deref(),
+        online,
+        channel_type,
+    )
+    .await?;
+    let total = common_channel::count_parent_channels(
+        &state.pool,
+        q.query.as_deref(),
+        online,
+        channel_type,
+    )
+    .await?;
 
     // Phase 6: 同步输出 camelCase + gb_* + ptzTypeText,前端
     // /channel/group、/channel/region 都读取这些字段。
-    let rows: Vec<serde_json::Value> = list
-        .iter()
-        .map(|c| channel_to_json(c))
-        .collect();
+    let rows: Vec<serde_json::Value> = list.iter().map(|c| channel_to_json(c)).collect();
 
     Ok(Json(ApiResult::success(serde_json::json!({
         "list": rows,
@@ -1022,7 +1044,14 @@ pub async fn device_group_add(
     let device_ids = body.device_ids.unwrap_or_default();
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     for device_id in device_ids {
-        common_channel::update_device_group(&state.pool, &device_id, parent_id, business_group, &now).await?;
+        common_channel::update_device_group(
+            &state.pool,
+            &device_id,
+            parent_id,
+            business_group,
+            &now,
+        )
+        .await?;
     }
     Ok(Json(ApiResult::<()>::success_empty()))
 }
@@ -1102,7 +1131,10 @@ pub async fn channel_play(
         return Json(ApiResult::error("ZLM 未配置"));
     };
 
-    let stream_id = match sip_server.start_live_stream(&device_id, &gb_channel_id, 15).await {
+    let stream_id = match sip_server
+        .start_live_stream(&device_id, &gb_channel_id, 15)
+        .await
+    {
         Ok(sid) => sid,
         Err(e) => return Json(ApiResult::error(format!("点播失败: {e}"))),
     };
@@ -1126,7 +1158,9 @@ pub async fn channel_play(
         "hasAudio": ch.has_audio.unwrap_or(false),
     });
     if hls_available {
-        out["hls"] = serde_json::json!(crate::zlm::address_builder::hls_url(ip, http, "rtp", &stream_id));
+        out["hls"] = serde_json::json!(crate::zlm::address_builder::hls_url(
+            ip, http, "rtp", &stream_id
+        ));
     }
     Json(ApiResult::success(out))
 }
@@ -1176,7 +1210,10 @@ pub async fn channel_play_stop(
     }
     // 2) 给设备发 BYE（不回 BYE 的设备会一直往已关闭的端口推流）
     if let Some(sip_server) = state.sip_server.clone() {
-        match sip_server.send_session_bye(&device_id, &gb_channel_id).await {
+        match sip_server
+            .send_session_bye(&device_id, &gb_channel_id)
+            .await
+        {
             Ok(call_id) => {
                 return Json(ApiResult::success(serde_json::json!({
                     "callId": call_id,
@@ -1186,7 +1223,9 @@ pub async fn channel_play_stop(
             Err(e) => tracing::warn!("channel_play_stop BYE 失败 {device_id}/{gb_channel_id}: {e}"),
         }
     }
-    Json(ApiResult::success(serde_json::json!({ "stream": stream_id })))
+    Json(ApiResult::success(
+        serde_json::json!({ "stream": stream_id }),
+    ))
 }
 
 /// GET /api/common/channel/map/list
@@ -1225,7 +1264,9 @@ pub async fn map_channel_list(
         .as_deref()
         .and_then(|s| s.parse::<i32>().ok());
 
-    let list: Vec<DeviceChannel> = common_channel::get_channels_for_map(&state.pool, q.query.as_deref(), online, channel_type).await?;
+    let list: Vec<DeviceChannel> =
+        common_channel::get_channels_for_map(&state.pool, q.query.as_deref(), online, channel_type)
+            .await?;
 
     let rows: Vec<serde_json::Value> = list
         .into_iter()
@@ -1275,14 +1316,16 @@ pub async fn map_save_level(
 ) -> Result<Json<ApiResult<()>>, AppError> {
     let level = body.level.unwrap_or(0);
     let channels = body.channels.unwrap_or_default();
-    
+
     if channels.is_empty() {
         return Ok(Json(ApiResult::<()>::success_empty()));
     }
-    
-    let result: sqlx::Result<u64> = common_channel::update_map_level(&state.pool, &channels, level).await;
-    result.map_err(|e| AppError::business(ErrorCode::Error500, format!("更新地图级别失败: {}", e)))?;
-    
+
+    let result: sqlx::Result<u64> =
+        common_channel::update_map_level(&state.pool, &channels, level).await;
+    result
+        .map_err(|e| AppError::business(ErrorCode::Error500, format!("更新地图级别失败: {}", e)))?;
+
     Ok(Json(ApiResult::<()>::success_empty()))
 }
 
@@ -1303,8 +1346,9 @@ pub async fn map_reset_level(
     State(state): State<AppState>,
 ) -> Result<Json<ApiResult<()>>, AppError> {
     let result: sqlx::Result<u64> = common_channel::reset_map_level(&state.pool).await;
-    result.map_err(|e| AppError::business(ErrorCode::Error500, format!("重置地图级别失败: {}", e)))?;
-    
+    result
+        .map_err(|e| AppError::business(ErrorCode::Error500, format!("重置地图级别失败: {}", e)))?;
+
     Ok(Json(ApiResult::<()>::success_empty()))
 }
 
@@ -1335,13 +1379,17 @@ pub async fn map_thin_clear(
             .bind(channel_id)
             .execute(&state.pool)
             .await
-            .map_err(|e| AppError::business(ErrorCode::Error500, format!("清除稀化数据失败: {}", e)))?;
+            .map_err(|e| {
+                AppError::business(ErrorCode::Error500, format!("清除稀化数据失败: {}", e))
+            })?;
         #[cfg(any(feature = "mysql", feature = "sqlite"))]
         sqlx::query("UPDATE gb_device_channel SET geojson = NULL WHERE id = ?")
             .bind(channel_id)
             .execute(&state.pool)
             .await
-            .map_err(|e| AppError::business(ErrorCode::Error500, format!("清除稀化数据失败: {}", e)))?;
+            .map_err(|e| {
+                AppError::business(ErrorCode::Error500, format!("清除稀化数据失败: {}", e))
+            })?;
         tracing::info!("Cleared thinned geojson for channel {}", channel_id);
     }
     Ok(Json(ApiResult::<()>::success_empty()))
@@ -1368,26 +1416,24 @@ pub async fn map_thin_progress(
     let channel_id = q.channel_id.unwrap_or(0);
     if channel_id > 0 {
         #[cfg(feature = "postgres")]
-        let has_geojson: bool = sqlx::query_scalar(
-            "SELECT (geojson IS NOT NULL) FROM gb_device_channel WHERE id = $1"
-        )
-        .bind(channel_id)
-        .fetch_optional(&state.pool)
-        .await
-        .ok()
-        .flatten()
-        .unwrap_or(false);
+        let has_geojson: bool =
+            sqlx::query_scalar("SELECT (geojson IS NOT NULL) FROM gb_device_channel WHERE id = $1")
+                .bind(channel_id)
+                .fetch_optional(&state.pool)
+                .await
+                .ok()
+                .flatten()
+                .unwrap_or(false);
 
         #[cfg(any(feature = "mysql", feature = "sqlite"))]
-        let has_geojson: bool = sqlx::query_scalar(
-            "SELECT (geojson IS NOT NULL) FROM gb_device_channel WHERE id = ?"
-        )
-        .bind(channel_id)
-        .fetch_optional(&state.pool)
-        .await
-        .ok()
-        .flatten()
-        .unwrap_or(false);
+        let has_geojson: bool =
+            sqlx::query_scalar("SELECT (geojson IS NOT NULL) FROM gb_device_channel WHERE id = ?")
+                .bind(channel_id)
+                .fetch_optional(&state.pool)
+                .await
+                .ok()
+                .flatten()
+                .unwrap_or(false);
 
         let progress = if has_geojson { 100 } else { 0 };
         return Ok(Json(ApiResult::success(serde_json::json!({
@@ -1425,9 +1471,10 @@ pub async fn map_thin_save(
     }
 
     // Get channel's device_id and gb_device_id to look up position history
-    let channel = common_channel::get_by_id(&state.pool, channel_id).await
+    let channel = common_channel::get_by_id(&state.pool, channel_id)
+        .await
         .map_err(|e| AppError::business(ErrorCode::Error500, format!("查询通道失败: {}", e)))?;
-    
+
     let channel = match channel {
         Some(c) => c,
         None => return Ok(Json(ApiResult::<()>::success_empty())),
@@ -1468,19 +1515,19 @@ pub async fn map_thin_save(
     }
 
     // Douglas-Peucker simplification with epsilon = 0.0001 degrees (~11m)
-    let coords: Vec<(f64, f64)> = points.iter()
-        .filter_map(|p| {
-            match (p.longitude, p.latitude) {
-                (Some(lng), Some(lat)) if lng != 0.0 && lat != 0.0 => Some((lng, lat)),
-                _ => None,
-            }
+    let coords: Vec<(f64, f64)> = points
+        .iter()
+        .filter_map(|p| match (p.longitude, p.latitude) {
+            (Some(lng), Some(lat)) if lng != 0.0 && lat != 0.0 => Some((lng, lat)),
+            _ => None,
         })
         .collect();
 
     let simplified = douglas_peucker(&coords, 0.0001);
 
     // Build GeoJSON LineString
-    let coord_arrays: Vec<Vec<f64>> = simplified.iter()
+    let coord_arrays: Vec<Vec<f64>> = simplified
+        .iter()
         .map(|(lng, lat)| vec![*lng, *lat])
         .collect();
     let geojson = serde_json::json!({
@@ -1525,7 +1572,12 @@ pub async fn map_thin_save(
         ));
     }
 
-    tracing::info!("Map thin saved for channel {}: {} -> {} points", channel_id, coords.len(), simplified.len());
+    tracing::info!(
+        "Map thin saved for channel {}: {} -> {} points",
+        channel_id,
+        coords.len(),
+        simplified.len()
+    );
 
     Ok(Json(ApiResult::<()>::success_empty()))
 }
@@ -1575,7 +1627,9 @@ pub async fn map_thin_draw(
             .bind(channel_id)
             .execute(&state.pool)
             .await
-            .map_err(|e| AppError::business(ErrorCode::Error500, format!("保存绘制数据失败: {}", e)))?
+            .map_err(|e| {
+                AppError::business(ErrorCode::Error500, format!("保存绘制数据失败: {}", e))
+            })?
             .rows_affected();
         #[cfg(any(feature = "mysql", feature = "sqlite"))]
         let affected = sqlx::query("UPDATE gb_device_channel SET geojson = ? WHERE id = ?")
@@ -1583,7 +1637,9 @@ pub async fn map_thin_draw(
             .bind(channel_id)
             .execute(&state.pool)
             .await
-            .map_err(|e| AppError::business(ErrorCode::Error500, format!("保存绘制数据失败: {}", e)))?
+            .map_err(|e| {
+                AppError::business(ErrorCode::Error500, format!("保存绘制数据失败: {}", e))
+            })?
             .rows_affected();
         if affected == 0 {
             return Err(AppError::business(
@@ -1601,32 +1657,33 @@ pub async fn map_thin_draw(
     }
 
     #[cfg(feature = "postgres")]
-    let row: Option<GeojsonRow> = sqlx::query_as(
-        "SELECT geojson FROM gb_device_channel WHERE id = $1"
-    )
-    .bind(channel_id)
-    .fetch_optional(&state.pool)
-    .await
-    .ok()
-    .flatten();
+    let row: Option<GeojsonRow> =
+        sqlx::query_as("SELECT geojson FROM gb_device_channel WHERE id = $1")
+            .bind(channel_id)
+            .fetch_optional(&state.pool)
+            .await
+            .ok()
+            .flatten();
 
     #[cfg(any(feature = "mysql", feature = "sqlite"))]
-    let row: Option<GeojsonRow> = sqlx::query_as(
-        "SELECT geojson FROM gb_device_channel WHERE id = ?"
-    )
-    .bind(channel_id)
-    .fetch_optional(&state.pool)
-    .await
-    .ok()
-    .flatten();
+    let row: Option<GeojsonRow> =
+        sqlx::query_as("SELECT geojson FROM gb_device_channel WHERE id = ?")
+            .bind(channel_id)
+            .fetch_optional(&state.pool)
+            .await
+            .ok()
+            .flatten();
 
-    let geojson = row.and_then(|r| r.geojson)
+    let geojson = row
+        .and_then(|r| r.geojson)
         .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_else(|| serde_json::json!({
-            "type": "Feature",
-            "geometry": { "type": "LineString", "coordinates": [] },
-            "properties": {}
-        }));
+        .unwrap_or_else(|| {
+            serde_json::json!({
+                "type": "Feature",
+                "geometry": { "type": "LineString", "coordinates": [] },
+                "properties": {}
+            })
+        });
 
     Ok(Json(ApiResult::success(geojson)))
 }
@@ -1790,12 +1847,21 @@ pub async fn front_end_ptz(
     let v_speed = q.tilt_speed.unwrap_or(1) as u8;
     let z_speed = q.zoom_speed.unwrap_or(1) as u8;
 
-    tracing::info!("commonChannel PTZ: channel_id={}, cmd={}", channel_id, command);
+    tracing::info!(
+        "commonChannel PTZ: channel_id={}, cmd={}",
+        channel_id,
+        command
+    );
 
     let body = build_ptz_xml(&command, h_speed, v_speed, z_speed);
     lookup_channel_and_send(&state, channel_id, |_| {
-        ("DeviceControl".to_string(), body.clone(), "PTZ控制命令已发送".to_string())
-    }).await
+        (
+            "DeviceControl".to_string(),
+            body.clone(),
+            "PTZ控制命令已发送".to_string(),
+        )
+    })
+    .await
 }
 
 /// GET /api/common/channel/front-end/auxiliary
@@ -1826,12 +1892,28 @@ pub async fn front_end_auxiliary(
     let channel_id = q.channel_id.unwrap_or(0);
     let command = q.command.clone().unwrap_or_default();
     let aux_id = q.auxiliary_id.unwrap_or(0) as u32;
-    let body = format!(r#"<AuxiliaryCmd><cmd>{}</cmd><index>{}</index></AuxiliaryCmd>"#, 
-        if command.to_lowercase() == "on" { "Set" } else { "Reset" }, aux_id);
-    tracing::info!("commonChannel auxiliary: channel_id={}, cmd={}", channel_id, command);
+    let body = format!(
+        r#"<AuxiliaryCmd><cmd>{}</cmd><index>{}</index></AuxiliaryCmd>"#,
+        if command.to_lowercase() == "on" {
+            "Set"
+        } else {
+            "Reset"
+        },
+        aux_id
+    );
+    tracing::info!(
+        "commonChannel auxiliary: channel_id={}, cmd={}",
+        channel_id,
+        command
+    );
     lookup_channel_and_send(&state, channel_id, |_| {
-        ("DeviceControl".to_string(), body.clone(), "辅助开关控制命令已发送".to_string())
-    }).await
+        (
+            "DeviceControl".to_string(),
+            body.clone(),
+            "辅助开关控制命令已发送".to_string(),
+        )
+    })
+    .await
 }
 
 /// GET /api/common/channel/front-end/wiper
@@ -1860,11 +1942,27 @@ pub async fn front_end_wiper(
 ) -> Json<serde_json::Value> {
     let channel_id = q.channel_id.unwrap_or(0);
     let command = q.command.clone().unwrap_or_default();
-    let body = format!(r#"<WiperCmd>{}</WiperCmd>"#, if command.to_lowercase() == "on" { "Open" } else { "Close" });
-    tracing::info!("commonChannel wiper: channel_id={}, cmd={}", channel_id, command);
+    let body = format!(
+        r#"<WiperCmd>{}</WiperCmd>"#,
+        if command.to_lowercase() == "on" {
+            "Open"
+        } else {
+            "Close"
+        }
+    );
+    tracing::info!(
+        "commonChannel wiper: channel_id={}, cmd={}",
+        channel_id,
+        command
+    );
     lookup_channel_and_send(&state, channel_id, |_| {
-        ("DeviceControl".to_string(), body.clone(), "雨刷控制命令已发送".to_string())
-    }).await
+        (
+            "DeviceControl".to_string(),
+            body.clone(),
+            "雨刷控制命令已发送".to_string(),
+        )
+    })
+    .await
 }
 
 /// GET /api/common/channel/front-end/fi/iris
@@ -1896,10 +1994,19 @@ pub async fn front_end_iris(
     let command = q.command.clone().unwrap_or_default();
     let speed = q.speed.unwrap_or(1) as u8;
     let body = build_fi_xml("iris", &command, speed);
-    tracing::info!("commonChannel iris: channel_id={}, cmd={}", channel_id, command);
+    tracing::info!(
+        "commonChannel iris: channel_id={}, cmd={}",
+        channel_id,
+        command
+    );
     lookup_channel_and_send(&state, channel_id, |_| {
-        ("DeviceControl".to_string(), body.clone(), "光圈控制命令已发送".to_string())
-    }).await
+        (
+            "DeviceControl".to_string(),
+            body.clone(),
+            "光圈控制命令已发送".to_string(),
+        )
+    })
+    .await
 }
 
 /// GET /api/common/channel/front-end/fi/focus
@@ -1931,10 +2038,19 @@ pub async fn front_end_focus(
     let command = q.command.clone().unwrap_or_default();
     let speed = q.speed.unwrap_or(1) as u8;
     let body = build_fi_xml("focus", &command, speed);
-    tracing::info!("commonChannel focus: channel_id={}, cmd={}", channel_id, command);
+    tracing::info!(
+        "commonChannel focus: channel_id={}, cmd={}",
+        channel_id,
+        command
+    );
     lookup_channel_and_send(&state, channel_id, |_| {
-        ("DeviceControl".to_string(), body.clone(), "聚焦控制命令已发送".to_string())
-    }).await
+        (
+            "DeviceControl".to_string(),
+            body.clone(),
+            "聚焦控制命令已发送".to_string(),
+        )
+    })
+    .await
 }
 
 // ========== 预置位 ==========
@@ -1965,8 +2081,13 @@ pub async fn front_end_preset_query(
     tracing::info!("commonChannel preset query: channel_id={}", channel_id);
     let body = r#"<PTZCmd Query="PresetList"/>"#.to_string();
     lookup_channel_and_send(&state, channel_id, |_| {
-        ("DeviceControl".to_string(), body.clone(), "预置位查询命令已发送".to_string())
-    }).await
+        (
+            "DeviceControl".to_string(),
+            body.clone(),
+            "预置位查询命令已发送".to_string(),
+        )
+    })
+    .await
 }
 
 /// GET /api/common/channel/front-end/preset/add
@@ -1997,10 +2118,19 @@ pub async fn front_end_preset_add(
     let channel_id = q.channel_id.unwrap_or(0);
     let preset_id = q.preset_id.unwrap_or(0);
     let body = build_preset_xml("SET_PRESET", preset_id as u32);
-    tracing::info!("commonChannel preset add: channel_id={}, preset_id={}", channel_id, preset_id);
+    tracing::info!(
+        "commonChannel preset add: channel_id={}, preset_id={}",
+        channel_id,
+        preset_id
+    );
     lookup_channel_and_send(&state, channel_id, |_| {
-        ("DeviceControl".to_string(), body.clone(), "预置位添加成功".to_string())
-    }).await
+        (
+            "DeviceControl".to_string(),
+            body.clone(),
+            "预置位添加成功".to_string(),
+        )
+    })
+    .await
 }
 
 /// GET /api/common/channel/front-end/preset/call
@@ -2030,10 +2160,19 @@ pub async fn front_end_preset_call(
     let channel_id = q.channel_id.unwrap_or(0);
     let preset_id = q.preset_id.unwrap_or(0);
     let body = build_preset_xml("GOTO_PRESET", preset_id as u32);
-    tracing::info!("commonChannel preset call: channel_id={}, preset_id={}", channel_id, preset_id);
+    tracing::info!(
+        "commonChannel preset call: channel_id={}, preset_id={}",
+        channel_id,
+        preset_id
+    );
     lookup_channel_and_send(&state, channel_id, |_| {
-        ("DeviceControl".to_string(), body.clone(), "预置位调用成功".to_string())
-    }).await
+        (
+            "DeviceControl".to_string(),
+            body.clone(),
+            "预置位调用成功".to_string(),
+        )
+    })
+    .await
 }
 
 /// GET /api/common/channel/front-end/preset/delete
@@ -2063,10 +2202,19 @@ pub async fn front_end_preset_delete(
     let channel_id = q.channel_id.unwrap_or(0);
     let preset_id = q.preset_id.unwrap_or(0);
     let body = build_preset_xml("CLEAR_PRESET", preset_id as u32);
-    tracing::info!("commonChannel preset delete: channel_id={}, preset_id={}", channel_id, preset_id);
+    tracing::info!(
+        "commonChannel preset delete: channel_id={}, preset_id={}",
+        channel_id,
+        preset_id
+    );
     lookup_channel_and_send(&state, channel_id, |_| {
-        ("DeviceControl".to_string(), body.clone(), "预置位删除成功".to_string())
-    }).await
+        (
+            "DeviceControl".to_string(),
+            body.clone(),
+            "预置位删除成功".to_string(),
+        )
+    })
+    .await
 }
 
 // ========== 巡航 ==========
@@ -2098,11 +2246,23 @@ pub async fn front_end_tour_point_add(
     let channel_id = q.channel_id.unwrap_or(0);
     let tour_id = q.tour_id.unwrap_or(0);
     let preset_id = q.preset_id.unwrap_or(0);
-    let body = format!(r#"<CruiseCmd id="{}" preset="{}" action="add" />"#, tour_id, preset_id);
-    tracing::info!("commonChannel tour point add: channel_id={}, tour_id={}", channel_id, tour_id);
+    let body = format!(
+        r#"<CruiseCmd id="{}" preset="{}" action="add" />"#,
+        tour_id, preset_id
+    );
+    tracing::info!(
+        "commonChannel tour point add: channel_id={}, tour_id={}",
+        channel_id,
+        tour_id
+    );
     lookup_channel_and_send(&state, channel_id, |_| {
-        ("DeviceControl".to_string(), body.clone(), "巡航点添加成功".to_string())
-    }).await
+        (
+            "DeviceControl".to_string(),
+            body.clone(),
+            "巡航点添加成功".to_string(),
+        )
+    })
+    .await
 }
 
 /// GET /api/common/channel/front-end/tour/point/delete
@@ -2133,11 +2293,23 @@ pub async fn front_end_tour_point_delete(
     let channel_id = q.channel_id.unwrap_or(0);
     let tour_id = q.tour_id.unwrap_or(0);
     let preset_id = q.preset_id.unwrap_or(0);
-    let body = format!(r#"<CruiseCmd id="{}" preset="{}" action="delete" />"#, tour_id, preset_id);
-    tracing::info!("commonChannel tour point delete: channel_id={}, tour_id={}", channel_id, tour_id);
+    let body = format!(
+        r#"<CruiseCmd id="{}" preset="{}" action="delete" />"#,
+        tour_id, preset_id
+    );
+    tracing::info!(
+        "commonChannel tour point delete: channel_id={}, tour_id={}",
+        channel_id,
+        tour_id
+    );
     lookup_channel_and_send(&state, channel_id, |_| {
-        ("DeviceControl".to_string(), body.clone(), "巡航点删除成功".to_string())
-    }).await
+        (
+            "DeviceControl".to_string(),
+            body.clone(),
+            "巡航点删除成功".to_string(),
+        )
+    })
+    .await
 }
 
 /// GET /api/common/channel/front-end/tour/speed
@@ -2170,10 +2342,19 @@ pub async fn front_end_tour_speed(
     let tour_id = q.tour_id.unwrap_or(0);
     let speed = q.speed.unwrap_or(1);
     let body = format!(r#"<CruiseSpeed id="{}" speed="{}" />"#, tour_id, speed);
-    tracing::info!("commonChannel tour speed: channel_id={}, tour_id={}", channel_id, tour_id);
+    tracing::info!(
+        "commonChannel tour speed: channel_id={}, tour_id={}",
+        channel_id,
+        tour_id
+    );
     lookup_channel_and_send(&state, channel_id, |_| {
-        ("DeviceControl".to_string(), body.clone(), "巡航速度设置成功".to_string())
-    }).await
+        (
+            "DeviceControl".to_string(),
+            body.clone(),
+            "巡航速度设置成功".to_string(),
+        )
+    })
+    .await
 }
 
 /// GET /api/common/channel/front-end/tour/time
@@ -2206,10 +2387,19 @@ pub async fn front_end_tour_time(
     let tour_id = q.tour_id.unwrap_or(0);
     let time = q.time.unwrap_or(10);
     let body = format!(r#"<CruiseTime id="{}" time="{}" />"#, tour_id, time);
-    tracing::info!("commonChannel tour time: channel_id={}, tour_id={}", channel_id, tour_id);
+    tracing::info!(
+        "commonChannel tour time: channel_id={}, tour_id={}",
+        channel_id,
+        tour_id
+    );
     lookup_channel_and_send(&state, channel_id, |_| {
-        ("DeviceControl".to_string(), body.clone(), "巡航停留时间设置成功".to_string())
-    }).await
+        (
+            "DeviceControl".to_string(),
+            body.clone(),
+            "巡航停留时间设置成功".to_string(),
+        )
+    })
+    .await
 }
 
 /// GET /api/common/channel/front-end/tour/start
@@ -2239,10 +2429,19 @@ pub async fn front_end_tour_start(
     let channel_id = q.channel_id.unwrap_or(0);
     let tour_id = q.tour_id.unwrap_or(0);
     let body = format!(r#"<CruiseCmd id="{}" action="start" />"#, tour_id);
-    tracing::info!("commonChannel tour start: channel_id={}, tour_id={}", channel_id, tour_id);
+    tracing::info!(
+        "commonChannel tour start: channel_id={}, tour_id={}",
+        channel_id,
+        tour_id
+    );
     lookup_channel_and_send(&state, channel_id, |_| {
-        ("DeviceControl".to_string(), body.clone(), "巡航启动成功".to_string())
-    }).await
+        (
+            "DeviceControl".to_string(),
+            body.clone(),
+            "巡航启动成功".to_string(),
+        )
+    })
+    .await
 }
 
 /// GET /api/common/channel/front-end/tour/stop
@@ -2272,10 +2471,19 @@ pub async fn front_end_tour_stop(
     let channel_id = q.channel_id.unwrap_or(0);
     let tour_id = q.tour_id.unwrap_or(0);
     let body = format!(r#"<CruiseCmd id="{}" action="stop" />"#, tour_id);
-    tracing::info!("commonChannel tour stop: channel_id={}, tour_id={}", channel_id, tour_id);
+    tracing::info!(
+        "commonChannel tour stop: channel_id={}, tour_id={}",
+        channel_id,
+        tour_id
+    );
     lookup_channel_and_send(&state, channel_id, |_| {
-        ("DeviceControl".to_string(), body.clone(), "巡航停止成功".to_string())
-    }).await
+        (
+            "DeviceControl".to_string(),
+            body.clone(),
+            "巡航停止成功".to_string(),
+        )
+    })
+    .await
 }
 
 // ========== 扫描 ==========
@@ -2308,10 +2516,19 @@ pub async fn front_end_scan_set_speed(
     let scan_id = q.scan_id.unwrap_or(0);
     let speed = q.speed.unwrap_or(1);
     let body = format!(r#"<ScanSpeed id="{}" speed="{}" />"#, scan_id, speed);
-    tracing::info!("commonChannel scan speed: channel_id={}, scan_id={}", channel_id, scan_id);
+    tracing::info!(
+        "commonChannel scan speed: channel_id={}, scan_id={}",
+        channel_id,
+        scan_id
+    );
     lookup_channel_and_send(&state, channel_id, |_| {
-        ("DeviceControl".to_string(), body.clone(), "扫描速度设置成功".to_string())
-    }).await
+        (
+            "DeviceControl".to_string(),
+            body.clone(),
+            "扫描速度设置成功".to_string(),
+        )
+    })
+    .await
 }
 
 /// GET /api/common/channel/front-end/scan/set/left
@@ -2341,10 +2558,19 @@ pub async fn front_end_scan_set_left(
     let channel_id = q.channel_id.unwrap_or(0);
     let scan_id = q.scan_id.unwrap_or(0);
     let body = format!(r#"<ScanSet id="{}" type="left" />"#, scan_id);
-    tracing::info!("commonChannel scan left: channel_id={}, scan_id={}", channel_id, scan_id);
+    tracing::info!(
+        "commonChannel scan left: channel_id={}, scan_id={}",
+        channel_id,
+        scan_id
+    );
     lookup_channel_and_send(&state, channel_id, |_| {
-        ("DeviceControl".to_string(), body.clone(), "扫描左边界设置成功".to_string())
-    }).await
+        (
+            "DeviceControl".to_string(),
+            body.clone(),
+            "扫描左边界设置成功".to_string(),
+        )
+    })
+    .await
 }
 
 /// GET /api/common/channel/front-end/scan/set/right
@@ -2374,10 +2600,19 @@ pub async fn front_end_scan_set_right(
     let channel_id = q.channel_id.unwrap_or(0);
     let scan_id = q.scan_id.unwrap_or(0);
     let body = format!(r#"<ScanSet id="{}" type="right" />"#, scan_id);
-    tracing::info!("commonChannel scan right: channel_id={}, scan_id={}", channel_id, scan_id);
+    tracing::info!(
+        "commonChannel scan right: channel_id={}, scan_id={}",
+        channel_id,
+        scan_id
+    );
     lookup_channel_and_send(&state, channel_id, |_| {
-        ("DeviceControl".to_string(), body.clone(), "扫描右边界设置成功".to_string())
-    }).await
+        (
+            "DeviceControl".to_string(),
+            body.clone(),
+            "扫描右边界设置成功".to_string(),
+        )
+    })
+    .await
 }
 
 /// GET /api/common/channel/front-end/scan/start
@@ -2407,10 +2642,19 @@ pub async fn front_end_scan_start(
     let channel_id = q.channel_id.unwrap_or(0);
     let scan_id = q.scan_id.unwrap_or(0);
     let body = format!(r#"<ScanCmd id="{}" action="start" />"#, scan_id);
-    tracing::info!("commonChannel scan start: channel_id={}, scan_id={}", channel_id, scan_id);
+    tracing::info!(
+        "commonChannel scan start: channel_id={}, scan_id={}",
+        channel_id,
+        scan_id
+    );
     lookup_channel_and_send(&state, channel_id, |_| {
-        ("DeviceControl".to_string(), body.clone(), "扫描启动成功".to_string())
-    }).await
+        (
+            "DeviceControl".to_string(),
+            body.clone(),
+            "扫描启动成功".to_string(),
+        )
+    })
+    .await
 }
 
 /// GET /api/common/channel/front-end/scan/stop
@@ -2440,10 +2684,19 @@ pub async fn front_end_scan_stop(
     let channel_id = q.channel_id.unwrap_or(0);
     let scan_id = q.scan_id.unwrap_or(0);
     let body = format!(r#"<ScanCmd id="{}" action="stop" />"#, scan_id);
-    tracing::info!("commonChannel scan stop: channel_id={}, scan_id={}", channel_id, scan_id);
+    tracing::info!(
+        "commonChannel scan stop: channel_id={}, scan_id={}",
+        channel_id,
+        scan_id
+    );
     lookup_channel_and_send(&state, channel_id, |_| {
-        ("DeviceControl".to_string(), body.clone(), "扫描停止成功".to_string())
-    }).await
+        (
+            "DeviceControl".to_string(),
+            body.clone(),
+            "扫描停止成功".to_string(),
+        )
+    })
+    .await
 }
 
 // ========== 通道回放 (commonChannel.js 使用的 channelId 版本) ==========
@@ -2475,26 +2728,41 @@ pub async fn channel_playback_query(
     let channel_id = q.channel_id.unwrap_or(0);
     let start_time = q.start_time.clone().unwrap_or_default();
     let end_time = q.end_time.clone().unwrap_or_default();
-    tracing::info!("commonChannel playback query: channel_id={}, {}-{}", channel_id, start_time, end_time);
+    tracing::info!(
+        "commonChannel playback query: channel_id={}, {}-{}",
+        channel_id,
+        start_time,
+        end_time
+    );
 
     match common_channel::get_by_id(&state.pool, channel_id).await {
         Ok(Some(ch)) => {
             let device_id = ch.device_id.clone().unwrap_or_default();
             let gb_channel_id = ch.gb_device_id.clone().unwrap_or_default();
-            tracing::info!("Playback query for device={}, channel={}", device_id, gb_channel_id);
+            tracing::info!(
+                "Playback query for device={}, channel={}",
+                device_id,
+                gb_channel_id
+            );
 
             if let Some(ref zlm_client) = state.zlm_client {
-                match zlm_client.get_mp4_record_file("rtp", &gb_channel_id, None, None, None).await {
+                match zlm_client
+                    .get_mp4_record_file("rtp", &gb_channel_id, None, None, None)
+                    .await
+                {
                     Ok(list) => {
-                        let filtered: Vec<serde_json::Value> = list.into_iter().map(|r| {
-                            serde_json::json!({
-                                "fileName": r.name,
-                                "filePath": r.file_path,
-                                "fileSize": r.size,
-                                "startTime": r.create_time,
-                                "duration": r.duration,
+                        let filtered: Vec<serde_json::Value> = list
+                            .into_iter()
+                            .map(|r| {
+                                serde_json::json!({
+                                    "fileName": r.name,
+                                    "filePath": r.file_path,
+                                    "fileSize": r.size,
+                                    "startTime": r.create_time,
+                                    "duration": r.duration,
+                                })
                             })
-                        }).collect();
+                            .collect();
                         return Json(serde_json::json!({
                             "code": 0,
                             "msg": "查询成功",
@@ -2538,7 +2806,12 @@ pub async fn channel_playback_start(
     let channel_id = q.channel_id.unwrap_or(0);
     let start_time = q.start_time.clone().unwrap_or_default();
     let end_time = q.end_time.clone().unwrap_or_default();
-    tracing::info!("commonChannel playback start: channel_id={}, {}-{}", channel_id, start_time, end_time);
+    tracing::info!(
+        "commonChannel playback start: channel_id={}, {}-{}",
+        channel_id,
+        start_time,
+        end_time
+    );
 
     match common_channel::get_by_id(&state.pool, channel_id).await {
         Ok(Some(ch)) => {
@@ -2573,7 +2846,9 @@ pub async fn channel_playback_start(
                                     Err(e) => {
                                         tracing::error!(
                                             "openRtpServer for playback {}/{} failed: {}",
-                                            device_id, channel_id, e
+                                            device_id,
+                                            channel_id,
+                                            e
                                         );
                                         return Json(serde_json::json!({
                                             "code": 1,
@@ -2589,7 +2864,16 @@ pub async fn channel_playback_start(
                                 }));
                             }
                         };
-                        match server.send_playback_invite(&device_id, &gb_channel_id, &start_time, &end_time, media_port).await {
+                        match server
+                            .send_playback_invite(
+                                &device_id,
+                                &gb_channel_id,
+                                &start_time,
+                                &end_time,
+                                media_port,
+                            )
+                            .await
+                        {
                             Ok(_) => {
                                 let stream_id = format!("playback_{}_{}", device_id, channel_id);
                                 return Json(serde_json::json!({
@@ -2606,7 +2890,9 @@ pub async fn channel_playback_start(
                             }
                             Err(e) => {
                                 tracing::error!("Playback invite failed: {}", e);
-                                return Json(serde_json::json!({ "code": 1, "msg": format!("回放邀请失败: {}", e) }));
+                                return Json(
+                                    serde_json::json!({ "code": 1, "msg": format!("回放邀请失败: {}", e) }),
+                                );
                             }
                         }
                     }
@@ -2926,8 +3212,7 @@ pub async fn channel_playback_seek(
     };
     match dispatch_playback_control(&state, &stream, cmd).await {
         Ok((device_id, channel_id)) => {
-            let mut body =
-                playback_control_ok(&stream, &device_id, &channel_id, "回放跳转成功");
+            let mut body = playback_control_ok(&stream, &device_id, &channel_id, "回放跳转成功");
             if let Some(obj) = body.0.as_object_mut() {
                 obj.insert(
                     "currentTime".to_string(),
@@ -3055,7 +3340,9 @@ mod tests {
     #[test]
     fn test_parse_playback_stream_id_standard_form() {
         // 形如 playback_{deviceId}_{channelId}_{ts}
-        let got = parse_playback_stream_id("playback_34020000001320000001_34020000001310000001_1700000000");
+        let got = parse_playback_stream_id(
+            "playback_34020000001320000001_34020000001310000001_1700000000",
+        );
         assert_eq!(
             got,
             Some((
@@ -3084,8 +3371,14 @@ mod tests {
         assert_eq!(parse_playback_stream_id("juststream"), None);
         assert_eq!(parse_playback_stream_id("a_b"), None);
         // 空段必须被拒绝，否则会下发到空 deviceId 的 SIP 消息
-        assert_eq!(parse_playback_stream_id("playback__34020000001310000001"), None);
-        assert_eq!(parse_playback_stream_id("playback_34020000001320000001_"), None);
+        assert_eq!(
+            parse_playback_stream_id("playback__34020000001310000001"),
+            None
+        );
+        assert_eq!(
+            parse_playback_stream_id("playback_34020000001320000001_"),
+            None
+        );
     }
 
     #[test]
@@ -3194,15 +3487,24 @@ mod channel_crud_contract_tests {
         }))
         .expect("camelCase 必须能反序列化");
 
-        let _ = channel_add(State(state.clone()), Json(body)).await.expect("新增应成功");
+        let _ = channel_add(State(state.clone()), Json(body))
+            .await
+            .expect("新增应成功");
 
-        let ch = common_channel::get_by_id(&state.pool, 1).await.unwrap().unwrap();
+        let ch = common_channel::get_by_id(&state.pool, 1)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(ch.name.as_deref(), Some("前门"));
         assert_eq!(ch.gb_device_id.as_deref(), Some("34020000001310000001"));
         assert_eq!(ch.civil_code.as_deref(), Some("340200"));
         // 这三列此前后端 DTO 里根本没有，改了静默丢失
         assert_eq!(ch.manufacturer.as_deref(), Some("05"), "行业/厂商必须落库");
-        assert_eq!(ch.stream_identification.as_deref(), Some("IP"), "网络标识必须落库");
+        assert_eq!(
+            ch.stream_identification.as_deref(),
+            Some("IP"),
+            "网络标识必须落库"
+        );
         assert_eq!(ch.channel_type, Some(3), "类型必须落库");
         assert_eq!(ch.address.as_deref(), Some("1 号楼"), "安装地址必须落库");
         // 手工新增的通道要挂到父设备主键上（录像计划"按设备关联"依赖它）
@@ -3211,7 +3513,11 @@ mod channel_crud_contract_tests {
                 .fetch_one(&state.pool)
                 .await
                 .unwrap();
-        assert_eq!(stored_dev_pk, Some(dev_pk), "data_device_id 必须是父设备主键");
+        assert_eq!(
+            stored_dev_pk,
+            Some(dev_pk),
+            "data_device_id 必须是父设备主键"
+        );
     }
 
     /// 编辑：只传要改的字段，其余保持原值（COALESCE），不能把名称清空。
@@ -3235,15 +3541,24 @@ mod channel_crud_contract_tests {
             "channelType": 4
         }))
         .unwrap();
-        let _ = channel_update(State(state.clone()), Json(upd)).await.expect("更新应成功");
+        let _ = channel_update(State(state.clone()), Json(upd))
+            .await
+            .expect("更新应成功");
 
-        let ch = common_channel::get_by_id(&state.pool, 1).await.unwrap().unwrap();
+        let ch = common_channel::get_by_id(&state.pool, 1)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(ch.name.as_deref(), Some("后门"));
         assert_eq!(ch.channel_type, Some(4));
         // 未提交的字段必须保持原值
         assert_eq!(ch.manufacturer.as_deref(), Some("05"));
         assert_eq!(ch.address.as_deref(), Some("1 号楼"));
-        assert_eq!(ch.gb_device_id.as_deref(), Some("34020000001310000001"), "未提交时不得清空国标ID");
+        assert_eq!(
+            ch.gb_device_id.as_deref(),
+            Some("34020000001310000001"),
+            "未提交时不得清空国标ID"
+        );
     }
 
     /// `id` 是前端的参数名；`channelId` 是后端历史上的名字。两个都要能绑。
@@ -3251,9 +3566,11 @@ mod channel_crud_contract_tests {
     fn test_channel_id_query_accepts_id_and_channel_id() {
         let q: ChannelIdQuery = serde_json::from_value(serde_json::json!({"id": 7})).unwrap();
         assert_eq!(q.channel_id, Some(7), "`id` 必须能绑定");
-        let q: ChannelIdQuery = serde_json::from_value(serde_json::json!({"channelId": 8})).unwrap();
+        let q: ChannelIdQuery =
+            serde_json::from_value(serde_json::json!({"channelId": 8})).unwrap();
         assert_eq!(q.channel_id, Some(8));
-        let q: ChannelIdQuery = serde_json::from_value(serde_json::json!({"channel_id": 9})).unwrap();
+        let q: ChannelIdQuery =
+            serde_json::from_value(serde_json::json!({"channel_id": 9})).unwrap();
         assert_eq!(q.channel_id, Some(9));
     }
 
@@ -3262,15 +3579,21 @@ mod channel_crud_contract_tests {
     #[tokio::test]
     async fn test_code_lists_are_name_code_objects() {
         let industries = industry_list().await.0.data.unwrap();
-        assert!(industries.iter().all(|i| i.get("name").is_some() && i.get("code").is_some()));
+        assert!(industries
+            .iter()
+            .all(|i| i.get("name").is_some() && i.get("code").is_some()));
         assert!(industries.iter().any(|i| i["name"] == "危险化学品"));
 
         let types = type_list().await.0.data.unwrap();
-        assert!(types.iter().all(|t| t.get("name").is_some() && t.get("code").is_some()));
+        assert!(types
+            .iter()
+            .all(|t| t.get("name").is_some() && t.get("code").is_some()));
         assert!(types.iter().any(|t| t["name"] == "摄像机"));
 
         let networks = network_identification_list().await.0.data.unwrap();
-        assert!(networks.iter().all(|n| n.get("name").is_some() && n.get("code").is_some()));
+        assert!(networks
+            .iter()
+            .all(|n| n.get("name").is_some() && n.get("code").is_some()));
     }
 }
 
@@ -3314,9 +3637,7 @@ async fn resolve_common_channel(
             let gb_channel_id = ch.gb_device_id.clone().unwrap_or_default();
             Ok((device_id, gb_channel_id))
         }
-        Ok(None) => Err(Json(
-            serde_json::json!({ "code": 1, "msg": "通道不存在" }),
-        )),
+        Ok(None) => Err(Json(serde_json::json!({ "code": 1, "msg": "通道不存在" }))),
         Err(e) => Err(Json(serde_json::json!({
             "code": 1,
             "msg": format!("数据库错误: {e}"),
@@ -3508,13 +3829,25 @@ pub async fn channel_broadcast_stop(
 /// `GET /api/common/channel/front-end/home_position?channelId=&enabled=&resetTime=&presetIndex=`
 #[derive(Debug, Default, Deserialize, utoipa::IntoParams)]
 pub struct CommonChannelHomePositionQuery {
-    #[serde(alias = "channelId", default, deserialize_with = "crate::serde_flex::de_opt_i64")]
+    #[serde(
+        alias = "channelId",
+        default,
+        deserialize_with = "crate::serde_flex::de_opt_i64"
+    )]
     pub channel_id: Option<i64>,
     #[serde(default, deserialize_with = "crate::serde_flex::de_opt_bool")]
     pub enabled: Option<bool>,
-    #[serde(alias = "resetTime", default, deserialize_with = "crate::serde_flex::de_opt_i64")]
+    #[serde(
+        alias = "resetTime",
+        default,
+        deserialize_with = "crate::serde_flex::de_opt_i64"
+    )]
     pub reset_time: Option<i64>,
-    #[serde(alias = "presetIndex", default, deserialize_with = "crate::serde_flex::de_opt_i64")]
+    #[serde(
+        alias = "presetIndex",
+        default,
+        deserialize_with = "crate::serde_flex::de_opt_i64"
+    )]
     pub preset_index: Option<i64>,
 }
 
@@ -3553,19 +3886,39 @@ pub async fn front_end_home_position(
 /// `GET /api/common/channel/front-end/drag_zoom_{in,out}` 的公共查询参数。
 #[derive(Debug, Default, Deserialize, utoipa::IntoParams)]
 pub struct CommonChannelDragZoomQuery {
-    #[serde(alias = "channelId", default, deserialize_with = "crate::serde_flex::de_opt_i64")]
+    #[serde(
+        alias = "channelId",
+        default,
+        deserialize_with = "crate::serde_flex::de_opt_i64"
+    )]
     pub channel_id: Option<i64>,
     #[serde(default, deserialize_with = "crate::serde_flex::de_opt_i64")]
     pub length: Option<i64>,
     #[serde(default, deserialize_with = "crate::serde_flex::de_opt_i64")]
     pub width: Option<i64>,
-    #[serde(alias = "midPointX", default, deserialize_with = "crate::serde_flex::de_opt_i64")]
+    #[serde(
+        alias = "midPointX",
+        default,
+        deserialize_with = "crate::serde_flex::de_opt_i64"
+    )]
     pub mid_point_x: Option<i64>,
-    #[serde(alias = "midPointY", default, deserialize_with = "crate::serde_flex::de_opt_i64")]
+    #[serde(
+        alias = "midPointY",
+        default,
+        deserialize_with = "crate::serde_flex::de_opt_i64"
+    )]
     pub mid_point_y: Option<i64>,
-    #[serde(alias = "lengthX", default, deserialize_with = "crate::serde_flex::de_opt_i64")]
+    #[serde(
+        alias = "lengthX",
+        default,
+        deserialize_with = "crate::serde_flex::de_opt_i64"
+    )]
     pub length_x: Option<i64>,
-    #[serde(alias = "lengthY", default, deserialize_with = "crate::serde_flex::de_opt_i64")]
+    #[serde(
+        alias = "lengthY",
+        default,
+        deserialize_with = "crate::serde_flex::de_opt_i64"
+    )]
     pub length_y: Option<i64>,
 }
 
@@ -3601,7 +3954,11 @@ async fn common_channel_drag_zoom(
         q.length_x.unwrap_or(0),
         q.length_y.unwrap_or(0),
     );
-    let msg = if zoom_in { "拉框放大成功" } else { "拉框缩小成功" };
+    let msg = if zoom_in {
+        "拉框放大成功"
+    } else {
+        "拉框缩小成功"
+    };
     lookup_channel_and_send(state, q.channel_id.unwrap_or(0), move |_ch| {
         ("DeviceControl".to_string(), body.clone(), msg.to_string())
     })

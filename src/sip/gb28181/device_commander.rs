@@ -13,9 +13,9 @@
 
 use std::sync::Arc;
 
-use crate::sip::gb28181::PendingRequestManager;
-use crate::sip::gb28181::PendingCmdType;
 use crate::sip::gb28181::pending_request::PendingRequest;
+use crate::sip::gb28181::PendingCmdType;
+use crate::sip::gb28181::PendingRequestManager;
 use crate::sip::gb28181::QueryResult;
 
 /// 设备查询配置
@@ -62,50 +62,35 @@ impl DeviceCommander {
     /// 查询设备基本信息（DeviceInfo）
     pub fn query_device_info(&self, device_id: &str, sn: u32) -> PendingRequest {
         let call_id = format!("di_{}_{}", device_id, sn);
-        self.pending.register(
-            device_id,
-            sn,
-            PendingCmdType::DeviceInfo,
-            &call_id,
-            None,
-        )
+        self.pending
+            .register(device_id, sn, PendingCmdType::DeviceInfo, &call_id, None)
     }
 
     /// 查询设备运行状态（DeviceStatus）
     pub fn query_device_status(&self, device_id: &str, sn: u32) -> PendingRequest {
         let call_id = format!("ds_{}_{}", device_id, sn);
-        self.pending.register(
-            device_id,
-            sn,
-            PendingCmdType::DeviceStatus,
-            &call_id,
-            None,
-        )
+        self.pending
+            .register(device_id, sn, PendingCmdType::DeviceStatus, &call_id, None)
     }
 
     /// 查询设备配置参数（ConfigDownload）
     #[allow(unused_variables)]
-    pub fn query_device_config(&self, device_id: &str, sn: u32, config_type: &str) -> PendingRequest {
+    pub fn query_device_config(
+        &self,
+        device_id: &str,
+        sn: u32,
+        config_type: &str,
+    ) -> PendingRequest {
         let call_id = format!("dc_{}_{}", device_id, sn);
-        self.pending.register(
-            device_id,
-            sn,
-            PendingCmdType::DeviceConfig,
-            &call_id,
-            None,
-        )
+        self.pending
+            .register(device_id, sn, PendingCmdType::DeviceConfig, &call_id, None)
     }
 
     /// 查询录像信息（RecordInfo）
     pub fn query_record_info(&self, device_id: &str, sn: u32) -> PendingRequest {
         let call_id = format!("ri_{}_{}", device_id, sn);
-        self.pending.register(
-            device_id,
-            sn,
-            PendingCmdType::RecordInfo,
-            &call_id,
-            None,
-        )
+        self.pending
+            .register(device_id, sn, PendingCmdType::RecordInfo, &call_id, None)
     }
 
     /// 解析 DeviceInfo 响应 XML
@@ -127,7 +112,9 @@ impl DeviceCommander {
 
     /// 解析 DeviceStatus 响应 XML
     pub fn parse_device_status(&self, xml: &str) -> DeviceStatusResult {
-        let result = self.pending.parse_response(PendingCmdType::DeviceStatus, xml);
+        let result = self
+            .pending
+            .parse_response(PendingCmdType::DeviceStatus, xml);
         match result {
             QueryResult::DeviceStatus(status) => DeviceStatusResult::Ok(DeviceStatusData {
                 online: status.online,
@@ -174,31 +161,49 @@ impl DeviceCommander {
 
     /// 注册 DeviceInfo 查询并保留 receiver
     pub fn register_device_info_with_receiver(
-        &self, device_id: &str, sn: u32,
+        &self,
+        device_id: &str,
+        sn: u32,
     ) -> (PendingRequest, tokio::sync::oneshot::Receiver<String>) {
         let call_id = format!("di_{}_{}", device_id, sn);
         self.pending.register_with_receiver(
-            device_id, sn, PendingCmdType::DeviceInfo, &call_id, None,
+            device_id,
+            sn,
+            PendingCmdType::DeviceInfo,
+            &call_id,
+            None,
         )
     }
 
     /// 注册 DeviceStatus 查询并保留 receiver
     pub fn register_device_status_with_receiver(
-        &self, device_id: &str, sn: u32,
+        &self,
+        device_id: &str,
+        sn: u32,
     ) -> (PendingRequest, tokio::sync::oneshot::Receiver<String>) {
         let call_id = format!("ds_{}_{}", device_id, sn);
         self.pending.register_with_receiver(
-            device_id, sn, PendingCmdType::DeviceStatus, &call_id, None,
+            device_id,
+            sn,
+            PendingCmdType::DeviceStatus,
+            &call_id,
+            None,
         )
     }
 
     /// 注册 DeviceConfig 查询并保留 receiver
     pub fn register_device_config_with_receiver(
-        &self, device_id: &str, sn: u32,
+        &self,
+        device_id: &str,
+        sn: u32,
     ) -> (PendingRequest, tokio::sync::oneshot::Receiver<String>) {
         let call_id = format!("dc_{}_{}", device_id, sn);
         self.pending.register_with_receiver(
-            device_id, sn, PendingCmdType::DeviceConfig, &call_id, None,
+            device_id,
+            sn,
+            PendingCmdType::DeviceConfig,
+            &call_id,
+            None,
         )
     }
 
@@ -209,11 +214,17 @@ impl DeviceCommander {
     /// （`PendingResponseRouter::route_message_response`）已支持
     /// `CmdType=MobilePosition`，这里只需按同样的 call_id 规约注册。
     pub fn register_mobile_position_with_receiver(
-        &self, device_id: &str, sn: u32,
+        &self,
+        device_id: &str,
+        sn: u32,
     ) -> (PendingRequest, tokio::sync::oneshot::Receiver<String>) {
         let call_id = format!("mp_{}_{}", device_id, sn);
         self.pending.register_with_receiver(
-            device_id, sn, PendingCmdType::MobilePosition, &call_id, None,
+            device_id,
+            sn,
+            PendingCmdType::MobilePosition,
+            &call_id,
+            None,
         )
     }
 
@@ -222,12 +233,13 @@ impl DeviceCommander {
     /// 与其它查询一样，SN 必须"登记即所发"：设备应答里回显的 SN 是
     /// Call-ID 不一致时唯一的关联依据。
     pub fn register_alarm_query_with_receiver(
-        &self, device_id: &str, sn: u32,
+        &self,
+        device_id: &str,
+        sn: u32,
     ) -> (PendingRequest, tokio::sync::oneshot::Receiver<String>) {
         let call_id = format!("al_{}_{}", device_id, sn);
-        self.pending.register_with_receiver(
-            device_id, sn, PendingCmdType::Alarm, &call_id, None,
-        )
+        self.pending
+            .register_with_receiver(device_id, sn, PendingCmdType::Alarm, &call_id, None)
     }
 
     /// 等待 receiver 响应（带超时）
@@ -237,10 +249,7 @@ impl DeviceCommander {
         rx: tokio::sync::oneshot::Receiver<String>,
         timeout_secs: u64,
     ) -> Result<String, DeviceQueryResult> {
-        match tokio::time::timeout(
-            std::time::Duration::from_secs(timeout_secs),
-            rx,
-        ).await {
+        match tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), rx).await {
             Ok(Ok(xml)) => Ok(xml),
             Ok(Err(_recv_cancelled)) => Err(DeviceQueryResult::Timeout),
             Err(_elapsed) => Err(DeviceQueryResult::Timeout),
@@ -281,7 +290,9 @@ impl DeviceCommander {
         }
         match self.await_response(_req, rx, timeout_secs).await {
             Ok(xml) => self.parse_device_status(&xml),
-            Err(DeviceQueryResult::Timeout) => DeviceStatusResult::ParseError("timeout".to_string()),
+            Err(DeviceQueryResult::Timeout) => {
+                DeviceStatusResult::ParseError("timeout".to_string())
+            }
             Err(_) => DeviceStatusResult::ParseError("error".to_string()),
         }
     }
@@ -433,13 +444,10 @@ mod tests {
         assert!(returned.is_some(), "complete 应返回原始 XML");
 
         // 收 oneshot
-        let xml = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            rx,
-        )
-        .await
-        .expect("不应超时")
-        .expect("oneshot 不应被取消");
+        let xml = tokio::time::timeout(std::time::Duration::from_secs(2), rx)
+            .await
+            .expect("不应超时")
+            .expect("oneshot 不应被取消");
         assert!(xml.contains("<DeviceName>Cam-A</DeviceName>"));
         assert!(xml.contains("<Channel>2</Channel>"));
     }
@@ -481,12 +489,7 @@ mod tests {
 
         // 模拟发送：立即成功
         let result = cmd
-            .query_device_info_and_parse(
-                "34020000001320000003",
-                202,
-                async { Ok(()) },
-                5,
-            )
+            .query_device_info_and_parse("34020000001320000003", 202, async { Ok(()) }, 5)
             .await;
 
         match result {
@@ -524,12 +527,7 @@ mod tests {
         let cmd = make_commander();
         // 不调用 complete，触发 0s 超时
         let result = cmd
-            .query_device_info_and_parse(
-                "34020000001320000005",
-                204,
-                async { Ok(()) },
-                0,
-            )
+            .query_device_info_and_parse("34020000001320000005", 204, async { Ok(()) }, 0)
             .await;
         match result {
             DeviceInfoResult::ParseError(msg) => assert!(msg.contains("timeout")),

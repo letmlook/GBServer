@@ -89,7 +89,7 @@ pub fn app(state: AppState) -> Router<AppState> {
     let api = api_public.merge(api_protected);
     // 注：原 `zlm_protected`（ZLM 反向代理）已并入受保护注册表（`server::zlm_proxy`
     // 的注解在 system 域），因此现在它与其它受保护接口一样会经过审计中间件。
-        let app = Router::new()
+    let app = Router::new()
         .merge(api)
         // Phase 4.1: 兼容多路径 hook 路由（/api/hook/*）
         // 公共端点，与既有 /api/zlm/hook 单路径并存
@@ -102,10 +102,8 @@ pub fn app(state: AppState) -> Router<AppState> {
     // 它们不出现在文档里（迁移进度见 `documented_routes()`）。
     let openapi = crate::openapi::build_openapi();
     let path_count = openapi.paths.paths.len();
-    let app = app.merge(
-        utoipa_swagger_ui::SwaggerUi::new("/swagger-ui")
-            .url("/api/openapi.json", openapi),
-    );
+    let app = app
+        .merge(utoipa_swagger_ui::SwaggerUi::new("/swagger-ui").url("/api/openapi.json", openapi));
     tracing::info!(
         "OpenAPI 文档已挂载：/swagger-ui（规范：/api/openapi.json），当前已收录 {} 条路径",
         path_count
@@ -253,8 +251,7 @@ mod tests {
         }
 
         // 鉴权要求：区域接口必须声明 access_token
-        let declared = doc["paths"]["/api/region/one"]["get"]["security"]
-            .to_string();
+        let declared = doc["paths"]["/api/region/one"]["get"]["security"].to_string();
         assert!(
             declared.contains("access_token"),
             "区域接口未声明鉴权要求: {declared}"
@@ -467,5 +464,4 @@ mod tests {
             assert_eq!(status, 401, "{} 未受鉴权保护（越权风险）", path);
         }
     }
-
 }

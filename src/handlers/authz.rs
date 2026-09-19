@@ -39,7 +39,10 @@ pub fn is_admin_role(role_id: Option<i32>, authority: Option<&str>) -> bool {
 ///
 /// 用户已被删除时返回 401，而不是当成"无权限"—— 否则被删用户会看到 403
 /// 而误以为是自己权限不够。
-pub async fn current_user(state: &AppState, headers: &HeaderMap) -> Result<(Claims, User), AppError> {
+pub async fn current_user(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Result<(Claims, User), AppError> {
     let token = extract_token_from_headers(headers).ok_or(AppError::Unauthorized)?;
     let keys = JwtKeys::new(state.config.jwt.secret.as_bytes());
     let claims = keys.verify_token(&token).ok_or(AppError::Unauthorized)?;

@@ -131,7 +131,7 @@ pub async fn list_alarms_paged(
                AND ($4::text IS NULL OR alarm_time >= $4) \
                AND ($5::text IS NULL OR alarm_time <= $5) \
              ORDER BY create_time DESC \
-             LIMIT $6 OFFSET $7"
+             LIMIT $6 OFFSET $7",
         )
         .bind(device_id)
         .bind(alarm_type)
@@ -156,7 +156,7 @@ pub async fn list_alarms_paged(
                AND (? IS NULL OR alarm_time >= ?) \
                AND (? IS NULL OR alarm_time <= ?) \
              ORDER BY create_time DESC \
-             LIMIT ? OFFSET ?"
+             LIMIT ? OFFSET ?",
         )
         .bind(device_id)
         .bind(device_id)
@@ -186,7 +186,7 @@ pub async fn list_alarms_paged(
                AND (? IS NULL OR alarm_time >= ?) \
                AND (? IS NULL OR alarm_time <= ?) \
              ORDER BY create_time DESC \
-             LIMIT ? OFFSET ?"
+             LIMIT ? OFFSET ?",
         )
         .bind(device_id)
         .bind(device_id)
@@ -222,7 +222,7 @@ pub async fn count_alarms(
                AND ($2::text IS NULL OR alarm_type = $2) \
                AND ($3::text IS NULL OR alarm_priority = $3) \
                AND ($4::text IS NULL OR alarm_time >= $4) \
-               AND ($5::text IS NULL OR alarm_time <= $5)"
+               AND ($5::text IS NULL OR alarm_time <= $5)",
         )
         .bind(device_id)
         .bind(alarm_type)
@@ -243,7 +243,7 @@ pub async fn count_alarms(
                AND (? IS NULL OR alarm_type = ?) \
                AND (? IS NULL OR alarm_priority = ?) \
                AND (? IS NULL OR alarm_time >= ?) \
-               AND (? IS NULL OR alarm_time <= ?)"
+               AND (? IS NULL OR alarm_time <= ?)",
         )
         .bind(device_id)
         .bind(device_id)
@@ -269,7 +269,7 @@ pub async fn count_alarms(
                AND (?2 IS NULL OR alarm_type = ?2) \
                AND (?3 IS NULL OR alarm_priority = ?3) \
                AND (?4 IS NULL OR alarm_time >= ?4) \
-               AND (?5 IS NULL OR alarm_time <= ?5)"
+               AND (?5 IS NULL OR alarm_time <= ?5)",
         )
         .bind(device_id)
         .bind(alarm_type)
@@ -290,7 +290,7 @@ pub async fn get_alarm_by_id(pool: &Pool, id: i64) -> sqlx::Result<Option<Alarm>
         sqlx::query_as::<_, Alarm>(
             "SELECT id, device_id, channel_id, alarm_priority, alarm_method, alarm_time, \
              alarm_description, longitude, latitude, alarm_type, create_time \
-             FROM gb_device_alarm WHERE id = $1"
+             FROM gb_device_alarm WHERE id = $1",
         )
         .bind(id)
         .fetch_optional(pool)
@@ -302,7 +302,7 @@ pub async fn get_alarm_by_id(pool: &Pool, id: i64) -> sqlx::Result<Option<Alarm>
         sqlx::query_as::<_, Alarm>(
             "SELECT id, device_id, channel_id, alarm_priority, alarm_method, alarm_time, \
              alarm_description, longitude, latitude, alarm_type, create_time \
-             FROM gb_device_alarm WHERE id = ?"
+             FROM gb_device_alarm WHERE id = ?",
         )
         .bind(id)
         .fetch_optional(pool)
@@ -314,7 +314,7 @@ pub async fn get_alarm_by_id(pool: &Pool, id: i64) -> sqlx::Result<Option<Alarm>
         sqlx::query_as::<_, Alarm>(
             "SELECT id, device_id, channel_id, alarm_priority, alarm_method, alarm_time, \
              alarm_description, longitude, latitude, alarm_type, create_time \
-             FROM gb_device_alarm WHERE id = ?"
+             FROM gb_device_alarm WHERE id = ?",
         )
         .bind(id)
         .fetch_optional(pool)
@@ -326,11 +326,26 @@ pub async fn get_alarm_by_id(pool: &Pool, id: i64) -> sqlx::Result<Option<Alarm>
 /// Delete ALL alarms (used by /api/alarm/clear). Returns count deleted.
 pub async fn delete_all(pool: &Pool) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
-    { return sqlx::query("DELETE FROM gb_device_alarm").execute(pool).await.map(|r| r.rows_affected()); }
+    {
+        return sqlx::query("DELETE FROM gb_device_alarm")
+            .execute(pool)
+            .await
+            .map(|r| r.rows_affected());
+    }
     #[cfg(feature = "postgres")]
-    { return sqlx::query("DELETE FROM gb_device_alarm").execute(pool).await.map(|r| r.rows_affected()); }
+    {
+        return sqlx::query("DELETE FROM gb_device_alarm")
+            .execute(pool)
+            .await
+            .map(|r| r.rows_affected());
+    }
     #[cfg(feature = "sqlite")]
-    { return sqlx::query("DELETE FROM gb_device_alarm").execute(pool).await.map(|r| r.rows_affected()); }
+    {
+        return sqlx::query("DELETE FROM gb_device_alarm")
+            .execute(pool)
+            .await
+            .map(|r| r.rows_affected());
+    }
 }
 
 pub async fn delete_alarm(pool: &Pool, id: i64) -> sqlx::Result<bool> {

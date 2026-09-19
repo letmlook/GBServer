@@ -9,12 +9,11 @@
 
 use axum::Router;
 use utoipa::openapi::path::Paths;
-use utoipa::openapi::{RefOr, Schema};
 use utoipa::openapi::security::{ApiKey, ApiKeyValue, HttpAuthScheme, HttpBuilder, SecurityScheme};
+use utoipa::openapi::{RefOr, Schema};
 use utoipa::{Modify, OpenApi};
 
 use crate::AppState;
-
 
 /// 一个域注册完的产物：`(schemas, paths, 真实 axum Router)`。
 pub mod registry_protected_routes;

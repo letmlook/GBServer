@@ -46,7 +46,11 @@ use crate::AppState;
 #[derive(Debug, Deserialize, Default, utoipa::IntoParams)]
 pub struct LatestQuery {
     /// 通道数据库主键（与 `deviceId` 二选一）
-    #[serde(alias = "channelId", default, deserialize_with = "crate::serde_flex::de_opt_i64")]
+    #[serde(
+        alias = "channelId",
+        default,
+        deserialize_with = "crate::serde_flex::de_opt_i64"
+    )]
     #[param(example = 1)]
     pub channel_id: Option<i64>,
     /// 设备国标编号
@@ -61,7 +65,11 @@ pub struct LatestQuery {
 #[derive(Debug, Deserialize, Default, utoipa::IntoParams)]
 pub struct HistoryQuery {
     /// 通道数据库主键。给了它就按通道查 `gb_device_mobile_position`。
-    #[serde(alias = "channelId", default, deserialize_with = "crate::serde_flex::de_opt_i64")]
+    #[serde(
+        alias = "channelId",
+        default,
+        deserialize_with = "crate::serde_flex::de_opt_i64"
+    )]
     pub channel_id: Option<i64>,
     /// 通道国标编号（可选，配合 deviceId 使用）。
     #[serde(alias = "gbChannelId")]
@@ -146,14 +154,16 @@ pub async fn position_latest(
         (dev, Some(ch))
     } else {
         let dev = opt_trimmed(q.device_id.as_deref())
-            .ok_or_else(|| {
-                AppError::business(ErrorCode::Error400, "缺少 channelId 或 deviceId")
-            })?
+            .ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 channelId 或 deviceId"))?
             .to_string();
-        (dev, opt_trimmed(q.gb_channel_id.as_deref()).map(str::to_string))
+        (
+            dev,
+            opt_trimmed(q.gb_channel_id.as_deref()).map(str::to_string),
+        )
     };
 
-    let latest = pos_db::get_latest_position(&state.pool, &device_id, channel_id.as_deref()).await?;
+    let latest =
+        pos_db::get_latest_position(&state.pool, &device_id, channel_id.as_deref()).await?;
     // `data` 直接就是位置对象，
     // 查不到时为 null。设备/通道编号本来就在对象里。
     Ok(Json(ApiResult::success(
@@ -195,8 +205,7 @@ pub async fn position_history(
         let (dev, gb_channel) = resolve_channel(&state, cid).await?;
         let page = q.page.unwrap_or(1).max(1);
         let count = q.count.unwrap_or(100).clamp(1, 1000);
-        let total =
-            pos_db::count(&state.pool, &dev, Some(&gb_channel), start, end).await?;
+        let total = pos_db::count(&state.pool, &dev, Some(&gb_channel), start, end).await?;
         let list = pos_db::list_paged(
             &state.pool,
             &dev,
@@ -218,8 +227,8 @@ pub async fn position_history(
     }
 
     // 未指定通道：兼容旧行为（gb_position_history 宽表）
-    let list = db::position_history::list_by_device_and_time(&state.pool, &device_id, start, end)
-        .await?;
+    let list =
+        db::position_history::list_by_device_and_time(&state.pool, &device_id, start, end).await?;
     Ok(Json(ApiResult::success(serde_json::json!({
         "deviceId": device_id,
         "source": "position_history",
@@ -401,7 +410,10 @@ pub async fn position_subscribe(
     let mut sip_message: Option<String> = None;
     let mut sent = false;
     match state.sip_server.as_ref() {
-        Some(sip_server) => match sip_server.send_subscribe(&device_id, "MobilePosition", expires as u32).await {
+        Some(sip_server) => match sip_server
+            .send_subscribe(&device_id, "MobilePosition", expires as u32)
+            .await
+        {
             Ok(()) => sent = true,
             Err(e) => sip_message = Some(e.to_string()),
         },
@@ -500,12 +512,9 @@ mod position_contract_tests {
     #[tokio::test]
     async fn test_position_latest_rejects_missing_params() {
         let state = app_state().await;
-        let e = position_latest(
-            State(state.clone()),
-            Query(LatestQuery::default()),
-        )
-        .await
-        .expect_err("缺参数应报错");
+        let e = position_latest(State(state.clone()), Query(LatestQuery::default()))
+            .await
+            .expect_err("缺参数应报错");
         assert!(matches!(e, AppError::Business(_, _)));
 
         let e = position_latest(
@@ -630,8 +639,8 @@ mod position_contract_tests {
             serde_json::from_value(serde_json::json!({"channelId": ""})).expect("空串应可解析");
         assert_eq!(q.channel_id, None);
 
-        let q: LatestQuery =
-            serde_json::from_value(serde_json::json!({"channelId": "7"})).expect("数字字符串应可解析");
+        let q: LatestQuery = serde_json::from_value(serde_json::json!({"channelId": "7"}))
+            .expect("数字字符串应可解析");
         assert_eq!(q.channel_id, Some(7));
 
         let q: HistoryQuery = serde_json::from_value(serde_json::json!({
@@ -645,7 +654,9 @@ mod position_contract_tests {
         assert_eq!(q.channel_id, None);
 
         // 非法值仍要报错，不能静默当成"没有筛选条件"
-        assert!(serde_json::from_value::<LatestQuery>(serde_json::json!({"channelId": "abc"})).is_err());
+        assert!(
+            serde_json::from_value::<LatestQuery>(serde_json::json!({"channelId": "abc"})).is_err()
+        );
     }
 
     /// 实时查询的设备响应解析（`<Response>` 形态）。

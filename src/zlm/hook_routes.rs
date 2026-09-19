@@ -8,14 +8,10 @@
 //! 事件名常量与 `ZlmHookEvent` 一一对应；handler 通过 phantom 泛型标记
 //! 路由绑定的事件，运行时再依据请求体中的 `hook_name` 二次校验 + 分派。
 
-use axum::{
-    extract::State,
-    routing::post,
-    Json, Router,
-};
+use axum::{extract::State, routing::post, Json, Router};
 
-use crate::AppState;
 use crate::zlm::hook::{handle_webhook_inner, ZlmHookEvent};
+use crate::AppState;
 
 // 事件名常量（与 ZlmHookEvent::from_hook_name 入参一致）
 const ON_SERVER_STARTED: &str = "on_server_started";
@@ -260,7 +256,10 @@ async fn handle_hook_event<T: HookEventTag>(
 /// 由 `router.rs` 直接注册 `zlm_hook::handle_webhook`，不在此处重复。
 pub fn hook_routes() -> Router<AppState> {
     Router::new()
-        .route("/api/hook/on_server_started", post(handle_hook_event::<ServerStarted>))
+        .route(
+            "/api/hook/on_server_started",
+            post(handle_hook_event::<ServerStarted>),
+        )
         .route(
             "/api/hook/on_server_keepalive",
             post(handle_hook_event::<ServerKeepalive>),
@@ -382,15 +381,26 @@ mod tests {
         ];
         for name in cases {
             let ev = ZlmHookEvent::from_hook_name(name);
-            assert_ne!(ev, ZlmHookEvent::Unknown, "hook_name={} should not be Unknown", name);
+            assert_ne!(
+                ev,
+                ZlmHookEvent::Unknown,
+                "hook_name={} should not be Unknown",
+                name
+            );
         }
     }
 
     #[test]
     fn test_hook_event_tag_constants_match() {
         // 编译期已强制 ROUTE 标签与 ENUM 一一对应；这里再验证常量一致
-        assert_eq!(<ServerStarted as HookEventTag>::HOOK_NAME, ON_SERVER_STARTED);
-        assert_eq!(<StreamChanged as HookEventTag>::HOOK_NAME, ON_STREAM_CHANGED);
+        assert_eq!(
+            <ServerStarted as HookEventTag>::HOOK_NAME,
+            ON_SERVER_STARTED
+        );
+        assert_eq!(
+            <StreamChanged as HookEventTag>::HOOK_NAME,
+            ON_STREAM_CHANGED
+        );
         assert_eq!(<RecordMp4 as HookEventTag>::HOOK_NAME, ON_RECORD_MP4);
         assert_eq!(<FlowReport as HookEventTag>::HOOK_NAME, ON_FLOW_REPORT);
     }

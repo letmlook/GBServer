@@ -8,9 +8,9 @@
 //! - PlaybackSession: 历史回放（start → control(pause/resume/seek/speed) → stop）
 //! - DownloadSession: 文件下载（start → stop + 文件上传通知）
 
+use chrono::{DateTime, Utc};
 use std::sync::Arc;
 use std::time::Duration;
-use chrono::{DateTime, Utc};
 
 use dashmap::DashMap;
 use tokio::sync::oneshot;
@@ -27,12 +27,12 @@ pub struct MediaWaiter {
 /// 会话状态
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MediaSessionState {
-    Starting,   // 命令已发，等待终端响应
-    Active,     // 媒体流传输中
-    Paused,     // 暂停中
-    Stopping,    // 停止中
-    Stopped,     // 已停止
-    Failed,      // 失败
+    Starting, // 命令已发，等待终端响应
+    Active,   // 媒体流传输中
+    Paused,   // 暂停中
+    Stopping, // 停止中
+    Stopped,  // 已停止
+    Failed,   // 失败
 }
 
 /// 会话类型
@@ -148,38 +148,44 @@ impl JtMediaSessionManager {
     pub fn create_live(&self, phone: &str, channel_id: u8) {
         let key = Self::session_key(phone, channel_id);
         let now = Utc::now();
-        self.sessions.insert(key, JtMediaSession {
-            phone: phone.to_string(),
-            channel_id,
-            session_type: MediaSessionType::Live,
-            state: MediaSessionState::Starting,
-            zlm_stream_id: None,
-            stream_url: None,
-            start_time: now,
-            end_time: None,
-            speed: 1.0,
-            current_pos_secs: 0,
-            last_activity: now,
-        });
+        self.sessions.insert(
+            key,
+            JtMediaSession {
+                phone: phone.to_string(),
+                channel_id,
+                session_type: MediaSessionType::Live,
+                state: MediaSessionState::Starting,
+                zlm_stream_id: None,
+                stream_url: None,
+                start_time: now,
+                end_time: None,
+                speed: 1.0,
+                current_pos_secs: 0,
+                last_activity: now,
+            },
+        );
     }
 
     /// 创建回放会话
     pub fn create_playback(&self, phone: &str, channel_id: u8) {
         let key = Self::session_key(phone, channel_id);
         let now = Utc::now();
-        self.sessions.insert(key, JtMediaSession {
-            phone: phone.to_string(),
-            channel_id,
-            session_type: MediaSessionType::Playback,
-            state: MediaSessionState::Starting,
-            zlm_stream_id: None,
-            stream_url: None,
-            start_time: now,
-            end_time: None,
-            speed: 1.0,
-            current_pos_secs: 0,
-            last_activity: now,
-        });
+        self.sessions.insert(
+            key,
+            JtMediaSession {
+                phone: phone.to_string(),
+                channel_id,
+                session_type: MediaSessionType::Playback,
+                state: MediaSessionState::Starting,
+                zlm_stream_id: None,
+                stream_url: None,
+                start_time: now,
+                end_time: None,
+                speed: 1.0,
+                current_pos_secs: 0,
+                last_activity: now,
+            },
+        );
     }
 
     /// 媒体到达，激活会话
@@ -257,14 +263,16 @@ impl JtMediaSessionManager {
 
     /// 获取活跃会话数
     pub fn active_count(&self) -> usize {
-        self.sessions.iter()
+        self.sessions
+            .iter()
             .filter(|r| r.state == MediaSessionState::Active)
             .count()
     }
 
     /// 获取指定类型的活跃会话
     pub fn get_by_type(&self, t: MediaSessionType) -> Vec<JtMediaSession> {
-        self.sessions.iter()
+        self.sessions
+            .iter()
             .filter(|r| r.session_type == t && r.state == MediaSessionState::Active)
             .map(|r| r.clone())
             .collect()
@@ -272,7 +280,9 @@ impl JtMediaSessionManager {
 }
 
 impl Default for JtMediaSessionManager {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]
@@ -286,7 +296,10 @@ mod tests {
         assert_eq!(mgr.count_for_phone("13812340001"), 1);
 
         mgr.activate("13812340001", 0, "zlm_live_001");
-        assert_eq!(mgr.get("13812340001", 0).unwrap().state, MediaSessionState::Active);
+        assert_eq!(
+            mgr.get("13812340001", 0).unwrap().state,
+            MediaSessionState::Active
+        );
 
         mgr.stop("13812340001", 0);
         let s = mgr.remove("13812340001", 0).unwrap();
@@ -328,7 +341,9 @@ mod tests {
         mgr.create_live("13812340001", 2);
         let mgr_clone = mgr.clone_for_test();
         let wait_handle = tokio::spawn(async move {
-            mgr_clone.wait_for_media("13812340001", 2, std::time::Duration::from_secs(2)).await
+            mgr_clone
+                .wait_for_media("13812340001", 2, std::time::Duration::from_secs(2))
+                .await
         });
         // Give time for waiter to register
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -343,7 +358,9 @@ mod tests {
     async fn test_wait_for_media_timeout() {
         let mgr = JtMediaSessionManager::new();
         mgr.create_live("13812340001", 3);
-        let result = mgr.wait_for_media("13812340001", 3, std::time::Duration::from_millis(100)).await;
+        let result = mgr
+            .wait_for_media("13812340001", 3, std::time::Duration::from_millis(100))
+            .await;
         assert!(result.is_err());
     }
 }

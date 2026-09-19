@@ -55,10 +55,13 @@ async fn sqlite_in_memory_schema_init_and_default_admin() {
         if !upper.starts_with("CREATE") && !upper.starts_with("INSERT") {
             continue;
         }
-        sqlx::query(stmt)
-            .execute(&pool)
-            .await
-            .unwrap_or_else(|e| panic!("init SQL failed: {} | stmt: {}", e, &stmt[..80.min(stmt.len())]));
+        sqlx::query(stmt).execute(&pool).await.unwrap_or_else(|e| {
+            panic!(
+                "init SQL failed: {} | stmt: {}",
+                e,
+                &stmt[..80.min(stmt.len())]
+            )
+        });
     }
 
     // 验证 gb_device 表存在且有 admin 用户
@@ -68,10 +71,11 @@ async fn sqlite_in_memory_schema_init_and_default_admin() {
         .unwrap();
     assert_eq!(device_count, 0, "fresh DB should have no devices");
 
-    let admin_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM gb_user WHERE username = 'admin'")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let admin_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM gb_user WHERE username = 'admin'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(admin_count, 1, "default admin user must be seeded");
 
     let role_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM gb_user_role")
@@ -130,7 +134,8 @@ async fn sqlite_device_crud_roundtrip() {
         if stmt.is_empty() {
             continue;
         }
-        if !stmt.to_uppercase().starts_with("CREATE") && !stmt.to_uppercase().starts_with("INSERT") {
+        if !stmt.to_uppercase().starts_with("CREATE") && !stmt.to_uppercase().starts_with("INSERT")
+        {
             continue;
         }
         let _ = sqlx::query(stmt).execute(&pool).await;
@@ -160,7 +165,15 @@ async fn sqlite_device_crud_roundtrip() {
         &pool,
         "34020000001110000001",
         Some("测试摄像头-001-更新"),
-        None, None, None, None, None, None, None, true, None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        true,
+        None,
         "2026-06-19 13:00:00",
     )
     .await
@@ -212,7 +225,8 @@ async fn sqlite_device_limit_blocks_new_registration() {
         if stmt.is_empty() {
             continue;
         }
-        if !stmt.to_uppercase().starts_with("CREATE") && !stmt.to_uppercase().starts_with("INSERT") {
+        if !stmt.to_uppercase().starts_with("CREATE") && !stmt.to_uppercase().starts_with("INSERT")
+        {
             continue;
         }
         let _ = sqlx::query(stmt).execute(&pool).await;
@@ -225,7 +239,17 @@ async fn sqlite_device_limit_blocks_new_registration() {
     db::device::upsert_device(
         &pool,
         "device-1",
-        Some("d1"), None, None, None, None, None, None, None, true, None, "2026-06-19 00:00:00",
+        Some("d1"),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        true,
+        None,
+        "2026-06-19 00:00:00",
     )
     .await
     .unwrap();
@@ -242,7 +266,17 @@ async fn sqlite_device_limit_blocks_new_registration() {
     db::device::upsert_device(
         &pool,
         "device-2",
-        Some("d2"), None, None, None, None, None, None, None, true, None, "2026-06-19 00:00:01",
+        Some("d2"),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        true,
+        None,
+        "2026-06-19 00:00:01",
     )
     .await
     .unwrap();
@@ -256,7 +290,11 @@ async fn sqlite_device_limit_blocks_new_registration() {
         .expect_err("third new device must be rejected");
     assert_eq!(err.current, 2);
     assert_eq!(err.limit, 2);
-    assert!(err.to_string().contains("2/2"), "error msg should mention limit: {}", err);
+    assert!(
+        err.to_string().contains("2/2"),
+        "error msg should mention limit: {}",
+        err
+    );
 }
 
 #[tokio::test]
@@ -290,7 +328,8 @@ async fn sqlite_user_auth_login_succeeds() {
         if stmt.is_empty() {
             continue;
         }
-        if !stmt.to_uppercase().starts_with("CREATE") && !stmt.to_uppercase().starts_with("INSERT") {
+        if !stmt.to_uppercase().starts_with("CREATE") && !stmt.to_uppercase().starts_with("INSERT")
+        {
             continue;
         }
         let _ = sqlx::query(stmt).execute(&pool).await;
@@ -298,7 +337,7 @@ async fn sqlite_user_auth_login_succeeds() {
 
     // admin / admin 的 MD5 = 21232f297a57a5a743894a0e4a801fc3
     let row: Option<(String, Option<i32>)> = sqlx::query_as(
-        "SELECT u.username, u.role_id FROM gb_user u WHERE u.username = ? AND u.password = ?"
+        "SELECT u.username, u.role_id FROM gb_user u WHERE u.username = ? AND u.password = ?",
     )
     .bind("admin")
     .bind("21232f297a57a5a743894a0e4a801fc3")
@@ -318,8 +357,8 @@ async fn sqlite_user_auth_login_succeeds() {
 /// `stream_status` field — covering the DB layer of `GET /api/server/stream/all`.
 #[tokio::test]
 async fn test_list_all_streams_unified_format() {
-    use gbserver::db::{stream_push, stream_proxy};
-    use gbserver::state::{StreamStatus, StreamState};
+    use gbserver::db::{stream_proxy, stream_push};
+    use gbserver::state::{StreamState, StreamStatus};
     use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
     use std::str::FromStr;
     use std::time::Duration;
@@ -350,8 +389,12 @@ async fn test_list_all_streams_unified_format() {
     }
 
     // Ensure stream_status column exists (defensive — init SQL has it but be safe)
-    stream_push::ensure_stream_status_column(&pool).await.expect("ensure push column");
-    stream_proxy::ensure_stream_status_column(&pool).await.expect("ensure proxy column");
+    stream_push::ensure_stream_status_column(&pool)
+        .await
+        .expect("ensure push column");
+    stream_proxy::ensure_stream_status_column(&pool)
+        .await
+        .expect("ensure proxy column");
 
     let now = "2026-06-20 10:00:00";
 
@@ -413,15 +456,26 @@ async fn test_list_all_streams_unified_format() {
     assert_eq!(p.app.as_deref(), Some("live"));
     assert_eq!(p.stream.as_deref(), Some("push-test"));
     assert_eq!(p.media_server_id.as_deref(), Some("ms-1"));
-    assert_eq!(p.status(), StreamStatus::Pushing, "push row status should be Pushing");
+    assert_eq!(
+        p.status(),
+        StreamStatus::Pushing,
+        "push row status should be Pushing"
+    );
     assert!(p.status().is_active(), "push row is_active should be true");
 
     let pr = &proxies[0];
     assert_eq!(pr.app.as_deref(), Some("live"));
     assert_eq!(pr.stream.as_deref(), Some("proxy-test"));
     assert_eq!(pr.media_server_id.as_deref(), Some("ms-1"));
-    assert_eq!(pr.status(), StreamStatus::Active, "proxy row status should be Active");
-    assert!(pr.status().is_active(), "proxy row is_active should be true");
+    assert_eq!(
+        pr.status(),
+        StreamStatus::Active,
+        "proxy row status should be Active"
+    );
+    assert!(
+        pr.status().is_active(),
+        "proxy row is_active should be true"
+    );
 
     // Unified count: push + proxy = 2 total
     let total = pushes.len() + proxies.len();
@@ -492,25 +546,29 @@ async fn sqlite_cloud_record_insert_and_query_roundtrip() {
 
     // 落库
     let inserted = cloud_record::insert_records(
-        &pool, "dev-1", "ch1",
-        "2026-06-10T00:00:00", "2026-06-10T23:59:59", &items,
-    ).await.expect("insert_records should succeed on sqlite");
+        &pool,
+        "dev-1",
+        "ch1",
+        "2026-06-10T00:00:00",
+        "2026-06-10T23:59:59",
+        &items,
+    )
+    .await
+    .expect("insert_records should succeed on sqlite");
     assert_eq!(inserted, 2, "应该插入 2 条 record");
 
     // 查询（page=1&count=10）
-    let queried = cloud_record::query_by_device_channel(
-        &pool, "dev-1", "ch1",
-        None, None, 1, 10,
-    ).await.expect("query_by_device_channel should succeed on sqlite");
+    let queried = cloud_record::query_by_device_channel(&pool, "dev-1", "ch1", None, None, 1, 10)
+        .await
+        .expect("query_by_device_channel should succeed on sqlite");
     assert_eq!(queried.len(), 2);
     let names: Vec<String> = queried.iter().filter_map(|r| r.file_name.clone()).collect();
     assert!(names.contains(&"seg-1.mp4".to_string()));
     assert!(names.contains(&"seg-2.mp4".to_string()));
 
     // 分页：page=1&count=1
-    let paged = cloud_record::query_by_device_channel(
-        &pool, "dev-1", "ch1",
-        None, None, 1, 1,
-    ).await.expect("paged query should succeed");
+    let paged = cloud_record::query_by_device_channel(&pool, "dev-1", "ch1", None, None, 1, 1)
+        .await
+        .expect("paged query should succeed");
     assert_eq!(paged.len(), 1, "page=1&count=1 应只返回 1 条");
 }

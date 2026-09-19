@@ -114,7 +114,12 @@ pub async fn query_device_latency(
     Query(q): Query<LatencyQuery>,
 ) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let reg = crate::sip::gb28181::latency_registry();
-    let list = match q.device_ids.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    let list = match q
+        .device_ids
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         Some(ids) => ids
             .split(',')
             .filter_map(|id| reg.get(id.trim()))
@@ -223,15 +228,14 @@ pub struct ChannelPage {
 pub async fn device_keepalive_statistics(
     State(state): State<AppState>,
 ) -> Json<ApiResult<serde_json::Value>> {
-    let online_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM gb_device WHERE on_line = true"
-    )
-    .fetch_one(&state.pool)
-    .await
-    .unwrap_or(0);
+    let online_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM gb_device WHERE on_line = true")
+            .fetch_one(&state.pool)
+            .await
+            .unwrap_or(0);
 
     let offline_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM gb_device WHERE on_line = false OR on_line IS NULL"
+        "SELECT COUNT(*) FROM gb_device WHERE on_line = false OR on_line IS NULL",
     )
     .fetch_one(&state.pool)
     .await
@@ -265,26 +269,22 @@ pub async fn device_keepalive_statistics(
 pub async fn device_register_statistics(
     State(state): State<AppState>,
 ) -> Json<ApiResult<serde_json::Value>> {
-    let today_register: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM gb_device WHERE DATE(create_time) = CURRENT_DATE"
-    )
-    .fetch_one(&state.pool)
-    .await
-    .unwrap_or(0);
+    let today_register: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM gb_device WHERE DATE(create_time) = CURRENT_DATE")
+            .fetch_one(&state.pool)
+            .await
+            .unwrap_or(0);
 
-    let total_devices: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM gb_device"
-    )
-    .fetch_one(&state.pool)
-    .await
-    .unwrap_or(0);
+    let total_devices: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM gb_device")
+        .fetch_one(&state.pool)
+        .await
+        .unwrap_or(0);
 
-    let active_devices: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM gb_device WHERE on_line = true"
-    )
-    .fetch_one(&state.pool)
-    .await
-    .unwrap_or(0);
+    let active_devices: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM gb_device WHERE on_line = true")
+            .fetch_one(&state.pool)
+            .await
+            .unwrap_or(0);
 
     Json(ApiResult::success(serde_json::json!({
         "todayRegister": today_register,

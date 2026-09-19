@@ -61,7 +61,11 @@ pub enum ParsedMessage {
     /// 0x0107 Query terminal params response
     QueryParamsResponse(Vec<crate::jt1078::response_parser::TerminalParam>),
     /// Any other unrecognised message — body preserved
-    Unknown { msg_id: u16, serial: u16, body: Vec<u8> },
+    Unknown {
+        msg_id: u16,
+        serial: u16,
+        body: Vec<u8>,
+    },
 }
 
 impl Jt1078Session {
@@ -102,7 +106,11 @@ impl Jt1078Session {
 
                 // simple protection against unbounded buffering
                 if self.pending.len() >= self.max_pending {
-                    tracing::warn!("JT1078 pending buffer full ({}), dropping seq {}", self.pending.len(), seq);
+                    tracing::warn!(
+                        "JT1078 pending buffer full ({}), dropping seq {}",
+                        self.pending.len(),
+                        seq
+                    );
                     // drop the incoming frame to avoid memory growth
                 } else {
                     self.pending.insert(seq, frame);
@@ -186,7 +194,11 @@ impl Jt1078Session {
         if payload.starts_with(b"AUTH:") {
             let token = &payload[5..];
             // allow per-session override to avoid races in tests
-            let configured = if let Some(cfg) = &self.expected_token { cfg.clone() } else { std::env::var("GBSERVER__JT1078__TOKEN").unwrap_or_else(|_| "secret".into()) };
+            let configured = if let Some(cfg) = &self.expected_token {
+                cfg.clone()
+            } else {
+                std::env::var("GBSERVER__JT1078__TOKEN").unwrap_or_else(|_| "secret".into())
+            };
             // compare as UTF-8 trimmed string to be tolerant of minor framing differences
             let token_str = String::from_utf8_lossy(token).trim().to_string();
             if token_str == configured || token_str.contains(&configured) {
@@ -213,12 +225,7 @@ impl Jt1078Session {
 
     /// Phase 6.1+ — process a fully-decoded JT808 message (msg_id, serial, body).
     /// Performs message-type-based dispatch and returns a `ParsedMessage`.
-    pub fn process_jt_message(
-        &mut self,
-        msg_id: u16,
-        serial: u16,
-        body: &[u8],
-    ) -> ParsedMessage {
+    pub fn process_jt_message(&mut self, msg_id: u16, serial: u16, body: &[u8]) -> ParsedMessage {
         use crate::jt1078::response_parser;
         match msg_id {
             0x0002 => {
@@ -229,21 +236,33 @@ impl Jt1078Session {
                 Ok(req) => ParsedMessage::Register(req),
                 Err(e) => {
                     tracing::warn!("parse_register_request failed: {}", e);
-                    ParsedMessage::Unknown { msg_id, serial, body: body.to_vec() }
+                    ParsedMessage::Unknown {
+                        msg_id,
+                        serial,
+                        body: body.to_vec(),
+                    }
                 }
             },
             0x0102 => match response_parser::parse_attribute_report(body) {
                 Ok(a) => ParsedMessage::AttributeReport(a),
                 Err(e) => {
                     tracing::warn!("parse_attribute_report failed: {}", e);
-                    ParsedMessage::Unknown { msg_id, serial, body: body.to_vec() }
+                    ParsedMessage::Unknown {
+                        msg_id,
+                        serial,
+                        body: body.to_vec(),
+                    }
                 }
             },
             0x0200 => match response_parser::parse_location_report(body) {
                 Ok(l) => ParsedMessage::LocationReport(l),
                 Err(e) => {
                     tracing::warn!("parse_location_report failed: {}", e);
-                    ParsedMessage::Unknown { msg_id, serial, body: body.to_vec() }
+                    ParsedMessage::Unknown {
+                        msg_id,
+                        serial,
+                        body: body.to_vec(),
+                    }
                 }
             },
             // 0x0201 位置信息查询应答：消息体与 0x0200 **完全相同**
@@ -253,21 +272,33 @@ impl Jt1078Session {
                 Ok(l) => ParsedMessage::LocationReport(l),
                 Err(e) => {
                     tracing::warn!("parse_location_report(0x0201) failed: {}", e);
-                    ParsedMessage::Unknown { msg_id, serial, body: body.to_vec() }
+                    ParsedMessage::Unknown {
+                        msg_id,
+                        serial,
+                        body: body.to_vec(),
+                    }
                 }
             },
             0x0802 => match response_parser::parse_media_search_response(body) {
                 Ok(items) => ParsedMessage::MediaSearchResult(items),
                 Err(e) => {
                     tracing::warn!("parse_media_search_response failed: {}", e);
-                    ParsedMessage::Unknown { msg_id, serial, body: body.to_vec() }
+                    ParsedMessage::Unknown {
+                        msg_id,
+                        serial,
+                        body: body.to_vec(),
+                    }
                 }
             },
             0x0801 => match response_parser::parse_media_item_first(body) {
                 Ok(m) => ParsedMessage::MediaItem(m),
                 Err(e) => {
                     tracing::warn!("parse_media_item_first failed: {}", e);
-                    ParsedMessage::Unknown { msg_id, serial, body: body.to_vec() }
+                    ParsedMessage::Unknown {
+                        msg_id,
+                        serial,
+                        body: body.to_vec(),
+                    }
                 }
             },
             0x0001 => {
@@ -275,19 +306,35 @@ impl Jt1078Session {
                     let reply_serial = u16::from_be_bytes([body[0], body[1]]);
                     let reply_msg_id = u16::from_be_bytes([body[2], body[3]]);
                     let result = body[4];
-                    ParsedMessage::CommonResponse { reply_serial, reply_msg_id, result }
+                    ParsedMessage::CommonResponse {
+                        reply_serial,
+                        reply_msg_id,
+                        result,
+                    }
                 } else {
-                    ParsedMessage::Unknown { msg_id, serial, body: body.to_vec() }
+                    ParsedMessage::Unknown {
+                        msg_id,
+                        serial,
+                        body: body.to_vec(),
+                    }
                 }
             }
             0x0107 => match response_parser::parse_query_params_response(body) {
                 Ok(p) => ParsedMessage::QueryParamsResponse(p),
                 Err(e) => {
                     tracing::warn!("parse_query_params_response failed: {}", e);
-                    ParsedMessage::Unknown { msg_id, serial, body: body.to_vec() }
+                    ParsedMessage::Unknown {
+                        msg_id,
+                        serial,
+                        body: body.to_vec(),
+                    }
                 }
             },
-            _ => ParsedMessage::Unknown { msg_id, serial, body: body.to_vec() },
+            _ => ParsedMessage::Unknown {
+                msg_id,
+                serial,
+                body: body.to_vec(),
+            },
         }
     }
 }
@@ -339,7 +386,12 @@ mod tests {
         let frames = sess.feed_bytes(&buf);
         assert_eq!(frames.len(), 1);
         // ensure payload extracted exactly
-        assert_eq!(frames[0].as_slice(), payload, "extracted payload mismatch: {:?}", frames[0]);
+        assert_eq!(
+            frames[0].as_slice(),
+            payload,
+            "extracted payload mismatch: {:?}",
+            frames[0]
+        );
         let kind = sess.process_payload(&frames[0]);
         assert_eq!(kind, FrameKind::AuthSuccess);
         assert!(sess.authenticated);
@@ -387,7 +439,9 @@ mod tests {
             let seq_b = seq.to_be_bytes();
             let ts = 0u32.to_be_bytes();
             let mut xor: u8 = 0;
-            for &b in payload { xor ^= b; }
+            for &b in payload {
+                xor ^= b;
+            }
             let mut buf = Vec::new();
             buf.push(0x7E);
             buf.push(0x01);

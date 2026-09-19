@@ -1,14 +1,14 @@
-use std::net::SocketAddr;
+use bytes::BytesMut;
+use dashmap::DashMap;
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::{Arc, OnceLock};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpListener as TokioTcpListener;
 #[cfg(test)]
 use tokio::net::TcpStream as TokioTcpStream;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::{Mutex, RwLock};
-use bytes::BytesMut;
-use dashmap::DashMap;
 
 use crate::sip::core::parser::Parser;
 use crate::sip::core::SipMessage;
@@ -33,7 +33,10 @@ impl TcpListener {
     pub async fn bind(addr: &str) -> anyhow::Result<Self> {
         let listener = TokioTcpListener::bind(addr).await?;
         let local_addr = listener.local_addr()?;
-        Ok(Self { listener, addr: local_addr })
+        Ok(Self {
+            listener,
+            addr: local_addr,
+        })
     }
 
     /// 接受连接并**拆成读写两半**。
@@ -139,7 +142,6 @@ impl TcpReader {
         let message = Parser::parse(&message_bytes)?;
         Ok(Some((message, message_bytes.to_vec())))
     }
-
 }
 
 #[derive(Clone)]
@@ -442,7 +444,11 @@ mod outbound_transport_tests {
         let mut buf = vec![0u8; 512];
         let n = accepted.read(&mut buf).await.unwrap();
         let text = String::from_utf8_lossy(&buf[..n]).to_string();
-        assert!(text.starts_with("MESSAGE sip:dev@127.0.0.1 SIP/2.0\r\n"), "{}", text);
+        assert!(
+            text.starts_with("MESSAGE sip:dev@127.0.0.1 SIP/2.0\r\n"),
+            "{}",
+            text
+        );
         assert!(text.contains("Call-ID: frame-test"), "{}", text);
     }
 }

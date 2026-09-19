@@ -12,9 +12,9 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::AppState;
 use crate::response::ApiResult;
 use crate::sip::gb28181::device_query::{DeviceInfoResponse, DeviceStatusResponse};
+use crate::AppState;
 
 /// 查询参数
 #[derive(Debug, Deserialize, utoipa::IntoParams)]
@@ -318,7 +318,8 @@ pub async fn get_ssrc(
             "deviceId": device_id,
             "channelId": channel_id,
             "ssrc": ssrc,
-        }))).into_response();
+        })))
+        .into_response();
     }
     Json(ApiResult::<()>::error("SIP server not available")).into_response()
 }
@@ -352,7 +353,11 @@ fn snapshot_file_name(device_id: &str, channel_id: &str) -> String {
     format!("{}_{}.jpg", clean(device_id), clean(channel_id))
 }
 
-fn snapshot_file_path(dir: &std::path::Path, device_id: &str, channel_id: &str) -> std::path::PathBuf {
+fn snapshot_file_path(
+    dir: &std::path::Path,
+    device_id: &str,
+    channel_id: &str,
+) -> std::path::PathBuf {
     dir.join(snapshot_file_name(device_id, channel_id))
 }
 
@@ -636,7 +641,10 @@ pub async fn list_snapshots(
                     continue;
                 }
                 let url = if token.is_empty() {
-                    format!("/api/play/snapshot/{}/{}?v={}", device_id, channel_id, version)
+                    format!(
+                        "/api/play/snapshot/{}/{}?v={}",
+                        device_id, channel_id, version
+                    )
                 } else {
                     format!(
                         "/api/play/snapshot/{}/{}?token={}&v={}",
@@ -661,8 +669,10 @@ fn snap_error(status: StatusCode, msg: &str) -> Response {
     let body = serde_json::json!({ "code": -1, "msg": msg, "data": null }).to_string();
     let mut resp = Response::new(Body::from(body));
     *resp.status_mut() = status;
-    resp.headers_mut()
-        .insert(header::CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    resp.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json"),
+    );
     resp
 }
 
@@ -839,29 +849,32 @@ pub async fn stream_info(
     State(state): State<AppState>,
     Query(params): Query<serde_json::Value>,
 ) -> impl IntoResponse {
-    let app = params.get("app")
-        .and_then(|v| v.as_str())
-        .unwrap_or("live");
-    let stream = params.get("stream")
+    let app = params.get("app").and_then(|v| v.as_str()).unwrap_or("live");
+    let stream = params
+        .get("stream")
         .and_then(|v| v.as_str())
         .unwrap_or_default();
-    
+
     if let Some(ref zlm_client) = state.zlm_client {
-        match zlm_client.get_media_list(None, Some(app), Some(stream)).await {
+        match zlm_client
+            .get_media_list(None, Some(app), Some(stream))
+            .await
+        {
             Ok(list) => {
                 return Json(ApiResult::success(serde_json::json!({
                     "app": app,
                     "stream": stream,
                     "count": list.len(),
                     "streams": list,
-                }))).into_response();
+                })))
+                .into_response();
             }
             Err(e) => {
                 return Json(ApiResult::<()>::error(format!("ZLM error: {}", e))).into_response();
             }
         }
     }
-    
+
     Json(ApiResult::<()>::error("ZLM not configured")).into_response()
 }
 // ============================================================================
@@ -1050,10 +1063,7 @@ pub async fn ssrc_query(
     ),
     security(("access_token" = [])),
 )]
-pub async fn snap_query(
-    state: State<AppState>,
-    Query(q): Query<DeviceChannelQuery>,
-) -> Response {
+pub async fn snap_query(state: State<AppState>, Query(q): Query<DeviceChannelQuery>) -> Response {
     capture_snapshot_now(
         state,
         Path((
@@ -1166,8 +1176,10 @@ pub async fn device_alarm_query(
         return Json(ApiResult::<serde_json::Value>::error("deviceId 必须存在")).into_response();
     }
     let Some(ref sip_server) = state.sip_server else {
-        return Json(ApiResult::<serde_json::Value>::error("SIP server not available"))
-            .into_response();
+        return Json(ApiResult::<serde_json::Value>::error(
+            "SIP server not available",
+        ))
+        .into_response();
     };
     let server = &**sip_server;
     if !server.is_device_online(&device_id).await {
@@ -1318,7 +1330,8 @@ mod compat_tests {
     /// 查询参数风格 DTO（camelCase + 数字型 id）都必须能反序列化。
     #[test]
     fn query_dtos_accept_frontend_shapes() {
-        let q: DeviceIdQuery = serde_json::from_value(serde_json::json!({"deviceId": "d"})).unwrap();
+        let q: DeviceIdQuery =
+            serde_json::from_value(serde_json::json!({"deviceId": "d"})).unwrap();
         assert_eq!(q.device_id.as_deref(), Some("d"));
 
         let q: DeviceChannelQuery =

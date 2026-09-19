@@ -138,21 +138,26 @@ fn b2_upstream_device_status_response_format() {
 /// B2.5: 多个 Item 的 SumNum/Num 必须等于通道数
 #[test]
 fn b2_upstream_catalog_sum_count_matches_items() {
-    let channels: Vec<SimChannel> = (1..=5).map(|i| SimChannel {
-        gb_device_id: Some(format!("3402000000132000000{:02}", i)),
-        name: Some(format!("Camera-{:03}", i)),
-        parent_id: Some("34020000002000000001".to_string()),
-        status: Some("ON".to_string()),
-        has_audio: Some(false),
-        sub_count: Some(0),
-    }).collect();
+    let channels: Vec<SimChannel> = (1..=5)
+        .map(|i| SimChannel {
+            gb_device_id: Some(format!("3402000000132000000{:02}", i)),
+            name: Some(format!("Camera-{:03}", i)),
+            parent_id: Some("34020000002000000001".to_string()),
+            status: Some("ON".to_string()),
+            has_audio: Some(false),
+            sub_count: Some(0),
+        })
+        .collect();
 
     let resp = build_catalog_response("99", "34020000002000000001", &channels);
     assert!(resp.contains("<SumNum>5</SumNum>"));
     assert!(resp.contains(r#"<DeviceList Num="5">"#));
     for i in 1..=5 {
-        assert!(resp.contains(&format!("3402000000132000000{:02}", i)),
-            "channel {} missing", i);
+        assert!(
+            resp.contains(&format!("3402000000132000000{:02}", i)),
+            "channel {} missing",
+            i
+        );
     }
 }
 
@@ -168,15 +173,17 @@ fn b2_upstream_catalog_utf8_channel_names() {
         sub_count: Some(0),
     }];
     let resp = build_catalog_response("1", "34020000002000000001", &channels);
-    assert!(resp.contains("教学楼前门摄像头"),
-        "Chinese name should pass through unchanged");
+    assert!(
+        resp.contains("教学楼前门摄像头"),
+        "Chinese name should pass through unchanged"
+    );
 }
 
 /// B2.7: SIP MESSAGE 报文构造：上级发送 Catalog 查询的完整请求
 #[test]
 fn b2_upstream_catalog_query_sip_request_format() {
     let upstream_device_id = "37010000002000000001"; // 上级平台 GB ID
-    let local_device_id = "34020000002000000001";    // 本级 GB ID
+    let local_device_id = "34020000002000000001"; // 本级 GB ID
     let body = format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <Query>
@@ -197,10 +204,20 @@ fn b2_upstream_catalog_query_sip_request_format() {
          Content-Type: APPLICATION/MANSCDP+XML\r\n\
          Content-Length: {}\r\n\r\n\
          {}",
-        local_device_id, upstream_device_id, local_device_id, body.len(), body
+        local_device_id,
+        upstream_device_id,
+        local_device_id,
+        body.len(),
+        body
     );
 
-    let method = msg.lines().next().unwrap().split_whitespace().next().unwrap();
+    let method = msg
+        .lines()
+        .next()
+        .unwrap()
+        .split_whitespace()
+        .next()
+        .unwrap();
     assert_eq!(method, "MESSAGE");
     assert!(msg.contains("<CmdType>Catalog</CmdType>"));
     assert!(msg.contains(&format!("<DeviceID>{}</DeviceID>", local_device_id)));

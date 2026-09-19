@@ -19,8 +19,14 @@ pub fn build_jt808_frame(msg_id: u16, phone: &str, seq: u16, body: &[u8]) -> Vec
     // Escape: replace 0x7E with 0x7D 0x02, 0x7D with 0x7D 0x01
     for &b in body {
         match b {
-            0x7E => { frame.push(0x7D); frame.push(0x02); }
-            0x7D => { frame.push(0x7D); frame.push(0x01); }
+            0x7E => {
+                frame.push(0x7D);
+                frame.push(0x02);
+            }
+            0x7D => {
+                frame.push(0x7D);
+                frame.push(0x01);
+            }
             _ => frame.push(b),
         }
     }
@@ -28,8 +34,14 @@ pub fn build_jt808_frame(msg_id: u16, phone: &str, seq: u16, body: &[u8]) -> Vec
     let checksum = frame[1..].iter().fold(0u8, |acc, &b| acc ^ b);
     // 0x7E in checksum is also escaped
     match checksum {
-        0x7E => { frame.push(0x7D); frame.push(0x02); }
-        0x7D => { frame.push(0x7D); frame.push(0x01); }
+        0x7E => {
+            frame.push(0x7D);
+            frame.push(0x02);
+        }
+        0x7D => {
+            frame.push(0x7D);
+            frame.push(0x01);
+        }
         _ => frame.push(checksum),
     }
     frame.push(0x7E);
@@ -39,7 +51,8 @@ pub fn build_jt808_frame(msg_id: u16, phone: &str, seq: u16, body: &[u8]) -> Vec
 /// Convert phone number string (e.g. "13812345678") to BCD bytes (6 bytes, padded with 0)
 fn phone_to_bcd(phone: &str) -> [u8; 6] {
     let mut bcd = [0u8; 6];
-    let digits: Vec<u8> = phone.chars()
+    let digits: Vec<u8> = phone
+        .chars()
         .filter(|c| c.is_ascii_digit())
         .take(12)
         .map(|c| c as u8 - b'0')
@@ -81,8 +94,15 @@ pub fn build_live_video_control(channel_id: u8, control: u8, close: bool) -> Vec
 }
 
 /// 0x9201: Playback request
-pub fn build_playback_request(channel_id: u8, stream_type: u8, storage_type: u8,
-    playback_mode: u8, speed: u8, start_time: &[u8; 6], end_time: &[u8; 6]) -> Vec<u8> {
+pub fn build_playback_request(
+    channel_id: u8,
+    stream_type: u8,
+    storage_type: u8,
+    playback_mode: u8,
+    speed: u8,
+    start_time: &[u8; 6],
+    end_time: &[u8; 6],
+) -> Vec<u8> {
     let mut body = Vec::with_capacity(16);
     body.push(channel_id);
     body.push(stream_type);
@@ -146,7 +166,11 @@ pub fn try_encode_time_bcd(time_str: &str) -> Option<[u8; 6]> {
         return None;
     }
     if let Ok(ts) = s.parse::<i64>() {
-        let ts = if ts > 1_000_000_000_000 { ts / 1000 } else { ts };
+        let ts = if ts > 1_000_000_000_000 {
+            ts / 1000
+        } else {
+            ts
+        };
         return chrono::DateTime::from_timestamp(ts, 0).map(bcd_from_utc);
     }
     for fmt in ["%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"] {
@@ -162,7 +186,13 @@ pub fn try_encode_time_bcd(time_str: &str) -> Option<[u8; 6]> {
 }
 
 /// 0x9202: Playback control
-pub fn build_playback_control(channel_id: u8, control: u8, speed: u8, seek_time: &[u8; 6]) -> Vec<u8> {    let mut body = Vec::with_capacity(9);
+pub fn build_playback_control(
+    channel_id: u8,
+    control: u8,
+    speed: u8,
+    seek_time: &[u8; 6],
+) -> Vec<u8> {
+    let mut body = Vec::with_capacity(9);
     body.push(channel_id);
     body.push(control);
     body.push(speed);
@@ -172,8 +202,14 @@ pub fn build_playback_control(channel_id: u8, control: u8, speed: u8, seek_time:
 
 /// 0x9301: PTZ control
 /// PTZ command bytes as per GB28181 PTZ spec
-pub fn build_ptz_control(channel_id: u8, cmd_byte1: u8, cmd_byte2: u8,
-    speed_h: u8, speed_v: u8, speed_z: u8) -> Vec<u8> {
+pub fn build_ptz_control(
+    channel_id: u8,
+    cmd_byte1: u8,
+    cmd_byte2: u8,
+    speed_h: u8,
+    speed_v: u8,
+    speed_z: u8,
+) -> Vec<u8> {
     vec![channel_id, cmd_byte1, cmd_byte2, speed_h, speed_v, speed_z]
 }
 
@@ -296,22 +332,53 @@ pub fn build_register_response_body(register_serial: u16, result: u8, auth_code:
 }
 
 /// 0x8100: Build complete terminal register response frame.
-pub fn build_register_response(phone: &str, register_serial: u16, result: u8, auth_code: &str) -> Vec<u8> {
+pub fn build_register_response(
+    phone: &str,
+    register_serial: u16,
+    result: u8,
+    auth_code: &str,
+) -> Vec<u8> {
     let body = build_register_response_body(register_serial, result, auth_code);
     build_jt808_frame(0x8100, phone, 0, &body)
 }
 
 /// 0x8801: Take photo
-pub fn build_take_photo(channel_id: u8, photo_cmd: u16, interval: u16, save_flag: u8,
-    resolution: u8, quality: u8, brightness: u8, contrast: u8, saturation: u8, chroma: u8) -> Vec<u8> {
-    vec![channel_id, (photo_cmd >> 8) as u8, (photo_cmd & 0xFF) as u8,
-         (interval >> 8) as u8, (interval & 0xFF) as u8,
-         save_flag, resolution, quality, brightness, contrast, saturation, chroma]
+pub fn build_take_photo(
+    channel_id: u8,
+    photo_cmd: u16,
+    interval: u16,
+    save_flag: u8,
+    resolution: u8,
+    quality: u8,
+    brightness: u8,
+    contrast: u8,
+    saturation: u8,
+    chroma: u8,
+) -> Vec<u8> {
+    vec![
+        channel_id,
+        (photo_cmd >> 8) as u8,
+        (photo_cmd & 0xFF) as u8,
+        (interval >> 8) as u8,
+        (interval & 0xFF) as u8,
+        save_flag,
+        resolution,
+        quality,
+        brightness,
+        contrast,
+        saturation,
+        chroma,
+    ]
 }
 
 /// 0x8802: Media search
-pub fn build_media_search(media_type: u8, channel_id: u8, event: u8,
-    start_time: &[u8; 6], end_time: &[u8; 6]) -> Vec<u8> {
+pub fn build_media_search(
+    media_type: u8,
+    channel_id: u8,
+    event: u8,
+    start_time: &[u8; 6],
+    end_time: &[u8; 6],
+) -> Vec<u8> {
     let mut body = Vec::with_capacity(15);
     body.push(media_type);
     body.push(channel_id);
@@ -438,7 +505,7 @@ pub fn build_set_circular_area(_areas: &[(u32, f64, f64, u32, u32, u8)]) -> Vec<
     let mut body = Vec::new();
     body.push(1u8); // count
     body.push(0x01); // set action
-    // Return basic frame - full implementation would iterate areas and encode each
+                     // Return basic frame - full implementation would iterate areas and encode each
     body
 }
 
@@ -523,7 +590,11 @@ mod tests {
         assert_eq!(u16::from_be_bytes([start[1], start[2]]), 0x0001);
         assert_eq!(u16::from_be_bytes([stop[1], stop[2]]), 0x0000);
         assert_eq!(start[5], 1, "save=true → 保存标志 1");
-        assert_eq!(build_record_control(1, true, 0, false)[5], 0, "save=false → 0");
+        assert_eq!(
+            build_record_control(1, true, 0, false)[5],
+            0,
+            "save=false → 0"
+        );
     }
 
     #[test]
@@ -572,7 +643,10 @@ mod tests {
         let expected = [0x26u8, 0x01, 0x02, 0x03, 0x04, 0x05];
         assert_eq!(try_encode_time_bcd("2026-01-02 03:04:05"), Some(expected));
         assert_eq!(try_encode_time_bcd("2026-01-02T03:04:05"), Some(expected));
-        assert_eq!(try_encode_time_bcd("2026-01-02"), Some([0x26, 0x01, 0x02, 0, 0, 0]));
+        assert_eq!(
+            try_encode_time_bcd("2026-01-02"),
+            Some([0x26, 0x01, 0x02, 0, 0, 0])
+        );
         // Unix 时间戳（秒）
         assert!(try_encode_time_bcd("1767323045").is_some());
         // 毫秒时间戳

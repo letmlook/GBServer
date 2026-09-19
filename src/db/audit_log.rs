@@ -15,7 +15,7 @@ pub async fn ensure_table(pool: &Pool) -> sqlx::Result<()> {
                 status_code INT,
                 request_body TEXT,
                 create_time TIMESTAMP DEFAULT NOW()
-            )"#
+            )"#,
         )
         .execute(pool)
         .await
@@ -25,7 +25,7 @@ pub async fn ensure_table(pool: &Pool) -> sqlx::Result<()> {
 
         // 索引是可选优化：建不出来只告警
         if let Err(e) = sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_audit_log_create_time ON gb_audit_log(create_time)"
+            "CREATE INDEX IF NOT EXISTS idx_audit_log_create_time ON gb_audit_log(create_time)",
         )
         .execute(pool)
         .await
@@ -34,7 +34,7 @@ pub async fn ensure_table(pool: &Pool) -> sqlx::Result<()> {
         }
 
         let _ = sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_audit_log_username ON gb_audit_log(username)"
+            "CREATE INDEX IF NOT EXISTS idx_audit_log_username ON gb_audit_log(username)",
         )
         .execute(pool)
         .await;
@@ -54,7 +54,7 @@ pub async fn ensure_table(pool: &Pool) -> sqlx::Result<()> {
                 status_code INT,
                 request_body TEXT,
                 create_time DATETIME DEFAULT CURRENT_TIMESTAMP
-            )"#
+            )"#,
         )
         .execute(pool)
         .await
@@ -91,7 +91,7 @@ pub async fn ensure_table(pool: &Pool) -> sqlx::Result<()> {
                 request_body TEXT,
                 elapsed_ms BIGINT,
                 create_time DATETIME DEFAULT CURRENT_TIMESTAMP
-            )"#
+            )"#,
         )
         .execute(pool)
         .await
@@ -101,7 +101,7 @@ pub async fn ensure_table(pool: &Pool) -> sqlx::Result<()> {
 
         // 索引属于可选优化：建不出来只告警
         if let Err(e) = sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_audit_log_create_time ON gb_audit_log(create_time)"
+            "CREATE INDEX IF NOT EXISTS idx_audit_log_create_time ON gb_audit_log(create_time)",
         )
         .execute(pool)
         .await
@@ -110,7 +110,7 @@ pub async fn ensure_table(pool: &Pool) -> sqlx::Result<()> {
         }
 
         if let Err(e) = sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_audit_log_username ON gb_audit_log(username)"
+            "CREATE INDEX IF NOT EXISTS idx_audit_log_username ON gb_audit_log(username)",
         )
         .execute(pool)
         .await
@@ -200,17 +200,23 @@ pub async fn insert_with_metrics(
     }
     // Fallback: basic schema (no elapsed_ms column)
     #[cfg(feature = "mysql")]
-    { let _ = sqlx::query("INSERT INTO gb_audit_log (username, action, resource, method, path, ip, status_code) VALUES (?, ?, ?, ?, ?, ?, ?)")
+    {
+        let _ = sqlx::query("INSERT INTO gb_audit_log (username, action, resource, method, path, ip, status_code) VALUES (?, ?, ?, ?, ?, ?, ?)")
         .bind(username).bind(action).bind(resource).bind(method).bind(path).bind(ip).bind(status_code)
-        .execute(pool).await?; }
+        .execute(pool).await?;
+    }
     #[cfg(feature = "postgres")]
-    { let _ = sqlx::query("INSERT INTO gb_audit_log (username, action, resource, method, path, ip, status_code) VALUES ($1, $2, $3, $4, $5, $6, $7)")
+    {
+        let _ = sqlx::query("INSERT INTO gb_audit_log (username, action, resource, method, path, ip, status_code) VALUES ($1, $2, $3, $4, $5, $6, $7)")
         .bind(username).bind(action).bind(resource).bind(method).bind(path).bind(ip).bind(status_code)
-        .execute(pool).await?; }
+        .execute(pool).await?;
+    }
     #[cfg(feature = "sqlite")]
-    { let _ = sqlx::query("INSERT INTO gb_audit_log (username, action, resource, method, path, ip, status_code) VALUES (?, ?, ?, ?, ?, ?, ?)")
+    {
+        let _ = sqlx::query("INSERT INTO gb_audit_log (username, action, resource, method, path, ip, status_code) VALUES (?, ?, ?, ?, ?, ?, ?)")
         .bind(username).bind(action).bind(resource).bind(method).bind(path).bind(ip).bind(status_code)
-        .execute(pool).await?; }
+        .execute(pool).await?;
+    }
     Ok(())
 }
 
@@ -289,7 +295,9 @@ pub async fn list_paged(
 
     let count_sql = format!("SELECT COUNT(*) FROM gb_audit_log WHERE 1=1{}", conditions);
     let mut count_q = sqlx::query_scalar::<_, i64>(&count_sql);
-    for b in &bind_values { count_q = count_q.bind(b); }
+    for b in &bind_values {
+        count_q = count_q.bind(b);
+    }
     let total: i64 = count_q.fetch_one(pool).await.unwrap_or(0);
 
     #[cfg(feature = "postgres")]
@@ -310,24 +318,29 @@ pub async fn list_paged(
     );
 
     let mut data_q = sqlx::query_as::<_, AuditRow>(&data_sql);
-    for b in &bind_values { data_q = data_q.bind(b); }
+    for b in &bind_values {
+        data_q = data_q.bind(b);
+    }
     data_q = data_q.bind(count as i64).bind(offset as i64);
 
     let rows: Vec<AuditRow> = data_q.fetch_all(pool).await.unwrap_or_default();
 
-    let list: Vec<serde_json::Value> = rows.iter().map(|r| {
-        serde_json::json!({
-            "id": r.id,
-            "username": r.username,
-            "action": r.action,
-            "resource": r.resource,
-            "method": r.method,
-            "path": r.path,
-            "ip": r.ip,
-            "statusCode": r.status_code,
-            "createTime": r.create_time
+    let list: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|r| {
+            serde_json::json!({
+                "id": r.id,
+                "username": r.username,
+                "action": r.action,
+                "resource": r.resource,
+                "method": r.method,
+                "path": r.path,
+                "ip": r.ip,
+                "statusCode": r.status_code,
+                "createTime": r.create_time
+            })
         })
-    }).collect();
+        .collect();
 
     Ok((total, list))
 }

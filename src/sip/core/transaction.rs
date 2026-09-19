@@ -1,10 +1,10 @@
+use super::message::SipRequest;
+use super::method::SipMethod;
+use chrono::{DateTime, Duration, Utc};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
-use chrono::{DateTime, Utc, Duration};
-use super::message::SipRequest;
-use super::method::SipMethod;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransactionType {
@@ -100,14 +100,14 @@ impl TransportInfo {
         let to = req.header("to")?.clone();
         let call_id = req.header("call-id")?.clone();
         let cseq = req.header("cseq")?.clone();
-        
+
         let from_tag = Self::extract_tag(&from)?;
         let to_tag = Self::extract_tag_optional(&to);
         let cseq_parts: Vec<&str> = cseq.split_whitespace().collect();
         let cseq_num: u32 = cseq_parts.first()?.parse().ok()?;
         let cseq_method = cseq_parts.get(1).unwrap_or(&"INVITE").to_string();
         let via_branch = Self::extract_branch(&via)?;
-        
+
         Some(Self {
             via,
             via_branch,
@@ -120,7 +120,7 @@ impl TransportInfo {
             transport: "UDP".to_string(),
         })
     }
-    
+
     fn extract_tag(uri: &str) -> Option<String> {
         for part in uri.split(';') {
             if part.trim().starts_with("tag=") {
@@ -129,11 +129,11 @@ impl TransportInfo {
         }
         None
     }
-    
+
     fn extract_tag_optional(uri: &str) -> Option<String> {
         Self::extract_tag(uri)
     }
-    
+
     fn extract_branch(via: &str) -> Option<String> {
         for part in via.split(';') {
             if part.trim().starts_with("branch=") {
@@ -142,11 +142,11 @@ impl TransportInfo {
         }
         None
     }
-    
+
     pub fn is_invite(&self) -> bool {
         self.cseq_method.to_uppercase() == "INVITE"
     }
-    
+
     pub fn key(&self) -> String {
         format!("{}:{}:{}", self.call_id, self.from_tag, self.cseq)
     }
@@ -203,7 +203,7 @@ impl Transaction {
             raw_bytes: None,
         }
     }
-    
+
     pub fn new_invite_server(
         request: SipRequest,
         transport: TransportInfo,
@@ -223,7 +223,7 @@ impl Transaction {
             raw_bytes: None,
         }
     }
-    
+
     pub fn new_noninvite_client(
         request: SipRequest,
         transport: TransportInfo,
@@ -243,7 +243,7 @@ impl Transaction {
             raw_bytes: None,
         }
     }
-    
+
     pub fn new_noninvite_server(
         request: SipRequest,
         transport: TransportInfo,
@@ -263,19 +263,19 @@ impl Transaction {
             raw_bytes: None,
         }
     }
-    
+
     fn generate_id(transport: &TransportInfo) -> String {
         format!("{}-{}", transport.call_id, transport.via_branch)
     }
-    
+
     pub fn is_invite(&self) -> bool {
         self.txn_type == TransactionType::Invite
     }
-    
+
     pub fn handle_response(&mut self, status_code: u16) {
         self.last_response = Some(status_code);
         self.last_activity = Utc::now();
-        
+
         match (&mut self.state, status_code) {
             (TransactionState::InviteClient(s), 100..=199) => {
                 *s = InviteClientState::Proceeding;
@@ -298,7 +298,7 @@ impl Transaction {
             _ => {}
         }
     }
-    
+
     pub fn handle_ack(&mut self) {
         if let TransactionState::InviteServer(s) = &mut self.state {
             if matches!(s, InviteServerState::Completed) {
@@ -306,7 +306,7 @@ impl Transaction {
             }
         }
     }
-    
+
     pub fn handle_timeout(&mut self, timer_name: &str) {
         match timer_name {
             "A" => {
@@ -338,15 +338,20 @@ impl Transaction {
             }
             "F" => {
                 if let TransactionState::NonInviteClient(s) = &self.state {
-                    if matches!(s, NonInviteClientState::Trying | NonInviteClientState::Proceeding) {
-                        self.state = TransactionState::NonInviteClient(NonInviteClientState::Terminated);
+                    if matches!(
+                        s,
+                        NonInviteClientState::Trying | NonInviteClientState::Proceeding
+                    ) {
+                        self.state =
+                            TransactionState::NonInviteClient(NonInviteClientState::Terminated);
                     }
                 }
             }
             "K" => {
                 if let TransactionState::NonInviteServer(s) = &self.state {
                     if matches!(s, NonInviteServerState::Completed) {
-                        self.state = TransactionState::NonInviteServer(NonInviteServerState::Terminated);
+                        self.state =
+                            TransactionState::NonInviteServer(NonInviteServerState::Terminated);
                     }
                 }
             }
@@ -354,7 +359,7 @@ impl Transaction {
         }
         self.last_activity = Utc::now();
     }
-    
+
     pub fn should_cleanup(&self, max_age_secs: i64) -> bool {
         if self.state.is_terminal() {
             let age = (Utc::now() - self.last_activity).num_seconds();
@@ -383,7 +388,7 @@ impl TransactionManager {
             outbound: Arc::new(RwLock::new(None)),
         }
     }
-    
+
     pub fn with_timers(timers: TimerValues) -> Self {
         Self {
             transactions: Arc::new(RwLock::new(HashMap::new())),
@@ -404,39 +409,43 @@ impl TransactionManager {
             txn.raw_bytes = Some(raw);
         }
     }
-    
+
     pub async fn add(&self, txn: Transaction) {
         self.transactions.write().await.insert(txn.id.clone(), txn);
     }
-    
+
     pub async fn get(&self, id: &str) -> Option<Transaction> {
         self.transactions.read().await.get(id).cloned()
     }
-    
+
     pub async fn get_by_call_id(&self, call_id: &str) -> Vec<Transaction> {
-        self.transactions.read().await
+        self.transactions
+            .read()
+            .await
             .values()
             .filter(|t| t.transport.call_id == call_id)
             .cloned()
             .collect()
     }
-    
+
     pub async fn get_invite_transaction(&self, call_id: &str) -> Option<Transaction> {
-        self.transactions.read().await
+        self.transactions
+            .read()
+            .await
             .values()
             .find(|t| t.transport.call_id == call_id && t.is_invite())
             .cloned()
     }
-    
+
     pub async fn remove(&self, id: &str) {
         self.transactions.write().await.remove(id);
     }
-    
+
     pub async fn update(&self, txn: &Transaction) {
         let mut guard = self.transactions.write().await;
         guard.insert(txn.id.clone(), txn.clone());
     }
-    
+
     pub async fn handle_request(&self, req: &SipRequest, peer_addr: &str) -> Option<Transaction> {
         let transport = TransportInfo::from_request(req, peer_addr)?;
         let txn = if transport.is_invite() {
@@ -444,56 +453,69 @@ impl TransactionManager {
         } else {
             Transaction::new_noninvite_server(req.clone(), transport, self.timers.clone())
         };
-        
+
         self.add(txn.clone()).await;
         Some(txn)
     }
-    
-    pub async fn handle_response(&self, call_id: &str, cseq: u32, status_code: u16) -> Option<Transaction> {
+
+    pub async fn handle_response(
+        &self,
+        call_id: &str,
+        cseq: u32,
+        status_code: u16,
+    ) -> Option<Transaction> {
         let mut guard = self.transactions.write().await;
-        
-        let txn = guard.values_mut()
+
+        let txn = guard
+            .values_mut()
             .find(|t| t.transport.call_id == call_id && t.transport.cseq == cseq)?;
-        
+
         txn.handle_response(status_code);
         Some(txn.clone())
     }
-    
+
     pub async fn cleanup_expired(&self, max_age_secs: i64) {
         let mut guard = self.transactions.write().await;
         guard.retain(|_, txn| !txn.should_cleanup(max_age_secs));
     }
-    
+
     pub async fn get_pending_invites(&self) -> Vec<Transaction> {
-        self.transactions.read().await
+        self.transactions
+            .read()
+            .await
             .values()
             .filter(|t| {
-                matches!(t.state, 
-                    TransactionState::InviteClient(InviteClientState::Calling) |
-                    TransactionState::InviteClient(InviteClientState::Proceeding)
+                matches!(
+                    t.state,
+                    TransactionState::InviteClient(InviteClientState::Calling)
+                        | TransactionState::InviteClient(InviteClientState::Proceeding)
                 )
             })
             .cloned()
             .collect()
     }
-    
+
     pub async fn cancel_invite(&self, call_id: &str) -> Option<SipRequest> {
         let txn = self.get_invite_transaction(call_id).await?;
-        
+
         let mut cancel_req = SipRequest::new(SipMethod::Cancel, txn.request.uri.clone());
         cancel_req.set_header("via", &txn.transport.via);
-        cancel_req.set_header("from", &format!("<sip:{}>;tag={}", 
-            Self::extract_uri_from_via(&txn.transport.via),
-            txn.transport.from_tag
-        ));
+        cancel_req.set_header(
+            "from",
+            &format!(
+                "<sip:{}>;tag={}",
+                Self::extract_uri_from_via(&txn.transport.via),
+                txn.transport.from_tag
+            ),
+        );
         cancel_req.set_header("to", "");
         cancel_req.set_header("call-id", &txn.transport.call_id);
         cancel_req.set_header("cseq", &format!("{} CANCEL", txn.transport.cseq));
         cancel_req.set_header("max-forwards", "70");
-        
+
         Some(cancel_req)
     }
-    
+
     fn extract_uri_from_via(via: &str) -> String {
         for part in via.split(' ') {
             if part.contains('@') {
@@ -502,7 +524,7 @@ impl TransactionManager {
         }
         String::new()
     }
-    
+
     pub fn timers(&self) -> &TimerValues {
         &self.timers
     }
@@ -525,13 +547,13 @@ impl TransactionManager {
             }
         })
     }
-    
+
     /// 处理所有事务的定时器
     async fn process_timers(&self) {
         let now = Utc::now();
         let mut to_retransmit = Vec::new();
         let mut to_terminate = Vec::new();
-        
+
         {
             let guard = self.transactions.read().await;
             for (id, txn) in guard.iter() {
@@ -545,7 +567,7 @@ impl TransactionManager {
                 }
             }
         }
-        
+
         // 处理重传
         for id in to_retransmit {
             if let Some(mut txn) = self.get(&id).await {
@@ -586,7 +608,7 @@ impl TransactionManager {
                 }
             }
         }
-        
+
         // 处理超时
         for id in to_terminate {
             if let Some(mut txn) = self.get(&id).await {
@@ -595,7 +617,7 @@ impl TransactionManager {
                 tracing::warn!("Transaction {} timed out", id);
             }
         }
-        
+
         // 清理过期事务
         self.cleanup_expired(300).await;
     }
@@ -607,38 +629,35 @@ impl Transaction {
         if self.state.is_terminal() {
             return false;
         }
-        
+
         // 最大重传次数
         let max_retransmit = if self.is_invite() { 7 } else { 11 };
         if self.retransmit_count >= max_retransmit {
             return false;
         }
-        
+
         // 计算下次重传时间 (指数退避)
         let base_timeout = self.timer_values.t1.num_milliseconds();
         let max_timeout = self.timer_values.t2.num_milliseconds();
-        let next_timeout = std::cmp::min(
-            base_timeout * (1 << self.retransmit_count),
-            max_timeout
-        );
-        
+        let next_timeout = std::cmp::min(base_timeout * (1 << self.retransmit_count), max_timeout);
+
         let elapsed = (now - self.last_activity).num_milliseconds();
         elapsed >= next_timeout
     }
-    
+
     /// 检查是否超时
     pub fn is_timeout(&self, now: DateTime<Utc>) -> bool {
         if self.state.is_terminal() {
             return false;
         }
-        
+
         // INVITE 事务超时时间: 64*T1 (默认 32秒)
         // 非 INVITE 事务超时时间: 64*T1 (默认 32秒)
         let timeout_ms = 64 * self.timer_values.t1.num_milliseconds();
         let elapsed = (now - self.created_at).num_milliseconds();
         elapsed >= timeout_ms
     }
-    
+
     /// 终止事务
     pub fn terminate(&mut self) {
         self.state = match self.txn_type {
@@ -659,7 +678,7 @@ impl Transaction {
         };
         self.last_activity = Utc::now();
     }
-    
+
     /// 获取需要重传的请求
     pub fn get_retransmit_request(&self) -> Option<&SipRequest> {
         if self.needs_retransmit(Utc::now()) && !self.state.is_terminal() {
@@ -737,10 +756,7 @@ mod retransmit_tests {
             .expect("出站通道不应关闭");
 
         assert_eq!(got.0, "127.0.0.1:5061".parse::<SocketAddr>().unwrap());
-        assert_eq!(
-            got.1, raw,
-            "重传必须逐字发送原始字节（Via branch 不能变）"
-        );
+        assert_eq!(got.1, raw, "重传必须逐字发送原始字节（Via branch 不能变）");
     }
 
     /// 未附加原始字节时不应发送，也不应 panic（仅保留计数便于观测）。
@@ -779,7 +795,10 @@ mod retransmit_tests {
         let txn = mgr.handle_response("call-retrans-4", 1, 200).await;
         assert!(txn.is_some(), "应能按 call_id + cseq 匹配到事务");
         assert!(
-            mgr.get(&id).await.map(|t| t.state.is_terminal()).unwrap_or(true),
+            mgr.get(&id)
+                .await
+                .map(|t| t.state.is_terminal())
+                .unwrap_or(true),
             "200 之后事务应进入终态"
         );
 
@@ -801,6 +820,10 @@ mod retransmit_tests {
 
         let count = mgr.get(&id).await.map(|t| t.retransmit_count).unwrap_or(0);
         assert!(count >= 1, "应已发生重传，实际 {}", count);
-        assert!(count <= 11, "非 INVITE 事务重传上限为 11 次，实际 {}", count);
+        assert!(
+            count <= 11,
+            "非 INVITE 事务重传上限为 11 次，实际 {}",
+            count
+        );
     }
 }

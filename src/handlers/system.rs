@@ -140,11 +140,13 @@ pub async fn online_users(State(state): State<AppState>) -> Json<ApiResult<serde
     // gb_online_user table (Phase 8 follow-up).
     let ws_count = state.ws_state.broadcast_count().await;
     let users: Vec<serde_json::Value> = (0..ws_count)
-        .map(|i| serde_json::json!({
-            "id": format!("ws-{}", i),
-            "username": format!("ws-user-{}", i),
-            "source": "ws",
-        }))
+        .map(|i| {
+            serde_json::json!({
+                "id": format!("ws-{}", i),
+                "username": format!("ws-user-{}", i),
+                "source": "ws",
+            })
+        })
         .collect();
     Json(ApiResult::success(serde_json::json!({
         "list": users,

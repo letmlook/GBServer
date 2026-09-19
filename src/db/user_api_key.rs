@@ -36,11 +36,7 @@ pub struct UserApiKeyRemark {
     pub remark: Option<String>,
 }
 
-pub async fn list_paged(
-    pool: &Pool,
-    page: u32,
-    count: u32,
-) -> sqlx::Result<Vec<UserApiKey>> {
+pub async fn list_paged(pool: &Pool, page: u32, count: u32) -> sqlx::Result<Vec<UserApiKey>> {
     let offset = (page.saturating_sub(1)) * count;
     #[cfg(feature = "mysql")]
     return sqlx::query_as::<_, UserApiKey>(
@@ -153,12 +149,7 @@ pub async fn add(
     Ok(r.rows_affected())
 }
 
-pub async fn update_remark(
-    pool: &Pool,
-    id: i64,
-    remark: &str,
-    now: &str,
-) -> sqlx::Result<u64> {
+pub async fn update_remark(pool: &Pool, id: i64, remark: &str, now: &str) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
     let r = sqlx::query("UPDATE gb_user_api_key SET remark = ?, update_time = ? WHERE id = ?")
         .bind(remark)
@@ -208,12 +199,7 @@ pub async fn set_enable(pool: &Pool, id: i32, enable: bool, now: &str) -> sqlx::
     Ok(r.rows_affected())
 }
 
-pub async fn reset_api_key(
-    pool: &Pool,
-    id: i32,
-    new_key: &str,
-    now: &str,
-) -> sqlx::Result<u64> {
+pub async fn reset_api_key(pool: &Pool, id: i32, new_key: &str, now: &str) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
     let r = sqlx::query("UPDATE gb_user_api_key SET api_key = ?, update_time = ? WHERE id = ?")
         .bind(new_key)
@@ -310,19 +296,22 @@ pub async fn list_by_user_id(pool: &Pool, user_id: i64) -> sqlx::Result<Vec<User
 /// 删除过期的 API Key
 pub async fn delete_expired_keys(pool: &Pool, now_ts: i64) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
-    let r = sqlx::query("DELETE FROM gb_user_api_key WHERE expired_at IS NOT NULL AND expired_at < ?")
-        .bind(now_ts)
-        .execute(pool)
-        .await?;
+    let r =
+        sqlx::query("DELETE FROM gb_user_api_key WHERE expired_at IS NOT NULL AND expired_at < ?")
+            .bind(now_ts)
+            .execute(pool)
+            .await?;
     #[cfg(feature = "postgres")]
-    let r = sqlx::query("DELETE FROM gb_user_api_key WHERE expired_at IS NOT NULL AND expired_at < $1")
-        .bind(now_ts)
-        .execute(pool)
-        .await?;
+    let r =
+        sqlx::query("DELETE FROM gb_user_api_key WHERE expired_at IS NOT NULL AND expired_at < $1")
+            .bind(now_ts)
+            .execute(pool)
+            .await?;
     #[cfg(feature = "sqlite")]
-    let r = sqlx::query("DELETE FROM gb_user_api_key WHERE expired_at IS NOT NULL AND expired_at < ?")
-        .bind(now_ts)
-        .execute(pool)
-        .await?;
+    let r =
+        sqlx::query("DELETE FROM gb_user_api_key WHERE expired_at IS NOT NULL AND expired_at < ?")
+            .bind(now_ts)
+            .execute(pool)
+            .await?;
     Ok(r.rows_affected())
 }

@@ -3,7 +3,6 @@
 //! 这些测试验证模拟器生成的 SIP 消息格式正确。
 //! 不依赖真实服务器，使用字符串解析验证。
 
-
 /// 简化的 SIP 消息解析（用于测试验证）
 fn sip_line(msg: &str, header: &str) -> Option<String> {
     msg.lines()
@@ -12,7 +11,9 @@ fn sip_line(msg: &str, header: &str) -> Option<String> {
 }
 
 fn sip_method(msg: &str) -> Option<String> {
-    msg.lines().next().map(|l| l.split_whitespace().next().unwrap_or("").to_string())
+    msg.lines()
+        .next()
+        .map(|l| l.split_whitespace().next().unwrap_or("").to_string())
 }
 
 fn sip_body(msg: &str) -> Option<String> {
@@ -41,13 +42,22 @@ fn test_register_message_format() {
         Contact: <sip:{}@{}:{}>\r\n\
         Expires: {}\r\n\
         Content-Length: 0\r\n\r\n",
-        device_id, local_ip, local_port, cseq,
-        device_id, device_id.split_at(16).0, device_id.split_at(16).0,
-        device_id, device_id.split_at(16).0, device_id.split_at(16).0,
+        device_id,
+        local_ip,
+        local_port,
+        cseq,
+        device_id,
+        device_id.split_at(16).0,
+        device_id.split_at(16).0,
+        device_id,
+        device_id.split_at(16).0,
+        device_id.split_at(16).0,
         device_id,
         call_id,
         cseq,
-        device_id, local_ip, local_port,
+        device_id,
+        local_ip,
+        local_port,
         expires,
     );
 
@@ -126,8 +136,7 @@ fn test_catalog_multipacket_format() {
 {}
 </DeviceList>
 </Response>"#,
-        device_id,
-        channel_xml
+        device_id, channel_xml
     );
 
     assert!(resp.contains("<CmdType>Catalog</CmdType>"));
@@ -249,11 +258,13 @@ fn test_sim_channel_data() {
         status: String,
     }
     fn channel_set(parent: &str, count: u32) -> Vec<SimChannel> {
-        (1..=count).map(|i| SimChannel {
-            device_id: format!("{}{:04}", parent, i),
-            name: format!("Camera-{:04}", i),
-            status: "ON".to_string(),
-        }).collect()
+        (1..=count)
+            .map(|i| SimChannel {
+                device_id: format!("{}{:04}", parent, i),
+                name: format!("Camera-{:04}", i),
+                status: "ON".to_string(),
+            })
+            .collect()
     }
     let channels = channel_set("34020000001320000001", 3);
     assert_eq!(channels.len(), 3);
@@ -301,14 +312,22 @@ fn p1_4_keepalive_message_e2e_format() {
          Content-Type: APPLICATION/MANSCDP+XML\r\n\
          Content-Length: {}\r\n\r\n\
          {}",
-        device_id, device_id, call_id, sn, body.len(), body
+        device_id,
+        device_id,
+        call_id,
+        sn,
+        body.len(),
+        body
     );
 
     // 验证 SIP headers
     assert_eq!(sip_method(&msg), Some("MESSAGE".to_string()));
     assert_eq!(sip_line(&msg, "Call-ID"), Some(call_id.to_string()));
     assert_eq!(sip_line(&msg, "CSeq"), Some(format!("{} MESSAGE", sn)));
-    assert_eq!(sip_line(&msg, "Content-Type"), Some("APPLICATION/MANSCDP+XML".to_string()));
+    assert_eq!(
+        sip_line(&msg, "Content-Type"),
+        Some("APPLICATION/MANSCDP+XML".to_string())
+    );
 
     // 验证 XML body
     let extracted = sip_body(&msg).expect("body 必存在");
@@ -327,7 +346,7 @@ fn p1_4_keepalive_sequence_advances_monotonically() {
 
     for round in 0..5 {
         sn = round + 1; // 设备每个 Keepalive 周期 +1
-        // 模拟服务端记录：last_seen_at = 当前时间戳
+                        // 模拟服务端记录：last_seen_at = 当前时间戳
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -358,7 +377,10 @@ struct HeartbeatTracker {
 #[allow(dead_code)]
 impl HeartbeatTracker {
     fn new(timeout_secs: i64) -> Self {
-        Self { last_keepalive_at: None, timeout_secs }
+        Self {
+            last_keepalive_at: None,
+            timeout_secs,
+        }
     }
     fn record(&mut self, now: i64) {
         self.last_keepalive_at = Some(now);
@@ -382,8 +404,8 @@ fn p1_4_keepalive_heartbeat_online_offline_transitions() {
     // 30s 后收到 Keepalive
     tracker.record(t0 + 30);
     assert!(tracker.is_online(t0 + 30));
-    assert!(tracker.is_online(t0 + 89));   // 59s 内仍在线
-    assert!(!tracker.is_online(t0 + 91));  // 60s 后离线
+    assert!(tracker.is_online(t0 + 89)); // 59s 内仍在线
+    assert!(!tracker.is_online(t0 + 91)); // 60s 后离线
 
     // 收到新 Keepalive 后恢复在线
     tracker.record(t0 + 200);
@@ -422,9 +444,18 @@ fn p1_4_keepalive_multi_device_concurrent() {
 
     let mut sim = MultiDeviceSim {
         devices: vec![
-            ("34020000001320000001".to_string(), HeartbeatTracker::new(60)),
-            ("34020000001320000002".to_string(), HeartbeatTracker::new(60)),
-            ("34020000001320000003".to_string(), HeartbeatTracker::new(60)),
+            (
+                "34020000001320000001".to_string(),
+                HeartbeatTracker::new(60),
+            ),
+            (
+                "34020000001320000002".to_string(),
+                HeartbeatTracker::new(60),
+            ),
+            (
+                "34020000001320000003".to_string(),
+                HeartbeatTracker::new(60),
+            ),
         ],
     };
 

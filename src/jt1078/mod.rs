@@ -27,13 +27,13 @@
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-pub mod server;
-pub mod frame;
-pub mod session;
-pub mod manager;
 pub mod command;
 pub mod command_waiter;
+pub mod frame;
+pub mod manager;
 pub mod response_parser;
+pub mod server;
+pub mod session;
 
 use crate::jt1078::manager::Jt1078Manager;
 
@@ -47,11 +47,17 @@ pub struct Jt1078Server {
 
 impl Jt1078Server {
     pub fn new() -> Self {
-        Self { manager: Arc::new(RwLock::new(None)), pool: None }
+        Self {
+            manager: Arc::new(RwLock::new(None)),
+            pool: None,
+        }
     }
 
     pub fn with_pool(pool: crate::db::Pool) -> Self {
-        Self { manager: Arc::new(RwLock::new(None)), pool: Some(pool) }
+        Self {
+            manager: Arc::new(RwLock::new(None)),
+            pool: Some(pool),
+        }
     }
 
     pub fn pool(&self) -> Option<crate::db::Pool> {
@@ -72,7 +78,10 @@ impl Jt1078Server {
     }
 
     /// Start the server loop — delegates to server module which spawns listeners.
-    pub async fn start(&self, cfg: Option<crate::config::Jt1078Config>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn start(
+        &self,
+        cfg: Option<crate::config::Jt1078Config>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         crate::jt1078::server::start(self, cfg).await
     }
 }

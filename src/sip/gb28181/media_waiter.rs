@@ -129,7 +129,10 @@ impl MediaWaiterManager {
     /// 实测表现为级联推流 `startSendRtp` 报 `can not find the source stream`。
     pub fn forget_early_ready(&self, stream_id: &str) {
         if self.early_ready.remove(stream_id).is_some() {
-            tracing::debug!("MediaWaiter: 已作废 {} 的早期就绪通知（流将被重新拉起）", stream_id);
+            tracing::debug!(
+                "MediaWaiter: 已作废 {} 的早期就绪通知（流将被重新拉起）",
+                stream_id
+            );
         }
     }
 
@@ -202,7 +205,8 @@ impl MediaWaiterManager {
             return self.resolve(&call_id, stream_id, app);
         }
         // 没有等待者：暂存通知，供随后注册的等待者立刻命中
-        self.early_ready.insert(stream_id.to_string(), Instant::now());
+        self.early_ready
+            .insert(stream_id.to_string(), Instant::now());
         false
     }
 

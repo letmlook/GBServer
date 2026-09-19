@@ -1,9 +1,9 @@
+use chrono::{Datelike, Timelike, Utc};
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 use tokio::sync::{Notify, RwLock};
-use chrono::{Datelike, Timelike, Utc};
 
-use crate::db::{Pool, record_plan};
+use crate::db::{record_plan, Pool};
 use crate::zlm::ZlmClient;
 
 /// 全局唤醒句柄。
@@ -129,15 +129,23 @@ impl RecordPlanScheduler {
     /// 按设备的 media_server_id 解析目标 ZLM 节点。
     /// 'auto'/空/未知 → 默认客户端（返回 media_server_id = "auto"）。
     fn resolve_client(&self, media_server_id: Option<&str>) -> Option<(String, Arc<ZlmClient>)> {
-        match media_server_id.map(str::trim).filter(|s| !s.is_empty() && *s != "auto") {
+        match media_server_id
+            .map(str::trim)
+            .filter(|s| !s.is_empty() && *s != "auto")
+        {
             Some(id) => {
                 if let Some(client) = self.zlm_clients.get(id) {
                     return Some((id.to_string(), client.clone()));
                 }
                 // 指定的节点不在客户端表中 → 退回默认节点
-                self.zlm_client.as_ref().map(|c| ("auto".to_string(), c.clone()))
+                self.zlm_client
+                    .as_ref()
+                    .map(|c| ("auto".to_string(), c.clone()))
             }
-            None => self.zlm_client.as_ref().map(|c| ("auto".to_string(), c.clone())),
+            None => self
+                .zlm_client
+                .as_ref()
+                .map(|c| ("auto".to_string(), c.clone())),
         }
     }
 
@@ -179,7 +187,7 @@ impl RecordPlanScheduler {
         let current_minutes = now.hour() as i32 * 60 + now.minute() as i32;
 
         let plans = record_plan::list_paged(&self.pool, 1, 1000, None).await?;
-        
+
         let mut channels_to_record: Vec<(i64, String, String, i32, Option<String>)> = Vec::new();
 
         for plan in &plans {
@@ -220,7 +228,13 @@ impl RecordPlanScheduler {
                 let device_id = ch.device_id.unwrap_or_default();
                 let gb_channel_id = ch.gb_device_id.unwrap_or_default();
                 if !device_id.is_empty() && !gb_channel_id.is_empty() {
-                    channels_to_record.push((ch.id, device_id, gb_channel_id, plan.id, ch.media_server_id));
+                    channels_to_record.push((
+                        ch.id,
+                        device_id,
+                        gb_channel_id,
+                        plan.id,
+                        ch.media_server_id,
+                    ));
                 }
             }
         }
@@ -228,7 +242,8 @@ impl RecordPlanScheduler {
         // 只在持读锁期间做集合差，实际 ZLM 调用放在锁外逐个执行
         let to_start: Vec<(i64, String, String, i32, Option<String>)> = {
             let active = self.active_recordings.read().await;
-            channels_to_record.iter()
+            channels_to_record
+                .iter()
                 .filter(|(cid, _, _, _, _)| !active.contains_key(cid))
                 .cloned()
                 .collect()
@@ -309,21 +324,27 @@ impl RecordPlanScheduler {
                         media_server_id: resolved_ms_id.clone(),
                         started_at: Utc::now(),
                     };
-                    self.active_recordings.write().await.insert(channel_id, recording.clone());
+                    self.active_recordings
+                        .write()
+                        .await
+                        .insert(channel_id, recording.clone());
 
                     // E1: 同步写入 StateStore（跨节点可见）
                     if let Some(ref store) = self.state_store {
                         use crate::state_store::ActiveRecordingState;
-                        store.set_active_recording(channel_id, ActiveRecordingState {
-                            channel_id: recording.channel_id,
-                            device_id: recording.device_id.clone(),
-                            gb_channel_id: recording.gb_channel_id.clone(),
-                            plan_id: recording.plan_id,
-                            app: recording.app.clone(),
-                            stream: recording.stream.clone(),
-                            media_server_id: recording.media_server_id.clone(),
-                            started_at: recording.started_at,
-                        });
+                        store.set_active_recording(
+                            channel_id,
+                            ActiveRecordingState {
+                                channel_id: recording.channel_id,
+                                device_id: recording.device_id.clone(),
+                                gb_channel_id: recording.gb_channel_id.clone(),
+                                plan_id: recording.plan_id,
+                                app: recording.app.clone(),
+                                stream: recording.stream.clone(),
+                                media_server_id: recording.media_server_id.clone(),
+                                started_at: recording.started_at,
+                            },
+                        );
                     }
                 }
                 Err(e) => {
@@ -341,16 +362,21 @@ impl RecordPlanScheduler {
         let mut active = self.active_recordings.write().await;
         let mut to_remove = Vec::new();
         for (channel_id, recording) in active.iter() {
-            let still_needed = channels_to_record.iter()
+            let still_needed = channels_to_record
+                .iter()
                 .any(|(cid, _, _, _, _)| cid == channel_id);
             if !still_needed {
                 // 按启动时解析的节点停止，避免默认节点与实际节点不一致
                 if let Some((_, zlm)) = self.resolve_client(Some(&recording.media_server_id)) {
-                    let _ = zlm.stop_record("1", "__defaultVhost__", &recording.app, &recording.stream).await;
+                    let _ = zlm
+                        .stop_record("1", "__defaultVhost__", &recording.app, &recording.stream)
+                        .await;
                 }
                 tracing::info!(
                     "RecordPlanScheduler: stopped MP4 recording for channel {} stream {}/{}",
-                    channel_id, recording.app, recording.stream
+                    channel_id,
+                    recording.app,
+                    recording.stream
                 );
                 to_remove.push(*channel_id);
             }
@@ -412,7 +438,10 @@ mod schedule_tests {
         let items = vec![item(600, 660, 2)];
         assert!(schedule_matches(&items, 2, 600), "起点 10:00 应包含");
         assert!(schedule_matches(&items, 2, 659), "10:59 应包含");
-        assert!(schedule_matches(&items, 2, 660), "终点 11:00 闭区间应包含（stop >= index）");
+        assert!(
+            schedule_matches(&items, 2, 660),
+            "终点 11:00 闭区间应包含（stop >= index）"
+        );
         assert!(!schedule_matches(&items, 2, 599), "09:59 不应包含");
         assert!(!schedule_matches(&items, 2, 661));
         // 周几不匹配（周一）
@@ -454,7 +483,10 @@ mod schedule_tests {
     fn missing_fields_never_match() {
         let mut it = item(0, 1439, 1);
         it.week_day = None;
-        assert!(!schedule_matches(&[it], 1, 100), "缺 week_day 不匹配任何一天");
+        assert!(
+            !schedule_matches(&[it], 1, 100),
+            "缺 week_day 不匹配任何一天"
+        );
 
         let mut it = item(0, 1439, 1);
         it.start = None;
@@ -485,7 +517,9 @@ mod start_record_retry_tests {
         assert!(is_stream_not_ready_error(&anyhow::anyhow!(
             "ZLM error: can not find the stream"
         )));
-        assert!(is_stream_not_ready_error(&anyhow::anyhow!("stream not found")));
+        assert!(is_stream_not_ready_error(&anyhow::anyhow!(
+            "stream not found"
+        )));
         assert!(!is_stream_not_ready_error(&anyhow::anyhow!(
             "ZLM error: -300 Required parameter missed: \"port\""
         )));

@@ -1,7 +1,7 @@
+use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use chrono::{DateTime, Utc};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TalkStatus {
@@ -94,7 +94,9 @@ impl TalkSession {
 
     /// SSRC 的数值形式（RTP 头要 u32）。SSRC 按国标是 10 位十进制。
     pub fn ssrc_u32(&self) -> Option<u32> {
-        self.ssrc.as_deref().and_then(|s| s.trim().parse::<u32>().ok())
+        self.ssrc
+            .as_deref()
+            .and_then(|s| s.trim().parse::<u32>().ok())
     }
 
     pub fn is_active(&self) -> bool {
@@ -119,7 +121,10 @@ impl TalkManager {
 
     pub async fn create(&self, call_id: &str, device_id: &str, channel_id: &str) -> TalkSession {
         let session = TalkSession::new(call_id, device_id, channel_id);
-        self.sessions.write().await.insert(call_id.to_string(), session.clone());
+        self.sessions
+            .write()
+            .await
+            .insert(call_id.to_string(), session.clone());
         session
     }
 
@@ -127,7 +132,10 @@ impl TalkManager {
         self.sessions.read().await.get(call_id).cloned()
     }
 
-    pub async fn get_mut(&self, _call_id: &str) -> Option<tokio::sync::RwLockWriteGuard<'_, HashMap<String, TalkSession>>> {
+    pub async fn get_mut(
+        &self,
+        _call_id: &str,
+    ) -> Option<tokio::sync::RwLockWriteGuard<'_, HashMap<String, TalkSession>>> {
         Some(self.sessions.write().await)
     }
 
@@ -140,8 +148,14 @@ impl TalkManager {
         self.sessions.write().await.remove(call_id)
     }
 
-    pub async fn get_by_device_channel(&self, device_id: &str, channel_id: &str) -> Option<TalkSession> {
-        self.sessions.read().await
+    pub async fn get_by_device_channel(
+        &self,
+        device_id: &str,
+        channel_id: &str,
+    ) -> Option<TalkSession> {
+        self.sessions
+            .read()
+            .await
             .values()
             .find(|s| s.device_id == device_id && s.channel_id == channel_id && s.is_active())
             .cloned()
@@ -206,7 +220,9 @@ impl TalkManager {
     }
 
     pub async fn get_active_sessions(&self) -> Vec<TalkSession> {
-        self.sessions.read().await
+        self.sessions
+            .read()
+            .await
             .values()
             .filter(|s| s.is_active())
             .cloned()
@@ -217,7 +233,7 @@ impl TalkManager {
         let now = Utc::now();
         let mut guard = self.sessions.write().await;
         let mut removed = Vec::new();
-        
+
         guard.retain(|call_id, session| {
             let age = (now - session.last_activity).num_seconds();
             if age > max_age_secs && session.status == TalkStatus::Terminated {
@@ -226,7 +242,7 @@ impl TalkManager {
             }
             true
         });
-        
+
         removed
     }
 

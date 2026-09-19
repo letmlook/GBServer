@@ -77,24 +77,27 @@ impl CascadeRegistrar {
         realm: &str,
         register_interval_secs: u64,
     ) {
-        self.states.insert(platform_id.to_string(), RegistrationState {
-            platform_id: platform_id.to_string(),
-            platform_device_id: platform_device_id.to_string(),
-            host: host.to_string(),
-            port,
-            local_device_id: local_device_id.to_string(),
-            password: password.to_string(),
-            realm: realm.to_string(),
-            status: RegistrationStatus::NotRegistered,
-            register_interval_secs,
-            last_register: None,
-            retry_count: 0,
-            max_retries: 5,
-            nonce: None,
-            opaque: None,
-            register_cseq: 0,
-            last_call_id: None,
-        });
+        self.states.insert(
+            platform_id.to_string(),
+            RegistrationState {
+                platform_id: platform_id.to_string(),
+                platform_device_id: platform_device_id.to_string(),
+                host: host.to_string(),
+                port,
+                local_device_id: local_device_id.to_string(),
+                password: password.to_string(),
+                realm: realm.to_string(),
+                status: RegistrationStatus::NotRegistered,
+                register_interval_secs,
+                last_register: None,
+                retry_count: 0,
+                max_retries: 5,
+                nonce: None,
+                opaque: None,
+                register_cseq: 0,
+                last_call_id: None,
+            },
+        );
     }
 
     pub fn remove_platform(&self, platform_id: &str) {
@@ -154,7 +157,9 @@ impl CascadeRegistrar {
                 s.retry_count = s.retry_count.saturating_add(1);
                 tracing::warn!(
                     "Cascade platform {} keepalive timeout ({}s > {}s * 60), marked Failed",
-                    key, elapsed, max_misses
+                    key,
+                    elapsed,
+                    max_misses
                 );
             }
             out.push(key);
@@ -167,7 +172,11 @@ impl CascadeRegistrar {
     /// - 新出现的平台：add_platform
     /// - DB 中 enable=false 的平台：remove_platform（外层负责发 UNREGISTER）
     /// - 已存在但 DB 中字段变化：更新 host/port/password/realm
-    pub async fn reload_from_db(&self, local_device_id: &str, realm: &str) -> (Vec<String>, Vec<String>) {
+    pub async fn reload_from_db(
+        &self,
+        local_device_id: &str,
+        realm: &str,
+    ) -> (Vec<String>, Vec<String>) {
         let pool = match self.pool.read().await.clone() {
             Some(p) => p,
             None => return (Vec::new(), Vec::new()),
@@ -188,10 +197,15 @@ impl CascadeRegistrar {
         let mut active_ids = std::collections::HashSet::new();
         for p in platforms.iter().filter(|p| p.enable.unwrap_or(false)) {
             let server_gb_id = p.server_gb_id.clone().unwrap_or_default();
-            let server_ip = p.server_ip.clone().unwrap_or_else(|| "127.0.0.1".to_string());
+            let server_ip = p
+                .server_ip
+                .clone()
+                .unwrap_or_else(|| "127.0.0.1".to_string());
             let server_port = p.server_port.unwrap_or(5060) as u16;
             let password = p.password.clone().unwrap_or_default();
-            let expires_secs: u64 = p.expires.as_deref()
+            let expires_secs: u64 = p
+                .expires
+                .as_deref()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(3600);
             // 与 load_platforms_from_db 保持一致：键 = 上级平台国标 ID
@@ -215,7 +229,10 @@ impl CascadeRegistrar {
                         s.status = RegistrationStatus::NotRegistered;
                         s.nonce = None;
                         s.opaque = None;
-                        tracing::info!("Cascade platform {} config changed, will re-register", platform_id);
+                        tracing::info!(
+                            "Cascade platform {} config changed, will re-register",
+                            platform_id
+                        );
                     }
                 }
                 None => {
@@ -245,7 +262,10 @@ impl CascadeRegistrar {
         for id in to_remove {
             self.states.remove(&id);
             removed.push(id.clone());
-            tracing::info!("Cascade platform {} removed by reload (DB disable/delete)", id);
+            tracing::info!(
+                "Cascade platform {} removed by reload (DB disable/delete)",
+                id
+            );
         }
 
         (added, removed)
@@ -281,10 +301,17 @@ impl CascadeRegistrar {
              Content-Type: APPLICATION/MANSCDP+XML\r\n\
              Content-Length: {}\r\n\r\n\
              {}",
-            state.platform_device_id, state.host, state.port,
-            state.local_device_id, state.local_device_id, branch,
-            state.local_device_id, tag,
-            state.platform_device_id, state.host, state.port,
+            state.platform_device_id,
+            state.host,
+            state.port,
+            state.local_device_id,
+            state.local_device_id,
+            branch,
+            state.local_device_id,
+            tag,
+            state.platform_device_id,
+            state.host,
+            state.port,
             call_id,
             sn,
             body.len(),
@@ -337,7 +364,11 @@ impl CascadeRegistrar {
     }
 
     /// C3.3: 平台被 DB 禁用后立即 UNREGISTER 并移除会话（由 handler 调用）
-    pub async fn unregister_and_remove(&self, platform_id: &str, expires: u32) -> Result<(), String> {
+    pub async fn unregister_and_remove(
+        &self,
+        platform_id: &str,
+        expires: u32,
+    ) -> Result<(), String> {
         // 构造 Expires: 0 的 REGISTER 报文
         let msg = self
             .build_register_request(platform_id, 99, 0)
@@ -397,7 +428,12 @@ impl CascadeRegistrar {
         local_device_id: &str,
         realm: &str,
     ) -> Result<(), String> {
-        let pool = self.pool.read().await.clone().ok_or("registrar 未绑定数据库")?;
+        let pool = self
+            .pool
+            .read()
+            .await
+            .clone()
+            .ok_or("registrar 未绑定数据库")?;
         let p = crate::db::platform::get_by_server_gb_id(&pool, server_gb_id)
             .await
             .map_err(|e| e.to_string())?
@@ -405,7 +441,10 @@ impl CascadeRegistrar {
         if !p.enable.unwrap_or(false) {
             return Err(format!("平台 {} 未启用", server_gb_id));
         }
-        let server_ip = p.server_ip.clone().unwrap_or_else(|| "127.0.0.1".to_string());
+        let server_ip = p
+            .server_ip
+            .clone()
+            .unwrap_or_else(|| "127.0.0.1".to_string());
         let server_port = p.server_port.unwrap_or(5060) as u16;
         let password = p.password.clone().unwrap_or_default();
         let expires_secs: u64 = p
@@ -432,7 +471,9 @@ impl CascadeRegistrar {
             }
             None => self.add_platform(
                 server_gb_id,
-                &p.server_gb_id.clone().unwrap_or_else(|| server_gb_id.to_string()),
+                &p.server_gb_id
+                    .clone()
+                    .unwrap_or_else(|| server_gb_id.to_string()),
                 &server_ip,
                 server_port,
                 local_device_id,
@@ -452,9 +493,9 @@ impl CascadeRegistrar {
             .get_sip_server()
             .await
             .ok_or_else(|| "SIP server 未就绪".to_string())?;
-        let state = self.state(platform_id).ok_or_else(|| {
-            format!("registrar 中没有平台 {} 的注册状态", platform_id)
-        })?;
+        let state = self
+            .state(platform_id)
+            .ok_or_else(|| format!("registrar 中没有平台 {} 的注册状态", platform_id))?;
         let cseq = state.register_cseq.wrapping_add(1);
         if let Some(mut s) = self.states.get_mut(platform_id) {
             s.register_cseq = cseq;
@@ -477,13 +518,23 @@ impl CascadeRegistrar {
         Ok(())
     }
 
-    pub fn handle_401_challenge(&self, platform_id: &str, nonce: &str, opaque: Option<&str>, realm: &str) {
+    pub fn handle_401_challenge(
+        &self,
+        platform_id: &str,
+        nonce: &str,
+        opaque: Option<&str>,
+        realm: &str,
+    ) {
         if let Some(mut state) = self.states.get_mut(platform_id) {
             state.status = RegistrationStatus::Challenged;
             state.nonce = Some(nonce.to_string());
             state.opaque = opaque.map(|s| s.to_string());
             state.realm = realm.to_string();
-            tracing::info!("Cascade platform {} challenged, nonce={}", platform_id, nonce);
+            tracing::info!(
+                "Cascade platform {} challenged, nonce={}",
+                platform_id,
+                nonce
+            );
         }
     }
 
@@ -501,16 +552,29 @@ impl CascadeRegistrar {
             state.retry_count += 1;
             if state.retry_count >= state.max_retries {
                 state.status = RegistrationStatus::Failed;
-                tracing::error!("Cascade platform {} registration failed after {} retries", platform_id, state.retry_count);
+                tracing::error!(
+                    "Cascade platform {} registration failed after {} retries",
+                    platform_id,
+                    state.retry_count
+                );
             } else {
                 state.status = RegistrationStatus::NotRegistered;
-                tracing::warn!("Cascade platform {} registration failed, retry {}/{}", 
-                    platform_id, state.retry_count, state.max_retries);
+                tracing::warn!(
+                    "Cascade platform {} registration failed, retry {}/{}",
+                    platform_id,
+                    state.retry_count,
+                    state.max_retries
+                );
             }
         }
     }
 
-    pub fn build_register_request(&self, platform_id: &str, cseq: u32, expires: u32) -> Option<String> {
+    pub fn build_register_request(
+        &self,
+        platform_id: &str,
+        cseq: u32,
+        expires: u32,
+    ) -> Option<String> {
         // **先 clone 再释放读锁**：DashMap 的 `get` 持有分片读锁，
         // 若在同一函数里再 `get_mut`（下面的 last_call_id 回填）会对同一分片
         // 自死锁 —— 这正是"cargo test --lib cascade 永远跑不完"的原因。
@@ -525,7 +589,10 @@ impl CascadeRegistrar {
 
         let auth_header = if state.status == RegistrationStatus::Challenged {
             if let Some(ref nonce) = state.nonce {
-                let uri = format!("sip:{}@{}:{}", state.platform_device_id, state.host, state.port);
+                let uri = format!(
+                    "sip:{}@{}:{}",
+                    state.platform_device_id, state.host, state.port
+                );
                 let response = build_digest_response(
                     &state.local_device_id,
                     &state.realm,
@@ -560,11 +627,22 @@ impl CascadeRegistrar {
              Max-Forwards: 70\r\n\
              Expires: {}\r\n\
              User-Agent: GBServer/1.0\r\n",
-            state.platform_device_id, state.host, state.port,
-            state.local_device_id, 5060, branch,
-            state.local_device_id, state.local_device_id, 5060, tag,
-            state.platform_device_id, state.host, state.port,
-            call_id, cseq, expires
+            state.platform_device_id,
+            state.host,
+            state.port,
+            state.local_device_id,
+            5060,
+            branch,
+            state.local_device_id,
+            state.local_device_id,
+            5060,
+            tag,
+            state.platform_device_id,
+            state.host,
+            state.port,
+            call_id,
+            cseq,
+            expires
         );
 
         if let Some(auth) = auth_header {
@@ -575,7 +653,12 @@ impl CascadeRegistrar {
         Some(headers)
     }
 
-    pub async fn load_platforms_from_db(&self, pool: &crate::db::Pool, local_device_id: &str, realm: &str) {
+    pub async fn load_platforms_from_db(
+        &self,
+        pool: &crate::db::Pool,
+        local_device_id: &str,
+        realm: &str,
+    ) {
         // Also store the pool for later use
         self.set_pool(pool.clone()).await;
         match crate::db::platform::list_platforms(pool).await {
@@ -583,10 +666,15 @@ impl CascadeRegistrar {
                 for p in platforms {
                     if p.enable.unwrap_or(false) {
                         let server_gb_id = p.server_gb_id.clone().unwrap_or_default();
-                        let server_ip = p.server_ip.clone().unwrap_or_else(|| "127.0.0.1".to_string());
+                        let server_ip = p
+                            .server_ip
+                            .clone()
+                            .unwrap_or_else(|| "127.0.0.1".to_string());
                         let server_port = p.server_port.unwrap_or(5060) as u16;
                         let password = p.password.clone().unwrap_or_default();
-                        let expires_secs: u64 = p.expires.as_deref()
+                        let expires_secs: u64 = p
+                            .expires
+                            .as_deref()
                             .and_then(|s| s.parse().ok())
                             .unwrap_or(3600);
                         // 平台键统一用**上级平台的国标 ID**（server_gb_id）：
@@ -812,13 +900,27 @@ mod c3_tests {
     #[test]
     fn c3_401_digest_full_cycle() {
         let r = make_registrar();
-        r.add_platform("plat-401", "37010000002000000001", "127.0.0.1", 5060,
-                       "34020000002000000001", "secret", "GBServer", 3600);
-        assert_eq!(r.get_status("plat-401"), Some(RegistrationStatus::NotRegistered));
+        r.add_platform(
+            "plat-401",
+            "37010000002000000001",
+            "127.0.0.1",
+            5060,
+            "34020000002000000001",
+            "secret",
+            "GBServer",
+            3600,
+        );
+        assert_eq!(
+            r.get_status("plat-401"),
+            Some(RegistrationStatus::NotRegistered)
+        );
 
         // 收到 401 挑战
         r.handle_401_challenge("plat-401", "nonce_abc", Some("opaque_xyz"), "GBServer");
-        assert_eq!(r.get_status("plat-401"), Some(RegistrationStatus::Challenged));
+        assert_eq!(
+            r.get_status("plat-401"),
+            Some(RegistrationStatus::Challenged)
+        );
         let s = r.state("plat-401").unwrap();
         assert_eq!(s.nonce.as_deref(), Some("nonce_abc"));
         assert_eq!(s.opaque.as_deref(), Some("opaque_xyz"));
@@ -837,7 +939,10 @@ mod c3_tests {
 
         // 注册成功
         r.mark_registered("plat-401");
-        assert_eq!(r.get_status("plat-401"), Some(RegistrationStatus::Registered));
+        assert_eq!(
+            r.get_status("plat-401"),
+            Some(RegistrationStatus::Registered)
+        );
         assert_eq!(r.state("plat-401").unwrap().retry_count, 0);
     }
 
@@ -845,8 +950,16 @@ mod c3_tests {
     #[test]
     fn c3_failed_to_retry_state_machine() {
         let r = make_registrar();
-        r.add_platform("plat-retry", "37010000002000000002", "127.0.0.1", 5060,
-                       "34020000002000000001", "secret", "GBServer", 3600);
+        r.add_platform(
+            "plat-retry",
+            "37010000002000000002",
+            "127.0.0.1",
+            5060,
+            "34020000002000000001",
+            "secret",
+            "GBServer",
+            3600,
+        );
 
         r.mark_failed("plat-retry");
         let s1 = r.state("plat-retry").unwrap();
@@ -875,8 +988,16 @@ mod c3_tests {
     #[test]
     fn c3_keepalive_timeout_detection() {
         let r = make_registrar();
-        r.add_platform("plat-ka", "37010000002000000003", "127.0.0.1", 5060,
-                       "34020000002000000001", "secret", "GBServer", 3600);
+        r.add_platform(
+            "plat-ka",
+            "37010000002000000003",
+            "127.0.0.1",
+            5060,
+            "34020000002000000001",
+            "secret",
+            "GBServer",
+            3600,
+        );
         r.mark_registered("plat-ka");
 
         // 模拟 10 分钟前最后活跃
@@ -895,8 +1016,16 @@ mod c3_tests {
     #[test]
     fn c3_note_liveness_resets_timer() {
         let r = make_registrar();
-        r.add_platform("plat-live", "37010000002000000004", "127.0.0.1", 5060,
-                       "34020000002000000001", "secret", "GBServer", 3600);
+        r.add_platform(
+            "plat-live",
+            "37010000002000000004",
+            "127.0.0.1",
+            5060,
+            "34020000002000000001",
+            "secret",
+            "GBServer",
+            3600,
+        );
         r.mark_registered("plat-live");
 
         // 5 分钟前
@@ -904,7 +1033,10 @@ mod c3_tests {
             s.last_register = Some(Utc::now() - chrono::Duration::seconds(300));
         }
         // 检测会超时
-        assert_eq!(r.detect_keepalive_timeouts(2), vec!["plat-live".to_string()]);
+        assert_eq!(
+            r.detect_keepalive_timeouts(2),
+            vec!["plat-live".to_string()]
+        );
         // 重新 mark_registered 后再 note_liveness
         r.mark_registered("plat-live");
         r.note_liveness("plat-live");
@@ -917,8 +1049,16 @@ mod c3_tests {
     #[test]
     fn c3_disable_removes_session() {
         let r = make_registrar();
-        r.add_platform("plat-dis", "37010000002000000005", "127.0.0.1", 5060,
-                       "34020000002000000001", "secret", "GBServer", 3600);
+        r.add_platform(
+            "plat-dis",
+            "37010000002000000005",
+            "127.0.0.1",
+            5060,
+            "34020000002000000001",
+            "secret",
+            "GBServer",
+            3600,
+        );
         r.mark_registered("plat-dis");
         assert!(r.get_status("plat-dis").is_some());
 
@@ -931,8 +1071,16 @@ mod c3_tests {
     #[test]
     fn c3_build_keepalive_message_format() {
         let r = make_registrar();
-        r.add_platform("plat-msg", "37010000002000000006", "192.168.1.10", 5061,
-                       "34020000002000000001", "secret", "GBServer", 3600);
+        r.add_platform(
+            "plat-msg",
+            "37010000002000000006",
+            "192.168.1.10",
+            5061,
+            "34020000002000000001",
+            "secret",
+            "GBServer",
+            3600,
+        );
         let msg = r.build_keepalive_message("plat-msg", 123).unwrap();
         assert!(msg.starts_with("MESSAGE sip:37010000002000000006@192.168.1.10:5061 SIP/2.0"));
         assert!(msg.contains("CSeq: 123 MESSAGE"));
@@ -946,8 +1094,16 @@ mod c3_tests {
     #[tokio::test]
     async fn c3_send_keepalive_all_skips_unregistered() {
         let r = make_registrar();
-        r.add_platform("plat-noreg", "37010000002000000007", "127.0.0.1", 5060,
-                       "34020000002000000001", "secret", "GBServer", 3600);
+        r.add_platform(
+            "plat-noreg",
+            "37010000002000000007",
+            "127.0.0.1",
+            5060,
+            "34020000002000000001",
+            "secret",
+            "GBServer",
+            3600,
+        );
         // 没 mark_registered → NotRegistered → 不发送
         r.send_keepalive_all().await; // 应立即返回，不 panic
         let s = r.state("plat-noreg").unwrap();
@@ -958,12 +1114,20 @@ mod c3_tests {
     #[test]
     fn c3_timeout_detection_skips_non_registered() {
         let r = make_registrar();
-        r.add_platform("plat-nr", "37010000002000000008", "127.0.0.1", 5060,
-                       "34020000002000000001", "secret", "GBServer", 3600);
+        r.add_platform(
+            "plat-nr",
+            "37010000002000000008",
+            "127.0.0.1",
+            5060,
+            "34020000002000000001",
+            "secret",
+            "GBServer",
+            3600,
+        );
         // 默认 NotRegistered + last_register=None
         let timed_out = r.detect_keepalive_timeouts(0); // 阈值 0
-        // None 状态视为无限远，应当被报告
-        // 但因为状态不是 Registered → 跳过
+                                                        // None 状态视为无限远，应当被报告
+                                                        // 但因为状态不是 Registered → 跳过
         assert!(timed_out.is_empty());
     }
 
@@ -1042,9 +1206,13 @@ mod c3_tests {
             3600,
         );
         // 未建报文前没有 Call-ID 记录
-        assert!(r.resolve_platform_from_call_id("cascade_34020000002000000099_abc").is_none());
+        assert!(r
+            .resolve_platform_from_call_id("cascade_34020000002000000099_abc")
+            .is_none());
 
-        let msg = r.build_register_request("34020000002000000099", 1, 3600).unwrap();
+        let msg = r
+            .build_register_request("34020000002000000099", 1, 3600)
+            .unwrap();
         // Request-URI 必须是「上级国标 ID@上级 host:port」，不是 `sip::5062`
         assert!(
             msg.starts_with("REGISTER sip:34020000002000000099@127.0.0.1:5062 SIP/2.0\r\n"),
@@ -1056,14 +1224,20 @@ mod c3_tests {
             .find_map(|l| l.strip_prefix("Call-ID: "))
             .expect("应有 Call-ID")
             .to_string();
-        assert!(call_id.starts_with("cascade_34020000002000000099_"), "{}", call_id);
+        assert!(
+            call_id.starts_with("cascade_34020000002000000099_"),
+            "{}",
+            call_id
+        );
         assert_eq!(
             r.resolve_platform_from_call_id(&call_id).as_deref(),
             Some("34020000002000000099"),
             "必须能由 Call-ID 反查到平台"
         );
         assert!(r.resolve_platform_from_call_id("").is_none());
-        assert!(r.resolve_platform_from_call_id("cascade_unknown_x").is_none());
+        assert!(r
+            .resolve_platform_from_call_id("cascade_unknown_x")
+            .is_none());
     }
 
     /// 挑战 → 带 Authorization 重发 的报文形态（RFC 2617）。
@@ -1071,8 +1245,14 @@ mod c3_tests {
     async fn test_401_challenge_produces_authorization_header() {
         let r = CascadeRegistrar::new();
         r.add_platform(
-            "plat1", "34020000002000000099", "10.0.0.9", 5060,
-            "34020000002000000001", "admin123", "3402000000", 3600,
+            "plat1",
+            "34020000002000000099",
+            "10.0.0.9",
+            5060,
+            "34020000002000000001",
+            "admin123",
+            "3402000000",
+            3600,
         );
         let first = r.build_register_request("plat1", 1, 3600).unwrap();
         assert!(
@@ -1089,7 +1269,11 @@ mod c3_tests {
         assert!(second.contains("Authorization: Digest"), "{}", second);
         assert!(second.contains("nonce=\"nonce-1\""), "{}", second);
         assert!(second.contains("opaque=\"opaque-1\""), "{}", second);
-        assert!(second.contains("uri=\"sip:34020000002000000099@10.0.0.9:5060\""), "{}", second);
+        assert!(
+            second.contains("uri=\"sip:34020000002000000099@10.0.0.9:5060\""),
+            "{}",
+            second
+        );
         assert!(second.contains("CSeq: 2 REGISTER"), "{}", second);
     }
 }

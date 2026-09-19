@@ -3,9 +3,7 @@
 //! 测试 PendingRequestManager 在模拟 SIP MESSAGE 响应下的行为。
 //! 这些测试不依赖真实 SIP 网络，而是直接调用 ResponseRouter 的路由逻辑。
 
-use gbserver::sip::gb28181::pending_request::{
-    PendingRequestManager, PendingCmdType, QueryResult,
-};
+use gbserver::sip::gb28181::pending_request::{PendingCmdType, PendingRequestManager, QueryResult};
 use gbserver::sip::gb28181::ResponseRouter;
 
 #[test]
@@ -60,9 +58,27 @@ fn test_pending_request_multiple_devices() {
     let mgr = PendingRequestManager::new();
 
     // 注册多个设备的不同请求
-    mgr.register("34020000001110000001", 1, PendingCmdType::DeviceInfo, "call-d1-1", None);
-    mgr.register("34020000001110000001", 2, PendingCmdType::DeviceStatus, "call-d1-2", None);
-    mgr.register("34020000002220000002", 1, PendingCmdType::DeviceInfo, "call-d2-1", None);
+    mgr.register(
+        "34020000001110000001",
+        1,
+        PendingCmdType::DeviceInfo,
+        "call-d1-1",
+        None,
+    );
+    mgr.register(
+        "34020000001110000001",
+        2,
+        PendingCmdType::DeviceStatus,
+        "call-d1-2",
+        None,
+    );
+    mgr.register(
+        "34020000002220000002",
+        1,
+        PendingCmdType::DeviceInfo,
+        "call-d2-1",
+        None,
+    );
 
     assert_eq!(mgr.pending_count(), 3);
 
@@ -78,8 +94,20 @@ fn test_pending_request_multiple_devices() {
 #[test]
 fn test_pending_request_cancel_single() {
     let mgr = PendingRequestManager::new();
-    mgr.register("34020000001110000001", 5, PendingCmdType::DeviceInfo, "call-5", None);
-    mgr.register("34020000001110000001", 6, PendingCmdType::DeviceStatus, "call-6", None);
+    mgr.register(
+        "34020000001110000001",
+        5,
+        PendingCmdType::DeviceInfo,
+        "call-5",
+        None,
+    );
+    mgr.register(
+        "34020000001110000001",
+        6,
+        PendingCmdType::DeviceStatus,
+        "call-6",
+        None,
+    );
 
     assert_eq!(mgr.pending_count(), 2);
 
@@ -96,7 +124,13 @@ fn test_pending_request_cancel_single() {
 fn test_pending_request_timeout_cleanup() {
     // 使用 0 秒超时的管理器（立即过期）
     let mgr = PendingRequestManager::new().with_timeout(0);
-    mgr.register("34020000001110000001", 1, PendingCmdType::DeviceInfo, "call-x", None);
+    mgr.register(
+        "34020000001110000001",
+        1,
+        PendingCmdType::DeviceInfo,
+        "call-x",
+        None,
+    );
     assert_eq!(mgr.pending_count(), 1);
 
     // 等待一瞬间（超时管理器会认为已过期）

@@ -192,7 +192,10 @@ pub async fn area_circle_delete(
     State(state): State<AppState>,
     Query(q): Query<IdQuery>,
 ) -> Json<ApiResult<serde_json::Value>> {
-    let id = q.id.as_deref().and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
+    let id =
+        q.id.as_deref()
+            .and_then(|s| s.parse::<i64>().ok())
+            .unwrap_or(0);
     if id <= 0 {
         return err("id 必填且 >0");
     }
@@ -316,7 +319,10 @@ pub async fn area_polygon_delete(
     State(state): State<AppState>,
     Query(q): Query<IdQuery>,
 ) -> Json<ApiResult<serde_json::Value>> {
-    let id = q.id.as_deref().and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
+    let id =
+        q.id.as_deref()
+            .and_then(|s| s.parse::<i64>().ok())
+            .unwrap_or(0);
     if id <= 0 {
         return err("id 必填且 >0");
     }
@@ -391,7 +397,9 @@ pub async fn area_rectangle_add(
     if phone.is_empty() {
         return err("phoneNumber 必填");
     }
-    match jt_db::insert_area_rectangle(&state.pool, phone, label, lt_lat, lt_lon, rb_lat, rb_lon).await {
+    match jt_db::insert_area_rectangle(&state.pool, phone, label, lt_lat, lt_lon, rb_lat, rb_lon)
+        .await
+    {
         Ok(id) => Json(ApiResult::success(serde_json::json!({
             "id": id, "phone": phone, "label": label,
             "leftTopLat": lt_lat, "leftTopLon": lt_lon,
@@ -424,12 +432,19 @@ pub async fn area_rectangle_edit(
     let label = b.get("label").and_then(|v| v.as_str());
     let lt_lat = b.get("leftTopLat").and_then(|v| v.as_f64()).unwrap_or(0.0);
     let lt_lon = b.get("leftTopLon").and_then(|v| v.as_f64()).unwrap_or(0.0);
-    let rb_lat = b.get("rightBottomLat").and_then(|v| v.as_f64()).unwrap_or(0.0);
-    let rb_lon = b.get("rightBottomLon").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let rb_lat = b
+        .get("rightBottomLat")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+    let rb_lon = b
+        .get("rightBottomLon")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
     if id <= 0 {
         return err("id 必填且 >0");
     }
-    match jt_db::update_area_rectangle(&state.pool, id, label, lt_lat, lt_lon, rb_lat, rb_lon).await {
+    match jt_db::update_area_rectangle(&state.pool, id, label, lt_lat, lt_lon, rb_lat, rb_lon).await
+    {
         Ok(n) if n > 0 => Json(ApiResult::success(serde_json::json!({
             "id": id, "updated": n, "msg": "矩形区域已编辑"
         }))),
@@ -458,7 +473,10 @@ pub async fn area_rectangle_delete(
     State(state): State<AppState>,
     Query(q): Query<IdQuery>,
 ) -> Json<ApiResult<serde_json::Value>> {
-    let id = q.id.as_deref().and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
+    let id =
+        q.id.as_deref()
+            .and_then(|s| s.parse::<i64>().ok())
+            .unwrap_or(0);
     if id <= 0 {
         return err("id 必填且 >0");
     }
@@ -614,7 +632,10 @@ pub async fn route_delete(
     State(state): State<AppState>,
     Query(q): Query<IdQuery>,
 ) -> Json<ApiResult<serde_json::Value>> {
-    let id = q.id.as_deref().and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
+    let id =
+        q.id.as_deref()
+            .and_then(|s| s.parse::<i64>().ok())
+            .unwrap_or(0);
     if id <= 0 {
         return err("id 必填且 >0");
     }
@@ -670,7 +691,10 @@ pub async fn live_continue(
         Ok(m) => m,
         Err(_) => return err("JT1078服务未启动"),
     };
-    match mgr.send_live_video_control_and_wait(&phone, channel, 0x00, false, 5).await {
+    match mgr
+        .send_live_video_control_and_wait(&phone, channel, 0x00, false, 5)
+        .await
+    {
         Ok(0) => Json(ApiResult::success(serde_json::json!({
             "phone": q.phone, "channelId": q.channel_id, "msg": "直播已继续"
         }))),
@@ -707,7 +731,10 @@ pub async fn live_pause(
         Ok(m) => m,
         Err(_) => return err("JT1078服务未启动"),
     };
-    match mgr.send_live_video_control_and_wait(&phone, channel, 0x01, false, 5).await {
+    match mgr
+        .send_live_video_control_and_wait(&phone, channel, 0x01, false, 5)
+        .await
+    {
         Ok(0) => Json(ApiResult::success(serde_json::json!({
             "phone": q.phone, "channelId": q.channel_id, "msg": "直播已暂停"
         }))),
@@ -744,7 +771,10 @@ pub async fn live_switch(
         Ok(m) => m,
         Err(_) => return err("JT1078服务未启动"),
     };
-    match mgr.send_live_video_and_wait(&phone, channel, 0, false, 5).await {
+    match mgr
+        .send_live_video_and_wait(&phone, channel, 0, false, 5)
+        .await
+    {
         Ok(0) => Json(ApiResult::success(serde_json::json!({
             "phone": q.phone, "channelId": q.channel_id, "msg": "直播切换命令已下发"
         }))),
@@ -961,7 +991,8 @@ pub async fn confirmation_alarm(
     }
 
     // 报警消息流水号：兼容多种字段命名
-    let alarm_seq = pick_u64(&b, &["alarmId", "alarm_id", "alarmSeq", "serial"]).unwrap_or(0) as u16;
+    let alarm_seq =
+        pick_u64(&b, &["alarmId", "alarm_id", "alarmSeq", "serial"]).unwrap_or(0) as u16;
     // 人工确认报警类型位标志：默认全 1（确认全部）
     let alarm_type = pick_u64(&b, &["type", "alarmType", "alarm_type", "confirmType"])
         .unwrap_or(0xFFFF_FFFF) as u32;
@@ -1213,9 +1244,16 @@ mod field_alias_tests {
     #[test]
     fn test_missing_or_empty_falls_back() {
         let empty = serde_json::json!({"phoneNumber": "   "});
-        assert_eq!(get_str(&empty, &["phoneNumber", "phone"]), "", "空白视为未填");
+        assert_eq!(
+            get_str(&empty, &["phoneNumber", "phone"]),
+            "",
+            "空白视为未填"
+        );
         assert_eq!(get_f64(&empty, &["radiusM", "radius"]), 0.0);
-        assert_eq!(get_json_or_str(&empty, &["pointsJson"]), serde_json::json!([]));
+        assert_eq!(
+            get_json_or_str(&empty, &["pointsJson"]),
+            serde_json::json!([])
+        );
         assert_eq!(
             get_json_or_str(&serde_json::json!({"pointsJson": ""}), &["pointsJson"]),
             serde_json::json!([])

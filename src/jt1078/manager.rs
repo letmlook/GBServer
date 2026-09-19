@@ -3,13 +3,13 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::Mutex;
 use std::time::Instant;
+use tokio::sync::Mutex;
 
-use crate::jt1078::session::Jt1078Session;
 use crate::jt1078::command;
 use crate::jt1078::command_waiter::JtCommandWaiter;
 use crate::jt1078::jt_media_session::JtMediaSessionManager;
+use crate::jt1078::session::Jt1078Session;
 
 /// 那些"数据应答是独立报文"的命令：终端会**先**回 0x0001 通用应答，**再**回
 /// 一条数据报文（如 0x8201 → 0x0201）。通用应答只能代表"收到"，
@@ -36,13 +36,25 @@ pub struct Jt1078Manager {
     /// `send_raw` 此前一律用 UDP 下发，因此**以 TCP 接入的终端永远收不到平台命令**
     /// （命令只能等到超时）。真实部署里 JT/T 808 终端大量使用 TCP。
     /// TCP 连接的写半由各自的任务持有，这里只保留一个 channel 发送端。
-    tcp_senders: Arc<Mutex<std::collections::HashMap<SocketAddr, tokio::sync::mpsc::UnboundedSender<Vec<u8>>>>>,
+    tcp_senders: Arc<
+        Mutex<std::collections::HashMap<SocketAddr, tokio::sync::mpsc::UnboundedSender<Vec<u8>>>>,
+    >,
     /// 终端多媒体检索结果缓存（0x8802 请求 → 0x0802 应答）。
     ///
     /// 请求与应答是两条独立的上行/下行消息：HTTP 侧发完 0x8802 后需要等待
     /// 终端的 0x0802，这里用一块共享缓存做交接（带采集时间，避免拿到上一次
     /// 检索的陈旧结果）。
-    media_search_results: Arc<Mutex<std::collections::HashMap<String, (std::time::Instant, Vec<crate::jt1078::response_parser::MediaSearchItem>)>>>,
+    media_search_results: Arc<
+        Mutex<
+            std::collections::HashMap<
+                String,
+                (
+                    std::time::Instant,
+                    Vec<crate::jt1078::response_parser::MediaSearchItem>,
+                ),
+            >,
+        >,
+    >,
     /// 下发命令用的 UDP socket（与监听同一端口）。
     ///
     /// 此前 `send_raw` 每条命令都 `UdpSocket::bind("0.0.0.0:0")` 新建临时端口，
@@ -55,7 +67,12 @@ pub struct Jt1078Manager {
 }
 
 impl Jt1078Manager {
-    pub fn new(timeout: Duration, retransmit_wait: Duration, retransmit_hook: Option<String>, retransmit_send_to_device: bool) -> Self {
+    pub fn new(
+        timeout: Duration,
+        retransmit_wait: Duration,
+        retransmit_hook: Option<String>,
+        retransmit_send_to_device: bool,
+    ) -> Self {
         Self {
             sessions: Arc::new(Mutex::new(HashMap::new())),
             terminal_addrs: Arc::new(Mutex::new(HashMap::new())),
@@ -92,13 +109,17 @@ impl Jt1078Manager {
         body: &[u8],
         timeout_secs: u64,
     ) -> Result<Vec<u8>, String> {
-        let addr = self.get_terminal_addr(phone).await
+        let addr = self
+            .get_terminal_addr(phone)
+            .await
             .ok_or_else(|| format!("终端 {} 未连接", phone))?;
         let seq = self.next_seq(addr).await;
         let frame = command::build_jt808_frame(msg_id, phone, seq, body);
 
         // Register waiter
-        let (_key, rx) = self.command_waiter.register(phone, msg_id, seq, Some(timeout_secs));
+        let (_key, rx) = self
+            .command_waiter
+            .register(phone, msg_id, seq, Some(timeout_secs));
 
         // Send
         self.send_raw(phone, &frame).await?;
@@ -141,7 +162,10 @@ impl Jt1078Manager {
 
     /// Register a phone number for a connected terminal so commands can be sent to it.
     pub async fn register_terminal(&self, phone: &str, addr: SocketAddr) {
-        self.terminal_addrs.lock().await.insert(phone.to_string(), addr);
+        self.terminal_addrs
+            .lock()
+            .await
+            .insert(phone.to_string(), addr);
     }
 
     /// 绑定数据库连接池（由 `jt1078::server::start` 注入）。
@@ -184,10 +208,17 @@ impl Jt1078Manager {
     ///
     /// 此前只在内存里登记地址，`gb_jt_terminal` 永远没有记录 ——
     /// `/api/jt1078/terminal/list` 因此恒为空，终端管理页看不到任何设备。
-    pub async fn persist_terminal_online(&self, phone: &str, reg: Option<&crate::jt1078::response_parser::RegisterRequest>) {
+    pub async fn persist_terminal_online(
+        &self,
+        phone: &str,
+        reg: Option<&crate::jt1078::response_parser::RegisterRequest>,
+    ) {
         let Some(pool) = self.pool.get() else { return };
         let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-        let existing = crate::db::jt1078::get_terminal_by_phone(pool, phone).await.ok().flatten();
+        let existing = crate::db::jt1078::get_terminal_by_phone(pool, phone)
+            .await
+            .ok()
+            .flatten();
         match (existing, reg) {
             (None, Some(r)) => {
                 let fields = crate::db::jt1078::JtTerminalWrite {
@@ -200,8 +231,7 @@ impl Jt1078Manager {
                     province_id: None,
                     city_id: None,
                 };
-                if let Err(e) = crate::db::jt1078::insert_terminal(pool, phone, &fields, &now)
-                .await
+                if let Err(e) = crate::db::jt1078::insert_terminal(pool, phone, &fields, &now).await
                 {
                     tracing::warn!("JT1078 终端入库失败 phone={}: {}", phone, e);
                 }
@@ -217,8 +247,7 @@ impl Jt1078Manager {
                     province_id: None,
                     city_id: None,
                 };
-                if let Err(e) = crate::db::jt1078::update_terminal(pool, phone, &fields, &now)
-                .await
+                if let Err(e) = crate::db::jt1078::update_terminal(pool, phone, &fields, &now).await
                 {
                     tracing::warn!("JT1078 终端更新失败 phone={}: {}", phone, e);
                 }
@@ -275,7 +304,9 @@ impl Jt1078Manager {
     }
 
     pub async fn send_raw(&self, phone: &str, data: &[u8]) -> Result<(), String> {
-        let addr = self.get_terminal_addr(phone).await
+        let addr = self
+            .get_terminal_addr(phone)
+            .await
             .ok_or_else(|| format!("终端 {} 未连接", phone))?;
 
         // 先看该对端是不是 TCP 接入：是就走同一条 TCP 连接下发。
@@ -300,7 +331,8 @@ impl Jt1078Manager {
         let socket = tokio::net::UdpSocket::bind("0.0.0.0:0")
             .await
             .map_err(|e| format!("绑定UDP失败: {}", e))?;
-        socket.send_to(data, addr)
+        socket
+            .send_to(data, addr)
             .await
             .map_err(|e| format!("发送失败: {}", e))?;
         Ok(())
@@ -308,7 +340,9 @@ impl Jt1078Manager {
 
     /// Send a JT808-framed command to a terminal.
     pub async fn send_command(&self, phone: &str, msg_id: u16, body: &[u8]) -> Result<(), String> {
-        let addr = self.get_terminal_addr(phone).await
+        let addr = self
+            .get_terminal_addr(phone)
+            .await
             .ok_or_else(|| format!("终端 {} 未连接", phone))?;
         let seq = self.next_seq(addr).await;
         let frame = command::build_jt808_frame(msg_id, phone, seq, body);
@@ -316,35 +350,76 @@ impl Jt1078Manager {
     }
 
     /// Send a PTZ control command (0x9301)
-    pub async fn send_ptz(&self, phone: &str, channel_id: u8, direction: &str, speed: u8) -> Result<(), String> {
+    pub async fn send_ptz(
+        &self,
+        phone: &str,
+        channel_id: u8,
+        direction: &str,
+        speed: u8,
+    ) -> Result<(), String> {
         let (b1, b2, h, v) = command::ptz_direction_bytes(direction, speed);
         let body = command::build_ptz_control(channel_id, b1, b2, h, v, 0);
         self.send_command(phone, 0x9301, &body).await
     }
 
     /// Send live video start/stop (0x9101)
-    pub async fn send_live_video(&self, phone: &str, channel_id: u8, stream_type: u8, close: bool) -> Result<(), String> {
+    pub async fn send_live_video(
+        &self,
+        phone: &str,
+        channel_id: u8,
+        stream_type: u8,
+        close: bool,
+    ) -> Result<(), String> {
         let body = command::build_live_video_request(channel_id, stream_type, close);
         self.send_command(phone, 0x9101, &body).await
     }
 
     /// Send live video control (0x9102)
-    pub async fn send_live_video_control(&self, phone: &str, channel_id: u8, control: u8, close: bool) -> Result<(), String> {
+    pub async fn send_live_video_control(
+        &self,
+        phone: &str,
+        channel_id: u8,
+        control: u8,
+        close: bool,
+    ) -> Result<(), String> {
         let body = command::build_live_video_control(channel_id, control, close);
         self.send_command(phone, 0x9102, &body).await
     }
 
     /// Send playback request (0x9201)
-    pub async fn send_playback(&self, phone: &str, channel_id: u8, stream_type: u8, storage_type: u8,
-        speed: u8, start_time: &str, end_time: &str) -> Result<(), String> {
+    pub async fn send_playback(
+        &self,
+        phone: &str,
+        channel_id: u8,
+        stream_type: u8,
+        storage_type: u8,
+        speed: u8,
+        start_time: &str,
+        end_time: &str,
+    ) -> Result<(), String> {
         let st = command::encode_time_bcd(start_time);
         let et = command::encode_time_bcd(end_time);
-        let body = command::build_playback_request(channel_id, stream_type, storage_type, 0, speed, &st, &et);
+        let body = command::build_playback_request(
+            channel_id,
+            stream_type,
+            storage_type,
+            0,
+            speed,
+            &st,
+            &et,
+        );
         self.send_command(phone, 0x9201, &body).await
     }
 
     /// Send playback control (0x9202)
-    pub async fn send_playback_control(&self, phone: &str, channel_id: u8, control: u8, speed: u8, seek_time: &str) -> Result<(), String> {
+    pub async fn send_playback_control(
+        &self,
+        phone: &str,
+        channel_id: u8,
+        control: u8,
+        speed: u8,
+        seek_time: &str,
+    ) -> Result<(), String> {
         let st = command::encode_time_bcd(seek_time);
         let body = command::build_playback_control(channel_id, control, speed, &st);
         self.send_command(phone, 0x9202, &body).await
@@ -369,31 +444,53 @@ impl Jt1078Manager {
     }
 
     /// Send text message to terminal (0x8300)
-    pub async fn send_text_message(&self, phone: &str, text: &str, emergency: bool) -> Result<(), String> {
+    pub async fn send_text_message(
+        &self,
+        phone: &str,
+        text: &str,
+        emergency: bool,
+    ) -> Result<(), String> {
         let body = command::build_text_message(text, emergency);
         self.send_command(phone, 0x8300, &body).await
     }
 
     /// Send phone callback (0x8400)
-    pub async fn send_phone_callback(&self, phone: &str, sign: u8, dest_phone: &str) -> Result<(), String> {
+    pub async fn send_phone_callback(
+        &self,
+        phone: &str,
+        sign: u8,
+        dest_phone: &str,
+    ) -> Result<(), String> {
         let body = command::build_phone_callback(sign, dest_phone);
         self.send_command(phone, 0x8400, &body).await
     }
 
     /// Send vehicle control (door) (0x8500)
-    pub async fn send_vehicle_control(&self, phone: &str, control_type: u8, value: bool) -> Result<(), String> {
+    pub async fn send_vehicle_control(
+        &self,
+        phone: &str,
+        control_type: u8,
+        value: bool,
+    ) -> Result<(), String> {
         let body = command::build_vehicle_control(control_type, value);
         self.send_command(phone, 0x8500, &body).await
     }
 
     /// Send take photo command (0x8801)
     pub async fn send_take_photo(&self, phone: &str, channel_id: u8) -> Result<(), String> {
-        let body = command::build_take_photo(channel_id, 0x0001, 5, 0, 0x02, 0x05, 0x80, 0x80, 0x80, 0x80);
+        let body =
+            command::build_take_photo(channel_id, 0x0001, 5, 0, 0x02, 0x05, 0x80, 0x80, 0x80, 0x80);
         self.send_command(phone, 0x8801, &body).await
     }
 
     /// Send media search (0x8802)
-    pub async fn send_media_search(&self, phone: &str, channel_id: u8, start_time: &str, end_time: &str) -> Result<(), String> {
+    pub async fn send_media_search(
+        &self,
+        phone: &str,
+        channel_id: u8,
+        start_time: &str,
+        end_time: &str,
+    ) -> Result<(), String> {
         let st = command::encode_time_bcd(start_time);
         let et = command::encode_time_bcd(end_time);
         let body = command::build_media_search(0, channel_id, 0, &st, &et);
@@ -413,7 +510,11 @@ impl Jt1078Manager {
     }
 
     /// Send set phone book (0x8401)
-    pub async fn send_set_phone_book(&self, phone: &str, contacts: &[(String, String)]) -> Result<(), String> {
+    pub async fn send_set_phone_book(
+        &self,
+        phone: &str,
+        contacts: &[(String, String)],
+    ) -> Result<(), String> {
         let body = command::build_set_phone_book(contacts);
         self.send_command(phone, 0x8401, &body).await
     }
@@ -425,7 +526,13 @@ impl Jt1078Manager {
     }
 
     /// Send set params (0x8103)
-    pub async fn send_set_params(&self, phone: &str, apn: &str, ip: &str, port: u16) -> Result<(), String> {
+    pub async fn send_set_params(
+        &self,
+        phone: &str,
+        apn: &str,
+        ip: &str,
+        port: u16,
+    ) -> Result<(), String> {
         let port_bytes = port.to_be_bytes();
         let param_data = [
             (0x0010u32, apn.as_bytes()),
@@ -447,7 +554,12 @@ impl Jt1078Manager {
     }
 
     /// Send connection control - switch server address
-    pub async fn send_connection_control(&self, phone: &str, ip: &str, port: u16) -> Result<(), String> {
+    pub async fn send_connection_control(
+        &self,
+        phone: &str,
+        ip: &str,
+        port: u16,
+    ) -> Result<(), String> {
         let ip_parts: Vec<u8> = ip.split('.').filter_map(|s| s.parse().ok()).collect();
         if ip_parts.len() != 4 {
             return Err("无效IP地址".to_string());
@@ -457,7 +569,11 @@ impl Jt1078Manager {
         self.send_command(phone, 0x8103, &body).await
     }
 
-    pub async fn process_payload_for(&self, addr: SocketAddr, payload: &[u8]) -> crate::jt1078::session::FrameKind {
+    pub async fn process_payload_for(
+        &self,
+        addr: SocketAddr,
+        payload: &[u8],
+    ) -> crate::jt1078::session::FrameKind {
         let mut map = self.sessions.lock().await;
         let session = map.entry(addr).or_insert_with(|| Jt1078Session::new(addr));
         session.process_payload(payload)
@@ -483,8 +599,14 @@ impl Jt1078Manager {
         // 0x0201（位置信息查询应答）是一条**独立报文**，不是 0x0001 通用应答，
         // 因此这里按回显的流水号把消息体交回等待中的 `0x8201` 命令。
         if msg_id == 0x0201 {
-            if self.command_waiter.complete_by_serial(serial, body.to_vec()) {
-                tracing::debug!("JT1078 0x0201 位置应答已交回等待中的 0x8201 命令 serial={}", serial);
+            if self
+                .command_waiter
+                .complete_by_serial(serial, body.to_vec())
+            {
+                tracing::debug!(
+                    "JT1078 0x0201 位置应答已交回等待中的 0x8201 命令 serial={}",
+                    serial
+                );
             }
         }
         // Resolve command waiter for 0x0001 general common response
@@ -497,8 +619,12 @@ impl Jt1078Manager {
             // 结果码；真正的数据报文到达时等待方已经不在了 ——
             // 实测：0x8201 位置查询就是这样被"抢答"成失败，接口只能走兜底。
             if !COMMANDS_WITH_DATA_REPLY.contains(&reply_msg_id) {
-                self.command_waiter
-                    .try_resolve_by_response(phone, reply_msg_id, reply_serial, result);
+                self.command_waiter.try_resolve_by_response(
+                    phone,
+                    reply_msg_id,
+                    reply_serial,
+                    result,
+                );
             } else {
                 tracing::debug!(
                     "JT1078 0x0001 通用应答（reply_msg_id=0x{:04X}）不完成等待方：该命令有独立数据应答报文",
@@ -537,7 +663,11 @@ impl Jt1078Manager {
                     )
                     .await
                     {
-                        tracing::warn!("JT1078 位置回写 gb_jt_terminal 失败 phone={}: {}", phone, e);
+                        tracing::warn!(
+                            "JT1078 位置回写 gb_jt_terminal 失败 phone={}: {}",
+                            phone,
+                            e
+                        );
                     }
                     // 同一份位置也写进 `gb_position_history`（地图打点/轨迹用）
                     let ts = loc.time.format("%Y-%m-%d %H:%M:%S").to_string();
@@ -553,7 +683,11 @@ impl Jt1078Manager {
                     )
                     .await
                     {
-                        tracing::warn!("JT1078 位置写 gb_position_history 失败 phone={}: {}", phone, e);
+                        tracing::warn!(
+                            "JT1078 位置写 gb_position_history 失败 phone={}: {}",
+                            phone,
+                            e
+                        );
                     }
                 }
             }
@@ -624,14 +758,21 @@ impl Jt1078Manager {
             tokio::time::sleep(tick).await;
             let removed = self.cleanup_once().await;
             if removed > 0 {
-                tracing::info!("JT1078 manager cleanup removed {} timed-out sessions", removed);
+                tracing::info!(
+                    "JT1078 manager cleanup removed {} timed-out sessions",
+                    removed
+                );
             }
 
             let mut map = self.sessions.lock().await;
             for (addr, sess) in map.iter_mut() {
                 let timed_out = sess.collect_timed_out_missing(self.retransmit_wait);
                 if !timed_out.is_empty() {
-                    tracing::warn!("JT1078 missing sequences timed out for {}: {:?}", addr, timed_out);
+                    tracing::warn!(
+                        "JT1078 missing sequences timed out for {}: {:?}",
+                        addr,
+                        timed_out
+                    );
                     if sess.should_trigger_missing_alert(self.retransmit_wait) {
                         tracing::warn!("JT1078 missing seqs for {}: {:?}", addr, timed_out);
                         crate::metrics::inc_missing(timed_out.len() as u64);
@@ -645,8 +786,16 @@ impl Jt1078Manager {
                                     .build()
                                     .unwrap_or_else(|_| reqwest::Client::new());
                                 #[derive(serde::Serialize)]
-                                struct MissingReport { addr: String, missing: Vec<u16>, timestamp_ms: u128 }
-                                let report = MissingReport { addr: addr_s, missing, timestamp_ms: chrono::Utc::now().timestamp_millis() as u128 };
+                                struct MissingReport {
+                                    addr: String,
+                                    missing: Vec<u16>,
+                                    timestamp_ms: u128,
+                                }
+                                let report = MissingReport {
+                                    addr: addr_s,
+                                    missing,
+                                    timestamp_ms: chrono::Utc::now().timestamp_millis() as u128,
+                                };
                                 let _ = client.post(&hook_url).json(&report).send().await;
                             });
                         }
@@ -654,7 +803,9 @@ impl Jt1078Manager {
                             let addr_copy = *addr;
                             let missing_copy = timed_out.clone();
                             tokio::spawn(async move {
-                                let _ = Jt1078Manager::send_retransmit_request(addr_copy, missing_copy).await;
+                                let _ =
+                                    Jt1078Manager::send_retransmit_request(addr_copy, missing_copy)
+                                        .await;
                             });
                         }
                     }
@@ -663,7 +814,10 @@ impl Jt1078Manager {
         }
     }
 
-    pub async fn send_retransmit_request(addr: SocketAddr, missing: Vec<u16>) -> anyhow::Result<()> {
+    pub async fn send_retransmit_request(
+        addr: SocketAddr,
+        missing: Vec<u16>,
+    ) -> anyhow::Result<()> {
         let socket = tokio::net::UdpSocket::bind("0.0.0.0:0").await?;
         let msg = serde_json::json!({ "type": "retransmit_request", "missing": missing });
         let data = msg.to_string().into_bytes();
@@ -677,11 +831,18 @@ impl Jt1078Manager {
 
     /// 0x9301 PTZ control
     pub async fn send_ptz_and_wait(
-        &self, phone: &str, channel_id: u8, direction: &str, speed: u8, timeout_secs: u64,
+        &self,
+        phone: &str,
+        channel_id: u8,
+        direction: &str,
+        speed: u8,
+        timeout_secs: u64,
     ) -> Result<u8, String> {
         let (b1, b2, h, v) = command::ptz_direction_bytes(direction, speed);
         let body = command::build_ptz_control(channel_id, b1, b2, h, v, 0);
-        let resp = self.send_command_and_wait(phone, 0x9301, &body, timeout_secs).await?;
+        let resp = self
+            .send_command_and_wait(phone, 0x9301, &body, timeout_secs)
+            .await?;
         Ok(resp.first().copied().unwrap_or(1))
     }
 
@@ -689,10 +850,17 @@ impl Jt1078Manager {
     /// Phase 6.3: when start (close=false), also creates a media session and
     /// waits for ZLM on_stream_changed hook to resolve the session to Active.
     pub async fn send_live_video_and_wait(
-        &self, phone: &str, channel_id: u8, stream_type: u8, close: bool, timeout_secs: u64,
+        &self,
+        phone: &str,
+        channel_id: u8,
+        stream_type: u8,
+        close: bool,
+        timeout_secs: u64,
     ) -> Result<u8, String> {
         let body = command::build_live_video_request(channel_id, stream_type, close);
-        let resp = self.send_command_and_wait(phone, 0x9101, &body, timeout_secs).await?;
+        let resp = self
+            .send_command_and_wait(phone, 0x9101, &body, timeout_secs)
+            .await?;
         let result = resp.first().copied().unwrap_or(1);
         if !close && result == 0 {
             // Create session and wait for ZLM media arrival
@@ -707,59 +875,108 @@ impl Jt1078Manager {
     /// Phase 6.3: wait for ZLM media arrival (called by handler after opening
     /// ZLM RTP server). Returns the activated JtMediaSession.
     pub async fn wait_for_zlm_media(
-        &self, phone: &str, channel_id: u8, timeout_secs: u64,
+        &self,
+        phone: &str,
+        channel_id: u8,
+        timeout_secs: u64,
     ) -> Result<crate::jt1078::jt_media_session::JtMediaSession, String> {
-        self.media_session_manager.wait_for_media(
-            phone, channel_id, std::time::Duration::from_secs(timeout_secs),
-        ).await
+        self.media_session_manager
+            .wait_for_media(
+                phone,
+                channel_id,
+                std::time::Duration::from_secs(timeout_secs),
+            )
+            .await
     }
 
     /// 0x9102 Live video control
     pub async fn send_live_video_control_and_wait(
-        &self, phone: &str, channel_id: u8, control: u8, close: bool, timeout_secs: u64,
+        &self,
+        phone: &str,
+        channel_id: u8,
+        control: u8,
+        close: bool,
+        timeout_secs: u64,
     ) -> Result<u8, String> {
         let body = command::build_live_video_control(channel_id, control, close);
-        let resp = self.send_command_and_wait(phone, 0x9102, &body, timeout_secs).await?;
+        let resp = self
+            .send_command_and_wait(phone, 0x9102, &body, timeout_secs)
+            .await?;
         Ok(resp.first().copied().unwrap_or(1))
     }
 
     /// 0x9201 Playback request
     pub async fn send_playback_and_wait(
-        &self, phone: &str, channel_id: u8, stream_type: u8, storage_type: u8,
-        speed: u8, start_time: &str, end_time: &str, timeout_secs: u64,
+        &self,
+        phone: &str,
+        channel_id: u8,
+        stream_type: u8,
+        storage_type: u8,
+        speed: u8,
+        start_time: &str,
+        end_time: &str,
+        timeout_secs: u64,
     ) -> Result<u8, String> {
         let st = command::encode_time_bcd(start_time);
         let et = command::encode_time_bcd(end_time);
-        let body = command::build_playback_request(channel_id, stream_type, storage_type, 0, speed, &st, &et);
-        let resp = self.send_command_and_wait(phone, 0x9201, &body, timeout_secs).await?;
+        let body = command::build_playback_request(
+            channel_id,
+            stream_type,
+            storage_type,
+            0,
+            speed,
+            &st,
+            &et,
+        );
+        let resp = self
+            .send_command_and_wait(phone, 0x9201, &body, timeout_secs)
+            .await?;
         Ok(resp.first().copied().unwrap_or(1))
     }
 
     /// 0x9202 Playback control
     pub async fn send_playback_control_and_wait(
-        &self, phone: &str, channel_id: u8, control: u8, speed: u8, seek_time: &str, timeout_secs: u64,
+        &self,
+        phone: &str,
+        channel_id: u8,
+        control: u8,
+        speed: u8,
+        seek_time: &str,
+        timeout_secs: u64,
     ) -> Result<u8, String> {
         let st = command::encode_time_bcd(seek_time);
         let body = command::build_playback_control(channel_id, control, speed, &st);
-        let resp = self.send_command_and_wait(phone, 0x9202, &body, timeout_secs).await?;
+        let resp = self
+            .send_command_and_wait(phone, 0x9202, &body, timeout_secs)
+            .await?;
         Ok(resp.first().copied().unwrap_or(1))
     }
 
     /// 0x8103 Set terminal parameters (wiper, fill light, APN, IP, port, etc.)
     pub async fn send_set_params_and_wait(
-        &self, phone: &str, params: &[(u32, &[u8])], timeout_secs: u64,
+        &self,
+        phone: &str,
+        params: &[(u32, &[u8])],
+        timeout_secs: u64,
     ) -> Result<u8, String> {
         let body = command::build_set_params(params);
-        let resp = self.send_command_and_wait(phone, 0x8103, &body, timeout_secs).await?;
+        let resp = self
+            .send_command_and_wait(phone, 0x8103, &body, timeout_secs)
+            .await?;
         Ok(resp.first().copied().unwrap_or(1))
     }
 
     /// 0x8104 Query terminal parameters (waits for 0x0107 response)
     pub async fn send_query_params_and_wait(
-        &self, phone: &str, param_ids: &[u32], timeout_secs: u64,
+        &self,
+        phone: &str,
+        param_ids: &[u32],
+        timeout_secs: u64,
     ) -> Result<Vec<crate::jt1078::response_parser::TerminalParam>, String> {
         let body = command::build_query_params(param_ids);
-        let _ = self.send_command_and_wait(phone, 0x8104, &body, timeout_secs).await?;
+        let _ = self
+            .send_command_and_wait(phone, 0x8104, &body, timeout_secs)
+            .await?;
         // The actual 0x0107 message body is delivered through process_jt_message;
         // for now we return an empty list (full impl in Phase 6.5).
         Ok(Vec::new())
@@ -767,19 +984,28 @@ impl Jt1078Manager {
 
     /// 0x8105 Terminal control (reset, factory reset, etc.)
     pub async fn send_terminal_control_and_wait(
-        &self, phone: &str, cmd: u8, timeout_secs: u64,
+        &self,
+        phone: &str,
+        cmd: u8,
+        timeout_secs: u64,
     ) -> Result<u8, String> {
         let body = command::build_terminal_control(cmd);
-        let resp = self.send_command_and_wait(phone, 0x8105, &body, timeout_secs).await?;
+        let resp = self
+            .send_command_and_wait(phone, 0x8105, &body, timeout_secs)
+            .await?;
         Ok(resp.first().copied().unwrap_or(1))
     }
 
     /// 0x8106 Query terminal attributes
     pub async fn send_query_attributes_and_wait(
-        &self, phone: &str, timeout_secs: u64,
+        &self,
+        phone: &str,
+        timeout_secs: u64,
     ) -> Result<u8, String> {
         let body = command::build_query_attributes();
-        let resp = self.send_command_and_wait(phone, 0x8106, &body, timeout_secs).await?;
+        let resp = self
+            .send_command_and_wait(phone, 0x8106, &body, timeout_secs)
+            .await?;
         Ok(resp.first().copied().unwrap_or(1))
     }
 
@@ -790,66 +1016,106 @@ impl Jt1078Manager {
     /// 直接返回 `Err("not yet wired")`，于是 `/api/jt1078/position-info` 的
     /// 实时查询分支永远失败。
     pub async fn send_query_location_and_wait(
-        &self, phone: &str, timeout_secs: u64,
+        &self,
+        phone: &str,
+        timeout_secs: u64,
     ) -> Result<crate::jt1078::response_parser::LocationReport, String> {
         let body = command::build_query_location();
-        let resp = self.send_command_and_wait(phone, 0x8201, &body, timeout_secs).await?;
+        let resp = self
+            .send_command_and_wait(phone, 0x8201, &body, timeout_secs)
+            .await?;
         crate::jt1078::response_parser::parse_location_report(&resp)
     }
 
     /// 0x8300 Text message dispatch
     pub async fn send_text_message_and_wait(
-        &self, phone: &str, text: &str, emergency: bool, timeout_secs: u64,
+        &self,
+        phone: &str,
+        text: &str,
+        emergency: bool,
+        timeout_secs: u64,
     ) -> Result<u8, String> {
         let body = command::build_text_message(text, emergency);
-        let resp = self.send_command_and_wait(phone, 0x8300, &body, timeout_secs).await?;
+        let resp = self
+            .send_command_and_wait(phone, 0x8300, &body, timeout_secs)
+            .await?;
         Ok(resp.first().copied().unwrap_or(1))
     }
 
     /// 0x8400 Phone callback
     pub async fn send_phone_callback_and_wait(
-        &self, phone: &str, sign: u8, dest_phone: &str, timeout_secs: u64,
+        &self,
+        phone: &str,
+        sign: u8,
+        dest_phone: &str,
+        timeout_secs: u64,
     ) -> Result<u8, String> {
         let body = command::build_phone_callback(sign, dest_phone);
-        let resp = self.send_command_and_wait(phone, 0x8400, &body, timeout_secs).await?;
+        let resp = self
+            .send_command_and_wait(phone, 0x8400, &body, timeout_secs)
+            .await?;
         Ok(resp.first().copied().unwrap_or(1))
     }
 
     /// 0x8401 Set phone book
     pub async fn send_set_phone_book_and_wait(
-        &self, phone: &str, contacts: &[(String, String)], timeout_secs: u64,
+        &self,
+        phone: &str,
+        contacts: &[(String, String)],
+        timeout_secs: u64,
     ) -> Result<u8, String> {
         let body = command::build_set_phone_book(contacts);
-        let resp = self.send_command_and_wait(phone, 0x8401, &body, timeout_secs).await?;
+        let resp = self
+            .send_command_and_wait(phone, 0x8401, &body, timeout_secs)
+            .await?;
         Ok(resp.first().copied().unwrap_or(1))
     }
 
     /// 0x8500 Vehicle control (door open/close)
     pub async fn send_vehicle_control_and_wait(
-        &self, phone: &str, control_type: u8, value: bool, timeout_secs: u64,
+        &self,
+        phone: &str,
+        control_type: u8,
+        value: bool,
+        timeout_secs: u64,
     ) -> Result<u8, String> {
         let body = command::build_vehicle_control(control_type, value);
-        let resp = self.send_command_and_wait(phone, 0x8500, &body, timeout_secs).await?;
+        let resp = self
+            .send_command_and_wait(phone, 0x8500, &body, timeout_secs)
+            .await?;
         Ok(resp.first().copied().unwrap_or(1))
     }
 
     /// 0x8801 Take photo
     pub async fn send_take_photo_and_wait(
-        &self, phone: &str, channel_id: u8, timeout_secs: u64,
+        &self,
+        phone: &str,
+        channel_id: u8,
+        timeout_secs: u64,
     ) -> Result<u8, String> {
-        let body = command::build_take_photo(channel_id, 0x0001, 5, 0, 0x02, 0x05, 0x80, 0x80, 0x80, 0x80);
-        let resp = self.send_command_and_wait(phone, 0x8801, &body, timeout_secs).await?;
+        let body =
+            command::build_take_photo(channel_id, 0x0001, 5, 0, 0x02, 0x05, 0x80, 0x80, 0x80, 0x80);
+        let resp = self
+            .send_command_and_wait(phone, 0x8801, &body, timeout_secs)
+            .await?;
         Ok(resp.first().copied().unwrap_or(1))
     }
 
     /// 0x8802 Media search
     pub async fn send_media_search_and_wait(
-        &self, phone: &str, channel_id: u8, start_time: &str, end_time: &str, timeout_secs: u64,
+        &self,
+        phone: &str,
+        channel_id: u8,
+        start_time: &str,
+        end_time: &str,
+        timeout_secs: u64,
     ) -> Result<u8, String> {
         let st = command::encode_time_bcd(start_time);
         let et = command::encode_time_bcd(end_time);
         let body = command::build_media_search(0, channel_id, 0, &st, &et);
-        let resp = self.send_command_and_wait(phone, 0x8802, &body, timeout_secs).await?;
+        let resp = self
+            .send_command_and_wait(phone, 0x8802, &body, timeout_secs)
+            .await?;
         Ok(resp.first().copied().unwrap_or(1))
     }
 
@@ -865,7 +1131,9 @@ impl Jt1078Manager {
         timeout_secs: u64,
     ) -> Result<u8, String> {
         let body = command::build_record_control(channel_id, start, duration_secs, true);
-        let resp = self.send_command_and_wait(phone, 0x8801, &body, timeout_secs).await?;
+        let resp = self
+            .send_command_and_wait(phone, 0x8801, &body, timeout_secs)
+            .await?;
         Ok(resp.first().copied().unwrap_or(1))
     }
 
@@ -878,7 +1146,9 @@ impl Jt1078Manager {
         timeout_secs: u64,
     ) -> Result<u8, String> {
         let body = command::build_temp_position_tracking(interval_secs, validity_secs);
-        let resp = self.send_command_and_wait(phone, 0x8202, &body, timeout_secs).await?;
+        let resp = self
+            .send_command_and_wait(phone, 0x8202, &body, timeout_secs)
+            .await?;
         Ok(resp.first().copied().unwrap_or(1))
     }
 
@@ -891,7 +1161,9 @@ impl Jt1078Manager {
         timeout_secs: u64,
     ) -> Result<u8, String> {
         let body = command::build_confirm_alarm(alarm_seq, alarm_type);
-        let resp = self.send_command_and_wait(phone, 0x8203, &body, timeout_secs).await?;
+        let resp = self
+            .send_command_and_wait(phone, 0x8203, &body, timeout_secs)
+            .await?;
         Ok(resp.first().copied().unwrap_or(1))
     }
 
@@ -911,27 +1183,25 @@ impl Jt1078Manager {
             .ok_or_else(|| format!("无法解析结束时间: {}", end_time))?;
         // 资源类型 0=音视频；报警标志 0=不筛选；资源掩码全 1=全部资源；
         // 存储器 0=主存储器；上传方式 1=手动上传；最大文件大小 0=不限制
-        let body = command::build_file_upload_request(
-            0,
-            channel_id,
-            &st,
-            &et,
-            0,
-            0xFFFF_FFFF,
-            0,
-            1,
-            0,
-        );
-        let resp = self.send_command_and_wait(phone, 0x9205, &body, timeout_secs).await?;
+        let body =
+            command::build_file_upload_request(0, channel_id, &st, &et, 0, 0xFFFF_FFFF, 0, 1, 0);
+        let resp = self
+            .send_command_and_wait(phone, 0x9205, &body, timeout_secs)
+            .await?;
         Ok(resp.first().copied().unwrap_or(1))
     }
 
     /// 0x8803 Media upload
     pub async fn send_media_upload_and_wait(
-        &self, phone: &str, media_id: u32, timeout_secs: u64,
+        &self,
+        phone: &str,
+        media_id: u32,
+        timeout_secs: u64,
     ) -> Result<u8, String> {
         let body = command::build_media_upload(media_id, 0);
-        let resp = self.send_command_and_wait(phone, 0x8803, &body, timeout_secs).await?;
+        let resp = self
+            .send_command_and_wait(phone, 0x8803, &body, timeout_secs)
+            .await?;
         Ok(resp.first().copied().unwrap_or(1))
     }
 }
@@ -947,8 +1217,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_feed_and_count_and_cleanup() {
-
-        let manager = Jt1078Manager::new(Duration::from_millis(100), Duration::from_millis(200), None, false);
+        let manager = Jt1078Manager::new(
+            Duration::from_millis(100),
+            Duration::from_millis(200),
+            None,
+            false,
+        );
         let addr1 = make_addr(60001);
         let payload = b"abc";
         let len = (payload.len() as u32).to_be_bytes();
@@ -968,7 +1242,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_terminal_registry() {
-        let manager = Jt1078Manager::new(Duration::from_secs(60), Duration::from_millis(200), None, false);
+        let manager = Jt1078Manager::new(
+            Duration::from_secs(60),
+            Duration::from_millis(200),
+            None,
+            false,
+        );
         let addr = make_addr(60002);
         // Feed bytes to create a session first, then register terminal
         let payload = b"test";
@@ -989,7 +1268,10 @@ mod tests {
     #[tokio::test]
     async fn test_send_raw_prefers_tcp_channel() {
         let manager = Jt1078Manager::new(
-            Duration::from_secs(60), Duration::from_millis(200), None, false,
+            Duration::from_secs(60),
+            Duration::from_millis(200),
+            None,
+            false,
         );
         let addr = make_addr(61000);
         manager.register_terminal("13912345678", addr).await;
@@ -1013,30 +1295,30 @@ mod tests {
     #[tokio::test]
     async fn test_send_raw_udp_uses_listen_socket() {
         let manager = Jt1078Manager::new(
-            Duration::from_secs(60), Duration::from_millis(200), None, false,
+            Duration::from_secs(60),
+            Duration::from_millis(200),
+            None,
+            false,
         );
         // 终端侧 UDP socket（模拟终端监听端口）
-        let terminal = std::sync::Arc::new(
-            tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap(),
-        );
+        let terminal =
+            std::sync::Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap());
         let terminal_addr = terminal.local_addr().unwrap();
         // 平台侧"监听 socket"（下行必须用它，来源端口才是服务端口）
-        let server = std::sync::Arc::new(
-            tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap(),
-        );
+        let server = std::sync::Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap());
         let server_addr = server.local_addr().unwrap();
         manager.set_send_socket(server.clone());
-        manager.register_terminal("13900000001", terminal_addr).await;
+        manager
+            .register_terminal("13900000001", terminal_addr)
+            .await;
 
         manager.send_raw("13900000001", b"HELLO-UDP").await.unwrap();
         let mut buf = [0u8; 32];
-        let (n, from) = tokio::time::timeout(
-            Duration::from_millis(500),
-            terminal.recv_from(&mut buf),
-        )
-        .await
-        .expect("应收到下行数据")
-        .unwrap();
+        let (n, from) =
+            tokio::time::timeout(Duration::from_millis(500), terminal.recv_from(&mut buf))
+                .await
+                .expect("应收到下行数据")
+                .unwrap();
         assert_eq!(&buf[..n], b"HELLO-UDP");
         assert_eq!(from, server_addr, "来源必须是平台的监听端口");
     }
@@ -1045,7 +1327,10 @@ mod tests {
     #[tokio::test]
     async fn test_send_raw_reports_unknown_terminal() {
         let manager = Jt1078Manager::new(
-            Duration::from_secs(60), Duration::from_millis(200), None, false,
+            Duration::from_secs(60),
+            Duration::from_millis(200),
+            None,
+            false,
         );
         let err = manager.send_raw("13900000000", b"x").await.unwrap_err();
         assert!(err.contains("未连接"), "{}", err);
@@ -1056,23 +1341,29 @@ mod tests {
     async fn test_media_search_result_store_and_take() {
         use crate::jt1078::response_parser::MediaSearchItem;
         let manager = Jt1078Manager::new(
-            Duration::from_secs(60), Duration::from_millis(200), None, false,
+            Duration::from_secs(60),
+            Duration::from_millis(200),
+            None,
+            false,
         );
         assert!(manager
             .take_media_search_result("13912345678", Duration::from_secs(30))
             .await
             .is_none());
         manager
-            .store_media_search_result("13912345678", vec![MediaSearchItem {
-                media_id: 1,
-                media_type: 2,
-                channel_id: 1,
-                event_code: 0,
-                start_time: chrono::Local::now(),
-                end_time: chrono::Local::now(),
-                longitude: None,
-                latitude: None,
-            }])
+            .store_media_search_result(
+                "13912345678",
+                vec![MediaSearchItem {
+                    media_id: 1,
+                    media_type: 2,
+                    channel_id: 1,
+                    event_code: 0,
+                    start_time: chrono::Local::now(),
+                    end_time: chrono::Local::now(),
+                    longitude: None,
+                    latitude: None,
+                }],
+            )
             .await;
         let taken = manager
             .take_media_search_result("13912345678", Duration::from_secs(30))

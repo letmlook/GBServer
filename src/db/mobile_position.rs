@@ -143,7 +143,7 @@ pub async fn list_paged(
                AND ($3::text IS NULL OR time >= $3) \
                AND ($4::text IS NULL OR time <= $4) \
              ORDER BY time DESC \
-             LIMIT $5 OFFSET $6"
+             LIMIT $5 OFFSET $6",
         )
         .bind(device_id)
         .bind(channel_id)
@@ -166,7 +166,7 @@ pub async fn list_paged(
                AND (? IS NULL OR time >= ?) \
                AND (? IS NULL OR time <= ?) \
              ORDER BY time DESC \
-             LIMIT ? OFFSET ?"
+             LIMIT ? OFFSET ?",
         )
         .bind(device_id)
         .bind(channel_id)
@@ -192,7 +192,7 @@ pub async fn list_paged(
                AND (?3 IS NULL OR time >= ?3) \
                AND (?4 IS NULL OR time <= ?4) \
              ORDER BY time DESC \
-             LIMIT ?5 OFFSET ?6"
+             LIMIT ?5 OFFSET ?6",
         )
         .bind(device_id)
         .bind(channel_id)
@@ -220,7 +220,7 @@ pub async fn count(
              WHERE device_id = $1 \
                AND ($2::text IS NULL OR channel_id = $2) \
                AND ($3::text IS NULL OR time >= $3) \
-               AND ($4::text IS NULL OR time <= $4)"
+               AND ($4::text IS NULL OR time <= $4)",
         )
         .bind(device_id)
         .bind(channel_id)
@@ -239,7 +239,7 @@ pub async fn count(
              WHERE device_id = ? \
                AND (? IS NULL OR channel_id = ?) \
                AND (? IS NULL OR time >= ?) \
-               AND (? IS NULL OR time <= ?)"
+               AND (? IS NULL OR time <= ?)",
         )
         .bind(device_id)
         .bind(channel_id)
@@ -261,7 +261,7 @@ pub async fn count(
              WHERE device_id = ?1 \
                AND (?2 IS NULL OR channel_id = ?2) \
                AND (?3 IS NULL OR time >= ?3) \
-               AND (?4 IS NULL OR time <= ?4)"
+               AND (?4 IS NULL OR time <= ?4)",
         )
         .bind(device_id)
         .bind(channel_id)
@@ -305,7 +305,11 @@ pub async fn delete_before_time(pool: &Pool, before_time: &str) -> sqlx::Result<
 }
 
 /// 获取设备最新位置
-pub async fn get_latest_position(pool: &Pool, device_id: &str, channel_id: Option<&str>) -> sqlx::Result<Option<MobilePosition>> {
+pub async fn get_latest_position(
+    pool: &Pool,
+    device_id: &str,
+    channel_id: Option<&str>,
+) -> sqlx::Result<Option<MobilePosition>> {
     #[cfg(feature = "postgres")]
     {
         let query = sqlx::query_as::<_, MobilePosition>(
@@ -313,7 +317,7 @@ pub async fn get_latest_position(pool: &Pool, device_id: &str, channel_id: Optio
              altitude, speed, direction, report_source, create_time \
              FROM gb_device_mobile_position \
              WHERE device_id = $1 AND ($2::text IS NULL OR channel_id = $2) \
-             ORDER BY time DESC LIMIT 1"
+             ORDER BY time DESC LIMIT 1",
         )
         .bind(device_id)
         .bind(channel_id);
@@ -327,7 +331,7 @@ pub async fn get_latest_position(pool: &Pool, device_id: &str, channel_id: Optio
              altitude, speed, direction, report_source, create_time \
              FROM gb_device_mobile_position \
              WHERE device_id = ? AND (? IS NULL OR channel_id = ?) \
-             ORDER BY time DESC LIMIT 1"
+             ORDER BY time DESC LIMIT 1",
         )
         .bind(device_id)
         .bind(channel_id)
@@ -342,7 +346,7 @@ pub async fn get_latest_position(pool: &Pool, device_id: &str, channel_id: Optio
              altitude, speed, direction, report_source, create_time \
              FROM gb_device_mobile_position \
              WHERE device_id = ?1 AND (?2 IS NULL OR channel_id = ?2) \
-             ORDER BY time DESC LIMIT 1"
+             ORDER BY time DESC LIMIT 1",
         )
         .bind(device_id)
         .bind(channel_id);

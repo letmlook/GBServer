@@ -89,7 +89,12 @@ mod tests {
             iat: now,
             role: Some("admin".into()),
         };
-        encode(&Header::default(), &claims, &EncodingKey::from_secret(secret.as_bytes())).unwrap()
+        encode(
+            &Header::default(),
+            &claims,
+            &EncodingKey::from_secret(secret.as_bytes()),
+        )
+        .unwrap()
     }
 
     /// 回归守卫：**真实登录签发的 token** 必须能通过 WS 校验。
@@ -100,8 +105,8 @@ mod tests {
         let login_token = crate::auth::JwtKeys::new(secret.as_bytes())
             .create_token("alice", 30)
             .expect("签发登录 token");
-        let claims = verify_ws_jwt(&login_token, secret)
-            .expect("登录 token 必须能用于 WebSocket 鉴权");
+        let claims =
+            verify_ws_jwt(&login_token, secret).expect("登录 token 必须能用于 WebSocket 鉴权");
         assert_eq!(claims.sub, "login", "登录 token 的 sub 固定为 login");
         assert_eq!(
             claims.username(),
@@ -115,9 +120,18 @@ mod tests {
     fn test_verify_ws_jwt_rejects_token_without_audience() {
         let secret = "test-secret-test-secret-test-secret-1234";
         let exp = chrono::Utc::now().timestamp() + 60;
-        let claims = WsClaims { sub: "alice".into(), exp, role: None, user_name: None };
-        let token =
-            encode(&Header::default(), &claims, &EncodingKey::from_secret(secret.as_bytes())).unwrap();
+        let claims = WsClaims {
+            sub: "alice".into(),
+            exp,
+            role: None,
+            user_name: None,
+        };
+        let token = encode(
+            &Header::default(),
+            &claims,
+            &EncodingKey::from_secret(secret.as_bytes()),
+        )
+        .unwrap();
         assert!(verify_ws_jwt(&token, secret).is_err());
     }
 
@@ -133,7 +147,7 @@ mod tests {
     #[test]
     fn test_verify_ws_jwt_expired() {
         let secret = "test-secret-test-secret-test-secret-1234";
-        let token = make_token(secret, -120);  // expired 2 min ago
+        let token = make_token(secret, -120); // expired 2 min ago
         let result = verify_ws_jwt(&token, secret);
         assert!(result.is_err());
     }

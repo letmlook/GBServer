@@ -52,17 +52,12 @@ pub async fn liveness() -> (StatusCode, Json<serde_json::Value>) {
         (status = 503, description = "依赖异常"),
     ),
 )]
-pub async fn readiness(
-    State(state): State<AppState>,
-) -> (StatusCode, Json<serde_json::Value>) {
+pub async fn readiness(State(state): State<AppState>) -> (StatusCode, Json<serde_json::Value>) {
     // Use `execute` to issue a round-trip query without depending on column
     // type decoding (PG `SELECT 1` returns INTEGER → i32, SQLite returns INTEGER
     // → i64; decoding would fail across the boundary). `execute` only checks
     // the result rows-affected — sufficient for a liveness probe.
-    let db_ok = sqlx::query("SELECT 1")
-        .execute(&state.pool)
-        .await
-        .is_ok();
+    let db_ok = sqlx::query("SELECT 1").execute(&state.pool).await.is_ok();
 
     let cluster_ok = if state.config.cluster.single_node_mode {
         true
@@ -94,7 +89,11 @@ pub async fn readiness(
         "clusterNodes": state.cluster_registry.list_active().await.len(),
         "timestamp": chrono::Utc::now().to_rfc3339(),
     });
-    let code = if all_ok { StatusCode::OK } else { StatusCode::SERVICE_UNAVAILABLE };
+    let code = if all_ok {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
     (code, Json(body))
 }
 

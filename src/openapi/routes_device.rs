@@ -12,24 +12,48 @@ use super::{DocumentedRoutes, RoutesAccumulator};
 
 pub fn routes() -> DocumentedRoutes {
     let mut acc = RoutesAccumulator::default();
-    acc.add(routes!(crate::handlers::device::device_keepalive_statistics));
+    acc.add(routes!(
+        crate::handlers::device::device_keepalive_statistics
+    ));
     acc.add(routes!(crate::handlers::device::device_register_statistics));
     acc.add(routes!(crate::handlers::device::query_channels));
     acc.add(routes!(crate::handlers::device::query_device_latency));
     acc.add(routes!(crate::handlers::device::query_devices));
     acc.add(routes!(crate::handlers::device_batch::batch_control));
-    acc.add(routes!(crate::handlers::device_control::config_query_basic_param));
-    acc.add(routes!(crate::handlers::device_control::config_query_svac_decode));
-    acc.add(routes!(crate::handlers::device_control::config_query_svac_encode));
-    acc.add(routes!(crate::handlers::device_control::config_query_video_param));
-    acc.add(routes!(crate::handlers::device_control::config_set_basic_param));
-    acc.add(routes!(crate::handlers::device_control::config_set_video_param));
-    acc.add(routes!(crate::handlers::device_control::device_config_query));
-    acc.add(routes!(crate::handlers::device_control::device_config_update));
-    acc.add(routes!(crate::handlers::device_control::device_drag_zoom_in));
-    acc.add(routes!(crate::handlers::device_control::device_drag_zoom_out));
+    acc.add(routes!(
+        crate::handlers::device_control::config_query_basic_param
+    ));
+    acc.add(routes!(
+        crate::handlers::device_control::config_query_svac_decode
+    ));
+    acc.add(routes!(
+        crate::handlers::device_control::config_query_svac_encode
+    ));
+    acc.add(routes!(
+        crate::handlers::device_control::config_query_video_param
+    ));
+    acc.add(routes!(
+        crate::handlers::device_control::config_set_basic_param
+    ));
+    acc.add(routes!(
+        crate::handlers::device_control::config_set_video_param
+    ));
+    acc.add(routes!(
+        crate::handlers::device_control::device_config_query
+    ));
+    acc.add(routes!(
+        crate::handlers::device_control::device_config_update
+    ));
+    acc.add(routes!(
+        crate::handlers::device_control::device_drag_zoom_in
+    ));
+    acc.add(routes!(
+        crate::handlers::device_control::device_drag_zoom_out
+    ));
     acc.add(routes!(crate::handlers::device_control::device_guard));
-    acc.add(routes!(crate::handlers::device_control::device_home_position));
+    acc.add(routes!(
+        crate::handlers::device_control::device_home_position
+    ));
     acc.add(routes!(crate::handlers::device_control::device_iframe));
     acc.add(routes!(crate::handlers::device_control::device_preset));
     acc.add(routes!(crate::handlers::device_control::device_ptz));
@@ -54,7 +78,9 @@ pub fn routes() -> DocumentedRoutes {
     acc.add(routes!(crate::handlers::device_query::sync_status_path));
     acc.add(routes!(crate::handlers::device_stub::channel_audio));
     acc.add(routes!(crate::handlers::device_stub::channel_one));
-    acc.add(routes!(crate::handlers::device_stub::channel_stream_identification_update));
+    acc.add(routes!(
+        crate::handlers::device_stub::channel_stream_identification_update
+    ));
     acc.add(routes!(crate::handlers::device_stub::config_basic_param));
     acc.add(routes!(crate::handlers::device_stub::control_record));
     acc.add(routes!(crate::handlers::device_stub::device_add));
@@ -67,7 +93,9 @@ pub fn routes() -> DocumentedRoutes {
     acc.add(routes!(crate::handlers::device_stub::query_streams));
     acc.add(routes!(crate::handlers::device_stub::sub_channels));
     acc.add(routes!(crate::handlers::device_stub::subscribe_alarm));
-    acc.add(routes!(crate::handlers::device_stub::subscribe_mobile_position));
+    acc.add(routes!(
+        crate::handlers::device_stub::subscribe_mobile_position
+    ));
     acc.add(routes!(crate::handlers::device_stub::sync_status));
     acc.add(routes!(crate::handlers::device_stub::tree_channel));
 

@@ -41,8 +41,10 @@ pub async fn ensure_table(pool: &Pool) -> sqlx::Result<()> {
              altitude REAL,\
              speed REAL,\
              direction REAL\
-             )"
-        ).execute(pool).await?;
+             )",
+        )
+        .execute(pool)
+        .await?;
     }
     Ok(())
 }

@@ -61,7 +61,9 @@ impl StreamReconnectManager {
     }
 
     pub fn is_gb28181_stream(stream_id: &str) -> bool {
-        stream_id.contains('_') && !stream_id.starts_with("proxy_") && !stream_id.starts_with("push_")
+        stream_id.contains('_')
+            && !stream_id.starts_with("proxy_")
+            && !stream_id.starts_with("push_")
     }
 
     /// 从 ZLM 的 stream_id 解析出 `(device_id, channel_id)`。
@@ -141,7 +143,9 @@ impl StreamReconnectManager {
                     tokio::spawn({
                         let ws = ws.clone();
                         let msg = msg.clone();
-                        async move { ws.broadcast("streamReconnect", msg).await; }
+                        async move {
+                            ws.broadcast("streamReconnect", msg).await;
+                        }
                     });
                 }
             }
@@ -153,8 +157,11 @@ impl StreamReconnectManager {
 
     pub fn mark_success(&self, stream_id: &str) {
         if let Some((_, entry)) = self.entries.remove(stream_id) {
-            tracing::info!("Stream reconnected successfully: {} (after {} retries)",
-                stream_id, entry.retry_count);
+            tracing::info!(
+                "Stream reconnected successfully: {} (after {} retries)",
+                stream_id,
+                entry.retry_count
+            );
             if let Ok(ws_guard) = self.ws_state.try_read() {
                 if let Some(ref ws) = *ws_guard {
                     let msg = serde_json::json!({
@@ -166,7 +173,9 @@ impl StreamReconnectManager {
                     tokio::spawn({
                         let ws = ws.clone();
                         let msg = msg.clone();
-                        async move { ws.broadcast("streamReconnect", msg).await; }
+                        async move {
+                            ws.broadcast("streamReconnect", msg).await;
+                        }
                     });
                 }
             }
@@ -194,9 +203,8 @@ impl StreamReconnectManager {
             return;
         }
 
-        let mut interval = tokio::time::interval(
-            std::time::Duration::from_secs(self.retry_interval_secs)
-        );
+        let mut interval =
+            tokio::time::interval(std::time::Duration::from_secs(self.retry_interval_secs));
 
         loop {
             interval.tick().await;
@@ -205,8 +213,12 @@ impl StreamReconnectManager {
             let sip_server_opt = self.get_sip_server().await;
             for entry in entries {
                 if let Some(ref sip_server) = sip_server_opt {
-                    tracing::info!("Attempting stream reconnect: {} (retry {}/{})", 
-                        entry.stream_id, entry.retry_count + 1, entry.max_retries);
+                    tracing::info!(
+                        "Attempting stream reconnect: {} (retry {}/{})",
+                        entry.stream_id,
+                        entry.retry_count + 1,
+                        entry.max_retries
+                    );
 
                     let sip = &*sip_server;
                     // 必须走 `start_live_stream`：它会先 `openRtpServer` 拿到
@@ -217,7 +229,6 @@ impl StreamReconnectManager {
                         .start_live_stream(&entry.device_id, &entry.channel_id, 15)
                         .await;
 
-
                     match result {
                         Ok(_) => {
                             tracing::info!("Stream reconnect succeeded: {}", entry.stream_id);
@@ -227,7 +238,10 @@ impl StreamReconnectManager {
                             tracing::warn!("Stream reconnect failed: {} - {}", entry.stream_id, e);
                             if let Some(state) = self.increment_retry(&entry.stream_id) {
                                 if state == ReconnectState::Failed {
-                                    tracing::error!("Stream reconnect giving up: {}", entry.stream_id);
+                                    tracing::error!(
+                                        "Stream reconnect giving up: {}",
+                                        entry.stream_id
+                                    );
                                 }
                             }
                         }
@@ -244,7 +258,9 @@ mod tests {
 
     #[test]
     fn test_is_gb28181_stream() {
-        assert!(StreamReconnectManager::is_gb28181_stream("34020000001320000001_34020000001320000001"));
+        assert!(StreamReconnectManager::is_gb28181_stream(
+            "34020000001320000001_34020000001320000001"
+        ));
         assert!(!StreamReconnectManager::is_gb28181_stream("proxy_stream"));
         assert!(!StreamReconnectManager::is_gb28181_stream("push_stream"));
     }
@@ -263,7 +279,11 @@ mod tests {
     #[test]
     fn test_parse_stream_id_accepts_all_known_forms() {
         for (input, dev, ch) in [
-            ("34020000001320000001_34020000001320000002", "34020000001320000001", "34020000001320000002"),
+            (
+                "34020000001320000001_34020000001320000002",
+                "34020000001320000001",
+                "34020000001320000002",
+            ),
             ("34020000001320000001$101", "34020000001320000001", "101"),
             ("34020000001320000001/101", "34020000001320000001", "101"),
         ] {

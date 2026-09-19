@@ -12,11 +12,11 @@
 //! - cloud_record_sync(record_id)
 //! - ws_broadcast(event, payload)
 
+use futures_util::StreamExt;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{broadcast, RwLock};
-use serde::{Deserialize, Serialize};
-use futures_util::StreamExt;
 
 #[derive(Debug, Clone)]
 pub enum RpcTarget {
@@ -79,21 +79,32 @@ pub struct LocalRpc {
 impl LocalRpc {
     pub fn new(node_id: &str) -> Self {
         let (tx, _) = broadcast::channel(1024);
-        Self { node_id: node_id.to_string(), tx }
+        Self {
+            node_id: node_id.to_string(),
+            tx,
+        }
     }
 }
 
 impl RpcTransport for LocalRpc {
     fn broadcast(&self, request: &RpcRequest) -> Result<(), String> {
-        self.tx.send(request.clone()).map(|_| ()).map_err(|e| e.to_string())
+        self.tx
+            .send(request.clone())
+            .map(|_| ())
+            .map_err(|e| e.to_string())
     }
     fn send_to(&self, _node_id: &str, request: &RpcRequest) -> Result<(), String> {
-        self.tx.send(request.clone()).map(|_| ()).map_err(|e| e.to_string())
+        self.tx
+            .send(request.clone())
+            .map(|_| ())
+            .map_err(|e| e.to_string())
     }
     fn receive(&self) -> broadcast::Receiver<RpcRequest> {
         self.tx.subscribe()
     }
-    fn node_id(&self) -> &str { &self.node_id }
+    fn node_id(&self) -> &str {
+        &self.node_id
+    }
 }
 
 /// RPC 路由器 — 将请求分发到本地处理器，并可通过注册的出站传输
@@ -111,7 +122,10 @@ pub trait RpcHandler: Send + Sync {
 
 impl RpcRouter {
     pub fn new() -> Self {
-        Self { handlers: RwLock::new(HashMap::new()), outbound: RwLock::new(Vec::new()) }
+        Self {
+            handlers: RwLock::new(HashMap::new()),
+            outbound: RwLock::new(Vec::new()),
+        }
     }
 
     pub async fn register<H: RpcHandler + 'static>(&self, handler: H) {
@@ -136,7 +150,11 @@ impl RpcRouter {
     }
 
     /// 定向发送到指定节点（逐个出站传输尝试，首个成功即返回）
-    pub async fn send_to_outbound(&self, node_id: &str, request: &RpcRequest) -> Result<(), String> {
+    pub async fn send_to_outbound(
+        &self,
+        node_id: &str,
+        request: &RpcRequest,
+    ) -> Result<(), String> {
         let out = self.outbound.read().await;
         let mut last_err = format!("no outbound transport registered (target={})", node_id);
         for t in out.iter() {
@@ -153,7 +171,11 @@ impl RpcRouter {
         if let Some(handler) = handlers.get(&request.method) {
             handler.handle(request.payload.clone())
         } else {
-            RpcResponse { ok: false, result: None, error: Some(format!("Unknown method: {}", request.method)) }
+            RpcResponse {
+                ok: false,
+                result: None,
+                error: Some(format!("Unknown method: {}", request.method)),
+            }
         }
     }
 
@@ -193,7 +215,9 @@ impl Clone for RpcRouter {
 }
 
 impl Default for RpcRouter {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 // 跨节点业务 RPC handler 注册说明：
@@ -243,7 +267,11 @@ impl HttpRpc {
             .no_proxy()
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
-        Self { node_id: node_id.to_string(), config, http }
+        Self {
+            node_id: node_id.to_string(),
+            config,
+            http,
+        }
     }
 
     /// 出站请求统一附带共享密钥（未配置则不带头）
@@ -254,7 +282,11 @@ impl HttpRpc {
         }
     }
 
-    pub async fn send_request(&self, endpoint: &str, request: &RpcRequest) -> Result<RpcResponse, String> {
+    pub async fn send_request(
+        &self,
+        endpoint: &str,
+        request: &RpcRequest,
+    ) -> Result<RpcResponse, String> {
         let url = format!("{}/api/rpc", endpoint.trim_end_matches('/'));
         let resp = self
             .authed(self.http.post(&url))
@@ -265,11 +297,15 @@ impl HttpRpc {
         if !resp.status().is_success() {
             return Err(format!("HTTP {} from {}", resp.status(), url));
         }
-        resp.json::<RpcResponse>().await
+        resp.json::<RpcResponse>()
+            .await
             .map_err(|e| format!("decode RpcResponse failed: {}", e))
     }
 
-    pub async fn broadcast(&self, request: &RpcRequest) -> Vec<(String, Result<RpcResponse, String>)> {
+    pub async fn broadcast(
+        &self,
+        request: &RpcRequest,
+    ) -> Vec<(String, Result<RpcResponse, String>)> {
         let mut results = Vec::new();
         for ep in &self.config.peer_endpoints {
             let r = self.send_request(ep, request).await;
@@ -278,9 +314,16 @@ impl HttpRpc {
         results
     }
 
-    pub async fn send_to(&self, node_id: &str, request: &RpcRequest) -> Result<RpcResponse, String> {
+    pub async fn send_to(
+        &self,
+        node_id: &str,
+        request: &RpcRequest,
+    ) -> Result<RpcResponse, String> {
         // 简单按 node_id 匹配 endpoint（生产可用 service discovery）
-        let endpoint = self.config.peer_endpoints.iter()
+        let endpoint = self
+            .config
+            .peer_endpoints
+            .iter()
             .find(|e| e.contains(node_id))
             .ok_or_else(|| format!("No endpoint for node_id={}", node_id))?;
         self.send_request(endpoint, request).await
@@ -323,7 +366,10 @@ impl RpcTransport for HttpRpc {
         if req.from_node.is_none() {
             req.from_node = Some(self.node_id.clone());
         }
-        let endpoint = self.config.peer_endpoints.iter()
+        let endpoint = self
+            .config
+            .peer_endpoints
+            .iter()
             .find(|e| e.contains(node_id))
             .ok_or_else(|| format!("HttpRpc: No endpoint for node_id={}", node_id))?
             .clone();
@@ -347,7 +393,9 @@ impl RpcTransport for HttpRpc {
         broadcast::channel(1).1
     }
 
-    fn node_id(&self) -> &str { &self.node_id }
+    fn node_id(&self) -> &str {
+        &self.node_id
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -373,7 +421,11 @@ pub struct RedisRpcTransport {
 }
 
 impl RedisRpcTransport {
-    pub fn new(node_id: String, redis: Arc<tokio::sync::Mutex<redis::aio::ConnectionManager>>, client: redis::Client) -> Self {
+    pub fn new(
+        node_id: String,
+        redis: Arc<tokio::sync::Mutex<redis::aio::ConnectionManager>>,
+        client: redis::Client,
+    ) -> Self {
         let (local_tx, _) = tokio::sync::broadcast::channel(1024);
         Self {
             node_id,
@@ -462,7 +514,8 @@ impl RpcTransport for RedisRpcTransport {
             use redis::AsyncCommands;
             let conn = redis.lock().await.clone();
             let mut conn = conn;
-            let res: Result<String, _> = conn.xadd(&stream_key, "*", &[("payload", &payload)]).await;
+            let res: Result<String, _> =
+                conn.xadd(&stream_key, "*", &[("payload", &payload)]).await;
             if let Err(e) = res {
                 tracing::warn!("RedisRpcTransport: xadd failed: {}", e);
             }
@@ -472,7 +525,9 @@ impl RpcTransport for RedisRpcTransport {
     fn receive(&self) -> broadcast::Receiver<RpcRequest> {
         self.local_tx.subscribe()
     }
-    fn node_id(&self) -> &str { &self.node_id }
+    fn node_id(&self) -> &str {
+        &self.node_id
+    }
 }
 
 #[cfg(test)]
@@ -483,9 +538,15 @@ mod tests {
     async fn test_local_rpc_broadcast() {
         struct PingHandler;
         impl RpcHandler for PingHandler {
-            fn name(&self) -> &str { "ping" }
+            fn name(&self) -> &str {
+                "ping"
+            }
             fn handle(&self, payload: serde_json::Value) -> RpcResponse {
-                RpcResponse { ok: true, result: Some(payload), error: None }
+                RpcResponse {
+                    ok: true,
+                    result: Some(payload),
+                    error: None,
+                }
             }
         }
 
@@ -501,7 +562,8 @@ mod tests {
             payload: serde_json::json!({"device_id": "dev1", "cmd": "stop"}),
             reply_to: None,
             from_node: None,
-        }).unwrap();
+        })
+        .unwrap();
 
         // 本地 route：已注册方法返回 ok + 原样 payload
         let req = RpcRequest {
@@ -516,10 +578,12 @@ mod tests {
         assert_eq!(resp.result, Some(serde_json::json!({"k": 1})));
 
         // 未注册方法显式失败（历史上 echo handler 会伪装 ok:true）
-        let resp = router.route(&RpcRequest {
-            method: "play_stop".to_string(),
-            ..Default::default()
-        }).await;
+        let resp = router
+            .route(&RpcRequest {
+                method: "play_stop".to_string(),
+                ..Default::default()
+            })
+            .await;
         assert!(!resp.ok);
         assert!(resp.error.unwrap().contains("Unknown method"));
     }
@@ -542,24 +606,43 @@ mod tests {
                 self.hits.fetch_add(1, Ordering::SeqCst);
                 Ok(())
             }
-            fn receive(&self) -> broadcast::Receiver<RpcRequest> { self.local_tx.subscribe() }
-            fn node_id(&self) -> &str { "counting" }
+            fn receive(&self) -> broadcast::Receiver<RpcRequest> {
+                self.local_tx.subscribe()
+            }
+            fn node_id(&self) -> &str {
+                "counting"
+            }
         }
 
-        let t1 = Arc::new(CountingTransport { hits: AtomicUsize::new(0), local_tx: broadcast::channel(8).0 });
-        let t2 = Arc::new(CountingTransport { hits: AtomicUsize::new(0), local_tx: broadcast::channel(8).0 });
+        let t1 = Arc::new(CountingTransport {
+            hits: AtomicUsize::new(0),
+            local_tx: broadcast::channel(8).0,
+        });
+        let t2 = Arc::new(CountingTransport {
+            hits: AtomicUsize::new(0),
+            local_tx: broadcast::channel(8).0,
+        });
         let router = RpcRouter::new();
-        router.register_outbound(t1.clone() as Arc<dyn RpcTransport>).await;
-        router.register_outbound(t2.clone() as Arc<dyn RpcTransport>).await;
+        router
+            .register_outbound(t1.clone() as Arc<dyn RpcTransport>)
+            .await;
+        router
+            .register_outbound(t2.clone() as Arc<dyn RpcTransport>)
+            .await;
 
-        router.broadcast_outbound(&RpcRequest {
-            method: "ws_broadcast".to_string(),
-            ..Default::default()
-        }).await;
+        router
+            .broadcast_outbound(&RpcRequest {
+                method: "ws_broadcast".to_string(),
+                ..Default::default()
+            })
+            .await;
         assert_eq!(t1.hits.load(Ordering::SeqCst), 1);
         assert_eq!(t2.hits.load(Ordering::SeqCst), 1);
 
-        router.send_to_outbound("node-9", &RpcRequest::default()).await.unwrap();
+        router
+            .send_to_outbound("node-9", &RpcRequest::default())
+            .await
+            .unwrap();
         // send_to 命中首个传输即返回
         assert_eq!(t1.hits.load(Ordering::SeqCst), 2);
         assert_eq!(t2.hits.load(Ordering::SeqCst), 1);
@@ -635,10 +718,13 @@ mod tests {
     /// E2: HTTP URL 拼接正确
     #[tokio::test]
     async fn test_http_rpc_url_building() {
-        let rpc = HttpRpc::new("node-1", HttpRpcConfig {
-            peer_endpoints: vec!["http://node2:18080".to_string()],
-            ..Default::default()
-        });
+        let rpc = HttpRpc::new(
+            "node-1",
+            HttpRpcConfig {
+                peer_endpoints: vec!["http://node2:18080".to_string()],
+                ..Default::default()
+            },
+        );
         let req = RpcRequest {
             method: "device_control".to_string(),
             target: "Node:node2".to_string(),
@@ -672,16 +758,20 @@ mod tests {
         let result = rpc.send_to("unknown", &req).await;
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(err.contains("No endpoint") || err.contains("HTTP"), "错误信息: {}", err);
+        assert!(
+            err.contains("No endpoint") || err.contains("HTTP"),
+            "错误信息: {}",
+            err
+        );
     }
 
     /// E2: 端到端 mock 远端返回 RpcResponse
     #[tokio::test]
     async fn test_http_rpc_roundtrip_via_mock_server() {
-        use std::net::SocketAddr;
-        use axum::{routing::post, Router as AxRouter};
         use axum::extract::Json;
         use axum::response::IntoResponse;
+        use axum::{routing::post, Router as AxRouter};
+        use std::net::SocketAddr;
 
         async fn echo(Json(req): Json<RpcRequest>) -> impl IntoResponse {
             Json(RpcResponse {
@@ -700,11 +790,14 @@ mod tests {
         // 给 server 一点启动时间
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-        let rpc = HttpRpc::new("node-1", HttpRpcConfig {
-            peer_endpoints: vec![format!("http://{}", addr)],
-            timeout_secs: 2,
+        let rpc = HttpRpc::new(
+            "node-1",
+            HttpRpcConfig {
+                peer_endpoints: vec![format!("http://{}", addr)],
+                timeout_secs: 2,
                 secret: None,
-        });
+            },
+        );
 
         let req = RpcRequest {
             method: "device_control".to_string(),
@@ -714,7 +807,10 @@ mod tests {
             from_node: None,
         };
 
-        let resp = rpc.send_request(&format!("http://{}", addr), &req).await.unwrap();
+        let resp = rpc
+            .send_request(&format!("http://{}", addr), &req)
+            .await
+            .unwrap();
         assert!(resp.ok);
         assert_eq!(resp.result.unwrap()["device_id"], "dev-abc");
     }
@@ -722,9 +818,9 @@ mod tests {
     /// E2: HttpRpc.broadcast 对多 endpoint 扇出
     #[tokio::test]
     async fn test_http_rpc_broadcast_returns_per_endpoint_results() {
-        use axum::{routing::post, Router as AxRouter};
         use axum::extract::Json;
         use axum::response::IntoResponse;
+        use axum::{routing::post, Router as AxRouter};
 
         async fn echo(Json(req): Json<RpcRequest>) -> impl IntoResponse {
             Json(RpcResponse {
@@ -741,15 +837,22 @@ mod tests {
         let a1 = l1.local_addr().unwrap();
         let l2 = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let a2 = l2.local_addr().unwrap();
-        tokio::spawn(async move { axum::serve(l1, app1).await.unwrap(); });
-        tokio::spawn(async move { axum::serve(l2, app2).await.unwrap(); });
+        tokio::spawn(async move {
+            axum::serve(l1, app1).await.unwrap();
+        });
+        tokio::spawn(async move {
+            axum::serve(l2, app2).await.unwrap();
+        });
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-        let rpc = HttpRpc::new("node-1", HttpRpcConfig {
-            peer_endpoints: vec![format!("http://{}", a1), format!("http://{}", a2)],
-            timeout_secs: 2,
+        let rpc = HttpRpc::new(
+            "node-1",
+            HttpRpcConfig {
+                peer_endpoints: vec![format!("http://{}", a1), format!("http://{}", a2)],
+                timeout_secs: 2,
                 secret: None,
-        });
+            },
+        );
 
         let req = RpcRequest {
             method: "play_stop".to_string(),

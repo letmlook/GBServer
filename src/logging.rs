@@ -112,7 +112,11 @@ impl<S: Subscriber> Layer<S> for CaptureLayer {
             logger: Some(metadata.target().to_string()),
             thread: Some(thread),
             message: visitor.message,
-            source: Some(format!("{}:{}", metadata.file().unwrap_or(""), metadata.line().unwrap_or(0))),
+            source: Some(format!(
+                "{}:{}",
+                metadata.file().unwrap_or(""),
+                metadata.line().unwrap_or(0)
+            )),
         });
     }
 }
@@ -166,10 +170,7 @@ mod tests {
         }
         let got = drain();
         assert!(got.len() <= MAX_BUFFER, "队列不得超出上限");
-        assert!(
-            dropped_count() > before,
-            "超出上限的条目应被计入丢弃数"
-        );
+        assert!(dropped_count() > before, "超出上限的条目应被计入丢弃数");
     }
 
     /// CaptureLayer 真的能捕获 tracing 事件（验证 layer 接线有效）。

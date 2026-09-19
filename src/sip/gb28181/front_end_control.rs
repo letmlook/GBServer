@@ -357,7 +357,11 @@ mod tests {
                 .collect();
             let sum = bytes[..7].iter().fold(0u8, |a, b| a.wrapping_add(*b));
             assert_eq!(bytes[7], sum, "校验码错误: {}", cmd);
-            assert!(cmd.chars().all(|c| !c.is_ascii_lowercase()), "必须大写: {}", cmd);
+            assert!(
+                cmd.chars().all(|c| !c.is_ascii_lowercase()),
+                "必须大写: {}",
+                cmd
+            );
         }
     }
 

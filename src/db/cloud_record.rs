@@ -117,7 +117,7 @@ pub async fn insert(pool: &Pool, record: &CloudRecordInsert) -> sqlx::Result<i64
             "INSERT INTO gb_cloud_record \
              (app, stream, call_id, start_time, end_time, media_server_id, server_id, \
               file_name, folder, file_path, file_size, time_len) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&record.app)
         .bind(&record.stream)
@@ -145,7 +145,7 @@ pub async fn get_by_id(pool: &Pool, id: i64) -> sqlx::Result<Option<CloudRecord>
         sqlx::query_as::<_, CloudRecord>(
             "SELECT id, app, stream, call_id, start_time, end_time, media_server_id, \
              server_id, file_name, folder, file_path, collect, file_size, time_len \
-             FROM gb_cloud_record WHERE id = $1"
+             FROM gb_cloud_record WHERE id = $1",
         )
         .bind(id)
         .fetch_optional(pool)
@@ -157,7 +157,7 @@ pub async fn get_by_id(pool: &Pool, id: i64) -> sqlx::Result<Option<CloudRecord>
         sqlx::query_as::<_, CloudRecord>(
             "SELECT id, app, stream, call_id, start_time, end_time, media_server_id, \
              server_id, file_name, folder, file_path, collect, file_size, time_len \
-             FROM gb_cloud_record WHERE id = ?"
+             FROM gb_cloud_record WHERE id = ?",
         )
         .bind(id)
         .fetch_optional(pool)
@@ -169,7 +169,7 @@ pub async fn get_by_id(pool: &Pool, id: i64) -> sqlx::Result<Option<CloudRecord>
         sqlx::query_as::<_, CloudRecord>(
             "SELECT id, app, stream, call_id, start_time, end_time, media_server_id, \
              server_id, file_name, folder, file_path, collect, file_size, time_len \
-             FROM gb_cloud_record WHERE id = ?"
+             FROM gb_cloud_record WHERE id = ?",
         )
         .bind(id)
         .fetch_optional(pool)
@@ -257,7 +257,7 @@ pub async fn list_paged(
                AND (?4 IS NULL OR start_time >= ?4) \
                AND (?5 IS NULL OR end_time <= ?5) \
              ORDER BY start_time DESC \
-             LIMIT ?6 OFFSET ?7"
+             LIMIT ?6 OFFSET ?7",
         )
         .bind(app)
         .bind(stream)
@@ -310,13 +310,19 @@ impl<'a> CloudRecordFilter<'a> {
         if let Some(v) = self.device_id.filter(|s| !s.is_empty()) {
             w.add(
                 "substr(stream, 1, length(?)) = ?",
-                vec![BindValue::Text(v.to_string()), BindValue::Text(v.to_string())],
+                vec![
+                    BindValue::Text(v.to_string()),
+                    BindValue::Text(v.to_string()),
+                ],
             );
         }
         if let Some(v) = self.channel_id.filter(|s| !s.is_empty()) {
             w.add(
                 "substr(stream, length(stream) - length(?) + 1) = ?",
-                vec![BindValue::Text(v.to_string()), BindValue::Text(v.to_string())],
+                vec![
+                    BindValue::Text(v.to_string()),
+                    BindValue::Text(v.to_string()),
+                ],
             );
         }
         if let Some(v) = self.query.map(str::trim).filter(|s| !s.is_empty()) {
@@ -360,7 +366,11 @@ pub async fn list_filtered(
     const COUNT_BASE: &str = "SELECT COUNT(*) FROM gb_cloud_record";
 
     let limit_ph = if cfg!(feature = "postgres") {
-        format!(" LIMIT ${} OFFSET ${}", w.binds.len() + 1, w.binds.len() + 2)
+        format!(
+            " LIMIT ${} OFFSET ${}",
+            w.binds.len() + 1,
+            w.binds.len() + 2
+        )
     } else {
         " LIMIT ? OFFSET ?".to_string()
     };
@@ -454,7 +464,7 @@ pub async fn count_all(
                AND (?2 IS NULL OR stream = ?2) \
                AND (?3 IS NULL OR media_server_id = ?3) \
                AND (?4 IS NULL OR start_time >= ?4) \
-               AND (?5 IS NULL OR end_time <= ?5)"
+               AND (?5 IS NULL OR end_time <= ?5)",
         )
         .bind(app)
         .bind(stream)
@@ -496,7 +506,7 @@ pub async fn update(pool: &Pool, record: &CloudRecordUpdate) -> sqlx::Result<boo
              end_time = COALESCE(?, end_time), \
              file_size = COALESCE(?, file_size), \
              time_len = COALESCE(?, time_len) \
-             WHERE id = ?"
+             WHERE id = ?",
         )
         .bind(record.end_time)
         .bind(record.file_size)
@@ -903,9 +913,12 @@ pub async fn insert_records(
             .map(|dt| dt.timestamp())
             .or_else(|| {
                 // 退化：尝试 GB28181 常见格式 "2026-06-10T10:00:00"
-                chrono::NaiveDateTime::parse_from_str(item.start_time.as_deref()?, "%Y-%m-%dT%H:%M:%S")
-                    .ok()
-                    .map(|nd| nd.and_utc().timestamp())
+                chrono::NaiveDateTime::parse_from_str(
+                    item.start_time.as_deref()?,
+                    "%Y-%m-%dT%H:%M:%S",
+                )
+                .ok()
+                .map(|nd| nd.and_utc().timestamp())
             });
         let end_ts = item
             .end_time
@@ -913,9 +926,12 @@ pub async fn insert_records(
             .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
             .map(|dt| dt.timestamp())
             .or_else(|| {
-                chrono::NaiveDateTime::parse_from_str(item.end_time.as_deref()?, "%Y-%m-%dT%H:%M:%S")
-                    .ok()
-                    .map(|nd| nd.and_utc().timestamp())
+                chrono::NaiveDateTime::parse_from_str(
+                    item.end_time.as_deref()?,
+                    "%Y-%m-%dT%H:%M:%S",
+                )
+                .ok()
+                .map(|nd| nd.and_utc().timestamp())
             });
         let time_len = match (start_ts, end_ts) {
             (Some(s), Some(e)) if e >= s => Some((e - s) as f64),
@@ -1065,10 +1081,28 @@ mod tests {
         let pool = sqlite_pool_with_schema().await;
         let dev = "34020000001320000001";
 
-        insert_rec(&pool, &format!("{}_34020000001310000001", dev), "older.mp4", 100).await;
-        insert_rec(&pool, &format!("{}_34020000001310000002", dev), "newer.mp4", 200).await;
+        insert_rec(
+            &pool,
+            &format!("{}_34020000001310000001", dev),
+            "older.mp4",
+            100,
+        )
+        .await;
+        insert_rec(
+            &pool,
+            &format!("{}_34020000001310000002", dev),
+            "newer.mp4",
+            200,
+        )
+        .await;
         // 另一个设备，不应命中
-        insert_rec(&pool, "34020000001320000099_34020000001310000001", "other.mp4", 300).await;
+        insert_rec(
+            &pool,
+            "34020000001320000099_34020000001310000001",
+            "other.mp4",
+            300,
+        )
+        .await;
 
         let latest = find_latest_by_stream_like(&pool, dev)
             .await

@@ -33,8 +33,8 @@ struct NodeMeta {
 pub struct ClusterNode {
     #[serde(alias = "nodeId")]
     pub node_id: String,
-    pub addr: String,           // "http://10.0.0.5:8080"
-    pub role: String,           // "primary" / "secondary"
+    pub addr: String, // "http://10.0.0.5:8080"
+    pub role: String, // "primary" / "secondary"
     #[serde(alias = "lastHeartbeatSecs")]
     pub last_heartbeat_secs: i64,
 }
@@ -67,7 +67,8 @@ impl Default for ClusterConfig {
 
 fn uuid_like() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
-    let nanos = SystemTime::now().duration_since(UNIX_EPOCH)
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
     format!("{:x}", nanos)
@@ -86,7 +87,10 @@ pub struct ClusterRegistry {
 impl ClusterRegistry {
     /// Create a registry that talks to Redis. If `redis` is None, the registry
     /// is functional but always reports only the local node (single_node_mode).
-    pub fn new(config: ClusterConfig, redis: Option<Arc<tokio::sync::Mutex<ConnectionManager>>>) -> Self {
+    pub fn new(
+        config: ClusterConfig,
+        redis: Option<Arc<tokio::sync::Mutex<ConnectionManager>>>,
+    ) -> Self {
         Self { config, redis }
     }
 
@@ -109,10 +113,14 @@ impl ClusterRegistry {
         let mut conn = redis.lock().await.clone();
         let _: Result<(), _> = redis::pipe()
             .atomic()
-            .sadd(KEY_NODES, &self.config.node_id).ignore()
-            .zadd(KEY_HEARTBEAT, &self.config.node_id, now).ignore()
-            .hset(KEY_NODE_INFO, &self.config.node_id, node_meta).ignore()
-            .query_async(&mut conn).await;
+            .sadd(KEY_NODES, &self.config.node_id)
+            .ignore()
+            .zadd(KEY_HEARTBEAT, &self.config.node_id, now)
+            .ignore()
+            .hset(KEY_NODE_INFO, &self.config.node_id, node_meta)
+            .ignore()
+            .query_async(&mut conn)
+            .await;
     }
 
     /// Phase 7.2: Evict nodes whose last heartbeat is older than ttl.
@@ -130,10 +138,14 @@ impl ClusterRegistry {
         if !expired.is_empty() {
             let _: Result<(), _> = redis::pipe()
                 .atomic()
-                .zrembyscore(KEY_HEARTBEAT, 0, cutoff).ignore()
-                .srem(KEY_NODES, &expired).ignore()
-                .hdel(KEY_NODE_INFO, &expired).ignore()
-                .query_async(&mut conn).await;
+                .zrembyscore(KEY_HEARTBEAT, 0, cutoff)
+                .ignore()
+                .srem(KEY_NODES, &expired)
+                .ignore()
+                .hdel(KEY_NODE_INFO, &expired)
+                .ignore()
+                .query_async(&mut conn)
+                .await;
         }
         expired
     }
@@ -160,19 +172,26 @@ impl ClusterRegistry {
             Ok(v) => v,
             Err(_) => HashMap::new(),
         };
-        ids.into_iter().map(|id| {
-            let meta = infos.get(&id).and_then(|s| serde_json::from_str::<NodeMeta>(s).ok());
-            ClusterNode {
-                addr: if id == self.config.node_id {
-                    self.config.addr.clone()
-                } else {
-                    meta.as_ref().map(|m| m.addr.clone()).unwrap_or_default()
-                },
-                last_heartbeat_secs: now,
-                node_id: id,
-                role: meta.as_ref().map(|m| m.role.clone()).unwrap_or_else(|| self.config.role.clone()),
-            }
-        }).collect()
+        ids.into_iter()
+            .map(|id| {
+                let meta = infos
+                    .get(&id)
+                    .and_then(|s| serde_json::from_str::<NodeMeta>(s).ok());
+                ClusterNode {
+                    addr: if id == self.config.node_id {
+                        self.config.addr.clone()
+                    } else {
+                        meta.as_ref().map(|m| m.addr.clone()).unwrap_or_default()
+                    },
+                    last_heartbeat_secs: now,
+                    node_id: id,
+                    role: meta
+                        .as_ref()
+                        .map(|m| m.role.clone())
+                        .unwrap_or_else(|| self.config.role.clone()),
+                }
+            })
+            .collect()
     }
 
     pub fn local_node(&self) -> ClusterNode {
@@ -258,7 +277,9 @@ mod tests {
     #[test]
     fn test_touch_without_redis_is_noop() {
         // Synchronous check that touch() compiles and runs without redis.
-        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
         let cfg = ClusterConfig::default();
         let reg = ClusterRegistry::new(cfg, None);
         rt.block_on(async {

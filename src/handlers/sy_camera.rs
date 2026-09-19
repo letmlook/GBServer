@@ -146,7 +146,11 @@ fn device_to_row(d: &db::Device, ch: Option<&db::DeviceChannel>) -> CameraRow {
             (
                 c.id,
                 opt_to_string(&c.gb_device_id),
-                if ch_name.is_empty() { opt_to_string(&d.name) } else { ch_name },
+                if ch_name.is_empty() {
+                    opt_to_string(&d.name)
+                } else {
+                    ch_name
+                },
                 c.sub_count.unwrap_or(0),
                 c.has_audio.unwrap_or(false),
                 c.longitude,
@@ -177,9 +181,17 @@ fn device_to_row(d: &db::Device, ch: Option<&db::DeviceChannel>) -> CameraRow {
         // 保证前端树的父节点永远有可读标签。
         device_name: {
             let dn = opt_to_string(&d.name);
-            if dn.is_empty() { d.device_id.clone() } else { dn }
+            if dn.is_empty() {
+                d.device_id.clone()
+            } else {
+                dn
+            }
         },
-        status: if d.on_line.unwrap_or(false) { "ON".into() } else { "OFF".into() },
+        status: if d.on_line.unwrap_or(false) {
+            "ON".into()
+        } else {
+            "OFF".into()
+        },
         online: d.on_line.unwrap_or(false),
         longitude,
         latitude,
@@ -374,7 +386,9 @@ pub async fn camera_list_with_child(
 pub async fn camera_list_for_mobile(
     State(state): State<AppState>,
 ) -> Json<ApiResult<serde_json::Value>> {
-    let channels = db::device::list_all_channels(&state.pool).await.unwrap_or_default();
+    let channels = db::device::list_all_channels(&state.pool)
+        .await
+        .unwrap_or_default();
     let rows: Vec<CameraMobile> = channels.iter().map(channel_to_mobile).collect();
     Json(ApiResult::success(serde_json::json!({
         "list": rows,
@@ -421,17 +435,23 @@ pub async fn camera_list_box(
     State(state): State<AppState>,
     Query(q): Query<BoxQuery>,
 ) -> Json<ApiResult<serde_json::Value>> {
-    let channels = db::device::list_all_channels(&state.pool).await.unwrap_or_default();
+    let channels = db::device::list_all_channels(&state.pool)
+        .await
+        .unwrap_or_default();
     let min_lng = q.min_lng.unwrap_or(f64::MIN);
     let min_lat = q.min_lat.unwrap_or(f64::MIN);
     let max_lng = q.max_lng.unwrap_or(f64::MAX);
     let max_lat = q.max_lat.unwrap_or(f64::MAX);
-    let out: Vec<CameraMobile> = channels.iter().filter(|c| {
-        match (c.longitude, c.latitude) {
-            (Some(lng), Some(lat)) => lng >= min_lng && lng <= max_lng && lat >= min_lat && lat <= max_lat,
+    let out: Vec<CameraMobile> = channels
+        .iter()
+        .filter(|c| match (c.longitude, c.latitude) {
+            (Some(lng), Some(lat)) => {
+                lng >= min_lng && lng <= max_lng && lat >= min_lat && lat <= max_lat
+            }
             _ => false,
-        }
-    }).map(channel_to_mobile).collect();
+        })
+        .map(channel_to_mobile)
+        .collect();
     Json(ApiResult::success(serde_json::json!({
         "list": out,
         "total": out.len(),
@@ -456,15 +476,27 @@ pub async fn camera_list_circle(
     State(state): State<AppState>,
     Query(q): Query<CircleQuery>,
 ) -> Json<ApiResult<serde_json::Value>> {
-    let channels = db::device::list_all_channels(&state.pool).await.unwrap_or_default();
-    let (cx, cy, r) = (q.lng.unwrap_or(0.0), q.lat.unwrap_or(0.0), q.radius.unwrap_or(0.0));
-    let out: Vec<CameraMobile> = channels.iter().filter(|c| {
-        if let (Some(lng), Some(lat)) = (c.longitude, c.latitude) {
-            let dx = lng - cx;
-            let dy = lat - cy;
-            (dx * dx + dy * dy).sqrt() <= r
-        } else { false }
-    }).map(channel_to_mobile).collect();
+    let channels = db::device::list_all_channels(&state.pool)
+        .await
+        .unwrap_or_default();
+    let (cx, cy, r) = (
+        q.lng.unwrap_or(0.0),
+        q.lat.unwrap_or(0.0),
+        q.radius.unwrap_or(0.0),
+    );
+    let out: Vec<CameraMobile> = channels
+        .iter()
+        .filter(|c| {
+            if let (Some(lng), Some(lat)) = (c.longitude, c.latitude) {
+                let dx = lng - cx;
+                let dy = lat - cy;
+                (dx * dx + dy * dy).sqrt() <= r
+            } else {
+                false
+            }
+        })
+        .map(channel_to_mobile)
+        .collect();
     Json(ApiResult::success(serde_json::json!({
         "list": out,
         "total": out.len(),
@@ -490,18 +522,29 @@ pub async fn camera_list_polygon(
     Query(q): Query<PolygonQuery>,
 ) -> Json<ApiResult<serde_json::Value>> {
     let points_str = q.points.unwrap_or_default();
-    let polygon: Vec<(f64, f64)> = points_str.split(';').filter_map(|p| {
-        let mut parts = p.split(',');
-        let lng = parts.next()?.trim().parse().ok()?;
-        let lat = parts.next()?.trim().parse().ok()?;
-        Some((lng, lat))
-    }).collect();
-    let channels = db::device::list_all_channels(&state.pool).await.unwrap_or_default();
-    let out: Vec<CameraMobile> = channels.iter().filter(|c| {
-        if let (Some(lng), Some(lat)) = (c.longitude, c.latitude) {
-            point_in_polygon(lng, lat, &polygon)
-        } else { false }
-    }).map(channel_to_mobile).collect();
+    let polygon: Vec<(f64, f64)> = points_str
+        .split(';')
+        .filter_map(|p| {
+            let mut parts = p.split(',');
+            let lng = parts.next()?.trim().parse().ok()?;
+            let lat = parts.next()?.trim().parse().ok()?;
+            Some((lng, lat))
+        })
+        .collect();
+    let channels = db::device::list_all_channels(&state.pool)
+        .await
+        .unwrap_or_default();
+    let out: Vec<CameraMobile> = channels
+        .iter()
+        .filter(|c| {
+            if let (Some(lng), Some(lat)) = (c.longitude, c.latitude) {
+                point_in_polygon(lng, lat, &polygon)
+            } else {
+                false
+            }
+        })
+        .map(channel_to_mobile)
+        .collect();
     Json(ApiResult::success(serde_json::json!({
         "list": out,
         "total": out.len(),
@@ -509,7 +552,9 @@ pub async fn camera_list_polygon(
 }
 
 fn point_in_polygon(lng: f64, lat: f64, polygon: &[(f64, f64)]) -> bool {
-    if polygon.len() < 3 { return false; }
+    if polygon.len() < 3 {
+        return false;
+    }
     let mut inside = false;
     let n = polygon.len();
     let mut j = n - 1;
@@ -545,11 +590,14 @@ pub async fn camera_list_address(
     Query(q): Query<AddressQuery>,
 ) -> Json<ApiResult<serde_json::Value>> {
     let code = q.civil_code.unwrap_or_default();
-    let channels = db::device::list_all_channels(&state.pool).await.unwrap_or_default();
+    let channels = db::device::list_all_channels(&state.pool)
+        .await
+        .unwrap_or_default();
     let out: Vec<CameraMobile> = if code.is_empty() {
         channels.iter().map(channel_to_mobile).collect()
     } else {
-        channels.iter()
+        channels
+            .iter()
             .filter(|c| c.civil_code.as_deref().unwrap_or("").starts_with(&code))
             .map(channel_to_mobile)
             .collect()
@@ -571,9 +619,16 @@ pub async fn camera_list_ids(
     Query(q): Query<IdsQuery>,
 ) -> Json<ApiResult<serde_json::Value>> {
     let ids_str = q.ids.unwrap_or_default();
-    let wanted: Vec<&str> = ids_str.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
-    let channels = db::device::list_all_channels(&state.pool).await.unwrap_or_default();
-    let out: Vec<CameraMobile> = channels.iter()
+    let wanted: Vec<&str> = ids_str
+        .split(',')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let channels = db::device::list_all_channels(&state.pool)
+        .await
+        .unwrap_or_default();
+    let out: Vec<CameraMobile> = channels
+        .iter()
         .filter(|c| {
             let ch_id = c.gb_device_id.as_deref().unwrap_or("");
             wanted.iter().any(|w| *w == ch_id)
@@ -602,22 +657,28 @@ pub async fn camera_list_ids(
 pub async fn camera_meeting_list(
     State(state): State<AppState>,
 ) -> Json<ApiResult<serde_json::Value>> {
-    let channels = db::device::list_all_channels(&state.pool).await.unwrap_or_default();
-    let devices = db::device::list_devices_paged(&state.pool, 1, 1, None, None).await.unwrap_or_default();
+    let channels = db::device::list_all_channels(&state.pool)
+        .await
+        .unwrap_or_default();
+    let devices = db::device::list_devices_paged(&state.pool, 1, 1, None, None)
+        .await
+        .unwrap_or_default();
     let _ = devices; // devices not strictly needed; meeting = devices with sub_count > 0
-    let out: Vec<serde_json::Value> = channels.iter().filter(|c| {
-        c.sub_count.unwrap_or(0) > 0
-    }).map(|c| {
-        serde_json::json!({
-            "deviceId": c.device_id,
-            "channelId": c.gb_device_id,
-            "name": c.name,
-            "subCount": c.sub_count.unwrap_or(0),
-            "manufacturer": c.manufacturer,
-            "model": c.model,
-            "status": c.status,
+    let out: Vec<serde_json::Value> = channels
+        .iter()
+        .filter(|c| c.sub_count.unwrap_or(0) > 0)
+        .map(|c| {
+            serde_json::json!({
+                "deviceId": c.device_id,
+                "channelId": c.gb_device_id,
+                "name": c.name,
+                "subCount": c.sub_count.unwrap_or(0),
+                "manufacturer": c.manufacturer,
+                "model": c.model,
+                "status": c.status,
+            })
         })
-    }).collect();
+        .collect();
     Json(ApiResult::success(serde_json::json!({
         "list": out,
         "total": out.len(),
@@ -630,7 +691,7 @@ mod tests {
 
     #[test]
     fn test_point_in_polygon_simple_square() {
-        let poly = vec![(0.0,0.0),(10.0,0.0),(10.0,10.0),(0.0,10.0)];
+        let poly = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)];
         assert!(point_in_polygon(5.0, 5.0, &poly));
         assert!(!point_in_polygon(15.0, 5.0, &poly));
         assert!(!point_in_polygon(5.0, -1.0, &poly));
@@ -638,7 +699,7 @@ mod tests {
 
     #[test]
     fn test_point_in_polygon_triangle() {
-        let poly = vec![(0.0,0.0),(10.0,0.0),(5.0,10.0)];
+        let poly = vec![(0.0, 0.0), (10.0, 0.0), (5.0, 10.0)];
         assert!(point_in_polygon(5.0, 3.0, &poly));
         assert!(!point_in_polygon(0.0, 5.0, &poly));
     }
@@ -646,8 +707,8 @@ mod tests {
     #[test]
     fn test_point_in_polygon_too_few_points() {
         assert!(!point_in_polygon(0.0, 0.0, &[]));
-        assert!(!point_in_polygon(0.0, 0.0, &[(0.0,0.0)]));
-        assert!(!point_in_polygon(0.0, 0.0, &[(0.0,0.0),(1.0,1.0)]));
+        assert!(!point_in_polygon(0.0, 0.0, &[(0.0, 0.0)]));
+        assert!(!point_in_polygon(0.0, 0.0, &[(0.0, 0.0), (1.0, 1.0)]));
     }
 
     #[test]
@@ -811,7 +872,7 @@ pub async fn camera_control_ptz(
         command: Some(command),
         speed: q.speed.map(|v| v.clamp(0, 255) as u8),
         preset_index: q.preset.map(|p| p as u32),
-        guard_cmd: None
+        guard_cmd: None,
     };
     crate::handlers::device_control::device_ptz(State(state), Query(ptz)).await
 }
@@ -829,7 +890,8 @@ mod camera_control_tests {
             "command": "left",
             "speed": 5,
             "preset": 1,
-        })).unwrap();
+        }))
+        .unwrap();
         assert_eq!(q.device_id.as_deref(), Some("34020000001320000001"));
         assert_eq!(q.command.as_deref(), Some("left"));
         assert_eq!(q.speed, Some(5));
@@ -846,7 +908,8 @@ mod camera_control_tests {
             "command": "right",
             "speed": 4,
             "presetIndex": 2,
-        })).unwrap();
+        }))
+        .unwrap();
         assert_eq!(q.device_id.as_deref(), Some("34020000001320000001"));
         assert_eq!(q.channel_id.as_deref(), Some("34020000001320000010"));
         assert_eq!(q.command.as_deref(), Some("right"));
@@ -905,7 +968,10 @@ mod camera_contract_tests {
             .await
             .unwrap();
         }
-        ("34020000001320000001".to_string(), "34020000001320000002".to_string())
+        (
+            "34020000001320000001".to_string(),
+            "34020000001320000002".to_string(),
+        )
     }
 
     fn q(v: serde_json::Value) -> PageQuery {
@@ -946,7 +1012,9 @@ mod camera_contract_tests {
         assert_eq!(d["listTotal"], 3);
         assert_eq!(d["total"], 3, "total 是匹配的行数（本平台在通道维度分页）");
         let list = d["list"].as_array().unwrap();
-        assert!(list.iter().any(|r| r["channel_id"] == "34020000001310000001"));
+        assert!(list
+            .iter()
+            .any(|r| r["channel_id"] == "34020000001310000001"));
         assert!(list.iter().any(|r| r["is_device"] == true));
 
         // 关键字过滤（前端参数名 query）

@@ -1,8 +1,8 @@
+use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use chrono::{DateTime, Utc};
 
 #[derive(Debug, Clone)]
 pub struct CatalogSubscription {
@@ -61,7 +61,9 @@ impl CatalogSubscriptionManager {
     }
 
     pub async fn subscribe(&self, subscription: CatalogSubscription) {
-        self.subscriptions.write().await
+        self.subscriptions
+            .write()
+            .await
             .insert(subscription.call_id.clone(), subscription);
     }
 
@@ -74,7 +76,9 @@ impl CatalogSubscriptionManager {
     }
 
     pub async fn get_by_device(&self, device_id: &str) -> Vec<CatalogSubscription> {
-        self.subscriptions.read().await
+        self.subscriptions
+            .read()
+            .await
             .values()
             .filter(|s| s.device_id == device_id)
             .cloned()
@@ -88,7 +92,7 @@ impl CatalogSubscriptionManager {
     pub async fn cleanup_expired(&self) -> Vec<String> {
         let mut guard = self.subscriptions.write().await;
         let mut removed = Vec::new();
-        
+
         guard.retain(|call_id, sub| {
             if sub.is_expired() {
                 removed.push(call_id.clone());
@@ -96,7 +100,7 @@ impl CatalogSubscriptionManager {
             }
             true
         });
-        
+
         removed
     }
 
@@ -113,15 +117,19 @@ impl Default for CatalogSubscriptionManager {
     }
 }
 
-pub fn build_catalog_notify_body(channels: &[crate::db::device::DeviceChannel], sn: u32, device_id: &str) -> String {
+pub fn build_catalog_notify_body(
+    channels: &[crate::db::device::DeviceChannel],
+    sn: u32,
+    device_id: &str,
+) -> String {
     let mut channel_xml = String::new();
-    
+
     for ch in channels {
         let name = ch.name.as_deref().unwrap_or("未知通道");
         let gb_id = ch.gb_device_id.as_deref().unwrap_or("");
         let status = ch.status.as_deref().unwrap_or("OFF");
         let has_audio = ch.has_audio.unwrap_or(false);
-        
+
         channel_xml.push_str(&format!(
             r#"<Item>
 <DeviceID>{}</DeviceID>
@@ -132,13 +140,16 @@ pub fn build_catalog_notify_body(channels: &[crate::db::device::DeviceChannel], 
 <SubCount>{}</SubCount>
 <HasAudio>{}</HasAudio>
 </Item>"#,
-            gb_id, name, status, device_id,
+            gb_id,
+            name,
+            status,
+            device_id,
             if status == "ON" { "true" } else { "false" },
             ch.sub_count.unwrap_or(0),
             has_audio
         ));
     }
-    
+
     let num = channels.len();
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>

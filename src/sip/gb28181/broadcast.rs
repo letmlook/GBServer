@@ -7,10 +7,10 @@
 //!
 //! Phase 3.5: 把 broadcast 与 talk 拆分为独立 manager，避免 BYE 走错方向
 
+use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use chrono::{DateTime, Utc};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BroadcastStatus {
@@ -260,10 +260,7 @@ mod tests {
         mgr.create(make_session("c1", "d", "ch")).await;
 
         mgr.activate("c1").await;
-        assert_eq!(
-            mgr.get("c1").await.unwrap().status,
-            BroadcastStatus::Active
-        );
+        assert_eq!(mgr.get("c1").await.unwrap().status, BroadcastStatus::Active);
 
         mgr.start_terminating("c1").await;
         assert_eq!(

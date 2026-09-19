@@ -1,23 +1,23 @@
+use crate::response::ApiResult;
 use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
     Json,
 };
 use thiserror::Error;
-use crate::response::ApiResult;
 
 /// 全平台统一业务错误码（HTTP 状态码 + 业务码双层表达）。
 #[derive(Debug, Clone, Copy)]
 pub enum ErrorCode {
     Success = 0,
-    Error100 = 100,   // 失败
-    Error400 = 400,   // 参数或方法错误
-    Error401 = 401,   // 请登录后重新请求
-    Error403 = 403,   // 无权限操作
-    Error404 = 404,   // 资源未找到
-    Error408 = 408,   // 请求超时
-    Error486 = 486,   // 超时或无响应
-    Error500 = 500,   // 系统异常
+    Error100 = 100, // 失败
+    Error400 = 400, // 参数或方法错误
+    Error401 = 401, // 请登录后重新请求
+    Error403 = 403, // 无权限操作
+    Error404 = 404, // 资源未找到
+    Error408 = 408, // 请求超时
+    Error486 = 486, // 超时或无响应
+    Error500 = 500, // 系统异常
 }
 
 impl ErrorCode {
@@ -60,7 +60,11 @@ impl AppError {
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let (code, status, msg) = match &self {
-            AppError::Unauthorized => (ErrorCode::Error401.code(), StatusCode::UNAUTHORIZED, ErrorCode::Error401.msg().to_string()),
+            AppError::Unauthorized => (
+                ErrorCode::Error401.code(),
+                StatusCode::UNAUTHORIZED,
+                ErrorCode::Error401.msg().to_string(),
+            ),
             AppError::Business(ec, m) => {
                 let status = match ec.code() {
                     401 => StatusCode::UNAUTHORIZED,
@@ -71,8 +75,16 @@ impl IntoResponse for AppError {
                 };
                 (ec.code(), status, m.clone())
             }
-            AppError::Db(e) => (ErrorCode::Error500.code(), StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-            AppError::Config(e) => (ErrorCode::Error500.code(), StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+            AppError::Db(e) => (
+                ErrorCode::Error500.code(),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                e.to_string(),
+            ),
+            AppError::Config(e) => (
+                ErrorCode::Error500.code(),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                e.to_string(),
+            ),
         };
         let body = Json(ApiResult::<()>::fail(code, msg));
         (status, body).into_response()

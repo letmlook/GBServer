@@ -74,46 +74,32 @@ pub struct MediaServer {
 
 /// 获取所有媒体服务器
 pub async fn list_media_servers(pool: &Pool) -> sqlx::Result<Vec<MediaServer>> {
-    sqlx::query_as::<_, MediaServer>(
-        "SELECT * FROM gb_media_server ORDER BY id"
-    )
-    .fetch_all(pool)
-    .await
+    sqlx::query_as::<_, MediaServer>("SELECT * FROM gb_media_server ORDER BY id")
+        .fetch_all(pool)
+        .await
 }
 
 /// 根据ID获取媒体服务器
 pub async fn get_media_server_by_id(pool: &Pool, id: &str) -> sqlx::Result<Option<MediaServer>> {
     #[cfg(feature = "mysql")]
-    return sqlx::query_as::<_, MediaServer>(
-        "SELECT * FROM gb_media_server WHERE id = ?"
-    )
-    .bind(id)
-    .fetch_optional(pool)
-    .await;
+    return sqlx::query_as::<_, MediaServer>("SELECT * FROM gb_media_server WHERE id = ?")
+        .bind(id)
+        .fetch_optional(pool)
+        .await;
     #[cfg(feature = "postgres")]
-    return sqlx::query_as::<_, MediaServer>(
-        "SELECT * FROM gb_media_server WHERE id = $1"
-    )
-    .bind(id)
-    .fetch_optional(pool)
-    .await;
+    return sqlx::query_as::<_, MediaServer>("SELECT * FROM gb_media_server WHERE id = $1")
+        .bind(id)
+        .fetch_optional(pool)
+        .await;
     #[cfg(feature = "sqlite")]
-    return sqlx::query_as::<_, MediaServer>(
-        "SELECT * FROM gb_media_server WHERE id = ?"
-    )
-    .bind(id)
-    .fetch_optional(pool)
-    .await;
+    return sqlx::query_as::<_, MediaServer>("SELECT * FROM gb_media_server WHERE id = ?")
+        .bind(id)
+        .fetch_optional(pool)
+        .await;
 }
 
 /// 添加媒体服务器
-pub async fn add(
-    pool: &Pool,
-    id: &str,
-    ip: &str,
-    http_port: i32,
-    now: &str,
-) -> sqlx::Result<u64> {
+pub async fn add(pool: &Pool, id: &str, ip: &str, http_port: i32, now: &str) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
     let r = sqlx::query(
         r#"INSERT INTO gb_media_server (id, ip, http_port, create_time, update_time, auto_config, rtp_enable, default_server)
@@ -169,7 +155,7 @@ pub async fn update(
            hook_ip = COALESCE(?, hook_ip),
            http_port = CASE WHEN http_port IS NULL OR http_port = 0 THEN ? ELSE http_port END,
            update_time = ?
-           WHERE id = ?"#
+           WHERE id = ?"#,
     )
     .bind(ip)
     .bind(hook_ip)
@@ -185,7 +171,7 @@ pub async fn update(
            hook_ip = COALESCE($2, hook_ip),
            http_port = COALESCE($3, http_port),
            update_time = $4
-           WHERE id = $5"#
+           WHERE id = $5"#,
     )
     .bind(ip)
     .bind(hook_ip)
@@ -201,7 +187,7 @@ pub async fn update(
            hook_ip = COALESCE(?, hook_ip),
            http_port = CASE WHEN http_port IS NULL OR http_port = 0 THEN ? ELSE http_port END,
            update_time = ?
-           WHERE id = ?"#
+           WHERE id = ?"#,
     )
     .bind(ip)
     .bind(hook_ip)
@@ -217,19 +203,19 @@ pub async fn update(
 pub async fn delete_by_id(pool: &Pool, id: &str) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
     let r = sqlx::query("DELETE FROM gb_media_server WHERE id = ?")
-    .bind(id)
-    .execute(pool)
-    .await?;
+        .bind(id)
+        .execute(pool)
+        .await?;
     #[cfg(feature = "postgres")]
     let r = sqlx::query("DELETE FROM gb_media_server WHERE id = $1")
-    .bind(id)
-    .execute(pool)
-    .await?;
+        .bind(id)
+        .execute(pool)
+        .await?;
     #[cfg(feature = "sqlite")]
     let r = sqlx::query("DELETE FROM gb_media_server WHERE id = ?")
-    .bind(id)
-    .execute(pool)
-    .await?;
+        .bind(id)
+        .execute(pool)
+        .await?;
     Ok(r.rows_affected())
 }
 
@@ -270,7 +256,7 @@ pub async fn sync_from_config_full(
             rtp_port_range = COALESCE(VALUES(rtp_port_range), rtp_port_range),
             send_rtp_port_range = COALESCE(VALUES(send_rtp_port_range), send_rtp_port_range),
             rtc_extern_ip = COALESCE(VALUES(rtc_extern_ip), rtc_extern_ip),
-            update_time = VALUES(update_time)"#
+            update_time = VALUES(update_time)"#,
     )
     .bind(id)
     .bind(ip)
@@ -319,7 +305,7 @@ pub async fn sync_from_config_full(
             rtp_port_range = COALESCE(excluded.rtp_port_range, rtp_port_range),
             send_rtp_port_range = COALESCE(excluded.send_rtp_port_range, send_rtp_port_range),
             rtc_extern_ip = COALESCE(excluded.rtc_extern_ip, rtc_extern_ip),
-            update_time = excluded.update_time"#
+            update_time = excluded.update_time"#,
     )
     .bind(id)
     .bind(ip)
@@ -366,28 +352,37 @@ pub async fn count_all(pool: &Pool) -> sqlx::Result<i64> {
 }
 
 /// 更新服务器状态
-pub async fn update_status(pool: &Pool, id: &str, status: bool, last_keepalive: &str) -> sqlx::Result<u64> {
+pub async fn update_status(
+    pool: &Pool,
+    id: &str,
+    status: bool,
+    last_keepalive: &str,
+) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
-    let r = sqlx::query("UPDATE gb_media_server SET status = ?, last_keepalive_time = ? WHERE id = ?")
-        .bind(status)
-        .bind(last_keepalive)
-        .bind(id)
-        .execute(pool)
-        .await?;
+    let r =
+        sqlx::query("UPDATE gb_media_server SET status = ?, last_keepalive_time = ? WHERE id = ?")
+            .bind(status)
+            .bind(last_keepalive)
+            .bind(id)
+            .execute(pool)
+            .await?;
     #[cfg(feature = "postgres")]
-    let r = sqlx::query("UPDATE gb_media_server SET status = $1, last_keepalive_time = $2 WHERE id = $3")
-        .bind(status)
-        .bind(last_keepalive)
-        .bind(id)
-        .execute(pool)
-        .await?;
+    let r = sqlx::query(
+        "UPDATE gb_media_server SET status = $1, last_keepalive_time = $2 WHERE id = $3",
+    )
+    .bind(status)
+    .bind(last_keepalive)
+    .bind(id)
+    .execute(pool)
+    .await?;
     #[cfg(feature = "sqlite")]
-    let r = sqlx::query("UPDATE gb_media_server SET status = ?, last_keepalive_time = ? WHERE id = ?")
-        .bind(status)
-        .bind(last_keepalive)
-        .bind(id)
-        .execute(pool)
-        .await?;
+    let r =
+        sqlx::query("UPDATE gb_media_server SET status = ?, last_keepalive_time = ? WHERE id = ?")
+            .bind(status)
+            .bind(last_keepalive)
+            .bind(id)
+            .execute(pool)
+            .await?;
     Ok(r.rows_affected())
 }
 
@@ -432,7 +427,7 @@ pub async fn update_ports(
            rtmp_port = COALESCE(?, rtmp_port),
            status = 1,
            update_time = ?
-           WHERE id = ?"#
+           WHERE id = ?"#,
     )
     .bind(http_port)
     .bind(http_ssl_port)
@@ -451,7 +446,7 @@ pub async fn update_ports(
            rtmp_port = COALESCE($4, rtmp_port),
            status = true,
            update_time = $5
-           WHERE id = $6"#
+           WHERE id = $6"#,
     )
     .bind(http_port)
     .bind(http_ssl_port)
@@ -470,7 +465,7 @@ pub async fn update_ports(
            rtmp_port = COALESCE(?, rtmp_port),
            status = 1,
            update_time = ?
-           WHERE id = ?"#
+           WHERE id = ?"#,
     )
     .bind(http_port)
     .bind(http_ssl_port)
@@ -622,11 +617,7 @@ pub async fn sync_ports_from_zlm(
 ///
 /// Phase 4 follow-up: 同时 reset `consecutive_misses = 0`，避免 grace count
 /// 在节点恢复后还保留旧的丢失计数。
-pub async fn update_last_keepalive(
-    pool: &Pool,
-    id: &str,
-    now: &str,
-) -> sqlx::Result<u64> {
+pub async fn update_last_keepalive(pool: &Pool, id: &str, now: &str) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
     let r = sqlx::query(
         "UPDATE gb_media_server SET last_keepalive_time = ?, status = 1, consecutive_misses = 0 WHERE id = ?"
@@ -661,27 +652,24 @@ pub async fn update_last_keepalive(
 /// 必须与写入方同格式同时区（`%Y-%m-%d %H:%M:%S`，本地时区）。
 ///
 /// Returns the number of rows updated (i.e. newly-offline nodes).
-pub async fn mark_offline_if_expired(
-    pool: &Pool,
-    before_time: &str,
-) -> sqlx::Result<u64> {
+pub async fn mark_offline_if_expired(pool: &Pool, before_time: &str) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
     let r = sqlx::query(
-        "UPDATE gb_media_server SET status = 0 WHERE status = 1 AND last_keepalive_time < ?"
+        "UPDATE gb_media_server SET status = 0 WHERE status = 1 AND last_keepalive_time < ?",
     )
     .bind(before_time)
     .execute(pool)
     .await?;
     #[cfg(feature = "postgres")]
     let r = sqlx::query(
-        "UPDATE gb_media_server SET status = 0 WHERE status = 1 AND last_keepalive_time < $1"
+        "UPDATE gb_media_server SET status = 0 WHERE status = 1 AND last_keepalive_time < $1",
     )
     .bind(before_time)
     .execute(pool)
     .await?;
     #[cfg(feature = "sqlite")]
     let r = sqlx::query(
-        "UPDATE gb_media_server SET status = 0 WHERE status = 1 AND last_keepalive_time < ?"
+        "UPDATE gb_media_server SET status = 0 WHERE status = 1 AND last_keepalive_time < ?",
     )
     .bind(before_time)
     .execute(pool)
@@ -694,14 +682,11 @@ pub async fn mark_offline_if_expired(
 /// 步骤 1：`increment_miss_count_if_expired` —
 /// 对每个 status=1 且 `last_keepalive_time < before_time` 的节点，
 /// 仅 `consecutive_misses += 1`。返回被递增的节点数。
-pub async fn increment_miss_count_if_expired(
-    pool: &Pool,
-    before_time: &str,
-) -> sqlx::Result<u64> {
+pub async fn increment_miss_count_if_expired(pool: &Pool, before_time: &str) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
     let r = sqlx::query(
         "UPDATE gb_media_server SET consecutive_misses = consecutive_misses + 1 \
-         WHERE status = 1 AND last_keepalive_time < ?"
+         WHERE status = 1 AND last_keepalive_time < ?",
     )
     .bind(before_time)
     .execute(pool)
@@ -709,7 +694,7 @@ pub async fn increment_miss_count_if_expired(
     #[cfg(feature = "postgres")]
     let r = sqlx::query(
         "UPDATE gb_media_server SET consecutive_misses = consecutive_misses + 1 \
-         WHERE status = true AND last_keepalive_time < $1"
+         WHERE status = true AND last_keepalive_time < $1",
     )
     .bind(before_time)
     .execute(pool)
@@ -717,7 +702,7 @@ pub async fn increment_miss_count_if_expired(
     #[cfg(feature = "sqlite")]
     let r = sqlx::query(
         "UPDATE gb_media_server SET consecutive_misses = consecutive_misses + 1 \
-         WHERE status = 1 AND last_keepalive_time < ?"
+         WHERE status = 1 AND last_keepalive_time < ?",
     )
     .bind(before_time)
     .execute(pool)
@@ -739,7 +724,7 @@ pub async fn mark_offline_if_miss_count_exceeded(
     #[cfg(feature = "mysql")]
     let r = sqlx::query(
         "UPDATE gb_media_server SET status = 0, consecutive_misses = 0 \
-         WHERE status = 1 AND consecutive_misses >= ?"
+         WHERE status = 1 AND consecutive_misses >= ?",
     )
     .bind(grace_count)
     .execute(pool)
@@ -747,7 +732,7 @@ pub async fn mark_offline_if_miss_count_exceeded(
     #[cfg(feature = "postgres")]
     let r = sqlx::query(
         "UPDATE gb_media_server SET status = false, consecutive_misses = 0 \
-         WHERE status = true AND consecutive_misses >= $1"
+         WHERE status = true AND consecutive_misses >= $1",
     )
     .bind(grace_count)
     .execute(pool)
@@ -755,7 +740,7 @@ pub async fn mark_offline_if_miss_count_exceeded(
     #[cfg(feature = "sqlite")]
     let r = sqlx::query(
         "UPDATE gb_media_server SET status = 0, consecutive_misses = 0 \
-         WHERE status = 1 AND consecutive_misses >= ?"
+         WHERE status = 1 AND consecutive_misses >= ?",
     )
     .bind(grace_count)
     .execute(pool)
@@ -764,14 +749,11 @@ pub async fn mark_offline_if_miss_count_exceeded(
 }
 
 /// Phase 4 follow-up: 重置健康节点的 `consecutive_misses = 0`（keepalive 恢复）
-pub async fn reset_miss_count_for_fresh_nodes(
-    pool: &Pool,
-    before_time: &str,
-) -> sqlx::Result<u64> {
+pub async fn reset_miss_count_for_fresh_nodes(pool: &Pool, before_time: &str) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
     let r = sqlx::query(
         "UPDATE gb_media_server SET consecutive_misses = 0 \
-         WHERE status = 1 AND last_keepalive_time >= ? AND consecutive_misses > 0"
+         WHERE status = 1 AND last_keepalive_time >= ? AND consecutive_misses > 0",
     )
     .bind(before_time)
     .execute(pool)
@@ -779,7 +761,7 @@ pub async fn reset_miss_count_for_fresh_nodes(
     #[cfg(feature = "postgres")]
     let r = sqlx::query(
         "UPDATE gb_media_server SET consecutive_misses = 0 \
-         WHERE status = true AND last_keepalive_time >= $1 AND consecutive_misses > 0"
+         WHERE status = true AND last_keepalive_time >= $1 AND consecutive_misses > 0",
     )
     .bind(before_time)
     .execute(pool)
@@ -787,7 +769,7 @@ pub async fn reset_miss_count_for_fresh_nodes(
     #[cfg(feature = "sqlite")]
     let r = sqlx::query(
         "UPDATE gb_media_server SET consecutive_misses = 0 \
-         WHERE status = 1 AND last_keepalive_time >= ? AND consecutive_misses > 0"
+         WHERE status = 1 AND last_keepalive_time >= ? AND consecutive_misses > 0",
     )
     .bind(before_time)
     .execute(pool)
@@ -849,27 +831,24 @@ pub async fn update_flow_stats(
 // =====================================================================
 
 /// 获取指定媒体服务器的全部白名单 CIDR
-pub async fn get_white_list_cidrs(
-    pool: &Pool,
-    media_server_id: &str,
-) -> sqlx::Result<Vec<String>> {
+pub async fn get_white_list_cidrs(pool: &Pool, media_server_id: &str) -> sqlx::Result<Vec<String>> {
     #[cfg(feature = "mysql")]
     let rows = sqlx::query_scalar::<_, String>(
-        "SELECT cidr FROM gb_media_server_white_list WHERE media_server_id = ? ORDER BY id"
+        "SELECT cidr FROM gb_media_server_white_list WHERE media_server_id = ? ORDER BY id",
     )
     .bind(media_server_id)
     .fetch_all(pool)
     .await?;
     #[cfg(feature = "postgres")]
     let rows = sqlx::query_scalar::<_, String>(
-        "SELECT cidr FROM gb_media_server_white_list WHERE media_server_id = $1 ORDER BY id"
+        "SELECT cidr FROM gb_media_server_white_list WHERE media_server_id = $1 ORDER BY id",
     )
     .bind(media_server_id)
     .fetch_all(pool)
     .await?;
     #[cfg(feature = "sqlite")]
     let rows = sqlx::query_scalar::<_, String>(
-        "SELECT cidr FROM gb_media_server_white_list WHERE media_server_id = ? ORDER BY id"
+        "SELECT cidr FROM gb_media_server_white_list WHERE media_server_id = ? ORDER BY id",
     )
     .bind(media_server_id)
     .fetch_all(pool)
@@ -922,7 +901,7 @@ pub async fn remove_white_list_cidr(
 ) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
     let r = sqlx::query(
-        "DELETE FROM gb_media_server_white_list WHERE media_server_id = ? AND cidr = ?"
+        "DELETE FROM gb_media_server_white_list WHERE media_server_id = ? AND cidr = ?",
     )
     .bind(media_server_id)
     .bind(cidr)
@@ -930,7 +909,7 @@ pub async fn remove_white_list_cidr(
     .await?;
     #[cfg(feature = "postgres")]
     let r = sqlx::query(
-        "DELETE FROM gb_media_server_white_list WHERE media_server_id = $1 AND cidr = $2"
+        "DELETE FROM gb_media_server_white_list WHERE media_server_id = $1 AND cidr = $2",
     )
     .bind(media_server_id)
     .bind(cidr)
@@ -938,7 +917,7 @@ pub async fn remove_white_list_cidr(
     .await?;
     #[cfg(feature = "sqlite")]
     let r = sqlx::query(
-        "DELETE FROM gb_media_server_white_list WHERE media_server_id = ? AND cidr = ?"
+        "DELETE FROM gb_media_server_white_list WHERE media_server_id = ? AND cidr = ?",
     )
     .bind(media_server_id)
     .bind(cidr)
@@ -955,9 +934,11 @@ pub async fn remove_white_list_cidr(
 pub async fn ensure_columns(pool: &Pool) -> sqlx::Result<()> {
     #[cfg(feature = "postgres")]
     {
-        let _ = sqlx::query("ALTER TABLE gb_media_server ADD COLUMN IF NOT EXISTS enabled bool DEFAULT true")
-            .execute(pool)
-            .await?;
+        let _ = sqlx::query(
+            "ALTER TABLE gb_media_server ADD COLUMN IF NOT EXISTS enabled bool DEFAULT true",
+        )
+        .execute(pool)
+        .await?;
     }
     #[cfg(feature = "sqlite")]
     {
@@ -1008,9 +989,10 @@ pub async fn ensure_columns(pool: &Pool) -> sqlx::Result<()> {
         .await
         .unwrap_or(0);
         if exists == 0 {
-            let _ = sqlx::query("ALTER TABLE gb_media_server ADD COLUMN rtc_extern_ip VARCHAR(100)")
-                .execute(pool)
-                .await?;
+            let _ =
+                sqlx::query("ALTER TABLE gb_media_server ADD COLUMN rtc_extern_ip VARCHAR(100)")
+                    .execute(pool)
+                    .await?;
         }
     }
     #[cfg(feature = "mysql")]
@@ -1022,9 +1004,10 @@ pub async fn ensure_columns(pool: &Pool) -> sqlx::Result<()> {
         .await
         .unwrap_or(0);
         if exists == 0 {
-            let _ = sqlx::query("ALTER TABLE gb_media_server ADD COLUMN rtc_extern_ip VARCHAR(100)")
-                .execute(pool)
-                .await?;
+            let _ =
+                sqlx::query("ALTER TABLE gb_media_server ADD COLUMN rtc_extern_ip VARCHAR(100)")
+                    .execute(pool)
+                    .await?;
         }
     }
     Ok(())

@@ -203,7 +203,12 @@ mod tests {
     use super::*;
     use crate::test_support::sqlite_pool_with_schema;
 
-    async fn seed_channel_with_civil_code(pool: &db::Pool, device_id: &str, gb_id: &str, civil: &str) {
+    async fn seed_channel_with_civil_code(
+        pool: &db::Pool,
+        device_id: &str,
+        gb_id: &str,
+        civil: &str,
+    ) {
         sqlx::query(
             "INSERT INTO gb_device_channel \
              (device_id, name, gb_device_id, civil_code, status, data_type, data_device_id, create_time, update_time) \
@@ -226,17 +231,26 @@ mod tests {
             .await
             .unwrap();
         assert!(parent > 0);
-        let parent_id: i32 = sqlx::query_scalar("SELECT id FROM gb_common_region WHERE device_id = 'ROOT'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-        db::region::add(&pool, "340200", "南京市", Some(parent_id), Some("ROOT"), now)
-            .await
-            .unwrap();
-        let child_id: i32 = sqlx::query_scalar("SELECT id FROM gb_common_region WHERE device_id = '340200'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+        let parent_id: i32 =
+            sqlx::query_scalar("SELECT id FROM gb_common_region WHERE device_id = 'ROOT'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        db::region::add(
+            &pool,
+            "340200",
+            "南京市",
+            Some(parent_id),
+            Some("ROOT"),
+            now,
+        )
+        .await
+        .unwrap();
+        let child_id: i32 =
+            sqlx::query_scalar("SELECT id FROM gb_common_region WHERE device_id = '340200'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
 
         let detail = load_region_detail(&pool, child_id).await.unwrap().unwrap();
         // 关键：name 必须来自数据库，而不是 `region-{id}` 这类编造值
@@ -257,9 +271,16 @@ mod tests {
         let pool = sqlite_pool_with_schema().await;
         let now = "2026-01-01 00:00:00";
         for i in 0..5 {
-            db::region::add(&pool, &format!("code{}", i), &format!("区域{}", i), None, None, now)
-                .await
-                .unwrap();
+            db::region::add(
+                &pool,
+                &format!("code{}", i),
+                &format!("区域{}", i),
+                None,
+                None,
+                now,
+            )
+            .await
+            .unwrap();
         }
 
         let (page1, total) = load_region_page(&pool, 1, 2).await.unwrap();

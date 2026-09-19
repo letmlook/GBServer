@@ -51,8 +51,8 @@ mod tests {
         // 测试ZLMediaKit连接
         println!("测试ZLMediaKit连接...");
 
-        let zlm_url = std::env::var("ZLM_URL")
-            .unwrap_or_else(|_| "http://127.0.0.1:8080".to_string());
+        let zlm_url =
+            std::env::var("ZLM_URL").unwrap_or_else(|_| "http://127.0.0.1:8080".to_string());
 
         println!("ZLMediaKit连接字符串: {}", zlm_url);
         println!("✅ ZLMediaKit连接测试通过");

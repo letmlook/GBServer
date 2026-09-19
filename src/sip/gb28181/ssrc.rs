@@ -52,12 +52,15 @@ impl SsrcManager {
             ssrc
         );
 
-        self.allocations.insert(ssrc.clone(), SsrcAllocation {
-            ssrc: ssrc.clone(),
-            device_id: device_id.to_string(),
-            channel_id: channel_id.to_string(),
-            stream_type: stream_type.to_string(),
-        });
+        self.allocations.insert(
+            ssrc.clone(),
+            SsrcAllocation {
+                ssrc: ssrc.clone(),
+                device_id: device_id.to_string(),
+                channel_id: channel_id.to_string(),
+                stream_type: stream_type.to_string(),
+            },
+        );
 
         ssrc
     }
@@ -66,7 +69,12 @@ impl SsrcManager {
         self.allocations.remove(ssrc).map(|(_, v)| v)
     }
 
-    pub fn validate(&self, ssrc: &str, expected_device_id: &str, expected_channel_id: &str) -> bool {
+    pub fn validate(
+        &self,
+        ssrc: &str,
+        expected_device_id: &str,
+        expected_channel_id: &str,
+    ) -> bool {
         if let Some(entry) = self.allocations.get(ssrc) {
             entry.device_id == expected_device_id && entry.channel_id == expected_channel_id
         } else {
@@ -91,7 +99,8 @@ impl SsrcManager {
     }
 
     pub fn release_by_device(&self, device_id: &str) -> Vec<SsrcAllocation> {
-        let to_remove: Vec<String> = self.allocations
+        let to_remove: Vec<String> = self
+            .allocations
             .iter()
             .filter(|v| v.device_id == device_id)
             .map(|v| v.ssrc.clone())
@@ -117,7 +126,11 @@ mod tests {
         let ssrc = manager.allocate("device1", "channel1", "Play");
         // 国标 SSRC 必须是 10 位十进制
         assert_eq!(ssrc.len(), 10, "SSRC 应为 10 位, 实际 {}", ssrc);
-        assert!(ssrc.chars().all(|c| c.is_ascii_digit()), "SSRC 必须全是数字: {}", ssrc);
+        assert!(
+            ssrc.chars().all(|c| c.is_ascii_digit()),
+            "SSRC 必须全是数字: {}",
+            ssrc
+        );
         assert!(ssrc.starts_with('0'), "实时流类型位应为 0: {}", ssrc);
 
         let alloc = manager.get(&ssrc).unwrap();

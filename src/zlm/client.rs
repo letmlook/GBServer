@@ -1,5 +1,5 @@
+use anyhow::{anyhow, Result};
 use reqwest::Client;
-use anyhow::{Result, anyhow};
 use serde::Deserialize;
 use std::collections::HashMap;
 
@@ -142,7 +142,11 @@ impl ZlmClient {
         &self.base_url
     }
 
-    async fn request<R: for<'de> serde::Deserialize<'de>>(&self, path: &str, params: &[(&str, String)]) -> Result<R> {
+    async fn request<R: for<'de> serde::Deserialize<'de>>(
+        &self,
+        path: &str,
+        params: &[(&str, String)],
+    ) -> Result<R> {
         let url = format!("{}{}", self.base_url, path);
         let mut req = self.http.get(&url);
         for (k, v) in params {
@@ -156,13 +160,25 @@ impl ZlmClient {
         Ok(body)
     }
 
-    pub async fn get_media_list(&self, schema: Option<&str>, app: Option<&str>, stream: Option<&str>) -> Result<Vec<MediaInfo>> {
+    pub async fn get_media_list(
+        &self,
+        schema: Option<&str>,
+        app: Option<&str>,
+        stream: Option<&str>,
+    ) -> Result<Vec<MediaInfo>> {
         let mut params = vec![("secret", self.secret.clone())];
-        if let Some(s) = schema { params.push(("schema", s.to_string())); }
-        if let Some(a) = app { params.push(("app", a.to_string())); }
-        if let Some(s) = stream { params.push(("stream", s.to_string())); }
+        if let Some(s) = schema {
+            params.push(("schema", s.to_string()));
+        }
+        if let Some(a) = app {
+            params.push(("app", a.to_string()));
+        }
+        if let Some(s) = stream {
+            params.push(("stream", s.to_string()));
+        }
 
-        let resp: ApiResponse<Vec<MediaInfo>> = self.request("/index/api/getMediaList", &params).await?;
+        let resp: ApiResponse<Vec<MediaInfo>> =
+            self.request("/index/api/getMediaList", &params).await?;
         Ok(resp.data.unwrap_or_default())
     }
 
@@ -172,7 +188,13 @@ impl ZlmClient {
         Ok(list.len())
     }
 
-    pub async fn get_media_info(&self, schema: &str, vhost: &str, app: &str, stream: &str) -> Result<Option<MediaInfo>> {
+    pub async fn get_media_info(
+        &self,
+        schema: &str,
+        vhost: &str,
+        app: &str,
+        stream: &str,
+    ) -> Result<Option<MediaInfo>> {
         let params = vec![
             ("secret", self.secret.clone()),
             ("schema", schema.to_string()),
@@ -182,7 +204,9 @@ impl ZlmClient {
         ];
 
         let resp: ApiResponse<MediaInfo> = self.request("/index/api/getMediaInfo", &params).await?;
-        Ok(resp.data.filter(|d| d.schema == schema && d.app == app && d.stream == stream))
+        Ok(resp
+            .data
+            .filter(|d| d.schema == schema && d.app == app && d.stream == stream))
     }
 
     /// 该流当前是否真的有某个 schema 的源（rtsp/rtmp/hls/ts/fmp4…）。
@@ -240,7 +264,13 @@ impl ZlmClient {
         Ok(list.iter().any(|m| m.stream == stream))
     }
 
-    pub async fn is_media_exist(&self, schema: &str, vhost: &str, app: &str, stream: &str) -> Result<bool> {
+    pub async fn is_media_exist(
+        &self,
+        schema: &str,
+        vhost: &str,
+        app: &str,
+        stream: &str,
+    ) -> Result<bool> {
         let params = vec![
             ("secret", self.secret.clone()),
             ("schema", schema.to_string()),
@@ -264,23 +294,47 @@ impl ZlmClient {
             ("stream", req.stream.clone()),
             ("url", req.url.clone()),
         ];
-        if let Some(rtp) = req.rtp_type { params.push(("rtp_type", rtp.to_string())); }
-        if let Some(t) = req.timeout_sec { params.push(("timeout_sec", t.to_string())); }
-        if let Some(v) = req.enable_hls { params.push(("enable_hls", if v { "1" } else { "0" }.to_string())); }
-        if let Some(v) = req.enable_mp4 { params.push(("enable_mp4", if v { "1" } else { "0" }.to_string())); }
-        if let Some(v) = req.enable_rtsp { params.push(("enable_rtsp", if v { "1" } else { "0" }.to_string())); }
-        if let Some(v) = req.enable_rtmp { params.push(("enable_rtmp", if v { "1" } else { "0" }.to_string())); }
-        if let Some(v) = req.enable_fmp4 { params.push(("enable_fmp4", if v { "1" } else { "0" }.to_string())); }
-        if let Some(v) = req.enable_ts { params.push(("enable_ts", if v { "1" } else { "0" }.to_string())); }
+        if let Some(rtp) = req.rtp_type {
+            params.push(("rtp_type", rtp.to_string()));
+        }
+        if let Some(t) = req.timeout_sec {
+            params.push(("timeout_sec", t.to_string()));
+        }
+        if let Some(v) = req.enable_hls {
+            params.push(("enable_hls", if v { "1" } else { "0" }.to_string()));
+        }
+        if let Some(v) = req.enable_mp4 {
+            params.push(("enable_mp4", if v { "1" } else { "0" }.to_string()));
+        }
+        if let Some(v) = req.enable_rtsp {
+            params.push(("enable_rtsp", if v { "1" } else { "0" }.to_string()));
+        }
+        if let Some(v) = req.enable_rtmp {
+            params.push(("enable_rtmp", if v { "1" } else { "0" }.to_string()));
+        }
+        if let Some(v) = req.enable_fmp4 {
+            params.push(("enable_fmp4", if v { "1" } else { "0" }.to_string()));
+        }
+        if let Some(v) = req.enable_ts {
+            params.push(("enable_ts", if v { "1" } else { "0" }.to_string()));
+        }
         // 参数名必须是 `enable_audio`（ZLM 对未知参数静默忽略 → 之前勾了"开启音频"也没用）
-        if let Some(v) = req.enable_audio { params.push(("enable_audio", if v { "1" } else { "0" }.to_string())); }
+        if let Some(v) = req.enable_audio {
+            params.push(("enable_audio", if v { "1" } else { "0" }.to_string()));
+        }
 
         #[derive(Deserialize)]
-        struct Resp { key: String }
+        struct Resp {
+            key: String,
+        }
         let resp: ApiResponse<Resp> = self.request("/index/api/addStreamProxy", &params).await?;
-        
+
         if resp.code != 0 {
-            return Err(anyhow!("ZLM error: {} - {}", resp.code, resp.msg.unwrap_or_default()));
+            return Err(anyhow!(
+                "ZLM error: {} - {}",
+                resp.code,
+                resp.msg.unwrap_or_default()
+            ));
         }
         Ok(resp.data.map(|r| r.key).unwrap_or_default())
     }
@@ -289,20 +343,42 @@ impl ZlmClient {
         self.add_stream_proxy(req).await
     }
 
-    pub async fn close_streams(&self, schema: Option<&str>, app: Option<&str>, stream: Option<&str>, force: bool) -> Result<CloseStreamsResponse> {
+    pub async fn close_streams(
+        &self,
+        schema: Option<&str>,
+        app: Option<&str>,
+        stream: Option<&str>,
+        force: bool,
+    ) -> Result<CloseStreamsResponse> {
         let mut params = vec![
-            ("secret", self.secret.clone()), 
-            ("force", if force { "1" } else { "0" }.to_string())
+            ("secret", self.secret.clone()),
+            ("force", if force { "1" } else { "0" }.to_string()),
         ];
-        if let Some(s) = schema { params.push(("schema", s.to_string())); }
-        if let Some(a) = app { params.push(("app", a.to_string())); }
-        if let Some(s) = stream { params.push(("stream", s.to_string())); }
+        if let Some(s) = schema {
+            params.push(("schema", s.to_string()));
+        }
+        if let Some(a) = app {
+            params.push(("app", a.to_string()));
+        }
+        if let Some(s) = stream {
+            params.push(("stream", s.to_string()));
+        }
 
-        let resp: ApiResponse<CloseStreamsResponse> = self.request("/index/api/close_streams", &params).await?;
-        Ok(resp.data.unwrap_or(CloseStreamsResponse { count_hit: 0, count_closed: 0 }))
+        let resp: ApiResponse<CloseStreamsResponse> =
+            self.request("/index/api/close_streams", &params).await?;
+        Ok(resp.data.unwrap_or(CloseStreamsResponse {
+            count_hit: 0,
+            count_closed: 0,
+        }))
     }
 
-    pub async fn close_stream(&self, vhost: &str, app: &str, stream: &str, force: bool) -> Result<()> {
+    pub async fn close_stream(
+        &self,
+        vhost: &str,
+        app: &str,
+        stream: &str,
+        force: bool,
+    ) -> Result<()> {
         let params = vec![
             ("secret", self.secret.clone()),
             ("vhost", vhost.to_string()),
@@ -313,16 +389,24 @@ impl ZlmClient {
 
         #[derive(Deserialize)]
         #[allow(dead_code)]
-        struct Resp { code: i32 }
+        struct Resp {
+            code: i32,
+        }
         let resp: ApiResponse<Resp> = self.request("/index/api/close_stream", &params).await?;
-        
+
         if resp.code != 0 {
             return Err(anyhow!("ZLM error: {}", resp.msg.unwrap_or_default()));
         }
         Ok(())
     }
 
-    pub async fn kick_session(&self, vhost: &str, app: &str, stream: &str, schema: &str) -> Result<u32> {
+    pub async fn kick_session(
+        &self,
+        vhost: &str,
+        app: &str,
+        stream: &str,
+        schema: &str,
+    ) -> Result<u32> {
         let params = vec![
             ("secret", self.secret.clone()),
             ("vhost", vhost.to_string()),
@@ -331,7 +415,8 @@ impl ZlmClient {
             ("schema", schema.to_string()),
         ];
 
-        let resp: ApiResponse<KickSessionResponse> = self.request("/index/api/kick_session", &params).await?;
+        let resp: ApiResponse<KickSessionResponse> =
+            self.request("/index/api/kick_session", &params).await?;
         Ok(resp.data.map(|r| r.hit).unwrap_or(0))
     }
 
@@ -344,7 +429,9 @@ impl ZlmClient {
         ];
 
         #[derive(Deserialize)]
-        struct Resp { count: u32 }
+        struct Resp {
+            count: u32,
+        }
         let resp: ApiResponse<Resp> = self.request("/index/api/kick_sessions", &params).await?;
         Ok(resp.data.map(|r| r.count).unwrap_or(0))
     }
@@ -355,10 +442,16 @@ impl ZlmClient {
         let resp: OpenRtpServerResp = self.request("/index/api/openRtpServer", &params).await?;
 
         if resp.code != 0 {
-            return Err(anyhow!("ZLM error: {} - {}", resp.code, resp.msg.unwrap_or_default()));
+            return Err(anyhow!(
+                "ZLM error: {} - {}",
+                resp.code,
+                resp.msg.unwrap_or_default()
+            ));
         }
 
-        let port = resp.port.ok_or_else(|| anyhow!("No RTP server info returned"))?;
+        let port = resp
+            .port
+            .ok_or_else(|| anyhow!("No RTP server info returned"))?;
 
         // ZLM openRtpServer 不回传 stream_id / ssrc 等字段，从入参回填；
         // 调用方（playback / play / broadcast / cascade）已经持有 stream_id，
@@ -432,7 +525,9 @@ impl ZlmClient {
 
         #[derive(Deserialize)]
         #[allow(dead_code)]
-        struct Resp { code: i32 }
+        struct Resp {
+            code: i32,
+        }
         let resp: ApiResponse<Resp> = self.request("/index/api/connectRtpServer", &params).await?;
 
         if resp.code != 0 {
@@ -464,12 +559,19 @@ impl ZlmClient {
 
     pub async fn list_rtp_servers(&self) -> Result<Vec<RtpServerInfo>> {
         let params = vec![("secret", self.secret.clone())];
-        
-        let resp: ApiResponse<Vec<RtpServerInfo>> = self.request("/index/api/listRtpServer", &params).await?;
+
+        let resp: ApiResponse<Vec<RtpServerInfo>> =
+            self.request("/index/api/listRtpServer", &params).await?;
         Ok(resp.data.unwrap_or_default())
     }
 
-    pub async fn start_record(&self, type_: &str, vhost: &str, app: &str, stream: &str) -> Result<()> {
+    pub async fn start_record(
+        &self,
+        type_: &str,
+        vhost: &str,
+        app: &str,
+        stream: &str,
+    ) -> Result<()> {
         let params = vec![
             ("secret", self.secret.clone()),
             ("type", type_.to_string()),
@@ -477,16 +579,23 @@ impl ZlmClient {
             ("app", app.to_string()),
             ("stream", stream.to_string()),
         ];
-        
-        let resp: ApiResponse<serde_json::Value> = self.request("/index/api/startRecord", &params).await?;
-        
+
+        let resp: ApiResponse<serde_json::Value> =
+            self.request("/index/api/startRecord", &params).await?;
+
         if resp.code != 0 {
             return Err(anyhow!("ZLM error: {}", resp.msg.unwrap_or_default()));
         }
         Ok(())
     }
 
-    pub async fn stop_record(&self, type_: &str, vhost: &str, app: &str, stream: &str) -> Result<()> {
+    pub async fn stop_record(
+        &self,
+        type_: &str,
+        vhost: &str,
+        app: &str,
+        stream: &str,
+    ) -> Result<()> {
         let params = vec![
             ("secret", self.secret.clone()),
             ("type", type_.to_string()),
@@ -494,9 +603,10 @@ impl ZlmClient {
             ("app", app.to_string()),
             ("stream", stream.to_string()),
         ];
-        
-        let resp: ApiResponse<serde_json::Value> = self.request("/index/api/stopRecord", &params).await?;
-        
+
+        let resp: ApiResponse<serde_json::Value> =
+            self.request("/index/api/stopRecord", &params).await?;
+
         if resp.code != 0 {
             return Err(anyhow!("ZLM error: {}", resp.msg.unwrap_or_default()));
         }
@@ -553,7 +663,12 @@ impl ZlmClient {
     }
 
     /// 某个日期目录下的录像文件。
-    pub async fn list_mp4_files(&self, app: &str, stream: &str, period: &str) -> Result<Vec<Mp4RecordFile>> {
+    pub async fn list_mp4_files(
+        &self,
+        app: &str,
+        stream: &str,
+        period: &str,
+    ) -> Result<Vec<Mp4RecordFile>> {
         let resp = self.get_mp4_record_paths(app, stream, Some(period)).await?;
         let root = resp.root_path.clone();
         Ok(resp
@@ -697,19 +812,35 @@ impl ZlmClient {
             ("src_url", req.src_url.clone()),
             ("dst_url", req.dst_url.clone()),
         ];
-        
-        if let Some(t) = req.timeout_ms { params.push(("timeout_ms", t.to_string())); }
-        if let Some(k) = &req.ffmpeg_cmd_key { params.push(("ffmpeg_cmd_key", k.clone())); }
-        if let Some(v) = req.enable_hls { params.push(("enable_hls", if v { "1" } else { "0" }.to_string())); }
-        if let Some(v) = req.enable_mp4 { params.push(("enable_mp4", if v { "1" } else { "0" }.to_string())); }
-        if let Some(v) = req.enable_rtsp { params.push(("enable_rtsp", if v { "1" } else { "0" }.to_string())); }
-        if let Some(v) = req.enable_rtmp { params.push(("enable_rtmp", if v { "1" } else { "0" }.to_string())); }
-        if let Some(v) = req.enable_fmp4 { params.push(("enable_fmp4", if v { "1" } else { "0" }.to_string())); }
+
+        if let Some(t) = req.timeout_ms {
+            params.push(("timeout_ms", t.to_string()));
+        }
+        if let Some(k) = &req.ffmpeg_cmd_key {
+            params.push(("ffmpeg_cmd_key", k.clone()));
+        }
+        if let Some(v) = req.enable_hls {
+            params.push(("enable_hls", if v { "1" } else { "0" }.to_string()));
+        }
+        if let Some(v) = req.enable_mp4 {
+            params.push(("enable_mp4", if v { "1" } else { "0" }.to_string()));
+        }
+        if let Some(v) = req.enable_rtsp {
+            params.push(("enable_rtsp", if v { "1" } else { "0" }.to_string()));
+        }
+        if let Some(v) = req.enable_rtmp {
+            params.push(("enable_rtmp", if v { "1" } else { "0" }.to_string()));
+        }
+        if let Some(v) = req.enable_fmp4 {
+            params.push(("enable_fmp4", if v { "1" } else { "0" }.to_string()));
+        }
 
         #[derive(Deserialize)]
-        struct Resp { key: String }
+        struct Resp {
+            key: String,
+        }
         let resp: ApiResponse<Resp> = self.request("/index/api/addFfmpegSource", &params).await?;
-        
+
         if resp.code != 0 {
             return Err(anyhow!("ZLM error: {}", resp.msg.unwrap_or_default()));
         }
@@ -721,10 +852,7 @@ impl ZlmClient {
     /// 本平台的 `POST /api/play/convertStop/{key}` 走的就是它：转码/转推的流停止时
     /// 必须把 ffmpeg 源删掉，否则 ZLM 会一直重试拉流。
     pub async fn del_ffmpeg_source(&self, key: &str) -> Result<()> {
-        let params = vec![
-            ("secret", self.secret.clone()),
-            ("key", key.to_string()),
-        ];
+        let params = vec![("secret", self.secret.clone()), ("key", key.to_string())];
         let resp: ApiResponse<serde_json::Value> =
             self.request("/index/api/delFFmpegSource", &params).await?;
         if resp.code != 0 {
@@ -751,12 +879,15 @@ impl ZlmClient {
     ) -> Result<bool> {
         self.set_server_config(secret, key, value).await?;
         let cfg = self.get_server_config().await?;
-        Ok(cfg.get(key).map(|v| v.trim() == value.trim()).unwrap_or(false))
+        Ok(cfg
+            .get(key)
+            .map(|v| v.trim() == value.trim())
+            .unwrap_or(false))
     }
 
     pub async fn get_server_config(&self) -> Result<HashMap<String, String>> {
         let params = vec![("secret", self.secret.clone())];
-        
+
         #[derive(Deserialize)]
         struct Resp {
             // ZLM 响应字段：仅用于反序列化（保留以完整映射 API）
@@ -766,8 +897,9 @@ impl ZlmClient {
             #[serde(flatten)]
             rest: HashMap<String, String>,
         }
-        
-        let resp: ApiResponse<Vec<Resp>> = self.request("/index/api/getServerConfig", &params).await?;
+
+        let resp: ApiResponse<Vec<Resp>> =
+            self.request("/index/api/getServerConfig", &params).await?;
         let mut result = HashMap::new();
         if let Some(data) = resp.data {
             for item in data {
@@ -847,10 +979,7 @@ impl ZlmClient {
             #[serde(default)]
             msg: Option<String>,
         }
-        let params = vec![
-            ("secret", secret.to_string()),
-            (key, value.to_string()),
-        ];
+        let params = vec![("secret", secret.to_string()), (key, value.to_string())];
         let resp: Resp = self.request("/index/api/setServerConfig", &params).await?;
         if resp.code == 0 {
             Ok(())
@@ -863,43 +992,50 @@ impl ZlmClient {
         }
     }
 
-
     pub async fn get_server_stats(&self) -> Result<HashMap<String, serde_json::Value>> {
         let params = vec![("secret", self.secret.clone())];
-        let resp: ApiResponse<HashMap<String, serde_json::Value>> = self.request("/index/api/getServerStats", &params).await?;
+        let resp: ApiResponse<HashMap<String, serde_json::Value>> =
+            self.request("/index/api/getServerStats", &params).await?;
         Ok(resp.data.unwrap_or_default())
     }
 
     pub async fn get_net_work_api(&self) -> Result<HashMap<String, serde_json::Value>> {
         let params = vec![("secret", self.secret.clone())];
-        let resp: ApiResponse<HashMap<String, serde_json::Value>> = self.request("/index/api/getNetWorkApi", &params).await?;
+        let resp: ApiResponse<HashMap<String, serde_json::Value>> =
+            self.request("/index/api/getNetWorkApi", &params).await?;
         Ok(resp.data.unwrap_or_default())
     }
 
     pub async fn get_media_video_info(&self, url: &str) -> Result<serde_json::Value> {
-        let params = vec![
-            ("secret", self.secret.clone()),
-            ("url", url.to_string()),
-        ];
-        let resp: ApiResponse<serde_json::Value> = self.request("/index/api/getMediaInfo", &params).await?;
+        let params = vec![("secret", self.secret.clone()), ("url", url.to_string())];
+        let resp: ApiResponse<serde_json::Value> =
+            self.request("/index/api/getMediaInfo", &params).await?;
         resp.data.ok_or_else(|| anyhow!("No media info"))
     }
 
     pub async fn restart_server(&self) -> Result<()> {
         let params = vec![("secret", self.secret.clone())];
-        
+
         #[derive(Deserialize)]
         #[allow(dead_code)]
-        struct Resp { code: i32 }
+        struct Resp {
+            code: i32,
+        }
         let resp: ApiResponse<Resp> = self.request("/index/api/restartServer", &params).await?;
-        
+
         if resp.code != 0 {
             return Err(anyhow!("ZLM error: {}", resp.msg.unwrap_or_default()));
         }
         Ok(())
     }
 
-    pub async fn send_rtp_info(&self, stream_id: &str, ssrc: &str, client_ip: &str, client_port: u16) -> Result<()> {
+    pub async fn send_rtp_info(
+        &self,
+        stream_id: &str,
+        ssrc: &str,
+        client_ip: &str,
+        client_port: u16,
+    ) -> Result<()> {
         let params = vec![
             ("secret", self.secret.clone()),
             ("stream_id", stream_id.to_string()),
@@ -910,7 +1046,9 @@ impl ZlmClient {
 
         #[derive(Deserialize)]
         #[allow(dead_code)]
-        struct Resp { code: i32 }
+        struct Resp {
+            code: i32,
+        }
         let resp: ApiResponse<Resp> = self.request("/index/api/sendRtpInfo", &params).await?;
 
         if resp.code != 0 {
@@ -954,11 +1092,16 @@ impl ZlmClient {
 
         #[derive(Deserialize)]
         #[allow(dead_code)]
-        struct Resp { code: i32 }
+        struct Resp {
+            code: i32,
+        }
         let resp: ApiResponse<Resp> = self.request("/index/api/startSendRtp", &params).await?;
 
         if resp.code != 0 {
-            return Err(anyhow!("ZLM startSendRtp error: {}", resp.msg.unwrap_or_default()));
+            return Err(anyhow!(
+                "ZLM startSendRtp error: {}",
+                resp.msg.unwrap_or_default()
+            ));
         }
         Ok(())
     }
@@ -969,13 +1112,10 @@ impl ZlmClient {
     /// ZLM 的 `stopSendRtp` 允许用 `stream` **或** `ssrc` 选中会话；
     /// 两者都给最稳妥。此前调用方把 **ssrc** 传进了 `stream` 参数，
     /// ZLM 找不到名为该 ssrc 的流 ⇒ 推流从未真正停止（上游会一直收到 RTP）。
-    pub async fn stop_send_rtp(
-        &self,
-        vhost: &str,
-        app: &str,
-        stream: &str,
-    ) -> Result<()> {
-        let _ = self.stop_send_rtp_ex(vhost, app, Some(stream), None).await?;
+    pub async fn stop_send_rtp(&self, vhost: &str, app: &str, stream: &str) -> Result<()> {
+        let _ = self
+            .stop_send_rtp_ex(vhost, app, Some(stream), None)
+            .await?;
         Ok(())
     }
 
@@ -1015,11 +1155,13 @@ impl ZlmClient {
         let resp: Resp = self.request("/index/api/stopSendRtp", &params).await?;
 
         if resp.code != 0 {
-            return Err(anyhow!("ZLM stopSendRtp error: {}", resp.msg.unwrap_or_default()));
+            return Err(anyhow!(
+                "ZLM stopSendRtp error: {}",
+                resp.msg.unwrap_or_default()
+            ));
         }
         Ok(true)
     }
-
 
     /// ZLM 自带的"下载文件（拉流写盘）"接口族 —— **本仓库使用的 ZLM 版本没有它们**。
     ///
@@ -1029,7 +1171,12 @@ impl ZlmClient {
     /// **不可能成功**：这里直接返回明确原因（而不是让调用方看到
     /// `HTTP error: 404` 这种无从判断的报错）。GB28181 的录像下载走
     /// **设备侧 INVITE 下载**（`download_sdp` + RTP 收流），那条路径与 ZLM 无关。
-    pub async fn create_download(&self, url: &str, file_name: &str, save_path: Option<&str>) -> Result<String> {
+    pub async fn create_download(
+        &self,
+        url: &str,
+        file_name: &str,
+        save_path: Option<&str>,
+    ) -> Result<String> {
         let _ = (url, file_name, save_path);
         Err(anyhow!(
             "当前 ZLM 版本没有 /index/api/createDownload（不在 getApiList 中）；             请使用 GB28181 设备侧录像下载（要求设备在线）"
@@ -1081,14 +1228,17 @@ pub fn parse_port_range(s: &str) -> Result<(u16, u16)> {
     let normalized = s.trim().replace('-', ",");
     let parts: Vec<&str> = normalized.split(',').map(str::trim).collect();
     if parts.len() != 2 {
-        return Err(anyhow!("Invalid port range: {} (expected 'start-end' or 'start,end')", s));
+        return Err(anyhow!(
+            "Invalid port range: {} (expected 'start-end' or 'start,end')",
+            s
+        ));
     }
-    let start: u16 = parts[0].parse().map_err(|e| {
-        anyhow!("Invalid port range start '{}': {}", parts[0], e)
-    })?;
-    let end: u16 = parts[1].parse().map_err(|e| {
-        anyhow!("Invalid port range end '{}': {}", parts[1], e)
-    })?;
+    let start: u16 = parts[0]
+        .parse()
+        .map_err(|e| anyhow!("Invalid port range start '{}': {}", parts[0], e))?;
+    let end: u16 = parts[1]
+        .parse()
+        .map_err(|e| anyhow!("Invalid port range end '{}': {}", parts[1], e))?;
     Ok((start, end))
 }
 
@@ -1099,12 +1249,7 @@ pub fn parse_port_range(s: &str) -> Result<(u16, u16)> {
 ///
 /// Returns `Ok(())` on success; propagates errors from `parse_port_range` or
 /// `set_server_config`.
-pub async fn set_rtp_port_range(
-    zlm: &ZlmClient,
-    secret: &str,
-    key: &str,
-    raw: &str,
-) -> Result<()> {
+pub async fn set_rtp_port_range(zlm: &ZlmClient, secret: &str, key: &str, raw: &str) -> Result<()> {
     let (start, end) = parse_port_range(raw)?;
     let value = format!("{}-{}", start, end);
     zlm.set_server_config(secret, key, &value).await
@@ -1126,9 +1271,7 @@ pub async fn set_rtp_port_range_verified(
     for key in candidate_keys {
         match zlm.set_server_config_verified(secret, key, &value).await {
             Ok(true) => return Ok((*key).to_string()),
-            Ok(false) => {
-                last_err = anyhow!("{key} 下发后回读值不一致（该 ZLM 版本可能不支持）")
-            }
+            Ok(false) => last_err = anyhow!("{key} 下发后回读值不一致（该 ZLM 版本可能不支持）"),
             Err(e) => last_err = e,
         }
     }
@@ -1173,7 +1316,8 @@ impl ZlmClient {
             #[serde(rename = "data")]
             data: Option<Vec<serde_json::Value>>,
         }
-        let resp: StreamListResp = self.http
+        let resp: StreamListResp = self
+            .http
             .get(format!("{}/api/stream/list", self.base_url))
             .query(&[("secret", &self.secret)])
             .send()
@@ -1193,7 +1337,8 @@ impl ZlmClient {
             #[serde(rename = "version")]
             version: Option<String>,
         }
-        let resp: VersionResp = self.http
+        let resp: VersionResp = self
+            .http
             .get(format!("{}/api/version", self.base_url))
             .send()
             .await?
@@ -1351,10 +1496,7 @@ mod tests {
             let stripped = uri.trim_start_matches("http://");
             let mut parts = stripped.splitn(2, ':');
             let ip = parts.next().unwrap_or("127.0.0.1").to_string();
-            let port: u16 = parts
-                .next()
-                .and_then(|p| p.parse().ok())
-                .unwrap_or(80);
+            let port: u16 = parts.next().and_then(|p| p.parse().ok()).unwrap_or(80);
 
             let zlm_client = crate::zlm::ZlmClient::new(&ip, port, "test-secret");
 

@@ -251,7 +251,12 @@ pub async fn add(pool: &Pool, f: &StreamProxyWrite<'_>, now: &str) -> sqlx::Resu
 ///
 /// 注意 `pulling` 不在可写字段里 —— 它是运行期状态，只能由
 /// `update_play_state` 改写，否则"编辑弹窗保存"会把正在拉流的标记抹掉。
-pub async fn update(pool: &Pool, id: i64, f: &StreamProxyWrite<'_>, now: &str) -> sqlx::Result<u64> {
+pub async fn update(
+    pool: &Pool,
+    id: i64,
+    f: &StreamProxyWrite<'_>,
+    now: &str,
+) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
     let r = sqlx::query(
         r#"UPDATE gb_stream_proxy SET
@@ -384,12 +389,13 @@ pub async fn update_play_state(
         .execute(pool)
         .await?;
     #[cfg(feature = "postgres")]
-    let r = sqlx::query("UPDATE gb_stream_proxy SET pulling = $1, stream_status = $2 WHERE id = $3")
-        .bind(pulling)
-        .bind(status)
-        .bind(id)
-        .execute(pool)
-        .await?;
+    let r =
+        sqlx::query("UPDATE gb_stream_proxy SET pulling = $1, stream_status = $2 WHERE id = $3")
+            .bind(pulling)
+            .bind(status)
+            .bind(id)
+            .execute(pool)
+            .await?;
     #[cfg(feature = "sqlite")]
     let r = sqlx::query("UPDATE gb_stream_proxy SET pulling = ?, stream_status = ? WHERE id = ?")
         .bind(pulling)
@@ -430,19 +436,19 @@ pub async fn set_media_server_id(
 pub async fn delete_by_id(pool: &Pool, id: i64) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
     let r = sqlx::query("DELETE FROM gb_stream_proxy WHERE id = ?")
-    .bind(id)
-    .execute(pool)
-    .await?;
+        .bind(id)
+        .execute(pool)
+        .await?;
     #[cfg(feature = "postgres")]
     let r = sqlx::query("DELETE FROM gb_stream_proxy WHERE id = $1")
-    .bind(id)
-    .execute(pool)
-    .await?;
+        .bind(id)
+        .execute(pool)
+        .await?;
     #[cfg(feature = "sqlite")]
     let r = sqlx::query("DELETE FROM gb_stream_proxy WHERE id = ?")
-    .bind(id)
-    .execute(pool)
-    .await?;
+        .bind(id)
+        .execute(pool)
+        .await?;
     Ok(r.rows_affected())
 }
 
@@ -467,7 +473,10 @@ fn proxy_filter(
     use crate::dyn_where::{BindValue, DynWhere};
     let mut w = DynWhere::new();
     if let Some(mid) = media_server_id.filter(|s| !s.is_empty()) {
-        w.add("media_server_id = ?", vec![BindValue::Text(mid.to_string())]);
+        w.add(
+            "media_server_id = ?",
+            vec![BindValue::Text(mid.to_string())],
+        );
     }
     if let Some(p) = pulling {
         // 不能绑 Int：postgres 的 `pulling` 是 bool 列，`boolean = integer` 会 500。
@@ -508,7 +517,11 @@ pub async fn list_paged(
     // 多方言共用同一份 SQL 文本：`DynWhere::sql` 把 `?` 改写成 `$n`。
     // 列名显式列出，不用 `SELECT *` —— 少了列时 `SELECT *` 不报错，只会让字段恒空。
     let limit_ph = if cfg!(feature = "postgres") {
-        format!(" LIMIT ${} OFFSET ${}", w.binds.len() + 1, w.binds.len() + 2)
+        format!(
+            " LIMIT ${} OFFSET ${}",
+            w.binds.len() + 1,
+            w.binds.len() + 2
+        )
     } else {
         " LIMIT ? OFFSET ?".to_string()
     };
@@ -643,7 +656,11 @@ pub async fn update_enable_status(pool: &Pool, id: i64, enable: bool) -> sqlx::R
 }
 
 /// 根据 app 和 stream 查询代理
-pub async fn get_by_app_stream(pool: &Pool, app: &str, stream: &str) -> sqlx::Result<Option<StreamProxy>> {
+pub async fn get_by_app_stream(
+    pool: &Pool,
+    app: &str,
+    stream: &str,
+) -> sqlx::Result<Option<StreamProxy>> {
     #[cfg(feature = "mysql")]
     return sqlx::query_as::<_, StreamProxy>(
         "SELECT id, type, app, stream, src_url, timeout, ffmpeg_cmd_key, rtsp_type, media_server_id, enable_audio, enable_mp4, pulling, enable, create_time, name, update_time, stream_key, server_id, enable_disable_none_reader, relates_media_server_id, stream_status FROM gb_stream_proxy WHERE app = ? AND stream = ?"
@@ -715,7 +732,10 @@ pub async fn get_all_pulling_proxies(pool: &Pool) -> sqlx::Result<Vec<StreamProx
 }
 
 /// 根据媒体服务器ID获取代理列表
-pub async fn list_by_media_server(pool: &Pool, media_server_id: &str) -> sqlx::Result<Vec<StreamProxy>> {
+pub async fn list_by_media_server(
+    pool: &Pool,
+    media_server_id: &str,
+) -> sqlx::Result<Vec<StreamProxy>> {
     #[cfg(feature = "mysql")]
     return sqlx::query_as::<_, StreamProxy>(
         "SELECT id, type, app, stream, src_url, timeout, ffmpeg_cmd_key, rtsp_type, media_server_id, enable_audio, enable_mp4, pulling, enable, create_time, name, update_time, stream_key, server_id, enable_disable_none_reader, relates_media_server_id, stream_status FROM gb_stream_proxy WHERE media_server_id = ? ORDER BY id"

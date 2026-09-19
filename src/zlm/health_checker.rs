@@ -108,7 +108,8 @@ impl ZlmHealthChecker {
                         }
                         None => {}
                     }
-                    zlm_ports = Some(crate::zlm::address_builder::ZlmPortConfig::from_server_config(&cfg));
+                    zlm_ports =
+                        Some(crate::zlm::address_builder::ZlmPortConfig::from_server_config(&cfg));
                     ZlmServerStatus::Online
                 }
                 Err(_) => ZlmServerStatus::Offline,
@@ -165,7 +166,12 @@ impl ZlmHealthChecker {
             }
 
             if *status != new_status {
-                tracing::info!("ZLM server {} status changed: {:?} -> {:?}", id, status, new_status);
+                tracing::info!(
+                    "ZLM server {} status changed: {:?} -> {:?}",
+                    id,
+                    status,
+                    new_status
+                );
                 *status = new_status;
 
                 if let Some(ref pool) = self.pool {
@@ -176,7 +182,9 @@ impl ZlmHealthChecker {
                         {
                             tracing::error!(
                                 "ZLM 节点 {} 状态写库失败 (online={}): {}",
-                                id, online, e
+                                id,
+                                online,
+                                e
                             );
                         }
                     }
@@ -186,7 +194,10 @@ impl ZlmHealthChecker {
                 }
             }
 
-            if id_drift && new_status == ZlmServerStatus::Online && !reconfigure.iter().any(|(rid, _)| rid == id) {
+            if id_drift
+                && new_status == ZlmServerStatus::Online
+                && !reconfigure.iter().any(|(rid, _)| rid == id)
+            {
                 reconfigure.push((id.clone(), client.clone()));
             }
 
@@ -198,9 +209,7 @@ impl ZlmHealthChecker {
         // 平台侧收不到任何"流已就绪/无人观看/录像完成"事件）
         for (id, client) in reconfigure {
             let Some(hook_url) = self.hook_urls.get(&id) else {
-                tracing::warn!(
-                    "ZLM 节点 {id} 上线，但配置里没有 hook_url，跳过 hook 下发"
-                );
+                tracing::warn!("ZLM 节点 {id} 上线，但配置里没有 hook_url，跳过 hook 下发");
                 continue;
             };
             // 节点身份：ZLM 在每个 hook 请求里带上 `mediaServerId`，值取自
@@ -222,7 +231,10 @@ impl ZlmHealthChecker {
             let mut failed = 0usize;
             let mut unsupported: Vec<String> = Vec::new();
             for (key, value) in &items {
-                match client.set_server_config_verified(&client.secret, key, value).await {
+                match client
+                    .set_server_config_verified(&client.secret, key, value)
+                    .await
+                {
                     Ok(true) => {}
                     Ok(false) => unsupported.push(key.clone()),
                     Err(_) => failed += 1,
@@ -305,16 +317,16 @@ impl ZlmHealthChecker {
 
     pub async fn get_online_clients(&self) -> Vec<(String, Arc<crate::zlm::ZlmClient>)> {
         let clients = self.clients.read().await;
-        clients.iter()
+        clients
+            .iter()
             .filter(|(_, _, status)| *status == ZlmServerStatus::Online)
             .map(|(id, client, _)| (id.clone(), client.clone()))
             .collect()
     }
 
     pub async fn run_health_check_loop(&self) {
-        let mut interval = tokio::time::interval(
-            std::time::Duration::from_secs(self.check_interval_secs)
-        );
+        let mut interval =
+            tokio::time::interval(std::time::Duration::from_secs(self.check_interval_secs));
 
         loop {
             interval.tick().await;
@@ -337,7 +349,10 @@ mod media_server_id_tests {
     #[test]
     fn detects_media_server_id_drift() {
         let mut cfg = HashMap::new();
-        cfg.insert("general.mediaServerId".to_string(), "zlmediakit-1".to_string());
+        cfg.insert(
+            "general.mediaServerId".to_string(),
+            "zlmediakit-1".to_string(),
+        );
         assert_eq!(media_server_id_drift("zlmediakit-1", &cfg), None);
 
         cfg.insert("general.mediaServerId".to_string(), "hacked".to_string());

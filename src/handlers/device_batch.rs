@@ -105,29 +105,60 @@ pub async fn batch_control(
                         .send_device_control(device_id, channel_id, "DeviceControl", &body)
                         .await
                     {
-                        Ok(_) => DeviceControlResult { device_id: device_id.clone(), success: true, message: None },
-                        Err(e) => DeviceControlResult { device_id: device_id.clone(), success: false, message: Some(format!("{}", e)) },
+                        Ok(_) => DeviceControlResult {
+                            device_id: device_id.clone(),
+                            success: true,
+                            message: None,
+                        },
+                        Err(e) => DeviceControlResult {
+                            device_id: device_id.clone(),
+                            success: false,
+                            message: Some(format!("{}", e)),
+                        },
                     }
                 } else {
-                    DeviceControlResult { device_id: device_id.clone(), success: false, message: Some("Missing channel_id".to_string()) }
+                    DeviceControlResult {
+                        device_id: device_id.clone(),
+                        success: false,
+                        message: Some("Missing channel_id".to_string()),
+                    }
                 }
             }
-            BatchCommand::SyncCatalog => {
-                match sip.send_catalog_query(device_id).await {
-                    Ok(_) => DeviceControlResult { device_id: device_id.clone(), success: true, message: None },
-                    Err(e) => DeviceControlResult { device_id: device_id.clone(), success: false, message: Some(format!("{}", e)) },
-                }
-            }
+            BatchCommand::SyncCatalog => match sip.send_catalog_query(device_id).await {
+                Ok(_) => DeviceControlResult {
+                    device_id: device_id.clone(),
+                    success: true,
+                    message: None,
+                },
+                Err(e) => DeviceControlResult {
+                    device_id: device_id.clone(),
+                    success: false,
+                    message: Some(format!("{}", e)),
+                },
+            },
             BatchCommand::Reboot => {
                 // 远程启动：`<CmdType>DeviceControl</CmdType>` + `<TeleBoot>Boot</TeleBoot>`。
                 // 此前是 `cmd_type="Reboot"` + 空 body —— 设备端既认不出 CmdType，
                 // 也没有 TeleBoot 元素，"批量重启"实际什么都不会发生。
                 match sip
-                    .send_device_control(device_id, device_id, "DeviceControl", "<TeleBoot>Boot</TeleBoot>")
+                    .send_device_control(
+                        device_id,
+                        device_id,
+                        "DeviceControl",
+                        "<TeleBoot>Boot</TeleBoot>",
+                    )
                     .await
                 {
-                    Ok(_) => DeviceControlResult { device_id: device_id.clone(), success: true, message: None },
-                    Err(e) => DeviceControlResult { device_id: device_id.clone(), success: false, message: Some(format!("{}", e)) },
+                    Ok(_) => DeviceControlResult {
+                        device_id: device_id.clone(),
+                        success: true,
+                        message: None,
+                    },
+                    Err(e) => DeviceControlResult {
+                        device_id: device_id.clone(),
+                        success: false,
+                        message: Some(format!("{}", e)),
+                    },
                 }
             }
             BatchCommand::QueryDeviceInfo => {
@@ -135,15 +166,31 @@ pub async fn batch_control(
                 // 三个不同的批量按钮下发的是同一条目录查询。现在各发各的。
                 let sn = (chrono::Utc::now().timestamp_millis() % 900_000 + 100_000) as u32;
                 match sip.send_device_info_query(device_id, sn).await {
-                    Ok(_) => DeviceControlResult { device_id: device_id.clone(), success: true, message: None },
-                    Err(e) => DeviceControlResult { device_id: device_id.clone(), success: false, message: Some(format!("{}", e)) },
+                    Ok(_) => DeviceControlResult {
+                        device_id: device_id.clone(),
+                        success: true,
+                        message: None,
+                    },
+                    Err(e) => DeviceControlResult {
+                        device_id: device_id.clone(),
+                        success: false,
+                        message: Some(format!("{}", e)),
+                    },
                 }
             }
             BatchCommand::QueryDeviceStatus => {
                 let sn = (chrono::Utc::now().timestamp_millis() % 900_000 + 100_000) as u32;
                 match sip.send_device_status_query(device_id, sn).await {
-                    Ok(_) => DeviceControlResult { device_id: device_id.clone(), success: true, message: None },
-                    Err(e) => DeviceControlResult { device_id: device_id.clone(), success: false, message: Some(format!("{}", e)) },
+                    Ok(_) => DeviceControlResult {
+                        device_id: device_id.clone(),
+                        success: true,
+                        message: None,
+                    },
+                    Err(e) => DeviceControlResult {
+                        device_id: device_id.clone(),
+                        success: false,
+                        message: Some(format!("{}", e)),
+                    },
                 }
             }
         };

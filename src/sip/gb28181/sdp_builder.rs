@@ -116,7 +116,9 @@ impl SdpBuilder {
         //   语音对讲/广播 → 平台既发又收（可视对讲）→ sendrecv
         // 设备侧的 200 OK 才用 sendonly。
         let direction = match stream_type {
-            StreamType::Play | StreamType::Playback | StreamType::Download => SdpDirection::RecvOnly,
+            StreamType::Play | StreamType::Playback | StreamType::Download => {
+                SdpDirection::RecvOnly
+            }
             StreamType::Talk | StreamType::Broadcast => SdpDirection::SendRecv,
         };
         Self {
@@ -197,15 +199,15 @@ impl SdpBuilder {
                     "m=audio {} {} 8 0 101\r\n\
                      a=rtpmap:8 PCMA/8000\r\n\
                      a=rtpmap:0 PCMU/8000\r\n\
-                     a=rtpmap:101 telephone-event/8000\r\n"
-                    , self.media_port, proto
+                     a=rtpmap:101 telephone-event/8000\r\n",
+                    self.media_port, proto
                 ));
             }
             _ => {
                 sdp.push_str(&format!(
                     "m=video {} {} 96\r\n\
-                     a=rtpmap:96 PS/90000\r\n"
-                    , self.media_port, proto
+                     a=rtpmap:96 PS/90000\r\n",
+                    self.media_port, proto
                 ));
             }
         }
@@ -223,7 +225,8 @@ impl SdpBuilder {
 
         if let (Some(s), Some(_)) = (&self.start_time, &self.end_time) {
             if s != "0" {
-                sdp.push_str(&format!("a=range:npt={},{}\r\n", 
+                sdp.push_str(&format!(
+                    "a=range:npt={},{}\r\n",
                     self.start_time.as_deref().unwrap_or("0"),
                     self.end_time.as_deref().unwrap_or("0")
                 ));
@@ -254,30 +257,39 @@ impl SdpBuilder {
 }
 
 pub fn play_sdp(ip: &str, media_port: u16, ssrc: &str) -> String {
-    SdpBuilder::new(ip, media_port, StreamType::Play, ssrc)
-        .build()
+    SdpBuilder::new(ip, media_port, StreamType::Play, ssrc).build()
 }
 
-pub fn playback_sdp(ip: &str, media_port: u16, ssrc: &str, start_time: &str, end_time: &str) -> String {
+pub fn playback_sdp(
+    ip: &str,
+    media_port: u16,
+    ssrc: &str,
+    start_time: &str,
+    end_time: &str,
+) -> String {
     SdpBuilder::new(ip, media_port, StreamType::Playback, ssrc)
         .time_range(start_time, end_time)
         .build()
 }
 
-pub fn download_sdp(ip: &str, media_port: u16, ssrc: &str, start_time: &str, end_time: &str) -> String {
+pub fn download_sdp(
+    ip: &str,
+    media_port: u16,
+    ssrc: &str,
+    start_time: &str,
+    end_time: &str,
+) -> String {
     SdpBuilder::new(ip, media_port, StreamType::Download, ssrc)
         .time_range(start_time, end_time)
         .build()
 }
 
 pub fn talk_sdp(ip: &str, audio_port: u16, ssrc: &str) -> String {
-    SdpBuilder::new(ip, audio_port, StreamType::Talk, ssrc)
-        .build()
+    SdpBuilder::new(ip, audio_port, StreamType::Talk, ssrc).build()
 }
 
 pub fn broadcast_sdp(ip: &str, audio_port: u16, ssrc: &str) -> String {
-    SdpBuilder::new(ip, audio_port, StreamType::Broadcast, ssrc)
-        .build()
+    SdpBuilder::new(ip, audio_port, StreamType::Broadcast, ssrc).build()
 }
 
 /// 从设备 200 OK 的 SDP 里解析首个 `m=video` / `m=audio` 的端口号。
@@ -296,7 +308,9 @@ pub fn parse_media_port(sdp: &str) -> Option<u16> {
             continue;
         };
         let mut it = rest.split_whitespace();
-        let Some(media_type) = it.next() else { continue };
+        let Some(media_type) = it.next() else {
+            continue;
+        };
         if media_type != "video" && media_type != "audio" {
             continue;
         }
@@ -325,7 +339,13 @@ mod tests {
 
     #[test]
     fn test_playback_sdp() {
-        let sdp = playback_sdp("192.168.1.100", 50000, "0100000001", "1700000000", "1700003600");
+        let sdp = playback_sdp(
+            "192.168.1.100",
+            50000,
+            "0100000001",
+            "1700000000",
+            "1700003600",
+        );
         assert!(sdp.contains("s=Playback"));
         assert!(sdp.contains("t=1700000000 1700003600"));
         assert!(sdp.contains("a=range:npt=1700000000,1700003600"));
@@ -333,7 +353,13 @@ mod tests {
 
     #[test]
     fn test_download_sdp() {
-        let sdp = download_sdp("192.168.1.100", 50000, "0100000001", "1700000000", "1700003600");
+        let sdp = download_sdp(
+            "192.168.1.100",
+            50000,
+            "0100000001",
+            "1700000000",
+            "1700003600",
+        );
         assert!(sdp.contains("s=Download"));
         assert!(sdp.contains("a=range:npt=1700000000,1700003600"));
     }
@@ -415,14 +441,26 @@ mod tests {
 
     #[test]
     fn playback_time_range_accepts_existing_unix_seconds() {
-        let sdp = playback_sdp("192.168.1.100", 50000, "0100000001", "1700000000", "1700003600");
+        let sdp = playback_sdp(
+            "192.168.1.100",
+            50000,
+            "0100000001",
+            "1700000000",
+            "1700003600",
+        );
         assert!(sdp.contains("t=1700000000 1700003600"));
     }
 
     /// 起止时间无法解析时回退为不限时，而不是把非法串发出去。
     #[test]
     fn playback_time_range_falls_back_to_unbounded_on_garbage() {
-        let sdp = playback_sdp("192.168.1.100", 50000, "0100000001", "not-a-time", "also-bad");
+        let sdp = playback_sdp(
+            "192.168.1.100",
+            50000,
+            "0100000001",
+            "not-a-time",
+            "also-bad",
+        );
         assert!(sdp.contains("t=0 0"), "实际:\n{}", sdp);
         assert!(!sdp.contains("a=range:npt"), "实际:\n{}", sdp);
         assert!(!sdp.contains("not-a-time"));
@@ -434,10 +472,7 @@ mod tests {
         assert_eq!(to_unix_seconds("1700000000"), Some(1700000000));
         assert_eq!(to_unix_seconds("2024-01-01T10:00:00"), Some(1704103200));
         assert_eq!(to_unix_seconds("2024-01-01 10:00:00"), Some(1704103200));
-        assert_eq!(
-            to_unix_seconds("2024-01-01T10:00:00Z"),
-            Some(1704103200)
-        );
+        assert_eq!(to_unix_seconds("2024-01-01T10:00:00Z"), Some(1704103200));
         assert_eq!(to_unix_seconds(""), None);
         assert_eq!(to_unix_seconds("   "), None);
         assert_eq!(to_unix_seconds("nonsense"), None);

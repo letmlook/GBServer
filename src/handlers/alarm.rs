@@ -5,8 +5,8 @@ use axum::{
 use serde::Deserialize;
 use utoipa::{IntoParams, ToSchema};
 
-use crate::error::{AppError, ErrorCode};
 use crate::dyn_where::{BindValue, DynWhere};
+use crate::error::{AppError, ErrorCode};
 use crate::response::ApiResult;
 use crate::AppState;
 
@@ -116,14 +116,19 @@ pub async fn alarm_list(
 
     let w = alarm_filter(&q);
 
-    const COLS: &str = "SELECT id, device_id, channel_id, alarm_priority, alarm_method, alarm_type, \
+    const COLS: &str =
+        "SELECT id, device_id, channel_id, alarm_priority, alarm_method, alarm_type, \
          alarm_time, alarm_description, longitude, latitude, create_time, \
          handled, handle_user, handle_time, handle_result \
          FROM gb_device_alarm";
     const COUNT_BASE: &str = "SELECT COUNT(*) FROM gb_device_alarm";
 
     let limit_ph = if cfg!(feature = "postgres") {
-        format!(" LIMIT ${} OFFSET ${}", w.binds.len() + 1, w.binds.len() + 2)
+        format!(
+            " LIMIT ${} OFFSET ${}",
+            w.binds.len() + 1,
+            w.binds.len() + 2
+        )
     } else {
         " LIMIT ? OFFSET ?".to_string()
     };
@@ -177,15 +182,25 @@ fn alarm_filter(q: &AlarmQuery) -> DynWhere {
     }
     if let Some(v) = q.alarm_type.as_deref().filter(|s| !s.is_empty()) {
         // 兼容逗号分隔的多个类型（早期前端会对同名参数重复传多次）
-        let types: Vec<&str> = v.split(',').map(str::trim).filter(|s| !s.is_empty()).collect();
+        let types: Vec<&str> = v
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .collect();
         match types.len() {
             0 => {}
-            1 => w.add("alarm_type = ?", vec![BindValue::Text(types[0].to_string())]),
+            1 => w.add(
+                "alarm_type = ?",
+                vec![BindValue::Text(types[0].to_string())],
+            ),
             _ => {
                 let ph = vec!["?"; types.len()].join(",");
                 w.add(
                     format!("alarm_type IN ({ph})"),
-                    types.iter().map(|t| BindValue::Text(t.to_string())).collect(),
+                    types
+                        .iter()
+                        .map(|t| BindValue::Text(t.to_string()))
+                        .collect(),
                 );
             }
         }
@@ -219,7 +234,10 @@ fn alarm_filter(q: &AlarmQuery) -> DynWhere {
         );
     }
     if let Some(handled) = q.handled {
-        w.add("handled = ?", vec![BindValue::Int(if handled { 1 } else { 0 })]);
+        w.add(
+            "handled = ?",
+            vec![BindValue::Int(if handled { 1 } else { 0 })],
+        );
     }
     w
 }
@@ -247,24 +265,28 @@ pub async fn alarm_detail(
     axum::extract::Path(id): axum::extract::Path<i64>,
 ) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     #[cfg(feature = "postgres")]
-    let row: Option<AlarmRow> = sqlx::query_as("SELECT id, device_id, channel_id, alarm_priority, \
+    let row: Option<AlarmRow> = sqlx::query_as(
+        "SELECT id, device_id, channel_id, alarm_priority, \
         alarm_method, alarm_type, alarm_time, alarm_description, longitude, latitude, \
         create_time, handled, handle_user, handle_time, handle_result \
-        FROM gb_device_alarm WHERE id = $1")
-        .bind(id)
-        .fetch_optional(&state.pool)
-        .await
-        .map_err(|e| AppError::business(ErrorCode::Error500, format!("数据库查询失败: {e}")))?;
+        FROM gb_device_alarm WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| AppError::business(ErrorCode::Error500, format!("数据库查询失败: {e}")))?;
 
     #[cfg(any(feature = "mysql", feature = "sqlite"))]
-    let row: Option<AlarmRow> = sqlx::query_as("SELECT id, device_id, channel_id, alarm_priority, \
+    let row: Option<AlarmRow> = sqlx::query_as(
+        "SELECT id, device_id, channel_id, alarm_priority, \
         alarm_method, alarm_type, alarm_time, alarm_description, longitude, latitude, \
         create_time, handled, handle_user, handle_time, handle_result \
-        FROM gb_device_alarm WHERE id = ?")
-        .bind(id)
-        .fetch_optional(&state.pool)
-        .await
-        .map_err(|e| AppError::business(ErrorCode::Error500, format!("数据库查询失败: {e}")))?;
+        FROM gb_device_alarm WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| AppError::business(ErrorCode::Error500, format!("数据库查询失败: {e}")))?;
 
     match row {
         Some(r) => Ok(Json(ApiResult::success(r.to_json()))),
@@ -378,7 +400,9 @@ pub async fn alarm_delete(
     if deleted == 0 {
         return Ok(Json(ApiResult::error("告警不存在")));
     }
-    Ok(Json(ApiResult::success(serde_json::json!({ "deleted": deleted }))))
+    Ok(Json(ApiResult::success(
+        serde_json::json!({ "deleted": deleted }),
+    )))
 }
 
 /// DELETE /api/alarm/batch - 批量删除告警（body `{"ids":[...]}`）
@@ -439,7 +463,9 @@ async fn delete_alarm_ids(
     ids: &[i64],
 ) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     if ids.is_empty() {
-        return Ok(Json(ApiResult::success(serde_json::json!({ "deleted": 0 }))));
+        return Ok(Json(ApiResult::success(
+            serde_json::json!({ "deleted": 0 }),
+        )));
     }
 
     let mut deleted = 0u64;
@@ -450,17 +476,23 @@ async fn delete_alarm_ids(
             .bind(id)
             .execute(pool)
             .await
-            .map_err(|e| AppError::business(ErrorCode::Error500, format!("数据库删除失败: {}", e)))?;
+            .map_err(|e| {
+                AppError::business(ErrorCode::Error500, format!("数据库删除失败: {}", e))
+            })?;
         #[cfg(any(feature = "mysql", feature = "sqlite"))]
         let r = sqlx::query("DELETE FROM gb_device_alarm WHERE id = ?")
             .bind(id)
             .execute(pool)
             .await
-            .map_err(|e| AppError::business(ErrorCode::Error500, format!("数据库删除失败: {}", e)))?;
+            .map_err(|e| {
+                AppError::business(ErrorCode::Error500, format!("数据库删除失败: {}", e))
+            })?;
         deleted += r.rows_affected();
     }
 
-    Ok(Json(ApiResult::success(serde_json::json!({ "deleted": deleted }))))
+    Ok(Json(ApiResult::success(
+        serde_json::json!({ "deleted": deleted }),
+    )))
 }
 
 /// DELETE /api/alarm/clear - 按筛选条件清空告警
@@ -511,7 +543,9 @@ pub async fn alarm_clear(
         .await
         .map_err(|e| AppError::business(ErrorCode::Error500, format!("清空失败: {e}")))?;
     tracing::info!("alarm_clear: 清空 {cleared} 条告警（条件: {where_sql}）");
-    Ok(Json(ApiResult::success(serde_json::json!({ "cleared": cleared }))))
+    Ok(Json(ApiResult::success(
+        serde_json::json!({ "cleared": cleared }),
+    )))
 }
 
 /// DELETE /api/alarm/device/:device_id - 删除设备的所有告警
@@ -547,7 +581,9 @@ pub async fn alarm_delete_by_device(
         .await
         .map_err(|e| AppError::business(ErrorCode::Error500, format!("数据库删除失败: {}", e)))?;
 
-    Ok(Json(ApiResult::success(serde_json::json!({ "deleted": r.rows_affected() }))))
+    Ok(Json(ApiResult::success(
+        serde_json::json!({ "deleted": r.rows_affected() }),
+    )))
 }
 
 /// DELETE /api/alarm/before/:time - 删除指定时间之前的告警
@@ -583,7 +619,9 @@ pub async fn alarm_delete_before_time(
         .await
         .map_err(|e| AppError::business(ErrorCode::Error500, format!("数据库删除失败: {}", e)))?;
 
-    Ok(Json(ApiResult::success(serde_json::json!({ "deleted": r.rows_affected() }))))
+    Ok(Json(ApiResult::success(
+        serde_json::json!({ "deleted": r.rows_affected() }),
+    )))
 }
 
 #[cfg(all(test, feature = "sqlite"))]
@@ -620,9 +658,12 @@ mod alarm_contract_tests {
         seed(&state, "d2", "1", "2026-09-10 08:00:00", "2").await;
         seed(&state, "d3", "1", "2026-09-20 08:00:00", "3").await;
 
-        let all = alarm_list(State(state.clone()), Query(q(serde_json::json!({"page":1,"count":10}))))
-            .await
-            .unwrap();
+        let all = alarm_list(
+            State(state.clone()),
+            Query(q(serde_json::json!({"page":1,"count":10}))),
+        )
+        .await
+        .unwrap();
         assert_eq!(all.0.data.as_ref().unwrap()["total"], 3);
 
         let ranged = alarm_list(
@@ -642,7 +683,9 @@ mod alarm_contract_tests {
         // startTime 是历史别名，也要能用
         let alias = alarm_list(
             State(state.clone()),
-            Query(q(serde_json::json!({"page":1,"count":10,"startTime":"2026-09-05 00:00:00"}))),
+            Query(q(
+                serde_json::json!({"page":1,"count":10,"startTime":"2026-09-05 00:00:00"}),
+            )),
         )
         .await
         .unwrap();
@@ -653,8 +696,22 @@ mod alarm_contract_tests {
     #[tokio::test]
     async fn test_keyword_filters_device_and_description() {
         let state = app_state().await;
-        seed(&state, "34020000001320000001", "1", "2026-09-01 08:00:00", "1").await;
-        seed(&state, "34020000001320000002", "1", "2026-09-01 08:00:00", "1").await;
+        seed(
+            &state,
+            "34020000001320000001",
+            "1",
+            "2026-09-01 08:00:00",
+            "1",
+        )
+        .await;
+        seed(
+            &state,
+            "34020000001320000002",
+            "1",
+            "2026-09-01 08:00:00",
+            "1",
+        )
+        .await;
 
         let hit = alarm_list(
             State(state.clone()),
@@ -690,9 +747,12 @@ mod alarm_contract_tests {
         .unwrap();
         assert_eq!(res.0.data.unwrap()["cleared"], 2);
 
-        let left = alarm_list(State(state.clone()), Query(q(serde_json::json!({"page":1,"count":10}))))
-            .await
-            .unwrap();
+        let left = alarm_list(
+            State(state.clone()),
+            Query(q(serde_json::json!({"page":1,"count":10}))),
+        )
+        .await
+        .unwrap();
         let d = left.0.data.unwrap();
         assert_eq!(d["total"], 1, "只应清掉 alarmType=1 的两条: {d}");
         assert_eq!(d["list"][0]["deviceId"], "d2");
@@ -710,10 +770,14 @@ mod alarm_contract_tests {
         }))
         .expect("前端载荷必须能反序列化");
         assert_eq!(body.handle_result.as_deref(), Some("已电话确认"));
-        let res = alarm_handle(State(state.clone()), Json(body)).await.unwrap();
+        let res = alarm_handle(State(state.clone()), Json(body))
+            .await
+            .unwrap();
         assert_eq!(res.0.data.unwrap()["handled"], true);
 
-        let detail = alarm_detail(State(state.clone()), axum::extract::Path(1i64)).await.unwrap();
+        let detail = alarm_detail(State(state.clone()), axum::extract::Path(1i64))
+            .await
+            .unwrap();
         let d = detail.0.data.unwrap();
         assert_eq!(d["handled"], true);
         assert_eq!(d["handleUser"], "admin");
@@ -745,12 +809,17 @@ mod alarm_contract_tests {
         seed(&state, "d3", "1", "2026-09-03 08:00:00", "1").await;
 
         let body: Vec<i64> = serde_json::from_value(serde_json::json!([1, 3])).unwrap();
-        let res = alarm_delete_batch(State(state.clone()), Json(body)).await.unwrap();
-        assert_eq!(res.0.data.unwrap()["deleted"], 2);
-
-        let left = alarm_list(State(state.clone()), Query(q(serde_json::json!({"page":1,"count":10}))))
+        let res = alarm_delete_batch(State(state.clone()), Json(body))
             .await
             .unwrap();
+        assert_eq!(res.0.data.unwrap()["deleted"], 2);
+
+        let left = alarm_list(
+            State(state.clone()),
+            Query(q(serde_json::json!({"page":1,"count":10}))),
+        )
+        .await
+        .unwrap();
         assert_eq!(left.0.data.unwrap()["total"], 1);
     }
 }

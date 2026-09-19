@@ -1,7 +1,7 @@
-use tokio::net::{TcpListener, UdpSocket};
-use tokio::io::AsyncReadExt;
 use std::error::Error;
 use std::sync::Arc;
+use tokio::io::AsyncReadExt;
+use tokio::net::{TcpListener, UdpSocket};
 
 use super::Jt1078Server;
 
@@ -131,7 +131,10 @@ fn build_common_ack(phone: &str, serial: u16) -> Vec<u8> {
     crate::jt1078::command::build_jt808_frame(0x8001, phone, 0, &body)
 }
 
-pub async fn start(server: &Jt1078Server, cfg: Option<crate::config::Jt1078Config>) -> Result<(), Box<dyn Error + Send + Sync>> {
+pub async fn start(
+    server: &Jt1078Server,
+    cfg: Option<crate::config::Jt1078Config>,
+) -> Result<(), Box<dyn Error + Send + Sync>> {
     // Phase 6.1: TCP/UDP ports now read from Jt1078Config (default 60000)
     let tcp_port = cfg.as_ref().and_then(|c| c.tcp_port).unwrap_or(60000);
     let udp_port = cfg.as_ref().and_then(|c| c.udp_port).unwrap_or(60000);
@@ -140,10 +143,23 @@ pub async fn start(server: &Jt1078Server, cfg: Option<crate::config::Jt1078Confi
 
     // Create a manager used by both TCP and UDP listeners and start cleanup
     // Use injected cfg when available, otherwise fall back to environment or defaults
-    let timeout = cfg.as_ref().and_then(|c| c.timeout_ms).map(|m| std::time::Duration::from_millis(m)).unwrap_or(std::time::Duration::from_secs(60));
-    let retransmit_wait = cfg.as_ref().and_then(|c| c.retransmit_wait_ms).map(|m| std::time::Duration::from_millis(m)).unwrap_or(std::time::Duration::from_millis(200));
-    let retransmit_hook = cfg.as_ref().and_then(|c| c.retransmit_hook_url.clone()).or_else(|| std::env::var("GBSERVER__JT1078__RETRANSMIT_HOOK").ok());
-    let retransmit_send_to_device = std::env::var("GBSERVER__JT1078__RETRANSMIT_SEND_TO_DEVICE").map(|v| v == "1" || v.eq_ignore_ascii_case("true")).unwrap_or(false);
+    let timeout = cfg
+        .as_ref()
+        .and_then(|c| c.timeout_ms)
+        .map(|m| std::time::Duration::from_millis(m))
+        .unwrap_or(std::time::Duration::from_secs(60));
+    let retransmit_wait = cfg
+        .as_ref()
+        .and_then(|c| c.retransmit_wait_ms)
+        .map(|m| std::time::Duration::from_millis(m))
+        .unwrap_or(std::time::Duration::from_millis(200));
+    let retransmit_hook = cfg
+        .as_ref()
+        .and_then(|c| c.retransmit_hook_url.clone())
+        .or_else(|| std::env::var("GBSERVER__JT1078__RETRANSMIT_HOOK").ok());
+    let retransmit_send_to_device = std::env::var("GBSERVER__JT1078__RETRANSMIT_SEND_TO_DEVICE")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
 
     let manager = Arc::new(crate::jt1078::manager::Jt1078Manager::new(
         timeout,
@@ -159,7 +175,9 @@ pub async fn start(server: &Jt1078Server, cfg: Option<crate::config::Jt1078Confi
     server.set_manager(manager.clone()).await;
     let manager_for_cleanup = manager.clone();
     tokio::spawn(async move {
-        manager_for_cleanup.cleanup_loop(std::time::Duration::from_secs(30)).await;
+        manager_for_cleanup
+            .cleanup_loop(std::time::Duration::from_secs(30))
+            .await;
     });
 
     match TcpListener::bind(&tcp_addr).await {
@@ -183,11 +201,7 @@ pub async fn start(server: &Jt1078Server, cfg: Option<crate::config::Jt1078Confi
                                 use tokio::io::AsyncWriteExt;
                                 while let Some(bytes) = rx.recv().await {
                                     if let Err(e) = write_half.write_all(&bytes).await {
-                                        tracing::warn!(
-                                            "JT1078 TCP 下行写入失败 {}: {}",
-                                            addr,
-                                            e
-                                        );
+                                        tracing::warn!("JT1078 TCP 下行写入失败 {}: {}", addr, e);
                                         break;
                                     }
                                 }
@@ -200,19 +214,22 @@ pub async fn start(server: &Jt1078Server, cfg: Option<crate::config::Jt1078Confi
                                 loop {
                                     match read_half.read(&mut read_buf).await {
                                         Ok(0) => {
-                                            tracing::info!("JT1078 TCP connection closed by {}", addr);
+                                            tracing::info!(
+                                                "JT1078 TCP connection closed by {}",
+                                                addr
+                                            );
                                             break;
                                         }
                                         Ok(n) => {
                                             // 真实 JT/T 808 帧优先；自造的 demo 帧走旧路径
-                                            if !handle_jt808_bytes(
-                                                &manager, addr, &read_buf[..n],
-                                            )
-                                            .await
+                                            if !handle_jt808_bytes(&manager, addr, &read_buf[..n])
+                                                .await
                                             {
-                                                let frames = manager.feed_bytes(addr, &read_buf[..n]).await;
+                                                let frames =
+                                                    manager.feed_bytes(addr, &read_buf[..n]).await;
                                                 for f in frames {
-                                                    let kind = manager.process_payload_for(addr, &f).await;
+                                                    let kind =
+                                                        manager.process_payload_for(addr, &f).await;
                                                     match kind {
                                                         crate::jt1078::session::FrameKind::AuthFailure => {
                                                             tracing::warn!("JT1078 auth failed from {}", addr);
@@ -232,7 +249,11 @@ pub async fn start(server: &Jt1078Server, cfg: Option<crate::config::Jt1078Confi
                                             }
                                         }
                                         Err(e) => {
-                                            tracing::warn!("JT1078 TCP read error from {}: {}", addr, e);
+                                            tracing::warn!(
+                                                "JT1078 TCP read error from {}: {}",
+                                                addr,
+                                                e
+                                            );
                                             break;
                                         }
                                     }
@@ -281,7 +302,11 @@ pub async fn start(server: &Jt1078Server, cfg: Option<crate::config::Jt1078Confi
                                             tracing::debug!("JT1078 UDP heartbeat from {}", addr);
                                         }
                                         crate::jt1078::session::FrameKind::Data(d) => {
-                                            tracing::debug!("JT1078 UDP data {} bytes from {}", d.len(), addr);
+                                            tracing::debug!(
+                                                "JT1078 UDP data {} bytes from {}",
+                                                d.len(),
+                                                addr
+                                            );
                                         }
                                     }
                                 }

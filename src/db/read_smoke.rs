@@ -53,12 +53,18 @@ async fn seed(pool: &db::Pool) {
 async fn smoke_media_server_reads() {
     let pool = sqlite_pool_with_schema().await;
     seed(&pool).await;
-    db::media_server::list_media_servers(&pool).await.expect("list_media_servers");
+    db::media_server::list_media_servers(&pool)
+        .await
+        .expect("list_media_servers");
     db::media_server::get_media_server_by_id(&pool, "zlm-a")
         .await
         .expect("get_media_server_by_id");
-    db::media_server::get_default_server(&pool).await.expect("get_default_server");
-    db::media_server::list_online_servers(&pool).await.expect("list_online_servers");
+    db::media_server::get_default_server(&pool)
+        .await
+        .expect("get_default_server");
+    db::media_server::list_online_servers(&pool)
+        .await
+        .expect("list_online_servers");
 }
 
 /// 设备 / 通道：`Device` 与 `DeviceChannel` 字段多，最容易漂移
@@ -73,9 +79,13 @@ async fn smoke_device_and_channel_reads() {
     db::device::list_devices_paged(&pool, 1, 10, None, None)
         .await
         .expect("list_devices_paged");
-    db::device::count_devices(&pool, None, None).await.expect("count_devices");
+    db::device::count_devices(&pool, None, None)
+        .await
+        .expect("count_devices");
 
-    db::common_channel::get_by_id(&pool, 1).await.expect("common_channel::get_by_id");
+    db::common_channel::get_by_id(&pool, 1)
+        .await
+        .expect("common_channel::get_by_id");
     db::common_channel::get_channels_for_map(&pool, None, None, None)
         .await
         .expect("get_channels_for_map");
@@ -100,7 +110,9 @@ async fn smoke_record_alarm_position_reads() {
     let pool = sqlite_pool_with_schema().await;
     seed(&pool).await;
 
-    db::cloud_record::get_by_id(&pool, 1).await.expect("cloud_record::get_by_id");
+    db::cloud_record::get_by_id(&pool, 1)
+        .await
+        .expect("cloud_record::get_by_id");
     db::cloud_record::list_paged(&pool, None, None, None, None, None, 1, 10)
         .await
         .expect("cloud_record::list_paged");
@@ -108,7 +120,9 @@ async fn smoke_record_alarm_position_reads() {
         .await
         .expect("find_latest_by_stream_like");
 
-    db::alarm::get_alarm_by_id(&pool, 1).await.expect("alarm::get_alarm_by_id");
+    db::alarm::get_alarm_by_id(&pool, 1)
+        .await
+        .expect("alarm::get_alarm_by_id");
 
     db::mobile_position::get_latest_position(&pool, "34020000001320000001", None)
         .await
@@ -121,27 +135,41 @@ async fn smoke_user_and_stream_reads() {
     let pool = sqlite_pool_with_schema().await;
     seed(&pool).await;
 
-    db::user::find_by_username(&pool, "admin").await.expect("find_by_username");
+    db::user::find_by_username(&pool, "admin")
+        .await
+        .expect("find_by_username");
     db::user::find_by_id(&pool, 1).await.expect("find_by_id");
-    db::user::get_users_paged(&pool, 1, 10, None).await.expect("get_users_paged");
+    db::user::get_users_paged(&pool, 1, 10, None)
+        .await
+        .expect("get_users_paged");
     // 搜索路径单独走一遍：带 query 与不带是两条不同 SQL（LIKE + $n/? 占位符）。
     db::user::get_users_paged(&pool, 1, 10, Some("adm"))
         .await
         .expect("get_users_paged(query)");
-    db::user::count_users(&pool, None).await.expect("count_users");
-    db::user::count_users(&pool, Some("adm")).await.expect("count_users(query)");
+    db::user::count_users(&pool, None)
+        .await
+        .expect("count_users");
+    db::user::count_users(&pool, Some("adm"))
+        .await
+        .expect("count_users(query)");
     db::user::get_all_users(&pool).await.expect("get_all_users");
 
-    db::stream_proxy::get_by_id(&pool, 1).await.expect("stream_proxy::get_by_id");
+    db::stream_proxy::get_by_id(&pool, 1)
+        .await
+        .expect("stream_proxy::get_by_id");
     db::stream_proxy::get_all_enabled_proxies(&pool)
         .await
         .expect("get_all_enabled_proxies");
 
-    db::stream_push::get_by_id(&pool, 1).await.expect("stream_push::get_by_id");
+    db::stream_push::get_by_id(&pool, 1)
+        .await
+        .expect("stream_push::get_by_id");
     db::stream_push::get_by_app_stream(&pool, "push", "s1")
         .await
         .expect("stream_push::get_by_app_stream");
-    db::stream_proxy::get_by_id(&pool, 1).await.expect("stream_proxy::get_by_id");
+    db::stream_proxy::get_by_id(&pool, 1)
+        .await
+        .expect("stream_proxy::get_by_id");
     db::stream_proxy::get_by_app_stream(&pool, "proxy", "s1")
         .await
         .expect("stream_proxy::get_by_app_stream");
@@ -180,8 +208,12 @@ async fn smoke_platform_plan_apikey_reads() {
             .unwrap_or_else(|e| panic!("seed failed: {} | {}", e, sql));
     }
 
-    db::platform::list_platforms(&pool).await.expect("platform::list_platforms");
-    db::platform::get_by_id(&pool, 1).await.expect("platform::get_by_id");
+    db::platform::list_platforms(&pool)
+        .await
+        .expect("platform::list_platforms");
+    db::platform::get_by_id(&pool, 1)
+        .await
+        .expect("platform::get_by_id");
     db::platform::get_all_enabled_platforms(&pool)
         .await
         .expect("get_all_enabled_platforms");
@@ -193,7 +225,9 @@ async fn smoke_platform_plan_apikey_reads() {
         .await
         .expect("get_all_online_platforms");
 
-    db::platform_channel::get_by_id(&pool, 1).await.expect("platform_channel::get_by_id");
+    db::platform_channel::get_by_id(&pool, 1)
+        .await
+        .expect("platform_channel::get_by_id");
     db::platform_group::list_by_platform(&pool, 1)
         .await
         .expect("platform_group::list_by_platform");
@@ -201,21 +235,33 @@ async fn smoke_platform_plan_apikey_reads() {
         .await
         .expect("platform_region::list_by_platform");
 
-    db::record_plan::get_by_id(&pool, 1).await.expect("record_plan::get_by_id");
-    db::record_plan::list_items(&pool, 1).await.expect("record_plan::list_items");
+    db::record_plan::get_by_id(&pool, 1)
+        .await
+        .expect("record_plan::get_by_id");
+    db::record_plan::list_items(&pool, 1)
+        .await
+        .expect("record_plan::list_items");
 
-    db::user_api_key::get_by_id(&pool, 1).await.expect("user_api_key::get_by_id");
+    db::user_api_key::get_by_id(&pool, 1)
+        .await
+        .expect("user_api_key::get_by_id");
     db::user_api_key::list_by_user_id(&pool, 1)
         .await
         .expect("user_api_key::list_by_user_id");
 
     db::region::list_all(&pool).await.expect("region::list_all");
-    db::region::get_by_id(&pool, 1).await.expect("region::get_by_id");
+    db::region::get_by_id(&pool, 1)
+        .await
+        .expect("region::get_by_id");
     db::group::list_all(&pool).await.expect("group::list_all");
-    db::group::get_by_id(&pool, 1).await.expect("group::get_by_id");
+    db::group::get_by_id(&pool, 1)
+        .await
+        .expect("group::get_by_id");
 
     db::role::list_all(&pool).await.expect("role::list_all");
-    db::role::get_by_id(&pool, 1).await.expect("role::get_by_id");
+    db::role::get_by_id(&pool, 1)
+        .await
+        .expect("role::get_by_id");
 }
 
 /// JT1078 与位置历史 / 审计日志
@@ -261,7 +307,9 @@ async fn smoke_jt1078_and_history_reads() {
         .await
         .expect("list_by_device_and_time");
 
-    db::audit_log::ensure_table(&pool).await.expect("audit_log::ensure_table");
+    db::audit_log::ensure_table(&pool)
+        .await
+        .expect("audit_log::ensure_table");
     db::audit_log::list_paged(&pool, None, None, None, None, 1, 10)
         .await
         .expect("audit_log::list_paged");
@@ -288,19 +336,37 @@ async fn smoke_previously_missing_tables_exist_and_accept_writes() {
         .bind(now).bind(now).execute(&pool).await.expect("gb_jt_route 应存在且可写");
 
     // 系统日志表（log_list 一直在查它，但此前三库都没建）
-    sqlx::query("INSERT INTO gb_log (time, level, logger, thread, message, source) VALUES (?,?,?,?,?,?)")
-        .bind(now).bind("INFO").bind("t").bind("t1").bind("m").bind("s")
-        .execute(&pool).await.expect("gb_log 应存在且可写");
+    sqlx::query(
+        "INSERT INTO gb_log (time, level, logger, thread, message, source) VALUES (?,?,?,?,?,?)",
+    )
+    .bind(now)
+    .bind("INFO")
+    .bind("t")
+    .bind("t1")
+    .bind("m")
+    .bind("s")
+    .execute(&pool)
+    .await
+    .expect("gb_log 应存在且可写");
 
     // 平台目录表（catalog_add/edit 一直在写它）
     sqlx::query("INSERT INTO gb_platform_catalog (name, parent, civil_code, business_group, platform_id, create_time, update_time) VALUES ('n','p','340200','g',1,?,?)")
         .bind(now).bind(now).execute(&pool).await.expect("gb_platform_catalog 应存在且可写");
     let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM gb_platform_catalog")
-        .fetch_one(&pool).await.unwrap();
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert_eq!(n, 1);
 
     // 更新路径（catalog_edit）同样要能命中
-    let affected = sqlx::query("UPDATE gb_platform_catalog SET name = COALESCE(?, name), update_time = ? WHERE id = 1")
-        .bind(Some("renamed")).bind(now).execute(&pool).await.unwrap().rows_affected();
+    let affected = sqlx::query(
+        "UPDATE gb_platform_catalog SET name = COALESCE(?, name), update_time = ? WHERE id = 1",
+    )
+    .bind(Some("renamed"))
+    .bind(now)
+    .execute(&pool)
+    .await
+    .unwrap()
+    .rows_affected();
     assert_eq!(affected, 1, "目录更新应命中 1 行");
 }

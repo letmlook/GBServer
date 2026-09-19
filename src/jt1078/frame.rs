@@ -73,7 +73,15 @@ pub fn parse_jt1078_structured_frame(buf: &[u8]) -> Option<(usize, Jt1078Frame)>
         return None; // checksum mismatch — drop
     }
 
-    Some((total_len, Jt1078Frame { seq, timestamp, payload, checksum }))
+    Some((
+        total_len,
+        Jt1078Frame {
+            seq,
+            timestamp,
+            payload,
+            checksum,
+        },
+    ))
 }
 
 #[cfg(test)]
@@ -103,7 +111,9 @@ mod tests {
         let timestamp = 0xDEADBEEFu32.to_be_bytes();
 
         let mut xor: u8 = 0;
-        for &b in payload.iter() { xor ^= b; }
+        for &b in payload.iter() {
+            xor ^= b;
+        }
 
         let mut buf = Vec::new();
         buf.push(0x7E);
@@ -354,7 +364,13 @@ mod jt808_inbound_tests {
         // 起始/结束符各一个，中间不应再有裸 0x7E
         assert_eq!(frame[0], 0x7E);
         assert_eq!(*frame.last().unwrap(), 0x7E);
-        assert_eq!(frame[1..frame.len() - 1].iter().filter(|b| **b == 0x7E).count(), 0);
+        assert_eq!(
+            frame[1..frame.len() - 1]
+                .iter()
+                .filter(|b| **b == 0x7E)
+                .count(),
+            0
+        );
         let (_c, msgs, bad) = split_jt808(&frame);
         assert_eq!(bad, 0);
         assert_eq!(msgs[0].body, body);

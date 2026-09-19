@@ -113,10 +113,16 @@ pub async fn collect_delete(
         .execute(&state.pool)
         .await
         {
-            tracing::warn!("取消收藏时删除收藏表记录失败 record_id={}: {}", record_id, e);
+            tracing::warn!(
+                "取消收藏时删除收藏表记录失败 record_id={}: {}",
+                record_id,
+                e
+            );
         }
     }
-    Json(ApiResult::success(serde_json::json!({"id": id, "collect": false})))
+    Json(ApiResult::success(
+        serde_json::json!({"id": id, "collect": false}),
+    ))
 }
 
 /// `list_url` 响应：分页结果 `{list,total,page,count}`，
@@ -151,12 +157,20 @@ pub async fn list_url(
     let count = q.count.unwrap_or(15);
     let kw = q.device_id.as_deref().or(q.channel_id.as_deref());
     let records = db::cloud_record::list_paged(
-        &state.pool, kw, None, None, None, None,
-        page as i64, count as i64,
-    ).await.unwrap_or_default();
-    let total = db::cloud_record::count_all(
-        &state.pool, kw, None, None, None, None,
-    ).await.unwrap_or(0);
+        &state.pool,
+        kw,
+        None,
+        None,
+        None,
+        None,
+        page as i64,
+        count as i64,
+    )
+    .await
+    .unwrap_or_default();
+    let total = db::cloud_record::count_all(&state.pool, kw, None, None, None, None)
+        .await
+        .unwrap_or(0);
     let urls: Vec<serde_json::Value> = records.iter().map(|r| {
         // 2026-09-11：此前这里给出 `/record/<path>`，但**没有对应路由**，
         // 点开必然 404。现改为真实可用的下载端点（支持 Range）。
@@ -385,8 +399,8 @@ pub(crate) async fn build_cloud_record_zip(
     let token = format!("{}-{}", chrono::Utc::now().timestamp(), random_token());
     let file_name = format!("cloud-record-{}.zip", token);
     let out_path = download_dir.join(&file_name);
-    let entries =
-        crate::archive::write_zip_stored(&files, &out_path).map_err(|e| format!("打包失败: {}", e))?;
+    let entries = crate::archive::write_zip_stored(&files, &out_path)
+        .map_err(|e| format!("打包失败: {}", e))?;
 
     Ok(ZipBuildOutcome {
         token,
@@ -624,7 +638,9 @@ pub async fn download_file(
 
     let rec = db::cloud_record::get_by_id(&state.pool, id)
         .await?
-        .ok_or_else(|| AppError::business(ErrorCode::Error404, format!("录像记录不存在: {}", id)))?;
+        .ok_or_else(|| {
+            AppError::business(ErrorCode::Error404, format!("录像记录不存在: {}", id))
+        })?;
 
     let record_root = state
         .config
@@ -721,11 +737,7 @@ mod tests {
         std::fs::write(root.join("b.mp4"), b"y").unwrap();
 
         // file_path 指向一个本机不存在的 ZLM 侧路径（典型容器挂载差异）
-        let r = rec(
-            Some("/zlm/media/record/b.mp4"),
-            None,
-            Some("b.mp4"),
-        );
+        let r = rec(Some("/zlm/media/record/b.mp4"), None, Some("b.mp4"));
         assert_eq!(
             resolve_record_file(&r, Some(root.as_path())),
             Some(root.join("b.mp4"))
@@ -761,7 +773,10 @@ mod tests {
             Some("none.mp4"),
         );
         assert_eq!(resolve_record_file(&r, None), None);
-        assert_eq!(resolve_record_file(&r, Some(std::path::Path::new("/tmp"))), None);
+        assert_eq!(
+            resolve_record_file(&r, Some(std::path::Path::new("/tmp"))),
+            None
+        );
     }
 
     #[test]
@@ -832,13 +847,21 @@ mod tests {
 
         let id1 = db::cloud_record::insert(
             &pool,
-            &insert_cfg("cam1.mp4", &rec_dir.to_string_lossy(), &f1.to_string_lossy()),
+            &insert_cfg(
+                "cam1.mp4",
+                &rec_dir.to_string_lossy(),
+                &f1.to_string_lossy(),
+            ),
         )
         .await
         .expect("insert record 1");
         let id2 = db::cloud_record::insert(
             &pool,
-            &insert_cfg("cam2.mp4", &rec_dir.to_string_lossy(), &f2.to_string_lossy()),
+            &insert_cfg(
+                "cam2.mp4",
+                &rec_dir.to_string_lossy(),
+                &f2.to_string_lossy(),
+            ),
         )
         .await
         .expect("insert record 2");
@@ -851,7 +874,10 @@ mod tests {
         assert_eq!(outcome.entries.len(), 2);
         assert!(outcome.out_path.is_file(), "ZIP 必须真实落盘");
         assert!(outcome.skipped.is_empty(), "两条记录都可用，不应有 skipped");
-        assert_eq!(outcome.file_name, format!("cloud-record-{}.zip", outcome.token));
+        assert_eq!(
+            outcome.file_name,
+            format!("cloud-record-{}.zip", outcome.token)
+        );
 
         // 用独立读取器校验归档内容
         let back = crate::archive::read_zip_stored(&outcome.out_path)
@@ -927,12 +953,10 @@ mod tests {
         )
         .await
         .unwrap();
-        let bad_id = db::cloud_record::insert(
-            &pool,
-            &insert_cfg("bad.mp4", "/nope", "/nope/bad.mp4"),
-        )
-        .await
-        .unwrap();
+        let bad_id =
+            db::cloud_record::insert(&pool, &insert_cfg("bad.mp4", "/nope", "/nope/bad.mp4"))
+                .await
+                .unwrap();
 
         let outcome = build_cloud_record_zip(None, &pool, &[ok_id, bad_id], None, &work)
             .await

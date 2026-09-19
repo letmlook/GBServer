@@ -37,7 +37,8 @@ pub fn validate_jwt_secret(secret: &str) -> Result<(), String> {
     if secret.len() < MIN_JWT_SECRET_LEN {
         return Err(format!(
             "JWT secret too short ({} < {} chars); use a random ≥32-char string",
-            secret.len(), MIN_JWT_SECRET_LEN
+            secret.len(),
+            MIN_JWT_SECRET_LEN
         ));
     }
     let lower = secret.to_ascii_lowercase();
@@ -57,10 +58,22 @@ pub fn validate_jwt_secret(secret: &str) -> Result<(), String> {
 /// of a sensitive key in `text`. Sensitive keys are case-insensitive.
 const SENSITIVE_KEYS: &[&str] = &[
     // URL / body 字段
-    "password", "passwd", "secret", "token", "jwt", "apikey", "api_key",
-    "authorization", "access_token", "refresh_token", "private",
+    "password",
+    "passwd",
+    "secret",
+    "token",
+    "jwt",
+    "apikey",
+    "api_key",
+    "authorization",
+    "access_token",
+    "refresh_token",
+    "private",
     // HTTP header 名（to_ascii_lowercase 已做大小写无关匹配，所以这里写小写即可）
-    "x-api-key", "x-api-token", "x-auth-token", "x-access-token",
+    "x-api-key",
+    "x-api-token",
+    "x-auth-token",
+    "x-access-token",
 ];
 
 /// Returns `text` with sensitive values replaced by `***`.
@@ -100,11 +113,14 @@ pub fn redact_sensitive(text: &str) -> String {
             if start < bytes.len() && bytes[start] == b'"' {
                 let mut end = start + 1;
                 while end < bytes.len() && bytes[end] != b'"' {
-                    if bytes[end] == b'\\' { end += 2; continue; }
+                    if bytes[end] == b'\\' {
+                        end += 2;
+                        continue;
+                    }
                     end += 1;
                 }
                 if end < bytes.len() && start + 1 < end {
-                    out.replace_range(start+1..end, "***");
+                    out.replace_range(start + 1..end, "***");
                 }
             }
         }
@@ -179,7 +195,11 @@ mod tests {
         );
         let err = validate_jwt_secret(COMMITTED_DEMO_JWT_SECRET)
             .expect_err("随仓库提交的示例密钥必须被拒绝");
-        assert!(err.contains("weak") || err.contains("default"), "错误信息: {}", err);
+        assert!(
+            err.contains("weak") || err.contains("default"),
+            "错误信息: {}",
+            err
+        );
     }
 
     /// 配置文件里的实际取值也必须被拦下（防止示例密钥被改回）

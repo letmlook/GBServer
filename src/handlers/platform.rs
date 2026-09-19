@@ -9,7 +9,7 @@ use sqlx::Row;
 
 use crate::db::platform as platform_db;
 use crate::db::platform_channel;
-use crate::db::{Platform, device as db_device};
+use crate::db::{device as db_device, Platform};
 use crate::error::{AppError, ErrorCode};
 use crate::response::ApiResult;
 
@@ -34,7 +34,11 @@ use crate::AppState;
 
 /// 内部工具 — 按 feature 分发不同 SQL；sqlite 路径下部分参数仅在 cfg(postgres/mysql) 中使用
 #[allow(unused_variables)]
-async fn update_platform_status(pool: &crate::db::Pool, id: i64, status: bool) -> Result<(), sqlx::Error> {
+async fn update_platform_status(
+    pool: &crate::db::Pool,
+    id: i64,
+    status: bool,
+) -> Result<(), sqlx::Error> {
     #[cfg(feature = "postgres")]
     sqlx::query("UPDATE gb_platform SET status = $1 WHERE id = $2")
         .bind(status)
@@ -105,7 +109,11 @@ async fn sync_platform_registration(
             Ok(enable)
         }
         Err(err) => {
-            tracing::warn!("platform registration sync failed for {}: {}", server_gb_id, err);
+            tracing::warn!(
+                "platform registration sync failed for {}: {}",
+                server_gb_id,
+                err
+            );
             update_platform_status(&state.pool, id, false).await?;
             Ok(false)
         }
@@ -264,11 +272,13 @@ pub async fn platform_query(
 
     #[cfg(feature = "postgres")]
     let raw_list = if search.is_empty() {
-        sqlx::query_as::<_, Platform>("SELECT * FROM gb_platform ORDER BY id DESC LIMIT $1 OFFSET $2")
-            .bind(count as i64)
-            .bind(offset)
-            .fetch_all(&state.pool)
-            .await?
+        sqlx::query_as::<_, Platform>(
+            "SELECT * FROM gb_platform ORDER BY id DESC LIMIT $1 OFFSET $2",
+        )
+        .bind(count as i64)
+        .bind(offset)
+        .fetch_all(&state.pool)
+        .await?
     } else {
         sqlx::query_as::<_, Platform>(
             "SELECT * FROM gb_platform WHERE name LIKE $1 OR server_gb_id LIKE $1 OR device_gb_id LIKE $1 ORDER BY id DESC LIMIT $2 OFFSET $3",
@@ -346,7 +356,9 @@ pub async fn platform_query(
     ),
     security(("access_token" = [])),
 )]
-pub async fn platform_server_config(State(state): State<AppState>) -> Json<ApiResult<serde_json::Value>> {
+pub async fn platform_server_config(
+    State(state): State<AppState>,
+) -> Json<ApiResult<serde_json::Value>> {
     let sip = state.config.sip.as_ref();
     let device_ip = sip
         .map(|cfg| cfg.ip.clone())
@@ -420,14 +432,14 @@ pub async fn platform_channel_list(
     let page = q.page.unwrap_or(1);
     let count = q.count.unwrap_or(10).min(100);
     let platform_id = q.platform_id.unwrap_or(0);
-    
+
     if platform_id <= 0 {
         return Ok(Json(ApiResult::success(serde_json::json!({
             "total": 0,
             "list": []
         }))));
     }
-    
+
     let offset = (page.saturating_sub(1) * count) as i64;
     let search = q.query.as_deref().unwrap_or("").trim().to_string();
     let like = format!("%{}%", search);
@@ -436,7 +448,10 @@ pub async fn platform_channel_list(
         Some("false") => Some(false),
         _ => None,
     };
-    let channel_type = q.channel_type.as_deref().and_then(|v| v.parse::<i32>().ok());
+    let channel_type = q
+        .channel_type
+        .as_deref()
+        .and_then(|v| v.parse::<i32>().ok());
     let has_share = q.has_share.as_deref().unwrap_or("false");
 
     #[cfg(feature = "postgres")]
@@ -619,7 +634,7 @@ pub async fn platform_channel_list(
             "customName": r.try_get::<Option<String>, _>("custom_name").ok().flatten()
         })
     }).collect();
-    
+
     Ok(Json(ApiResult::success(serde_json::json!({
         "total": total,
         "list": rows
@@ -665,7 +680,7 @@ pub async fn platform_channel_push(
             "code": 1
         }))));
     }
-    
+
     let platform = match platform_db::get_by_id(&state.pool, platform_id as i64).await {
         Ok(Some(p)) => p,
         Ok(None) => {
@@ -679,7 +694,7 @@ pub async fn platform_channel_push(
             return Ok(Json(ApiResult::error("Database error")));
         }
     };
-    
+
     let server_gb_id = match platform.server_gb_id.clone() {
         Some(id) => id,
         None => {
@@ -689,7 +704,7 @@ pub async fn platform_channel_push(
             }))));
         }
     };
-    
+
     if platform.enable.unwrap_or(false) && !platform.status.unwrap_or(false) {
         let _ = sync_platform_registration(&state, &platform).await?;
     }
@@ -703,12 +718,12 @@ pub async fn platform_channel_push(
             }))));
         }
     };
-    
+
     let sip = &*sip_server;
-    
+
     let mut pushed_count = 0;
     let mut errors = Vec::new();
-    
+
     let channel_ids = if let Some(channel_id_list) = &q.channel_id_list {
         channel_id_list
             .split(',')
@@ -737,7 +752,11 @@ pub async fn platform_channel_push(
         .fetch_all(&state.pool)
         .await?;
         rows.into_iter()
-            .filter_map(|row| row.try_get::<Option<String>, _>("gb_device_id").ok().flatten())
+            .filter_map(|row| {
+                row.try_get::<Option<String>, _>("gb_device_id")
+                    .ok()
+                    .flatten()
+            })
             .collect::<Vec<_>>()
     };
 
@@ -777,7 +796,11 @@ pub async fn platform_channel_push(
             .await
         {
             Ok(_) => {
-                tracing::info!("Sent platform INVITE for channel {} to {}", channel_id, server_gb_id);
+                tracing::info!(
+                    "Sent platform INVITE for channel {} to {}",
+                    channel_id,
+                    server_gb_id
+                );
                 pushed_count += 1;
             }
             Err(e) => {
@@ -786,7 +809,7 @@ pub async fn platform_channel_push(
             }
         }
     }
-    
+
     refresh_platform_catalog(&state, platform_id).await?;
 
     Ok(Json(ApiResult::success(serde_json::json!({
@@ -967,8 +990,18 @@ pub async fn platform_add(
     // 接口照样回「平台添加成功」，但库里 `server_gb_id` 为空 ⇒ 级联注册、
     // `get_by_server_gb_id` 全部以空串为键，平台**实际不可用**。
     let name = body.name.clone().unwrap_or_default().trim().to_string();
-    let server_gb_id = body.server_gb_id.clone().unwrap_or_default().trim().to_string();
-    let server_ip = body.server_host.clone().unwrap_or_default().trim().to_string();
+    let server_gb_id = body
+        .server_gb_id
+        .clone()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let server_ip = body
+        .server_host
+        .clone()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
     if name.is_empty() {
         return Err(AppError::business(ErrorCode::Error400, "平台名称不能为空"));
     }
@@ -995,9 +1028,9 @@ pub async fn platform_add(
     let transport = body.transport.clone().unwrap_or_else(|| "TCP".to_string());
     let username = body.username.clone().unwrap_or_default();
     let password = body.password.clone().unwrap_or_default();
-    
+
     let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    
+
     platform_db::add(
         &state.pool,
         &name,
@@ -1009,7 +1042,8 @@ pub async fn platform_add(
         &username,
         &password,
         &now,
-    ).await?;
+    )
+    .await?;
 
     #[cfg(feature = "postgres")]
     sqlx::query(
@@ -1207,7 +1241,7 @@ pub async fn platform_update(
             "code": 1
         }))));
     }
-    
+
     let name = body.name.as_deref();
     let server_gb_id = body.server_gb_id.as_deref();
     let server_ip = body.server_host.as_deref();
@@ -1216,9 +1250,9 @@ pub async fn platform_update(
     let transport = body.transport.as_deref();
     let username = body.username.as_deref();
     let password = body.password.as_deref();
-    
+
     let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    
+
     platform_db::update(
         &state.pool,
         id,
@@ -1231,7 +1265,8 @@ pub async fn platform_update(
         username,
         password,
         &now,
-    ).await?;
+    )
+    .await?;
 
     #[cfg(feature = "postgres")]
     sqlx::query(
@@ -1396,7 +1431,7 @@ pub async fn platform_update(
             refresh_platform_catalog(&state, platform.id as i64).await?;
         }
     }
-    
+
     Ok(Json(ApiResult::success(serde_json::json!({
         "message": "平台更新成功",
         "code": 0
@@ -1454,10 +1489,7 @@ pub async fn platform_delete(
     let platform = platform.ok_or_else(|| {
         AppError::business(
             ErrorCode::Error404,
-            format!(
-                "平台不存在: id={:?} serverGBId={:?}",
-                q.id, q.server_gb_id
-            ),
+            format!("平台不存在: id={:?} serverGBId={:?}", q.id, q.server_gb_id),
         )
     })?;
     let id = platform.id as i64;
@@ -1520,17 +1552,22 @@ pub async fn platform_exit(
     let platform = platform_db::get_by_server_gb_id(&state.pool, &server_gb_id)
         .await?
         .ok_or_else(|| {
-            AppError::business(
-                ErrorCode::Error404,
-                format!("平台不存在: {server_gb_id}"),
-            )
+            AppError::business(ErrorCode::Error404, format!("平台不存在: {server_gb_id}"))
         })?;
 
     let mut sip_warning: Option<String> = None;
-    match state.sip_server.as_ref().and_then(|sip| sip.cascade_registrar()) {
+    match state
+        .sip_server
+        .as_ref()
+        .and_then(|sip| sip.cascade_registrar())
+    {
         Some(registrar) => {
             if let Err(e) = registrar.unregister_and_remove(&server_gb_id, 0).await {
-                tracing::warn!("向 {} 发送注销 REGISTER 失败（仍置为停用）: {}", server_gb_id, e);
+                tracing::warn!(
+                    "向 {} 发送注销 REGISTER 失败（仍置为停用）: {}",
+                    server_gb_id,
+                    e
+                );
                 sip_warning = Some(e);
             }
         }
@@ -1597,7 +1634,7 @@ pub async fn platform_channel_add(
             "code": 1
         }))));
     }
-    
+
     let platform = platform_db::get_by_id(&state.pool, platform_id).await?;
     let mut added_count = 0;
     let mut pushed_channels = Vec::new();
@@ -1625,9 +1662,17 @@ pub async fn platform_channel_add(
         .await?;
         for row in rows {
             let channel_db_id = row.try_get::<i64, _>("id").unwrap_or_default();
-            if channel_db_id > 0 && platform_channel::add(&state.pool, platform_id, channel_db_id).await.is_ok() {
+            if channel_db_id > 0
+                && platform_channel::add(&state.pool, platform_id, channel_db_id)
+                    .await
+                    .is_ok()
+            {
                 added_count += 1;
-                if let Some(gb_device_id) = row.try_get::<Option<String>, _>("gb_device_id").ok().flatten() {
+                if let Some(gb_device_id) = row
+                    .try_get::<Option<String>, _>("gb_device_id")
+                    .ok()
+                    .flatten()
+                {
                     pushed_channels.push(gb_device_id);
                 }
             }
@@ -1653,7 +1698,11 @@ pub async fn platform_channel_add(
                 .await?;
             if let Some(row) = row {
                 let channel_db_id = row.try_get::<i64, _>("id").unwrap_or_default();
-                if channel_db_id > 0 && platform_channel::add(&state.pool, platform_id, channel_db_id).await.is_ok() {
+                if channel_db_id > 0
+                    && platform_channel::add(&state.pool, platform_id, channel_db_id)
+                        .await
+                        .is_ok()
+                {
                     added_count += 1;
                     pushed_channels.push(
                         row.try_get::<Option<String>, _>("gb_device_id")
@@ -1676,7 +1725,7 @@ pub async fn platform_channel_add(
             refresh_platform_catalog(&state, platform_id).await?;
         }
     }
-    
+
     Ok(Json(ApiResult::success(serde_json::json!({
         "platformId": platform_id,
         "addedCount": added_count,
@@ -1718,21 +1767,29 @@ pub async fn platform_channel_device_add(
             "code": 1
         }))));
     }
-    
+
     let device_ids = body.device_ids.unwrap_or_default();
     let platform = platform_db::get_by_id(&state.pool, platform_id).await?;
     let mut added_count = 0;
     let mut pushed_channels = Vec::new();
-    
+
     for device_id in device_ids {
         let channels = db_device::list_channels_for_device(&state.pool, &device_id).await?;
-        
+
         for channel in channels {
             let channel_db_id = channel.id as i64;
             if channel_db_id > 0 {
-                if platform_channel::add(&state.pool, platform_id, channel_db_id).await.is_ok() {
+                if platform_channel::add(&state.pool, platform_id, channel_db_id)
+                    .await
+                    .is_ok()
+                {
                     added_count += 1;
-                    pushed_channels.push(channel.gb_device_id.clone().unwrap_or_else(|| channel_db_id.to_string()));
+                    pushed_channels.push(
+                        channel
+                            .gb_device_id
+                            .clone()
+                            .unwrap_or_else(|| channel_db_id.to_string()),
+                    );
                 }
             }
         }
@@ -1748,7 +1805,7 @@ pub async fn platform_channel_device_add(
             refresh_platform_catalog(&state, platform_id).await?;
         }
     }
-    
+
     Ok(Json(ApiResult::success(serde_json::json!({
         "platformId": platform_id,
         "addedCount": added_count,
@@ -1782,16 +1839,24 @@ pub async fn platform_channel_device_remove(
             "code": 1
         }))));
     }
-    
+
     let device_ids = body.device_ids.unwrap_or_default();
     let mut removed_count = 0;
-    
+
     for device_id in device_ids {
         let channels = db_device::list_channels_for_device(&state.pool, &device_id).await?;
-        
+
         for channel in channels {
             let channel_db_id = channel.id as i64;
-            if channel_db_id > 0 && platform_channel::delete_by_device_channel_id(&state.pool, platform_id, channel_db_id).await.is_ok() {
+            if channel_db_id > 0
+                && platform_channel::delete_by_device_channel_id(
+                    &state.pool,
+                    platform_id,
+                    channel_db_id,
+                )
+                .await
+                .is_ok()
+            {
                 removed_count += 1;
             }
         }
@@ -1800,7 +1865,7 @@ pub async fn platform_channel_device_remove(
     if removed_count > 0 {
         refresh_platform_catalog(&state, platform_id).await?;
     }
-    
+
     Ok(Json(ApiResult::success(serde_json::json!({
         "platformId": platform_id,
         "removedCount": removed_count,
@@ -1834,10 +1899,11 @@ pub async fn platform_channel_remove(
             "code": 1
         }))));
     }
-    
+
     let mut removed_count = 0;
     if body.all == Some(true) {
-        removed_count = platform_channel::batch_delete_by_platform(&state.pool, platform_id).await? as i32;
+        removed_count =
+            platform_channel::batch_delete_by_platform(&state.pool, platform_id).await? as i32;
     } else if let Some(channel_ids) = body.channel_ids {
         for channel_id_str in channel_ids {
             #[cfg(feature = "postgres")]
@@ -1859,7 +1925,12 @@ pub async fn platform_channel_remove(
                 .await?;
             if let Some(row) = row {
                 let channel_id = row.try_get::<i64, _>("id").unwrap_or_default();
-                removed_count += platform_channel::delete_by_device_channel_id(&state.pool, platform_id, channel_id).await? as i32;
+                removed_count += platform_channel::delete_by_device_channel_id(
+                    &state.pool,
+                    platform_id,
+                    channel_id,
+                )
+                .await? as i32;
             }
         }
     }
@@ -1867,7 +1938,7 @@ pub async fn platform_channel_remove(
     if removed_count > 0 {
         refresh_platform_catalog(&state, platform_id).await?;
     }
-    
+
     Ok(Json(ApiResult::success(serde_json::json!({
         "platformId": platform_id,
         "removedCount": removed_count,
@@ -1914,10 +1985,10 @@ pub async fn platform_channel_custom_update(
             "code": 1
         }))));
     }
-    
+
     let custom_name = body.custom_name.as_deref().or(body.name.as_deref());
     let custom_info = body.custom_info.as_deref();
-    
+
     platform_channel::update(&state.pool, id, custom_name, custom_info).await?;
     if let Some(custom_device_id) = body.custom_device_id.as_deref() {
         #[cfg(feature = "postgres")]
@@ -1938,7 +2009,7 @@ pub async fn platform_channel_custom_update(
             refresh_platform_catalog(&state, platform_id as i64).await?;
         }
     }
-    
+
     Ok(Json(ApiResult::success(serde_json::json!({
         "id": id,
         "message": "自定义通道更新成功",
@@ -2078,7 +2149,9 @@ pub async fn catalog_edit(
             platform_id: body.platform_id,
         };
         let Json(_) = catalog_add(State(state.clone()), Json(add_body)).await?;
-        return Ok(Json(serde_json::json!({ "code": 0, "msg": "目录编辑成功" })));
+        return Ok(Json(
+            serde_json::json!({ "code": 0, "msg": "目录编辑成功" }),
+        ));
     }
     // 保留 Option：`unwrap_or_default()` 会把没传的字段变成**空串**，而空串不是
     // NULL —— `COALESCE(?, col)` 于是把库里已有的值清空（编辑弹窗只要没带
@@ -2213,12 +2286,18 @@ mod platform_contract_tests {
         let bad = serde_json::from_value::<PlatformAddBody>(serde_json::json!({
             "name": "x", "expires": {"nope": 1}
         }));
-        assert!(bad.is_err(), "对象既不是数字也不是字符串，应报错而不是静默丢弃");
+        assert!(
+            bad.is_err(),
+            "对象既不是数字也不是字符串，应报错而不是静默丢弃"
+        );
     }
 
     #[test]
     fn int_or_string_emits_numbers_for_numeric_columns() {
-        assert_eq!(int_or_string(&Some("3600".to_string())), serde_json::json!(3600));
+        assert_eq!(
+            int_or_string(&Some("3600".to_string())),
+            serde_json::json!(3600)
+        );
         assert_eq!(
             int_or_string(&Some("weird".to_string())),
             serde_json::json!("weird")
@@ -2233,7 +2312,9 @@ mod platform_contract_tests {
 
         let missing_gb = platform_add(
             State(state.clone()),
-            Json(add_body(serde_json::json!({"name": "没有国标ID", "serverIp": "10.0.0.1"}))),
+            Json(add_body(
+                serde_json::json!({"name": "没有国标ID", "serverIp": "10.0.0.1"}),
+            )),
         )
         .await
         .expect_err("缺国标ID 应报错");
@@ -2320,7 +2401,11 @@ mod platform_contract_tests {
 
         let list = platform_query(
             State(state.clone()),
-            Query(PlatformQuery { page: Some(1), count: Some(10), query: None }),
+            Query(PlatformQuery {
+                page: Some(1),
+                count: Some(10),
+                query: None,
+            }),
         )
         .await
         .unwrap();
@@ -2341,9 +2426,8 @@ mod platform_contract_tests {
         // 回提交护栏：编辑弹窗会把整行原样 POST 回 /platform/update。
         // 只要响应用了两个互为别名的键（例如 keepTimeout + heartBeatInterval），
         // serde 就会报 "duplicate field" → 更新稳定 422。
-        serde_json::from_value::<PlatformAddBody>(first.clone()).expect(
-            "列表行必须能原样反序列化成 PlatformAddBody（否则编辑保存必 422）",
-        );
+        serde_json::from_value::<PlatformAddBody>(first.clone())
+            .expect("列表行必须能原样反序列化成 PlatformAddBody（否则编辑保存必 422）");
     }
 
     /// 注销：按 serverGBId 定位（此前按 device_gb_id 查、只回布尔，且无任何动作）。
@@ -2360,9 +2444,12 @@ mod platform_contract_tests {
         .await
         .unwrap();
 
-        let missing = platform_exit(State(state.clone()), Path("99999999999999999999".to_string()))
-            .await
-            .expect_err("不存在的平台应 404");
+        let missing = platform_exit(
+            State(state.clone()),
+            Path("99999999999999999999".to_string()),
+        )
+        .await
+        .expect_err("不存在的平台应 404");
         assert!(matches!(missing, AppError::Business(_, _)));
 
         let exited = platform_exit(
@@ -2379,7 +2466,11 @@ mod platform_contract_tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(row.enable, Some(false), "注销后必须停用，否则下一个周期会注册回来");
+        assert_eq!(
+            row.enable,
+            Some(false),
+            "注销后必须停用，否则下一个周期会注册回来"
+        );
         assert_eq!(row.status, Some(false));
     }
 
@@ -2410,15 +2501,16 @@ mod platform_contract_tests {
         }))
         .unwrap();
         assert_eq!(edit.parent_id, None);
-        let _ = catalog_edit(State(state.clone()), Json(edit)).await.unwrap();
+        let _ = catalog_edit(State(state.clone()), Json(edit))
+            .await
+            .unwrap();
 
-        let (name, parent, civil): (String, String, String) = sqlx::query_as(
-            "SELECT name, parent, civil_code FROM gb_platform_catalog WHERE id = ?",
-        )
-        .bind(catalog_id)
-        .fetch_one(&state.pool)
-        .await
-        .unwrap();
+        let (name, parent, civil): (String, String, String) =
+            sqlx::query_as("SELECT name, parent, civil_code FROM gb_platform_catalog WHERE id = ?")
+                .bind(catalog_id)
+                .fetch_one(&state.pool)
+                .await
+                .unwrap();
         assert_eq!(name, "目录A-改名");
         assert_eq!(parent, "0", "未提供的 parent 不能被空串覆盖");
         assert_eq!(civil, "340200", "未提供的 civil_code 不能被空串覆盖");
@@ -2437,7 +2529,9 @@ mod platform_contract_tests {
             "serverIp": "127.0.0.1",
             "serverPort": 5060
         }));
-        let _ = platform_add(State(state.clone()), Json(body)).await.unwrap();
+        let _ = platform_add(State(state.clone()), Json(body))
+            .await
+            .unwrap();
         let created = platform_db::get_by_server_gb_id(&state.pool, "34020000002000000777")
             .await
             .unwrap()

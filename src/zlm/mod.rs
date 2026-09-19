@@ -1,13 +1,13 @@
+pub mod address_builder;
+pub mod auth;
 pub mod client;
+pub mod health_checker;
 pub mod hook;
 pub mod hook_routes;
-pub mod types;
-pub mod address_builder;
-pub mod health_checker;
-pub mod auth;
 pub mod media_node;
+pub mod types;
 
+pub use address_builder::{StreamAddressBuilder, StreamAddresses, ZlmPortConfig};
 pub use client::ZlmClient;
-pub use types::*;
-pub use address_builder::{StreamAddressBuilder, ZlmPortConfig, StreamAddresses};
 pub use health_checker::{ZlmHealthChecker, ZlmServerStatus};
+pub use types::*;

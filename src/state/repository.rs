@@ -155,7 +155,11 @@ impl StreamStateRepository for StateStoreRepository {
             .count()
     }
     fn count_active_streams(&self) -> usize {
-        self.store.all_streams().iter().filter(|(_, s)| s.online).count()
+        self.store
+            .all_streams()
+            .iter()
+            .filter(|(_, s)| s.online)
+            .count()
     }
 }
 
@@ -166,9 +170,7 @@ impl StreamStateRepository for StateStoreRepository {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state_store::{
-        InviteSessionState, StateStore, StreamState,
-    };
+    use crate::state_store::{InviteSessionState, StateStore, StreamState};
     use chrono::Utc;
 
     fn make_repo() -> StateStoreRepository {
@@ -180,7 +182,10 @@ mod tests {
         let repo = make_repo();
         assert_eq!(repo.get_recording("dev1", "ch1"), None);
         repo.set_recording("dev1", "ch1", "Record");
-        assert_eq!(repo.get_recording("dev1", "ch1"), Some("Record".to_string()));
+        assert_eq!(
+            repo.get_recording("dev1", "ch1"),
+            Some("Record".to_string())
+        );
         repo.del_recording("dev1", "ch1");
         assert_eq!(repo.get_recording("dev1", "ch1"), None);
     }
@@ -292,6 +297,9 @@ mod tests {
         let repo = make_repo();
         repo.set_recording("dev1", "ch1", "Record");
         repo.set_recording("dev1", "ch1", "StopRecord");
-        assert_eq!(repo.get_recording("dev1", "ch1"), Some("StopRecord".to_string()));
+        assert_eq!(
+            repo.get_recording("dev1", "ch1"),
+            Some("StopRecord".to_string())
+        );
     }
 }

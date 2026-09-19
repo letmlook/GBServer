@@ -18,7 +18,9 @@ pub fn routes() -> DocumentedRoutes {
     acc.add(routes!(crate::handlers::play::play_start));
     acc.add(routes!(crate::handlers::play::play_stop));
     acc.add(routes!(crate::handlers::playback::gb_record_download_file));
-    acc.add(routes!(crate::handlers::playback::gb_record_download_progress));
+    acc.add(routes!(
+        crate::handlers::playback::gb_record_download_progress
+    ));
     acc.add(routes!(crate::handlers::playback::gb_record_download_start));
     acc.add(routes!(crate::handlers::playback::gb_record_download_stop));
     acc.add(routes!(crate::handlers::playback::gb_record_query));

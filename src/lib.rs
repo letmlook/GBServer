@@ -1,30 +1,30 @@
-pub mod config;
-pub mod dyn_where;
-pub mod serde_flex;
-pub mod error;
-pub mod response;
-pub mod openapi;
-pub mod auth;
 pub mod archive;
-pub mod db;
-#[cfg(all(test, feature = "sqlite"))]
-pub(crate) mod test_support;
-pub mod handlers;
-pub mod router;
-pub mod sip;
-pub mod zlm;
-pub mod jt1078;
-pub mod scheduler;
+pub mod auth;
 pub mod cascade;
+pub mod cluster;
+pub mod config;
+pub mod db;
+pub mod dyn_where;
+pub mod error;
+pub mod handlers;
+pub mod jt1078;
 pub mod logging;
 pub mod metrics;
-pub mod rpc;
-pub mod state_store;
-pub mod state;
-pub mod security;
-pub mod cluster;
-pub mod ws;
 pub mod middleware;
+pub mod openapi;
+pub mod response;
+pub mod router;
+pub mod rpc;
+pub mod scheduler;
+pub mod security;
+pub mod serde_flex;
+pub mod sip;
+pub mod state;
+pub mod state_store;
+#[cfg(all(test, feature = "sqlite"))]
+pub(crate) mod test_support;
+pub mod ws;
+pub mod zlm;
 
 use config::AppConfig;
 use std::collections::HashMap;
@@ -334,10 +334,11 @@ async fn init_db_tables(pool: &db::Pool) -> anyhow::Result<()> {
     #[cfg(feature = "postgres")]
     {
         let table_exists: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name = 'gb_device')"
+            "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name = 'gb_device')",
         )
         .fetch_one(pool)
-        .await.unwrap_or(false);
+        .await
+        .unwrap_or(false);
 
         if !table_exists {
             tracing::info!("Schema tables not found, initializing from SQL script...");
@@ -349,9 +350,13 @@ async fn init_db_tables(pool: &db::Pool) -> anyhow::Result<()> {
                     continue;
                 }
                 // Skip non-DML/DDL statements
-                if !stmt.starts_with("CREATE") && !stmt.starts_with("INSERT") &&
-                   !stmt.starts_with("ALTER") && !stmt.starts_with("COMMENT") &&
-                   !stmt.starts_with("DROP") && !stmt.starts_with("DO") {
+                if !stmt.starts_with("CREATE")
+                    && !stmt.starts_with("INSERT")
+                    && !stmt.starts_with("ALTER")
+                    && !stmt.starts_with("COMMENT")
+                    && !stmt.starts_with("DROP")
+                    && !stmt.starts_with("DO")
+                {
                     continue;
                 }
                 let _ = sqlx::query(stmt).execute(pool).await;
@@ -376,8 +381,11 @@ async fn init_db_tables(pool: &db::Pool) -> anyhow::Result<()> {
                 if stmt.is_empty() || stmt.starts_with("--") || stmt.starts_with("/*") {
                     continue;
                 }
-                if !stmt.starts_with("CREATE") && !stmt.starts_with("INSERT") &&
-                   !stmt.starts_with("ALTER") && !stmt.starts_with("DROP") {
+                if !stmt.starts_with("CREATE")
+                    && !stmt.starts_with("INSERT")
+                    && !stmt.starts_with("ALTER")
+                    && !stmt.starts_with("DROP")
+                {
                     continue;
                 }
                 let _ = sqlx::query(stmt).execute(pool).await;
@@ -390,11 +398,16 @@ async fn init_db_tables(pool: &db::Pool) -> anyhow::Result<()> {
     {
         // SQLite 用 sqlite_master 检测；Phase 1 仅覆盖核心 6 表最小集合
         // Phase 7.6: 检测多个核心表确保 schema 完整；任一缺失即触发 init。
-        let core_tables = ["gb_device", "gb_common_region", "gb_online_user", "gb_cluster_node"];
+        let core_tables = [
+            "gb_device",
+            "gb_common_region",
+            "gb_online_user",
+            "gb_cluster_node",
+        ];
         let mut missing_any = false;
         for tbl in &core_tables {
             let exists: bool = sqlx::query_scalar(
-                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?)"
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?)",
             )
             .bind(tbl)
             .fetch_one(pool)
@@ -424,8 +437,11 @@ async fn init_db_tables(pool: &db::Pool) -> anyhow::Result<()> {
                     continue;
                 }
                 let upper = stmt.to_uppercase();
-                if !upper.starts_with("CREATE") && !upper.starts_with("INSERT") &&
-                   !upper.starts_with("ALTER") && !upper.starts_with("DROP") {
+                if !upper.starts_with("CREATE")
+                    && !upper.starts_with("INSERT")
+                    && !upper.starts_with("ALTER")
+                    && !upper.starts_with("DROP")
+                {
                     continue;
                 }
                 // Only CREATE statements use IF NOT EXISTS so they're safe to
@@ -635,7 +651,9 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
                 return Err(anyhow::anyhow!("JWT secret rejected in STRICT mode"));
             }
             tracing::warn!("⚠️  JWT secret validation failed: {}", e);
-            tracing::warn!("Set GBSERVER__JWT__SECRET to a ≥32-char random hex string before production.");
+            tracing::warn!(
+                "Set GBSERVER__JWT__SECRET to a ≥32-char random hex string before production."
+            );
         }
     }
     let pool = db::create_pool(&cfg).await?;
@@ -655,7 +673,11 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
                     continue;
                 }
                 if let Err(e) = db::log::insert_batch(&log_pool, &batch).await {
-                    eprintln!("[gb_log] 写入系统日志失败（本轮 {} 条）: {}", batch.len(), e);
+                    eprintln!(
+                        "[gb_log] 写入系统日志失败（本轮 {} 条）: {}",
+                        batch.len(),
+                        e
+                    );
                 }
             }
         });
@@ -676,7 +698,9 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
                 } else if cur * 5 >= limit * 4 {
                     tracing::warn!(
                         "⚠️  SQLite 设备数量已用 {}% ({}/{}); 接近上限，请规划迁移到 PostgreSQL。",
-                        cur * 100 / limit, cur, limit
+                        cur * 100 / limit,
+                        cur,
+                        limit
                     );
                 } else {
                     tracing::info!("SQLite device count: {}/{}", cur, limit);
@@ -702,9 +726,7 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
     // 既用于绑定也用于通告；解析失败则保持原值并告警。
     let mut cfg = cfg;
     if let Some(ref mut sip_cfg) = cfg.sip {
-        let wildcard = sip_cfg.ip.is_empty()
-            || sip_cfg.ip == "0.0.0.0"
-            || sip_cfg.ip == "::";
+        let wildcard = sip_cfg.ip.is_empty() || sip_cfg.ip == "0.0.0.0" || sip_cfg.ip == "::";
         let no_explicit_advertise = sip_cfg.sdp_ip.is_none() && sip_cfg.stream_ip.is_none();
         if wildcard && no_explicit_advertise {
             match detect_sip_local_ip() {
@@ -727,7 +749,11 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
 
     let mut sip_server = if let Some(ref sip_config) = cfg.sip {
         if sip_config.enabled {
-            let mut server = sip::SipServer::new(sip_config.clone(), pool.clone(), cfg.database.sqlite_max_devices);
+            let mut server = sip::SipServer::new(
+                sip_config.clone(),
+                pool.clone(),
+                cfg.database.sqlite_max_devices,
+            );
             server.set_ws_state(ws_state.clone()).await;
             // **必须显式接线**：`SipServer::tcp_enabled` 与 `sip.tcp_enabled`
             // 之间此前没有任何连接点，`set_tcp_enabled` 是死代码 ——
@@ -760,7 +786,12 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
             if server.enabled {
                 let client = Arc::new(zlm::ZlmClient::from_config(server));
                 zlm_clients.insert(server.id.clone(), client.clone());
-                tracing::info!("ZLM client initialized: {} ({}:{})", server.id, server.ip, server.http_port);
+                tracing::info!(
+                    "ZLM client initialized: {} ({}:{})",
+                    server.id,
+                    server.ip,
+                    server.http_port
+                );
 
                 // 写库失败要可见：节点行同步不进去的话，媒体节点页 / 节点选择
                 // 都会少一个节点，而启动日志里什么异常都看不到。
@@ -774,7 +805,9 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
                     server.send_rtp_port_range.as_deref(),
                     server.rtc_extern_ip.as_deref(),
                     &now,
-                ).await {
+                )
+                .await
+                {
                     tracing::error!("同步媒体节点 {} 到数据库失败: {}", server.id, e);
                 }
 
@@ -816,7 +849,9 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
     // (timeout_secs / grace_count / check_interval_secs 来自 [zlm.keepalive])
     {
         let health_pool = pool.clone();
-        let keepalive_cfg = cfg.zlm.as_ref()
+        let keepalive_cfg = cfg
+            .zlm
+            .as_ref()
             .map(|z| z.keepalive.clone())
             .unwrap_or_default();
         let health_config = zlm::media_node::HealthCheckConfig {
@@ -826,7 +861,9 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
         };
         tracing::info!(
             "MediaNode health check started: timeout={}s, grace={}, interval={}s",
-            health_config.timeout_secs, health_config.grace_count, health_config.check_interval_secs
+            health_config.timeout_secs,
+            health_config.grace_count,
+            health_config.check_interval_secs
         );
         tokio::spawn(async move {
             zlm::media_node::health_check_loop(health_pool, health_config).await;
@@ -838,10 +875,14 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
     // to run while Arc::strong_count(&sip_server) == 1.
     {
         let registrar = Arc::new(crate::cascade::CascadeRegistrar::new());
-        let local_device_id = cfg.sip.as_ref()
+        let local_device_id = cfg
+            .sip
+            .as_ref()
             .map(|s| s.device_id.clone())
             .unwrap_or_else(|| "local_device".to_string());
-        let realm = cfg.sip.as_ref()
+        let realm = cfg
+            .sip
+            .as_ref()
             .map(|s| s.realm.clone())
             .unwrap_or_else(|| "GBServerRealm".to_string());
 
@@ -893,7 +934,8 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
         let realm_for_reg = realm.clone();
         let pool_clone = pool.clone();
         tokio::spawn(async move {
-            reg.load_platforms_from_db(&pool_clone, &local_device_id_for_reg, &realm_for_reg).await;
+            reg.load_platforms_from_db(&pool_clone, &local_device_id_for_reg, &realm_for_reg)
+                .await;
             reg.run_registration_loop().await;
         });
 
@@ -912,7 +954,9 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
 
     let download_manager = Arc::new(crate::handlers::playback::DownloadManager::new());
     let playback_manager = Arc::new(crate::handlers::playback::PlaybackManager::new());
-    let jt1078_manager: Arc<tokio::sync::RwLock<Option<Arc<crate::jt1078::manager::Jt1078Manager>>>> = Arc::new(tokio::sync::RwLock::new(None));
+    let jt1078_manager: Arc<
+        tokio::sync::RwLock<Option<Arc<crate::jt1078::manager::Jt1078Manager>>>,
+    > = Arc::new(tokio::sync::RwLock::new(None));
 
     // Initialize Redis (optional)
     let redis_conn = if let Some(ref redis_cfg) = cfg.redis {
@@ -993,22 +1037,40 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
     if let Some(ref router) = state.rpc_router {
         let hub_clone = state.ws_hub.clone();
         let self_node = state.cluster_registry.config().node_id.clone();
-        struct WsBroadcastHandler { hub: Arc<crate::ws::WsHub>, self_node: String }
+        struct WsBroadcastHandler {
+            hub: Arc<crate::ws::WsHub>,
+            self_node: String,
+        }
         impl crate::rpc::RpcHandler for WsBroadcastHandler {
-            fn name(&self) -> &str { "ws_broadcast" }
+            fn name(&self) -> &str {
+                "ws_broadcast"
+            }
             fn handle(&self, payload: serde_json::Value) -> crate::rpc::RpcResponse {
                 if payload.get("from_node").and_then(|v| v.as_str()) == Some(&self.self_node) {
-                    return crate::rpc::RpcResponse { ok: true, result: None, error: None };
+                    return crate::rpc::RpcResponse {
+                        ok: true,
+                        result: None,
+                        error: None,
+                    };
                 }
                 let hub = self.hub.clone();
                 // Spawn async dispatch — RpcHandler is sync; use tokio::spawn.
                 tokio::spawn(async move {
                     hub.handle_rpc_broadcast(payload).await;
                 });
-                crate::rpc::RpcResponse { ok: true, result: None, error: None }
+                crate::rpc::RpcResponse {
+                    ok: true,
+                    result: None,
+                    error: None,
+                }
             }
         }
-        router.register(WsBroadcastHandler { hub: hub_clone, self_node }).await;
+        router
+            .register(WsBroadcastHandler {
+                hub: hub_clone,
+                self_node,
+            })
+            .await;
     }
 
     // Phase 7.3: 把 state.rpc_router 注入 ws_hub（让 hub 能 cluster 广播）
@@ -1027,21 +1089,36 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
     // E2: [rpc].peer_endpoints 非空时启用 HttpRpc 出站传输（POST 对端 /api/rpc）
     if let Some(ref router) = state.rpc_router {
         if !cfg.rpc.peer_endpoints.is_empty() {
-            let node_id = cfg.rpc.node_id.clone()
+            let node_id = cfg
+                .rpc
+                .node_id
+                .clone()
                 .unwrap_or_else(|| state.cluster_registry.config().node_id.clone());
-            let http_rpc = crate::rpc::HttpRpc::new(&node_id, crate::rpc::HttpRpcConfig {
-                peer_endpoints: cfg.rpc.peer_endpoints.clone(),
-                timeout_secs: cfg.rpc.timeout_secs.unwrap_or(5),
-                secret: cfg.rpc.secret.clone(),
-            });
+            let http_rpc = crate::rpc::HttpRpc::new(
+                &node_id,
+                crate::rpc::HttpRpcConfig {
+                    peer_endpoints: cfg.rpc.peer_endpoints.clone(),
+                    timeout_secs: cfg.rpc.timeout_secs.unwrap_or(5),
+                    secret: cfg.rpc.secret.clone(),
+                },
+            );
             router.register_outbound(Arc::new(http_rpc)).await;
-            if cfg.rpc.secret.as_deref().map(|s| s.is_empty()).unwrap_or(true) {
+            if cfg
+                .rpc
+                .secret
+                .as_deref()
+                .map(|s| s.is_empty())
+                .unwrap_or(true)
+            {
                 tracing::warn!(
                     "多节点 RPC 已启用（{} 个对端）但未配置 [rpc].secret —— 入站 /api/rpc 将不校验来源，                     建议设置共享密钥",
                     cfg.rpc.peer_endpoints.len()
                 );
             }
-            tracing::info!("HttpRpc outbound enabled: {} peers", cfg.rpc.peer_endpoints.len());
+            tracing::info!(
+                "HttpRpc outbound enabled: {} peers",
+                cfg.rpc.peer_endpoints.len()
+            );
         }
     }
 
@@ -1078,7 +1155,9 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
                     let _ = router_clone.route(&req).await;
                 }
             });
-            router.register_outbound(transport as Arc<dyn crate::rpc::RpcTransport>).await;
+            router
+                .register_outbound(transport as Arc<dyn crate::rpc::RpcTransport>)
+                .await;
             tracing::info!("RedisRpcTransport subscriber started (inbound + outbound)");
         }
     }
@@ -1127,9 +1206,13 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
                     .await
                     .unwrap_or(false);
                 if !alive {
-                    if let Err(e) =
-                        db::stream_proxy::update_play_state(&proxy_pool, rec.id as i64, false, "ready")
-                            .await
+                    if let Err(e) = db::stream_proxy::update_play_state(
+                        &proxy_pool,
+                        rec.id as i64,
+                        false,
+                        "ready",
+                    )
+                    .await
                     {
                         tracing::warn!("拉流代理 {}/{} 状态复位失败: {}", app, stream, e);
                     } else {
@@ -1222,7 +1305,8 @@ pub struct AppState {
     pub state_store: Arc<crate::state_store::StateStore>,
     /// Phase 7.1: business-level repository facade over StateStore.
     pub state_repo: Arc<crate::state::StateStoreRepository>,
-    pub jt1078_manager: Arc<tokio::sync::RwLock<Option<Arc<crate::jt1078::manager::Jt1078Manager>>>>,
+    pub jt1078_manager:
+        Arc<tokio::sync::RwLock<Option<Arc<crate::jt1078::manager::Jt1078Manager>>>>,
     pub rpc_router: Option<Arc<crate::rpc::RpcRouter>>,
     /// Phase 7.2: cluster registry (Redis-backed node discovery).
     pub cluster_registry: Arc<crate::cluster::ClusterRegistry>,
@@ -1230,11 +1314,15 @@ pub struct AppState {
 
 impl AppState {
     /// 获取 ZLM 客户端。media_server_id 为 None 或 "auto" 时自动选择负载最低的节点。
-    pub async fn get_zlm_client_auto(&self, media_server_id: Option<&str>) -> Option<(String, Arc<zlm::ZlmClient>)> {
+    pub async fn get_zlm_client_auto(
+        &self,
+        media_server_id: Option<&str>,
+    ) -> Option<(String, Arc<zlm::ZlmClient>)> {
         match media_server_id {
-            Some(id) if id != "auto" && !id.is_empty() => {
-                self.zlm_clients.get(id).map(|c| (id.to_string(), c.clone()))
-            }
+            Some(id) if id != "auto" && !id.is_empty() => self
+                .zlm_clients
+                .get(id)
+                .map(|c| (id.to_string(), c.clone())),
             _ => self.select_least_loaded().await,
         }
     }
@@ -1266,7 +1354,7 @@ impl AppState {
         }
         self.zlm_client.clone()
     }
-    
+
     pub fn list_zlm_servers(&self) -> Vec<String> {
         self.zlm_clients.keys().cloned().collect()
     }
@@ -1302,17 +1390,24 @@ impl AppState {
 
         // Phase 4.6: 优先过滤 online 节点（last_keepalive < 30s → status=0）。
         // 若 DB 拿不到 online 列表（schema 未扩展 / DB 不可用），退化为不过滤。
-        let online_ids: Vec<String> = match crate::db::media_server::list_online_servers(&self.pool).await {
-            Ok(rows) => rows.into_iter().map(|s| s.id).collect(),
-            Err(e) => {
-                tracing::warn!("list_online_servers failed, falling back to unfiltered: {}", e);
-                self.zlm_clients.keys().cloned().collect()
-            }
-        };
+        let online_ids: Vec<String> =
+            match crate::db::media_server::list_online_servers(&self.pool).await {
+                Ok(rows) => rows.into_iter().map(|s| s.id).collect(),
+                Err(e) => {
+                    tracing::warn!(
+                        "list_online_servers failed, falling back to unfiltered: {}",
+                        e
+                    );
+                    self.zlm_clients.keys().cloned().collect()
+                }
+            };
 
         // Step A: state_store 选 least-load among online
         if !online_ids.is_empty() {
-            if let Some(id) = self.state_store.select_least_loaded_server_filtered(&online_ids) {
+            if let Some(id) = self
+                .state_store
+                .select_least_loaded_server_filtered(&online_ids)
+            {
                 if let Some(client) = self.zlm_clients.get(&id) {
                     return Some((id, client.clone()));
                 }
@@ -1380,7 +1475,10 @@ impl AppState {
                 return Some((id.clone(), c.clone()));
             }
         }
-        self.zlm_clients.iter().next().map(|(id, c)| (id.clone(), c.clone()))
+        self.zlm_clients
+            .iter()
+            .next()
+            .map(|(id, c)| (id.clone(), c.clone()))
     }
 }
 
@@ -1396,16 +1494,15 @@ mod tests {
     //! - the actual least-loaded (smallest stream_count) wins
     //! - when all are offline, falls through to iter().next() safety net (not None)
     // Phase 5.6: 修复 PG/MySQL 编译失败 — 该测试仅在 sqlite feature 下有意义
+    use super::*;
+    use crate::config::{DatabaseConfig, JwtConfig, ServerConfig};
+    use chrono::Utc;
     #[cfg(feature = "sqlite")]
     use sqlx::sqlite::SqlitePoolOptions;
-    use super::*;
-    use chrono::Utc;
-    use crate::config::{ServerConfig, DatabaseConfig, JwtConfig};
 
     /// Build a minimal `gb_media_server` table on an in-memory SQLite pool.
     /// Returns the pool and a `status=1`/`status=0` inserter closure.
-    async fn make_pool_with_servers(
-        rows: &[(&str, i32)], // (id, status 0/1)
+    async fn make_pool_with_servers(rows: &[(&str, i32)], // (id, status 0/1)
     ) -> db::Pool {
         let pool: db::Pool = SqlitePoolOptions::new()
             .max_connections(1)
@@ -1464,14 +1561,12 @@ mod tests {
         .expect("create table");
 
         for (id, status) in rows {
-            sqlx::query(
-                "INSERT INTO gb_media_server (id, status) VALUES (?, ?)",
-            )
-            .bind(id)
-            .bind(status)
-            .execute(&pool)
-            .await
-            .expect("insert");
+            sqlx::query("INSERT INTO gb_media_server (id, status) VALUES (?, ?)")
+                .bind(id)
+                .bind(status)
+                .execute(&pool)
+                .await
+                .expect("insert");
         }
         pool
     }
@@ -1552,19 +1647,37 @@ mod tests {
         ]));
         let store = Arc::new(crate::state_store::StateStore::in_memory());
         // Stream counts: a=10, b=3 → state_store should pick b.
-        store.set_media_server("zlm-a", crate::state_store::MediaServerLoad {
-            server_id: "zlm-a".into(), stream_count: 10, rtp_server_count: 0,
-            online: true, last_keepalive: Utc::now(),
-        });
-        store.set_media_server("zlm-b", crate::state_store::MediaServerLoad {
-            server_id: "zlm-b".into(), stream_count: 3, rtp_server_count: 0,
-            online: true, last_keepalive: Utc::now(),
-        });
+        store.set_media_server(
+            "zlm-a",
+            crate::state_store::MediaServerLoad {
+                server_id: "zlm-a".into(),
+                stream_count: 10,
+                rtp_server_count: 0,
+                online: true,
+                last_keepalive: Utc::now(),
+            },
+        );
+        store.set_media_server(
+            "zlm-b",
+            crate::state_store::MediaServerLoad {
+                server_id: "zlm-b".into(),
+                stream_count: 3,
+                rtp_server_count: 0,
+                online: true,
+                last_keepalive: Utc::now(),
+            },
+        );
         // zlm-c has stream_count but is offline; should be skipped.
-        store.set_media_server("zlm-c", crate::state_store::MediaServerLoad {
-            server_id: "zlm-c".into(), stream_count: 1, rtp_server_count: 0,
-            online: false, last_keepalive: Utc::now() - chrono::Duration::seconds(120),
-        });
+        store.set_media_server(
+            "zlm-c",
+            crate::state_store::MediaServerLoad {
+                server_id: "zlm-c".into(),
+                stream_count: 1,
+                rtp_server_count: 0,
+                online: false,
+                last_keepalive: Utc::now() - chrono::Duration::seconds(120),
+            },
+        );
 
         let mut zlm_clients = HashMap::new();
         for id in ["zlm-a", "zlm-b", "zlm-c"] {
@@ -1575,7 +1688,9 @@ mod tests {
         }
         let state = make_app_state(pool, store, zlm_clients);
 
-        let (picked_id, _) = rt.block_on(state.select_least_loaded()).expect("should pick one");
+        let (picked_id, _) = rt
+            .block_on(state.select_least_loaded())
+            .expect("should pick one");
         assert_eq!(picked_id, "zlm-b", "must skip offline zlm-c (lowest count)");
     }
 
@@ -1594,10 +1709,16 @@ mod tests {
         ]));
         let store = Arc::new(crate::state_store::StateStore::in_memory());
         for (id, count) in [("zlm-a", 5_i64), ("zlm-b", 3_i64), ("zlm-c", 10_i64)] {
-            store.set_media_server(id, crate::state_store::MediaServerLoad {
-                server_id: id.into(), stream_count: count, rtp_server_count: 0,
-                online: true, last_keepalive: Utc::now(),
-            });
+            store.set_media_server(
+                id,
+                crate::state_store::MediaServerLoad {
+                    server_id: id.into(),
+                    stream_count: count,
+                    rtp_server_count: 0,
+                    online: true,
+                    last_keepalive: Utc::now(),
+                },
+            );
         }
 
         let mut zlm_clients = HashMap::new();
@@ -1609,7 +1730,9 @@ mod tests {
         }
         let state = make_app_state(pool, store, zlm_clients);
 
-        let (picked_id, _) = rt.block_on(state.select_least_loaded()).expect("should pick one");
+        let (picked_id, _) = rt
+            .block_on(state.select_least_loaded())
+            .expect("should pick one");
         assert_eq!(picked_id, "zlm-b", "zlm-b has lowest stream_count=3");
     }
 
@@ -1626,10 +1749,7 @@ mod tests {
             .build()
             .unwrap();
 
-        let pool = rt.block_on(make_pool_with_servers(&[
-            ("zlm-a", 0),
-            ("zlm-b", 0),
-        ]));
+        let pool = rt.block_on(make_pool_with_servers(&[("zlm-a", 0), ("zlm-b", 0)]));
         let store = Arc::new(crate::state_store::StateStore::in_memory());
 
         let mut zlm_clients = HashMap::new();
@@ -1645,7 +1765,10 @@ mod tests {
         // iter().next() safety net always returns Some when at least one
         // client is configured, even when all are DB-offline and upstream
         // signals are unreachable.
-        assert!(picked.is_some(), "fallback should still return a configured zlm_client");
+        assert!(
+            picked.is_some(),
+            "fallback should still return a configured zlm_client"
+        );
         let (picked_id, _) = picked.unwrap();
         assert!(
             picked_id == "zlm-a" || picked_id == "zlm-b",

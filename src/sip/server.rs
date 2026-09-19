@@ -12,13 +12,17 @@ use tokio::sync::{oneshot, RwLock};
 
 use crate::cascade::CascadeRegistrar;
 use crate::config::SipConfig;
-use crate::db::{device as db_device, platform as db_platform, platform_channel as db_platform_channel, Pool};
 use crate::db::position_history as ph;
+use crate::db::{
+    device as db_device, platform as db_platform, platform_channel as db_platform_channel, Pool,
+};
 use crate::handlers::websocket::WsState;
 use crate::sip::core::parser::Parser;
 use crate::sip::core::{
     SipMessage, SipMethod, SipRequest, SipResponse, Transaction, TransactionManager, TransportInfo,
 };
+use crate::sip::gb28181::broadcast::{BroadcastManager, BroadcastSession};
+use crate::sip::gb28181::cascade_forward::SendRtpManager;
 use crate::sip::gb28181::catalog::{
     build_catalog_notify_body, CatalogSubscription, CatalogSubscriptionManager,
 };
@@ -26,13 +30,11 @@ use crate::sip::gb28181::invite::SessionStatus;
 use crate::sip::gb28181::invite_session::{
     build_invite_sdp, build_playback_sdp, InviteSessionManager, InviteSessionStatus, SdpInfo,
 };
-use crate::sip::gb28181::talk::{build_talk_sdp as build_audio_sdp, TalkManager, TalkStatus};
-use crate::sip::gb28181::broadcast::{BroadcastManager, BroadcastSession};
-use crate::sip::gb28181::{DeviceManager, SessionManager, XmlParser};
+use crate::sip::gb28181::nat_helper::NatHelper;
 use crate::sip::gb28181::ssrc::SsrcManager;
 use crate::sip::gb28181::stream_reconnect::StreamReconnectManager;
-use crate::sip::gb28181::nat_helper::NatHelper;
-use crate::sip::gb28181::cascade_forward::SendRtpManager;
+use crate::sip::gb28181::talk::{build_talk_sdp as build_audio_sdp, TalkManager, TalkStatus};
+use crate::sip::gb28181::{DeviceManager, SessionManager, XmlParser};
 use crate::sip::transport::tcp::{TcpConnectionManager, TcpListener};
 use crate::zlm::ZlmClient;
 
@@ -84,10 +86,7 @@ pub enum PlaybackControlCmd {
 /// 的 **MANSCDP** 报文）——那是"设备控制"（云台/报警/录像）的报文族，
 /// 与回放控制完全不同。设备收到 MANSCDP 的 INFO 只会当作无法识别的控制命令，
 /// **暂停/继续/拖动/倍速全都不会生效**，而平台侧返回的是 success。
-pub(crate) fn build_playback_control_mansrtsp(
-    cmd: &PlaybackControlCmd,
-    cseq: u32,
-) -> String {
+pub(crate) fn build_playback_control_mansrtsp(cmd: &PlaybackControlCmd, cseq: u32) -> String {
     let (method, extra) = match cmd {
         PlaybackControlCmd::Play | PlaybackControlCmd::Resume => ("PLAY", String::new()),
         PlaybackControlCmd::Pause => ("PAUSE", String::new()),
@@ -97,9 +96,7 @@ pub(crate) fn build_playback_control_mansrtsp(
             let npt = seek_time_to_npt(seek_time);
             ("PLAY", format!("Range: npt={}-\r\n", npt))
         }
-        PlaybackControlCmd::Scale { speed } => {
-            ("PLAY", format!("Scale: {}\r\n", speed))
-        }
+        PlaybackControlCmd::Scale { speed } => ("PLAY", format!("Scale: {}\r\n", speed)),
     };
     format!("{} RTSP/1.0\r\nCSeq: {}\r\n{}", method, cseq, extra)
 }
@@ -489,11 +486,9 @@ impl SipServer {
     pub fn set_state_store(&mut self, store: std::sync::Arc<crate::state_store::StateStore>) {
         // SendRtpManager.set_state_store 需 &mut self，通过 Arc::get_mut
         // 仅当本节点是唯一持有者时有效；多节点场景下由 CascadeRegistrar 持有
-        Arc::get_mut(&mut self.send_rtp_manager)
-            .map(|m| m.set_state_store(store.clone()));
+        Arc::get_mut(&mut self.send_rtp_manager).map(|m| m.set_state_store(store.clone()));
         // InviteSessionManager 通过 Arc::get_mut 注入
-        Arc::get_mut(&mut self.invite_session_manager)
-            .map(|m| m.set_state_store(store));
+        Arc::get_mut(&mut self.invite_session_manager).map(|m| m.set_state_store(store));
     }
 
     /// B3: 暴露 SendRtpManager 用于外部（cascade_service / BYE 处理）注册会话
@@ -579,8 +574,7 @@ impl SipServer {
                 // （实测），于是级联推流始终起不来。
                 // 正确做法：先把占位 server 关掉释放 P，再让 startSendRtp 以 P 为源端口 bind。
                 if req.local_send_port != 0 {
-                    let send_stream_id =
-                        format!("cascade_{}_{}", req.platform_id, req.channel_id);
+                    let send_stream_id = format!("cascade_{}_{}", req.platform_id, req.channel_id);
                     if let Err(e) = zlm.close_rtp_server(&send_stream_id).await {
                         tracing::warn!(
                             "级联推流：释放发送端口占位 {} 失败（继续尝试）: {}",
@@ -625,8 +619,7 @@ impl SipServer {
                         Err(e) => break Err(e),
                     }
                 };
-                match send_result
-                {
+                match send_result {
                     Ok(()) => {
                         self.send_rtp_manager
                             .set_stream_by_channel(&req.channel_id, &stream_id);
@@ -842,7 +835,21 @@ impl SipServer {
             }
         });
 
-        dbg_upsert_device(&self.pool, &self.config.device_id, "GBServer", Some("Rust"), Some("GBServer"), None, None, None, None, None, true, "zlmediakit-1".to_string()).await?;
+        dbg_upsert_device(
+            &self.pool,
+            &self.config.device_id,
+            "GBServer",
+            Some("Rust"),
+            Some("GBServer"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            true,
+            "zlmediakit-1".to_string(),
+        )
+        .await?;
 
         Ok(())
     }
@@ -858,7 +865,9 @@ impl SipServer {
             count += 1;
             tracing::info!(
                 "Restored online device from DB: device_id={} ip={:?}:{:?}",
-                d.device_id, d.ip, d.port
+                d.device_id,
+                d.ip,
+                d.port
             );
         }
         tracing::info!("Restored {} online devices from DB", count);
@@ -945,7 +954,33 @@ impl SipServer {
                         let transaction_manager = udp_transaction_manager.clone();
                         let catalog_sync_manager = udp_catalog_sync_manager.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = Self::handle_packet(&data, addr, &config, &device_manager, &session_manager, &invite_session_manager, &talk_manager, &catalog_subscription_manager, &zlm_client, &pool, &socket_for_response, false, &ws_state, &pending_request_manager, &pending_invites, &cascade_registrar, &send_rtp_manager, &Some(subscription_lifecycle), &renewal_failures, sqlite_max_devices, &media_waiter_manager, &transaction_manager, &catalog_sync_manager).await {
+                            if let Err(e) = Self::handle_packet(
+                                &data,
+                                addr,
+                                &config,
+                                &device_manager,
+                                &session_manager,
+                                &invite_session_manager,
+                                &talk_manager,
+                                &catalog_subscription_manager,
+                                &zlm_client,
+                                &pool,
+                                &socket_for_response,
+                                false,
+                                &ws_state,
+                                &pending_request_manager,
+                                &pending_invites,
+                                &cascade_registrar,
+                                &send_rtp_manager,
+                                &Some(subscription_lifecycle),
+                                &renewal_failures,
+                                sqlite_max_devices,
+                                &media_waiter_manager,
+                                &transaction_manager,
+                                &catalog_sync_manager,
+                            )
+                            .await
+                            {
                                 tracing::error!("SIP handler error: {}", e);
                             }
                         });
@@ -1021,16 +1056,31 @@ impl SipServer {
 
                             tokio::spawn(async move {
                                 Self::handle_tcp_connection(
-                                    addr, reader, &config, &device_manager, &session_manager,
-                                    &invite_session_manager, &talk_manager,
-                                    &catalog_subscription_manager, &zlm_client, &pool,
-                                    &conn_manager, &pending_request_manager,
-                                    &send_rtp_manager, sqlite_max_devices,
-                                    &media_waiter_manager, &socket, &ws_state,
-                                    &pending_invites, &cascade_registrar,
-                                    &Some(subscription_lifecycle), &renewal_failures,
-                                    &transaction_manager, &catalog_sync_manager,
-                                ).await;
+                                    addr,
+                                    reader,
+                                    &config,
+                                    &device_manager,
+                                    &session_manager,
+                                    &invite_session_manager,
+                                    &talk_manager,
+                                    &catalog_subscription_manager,
+                                    &zlm_client,
+                                    &pool,
+                                    &conn_manager,
+                                    &pending_request_manager,
+                                    &send_rtp_manager,
+                                    sqlite_max_devices,
+                                    &media_waiter_manager,
+                                    &socket,
+                                    &ws_state,
+                                    &pending_invites,
+                                    &cascade_registrar,
+                                    &Some(subscription_lifecycle),
+                                    &renewal_failures,
+                                    &transaction_manager,
+                                    &catalog_sync_manager,
+                                )
+                                .await;
                             });
                         }
                         Err(e) => {
@@ -1042,9 +1092,9 @@ impl SipServer {
         }
 
         // Phase 2 R6 + R3: 合并 Catalog / MobilePosition 续订循环为单一
-// subscription_renewal_loop，由 SubscriptionLifecycle::get_needing_renew 驱动，
-// 带 per-device failure_count 退避（>5 次则跳过 5 分钟）。
-let renewal_pool = pool.clone();
+        // subscription_renewal_loop，由 SubscriptionLifecycle::get_needing_renew 驱动，
+        // 带 per-device failure_count 退避（>5 次则跳过 5 分钟）。
+        let renewal_pool = pool.clone();
         let renewal_catalog_manager = catalog_subscription_manager.clone();
         let renewal_device_manager = device_manager.clone();
         let renewal_config = config.clone();
@@ -1058,12 +1108,15 @@ let renewal_pool = pool.clone();
 
                 // 1. 先从 DB 加载需要续订的设备（保持与原 Catalog/MobilePosition 路径一致）
                 let mut candidates: Vec<(String, String, u32)> = Vec::new();
-                if let Ok(devices) = db_device::get_devices_for_catalog_renewal(&renewal_pool).await {
+                if let Ok(devices) = db_device::get_devices_for_catalog_renewal(&renewal_pool).await
+                {
                     for (device_id, cycle) in devices {
                         candidates.push((device_id, "Catalog".to_string(), cycle as u32));
                     }
                 }
-                if let Ok(devices) = db_device::get_devices_for_mobile_position_renewal(&renewal_pool).await {
+                if let Ok(devices) =
+                    db_device::get_devices_for_mobile_position_renewal(&renewal_pool).await
+                {
                     for (device_id, cycle) in devices {
                         candidates.push((device_id, "MobilePosition".to_string(), cycle as u32));
                     }
@@ -1073,13 +1126,19 @@ let renewal_pool = pool.clone();
                 for (device_id, event, cycle) in &candidates {
                     let sub_type = match event.as_str() {
                         "Catalog" => Some(crate::sip::gb28181::SubscriptionType::Catalog),
-                        "MobilePosition" => Some(crate::sip::gb28181::SubscriptionType::MobilePosition),
+                        "MobilePosition" => {
+                            Some(crate::sip::gb28181::SubscriptionType::MobilePosition)
+                        }
                         _ => None,
                     };
                     if let Some(st) = sub_type {
                         let key = format!("{}_{}", device_id, st.as_str());
                         // 第一次进入续订：注册
-                        if !renewal_lifecycle.get_for_device(device_id).iter().any(|s| s.sub_type == st) {
+                        if !renewal_lifecycle
+                            .get_for_device(device_id)
+                            .iter()
+                            .any(|s| s.sub_type == st)
+                        {
                             renewal_lifecycle.register(device_id, st, &key, *cycle);
                         }
                     }
@@ -1127,7 +1186,8 @@ let renewal_pool = pool.clone();
                         &renewal_device_manager,
                         &renewal_catalog_manager,
                         &renewal_socket,
-                    ).await;
+                    )
+                    .await;
 
                     match result {
                         Ok(_) => {
@@ -1140,7 +1200,9 @@ let renewal_pool = pool.clone();
                             *new_count += 1;
                             tracing::warn!(
                                 "Renewal failed for {}: {} (failures={})",
-                                key, e, *new_count
+                                key,
+                                e,
+                                *new_count
                             );
                         }
                     }
@@ -1294,13 +1356,12 @@ let renewal_pool = pool.clone();
                             // 经统一出站口发送：设备以 TCP 注册时，平台心跳
                             // 必须走同一条 TCP 连接（走 UDP 设备收不到，
                             // 会被判定"平台失联"从而注销）。
-                            if let Err(e) =
-                                crate::sip::transport::tcp::send_sip_out(
-                                    &heartbeat_socket,
-                                    addr,
-                                    &sip_msg,
-                                )
-                                .await
+                            if let Err(e) = crate::sip::transport::tcp::send_sip_out(
+                                &heartbeat_socket,
+                                addr,
+                                &sip_msg,
+                            )
+                            .await
                             {
                                 tracing::debug!(
                                     "Failed to send keepalive to {} at {}: {}",
@@ -1340,7 +1401,9 @@ let renewal_pool = pool.clone();
             let reg = crate::sip::gb28181::latency_registry();
             reg.set_interval_secs(interval_secs);
             if interval_secs == 0 {
-                tracing::info!("设备延迟探针已关闭（sip.heartbeat.latency_probe_interval_secs = 0）");
+                tracing::info!(
+                    "设备延迟探针已关闭（sip.heartbeat.latency_probe_interval_secs = 0）"
+                );
                 return;
             }
             let interval = Duration::from_secs(interval_secs);
@@ -1408,7 +1471,9 @@ let renewal_pool = pool.clone();
         ws_state: &Option<Arc<WsState>>,
         pending_invites: &Arc<DashMap<String, oneshot::Sender<SipResponse>>>,
         cascade_registrar: &Option<Arc<CascadeRegistrar>>,
-        subscription_lifecycle: &Option<Arc<crate::sip::gb28181::subscription_lifecycle::SubscriptionLifecycle>>,
+        subscription_lifecycle: &Option<
+            Arc<crate::sip::gb28181::subscription_lifecycle::SubscriptionLifecycle>,
+        >,
         renewal_failures: &Arc<DashMap<String, u32>>,
         transaction_manager: &Arc<TransactionManager>,
         catalog_sync_manager: &Arc<CatalogSyncManager>,
@@ -1449,7 +1514,9 @@ let renewal_pool = pool.clone();
                             renewal_failures,
                             transaction_manager,
                             catalog_sync_manager,
-                        ).await {
+                        )
+                        .await
+                        {
                             tracing::error!("TCP SIP handler error: {}", e);
                         }
                     }
@@ -1504,7 +1571,9 @@ let renewal_pool = pool.clone();
         ws_state: &Option<Arc<WsState>>,
         pending_invites: &Arc<DashMap<String, oneshot::Sender<SipResponse>>>,
         cascade_registrar: &Option<Arc<CascadeRegistrar>>,
-        subscription_lifecycle: &Option<Arc<crate::sip::gb28181::subscription_lifecycle::SubscriptionLifecycle>>,
+        subscription_lifecycle: &Option<
+            Arc<crate::sip::gb28181::subscription_lifecycle::SubscriptionLifecycle>,
+        >,
         renewal_failures: &Arc<DashMap<String, u32>>,
         transaction_manager: &Arc<TransactionManager>,
         catalog_sync_manager: &Arc<CatalogSyncManager>,
@@ -1557,7 +1626,9 @@ let renewal_pool = pool.clone();
         pending_invites: &Arc<DashMap<String, oneshot::Sender<SipResponse>>>,
         cascade_registrar: &Option<Arc<CascadeRegistrar>>,
         send_rtp_manager: &Arc<SendRtpManager>,
-        subscription_lifecycle: &Option<Arc<crate::sip::gb28181::subscription_lifecycle::SubscriptionLifecycle>>,
+        subscription_lifecycle: &Option<
+            Arc<crate::sip::gb28181::subscription_lifecycle::SubscriptionLifecycle>,
+        >,
         renewal_failures: &Arc<DashMap<String, u32>>,
         sqlite_max_devices: Option<usize>,
         media_waiter_manager: &Arc<MediaWaiterManager>,
@@ -1584,14 +1655,13 @@ let renewal_pool = pool.clone();
                     send_rtp_manager,
                     sqlite_max_devices,
                     catalog_sync_manager,
-                ).await
+                )
+                .await
             }
             SipMessage::Response(resp) => {
                 // 收到响应即终止对应的客户端事务，停止 RFC 3261 §17 的重传。
                 // 必须在处理响应之前做，避免响应已到却仍继续重传旧请求。
-                if let (Some(call_id), Some(cseq)) =
-                    (resp.header("call-id"), resp.header("cseq"))
-                {
+                if let (Some(call_id), Some(cseq)) = (resp.header("call-id"), resp.header("cseq")) {
                     if let Some(n) = cseq
                         .split_whitespace()
                         .next()
@@ -1616,7 +1686,8 @@ let renewal_pool = pool.clone();
                     media_waiter_manager,
                     socket,
                     config,
-                ).await
+                )
+                .await
             }
         }
     }
@@ -1642,7 +1713,18 @@ let renewal_pool = pool.clone();
         let method = req.method;
         match method {
             SipMethod::Register => {
-                Self::handle_register(req, addr, config, device_manager, pool, socket, ws_state, pending_request_manager, sqlite_max_devices).await
+                Self::handle_register(
+                    req,
+                    addr,
+                    config,
+                    device_manager,
+                    pool,
+                    socket,
+                    ws_state,
+                    pending_request_manager,
+                    sqlite_max_devices,
+                )
+                .await
             }
             SipMethod::Message => {
                 Self::handle_message(
@@ -1660,20 +1742,38 @@ let renewal_pool = pool.clone();
                 .await
             }
             SipMethod::Invite => {
-                Self::handle_invite(req, addr, config, session_manager, invite_session_manager, talk_manager, zlm_client, pool, socket, send_rtp_manager).await
+                Self::handle_invite(
+                    req,
+                    addr,
+                    config,
+                    session_manager,
+                    invite_session_manager,
+                    talk_manager,
+                    zlm_client,
+                    pool,
+                    socket,
+                    send_rtp_manager,
+                )
+                .await
             }
             SipMethod::Ack => {
                 Self::handle_ack(req, session_manager, invite_session_manager, talk_manager).await
             }
             SipMethod::Bye => {
-                Self::handle_bye(req, session_manager, invite_session_manager, talk_manager, zlm_client, socket, addr, send_rtp_manager).await
+                Self::handle_bye(
+                    req,
+                    session_manager,
+                    invite_session_manager,
+                    talk_manager,
+                    zlm_client,
+                    socket,
+                    addr,
+                    send_rtp_manager,
+                )
+                .await
             }
-            SipMethod::Options => {
-                Self::handle_options(req, addr, config, socket).await
-            }
-            SipMethod::Info => {
-                Self::handle_info(req, addr, config, pool, socket).await
-            }
+            SipMethod::Options => Self::handle_options(req, addr, config, socket).await,
+            SipMethod::Info => Self::handle_info(req, addr, config, pool, socket).await,
             SipMethod::Cancel => {
                 Self::handle_cancel(
                     req,
@@ -1738,7 +1838,12 @@ let renewal_pool = pool.clone();
             .or_else(|| Self::extract_device_id(&to))
             .unwrap_or_default();
         if device_id.is_empty() {
-            tracing::warn!("REGISTER: Cannot extract device ID - from={:?} to={:?} cseq={:?}", from, to, cseq);
+            tracing::warn!(
+                "REGISTER: Cannot extract device ID - from={:?} to={:?} cseq={:?}",
+                from,
+                to,
+                cseq
+            );
             return Ok(());
         }
 
@@ -1818,16 +1923,22 @@ let renewal_pool = pool.clone();
         } else {
             // SQLite 模式下检查设备数量上限
             #[cfg(feature = "sqlite")]
-            if let Err(e) = db_device::check_sqlite_device_limit(
-                pool,
-                &device_id,
-                sqlite_max_devices,
-            ).await {
+            if let Err(e) =
+                db_device::check_sqlite_device_limit(pool, &device_id, sqlite_max_devices).await
+            {
                 tracing::warn!("REGISTER rejected: {}", e);
-                let response = Parser::generate_response(503, "Service Unavailable", &[
-                    ("Via", &via), ("From", &from), ("To", &to),
-                    ("Call-ID", &call_id), ("CSeq", &cseq),
-                ], None);
+                let response = Parser::generate_response(
+                    503,
+                    "Service Unavailable",
+                    &[
+                        ("Via", &via),
+                        ("From", &from),
+                        ("To", &to),
+                        ("Call-ID", &call_id),
+                        ("CSeq", &cseq),
+                    ],
+                    None,
+                );
                 Self::send_response(socket, addr, &response).await?;
                 return Ok(());
             }
@@ -1999,8 +2110,7 @@ let renewal_pool = pool.clone();
             // 1.5~3 秒重复 DeviceInfo/DeviceStatus，既刷爆日志也不断重写 DB。
             // 只有 `Catalog` 分支本来就正确地分别处理 Query 与 Response，
             // 因此这里只对"纯查询型"的分支生效。
-            let body_is_response =
-                body.contains("<Response") || body.contains("<Response>");
+            let body_is_response = body.contains("<Response") || body.contains("<Response>");
 
             /// 对设备的 MESSAGE（无论 Query 还是 Response）都必须回 200 OK。
             macro_rules! ack_message {
@@ -2079,9 +2189,19 @@ let renewal_pool = pool.clone();
                     }
                     Some("RecordInfo") => {
                         return Self::handle_record_info_for_platform(
-                            body, &config.device_id, &sn, addr, &from, &to,
-                            &via, &call_id, &cseq, socket, zlm_client,
-                        ).await;
+                            body,
+                            &config.device_id,
+                            &sn,
+                            addr,
+                            &from,
+                            &to,
+                            &via,
+                            &call_id,
+                            &cseq,
+                            socket,
+                            zlm_client,
+                        )
+                        .await;
                     }
                     _ => {} // fall through to existing routing
                 }
@@ -2135,16 +2255,19 @@ let renewal_pool = pool.clone();
                     //    gb_device_channel,设备列表才能显示通道。
                     if body.contains("<Response") {
                         // Phase 3.x: 与 handle_notify 同路径,把响应里的通道落库。
-                        let device_id_for_catalog = XmlParser::get_device_id(body)
-                            .unwrap_or_else(|| device_id.clone());
+                        let device_id_for_catalog =
+                            XmlParser::get_device_id(body).unwrap_or_else(|| device_id.clone());
                         let (sum_num, channels) = XmlParser::parse_catalog_channels(body);
                         tracing::info!(
                             "Catalog RESPONSE from {}: {} channels (SumNum={:?})",
-                            device_id_for_catalog, channels.len(), sum_num,
+                            device_id_for_catalog,
+                            channels.len(),
+                            sum_num,
                         );
                         for ch in &channels {
                             let status = ch.status == "ON" || ch.status.to_lowercase() == "online";
-                            let parent_id = ch.parent_id.clone().or(Some(device_id_for_catalog.clone()));
+                            let parent_id =
+                                ch.parent_id.clone().or(Some(device_id_for_catalog.clone()));
                             if let Err(e) = db_device::upsert_channel_from_catalog(
                                 pool,
                                 &device_id_for_catalog,
@@ -2162,7 +2285,9 @@ let renewal_pool = pool.clone();
                                 ch.ptz_type,
                                 ch.has_audio,
                                 ch.sub_count,
-                            ).await {
+                            )
+                            .await
+                            {
                                 tracing::warn!("upsert channel {} failed: {}", ch.device_id, e);
                             }
                         }
@@ -2189,9 +2314,15 @@ let renewal_pool = pool.clone();
 
                         // 回复 200 OK(MESSAGE 也要求回复 200)
                         let response = Parser::generate_response(
-                            200, "OK",
-                            &[("Via", &via), ("From", &from), ("To", &to),
-                              ("Call-ID", &call_id), ("CSeq", &cseq)],
+                            200,
+                            "OK",
+                            &[
+                                ("Via", &via),
+                                ("From", &from),
+                                ("To", &to),
+                                ("Call-ID", &call_id),
+                                ("CSeq", &cseq),
+                            ],
                             None,
                         );
                         Self::send_response(socket, addr, &response).await?;
@@ -2211,11 +2342,7 @@ let renewal_pool = pool.clone();
                     // 不要把应答再次当成新查询回一条（避免与设备无限循环）。
                     if body_is_response {
                         if let Err(e) = persist_device_info_response(pool, &device_id, body).await {
-                            tracing::warn!(
-                                "DeviceInfo 应答落库失败 device={}: {}",
-                                device_id,
-                                e
-                            );
+                            tracing::warn!("DeviceInfo 应答落库失败 device={}: {}", device_id, e);
                         }
                         ack_message!();
                     }
@@ -2564,8 +2691,11 @@ let renewal_pool = pool.clone();
                 let channel_id_for_log = channel_id.clone();
                 tracing::info!(
                     "B3 cascade startSendRtp: channel={} -> upstream={}:{} ssrc={} stream={}",
-                    channel_id_for_log, session.upstream_host, session.upstream_port,
-                    session.upstream_ssrc, stream_key,
+                    channel_id_for_log,
+                    session.upstream_host,
+                    session.upstream_port,
+                    session.upstream_ssrc,
+                    stream_key,
                 );
                 let rtp_app = "rtp".to_string();
                 let stream_id = stream_key.clone();
@@ -2580,34 +2710,42 @@ let renewal_pool = pool.clone();
                 let channel_for_backfill = channel_id.clone();
                 let stream_for_backfill = stream_id.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = zlm_clone.start_send_rtp(
-                        "__defaultVhost__",
-                        &rtp_app,
-                        &stream_id,
-                        &ssrc,
-                        &dst_url,
-                        dst_port,
-                        true, // is_udp
-                        Some(0),
-                        // 国标级联要求 PS 封装（与 drain_cascade_pulls 保持一致）
-                        true,
-                    ).await {
+                    if let Err(e) = zlm_clone
+                        .start_send_rtp(
+                            "__defaultVhost__",
+                            &rtp_app,
+                            &stream_id,
+                            &ssrc,
+                            &dst_url,
+                            dst_port,
+                            true, // is_udp
+                            Some(0),
+                            // 国标级联要求 PS 封装（与 drain_cascade_pulls 保持一致）
+                            true,
+                        )
+                        .await
+                    {
                         tracing::error!(
                             "B3 startSendRtp failed for channel {} -> {}:{} : {}",
-                            channel_id_for_log, upstream_host, upstream_port, e,
+                            channel_id_for_log,
+                            upstream_host,
+                            upstream_port,
+                            e,
                         );
                     } else {
                         // 回填 ZLM 流标识：BYE 时要用它（或 ssrc）才能停掉推流
-                        mgr_for_backfill.set_stream_by_channel(
-                            &channel_for_backfill,
-                            &stream_for_backfill,
-                        );
+                        mgr_for_backfill
+                            .set_stream_by_channel(&channel_for_backfill, &stream_for_backfill);
                     }
                 });
             }
         }
 
-        tracing::info!("INVITE 200 OK sent - stream: {}, port: {}", stream_type, media_port);
+        tracing::info!(
+            "INVITE 200 OK sent - stream: {}, port: {}",
+            stream_type,
+            media_port
+        );
         Ok(())
     }
 
@@ -2643,20 +2781,19 @@ let renewal_pool = pool.clone();
         cseq: &str,
     ) -> Result<()> {
         let sdp = req.body.clone().unwrap_or_default();
-        let (upstream_host, upstream_port, upstream_ssrc) =
-            match parse_cascade_invite_sdp(&sdp) {
-                Ok(v) => v,
-                Err(e) => {
-                    tracing::warn!(
-                        "级联 INVITE 的 SDP 无法解析（platform={} call_id={}）: {}",
-                        platform_id,
-                        call_id,
-                        e
-                    );
-                    Self::send_error_response(400, "Bad Request", req, addr, socket).await?;
-                    return Ok(());
-                }
-            };
+        let (upstream_host, upstream_port, upstream_ssrc) = match parse_cascade_invite_sdp(&sdp) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(
+                    "级联 INVITE 的 SDP 无法解析（platform={} call_id={}）: {}",
+                    platform_id,
+                    call_id,
+                    e
+                );
+                Self::send_error_response(400, "Bad Request", req, addr, socket).await?;
+                return Ok(());
+            }
+        };
 
         // 通道：优先 Subject 的第 1 段（`<通道>:<ssrc>,<本级>:0`），其次 URI
         let channel_id = Self::extract_channel_from_subject(req)
@@ -2669,7 +2806,8 @@ let renewal_pool = pool.clone();
         }
 
         // 通道 → 设备（本级库里的设备-通道关系）
-        let device_id = match crate::db::device::get_channel_by_channel_id(pool, &channel_id).await {
+        let device_id = match crate::db::device::get_channel_by_channel_id(pool, &channel_id).await
+        {
             Ok(Some(ch)) => match ch.device_id {
                 Some(d) if !d.is_empty() => d,
                 _ => {
@@ -2701,7 +2839,10 @@ let renewal_pool = pool.clone();
                 code,
                 reason,
                 &[
-                    ("Via", &format!("{};rport={};branch={}", via, addr.port(), branch)),
+                    (
+                        "Via",
+                        &format!("{};rport={};branch={}", via, addr.port(), branch),
+                    ),
                     ("From", from),
                     ("To", &to_tagged),
                     ("Call-ID", call_id),
@@ -2743,18 +2884,16 @@ let renewal_pool = pool.clone();
             .clone()
             .or_else(|| config.sdp_ip.clone())
             .unwrap_or_else(|| config.ip.clone());
-        let answer_sdp = build_invite_sdp(
-            &media_ip,
-            local_send_port,
-            "Play",
-            Some(&upstream_ssrc),
-        );
+        let answer_sdp = build_invite_sdp(&media_ip, local_send_port, "Play", Some(&upstream_ssrc));
 
         let response = Parser::generate_response(
             200,
             "OK",
             &[
-                ("Via", &format!("{};rport={};branch={}", via, addr.port(), branch)),
+                (
+                    "Via",
+                    &format!("{};rport={};branch={}", via, addr.port(), branch),
+                ),
                 ("From", from),
                 ("To", &to_tagged),
                 ("Call-ID", call_id),
@@ -3069,19 +3208,19 @@ let renewal_pool = pool.clone();
                             )
                             .await
                         {
-                            tracing::warn!(
-                                "B3 级联 BYE 后 stopSendRtp 失败 ssrc={}: {}",
-                                ssrc,
-                                e
-                            );
+                            tracing::warn!("B3 级联 BYE 后 stopSendRtp 失败 ssrc={}: {}", ssrc, e);
                         }
-                        tracing::info!("B3 cascade BYE -> ZLM stopSendRtp for channel={}", channel_id);
+                        tracing::info!(
+                            "B3 cascade BYE -> ZLM stopSendRtp for channel={}",
+                            channel_id
+                        );
                     });
                 }
                 send_rtp_manager.close(&call_id);
                 tracing::info!(
                     "B3 cascade BYE: closed SendRtp session for platform={} channel={}",
-                    session.platform_id, session.channel_id
+                    session.platform_id,
+                    session.channel_id
                 );
             }
         } else if let Some(channel_id) = {
@@ -3090,7 +3229,11 @@ let renewal_pool = pool.clone();
             // 不一致 —— 只按 call_id 查会漏掉，导致"上级已经挂断，平台还在
             // 往它推流"。这里按 BYE 的 Request-URI 取通道兜底关闭。
             let c = Self::extract_channel_id(&req.uri);
-            if c.is_empty() { None } else { Some(c) }
+            if c.is_empty() {
+                None
+            } else {
+                Some(c)
+            }
         } {
             let closed = send_rtp_manager.close_by_channel(&channel_id);
             if !closed.is_empty() {
@@ -3128,13 +3271,18 @@ let renewal_pool = pool.clone();
 
         session_manager.remove(&call_id).await;
 
-        let response = Parser::generate_response(200, "OK", &[
-            ("Via", &via),
-            ("From", &from),
-            ("To", &to),
-            ("Call-ID", &call_id),
-            ("CSeq", &cseq),
-        ], None);
+        let response = Parser::generate_response(
+            200,
+            "OK",
+            &[
+                ("Via", &via),
+                ("From", &from),
+                ("To", &to),
+                ("Call-ID", &call_id),
+                ("CSeq", &cseq),
+            ],
+            None,
+        );
 
         Self::send_response(socket, addr, &response).await?;
         tracing::info!("BYE received - CallID: {} - Session terminated", call_id);
@@ -3503,8 +3651,12 @@ let renewal_pool = pool.clone();
                     let device_id_for_catalog = XmlParser::get_device_id(body)
                         .unwrap_or_else(|| Self::extract_device_id(&from).unwrap_or_default());
                     let (sum_num, channels) = XmlParser::parse_catalog_channels(body);
-                    tracing::info!("Catalog NOTIFY from {}: {} channels (SumNum={:?})",
-                        device_id_for_catalog, channels.len(), sum_num);
+                    tracing::info!(
+                        "Catalog NOTIFY from {}: {} channels (SumNum={:?})",
+                        device_id_for_catalog,
+                        channels.len(),
+                        sum_num
+                    );
 
                     // 订阅推送的目录同样可能是分页的，走同一套聚合逻辑
                     match catalog_sync_manager
@@ -3532,19 +3684,24 @@ let renewal_pool = pool.clone();
                             .flatten();
                     if let Some(platform) = upstream_platform.as_ref() {
                         let platform_id = platform.id as i64;
-                        let channel_ids: Vec<String> = channels.iter()
-                            .map(|c| c.device_id.clone())
-                            .collect();
+                        let channel_ids: Vec<String> =
+                            channels.iter().map(|c| c.device_id.clone()).collect();
                         match db_platform_channel::batch_add_channels(
-                            pool, platform_id, &channel_ids,
-                        ).await {
+                            pool,
+                            platform_id,
+                            &channel_ids,
+                        )
+                        .await
+                        {
                             Ok(n) => tracing::info!(
                                 "B2: 上级平台 {} Catalog → 落库 gb_platform_channel {} 条",
-                                device_id_for_catalog, n,
+                                device_id_for_catalog,
+                                n,
                             ),
                             Err(e) => tracing::warn!(
                                 "B2: 落库 gb_platform_channel 失败 platform={}: {}",
-                                device_id_for_catalog, e,
+                                device_id_for_catalog,
+                                e,
                             ),
                         }
                     }
@@ -3694,7 +3851,9 @@ let renewal_pool = pool.clone();
         pending_request_manager: &Arc<PendingRequestManager>,
         // 注：send_rtp_manager 当前未在响应路径使用，但保留参数位置以兼容调用方
         _send_rtp_manager: &Arc<SendRtpManager>,
-        subscription_lifecycle: &Option<Arc<crate::sip::gb28181::subscription_lifecycle::SubscriptionLifecycle>>,
+        subscription_lifecycle: &Option<
+            Arc<crate::sip::gb28181::subscription_lifecycle::SubscriptionLifecycle>,
+        >,
         renewal_failures: &Arc<DashMap<String, u32>>,
         media_waiter_manager: &Arc<MediaWaiterManager>,
         socket: &Arc<UdpSocket>,
@@ -3802,18 +3961,19 @@ let renewal_pool = pool.clone();
                 // 对端 To tag 只在这个 200 OK 里出现一次：先落库再解析 SDP，
                 // 即使 SDP 解析失败（部分设备不回 SDP）BYE 也仍是合法对话内请求。
                 let remote_tag = resp.headers.get("to").and_then(|t| extract_sip_tag(t));
-                talk_manager.mark_answered(&call_id, remote_tag.as_deref()).await;
-                match resp.body.as_deref().and_then(|b| {
-                    crate::sip::gb28181::talk::parse_talk_sdp(b)
-                }) {
+                talk_manager
+                    .mark_answered(&call_id, remote_tag.as_deref())
+                    .await;
+                match resp
+                    .body
+                    .as_deref()
+                    .and_then(|b| crate::sip::gb28181::talk::parse_talk_sdp(b))
+                {
                     Some((ip, port)) => {
                         // 设备 SDP 的 c= 常常写成 0.0.0.0（模拟器与部分国标设备都如此），
                         // 那不是可路由地址。此时回退到该设备的 SIP 信令源地址，
                         // 否则平台会把麦克风音频发到 0.0.0.0:port。
-                        let media_ip = if ip.trim().is_empty()
-                            || ip == "0.0.0.0"
-                            || ip == "::"
-                        {
+                        let media_ip = if ip.trim().is_empty() || ip == "0.0.0.0" || ip == "::" {
                             match session_manager
                                 .get(&call_id)
                                 .await
@@ -3941,7 +4101,9 @@ let renewal_pool = pool.clone();
                             );
                             let ack_uri = format!(
                                 "sip:{}@{}:{}",
-                                invite_ctx.channel_id, device_addr.ip(), device_addr.port()
+                                invite_ctx.channel_id,
+                                device_addr.ip(),
+                                device_addr.port()
                             );
                             let ack_cseq = cseq_header(cseq_num, "ACK");
                             let ack = Parser::generate_ack(
@@ -3952,44 +4114,43 @@ let renewal_pool = pool.clone();
                                 &call_id,
                                 &ack_cseq,
                             );
-                            if let Err(e) = crate::sip::transport::tcp::send_sip_out(
-                                socket,
-                                device_addr,
-                                &ack,
-                            )
-                            .await
+                            if let Err(e) =
+                                crate::sip::transport::tcp::send_sip_out(socket, device_addr, &ack)
+                                    .await
                             {
-                                tracing::warn!(
-                                    "Failed to send ACK for call_id={}: {}",
-                                    call_id, e
-                                );
+                                tracing::warn!("Failed to send ACK for call_id={}: {}", call_id, e);
                             } else {
                                 tracing::info!(
                                     "Sent ACK to device for call_id={} (channel={})",
-                                    call_id, invite_ctx.channel_id
+                                    call_id,
+                                    invite_ctx.channel_id
                                 );
                             }
                         }
                     }
                 } else {
-                    tracing::debug!(
-                        "Skip duplicate ACK for call_id={} (already sent)",
-                        call_id
-                    );
+                    tracing::debug!("Skip duplicate ACK for call_id={} (already sent)", call_id);
                 }
             } else if cseq.contains("BYE") {
                 session_manager.remove(&call_id).await;
             } else if cseq.contains("SUBSCRIBE") {
                 // Phase 2.3: SUBSCRIBE 200 响应 → 通知 SubscriptionLifecycle 续期
-                let expires_header = resp.headers.get("expires")
+                let expires_header = resp
+                    .headers
+                    .get("expires")
                     .and_then(|v| v.parse::<u32>().ok())
                     .unwrap_or(3600);
                 // 从 call_id 提取 device_id 和 sub_type
-                if let Some(device_id) = call_id.strip_prefix("sub_").and_then(|s| s.split('_').next()) {
+                if let Some(device_id) = call_id
+                    .strip_prefix("sub_")
+                    .and_then(|s| s.split('_').next())
+                {
                     let event = resp.headers.get("event").cloned().unwrap_or_default();
                     if let Some(sub_type) = match event.as_str() {
                         "Catalog" => Some(crate::sip::gb28181::SubscriptionType::Catalog),
-                        "MobilePosition" => Some(crate::sip::gb28181::SubscriptionType::MobilePosition),
+                        "MobilePosition" => {
+                            Some(crate::sip::gb28181::SubscriptionType::MobilePosition)
+                        }
                         "Alarm" => Some(crate::sip::gb28181::SubscriptionType::Alarm),
                         _ => None,
                     } {
@@ -3999,7 +4160,9 @@ let renewal_pool = pool.clone();
                         renewal_failures.remove(&format!("{}_{}", device_id, sub_type.as_str()));
                         tracing::debug!(
                             "SUBSCRIBE renewed: device={} event={} expires={}s",
-                            device_id, event, expires_header
+                            device_id,
+                            event,
+                            expires_header
                         );
                     }
                 }
@@ -4019,8 +4182,7 @@ let renewal_pool = pool.clone();
                 || call_id.starts_with("playback_")
                 || call_id.starts_with("download_");
             if is_invite_resp {
-                media_waiter_manager
-                    .reject_by_call_id(&call_id, resp.status_code(), &resp.reason);
+                media_waiter_manager.reject_by_call_id(&call_id, resp.status_code(), &resp.reason);
             }
             if let Some((_, tx)) = pending_invites.remove(&call_id) {
                 let _ = tx.send(resp.clone());
@@ -4306,7 +4468,8 @@ let renewal_pool = pool.clone();
                 );
             }
             // 同步回写通道坐标，让地图/通道列表能看到设备位置（0,0 由函数内部守卫）
-            if let Err(e) = pos_db::sync_channel_coords(pool, device_id, longitude, latitude).await {
+            if let Err(e) = pos_db::sync_channel_coords(pool, device_id, longitude, latitude).await
+            {
                 tracing::warn!("回写通道坐标失败 device={}: {}", device_id, e);
             }
         }
@@ -4663,7 +4826,11 @@ let renewal_pool = pool.clone();
                         routes.remove(&addr);
                     }
                     Err(e) => {
-                        tracing::warn!("TCP response to {} failed, falling back to UDP: {}", addr, e);
+                        tracing::warn!(
+                            "TCP response to {} failed, falling back to UDP: {}",
+                            addr,
+                            e
+                        );
                         routes.remove(&addr);
                     }
                 }
@@ -4710,7 +4877,9 @@ let renewal_pool = pool.clone();
         }
         // 兼容非标准 ID：UUID / hex / 任意 alphanumeric (>=8 chars)
         if user.len() >= 8
-            && user.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            && user
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
         {
             Some(user.to_string())
         } else {
@@ -4813,7 +4982,10 @@ f=v/1/96/1/2/1/1/0
         // 而不是 server 自己拼接的 Request-URI。客户端很可能发 sip:server_ip，
         // server 端拼的 sip:device_id@server_ip:port 通常与客户端不一致，会导致 HA2 不匹配。
         let digest_uri = params.get("uri").map(|s| s.as_str()).unwrap_or(uri);
-        let ha2 = format!("{:x}", Md5::digest(format!("{}:{}", "REGISTER", digest_uri)));
+        let ha2 = format!(
+            "{:x}",
+            Md5::digest(format!("{}:{}", "REGISTER", digest_uri))
+        );
         // RFC 2617 §3.2.2: response 取决于客户端是否声明 qop。
         //   - 客户端带 qop="auth"        -> KD1 = MD5(HA1:nonce:nc:cnonce:qop:HA2)
         //   - 客户端未声明 qop (RFC 2069 兼容) -> KD1 = MD5(HA1:nonce:HA2)
@@ -4825,10 +4997,7 @@ f=v/1/96/1/2/1/1/0
                 let cnonce = params.get("cnonce").map(|s| s.as_str()).unwrap_or("");
                 format!(
                     "{:x}",
-                    Md5::digest(format!(
-                        "{}:{}:{}:{}:auth:{}",
-                        ha1, nonce, nc, cnonce, ha2
-                    ))
+                    Md5::digest(format!("{}:{}:{}:{}:auth:{}", ha1, nonce, nc, cnonce, ha2))
                 )
             }
             _ => {
@@ -5048,11 +5217,7 @@ f=v/1/96/1/2/1/1/0
     ///   <Transport>TCP-PASSIVE</Transport>
     /// </Control>
     /// ```
-    pub async fn send_device_transport(
-        &self,
-        device_id: &str,
-        transport: &str,
-    ) -> Result<()> {
+    pub async fn send_device_transport(&self, device_id: &str, transport: &str) -> Result<()> {
         let sn = chrono::Utc::now().timestamp();
         let xml_body = format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -5083,7 +5248,11 @@ f=v/1/96/1/2/1/1/0
         config_type: &str,
         sn: u32,
     ) -> Result<()> {
-        let sn = if sn == 0 { chrono::Utc::now().timestamp() as u32 } else { sn };
+        let sn = if sn == 0 {
+            chrono::Utc::now().timestamp() as u32
+        } else {
+            sn
+        };
         let body = format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
 <Query>
@@ -5112,7 +5281,11 @@ f=v/1/96/1/2/1/1/0
     /// 此前这里内部另取 `Utc::now().timestamp()`，与调用方登记的 SN 不同，
     /// 于是 `/api/device/query/info` 与 `/status` **必然超时**。
     pub async fn send_device_info_query(&self, device_id: &str, sn: u32) -> Result<()> {
-        let sn = if sn == 0 { chrono::Utc::now().timestamp() as u32 } else { sn };
+        let sn = if sn == 0 {
+            chrono::Utc::now().timestamp() as u32
+        } else {
+            sn
+        };
         let body = format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
 <Query>
@@ -5139,7 +5312,11 @@ f=v/1/96/1/2/1/1/0
     /// MESSAGE；`PendingResponseRouter` 按 `CmdType=MobilePosition` + SN 命中
     /// `register_mobile_position_with_receiver` 注册的等待方。
     pub async fn send_mobile_position_query(&self, device_id: &str, sn: u32) -> Result<()> {
-        let sn = if sn == 0 { chrono::Utc::now().timestamp() as u32 } else { sn };
+        let sn = if sn == 0 {
+            chrono::Utc::now().timestamp() as u32
+        } else {
+            sn
+        };
         let body = format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
 <Query>
@@ -5216,7 +5393,11 @@ f=v/1/96/1/2/1/1/0
 
     /// 发送 DeviceStatus 查询。`sn` 语义同 [`Self::send_device_info_query`]。
     pub async fn send_device_status_query(&self, device_id: &str, sn: u32) -> Result<()> {
-        let sn = if sn == 0 { chrono::Utc::now().timestamp() as u32 } else { sn };
+        let sn = if sn == 0 {
+            chrono::Utc::now().timestamp() as u32
+        } else {
+            sn
+        };
         let body = format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
 <Query>
@@ -5335,12 +5516,19 @@ f=v/1/96/1/2/1/1/0
             "Alarm" => Some(crate::sip::gb28181::SubscriptionType::Alarm),
             _ => None,
         } {
-            self.subscription_lifecycle.register(device_id, sub_type, &call_id, expires);
+            self.subscription_lifecycle
+                .register(device_id, sub_type, &call_id, expires);
             // Phase 2 R3: 订阅成功 → 重置失败计数
-            self.renewal_failures.remove(&format!("{}_{}", device_id, sub_type.as_str()));
+            self.renewal_failures
+                .remove(&format!("{}_{}", device_id, sub_type.as_str()));
         }
 
-        tracing::info!("Sent SUBSCRIBE {} to device {} at {}", event, device_id, device_addr);
+        tracing::info!(
+            "Sent SUBSCRIBE {} to device {} at {}",
+            event,
+            device_id,
+            device_addr
+        );
         Ok(())
     }
 
@@ -5463,8 +5651,7 @@ f=v/1/96/1/2/1/1/0
         // 国标的 Subject 形如 `<通道编码>:<SSRC>,<本级编码>:0`
         // （即 `channelId:ssrc,sipConfig.getId():0`）。
         // 此前把"本级编码"与"通道编码"写反了，且 SSRC 段放的是通道编码。
-        let subject =
-            build_device_invite_subject(channel_id, &talk_ssrc, &self.config.device_id);
+        let subject = build_device_invite_subject(channel_id, &talk_ssrc, &self.config.device_id);
 
         let headers: Vec<(&str, &str)> = vec![
             ("Via", &via),
@@ -5561,9 +5748,15 @@ f=v/1/96/1/2/1/1/0
         let message = Parser::generate_request("BYE", &uri, &headers, None);
 
         self.send_request_to(device_addr, &message).await?;
-        tracing::info!("Sent TALK BYE to device {} channel {}", device_id, channel_id);
-        
-        self.talk_manager.update_status(call_id, TalkStatus::Terminating).await;
+        tracing::info!(
+            "Sent TALK BYE to device {} channel {}",
+            device_id,
+            channel_id
+        );
+
+        self.talk_manager
+            .update_status(call_id, TalkStatus::Terminating)
+            .await;
 
         if let Some(ref stream_id) = session.zlm_stream_id {
             if let Some(ref zlm) = self.zlm_client {
@@ -5588,11 +5781,7 @@ f=v/1/96/1/2/1/1/0
     /// 与 `send_talk_invite` 区别：talk 是客户端 → 设备（一对一），
     /// broadcast 是设备 → 客户端（一对多），SSRC 前缀 4。
     /// 设备推流到 ZLM RTP server（端口由 ZLM 自动分配避免与 talk 9100/9101 冲突）。
-    pub async fn send_broadcast_invite(
-        &self,
-        device_id: &str,
-        channel_id: &str,
-    ) -> Result<String> {
+    pub async fn send_broadcast_invite(&self, device_id: &str, channel_id: &str) -> Result<String> {
         // 1. 提前开 ZLM RTP server，让设备知道推到哪个端口
         let stream_id = format!("broadcast_{}_{}", device_id, channel_id);
         let mut session = BroadcastSession::new(
@@ -5614,7 +5803,10 @@ f=v/1/96/1/2/1/1/0
             match zlm.open_rtp_server(&rtp_req).await {
                 Ok(rtp_server) => {
                     session.set_local_port(rtp_server.port);
-                    tracing::info!("ZLM RTP server opened for broadcast on port {}", rtp_server.port);
+                    tracing::info!(
+                        "ZLM RTP server opened for broadcast on port {}",
+                        rtp_server.port
+                    );
                 }
                 Err(e) => {
                     tracing::warn!("Failed to open ZLM RTP server for broadcast: {}", e);
@@ -5623,7 +5815,10 @@ f=v/1/96/1/2/1/1/0
         }
 
         // 2. 发送 SIP INVITE（SSRC 第 4 段前缀 4 表示 Audio/Broadcast）
-        let device_addr = self.device_manager.get_address(device_id).await
+        let device_addr = self
+            .device_manager
+            .get_address(device_id)
+            .await
             .ok_or_else(|| anyhow::anyhow!("Device {} not registered", device_id))?;
         let call_id = session.call_id.clone();
         let branch = generate_branch();
@@ -5633,13 +5828,25 @@ f=v/1/96/1/2/1/1/0
         // 统一用 10 位 SSRC（此前是 "4" + id9 + "0" 共 11 位，不符合国标）
         let ssrc = build_audio_ssrc(device_id);
 
-        let via = format!("SIP/2.0/UDP {}:{};branch={};rport",
-            self.config.ip, self.config.port, branch);
+        let via = format!(
+            "SIP/2.0/UDP {}:{};branch={};rport",
+            self.config.ip, self.config.port, branch
+        );
         let from_tag = generate_tag();
-        let from = format!("<sip:{}@{}:{}>;tag={}",
-            self.config.device_id, self.config.ip, self.config.port, from_tag);
-        let to = format!("<sip:{}@{}:{}>", channel_id, device_addr.ip(), device_addr.port());
-        let contact = format!("<sip:{}@{}:{}>", self.config.device_id, self.config.ip, self.config.port);
+        let from = format!(
+            "<sip:{}@{}:{}>;tag={}",
+            self.config.device_id, self.config.ip, self.config.port, from_tag
+        );
+        let to = format!(
+            "<sip:{}@{}:{}>",
+            channel_id,
+            device_addr.ip(),
+            device_addr.port()
+        );
+        let contact = format!(
+            "<sip:{}@{}:{}>",
+            self.config.device_id, self.config.ip, self.config.port
+        );
         // Subject：`<通道编码>:<SSRC>,<本级编码>:0`
         let subject = build_device_invite_subject(channel_id, &ssrc, &self.config.device_id);
 
@@ -5659,7 +5866,12 @@ f=v/1/96/1/2/1/1/0
             ("Content-Type", "application/sdp"),
         ];
 
-        let uri = format!("sip:{}@{}:{}", channel_id, device_addr.ip(), device_addr.port());
+        let uri = format!(
+            "sip:{}@{}:{}",
+            channel_id,
+            device_addr.ip(),
+            device_addr.port()
+        );
         let message = Parser::generate_request("INVITE", &uri, &headers, Some(&sdp));
 
         // 对话标识 + SIP 事务上下文：
@@ -5682,8 +5894,12 @@ f=v/1/96/1/2/1/1/0
         self.pending_invites.insert(call_id.clone(), tx);
 
         self.send_request_to(device_addr, &message).await?;
-        tracing::info!("Sent BROADCAST INVITE to device={} channel={} call_id={}",
-            device_id, channel_id, call_id);
+        tracing::info!(
+            "Sent BROADCAST INVITE to device={} channel={} call_id={}",
+            device_id,
+            channel_id,
+            call_id
+        );
 
         // 3. 注册会话到 BroadcastManager（状态仍为 Pending，等 200 OK 置 Active）
         self.broadcast_manager.create(session.clone()).await;
@@ -5730,23 +5946,45 @@ f=v/1/96/1/2/1/1/0
 
     /// Phase 3.5: 发送语音广播 BYE（走 BroadcastManager，与 talk BYE 互不影响）
     pub async fn send_broadcast_bye(&self, device_id: &str, channel_id: &str) -> Result<()> {
-        let session = self.broadcast_manager
-            .get_by_device_channel(device_id, channel_id).await
-            .ok_or_else(|| anyhow::anyhow!("No active broadcast session for {}/{}", device_id, channel_id))?;
+        let session = self
+            .broadcast_manager
+            .get_by_device_channel(device_id, channel_id)
+            .await
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "No active broadcast session for {}/{}",
+                    device_id,
+                    channel_id
+                )
+            })?;
 
-        let device_addr = self.device_manager.get_address(device_id).await
+        let device_addr = self
+            .device_manager
+            .get_address(device_id)
+            .await
             .ok_or_else(|| anyhow::anyhow!("Device {} not registered", device_id))?;
         let call_id = &session.call_id;
         let branch = generate_branch();
         // 与 talk/play 同理：BYE 必须是对话内请求，否则设备回 481 继续推流。
         let cseq = cseq_header(session.bye_cseq(), "BYE").to_string();
 
-        let via = format!("SIP/2.0/UDP {}:{};branch={};rport",
-            self.config.ip, self.config.port, branch);
-        let from = format!("<sip:{}@{}:{}>;tag={}",
-            self.config.device_id, self.config.ip, self.config.port,
-            session.local_tag.clone().unwrap_or_else(generate_tag));
-        let mut to = format!("<sip:{}@{}:{}>", channel_id, device_addr.ip(), device_addr.port());
+        let via = format!(
+            "SIP/2.0/UDP {}:{};branch={};rport",
+            self.config.ip, self.config.port, branch
+        );
+        let from = format!(
+            "<sip:{}@{}:{}>;tag={}",
+            self.config.device_id,
+            self.config.ip,
+            self.config.port,
+            session.local_tag.clone().unwrap_or_else(generate_tag)
+        );
+        let mut to = format!(
+            "<sip:{}@{}:{}>",
+            channel_id,
+            device_addr.ip(),
+            device_addr.port()
+        );
         if let Some(remote_tag) = session.remote_tag.as_deref() {
             to = format!("{};tag={}", to, remote_tag);
         }
@@ -5760,10 +5998,19 @@ f=v/1/96/1/2/1/1/0
             ("Max-Forwards", "70"),
         ];
 
-        let uri = format!("sip:{}@{}:{}", channel_id, device_addr.ip(), device_addr.port());
+        let uri = format!(
+            "sip:{}@{}:{}",
+            channel_id,
+            device_addr.ip(),
+            device_addr.port()
+        );
         let message = Parser::generate_request("BYE", &uri, &headers, None);
         self.send_request_to(device_addr, &message).await?;
-        tracing::info!("Sent BROADCAST BYE to device {} channel {}", device_id, channel_id);
+        tracing::info!(
+            "Sent BROADCAST BYE to device {} channel {}",
+            device_id,
+            channel_id
+        );
 
         self.broadcast_manager.start_terminating(call_id).await;
 
@@ -5820,16 +6067,10 @@ f=v/1/96/1/2/1/1/0
         );
         // From 必须与 INVITE 逐字一致（含 tag）；老会话没有记录 tag 时
         // 才退回生成一个（否则连发出去的机会都没有）。
-        let from_tag = session
-            .local_tag
-            .clone()
-            .unwrap_or_else(generate_tag);
+        let from_tag = session.local_tag.clone().unwrap_or_else(generate_tag);
         let from = format!(
             "<sip:{}@{}:{}>;tag={}",
-            self.config.device_id,
-            self.config.ip,
-            self.config.port,
-            from_tag
+            self.config.device_id, self.config.ip, self.config.port, from_tag
         );
         let mut to = format!(
             "<sip:{}@{}:{}>",
@@ -5930,10 +6171,7 @@ f=v/1/96/1/2/1/1/0
         let cseq_num = session.bye_cseq(); // CSeq 严格递增
         let body = build_playback_control_mansrtsp(&cmd, cseq_num);
         let call_id = session.call_id.clone();
-        let from_tag = session
-            .local_tag
-            .clone()
-            .unwrap_or_else(generate_tag);
+        let from_tag = session.local_tag.clone().unwrap_or_else(generate_tag);
 
         let addr = match self.device_manager.get_address(device_id).await {
             Some(a) => a,
@@ -5948,12 +6186,7 @@ f=v/1/96/1/2/1/1/0
             "<sip:{}@{}:{}>;tag={}",
             self.config.device_id, self.config.ip, self.config.port, from_tag
         );
-        let mut to = format!(
-            "<sip:{}@{}:{}>",
-            channel_id,
-            addr.ip(),
-            addr.port()
-        );
+        let mut to = format!("<sip:{}@{}:{}>", channel_id, addr.ip(), addr.port());
         if let Some(remote_tag) = session.remote_tag.as_deref() {
             to = format!("{};tag={}", to, remote_tag);
         }
@@ -6081,7 +6314,13 @@ f=v/1/96/1/2/1/1/0
         let message = Parser::generate_request("MESSAGE", &uri, &headers, Some(&body));
 
         self.send_request_to(device_addr, &message).await?;
-        tracing::info!("Sent RecordInfo query to device {} channel {} [{}-{}]", device_id, channel_id, start_time, end_time);
+        tracing::info!(
+            "Sent RecordInfo query to device {} channel {} [{}-{}]",
+            device_id,
+            channel_id,
+            start_time,
+            end_time
+        );
 
         Ok(call_id)
     }
@@ -6102,10 +6341,17 @@ f=v/1/96/1/2/1/1/0
         end_time: &str,
         sn: i64,
     ) -> Result<Vec<RecordInfoItem>> {
-        let device_addr = self.device_manager.get_address(device_id).await
+        let device_addr = self
+            .device_manager
+            .get_address(device_id)
+            .await
             .ok_or_else(|| anyhow::anyhow!("Device {} not registered", device_id))?;
 
-        let call_id = format!("recinfo_{}_{}", device_id, chrono::Utc::now().timestamp_millis());
+        let call_id = format!(
+            "recinfo_{}_{}",
+            device_id,
+            chrono::Utc::now().timestamp_millis()
+        );
         let branch = generate_branch();
         let cseq = cseq_header(1, "MESSAGE").to_string();
 
@@ -6128,12 +6374,27 @@ f=v/1/96/1/2/1/1/0
 
         let content_length = body.len().to_string();
 
-        let via = format!("SIP/2.0/UDP {}:{};branch={};rport",
-            self.config.ip, self.config.port, branch);
-        let from = format!("<sip:{}@{}:{}>;tag={}",
-            self.config.device_id, self.config.ip, self.config.port, generate_tag());
-        let to = format!("<sip:{}@{}:{}>", device_id, device_addr.ip(), device_addr.port());
-        let contact = format!("<sip:{}@{}:{}>", self.config.device_id, self.config.ip, self.config.port);
+        let via = format!(
+            "SIP/2.0/UDP {}:{};branch={};rport",
+            self.config.ip, self.config.port, branch
+        );
+        let from = format!(
+            "<sip:{}@{}:{}>;tag={}",
+            self.config.device_id,
+            self.config.ip,
+            self.config.port,
+            generate_tag()
+        );
+        let to = format!(
+            "<sip:{}@{}:{}>",
+            device_id,
+            device_addr.ip(),
+            device_addr.port()
+        );
+        let contact = format!(
+            "<sip:{}@{}:{}>",
+            self.config.device_id, self.config.ip, self.config.port
+        );
 
         let headers: Vec<(&str, &str)> = vec![
             ("Via", &via),
@@ -6149,11 +6410,21 @@ f=v/1/96/1/2/1/1/0
         ];
 
         // 2. 发送 SIP MESSAGE
-        let uri = format!("sip:{}@{}:{}", device_id, device_addr.ip(), device_addr.port());
+        let uri = format!(
+            "sip:{}@{}:{}",
+            device_id,
+            device_addr.ip(),
+            device_addr.port()
+        );
         let message = Parser::generate_request("MESSAGE", &uri, &headers, Some(&body));
         self.send_request_to(device_addr, &message).await?;
-        tracing::info!("Sent RecordInfo query (async) to device {} channel {} [{}-{}]",
-            device_id, channel_id, start_time, end_time);
+        tracing::info!(
+            "Sent RecordInfo query (async) to device {} channel {} [{}-{}]",
+            device_id,
+            channel_id,
+            start_time,
+            end_time
+        );
 
         // 3. 等待多包累积完成（15s 超时）
         match tokio::time::timeout(Duration::from_secs(15), rx).await {
@@ -6161,14 +6432,17 @@ f=v/1/96/1/2/1/1/0
                 let items = parse_record_info_items(&xml);
                 tracing::info!(
                     "RecordInfo async: device={} channel={} received {} items",
-                    device_id, channel_id, items.len()
+                    device_id,
+                    channel_id,
+                    items.len()
                 );
                 // 4. 落库复用 gb_cloud_record（已有三态 cfg，Phase 3.3 严禁新建 record 表）
                 if !items.is_empty() {
                     if let Err(e) = crate::db::cloud_record::insert_records(
-                        &self.pool, device_id, channel_id,
-                        start_time, end_time, &items,
-                    ).await {
+                        &self.pool, device_id, channel_id, start_time, end_time, &items,
+                    )
+                    .await
+                    {
                         tracing::warn!("Failed to persist RecordInfo to gb_cloud_record: {}", e);
                     }
                 }
@@ -6220,14 +6494,13 @@ f=v/1/96/1/2/1/1/0
         media_port: u16,
         ssrc: Option<&str>,
     ) {
-        let mut session =
-            crate::sip::gb28181::invite_session::InviteSession::new(
-                call_id,
-                device_id,
-                channel_id,
-                stream_type,
-                device_addr,
-            );
+        let mut session = crate::sip::gb28181::invite_session::InviteSession::new(
+            call_id,
+            device_id,
+            channel_id,
+            stream_type,
+            device_addr,
+        );
         session.set_device_info(&device_addr.ip().to_string(), device_addr.port());
         session.set_local_dialog(from_tag, invite_cseq);
         session.media_port = media_port;
@@ -6298,8 +6571,7 @@ f=v/1/96/1/2/1/1/0
             self.config.device_id, self.config.ip, self.config.port
         );
         // Subject：`<通道编码>:<SSRC>,<本级编码>:0`
-        let subject =
-            build_device_invite_subject(channel_id, &ssrc_str, &self.config.device_id);
+        let subject = build_device_invite_subject(channel_id, &ssrc_str, &self.config.device_id);
 
         // 规范 SDP – s=Play，使用真实 RTP 端口
         let sdp = build_invite_sdp(&self.config.ip, media_port, "Play", Some(&ssrc_str));
@@ -6457,9 +6729,11 @@ f=v/1/96/1/2/1/1/0
                 let _ = self.media_waiter_manager.cleanup_expired();
                 Err(anyhow::anyhow!("Media session not found"))
             }
-            Ok(Ok(MediaWaitResult::DeviceRejected { status, reason })) => {
-                Err(anyhow::anyhow!("Device rejected INVITE: {} {}", status, reason))
-            }
+            Ok(Ok(MediaWaitResult::DeviceRejected { status, reason })) => Err(anyhow::anyhow!(
+                "Device rejected INVITE: {} {}",
+                status,
+                reason
+            )),
             Ok(Err(_)) => {
                 let _ = self.media_waiter_manager.cleanup_expired();
                 Err(anyhow::anyhow!("Media wait channel closed unexpectedly"))
@@ -6711,7 +6985,14 @@ f=v/1/96/1/2/1/1/0
         let message = Parser::generate_request("INVITE", &uri, &headers, Some(&sdp));
 
         self.send_request_to(device_addr, &message).await?;
-        tracing::info!("Sent PLAYBACK INVITE to device {} channel {} [{}-{}] at {}", device_id, channel_id, start_time, end_time, device_addr);
+        tracing::info!(
+            "Sent PLAYBACK INVITE to device {} channel {} [{}-{}] at {}",
+            device_id,
+            channel_id,
+            start_time,
+            end_time,
+            device_addr
+        );
 
         // 保存 INVITE 上下文,handle_response 收到 200 OK 时发 ACK。
         // 设备 ack 后无 ACK 不推流 —— GB28181 三次握手必须完整。
@@ -6763,12 +7044,16 @@ f=v/1/96/1/2/1/1/0
         media_port: u16,
         timeout_secs: u64,
     ) -> Result<(String, String)> {
-        let call_id = format!("playback_{}_{}", device_id, chrono::Utc::now().timestamp_millis());
+        let call_id = format!(
+            "playback_{}_{}",
+            device_id,
+            chrono::Utc::now().timestamp_millis()
+        );
 
         // 1. 注册 media waiter（早于发包）
-        let (_waiter_key, media_rx) = self
-            .media_waiter_manager()
-            .register(&call_id, zlm_stream_id, "rtp", timeout_secs);
+        let (_waiter_key, media_rx) =
+            self.media_waiter_manager()
+                .register(&call_id, zlm_stream_id, "rtp", timeout_secs);
 
         // 2. 发送 SIP INVITE（自定义 Subject 字段第 4 段 SSRC 前缀 1 表示 Playback）
         {
@@ -6798,7 +7083,9 @@ f=v/1/96/1/2/1/1/0
             );
             let to = format!(
                 "<sip:{}@{}:{}>",
-                channel_id, device_addr.ip(), device_addr.port()
+                channel_id,
+                device_addr.ip(),
+                device_addr.port()
             );
             let contact = format!(
                 "<sip:{}@{}:{}>",
@@ -6828,13 +7115,18 @@ f=v/1/96/1/2/1/1/0
 
             let uri = format!(
                 "sip:{}@{}:{}",
-                channel_id, device_addr.ip(), device_addr.port()
+                channel_id,
+                device_addr.ip(),
+                device_addr.port()
             );
             let message = Parser::generate_request("INVITE", &uri, &headers, Some(&sdp));
             self.send_request_to(device_addr, &message).await?;
             tracing::info!(
                 "Sent PLAYBACK INVITE (async) to device={} channel={} stream={} call_id={}",
-                device_id, channel_id, zlm_stream_id, call_id
+                device_id,
+                channel_id,
+                zlm_stream_id,
+                call_id
             );
 
             // 保存 INVITE 上下文，handle_response 收到 200 OK 时发 ACK。
@@ -6868,7 +7160,10 @@ f=v/1/96/1/2/1/1/0
 
         // 3. 等 ZLM media waiter 触发（ZLM hook on_stream_changed 会 resolve）
         match tokio::time::timeout(Duration::from_secs(timeout_secs), media_rx).await {
-            Ok(Ok(MediaWaitResult::MediaReady { zlm_stream_id: zid, app: _ })) => {
+            Ok(Ok(MediaWaitResult::MediaReady {
+                zlm_stream_id: zid,
+                app: _,
+            })) => {
                 tracing::info!("Playback media ready: stream_id={}", zid);
                 Ok((call_id, zid))
             }
@@ -6876,9 +7171,11 @@ f=v/1/96/1/2/1/1/0
                 let _ = self.media_waiter_manager().cleanup_expired();
                 Err(anyhow::anyhow!("Playback media wait failed: not found"))
             }
-            Ok(Ok(MediaWaitResult::DeviceRejected { status, reason })) => {
-                Err(anyhow::anyhow!("Playback device rejected: {} {}", status, reason))
-            }
+            Ok(Ok(MediaWaitResult::DeviceRejected { status, reason })) => Err(anyhow::anyhow!(
+                "Playback device rejected: {} {}",
+                status,
+                reason
+            )),
             Ok(Err(_cancelled)) => {
                 let _ = self.media_waiter_manager().cleanup_expired();
                 Err(anyhow::anyhow!("Playback media wait channel cancelled"))
@@ -7061,16 +7358,13 @@ f=v/1/96/1/2/1/1/0
         // 上级平台会按回放处理，语义不符。
         // SSRC 也改为按会话分配：所有通道共用常量 0100000001 时，
         // 媒体面无法区分同时拉取的多路流。
-        let ssrc = self
-            .ssrc_manager()
-            .allocate(channel_id, channel_id, "play");
+        let ssrc = self.ssrc_manager().allocate(channel_id, channel_id, "play");
         let sdp = build_invite_sdp(&self.config.ip, sdp_port, "Play", Some(&ssrc));
 
         // 平台侧：
         // `<本级来源编码>:<SSRC>,<目标通道编码>:0`
         // （即 `sourceId:ssrc,channelId:0`）
-        let subject =
-            build_platform_invite_subject(&self.config.device_id, &ssrc, channel_id);
+        let subject = build_platform_invite_subject(&self.config.device_id, &ssrc, channel_id);
 
         let headers: Vec<(&str, &str)> = vec![
             ("Via", &via),
@@ -7090,7 +7384,12 @@ f=v/1/96/1/2/1/1/0
         let message = Parser::generate_request("INVITE", &uri, &headers, Some(&sdp));
 
         self.send_request_to(addr, &message).await?;
-        tracing::info!("Sent platform INVITE for channel {} to platform {} at {}", channel_id, platform_gb_id, addr);
+        tracing::info!(
+            "Sent platform INVITE for channel {} to platform {} at {}",
+            channel_id,
+            platform_gb_id,
+            addr
+        );
 
         Ok(())
     }
@@ -7120,9 +7419,8 @@ f=v/1/96/1/2/1/1/0
         channel_id: &str,
         sdp: &str,
     ) -> Result<String> {
-        let (upstream_host, upstream_port, upstream_ssrc) =
-            parse_cascade_invite_sdp(sdp)
-                .map_err(|e| anyhow::anyhow!("Parse upstream SDP failed: {}", e))?;
+        let (upstream_host, upstream_port, upstream_ssrc) = parse_cascade_invite_sdp(sdp)
+            .map_err(|e| anyhow::anyhow!("Parse upstream SDP failed: {}", e))?;
 
         let cascade_call_id = format!("cascade_{}_{}", platform_id, channel_id);
         self.send_rtp_manager.handle_upstream_invite(
@@ -7136,13 +7434,23 @@ f=v/1/96/1/2/1/1/0
 
         tracing::info!(
             "5.3 register_cascade_invite: platform={} channel={} cascade_call_id={} upstream={}:{}",
-            platform_id, channel_id, cascade_call_id,
-            self.config.ip, upstream_port
+            platform_id,
+            channel_id,
+            cascade_call_id,
+            self.config.ip,
+            upstream_port
         );
         Ok(cascade_call_id)
     }
 
-    pub async fn send_platform_message(&self, platform_gb_id: &str, cmd_type: &str, sn: i64, device_id: &str, content: Option<&str>) -> Result<()> {
+    pub async fn send_platform_message(
+        &self,
+        platform_gb_id: &str,
+        cmd_type: &str,
+        sn: i64,
+        device_id: &str,
+        content: Option<&str>,
+    ) -> Result<()> {
         let platform = crate::db::platform::get_by_server_gb_id(&self.pool, platform_gb_id)
             .await?
             .ok_or_else(|| anyhow::anyhow!("Platform {} not found", platform_gb_id))?;
@@ -7216,7 +7524,12 @@ f=v/1/96/1/2/1/1/0
         let message = Parser::generate_request("MESSAGE", &uri, &headers, Some(&body));
 
         self.send_request_to(addr, &message).await?;
-        tracing::info!("Sent {} to platform {} at {}", cmd_type, platform_gb_id, addr);
+        tracing::info!(
+            "Sent {} to platform {} at {}",
+            cmd_type,
+            platform_gb_id,
+            addr
+        );
 
         Ok(())
     }
@@ -7259,7 +7572,10 @@ f=v/1/96/1/2/1/1/0
         let platforms = match crate::db::platform::get_all_online_platforms(&self.pool).await {
             Ok(p) => p,
             Err(e) => {
-                tracing::warn!("forward_mobile_position: get_all_online_platforms failed: {}", e);
+                tracing::warn!(
+                    "forward_mobile_position: get_all_online_platforms failed: {}",
+                    e
+                );
                 return Ok(0);
             }
         };
@@ -7299,10 +7615,9 @@ f=v/1/96/1/2/1/1/0
                 .await
             {
                 Ok(_) => sent += 1,
-                Err(e) => tracing::warn!(
-                    "forward_mobile_position to {} failed: {}",
-                    server_gb_id, e
-                ),
+                Err(e) => {
+                    tracing::warn!("forward_mobile_position to {} failed: {}", server_gb_id, e)
+                }
             }
         }
         Ok(sent)
@@ -7585,8 +7900,14 @@ f=v/1/96/1/2/1/1/0
         let channel_id = fields.get("DeviceID").cloned().unwrap_or_default();
         let start_time = fields.get("StartTime").cloned();
         let end_time = fields.get("EndTime").cloned();
-        let secrecy = fields.get("Secrecy").cloned().unwrap_or_else(|| "0".to_string());
-        let _type = fields.get("Type").cloned().unwrap_or_else(|| "all".to_string());
+        let secrecy = fields
+            .get("Secrecy")
+            .cloned()
+            .unwrap_or_else(|| "0".to_string());
+        let _type = fields
+            .get("Type")
+            .cloned()
+            .unwrap_or_else(|| "all".to_string());
 
         // 查询 ZLM MP4（与 handle_record_info 一致）
         let mut record_items: Vec<RecordInfoItem> = Vec::new();
@@ -7594,16 +7915,32 @@ f=v/1/96/1/2/1/1/0
             let app = "rtp";
             let stream1 = format!("{}${}", local_device_id, channel_id);
             let stream2 = channel_id.clone();
-            let zlm_start = start_time.as_ref().map(|s| s.replace(' ', "T").replace(':', "-"));
-            let zlm_end = end_time.as_ref().map(|s| s.replace(' ', "T").replace(':', "-"));
+            let zlm_start = start_time
+                .as_ref()
+                .map(|s| s.replace(' ', "T").replace(':', "-"));
+            let zlm_end = end_time
+                .as_ref()
+                .map(|s| s.replace(' ', "T").replace(':', "-"));
 
             let files = if let Ok(list) = zlm
-                .get_mp4_record_file(app, &stream1, None, zlm_start.as_deref(), zlm_end.as_deref())
+                .get_mp4_record_file(
+                    app,
+                    &stream1,
+                    None,
+                    zlm_start.as_deref(),
+                    zlm_end.as_deref(),
+                )
                 .await
             {
                 list
             } else if let Ok(list) = zlm
-                .get_mp4_record_file(app, &stream2, None, zlm_start.as_deref(), zlm_end.as_deref())
+                .get_mp4_record_file(
+                    app,
+                    &stream2,
+                    None,
+                    zlm_start.as_deref(),
+                    zlm_end.as_deref(),
+                )
                 .await
             {
                 list
@@ -7633,17 +7970,22 @@ f=v/1/96/1/2/1/1/0
         }
 
         let response_body = build_upstream_record_info_response(sn, &channel_id, &record_items);
-        let response = Parser::generate_response(200, "OK", &[
-            ("Via", via), ("From", from), ("To", to),
-            ("Call-ID", call_id), ("CSeq", cseq),
-            ("Content-Type", "Application/MANSCDP+xml"),
-        ], Some(&response_body));
+        let response = Parser::generate_response(
+            200,
+            "OK",
+            &[
+                ("Via", via),
+                ("From", from),
+                ("To", to),
+                ("Call-ID", call_id),
+                ("CSeq", cseq),
+                ("Content-Type", "Application/MANSCDP+xml"),
+            ],
+            Some(&response_body),
+        );
         Self::send_response(socket, addr, &response).await?;
         Ok(())
     }
-
-
-
 
     fn get_received_from_via(via: &str) -> Option<String> {
         for part in via.split(';') {
@@ -7687,9 +8029,8 @@ pub struct CascadePullRequest {
 }
 
 /// 待处理的级联拉流请求（进程级队列，见 `CascadePullRequest`）。
-static CASCADE_PULL_QUEUE: std::sync::OnceLock<
-    tokio::sync::Mutex<Vec<CascadePullRequest>>,
-> = std::sync::OnceLock::new();
+static CASCADE_PULL_QUEUE: std::sync::OnceLock<tokio::sync::Mutex<Vec<CascadePullRequest>>> =
+    std::sync::OnceLock::new();
 
 pub fn cascade_pull_queue() -> &'static tokio::sync::Mutex<Vec<CascadePullRequest>> {
     CASCADE_PULL_QUEUE.get_or_init(|| tokio::sync::Mutex::new(Vec::new()))
@@ -7743,9 +8084,7 @@ pub fn parse_cascade_invite_sdp(sdp: &str) -> Result<(String, u16, String), Stri
         } else if line.starts_with("m=video ") {
             let parts: Vec<&str> = line.split_whitespace().collect();
             if parts.len() >= 2 {
-                media_port = parts[1]
-                    .parse()
-                    .map_err(|e| format!("bad port: {}", e))?;
+                media_port = parts[1].parse().map_err(|e| format!("bad port: {}", e))?;
             }
         } else if let Some(rest) = line.strip_prefix("y=") {
             ssrc = rest.chars().take(10).collect();
@@ -7832,7 +8171,11 @@ async fn persist_device_info_response(pool: &Pool, device_id: &str, body: &str) 
 
     tracing::info!(
         "DeviceInfo 应答落库 device={} name={:?} manufacturer={:?} model={:?} firmware={:?}",
-        device_id, name, manufacturer, model, firmware
+        device_id,
+        name,
+        manufacturer,
+        model,
+        firmware
     );
     Ok(())
 }
@@ -7873,7 +8216,11 @@ fn spawn_device_info_query_after_register(
             sn, device_id
         );
 
-        let call_id = format!("msg_{}_{}", device_id, chrono::Utc::now().timestamp_millis());
+        let call_id = format!(
+            "msg_{}_{}",
+            device_id,
+            chrono::Utc::now().timestamp_millis()
+        );
         let branch = generate_branch();
         let cseq = cseq_header(1, "MESSAGE");
         let via = format!(
@@ -7891,10 +8238,7 @@ fn spawn_device_info_query_after_register(
             device_addr.ip(),
             device_addr.port()
         );
-        let contact = format!(
-            "<sip:{}@{}:{}>",
-            config.device_id, config.ip, config.port
-        );
+        let contact = format!("<sip:{}@{}:{}>", config.device_id, config.ip, config.port);
         let content_length = body.len().to_string();
         let headers: Vec<(&str, &str)> = vec![
             ("Via", &via),
@@ -7913,21 +8257,19 @@ fn spawn_device_info_query_after_register(
             device_addr.ip(),
             device_addr.port()
         );
-        let message = Parser::generate_request_from_method(
-            SipMethod::Message,
-            &uri,
-            &headers,
-            Some(&body),
-        );
+        let message =
+            Parser::generate_request_from_method(SipMethod::Message, &uri, &headers, Some(&body));
 
         match crate::sip::transport::tcp::send_sip_out(&socket, device_addr, &message).await {
             Ok(_) => tracing::info!(
                 "注册后自动 DeviceInfo 查询已下发 device={} sn={}",
-                device_id, sn
+                device_id,
+                sn
             ),
             Err(e) => tracing::warn!(
                 "注册后自动 DeviceInfo 查询下发失败 device={}: {}",
-                device_id, e
+                device_id,
+                e
             ),
         }
     });
@@ -8180,13 +8522,7 @@ mod dialog_tag_tests {
     fn invite_session_dialog_fields_are_independent() {
         use crate::sip::gb28181::invite_session::{InviteSession, StreamType};
         let addr: SocketAddr = "10.1.2.3:5060".parse().unwrap();
-        let mut s = InviteSession::new(
-            "play_dev_ch",
-            "dev",
-            "ch",
-            StreamType::Playback,
-            addr,
-        );
+        let mut s = InviteSession::new("play_dev_ch", "dev", "ch", StreamType::Playback, addr);
         s.set_local_dialog("local-tag", 3);
         s.set_remote_tag("remote-tag");
         s.set_sdp_response("v=0\r\nm=video 11001 RTP/AVP 96\r\n");
@@ -8213,9 +8549,10 @@ mod dialog_tag_tests {
         mgr.create(s).await;
 
         assert!(mgr.get("play_1").await.unwrap().remote_tag.is_none());
-        assert!(mgr
-            .mark_answered("play_1", Some("remote-tag"), Some("v=0\r\n"))
-            .await);
+        assert!(
+            mgr.mark_answered("play_1", Some("remote-tag"), Some("v=0\r\n"))
+                .await
+        );
         let got = mgr.get("play_1").await.unwrap();
         assert_eq!(got.remote_tag.as_deref(), Some("remote-tag"));
         assert_eq!(got.sdp_response.as_deref(), Some("v=0\r\n"));
@@ -8267,16 +8604,77 @@ mod dialog_tag_tests {
         let s = InviteSession::new("playback_1", "dev", "ch", StreamType::Playback, addr);
         mgr.create(s).await;
 
-        assert!(mgr
-            .set_zlm_stream_by_device_channel("dev", "ch", "dev_ch", "rtp")
-            .await);
+        assert!(
+            mgr.set_zlm_stream_by_device_channel("dev", "ch", "dev_ch", "rtp")
+                .await
+        );
         let got = mgr.get("playback_1").await.unwrap();
         assert_eq!(got.zlm_stream_id.as_deref(), Some("dev_ch"));
         assert_eq!(got.zlm_app, "rtp");
         // 未知设备不应创建/修改任何东西
-        assert!(!mgr
-            .set_zlm_stream_by_device_channel("other", "ch", "x", "rtp")
-            .await);
+        assert!(
+            !mgr.set_zlm_stream_by_device_channel("other", "ch", "x", "rtp")
+                .await
+        );
+    }
+
+    /// 同一通道的不同业务会话必须按类型和流标识精确定位，不能依赖 HashMap 遍历顺序。
+    #[tokio::test]
+    async fn precise_invite_session_lookup_excludes_other_stream_types() {
+        use crate::sip::gb28181::invite_session::{
+            InviteSession, InviteSessionManager, InviteSessionStatus, StreamType,
+        };
+        use chrono::{Duration, Utc};
+
+        let mgr = InviteSessionManager::new();
+        let addr: SocketAddr = "10.1.2.3:5060".parse().unwrap();
+        let now = Utc::now();
+
+        let mut old_live = InviteSession::new("play_old", "dev", "ch", StreamType::Play, addr);
+        old_live.created_at = now - Duration::seconds(2);
+        mgr.create(old_live).await;
+
+        let mut playback =
+            InviteSession::new("playback_1", "dev", "ch", StreamType::Playback, addr);
+        playback.created_at = now - Duration::seconds(1);
+        mgr.create(playback).await;
+
+        let mut live = InviteSession::new("play_new", "dev", "ch", StreamType::Play, addr);
+        live.created_at = now;
+        mgr.create(live).await;
+
+        mgr.update_status("play_old", InviteSessionStatus::Terminated)
+            .await;
+        assert!(
+            mgr.set_zlm_stream_by_call_id("play_new", "live_stream", "rtp")
+                .await
+        );
+        assert!(
+            mgr.set_zlm_stream_by_call_id("playback_1", "playback_stream", "rtp")
+                .await
+        );
+
+        assert_eq!(
+            mgr.get_latest_by_device_channel_type("dev", "ch", StreamType::Play)
+                .await
+                .unwrap()
+                .call_id,
+            "play_new"
+        );
+        assert_eq!(
+            mgr.get_latest_by_device_channel_type("dev", "ch", StreamType::Playback)
+                .await
+                .unwrap()
+                .call_id,
+            "playback_1"
+        );
+        assert_eq!(
+            mgr.get_by_zlm_stream_id("live_stream")
+                .await
+                .unwrap()
+                .call_id,
+            "play_new"
+        );
     }
 }
 
@@ -8444,10 +8842,24 @@ mod playback_control_tests {
     /// `<通道编码>:<SSRC>,<本级编码>:0`（平台侧为 `<本级>:<SSRC>,<通道>:0`）。
     #[test]
     fn invite_subject_builders_have_fixed_shape() {
-        let dev = build_device_invite_subject("34020000001320000002", "0100000001", "34020000002000000001");
-        assert_eq!(dev, "34020000001320000002:0100000001,34020000002000000001:0");
-        let plat = build_platform_invite_subject("34020000002000000001", "0100000001", "34020000001320000002");
-        assert_eq!(plat, "34020000002000000001:0100000001,34020000001320000002:0");
+        let dev = build_device_invite_subject(
+            "34020000001320000002",
+            "0100000001",
+            "34020000002000000001",
+        );
+        assert_eq!(
+            dev,
+            "34020000001320000002:0100000001,34020000002000000001:0"
+        );
+        let plat = build_platform_invite_subject(
+            "34020000002000000001",
+            "0100000001",
+            "34020000001320000002",
+        );
+        assert_eq!(
+            plat,
+            "34020000002000000001:0100000001,34020000001320000002:0"
+        );
         // 两段、四个字段、末字段恒为 0
         for s in [&dev, &plat] {
             let parts: Vec<&str> = s.split(',').collect();
@@ -8739,14 +9151,26 @@ mod upstream_message_tests {
         // 用 lazy pool（与 src/sip/gb28181/cascade_service.rs::dummy_pool 模式一致）
         let pool = {
             #[cfg(feature = "postgres")]
-            { sqlx::postgres::PgPoolOptions::new().max_connections(1)
-                .connect_lazy("postgres://x:x@127.0.0.1/x").unwrap() }
+            {
+                sqlx::postgres::PgPoolOptions::new()
+                    .max_connections(1)
+                    .connect_lazy("postgres://x:x@127.0.0.1/x")
+                    .unwrap()
+            }
             #[cfg(feature = "mysql")]
-            { sqlx::mysql::MySqlPoolOptions::new().max_connections(1)
-                .connect_lazy("mysql://x:x@127.0.0.1/x").unwrap() }
+            {
+                sqlx::mysql::MySqlPoolOptions::new()
+                    .max_connections(1)
+                    .connect_lazy("mysql://x:x@127.0.0.1/x")
+                    .unwrap()
+            }
             #[cfg(feature = "sqlite")]
-            { sqlx::sqlite::SqlitePoolOptions::new().max_connections(1)
-                .connect_lazy("sqlite::memory:").unwrap() }
+            {
+                sqlx::sqlite::SqlitePoolOptions::new()
+                    .max_connections(1)
+                    .connect_lazy("sqlite::memory:")
+                    .unwrap()
+            }
         };
 
         let config = SipConfig::default();
@@ -8760,10 +9184,15 @@ mod upstream_message_tests {
             .register_cascade_invite("34010000002000000001", "34020000001320000001", sdp)
             .expect("register_cascade_invite should succeed");
 
-        assert_eq!(cascade_call_id, "cascade_34010000002000000001_34020000001320000001");
+        assert_eq!(
+            cascade_call_id,
+            "cascade_34010000002000000001_34020000001320000001"
+        );
 
         // 验证 SendRtpManager 中有该 session
-        let sessions = server.send_rtp_manager().get_by_channel("34020000001320000001");
+        let sessions = server
+            .send_rtp_manager()
+            .get_by_channel("34020000001320000001");
         assert_eq!(sessions.len(), 1);
         let s = &sessions[0];
         assert_eq!(s.platform_id, "34010000002000000001");
@@ -8779,14 +9208,26 @@ mod upstream_message_tests {
     async fn phase5_register_cascade_invite_bad_sdp_no_session() {
         let pool = {
             #[cfg(feature = "postgres")]
-            { sqlx::postgres::PgPoolOptions::new().max_connections(1)
-                .connect_lazy("postgres://x:x@127.0.0.1/x").unwrap() }
+            {
+                sqlx::postgres::PgPoolOptions::new()
+                    .max_connections(1)
+                    .connect_lazy("postgres://x:x@127.0.0.1/x")
+                    .unwrap()
+            }
             #[cfg(feature = "mysql")]
-            { sqlx::mysql::MySqlPoolOptions::new().max_connections(1)
-                .connect_lazy("mysql://x:x@127.0.0.1/x").unwrap() }
+            {
+                sqlx::mysql::MySqlPoolOptions::new()
+                    .max_connections(1)
+                    .connect_lazy("mysql://x:x@127.0.0.1/x")
+                    .unwrap()
+            }
             #[cfg(feature = "sqlite")]
-            { sqlx::sqlite::SqlitePoolOptions::new().max_connections(1)
-                .connect_lazy("sqlite::memory:").unwrap() }
+            {
+                sqlx::sqlite::SqlitePoolOptions::new()
+                    .max_connections(1)
+                    .connect_lazy("sqlite::memory:")
+                    .unwrap()
+            }
         };
 
         let config = SipConfig::default();
@@ -8808,21 +9249,37 @@ mod upstream_message_tests {
     async fn phase5_forward_mobile_position_no_platforms() {
         let pool = {
             #[cfg(feature = "postgres")]
-            { sqlx::postgres::PgPoolOptions::new().max_connections(1)
-                .connect_lazy("postgres://x:x@127.0.0.1/x").unwrap() }
+            {
+                sqlx::postgres::PgPoolOptions::new()
+                    .max_connections(1)
+                    .connect_lazy("postgres://x:x@127.0.0.1/x")
+                    .unwrap()
+            }
             #[cfg(feature = "mysql")]
-            { sqlx::mysql::MySqlPoolOptions::new().max_connections(1)
-                .connect_lazy("mysql://x:x@127.0.0.1/x").unwrap() }
+            {
+                sqlx::mysql::MySqlPoolOptions::new()
+                    .max_connections(1)
+                    .connect_lazy("mysql://x:x@127.0.0.1/x")
+                    .unwrap()
+            }
             #[cfg(feature = "sqlite")]
-            { sqlx::sqlite::SqlitePoolOptions::new().max_connections(1)
-                .connect_lazy("sqlite::memory:").unwrap() }
+            {
+                sqlx::sqlite::SqlitePoolOptions::new()
+                    .max_connections(1)
+                    .connect_lazy("sqlite::memory:")
+                    .unwrap()
+            }
         };
         let server = SipServer::new(SipConfig::default(), pool, None);
 
         let count = server
             .forward_mobile_position_to_all(
                 "34020000001320000001",
-                30.5, 114.3, Some(10.0), Some(180), "2026-06-20T12:00:00",
+                30.5,
+                114.3,
+                Some(10.0),
+                Some(180),
+                "2026-06-20T12:00:00",
             )
             .await
             .expect("无平台时也应成功");
@@ -8834,20 +9291,37 @@ mod upstream_message_tests {
     async fn phase5_forward_mobile_position_optional_fields() {
         let pool = {
             #[cfg(feature = "postgres")]
-            { sqlx::postgres::PgPoolOptions::new().max_connections(1)
-                .connect_lazy("postgres://x:x@127.0.0.1/x").unwrap() }
+            {
+                sqlx::postgres::PgPoolOptions::new()
+                    .max_connections(1)
+                    .connect_lazy("postgres://x:x@127.0.0.1/x")
+                    .unwrap()
+            }
             #[cfg(feature = "mysql")]
-            { sqlx::mysql::MySqlPoolOptions::new().max_connections(1)
-                .connect_lazy("mysql://x:x@127.0.0.1/x").unwrap() }
+            {
+                sqlx::mysql::MySqlPoolOptions::new()
+                    .max_connections(1)
+                    .connect_lazy("mysql://x:x@127.0.0.1/x")
+                    .unwrap()
+            }
             #[cfg(feature = "sqlite")]
-            { sqlx::sqlite::SqlitePoolOptions::new().max_connections(1)
-                .connect_lazy("sqlite::memory:").unwrap() }
+            {
+                sqlx::sqlite::SqlitePoolOptions::new()
+                    .max_connections(1)
+                    .connect_lazy("sqlite::memory:")
+                    .unwrap()
+            }
         };
         let server = SipServer::new(SipConfig::default(), pool, None);
 
         let count = server
             .forward_mobile_position_to_all(
-                "34020000001320000001", 0.0, 0.0, None, None, "2026-06-20T12:00:00",
+                "34020000001320000001",
+                0.0,
+                0.0,
+                None,
+                None,
+                "2026-06-20T12:00:00",
             )
             .await
             .expect("optional 字段为 None 时也应成功");
@@ -8861,21 +9335,36 @@ mod upstream_message_tests {
     async fn phase5_forward_alarm_no_platforms() {
         let pool = {
             #[cfg(feature = "postgres")]
-            { sqlx::postgres::PgPoolOptions::new().max_connections(1)
-                .connect_lazy("postgres://x:x@127.0.0.1/x").unwrap() }
+            {
+                sqlx::postgres::PgPoolOptions::new()
+                    .max_connections(1)
+                    .connect_lazy("postgres://x:x@127.0.0.1/x")
+                    .unwrap()
+            }
             #[cfg(feature = "mysql")]
-            { sqlx::mysql::MySqlPoolOptions::new().max_connections(1)
-                .connect_lazy("mysql://x:x@127.0.0.1/x").unwrap() }
+            {
+                sqlx::mysql::MySqlPoolOptions::new()
+                    .max_connections(1)
+                    .connect_lazy("mysql://x:x@127.0.0.1/x")
+                    .unwrap()
+            }
             #[cfg(feature = "sqlite")]
-            { sqlx::sqlite::SqlitePoolOptions::new().max_connections(1)
-                .connect_lazy("sqlite::memory:").unwrap() }
+            {
+                sqlx::sqlite::SqlitePoolOptions::new()
+                    .max_connections(1)
+                    .connect_lazy("sqlite::memory:")
+                    .unwrap()
+            }
         };
         let server = SipServer::new(SipConfig::default(), pool, None);
 
         let count = server
             .forward_alarm_to_all(
                 "34020000001320000001",
-                "1", 1, "2026-06-20T12:00:00", Some("motion detection"),
+                "1",
+                1,
+                "2026-06-20T12:00:00",
+                Some("motion detection"),
             )
             .await
             .expect("无平台时也应成功");
@@ -8887,21 +9376,31 @@ mod upstream_message_tests {
     async fn phase5_forward_alarm_no_description() {
         let pool = {
             #[cfg(feature = "postgres")]
-            { sqlx::postgres::PgPoolOptions::new().max_connections(1)
-                .connect_lazy("postgres://x:x@127.0.0.1/x").unwrap() }
+            {
+                sqlx::postgres::PgPoolOptions::new()
+                    .max_connections(1)
+                    .connect_lazy("postgres://x:x@127.0.0.1/x")
+                    .unwrap()
+            }
             #[cfg(feature = "mysql")]
-            { sqlx::mysql::MySqlPoolOptions::new().max_connections(1)
-                .connect_lazy("mysql://x:x@127.0.0.1/x").unwrap() }
+            {
+                sqlx::mysql::MySqlPoolOptions::new()
+                    .max_connections(1)
+                    .connect_lazy("mysql://x:x@127.0.0.1/x")
+                    .unwrap()
+            }
             #[cfg(feature = "sqlite")]
-            { sqlx::sqlite::SqlitePoolOptions::new().max_connections(1)
-                .connect_lazy("sqlite::memory:").unwrap() }
+            {
+                sqlx::sqlite::SqlitePoolOptions::new()
+                    .max_connections(1)
+                    .connect_lazy("sqlite::memory:")
+                    .unwrap()
+            }
         };
         let server = SipServer::new(SipConfig::default(), pool, None);
 
         let count = server
-            .forward_alarm_to_all(
-                "34020000001320000001", "1", 1, "2026-06-20T12:00:00", None,
-            )
+            .forward_alarm_to_all("34020000001320000001", "1", 1, "2026-06-20T12:00:00", None)
             .await
             .expect("description 为 None 时也应成功");
         assert_eq!(count, 0);
@@ -8961,24 +9460,22 @@ mod upstream_message_tests {
     /// items 中含 None 字段 → 跳过空值用默认值
     #[test]
     fn phase5_build_upstream_record_info_response_none_fields() {
-        let items = vec![
-            RecordInfoItem {
-                device_id: None,
-                name: None,
-                file_path: None,
-                address: None,
-                start_time: None,
-                end_time: None,
-                secrecy: None,
-                kind: None,
-            },
-        ];
+        let items = vec![RecordInfoItem {
+            device_id: None,
+            name: None,
+            file_path: None,
+            address: None,
+            start_time: None,
+            end_time: None,
+            secrecy: None,
+            kind: None,
+        }];
         let xml = build_upstream_record_info_response("1", "fallback_ch", &items);
         // 默认值：name / device_id 落到 channel_id；空字段为空串
         assert!(xml.contains("<SumNum>1</SumNum>"));
-        assert!(xml.contains("fallback_ch"));  // device_id 兜底
-        assert!(xml.contains("fallback_ch-records"));  // name 兜底
-        // 不应 panic，输出合法
+        assert!(xml.contains("fallback_ch")); // device_id 兜底
+        assert!(xml.contains("fallback_ch-records")); // name 兜底
+                                                      // 不应 panic，输出合法
         assert!(xml.contains("</Response>"));
     }
 }
@@ -9097,7 +9594,9 @@ mod playback_control_mansrtsp_tests {
         assert!(b.contains("Scale: 4\r\n"), "{}", b);
 
         let b = build_playback_control_mansrtsp(
-            &PlaybackControlCmd::Seek { seek_time: "120".into() },
+            &PlaybackControlCmd::Seek {
+                seek_time: "120".into(),
+            },
             7,
         );
         assert!(b.contains("Range: npt=120-\r\n"), "{}", b);

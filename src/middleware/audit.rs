@@ -20,11 +20,7 @@ use axum::response::Response;
 use crate::AppState;
 
 /// Phase 7.4: Audit middleware.
-pub async fn audit_middleware(
-    State(state): State<AppState>,
-    req: Request,
-    next: Next,
-) -> Response {
+pub async fn audit_middleware(State(state): State<AppState>, req: Request, next: Next) -> Response {
     if !state.config.audit.enabled {
         return next.run(req).await;
     }
@@ -35,20 +31,28 @@ pub async fn audit_middleware(
         return next.run(req).await;
     }
     // Best-effort IP extraction
-    let ip = req.headers().get("x-forwarded-for")
+    let ip = req
+        .headers()
+        .get("x-forwarded-for")
         .and_then(|v| v.to_str().ok())
         .map(|s| s.split(',').next().unwrap_or("").trim().to_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "0.0.0.0".to_string());
     // Best-effort username extraction
-    let username = req.headers().get("access-token")
+    let username = req
+        .headers()
+        .get("access-token")
         .and_then(|v| v.to_str().ok())
         .and_then(|t| crate::auth::decode_jwt_unsafe(t).ok())
         .map(|c| c.user)
         .unwrap_or_else(|| "anonymous".to_string());
     let resource = path.clone();
     let action = format!("{} {}", method, path);
-    let path_truncated = if path.len() > 500 { path[..500].to_string() } else { path.clone() };
+    let path_truncated = if path.len() > 500 {
+        path[..500].to_string()
+    } else {
+        path.clone()
+    };
     let ip_clone = ip.clone();
     let username_clone = username.clone();
     let started = Instant::now();
@@ -59,8 +63,17 @@ pub async fn audit_middleware(
     let pool = state.pool.clone();
     tokio::spawn(async move {
         let res = crate::db::audit_log::insert_with_metrics(
-            &pool, &username_clone, &action, &resource, &method, &path_truncated, &ip_clone, status, elapsed_ms,
-        ).await;
+            &pool,
+            &username_clone,
+            &action,
+            &resource,
+            &method,
+            &path_truncated,
+            &ip_clone,
+            status,
+            elapsed_ms,
+        )
+        .await;
         match res {
             Ok(_) => crate::metrics::inc_audit_log_writes_total(),
             Err(e) => {

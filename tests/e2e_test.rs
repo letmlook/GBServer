@@ -15,8 +15,8 @@ mod tests {
         let redis_url = std::env::var("TEST_REDIS_URL")
             .unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
 
-        let zlm_url = std::env::var("ZLM_URL")
-            .unwrap_or_else(|_| "http://127.0.0.1:8080".to_string());
+        let zlm_url =
+            std::env::var("ZLM_URL").unwrap_or_else(|_| "http://127.0.0.1:8080".to_string());
 
         println!("数据库: {}", db_url);
         println!("Redis: {}", redis_url);

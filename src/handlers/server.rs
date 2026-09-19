@@ -12,27 +12,30 @@ use serde::Deserialize;
 use std::collections::VecDeque;
 use std::sync::{Mutex, OnceLock};
 
-use crate::db::{get_media_server_by_id, list_media_servers, media_server, stream_push, stream_proxy, MediaServer};
+use crate::db::{
+    get_media_server_by_id, list_media_servers, media_server, stream_proxy, stream_push,
+    MediaServer,
+};
 use crate::error::{AppError, ErrorCode};
 use crate::response::ApiResult;
 use crate::state::StreamState;
 
 use crate::AppState;
 
+use crate::db;
 use chrono::TimeZone;
+use serde_json::json;
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::time::{SystemTime, UNIX_EPOCH};
-use serde_json::json;
 use std::str::FromStr;
-use crate::db as db;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 // Helper functions to read system metrics
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-use {tokio::time::sleep, std::time::Duration};
+use std::process::Command;
 #[cfg(target_os = "linux")]
 use {std::fs::File, std::io::Read};
-use std::process::Command;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use {std::time::Duration, tokio::time::sleep};
 
 #[utoipa::path(
     get,
@@ -174,11 +177,7 @@ async fn configure_zlm_hooks(
     // （最坏 30s × 11），普通后台管理操作变成"卡死"。
     const HOOK_CONFIG_BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
     let errors = client
-        .set_server_configs_batch(
-            &client.secret,
-            config_items,
-            HOOK_CONFIG_BUDGET,
-        )
+        .set_server_configs_batch(&client.secret, config_items, HOOK_CONFIG_BUDGET)
         .await;
     for e in &errors {
         tracing::warn!("Failed to configure ZLM hook {}", e);
@@ -198,7 +197,9 @@ async fn read_cpu_usage_impl() -> Option<f64> {
     let (t2, id2) = read_cpu_times()?;
     let dt = t2.saturating_sub(t1) as f64;
     let di = id2.saturating_sub(id1) as f64;
-    if dt <= 0.0 { return Some(0.0); }
+    if dt <= 0.0 {
+        return Some(0.0);
+    }
     Some(((dt - di) / dt) * 100.0)
 }
 #[cfg(target_os = "linux")]
@@ -208,14 +209,20 @@ fn read_cpu_times() -> Option<(u64, u64)> {
     for line in s.lines() {
         if line.starts_with("cpu ") {
             let parts: Vec<&str> = line.split_whitespace().collect();
-            let vals: Vec<u64> = parts.iter().skip(1).filter_map(|p| p.parse().ok()).collect();
+            let vals: Vec<u64> = parts
+                .iter()
+                .skip(1)
+                .filter_map(|p| p.parse().ok())
+                .collect();
             let user = *vals.first().unwrap_or(&0);
             let nice = *vals.get(1).unwrap_or(&0);
             let system = *vals.get(2).unwrap_or(&0);
             let idle = *vals.get(3).unwrap_or(&0);
             let iowait = *vals.get(4).unwrap_or(&0);
-            let total: u64 = [user, nice, system, idle, iowait].iter()
-                .chain(vals.get(5..).unwrap_or(&[])).sum();
+            let total: u64 = [user, nice, system, idle, iowait]
+                .iter()
+                .chain(vals.get(5..).unwrap_or(&[]))
+                .sum();
             return Some((total, idle + iowait));
         }
     }
@@ -227,7 +234,8 @@ async fn read_cpu_usage_impl() -> Option<f64> {
     // Use `top -l 1 -n 0` to get CPU usage
     let output = Command::new("top")
         .args(["-l", "1", "-n", "0"])
-        .output().ok()?;
+        .output()
+        .ok()?;
     let out = String::from_utf8_lossy(&output.stdout);
     for line in out.lines() {
         if line.contains("CPU usage:") {
@@ -235,7 +243,7 @@ async fn read_cpu_usage_impl() -> Option<f64> {
             let parts: Vec<&str> = line.split_whitespace().collect();
             for (i, p) in parts.iter().enumerate() {
                 if p.contains("idle") && i > 0 {
-                    if let Ok(idle_pct) = parts[i-1].trim_end_matches('%').parse::<f64>() {
+                    if let Ok(idle_pct) = parts[i - 1].trim_end_matches('%').parse::<f64>() {
                         return Some((100.0 - idle_pct).max(0.0));
                     }
                 }
@@ -245,9 +253,12 @@ async fn read_cpu_usage_impl() -> Option<f64> {
     // Fallback: use `ps` to approximate
     let output = Command::new("ps")
         .args(["-A", "-o", "%cpu"])
-        .output().ok()?;
+        .output()
+        .ok()?;
     let out = String::from_utf8_lossy(&output.stdout);
-    let total: f64 = out.lines().skip(1)
+    let total: f64 = out
+        .lines()
+        .skip(1)
         .filter_map(|l| l.trim().parse::<f64>().ok())
         .sum();
     Some(total.min(100.0))
@@ -258,20 +269,27 @@ async fn read_cpu_usage_impl() -> Option<f64> {
     // Use wmic to get CPU load
     let output = Command::new("wmic")
         .args(["cpu", "get", "loadpercentage"])
-        .output().ok()?;
+        .output()
+        .ok()?;
     let out = String::from_utf8_lossy(&output.stdout);
-    out.lines().skip(1)
+    out.lines()
+        .skip(1)
         .find_map(|l| l.trim().parse::<f64>().ok())
         .or(Some(5.0))
 }
 
 // ── Platform-agnostic memory info ──
-fn read_memory_info() -> Option<(u64, u64, u64)> { read_memory_info_impl() }
+fn read_memory_info() -> Option<(u64, u64, u64)> {
+    read_memory_info_impl()
+}
 
 #[cfg(target_os = "linux")]
 fn read_memory_info_impl() -> Option<(u64, u64, u64)> {
     let mut s = String::new();
-    File::open("/proc/meminfo").ok()?.read_to_string(&mut s).ok()?;
+    File::open("/proc/meminfo")
+        .ok()?
+        .read_to_string(&mut s)
+        .ok()?;
     let mut total = 0u64;
     let mut avail = 0u64;
     for line in s.lines() {
@@ -287,11 +305,23 @@ fn read_memory_info_impl() -> Option<(u64, u64, u64)> {
 #[cfg(target_os = "macos")]
 fn read_memory_info_impl() -> Option<(u64, u64, u64)> {
     // Total from sysctl
-    let total_out = Command::new("sysctl").args(["-n", "hw.memsize"]).output().ok()?;
-    let total: u64 = String::from_utf8_lossy(&total_out.stdout).trim().parse().ok()?;
+    let total_out = Command::new("sysctl")
+        .args(["-n", "hw.memsize"])
+        .output()
+        .ok()?;
+    let total: u64 = String::from_utf8_lossy(&total_out.stdout)
+        .trim()
+        .parse()
+        .ok()?;
     // Usage from vm_stat (page size is 4096 on Apple Silicon, 16384 on Intel)
-    let page_size_out = Command::new("sysctl").args(["-n", "hw.pagesize"]).output().ok()?;
-    let page_size: u64 = String::from_utf8_lossy(&page_size_out.stdout).trim().parse().unwrap_or(16384);
+    let page_size_out = Command::new("sysctl")
+        .args(["-n", "hw.pagesize"])
+        .output()
+        .ok()?;
+    let page_size: u64 = String::from_utf8_lossy(&page_size_out.stdout)
+        .trim()
+        .parse()
+        .unwrap_or(16384);
     let vm_out = Command::new("vm_stat").output().ok()?;
     let vm = String::from_utf8_lossy(&vm_out.stdout);
     let mut active_pages = 0u64;
@@ -299,11 +329,29 @@ fn read_memory_info_impl() -> Option<(u64, u64, u64)> {
     let mut wired_pages = 0u64;
     for line in vm.lines() {
         if line.contains("Pages active:") {
-            active_pages = line.split(':').nth(1)?.trim().trim_end_matches('.').parse().ok()?;
+            active_pages = line
+                .split(':')
+                .nth(1)?
+                .trim()
+                .trim_end_matches('.')
+                .parse()
+                .ok()?;
         } else if line.contains("Pages inactive:") {
-            inactive_pages = line.split(':').nth(1)?.trim().trim_end_matches('.').parse().ok()?;
+            inactive_pages = line
+                .split(':')
+                .nth(1)?
+                .trim()
+                .trim_end_matches('.')
+                .parse()
+                .ok()?;
         } else if line.contains("Pages wired down:") {
-            wired_pages = line.split(':').nth(1)?.trim().trim_end_matches('.').parse().ok()?;
+            wired_pages = line
+                .split(':')
+                .nth(1)?
+                .trim()
+                .trim_end_matches('.')
+                .parse()
+                .ok()?;
         }
     }
     let used_pages = active_pages + wired_pages + (inactive_pages / 2);
@@ -314,7 +362,11 @@ fn read_memory_info_impl() -> Option<(u64, u64, u64)> {
 #[cfg(target_os = "windows")]
 fn read_memory_info_impl() -> Option<(u64, u64, u64)> {
     // Fallback: return dummy values; real impl would use GlobalMemoryStatusEx via winapi
-    Some((16 * 1024 * 1024 * 1024, 8 * 1024 * 1024 * 1024, 8 * 1024 * 1024 * 1024))
+    Some((
+        16 * 1024 * 1024 * 1024,
+        8 * 1024 * 1024 * 1024,
+        8 * 1024 * 1024 * 1024,
+    ))
 }
 
 // ── 系统负载（load average） ──
@@ -325,7 +377,10 @@ fn read_memory_info_impl() -> Option<(u64, u64, u64)> {
 #[cfg(target_os = "linux")]
 fn read_load_average() -> Option<(f64, f64, f64)> {
     let mut s = String::new();
-    File::open("/proc/loadavg").ok()?.read_to_string(&mut s).ok()?;
+    File::open("/proc/loadavg")
+        .ok()?
+        .read_to_string(&mut s)
+        .ok()?;
     let first = s.lines().next()?;
     let mut parts = first.split_whitespace();
     let l1: f64 = parts.next()?.parse().ok()?;
@@ -371,13 +426,19 @@ fn read_all_disk_usage() -> Vec<(String, u64, u64)> {
     // 收集通过基础过滤的行
     let mut rows: Vec<(String, String, u64, u64)> = Vec::new();
     for (idx, line) in out.lines().enumerate() {
-        if idx == 0 { continue; }
+        if idx == 0 {
+            continue;
+        }
         let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() < 6 { continue; }
+        if parts.len() < 6 {
+            continue;
+        }
         let fs = parts[0];
         #[cfg(target_os = "macos")]
         {
-            if !fs.starts_with("/dev/disk") { continue; }
+            if !fs.starts_with("/dev/disk") {
+                continue;
+            }
         }
         #[cfg(target_os = "linux")]
         {
@@ -394,8 +455,14 @@ fn read_all_disk_usage() -> Vec<(String, u64, u64)> {
                 continue;
             }
         }
-        let total_kb = match parts[1].parse::<u64>() { Ok(n) => n, Err(_) => continue };
-        let used_kb  = match parts[2].parse::<u64>() { Ok(n) => n, Err(_) => continue };
+        let total_kb = match parts[1].parse::<u64>() {
+            Ok(n) => n,
+            Err(_) => continue,
+        };
+        let used_kb = match parts[2].parse::<u64>() {
+            Ok(n) => n,
+            Err(_) => continue,
+        };
         let mount = parts.last().unwrap_or(&"/").to_string();
         rows.push((fs.to_string(), mount, total_kb, used_kb));
     }
@@ -407,11 +474,13 @@ fn read_all_disk_usage() -> Vec<(String, u64, u64)> {
         let family = disk_family(fs.as_str());
         let total_bytes = total_kb * 1024;
         // 容量阈值过滤：忽略 dmg / 模拟器 / 小数据盘
-        if total_bytes < MIN_DISK_BYTES { continue; }
+        if total_bytes < MIN_DISK_BYTES {
+            continue;
+        }
 
-        let entry = by_disk.entry(family).or_insert_with(|| {
-            (mount.clone(), total_kb, used_kb)
-        });
+        let entry = by_disk
+            .entry(family)
+            .or_insert_with(|| (mount.clone(), total_kb, used_kb));
         if mount == "/" {
             entry.0 = mount;
             entry.1 = total_kb;
@@ -423,12 +492,17 @@ fn read_all_disk_usage() -> Vec<(String, u64, u64)> {
         }
     }
 
-    let mut result: Vec<(String, u64, u64)> = by_disk.into_iter()
+    let mut result: Vec<(String, u64, u64)> = by_disk
+        .into_iter()
         .map(|(_, (m, t, u))| (m, t * 1024, u * 1024))
         .collect();
     result.sort_by(|a, b| {
-        if a.0 == "/" { return std::cmp::Ordering::Less; }
-        if b.0 == "/" { return std::cmp::Ordering::Greater; }
+        if a.0 == "/" {
+            return std::cmp::Ordering::Less;
+        }
+        if b.0 == "/" {
+            return std::cmp::Ordering::Greater;
+        }
         a.0.cmp(&b.0)
     });
     result
@@ -452,14 +526,24 @@ fn read_all_disks_raw() -> Vec<(String, String, u64, u64)> {
     let out = String::from_utf8_lossy(&output.stdout);
     let mut rows: Vec<(String, String, u64, u64)> = Vec::new();
     for (i, line) in out.lines().enumerate() {
-        if i == 0 { continue; } // 跳过 Filesystem 标题行
+        if i == 0 {
+            continue;
+        } // 跳过 Filesystem 标题行
         let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() < 6 { continue; }
+        if parts.len() < 6 {
+            continue;
+        }
         let fs = parts[0];
         // 跳过 tmpfs / devtmpfs / overlay / squashfs 等明显非真实存储的伪 FS
         // 但保留 LVM / sd / nvme / loop（loop 在容器里常见）
-        let total_kb = match parts[1].parse::<u64>() { Ok(n) => n, Err(_) => continue };
-        let used_kb  = match parts[2].parse::<u64>() { Ok(n) => n, Err(_) => continue };
+        let total_kb = match parts[1].parse::<u64>() {
+            Ok(n) => n,
+            Err(_) => continue,
+        };
+        let used_kb = match parts[2].parse::<u64>() {
+            Ok(n) => n,
+            Err(_) => continue,
+        };
         let mount = parts.last().unwrap_or(&"/").to_string();
         rows.push((fs.to_string(), mount, total_kb, used_kb));
     }
@@ -467,7 +551,9 @@ fn read_all_disks_raw() -> Vec<(String, String, u64, u64)> {
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-fn read_all_disks_raw() -> Vec<(String, String, u64, u64)> { Vec::new() }
+fn read_all_disks_raw() -> Vec<(String, String, u64, u64)> {
+    Vec::new()
+}
 
 /// 把块设备名归一化为"物理磁盘族"标识：
 /// - `/dev/disk3s5` → `disk3` （去掉 `s[0-9]+` 后缀；APFS volume）
@@ -489,7 +575,8 @@ fn disk_family(fs: &str) -> String {
         s.to_string()
     };
     // Linux: 去掉末尾纯数字部分（sda1 → sda）
-    let family: String = s.chars()
+    let family: String = s
+        .chars()
         .take_while(|c| c.is_ascii_alphanumeric())
         .collect();
     family
@@ -510,39 +597,55 @@ fn strip_apfs_suffixes(s: &str) -> Option<String> {
         }
         break;
     }
-    if changed { Some(cur) } else { None }
+    if changed {
+        Some(cur)
+    } else {
+        None
+    }
 }
 
 #[cfg(target_os = "windows")]
 fn read_all_disk_usage() -> Vec<(String, u64, u64)> {
     // Fallback: single synthetic disk
-    vec![("C:".to_string(),
-          100 * 1024 * 1024 * 1024,
-          50 * 1024 * 1024 * 1024)]
+    vec![(
+        "C:".to_string(),
+        100 * 1024 * 1024 * 1024,
+        50 * 1024 * 1024 * 1024,
+    )]
 }
 
 // ── Platform-agnostic uptime ──
-fn read_uptime() -> Option<f64> { read_uptime_impl() }
+fn read_uptime() -> Option<f64> {
+    read_uptime_impl()
+}
 
 #[cfg(target_os = "linux")]
 fn read_uptime_impl() -> Option<f64> {
     let mut s = String::new();
-    File::open("/proc/uptime").ok()?.read_to_string(&mut s).ok()?;
+    File::open("/proc/uptime")
+        .ok()?
+        .read_to_string(&mut s)
+        .ok()?;
     s.split_whitespace().next()?.parse::<f64>().ok()
 }
 
 #[cfg(target_os = "macos")]
 fn read_uptime_impl() -> Option<f64> {
     // Get boot time via sysctl, compute uptime
-    let output = Command::new("sysctl").args(["-n", "kern.boottime"]).output().ok()?;
+    let output = Command::new("sysctl")
+        .args(["-n", "kern.boottime"])
+        .output()
+        .ok()?;
     let out = String::from_utf8_lossy(&output.stdout);
     // Format: { sec = 1234567890, usec = 123456 } Fri May  1 12:00:00 2026
-    let boot_secs = out.split("sec = ")
+    let boot_secs = out
+        .split("sec = ")
         .nth(1)?
         .split(',')
         .next()?
         .trim()
-        .parse::<u64>().ok()?;
+        .parse::<u64>()
+        .ok()?;
     let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?;
     Some(now.as_secs().saturating_sub(boot_secs) as f64)
 }
@@ -553,8 +656,12 @@ fn read_uptime_impl() -> Option<f64> {
 }
 
 // ── Platform-agnostic network I/O ──
-async fn read_network_rx_mbps() -> Option<f64> { read_net_rx_impl().await }
-async fn read_network_tx_mbps() -> Option<f64> { read_net_tx_impl().await }
+async fn read_network_rx_mbps() -> Option<f64> {
+    read_net_rx_impl().await
+}
+async fn read_network_tx_mbps() -> Option<f64> {
+    read_net_tx_impl().await
+}
 
 #[cfg(target_os = "linux")]
 async fn read_net_rx_impl() -> Option<f64> {
@@ -575,7 +682,10 @@ async fn read_net_tx_impl() -> Option<f64> {
 #[cfg(target_os = "linux")]
 fn read_net_dev_bytes() -> Option<(u64, u64)> {
     let mut s = String::new();
-    File::open("/proc/net/dev").ok()?.read_to_string(&mut s).ok()?;
+    File::open("/proc/net/dev")
+        .ok()?
+        .read_to_string(&mut s)
+        .ok()?;
     let mut rx_total = 0u64;
     let mut tx_total = 0u64;
     for line in s.lines().skip(2) {
@@ -615,17 +725,27 @@ fn read_netstat_bytes() -> Option<(u64, u64)> {
         let parts: Vec<&str> = line.split_whitespace().collect();
         if parts.len() >= 10 {
             // netstat -ib format: Name Mtu Network Address Ipkts Ierrs Opkts Oerrs Coll
-            rx += parts.get(4).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
-            tx += parts.get(6).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
+            rx += parts
+                .get(4)
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(0);
+            tx += parts
+                .get(6)
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(0);
         }
     }
     Some((rx, tx))
 }
 
 #[cfg(target_os = "windows")]
-async fn read_net_rx_impl() -> Option<f64> { Some(0.0) }
+async fn read_net_rx_impl() -> Option<f64> {
+    Some(0.0)
+}
 #[cfg(target_os = "windows")]
-async fn read_net_tx_impl() -> Option<f64> { Some(0.0) }
+async fn read_net_tx_impl() -> Option<f64> {
+    Some(0.0)
+}
 
 // ── 自动检测本机对外 IP ──
 //
@@ -653,7 +773,9 @@ fn detect_outbound_ip() -> Option<IpAddr> {
 fn detect_ipv4_via_ifconfig() -> Option<IpAddr> {
     // macOS / Linux: parse `ifconfig` output.  Cheap heuristic.
     let output = std::process::Command::new("ifconfig").output().ok()?;
-    if !output.status.success() { return None; }
+    if !output.status.success() {
+        return None;
+    }
     let out = String::from_utf8_lossy(&output.stdout);
     let mut current_name = String::new();
     let mut current_ips: Vec<Ipv4Addr> = Vec::new();
@@ -696,7 +818,8 @@ fn detect_ipv4_via_ifconfig() -> Option<IpAddr> {
 fn is_virtual_interface(name: &str) -> bool {
     let n = name.to_ascii_lowercase();
     // Loopback, virtual bridges, VPN tunnels, AWDL, etc.
-    n == "lo0" || n == "lo"
+    n == "lo0"
+        || n == "lo"
         || n.starts_with("awdl")
         || n.starts_with("llw")
         || n.starts_with("utun")
@@ -740,7 +863,9 @@ fn detect_outbound_ip_cached() -> Option<IpAddr> {
     ),
     security(("access_token" = [])),
 )]
-pub async fn media_server_list(State(state): State<AppState>) -> Result<Json<ApiResult<Vec<MediaServer>>>, AppError> {
+pub async fn media_server_list(
+    State(state): State<AppState>,
+) -> Result<Json<ApiResult<Vec<MediaServer>>>, AppError> {
     let list = list_media_servers(&state.pool).await?;
     Ok(Json(ApiResult::success(list)))
 }
@@ -788,7 +913,9 @@ pub async fn media_server_one(
     Path(id): Path<String>,
 ) -> Result<Json<ApiResult<MediaServer>>, AppError> {
     let one = get_media_server_by_id(&state.pool, &id).await?;
-    let one = one.ok_or_else(|| crate::error::AppError::business(crate::error::ErrorCode::Error404, "流媒体不存在"))?;
+    let one = one.ok_or_else(|| {
+        crate::error::AppError::business(crate::error::ErrorCode::Error404, "流媒体不存在")
+    })?;
     Ok(Json(ApiResult::success(one)))
 }
 
@@ -816,7 +943,9 @@ pub async fn media_server_one(
     ),
     security(("access_token" = [])),
 )]
-pub async fn system_config_info(State(state): State<AppState>) -> Json<ApiResult<serde_json::Value>> {
+pub async fn system_config_info(
+    State(state): State<AppState>,
+) -> Json<ApiResult<serde_json::Value>> {
     let cfg = &state.config;
 
     // SIP config: 用前端 dialog 期望的字段命名
@@ -824,7 +953,9 @@ pub async fn system_config_info(State(state): State<AppState>) -> Json<ApiResult
         // 优先级：sdp_ip > stream_ip > ip。
         // 如果 `ip` 是 "0.0.0.0"（"绑定所有网卡"占位符）且没有 sdp_ip/stream_ip
         // 配置，自动检测本机对外 IP。
-        let show_ip = s.sdp_ip.clone()
+        let show_ip = s
+            .sdp_ip
+            .clone()
             .or_else(|| s.stream_ip.clone())
             .or_else(|| {
                 if s.ip == "0.0.0.0" {
@@ -856,16 +987,20 @@ pub async fn system_config_info(State(state): State<AppState>) -> Json<ApiResult
 
     // ZLM config (保留原结构)
     let zlm_json = if let Some(z) = &cfg.zlm {
-        let servers: Vec<_> = z.servers.iter().map(|sv| {
-            json!({
-                "id": sv.id,
-                "ip": sv.ip,
-                // 与 /api/server/media_server/list 保持一致的 camelCase
-                "httpPort": sv.http_port,
-                "httpsPort": sv.https_port,
-                "enabled": sv.enabled,
+        let servers: Vec<_> = z
+            .servers
+            .iter()
+            .map(|sv| {
+                json!({
+                    "id": sv.id,
+                    "ip": sv.ip,
+                    // 与 /api/server/media_server/list 保持一致的 camelCase
+                    "httpPort": sv.http_port,
+                    "httpsPort": sv.https_port,
+                    "enabled": sv.enabled,
+                })
             })
-        }).collect();
+            .collect();
         json!({
             "servers": servers,
             "streamTimeout": z.stream_timeout,
@@ -879,16 +1014,28 @@ pub async fn system_config_info(State(state): State<AppState>) -> Json<ApiResult
     // Database type from URL
     let db_type = {
         let url = &cfg.database.url;
-        if url.starts_with("postgres") { "postgres" } else if url.starts_with("mysql") { "mysql" } else { "unknown" }
+        if url.starts_with("postgres") {
+            "postgres"
+        } else if url.starts_with("mysql") {
+            "mysql"
+        } else {
+            "unknown"
+        }
     };
 
     // addOn.serverId: 优先用 user_settings.server_id；兜底取 SIP device_id 末 8 位
-    let add_on_server_id = cfg.user_settings.as_ref()
+    let add_on_server_id = cfg
+        .user_settings
+        .as_ref()
         .and_then(|u| u.server_id.clone())
         .or_else(|| {
             cfg.sip.as_ref().map(|s| {
                 let id = &s.device_id;
-                if id.len() >= 8 { id[id.len() - 8..].to_string() } else { id.clone() }
+                if id.len() >= 8 {
+                    id[id.len() - 8..].to_string()
+                } else {
+                    id.clone()
+                }
             })
         })
         .unwrap_or_else(|| "gbserver".to_string());
@@ -914,11 +1061,11 @@ pub async fn system_config_info(State(state): State<AppState>) -> Json<ApiResult
 const WINDOW_SIZE: usize = 30; // 30 × 2s = 60s 的滚动窗口
 
 struct SampleBuffers {
-    cpu: Mutex<VecDeque<(String, f64)>>,  // (time, fraction 0.0-1.0)
+    cpu: Mutex<VecDeque<(String, f64)>>, // (time, fraction 0.0-1.0)
     mem: Mutex<VecDeque<(String, f64)>>,
-    net: Mutex<VecDeque<(String, f64, f64)>>,  // (time, out_mbps, in_mbps)
-    load: Mutex<VecDeque<(String, f64)>>,      // (time, load1)
-    disk: Mutex<VecDeque<(String, f64)>>,      // (time, max_used_pct)
+    net: Mutex<VecDeque<(String, f64, f64)>>, // (time, out_mbps, in_mbps)
+    load: Mutex<VecDeque<(String, f64)>>,     // (time, load1)
+    disk: Mutex<VecDeque<(String, f64)>>,     // (time, max_used_pct)
 }
 
 static BUFFERS: OnceLock<SampleBuffers> = OnceLock::new();
@@ -970,8 +1117,14 @@ pub async fn system_info(State(state): State<AppState>) -> Json<ApiResult<serde_
 
     // Memory: 0.0-1.0 fraction
     let mem_pct = if let Some((total, _avail, used)) = read_memory_info() {
-        if total > 0 { (used as f64 / total as f64) * 100.0 } else { 50.0 }
-    } else { 50.0 };
+        if total > 0 {
+            (used as f64 / total as f64) * 100.0
+        } else {
+            50.0
+        }
+    } else {
+        50.0
+    };
     let mem_fraction = mem_pct / 100.0;
 
     // Disk: list of [{path, free, use}] in GB, one row per real mount point.
@@ -995,24 +1148,34 @@ pub async fn system_info(State(state): State<AppState>) -> Json<ApiResult<serde_
             "used": 50.0 * 1024.0 * 1024.0 * 1024.0_f64,
         })]
     } else {
-        disks.iter().map(|(path, total, used)| {
-            let total_gb = *total as f64 / (1024.0 * 1024.0 * 1024.0);
-            let used_gb  = *used  as f64 / (1024.0 * 1024.0 * 1024.0);
-            let free_gb  = (total_gb - used_gb).max(0.0);
-            serde_json::json!({
-                "path": path,
-                "free": free_gb,
-                "use":  used_gb,
-                "total": *total as f64,
-                "used":  *used as f64,
+        disks
+            .iter()
+            .map(|(path, total, used)| {
+                let total_gb = *total as f64 / (1024.0 * 1024.0 * 1024.0);
+                let used_gb = *used as f64 / (1024.0 * 1024.0 * 1024.0);
+                let free_gb = (total_gb - used_gb).max(0.0);
+                serde_json::json!({
+                    "path": path,
+                    "free": free_gb,
+                    "use":  used_gb,
+                    "total": *total as f64,
+                    "used":  *used as f64,
+                })
             })
-        }).collect()
+            .collect()
     };
     // disk_usage: report the highest usage% across all mounts for the
     // backward-compat scalar field.
-    let disk_pct = disks.iter().filter_map(|(_, total, used)| {
-        if *total > 0 { Some((*used as f64 / *total as f64) * 100.0) } else { None }
-    }).fold(0.0_f64, f64::max);
+    let disk_pct = disks
+        .iter()
+        .filter_map(|(_, total, used)| {
+            if *total > 0 {
+                Some((*used as f64 / *total as f64) * 100.0)
+            } else {
+                None
+            }
+        })
+        .fold(0.0_f64, f64::max);
 
     // Network I/O: out=upload (tx), in=download (rx)
     let net_rx_mbps = read_network_rx_mbps().await.unwrap_or(0.0);
@@ -1026,26 +1189,49 @@ pub async fn system_info(State(state): State<AppState>) -> Json<ApiResult<serde_
     let bufs = buffers();
     push_truncated(&mut bufs.cpu.lock().unwrap(), (now.clone(), cpu_fraction));
     push_truncated(&mut bufs.mem.lock().unwrap(), (now.clone(), mem_fraction));
-    push_truncated(&mut bufs.net.lock().unwrap(), (now.clone(), net_tx_mbps, net_rx_mbps));
+    push_truncated(
+        &mut bufs.net.lock().unwrap(),
+        (now.clone(), net_tx_mbps, net_rx_mbps),
+    );
     push_truncated(
         &mut bufs.load.lock().unwrap(),
         (now.clone(), load_avg.map(|l| l.0).unwrap_or(0.0)),
     );
     push_truncated(&mut bufs.disk.lock().unwrap(), (now.clone(), disk_pct));
 
-    let cpu_data: Vec<serde_json::Value> = bufs.cpu.lock().unwrap().iter()
+    let cpu_data: Vec<serde_json::Value> = bufs
+        .cpu
+        .lock()
+        .unwrap()
+        .iter()
         .map(|(t, v)| serde_json::json!({"time": t, "data": v}))
         .collect();
-    let mem_data: Vec<serde_json::Value> = bufs.mem.lock().unwrap().iter()
+    let mem_data: Vec<serde_json::Value> = bufs
+        .mem
+        .lock()
+        .unwrap()
+        .iter()
         .map(|(t, v)| serde_json::json!({"time": t, "data": v}))
         .collect();
-    let net_data: Vec<serde_json::Value> = bufs.net.lock().unwrap().iter()
+    let net_data: Vec<serde_json::Value> = bufs
+        .net
+        .lock()
+        .unwrap()
+        .iter()
         .map(|(t, out, in_)| serde_json::json!({"time": t, "out": out, "in": in_}))
         .collect();
-    let load_data: Vec<serde_json::Value> = bufs.load.lock().unwrap().iter()
+    let load_data: Vec<serde_json::Value> = bufs
+        .load
+        .lock()
+        .unwrap()
+        .iter()
         .map(|(t, v)| serde_json::json!({"time": t, "data": v}))
         .collect();
-    let disk_history: Vec<serde_json::Value> = bufs.disk.lock().unwrap().iter()
+    let disk_history: Vec<serde_json::Value> = bufs
+        .disk
+        .lock()
+        .unwrap()
+        .iter()
         .map(|(t, v)| serde_json::json!({"time": t, "data": v}))
         .collect();
 
@@ -1070,7 +1256,9 @@ pub async fn system_info(State(state): State<AppState>) -> Json<ApiResult<serde_
     // 不能脱敏。这只是给登录后的管理员看的，普通用户没有 access-token。
     let sip_cfg = state.config.sip.as_ref().map(|sip| {
         // username 配置为空时降级为 device_id（兼容旧 config）
-        let username = sip.username.clone()
+        let username = sip
+            .username
+            .clone()
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| sip.device_id.clone());
         serde_json::json!({
@@ -1124,11 +1312,17 @@ pub async fn system_info(State(state): State<AppState>) -> Json<ApiResult<serde_
         "tx": net_tx_mbps,
     }]);
 
-    let total_devices = db::count_devices(&state.pool, None, None).await.unwrap_or(0);
-    let online_devices = db::count_devices(&state.pool, None, Some(true)).await.unwrap_or(0);
+    let total_devices = db::count_devices(&state.pool, None, None)
+        .await
+        .unwrap_or(0);
+    let online_devices = db::count_devices(&state.pool, None, Some(true))
+        .await
+        .unwrap_or(0);
     let total_channels = db::count_all_channels(&state.pool).await.unwrap_or(0);
     let online_channels = db::count_online_channels(&state.pool).await.unwrap_or(0);
-    let media_server_count = crate::db::media_server::count_all(&state.pool).await.unwrap_or(0);
+    let media_server_count = crate::db::media_server::count_all(&state.pool)
+        .await
+        .unwrap_or(0);
 
     let disk_all_data: Vec<serde_json::Value> = disks_raw.iter()
         .map(|(fs, mount, total_kb, used_kb)| {
@@ -1246,9 +1440,15 @@ pub async fn server_info(State(_state): State<AppState>) -> Json<ApiResult<serde
     use std::sync::OnceLock;
     static START_TIME: OnceLock<SystemTime> = OnceLock::new();
     let start = START_TIME.get_or_init(|| SystemTime::now());
-    let start_ts = start.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+    let start_ts = start
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
     // Simple uptime calculation from start time
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
     let uptime = now.saturating_sub(start_ts);
     Json(ApiResult::success(serde_json::json!({
         "服务器": {
@@ -1285,18 +1485,28 @@ pub async fn server_info(State(_state): State<AppState>) -> Json<ApiResult<serde
 )]
 pub async fn resource_info(State(state): State<AppState>) -> Json<ApiResult<serde_json::Value>> {
     // Device / channel counts from DB
-    let total_devices = db::count_devices(&state.pool, None, None).await.unwrap_or(0);
-    let online_devices = db::count_devices(&state.pool, None, Some(true)).await.unwrap_or(0);
+    let total_devices = db::count_devices(&state.pool, None, None)
+        .await
+        .unwrap_or(0);
+    let online_devices = db::count_devices(&state.pool, None, Some(true))
+        .await
+        .unwrap_or(0);
     let total_channels = db::count_all_channels(&state.pool).await.unwrap_or(0);
     let online_channels = db::count_online_channels(&state.pool).await.unwrap_or(0);
 
     // Stream push / proxy counts
-    let push_total = db::stream_push::count_all(&state.pool, None, None, None).await.unwrap_or(0);
+    let push_total = db::stream_push::count_all(&state.pool, None, None, None)
+        .await
+        .unwrap_or(0);
     let push_online = db::stream_push::count_all(&state.pool, None, Some(true), None)
         .await
         .unwrap_or(0);
-    let proxy_total = db::stream_proxy::count_all(&state.pool, None, None, None).await.unwrap_or(0);
-    let proxy_online = db::stream_proxy::count_all(&state.pool, None, Some(true), None).await.unwrap_or(0);
+    let proxy_total = db::stream_proxy::count_all(&state.pool, None, None, None)
+        .await
+        .unwrap_or(0);
+    let proxy_online = db::stream_proxy::count_all(&state.pool, None, Some(true), None)
+        .await
+        .unwrap_or(0);
 
     let data = serde_json::json!({
         "device":  {"total": total_devices,  "online": online_devices},
@@ -1358,11 +1568,10 @@ pub async fn media_server_check(
         ),
         None => None,
     };
-    let ip = q
-        .ip
-        .clone()
-        .or_else(|| stored.as_ref().and_then(|m| m.ip.clone()))
-        .unwrap_or_else(|| "127.0.0.1".to_string());
+    let ip =
+        q.ip.clone()
+            .or_else(|| stored.as_ref().and_then(|m| m.ip.clone()))
+            .unwrap_or_else(|| "127.0.0.1".to_string());
     let http_port = q
         .port
         .or_else(|| stored.as_ref().and_then(|m| m.http_port))
@@ -1430,14 +1639,12 @@ pub async fn media_server_check(
         {
             obj.insert(
                 "streamIp".to_string(),
-                json!(
-                    state
-                        .config
-                        .zlm
-                        .as_ref()
-                        .and_then(|cfg| cfg.servers.first().map(|sv| sv.ip.clone()))
-                        .unwrap_or_else(|| "127.0.0.1".to_string())
-                ),
+                json!(state
+                    .config
+                    .zlm
+                    .as_ref()
+                    .and_then(|cfg| cfg.servers.first().map(|sv| sv.ip.clone()))
+                    .unwrap_or_else(|| "127.0.0.1".to_string())),
             );
         }
     }
@@ -1482,11 +1689,7 @@ pub async fn media_server_record_check(
     State(state): State<AppState>,
     Query(q): Query<MediaServerRecordCheckQuery>,
 ) -> Json<ApiResult<serde_json::Value>> {
-    let reachable = state
-        .zlm_client
-        .as_ref()
-        .map(|_| true)
-        .unwrap_or(false);
+    let reachable = state.zlm_client.as_ref().map(|_| true).unwrap_or(false);
     Json(ApiResult::success(serde_json::json!({
         "success": reachable,
         "ip": q.ip,
@@ -1563,14 +1766,16 @@ pub async fn media_server_save(
     State(state): State<AppState>,
     Json(body): Json<MediaServerSaveBody>,
 ) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
-    let id = body.id.unwrap_or_else(|| format!("media_server_{}", chrono::Utc::now().timestamp_millis()));
+    let id = body
+        .id
+        .unwrap_or_else(|| format!("media_server_{}", chrono::Utc::now().timestamp_millis()));
     let ip = body.ip.unwrap_or_else(|| "127.0.0.1".to_string());
     let http_port = body.http_port.unwrap_or(8080);
     let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    
+
     // 检查是否已存在
     let existing = get_media_server_by_id(&state.pool, &id).await?;
-    
+
     if existing.is_some() {
         media_server::update(
             &state.pool,
@@ -1579,16 +1784,11 @@ pub async fn media_server_save(
             body.hook_ip.as_deref(),
             Some(http_port),
             &now,
-        ).await?;
+        )
+        .await?;
     } else {
         // 添加
-        media_server::add(
-            &state.pool,
-            &id,
-            &ip,
-            http_port,
-            &now,
-        ).await?;
+        media_server::add(&state.pool, &id, &ip, http_port, &now).await?;
     }
 
     #[cfg(feature = "postgres")]
@@ -1694,13 +1894,13 @@ pub async fn media_server_save(
     let auto_config = body.auto_config.unwrap_or(true);
     let mut zlm_hook_errors = Vec::new();
     if auto_config {
-        let client = state
-            .get_zlm_client(Some(&id))
-            .unwrap_or_else(|| std::sync::Arc::new(crate::zlm::ZlmClient::new(
+        let client = state.get_zlm_client(Some(&id)).unwrap_or_else(|| {
+            std::sync::Arc::new(crate::zlm::ZlmClient::new(
                 &ip,
                 http_port as u16,
                 body.secret.as_deref().unwrap_or_default(),
-            )));
+            ))
+        });
         zlm_hook_errors = configure_zlm_hooks(&state, &id, &client).await;
         // 保存即生效：rtc.externIP 变化后立刻下发并回读校验，
         // 否则要等下一轮健康检查（最长 10s，且节点已在线时不会重新推送配置）。
@@ -1720,7 +1920,7 @@ pub async fn media_server_save(
             }
         }
     }
-    
+
     Ok(Json(ApiResult::success(serde_json::json!({
         "id": id,
         "autoConfig": auto_config,
@@ -1753,12 +1953,7 @@ pub async fn media_server_delete(
     State(state): State<AppState>,
     Query(q): Query<MediaServerDeleteQuery>,
 ) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
-    let id = q
-        .id
-        .as_deref()
-        .unwrap_or("")
-        .trim()
-        .to_string();
+    let id = q.id.as_deref().unwrap_or("").trim().to_string();
     if id.is_empty() {
         return Err(AppError::business(ErrorCode::Error400, "缺少 id 参数"));
     }
@@ -1798,7 +1993,10 @@ pub async fn media_server_media_info(
     let app = q.app.as_deref().unwrap_or("");
     let stream = q.stream.as_deref().unwrap_or("");
     if app.is_empty() || stream.is_empty() {
-        return Err(AppError::business(ErrorCode::Error400, "缺少 app 或 stream 参数"));
+        return Err(AppError::business(
+            ErrorCode::Error400,
+            "缺少 app 或 stream 参数",
+        ));
     }
 
     // 选择 ZLM 客户端
@@ -1822,7 +2020,10 @@ pub async fn media_server_media_info(
             Ok(Json(ApiResult::success(value)))
         }
         Ok(None) => Ok(Json(ApiResult::success(serde_json::Value::Null))),
-        Err(e) => Err(AppError::business(ErrorCode::Error500, format!("ZLM 请求失败: {}", e))),
+        Err(e) => Err(AppError::business(
+            ErrorCode::Error500,
+            format!("ZLM 请求失败: {}", e),
+        )),
     }
 }
 
@@ -1874,7 +2075,10 @@ pub async fn media_server_load(
     // ZLM 不可达时每节点要等满客户端超时，接口整体线性变慢。
     let (gb_receive, gb_send) = match state.sip_server.as_ref() {
         Some(sip) => (
-            sip.invite_session_manager().get_active_sessions().await.len(),
+            sip.invite_session_manager()
+                .get_active_sessions()
+                .await
+                .len(),
             sip.send_rtp_manager().active_count(),
         ),
         None => (0, 0),
@@ -2081,11 +2285,26 @@ fn media_server_probe_fields(
             "streamIp".to_string(),
             json!(configs.get("general.streamip").cloned().unwrap_or_default()),
         ),
-        ("httpSSlPort".to_string(), json!(get_i32("http.sslport").unwrap_or(443))),
-        ("rtmpPort".to_string(), json!(get_i32("rtmp.port").unwrap_or(1935))),
-        ("rtmpSSlPort".to_string(), json!(get_i32("rtmp.sslport").unwrap_or(0))),
-        ("rtspPort".to_string(), json!(get_i32("rtsp.port").unwrap_or(554))),
-        ("rtspSSLPort".to_string(), json!(get_i32("rtsp.sslport").unwrap_or(0))),
+        (
+            "httpSSlPort".to_string(),
+            json!(get_i32("http.sslport").unwrap_or(443)),
+        ),
+        (
+            "rtmpPort".to_string(),
+            json!(get_i32("rtmp.port").unwrap_or(1935)),
+        ),
+        (
+            "rtmpSSlPort".to_string(),
+            json!(get_i32("rtmp.sslport").unwrap_or(0)),
+        ),
+        (
+            "rtspPort".to_string(),
+            json!(get_i32("rtsp.port").unwrap_or(554)),
+        ),
+        (
+            "rtspSSLPort".to_string(),
+            json!(get_i32("rtsp.sslport").unwrap_or(0)),
+        ),
         (
             "recordAssistPort".to_string(),
             json!(get_i32("record.port").unwrap_or(0)),
@@ -2109,10 +2328,7 @@ mod media_server_probe_tests {
             .collect()
     }
 
-    fn field<'a>(
-        fields: &'a [(String, serde_json::Value)],
-        name: &str,
-    ) -> &'a serde_json::Value {
+    fn field<'a>(fields: &'a [(String, serde_json::Value)], name: &str) -> &'a serde_json::Value {
         &fields
             .iter()
             .find(|(k, _)| k == name)
@@ -2253,7 +2469,9 @@ mod media_server_contract_tests {
             "enabled": false, "autoConfig": false
         }))
         .unwrap();
-        let _ = media_server_save(State(state.clone()), Json(body)).await.unwrap();
+        let _ = media_server_save(State(state.clone()), Json(body))
+            .await
+            .unwrap();
 
         let row = get_media_server_by_id(&state.pool, "ms-1")
             .await
@@ -2262,7 +2480,9 @@ mod media_server_contract_tests {
         assert_eq!(row.enabled, Some(false), "禁用状态必须落库");
 
         // 停用后不应出现在"在线可选节点"里（node 选择/负载均衡都会用它）
-        let online = media_server::list_online_servers(&state.pool).await.unwrap();
+        let online = media_server::list_online_servers(&state.pool)
+            .await
+            .unwrap();
         assert!(online.iter().all(|m| m.id != "ms-1"), "停用节点不该被选路");
     }
 
@@ -2328,14 +2548,20 @@ mod system_info_contract_tests {
         assert!(d["disk_usage"].is_number());
 
         // 「系统信息」页内存卡片：memory.total/used 是字节
-        assert!(d["memory"]["total"].is_number(), "memory.total 缺失 → 卡片恒 0%");
+        assert!(
+            d["memory"]["total"].is_number(),
+            "memory.total 缺失 → 卡片恒 0%"
+        );
         assert!(d["memory"]["used"].is_number());
         assert!(d["memory"]["free"].is_number());
         assert!(d["memory"]["mem"].is_array(), "memory.mem 是历史采样数组");
 
         // 磁盘卡片：total/used 字节；dashboard 柱状图用 use/free（GB）
         let disk0 = &d["disk"][0];
-        assert!(disk0["total"].is_number(), "disk[].total 缺失 → 磁盘卡片恒 0%");
+        assert!(
+            disk0["total"].is_number(),
+            "disk[].total 缺失 → 磁盘卡片恒 0%"
+        );
         assert!(disk0["used"].is_number());
         assert!(disk0["use"].is_number(), "dashboard 柱状图读 use(GB)");
 
@@ -2373,7 +2599,9 @@ mod system_info_contract_tests {
         assert_eq!(d["deviceOnline"], 1);
         assert_eq!(
             d["mediaServerCount"],
-            crate::db::media_server::count_all(&state.pool).await.unwrap()
+            crate::db::media_server::count_all(&state.pool)
+                .await
+                .unwrap()
         );
     }
 }
@@ -2423,7 +2651,9 @@ mod log_export_contract_tests {
             .to_str()
             .unwrap()
             .contains("gbserver-log-"));
-        let bytes = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
+        let bytes = axum::body::to_bytes(res.into_body(), 1 << 20)
+            .await
+            .unwrap();
         let text = String::from_utf8(bytes.to_vec()).unwrap();
         assert!(text.starts_with('\u{feff}'), "CSV 应带 UTF-8 BOM");
         assert!(text.contains("id,time,level,logger,thread,source,message"));

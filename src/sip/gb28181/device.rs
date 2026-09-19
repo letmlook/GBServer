@@ -1,10 +1,10 @@
 //! 设备注册/注销管理
 
+use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use chrono::{DateTime, Utc};
 
 #[derive(Debug, Clone)]
 pub struct Device {
@@ -114,7 +114,11 @@ impl DeviceManager {
     }
 
     pub async fn get_address(&self, device_id: &str) -> Option<SocketAddr> {
-        self.devices.read().await.get(device_id).and_then(|d| d.addr)
+        self.devices
+            .read()
+            .await
+            .get(device_id)
+            .and_then(|d| d.addr)
     }
 
     pub async fn set_online(&self, device_id: &str, online: bool) {
@@ -137,7 +141,9 @@ impl DeviceManager {
     }
 
     pub async fn list_online(&self) -> Vec<Device> {
-        self.devices.read().await
+        self.devices
+            .read()
+            .await
             .values()
             .filter(|d| d.online)
             .cloned()
@@ -152,7 +158,9 @@ impl DeviceManager {
         let now = Utc::now();
         let mut guard = self.devices.write().await;
         guard.retain(|_, d| {
-            if !d.online { return true; }
+            if !d.online {
+                return true;
+            }
             let elapsed = (now - d.keepalive_time).num_seconds();
             elapsed < timeout_secs as i64
         });

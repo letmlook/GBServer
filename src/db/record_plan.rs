@@ -1,9 +1,9 @@
 //! 录像计划表 gb_record_plan, gb_record_plan_item
 
 use serde::{Deserialize, Serialize};
+use sqlx::FromRow;
 #[cfg(feature = "postgres")]
 use sqlx::Row;
-use sqlx::FromRow;
 
 use super::Pool;
 
@@ -375,10 +375,12 @@ pub async fn update(
 pub async fn delete_by_id(pool: &Pool, id: i32) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
     {
-        let _ = sqlx::query("UPDATE gb_device_channel SET record_plan_id = NULL WHERE record_plan_id = ?")
-            .bind(id)
-            .execute(pool)
-            .await?;
+        let _ = sqlx::query(
+            "UPDATE gb_device_channel SET record_plan_id = NULL WHERE record_plan_id = ?",
+        )
+        .bind(id)
+        .execute(pool)
+        .await?;
         let _ = sqlx::query("DELETE FROM gb_record_plan_item WHERE plan_id = ?")
             .bind(id)
             .execute(pool)
@@ -391,10 +393,12 @@ pub async fn delete_by_id(pool: &Pool, id: i32) -> sqlx::Result<u64> {
     }
     #[cfg(feature = "postgres")]
     {
-        let _ = sqlx::query("UPDATE gb_device_channel SET record_plan_id = NULL WHERE record_plan_id = $1")
-            .bind(id)
-            .execute(pool)
-            .await?;
+        let _ = sqlx::query(
+            "UPDATE gb_device_channel SET record_plan_id = NULL WHERE record_plan_id = $1",
+        )
+        .bind(id)
+        .execute(pool)
+        .await?;
         let _ = sqlx::query("DELETE FROM gb_record_plan_item WHERE plan_id = $1")
             .bind(id)
             .execute(pool)
@@ -407,10 +411,12 @@ pub async fn delete_by_id(pool: &Pool, id: i32) -> sqlx::Result<u64> {
     }
     #[cfg(feature = "sqlite")]
     {
-        let _ = sqlx::query("UPDATE gb_device_channel SET record_plan_id = NULL WHERE record_plan_id = ?")
-            .bind(id)
-            .execute(pool)
-            .await?;
+        let _ = sqlx::query(
+            "UPDATE gb_device_channel SET record_plan_id = NULL WHERE record_plan_id = ?",
+        )
+        .bind(id)
+        .execute(pool)
+        .await?;
         let _ = sqlx::query("DELETE FROM gb_record_plan_item WHERE plan_id = ?")
             .bind(id)
             .execute(pool)
@@ -426,11 +432,7 @@ pub async fn delete_by_id(pool: &Pool, id: i32) -> sqlx::Result<u64> {
 /// 按**通道主键**（`gb_device_channel.id`，即前端里的 `gbId`）关联/取消关联。
 ///
 /// `plan_id = None` 表示取消关联。
-pub async fn link_channel(
-    pool: &Pool,
-    channel_id: i64,
-    plan_id: Option<i64>,
-) -> sqlx::Result<u64> {
+pub async fn link_channel(pool: &Pool, channel_id: i64, plan_id: Option<i64>) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
     let r = sqlx::query("UPDATE gb_device_channel SET record_plan_id = ? WHERE id = ?")
         .bind(plan_id.map(|x| x as i32))
@@ -550,20 +552,23 @@ pub async fn all_channel_ids(pool: &Pool) -> sqlx::Result<Vec<i64>> {
 /// 清掉某个计划下所有通道的关联。
 pub async fn unlink_all_channels(pool: &Pool, plan_id: i64) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
-    let r = sqlx::query("UPDATE gb_device_channel SET record_plan_id = NULL WHERE record_plan_id = ?")
-        .bind(plan_id as i32)
-        .execute(pool)
-        .await?;
+    let r =
+        sqlx::query("UPDATE gb_device_channel SET record_plan_id = NULL WHERE record_plan_id = ?")
+            .bind(plan_id as i32)
+            .execute(pool)
+            .await?;
     #[cfg(feature = "postgres")]
-    let r = sqlx::query("UPDATE gb_device_channel SET record_plan_id = NULL WHERE record_plan_id = $1")
-        .bind(plan_id as i32)
-        .execute(pool)
-        .await?;
+    let r =
+        sqlx::query("UPDATE gb_device_channel SET record_plan_id = NULL WHERE record_plan_id = $1")
+            .bind(plan_id as i32)
+            .execute(pool)
+            .await?;
     #[cfg(feature = "sqlite")]
-    let r = sqlx::query("UPDATE gb_device_channel SET record_plan_id = NULL WHERE record_plan_id = ?")
-        .bind(plan_id as i32)
-        .execute(pool)
-        .await?;
+    let r =
+        sqlx::query("UPDATE gb_device_channel SET record_plan_id = NULL WHERE record_plan_id = ?")
+            .bind(plan_id as i32)
+            .execute(pool)
+            .await?;
     Ok(r.rows_affected())
 }
 
@@ -689,12 +694,17 @@ mod plan_db_tests {
     #[test]
     fn test_item_validation_rejects_impossible_windows() {
         assert!(payload(600, 660, 1).validate().is_none());
-        let err = payload(660, 600, 1).validate().expect("start>stop 必须报错");
+        let err = payload(660, 600, 1)
+            .validate()
+            .expect("start>stop 必须报错");
         assert!(err.contains("大于"), "{err}");
         assert!(payload(0, 1440, 7).validate().is_none(), "stop=1440 合法");
         assert!(payload(-1, 60, 1).validate().is_some(), "负 start 非法");
         assert!(payload(0, 1441, 1).validate().is_some(), "超过 1440 非法");
-        assert!(payload(0, 60, 0).validate().is_some(), "weekDay=0 非法（ISO 1..7）");
+        assert!(
+            payload(0, 60, 0).validate().is_some(),
+            "weekDay=0 非法（ISO 1..7）"
+        );
         assert!(payload(0, 60, 8).validate().is_some(), "weekDay=8 非法");
     }
 
@@ -765,7 +775,12 @@ mod plan_db_tests {
         assert!(channel_exists(&pool, c1).await.unwrap());
         assert!(!channel_exists(&pool, 9999).await.unwrap());
 
-        assert_eq!(channel_id_by_gb_id(&pool, "34020000001310000002").await.unwrap(), Some(c2));
+        assert_eq!(
+            channel_id_by_gb_id(&pool, "34020000001310000002")
+                .await
+                .unwrap(),
+            Some(c2)
+        );
         assert_eq!(channel_id_by_gb_id(&pool, "nope").await.unwrap(), None);
 
         let all = all_channel_ids(&pool).await.unwrap();
@@ -794,6 +809,9 @@ mod plan_db_tests {
         assert_eq!(hit.len(), 1);
         assert_eq!(hit[0].name, "机房全天");
         assert_eq!(count_all(&pool, Some("机房")).await.unwrap(), 1);
-        assert!(list_paged(&pool, 1, 10, Some("不存在")).await.unwrap().is_empty());
+        assert!(list_paged(&pool, 1, 10, Some("不存在"))
+            .await
+            .unwrap()
+            .is_empty());
     }
 }

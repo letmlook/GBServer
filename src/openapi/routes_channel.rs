@@ -14,56 +14,124 @@ pub fn routes() -> DocumentedRoutes {
     let mut acc = RoutesAccumulator::default();
     acc.add(routes!(crate::handlers::common_channel::camera_list_ids));
     acc.add(routes!(crate::handlers::common_channel::channel_add));
-    acc.add(routes!(crate::handlers::common_channel::channel_broadcast_start));
-    acc.add(routes!(crate::handlers::common_channel::channel_broadcast_stop));
+    acc.add(routes!(
+        crate::handlers::common_channel::channel_broadcast_start
+    ));
+    acc.add(routes!(
+        crate::handlers::common_channel::channel_broadcast_stop
+    ));
     acc.add(routes!(crate::handlers::common_channel::channel_delete));
     acc.add(routes!(crate::handlers::common_channel::channel_group_add));
-    acc.add(routes!(crate::handlers::common_channel::channel_group_delete));
+    acc.add(routes!(
+        crate::handlers::common_channel::channel_group_delete
+    ));
     acc.add(routes!(crate::handlers::common_channel::channel_one));
     acc.add(routes!(crate::handlers::common_channel::channel_play));
     acc.add(routes!(crate::handlers::common_channel::channel_play_stop));
-    acc.add(routes!(crate::handlers::common_channel::channel_playback_pause));
-    acc.add(routes!(crate::handlers::common_channel::channel_playback_query));
-    acc.add(routes!(crate::handlers::common_channel::channel_playback_resume));
-    acc.add(routes!(crate::handlers::common_channel::channel_playback_seek));
-    acc.add(routes!(crate::handlers::common_channel::channel_playback_speed));
-    acc.add(routes!(crate::handlers::common_channel::channel_playback_start));
-    acc.add(routes!(crate::handlers::common_channel::channel_playback_stop));
+    acc.add(routes!(
+        crate::handlers::common_channel::channel_playback_pause
+    ));
+    acc.add(routes!(
+        crate::handlers::common_channel::channel_playback_query
+    ));
+    acc.add(routes!(
+        crate::handlers::common_channel::channel_playback_resume
+    ));
+    acc.add(routes!(
+        crate::handlers::common_channel::channel_playback_seek
+    ));
+    acc.add(routes!(
+        crate::handlers::common_channel::channel_playback_speed
+    ));
+    acc.add(routes!(
+        crate::handlers::common_channel::channel_playback_start
+    ));
+    acc.add(routes!(
+        crate::handlers::common_channel::channel_playback_stop
+    ));
     acc.add(routes!(crate::handlers::common_channel::channel_region_add));
-    acc.add(routes!(crate::handlers::common_channel::channel_region_delete));
+    acc.add(routes!(
+        crate::handlers::common_channel::channel_region_delete
+    ));
     acc.add(routes!(crate::handlers::common_channel::channel_reset));
     acc.add(routes!(crate::handlers::common_channel::channel_talk_start));
     acc.add(routes!(crate::handlers::common_channel::channel_talk_stop));
     acc.add(routes!(crate::handlers::common_channel::channel_update));
     acc.add(routes!(crate::handlers::common_channel::civilcode_list));
-    acc.add(routes!(crate::handlers::common_channel::clear_unusual_civilcode));
-    acc.add(routes!(crate::handlers::common_channel::clear_unusual_parent));
+    acc.add(routes!(
+        crate::handlers::common_channel::clear_unusual_civilcode
+    ));
+    acc.add(routes!(
+        crate::handlers::common_channel::clear_unusual_parent
+    ));
     acc.add(routes!(crate::handlers::common_channel::device_group_add));
-    acc.add(routes!(crate::handlers::common_channel::device_group_delete));
+    acc.add(routes!(
+        crate::handlers::common_channel::device_group_delete
+    ));
     acc.add(routes!(crate::handlers::common_channel::device_region_add));
-    acc.add(routes!(crate::handlers::common_channel::device_region_delete));
-    acc.add(routes!(crate::handlers::common_channel::front_end_auxiliary));
-    acc.add(routes!(crate::handlers::common_channel::front_end_drag_zoom_in));
-    acc.add(routes!(crate::handlers::common_channel::front_end_drag_zoom_out));
+    acc.add(routes!(
+        crate::handlers::common_channel::device_region_delete
+    ));
+    acc.add(routes!(
+        crate::handlers::common_channel::front_end_auxiliary
+    ));
+    acc.add(routes!(
+        crate::handlers::common_channel::front_end_drag_zoom_in
+    ));
+    acc.add(routes!(
+        crate::handlers::common_channel::front_end_drag_zoom_out
+    ));
     acc.add(routes!(crate::handlers::common_channel::front_end_focus));
-    acc.add(routes!(crate::handlers::common_channel::front_end_home_position));
+    acc.add(routes!(
+        crate::handlers::common_channel::front_end_home_position
+    ));
     acc.add(routes!(crate::handlers::common_channel::front_end_iris));
-    acc.add(routes!(crate::handlers::common_channel::front_end_preset_add));
-    acc.add(routes!(crate::handlers::common_channel::front_end_preset_call));
-    acc.add(routes!(crate::handlers::common_channel::front_end_preset_delete));
-    acc.add(routes!(crate::handlers::common_channel::front_end_preset_query));
+    acc.add(routes!(
+        crate::handlers::common_channel::front_end_preset_add
+    ));
+    acc.add(routes!(
+        crate::handlers::common_channel::front_end_preset_call
+    ));
+    acc.add(routes!(
+        crate::handlers::common_channel::front_end_preset_delete
+    ));
+    acc.add(routes!(
+        crate::handlers::common_channel::front_end_preset_query
+    ));
     acc.add(routes!(crate::handlers::common_channel::front_end_ptz));
-    acc.add(routes!(crate::handlers::common_channel::front_end_scan_set_left));
-    acc.add(routes!(crate::handlers::common_channel::front_end_scan_set_right));
-    acc.add(routes!(crate::handlers::common_channel::front_end_scan_set_speed));
-    acc.add(routes!(crate::handlers::common_channel::front_end_scan_start));
-    acc.add(routes!(crate::handlers::common_channel::front_end_scan_stop));
-    acc.add(routes!(crate::handlers::common_channel::front_end_tour_point_add));
-    acc.add(routes!(crate::handlers::common_channel::front_end_tour_point_delete));
-    acc.add(routes!(crate::handlers::common_channel::front_end_tour_speed));
-    acc.add(routes!(crate::handlers::common_channel::front_end_tour_start));
-    acc.add(routes!(crate::handlers::common_channel::front_end_tour_stop));
-    acc.add(routes!(crate::handlers::common_channel::front_end_tour_time));
+    acc.add(routes!(
+        crate::handlers::common_channel::front_end_scan_set_left
+    ));
+    acc.add(routes!(
+        crate::handlers::common_channel::front_end_scan_set_right
+    ));
+    acc.add(routes!(
+        crate::handlers::common_channel::front_end_scan_set_speed
+    ));
+    acc.add(routes!(
+        crate::handlers::common_channel::front_end_scan_start
+    ));
+    acc.add(routes!(
+        crate::handlers::common_channel::front_end_scan_stop
+    ));
+    acc.add(routes!(
+        crate::handlers::common_channel::front_end_tour_point_add
+    ));
+    acc.add(routes!(
+        crate::handlers::common_channel::front_end_tour_point_delete
+    ));
+    acc.add(routes!(
+        crate::handlers::common_channel::front_end_tour_speed
+    ));
+    acc.add(routes!(
+        crate::handlers::common_channel::front_end_tour_start
+    ));
+    acc.add(routes!(
+        crate::handlers::common_channel::front_end_tour_stop
+    ));
+    acc.add(routes!(
+        crate::handlers::common_channel::front_end_tour_time
+    ));
     acc.add(routes!(crate::handlers::common_channel::front_end_wiper));
     acc.add(routes!(crate::handlers::common_channel::industry_list));
     acc.add(routes!(crate::handlers::common_channel::map_channel_list));
@@ -73,11 +141,17 @@ pub fn routes() -> DocumentedRoutes {
     acc.add(routes!(crate::handlers::common_channel::map_thin_draw));
     acc.add(routes!(crate::handlers::common_channel::map_thin_progress));
     acc.add(routes!(crate::handlers::common_channel::map_thin_save));
-    acc.add(routes!(crate::handlers::common_channel::network_identification_list));
+    acc.add(routes!(
+        crate::handlers::common_channel::network_identification_list
+    ));
     acc.add(routes!(crate::handlers::common_channel::parent_list));
     acc.add(routes!(crate::handlers::common_channel::type_list));
-    acc.add(routes!(crate::handlers::common_channel::unusual_civilcode_list));
-    acc.add(routes!(crate::handlers::common_channel::unusual_parent_list));
+    acc.add(routes!(
+        crate::handlers::common_channel::unusual_civilcode_list
+    ));
+    acc.add(routes!(
+        crate::handlers::common_channel::unusual_parent_list
+    ));
     acc.add(routes!(crate::handlers::front_end::auxiliary));
     acc.add(routes!(crate::handlers::front_end::cruise_point_add));
     acc.add(routes!(crate::handlers::front_end::cruise_point_delete));
@@ -87,7 +161,9 @@ pub fn routes() -> DocumentedRoutes {
     acc.add(routes!(crate::handlers::front_end::cruise_time));
     acc.add(routes!(crate::handlers::front_end::focus));
     acc.add(routes!(crate::handlers::front_end::iris));
-    acc.add(routes!(crate::handlers::front_end::legacy_front_end_command));
+    acc.add(routes!(
+        crate::handlers::front_end::legacy_front_end_command
+    ));
     acc.add(routes!(crate::handlers::front_end::preset_add));
     acc.add(routes!(crate::handlers::front_end::preset_call));
     acc.add(routes!(crate::handlers::front_end::preset_delete));

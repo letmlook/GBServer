@@ -105,13 +105,18 @@ pub async fn ws_handler(
         .find_map(|kv| kv.strip_prefix("token="))
         .map(|s| url_decode(s))
         .or_else(|| {
-            headers.get("authorization")
+            headers
+                .get("authorization")
                 .and_then(|v| v.to_str().ok())
                 .and_then(|s| s.strip_prefix("Bearer "))
                 .map(String::from)
         });
     let Some(token) = token else {
-        return (axum::http::StatusCode::UNAUTHORIZED, "Missing JWT (query ?token= or Authorization: Bearer)").into_response();
+        return (
+            axum::http::StatusCode::UNAUTHORIZED,
+            "Missing JWT (query ?token= or Authorization: Bearer)",
+        )
+            .into_response();
     };
     // 2) Verify
     let claims = match verify_ws_jwt(&token, &state.config.jwt.secret) {
@@ -179,7 +184,11 @@ pub async fn ws_handler(
                 if let Message::Text(text) = msg {
                     if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
                         if val.get("type").and_then(|v| v.as_str()) == Some("ping") {
-                            let _ = ws_state_clone.tx_map.read().await.get(&client_id_clone)
+                            let _ = ws_state_clone
+                                .tx_map
+                                .read()
+                                .await
+                                .get(&client_id_clone)
                                 .map(|tx| tx.send(Message::Text(r#"{"event":"pong"}"#.into())));
                         }
                     }
@@ -212,7 +221,7 @@ fn url_decode(s: &str) -> String {
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let (Some(h), Some(l)) = (hex(bytes[i+1]), hex(bytes[i+2])) {
+            if let (Some(h), Some(l)) = (hex(bytes[i + 1]), hex(bytes[i + 2])) {
                 out.push((h << 4) | l);
                 i += 3;
                 continue;

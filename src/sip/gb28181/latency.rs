@@ -166,7 +166,11 @@ impl LatencyRegistry {
             .collect();
         for (call_id, device_id) in &expired {
             self.inflight.remove(call_id);
-            tracing::debug!("延迟探针超时：{}（{}ms 无响应）", device_id, timeout.as_millis());
+            tracing::debug!(
+                "延迟探针超时：{}（{}ms 无响应）",
+                device_id,
+                timeout.as_millis()
+            );
             self.record(device_id, None);
         }
         expired.len()
@@ -236,7 +240,11 @@ fn to_latency(device_id: &str, e: &Entry) -> DeviceLatency {
         last_ms: e.last_ms,
         min_ms: e.rtts.iter().copied().min(),
         max_ms: e.rtts.iter().copied().max(),
-        loss_pct: if total == 0 { 0 } else { ((lost * 100) / total) as u32 },
+        loss_pct: if total == 0 {
+            0
+        } else {
+            ((lost * 100) / total) as u32
+        },
         ok: e.ok,
         fail_streak: e.fail_streak,
         measured_at: e.measured_at,

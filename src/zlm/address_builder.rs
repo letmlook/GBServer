@@ -107,36 +107,62 @@ impl StreamAddressBuilder {
         let stream_path = format!("{}/{}", app, stream_id);
 
         StreamAddresses {
-            rtsp: format!("rtsp://{}:{}/{}", self.ip, self.port_config.rtsp_port, stream_path),
-            rtmp: format!("rtmp://{}:{}/{}", self.ip, self.port_config.rtmp_port, stream_path),
-            hls: format!("http://{}:{}/{}/hls.m3u8", 
-                self.ip, 
-                self.port_config.hls_port.unwrap_or(self.port_config.http_port), 
-                stream_path),
+            rtsp: format!(
+                "rtsp://{}:{}/{}",
+                self.ip, self.port_config.rtsp_port, stream_path
+            ),
+            rtmp: format!(
+                "rtmp://{}:{}/{}",
+                self.ip, self.port_config.rtmp_port, stream_path
+            ),
+            hls: format!(
+                "http://{}:{}/{}/hls.m3u8",
+                self.ip,
+                self.port_config
+                    .hls_port
+                    .unwrap_or(self.port_config.http_port),
+                stream_path
+            ),
             flv: http_flv_url(
                 &self.ip,
-                self.port_config.flv_port.unwrap_or(self.port_config.http_port),
+                self.port_config
+                    .flv_port
+                    .unwrap_or(self.port_config.http_port),
                 app,
                 stream_id,
             ),
             ws_flv: ws_flv_url(
                 &self.ip,
-                self.port_config.ws_flv_port.unwrap_or(self.port_config.http_port),
+                self.port_config
+                    .ws_flv_port
+                    .unwrap_or(self.port_config.http_port),
                 app,
                 stream_id,
             ),
-            webrtc: self.port_config.webrtc_port.map(|port| {
-                format!("webrtc://{}:{}/index/api/webrtc?app={}&stream={}&type=play", 
-                    self.ip, port, app, stream_id)
-            }).or_else(|| Some(format!("webrtc://{}:{}/index/api/webrtc?app={}&stream={}&type=play", 
-                self.ip, self.port_config.http_port, app, stream_id))),
+            webrtc: self
+                .port_config
+                .webrtc_port
+                .map(|port| {
+                    format!(
+                        "webrtc://{}:{}/index/api/webrtc?app={}&stream={}&type=play",
+                        self.ip, port, app, stream_id
+                    )
+                })
+                .or_else(|| {
+                    Some(format!(
+                        "webrtc://{}:{}/index/api/webrtc?app={}&stream={}&type=play",
+                        self.ip, self.port_config.http_port, app, stream_id
+                    ))
+                }),
         }
     }
 
     pub fn build_with_webrtc_api(&self, app: &str, stream_id: &str) -> StreamAddresses {
         let mut addrs = self.build(app, stream_id);
-        addrs.webrtc = Some(format!("webrtc://{}:{}/index/api/webrtc?app={}&stream={}&type=play", 
-            self.ip, self.port_config.http_port, app, stream_id));
+        addrs.webrtc = Some(format!(
+            "webrtc://{}:{}/index/api/webrtc?app={}&stream={}&type=play",
+            self.ip, self.port_config.http_port, app, stream_id
+        ));
         addrs
     }
 }
@@ -160,7 +186,8 @@ mod tests {
             hls_url("10.0.0.1", 8080, "rtp", "s1"),
             "http://10.0.0.1:8080/rtp/s1/hls.m3u8"
         );
-        let addrs = StreamAddressBuilder::new("10.0.0.1", ZlmPortConfig::default()).build("rtp", "s1");
+        let addrs =
+            StreamAddressBuilder::new("10.0.0.1", ZlmPortConfig::default()).build("rtp", "s1");
         assert!(addrs.flv.ends_with(".live.flv"), "{}", addrs.flv);
         assert!(addrs.ws_flv.ends_with(".live.flv"), "{}", addrs.ws_flv);
     }
@@ -174,7 +201,11 @@ mod tests {
         assert!(addrs.rtsp.starts_with("rtsp://192.168.1.100:554/"));
         assert!(addrs.rtmp.starts_with("rtmp://192.168.1.100:1935/"));
         assert!(addrs.hls.contains("hls.m3u8"));
-        assert!(addrs.flv.ends_with(".live.flv"), "HTTP-FLV 后缀固定 .live.flv: {}", addrs.flv);
+        assert!(
+            addrs.flv.ends_with(".live.flv"),
+            "HTTP-FLV 后缀固定 .live.flv: {}",
+            addrs.flv
+        );
         assert!(addrs.ws_flv.starts_with("ws://"));
         assert!(addrs.webrtc.is_some());
     }

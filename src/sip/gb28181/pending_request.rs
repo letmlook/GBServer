@@ -639,12 +639,19 @@ mod tests {
             "call-y",
             None, // 关键：None 时必须取 manager 默认值
         );
-        assert_eq!(req.timeout_secs, 2, "register 应采用 manager 默认超时，而非硬编码 30");
+        assert_eq!(
+            req.timeout_secs, 2,
+            "register 应采用 manager 默认超时，而非硬编码 30"
+        );
 
         // 等 3s 后确认按 2s 超时清理（如果用了 30s 硬编码则不会清理）
         std::thread::sleep(Duration::from_secs(3));
         let removed = mgr.cleanup_expired();
-        assert_eq!(removed.len(), 1, "应按 manager 默认 2s 超时清理，验证未硬编码 30");
+        assert_eq!(
+            removed.len(),
+            1,
+            "应按 manager 默认 2s 超时清理，验证未硬编码 30"
+        );
     }
 
     /// 调用方显式传入 timeout 时必须优先生效，不被 manager 默认覆盖
@@ -665,9 +672,8 @@ mod tests {
     #[tokio::test]
     async fn test_register_record_info_multi_packet_completes_after_sum_num() {
         let mgr = PendingRequestManager::new();
-        let (_req, rx) = mgr.register_record_info_multi_packet(
-            "34020000001110000001", 100, "call-mp-1", 15,
-        );
+        let (_req, rx) =
+            mgr.register_record_info_multi_packet("34020000001110000001", 100, "call-mp-1", 15);
         assert_eq!(mgr.pending_count(), 1);
 
         let packet1 = r#"<?xml version="1.0"?>
@@ -733,9 +739,8 @@ mod tests {
     #[tokio::test]
     async fn test_cancel_multi_packet_removes_buffer() {
         let mgr = PendingRequestManager::new();
-        let (_req, _rx) = mgr.register_record_info_multi_packet(
-            "34020000001110000001", 200, "call-cancel", 15,
-        );
+        let (_req, _rx) =
+            mgr.register_record_info_multi_packet("34020000001110000001", 200, "call-cancel", 15);
         assert!(mgr.cancel_multi_packet("call-cancel"));
         assert!(!mgr.cancel_multi_packet("call-cancel"));
     }
@@ -768,7 +773,11 @@ impl ResponseRouter {
     /// 从 XML 提取 CmdType，返回完成后的 XML（供 parse_response 使用）。
     /// Phase 3.3: RecordInfo 多包时由 `pending.push_record_info_packet` 累积，
     /// SumNum 达到后才返回累积 XML。
-    pub fn route_message_response(&self, body: &str, call_id: &str) -> Option<(PendingCmdType, String)> {
+    pub fn route_message_response(
+        &self,
+        body: &str,
+        call_id: &str,
+    ) -> Option<(PendingCmdType, String)> {
         self.route_message_response_inner(body, call_id, None)
     }
 
@@ -835,8 +844,9 @@ impl ResponseRouter {
             // 若未注册多包（单包 RecordInfo 兼容），回退到原 complete 路径
             if pt == PendingCmdType::RecordInfo {
                 if self.pending.is_multi_packet_registered(&effective_call_id) {
-                    if let Some(accumulated) =
-                        self.pending.push_record_info_packet(&effective_call_id, body)
+                    if let Some(accumulated) = self
+                        .pending
+                        .push_record_info_packet(&effective_call_id, body)
                     {
                         return Some((pt, accumulated));
                     }
@@ -1169,7 +1179,10 @@ mod response_router_tests {
         let body = "<?xml version=\"1.0\"?>\r\n<Response>\r\n<CmdType>DeviceStatus</CmdType>\r\n<SN>2446260257</SN>\r\n<DeviceID>34020000001320000001</DeviceID>\r\n<Online>ONLINE</Online>\r\n</Response>";
         assert_eq!(extract_sn(body), Some(2446260257));
         assert_eq!(extract_sn("<Response><SN>42</SN></Response>"), Some(42));
-        assert_eq!(extract_sn("<Response><CmdType>X</CmdType></Response>"), None);
+        assert_eq!(
+            extract_sn("<Response><CmdType>X</CmdType></Response>"),
+            None
+        );
     }
 
     #[tokio::test]

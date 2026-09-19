@@ -45,7 +45,11 @@ fn crc_table() -> &'static [u32; 256] {
         for (i, slot) in t.iter_mut().enumerate() {
             let mut c = i as u32;
             for _ in 0..8 {
-                c = if c & 1 != 0 { 0xEDB8_8320 ^ (c >> 1) } else { c >> 1 };
+                c = if c & 1 != 0 {
+                    0xEDB8_8320 ^ (c >> 1)
+                } else {
+                    c >> 1
+                };
             }
             *slot = c;
         }
@@ -73,7 +77,8 @@ fn dos_time_date() -> (u16, u16) {
     use chrono::{Datelike, Timelike};
     let now = chrono::Local::now();
     let year = now.year().clamp(1980, 2107) as u16;
-    let time = ((now.hour() as u16) << 11) | ((now.minute() as u16) << 5) | (now.second() as u16 / 2);
+    let time =
+        ((now.hour() as u16) << 11) | ((now.minute() as u16) << 5) | (now.second() as u16 / 2);
     let date = ((year - 1980) << 9) | ((now.month() as u16) << 5) | (now.day() as u16);
     (time, date)
 }
@@ -333,7 +338,10 @@ mod tests {
         // 标准测试向量
         assert_eq!(crc32(b""), 0x0000_0000);
         assert_eq!(crc32(b"123456789"), 0xCBF4_3926);
-        assert_eq!(crc32(b"The quick brown fox jumps over the lazy dog"), 0x414F_A339);
+        assert_eq!(
+            crc32(b"The quick brown fox jumps over the lazy dog"),
+            0x414F_A339
+        );
     }
 
     #[test]
@@ -346,7 +354,6 @@ mod tests {
         }
         assert_eq!(one, acc, "分块计算的 CRC 必须与一次性计算一致");
     }
-
 
     #[test]
     fn test_write_zip_stored_roundtrip() {
@@ -404,12 +411,16 @@ mod tests {
 
     #[test]
     fn test_write_zip_stored_missing_file_is_error() {
-        let dir = std::env::temp_dir().join(format!("gbserver-zip-test-miss-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("gbserver-zip-test-miss-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let out = dir.join("out.zip");
         let entries = vec![("x.mp4".to_string(), dir.join("does-not-exist.mp4"))];
-        assert!(write_zip_stored(&entries, &out).is_err(), "缺失源文件必须报错");
+        assert!(
+            write_zip_stored(&entries, &out).is_err(),
+            "缺失源文件必须报错"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

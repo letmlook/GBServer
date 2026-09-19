@@ -21,18 +21,10 @@ use axum::{
 use serde::Deserialize;
 
 use crate::db::{
-    delete_device_cascade,
-    get_channel_by_device_and_channel_id,
-    get_device_by_device_id,
-    insert_device,
-    list_channels_by_parent,
-    list_channels_for_device,
-    update_device,
-    DeviceChannel,
-    update_channel_has_audio,
-    update_channel_stream_identification,
-    update_device_mobile_position_subscription,
-    update_device_stream_mode,
+    delete_device_cascade, get_channel_by_device_and_channel_id, get_device_by_device_id,
+    insert_device, list_channels_by_parent, list_channels_for_device, update_channel_has_audio,
+    update_channel_stream_identification, update_device,
+    update_device_mobile_position_subscription, update_device_stream_mode, DeviceChannel,
 };
 use crate::error::{AppError, ErrorCode};
 use crate::response::ApiResult;
@@ -80,7 +72,10 @@ pub async fn sync_status(
     let db_device = if requested_device_id.is_empty() {
         None
     } else {
-        get_device_by_device_id(&state.pool, &requested_device_id).await.ok().flatten()
+        get_device_by_device_id(&state.pool, &requested_device_id)
+            .await
+            .ok()
+            .flatten()
     };
 
     if let Some(ref sip_server) = state.sip_server {
@@ -295,7 +290,6 @@ pub async fn device_sync(
     Json(ApiResult::error("设备未注册或SIP服务未初始化"))
 }
 
-
 /// POST /api/device/query/transport/{device_id}/{stream_mode}
 /// 设置设备流传输模式
 /// 参数: device_id - 设备ID, stream_mode - 流模式 (TCP/UDP/TCP-ACTIVE/TCP-PASSIVE)
@@ -343,13 +337,15 @@ pub async fn device_transport(
     // 伪装成成功。现在如实传播，并把"0 行受影响"解释为设备不存在。
     let updated = update_device_stream_mode(&state.pool, &device_id, &normalized_mode)
         .await
-        .map_err(|e| {
-            AppError::business(ErrorCode::Error500, format!("更新传输模式失败: {}", e))
-        })?;
+        .map_err(|e| AppError::business(ErrorCode::Error500, format!("更新传输模式失败: {}", e)))?;
     if updated == 0 {
         return Ok(Json(ApiResult::error(format!("设备不存在: {}", device_id))));
     }
-    tracing::info!("Transport mode change: device={}, mode={}", device_id, normalized_mode);
+    tracing::info!(
+        "Transport mode change: device={}, mode={}",
+        device_id,
+        normalized_mode
+    );
 
     // 2) 向设备下发 SIP Control/Transport 消息（设备在线才发；不在线仅 DB 更新也合法）
     let mut sip_sent = false;
@@ -357,7 +353,10 @@ pub async fn device_transport(
     if let Some(ref sip_server) = state.sip_server {
         let server = &*sip_server;
         if server.is_device_online(&device_id).await {
-            match server.send_device_transport(&device_id, &normalized_mode).await {
+            match server
+                .send_device_transport(&device_id, &normalized_mode)
+                .await
+            {
                 Ok(_) => sip_sent = true,
                 Err(e) => {
                     tracing::warn!("Failed to send Transport SIP: {}", e);
@@ -397,7 +396,6 @@ pub struct SubscribePositionQuery {
     pub interval: Option<i32>,
 }
 
-
 #[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct SubscribeAlarmQuery {
     /// 设备国标 ID
@@ -432,23 +430,26 @@ pub async fn subscribe_mobile_position(
     let cycle = q.cycle.unwrap_or(5) as u32;
     let interval = q.interval.unwrap_or(5);
 
-    tracing::info!("Position subscription: device={}, cycle={}, interval={}",
-        device_id, cycle, interval);
+    tracing::info!(
+        "Position subscription: device={}, cycle={}, interval={}",
+        device_id,
+        cycle,
+        interval
+    );
 
-    let persisted = update_device_mobile_position_subscription(
-        &state.pool,
-        &device_id,
-        cycle as i32,
-        interval,
-    )
-    .await
-    .unwrap_or_default();
+    let persisted =
+        update_device_mobile_position_subscription(&state.pool, &device_id, cycle as i32, interval)
+            .await
+            .unwrap_or_default();
 
     if let Some(ref sip_server) = state.sip_server {
         let server = &*sip_server;
         if let Some(device) = server.device_manager().get(&device_id).await {
             if device.online {
-                match server.send_subscribe(&device_id, "MobilePosition", cycle).await {
+                match server
+                    .send_subscribe(&device_id, "MobilePosition", cycle)
+                    .await
+                {
                     Ok(_) => {
                         return Json(ApiResult::success(serde_json::json!({
                             "deviceId": device_id,
@@ -512,7 +513,10 @@ pub async fn config_basic_param(
     Path(device_id): Path<String>,
 ) -> Json<ApiResult<serde_json::Value>> {
     tracing::info!("Config BasicParam query for: {}", device_id);
-    let db_device = get_device_by_device_id(&state.pool, &device_id).await.ok().flatten();
+    let db_device = get_device_by_device_id(&state.pool, &device_id)
+        .await
+        .ok()
+        .flatten();
     let db_name = db_device.as_ref().and_then(|d| d.name.clone());
     let db_manufacturer = db_device.as_ref().and_then(|d| d.manufacturer.clone());
     let db_model = db_device.as_ref().and_then(|d| d.model.clone());
@@ -654,11 +658,7 @@ pub async fn channel_one(
     State(state): State<AppState>,
     Query(q): Query<ChannelOneQuery>,
 ) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
-    let device_id = q
-        .device_id
-        .as_deref()
-        .unwrap_or("")
-        .trim();
+    let device_id = q.device_id.as_deref().unwrap_or("").trim();
     let channel_id = q.channel_id.as_deref().unwrap_or("").trim();
     if device_id.is_empty() || channel_id.is_empty() {
         return Ok(Json(ApiResult::success(serde_json::Value::Null)));
@@ -722,7 +722,10 @@ pub async fn query_streams(
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
     if let Some(ref default_client) = state.zlm_client {
-        if !nodes.iter().any(|(_, c)| std::sync::Arc::ptr_eq(c, default_client)) {
+        if !nodes
+            .iter()
+            .any(|(_, c)| std::sync::Arc::ptr_eq(c, default_client))
+        {
             nodes.push(("auto".to_string(), default_client.clone()));
         }
     }
@@ -874,14 +877,16 @@ pub async fn control_record(
 
     let is_start = match parse_record_cmd(&record_cmd) {
         Some(v) => v,
-        None => {
-            return Json(ApiResult::error(
-                "recordCmdStr 只能为 Record 或 StopRecord",
-            ))
-        }
+        None => return Json(ApiResult::error("recordCmdStr 只能为 Record 或 StopRecord")),
     };
 
-    tracing::info!("Record control: device={}, channel={}, cmd={}, start={}", device_id, channel_id, record_cmd, is_start);
+    tracing::info!(
+        "Record control: device={}, channel={}, cmd={}, start={}",
+        device_id,
+        channel_id,
+        record_cmd,
+        is_start
+    );
 
     let record_cmd_xml = if is_start {
         "<RecordCmd>Record</RecordCmd>".to_string()
@@ -893,22 +898,38 @@ pub async fn control_record(
         let server = &*sip_server;
         if let Some(device) = server.device_manager().get(&device_id).await {
             if device.online {
-                match server.send_device_control(&device_id, &channel_id, "DeviceControl", &record_cmd_xml).await {
+                match server
+                    .send_device_control(&device_id, &channel_id, "DeviceControl", &record_cmd_xml)
+                    .await
+                {
                     Ok(_) => {
                         // Phase 7.1: use StateStore repository instead of cache.rs (deprecated).
                         if is_start {
-                            state.state_repo.as_ref().set_recording(&device_id, &channel_id, "Record");
+                            state.state_repo.as_ref().set_recording(
+                                &device_id,
+                                &channel_id,
+                                "Record",
+                            );
                         } else {
-                            state.state_repo.as_ref().del_recording(&device_id, &channel_id);
+                            state
+                                .state_repo
+                                .as_ref()
+                                .del_recording(&device_id, &channel_id);
                         }
-                        
-                        state.ws_state.broadcast("record_state", serde_json::json!({
-                            "deviceId": device_id,
-                            "channelId": channel_id,
-                            "recording": is_start,
-                            "recordCmd": record_cmd,
-                        })).await;
-                        
+
+                        state
+                            .ws_state
+                            .broadcast(
+                                "record_state",
+                                serde_json::json!({
+                                    "deviceId": device_id,
+                                    "channelId": channel_id,
+                                    "recording": is_start,
+                                    "recordCmd": record_cmd,
+                                }),
+                            )
+                            .await;
+
                         return Json(ApiResult::success(serde_json::json!({
                             "deviceId": device_id,
                             "channelId": channel_id,
@@ -1097,7 +1118,11 @@ pub async fn channel_audio(
         return Ok(Json(ApiResult::error("channel_id is required")));
     }
 
-    tracing::info!("Channel audio update: channel_id={}, audio={}", channel_id, audio);
+    tracing::info!(
+        "Channel audio update: channel_id={}, audio={}",
+        channel_id,
+        audio
+    );
 
     // 2026-09-12 修正：此前这里对一个**只读查询**（get_media_list）的结果视而不见，
     // 却打印 "ZLM streams updated for audio mode" —— 既没有真的改 ZLM，
@@ -1125,7 +1150,6 @@ pub async fn channel_audio(
         "code": 0
     }))))
 }
-
 
 /// POST /api/device/query/channel/stream/identification/update/
 /// 更新通道流标识
@@ -1179,13 +1203,15 @@ pub async fn channel_stream_identification_update(
         return Ok(Json(ApiResult::error("id is required")));
     }
 
-    tracing::info!("Stream identification update: id={}, stream={}", id, stream_identification);
+    tracing::info!(
+        "Stream identification update: id={}, stream={}",
+        id,
+        stream_identification
+    );
     // 修正：此前写入错误被 `let _ =` 吞掉后仍返回「更新成功」
     let affected = update_channel_stream_identification(&state.pool, id, &stream_identification)
         .await
-        .map_err(|e| {
-            AppError::business(ErrorCode::Error500, format!("流标识写入失败: {}", e))
-        })?;
+        .map_err(|e| AppError::business(ErrorCode::Error500, format!("流标识写入失败: {}", e)))?;
     if affected == 0 {
         return Err(AppError::business(
             ErrorCode::Error404,
@@ -1274,11 +1300,7 @@ pub async fn device_add(
     State(state): State<AppState>,
     Json(body): Json<DeviceAddBody>,
 ) -> Result<Json<ApiResult<()>>, AppError> {
-    let device_id = body
-        .device_id
-        .as_deref()
-        .unwrap_or("")
-        .trim();
+    let device_id = body.device_id.as_deref().unwrap_or("").trim();
     if device_id.is_empty() {
         return Err(AppError::business(ErrorCode::Error400, "缺少 deviceId"));
     }
@@ -1430,7 +1452,6 @@ pub async fn device_tree(
     }))))
 }
 
-
 /// GET /api/device/query/subscribe/alarm
 ///
 /// 通过 SIP SUBSCRIBE 订阅设备报警事件（仅当下发命令，不等待/不解析设备应答）。
@@ -1500,7 +1521,10 @@ mod stream_row_tests {
     /// 实时流 `设备ID_通道ID` 必须解析出国标标识（前端靠它跳转直播页）。
     #[test]
     fn test_live_stream_row_has_device_and_channel() {
-        let row = stream_row_json("zlmediakit-1", &info("34020000001320000001_34020000001310000001"));
+        let row = stream_row_json(
+            "zlmediakit-1",
+            &info("34020000001320000001_34020000001310000001"),
+        );
         assert_eq!(row["deviceId"], "34020000001320000001");
         assert_eq!(row["channelId"], "34020000001310000001");
         assert_eq!(row["mediaServerId"], "zlmediakit-1");
@@ -1556,7 +1580,9 @@ mod device_write_tests {
         }))
         .expect("camelCase 必须能反序列化");
 
-        let _ = device_add(State(state.clone()), Json(add)).await.expect("新增应成功");
+        let _ = device_add(State(state.clone()), Json(add))
+            .await
+            .expect("新增应成功");
 
         let d = crate::db::device::get_device_by_device_id(&state.pool, "34020000001320000001")
             .await
@@ -1579,7 +1605,9 @@ mod device_write_tests {
             "password": ""
         }))
         .unwrap();
-        let _ = device_update(State(state.clone()), Json(upd)).await.expect("更新应成功");
+        let _ = device_update(State(state.clone()), Json(upd))
+            .await
+            .expect("更新应成功");
 
         let d = crate::db::device::get_device_by_device_id(&state.pool, "34020000001320000001")
             .await
@@ -1611,7 +1639,10 @@ mod device_write_tests {
         )
         .await;
         let d = resp.0.data.unwrap();
-        assert!(d.get("id").and_then(|v| v.as_i64()).unwrap_or(0) > 0, "必须带 id: {d}");
+        assert!(
+            d.get("id").and_then(|v| v.as_i64()).unwrap_or(0) > 0,
+            "必须带 id: {d}"
+        );
         assert_eq!(d["deviceId"], "34020000001320000002");
         assert_eq!(d["expires"], 1800);
         assert!(d.get("onLine").is_some(), "在线状态键名是 onLine");

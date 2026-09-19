@@ -350,11 +350,7 @@ pub async fn delete_user(pool: &Pool, id: i32) -> sqlx::Result<u64> {
     Ok(r.rows_affected())
 }
 
-pub async fn change_password(
-    pool: &Pool,
-    user_id: i32,
-    password_md5: &str,
-) -> sqlx::Result<u64> {
+pub async fn change_password(pool: &Pool, user_id: i32, password_md5: &str) -> sqlx::Result<u64> {
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     #[cfg(feature = "mysql")]
     let r = sqlx::query("UPDATE gb_user SET password = ?, update_time = ? WHERE id = ?")
@@ -439,7 +435,11 @@ pub async fn count_users_by_role(pool: &Pool, role_id: i32) -> sqlx::Result<i64>
 }
 
 /// 用户名是否已被占用（`exclude_id` 用于「改用户名」时排除自己）。
-pub async fn username_taken(pool: &Pool, username: &str, exclude_id: Option<i32>) -> sqlx::Result<bool> {
+pub async fn username_taken(
+    pool: &Pool,
+    username: &str,
+    exclude_id: Option<i32>,
+) -> sqlx::Result<bool> {
     match exclude_id {
         Some(id) => {
             #[cfg(feature = "postgres")]
@@ -535,4 +535,3 @@ pub async fn role_exists(pool: &Pool, role_id: i32) -> sqlx::Result<bool> {
         .unwrap_or((0,));
     Ok(row.0 > 0)
 }
-

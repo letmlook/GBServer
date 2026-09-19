@@ -13,8 +13,8 @@ use std::sync::Arc;
 use chrono::Utc;
 use dashmap::DashMap;
 
-use crate::sip::gb28181::SubscriptionType;
 use crate::db::Pool;
+use crate::sip::gb28181::SubscriptionType;
 
 /// 已发送的 SUBSCRIBE 会话（管理续期）
 #[derive(Debug, Clone)]
@@ -307,7 +307,12 @@ impl NotifyDispatcher {
 
     /// 处理 Alarm NOTIFY → 落库 + Redis + WS
     #[allow(unused_variables)]
-    pub async fn handle_alarm_notify(&self, xml: &str, redis: Option<&redis::aio::ConnectionManager>, ws: Option<&crate::handlers::websocket::WsState>) -> Result<(), String> {
+    pub async fn handle_alarm_notify(
+        &self,
+        xml: &str,
+        redis: Option<&redis::aio::ConnectionManager>,
+        ws: Option<&crate::handlers::websocket::WsState>,
+    ) -> Result<(), String> {
         use crate::db::alarm as db_alarm;
         use crate::sip::gb28181::XmlParser;
 
@@ -394,7 +399,11 @@ mod tests {
         let ch = "34020000001310000001";
 
         sqlx::query("INSERT INTO gb_device (device_id, name, on_line) VALUES (?, ?, 1)")
-            .bind(dev).bind("test-dev").execute(&pool).await.unwrap();
+            .bind(dev)
+            .bind("test-dev")
+            .execute(&pool)
+            .await
+            .unwrap();
         sqlx::query(
             "INSERT INTO gb_device_channel (device_id, gb_device_id, name, status, create_time, update_time, data_type, data_device_id) \
              VALUES (?, ?, ?, 'ON', '2026-09-19 00:00:00', '2026-09-19 00:00:00', 0, 0)",
@@ -414,13 +423,19 @@ mod tests {
 
         // 1) 位置表有记录
         let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM gb_device_mobile_position")
-            .fetch_one(&pool).await.unwrap();
+            .fetch_one(&pool)
+            .await
+            .unwrap();
         assert_eq!(n, 1, "位置表应有 1 条");
 
         // 2) 通道坐标已回写（地图读的就是这两个字段）
-        let (lng, lat): (Option<f64>, Option<f64>) =
-            sqlx::query_as("SELECT longitude, latitude FROM gb_device_channel WHERE gb_device_id = ?")
-                .bind(ch).fetch_one(&pool).await.unwrap();
+        let (lng, lat): (Option<f64>, Option<f64>) = sqlx::query_as(
+            "SELECT longitude, latitude FROM gb_device_channel WHERE gb_device_id = ?",
+        )
+        .bind(ch)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
         assert_eq!(lng, Some(116.397128), "通道经度应被回写");
         assert_eq!(lat, Some(39.916527), "通道纬度应被回写");
     }
@@ -435,7 +450,11 @@ mod tests {
         let ch = "34020000001310000001";
 
         sqlx::query("INSERT INTO gb_device (device_id, name, on_line) VALUES (?, ?, 1)")
-            .bind(dev).bind("test-dev").execute(&pool).await.unwrap();
+            .bind(dev)
+            .bind("test-dev")
+            .execute(&pool)
+            .await
+            .unwrap();
         sqlx::query(
             "INSERT INTO gb_device_channel (device_id, gb_device_id, name, status, longitude, latitude, create_time, update_time, data_type, data_device_id) \
              VALUES (?, ?, ?, 'ON', 116.4, 39.9, '2026-09-19 00:00:00', '2026-09-19 00:00:00', 0, 0)",
@@ -451,9 +470,13 @@ mod tests {
             .await
             .expect("NOTIFY 处理应成功");
 
-        let (lng, lat): (Option<f64>, Option<f64>) =
-            sqlx::query_as("SELECT longitude, latitude FROM gb_device_channel WHERE gb_device_id = ?")
-                .bind(ch).fetch_one(&pool).await.unwrap();
+        let (lng, lat): (Option<f64>, Option<f64>) = sqlx::query_as(
+            "SELECT longitude, latitude FROM gb_device_channel WHERE gb_device_id = ?",
+        )
+        .bind(ch)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
         assert_eq!(lng, Some(116.4), "0,0 上报不得覆盖已有经度");
         assert_eq!(lat, Some(39.9), "0,0 上报不得覆盖已有纬度");
     }

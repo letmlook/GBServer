@@ -1,8 +1,8 @@
+use chrono::{DateTime, Utc};
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use chrono::{DateTime, Utc};
-use std::net::SocketAddr;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum StreamType {
@@ -52,13 +52,13 @@ impl SdpInfo {
             }
 
             let (key, value) = if let Some(pos) = line.find('=') {
-                (&line[..pos], &line[pos+1..])
+                (&line[..pos], &line[pos + 1..])
             } else {
                 continue;
             };
 
             match key {
-                "v" => {},
+                "v" => {}
                 "o" => origin = value.to_string(),
                 "s" => session_name = value.to_string(),
                 "c" => connection_info = value.to_string(),
@@ -88,8 +88,11 @@ impl SdpInfo {
                             media.rtpmap = Some(value.to_string());
                         } else if value.starts_with("fmtp:") {
                             media.fmtp = Some(value.to_string());
-                        } else if value.starts_with("sendonly") || value.starts_with("recvonly") || 
-                                  value.starts_with("sendrecv") || value.starts_with("inactive") {
+                        } else if value.starts_with("sendonly")
+                            || value.starts_with("recvonly")
+                            || value.starts_with("sendrecv")
+                            || value.starts_with("inactive")
+                        {
                             media.sendrecv = Some(value.to_string());
                         } else if value.starts_with("track:") {
                             media.track_id = Some(value.to_string());
@@ -115,13 +118,15 @@ impl SdpInfo {
     }
 
     pub fn get_video_port(&self) -> Option<u16> {
-        self.media_lines.iter()
+        self.media_lines
+            .iter()
             .find(|m| m.media == "video")
             .map(|m| m.port)
     }
 
     pub fn get_audio_port(&self) -> Option<u16> {
-        self.media_lines.iter()
+        self.media_lines
+            .iter()
             .find(|m| m.media == "audio")
             .map(|m| m.port)
     }
@@ -353,16 +358,19 @@ impl InviteSessionManager {
     /// E1: 把单个会话状态同步到 StateStore
     fn sync_to_store(&self, session: &InviteSession) {
         if let Some(ref store) = self.state_store {
-            store.set_invite_session(&session.call_id, crate::state_store::InviteSessionState {
-                call_id: session.call_id.clone(),
-                device_id: session.device_id.clone(),
-                channel_id: session.channel_id.clone(),
-                session_type: format!("{:?}", session.stream_type),
-                zlm_stream_id: session.zlm_stream_id.clone(),
-                status: format!("{:?}", session.status),
-                created_at: session.created_at,
-                last_activity: session.last_activity,
-            });
+            store.set_invite_session(
+                &session.call_id,
+                crate::state_store::InviteSessionState {
+                    call_id: session.call_id.clone(),
+                    device_id: session.device_id.clone(),
+                    channel_id: session.channel_id.clone(),
+                    session_type: format!("{:?}", session.stream_type),
+                    zlm_stream_id: session.zlm_stream_id.clone(),
+                    status: format!("{:?}", session.status),
+                    created_at: session.created_at,
+                    last_activity: session.last_activity,
+                },
+            );
         }
     }
 
@@ -378,7 +386,10 @@ impl InviteSessionManager {
         self.sessions.read().await.get(call_id).cloned()
     }
 
-    pub async fn get_mut(&self, _call_id: &str) -> Option<tokio::sync::RwLockWriteGuard<'_, HashMap<String, InviteSession>>> {
+    pub async fn get_mut(
+        &self,
+        _call_id: &str,
+    ) -> Option<tokio::sync::RwLockWriteGuard<'_, HashMap<String, InviteSession>>> {
         Some(self.sessions.write().await)
     }
 
@@ -452,16 +463,81 @@ impl InviteSessionManager {
         true
     }
 
-    pub async fn get_by_device_channel(&self, device_id: &str, channel_id: &str) -> Option<InviteSession> {
+    /// 按 Call-ID 回填 ZLM 流标识。
+    ///
+    /// 同一设备通道可以同时存在直播、回放和下载会话，因此新的调用路径
+    /// 不得再按设备/通道模糊选择会话。
+    pub async fn set_zlm_stream_by_call_id(
+        &self,
+        call_id: &str,
+        stream_id: &str,
+        app: &str,
+    ) -> bool {
+        let mut guard = self.sessions.write().await;
+        let Some(session) = guard.get_mut(call_id) else {
+            return false;
+        };
+        session.set_zlm_stream(stream_id, app);
+        let snapshot = session.clone();
+        drop(guard);
+        self.sync_to_store(&snapshot);
+        true
+    }
+
+    pub async fn get_by_device_channel(
+        &self,
+        device_id: &str,
+        channel_id: &str,
+    ) -> Option<InviteSession> {
         let guard = self.sessions.read().await;
         // Consider sessions that are not terminated (Inviting, Ringing, Active)
-        guard.values()
-            .find(|s| s.device_id == device_id && s.channel_id == channel_id && s.status != InviteSessionStatus::Terminated)
+        guard
+            .values()
+            .find(|s| {
+                s.device_id == device_id
+                    && s.channel_id == channel_id
+                    && s.status != InviteSessionStatus::Terminated
+            })
+            .cloned()
+    }
+
+    /// 返回指定业务类型中最新的未终止会话。
+    pub async fn get_latest_by_device_channel_type(
+        &self,
+        device_id: &str,
+        channel_id: &str,
+        stream_type: StreamType,
+    ) -> Option<InviteSession> {
+        let guard = self.sessions.read().await;
+        guard
+            .values()
+            .filter(|session| {
+                session.device_id == device_id
+                    && session.channel_id == channel_id
+                    && session.stream_type == stream_type
+                    && session.status != InviteSessionStatus::Terminated
+            })
+            .max_by_key(|session| session.created_at)
+            .cloned()
+    }
+
+    /// 按 ZLM 流标识查找未终止会话，供媒体 hook 精确清理。
+    pub async fn get_by_zlm_stream_id(&self, stream_id: &str) -> Option<InviteSession> {
+        let guard = self.sessions.read().await;
+        guard
+            .values()
+            .filter(|session| {
+                session.zlm_stream_id.as_deref() == Some(stream_id)
+                    && session.status != InviteSessionStatus::Terminated
+            })
+            .max_by_key(|session| session.created_at)
             .cloned()
     }
 
     pub async fn get_active_sessions(&self) -> Vec<InviteSession> {
-        self.sessions.read().await
+        self.sessions
+            .read()
+            .await
             .values()
             .filter(|s| s.is_active())
             .cloned()
@@ -469,11 +545,15 @@ impl InviteSessionManager {
     }
 
     pub async fn get_pending_sessions(&self) -> Vec<InviteSession> {
-        self.sessions.read().await
+        self.sessions
+            .read()
+            .await
             .values()
-            .filter(|s| s.status == InviteSessionStatus::Pending || 
-                      s.status == InviteSessionStatus::Inviting ||
-                      s.status == InviteSessionStatus::Ringing)
+            .filter(|s| {
+                s.status == InviteSessionStatus::Pending
+                    || s.status == InviteSessionStatus::Inviting
+                    || s.status == InviteSessionStatus::Ringing
+            })
             .cloned()
             .collect()
     }
@@ -517,7 +597,8 @@ impl InviteSessionManager {
     }
 
     pub async fn is_stream_active(&self, device_id: &str, channel_id: &str) -> bool {
-        self.get_by_device_channel(device_id, channel_id).await
+        self.get_by_device_channel(device_id, channel_id)
+            .await
             .map(|s| s.is_active())
             .unwrap_or(false)
     }
@@ -560,11 +641,7 @@ pub fn build_invite_sdp(
 }
 
 pub fn build_talk_sdp(local_ip: &str, audio_port: u16) -> String {
-    super::sdp_builder::talk_sdp(
-        local_ip,
-        audio_port,
-        super::sdp_builder::DEFAULT_SSRC,
-    )
+    super::sdp_builder::talk_sdp(local_ip, audio_port, super::sdp_builder::DEFAULT_SSRC)
 }
 
 /// 回放 SDP。`ssrc` 由调用方提供（回放流的 SSRC 需与 Subject/`y=` 一致）。
@@ -602,7 +679,7 @@ a=sendonly
 y=0100000001
 f=v/1/96/1/2/1/1/0
 "#;
-        
+
         let info = SdpInfo::parse(sdp).unwrap();
         assert_eq!(info.session_name, "Play");
         assert_eq!(info.get_video_port(), Some(50000));
@@ -655,17 +732,22 @@ impl InviteSessionManager {
         stream_type: StreamType,
     ) -> Option<InviteSession> {
         let guard = self.sessions.read().await;
-        guard.values().find(|s| {
-            s.device_id == device_id
-            && s.channel_id == channel_id
-            && s.stream_type == stream_type
-            && s.is_active()
-        }).cloned()
+        guard
+            .values()
+            .find(|s| {
+                s.device_id == device_id
+                    && s.channel_id == channel_id
+                    && s.stream_type == stream_type
+                    && s.is_active()
+            })
+            .cloned()
     }
 
     /// 获取设备的全部会话
     pub async fn get_sessions_by_device(&self, device_id: &str) -> Vec<InviteSession> {
-        self.sessions.read().await
+        self.sessions
+            .read()
+            .await
             .values()
             .filter(|s| s.device_id == device_id)
             .cloned()
@@ -674,7 +756,9 @@ impl InviteSessionManager {
 
     /// 获取设备的活跃通道数（用于资源限制）
     pub async fn active_channel_count(&self, device_id: &str) -> usize {
-        self.sessions.read().await
+        self.sessions
+            .read()
+            .await
             .values()
             .filter(|s| s.device_id == device_id && s.is_active())
             .count()
@@ -682,7 +766,9 @@ impl InviteSessionManager {
 
     /// 按媒体服务器 ID 查找活跃会话（用于 ZLM 节点下线时清理）
     pub async fn get_sessions_by_zlm(&self, _media_server_id: &str) -> Vec<InviteSession> {
-        self.sessions.read().await
+        self.sessions
+            .read()
+            .await
             .values()
             .filter(|s| s.is_active())
             .cloned()
@@ -712,7 +798,8 @@ impl InviteSessionManager {
 
     /// 将会话激活（收到 200 OK 后调用）
     pub async fn activate(&self, call_id: &str) {
-        self.update_status(call_id, InviteSessionStatus::Active).await;
+        self.update_status(call_id, InviteSessionStatus::Active)
+            .await;
     }
 
     /// 批量清理所有已终止且超过 max_age 秒的会话
@@ -745,10 +832,10 @@ impl InviteSessionManager {
         let mut stats = SessionStats::default();
         for s in guard.values() {
             match s.status {
-                InviteSessionStatus::Pending  => stats.pending += 1,
+                InviteSessionStatus::Pending => stats.pending += 1,
                 InviteSessionStatus::Inviting => stats.inviting += 1,
-                InviteSessionStatus::Ringing   => stats.ringing += 1,
-                InviteSessionStatus::Active    => stats.active += 1,
+                InviteSessionStatus::Ringing => stats.ringing += 1,
+                InviteSessionStatus::Active => stats.active += 1,
                 InviteSessionStatus::Terminating => stats.terminating += 1,
                 InviteSessionStatus::Terminated => stats.terminated += 1,
             }
@@ -767,4 +854,3 @@ pub struct SessionStats {
     pub terminating: usize,
     pub terminated: usize,
 }
-

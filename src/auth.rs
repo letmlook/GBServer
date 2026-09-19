@@ -89,7 +89,9 @@ pub fn decode_jwt_unsafe(token: &str) -> Result<ClaimsView, String> {
     let decoding = DecodingKey::from_secret(secret.as_bytes());
     let data = decode::<Claims>(token, &decoding, &validation)
         .map_err(|e| format!("decode failed: {}", e))?;
-    Ok(ClaimsView { user: data.claims.userName })
+    Ok(ClaimsView {
+        user: data.claims.userName,
+    })
 }
 
 /// Phase 7.6: hash a plaintext password using Argon2id with default parameters.
@@ -233,13 +235,18 @@ pub async fn auth_middleware(
 
             tokio::spawn(async move {
                 // 审计失败不应阻断请求，但绝不能静默丢失
-                if let Err(e) =
-                    crate::db::audit_log::insert(
-                        &pool, &username, &action, &resource, &method, &path, &ip, 200,
-                    )
-                    .await
+                if let Err(e) = crate::db::audit_log::insert(
+                    &pool, &username, &action, &resource, &method, &path, &ip, 200,
+                )
+                .await
                 {
-                    tracing::error!("审计日志写入失败 user={} {} {}: {}", username, method, path, e);
+                    tracing::error!(
+                        "审计日志写入失败 user={} {} {}: {}",
+                        username,
+                        method,
+                        path,
+                        e
+                    );
                 }
             });
 
@@ -257,12 +264,19 @@ pub async fn auth_middleware(
                 if api_key_record.enable.unwrap_or(false) == false {
                     return (
                         axum::http::StatusCode::UNAUTHORIZED,
-                        axum::Json(serde_json::json!({"code": 401, "msg": "API Key已禁用", "data": null})),
-                    ).into_response();
+                        axum::Json(
+                            serde_json::json!({"code": 401, "msg": "API Key已禁用", "data": null}),
+                        ),
+                    )
+                        .into_response();
                 }
                 // Check if expired
                 if let Some(expired_at) = api_key_record.expired_at {
-                    let now_ts = SystemTime::now().duration_since(UNIX_EPOCH).ok().map(|d| d.as_secs() as i64).unwrap_or(0);
+                    let now_ts = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .ok()
+                        .map(|d| d.as_secs() as i64)
+                        .unwrap_or(0);
                     if expired_at > 0 && now_ts > expired_at {
                         return (
                             axum::http::StatusCode::UNAUTHORIZED,
@@ -277,18 +291,23 @@ pub async fn auth_middleware(
                 let ip = extract_client_ip(request.headers());
                 let action = determine_action(&method, &path);
                 let resource = path.clone();
-                let username = format!("apikey:{}", api_key_record.app.as_deref().unwrap_or("unknown"));
+                let username = format!(
+                    "apikey:{}",
+                    api_key_record.app.as_deref().unwrap_or("unknown")
+                );
 
                 tokio::spawn(async move {
-                    if let Err(e) =
-                        crate::db::audit_log::insert(
-                            &pool, &username, &action, &resource, &method, &path, &ip, 200,
-                        )
-                        .await
+                    if let Err(e) = crate::db::audit_log::insert(
+                        &pool, &username, &action, &resource, &method, &path, &ip, 200,
+                    )
+                    .await
                     {
                         tracing::error!(
                             "审计日志写入失败 user={} {} {}: {}",
-                            username, method, path, e
+                            username,
+                            method,
+                            path,
+                            e
                         );
                     }
                 });
@@ -298,8 +317,11 @@ pub async fn auth_middleware(
             Ok(None) => {
                 return (
                     axum::http::StatusCode::UNAUTHORIZED,
-                    axum::Json(serde_json::json!({"code": 401, "msg": "API Key无效", "data": null})),
-                ).into_response();
+                    axum::Json(
+                        serde_json::json!({"code": 401, "msg": "API Key无效", "data": null}),
+                    ),
+                )
+                    .into_response();
             }
             Err(e) => {
                 tracing::warn!("Failed to verify API Key: {}", e);
@@ -311,7 +333,8 @@ pub async fn auth_middleware(
     (
         axum::http::StatusCode::UNAUTHORIZED,
         axum::Json(serde_json::json!({"code": 401, "msg": "请登录后重新请求", "data": null})),
-    ).into_response()
+    )
+        .into_response()
 }
 
 fn extract_api_key(req: &Request) -> Option<String> {
@@ -369,7 +392,10 @@ mod tests {
     fn test_extract_token_from_authorization_bearer() {
         let mut headers = axum::http::HeaderMap::new();
         headers.insert(AUTHORIZATION, "Bearer abc.def.ghi".parse().unwrap());
-        assert_eq!(extract_token_from_headers(&headers).as_deref(), Some("abc.def.ghi"));
+        assert_eq!(
+            extract_token_from_headers(&headers).as_deref(),
+            Some("abc.def.ghi")
+        );
     }
 
     /// F3: 从 access-token header 提取
@@ -377,7 +403,10 @@ mod tests {
     fn test_extract_token_from_access_token_header() {
         let mut headers = axum::http::HeaderMap::new();
         headers.insert(HEADER_ACCESS_TOKEN, "xyz.tok.en".parse().unwrap());
-        assert_eq!(extract_token_from_headers(&headers).as_deref(), Some("xyz.tok.en"));
+        assert_eq!(
+            extract_token_from_headers(&headers).as_deref(),
+            Some("xyz.tok.en")
+        );
     }
 
     /// F3: 没有 token 时返回 None
@@ -402,7 +431,8 @@ mod tests {
         headers.insert("X-API-Key", "my-secret-key".parse().unwrap());
         let _req = axum::extract::Request::builder()
             .uri("/api/foo")
-            .body(axum::body::Body::empty()).unwrap();
+            .body(axum::body::Body::empty())
+            .unwrap();
         // 直接复用 header 提取逻辑
         let v = headers.get("X-API-Key").and_then(|v| v.to_str().ok());
         assert_eq!(v, Some("my-secret-key"));
@@ -481,7 +511,11 @@ mod password_tests {
             "21232f297a57a5a743894a0e4a801fc3",
             "已是 MD5 的输入不得被二次哈希（老前端直接送 md5）"
         );
-        assert_eq!(password_secret("  admin  "), password_secret("admin"), "应 trim");
+        assert_eq!(
+            password_secret("  admin  "),
+            password_secret("admin"),
+            "应 trim"
+        );
     }
 
     /// 端到端（值层面）：界面新建用户时送**明文**入库，登录时送 **md5** —— 必须能对上。

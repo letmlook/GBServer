@@ -1,7 +1,7 @@
+use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use chrono::{DateTime, Utc};
 
 #[derive(Debug, Clone)]
 pub struct CascadePlatform {
@@ -49,7 +49,10 @@ impl CascadeManager {
     }
 
     pub async fn add_platform(&self, platform: CascadePlatform) {
-        self.platforms.write().await.insert(platform.platform_id.clone(), platform);
+        self.platforms
+            .write()
+            .await
+            .insert(platform.platform_id.clone(), platform);
     }
 
     pub async fn remove_platform(&self, platform_id: &str) {
@@ -94,14 +97,21 @@ impl CascadeManager {
     }
 
     pub async fn list_channels(&self, platform_id: &str) -> Vec<CascadeChannel> {
-        self.channels.read().await
+        self.channels
+            .read()
+            .await
             .values()
             .filter(|c| c.platform_id == platform_id)
             .cloned()
             .collect()
     }
 
-    pub async fn update_push_status(&self, platform_id: &str, channel_id: &str, status: PushStatus) {
+    pub async fn update_push_status(
+        &self,
+        platform_id: &str,
+        channel_id: &str,
+        status: PushStatus,
+    ) {
         let key = format!("{}_{}", platform_id, channel_id);
         let mut guard = self.channels.write().await;
         if let Some(c) = guard.get_mut(&key) {

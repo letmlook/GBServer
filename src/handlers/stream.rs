@@ -1,7 +1,7 @@
 //! 推流 /api/push 与拉流代理 /api/proxy，对应前端 streamPush.js / streamProxy.js
 
 use axum::{
-    extract::{Query, State, Multipart},
+    extract::{Multipart, Query, State},
     Json,
 };
 use serde::Deserialize;
@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use utoipa::{IntoParams, ToSchema};
 
-use crate::db::{stream_push, stream_proxy, StreamPush, StreamProxy};
+use crate::db::{stream_proxy, stream_push, StreamProxy, StreamPush};
 use crate::error::{AppError, ErrorCode};
 use crate::response::ApiResult;
 use crate::zlm::OpenRtpServerRequest;
@@ -58,7 +58,8 @@ pub async fn push_list(
     let pushing = q.pushing.as_deref().and_then(|s| s.parse().ok());
     // 关键字过滤此前被 DTO 收下却从未使用（页面按签名传 query 会静默忽略）
     let query = q.query.as_deref().filter(|s| !s.trim().is_empty());
-    let total = stream_push::count_all(&state.pool, q.mediaServerId.as_deref(), pushing, query).await?;
+    let total =
+        stream_push::count_all(&state.pool, q.mediaServerId.as_deref(), pushing, query).await?;
     let list = stream_push::list_paged(
         &state.pool,
         page,
@@ -160,22 +161,20 @@ pub async fn push_add(
     let app = body.app.unwrap_or_else(|| "push".to_string());
     let stream = body.stream.unwrap_or_default();
     let media_server_id = body.media_server_id.unwrap_or_default();
-    
+
     if stream.is_empty() {
         return Ok(Json(ApiResult::error("Stream ID is required")));
     }
-    
+
     let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    
+
     match stream_push::add(&state.pool, &app, &stream, &media_server_id, &now).await {
-        Ok(_) => {
-            Ok(Json(ApiResult::success(serde_json::json!({
-                "app": app,
-                "stream": stream,
-                "mediaServerId": media_server_id,
-                "message": "Push stream added successfully"
-            }))))
-        }
+        Ok(_) => Ok(Json(ApiResult::success(serde_json::json!({
+            "app": app,
+            "stream": stream,
+            "mediaServerId": media_server_id,
+            "message": "Push stream added successfully"
+        })))),
         Err(e) => {
             tracing::error!("Failed to add push stream: {}", e);
             Ok(Json(ApiResult::error(format!("Database error: {}", e))))
@@ -222,9 +221,9 @@ pub async fn push_update(
     if id <= 0 {
         return Ok(Json(ApiResult::error("Push stream ID is required")));
     }
-    
+
     let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    
+
     match stream_push::update(
         &state.pool,
         id,
@@ -232,13 +231,13 @@ pub async fn push_update(
         body.stream.as_deref(),
         body.media_server_id.as_deref(),
         &now,
-    ).await {
-        Ok(_) => {
-            Ok(Json(ApiResult::success(serde_json::json!({
-                "id": id,
-                "message": "Push stream updated successfully"
-            }))))
-        }
+    )
+    .await
+    {
+        Ok(_) => Ok(Json(ApiResult::success(serde_json::json!({
+            "id": id,
+            "message": "Push stream updated successfully"
+        })))),
         Err(e) => {
             tracing::error!("Failed to update push stream: {}", e);
             Ok(Json(ApiResult::error(format!("Database error: {}", e))))
@@ -273,7 +272,7 @@ pub async fn push_remove(
     if id <= 0 {
         return Ok(Json(ApiResult::error("Push stream ID is required")));
     }
-    
+
     // Get the push stream info first to close ZLM connection
     if let Ok(Some(push)) = stream_push::get_by_id(&state.pool, id as i64).await {
         if push.pushing.unwrap_or(false) {
@@ -287,14 +286,12 @@ pub async fn push_remove(
             }
         }
     }
-    
+
     match stream_push::delete_by_id(&state.pool, id as i64).await {
-        Ok(_) => {
-            Ok(Json(ApiResult::success(serde_json::json!({
-                "id": id,
-                "message": "Push stream removed successfully"
-            }))))
-        }
+        Ok(_) => Ok(Json(ApiResult::success(serde_json::json!({
+            "id": id,
+            "message": "Push stream removed successfully"
+        })))),
         Err(e) => {
             tracing::error!("Failed to remove push stream: {}", e);
             Ok(Json(ApiResult::error(format!("Database error: {}", e))))
@@ -340,7 +337,7 @@ pub async fn push_start(
 ) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let id = body.id.unwrap_or(0);
     let stream_id = body.stream.clone().unwrap_or_default();
-    
+
     // Get push info from DB or use provided values
     let (push_stream, media_server_id) = if id > 0 {
         match stream_push::get_by_id(&state.pool, id as i64).await {
@@ -358,28 +355,28 @@ pub async fn push_start(
     } else {
         (Some(stream_id.clone()), body.media_server_id.clone())
     };
-    
+
     let stream = push_stream.unwrap_or_default();
     let ms_id = media_server_id.unwrap_or_default();
-    
+
     if stream.is_empty() {
         return Ok(Json(ApiResult::error("Stream ID is required")));
     }
-    
+
     // Get ZLM client
     let zlm_client = if !ms_id.is_empty() {
         state.zlm_client.clone()
     } else {
         state.zlm_client.clone()
     };
-    
+
     let zlm = match zlm_client {
         Some(c) => c,
         None => {
             return Ok(Json(ApiResult::error("ZLM client not available")));
         }
     };
-    
+
     // Open RTP server via ZLM
     let req = OpenRtpServerRequest {
         secret: zlm.secret.clone(),
@@ -389,11 +386,11 @@ pub async fn push_start(
         rtp_type: None,
         recv_port: None,
     };
-    
+
     match zlm.open_rtp_server(&req).await {
         Ok(rtp_info) => {
             tracing::info!("RTP server opened: {} -> {:?}", stream, rtp_info);
-            
+
             if id > 0 {
                 let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
                 // 修正：此前吞掉错误 —— ZLM 已开好收流端口但库里没记，
@@ -409,7 +406,7 @@ pub async fn push_start(
                         AppError::business(ErrorCode::Error500, format!("推流状态更新失败: {}", e))
                     })?;
             }
-            
+
             Ok(Json(ApiResult::success(serde_json::json!({
                 "stream": stream,
                 "port": rtp_info.port,
@@ -459,7 +456,7 @@ pub async fn push_batch_remove(
     let ids = body.ids.unwrap_or_default();
     let mut removed = 0;
     let mut errors = Vec::new();
-    
+
     for id in ids {
         // Get push info first
         if let Ok(Some(push)) = stream_push::get_by_id(&state.pool, id as i64).await {
@@ -478,13 +475,13 @@ pub async fn push_batch_remove(
                 }
             }
         }
-        
+
         match stream_push::delete_by_id(&state.pool, id as i64).await {
             Ok(n) => removed += n,
             Err(e) => errors.push(format!("ID {}: {}", id, e)),
         }
     }
-    
+
     Ok(Json(ApiResult::success(serde_json::json!({
         "removed": removed,
         "errors": errors,
@@ -517,20 +514,26 @@ pub async fn push_save_to_gb(
     let id = body.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
     let device_id = body.get("deviceId").and_then(|v| v.as_str()).unwrap_or("");
     let channel_id = body.get("channelId").and_then(|v| v.as_str()).unwrap_or("");
-    
+
     if id <= 0 || device_id.is_empty() {
         return Ok(Json(ApiResult::error("缺少必要参数".to_string())));
     }
-    
+
     // 此前更新的是**不存在的列**（`gb_stream_push.device_id/channel_id`）→
     // 接口稳定报 500 "no such column: device_id"。现在写入真实存在的
     // `gb_device_id` / `gb_channel_id`。
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let affected =
-        stream_push::set_gb_binding(&state.pool, id, Some(device_id), Some(channel_id), &now).await
-            .map_err(|e| AppError::business(ErrorCode::Error500, format!("绑定国标设备失败: {e}")))?;
+        stream_push::set_gb_binding(&state.pool, id, Some(device_id), Some(channel_id), &now)
+            .await
+            .map_err(|e| {
+                AppError::business(ErrorCode::Error500, format!("绑定国标设备失败: {e}"))
+            })?;
     if affected == 0 {
-        return Err(AppError::business(ErrorCode::Error404, format!("推流不存在: {id}")));
+        return Err(AppError::business(
+            ErrorCode::Error404,
+            format!("推流不存在: {id}"),
+        ));
     }
 
     Ok(Json(ApiResult::success(serde_json::json!({
@@ -562,18 +565,21 @@ pub async fn push_remove_form_gb(
     Json(body): Json<serde_json::Value>,
 ) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let id = body.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
-    
+
     if id <= 0 {
         return Ok(Json(ApiResult::error("缺少必要参数".to_string())));
     }
-    
+
     // 同 save_to_gb：原来更新的是不存在的列 → 稳定 500。现在清空真实列。
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let affected = stream_push::set_gb_binding(&state.pool, id, None, None, &now)
         .await
         .map_err(|e| AppError::business(ErrorCode::Error500, format!("解绑国标设备失败: {e}")))?;
     if affected == 0 {
-        return Err(AppError::business(ErrorCode::Error404, format!("推流不存在: {id}")));
+        return Err(AppError::business(
+            ErrorCode::Error404,
+            format!("推流不存在: {id}"),
+        ));
     }
 
     Ok(Json(ApiResult::success(serde_json::json!({
@@ -699,12 +705,14 @@ pub async fn proxy_ffmpeg_cmd_list(
     Query(q): Query<ProxyListQuery>,
 ) -> Result<Json<ApiResult<HashMap<String, String>>>, AppError> {
     let media_server_id = q.mediaServerId.unwrap_or_else(|| "auto".to_string());
-    let zlm = state.get_zlm_client(Some(&media_server_id)).ok_or_else(|| {
-        AppError::business(
-            ErrorCode::Error100,
-            format!("流媒体节点不可用: {media_server_id}"),
-        )
-    })?;
+    let zlm = state
+        .get_zlm_client(Some(&media_server_id))
+        .ok_or_else(|| {
+            AppError::business(
+                ErrorCode::Error100,
+                format!("流媒体节点不可用: {media_server_id}"),
+            )
+        })?;
     let cfg = zlm.get_server_config().await.map_err(|e| {
         AppError::business(
             ErrorCode::Error500,
@@ -896,12 +904,16 @@ pub async fn proxy_save(
         Some(existing) => {
             stream_proxy::update(&state.pool, existing.id as i64, &w, &now)
                 .await
-                .map_err(|e| AppError::business(ErrorCode::Error500, format!("保存代理失败: {e}")))?;
+                .map_err(|e| {
+                    AppError::business(ErrorCode::Error500, format!("保存代理失败: {e}"))
+                })?;
         }
         None => {
             stream_proxy::add(&state.pool, &w, &now)
                 .await
-                .map_err(|e| AppError::business(ErrorCode::Error500, format!("新增代理失败: {e}")))?;
+                .map_err(|e| {
+                    AppError::business(ErrorCode::Error500, format!("新增代理失败: {e}"))
+                })?;
         }
     }
     proxy_row_json(&state, &app, &stream).await
@@ -953,7 +965,9 @@ pub async fn proxy_update(
         .await
         .map_err(|e| AppError::business(ErrorCode::Error500, format!("更新代理失败: {e}")))?;
     // 保存后回读（app/stream 可能被改过，用哪个键回读以库里的最新值为准）
-    let app = opt_trim(&body.app).unwrap_or_else(|| existing.app.as_deref().unwrap_or("proxy")).to_string();
+    let app = opt_trim(&body.app)
+        .unwrap_or_else(|| existing.app.as_deref().unwrap_or("proxy"))
+        .to_string();
     let stream = opt_trim(&body.stream)
         .map(str::to_string)
         .or(existing.stream.clone())
@@ -976,10 +990,7 @@ pub struct ProxyActionQuery {
 }
 
 /// 按 id 或 app+stream 定位代理行。
-async fn resolve_proxy(
-    state: &AppState,
-    q: &ProxyActionQuery,
-) -> Result<StreamProxy, AppError> {
+async fn resolve_proxy(state: &AppState, q: &ProxyActionQuery) -> Result<StreamProxy, AppError> {
     if let Some(id) = q.id.filter(|v| *v > 0) {
         return stream_proxy::get_by_id(&state.pool, id)
             .await?
@@ -1063,7 +1074,12 @@ pub async fn proxy_start(
         if let Err(e) =
             stream_proxy::set_media_server_id(&state.pool, rec.id as i64, &chosen_ms_id, &now).await
         {
-            tracing::warn!("回写拉流代理 {}/{} 的 mediaServerId 失败: {}", app, stream, e);
+            tracing::warn!(
+                "回写拉流代理 {}/{} 的 mediaServerId 失败: {}",
+                app,
+                stream,
+                e
+            );
         }
     }
 
@@ -1167,15 +1183,14 @@ pub async fn proxy_start(
         }
     };
 
-    if let Err(e) = stream_proxy::update_play_state(&state.pool, rec.id as i64, true, "active").await {
+    if let Err(e) =
+        stream_proxy::update_play_state(&state.pool, rec.id as i64, true, "active").await
+    {
         tracing::warn!("代理启动后回写 pulling 失败 id={}: {}", rec.id, e);
     }
     tracing::info!("拉流代理已启动: {app}/{stream} <- {src_url} (key={key})");
 
-    let resolved_media_server_id = state
-        .zlm_server_id(&zlm)
-        .or(ms_hint)
-        .unwrap_or_default();
+    let resolved_media_server_id = state.zlm_server_id(&zlm).or(ms_hint).unwrap_or_default();
     let media_ip = zlm.ip.clone();
     let http_port = zlm.http_port;
     let stream_url = format!("{app}/{stream}");
@@ -1229,7 +1244,9 @@ pub async fn proxy_stop(
     let app = rec.app.clone().unwrap_or_else(|| "proxy".to_string());
     let stream = rec.stream.clone().unwrap_or_default();
     if stream.is_empty() {
-        return Ok(Json(ApiResult::error("代理记录缺少 stream，无法停止".to_string())));
+        return Ok(Json(ApiResult::error(
+            "代理记录缺少 stream，无法停止".to_string(),
+        )));
     }
     let ms_hint = rec
         .media_server_id
@@ -1347,14 +1364,14 @@ pub async fn push_upload(
     if !upload_dir.exists() {
         let _ = std::fs::create_dir_all(&upload_dir);
     }
-    
+
     let mut app = "upload".to_string();
     let mut stream = String::new();
     let mut saved_path = String::new();
-    
+
     while let Some(field) = multipart.next_field().await.unwrap_or(None) {
         let field_name = field.name().unwrap_or_default().to_string();
-        
+
         match field_name.as_str() {
             "file" => {
                 let filename = field.file_name().unwrap_or("upload.bin").to_string();
@@ -1362,24 +1379,30 @@ pub async fn push_upload(
                     .extension()
                     .and_then(|s| s.to_str())
                     .unwrap_or("bin");
-                
+
                 let timestamp = chrono::Utc::now().format("%Y%m%d%H%M%S").to_string();
                 let random_suffix: String = (0..4)
                     .map(|_| char::from(b'a' + rand::random::<u8>() % 26))
                     .collect();
                 stream = format!("{}_{}", timestamp, random_suffix);
-                
+
                 let saved_filename = format!("{}.{}", stream, ext);
                 let filepath = upload_dir.join(&saved_filename);
-                
+
                 let data = field.bytes().await.map_err(|e| {
-                    AppError::business(crate::error::ErrorCode::Error500, format!("读取上传文件失败: {}", e))
+                    AppError::business(
+                        crate::error::ErrorCode::Error500,
+                        format!("读取上传文件失败: {}", e),
+                    )
                 })?;
-                
+
                 std::fs::write(&filepath, &data).map_err(|e| {
-                    AppError::business(crate::error::ErrorCode::Error500, format!("保存文件失败: {}", e))
+                    AppError::business(
+                        crate::error::ErrorCode::Error500,
+                        format!("保存文件失败: {}", e),
+                    )
                 })?;
-                
+
                 saved_path = filepath.to_string_lossy().to_string();
                 tracing::info!("Uploaded file saved: {}", saved_path);
             }
@@ -1396,24 +1419,22 @@ pub async fn push_upload(
             _ => {}
         }
     }
-    
+
     if stream.is_empty() {
         return Ok(Json(ApiResult::error("未提供文件或流名称")));
     }
-    
+
     let media_server_id = "auto".to_string();
     let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    
+
     match stream_push::add(&state.pool, &app, &stream, &media_server_id, &now).await {
-        Ok(_) => {
-            Ok(Json(ApiResult::success(serde_json::json!({
-                "app": app,
-                "stream": stream,
-                "url": saved_path,
-                "mediaServerId": media_server_id,
-                "message": "文件上传成功"
-            }))))
-        }
+        Ok(_) => Ok(Json(ApiResult::success(serde_json::json!({
+            "app": app,
+            "stream": stream,
+            "url": saved_path,
+            "mediaServerId": media_server_id,
+            "message": "文件上传成功"
+        })))),
         Err(e) => {
             tracing::error!("Failed to add push stream record: {}", e);
             Ok(Json(ApiResult::error(format!("数据库错误: {}", e))))
@@ -1490,7 +1511,10 @@ pub async fn push_force_close(
     zlm.close_streams(app.as_deref(), None, Some(&stream), true)
         .await
         .map_err(|e| {
-            AppError::business(ErrorCode::Error500, format!("关闭推流 {} 失败: {}", stream, e))
+            AppError::business(
+                ErrorCode::Error500,
+                format!("关闭推流 {} 失败: {}", stream, e),
+            )
         })?;
 
     if let Err(e) = stream_push::update_pushing_status(&state.pool, q.id, false).await {
@@ -1640,7 +1664,9 @@ mod proxy_tests {
             enable_disable_none_reader: None,
             relates_media_server_id: None,
         };
-        stream_proxy::add(&state.pool, &w, &local_now_str()).await.unwrap();
+        stream_proxy::add(&state.pool, &w, &local_now_str())
+            .await
+            .unwrap();
         let rec = stream_proxy::get_by_app_stream(&state.pool, "lb", "auto-1")
             .await
             .unwrap()
@@ -1648,9 +1674,14 @@ mod proxy_tests {
         assert_eq!(rec.media_server_id.as_deref(), Some("auto"));
 
         // 回写为具体节点后，读取必须拿到具体节点（stop/delete 依据它工作）
-        stream_proxy::set_media_server_id(&state.pool, rec.id as i64, "zlmediakit-2", &local_now_str())
-            .await
-            .unwrap();
+        stream_proxy::set_media_server_id(
+            &state.pool,
+            rec.id as i64,
+            "zlmediakit-2",
+            &local_now_str(),
+        )
+        .await
+        .unwrap();
         let rec = stream_proxy::get_by_app_stream(&state.pool, "lb", "auto-1")
             .await
             .unwrap()
@@ -1830,7 +1861,10 @@ mod proxy_tests {
         assert_eq!(resp.0.data.as_ref().unwrap()["srcUrl"], "rtsp://new");
         assert_eq!(resp.0.data.as_ref().unwrap()["enable"], true);
 
-        let row = stream_proxy::get_by_id(&state.pool, id).await.unwrap().unwrap();
+        let row = stream_proxy::get_by_id(&state.pool, id)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(row.src_url.as_deref(), Some("rtsp://new"));
         assert_eq!(row.enable, Some(true));
         assert_eq!(row.name.as_deref(), Some("改名"));
@@ -2171,7 +2205,10 @@ mod proxy_tests {
         .await
         .unwrap();
         assert_eq!(stopped.0.data.unwrap()["pulling"], false);
-        let row = stream_proxy::get_by_id(&state.pool, id).await.unwrap().unwrap();
+        let row = stream_proxy::get_by_id(&state.pool, id)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(row.pulling, Some(false));
         assert_eq!(row.stream_status.as_deref(), Some("ready"));
     }

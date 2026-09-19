@@ -18,8 +18,12 @@ pub fn inc_missing(n: u64) {
 }
 
 // Phase 7.5 setters
-pub fn set_cluster_nodes_active(n: usize) { CLUSTER_NODES_ACTIVE.store(n, Ordering::Relaxed); }
-pub fn inc_rpc_messages_total() { RPC_MESSAGES_TOTAL.fetch_add(1, Ordering::Relaxed); }
+pub fn set_cluster_nodes_active(n: usize) {
+    CLUSTER_NODES_ACTIVE.store(n, Ordering::Relaxed);
+}
+pub fn inc_rpc_messages_total() {
+    RPC_MESSAGES_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
 pub fn inc_ws_clients(delta: i64) {
     if delta >= 0 {
         WS_CLIENTS_CONNECTED.fetch_add(delta as usize, Ordering::Relaxed);
@@ -27,9 +31,15 @@ pub fn inc_ws_clients(delta: i64) {
         WS_CLIENTS_CONNECTED.fetch_sub((-delta) as usize, Ordering::Relaxed);
     }
 }
-pub fn inc_audit_log_writes_total() { AUDIT_LOG_WRITES_TOTAL.fetch_add(1, Ordering::Relaxed); }
-pub fn inc_audit_log_writes_failed() { AUDIT_LOG_WRITES_FAILED.fetch_add(1, Ordering::Relaxed); }
-pub fn set_redis_state_keys(n: i64) { REDIS_STATE_KEYS.store(n, Ordering::Relaxed); }
+pub fn inc_audit_log_writes_total() {
+    AUDIT_LOG_WRITES_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
+pub fn inc_audit_log_writes_failed() {
+    AUDIT_LOG_WRITES_FAILED.fetch_add(1, Ordering::Relaxed);
+}
+pub fn set_redis_state_keys(n: i64) {
+    REDIS_STATE_KEYS.store(n, Ordering::Relaxed);
+}
 
 pub fn set_active_sessions(n: usize) {
     JT1078_ACTIVE.store(n, Ordering::Relaxed);
@@ -105,6 +115,9 @@ pub fn gather() -> String {
     // Build info
     s.push_str("# HELP gb_build_info Build information\n");
     s.push_str("# TYPE gb_build_info gauge\n");
-    s.push_str(&format!("gb_build_info{{version=\"{}\"}} 1\n", env!("CARGO_PKG_VERSION")));
+    s.push_str(&format!(
+        "gb_build_info{{version=\"{}\"}} 1\n",
+        env!("CARGO_PKG_VERSION")
+    ));
     s
 }

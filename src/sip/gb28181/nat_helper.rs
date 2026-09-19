@@ -21,13 +21,15 @@ impl NatHelper {
         self.stream_ip.as_deref().unwrap_or(&self.local_ip)
     }
 
-    pub fn get_device_real_addr(&self, via_received: Option<&str>, via_rport: Option<u16>, contact_ip: Option<&str>, contact_port: Option<u16>) -> (String, u16) {
-        let ip = via_received
-            .or(contact_ip)
-            .unwrap_or(&self.local_ip);
-        let port = via_rport
-            .or(contact_port)
-            .unwrap_or(5060);
+    pub fn get_device_real_addr(
+        &self,
+        via_received: Option<&str>,
+        via_rport: Option<u16>,
+        contact_ip: Option<&str>,
+        contact_port: Option<u16>,
+    ) -> (String, u16) {
+        let ip = via_received.or(contact_ip).unwrap_or(&self.local_ip);
+        let port = via_rport.or(contact_port).unwrap_or(5060);
         (ip.to_string(), port)
     }
 

@@ -92,7 +92,9 @@ pub struct LegacyFrontEndCommandQuery {
 fn ptz_speed(q: &PtzQuery, action: PtzAction) -> u8 {
     let fallback = q.speed.unwrap_or(50);
     let raw = match action {
-        PtzAction::ZoomIn | PtzAction::ZoomOut => q.zoom_speed.or(q.horizon_speed).unwrap_or(fallback),
+        PtzAction::ZoomIn | PtzAction::ZoomOut => {
+            q.zoom_speed.or(q.horizon_speed).unwrap_or(fallback)
+        }
         _ => q.horizon_speed.or(q.vertical_speed).unwrap_or(fallback),
     };
     raw.clamp(0, 255) as u8
@@ -121,7 +123,12 @@ fn preset_body(cmd: &str, preset_index: u32) -> Option<String> {
 ///
 /// 组合码2 的口径：取值 0-15，
 /// 由本函数左移 4 位写入字节7（此前直接当字节7 写，等于少移了 4 位）。
-fn build_raw_front_end_xml(cmd_code: i32, parameter1: i32, parameter2: i32, combind_code2: i32) -> String {
+fn build_raw_front_end_xml(
+    cmd_code: i32,
+    parameter1: i32,
+    parameter2: i32,
+    combind_code2: i32,
+) -> String {
     build_ptz_cmd_raw(
         (cmd_code & 0xff) as u8,
         (parameter1 & 0xff) as u8,
@@ -198,7 +205,10 @@ async fn send_via_sip(
         let server = &*sip_server;
         if let Some(device) = server.device_manager().get(device_id).await {
             if device.online && device.addr.is_some() {
-                return match server.send_device_control(device_id, channel_id, cmd_type, body).await {
+                return match server
+                    .send_device_control(device_id, channel_id, cmd_type, body)
+                    .await
+                {
                     Ok(_) => Ok(()),
                     Err(e) => Err(format!("SIP send failed: {}", e)),
                 };
@@ -250,7 +260,11 @@ pub async fn ptz(
 
     tracing::info!(
         "PTZ control: device={}, channel={}, cmd={}, action={:?}, speed={}",
-        device_id, channel_id, command, action, speed
+        device_id,
+        channel_id,
+        command,
+        action,
+        speed
     );
 
     let body = format!("<PTZCmd>{}</PTZCmd>", build_ptz_cmd(action, speed));
@@ -294,7 +308,12 @@ pub async fn legacy_front_end_command(
 
     tracing::info!(
         "Legacy front-end command: device={}, channel={}, cmd={}, p1={}, p2={}, c2={}",
-        device_id, channel_id, cmd_code, parameter1, parameter2, combind_code2
+        device_id,
+        channel_id,
+        cmd_code,
+        parameter1,
+        parameter2,
+        combind_code2
     );
 
     let body = build_raw_front_end_xml(cmd_code, parameter1, parameter2, combind_code2);
@@ -333,7 +352,10 @@ pub async fn auxiliary(
 
     tracing::info!(
         "Auxiliary control: device={}, channel={}, cmd={}, switch={}",
-        device_id, channel_id, command, switch_id
+        device_id,
+        channel_id,
+        command,
+        switch_id
     );
 
     let body = build_auxiliary_xml(&command, switch_id);
@@ -369,7 +391,12 @@ pub async fn wiper(
 ) -> Json<serde_json::Value> {
     let command = q.command.clone().unwrap_or_default();
 
-    tracing::info!("Wiper control: device={}, channel={}, cmd={}", device_id, channel_id, command);
+    tracing::info!(
+        "Wiper control: device={}, channel={}, cmd={}",
+        device_id,
+        channel_id,
+        command
+    );
 
     let body = build_wiper_xml(&command);
     match send_via_sip(&state, &device_id, &channel_id, "DeviceControl", &body).await {
@@ -411,10 +438,16 @@ pub async fn iris(
     let speed = q.speed.unwrap_or(50).clamp(0, 255) as u8;
     let body = match lower.as_str() {
         "in" | "open" | "on" | "iris_in" => {
-            format!("<PTZCmd>{}</PTZCmd>", build_fi_cmd(FiAction::IrisOpen, speed))
+            format!(
+                "<PTZCmd>{}</PTZCmd>",
+                build_fi_cmd(FiAction::IrisOpen, speed)
+            )
         }
         "out" | "close" | "off" | "iris_out" => {
-            format!("<PTZCmd>{}</PTZCmd>", build_fi_cmd(FiAction::IrisClose, speed))
+            format!(
+                "<PTZCmd>{}</PTZCmd>",
+                build_fi_cmd(FiAction::IrisClose, speed)
+            )
         }
         // 停止：stop 分支两个方向都不置位，于是指令码停在基址 0x40、速度为 0
         "stop" => format!("<PTZCmd>{}</PTZCmd>", build_ptz_cmd_raw(0x40, 0, 0, 0)),
@@ -470,10 +503,16 @@ pub async fn focus(
     let speed = q.speed.unwrap_or(50).clamp(0, 255) as u8;
     let body = match lower.as_str() {
         "near" | "focus_in" | "on" | "open" => {
-            format!("<PTZCmd>{}</PTZCmd>", build_fi_cmd(FiAction::FocusNear, speed))
+            format!(
+                "<PTZCmd>{}</PTZCmd>",
+                build_fi_cmd(FiAction::FocusNear, speed)
+            )
         }
         "far" | "focus_out" | "off" | "close" => {
-            format!("<PTZCmd>{}</PTZCmd>", build_fi_cmd(FiAction::FocusFar, speed))
+            format!(
+                "<PTZCmd>{}</PTZCmd>",
+                build_fi_cmd(FiAction::FocusFar, speed)
+            )
         }
         "stop" => format!("<PTZCmd>{}</PTZCmd>", build_ptz_cmd_raw(0x40, 0, 0, 0)),
         _ => {
@@ -490,7 +529,15 @@ pub async fn focus(
         channel_device_id,
         command
     );
-    match send_via_sip(&state, &device_id, &channel_device_id, "DeviceControl", &body).await {
+    match send_via_sip(
+        &state,
+        &device_id,
+        &channel_device_id,
+        "DeviceControl",
+        &body,
+    )
+    .await
+    {
         Ok(()) => Json(success_json("焦距控制命令已发送")),
         Err(e) => Json(serde_json::json!({ "code": 1, "msg": e })),
     }
@@ -518,10 +565,22 @@ pub async fn preset_query(
     State(state): State<AppState>,
     Path((device_id, channel_device_id)): Path<(String, String)>,
 ) -> Json<serde_json::Value> {
-    tracing::info!("Preset query: device={}, channel={}", device_id, channel_device_id);
+    tracing::info!(
+        "Preset query: device={}, channel={}",
+        device_id,
+        channel_device_id
+    );
 
     let body = r#"<PTZCmd Query="PresetList"/>"#.to_string();
-    match send_via_sip(&state, &device_id, &channel_device_id, "DeviceControl", &body).await {
+    match send_via_sip(
+        &state,
+        &device_id,
+        &channel_device_id,
+        "DeviceControl",
+        &body,
+    )
+    .await
+    {
         Ok(()) => Json(serde_json::json!({
             "code": 0,
             "data": [],
@@ -562,13 +621,23 @@ pub async fn preset_add(
 
     tracing::info!(
         "Preset add: device={}, channel={}, preset={}",
-        device_id, channel_device_id, preset_id
+        device_id,
+        channel_device_id,
+        preset_id
     );
 
     let Some(body) = preset_body("SET_PRESET", preset_id as u32) else {
         return Json(serde_json::json!({ "code": 1, "msg": "预置位命令构造失败" }));
     };
-    match send_via_sip(&state, &device_id, &channel_device_id, "DeviceControl", &body).await {
+    match send_via_sip(
+        &state,
+        &device_id,
+        &channel_device_id,
+        "DeviceControl",
+        &body,
+    )
+    .await
+    {
         Ok(()) => Json(success_json("预置位添加成功")),
         Err(e) => Json(serde_json::json!({ "code": 1, "msg": e })),
     }
@@ -601,13 +670,23 @@ pub async fn preset_call(
 
     tracing::info!(
         "Preset call: device={}, channel={}, preset={}",
-        device_id, channel_device_id, preset_id
+        device_id,
+        channel_device_id,
+        preset_id
     );
 
     let Some(body) = preset_body("GOTO_PRESET", preset_id as u32) else {
         return Json(serde_json::json!({ "code": 1, "msg": "预置位命令构造失败" }));
     };
-    match send_via_sip(&state, &device_id, &channel_device_id, "DeviceControl", &body).await {
+    match send_via_sip(
+        &state,
+        &device_id,
+        &channel_device_id,
+        "DeviceControl",
+        &body,
+    )
+    .await
+    {
         Ok(()) => Json(success_json("预置位调用成功")),
         Err(e) => Json(serde_json::json!({ "code": 1, "msg": e })),
     }
@@ -640,13 +719,23 @@ pub async fn preset_delete(
 
     tracing::info!(
         "Preset delete: device={}, channel={}, preset={}",
-        device_id, channel_device_id, preset_id
+        device_id,
+        channel_device_id,
+        preset_id
     );
 
     let Some(body) = preset_body("CLEAR_PRESET", preset_id as u32) else {
         return Json(serde_json::json!({ "code": 1, "msg": "预置位命令构造失败" }));
     };
-    match send_via_sip(&state, &device_id, &channel_device_id, "DeviceControl", &body).await {
+    match send_via_sip(
+        &state,
+        &device_id,
+        &channel_device_id,
+        "DeviceControl",
+        &body,
+    )
+    .await
+    {
         Ok(()) => Json(success_json("预置位删除成功")),
         Err(e) => Json(serde_json::json!({ "code": 1, "msg": e })),
     }
@@ -676,16 +765,32 @@ pub async fn cruise_point_add(
     Path((device_id, channel_device_id)): Path<(String, String)>,
     Query(q): Query<CruiseQuery>,
 ) -> Json<serde_json::Value> {
-    let cruise_id = q.cruise_id.clone().unwrap_or_default().parse::<u32>().unwrap_or(0);
+    let cruise_id = q
+        .cruise_id
+        .clone()
+        .unwrap_or_default()
+        .parse::<u32>()
+        .unwrap_or(0);
     let preset_id = q.preset_id.unwrap_or(0) as u32;
 
     tracing::info!(
         "Cruise point add: device={}, channel={}, cruise={}, preset={}",
-        device_id, channel_device_id, cruise_id, preset_id
+        device_id,
+        channel_device_id,
+        cruise_id,
+        preset_id
     );
 
     let body = build_cruise_xml("addPoint", cruise_id, preset_id, 0, 0);
-    match send_via_sip(&state, &device_id, &channel_device_id, "DeviceControl", &body).await {
+    match send_via_sip(
+        &state,
+        &device_id,
+        &channel_device_id,
+        "DeviceControl",
+        &body,
+    )
+    .await
+    {
         Ok(()) => Json(success_json("巡航点添加成功")),
         Err(e) => Json(serde_json::json!({ "code": 1, "msg": e })),
     }
@@ -714,16 +819,32 @@ pub async fn cruise_point_delete(
     Path((device_id, channel_device_id)): Path<(String, String)>,
     Query(q): Query<CruiseQuery>,
 ) -> Json<serde_json::Value> {
-    let cruise_id = q.cruise_id.clone().unwrap_or_default().parse::<u32>().unwrap_or(0);
+    let cruise_id = q
+        .cruise_id
+        .clone()
+        .unwrap_or_default()
+        .parse::<u32>()
+        .unwrap_or(0);
     let preset_id = q.preset_id.unwrap_or(0) as u32;
 
     tracing::info!(
         "Cruise point delete: device={}, channel={}, cruise={}, preset={}",
-        device_id, channel_device_id, cruise_id, preset_id
+        device_id,
+        channel_device_id,
+        cruise_id,
+        preset_id
     );
 
     let body = build_cruise_xml("deletePoint", cruise_id, preset_id, 0, 0);
-    match send_via_sip(&state, &device_id, &channel_device_id, "DeviceControl", &body).await {
+    match send_via_sip(
+        &state,
+        &device_id,
+        &channel_device_id,
+        "DeviceControl",
+        &body,
+    )
+    .await
+    {
         Ok(()) => Json(success_json("巡航点删除成功")),
         Err(e) => Json(serde_json::json!({ "code": 1, "msg": e })),
     }
@@ -752,16 +873,32 @@ pub async fn cruise_speed(
     Path((device_id, channel_device_id)): Path<(String, String)>,
     Query(q): Query<CruiseQuery>,
 ) -> Json<serde_json::Value> {
-    let cruise_id = q.cruise_id.clone().unwrap_or_default().parse::<u32>().unwrap_or(0);
+    let cruise_id = q
+        .cruise_id
+        .clone()
+        .unwrap_or_default()
+        .parse::<u32>()
+        .unwrap_or(0);
     let speed = q.speed.unwrap_or(1) as u8;
 
     tracing::info!(
         "Cruise speed: device={}, channel={}, cruise={}, speed={}",
-        device_id, channel_device_id, cruise_id, speed
+        device_id,
+        channel_device_id,
+        cruise_id,
+        speed
     );
 
     let body = build_cruise_xml("speed", cruise_id, 0, speed, 0);
-    match send_via_sip(&state, &device_id, &channel_device_id, "DeviceControl", &body).await {
+    match send_via_sip(
+        &state,
+        &device_id,
+        &channel_device_id,
+        "DeviceControl",
+        &body,
+    )
+    .await
+    {
         Ok(()) => Json(success_json("巡航速度设置成功")),
         Err(e) => Json(serde_json::json!({ "code": 1, "msg": e })),
     }
@@ -790,16 +927,32 @@ pub async fn cruise_time(
     Path((device_id, channel_device_id)): Path<(String, String)>,
     Query(q): Query<CruiseQuery>,
 ) -> Json<serde_json::Value> {
-    let cruise_id = q.cruise_id.clone().unwrap_or_default().parse::<u32>().unwrap_or(0);
+    let cruise_id = q
+        .cruise_id
+        .clone()
+        .unwrap_or_default()
+        .parse::<u32>()
+        .unwrap_or(0);
     let time = q.time.unwrap_or(10) as u32;
 
     tracing::info!(
         "Cruise time: device={}, channel={}, cruise={}, time={}",
-        device_id, channel_device_id, cruise_id, time
+        device_id,
+        channel_device_id,
+        cruise_id,
+        time
     );
 
     let body = build_cruise_xml("time", cruise_id, 0, 0, time);
-    match send_via_sip(&state, &device_id, &channel_device_id, "DeviceControl", &body).await {
+    match send_via_sip(
+        &state,
+        &device_id,
+        &channel_device_id,
+        "DeviceControl",
+        &body,
+    )
+    .await
+    {
         Ok(()) => Json(success_json("巡航时间设置成功")),
         Err(e) => Json(serde_json::json!({ "code": 1, "msg": e })),
     }
@@ -828,15 +981,30 @@ pub async fn cruise_start(
     Path((device_id, channel_device_id)): Path<(String, String)>,
     Query(q): Query<CruiseQuery>,
 ) -> Json<serde_json::Value> {
-    let cruise_id = q.cruise_id.clone().unwrap_or_default().parse::<u32>().unwrap_or(0);
+    let cruise_id = q
+        .cruise_id
+        .clone()
+        .unwrap_or_default()
+        .parse::<u32>()
+        .unwrap_or(0);
 
     tracing::info!(
         "Cruise start: device={}, channel={}, cruise={}",
-        device_id, channel_device_id, cruise_id
+        device_id,
+        channel_device_id,
+        cruise_id
     );
 
     let body = build_cruise_xml("start", cruise_id, 0, 0, 0);
-    match send_via_sip(&state, &device_id, &channel_device_id, "DeviceControl", &body).await {
+    match send_via_sip(
+        &state,
+        &device_id,
+        &channel_device_id,
+        "DeviceControl",
+        &body,
+    )
+    .await
+    {
         Ok(()) => Json(success_json("巡航启动成功")),
         Err(e) => Json(serde_json::json!({ "code": 1, "msg": e })),
     }
@@ -865,15 +1033,30 @@ pub async fn cruise_stop(
     Path((device_id, channel_device_id)): Path<(String, String)>,
     Query(q): Query<CruiseQuery>,
 ) -> Json<serde_json::Value> {
-    let cruise_id = q.cruise_id.clone().unwrap_or_default().parse::<u32>().unwrap_or(0);
+    let cruise_id = q
+        .cruise_id
+        .clone()
+        .unwrap_or_default()
+        .parse::<u32>()
+        .unwrap_or(0);
 
     tracing::info!(
         "Cruise stop: device={}, channel={}, cruise={}",
-        device_id, channel_device_id, cruise_id
+        device_id,
+        channel_device_id,
+        cruise_id
     );
 
     let body = build_cruise_xml("stop", cruise_id, 0, 0, 0);
-    match send_via_sip(&state, &device_id, &channel_device_id, "DeviceControl", &body).await {
+    match send_via_sip(
+        &state,
+        &device_id,
+        &channel_device_id,
+        "DeviceControl",
+        &body,
+    )
+    .await
+    {
         Ok(()) => Json(success_json("巡航停止成功")),
         Err(e) => Json(serde_json::json!({ "code": 1, "msg": e })),
     }
@@ -903,16 +1086,32 @@ pub async fn scan_set_speed(
     Path((device_id, channel_device_id)): Path<(String, String)>,
     Query(q): Query<ScanQuery>,
 ) -> Json<serde_json::Value> {
-    let scan_id = q.scan_id.clone().unwrap_or_default().parse::<u32>().unwrap_or(0);
+    let scan_id = q
+        .scan_id
+        .clone()
+        .unwrap_or_default()
+        .parse::<u32>()
+        .unwrap_or(0);
     let speed = q.speed.unwrap_or(1) as u8;
 
     tracing::info!(
         "Scan set speed: device={}, channel={}, scan={}, speed={}",
-        device_id, channel_device_id, scan_id, speed
+        device_id,
+        channel_device_id,
+        scan_id,
+        speed
     );
 
     let body = build_scan_xml("setSpeed", scan_id, speed);
-    match send_via_sip(&state, &device_id, &channel_device_id, "DeviceControl", &body).await {
+    match send_via_sip(
+        &state,
+        &device_id,
+        &channel_device_id,
+        "DeviceControl",
+        &body,
+    )
+    .await
+    {
         Ok(()) => Json(success_json("扫描速度设置成功")),
         Err(e) => Json(serde_json::json!({ "code": 1, "msg": e })),
     }
@@ -941,15 +1140,30 @@ pub async fn scan_set_left(
     Path((device_id, channel_device_id)): Path<(String, String)>,
     Query(q): Query<ScanQuery>,
 ) -> Json<serde_json::Value> {
-    let scan_id = q.scan_id.clone().unwrap_or_default().parse::<u32>().unwrap_or(0);
+    let scan_id = q
+        .scan_id
+        .clone()
+        .unwrap_or_default()
+        .parse::<u32>()
+        .unwrap_or(0);
 
     tracing::info!(
         "Scan set left: device={}, channel={}, scan={}",
-        device_id, channel_device_id, scan_id
+        device_id,
+        channel_device_id,
+        scan_id
     );
 
     let body = build_scan_xml("setLeft", scan_id, 0);
-    match send_via_sip(&state, &device_id, &channel_device_id, "DeviceControl", &body).await {
+    match send_via_sip(
+        &state,
+        &device_id,
+        &channel_device_id,
+        "DeviceControl",
+        &body,
+    )
+    .await
+    {
         Ok(()) => Json(success_json("左边界设置成功")),
         Err(e) => Json(serde_json::json!({ "code": 1, "msg": e })),
     }
@@ -978,15 +1192,30 @@ pub async fn scan_set_right(
     Path((device_id, channel_device_id)): Path<(String, String)>,
     Query(q): Query<ScanQuery>,
 ) -> Json<serde_json::Value> {
-    let scan_id = q.scan_id.clone().unwrap_or_default().parse::<u32>().unwrap_or(0);
+    let scan_id = q
+        .scan_id
+        .clone()
+        .unwrap_or_default()
+        .parse::<u32>()
+        .unwrap_or(0);
 
     tracing::info!(
         "Scan set right: device={}, channel={}, scan={}",
-        device_id, channel_device_id, scan_id
+        device_id,
+        channel_device_id,
+        scan_id
     );
 
     let body = build_scan_xml("setRight", scan_id, 0);
-    match send_via_sip(&state, &device_id, &channel_device_id, "DeviceControl", &body).await {
+    match send_via_sip(
+        &state,
+        &device_id,
+        &channel_device_id,
+        "DeviceControl",
+        &body,
+    )
+    .await
+    {
         Ok(()) => Json(success_json("右边界设置成功")),
         Err(e) => Json(serde_json::json!({ "code": 1, "msg": e })),
     }
@@ -1015,15 +1244,30 @@ pub async fn scan_start(
     Path((device_id, channel_device_id)): Path<(String, String)>,
     Query(q): Query<ScanQuery>,
 ) -> Json<serde_json::Value> {
-    let scan_id = q.scan_id.clone().unwrap_or_default().parse::<u32>().unwrap_or(0);
+    let scan_id = q
+        .scan_id
+        .clone()
+        .unwrap_or_default()
+        .parse::<u32>()
+        .unwrap_or(0);
 
     tracing::info!(
         "Scan start: device={}, channel={}, scan={}",
-        device_id, channel_device_id, scan_id
+        device_id,
+        channel_device_id,
+        scan_id
     );
 
     let body = build_scan_xml("start", scan_id, 0);
-    match send_via_sip(&state, &device_id, &channel_device_id, "DeviceControl", &body).await {
+    match send_via_sip(
+        &state,
+        &device_id,
+        &channel_device_id,
+        "DeviceControl",
+        &body,
+    )
+    .await
+    {
         Ok(()) => Json(success_json("扫描启动成功")),
         Err(e) => Json(serde_json::json!({ "code": 1, "msg": e })),
     }
@@ -1052,15 +1296,30 @@ pub async fn scan_stop(
     Path((device_id, channel_device_id)): Path<(String, String)>,
     Query(q): Query<ScanQuery>,
 ) -> Json<serde_json::Value> {
-    let scan_id = q.scan_id.clone().unwrap_or_default().parse::<u32>().unwrap_or(0);
+    let scan_id = q
+        .scan_id
+        .clone()
+        .unwrap_or_default()
+        .parse::<u32>()
+        .unwrap_or(0);
 
     tracing::info!(
         "Scan stop: device={}, channel={}, scan={}",
-        device_id, channel_device_id, scan_id
+        device_id,
+        channel_device_id,
+        scan_id
     );
 
     let body = build_scan_xml("stop", scan_id, 0);
-    match send_via_sip(&state, &device_id, &channel_device_id, "DeviceControl", &body).await {
+    match send_via_sip(
+        &state,
+        &device_id,
+        &channel_device_id,
+        "DeviceControl",
+        &body,
+    )
+    .await
+    {
         Ok(()) => Json(success_json("扫描停止成功")),
         Err(e) => Json(serde_json::json!({ "code": 1, "msg": e })),
     }
@@ -1217,8 +1476,14 @@ mod front_end_wire_tests {
         let istop = assert_valid_ptzcmd(&iris_body("stop", 30).unwrap());
         assert_eq!(&istop[..6], &[0xA5, 0x0F, 0x01, 0x40, 0x00, 0x00]);
         // 旧前端的取值继续可用
-        assert_eq!(assert_valid_ptzcmd(&focus_body("focus_in", 1).unwrap())[3], 0x42);
-        assert_eq!(assert_valid_ptzcmd(&iris_body("close", 1).unwrap())[3], 0x44);
+        assert_eq!(
+            assert_valid_ptzcmd(&focus_body("focus_in", 1).unwrap())[3],
+            0x42
+        );
+        assert_eq!(
+            assert_valid_ptzcmd(&iris_body("close", 1).unwrap())[3],
+            0x44
+        );
         // 拼错要报错，而不是静默下发错误指令
         assert!(focus_body("nope", 1).is_none());
         assert!(iris_body("nope", 1).is_none());
@@ -1295,9 +1560,10 @@ mod front_end_query_alias_tests {
     /// axum 的 `Query`（serde_urlencoded）等价。
     #[test]
     fn test_ptz_query_aliases() {
-        let q: PtzQuery =
-            serde_json::from_value(serde_json::json!({"cmd": "up", "horizonSpeed": 31, "speed": 9}))
-                .unwrap();
+        let q: PtzQuery = serde_json::from_value(
+            serde_json::json!({"cmd": "up", "horizonSpeed": 31, "speed": 9}),
+        )
+        .unwrap();
         assert_eq!(q.command.as_deref(), Some("up"), "`cmd` 必须能绑到 command");
         assert_eq!(q.horizon_speed, Some(31));
         assert_eq!(q.speed, Some(9));

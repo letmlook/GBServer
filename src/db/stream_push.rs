@@ -99,15 +99,17 @@ pub async fn ensure_stream_status_column(pool: &Pool) -> sqlx::Result<()> {
     #[cfg(feature = "sqlite")]
     {
         let exists: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM pragma_table_info('gb_stream_push') WHERE name = 'stream_status'"
+            "SELECT COUNT(*) FROM pragma_table_info('gb_stream_push') WHERE name = 'stream_status'",
         )
         .fetch_one(pool)
         .await
         .unwrap_or(0);
         if exists == 0 {
-            let _ = sqlx::query("ALTER TABLE gb_stream_push ADD COLUMN stream_status TEXT NOT NULL DEFAULT 'ready'")
-                .execute(pool)
-                .await?;
+            let _ = sqlx::query(
+                "ALTER TABLE gb_stream_push ADD COLUMN stream_status TEXT NOT NULL DEFAULT 'ready'",
+            )
+            .execute(pool)
+            .await?;
         }
     }
     // MySQL: information_schema 检测
@@ -295,7 +297,7 @@ pub async fn update(
            stream = COALESCE(?, stream),
            media_server_id = COALESCE(?, media_server_id),
            update_time = ?
-           WHERE id = ?"#
+           WHERE id = ?"#,
     )
     .bind(app)
     .bind(stream)
@@ -311,7 +313,7 @@ pub async fn update(
            stream = COALESCE($2, stream),
            media_server_id = COALESCE($3, media_server_id),
            update_time = $4
-           WHERE id = $5"#
+           WHERE id = $5"#,
     )
     .bind(app)
     .bind(stream)
@@ -327,7 +329,7 @@ pub async fn update(
            stream = COALESCE(?, stream),
            media_server_id = COALESCE(?, media_server_id),
            update_time = ?
-           WHERE id = ?"#
+           WHERE id = ?"#,
     )
     .bind(app)
     .bind(stream)
@@ -343,19 +345,19 @@ pub async fn update(
 pub async fn delete_by_id(pool: &Pool, id: i64) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
     let r = sqlx::query("DELETE FROM gb_stream_push WHERE id = ?")
-    .bind(id)
-    .execute(pool)
-    .await?;
+        .bind(id)
+        .execute(pool)
+        .await?;
     #[cfg(feature = "postgres")]
     let r = sqlx::query("DELETE FROM gb_stream_push WHERE id = $1")
-    .bind(id)
-    .execute(pool)
-    .await?;
+        .bind(id)
+        .execute(pool)
+        .await?;
     #[cfg(feature = "sqlite")]
     let r = sqlx::query("DELETE FROM gb_stream_push WHERE id = ?")
-    .bind(id)
-    .execute(pool)
-    .await?;
+        .bind(id)
+        .execute(pool)
+        .await?;
     Ok(r.rows_affected())
 }
 
@@ -386,7 +388,11 @@ pub async fn list_paged(
          push_time, status, update_time, pushing, self as self_push, start_offline_push, stream_status, gb_device_id, gb_channel_id \
          FROM gb_stream_push";
     let limit_ph = if cfg!(feature = "postgres") {
-        format!(" LIMIT ${} OFFSET ${}", w.binds.len() + 1, w.binds.len() + 2)
+        format!(
+            " LIMIT ${} OFFSET ${}",
+            w.binds.len() + 1,
+            w.binds.len() + 2
+        )
     } else {
         " LIMIT ? OFFSET ?".to_string()
     };
@@ -412,7 +418,10 @@ fn push_filter(
     use crate::dyn_where::{BindValue, DynWhere};
     let mut w = DynWhere::new();
     if let Some(mid) = media_server_id.filter(|s| !s.is_empty()) {
-        w.add("media_server_id = ?", vec![BindValue::Text(mid.to_string())]);
+        w.add(
+            "media_server_id = ?",
+            vec![BindValue::Text(mid.to_string())],
+        );
     }
     if let Some(p) = pushing {
         // postgres 的 `pushing` 是 bool 列，绑 Int 会 `boolean = integer` 直接 500。
@@ -568,7 +577,11 @@ pub async fn update_status(pool: &Pool, id: i64, status: bool) -> sqlx::Result<u
 }
 
 /// 根据app和stream查询推流记录
-pub async fn get_by_app_stream(pool: &Pool, app: &str, stream: &str) -> sqlx::Result<Option<StreamPush>> {
+pub async fn get_by_app_stream(
+    pool: &Pool,
+    app: &str,
+    stream: &str,
+) -> sqlx::Result<Option<StreamPush>> {
     #[cfg(feature = "mysql")]
     return sqlx::query_as::<_, StreamPush>(
         "SELECT id, app, stream, create_time, media_server_id, server_id, push_time, status, update_time, pushing, self as self_push, start_offline_push, stream_status, gb_device_id, gb_channel_id FROM gb_stream_push WHERE app = ? AND stream = ?"
@@ -618,19 +631,35 @@ mod push_filter_tests {
         seed(&pool, "push", "cam1").await;
         seed(&pool, "push", "gate1").await;
 
-        let all = super::list_paged(&pool, 1, 10, None, None, None).await.unwrap();
+        let all = super::list_paged(&pool, 1, 10, None, None, None)
+            .await
+            .unwrap();
         assert_eq!(all.len(), 2);
 
-        let hit = super::list_paged(&pool, 1, 10, None, None, Some("cam")).await.unwrap();
+        let hit = super::list_paged(&pool, 1, 10, None, None, Some("cam"))
+            .await
+            .unwrap();
         assert_eq!(hit.len(), 1);
         assert_eq!(hit[0].stream.as_deref(), Some("cam1"));
 
-        let by_app = super::list_paged(&pool, 1, 10, None, None, Some("gate")).await.unwrap();
+        let by_app = super::list_paged(&pool, 1, 10, None, None, Some("gate"))
+            .await
+            .unwrap();
         assert_eq!(by_app.len(), 1);
 
         assert_eq!(super::count_all(&pool, None, None, None).await.unwrap(), 2);
-        assert_eq!(super::count_all(&pool, None, None, Some("cam")).await.unwrap(), 1);
-        assert_eq!(super::count_all(&pool, None, None, Some("nope")).await.unwrap(), 0);
+        assert_eq!(
+            super::count_all(&pool, None, None, Some("cam"))
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            super::count_all(&pool, None, None, Some("nope"))
+                .await
+                .unwrap(),
+            0
+        );
     }
 
     /// 列表序列化成 camelCase（前端读 mediaServerId/createTime），
@@ -639,7 +668,9 @@ mod push_filter_tests {
     async fn test_list_serializes_camel_case() {
         let pool = sqlite_pool_with_schema().await;
         seed(&pool, "push", "cam1").await;
-        let rows = super::list_paged(&pool, 1, 10, None, None, None).await.unwrap();
+        let rows = super::list_paged(&pool, 1, 10, None, None, None)
+            .await
+            .unwrap();
         let v = serde_json::to_value(&rows[0]).unwrap();
         assert!(v.get("mediaServerId").is_some(), "必须是 camelCase: {v}");
         assert!(v.get("createTime").is_some());
@@ -654,17 +685,35 @@ mod push_filter_tests {
         let pool = sqlite_pool_with_schema().await;
         seed(&pool, "push", "cam1").await;
 
-        let n = super::set_gb_binding(&pool, 1, Some("34020000001320000001"), Some("34020000001310000001"), "now")
+        let n = super::set_gb_binding(
+            &pool,
+            1,
+            Some("34020000001320000001"),
+            Some("34020000001310000001"),
+            "now",
+        )
+        .await
+        .unwrap();
+        assert_eq!(n, 1);
+        let rows = super::list_paged(&pool, 1, 10, None, None, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            rows[0].gb_device_id.as_deref(),
+            Some("34020000001320000001")
+        );
+        assert_eq!(
+            rows[0].gb_channel_id.as_deref(),
+            Some("34020000001310000001")
+        );
+
+        let n = super::set_gb_binding(&pool, 1, None, None, "now")
             .await
             .unwrap();
         assert_eq!(n, 1);
-        let rows = super::list_paged(&pool, 1, 10, None, None, None).await.unwrap();
-        assert_eq!(rows[0].gb_device_id.as_deref(), Some("34020000001320000001"));
-        assert_eq!(rows[0].gb_channel_id.as_deref(), Some("34020000001310000001"));
-
-        let n = super::set_gb_binding(&pool, 1, None, None, "now").await.unwrap();
-        assert_eq!(n, 1);
-        let rows = super::list_paged(&pool, 1, 10, None, None, None).await.unwrap();
+        let rows = super::list_paged(&pool, 1, 10, None, None, None)
+            .await
+            .unwrap();
         assert!(rows[0].gb_device_id.is_none());
     }
 }

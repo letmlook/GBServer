@@ -1,9 +1,9 @@
 use axum::{extract::Path, extract::Query, extract::State, Json};
 use utoipa::IntoParams;
 
+use crate::db::device as db_device;
 use crate::response::ApiResult;
 use crate::AppState;
-use crate::db::device as db_device;
 
 /// 从 SDP 文本里解析首个 m=video/m=audio 的端口号。
 ///
@@ -46,7 +46,9 @@ async fn play_urls_json(
         "transport": transport,
     });
     if hls_available {
-        out["hls"] = serde_json::json!(crate::zlm::address_builder::hls_url(ip, http, "rtp", stream_id));
+        out["hls"] = serde_json::json!(crate::zlm::address_builder::hls_url(
+            ip, http, "rtp", stream_id
+        ));
     }
     out
 }
@@ -89,16 +91,19 @@ pub async fn play_start(
         }
     };
 
-    let channel = match db_device::get_channel_by_device_and_channel_id(&state.pool, &device_id, &channel_id).await {
-        Ok(Some(c)) => c,
-        Ok(None) => {
-            return Json(ApiResult::error("Channel not found"));
-        }
-        Err(e) => {
-            tracing::error!("Failed to query channel: {}", e);
-            return Json(ApiResult::error("Database error"));
-        }
-    };
+    let channel =
+        match db_device::get_channel_by_device_and_channel_id(&state.pool, &device_id, &channel_id)
+            .await
+        {
+            Ok(Some(c)) => c,
+            Ok(None) => {
+                return Json(ApiResult::error("Channel not found"));
+            }
+            Err(e) => {
+                tracing::error!("Failed to query channel: {}", e);
+                return Json(ApiResult::error("Database error"));
+            }
+        };
 
     if !device.on_line.unwrap_or(false) {
         return Json(ApiResult::error("Device is offline"));
@@ -159,14 +164,16 @@ pub async fn play_start(
             Ok(s) => s,
             Err(e) => {
                 let msg = e.to_string();
-                let already_exists = msg.contains("-300")
-                    || msg.to_lowercase().contains("already exist");
+                let already_exists =
+                    msg.contains("-300") || msg.to_lowercase().contains("already exist");
                 if already_exists {
                     match zlm_client.get_rtp_info(&stream_id).await {
                         Ok(Some(info)) => {
                             tracing::info!(
                                 "流 {stream_id} 已存在（local_port={} peer={}:{}），复用现有流",
-                                info.local_port, info.peer_ip, info.peer_port
+                                info.local_port,
+                                info.peer_ip,
+                                info.peer_port
                             );
                             // 复用的流也刷新一次缩略图（可能已经播了很久，
                             // 画面早就变了）
@@ -175,16 +182,18 @@ pub async fn play_start(
                                 device_id.clone(),
                                 channel_id.clone(),
                             );
-                            return Json(ApiResult::success(play_urls_json(
-                                zlm_client,
-                                &stream_id,
-                                &device_id,
-                                &channel_id,
-                                channel.has_audio.unwrap_or(false),
-                                &ssrc,
-                                &transport_mode,
-                            )
-                            .await));
+                            return Json(ApiResult::success(
+                                play_urls_json(
+                                    zlm_client,
+                                    &stream_id,
+                                    &device_id,
+                                    &channel_id,
+                                    channel.has_audio.unwrap_or(false),
+                                    &ssrc,
+                                    &transport_mode,
+                                )
+                                .await,
+                            ));
                         }
                         Ok(None) => {
                             tracing::warn!(
@@ -196,9 +205,7 @@ pub async fn play_start(
                             match zlm_client.open_rtp_server(&rtp_req).await {
                                 Ok(s2) => s2,
                                 Err(e2) => {
-                                    tracing::error!(
-                                        "openRtpServer 重试仍失败 {stream_id}: {e2}"
-                                    );
+                                    tracing::error!("openRtpServer 重试仍失败 {stream_id}: {e2}");
                                     return Json(ApiResult::error(format!(
                                         "Media Server error: {}",
                                         e2
@@ -213,9 +220,7 @@ pub async fn play_start(
                             match zlm_client.open_rtp_server(&rtp_req).await {
                                 Ok(s2) => s2,
                                 Err(e2) => {
-                                    tracing::error!(
-                                        "openRtpServer 重试仍失败 {stream_id}: {e2}"
-                                    );
+                                    tracing::error!("openRtpServer 重试仍失败 {stream_id}: {e2}");
                                     return Json(ApiResult::error(format!(
                                         "Media Server error: {}",
                                         e2
@@ -231,7 +236,11 @@ pub async fn play_start(
             }
         };
 
-        tracing::info!("ZLM RTP server opened on port {} (transport={})", rtp_server.port, transport_mode);
+        tracing::info!(
+            "ZLM RTP server opened on port {} (transport={})",
+            rtp_server.port,
+            transport_mode
+        );
 
         // 端口是否落在"对外发布的收流范围"内。ZLM 的端口池是**启动时**按
         // config.ini 的 rtp_proxy.port_range 建立的；如果 compose 只发布了
@@ -315,7 +324,10 @@ pub async fn play_start(
                 device.ip.as_deref().unwrap_or("0.0.0.0"),
                 device_port
             );
-            if let Err(e) = zlm_client.connect_rtp_server(&stream_id, &dst, device_port, None).await {
+            if let Err(e) = zlm_client
+                .connect_rtp_server(&stream_id, &dst, device_port, None)
+                .await
+            {
                 tracing::error!(
                     "connectRtpServer to TCP-PASSIVE device:{} failed: {}",
                     device_port,
@@ -355,11 +367,23 @@ pub async fn play_start(
             return Json(ApiResult::success(payload));
         }
 
-        match sip.send_play_invite_and_wait_media(
-            &device_id, &channel_id, rtp_server.port, &stream_id, Some(&ssrc), 15,
-        ).await {
+        match sip
+            .send_play_invite_and_wait_media(
+                &device_id,
+                &channel_id,
+                rtp_server.port,
+                &stream_id,
+                Some(&ssrc),
+                15,
+            )
+            .await
+        {
             Ok((_call_id, _zlm_stream_id, invite_resp)) => {
-                tracing::info!("SIP INVITE + ZLM media ready for {}/{}", device_id, channel_id);
+                tracing::info!(
+                    "SIP INVITE + ZLM media ready for {}/{}",
+                    device_id,
+                    channel_id
+                );
 
                 // 解析设备 200 OK SDP,如果 m= 端口和 ZLM RTP server 端口不一致
                 // (gbcpp/1.0 等非标准设备),用 connectRtpServer 让 ZLM 主动
@@ -379,17 +403,20 @@ pub async fn play_start(
                                     device.ip.as_deref().unwrap_or("0.0.0.0"),
                                     device_port
                                 );
-                                if let Err(e) =
-                                    zlm_client.connect_rtp_server(&stream_id, &dst, device_port, None).await
+                                if let Err(e) = zlm_client
+                                    .connect_rtp_server(&stream_id, &dst, device_port, None)
+                                    .await
                                 {
                                     tracing::error!(
                                         "connectRtpServer to device:{} failed: {}",
-                                        device_port, e
+                                        device_port,
+                                        e
                                     );
                                 } else {
                                     tracing::info!(
                                         "ZLM connectRtpServer -> {} (stream_id={})",
-                                        dst, stream_id
+                                        dst,
+                                        stream_id
                                     );
                                 }
                             }
@@ -478,12 +505,14 @@ pub async fn play_stop(
     };
 
     let stream_id = format!("{}_{}", device_id, channel_id);
-    
+
     // 1. 通知 ZLM 停止该流的接收
     if let Some(ref zlm_client) = state.zlm_client {
         let _ = zlm_client.close_rtp_server(&stream_id).await;
         // 为了干净，把相关的 session 都踢掉
-        let _ = zlm_client.close_streams(None, Some("rtp"), Some(&stream_id), true).await;
+        let _ = zlm_client
+            .close_streams(None, Some("rtp"), Some(&stream_id), true)
+            .await;
         tracing::debug!("ZLM resources cleaned for stream={}", stream_id);
     }
 
@@ -493,7 +522,11 @@ pub async fn play_stop(
     let sip = &*sip_server;
     match sip.send_session_bye(&device_id, &channel_id).await {
         Ok(call_id) => {
-            tracing::info!("Session BYE sent for stream {} call_id={}", stream_id, call_id);
+            tracing::info!(
+                "Session BYE sent for stream {} call_id={}",
+                stream_id,
+                call_id
+            );
             // 返回 call_id 给调用方以便排查
             return Json(ApiResult::success(serde_json::json!({"callId": call_id})));
         }
@@ -529,7 +562,11 @@ pub async fn broadcast_start(
     State(state): State<AppState>,
     Path((device_id, channel_id)): Path<(String, String)>,
 ) -> Json<ApiResult<serde_json::Value>> {
-    tracing::info!("Broadcast start: device={}, channel={}", device_id, channel_id);
+    tracing::info!(
+        "Broadcast start: device={}, channel={}",
+        device_id,
+        channel_id
+    );
 
     let device = match db_device::get_device_by_device_id(&state.pool, &device_id).await {
         Ok(Some(d)) => d,
@@ -557,7 +594,12 @@ pub async fn broadcast_start(
     // Phase 3.5: broadcast 走独立 BroadcastManager，不再共享 talk_invite
     match sip.send_broadcast_invite(&device_id, &channel_id).await {
         Ok(call_id) => {
-            tracing::info!("Broadcast INVITE sent to {}/{} call_id={}", device_id, channel_id, call_id);
+            tracing::info!(
+                "Broadcast INVITE sent to {}/{} call_id={}",
+                device_id,
+                channel_id,
+                call_id
+            );
             Json(ApiResult::success(serde_json::json!({
                 "deviceId": device_id,
                 "channelId": channel_id,
@@ -596,7 +638,11 @@ pub async fn broadcast_stop(
     State(state): State<AppState>,
     Path((device_id, channel_id)): Path<(String, String)>,
 ) -> Json<ApiResult<serde_json::Value>> {
-    tracing::info!("Broadcast stop: device={}, channel={}", device_id, channel_id);
+    tracing::info!(
+        "Broadcast stop: device={}, channel={}",
+        device_id,
+        channel_id
+    );
 
     let sip_server = match &state.sip_server {
         Some(s) => s.clone(),
@@ -688,11 +734,7 @@ pub async fn play_share_create(
         .unwrap_or(0);
     let expires_at = now + ttl;
 
-    let token = format!(
-        "share_{:x}_{:08x}",
-        expires_at,
-        rand::random::<u32>()
-    );
+    let token = format!("share_{:x}_{:08x}", expires_at, rand::random::<u32>());
 
     let entry = ShareToken {
         token: token.clone(),
@@ -899,8 +941,14 @@ mod share_token_tests {
         {
             let mut tokens = share_tokens_store().lock().unwrap();
             tokens.retain(|t| t.expires_at > now);
-            assert!(tokens.iter().any(|t| t.token == live), "未过期 token 应可查到");
-            assert!(!tokens.iter().any(|t| t.token == expired), "过期 token 应被 GC");
+            assert!(
+                tokens.iter().any(|t| t.token == live),
+                "未过期 token 应可查到"
+            );
+            assert!(
+                !tokens.iter().any(|t| t.token == expired),
+                "过期 token 应被 GC"
+            );
             assert!(
                 !tokens.iter().any(|t| t.token == "definitely-not-a-token"),
                 "伪造 token 不应命中"
@@ -952,24 +1000,19 @@ pub async fn play_convert_stop(
     let media_server_id = q.media_server_id.clone().unwrap_or_default();
     // 接口要求显式给 mediaServerId；缺省时按"所有节点都试一遍"更实用，
     // 但要在响应里说清楚是哪个节点删掉的。
-    let clients: Vec<(String, std::sync::Arc<crate::zlm::ZlmClient>)> = if media_server_id
-        .is_empty()
-    {
-        state
-            .zlm_clients
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect()
-    } else {
-        match state.zlm_clients.get(&media_server_id) {
-            Some(c) => vec![(media_server_id.clone(), c.clone())],
-            None => {
-                return Json(ApiResult::error(format!(
-                    "流媒体不存在: {media_server_id}"
-                )))
+    let clients: Vec<(String, std::sync::Arc<crate::zlm::ZlmClient>)> =
+        if media_server_id.is_empty() {
+            state
+                .zlm_clients
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect()
+        } else {
+            match state.zlm_clients.get(&media_server_id) {
+                Some(c) => vec![(media_server_id.clone(), c.clone())],
+                None => return Json(ApiResult::error(format!("流媒体不存在: {media_server_id}"))),
             }
-        }
-    };
+        };
     if clients.is_empty() {
         return Json(ApiResult::error("没有可用的流媒体节点"));
     }

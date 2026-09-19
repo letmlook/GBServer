@@ -124,11 +124,7 @@ fn tile_lat(y: f64, n: f64) -> f64 {
 }
 
 /// 通道是否落在瓦片内（左闭右开，与瓦片编号一致）
-pub(crate) fn channel_in_tile(
-    lon: f64,
-    lat: f64,
-    bounds: (f64, f64, f64, f64),
-) -> bool {
+pub(crate) fn channel_in_tile(lon: f64, lat: f64, bounds: (f64, f64, f64, f64)) -> bool {
     let (lon_min, lon_max, lat_min, lat_max) = bounds;
     lon >= lon_min && lon < lon_max && lat >= lat_min && lat < lat_max
 }
@@ -297,12 +293,11 @@ pub async fn front_end_common(
     let success_msg = format!("指令 {} 已下发", cmd_upper);
     // lookup_channel_and_send 采用 commonChannel 的 {code,msg} 契约；
     // 这里转成 ApiResult 信封，并把真实的失败原因透传出去
-    let Json(inner) = crate::handlers::common_channel::lookup_channel_and_send(
-        &state,
-        channel_id,
-        move |_| (sip_cmd_type, body, success_msg),
-    )
-    .await;
+    let Json(inner) =
+        crate::handlers::common_channel::lookup_channel_and_send(&state, channel_id, move |_| {
+            (sip_cmd_type, body, success_msg)
+        })
+        .await;
 
     if inner.get("code").and_then(|c| c.as_i64()) == Some(0) {
         Json(ApiResult::success(inner))
@@ -343,23 +338,36 @@ pub struct PlayUrlQuery {
     ),
     security(("access_token" = [])),
 )]
-pub async fn server_config(
-    State(state): State<AppState>,
-) -> Json<ApiResult<serde_json::Value>> {
+pub async fn server_config(State(state): State<AppState>) -> Json<ApiResult<serde_json::Value>> {
     let cfg = state.config.clone();
-    let sip = cfg.sip.as_ref().map(|s| serde_json::json!({
-        "enabled": s.enabled,
-        "ip": s.ip,
-        "port": s.port,
-        "deviceId": s.device_id,
-        "realm": s.realm,
-        "password": "***",
-    })).unwrap_or(serde_json::json!({"enabled": false}));
-    let zlm = cfg.zlm.as_ref().map(|z| {
-        z.servers.iter().map(|m| serde_json::json!({
-            "id": m.id, "ip": m.ip, "httpPort": m.http_port, "secret": "***",
-        })).collect::<Vec<_>>()
-    }).unwrap_or_default();
+    let sip = cfg
+        .sip
+        .as_ref()
+        .map(|s| {
+            serde_json::json!({
+                "enabled": s.enabled,
+                "ip": s.ip,
+                "port": s.port,
+                "deviceId": s.device_id,
+                "realm": s.realm,
+                "password": "***",
+            })
+        })
+        .unwrap_or(serde_json::json!({"enabled": false}));
+    let zlm = cfg
+        .zlm
+        .as_ref()
+        .map(|z| {
+            z.servers
+                .iter()
+                .map(|m| {
+                    serde_json::json!({
+                        "id": m.id, "ip": m.ip, "httpPort": m.http_port, "secret": "***",
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
     Json(ApiResult::success(serde_json::json!({
         "sip": sip,
         "zlm": zlm,
@@ -433,12 +441,22 @@ mod tests {
         let (lon_min, lon_max, lat_min, lat_max) = tile_bounds(1, 0, 0).unwrap();
         assert_eq!((lon_min, lon_max), (-180.0, 0.0));
         // 赤道处 lat_min 恰为 0.0（边界），lat_max 为正
-        assert!(lat_min >= 0.0 && lat_max > 0.0, "左上瓦片在赤道及以北: {}..{}", lat_min, lat_max);
+        assert!(
+            lat_min >= 0.0 && lat_max > 0.0,
+            "左上瓦片在赤道及以北: {}..{}",
+            lat_min,
+            lat_max
+        );
         // 右下瓦片：东经、南纬
         let (lon_min, lon_max, lat_min, lat_max) = tile_bounds(1, 1, 1).unwrap();
         assert_eq!((lon_min, lon_max), (0.0, 180.0));
         // 赤道处 lat_max 恰为 0.0（边界），lat_min 为负
-        assert!(lat_min < 0.0 && lat_max <= 0.0, "右下瓦片在赤道及以南: {}..{}", lat_min, lat_max);
+        assert!(
+            lat_min < 0.0 && lat_max <= 0.0,
+            "右下瓦片在赤道及以南: {}..{}",
+            lat_min,
+            lat_max
+        );
     }
 
     #[test]
@@ -468,5 +486,4 @@ mod tests {
             "未知指令必须返回 None（上层据此显式报错）"
         );
     }
-
 }

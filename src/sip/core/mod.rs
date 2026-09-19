@@ -1,16 +1,15 @@
-pub mod message;
-pub mod parser;
-pub mod transaction;
-pub mod method;
-pub mod status;
 pub mod header;
+pub mod message;
+pub mod method;
+pub mod parser;
+pub mod status;
+pub mod transaction;
 
-pub use message::{SipMessage, SipRequest, SipResponse, SipHeader};
-pub use parser::Parser;
-pub use transaction::{Transaction, TransactionManager, TransportInfo};
-pub use method::{SipMethod, SipMethodSet, is_required_method};
-pub use status::{StatusCode, ResponseClass};
 pub use header::{
-    HeaderName, ViaHeader, NameAddr, CSeq, Contact,
-    SubscriptionState, Authorization, Challenge
+    Authorization, CSeq, Challenge, Contact, HeaderName, NameAddr, SubscriptionState, ViaHeader,
 };
+pub use message::{SipHeader, SipMessage, SipRequest, SipResponse};
+pub use method::{is_required_method, SipMethod, SipMethodSet};
+pub use parser::Parser;
+pub use status::{ResponseClass, StatusCode};
+pub use transaction::{Transaction, TransactionManager, TransportInfo};

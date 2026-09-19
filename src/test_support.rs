@@ -57,7 +57,6 @@ pub(crate) async fn sqlite_pool_with_schema() -> db::Pool {
     pool
 }
 
-
 /// 最小可用 `AppConfig`（只填充测试关心的字段，其余为默认）
 pub(crate) fn app_config() -> crate::config::AppConfig {
     use crate::config::{

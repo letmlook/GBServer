@@ -633,10 +633,16 @@ async fn sync_stream_changed(state: &AppState, data: &StreamChangedData) {
                 media_server_id,
                 crate::state_store::MediaServerLoad {
                     server_id: media_server_id.to_string(),
-                    stream_count: state.state_store.get_media_server(media_server_id)
-                        .map(|s| s.stream_count + 1).unwrap_or(1),
-                    rtp_server_count: state.state_store.get_media_server(media_server_id)
-                        .map(|s| s.rtp_server_count).unwrap_or(0),
+                    stream_count: state
+                        .state_store
+                        .get_media_server(media_server_id)
+                        .map(|s| s.stream_count + 1)
+                        .unwrap_or(1),
+                    rtp_server_count: state
+                        .state_store
+                        .get_media_server(media_server_id)
+                        .map(|s| s.rtp_server_count)
+                        .unwrap_or(0),
                     online: true,
                     last_keepalive: chrono::Utc::now(),
                 },
@@ -664,7 +670,8 @@ async fn sync_stream_changed(state: &AppState, data: &StreamChangedData) {
                 .resolve_by_stream(&data.stream, &data.app);
             tracing::debug!(
                 "on_stream_changed rtp/{} register=true media_waiter resolved={}",
-                data.stream, resolved
+                data.stream,
+                resolved
             );
         }
 
@@ -678,9 +685,9 @@ async fn sync_stream_changed(state: &AppState, data: &StreamChangedData) {
                 let channel_id: u8 = parts[1].parse().unwrap_or(0);
                 let mgr_guard = state.jt1078_manager.read().await;
                 if let Some(m) = mgr_guard.as_ref() {
-                    let resolved = m
-                        .media_session_manager()
-                        .resolve_waiter(&phone, channel_id, &data.stream);
+                    let resolved =
+                        m.media_session_manager()
+                            .resolve_waiter(&phone, channel_id, &data.stream);
                     tracing::info!(
                         "6.3 on_stream_changed routed to JtMediaSessionManager: phone={} ch={} resolved={}",
                         phone, channel_id, resolved
@@ -702,7 +709,8 @@ async fn sync_stream_changed(state: &AppState, data: &StreamChangedData) {
                 if data.register {
                     tracing::info!(
                         "Download stream ready: session={} stream={}",
-                        session.stream_id, data.stream
+                        session.stream_id,
+                        data.stream
                     );
                     dm.update_progress_percent(&session.stream_id, 0.0, "downloading")
                         .await;
@@ -712,7 +720,8 @@ async fn sync_stream_changed(state: &AppState, data: &StreamChangedData) {
                     // 让 /progress 能给出终态）。
                     tracing::info!(
                         "Download stream finished: session={} stream={}",
-                        session.stream_id, data.stream
+                        session.stream_id,
+                        data.stream
                     );
                     dm.update_progress_percent(&session.stream_id, 100.0, "completed")
                         .await;
@@ -907,13 +916,21 @@ async fn decide_idle_stream(state: &AppState, data: &StreamNoneReaderData) -> Id
     // 级联推的是"这个通道的流"），所以按 channel_id 判定即可覆盖实时与回放。
     if let Some(ref sip_server) = state.sip_server {
         let sip = sip_server.as_ref();
-        if !sip.send_rtp_manager().get_by_channel(&channel_id).is_empty() {
+        if !sip
+            .send_rtp_manager()
+            .get_by_channel(&channel_id)
+            .is_empty()
+        {
             return IdleStreamDecision::keep("正在向级联上级平台推流");
         }
     }
 
     // 5. 平台下发的云录像指令（Record/StopRecord）
-    if state.state_store.get_recording(&device_id, &channel_id).is_some() {
+    if state
+        .state_store
+        .get_recording(&device_id, &channel_id)
+        .is_some()
+    {
         return IdleStreamDecision::keep("云录像指令生效中");
     }
 
@@ -939,8 +956,10 @@ async fn close_idle_stream(
     data: &StreamNoneReaderData,
     decision: &IdleStreamDecision,
 ) {
-    let (Some(device_id), Some(channel_id)) = (decision.device_id.as_deref(), decision.channel_id.as_deref())
-    else {
+    let (Some(device_id), Some(channel_id)) = (
+        decision.device_id.as_deref(),
+        decision.channel_id.as_deref(),
+    ) else {
         return;
     };
 
@@ -972,11 +991,7 @@ async fn close_idle_stream(
         // 先按 hook 载荷里的 stream 关（这是权威流名），
         // 再按会话记录的 stream_id 兜底（二者在规范流名上一致）。
         if let Err(e) = client.close_rtp_server(&data.stream).await {
-            tracing::warn!(
-                "none_reader: closeRtpServer({}) 失败: {}",
-                data.stream,
-                e
-            );
+            tracing::warn!("none_reader: closeRtpServer({}) 失败: {}", data.stream, e);
         }
     }
 }
@@ -995,15 +1010,16 @@ fn sync_media_server_stream_count(
     media_server_id: &str,
     streams: i64,
 ) {
-    let mut load = store
-        .get_media_server(media_server_id)
-        .unwrap_or(crate::state_store::MediaServerLoad {
-            server_id: media_server_id.to_string(),
-            stream_count: 0,
-            rtp_server_count: 0,
-            online: true,
-            last_keepalive: chrono::Utc::now(),
-        });
+    let mut load =
+        store
+            .get_media_server(media_server_id)
+            .unwrap_or(crate::state_store::MediaServerLoad {
+                server_id: media_server_id.to_string(),
+                stream_count: 0,
+                rtp_server_count: 0,
+                online: true,
+                last_keepalive: chrono::Utc::now(),
+            });
     load.stream_count = streams;
     load.last_keepalive = chrono::Utc::now();
     store.set_media_server(media_server_id, load);
@@ -1106,15 +1122,15 @@ pub(crate) async fn handle_webhook_inner(
 
     match hook_name {
         "on_stream_changed" => {
-            let parsed = event
-                .get("schema")
-                .and_then(|_| match serde_json::from_value::<StreamChangedData>(event.clone()) {
+            let parsed = event.get("schema").and_then(|_| {
+                match serde_json::from_value::<StreamChangedData>(event.clone()) {
                     Ok(d) => Some(d),
                     Err(e) => {
                         tracing::warn!("on_stream_changed 载荷解析失败: {} 原文={}", e, event);
                         None
                     }
-                });
+                }
+            });
             if let Some(data) = parsed {
                 tracing::info!(
                     "Stream changed: {}/{}/{} register={}",
@@ -1284,8 +1300,13 @@ pub(crate) async fn handle_webhook_inner(
                 return resp;
             }
             if let Some(data) = serde_json::from_value::<PlayData>(event.clone()).ok() {
-                tracing::info!("on_play: {}/{}/{} from {}",
-                    data.schema, data.app, data.stream, data.ip);
+                tracing::info!(
+                    "on_play: {}/{}/{} from {}",
+                    data.schema,
+                    data.app,
+                    data.stream,
+                    data.ip
+                );
                 // 从 stream_id 解析设备/通道（格式：device_id_channel_id 或 device_id$channel_id）
                 if let Some((device_id, channel_id)) = parse_stream_id(&data.stream) {
                     // 播放鉴权（预留）
@@ -1300,8 +1321,13 @@ pub(crate) async fn handle_webhook_inner(
                 return resp;
             }
             if let Some(data) = serde_json::from_value::<PublishData>(event.clone()).ok() {
-                tracing::info!("on_publish: {}/{}/{} from {}",
-                    data.schema, data.app, data.stream, data.ip);
+                tracing::info!(
+                    "on_publish: {}/{}/{} from {}",
+                    data.schema,
+                    data.app,
+                    data.stream,
+                    data.ip
+                );
                 // 验证推流来源 IP 是否与注册设备匹配
                 if let Some((device_id, _channel_id)) = parse_stream_id(&data.stream) {
                     if let Some(ref sip_server) = state.sip_server {
@@ -1423,9 +1449,7 @@ pub(crate) async fn handle_webhook_inner(
                     // ZLM 收到后无法区分事件，等于整套 hook 都不生效。
                     let config_items = crate::zlm::hook::hook_config_items(&hook_url, &secret);
                     for (key, value) in &config_items {
-                        if let Err(e) =
-                            zlm_client.set_server_config(&secret, key, value).await
-                        {
+                        if let Err(e) = zlm_client.set_server_config(&secret, key, value).await {
                             tracing::warn!("Failed to set ZLM config {}={}: {}", key, value, e);
                         }
                     }
@@ -1434,8 +1458,11 @@ pub(crate) async fn handle_webhook_inner(
                     // Phase 4.3: 自动同步 RTP 端口范围 + 协议开关到 ZLM
                     // 与 gb_media_server.rtp_port_range / send_rtp_port_range 对齐
                     match crate::db::media_server::get_media_server_by_id(
-                        &state.pool, media_server_id,
-                    ).await {
+                        &state.pool,
+                        media_server_id,
+                    )
+                    .await
+                    {
                         Ok(Some(server_config)) => {
                             // 设备→平台收流端口范围。
                             //
@@ -1446,10 +1473,13 @@ pub(crate) async fn handle_webhook_inner(
                             // "INVITE 200 OK 但永远等不到媒体"。
                             if let Some(ref rtp_range) = server_config.rtp_port_range {
                                 match crate::zlm::client::set_rtp_port_range_verified(
-                                    zlm_client, &secret,
+                                    zlm_client,
+                                    &secret,
                                     &["rtp_proxy.port_range", "rtp.port_range"],
                                     rtp_range,
-                                ).await {
+                                )
+                                .await
+                                {
                                     Ok(key) => tracing::info!(
                                         "ZLM {key} set to {rtp_range} for server {media_server_id}"
                                     ),
@@ -1462,10 +1492,13 @@ pub(crate) async fn handle_webhook_inner(
                             // （统一走 rtp_proxy.port_range），此时明确告警而不是假装成功。
                             if let Some(ref srtp_range) = server_config.send_rtp_port_range {
                                 match crate::zlm::client::set_rtp_port_range_verified(
-                                    zlm_client, &secret,
+                                    zlm_client,
+                                    &secret,
                                     &["send_rtp.port_range"],
                                     srtp_range,
-                                ).await {
+                                )
+                                .await
+                                {
                                     Ok(key) => tracing::info!(
                                         "ZLM {key} set to {srtp_range} for server {media_server_id}"
                                     ),
@@ -1504,13 +1537,10 @@ pub(crate) async fn handle_webhook_inner(
 
                             // 协议开关（与 ZLM 默认对齐：全部启用）
                             for (key, value) in PROTOCOL_ENABLE_FLAGS {
-                                if let Err(e) = zlm_client.set_server_config(
-                                    &secret, key, value,
-                                ).await {
-                                    tracing::warn!(
-                                        "Failed to set ZLM {}={}: {}",
-                                        key, value, e,
-                                    );
+                                if let Err(e) =
+                                    zlm_client.set_server_config(&secret, key, value).await
+                                {
+                                    tracing::warn!("Failed to set ZLM {}={}: {}", key, value, e,);
                                 }
                             }
                             tracing::info!(
@@ -1527,7 +1557,8 @@ pub(crate) async fn handle_webhook_inner(
                         Err(e) => {
                             tracing::warn!(
                                 "Failed to query media_server {} for RTP config: {}",
-                                media_server_id, e,
+                                media_server_id,
+                                e,
                             );
                         }
                     }
@@ -1831,17 +1862,26 @@ pub(crate) async fn handle_webhook_inner(
         "on_rtp_playlist" => {
             match serde_json::from_value::<RtpPlaylistData>(event.clone()) {
                 Ok(data) => {
-                tracing::info!(
-                    "ABL rtp_playlist: app={:?} stream={:?} ssrc={:?} action={:?}",
-                    data.app, data.stream, data.ssrc, data.action
-                );
-                // 通知 WS 订阅者（用于前端展示 playlist 状态）
-                state.ws_state.broadcast("abl_rtp_playlist", serde_json::json!({
-                    "app": data.app,
-                    "stream": data.stream,
-                    "ssrc": data.ssrc,
-                    "action": data.action,
-                })).await;
+                    tracing::info!(
+                        "ABL rtp_playlist: app={:?} stream={:?} ssrc={:?} action={:?}",
+                        data.app,
+                        data.stream,
+                        data.ssrc,
+                        data.action
+                    );
+                    // 通知 WS 订阅者（用于前端展示 playlist 状态）
+                    state
+                        .ws_state
+                        .broadcast(
+                            "abl_rtp_playlist",
+                            serde_json::json!({
+                                "app": data.app,
+                                "stream": data.stream,
+                                "ssrc": data.ssrc,
+                                "action": data.action,
+                            }),
+                        )
+                        .await;
                 }
                 // 解析失败必须可见：此前 `.ok()` + `if let` 让"载荷字段名对不上"
                 // 变成完全无声的功能缺失（官方文档没给这几个 ABL 事件的示例载荷）。
@@ -1851,28 +1891,31 @@ pub(crate) async fn handle_webhook_inner(
         "on_record_progress" => {
             match serde_json::from_value::<RecordProgressData>(event.clone()) {
                 Ok(data) => {
-                tracing::debug!(
-                    "ABL record_progress: {}/{} duration={:?}s size={:?}B ts={:?}",
-                    data.app.as_deref().unwrap_or(""),
-                    data.stream.as_deref().unwrap_or(""),
-                    data.current_duration, data.current_size, data.progress_ts
-                );
-                // 更新 DB 中的录像进度（cloud_record），供前端轮询
-                if let (Some(app), Some(stream)) = (data.app.as_deref(), data.stream.as_deref()) {
-                    if let Err(e) = crate::db::cloud_record::update_recording_progress(
-                        &state.pool,
-                        stream,
-                        app,
-                        data.current_duration.unwrap_or(0.0),
-                        data.current_size.unwrap_or(0),
-                    )
-                    .await
+                    tracing::debug!(
+                        "ABL record_progress: {}/{} duration={:?}s size={:?}B ts={:?}",
+                        data.app.as_deref().unwrap_or(""),
+                        data.stream.as_deref().unwrap_or(""),
+                        data.current_duration,
+                        data.current_size,
+                        data.progress_ts
+                    );
+                    // 更新 DB 中的录像进度（cloud_record），供前端轮询
+                    if let (Some(app), Some(stream)) = (data.app.as_deref(), data.stream.as_deref())
                     {
-                        tracing::warn!(
-                            "on_record_progress: 更新录像进度失败 {app}/{stream}: {e}"
-                        );
+                        if let Err(e) = crate::db::cloud_record::update_recording_progress(
+                            &state.pool,
+                            stream,
+                            app,
+                            data.current_duration.unwrap_or(0.0),
+                            data.current_size.unwrap_or(0),
+                        )
+                        .await
+                        {
+                            tracing::warn!(
+                                "on_record_progress: 更新录像进度失败 {app}/{stream}: {e}"
+                            );
+                        }
                     }
-                }
                 }
                 Err(e) => tracing::warn!("on_record_progress 载荷解析失败: {} 原文={}", e, event),
             }
@@ -1880,19 +1923,26 @@ pub(crate) async fn handle_webhook_inner(
         "on_send_rtp_progress" => {
             match serde_json::from_value::<SendRtpProgressData>(event.clone()) {
                 Ok(data) => {
-                tracing::debug!(
-                    "ABL send_rtp_progress: {}/{} total={:?} bytes={:?}",
-                    data.app.as_deref().unwrap_or(""),
-                    data.stream.as_deref().unwrap_or(""),
-                    data.total_sent, data.bytes_sent
-                );
-                // 级联推流进度（如不需要可关闭日志），用于监控推流质量
-                state.ws_state.broadcast("abl_send_rtp_progress", serde_json::json!({
-                    "app": data.app,
-                    "stream": data.stream,
-                    "total_sent": data.total_sent,
-                    "bytes_sent": data.bytes_sent,
-                })).await;
+                    tracing::debug!(
+                        "ABL send_rtp_progress: {}/{} total={:?} bytes={:?}",
+                        data.app.as_deref().unwrap_or(""),
+                        data.stream.as_deref().unwrap_or(""),
+                        data.total_sent,
+                        data.bytes_sent
+                    );
+                    // 级联推流进度（如不需要可关闭日志），用于监控推流质量
+                    state
+                        .ws_state
+                        .broadcast(
+                            "abl_send_rtp_progress",
+                            serde_json::json!({
+                                "app": data.app,
+                                "stream": data.stream,
+                                "total_sent": data.total_sent,
+                                "bytes_sent": data.bytes_sent,
+                            }),
+                        )
+                        .await;
                 }
                 Err(e) => tracing::warn!("on_send_rtp_progress 载荷解析失败: {} 原文={}", e, event),
             }
@@ -2004,16 +2054,12 @@ async fn check_hook_auth(
                         client_ip,
                         media_server_id
                     );
-                    return Some(Json(hook_error_response(
-                        "Unauthorized: IP not allowed",
-                    )));
+                    return Some(Json(hook_error_response("Unauthorized: IP not allowed")));
                 }
             }
             Err(_) => {
                 tracing::warn!("hook auth: unparseable client IP '{}'", client_ip_str);
-                return Some(Json(hook_error_response(
-                    "Unauthorized: invalid client IP",
-                )));
+                return Some(Json(hook_error_response("Unauthorized: invalid client IP")));
             }
         }
     }
@@ -2117,7 +2163,8 @@ mod tests {
 
     #[test]
     fn idle_decision_keep_never_closes() {
-        for reason in ["非国标流（推流/拉流代理），交由用户停止", "ZLM 正在录像"] {
+        for reason in ["非国标流（推流/拉流代理），交由用户停止", "ZLM 正在录像"]
+        {
             let d = IdleStreamDecision::keep(reason);
             assert!(!d.close);
             assert_eq!(d.reason, reason);
@@ -2181,10 +2228,7 @@ mod tests {
             ZlmHookEvent::from_hook_name("on_publish"),
             ZlmHookEvent::Publish
         );
-        assert_eq!(
-            ZlmHookEvent::from_hook_name("on_play"),
-            ZlmHookEvent::Play
-        );
+        assert_eq!(ZlmHookEvent::from_hook_name("on_play"), ZlmHookEvent::Play);
     }
 
     #[test]
@@ -2303,10 +2347,7 @@ mod tests {
         let stripped = uri.trim_start_matches("http://");
         let mut parts = stripped.splitn(2, ':');
         let ip = parts.next().unwrap_or("127.0.0.1").to_string();
-        let port: u16 = parts
-            .next()
-            .and_then(|p| p.parse().ok())
-            .unwrap_or(80);
+        let port: u16 = parts.next().and_then(|p| p.parse().ok()).unwrap_or(80);
 
         let zlm_client = crate::zlm::ZlmClient::new(&ip, port, "test-secret");
 
@@ -2321,7 +2362,10 @@ mod tests {
 
         // (b) rtp.port_range —— set_rtp_port_range helper handles comma→dash conversion
         crate::zlm::client::set_rtp_port_range(
-            &zlm_client, secret, "rtp.port_range", "30000,30200",
+            &zlm_client,
+            secret,
+            "rtp.port_range",
+            "30000,30200",
         )
         .await
         .expect("set_rtp_port_range rtp.port_range");
@@ -2377,7 +2421,10 @@ mod tests {
                 }
             }
         }
-        assert!(found_rtp_port_range, "rtp.port_range=30000-30200 not seen in requests");
+        assert!(
+            found_rtp_port_range,
+            "rtp.port_range=30000-30200 not seen in requests"
+        );
         assert!(
             found_send_rtp_port_range,
             "send_rtp.port_range=40000-40200 not seen in requests"
@@ -2393,7 +2440,12 @@ mod tests {
     // ============== on_flow_report → StateStore 同步（2026-09-11 cache 迁移） ==============
 
     /// 构造一个带 `MediaServerLoad` 的内存 StateStore
-    fn store_with(id: &str, stream_count: i64, rtp_server_count: i32, online: bool) -> crate::state_store::StateStore {
+    fn store_with(
+        id: &str,
+        stream_count: i64,
+        rtp_server_count: i32,
+        online: bool,
+    ) -> crate::state_store::StateStore {
         let store = crate::state_store::StateStore::in_memory();
         store.set_media_server(
             id,
@@ -2412,7 +2464,9 @@ mod tests {
     fn test_flow_report_creates_entry_for_unknown_server() {
         let store = crate::state_store::StateStore::in_memory();
         sync_media_server_stream_count(&store, "zlm-new", 7);
-        let load = store.get_media_server("zlm-new").expect("entry should be created");
+        let load = store
+            .get_media_server("zlm-new")
+            .expect("entry should be created");
         assert_eq!(load.stream_count, 7);
         assert_eq!(load.server_id, "zlm-new");
         assert!(load.online, "刚上报过 flow report 的节点应视为在线");

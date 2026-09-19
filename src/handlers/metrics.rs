@@ -1,6 +1,6 @@
-use axum::extract::State;
 use crate::metrics;
 use crate::AppState;
+use axum::extract::State;
 
 #[utoipa::path(
     get,

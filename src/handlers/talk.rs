@@ -35,10 +35,16 @@ pub async fn talk_start(
     State(state): State<AppState>,
     Path((device_id, channel_id)): Path<(String, String)>,
 ) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
-    tracing::info!("[Talk] 开始对讲: device={}, channel={}", device_id, channel_id);
+    tracing::info!(
+        "[Talk] 开始对讲: device={}, channel={}",
+        device_id,
+        channel_id
+    );
 
     // 获取 SIP 服务器
-    let sip_server = state.sip_server.as_ref()
+    let sip_server = state
+        .sip_server
+        .as_ref()
         .ok_or_else(|| AppError::business(ErrorCode::Error100, "SIP服务未启动"))?;
 
     // 发送语音对讲 INVITE
@@ -84,8 +90,9 @@ pub async fn talk_start(
                 None => {
                     // 超时：清理掉这个半成品会话（先按不限状态找到它再移除），
                     // 否则它会以 Inviting 状态残留在 TalkManager 里。
-                    if let Some(stale) =
-                        manager.get_any_by_device_channel(&device_id, &channel_id).await
+                    if let Some(stale) = manager
+                        .get_any_by_device_channel(&device_id, &channel_id)
+                        .await
                     {
                         let _ = manager.remove(&stale.call_id).await;
                     }
@@ -108,7 +115,10 @@ pub async fn talk_start(
         }
         Err(e) => {
             tracing::error!("[Talk] INVITE 发送失败: {}", e);
-            Err(AppError::business(ErrorCode::Error100, format!("对讲请求失败: {}", e)))
+            Err(AppError::business(
+                ErrorCode::Error100,
+                format!("对讲请求失败: {}", e),
+            ))
         }
     }
 }
@@ -134,10 +144,16 @@ pub async fn talk_stop(
     State(state): State<AppState>,
     Path((device_id, channel_id)): Path<(String, String)>,
 ) -> Result<Json<ApiResult<()>>, AppError> {
-    tracing::info!("[Talk] 停止对讲: device={}, channel={}", device_id, channel_id);
+    tracing::info!(
+        "[Talk] 停止对讲: device={}, channel={}",
+        device_id,
+        channel_id
+    );
 
     // 获取 SIP 服务器
-    let sip_server = state.sip_server.as_ref()
+    let sip_server = state
+        .sip_server
+        .as_ref()
         .ok_or_else(|| AppError::business(ErrorCode::Error100, "SIP服务未启动"))?;
 
     // 发送语音对讲 BYE
@@ -192,10 +208,16 @@ pub async fn talk_invite(
     State(state): State<AppState>,
     Path((device_id, channel_id)): Path<(String, String)>,
 ) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
-    tracing::info!("[Talk] 邀请对讲: device={}, channel={}", device_id, channel_id);
+    tracing::info!(
+        "[Talk] 邀请对讲: device={}, channel={}",
+        device_id,
+        channel_id
+    );
 
     // 获取 SIP 服务器
-    let sip_server = state.sip_server.as_ref()
+    let sip_server = state
+        .sip_server
+        .as_ref()
         .ok_or_else(|| AppError::business(ErrorCode::Error100, "SIP服务未启动"))?;
 
     // 发送语音对讲 INVITE
@@ -207,7 +229,10 @@ pub async fn talk_invite(
     match result {
         Ok(call_id) => {
             // 获取本地IP用于SDP
-            let local_ip = state.config.sip.as_ref()
+            let local_ip = state
+                .config
+                .sip
+                .as_ref()
                 .map(|c| c.ip.clone())
                 .unwrap_or_else(|| "0.0.0.0".to_string());
 
@@ -238,7 +263,10 @@ pub async fn talk_invite(
         }
         Err(e) => {
             tracing::error!("[Talk] 邀请发送失败: {}", e);
-            Err(AppError::business(ErrorCode::Error100, format!("对讲邀请失败: {}", e)))
+            Err(AppError::business(
+                ErrorCode::Error100,
+                format!("对讲邀请失败: {}", e),
+            ))
         }
     }
 }
@@ -271,15 +299,17 @@ pub async fn talk_ack(
     State(_state): State<AppState>,
     Query(q): Query<TalkAckQuery>,
 ) -> Result<Json<ApiResult<()>>, AppError> {
-    let call_id = q.call_id.as_deref()
+    let call_id = q
+        .call_id
+        .as_deref()
         .or(q.device_id.as_deref())
         .ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 callId 或 deviceId"))?;
-    
+
     tracing::info!("[Talk] ACK 确认: call_id={}", call_id);
-    
+
     // ACK 主要由 SIP 层处理，这里只做日志记录
     // SIP 服务器收到设备的 200 OK 后会自动发送 ACK
-    
+
     Ok(Json(ApiResult::<()>::success_empty()))
 }
 
@@ -301,15 +331,25 @@ pub async fn talk_bye(
     State(state): State<AppState>,
     Json(body): Json<TalkAckQuery>,
 ) -> Result<Json<ApiResult<()>>, AppError> {
-    let device_id = body.device_id.as_deref()
+    let device_id = body
+        .device_id
+        .as_deref()
         .ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 deviceId"))?;
-    let channel_id = body.channel_id.as_deref()
+    let channel_id = body
+        .channel_id
+        .as_deref()
         .ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 channelId"))?;
-    
-    tracing::info!("[Talk] BYE 结束: device={}, channel={}", device_id, channel_id);
+
+    tracing::info!(
+        "[Talk] BYE 结束: device={}, channel={}",
+        device_id,
+        channel_id
+    );
 
     // 获取 SIP 服务器
-    let sip_server = state.sip_server.as_ref()
+    let sip_server = state
+        .sip_server
+        .as_ref()
         .ok_or_else(|| AppError::business(ErrorCode::Error100, "SIP服务未启动"))?;
 
     // 发送语音对讲 BYE
@@ -351,14 +391,22 @@ pub async fn talk_status(
     State(state): State<AppState>,
     Path((device_id, channel_id)): Path<(String, String)>,
 ) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
-    tracing::debug!("[Talk] 查询状态: device={}, channel={}", device_id, channel_id);
+    tracing::debug!(
+        "[Talk] 查询状态: device={}, channel={}",
+        device_id,
+        channel_id
+    );
 
-    let sip_server = state.sip_server.as_ref()
+    let sip_server = state
+        .sip_server
+        .as_ref()
         .ok_or_else(|| AppError::business(ErrorCode::Error100, "SIP服务未启动"))?;
 
     let talk_session = {
         let sip = &*sip_server;
-        sip.talk_manager().get_by_device_channel(&device_id, &channel_id).await
+        sip.talk_manager()
+            .get_by_device_channel(&device_id, &channel_id)
+            .await
     };
 
     match talk_session {
@@ -371,7 +419,7 @@ pub async fn talk_status(
                 crate::sip::gb28181::talk::TalkStatus::Terminating => "terminating",
                 crate::sip::gb28181::talk::TalkStatus::Terminated => "terminated",
             };
-            
+
             Ok(Json(ApiResult::success(serde_json::json!({
                 "callId": session.call_id,
                 "deviceId": session.device_id,
@@ -385,14 +433,12 @@ pub async fn talk_status(
                 "lastActivity": session.last_activity.to_rfc3339()
             }))))
         }
-        None => {
-            Ok(Json(ApiResult::success(serde_json::json!({
-                "deviceId": device_id,
-                "channelId": channel_id,
-                "status": "idle",
-                "msg": "当前无活跃的对讲会话"
-            }))))
-        }
+        None => Ok(Json(ApiResult::success(serde_json::json!({
+            "deviceId": device_id,
+            "channelId": channel_id,
+            "status": "idle",
+            "msg": "当前无活跃的对讲会话"
+        })))),
     }
 }
 
@@ -414,37 +460,42 @@ pub async fn talk_list(
     tracing::debug!("[Talk] 获取对讲列表");
 
     // 获取 SIP 服务器和 TalkManager
-    let sip_server = state.sip_server.as_ref()
+    let sip_server = state
+        .sip_server
+        .as_ref()
         .ok_or_else(|| AppError::business(ErrorCode::Error100, "SIP服务未启动"))?;
 
     let talk_manager = {
         let sip = &*sip_server;
         sip.talk_manager()
     };
-    
+
     let sessions = talk_manager.get_active_sessions().await;
 
-    let list: Vec<serde_json::Value> = sessions.iter().map(|s| {
-        let status_str = match s.status {
-            crate::sip::gb28181::talk::TalkStatus::Pending => "pending",
-            crate::sip::gb28181::talk::TalkStatus::Inviting => "inviting",
-            crate::sip::gb28181::talk::TalkStatus::Ringing => "ringing",
-            crate::sip::gb28181::talk::TalkStatus::Active => "active",
-            crate::sip::gb28181::talk::TalkStatus::Terminating => "terminating",
-            crate::sip::gb28181::talk::TalkStatus::Terminated => "terminated",
-        };
-        
-        serde_json::json!({
-            "callId": s.call_id,
-            "deviceId": s.device_id,
-            "channelId": s.channel_id,
-            "status": status_str,
-            "localPort": s.local_port,
-            "deviceIp": s.device_ip,
-            "devicePort": s.device_port,
-            "startTime": s.start_time.to_rfc3339()
+    let list: Vec<serde_json::Value> = sessions
+        .iter()
+        .map(|s| {
+            let status_str = match s.status {
+                crate::sip::gb28181::talk::TalkStatus::Pending => "pending",
+                crate::sip::gb28181::talk::TalkStatus::Inviting => "inviting",
+                crate::sip::gb28181::talk::TalkStatus::Ringing => "ringing",
+                crate::sip::gb28181::talk::TalkStatus::Active => "active",
+                crate::sip::gb28181::talk::TalkStatus::Terminating => "terminating",
+                crate::sip::gb28181::talk::TalkStatus::Terminated => "terminated",
+            };
+
+            serde_json::json!({
+                "callId": s.call_id,
+                "deviceId": s.device_id,
+                "channelId": s.channel_id,
+                "status": status_str,
+                "localPort": s.local_port,
+                "deviceIp": s.device_ip,
+                "devicePort": s.device_port,
+                "startTime": s.start_time.to_rfc3339()
+            })
         })
-    }).collect();
+        .collect();
 
     Ok(Json(ApiResult::success(serde_json::json!({
         "total": list.len(),
@@ -463,7 +514,9 @@ fn ws_query_param(qstring: &str, key: &str) -> Option<String> {
         .find_map(|kv| kv.strip_prefix(&format!("{}=", key)))
         .map(|s| {
             // 最小化百分号解码：够用即可（token 是 JWT，不含需要转义的字符）
-            s.replace("%20", " ").replace("%2F", "/").replace("%2B", "+")
+            s.replace("%20", " ")
+                .replace("%2F", "/")
+                .replace("%2B", "+")
         })
 }
 
@@ -528,7 +581,9 @@ pub async fn talk_audio_ws(
     // 或第三方客户端先连 WS 的场景仍会走到这里。
     let manager = sip.talk_manager();
     let Some(session) = manager.wait_active(&device_id, &channel_id, 6_000).await else {
-        let any = manager.get_any_by_device_channel(&device_id, &channel_id).await;
+        let any = manager
+            .get_any_by_device_channel(&device_id, &channel_id)
+            .await;
         return (
             StatusCode::NOT_FOUND,
             if any.is_some() {
@@ -671,7 +726,10 @@ mod talk_contract_tests {
         // 未激活的通道应超时返回 None，且 get_any_by_device_channel 仍能看到它
         let none = mgr2.wait_active("dev-1", "ch-404", 200).await;
         assert!(none.is_none());
-        assert!(mgr2.get_any_by_device_channel("dev-1", "ch-404").await.is_none());
+        assert!(mgr2
+            .get_any_by_device_channel("dev-1", "ch-404")
+            .await
+            .is_none());
     }
 
     /// 停止对讲时要能按**不限状态**取到会话 —— `send_talk_bye` 用的是
@@ -696,7 +754,10 @@ mod talk_contract_tests {
         let state = app_state().await;
         let err = super::talk_start(
             axum::extract::State(state.clone()),
-            axum::extract::Path(("34020000001320000001".to_string(), "34020000001310000001".to_string())),
+            axum::extract::Path((
+                "34020000001320000001".to_string(),
+                "34020000001310000001".to_string(),
+            )),
         )
         .await
         .expect_err("SIP 未启用应报错");

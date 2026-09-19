@@ -1,4 +1,7 @@
-use axum::{extract::{Query, State}, Json};
+use axum::{
+    extract::{Query, State},
+    Json,
+};
 use serde::Deserialize;
 
 use crate::db::update_device_catalog_subscription;
@@ -58,15 +61,23 @@ pub async fn device_ptz(
         return Json(ApiResult::error("device_id and channel_id are required"));
     }
 
-    tracing::info!("PTZ control: device={}, channel={}, cmd={}, speed={}",
-        device_id, channel_id, command, speed);
+    tracing::info!(
+        "PTZ control: device={}, channel={}, cmd={}, speed={}",
+        device_id,
+        channel_id,
+        command,
+        speed
+    );
 
     if let Some(ref sip_server) = state.sip_server {
         let server = &*sip_server;
         if let Some(device) = server.device_manager().get(&device_id).await {
             if device.online && device.addr.is_some() {
                 let ptz_cmd = build_ptz_xml(&command, speed, 0, 0);
-                match server.send_device_control(&device_id, &channel_id, "DeviceControl", &ptz_cmd).await {
+                match server
+                    .send_device_control(&device_id, &channel_id, "DeviceControl", &ptz_cmd)
+                    .await
+                {
                     Ok(_) => {
                         tracing::info!("PTZ command sent via SIP: {}", device_id);
                         return Json(ApiResult::success(serde_json::json!({
@@ -121,15 +132,23 @@ pub async fn device_preset(
         return Json(ApiResult::error("device_id is required"));
     }
 
-    tracing::info!("Preset control: device={}, channel={}, cmd={}, preset={}",
-        device_id, channel_id, command, preset_index);
+    tracing::info!(
+        "Preset control: device={}, channel={}, cmd={}, preset={}",
+        device_id,
+        channel_id,
+        command,
+        preset_index
+    );
 
     if let Some(ref sip_server) = state.sip_server {
         let server = &*sip_server;
         if let Some(device) = server.device_manager().get(&device_id).await {
             if device.online && device.addr.is_some() {
                 let preset_cmd = build_preset_xml(&command, preset_index);
-                match server.send_device_control(&device_id, &channel_id, "DeviceControl", &preset_cmd).await {
+                match server
+                    .send_device_control(&device_id, &channel_id, "DeviceControl", &preset_cmd)
+                    .await
+                {
                     Ok(_) => {
                         return Json(ApiResult::success(serde_json::json!({
                             "deviceId": device_id,
@@ -181,7 +200,11 @@ pub async fn device_guard(
         return Json(ApiResult::error("device_id is required"));
     }
 
-    let cmd_type = if guard_cmd == "SetGuard" { "设防" } else { "撤防" };
+    let cmd_type = if guard_cmd == "SetGuard" {
+        "设防"
+    } else {
+        "撤防"
+    };
     tracing::info!("Guard control: device={}, cmd={}", device_id, guard_cmd);
 
     if let Some(ref sip_server) = state.sip_server {
@@ -189,7 +212,10 @@ pub async fn device_guard(
         if let Some(device) = server.device_manager().get(&device_id).await {
             if device.online && device.addr.is_some() {
                 let guard_xml = format!(r#"<GuardCmd>{}</GuardCmd>"#, guard_cmd);
-                match server.send_device_control(&device_id, &device_id, "DeviceControl", &guard_xml).await {
+                match server
+                    .send_device_control(&device_id, &device_id, "DeviceControl", &guard_xml)
+                    .await
+                {
                     Ok(_) => {
                         return Json(ApiResult::success(serde_json::json!({
                             "deviceId": device_id,
@@ -248,7 +274,11 @@ pub async fn subscribe_catalog(
         .await
         .unwrap_or_default();
 
-    tracing::info!("Catalog subscription: device={}, cycle={}", device_id, cycle);
+    tracing::info!(
+        "Catalog subscription: device={}, cycle={}",
+        device_id,
+        cycle
+    );
 
     if let Some(ref sip_server) = state.sip_server {
         let server = &*sip_server;
@@ -294,14 +324,21 @@ pub async fn subscribe_mobile_position(
     let cycle = q.cycle.unwrap_or(5) as u32;
     let interval = q.interval.unwrap_or(5);
 
-    tracing::info!("Position subscription: device={}, cycle={}, interval={}",
-        device_id, cycle, interval);
+    tracing::info!(
+        "Position subscription: device={}, cycle={}, interval={}",
+        device_id,
+        cycle,
+        interval
+    );
 
     if let Some(ref sip_server) = state.sip_server {
         let server = &*sip_server;
         if let Some(device) = server.device_manager().get(&device_id).await {
             if device.online {
-                match server.send_subscribe(&device_id, "MobilePosition", cycle).await {
+                match server
+                    .send_subscribe(&device_id, "MobilePosition", cycle)
+                    .await
+                {
                     Ok(_) => {
                         return Json(ApiResult::success(serde_json::json!({
                             "deviceId": device_id,
@@ -335,8 +372,13 @@ fn build_ptz_xml(command: &str, speed: u8, preset: u32, _dwStop: u32) -> String 
     // 云台/聚焦光圈/预置位统一是 `PTZCmd` 8 字节指令
     match crate::sip::gb28181::front_end_control::control_element(command, speed, preset) {
         Some((_, v)) => format!(r#"<PTZCmd>{}</PTZCmd>"#, v),
-        _ => format!(r#"<PTZCmd>{}</PTZCmd>"#, crate::sip::gb28181::front_end_control::build_ptz_cmd(
-            crate::sip::gb28181::front_end_control::PtzAction::Stop, 0)),
+        _ => format!(
+            r#"<PTZCmd>{}</PTZCmd>"#,
+            crate::sip::gb28181::front_end_control::build_ptz_cmd(
+                crate::sip::gb28181::front_end_control::PtzAction::Stop,
+                0
+            )
+        ),
     }
 }
 
@@ -380,7 +422,10 @@ pub async fn device_config_query(
     Query(q): Query<ConfigQuery>,
 ) -> Json<ApiResult<serde_json::Value>> {
     let device_id = q.device_id.clone().unwrap_or_default();
-    let config_type = q.config_type.clone().unwrap_or_else(|| "BasicParam".to_string());
+    let config_type = q
+        .config_type
+        .clone()
+        .unwrap_or_else(|| "BasicParam".to_string());
 
     if device_id.is_empty() {
         return Json(ApiResult::error("device_id is required"));
@@ -510,7 +555,10 @@ pub async fn device_config_update(
     Json(body): Json<ConfigUpdate>,
 ) -> Json<ApiResult<serde_json::Value>> {
     let device_id = body.device_id.clone().unwrap_or_default();
-    let config_type = body.config_type.clone().unwrap_or_else(|| "BasicParam".to_string());
+    let config_type = body
+        .config_type
+        .clone()
+        .unwrap_or_else(|| "BasicParam".to_string());
     let config_data = body.config_data.clone().unwrap_or(serde_json::json!({}));
 
     if device_id.is_empty() {
@@ -526,17 +574,27 @@ pub async fn device_config_update(
                 // 根据配置类型构建不同的配置XML
                 let config_xml = match config_type.as_str() {
                     "BasicParam" => {
-                        let sip_server_id = config_data.get("sipServerId")
-                            .and_then(|v| v.as_str()).unwrap_or("");
-                        let sip_server_port = config_data.get("sipServerPort")
-                            .and_then(|v| v.as_u64()).unwrap_or(5060);
-                        let sip_server_domain = config_data.get("sipServerDomain")
-                            .and_then(|v| v.as_str()).unwrap_or("");
-                        let transport = config_data.get("transport")
-                            .and_then(|v| v.as_str()).unwrap_or("UDP");
-                        let charset = config_data.get("charset")
-                            .and_then(|v| v.as_str()).unwrap_or("GB2312");
-                        
+                        let sip_server_id = config_data
+                            .get("sipServerId")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        let sip_server_port = config_data
+                            .get("sipServerPort")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(5060);
+                        let sip_server_domain = config_data
+                            .get("sipServerDomain")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        let transport = config_data
+                            .get("transport")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("UDP");
+                        let charset = config_data
+                            .get("charset")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("GB2312");
+
                         // 只给**内层元素**：外壳（`<Control>`/CmdType/SN/DeviceID）
                         // 由 `send_device_control` 统一生成。此前这里又拼了一整份
                         // `<Control>` 文档再交给它包装，报文里出现**嵌套的 Control**
@@ -552,8 +610,10 @@ pub async fn device_config_update(
                         )
                     }
                     "SnapConfig" => {
-                        let snap_interval = config_data.get("snapInterval")
-                            .and_then(|v| v.as_u64()).unwrap_or(0);
+                        let snap_interval = config_data
+                            .get("snapInterval")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0);
                         format!(
                             "<SnapConfig>\n<SnapInterval>{}</SnapInterval>\n</SnapConfig>",
                             snap_interval
@@ -563,13 +623,15 @@ pub async fn device_config_update(
                         // 通用配置，直接使用传入的JSON
                         format!(
                             "<ConfigType>{}</ConfigType>\n<ConfigData>{}</ConfigData>",
-                            config_type,
-                            config_data
+                            config_type, config_data
                         )
                     }
                 };
 
-                match server.send_device_control(&device_id, &device_id, "DeviceConfig", &config_xml).await {
+                match server
+                    .send_device_control(&device_id, &device_id, "DeviceConfig", &config_xml)
+                    .await
+                {
                     Ok(_) => {
                         return Json(ApiResult::success(serde_json::json!({
                             "deviceId": device_id,
@@ -579,7 +641,10 @@ pub async fn device_config_update(
                     }
                     Err(e) => {
                         tracing::error!("Failed to send config update: {}", e);
-                        return Json(ApiResult::error(format!("Failed to send config update: {}", e)));
+                        return Json(ApiResult::error(format!(
+                            "Failed to send config update: {}",
+                            e
+                        )));
                     }
                 }
             }
@@ -637,7 +702,10 @@ pub async fn device_reboot(
                 // 而且外面又套了一层 `<Control>`（嵌套 + 元素中间夹 XML 声明 = 非法 XML）。
                 let reboot_xml = "<TeleBoot>Boot</TeleBoot>".to_string();
 
-                match server.send_device_control(&device_id, &device_id, "DeviceControl", &reboot_xml).await {
+                match server
+                    .send_device_control(&device_id, &device_id, "DeviceControl", &reboot_xml)
+                    .await
+                {
                     Ok(_) => {
                         return Json(ApiResult::success(serde_json::json!({
                             "deviceId": device_id,
@@ -646,7 +714,10 @@ pub async fn device_reboot(
                     }
                     Err(e) => {
                         tracing::error!("Failed to send reboot command: {}", e);
-                        return Json(ApiResult::error(format!("Failed to send reboot command: {}", e)));
+                        return Json(ApiResult::error(format!(
+                            "Failed to send reboot command: {}",
+                            e
+                        )));
                     }
                 }
             }
@@ -812,8 +883,7 @@ pub async fn device_reset_alarm(
 ) -> Json<ApiResult<serde_json::Value>> {
     let device_id = q.device_id.clone().unwrap_or_default();
     let channel_id = q.channel_id.clone().unwrap_or_default();
-    let element =
-        build_alarm_reset_element(q.alarm_method.as_deref(), q.alarm_type.as_deref());
+    let element = build_alarm_reset_element(q.alarm_method.as_deref(), q.alarm_type.as_deref());
     tracing::info!(
         "Device reset_alarm: device={}, channel={}, method={:?}, type={:?}",
         device_id,
@@ -860,7 +930,11 @@ pub async fn device_iframe(
 ) -> Json<ApiResult<serde_json::Value>> {
     let device_id = q.device_id.clone().unwrap_or_default();
     let channel_id = q.channel_id.clone().unwrap_or_default();
-    tracing::info!("Device i_frame: device={}, channel={}", device_id, channel_id);
+    tracing::info!(
+        "Device i_frame: device={}, channel={}",
+        device_id,
+        channel_id
+    );
     // GB/T 28181-2016 §9.3.1：`<IFrameCmd>IFrame</IFrameCmd>`。
     // （早期实现里是 `<IFameCmd>Send</IFameCmd>` —— 元素名少一个 r 且取值不同，
     //  那是笔误，严格解析的设备认不出来，这里按国标下发。）
@@ -884,9 +958,17 @@ pub struct HomePositionQuery {
     /// 是否开启看守位（前端可能是 true/false，也可能是 1/0）
     #[serde(default, deserialize_with = "crate::serde_flex::de_opt_bool")]
     pub enabled: Option<bool>,
-    #[serde(alias = "resetTime", default, deserialize_with = "crate::serde_flex::de_opt_i64")]
+    #[serde(
+        alias = "resetTime",
+        default,
+        deserialize_with = "crate::serde_flex::de_opt_i64"
+    )]
     pub reset_time: Option<i64>,
-    #[serde(alias = "presetIndex", default, deserialize_with = "crate::serde_flex::de_opt_i64")]
+    #[serde(
+        alias = "presetIndex",
+        default,
+        deserialize_with = "crate::serde_flex::de_opt_i64"
+    )]
     pub preset_index: Option<i64>,
 }
 
@@ -965,16 +1047,32 @@ pub struct DragZoomQuery {
     #[serde(default, deserialize_with = "crate::serde_flex::de_opt_i64")]
     pub width: Option<i64>,
     /// 拉框中心 X 坐标
-    #[serde(alias = "midPointX", default, deserialize_with = "crate::serde_flex::de_opt_i64")]
+    #[serde(
+        alias = "midPointX",
+        default,
+        deserialize_with = "crate::serde_flex::de_opt_i64"
+    )]
     pub mid_point_x: Option<i64>,
     /// 拉框中心 Y 坐标
-    #[serde(alias = "midPointY", default, deserialize_with = "crate::serde_flex::de_opt_i64")]
+    #[serde(
+        alias = "midPointY",
+        default,
+        deserialize_with = "crate::serde_flex::de_opt_i64"
+    )]
     pub mid_point_y: Option<i64>,
     /// X 方向放大倍数
-    #[serde(alias = "lengthX", default, deserialize_with = "crate::serde_flex::de_opt_i64")]
+    #[serde(
+        alias = "lengthX",
+        default,
+        deserialize_with = "crate::serde_flex::de_opt_i64"
+    )]
     pub length_x: Option<i64>,
     /// Y 方向放大倍数
-    #[serde(alias = "lengthY", default, deserialize_with = "crate::serde_flex::de_opt_i64")]
+    #[serde(
+        alias = "lengthY",
+        default,
+        deserialize_with = "crate::serde_flex::de_opt_i64"
+    )]
     pub length_y: Option<i64>,
 }
 
@@ -1136,14 +1234,17 @@ mod control_element_tests {
             "<HomePosition>\n<Enabled>1</Enabled>\n<ResetTime>30</ResetTime>\n<PresetIndex>2</PresetIndex>\n</HomePosition>"
         );
         let off = build_home_position_element(false, Some(30), Some(2));
-        assert_eq!(
-            off,
-            "<HomePosition>\n<Enabled>0</Enabled>\n</HomePosition>"
-        );
+        assert_eq!(off, "<HomePosition>\n<Enabled>0</Enabled>\n</HomePosition>");
         // 缺省值补 0，不能出现空标签
         let defaulted = build_home_position_element(true, None, None);
-        assert!(defaulted.contains("<ResetTime>0</ResetTime>"), "{defaulted}");
-        assert!(defaulted.contains("<PresetIndex>0</PresetIndex>"), "{defaulted}");
+        assert!(
+            defaulted.contains("<ResetTime>0</ResetTime>"),
+            "{defaulted}"
+        );
+        assert!(
+            defaulted.contains("<PresetIndex>0</PresetIndex>"),
+            "{defaulted}"
+        );
     }
 
     /// 拉框放大/缩小的元素名与六个字段必须保持下述形状。
@@ -1163,15 +1264,17 @@ mod control_element_tests {
             assert!(zin.contains(frag), "{zin} 缺 {frag}");
         }
         let zout = build_drag_zoom_element(false, 1, 2, 3, 4, 5, 6);
-        assert!(zout.starts_with("<DragZoomOut>") && zout.ends_with("</DragZoomOut>"), "{zout}");
+        assert!(
+            zout.starts_with("<DragZoomOut>") && zout.ends_with("</DragZoomOut>"),
+            "{zout}"
+        );
     }
 
     /// 前端把开关放在查询串里时可能是 `"true"`/`"1"`，都必须能反序列化。
     #[test]
     fn home_position_query_accepts_flexible_bool() {
-        let parse = |v: serde_json::Value| -> HomePositionQuery {
-            serde_json::from_value(v).unwrap()
-        };
+        let parse =
+            |v: serde_json::Value| -> HomePositionQuery { serde_json::from_value(v).unwrap() };
         assert_eq!(
             parse(serde_json::json!({"deviceId": "d", "enabled": true})).enabled,
             Some(true)
@@ -1388,7 +1491,13 @@ pub async fn config_query_svac_encode(
     Query(q): Query<ConfigQueryParams>,
 ) -> Json<ApiResult<serde_json::Value>> {
     let device_id = q.device_id.clone().unwrap_or_default();
-    config_query(&state, &device_id, q.channel_id.as_deref(), "SVACEncodeConfig").await
+    config_query(
+        &state,
+        &device_id,
+        q.channel_id.as_deref(),
+        "SVACEncodeConfig",
+    )
+    .await
 }
 
 /// GET /api/device/config/query/svacDecodeConfig
@@ -1416,7 +1525,13 @@ pub async fn config_query_svac_decode(
     Query(q): Query<ConfigQueryParams>,
 ) -> Json<ApiResult<serde_json::Value>> {
     let device_id = q.device_id.clone().unwrap_or_default();
-    config_query(&state, &device_id, q.channel_id.as_deref(), "SVACDecodeConfig").await
+    config_query(
+        &state,
+        &device_id,
+        q.channel_id.as_deref(),
+        "SVACDecodeConfig",
+    )
+    .await
 }
 
 /// `GET /api/device/config/set/basicParam` 的查询参数。
@@ -1431,10 +1546,18 @@ pub struct BasicParamQuery {
     #[serde(default, deserialize_with = "crate::serde_flex::de_opt_string")]
     pub expiration: Option<String>,
     /// 心跳间隔（秒；只发正值，空值不修改）
-    #[serde(alias = "heartBeatInterval", default, deserialize_with = "crate::serde_flex::de_opt_string")]
+    #[serde(
+        alias = "heartBeatInterval",
+        default,
+        deserialize_with = "crate::serde_flex::de_opt_string"
+    )]
     pub heart_beat_interval: Option<String>,
     /// 心跳超时次数（只发正值，空值不修改）
-    #[serde(alias = "heartBeatCount", default, deserialize_with = "crate::serde_flex::de_opt_string")]
+    #[serde(
+        alias = "heartBeatCount",
+        default,
+        deserialize_with = "crate::serde_flex::de_opt_string"
+    )]
     pub heart_beat_count: Option<String>,
 }
 
@@ -1481,13 +1604,22 @@ pub struct VideoParamOptQuery {
     /// 分辨率（如 `1080P` / `4K`；空值不修改）
     pub resolution: Option<String>,
     /// 下载速度模式（`CBR` / `VBR` / `QCIF` 等；空值不修改）
-    #[serde(alias = "downloadSpeed", default, deserialize_with = "crate::serde_flex::de_opt_string")]
+    #[serde(
+        alias = "downloadSpeed",
+        default,
+        deserialize_with = "crate::serde_flex::de_opt_string"
+    )]
     pub download_speed: Option<String>,
 }
 
 pub(crate) fn build_video_param_set_element(q: &VideoParamOptQuery) -> String {
     let mut xml = String::from("<VideoParamOpt>");
-    if let Some(v) = q.resolution.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(v) = q
+        .resolution
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         xml.push_str(&format!("\n<Resolution>{}</Resolution>", v));
     }
     if let Some(v) = q

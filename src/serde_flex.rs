@@ -240,7 +240,8 @@ mod tests {
 
     #[test]
     fn opt_i64_vec_skips_blanks_and_rejects_garbage() {
-        let a: OptI64Vec = serde_json::from_value(serde_json::json!({"ids": [1, "2", ""]})).unwrap();
+        let a: OptI64Vec =
+            serde_json::from_value(serde_json::json!({"ids": [1, "2", ""]})).unwrap();
         assert_eq!(a.ids.unwrap(), vec![1, 2]);
         assert!(serde_json::from_value::<OptI64Vec>(serde_json::json!({"ids": ["x"]})).is_err());
     }

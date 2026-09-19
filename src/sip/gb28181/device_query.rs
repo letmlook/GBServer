@@ -84,7 +84,10 @@ impl DeviceQueryManager {
             device_name: fields.get("DeviceName").cloned(),
             manufacturer: fields.get("Manufacturer").cloned(),
             model: fields.get("Model").cloned(),
-            firmware: fields.get("FirmwareVersion").or_else(|| fields.get("Firmware")).cloned(),
+            firmware: fields
+                .get("FirmwareVersion")
+                .or_else(|| fields.get("Firmware"))
+                .cloned(),
             channel_count: fields.get("Channel").and_then(|s| s.parse().ok()),
             serial_number: fields.get("SerialNumber").cloned(),
         }
@@ -105,7 +108,10 @@ impl DeviceQueryManager {
             online: fields.get("Online").cloned(),
             status: fields.get("Status").cloned(),
             device_time: fields.get("DeviceTime").cloned(),
-            encode_channel_count: fields.get("EncodeChannel").or_else(|| fields.get("ChannelNum")).and_then(|s| s.parse().ok()),
+            encode_channel_count: fields
+                .get("EncodeChannel")
+                .or_else(|| fields.get("ChannelNum"))
+                .and_then(|s| s.parse().ok()),
             decode_channel_count: fields.get("DecodeChannel").and_then(|s| s.parse().ok()),
             record_channel_count: fields.get("RecordChannel").and_then(|s| s.parse().ok()),
             storage_space: storage,

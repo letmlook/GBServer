@@ -213,8 +213,12 @@ pub struct HeartbeatConfig {
     pub latency_probe_timeout_ms: u64,
 }
 
-fn default_latency_probe_interval_secs() -> u64 { 15 }
-fn default_latency_probe_timeout_ms() -> u64 { 5000 }
+fn default_latency_probe_interval_secs() -> u64 {
+    15
+}
+fn default_latency_probe_timeout_ms() -> u64 {
+    5000
+}
 
 impl Default for HeartbeatConfig {
     fn default() -> Self {
@@ -300,9 +304,15 @@ pub struct ZlmKeepaliveConfig {
     pub check_interval_secs: u64,
 }
 
-fn default_keepalive_timeout_secs() -> i64 { 30 }
-fn default_keepalive_grace_count() -> i32 { 3 }
-fn default_keepalive_check_interval_secs() -> u64 { 10 }
+fn default_keepalive_timeout_secs() -> i64 {
+    30
+}
+fn default_keepalive_grace_count() -> i32 {
+    3
+}
+fn default_keepalive_check_interval_secs() -> u64 {
+    10
+}
 
 impl Default for ZlmKeepaliveConfig {
     fn default() -> Self {
@@ -390,10 +400,18 @@ pub struct ClusterAppConfig {
     pub heartbeat_ttl_secs: u64,
 }
 
-fn default_cluster_single_node() -> bool { true }
-fn default_cluster_role() -> String { "primary".to_string() }
-fn default_cluster_heartbeat_interval() -> u64 { 10 }
-fn default_cluster_heartbeat_ttl() -> u64 { 60 }
+fn default_cluster_single_node() -> bool {
+    true
+}
+fn default_cluster_role() -> String {
+    "primary".to_string()
+}
+fn default_cluster_heartbeat_interval() -> u64 {
+    10
+}
+fn default_cluster_heartbeat_ttl() -> u64 {
+    60
+}
 
 impl Default for ClusterAppConfig {
     fn default() -> Self {
@@ -449,8 +467,12 @@ pub struct AuditConfig {
     pub retention_days: u32,
 }
 
-fn default_audit_enabled() -> bool { true }
-fn default_audit_retention_days() -> u32 { 90 }
+fn default_audit_enabled() -> bool {
+    true
+}
+fn default_audit_retention_days() -> u32 {
+    90
+}
 
 impl Default for AuditConfig {
     fn default() -> Self {

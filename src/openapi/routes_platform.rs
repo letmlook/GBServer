@@ -16,9 +16,15 @@ pub fn routes() -> DocumentedRoutes {
     acc.add(routes!(crate::handlers::platform::catalog_edit));
     acc.add(routes!(crate::handlers::platform::platform_add));
     acc.add(routes!(crate::handlers::platform::platform_channel_add));
-    acc.add(routes!(crate::handlers::platform::platform_channel_custom_update));
-    acc.add(routes!(crate::handlers::platform::platform_channel_device_add));
-    acc.add(routes!(crate::handlers::platform::platform_channel_device_remove));
+    acc.add(routes!(
+        crate::handlers::platform::platform_channel_custom_update
+    ));
+    acc.add(routes!(
+        crate::handlers::platform::platform_channel_device_add
+    ));
+    acc.add(routes!(
+        crate::handlers::platform::platform_channel_device_remove
+    ));
     acc.add(routes!(crate::handlers::platform::platform_channel_list));
     acc.add(routes!(crate::handlers::platform::platform_channel_push));
     acc.add(routes!(crate::handlers::platform::platform_channel_remove));

@@ -1,57 +1,57 @@
-#[cfg(all(test, feature = "sqlite"))]
-mod read_smoke;
-pub mod log;
-mod user;
+pub mod alarm;
+pub mod audit_log;
+pub mod cloud_record;
+pub mod common_channel;
 pub mod device;
-pub mod media_server;
-pub mod role;
-pub mod region;
 pub mod group;
-pub mod user_api_key;
-pub mod record_plan;
-pub mod stream_push;
-pub mod stream_proxy;
+pub mod jt1078;
+pub mod log;
+pub mod media_server;
+pub mod mobile_position;
 pub mod platform;
 pub mod platform_channel;
-pub mod common_channel;
-pub mod jt1078;
-pub mod position_history;
-pub mod alarm;
-pub mod mobile_position;
-pub mod cloud_record;
 pub mod platform_group;
 pub mod platform_region;
-pub mod audit_log;
+pub mod position_history;
+#[cfg(all(test, feature = "sqlite"))]
+mod read_smoke;
+pub mod record_plan;
+pub mod region;
+pub mod role;
+pub mod stream_proxy;
+pub mod stream_push;
+mod user;
+pub mod user_api_key;
 
 // 跨模块同名函数 re-export（如 `count_all`、`get_by_id` 等多模块共有）。
 // 调用方写 `db::count_all(&pool)` 时使用"先 import 的优先"语义；触发 warning 但不编译失败。
 // 业务层实际依赖调用路径明确（`db::device::get_by_id` vs `db::region::get_by_id`）。
-#[allow(ambiguous_glob_reexports)]
-pub use log::*;
-#[allow(ambiguous_glob_reexports)]
-pub use user::*;
+pub use alarm::Alarm;
+pub use cloud_record::CloudRecord;
 #[allow(ambiguous_glob_reexports)]
 pub use device::*;
 #[allow(ambiguous_glob_reexports)]
-pub use media_server::*;
+pub use group::*;
+pub use jt1078::{JtChannel, JtTerminal};
 #[allow(ambiguous_glob_reexports)]
-pub use role::*;
+pub use log::*;
+#[allow(ambiguous_glob_reexports)]
+pub use media_server::*;
+pub use mobile_position::MobilePosition;
+pub use platform::Platform;
+pub use position_history::PositionHistory;
+#[allow(ambiguous_glob_reexports)]
+pub use record_plan::*;
 #[allow(ambiguous_glob_reexports)]
 pub use region::*;
 #[allow(ambiguous_glob_reexports)]
-pub use group::*;
+pub use role::*;
+pub use stream_proxy::{StreamProxy, StreamProxyWrite};
+pub use stream_push::StreamPush;
+#[allow(ambiguous_glob_reexports)]
+pub use user::*;
 #[allow(ambiguous_glob_reexports)]
 pub use user_api_key::*;
-#[allow(ambiguous_glob_reexports)]
-pub use record_plan::*;
-pub use stream_push::StreamPush;
-pub use stream_proxy::{StreamProxy, StreamProxyWrite};
-pub use platform::Platform;
-pub use jt1078::{JtTerminal, JtChannel};
-pub use position_history::PositionHistory;
-pub use alarm::Alarm;
-pub use mobile_position::MobilePosition;
-pub use cloud_record::CloudRecord;
 
 use crate::config::AppConfig;
 
@@ -67,7 +67,11 @@ pub type Pool = sqlx::PgPool;
 pub type Pool = sqlx::MySqlPool;
 
 // 兜底：当三个 feature 同时未指定时，默认 PG（保留历史行为）
-#[cfg(all(not(feature = "mysql"), not(feature = "postgres"), not(feature = "sqlite")))]
+#[cfg(all(
+    not(feature = "mysql"),
+    not(feature = "postgres"),
+    not(feature = "sqlite")
+))]
 pub type Pool = sqlx::PgPool;
 
 pub async fn create_pool(cfg: &AppConfig) -> anyhow::Result<Pool> {

@@ -52,8 +52,14 @@ pub async fn login(
     State(state): State<AppState>,
     Query(params): Query<LoginParams>,
 ) -> Result<impl IntoResponse, AppError> {
-    let username = params.username.as_deref().ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 username"))?;
-    let password = params.password.as_deref().ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 password"))?;
+    let username = params
+        .username
+        .as_deref()
+        .ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 username"))?;
+    let password = params
+        .password
+        .as_deref()
+        .ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 password"))?;
     let mut user = db::find_by_username(&state.pool, username)
         .await?
         .ok_or_else(|| AppError::business(ErrorCode::Error100, "用户名或密码错误"))?;
@@ -104,13 +110,18 @@ pub async fn login(
         },
         push_key: user.push_key.clone(),
         access_token: Some(token.clone()),
-        server_id: state.config.user_settings.as_ref().and_then(|u| u.server_id.clone()),
+        server_id: state
+            .config
+            .user_settings
+            .as_ref()
+            .and_then(|u| u.server_id.clone()),
     };
 
     let mut response = (StatusCode::OK, Json(ApiResult::success(login_user))).into_response();
     response.headers_mut().insert(
         axum::http::header::HeaderName::from_static("access-token"),
-        axum::http::HeaderValue::from_str(&token).unwrap_or(axum::http::HeaderValue::from_static("")),
+        axum::http::HeaderValue::from_str(&token)
+            .unwrap_or(axum::http::HeaderValue::from_static("")),
     );
     Ok(response)
 }
@@ -197,7 +208,11 @@ pub async fn user_info(
         },
         push_key: user.push_key.clone(),
         access_token: None,
-        server_id: state.config.user_settings.as_ref().and_then(|u| u.server_id.clone()),
+        server_id: state
+            .config
+            .user_settings
+            .as_ref()
+            .and_then(|u| u.server_id.clone()),
     };
     Ok(Json(ApiResult::success(login_user)))
 }
@@ -360,7 +375,10 @@ pub async fn update_user(
 
     let n = db::update_user(&state.pool, user_id, username, params.role_id).await?;
     if n == 0 {
-        return Err(AppError::business(ErrorCode::Error100, "用户不存在或更新失败"));
+        return Err(AppError::business(
+            ErrorCode::Error100,
+            "用户不存在或更新失败",
+        ));
     }
     Ok(Json(ApiResult::<()>::success_empty()))
 }
@@ -425,9 +443,24 @@ pub async fn add_user(
     // 否则库里是 Argon2(明文) 而登录送 md5(明文)，新建用户永远登不上。
     let password_hash = crate::auth::hash_password(&crate::auth::password_secret(password))
         .map_err(|e| AppError::business(ErrorCode::Error100, format!("hash failed: {}", e)))?;
-    let push_key = md5_hex(&format!("{}{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis(), password));
+    let push_key = md5_hex(&format!(
+        "{}{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis(),
+        password
+    ));
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    let n = db::add_user(&state.pool, username, &password_hash, role_id, &push_key, &now).await?;
+    let n = db::add_user(
+        &state.pool,
+        username,
+        &password_hash,
+        role_id,
+        &push_key,
+        &now,
+    )
+    .await?;
     if n == 0 {
         return Err(AppError::business(ErrorCode::Error100, "添加失败"));
     }
@@ -467,12 +500,16 @@ pub async fn delete_user(
     Query(q): Query<DeleteQuery>,
 ) -> Result<Json<ApiResult<()>>, AppError> {
     authz::require_admin(&state, &headers).await?;
-    let id = q.id.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id"))?;
+    let id =
+        q.id.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id"))?;
     let (_, me) = authz::current_user(&state, &headers).await?;
     if me.id == id {
         // 明确拦自己：此前靠 `db::delete_user` 里 SQL 的 `WHERE id != 1` 兜住，
         // 报的还是含义不明的"删除失败"，且只保护了 id=1 这一个账号。
-        return Err(AppError::business(ErrorCode::Error400, "不能删除当前登录账号"));
+        return Err(AppError::business(
+            ErrorCode::Error400,
+            "不能删除当前登录账号",
+        ));
     }
     let n = db::delete_user(&state.pool, id).await?;
     if n == 0 {
@@ -513,10 +550,17 @@ pub async fn change_password(
     let token = crate::auth::extract_token_from_headers(&headers).ok_or(AppError::Unauthorized)?;
     let keys = JwtKeys::new(state.config.jwt.secret.as_bytes());
     let claims = keys.verify_token(&token).ok_or(AppError::Unauthorized)?;
-    let old_md5 = params.old_password.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 oldPassword"))?;
-    let new_pwd = params.password.as_deref().ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 password"))?;
+    let old_md5 = params
+        .old_password
+        .ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 oldPassword"))?;
+    let new_pwd = params
+        .password
+        .as_deref()
+        .ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 password"))?;
 
-    let user = db::find_by_username(&state.pool, &claims.userName).await?.ok_or(AppError::Unauthorized)?;
+    let user = db::find_by_username(&state.pool, &claims.userName)
+        .await?
+        .ok_or(AppError::Unauthorized)?;
     // 旧口令同样走兼容校验：
     // 此前这里是 `current_md5 != old_md5` 的明文比较，导致存 Argon2id 的新用户
     // **永远无法修改自己的密码**（Argon2 串不可能等于 MD5 十六进制）。
@@ -568,8 +612,13 @@ pub async fn change_password_for_admin(
     Query(params): Query<ChangePasswordForAdminParams>,
 ) -> Result<Json<ApiResult<()>>, AppError> {
     authz::require_admin(&state, &headers).await?;
-    let user_id = params.user_id.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 userId"))?;
-    let password = params.password.as_deref().ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 password"))?;
+    let user_id = params
+        .user_id
+        .ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 userId"))?;
+    let password = params
+        .password
+        .as_deref()
+        .ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 password"))?;
     // 管理员重置口令也存 Argon2id（此前写 MD5）；秘密值同样取 md5(明文)，
     // 与登录侧（送 md5）保持一致，否则被重置的账号从此登录不上。
     let new_hash = crate::auth::hash_password(&crate::auth::password_secret(password))
@@ -612,8 +661,12 @@ pub async fn change_push_key(
     Query(params): Query<ChangePushKeyParams>,
 ) -> Result<Json<ApiResult<()>>, AppError> {
     authz::require_admin(&state, &headers).await?;
-    let user_id = params.user_id.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 userId"))?;
-    let push_key = params.push_key.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 pushKey"))?;
+    let user_id = params
+        .user_id
+        .ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 userId"))?;
+    let push_key = params
+        .push_key
+        .ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 pushKey"))?;
     let n = db::change_push_key(&state.pool, user_id, &push_key).await?;
     if n == 0 {
         return Err(AppError::business(ErrorCode::Error100, "修改失败"));
@@ -708,7 +761,11 @@ mod password_flow_tests {
         )
         .await
         .unwrap();
-        let uid = db::find_by_username(&state.pool, "u1").await.unwrap().unwrap().id;
+        let uid = db::find_by_username(&state.pool, "u1")
+            .await
+            .unwrap()
+            .unwrap()
+            .id;
 
         let _ = change_password_for_admin(
             State(state.clone()),
@@ -722,8 +779,14 @@ mod password_flow_tests {
         .expect("重置应成功");
 
         let s = stored("u1", &state).await;
-        assert!(crate::auth::verify_password_flexible(&md5("reset999"), &s), "重置后必须能用新口令登录");
-        assert!(!crate::auth::verify_password_flexible(&md5("plain123"), &s), "旧口令必须失效");
+        assert!(
+            crate::auth::verify_password_flexible(&md5("reset999"), &s),
+            "重置后必须能用新口令登录"
+        );
+        assert!(
+            !crate::auth::verify_password_flexible(&md5("plain123"), &s),
+            "旧口令必须失效"
+        );
     }
 
     /// 自助改密：`oldPassword` 走登录口径（md5），改完必须能用新口令登录。
@@ -799,7 +862,10 @@ mod password_flow_tests {
         .expect_err("旧密码错误应报错");
         assert!(matches!(err, AppError::Business(_, _)));
         let s = stored("u1", &state).await;
-        assert!(crate::auth::verify_password_flexible(&md5("plain123"), &s), "口令不应被改动");
+        assert!(
+            crate::auth::verify_password_flexible(&md5("plain123"), &s),
+            "口令不应被改动"
+        );
     }
 }
 

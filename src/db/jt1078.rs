@@ -1,6 +1,6 @@
+use crate::db::Pool;
 use serde::Serialize;
 use sqlx::FromRow;
-use crate::db::Pool;
 
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub struct JtTerminal {
@@ -69,13 +69,35 @@ pub async fn list_terminals_paged(
             "SELECT id, phone_number, terminal_id, CAST(province_id AS CHAR) AS province_id, province_text, CAST(city_id AS CHAR) AS city_id, city_text, maker_id, model, plate_color, plate_no, longitude, latitude, status, register_time, update_time, create_time, geo_coord_sys, media_server_id, sdp_ip, auth_code FROM gb_jt_terminal ORDER BY id LIMIT ? OFFSET ?"
         };
         let rows = if has_query && online.is_some() {
-            sqlx::query_as::<_, JtTerminal>(sql).bind(&like).bind(&like).bind(online.unwrap()).bind(limit).bind(offset).fetch_all(pool).await?
+            sqlx::query_as::<_, JtTerminal>(sql)
+                .bind(&like)
+                .bind(&like)
+                .bind(online.unwrap())
+                .bind(limit)
+                .bind(offset)
+                .fetch_all(pool)
+                .await?
         } else if has_query {
-            sqlx::query_as::<_, JtTerminal>(sql).bind(&like).bind(&like).bind(limit).bind(offset).fetch_all(pool).await?
+            sqlx::query_as::<_, JtTerminal>(sql)
+                .bind(&like)
+                .bind(&like)
+                .bind(limit)
+                .bind(offset)
+                .fetch_all(pool)
+                .await?
         } else if online.is_some() {
-            sqlx::query_as::<_, JtTerminal>(sql).bind(online.unwrap()).bind(limit).bind(offset).fetch_all(pool).await?
+            sqlx::query_as::<_, JtTerminal>(sql)
+                .bind(online.unwrap())
+                .bind(limit)
+                .bind(offset)
+                .fetch_all(pool)
+                .await?
         } else {
-            sqlx::query_as::<_, JtTerminal>(sql).bind(limit).bind(offset).fetch_all(pool).await?
+            sqlx::query_as::<_, JtTerminal>(sql)
+                .bind(limit)
+                .bind(offset)
+                .fetch_all(pool)
+                .await?
         };
         Ok(rows)
     }
@@ -92,13 +114,35 @@ pub async fn list_terminals_paged(
             "SELECT id, phone_number, terminal_id, CAST(province_id AS TEXT) AS province_id, province_text, CAST(city_id AS TEXT) AS city_id, city_text, maker_id, model, plate_color, plate_no, longitude, latitude, status, register_time, update_time, create_time, geo_coord_sys, media_server_id, sdp_ip, auth_code FROM gb_jt_terminal ORDER BY id LIMIT $1 OFFSET $2"
         };
         let rows = if has_query && online.is_some() {
-            sqlx::query_as::<_, JtTerminal>(sql).bind(&like).bind(&like).bind(online.unwrap()).bind(limit).bind(offset).fetch_all(pool).await?
+            sqlx::query_as::<_, JtTerminal>(sql)
+                .bind(&like)
+                .bind(&like)
+                .bind(online.unwrap())
+                .bind(limit)
+                .bind(offset)
+                .fetch_all(pool)
+                .await?
         } else if has_query {
-            sqlx::query_as::<_, JtTerminal>(sql).bind(&like).bind(&like).bind(limit).bind(offset).fetch_all(pool).await?
+            sqlx::query_as::<_, JtTerminal>(sql)
+                .bind(&like)
+                .bind(&like)
+                .bind(limit)
+                .bind(offset)
+                .fetch_all(pool)
+                .await?
         } else if online.is_some() {
-            sqlx::query_as::<_, JtTerminal>(sql).bind(online.unwrap()).bind(limit).bind(offset).fetch_all(pool).await?
+            sqlx::query_as::<_, JtTerminal>(sql)
+                .bind(online.unwrap())
+                .bind(limit)
+                .bind(offset)
+                .fetch_all(pool)
+                .await?
         } else {
-            sqlx::query_as::<_, JtTerminal>(sql).bind(limit).bind(offset).fetch_all(pool).await?
+            sqlx::query_as::<_, JtTerminal>(sql)
+                .bind(limit)
+                .bind(offset)
+                .fetch_all(pool)
+                .await?
         };
         Ok(rows)
     }
@@ -115,13 +159,35 @@ pub async fn list_terminals_paged(
             "SELECT id, phone_number, terminal_id, CAST(province_id AS TEXT) AS province_id, province_text, CAST(city_id AS TEXT) AS city_id, city_text, maker_id, model, plate_color, plate_no, longitude, latitude, status, register_time, update_time, create_time, geo_coord_sys, media_server_id, sdp_ip, auth_code FROM gb_jt_terminal ORDER BY id LIMIT ? OFFSET ?"
         };
         let rows = if has_query && online.is_some() {
-            sqlx::query_as::<_, JtTerminal>(sql).bind(&like).bind(&like).bind(online.unwrap()).bind(limit).bind(offset).fetch_all(pool).await?
+            sqlx::query_as::<_, JtTerminal>(sql)
+                .bind(&like)
+                .bind(&like)
+                .bind(online.unwrap())
+                .bind(limit)
+                .bind(offset)
+                .fetch_all(pool)
+                .await?
         } else if has_query {
-            sqlx::query_as::<_, JtTerminal>(sql).bind(&like).bind(&like).bind(limit).bind(offset).fetch_all(pool).await?
+            sqlx::query_as::<_, JtTerminal>(sql)
+                .bind(&like)
+                .bind(&like)
+                .bind(limit)
+                .bind(offset)
+                .fetch_all(pool)
+                .await?
         } else if online.is_some() {
-            sqlx::query_as::<_, JtTerminal>(sql).bind(online.unwrap()).bind(limit).bind(offset).fetch_all(pool).await?
+            sqlx::query_as::<_, JtTerminal>(sql)
+                .bind(online.unwrap())
+                .bind(limit)
+                .bind(offset)
+                .fetch_all(pool)
+                .await?
         } else {
-            sqlx::query_as::<_, JtTerminal>(sql).bind(limit).bind(offset).fetch_all(pool).await?
+            sqlx::query_as::<_, JtTerminal>(sql)
+                .bind(limit)
+                .bind(offset)
+                .fetch_all(pool)
+                .await?
         };
         Ok(rows)
     }
@@ -146,9 +212,13 @@ pub async fn count_terminals(
                 .bind(&like).bind(&like).fetch_one(pool).await
         } else if online.is_some() {
             sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_jt_terminal WHERE status = ?")
-                .bind(online.unwrap()).fetch_one(pool).await
+                .bind(online.unwrap())
+                .fetch_one(pool)
+                .await
         } else {
-            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_jt_terminal").fetch_one(pool).await
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_jt_terminal")
+                .fetch_one(pool)
+                .await
         }
     }
 
@@ -162,9 +232,13 @@ pub async fn count_terminals(
                 .bind(&like).bind(&like).fetch_one(pool).await
         } else if online.is_some() {
             sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_jt_terminal WHERE status = $1")
-                .bind(online.unwrap()).fetch_one(pool).await
+                .bind(online.unwrap())
+                .fetch_one(pool)
+                .await
         } else {
-            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_jt_terminal").fetch_one(pool).await
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_jt_terminal")
+                .fetch_one(pool)
+                .await
         }
     }
 
@@ -178,9 +252,13 @@ pub async fn count_terminals(
                 .bind(&like).bind(&like).fetch_one(pool).await
         } else if online.is_some() {
             sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_jt_terminal WHERE status = ?")
-                .bind(online.unwrap()).fetch_one(pool).await
+                .bind(online.unwrap())
+                .fetch_one(pool)
+                .await
         } else {
-            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_jt_terminal").fetch_one(pool).await
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_jt_terminal")
+                .fetch_one(pool)
+                .await
         }
     }
 }
@@ -194,7 +272,9 @@ pub async fn get_terminal_by_phone(pool: &Pool, phone: &str) -> sqlx::Result<Opt
          create_time, geo_coord_sys, media_server_id, sdp_ip, auth_code \
          FROM gb_jt_terminal WHERE phone_number = ?",
     )
-        .bind(phone).fetch_optional(pool).await;
+    .bind(phone)
+    .fetch_optional(pool)
+    .await;
     #[cfg(feature = "postgres")]
     return sqlx::query_as::<_, JtTerminal>(
         "SELECT id, phone_number, terminal_id, CAST(province_id AS TEXT) AS province_id, \
@@ -203,7 +283,9 @@ pub async fn get_terminal_by_phone(pool: &Pool, phone: &str) -> sqlx::Result<Opt
          create_time, geo_coord_sys, media_server_id, sdp_ip, auth_code \
          FROM gb_jt_terminal WHERE phone_number = $1",
     )
-        .bind(phone).fetch_optional(pool).await;
+    .bind(phone)
+    .fetch_optional(pool)
+    .await;
 }
 
 /// 根据终端 ID（JT/T 808 终端号，非手机号）查询终端。
@@ -222,7 +304,9 @@ pub async fn get_terminal_by_terminal_id(
          create_time, geo_coord_sys, media_server_id, sdp_ip, auth_code \
          FROM gb_jt_terminal WHERE terminal_id = ?",
     )
-        .bind(terminal_id).fetch_optional(pool).await;
+    .bind(terminal_id)
+    .fetch_optional(pool)
+    .await;
     #[cfg(feature = "postgres")]
     return sqlx::query_as::<_, JtTerminal>(
         "SELECT id, phone_number, terminal_id, CAST(province_id AS TEXT) AS province_id, \
@@ -231,7 +315,9 @@ pub async fn get_terminal_by_terminal_id(
          create_time, geo_coord_sys, media_server_id, sdp_ip, auth_code \
          FROM gb_jt_terminal WHERE terminal_id = $1",
     )
-        .bind(terminal_id).fetch_optional(pool).await;
+    .bind(terminal_id)
+    .fetch_optional(pool)
+    .await;
 }
 
 /// 根据ID查询终端
@@ -248,10 +334,14 @@ pub async fn get_terminal_by_id(pool: &Pool, id: i32) -> sqlx::Result<Option<JtT
 pub async fn get_channel_by_id(pool: &Pool, id: i32) -> sqlx::Result<Option<JtChannel>> {
     #[cfg(any(feature = "mysql", feature = "sqlite"))]
     return sqlx::query_as::<_, JtChannel>("SELECT * FROM gb_jt_channel WHERE id = ?")
-        .bind(id).fetch_optional(pool).await;
+        .bind(id)
+        .fetch_optional(pool)
+        .await;
     #[cfg(feature = "postgres")]
     return sqlx::query_as::<_, JtChannel>("SELECT * FROM gb_jt_channel WHERE id = $1")
-        .bind(id).fetch_optional(pool).await;
+        .bind(id)
+        .fetch_optional(pool)
+        .await;
 }
 
 /// 获取所有在线终端
@@ -268,10 +358,12 @@ pub async fn get_online_terminals(pool: &Pool) -> sqlx::Result<Vec<JtTerminal>> 
 pub async fn count_online_terminals(pool: &Pool) -> sqlx::Result<i64> {
     #[cfg(any(feature = "mysql", feature = "sqlite"))]
     return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_jt_terminal WHERE status = 1")
-        .fetch_one(pool).await;
+        .fetch_one(pool)
+        .await;
     #[cfg(feature = "postgres")]
     return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_jt_terminal WHERE status = true")
-        .fetch_one(pool).await;
+        .fetch_one(pool)
+        .await;
 }
 
 /// Insert a new JT1078 channel for a terminal identified by phone_number.
@@ -363,11 +455,19 @@ pub async fn list_channels_by_terminal(
     terminal_db_id: i32,
 ) -> sqlx::Result<Vec<JtChannel>> {
     #[cfg(any(feature = "mysql", feature = "sqlite"))]
-    return sqlx::query_as::<_, JtChannel>("SELECT * FROM gb_jt_channel WHERE terminal_db_id = ? ORDER BY channel_id")
-        .bind(terminal_db_id).fetch_all(pool).await;
+    return sqlx::query_as::<_, JtChannel>(
+        "SELECT * FROM gb_jt_channel WHERE terminal_db_id = ? ORDER BY channel_id",
+    )
+    .bind(terminal_db_id)
+    .fetch_all(pool)
+    .await;
     #[cfg(feature = "postgres")]
-    return sqlx::query_as::<_, JtChannel>("SELECT * FROM gb_jt_channel WHERE terminal_db_id = $1 ORDER BY channel_id")
-        .bind(terminal_db_id).fetch_all(pool).await;
+    return sqlx::query_as::<_, JtChannel>(
+        "SELECT * FROM gb_jt_channel WHERE terminal_db_id = $1 ORDER BY channel_id",
+    )
+    .bind(terminal_db_id)
+    .fetch_all(pool)
+    .await;
 }
 
 /// 终端的可写字段。
@@ -435,7 +535,8 @@ pub async fn update_terminal(
     f: &JtTerminalWrite<'_>,
     now: &str,
 ) -> sqlx::Result<u64> {
-    let set = "SET terminal_id = COALESCE({p1}, terminal_id), plate_no = COALESCE({p2}, plate_no), \
+    let set =
+        "SET terminal_id = COALESCE({p1}, terminal_id), plate_no = COALESCE({p2}, plate_no), \
                plate_color = COALESCE({p3}, plate_color), maker_id = COALESCE({p4}, maker_id), \
                model = COALESCE({p5}, model), media_server_id = COALESCE({p6}, media_server_id), \
                province_id = COALESCE({p7}, province_id), city_id = COALESCE({p8}, city_id), \
@@ -443,8 +544,9 @@ pub async fn update_terminal(
 
     #[cfg(any(feature = "mysql", feature = "sqlite"))]
     let r = {
-        let sql: String = (1..=10)
-            .fold(set.to_string(), |acc, i| acc.replace(&format!("{{p{i}}}"), "?"));
+        let sql: String = (1..=10).fold(set.to_string(), |acc, i| {
+            acc.replace(&format!("{{p{i}}}"), "?")
+        });
         sqlx::query(&format!("UPDATE gb_jt_terminal {sql}"))
             .bind(f.terminal_id)
             .bind(f.plate_no)
@@ -461,8 +563,9 @@ pub async fn update_terminal(
     };
     #[cfg(feature = "postgres")]
     let r = {
-        let sql: String = (1..=10)
-            .fold(set.to_string(), |acc, i| acc.replace(&format!("{{p{i}}}"), &format!("${i}")));
+        let sql: String = (1..=10).fold(set.to_string(), |acc, i| {
+            acc.replace(&format!("{{p{i}}}"), &format!("${i}"))
+        });
         sqlx::query(&format!("UPDATE gb_jt_terminal {sql}"))
             .bind(f.terminal_id)
             .bind(f.plate_no)
@@ -482,36 +585,59 @@ pub async fn update_terminal(
 
 pub async fn delete_terminal_by_phone(pool: &Pool, phone_number: &str) -> sqlx::Result<u64> {
     #[cfg(any(feature = "mysql", feature = "sqlite"))]
-    return sqlx::query("DELETE FROM gb_jt_terminal WHERE phone_number = ?").bind(phone_number).execute(pool).await.map(|r| r.rows_affected());
+    return sqlx::query("DELETE FROM gb_jt_terminal WHERE phone_number = ?")
+        .bind(phone_number)
+        .execute(pool)
+        .await
+        .map(|r| r.rows_affected());
     #[cfg(feature = "postgres")]
-    return sqlx::query("DELETE FROM gb_jt_terminal WHERE phone_number = $1").bind(phone_number).execute(pool).await.map(|r| r.rows_affected());
+    return sqlx::query("DELETE FROM gb_jt_terminal WHERE phone_number = $1")
+        .bind(phone_number)
+        .execute(pool)
+        .await
+        .map(|r| r.rows_affected());
 }
 
 /// 按数据库主键删除（前端终端列表传的就是主键）。
 pub async fn delete_terminal_by_id(pool: &Pool, id: i64) -> sqlx::Result<u64> {
     #[cfg(any(feature = "mysql", feature = "sqlite"))]
-    return sqlx::query("DELETE FROM gb_jt_terminal WHERE id = ?").bind(id).execute(pool).await.map(|r| r.rows_affected());
+    return sqlx::query("DELETE FROM gb_jt_terminal WHERE id = ?")
+        .bind(id)
+        .execute(pool)
+        .await
+        .map(|r| r.rows_affected());
     #[cfg(feature = "postgres")]
-    return sqlx::query("DELETE FROM gb_jt_terminal WHERE id = $1").bind(id).execute(pool).await.map(|r| r.rows_affected());
+    return sqlx::query("DELETE FROM gb_jt_terminal WHERE id = $1")
+        .bind(id)
+        .execute(pool)
+        .await
+        .map(|r| r.rows_affected());
 }
 
 /// 更新终端在线状态
-pub async fn update_terminal_status(pool: &Pool, phone_number: &str, status: bool) -> sqlx::Result<u64> {
+pub async fn update_terminal_status(
+    pool: &Pool,
+    phone_number: &str,
+    status: bool,
+) -> sqlx::Result<u64> {
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     #[cfg(any(feature = "mysql", feature = "sqlite"))]
-    let r = sqlx::query("UPDATE gb_jt_terminal SET status = ?, update_time = ? WHERE phone_number = ?")
-        .bind(status)
-        .bind(&now)
-        .bind(phone_number)
-        .execute(pool)
-        .await?;
+    let r =
+        sqlx::query("UPDATE gb_jt_terminal SET status = ?, update_time = ? WHERE phone_number = ?")
+            .bind(status)
+            .bind(&now)
+            .bind(phone_number)
+            .execute(pool)
+            .await?;
     #[cfg(feature = "postgres")]
-    let r = sqlx::query("UPDATE gb_jt_terminal SET status = $1, update_time = $2 WHERE phone_number = $3")
-        .bind(status)
-        .bind(&now)
-        .bind(phone_number)
-        .execute(pool)
-        .await?;
+    let r = sqlx::query(
+        "UPDATE gb_jt_terminal SET status = $1, update_time = $2 WHERE phone_number = $3",
+    )
+    .bind(status)
+    .bind(&now)
+    .bind(phone_number)
+    .execute(pool)
+    .await?;
     Ok(r.rows_affected())
 }
 
@@ -576,18 +702,17 @@ pub async fn update_terminal_position(
 pub async fn count_channels_by_terminal(pool: &Pool, terminal_db_id: i32) -> sqlx::Result<i64> {
     #[cfg(feature = "postgres")]
     let count = sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM gb_jt_channel WHERE terminal_db_id = $1"
+        "SELECT COUNT(*) FROM gb_jt_channel WHERE terminal_db_id = $1",
     )
     .bind(terminal_db_id)
     .fetch_one(pool)
     .await?;
     #[cfg(any(feature = "mysql", feature = "sqlite"))]
-    let count = sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM gb_jt_channel WHERE terminal_db_id = ?"
-    )
-    .bind(terminal_db_id)
-    .fetch_one(pool)
-    .await?;
+    let count =
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_jt_channel WHERE terminal_db_id = ?")
+            .bind(terminal_db_id)
+            .fetch_one(pool)
+            .await?;
     Ok(count)
 }
 
@@ -596,21 +721,25 @@ pub async fn count_channels_by_terminal(pool: &Pool, terminal_db_id: i32) -> sql
 /// Look up the auth_code assigned to a terminal by phone number.
 /// Returns None if terminal not found OR if auth_code column is NULL.
 pub async fn get_auth_code_by_phone(pool: &Pool, phone: &str) -> sqlx::Result<Option<String>> {
-    let row: Option<(Option<String>,)> = sqlx::query_as(&crate::dyn_where::dialect_sql("SELECT auth_code FROM gb_jt_terminal WHERE phone_number = ?"))
-        .bind(phone)
-        .fetch_optional(pool)
-        .await?;
+    let row: Option<(Option<String>,)> = sqlx::query_as(&crate::dyn_where::dialect_sql(
+        "SELECT auth_code FROM gb_jt_terminal WHERE phone_number = ?",
+    ))
+    .bind(phone)
+    .fetch_optional(pool)
+    .await?;
     Ok(row.and_then(|r| r.0))
 }
 
 /// Update the auth_code for a terminal (admin operation).
 pub async fn update_auth_code(pool: &Pool, phone: &str, auth_code: &str) -> sqlx::Result<u64> {
-    let result = sqlx::query(&crate::dyn_where::dialect_sql("UPDATE gb_jt_terminal SET auth_code = ?, update_time = ? WHERE phone_number = ?"))
-        .bind(auth_code)
-        .bind(chrono::Utc::now().to_rfc3339())
-        .bind(phone)
-        .execute(pool)
-        .await?;
+    let result = sqlx::query(&crate::dyn_where::dialect_sql(
+        "UPDATE gb_jt_terminal SET auth_code = ?, update_time = ? WHERE phone_number = ?",
+    ))
+    .bind(auth_code)
+    .bind(chrono::Utc::now().to_rfc3339())
+    .bind(phone)
+    .execute(pool)
+    .await?;
     Ok(result.rows_affected())
 }
 
@@ -787,25 +916,41 @@ pub async fn insert_area_circle(
     #[cfg(feature = "mysql")]
     {
         let r = sqlx::query(sql)
-            .bind(phone_number).bind(label).bind(center_lat).bind(center_lon)
-            .bind(radius_m).bind(&now).bind(&now)
-            .execute(pool).await?;
+            .bind(phone_number)
+            .bind(label)
+            .bind(center_lat)
+            .bind(center_lon)
+            .bind(radius_m)
+            .bind(&now)
+            .bind(&now)
+            .execute(pool)
+            .await?;
         return Ok(r.last_insert_id() as i64);
     }
     #[cfg(not(feature = "mysql"))]
     {
         let with_returning = format!("{sql} RETURNING id");
         let row: (i64,) = sqlx::query_as(&crate::dyn_where::dialect_sql(&with_returning))
-            .bind(phone_number).bind(label).bind(center_lat).bind(center_lon)
-            .bind(radius_m).bind(&now).bind(&now)
-            .fetch_one(pool).await?;
+            .bind(phone_number)
+            .bind(label)
+            .bind(center_lat)
+            .bind(center_lon)
+            .bind(radius_m)
+            .bind(&now)
+            .bind(&now)
+            .fetch_one(pool)
+            .await?;
         Ok(row.0)
     }
 }
 
 pub async fn update_area_circle(
-    pool: &Pool, id: i64,
-    label: Option<&str>, center_lat: f64, center_lon: f64, radius_m: i32,
+    pool: &Pool,
+    id: i64,
+    label: Option<&str>,
+    center_lat: f64,
+    center_lon: f64,
+    radius_m: i32,
 ) -> sqlx::Result<u64> {
     let now = chrono::Utc::now().to_rfc3339();
     let n = sqlx::query(
@@ -818,26 +963,34 @@ pub async fn update_area_circle(
 }
 
 pub async fn delete_area_circle(pool: &Pool, id: i64) -> sqlx::Result<u64> {
-    let n = sqlx::query(&crate::dyn_where::dialect_sql("DELETE FROM gb_jt_area_circle WHERE id = ?"))
-        .bind(id)
-        .execute(pool).await?
-        .rows_affected();
+    let n = sqlx::query(&crate::dyn_where::dialect_sql(
+        "DELETE FROM gb_jt_area_circle WHERE id = ?",
+    ))
+    .bind(id)
+    .execute(pool)
+    .await?
+    .rows_affected();
     Ok(n)
 }
 
 pub async fn list_area_circles_by_phone(
-    pool: &Pool, phone_number: &str,
+    pool: &Pool,
+    phone_number: &str,
 ) -> sqlx::Result<Vec<JtAreaCircle>> {
-    let rows = sqlx::query_as::<_, JtAreaCircle>(
-        &crate::dyn_where::dialect_sql("SELECT * FROM gb_jt_area_circle WHERE phone_number = ? ORDER BY id DESC")
-    )
+    let rows = sqlx::query_as::<_, JtAreaCircle>(&crate::dyn_where::dialect_sql(
+        "SELECT * FROM gb_jt_area_circle WHERE phone_number = ? ORDER BY id DESC",
+    ))
     .bind(phone_number)
-    .fetch_all(pool).await?;
+    .fetch_all(pool)
+    .await?;
     Ok(rows)
 }
 
 pub async fn insert_area_polygon(
-    pool: &Pool, phone_number: &str, label: Option<&str>, points_json: &str,
+    pool: &Pool,
+    phone_number: &str,
+    label: Option<&str>,
+    points_json: &str,
 ) -> sqlx::Result<i64> {
     let now = chrono::Utc::now().to_rfc3339();
     let sql = "INSERT INTO gb_jt_area_polygon (phone_number, label, points_json, create_time, \
@@ -846,42 +999,62 @@ pub async fn insert_area_polygon(
     #[cfg(feature = "mysql")]
     {
         let r = sqlx::query(sql)
-            .bind(phone_number).bind(label).bind(points_json).bind(&now).bind(&now)
-            .execute(pool).await?;
+            .bind(phone_number)
+            .bind(label)
+            .bind(points_json)
+            .bind(&now)
+            .bind(&now)
+            .execute(pool)
+            .await?;
         return Ok(r.last_insert_id() as i64);
     }
     #[cfg(not(feature = "mysql"))]
     {
         let with_returning = format!("{sql} RETURNING id");
         let row: (i64,) = sqlx::query_as(&crate::dyn_where::dialect_sql(&with_returning))
-            .bind(phone_number).bind(label).bind(points_json).bind(&now).bind(&now)
-            .fetch_one(pool).await?;
+            .bind(phone_number)
+            .bind(label)
+            .bind(points_json)
+            .bind(&now)
+            .bind(&now)
+            .fetch_one(pool)
+            .await?;
         Ok(row.0)
     }
 }
 
 pub async fn delete_area_polygon(pool: &Pool, id: i64) -> sqlx::Result<u64> {
-    let n = sqlx::query(&crate::dyn_where::dialect_sql("DELETE FROM gb_jt_area_polygon WHERE id = ?"))
-        .bind(id)
-        .execute(pool).await?
-        .rows_affected();
+    let n = sqlx::query(&crate::dyn_where::dialect_sql(
+        "DELETE FROM gb_jt_area_polygon WHERE id = ?",
+    ))
+    .bind(id)
+    .execute(pool)
+    .await?
+    .rows_affected();
     Ok(n)
 }
 
 pub async fn list_area_polygons_by_phone(
-    pool: &Pool, phone_number: &str,
+    pool: &Pool,
+    phone_number: &str,
 ) -> sqlx::Result<Vec<JtAreaPolygon>> {
-    let rows = sqlx::query_as::<_, JtAreaPolygon>(
-        &crate::dyn_where::dialect_sql("SELECT * FROM gb_jt_area_polygon WHERE phone_number = ? ORDER BY id DESC")
-    )
+    let rows = sqlx::query_as::<_, JtAreaPolygon>(&crate::dyn_where::dialect_sql(
+        "SELECT * FROM gb_jt_area_polygon WHERE phone_number = ? ORDER BY id DESC",
+    ))
     .bind(phone_number)
-    .fetch_all(pool).await?;
+    .fetch_all(pool)
+    .await?;
     Ok(rows)
 }
 
 pub async fn insert_area_rectangle(
-    pool: &Pool, phone_number: &str, label: Option<&str>,
-    lt_lat: f64, lt_lon: f64, rb_lat: f64, rb_lon: f64,
+    pool: &Pool,
+    phone_number: &str,
+    label: Option<&str>,
+    lt_lat: f64,
+    lt_lon: f64,
+    rb_lat: f64,
+    rb_lon: f64,
 ) -> sqlx::Result<i64> {
     let now = chrono::Utc::now().to_rfc3339();
     let sql = "INSERT INTO gb_jt_area_rectangle (phone_number, label, left_top_lat, left_top_lon, \
@@ -891,25 +1064,44 @@ pub async fn insert_area_rectangle(
     #[cfg(feature = "mysql")]
     {
         let r = sqlx::query(sql)
-            .bind(phone_number).bind(label).bind(lt_lat).bind(lt_lon).bind(rb_lat).bind(rb_lon)
-            .bind(&now).bind(&now)
-            .execute(pool).await?;
+            .bind(phone_number)
+            .bind(label)
+            .bind(lt_lat)
+            .bind(lt_lon)
+            .bind(rb_lat)
+            .bind(rb_lon)
+            .bind(&now)
+            .bind(&now)
+            .execute(pool)
+            .await?;
         return Ok(r.last_insert_id() as i64);
     }
     #[cfg(not(feature = "mysql"))]
     {
         let with_returning = format!("{sql} RETURNING id");
         let row: (i64,) = sqlx::query_as(&crate::dyn_where::dialect_sql(&with_returning))
-            .bind(phone_number).bind(label).bind(lt_lat).bind(lt_lon).bind(rb_lat).bind(rb_lon)
-            .bind(&now).bind(&now)
-            .fetch_one(pool).await?;
+            .bind(phone_number)
+            .bind(label)
+            .bind(lt_lat)
+            .bind(lt_lon)
+            .bind(rb_lat)
+            .bind(rb_lon)
+            .bind(&now)
+            .bind(&now)
+            .fetch_one(pool)
+            .await?;
         Ok(row.0)
     }
 }
 
 pub async fn update_area_rectangle(
-    pool: &Pool, id: i64, label: Option<&str>,
-    lt_lat: f64, lt_lon: f64, rb_lat: f64, rb_lon: f64,
+    pool: &Pool,
+    id: i64,
+    label: Option<&str>,
+    lt_lat: f64,
+    lt_lon: f64,
+    rb_lat: f64,
+    rb_lon: f64,
 ) -> sqlx::Result<u64> {
     let now = chrono::Utc::now().to_rfc3339();
     let n = sqlx::query(
@@ -922,26 +1114,34 @@ pub async fn update_area_rectangle(
 }
 
 pub async fn delete_area_rectangle(pool: &Pool, id: i64) -> sqlx::Result<u64> {
-    let n = sqlx::query(&crate::dyn_where::dialect_sql("DELETE FROM gb_jt_area_rectangle WHERE id = ?"))
-        .bind(id)
-        .execute(pool).await?
-        .rows_affected();
+    let n = sqlx::query(&crate::dyn_where::dialect_sql(
+        "DELETE FROM gb_jt_area_rectangle WHERE id = ?",
+    ))
+    .bind(id)
+    .execute(pool)
+    .await?
+    .rows_affected();
     Ok(n)
 }
 
 pub async fn list_area_rectangles_by_phone(
-    pool: &Pool, phone_number: &str,
+    pool: &Pool,
+    phone_number: &str,
 ) -> sqlx::Result<Vec<JtAreaRectangle>> {
-    let rows = sqlx::query_as::<_, JtAreaRectangle>(
-        &crate::dyn_where::dialect_sql("SELECT * FROM gb_jt_area_rectangle WHERE phone_number = ? ORDER BY id DESC")
-    )
+    let rows = sqlx::query_as::<_, JtAreaRectangle>(&crate::dyn_where::dialect_sql(
+        "SELECT * FROM gb_jt_area_rectangle WHERE phone_number = ? ORDER BY id DESC",
+    ))
     .bind(phone_number)
-    .fetch_all(pool).await?;
+    .fetch_all(pool)
+    .await?;
     Ok(rows)
 }
 
 pub async fn insert_route(
-    pool: &Pool, phone_number: &str, label: Option<&str>, waypoints_json: &str,
+    pool: &Pool,
+    phone_number: &str,
+    label: Option<&str>,
+    waypoints_json: &str,
 ) -> sqlx::Result<i64> {
     let now = chrono::Utc::now().to_rfc3339();
     let sql = "INSERT INTO gb_jt_route (phone_number, label, waypoints_json, create_time, \
@@ -950,36 +1150,48 @@ pub async fn insert_route(
     #[cfg(feature = "mysql")]
     {
         let r = sqlx::query(sql)
-            .bind(phone_number).bind(label).bind(waypoints_json).bind(&now).bind(&now)
-            .execute(pool).await?;
+            .bind(phone_number)
+            .bind(label)
+            .bind(waypoints_json)
+            .bind(&now)
+            .bind(&now)
+            .execute(pool)
+            .await?;
         return Ok(r.last_insert_id() as i64);
     }
     #[cfg(not(feature = "mysql"))]
     {
         let with_returning = format!("{sql} RETURNING id");
         let row: (i64,) = sqlx::query_as(&crate::dyn_where::dialect_sql(&with_returning))
-            .bind(phone_number).bind(label).bind(waypoints_json).bind(&now).bind(&now)
-            .fetch_one(pool).await?;
+            .bind(phone_number)
+            .bind(label)
+            .bind(waypoints_json)
+            .bind(&now)
+            .bind(&now)
+            .fetch_one(pool)
+            .await?;
         Ok(row.0)
     }
 }
 
 pub async fn delete_route(pool: &Pool, id: i64) -> sqlx::Result<u64> {
-    let n = sqlx::query(&crate::dyn_where::dialect_sql("DELETE FROM gb_jt_route WHERE id = ?"))
-        .bind(id)
-        .execute(pool).await?
-        .rows_affected();
+    let n = sqlx::query(&crate::dyn_where::dialect_sql(
+        "DELETE FROM gb_jt_route WHERE id = ?",
+    ))
+    .bind(id)
+    .execute(pool)
+    .await?
+    .rows_affected();
     Ok(n)
 }
 
-pub async fn list_routes_by_phone(
-    pool: &Pool, phone_number: &str,
-) -> sqlx::Result<Vec<JtRoute>> {
-    let rows = sqlx::query_as::<_, JtRoute>(
-        &crate::dyn_where::dialect_sql("SELECT * FROM gb_jt_route WHERE phone_number = ? ORDER BY id DESC")
-    )
+pub async fn list_routes_by_phone(pool: &Pool, phone_number: &str) -> sqlx::Result<Vec<JtRoute>> {
+    let rows = sqlx::query_as::<_, JtRoute>(&crate::dyn_where::dialect_sql(
+        "SELECT * FROM gb_jt_route WHERE phone_number = ? ORDER BY id DESC",
+    ))
     .bind(phone_number)
-    .fetch_all(pool).await?;
+    .fetch_all(pool)
+    .await?;
     Ok(rows)
 }
 
@@ -1028,10 +1240,14 @@ mod tests {
     #[tokio::test]
     async fn area_circle_crud_roundtrip() {
         let pool = make_pool().await;
-        let id = insert_area_circle(&pool, "13800000001", Some("工厂围栏"), 31.5, 121.4, 500).await.unwrap();
+        let id = insert_area_circle(&pool, "13800000001", Some("工厂围栏"), 31.5, 121.4, 500)
+            .await
+            .unwrap();
         assert!(id > 0);
 
-        let items = list_area_circles_by_phone(&pool, "13800000001").await.unwrap();
+        let items = list_area_circles_by_phone(&pool, "13800000001")
+            .await
+            .unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].center_lat, 31.5);
         assert_eq!(items[0].center_lon, 121.4);
@@ -1039,16 +1255,22 @@ mod tests {
         assert_eq!(items[0].label.as_deref(), Some("工厂围栏"));
 
         // update
-        let n = update_area_circle(&pool, id, Some("新围栏"), 31.6, 121.5, 800).await.unwrap();
+        let n = update_area_circle(&pool, id, Some("新围栏"), 31.6, 121.5, 800)
+            .await
+            .unwrap();
         assert_eq!(n, 1);
-        let items = list_area_circles_by_phone(&pool, "13800000001").await.unwrap();
+        let items = list_area_circles_by_phone(&pool, "13800000001")
+            .await
+            .unwrap();
         assert_eq!(items[0].label.as_deref(), Some("新围栏"));
         assert_eq!(items[0].radius_m, 800);
 
         // delete
         let n = delete_area_circle(&pool, id).await.unwrap();
         assert_eq!(n, 1);
-        let items = list_area_circles_by_phone(&pool, "13800000001").await.unwrap();
+        let items = list_area_circles_by_phone(&pool, "13800000001")
+            .await
+            .unwrap();
         assert_eq!(items.len(), 0);
     }
 
@@ -1056,32 +1278,56 @@ mod tests {
     async fn area_polygon_crud_roundtrip() {
         let pool = make_pool().await;
         let pts = r#"[{"lat":31.5,"lon":121.4},{"lat":31.6,"lon":121.4}]"#;
-        let id = insert_area_polygon(&pool, "13800000002", Some("poly1"), pts).await.unwrap();
+        let id = insert_area_polygon(&pool, "13800000002", Some("poly1"), pts)
+            .await
+            .unwrap();
         assert!(id > 0);
 
-        let items = list_area_polygons_by_phone(&pool, "13800000002").await.unwrap();
+        let items = list_area_polygons_by_phone(&pool, "13800000002")
+            .await
+            .unwrap();
         assert_eq!(items.len(), 1);
         assert!(items[0].points_json.contains("31.5"));
         assert_eq!(items[0].label.as_deref(), Some("poly1"));
 
         assert_eq!(delete_area_polygon(&pool, id).await.unwrap(), 1);
-        assert_eq!(list_area_polygons_by_phone(&pool, "13800000002").await.unwrap().len(), 0);
+        assert_eq!(
+            list_area_polygons_by_phone(&pool, "13800000002")
+                .await
+                .unwrap()
+                .len(),
+            0
+        );
     }
 
     #[tokio::test]
     async fn area_rectangle_crud_roundtrip() {
         let pool = make_pool().await;
-        let id = insert_area_rectangle(&pool, "13800000003", Some("rect1"), 31.5, 121.0, 31.0, 121.5)
-            .await.unwrap();
-        let items = list_area_rectangles_by_phone(&pool, "13800000003").await.unwrap();
+        let id = insert_area_rectangle(
+            &pool,
+            "13800000003",
+            Some("rect1"),
+            31.5,
+            121.0,
+            31.0,
+            121.5,
+        )
+        .await
+        .unwrap();
+        let items = list_area_rectangles_by_phone(&pool, "13800000003")
+            .await
+            .unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].left_top_lat, 31.5);
         assert_eq!(items[0].right_bottom_lon, 121.5);
 
         let n = update_area_rectangle(&pool, id, Some("rect1-updated"), 31.6, 121.1, 31.1, 121.6)
-            .await.unwrap();
+            .await
+            .unwrap();
         assert_eq!(n, 1);
-        let items = list_area_rectangles_by_phone(&pool, "13800000003").await.unwrap();
+        let items = list_area_rectangles_by_phone(&pool, "13800000003")
+            .await
+            .unwrap();
         assert_eq!(items[0].label.as_deref(), Some("rect1-updated"));
 
         assert_eq!(delete_area_rectangle(&pool, id).await.unwrap(), 1);
@@ -1091,25 +1337,55 @@ mod tests {
     async fn route_crud_roundtrip() {
         let pool = make_pool().await;
         let wps = r#"[{"lat":31.5,"lon":121.4},{"lat":31.6,"lon":121.5}]"#;
-        let id = insert_route(&pool, "13800000004", Some("线路A"), wps).await.unwrap();
+        let id = insert_route(&pool, "13800000004", Some("线路A"), wps)
+            .await
+            .unwrap();
         let items = list_routes_by_phone(&pool, "13800000004").await.unwrap();
         assert_eq!(items.len(), 1);
         assert!(items[0].waypoints_json.contains("31.5"));
         assert_eq!(items[0].label.as_deref(), Some("线路A"));
 
         assert_eq!(delete_route(&pool, id).await.unwrap(), 1);
-        assert_eq!(list_routes_by_phone(&pool, "13800000004").await.unwrap().len(), 0);
+        assert_eq!(
+            list_routes_by_phone(&pool, "13800000004")
+                .await
+                .unwrap()
+                .len(),
+            0
+        );
     }
 
     /// 验证不同 phone_number 的围栏互不干扰（边界）
     #[tokio::test]
     async fn areas_are_scoped_by_phone() {
         let pool = make_pool().await;
-        insert_area_circle(&pool, "13800000010", None, 1.0, 1.0, 100).await.unwrap();
-        insert_area_circle(&pool, "13800000011", None, 2.0, 2.0, 200).await.unwrap();
+        insert_area_circle(&pool, "13800000010", None, 1.0, 1.0, 100)
+            .await
+            .unwrap();
+        insert_area_circle(&pool, "13800000011", None, 2.0, 2.0, 200)
+            .await
+            .unwrap();
 
-        assert_eq!(list_area_circles_by_phone(&pool, "13800000010").await.unwrap().len(), 1);
-        assert_eq!(list_area_circles_by_phone(&pool, "13800000011").await.unwrap().len(), 1);
-        assert_eq!(list_area_circles_by_phone(&pool, "13800000099").await.unwrap().len(), 0);
+        assert_eq!(
+            list_area_circles_by_phone(&pool, "13800000010")
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            list_area_circles_by_phone(&pool, "13800000011")
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            list_area_circles_by_phone(&pool, "13800000099")
+                .await
+                .unwrap()
+                .len(),
+            0
+        );
     }
 }

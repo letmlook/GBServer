@@ -1,10 +1,10 @@
 //! Invite 会话管理
 
+use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use chrono::{DateTime, Utc};
 
 #[derive(Debug, Clone)]
 pub struct InviteSession {
@@ -52,7 +52,13 @@ impl SessionManager {
         }
     }
 
-    pub async fn create(&self, call_id: &str, device_id: &str, channel_id: &str, stream_type: &str) {
+    pub async fn create(
+        &self,
+        call_id: &str,
+        device_id: &str,
+        channel_id: &str,
+        stream_type: &str,
+    ) {
         let session = InviteSession {
             call_id: call_id.to_string(),
             device_id: device_id.to_string(),
@@ -68,7 +74,10 @@ impl SessionManager {
             device_addr: None,
             ack_sent: false,
         };
-        self.sessions.write().await.insert(call_id.to_string(), session);
+        self.sessions
+            .write()
+            .await
+            .insert(call_id.to_string(), session);
     }
 
     pub async fn get(&self, call_id: &str) -> Option<InviteSession> {
@@ -142,10 +151,19 @@ impl SessionManager {
         self.sessions.write().await.remove(call_id);
     }
 
-    pub async fn get_by_device_channel(&self, device_id: &str, channel_id: &str) -> Option<InviteSession> {
+    pub async fn get_by_device_channel(
+        &self,
+        device_id: &str,
+        channel_id: &str,
+    ) -> Option<InviteSession> {
         let guard = self.sessions.read().await;
-        guard.values()
-            .find(|s| s.device_id == device_id && s.channel_id == channel_id && s.status == SessionStatus::Active)
+        guard
+            .values()
+            .find(|s| {
+                s.device_id == device_id
+                    && s.channel_id == channel_id
+                    && s.status == SessionStatus::Active
+            })
             .cloned()
     }
 }

@@ -1,6 +1,6 @@
+use anyhow::Result;
 use std::net::SocketAddr;
 use tokio::net::UdpSocket as TokioUdpSocket;
-use anyhow::Result;
 
 pub struct UdpSocket {
     socket: TokioUdpSocket,
@@ -9,9 +9,7 @@ pub struct UdpSocket {
 impl UdpSocket {
     pub async fn bind(addr: &str) -> Result<Self> {
         let socket = TokioUdpSocket::bind(addr).await?;
-        Ok(Self {
-            socket,
-        })
+        Ok(Self { socket })
     }
 
     pub async fn recv_from(&mut self) -> Result<(Vec<u8>, SocketAddr)> {

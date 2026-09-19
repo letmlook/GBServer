@@ -62,9 +62,7 @@ pub trait MediaNode: Send + Sync {
 ///
 /// 使用默认配置（timeout=30s, grace=3）。
 /// 返回被标记为 offline 的节点数。
-pub async fn run_health_check_once(
-    pool: &crate::db::Pool,
-) -> anyhow::Result<usize> {
+pub async fn run_health_check_once(pool: &crate::db::Pool) -> anyhow::Result<usize> {
     run_health_check_once_with_config(pool, &HealthCheckConfig::default()).await
 }
 
@@ -94,24 +92,21 @@ pub async fn run_health_check_once_with_config(
     let threshold_str = offline_threshold.format("%Y-%m-%d %H:%M:%S").to_string();
 
     // Step 1: 递增过期节点的连续丢失计数
-    let _ = media_server::increment_miss_count_if_expired(
-        pool, &threshold_str,
-    ).await?;
+    let _ = media_server::increment_miss_count_if_expired(pool, &threshold_str).await?;
 
     // Step 2: 切连续丢失达到阈值的节点为 offline
-    let affected = media_server::mark_offline_if_miss_count_exceeded(
-        pool, config.grace_count,
-    ).await?;
+    let affected =
+        media_server::mark_offline_if_miss_count_exceeded(pool, config.grace_count).await?;
 
     // Step 3: 重置健康节点的 miss 计数（keepalive 恢复）
-    let reset_count = media_server::reset_miss_count_for_fresh_nodes(
-        pool, &threshold_str,
-    ).await?;
+    let reset_count = media_server::reset_miss_count_for_fresh_nodes(pool, &threshold_str).await?;
 
     if affected > 0 {
         tracing::info!(
             "Marked {} media nodes offline (keepalive timeout={}s × {} grace)",
-            affected, config.timeout_secs, config.grace_count
+            affected,
+            config.timeout_secs,
+            config.grace_count
         );
     }
     if reset_count > 0 {
@@ -258,9 +253,16 @@ mod tests {
         .expect("insert fresh");
 
         // 跑一次 health check（用 grace_count=1 保持原始语义：单次超时立即切 offline）
-        let affected = run_health_check_once_with_config(&pool, &HealthCheckConfig { timeout_secs: 30, grace_count: 1, check_interval_secs: 10 })
-            .await
-            .expect("health check");
+        let affected = run_health_check_once_with_config(
+            &pool,
+            &HealthCheckConfig {
+                timeout_secs: 30,
+                grace_count: 1,
+                check_interval_secs: 10,
+            },
+        )
+        .await
+        .expect("health check");
         assert_eq!(affected, 1, "exactly one row should be marked offline");
 
         // 验证 expired 已被切到 status=0
@@ -328,9 +330,16 @@ mod tests {
         .expect("insert");
 
         // 跑 health check with grace_count=3
-        let affected = run_health_check_once_with_config(&pool, &HealthCheckConfig { timeout_secs: 30, grace_count: 3, check_interval_secs: 10 })
-            .await
-            .expect("health check");
+        let affected = run_health_check_once_with_config(
+            &pool,
+            &HealthCheckConfig {
+                timeout_secs: 30,
+                grace_count: 3,
+                check_interval_secs: 10,
+            },
+        )
+        .await
+        .expect("health check");
         assert_eq!(affected, 0, "第一次未达 grace_count 不应切 offline");
 
         // consecutive_misses 应该 +1 到 1，但 status 仍 1
@@ -341,11 +350,12 @@ mod tests {
             .expect("select status");
         assert_eq!(status, 1, "第一次未达 grace_count 仍应 online");
 
-        let misses: i32 = sqlx::query_scalar("SELECT consecutive_misses FROM gb_media_server WHERE id = ?")
-            .bind("zlm-gc1")
-            .fetch_one(&pool)
-            .await
-            .expect("select misses");
+        let misses: i32 =
+            sqlx::query_scalar("SELECT consecutive_misses FROM gb_media_server WHERE id = ?")
+                .bind("zlm-gc1")
+                .fetch_one(&pool)
+                .await
+                .expect("select misses");
         assert_eq!(misses, 1, "consecutive_misses 应该 +1");
     }
 
@@ -392,9 +402,16 @@ mod tests {
         .expect("insert");
 
         // 跑 health check with grace_count=3
-        let affected = run_health_check_once_with_config(&pool, &HealthCheckConfig { timeout_secs: 30, grace_count: 3, check_interval_secs: 10 })
-            .await
-            .expect("health check");
+        let affected = run_health_check_once_with_config(
+            &pool,
+            &HealthCheckConfig {
+                timeout_secs: 30,
+                grace_count: 3,
+                check_interval_secs: 10,
+            },
+        )
+        .await
+        .expect("health check");
         assert_eq!(affected, 1, "达到 grace_count 应该切 offline");
 
         let status: i32 = sqlx::query_scalar("SELECT status FROM gb_media_server WHERE id = ?")
@@ -445,19 +462,18 @@ mod tests {
         .expect("insert");
 
         // 模拟 keepalive 到达
-        let updated = crate::db::media_server::update_last_keepalive(
-            &pool, "zlm-gc3", &now_ts,
-        )
-        .await
-        .expect("update");
+        let updated = crate::db::media_server::update_last_keepalive(&pool, "zlm-gc3", &now_ts)
+            .await
+            .expect("update");
         assert_eq!(updated, 1);
 
         // consecutive_misses 应被重置为 0
-        let misses: i32 = sqlx::query_scalar("SELECT consecutive_misses FROM gb_media_server WHERE id = ?")
-            .bind("zlm-gc3")
-            .fetch_one(&pool)
-            .await
-            .expect("select misses");
+        let misses: i32 =
+            sqlx::query_scalar("SELECT consecutive_misses FROM gb_media_server WHERE id = ?")
+                .bind("zlm-gc3")
+                .fetch_one(&pool)
+                .await
+                .expect("select misses");
         assert_eq!(misses, 0, "keepalive 到达应重置 consecutive_misses");
     }
 }

@@ -22,7 +22,9 @@ pub fn routes() -> DocumentedRoutes {
     acc.add(routes!(crate::handlers::alarm::alarm_handle));
     acc.add(routes!(crate::handlers::alarm::alarm_list));
     acc.add(routes!(crate::handlers::parity_extras::alarm_snap));
-    acc.add(routes!(crate::handlers::parity_extras::channel_map_thin_tile));
+    acc.add(routes!(
+        crate::handlers::parity_extras::channel_map_thin_tile
+    ));
     acc.add(routes!(crate::handlers::parity_extras::channel_map_tile));
     acc.add(routes!(crate::handlers::parity_extras::front_end_common));
     acc.add(routes!(crate::handlers::parity_extras::server_config));

@@ -9,8 +9,8 @@ use axum::{
 use serde::Deserialize;
 
 use crate::response::ApiResult;
-use crate::AppState;
 use crate::zlm::OpenRtpServerRequest;
+use crate::AppState;
 
 #[derive(Deserialize, Default)]
 pub struct OpenRtpQuery {
@@ -42,9 +42,9 @@ pub async fn rtp_receive_open(
     let Some(zlm) = state.zlm_clients.values().next() else {
         return Json(ApiResult::error("no ZLM available"));
     };
-    let stream_id = q.stream_id.unwrap_or_else(|| {
-        format!("rtp_recv_{}", chrono::Utc::now().timestamp_millis())
-    });
+    let stream_id = q
+        .stream_id
+        .unwrap_or_else(|| format!("rtp_recv_{}", chrono::Utc::now().timestamp_millis()));
     let req = OpenRtpServerRequest {
         secret: zlm.secret.clone(),
         stream_id: stream_id.clone(),
@@ -133,7 +133,9 @@ pub async fn rtp_send_start(
     let target_ip = b.target_ip.unwrap_or_default();
     let target_port = b.target_port.unwrap_or(0);
     if stream_id.is_empty() || ssrc.is_empty() || target_ip.is_empty() || target_port == 0 {
-        return Json(ApiResult::error("missing stream_id/ssrc/target_ip/target_port"));
+        return Json(ApiResult::error(
+            "missing stream_id/ssrc/target_ip/target_port",
+        ));
     }
     // **真实 ZLM 没有 `/index/api/sendRtpInfo`**（`getApiList` 里没有，直接调用
     // 返回 404 的 HTML）—— 此前这个端点必然失败。真正的"把流推到远端"接口是
@@ -220,15 +222,12 @@ pub async fn rtp_send_stop(
     // SSRC 兜底：级联推流的 SSRC 存在 SendRtpManager 会话里
     let ssrc = match q.ssrc {
         Some(s) if !s.is_empty() => Some(s),
-        _ => state
-            .sip_server
-            .as_ref()
-            .and_then(|sip| {
-                sip.send_rtp_manager()
-                    .get_by_channel(&stream_id)
-                    .first()
-                    .map(|session| session.upstream_ssrc.clone())
-            }),
+        _ => state.sip_server.as_ref().and_then(|sip| {
+            sip.send_rtp_manager()
+                .get_by_channel(&stream_id)
+                .first()
+                .map(|session| session.upstream_ssrc.clone())
+        }),
     };
 
     match zlm
@@ -353,7 +352,8 @@ pub async fn ps_send_stop(
 )]
 pub async fn ps_get_test_port() -> Json<ApiResult<serde_json::Value>> {
     use std::net::UdpSocket;
-    let port = UdpSocket::bind("127.0.0.1:0").ok()
+    let port = UdpSocket::bind("127.0.0.1:0")
+        .ok()
         .and_then(|s| s.local_addr().ok().map(|a| a.port()))
         .unwrap_or(0);
     Json(ApiResult::success(serde_json::json!({"port": port})))

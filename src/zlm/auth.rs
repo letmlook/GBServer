@@ -101,7 +101,10 @@ mod tests {
     fn test_check_secret_match() {
         let checker = HookAuthChecker::new("super-secret");
         assert!(checker.check_secret("super-secret"));
-        assert_eq!(checker.check("super-secret", &IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))), AuthResult::Ok);
+        assert_eq!(
+            checker.check("super-secret", &IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))),
+            AuthResult::Ok
+        );
     }
 
     #[test]
@@ -109,7 +112,7 @@ mod tests {
         let checker = HookAuthChecker::new("super-secret");
         assert!(!checker.check_secret("wrong"));
         assert!(!checker.check_secret(""));
-        assert!(!checker.check_secret("super-secre"));   // shorter
+        assert!(!checker.check_secret("super-secre")); // shorter
         assert!(!checker.check_secret("super-secret-1")); // longer
 
         let ip = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
@@ -134,14 +137,15 @@ mod tests {
         assert!(!checker.check_ip(&out_of_range));
 
         assert_eq!(checker.check("any", &in_range), AuthResult::Ok);
-        assert_eq!(checker.check("any", &out_of_range), AuthResult::IpNotWhitelisted);
+        assert_eq!(
+            checker.check("any", &out_of_range),
+            AuthResult::IpNotWhitelisted
+        );
     }
 
     #[test]
     fn test_check_ip_whitelist_miss() {
-        let cidrs = vec![
-            ipnetwork::IpNetwork::from_str("10.0.0.0/8").unwrap(),
-        ];
+        let cidrs = vec![ipnetwork::IpNetwork::from_str("10.0.0.0/8").unwrap()];
         let checker = HookAuthChecker::new("any").with_whitelist(cidrs);
 
         let miss_v4 = IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1));

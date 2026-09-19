@@ -79,7 +79,7 @@ async fn jt_e2e_test_general_common_response() {
     let body: Vec<u8> = vec![
         0x00, 0x05, // reply_serial = 5
         0x91, 0x02, // reply_msg_id = 0x9102
-        0x00,       // result = 0 (success)
+        0x00, // result = 0 (success)
     ];
     assert!(waiter.complete("13812340001", 0x9102, 5, body.clone()));
     let received = rx.await.expect("should receive");

@@ -44,12 +44,13 @@ pub async fn webrtc_play(
     Json(req): Json<WebRtcOfferRequest>,
 ) -> Json<ApiResult<serde_json::Value>> {
     let app = req.app.as_deref().unwrap_or("rtp");
-    let stream = req.stream.clone().unwrap_or_else(|| {
-        match (&req.device_id, &req.channel_id) {
+    let stream = req
+        .stream
+        .clone()
+        .unwrap_or_else(|| match (&req.device_id, &req.channel_id) {
             (Some(d), Some(c)) => format!("{}_{}", d, c),
             _ => String::new(),
-        }
-    });
+        });
     if stream.is_empty() {
         return Json(ApiResult::error("缺少 stream（或 deviceId+channelId）"));
     }
@@ -73,11 +74,11 @@ pub async fn webrtc_play(
         // ZLM 会继续做 SDP 校验）：
         //   POST /index/api/webrtc?secret=..&app=..&stream=..&type=play
         //   Content-Type: application/sdp   body: <offer sdp>
-        let mut url = match reqwest::Url::parse(&format!("{}/index/api/webrtc", zlm_client.base_url()))
-        {
-            Ok(u) => u,
-            Err(e) => return Json(ApiResult::error(format!("ZLM 地址非法: {e}"))),
-        };
+        let mut url =
+            match reqwest::Url::parse(&format!("{}/index/api/webrtc", zlm_client.base_url())) {
+                Ok(u) => u,
+                Err(e) => return Json(ApiResult::error(format!("ZLM 地址非法: {e}"))),
+            };
         url.query_pairs_mut()
             .append_pair("secret", &zlm_client.secret)
             .append_pair("app", app)
@@ -104,12 +105,9 @@ pub async fn webrtc_play(
                     Ok(body) => {
                         let code = body.get("code").and_then(|v| v.as_i64()).unwrap_or(-1);
                         if code == 0 {
-                            let answer_sdp =
-                                body.get("sdp").and_then(|v| v.as_str()).unwrap_or("");
+                            let answer_sdp = body.get("sdp").and_then(|v| v.as_str()).unwrap_or("");
                             if answer_sdp.is_empty() {
-                                return Json(ApiResult::error(
-                                    "ZLM 返回成功但没有 answer SDP",
-                                ));
+                                return Json(ApiResult::error("ZLM 返回成功但没有 answer SDP"));
                             }
                             return Json(ApiResult::success(serde_json::json!({
                                 "sdp": answer_sdp,

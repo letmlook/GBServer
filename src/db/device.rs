@@ -101,7 +101,6 @@ pub struct DeviceChannel {
     pub record_plan_id: Option<i32>,
 }
 
- 
 pub async fn update_channel_has_audio(
     pool: &Pool,
     channel_id: i64,
@@ -143,29 +142,32 @@ pub async fn update_channel_stream_identification(
 ) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
     {
-        let result = sqlx::query("UPDATE gb_device_channel SET stream_identification = ? WHERE id = ?")
-            .bind(stream_identification)
-            .bind(channel_id)
-            .execute(pool)
-            .await?;
+        let result =
+            sqlx::query("UPDATE gb_device_channel SET stream_identification = ? WHERE id = ?")
+                .bind(stream_identification)
+                .bind(channel_id)
+                .execute(pool)
+                .await?;
         Ok(result.rows_affected())
     }
     #[cfg(feature = "postgres")]
     {
-        let result = sqlx::query("UPDATE gb_device_channel SET stream_identification = $1 WHERE id = $2")
-            .bind(stream_identification)
-            .bind(channel_id)
-            .execute(pool)
-            .await?;
+        let result =
+            sqlx::query("UPDATE gb_device_channel SET stream_identification = $1 WHERE id = $2")
+                .bind(stream_identification)
+                .bind(channel_id)
+                .execute(pool)
+                .await?;
         Ok(result.rows_affected())
     }
     #[cfg(feature = "sqlite")]
     {
-        let result = sqlx::query("UPDATE gb_device_channel SET stream_identification = ? WHERE id = ?")
-            .bind(stream_identification)
-            .bind(channel_id)
-            .execute(pool)
-            .await?;
+        let result =
+            sqlx::query("UPDATE gb_device_channel SET stream_identification = ? WHERE id = ?")
+                .bind(stream_identification)
+                .bind(channel_id)
+                .execute(pool)
+                .await?;
         Ok(result.rows_affected())
     }
 }
@@ -245,20 +247,24 @@ pub async fn update_device_stream_mode(
 ) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
     {
-        let result = sqlx::query("UPDATE gb_device SET stream_mode = ?, update_time = NOW() WHERE device_id = ?")
-            .bind(stream_mode)
-            .bind(device_id)
-            .execute(pool)
-            .await?;
+        let result = sqlx::query(
+            "UPDATE gb_device SET stream_mode = ?, update_time = NOW() WHERE device_id = ?",
+        )
+        .bind(stream_mode)
+        .bind(device_id)
+        .execute(pool)
+        .await?;
         Ok(result.rows_affected())
     }
     #[cfg(feature = "postgres")]
     {
-        let result = sqlx::query("UPDATE gb_device SET stream_mode = $1, update_time = NOW() WHERE device_id = $2")
-            .bind(stream_mode)
-            .bind(device_id)
-            .execute(pool)
-            .await?;
+        let result = sqlx::query(
+            "UPDATE gb_device SET stream_mode = $1, update_time = NOW() WHERE device_id = $2",
+        )
+        .bind(stream_mode)
+        .bind(device_id)
+        .execute(pool)
+        .await?;
         Ok(result.rows_affected())
     }
     #[cfg(feature = "sqlite")]
@@ -360,15 +366,21 @@ pub async fn update_device_mobile_position_subscription(
 pub async fn count_all_channels(pool: &Pool) -> sqlx::Result<i64> {
     #[cfg(feature = "mysql")]
     {
-        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_device_channel").fetch_one(pool).await
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_device_channel")
+            .fetch_one(pool)
+            .await
     }
     #[cfg(feature = "postgres")]
     {
-        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_device_channel").fetch_one(pool).await
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_device_channel")
+            .fetch_one(pool)
+            .await
     }
     #[cfg(feature = "sqlite")]
     {
-        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_device_channel").fetch_one(pool).await
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_device_channel")
+            .fetch_one(pool)
+            .await
     }
 }
 
@@ -516,14 +528,25 @@ pub async fn count_devices(
                 .bind(&like).bind(&like).bind(status.unwrap()).fetch_one(pool).await;
         }
         if has_query {
-            return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_device WHERE (device_id LIKE ? OR name LIKE ?)")
-                .bind(&like).bind(&like).fetch_one(pool).await;
+            return sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM gb_device WHERE (device_id LIKE ? OR name LIKE ?)",
+            )
+            .bind(&like)
+            .bind(&like)
+            .fetch_one(pool)
+            .await;
         }
         if status.is_some() {
-            return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_device WHERE on_line = ?")
-                .bind(status.unwrap()).fetch_one(pool).await;
+            return sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM gb_device WHERE on_line = ?",
+            )
+            .bind(status.unwrap())
+            .fetch_one(pool)
+            .await;
         }
-        return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_device").fetch_one(pool).await;
+        return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_device")
+            .fetch_one(pool)
+            .await;
     }
     #[cfg(feature = "postgres")]
     {
@@ -532,14 +555,25 @@ pub async fn count_devices(
                 .bind(&like).bind(&like).bind(status.unwrap()).fetch_one(pool).await;
         }
         if has_query {
-            return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_device WHERE (device_id LIKE $1 OR name LIKE $2)")
-                .bind(&like).bind(&like).fetch_one(pool).await;
+            return sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM gb_device WHERE (device_id LIKE $1 OR name LIKE $2)",
+            )
+            .bind(&like)
+            .bind(&like)
+            .fetch_one(pool)
+            .await;
         }
         if status.is_some() {
-            return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_device WHERE on_line = $1")
-                .bind(status.unwrap()).fetch_one(pool).await;
+            return sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM gb_device WHERE on_line = $1",
+            )
+            .bind(status.unwrap())
+            .fetch_one(pool)
+            .await;
         }
-        return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_device").fetch_one(pool).await;
+        return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_device")
+            .fetch_one(pool)
+            .await;
     }
     #[cfg(feature = "sqlite")]
     {
@@ -548,14 +582,25 @@ pub async fn count_devices(
                 .bind(&like).bind(&like).bind(status.unwrap()).fetch_one(pool).await;
         }
         if has_query {
-            return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_device WHERE (device_id LIKE ? OR name LIKE ?)")
-                .bind(&like).bind(&like).fetch_one(pool).await;
+            return sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM gb_device WHERE (device_id LIKE ? OR name LIKE ?)",
+            )
+            .bind(&like)
+            .bind(&like)
+            .fetch_one(pool)
+            .await;
         }
         if status.is_some() {
-            return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_device WHERE on_line = ?")
-                .bind(status.unwrap()).fetch_one(pool).await;
+            return sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM gb_device WHERE on_line = ?",
+            )
+            .bind(status.unwrap())
+            .fetch_one(pool)
+            .await;
         }
-        return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_device").fetch_one(pool).await;
+        return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_device")
+            .fetch_one(pool)
+            .await;
     }
 }
 
@@ -576,21 +621,24 @@ pub async fn get_device_by_device_id(pool: &Pool, device_id: &str) -> sqlx::Resu
     );
     #[cfg(feature = "mysql")]
     return sqlx::query_as::<_, Device>(&format!(
-        "SELECT {} FROM gb_device WHERE device_id = ?", cols
+        "SELECT {} FROM gb_device WHERE device_id = ?",
+        cols
     ))
     .bind(device_id)
     .fetch_optional(pool)
     .await;
     #[cfg(feature = "postgres")]
     return sqlx::query_as::<_, Device>(&format!(
-        "SELECT {} FROM gb_device WHERE device_id = $1", cols
+        "SELECT {} FROM gb_device WHERE device_id = $1",
+        cols
     ))
     .bind(device_id)
     .fetch_optional(pool)
     .await;
     #[cfg(feature = "sqlite")]
     return sqlx::query_as::<_, Device>(&format!(
-        "SELECT {} FROM gb_device WHERE device_id = ?", cols
+        "SELECT {} FROM gb_device WHERE device_id = ?",
+        cols
     ))
     .bind(device_id)
     .fetch_optional(pool)
@@ -609,22 +657,31 @@ pub async fn list_channels_paged(
         "SELECT {} FROM gb_device_channel WHERE device_id = ? ORDER BY id LIMIT ? OFFSET ?",
         DEVICE_CHANNEL_SELECT_COLUMNS,
     ))
-    .bind(device_id).bind(count as i64).bind(offset as i64)
-    .fetch_all(pool).await;
+    .bind(device_id)
+    .bind(count as i64)
+    .bind(offset as i64)
+    .fetch_all(pool)
+    .await;
     #[cfg(feature = "postgres")]
     return sqlx::query_as::<_, DeviceChannel>(&format!(
         "SELECT {} FROM gb_device_channel WHERE device_id = $1 ORDER BY id LIMIT $2 OFFSET $3",
         DEVICE_CHANNEL_SELECT_COLUMNS,
     ))
-    .bind(device_id).bind(count as i64).bind(offset as i64)
-    .fetch_all(pool).await;
+    .bind(device_id)
+    .bind(count as i64)
+    .bind(offset as i64)
+    .fetch_all(pool)
+    .await;
     #[cfg(feature = "sqlite")]
     return sqlx::query_as::<_, DeviceChannel>(&format!(
         "SELECT {} FROM gb_device_channel WHERE device_id = ? ORDER BY id LIMIT ? OFFSET ?",
         DEVICE_CHANNEL_SELECT_COLUMNS,
     ))
-    .bind(device_id).bind(count as i64).bind(offset as i64)
-    .fetch_all(pool).await;
+    .bind(device_id)
+    .bind(count as i64)
+    .bind(offset as i64)
+    .fetch_all(pool)
+    .await;
 }
 
 /// 某设备下的通道（可带关键字/在线/类型过滤）。
@@ -644,7 +701,10 @@ pub async fn list_channels_filtered(
     let offset = (page.saturating_sub(1) as i64) * count as i64;
 
     let mut w = DynWhere::new();
-    w.add("device_id = ?", vec![BindValue::Text(device_id.to_string())]);
+    w.add(
+        "device_id = ?",
+        vec![BindValue::Text(device_id.to_string())],
+    );
     if let Some(kw) = query.map(str::trim).filter(|s| !s.is_empty()) {
         let like = format!("%{kw}%");
         w.add(
@@ -662,9 +722,16 @@ pub async fn list_channels_filtered(
         w.add("channel_type = ?", vec![BindValue::Int(t)]);
     }
 
-    let base = format!("SELECT {} FROM gb_device_channel", DEVICE_CHANNEL_SELECT_COLUMNS);
+    let base = format!(
+        "SELECT {} FROM gb_device_channel",
+        DEVICE_CHANNEL_SELECT_COLUMNS
+    );
     let limit_ph = if cfg!(feature = "postgres") {
-        format!(" LIMIT ${} OFFSET ${}", w.binds.len() + 1, w.binds.len() + 2)
+        format!(
+            " LIMIT ${} OFFSET ${}",
+            w.binds.len() + 1,
+            w.binds.len() + 2
+        )
     } else {
         " LIMIT ? OFFSET ?".to_string()
     };
@@ -696,14 +763,26 @@ pub async fn list_channels_filtered(
 
 pub async fn count_channels(pool: &Pool, device_id: &str) -> sqlx::Result<i64> {
     #[cfg(feature = "mysql")]
-    return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_device_channel WHERE device_id = ?")
-        .bind(device_id).fetch_one(pool).await;
+    return sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM gb_device_channel WHERE device_id = ?",
+    )
+    .bind(device_id)
+    .fetch_one(pool)
+    .await;
     #[cfg(feature = "postgres")]
-    return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_device_channel WHERE device_id = $1")
-        .bind(device_id).fetch_one(pool).await;
+    return sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM gb_device_channel WHERE device_id = $1",
+    )
+    .bind(device_id)
+    .fetch_one(pool)
+    .await;
     #[cfg(feature = "sqlite")]
-    return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_device_channel WHERE device_id = ?")
-        .bind(device_id).fetch_one(pool).await;
+    return sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM gb_device_channel WHERE device_id = ?",
+    )
+    .bind(device_id)
+    .fetch_one(pool)
+    .await;
 }
 
 pub async fn get_channel_by_device_and_channel_id(
@@ -842,19 +921,28 @@ pub async fn list_channels_for_device(
     let cols = "id, device_id, name, manufacturer, model, owner, civil_code, address, parental, parent_id, gb_device_id, status, longitude, latitude, ptz_type, create_time, update_time, sub_count, stream_id, has_audio, stream_identification, channel_type, map_level, gb_name, gb_manufacturer, gb_model, gb_civil_code, gb_address, gb_status, gb_longitude, gb_latitude, record_plan_id";
     #[cfg(feature = "mysql")]
     return sqlx::query_as::<_, DeviceChannel>(&format!(
-        "SELECT {} FROM gb_device_channel WHERE device_id = ? ORDER BY id", cols
+        "SELECT {} FROM gb_device_channel WHERE device_id = ? ORDER BY id",
+        cols
     ))
-    .bind(device_id).fetch_all(pool).await;
+    .bind(device_id)
+    .fetch_all(pool)
+    .await;
     #[cfg(feature = "postgres")]
     return sqlx::query_as::<_, DeviceChannel>(&format!(
-        "SELECT {} FROM gb_device_channel WHERE device_id = $1 ORDER BY id", cols
+        "SELECT {} FROM gb_device_channel WHERE device_id = $1 ORDER BY id",
+        cols
     ))
-    .bind(device_id).fetch_all(pool).await;
+    .bind(device_id)
+    .fetch_all(pool)
+    .await;
     #[cfg(feature = "sqlite")]
     return sqlx::query_as::<_, DeviceChannel>(&format!(
-        "SELECT {} FROM gb_device_channel WHERE device_id = ? ORDER BY id", cols
+        "SELECT {} FROM gb_device_channel WHERE device_id = ? ORDER BY id",
+        cols
     ))
-    .bind(device_id).fetch_all(pool).await;
+    .bind(device_id)
+    .fetch_all(pool)
+    .await;
 }
 
 /// 通用通道列表：全量分页，支持 query(名称/通道号)、online(设备在线)、channel_type
@@ -906,9 +994,13 @@ pub async fn list_common_channels_paged(
                 .bind(channel_type.unwrap()).bind(limit).bind(offset)
                 .fetch_all(pool).await?
         } else {
-            sqlx::query_as::<_, DeviceChannel>("SELECT * FROM gb_device_channel ORDER BY id LIMIT ? OFFSET ?")
-                .bind(limit).bind(offset)
-                .fetch_all(pool).await?
+            sqlx::query_as::<_, DeviceChannel>(
+                "SELECT * FROM gb_device_channel ORDER BY id LIMIT ? OFFSET ?",
+            )
+            .bind(limit)
+            .bind(offset)
+            .fetch_all(pool)
+            .await?
         };
         Ok(rows)
     }
@@ -930,41 +1022,76 @@ pub async fn list_common_channels_paged(
         } else if channel_type.is_some() {
             ("SELECT c.* FROM gb_device_channel c WHERE c.channel_type = $1 ORDER BY c.id LIMIT $2 OFFSET $3", vec![])
         } else {
-            ("SELECT * FROM gb_device_channel ORDER BY id LIMIT $1 OFFSET $2", vec![])
+            (
+                "SELECT * FROM gb_device_channel ORDER BY id LIMIT $1 OFFSET $2",
+                vec![],
+            )
         };
         // Build query with bind - use raw to avoid dynamic param count
         let rows = if has_query && online.is_some() && channel_type.is_some() {
             sqlx::query_as::<_, DeviceChannel>(sql)
-                .bind(&like).bind(&like).bind(online.unwrap()).bind(channel_type.unwrap()).bind(limit).bind(offset)
-                .fetch_all(pool).await?
+                .bind(&like)
+                .bind(&like)
+                .bind(online.unwrap())
+                .bind(channel_type.unwrap())
+                .bind(limit)
+                .bind(offset)
+                .fetch_all(pool)
+                .await?
         } else if has_query && online.is_some() {
             sqlx::query_as::<_, DeviceChannel>(sql)
-                .bind(&like).bind(&like).bind(online.unwrap()).bind(limit).bind(offset)
-                .fetch_all(pool).await?
+                .bind(&like)
+                .bind(&like)
+                .bind(online.unwrap())
+                .bind(limit)
+                .bind(offset)
+                .fetch_all(pool)
+                .await?
         } else if has_query && channel_type.is_some() {
             sqlx::query_as::<_, DeviceChannel>(sql)
-                .bind(&like).bind(&like).bind(channel_type.unwrap()).bind(limit).bind(offset)
-                .fetch_all(pool).await?
+                .bind(&like)
+                .bind(&like)
+                .bind(channel_type.unwrap())
+                .bind(limit)
+                .bind(offset)
+                .fetch_all(pool)
+                .await?
         } else if has_query {
             sqlx::query_as::<_, DeviceChannel>(sql)
-                .bind(&like).bind(&like).bind(limit).bind(offset)
-                .fetch_all(pool).await?
+                .bind(&like)
+                .bind(&like)
+                .bind(limit)
+                .bind(offset)
+                .fetch_all(pool)
+                .await?
         } else if online.is_some() && channel_type.is_some() {
             sqlx::query_as::<_, DeviceChannel>(sql)
-                .bind(online.unwrap()).bind(channel_type.unwrap()).bind(limit).bind(offset)
-                .fetch_all(pool).await?
+                .bind(online.unwrap())
+                .bind(channel_type.unwrap())
+                .bind(limit)
+                .bind(offset)
+                .fetch_all(pool)
+                .await?
         } else if online.is_some() {
             sqlx::query_as::<_, DeviceChannel>(sql)
-                .bind(online.unwrap()).bind(limit).bind(offset)
-                .fetch_all(pool).await?
+                .bind(online.unwrap())
+                .bind(limit)
+                .bind(offset)
+                .fetch_all(pool)
+                .await?
         } else if channel_type.is_some() {
             sqlx::query_as::<_, DeviceChannel>(sql)
-                .bind(channel_type.unwrap()).bind(limit).bind(offset)
-                .fetch_all(pool).await?
+                .bind(channel_type.unwrap())
+                .bind(limit)
+                .bind(offset)
+                .fetch_all(pool)
+                .await?
         } else {
             sqlx::query_as::<_, DeviceChannel>(sql)
-                .bind(limit).bind(offset)
-                .fetch_all(pool).await?
+                .bind(limit)
+                .bind(offset)
+                .fetch_all(pool)
+                .await?
         };
         Ok(rows)
     }
@@ -985,40 +1112,75 @@ pub async fn list_common_channels_paged(
         } else if channel_type.is_some() {
             ("SELECT c.* FROM gb_device_channel c WHERE c.channel_type = ? ORDER BY c.id LIMIT ? OFFSET ?", vec![])
         } else {
-            ("SELECT * FROM gb_device_channel ORDER BY id LIMIT ? OFFSET ?", vec![])
+            (
+                "SELECT * FROM gb_device_channel ORDER BY id LIMIT ? OFFSET ?",
+                vec![],
+            )
         };
         let rows = if has_query && online.is_some() && channel_type.is_some() {
             sqlx::query_as::<_, DeviceChannel>(sql)
-                .bind(&like).bind(&like).bind(online.unwrap()).bind(channel_type.unwrap()).bind(limit).bind(offset)
-                .fetch_all(pool).await?
+                .bind(&like)
+                .bind(&like)
+                .bind(online.unwrap())
+                .bind(channel_type.unwrap())
+                .bind(limit)
+                .bind(offset)
+                .fetch_all(pool)
+                .await?
         } else if has_query && online.is_some() {
             sqlx::query_as::<_, DeviceChannel>(sql)
-                .bind(&like).bind(&like).bind(online.unwrap()).bind(limit).bind(offset)
-                .fetch_all(pool).await?
+                .bind(&like)
+                .bind(&like)
+                .bind(online.unwrap())
+                .bind(limit)
+                .bind(offset)
+                .fetch_all(pool)
+                .await?
         } else if has_query && channel_type.is_some() {
             sqlx::query_as::<_, DeviceChannel>(sql)
-                .bind(&like).bind(&like).bind(channel_type.unwrap()).bind(limit).bind(offset)
-                .fetch_all(pool).await?
+                .bind(&like)
+                .bind(&like)
+                .bind(channel_type.unwrap())
+                .bind(limit)
+                .bind(offset)
+                .fetch_all(pool)
+                .await?
         } else if has_query {
             sqlx::query_as::<_, DeviceChannel>(sql)
-                .bind(&like).bind(&like).bind(limit).bind(offset)
-                .fetch_all(pool).await?
+                .bind(&like)
+                .bind(&like)
+                .bind(limit)
+                .bind(offset)
+                .fetch_all(pool)
+                .await?
         } else if online.is_some() && channel_type.is_some() {
             sqlx::query_as::<_, DeviceChannel>(sql)
-                .bind(online.unwrap()).bind(channel_type.unwrap()).bind(limit).bind(offset)
-                .fetch_all(pool).await?
+                .bind(online.unwrap())
+                .bind(channel_type.unwrap())
+                .bind(limit)
+                .bind(offset)
+                .fetch_all(pool)
+                .await?
         } else if online.is_some() {
             sqlx::query_as::<_, DeviceChannel>(sql)
-                .bind(online.unwrap()).bind(limit).bind(offset)
-                .fetch_all(pool).await?
+                .bind(online.unwrap())
+                .bind(limit)
+                .bind(offset)
+                .fetch_all(pool)
+                .await?
         } else if channel_type.is_some() {
             sqlx::query_as::<_, DeviceChannel>(sql)
-                .bind(channel_type.unwrap()).bind(limit).bind(offset)
-                .fetch_all(pool).await?
+                .bind(channel_type.unwrap())
+                .bind(limit)
+                .bind(offset)
+                .fetch_all(pool)
+                .await?
         } else {
             sqlx::query_as::<_, DeviceChannel>(sql)
-                .bind(limit).bind(offset)
-                .fetch_all(pool).await?
+                .bind(limit)
+                .bind(offset)
+                .fetch_all(pool)
+                .await?
         };
         Ok(rows)
     }
@@ -1061,12 +1223,16 @@ pub async fn count_common_channels(
                 .bind(online.unwrap())
                 .fetch_one(pool).await?
         } else if channel_type.is_some() {
-            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_device_channel c WHERE c.channel_type = ?")
-                .bind(channel_type.unwrap())
-                .fetch_one(pool).await?
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM gb_device_channel c WHERE c.channel_type = ?",
+            )
+            .bind(channel_type.unwrap())
+            .fetch_one(pool)
+            .await?
         } else {
             sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_device_channel")
-                .fetch_one(pool).await?
+                .fetch_one(pool)
+                .await?
         };
         Ok(row)
     }
@@ -1092,35 +1258,50 @@ pub async fn count_common_channels(
         };
         let row = if has_query && online.is_some() && channel_type.is_some() {
             sqlx::query_scalar::<_, i64>(sql)
-                .bind(&like).bind(&like).bind(online.unwrap()).bind(channel_type.unwrap())
-                .fetch_one(pool).await?
+                .bind(&like)
+                .bind(&like)
+                .bind(online.unwrap())
+                .bind(channel_type.unwrap())
+                .fetch_one(pool)
+                .await?
         } else if has_query && online.is_some() {
             sqlx::query_scalar::<_, i64>(sql)
-                .bind(&like).bind(&like).bind(online.unwrap())
-                .fetch_one(pool).await?
+                .bind(&like)
+                .bind(&like)
+                .bind(online.unwrap())
+                .fetch_one(pool)
+                .await?
         } else if has_query && channel_type.is_some() {
             sqlx::query_scalar::<_, i64>(sql)
-                .bind(&like).bind(&like).bind(channel_type.unwrap())
-                .fetch_one(pool).await?
+                .bind(&like)
+                .bind(&like)
+                .bind(channel_type.unwrap())
+                .fetch_one(pool)
+                .await?
         } else if has_query {
             sqlx::query_scalar::<_, i64>(sql)
-                .bind(&like).bind(&like)
-                .fetch_one(pool).await?
+                .bind(&like)
+                .bind(&like)
+                .fetch_one(pool)
+                .await?
         } else if online.is_some() && channel_type.is_some() {
             sqlx::query_scalar::<_, i64>(sql)
-                .bind(online.unwrap()).bind(channel_type.unwrap())
-                .fetch_one(pool).await?
+                .bind(online.unwrap())
+                .bind(channel_type.unwrap())
+                .fetch_one(pool)
+                .await?
         } else if online.is_some() {
             sqlx::query_scalar::<_, i64>(sql)
                 .bind(online.unwrap())
-                .fetch_one(pool).await?
+                .fetch_one(pool)
+                .await?
         } else if channel_type.is_some() {
             sqlx::query_scalar::<_, i64>(sql)
                 .bind(channel_type.unwrap())
-                .fetch_one(pool).await?
+                .fetch_one(pool)
+                .await?
         } else {
-            sqlx::query_scalar::<_, i64>(sql)
-                .fetch_one(pool).await?
+            sqlx::query_scalar::<_, i64>(sql).fetch_one(pool).await?
         };
         Ok(row)
     }
@@ -1146,35 +1327,50 @@ pub async fn count_common_channels(
         };
         let row = if has_query && online.is_some() && channel_type.is_some() {
             sqlx::query_scalar::<_, i64>(sql)
-                .bind(&like).bind(&like).bind(online.unwrap()).bind(channel_type.unwrap())
-                .fetch_one(pool).await?
+                .bind(&like)
+                .bind(&like)
+                .bind(online.unwrap())
+                .bind(channel_type.unwrap())
+                .fetch_one(pool)
+                .await?
         } else if has_query && online.is_some() {
             sqlx::query_scalar::<_, i64>(sql)
-                .bind(&like).bind(&like).bind(online.unwrap())
-                .fetch_one(pool).await?
+                .bind(&like)
+                .bind(&like)
+                .bind(online.unwrap())
+                .fetch_one(pool)
+                .await?
         } else if has_query && channel_type.is_some() {
             sqlx::query_scalar::<_, i64>(sql)
-                .bind(&like).bind(&like).bind(channel_type.unwrap())
-                .fetch_one(pool).await?
+                .bind(&like)
+                .bind(&like)
+                .bind(channel_type.unwrap())
+                .fetch_one(pool)
+                .await?
         } else if has_query {
             sqlx::query_scalar::<_, i64>(sql)
-                .bind(&like).bind(&like)
-                .fetch_one(pool).await?
+                .bind(&like)
+                .bind(&like)
+                .fetch_one(pool)
+                .await?
         } else if online.is_some() && channel_type.is_some() {
             sqlx::query_scalar::<_, i64>(sql)
-                .bind(online.unwrap()).bind(channel_type.unwrap())
-                .fetch_one(pool).await?
+                .bind(online.unwrap())
+                .bind(channel_type.unwrap())
+                .fetch_one(pool)
+                .await?
         } else if online.is_some() {
             sqlx::query_scalar::<_, i64>(sql)
                 .bind(online.unwrap())
-                .fetch_one(pool).await?
+                .fetch_one(pool)
+                .await?
         } else if channel_type.is_some() {
             sqlx::query_scalar::<_, i64>(sql)
                 .bind(channel_type.unwrap())
-                .fetch_one(pool).await?
+                .fetch_one(pool)
+                .await?
         } else {
-            sqlx::query_scalar::<_, i64>(sql)
-                .fetch_one(pool).await?
+            sqlx::query_scalar::<_, i64>(sql).fetch_one(pool).await?
         };
         Ok(row)
     }
@@ -1183,20 +1379,38 @@ pub async fn count_common_channels(
 pub async fn delete_device_cascade(pool: &Pool, device_id: &str) -> sqlx::Result<u64> {
     #[cfg(feature = "mysql")]
     {
-        let _ = sqlx::query("DELETE FROM gb_device_channel WHERE device_id = ?").bind(device_id).execute(pool).await?;
-        let r = sqlx::query("DELETE FROM gb_device WHERE device_id = ?").bind(device_id).execute(pool).await?;
+        let _ = sqlx::query("DELETE FROM gb_device_channel WHERE device_id = ?")
+            .bind(device_id)
+            .execute(pool)
+            .await?;
+        let r = sqlx::query("DELETE FROM gb_device WHERE device_id = ?")
+            .bind(device_id)
+            .execute(pool)
+            .await?;
         return Ok(r.rows_affected());
     }
     #[cfg(feature = "postgres")]
     {
-        let _ = sqlx::query("DELETE FROM gb_device_channel WHERE device_id = $1").bind(device_id).execute(pool).await?;
-        let r = sqlx::query("DELETE FROM gb_device WHERE device_id = $1").bind(device_id).execute(pool).await?;
+        let _ = sqlx::query("DELETE FROM gb_device_channel WHERE device_id = $1")
+            .bind(device_id)
+            .execute(pool)
+            .await?;
+        let r = sqlx::query("DELETE FROM gb_device WHERE device_id = $1")
+            .bind(device_id)
+            .execute(pool)
+            .await?;
         return Ok(r.rows_affected());
     }
     #[cfg(feature = "sqlite")]
     {
-        let _ = sqlx::query("DELETE FROM gb_device_channel WHERE device_id = ?").bind(device_id).execute(pool).await?;
-        let r = sqlx::query("DELETE FROM gb_device WHERE device_id = ?").bind(device_id).execute(pool).await?;
+        let _ = sqlx::query("DELETE FROM gb_device_channel WHERE device_id = ?")
+            .bind(device_id)
+            .execute(pool)
+            .await?;
+        let r = sqlx::query("DELETE FROM gb_device WHERE device_id = ?")
+            .bind(device_id)
+            .execute(pool)
+            .await?;
         return Ok(r.rows_affected());
     }
 }
@@ -1235,29 +1449,32 @@ pub async fn check_sqlite_device_limit(
 pub async fn device_exists(pool: &Pool, device_id: &str) -> sqlx::Result<bool> {
     #[cfg(feature = "mysql")]
     {
-        let row: (i64,) = sqlx::query_as("SELECT EXISTS(SELECT 1 FROM gb_device WHERE device_id = ?)")
-            .bind(device_id)
-            .fetch_optional(pool)
-            .await?
-            .unwrap_or((0,));
+        let row: (i64,) =
+            sqlx::query_as("SELECT EXISTS(SELECT 1 FROM gb_device WHERE device_id = ?)")
+                .bind(device_id)
+                .fetch_optional(pool)
+                .await?
+                .unwrap_or((0,));
         Ok(row.0 > 0)
     }
     #[cfg(feature = "postgres")]
     {
-        let row: (bool,) = sqlx::query_as("SELECT EXISTS(SELECT 1 FROM gb_device WHERE device_id = $1)")
-            .bind(device_id)
-            .fetch_optional(pool)
-            .await?
-            .unwrap_or((false,));
+        let row: (bool,) =
+            sqlx::query_as("SELECT EXISTS(SELECT 1 FROM gb_device WHERE device_id = $1)")
+                .bind(device_id)
+                .fetch_optional(pool)
+                .await?
+                .unwrap_or((false,));
         Ok(row.0)
     }
     #[cfg(feature = "sqlite")]
     {
-        let row: (i64,) = sqlx::query_as("SELECT EXISTS(SELECT 1 FROM gb_device WHERE device_id = ?)")
-            .bind(device_id)
-            .fetch_optional(pool)
-            .await?
-            .unwrap_or((0,));
+        let row: (i64,) =
+            sqlx::query_as("SELECT EXISTS(SELECT 1 FROM gb_device WHERE device_id = ?)")
+                .bind(device_id)
+                .fetch_optional(pool)
+                .await?
+                .unwrap_or((0,));
         Ok(row.0 > 0)
     }
 }
@@ -1405,7 +1622,9 @@ pub async fn update_device(
                update_time = {p14} WHERE device_id = {p15}";
     #[cfg(feature = "mysql")]
     let r = {
-        let sql: String = (1..=15).fold(set.to_string(), |acc, i| acc.replace(&format!("{{p{i}}}"), "?"));
+        let sql: String = (1..=15).fold(set.to_string(), |acc, i| {
+            acc.replace(&format!("{{p{i}}}"), "?")
+        });
         sqlx::query(&format!("UPDATE gb_device SET {sql}"))
             .bind(f.name)
             .bind(f.manufacturer)
@@ -1427,7 +1646,9 @@ pub async fn update_device(
     };
     #[cfg(feature = "postgres")]
     let r = {
-        let sql: String = (1..=15).fold(set.to_string(), |acc, i| acc.replace(&format!("{{p{i}}}"), &format!("${i}")));
+        let sql: String = (1..=15).fold(set.to_string(), |acc, i| {
+            acc.replace(&format!("{{p{i}}}"), &format!("${i}"))
+        });
         sqlx::query(&format!("UPDATE gb_device SET {sql}"))
             .bind(f.name)
             .bind(f.manufacturer)
@@ -1449,7 +1670,9 @@ pub async fn update_device(
     };
     #[cfg(feature = "sqlite")]
     let r = {
-        let sql: String = (1..=15).fold(set.to_string(), |acc, i| acc.replace(&format!("{{p{i}}}"), "?"));
+        let sql: String = (1..=15).fold(set.to_string(), |acc, i| {
+            acc.replace(&format!("{{p{i}}}"), "?")
+        });
         sqlx::query(&format!("UPDATE gb_device SET {sql}"))
             .bind(f.name)
             .bind(f.manufacturer)
@@ -1528,8 +1751,14 @@ pub async fn update_device_info_fields(
                update_time = ?
            WHERE device_id = ?"#,
     )
-    .bind(name).bind(manufacturer).bind(model).bind(firmware).bind(now).bind(device_id)
-    .execute(pool).await?;
+    .bind(name)
+    .bind(manufacturer)
+    .bind(model)
+    .bind(firmware)
+    .bind(now)
+    .bind(device_id)
+    .execute(pool)
+    .await?;
     #[cfg(feature = "postgres")]
     let r = sqlx::query(
         r#"UPDATE gb_device
@@ -1540,8 +1769,14 @@ pub async fn update_device_info_fields(
                update_time = $5
            WHERE device_id = $6"#,
     )
-    .bind(name).bind(manufacturer).bind(model).bind(firmware).bind(now).bind(device_id)
-    .execute(pool).await?;
+    .bind(name)
+    .bind(manufacturer)
+    .bind(model)
+    .bind(firmware)
+    .bind(now)
+    .bind(device_id)
+    .execute(pool)
+    .await?;
     #[cfg(feature = "sqlite")]
     let r = sqlx::query(
         r#"UPDATE gb_device
@@ -1552,8 +1787,14 @@ pub async fn update_device_info_fields(
                update_time = ?
            WHERE device_id = ?"#,
     )
-    .bind(name).bind(manufacturer).bind(model).bind(firmware).bind(now).bind(device_id)
-    .execute(pool).await?;
+    .bind(name)
+    .bind(manufacturer)
+    .bind(model)
+    .bind(firmware)
+    .bind(now)
+    .bind(device_id)
+    .execute(pool)
+    .await?;
     Ok(r.rows_affected())
 }
 
@@ -1626,23 +1867,17 @@ pub async fn upsert_device(
 
 pub async fn list_all_channels(pool: &Pool) -> sqlx::Result<Vec<DeviceChannel>> {
     #[cfg(feature = "mysql")]
-    return sqlx::query_as::<_, DeviceChannel>(
-        "SELECT * FROM gb_device_channel"
-    )
-    .fetch_all(pool)
-    .await;
+    return sqlx::query_as::<_, DeviceChannel>("SELECT * FROM gb_device_channel")
+        .fetch_all(pool)
+        .await;
     #[cfg(feature = "postgres")]
-    return sqlx::query_as::<_, DeviceChannel>(
-        "SELECT * FROM gb_device_channel"
-    )
-    .fetch_all(pool)
-    .await;
+    return sqlx::query_as::<_, DeviceChannel>("SELECT * FROM gb_device_channel")
+        .fetch_all(pool)
+        .await;
     #[cfg(feature = "sqlite")]
-    return sqlx::query_as::<_, DeviceChannel>(
-        "SELECT * FROM gb_device_channel"
-    )
-    .fetch_all(pool)
-    .await;
+    return sqlx::query_as::<_, DeviceChannel>("SELECT * FROM gb_device_channel")
+        .fetch_all(pool)
+        .await;
 }
 
 /// 获取所有需要目录订阅续期的在线设备
@@ -1679,7 +1914,9 @@ pub async fn get_devices_for_catalog_renewal(pool: &Pool) -> sqlx::Result<Vec<(S
 
 /// 获取所有需要移动位置订阅续期的在线设备
 /// 返回 (device_id, subscribe_cycle_for_mobile_position) 列表
-pub async fn get_devices_for_mobile_position_renewal(pool: &Pool) -> sqlx::Result<Vec<(String, i32)>> {
+pub async fn get_devices_for_mobile_position_renewal(
+    pool: &Pool,
+) -> sqlx::Result<Vec<(String, i32)>> {
     #[cfg(feature = "mysql")]
     {
         let rows: Vec<(String, i32)> = sqlx::query_as(
@@ -1953,7 +2190,7 @@ pub async fn upsert_channel_from_catalog(
     #[cfg(feature = "postgres")]
     {
         let existing = sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*) FROM gb_device_channel WHERE device_id = $1 AND gb_device_id = $2"
+            "SELECT COUNT(*) FROM gb_device_channel WHERE device_id = $1 AND gb_device_id = $2",
         )
         .bind(device_id)
         .bind(channel_device_id)
@@ -1978,11 +2215,15 @@ pub async fn upsert_channel_from_catalog(
                    has_audio = COALESCE($14, has_audio),
                    sub_count = COALESCE($15, sub_count),
                    update_time = $16
-                   WHERE device_id = $1 AND gb_device_id = $2"#
+                   WHERE device_id = $1 AND gb_device_id = $2"#,
             )
             .bind(device_id)
             .bind(channel_device_id)
-            .bind(if name.is_empty() { None as Option<&str> } else { Some(name) })
+            .bind(if name.is_empty() {
+                None as Option<&str>
+            } else {
+                Some(name)
+            })
             .bind(manufacturer)
             .bind(model)
             .bind(owner)
@@ -2007,7 +2248,7 @@ pub async fn upsert_channel_from_catalog(
                     create_time, update_time)
                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9,
                     CASE WHEN $10 THEN 'ON' ELSE 'OFF' END,
-                    $11, $12, $13, $14, $15, $16, $17)"#
+                    $11, $12, $13, $14, $15, $16, $17)"#,
             )
             .bind(device_id)
             .bind(channel_device_id)
@@ -2051,7 +2292,7 @@ pub async fn upsert_channel_from_catalog(
                latitude = COALESCE(VALUES(latitude), latitude),
                has_audio = COALESCE(VALUES(has_audio), has_audio),
                sub_count = COALESCE(VALUES(sub_count), sub_count),
-               update_time = VALUES(update_time)"#
+               update_time = VALUES(update_time)"#,
         )
         .bind(device_id)
         .bind(channel_device_id)
@@ -2104,7 +2345,7 @@ pub async fn upsert_channel_from_catalog(
                latitude = COALESCE(excluded.latitude, gb_device_channel.latitude),
                has_audio = COALESCE(excluded.has_audio, gb_device_channel.has_audio),
                sub_count = COALESCE(excluded.sub_count, gb_device_channel.sub_count),
-               update_time = excluded.update_time"#
+               update_time = excluded.update_time"#,
         )
         .bind(device_id)
         .bind(channel_device_id)
@@ -2132,7 +2373,8 @@ pub async fn upsert_channel_from_catalog(
 /// 在线注册设备数（与 on_line 字段一致）
 pub async fn count_registered_devices(pool: &Pool) -> sqlx::Result<i64> {
     let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM gb_device")
-        .fetch_one(pool).await?;
+        .fetch_one(pool)
+        .await?;
     Ok(n)
 }
 

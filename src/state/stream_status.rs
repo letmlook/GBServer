@@ -137,9 +137,18 @@ mod tests {
 
     #[test]
     fn test_stream_status_from_str() {
-        assert_eq!("ready".parse::<StreamStatus>().unwrap(), StreamStatus::Ready);
-        assert_eq!("PUSHING".parse::<StreamStatus>().unwrap(), StreamStatus::Pushing);
-        assert_eq!("Active".parse::<StreamStatus>().unwrap(), StreamStatus::Active);
+        assert_eq!(
+            "ready".parse::<StreamStatus>().unwrap(),
+            StreamStatus::Ready
+        );
+        assert_eq!(
+            "PUSHING".parse::<StreamStatus>().unwrap(),
+            StreamStatus::Pushing
+        );
+        assert_eq!(
+            "Active".parse::<StreamStatus>().unwrap(),
+            StreamStatus::Active
+        );
         assert!("bogus".parse::<StreamStatus>().is_err());
     }
 
@@ -155,13 +164,27 @@ mod tests {
             ch: Option<String>,
         }
         impl StreamState for MockState {
-            fn stream_id(&self) -> &str { &self.id }
-            fn app(&self) -> &str { &self.app }
-            fn status(&self) -> StreamStatus { self.st }
-            fn set_status(&mut self, status: StreamStatus) { self.st = status; }
-            fn media_server_id(&self) -> Option<&str> { self.ms.as_deref() }
-            fn device_id(&self) -> Option<&str> { self.dev.as_deref() }
-            fn channel_id(&self) -> Option<&str> { self.ch.as_deref() }
+            fn stream_id(&self) -> &str {
+                &self.id
+            }
+            fn app(&self) -> &str {
+                &self.app
+            }
+            fn status(&self) -> StreamStatus {
+                self.st
+            }
+            fn set_status(&mut self, status: StreamStatus) {
+                self.st = status;
+            }
+            fn media_server_id(&self) -> Option<&str> {
+                self.ms.as_deref()
+            }
+            fn device_id(&self) -> Option<&str> {
+                self.dev.as_deref()
+            }
+            fn channel_id(&self) -> Option<&str> {
+                self.ch.as_deref()
+            }
         }
 
         let m = MockState {

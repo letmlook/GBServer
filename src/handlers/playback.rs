@@ -1,8 +1,11 @@
-use axum::{extract::{Path, Query, State}, Json};
+use axum::{
+    extract::{Path, Query, State},
+    Json,
+};
+use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use chrono::{DateTime, Utc};
 use utoipa::IntoParams;
 
 use crate::error::{AppError, ErrorCode};
@@ -37,8 +40,11 @@ impl PlaybackManager {
         }
     }
 
-pub async fn create(&self, session: PlaybackSession) {
-        self.sessions.write().await.insert(session.stream_id.clone(), session);
+    pub async fn create(&self, session: PlaybackSession) {
+        self.sessions
+            .write()
+            .await
+            .insert(session.stream_id.clone(), session);
     }
 
     pub async fn get(&self, stream_id: &str) -> Option<PlaybackSession> {
@@ -130,7 +136,10 @@ impl DownloadManager {
         if removed > 0 {
             tracing::debug!("下载会话清理: 移除 {} 条已结束的会话", removed);
         }
-        self.sessions.write().await.insert(session.stream_id.clone(), session);
+        self.sessions
+            .write()
+            .await
+            .insert(session.stream_id.clone(), session);
     }
 
     pub async fn get(&self, stream_id: &str) -> Option<DownloadSession> {
@@ -144,8 +153,8 @@ impl DownloadManager {
             s.current_bytes = current_bytes;
             s.total_bytes = total_bytes;
             if total_bytes > 0 {
-                s.progress = ((current_bytes as f64) / (total_bytes as f64) * 100.0)
-                    .clamp(0.0, 100.0);
+                s.progress =
+                    ((current_bytes as f64) / (total_bytes as f64) * 100.0).clamp(0.0, 100.0);
             }
             s.status = if current_bytes >= total_bytes && total_bytes > 0 {
                 "completed".to_string()
@@ -162,7 +171,6 @@ impl DownloadManager {
             s.status = status.to_string();
         }
     }
-
 
     /// 记录设备推流结束后 ZLM 落盘的 MP4（`on_record_mp4` 钩子调用）。
     ///
@@ -271,15 +279,25 @@ pub async fn playback_start(
     Path((device_id, channel_id)): Path<(String, String)>,
     Query(q): Query<PlaybackQuery>,
 ) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
-    let start_time = q.start_time.clone().unwrap_or_else(|| {
-        chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string()
-    });
+    let start_time = q
+        .start_time
+        .clone()
+        .unwrap_or_else(|| chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string());
     let end_time = q.end_time.clone();
 
-    tracing::info!("Playback start: device={}, channel={}, start={}", device_id, channel_id, start_time);
+    tracing::info!(
+        "Playback start: device={}, channel={}, start={}",
+        device_id,
+        channel_id,
+        start_time
+    );
 
-    let stream_id = format!("playback_{}_{}_{}", device_id, channel_id,
-        chrono::Utc::now().timestamp());
+    let stream_id = format!(
+        "playback_{}_{}_{}",
+        device_id,
+        channel_id,
+        chrono::Utc::now().timestamp()
+    );
     let app = "playback".to_string();
     let media_server_id = state.list_zlm_servers().into_iter().next();
     // 只有真实成功的分支才会返回 session，`source` 恒为 INVITE 路径
@@ -304,8 +322,13 @@ pub async fn playback_start(
                     let end = end_time.clone().unwrap_or_else(|| start_time.clone());
                     match sip
                         .send_playback_invite_and_wait(
-                            &device_id, &channel_id,
-                            &start_time, &end, &stream_id, rtp_server.port, 15,
+                            &device_id,
+                            &channel_id,
+                            &start_time,
+                            &end,
+                            &stream_id,
+                            rtp_server.port,
+                            15,
                         )
                         .await
                     {
@@ -313,24 +336,31 @@ pub async fn playback_start(
                             let media_ip = zlm_client.ip.clone();
                             let http_port = zlm_client.http_port;
                             let play_url = format!("rtsp://{}:554/{}/{}", media_ip, app, stream_id);
-                            let flv_url = crate::zlm::address_builder::http_flv_url(&media_ip, http_port, &app, &stream_id);
-                            let hls_url = format!("http://{}:{}/{}/{}/hls.m3u8", media_ip, http_port, app, stream_id);
+                            let flv_url = crate::zlm::address_builder::http_flv_url(
+                                &media_ip, http_port, &app, &stream_id,
+                            );
+                            let hls_url = format!(
+                                "http://{}:{}/{}/{}/hls.m3u8",
+                                media_ip, http_port, app, stream_id
+                            );
                             if let Some(ref playback_manager) = state.playback_manager {
-                                playback_manager.create(PlaybackSession {
-                                    stream_id: stream_id.clone(),
-                                    device_id: device_id.clone(),
-                                    channel_id: channel_id.clone(),
-                                    app: app.clone(),
-                                    stream: stream_id.clone(),
-                                    media_server_id: media_server_id.clone(),
-                                    schema: "rtsp".to_string(),
-                                    start_time: start_time.clone(),
-                                    end_time: end_time.clone(),
-                                    current_time: start_time.clone(),
-                                    speed: 1.0,
-                                    paused: false,
-                                    source: source.to_string(),
-                                }).await;
+                                playback_manager
+                                    .create(PlaybackSession {
+                                        stream_id: stream_id.clone(),
+                                        device_id: device_id.clone(),
+                                        channel_id: channel_id.clone(),
+                                        app: app.clone(),
+                                        stream: stream_id.clone(),
+                                        media_server_id: media_server_id.clone(),
+                                        schema: "rtsp".to_string(),
+                                        start_time: start_time.clone(),
+                                        end_time: end_time.clone(),
+                                        current_time: start_time.clone(),
+                                        speed: 1.0,
+                                        paused: false,
+                                        source: source.to_string(),
+                                    })
+                                    .await;
                             }
                             // `hls` 同样只在真的有源时给出（回放流在多数 ZLM 版本上
                             // 没有 hls 源，给出 404 地址会让前端优先选它而播不出来）
@@ -386,7 +416,10 @@ pub async fn playback_start(
     };
     tracing::warn!(
         "回放启动失败 device={} channel={} start={}: {}",
-        device_id, channel_id, start_time, reason
+        device_id,
+        channel_id,
+        start_time,
+        reason
     );
     Err(AppError::business(
         ErrorCode::Error500,
@@ -537,27 +570,28 @@ pub async fn playback_speed(
     if let Some(ref playback_manager) = state.playback_manager {
         playback_manager.update_speed(&stream_id, speed).await;
     }
-    
+
     if let Some(ref sip_server) = state.sip_server {
         let sip = &*sip_server;
         let parts: Vec<&str> = stream_id.split('_').collect();
         if parts.len() >= 3 {
             let device_id = parts[1];
             let channel_id = parts[2].to_string();
-            
+
             if let Err(e) = sip
                 .send_playback_control(
                     device_id,
                     &channel_id,
                     crate::sip::PlaybackControlCmd::Scale { speed },
                 )
-                .await {
+                .await
+            {
                 tracing::error!("Failed to send speed command: {}", e);
                 return Json(ApiResult::error(format!("SIP error: {}", e)));
             }
         }
     }
-    
+
     Json(ApiResult::success(serde_json::json!({
         "streamId": stream_id,
         "speed": speed,
@@ -590,12 +624,14 @@ pub async fn playback_seek(
     Path((stream_id, seek_time)): Path<(String, String)>,
 ) -> Json<ApiResult<serde_json::Value>> {
     tracing::info!("Playback seek: stream={}, time={}", stream_id, seek_time);
-    
+
     // 更新本地会话状态
     if let Some(ref playback_manager) = state.playback_manager {
-        playback_manager.update_current_time(&stream_id, seek_time.clone()).await;
+        playback_manager
+            .update_current_time(&stream_id, seek_time.clone())
+            .await;
     }
-    
+
     // 发送 SIP INFO 消息通知设备跳转
     if let Some(ref sip_server) = state.sip_server {
         let sip = &*sip_server;
@@ -603,7 +639,7 @@ pub async fn playback_seek(
         if parts.len() >= 3 {
             let device_id = parts[1];
             let channel_id = parts[2];
-            
+
             if let Err(e) = sip
                 .send_playback_control(
                     device_id,
@@ -612,13 +648,14 @@ pub async fn playback_seek(
                         seek_time: seek_time.clone(),
                     },
                 )
-                .await {
+                .await
+            {
                 tracing::error!("Failed to send seek command: {}", e);
                 return Json(ApiResult::error(format!("SIP error: {}", e)));
             }
         }
     }
-    
+
     Json(ApiResult::success(serde_json::json!({
         "streamId": stream_id,
         "currentTime": seek_time,
@@ -649,7 +686,12 @@ pub async fn playback_stop(
     State(state): State<AppState>,
     Path((device_id, channel_id, stream_id)): Path<(String, String, String)>,
 ) -> Json<ApiResult<()>> {
-    tracing::info!("Playback stop: device={}, channel={}, stream={}", device_id, channel_id, stream_id);
+    tracing::info!(
+        "Playback stop: device={}, channel={}, stream={}",
+        device_id,
+        channel_id,
+        stream_id
+    );
 
     if let Some(ref playback_manager) = state.playback_manager {
         if let Some(session) = playback_manager.get(&stream_id).await {
@@ -657,12 +699,14 @@ pub async fn playback_stop(
                 .get_zlm_client(session.media_server_id.as_deref())
                 .or_else(|| state.zlm_client.clone())
             {
-                let _ = zlm_client.close_streams(
-                    Some(&session.schema),
-                    Some(&session.app),
-                    Some(&session.stream),
-                    true,
-                ).await;
+                let _ = zlm_client
+                    .close_streams(
+                        Some(&session.schema),
+                        Some(&session.app),
+                        Some(&session.stream),
+                        true,
+                    )
+                    .await;
             }
             playback_manager.remove(&stream_id).await;
 
@@ -680,12 +724,14 @@ pub async fn playback_stop(
     }
 
     if let Some(ref zlm_client) = state.zlm_client {
-        let _ = zlm_client.close_streams(
-            Some("rtsp"),
-            Some("playback"),
-            Some(&format!("{}${}", device_id, channel_id)),
-            true
-        ).await;
+        let _ = zlm_client
+            .close_streams(
+                Some("rtsp"),
+                Some("playback"),
+                Some(&format!("{}${}", device_id, channel_id)),
+                true,
+            )
+            .await;
     }
 
     Json(ApiResult::<()>::success_empty())
@@ -736,7 +782,11 @@ pub async fn gb_record_query(
                 let sn = chrono::Utc::now().timestamp() % 10000;
                 match sip
                     .send_record_info_query_and_wait(
-                        &device_id, &channel_id, &start_time, &end_time, sn,
+                        &device_id,
+                        &channel_id,
+                        &start_time,
+                        &end_time,
+                        sn,
                     )
                     .await
                 {
@@ -784,7 +834,10 @@ pub async fn gb_record_query(
 
     // 兼容路径：ZLM 本地 MP4 文件列表
     if let Some(ref zlm_client) = state.zlm_client {
-        match zlm_client.get_mp4_record_file("record", &channel_id, None, None, None).await {
+        match zlm_client
+            .get_mp4_record_file("record", &channel_id, None, None, None)
+            .await
+        {
             Ok(files) => {
                 let total = files.len() as i64;
                 let offset = ((page - 1) * count) as usize;
@@ -855,15 +908,31 @@ pub async fn gb_record_download_start(
     let start_time = q.start_time.clone().unwrap_or_default();
     let end_time = q.end_time.clone().unwrap_or_default();
 
-    tracing::info!("Record download: device={}, channel={}, start={}, end={}",
-        device_id, channel_id, start_time, end_time);
+    tracing::info!(
+        "Record download: device={}, channel={}, start={}, end={}",
+        device_id,
+        channel_id,
+        start_time,
+        end_time
+    );
 
-    let stream_id = format!("download_{}_{}_{}", device_id, channel_id,
-        chrono::Utc::now().timestamp());
+    let stream_id = format!(
+        "download_{}_{}_{}",
+        device_id,
+        channel_id,
+        chrono::Utc::now().timestamp()
+    );
 
-    let file_name = format!("{}_{}_{}_{}.mp4", device_id, channel_id,
-        start_time.replace(":", "").replace("-", "").replace("T", "_"),
-        chrono::Utc::now().timestamp());
+    let file_name = format!(
+        "{}_{}_{}_{}.mp4",
+        device_id,
+        channel_id,
+        start_time
+            .replace(":", "")
+            .replace("-", "")
+            .replace("T", "_"),
+        chrono::Utc::now().timestamp()
+    );
 
     // 1) 优先走 GB28181 录像下载 INVITE（Subject SSRC 前缀 2），
     //    设备推送 9102 端口的 RTP 流，ZLM 自动 MP4 落盘
@@ -892,7 +961,9 @@ pub async fn gb_record_download_start(
                             Err(e) => {
                                 tracing::error!(
                                     "openRtpServer for download {}/{} failed: {}",
-                                    device_id, channel_id, e
+                                    device_id,
+                                    channel_id,
+                                    e
                                 );
                                 0
                             }
@@ -906,24 +977,22 @@ pub async fn gb_record_download_start(
                     // 改为直接失败，避免留下一个永远不会完成的下载会话。
                     tracing::error!(
                         "ZLM 收流端口分配失败，放弃录像下载 INVITE ({}/{})",
-                        device_id, channel_id
+                        device_id,
+                        channel_id
                     );
                 } else {
-                match sip
-                    .send_download_invite(
-                        &device_id,
-                        &channel_id,
-                        &start_time,
-                        &end_time,
-                        media_port,
-                    )
-                    .await
+                    match sip
+                        .send_download_invite(
+                            &device_id,
+                            &channel_id,
+                            &start_time,
+                            &end_time,
+                            media_port,
+                        )
+                        .await
                     {
                         Ok(call_id) => {
-                            tracing::info!(
-                                "GB28181 DOWNLOAD INVITE sent, call_id={}",
-                                call_id
-                            );
+                            tracing::info!("GB28181 DOWNLOAD INVITE sent, call_id={}", call_id);
                             used_gb28181 = true;
                             // **必须让 ZLM 真的把收到的 RTP 录成 MP4**。
                             //
@@ -936,24 +1005,22 @@ pub async fn gb_record_download_start(
                             if let Some(ref zlm) = state.zlm_client {
                                 // 流所在的 app 以 ZLM 实际注册的为准
                                 // （openRtpServer 默认建在 "rtp"）。
-                                let app = match zlm
-                                    .get_media_list(None, None, Some(&stream_id))
-                                    .await
-                                {
-                                    Ok(list) => list
-                                        .into_iter()
-                                        .next()
-                                        .map(|m| m.app)
-                                        .unwrap_or_else(|| "rtp".to_string()),
-                                    Err(e) => {
-                                        tracing::debug!(
-                                            "查询下载流 {} 的 app 失败（按 rtp 处理）: {}",
-                                            stream_id,
-                                            e
-                                        );
-                                        "rtp".to_string()
-                                    }
-                                };
+                                let app =
+                                    match zlm.get_media_list(None, None, Some(&stream_id)).await {
+                                        Ok(list) => list
+                                            .into_iter()
+                                            .next()
+                                            .map(|m| m.app)
+                                            .unwrap_or_else(|| "rtp".to_string()),
+                                        Err(e) => {
+                                            tracing::debug!(
+                                                "查询下载流 {} 的 app 失败（按 rtp 处理）: {}",
+                                                stream_id,
+                                                e
+                                            );
+                                            "rtp".to_string()
+                                        }
+                                    };
                                 match zlm
                                     .start_record("1", "__defaultVhost__", &app, &stream_id)
                                     .await
@@ -1005,9 +1072,12 @@ pub async fn gb_record_download_start(
         // Phase 3.4: 注册 media waiter，等设备推流到达；流到达后状态从 inviting → downloading
         if let Some(ref sip_server) = state.sip_server {
             let sip = &*sip_server;
-            let (_key, _rx) = sip
-                .media_waiter_manager()
-                .register(&format!("dlw_{}", stream_id), &stream_id, "rtp", 15);
+            let (_key, _rx) = sip.media_waiter_manager().register(
+                &format!("dlw_{}", stream_id),
+                &stream_id,
+                "rtp",
+                15,
+            );
             // 把 ZLM 流名回填进业务会话：`send_download_invite` 发 INVITE 时
             // 还不知道 stream_id（它只收 media_port），没有这一步，
             // 之后停止下载 / 无人观看关流时找不到要释放的收流端口。
@@ -1035,7 +1105,10 @@ pub async fn gb_record_download_start(
     if let Some(ref zlm_client) = state.zlm_client {
         let record_url = format!("rtsp://127.0.0.1/record/{}/{}", device_id, channel_id);
 
-        match zlm_client.create_download(&record_url, &file_name, Some("./downloads")).await {
+        match zlm_client
+            .create_download(&record_url, &file_name, Some("./downloads"))
+            .await
+        {
             Ok(download_path) => {
                 tracing::info!("Download started: {} -> {}", file_name, download_path);
 
@@ -1064,17 +1137,17 @@ pub async fn gb_record_download_start(
                 }
 
                 return Json(ApiResult::success(serde_json::json!({
-                    "streamId": stream_id,
-                    "fileName": file_name,
-                    "downloadUrl": format!(
-                "/api/gb_record/download/file/{}",
-                stream_id
-            ),
-                    "savePath": download_path,
-                    "transport": "zlm-local",
-                    "progress": 0,
-                    "status": "downloading"
-                })));
+                        "streamId": stream_id,
+                        "fileName": file_name,
+                        "downloadUrl": format!(
+                    "/api/gb_record/download/file/{}",
+                    stream_id
+                ),
+                        "savePath": download_path,
+                        "transport": "zlm-local",
+                        "progress": 0,
+                        "status": "downloading"
+                    })));
             }
             Err(e) => {
                 tracing::error!("Failed to start download: {}", e);
@@ -1116,7 +1189,10 @@ pub async fn gb_record_download_file(
     headers: axum::http::HeaderMap,
 ) -> Result<axum::response::Response, AppError> {
     let Some(dm) = state.download_manager.as_ref() else {
-        return Err(AppError::business(ErrorCode::Error500, "下载管理器未初始化"));
+        return Err(AppError::business(
+            ErrorCode::Error500,
+            "下载管理器未初始化",
+        ));
     };
     let Some(session) = dm.get(&stream_id).await else {
         return Err(AppError::business(
@@ -1168,8 +1244,12 @@ pub async fn gb_record_download_stop(
     State(state): State<AppState>,
     Path((device_id, channel_id, stream_id)): Path<(String, String, String)>,
 ) -> Json<ApiResult<()>> {
-    tracing::info!("Record download stop: device={}, channel={}, stream={}",
-        device_id, channel_id, stream_id);
+    tracing::info!(
+        "Record download stop: device={}, channel={}, stream={}",
+        device_id,
+        channel_id,
+        stream_id
+    );
 
     // 如果是 GB28181 下载会话：发 BYE + 关 ZLM RTP server
     if let Some(ref dm) = state.download_manager {
@@ -1292,7 +1372,8 @@ pub async fn gb_record_download_progress(
                         } else {
                             "downloading"
                         };
-                        dm.update_progress_percent(&stream_id, progress, status).await;
+                        dm.update_progress_percent(&stream_id, progress, status)
+                            .await;
                         return Json(ApiResult::success(serde_json::json!({
                             "streamId": stream_id,
                             "fileName": dl.file_name,
@@ -1362,7 +1443,8 @@ mod download_manager_tests {
     #[tokio::test]
     async fn test_download_session_records_zlm_file() {
         let dm = DownloadManager::new();
-        dm.create(make_session("download_dev_ch_1", "download_dev_ch_1")).await;
+        dm.create(make_session("download_dev_ch_1", "download_dev_ch_1"))
+            .await;
 
         dm.set_zlm_file(
             "download_dev_ch_1",
@@ -1378,7 +1460,10 @@ mod download_manager_tests {
         assert_eq!(s.current_bytes, 176434);
         assert_eq!(s.total_bytes, 176434);
         assert_eq!(s.progress, 100.0);
-        assert_eq!(s.zlm_file_name.as_deref(), Some("2026-09-13-06-14-43-0.mp4"));
+        assert_eq!(
+            s.zlm_file_name.as_deref(),
+            Some("2026-09-13-06-14-43-0.mp4")
+        );
     }
 
     /// 停止下载只标记 `finalizing`，不能把会话删掉 —— 文件信息随后才由
@@ -1386,11 +1471,16 @@ mod download_manager_tests {
     #[tokio::test]
     async fn test_download_session_survives_stop_until_file_arrives() {
         let dm = DownloadManager::new();
-        dm.create(make_session("download_dev_ch_2", "download_dev_ch_2")).await;
+        dm.create(make_session("download_dev_ch_2", "download_dev_ch_2"))
+            .await;
         dm.set_status("download_dev_ch_2", "finalizing").await;
-        assert!(dm.get("download_dev_ch_2").await.is_some(), "停止后会话不应消失");
+        assert!(
+            dm.get("download_dev_ch_2").await.is_some(),
+            "停止后会话不应消失"
+        );
 
-        dm.set_zlm_file("download_dev_ch_2", "f.mp4".into(), None, None, 10).await;
+        dm.set_zlm_file("download_dev_ch_2", "f.mp4".into(), None, None, 10)
+            .await;
         let s = dm.get("download_dev_ch_2").await.unwrap();
         assert_eq!(s.status, "completed");
         assert!(s.zlm_file_name.is_some());
@@ -1504,11 +1594,16 @@ mod download_progress_tests {
         assert_eq!(s.status, "inviting");
 
         // 流上线 → downloading
-        dm.update_progress_percent("download_dev_ch_1", 0.0, "downloading").await;
-        assert_eq!(dm.get("download_dev_ch_1").await.unwrap().status, "downloading");
+        dm.update_progress_percent("download_dev_ch_1", 0.0, "downloading")
+            .await;
+        assert_eq!(
+            dm.get("download_dev_ch_1").await.unwrap().status,
+            "downloading"
+        );
 
         // 流注销（设备推完）→ completed，且 progress 置 100
-        dm.update_progress_percent("download_dev_ch_1", 100.0, "completed").await;
+        dm.update_progress_percent("download_dev_ch_1", 100.0, "completed")
+            .await;
         let s = dm.get("download_dev_ch_1").await.unwrap();
         assert_eq!(s.status, "completed");
         assert_eq!(s.progress, 100.0);
@@ -1542,7 +1637,10 @@ mod playback_contract_tests {
         let state = app_state().await; // 无 SIP / 无 ZLM
         let err = super::playback_start(
             axum::extract::State(state.clone()),
-            Path(("34020000001320000001".to_string(), "34020000001310000001".to_string())),
+            Path((
+                "34020000001320000001".to_string(),
+                "34020000001310000001".to_string(),
+            )),
             Query(super::PlaybackQuery {
                 start_time: Some("2026-01-01T00:00:00".to_string()),
                 end_time: Some("2026-01-01T00:05:00".to_string()),

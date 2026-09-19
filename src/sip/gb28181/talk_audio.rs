@@ -243,10 +243,7 @@ impl TalkAudioSender {
     }
 
     pub fn ssrc(&self) -> u32 {
-        self.packetizer
-            .lock()
-            .map(|g| g.ssrc())
-            .unwrap_or_default()
+        self.packetizer.lock().map(|g| g.ssrc()).unwrap_or_default()
     }
 
     /// 已发送 (RTP 包数, G.711 负载字节数)。
@@ -387,13 +384,7 @@ mod tests {
         let mut prev: i32 = -1;
         for x in (0i32..=32000).step_by(7) {
             let code = (alaw_encode_sample(x as i16) ^ 0x55) as i32;
-            assert!(
-                code >= prev,
-                "x={} code^0x55={} 小于前值 {}",
-                x,
-                code,
-                prev
-            );
+            assert!(code >= prev, "x={} code^0x55={} 小于前值 {}", x, code, prev);
             prev = code;
         }
         // 解码幅值随**未加掩码**的 7 位码值单调（正半轴 0x80..=0xFF）。
@@ -495,10 +486,7 @@ mod tests {
                 u32::from_be_bytes([buf[8], buf[9], buf[10], buf[11]]),
                 0x01020304
             );
-            assert!(
-                buf[12..n].iter().all(|&b| b == 0xD5),
-                "静音负载必须是 0xD5"
-            );
+            assert!(buf[12..n].iter().all(|&b| b == 0xD5), "静音负载必须是 0xD5");
         }
 
         let (packets, bytes) = sender.stats();

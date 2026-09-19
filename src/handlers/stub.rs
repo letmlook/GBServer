@@ -18,16 +18,16 @@ use axum::{
 use chrono::Datelike;
 use serde::{Deserialize, Serialize};
 
-use crate::dyn_where::{BindValue, DynWhere};
 use crate::db::{
-    count_common_channels, list_common_channels_paged, group, record_plan, region,
-    user_api_key, DeviceChannel, Group, Region,
+    count_common_channels, group, list_common_channels_paged, record_plan, region, user_api_key,
+    DeviceChannel, Group, Region,
 };
+use crate::dyn_where::{BindValue, DynWhere};
 use crate::error::{AppError, ErrorCode};
 use crate::response::ApiResult;
 use crate::AppState;
-use std::collections::HashSet;
 use sqlx::Row;
+use std::collections::HashSet;
 
 /// 把各种时间写法归一成毫秒时间戳。
 ///
@@ -85,7 +85,10 @@ fn parse_record_time_ms(value: &str) -> Option<i64> {
     ] {
         if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(v, fmt) {
             // 无时区信息 ⇒ 按**本地时间**解释（页面上选的就是本地时间）
-            return dt.and_local_timezone(chrono::Local).single().map(|d| d.timestamp_millis());
+            return dt
+                .and_local_timezone(chrono::Local)
+                .single()
+                .map(|d| d.timestamp_millis());
         }
         if let Ok(d) = chrono::NaiveDate::parse_from_str(v, fmt) {
             return d
@@ -103,7 +106,12 @@ fn record_duration_ms(duration: Option<f64>) -> i64 {
         .unwrap_or(0)
 }
 
-pub(crate) fn build_cloud_record_id(media_server_id: &str, app: &str, stream: &str, file_name: &str) -> String {
+pub(crate) fn build_cloud_record_id(
+    media_server_id: &str,
+    app: &str,
+    stream: &str,
+    file_name: &str,
+) -> String {
     format!("{media_server_id}::{app}::{stream}::{file_name}")
 }
 
@@ -146,7 +154,9 @@ fn build_cloud_record_file_urls(
     let https_port = config_server
         .and_then(|sv| sv.https_port.map(|port| port as i32))
         .unwrap_or(443);
-    let secret = config_server.map(|sv| sv.secret.clone()).unwrap_or_default();
+    let secret = config_server
+        .map(|sv| sv.secret.clone())
+        .unwrap_or_default();
 
     let rel = record_rel_path(abs_path, app, stream, file_name);
 
@@ -187,12 +197,7 @@ pub(crate) fn cloud_record_rel_path_for(
     record_rel_path(abs_path, app, stream, file_name)
 }
 
-fn record_rel_path(
-    abs_path: Option<&str>,
-    app: &str,
-    stream: &str,
-    file_name: &str,
-) -> String {
+fn record_rel_path(abs_path: Option<&str>, app: &str, stream: &str, file_name: &str) -> String {
     if let Some(p) = abs_path {
         if let Some(i) = p.find("/record/") {
             return p[i + 1..].to_string();
@@ -266,20 +271,10 @@ pub async fn common_channel_list(
         Some("false") => Some(false),
         _ => None,
     };
-    let channel_type = q
-        .channelType
-        .as_deref()
-        .and_then(|s| s.parse::<i32>().ok());
+    let channel_type = q.channelType.as_deref().and_then(|s| s.parse::<i32>().ok());
 
-    let list: Vec<DeviceChannel> = list_common_channels_paged(
-        &state.pool,
-        page,
-        count,
-        query,
-        online,
-        channel_type,
-    )
-    .await?;
+    let list: Vec<DeviceChannel> =
+        list_common_channels_paged(&state.pool, page, count, query, online, channel_type).await?;
     let total = count_common_channels(&state.pool, query, online, channel_type).await?;
 
     let rows: Vec<serde_json::Value> = list
@@ -431,7 +426,10 @@ pub async fn region_delete(
     } else if let Some(ref device_id) = q.device_id {
         region::delete_by_device_id(&state.pool, device_id).await?;
     } else {
-        return Err(AppError::business(ErrorCode::Error400, "缺少 id 或 deviceId"));
+        return Err(AppError::business(
+            ErrorCode::Error400,
+            "缺少 id 或 deviceId",
+        ));
     }
     Ok(Json(ApiResult::<()>::success_empty()))
 }
@@ -456,7 +454,8 @@ pub async fn region_description(
     State(state): State<AppState>,
     Query(q): Query<RegionQuery>,
 ) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
-    let id = q.id.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id"))?;
+    let id =
+        q.id.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id"))?;
     let r: Option<Region> = region::get_by_id(&state.pool, id).await?;
     Ok(Json(ApiResult::success(
         r.map(|x| {
@@ -612,7 +611,9 @@ pub async fn region_update(
     State(state): State<AppState>,
     Json(body): Json<region::RegionUpdate>,
 ) -> Result<Json<ApiResult<()>>, AppError> {
-    let id = body.id.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id"))?;
+    let id = body
+        .id
+        .ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id"))?;
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     region::update(
         &state.pool,
@@ -645,19 +646,21 @@ pub async fn region_add(
     State(state): State<AppState>,
     Json(body): Json<region::RegionAdd>,
 ) -> Result<Json<ApiResult<()>>, AppError> {
-    let device_id = body
-        .device_id
-        .as_deref()
-        .unwrap_or("")
-        .trim();
+    let device_id = body.device_id.as_deref().unwrap_or("").trim();
     let name = body.name.as_deref().unwrap_or("").trim();
     if device_id.is_empty() || name.is_empty() {
-        return Err(AppError::business(ErrorCode::Error400, "deviceId 与 name 必填"));
+        return Err(AppError::business(
+            ErrorCode::Error400,
+            "deviceId 与 name 必填",
+        ));
     }
     // 国标编码唯一：直接插会撞 `uk_common_region_device_id`，把
     // `duplicate key value violates unique constraint` 原样抛成 **HTTP 500**
     // （前端只看到一串数据库英文）。这里先查一次，给出明确的 400。
-    if region::get_by_device_id(&state.pool, device_id).await?.is_some() {
+    if region::get_by_device_id(&state.pool, device_id)
+        .await?
+        .is_some()
+    {
         return Err(AppError::business(
             ErrorCode::Error400,
             format!("该区域国标编码已存在: {device_id}"),
@@ -788,7 +791,13 @@ pub async fn region_tree_query(
     let filtered: Vec<&Region> = all
         .iter()
         .filter(|r| {
-            tree_node_matches(q.parent_id, q.query.as_deref(), r.parent_id, &r.device_id, &r.name)
+            tree_node_matches(
+                q.parent_id,
+                q.query.as_deref(),
+                r.parent_id,
+                &r.device_id,
+                &r.name,
+            )
         })
         .collect();
     let total = filtered.len() as u64;
@@ -885,10 +894,16 @@ pub async fn group_add(
     let name = body.name.as_deref().unwrap_or("").trim();
     let business_group = body.business_group.as_deref().unwrap_or("0");
     if device_id.is_empty() || name.is_empty() {
-        return Err(AppError::business(ErrorCode::Error400, "deviceId 与 name 必填"));
+        return Err(AppError::business(
+            ErrorCode::Error400,
+            "deviceId 与 name 必填",
+        ));
     }
     // 同 region_add：先查重，避免把唯一约束冲突抛成 HTTP 500。
-    if group::get_by_device_id(&state.pool, device_id).await?.is_some() {
+    if group::get_by_device_id(&state.pool, device_id)
+        .await?
+        .is_some()
+    {
         return Err(AppError::business(
             ErrorCode::Error400,
             format!("该分组国标编码已存在: {device_id}"),
@@ -927,7 +942,9 @@ pub async fn group_update(
     State(state): State<AppState>,
     Json(body): Json<group::GroupUpdate>,
 ) -> Result<Json<ApiResult<()>>, AppError> {
-    let id = body.id.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id"))?;
+    let id = body
+        .id
+        .ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id"))?;
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     group::update(
         &state.pool,
@@ -965,9 +982,8 @@ pub async fn group_one(
     State(state): State<AppState>,
     Query(q): Query<IdQuery>,
 ) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
-    let id = q
-        .id
-        .ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id"))?;
+    let id =
+        q.id.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id"))?;
     let g: Option<Group> = group::get_by_id(&state.pool, id).await?;
     Ok(Json(ApiResult::success(
         g.map(|x| {
@@ -988,8 +1004,7 @@ pub async fn group_one(
 }
 
 /// DELETE /api/group/delete?id=
-#[derive(Debug, Deserialize, utoipa::IntoParams)]
-#[derive(Default)]
+#[derive(Debug, Deserialize, utoipa::IntoParams, Default)]
 pub struct IdQuery {
     pub id: Option<i32>,
     #[serde(alias = "planId")]
@@ -1017,7 +1032,8 @@ pub async fn group_delete(
     State(state): State<AppState>,
     Query(q): Query<IdQuery>,
 ) -> Result<Json<ApiResult<()>>, AppError> {
-    let id = q.id.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id"))?;
+    let id =
+        q.id.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id"))?;
     group::delete_by_id(&state.pool, id).await?;
     Ok(Json(ApiResult::<()>::success_empty()))
 }
@@ -1086,7 +1102,13 @@ pub async fn group_tree_query(
     let filtered: Vec<&Group> = all
         .iter()
         .filter(|g| {
-            tree_node_matches(q.parent_id, q.query.as_deref(), g.parent_id, &g.device_id, &g.name)
+            tree_node_matches(
+                q.parent_id,
+                q.query.as_deref(),
+                g.parent_id,
+                &g.device_id,
+                &g.name,
+            )
         })
         .collect();
     let total = filtered.len() as u64;
@@ -1172,8 +1194,7 @@ pub async fn log_list(
     // 此前 `format` 被 serde 静默丢弃，接口照样返回 JSON，而前端把它
     // 原样存成 `.csv`：用户拿到一个内容是 JSON 的"CSV 文件"，
     // 因为 HTTP 200 让 `r.ok` 为真，失败提示也不会触发。
-    if q
-        .format
+    if q.format
         .as_deref()
         .map(|f| f.eq_ignore_ascii_case("csv"))
         .unwrap_or(false)
@@ -1281,8 +1302,9 @@ pub async fn log_file_download(
             (logs_to_csv(&rows), "text/csv; charset=utf-8")
         } else {
             (
-                serde_json::to_vec_pretty(&rows)
-                    .map_err(|e| AppError::business(ErrorCode::Error500, format!("序列化日志失败: {}", e)))?,
+                serde_json::to_vec_pretty(&rows).map_err(|e| {
+                    AppError::business(ErrorCode::Error500, format!("序列化日志失败: {}", e))
+                })?,
                 "application/json; charset=utf-8",
             )
         };
@@ -1319,7 +1341,10 @@ pub async fn log_file_download(
     // 权限不足 / IO 错误会被伪装成"文件不存在"。现在如实区分。
     let data = tokio::fs::read(&file_path).await.map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
-            AppError::business(ErrorCode::Error404, format!("日志文件不存在: {}", file_name))
+            AppError::business(
+                ErrorCode::Error404,
+                format!("日志文件不存在: {}", file_name),
+            )
         } else {
             AppError::business(
                 ErrorCode::Error500,
@@ -1445,7 +1470,8 @@ pub async fn user_api_key_list(
     crate::handlers::authz::require_admin(&state, &headers).await?;
     let page = q.page.unwrap_or(1);
     let count = q.count.unwrap_or(10).min(100);
-    let list: Vec<crate::db::UserApiKey> = user_api_key::list_paged(&state.pool, page, count).await?;
+    let list: Vec<crate::db::UserApiKey> =
+        user_api_key::list_paged(&state.pool, page, count).await?;
     let total: i64 = user_api_key::count_all(&state.pool).await?;
     let list: Vec<serde_json::Value> = list
         .iter()
@@ -1491,7 +1517,8 @@ pub async fn user_api_key_remark(
     headers: HeaderMap,
 ) -> Result<Json<ApiResult<()>>, AppError> {
     crate::handlers::authz::require_admin(&state, &headers).await?;
-    let id = q.id.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id"))?;
+    let id =
+        q.id.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id"))?;
     let remark = q.remark.as_deref().unwrap_or("");
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     user_api_key::update_remark(&state.pool, id as i64, remark, &now).await?;
@@ -1525,7 +1552,8 @@ pub async fn user_api_key_enable(
     headers: HeaderMap,
 ) -> Result<Json<ApiResult<()>>, AppError> {
     crate::handlers::authz::require_admin(&state, &headers).await?;
-    let id = q.id.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id"))?;
+    let id =
+        q.id.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id"))?;
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     user_api_key::set_enable(&state.pool, id, true, &now).await?;
     Ok(Json(ApiResult::<()>::success_empty()))
@@ -1552,7 +1580,8 @@ pub async fn user_api_key_disable(
     headers: HeaderMap,
 ) -> Result<Json<ApiResult<()>>, AppError> {
     crate::handlers::authz::require_admin(&state, &headers).await?;
-    let id = q.id.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id"))?;
+    let id =
+        q.id.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id"))?;
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     user_api_key::set_enable(&state.pool, id, false, &now).await?;
     Ok(Json(ApiResult::<()>::success_empty()))
@@ -1579,11 +1608,14 @@ pub async fn user_api_key_reset(
     headers: HeaderMap,
 ) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     crate::handlers::authz::require_admin(&state, &headers).await?;
-    let id = q.id.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id"))?;
+    let id =
+        q.id.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id"))?;
     let new_key = format!("{:032x}", rand::random::<u128>());
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     user_api_key::reset_api_key(&state.pool, id, &new_key, &now).await?;
-    Ok(Json(ApiResult::success(serde_json::json!({ "apiKey": new_key }))))
+    Ok(Json(ApiResult::success(
+        serde_json::json!({ "apiKey": new_key }),
+    )))
 }
 
 /// DELETE /api/userApiKey/delete?id=
@@ -1608,7 +1640,8 @@ pub async fn user_api_key_delete(
     headers: HeaderMap,
 ) -> Result<Json<ApiResult<()>>, AppError> {
     crate::handlers::authz::require_admin(&state, &headers).await?;
-    let id = q.id.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id"))?;
+    let id =
+        q.id.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id"))?;
     user_api_key::delete_by_id(&state.pool, id).await?;
     Ok(Json(ApiResult::<()>::success_empty()))
 }
@@ -1710,8 +1743,7 @@ pub struct CloudRecordDeleteBody {
     pub ids: Option<Vec<String>>,
 }
 
-#[derive(Debug, Deserialize, Serialize, utoipa::ToSchema, utoipa::IntoParams)]
-#[derive(Default)]
+#[derive(Debug, Deserialize, Serialize, utoipa::ToSchema, utoipa::IntoParams, Default)]
 pub struct CloudRecordCollectQuery {
     /// 数字主键（列表返回的 id）与组合串 recordId 都接受
     pub id: Option<String>,
@@ -1776,10 +1808,7 @@ async fn ensure_cloud_record_task_table(pool: &crate::db::Pool) {
 }
 
 /// 把查询参数里的录像标识统一成**组合串**（seek/speed/collect 需要它做会话 key）。
-async fn resolve_cloud_record_id_string(
-    state: &AppState,
-    q: &CloudRecordQuery,
-) -> String {
+async fn resolve_cloud_record_id_string(state: &AppState, q: &CloudRecordQuery) -> String {
     let raw = q
         .record_id
         .clone()
@@ -1865,16 +1894,13 @@ pub async fn cloud_record_play_path(
     };
     let record_id = build_cloud_record_id(&media_server_id, &app, &stream, &file_name);
 
-    let mut payload = build_cloud_record_file_urls(
-        &state,
-        &media_server_id,
-        &app,
-        &stream,
-        None,
-        &file_name,
-    );
+    let mut payload =
+        build_cloud_record_file_urls(&state, &media_server_id, &app, &stream, None, &file_name);
     if let Some(zlm) = state.get_zlm_client(Some(&media_server_id)) {
-        if let Ok(records) = zlm.get_mp4_record_file(&app, &stream, None, None, None).await {
+        if let Ok(records) = zlm
+            .get_mp4_record_file(&app, &stream, None, None, None)
+            .await
+        {
             if let Some(record) = records.into_iter().find(|item| item.name == file_name) {
                 payload = build_cloud_record_file_urls(
                     &state,
@@ -1890,24 +1916,29 @@ pub async fn cloud_record_play_path(
                     obj.insert("fileName".to_string(), serde_json::json!(record.name));
                     obj.insert("stream".to_string(), serde_json::json!(stream));
                     obj.insert("app".to_string(), serde_json::json!(app));
-                    obj.insert("mediaServerId".to_string(), serde_json::json!(media_server_id));
+                    obj.insert(
+                        "mediaServerId".to_string(),
+                        serde_json::json!(media_server_id),
+                    );
                 }
                 if let Some(ref playback_manager) = state.playback_manager {
-                    playback_manager.create(crate::handlers::playback::PlaybackSession {
-                        stream_id: record_id.clone(),
-                        device_id: media_server_id.clone(),
-                        channel_id: file_name.clone(),
-                        app: app.clone(),
-                        stream: stream.clone(),
-                        media_server_id: Some(media_server_id.clone()),
-                        schema: q.schema.clone().unwrap_or_else(|| "fmp4".to_string()),
-                        start_time: record.create_time.clone(),
-                        end_time: None,
-                        current_time: record.create_time,
-                        speed: 1.0,
-                        paused: false,
-                        source: "cloud_record".to_string(),
-                    }).await;
+                    playback_manager
+                        .create(crate::handlers::playback::PlaybackSession {
+                            stream_id: record_id.clone(),
+                            device_id: media_server_id.clone(),
+                            channel_id: file_name.clone(),
+                            app: app.clone(),
+                            stream: stream.clone(),
+                            media_server_id: Some(media_server_id.clone()),
+                            schema: q.schema.clone().unwrap_or_else(|| "fmp4".to_string()),
+                            start_time: record.create_time.clone(),
+                            end_time: None,
+                            current_time: record.create_time,
+                            speed: 1.0,
+                            paused: false,
+                            source: "cloud_record".to_string(),
+                        })
+                        .await;
                 }
             }
         }
@@ -1950,12 +1981,16 @@ pub async fn cloud_record_date_list(
     let mut dates: HashSet<String> = HashSet::new();
     for media_server_id in media_server_ids {
         if let Some(zlm) = state.get_zlm_client(Some(&media_server_id)) {
-            if let Ok(list) = zlm.get_mp4_record_file(&app, &stream, None, None, None).await {
+            if let Ok(list) = zlm
+                .get_mp4_record_file(&app, &stream, None, None, None)
+                .await
+            {
                 for rec in list {
                     let date = rec.create_time.chars().take(10).collect::<String>();
                     if !date.is_empty() {
                         if let (Some(year), Some(month)) = (q.year, q.month) {
-                            if let Ok(parsed) = chrono::NaiveDate::parse_from_str(&date, "%Y-%m-%d") {
+                            if let Ok(parsed) = chrono::NaiveDate::parse_from_str(&date, "%Y-%m-%d")
+                            {
                                 if parsed.year() != year || parsed.month() != month {
                                     continue;
                                 }
@@ -2003,7 +2038,10 @@ pub async fn cloud_record_load(
     };
 
     if let Some(zlm) = state.get_zlm_client(Some(&media_server_id)) {
-        if let Ok(records) = zlm.get_mp4_record_file(&app, &stream, None, None, None).await {
+        if let Ok(records) = zlm
+            .get_mp4_record_file(&app, &stream, None, None, None)
+            .await
+        {
             if let Some(record) = records.into_iter().find(|item| item.name == file_name) {
                 let start_time = normalize_record_time_ms(&record.create_time);
                 let duration = record_duration_ms(record.duration);
@@ -2021,7 +2059,10 @@ pub async fn cloud_record_load(
                     obj.insert("key".to_string(), serde_json::json!(file_name));
                     obj.insert("app".to_string(), serde_json::json!(app));
                     obj.insert("stream".to_string(), serde_json::json!(stream));
-                    obj.insert("mediaServerId".to_string(), serde_json::json!(media_server_id));
+                    obj.insert(
+                        "mediaServerId".to_string(),
+                        serde_json::json!(media_server_id),
+                    );
                     obj.insert("duration".to_string(), serde_json::json!(duration.max(1)));
                     obj.insert("startTime".to_string(), serde_json::json!(start_time));
                     obj.insert("endTime".to_string(), serde_json::json!(end_time));
@@ -2029,21 +2070,23 @@ pub async fn cloud_record_load(
                     obj.insert("playPath".to_string(), serde_json::json!(record.path));
                 }
                 if let Some(ref playback_manager) = state.playback_manager {
-                    playback_manager.create(crate::handlers::playback::PlaybackSession {
-                        stream_id: record_id.clone(),
-                        device_id: media_server_id.clone(),
-                        channel_id: file_name,
-                        app: app.clone(),
-                        stream: stream.clone(),
-                        media_server_id: Some(media_server_id.clone()),
-                        schema: q.schema.clone().unwrap_or_else(|| "fmp4".to_string()),
-                        start_time: record.create_time.clone(),
-                        end_time: Some(end_time.to_string()),
-                        current_time: record.create_time,
-                        speed: 1.0,
-                        paused: false,
-                        source: "cloud_record".to_string(),
-                    }).await;
+                    playback_manager
+                        .create(crate::handlers::playback::PlaybackSession {
+                            stream_id: record_id.clone(),
+                            device_id: media_server_id.clone(),
+                            channel_id: file_name,
+                            app: app.clone(),
+                            stream: stream.clone(),
+                            media_server_id: Some(media_server_id.clone()),
+                            schema: q.schema.clone().unwrap_or_else(|| "fmp4".to_string()),
+                            start_time: record.create_time.clone(),
+                            end_time: Some(end_time.to_string()),
+                            current_time: record.create_time,
+                            speed: 1.0,
+                            paused: false,
+                            source: "cloud_record".to_string(),
+                        })
+                        .await;
                 }
                 return Json(ApiResult::success(payload));
             }
@@ -2205,7 +2248,10 @@ pub async fn cloud_record_task_add(
     .execute(&state.pool)
     .await;
 
-    let inserted = result.ok().map(|res| res.rows_affected()).unwrap_or_default();
+    let inserted = result
+        .ok()
+        .map(|res| res.rows_affected())
+        .unwrap_or_default();
     Json(ApiResult::success(serde_json::json!({
         "app": app,
         "stream": stream,
@@ -2267,7 +2313,9 @@ pub async fn cloud_record_task_list(
         })
         .collect();
     let total = list.len();
-    Json(ApiResult::success(serde_json::json!({"total": total, "list": list})))
+    Json(ApiResult::success(
+        serde_json::json!({"total": total, "list": list}),
+    ))
 }
 
 #[utoipa::path(
@@ -2341,7 +2389,10 @@ pub async fn cloud_record_delete(
                 // 否则剩下的行会指向不存在的文件（列表里还在、点开必 404）。
                 // 只删被点的那一行是"文件没了、记录留着"的孤儿来源。
                 match crate::db::cloud_record::delete_by_app_stream_period(
-                    &state.pool, &app, &stream, &period,
+                    &state.pool,
+                    &app,
+                    &stream,
+                    &period,
                 )
                 .await
                 {
@@ -2493,7 +2544,10 @@ fn cloud_record_row_json(
     state: &AppState,
     r: &crate::db::cloud_record::CloudRecord,
 ) -> serde_json::Value {
-    let media_server_id = r.media_server_id.clone().unwrap_or_else(|| "default".to_string());
+    let media_server_id = r
+        .media_server_id
+        .clone()
+        .unwrap_or_else(|| "default".to_string());
     let file_name = r.file_name.clone().unwrap_or_default();
     let (device_id, channel_id) = parse_stream_device_channel(&r.stream);
     let mut payload = build_cloud_record_file_urls(
@@ -2524,7 +2578,10 @@ fn cloud_record_row_json(
         obj.insert("folder".to_string(), serde_json::json!(r.folder));
         obj.insert("filePath".to_string(), serde_json::json!(r.file_path));
         obj.insert("size".to_string(), serde_json::json!(r.file_size));
-        obj.insert("collect".to_string(), serde_json::json!(r.collect.unwrap_or(false)));
+        obj.insert(
+            "collect".to_string(),
+            serde_json::json!(r.collect.unwrap_or(false)),
+        );
         obj.insert(
             "mediaServerId".to_string(),
             serde_json::json!(r.media_server_id),
@@ -2597,7 +2654,8 @@ async fn cloud_record_scan_zlm(
                     if !call_id.is_empty() && !file_name_lc.contains(&call_id) {
                         continue;
                     }
-                    let record_id = build_cloud_record_id(&media_server_id, app, stream, &file_name);
+                    let record_id =
+                        build_cloud_record_id(&media_server_id, app, stream, &file_name);
                     let mut payload = build_cloud_record_file_urls(
                         state,
                         &media_server_id,
@@ -2615,7 +2673,10 @@ async fn cloud_record_scan_zlm(
                         obj.insert("endTime".to_string(), serde_json::json!(end_time));
                         obj.insert("timeLen".to_string(), serde_json::json!(time_len));
                         obj.insert("fileName".to_string(), serde_json::json!(file_name));
-                        obj.insert("createTime".to_string(), serde_json::json!(record.create_time));
+                        obj.insert(
+                            "createTime".to_string(),
+                            serde_json::json!(record.create_time),
+                        );
                         obj.insert("size".to_string(), serde_json::json!(record.size));
                         obj.insert(
                             "mediaServerId".to_string(),
@@ -2634,8 +2695,14 @@ async fn cloud_record_scan_zlm(
     }
 
     list.sort_by(|a, b| {
-        let av = a.get("startTime").and_then(|v| v.as_i64()).unwrap_or_default();
-        let bv = b.get("startTime").and_then(|v| v.as_i64()).unwrap_or_default();
+        let av = a
+            .get("startTime")
+            .and_then(|v| v.as_i64())
+            .unwrap_or_default();
+        let bv = b
+            .get("startTime")
+            .and_then(|v| v.as_i64())
+            .unwrap_or_default();
         av.cmp(&bv)
     });
     if q.asc_order != Some(true) {
@@ -2644,7 +2711,11 @@ async fn cloud_record_scan_zlm(
     let total = list.len();
     let start = ((page.max(1) - 1) * count) as usize;
     let end = (start + count as usize).min(total);
-    let paged = if start >= total { Vec::new() } else { list[start..end].to_vec() };
+    let paged = if start >= total {
+        Vec::new()
+    } else {
+        list[start..end].to_vec()
+    };
     Some(serde_json::json!({ "total": total, "list": paged }))
 }
 
@@ -2781,14 +2852,13 @@ pub async fn cloud_record_collect_add(
     Query(q): Query<CloudRecordCollectQuery>,
 ) -> Json<ApiResult<serde_json::Value>> {
     ensure_record_collect_table(&state.pool).await;
-    
+
     // collect 的 DTO 是独立的（多了 name/deviceId/channelId），单独解析
-    let raw_id = q
-        .id
-        .clone()
-        .or(q.record_id.clone())
-        .or(q.cloud_record_id.clone())
-        .unwrap_or_default();
+    let raw_id =
+        q.id.clone()
+            .or(q.record_id.clone())
+            .or(q.cloud_record_id.clone())
+            .unwrap_or_default();
     let record_id = match resolve_cloud_record(&state, &raw_id).await {
         Some((m, a, st, f, _)) => build_cloud_record_id(&m, &a, &st, &f),
         None => raw_id,
@@ -2796,11 +2866,11 @@ pub async fn cloud_record_collect_add(
     if record_id.is_empty() {
         return Json(ApiResult::error("record_id is required"));
     }
-    
+
     let device_id = q.device_id.clone().unwrap_or_default();
     let channel_id = q.channel_id.clone().unwrap_or_default();
     let name = q.name.clone().unwrap_or_else(|| "收藏录像".to_string());
-    
+
     // 冲突处理同样分方言：SQLite / PostgreSQL 用 `ON CONFLICT DO NOTHING`，
     // MySQL 用 `INSERT IGNORE`（此前只有 pg 写法，MySQL 上必然报错，
     // 而 `Err` 又被当成"已收藏"静默吞掉）。
@@ -2825,9 +2895,9 @@ pub async fn cloud_record_collect_add(
         .execute(&state.pool)
         .await
     {
-        Ok(r) if r.rows_affected() > 0 => {
-            Json(ApiResult::success(serde_json::json!({"recordId": record_id, "status": "collected"})))
-        }
+        Ok(r) if r.rows_affected() > 0 => Json(ApiResult::success(
+            serde_json::json!({"recordId": record_id, "status": "collected"}),
+        )),
         Ok(_) => Json(ApiResult::success(
             serde_json::json!({"recordId": record_id, "status": "already_collected"}),
         )),
@@ -2858,12 +2928,16 @@ pub async fn cloud_record_collect_delete(
     Json(body): Json<CloudRecordCollectQuery>,
 ) -> Json<ApiResult<serde_json::Value>> {
     ensure_record_collect_table(&state.pool).await;
-    
-    let record_id = body.record_id.clone().or(body.cloud_record_id).unwrap_or_default();
+
+    let record_id = body
+        .record_id
+        .clone()
+        .or(body.cloud_record_id)
+        .unwrap_or_default();
     if record_id.is_empty() {
         return Json(ApiResult::error("record_id is required"));
     }
-    
+
     if let Err(e) = sqlx::query(&crate::dyn_where::dialect_sql(
         "DELETE FROM gb_record_collect WHERE record_id = ?",
     ))
@@ -2873,8 +2947,10 @@ pub async fn cloud_record_collect_delete(
     {
         tracing::error!("取消收藏失败 record_id={}: {}", record_id, e);
     }
-    
-    Json(ApiResult::success(serde_json::json!({"recordId": record_id, "status": "deleted"})))
+
+    Json(ApiResult::success(
+        serde_json::json!({"recordId": record_id, "status": "deleted"}),
+    ))
 }
 
 /// GET /api/cloud/record/collect/list
@@ -2899,45 +2975,56 @@ pub async fn cloud_record_collect_list(
     Query(q): Query<IdQuery>,
 ) -> Json<ApiResult<serde_json::Value>> {
     ensure_record_collect_table(&state.pool).await;
-    
+
     let page = q.page.unwrap_or(1);
     let count = q.count.unwrap_or(20).min(100);
     let offset = (page.saturating_sub(1) * count) as i64;
-    
+
     // 不再用 `create_time::text`（PostgreSQL 专有），也不再用
     // `unwrap_or_default()` 把错误吞成空列表 —— 那让"收藏列表恒为空"
     // 在 sqlite/mysql 上静默存在了很久。
     // `id` 用 i64 解码：postgres 建表是 `BIGSERIAL`（INT8），用 i32 会直接
     // `mismatched types ... INT4 vs INT8`；MySQL/SQLite 的 64 位整数同样兼容。
-    let records: Vec<(i64, String, Option<String>, Option<String>, Option<String>, Option<String>)> =
-        match sqlx::query_as(&crate::dyn_where::dialect_sql(
-            "SELECT id, record_id, device_id, channel_id, name, create_time \
+    let records: Vec<(
+        i64,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    )> = match sqlx::query_as(&crate::dyn_where::dialect_sql(
+        "SELECT id, record_id, device_id, channel_id, name, create_time \
              FROM gb_record_collect ORDER BY id DESC LIMIT ? OFFSET ?",
-        ))
-        .bind(count as i64)
-        .bind(offset)
-        .fetch_all(&state.pool)
-        .await
-        {
-            Ok(rows) => rows,
-            Err(e) => {
-                tracing::error!("查询收藏列表失败: {}", e);
-                return Json(ApiResult::error(format!("查询收藏列表失败: {e}")));
-            }
-        };
-    
-    let list: Vec<serde_json::Value> = records.into_iter().map(|r| {
-        serde_json::json!({
-            "id": r.0,
-            "recordId": r.1,
-            "deviceId": r.2.clone().unwrap_or_default(),
-            "channelId": r.3.clone().unwrap_or_default(),
-            "name": r.4.clone(),
-            "createTime": r.5
+    ))
+    .bind(count as i64)
+    .bind(offset)
+    .fetch_all(&state.pool)
+    .await
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::error!("查询收藏列表失败: {}", e);
+            return Json(ApiResult::error(format!("查询收藏列表失败: {e}")));
+        }
+    };
+
+    let list: Vec<serde_json::Value> = records
+        .into_iter()
+        .map(|r| {
+            serde_json::json!({
+                "id": r.0,
+                "recordId": r.1,
+                "deviceId": r.2.clone().unwrap_or_default(),
+                "channelId": r.3.clone().unwrap_or_default(),
+                "name": r.4.clone(),
+                "createTime": r.5
+            })
         })
-    }).collect();
-    
-    Json(ApiResult::success(serde_json::json!({"total": list.len(), "list": list})))
+        .collect();
+
+    Json(ApiResult::success(
+        serde_json::json!({"total": list.len(), "list": list}),
+    ))
 }
 
 // ========== record_plan ==========
@@ -3040,7 +3127,11 @@ pub async fn record_plan_add(
     State(state): State<AppState>,
     Json(body): Json<record_plan::RecordPlanAdd>,
 ) -> Result<Json<ApiResult<()>>, AppError> {
-    let name = body.name.as_deref().map(str::trim).filter(|s| !s.is_empty())
+    let name = body
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
         .ok_or_else(|| AppError::business(ErrorCode::Error400, "计划名称不可为空"))?;
     // planItemList 为空直接报错
     // "添加录制计划时，录制计划不可为空"。此前我们静默建了一条**没有时段**的
@@ -3049,7 +3140,9 @@ pub async fn record_plan_add(
         .plan_item_list
         .as_ref()
         .filter(|v| !v.is_empty())
-        .ok_or_else(|| AppError::business(ErrorCode::Error400, "添加录制计划时，录制计划不可为空"))?;
+        .ok_or_else(|| {
+            AppError::business(ErrorCode::Error400, "添加录制计划时，录制计划不可为空")
+        })?;
     validate_record_plan_items(items)?;
     let snap = body.snap.unwrap_or(false);
     let now = local_now_str();
@@ -3077,11 +3170,16 @@ pub async fn record_plan_update(
     State(state): State<AppState>,
     Json(body): Json<record_plan::RecordPlanUpdate>,
 ) -> Result<Json<ApiResult<()>>, AppError> {
-    let id = body.id.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id"))?;
+    let id = body
+        .id
+        .ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id"))?;
     if id == 0 {
         return Err(AppError::business(ErrorCode::Error400, "计划 ID 不可为空"));
     }
-    if record_plan::get_by_id(&state.pool, id as i32).await?.is_none() {
+    if record_plan::get_by_id(&state.pool, id as i32)
+        .await?
+        .is_none()
+    {
         return Err(AppError::business(
             ErrorCode::Error400,
             format!("录制计划不存在: {id}"),
@@ -3130,11 +3228,7 @@ pub async fn record_plan_query(
 ) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let page = q.page.unwrap_or(1);
     let count = q.count.unwrap_or(15).min(100);
-    let search = q
-        .query
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty());
+    let search = q.query.as_deref().map(str::trim).filter(|s| !s.is_empty());
     let plans: Vec<crate::db::RecordPlan> =
         record_plan::list_paged(&state.pool, page, count, search).await?;
     let total: i64 = record_plan::count_all(&state.pool, search).await?;
@@ -3187,12 +3281,14 @@ pub async fn record_plan_delete(
     // 查询参数名是 **planId**，`IdQuery` 已经 alias 到 `plan_id`。
     // 早期实现只读 `id`，于是前端传 planId 时稳定得到
     // 400「缺少 id」——删除功能不可用。
-    let id = q
-        .id
-        .or(q.plan_id)
-        .ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 planId"))?;
+    let id =
+        q.id.or(q.plan_id)
+            .ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 planId"))?;
     // 计划不存在时报 "录制计划不存在"，而不是静默成功
-    if record_plan::get_by_id(&state.pool, id as i32).await?.is_none() {
+    if record_plan::get_by_id(&state.pool, id as i32)
+        .await?
+        .is_none()
+    {
         return Err(AppError::business(
             ErrorCode::Error400,
             format!("录制计划不存在: {id}"),
@@ -3284,8 +3380,14 @@ pub async fn record_plan_channel_list(
         );
     }
     match online {
-        Some("true") => w.add("coalesce(c.gb_status, c.status) = ?", vec![BindValue::Text("ON".into())]),
-        Some("false") => w.add("coalesce(c.gb_status, c.status) = ?", vec![BindValue::Text("OFF".into())]),
+        Some("true") => w.add(
+            "coalesce(c.gb_status, c.status) = ?",
+            vec![BindValue::Text("ON".into())],
+        ),
+        Some("false") => w.add(
+            "coalesce(c.gb_status, c.status) = ?",
+            vec![BindValue::Text("OFF".into())],
+        ),
         _ => {}
     }
     if let Some(t) = channel_type {
@@ -3312,11 +3414,19 @@ pub async fn record_plan_channel_list(
     const BASE_COUNT: &str = "SELECT COUNT(*) FROM gb_device_channel c";
 
     let limit_ph = if cfg!(feature = "postgres") {
-        format!(" LIMIT ${} OFFSET ${}", w.binds.len() + 1, w.binds.len() + 2)
+        format!(
+            " LIMIT ${} OFFSET ${}",
+            w.binds.len() + 1,
+            w.binds.len() + 2
+        )
     } else {
         " LIMIT ? OFFSET ?".to_string()
     };
-    let sql_rows = format!("{}{}", w.sql(BASE_COLS), format!(" ORDER BY c.id DESC{limit_ph}"));
+    let sql_rows = format!(
+        "{}{}",
+        w.sql(BASE_COLS),
+        format!(" ORDER BY c.id DESC{limit_ph}")
+    );
     let mut q_rows = sqlx::query_as::<_, RecordPlanChannelRow>(&sql_rows);
     for b in &w.binds {
         q_rows = match b {
@@ -3326,7 +3436,11 @@ pub async fn record_plan_channel_list(
             BindValue::Bool(v) => q_rows.bind(*v),
         };
     }
-    let rows: Vec<RecordPlanChannelRow> = q_rows.bind(count as i64).bind(offset).fetch_all(&state.pool).await?;
+    let rows: Vec<RecordPlanChannelRow> = q_rows
+        .bind(count as i64)
+        .bind(offset)
+        .fetch_all(&state.pool)
+        .await?;
 
     let sql_count = w.sql(BASE_COUNT);
     let mut q_count = sqlx::query_scalar::<_, i64>(&sql_count);
@@ -3430,7 +3544,11 @@ pub async fn record_plan_link(
     }
     // 关联到某个计划前，先确认计划真的存在（否则会在通道上留一个野 plan_id）
     if let Some(plan_id) = body.plan_id {
-        if plan_id > 0 && record_plan::get_by_id(&state.pool, plan_id as i32).await?.is_none() {
+        if plan_id > 0
+            && record_plan::get_by_id(&state.pool, plan_id as i32)
+                .await?
+                .is_none()
+        {
             return Err(AppError::business(
                 ErrorCode::Error400,
                 format!("录制计划不存在: {plan_id}"),
@@ -3474,7 +3592,11 @@ pub async fn record_plan_link(
         tracing::info!(
             "record_plan_link: {} 个通道 {} 计划 {:?}",
             resolved.len(),
-            if body.plan_id.is_some() { "关联到" } else { "取消关联" },
+            if body.plan_id.is_some() {
+                "关联到"
+            } else {
+                "取消关联"
+            },
             body.plan_id
         );
         crate::scheduler::record_plan::wake_record_plan_scheduler();
@@ -3510,18 +3632,26 @@ pub async fn record_plan_link(
     // 4) 全部关联 / 全部取消关联
     if let Some(all_link) = body.all_link {
         // 全部关联 / 全部取消关联两个分支都要 planId
-        let plan_id = body
-            .plan_id
-            .ok_or_else(|| AppError::business(ErrorCode::Error400, "全部关联/取消关联时必须提供 planId"))?;
+        let plan_id = body.plan_id.ok_or_else(|| {
+            AppError::business(ErrorCode::Error400, "全部关联/取消关联时必须提供 planId")
+        })?;
         if all_link {
             let ids = record_plan::all_channel_ids(&state.pool).await?;
             for id in &ids {
                 record_plan::link_channel(&state.pool, *id, Some(plan_id)).await?;
             }
-            tracing::info!("record_plan_link: 全部 {} 个通道关联到计划 {}", ids.len(), plan_id);
+            tracing::info!(
+                "record_plan_link: 全部 {} 个通道关联到计划 {}",
+                ids.len(),
+                plan_id
+            );
         } else {
             let n = record_plan::unlink_all_channels(&state.pool, plan_id).await?;
-            tracing::info!("record_plan_link: 计划 {} 移除全部关联（{} 个通道）", plan_id, n);
+            tracing::info!(
+                "record_plan_link: 计划 {} 移除全部关联（{} 个通道）",
+                plan_id,
+                n
+            );
         }
         crate::scheduler::record_plan::wake_record_plan_scheduler();
         return Ok(Json(ApiResult::<()>::success_empty()));
@@ -3539,7 +3669,6 @@ pub async fn record_plan_link(
 // ============================================================================
 // Phase 7.3: 运维 API 路由处理器
 // ============================================================================
-
 
 /// /api/server/shutdown — 服务关闭
 // 注：这里曾有 `server_shutdown`，返回 "Shutdown signal sent. Server will stop
@@ -3571,17 +3700,18 @@ mod log_export_tests {
             "%2e%2e%2fetc",
             "x.log\0",
         ] {
-            assert!(
-                safe_log_file_name(bad).is_none(),
-                "{:?} 应被拒绝",
-                bad
-            );
+            assert!(safe_log_file_name(bad).is_none(), "{:?} 应被拒绝", bad);
         }
     }
 
     #[test]
     fn safe_log_file_name_accepts_plain_names() {
-        for good in ["gbserver-log.csv", "app.log", "2026-09-12_01-00.log", "a1.b2-c3_d4"] {
+        for good in [
+            "gbserver-log.csv",
+            "app.log",
+            "2026-09-12_01-00.log",
+            "a1.b2-c3_d4",
+        ] {
             assert_eq!(safe_log_file_name(good), Some(good), "{:?} 应被接受", good);
         }
     }
@@ -3604,7 +3734,10 @@ mod log_export_tests {
             "CSV 应以 UTF-8 BOM + 表头开头"
         );
         // 引号被转义成两个引号，且整段仍包在一对引号里
-        assert!(csv.contains("\"a,\"\"quoted\"\" line\nsecond line\""), "{csv}");
+        assert!(
+            csv.contains("\"a,\"\"quoted\"\" line\nsecond line\""),
+            "{csv}"
+        );
         // 数据行数 = 表头 + 1；正文里的 \n 在引号内，不应被当成新行分隔
         assert_eq!(csv.matches("2026-09-12 01:00:00.000").count(), 1);
     }
@@ -3620,7 +3753,10 @@ mod dyn_where_tests {
         assert_eq!(w.sql_for("SELECT * FROM t", true), "SELECT * FROM t");
         assert_eq!(w.sql_for("SELECT * FROM t", false), "SELECT * FROM t");
 
-        w.add("a LIKE ? OR b LIKE ?", vec![BindValue::Text("%x%".into()), BindValue::Text("%x%".into())]);
+        w.add(
+            "a LIKE ? OR b LIKE ?",
+            vec![BindValue::Text("%x%".into()), BindValue::Text("%x%".into())],
+        );
         w.add("c.channel_type = 0", vec![]);
         w.add("d = ?", vec![BindValue::Int(7)]);
 
@@ -3644,7 +3780,12 @@ mod dyn_where_tests {
         let mut w = DynWhere::new();
         w.add("a = ?", vec![BindValue::Text("x".into())]);
         let n = w.binds.len();
-        let sql = format!("{} LIMIT ${} OFFSET ${}", w.sql_for("SELECT 1 FROM t", true), n + 1, n + 2);
+        let sql = format!(
+            "{} LIMIT ${} OFFSET ${}",
+            w.sql_for("SELECT 1 FROM t", true),
+            n + 1,
+            n + 2
+        );
         assert_eq!(sql, "SELECT 1 FROM t WHERE a = $1 LIMIT $2 OFFSET $3");
     }
 }
@@ -3678,7 +3819,6 @@ mod record_plan_handler_tests {
             has_link: has_link.map(|s| s.to_string()),
         }
     }
-
 
     fn item(start: i32, stop: i32, day: i32) -> crate::db::record_plan::RecordPlanItemPayload {
         crate::db::record_plan::RecordPlanItemPayload {
@@ -3731,13 +3871,18 @@ mod record_plan_handler_tests {
             other => panic!("期望 400 业务错误，实际 {other:?}"),
         }
 
-        let err = record_plan_add(State(state.clone()), Json(add_body(Some("p"), Some(vec![]))))
-            .await
-            .expect_err("空数组同样必须被拒绝");
+        let err = record_plan_add(
+            State(state.clone()),
+            Json(add_body(Some("p"), Some(vec![]))),
+        )
+        .await
+        .expect_err("空数组同样必须被拒绝");
         assert!(matches!(err, AppError::Business(ErrorCode::Error400, _)));
 
         // 校验失败时不得留下半条计划
-        let total = crate::db::record_plan::count_all(&state.pool, None).await.unwrap();
+        let total = crate::db::record_plan::count_all(&state.pool, None)
+            .await
+            .unwrap();
         assert_eq!(total, 0, "校验失败不应写入任何计划");
     }
 
@@ -3760,7 +3905,10 @@ mod record_plan_handler_tests {
         let ch = seed_channel(&state, "34020000001310000001").await;
         let _ = record_plan_add(
             State(state.clone()),
-            Json(add_body(Some("机房"), Some(vec![item(600, 660, 1), item(1200, 1260, 7)]))),
+            Json(add_body(
+                Some("机房"),
+                Some(vec![item(600, 660, 1), item(1200, 1260, 7)]),
+            )),
         )
         .await
         .expect("add 应成功");
@@ -3841,7 +3989,9 @@ mod record_plan_handler_tests {
         .await
         .expect("按 planId 删除必须成功");
         assert_eq!(
-            crate::db::record_plan::count_all(&state.pool, None).await.unwrap(),
+            crate::db::record_plan::count_all(&state.pool, None)
+                .await
+                .unwrap(),
             0
         );
     }
@@ -3979,11 +4129,23 @@ mod record_plan_handler_tests {
         let resp = record_plan_channel_list(State(state.clone()), Query(q(Some("false"), Some(1))))
             .await
             .unwrap();
-        assert_eq!(resp.0.data.as_ref().unwrap()["list"].as_array().unwrap().len(), 0);
+        assert_eq!(
+            resp.0.data.as_ref().unwrap()["list"]
+                .as_array()
+                .unwrap()
+                .len(),
+            0
+        );
         let resp = record_plan_channel_list(State(state.clone()), Query(q(Some("true"), Some(1))))
             .await
             .unwrap();
-        assert_eq!(resp.0.data.as_ref().unwrap()["list"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            resp.0.data.as_ref().unwrap()["list"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
         assert_eq!(resp.0.data.as_ref().unwrap()["total"], 1);
     }
 
@@ -4110,7 +4272,10 @@ mod record_time_tests {
             parse_record_time_ms("2024-05-01T03:00:00.000Z"),
             Some(1714532400000)
         );
-        assert_eq!(parse_record_time_ms("2024-05-01T03:00:00Z"), Some(1714532400000));
+        assert_eq!(
+            parse_record_time_ms("2024-05-01T03:00:00Z"),
+            Some(1714532400000)
+        );
     }
 
     /// 带时区偏移的 RFC3339。
@@ -4129,7 +4294,10 @@ mod record_time_tests {
         assert_eq!(naive, parse_record_time_ms("2024-05-01T03:00:00").unwrap());
         assert_eq!(parse_record_time_ms("1714532400000"), Some(1714532400000));
         assert_eq!(parse_record_time_ms("1714532400"), Some(1714532400000));
-        assert!(parse_record_time_ms("2024-05-01").is_some(), "只有日期也要能解析");
+        assert!(
+            parse_record_time_ms("2024-05-01").is_some(),
+            "只有日期也要能解析"
+        );
     }
 
     /// 解析不了时返回 None（调用方会忽略该条件），而不是静默当成 0。
@@ -4254,7 +4422,10 @@ mod record_collect_tests {
         .await;
         let data = list.0.data.unwrap();
         assert_eq!(data["total"], 1, "收藏后列表必须有一条");
-        assert!(data["list"][0]["id"].as_i64().unwrap_or(0) > 0, "id 不能是 NULL");
+        assert!(
+            data["list"][0]["id"].as_i64().unwrap_or(0) > 0,
+            "id 不能是 NULL"
+        );
         assert_eq!(data["list"][0]["name"], "我的收藏");
     }
 }
@@ -4293,9 +4464,18 @@ mod region_group_contract_tests {
                 .unwrap();
             (root.id, child.id)
         } else {
-            group::add(&state.pool, &root_dev, "顶级分组", None, None, "0", now, None)
-                .await
-                .unwrap();
+            group::add(
+                &state.pool,
+                &root_dev,
+                "顶级分组",
+                None,
+                None,
+                "0",
+                now,
+                None,
+            )
+            .await
+            .unwrap();
             let root = group::get_by_device_id(&state.pool, &root_dev)
                 .await
                 .unwrap()
@@ -4353,7 +4533,9 @@ mod region_group_contract_tests {
 
         let body: region::RegionUpdate =
             serde_json::from_value(serde_json::json!({"id": child_id, "name": "改名了"})).unwrap();
-        let _ = region_update(State(state.clone()), Json(body)).await.unwrap();
+        let _ = region_update(State(state.clone()), Json(body))
+            .await
+            .unwrap();
 
         let child = region::get_by_id(&state.pool, child_id)
             .await
@@ -4365,7 +4547,9 @@ mod region_group_contract_tests {
         // 显式移到顶级：前端用 -1 哨兵
         let body: region::RegionUpdate =
             serde_json::from_value(serde_json::json!({"id": child_id, "parentId": -1})).unwrap();
-        let _ = region_update(State(state.clone()), Json(body)).await.unwrap();
+        let _ = region_update(State(state.clone()), Json(body))
+            .await
+            .unwrap();
         let child = region::get_by_id(&state.pool, child_id)
             .await
             .unwrap()
@@ -4378,12 +4562,18 @@ mod region_group_contract_tests {
         let state = app_state().await;
         let (root_id, child_id) = seed(&state, "35", false).await;
 
-        let body: group::GroupUpdate =
-            serde_json::from_value(serde_json::json!({"id": child_id, "name": "改名了", "businessGroup": "9"}))
-                .unwrap();
-        let _ = group_update(State(state.clone()), Json(body)).await.unwrap();
+        let body: group::GroupUpdate = serde_json::from_value(
+            serde_json::json!({"id": child_id, "name": "改名了", "businessGroup": "9"}),
+        )
+        .unwrap();
+        let _ = group_update(State(state.clone()), Json(body))
+            .await
+            .unwrap();
 
-        let child = group::get_by_id(&state.pool, child_id).await.unwrap().unwrap();
+        let child = group::get_by_id(&state.pool, child_id)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(child.name, "改名了");
         assert_eq!(child.parent_id, Some(root_id));
         assert_eq!(child.business_group, "9");
@@ -4404,7 +4594,12 @@ mod region_group_contract_tests {
         // 全量
         let all = region_tree_query(
             State(state.clone()),
-            Query(TreeNodeQuery { page: None, count: None, query: None, parent_id: None }),
+            Query(TreeNodeQuery {
+                page: None,
+                count: None,
+                query: None,
+                parent_id: None,
+            }),
         )
         .await
         .unwrap();
@@ -4497,9 +4692,17 @@ mod region_group_contract_tests {
     async fn group_one_returns_real_row() {
         let state = app_state().await;
         let (root_id, _) = seed(&state, "38", false).await;
-        let res = group_one(State(state.clone()), Query(IdQuery { id: Some(root_id), plan_id: None, page: None, count: None }))
-            .await
-            .expect("group_one");
+        let res = group_one(
+            State(state.clone()),
+            Query(IdQuery {
+                id: Some(root_id),
+                plan_id: None,
+                page: None,
+                count: None,
+            }),
+        )
+        .await
+        .expect("group_one");
         let data = res.0.data.unwrap();
         assert_eq!(data["id"], root_id);
         assert_eq!(data["name"], "顶级分组");

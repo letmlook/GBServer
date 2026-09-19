@@ -6,10 +6,10 @@
 //! 3. Alarm 转发（告警上报到上级）
 //! 4. SendRtp 会话管理（设备拉流→推送到上级）
 
-use std::sync::Arc;
-use dashmap::DashMap;
-use tokio::sync::RwLock;
 use chrono::{DateTime, Utc};
+use dashmap::DashMap;
+use std::sync::Arc;
+use tokio::sync::RwLock;
 
 /// SendRtp 会话（设备推流到本级 → SendRtp 到上级）
 #[derive(Debug, Clone)]
@@ -132,7 +132,8 @@ impl SendRtpManager {
             };
             store.set_cascade_sendrtp(&session.cascade_call_id, state);
         }
-        self.sessions.insert(session.cascade_call_id.clone(), session);
+        self.sessions
+            .insert(session.cascade_call_id.clone(), session);
     }
 
     /// 获取会话
@@ -729,12 +730,21 @@ mod tests {
     #[test]
     fn test_sendrtp_manager_bye_cleanup() {
         let mgr = SendRtpManager::new();
-        let s = mgr.handle_upstream_invite("call-bye".into(), "plat".into(), "ch-bye".into(),
-            "10.0.0.5".into(), 9100, "0xDEAD".into());
+        let s = mgr.handle_upstream_invite(
+            "call-bye".into(),
+            "plat".into(),
+            "ch-bye".into(),
+            "10.0.0.5".into(),
+            9100,
+            "0xDEAD".into(),
+        );
         assert!(s.active);
         let removed = mgr.close("call-bye");
         assert!(removed.is_some(), "close should return the removed session");
-        assert!(!removed.unwrap().active, "removed session should be inactive");
+        assert!(
+            !removed.unwrap().active,
+            "removed session should be inactive"
+        );
         assert!(mgr.get("call-bye").is_none());
         assert_eq!(mgr.active_count(), 0);
     }
@@ -743,8 +753,14 @@ mod tests {
     #[test]
     fn test_sendrtp_manager_cancel_removes_session() {
         let mgr = SendRtpManager::new();
-        mgr.handle_upstream_invite("call-cancel".into(), "plat".into(), "ch".into(),
-            "h".into(), 9000, "0x1".into());
+        mgr.handle_upstream_invite(
+            "call-cancel".into(),
+            "plat".into(),
+            "ch".into(),
+            "h".into(),
+            9000,
+            "0x1".into(),
+        );
         let snap_before = mgr.get_by_channel("ch");
         assert_eq!(snap_before.len(), 1);
 
@@ -752,7 +768,10 @@ mod tests {
         mgr.close("call-cancel");
 
         let snap_after = mgr.get_by_channel("ch");
-        assert!(snap_after.is_empty(), "channel snapshot should be empty after cancel");
+        assert!(
+            snap_after.is_empty(),
+            "channel snapshot should be empty after cancel"
+        );
         assert_eq!(mgr.active_count(), 0);
     }
 
@@ -760,10 +779,22 @@ mod tests {
     #[test]
     fn test_sendrtp_manager_bye_close_by_channel() {
         let mgr = SendRtpManager::new();
-        mgr.handle_upstream_invite("c1".into(), "p1".into(), "ch-bye".into(),
-            "h1".into(), 9000, "0x1".into());
-        mgr.handle_upstream_invite("c2".into(), "p2".into(), "ch-bye".into(),
-            "h2".into(), 9002, "0x2".into());
+        mgr.handle_upstream_invite(
+            "c1".into(),
+            "p1".into(),
+            "ch-bye".into(),
+            "h1".into(),
+            9000,
+            "0x1".into(),
+        );
+        mgr.handle_upstream_invite(
+            "c2".into(),
+            "p2".into(),
+            "ch-bye".into(),
+            "h2".into(),
+            9002,
+            "0x2".into(),
+        );
         assert_eq!(mgr.active_count(), 2);
 
         let closed = mgr.close_by_channel("ch-bye");
@@ -782,8 +813,12 @@ mod tests {
         mgr.set_state_store(store.clone());
 
         let s = mgr.handle_upstream_invite(
-            "call-store".into(), "plat".into(), "ch-store".into(),
-            "10.0.0.1".into(), 9000, "0xAAAA".into(),
+            "call-store".into(),
+            "plat".into(),
+            "ch-store".into(),
+            "10.0.0.1".into(),
+            9000,
+            "0xAAAA".into(),
         );
         assert!(s.active);
 
@@ -809,13 +844,21 @@ mod tests {
         let mut mgr = SendRtpManager::new();
         mgr.set_state_store(store.clone());
 
-        mgr.handle_upstream_invite("c1".into(), "p".into(), "ch".into(),
-            "h".into(), 9000, "0x1".into());
+        mgr.handle_upstream_invite(
+            "c1".into(),
+            "p".into(),
+            "ch".into(),
+            "h".into(),
+            9000,
+            "0x1".into(),
+        );
         assert!(store.get_cascade_sendrtp("c1").is_some());
 
         mgr.close("c1");
-        assert!(store.get_cascade_sendrtp("c1").is_none(),
-            "close 后 StateStore 应被删除");
+        assert!(
+            store.get_cascade_sendrtp("c1").is_none(),
+            "close 后 StateStore 应被删除"
+        );
     }
 
     /// E1: 不注入 StateStore 时不应 panic
@@ -823,8 +866,14 @@ mod tests {
     fn test_sendrtp_manager_no_state_store_works() {
         let mgr = SendRtpManager::new();
         // 没有 set_state_store，直接 create 应正常工作
-        mgr.handle_upstream_invite("c1".into(), "p".into(), "ch".into(),
-            "h".into(), 9000, "0x1".into());
+        mgr.handle_upstream_invite(
+            "c1".into(),
+            "p".into(),
+            "ch".into(),
+            "h".into(),
+            9000,
+            "0x1".into(),
+        );
         assert_eq!(mgr.active_count(), 1);
         mgr.close("c1");
         assert_eq!(mgr.active_count(), 0);
@@ -837,8 +886,12 @@ mod tests {
     fn phase5_close_by_stream_exact_match() {
         let mgr = SendRtpManager::new();
         mgr.handle_upstream_invite(
-            "cascade_plat1_ch1".into(), "plat1".into(), "ch1".into(),
-            "192.168.1.10".into(), 9000, "0x1234".into()
+            "cascade_plat1_ch1".into(),
+            "plat1".into(),
+            "ch1".into(),
+            "192.168.1.10".into(),
+            9000,
+            "0x1234".into(),
         );
         assert_eq!(mgr.active_count(), 1);
 
@@ -855,8 +908,12 @@ mod tests {
     fn phase5_close_by_stream_prefix_match() {
         let mgr = SendRtpManager::new();
         mgr.handle_upstream_invite(
-            "cascade_plat1_ch1".into(), "plat1".into(), "ch1".into(),
-            "192.168.1.10".into(), 9000, "0x1234".into()
+            "cascade_plat1_ch1".into(),
+            "plat1".into(),
+            "ch1".into(),
+            "192.168.1.10".into(),
+            9000,
+            "0x1234".into(),
         );
 
         // ZLM 实际推送的 stream 可能带 .ts 后缀
@@ -870,8 +927,12 @@ mod tests {
     fn phase5_close_by_stream_no_match() {
         let mgr = SendRtpManager::new();
         mgr.handle_upstream_invite(
-            "cascade_plat1_ch1".into(), "plat1".into(), "ch1".into(),
-            "192.168.1.10".into(), 9000, "0x1234".into()
+            "cascade_plat1_ch1".into(),
+            "plat1".into(),
+            "ch1".into(),
+            "192.168.1.10".into(),
+            9000,
+            "0x1234".into(),
         );
 
         let closed = mgr.close_by_stream("cascade_other_ch1");
@@ -894,8 +955,12 @@ mod tests {
         mgr.set_state_store(store.clone());
 
         mgr.handle_upstream_invite(
-            "cascade_sync_test".into(), "plat".into(), "ch".into(),
-            "h".into(), 9000, "0x1".into()
+            "cascade_sync_test".into(),
+            "plat".into(),
+            "ch".into(),
+            "h".into(),
+            9000,
+            "0x1".into(),
         );
         assert!(store.get_cascade_sendrtp("cascade_sync_test").is_some());
 

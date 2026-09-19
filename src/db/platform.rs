@@ -46,21 +46,15 @@ pub struct Platform {
 }
 
 /// 分页列表查询
-pub async fn list_paged(
-    pool: &Pool,
-    page: u32,
-    count: u32,
-) -> sqlx::Result<Vec<Platform>> {
+pub async fn list_paged(pool: &Pool, page: u32, count: u32) -> sqlx::Result<Vec<Platform>> {
     let offset = (page.saturating_sub(1)) * count;
     let limit = count.min(100) as i64;
     #[cfg(feature = "mysql")]
-    return sqlx::query_as::<_, Platform>(
-        "SELECT * FROM gb_platform ORDER BY id LIMIT ? OFFSET ?",
-    )
-    .bind(limit)
-    .bind(offset as i64)
-    .fetch_all(pool)
-    .await;
+    return sqlx::query_as::<_, Platform>("SELECT * FROM gb_platform ORDER BY id LIMIT ? OFFSET ?")
+        .bind(limit)
+        .bind(offset as i64)
+        .fetch_all(pool)
+        .await;
     #[cfg(feature = "postgres")]
     return sqlx::query_as::<_, Platform>(
         "SELECT * FROM gb_platform ORDER BY id LIMIT $1 OFFSET $2",
@@ -70,13 +64,11 @@ pub async fn list_paged(
     .fetch_all(pool)
     .await;
     #[cfg(feature = "sqlite")]
-    return sqlx::query_as::<_, Platform>(
-        "SELECT * FROM gb_platform ORDER BY id LIMIT ? OFFSET ?",
-    )
-    .bind(limit)
-    .bind(offset as i64)
-    .fetch_all(pool)
-    .await;
+    return sqlx::query_as::<_, Platform>("SELECT * FROM gb_platform ORDER BY id LIMIT ? OFFSET ?")
+        .bind(limit)
+        .bind(offset as i64)
+        .fetch_all(pool)
+        .await;
 }
 
 /// 统计总数
@@ -89,81 +81,69 @@ pub async fn count_all(pool: &Pool) -> sqlx::Result<i64> {
 /// 根据ID获取平台
 pub async fn get_by_id(pool: &Pool, id: i64) -> sqlx::Result<Option<Platform>> {
     #[cfg(feature = "mysql")]
-    return sqlx::query_as::<_, Platform>(
-        "SELECT * FROM gb_platform WHERE id = ?",
-    )
-    .bind(id)
-    .fetch_optional(pool)
-    .await;
+    return sqlx::query_as::<_, Platform>("SELECT * FROM gb_platform WHERE id = ?")
+        .bind(id)
+        .fetch_optional(pool)
+        .await;
     #[cfg(feature = "postgres")]
-    return sqlx::query_as::<_, Platform>(
-        "SELECT * FROM gb_platform WHERE id = $1",
-    )
-    .bind(id)
-    .fetch_optional(pool)
-    .await;
+    return sqlx::query_as::<_, Platform>("SELECT * FROM gb_platform WHERE id = $1")
+        .bind(id)
+        .fetch_optional(pool)
+        .await;
     #[cfg(feature = "sqlite")]
-    return sqlx::query_as::<_, Platform>(
-        "SELECT * FROM gb_platform WHERE id = ?",
-    )
-    .bind(id)
-    .fetch_optional(pool)
-    .await;
+    return sqlx::query_as::<_, Platform>("SELECT * FROM gb_platform WHERE id = ?")
+        .bind(id)
+        .fetch_optional(pool)
+        .await;
 }
 
 /// 根据国标ID获取平台
-pub async fn get_by_server_gb_id(pool: &Pool, server_gb_id: &str) -> sqlx::Result<Option<Platform>> {
+pub async fn get_by_server_gb_id(
+    pool: &Pool,
+    server_gb_id: &str,
+) -> sqlx::Result<Option<Platform>> {
     #[cfg(feature = "mysql")]
-    return sqlx::query_as::<_, Platform>(
-        "SELECT * FROM gb_platform WHERE server_gb_id = ?",
-    )
-    .bind(server_gb_id)
-    .fetch_optional(pool)
-    .await;
+    return sqlx::query_as::<_, Platform>("SELECT * FROM gb_platform WHERE server_gb_id = ?")
+        .bind(server_gb_id)
+        .fetch_optional(pool)
+        .await;
     #[cfg(feature = "postgres")]
-    return sqlx::query_as::<_, Platform>(
-        "SELECT * FROM gb_platform WHERE server_gb_id = $1",
-    )
-    .bind(server_gb_id)
-    .fetch_optional(pool)
-    .await;
+    return sqlx::query_as::<_, Platform>("SELECT * FROM gb_platform WHERE server_gb_id = $1")
+        .bind(server_gb_id)
+        .fetch_optional(pool)
+        .await;
     #[cfg(feature = "sqlite")]
-    return sqlx::query_as::<_, Platform>(
-        "SELECT * FROM gb_platform WHERE server_gb_id = ?",
-    )
-    .bind(server_gb_id)
-    .fetch_optional(pool)
-    .await;
+    return sqlx::query_as::<_, Platform>("SELECT * FROM gb_platform WHERE server_gb_id = ?")
+        .bind(server_gb_id)
+        .fetch_optional(pool)
+        .await;
 }
 
 /// Get platform by device_gb_id (the device's GB ID within the platform context)
-pub async fn get_by_device_gb_id(pool: &Pool, device_gb_id: &str) -> sqlx::Result<Option<Platform>> {
+pub async fn get_by_device_gb_id(
+    pool: &Pool,
+    device_gb_id: &str,
+) -> sqlx::Result<Option<Platform>> {
     #[cfg(feature = "mysql")]
     {
-        sqlx::query_as::<_, Platform>(
-            "SELECT * FROM gb_platform WHERE device_gb_id = ? LIMIT 1",
-        )
-        .bind(device_gb_id)
-        .fetch_optional(pool)
-        .await
+        sqlx::query_as::<_, Platform>("SELECT * FROM gb_platform WHERE device_gb_id = ? LIMIT 1")
+            .bind(device_gb_id)
+            .fetch_optional(pool)
+            .await
     }
     #[cfg(feature = "postgres")]
     {
-        sqlx::query_as::<_, Platform>(
-            "SELECT * FROM gb_platform WHERE device_gb_id = $1 LIMIT 1",
-        )
-        .bind(device_gb_id)
-        .fetch_optional(pool)
-        .await
+        sqlx::query_as::<_, Platform>("SELECT * FROM gb_platform WHERE device_gb_id = $1 LIMIT 1")
+            .bind(device_gb_id)
+            .fetch_optional(pool)
+            .await
     }
     #[cfg(feature = "sqlite")]
     {
-        sqlx::query_as::<_, Platform>(
-            "SELECT * FROM gb_platform WHERE device_gb_id = ? LIMIT 1",
-        )
-        .bind(device_gb_id)
-        .fetch_optional(pool)
-        .await
+        sqlx::query_as::<_, Platform>("SELECT * FROM gb_platform WHERE device_gb_id = ? LIMIT 1")
+            .bind(device_gb_id)
+            .fetch_optional(pool)
+            .await
     }
 }
 
@@ -401,11 +381,9 @@ pub async fn update_enable(pool: &Pool, id: i64, enable: bool) -> sqlx::Result<u
 /// 获取所有启用的平台
 pub async fn get_all_enabled_platforms(pool: &Pool) -> sqlx::Result<Vec<Platform>> {
     #[cfg(feature = "mysql")]
-    return sqlx::query_as::<_, Platform>(
-        "SELECT * FROM gb_platform WHERE enable = 1 ORDER BY id",
-    )
-    .fetch_all(pool)
-    .await;
+    return sqlx::query_as::<_, Platform>("SELECT * FROM gb_platform WHERE enable = 1 ORDER BY id")
+        .fetch_all(pool)
+        .await;
     #[cfg(feature = "postgres")]
     return sqlx::query_as::<_, Platform>(
         "SELECT * FROM gb_platform WHERE enable = true ORDER BY id",
@@ -413,20 +391,16 @@ pub async fn get_all_enabled_platforms(pool: &Pool) -> sqlx::Result<Vec<Platform
     .fetch_all(pool)
     .await;
     #[cfg(feature = "sqlite")]
-    return sqlx::query_as::<_, Platform>(
-        "SELECT * FROM gb_platform WHERE enable = 1 ORDER BY id",
-    )
-    .fetch_all(pool)
-    .await;
+    return sqlx::query_as::<_, Platform>("SELECT * FROM gb_platform WHERE enable = 1 ORDER BY id")
+        .fetch_all(pool)
+        .await;
 }
 
 /// 获取所有平台
 pub async fn list_platforms(pool: &Pool) -> sqlx::Result<Vec<Platform>> {
-    sqlx::query_as::<_, Platform>(
-        "SELECT * FROM gb_platform ORDER BY id",
-    )
-    .fetch_all(pool)
-    .await
+    sqlx::query_as::<_, Platform>("SELECT * FROM gb_platform ORDER BY id")
+        .fetch_all(pool)
+        .await
 }
 
 /// 获取所有在线平台

@@ -74,7 +74,13 @@ impl SipRequest {
 /// 连设备 ID 都取不到（`REGISTER: Cannot extract device ID - from="" to=""`）。
 impl fmt::Display for SipRequest {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} {} {}\r\n", self.method.as_str(), self.uri, self.version)?;
+        write!(
+            f,
+            "{} {} {}\r\n",
+            self.method.as_str(),
+            self.uri,
+            self.version
+        )?;
         for (name, value) in &self.headers {
             // Content-Length 由下面统一写：解析出来的头里本来就有它，
             // 再来一次就是**重复的 Content-Length**，接收方对以哪个为准
@@ -395,7 +401,10 @@ mod wire_format_tests {
         let SipMessage::Request(req) = &parsed else {
             panic!("应为请求");
         };
-        assert_eq!(req.header("from").map(String::as_str), Some("<sip:34020000001320000001@3402000000>;tag=abc"));
+        assert_eq!(
+            req.header("from").map(String::as_str),
+            Some("<sip:34020000001320000001@3402000000>;tag=abc")
+        );
 
         let reserialized = format!("{}", parsed);
         assert!(
@@ -447,15 +456,23 @@ mod wire_format_tests {
             .lines()
             .find_map(|l| {
                 let (k, v) = l.split_once(':')?;
-                k.trim().eq_ignore_ascii_case("content-length")
+                k.trim()
+                    .eq_ignore_ascii_case("content-length")
                     .then(|| v.trim().parse().ok())?
             })
             .expect("应有 Content-Length");
-        assert_eq!(declared, written_body.len(), "Content-Length 与实际 body 不符");
+        assert_eq!(
+            declared,
+            written_body.len(),
+            "Content-Length 与实际 body 不符"
+        );
         let again = Parser::parse(text.as_bytes()).unwrap();
         let SipMessage::Request(req) = &again else {
             panic!("应为请求");
         };
-        assert_eq!(req.body.as_deref(), Some(body.trim_end_matches("\r\n").trim_end()));
+        assert_eq!(
+            req.body.as_deref(),
+            Some(body.trim_end_matches("\r\n").trim_end())
+        );
     }
 }

@@ -186,13 +186,17 @@ impl XmlParser {
                 }
                 Ok(Event::Text(e)) => {
                     let text = String::from_utf8_lossy(&e).trim().to_string();
-                    if text.is_empty() { continue; }
+                    if text.is_empty() {
+                        continue;
+                    }
 
                     if current_tag == "SumNum" {
                         sum_num = text.parse().ok();
                     }
 
-                    if !in_item { continue; }
+                    if !in_item {
+                        continue;
+                    }
 
                     match current_tag.as_str() {
                         "DeviceID" => current_channel.device_id = text,
@@ -210,7 +214,10 @@ impl XmlParser {
                         "SnapshotURL" => current_channel.snapshot_url = Some(text),
                         "PTZType" => current_channel.ptz_type = text.parse().ok(),
                         "StreamCount" => current_channel.stream_count = text.parse().ok(),
-                        "HasAudio" => current_channel.has_audio = Some(text == "1" || text.to_lowercase() == "true"),
+                        "HasAudio" => {
+                            current_channel.has_audio =
+                                Some(text == "1" || text.to_lowercase() == "true")
+                        }
                         "SubCount" => current_channel.sub_count = text.parse().ok(),
                         "RegisterStatus" => current_channel.register_status = Some(text),
                         "ChannelType" => current_channel.channel_type = Some(text),
@@ -271,7 +278,8 @@ mod tests {
     /// 元素形式 `<DeviceID>...</DeviceID>` 仍然优先识别（兼容历史路径）
     #[test]
     fn find_first_element_basic() {
-        let xml = r#"<Response><DeviceID>34020000002000000001</DeviceID><Result>OK</Result></Response>"#;
+        let xml =
+            r#"<Response><DeviceID>34020000002000000001</DeviceID><Result>OK</Result></Response>"#;
         assert_eq!(
             XmlParser::find_first_element(xml, "DeviceID").as_deref(),
             Some("34020000002000000001")

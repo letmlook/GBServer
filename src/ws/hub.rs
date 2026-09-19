@@ -61,11 +61,19 @@ impl WsHub {
     /// receiver that the WS handler must drain into the socket send loop —
     /// events dispatched by `broadcast_event` / `handle_rpc_broadcast`
     /// arrive on this channel (filtered by the client's subscription).
-    pub async fn register(&self, user: String, events_csv: Option<String>) -> (String, mpsc::UnboundedReceiver<Message>) {
+    pub async fn register(
+        &self,
+        user: String,
+        events_csv: Option<String>,
+    ) -> (String, mpsc::UnboundedReceiver<Message>) {
         let subscribed = parse_events(events_csv.as_deref());
         let (tx, rx) = mpsc::unbounded_channel::<Message>();
         let client_id = format!("client_{}", uuid_like());
-        let info = ClientInfo { user, subscribed, tx };
+        let info = ClientInfo {
+            user,
+            subscribed,
+            tx,
+        };
         self.clients.write().await.insert(client_id.clone(), info);
         (client_id, rx)
     }
@@ -103,7 +111,10 @@ impl WsHub {
     /// dispatches to local clients only (no recursion).
     pub async fn handle_rpc_broadcast(&self, payload: serde_json::Value) {
         let event = payload.get("event").and_then(|v| v.as_str()).unwrap_or("");
-        let data = payload.get("data").cloned().unwrap_or(serde_json::json!({}));
+        let data = payload
+            .get("data")
+            .cloned()
+            .unwrap_or(serde_json::json!({}));
         if event.is_empty() {
             return;
         }
@@ -159,7 +170,8 @@ fn parse_events(csv: Option<&str>) -> HashSet<String> {
 
 fn uuid_like() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
-    let nanos = SystemTime::now().duration_since(UNIX_EPOCH)
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
     format!("{:x}", nanos)
@@ -176,7 +188,8 @@ mod tests {
         let (id, mut rx) = hub.register("alice".into(), Some("*".into())).await;
         assert_eq!(hub.client_count().await, 1);
         // register 返回的 rx 应能收到 hub 广播的事件（订阅过滤已接线）
-        hub.broadcast_event("alarm", serde_json::json!({"id": 1})).await;
+        hub.broadcast_event("alarm", serde_json::json!({"id": 1}))
+            .await;
         match rx.recv().await {
             Some(Message::Text(t)) => assert!(t.contains("\"alarm\"")),
             other => panic!("expected Text message, got {:?}", other.is_some()),
@@ -191,12 +204,18 @@ mod tests {
         // Build our own pair so we can read from rx.
         let (tx, mut rx) = mpsc::unbounded_channel::<Message>();
         let id = "test-client-1".to_string();
-        hub.clients.write().await.insert(id.clone(), ClientInfo {
-            user: "alice".into(),
-            subscribed: ["alarm".to_string(), "jt_position".to_string()].into_iter().collect(),
-            tx,
-        });
-        hub.broadcast_event("alarm", serde_json::json!({"id": 1})).await;
+        hub.clients.write().await.insert(
+            id.clone(),
+            ClientInfo {
+                user: "alice".into(),
+                subscribed: ["alarm".to_string(), "jt_position".to_string()]
+                    .into_iter()
+                    .collect(),
+                tx,
+            },
+        );
+        hub.broadcast_event("alarm", serde_json::json!({"id": 1}))
+            .await;
         let msg = rx.recv().await.unwrap();
         if let Message::Text(t) = msg {
             assert!(t.contains("\"alarm\""));
@@ -210,15 +229,20 @@ mod tests {
         let hub = WsHub::new("node-1".into(), None);
         let (tx, mut rx) = mpsc::unbounded_channel::<Message>();
         let id = "test-client-2".to_string();
-        hub.clients.write().await.insert(id.clone(), ClientInfo {
-            user: "alice".into(),
-            subscribed: ["alarm".to_string()].into_iter().collect(),
-            tx,
-        });
+        hub.clients.write().await.insert(
+            id.clone(),
+            ClientInfo {
+                user: "alice".into(),
+                subscribed: ["alarm".to_string()].into_iter().collect(),
+                tx,
+            },
+        );
         // jt_position is NOT subscribed; message should not arrive.
-        hub.broadcast_event("jt_position", serde_json::json!({})).await;
+        hub.broadcast_event("jt_position", serde_json::json!({}))
+            .await;
         // alarm IS subscribed; message should arrive.
-        hub.broadcast_event("alarm", serde_json::json!({"x": 1})).await;
+        hub.broadcast_event("alarm", serde_json::json!({"x": 1}))
+            .await;
         let msg = rx.recv().await.unwrap();
         if let Message::Text(t) = msg {
             assert!(t.contains("\"alarm\""));
@@ -233,16 +257,20 @@ mod tests {
         let hub = WsHub::new("node-1".into(), None);
         let (tx, mut rx) = mpsc::unbounded_channel::<Message>();
         let id = "test-client-3".to_string();
-        hub.clients.write().await.insert(id.clone(), ClientInfo {
-            user: "alice".into(),
-            subscribed: ["jt_alarm".to_string()].into_iter().collect(),
-            tx,
-        });
+        hub.clients.write().await.insert(
+            id.clone(),
+            ClientInfo {
+                user: "alice".into(),
+                subscribed: ["jt_alarm".to_string()].into_iter().collect(),
+                tx,
+            },
+        );
         hub.handle_rpc_broadcast(serde_json::json!({
             "event": "jt_alarm",
             "data": { "phone": "13800000001" },
             "from_node": "node-2"
-        })).await;
+        }))
+        .await;
         let msg = rx.recv().await.unwrap();
         if let Message::Text(t) = msg {
             assert!(t.contains("jt_alarm"));

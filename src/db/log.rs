@@ -180,11 +180,7 @@ pub async fn list_paged(
     for b in &binds {
         lq = lq.bind(b);
     }
-    let list = lq
-        .bind(count as i64)
-        .bind(offset)
-        .fetch_all(pool)
-        .await?;
+    let list = lq.bind(count as i64).bind(offset).fetch_all(pool).await?;
 
     Ok((total, list))
 }
@@ -230,19 +226,25 @@ mod tests {
         .await
         .expect("日志写入应成功");
 
-        let (total, all) = list_paged(&pool, None, None, None, None, 1, 10).await.unwrap();
+        let (total, all) = list_paged(&pool, None, None, None, None, 1, 10)
+            .await
+            .unwrap();
         assert_eq!(total, 3);
         assert_eq!(all.len(), 3);
         // 倒序：最新在前
         assert_eq!(all[0].level, "ERROR");
 
         // 按级别过滤
-        let (n, rows) = list_paged(&pool, None, Some("WARN"), None, None, 1, 10).await.unwrap();
+        let (n, rows) = list_paged(&pool, None, Some("WARN"), None, None, 1, 10)
+            .await
+            .unwrap();
         assert_eq!(n, 1);
         assert_eq!(rows[0].message.as_deref(), Some("stream reconnect"));
 
         // 按关键字过滤
-        let (n, _) = list_paged(&pool, Some("invite"), None, None, None, 1, 10).await.unwrap();
+        let (n, _) = list_paged(&pool, Some("invite"), None, None, None, 1, 10)
+            .await
+            .unwrap();
         assert_eq!(n, 1);
 
         // 时间范围过滤
@@ -264,20 +266,32 @@ mod tests {
     async fn test_pagination_and_retention() {
         let pool = sqlite_pool_with_schema().await;
         let rows: Vec<NewLogEntry> = (0..5)
-            .map(|i| entry(&format!("2026-01-01 10:00:0{}", i), "INFO", &format!("m{}", i)))
+            .map(|i| {
+                entry(
+                    &format!("2026-01-01 10:00:0{}", i),
+                    "INFO",
+                    &format!("m{}", i),
+                )
+            })
             .collect();
         insert_batch(&pool, &rows).await.unwrap();
 
-        let (total, page1) = list_paged(&pool, None, None, None, None, 1, 2).await.unwrap();
+        let (total, page1) = list_paged(&pool, None, None, None, None, 1, 2)
+            .await
+            .unwrap();
         assert_eq!(total, 5);
         assert_eq!(page1.len(), 2);
-        let (_, page3) = list_paged(&pool, None, None, None, None, 3, 2).await.unwrap();
+        let (_, page3) = list_paged(&pool, None, None, None, None, 3, 2)
+            .await
+            .unwrap();
         assert_eq!(page3.len(), 1);
 
         // 保留策略：删除 10:00:03 之前的记录（应删 3 条）
         let removed = delete_before(&pool, "2026-01-01 10:00:03").await.unwrap();
         assert_eq!(removed, 3);
-        let (total, _) = list_paged(&pool, None, None, None, None, 1, 10).await.unwrap();
+        let (total, _) = list_paged(&pool, None, None, None, None, 1, 10)
+            .await
+            .unwrap();
         assert_eq!(total, 2);
     }
 

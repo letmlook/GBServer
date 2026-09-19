@@ -57,20 +57,35 @@ impl SubscriptionManager {
         self.ws_state = Some(ws);
     }
 
-    pub fn subscribe(&self, device_id: &str, sub_type: SubscriptionType, call_id: &str, expires: u32, interval_secs: u32) {
+    pub fn subscribe(
+        &self,
+        device_id: &str,
+        sub_type: SubscriptionType,
+        call_id: &str,
+        expires: u32,
+        interval_secs: u32,
+    ) {
         let key = format!("{}_{}", device_id, sub_type.as_str());
         let now = Utc::now();
-        self.subscriptions.insert(key, SubscriptionEntry {
-            device_id: device_id.to_string(),
-            sub_type,
-            call_id: call_id.to_string(),
-            expires,
-            created_at: now,
-            last_renew: now,
-            interval_secs,
-            active: true,
-        });
-        tracing::info!("Subscription registered: {} {} expires={}s", device_id, sub_type.as_str(), expires);
+        self.subscriptions.insert(
+            key,
+            SubscriptionEntry {
+                device_id: device_id.to_string(),
+                sub_type,
+                call_id: call_id.to_string(),
+                expires,
+                created_at: now,
+                last_renew: now,
+                interval_secs,
+                active: true,
+            },
+        );
+        tracing::info!(
+            "Subscription registered: {} {} expires={}s",
+            device_id,
+            sub_type.as_str(),
+            expires
+        );
     }
 
     pub fn unsubscribe(&self, device_id: &str, sub_type: SubscriptionType) {
@@ -98,7 +113,8 @@ impl SubscriptionManager {
 
     pub fn get_expiring_soon(&self, threshold_secs: i64) -> Vec<SubscriptionEntry> {
         let now = Utc::now();
-        self.subscriptions.iter()
+        self.subscriptions
+            .iter()
             .filter(|e| {
                 let elapsed = (now - e.last_renew).num_seconds();
                 let remaining = e.expires as i64 - elapsed;
@@ -134,7 +150,11 @@ impl SubscriptionManager {
 
             let expiring = self.get_expiring_soon(30);
             for entry in expiring {
-                tracing::info!("Auto-renewing subscription: {} {}", entry.device_id, entry.sub_type.as_str());
+                tracing::info!(
+                    "Auto-renewing subscription: {} {}",
+                    entry.device_id,
+                    entry.sub_type.as_str()
+                );
                 self.renew(&entry.device_id, entry.sub_type);
             }
 
@@ -170,7 +190,9 @@ mod tests {
         let manager = SubscriptionManager::new();
         manager.subscribe("dev1", SubscriptionType::MobilePosition, "call1", 300, 60);
         manager.unsubscribe("dev1", SubscriptionType::MobilePosition);
-        assert!(manager.get("dev1", SubscriptionType::MobilePosition).is_none());
+        assert!(manager
+            .get("dev1", SubscriptionType::MobilePosition)
+            .is_none());
     }
 
     #[test]

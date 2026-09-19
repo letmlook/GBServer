@@ -14,13 +14,17 @@ pub fn routes() -> DocumentedRoutes {
     let mut acc = RoutesAccumulator::default();
     acc.add(routes!(crate::handlers::rtp_control::ps_get_test_port));
     acc.add(routes!(crate::handlers::rtp_control::ps_receive_close));
-    acc.add(routes!(crate::handlers::rtp_control::ps_receive_close_query));
+    acc.add(routes!(
+        crate::handlers::rtp_control::ps_receive_close_query
+    ));
     acc.add(routes!(crate::handlers::rtp_control::ps_receive_open));
     acc.add(routes!(crate::handlers::rtp_control::ps_send_start));
     acc.add(routes!(crate::handlers::rtp_control::ps_send_stop));
     acc.add(routes!(crate::handlers::rtp_control::ps_send_stop_query));
     acc.add(routes!(crate::handlers::rtp_control::rtp_receive_close));
-    acc.add(routes!(crate::handlers::rtp_control::rtp_receive_close_query));
+    acc.add(routes!(
+        crate::handlers::rtp_control::rtp_receive_close_query
+    ));
     acc.add(routes!(crate::handlers::rtp_control::rtp_receive_open));
     acc.add(routes!(crate::handlers::rtp_control::rtp_send_start));
     acc.add(routes!(crate::handlers::rtp_control::rtp_send_stop));

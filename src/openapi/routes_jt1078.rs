@@ -59,10 +59,14 @@ pub fn routes() -> DocumentedRoutes {
     acc.add(routes!(crate::handlers::jt1078_extra::area_polygon_query));
     acc.add(routes!(crate::handlers::jt1078_extra::area_polygon_set));
     acc.add(routes!(crate::handlers::jt1078_extra::area_rectangle_add));
-    acc.add(routes!(crate::handlers::jt1078_extra::area_rectangle_delete));
+    acc.add(routes!(
+        crate::handlers::jt1078_extra::area_rectangle_delete
+    ));
     acc.add(routes!(crate::handlers::jt1078_extra::area_rectangle_edit));
     acc.add(routes!(crate::handlers::jt1078_extra::area_rectangle_query));
-    acc.add(routes!(crate::handlers::jt1078_extra::area_rectangle_update));
+    acc.add(routes!(
+        crate::handlers::jt1078_extra::area_rectangle_update
+    ));
     acc.add(routes!(crate::handlers::jt1078_extra::confirmation_alarm));
     acc.add(routes!(crate::handlers::jt1078_extra::live_continue));
     acc.add(routes!(crate::handlers::jt1078_extra::live_pause));
@@ -75,11 +79,19 @@ pub fn routes() -> DocumentedRoutes {
     acc.add(routes!(crate::handlers::jt1078_extra::route_query));
     acc.add(routes!(crate::handlers::jt1078_extra::route_set));
     acc.add(routes!(crate::handlers::jt1078_extra::snap));
-    acc.add(routes!(crate::handlers::jt1078_extra::temp_position_tracking));
-    acc.add(routes!(crate::handlers::jt1078_extra::terminal_channel_delete));
-    acc.add(routes!(crate::handlers::jt1078_extra::terminal_channel_delete_query));
+    acc.add(routes!(
+        crate::handlers::jt1078_extra::temp_position_tracking
+    ));
+    acc.add(routes!(
+        crate::handlers::jt1078_extra::terminal_channel_delete
+    ));
+    acc.add(routes!(
+        crate::handlers::jt1078_extra::terminal_channel_delete_query
+    ));
     acc.add(routes!(crate::handlers::jt1078_extra::terminal_channel_one));
-    acc.add(routes!(crate::handlers::jt1078_extra::terminal_channel_one_query));
+    acc.add(routes!(
+        crate::handlers::jt1078_extra::terminal_channel_one_query
+    ));
 
     acc.finish()
 }

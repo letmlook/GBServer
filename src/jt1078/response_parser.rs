@@ -62,7 +62,9 @@ pub fn parse_register_request(body: &[u8]) -> Result<RegisterRequest, String> {
         .rposition(|b| *b != 0x00)
         .map(|i| i + 1)
         .unwrap_or(0);
-    let plate = String::from_utf8_lossy(&plate_raw[..plate_end]).trim().to_string();
+    let plate = String::from_utf8_lossy(&plate_raw[..plate_end])
+        .trim()
+        .to_string();
 
     // JT/T 808-2019 在车牌之后追加了 ICCID / 硬件版本，但**车牌本身不定长**
     // （GBK），在不知道车牌字节长度的前提下无法可靠定位 ICCID 的起点。
@@ -89,8 +91,8 @@ pub fn parse_register_request(body: &[u8]) -> Result<RegisterRequest, String> {
 pub struct LocationReport {
     pub alarm: u32,
     pub status: u32,
-    pub latitude: f64,   // raw / 1_000_000
-    pub longitude: f64,  // raw / 1_000_000
+    pub latitude: f64,  // raw / 1_000_000
+    pub longitude: f64, // raw / 1_000_000
     pub altitude: u16,
     pub speed: u16,
     pub direction: u16,
@@ -392,12 +394,24 @@ fn parse_bcd_datetime(bcd: &[u8]) -> Result<DateTime<Local>, String> {
     if s.len() != 12 {
         return Err(format!("BCD datetime string length: {}", s.len()));
     }
-    let yy: i32 = s[0..2].parse().map_err(|e: std::num::ParseIntError| e.to_string())?;
-    let mm: u32 = s[2..4].parse().map_err(|e: std::num::ParseIntError| e.to_string())?;
-    let dd: u32 = s[4..6].parse().map_err(|e: std::num::ParseIntError| e.to_string())?;
-    let hh: u32 = s[6..8].parse().map_err(|e: std::num::ParseIntError| e.to_string())?;
-    let mi: u32 = s[8..10].parse().map_err(|e: std::num::ParseIntError| e.to_string())?;
-    let ss: u32 = s[10..12].parse().map_err(|e: std::num::ParseIntError| e.to_string())?;
+    let yy: i32 = s[0..2]
+        .parse()
+        .map_err(|e: std::num::ParseIntError| e.to_string())?;
+    let mm: u32 = s[2..4]
+        .parse()
+        .map_err(|e: std::num::ParseIntError| e.to_string())?;
+    let dd: u32 = s[4..6]
+        .parse()
+        .map_err(|e: std::num::ParseIntError| e.to_string())?;
+    let hh: u32 = s[6..8]
+        .parse()
+        .map_err(|e: std::num::ParseIntError| e.to_string())?;
+    let mi: u32 = s[8..10]
+        .parse()
+        .map_err(|e: std::num::ParseIntError| e.to_string())?;
+    let ss: u32 = s[10..12]
+        .parse()
+        .map_err(|e: std::num::ParseIntError| e.to_string())?;
     let year = if yy >= 70 { 1900 + yy } else { 2000 + yy };
     let date = NaiveDate::from_ymd_opt(year, mm, dd)
         .ok_or_else(|| format!("invalid date Y={} M={} D={}", year, mm, dd))?;
@@ -466,11 +480,11 @@ mod tests {
         let mut b = Vec::new();
         b.extend_from_slice(&0x0100u16.to_be_bytes()); // province
         b.extend_from_slice(&0x0200u16.to_be_bytes()); // city
-        b.extend_from_slice(b"AAAAA");                // manufacturer
-        b.extend_from_slice(&vec![b'B'; 20]);          // terminal_model
-        b.extend_from_slice(b"1234567");              // terminal_id
-        b.push(2);                                    // plate_color = 黄牌
-        b.extend_from_slice("京A12345".as_bytes());    // plate（真实终端为 GBK）
+        b.extend_from_slice(b"AAAAA"); // manufacturer
+        b.extend_from_slice(&vec![b'B'; 20]); // terminal_model
+        b.extend_from_slice(b"1234567"); // terminal_id
+        b.push(2); // plate_color = 黄牌
+        b.extend_from_slice("京A12345".as_bytes()); // plate（真实终端为 GBK）
         b
     }
 
@@ -633,8 +647,16 @@ mod media_search_tests {
     use super::*;
 
     /// 构造一条 27 字节媒体数据项（起始/结束时间为 BCD）。
-    fn item(media_id: u32, media_type: u8, channel: u8, event: u8, start: &str, end: &str,
-            lon: u32, lat: u32) -> Vec<u8> {
+    fn item(
+        media_id: u32,
+        media_type: u8,
+        channel: u8,
+        event: u8,
+        start: &str,
+        end: &str,
+        lon: u32,
+        lat: u32,
+    ) -> Vec<u8> {
         let mut v = Vec::with_capacity(27);
         v.extend_from_slice(&media_id.to_be_bytes());
         v.push(media_type);
@@ -653,10 +675,26 @@ mod media_search_tests {
     fn parses_media_search_response() {
         let mut body = Vec::new();
         body.extend_from_slice(&2u16.to_be_bytes());
-        body.extend_from_slice(&item(1001, 2, 1, 0, "2026-09-01T10:00:00", "2026-09-01T10:05:00",
-                                     116_397_000, 39_909_000));
-        body.extend_from_slice(&item(1002, 0, 2, 1, "2026-09-01T11:00:00", "2026-09-01T11:00:30",
-                                     0, 0));
+        body.extend_from_slice(&item(
+            1001,
+            2,
+            1,
+            0,
+            "2026-09-01T10:00:00",
+            "2026-09-01T10:05:00",
+            116_397_000,
+            39_909_000,
+        ));
+        body.extend_from_slice(&item(
+            1002,
+            0,
+            2,
+            1,
+            "2026-09-01T11:00:00",
+            "2026-09-01T11:00:30",
+            0,
+            0,
+        ));
 
         let items = parse_media_search_response(&body).expect("应能解析");
         assert_eq!(items.len(), 2);
@@ -664,8 +702,14 @@ mod media_search_tests {
         assert_eq!(items[0].media_type, 2);
         assert_eq!(items[0].media_type_name(), "video");
         assert_eq!(items[0].channel_id, 1);
-        assert_eq!(items[0].start_time.format("%Y-%m-%d %H:%M:%S").to_string(), "2026-09-01 10:00:00");
-        assert_eq!(items[0].end_time.format("%Y-%m-%d %H:%M:%S").to_string(), "2026-09-01 10:05:00");
+        assert_eq!(
+            items[0].start_time.format("%Y-%m-%d %H:%M:%S").to_string(),
+            "2026-09-01 10:00:00"
+        );
+        assert_eq!(
+            items[0].end_time.format("%Y-%m-%d %H:%M:%S").to_string(),
+            "2026-09-01 10:05:00"
+        );
         assert!((items[0].longitude.unwrap() - 116.397).abs() < 1e-6);
         assert!((items[0].latitude.unwrap() - 39.909).abs() < 1e-6);
         // 0 表示无效经纬度
@@ -679,7 +723,16 @@ mod media_search_tests {
     fn tolerates_truncated_item_list() {
         let mut body = Vec::new();
         body.extend_from_slice(&2u16.to_be_bytes());
-        body.extend_from_slice(&item(7, 2, 1, 0, "2026-09-01T10:00:00", "2026-09-01T10:01:00", 0, 0));
+        body.extend_from_slice(&item(
+            7,
+            2,
+            1,
+            0,
+            "2026-09-01T10:00:00",
+            "2026-09-01T10:01:00",
+            0,
+            0,
+        ));
         body.extend_from_slice(&[0u8; 10]); // 第二条只剩半截
 
         let items = parse_media_search_response(&body).unwrap();
@@ -690,12 +743,30 @@ mod media_search_tests {
     /// 单条时间字段损坏时跳过该条，不影响其它条目。
     #[test]
     fn skips_item_with_invalid_time() {
-        let mut bad = item(9, 2, 1, 0, "2026-09-01T10:00:00", "2026-09-01T10:01:00", 0, 0);
+        let mut bad = item(
+            9,
+            2,
+            1,
+            0,
+            "2026-09-01T10:00:00",
+            "2026-09-01T10:01:00",
+            0,
+            0,
+        );
         bad[7] = 0xFF; // BCD 非法
         let mut body = Vec::new();
         body.extend_from_slice(&2u16.to_be_bytes());
         body.extend_from_slice(&bad);
-        body.extend_from_slice(&item(10, 2, 1, 0, "2026-09-01T12:00:00", "2026-09-01T12:01:00", 0, 0));
+        body.extend_from_slice(&item(
+            10,
+            2,
+            1,
+            0,
+            "2026-09-01T12:00:00",
+            "2026-09-01T12:01:00",
+            0,
+            0,
+        ));
 
         let items = parse_media_search_response(&body).unwrap();
         assert_eq!(items.len(), 1);
