@@ -170,6 +170,74 @@ pub async fn update_channel_stream_identification(
     }
 }
 
+/// 补全 `gb_device` 里**缺失**的 `transport` / `stream_mode`。
+///
+/// 为什么需要它：注册成功时写库的 `upsert_device` 曾经把这两列都传 `None`，
+/// 于是**所有设备的「信令」和「流模式」列永远是空的**（前端显示 "-"）。
+///
+/// 语义要点：
+/// * **已有值不覆盖** —— `COALESCE(NULLIF(col,''), ?)` 只在列为 NULL 或空串时
+///   才写入。免得管理员在设备编辑里选了 `TCP-ACTIVE`，下一次注册/心跳就被
+///   这里的默认值冲掉。
+/// * 用 `NULLIF(col,'')` 而不是 `col IS NULL`，一并处理历史遗留的空串。
+/// * 幂等：值已存在时是一条 no-op UPDATE，重复调用无副作用。
+///
+/// 调用时机：
+/// * REGISTER 成功 —— 用 Via 头解析出的真实信令（UDP/TCP）
+/// * 心跳 —— 让**修复前就已注册**的老设备在 1 个心跳周期内（默认 60s）
+///   把历史 NULL 补上，不必等到下次重新注册（可能是一小时后）
+pub async fn fill_device_transport_if_missing(
+    pool: &Pool,
+    device_id: &str,
+    transport: Option<&str>,
+    stream_mode: Option<&str>,
+    now: &str,
+) -> sqlx::Result<u64> {
+    #[cfg(feature = "mysql")]
+    let r = sqlx::query(
+        "UPDATE gb_device SET \
+         transport = COALESCE(NULLIF(transport, ''), ?), \
+         stream_mode = COALESCE(NULLIF(stream_mode, ''), ?), \
+         update_time = ? \
+         WHERE device_id = ?",
+    )
+    .bind(transport)
+    .bind(stream_mode)
+    .bind(now)
+    .bind(device_id)
+    .execute(pool)
+    .await?;
+    #[cfg(feature = "postgres")]
+    let r = sqlx::query(
+        "UPDATE gb_device SET \
+         transport = COALESCE(NULLIF(transport, ''), $1), \
+         stream_mode = COALESCE(NULLIF(stream_mode, ''), $2), \
+         update_time = $3 \
+         WHERE device_id = $4",
+    )
+    .bind(transport)
+    .bind(stream_mode)
+    .bind(now)
+    .bind(device_id)
+    .execute(pool)
+    .await?;
+    #[cfg(feature = "sqlite")]
+    let r = sqlx::query(
+        "UPDATE gb_device SET \
+         transport = COALESCE(NULLIF(transport, ''), ?), \
+         stream_mode = COALESCE(NULLIF(stream_mode, ''), ?), \
+         update_time = ? \
+         WHERE device_id = ?",
+    )
+    .bind(transport)
+    .bind(stream_mode)
+    .bind(now)
+    .bind(device_id)
+    .execute(pool)
+    .await?;
+    Ok(r.rows_affected())
+}
+
 pub async fn update_device_stream_mode(
     pool: &Pool,
     device_id: &str,

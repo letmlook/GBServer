@@ -35,6 +35,14 @@ use crate::sip::gb28181::nat_helper::NatHelper;
 use crate::sip::gb28181::cascade_forward::SendRtpManager;
 use crate::sip::transport::tcp::{TcpConnectionManager, TcpListener};
 use crate::zlm::ZlmClient;
+
+/// 新注册设备的默认**流模式**（平台拉媒体流时用的传输模式）。
+///
+/// GB28181 的默认是 UDP，播放侧也是这么兜底的
+/// （`device.transport.or(device.stream_mode).unwrap_or("UDP")`），
+/// 所以这里保持一致 —— 「流模式」列显示的就是平台实际会用的模式。
+const DEFAULT_STREAM_MODE: &str = "UDP";
+
 /// GB28181 回放控制命令
 ///
 /// SipServer::send_playback_control 的入参类型。
@@ -1758,8 +1766,50 @@ let renewal_pool = pool.clone();
             }
 
             let ip_str = addr.ip().to_string();
-            db_device::upsert_device(pool, &device_id, None, None, None, None, None, None,
-                Some(&ip_str), Some(addr.port() as i32), true, Some("zlmediakit-1"), &now).await?;
+            // 设备的**真实信令传输方式**从 Via 头取（`SIP/2.0/UDP` / `SIP/2.0/TCP`）。
+            //
+            // 此前 `upsert_device` 的 transport / stream_mode 两个位置都传 `None`，
+            // 于是 gb_device 这两列**永远是 NULL** —— 前端「国标设备」列表的
+            // 「信令」「流模式」两列一直显示 "-"。
+            //
+            // 注意这里仍然传 `None`，真正的写入交给下面的
+            // `fill_device_transport_if_missing`（**只在列为空时写**）：
+            // `transport` 不只是展示值，它还决定 INVITE 走 UDP 还是 TCP
+            // （见 play.rs 里 `device.transport.or(stream_mode)`），
+            // 是管理员在设备编辑里可以指定的配置项。每次注册都无条件覆盖的话，
+            // 管理员选的 TCP 会被设备的下一次注册（可能一小时后）悄悄改回去。
+            let signal_transport = Self::transport_from_via(&via);
+            db_device::upsert_device(
+                pool,
+                &device_id,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(&ip_str),
+                Some(addr.port() as i32),
+                true,
+                Some("zlmediakit-1"),
+                &now,
+            )
+            .await?;
+            // 补齐空值（新设备首次注册走这里；老设备的历史 NULL 也在这里补）：
+            //   * transport  → Via 解析出的真实信令方式
+            //   * stream_mode → UDP（GB28181 默认，与播放侧兜底一致）
+            // 已有值一律不动，幂等。
+            if let Err(e) = db_device::fill_device_transport_if_missing(
+                pool,
+                &device_id,
+                signal_transport,
+                Some(DEFAULT_STREAM_MODE),
+                &now,
+            )
+            .await
+            {
+                tracing::warn!("补齐设备 {} 的信令/流模式失败: {}", device_id, e);
+            }
             device_manager.register(&device_id, addr).await;
             if let Some(ref ws) = ws_state {
                 ws.broadcast(
@@ -1984,6 +2034,27 @@ let renewal_pool = pool.clone();
                             &now,
                         )
                         .await?;
+                        // 顺手补齐「信令 / 流模式」两列的空值。
+                        //
+                        // 修复前注册流程从没写过这两列，历史设备全是 NULL；
+                        // 而设备重新注册可能要等一小时（register_timeout 默认 3600s）。
+                        // 心跳是每设备 60s 一次（heart_beat_interval 默认值），
+                        // 借它把老数据在**一个心跳周期内**补上，用户不用干等。
+                        //
+                        // `fill_..._if_missing` 是幂等的（已有值不覆盖），
+                        // 所以之后的每次心跳都只是一条 no-op UPDATE。
+                        let signal_transport = Self::transport_from_via(&via);
+                        if let Err(e) = db_device::fill_device_transport_if_missing(
+                            pool,
+                            &dev_id,
+                            signal_transport,
+                            Some(DEFAULT_STREAM_MODE),
+                            &now,
+                        )
+                        .await
+                        {
+                            tracing::debug!("补齐设备 {} 的信令/流模式失败: {}", dev_id, e);
+                        }
                         device_manager.update_keepalive(&dev_id, addr).await;
                     }
                     tracing::debug!("Keepalive from device: {}", device_id);
@@ -4518,6 +4589,22 @@ let renewal_pool = pool.clone();
         }
         socket.send_to(response.as_bytes(), addr).await?;
         Ok(())
+    }
+
+    /// 从 Via 头解析设备的**信令传输方式**（`UDP` / `TCP` / `TLS`）。
+    ///
+    /// Via 形如 `SIP/2.0/UDP 192.168.3.100:5060;rport;branch=...`，
+    /// 中间那段就是设备实际使用的传输层协议。取不到时返回 `None`
+    /// （调用方据此跳过写入，不猜）。
+    fn transport_from_via(via: &str) -> Option<&'static str> {
+        let transport = crate::sip::core::header::ViaHeader::parse(via)?.transport;
+        match transport.to_ascii_uppercase().as_str() {
+            "UDP" => Some("UDP"),
+            "TCP" => Some("TCP"),
+            // 国标设备基本只用 UDP/TCP；TLS 等其它值归到 TCP 之外不映射，
+            // 避免把不认识的值写进库里污染「信令」列。
+            _ => None,
+        }
     }
 
     fn extract_device_id(sip_uri: &str) -> Option<String> {

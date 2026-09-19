@@ -52,24 +52,39 @@
           <el-table-column prop="ip" label="IP" width="120">
             <template #default="{ row }"><span class="mono">{{ row.ip }}</span></template>
           </el-table-column>
-          <el-table-column label="信令" width="100">
+          <!-- 信令：设备端的信令地址（注册来源 IP:端口）。
+               之前在"信令"列显示的是 UDP/TCP 传输层协议，那不是这一列该表达的
+               信息 —— 管理员要看的是"这台设备从哪个地址、哪个端口连过来的"，
+               用来核对 NAT 映射、排查注册问题。传输协议本身已经由"流模式"
+               下拉（以及设备编辑里的信令传输）覆盖。 -->
+          <el-table-column label="信令地址" min-width="150">
             <template #default="{ row }">
-              <el-tag
-                v-if="row.transport"
-                :type="row.transport === 'TCP' ? 'warning' : 'success'"
-                size="small"
-              >{{ row.transport }}</el-tag>
+              <span v-if="row.ip" class="mono">{{ row.ip }}:{{ row.port ?? '-' }}</span>
               <span v-else class="text-tertiary">-</span>
             </template>
           </el-table-column>
-          <el-table-column label="流模式" min-width="120">
+          <!-- 流模式：可直接改。选定后后端会落库**并向下发 SIP
+               DeviceControl/Transport 消息**，让设备按平台指定的模式协商收流。 -->
+          <el-table-column label="流模式" width="168">
             <template #default="{ row }">
-              <el-tag
-                v-if="row.streamMode"
-                :type="row.streamMode === 'UDP' ? 'success' : 'warning'"
+              <el-select
+                :model-value="row.streamMode || STREAM_MODE_DEFAULT"
                 size="small"
-              >{{ row.streamMode }}</el-tag>
-              <span v-else class="text-tertiary">-</span>
+                :disabled="modeChanging === row.deviceId"
+                popper-class="stream-mode-select"
+                style="width: 100%"
+                @change="(v: string) => onChangeStreamMode(row, v)"
+              >
+                <el-option
+                  v-for="m in STREAM_MODES"
+                  :key="m.value"
+                  :label="m.label"
+                  :value="m.value"
+                >
+                  <span>{{ m.label }}</span>
+                  <span class="mode-hint">{{ m.hint }}</span>
+                </el-option>
+              </el-select>
             </template>
           </el-table-column>
           <el-table-column label="在线" width="80">
@@ -183,7 +198,15 @@
 import { onMounted, reactive, ref } from 'vue'
 import { Plus, VideoCameraFilled } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { queryDevices, deleteDevice, sync, setGuard, resetGuard, queryChannels } from '@/api/device'
+import {
+  queryDevices,
+  deleteDevice,
+  sync,
+  setGuard,
+  resetGuard,
+  queryChannels,
+  updateDeviceTransport
+} from '@/api/device'
 import { captureSnap, listSnapshots, snapshotKey } from '@/api/live'
 import GbSearchForm from '@/components/GbSearchForm/index.vue'
 import DeviceEditDialog from './EditDialog.vue'
@@ -204,6 +227,70 @@ const snapItems = ref<{ deviceId: string; channelId: string; name: string; snapU
 
 const playVisible = ref(false)
 const playingChannel = ref<{ deviceId: string; channelId: string; name: string } | null>(null)
+
+/**
+ * 流模式可选值。
+ *
+ * GB28181 的媒体流传输只有三种形态：
+ *   * `UDP`         —— 平台被动收流（设备往平台开好的 RTP 端口推）
+ *   * `TCP-PASSIVE` —— 平台被动：设备主动连平台的 TCP 端口推流
+ *   * `TCP-ACTIVE`  —— 平台主动：平台去连设备的 TCP 端口拉流
+ *
+ * 值保持 WVP 的拼写（`TCP-PASSIVE` / `TCP-ACTIVE`），后端
+ * `/api/device/query/transport/:id/:mode` 就是按这个集合校验的。
+ */
+const STREAM_MODES = [
+  { value: 'UDP', label: 'UDP', hint: '设备推流到平台（被动收流）' },
+  { value: 'TCP-PASSIVE', label: 'TCP 被动', hint: '设备连接平台' },
+  { value: 'TCP-ACTIVE', label: 'TCP 主动', hint: '平台连接设备' }
+] as const
+
+/** 设备没设过流模式时的默认值 —— 与后端 `DEFAULT_STREAM_MODE` 保持一致 */
+const STREAM_MODE_DEFAULT = 'UDP'
+
+/** 正在切换流模式的设备（用于禁用下拉 + 避免重复点击） */
+const modeChanging = ref('')
+
+/**
+ * 切换某台设备的流模式。
+ *
+ * 后端做两件事（见 `device_stub::device_transport`）：
+ *   1. 落库，后续点播都按新模式建流；
+ *   2. 向设备下发 SIP `DeviceControl/Transport` 消息，**通知设备按平台指定
+ *      的模式协商**收流。
+ *
+ * 设备不在线时只落库、不发 SIP —— 这时如实告诉用户"已保存，上线后生效"，
+ * 不要谎报"已通知设备"。
+ */
+async function onChangeStreamMode(row: any, mode: string) {
+  const deviceId = row?.deviceId
+  if (!deviceId || mode === row.streamMode) return
+  modeChanging.value = deviceId
+  try {
+    const res = (await updateDeviceTransport(deviceId, mode)) as unknown as {
+      code: number
+      data?: { sipSent?: boolean; sipError?: string | null }
+    }
+    row.streamMode = mode
+    const sipSent = res?.data?.sipSent
+    if (sipSent) {
+      ElMessage.success(`流模式已切换为 ${mode}，已通知设备协商`)
+    } else if (isOnline(row)) {
+      // 在线却发不出去：把后端给的原因带出来，别只说"成功"
+      ElMessage.warning(
+        `流模式已保存为 ${mode}，但通知设备失败${res?.data?.sipError ? `：${res.data.sipError}` : ''}`
+      )
+    } else {
+      ElMessage.success(`流模式已保存为 ${mode}（设备离线，上线后生效）`)
+    }
+  } catch (e: any) {
+    ElMessage.error(e?.message ?? '切换流模式失败')
+    // 失败时把下拉回滚到服务端的真实值，避免界面显示成"已改"
+    loadData()
+  } finally {
+    modeChanging.value = ''
+  }
+}
 
 const query = reactive({
   page: 1,
@@ -491,5 +578,23 @@ onMounted(async () => {
   color: var(--text-tertiary);
   display: flex; align-items: center; justify-content: center;
   width: 100%; height: 100%;
+}
+
+/* 流模式下拉选项：左侧模式名，右侧灰色说明（"设备连接平台" 之类），
+   让管理员不用去翻协议文档就能选对主动/被动。
+   注意：下拉面板被 teleport 到 body，scoped 选择器命中不到，
+   所以这段放在下面的全局样式块里（用 popper-class 命名空间隔离）。 */
+</style>
+
+<style lang="scss">
+.stream-mode-select .el-select-dropdown__item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.stream-mode-select .mode-hint {
+  margin-left: 16px;
+  color: var(--text-tertiary);
+  font-size: var(--text-xs);
 }
 </style>
