@@ -94,3 +94,20 @@ All normal API responses use `WVPResult<T>` with the standard shape `{ code: 0, 
 Authentication accepts JWT via `access-token` or `Authorization: Bearer ...`, then falls back to API keys via `X-API-Key` or `apiKey`. Authenticated requests write audit logs asynchronously. Public route exclusions and the protected ZLM proxy are configured in `router.rs` / `auth.rs`.
 
 SDP generation is split by use case (`play_sdp`, `playback_sdp`, `download_sdp`, `talk_sdp`, `broadcast_sdp`). NAT address rewriting is handled in `sip/gb28181/nat_helper.rs` based on configured SDP/stream IPs.
+
+### Local verification: prefer debug build over `--release`
+
+Use the debug build (`cargo build`) for any local compile-and-verify cycle. It's 4-5x faster (~2-3 min vs ~10-12 min) and gives identical functional results. Only switch to `cargo build --release` when producing a release artifact (tagged deploy, production image, performance benchmark).
+
+```bash
+# Default for local dev / agent verification:
+cargo build              # → target/debug/gbserver
+
+# Run after debug build:
+NO_PROXY=localhost,127.0.0.1,::1 ./target/debug/gbserver
+
+# Only for release artifacts:
+cargo build --release    # → target/release/gbserver
+```
+
+The frontend (`npm run build`) is already fast enough (~17s) that debug/release distinction doesn't apply.
