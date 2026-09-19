@@ -1,18 +1,7 @@
 <template>
   <div class="cloud-record-page">
-    <div class="page-header">
-      <div>
-        <h1 class="page-title">云端录像</h1>
-        <p class="page-subtitle">ZLMediaKit MP4 / HLS 录像检索与下载</p>
-      </div>
-      <div class="page-actions">
-        <el-button @click="loadData">刷新</el-button>
-        <el-button type="success" :disabled="!selection.length" @click="onDownloadZip">打包下载</el-button>
-      </div>
-    </div>
-
     <el-card class="filter-card">
-      <el-form :inline="true">
+      <el-form class="gb-query-row" :inline="true">
         <el-form-item label="设备">
           <el-input v-model="query.deviceId" placeholder="国标设备ID" />
         </el-form-item>
@@ -33,6 +22,10 @@
         </el-form-item>
         <el-form-item>
           <el-button type="primary" @click="loadData">查询</el-button>
+        </el-form-item>
+        <el-form-item class="gb-query-actions">
+          <el-button @click="loadData">刷新</el-button>
+          <el-button type="success" :disabled="!selection.length" @click="onDownloadZip">打包下载</el-button>
         </el-form-item>
       </el-form>
     </el-card>
@@ -237,9 +230,6 @@ onMounted(loadData)
 
 <style scoped>
 .cloud-record-page { padding: 16px; }
-.page-header { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 12px; }
-.page-title { font-size: 20px; font-weight: 600; margin: 0; }
-.page-subtitle { color: var(--el-text-color-secondary); font-size: var(--text-sm); margin-top: 4px; }
 .filter-card { margin-bottom: 12px; }
 .pagination { margin-top: 16px; justify-content: flex-end; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: var(--text-sm); }

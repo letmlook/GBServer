@@ -1,17 +1,6 @@
 <template>
   <div class="device-page">
     <div v-if="!currentDeviceId">
-      <div class="page-header">
-        <div>
-          <h1 class="page-title">国标设备</h1>
-          <p class="page-subtitle">GB/T 28181 设备注册 · 心跳保活 · 目录同步</p>
-        </div>
-        <div class="page-actions">
-          <el-button @click="loadData">刷新</el-button>
-          <el-button :icon="Plus" type="primary" @click="onAdd">新增设备</el-button>
-        </div>
-      </div>
-
       <GbSearchForm :model="query" @search="loadData" @reset="resetQuery">
         <template #default="{ model }">
           <el-form-item label="关键字">
@@ -33,6 +22,10 @@
               <el-option label="全部" value="" />
             </el-select>
           </el-form-item>
+        </template>
+        <template #actions>
+          <el-button @click="loadData">刷新</el-button>
+          <el-button :icon="Plus" type="primary" @click="onAdd">新增设备</el-button>
         </template>
       </GbSearchForm>
 
@@ -139,11 +132,7 @@
     </div>
 
     <div v-else>
-      <el-page-header @back="currentDeviceId = ''">
-        <template #content>
-          <span class="page-title">通道 · {{ currentDeviceId }}</span>
-        </template>
-      </el-page-header>
+      <el-page-header @back="currentDeviceId = ''" />
       <el-card class="table-card" style="margin-top: 12px">
         <el-table :data="channels" v-loading="channelLoading" stripe border>
           <el-table-column label="缩略图" width="120" align="center">
@@ -687,9 +676,6 @@ onUnmounted(() => {
 
 <style scoped>
 .device-page { padding: 16px; }
-.page-header { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 16px; }
-.page-title { font-size: var(--text-xl); font-weight: 600; margin: 0; }
-.page-subtitle { color: var(--el-text-color-secondary); font-size: 12px; margin-top: 4px; }
 .table-card { min-height: 400px; overflow-x: auto; }
 .pagination { margin-top: 16px; justify-content: flex-end; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }

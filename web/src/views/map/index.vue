@@ -1,10 +1,6 @@
 <template>
   <div class="map-page">
     <div class="page-header">
-      <div>
-        <h1 class="page-title">电子地图</h1>
-        <p class="page-subtitle">底图：高德 raster · 通道定位</p>
-      </div>
       <div class="page-actions">
         <el-radio-group v-model="coord" size="small" @change="redraw">
           <el-radio-button label="GCJ02">GCJ02</el-radio-button>
@@ -239,8 +235,7 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .map-page { padding: 16px; }
-.page-header { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 12px; }
-.page-title { font-size: 20px; font-weight: 600; margin: 0; }
+.page-header { display: flex; justify-content: flex-end; align-items: flex-end; margin-bottom: 12px; }
 .region-card { max-height: calc(100vh - 200px); overflow: auto; }
 .map-card { min-height: 540px; }
 .map-stage { position: relative; width: 100%; height: 540px; border-radius: 6px; overflow: hidden; }

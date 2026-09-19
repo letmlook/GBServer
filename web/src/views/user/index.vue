@@ -1,10 +1,6 @@
 <template>
   <div class="user-page">
     <div class="page-header">
-      <div>
-        <h1 class="page-title">用户管理</h1>
-        <p class="page-subtitle">账号 · 角色 · 密码 · PushKey</p>
-      </div>
       <div class="page-actions">
         <el-input
           v-model="keyword"
@@ -330,9 +326,7 @@ onMounted(async () => {
   justify-content: flex-end;
 }
 .user-page { padding: 16px; }
-.page-header { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 12px; gap: 12px; }
-.page-title { font-size: 20px; font-weight: 600; margin: 0; }
-.page-subtitle { color: var(--el-text-color-secondary); font-size: var(--text-sm); margin-top: 4px; }
+.page-header { display: flex; justify-content: flex-end; align-items: flex-end; margin-bottom: 12px; gap: 12px; }
 .page-actions { display: flex; align-items: center; gap: 8px; }
 .search { width: 200px; }
 /* 操作列按单行排布：默认 el-button 之间的 margin 会让 4 个按钮换行错位。 */

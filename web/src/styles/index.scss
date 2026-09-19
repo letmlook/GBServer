@@ -46,13 +46,31 @@ div:focus { outline: none; }
 .gb-page__header {
   display: flex;
   align-items: flex-end;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 12px;
   flex-wrap: wrap;
 }
-.gb-page__title { font-size: var(--text-xl); font-weight: 600; color: var(--text-primary); margin: 0; }
-.gb-page__subtitle { font-size: var(--text-xs); color: var(--text-tertiary); margin-top: 4px; }
 .gb-page__actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+/* 查询行：把原先独立在页头那一行的动作按钮（刷新 / 新增 / 导出 …）并进筛选条件
+   同一行 —— 条件靠左、动作靠右，省掉一行几乎只有按钮的空白。
+   用在 el-form 上（`:inline="true"`）或普通 div 上。 */
+.gb-query-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  /* el-form--inline 默认给每个 item 32px 右边距；查询行还要多塞一组动作按钮，
+     收窄到 12px，1280px 视口下「条件 + 查询/重置 + 动作」才能落在同一行。
+     （index.scss 在 element-plus CSS 之后引入，同特异性下后者生效。） */
+  .el-form-item { margin-right: 12px; }
+}
+/* 裸 div 的查询行需要自己控间距（el-form 的 item 自带 margin-right） */
+.gb-query-row--gap { gap: 8px 12px; }
+.gb-query-actions {
+  display: flex;
+  align-items: center;
+  margin-left: auto;
+}
 
 .gb-grid { display: grid; gap: 14px; }
 .gb-grid--kpi  { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }

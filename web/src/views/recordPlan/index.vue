@@ -1,18 +1,7 @@
 <template>
   <div class="record-plan-page">
-    <div class="page-header">
-      <div>
-        <h1 class="page-title">录像计划</h1>
-        <p class="page-subtitle">按时段自动拉起设备流并录像 · 通道关联</p>
-      </div>
-      <div class="page-actions">
-        <el-button :icon="Refresh" @click="loadData">刷新</el-button>
-        <el-button type="primary" :icon="Plus" @click="onAdd">新增计划</el-button>
-      </div>
-    </div>
-
     <el-card>
-      <el-form :inline="true" size="small" class="search-bar">
+      <el-form :inline="true" size="small" class="search-bar gb-query-row">
         <el-form-item label="关键字">
           <el-input
             v-model="query"
@@ -24,6 +13,10 @@
         </el-form-item>
         <el-form-item>
           <el-button type="primary" @click="onSearch">查询</el-button>
+        </el-form-item>
+        <el-form-item class="gb-query-actions">
+          <el-button :icon="Refresh" @click="loadData">刷新</el-button>
+          <el-button type="primary" :icon="Plus" @click="onAdd">新增计划</el-button>
         </el-form-item>
       </el-form>
 
@@ -163,22 +156,6 @@ onMounted(loadData)
 <style scoped>
 .record-plan-page {
   padding: 16px;
-}
-.page-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-end;
-  margin-bottom: 12px;
-}
-.page-title {
-  font-size: 20px;
-  font-weight: 600;
-  margin: 0;
-}
-.page-subtitle {
-  color: var(--el-text-color-secondary);
-  font-size: var(--text-sm);
-  margin-top: 4px;
 }
 .search-bar {
   margin-bottom: 8px;

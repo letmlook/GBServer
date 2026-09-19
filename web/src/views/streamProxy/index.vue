@@ -1,30 +1,19 @@
 <template>
   <div class="stream-proxy-page">
-    <div class="page-header">
-      <div>
-        <h1 class="page-title">拉流代理</h1>
-        <p class="page-subtitle">RTSP / RTMP / HLS 拉流转 ZLMediaKit · 可转 GB28181 通道</p>
-      </div>
-      <div class="page-actions">
-        <el-button @click="loadData">刷新</el-button>
-        <el-button type="primary" :icon="Plus" @click="onAdd">新增代理</el-button>
-      </div>
-    </div>
-
     <el-card>
-      <el-form :inline="true" class="filter-bar">
+      <el-form :inline="true" class="filter-bar gb-query-row">
         <el-form-item label="关键字">
           <el-input
             v-model="filter.query"
             placeholder="名称 / App / Stream / 源地址"
             clearable
-            style="width: 240px"
+            style="width: 200px"
             @keyup.enter="onSearch"
             @clear="onSearch"
           />
         </el-form-item>
         <el-form-item label="拉流状态">
-          <el-select v-model="filter.pulling" placeholder="全部" clearable style="width: 140px" @change="onSearch">
+          <el-select v-model="filter.pulling" placeholder="全部" clearable style="width: 120px" @change="onSearch">
             <el-option label="全部" value="" />
             <el-option label="正在拉流" value="true" />
             <el-option label="尚未拉流" value="false" />
@@ -38,6 +27,10 @@
         </el-form-item>
         <el-form-item>
           <el-button type="primary" @click="onSearch">查询</el-button>
+        </el-form-item>
+        <el-form-item class="gb-query-actions">
+          <el-button @click="loadData">刷新</el-button>
+          <el-button type="primary" :icon="Plus" @click="onAdd">新增代理</el-button>
         </el-form-item>
       </el-form>
 
@@ -211,9 +204,6 @@ onMounted(() => {
 
 <style scoped>
 .stream-proxy-page { padding: 16px; }
-.page-header { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 12px; }
-.page-title { font-size: 20px; font-weight: 600; margin: 0; }
-.page-subtitle { color: var(--el-text-color-secondary); font-size: var(--text-sm); margin-top: 4px; }
 .filter-bar { margin-bottom: 4px; }
 .pager { margin-top: 12px; justify-content: flex-end; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: var(--text-sm); }

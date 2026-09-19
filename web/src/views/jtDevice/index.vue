@@ -1,10 +1,6 @@
 <template>
   <div class="jt-page">
     <div class="page-header">
-      <div>
-        <h1 class="page-title">JT/T 1078 车载终端</h1>
-        <p class="page-subtitle">部标 808/1078 · 终端管理 · 区域/路线围栏</p>
-      </div>
       <div class="page-actions">
         <el-button @click="loadData">刷新</el-button>
         <el-button type="primary" :icon="Plus" @click="onAdd">新增终端</el-button>
@@ -332,8 +328,6 @@ onMounted(loadData)
 
 <style scoped>
 .jt-page { padding: 16px; }
-.page-header { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 12px; }
-.page-title { font-size: 20px; font-weight: 600; margin: 0; }
-.page-subtitle { color: var(--el-text-color-secondary); font-size: var(--text-sm); margin-top: 4px; }
+.page-header { display: flex; justify-content: flex-end; align-items: flex-end; margin-bottom: 12px; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: var(--text-sm); }
 </style>

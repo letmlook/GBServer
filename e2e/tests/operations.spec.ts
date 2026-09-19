@@ -40,8 +40,10 @@ test.describe('Operations pages', () => {
     const diskCard = page.locator('.metric-card', { hasText: '磁盘' }).first();
     await expect(diskCard.locator('.metric-detail')).not.toContainText('- / -');
 
-    // 版本 / 构建时间不再恒为 '-'，副标题不再是「加载中...」
-    await expect(page.locator('.page-subtitle')).not.toContainText('加载中');
+    // 版本 / 构建时间不再恒为 '-'。页面级标题/副标题已统一去掉（顶栏面包屑
+    // 和菜单本身就说明了当前页面），所以这里反过来断言副标题已不存在，
+    // 版本信息由下面「构建信息」卡片承载。
+    await expect(page.locator('.page-subtitle')).toHaveCount(0);
     const build = page.locator('.el-descriptions').first();
     await expect(build).toContainText('版本');
     await expect(build).not.toContainText('构建时间\n-');

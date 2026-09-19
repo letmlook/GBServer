@@ -1,12 +1,5 @@
 <template>
   <div class="playback-page">
-    <div class="page-header">
-      <div>
-        <h1 class="page-title">录像回放</h1>
-        <p class="page-subtitle">GB/T 28181 录像检索 · 回放控制</p>
-      </div>
-    </div>
-
     <el-card class="filter-card">
       <el-form :inline="true">
         <el-form-item label="设备">
@@ -268,9 +261,6 @@ onUnmounted(destroyPlayers)
 
 <style scoped>
 .playback-page { padding: 16px; }
-.page-header { margin-bottom: 12px; }
-.page-title { font-size: 20px; font-weight: 600; margin: 0; }
-.page-subtitle { color: var(--el-text-color-secondary); font-size: var(--text-sm); margin-top: 4px; }
 .filter-card { margin-bottom: 12px; }
 .result-card { min-height: 540px; }
 .player-card { min-height: 540px; }

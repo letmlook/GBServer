@@ -1,25 +1,14 @@
 <template>
   <div class="channel-page">
-    <div class="page-header">
-      <div>
-        <h1 class="page-title">通道列表</h1>
-        <p class="page-subtitle">GB/T 28181 通道 · 来自在线国标设备</p>
-      </div>
-      <div class="page-actions">
-        <el-button @click="loadData">刷新</el-button>
-        <el-button type="primary" :icon="Plus" @click="onAdd">新增通道</el-button>
-      </div>
-    </div>
-
     <el-card class="filter-card">
-      <el-form :inline="true" :model="query" @submit.prevent="loadData">
+      <el-form class="gb-query-row" :inline="true" :model="query" @submit.prevent="loadData">
         <el-form-item label="关键字">
           <el-autocomplete
             v-model="query.query"
             :fetch-suggestions="searchSuggest"
             placeholder="国标ID / 通道名 / 设备ID（输即搜）"
             clearable
-            style="width: 280px"
+            style="width: 240px"
             @keyup.enter="loadData"
             @select="onSelectSuggest"
           />
@@ -39,6 +28,10 @@
         <el-form-item>
           <el-button type="primary" @click="loadData">查询</el-button>
           <el-button @click="resetQuery">重置</el-button>
+        </el-form-item>
+        <el-form-item class="gb-query-actions">
+          <el-button @click="loadData">刷新</el-button>
+          <el-button type="primary" :icon="Plus" @click="onAdd">新增通道</el-button>
         </el-form-item>
       </el-form>
     </el-card>
@@ -442,9 +435,6 @@ onMounted(async () => {
 
 <style scoped>
 .channel-page { padding: 16px; }
-.page-header { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 16px; }
-.page-title { font-size: 20px; font-weight: 600; margin: 0; }
-.page-subtitle { color: var(--el-text-color-secondary); font-size: var(--text-sm); margin-top: 4px; }
 .filter-card { margin-bottom: 12px; }
 .table-card { min-height: 400px; overflow-x: auto; }
 .pagination { margin-top: 16px; justify-content: flex-end; }

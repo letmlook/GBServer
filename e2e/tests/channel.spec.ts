@@ -65,7 +65,7 @@ test.describe.serial('Channel page (/channel)', () => {
     expect(body.channelType).toBe(3); // 快球
 
     // 列表里应能查到（说明真的写库了）
-    await page.getByPlaceholder('国标ID / 名称').fill(NAME);
+    await page.getByPlaceholder('国标ID / 通道名 / 设备ID').fill(NAME);
     await page.getByRole('button', { name: '查询' }).click();
     const row = page.locator('tr', { hasText: NAME }).first();
     await expect(row).toBeVisible({ timeout: 10_000 });
@@ -74,7 +74,7 @@ test.describe.serial('Channel page (/channel)', () => {
 
   test('编辑通道：只改名称不会清空其它字段', async ({ page }) => {
     await gotoChannel(page);
-    await page.getByPlaceholder('国标ID / 名称').fill(NAME);
+    await page.getByPlaceholder('国标ID / 通道名 / 设备ID').fill(NAME);
     await page.getByRole('button', { name: '查询' }).click();
     const row = page.locator('tr', { hasText: NAME }).first();
     await expect(row).toBeVisible({ timeout: 10_000 });
@@ -88,7 +88,7 @@ test.describe.serial('Channel page (/channel)', () => {
     await nameInput.fill(newName);
     await dialog.getByRole('button', { name: '保存' }).click();
 
-    await page.getByPlaceholder('国标ID / 名称').fill(newName);
+    await page.getByPlaceholder('国标ID / 通道名 / 设备ID').fill(newName);
     await page.getByRole('button', { name: '查询' }).click();
     const edited = page.locator('tr', { hasText: newName }).first();
     await expect(edited).toBeVisible({ timeout: 10_000 });

@@ -1,19 +1,7 @@
 <template>
   <div class="alarm-page">
-    <div class="page-header">
-      <div>
-        <h1 class="page-title">报警管理</h1>
-        <p class="page-subtitle">设备报警事件 · 处理 / 清除 / 抓图</p>
-      </div>
-      <div class="page-actions">
-        <el-button @click="loadData">刷新</el-button>
-        <el-button type="danger" @click="onBatchClear" :disabled="!selection.length">批量清除</el-button>
-        <el-button type="warning" @click="onClearByFilter">按条件清空</el-button>
-      </div>
-    </div>
-
     <el-card class="filter-card">
-      <el-form :inline="true">
+      <el-form class="gb-query-row" :inline="true">
         <el-form-item label="关键字">
           <el-input v-model="query.query" placeholder="设备ID / 描述" clearable @keyup.enter="loadData" />
         </el-form-item>
@@ -22,6 +10,11 @@
         </el-form-item>
         <el-form-item>
           <el-button type="primary" @click="loadData">查询</el-button>
+        </el-form-item>
+        <el-form-item class="gb-query-actions">
+          <el-button @click="loadData">刷新</el-button>
+          <el-button type="danger" :disabled="!selection.length" @click="onBatchClear">批量清除</el-button>
+          <el-button type="warning" @click="onClearByFilter">按条件清空</el-button>
         </el-form-item>
       </el-form>
     </el-card>
@@ -238,9 +231,6 @@ onMounted(() => {
 
 <style scoped>
 .alarm-page { padding: 16px; }
-.page-header { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 12px; }
-.page-title { font-size: 20px; font-weight: 600; margin: 0; }
-.page-subtitle { color: var(--el-text-color-secondary); font-size: var(--text-sm); margin-top: 4px; }
 .filter-card { margin-bottom: 12px; }
 .pagination { margin-top: 16px; justify-content: flex-end; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: var(--text-sm); }

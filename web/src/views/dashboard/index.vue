@@ -1,10 +1,6 @@
 <template>
   <div class="gb-page">
     <header class="gb-page__header">
-      <div>
-        <h1 class="gb-page__title">控制台</h1>
-        <p class="gb-page__subtitle">实时监控网关、媒体节点与全网告警</p>
-      </div>
       <div class="gb-page__actions">
         <span class="text-tertiary text-xs">最近同步：{{ syncLabel }}（{{ REFRESH_INTERVAL_MS / 1000 }}s 自动）</span>
         <button class="gb-btn" @click="refresh">刷新</button>

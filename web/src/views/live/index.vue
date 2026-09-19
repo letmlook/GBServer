@@ -1,10 +1,6 @@
 <template>
   <div class="live-page">
     <div class="page-header">
-      <div>
-        <h1 class="page-title">实时直播</h1>
-        <p class="page-subtitle">{{ stats.online }} 路在线 · {{ stats.total }} 路总计</p>
-      </div>
       <div class="page-actions">
         <el-button @click="loadData">刷新</el-button>
         <!-- 布局切换：与「刷新」同款普通按钮（默认 size），仅用 type 区分选中态。
@@ -209,11 +205,6 @@ const snapItems = ref<{ deviceId: string; channelId: string; name: string; snapU
 let hlsInstance: any = null
 let flvPlayer: any = null
 let webrtcPc: RTCPeerConnection | null = null
-
-const stats = computed(() => ({
-  total: channels.value.length,
-  online: channels.value.filter((c) => c.online).length
-}))
 
 const statusLabel = computed(() => {
   switch (playerStatus.value) {
@@ -630,9 +621,7 @@ onMounted(async () => {
   height: calc(100vh - 16px);
   box-sizing: border-box;
 }
-.page-header { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 12px; flex: 0 0 auto; }
-.page-title { font-size: 20px; font-weight: 600; margin: 0; }
-.page-subtitle { color: var(--el-text-color-secondary); font-size: var(--text-sm); margin-top: 4px; }
+.page-header { display: flex; justify-content: flex-end; align-items: flex-end; margin-bottom: 12px; flex: 0 0 auto; }
 
 /* 主区：左侧设备栏 + 右侧播放卡 占满剩余高度；
    关键是不让任一列把页面撑高导致整体出现竖向滚动条。 */

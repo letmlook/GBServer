@@ -1,28 +1,23 @@
 <template>
   <div class="region-page">
-    <div class="page-header">
-      <div>
-        <h1 class="page-title">行政区划 / 业务分组</h1>
-        <p class="page-subtitle">GB/T 28181 目录树 · 通道归类</p>
-      </div>
-      <div class="page-actions">
-        <el-button @click="loadData">刷新</el-button>
-        <el-button v-if="tab === 'region'" @click="onSync">同步行政区划</el-button>
-        <el-button type="primary" :icon="Plus" @click="onAdd(null)">新增</el-button>
-      </div>
-    </div>
-
     <el-card>
       <el-tabs v-model="tab" @tab-change="onTabChange">
         <el-tab-pane label="行政区划" name="region">
-          <el-input
-            v-model="keyword"
-            placeholder="按名称 / 国标编码搜索"
-            clearable
-            style="width: 280px; margin-bottom: 8px"
-            @keyup.enter="loadData"
-            @clear="loadData"
-          />
+          <div class="tab-query-row gb-query-row gb-query-row--gap">
+            <el-input
+              v-model="keyword"
+              placeholder="按名称 / 国标编码搜索"
+              clearable
+              style="width: 280px"
+              @keyup.enter="loadData"
+              @clear="loadData"
+            />
+            <div class="gb-query-actions">
+              <el-button @click="loadData">刷新</el-button>
+              <el-button @click="onSync">同步行政区划</el-button>
+              <el-button type="primary" :icon="Plus" @click="onAdd(null)">新增</el-button>
+            </div>
+          </div>
           <el-tree
             :data="regionTree"
             node-key="id"
@@ -48,14 +43,20 @@
         </el-tab-pane>
 
         <el-tab-pane label="业务分组" name="group">
-          <el-input
-            v-model="keyword"
-            placeholder="按名称 / 国标编码搜索"
-            clearable
-            style="width: 280px; margin-bottom: 8px"
-            @keyup.enter="loadData"
-            @clear="loadData"
-          />
+          <div class="tab-query-row gb-query-row gb-query-row--gap">
+            <el-input
+              v-model="keyword"
+              placeholder="按名称 / 国标编码搜索"
+              clearable
+              style="width: 280px"
+              @keyup.enter="loadData"
+              @clear="loadData"
+            />
+            <div class="gb-query-actions">
+              <el-button @click="loadData">刷新</el-button>
+              <el-button type="primary" :icon="Plus" @click="onAdd(null)">新增</el-button>
+            </div>
+          </div>
           <el-tree
             :data="groupTree"
             node-key="id"
@@ -202,9 +203,7 @@ onMounted(loadData)
 
 <style scoped>
 .region-page { padding: 16px; }
-.page-header { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 12px; }
-.page-title { font-size: 20px; font-weight: 600; margin: 0; }
-.page-subtitle { color: var(--el-text-color-secondary); font-size: var(--text-sm); margin-top: 4px; }
+.tab-query-row { margin-bottom: 8px; }
 .node-row { display: flex; align-items: center; gap: 10px; width: 100%; }
 .node-name { min-width: 140px; }
 .node-id { color: var(--el-text-color-secondary); }

@@ -47,6 +47,18 @@ const ADMIN_PAGES: ReadonlyArray<{ name: string; path: string }> = [
   { name: 'operations',   path: '/operations' },
 ];
 
+// 带「查询行」的页面：页面动作按钮应并进查询条件那一行（.gb-query-actions），
+// 不再单独占页头一行。见 web/src/styles/index.scss 的 .gb-query-row。
+const QUERY_ROW_PAGES: ReadonlySet<string> = new Set([
+  '/device',
+  '/channel',
+  '/cloudRecord',
+  '/recordPlan',
+  '/streamProxy',
+  '/region',
+  '/alarm',
+]);
+
 // Vue 3 新登录页 placeholder（见 web/src/views/login/index.vue）
 const LOGIN_USERNAME_PLACEHOLDER = '用户名 / SIP 编号';
 const LOGIN_PASSWORD_PLACEHOLDER = '登录密码';
@@ -140,6 +152,23 @@ test.describe('GBServer admin UI smoke (Vue 3)', () => {
 
         const hasBody = await page.locator('body').isVisible();
         expect(hasBody, `body visible for ${p.name}`).toBe(true);
+
+        // 主界面不再有页面级标题 / 副标题：左侧菜单与顶栏面包屑已经表明当前页面，
+        // 每个 view 顶部的「主标题 + 副标题」块已按要求统一删除（只保留 .page-actions
+        // 工具按钮）。这里对所有菜单页锁死该回归。
+        await expect(
+          page.locator('.page-title, .page-subtitle, .gb-page__title, .gb-page__subtitle'),
+          `${p.name} 主界面不应再渲染页面级标题/副标题`
+        ).toHaveCount(0);
+
+        // 有查询条件行的页面：页面动作（刷新 / 新增 …）必须已经并进查询行里，
+        // 而不是单独占页头一行。
+        if (QUERY_ROW_PAGES.has(p.path)) {
+          await expect(
+            page.locator('.gb-query-row .gb-query-actions').first(),
+            `${p.name} 的页面动作按钮应在查询条件行内`
+          ).toBeVisible();
+        }
 
         await page.screenshot({ path: path.join(ARTIFACT_DIR, `${p.name}.png`), fullPage: true });
 

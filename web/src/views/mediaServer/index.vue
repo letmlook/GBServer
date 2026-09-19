@@ -1,10 +1,6 @@
 <template>
   <div class="media-server-page">
     <div class="page-header">
-      <div>
-        <h1 class="page-title">媒体节点</h1>
-        <p class="page-subtitle">ZLMediaKit 集群 · {{ onlineCount }} 个在线 / {{ rows.length }} 个总计</p>
-      </div>
       <div class="page-actions">
         <el-button @click="loadData">刷新</el-button>
         <el-button type="primary" :icon="Plus" @click="onAdd">新增节点</el-button>
@@ -100,14 +96,11 @@ const rows = ref<any[]>([])
 const editVisible = ref(false)
 const currentRow = ref<MediaServer>({} as MediaServer)
 
-const onlineCount = ref(0)
-
 async function loadData() {
   loading.value = true
   try {
     const res = await getMediaServerList()
     rows.value = (res.data as MediaServer[]) ?? []
-    onlineCount.value = rows.value.filter((r) => r.status).length
   } finally {
     loading.value = false
   }
@@ -151,8 +144,6 @@ onMounted(loadData)
 
 <style scoped>
 .media-server-page { padding: 16px; }
-.page-header { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 12px; }
-.page-title { font-size: 20px; font-weight: 600; margin: 0; }
-.page-subtitle { color: var(--el-text-color-secondary); font-size: var(--text-sm); margin-top: 4px; }
+.page-header { display: flex; justify-content: flex-end; align-items: flex-end; margin-bottom: 12px; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: var(--text-sm); }
 </style>

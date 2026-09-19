@@ -1,10 +1,6 @@
 <template>
   <div class="system-info-page">
     <div class="page-header">
-      <div>
-        <h1 class="page-title">系统信息</h1>
-        <p class="page-subtitle">{{ info.version ?? '加载中...' }} · 运行时长 {{ uptimeText }}</p>
-      </div>
       <div class="page-actions">
         <el-button @click="loadData">刷新</el-button>
       </div>
@@ -143,9 +139,7 @@ onMounted(loadData)
 
 <style scoped>
 .system-info-page { padding: 16px; }
-.page-header { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 12px; }
-.page-title { font-size: 20px; font-weight: 600; margin: 0; }
-.page-subtitle { color: var(--el-text-color-secondary); font-size: var(--text-sm); margin-top: 4px; }
+.page-header { display: flex; justify-content: flex-end; align-items: flex-end; margin-bottom: 12px; }
 .metric-card { text-align: center; }
 .metric-label { color: var(--el-text-color-secondary); font-size: var(--text-sm); }
 .metric-value { font-size: 28px; font-weight: 700; margin: 6px 0; }

@@ -1,10 +1,19 @@
 <template>
   <el-card class="gb-search-form">
-    <el-form :inline="inline" :model="model" @submit.prevent="$emit('search')">
+    <el-form
+      :inline="inline"
+      :model="model"
+      :class="{ 'gb-query-row': inline }"
+      @submit.prevent="$emit('search')"
+    >
       <slot :model="model" />
       <el-form-item>
         <el-button type="primary" @click="$emit('search')">查询</el-button>
         <el-button @click="onReset">重置</el-button>
+      </el-form-item>
+      <!-- 页面动作（刷新 / 新增 …）：与筛选条件同一行、靠右，替代原先页面顶部
+           单独的一行按钮。 -->
+      <el-form-item v-if="$slots.actions" class="gb-query-actions">
         <slot name="actions" :model="model" />
       </el-form-item>
     </el-form>

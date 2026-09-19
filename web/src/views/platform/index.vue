@@ -1,10 +1,6 @@
 <template>
   <div class="platform-page">
     <div class="page-header">
-      <div>
-        <h1 class="page-title">上级 / 下级平台</h1>
-        <p class="page-subtitle">GB/T 28181 级联 · 通道推送</p>
-      </div>
       <div class="page-actions">
         <el-button @click="loadData">刷新</el-button>
         <el-button type="primary" :icon="Plus" @click="onAdd">新增平台</el-button>
@@ -122,8 +118,6 @@ onMounted(loadData)
 
 <style scoped>
 .platform-page { padding: 16px; }
-.page-header { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 12px; }
-.page-title { font-size: 20px; font-weight: 600; margin: 0; }
-.page-subtitle { color: var(--el-text-color-secondary); font-size: var(--text-sm); margin-top: 4px; }
+.page-header { display: flex; justify-content: flex-end; align-items: flex-end; margin-bottom: 12px; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: var(--text-sm); }
 </style>

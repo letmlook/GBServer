@@ -1,10 +1,6 @@
 <template>
   <div class="real-log-page">
     <div class="page-header">
-      <div>
-        <h1 class="page-title">实时日志</h1>
-        <p class="page-subtitle">{{ events.length }} 条 · 错误 {{ errors }} · 警告 {{ warns }}</p>
-      </div>
       <div class="page-actions">
         <el-switch v-model="paused" active-text="暂停" />
         <el-switch v-model="wrap" active-text="自动换行" />
@@ -59,9 +55,6 @@ const filteredEvents = computed(() => {
   if (!level.value) return events.value
   return events.value.filter((e) => (e.level ?? '').toUpperCase() === level.value)
 })
-
-const errors = computed(() => events.value.filter((e) => (e.level ?? '').toUpperCase() === 'ERROR').length)
-const warns = computed(() => events.value.filter((e) => (e.level ?? '').toUpperCase() === 'WARN').length)
 
 const scroller = ref<HTMLElement | null>(null)
 let timer: ReturnType<typeof setInterval> | null = null
@@ -138,9 +131,7 @@ const vAutoBottom = {
 
 <style scoped>
 .real-log-page { padding: 16px; }
-.page-header { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 12px; }
-.page-title { font-size: 20px; font-weight: 600; margin: 0; }
-.page-subtitle { color: var(--el-text-color-secondary); font-size: var(--text-sm); margin-top: 4px; }
+.page-header { display: flex; justify-content: flex-end; align-items: flex-end; margin-bottom: 12px; }
 .log-card { min-height: 600px; }
 .log-header { display: flex; align-items: center; gap: 12px; }
 .status { display: flex; align-items: center; gap: 4px; font-size: var(--text-sm); }
