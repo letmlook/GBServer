@@ -139,6 +139,38 @@ export function deviceRecord(params: { deviceId: string; channelId: string; reco
   })
 }
 
+/**
+ * 平台 ↔ 设备的 SIP 往返延迟快照（GET /api/device/query/latency）。
+ *
+ * 后端由 SIP 探针循环写进程内注册表。传入当前页的 deviceId 后只返回这些
+ * 设备的样本（不传则返回全部）—— 设备上千时轮询体量才不会失控。
+ */
+export function queryDeviceLatency(deviceIds?: string[]) {
+  return request<WvpResult<{ list: DeviceLatency[]; probeIntervalSecs: number }>>({
+    method: 'get',
+    url: '/device/query/latency',
+    params: deviceIds && deviceIds.length ? { deviceIds: deviceIds.join(',') } : undefined
+  })
+}
+
+export interface DeviceLatency {
+  deviceId: string
+  /** 最近若干次采样的平均往返延迟（ms）；没有成功样本时为 null */
+  rttMs: number | null
+  /** 最近一次成功的原始样本（ms）——探针失败时保留上次成功值 */
+  lastMs: number | null
+  minMs: number | null
+  maxMs: number | null
+  /** 窗口内丢包率（%） */
+  lossPct: number
+  /** 最近一次探针是否拿到成功响应 */
+  ok: boolean
+  failStreak: number
+  /** 最近一次结算时间（unix 秒） */
+  measuredAt: number | null
+  samples: number
+}
+
 export interface DeviceRecord {
   id?: number
   deviceId: string

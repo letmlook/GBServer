@@ -118,6 +118,9 @@ pub async fn device_delete(
     Path(device_id): Path<String>,
 ) -> Result<Json<WVPResult<()>>, AppError> {
     delete_device_cascade(&state.pool, &device_id).await?;
+    // 连带清掉该设备的延迟样本：设备没了，注册表里的历史值再留着只会在
+    // 同 ID 重新注册时冒充成"当前延迟"。
+    crate::sip::gb28181::latency_registry().forget(&device_id);
     Ok(Json(WVPResult::<()>::success_empty()))
 }
 

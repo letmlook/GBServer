@@ -104,6 +104,12 @@ retry_interval_secs = 5
 [sip.heartbeat]
 timeout_multiplier = 3
 check_interval_secs = 10
+# 设备延迟探针：「国标设备」列表「延迟」列的采样间隔（秒）。
+# 平台每轮向每台在线设备各发一条 SIP MESSAGE（Keepalive）探针，
+# 用设备回的 200 OK 结算一次平台↔设备的往返延迟。0 = 关闭探针。
+latency_probe_interval_secs = 15
+# 单次探针等待响应的超时（毫秒）；超时记一次丢包。
+latency_probe_timeout_ms = 5000
 
 # ZLM 流媒体服务器配置（多节点负载均衡示例）
 [zlm]

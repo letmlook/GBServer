@@ -197,13 +197,32 @@ impl Default for StreamReconnectConfig {
 pub struct HeartbeatConfig {
     pub timeout_multiplier: u32,
     pub check_interval_secs: u64,
+    /// 设备延迟探针间隔（秒）。平台每一轮向**在线设备**各发一条 SIP
+    /// MESSAGE 探针，用设备回的 200 OK 结算一次往返延迟（「国标设备」
+    /// 列表的「延迟」列）。0 = 关闭探针（该列显示"未启用"）。
+    ///
+    /// 为什么与 `check_interval_secs` 分开：心跳检查 10s 一次、且承担
+    /// 「判离线」职责，必须保持轻量；探针的发送量随设备数线性增长，
+    /// 得有自己的节拍。
+    #[serde(default = "default_latency_probe_interval_secs")]
+    pub latency_probe_interval_secs: u64,
+    /// 单次探针等待响应的超时（毫秒）。超时记一次丢包。
+    /// 应当明显小于 `latency_probe_interval_secs`，否则探针会在下一轮
+    /// 开始前就被误判超时。
+    #[serde(default = "default_latency_probe_timeout_ms")]
+    pub latency_probe_timeout_ms: u64,
 }
+
+fn default_latency_probe_interval_secs() -> u64 { 15 }
+fn default_latency_probe_timeout_ms() -> u64 { 5000 }
 
 impl Default for HeartbeatConfig {
     fn default() -> Self {
         Self {
             timeout_multiplier: 3,
             check_interval_secs: 10,
+            latency_probe_interval_secs: default_latency_probe_interval_secs(),
+            latency_probe_timeout_ms: default_latency_probe_timeout_ms(),
         }
     }
 }

@@ -1316,6 +1316,74 @@ let renewal_pool = pool.clone();
             }
         });
 
+        // ── 设备延迟探针 ──
+        //
+        // 周期性向每台在线设备发一条 SIP MESSAGE（Keepalive，与上面心跳
+        // 补发同款），用设备回的 200 OK 结算一次 RTT，供「国标设备」列表的
+        // 「延迟」列显示"平台 ↔ 设备"的真实往返时间。
+        //
+        // 独立循环而不是塞进上面的心跳循环：心跳循环 10s 一次且承担
+        // 「判离线」职责，往里加随设备数线性增长的发送量会拖慢离线判定。
+        let latency_config = config.clone();
+        let latency_device_manager = device_manager.clone();
+        let latency_socket = socket.clone();
+        tokio::spawn(async move {
+            let interval_secs = latency_config
+                .heartbeat
+                .as_ref()
+                .map(|h| h.latency_probe_interval_secs)
+                .unwrap_or(15);
+            let timeout_ms = latency_config
+                .heartbeat
+                .as_ref()
+                .map(|h| h.latency_probe_timeout_ms)
+                .unwrap_or(5000);
+            let reg = crate::sip::gb28181::latency_registry();
+            reg.set_interval_secs(interval_secs);
+            if interval_secs == 0 {
+                tracing::info!("设备延迟探针已关闭（sip.heartbeat.latency_probe_interval_secs = 0）");
+                return;
+            }
+            let interval = Duration::from_secs(interval_secs);
+            let timeout = Duration::from_millis(timeout_ms);
+            tracing::info!(
+                "设备延迟探针已启用：每 {}s 探测一轮，单次超时 {}ms",
+                interval_secs,
+                timeout_ms
+            );
+
+            // 先等一个间隔：后端刚起来时设备还没注册上来，立刻探测只会
+            // 得到一堆"发送失败/超时"的假丢包。
+            tokio::time::sleep(interval).await;
+            loop {
+                // 先清上一轮没等到响应的探针（计丢包），再发这一轮 ——
+                // 否则在途表会随运行时间无限增长。
+                let expired = reg.sweep_expired(timeout);
+                if expired > 0 {
+                    tracing::debug!("延迟探针超时 {} 条（未收到响应）", expired);
+                }
+
+                let targets: Vec<(String, SocketAddr)> = latency_device_manager
+                    .list_all()
+                    .await
+                    .into_iter()
+                    .filter(|d| d.online)
+                    .filter_map(|d| d.addr.map(|addr| (d.device_id.clone(), addr)))
+                    .collect();
+                if !targets.is_empty() {
+                    let sent = crate::sip::gb28181::latency::probe_round(
+                        &latency_socket,
+                        &latency_config,
+                        targets,
+                    )
+                    .await;
+                    tracing::debug!("本轮发出 {} 条延迟探针", sent);
+                }
+
+                tokio::time::sleep(interval).await;
+            }
+        });
+
         loop {
             tokio::time::sleep(Duration::from_secs(3600)).await;
         }
@@ -3643,6 +3711,16 @@ let renewal_pool = pool.clone();
             call_id,
             cseq
         );
+
+        // 延迟探针响应：结算一次 RTT 样本。
+        // 放在最前面 —— `lat_` 前缀的 Call-ID 只属于延迟注册表，不参与
+        // 下面的级联/事务/会话路由（下面各分支按 cseq 或 call_id 前缀匹配，
+        // 探针都命中不了，不会有副作用）。
+        // 本函数是 UDP 与 TCP 两条收包路径的唯一出口（都经 `handle_packet`），
+        // 所以这里挂一次就覆盖两种传输。
+        if call_id.starts_with(crate::sip::gb28181::latency::PROBE_CALL_ID_PREFIX) {
+            crate::sip::gb28181::latency_registry().on_response(&call_id, resp.status_code());
+        }
 
         // Route REGISTER responses to cascade registrar
         if cseq.contains("REGISTER") {

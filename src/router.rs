@@ -91,6 +91,10 @@ pub fn app(state: AppState) -> Router<AppState> {
             get(device::device_keepalive_statistics),
         )
         .route(
+            "/api/device/query/latency",
+            get(device::query_device_latency),
+        )
+        .route(
             "/api/device/query/statistics/register",
             get(device::device_register_statistics),
         )

@@ -53,6 +53,44 @@ pub struct DevicePage {
     pub size: u64,
 }
 
+/// `GET /api/device/query/latency` 的查询参数。
+#[derive(Debug, Deserialize)]
+pub struct LatencyQuery {
+    /// 逗号分隔的设备 ID。给了就只返回这些设备 —— 列表页一页只有 20 行，
+    /// 没必要每 5s 把**全部**设备的样本推下来（设备上千时那是几百 KB 的轮询）。
+    #[serde(rename = "deviceIds", default)]
+    pub device_ids: Option<String>,
+}
+
+/// GET /api/device/query/latency
+///
+/// 「国标设备」列表「延迟」列的数据源：平台 → 设备 → 平台的 **SIP 往返时间**。
+///
+/// 数据来自进程内延迟注册表（由 `sip/server.rs` 的探针循环按
+/// `sip.heartbeat.latency_probe_interval_secs` 写入），不落库 ——
+/// 延迟是秒级变化的实时量，落库只会在后端重启后留下过期值；
+/// 重启后一轮探针就会重新填满。
+///
+/// 前端每次带上当前页的 deviceId，返回里没有的设备就是"还没测出来"。
+pub async fn query_device_latency(
+    State(_state): State<AppState>,
+    Query(q): Query<LatencyQuery>,
+) -> Result<Json<WVPResult<serde_json::Value>>, AppError> {
+    let reg = crate::sip::gb28181::latency_registry();
+    let list = match q.device_ids.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(ids) => ids
+            .split(',')
+            .filter_map(|id| reg.get(id.trim()))
+            .collect::<Vec<_>>(),
+        None => reg.snapshot(),
+    };
+    Ok(Json(WVPResult::success(serde_json::json!({
+        "list": list,
+        // 0 = 探针未启用（配置里关掉了），前端据此显示"未启用"而不是"测量中"。
+        "probeIntervalSecs": reg.interval_secs(),
+    }))))
+}
+
 #[derive(Debug, Deserialize)]
 pub struct ChannelsQuery {
     pub page: Option<u32>,

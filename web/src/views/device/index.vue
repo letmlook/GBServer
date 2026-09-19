@@ -91,6 +91,26 @@
               </el-tag>
             </template>
           </el-table-column>
+          <!-- 延迟：平台 → 设备 → 平台的 **SIP 往返时间**（由 SIP 探针量出来，
+               不是设备心跳周期）。设备离线时不显示数字：离线设备没有探针在途，
+               留着上次的样本会被误读成"当前延迟"。 -->
+          <el-table-column label="延迟" width="136" align="center">
+            <template #default="{ row }">
+              <span v-if="!isOnline(row)" class="text-tertiary">-</span>
+              <span
+                v-else-if="probeIntervalSecs === 0"
+                class="text-tertiary"
+                title="延迟探针已关闭（sip.heartbeat.latency_probe_interval_secs = 0）"
+              >未启用</span>
+              <el-tooltip v-else :content="latencyTitle(row)" placement="top">
+                <span class="latency-cell">
+                  <span :class="['gb-dot', latencyDot(row)]" />
+                  <span class="mono">{{ latencyText(row) }}</span>
+                  <span class="text-tertiary latency-cell__q">{{ latencyQuality(row) }}</span>
+                </span>
+              </el-tooltip>
+            </template>
+          </el-table-column>
           <el-table-column prop="channelCount" label="通道数" width="80" />
           <el-table-column label="操作" width="320" fixed="right">
             <template #default="{ row }">
@@ -192,7 +212,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { onMounted, onUnmounted, reactive, ref } from 'vue'
 import { Plus, VideoCameraFilled } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
@@ -202,7 +222,9 @@ import {
   setGuard,
   resetGuard,
   queryChannels,
-  updateDeviceTransport
+  updateDeviceTransport,
+  queryDeviceLatency,
+  type DeviceLatency
 } from '@/api/device'
 import { captureSnap, listSnapshots, snapshotKey } from '@/api/live'
 import GbSearchForm from '@/components/GbSearchForm/index.vue'
@@ -296,6 +318,119 @@ const query = reactive({
   status: ''
 })
 
+/* ── 延迟（平台 ↔ 设备的 SIP 往返） ──
+ *
+ * 数据源是 `/device/query/latency`，后端每个探针周期（默认 15s）向每台
+ * 在线设备发一条 SIP MESSAGE 并量往返时间。前端 5s 拉一次，比探针周期
+ * 短 —— 保证设备刚测完就能显示出来，而不是最多等一个完整周期。
+ *
+ * 注册表在后端内存里，键是 deviceId；这里只缓存「当前页需要的那些行」，
+ * 表里没有的行查不到就是"还没测出来"，显示测量中。
+ */
+const latencyMap = ref<Record<string, DeviceLatency>>({})
+/** 探针周期（秒）。0 = 后端关闭了探针，前端据此显示"未启用"而不是"测量中"。 */
+const probeIntervalSecs = ref(15)
+let latencyTimer: number | null = null
+
+const LATENCY_POLL_MS = 5_000
+
+async function loadLatency() {
+  // 二级页（通道列表）不显示设备延迟，别白拉接口。
+  if (currentDeviceId.value) return
+  const ids = rows.value.map((r) => r.deviceId).filter(Boolean)
+  if (!ids.length) {
+    latencyMap.value = {}
+    return
+  }
+  try {
+    const res = await queryDeviceLatency(ids)
+    const map: Record<string, DeviceLatency> = {}
+    for (const item of res?.data?.list ?? []) {
+      if (item?.deviceId) map[item.deviceId] = item
+    }
+    latencyMap.value = map
+    if (typeof res?.data?.probeIntervalSecs === 'number') {
+      probeIntervalSecs.value = res.data.probeIntervalSecs
+    }
+  } catch {
+    // 静默：延迟是附加信息，拉不到就保持上一次的值，不打断设备管理操作。
+  }
+}
+
+/** 该行当前应有的延迟样本（没有 = 还没测出来）。 */
+function latencyOf(row: any): DeviceLatency | undefined {
+  return latencyMap.value[row?.deviceId]
+}
+
+/**
+ * 延迟档位。阈值按 GB28181 的常见部署定：
+ * 同局域网设备正常在个位数~几十毫秒；跨公网几百毫秒也常见，
+ * 所以 80/200ms 分档，超过 200ms 才算"差"。
+ */
+function latencyLevel(row: any): 'unknown' | 'good' | 'fair' | 'poor' | 'lost' {
+  const l = latencyOf(row)
+  if (!l || l.samples === 0) return 'unknown'
+  if (!l.ok) return 'lost'
+  const v = l.rttMs ?? l.lastMs ?? 0
+  if (v > 200) return 'poor'
+  if (v > 80) return 'fair'
+  return 'good'
+}
+
+/**
+ * 档位 → 圆点样式 + 文案。
+ *
+ * 圆点用的是 styles/_utilities.scss 里的**全局** `gb-dot--*`
+ * （success/warning/error），不带后缀时是灰色基态。
+ * 不要照抄 Navbar 里的 `gb-dot--warn` / `gb-dot--err`：那两个是
+ * Navbar.vue 的 scoped 类，在别的组件里命中不到，点会一直是灰的。
+ */
+const LEVEL_TEXT: Record<string, { dot: string; label: string }> = {
+  unknown: { dot: '', label: '测量中' },
+  good: { dot: 'gb-dot--success', label: '优' },
+  fair: { dot: 'gb-dot--warning', label: '良' },
+  poor: { dot: 'gb-dot--error', label: '差' },
+  lost: { dot: 'gb-dot--error', label: '超时' }
+}
+
+function latencyDot(row: any): string {
+  return LEVEL_TEXT[latencyLevel(row)].dot
+}
+
+function latencyQuality(row: any): string {
+  return LEVEL_TEXT[latencyLevel(row)].label
+}
+
+function latencyText(row: any): string {
+  const l = latencyOf(row)
+  const level = latencyLevel(row)
+  if (level === 'unknown') return '-- ms'
+  // 探针超时：显示"上次成功的值"，并且文案由 latencyQuality 说清是超时。
+  const v = level === 'lost' ? l?.lastMs : (l?.rttMs ?? l?.lastMs)
+  return v === null || v === undefined ? '-- ms' : `${v}ms`
+}
+
+/** 悬停明细：均值/极值/丢包/采样次数 —— 单看一个数字看不出抖动。 */
+function latencyTitle(row: any): string {
+  const l = latencyOf(row)
+  if (!l || l.samples === 0) {
+    return `尚未测到延迟（每 ${probeIntervalSecs.value}s 探测一次）`
+  }
+  const parts: string[] = []
+  if (l.rttMs !== null && l.rttMs !== undefined) parts.push(`平均 ${l.rttMs}ms`)
+  if (l.minMs !== null && l.minMs !== undefined) parts.push(`最小 ${l.minMs}ms`)
+  if (l.maxMs !== null && l.maxMs !== undefined) parts.push(`最大 ${l.maxMs}ms`)
+  if (l.lastMs !== null && l.lastMs !== undefined) parts.push(`最近一次成功 ${l.lastMs}ms`)
+  parts.push(`丢包 ${l.lossPct}%`)
+  parts.push(`采样 ${l.samples} 次`)
+  if (l.measuredAt) {
+    parts.push(`更新于 ${new Date(l.measuredAt * 1000).toLocaleTimeString()}`)
+  }
+  parts.push(`每 ${probeIntervalSecs.value}s 探测一次`)
+  const head = l.ok ? '平台 ↔ 设备 SIP 往返延迟' : `探针超时（连续 ${l.failStreak} 次无响应）`
+  return `${head}：${parts.join(' · ')}`
+}
+
 function isOnline(row: any): boolean {
   return (
     row?.onLine === true ||
@@ -328,6 +463,8 @@ async function loadData() {
     })
     rows.value = res.data?.list ?? []
     total.value = res.data?.total ?? 0
+    // 行换了就立刻拉一次延迟，不等 5s 轮询 —— 否则翻页后新行会先空一下。
+    void loadLatency()
   } catch {
     rows.value = []
     total.value = 0
@@ -532,10 +669,19 @@ function onPlaySnap(snapUrl: string, payload?: { auto?: boolean }) {
 }
 
 onMounted(async () => {
+  // loadData() 内部会顺带拉一次延迟，这里只负责起轮询。
   await loadData()
+  latencyTimer = window.setInterval(loadLatency, LATENCY_POLL_MS)
   queryDevices({ page: 1, count: 200 })
     .then((r) => (rowsSuggestion.value = r.data?.list ?? []))
     .catch(() => {})
+})
+
+onUnmounted(() => {
+  if (latencyTimer !== null) {
+    window.clearInterval(latencyTimer)
+    latencyTimer = null
+  }
 })
 </script>
 
@@ -550,6 +696,17 @@ onMounted(async () => {
 
 .text-tertiary { color: var(--text-tertiary); }
 .text-xs { font-size: 12px; }
+
+/* 延迟列：圆点 + 数字 + 档位文字，整体居中不换行
+   （"测量中"/"-- ms" 在窄列里会折成两行，很难看） */
+.latency-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+  cursor: help;
+}
+.latency-cell__q { font-size: var(--text-xs); }
 
 /* 缩略图列：16:9 缩略图，加载前显示摄像头占位符 */
 .thumb-cell {
