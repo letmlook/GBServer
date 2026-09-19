@@ -36,8 +36,8 @@
 | # | 类别 | 事项 | 标记 |
 |---|---|---|---|
 | A1 | 功能端点 | 中亿视图（SY）定制模块 10 条端点 | 🔴 |
-| A2 | 功能端点 | WVP 自带诊断端点 `/api/test/{hook/list,redis}` | 🔴 |
-| A3 | 功能端点 | LiveGBS 兼容 API（`/api/v1/*` 11 条 + `/auth/login`） | ⚪ |
+| A2 | 功能端点 | 运维诊断端点 `/api/test/{hook/list,redis}` | 🔴 |
+| A3 | 功能端点 | 外部集成协议 `/api/v1/*` 11 条 + `/auth/login` | ⚪ |
 | B1 | 缺陷 | UDP/TCP-PASSIVE 下 `connectRtpServer` 被 ZLM 拒绝（真机已复现） | 🟠 |
 | B2 | 缺陷 | 录像计划 `startRecord` 与设备推流的竞态 | ✅ 已修并复验 |
 | B3 | 缺陷 | 假设备 mock 缺 `connection_lost` → 进程崩溃（"设备在线但无 RTP"） | ✅ 已修并复验 |
@@ -51,6 +51,7 @@
 | B12 | 缺陷 | ZLM 对同一路流**按协议各返回一行** → 控制台「重点通道」同一通道重复铺格子、「直播 N」虚高 | ✅ 已修并复验 |
 | B13 | 性能 | 控制台首屏"等最慢接口"才统一赋值 + `system/info` 被 3 个组件同时拉 → 卡片空等约 2s | ✅ 已修并复验 |
 | B14 | 缺陷 | 设备 `DeviceControl` / `ConfigDownload` 等**应答未被解析**（真机实测落入 `Unhandled MESSAGE body`） | 🟠 |
+| B15 | 缺陷 | 设备保活/注册统计查了**库里不存在的表**（真实表名 `gb_device`）→ 两个统计接口恒返回 0 | ✅ 已修 |
 | B9 | 配置 | `rtc.externIP` 平台未下发 → 容器部署下浏览器 ICE 永远连不上 | ✅ 已修 |
 | A4 | 前端 | 直播页 WebRTC 播放入口（`postWebrtcPlay` 原先无调用方） | ✅ 已接 (2026-09-19) |
 | C1 | 代码债 | `handle_packet` 23 个参数 | 🔵 |
@@ -100,7 +101,7 @@ e2e 最近一次运行 35 通过 / 0 失败（筛选运行）、三方言冒烟�
 |---|---|---|
 | A1 中亿视图 10 端点 | 否（第三方定制集成模块） | 🟢 可发布，后续迭代 |
 | A2 `/api/test/*` | 否（运维诊断） | 🟢 可发布，后续迭代 |
-| A3 LiveGBS `/api/v1/*` | 否（另一套协议/鉴权） | 🟢 范围外 |
+| A3 `/api/v1/*` 外部集成协议 | 否（另一套协议/鉴权） | 🟢 范围外 |
 | B1 端口不一致时的 `connectRtpServer` | **真机已复现**，但该设备仍按 INVITE 端口推流，流正常 → 目前只影响"不按 INVITE 端口推流"的设备类 | 🟡 建议补明确错误提示 |
 | B2 录像计划竞态 | 曾影响（已修已复验） | ✅ 已关闭 |
 | B3 mock 崩溃 | 否（测试基建） | ✅ 已关闭 |
@@ -123,15 +124,15 @@ e2e 最近一次运行 35 通过 / 0 失败（筛选运行）、三方言冒烟�
 
 ### A1 🔴 中亿视图（SY）定制模块 10 条端点
 
-来源：WVP-PRO `web/custom/CameraChannelController.java`（对照方法：抽 `@*Mapping` +
-归一化比对 `router.rs`）。
+来源：第三方地图视图（中亿 SY）定制对接需求，需与本模块既有 `/api/sy/*` 实现
+逐一比对 `router.rs` 的实际挂载情况。
 
 缺失清单（本仓库 `/api/sy/*` 已实现 **13 条**：`camera/list`、`camera/list/ids`、
 `camera/list-with-child`、`camera/list-for-mobile`、`camera/cont-with-child`、
 `camera/list/{box,circle,polygon,address}`、`camera/meeting/list`、
 `camera/control/{play,stop,ptz}`）：
 
-| 端点 | WVP 语义 | 本仓库等价实现 |
+| 端点 | 语义 | 本仓库等价实现 |
 |---|---|---|
 | `GET /api/sy/camera/one` | 单通道详情 | ❌ 无 |
 | `GET /api/sy/camera/update` | 更新通道 | ❌ 无 |
@@ -147,18 +148,18 @@ e2e 最近一次运行 35 通过 / 0 失败（筛选运行）、三方言冒烟�
 **实现时应复用已有实现、只加前缀别名，不要重写逻辑。**
 （注意：`/api/cloud/record/collect/delete` 自身还有一个前端方法不匹配的问题，见 C9。）
 
-### A2 🔴 WVP 自带诊断端点
+### A2 🔴 运维诊断端点（未实现）
 
 `GET /api/test/hook/list`（列出 ZLM hook 事件与最近一次载荷）、
 `GET /api/test/redis`（Redis 连通性）。属运维诊断，优先级低。
 
-### A3 ⚪ LiveGBS 兼容 API（范围外）
+### A3 ⚪ 外部集成协议 `/api/v1/*`（范围外）
 
 `/api/v1/{login,getserverinfo,userinfo,device/list,device/channellist,device/fetchpreset,stream/{start,stop,touch},control/{ptz,preset}}`
-共 11 条 + `web/gb28181/AuthController` 的 `/auth/login`。
+共 11 条 + `/auth/login`。
 
-**为何范围外**：这套接口用 LiveGBS 的 `sign` 签名鉴权（不是本平台的 JWT/API-Key），
-是**另一套第三方集成协议**；且需要与 LiveGBS 的返回结构逐字段对齐才有意义。
+**为何范围外**：这套接口使用**第三方签名鉴权**（`sign` 参数，不是本平台的
+JWT/API-Key），是另一套独立的集成协议；且需要与其返回结构逐字段对齐才有意义。
 若将来要支持，应作为独立里程碑（新增鉴权过滤器 + 独立 DTO 层），不要在现有
 handler 上打补丁。
 
@@ -188,7 +189,7 @@ connectRtpServer to device:20014 failed: ZLM error: 仅支持tcp主动模式
 
 **代码位置**：`src/handlers/play.rs:344-375`。端口不一致只打 `tracing::warn!`，
 `connect_rtp_server` 失败只打 `tracing::error!`（362-364）并**不返回错误**，继续走
-下面的 `WVPResult::success`；对照 `play.rs:295-307` 的 TCP-PASSIVE 分支是
+下面的 `ApiResult::success`；对照 `play.rs:295-307` 的 TCP-PASSIVE 分支是
 **会返回错误**的（304）。
 
 **真机带来的新认识（改变了影响评估）**：这台真机**仍然把 RTP 推到了 INVITE 指定的
@@ -568,6 +569,19 @@ Unhandled MESSAGE body: <?xml version="1.0" encoding="GB2312"?>
 （平台下发 `ConfigDownload`，设备回的 `CmdType` 是 `DeviceConfig`），按 `SN`
 关联待确认命令；至少把 `Result != OK` 提升为 WARN。
 
+### B15 ✅ 设备统计查了不存在的表（已修，2026-09-19）
+
+**现象**：`/api/device/query/statistics/keepalive` 与 `.../register` 恒返回
+`online=0 / total=0`，即使库里有在线设备。
+
+**根因**：`src/handlers/device.rs` 的 5 条统计 SQL 查了一张**库里不存在的表**（沿用了
+早期外部实现的表名）—— 三方言的初始化脚本里都没有它（本项目真实表名是 `gb_device`）。
+查询报错后被 `.unwrap_or(0)` 吞掉，于是恒为 0。
+
+**修复**：SQL 表名改为 `gb_device`（`src/handlers/device.rs:154/161/183/190/197`）。
+不改任何响应字段名。**注意**：`DATE(create_time) = CURRENT_DATE` 这一口径在三方言下
+行为不同，如需严格一致应改用各方言的日期函数（暂无影响，未改）。
+
 ---
 
 ## C. 代码债与清理
@@ -600,9 +614,9 @@ db/platform.rs (1)        : update_enable
 ```
 
 初步分类：
-* **删除候选（功能已由别的实现覆盖 / WVP 也没有）**：
+* **删除候选（功能已由别的实现覆盖 / 本就无对应功能入口）**：
   `delete_by_app_stream`（已改为 `delete_by_app_stream_period`）、
-  `add_white_list_cidr` / `remove_white_list_cidr`（WVP 无白名单功能）、
+  `add_white_list_cidr` / `remove_white_list_cidr`（本平台无白名单功能）、
   `update_enable`（平台启停走 `/api/platform/update`）、
   `platform::add`（新增平台走别的路径）、
   `stream_proxy::update_pulling_status`（已被 `update_pulling_status_by_app_stream` 取代）、
@@ -730,7 +744,7 @@ PS 解封装结果）回填该字段，只沿用目录/入库时的值。
 （同时 `router.rs:1082` 另有一条 `cloud_record_extra::collect_delete`，需一并核对口径。）
 
 **影响**：目前该入口在 UI 上未暴露为高频操作，但属真实契约不一致。
-**下一步**：统一方法（改前端为 delete，或按 WVP 契约在 GET 上也注册），并补一条契约测试。
+**下一步**：统一方法（改前端为 delete，或在该路径的 GET 上也注册），并补一条契约测试。
 
 ---
 

@@ -2,40 +2,25 @@
 
 # GBServer
 
-### GB28181 国标信令 · 流媒体接入 · 级联管理平台（Rust 重写版）
+### GB28181 国标信令 · 流媒体接入 · 级联管理平台
 
-面向 **GB/T 28181-2016** 国标协议、JT1078 车辆终端协议的 **流媒体接入与级联管理平台**。
+面向 **GB/T 28181-2016** 国标协议、**JT1078** 车辆终端协议的流媒体接入与级联管理平台。
+Rust 全异步后端（Axum + SQLx + Tokio），前端 Vue 3 + Element Plus + Vite（[`web/`](web/README.md)）。
 
-Rust 全异步后端（Axum + SQLx + Tokio），前端为 Vue 3 + Element Plus + Vite（位于 [`web/`](web/README.md)），
-目标是提供比传统 Java 实现更高的单机并发、更低的资源占用与更现代的工程实践。
-
-[特性](#-核心特性) · [快速开始](#-快速开始) · [文档索引](#-文档索引) · [部署分级](#-部署分级) · [API 概览](#-api-概览)
+[快速开始](#-快速开始) · [核心特性](#-核心特性) · [配置](#-配置) · [测试](#-测试与核验) · [文档索引](#-文档索引)
 
 </div>
 
 ---
 
-> 📌 **状态（2026-09-19 更新）**
-> 代码功能曾于 2026-09-19 短暂冻结，同日经用户要求**解除冻结**以修复用户管理模块的
-> 权限缺口与数据不一致（commit `bfa65f8`）。当前**冻结已解除**，可正常提交修复。
-> 历史归档的 Vue 2 前端 `web-legacy-vue2/` 已于 2026-09-19 从仓库删除（commit `00ffff1`），仅存于 git 历史。
-> 当前状态（已实现什么、为什么这么设计、契约审计结论）见 [`docs/STATUS.md`](docs/STATUS.md)，
-> 未完成事项见 [`docs/OPEN_ISSUES.md`](docs/OPEN_ISSUES.md)。
+## 📌 当前状态（2026-09-19）
 
----
-
-## 📖 项目简介
-
-GBServer 是面向 **GB/T 28181-2016** 国标协议的流媒体接入与级联管理平台的 Rust 重写实现，
-目标是**兼容 Java 原版（WVP-PRO）的前端与 API 契约**，提供：
-
-- **更高的单机吞吐**：基于 Tokio + Axum 异步运行时，IO 密集场景下资源占用显著下降。
-- **更现代的工程实践**：单一二进制部署、零依赖启动（SQLite 默认）、Cargo feature 切换数据库。
-- **数据库三选一**：SQLite（默认） / PostgreSQL / MySQL，编译期通过 `cargo` feature 切换。
-- **可观测性**：内置 `/metrics` Prometheus 端点、tracing 结构化日志。
-- **协议扩展**：在 GB28181 基础上原生支持 JT1078 车载终端协议、重传检测 Hook。
-
-> 🔍 想了解当前接口实现状态与待补齐项？见 `src/handlers/stub.rs`、`src/handlers/device_stub.rs` 与 `src/router.rs` 的占位标记。
+- **可正常开发与提交**：代码冻结已于 2026-09-19 解除；未完成事项集中在 [`docs/OPEN_ISSUES.md`](docs/OPEN_ISSUES.md)。
+- **第一台真实国标设备已接入并核验主链路**（EasyGBD，TCP）：401 摘要注册与续期、Keepalive、
+  目录同步、注册后自动 DeviceInfo 落库、实时点播 + FLV 实拉成功（H264 1080×1920 + G.711A）。
+- **规模基线**：87,662 行 Rust（141 个文件）· 31 个 handler 模块 · **429 条唯一 `/api/...` 路由**
+  · `cargo test --no-fail-fast` **746 通过 / 0 失败 / 3 忽略** · 前端 18 个业务视图。
+- **已实现什么 / 为什么这么设计** → [`docs/STATUS.md`](docs/STATUS.md)；**还没做什么** → [`docs/OPEN_ISSUES.md`](docs/OPEN_ISSUES.md)。
 
 ---
 
@@ -43,250 +28,168 @@ GBServer 是面向 **GB/T 28181-2016** 国标协议的流媒体接入与级联�
 
 | 领域 | 能力 |
 |------|------|
-| **国标信令** | SIP 注册、心跳、目录订阅、Invite/Bye/Info、SDP 协商、SSRC 分配、NAT 地址改写、PTZ 控制 |
-| **流媒体** | ZLMediaKit 集成、Hook 接收、节点健康检查、自动选流（最少负载优先 + Redis 计数回退） |
-| **推流/代理** | GB28181 推流、拉流代理（FFmpeg 命令）启停控制 |
-| **级联平台** | 上级平台 SIP REGISTER 保活、设备/通道同步 |
-| **录像计划** | 后台调度器、计划与通道关联、定时录像触发 |
-| **JT1078** | 车辆终端 UDP 服务、帧解析、会话状态、序列号重传检测、可选 Webhook 通知 |
-| **鉴权** | JWT（HS256，请求头 `access-token`）+ API Key（`X-API-Key` / `apiKey`），审计日志异步落库 |
-| **缓存** | 可选 Redis（`cache` / `broker`），运行时按配置自动启用 |
-| **可观测** | Prometheus `/metrics`、tracing JSON 日志、健康检查 `/health` |
+| **国标信令** | SIP 注册（401 摘要鉴权）、心跳、目录订阅、INVITE/BYE/INFO、SDP 协商、SSRC 分配、NAT 地址改写、PTZ |
+| **实时流** | ZLMediaKit 集成（Hook、节点健康检查、多节点最少负载选择）、点播/停止/抓图/分享、WebRTC |
+| **录像回放** | 历史回放与暂停/续播/拖动/倍速、云端录像（计划 → 录制 → 落库 → 播放 → 删除）、录像下载 |
+| **推流 / 拉流** | GB28181 推流、拉流代理（FFmpeg）启停、`ffmpeg_cmd` 生成 |
+| **级联平台** | 上级平台 SIP REGISTER 保活、目录/通道同步、级联推流、上级点播本级 |
+| **语音** | 对讲（音频上行已端到端验证）、语音广播 |
+| **JT1078** | 车辆终端 UDP 服务、帧解析、会话状态、序列号重传检测 + 可选 Webhook（**本项目独有扩展**） |
+| **设备管理** | 设备/通道 CRUD 与统计、DeviceInfo/DeviceStatus、配置查询与更新（等设备应答）、区域与业务分组、报警、移动位置 |
+| **鉴权** | JWT（`access-token` / `Authorization: Bearer`）+ API Key（`X-API-Key` / `apiKey`）；管理类端点统一走 `authz::require_admin`；审计日志异步落库 |
+| **可观测** | Prometheus `/metrics`、`/api/health` + `/api/ready`、tracing 结构化日志、系统信息面板 |
+
+> 尚未实现的端点（中亿视图 SY 定制 10 条、`/api/test/*` 诊断端点、`/api/v1/*` 外部集成协议）
+> 已在 [`docs/OPEN_ISSUES.md`](docs/OPEN_ISSUES.md) §A 登记。
 
 ---
 
-## 🛠️ 技术栈
-
-| 层 | 选型 | 版本 |
-|----|------|------|
-| Web 框架 | Axum + Tower | 0.7 / 0.4 |
-| 异步运行时 | Tokio | 1.x（full） |
-| 数据库 | SQLx | 0.7（runtime-tokio） |
-| 序列化 | serde / serde_json | 1.x |
-| 鉴权 | jsonwebtoken | 9.x |
-| 配置 | config + TOML + 环境变量 | 0.14 |
-| 日志 | tracing / tracing-subscriber | 0.1 / 0.3 |
-| HTTP 客户端 | reqwest（rustls-tls） | 0.11 |
-| 缓存 | redis | 0.25 |
-| SIP/GB28181 | quick-xml + 自研 SIP 协议栈 | 0.31 |
-| 前端 | Vue 3 + Element Plus + Vite + TypeScript | 3.5 / 2.8 / 5.4 / 5.6 |
-
----
-
-## 🏗️ 系统架构
+## 🏗️ 架构
 
 ```
-                    ┌────────────────────────────────────┐
-                    │          前端 (Vue 3 SPA)          │
-                    │  web/dist  ←  Vite build         │
-                    └──────────────┬─────────────────────┘
-                                   │ HTTP / WS
-                    ┌──────────────▼─────────────────────┐
-                    │         Axum 路由 (router.rs)      │
-                    │  /api/* 鉴权中间件   /metrics /health
-                    └──┬─────────┬─────────┬─────────┬───┘
-                       │         │         │         │
-        ┌──────────────▼┐ ┌─────▼─────┐ ┌──▼──────┐ ┌▼────────┐
-        │   handlers/   │ │   sip/    │ │  zlm/   │ │ jt1078/ │
-        │  业务接口     │ │ GB28181   │ │ ZLM 客户端│ │ 车载终端 │
-        └──────┬───────┘ └─────┬─────┘ └────┬────┘ └────┬────┘
-               │              │            │            │
-        ┌──────▼──────────────▼────────────▼────────────▼───┐
-        │              db/  ──  SQLx  ──  Pool              │
-        │       (SQLite ⏐ PostgreSQL ⏐ MySQL, feature 切换) │
-        └────────────────────────────────────────────────────┘
-                                   │
-                    ┌──────────────▼─────────────────────┐
-                    │  后台循环：SIP / 级联 / 录像计划 / JT │
-                    └────────────────────────────────────┘
+前端 Vue 3 SPA (web/dist, 由后端 static_dir 提供)
+        │ HTTP / WS
+Axum 路由 router.rs ── /api/* 鉴权中间件 · /metrics · /health
+        │
+ handlers/ ──► db/ ──► SQLx（SQLite 默认 / PostgreSQL / MySQL，cargo feature 切换）
+        ├──► sip/      GB28181 SIP 栈（core 解析 · transport UDP/TCP · gb28181 应用层）
+        ├──► zlm/      ZLMediaKit HTTP 客户端 · Hook 接收 · 健康检查
+        ├──► jt1078/   车辆终端协议与会话
+        ├──► cascade/  上级平台注册保活
+        ├──► scheduler/ 录像计划后台调度
+        └──► ws/ · cluster/ · rpc.rs · state_store.rs   集群 / 跨节点状态
 ```
 
-**关键模块**（详见 [`docs/DEPLOYMENT_GUIDE.md` 附录 B](docs/DEPLOYMENT_GUIDE.md) 与 `CLAUDE.md`）：
-
-- `handlers/` — 业务 HTTP 接口，薄层调用 `db/` 与协议模块。
-- `sip/core/` + `sip/transport/` + `sip/gb28181/` — SIP 协议栈、UDP/TCP 传输、应用层逻辑。
-- `zlm/` — ZLMediaKit HTTP 客户端、Hook 接收、健康检查。
-- `cascade/` — 上级平台 SIP REGISTER 保活。
-- `scheduler/` — 录像计划后台调度。
-- `jt1078/` — JT1078 车辆终端协议与会话。
-
----
-
-## 📊 部署分级
-
-> 完整说明与硬件建议见 [`docs/DEPLOYMENT_GUIDE.md`](docs/DEPLOYMENT_GUIDE.md)。
-
-| 级别 | 设备数 | 并发流 | 数据库 | Redis | 形态 |
-|------|--------|--------|--------|-------|------|
-| **L1 演示/开发** | < 50 | < 10 | SQLite | 无 | 单机 |
-| **L2 边缘节点** | < 200 | < 20 | SQLite | 无 | 单机 |
-| **L3 小规模生产** | < 500 | < 50 | SQLite / PG | 可选 | 单机 |
-| **L4 中等生产** | 500 – 2000 | 50 – 200 | PostgreSQL | 可选 | 单机 |
-| **L5 大规模生产** | 2000 – 5000 | 200 – 500 | PG + Patroni | 是 | 单机 + 主备 |
-| **L6 HA 集群** | > 2000 | > 200 | PG + Patroni | **必选** | 多实例 + SIP LB |
-| **L8 MySQL 平迁** | 任意 | 任意 | MySQL | 可选 | 单/多 |
+- `handlers/` 保持薄层：取参数 → 调 `db::` 或协议模块 → 返回 `ApiResult<T>` / `AppError`。
+- `stub.rs` / `device_stub.rs` **名字叫 stub，实为真实生产实现**（64 个 entry 全部落库/下发 SIP/调 ZLM，其中 48 条是前端活跃调用），当前不建议清退，见 [`docs/STUB_COMPAT_PLAN.md`](docs/STUB_COMPAT_PLAN.md)。
+- 跨节点部署：`StateStore`（Redis）+ `[rpc] peer_endpoints` + `[cluster]`，负载回退链 `StateStore → ZLM 实时计数 → 首个节点`。
 
 ---
 
 ## 🚀 快速开始
 
-### 0. 准备环境
+### 0. 环境依赖
 
-| 依赖 | 用途 | 必选 | 安装 |
-|------|------|------|------|
-| **Rust** 1.70+ | 编译后端 | 构建时 | <https://rustup.rs/> |
-| **Node.js** 14+（含 npm） | 构建前端 | 构建时 | <https://nodejs.org/> |
-| **SQLite** | 默认数据库 | ✅ 运行时 | **无需安装**，随 Rust crate `rusqlite` 内置 |
-| **PostgreSQL** 12+ | 生产数据库 | 二选一 | <https://www.postgresql.org/download/> |
-| **MySQL** 5.7+ / 8.x | MySQL 平迁 / 兼容历史部署 | 二选一 | <https://dev.mysql.com/downloads/mysql/> |
-| **Redis** 6.x / 7.x | 缓存 | 可选 | 预留接口，当前可关闭 |
+| 依赖 | 用途 | 必需性 |
+|------|------|--------|
+| **Rust**（stable） | 编译后端 | 构建时 |
+| **Node.js 18+**（含 npm） | 编译前端 | 构建时 |
+| **SQLite** | 默认数据库 | ✅ 零安装，首次启动自动建库 |
+| **PostgreSQL 12+** / **MySQL 5.7+** | 生产数据库 | 二选一（cargo feature） |
+| **Redis** | 缓存与跨节点状态 | 可选（单机可关，多实例必配） |
+| **ZLMediaKit** | 流媒体引擎 | 播放/录像必需 |
 
-### 1. 选择数据库（SQLite 默认开箱即用）
-
-| 后端 | 启动命令 | 适用场景 |
-|------|----------|----------|
-| **SQLite** ✅ | `cargo run` | 开发 / 演示 / 边缘 / 小规模生产（≤ 500 设备） |
-| PostgreSQL | `cargo run --no-default-features --features postgres` | 生产主力 / 多实例 / Patroni 集群 |
-| MySQL | `cargo run --no-default-features --features mysql` | MySQL 平迁，schema 与 `database/init-mysql-2.7.4.sql` 完全兼容 |
-
-> 📘 三种后端的对比、迁移路径与限制详见 [`docs/DEPLOYMENT_GUIDE.md` §4](docs/DEPLOYMENT_GUIDE.md) 与 [`database/README.md`](database/README.md)。
-
-### 2. 初始化数据库
+### 1. 选择数据库
 
 ```bash
-# SQLite（默认，无需任何操作；首次启动时自动创建 ./data/gbserver.db 并执行 init-sqlite-2.7.4.sql）
-
-# PostgreSQL
-createdb gbserver
-psql -U postgres -d gbserver -f database/init-postgresql-2.7.4.sql
-
-# MySQL
-mysql -uroot -p -e "CREATE DATABASE gbserver DEFAULT CHARACTER SET utf8mb4;"
-mysql -uroot -p gbserver < database/init-mysql-2.7.4.sql
+cargo run                                                # SQLite（默认，开箱即用，≤500 设备）
+cargo run --no-default-features --features postgres       # PostgreSQL（生产主力 / 多实例）
+cargo run --no-default-features --features mysql          # MySQL（平迁 / 兼容历史部署）
 ```
 
-> 默认管理员：`admin` / `admin`（密码以 MD5 存储）。
+SQLite 无需任何初始化操作。PG / MySQL 需先建库并导入 schema：
 
-### 3. 配置
-
-复制并按需修改 `config/application.toml`：
-
-```toml
-server:
-  port: 18080
-
-database:
-  url: "sqlite://data/gbserver.db?mode=rwc"   # 或 postgres://… / mysql://…
-  sqlite_max_devices: 500                     # SQLite 设备上限
-
-jwt:
-  secret: "请改为随机长字符串"
-  expiration_minutes: 30
-
-# 前端构建产物目录（可选；不配置则仅提供 API）
-static_dir: "web/dist"
+```bash
+createdb gbserver && psql -U postgres -d gbserver -f database/init-postgresql-2.7.4.sql
+mysql -uroot -p -e "CREATE DATABASE gbserver DEFAULT CHARACTER SET utf8mb4;" \
+  && mysql -uroot -p gbserver < database/init-mysql-2.7.4.sql
 ```
 
-> 🌐 可通过环境变量覆盖，命名规则：`GBSERVER__SECTION__KEY`（双下划线分隔）。
-> 示例：`GBSERVER__SERVER__PORT=18080`、`GBSERVER__DATABASE__URL=postgres://...`。
+> 默认管理员：`admin` / `admin`（MD5 存储，**上线前必须改**）。
 
-### 4. 构建并运行
+### 2. 构建并运行
 
-**Windows（PowerShell，在仓库根目录执行）**
+**Linux / macOS**
+
+```bash
+cd web && npm install && npm run build && cd ..   # 前端产物 → web/dist
+cargo build                                        # 本地开发/验证用 debug（比 release 快 4–5 倍）
+./target/debug/gbserver                            # 必须在仓库根目录启动
+```
+
+```bash
+# 容器内外的 ZLM 都在 127.0.0.1 时，务必绕过系统代理，否则健康检查会误判节点离线：
+NO_PROXY=localhost,127.0.0.1,::1 no_proxy=localhost,127.0.0.1,::1 ./target/debug/gbserver
+
+cargo build --release                              # 仅在打 tag / 出生产镜像时使用
+```
+
+**Windows（PowerShell，仓库根目录）**
 
 ```powershell
-# 一键：构建前后端 + 启动
-.\scripts\build-and-run.ps1
-
-# 仅启动（已构建过）
-.\scripts\run.ps1
+.\scripts\build-and-run.ps1     # 构建前后端并启动
+.\scripts\run.ps1               # 仅启动已构建的二进制
 ```
 
-**Linux / macOS（bash）**
+服务默认监听 `http://0.0.0.0:18080`；前端静态资源由后端直接提供（无独立生产前端服务）。
+
+### 3. 一键 Docker（PostgreSQL + Redis + ZLMediaKit）
 
 ```bash
-# 1) 构建前端（产物 -> web/dist）
-cd web && npm install && npm run build:prod && cd ..
-
-# 2) 构建后端（产物 -> target/release/）
-cargo build --release
-# 切换 MySQL：cargo build --release --no-default-features --features mysql
-# 切换 PG  ：cargo build --release --no-default-features --features postgres
-
-# 3) 启动（必须在仓库根目录，以便正确加载 config 与 web/dist）
-cargo run --release
+docker compose up -d                                   # Linux 服务器：ZLM 用 host 网络（推荐）
+docker compose -f docker-compose.yml -f docker-compose.mac.yml up -d   # macOS / Windows（Docker Desktop 不支持 host 网络）
+docker compose --profile mysql up -d                   # MySQL 变体
+docker compose down                                    # 保留数据卷；加 -v 彻底清空
 ```
 
-> ⚠️ **运行目录**：必须在 GBServer 仓库根目录启动后端，配置路径与 `web/dist` 才能正确解析。
-
-服务默认监听 `http://0.0.0.0:18080`。
-
-### 5. 一键 Docker 启动（PostgreSQL + Redis + ZLMediaKit）
-
-```bash
-docker compose up -d          # ZLM 用 host 网络（推荐，见下）
-docker compose ps
-docker compose down           # 保留数据卷；加 -v 彻底清空
-```
-
-MySQL 通过 profile 启动：`docker compose --profile mysql up -d`。
-
-#### ZLM 的网络模式（重要）
-
-`docker-compose.yml` 默认让 **ZLM 使用 host 网络**，不再逐口映射：
-
-* GB28181 的收流端口池（`rtp_proxy.port_range`，默认 `30000-30100`）是 ZLM
-  **启动时**建立的，桥接模式必须把整段 UDP 逐个发布 —— 端口池与映射一旦不一致
-  就会"INVITE 200 OK 但永远等不到媒体"；
-* WebRTC 需要浏览器能连上 ZLM 通告的 ICE 候选。桥接模式 ZLM 只知道自己的容器
-  内网 IP，浏览器会一直卡在 `checking`；
-* RTSP(554) / RTMP(1935) / HTTP(8080) / SRT(9000) 在 host 网络下直接绑定宿主，
-  外部设备与上级平台无需穿透映射。
-
-> ⚠️ **Docker Desktop（macOS / Windows）不支持 host 网络**（容器端口在宿主上不可达）。
-> 在这两个平台上开发请叠加桥接文件：
-> ```bash
-> docker compose -f docker-compose.yml -f docker-compose.mac.yml up -d
-> ```
-> 该叠加文件会把 ZLM 切回桥接 + 端口映射，并给后端下发
-
-> `rtc_extern_ip=127.0.0.1`，使 WebRTC 在本机也能连通。
-
-#### 修改 ZLM 配置
-
-ZLM 的配置文件就是仓库里的 `docker/zlm/config.ini`（已挂进容器，可读可写）：
-
-```bash
-vim docker/zlm/config.ini      # 改 rtp_proxy.port_range / rtc.port / api.secret 等
-docker compose restart zlm     # 端口池类配置是启动时建立的，必须重启
-```
-
-WebRTC 的对外通告 IP（`rtc.externIP`）**不需要手改**：在 `config/application.toml`
-的 `[[zlm.servers]]` 里配 `rtc_extern_ip`，或在媒体节点页保存该字段，
-后端会在节点上线时下发并回读校验（host 网络下留空即可）。
+为什么 ZLM 默认用 host 网络：GB28181 收流端口池（默认 `30000-30100/udp`）是 ZLM **启动时**建立的，
+桥接模式必须逐口发布，一旦不一致就是「INVITE 200 OK 却永远等不到媒体」；WebRTC 也需要浏览器能直连
+ZLM 通告的 ICE 候选。改 ZLM 配置请编辑 `docker/zlm/config.ini` 后 `docker compose restart zlm`；
+`rtc.externIP` 无需手改——在 `config/application.toml` 的 `[[zlm.servers]]` 配 `rtc_extern_ip` 即可，
+后端会在节点上线时下发并回读校验。
 
 ---
 
-## ⚙️ 配置说明
+## ⚙️ 配置
+
+配置来源：`config/application.toml` + 环境变量覆盖（`GBSERVER__SECTION__KEY`，双下划线分隔，
+如 `GBSERVER__SERVER__PORT=18080`）。完整字段与注释见该文件本身。
 
 | 配置段 | 关键字段 | 默认值 | 说明 |
 |--------|----------|--------|------|
+| — | `static_dir` | `web/dist` | 前端产物目录；不配置则仅提供 API |
 | `server` | `port` | `18080` | HTTP 监听端口 |
 | `database` | `url` | `sqlite://data/gbserver.db?mode=rwc` | SQLx 连接串 |
-| `database` | `sqlite_max_devices` | `500` | SQLite 设备上限，超出请迁移到 PG |
-| `jwt` | `secret` | 占位 | **生产环境必改**为 32+ 位随机字符串 |
-| `jwt` | `expiration_minutes` | `30` | Token 有效期 |
-| `sip` | `enabled` | `true` | 是否启动 SIP 服务 |
-| `sip` | `port` | `5060` | SIP UDP 端口 |
-| `sip` | `tcp_port` | `5061` | SIP TCP 端口 |
-| `sip` | `sdp_ip` / `stream_ip` | 动态 | SDP/流地址改写源 |
-| `jt1078` | `enabled` | `true` | 是否启用 JT1078 服务 |
-| `jt1078` | `timeout_ms` | `60000` | 重传检测超时 |
-| `jt1078` | `retransmit_wait_ms` | `200` | 重传等待窗口 |
-| `jt1078` | `retransmit_hook_url` | — | 缺序上报 webhook（POST JSON） |
-| `zlm` | — | — | ZLMediaKit 节点列表，详见 `config/application.toml` 注释 |
+| `database` | `sqlite_max_devices` | `500` | SQLite 设备上限，超出请迁 PG |
+| `jwt` | `secret` | 占位 | **生产必改**为 256-bit 随机串 |
+| `jwt` | `expiration_minutes` / `remember_expiration_minutes` | `720` / `10080` | 普通会话 / 「7 天免登录」（须与前端 cookie 对齐） |
+| `sip` | `port` / `tcp_port` | `5060` / `5060` | UDP 与 TCP **共用同一端口**；别改成 5061，否则 TCP 设备注册不上 |
+| `sip` | `sdp_ip` / `stream_ip` | 空 | 公网部署时填公网 IP（NAT 穿透） |
+| `sip.heartbeat` | `latency_probe_interval_secs` | `15` | 设备列表「延迟」列的探针间隔，`0` 关闭 |
+| `zlm` | `servers[]` | — | 媒体节点列表：`ip` 必须**真实可达**（别写 127.0.0.1） |
+| `zlm.servers[]` | `hook_url` | — | 必须填 **ZLM 能访问到后端**的地址（容器部署用 `host.docker.internal`） |
+| `zlm.servers[]` | `rtp_port_range` / `rtc_extern_ip` | `30000-30100` / 空 | 须与 compose 端口映射一致；桥接容器部署必须填宿主可达 IP |
+| `cluster` / `rpc` | `enabled` / `peer_endpoints` | `false` / `[]` | 多实例 HA 时启用（依赖 Redis） |
+| `jt1078` | `enabled` / `timeout_ms` / `retransmit_hook_url` | `true` / `60000` / — | 车载终端服务与缺序上报 |
 
-> 📌 端口矩阵以 [`docs/DEPLOYMENT_GUIDE.md` §2](docs/DEPLOYMENT_GUIDE.md) 为唯一权威源。
+> 端口矩阵与三种数据库的选型、迁移路径、备份灾备以 [`docs/DEPLOYMENT_GUIDE.md`](docs/DEPLOYMENT_GUIDE.md) 为唯一权威源。
+
+---
+
+## 🧪 测试与核验
+
+```bash
+cargo test                                    # 全量（SQLite 默认 feature，完全自包含）
+cargo test --test sqlite_compat               # 数据库层主测试套件（内存 SQLite）
+cargo test --test device_simulator_test       # SIP 报文格式与心跳场景
+cargo test --test jt1078_e2e_test             # JT1078 命令/应答生命周期
+cargo test --no-default-features --features postgres --lib   # 方言矩阵：PostgreSQL
+cargo test --no-default-features --features mysql --lib      # 方言矩阵：MySQL
+cargo fmt && cargo clippy --all-targets --all-features
+```
+
+前端与端到端：
+
+```bash
+cd web && npm run build      # vue-tsc 类型检查 + 生产构建（≈17s）
+cd web && npm run lint
+cd e2e && npm install && npx playwright install chromium && npx playwright test   # 需后端 :18080 + 前端 dev :9528 + ZLM
+```
+
+- 默认 SQLite feature 下的测试**不连接** Redis / PG / MySQL / ZLM，CI 无需任何 service 容器。
+- `.github/workflows/ci.yml`（门禁：`cargo check --all-targets` + 测试、三 feature 编译、前端构建）当前按用户要求**只保留手动 `workflow_dispatch` 触发**。
+- 本地等效命令（`just`）：`just feature-check`、`just clippy`、`just fmt`。
+- 已有实测证据的能力清单见 [`docs/STATUS.md`](docs/STATUS.md) §6（真机闭环 / 核心闭环 / 三方言 / e2e）。
 
 ---
 
@@ -294,178 +197,41 @@ WebRTC 的对外通告 IP（`rtc.externIP`）**不需要手改**：在 `config/a
 
 | 文档 | 用途 |
 |------|------|
-| [docs/DEPLOYMENT_GUIDE.md](docs/DEPLOYMENT_GUIDE.md) | 构建、运行、部署分级、配置、监控、灾备、升级、FAQ（仓库唯一对外文档） |
-| [docs/STATUS.md](docs/STATUS.md) | **当前状态**：规模基线、已实现能力矩阵、关键设计决策、契约审计结论 |
-| [docs/OPEN_ISSUES.md](docs/OPEN_ISSUES.md) | **当前未完成/未验证事项**（只列没做完的） |
+| [docs/STATUS.md](docs/STATUS.md) | **当前状态**：规模基线、能力矩阵、关键设计决策、真机核验与证据 |
+| [docs/OPEN_ISSUES.md](docs/OPEN_ISSUES.md) | **未完成 / 未验证事项**（唯一待办表） |
+| [docs/DEPLOYMENT_GUIDE.md](docs/DEPLOYMENT_GUIDE.md) | 构建、运行、部署分级、配置、监控、灾备、升级、FAQ（唯一对外部署文档） |
 | [docs/DB_DIALECT_NOTES.md](docs/DB_DIALECT_NOTES.md) | 写多方言 SQL（SQLite / MySQL / PostgreSQL）的注意事项 |
 | [docs/STUB_COMPAT_PLAN.md](docs/STUB_COMPAT_PLAN.md) | `stub.rs` / `device_stub.rs` 的真实定位与清退评估 |
-| [database/README.md](database/README.md) | 初始化脚本说明 |
-| [web/README.md](web/README.md) | 前端子项目（Vue 3 + Element Plus + Vite）说明 |
-| [e2e/README.md](e2e/README.md) | Playwright 端到端测试说明 |
-| [mock/README.md](mock/README.md) | 模拟测试资源（SIP 设备 / JT1078 终端 / 级联平台） |
+| [AGENTS.md](AGENTS.md) / [CLAUDE.md](CLAUDE.md) | 供 AI/新同学读的仓库约定、易踩坑与敏感改动提示 |
+| [database/README.md](database/README.md) | 三方言初始化脚本说明 |
+| [web/README.md](web/README.md) · [e2e/README.md](e2e/README.md) · [mock/README.md](mock/README.md) | 前端 · 端到端测试 · 模拟资源（SIP 设备 / JT1078 终端 / 级联平台） |
 
 ---
 
 ## 🌐 API 概览
 
-> 响应格式与 Java 版一致：`{ "code": 0, "msg": "成功", "data": ... }`。
-> 鉴权请求头：`access-token`（JWT）或 `X-API-Key` / `apiKey`（API Key）。
+统一响应格式（对应后端 `ApiResult<T>`）：`{ "code": 0, "msg": "成功", "data": ... }`；
+鉴权请求头 `access-token`（JWT）或 `X-API-Key` / `apiKey`。完整路由见 `src/router.rs`。
 
 | 域 | 主要端点 |
 |----|----------|
-| **用户** | 登录/登出、userInfo、users 分页、增删改密、changePushKey |
-| **设备** | `GET /api/device/query/devices`（分页）、`/devices/:id/channels`（分页） |
-| **流媒体服务器** | list、online/list、one/:id、system/configInfo、system/info、map/config、resource/info |
-| **推流** | list（分页）、add/update/remove/start、batchRemove、save_to_gb / remove_form_gb（写操作部分为占位） |
-| **拉流代理** | list（分页）、ffmpeg_cmd/list、add/update/save/start/stop/delete |
-| **级联平台** | query（分页）、server_config、channel/list、channel/push、add/update/delete、exit/:id |
-| **实时播放** | play/start、stop、broadcast、broadcast/stop（拉流需 ZLM/SIP） |
-| **区域/分组** | region/tree/list、add、update、delete、path、tree/query；group 同上 |
-| **角色** | `GET /api/role/all` |
-| **回放/录像** | playback/*、gb_record/query、download/*、cloud/record/*、record/plan/* |
-| **占位接口** | device/sync_status、device/delete、subscribe/catalog、media_server/check、record/check 等 |
-
-完整列表与占位标记参见 `src/router.rs` 与 `src/handlers/stub.rs`、`device_stub.rs`。
-
-### 接口联调测试
-
-后端启动且数据库就绪后，可通过以下方式联调测试：
-
-- **单元 / 集成测试**：`cargo test`（详见 [测试](#-测试) 章节）。
-- **API 端到端冒烟**：使用 `curl` 调通主要路由（登录、用户信息、设备列表、流媒体服务器列表、推流列表、级联平台、区域/分组、回放、云录像等），可参考 [`web/src/api/`](web/src/api/) 中前端已封装的所有端点。
-- **Postman / Apifox**：导入 [`docs/DEPLOYMENT_GUIDE.md`](docs/DEPLOYMENT_GUIDE.md)「附录 B：相关源码索引」部分整理的路由。
-
----
-
-## 👨‍💻 开发指南
-
-### 开发时前后端分离
-
-```bash
-# 终端 A：后端（仓库根目录）
-cargo run
-
-# 终端 B：前端（web 目录，代理到 18080）
-cd web && npm run dev
-# 浏览器打开 http://localhost:9528
-```
-
-代理规则见 `web/vite.config.ts`：`/dev-api` → `http://127.0.0.1:18080`。
-
-### 代码规范
-
-```bash
-cargo fmt
-cargo clippy --all-targets --all-features
-```
-
-### 调试开关
-
-通过环境变量 `RUST_LOG` 控制 tracing 输出，例如：
-
-```bash
-RUST_LOG=gbserver=debug,sqlx=warn cargo run
-```
-
----
-
-## 🧪 测试
-
-```bash
-# 全部
-cargo test
-
-# 聚焦某个测试
-cargo test <test_name>
-cargo test --lib <test_name>
-
-# 集成测试
-cargo test --test integration_test
-cargo test --test jt1078_integration
-
-# 三库矩阵（SQLite / PostgreSQL / MySQL）
-cargo test --lib                                                  # SQLite（默认）
-cargo test --no-default-features --features postgres --lib       # PostgreSQL
-cargo test --no-default-features --features mysql --lib           # MySQL
-```
-
-### 持续集成（GitHub Actions）
-
-每次 push 与 PR 都会跑 [`.github/workflows/ci.yml`](.github/workflows/ci.yml)：
-
-| Job | 内容 | 是否门禁 |
-|-----|------|----------|
-| `backend` | `cargo check --all-targets` + `cargo test --no-fail-fast`（SQLite 默认 feature） | ✅ |
-| `feature-matrix` | `sqlite` / `postgres` / `mysql` 三种 feature 各自可编译 | ✅ |
-| `frontend` | `npm ci` + `npm run build`（`vue-tsc --noEmit && vite build`） | ✅ |
-| `hygiene` | `cargo fmt --check` + `cargo clippy` | ❌ 仅报告 |
-
-> 默认 SQLite feature 下的测试**完全自包含**（不连接 Redis / PostgreSQL / MySQL / ZLM），
-> 因此 CI 无需任何 service 容器。
->
-> `hygiene` 暂不设为门禁：当前基线尚有约 2.6 万行 `rustfmt` 差异与 292 条 clippy warning
-> （主要为 `too_many_arguments` / `borrow_deref_ref` 等，可机械修复）。清理完成后即可摘掉
-> `continue-on-error` 提升为硬约束。
->
-> 本地等效命令：`just feature-check`（三 feature 编译）、`just clippy`、`just fmt`。
-
-### 浏览器端到端（Playwright）
-
-```bash
-cd e2e
-npm install && npx playwright install chromium
-npx playwright test                  # 跑全套（需先启动后端 / 前端 dev server / ZLM）
-npx playwright show-report           # 查看 HTML 报告
-```
-
-详见 [`e2e/README.md`](e2e/README.md)。截图落盘到 `e2e/artifacts/`。
-
----
-
-## 🛣️ 路线图
-
-- [x] GB28181 业务接口逐步补齐（Phase 0/1/2/3 — Live/Playback/RecordInfo/Download/Talk-Broadcast）
-- [x] SQLite 零依赖默认后端（Phase 1–7）
-- [x] JT1078 重传检测 + Webhook
-- [x] 启动 warning + 多 DB CI 矩阵
-- [ ] 集群化 SIP 负载均衡
-- [ ] 完整 WebRTC 播放链路
-- [ ] 录像云端转存与对象存储适配
-- [ ] 多租户与权限细化
-
----
-
-## 🤝 贡献指南
-
-欢迎通过 Issue / PR 贡献。提交前请：
-
-1. Fork 仓库并新建特性分支：`git checkout -b feat/your-feature`
-2. 通过 `cargo fmt` 与 `cargo clippy --all-targets --all-features`
-3. 为新功能/缺陷补充单元测试或集成测试
-4. 保持提交粒度小、说明清晰；遵循 Conventional Commits 风格
-5. 确保本地 `cargo test` 全绿
-
-> 重大变更前请先开 Issue 讨论，避免重复劳动。
+| **用户 / 角色 / API Key** | 登录登出、userInfo、用户分页与增删改密、`role/*`、`userApiKey/*` |
+| **设备** | `GET /api/device/query/devices`（分页）、`/devices/:id/channels`（分页）、统计、tree、status |
+| **通道 / 区域 / 分组** | 通道查询与编辑；`region/*`、`group/*`（tree、path、增删改） |
+| **实时 / 回放** | `play/start|stop`、broadcast、抓图与分享；`playback/*`、`gb_record/query`、`download/*` |
+| **云端录像** | `cloud/record/*`（计划、列表、播放、下载、ZIP 打包、收藏）、`record/plan/*` |
+| **流媒体节点** | list、online/list、one、check、load、media_info、system/configInfo、system/info |
+| **推流 / 拉流代理** | `push/*`、`streamProxy/*`（含 `ffmpeg_cmd`） |
+| **级联平台** | `platform/query`、server_config、channel/list、channel/push、增删改、exit |
+| **JT1078** | 终端 / 通道 / 围栏 / 路线 / 位置 / 多媒体检索 / 录像下载 |
+| **系统** | `/api/health`、`/api/ready`、`/metrics`、`/api/server/system/info`（控制台单端点） |
 
 ---
 
 ## 📜 许可证
 
-本仓库默认遵循 **MIT License**。第三方依赖（ZLMediaKit、Element UI、Vue 等）
-各自保留其原始许可证，详见各依赖仓库的 LICENSE 文件。
-
----
+本仓库遵循 **MIT License**。第三方依赖（ZLMediaKit、Vue、Element Plus 等）各自保留原始许可证。
 
 ## 🙏 致谢
 
-- 流媒体引擎 [ZLMediaKit](https://github.com/ZLMediaKit/ZLMediaKit)
-- 前端模板 [vue-admin-template](https://github.com/PanJiaChen/vue-admin-template) by PanJiaChen
-- 所有使用、反馈与贡献者
-
----
-
-<div align="center">
-
-**[⬆ 回到顶部](#gbserver)**
-
-</div>
+[ZLMediaKit](https://github.com/ZLMediaKit/ZLMediaKit) · [vue-admin-template](https://github.com/PanJiaChen/vue-admin-template) · 所有使用与贡献者

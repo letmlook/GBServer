@@ -5,6 +5,9 @@
 > 同时把 §1 的全部计数、§2 的能力矩阵、§6 的验证证据按当前代码/运行态重新实测。
 > 逐轮修复过程记录（阶段性快照、修复叙述）已按「只保留最新状态」的要求清理，需要时走 git 历史。
 >
+> **补充（同日）**：项目转入**独立演进**，全仓清除外部实现（WVP / LiveGBS 等）的命名与引用，
+> 并完成响应信封类型、收藏表名等实体改名（详见 §3 首条）。
+>
 > 本文档与 [`OPEN_ISSUES.md`](OPEN_ISSUES.md) 的分工：
 > **本文档 = 已实现什么、为什么这么设计、已验证过什么**；**OPEN_ISSUES = 还没做什么**。
 
@@ -25,7 +28,7 @@
 
 「真机」列 = 该模块**是否已被真实设备（EasyGBD `34020000001320128497`）实测覆盖**；
 `—` 表示尚未用真机验证（不等于不可用）。注意 `stub.rs` / `device_stub.rs` 承载的条目
-**不是 WVP 兼容 shim，而是真实实现**（见 §3）。
+是**真实实现**（见 §3）。
 
 | 模块 | 状态 | 真机 | 说明 |
 |------|------|------|------|
@@ -51,14 +54,26 @@
 | RTP / PS | ✅ 完整 | — | send / receive + getTestPort |
 | 移动位置 | ✅ 完整 | — | 订阅 + history 查询，打通两张位置表 |
 | WebRTC | ⚠️ 部分 | ⚠️ | 入口已接（直播页 + 通道播放对话框）；真机流曾建立 rtc 播放会话，但**GB28181 流解不出帧**（见 OPEN_ISSUES B8） |
-| JT1078 车载终端 | ✅ 路由齐全 | — | 终端 / 通道 / 围栏（圆/多边形/矩形）/ 路线 / 位置 / 多媒体检索 / 录像下载；**GBServer 独有扩展，超出 WVP 范围**；真终端未测（D2） |
-| 中亿视图（SY） | ✅ 完整 | — | 已实现 13 条 `/api/sy/*`（list / list/ids / list-with-child / list-for-mobile / cont-with-child / box / circle / polygon / address / meeting/list / control/{play,stop,ptz}）；WVP 另有 10 条未实现（A1） |
+| JT1078 车载终端 | ✅ 路由齐全 | — | 终端 / 通道 / 围栏（圆/多边形/矩形）/ 路线 / 位置 / 多媒体检索 / 录像下载；**GBServer 独有扩展**；真终端未测（D2） |
+| 中亿视图（SY） | ✅ 完整 | — | 已实现 13 条 `/api/sy/*`（list / list/ids / list-with-child / list-for-mobile / cont-with-child / box / circle / polygon / address / meeting/list / control/{play,stop,ptz}）；第三方对接所需的另 10 条未实现（A1） |
 | 系统 / 监控 | ✅ 完整 | — | `/api/system/info`、`/api/server/system/info`、`/metrics`（12 个指标族）、`/api/health`、`/api/ready` |
 
 ## 3. 关键设计决策
 
 保留这些结论是为了避免后人重复论证同一个问题。
 
+- **项目自 2026-09-19 起独立演进，不再保留任何外部实现（WVP / LiveGBS 等）的命名与引用**。
+  已完成的实体改名（**API 契约不变**，只是内部命名）：
+  - 响应信封类型改名为 `ApiResult<T>`（`src/response.rs`，888 处调用点、前端
+    `web/src/types/api.ts` 的 `ApiResult<T>`）；JSON 形状仍是 `{code,msg,data}`。
+  - 设备配置查询/下发 handler 改为 `config_query_*` / `config_set_*`，DTO 改为
+    `ConfigQueryParams`；告警批量删除改为 `alarm_delete_batch`。路由路径未变。
+  - 收藏录像表改名为 `gb_record_collect`。**不做旧表兼容迁移**：全仓已无旧表名字面量，
+    老部署升级后收藏列表为空（收藏无对外契约承诺）；需要保留数据时手工执行
+    `ALTER TABLE <旧表名> RENAME TO gb_record_collect`。
+  - Redis 录制态键只认 `gbserver:recording:*`，不再回退读旧命名空间（在途录制态丢失可由
+    设备重新上报恢复）。
+  - 全仓（代码 / 注释 / 文档 / 测试名）已无任何 WVP / LiveGBS 残留。
 - **管理员判定集中在 `src/handlers/authz.rs`**（2026-09-19 新增）：`authority == "0"`
   为管理员、内置角色 `id = 1` 兜底，拒绝返回 `ErrorCode::Error403`。此前 `require_admin`
   内联在 `handlers/user.rs`、硬编码 `role_id == 1`，且只覆盖 4 个端点 —— 导致
@@ -73,7 +88,7 @@
   没有空占位。其中 **48 条是当前 Vue 3 前端正在调用的活跃路径**。它们的自我描述
   「真实实现已迁出、仅挂旧路径」与实际不符 —— 实现从未迁出，函数体就在文件内。
   详见 [`STUB_COMPAT_PLAN.md`](STUB_COMPAT_PLAN.md)。
-- **JT1078 纳入平替范围**：WVP-PRO 没有 JT1078 协议层，这是本项目的**独有扩展**；
+- **JT1078 是本项目的独有扩展**：国标协议栈之外自行实现的车辆终端协议层；
   协议操作层 12 个端点均为真实下发并等待终端通用应答，已无「已受理」占位响应。
 - **状态源统一到 `StateStore`**：`src/cache.rs` 与 `src/sip/gb28181/cascade_service.rs`
   已确认零生产调用并整体删除（后者 751 行）；级联代码现位于 `src/cascade/`、
@@ -112,8 +127,8 @@ C8（通道 `hasAudio` 与实际流不符：流里有 G.711A，接口却报 `has
 
 ## 5. 前端 ↔ 后端契约审计结论
 
-2026-09-12 对 **16 个 API 模块 / 130 条契约**做了逐条审计（对照 WVP-PRO Java 源码
-与本仓库 router / DTO / 响应键名），逐模块结论如下。审计原文已归档至 git 历史。
+2026-09-12 对 **16 个 API 模块 / 130 条契约**做了逐条审计（前端 `web/src/api/` 的调用
+形态与本仓库 router / DTO / 响应键名逐字段比对），逐模块结论如下。审计原文已归档至 git 历史。
 
 | 模块 | 条目 | 结论 |
 |------|------|------|

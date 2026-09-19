@@ -80,7 +80,7 @@ handlers/ ──→ db/ ──→ SQLx (SQLite by default; MySQL/PostgreSQL behi
 ```
 
 - `router.rs` is the central route map. Public routes include login, health, metrics, ZLM hooks, and selected frontend/static routes; most `/api/...` routes are wrapped by `auth_middleware`.
-- `handlers/` should stay thin: extract Axum params/state, call `db::` or protocol/service modules, and return `WVPResult<T>` or `AppError`. Several `stub.rs` / `device_stub.rs` endpoints intentionally return empty compatibility responses for frontend/API parity.
+- `handlers/` should stay thin: extract Axum params/state, call `db::` or protocol/service modules, and return `ApiResult<T>` or `AppError`. Several `stub.rs` / `device_stub.rs` endpoints intentionally return empty compatibility responses for frontend/API parity.
 - `db/` uses one module per table/domain. Functions are free functions over `&db::Pool`; structs typically derive `sqlx::FromRow`. SQLite is the default feature; MySQL/PostgreSQL-specific SQL is gated with `#[cfg(feature = "mysql")]` / `#[cfg(feature = "postgres")]` where needed.
 - `sip/core/` contains low-level SIP message/header/method/status parsing and transaction/dialog primitives. `sip/transport/` owns UDP/TCP networking. `sip/gb28181/` contains application-level device registration, catalog subscription, live/playback/talk INVITE sessions, PTZ, SDP, SSRC, NAT handling, and reconnect behavior.
 - `zlm/` wraps ZLMediaKit HTTP APIs and webhook handling. `AppState::get_zlm_client_auto()` selects the least-loaded node, preferring Redis stream counters and falling back to live ZLM API counts.
@@ -89,7 +89,7 @@ handlers/ ──→ db/ ──→ SQLx (SQLite by default; MySQL/PostgreSQL behi
 
 ### Cross-cutting conventions
 
-All normal API responses use `WVPResult<T>` with the standard shape `{ code: 0, msg: "成功", data: ... }`. Handlers generally return `Result<Json<WVPResult<T>>, AppError>` so `?` converts DB/business failures into JSON error responses.
+All normal API responses use `ApiResult<T>` with the standard shape `{ code: 0, msg: "成功", data: ... }`. Handlers generally return `Result<Json<ApiResult<T>>, AppError>` so `?` converts DB/business failures into JSON error responses.
 
 Authentication accepts JWT via `access-token` or `Authorization: Bearer ...`, then falls back to API keys via `X-API-Key` or `apiKey`. Authenticated requests write audit logs asynchronously. Public route exclusions and the protected ZLM proxy are configured in `router.rs` / `auth.rs`.
 

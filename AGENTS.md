@@ -19,7 +19,7 @@ Agent instructions for working on this GB28181 video platform server (Rust backe
 
 - **Backend**: Rust with Axum 0.7, SQLx (SQLite default / PostgreSQL / MySQL via cargo features), JWT auth
 - **Frontend**: Vue 3 + Element Plus + Vite + TypeScript (in `web/` directory; the old Vue 2 app was deleted from the repo — it survives only in git history)
-- **Purpose**: GB28181 protocol video management platform (WVP-PRO compatible) with JT1078 vehicle terminal support
+- **Purpose**: GB28181 protocol video management platform with JT1078 vehicle terminal support
 
 ## Build Commands
 
@@ -107,9 +107,9 @@ mysql -uroot -p gbserver < database/init-mysql-2.7.4.sql
 
 ```rust
 // Correct
-pub async fn handler(...) -> Result<Json<WVPResult<T>>, AppError> {
+pub async fn handler(...) -> Result<Json<ApiResult<T>>, AppError> {
     let data = db::query(&state.pool, id).await?;
-    Ok(Json(WVPResult::success(data)))
+    Ok(Json(ApiResult::success(data)))
 }
 
 // Incorrect - don't use unwrap/expect in handlers
@@ -117,17 +117,17 @@ let data = db::query(&state.pool, id).await.unwrap();
 ```
 
 #### Response Format
-- Always wrap responses in `WVPResult<T>` (see `src/response.rs`)
-- Use `WVPResult::success(data)` for successful responses
-- Use `WVPResult::success_empty()` for operations with no return data
+- Always wrap responses in `ApiResult<T>` (see `src/response.rs`)
+- Use `ApiResult::success(data)` for successful responses
+- Use `ApiResult::success_empty()` for operations with no return data
 - Use `AppError::into_response()` for errors (automatic JSON conversion)
 
 ```rust
 // Successful response
-Ok(Json(WVPResult::success(some_data)))
+Ok(Json(ApiResult::success(some_data)))
 
 // Empty success
-Ok(Json(WVPResult::success_empty()))
+Ok(Json(ApiResult::success_empty()))
 
 // Error (handled automatically via ?)
 Err(AppError::business(ErrorCode::Error400, "invalid input"))
@@ -152,7 +152,7 @@ sqlx::query_as::<_, Device>(
 
 #### Naming Conventions
 - **Functions**: snake_case (`list_devices_paged`, `get_device_by_device_id`)
-- **Types**: PascalCase (`AppError`, `WVPResult`, `Device`)
+- **Types**: PascalCase (`AppError`, `ApiResult`, `Device`)
 - **Modules**: snake_case (`db`, `handlers`, `sip`)
 - **Variables**: snake_case
 - **Constants**: SCREAMING_SNAKE_CASE
@@ -166,7 +166,7 @@ use serde::Deserialize;
 
 use crate::db::{self, Device};
 use crate::error::{AppError, ErrorCode};
-use crate::response::WVPResult;
+use crate::response::ApiResult;
 ```
 
 #### Handler Pattern
@@ -176,7 +176,7 @@ Always extract state and validate input:
 pub async fn handler(
     State(state): State<AppState>,
     Query(params): Query<Params>,
-) -> Result<Json<WVPResult<Response>>, AppError> {
+) -> Result<Json<ApiResult<Response>>, AppError> {
     let value = params.value.ok_or_else(|| 
         AppError::business(ErrorCode::Error400, "缺少参数")
     )?;
@@ -216,11 +216,11 @@ GBServer/
 │   ├── lib.rs               # AppState, run() function, background task wiring
 │   ├── config.rs            # Configuration loading
 │   ├── error.rs             # AppError, ErrorCode
-│   ├── response.rs          # WVPResult
+│   ├── response.rs          # ApiResult
 │   ├── auth.rs              # JWT authentication
-│   ├── router.rs            # Route definitions (424 处 .route(，429 条唯一 /api/ 路径)
+│   ├── router.rs            # Route definitions (425 处 .route(，429 条唯一 /api/ 路径)
 │   ├── db/                  # Database layer
-│   ├── handlers/            # HTTP handlers (incl. stub.rs / device_stub.rs compat shims)
+│   ├── handlers/            # HTTP handlers (stub.rs / device_stub.rs 是真实实现，见 docs/STUB_COMPAT_PLAN.md)
 │   ├── sip/                 # GB28181 SIP stack (core/ transport/ gb28181/)
 │   ├── zlm/                 # ZLM media server client + hooks
 │   ├── jt1078/              # JT1078 vehicle terminal protocol
@@ -231,7 +231,7 @@ GBServer/
 ├── web/                     # Vue 3 frontend (active)
 ├── e2e/                     # Playwright UI tests
 ├── mock/                    # Python simulators (SIP device / JT1078 terminal / cascade)
-├── docs/                    # 当前状态 / 待办 / 部署指南 / 方言注意事项 / shim 退役计划
+├── docs/                    # 当前状态 / 待办 / 部署指南 / 方言注意事项 / stub 模块定位评估
 ├── config/
 │   └── application.toml     # Default configuration
 ├── database/
@@ -247,7 +247,7 @@ GBServer/
 
 1. Create function in appropriate `handlers/*.rs` file
 2. Add route in `router.rs`
-3. Return `Result<Json<WVPResult<T>>, AppError>`
+3. Return `Result<Json<ApiResult<T>>, AppError>`
 4. Use `State(state): State<AppState>` to access app state
 5. Use `Query(params): Query<Params>` for query parameters
 

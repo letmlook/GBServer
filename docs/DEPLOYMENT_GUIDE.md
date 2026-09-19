@@ -696,9 +696,9 @@ systemctl start gbserver
 
 DB schema 由 `init_db_tables` 在启动时自动执行缺失迁移（幂等）。
 
-### 9.2 从 Java 旧版迁移
+### 9.2 从旧版本迁移
 
-1. 停 Java 服务：`systemctl stop gbserver`
+1. 停旧进程：`systemctl stop gbserver`
 2. 备份 DB：`pg_dump gbserver > backup_$(date +%F).sql`
 3. 拉取新版：`git pull && cargo build --release`
 4. 启动：`systemctl start gbserver`
