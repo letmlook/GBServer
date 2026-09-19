@@ -324,6 +324,20 @@ extending this one response.
 
 ## Gotchas for Common Edits
 
+- **延迟只有一个来源：国标设备列表的「延迟」列**（`web/src/api/device.ts`
+  `queryDeviceLatency`）。它是**平台 ↔ 设备**的 SIP 往返：平台按
+  `sip.heartbeat.latency_probe_interval_secs`（默认 15s，0 = 关闭）
+  向每台在线设备发一条 MESSAGE 探针，用设备回的 200 OK 结算 RTT。
+  采样见 `src/sip/gb28181/latency.rs` + `src/sip/server.rs` 的「设备延迟探针」
+  循环，响应结算挂在 `handle_response` 里（用 `lat_` Call-ID 前缀认领）。
+  数据只在内存里，不落库。
+  - 顶部导航栏那个「延迟」**已删除**（曾显示浏览器↔后端的 HTTP 往返，
+    而 `Navbar.vue` 用的 `/api/server/system/info` 服务端有固定约 260ms
+    采样 sleep —— CPU 60ms + 网络 2×100ms，见 `src/handlers/server.rs`
+    的 `read_cpu_usage_impl` / `read_net_rx_impl` —— 显示出来不是网络延迟）。
+    那个请求现在只用来喂「平台信息」弹层，别再把它当成延迟探针。
+  - 副作用提示：dashboard 每 2s 打一次同一个 `system/info`，每次都要等那
+    ~260ms 的 sleep，接口本身的响应时间被自己抬高了。
 - **`config/application.toml` is deployment-specific.** The `[[zlm.servers]]`
   `hook_url` and similar IPs/ports are tuned for one box. Local-dev
   edits to this file (e.g. `host.docker.internal` → `127.0.0.1`) are

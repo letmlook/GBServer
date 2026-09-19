@@ -74,11 +74,6 @@
         </div>
       </el-popover>
 
-      <div v-if="latency !== null" class="topbar-stat" :title="latencyTitle">
-        <span :class="['gb-dot', latencyDot]" />
-        <span class="mono">{{ latencyLabel }}</span>
-        <span class="text-tertiary">延迟</span>
-      </div>
       <button class="gb-icon-btn" aria-label="告警" @click="goAlarm">
         <svg viewBox="0 0 24 24" fill="none">
           <path d="M12 3l9 16H3z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" />
@@ -170,64 +165,42 @@ const route = useRoute()
 const router = useRouter()
 
 const query = ref('')
-/**
- * 延迟（ms）= 浏览器 → 后端 → 浏览器的 round-trip。
- * 真实测量而非硬编码 —— 之前的 `ref('12ms')` 永远不变，体验差。
- * 每 5s ping 一次 `/api/server/system/info`（轻量、admin 一直在用）。
- */
-const latency = ref<number | null>(null)
-let latencyTimer: number | null = null
 
 /**
  * 「平台信息」弹层的开关，以及后端 system/info 的最新一次响应。
- * 弹层里的 SIP / JT1078 接入参数直接取自这个响应 —— 与测延迟共用同一次
- * 请求，不额外发接口。
+ * 弹层里的 SIP / JT1078 接入参数直接取自这个响应。
  */
 const platformVisible = ref(false)
 const info = ref<SystemInfo | null>(null)
+/** `system/info` 的轮询定时器（喂「平台信息」弹层） */
+let infoTimer: number | null = null
 
-const latencyLabel = computed(() => {
-  if (latency.value === null) return '--'
-  return `${latency.value}ms`
-})
-const latencyDot = computed(() => {
-  const v = latency.value
-  if (v === null) return 'gb-dot--mute'
-  if (v > 300) return 'gb-dot--err'
-  if (v > 150) return 'gb-dot--warn'
-  return 'gb-dot--success'
-})
-const latencyTitle = computed(() => {
-  const v = latency.value
-  if (v === null) return '延迟测量中…'
-  if (v > 300) return `延迟 ${v}ms（高）`
-  if (v > 150) return `延迟 ${v}ms（一般）`
-  return `延迟 ${v}ms（健康）`
-})
-
-async function measureLatency() {
-  // 用裸 fetch 测延迟：避开项目里 axios 的业务码拦截器（避免每 5s 弹
-  // "Error" toast）。fetch 自带的网络失败走 reject，HTTP 4xx/5xx 不算失败，
-  // 我们只看 round-trip。
-  //
-  // 同一次请求顺带解析 body 存进 `info` —— 「平台信息」弹层要用里面的
-  // sip_config / jt1078_config / host_ip。一次请求两用，不再额外发一次。
+/**
+ * 周期性拉一次 `system/info`，喂给「平台信息」弹层里的
+ * sip_config / jt1078_config / host_ip。
+ *
+ * 用裸 fetch 而不是项目里的 axios：这只是一次后台静默刷新，
+ * 走 axios 会被业务码拦截器弹出 "Error" toast，而这里失败无所谓
+ * （弹层显示上一次的值即可）。
+ *
+ * 注意：这个请求以前兼任「顶部导航栏延迟」的探针（用 performance.now()
+ * 掐往返时间显示 `287ms 延迟`）。那个数字测得的是浏览器↔后端的 HTTP
+ * 往返，而该接口服务端本身有固定 ~260ms 采样 sleep（CPU 60ms + 网络
+ * 2×100ms），显示出来既不是网络延迟也不反映设备链路，已按要求去掉 ——
+ * 需要看平台↔设备的真实延迟，用「国标设备」列表的「延迟」列。
+ */
+async function loadPlatformInfo() {
   const baseURL = (import.meta.env.VITE_APP_BASE_API ?? '') as string
   const url = `${baseURL}/server/system/info`
-  const t0 = performance.now()
   try {
-    // 加 `?` cache buster 防止 304 round-trip 太短显得"延迟只有 0ms"
     const res = await fetch(`${url}${url.includes('?') ? '&' : '?'}_t=${Date.now()}`, {
       credentials: 'include',
       headers: { 'access-token': getToken() ?? '' }
     })
-    // 必须读完 body 才算完整 round-trip，否则会低估延迟
     const body = await res.json().catch(() => null)
-    latency.value = Math.max(0, Math.round(performance.now() - t0))
     if (body?.data) info.value = body.data as SystemInfo
   } catch {
-    // 网络层失败：上一次延迟保留；首次测量就失败 → 标 -1，UI 走红点
-    latency.value = latency.value ?? -1
+    // 网络层失败：保留上一次的响应，弹层照旧显示旧值
   }
 }
 
@@ -315,15 +288,14 @@ function onProfileSave() {
 }
 
 onMounted(() => {
-  // 立即测一次，再每 5s 续测
-  measureLatency()
-  latencyTimer = window.setInterval(measureLatency, 5_000)
+  loadPlatformInfo()
+  infoTimer = window.setInterval(loadPlatformInfo, 5_000)
 })
 
 onBeforeUnmount(() => {
-  if (latencyTimer !== null) {
-    window.clearInterval(latencyTimer)
-    latencyTimer = null
+  if (infoTimer !== null) {
+    window.clearInterval(infoTimer)
+    infoTimer = null
   }
 })
 </script>
@@ -381,16 +353,6 @@ onBeforeUnmount(() => {
     border-color: var(--brand-primary-300);
     background: rgba(11, 138, 178, 0.08);
   }
-}
-.topbar-stat {
-  display: flex; align-items: center; gap: 6px;
-  font-size: var(--text-xs);
-  color: var(--text-secondary);
-  padding: 0 8px;
-  .mono { color: var(--text-primary); }
-  .gb-dot--mute { background: var(--text-tertiary); }
-  .gb-dot--warn { background: var(--state-warning); }
-  .gb-dot--err { background: var(--state-error); }
 }
 .badge-dot {
   position: absolute; top: 6px; right: 6px;
