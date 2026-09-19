@@ -148,9 +148,9 @@
             </h4>
             <dl v-if="sipCfg" class="proto-list">
               <div class="proto-row">
-                <dt>设备 ID</dt>
+                <dt>用户名（设备 ID）</dt>
                 <dd class="proto-value mono">{{ sipCfg.device_id }}
-                  <button class="proto-copy" @click="copy(sipCfg.device_id ?? '', '设备 ID')" title="复制设备 ID">
+                  <button class="proto-copy" @click="copy(sipCfg.device_id ?? '', 'SIP 用户名')" title="复制 SIP 用户名">
                     <el-icon :size="12"><DocumentCopy /></el-icon>
                   </button>
                 </dd>
