@@ -203,7 +203,7 @@ pub const ROUTED_HOOK_EVENTS: &[&str] = &[
 /// 3. 委托给 `handle_webhook`，由其根据 hook_name 路由到具体业务逻辑
 async fn handle_hook_event<T: HookEventTag>(
     State(state): State<AppState>,
-    raw_query: Option<axum::extract::RawQuery>,
+    raw_query: axum::extract::RawQuery,
     Json(mut event): Json<serde_json::Value>,
 ) -> Json<serde_json::Value> {
     // **必须在这里把路由绑定的事件名注入请求体。**
@@ -250,7 +250,7 @@ async fn handle_hook_event<T: HookEventTag>(
 
     // 把查询串一并透传：真实 ZLM 经 `[hook] admin_params` 把 secret 作为
     // URL 参数附加（body 里没有 secret），鉴权必须能读到它。
-    let query = raw_query.and_then(|q| q.0);
+    let query = raw_query.0;
     handle_webhook_inner(&state, event, query.as_deref()).await
 }
 

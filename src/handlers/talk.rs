@@ -387,12 +387,12 @@ pub async fn talk_audio_ws(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
     Path((device_id, channel_id)): Path<(String, String)>,
-    raw_query: Option<RawQuery>,
+    raw_query: RawQuery,
     headers: HeaderMap,
 ) -> impl IntoResponse {
     use axum::http::StatusCode;
 
-    let qstring = raw_query.and_then(|q| q.0).unwrap_or_default();
+    let qstring = raw_query.0.unwrap_or_default();
     let token = ws_query_param(&qstring, "token").or_else(|| {
         headers
             .get("authorization")
@@ -503,7 +503,8 @@ pub async fn talk_audio_ws(
                                         format!(
                                             "{{\"callId\":\"{}\",\"packets\":{},\"bytes\":{}}}",
                                             call_id, packets, bytes
-                                        ),
+                                        )
+                                        .into(),
                                     ))
                                     .await;
                             }
@@ -513,7 +514,7 @@ pub async fn talk_audio_ws(
                             tracing::warn!("对讲音频发送失败 call_id={}: {}", call_id, e);
                             let _ = tx
                                 .send(Message::Text(
-                                    format!("{{\"error\":\"发送失败: {}\"}}", e),
+                                    format!("{{\"error\":\"发送失败: {}\"}}", e).into(),
                                 ))
                                 .await;
                         }

@@ -1025,10 +1025,10 @@ fn sync_media_server_stream_count(
 /// 于是「无人观看自动关流」永远不生效（ZLM 侧取默认 `false`）。
 pub async fn handle_webhook(
     State(state): State<AppState>,
-    raw_query: Option<axum::extract::RawQuery>,
+    raw_query: axum::extract::RawQuery,
     Json(event): Json<serde_json::Value>,
 ) -> Json<serde_json::Value> {
-    let query = raw_query.and_then(|q| q.0);
+    let query = raw_query.0;
     handle_webhook_inner(&state, event, query.as_deref()).await
 }
 

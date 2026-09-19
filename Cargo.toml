@@ -15,9 +15,9 @@ sqlite = ["sqlx/sqlite"]
 
 [dependencies]
 # Web
-axum = { version = "0.7", features = ["json", "macros", "form", "query", "ws", "multipart"] }
-tower = { version = "0.4", features = ["util"] }
-tower-http = { version = "0.5", features = ["cors", "fs", "trace"] }
+axum = { version = "0.8", features = ["json", "macros", "form", "query", "ws", "multipart"] }
+tower = { version = "0.5", features = ["util"], default-features = false }
+tower-http = { version = "0.6", features = ["cors", "fs", "trace"], default-features = false }
 tokio = { version = "1", features = ["full"] }
 
 # 序列化与配置

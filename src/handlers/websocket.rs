@@ -43,7 +43,8 @@ impl WsState {
             return;
         }
         let msg = json!({ "event": event, "data": data });
-        let msg = Message::Text(msg.to_string());
+        // axum 0.8：Message::Text 收 Utf8Bytes（不再接受 String）
+        let msg = Message::Text(msg.to_string().into());
         let map = self.tx_map.read().await;
         let mut failed = Vec::new();
         for (id, tx) in map.iter() {
@@ -78,11 +79,11 @@ impl WsState {
 pub async fn ws_handler(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
-    raw_query: Option<axum::extract::RawQuery>,
+    raw_query: axum::extract::RawQuery,
     headers: HeaderMap,
 ) -> impl IntoResponse {
     // 1) Parse token from raw query string (token=<jwt>).
-    let qstring: String = raw_query.and_then(|q| q.0).unwrap_or_default();
+    let qstring: String = raw_query.0.unwrap_or_default();
     let token = qstring
         .split('&')
         .find_map(|kv| kv.strip_prefix("token="))
@@ -163,7 +164,7 @@ pub async fn ws_handler(
                     if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
                         if val.get("type").and_then(|v| v.as_str()) == Some("ping") {
                             let _ = ws_state_clone.tx_map.read().await.get(&client_id_clone)
-                                .map(|tx| tx.send(Message::Text(r#"{"event":"pong"}"#.to_string())));
+                                .map(|tx| tx.send(Message::Text(r#"{"event":"pong"}"#.into())));
                         }
                     }
                 } else if let Message::Close(_) = msg {

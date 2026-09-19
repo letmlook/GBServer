@@ -112,7 +112,8 @@ impl WsHub {
 
     async fn local_dispatch(&self, event: &str, data: &serde_json::Value) {
         let msg = serde_json::json!({ "event": event, "data": data }).to_string();
-        let msg = Message::Text(msg);
+        // axum 0.8：Message::Text 收 Utf8Bytes（不再接受 String）
+        let msg = Message::Text(msg.into());
         let map = self.clients.read().await;
         let mut failed = Vec::new();
         for (id, client) in map.iter() {

@@ -84,7 +84,7 @@ pub fn app(state: AppState) -> Router<AppState> {
         .route("/api/user/changePushKey", post(user::change_push_key))
         .route("/api/device/query/devices", get(device::query_devices))
         .route(
-            "/api/device/query/devices/:device_id/channels",
+            "/api/device/query/devices/{device_id}/channels",
             get(device::query_channels),
         )
         .route(
@@ -104,15 +104,15 @@ pub fn app(state: AppState) -> Router<AppState> {
             get(device_stub::sync_status),
         )
         .route(
-            "/api/device/query/devices/:device_id/delete",
+            "/api/device/query/devices/{device_id}/delete",
             delete(device_stub::device_delete),
         )
         .route(
-            "/api/device/query/devices/:device_id/sync",
+            "/api/device/query/devices/{device_id}/sync",
             get(device_stub::device_sync),
         )
         .route(
-            "/api/device/query/transport/:device_id/:stream_mode",
+            "/api/device/query/transport/{device_id}/{stream_mode}",
             post(device_stub::device_transport),
         )
         .route(
@@ -131,7 +131,7 @@ pub fn app(state: AppState) -> Router<AppState> {
         // 这些端点此前完全未挂载，
         // 按此路径调用会落到 SPA 兜底拿到 index.html。
         .route(
-            "/api/device/control/teleboot/:device_id",
+            "/api/device/control/teleboot/{device_id}",
             get(device_control::device_teleboot),
         )
         .route(
@@ -196,7 +196,7 @@ pub fn app(state: AppState) -> Router<AppState> {
             get(device_stub::subscribe_mobile_position),
         )
         .route(
-            "/api/device/config/query/:device_id/BasicParam",
+            "/api/device/config/query/{device_id}/BasicParam",
             get(device_stub::config_basic_param),
         )
         .route(
@@ -210,11 +210,11 @@ pub fn app(state: AppState) -> Router<AppState> {
             get(device_stub::control_record),
         )
         .route(
-            "/api/device/query/sub_channels/:device_id/:parent_channel_id/channels",
+            "/api/device/query/sub_channels/{device_id}/{parent_channel_id}/channels",
             get(device_stub::sub_channels),
         )
         .route(
-            "/api/device/query/tree/channel/:device_id",
+            "/api/device/query/tree/channel/{device_id}",
             get(device_stub::tree_channel),
         )
         .route(
@@ -234,32 +234,32 @@ pub fn app(state: AppState) -> Router<AppState> {
             post(device_stub::device_add),
         )
         .route(
-            "/api/device/query/devices/:device_id",
+            "/api/device/query/devices/{device_id}",
             get(device_stub::device_one),
         )
         .route(
-            "/api/device/query/tree/:device_id",
+            "/api/device/query/tree/{device_id}",
             get(device_stub::device_tree),
         )
         // Device query APIs (Phase 1 - MESSAGE response routing)
         .route(
-            "/api/device/query/info/:device_id",
+            "/api/device/query/info/{device_id}",
             get(device_query::device_info),
         )
         // 路径/参数风格入口（与本平台的历史形式并存）
         .route("/api/device/query/info", get(device_query::device_info_query))
         .route(
-            "/api/device/query/devices/:device_id/status",
+            "/api/device/query/devices/{device_id}/status",
             get(device_query::device_status_path),
         )
         .route(
-            "/api/device/query/:device_id/sync_status",
+            "/api/device/query/{device_id}/sync_status",
             get(device_query::sync_status_path),
         )
         .route(
             // 立即抓一帧刷新缩略图（历史前端兼容路径）。GET/POST 都收 ——
             // 老前端用 GET 调，新前端用 POST。
-            "/api/device/query/snap/:device_id/:channel_id",
+            "/api/device/query/snap/{device_id}/{channel_id}",
             get(device_query::snap_path).post(device_query::snap_path),
         )
         .route(
@@ -271,15 +271,15 @@ pub fn app(state: AppState) -> Router<AppState> {
             get(device_query::device_alarm_query),
         )
         .route(
-            "/api/device/query/status/:device_id",
+            "/api/device/query/status/{device_id}",
             get(device_query::device_status),
         )
         .route(
-            "/api/device/config/query/:device_id/:config_type",
+            "/api/device/config/query/{device_id}/{config_type}",
             get(device_query::device_config_query),
         )
         .route(
-            "/api/play/ssrc/:device_id/:channel_id",
+            "/api/play/ssrc/{device_id}/{channel_id}",
             get(device_query::get_ssrc),
         )
         .route("/api/play/ssrc", get(device_query::ssrc_query))
@@ -294,7 +294,7 @@ pub fn app(state: AppState) -> Router<AppState> {
         .route(
             // 立即抓一帧刷新通道缩略图（要求该通道当前有活跃流）。
             // 画面由后端从流里取帧、自己存盘，见 `capture_snapshot_now`。
-            "/api/play/snap/:device_id/:channel_id",
+            "/api/play/snap/{device_id}/{channel_id}",
             get(device_query::snap_path).post(device_query::snap_path),
         )
         .route(
@@ -320,7 +320,7 @@ pub fn app(state: AppState) -> Router<AppState> {
             get(server::media_server_list),
         )
         .route(
-            "/api/server/media_server/one/:id",
+            "/api/server/media_server/one/{id}",
             get(server::media_server_one),
         )
         .route(
@@ -429,29 +429,29 @@ pub fn app(state: AppState) -> Router<AppState> {
         .route("/api/platform/update", post(platform::platform_update))
         .route("/api/platform/delete", delete(platform::platform_delete))
         .route(
-            "/api/platform/exit/:device_gb_id",
+            "/api/platform/exit/{device_gb_id}",
             get(platform::platform_exit),
         )
         .route("/api/platform/catalog/add", post(platform::catalog_add))
         .route("/api/platform/catalog/edit", post(platform::catalog_edit))
         .route(
-            "/api/play/start/:device_id/:channel_id",
+            "/api/play/start/{device_id}/{channel_id}",
             get(play::play_start),
         )
         .route(
-            "/api/play/stop/:device_id/:channel_id",
+            "/api/play/stop/{device_id}/{channel_id}",
             get(play::play_stop),
         )
         .route(
-            "/api/play/broadcast/:device_id/:channel_id",
+            "/api/play/broadcast/{device_id}/{channel_id}",
             get(play::broadcast_start),
         )
         .route(
-            "/api/play/broadcast/stop/:device_id/:channel_id",
+            "/api/play/broadcast/stop/{device_id}/{channel_id}",
             get(play::broadcast_stop),
         )
         .route(
-            "/api/play/convertStop/:key",
+            "/api/play/convertStop/{key}",
             post(play::play_convert_stop),
         )
         .route(
@@ -489,7 +489,7 @@ pub fn app(state: AppState) -> Router<AppState> {
         .route("/api/group/path", get(stub::group_path))
         .route("/api/group/tree/query", get(stub::group_tree_query))
         .route("/api/log/list", get(stub::log_list))
-        .route("/api/log/file/:file_name", get(stub::log_file_download))
+        .route("/api/log/file/{file_name}", get(stub::log_file_download))
         .route("/api/userApiKey/remark", post(stub::user_api_key_remark))
         .route("/api/userApiKey/userApiKeys", get(stub::user_api_key_list))
         .route("/api/userApiKey/enable", post(stub::user_api_key_enable))
@@ -498,48 +498,48 @@ pub fn app(state: AppState) -> Router<AppState> {
         .route("/api/userApiKey/delete", delete(stub::user_api_key_delete))
         .route("/api/userApiKey/add", post(stub::user_api_key_add))
         .route(
-            "/api/playback/start/:device_id/:channel_id",
+            "/api/playback/start/{device_id}/{channel_id}",
             get(playback::playback_start),
         )
         .route(
-            "/api/playback/resume/:stream_id",
+            "/api/playback/resume/{stream_id}",
             get(playback::playback_resume),
         )
         .route(
-            "/api/playback/pause/:stream_id",
+            "/api/playback/pause/{stream_id}",
             get(playback::playback_pause),
         )
         .route(
-            "/api/playback/speed/:stream_id/:speed",
+            "/api/playback/speed/{stream_id}/{speed}",
             get(playback::playback_speed),
         )
         .route(
-            "/api/playback/seek/:stream_id/:seek_time",
+            "/api/playback/seek/{stream_id}/{seek_time}",
             get(playback::playback_seek),
         )
         .route(
-            "/api/playback/stop/:device_id/:channel_id/:stream_id",
+            "/api/playback/stop/{device_id}/{channel_id}/{stream_id}",
             get(playback::playback_stop),
         )
         .route(
-            "/api/gb_record/query/:device_id/:channel_id",
+            "/api/gb_record/query/{device_id}/{channel_id}",
             get(playback::gb_record_query),
         )
         .route(
-            "/api/gb_record/download/start/:device_id/:channel_id",
+            "/api/gb_record/download/start/{device_id}/{channel_id}",
             get(playback::gb_record_download_start),
         )
         .route(
-            "/api/gb_record/download/stop/:device_id/:channel_id/:stream_id",
+            "/api/gb_record/download/stop/{device_id}/{channel_id}/{stream_id}",
             get(playback::gb_record_download_stop),
         )
         .route(
-            "/api/gb_record/download/progress/:device_id/:channel_id/:stream_id",
+            "/api/gb_record/download/progress/{device_id}/{channel_id}/{stream_id}",
             get(playback::gb_record_download_progress),
         )
         // 下载产物（ZLM 落盘的 MP4）本体：支持 Range，供前端直接保存/拖动
         .route(
-            "/api/gb_record/download/file/:stream_id",
+            "/api/gb_record/download/file/{stream_id}",
             get(playback::gb_record_download_file),
         )
         .route(
@@ -579,21 +579,21 @@ pub fn app(state: AppState) -> Router<AppState> {
             get(stub::cloud_record_collect_list),
         )
         .route(
-            "/api/talk/start/:device_id/:channel_id",
+            "/api/talk/start/{device_id}/{channel_id}",
             get(talk::talk_start),
         )
         .route(
-            "/api/talk/stop/:device_id/:channel_id",
+            "/api/talk/stop/{device_id}/{channel_id}",
             get(talk::talk_stop),
         )
         .route(
-            "/api/talk/invite/:device_id/:channel_id",
+            "/api/talk/invite/{device_id}/{channel_id}",
             get(talk::talk_invite),
         )
         .route("/api/talk/ack", post(talk::talk_ack))
         .route("/api/talk/bye", post(talk::talk_bye))
         .route(
-            "/api/talk/status/:device_id/:channel_id",
+            "/api/talk/status/{device_id}/{channel_id}",
             get(talk::talk_status),
         )
         .route("/api/talk/list", get(talk::talk_list))
@@ -611,16 +611,16 @@ pub fn app(state: AppState) -> Router<AppState> {
         // history 带 `channelId` 时读 gb_device_mobile_position；
         // 不带时保持旧行为（gb_position_history 宽表）。
         .route(
-            "/api/position/history/:device_id",
+            "/api/position/history/{device_id}",
             get(position::position_history),
         )
         .route("/api/position/latest", get(position::position_latest))
         .route(
-            "/api/position/realtime/:device_id",
+            "/api/position/realtime/{device_id}",
             get(position::position_realtime),
         )
         .route(
-            "/api/position/subscribe/:device_id",
+            "/api/position/subscribe/{device_id}",
             get(position::position_subscribe),
         )
         // ========== 通用通道 common_channel ==========
@@ -880,87 +880,87 @@ pub fn app(state: AppState) -> Router<AppState> {
         )
         // ========== 前端控制 front_end ==========
         .route(
-            "/api/front-end/ptz/:device_id/:channel_id",
+            "/api/front-end/ptz/{device_id}/{channel_id}",
             get(front_end::ptz),
         )
         .route(
-            "/api/front-end/auxiliary/:device_id/:channel_id",
+            "/api/front-end/auxiliary/{device_id}/{channel_id}",
             get(front_end::auxiliary),
         )
         .route(
-            "/api/front-end/wiper/:device_id/:channel_id",
+            "/api/front-end/wiper/{device_id}/{channel_id}",
             get(front_end::wiper),
         )
         .route(
-            "/api/front-end/fi/iris/:device_id/:channel_id",
+            "/api/front-end/fi/iris/{device_id}/{channel_id}",
             get(front_end::iris),
         )
         .route(
-            "/api/front-end/fi/focus/:device_id/:channel_device_id",
+            "/api/front-end/fi/focus/{device_id}/{channel_device_id}",
             get(front_end::focus),
         )
         .route(
-            "/api/front-end/preset/query/:device_id/:channel_device_id",
+            "/api/front-end/preset/query/{device_id}/{channel_device_id}",
             get(front_end::preset_query),
         )
         .route(
-            "/api/front-end/preset/add/:device_id/:channel_device_id",
+            "/api/front-end/preset/add/{device_id}/{channel_device_id}",
             get(front_end::preset_add),
         )
         .route(
-            "/api/front-end/preset/call/:device_id/:channel_device_id",
+            "/api/front-end/preset/call/{device_id}/{channel_device_id}",
             get(front_end::preset_call),
         )
         .route(
-            "/api/front-end/preset/delete/:device_id/:channel_device_id",
+            "/api/front-end/preset/delete/{device_id}/{channel_device_id}",
             get(front_end::preset_delete),
         )
         .route(
-            "/api/front-end/cruise/point/add/:device_id/:channel_device_id",
+            "/api/front-end/cruise/point/add/{device_id}/{channel_device_id}",
             get(front_end::cruise_point_add),
         )
         .route(
-            "/api/front-end/cruise/point/delete/:device_id/:channel_device_id",
+            "/api/front-end/cruise/point/delete/{device_id}/{channel_device_id}",
             get(front_end::cruise_point_delete),
         )
         .route(
-            "/api/front-end/cruise/speed/:device_id/:channel_device_id",
+            "/api/front-end/cruise/speed/{device_id}/{channel_device_id}",
             get(front_end::cruise_speed),
         )
         .route(
-            "/api/front-end/cruise/time/:device_id/:channel_device_id",
+            "/api/front-end/cruise/time/{device_id}/{channel_device_id}",
             get(front_end::cruise_time),
         )
         .route(
-            "/api/front-end/cruise/start/:device_id/:channel_device_id",
+            "/api/front-end/cruise/start/{device_id}/{channel_device_id}",
             get(front_end::cruise_start),
         )
         .route(
-            "/api/front-end/cruise/stop/:device_id/:channel_device_id",
+            "/api/front-end/cruise/stop/{device_id}/{channel_device_id}",
             get(front_end::cruise_stop),
         )
         .route(
-            "/api/front-end/scan/set/speed/:device_id/:channel_device_id",
+            "/api/front-end/scan/set/speed/{device_id}/{channel_device_id}",
             get(front_end::scan_set_speed),
         )
         .route(
-            "/api/front-end/scan/set/left/:device_id/:channel_device_id",
+            "/api/front-end/scan/set/left/{device_id}/{channel_device_id}",
             get(front_end::scan_set_left),
         )
         .route(
-            "/api/front-end/scan/set/right/:device_id/:channel_device_id",
+            "/api/front-end/scan/set/right/{device_id}/{channel_device_id}",
             get(front_end::scan_set_right),
         )
         .route(
-            "/api/front-end/scan/start/:device_id/:channel_device_id",
+            "/api/front-end/scan/start/{device_id}/{channel_device_id}",
             get(front_end::scan_start),
         )
         .route(
-            "/api/front-end/scan/stop/:device_id/:channel_device_id",
+            "/api/front-end/scan/stop/{device_id}/{channel_device_id}",
             get(front_end::scan_stop),
         )
         .route(
-            "/api/ptz/front_end_command/:device_id/:channel_id",
+            "/api/ptz/front_end_command/{device_id}/{channel_id}",
             post(front_end::legacy_front_end_command),
         )
         // ========== JT1078 部标设备 ==========
@@ -1047,14 +1047,14 @@ pub fn app(state: AppState) -> Router<AppState> {
         )
         // Phase 7.4: alarm endpoints now require JWT (moved from main-app merge below)
         .route("/api/alarm/list", get(alarm::alarm_list))
-        .route("/api/alarm/detail/:id", get(alarm::alarm_detail))
+        .route("/api/alarm/detail/{id}", get(alarm::alarm_detail))
         .route("/api/alarm/handle", post(alarm::alarm_handle))
-        .route("/api/alarm/delete/:id", delete(alarm::alarm_delete))
+        .route("/api/alarm/delete/{id}", delete(alarm::alarm_delete))
         .route("/api/alarm/batch", delete(alarm::alarm_batch_delete))
         // 本端点契约：DELETE body 是裸数组 [1,2,3]
         .route("/api/alarm/delete", delete(alarm::alarm_delete_batch))
-        .route("/api/alarm/device/:device_id", delete(alarm::alarm_delete_by_device))
-        .route("/api/alarm/before/:time", delete(alarm::alarm_delete_before_time))
+        .route("/api/alarm/device/{device_id}", delete(alarm::alarm_delete_by_device))
+        .route("/api/alarm/before/{time}", delete(alarm::alarm_delete_before_time))
         // Phase 7.6: system info/stats/version/online-users
         .route("/api/system/info", get(system::system_info))
         .route("/api/system/stats", get(system::system_stats))
@@ -1062,7 +1062,7 @@ pub fn app(state: AppState) -> Router<AppState> {
         .route("/api/server/shutdown", get(server::server_shutdown))
         .route("/api/system/online-users", get(system::online_users))
         .route("/api/user/logout", get(user::logout))
-        .route("/api/platform/info/:id", get(platform::platform_info))
+        .route("/api/platform/info/{id}", get(platform::platform_info))
         .route("/api/role/add", post(role::role_add))
         .route("/api/role/delete", delete(role::role_delete))
         .route("/api/proxy/one", get(stream::proxy_one))
@@ -1082,24 +1082,24 @@ pub fn app(state: AppState) -> Router<AppState> {
         .route("/api/cloud/record/collect/delete", get(cloud_record_extra::collect_delete))
         .route("/api/cloud/record/download/zip", get(cloud_record_extra::download_zip))
         // 单条录像文件下载/播放（支持 HTTP Range，供 <video> 拖动）
-        .route("/api/cloud/record/download/:id", get(cloud_record_extra::download_file))
+        .route("/api/cloud/record/download/{id}", get(cloud_record_extra::download_file))
         .route("/api/cloud/record/list-url", get(cloud_record_extra::list_url))
         .route("/api/cloud/record/zip", get(cloud_record_extra::zip))
         .route("/api/alarm/clear", delete(alarm::alarm_clear))
-        .route("/api/alarm/snap/:param", get(parity_extras::alarm_snap))
-        .route("/api/common/channel/map/tile/:z/:x/:y", get(parity_extras::channel_map_tile))
-        .route("/api/common/channel/map/thin/tile/:z/:x/:y", get(parity_extras::channel_map_thin_tile))
-        .route("/api/front-end/common/:cmd/:ch", get(parity_extras::front_end_common))
+        .route("/api/alarm/snap/{param}", get(parity_extras::alarm_snap))
+        .route("/api/common/channel/map/tile/{z}/{x}/{y}", get(parity_extras::channel_map_tile))
+        .route("/api/common/channel/map/thin/tile/{z}/{x}/{y}", get(parity_extras::channel_map_thin_tile))
+        .route("/api/front-end/common/{cmd}/{ch}", get(parity_extras::front_end_common))
         .route("/api/server/config", get(parity_extras::server_config))
         .route("/api/server/version", get(parity_extras::server_version))
         .route("/api/rtp/receive/open", post(rtp_control::rtp_receive_open))
-        .route("/api/rtp/receive/close/:stream_id", post(rtp_control::rtp_receive_close))
+        .route("/api/rtp/receive/close/{stream_id}", post(rtp_control::rtp_receive_close))
         .route("/api/rtp/send/start", post(rtp_control::rtp_send_start))
-        .route("/api/rtp/send/stop/:stream_id", post(rtp_control::rtp_send_stop))
+        .route("/api/rtp/send/stop/{stream_id}", post(rtp_control::rtp_send_stop))
         .route("/api/ps/receive/open", post(rtp_control::ps_receive_open))
-        .route("/api/ps/receive/close/:stream_id", post(rtp_control::ps_receive_close))
+        .route("/api/ps/receive/close/{stream_id}", post(rtp_control::ps_receive_close))
         .route("/api/ps/send/start", post(rtp_control::ps_send_start))
-        .route("/api/ps/send/stop/:stream_id", post(rtp_control::ps_send_stop))
+        .route("/api/ps/send/stop/{stream_id}", post(rtp_control::ps_send_stop))
         .route("/api/ps/getTestPort", get(rtp_control::ps_get_test_port))
         // 第三方对接（vmanager/rtp|ps）的查询参数风格入口
         .route(
@@ -1144,12 +1144,12 @@ pub fn app(state: AppState) -> Router<AppState> {
         .route("/api/jt1078/confirmation-alarm-message", post(jt1078_extra::confirmation_alarm))
         .route("/api/jt1078/playback/download", get(jt1078_extra::playback_download))
         .route("/api/jt1078/media/upload/one/delete", get(jt1078_extra::media_upload_delete))
-        .route("/api/jt1078/terminal/channel/delete/:id", delete(jt1078_extra::terminal_channel_delete))
+        .route("/api/jt1078/terminal/channel/delete/{id}", delete(jt1078_extra::terminal_channel_delete))
         .route(
             "/api/jt1078/terminal/channel/delete",
             delete(jt1078_extra::terminal_channel_delete_query),
         )
-        .route("/api/jt1078/terminal/channel/one/:id", get(jt1078_extra::terminal_channel_one))
+        .route("/api/jt1078/terminal/channel/one/{id}", get(jt1078_extra::terminal_channel_one))
         // 该入口用查询参数（`?id=`）而不是路径参数
         .route(
             "/api/jt1078/terminal/channel/one",
@@ -1188,13 +1188,13 @@ pub fn app(state: AppState) -> Router<AppState> {
         // （见 `device_query::spawn_snapshot_capture`）或调
         // `POST /api/play/snap/{d}/{c}` 手动触发。
         .route(
-            "/api/play/snapshot/:device_id/:channel_id",
+            "/api/play/snapshot/{device_id}/{channel_id}",
             get(device_query::get_snapshot_file),
         );
 
     let api = api_public.merge(api_protected);
     let zlm_protected = Router::new()
-        .route("/zlm/:media_server_id/*path", get(server::zlm_proxy).post(server::zlm_proxy))
+        .route("/zlm/{media_server_id}/{*path}", get(server::zlm_proxy).post(server::zlm_proxy))
         .route_layer(middleware::from_fn_with_state(
             state_clone.clone(),
             auth_middleware,
@@ -1217,7 +1217,7 @@ pub fn app(state: AppState) -> Router<AppState> {
     // 握手判成 401。这里与 `/api/ws` 保持一致 —— 路由公开，JWT 在 handler
     // 内部用 `?token=` 校验（见 `handlers::talk::talk_audio_ws`）。
     let app = app.route(
-        "/api/talk/audio/:device_id/:channel_id",
+        "/api/talk/audio/{device_id}/{channel_id}",
         get(talk::talk_audio_ws),
     );
 
