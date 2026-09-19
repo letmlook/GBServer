@@ -1,7 +1,7 @@
 # GBServer 当前状态
 
-> 🔒 **代码功能已冻结（2026-09-19）。** 本文件描述**当前**状态；历史过程记录（逐轮修复叙述、
-> 阶段性快照）已按「只保留最新状态」的要求清理，需要时走 git 历史。
+> 📌 **最近更新：2026-09-19**（用户管理模块修复，commit `bfa65f8`）。本文件描述**当前**状态；
+> 历史过程记录（逐轮修复叙述、阶段性快照）已按「只保留最新状态」的要求清理，需要时走 git 历史。
 >
 > 本文档与 [`OPEN_ISSUES.md`](OPEN_ISSUES.md) 的分工：
 > **本文档 = 已实现什么、为什么这么设计、已验证过什么**；**OPEN_ISSUES = 还没做什么**。
@@ -13,7 +13,7 @@
 | 后端代码量 | 87,246 行 Rust | `find src -name '*.rs' \| xargs wc -l` |
 | 已注册路由 | 429 条唯一 `/api/...` 路径（`router.rs` 424 处 `.route(`） | `grep -oE '"/api/[^"]*"' src/router.rs \| sort -u \| wc -l` |
 | Handler 模块 | 30 个（`stub.rs` / `device_stub.rs` **是真实实现**，非兼容 shim，见 §3） | `grep -c 'pub mod' src/handlers/mod.rs` |
-| 后端测试 | **744 通过 / 0 失败 / 3 忽略** | `cargo test --no-fail-fast` |
+| 后端测试 | **746 通过 / 0 失败 / 3 忽略** | `cargo test --no-fail-fast` |
 | 编译 | `cargo check` 0 error；clippy 272 条告警（未清零） | `cargo check` / `cargo clippy --all-targets` |
 | 前端 | 18 个业务视图目录、17 个类型化 API 模块、13 个通用组件、42 个 SVG 图标 | `ls web/src/views` |
 | 旧 Vue 2 前端 | 已于 2026-09-19 删除，仅存 git 历史 | `git log --oneline -- web-legacy-vue2` |
@@ -55,6 +55,14 @@
 
 保留这些结论是为了避免后人重复论证同一个问题。
 
+- **管理员判定集中在 `src/handlers/authz.rs`**（2026-09-19 新增）：`authority == "0"`
+  为管理员、内置角色 `id = 1` 兜底，拒绝返回 `ErrorCode::Error403`。此前 `require_admin`
+  内联在 `handlers/user.rs`、硬编码 `role_id == 1`，且只覆盖 4 个端点 —— 导致
+  `/api/role/*`、`/api/userApiKey/*`、`/api/user/{users,all}` 任何已登录用户都能调，
+  普通用户可自助创建管理员级角色。**新增管理类端点必须调用 `authz::require_admin`。**
+- **用户列表查询用 `LEFT JOIN` 角色表**：`gb_user` 与 `gb_user_role` 之间没有外键约束，
+  历史上删角色不校验引用会留下悬空 `role_id`；用 `INNER JOIN` 时这些用户会被 SQL
+  静默丢出列表，而 `count_users` 仍计入 —— 表现为「共 N 条只有 N-k 行、翻页也找不回」。
 - **`stub.rs` / `device_stub.rs` 是生产实现，不是待退役的兼容层**（2026-09-19 复核更正）：
   这两个文件名为 `stub`，但 65 个 entry **全部是真实实现**（落库 / 下发 SIP / 调 ZLM），
   没有空占位。其中 **49 条是当前 Vue 3 前端正在调用的活跃路径**。它们的自我描述
@@ -80,7 +88,7 @@
 | `channel.ts` | 8 | ✅ 已修 |
 | `alarm.ts` | 10 | ✅ 已修 |
 | `live.ts` | 6 | ✅ 已修 |
-| `user.ts` | 6 | ⚠️ 1 条仍在：`UsersQuery` 无 `query` 字段（当前无调用方传，无用户可见影响） |
+| `user.ts` | 6 | ✅ 已修（`query` 搜索 / 权限缺口 / 悬空角色，见 OPEN_ISSUES C5–C7） |
 | `cloudRecord.ts` | 14 | ✅ 已修（连带修掉 5 个审计未覆盖的深层缺陷） |
 | `device.ts` | 6 | ✅ 已修 |
 | `jtDevice.ts` | 13 | ✅ 已修（连带修掉 TEXT 列声明成 `Option<i32>` 的 500） |
@@ -118,7 +126,7 @@
 | [`OPEN_ISSUES.md`](OPEN_ISSUES.md) | **未完成 / 未验证事项**（唯一待办表） |
 | [`DEPLOYMENT_GUIDE.md`](DEPLOYMENT_GUIDE.md) | 构建、运行、部署分级、配置、监控、灾备、升级 |
 | [`DB_DIALECT_NOTES.md`](DB_DIALECT_NOTES.md) | 写多方言 SQL 的注意事项 |
-| [`STUB_COMPAT_PLAN.md`](STUB_COMPAT_PLAN.md) | `stub.rs` / `device_stub.rs` 的真实定位与清退评估（冻结期内不执行） |
+| [`STUB_COMPAT_PLAN.md`](STUB_COMPAT_PLAN.md) | `stub.rs` / `device_stub.rs` 的真实定位与清退评估（当前不建议清退） |
 | [`../web/README.md`](../web/README.md) | 前端说明 |
 | [`../e2e/README.md`](../e2e/README.md) | 端到端测试说明 |
 | [`../mock/README.md`](../mock/README.md) | 模拟测试资源 |

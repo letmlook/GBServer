@@ -2,9 +2,14 @@
 
 Agent instructions for working on this GB28181 video platform server (Rust backend + Vue 3 frontend).
 
-> 🔒 **代码功能已冻结（2026-09-19）。** 不再新增功能、不再改动运行时行为。
-> 本仓库后续只做**文档维护与状态同步**；除非用户显式解除冻结，否则不要提交功能性代码改动。
+> 📌 **代码冻结状态：已解除（2026-09-19）。** 当日曾短暂冻结，同日经用户要求解除以修复
+> 用户管理模块的安全与数据一致性缺陷（commit `bfa65f8`）。可正常提交修复。
 > 当前未完成事项见 `docs/OPEN_ISSUES.md`，已实现能力与设计决策见 `docs/STATUS.md`。
+>
+> **权限约定（重要）**：管理员判定统一走 `src/handlers/authz.rs` —— `authority == "0"`
+> 为管理员，内置角色 `id = 1` 兜底。**新增任何管理类端点都必须调用
+> `authz::require_admin`**；`/api/role/*`、`/api/userApiKey/*`、`/api/user/{users,all}`
+> 曾因只挂 JWT 而让普通用户可自助提权。
 >
 > **测试状态提醒**：`cargo test` 在 2026-09-19 曾因测试构造器缺字段而**整体编译失败**
 > （已于同日修复）。改动 `config` 结构体字段后

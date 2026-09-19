@@ -15,8 +15,9 @@ Rust 全异步后端（Axum + SQLx + Tokio），前端为 Vue 3 + Element Plus +
 
 ---
 
-> 🔒 **状态：代码功能已冻结（2026-09-19）**
-> 不再新增功能、不再改动运行时行为；本仓库后续只做**文档维护**与状态同步。
+> 📌 **状态（2026-09-19 更新）**
+> 代码功能曾于 2026-09-19 短暂冻结，同日经用户要求**解除冻结**以修复用户管理模块的
+> 权限缺口与数据不一致（commit `bfa65f8`）。当前**冻结已解除**，可正常提交修复。
 > 历史归档的 Vue 2 前端 `web-legacy-vue2/` 已于 2026-09-19 从仓库删除（commit `00ffff1`），仅存于 git 历史。
 > 当前状态（已实现什么、为什么这么设计、契约审计结论）见 [`docs/STATUS.md`](docs/STATUS.md)，
 > 未完成事项见 [`docs/OPEN_ISSUES.md`](docs/OPEN_ISSUES.md)。
@@ -297,7 +298,7 @@ WebRTC 的对外通告 IP（`rtc.externIP`）**不需要手改**：在 `config/a
 | [docs/STATUS.md](docs/STATUS.md) | **当前状态**：规模基线、已实现能力矩阵、关键设计决策、契约审计结论 |
 | [docs/OPEN_ISSUES.md](docs/OPEN_ISSUES.md) | **当前未完成/未验证事项**（只列没做完的） |
 | [docs/DB_DIALECT_NOTES.md](docs/DB_DIALECT_NOTES.md) | 写多方言 SQL（SQLite / MySQL / PostgreSQL）的注意事项 |
-| [docs/STUB_COMPAT_PLAN.md](docs/STUB_COMPAT_PLAN.md) | 兼容 shim 的退役路线（冻结期内不执行） |
+| [docs/STUB_COMPAT_PLAN.md](docs/STUB_COMPAT_PLAN.md) | `stub.rs` / `device_stub.rs` 的真实定位与清退评估 |
 | [database/README.md](database/README.md) | 初始化脚本说明 |
 | [web/README.md](web/README.md) | 前端子项目（Vue 3 + Element Plus + Vite）说明 |
 | [e2e/README.md](e2e/README.md) | Playwright 端到端测试说明 |
