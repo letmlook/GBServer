@@ -148,17 +148,35 @@
             </h4>
             <dl v-if="sipCfg" class="proto-list">
               <div class="proto-row">
-                <dt>用户名（设备 ID）</dt>
+                <dt>SIP 服务器 ID</dt>
                 <dd class="proto-value mono">{{ sipCfg.device_id }}
+                  <button class="proto-copy" @click="copy(sipCfg.device_id ?? '', 'SIP 服务器 ID')" title="复制 SIP 服务器 ID">
+                    <el-icon :size="12"><DocumentCopy /></el-icon>
+                  </button>
+                </dd>
+              </div>
+              <div class="proto-row">
+                <dt>SIP 服务器域</dt>
+                <dd class="proto-value mono">{{ sipCfg.realm }}
+                  <button class="proto-copy" @click="copy(sipCfg.realm ?? '', 'SIP 服务器域')" title="复制 SIP 服务器域">
+                    <el-icon :size="12"><DocumentCopy /></el-icon>
+                  </button>
+                </dd>
+              </div>
+              <div class="proto-row">
+                <dt>SIP 用户名</dt>
+                <dd class="proto-value mono">
+                  {{ sipCfg.device_id }}
+                  <span class="meta">= 服务器 ID</span>
                   <button class="proto-copy" @click="copy(sipCfg.device_id ?? '', 'SIP 用户名')" title="复制 SIP 用户名">
                     <el-icon :size="12"><DocumentCopy /></el-icon>
                   </button>
                 </dd>
               </div>
               <div class="proto-row">
-                <dt>信令域</dt>
-                <dd class="proto-value mono">{{ sipCfg.realm }}
-                  <button class="proto-copy" @click="copy(sipCfg.realm ?? '', '信令域')" title="复制信令域">
+                <dt>SIP 密码</dt>
+                <dd class="proto-value mono">{{ sipCfg.password }}
+                  <button class="proto-copy" @click="copy(sipCfg.password ?? '', 'SIP 密码')" title="复制 SIP 密码">
                     <el-icon :size="12"><DocumentCopy /></el-icon>
                   </button>
                 </dd>
@@ -169,14 +187,6 @@
                   {{ listenAddr(sipCfg.bind_ip || sipCfg.ip) }}:{{ sipCfg.port }}
                   <span class="meta">{{ sipCfg.tcp_enabled ? 'UDP/TCP' : 'UDP' }}</span>
                   <button class="proto-copy" @click="copy(listenAddr(sipCfg.bind_ip || sipCfg.ip) + ':' + sipCfg.port, '监听地址')" title="复制监听地址">
-                    <el-icon :size="12"><DocumentCopy /></el-icon>
-                  </button>
-                </dd>
-              </div>
-              <div class="proto-row">
-                <dt>密码</dt>
-                <dd class="proto-value mono">{{ sipCfg.password }}
-                  <button class="proto-copy" @click="copy(sipCfg.password ?? '', 'SIP 密码')" title="复制 SIP 密码">
                     <el-icon :size="12"><DocumentCopy /></el-icon>
                   </button>
                 </dd>
