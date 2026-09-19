@@ -85,6 +85,20 @@
           <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" stroke="currentColor" stroke-width="1.6" />
         </svg>
       </button>
+      <!-- 接口文档：后端在同一源上提供 Swagger UI（/swagger-ui/）。
+           用新标签页打开，避免被 SPA 路由当成内部页面。 -->
+      <button
+        class="topbar-platform"
+        aria-label="接口文档"
+        title="API 接口文档（Swagger UI，可在页面内直接调用接口）"
+        @click="openApiDocs"
+      >
+        <svg viewBox="0 0 24 24" fill="none">
+          <path d="M4 5.5A1.5 1.5 0 0 1 5.5 4H10l2 2h6.5A1.5 1.5 0 0 1 20 7.5v9A1.5 1.5 0 0 1 18.5 18h-13A1.5 1.5 0 0 1 4 16.5z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" />
+          <path d="M9 11.5h6M9 14.5h4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+        </svg>
+        <span>接口文档</span>
+      </button>
       <el-dropdown trigger="click" @command="onCommand">
         <div class="user-chip">
           <div class="user-avatar">{{ avatarLetter }}</div>
@@ -219,6 +233,20 @@ function toggleTheme() {
 }
 function goAlarm() {
   router.push('/alarm')
+}
+
+/// 打开后端提供的 Swagger UI（与前端同源，后端挂在 `/swagger-ui/`）。
+///
+/// 用 `window.open` 而不是路由跳转：Swagger UI 是后端渲染的独立页面，
+/// 走 SPA 路由会被 404 兜底成前端页面。
+function openApiDocs() {
+  const url = `${window.location.origin}/swagger-ui/`
+  const win = window.open(url, '_blank', 'noopener')
+  if (!win) {
+    // 被浏览器拦截弹窗时，退化为当前标签页跳转
+    ElMessage.warning('新标签页被拦截，已在当前页打开接口文档')
+    window.location.href = url
+  }
 }
 
 const pwdVisible = ref(false)
