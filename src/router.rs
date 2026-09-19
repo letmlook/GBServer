@@ -70,7 +70,7 @@ pub fn app(state: AppState) -> Router<AppState> {
     let state_clone = state.clone();
     // 文档路由必须先于 `api_protected` 构造：它要并进受保护区，
     // 才能继承鉴权与审计中间件。
-    let (doc_schemas, doc_paths, doc_router) = documented_region_routes();
+    let (doc_schemas, doc_paths, doc_router) = documented_routes();
     let api_protected = Router::new()
         .route(
             "/api/user/userInfo",
@@ -1298,59 +1298,16 @@ pub fn app(state: AppState) -> Router<AppState> {
     app.layer(cors)
 }
 
-/// `routes!()` 的产物：`(schemas, paths, MethodRouter)`。
-type RegionRoutes = (
-    Vec<(String, utoipa::openapi::RefOr<utoipa::openapi::schema::Schema>)>,
-    utoipa::openapi::path::Paths,
-    Router<AppState>,
-);
-
-/// 已接入 OpenAPI 文档的路由。
+/// 已接入 OpenAPI 文档的路由，按域汇总。
 ///
-/// **迁移规则**：handler 上加 `#[utoipa::path(...)]` 后，把它从 `app()` 里的字符串
-/// 注册搬到这里用 `routes!()` 注册 —— 注意是**搬**，不是两处都注册，否则 axum 会在
-/// 启动时以 `Overlapping method route` panic（有 `test_router_builds_without_conflicts`
-/// 兜底，但别依赖它）。
+/// 新增一个域：在 `src/openapi/` 下加 `routes_<域>.rs`（照 `routes_region.rs` 抄），
+/// 然后在这里 `acc.merge(..)` 一行。
 ///
-/// `routes!()` 同时产出两样东西：真正的 axum `MethodRouter` 与 OpenAPI path 条目，
-/// 因此路由表与文档天然一致，不存在漏登记。
-///
-/// 返回类型是 `(schemas, paths, MethodRouter)` 三元组，由 `UtoipaMethodRouter` 定义。
-///
-/// 当前已迁移：区域（region）3 条。
-fn documented_region_routes() -> RegionRoutes {
-    // `routes!()` 一次只放**一条**路由：多个 handler 塞进同一次调用时，宏会为每个
-    // handler 注册一遍同一组 method，报
-    // `Overlapping method route. Cannot add two method routes that both handle GET`。
-    //
-    // 每条 route 的 MethodRouter 通过 `Router::route(path, ..)` 并入 —— 路径从宏产出的
-    // `paths` 里取，因此路由字符串与 `#[utoipa::path]` 不会各写一份而漂移。
-    let mut paths = utoipa::openapi::path::Paths::new();
-    let mut schemas = Vec::new();
-    let mut router: Router<AppState> = Router::new();
-
-    /// 把 `routes!()` 的单条产物并入 router 与文档集合。
-    macro_rules! add {
-        ($handler:path) => {{
-            let (s, mut p, m) = routes!($handler);
-            schemas.extend(s);
-            let path = p
-                .paths
-                .keys()
-                .next()
-                .expect("routes!() 必然产出一条 path")
-                .clone();
-            let item = p.paths.remove(&path).expect("path 一定存在");
-            paths.paths.insert(path.clone(), item);
-            router = router.route(&path, m);
-        }};
-    }
-
-    add!(crate::handlers::region::region_one);
-    add!(crate::handlers::region::region_page_list);
-    add!(crate::handlers::region::region_sync);
-
-    (schemas, paths, router)
+/// 迁移做法见 `src/openapi/routes_region.rs` 的文件头注释（三个坑都在那里）。
+fn documented_routes() -> crate::openapi::DocumentedRoutes {
+    let mut acc = crate::openapi::RoutesAccumulator::default();
+    acc.merge(crate::openapi::routes_region::routes());
+    acc.finish()
 }
 
 #[cfg(all(test, feature = "sqlite"))]

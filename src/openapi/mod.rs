@@ -1,15 +1,84 @@
-//! OpenAPI 文档配置（安全方案 / 标签 / 通用响应）。
+//! OpenAPI 文档配置（安全方案 / 标签 / 各域路由注册）。
 //!
-//! 接口清单**不在这里手工维护**：路由与文档由 `src/router.rs` 的
-//! `OpenApiRouter` + `routes!()` 在同一处注册，避免「文档漏登记」。
-//! 本模块只放跨接口共享的部分。
+//! 接口清单**不手工维护**：每个域在 `routes_*.rs` 里用 `routes!()` 注册路由，
+//! 同时产出 axum 路由与 OpenAPI path，因此不存在「加了路由忘了写文档」。
 //!
 //! 访问方式：
 //! * `/swagger-ui` —— 交互式文档（右上角 Authorize 填 token 后可直接调用）
 //! * `/api/openapi.json` —— OpenAPI 3.1 规范，供 Postman / Apifox / 前端代码生成
 
+use axum::Router;
+use utoipa::openapi::path::Paths;
+use utoipa::openapi::{RefOr, Schema};
 use utoipa::openapi::security::{ApiKey, ApiKeyValue, HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::{Modify, OpenApi};
+
+use crate::AppState;
+
+pub mod routes_region;
+
+/// 一个域注册完的产物：`(schemas, paths, 真实 axum Router)`。
+pub type DocumentedRoutes = (Vec<(String, RefOr<Schema>)>, Paths, Router<AppState>);
+
+/// 各域 `routes!()` 的累加器。
+///
+/// 存在的意义：`routes!()` 一次只能放**一条**路由（多条会让宏为每个 handler 重复
+/// 注册同一组 method → 启动 panic `Overlapping method route`），所以需要一个地方
+/// 把逐条结果攒起来。
+#[derive(Default)]
+pub struct RoutesAccumulator {
+    schemas: Vec<(String, RefOr<Schema>)>,
+    paths: Paths,
+    router: Router<AppState>,
+}
+
+impl RoutesAccumulator {
+    /// 并入一条 `routes!()` 产物。方法路由会按其 paths.paths 里声明的 path
+    /// 逐条 `router.route(path, m)` 注册 —— path 与 spec 来自同一宏产物，不会漂移。
+    ///
+    /// axum 0.8 的 `Router::merge` 不接受 `MethodRouter`，所以这里手动按 path 注册。
+    pub fn add(
+        &mut self,
+        (schemas, mut paths, method_router): (
+            Vec<(String, RefOr<Schema>)>,
+            Paths,
+            axum::routing::MethodRouter<AppState>,
+        ),
+    ) {
+        self.schemas.extend(schemas);
+        let route_paths: Vec<String> = paths.paths.keys().cloned().collect();
+        for path in route_paths {
+            if let Some(item) = paths.paths.remove(&path) {
+                // 同一 path 多 method 的合并（如 GET+POST 共用路径）
+                match self.paths.paths.get_mut(&path) {
+                    Some(existing) => existing.merge_operations(item),
+                    None => {
+                        self.paths.paths.insert(path.clone(), item);
+                    }
+                }
+                self.router = self.router.clone().route(&path, method_router.clone());
+            }
+        }
+    }
+
+    /// 并入整个域的产物（域模块返回的 `DocumentedRoutes`）。
+    pub fn merge(&mut self, (schemas, paths, router): DocumentedRoutes) {
+        self.schemas.extend(schemas);
+        for (path, item) in paths.paths {
+            match self.paths.paths.get_mut(&path) {
+                Some(existing) => existing.merge_operations(item),
+                None => {
+                    self.paths.paths.insert(path, item);
+                }
+            }
+        }
+        self.router = std::mem::take(&mut self.router).merge(router);
+    }
+
+    pub fn finish(self) -> DocumentedRoutes {
+        (self.schemas, self.paths, self.router)
+    }
+}
 
 /// 注入鉴权方案，供 Swagger UI 的 Authorize 按钮使用。
 ///
@@ -47,7 +116,7 @@ impl Modify for SecurityAddon {
 
 /// 文档骨架：仅描述信息与标签分组。
 ///
-/// 路径（paths）全部由 `router.rs` 的 `routes!()` 在注册路由时收集，
+/// 路径（paths）全部由各域 `routes_*.rs` 在注册路由时收集，
 /// 所以这里**不需要也不应该**列出 path 清单。
 #[derive(OpenApi)]
 #[openapi(
