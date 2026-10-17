@@ -2929,11 +2929,15 @@ pub async fn cloud_record_collect_delete(
 ) -> Json<ApiResult<serde_json::Value>> {
     ensure_record_collect_table(&state.pool).await;
 
-    let record_id = body
-        .record_id
-        .clone()
+    let raw_id = body
+        .id
+        .or(body.record_id)
         .or(body.cloud_record_id)
         .unwrap_or_default();
+    let record_id = match resolve_cloud_record(&state, &raw_id).await {
+        Some((m, a, st, f, _)) => build_cloud_record_id(&m, &a, &st, &f),
+        None => raw_id,
+    };
     if record_id.is_empty() {
         return Json(ApiResult::error("record_id is required"));
     }
@@ -4427,6 +4431,45 @@ mod record_collect_tests {
             "id 不能是 NULL"
         );
         assert_eq!(data["list"][0]["name"], "我的收藏");
+
+        // 前端现用 GET + 云录像数字主键；取消后收藏表应立即为空。
+        let deleted = crate::handlers::cloud_record_extra::collect_delete(
+            State(state.clone()),
+            Query(crate::handlers::cloud_record_extra::CollectQuery {
+                id: Some(record_pk),
+            }),
+        )
+        .await;
+        assert_eq!(deleted.0.code, 0);
+        let list = cloud_record_collect_list(State(state.clone()), Query(IdQuery::default())).await;
+        assert_eq!(list.0.data.unwrap()["total"], 0);
+
+        // 兼容 DELETE + id 参数的调用方；列表 id 是收藏主键，需先取组合串。
+        let added = cloud_record_collect_add(
+            State(state.clone()),
+            Query(CloudRecordCollectQuery {
+                id: Some(record_pk.to_string()),
+                ..Default::default()
+            }),
+        )
+        .await;
+        assert_eq!(added.0.code, 0);
+        let list = cloud_record_collect_list(State(state.clone()), Query(IdQuery::default())).await;
+        let record_id = list.0.data.unwrap()["list"][0]["recordId"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let deleted = cloud_record_collect_delete(
+            State(state.clone()),
+            Json(CloudRecordCollectQuery {
+                id: Some(record_id),
+                ..Default::default()
+            }),
+        )
+        .await;
+        assert_eq!(deleted.0.code, 0);
+        let list = cloud_record_collect_list(State(state), Query(IdQuery::default())).await;
+        assert_eq!(list.0.data.unwrap()["total"], 0);
     }
 }
 

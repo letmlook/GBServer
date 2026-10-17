@@ -328,6 +328,69 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn authenticated_collect_roundtrip_updates_business_storage() {
+        let state = app_state().await;
+        sqlx::query(
+            "INSERT INTO gb_cloud_record (app, stream, start_time, end_time, file_name, file_path, media_server_id) \
+             VALUES ('rtp', 'auth_roundtrip', 1, 2, 'a.mp4', '/tmp/a.mp4', 'zlm-1')",
+        )
+        .execute(&state.pool).await.unwrap();
+        let record_pk: i64 =
+            sqlx::query_scalar("SELECT id FROM gb_cloud_record ORDER BY id DESC LIMIT 1")
+                .fetch_one(&state.pool)
+                .await
+                .unwrap();
+        let jwt = crate::auth::JwtKeys::new(state.config.jwt.secret.as_bytes());
+        let token = jwt.create_token("admin", 60).unwrap();
+        let base = spawn(state).await;
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let add: serde_json::Value = client
+            .get(format!(
+                "{base}/api/cloud/record/collect/add?recordId={record_pk}"
+            ))
+            .header("access-token", &token)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(add["code"], 0, "{add}");
+        let list: serde_json::Value = client
+            .get(format!("{base}/api/cloud/record/collect/list"))
+            .header("access-token", &token)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(list["data"]["total"], 1, "{list}");
+        let deleted: serde_json::Value = client
+            .get(format!(
+                "{base}/api/cloud/record/collect/delete?id={record_pk}"
+            ))
+            .header("access-token", &token)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(deleted["code"], 0, "{deleted}");
+        let list: serde_json::Value = client
+            .get(format!("{base}/api/cloud/record/collect/list"))
+            .header("access-token", &token)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(list["data"]["total"], 0, "{list}");
+    }
+
+    #[tokio::test]
     async fn diagnostics_routes_require_admin_and_hide_internal_state() {
         let state = app_state().await;
         sqlx::query("INSERT INTO gb_user_role (id, name, authority, create_time, update_time) VALUES (2, 'viewer', '1', '2026-10-17', '2026-10-17')")
