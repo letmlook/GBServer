@@ -6,7 +6,7 @@
 
 | 项目 | 本轮结果 | 证据范围 |
 |---|---|---|
-| Rust 测试 | `cargo test --no-fail-fast --locked`：779 通过、0 失败、3 个文档测试忽略 | SQLite 默认特性；本机自动化，ZLM + Mock 的实际运行证据见下文；真机仍待复验 |
+| Rust 测试 | `cargo test --no-fail-fast --locked`：780 通过、0 失败、3 个文档测试忽略 | SQLite 默认特性；本机自动化，ZLM + Mock 的实际运行证据见下文；真机仍待复验 |
 | 前端构建 | `web/npm run build` 通过 | Vue 类型检查与 Vite 打包，不代表浏览器播放通过 |
 | M1 播放收流 | 已移除普通点播和级联点播在媒体 ready 后的二次 `connectRtpServer`；TCP-PASSIVE 主动连接保留 | `media_ready_port_mismatch_is_diagnostic_only` 单测和调用点检查；ZLM/真机回归待执行 |
 | M1 录像重试 | 25 次、800ms 的生产预算不变；新增缺流重试和不可恢复错误次数测试 | `start_record_retry_tests` 4/4；本轮 ZLM + SIP Mock 生成新 MP4，详见下行 |
@@ -16,6 +16,7 @@
 | M2 传输模式结果 | 新增进程内唯一 SN、发送失败清理 pending、传输模式 `waitResult=true` 的设备确认/拒绝/未确认状态；设备列表按状态提示 | 本机真实后端 + Python SIP Mock 的接口运行验证：确认、拒绝、仅 SIP 200 无设备回执、重复回执、5.5 秒迟到回执和新旧 SN 隔离均符合预期；其它控制入口和真机回执待做 |
 | C8 直播音频标志 | 点播响应优先以当前 ZLM 流的 ready 音频 track 判定 `hasAudio`，无 track 时回退目录字段，并以 `audioSource` 标明来源 | 音频 track 单测、前端构建及 `cargo test --no-fail-fast --locked`（774 通过、3 文档测试忽略）通过；本轮 ZLM + Mock 点播返回 `audioSource=media` 且 `hasAudio=true`，ZLM 同流 ready 音频 track；真机待复验 |
 | M4 多方言运行 | PostgreSQL 与 MySQL 特性分别 `cargo build --no-default-features --features <dialect> --locked` 通过；独立测试库按对应初始化 SQL 建表，后端启动、登录、媒体节点/设备列表查询、收藏 GET 和 DELETE 往返均通过 | PostgreSQL 16 容器的隔离库与 MySQL 8 独立临时容器；各 31 张初始化表，测试后隔离库/容器已清理。证明本轮相关路径可运行，不等于全部业务及目标部署验收 |
+| M4 平台通道跨方言更新 | MySQL 自定义名称/地址更新缺少 `UPDATE ... SET`，隔离库测试先复现 1064 错误，修复后通过；PostgreSQL 改用参数绑定；SQLite 共享分支的往返测试通过 | MySQL 8 与 PostgreSQL 16 初始化隔离库分别运行 `mysql_platform_channel`、`postgres_platform_channel` 的忽略测试；两列同时/分别更新及含单引号值通过。默认 SQLite 全量测试包含 `sqlite_custom_fields_roundtrip` |
 | M3 管理员诊断 | `on_play`/`on_publish` 各保留最近一条白名单元数据；管理员可查 Hook 和 Redis/StateStore 状态。媒体节点列表和检测响应不返回保存的 ZLM secret；ZLM 代理要求管理员并拒绝原始配置读取，配置下发失败摘要不回显配置值 | 定向诊断及媒体节点测试通过，完整 `cargo test --no-fail-fast --locked` 777 通过、3 文档测试忽略；本机真实 Redis 容器停止时返回 `ping_failed`，恢复后 `connected`；真实 ZLM 容器停止时节点检测返回脱敏错误，恢复后 `reachable=true`。代理 GET 当前返回 405，POST 权限和配置拦截已有回归测试 |
 
 本轮尚未接入真实 GB28181 设备；ZLM + Mock 及本机三方言的证据不能替代真机与目标部署拓扑验收。

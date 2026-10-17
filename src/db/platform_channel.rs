@@ -235,63 +235,39 @@ pub async fn update(
         return Ok(0);
     }
 
-    #[cfg(feature = "mysql")]
-    {
-        let mut updates = Vec::new();
-        let mut query = sqlx::query("UPDATE gb_platform_channel SET ");
-
-        if let Some(name) = custom_name {
-            updates.push("custom_name = ?");
-            query = query.bind(name);
-        }
-        if let Some(info) = custom_info {
-            updates.push("custom_address = ?");
-            query = query.bind(info);
-        }
-
-        if updates.is_empty() {
-            return Ok(0);
-        }
-
-        let sql = format!("{} WHERE id = ?", updates.join(", "));
-        let mut query = sqlx::query(&sql);
-        if let Some(name) = custom_name {
-            query = query.bind(name);
-        }
-        if let Some(info) = custom_info {
-            query = query.bind(info);
-        }
-        query = query.bind(id);
-        let r = query.execute(pool).await?;
-        return Ok(r.rows_affected());
-    }
-
     #[cfg(feature = "postgres")]
     {
-        let mut updates = Vec::new();
-
-        if let Some(name) = custom_name {
-            updates.push(format!("custom_name = '{}'", name.replace("'", "''")));
-        }
-        if let Some(info) = custom_info {
-            updates.push(format!("custom_address = '{}'", info.replace("'", "''")));
-        }
-
-        if updates.is_empty() {
-            return Ok(0);
-        }
-
-        let sql = format!("{} WHERE id = $1", updates.join(", "));
-        let r = sqlx::query(&sql).bind(id).execute(pool).await?;
+        let r = match (custom_name, custom_info) {
+            (Some(name), Some(info)) => sqlx::query(
+                "UPDATE gb_platform_channel SET custom_name = $1, custom_address = $2 WHERE id = $3",
+            )
+            .bind(name)
+            .bind(info)
+            .bind(id)
+            .execute(pool)
+            .await?,
+            (Some(name), None) => sqlx::query(
+                "UPDATE gb_platform_channel SET custom_name = $1 WHERE id = $2",
+            )
+            .bind(name)
+            .bind(id)
+            .execute(pool)
+            .await?,
+            (None, Some(info)) => sqlx::query(
+                "UPDATE gb_platform_channel SET custom_address = $1 WHERE id = $2",
+            )
+            .bind(info)
+            .bind(id)
+            .execute(pool)
+            .await?,
+            (None, None) => unreachable!(),
+        };
         return Ok(r.rows_affected());
     }
 
-    #[cfg(feature = "sqlite")]
+    #[cfg(any(feature = "sqlite", feature = "mysql"))]
     {
-        // 先收集需要更新的列，避免构造一个「空 SET 子句」的无效 SQL。
-        // 2026-09-11：此前这里还额外构造了一个 `UPDATE ... SET `（空 SET，
-        // 非法 SQL）并 bind 了参数，但该 query 从未执行就被丢弃 —— 编译器
-        // `unused_assignments` 告警即指向此处。已删除这段死代码。
+        // SQLite 与 MySQL 共用 ? 占位符；列名来自固定白名单，值只通过 bind 传递。
         let mut updates = Vec::new();
         if custom_name.is_some() {
             updates.push("custom_name = ?");
@@ -318,6 +294,38 @@ pub async fn update(
         query = query.bind(id);
         let r = query.execute(pool).await?;
         return Ok(r.rows_affected());
+    }
+}
+
+#[cfg(all(test, feature = "sqlite"))]
+mod update_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn sqlite_custom_fields_roundtrip() {
+        let pool = crate::test_support::sqlite_pool_with_schema().await;
+        let id = sqlx::query(
+            "INSERT INTO gb_platform_channel (platform_id, device_channel_id) VALUES (NULL, NULL)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap()
+        .last_insert_rowid();
+        assert_eq!(
+            update(&pool, id, Some("O'Brien"), Some("north gate"))
+                .await
+                .unwrap(),
+            1
+        );
+        let fields: (Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT custom_name, custom_address FROM gb_platform_channel WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(fields.0.as_deref(), Some("O'Brien"));
+        assert_eq!(fields.1.as_deref(), Some("north gate"));
     }
 }
 
