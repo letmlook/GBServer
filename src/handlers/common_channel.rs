@@ -71,7 +71,17 @@ fn build_preset_xml(command: &str, preset_index: u32) -> String {
     front_end_element(command, 1, preset_index)
 }
 
-fn build_fi_xml(cmd_type: &str, command: &str, _speed: u8) -> String {
+fn checked_preset_index(index: Option<i32>) -> Result<u32, Json<serde_json::Value>> {
+    match index {
+        Some(index @ 1..=255) => Ok(index as u32),
+        _ => Err(Json(serde_json::json!({
+            "code": 1,
+            "msg": "预置位编号必须在 1-255 之间"
+        }))),
+    }
+}
+
+fn build_fi_xml(cmd_type: &str, command: &str, speed: u8) -> String {
     // 兼容旧的 (类型, on/off) 调用形式
     let cmd = match (cmd_type, command.to_lowercase().as_str()) {
         ("iris", "on" | "open") => "IRIS_IN",
@@ -80,7 +90,7 @@ fn build_fi_xml(cmd_type: &str, command: &str, _speed: u8) -> String {
         ("focus", _) => "FOCUS_OUT",
         _ => return String::new(),
     };
-    front_end_element(cmd, 1, 0)
+    front_end_element(cmd, speed, 0)
 }
 
 /// 统一把动作名翻成国标元素（`PTZCmd` / `FICmd` / `PresetCmd`）。
@@ -1924,6 +1934,58 @@ mod ptz_validation_tests {
         assert_eq!(invalid_speed["code"], 1);
         assert_eq!(invalid_speed["msg"], "云台速度必须在 0-255 之间");
     }
+
+    #[test]
+    fn common_channel_fi_uses_requested_speed_and_preset_rejects_truncation() {
+        assert_eq!(
+            build_fi_xml("focus", "on", 40),
+            "<PTZCmd>A50F01422800001F</PTZCmd>"
+        );
+        assert!(checked_preset_index(None).is_err());
+        assert!(checked_preset_index(Some(0)).is_err());
+        assert!(checked_preset_index(Some(-1)).is_err());
+        assert!(checked_preset_index(Some(256)).is_err());
+        assert_eq!(checked_preset_index(Some(255)).unwrap(), 255);
+    }
+
+    #[tokio::test]
+    async fn common_channel_fi_and_preset_reject_invalid_parameters_before_lookup() {
+        let state = crate::test_support::app_state().await;
+        let iris = front_end_iris(
+            State(state.clone()),
+            Query(IrisQuery {
+                channel_id: Some(1),
+                command: Some("INVALID".into()),
+                speed: Some(1),
+            }),
+        )
+        .await
+        .0;
+        assert_eq!(iris["msg"], "不支持的光圈命令");
+
+        let focus = front_end_focus(
+            State(state.clone()),
+            Query(FocusQuery {
+                channel_id: Some(1),
+                command: Some("on".into()),
+                speed: Some(256),
+            }),
+        )
+        .await
+        .0;
+        assert_eq!(focus["msg"], "聚焦速度必须在 1-255 之间");
+
+        let preset = front_end_preset_call(
+            State(state),
+            Query(PresetCallQ {
+                channel_id: Some(1),
+                preset_id: Some(256),
+            }),
+        )
+        .await
+        .0;
+        assert_eq!(preset["msg"], "预置位编号必须在 1-255 之间");
+    }
 }
 
 /// GET /api/common/channel/front-end/auxiliary
@@ -2054,6 +2116,15 @@ pub async fn front_end_iris(
 ) -> Json<serde_json::Value> {
     let channel_id = q.channel_id.unwrap_or(0);
     let command = q.command.clone().unwrap_or_default();
+    if !matches!(
+        command.to_ascii_lowercase().as_str(),
+        "on" | "off" | "open" | "close"
+    ) {
+        return Json(serde_json::json!({ "code": 1, "msg": "不支持的光圈命令" }));
+    }
+    if q.speed.is_some_and(|speed| !(1..=255).contains(&speed)) {
+        return Json(serde_json::json!({ "code": 1, "msg": "光圈速度必须在 1-255 之间" }));
+    }
     let speed = q.speed.unwrap_or(1) as u8;
     let body = build_fi_xml("iris", &command, speed);
     tracing::info!(
@@ -2098,6 +2169,15 @@ pub async fn front_end_focus(
 ) -> Json<serde_json::Value> {
     let channel_id = q.channel_id.unwrap_or(0);
     let command = q.command.clone().unwrap_or_default();
+    if !matches!(
+        command.to_ascii_lowercase().as_str(),
+        "on" | "off" | "open" | "close"
+    ) {
+        return Json(serde_json::json!({ "code": 1, "msg": "不支持的聚焦命令" }));
+    }
+    if q.speed.is_some_and(|speed| !(1..=255).contains(&speed)) {
+        return Json(serde_json::json!({ "code": 1, "msg": "聚焦速度必须在 1-255 之间" }));
+    }
     let speed = q.speed.unwrap_or(1) as u8;
     let body = build_fi_xml("focus", &command, speed);
     tracing::info!(
@@ -2169,7 +2249,7 @@ pub struct PresetAddQ {
     responses(
         (status = 200, description = "预置位添加",
          body = serde_json::Value,
-         example = json!({"code":0,"msg":"预置位添加成功"})),
+         example = json!({"code":0,"msg":"预置位设置命令已发送"})),
     ),
     security(("access_token" = [])),
 )]
@@ -2178,8 +2258,11 @@ pub async fn front_end_preset_add(
     Query(q): Query<PresetAddQ>,
 ) -> Json<serde_json::Value> {
     let channel_id = q.channel_id.unwrap_or(0);
-    let preset_id = q.preset_id.unwrap_or(0);
-    let body = build_preset_xml("SET_PRESET", preset_id as u32);
+    let preset_id = match checked_preset_index(q.preset_id) {
+        Ok(index) => index,
+        Err(response) => return response,
+    };
+    let body = build_preset_xml("SET_PRESET", preset_id);
     tracing::info!(
         "commonChannel preset add: channel_id={}, preset_id={}",
         channel_id,
@@ -2189,7 +2272,7 @@ pub async fn front_end_preset_add(
         (
             "DeviceControl".to_string(),
             body.clone(),
-            "预置位添加成功".to_string(),
+            "预置位设置命令已发送".to_string(),
         )
     })
     .await
@@ -2211,7 +2294,7 @@ pub struct PresetCallQ {
     responses(
         (status = 200, description = "预置位调用",
          body = serde_json::Value,
-         example = json!({"code":0,"msg":"预置位调用成功"})),
+         example = json!({"code":0,"msg":"预置位调用命令已发送"})),
     ),
     security(("access_token" = [])),
 )]
@@ -2220,8 +2303,11 @@ pub async fn front_end_preset_call(
     Query(q): Query<PresetCallQ>,
 ) -> Json<serde_json::Value> {
     let channel_id = q.channel_id.unwrap_or(0);
-    let preset_id = q.preset_id.unwrap_or(0);
-    let body = build_preset_xml("GOTO_PRESET", preset_id as u32);
+    let preset_id = match checked_preset_index(q.preset_id) {
+        Ok(index) => index,
+        Err(response) => return response,
+    };
+    let body = build_preset_xml("GOTO_PRESET", preset_id);
     tracing::info!(
         "commonChannel preset call: channel_id={}, preset_id={}",
         channel_id,
@@ -2231,7 +2317,7 @@ pub async fn front_end_preset_call(
         (
             "DeviceControl".to_string(),
             body.clone(),
-            "预置位调用成功".to_string(),
+            "预置位调用命令已发送".to_string(),
         )
     })
     .await
@@ -2253,7 +2339,7 @@ pub struct PresetDeleteQ {
     responses(
         (status = 200, description = "预置位删除",
          body = serde_json::Value,
-         example = json!({"code":0,"msg":"预置位删除成功"})),
+         example = json!({"code":0,"msg":"预置位删除命令已发送"})),
     ),
     security(("access_token" = [])),
 )]
@@ -2262,8 +2348,11 @@ pub async fn front_end_preset_delete(
     Query(q): Query<PresetDeleteQ>,
 ) -> Json<serde_json::Value> {
     let channel_id = q.channel_id.unwrap_or(0);
-    let preset_id = q.preset_id.unwrap_or(0);
-    let body = build_preset_xml("CLEAR_PRESET", preset_id as u32);
+    let preset_id = match checked_preset_index(q.preset_id) {
+        Ok(index) => index,
+        Err(response) => return response,
+    };
+    let body = build_preset_xml("CLEAR_PRESET", preset_id);
     tracing::info!(
         "commonChannel preset delete: channel_id={}, preset_id={}",
         channel_id,
@@ -2273,7 +2362,7 @@ pub async fn front_end_preset_delete(
         (
             "DeviceControl".to_string(),
             body.clone(),
-            "预置位删除成功".to_string(),
+            "预置位删除命令已发送".to_string(),
         )
     })
     .await

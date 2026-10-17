@@ -6,7 +6,7 @@
 
 | 项目 | 本轮结果 | 证据范围 |
 |---|---|---|
-| Rust 测试 | `cargo test --no-fail-fast --locked`：794 通过、0 失败、3 个文档测试忽略 | SQLite 默认特性；本机自动化，ZLM + Mock 的实际运行证据见下文；真机仍待复验 |
+| Rust 测试 | `cargo test --no-fail-fast --locked`：796 通过、0 失败、3 个文档测试忽略 | SQLite 默认特性；本机自动化，ZLM + Mock 的实际运行证据见下文；真机仍待复验 |
 | 版本一致性 | SIP `User-Agent` 统一从 Cargo 包版本生成，覆盖设备侧 SIP 和级联请求；HTTP `/api/server/version`、`/api/system/info` 与 OpenAPI 均返回 `2.0.0` | `cargo fmt --check`、Rust 全量测试与 `cargo build --locked` 通过；本机后端启动后对三个 HTTP 出口实测均为 `2.0.0`；级联 REGISTER/INVITE 的 SIP 报文构造测试通过，真机报文待复验 |
 | 前端构建 | `web/npm run build` 通过 | Vue 类型检查与 Vite 打包，不代表浏览器播放通过 |
 | M1 播放收流 | 普通点播和级联点播在媒体 ready 后不再二次回连。`on_rtp_server_started` 仅表示端口已打开，不误报媒体到达。TCP-PASSIVE 使用 ZLM `tcp_mode=2`、纯主机 `dst_url` 主动连接，并等真实流注册后才返回成功；失败清理 RTP Server 和 Play 会话 | 回归测试覆盖媒体判定、被动模式等待及取消；本机真实 ZLM + SIP Mock：普通模式无 RTP 时 15.0 秒超时、有 RTP 时 FLV 可读；TCP-PASSIVE 无设备媒体时 15.0 秒失败，ZLM RTP Server 0 残留且 Mock 收到 BYE；使用本机 TCP RTP/PS relay 时约 5.73 秒成功、FLV 头为 `FLV`、停止成功。真机仍待复验 |
@@ -29,6 +29,7 @@
 | M2 预置位结果 | `GET /api/device/control/preset` 要求通道 ID、合法预置位动作和 1–255 编号，拒绝把未知动作兜底成 STOP；默认即时返回 `sent`，`waitResult=true` 等待同设备、通道、SN 的执行回执，保留原 `result` 字段 | 参数校验测试先复现缺通道仍进入发送路径，修复后通过；本机后端 + SIP Mock 对预置位确认、拒绝、仅 SIP 200、默认即时返回均通过；`cargo test --no-fail-fast --locked` 792 通过、0 失败、3 个文档测试忽略。真机预置位未验证 |
 | M2 PTZ 与中亿视图预置位 | `/api/device/control/ptz` 在发送前校验动作和预置位编号；未知动作不再兜底成 STOP，`/api/sy/camera/control/ptz` 传入的预置位编号正确进入 PTZ XML；即时响应标明 SIP 已发送和设备结果仍为 `sent` | 参数回归测试先失败后通过；本机后端 + SIP Mock 实测中亿视图 `GOTO_PRESET&preset=3` 发出 `PTZCmd=A50F01820003003A`，控制回执完整场景通过；全量 Rust 测试 793 通过、0 失败、3 个文档测试忽略。真机 PTZ 未验证 |
 | M2 通用通道 PTZ 参数 | `/api/common/channel/front-end/ptz` 仅接受已定义的 PTZ 动作，拒绝负数及超过 255 的速度；STOP 仍允许速度 0。无效参数在查库与发送 SIP 前返回错误，不会被兜底为 STOP 或截断成 `u8` | 参数定向测试及全量 Rust 测试 794 通过、0 失败、3 个文档测试忽略；尚未在真机验证该兼容入口 |
+| M2 通用通道镜头与预置位 | 聚焦、光圈仅接受明确开关动作和 1–255 速度，实际编码使用请求速度；预置位设置、调用、删除要求 1–255 编号，响应只声明命令已发送，避免将未收到设备回执写成操作成功 | 指令字节和参数定向测试通过；全量 Rust 测试 796 通过、0 失败、3 个文档测试忽略。通用通道兼容入口尚未在真机验证 |
 | C8 直播音频标志 | 点播响应优先以当前 ZLM 流的 ready 音频 track 判定 `hasAudio`，无 track 时回退目录字段，并以 `audioSource` 标明来源 | 音频 track 单测、前端构建及 `cargo test --no-fail-fast --locked`（774 通过、3 文档测试忽略）通过；本轮 ZLM + Mock 点播返回 `audioSource=media` 且 `hasAudio=true`，ZLM 同流 ready 音频 track；真机待复验 |
 | M4 多方言运行 | PostgreSQL 与 MySQL 特性分别 `cargo build --no-default-features --features <dialect> --locked` 通过；独立测试库按对应初始化 SQL 建表，后端启动、登录、媒体节点/设备列表查询、收藏 GET 和 DELETE 往返均通过 | PostgreSQL 16 容器的隔离库与 MySQL 8 独立临时容器；各 31 张初始化表，测试后隔离库/容器已清理。证明本轮相关路径可运行，不等于全部业务及目标部署验收 |
 | M4 平台通道跨方言更新 | MySQL 自定义名称/地址更新缺少 `UPDATE ... SET`，隔离库测试先复现 1064 错误，修复后通过；PostgreSQL 改用参数绑定；SQLite 共享分支的往返测试通过 | MySQL 8 与 PostgreSQL 16 初始化隔离库分别运行 `mysql_platform_channel`、`postgres_platform_channel` 的忽略测试；两列同时/分别更新及含单引号值通过。默认 SQLite 全量测试包含 `sqlite_custom_fields_roundtrip` |
