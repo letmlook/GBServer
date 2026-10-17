@@ -603,7 +603,7 @@ pub async fn config_basic_param(
         let server = &*sip_server;
         if let Some(device) = server.device_manager().get(&device_id).await {
             if device.online {
-                let sn = chrono::Utc::now().timestamp_millis() as u32;
+                let sn = crate::sip::server::next_sip_command_sn();
                 let commander = server.device_commander();
                 let (req, rx) = commander.register_device_config_with_receiver(&device_id, sn);
                 match server
@@ -655,6 +655,7 @@ pub async fn config_basic_param(
                         }
                     },
                     Err(e) => {
+                        commander.cancel_pending(&req);
                         tracing::error!("Failed to send config query: {}", e);
                         return Json(ApiResult::success(serde_json::json!({
                             "deviceId": device_id,

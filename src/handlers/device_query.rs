@@ -71,7 +71,7 @@ pub async fn device_info(
     State(state): State<AppState>,
     Path(device_id): Path<String>,
 ) -> impl IntoResponse {
-    let sn = chrono::Utc::now().timestamp_millis() as u32;
+    let sn = crate::sip::server::next_sip_command_sn();
 
     // 设备在线：注册 + 发送 SIP MESSAGE + 等待响应（带 15s 超时）
     if let Some(ref sip_server) = state.sip_server {
@@ -173,7 +173,7 @@ pub async fn device_status(
     State(state): State<AppState>,
     Path(device_id): Path<String>,
 ) -> impl IntoResponse {
-    let sn = chrono::Utc::now().timestamp_millis() as u32;
+    let sn = crate::sip::server::next_sip_command_sn();
 
     // 设备在线：注册 + 发送 SIP MESSAGE + 等待响应（带 15s 超时）
     if let Some(ref sip_server) = state.sip_server {
@@ -262,7 +262,7 @@ pub async fn device_status(
          body = ApiResult<serde_json::Value>,
          example = json!({"code":0,"msg":"成功","data":{
              "deviceId":"34020000001320000001","config_type":"BasicParam",
-             "sn":1700000000000_i64,"xml":"<Response>...</Response>","source":"live"
+             "sn":1234567890_u32,"xml":"<Response>...</Response>","source":"live"
          }})),
         (status = 401, description = "未鉴权"),
     ),
@@ -1189,7 +1189,7 @@ pub async fn device_alarm_query(
         .into_response();
     }
 
-    let sn = chrono::Utc::now().timestamp_millis() as u32;
+    let sn = crate::sip::server::next_sip_command_sn();
     let commander = server.device_commander();
     let (req, rx) = commander.register_alarm_query_with_receiver(&device_id, sn);
     if let Err(e) = server
@@ -1205,6 +1205,7 @@ pub async fn device_alarm_query(
         )
         .await
     {
+        commander.cancel_pending(&req);
         tracing::error!("报警查询下发失败 device={}: {}", device_id, e);
         return Json(ApiResult::<serde_json::Value>::error(format!(
             "下发报警查询失败: {e}"

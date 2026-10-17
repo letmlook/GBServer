@@ -832,6 +832,7 @@ class SipDeviceMock:
         control_result: str = "ok",
         control_result_delay_ms: int = 0,
         control_result_repeats: int = 1,
+        config_result_delay_ms: int = 0,
     ):
         self.cfg = cfg
         self.server_addr = server_addr
@@ -842,6 +843,7 @@ class SipDeviceMock:
         self.control_result = control_result
         self.control_result_delay_ms = control_result_delay_ms
         self.control_result_repeats = control_result_repeats
+        self.config_result_delay_ms = config_result_delay_ms
         self._alarm_task: Optional[asyncio.Task] = None
         self.alarm_count = 0
         self.rtp = RtpSender(cfg)
@@ -1249,6 +1251,8 @@ class SipDeviceMock:
             f"Content-Length: {len(body.encode())}\r\n"
             f"\r\n{body}"
         )
+        if self.config_result_delay_ms:
+            await asyncio.sleep(self.config_result_delay_ms / 1000)
         self.transport.sendto(payload.encode(), addr)
         log.info("ConfigDownload(%s) 应答已发送 sn=%s", config_type, sn)
 
@@ -1807,10 +1811,12 @@ def main():
                         help="发送设备层回执前延迟的毫秒数；超过平台等待预算可测试迟到回执")
     parser.add_argument("--control-result-repeats", type=int, default=1,
                         help="发送同一设备层回执的次数，用于重复回执测试")
+    parser.add_argument("--config-result-delay-ms", type=int, default=0,
+                        help="ConfigDownload 回执延迟，11000 可测试 15 秒等待预算")
     args = parser.parse_args()
 
-    if args.control_result_delay_ms < 0 or not 1 <= args.control_result_repeats <= 3:
-        parser.error("control result delay must be >= 0 and repeats must be 1..3")
+    if args.control_result_delay_ms < 0 or args.config_result_delay_ms < 0 or not 1 <= args.control_result_repeats <= 3:
+        parser.error("result delays must be >= 0 and control result repeats must be 1..3")
 
     log.setLevel(args.log_level)
 
@@ -1838,6 +1844,7 @@ def main():
         cfg, server_addr, args.local_port, args.auto_register, args.auto_keepalive,
         args.auto_alarm_secs,
         args.control_result, args.control_result_delay_ms, args.control_result_repeats,
+        args.config_result_delay_ms,
     )
 
     async def run():

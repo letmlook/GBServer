@@ -478,13 +478,14 @@ pub(crate) async fn query_config_and_wait(
 
     // SN 必须"登记用哪个、发出就用哪个、设备回显也就是哪个" —— 这是
     // Call-ID 不一致时唯一的关联依据（见 pending_request::extract_sn）。
-    let sn = chrono::Utc::now().timestamp_millis() as u32;
+    let sn = crate::sip::server::next_sip_command_sn();
     let commander = server.device_commander();
     let (req, rx) = commander.register_device_config_with_receiver(device_id, sn);
     if let Err(e) = server
         .send_device_config_query(device_id, config_type, sn)
         .await
     {
+        commander.cancel_pending(&req);
         tracing::error!("下发 ConfigDownload 失败 device={}: {}", device_id, e);
         return serde_json::json!({
             "deviceId": device_id,

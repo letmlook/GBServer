@@ -146,6 +146,11 @@ impl DeviceCommander {
         self.pending.pending_count()
     }
 
+    /// 下发失败时立即移除请求，避免后到回执命中旧等待项。
+    pub fn cancel_pending(&self, req: &PendingRequest) -> bool {
+        self.pending.cancel(&req.call_id)
+    }
+
     // ========================================================================
     // Phase 2.1: await 响应版本（基于 register_with_receiver）
     //
@@ -171,7 +176,7 @@ impl DeviceCommander {
             sn,
             PendingCmdType::DeviceInfo,
             &call_id,
-            None,
+            Some(30),
         )
     }
 
@@ -187,7 +192,7 @@ impl DeviceCommander {
             sn,
             PendingCmdType::DeviceStatus,
             &call_id,
-            None,
+            Some(30),
         )
     }
 
@@ -203,7 +208,7 @@ impl DeviceCommander {
             sn,
             PendingCmdType::DeviceConfig,
             &call_id,
-            None,
+            Some(15),
         )
     }
 
@@ -238,22 +243,32 @@ impl DeviceCommander {
         sn: u32,
     ) -> (PendingRequest, tokio::sync::oneshot::Receiver<String>) {
         let call_id = format!("al_{}_{}", device_id, sn);
-        self.pending
-            .register_with_receiver(device_id, sn, PendingCmdType::Alarm, &call_id, None)
+        self.pending.register_with_receiver(
+            device_id,
+            sn,
+            PendingCmdType::Alarm,
+            &call_id,
+            Some(15),
+        )
     }
 
     /// 等待 receiver 响应（带超时）
     pub async fn await_response(
         &self,
-        _req: PendingRequest,
+        req: PendingRequest,
         rx: tokio::sync::oneshot::Receiver<String>,
         timeout_secs: u64,
     ) -> Result<String, DeviceQueryResult> {
-        match tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), rx).await {
-            Ok(Ok(xml)) => Ok(xml),
-            Ok(Err(_recv_cancelled)) => Err(DeviceQueryResult::Timeout),
-            Err(_elapsed) => Err(DeviceQueryResult::Timeout),
+        let result =
+            match tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), rx).await {
+                Ok(Ok(xml)) => Ok(xml),
+                Ok(Err(_recv_cancelled)) => Err(DeviceQueryResult::Timeout),
+                Err(_elapsed) => Err(DeviceQueryResult::Timeout),
+            };
+        if result.is_err() {
+            self.cancel_pending(&req);
         }
+        result
     }
 
     /// 一站式：注册 + 等待 + 解析 DeviceInfo
@@ -265,11 +280,12 @@ impl DeviceCommander {
         send_fn: impl std::future::Future<Output = Result<(), String>>,
         timeout_secs: u64,
     ) -> DeviceInfoResult {
-        let (_req, rx) = self.register_device_info_with_receiver(device_id, sn);
+        let (req, rx) = self.register_device_info_with_receiver(device_id, sn);
         if let Err(e) = send_fn.await {
+            self.cancel_pending(&req);
             return DeviceInfoResult::ParseError(format!("send failed: {}", e));
         }
-        match self.await_response(_req, rx, timeout_secs).await {
+        match self.await_response(req, rx, timeout_secs).await {
             Ok(xml) => self.parse_device_info(&xml),
             Err(DeviceQueryResult::Timeout) => DeviceInfoResult::ParseError("timeout".to_string()),
             Err(_) => DeviceInfoResult::ParseError("error".to_string()),
@@ -284,11 +300,12 @@ impl DeviceCommander {
         send_fn: impl std::future::Future<Output = Result<(), String>>,
         timeout_secs: u64,
     ) -> DeviceStatusResult {
-        let (_req, rx) = self.register_device_status_with_receiver(device_id, sn);
+        let (req, rx) = self.register_device_status_with_receiver(device_id, sn);
         if let Err(e) = send_fn.await {
+            self.cancel_pending(&req);
             return DeviceStatusResult::ParseError(format!("send failed: {}", e));
         }
-        match self.await_response(_req, rx, timeout_secs).await {
+        match self.await_response(req, rx, timeout_secs).await {
             Ok(xml) => self.parse_device_status(&xml),
             Err(DeviceQueryResult::Timeout) => {
                 DeviceStatusResult::ParseError("timeout".to_string())
@@ -464,6 +481,21 @@ mod tests {
             Err(DeviceQueryResult::Timeout) => {} // 预期
             other => panic!("预期 Timeout，实际 {:?}", other),
         }
+        assert_eq!(
+            cmd.pending_count(),
+            0,
+            "超时后不应保留可被迟到回执命中的 pending"
+        );
+    }
+
+    #[test]
+    fn config_pending_lives_for_the_full_wait_and_can_be_cancelled() {
+        let cmd = make_commander();
+        let (req, _rx) = cmd.register_device_config_with_receiver("device-a", 42);
+        assert_eq!(req.timeout_secs, 15);
+        assert_eq!(cmd.pending_count(), 1);
+        assert!(cmd.cancel_pending(&req));
+        assert_eq!(cmd.pending_count(), 0);
     }
 
     /// query_device_info_and_parse：注册 → 发送 → 完成 → 解析，整链路
@@ -519,6 +551,7 @@ mod tests {
             DeviceInfoResult::ParseError(msg) => assert!(msg.contains("network down")),
             other => panic!("预期 ParseError，实际 {:?}", other),
         }
+        assert_eq!(cmd.pending_count(), 0, "发送失败不能留下 pending");
     }
 
     /// 设备发送成功但超时：应返回 ParseError("timeout")
@@ -533,5 +566,6 @@ mod tests {
             DeviceInfoResult::ParseError(msg) => assert!(msg.contains("timeout")),
             other => panic!("预期 ParseError(timeout)，实际 {:?}", other),
         }
+        assert_eq!(cmd.pending_count(), 0, "等待超时不能留下 pending");
     }
 }

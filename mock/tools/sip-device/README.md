@@ -88,6 +88,7 @@ curl -X POST http://127.0.0.1:18080/api/device/query/subscribe/catalog \
 | `--control-result` | `ok` | `ok` / `reject` / `silent`；`silent` 仍回 SIP 200 |
 | `--control-result-delay-ms` | 0 | 设备层回执延迟；大于 5000 可模拟平台等待超时 |
 | `--control-result-repeats` | 1 | 同一回执发送次数（1–3） |
+| `--config-result-delay-ms` | 0 | `ConfigDownload` 回执延迟；11000 可验证平台 15 秒等待窗跨过 10 秒清理周期 |
 
 传输模式结果运行验收：在隔离的 SQLite 后端启动后，执行
 `python3 mock/tools/sip-device/verify_control_result_runtime.py`。脚本短暂占用本机

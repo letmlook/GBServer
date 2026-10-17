@@ -298,7 +298,7 @@ pub async fn position_realtime(
     if let Some(sip_server) = state.sip_server.as_ref() {
         let server = &**sip_server;
         if server.is_device_online(&device_id).await {
-            let sn = chrono::Utc::now().timestamp_millis() as u32;
+            let sn = crate::sip::server::next_sip_command_sn();
             let commander = server.device_commander();
             let (req, rx) = commander.register_mobile_position_with_receiver(&device_id, sn);
             let send = server.send_mobile_position_query(&device_id, sn).await;
@@ -328,7 +328,10 @@ pub async fn position_realtime(
                     }
                     Err(_) => note = Some("设备在 5 秒内未返回位置".to_string()),
                 },
-                Err(e) => note = Some(format!("位置查询下发失败: {e}")),
+                Err(e) => {
+                    commander.cancel_pending(&req);
+                    note = Some(format!("位置查询下发失败: {e}"));
+                }
             }
         } else {
             note = Some("设备离线".to_string());

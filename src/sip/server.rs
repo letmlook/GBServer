@@ -5,7 +5,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 /// 进程随机起点 + 原子递增，避免同秒内并发设备命令复用 SN。
-fn next_device_control_sn() -> u32 {
+pub(crate) fn next_sip_command_sn() -> u32 {
     static COUNTER: OnceLock<AtomicU32> = OnceLock::new();
     let counter = COUNTER.get_or_init(|| AtomicU32::new(rand::thread_rng().gen_range(1..u32::MAX)));
     loop {
@@ -46,9 +46,7 @@ mod device_control_sn_tests {
 
     #[test]
     fn generated_command_serials_are_nonzero_and_unique() {
-        let serials: HashSet<u32> = (0..10_000)
-            .map(|_| super::next_device_control_sn())
-            .collect();
+        let serials: HashSet<u32> = (0..10_000).map(|_| super::next_sip_command_sn()).collect();
         assert_eq!(serials.len(), 10_000);
         assert!(!serials.contains(&0));
     }
@@ -2070,7 +2068,7 @@ impl SipServer {
             // 设备刚上线时 manufacturer/model/firmware 全是 NULL，主动下一条
             // DeviceInfo 查询，等应答被 `persist_device_info_response` 落库。
             // 设备拒答/丢包也不影响注册本身。
-            let sn = chrono::Utc::now().timestamp_millis() as u32;
+            let sn = next_sip_command_sn();
             spawn_device_info_query_after_register(
                 config.clone(),
                 device_manager.clone(),
@@ -5249,7 +5247,7 @@ f=v/1/96/1/2/1/1/0
         cmd_type: &str,
         body: &str,
     ) -> Result<()> {
-        let sn = next_device_control_sn();
+        let sn = next_sip_command_sn();
         // 国标 `DeviceControl` 只有 **一个** `<DeviceID>`，且通道级命令
         // （PTZ/录像/布防…）里它必须填**通道编码**；设备级命令
         // （TeleBoot / DeviceConfig）才填设备编码。此前固定填 device_id
@@ -5278,7 +5276,7 @@ f=v/1/96/1/2/1/1/0
             cmd_type == "DeviceControl",
             "only DeviceControl supports confirmation"
         );
-        let sn = next_device_control_sn();
+        let sn = next_sip_command_sn();
         let pending_call_id = format!("ctl_{}_{}", device_id, sn);
         let target_id = if channel_id.is_empty() {
             device_id
@@ -5332,7 +5330,7 @@ f=v/1/96/1/2/1/1/0
             device_id,
             "DeviceControl",
             &format!("<Transport>{}</Transport>", transport),
-            next_device_control_sn(),
+            next_sip_command_sn(),
         );
 
         self.send_message_to_device(
