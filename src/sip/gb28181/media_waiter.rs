@@ -1,7 +1,7 @@
 // ! MediaWaiter — ZLM 媒体到达等待器
 //!
 //! play.rs 的 send_play_invite_and_wait() 在 SIP 200 OK 后调用 await_media()，
-//! 等待 ZLM Hook 确认媒体流已到达（on_stream_started / on_rtp_server_started）。
+//! 等待 ZLM Hook 确认媒体流已到达（on_stream_changed / on_stream_started）。
 //!
 //! 流程：
 //!   HTTP handler (play_start)
@@ -96,9 +96,8 @@ pub struct MediaWaiterManager {
     active_keys: Arc<DashMap<String, ()>>,
     /// **先于等待者到达**的媒体就绪通知：`stream_id -> 通知时刻`。
     ///
-    /// 竞态是真实存在的：`openRtpServer` 在 ZLM 内部创建流时就会触发
-    /// `on_rtp_server_started`，而调用方要等这个 HTTP 响应回来之后才注册
-    /// 等待者。通知先到、等待者后注册的情况下，原先会直接丢弃 ——
+    /// 竞态是真实存在的：媒体注册 Hook 可能先于 HTTP 等待者注册到达。
+    /// 通知先到、等待者后注册的情况下，原先会直接丢弃 ——
     /// 结果是"媒体明明已经就绪，播放请求却要干等 15 秒超时失败"。
     ///
     /// 这里把这类通知暂存一小段时间：`register` 时若命中就立即完成，
@@ -196,7 +195,7 @@ impl MediaWaiterManager {
         false
     }
 
-    /// 按 stream_id 完成等待（ZLM Hook 的 on_rtp_server_started）
+    /// 按 stream_id 完成等待（ZLM Hook 的真实流注册事件）
     pub fn resolve_by_stream(&self, stream_id: &str, app: &str) -> bool {
         // 先 clone 必要字段，drop 读锁后再调 resolve，避免在持锁时调 remove 死锁
         let call_id_opt: Option<String> =
@@ -369,9 +368,8 @@ mod tests {
         assert!(!mgr.reject_by_call_id("nonexistent", 503, "x"));
     }
 
-    /// 竞态回归：ZLM 的媒体就绪通知可能**早于**等待者注册
-    /// （`openRtpServer` 内部就会触发 `on_rtp_server_started`，
-    /// 而调用方要等响应回来才注册）。此前这种通知会被直接丢弃，
+    /// 竞态回归：ZLM 的媒体注册通知可能**早于**等待者注册。
+    /// 此前这种通知会被直接丢弃，
     /// 播放请求只能干等 15 秒超时。
     #[tokio::test]
     async fn test_early_ready_notification_is_not_lost() {

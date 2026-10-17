@@ -1626,19 +1626,11 @@ pub(crate) async fn handle_webhook_inner(
             }
         }
         "on_rtp_server_started" => {
-            // Phase 3.1: ZLM 成功开启 RTP Server，等待设备推流到达
+            // 这里只表示监听端口已打开；设备尚未推来 RTP。媒体等待器只能由
+            // on_stream_changed/on_stream_started 的真实流注册事件唤醒。
             if let Some(data) = serde_json::from_value::<RtpServerStartedData>(event.clone()).ok() {
-                // 流 ID 就是 RTP server 对应的 stream_id
                 let stream_id = &data.stream_id;
                 tracing::info!("ZLM RTP server started: stream_id={}", stream_id);
-                // 通过 stream_id 反查 call_id，触发 MediaWaiter
-                if let Some(ref sip_server) = state.sip_server {
-                    let sip = sip_server.as_ref();
-                    let resolved = sip.notify_media_ready_by_stream(stream_id, "rtp").await;
-                    if resolved {
-                        tracing::info!("MediaWaiter resolved for stream_id={}", stream_id);
-                    }
-                }
             }
         }
         "on_stream_started" => {
@@ -2164,6 +2156,46 @@ mod abl_payload_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
+    async fn opening_rtp_port_does_not_confirm_media_arrival() {
+        let mut state = crate::test_support::app_state().await;
+        let sip = std::sync::Arc::new(crate::sip::SipServer::new(
+            crate::config::SipConfig::default(),
+            state.pool.clone(),
+            None,
+        ));
+        let waiter = sip.media_waiter_manager();
+        state.sip_server = Some(sip);
+        let (_, mut rx) = waiter.register("play-test", "device_channel", "rtp", 10);
+
+        let opened = serde_json::json!({
+            "hook_name": "on_rtp_server_started",
+            "stream_id": "device_channel",
+            "port": 30000
+        });
+        let _ = handle_webhook_inner(&state, opened, None).await;
+        assert!(matches!(
+            rx.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
+        assert_eq!(waiter.active_count(), 1);
+
+        let arrived = serde_json::json!({
+            "hook_name": "on_stream_started",
+            "schema": "rtsp",
+            "app": "rtp",
+            "stream": "device_channel",
+            "vhost": "__defaultVhost__",
+            "regist": true
+        });
+        let _ = handle_webhook_inner(&state, arrived, None).await;
+        assert!(matches!(
+            rx.await,
+            Ok(crate::sip::gb28181::media_waiter::MediaWaitResult::MediaReady { .. })
+        ));
+    }
 
     #[cfg(feature = "sqlite")]
     #[tokio::test]
