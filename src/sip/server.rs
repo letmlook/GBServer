@@ -2328,52 +2328,60 @@ impl SipServer {
                             channels.len(),
                             sum_num,
                         );
-                        for ch in &channels {
-                            let status = ch.status == "ON" || ch.status.to_lowercase() == "online";
-                            let parent_id =
-                                ch.parent_id.clone().or(Some(device_id_for_catalog.clone()));
-                            if let Err(e) = db_device::upsert_channel_from_catalog(
-                                pool,
-                                &device_id_for_catalog,
-                                &ch.device_id,
-                                &ch.name,
-                                ch.manufacturer.as_deref(),
-                                ch.model.as_deref(),
-                                ch.owner.as_deref(),
-                                ch.civil_code.as_deref(),
-                                ch.address.as_deref(),
-                                parent_id.as_deref(),
-                                status,
-                                ch.longitude,
-                                ch.latitude,
-                                ch.ptz_type,
-                                ch.has_audio,
-                                ch.sub_count,
-                            )
-                            .await
-                            {
-                                tracing::warn!("upsert channel {} failed: {}", ch.device_id, e);
-                            }
-                        }
-
-                        // 分页聚合：设备可能把目录分若干页返回（SumNum > 1），
-                        // 这里按 (device_id, sn) 累计包数，收齐后 flush 并记录
-                        // 同步完成状态；上面的逐包 upsert 保留作为兜底，
-                        // 这样即使设备少发了最后一页也不会丢已收到的通道。
-                        match catalog_sync_manager
-                            .handle_packet(&device_id_for_catalog, body)
-                            .await
-                        {
-                            Ok(true) => tracing::info!(
-                                "Catalog sync complete for {}",
+                        if catalog_sync_manager.is_stale_packet(&device_id_for_catalog, body) {
+                            tracing::warn!(
+                                "Ignoring stale Catalog RESPONSE before channel upsert: device={}",
                                 device_id_for_catalog
-                            ),
-                            Ok(false) => {}
-                            Err(e) => tracing::warn!(
-                                "Catalog sync flush failed for {}: {}",
-                                device_id_for_catalog,
-                                e
-                            ),
+                            );
+                        } else {
+                            for ch in &channels {
+                                let status =
+                                    ch.status == "ON" || ch.status.to_lowercase() == "online";
+                                let parent_id =
+                                    ch.parent_id.clone().or(Some(device_id_for_catalog.clone()));
+                                if let Err(e) = db_device::upsert_channel_from_catalog(
+                                    pool,
+                                    &device_id_for_catalog,
+                                    &ch.device_id,
+                                    &ch.name,
+                                    ch.manufacturer.as_deref(),
+                                    ch.model.as_deref(),
+                                    ch.owner.as_deref(),
+                                    ch.civil_code.as_deref(),
+                                    ch.address.as_deref(),
+                                    parent_id.as_deref(),
+                                    status,
+                                    ch.longitude,
+                                    ch.latitude,
+                                    ch.ptz_type,
+                                    ch.has_audio,
+                                    ch.sub_count,
+                                )
+                                .await
+                                {
+                                    tracing::warn!("upsert channel {} failed: {}", ch.device_id, e);
+                                }
+                            }
+
+                            // 分页聚合：设备可能把目录分若干页返回（SumNum 为总条目数），
+                            // 这里按 (device_id, sn) 累计唯一条目，收齐后 flush 并记录
+                            // 同步完成状态；上面的逐包 upsert 保留作为兜底，
+                            // 这样即使设备少发了最后一页也不会丢已收到的通道。
+                            match catalog_sync_manager
+                                .handle_packet(&device_id_for_catalog, body)
+                                .await
+                            {
+                                Ok(true) => tracing::info!(
+                                    "Catalog sync complete for {}",
+                                    device_id_for_catalog
+                                ),
+                                Ok(false) => {}
+                                Err(e) => tracing::warn!(
+                                    "Catalog sync flush failed for {}: {}",
+                                    device_id_for_catalog,
+                                    e
+                                ),
+                            }
                         }
 
                         // 回复 200 OK(MESSAGE 也要求回复 200)

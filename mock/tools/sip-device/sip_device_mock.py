@@ -401,7 +401,8 @@ def build_catalog_response(
     """构造 Catalog 响应（单包；多包逻辑在外层循环）"""
     realm = realm_from_device_id(cfg.device_id)
     items_xml = ""
-    for i, ch in enumerate(chunk, start=1):
+    for ch in chunk:
+        i = ch + 1
         channel_id = f"{cfg.device_id[:-4]}{i:04d}" if len(cfg.device_id) >= 20 else f"{cfg.device_id}{i:02d}"
         items_xml += (
             f'<Item>\r\n'
@@ -1012,9 +1013,9 @@ class SipDeviceMock:
             # 多包聚合：按 8 个一分包
             chunk_size = 8
             chunks = [list(range(i, min(i + chunk_size, channels))) for i in range(0, channels, chunk_size)]
-            # 声明的总包数可以与实际发包数**不同**：用于验证平台侧
-            # 「设备声明 N 页、实收 M 页」的超时收尾逻辑（--catalog-sum-num-override）
-            sum_num = self.cfg.catalog_sum_num_override or len(chunks)
+            # 声明的目录条目总数可以与实际发送条目数**不同**：用于验证平台侧
+            # 「设备声明 N 条目录、实收 M 条」的超时收尾逻辑（--catalog-sum-num-override）
+            sum_num = self.cfg.catalog_sum_num_override or channels
             for idx, chunk in enumerate(chunks):
                 cseq = self.state.next_cseq()
                 local = self.transport.get_extra_info("sockname")

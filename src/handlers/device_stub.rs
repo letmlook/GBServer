@@ -172,11 +172,11 @@ pub async fn device_delete(
     operation_id = "device_query_device_sync",
     params(("device_id" = String, Path, description = "设备国标 ID")),
     responses(
-        (status = 200, description = "目录同步进度（waiting/receiving/done/failed + 收包/总数/通道数）",
+        (status = 200, description = "目录同步进度（waiting/receiving/done/failed + 已收包数/目录条目数/通道数）",
          body = ApiResult<serde_json::Value>,
          example = json!({"code":0,"msg":"成功","data":{
              "deviceId":"34020000001320000001","syncState":"done",
-             "totalPackets":2,"receivedPackets":2,"channelCount":4,
+             "totalPackets":null,"receivedPackets":2,"totalChannels":4,"receivedChannels":4,"channelCount":4,
              "error":null,"message":"设备目录同步完成","code":0
          }})),
         (status = 401, description = "未鉴权"),
@@ -202,12 +202,18 @@ pub async fn device_sync(
                         let manager = server.catalog_sync_manager();
                         let deadline =
                             tokio::time::Instant::now() + std::time::Duration::from_secs(8);
-                        let (mut sync_state, mut total, mut received, mut error) =
-                            ("waiting".to_string(), 0_i32, 0_i32, None::<String>);
+                        let (
+                            mut sync_state,
+                            mut total,
+                            mut received,
+                            mut received_items,
+                            mut error,
+                        ) = ("waiting".to_string(), 0_i32, 0_i32, 0_i32, None::<String>);
                         loop {
                             if let Some(sess) = manager.get_session(&device_id) {
                                 total = sess.total_num;
                                 received = sess.received_num;
+                                received_items = sess.received_items;
                                 error = sess.error.clone();
                                 sync_state = match sess.state {
                                     crate::sip::gb28181::SyncState::Waiting => "waiting",
@@ -230,7 +236,7 @@ pub async fn device_sync(
                             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
                         }
 
-                        // 超时后把会话**确定性收尾**：设备声明 SumNum 页却只发了几页
+                        // 超时后把会话**确定性收尾**：设备声明 SumNum 条目却未发齐
                         // （甚至一页都不发）时，会话不能永远停在 receiving ——
                         // 各分页已逐包入库，这里按"已完成（可能不完整）"或"失败"收尾，
                         // 并把差异写进 error，前端才判断得出结果。
@@ -239,6 +245,7 @@ pub async fn device_sync(
                             if let Some(sess) = manager.get_session(&device_id) {
                                 total = sess.total_num;
                                 received = sess.received_num;
+                                received_items = sess.received_items;
                                 error = sess.error.clone();
                                 sync_state = match sess.state {
                                     crate::sip::gb28181::SyncState::Waiting => "waiting",
@@ -268,8 +275,10 @@ pub async fn device_sync(
                         return Json(ApiResult::success(serde_json::json!({
                             "deviceId": device_id,
                             "syncState": sync_state,
-                            "totalPackets": total,
+                            "totalPackets": null,
                             "receivedPackets": received,
+                            "totalChannels": total,
+                            "receivedChannels": received_items,
                             "channelCount": channel_count,
                             "error": error,
                             "message": message,

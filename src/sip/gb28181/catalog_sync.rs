@@ -10,7 +10,7 @@
 //! - CatalogSubscriptionManager 管理订阅本身的状态（订阅/取消/过期）
 //! - CatalogSyncManager 管理目录同步的进度（多包缓冲/完成状态/通道更新）
 
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 
 use dashmap::DashMap;
 
@@ -37,10 +37,13 @@ pub struct CatalogSyncSession {
     pub device_id: String,
     /// 流水号
     pub sn: u32,
-    /// 当前会话的 SumNum（设备返回的总包数）
+    /// 当前会话的 SumNum（设备声明的目录条目总数）
     pub total_num: i32,
-    /// 已收到包数
+    /// 已收到包数（包括重复包）
     pub received_num: i32,
+    /// 已收到的唯一目录条目数
+    pub received_items: i32,
+    seen_channel_ids: HashSet<String>,
     /// XML 缓冲（多包聚合用）
     pub buffer: String,
     /// 当前同步状态
@@ -58,6 +61,8 @@ impl CatalogSyncSession {
             sn,
             total_num: 0,
             received_num: 0,
+            received_items: 0,
+            seen_channel_ids: HashSet::new(),
             buffer: String::new(),
             state: SyncState::Waiting,
             error: None,
@@ -66,46 +71,52 @@ impl CatalogSyncSession {
     }
 
     /// 追加一个 Catalog 分页包
-    /// 返回 true 表示所有包已收齐
+    /// 返回 true 表示声明的目录条目已收齐
     pub fn add_packet(&mut self, xml: &str) -> bool {
-        // 解析 SumNum 和 Num
+        if matches!(self.state, SyncState::Done | SyncState::Failed) {
+            return false;
+        }
+        let (_, channels) = crate::sip::gb28181::XmlParser::parse_catalog_channels(xml);
+        // SumNum 是本轮目录的总条目数；DeviceList Num 是当前包条目数。
         let sum_num = Self::extract_tag(xml, "SumNum")
             .and_then(|s| s.parse().ok())
-            .unwrap_or(1);
-        let _num = Self::extract_tag(xml, "Num")
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(1);
+            .unwrap_or(channels.len() as i32);
 
-        if self.total_num == 0 {
-            self.total_num = sum_num;
+        if self.state == SyncState::Waiting {
+            self.total_num = sum_num.max(0);
         }
+        for channel in channels {
+            self.seen_channel_ids.insert(channel.device_id);
+        }
+        self.received_items = self.seen_channel_ids.len() as i32;
 
         // 追加 DeviceList 内容
         if let Some(start) = xml.find("<DeviceList") {
-            if let Some(end) = xml.find("</DeviceList>") {
-                self.buffer.push_str(&xml[start..=end]);
+            if let Some(relative_end) = xml[start..].find("</DeviceList>") {
+                let end = start + relative_end;
+                self.buffer
+                    .push_str(&xml[start..end + "</DeviceList>".len()]);
             }
         }
 
-        // GB28181 协议：<Num> 是当前包序号（1..SumNum），每收一包 +1，
-        // 而非包内 item 数量；这里按包计数与总包数 SumNum 比对。
+        // 乱序页不影响完成判定；重复页不增加唯一条目数。
         self.received_num += 1;
-        self.state = if self.received_num >= self.total_num {
+        self.state = if self.received_items >= self.total_num {
             SyncState::Done
         } else {
             SyncState::Receiving
         };
-        self.received_num >= self.total_num
+        self.state == SyncState::Done
     }
 
     /// 超时收尾：把会话从"等待/接收中"推进到一个**确定**的终态。
     ///
-    /// 每个分页到达时都已**逐包 upsert 入库**，所以少收几页不等于数据全丢；
+    /// 每个分页到达时都已**逐包 upsert 入库**，所以少收条目不等于数据全丢；
     /// 但会话若一直停在 `Receiving`，调用方只能永远报"同步进行中"，
     /// 前端无法判断这次同步到底结束没有。
     ///
     /// * 一页都没收到 → `Failed`（设备没响应）
-    /// * 收到部分页     → `Done`，并在 `error` 里说明"声明 N 页、实收 M 页"
+    /// * 收到部分条目   → `Done`，并在 `error` 里说明"声明 N 条、实收 M 条"
     ///
     /// 返回 `true` 表示本次调用确实改写了状态。
     pub fn finalize_partial(&mut self, timeout_secs: u64) -> bool {
@@ -118,8 +129,8 @@ impl CatalogSyncSession {
         } else {
             self.state = SyncState::Done;
             self.error = Some(format!(
-                "设备声明 {} 个分页、实收 {} 个；各分页已逐包入库，目录可能不完整",
-                self.total_num, self.received_num
+                "设备声明 {} 个目录条目、实收 {} 个；各分页已逐包入库，目录可能不完整",
+                self.total_num, self.received_items
             ));
         }
         true
@@ -165,28 +176,55 @@ impl CatalogSyncManager {
         tracing::info!("Catalog sync started: device={} sn={}", device_id, sn);
     }
 
+    /// 活跃查询存在时，拒绝上一代查询的响应；无查询会话的订阅推送仍可落库。
+    pub fn is_stale_packet(&self, device_id: &str, xml: &str) -> bool {
+        let Some(session) = self.sessions.get(device_id) else {
+            return false;
+        };
+        if !matches!(session.state, SyncState::Waiting | SyncState::Receiving) {
+            return false;
+        }
+        crate::sip::gb28181::XmlParser::get_sn(xml).is_some_and(|sn| sn != session.sn)
+    }
+
     /// 处理收到的 Catalog 分页包（来自 handle_message 或 handle_notify）
-    /// 返回 true 表示收齐所有包并完成入库
+    /// 返回 true 表示收齐声明的条目并完成入库
     pub async fn handle_packet(&self, device_id: &str, xml: &str) -> Result<bool, String> {
         let key = device_id.to_string();
+        let packet_sn =
+            CatalogSyncSession::extract_tag(xml, "SN").and_then(|s| s.parse::<u32>().ok());
 
         // 确保会话存在
         if !self.sessions.contains_key(&key) {
-            self.start_sync(device_id, 1);
+            self.start_sync(device_id, packet_sn.unwrap_or(1));
+        } else if let (Some(sn), Some(session)) = (packet_sn, self.get_session(device_id)) {
+            if sn != session.sn && matches!(session.state, SyncState::Done | SyncState::Failed) {
+                self.start_sync(device_id, sn);
+            }
         }
 
         let mut session = match self.sessions.get_mut(&key) {
             Some(s) => s,
             None => return Err("Session not found".to_string()),
         };
+        if packet_sn.is_some_and(|sn| sn != session.sn) {
+            tracing::warn!(
+                "Ignoring stale Catalog packet: device={} expected_sn={} packet_sn={:?}",
+                device_id,
+                session.sn,
+                packet_sn
+            );
+            return Ok(false);
+        }
 
         // 追加分页数据
         let done = session.add_packet(xml);
 
         if done {
             tracing::info!(
-                "Catalog sync complete: device={} total={} packets={}",
+                "Catalog sync complete: device={} items={}/{} packets={}",
                 device_id,
+                session.received_items,
                 session.total_num,
                 session.received_num
             );
@@ -207,10 +245,11 @@ impl CatalogSyncManager {
             }
         } else {
             tracing::debug!(
-                "Catalog sync progress: device={} {}/{} packets",
+                "Catalog sync progress: device={} items={}/{} packets={}",
                 device_id,
-                session.received_num,
-                session.total_num
+                session.received_items,
+                session.total_num,
+                session.received_num
             );
         }
 
@@ -288,6 +327,28 @@ impl CatalogSyncManager {
 mod tests {
     use super::*;
 
+    #[test]
+    fn catalog_completes_by_unique_items_not_packet_count() {
+        let mut session = CatalogSyncSession::new("dev-1".to_string(), 8);
+        let first = r#"<Response><SN>8</SN><SumNum>3</SumNum><DeviceList Num="2"><Item><DeviceID>ch-1</DeviceID><Name>A</Name></Item><Item><DeviceID>ch-2</DeviceID><Name>B</Name></Item></DeviceList></Response>"#;
+        let second = r#"<Response><SN>8</SN><SumNum>3</SumNum><DeviceList Num="1"><Item><DeviceID>ch-3</DeviceID><Name>C</Name></Item></DeviceList></Response>"#;
+        assert!(!session.add_packet(first));
+        assert!(session.buffer.contains("</DeviceList>"));
+        assert!(
+            session.add_packet(second),
+            "three items arrived in two unique pages"
+        );
+        assert_eq!(session.state, SyncState::Done);
+
+        let mut duplicate = CatalogSyncSession::new("dev-1".to_string(), 9);
+        let one = r#"<Response><SN>9</SN><SumNum>2</SumNum><DeviceList Num="1"><Item><DeviceID>ch-1</DeviceID><Name>A</Name></Item></DeviceList></Response>"#;
+        assert!(!duplicate.add_packet(one));
+        assert!(
+            !duplicate.add_packet(one),
+            "duplicate page must not complete sync"
+        );
+    }
+
     /// 设备声明 3 页却只发 1 页时，会话必须能被**确定性收尾**：
     /// 收到部分 → Done（并说明差异），一页没收到 → Failed。
     #[test]
@@ -302,7 +363,7 @@ mod tests {
         assert!(sess.finalize_partial(8), "应改写成终态");
         assert_eq!(sess.state, SyncState::Done);
         let err = sess.error.clone().unwrap();
-        assert!(err.contains("声明 3 个分页、实收 1 个"), "{err}");
+        assert!(err.contains("声明 3 个目录条目、实收 1 个"), "{err}");
         // 已经收尾过就不再改写
         assert!(!sess.finalize_partial(8));
 
@@ -323,7 +384,7 @@ mod tests {
         mgr.start_sync("dev-x", 7);
         let page = r#"<Response><CmdType>Catalog</CmdType><SN>7</SN><SumNum>9</SumNum><Num>1</Num>
 <DeviceList Num="1"><Item><DeviceID>ch-1</DeviceID><Name>c1</Name></Item></DeviceList></Response>"#;
-        mgr.handle_packet("dev-x", page).await;
+        mgr.handle_packet("dev-x", page).await.unwrap();
         let sess = mgr.get_session("dev-x").unwrap();
         assert_eq!(sess.received_num, 1);
         assert_eq!(sess.state, SyncState::Receiving);
@@ -331,9 +392,32 @@ mod tests {
         assert!(mgr.finalize_partial("dev-x", 8), "应收尾成功");
         let sess = mgr.get_session("dev-x").unwrap();
         assert_eq!(sess.state, SyncState::Done, "必须真的落成 Done");
-        assert!(sess.error.unwrap().contains("声明 9 个分页、实收 1 个"));
+        assert!(sess.error.unwrap().contains("声明 9 个目录条目、实收 1 个"));
         // 不存在的设备不做任何事
         assert!(!mgr.finalize_partial("nope", 8));
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
+    async fn manager_ignores_catalog_packet_from_previous_sn() {
+        let pool = crate::test_support::sqlite_pool_with_schema().await;
+        let manager = CatalogSyncManager::new(pool);
+        manager.start_sync("dev-x", 10);
+        let stale = r#"<Response><SN>9</SN><SumNum>1</SumNum><DeviceList Num="1"><Item><DeviceID>old</DeviceID><Name>Old</Name></Item></DeviceList></Response>"#;
+        assert!(manager.is_stale_packet("dev-x", stale));
+        assert!(!manager.handle_packet("dev-x", stale).await.unwrap());
+        let session = manager.get_session("dev-x").unwrap();
+        assert_eq!(session.state, SyncState::Waiting);
+        assert_eq!(session.received_num, 0);
+        assert_eq!(session.received_items, 0);
+        assert!(manager.finalize_partial("dev-x", 8));
+        let next = r#"<Response><SN>11</SN><SumNum>2</SumNum><DeviceList Num="1"><Item><DeviceID>new</DeviceID><Name>New</Name></Item></DeviceList></Response>"#;
+        assert!(!manager.is_stale_packet("dev-x", next));
+        assert!(!manager.handle_packet("dev-x", next).await.unwrap());
+        let session = manager.get_session("dev-x").unwrap();
+        assert_eq!(session.sn, 11);
+        assert_eq!(session.state, SyncState::Receiving);
+        assert_eq!(session.received_items, 1);
     }
 
     #[test]
@@ -345,7 +429,7 @@ mod tests {
 <CmdType>Catalog</CmdType>
 <SN>1</SN>
 <DeviceID>34020000001320000001</DeviceID>
-<SumNum>3</SumNum>
+<SumNum>4</SumNum>
 <Num>2</Num>
 <DeviceList>
 <Item><DeviceID>34020000001320000001001</DeviceID><Name>Cam001</Name><Status>ON</Status></Item>
@@ -355,7 +439,7 @@ mod tests {
 
         let page2 = r#"<?xml version="1.0"?>
 <Response>
-<SumNum>3</SumNum>
+<SumNum>4</SumNum>
 <Num>1</Num>
 <DeviceList>
 <Item><DeviceID>34020000001320000001003</DeviceID><Name>Cam003</Name><Status>OFF</Status></Item>
@@ -374,7 +458,7 @@ mod tests {
 
         let done1 = s.add_packet(page1);
         assert!(!done1);
-        assert_eq!(s.total_num, 3);
+        assert_eq!(s.total_num, 4);
         assert_eq!(s.received_num, 1);
         assert_eq!(s.state, SyncState::Receiving);
 

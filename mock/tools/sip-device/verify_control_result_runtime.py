@@ -110,7 +110,12 @@ def sy_preset_command(token):
 
 def common_channel_commands(token, output):
     sync = api(f"/api/device/query/devices/{DEVICE_ID}/sync", token=token)
-    if sync.get("code") != 0 or (sync.get("data") or {}).get("syncState") != "done":
+    sync_data = sync.get("data") or {}
+    if (sync.get("code") != 0 or sync_data.get("syncState") != "done"
+            or sync_data.get("totalChannels") != 17
+            or sync_data.get("receivedChannels") != 17
+            or sync_data.get("receivedPackets") != 3
+            or sync_data.get("error") is not None):
         raise AssertionError("Mock catalog sync failed: " + json.dumps(sync, ensure_ascii=False))
     response = api("/api/common/channel/list?count=100", token=token)
     channels = (response.get("data") or {}).get("list") or []
@@ -171,7 +176,7 @@ def scenario(token, name, mode, expected, delay_ms=0, repeats=1, second=False):
     with tempfile.TemporaryFile() as output:
         args = [sys.executable, str(MOCK), "--server", "127.0.0.1:5060",
                 "--device-id", DEVICE_ID, "--username", DEVICE_ID,
-                "--password", SIP_PASSWORD, "--channels", "1",
+                "--password", SIP_PASSWORD, "--channels", "17",
                 "--auto-keepalive", "0", "--control-result", mode,
                 "--control-result-delay-ms", str(delay_ms),
                 "--control-result-repeats", str(repeats)]
