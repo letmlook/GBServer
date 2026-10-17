@@ -24,9 +24,12 @@ MOCK = Path(__file__).with_name("sip_device_mock.py")
 HTTP = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
-def api(path, token=None, post=False):
+def api(path, token=None, post=False, payload=None):
     headers = {"access-token": token} if token else {}
-    request = urllib.request.Request(BASE + path, headers=headers, data=b"" if post else None)
+    if payload is not None:
+        headers["Content-Type"] = "application/json"
+    data = json.dumps(payload).encode() if payload is not None else (b"" if post else None)
+    request = urllib.request.Request(BASE + path, headers=headers, data=data)
     with HTTP.open(request, timeout=12) as response:
         return json.load(response)
 
@@ -84,6 +87,17 @@ def record_command(token, action="Record"):
     return response["data"]
 
 
+def config_update_command(token, wait_result=True):
+    response = api("/api/device/config/update", token=token, post=True, payload={
+        "deviceId": DEVICE_ID, "configType": "BasicParam",
+        "configData": {"sipServerId": DEVICE_ID, "sipServerDomain": "test&domain"},
+        "waitResult": wait_result,
+    })
+    if response.get("code") != 0 or not response.get("data", {}).get("sipSent"):
+        raise AssertionError("DeviceConfig was not sent: " + json.dumps(response, ensure_ascii=False))
+    return response["data"]["deviceResult"]
+
+
 def scenario(token, name, mode, expected, delay_ms=0, repeats=1, second=False):
     with tempfile.TemporaryFile() as output:
         args = [sys.executable, str(MOCK), "--server", "127.0.0.1:5060",
@@ -102,6 +116,12 @@ def scenario(token, name, mode, expected, delay_ms=0, repeats=1, second=False):
             if expected == "rejected":
                 assert first["resultCode"] == "ERROR", f"{name}: {first}"
             if name in ("ok", "reject", "silent"):
+                immediate = config_update_command(token, wait_result=False)
+                assert immediate["status"] == "sent", f"{name} immediate config: {immediate}"
+                config = config_update_command(token)
+                assert config["status"] == expected, f"{name} config: {config}"
+                assert config["sn"] != first["sn"], "config reused transport request SN"
+                print(f"{name} config: {config['status']} sn={config['sn']}")
                 guard = guard_command(token)
                 assert guard["status"] == expected, f"{name} guard: {guard}"
                 assert guard["sn"] != first["sn"], "guard reused transport request SN"

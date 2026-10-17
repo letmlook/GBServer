@@ -496,15 +496,16 @@ def build_device_info_response(cfg: DeviceConfig, local_addr: tuple, server_addr
 def build_device_control_response(
     cfg: DeviceConfig, local_addr: tuple, server_addr: tuple,
     cseq: int, sn: str, call_id: str, target_id: str, result: str,
+    cmd_type: str = "DeviceControl",
 ) -> bytes:
     """设备层执行回执；独立于收到 MESSAGE 时的 SIP 200 OK。"""
-    if result not in ('OK', 'ERROR'):
+    if result not in ('OK', 'ERROR') or cmd_type not in ('DeviceControl', 'DeviceConfig'):
         raise ValueError('unsupported DeviceControl result')
     realm = realm_from_device_id(cfg.device_id)
     body = (
         '<?xml version="1.0" encoding="UTF-8"?>\r\n'
         '<Response>\r\n'
-        '<CmdType>DeviceControl</CmdType>\r\n'
+        f'<CmdType>{cmd_type}</CmdType>\r\n'
         f'<SN>{sn}</SN>\r\n'
         f'<DeviceID>{target_id}</DeviceID>\r\n'
         f'<Result>{result}</Result>\r\n'
@@ -1056,6 +1057,18 @@ class SipDeviceMock:
                     fields.append(f"{name}={value}")
             log.info("DeviceConfig 收到: %s", " ".join(fields) or body[:160])
             await self._reply_empty_ok(msg, addr)
+            if self.control_result != "silent":
+                if self.control_result_delay_ms:
+                    await asyncio.sleep(self.control_result_delay_ms / 1000)
+                result = "OK" if self.control_result == "ok" else "ERROR"
+                payload = build_device_control_response(
+                    self.cfg, self.transport.get_extra_info("sockname"), self.server_addr,
+                    self.state.next_cseq(), self._extract_xml_value(body, "SN") or "1",
+                    self._extract_header(msg, "Call-ID", ""), self.cfg.device_id, result,
+                    cmd_type="DeviceConfig",
+                )
+                for _ in range(self.control_result_repeats):
+                    self.transport.sendto(payload, addr)
         elif "<CmdType>DeviceControl</CmdType>" in body:
             # 设备控制（云台/镜头/预置位/录像/布防…）：真实设备按国标解析
             # PTZCmd/FICmd/PresetCmd。这里把控制元素原样打到日志，

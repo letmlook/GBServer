@@ -887,7 +887,10 @@ impl ResponseRouter {
                 if req.cmd_type != pt {
                     return None;
                 }
-                if pt == PendingCmdType::DeviceControl {
+                if matches!(
+                    pt,
+                    PendingCmdType::DeviceControl | PendingCmdType::DeviceConfig
+                ) {
                     if let (Some(expected), Some(target)) = (
                         req.expected_target.as_deref(),
                         extract_tag(body, "DeviceID"),
@@ -1338,6 +1341,28 @@ mod response_router_tests {
             Some((PendingCmdType::DeviceConfig, body.to_string()))
         );
         assert_eq!(mgr.pending_count(), 0);
+    }
+
+    #[test]
+    fn device_config_response_rejects_wrong_target_before_completing_pending() {
+        let (mgr, router) = fixture();
+        mgr.register_with_receiver_for_target(
+            "device-a",
+            19,
+            PendingCmdType::DeviceConfig,
+            "cfg-19",
+            Some(5),
+            "device-a",
+        );
+        let wrong = "<Response><CmdType>DeviceConfig</CmdType><SN>19</SN><DeviceID>device-b</DeviceID><Result>OK</Result></Response>";
+        assert!(router
+            .route_message_response_with_device(wrong, "msg-19", "device-a")
+            .is_none());
+        assert_eq!(mgr.pending_count(), 1);
+        let right = "<Response><CmdType>DeviceConfig</CmdType><SN>19</SN><DeviceID>device-a</DeviceID><Result>OK</Result></Response>";
+        assert!(router
+            .route_message_response_with_device(right, "msg-19", "device-a")
+            .is_some());
     }
 
     #[test]

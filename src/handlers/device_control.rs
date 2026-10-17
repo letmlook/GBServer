@@ -599,6 +599,9 @@ pub struct ConfigUpdate {
     /// SnapConfig 需要 snapInterval；其他类型透传）
     #[serde(alias = "configData")]
     pub config_data: Option<serde_json::Value>,
+    /// 等待设备返回 DeviceConfig Result，最长 5 秒；默认仅确认 SIP 已发送
+    #[serde(default, alias = "waitResult")]
+    pub wait_result: bool,
 }
 
 fn build_config_update_xml(config_type: &str, config_data: &serde_json::Value) -> String {
@@ -693,11 +696,11 @@ mod config_update_xml_tests {
     operation_id = "device_control_config_update",
     request_body = ConfigUpdate,
     responses(
-        (status = 200, description = "配置下发结果",
+        (status = 200, description = "配置下发及可选设备执行结果",
          body = ApiResult<serde_json::Value>,
          example = json!({"code":0,"msg":"成功","data":{
              "deviceId":"34020000001320000001","configType":"BasicParam",
-             "result":"Config update sent"
+             "sipSent":true,"deviceResult":{"status":"sent"},"result":"Config update sent"
          }})),
         (status = 401, description = "未鉴权"),
     ),
@@ -727,25 +730,61 @@ pub async fn device_config_update(
                 // 根据配置类型构建不同的配置XML
                 let config_xml = build_config_update_xml(&config_type, &config_data);
 
-                match server
-                    .send_device_control(&device_id, &device_id, "DeviceConfig", &config_xml)
-                    .await
-                {
-                    Ok(_) => {
-                        return Json(ApiResult::success(serde_json::json!({
-                            "deviceId": device_id,
-                            "configType": config_type,
-                            "result": "Config update sent"
-                        })));
+                let device_result = if body.wait_result {
+                    match server
+                        .send_device_control_confirmable(
+                            &device_id,
+                            &device_id,
+                            "DeviceConfig",
+                            &config_xml,
+                        )
+                        .await
+                    {
+                        Ok((sn, receiver)) => {
+                            let waited =
+                                tokio::time::timeout(std::time::Duration::from_secs(5), receiver)
+                                    .await;
+                            let (status, result_code) = match waited {
+                                Ok(Ok(xml)) => {
+                                    crate::handlers::device_stub::parse_device_control_result(&xml)
+                                }
+                                _ => {
+                                    server.cancel_device_control_pending(&device_id, sn);
+                                    ("unconfirmed", None)
+                                }
+                            };
+                            serde_json::json!({"status": status, "sn": sn, "resultCode": result_code})
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to send config update: {}", e);
+                            return Json(ApiResult::error(format!(
+                                "Failed to send config update: {}",
+                                e
+                            )));
+                        }
                     }
-                    Err(e) => {
-                        tracing::error!("Failed to send config update: {}", e);
-                        return Json(ApiResult::error(format!(
-                            "Failed to send config update: {}",
-                            e
-                        )));
+                } else {
+                    match server
+                        .send_device_control(&device_id, &device_id, "DeviceConfig", &config_xml)
+                        .await
+                    {
+                        Ok(()) => serde_json::json!({"status": "sent"}),
+                        Err(e) => {
+                            tracing::error!("Failed to send config update: {}", e);
+                            return Json(ApiResult::error(format!(
+                                "Failed to send config update: {}",
+                                e
+                            )));
+                        }
                     }
-                }
+                };
+                return Json(ApiResult::success(serde_json::json!({
+                    "deviceId": device_id,
+                    "configType": config_type,
+                    "sipSent": true,
+                    "deviceResult": device_result,
+                    "result": "Config update sent"
+                })));
             }
         }
     }

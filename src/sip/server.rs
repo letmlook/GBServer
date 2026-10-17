@@ -5264,7 +5264,7 @@ f=v/1/96/1/2/1/1/0
         .await
     }
 
-    /// 发送前登记回执；调用方可等待设备返回的 DeviceControl Response。
+    /// 发送前登记回执；调用方可等待设备返回的 DeviceControl/DeviceConfig Response。
     pub async fn send_device_control_confirmable(
         &self,
         device_id: &str,
@@ -5272,10 +5272,11 @@ f=v/1/96/1/2/1/1/0
         cmd_type: &str,
         body: &str,
     ) -> Result<(u32, oneshot::Receiver<String>)> {
-        anyhow::ensure!(
-            cmd_type == "DeviceControl",
-            "only DeviceControl supports confirmation"
-        );
+        let pending_type = match cmd_type {
+            "DeviceControl" => crate::sip::gb28181::PendingCmdType::DeviceControl,
+            "DeviceConfig" => crate::sip::gb28181::PendingCmdType::DeviceConfig,
+            _ => anyhow::bail!("unsupported confirmable command type"),
+        };
         let sn = next_sip_command_sn();
         let pending_call_id = format!("ctl_{}_{}", device_id, sn);
         let target_id = if channel_id.is_empty() {
@@ -5288,7 +5289,7 @@ f=v/1/96/1/2/1/1/0
             .register_with_receiver_for_target(
                 device_id,
                 sn,
-                crate::sip::gb28181::PendingCmdType::DeviceControl,
+                pending_type,
                 &pending_call_id,
                 Some(5),
                 target_id,
