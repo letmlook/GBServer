@@ -601,6 +601,88 @@ pub struct ConfigUpdate {
     pub config_data: Option<serde_json::Value>,
 }
 
+fn build_config_update_xml(config_type: &str, config_data: &serde_json::Value) -> String {
+    let escaped = |value: &str| quick_xml::escape::escape(value).into_owned();
+    match config_type {
+        "BasicParam" => {
+            let sip_server_id = config_data
+                .get("sipServerId")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let sip_server_port = config_data
+                .get("sipServerPort")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(5060);
+            let sip_server_domain = config_data
+                .get("sipServerDomain")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let transport = config_data
+                .get("transport")
+                .and_then(|v| v.as_str())
+                .unwrap_or("UDP");
+            let charset = config_data
+                .get("charset")
+                .and_then(|v| v.as_str())
+                .unwrap_or("GB2312");
+            format!(
+                "<BasicParam>\n<SIPServerID>{}</SIPServerID>\n<SIPServerPort>{}</SIPServerPort>\n<SIPServerDomain>{}</SIPServerDomain>\n<Transport>{}</Transport>\n<CharSet>{}</CharSet>\n</BasicParam>",
+                escaped(sip_server_id), sip_server_port, escaped(sip_server_domain), escaped(transport), escaped(charset)
+            )
+        }
+        "SnapConfig" => {
+            let snap_interval = config_data
+                .get("snapInterval")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            format!("<SnapConfig>\n<SnapInterval>{snap_interval}</SnapInterval>\n</SnapConfig>")
+        }
+        _ => format!(
+            "<ConfigType>{}</ConfigType>\n<ConfigData>{}</ConfigData>",
+            escaped(config_type),
+            escaped(&config_data.to_string())
+        ),
+    }
+}
+
+#[cfg(test)]
+mod config_update_xml_tests {
+    use super::*;
+
+    fn parses_as_xml(xml: &str) -> bool {
+        let mut reader = quick_xml::Reader::from_str(xml);
+        loop {
+            match reader.read_event() {
+                Ok(quick_xml::events::Event::Eof) => return true,
+                Err(_) => return false,
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn basic_param_text_is_escaped_and_remains_parseable() {
+        let xml = build_config_update_xml(
+            "BasicParam",
+            &serde_json::json!({"sipServerId":"340&<200>","sipServerDomain":"a&b.example","transport":"TCP","charset":"GB2312"}),
+        );
+        assert!(xml.contains("<SIPServerID>340&amp;&lt;200&gt;</SIPServerID>"));
+        assert!(xml.contains("<SIPServerDomain>a&amp;b.example</SIPServerDomain>"));
+        assert!(parses_as_xml(&xml));
+    }
+
+    #[test]
+    fn custom_config_json_cannot_inject_xml_elements() {
+        let xml = build_config_update_xml(
+            "Custom<&>",
+            &serde_json::json!({"value":"</ConfigData><TeleBoot>Boot</TeleBoot>"}),
+        );
+        assert!(xml.contains("<ConfigType>Custom&lt;&amp;&gt;</ConfigType>"));
+        assert!(!xml.contains("<TeleBoot>"));
+        assert!(parses_as_xml(&format!("<Root>{xml}</Root>")));
+    }
+}
+
 /// POST /api/device/config/update
 ///
 /// 通过 SIP DeviceConfig 下发配置参数（`CmdType = DeviceConfig`）。
@@ -643,61 +725,7 @@ pub async fn device_config_update(
         if let Some(device) = server.device_manager().get(&device_id).await {
             if device.online && device.addr.is_some() {
                 // 根据配置类型构建不同的配置XML
-                let config_xml = match config_type.as_str() {
-                    "BasicParam" => {
-                        let sip_server_id = config_data
-                            .get("sipServerId")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("");
-                        let sip_server_port = config_data
-                            .get("sipServerPort")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(5060);
-                        let sip_server_domain = config_data
-                            .get("sipServerDomain")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("");
-                        let transport = config_data
-                            .get("transport")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("UDP");
-                        let charset = config_data
-                            .get("charset")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("GB2312");
-
-                        // 只给**内层元素**：外壳（`<Control>`/CmdType/SN/DeviceID）
-                        // 由 `send_device_control` 统一生成。此前这里又拼了一整份
-                        // `<Control>` 文档再交给它包装，报文里出现**嵌套的 Control**
-                        // 和夹在元素中间的 `<?xml ...?>` 声明 —— 非法 XML，
-                        // 真实设备解析失败即丢弃（配置下发/重启因此从未真正生效）。
-                        format!(
-                            "<BasicParam>\n<SIPServerID>{}</SIPServerID>\n<SIPServerPort>{}</SIPServerPort>\n<SIPServerDomain>{}</SIPServerDomain>\n<Transport>{}</Transport>\n<CharSet>{}</CharSet>\n</BasicParam>",
-                            sip_server_id,
-                            sip_server_port,
-                            sip_server_domain,
-                            transport,
-                            charset
-                        )
-                    }
-                    "SnapConfig" => {
-                        let snap_interval = config_data
-                            .get("snapInterval")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(0);
-                        format!(
-                            "<SnapConfig>\n<SnapInterval>{}</SnapInterval>\n</SnapConfig>",
-                            snap_interval
-                        )
-                    }
-                    _ => {
-                        // 通用配置，直接使用传入的JSON
-                        format!(
-                            "<ConfigType>{}</ConfigType>\n<ConfigData>{}</ConfigData>",
-                            config_type, config_data
-                        )
-                    }
-                };
+                let config_xml = build_config_update_xml(&config_type, &config_data);
 
                 match server
                     .send_device_control(&device_id, &device_id, "DeviceConfig", &config_xml)
