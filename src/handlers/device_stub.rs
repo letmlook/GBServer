@@ -909,7 +909,7 @@ fn parse_record_cmd(raw: &str) -> Option<bool> {
 /// GET /api/device/control/record
 ///
 /// 通过 SIP DeviceControl 下发 `<RecordCmd>Record</RecordCmd>` 或 `StopRecord`，
-/// 同时把结果写入 StateStore + 推 WebSocket `record_state` 通知前端。
+/// 仅在设备返回 `Result=OK` 后更新 StateStore 并推送 `record_state`。
 #[utoipa::path(
     get,
     path = "/api/device/control/record",
@@ -917,12 +917,13 @@ fn parse_record_cmd(raw: &str) -> Option<bool> {
     operation_id = "device_control_record",
     params(RecordControlQuery),
     responses(
-        (status = 200, description = "录像命令下发结果（含 recording 状态）",
+        (status = 200, description = "录像命令下发及设备执行结果",
          body = ApiResult<serde_json::Value>,
          example = json!({"code":0,"msg":"成功","data":{
              "deviceId":"34020000001320000001","channelId":"34020000001310000001",
-             "recordCmd":"Record","recording":true,
-             "message":"远程录像控制命令已发送","code":0
+             "recordCmd":"Record","recording":true,"sipSent":true,
+             "deviceResult":{"status":"confirmed","sn":123,"resultCode":"OK"},
+             "message":"设备已确认远程录像控制命令"
          }})),
         (status = 401, description = "未鉴权"),
     ),
@@ -962,50 +963,62 @@ pub async fn control_record(
     if let Some(ref sip_server) = state.sip_server {
         let server = &*sip_server;
         if let Some(device) = server.device_manager().get(&device_id).await {
-            if device.online {
+            if device.online && device.addr.is_some() {
                 match server
-                    .send_device_control(&device_id, &channel_id, "DeviceControl", &record_cmd_xml)
+                    .send_device_control_confirmable(
+                        &device_id,
+                        &channel_id,
+                        "DeviceControl",
+                        &record_cmd_xml,
+                    )
                     .await
                 {
-                    Ok(_) => {
-                        // Phase 7.1: use StateStore repository instead of cache.rs (deprecated).
-                        if is_start {
-                            state.state_repo.as_ref().set_recording(
-                                &device_id,
-                                &channel_id,
-                                "Record",
-                            );
-                        } else {
-                            state
-                                .state_repo
-                                .as_ref()
-                                .del_recording(&device_id, &channel_id);
+                    Ok((sn, receiver)) => {
+                        let waited =
+                            tokio::time::timeout(std::time::Duration::from_secs(5), receiver).await;
+                        let (status, result_code) = match waited {
+                            Ok(Ok(xml)) => parse_device_control_result(&xml),
+                            _ => {
+                                server.cancel_device_control_pending(&device_id, sn);
+                                ("unconfirmed", None)
+                            }
+                        };
+                        let confirmed = status == "confirmed";
+                        if confirmed {
+                            if is_start {
+                                state.state_repo.as_ref().set_recording(
+                                    &device_id,
+                                    &channel_id,
+                                    "Record",
+                                );
+                            } else {
+                                state
+                                    .state_repo
+                                    .as_ref()
+                                    .del_recording(&device_id, &channel_id);
+                            }
+                            state.ws_state.broadcast("record_state", serde_json::json!({
+                                "deviceId": device_id,
+                                "channelId": channel_id,
+                                "recording": is_start,
+                                "recordCmd": record_cmd,
+                                "deviceResult": {"status": status, "sn": sn, "resultCode": result_code},
+                            })).await;
                         }
-
-                        state
-                            .ws_state
-                            .broadcast(
-                                "record_state",
-                                serde_json::json!({
-                                    "deviceId": device_id,
-                                    "channelId": channel_id,
-                                    "recording": is_start,
-                                    "recordCmd": record_cmd,
-                                }),
-                            )
-                            .await;
 
                         return Json(ApiResult::success(serde_json::json!({
                             "deviceId": device_id,
                             "channelId": channel_id,
                             "recordCmd": record_cmd,
-                            "recording": is_start,
-                            "message": "远程录像控制命令已发送",
-                            "code": 0
+                            "recording": if confirmed { Some(is_start) } else { None },
+                            "sipSent": true,
+                            "deviceResult": {"status": status, "sn": sn, "resultCode": result_code},
+                            "message": if confirmed { "设备已确认远程录像控制命令" } else { "命令已发送，设备执行结果未确认或已拒绝" },
                         })));
                     }
                     Err(e) => {
                         tracing::error!("Failed to send record control: {}", e);
+                        return Json(ApiResult::error(format!("远程录像控制命令发送失败: {e}")));
                     }
                 }
             }

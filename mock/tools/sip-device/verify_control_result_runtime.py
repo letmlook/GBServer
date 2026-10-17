@@ -74,6 +74,16 @@ def guard_command(token):
     return response["data"]["deviceResult"]
 
 
+def record_command(token, action="Record"):
+    query = urllib.parse.urlencode({
+        "deviceId": DEVICE_ID, "channelId": DEVICE_ID, "recordCmdStr": action,
+    })
+    response = api("/api/device/control/record?" + query, token=token)
+    if response.get("code") != 0 or not response.get("data", {}).get("sipSent"):
+        raise AssertionError("Record DeviceControl was not sent: " + json.dumps(response, ensure_ascii=False))
+    return response["data"]
+
+
 def scenario(token, name, mode, expected, delay_ms=0, repeats=1, second=False):
     with tempfile.TemporaryFile() as output:
         args = [sys.executable, str(MOCK), "--server", "127.0.0.1:5060",
@@ -96,6 +106,18 @@ def scenario(token, name, mode, expected, delay_ms=0, repeats=1, second=False):
                 assert guard["status"] == expected, f"{name} guard: {guard}"
                 assert guard["sn"] != first["sn"], "guard reused transport request SN"
                 print(f"{name} guard: {guard['status']} sn={guard['sn']}")
+                record = record_command(token)
+                result = record["deviceResult"]
+                assert result["status"] == expected, f"{name} record: {record}"
+                expected_recording = True if expected == "confirmed" else None
+                assert record["recording"] is expected_recording, f"{name} recording: {record}"
+                assert result["sn"] != guard["sn"], "record reused guard request SN"
+                print(f"{name} record: {result['status']} sn={result['sn']}")
+                if name == "ok":
+                    stopped = record_command(token, "StopRecord")
+                    assert stopped["deviceResult"]["status"] == "confirmed", stopped
+                    assert stopped["recording"] is False, stopped
+                    print(f"{name} stop record: confirmed sn={stopped['deviceResult']['sn']}")
             if second:
                 next_result = command(token)
                 assert next_result["status"] == expected, f"{name} second: {next_result}"

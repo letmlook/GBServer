@@ -154,8 +154,18 @@ export function queryDeviceTree(deviceId: string, params: DeviceQueryParams & { 
   })
 }
 
+export interface DeviceRecordControlResult {
+  deviceId: string
+  channelId: string
+  recordCmd: string
+  recording: boolean | null
+  sipSent: boolean
+  deviceResult: DeviceCommandResult
+  message: string
+}
+
 export function deviceRecord(params: { deviceId: string; channelId: string; recordCmdStr: string }) {
-  return request<ApiResult>({
+  return request<ApiResult<DeviceRecordControlResult>>({
     method: 'get',
     url: '/device/control/record',
     params
