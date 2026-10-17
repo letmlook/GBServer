@@ -32,7 +32,7 @@ RUN npm run build \
 # -----------------------------------------------------------------------------
 # Stage 2: Backend builder (Rust)
 # -----------------------------------------------------------------------------
-FROM rust:1.82-bookworm AS backend-builder
+FROM rust:1.98-bookworm AS backend-builder
 
 # System deps for sqlx-postgres + OpenSSL
 RUN apt-get update \
@@ -45,12 +45,15 @@ RUN apt-get update \
 
 WORKDIR /build
 
+# 默认 Compose 使用 PostgreSQL；SQLite Compose 通过 build.args 显式覆盖。
+ARG GBSERVER_DB_FEATURE=postgres
+
 # Pre-fetch dependency layer (so source edits don't bust the cargo cache)
 COPY Cargo.toml Cargo.lock ./
 RUN mkdir -p src tests \
     && echo 'fn main() { println!("stub"); }' > src/main.rs \
     && echo '' > tests/.gitkeep \
-    && cargo build --release \
+    && cargo build --release --locked --no-default-features --features "$GBSERVER_DB_FEATURE" \
     && rm -rf src tests target/release/gbserver* target/release/deps/gbserver-*
 
 # Real build
@@ -58,7 +61,7 @@ COPY src ./src
 COPY tests ./tests
 COPY config ./config
 COPY database ./database
-RUN cargo build --release \
+RUN cargo build --release --locked --no-default-features --features "$GBSERVER_DB_FEATURE" \
     && strip target/release/gbserver \
     && echo "backend build OK: $(du -sh target/release/gbserver | cut -f1)"
 
@@ -75,6 +78,7 @@ RUN apt-get update \
         ca-certificates \
         libssl3 \
         libpq5 \
+        curl \
         tini \
         tzdata \
     && rm -rf /var/lib/apt/lists/* \

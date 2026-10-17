@@ -3,6 +3,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        GBSERVER_DB_FEATURE: postgres
     image: gbserver:latest
     container_name: gbserver
     ports:

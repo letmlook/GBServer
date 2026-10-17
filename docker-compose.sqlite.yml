@@ -20,6 +20,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        GBSERVER_DB_FEATURE: sqlite
     image: gbserver:latest
     container_name: gbserver-sqlite
     ports:

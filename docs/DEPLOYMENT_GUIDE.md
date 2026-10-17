@@ -1,6 +1,6 @@
 # GBServer 部署与运维手册
 
-> 适用版本：`gbserver` v0.1.0
+> 适用版本：`gbserver` v2.0.0
 > 范围：构建、运行、配置、部署分级、监控、灾备与故障排查。
 > 本手册负责**部署与运维**；产品当前状态见 [`STATUS.md`](STATUS.md)、
 > 未完成事项见 [`OPEN_ISSUES.md`](OPEN_ISSUES.md)、多方言 SQL 注意事项见
@@ -76,7 +76,14 @@ mysql -uroot -p gbserver < database/init-mysql-2.7.4.sql
 | 仅编译前端 | `./scripts/build.sh --skip-backend` | — |
 | 仅运行（已编译） | `./scripts/run.sh` | `.\scripts\run.ps1` |
 | 一键编译 + 运行 | `./scripts/build-and-run.sh` | `.\scripts\build-and-run.ps1` |
-| Docker 一键拉起 | `docker compose up -d --build` | 同左 |
+| Docker 一键拉起 | `docker compose up -d --build`（PostgreSQL 镜像） | 同左 |
+
+Dockerfile 默认以 `postgres` Cargo 特性构建，主 Compose 也显式指定该特性，
+与 PostgreSQL URL 对应。
+SQLite 独立部署使用 `docker compose -f docker-compose.sqlite.yml up -d --build`，
+该文件通过 `GBSERVER_DB_FEATURE=sqlite` 构建 SQLite 镜像。单独构建 MySQL 镜像可用
+`docker build --build-arg GBSERVER_DB_FEATURE=mysql -t gbserver:mysql .`。
+三种镜像的数据库特性是编译时确定的，运行时 URL 必须选择相同方言。
 | 初始化 PG schema（Docker 容器） | `bash <(curl ...)` 或手动 | `.\scripts\init-db-postgres.ps1` |
 
 ### 1.5 Linux / macOS 原生构建
