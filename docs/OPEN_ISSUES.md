@@ -42,7 +42,7 @@
 | B2 | 缺陷 | 录像计划 `startRecord` 与设备推流的竞态 | ✅ 已修并复验 |
 | B3 | 缺陷 | 假设备 mock 缺 `connection_lost` → 进程崩溃（"设备在线但无 RTP"） | ✅ 已修并复验 |
 | B4 | 环境 | 后台进程"静默退出"= 同组 job 被中止连带杀进程（已定性，非缺陷） | ⚪ |
-| B5 | 测试 | `cloudRecord` e2e 已改为只认本轮新 MP4；当前环境缺少前端/ZLM，尚未运行验证 | 🟡 |
+| B5 | 测试 | `cloudRecord` e2e 已按本轮新 MP4 验收，ZLM + SIP Mock + Chromium 3/3 通过 | ✅ |
 | B6 | 缺陷 | `send_session_bye` 会话定位过粗（跨类型/跨代际误停） | ✅ 已修（2026-09-19） |
 | B7 | 缺陷 | `/api/play/webrtc` 调 ZLM 的形态错误 → 恒失败（**已修，普通流真实浏览器验证可播**） | ✅ 已修 |
 | B10 | 缺陷 | ZLM 流列表反序列化失败（`"fps": 25.0` 浮点 vs `u32`）→ 流列表恒为空 | ✅ 已修 |
@@ -252,7 +252,7 @@ ZLM 端口**（`on_publish from 192.168.65.1` → 流正常注册 → FLV 实拉
 **处置**：长驻服务必须**单独**用 `run_in_background: true` 启动（或 `setsid`），
 不要和会被中止的任务同组；启动命令已追加 `BACKEND EXIT CODE=$?` 便于下次定性。
 
-### B5 🔵 `cloudRecord` e2e 仍有时序耦合（当前已稳定）
+### B5 ✅ `cloudRecord` e2e 已按本轮新 MP4 验收（Mock + 真实 ZLM）
 
 **现象**：同一 spec 在不同轮次出现 `66 passed` / `65 passed + 1 skipped` /
 `3 skipped` / `2 failed` 等多种结果。
@@ -260,12 +260,12 @@ ZLM 端口**（`on_publish from 192.168.65.1` → 流正常注册 → FLV 实拉
 **已定性的部分**：`3 skipped`、`2 failed` 的直接原因是 B3（mock 崩溃）+ B4
 （后端消失）导致 `ensureRecording` 拿不到通道/JSON 解析失败 —— **环境问题，非用例缺陷**。
 
-**残留的用例脆弱点**：用例依赖"ZLM 关闭 MP4 时才触发 `on_record_mp4` 落库"，
-而 `ensureRecording` 在**删除计划之后**才轮询落库结果；当 `stop_record` 与
-`start_record` 只相隔几毫秒时（计划被立即删除），ZLM 不产出文件、也不回调。
-B2 修好后本轮 3/3 通过，但建议进一步**显式化**：录满 N 秒 → 调 `stop` →
-断言 `on_record_mp4` 回调（或断言 ZLM 记录目录出现文件），
-避免"计划刚建就删"的极端时序。
+**2026-10-17 验证**：用例先同步托管 SIP Mock 的目录，建立唯一录像计划并保持
+20 秒录制窗口，再停录并轮询本轮新增、对应通道的非空 MP4 数据库记录。
+Docker Desktop 上的真实 ZLM、ffmpeg SIP Mock、临时 SQLite 和 Chromium 完整跑通
+3/3；第二轮从空通道表开始，得到计划 3、记录 2、125446 字节 MP4，随后播放、
+下载和删除均通过。后端/ZLM/Mock 进程异常有独立健康诊断。此项只证明 Mock
+设备链路；真机录像仍属 M4 验收。
 
 ### B6 ✅ `send_session_bye` 会话定位过粗（已修，2026-09-19）
 

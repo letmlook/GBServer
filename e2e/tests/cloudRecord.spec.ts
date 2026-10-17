@@ -104,12 +104,19 @@ async function ensureRecording(page: Page, request: APIRequestContext): Promise<
     !oldIds.has(r.id) && r.app !== 'record_info' && r.fileName?.toLowerCase().endsWith('.mp4') &&
     (r.size ?? 0) > 0 && !!r.filePath && r.stream?.includes(channelGbId));
 
-  // 找一个可用通道
+  // 托管 SIP Mock 可在干净数据库上先触发目录同步；未指定 Mock 时只读现有通道。
+  const mockDeviceId = process.env.E2E_SIP_MOCK_DEVICE_ID;
+  if (mockDeviceId) {
+    const sync = await a.get(`/device/query/devices/${encodeURIComponent(mockDeviceId)}/sync`);
+    await expectApiSuccess(sync, '同步 SIP Mock 目录');
+    const body = await sync.json() as { data?: { syncState?: string; error?: string } };
+    expect(body.data?.syncState, `Mock 目录同步失败: ${body.data?.error ?? '无结果'}`).toBe('done');
+  }
   const channels = await a.get('/common/channel/list?page=1&count=5&online=true');
   expect(channels.ok(), '在线通道查询失败').toBeTruthy();
-  const chBody = (await channels.json()) as { code: number; data?: { list?: Array<{ id: number; channelId: string }> } };
+  const chBody = (await channels.json()) as { code: number; data?: { list?: Array<{ id: number; channelId: string; deviceId?: string }> } };
   expect(chBody.code, '在线通道查询业务失败').toBe(0);
-  const channel = chBody.data?.list?.[0];
+  const channel = chBody.data?.list?.find((c) => !mockDeviceId || c.deviceId === mockDeviceId);
   const channelId = channel?.id;
   if (!channelId || !channel?.channelId) return null;
 

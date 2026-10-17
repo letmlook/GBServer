@@ -60,12 +60,24 @@ E2E_FRONTEND_LOG_FILE=artifacts/frontend.log \
 E2E_ZLM_BASE_URL=http://127.0.0.1:8080 \
 E2E_SIP_MOCK_PID_FILE=artifacts/sip-mock.pid \
 E2E_SIP_MOCK_LOG_FILE=artifacts/sip-mock.log \
+E2E_SIP_MOCK_DEVICE_ID=34020000001320000001 \
 npx playwright test tests/cloudRecord.spec.ts
 ```
 
 PID 文件只填当前运行由脚本记录的 PID。远程后端可设置
 `E2E_BACKEND_HEALTH_URL`；ZLM 不在本机时设置 `E2E_ZLM_BASE_URL`。
 未提供 SIP Mock PID 文件表示用真机或未托管 Mock，本用例不会宣称已监测其进程。
+`E2E_SIP_MOCK_DEVICE_ID` 仅在明确使用 Mock 时设置；用例会先调用设备目录同步，
+因此临时空数据库不会因缺少通道而跳过。Mock 必须用设备国标 ID 作 Digest 用户名：
+
+```bash
+python3 mock/tools/sip-device/sip_device_mock.py \
+  --server 127.0.0.1:5060 --username 34020000001320000001 \
+  --send-rtp --auto-bye-secs 0
+```
+
+Mock 会优先选择本机 ffmpeg 的 `libopenh264`，没有时使用 `libx264`。需使用
+真实 ZLM 才能验证 MP4 文件；`mock/tools/zlm/zlm_mock.py` 不会录制文件。
 
 Screenshots per page land in `e2e/artifacts/<name>.png`.
 鉴权状态由 `global-setup.ts` 写入 `e2e/artifacts/.auth.json`（登录一次，

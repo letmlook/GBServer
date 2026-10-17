@@ -592,6 +592,19 @@ def build_bye(cfg: DeviceConfig, local_addr: tuple, server_addr: tuple, cseq: in
 
 # ---------------- 主类 ----------------
 
+def choose_h264_encoder(encoder_list: str) -> str:
+    """选本机 ffmpeg 实际提供的 H.264 编码器。"""
+    available = {
+        fields[1]
+        for line in encoder_list.splitlines()
+        if (fields := line.split()) and len(fields) >= 2 and fields[0].startswith("V")
+    }
+    for name in ("libopenh264", "libx264"):
+        if name in available:
+            return name
+    raise RuntimeError("ffmpeg 未提供可用的 H.264 编码器（libopenh264/libx264）")
+
+
 class RtpSender:
     """把 ffmpeg 产出的 MPEG-PS 打成 RTP 包发给平台。
 
@@ -618,14 +631,20 @@ class RtpSender:
         if dst_port <= 0:
             log.warning("平台宣告的收流端口为 0（m=video 0），不推流")
             return False
+        try:
+            encoders = subprocess.check_output(
+                ["ffmpeg", "-hide_banner", "-encoders"], stderr=subprocess.STDOUT, text=True,
+            )
+            encoder = choose_h264_encoder(encoders)
+        except (FileNotFoundError, subprocess.CalledProcessError, RuntimeError) as error:
+            log.error("无法准备 RTP/PS 测试流: %s", error)
+            return False
         cmd = [
             "ffmpeg", "-hide_banner", "-loglevel", "error",
             "-re",
             "-f", "lavfi", "-i", "testsrc=size=352x288:rate=25",
-            # 用 libopenh264（Cisco BSD 包，Fedora 默认就有）；
-            # 不要 libx264：Fedora/RHEL 仓库不带，且 `-x264-params` 在某些
-            # ffmpeg 版本会变 `-x264-params` 不识别。
-            "-c:v", "libopenh264", "-pix_fmt", "yuv420p",
+            # Fedora 常见 libopenh264；macOS/Homebrew 通常只有 libx264。
+            "-c:v", encoder, "-pix_fmt", "yuv420p",
             # 关键帧 1s 且每个 IDR 带 SPS/PPS（ZLM 拿不到就建不了流）。
             "-g", "25",
             "-an",
