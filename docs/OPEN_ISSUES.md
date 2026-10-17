@@ -36,7 +36,7 @@
 | # | 类别 | 事项 | 标记 |
 |---|---|---|---|
 | A1 | 功能端点 | 中亿视图（SY）定制模块 10 条端点 | 🔴 |
-| A2 | 功能端点 | 运维诊断端点 `/api/test/{hook/list,redis}` | 🔴 |
+| A2 | 功能端点 | 管理员诊断端点已实现；Redis/ZLM 故障运行演练待验收 | 🟡 |
 | A3 | 功能端点 | 外部集成协议 `/api/v1/*` 11 条 + `/auth/login` | ⚪ |
 | B1 | 缺陷 | UDP/TCP-PASSIVE 下 `connectRtpServer` 被 ZLM 拒绝（真机已复现） | 🟠 |
 | B2 | 缺陷 | 录像计划 `startRecord` 与设备推流的竞态 | ✅ 已修并复验 |
@@ -147,10 +147,16 @@ e2e 最近一次运行 35 通过 / 0 失败（筛选运行）、三方言冒烟�
 **实现时应复用已有实现、只加前缀别名，不要重写逻辑。**
 （`/api/cloud/record/collect/delete` 的 GET 与 DELETE 路由均已注册；登录后的业务结果仍需按 C9 验收。）
 
-### A2 🔴 运维诊断端点（未实现）
+### A2 🟡 管理员诊断端点（代码与自动化已覆盖，运行演练待做）
 
-`GET /api/test/hook/list`（列出 ZLM hook 事件与最近一次载荷）、
-`GET /api/test/redis`（Redis 连通性）。属运维诊断，优先级低。
+`GET /api/test/hook/list` 只返回已鉴权的 `on_play` / `on_publish` 最近一条
+白名单摘要，保留范围由 `capturedTypes` 明示；其它 Hook 尚未建立可信来源验证，
+不纳入快照。`GET /api/test/redis` 区分未配置、连通和不可用，PING 最多等待
+1 秒，故障原因使用固定码。两条路由调用 `authz::require_admin`；自动化已覆盖
+401/403/200、拒绝 Hook 不入快照、secret 脱敏及 Redis 超时。
+
+**剩余验收**：目标部署环境的 Redis/ZLM 故障注入、可恢复性和日志定位；本机
+Docker daemon 未运行，不能将当前自动化结果写成实际服务演练通过。
 
 ### A3 ⚪ 外部集成协议 `/api/v1/*`（范围外）
 

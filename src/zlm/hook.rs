@@ -1121,12 +1121,15 @@ fn record_authenticated_hook_summary(
     if client.secret.is_empty() {
         return;
     }
+    fn without_secret<'a>(value: Option<&'a str>, secret: &str) -> Option<&'a str> {
+        value.filter(|text| !text.contains(secret))
+    }
     let summary = crate::zlm::hook_diagnostics::HookSummary::new(
         kind,
-        media_server_id,
-        Some(app),
-        Some(stream),
-        Some(schema),
+        without_secret(media_server_id, &client.secret),
+        without_secret(Some(app), &client.secret),
+        without_secret(Some(stream), &client.secret),
+        without_secret(Some(schema), &client.secret),
     );
     state.hook_diagnostics.record(kind, summary);
 }
@@ -2185,7 +2188,8 @@ mod tests {
         assert_ne!(rejected.0["code"], 0);
         assert!(state.hook_diagnostics.list().is_empty());
 
-        let accepted = handle_webhook_inner(&state, event, Some("secret=configured-secret")).await;
+        let accepted =
+            handle_webhook_inner(&state, event.clone(), Some("secret=configured-secret")).await;
         assert_eq!(accepted.0["code"], 0);
         let entries = state.hook_diagnostics.list();
         assert_eq!(entries.len(), 1);
@@ -2193,6 +2197,13 @@ mod tests {
         let json = serde_json::to_string(&entries).unwrap();
         assert!(!json.contains("configured-secret"));
         assert!(!json.contains("body-secret"));
+
+        let mut sensitive_event = event;
+        sensitive_event["stream"] = serde_json::json!("configured-secret");
+        let _ =
+            handle_webhook_inner(&state, sensitive_event, Some("secret=configured-secret")).await;
+        let redacted = serde_json::to_string(&state.hook_diagnostics.list()).unwrap();
+        assert!(!redacted.contains("configured-secret"));
     }
 
     // ============== ZLM 响应契约 ==============

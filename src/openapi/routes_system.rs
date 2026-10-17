@@ -12,6 +12,8 @@ use super::{DocumentedRoutes, RoutesAccumulator};
 
 pub fn routes() -> DocumentedRoutes {
     let mut acc = RoutesAccumulator::default();
+    acc.add(routes!(crate::handlers::diagnostics::hook_list));
+    acc.add(routes!(crate::handlers::diagnostics::redis_status));
     acc.add(routes!(crate::handlers::server::list_all_streams));
     acc.add(routes!(crate::handlers::server::map_config));
     acc.add(routes!(crate::handlers::server::map_model_icon_list));

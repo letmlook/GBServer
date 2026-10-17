@@ -327,6 +327,56 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn diagnostics_routes_require_admin_and_hide_internal_state() {
+        let state = app_state().await;
+        sqlx::query("INSERT INTO gb_user_role (id, name, authority, create_time, update_time) VALUES (2, 'viewer', '1', '2026-10-17', '2026-10-17')")
+            .execute(&state.pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO gb_user (id, username, password, role_id, create_time, update_time) VALUES (2, 'viewer', 'unused', 2, '2026-10-17', '2026-10-17')")
+            .execute(&state.pool)
+            .await
+            .unwrap();
+        let jwt = crate::auth::JwtKeys::new(state.config.jwt.secret.as_bytes());
+        let admin_token = jwt.create_token("admin", 60).unwrap();
+        let viewer_token = jwt.create_token("viewer", 60).unwrap();
+        let base = spawn(state).await;
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        for path in ["/api/test/hook/list", "/api/test/redis"] {
+            let url = format!("{base}{path}");
+            let anonymous = client.get(&url).send().await.unwrap();
+            assert_eq!(anonymous.status().as_u16(), 401, "{path}");
+            let viewer = client
+                .get(&url)
+                .header("access-token", &viewer_token)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(viewer.status().as_u16(), 403, "{path}");
+            let admin = client
+                .get(&url)
+                .header("access-token", &admin_token)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(admin.status().as_u16(), 200, "{path}");
+            let body: serde_json::Value = admin.json().await.unwrap();
+            assert_eq!(body["code"], 0, "{path}: {body}");
+            assert!(!body.to_string().contains("redis://"));
+            if path.ends_with("/redis") {
+                assert_eq!(body["data"]["backend"], "memory");
+                assert_eq!(body["data"]["status"], "not_configured");
+            } else {
+                assert_eq!(
+                    body["data"]["capturedTypes"],
+                    serde_json::json!(["on_play", "on_publish"])
+                );
+                assert_eq!(body["data"]["items"], serde_json::json!([]));
+            }
+        }
+    }
+
     /// 启用 `static_dir`（SPA 静态资源）时路由表仍必须能构建。
     ///
     /// 回归保护：axum 0.8 **禁止** `nest_service("/", ..)`，根路径必须用
