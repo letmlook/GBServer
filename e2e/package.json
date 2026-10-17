@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "test": "playwright test",
+    "test:health": "node --experimental-strip-types --test test-helpers/runtime-health.test.mjs",
     "test:headed": "playwright test --headed",
     "report": "playwright show-report"
   },

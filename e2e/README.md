@@ -42,12 +42,30 @@ npx playwright install chromium
 npx playwright test                       # headless
 npx playwright test --headed              # requires a graphical display
 npx playwright show-report                # open the HTML report
+npm run test:health                        # 依赖进程健康检查单测（Node 22）
 ```
 
 `tests/cloudRecord.spec.ts` 会创建一个短时录像计划，录制后删除该计划，并且只接受
 本次新增、属于所选通道、文件大小大于零的 MP4 数据库记录。它会用这条记录验证页面、
 播放/下载和删除。没有在线通道时才跳过；创建计划后未产出文件会失败。运行该用例
 需要能收流的在线设备或 SIP Mock，以及可用的 ZLM。历史录像不能让用例通过。
+运行前与录制等待期间会检查后端 HTTP health、ZLM TCP 端口；如果本轮由脚本
+启动了 SIP Mock，可提供它的 PID 文件来检测中途退出。检查仅观察进程，不终止它们。
+
+```bash
+E2E_BACKEND_PID_FILE=artifacts/backend.pid \
+E2E_BACKEND_LOG_FILE=artifacts/backend.log \
+E2E_FRONTEND_PID_FILE=artifacts/frontend.pid \
+E2E_FRONTEND_LOG_FILE=artifacts/frontend.log \
+E2E_ZLM_BASE_URL=http://127.0.0.1:8080 \
+E2E_SIP_MOCK_PID_FILE=artifacts/sip-mock.pid \
+E2E_SIP_MOCK_LOG_FILE=artifacts/sip-mock.log \
+npx playwright test tests/cloudRecord.spec.ts
+```
+
+PID 文件只填当前运行由脚本记录的 PID。远程后端可设置
+`E2E_BACKEND_HEALTH_URL`；ZLM 不在本机时设置 `E2E_ZLM_BASE_URL`。
+未提供 SIP Mock PID 文件表示用真机或未托管 Mock，本用例不会宣称已监测其进程。
 
 Screenshots per page land in `e2e/artifacts/<name>.png`.
 鉴权状态由 `global-setup.ts` 写入 `e2e/artifacts/.auth.json`（登录一次，

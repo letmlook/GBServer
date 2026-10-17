@@ -16,6 +16,36 @@
  */
 
 import { test, expect, type APIRequestContext, type Page } from '@playwright/test';
+import { checkRuntimeHealth, type RuntimeDependency } from '../test-helpers/runtime-health';
+
+type RecordingEvidence = { planId: number; channelId: number; streamId: string; recordId: number; filePath: string; size: number };
+
+function recordingDependencies(): RuntimeDependency[] {
+  const zlm = new URL(process.env.E2E_ZLM_BASE_URL ?? 'http://127.0.0.1:8080');
+  const dependencies: RuntimeDependency[] = [
+    {
+      name: 'GBServer backend',
+      url: process.env.E2E_BACKEND_HEALTH_URL ?? 'http://127.0.0.1:18080/api/health',
+      pidFile: process.env.E2E_BACKEND_PID_FILE,
+      logFile: process.env.E2E_BACKEND_LOG_FILE
+    },
+    {
+      name: 'ZLM',
+      tcp: { host: zlm.hostname, port: Number(zlm.port || (zlm.protocol === 'https:' ? 443 : 80)) },
+      pidFile: process.env.E2E_ZLM_PID_FILE,
+      logFile: process.env.E2E_ZLM_LOG_FILE
+    }
+  ];
+  if (process.env.E2E_SIP_MOCK_PID_FILE) {
+    dependencies.push({
+      name: 'SIP Mock',
+      pidFile: process.env.E2E_SIP_MOCK_PID_FILE,
+      logFile: process.env.E2E_SIP_MOCK_LOG_FILE,
+      exitCodeFile: process.env.E2E_SIP_MOCK_EXIT_CODE_FILE
+    });
+  }
+  return dependencies;
+}
 
 async function gotoCloudRecord(page: Page) {
   await page.goto('/#/cloudRecord', { waitUntil: 'domcontentloaded' });
@@ -55,8 +85,10 @@ async function expectApiSuccess(response: Awaited<ReturnType<APIRequestContext['
   expect(body.code, `${action}: ${body.msg ?? ''}`).toBe(0);
 }
 
-async function ensureRecording(page: Page, request: APIRequestContext): Promise<number | null> {
+async function ensureRecording(page: Page, request: APIRequestContext): Promise<RecordingEvidence | null> {
   const a = await api(page, request);
+  const dependencies = recordingDependencies();
+  await checkRuntimeHealth(dependencies);
   // 只认**平台侧真实录制产物**：`app == 'record_info'` 的行是设备通过
   // RecordInfo 上报的设备侧录像（名字形如「录像片段1」），本机没有对应文件、
   // 也无法播放；用它做断言会得到与契约无关的失败。
@@ -100,17 +132,37 @@ async function ensureRecording(page: Page, request: APIRequestContext): Promise<
     const link = await a.post('/record/plan/link', { planId, channelIds: [channelId] });
     await expectApiSuccess(link, '关联录像通道');
     // INVITE、首帧与 ZLM 切片需要真实录制窗口；落库通常发生在停录后。
-    await new Promise((r) => setTimeout(r, 20_000));
+    for (let i = 0; i < 10; i++) {
+      await new Promise((r) => setTimeout(r, 2000));
+      await checkRuntimeHealth(dependencies);
+    }
   } finally {
-    const stopResponse = await a.delete(`/record/plan/delete?planId=${planId}`);
-    await expectApiSuccess(stopResponse, '停止录像计划');
+    let stopError: unknown;
+    try {
+      const stopResponse = await a.delete(`/record/plan/delete?planId=${planId}`);
+      await expectApiSuccess(stopResponse, '停止录像计划');
+    } catch (error) { stopError = error; }
+    await checkRuntimeHealth(dependencies);
+    if (stopError) throw stopError;
   }
   for (let i = 0; i < 30; i++) {
     await new Promise((r) => setTimeout(r, 2000));
+    await checkRuntimeHealth(dependencies);
     const record = await newRecord(channel.channelId);
-    if (record) return record.id;
+    if (record && record.stream && record.filePath && record.size) {
+      const evidence = { planId: planId!, channelId, streamId: record.stream,
+        recordId: record.id, filePath: record.filePath, size: record.size };
+      console.log(`[cloudRecord] 本轮产物 ${JSON.stringify(evidence)}`);
+      return evidence;
+    }
   }
-  throw new Error(`计划 ${planId}、通道 ${channelId} 未产生新的非空 MP4 数据库记录`);
+  const nearby = (await listRecords()).filter((r) => r.stream?.includes(channel.channelId))
+    .map((r) => ({ id: r.id, app: r.app, stream: r.stream, fileName: r.fileName,
+      filePath: r.filePath, size: r.size })).slice(0, 10);
+  const hook = await a.get('/test/hook/list').then(async (r) => r.ok() ? (await r.json()).data : null)
+    .catch(() => null);
+  throw new Error(`计划 ${planId}、通道 ${channelId} 未产生新 MP4；` +
+    `相关记录=${JSON.stringify(nearby)}；Hook 摘要=${JSON.stringify(hook)}`);
 }
 
 test.describe.serial('Cloud record page (/cloudRecord)', () => {
@@ -126,8 +178,9 @@ test.describe.serial('Cloud record page (/cloudRecord)', () => {
   test('列表展示真实录像，开始时间是可读时间而不是毫秒', async ({ page, request }) => {
     // 先进入应用以读取登录 cookie，然后创建本次录制。
     await gotoCloudRecord(page);
-    recordedId = await ensureRecording(page, request);
-    if (!recordedId) test.skip(true, '没有在线通道，无法开始录制');
+    const evidence = await ensureRecording(page, request);
+    if (!evidence) test.skip(true, '没有在线通道，无法开始录制');
+    recordedId = evidence!.recordId;
     // 用 reload 而不是再 goto 同一个 URL：hash 路由下重复 goto 可能被当成
     // 同文档导航，页面不会重新 mount/拉数据，列表仍是空态
     await page.reload({ waitUntil: 'domcontentloaded' });

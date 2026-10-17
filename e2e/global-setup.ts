@@ -15,6 +15,7 @@ import { chromium, type FullConfig } from '@playwright/test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { checkRuntimeHealth } from './test-helpers/runtime-health';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -30,6 +31,13 @@ const LOGIN_BUTTON_TEXT = '登 录';
 export default async function globalSetup(config: FullConfig): Promise<void> {
   const baseURL =
     config.projects[0]?.use?.baseURL ?? process.env.E2E_BASE_URL ?? 'http://127.0.0.1:9528';
+
+  await checkRuntimeHealth([
+    { name: 'GBServer backend', url: process.env.E2E_BACKEND_HEALTH_URL ?? 'http://127.0.0.1:18080/api/health',
+      pidFile: process.env.E2E_BACKEND_PID_FILE, logFile: process.env.E2E_BACKEND_LOG_FILE },
+    { name: 'Vue frontend', url: baseURL, pidFile: process.env.E2E_FRONTEND_PID_FILE,
+      logFile: process.env.E2E_FRONTEND_LOG_FILE }
+  ]);
 
   fs.mkdirSync(path.dirname(AUTH_FILE), { recursive: true });
 
