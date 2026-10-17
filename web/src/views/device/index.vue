@@ -110,8 +110,8 @@
               <el-button link type="primary" @click="showChannels(row)">通道</el-button>
               <el-button link type="primary" @click="onSync(row)">同步</el-button>
               <el-button link type="primary" @click="onEdit(row)">编辑</el-button>
-              <el-button link type="success" :disabled="!isOnline(row) || guardPending === row.deviceId" @click="onGuard(row, 'SetGuard')">设防</el-button>
-              <el-button link type="warning" :disabled="!isOnline(row) || guardPending === row.deviceId" @click="onGuard(row, 'ResetGuard')">撤防</el-button>
+              <el-button link type="success" :disabled="!isOnline(row) || !!guardPending" @click="onGuard(row, 'SetGuard')">设防</el-button>
+              <el-button link type="warning" :disabled="!isOnline(row) || !!guardPending" @click="onGuard(row, 'ResetGuard')">撤防</el-button>
               <el-button link type="danger" @click="onDelete(row)">删除</el-button>
             </template>
           </el-table-column>
