@@ -77,6 +77,14 @@ def guard_command(token):
     return response["data"]["deviceResult"]
 
 
+def reboot_command(token, wait_result=True):
+    query = urllib.parse.urlencode({"deviceId": DEVICE_ID, "waitResult": str(wait_result).lower()})
+    response = api("/api/device/control/reboot?" + query, token=token)
+    if response.get("code") != 0 or not response.get("data", {}).get("sipSent"):
+        raise AssertionError("Reboot DeviceControl was not sent: " + json.dumps(response, ensure_ascii=False))
+    return response["data"]["deviceResult"]
+
+
 def record_command(token, action="Record"):
     query = urllib.parse.urlencode({
         "deviceId": DEVICE_ID, "channelId": DEVICE_ID, "recordCmdStr": action,
@@ -122,6 +130,12 @@ def scenario(token, name, mode, expected, delay_ms=0, repeats=1, second=False):
                 assert config["status"] == expected, f"{name} config: {config}"
                 assert config["sn"] != first["sn"], "config reused transport request SN"
                 print(f"{name} config: {config['status']} sn={config['sn']}")
+                immediate_reboot = reboot_command(token, wait_result=False)
+                assert immediate_reboot["status"] == "sent", f"{name} immediate reboot: {immediate_reboot}"
+                reboot = reboot_command(token)
+                assert reboot["status"] == expected, f"{name} reboot: {reboot}"
+                assert reboot["sn"] != config["sn"], "reboot reused config request SN"
+                print(f"{name} reboot: {reboot['status']} sn={reboot['sn']}")
                 guard = guard_command(token)
                 assert guard["status"] == expected, f"{name} guard: {guard}"
                 assert guard["sn"] != first["sn"], "guard reused transport request SN"
