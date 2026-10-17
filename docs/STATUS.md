@@ -191,6 +191,7 @@ C8（通道 `hasAudio` 与实际流不符：流里有 G.711A，接口却报 `has
 
 | 文档 | 用途 |
 |------|------|
+| [`ROADMAP_2.0.md`](ROADMAP_2.0.md) | 2.0.0 迭代顺序、范围与验收条件 |
 | [`OPEN_ISSUES.md`](OPEN_ISSUES.md) | **未完成 / 未验证事项**（唯一待办表） |
 | [`DEPLOYMENT_GUIDE.md`](DEPLOYMENT_GUIDE.md) | 构建、运行、部署分级、配置、监控、灾备、升级 |
 | [`DB_DIALECT_NOTES.md`](DB_DIALECT_NOTES.md) | 写多方言 SQL 的注意事项 |
