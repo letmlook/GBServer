@@ -1,6 +1,72 @@
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::time::Duration;
+
+/// 进程随机起点 + 原子递增，避免同秒内并发设备命令复用 SN。
+fn next_device_control_sn() -> u32 {
+    static COUNTER: OnceLock<AtomicU32> = OnceLock::new();
+    let counter = COUNTER.get_or_init(|| AtomicU32::new(rand::thread_rng().gen_range(1..u32::MAX)));
+    loop {
+        let sn = counter.fetch_add(1, Ordering::Relaxed);
+        if sn != 0 {
+            return sn;
+        }
+    }
+}
+
+fn build_device_control_xml(
+    device_id: &str,
+    channel_id: &str,
+    cmd_type: &str,
+    body: &str,
+    sn: u32,
+) -> String {
+    let target = if channel_id.is_empty() {
+        device_id
+    } else {
+        channel_id
+    };
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<Control>
+<CmdType>{}</CmdType>
+<SN>{}</SN>
+<DeviceID>{}</DeviceID>
+{}
+</Control>"#,
+        cmd_type, sn, target, body
+    )
+}
+
+#[cfg(test)]
+mod device_control_sn_tests {
+    use std::collections::HashSet;
+
+    #[test]
+    fn generated_command_serials_are_nonzero_and_unique() {
+        let serials: HashSet<u32> = (0..10_000)
+            .map(|_| super::next_device_control_sn())
+            .collect();
+        assert_eq!(serials.len(), 10_000);
+        assert!(!serials.contains(&0));
+    }
+
+    #[test]
+    fn confirmable_control_xml_keeps_channel_target_and_serial() {
+        let xml = super::build_device_control_xml(
+            "device-a",
+            "channel-b",
+            "DeviceControl",
+            "<PTZCmd>01</PTZCmd>",
+            123,
+        );
+        assert!(xml.contains("<SN>123</SN>"));
+        assert!(xml.contains("<DeviceID>channel-b</DeviceID>"));
+        assert!(!xml.contains("<DeviceID>device-a</DeviceID>"));
+    }
+}
 
 use anyhow::Result;
 use chrono::Utc;
@@ -5183,27 +5249,13 @@ f=v/1/96/1/2/1/1/0
         cmd_type: &str,
         body: &str,
     ) -> Result<()> {
-        let sn = chrono::Utc::now().timestamp();
+        let sn = next_device_control_sn();
         // 国标 `DeviceControl` 只有 **一个** `<DeviceID>`，且通道级命令
         // （PTZ/录像/布防…）里它必须填**通道编码**；设备级命令
         // （TeleBoot / DeviceConfig）才填设备编码。此前固定填 device_id
         // 并额外附一个非标 `<ChannelID>`：多通道设备会把 PTZ/录像下发到
         // 设备本身，严格的设备端还会因未知元素直接丢弃报文。
-        let target = if channel_id.is_empty() {
-            device_id
-        } else {
-            channel_id
-        };
-        let xml_body = format!(
-            r#"<?xml version="1.0" encoding="UTF-8"?>
-<Control>
-<CmdType>{}</CmdType>
-<SN>{}</SN>
-<DeviceID>{}</DeviceID>
-{}
-</Control>"#,
-            cmd_type, sn, target, body
-        );
+        let xml_body = build_device_control_xml(device_id, channel_id, cmd_type, body, sn);
 
         self.send_message_to_device(
             device_id,
@@ -5212,6 +5264,48 @@ f=v/1/96/1/2/1/1/0
             Some("Application/MANSCDP+xml"),
         )
         .await
+    }
+
+    /// 发送前登记回执；调用方可等待设备返回的 DeviceControl Response。
+    pub async fn send_device_control_confirmable(
+        &self,
+        device_id: &str,
+        channel_id: &str,
+        cmd_type: &str,
+        body: &str,
+    ) -> Result<(u32, oneshot::Receiver<String>)> {
+        anyhow::ensure!(
+            cmd_type == "DeviceControl",
+            "only DeviceControl supports confirmation"
+        );
+        let sn = next_device_control_sn();
+        let pending_call_id = format!("ctl_{}_{}", device_id, sn);
+        let (_request, receiver) = self.pending_request_manager.register_with_receiver(
+            device_id,
+            sn,
+            crate::sip::gb28181::PendingCmdType::DeviceControl,
+            &pending_call_id,
+            Some(5),
+        );
+        let xml_body = build_device_control_xml(device_id, channel_id, cmd_type, body, sn);
+        if let Err(error) = self
+            .send_message_to_device(
+                device_id,
+                SipMethod::Message,
+                Some(&xml_body),
+                Some("Application/MANSCDP+xml"),
+            )
+            .await
+        {
+            self.pending_request_manager.cancel(&pending_call_id);
+            return Err(error);
+        }
+        Ok((sn, receiver))
+    }
+
+    pub fn cancel_device_control_pending(&self, device_id: &str, sn: u32) {
+        self.pending_request_manager
+            .cancel(&format!("ctl_{}_{}", device_id, sn));
     }
 
     /// 设置设备流传输模式（GB/T 28181 设备控制 — 整设备级，非通道级）
@@ -5225,16 +5319,12 @@ f=v/1/96/1/2/1/1/0
     /// </Control>
     /// ```
     pub async fn send_device_transport(&self, device_id: &str, transport: &str) -> Result<()> {
-        let sn = chrono::Utc::now().timestamp();
-        let xml_body = format!(
-            r#"<?xml version="1.0" encoding="UTF-8"?>
-<Control>
-<CmdType>DeviceControl</CmdType>
-<SN>{}</SN>
-<DeviceID>{}</DeviceID>
-<Transport>{}</Transport>
-</Control>"#,
-            sn, device_id, transport
+        let xml_body = build_device_control_xml(
+            device_id,
+            device_id,
+            "DeviceControl",
+            &format!("<Transport>{}</Transport>", transport),
+            next_device_control_sn(),
         );
 
         self.send_message_to_device(

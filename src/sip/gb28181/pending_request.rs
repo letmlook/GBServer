@@ -373,6 +373,17 @@ impl PendingRequestManager {
         None
     }
 
+    /// 发送失败或调用方放弃等待时，精确移除该请求及其回调。
+    pub fn cancel(&self, call_id: &str) -> bool {
+        let Some((_, req)) = self.by_call_id.remove(call_id) else {
+            return false;
+        };
+        self.by_device_sn
+            .remove(&format!("{}:{}", req.device_id, req.sn));
+        self.senders.remove(call_id);
+        true
+    }
+
     /// 按 call_id 读取命令类型（不删除），用于 SIP 响应路由判断
     pub fn peek_cmd_type(&self, call_id: &str) -> Option<PendingCmdType> {
         self.by_call_id
@@ -1353,6 +1364,27 @@ mod response_router_tests {
             assert_eq!(cmd, Some(PendingCmdType::DeviceInfo));
         }
         assert_eq!(mgr.pending_count(), 0);
+    }
+}
+
+#[cfg(test)]
+mod device_control_pending_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn cancel_removes_both_indices_and_receiver() {
+        let manager = PendingRequestManager::new();
+        let (_request, receiver) = manager.register_with_receiver(
+            "device-a",
+            42,
+            PendingCmdType::DeviceControl,
+            "control-42",
+            Some(5),
+        );
+        assert!(manager.cancel("control-42"));
+        assert_eq!(manager.pending_count(), 0);
+        assert!(manager.get_by_device_sn("device-a", 42).is_none());
+        assert!(receiver.await.is_err());
     }
 }
 

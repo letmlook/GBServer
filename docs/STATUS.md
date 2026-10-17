@@ -11,7 +11,8 @@
 | M1 播放收流 | 已移除普通点播和级联点播在媒体 ready 后的二次 `connectRtpServer`；TCP-PASSIVE 主动连接保留 | `media_ready_port_mismatch_is_diagnostic_only` 单测和调用点检查；ZLM/真机回归待执行 |
 | M1 录像重试 | 25 次、800ms 的生产预算不变；新增缺流重试和不可恢复错误次数测试 | `start_record_retry_tests` 4/4；新 MP4 端到端证据待执行 |
 | C9 收藏删除 | GET、DELETE 两种方法均进入鉴权，未登录返回 401；旧问题单的 GET 必然 405 不成立 | `cloud_record_collect_delete_accepts_both_methods`；登录后业务存储效果待实测 |
-| M2 命令应答路由 | `DeviceControl` 和 `DeviceConfig` 响应已映射；设备、CmdType、SN 不匹配或重复应答不完成 pending | `pending_request` 定向测试 25/25、变更后 Rust 库测试 697/697；发送端唯一 SN、HTTP 结果状态与真机闭环待实现 |
+| M2 命令应答路由 | `DeviceControl` 和 `DeviceConfig` 响应已映射；设备、CmdType、SN 不匹配或重复应答不完成 pending | `pending_request` 定向测试 25/25；真机闭环待验证 |
+| M2 传输模式结果 | 新增进程内唯一 SN、发送失败清理 pending、传输模式 `waitResult=true` 的设备确认/拒绝/未确认状态；设备列表按状态提示 | 本阶段 `cargo test --no-fail-fast --locked` 764 通过、3 文档测试忽略，前端构建通过；其他控制入口、Mock/真机回执与超时接口测试待做 |
 
 本轮尚未运行 PostgreSQL/MySQL 实例、ZLM + Mock/真机播放与云录像、浏览器 E2E；这些发布门禁仍为未验证。
 

@@ -45,10 +45,26 @@ export function syncStatus(deviceId: string) {
   })
 }
 
-export function updateDeviceTransport(deviceId: string, streamMode: string) {
-  return request<ApiResult>({
+export interface DeviceCommandResult {
+  status: 'not_sent' | 'sent' | 'confirmed' | 'rejected' | 'unconfirmed'
+  sn?: number
+  resultCode?: string | null
+}
+
+export interface DeviceTransportResult {
+  deviceId: string
+  streamMode: string
+  updated: number
+  sipSent: boolean
+  sipError?: string | null
+  deviceResult: DeviceCommandResult
+}
+
+export function updateDeviceTransport(deviceId: string, streamMode: string, waitResult = false) {
+  return request<ApiResult<DeviceTransportResult>>({
     method: 'post',
-    url: `/device/query/transport/${deviceId}/${streamMode}`
+    url: `/device/query/transport/${deviceId}/${streamMode}`,
+    params: { waitResult }
   })
 }
 

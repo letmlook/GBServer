@@ -275,16 +275,18 @@ async function onChangeStreamMode(row: any, mode: string) {
   if (!deviceId || mode === row.streamMode) return
   modeChanging.value = deviceId
   try {
-    const res = (await updateDeviceTransport(deviceId, mode)) as unknown as {
-      code: number
-      data?: { sipSent?: boolean; sipError?: string | null }
-    }
+    const res = await updateDeviceTransport(deviceId, mode, true)
     row.streamMode = mode
-    const sipSent = res?.data?.sipSent
-    if (sipSent) {
-      ElMessage.success(`流模式已切换为 ${mode}，已通知设备协商`)
+    const outcome = res?.data?.deviceResult
+    if (outcome?.status === 'confirmed') {
+      ElMessage.success(`流模式已保存为 ${mode}，设备确认已执行`)
+    } else if (outcome?.status === 'rejected') {
+      ElMessage.warning(`流模式已保存为 ${mode}，但设备拒绝执行${outcome.resultCode ? `（${outcome.resultCode}）` : ''}`)
+    } else if (outcome?.status === 'unconfirmed') {
+      ElMessage.warning(`流模式已保存为 ${mode}，设备执行结果未确认`)
+    } else if (outcome?.status === 'sent') {
+      ElMessage.info(`流模式已保存为 ${mode}，命令已发送，待设备确认`)
     } else if (isOnline(row)) {
-      // 在线却发不出去：把后端给的原因带出来，别只说"成功"
       ElMessage.warning(
         `流模式已保存为 ${mode}，但通知设备失败${res?.data?.sipError ? `：${res.data.sipError}` : ''}`
       )
