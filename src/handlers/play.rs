@@ -403,43 +403,19 @@ pub async fn play_start(
                     channel_id
                 );
 
-                // 解析设备 200 OK SDP,如果 m= 端口和 ZLM RTP server 端口不一致
-                // (gbcpp/1.0 等非标准设备),用 connectRtpServer 让 ZLM 主动
-                // connect 到设备宣告的推流端口,避免 ZLM 守错端口收不到流。
-                if let Some(resp) = invite_resp {
-                    if let Some(sdp) = &resp.body {
-                        if let Some(device_port) = parse_sdp_media_port(sdp) {
-                            if device_port != rtp_server.port {
-                                tracing::warn!(
-                                    "Device 200 OK m={} != ZLM RTP server port {}. Switching to ZLM connectRtpServer to device:{}",
-                                    device_port, rtp_server.port, device_port
-                                );
-                                // 不先 closeRtpServer,否则 ZLM 找不到 stream
-                                let dst = format!(
-                                    "{}://{}:{}",
-                                    if is_tcp { "rtp" } else { "rtp" },
-                                    device.ip.as_deref().unwrap_or("0.0.0.0"),
-                                    device_port
-                                );
-                                if let Err(e) = zlm_client
-                                    .connect_rtp_server(&stream_id, &dst, device_port, None)
-                                    .await
-                                {
-                                    tracing::error!(
-                                        "connectRtpServer to device:{} failed: {}",
-                                        device_port,
-                                        e
-                                    );
-                                } else {
-                                    tracing::info!(
-                                        "ZLM connectRtpServer -> {} (stream_id={})",
-                                        dst,
-                                        stream_id
-                                    );
-                                }
-                            }
-                        }
-                    }
+                // send_play_invite_and_wait_media 已确认 ZLM 收到媒体；端口差异
+                // 只作为设备行为诊断，不能再让 ZLM 主动连接设备。
+                if let Some(device_port) =
+                    crate::sip::gb28181::sdp_builder::media_ready_sdp_port_mismatch(
+                        invite_resp.as_ref().and_then(|r| r.body.as_deref()),
+                        rtp_server.port,
+                    )
+                {
+                    tracing::info!(
+                        %device_id, %channel_id, sdp_media_port = device_port,
+                        zlm_rtp_port = rtp_server.port, reason = "media_already_ready",
+                        "设备 SDP 端口与 ZLM 收流端口不同，继续使用已就绪媒体"
+                    );
                 }
 
                 // 构建播放地址返回给前端

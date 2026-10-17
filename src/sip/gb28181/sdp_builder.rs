@@ -321,6 +321,12 @@ pub fn parse_media_port(sdp: &str) -> Option<u16> {
     None
 }
 
+/// 媒体已到达 ZLM 后，SDP 端口差异仅用于诊断，不能触发二次 RTP 连接。
+pub fn media_ready_sdp_port_mismatch(sdp: Option<&str>, zlm_port: u16) -> Option<u16> {
+    sdp.and_then(parse_media_port)
+        .filter(|port| *port != 0 && *port != zlm_port)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -525,5 +531,24 @@ mod tests {
     #[test]
     fn parse_media_port_distinguishes_zero_port() {
         assert_eq!(parse_media_port("m=video 0 RTP/AVP 96\r\n"), Some(0));
+    }
+
+    #[test]
+    fn media_ready_port_mismatch_is_diagnostic_only() {
+        assert_eq!(
+            super::media_ready_sdp_port_mismatch(
+                Some("v=0\r\nm=video 20002 RTP/AVP 96\r\n"),
+                30066
+            ),
+            Some(20002)
+        );
+        assert_eq!(
+            super::media_ready_sdp_port_mismatch(
+                Some("v=0\r\nm=video 30066 RTP/AVP 96\r\n"),
+                30066
+            ),
+            None
+        );
+        assert_eq!(super::media_ready_sdp_port_mismatch(None, 30066), None);
     }
 }

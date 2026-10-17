@@ -6886,36 +6886,22 @@ f=v/1/96/1/2/1/1/0
 
         match result {
             Ok((_call_id, zlm_stream_id, resp)) => {
-                // 设备宣告的收流端口与 ZLM 监听端口不同 → 让 ZLM 主动连过去。
-                // 不先 closeRtpServer：那样 ZLM 里就没有 stream_id 对应的流，
-                // connectRtpServer 会报 "can not find the stream"。
-                if let Some(device_port) = resp
-                    .as_ref()
-                    .and_then(|r| r.body.as_deref())
-                    .and_then(crate::sip::gb28181::sdp_builder::parse_media_port)
+                // 此时 ZLM 已收到媒体，SDP 端口差异仅用于诊断。
+                if let Some(device_port) =
+                    resp.as_ref()
+                        .and_then(|r| r.body.as_deref())
+                        .and_then(|sdp| {
+                            crate::sip::gb28181::sdp_builder::media_ready_sdp_port_mismatch(
+                                Some(sdp),
+                                rtp_server.port,
+                            )
+                        })
                 {
-                    if device_port != rtp_server.port && device_port != 0 {
-                        let dst = format!(
-                            "rtp://{}:{}",
-                            device.ip.as_deref().unwrap_or("0.0.0.0"),
-                            device_port
-                        );
-                        match zlm
-                            .connect_rtp_server(&stream_id, &dst, device_port, None)
-                            .await
-                        {
-                            Ok(_) => tracing::info!(
-                                "start_live_stream: connectRtpServer -> {} (stream_id={})",
-                                dst,
-                                stream_id
-                            ),
-                            Err(e) => tracing::warn!(
-                                "start_live_stream: connectRtpServer {} failed: {}",
-                                dst,
-                                e
-                            ),
-                        }
-                    }
+                    tracing::info!(
+                        %device_id, %channel_id, sdp_media_port = device_port,
+                        zlm_rtp_port = rtp_server.port, reason = "media_already_ready",
+                        "start_live_stream: 继续使用已就绪媒体"
+                    );
                 }
                 Ok(zlm_stream_id)
             }
