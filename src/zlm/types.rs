@@ -287,6 +287,8 @@ pub struct OpenRtpServerRequest {
     pub stream_id: String,
     pub port: Option<u16>,
     pub use_tcp: Option<bool>,
+    /// ZLM openRtpServer 的 tcp_mode：0=UDP、1=TCP 监听、2=TCP 主动连接。
+    /// 保留 Rust 字段名以兼容现有调用点，序列化时使用 tcp_mode 参数。
     pub rtp_type: Option<u32>,
     pub recv_port: Option<u16>,
 }

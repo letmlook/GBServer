@@ -6,10 +6,10 @@
 
 | 项目 | 本轮结果 | 证据范围 |
 |---|---|---|
-| Rust 测试 | `cargo test --no-fail-fast --locked`：785 通过、0 失败、3 个文档测试忽略 | SQLite 默认特性；本机自动化，ZLM + Mock 的实际运行证据见下文；真机仍待复验 |
+| Rust 测试 | `cargo test --no-fail-fast --locked`：787 通过、0 失败、3 个文档测试忽略 | SQLite 默认特性；本机自动化，ZLM + Mock 的实际运行证据见下文；真机仍待复验 |
 | 版本一致性 | SIP `User-Agent` 统一从 Cargo 包版本生成，覆盖设备侧 SIP 和级联请求；HTTP `/api/server/version`、`/api/system/info` 与 OpenAPI 均返回 `2.0.0` | `cargo fmt --check`、Rust 全量测试与 `cargo build --locked` 通过；本机后端启动后对三个 HTTP 出口实测均为 `2.0.0`；级联 REGISTER/INVITE 的 SIP 报文构造测试通过，真机报文待复验 |
 | 前端构建 | `web/npm run build` 通过 | Vue 类型检查与 Vite 打包，不代表浏览器播放通过 |
-| M1 播放收流 | 已移除普通点播和级联点播在媒体 ready 后的二次 `connectRtpServer`；TCP-PASSIVE 主动连接保留。`on_rtp_server_started` 仅表示收流端口已打开，不再误报媒体到达 | `media_ready_port_mismatch_is_diagnostic_only` 与 `opening_rtp_port_does_not_confirm_media_arrival` 回归测试；2026-10-18 本机真实 ZLM + SIP Mock：只回 SIP 200 不推 RTP，`/api/play/start` 等待 15.0 秒后返回媒体超时，Mock 收到 BYE；同设备开启 ffmpeg RTP/PS 后约 5.3 秒返回成功，FLV 实取到 `FLV` 文件头，`/api/play/stop` 返回成功。真机仍待复验 |
+| M1 播放收流 | 普通点播和级联点播在媒体 ready 后不再二次回连。`on_rtp_server_started` 仅表示端口已打开，不误报媒体到达。TCP-PASSIVE 使用 ZLM `tcp_mode=2`、纯主机 `dst_url` 主动连接，并等真实流注册后才返回成功；失败清理 RTP Server 和 Play 会话 | 回归测试覆盖媒体判定、被动模式等待及取消；本机真实 ZLM + SIP Mock：普通模式无 RTP 时 15.0 秒超时、有 RTP 时 FLV 可读；TCP-PASSIVE 无设备媒体时 15.0 秒失败，ZLM RTP Server 0 残留且 Mock 收到 BYE；使用本机 TCP RTP/PS relay 时约 5.73 秒成功、FLV 头为 `FLV`、停止成功。真机仍待复验 |
 | M1 录像重试 | 25 次、800ms 的生产预算不变；新增缺流重试和不可恢复错误次数测试 | `start_record_retry_tests` 4/4；本轮 ZLM + SIP Mock 生成新 MP4，详见下行 |
 | M1 云录像验收 | `cloudRecord` 用例只接受本轮新建计划后、所选通道新增的非空 MP4 记录，播放与删除复用其 ID；录制等待中检查后端、ZLM 和托管 SIP Mock | Docker Desktop 真实 ZLM + ffmpeg SIP Mock + 临时 SQLite + Chromium：干净目录同步后 3/3 通过；本轮计划 3、流 `34020000001320000001_34020000001320000001`、记录 2、MP4 125446 字节，播放下载和删除均通过；健康检查单测 2/2。真机未覆盖 |
 | C9 收藏删除 | GET、DELETE 两种方法均进入鉴权，未登录返回 401；登录后 HTTP 对两种删除方法验证了收藏表与 `gb_cloud_record.collect` 一致清除。添加收藏也同时设置两套存储；数字 JSON `id` 可用，添加/删除中途失败均回滚 | SQLite 路由鉴权、登录后往返及两项事务失败注入测试通过；PostgreSQL 16、MySQL 8 初始化隔离库分别完成登录、添加、列表、GET 删除、再次添加、DELETE 数字 JSON 删除，最终两套存储均清空；测试库/容器已清理。当前云录像页面无收藏入口，浏览器页面验收不适用 |

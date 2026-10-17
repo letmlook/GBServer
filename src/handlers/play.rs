@@ -3,7 +3,30 @@ use utoipa::IntoParams;
 
 use crate::db::device as db_device;
 use crate::response::ApiResult;
+use crate::sip::gb28181::media_waiter::MediaWaitResult;
 use crate::AppState;
+
+async fn wait_for_passive_media(
+    media_rx: tokio::sync::oneshot::Receiver<MediaWaitResult>,
+    stream_id: &str,
+    timeout: std::time::Duration,
+) -> Result<(), String> {
+    match tokio::time::timeout(timeout, media_rx).await {
+        Ok(Ok(MediaWaitResult::MediaReady { zlm_stream_id, app }))
+            if zlm_stream_id == stream_id && app == "rtp" =>
+        {
+            Ok(())
+        }
+        Ok(Ok(MediaWaitResult::DeviceRejected { status, reason })) => {
+            Err(format!("device rejected media: {status} {reason}"))
+        }
+        Ok(Ok(MediaWaitResult::MediaReady { .. })) => Err("unexpected media stream".to_string()),
+        Ok(Ok(MediaWaitResult::Timeout | MediaWaitResult::SessionNotFound)) | Err(_) => {
+            Err("ZLM media timeout after TCP-PASSIVE connect".to_string())
+        }
+        Ok(Err(_)) => Err("media wait channel closed".to_string()),
+    }
+}
 
 /// 从 SDP 文本里解析首个 m=video/m=audio 的端口号。
 ///
@@ -193,7 +216,13 @@ pub async fn play_start(
             stream_id: stream_id.clone(),
             port: Some(0), // 让 ZLM 随机分配端口
             use_tcp: Some(is_tcp),
-            rtp_type: Some(if is_tcp { 1 } else { 0 }),
+            rtp_type: Some(if is_tcp_passive {
+                2
+            } else if is_tcp {
+                1
+            } else {
+                0
+            }),
             recv_port: None,
         };
 
@@ -319,10 +348,8 @@ pub async fn play_start(
         // 调用 SIP Server 真正发送 INVITE，并等待设备回复 200 OK
         let sip = &*sip_server;
 
-        // TCP-PASSIVE 设备不走"等媒体到达"路径:它压根不会推流给 ZLM,
-        // 等 ZLM 主动 connect 它的 listen 端口。把 SIP 200 OK 拿到后,
-        // 关闭刚才开的 ZLM 监听端口,改用 connectRtpServer 让 ZLM 去连
-        // 设备 SDP 宣告的推流端口。
+        // TCP-PASSIVE 设备先等待 ZLM 主动连接它的监听端口，再等真实媒体注册。
+        // 单靠 SIP 200 或 connectRtpServer 成功都不能证明流可播放。
         if is_tcp_passive {
             let (call_id, resp) = match sip
                 .send_play_invite_and_wait(&device_id, &channel_id, rtp_server.port, Some(&ssrc))
@@ -379,15 +406,15 @@ pub async fn play_start(
             // connectRtpServer 会返回 "can not find the stream"。
             // openRtpServer 已经创建好流,connectRtpServer 接管它做主动
             // connect。
-            let dst = format!(
-                "rtp://{}:{}",
-                device.ip.as_deref().unwrap_or("0.0.0.0"),
-                device_port
-            );
+            // ZLM 的 dst_url 只接受主机名/IP；端口由 dst_port 单独传入。
+            let dst = device.ip.as_deref().unwrap_or("0.0.0.0");
+            let media_waiters = sip.media_waiter_manager();
+            let (_, media_rx) = media_waiters.register(&call_id, &stream_id, "rtp", 15);
             if let Err(e) = zlm_client
-                .connect_rtp_server(&stream_id, &dst, device_port, None)
+                .connect_rtp_server(&stream_id, dst, device_port, None)
                 .await
             {
+                media_waiters.cancel_by_call_id(&call_id);
                 tracing::error!(
                     "connectRtpServer to TCP-PASSIVE device:{} failed: {}",
                     device_port,
@@ -409,8 +436,25 @@ pub async fn play_start(
                 stream_id
             );
 
-            // 等几秒让 ZLM connect 后拿到媒体再返回成功(此时 ZLM 应在
-            // 通过 hook 通知 media-ready,但客户端只关心 stream_id/play_url)
+            if let Err(reason) =
+                wait_for_passive_media(media_rx, &stream_id, std::time::Duration::from_secs(15))
+                    .await
+            {
+                media_waiters.cancel_by_call_id(&call_id);
+                tracing::error!(%stream_id, transport = "TCP-PASSIVE", %reason, "主动连接后媒体未就绪");
+                let _ = zlm_client.close_rtp_server(&stream_id).await;
+                let _ = sip
+                    .send_session_bye_by_type(
+                        &device_id,
+                        &channel_id,
+                        crate::sip::gb28181::invite_session::StreamType::Play,
+                    )
+                    .await;
+                return Json(ApiResult::error(format!(
+                    "TCP-PASSIVE media error: {reason}"
+                )));
+            }
+
             // 复用统一构造器：FLV 后缀 .live.flv、hls 仅在真的有源时给出
             let mut payload = play_urls_json(
                 zlm_client,
@@ -921,6 +965,30 @@ pub async fn play_share_start(
         "stream": format!("{}_{}", device_id, channel_id),
         "ssrc": "0100000001",
     })))
+}
+
+#[cfg(test)]
+mod passive_media_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn passive_connect_requires_media_registration() {
+        let manager = crate::sip::gb28181::media_waiter::MediaWaiterManager::new();
+        let (_, rx) = manager.register("passive-timeout", "stream-a", "rtp", 15);
+        let reason = wait_for_passive_media(rx, "stream-a", std::time::Duration::from_millis(10))
+            .await
+            .unwrap_err();
+        assert!(reason.contains("media timeout"));
+        assert!(manager.cancel_by_call_id("passive-timeout"));
+        assert_eq!(manager.active_count(), 0);
+
+        let (_, rx) = manager.register("passive-ready", "stream-a", "rtp", 15);
+        assert!(manager.resolve_by_stream("stream-a", "rtp"));
+        wait_for_passive_media(rx, "stream-a", std::time::Duration::from_secs(1))
+            .await
+            .unwrap();
+        assert_eq!(manager.active_count(), 0);
+    }
 }
 
 #[cfg(test)]

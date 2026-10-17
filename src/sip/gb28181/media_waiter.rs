@@ -233,6 +233,21 @@ impl MediaWaiterManager {
         true
     }
 
+    /// 主动取消一次等待（例如 TCP-PASSIVE 连接失败）。只移除本次请求的
+    /// stream 索引，避免误删同一路流上随后注册的新请求。
+    pub fn cancel_by_call_id(&self, call_id: &str) -> bool {
+        let Some((_, waiter)) = self.by_call_id.remove(call_id) else {
+            return false;
+        };
+        self.receivers.remove(&waiter.waiter_key);
+        self.by_stream_id
+            .remove_if(&waiter.zlm_stream_id, |_, current| {
+                current.call_id == call_id
+            });
+        self.active_keys.remove(&waiter.waiter_key);
+        true
+    }
+
     /// 清理已超时的等待器
     pub fn cleanup_expired(&self) -> Vec<String> {
         let mut removed = Vec::new();
@@ -366,6 +381,24 @@ mod tests {
         // 二次 reject / 不存在的 call_id 不报错
         assert!(!mgr.reject_by_call_id("call-005", 486, "Busy Here"));
         assert!(!mgr.reject_by_call_id("nonexistent", 503, "x"));
+    }
+
+    #[tokio::test]
+    async fn cancelled_passive_waiter_cannot_complete_later_play() {
+        let mgr = MediaWaiterManager::new();
+        let (_, first_rx) = mgr.register("first-play", "same-stream", "rtp", 15);
+        assert!(mgr.cancel_by_call_id("first-play"));
+        assert_eq!(mgr.active_count(), 0);
+        assert!(first_rx.await.is_err());
+
+        let (_, second_rx) = mgr.register("second-play", "same-stream", "rtp", 15);
+        assert!(mgr.resolve_by_stream("same-stream", "rtp"));
+        assert!(matches!(
+            second_rx.await,
+            Ok(MediaWaitResult::MediaReady { .. })
+        ));
+        assert!(!mgr.cancel_by_call_id("first-play"));
+        assert_eq!(mgr.active_count(), 0);
     }
 
     /// 竞态回归：ZLM 的媒体注册通知可能**早于**等待者注册。

@@ -106,7 +106,9 @@ fn open_rtp_server_params(secret: &str, req: &OpenRtpServerRequest) -> Vec<(&'st
         params.push(("tcp", if use_tcp { "1" } else { "0" }.to_string()));
     }
     if let Some(rtp_type) = req.rtp_type {
-        params.push(("rtp_type", rtp_type.to_string()));
+        // openRtpServer 的参数名是 tcp_mode（0=UDP、1=TCP 监听、
+        // 2=TCP 主动连接）；rtp_type 属于其它 ZLM 接口，发给这里会被忽略。
+        params.push(("tcp_mode", rtp_type.to_string()));
     }
     if let Some(recv_port) = req.recv_port {
         params.push(("recv_port", recv_port.to_string()));
@@ -509,7 +511,7 @@ impl ZlmClient {
     pub async fn connect_rtp_server(
         &self,
         stream_id: &str,
-        dst_url: &str, // 例如 "rtp://192.168.3.200:11001"
+        dst_url: &str, // 仅主机名/IP，例如 "192.168.3.200"；端口单独传
         dst_port: u16, // ZLM 要求 dst_port 单独传(不是合并在 URL 里)
         app: Option<&str>,
     ) -> Result<()> {
@@ -1391,7 +1393,8 @@ mod tests {
             Some("34020000001320000001")
         );
         assert_eq!(map.get("tcp").map(String::as_str), Some("0"));
-        assert_eq!(map.get("rtp_type").map(String::as_str), Some("0"));
+        assert_eq!(map.get("tcp_mode").map(String::as_str), Some("0"));
+        assert!(!map.contains_key("rtp_type"));
 
         // 显式指定端口时按原值传
         let req2 = OpenRtpServerRequest {
@@ -1401,6 +1404,19 @@ mod tests {
         let map2: std::collections::HashMap<&str, String> =
             open_rtp_server_params("sec", &req2).into_iter().collect();
         assert_eq!(map2.get("port").map(String::as_str), Some("30050"));
+
+        let passive = OpenRtpServerRequest {
+            rtp_type: Some(2),
+            ..req
+        };
+        let passive_params: std::collections::HashMap<&str, String> =
+            open_rtp_server_params("sec", &passive)
+                .into_iter()
+                .collect();
+        assert_eq!(
+            passive_params.get("tcp_mode").map(String::as_str),
+            Some("2")
+        );
     }
 
     /// `isRecording` / `isMediaExist`：官方 ZLM 返回**顶层** `exist`，
