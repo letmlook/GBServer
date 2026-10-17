@@ -1855,6 +1855,17 @@ pub async fn front_end_ptz(
 ) -> Json<serde_json::Value> {
     let channel_id = q.channel_id.unwrap_or(0);
     let command = q.command.clone().unwrap_or_default();
+    if crate::sip::gb28181::front_end_control::PtzAction::parse(&command).is_none() {
+        return Json(serde_json::json!({ "code": 1, "msg": "不支持的云台命令" }));
+    }
+    let speeds = [q.pan_speed, q.tilt_speed, q.zoom_speed];
+    if speeds
+        .iter()
+        .flatten()
+        .any(|speed| !(0..=255).contains(speed))
+    {
+        return Json(serde_json::json!({ "code": 1, "msg": "云台速度必须在 0-255 之间" }));
+    }
     let h_speed = q.pan_speed.unwrap_or(1) as u8;
     let v_speed = q.tilt_speed.unwrap_or(1) as u8;
     let z_speed = q.zoom_speed.unwrap_or(1) as u8;
@@ -1874,6 +1885,45 @@ pub async fn front_end_ptz(
         )
     })
     .await
+}
+
+#[cfg(all(test, feature = "sqlite"))]
+mod ptz_validation_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn common_channel_ptz_rejects_unknown_command_and_out_of_range_speed() {
+        let state = crate::test_support::app_state().await;
+        let invalid_command = front_end_ptz(
+            State(state.clone()),
+            Query(CommonChannelPtzQuery {
+                channel_id: Some(1),
+                command: Some("INVALID".into()),
+                pan_speed: Some(1),
+                tilt_speed: None,
+                zoom_speed: None,
+            }),
+        )
+        .await
+        .0;
+        assert_eq!(invalid_command["code"], 1);
+        assert_eq!(invalid_command["msg"], "不支持的云台命令");
+
+        let invalid_speed = front_end_ptz(
+            State(state),
+            Query(CommonChannelPtzQuery {
+                channel_id: Some(1),
+                command: Some("UP".into()),
+                pan_speed: Some(256),
+                tilt_speed: None,
+                zoom_speed: None,
+            }),
+        )
+        .await
+        .0;
+        assert_eq!(invalid_speed["code"], 1);
+        assert_eq!(invalid_speed["msg"], "云台速度必须在 0-255 之间");
+    }
 }
 
 /// GET /api/common/channel/front-end/auxiliary
