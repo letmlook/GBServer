@@ -44,6 +44,11 @@ npx playwright test --headed              # requires a graphical display
 npx playwright show-report                # open the HTML report
 ```
 
+`tests/cloudRecord.spec.ts` 会创建一个短时录像计划，录制后删除该计划，并且只接受
+本次新增、属于所选通道、文件大小大于零的 MP4 数据库记录。它会用这条记录验证页面、
+播放/下载和删除。没有在线通道时才跳过；创建计划后未产出文件会失败。运行该用例
+需要能收流的在线设备或 SIP Mock，以及可用的 ZLM。历史录像不能让用例通过。
+
 Screenshots per page land in `e2e/artifacts/<name>.png`.
 鉴权状态由 `global-setup.ts` 写入 `e2e/artifacts/.auth.json`（登录一次，
 所有用例复用），与用例的执行顺序无关。

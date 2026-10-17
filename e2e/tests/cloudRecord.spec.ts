@@ -12,7 +12,7 @@
  *   5. 打包下载：传的是组合串 id，后端按 i64 解析 → "missing ids"；
  *      且容器化部署下按本机路径找文件，必然"全部不可用"。
  *
- * 需要环境里已经有一段真实录像（录像计划拉流录制即可）。没有数据时跳过。
+ * 用例自行创建录像计划，只允许在没有在线通道时跳过。
  */
 
 import { test, expect, type APIRequestContext, type Page } from '@playwright/test';
@@ -23,13 +23,13 @@ async function gotoCloudRecord(page: Page) {
 }
 
 /**
- * 保证环境里至少有一段落好的录像。
+ * 保证本次计划产生一段非空 MP4。
  *
- * 空列表时不直接 skip，而是**自己造一段**：建一个覆盖当前时刻的录像计划
+ * 建一个覆盖当前时刻的录像计划
  * （后端在 add/link 时会立即唤醒调度器）→ 关联一个通道 → 设备推流、ZLM 录制 →
  * 删计划（停止录制）→ `on_record_mp4` 钩子落库。整条链路都是真实后端 + 真实 ZLM。
  *
- * 返回 false 表示环境不具备条件（没有通道/设备不在线），调用方 skip。
+ * 返回 null 表示环境不具备条件（没有在线通道），调用方 skip。
  */
 /**
  * 前端的 token 存在 cookie `gbserver_token` 里（`utils/auth.ts`），
@@ -49,24 +49,37 @@ async function api(page: Page, request: APIRequestContext) {
   };
 }
 
-async function ensureRecording(page: Page, request: APIRequestContext): Promise<boolean> {
+async function expectApiSuccess(response: Awaited<ReturnType<APIRequestContext['get']>>, action: string) {
+  expect(response.ok(), `${action}: HTTP ${response.status()}`).toBeTruthy();
+  const body = (await response.json()) as { code: number; msg?: string };
+  expect(body.code, `${action}: ${body.msg ?? ''}`).toBe(0);
+}
+
+async function ensureRecording(page: Page, request: APIRequestContext): Promise<number | null> {
   const a = await api(page, request);
   // 只认**平台侧真实录制产物**：`app == 'record_info'` 的行是设备通过
   // RecordInfo 上报的设备侧录像（名字形如「录像片段1」），本机没有对应文件、
   // 也无法播放；用它做断言会得到与契约无关的失败。
-  const hasRealRecord = async () => {
-    const l = await a.get('/cloud/record/list?page=1&count=50');
-    if (!l.ok()) return false;
-    const b = (await l.json()) as { data?: { list?: Array<{ app?: string }> } };
-    return (b.data?.list ?? []).some((r) => r.app !== 'record_info');
+  const listRecords = async () => {
+    const l = await a.get('/cloud/record/list?page=1&count=1000');
+    expect(l.ok(), '录像列表请求失败').toBeTruthy();
+    const b = (await l.json()) as { code: number; data?: { list?: Array<{ id: number; app?: string; size?: number; fileName?: string; filePath?: string }> } };
+    expect(b.code, '录像列表业务失败').toBe(0);
+    return b.data?.list ?? [];
   };
-  if (await hasRealRecord()) return true;
+  const oldIds = new Set((await listRecords()).map((r) => r.id));
+  const newRecord = async (channelGbId: string) => (await listRecords()).find((r) =>
+    !oldIds.has(r.id) && r.app !== 'record_info' && r.fileName?.toLowerCase().endsWith('.mp4') &&
+    (r.size ?? 0) > 0 && !!r.filePath && r.stream?.includes(channelGbId));
 
   // 找一个可用通道
   const channels = await a.get('/common/channel/list?page=1&count=5&online=true');
-  const chBody = (await channels.json()) as { data?: { list?: Array<{ id: number }> } };
-  const channelId = chBody.data?.list?.[0]?.id;
-  if (!channelId) return false;
+  expect(channels.ok(), '在线通道查询失败').toBeTruthy();
+  const chBody = (await channels.json()) as { code: number; data?: { list?: Array<{ id: number; channelId: string }> } };
+  expect(chBody.code, '在线通道查询业务失败').toBe(0);
+  const channel = chBody.data?.list?.[0];
+  const channelId = channel?.id;
+  if (!channelId || !channel?.channelId) return null;
 
   const now = new Date();
   const minutes = now.getHours() * 60 + now.getMinutes();
@@ -74,93 +87,79 @@ async function ensureRecording(page: Page, request: APIRequestContext): Promise<
   const stop = Math.min(1440, start + 180);
   const weekday = now.getDay() === 0 ? 7 : now.getDay(); // ISO：周一=1
   const planName = `e2e-cloud-${Date.now()}`;
-  await a.post('/record/plan/add', {
+  const add = await a.post('/record/plan/add', {
     name: planName,
     planItemList: [{ start, stop, weekDay: weekday }]
   });
+  await expectApiSuccess(add, '创建录像计划');
   const q = await a.get('/record/plan/query?page=1&count=50');
   const plans = (await q.json()) as { data?: { list?: Array<{ id: number; name: string }> } };
   const planId = plans.data?.list?.find((p) => p.name === planName)?.id;
-  if (!planId) return false;
-  await a.post('/record/plan/link', { planId, channelIds: [channelId] });
-
-  // 等录制产生文件（设备 INVITE + 收流 + 首帧 + ZLM 切片）
-  let ok = false;
-  for (let i = 0; i < 25; i++) {
-    await new Promise((r) => setTimeout(r, 2000));
-    if (await hasRealRecord()) {
-      ok = true;
-      break;
-    }
-    // 调度器每 60s 才轮询一次；首轮若因设备刚注册/收流失败而没录上，
-    // 重新 link 一次会**立即**唤醒调度器（后端在 link 后 notify），
-    // 避免整个用例白等一分钟。
-    if (i > 0 && i % 6 === 0) {
-      await a.post('/record/plan/link', { planId, channelIds: [channelId] });
-    }
+  expect(planId, '找不到本次创建的计划').toBeDefined();
+  try {
+    const link = await a.post('/record/plan/link', { planId, channelIds: [channelId] });
+    await expectApiSuccess(link, '关联录像通道');
+    // INVITE、首帧与 ZLM 切片需要真实录制窗口；落库通常发生在停录后。
+    await new Promise((r) => setTimeout(r, 20_000));
+  } finally {
+    const stopResponse = await a.delete(`/record/plan/delete?planId=${planId}`);
+    await expectApiSuccess(stopResponse, '停止录像计划');
   }
-  // 停录：ZLM 在文件收尾时会触发 on_record_mp4，把记录落库（含文件大小）
-  await a.delete(`/record/plan/delete?planId=${planId}`);
-  for (let i = 0; i < 15 && !ok; i++) {
+  for (let i = 0; i < 30; i++) {
     await new Promise((r) => setTimeout(r, 2000));
-    if (await hasRealRecord()) {
-      ok = true;
-      break;
-    }
+    const record = await newRecord(channel.channelId);
+    if (record) return record.id;
   }
-  await new Promise((r) => setTimeout(r, 1500));
-  return ok;
+  throw new Error(`计划 ${planId}、通道 ${channelId} 未产生新的非空 MP4 数据库记录`);
 }
 
-test.describe('Cloud record page (/cloudRecord)', () => {
+test.describe.serial('Cloud record page (/cloudRecord)', () => {
   // 首个用例可能要**真的录一段**（建计划→拉流→录制→落库），
   // 单这一条链路就可能 30s+，所以给整个 spec 放宽超时。
   test.describe.configure({ timeout: 150_000 });
+  let recordedId: number | null = null;
+
+  const recordRow = (page: Page, id: number) => page.locator('.el-table__body tbody tr').filter({
+    has: page.locator('td').nth(1).getByText(String(id), { exact: true })
+  });
 
   test('列表展示真实录像，开始时间是可读时间而不是毫秒', async ({ page, request }) => {
-    // 先进入应用（cookie 需要在同源文档里才能读到），再准备录像数据
+    // 先进入应用以读取登录 cookie，然后创建本次录制。
     await gotoCloudRecord(page);
-    const ready = await ensureRecording(page, request);
+    recordedId = await ensureRecording(page, request);
+    if (!recordedId) test.skip(true, '没有在线通道，无法开始录制');
     // 用 reload 而不是再 goto 同一个 URL：hash 路由下重复 goto 可能被当成
     // 同文档导航，页面不会重新 mount/拉数据，列表仍是空态
     await page.reload({ waitUntil: 'domcontentloaded' });
     await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => {});
-    const rows = page.locator('.el-table__body tbody tr');
-    await expect(rows.first()).toBeVisible({ timeout: 10_000 }).catch(() => {});
-    if (!ready || (await rows.count()) === 0) {
-      test.skip(true, '环境里没有可用通道/在线设备，无法生成录像');
-      return;
-    }
+    const row = recordRow(page, recordedId!);
+    await expect(row).toBeVisible({ timeout: 10_000 });
 
     // 列序：勾选/ID/App/Stream/开始/结束/设备·通道/大小/操作
     // 「开始」必须是 yyyy-MM-dd HH:mm:ss，不能是 13 位毫秒
-    const startText = (await rows.first().locator('td').nth(4).innerText()).trim();
+    const startText = (await row.locator('td').nth(4).innerText()).trim();
     expect(startText).toMatch(/\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/);
 
     // 设备/通道列必须解析出国标编号（来自流名）
-    const devText = (await rows.first().locator('td').nth(6).innerText()).trim();
+    const devText = (await row.locator('td').nth(6).innerText()).trim();
     expect(devText).toMatch(/3402\d+/);
   });
 
   test('播放：后端返回的地址真的能取到文件（含 Range）', async ({ page, request }) => {
-    // 先进入应用（cookie 需要在同源文档里才能读到），再准备录像数据
+    // 后续动作复用首个用例产生的记录，避免再次录制或选中历史文件。
     await gotoCloudRecord(page);
-    const ready = await ensureRecording(page, request);
+    if (!recordedId) test.skip(true, '前置用例没有在线通道');
     // 用 reload 而不是再 goto 同一个 URL：hash 路由下重复 goto 可能被当成
     // 同文档导航，页面不会重新 mount/拉数据，列表仍是空态
     await page.reload({ waitUntil: 'domcontentloaded' });
     await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => {});
-    const rows = page.locator('.el-table__body tbody tr');
-    await expect(rows.first()).toBeVisible({ timeout: 10_000 }).catch(() => {});
-    if (!ready || (await rows.count()) === 0) {
-      test.skip(true, '环境里没有云端录像');
-      return;
-    }
+    const row = recordRow(page, recordedId!);
+    await expect(row).toBeVisible({ timeout: 10_000 });
 
     // 拦截 /play/path 的响应，拿到后端拼出的真实地址
     const [resp] = await Promise.all([
       page.waitForResponse((r) => r.url().includes('/cloud/record/play/path'), { timeout: 10_000 }),
-      rows.first().getByRole('button', { name: '播放' }).click()
+      row.getByRole('button', { name: '播放' }).click()
     ]);
     const body = (await resp.json()) as { code: number; data?: { httpPath?: string } };
     expect(body.code).toBe(0);
@@ -173,9 +172,7 @@ test.describe('Cloud record page (/cloudRecord)', () => {
     expect(head.status()).toBeLessThan(300);
 
     // 顺带验证后端代理端点（容器化部署下本机没有文件，走的是代理）
-    const rowId = (
-      await page.locator('.el-table__body tbody tr').first().locator('td').nth(1).innerText()
-    ).trim();
+    const rowId = String(recordedId);
     const a = await api(page, request);
     const proxied = await a.get(`/cloud/record/download/${rowId}`);
     // 后端代理端点（容器化部署下本机没有文件，走的是从 ZLM 拉取的代理）
@@ -186,29 +183,24 @@ test.describe('Cloud record page (/cloudRecord)', () => {
   });
 
   test('删除：走 DELETE + body ids，并真的从列表移除', async ({ page, request }) => {
-    // 先进入应用（cookie 需要在同源文档里才能读到），再准备录像数据
+    // 删除的对象仅为首个用例创建的记录。
     await gotoCloudRecord(page);
-    const ready = await ensureRecording(page, request);
+    if (!recordedId) test.skip(true, '前置用例没有在线通道');
     // 用 reload 而不是再 goto 同一个 URL：hash 路由下重复 goto 可能被当成
     // 同文档导航，页面不会重新 mount/拉数据，列表仍是空态
     await page.reload({ waitUntil: 'domcontentloaded' });
     await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => {});
-    const rows = page.locator('.el-table__body tbody tr');
-    await expect(rows.first()).toBeVisible({ timeout: 10_000 }).catch(() => {});
-    const before = await rows.count();
-    if (!ready || before === 0) {
-      test.skip(true, '环境里没有云端录像');
-      return;
-    }
+    const row = recordRow(page, recordedId!);
+    await expect(row).toBeVisible({ timeout: 10_000 });
 
-    const rowId = (await rows.first().locator('td').nth(1).innerText()).trim();
+    const rowId = String(recordedId);
     const [delResp] = await Promise.all([
       page.waitForResponse(
         (r) => r.url().includes('/cloud/record/delete') && r.request().method() === 'DELETE',
         { timeout: 10_000 }
       ),
       (async () => {
-        await rows.first().getByRole('button', { name: '删除' }).click();
+        await row.getByRole('button', { name: '删除' }).click();
         await page.getByRole('button', { name: '确定' }).click();
       })()
     ]);
@@ -220,6 +212,6 @@ test.describe('Cloud record page (/cloudRecord)', () => {
     expect(body.data?.deleted ?? []).toContain(rowId);
     expect(body.data?.failed ?? []).toHaveLength(0);
 
-    await expect(rows).toHaveCount(before - 1, { timeout: 10_000 });
+    await expect(row).toHaveCount(0, { timeout: 10_000 });
   });
 });
