@@ -3,6 +3,7 @@ pub mod auth;
 pub mod client;
 pub mod health_checker;
 pub mod hook;
+pub mod hook_diagnostics;
 pub mod hook_routes;
 pub mod media_node;
 pub mod types;

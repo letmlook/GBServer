@@ -114,6 +114,7 @@ pub(crate) async fn app_state() -> crate::AppState {
         ws_state: Arc::new(crate::handlers::websocket::WsState::new()),
         ws_hub: Arc::new(crate::ws::WsHub::new("test-node".to_string(), None)),
         redis: None,
+        hook_diagnostics: Arc::new(crate::zlm::hook_diagnostics::HookDiagnostics::default()),
         state_store: state_store.clone(),
         state_repo: Arc::new(crate::state::StateStoreRepository::new(state_store)),
         jt1078_manager: Arc::new(tokio::sync::RwLock::new(None)),

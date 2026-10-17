@@ -995,6 +995,7 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
         // (constructed below with the router reference)
         ws_hub: Arc::new(crate::ws::WsHub::new(cfg.cluster.node_id.clone(), None)),
         redis: redis_conn.clone(),
+        hook_diagnostics: Arc::new(crate::zlm::hook_diagnostics::HookDiagnostics::default()),
         // Phase 4.6: construct StateStore — Redis backend if available, else in-memory.
         state_store: {
             let store = match &cfg.redis {
@@ -1299,6 +1300,7 @@ pub struct AppState {
     /// Phase 7.3: cluster-aware WebSocket fanout hub.
     pub ws_hub: Arc<crate::ws::WsHub>,
     pub redis: Option<redis::aio::ConnectionManager>,
+    pub hook_diagnostics: Arc<crate::zlm::hook_diagnostics::HookDiagnostics>,
     /// Phase 4.6: unified state store (Redis or in-memory). Drives
     /// `select_least_loaded_server_filtered` so offline nodes are skipped
     /// even when the Redis stream-count cache is empty.
@@ -1620,6 +1622,7 @@ mod tests {
             ws_state: Arc::new(crate::handlers::websocket::WsState::new()),
             ws_hub: Arc::new(crate::ws::WsHub::new("node-test".to_string(), None)),
             redis: None,
+            hook_diagnostics: Arc::new(crate::zlm::hook_diagnostics::HookDiagnostics::default()),
             state_store: state_store.clone(),
             state_repo: Arc::new(crate::state::StateStoreRepository::new(state_store)),
             jt1078_manager: Arc::new(tokio::sync::RwLock::new(None)),

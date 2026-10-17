@@ -13,6 +13,7 @@
 | C9 收藏删除 | GET、DELETE 两种方法均进入鉴权，未登录返回 401；旧问题单的 GET 必然 405 不成立 | `cloud_record_collect_delete_accepts_both_methods`；登录后业务存储效果待实测 |
 | M2 命令应答路由 | `DeviceControl` 和 `DeviceConfig` 响应已映射；设备、CmdType、SN 不匹配或重复应答不完成 pending；回执携带的错误通道 ID 也被拒绝 | 目标校验与离线传输模式接口测试通过，Rust 库测试 703/703；真机闭环待验证 |
 | M2 传输模式结果 | 新增进程内唯一 SN、发送失败清理 pending、传输模式 `waitResult=true` 的设备确认/拒绝/未确认状态；设备列表按状态提示 | 本阶段 `cargo test --no-fail-fast --locked` 764 通过、3 文档测试忽略，前端构建通过；其他控制入口、Mock/真机回执与超时接口测试待做 |
+| M3 Hook 诊断快照 | 已鉴权的 `on_play`/`on_publish` 只保留各自最近一条白名单元数据；拒绝事件不入快照 | `hook_diagnostics` 定向测试 3/3；管理员查询接口和其他 Hook 类型仍未实现 |
 
 本轮尚未运行 PostgreSQL/MySQL 实例、ZLM + Mock/真机播放与云录像、浏览器 E2E；这些发布门禁仍为未验证。
 

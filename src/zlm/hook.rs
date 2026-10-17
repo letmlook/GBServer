@@ -1105,6 +1105,32 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).to_string()
 }
 
+fn record_authenticated_hook_summary(
+    state: &AppState,
+    kind: crate::zlm::hook_diagnostics::HookKind,
+    event: &serde_json::Value,
+    app: &str,
+    stream: &str,
+    schema: &str,
+) {
+    // 鉴权放行不等于来源可证：空 secret 的兼容模式不会留下诊断快照。
+    let media_server_id = event.get("mediaServerId").and_then(|v| v.as_str());
+    let Some(client) = state.get_zlm_client(media_server_id) else {
+        return;
+    };
+    if client.secret.is_empty() {
+        return;
+    }
+    let summary = crate::zlm::hook_diagnostics::HookSummary::new(
+        kind,
+        media_server_id,
+        Some(app),
+        Some(stream),
+        Some(schema),
+    );
+    state.hook_diagnostics.record(kind, summary);
+}
+
 pub(crate) async fn handle_webhook_inner(
     state: &AppState,
     event: serde_json::Value,
@@ -1300,6 +1326,14 @@ pub(crate) async fn handle_webhook_inner(
                 return resp;
             }
             if let Some(data) = serde_json::from_value::<PlayData>(event.clone()).ok() {
+                record_authenticated_hook_summary(
+                    state,
+                    crate::zlm::hook_diagnostics::HookKind::Play,
+                    &event,
+                    &data.app,
+                    &data.stream,
+                    &data.schema,
+                );
                 tracing::info!(
                     "on_play: {}/{}/{} from {}",
                     data.schema,
@@ -1321,6 +1355,14 @@ pub(crate) async fn handle_webhook_inner(
                 return resp;
             }
             if let Some(data) = serde_json::from_value::<PublishData>(event.clone()).ok() {
+                record_authenticated_hook_summary(
+                    state,
+                    crate::zlm::hook_diagnostics::HookKind::Publish,
+                    &event,
+                    &data.app,
+                    &data.stream,
+                    &data.schema,
+                );
                 tracing::info!(
                     "on_publish: {}/{}/{} from {}",
                     data.schema,
@@ -2119,6 +2161,39 @@ mod abl_payload_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
+    async fn hook_diagnostics_only_capture_authenticated_play_metadata() {
+        let mut state = crate::test_support::app_state().await;
+        state.zlm_client = Some(std::sync::Arc::new(crate::zlm::ZlmClient::new(
+            "127.0.0.1",
+            8080,
+            "configured-secret",
+        )));
+        let event = serde_json::json!({
+            "hook_name": "on_play",
+            "ip": "127.0.0.1",
+            "port": 1234,
+            "schema": "rtsp",
+            "app": "rtp",
+            "stream": "device_channel",
+            "vhost": "__defaultVhost__",
+            "secret": "body-secret-must-not-leak"
+        });
+        let rejected = handle_webhook_inner(&state, event.clone(), Some("secret=wrong")).await;
+        assert_ne!(rejected.0["code"], 0);
+        assert!(state.hook_diagnostics.list().is_empty());
+
+        let accepted = handle_webhook_inner(&state, event, Some("secret=configured-secret")).await;
+        assert_eq!(accepted.0["code"], 0);
+        let entries = state.hook_diagnostics.list();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].stream.as_deref(), Some("device_channel"));
+        let json = serde_json::to_string(&entries).unwrap();
+        assert!(!json.contains("configured-secret"));
+        assert!(!json.contains("body-secret"));
+    }
 
     // ============== ZLM 响应契约 ==============
     //
