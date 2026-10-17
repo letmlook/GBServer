@@ -342,6 +342,7 @@ mod tests {
                 .unwrap();
         let jwt = crate::auth::JwtKeys::new(state.config.jwt.secret.as_bytes());
         let token = jwt.create_token("admin", 60).unwrap();
+        let pool = state.pool.clone();
         let base = spawn(state).await;
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
         let add: serde_json::Value = client
@@ -356,6 +357,21 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(add["code"], 0, "{add}");
+        let duplicate: serde_json::Value = client
+            .get(format!(
+                "{base}/api/cloud/record/collect/add?recordId={record_pk}"
+            ))
+            .header("access-token", &token)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(
+            duplicate["data"]["status"], "already_collected",
+            "{duplicate}"
+        );
         let list: serde_json::Value = client
             .get(format!("{base}/api/cloud/record/collect/list"))
             .header("access-token", &token)
@@ -366,6 +382,13 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(list["data"]["total"], 1, "{list}");
+        let collect_flag: i64 =
+            sqlx::query_scalar("SELECT collect FROM gb_cloud_record WHERE id = ?")
+                .bind(record_pk)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(collect_flag, 1, "add must set gb_cloud_record.collect");
         let deleted: serde_json::Value = client
             .get(format!(
                 "{base}/api/cloud/record/collect/delete?id={record_pk}"
@@ -378,6 +401,18 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(deleted["code"], 0, "{deleted}");
+        let deleted_again: serde_json::Value = client
+            .get(format!(
+                "{base}/api/cloud/record/collect/delete?id={record_pk}"
+            ))
+            .header("access-token", &token)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(deleted_again["code"], 0, "{deleted_again}");
         let list: serde_json::Value = client
             .get(format!("{base}/api/cloud/record/collect/list"))
             .header("access-token", &token)
@@ -388,6 +423,73 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(list["data"]["total"], 0, "{list}");
+        let collect_flag: i64 =
+            sqlx::query_scalar("SELECT collect FROM gb_cloud_record WHERE id = ?")
+                .bind(record_pk)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(collect_flag, 0, "GET must clear gb_cloud_record.collect");
+
+        let add: serde_json::Value = client
+            .get(format!(
+                "{base}/api/cloud/record/collect/add?recordId={record_pk}"
+            ))
+            .header("access-token", &token)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(add["code"], 0, "{add}");
+        let collect_flag: i64 =
+            sqlx::query_scalar("SELECT collect FROM gb_cloud_record WHERE id = ?")
+                .bind(record_pk)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(collect_flag, 1, "second add must restore collect flag");
+        let delete_response = client
+            .delete(format!("{base}/api/cloud/record/collect/delete"))
+            .header("access-token", &token)
+            .json(&serde_json::json!({"id": record_pk}))
+            .send()
+            .await
+            .unwrap();
+        let delete_status = delete_response.status();
+        let delete_body = delete_response.text().await.unwrap();
+        let deleted: serde_json::Value = serde_json::from_str(&delete_body)
+            .unwrap_or_else(|_| panic!("DELETE returned {delete_status}: {delete_body}"));
+        assert_eq!(deleted["code"], 0, "{deleted}");
+        let deleted_again: serde_json::Value = client
+            .delete(format!("{base}/api/cloud/record/collect/delete"))
+            .header("access-token", &token)
+            .json(&serde_json::json!({"id": record_pk}))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(deleted_again["code"], 0, "{deleted_again}");
+        let list: serde_json::Value = client
+            .get(format!("{base}/api/cloud/record/collect/list"))
+            .header("access-token", &token)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(list["data"]["total"], 0, "{list}");
+        let collect_flag: i64 =
+            sqlx::query_scalar("SELECT collect FROM gb_cloud_record WHERE id = ?")
+                .bind(record_pk)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(collect_flag, 0, "DELETE must clear gb_cloud_record.collect");
     }
 
     #[tokio::test]

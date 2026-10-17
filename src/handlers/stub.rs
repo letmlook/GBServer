@@ -1746,10 +1746,19 @@ pub struct CloudRecordDeleteBody {
 #[derive(Debug, Deserialize, Serialize, utoipa::ToSchema, utoipa::IntoParams, Default)]
 pub struct CloudRecordCollectQuery {
     /// 数字主键（列表返回的 id）与组合串 recordId 都接受
+    #[serde(default, deserialize_with = "crate::serde_flex::de_opt_string")]
     pub id: Option<String>,
-    #[serde(alias = "recordId")]
+    #[serde(
+        alias = "recordId",
+        default,
+        deserialize_with = "crate::serde_flex::de_opt_string"
+    )]
     pub record_id: Option<String>,
-    #[serde(alias = "cloudRecordId")]
+    #[serde(
+        alias = "cloudRecordId",
+        default,
+        deserialize_with = "crate::serde_flex::de_opt_string"
+    )]
     pub cloud_record_id: Option<String>,
     #[serde(alias = "deviceId")]
     pub device_id: Option<String>,
@@ -2738,7 +2747,7 @@ async fn cloud_record_scan_zlm(
 /// * 建表失败/类型不对时只有 `let _ =`，日志里一个字都没有。
 ///
 /// 因此这里按方言建表，并对**既有库**做一次类型迁移（保留已有收藏数据）。
-async fn ensure_record_collect_table(pool: &crate::db::Pool) {
+pub(crate) async fn ensure_record_collect_table(pool: &crate::db::Pool) {
     #[cfg(feature = "postgres")]
     const DDL: &str = r#"CREATE TABLE IF NOT EXISTS gb_record_collect (
             id BIGSERIAL PRIMARY KEY,
@@ -2859,13 +2868,13 @@ pub async fn cloud_record_collect_add(
             .or(q.record_id.clone())
             .or(q.cloud_record_id.clone())
             .unwrap_or_default();
-    let record_id = match resolve_cloud_record(&state, &raw_id).await {
-        Some((m, a, st, f, _)) => build_cloud_record_id(&m, &a, &st, &f),
-        None => raw_id,
-    };
-    if record_id.is_empty() {
+    if raw_id.is_empty() {
         return Json(ApiResult::error("record_id is required"));
     }
+    let Some((m, a, st, f, cloud_record_id)) = resolve_cloud_record(&state, &raw_id).await else {
+        return Json(ApiResult::error("record not found"));
+    };
+    let record_id = build_cloud_record_id(&m, &a, &st, &f);
 
     let device_id = q.device_id.clone().unwrap_or_default();
     let channel_id = q.channel_id.clone().unwrap_or_default();
@@ -2886,26 +2895,57 @@ pub async fn cloud_record_collect_add(
          VALUES (?, ?, ?, ?, ?)",
     );
 
-    match sqlx::query(&sql)
+    let mut tx = match state.pool.begin().await {
+        Ok(tx) => tx,
+        Err(e) => return Json(ApiResult::error(format!("收藏失败: {e}"))),
+    };
+    let inserted = match sqlx::query(&sql)
         .bind(&record_id)
         .bind(&device_id)
         .bind(&channel_id)
         .bind(&name)
         .bind(&now)
-        .execute(&state.pool)
+        .execute(&mut *tx)
         .await
     {
-        Ok(r) if r.rows_affected() > 0 => Json(ApiResult::success(
-            serde_json::json!({"recordId": record_id, "status": "collected"}),
-        )),
-        Ok(_) => Json(ApiResult::success(
-            serde_json::json!({"recordId": record_id, "status": "already_collected"}),
-        )),
+        Ok(r) => r.rows_affected() > 0,
         Err(e) => {
             tracing::error!("收藏录像失败 record_id={}: {}", record_id, e);
-            Json(ApiResult::error(format!("收藏失败: {e}")))
+            return Json(ApiResult::error(format!("收藏失败: {e}")));
+        }
+    };
+    if let Some(id) = cloud_record_id {
+        let exists_sql =
+            crate::dyn_where::dialect_sql("SELECT COUNT(*) FROM gb_cloud_record WHERE id = ?");
+        let exists: i64 = match sqlx::query_scalar(&exists_sql)
+            .bind(id)
+            .fetch_one(&mut *tx)
+            .await
+        {
+            Ok(exists) => exists,
+            Err(e) => return Json(ApiResult::error(format!("收藏失败: {e}"))),
+        };
+        if exists == 0 {
+            return Json(ApiResult::error("record not found"));
+        }
+        let update_sql =
+            crate::dyn_where::dialect_sql("UPDATE gb_cloud_record SET collect = ? WHERE id = ?");
+        if let Err(e) = sqlx::query(&update_sql)
+            .bind(true)
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+        {
+            return Json(ApiResult::error(format!("收藏失败: {e}")));
         }
     }
+    if let Err(e) = tx.commit().await {
+        return Json(ApiResult::error(format!("收藏失败: {e}")));
+    }
+    Json(ApiResult::success(serde_json::json!({
+        "recordId": record_id,
+        "status": if inserted { "collected" } else { "already_collected" },
+    })))
 }
 
 /// DELETE /api/cloud/record/collect/delete
@@ -2927,30 +2967,19 @@ pub async fn cloud_record_collect_delete(
     State(state): State<AppState>,
     Json(body): Json<CloudRecordCollectQuery>,
 ) -> Json<ApiResult<serde_json::Value>> {
-    ensure_record_collect_table(&state.pool).await;
-
     let raw_id = body
         .id
         .or(body.record_id)
         .or(body.cloud_record_id)
         .unwrap_or_default();
-    let record_id = match resolve_cloud_record(&state, &raw_id).await {
-        Some((m, a, st, f, _)) => build_cloud_record_id(&m, &a, &st, &f),
-        None => raw_id,
-    };
-    if record_id.is_empty() {
+    if raw_id.is_empty() {
         return Json(ApiResult::error("record_id is required"));
     }
-
-    if let Err(e) = sqlx::query(&crate::dyn_where::dialect_sql(
-        "DELETE FROM gb_record_collect WHERE record_id = ?",
-    ))
-    .bind(&record_id)
-    .execute(&state.pool)
-    .await
+    let record_id = match crate::handlers::cloud_record_extra::clear_collect(&state, &raw_id).await
     {
-        tracing::error!("取消收藏失败 record_id={}: {}", record_id, e);
-    }
+        Ok(record_id) => record_id,
+        Err(e) => return Json(ApiResult::error(e)),
+    };
 
     Json(ApiResult::success(
         serde_json::json!({"recordId": record_id, "status": "deleted"}),
@@ -4372,6 +4401,34 @@ mod record_collect_tests {
             .fetch_one(&state.pool)
             .await
             .expect("record id")
+    }
+
+    #[tokio::test]
+    async fn collect_add_failure_rolls_back_collect_table() {
+        let state = app_state().await;
+        let id = seed_record(&state).await;
+        sqlx::query("CREATE TRIGGER deny_collect_flag BEFORE UPDATE OF collect ON gb_cloud_record BEGIN SELECT RAISE(FAIL, 'blocked'); END")
+            .execute(&state.pool)
+            .await
+            .unwrap();
+
+        let added = cloud_record_collect_add(
+            State(state.clone()),
+            Query(CloudRecordCollectQuery {
+                id: Some(id.to_string()),
+                ..Default::default()
+            }),
+        )
+        .await;
+        assert_ne!(added.0.code, 0);
+        let collected: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM gb_record_collect")
+            .fetch_one(&state.pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            collected, 0,
+            "failed flag update must roll back table insert"
+        );
     }
 
     #[tokio::test]

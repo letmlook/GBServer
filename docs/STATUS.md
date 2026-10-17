@@ -6,12 +6,13 @@
 
 | 项目 | 本轮结果 | 证据范围 |
 |---|---|---|
-| Rust 测试 | `cargo test --no-fail-fast --locked`：781 通过、0 失败、3 个文档测试忽略 | SQLite 默认特性；本机自动化，ZLM + Mock 的实际运行证据见下文；真机仍待复验 |
+| Rust 测试 | `cargo test --no-fail-fast --locked`：784 通过、0 失败、3 个文档测试忽略 | SQLite 默认特性；本机自动化，ZLM + Mock 的实际运行证据见下文；真机仍待复验 |
+| 版本一致性 | SIP `User-Agent` 统一从 Cargo 包版本生成，覆盖设备侧 SIP 和级联请求；HTTP `/api/server/version`、`/api/system/info` 与 OpenAPI 均返回 `2.0.0` | `cargo fmt --check`、Rust 全量测试与 `cargo build --locked` 通过；本机后端启动后对三个 HTTP 出口实测均为 `2.0.0`；级联 REGISTER/INVITE 的 SIP 报文构造测试通过，真机报文待复验 |
 | 前端构建 | `web/npm run build` 通过 | Vue 类型检查与 Vite 打包，不代表浏览器播放通过 |
 | M1 播放收流 | 已移除普通点播和级联点播在媒体 ready 后的二次 `connectRtpServer`；TCP-PASSIVE 主动连接保留 | `media_ready_port_mismatch_is_diagnostic_only` 单测和调用点检查；ZLM/真机回归待执行 |
 | M1 录像重试 | 25 次、800ms 的生产预算不变；新增缺流重试和不可恢复错误次数测试 | `start_record_retry_tests` 4/4；本轮 ZLM + SIP Mock 生成新 MP4，详见下行 |
 | M1 云录像验收 | `cloudRecord` 用例只接受本轮新建计划后、所选通道新增的非空 MP4 记录，播放与删除复用其 ID；录制等待中检查后端、ZLM 和托管 SIP Mock | Docker Desktop 真实 ZLM + ffmpeg SIP Mock + 临时 SQLite + Chromium：干净目录同步后 3/3 通过；本轮计划 3、流 `34020000001320000001_34020000001320000001`、记录 2、MP4 125446 字节，播放下载和删除均通过；健康检查单测 2/2。真机未覆盖 |
-| C9 收藏删除 | GET、DELETE 两种方法均进入鉴权，未登录返回 401；登录后 GET 收藏、列表、取消收藏、列表清空的 HTTP 业务往返通过；DELETE 同时接受 `id` 与 `recordId` | 路由鉴权测试、`authenticated_collect_roundtrip_updates_business_storage` 与收藏存储往返测试；仍需在实际浏览器页面验收 |
+| C9 收藏删除 | GET、DELETE 两种方法均进入鉴权，未登录返回 401；登录后 HTTP 对两种删除方法验证了收藏表与 `gb_cloud_record.collect` 一致清除。添加收藏也同时设置两套存储；数字 JSON `id` 可用，添加/删除中途失败均回滚 | SQLite 路由鉴权、登录后往返及两项事务失败注入测试通过；PostgreSQL 16、MySQL 8 初始化隔离库分别完成登录、添加、列表、GET 删除、再次添加、DELETE 数字 JSON 删除，最终两套存储均清空；测试库/容器已清理。当前云录像页面无收藏入口，浏览器页面验收不适用 |
 | M2 命令应答路由 | `DeviceControl` 和 `DeviceConfig` 响应已映射；设备、CmdType、SN 不匹配或重复应答不完成 pending；回执携带的错误通道 ID 也被拒绝。命令与查询共用进程内唯一 SN，配置查询 pending 覆盖完整 15 秒等待，发送失败和超时后清理 | 定向测试与全量 Rust 测试通过；SQLite 后端 + SIP Mock 的 `ConfigDownload` 即时返回 `source=live`，延迟 11 秒仍在第 15 秒前收到实时回执（实测 11.01 秒）；真机闭环待验证 |
 | M2 传输模式结果 | 新增进程内唯一 SN、发送失败清理 pending、传输模式 `waitResult=true` 的设备确认/拒绝/未确认状态；设备列表按状态提示 | 本机真实后端 + Python SIP Mock 的接口运行验证：确认、拒绝、仅 SIP 200 无设备回执、重复回执、5.5 秒迟到回执和新旧 SN 隔离均符合预期；其它控制入口和真机回执待做 |
 | M2 设防/撤防结果 | 设防接口支持 `waitResult=true`，只接受 `SetGuard`/`ResetGuard`，返回 `sipSent` 与设备确认/拒绝/未确认状态；设备列表提供独立的设防、撤防动作，不再把在线状态当作已设防状态 | Rust 参数校验测试、前端类型检查与构建通过；真实后端 + SIP Mock HTTP/SIP 往返中，设防的确认、拒绝、无设备回执分别返回 `confirmed`、`rejected`、`unconfirmed`，且与传输模式请求 SN 不同。Chromium Playwright 设备列表用例 1/1 通过，覆盖在线/离线按钮及三种提示；真机与其它控制入口仍待验证 |

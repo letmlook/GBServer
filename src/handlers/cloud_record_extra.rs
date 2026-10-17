@@ -76,6 +76,49 @@ pub struct ZipTaskResp {
 /// （`/api/cloud/record/collect/add`），而这里此前只把
 /// `gb_cloud_record.collect` 标志清掉（另一套收藏语义），
 /// 两个存储互不相干（第四十九轮实测发现）。
+pub(crate) async fn clear_collect(state: &AppState, raw_id: &str) -> Result<String, String> {
+    crate::handlers::stub::ensure_record_collect_table(&state.pool).await;
+    let (media_server, app, stream, file_name, cloud_record_id) =
+        crate::handlers::stub::resolve_cloud_record(state, raw_id)
+            .await
+            .ok_or_else(|| "record not found".to_string())?;
+    let record_id =
+        crate::handlers::stub::build_cloud_record_id(&media_server, &app, &stream, &file_name);
+    let mut tx = state
+        .pool
+        .begin()
+        .await
+        .map_err(|e| format!("DB error: {e}"))?;
+    if let Some(id) = cloud_record_id {
+        let exists_sql =
+            crate::dyn_where::dialect_sql("SELECT COUNT(*) FROM gb_cloud_record WHERE id = ?");
+        let exists: i64 = sqlx::query_scalar(&exists_sql)
+            .bind(id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| format!("DB error: {e}"))?;
+        if exists == 0 {
+            return Err("record not found".to_string());
+        }
+        let sql =
+            crate::dyn_where::dialect_sql("UPDATE gb_cloud_record SET collect = ? WHERE id = ?");
+        sqlx::query(&sql)
+            .bind(false)
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("DB error: {e}"))?;
+    }
+    let sql = crate::dyn_where::dialect_sql("DELETE FROM gb_record_collect WHERE record_id = ?");
+    sqlx::query(&sql)
+        .bind(&record_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("DB error: {e}"))?;
+    tx.commit().await.map_err(|e| format!("DB error: {e}"))?;
+    Ok(record_id)
+}
+
 #[utoipa::path(
     get,
     path = "/api/cloud/record/collect/delete",
@@ -95,30 +138,8 @@ pub async fn collect_delete(
         Some(i) if i > 0 => i,
         _ => return Json(ApiResult::error("missing id")),
     };
-    // 1) 清 `gb_cloud_record.collect` 标志（另一套收藏语义）
-    match db::cloud_record::set_collect(&state.pool, id, false).await {
-        Ok(true) => {}
-        Ok(false) => return Json(ApiResult::error("record not found")),
-        Err(e) => return Json(ApiResult::error(format!("DB error: {}", e))),
-    }
-    // 2) 同一条录像如果在收藏表里，也一并删掉（组合串口径）
-    if let Some((m, a, st, f, _)) =
-        crate::handlers::stub::resolve_cloud_record(&state, &id.to_string()).await
-    {
-        let record_id = crate::handlers::stub::build_cloud_record_id(&m, &a, &st, &f);
-        if let Err(e) = sqlx::query(&crate::dyn_where::dialect_sql(
-            "DELETE FROM gb_record_collect WHERE record_id = ?",
-        ))
-        .bind(&record_id)
-        .execute(&state.pool)
-        .await
-        {
-            tracing::warn!(
-                "取消收藏时删除收藏表记录失败 record_id={}: {}",
-                record_id,
-                e
-            );
-        }
+    if let Err(e) = clear_collect(&state, &id.to_string()).await {
+        return Json(ApiResult::error(e));
     }
     Json(ApiResult::success(
         serde_json::json!({"id": id, "collect": false}),
@@ -677,6 +698,52 @@ pub async fn download_file(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
+    async fn collect_delete_failure_keeps_record_flag() {
+        let state = crate::test_support::app_state().await;
+        sqlx::query(
+            "INSERT INTO gb_cloud_record (app, stream, file_name, media_server_id, collect) \
+             VALUES ('rtp', 'rollback', 'rollback.mp4', 'zlm-1', 1)",
+        )
+        .execute(&state.pool)
+        .await
+        .unwrap();
+        let id: i64 =
+            sqlx::query_scalar("SELECT id FROM gb_cloud_record WHERE stream = 'rollback'")
+                .fetch_one(&state.pool)
+                .await
+                .unwrap();
+        crate::handlers::stub::ensure_record_collect_table(&state.pool).await;
+        let record_id = crate::handlers::stub::build_cloud_record_id(
+            "zlm-1",
+            "rtp",
+            "rollback",
+            "rollback.mp4",
+        );
+        sqlx::query("INSERT INTO gb_record_collect (record_id, device_id, channel_id, name, create_time) VALUES (?, '', '', '', '')")
+            .bind(&record_id)
+            .execute(&state.pool)
+            .await
+            .unwrap();
+        sqlx::query("CREATE TRIGGER deny_collect_delete BEFORE DELETE ON gb_record_collect BEGIN SELECT RAISE(FAIL, 'blocked'); END")
+            .execute(&state.pool)
+            .await
+            .unwrap();
+
+        let result = clear_collect(&state, &id.to_string()).await;
+        assert!(
+            result.is_err(),
+            "blocked collect delete must fail: {result:?}"
+        );
+        let flag: i64 = sqlx::query_scalar("SELECT collect FROM gb_cloud_record WHERE id = ?")
+            .bind(id)
+            .fetch_one(&state.pool)
+            .await
+            .unwrap();
+        assert_eq!(flag, 1, "failed delete must roll back flag update");
+    }
 
     fn rec(
         file_path: Option<&str>,
