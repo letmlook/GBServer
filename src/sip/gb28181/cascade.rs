@@ -142,7 +142,7 @@ pub fn build_register_request(
          CSeq: 1 REGISTER\r\n\
          Max-Forwards: 70\r\n\
          Expires: 3600\r\n\
-         User-Agent: GBServer/2.0.0\r\n\
+         User-Agent: {}\r\n\
          Content-Length: 0\r\n\r\n",
         remote_host,
         remote_port,
@@ -151,7 +151,8 @@ pub fn build_register_request(
         username,
         remote_host,
         remote_port,
-        generate_call_id()
+        generate_call_id(),
+        crate::sip::USER_AGENT
     )
 }
 
@@ -172,7 +173,7 @@ pub fn build_invite_request(
          CSeq: 1 INVITE\r\n\
          Max-Forwards: 70\r\n\
          Subject: {}:0\r\n\
-         User-Agent: GBServer/2.0.0\r\n\
+         User-Agent: {}\r\n\
          Content-Type: application/sdp\r\n\
          Content-Length: {}\r\n\r\n\
          {}",
@@ -186,9 +187,24 @@ pub fn build_invite_request(
         remote_port,
         generate_call_id(),
         channel_id,
+        crate::sip::USER_AGENT,
         sdp.len(),
         sdp
     )
+}
+
+#[cfg(test)]
+mod version_header_tests {
+    use super::*;
+
+    #[test]
+    fn cascade_requests_use_package_version() {
+        let expected = format!("User-Agent: {}\r\n", crate::sip::USER_AGENT);
+        let register = build_register_request("local", "127.0.0.1", 5060, "remote", "secret");
+        let invite = build_invite_request("local", "remote", "127.0.0.1", 5060, "channel", "v=0");
+        assert!(register.contains(&expected), "{register}");
+        assert!(invite.contains(&expected), "{invite}");
+    }
 }
 
 fn generate_branch() -> String {

@@ -297,7 +297,7 @@ impl CascadeRegistrar {
              Call-ID: {}\r\n\
              CSeq: {} MESSAGE\r\n\
              Max-Forwards: 70\r\n\
-             User-Agent: GBServer/2.0.0\r\n\
+             User-Agent: {}\r\n\
              Content-Type: APPLICATION/MANSCDP+XML\r\n\
              Content-Length: {}\r\n\r\n\
              {}",
@@ -314,6 +314,7 @@ impl CascadeRegistrar {
             state.port,
             call_id,
             sn,
+            crate::sip::USER_AGENT,
             body.len(),
             body
         );
@@ -626,7 +627,7 @@ impl CascadeRegistrar {
              CSeq: {} REGISTER\r\n\
              Max-Forwards: 70\r\n\
              Expires: {}\r\n\
-             User-Agent: GBServer/2.0.0\r\n",
+             User-Agent: {}\r\n",
             state.platform_device_id,
             state.host,
             state.port,
@@ -642,7 +643,8 @@ impl CascadeRegistrar {
             state.port,
             call_id,
             cseq,
-            expires
+            expires,
+            crate::sip::USER_AGENT
         );
 
         if let Some(auth) = auth_header {
@@ -1213,6 +1215,7 @@ mod c3_tests {
         let msg = r
             .build_register_request("34020000002000000099", 1, 3600)
             .unwrap();
+        assert!(msg.contains(&format!("User-Agent: {}\r\n", crate::sip::USER_AGENT)));
         // Request-URI 必须是「上级国标 ID@上级 host:port」，不是 `sip::5062`
         assert!(
             msg.starts_with("REGISTER sip:34020000002000000099@127.0.0.1:5062 SIP/2.0\r\n"),
