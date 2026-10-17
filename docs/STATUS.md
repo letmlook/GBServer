@@ -16,7 +16,7 @@
 | M2 传输模式结果 | 新增进程内唯一 SN、发送失败清理 pending、传输模式 `waitResult=true` 的设备确认/拒绝/未确认状态；设备列表按状态提示 | 本阶段 `cargo test --no-fail-fast --locked` 764 通过、3 文档测试忽略，前端构建通过；其他控制入口、Mock/真机回执与超时接口测试待做 |
 | C8 直播音频标志 | 点播响应优先以当前 ZLM 流的 ready 音频 track 判定 `hasAudio`，无 track 时回退目录字段，并以 `audioSource` 标明来源 | 音频 track 单测、前端构建及 `cargo test --no-fail-fast --locked`（774 通过、3 文档测试忽略）通过；本轮 ZLM + Mock 点播返回 `audioSource=media` 且 `hasAudio=true`，ZLM 同流 ready 音频 track；真机待复验 |
 | M4 多方言编译 | `cargo check --no-default-features --features postgres --locked` 与 `--features mysql` 均通过 | 仅证明两种特性编译；本轮没有 PostgreSQL/MySQL 实例及相关路径运行证据 |
-| M3 管理员诊断 | 已鉴权的 `on_play`/`on_publish` 各保留最近一条白名单元数据；两个管理员接口返回 Hook 范围及 Redis/StateStore 状态 | 定向诊断测试 7/7，完整 `cargo test --no-fail-fast --locked` 773 通过、3 文档测试忽略；目标环境 Redis/ZLM 故障演练未验证 |
+| M3 管理员诊断 | `on_play`/`on_publish` 各保留最近一条白名单元数据；管理员可查 Hook 和 Redis/StateStore 状态。媒体节点列表和检测响应不返回保存的 ZLM secret；ZLM 代理要求管理员并拒绝原始配置读取，配置下发失败摘要不回显配置值 | 定向诊断及媒体节点测试通过，完整 `cargo test --no-fail-fast --locked` 777 通过、3 文档测试忽略；本机真实 Redis 容器停止时返回 `ping_failed`，恢复后 `connected`；真实 ZLM 容器停止时节点检测返回脱敏错误，恢复后 `reachable=true`。代理 GET 当前返回 405，POST 权限和配置拦截已有回归测试 |
 
 本轮尚未运行 PostgreSQL/MySQL 实例及真实 GB28181 设备；ZLM + Mock 的证据不能替代真机与目标拓扑验收。
 

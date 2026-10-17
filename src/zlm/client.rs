@@ -934,7 +934,7 @@ impl ZlmClient {
             let secret = secret.to_string();
             set.spawn(async move {
                 let r = client.set_server_config(&secret, &key, &value).await;
-                (key, value, r)
+                (key, r)
             });
         }
 
@@ -952,10 +952,10 @@ impl ZlmClient {
                     break;
                 }
                 Ok(None) => break,
-                Ok(Some(Ok((key, value, Err(e))))) => {
-                    errors.push(format!("{}={}: {}", key, value, e));
+                Ok(Some(Ok((key, Err(_))))) => {
+                    errors.push(format!("{}: ZLM 配置下发失败", key));
                 }
-                Ok(Some(Ok((_key, _value, Ok(()))))) => {}
+                Ok(Some(Ok((_key, Ok(()))))) => {}
                 Ok(Some(Err(join_err))) => {
                     errors.push(format!("ZLM 配置任务异常: {}", join_err));
                 }

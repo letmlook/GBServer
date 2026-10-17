@@ -35,6 +35,7 @@ pub struct MediaServer {
     pub ws_flv_ssl_port: Option<i32>,
     pub jtt_proxy_port: Option<i32>,
     pub auto_config: Option<bool>,
+    #[serde(skip_serializing)]
     pub secret: Option<String>,
     #[sqlx(rename = "type")]
     #[serde(rename = "type")]

@@ -377,6 +377,42 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn zlm_proxy_requires_admin_and_blocks_raw_server_config() {
+        let state = app_state().await;
+        sqlx::query("INSERT INTO gb_user_role (id, name, authority, create_time, update_time) VALUES (2, 'viewer', '1', '2026-10-17', '2026-10-17')")
+            .execute(&state.pool).await.unwrap();
+        sqlx::query("INSERT INTO gb_user (id, username, password, role_id, create_time, update_time) VALUES (2, 'viewer', 'unused', 2, '2026-10-17', '2026-10-17')")
+            .execute(&state.pool).await.unwrap();
+        let jwt = crate::auth::JwtKeys::new(state.config.jwt.secret.as_bytes());
+        let viewer_token = jwt.create_token("viewer", 60).unwrap();
+        let admin_token = jwt.create_token("admin", 60).unwrap();
+        let base = spawn(state).await;
+        let url = format!("{base}/zlm/unknown/index/api/getServerConfig");
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let viewer_response = client
+            .post(&url)
+            .header("access-token", viewer_token)
+            .send()
+            .await
+            .unwrap();
+        let viewer_status = viewer_response.status();
+        let viewer_text = viewer_response.text().await.unwrap();
+        let viewer: serde_json::Value = serde_json::from_str(&viewer_text)
+            .unwrap_or_else(|_| panic!("viewer {viewer_status}: {viewer_text}"));
+        assert_eq!(viewer["code"], 403);
+        let admin: serde_json::Value = client
+            .post(&url)
+            .header("access-token", admin_token)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(admin["code"], 403);
+    }
+
     /// 启用 `static_dir`（SPA 静态资源）时路由表仍必须能构建。
     ///
     /// 回归保护：axum 0.8 **禁止** `nest_service("/", ..)`，根路径必须用

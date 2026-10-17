@@ -3,7 +3,7 @@
 use axum::{
     body::Bytes,
     extract::{Path, Query, State},
-    http::{header, Method, StatusCode},
+    http::{header, HeaderMap, Method, StatusCode},
     response::{IntoResponse, Response},
     Json,
 };
@@ -58,10 +58,25 @@ use {std::time::Duration, tokio::time::sleep};
 pub async fn zlm_proxy(
     method: Method,
     State(state): State<AppState>,
+    headers: HeaderMap,
     Path((media_server_id, path)): Path<(String, String)>,
     Query(mut params): Query<HashMap<String, String>>,
     body: Bytes,
 ) -> Response {
+    if let Err(err) = crate::handlers::authz::require_admin(&state, &headers).await {
+        return err.into_response();
+    }
+    // 原样转发配置会把 api.secret 等凭证直接交给浏览器。
+    if path
+        .trim_start_matches('/')
+        .eq_ignore_ascii_case("index/api/getServerConfig")
+    {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"code": 403, "msg": "请使用媒体节点检测接口", "data": null})),
+        )
+            .into_response();
+    }
     let Some(client) = state.get_zlm_client(Some(&media_server_id)) else {
         return (
             StatusCode::NOT_FOUND,
@@ -96,7 +111,7 @@ pub async fn zlm_proxy(
                 StatusCode::BAD_GATEWAY,
                 Json(serde_json::json!({
                     "code": 502,
-                    "msg": format!("ZLM请求失败: {}", e),
+                    "msg": "ZLM 请求失败",
                     "data": null
                 })),
             )
@@ -113,12 +128,12 @@ pub async fn zlm_proxy(
         .unwrap_or_else(|| header::HeaderValue::from_static("application/json"));
     let body = match resp.bytes().await {
         Ok(bytes) => bytes,
-        Err(e) => {
+        Err(_) => {
             return (
                 StatusCode::BAD_GATEWAY,
                 Json(serde_json::json!({
                     "code": 502,
-                    "msg": format!("读取ZLM响应失败: {}", e),
+                    "msg": "读取 ZLM 响应失败",
                     "data": null
                 })),
             )
@@ -1591,7 +1606,6 @@ pub async fn media_server_check(
     let mut payload = serde_json::json!({
         "ip": ip,
         "httpPort": http_port,
-        "secret": secret,
         "type": type_,
         "autoConfig": true,
         "rtpEnable": false,
@@ -1613,10 +1627,10 @@ pub async fn media_server_check(
                 }
             }
         }
-        Err(e) => {
+        Err(_) => {
             if let Some(obj) = payload.as_object_mut() {
                 obj.insert("reachable".to_string(), json!(false));
-                obj.insert("probeError".to_string(), json!(e.to_string()));
+                obj.insert("probeError".to_string(), json!("ZLM 不可达或鉴权失败"));
             }
         }
     }
@@ -2392,6 +2406,47 @@ mod media_server_probe_tests {
 mod media_server_contract_tests {
     use super::*;
     use crate::test_support::app_state;
+
+    #[tokio::test]
+    async fn media_server_list_never_serializes_saved_secret() {
+        let state = app_state().await;
+        media_server::add(
+            &state.pool,
+            "ms-secret",
+            "127.0.0.1",
+            8080,
+            "2026-01-01 00:00:00",
+        )
+        .await
+        .unwrap();
+        sqlx::query(
+            "UPDATE gb_media_server SET secret = 'sentinel-zlm-secret' WHERE id = 'ms-secret'",
+        )
+        .execute(&state.pool)
+        .await
+        .unwrap();
+        let list = media_server_list(State(state)).await.unwrap();
+        let serialized = serde_json::to_string(&list.0).unwrap();
+        assert!(!serialized.contains("sentinel-zlm-secret"));
+    }
+
+    #[tokio::test]
+    async fn media_server_probe_error_never_contains_secret() {
+        let state = app_state().await;
+        let err = media_server_check(
+            State(state),
+            Query(MediaServerCheckQuery {
+                id: None,
+                ip: Some("127.0.0.1".to_string()),
+                port: Some(1),
+                secret: Some("sentinel-zlm-secret".to_string()),
+                type_: None,
+            }),
+        )
+        .await
+        .expect_err("端口 1 不可达");
+        assert!(!format!("{err}").contains("sentinel-zlm-secret"));
+    }
 
     /// `check` 必须能用 `id` 定位节点；此前 DTO 里没有这个字段，
     /// 前端点哪个节点都在探测兜底的 127.0.0.1:80。

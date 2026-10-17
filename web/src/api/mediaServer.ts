@@ -26,7 +26,8 @@ export interface MediaServer {
   rtspPort?: number
   rtmpPort?: number
   rtpProxyPort?: number
-  secret: string
+  /** 写入新密钥时提交；已有密钥不会从服务端回传。 */
+  secret?: string
   type?: string
   autoConfig?: boolean
   rtpEnable?: boolean
@@ -54,7 +55,6 @@ export interface MediaServerProbe {
   probeError?: string
   ip?: string
   httpPort?: number
-  secret?: string
   type?: string
   streamIp?: string
   sdpIp?: string
