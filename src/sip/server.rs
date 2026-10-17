@@ -2408,6 +2408,13 @@ impl SipServer {
                     .await?;
                     return Ok(());
                 }
+                Some("DeviceControl") | Some("DeviceConfig") | Some("ConfigDownload")
+                    if body_is_response =>
+                {
+                    // PendingResponseRouter 已按设备、命令类型和 SN 处理结果。
+                    // MESSAGE 本身仍需 200 OK，且不要落入未知报文日志。
+                    ack_message!();
+                }
                 _ => {
                     tracing::debug!("Unhandled MESSAGE body: {}", body);
                 }

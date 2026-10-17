@@ -24,6 +24,8 @@ pub enum PendingCmdType {
     DeviceStatus,
     /// 查询设备配置参数
     DeviceConfig,
+    /// 设备控制执行结果
+    DeviceControl,
     /// 查询目录（Catalog）
     Catalog,
     /// 查询录像信息（RecordInfo）
@@ -42,6 +44,7 @@ impl PendingCmdType {
             PendingCmdType::DeviceInfo => "DeviceInfo",
             PendingCmdType::DeviceStatus => "DeviceStatus",
             PendingCmdType::DeviceConfig => "ConfigDownload",
+            PendingCmdType::DeviceControl => "DeviceControl",
             PendingCmdType::Catalog => "Catalog",
             PendingCmdType::RecordInfo => "RecordInfo",
             PendingCmdType::MobilePosition => "MobilePosition",
@@ -810,6 +813,8 @@ impl ResponseRouter {
             "DeviceInfo" => Some(PendingCmdType::DeviceInfo),
             "DeviceStatus" => Some(PendingCmdType::DeviceStatus),
             "ConfigDownload" => Some(PendingCmdType::DeviceConfig),
+            "DeviceConfig" => Some(PendingCmdType::DeviceConfig),
+            "DeviceControl" => Some(PendingCmdType::DeviceControl),
             "Catalog" => Some(PendingCmdType::Catalog),
             "RecordInfo" => Some(PendingCmdType::RecordInfo),
             "MobilePosition" => Some(PendingCmdType::MobilePosition),
@@ -819,26 +824,27 @@ impl ResponseRouter {
         };
 
         if let Some(pt) = pending_type {
-            // 先把 Call-ID 解析成"登记时用的那个 call_id"：
-            // 设备回显的是我们实际发出的 Call-ID（本仓库是 `msg_...`），而登记
-            // 用的是 `di_/ds_/dc_{device}_{sn}`；匹配不上时用 (device, SN) 兜底。
-            let mut effective_call_id = call_id.to_string();
-            if !self.pending.is_registered(call_id) {
-                if let Some(dev) = device_id {
-                    if let Some(sn) = extract_sn(body) {
-                        if let Some(req) = self.pending.get_by_device_sn(dev, sn) {
-                            tracing::debug!(
-                                "MESSAGE 响应按 (device={}, sn={}) 关联到 pending call_id={}（Call-ID {} 未命中）",
-                                dev,
-                                sn,
-                                req.call_id,
-                                call_id
-                            );
-                            effective_call_id = req.call_id;
-                        }
-                    }
+            // 真实设备的 MESSAGE 回显的是发包 Call-ID，不一定等于 pending 的
+            // 登记 Call-ID。由 SIP 来源给出设备 ID 时，必须同时核对设备、SN、
+            // 命令类型；即使 Call-ID 正确，也不能让错误/迟到应答完成新请求。
+            let effective_call_id = if let Some(dev) = device_id {
+                let Some(sn) = extract_sn(body) else {
+                    return None;
+                };
+                let Some(req) = self.pending.get_by_device_sn(dev, sn) else {
+                    return None;
+                };
+                if req.cmd_type != pt {
+                    return None;
                 }
-            }
+                req.call_id
+            } else {
+                // 无 SIP 来源的旧调用方仅按 Call-ID 关联，但仍校验命令类型。
+                if self.pending.peek_cmd_type(call_id) != Some(pt) {
+                    return None;
+                }
+                call_id.to_string()
+            };
 
             // Phase 3.3: RecordInfo 走多包路径（如果已注册 multi-packet）；
             // 若未注册多包（单包 RecordInfo 兼容），回退到原 complete 路径
@@ -1214,6 +1220,56 @@ mod response_router_tests {
         // 等待方确实被唤醒
         let got = tokio::time::timeout(std::time::Duration::from_millis(200), &mut rx).await;
         assert!(got.is_ok(), "oneshot 应被 complete 唤醒");
+    }
+
+    #[test]
+    fn device_control_response_requires_matching_device_type_and_sn() {
+        let (mgr, router) = fixture();
+        mgr.register(
+            "device-a",
+            42,
+            PendingCmdType::DeviceControl,
+            "control-42",
+            None,
+        );
+        for (body, source) in [
+            ("<Response><CmdType>DeviceControl</CmdType><SN>42</SN><Result>OK</Result></Response>", "device-b"),
+            ("<Response><CmdType>DeviceStatus</CmdType><SN>42</SN></Response>", "device-a"),
+            ("<Response><CmdType>DeviceControl</CmdType><SN>41</SN><Result>OK</Result></Response>", "device-a"),
+            ("<Response><CmdType>DeviceControl</CmdType><Result>OK</Result></Response>", "device-a"),
+        ] {
+            assert!(router.route_message_response_with_device(body, "control-42", source).is_none());
+            assert_eq!(mgr.pending_count(), 1);
+        }
+        let ok =
+            "<Response><CmdType>DeviceControl</CmdType><SN>42</SN><Result>OK</Result></Response>";
+        assert_eq!(
+            router.route_message_response_with_device(ok, "device-call-id", "device-a"),
+            Some((PendingCmdType::DeviceControl, ok.to_string()))
+        );
+        assert_eq!(mgr.pending_count(), 0);
+        assert!(router
+            .route_message_response_with_device(ok, "device-call-id", "device-a")
+            .is_none());
+    }
+
+    #[test]
+    fn device_config_response_alias_matches_config_download_request() {
+        let (mgr, router) = fixture();
+        mgr.register(
+            "device-a",
+            9,
+            PendingCmdType::DeviceConfig,
+            "config-9",
+            None,
+        );
+        let body =
+            "<Response><CmdType>DeviceConfig</CmdType><SN>9</SN><Result>OK</Result></Response>";
+        assert_eq!(
+            router.route_message_response_with_device(body, "device-call-id", "device-a"),
+            Some((PendingCmdType::DeviceConfig, body.to_string()))
+        );
+        assert_eq!(mgr.pending_count(), 0);
     }
 
     /// 只按 Call-ID 关联（旧行为）在同一场景下必须失败 —— 固化"为什么需要兜底"。
