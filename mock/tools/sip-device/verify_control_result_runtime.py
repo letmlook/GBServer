@@ -108,6 +108,44 @@ def sy_preset_command(token):
     assert data["deviceResult"]["status"] == "sent", data
 
 
+def common_channel_commands(token, output):
+    sync = api(f"/api/device/query/devices/{DEVICE_ID}/sync", token=token)
+    if sync.get("code") != 0 or (sync.get("data") or {}).get("syncState") != "done":
+        raise AssertionError("Mock catalog sync failed: " + json.dumps(sync, ensure_ascii=False))
+    response = api("/api/common/channel/list?count=100", token=token)
+    channels = (response.get("data") or {}).get("list") or []
+    channel = next((item for item in channels if item.get("deviceId") == DEVICE_ID), None)
+    if response.get("code") != 0 or channel is None:
+        raise AssertionError("Mock channel was not listed: " + json.dumps(response, ensure_ascii=False))
+    channel_id = channel["id"]
+
+    cases = [
+        ("/api/common/channel/front-end/fi/focus", {"command": "on", "speed": 40},
+         "PTZCmd=A50F01422800001F"),
+        ("/api/common/channel/front-end/preset/call", {"preset_id": 3},
+         "PTZCmd=A50F01820003003A"),
+    ]
+    for path, params, expected in cases:
+        query = urllib.parse.urlencode({"channel_id": channel_id, **params})
+        result = api(path + "?" + query, token=token)
+        if result.get("code") != 0 or "已发送" not in result.get("msg", ""):
+            raise AssertionError("Common channel command failed: " + json.dumps(result, ensure_ascii=False))
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            output.flush()
+            output.seek(0)
+            if expected in output.read().decode(errors="replace"):
+                break
+            time.sleep(0.05)
+        else:
+            raise AssertionError("Common channel command missing " + expected)
+
+    invalid = api("/api/common/channel/front-end/preset/call?" + urllib.parse.urlencode({
+        "channel_id": channel_id, "preset_id": 256,
+    }), token=token)
+    assert invalid.get("code") != 0 and "1-255" in invalid.get("msg", ""), invalid
+
+
 def record_command(token, action="Record"):
     query = urllib.parse.urlencode({
         "deviceId": DEVICE_ID, "channelId": DEVICE_ID, "recordCmdStr": action,
@@ -176,6 +214,7 @@ def scenario(token, name, mode, expected, delay_ms=0, repeats=1, second=False):
                         time.sleep(0.05)
                     else:
                         raise AssertionError("SY GOTO_PRESET did not send PTZCmd for preset 3")
+                    common_channel_commands(token, output)
                 guard = guard_command(token)
                 assert guard["status"] == expected, f"{name} guard: {guard}"
                 assert guard["sn"] != first["sn"], "guard reused transport request SN"
