@@ -1,6 +1,6 @@
 {
-  "name": "gbserver-web-v3",
-  "version": "3.0.0",
+  "name": "gbserver-web",
+  "version": "2.0.0",
   "description": "GBServer admin (Vue 3 + Element Plus + Vite + TS)",
   "private": true,
   "type": "module",

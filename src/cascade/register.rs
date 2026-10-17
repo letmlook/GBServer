@@ -297,7 +297,7 @@ impl CascadeRegistrar {
              Call-ID: {}\r\n\
              CSeq: {} MESSAGE\r\n\
              Max-Forwards: 70\r\n\
-             User-Agent: GBServer/1.0\r\n\
+             User-Agent: GBServer/2.0.0\r\n\
              Content-Type: APPLICATION/MANSCDP+XML\r\n\
              Content-Length: {}\r\n\r\n\
              {}",
@@ -626,7 +626,7 @@ impl CascadeRegistrar {
              CSeq: {} REGISTER\r\n\
              Max-Forwards: 70\r\n\
              Expires: {}\r\n\
-             User-Agent: GBServer/1.0\r\n",
+             User-Agent: GBServer/2.0.0\r\n",
             state.platform_device_id,
             state.host,
             state.port,

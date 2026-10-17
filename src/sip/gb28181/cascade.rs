@@ -142,7 +142,7 @@ pub fn build_register_request(
          CSeq: 1 REGISTER\r\n\
          Max-Forwards: 70\r\n\
          Expires: 3600\r\n\
-         User-Agent: GBServer/1.0\r\n\
+         User-Agent: GBServer/2.0.0\r\n\
          Content-Length: 0\r\n\r\n",
         remote_host,
         remote_port,
@@ -172,7 +172,7 @@ pub fn build_invite_request(
          CSeq: 1 INVITE\r\n\
          Max-Forwards: 70\r\n\
          Subject: {}:0\r\n\
-         User-Agent: GBServer/1.0\r\n\
+         User-Agent: GBServer/2.0.0\r\n\
          Content-Type: application/sdp\r\n\
          Content-Length: {}\r\n\r\n\
          {}",

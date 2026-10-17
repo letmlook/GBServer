@@ -46,6 +46,13 @@ export default defineConfig(({ mode }) => {
       port: 9528,
       open: true,
       proxy: {
+        // 后端返回的缩略图 URL 和日志导出使用绝对 /api 路径；
+        // 开发环境也要交给本系统后端处理。
+        '/api': {
+          target: env.VITE_PROXY_TARGET || 'http://127.0.0.1:18080',
+          changeOrigin: true,
+          ws: true
+        },
         '/dev-api': {
           target: env.VITE_PROXY_TARGET || 'http://127.0.0.1:18080',
           changeOrigin: true,

@@ -333,7 +333,7 @@ pub struct PlayUrlQuery {
     responses(
         (status = 200, description = "脱敏后的服务端配置快照（敏感字段 password/secret/db url 统一占位 ***）",
          body = ApiResult<serde_json::Value>,
-         example = json!({"code":0,"msg":"成功","data":{"sip":{"enabled":true,"ip":"127.0.0.1","port":5060,"deviceId":"44000000002000000001","realm":"4400000000","password":"***"},"zlm":[{"id":"zlmediakit-1","ip":"127.0.0.1","httpPort":80,"secret":"***"}],"database":{"url":"***"},"redis":false,"version":"0.1.0"}})),
+         example = json!({"code":0,"msg":"成功","data":{"sip":{"enabled":true,"ip":"127.0.0.1","port":5060,"deviceId":"44000000002000000001","realm":"4400000000","password":"***"},"zlm":[{"id":"zlmediakit-1","ip":"127.0.0.1","httpPort":80,"secret":"***"}],"database":{"url":"***"},"redis":false,"version":"2.0.0"}})),
         (status = 401, description = "未鉴权"),
     ),
     security(("access_token" = [])),
@@ -386,7 +386,7 @@ pub async fn server_config(State(state): State<AppState>) -> Json<ApiResult<serd
     responses(
         (status = 200, description = "服务端版本信息 `{version, name, rustc}`",
          body = ApiResult<serde_json::Value>,
-         example = json!({"code":0,"msg":"成功","data":{"version":"0.1.0","name":"gbserver","rustc":"rustc (compiled)"}})),
+         example = json!({"code":0,"msg":"成功","data":{"version":"2.0.0","name":"gbserver","rustc":"rustc (compiled)"}})),
         (status = 401, description = "未鉴权"),
     ),
     security(("access_token" = [])),

@@ -1,6 +1,6 @@
 [package]
 name = "gbserver"
-version = "0.1.0"
+version = "2.0.0"
 edition = "2021"
 description = "GBServer — GB28181 国标信令、流媒体接入与级联管理平台"
 

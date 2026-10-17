@@ -3311,7 +3311,7 @@ impl SipServer {
             ("Accept", "APPLICATION/SDP, APPLICATION/MANSCDP+XML, APPLICATION/MESSAGE+XML, MULTIPART/MIXED"),
             ("Supported", "replaces,100rel,eventlist"),
             ("Contact", &format!("<sip:{}@{}:{}>", config.device_id, config.ip, config.port)),
-            ("User-Agent", "GBServer/1.0"),
+            ("User-Agent", "GBServer/2.0.0"),
         ], None);
         Self::send_response(socket, addr, &response).await?;
         Ok(())
@@ -5661,7 +5661,7 @@ f=v/1/96/1/2/1/1/0
             ("CSeq", &cseq),
             ("Contact", &contact),
             ("Max-Forwards", "70"),
-            ("User-Agent", "GBServer/1.0"),
+            ("User-Agent", "GBServer/2.0.0"),
             ("Subject", &subject),
             ("Content-Type", "application/sdp"),
         ];
@@ -5861,7 +5861,7 @@ f=v/1/96/1/2/1/1/0
             ("CSeq", &cseq),
             ("Contact", &contact),
             ("Max-Forwards", "70"),
-            ("User-Agent", "GBServer/1.0"),
+            ("User-Agent", "GBServer/2.0.0"),
             ("Subject", &subject),
             ("Content-Type", "application/sdp"),
         ];
@@ -6329,7 +6329,7 @@ f=v/1/96/1/2/1/1/0
             ("CSeq", &cseq),
             ("Contact", &contact),
             ("Max-Forwards", "70"),
-            ("User-Agent", "GBServer/1.0"),
+            ("User-Agent", "GBServer/2.0.0"),
             ("Content-Type", "Application/MANSCDP+xml"),
             ("Content-Length", &content_length),
         ];
@@ -6433,7 +6433,7 @@ f=v/1/96/1/2/1/1/0
             ("CSeq", &cseq),
             ("Contact", &contact),
             ("Max-Forwards", "70"),
-            ("User-Agent", "GBServer/1.0"),
+            ("User-Agent", "GBServer/2.0.0"),
             ("Content-Type", "Application/MANSCDP+xml"),
             ("Content-Length", &content_length),
         ];
@@ -6613,7 +6613,7 @@ f=v/1/96/1/2/1/1/0
             ("CSeq", &cseq),
             ("Contact", &contact),
             ("Max-Forwards", "70"),
-            ("User-Agent", "GBServer/1.0"),
+            ("User-Agent", "GBServer/2.0.0"),
             ("Subject", &subject),
             ("Content-Type", "application/sdp"),
         ];
@@ -7000,7 +7000,7 @@ f=v/1/96/1/2/1/1/0
             ("CSeq", &cseq),
             ("Contact", &contact),
             ("Max-Forwards", "70"),
-            ("User-Agent", "GBServer/1.0"),
+            ("User-Agent", "GBServer/2.0.0"),
             ("Subject", &subject),
             ("Content-Type", "application/sdp"),
         ];
@@ -7137,7 +7137,7 @@ f=v/1/96/1/2/1/1/0
                 ("CSeq", &cseq),
                 ("Contact", &contact),
                 ("Max-Forwards", "70"),
-                ("User-Agent", "GBServer/1.0"),
+                ("User-Agent", "GBServer/2.0.0"),
                 ("Subject", &subject),
                 ("Content-Type", "application/sdp"),
             ];
@@ -7290,7 +7290,7 @@ f=v/1/96/1/2/1/1/0
             ("CSeq", &cseq),
             ("Contact", &contact),
             ("Max-Forwards", "70"),
-            ("User-Agent", "GBServer/1.0"),
+            ("User-Agent", "GBServer/2.0.0"),
             ("Subject", &subject),
             ("Content-Type", "application/sdp"),
         ];
@@ -7403,7 +7403,7 @@ f=v/1/96/1/2/1/1/0
             ("CSeq", &cseq),
             ("Contact", &contact),
             ("Max-Forwards", "70"),
-            ("User-Agent", "GBServer/1.0"),
+            ("User-Agent", "GBServer/2.0.0"),
             ("Subject", &subject),
             ("Content-Type", "application/sdp"),
         ];
