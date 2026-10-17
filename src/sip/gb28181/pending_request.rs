@@ -65,6 +65,8 @@ pub struct PendingRequest {
     pub cmd_type: PendingCmdType,
     /// Call-ID（用于匹配响应）
     pub call_id: String,
+    /// 控制命令原始目标；设备可能回设备 ID 或通道 ID。
+    pub expected_target: Option<String>,
     /// 创建时间
     pub created_at: Instant,
     /// 超时时长
@@ -83,6 +85,7 @@ impl Clone for PendingRequest {
             sn: self.sn,
             cmd_type: self.cmd_type,
             call_id: self.call_id.clone(),
+            expected_target: self.expected_target.clone(),
             created_at: self.created_at,
             timeout_secs: self.timeout_secs,
             // 关键：oneshot::Sender 不可 Clone — 重复 Clone 会导致 `tx.send` 双发 panic。
@@ -106,6 +109,7 @@ impl PendingRequest {
             sn,
             cmd_type,
             call_id,
+            expected_target: None,
             created_at: Instant::now(),
             timeout_secs: timeout,
             response_sender: None,
@@ -128,6 +132,7 @@ impl PendingRequest {
             sn,
             cmd_type,
             call_id,
+            expected_target: None,
             created_at: Instant::now(),
             timeout_secs,
             response_sender: Some(tx),
@@ -323,6 +328,37 @@ impl PendingRequestManager {
         call_id: &str,
         timeout_secs: Option<u64>,
     ) -> (PendingRequest, oneshot::Receiver<String>) {
+        self.register_with_receiver_inner(device_id, sn, cmd_type, call_id, timeout_secs, None)
+    }
+
+    pub fn register_with_receiver_for_target(
+        &self,
+        device_id: &str,
+        sn: u32,
+        cmd_type: PendingCmdType,
+        call_id: &str,
+        timeout_secs: Option<u64>,
+        target_id: &str,
+    ) -> (PendingRequest, oneshot::Receiver<String>) {
+        self.register_with_receiver_inner(
+            device_id,
+            sn,
+            cmd_type,
+            call_id,
+            timeout_secs,
+            Some(target_id),
+        )
+    }
+
+    fn register_with_receiver_inner(
+        &self,
+        device_id: &str,
+        sn: u32,
+        cmd_type: PendingCmdType,
+        call_id: &str,
+        timeout_secs: Option<u64>,
+        target_id: Option<&str>,
+    ) -> (PendingRequest, oneshot::Receiver<String>) {
         let timeout = timeout_secs.unwrap_or(self.default_timeout_secs);
         let (mut req, rx) = PendingRequest::new_with_receiver(
             device_id.to_string(),
@@ -331,6 +367,7 @@ impl PendingRequestManager {
             call_id.to_string(),
             timeout,
         );
+        req.expected_target = target_id.map(str::to_string);
 
         self.by_call_id.insert(call_id.to_string(), req.clone());
 
@@ -435,6 +472,7 @@ impl PendingRequestManager {
                     sn: r.sn,
                     cmd_type: r.cmd_type,
                     call_id: r.call_id.clone(),
+                    expected_target: r.expected_target.clone(),
                     created_at: r.created_at,
                     timeout_secs: r.timeout_secs,
                     response_sender: None,
@@ -497,6 +535,7 @@ impl PendingRequestManager {
                 sn: r.sn,
                 cmd_type: r.cmd_type,
                 call_id: r.call_id.clone(),
+                expected_target: r.expected_target.clone(),
                 created_at: r.created_at,
                 timeout_secs: r.timeout_secs,
                 response_sender: None,
@@ -848,6 +887,16 @@ impl ResponseRouter {
                 if req.cmd_type != pt {
                     return None;
                 }
+                if pt == PendingCmdType::DeviceControl {
+                    if let (Some(expected), Some(target)) = (
+                        req.expected_target.as_deref(),
+                        extract_tag(body, "DeviceID"),
+                    ) {
+                        if target != expected && target != req.device_id {
+                            return None;
+                        }
+                    }
+                }
                 req.call_id
             } else {
                 // 无 SIP 来源的旧调用方仅按 Call-ID 关联，但仍校验命令类型。
@@ -948,6 +997,14 @@ fn extract_sn(xml: &str) -> Option<u32> {
     let open = xml.find("<SN>")? + "<SN>".len();
     let close = xml[open..].find("</SN>")? + open;
     xml[open..close].trim().parse::<u32>().ok()
+}
+
+fn extract_tag<'a>(xml: &'a str, tag: &str) -> Option<&'a str> {
+    let open_tag = format!("<{tag}>");
+    let close_tag = format!("</{tag}>");
+    let start = xml.find(&open_tag)? + open_tag.len();
+    let end = xml[start..].find(&close_tag)? + start;
+    Some(xml[start..end].trim())
 }
 
 fn extract_cmd_type(xml: &str) -> &str {
@@ -1281,6 +1338,28 @@ mod response_router_tests {
             Some((PendingCmdType::DeviceConfig, body.to_string()))
         );
         assert_eq!(mgr.pending_count(), 0);
+    }
+
+    #[test]
+    fn device_control_response_rejects_wrong_channel_target() {
+        let (mgr, router) = fixture();
+        mgr.register_with_receiver_for_target(
+            "device-a",
+            77,
+            PendingCmdType::DeviceControl,
+            "control-77",
+            Some(5),
+            "channel-a",
+        );
+        let wrong = "<Response><CmdType>DeviceControl</CmdType><SN>77</SN><DeviceID>channel-b</DeviceID><Result>OK</Result></Response>";
+        assert!(router
+            .route_message_response_with_device(wrong, "msg-77", "device-a")
+            .is_none());
+        assert_eq!(mgr.pending_count(), 1);
+        let right = "<Response><CmdType>DeviceControl</CmdType><SN>77</SN><DeviceID>channel-a</DeviceID><Result>OK</Result></Response>";
+        assert!(router
+            .route_message_response_with_device(right, "msg-77", "device-a")
+            .is_some());
     }
 
     /// 只按 Call-ID 关联（旧行为）在同一场景下必须失败 —— 固化"为什么需要兜底"。

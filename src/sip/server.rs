@@ -5280,13 +5280,21 @@ f=v/1/96/1/2/1/1/0
         );
         let sn = next_device_control_sn();
         let pending_call_id = format!("ctl_{}_{}", device_id, sn);
-        let (_request, receiver) = self.pending_request_manager.register_with_receiver(
-            device_id,
-            sn,
-            crate::sip::gb28181::PendingCmdType::DeviceControl,
-            &pending_call_id,
-            Some(5),
-        );
+        let target_id = if channel_id.is_empty() {
+            device_id
+        } else {
+            channel_id
+        };
+        let (_request, receiver) = self
+            .pending_request_manager
+            .register_with_receiver_for_target(
+                device_id,
+                sn,
+                crate::sip::gb28181::PendingCmdType::DeviceControl,
+                &pending_call_id,
+                Some(5),
+                target_id,
+            );
         let xml_body = build_device_control_xml(device_id, channel_id, cmd_type, body, sn);
         if let Err(error) = self
             .send_message_to_device(

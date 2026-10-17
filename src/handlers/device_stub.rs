@@ -1637,6 +1637,50 @@ mod device_result_tests {
 }
 
 #[cfg(all(test, feature = "sqlite"))]
+mod transport_result_handler_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn offline_transport_change_saves_platform_config_without_claiming_device_success() {
+        let state = crate::test_support::app_state().await;
+        crate::db::device::upsert_device(
+            &state.pool,
+            "offline-device",
+            Some("offline"),
+            None,
+            None,
+            None,
+            Some("UDP"),
+            Some("UDP"),
+            None,
+            None,
+            false,
+            None,
+            "2026-10-17 00:00:00",
+        )
+        .await
+        .unwrap();
+        let response = device_transport(
+            State(state.clone()),
+            Path(("offline-device".to_string(), "TCP-PASSIVE".to_string())),
+            Query(TransportResultQuery { wait_result: true }),
+        )
+        .await
+        .unwrap()
+        .0;
+        let data = response.data.unwrap();
+        assert_eq!(data["deviceResult"]["status"], "not_sent");
+        assert_eq!(data["sipSent"], false);
+        assert_eq!(data["streamMode"], "TCP-PASSIVE");
+        let saved = crate::db::device::get_device_by_device_id(&state.pool, "offline-device")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.stream_mode.as_deref(), Some("TCP-PASSIVE"));
+    }
+}
+
+#[cfg(all(test, feature = "sqlite"))]
 mod device_write_tests {
     use super::*;
     use crate::test_support::app_state;
