@@ -8519,7 +8519,7 @@ pub fn build_upstream_catalog_response(
 /// B2: Pure helper — build the upstream DeviceInfo response body.
 pub fn build_upstream_device_info_response(sn: &str, local_device_id: &str) -> String {
     format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?><Response><CmdType>DeviceInfo</CmdType><SN>{}</SN><DeviceID>{}</DeviceID><Result>OK</Result><DeviceName>GBServer</DeviceName><Manufacturer>GBServer</Manufacturer><Model>GBServer v0.1</Model><Channel>1</Channel></Response>"#,
+        r#"<?xml version="1.0" encoding="UTF-8"?><Response><CmdType>DeviceInfo</CmdType><SN>{}</SN><DeviceID>{}</DeviceID><Result>OK</Result><DeviceName>GBServer</DeviceName><Manufacturer>GBServer</Manufacturer><Model>GBServer 2.0.0</Model><Channel>1</Channel></Response>"#,
         sn, local_device_id
     )
 }
@@ -9157,7 +9157,7 @@ mod upstream_message_tests {
         assert!(xml.contains("<DeviceID>34020000002000000001</DeviceID>"));
         assert!(xml.contains("<Result>OK</Result>"));
         assert!(xml.contains("<Manufacturer>GBServer</Manufacturer>"));
-        assert!(xml.contains("<Model>GBServer v0.1</Model>"));
+        assert!(xml.contains("<Model>GBServer 2.0.0</Model>"));
     }
 
     /// DeviceStatus response contains OK status and timestamp
