@@ -96,6 +96,18 @@ def preset_command(token, wait_result=True):
     return response["data"]["deviceResult"]
 
 
+def sy_preset_command(token):
+    query = urllib.parse.urlencode({
+        "deviceId": DEVICE_ID, "channelId": DEVICE_ID,
+        "command": "GOTO_PRESET", "preset": "3",
+    })
+    response = api("/api/sy/camera/control/ptz?" + query, token=token)
+    data = response.get("data") or {}
+    if response.get("code") != 0 or not data.get("sipSent") or data.get("presetIndex") != 3:
+        raise AssertionError("SY preset command was not sent with index 3: " + json.dumps(response, ensure_ascii=False))
+    assert data["deviceResult"]["status"] == "sent", data
+
+
 def record_command(token, action="Record"):
     query = urllib.parse.urlencode({
         "deviceId": DEVICE_ID, "channelId": DEVICE_ID, "recordCmdStr": action,
@@ -153,6 +165,17 @@ def scenario(token, name, mode, expected, delay_ms=0, repeats=1, second=False):
                 assert preset["status"] == expected, f"{name} preset: {preset}"
                 assert preset["sn"] != reboot["sn"], "preset reused reboot request SN"
                 print(f"{name} preset: {preset['status']} sn={preset['sn']}")
+                if name == "ok":
+                    sy_preset_command(token)
+                    deadline = time.monotonic() + 2
+                    while time.monotonic() < deadline:
+                        output.flush()
+                        output.seek(0)
+                        if "PTZCmd=A50F01820003003A" in output.read().decode(errors="replace"):
+                            break
+                        time.sleep(0.05)
+                    else:
+                        raise AssertionError("SY GOTO_PRESET did not send PTZCmd for preset 3")
                 guard = guard_command(token)
                 assert guard["status"] == expected, f"{name} guard: {guard}"
                 assert guard["sn"] != first["sn"], "guard reused transport request SN"

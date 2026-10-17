@@ -13,14 +13,14 @@ pub struct PtzQuery {
     /// 设备国标 ID
     #[serde(alias = "deviceId")]
     pub device_id: Option<String>,
-    /// 通道国标 ID（preset / guard 命令需要）
+    /// 通道国标 ID（PTZ 命令必填）
     #[serde(alias = "channelId")]
     pub channel_id: Option<String>,
     /// PTZ 指令（左/右/上/下/放大/缩小/停止等）
     pub command: Option<String>,
     /// 云台速度（1-255；默认 1）
     pub speed: Option<u8>,
-    /// 预置位编号（0-255；preset 命令必填）
+    /// 预置位编号（1-255；预置位动作必填）
     #[serde(alias = "presetIndex")]
     pub preset_index: Option<u32>,
     /// 设防/撤防命令（`SetGuard` / `ResetGuard`；guard 命令专用）
@@ -57,7 +57,8 @@ pub struct PresetQuery {
          body = ApiResult<serde_json::Value>,
          example = json!({"code":0,"msg":"成功","data":{
              "deviceId":"34020000001320000001","channelId":"34020000001310000001",
-             "command":"right","speed":3,"result":"PTZ command sent"
+             "command":"right","speed":3,"sipSent":true,
+             "deviceResult":{"status":"sent"},"result":"PTZ command sent"
          }})),
         (status = 401, description = "未鉴权"),
     ),
@@ -71,9 +72,19 @@ pub async fn device_ptz(
     let channel_id = q.channel_id.clone().unwrap_or_default();
     let command = q.command.clone().unwrap_or_default();
     let speed = q.speed.unwrap_or(1);
+    let preset_index = q.preset_index.unwrap_or(0);
 
     if device_id.is_empty() || channel_id.is_empty() {
         return Json(ApiResult::error("device_id and channel_id are required"));
+    }
+    let is_preset = crate::sip::gb28181::front_end_control::PresetAction::parse(&command).is_some();
+    if crate::sip::gb28181::front_end_control::control_element(&command, speed, preset_index)
+        .is_none()
+    {
+        return Json(ApiResult::error("不支持的云台命令"));
+    }
+    if is_preset && !(1..=255).contains(&preset_index) {
+        return Json(ApiResult::error("preset_index must be between 1 and 255"));
     }
 
     tracing::info!(
@@ -88,7 +99,7 @@ pub async fn device_ptz(
         let server = &*sip_server;
         if let Some(device) = server.device_manager().get(&device_id).await {
             if device.online && device.addr.is_some() {
-                let ptz_cmd = build_ptz_xml(&command, speed, 0, 0);
+                let ptz_cmd = build_ptz_xml(&command, speed, preset_index, 0);
                 match server
                     .send_device_control(&device_id, &channel_id, "DeviceControl", &ptz_cmd)
                     .await
@@ -100,11 +111,15 @@ pub async fn device_ptz(
                             "channelId": channel_id,
                             "command": command,
                             "speed": speed,
+                            "presetIndex": q.preset_index,
+                            "sipSent": true,
+                            "deviceResult": {"status": "sent"},
                             "result": "PTZ command sent"
                         })));
                     }
                     Err(e) => {
                         tracing::error!("Failed to send PTZ command: {}", e);
+                        return Json(ApiResult::error(format!("Failed to send PTZ command: {e}")));
                     }
                 }
             }
@@ -112,6 +127,29 @@ pub async fn device_ptz(
     }
 
     Json(ApiResult::error("Device not online"))
+}
+
+#[cfg(all(test, feature = "sqlite"))]
+mod ptz_validation_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn unknown_ptz_action_is_rejected_before_sip_send() {
+        let state = crate::test_support::app_state().await;
+        let response = device_ptz(
+            State(state),
+            Query(PtzQuery {
+                device_id: Some("device-a".into()),
+                channel_id: Some("channel-a".into()),
+                command: Some("BAD_COMMAND".into()),
+                ..Default::default()
+            }),
+        )
+        .await
+        .0;
+        assert_ne!(response.code, 0);
+        assert!(response.msg.contains("不支持的云台命令"), "{response:?}");
+    }
 }
 
 /// GET /api/device/control/preset
