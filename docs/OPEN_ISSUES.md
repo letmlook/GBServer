@@ -49,7 +49,7 @@
 | B11 | 缺陷 | `on_server_started` 用 ZLM **内部** HTTP 端口覆盖库里的对外端口（80 覆盖 8080）→ 后端所有 ZLM 调用 502 | ✅ 已修 |
 | B12 | 缺陷 | ZLM 对同一路流**按协议各返回一行** → 控制台「重点通道」同一通道重复铺格子、「直播 N」虚高 | ✅ 已修并复验 |
 | B13 | 性能 | 控制台首屏"等最慢接口"才统一赋值 + `system/info` 被 3 个组件同时拉 → 卡片空等约 2s | ✅ 已修并复验 |
-| B14 | 缺陷 | 设备 `DeviceControl` / `ConfigDownload` 等**应答未被解析**（真机实测落入 `Unhandled MESSAGE body`） | 🟠 |
+| B14 | 缺陷 | `DeviceControl` / `DeviceConfig` 应答已按设备、SN、类型关联；Mock 确认/拒绝/缺失/重复/迟到通过，真机及其它控制入口待验收 | 🟡 |
 | B15 | 缺陷 | 设备保活/注册统计查了**库里不存在的表**（真实表名 `gb_device`）→ 两个统计接口恒返回 0 | ✅ 已修 |
 | B9 | 配置 | `rtc.externIP` 平台未下发 → 容器部署下浏览器 ICE 永远连不上 | ✅ 已修 |
 | A4 | 前端 | 直播页 WebRTC 播放入口（`postWebrtcPlay` 原先无调用方） | ✅ 已接 (2026-09-19) |
@@ -107,13 +107,13 @@ e2e 最近一次运行 35 通过 / 0 失败（筛选运行）、三方言冒烟�
 | B4 进程"静默退出" | 否（会话操作副作用） | ✅ 已定性 |
 | B5 cloudRecord 用例时序 | 否（测试用例脆弱点） | 🟢 可发布，后续加固 |
 | B6 会话 BYE 定位过粗 | 曾导致跨类型/跨代际误停 | ✅ 已修：按业务类型或 ZLM 流 ID 精确定位，终止会话不再参与选择 |
-| B14 应答未解析 | 条件性：设备已回结果，平台却当未知报文丢弃 → 无法确认传输模式/录像/配置类命令是否生效 | 🟠 建议修 |
+| B14 命令应答真机复验 | Mock 的设备执行结果已关联并区分；真机与其它控制入口仍缺证据 | 🟡 待验收 |
 | C1 `handle_packet` 23 参数 | 否 | 🟢 可发布 |
 | C2 29 个无引用 db 函数 | 否 | 🟢 可发布（清理） |
 | C3 JT1078 鉴权码只存不用 | **仅真终端**有风险（平台自身不校验，mock 不校验） | 🟡 需真机确认 |
 | C4 API Key 过期记录不清理 | 否（鉴权已正确拒绝） | 🟢 可发布 |
 | C8 `hasAudio` 与实际流不符 | 否（仅元数据/前端图标不准） | 🟢 可发布 |
-| C9 收藏删除方法核对 | GET/DELETE 路由测试均到达鉴权并返回 401，未见所述 405；登录后业务行为待实测 | 🟡 待验收 |
+| C9 收藏删除方法核对 | GET/DELETE 路由均到达鉴权；登录后 HTTP 收藏、列表、取消收藏、列表清空通过 | 🟡 浏览器页面待验收 |
 | D1 真机剩余项 | 未知风险（模拟器覆盖不到的行为） | 🟡 主链路已通，其余项真机联调前不建议对外承诺 |
 | D2–D3 真机核验缺口 | 未知风险（模拟器覆盖不到的行为） | 🟡 真机联调前不建议对外承诺 |
 
@@ -145,9 +145,9 @@ e2e 最近一次运行 35 通过 / 0 失败（筛选运行）、三方言冒烟�
 | `GET /api/sy/test` | 自检 | ❌ 无 |
 
 **实现时应复用已有实现、只加前缀别名，不要重写逻辑。**
-（`/api/cloud/record/collect/delete` 的 GET 与 DELETE 路由均已注册；登录后的业务结果仍需按 C9 验收。）
+（`/api/cloud/record/collect/delete` 的 GET 与 DELETE 路由均已注册；登录后 HTTP 业务往返已按 C9 验证，浏览器页面仍待验收。）
 
-### A2 🟡 管理员诊断端点（代码与自动化已覆盖，运行演练待做）
+### A2 ✅ 管理员诊断端点（本机故障演练已完成）
 
 `GET /api/test/hook/list` 只返回已鉴权的 `on_play` / `on_publish` 最近一条
 白名单摘要，保留范围由 `capturedTypes` 明示；其它 Hook 尚未建立可信来源验证，
@@ -155,8 +155,8 @@ e2e 最近一次运行 35 通过 / 0 失败（筛选运行）、三方言冒烟�
 1 秒，故障原因使用固定码。两条路由调用 `authz::require_admin`；自动化已覆盖
 401/403/200、拒绝 Hook 不入快照、secret 脱敏及 Redis 超时。
 
-**剩余验收**：目标部署环境的 Redis/ZLM 故障注入、可恢复性和日志定位；本机
-Docker daemon 未运行，不能将当前自动化结果写成实际服务演练通过。
+本机 Docker 环境已对 Redis、ZLM 分别执行停止与恢复演练，响应使用脱敏错误码；
+目标部署环境的复验归入 M4。
 
 ### A3 ⚪ 外部集成协议 `/api/v1/*`（范围外）
 
@@ -523,7 +523,7 @@ ZLM 相关功能（流列表、录像删除、截图…）一起 500 —— 因�
 `system/info` 4s 内请求数从 3 个并发降到 1 个挂载请求 + 1 次轮询。
 `npm run build`（含 vue-tsc）通过，`smoke.spec.ts` 20/20、`dashboard.spec.ts` 4/4 通过。
 
-### B14 🟠 设备 `DeviceControl` 等应答未被解析（真机实测落入 `Unhandled MESSAGE body`）
+### B14 🟡 设备命令应答闭环（真机复验待做）
 
 **现象**（2026-09-19 13:48:43，真机 EasyGBD）：
 
@@ -535,23 +535,17 @@ Unhandled MESSAGE body: <?xml version="1.0" encoding="GB2312"?>
   <DeviceID>34020000001320128497</DeviceID><Result>OK</Result></Response>
 ```
 
-**根因**：`src/sip/server.rs::handle_message` 的 `CmdType` 分支只覆盖
-`Keepalive` / `Catalog` / `DeviceInfo` / `DeviceStatus` / `MobilePosition` /
-`Alarm` / `RecordInfo`（2081–2288 行），**没有 `DeviceControl`**，其余一律落到
-`_ => tracing::debug!("Unhandled MESSAGE body: {}", body)`（2286）。
+**当前代码**：`ResponseRouter` 已映射 `DeviceControl`、`ConfigDownload` 与其
+`DeviceConfig` 应答别名；以设备、SN、命令类型及控制目标匹配 pending。
+`/api/device/query/transport` 的 `waitResult=true` 分别呈现 `confirmed`、
+`rejected`、`unconfirmed`，并将 SIP 发送状态与设备结果分开。
 
-**影响**：
-- 传输模式切换、PTZ、布防、录像、重启等**指令类**下发后，设备回的 `Result=OK/ERROR`
-  被当作未知报文丢弃（DEBUG 级日志，生产 `RUST_LOG=info` 下**完全不可见**）；
-- 运维无法判断"命令到底生效没有"，只能靠设备行为反推；
-- 与 `STATUS.md`「设备配置查询/更新会等待设备响应（15s）」并不矛盾 ——
-  那条走的是 `register_device_config_with_receiver` + `await_response`
-  （`handlers/device_control.rs:339`、`device_stub.rs:417`），是**查询类**；
-  缺失的是**指令类应答**的统一解析与落库/回显。
+**本轮运行证据**：真实后端 + Python SIP Mock 对传输模式接口执行了确认、拒绝、
+仅 SIP 200 无设备回执、重复回执、5.5 秒迟到回执及新旧 SN 隔离，结果符合预期。
+这只能证明 Mock 路径，不代表 2026-09-19 的真机缺陷已在同一设备上复验。
 
-**下一步**：`handle_message` 增加 `DeviceControl` 分支，以及配置下载应答分支
-（平台下发 `ConfigDownload`，设备回的 `CmdType` 是 `DeviceConfig`），按 `SN`
-关联待确认命令；至少把 `Result != OK` 提升为 WARN。
+**剩余**：真机传输模式或控制命令回执；其它控制入口按设备结果展示，而不把
+SIP 发送成功当设备执行成功；若设备回 `Result != OK`，需有可定位日志。
 
 ### B15 ✅ 设备统计查了不存在的表（已修，2026-09-19）
 

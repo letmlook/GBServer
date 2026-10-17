@@ -13,7 +13,7 @@
 | M1 云录像验收 | `cloudRecord` 用例只接受本轮新建计划后、所选通道新增的非空 MP4 记录，播放与删除复用其 ID；录制等待中检查后端、ZLM 和托管 SIP Mock | Docker Desktop 真实 ZLM + ffmpeg SIP Mock + 临时 SQLite + Chromium：干净目录同步后 3/3 通过；本轮计划 3、流 `34020000001320000001_34020000001320000001`、记录 2、MP4 125446 字节，播放下载和删除均通过；健康检查单测 2/2。真机未覆盖 |
 | C9 收藏删除 | GET、DELETE 两种方法均进入鉴权，未登录返回 401；登录后 GET 收藏、列表、取消收藏、列表清空的 HTTP 业务往返通过；DELETE 同时接受 `id` 与 `recordId` | 路由鉴权测试、`authenticated_collect_roundtrip_updates_business_storage` 与收藏存储往返测试；仍需在实际浏览器页面验收 |
 | M2 命令应答路由 | `DeviceControl` 和 `DeviceConfig` 响应已映射；设备、CmdType、SN 不匹配或重复应答不完成 pending；回执携带的错误通道 ID 也被拒绝 | 目标校验与离线传输模式接口测试通过，Rust 库测试 703/703；真机闭环待验证 |
-| M2 传输模式结果 | 新增进程内唯一 SN、发送失败清理 pending、传输模式 `waitResult=true` 的设备确认/拒绝/未确认状态；设备列表按状态提示 | 本阶段 `cargo test --no-fail-fast --locked` 764 通过、3 文档测试忽略，前端构建通过；其他控制入口、Mock/真机回执与超时接口测试待做 |
+| M2 传输模式结果 | 新增进程内唯一 SN、发送失败清理 pending、传输模式 `waitResult=true` 的设备确认/拒绝/未确认状态；设备列表按状态提示 | 本机真实后端 + Python SIP Mock 的接口运行验证：确认、拒绝、仅 SIP 200 无设备回执、重复回执、5.5 秒迟到回执和新旧 SN 隔离均符合预期；其它控制入口和真机回执待做 |
 | C8 直播音频标志 | 点播响应优先以当前 ZLM 流的 ready 音频 track 判定 `hasAudio`，无 track 时回退目录字段，并以 `audioSource` 标明来源 | 音频 track 单测、前端构建及 `cargo test --no-fail-fast --locked`（774 通过、3 文档测试忽略）通过；本轮 ZLM + Mock 点播返回 `audioSource=media` 且 `hasAudio=true`，ZLM 同流 ready 音频 track；真机待复验 |
 | M4 多方言编译 | `cargo check --no-default-features --features postgres --locked` 与 `--features mysql` 均通过 | 仅证明两种特性编译；本轮没有 PostgreSQL/MySQL 实例及相关路径运行证据 |
 | M3 管理员诊断 | `on_play`/`on_publish` 各保留最近一条白名单元数据；管理员可查 Hook 和 Redis/StateStore 状态。媒体节点列表和检测响应不返回保存的 ZLM secret；ZLM 代理要求管理员并拒绝原始配置读取，配置下发失败摘要不回显配置值 | 定向诊断及媒体节点测试通过，完整 `cargo test --no-fail-fast --locked` 777 通过、3 文档测试忽略；本机真实 Redis 容器停止时返回 `ping_failed`，恢复后 `connected`；真实 ZLM 容器停止时节点检测返回脱敏错误，恢复后 `reachable=true`。代理 GET 当前返回 405，POST 权限和配置拦截已有回归测试 |

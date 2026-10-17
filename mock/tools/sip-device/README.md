@@ -62,6 +62,7 @@ curl -X POST http://127.0.0.1:18080/api/device/query/subscribe/catalog \
 | 下行 | MESSAGE Catalog | ✅ 多包聚合响应 |
 | 下行 | MESSAGE DeviceInfo | ✅ 响应 |
 | 下行 | MESSAGE DeviceStatus | ✅ 响应 |
+| 下行 | MESSAGE DeviceControl | ✅ 先回 SIP 200，再按参数发设备层 `<Response><Result>`；可模拟拒绝、缺失、迟到与重复 |
 | 下行 | INVITE 实时 | ✅ 200 OK + SDP + 3 秒后 BYE |
 | 下行 | INFO（MANSRTSP PTZ） | ✅ 200 OK |
 
@@ -84,6 +85,15 @@ curl -X POST http://127.0.0.1:18080/api/device/query/subscribe/catalog \
 | `--auto-register` | `true` | 启动后自动注册 |
 | `--no-auto-register` | - | 禁用自动注册 |
 | `--auto-keepalive` | 30 | 心跳间隔（秒），0 表示不发送 |
+| `--control-result` | `ok` | `ok` / `reject` / `silent`；`silent` 仍回 SIP 200 |
+| `--control-result-delay-ms` | 0 | 设备层回执延迟；大于 5000 可模拟平台等待超时 |
+| `--control-result-repeats` | 1 | 同一回执发送次数（1–3） |
+
+传输模式结果运行验收：在隔离的 SQLite 后端启动后，执行
+`python3 mock/tools/sip-device/verify_control_result_runtime.py`。脚本短暂占用本机
+UDP 15060，依次验证确认、拒绝、无回执、重复、迟到及 SN 隔离；它不会启动后端。
+可用 `GBSERVER_TEST_URL`、`GBSERVER_TEST_USERNAME`、`GBSERVER_TEST_PASSWORD`、
+`GBSERVER_TEST_DEVICE_ID`、`GBSERVER_TEST_SIP_PASSWORD` 覆盖测试环境参数。
 
 ## 故障排查
 

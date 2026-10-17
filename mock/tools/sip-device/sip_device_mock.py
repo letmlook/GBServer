@@ -493,6 +493,37 @@ def build_device_info_response(cfg: DeviceConfig, local_addr: tuple, server_addr
     return msg.encode()
 
 
+def build_device_control_response(
+    cfg: DeviceConfig, local_addr: tuple, server_addr: tuple,
+    cseq: int, sn: str, call_id: str, target_id: str, result: str,
+) -> bytes:
+    """设备层执行回执；独立于收到 MESSAGE 时的 SIP 200 OK。"""
+    if result not in ('OK', 'ERROR'):
+        raise ValueError('unsupported DeviceControl result')
+    realm = realm_from_device_id(cfg.device_id)
+    body = (
+        '<?xml version="1.0" encoding="UTF-8"?>\r\n'
+        '<Response>\r\n'
+        '<CmdType>DeviceControl</CmdType>\r\n'
+        f'<SN>{sn}</SN>\r\n'
+        f'<DeviceID>{target_id}</DeviceID>\r\n'
+        f'<Result>{result}</Result>\r\n'
+        '</Response>\r\n'
+    ).encode()
+    message = (
+        f'MESSAGE sip:{realm}@{server_addr[0]}:{server_addr[1]} {SIP_VERSION}\r\n'
+        f'Via: {SIP_VERSION}/UDP {local_addr[0]}:{local_addr[1]};rport;branch={make_branch()}\r\n'
+        f'From: <sip:{cfg.device_id}@{realm}>;tag={uuid.uuid4().hex[:8]}\r\n'
+        f'To: <sip:{realm}@{realm}>\r\n'
+        f'Call-ID: {call_id}\r\n'
+        f'CSeq: {cseq} MESSAGE\r\n'
+        'Content-Type: Application/MANSCDP+XML\r\n'
+        f'Content-Length: {len(body)}\r\n'
+        '\r\n'
+    ).encode()
+    return message + body
+
+
 def build_invite_ok(
     cfg: DeviceConfig,
     local_addr: tuple,
@@ -798,6 +829,9 @@ class SipDeviceMock:
         auto_register: bool = True,
         auto_keepalive: int = 0,
         auto_alarm_secs: int = 0,
+        control_result: str = "ok",
+        control_result_delay_ms: int = 0,
+        control_result_repeats: int = 1,
     ):
         self.cfg = cfg
         self.server_addr = server_addr
@@ -805,6 +839,9 @@ class SipDeviceMock:
         self.auto_register = auto_register
         self.auto_keepalive_interval = auto_keepalive
         self.auto_alarm_interval = auto_alarm_secs
+        self.control_result = control_result
+        self.control_result_delay_ms = control_result_delay_ms
+        self.control_result_repeats = control_result_repeats
         self._alarm_task: Optional[asyncio.Task] = None
         self.alarm_count = 0
         self.rtp = RtpSender(cfg)
@@ -1043,23 +1080,35 @@ class SipDeviceMock:
             if body.count("<Control>") > 1 or "<?xml" in body.split("<Control>", 1)[-1]:
                 struct += "!!嵌套Control/内层XML声明 "
             log.info("DeviceControl 收到: %s| %s", elem or body[:120], struct)
-            cseq = self.state.next_cseq()
-            branch = self._extract_via_branch(msg)
+            via_h = self._extract_header(msg, "Via", "")
             call_id = self._extract_header(msg, "Call-ID", "")
             from_h = self._extract_header(msg, "From", "")
             to_h = self._extract_header(msg, "To", "")
+            cseq_h = self._extract_header(msg, "CSeq", "")
             sn = self._extract_xml_value(body, "SN") or "1"
             local = self.transport.get_extra_info("sockname")
             resp = (
                 f"{SIP_VERSION} 200 OK\r\n"
-                f"Via: {SIP_VERSION}/UDP {local[0]}:{local[1]};rport;branch={branch}\r\n"
+                f"Via: {via_h}\r\n"
                 f"From: {from_h}\r\n"
                 f"To: {to_h};tag={uuid.uuid4().hex[:8]}\r\n"
                 f"Call-ID: {call_id}\r\n"
-                f"CSeq: {cseq} MESSAGE\r\n"
+                f"CSeq: {cseq_h}\r\n"
                 f"Content-Length: 0\r\n\r\n"
             )
             self.transport.sendto(resp.encode(), addr)
+            if self.control_result != "silent":
+                if self.control_result_delay_ms:
+                    await asyncio.sleep(self.control_result_delay_ms / 1000)
+                result = "OK" if self.control_result == "ok" else "ERROR"
+                payload = build_device_control_response(
+                    self.cfg, local, self.server_addr, self.state.next_cseq(),
+                    sn, call_id, devid or self.cfg.device_id, result,
+                )
+                for _ in range(self.control_result_repeats):
+                    self.transport.sendto(payload, addr)
+                log.info("DeviceControl 执行回执已发送 sn=%s result=%s repeats=%d",
+                         sn, result, self.control_result_repeats)
         else:
             log.debug("未识别 MESSAGE body: %s", body[:200])
 
@@ -1752,7 +1801,16 @@ def main():
         "设成比实际更大的值可验证平台侧「分页不完整」的超时收尾逻辑",
     )
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
+    parser.add_argument("--control-result", default="ok", choices=["ok", "reject", "silent"],
+                        help="DeviceControl 设备层执行回执；silent 仍返回 SIP 200")
+    parser.add_argument("--control-result-delay-ms", type=int, default=0,
+                        help="发送设备层回执前延迟的毫秒数；超过平台等待预算可测试迟到回执")
+    parser.add_argument("--control-result-repeats", type=int, default=1,
+                        help="发送同一设备层回执的次数，用于重复回执测试")
     args = parser.parse_args()
+
+    if args.control_result_delay_ms < 0 or not 1 <= args.control_result_repeats <= 3:
+        parser.error("control result delay must be >= 0 and repeats must be 1..3")
 
     log.setLevel(args.log_level)
 
@@ -1779,6 +1837,7 @@ def main():
     mock = SipDeviceMock(
         cfg, server_addr, args.local_port, args.auto_register, args.auto_keepalive,
         args.auto_alarm_secs,
+        args.control_result, args.control_result_delay_ms, args.control_result_repeats,
     )
 
     async def run():
