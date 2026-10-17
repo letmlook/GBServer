@@ -172,18 +172,30 @@ pub async fn device_preset(
 /// GET /api/device/control/guard
 ///
 /// 设防 / 撤防。`deviceId` 与 `guardCmd`（`SetGuard` / `ResetGuard`）必填。
+#[derive(Debug, Default, Deserialize, utoipa::IntoParams)]
+pub struct GuardQuery {
+    #[serde(alias = "deviceId")]
+    pub device_id: Option<String>,
+    #[serde(alias = "guardCmd")]
+    pub guard_cmd: Option<String>,
+    /// 等待设备返回 DeviceControl Result，最长 5 秒
+    #[serde(default, rename = "waitResult")]
+    pub wait_result: bool,
+}
+
 #[utoipa::path(
     get,
     path = "/api/device/control/guard",
     tag = "control",
     operation_id = "device_control_guard",
-    params(PtzQuery),
+    params(GuardQuery),
     responses(
-        (status = 200, description = "设防/撤防命令下发结果",
+        (status = 200, description = "设防/撤防命令下发及可选设备执行结果",
          body = ApiResult<serde_json::Value>,
          example = json!({"code":0,"msg":"成功","data":{
              "deviceId":"34020000001320000001","guardCmd":"SetGuard",
-             "result":"设防 command sent"
+             "sipSent":true,"deviceResult":{"status":"confirmed","sn":123,"resultCode":"OK"},
+             "result":"command sent"
          }})),
         (status = 401, description = "未鉴权"),
     ),
@@ -191,7 +203,7 @@ pub async fn device_preset(
 )]
 pub async fn device_guard(
     State(state): State<AppState>,
-    Query(q): Query<PtzQuery>,
+    Query(q): Query<GuardQuery>,
 ) -> Json<ApiResult<serde_json::Value>> {
     let device_id = q.device_id.clone().unwrap_or_default();
     let guard_cmd = q.guard_cmd.clone().unwrap_or_default();
@@ -200,11 +212,9 @@ pub async fn device_guard(
         return Json(ApiResult::error("device_id is required"));
     }
 
-    let cmd_type = if guard_cmd == "SetGuard" {
-        "设防"
-    } else {
-        "撤防"
-    };
+    if guard_cmd != "SetGuard" && guard_cmd != "ResetGuard" {
+        return Json(ApiResult::error("guardCmd 只能为 SetGuard 或 ResetGuard"));
+    }
     tracing::info!("Guard control: device={}, cmd={}", device_id, guard_cmd);
 
     if let Some(ref sip_server) = state.sip_server {
@@ -212,26 +222,86 @@ pub async fn device_guard(
         if let Some(device) = server.device_manager().get(&device_id).await {
             if device.online && device.addr.is_some() {
                 let guard_xml = format!(r#"<GuardCmd>{}</GuardCmd>"#, guard_cmd);
-                match server
-                    .send_device_control(&device_id, &device_id, "DeviceControl", &guard_xml)
-                    .await
-                {
-                    Ok(_) => {
-                        return Json(ApiResult::success(serde_json::json!({
-                            "deviceId": device_id,
-                            "guardCmd": guard_cmd,
-                            "result": format!("{} command sent", cmd_type)
-                        })));
+                let device_result = if q.wait_result {
+                    match server
+                        .send_device_control_confirmable(
+                            &device_id,
+                            &device_id,
+                            "DeviceControl",
+                            &guard_xml,
+                        )
+                        .await
+                    {
+                        Ok((sn, receiver)) => {
+                            let waited =
+                                tokio::time::timeout(std::time::Duration::from_secs(5), receiver)
+                                    .await;
+                            let (status, result_code) = match waited {
+                                Ok(Ok(xml)) => {
+                                    crate::handlers::device_stub::parse_device_control_result(&xml)
+                                }
+                                _ => {
+                                    server.cancel_device_control_pending(&device_id, sn);
+                                    ("unconfirmed", None)
+                                }
+                            };
+                            serde_json::json!({"status": status, "sn": sn, "resultCode": result_code})
+                        }
+                        Err(e) => {
+                            tracing::error!("Guard command send failed device={device_id}: {e}");
+                            return Json(ApiResult::error(format!("设防指令发送失败: {e}")));
+                        }
                     }
-                    Err(e) => {
-                        tracing::error!("Failed to send guard command: {}", e);
+                } else {
+                    match server
+                        .send_device_control(&device_id, &device_id, "DeviceControl", &guard_xml)
+                        .await
+                    {
+                        Ok(()) => serde_json::json!({"status": "sent"}),
+                        Err(e) => {
+                            tracing::error!("Guard command send failed device={device_id}: {e}");
+                            return Json(ApiResult::error(format!("设防指令发送失败: {e}")));
+                        }
                     }
-                }
+                };
+                return Json(ApiResult::success(serde_json::json!({
+                    "deviceId": device_id,
+                    "guardCmd": guard_cmd,
+                    "sipSent": true,
+                    "deviceResult": device_result,
+                    "result": "command sent",
+                })));
             }
         }
     }
 
     Json(ApiResult::error("Device not online"))
+}
+
+#[cfg(all(test, feature = "sqlite"))]
+mod guard_result_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn guard_rejects_unknown_action_before_sip_send() {
+        let state = crate::test_support::app_state().await;
+        let response = device_guard(
+            State(state),
+            Query(GuardQuery {
+                device_id: Some("device-a".into()),
+                guard_cmd: Some("SetGuard</GuardCmd><TeleBoot>Boot".into()),
+                wait_result: true,
+            }),
+        )
+        .await
+        .0;
+        assert_ne!(response.code, 0);
+        assert!(
+            response.msg.contains("SetGuard 或 ResetGuard"),
+            "{}",
+            response.msg
+        );
+    }
 }
 
 #[derive(Debug, Deserialize, utoipa::IntoParams)]

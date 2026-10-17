@@ -64,6 +64,16 @@ def command(token):
     return response["data"]["deviceResult"]
 
 
+def guard_command(token):
+    query = urllib.parse.urlencode({
+        "deviceId": DEVICE_ID, "guardCmd": "SetGuard", "waitResult": "true",
+    })
+    response = api("/api/device/control/guard?" + query, token=token)
+    if response.get("code") != 0 or not response.get("data", {}).get("sipSent"):
+        raise AssertionError("Guard DeviceControl was not sent: " + json.dumps(response, ensure_ascii=False))
+    return response["data"]["deviceResult"]
+
+
 def scenario(token, name, mode, expected, delay_ms=0, repeats=1, second=False):
     with tempfile.TemporaryFile() as output:
         args = [sys.executable, str(MOCK), "--server", "127.0.0.1:5060",
@@ -81,6 +91,11 @@ def scenario(token, name, mode, expected, delay_ms=0, repeats=1, second=False):
                 assert first["resultCode"] == "OK", f"{name}: {first}"
             if expected == "rejected":
                 assert first["resultCode"] == "ERROR", f"{name}: {first}"
+            if name in ("ok", "reject", "silent"):
+                guard = guard_command(token)
+                assert guard["status"] == expected, f"{name} guard: {guard}"
+                assert guard["sn"] != first["sn"], "guard reused transport request SN"
+                print(f"{name} guard: {guard['status']} sn={guard['sn']}")
             if second:
                 next_result = command(token)
                 assert next_result["status"] == expected, f"{name} second: {next_result}"

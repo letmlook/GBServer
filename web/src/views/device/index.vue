@@ -105,14 +105,13 @@
             </template>
           </el-table-column>
           <el-table-column prop="channelCount" label="通道数" width="80" />
-          <el-table-column label="操作" width="320" fixed="right">
+          <el-table-column label="操作" width="370" fixed="right">
             <template #default="{ row }">
               <el-button link type="primary" @click="showChannels(row)">通道</el-button>
               <el-button link type="primary" @click="onSync(row)">同步</el-button>
               <el-button link type="primary" @click="onEdit(row)">编辑</el-button>
-              <el-button link :type="isOnline(row) ? 'warning' : 'success'" @click="onGuard(row)">
-                {{ isOnline(row) ? '撤防' : '布防' }}
-              </el-button>
+              <el-button link type="success" :disabled="!isOnline(row) || guardPending === row.deviceId" @click="onGuard(row, 'SetGuard')">设防</el-button>
+              <el-button link type="warning" :disabled="!isOnline(row) || guardPending === row.deviceId" @click="onGuard(row, 'ResetGuard')">撤防</el-button>
               <el-button link type="danger" @click="onDelete(row)">删除</el-button>
             </template>
           </el-table-column>
@@ -222,6 +221,7 @@ import SnapPreview from '@/components/SnapPreview/index.vue'
 import ChannelPlayDialog from '@/components/ChannelPlayDialog/index.vue'
 
 const loading = ref(false)
+const guardPending = ref('')
 const channelLoading = ref(false)
 const rows = ref<any[]>([])
 const channels = ref<any[]>([])
@@ -565,17 +565,27 @@ async function onSync(row: any) {
   ElMessage.success('同步请求已发送')
 }
 
-async function onGuard(row: any) {
+async function onGuard(row: any, action: 'SetGuard' | 'ResetGuard') {
+  const deviceId = row.deviceId ?? ''
+  if (!deviceId || !isOnline(row) || guardPending.value) return
+  guardPending.value = deviceId
+  const label = action === 'SetGuard' ? '设防' : '撤防'
   try {
-    if (isOnline(row)) {
-      await resetGuard(row.deviceId ?? '')
-      ElMessage.success('撤防指令已发送')
+    const response = action === 'SetGuard' ? await setGuard(deviceId) : await resetGuard(deviceId)
+    const result = response.data?.deviceResult
+    if (result?.status === 'confirmed') {
+      ElMessage.success(`设备确认已${label}`)
+    } else if (result?.status === 'rejected') {
+      ElMessage.warning(`设备拒绝${label}${result.resultCode ? `（${result.resultCode}）` : ''}`)
+    } else if (result?.status === 'unconfirmed') {
+      ElMessage.warning(`${label}指令已发送，设备执行结果未确认`)
     } else {
-      await setGuard(row.deviceId ?? '')
-      ElMessage.success('布防指令已发送')
+      ElMessage.info(`${label}指令已发送，尚未收到设备执行结果`)
     }
   } catch (e: any) {
     ElMessage.error(e?.message ?? '指令发送失败')
+  } finally {
+    guardPending.value = ''
   }
 }
 

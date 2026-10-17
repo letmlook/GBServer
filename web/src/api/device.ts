@@ -60,6 +60,13 @@ export interface DeviceTransportResult {
   deviceResult: DeviceCommandResult
 }
 
+export interface DeviceGuardResult {
+  deviceId: string
+  guardCmd: 'SetGuard' | 'ResetGuard'
+  sipSent: boolean
+  deviceResult: DeviceCommandResult
+}
+
 export function updateDeviceTransport(deviceId: string, streamMode: string, waitResult = false) {
   return request<ApiResult<DeviceTransportResult>>({
     method: 'post',
@@ -69,18 +76,18 @@ export function updateDeviceTransport(deviceId: string, streamMode: string, wait
 }
 
 export function setGuard(deviceId: string) {
-  return request<ApiResult>({
+  return request<ApiResult<DeviceGuardResult>>({
     method: 'get',
     url: '/device/control/guard',
-    params: { deviceId, guardCmd: 'SetGuard' }
+    params: { deviceId, guardCmd: 'SetGuard', waitResult: true }
   })
 }
 
 export function resetGuard(deviceId: string) {
-  return request<ApiResult>({
+  return request<ApiResult<DeviceGuardResult>>({
     method: 'get',
     url: '/device/control/guard',
-    params: { deviceId, guardCmd: 'ResetGuard' }
+    params: { deviceId, guardCmd: 'ResetGuard', waitResult: true }
   })
 }
 

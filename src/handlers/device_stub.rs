@@ -301,7 +301,7 @@ pub struct TransportResultQuery {
     pub wait_result: bool,
 }
 
-fn parse_device_control_result(xml: &str) -> (&'static str, Option<String>) {
+pub(crate) fn parse_device_control_result(xml: &str) -> (&'static str, Option<String>) {
     let result = xml
         .split_once("<Result>")
         .and_then(|(_, rest)| rest.split_once("</Result>"))
