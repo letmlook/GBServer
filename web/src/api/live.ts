@@ -15,6 +15,8 @@ export interface PlayStartResult {
   deviceId?: string
   channelId?: string
   hasAudio?: boolean
+  /** media 表示当前 ZLM track；catalog 表示尚无 track 时采用目录字段。 */
+  audioSource?: 'media' | 'catalog'
   ssrc?: string
   transport?: string
 }

@@ -60,7 +60,7 @@
 | C5 | 代码债 | ~~`/api/user/users` 的 `UsersQuery` 无 `query` 字段~~ | ✅ 已修 (`bfa65f8`) |
 | C6 | 缺陷 | 用户管理权限缺口：9 个管理端点无角色校验（普通用户可造管理员级角色） | ✅ 已修 (`bfa65f8`) |
 | C7 | 缺陷 | 删角色不校验引用 → 悬空 `role_id` 用户被 INNER JOIN 静默吞掉 | ✅ 已修 (`bfa65f8`) |
-| C8 | 缺陷 | 通道 `hasAudio` 与实际流不符（真机流含 G.711A，接口仍报 `hasAudio=false`） | 🔵 |
+| C8 | 缺陷 | 直播响应已优先读取 ZLM ready 音频 track；真机复验及目录语义仍待确认 | 🟡 |
 | C9 | 契约核对 | 收藏删除 GET 与 DELETE 均已注册；登录后业务行为待实测 | 🟡 |
 | D1 | 真机核验 | GB28181 真实设备（TCP 被动 / 401 鉴权 / SDP 端口差异 / 目录分页） | 🟡 已接入并核验主链路，剩余项见 D1 |
 | D2 | 真机核验 | JT1078 真实终端（0x0802 变体 / 0x8100 鉴权 / 双向对讲） | 🔴 |
@@ -719,6 +719,11 @@ PS 解封装结果）回填该字段，只沿用目录/入库时的值。
 （FLV 里音频照常下发）。
 **下一步**：在 `on_stream_changed` / 点播成功后按 ZLM track 列表回填
 `gb_device_channel.has_audio`（或至少在 play 响应里就本次流实时判定）。
+
+**2026-10-17 代码进展**：`/api/play/start` 与 `/api/common/channel/play` 的本次
+直播响应已查询 ZLM track；有 track 时 `hasAudio` 表示 ready 音频，查不到时
+回退目录值，`audioSource` 标记 `media`/`catalog`。该值不会回填目录字段，
+因为目录描述通道能力、本次流描述当前媒体。真机返回仍未复验，C8 保持开放。
 
 ### C9 🟡 收藏删除 GET/DELETE 路由已核对，业务行为待实测
 

@@ -1143,7 +1143,14 @@ pub async fn channel_play(
     let http = zlm_client.http_port;
     // `hls` 只在 ZLM 真的有 hls 源时才给（RTP/PS 流通常没有），
     // 否则返回的是一个 404 地址，而前端优先用它。
-    let hls_available = zlm_client.has_schema("rtp", &stream_id, "hls").await;
+    let (hls_available, (has_audio, audio_source)) = tokio::join!(
+        zlm_client.has_schema("rtp", &stream_id, "hls"),
+        crate::handlers::play::resolve_live_audio(
+            &zlm_client,
+            &stream_id,
+            ch.has_audio.unwrap_or(false),
+        )
+    );
     let mut out = serde_json::json!({
         "app": "rtp",
         "stream": stream_id,
@@ -1155,7 +1162,8 @@ pub async fn channel_play(
         "hlsAvailable": hls_available,
         "deviceId": device_id,
         "channelId": gb_channel_id,
-        "hasAudio": ch.has_audio.unwrap_or(false),
+        "hasAudio": has_audio,
+        "audioSource": audio_source,
     });
     if hls_available {
         out["hls"] = serde_json::json!(crate::zlm::address_builder::hls_url(

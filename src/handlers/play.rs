@@ -13,6 +13,45 @@ fn parse_sdp_media_port(sdp: &str) -> Option<u16> {
     crate::sip::gb28181::sdp_builder::parse_media_port(sdp)
 }
 
+fn media_audio_from_tracks(tracks: &[crate::zlm::TrackInfo]) -> Option<bool> {
+    if tracks.is_empty() {
+        None
+    } else {
+        Some(
+            tracks
+                .iter()
+                .any(|track| track.codec_type == 1 && track.ready),
+        )
+    }
+}
+
+/// 直播的音频标志描述本次流；目录字段仅在 ZLM 尚未给出 track 时兜底。
+pub(crate) async fn resolve_live_audio(
+    zlm_client: &crate::zlm::ZlmClient,
+    stream_id: &str,
+    catalog_has_audio: bool,
+) -> (bool, &'static str) {
+    match zlm_client
+        .get_media_list(None, Some("rtp"), Some(stream_id))
+        .await
+    {
+        Ok(media) => {
+            let matching: Vec<_> = media
+                .iter()
+                .filter(|m| m.app == "rtp" && m.stream == stream_id && !m.tracks.is_empty())
+                .collect();
+            if !matching.is_empty() {
+                let audio = matching
+                    .iter()
+                    .any(|m| media_audio_from_tracks(&m.tracks) == Some(true));
+                return (audio, "media");
+            }
+        }
+        Err(error) => tracing::debug!(stream = stream_id, "查询 ZLM 音频 track 失败: {error}"),
+    }
+    (catalog_has_audio, "catalog")
+}
+
 /// 统一的"播放地址" JSON：所有成功分支都用它，避免同一组 URL 拼在多处漂移。
 ///
 /// `hls` **只在 ZLM 真的有 hls 源时才给出**：实测本仓库镜像上 GB28181 的
@@ -23,13 +62,16 @@ async fn play_urls_json(
     stream_id: &str,
     device_id: &str,
     channel_id: &str,
-    has_audio: bool,
+    catalog_has_audio: bool,
     ssrc: &str,
     transport: &str,
 ) -> serde_json::Value {
     let ip = &zlm_client.ip;
     let http = zlm_client.http_port;
-    let hls_available = zlm_client.has_schema("rtp", stream_id, "hls").await;
+    let (hls_available, (has_audio, audio_source)) = tokio::join!(
+        zlm_client.has_schema("rtp", stream_id, "hls"),
+        resolve_live_audio(zlm_client, stream_id, catalog_has_audio)
+    );
     let mut out = serde_json::json!({
         "app": "rtp",
         "stream": stream_id,
@@ -42,6 +84,7 @@ async fn play_urls_json(
         "deviceId": device_id,
         "channelId": channel_id,
         "hasAudio": has_audio,
+        "audioSource": audio_source,
         "ssrc": ssrc,
         "transport": transport,
     });
@@ -873,6 +916,26 @@ pub async fn play_share_start(
         "stream": format!("{}_{}", device_id, channel_id),
         "ssrc": "0100000001",
     })))
+}
+
+#[cfg(test)]
+mod live_audio_tests {
+    #[test]
+    fn ready_zlm_audio_track_overrides_catalog_flag() {
+        let tracks: Vec<crate::zlm::TrackInfo> = serde_json::from_value(serde_json::json!([
+            {"codec_id":0,"codec_id_name":"CodecH264","codec_type":0,"ready":true},
+            {"codec_id":10,"codec_id_name":"CodecG711A","codec_type":1,"ready":true}
+        ]))
+        .unwrap();
+        assert_eq!(super::media_audio_from_tracks(&tracks), Some(true));
+        assert_eq!(super::media_audio_from_tracks(&[]), None);
+        let video_only: Vec<crate::zlm::TrackInfo> = serde_json::from_value(serde_json::json!([
+            {"codec_id":0,"codec_id_name":"CodecH264","codec_type":0,"ready":true},
+            {"codec_id":10,"codec_id_name":"CodecG711A","codec_type":1,"ready":false}
+        ]))
+        .unwrap();
+        assert_eq!(super::media_audio_from_tracks(&video_only), Some(false));
+    }
 }
 
 #[cfg(test)]
