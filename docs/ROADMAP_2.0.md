@@ -84,7 +84,14 @@
 | 4 | 运维诊断 A2 | 管理员可查脱敏 Hook/Redis 状态；401/403 与故障注入结果 | 0 |
 | 5 | 发布验收 | 三方言相关路径、浏览器播放/录像、真机控制和文档状态同步 | 1–4 |
 
-每个工作包应独立提交。若因设备或环境缺失无法运行验收，用“未验证”记录缺口、复现条件与影响范围，不能把未执行写成通过。M1 已有设计与本地实施计划；执行前核对其中的文件行号和 A2 范围，避免照搬过时步骤。
+每个工作包应独立提交。若因设备或环境缺失无法运行验收，用“未验证”记录缺口、复现条件与影响范围，不能把未执行写成通过。实施前应审阅对应设计和计划。
+
+| 阶段 | 设计 | 当前实施计划 |
+|---|---|---|
+| M0 / M4 基线与发布门禁 | 本路线图 | `superpowers/plans/2026-10-17-v2-release-validation.md` |
+| M1 媒体与录像 | `superpowers/specs/2026-09-19-media-recording-reliability-design.md` | `superpowers/plans/2026-10-17-v2-media-reliability.md` |
+| M2 设备命令结果 | `superpowers/specs/2026-10-17-v2-device-command-result-design.md` | `superpowers/plans/2026-10-17-v2-device-command-result.md` |
+| M3 管理员诊断 | `superpowers/specs/2026-10-17-v2-admin-diagnostics-design.md` | `superpowers/plans/2026-10-17-v2-admin-diagnostics.md` |
 
 ## 发布判定
 
