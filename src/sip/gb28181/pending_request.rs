@@ -891,10 +891,17 @@ impl ResponseRouter {
                     pt,
                     PendingCmdType::DeviceControl | PendingCmdType::DeviceConfig
                 ) {
-                    if let (Some(expected), Some(target)) = (
-                        req.expected_target.as_deref(),
-                        extract_tag(body, "DeviceID"),
-                    ) {
+                    if let Some(expected) = req.expected_target.as_deref() {
+                        let Some(target) = extract_tag(body, "DeviceID").filter(|v| !v.is_empty())
+                        else {
+                            return None;
+                        };
+                        if extract_tag(body, "Result")
+                            .filter(|v| !v.is_empty())
+                            .is_none()
+                        {
+                            return None;
+                        }
                         if target != expected && target != req.device_id {
                             return None;
                         }
@@ -1363,6 +1370,38 @@ mod response_router_tests {
         assert!(router
             .route_message_response_with_device(right, "msg-19", "device-a")
             .is_some());
+    }
+
+    #[test]
+    fn confirmable_control_and_config_require_target_and_result_fields() {
+        for (cmd_type, pending_type) in [
+            ("DeviceControl", PendingCmdType::DeviceControl),
+            ("DeviceConfig", PendingCmdType::DeviceConfig),
+        ] {
+            let (mgr, router) = fixture();
+            mgr.register_with_receiver_for_target(
+                "device-a",
+                91,
+                pending_type,
+                "pending-91",
+                Some(5),
+                "channel-a",
+            );
+            for body in [
+                format!("<Response><CmdType>{cmd_type}</CmdType><SN>91</SN><Result>OK</Result></Response>"),
+                format!("<Response><CmdType>{cmd_type}</CmdType><SN>91</SN><DeviceID>channel-a</DeviceID></Response>"),
+                format!("<Response><CmdType>{cmd_type}</CmdType><SN>91</SN><DeviceID></DeviceID><Result>OK</Result></Response>"),
+                format!("<Response><CmdType>{cmd_type}</CmdType><SN>91</SN><DeviceID>channel-a</DeviceID><Result> </Result></Response>"),
+            ] {
+                assert!(router.route_message_response_with_device(&body, "msg-91", "device-a").is_none(), "{body}");
+                assert_eq!(mgr.pending_count(), 1);
+            }
+            let valid = format!("<Response><CmdType>{cmd_type}</CmdType><SN>91</SN><DeviceID>channel-a</DeviceID><Result>OK</Result></Response>");
+            assert!(router
+                .route_message_response_with_device(&valid, "msg-91", "device-a")
+                .is_some());
+            assert_eq!(mgr.pending_count(), 0);
+        }
     }
 
     #[test]

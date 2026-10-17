@@ -49,7 +49,7 @@
 | B11 | 缺陷 | `on_server_started` 用 ZLM **内部** HTTP 端口覆盖库里的对外端口（80 覆盖 8080）→ 后端所有 ZLM 调用 502 | ✅ 已修 |
 | B12 | 缺陷 | ZLM 对同一路流**按协议各返回一行** → 控制台「重点通道」同一通道重复铺格子、「直播 N」虚高 | ✅ 已修并复验 |
 | B13 | 性能 | 控制台首屏"等最慢接口"才统一赋值 + `system/info` 被 3 个组件同时拉 → 卡片空等约 2s | ✅ 已修并复验 |
-| B14 | 缺陷 | `DeviceControl` / `DeviceConfig` 应答已按设备、SN、类型关联；传输模式、设防/撤防及远程录像接口可返回设备执行状态，其余控制入口、真机仍待验收 | 🟡 |
+| B14 | 缺陷 | `DeviceControl` / `DeviceConfig` 应答按设备、SN、类型和目标关联；传输模式、设防/撤防、远程录像、配置下发及重启可返回设备执行状态；其它入口与真机仍待验收 | 🟡 |
 | B15 | 缺陷 | 设备保活/注册统计查了**库里不存在的表**（真实表名 `gb_device`）→ 两个统计接口恒返回 0 | ✅ 已修 |
 | B9 | 配置 | `rtc.externIP` 平台未下发 → 容器部署下浏览器 ICE 永远连不上 | ✅ 已修 |
 | A4 | 前端 | 直播页 WebRTC 播放入口（`postWebrtcPlay` 原先无调用方） | ✅ 已接 (2026-09-19) |
@@ -549,8 +549,10 @@ Unhandled MESSAGE body: <?xml version="1.0" encoding="GB2312"?>
 
 **当前代码**：`ResponseRouter` 已映射 `DeviceControl`、`ConfigDownload` 与其
 `DeviceConfig` 应答别名；以设备、SN、命令类型及控制目标匹配 pending。
-`/api/device/query/transport` 的 `waitResult=true` 分别呈现 `confirmed`、
-`rejected`、`unconfirmed`，并将 SIP 发送状态与设备结果分开。
+对可等待的控制/配置请求，缺失目标 ID 或 `Result` 的应答不会完成 pending。
+传输模式、设防/撤防、远程录像、配置下发及远程重启可分别呈现 `confirmed`、
+`rejected`、`unconfirmed`，并将 SIP 发送状态与设备结果分开；默认即时发送
+的离散操作保持 `sent` 语义。
 
 **本轮运行证据**：真实后端 + Python SIP Mock 对传输模式接口执行了确认、拒绝、
 仅 SIP 200 无设备回执、重复回执、5.5 秒迟到回执及新旧 SN 隔离，结果符合预期。
