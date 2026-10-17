@@ -42,9 +42,30 @@ async fn start_record_with_retry(
     attempts: u32,
     interval: std::time::Duration,
 ) -> anyhow::Result<()> {
+    start_record_with_retry_fn(
+        || zlm.start_record("1", "__defaultVhost__", app, stream),
+        attempts,
+        interval,
+        app,
+        stream,
+    )
+    .await
+}
+
+async fn start_record_with_retry_fn<F, Fut>(
+    mut start_record: F,
+    attempts: u32,
+    interval: std::time::Duration,
+    app: &str,
+    stream: &str,
+) -> anyhow::Result<()>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<()>>,
+{
     let mut last: Option<anyhow::Error> = None;
     for attempt in 1..=attempts.max(1) {
-        match zlm.start_record("1", "__defaultVhost__", app, stream).await {
+        match start_record().await {
             Ok(()) => return Ok(()),
             Err(e) => {
                 if !is_stream_not_ready_error(&e) {
@@ -509,6 +530,8 @@ mod schedule_tests {
 #[cfg(test)]
 mod start_record_retry_tests {
     use super::{is_already_recording_error, is_stream_not_ready_error};
+    use std::collections::VecDeque;
+    use std::time::Duration;
 
     /// "流还没注册"才值得重试；其它错误（参数错、权限错）必须立即失败，
     /// 否则会把真正的故障掩盖成 8 秒的重试。
@@ -537,5 +560,60 @@ mod start_record_retry_tests {
         assert!(!is_already_recording_error(&anyhow::anyhow!(
             "ZLM error: can not find the stream"
         )));
+    }
+
+    #[tokio::test]
+    async fn retry_waits_only_for_missing_stream_then_succeeds() {
+        let mut results = VecDeque::from(vec![
+            Err(anyhow::anyhow!("ZLM error: can not find the stream")),
+            Ok(()),
+        ]);
+        let mut calls = 0;
+        let result = super::start_record_with_retry_fn(
+            || {
+                calls += 1;
+                std::future::ready(results.pop_front().expect("unexpected retry"))
+            },
+            25,
+            Duration::ZERO,
+            "live",
+            "test-stream",
+        )
+        .await;
+        assert!(result.is_ok());
+        assert_eq!(calls, 2);
+    }
+
+    #[tokio::test]
+    async fn retry_stops_after_budget_or_non_retryable_error() {
+        let mut missing_calls = 0;
+        let missing = super::start_record_with_retry_fn(
+            || {
+                missing_calls += 1;
+                std::future::ready(Err(anyhow::anyhow!("stream not found")))
+            },
+            3,
+            Duration::ZERO,
+            "live",
+            "test-stream",
+        )
+        .await;
+        assert!(missing.is_err());
+        assert_eq!(missing_calls, 3);
+
+        let mut fatal_calls = 0;
+        let fatal = super::start_record_with_retry_fn(
+            || {
+                fatal_calls += 1;
+                std::future::ready(Err(anyhow::anyhow!("connection refused")))
+            },
+            25,
+            Duration::ZERO,
+            "live",
+            "test-stream",
+        )
+        .await;
+        assert!(fatal.is_err());
+        assert_eq!(fatal_calls, 1);
     }
 }
