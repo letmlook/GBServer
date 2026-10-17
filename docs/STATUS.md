@@ -10,6 +10,7 @@
 | 前端构建 | `web/npm run build` 通过 | Vue 类型检查与 Vite 打包，不代表浏览器播放通过 |
 | M1 播放收流 | 已移除普通点播和级联点播在媒体 ready 后的二次 `connectRtpServer`；TCP-PASSIVE 主动连接保留 | `media_ready_port_mismatch_is_diagnostic_only` 单测和调用点检查；ZLM/真机回归待执行 |
 | M1 录像重试 | 25 次、800ms 的生产预算不变；新增缺流重试和不可恢复错误次数测试 | `start_record_retry_tests` 4/4；新 MP4 端到端证据待执行 |
+| M1 云录像验收 | `cloudRecord` 用例改为只接受本轮新建计划后、所选通道新增的非空 MP4 记录，播放与删除复用其 ID | Playwright 3 个用例均能被发现；本机前端 :9528 未启动，执行在全局登录前置中断，未取得真实文件证据 |
 | C9 收藏删除 | GET、DELETE 两种方法均进入鉴权，未登录返回 401；旧问题单的 GET 必然 405 不成立 | `cloud_record_collect_delete_accepts_both_methods`；登录后业务存储效果待实测 |
 | M2 命令应答路由 | `DeviceControl` 和 `DeviceConfig` 响应已映射；设备、CmdType、SN 不匹配或重复应答不完成 pending；回执携带的错误通道 ID 也被拒绝 | 目标校验与离线传输模式接口测试通过，Rust 库测试 703/703；真机闭环待验证 |
 | M2 传输模式结果 | 新增进程内唯一 SN、发送失败清理 pending、传输模式 `waitResult=true` 的设备确认/拒绝/未确认状态；设备列表按状态提示 | 本阶段 `cargo test --no-fail-fast --locked` 764 通过、3 文档测试忽略，前端构建通过；其他控制入口、Mock/真机回执与超时接口测试待做 |
