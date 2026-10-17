@@ -308,6 +308,25 @@ mod tests {
         );
     }
 
+    /// C9: 前端的 GET 取消收藏与兼容 DELETE 路由都应存在；
+    /// 未登录时由鉴权拒绝，而非路由层 405。
+    #[tokio::test]
+    async fn cloud_record_collect_delete_accepts_both_methods() {
+        let base = spawn(app_state().await).await;
+        let url = format!("{base}/api/cloud/record/collect/delete?id=1");
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        for method in [reqwest::Method::GET, reqwest::Method::DELETE] {
+            let status = client
+                .request(method.clone(), &url)
+                .send()
+                .await
+                .unwrap()
+                .status()
+                .as_u16();
+            assert_eq!(status, 401, "{method} should reach JWT middleware");
+        }
+    }
+
     /// 启用 `static_dir`（SPA 静态资源）时路由表仍必须能构建。
     ///
     /// 回归保护：axum 0.8 **禁止** `nest_service("/", ..)`，根路径必须用

@@ -1,5 +1,19 @@
 # GBServer 当前状态
 
+## 2.0.0 当前验证增量（2026-10-17，`v2.0`）
+
+此节仅记录本轮实际证据；下方 2026-09-19 的规模和真机数据是历史快照。
+
+| 项目 | 本轮结果 | 证据范围 |
+|---|---|---|
+| Rust 测试 | `cargo test --no-fail-fast --locked`：758 通过、0 失败、3 个文档测试忽略 | SQLite 默认特性；本机自动化，不代表 ZLM/真机已运行 |
+| 前端构建 | `web/npm run build` 通过 | Vue 类型检查与 Vite 打包，不代表浏览器播放通过 |
+| M1 播放收流 | 已移除普通点播和级联点播在媒体 ready 后的二次 `connectRtpServer`；TCP-PASSIVE 主动连接保留 | `media_ready_port_mismatch_is_diagnostic_only` 单测和调用点检查；ZLM/真机回归待执行 |
+| M1 录像重试 | 25 次、800ms 的生产预算不变；新增缺流重试和不可恢复错误次数测试 | `start_record_retry_tests` 4/4；新 MP4 端到端证据待执行 |
+| C9 收藏删除 | GET、DELETE 两种方法均进入鉴权，未登录返回 401；旧问题单的 GET 必然 405 不成立 | `cloud_record_collect_delete_accepts_both_methods`；登录后业务存储效果待实测 |
+
+本轮尚未运行 PostgreSQL/MySQL 实例、ZLM + Mock/真机播放与云录像、浏览器 E2E；这些发布门禁仍为未验证。
+
 > 📌 **最近更新：2026-09-19（真实设备接入核验轮，HEAD `8ecec6a`）**
 > 本轮把第一台**真实国标设备**（EasyGBD，`34020000001320128497`，TCP）接进平台并做了端到端实测，
 > 同时把 §1 的全部计数、§2 的能力矩阵、§6 的验证证据按当前代码/运行态重新实测。

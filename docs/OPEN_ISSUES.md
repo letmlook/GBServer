@@ -61,7 +61,7 @@
 | C6 | 缺陷 | 用户管理权限缺口：9 个管理端点无角色校验（普通用户可造管理员级角色） | ✅ 已修 (`bfa65f8`) |
 | C7 | 缺陷 | 删角色不校验引用 → 悬空 `role_id` 用户被 INNER JOIN 静默吞掉 | ✅ 已修 (`bfa65f8`) |
 | C8 | 缺陷 | 通道 `hasAudio` 与实际流不符（真机流含 G.711A，接口仍报 `hasAudio=false`） | 🔵 |
-| C9 | 缺陷 | 前端用 GET 调 `DELETE /api/cloud/record/collect/delete` → 405 | 🔵 |
+| C9 | 契约核对 | 收藏删除 GET 与 DELETE 均已注册；登录后业务行为待实测 | 🟡 |
 | D1 | 真机核验 | GB28181 真实设备（TCP 被动 / 401 鉴权 / SDP 端口差异 / 目录分页） | 🟡 已接入并核验主链路，剩余项见 D1 |
 | D2 | 真机核验 | JT1078 真实终端（0x0802 变体 / 0x8100 鉴权 / 双向对讲） | 🔴 |
 | D3 | 真机核验 | 对讲音频互通（G.711A 时间戳/回声/抖动） | 🔴 |
@@ -113,7 +113,7 @@ e2e 最近一次运行 35 通过 / 0 失败（筛选运行）、三方言冒烟�
 | C3 JT1078 鉴权码只存不用 | **仅真终端**有风险（平台自身不校验，mock 不校验） | 🟡 需真机确认 |
 | C4 API Key 过期记录不清理 | 否（鉴权已正确拒绝） | 🟢 可发布 |
 | C8 `hasAudio` 与实际流不符 | 否（仅元数据/前端图标不准） | 🟢 可发布 |
-| C9 收藏删除方法不匹配 | 否（该按钮在 UI 未暴露时的调用才会 405） | 🟢 可发布 |
+| C9 收藏删除方法核对 | GET/DELETE 路由测试均到达鉴权并返回 401，未见所述 405；登录后业务行为待实测 | 🟡 待验收 |
 | D1 真机剩余项 | 未知风险（模拟器覆盖不到的行为） | 🟡 主链路已通，其余项真机联调前不建议对外承诺 |
 | D2–D3 真机核验缺口 | 未知风险（模拟器覆盖不到的行为） | 🟡 真机联调前不建议对外承诺 |
 
@@ -145,7 +145,7 @@ e2e 最近一次运行 35 通过 / 0 失败（筛选运行）、三方言冒烟�
 | `GET /api/sy/test` | 自检 | ❌ 无 |
 
 **实现时应复用已有实现、只加前缀别名，不要重写逻辑。**
-（注意：`/api/cloud/record/collect/delete` 自身还有一个前端方法不匹配的问题，见 C9。）
+（`/api/cloud/record/collect/delete` 的 GET 与 DELETE 路由均已注册；登录后的业务结果仍需按 C9 验收。）
 
 ### A2 🔴 运维诊断端点（未实现）
 
@@ -714,15 +714,16 @@ PS 解封装结果）回填该字段，只沿用目录/入库时的值。
 **下一步**：在 `on_stream_changed` / 点播成功后按 ZLM track 列表回填
 `gb_device_channel.has_audio`（或至少在 play 响应里就本次流实时判定）。
 
-### C9 🔵 前端用 GET 调一个只注册了 DELETE 的端点
+### C9 🟡 收藏删除 GET/DELETE 路由已核对，业务行为待实测
 
-**现象**：`/api/cloud/record/collect/delete` 在 `src/router.rs:573-576` 注册为
-`delete(...)`，而前端 `web/src/api/cloudRecord.ts:212`
-（`deleteCloudRecordCollect`）用的是 `method: 'get'` → 真实调用会 **405**。
-（同时 `router.rs:1082` 另有一条 `cloud_record_extra::collect_delete`，需一并核对口径。）
+前端 `web/src/api/cloudRecord.ts` 的 GET 调用对应
+`src/handlers/cloud_record_extra.rs::collect_delete`；另有兼容的 DELETE handler。
+2026-10-17 新增路由测试 `cloud_record_collect_delete_accepts_both_methods`：
+两种方法在未登录状态都到达鉴权中间件并返回 401，旧记录中的“GET 必然 405”不成立。
 
-**影响**：目前该入口在 UI 上未暴露为高频操作，但属真实契约不一致。
-**下一步**：统一方法（改前端为 delete，或在该路径的 GET 上也注册），并补一条契约测试。
+**剩余验收**：以登录用户创建本轮收藏，再分别验证 GET/DELETE 清除后的
+`gb_record_collect` 与 `gb_cloud_record.collect` 状态和页面刷新。当前路由测试
+不能证明这两套存储的业务结果，验收前保持开放。
 
 ---
 
