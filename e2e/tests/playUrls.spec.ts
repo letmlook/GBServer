@@ -73,21 +73,27 @@ test('实时点播返回的 flvUrl 真的能取到 FLV 流，且不会给出 404
   expect(body.code).toBe(0);
   const data = body.data ?? {};
 
-  // 1) FLV 地址必须是 .live.flv 且真的返回 FLV 头
-  expect(data.flvUrl, '必须给出 flvUrl').toBeTruthy();
-  expect(data.flvUrl!).toContain('.live.flv');
-  const flvBytes = await readStreamHead(data.flvUrl!);
-  expect(flvBytes.subarray(0, 3).toString('latin1'), `${data.flvUrl} 应返回 FLV 流`).toBe('FLV');
+  try {
+    // 1) FLV 地址必须是 .live.flv 且真的返回 FLV 头
+    expect(data.flvUrl, '必须给出 flvUrl').toBeTruthy();
+    expect(data.flvUrl!).toContain('.live.flv');
+    const flvBytes = await readStreamHead(data.flvUrl!);
+    expect(flvBytes.subarray(0, 3).toString('latin1'), `${data.flvUrl} 应返回 FLV 流`).toBe('FLV');
 
-  // 2) hls 要么不给、要么真的可取（不能给 404 地址）
-  if (data.hls) {
-    const hls = await page.request.get(data.hls, { failOnStatusCode: false });
-    expect(hls.status(), `${data.hls} 被返回了就必须可用`).toBeLessThan(400);
-    expect(await hls.text()).toContain('#EXTM3U');
-  } else {
-    expect(data.hlsAvailable).toBe(false);
+    // 2) hls 要么不给、要么真的可取（不能给 404 地址）
+    if (data.hls) {
+      const hls = await page.request.get(data.hls, { failOnStatusCode: false });
+      expect(hls.status(), `${data.hls} 被返回了就必须可用`).toBeLessThan(400);
+      expect(await hls.text()).toContain('#EXTM3U');
+    } else {
+      expect(data.hlsAvailable).toBe(false);
+    }
+
+    // 3) rtsp 地址仍然给出（非浏览器客户端用）
+    expect(data.playUrl ?? '').toMatch(/^rtsp:\/\//);
+  } finally {
+    const stopped = await page.request.get(`/dev-api/play/stop/${DEVICE}/${CHANNEL}`, { headers });
+    const result = await stopped.json() as { code: number; msg?: string };
+    expect(result.code, result.msg).toBe(0);
   }
-
-  // 3) rtsp 地址仍然给出（非浏览器客户端用）
-  expect(data.playUrl ?? '').toMatch(/^rtsp:\/\//);
 });

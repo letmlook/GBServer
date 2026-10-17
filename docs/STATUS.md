@@ -1,6 +1,6 @@
 # GBServer 当前状态
 
-## 2.0.0 当前验证增量（2026-10-17，`v2.0`）
+## 2.0.0 当前验证增量（2026-10-18，`v2.0`）
 
 此节仅记录本轮实际证据；下方 2026-09-19 的规模和真机数据是历史快照。
 
@@ -12,6 +12,7 @@
 | M1 播放收流 | 普通点播和级联点播在媒体 ready 后不再二次回连。`on_rtp_server_started` 仅表示端口已打开，不误报媒体到达。TCP-PASSIVE 使用 ZLM `tcp_mode=2`、纯主机 `dst_url` 主动连接，并等真实流注册后才返回成功；失败清理 RTP Server 和 Play 会话 | 回归测试覆盖媒体判定、被动模式等待及取消；本机真实 ZLM + SIP Mock：普通模式无 RTP 时 15.0 秒超时、有 RTP 时 FLV 可读；TCP-PASSIVE 无设备媒体时 15.0 秒失败，ZLM RTP Server 0 残留且 Mock 收到 BYE；使用本机 TCP RTP/PS relay 时约 5.73 秒成功、FLV 头为 `FLV`、停止成功。真机仍待复验 |
 | M1 录像重试 | 25 次、800ms 的生产预算不变；新增缺流重试和不可恢复错误次数测试 | `start_record_retry_tests` 4/4；本轮 ZLM + SIP Mock 生成新 MP4，详见下行 |
 | M1 云录像验收 | `cloudRecord` 用例只接受本轮新建计划后、所选通道新增的非空 MP4 记录，播放与删除复用其 ID；录制等待中检查后端、ZLM 和托管 SIP Mock | Docker Desktop 真实 ZLM + ffmpeg SIP Mock + 临时 SQLite + Chromium：干净目录同步后 3/3 通过；本轮计划 3、流 `34020000001320000001_34020000001320000001`、记录 2、MP4 125446 字节，播放下载和删除均通过；健康检查单测 2/2。真机未覆盖 |
+| M4 浏览器媒体与录像 | 新增可显式启用的 WebRTC 真实媒体用例，分别断言 SDP answer、ICE 连通和视频帧解码；FLV 用例结束时主动停止点播 | 本机真实 ZLM + ffmpeg SIP Mock + 临时 SQLite + Chromium：`E2E_REQUIRE_WEBRTC=1 npx playwright test tests/webrtcMedia.spec.ts` 1/1，ICE=`connected`、解码 3 帧、接收 6159 字节；`playUrls`、`cloudRecord`、`deviceControl` 关键用例 5/5，本轮云录像计划 1、新 MP4 记录 1、177512 字节，播放 Range 与删除通过；`web/npm run build` 通过。浏览器证据仍是 Mock 流，真机与生产拓扑待验收 |
 | C9 收藏删除 | GET、DELETE 两种方法均进入鉴权，未登录返回 401；登录后 HTTP 对两种删除方法验证了收藏表与 `gb_cloud_record.collect` 一致清除。添加收藏也同时设置两套存储；数字 JSON `id` 可用，添加/删除中途失败均回滚 | SQLite 路由鉴权、登录后往返及两项事务失败注入测试通过；PostgreSQL 16、MySQL 8 初始化隔离库分别完成登录、添加、列表、GET 删除、再次添加、DELETE 数字 JSON 删除，最终两套存储均清空；测试库/容器已清理。当前云录像页面无收藏入口，浏览器页面验收不适用 |
 | M2 命令应答路由 | `DeviceControl` 和 `DeviceConfig` 响应已映射；设备、CmdType、SN 不匹配或重复应答不完成 pending；回执携带的错误通道 ID 也被拒绝。命令与查询共用进程内唯一 SN，配置查询 pending 覆盖完整 15 秒等待，发送失败和超时后清理 | 定向测试与全量 Rust 测试通过；SQLite 后端 + SIP Mock 的 `ConfigDownload` 即时返回 `source=live`，延迟 11 秒仍在第 15 秒前收到实时回执（实测 11.01 秒）；真机闭环待验证 |
 | M2 传输模式结果 | 新增进程内唯一 SN、发送失败清理 pending、传输模式 `waitResult=true` 的设备确认/拒绝/未确认状态；设备列表按状态提示 | 本机真实后端 + Python SIP Mock 的接口运行验证：确认、拒绝、仅 SIP 200 无设备回执、重复回执、5.5 秒迟到回执和新旧 SN 隔离均符合预期；其它控制入口和真机回执待做 |
