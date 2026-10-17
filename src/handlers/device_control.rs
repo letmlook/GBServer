@@ -28,6 +28,21 @@ pub struct PtzQuery {
     pub guard_cmd: Option<String>,
 }
 
+#[derive(Debug, Default, Deserialize, utoipa::IntoParams)]
+pub struct PresetQuery {
+    #[serde(alias = "deviceId")]
+    pub device_id: Option<String>,
+    #[serde(alias = "channelId")]
+    pub channel_id: Option<String>,
+    /// SET_PRESET / GOTO_PRESET / CLEAR_PRESET
+    pub command: Option<String>,
+    #[serde(alias = "presetIndex")]
+    pub preset_index: Option<u32>,
+    /// 等待设备返回 DeviceControl Result，最长 5 秒
+    #[serde(default, rename = "waitResult")]
+    pub wait_result: bool,
+}
+
 /// GET /api/device/control/ptz
 ///
 /// 下发 8 字节 PTZ 指令（云台转动 / 镜头控制 / 预置位）。
@@ -107,13 +122,14 @@ pub async fn device_ptz(
     path = "/api/device/control/preset",
     tag = "control",
     operation_id = "device_control_preset",
-    params(PtzQuery),
+    params(PresetQuery),
     responses(
-        (status = 200, description = "预置位命令下发结果",
+        (status = 200, description = "预置位命令下发及可选设备执行结果",
          body = ApiResult<serde_json::Value>,
          example = json!({"code":0,"msg":"成功","data":{
              "deviceId":"34020000001320000001","channelId":"34020000001310000001",
-             "command":"preset","presetIndex":3,"result":"Preset command sent"
+             "command":"GOTO_PRESET","presetIndex":3,"sipSent":true,
+             "deviceResult":{"status":"sent"},"result":"Preset command sent"
          }})),
         (status = 401, description = "未鉴权"),
     ),
@@ -121,7 +137,7 @@ pub async fn device_ptz(
 )]
 pub async fn device_preset(
     State(state): State<AppState>,
-    Query(q): Query<PtzQuery>,
+    Query(q): Query<PresetQuery>,
 ) -> Json<ApiResult<serde_json::Value>> {
     let device_id = q.device_id.clone().unwrap_or_default();
     let channel_id = q.channel_id.clone().unwrap_or_default();
@@ -130,6 +146,15 @@ pub async fn device_preset(
 
     if device_id.is_empty() {
         return Json(ApiResult::error("device_id is required"));
+    }
+    if channel_id.is_empty() {
+        return Json(ApiResult::error("channel_id is required"));
+    }
+    if crate::sip::gb28181::front_end_control::PresetAction::parse(&command).is_none() {
+        return Json(ApiResult::error("command must be a preset action"));
+    }
+    if !(1..=255).contains(&preset_index) {
+        return Json(ApiResult::error("preset_index must be between 1 and 255"));
     }
 
     tracing::info!(
@@ -145,28 +170,112 @@ pub async fn device_preset(
         if let Some(device) = server.device_manager().get(&device_id).await {
             if device.online && device.addr.is_some() {
                 let preset_cmd = build_preset_xml(&command, preset_index);
-                match server
-                    .send_device_control(&device_id, &channel_id, "DeviceControl", &preset_cmd)
-                    .await
-                {
-                    Ok(_) => {
-                        return Json(ApiResult::success(serde_json::json!({
-                            "deviceId": device_id,
-                            "channelId": channel_id,
-                            "command": command,
-                            "presetIndex": preset_index,
-                            "result": "Preset command sent"
-                        })));
+                let device_result = if q.wait_result {
+                    match server
+                        .send_device_control_confirmable(
+                            &device_id,
+                            &channel_id,
+                            "DeviceControl",
+                            &preset_cmd,
+                        )
+                        .await
+                    {
+                        Ok((sn, receiver)) => {
+                            let waited =
+                                tokio::time::timeout(std::time::Duration::from_secs(5), receiver)
+                                    .await;
+                            let (status, result_code) = match waited {
+                                Ok(Ok(xml)) => {
+                                    crate::handlers::device_stub::parse_device_control_result(&xml)
+                                }
+                                _ => {
+                                    server.cancel_device_control_pending(&device_id, sn);
+                                    ("unconfirmed", None)
+                                }
+                            };
+                            serde_json::json!({"status": status, "sn": sn, "resultCode": result_code})
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to send preset command: {}", e);
+                            return Json(ApiResult::error(format!(
+                                "Failed to send preset command: {}",
+                                e
+                            )));
+                        }
                     }
-                    Err(e) => {
-                        tracing::error!("Failed to send preset command: {}", e);
+                } else {
+                    match server
+                        .send_device_control(&device_id, &channel_id, "DeviceControl", &preset_cmd)
+                        .await
+                    {
+                        Ok(()) => serde_json::json!({"status": "sent"}),
+                        Err(e) => {
+                            tracing::error!("Failed to send preset command: {}", e);
+                            return Json(ApiResult::error(format!(
+                                "Failed to send preset command: {}",
+                                e
+                            )));
+                        }
                     }
-                }
+                };
+                return Json(ApiResult::success(serde_json::json!({
+                    "deviceId": device_id,
+                    "channelId": channel_id,
+                    "command": command,
+                    "presetIndex": preset_index,
+                    "sipSent": true,
+                    "deviceResult": device_result,
+                    "result": "Preset command sent"
+                })));
             }
         }
     }
 
     Json(ApiResult::error("Device not online"))
+}
+
+#[cfg(all(test, feature = "sqlite"))]
+mod preset_validation_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn preset_rejects_missing_target_unknown_action_and_out_of_range_index() {
+        let cases = [
+            (None, Some("GOTO_PRESET"), Some(3), "channel_id"),
+            (Some("channel-a"), None, Some(3), "command"),
+            (Some("channel-a"), Some("UP"), Some(3), "command"),
+            (Some("channel-a"), Some("GOTO_PRESET"), None, "preset_index"),
+            (
+                Some("channel-a"),
+                Some("GOTO_PRESET"),
+                Some(0),
+                "preset_index",
+            ),
+            (
+                Some("channel-a"),
+                Some("GOTO_PRESET"),
+                Some(256),
+                "preset_index",
+            ),
+        ];
+        for (channel, command, index, error) in cases {
+            let state = crate::test_support::app_state().await;
+            let response = device_preset(
+                State(state),
+                Query(PresetQuery {
+                    device_id: Some("device-a".into()),
+                    channel_id: channel.map(str::to_string),
+                    command: command.map(str::to_string),
+                    preset_index: index,
+                    ..Default::default()
+                }),
+            )
+            .await
+            .0;
+            assert_ne!(response.code, 0);
+            assert!(response.msg.contains(error), "{response:?}");
+        }
+    }
 }
 
 /// GET /api/device/control/guard

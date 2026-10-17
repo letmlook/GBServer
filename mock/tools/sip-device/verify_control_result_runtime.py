@@ -85,6 +85,17 @@ def reboot_command(token, wait_result=True):
     return response["data"]["deviceResult"]
 
 
+def preset_command(token, wait_result=True):
+    query = urllib.parse.urlencode({
+        "deviceId": DEVICE_ID, "channelId": DEVICE_ID, "command": "GOTO_PRESET",
+        "presetIndex": "3", "waitResult": str(wait_result).lower(),
+    })
+    response = api("/api/device/control/preset?" + query, token=token)
+    if response.get("code") != 0 or not response.get("data", {}).get("sipSent"):
+        raise AssertionError("Preset DeviceControl was not sent: " + json.dumps(response, ensure_ascii=False))
+    return response["data"]["deviceResult"]
+
+
 def record_command(token, action="Record"):
     query = urllib.parse.urlencode({
         "deviceId": DEVICE_ID, "channelId": DEVICE_ID, "recordCmdStr": action,
@@ -136,6 +147,12 @@ def scenario(token, name, mode, expected, delay_ms=0, repeats=1, second=False):
                 assert reboot["status"] == expected, f"{name} reboot: {reboot}"
                 assert reboot["sn"] != config["sn"], "reboot reused config request SN"
                 print(f"{name} reboot: {reboot['status']} sn={reboot['sn']}")
+                immediate_preset = preset_command(token, wait_result=False)
+                assert immediate_preset["status"] == "sent", f"{name} immediate preset: {immediate_preset}"
+                preset = preset_command(token)
+                assert preset["status"] == expected, f"{name} preset: {preset}"
+                assert preset["sn"] != reboot["sn"], "preset reused reboot request SN"
+                print(f"{name} preset: {preset['status']} sn={preset['sn']}")
                 guard = guard_command(token)
                 assert guard["status"] == expected, f"{name} guard: {guard}"
                 assert guard["sn"] != first["sn"], "guard reused transport request SN"
