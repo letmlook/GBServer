@@ -10,11 +10,13 @@ services:
     ports:
       - "18080:18080"
       - "5060:5060/udp"
-      - "5061:5061"
+      - "5060:5060/tcp"
     environment:
       GBSERVER__SERVER__HOST: 0.0.0.0
       GBSERVER__SERVER__PORT: 18080
-      GBSERVER__SIP__IP: 0.0.0.0
+      # 设备可达的宿主 IPv4，用于 Via/Contact/SDP；不能是容器桥接 IP。
+      GBSERVER__SIP__IP: ${GBSERVER_SIP_ADVERTISE_IP:?Set GBSERVER_SIP_ADVERTISE_IP to the host IPv4 reachable by devices}
+      GBSERVER__SIP__BIND_IP: 0.0.0.0
       GBSERVER__SIP__PORT: 5060
       GBSERVER__DATABASE__URL: postgres://postgres:postgrespw@postgres:5432/gbserver
       GBSERVER__REDIS__URL: redis://redis:6379
@@ -22,10 +24,12 @@ services:
       GBSERVER__SIP__PASSWORD: ${GBSERVER_SIP_PASSWORD:-admin123}
       # ---- ZLM 节点地址（默认 compose：ZLM 用 host 网络）----
       # ZLM 与后端不在同一个网络命名空间：后端在桥接网络里，ZLM 直接占用宿主端口。
-      #   * 后端 → ZLM：host.docker.internal:8080（由下面的 extra_hosts 保证解析）
+      #   * 后端 → ZLM：设备和浏览器均可达的宿主 IPv4:8080
       #   * ZLM → 后端 hook：127.0.0.1:18080（ZLM 在 host 命名空间，后端把 18080
       #     发布在宿主上，因此回环地址就是正确地址）
-      GBSERVER__ZLM__SERVERS__0__IP: ${GBSERVER_ZLM_IP:-host.docker.internal}
+      # 节点 IP 同时进入浏览器播放 URL，不能填 host.docker.internal。
+      # ZLM 若不在同一宿主机，可单独覆盖 GBSERVER_ZLM_IP。
+      GBSERVER__ZLM__SERVERS__0__IP: ${GBSERVER_ZLM_IP:-${GBSERVER_SIP_ADVERTISE_IP}}
       GBSERVER__ZLM__SERVERS__0__HTTP_PORT: ${GBSERVER_ZLM_HTTP_PORT:-8080}
       GBSERVER__ZLM__SERVERS__0__HOOK_URL: ${GBSERVER_ZLM_HOOK_URL:-http://127.0.0.1:18080/api/zlm/hook}
       # host 网络下 ZLM 会通告宿主真实网卡地址，**不要**设 rtc_extern_ip；

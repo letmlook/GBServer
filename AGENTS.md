@@ -265,6 +265,8 @@ GBServer/
 cargo run
 
 # Or with PostgreSQL/Redis/ZLM via Docker Compose
+# First set GBSERVER_SIP_ADVERTISE_IP in .env to the host IPv4 reachable by devices.
+# SIP binds 0.0.0.0 in the container but advertises this host IP in Via/Contact/SDP.
 #
 # ZLM 默认用 **host 网络**（Linux 服务器：收流端口池 / WebRTC 候选 / RTSP-RTMP
 # 都直接落在宿主，不需要逐口映射）：

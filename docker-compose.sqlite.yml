@@ -27,11 +27,13 @@ services:
     ports:
       - "18080:18080"
       - "5060:5060/udp"
-      - "5061:5061"
+      - "5060:5060/tcp"
     environment:
       GBSERVER__SERVER__HOST: 0.0.0.0
       GBSERVER__SERVER__PORT: 18080
-      GBSERVER__SIP__IP: 0.0.0.0
+      # 设备可达的宿主 IPv4，用于 Via/Contact/SDP；监听仍绑定容器全网卡。
+      GBSERVER__SIP__IP: ${GBSERVER_SIP_ADVERTISE_IP:?Set GBSERVER_SIP_ADVERTISE_IP to the host IPv4 reachable by devices}
+      GBSERVER__SIP__BIND_IP: 0.0.0.0
       GBSERVER__SIP__PORT: 5060
       # SQLite 默认模式（无需 --features；Cargo.toml 默认即 sqlite）
       GBSERVER__DATABASE__URL: "sqlite:///var/lib/gbserver/gbserver.db?mode=rwc"
@@ -40,6 +42,10 @@ services:
       # Redis 留空 → 自动走 InMemoryBackend（StateStore 单机）
       GBSERVER__JWT__SECRET: ${GBSERVER_JWT_SECRET:-a7f3c9e2b1d84f6a0e8c5b2d9f1a4e7c0b3d6f9a2e5c8b1d4f7a0e3c6b9d2f5}
       GBSERVER__SIP__PASSWORD: ${GBSERVER_SIP_PASSWORD:-admin123}
+      # ZLM 在桥接网络中，但媒体 URL 和 ICE 候选必须指向浏览器可达的宿主地址。
+      GBSERVER__ZLM__SERVERS__0__IP: ${GBSERVER_ZLM_IP:-${GBSERVER_SIP_ADVERTISE_IP}}
+      GBSERVER__ZLM__SERVERS__0__HOOK_URL: http://gbserver:18080/api/zlm/hook
+      GBSERVER__ZLM__SERVERS__0__RTC_EXTERN_IP: ${GBSERVER_ZLM_RTC_EXTERN_IP:-${GBSERVER_SIP_ADVERTISE_IP}}
       RUST_LOG: info,gbserver=debug
     volumes:
       - sqlitedata:/var/lib/gbserver

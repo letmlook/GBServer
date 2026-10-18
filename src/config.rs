@@ -144,7 +144,7 @@ pub struct SipConfig {
     /// 也就无法注册，而 TCP 的解析/分帧/响应回程代码全都白写了。
     #[serde(default = "default_true")]
     pub tcp_enabled: bool,
-    /// **实际绑定**的地址（不序列化）。
+    /// **实际绑定**的地址，可通过 `sip.bind_ip` / `GBSERVER__SIP__BIND_IP` 配置。
     ///
     /// `ip` 同时承担两个角色会出问题：它既要写进 Via/Contact/SDP 对外通告，
     /// 又被拿来 `bind`。若把通配地址 `0.0.0.0` 解析成局域网 IP 后直接拿去
@@ -152,8 +152,9 @@ pub struct SipConfig {
     /// 而且 DHCP 换 IP 后启动直接失败。
     ///
     /// 因此：`ip` = 对外通告地址；`bind_ip` = 绑定地址（缺省等于 `ip`）。
-    /// 只有"配置为通配地址 + 自动解析出通告地址"时才会两者分离。
-    #[serde(skip)]
+    /// Docker 桥接部署须明确分离：`ip` 写设备可达的宿主 IPv4，
+    /// `bind_ip` 写容器内的 `0.0.0.0`。
+    #[serde(default)]
     pub bind_ip: Option<String>,
     pub device_id: String,
     /// SIP 用户名：本平台向上级 / 下级平台发起级联注册时使用的 SIP 账号。
@@ -252,6 +253,33 @@ impl Default for SipConfig {
             stream_reconnect: None,
             heartbeat: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod sip_config_tests {
+    #[test]
+    fn advertised_ip_and_bind_ip_can_be_configured_independently() {
+        let sip: super::SipConfig = serde_json::from_value(serde_json::json!({
+            "enabled": true,
+            "ip": "192.0.2.10",
+            "bind_ip": "0.0.0.0",
+            "port": 5060,
+            "tcp_port": 5060,
+            "device_id": "34020000002000000001",
+            "password": "test-password",
+            "realm": "3402000000",
+            "keepalive_timeout": 30,
+            "register_timeout": 3600,
+            "charset": "UTF-8",
+            "sdp_ip": null,
+            "stream_ip": null,
+            "stream_reconnect": null,
+            "heartbeat": null
+        }))
+        .expect("SIP configuration should accept a separate bind address");
+        assert_eq!(sip.ip, "192.0.2.10");
+        assert_eq!(sip.bind_ip.as_deref(), Some("0.0.0.0"));
     }
 }
 

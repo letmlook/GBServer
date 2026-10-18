@@ -71,6 +71,7 @@
 | E4 | 环境 | CI 自动触发按用户要求保持关闭（`workflow_dispatch`） | ⚪ |
 | E5 | 部署 | ZLM 改 host 网络 + 配置文件只读管理 + mac 叠加文件 | ✅ 已改 |
 | E6 | 环境 | 后端访问 `192.168.3.88:8080`（ZLM）偶发 `error sending request`（本机 HTTP 代理同名主机） | ⚪ |
+| E7 | 部署验收 | 2.0 Compose SIP/媒体地址与 TCP 5060 契约已修，Docker 镜像构建和容器内实测仍受 Docker Hub 授权网络超时阻断 | 🟡 |
 
 ---
 
@@ -865,6 +866,15 @@ hook.on_send_rtp_progress
 不是平台缺陷 —— 与 `AGENTS.md` 记录的 `NO_PROXY` 要求同源。
 **做法**：本机裸跑后端时设 `NO_PROXY=localhost,127.0.0.1,::1,192.168.3.88`
 （或干脆让后端也只走 127.0.0.1 访问 ZLM）。
+
+### E7 🟡 2.0 Docker 容器实际运行待验收
+
+主 Compose、SQLite Compose 和 mac 叠加配置已要求设备可达的 SIP 通告 IP，
+容器绑定 `0.0.0.0`，同时发布 SIP UDP/TCP 5060，并让浏览器媒体 URL 与桥接
+WebRTC 候选使用可达地址。配置展开、Rust 测试和本机进程监听均已验证。
+`docker compose build gbserver` 仍在获取 Docker Hub `docker/dockerfile:1.7` 授权 token
+时因 IPv6 网络超时，未进入镜像编译；容器内 SIP/媒体、健康检查和目标服务器部署
+均未实测。恢复镜像源访问后应先构建镜像，再以真实设备和浏览器跑 M4 闭环。
 
 ---
 

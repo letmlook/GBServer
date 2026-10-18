@@ -15,21 +15,20 @@
 #   2. zlm 恢复 `extra_hosts`（容器内 `host.docker.internal` 需要稳定解析到
 #      宿主的 IPv4 网关：Docker Desktop 上该名字可能只解析出 IPv6 ULA，
 #      导致 ZLM 的 hook 回调全部连不上后端）；
-#   3. 后端把 ZLM 当"宿主上的服务"访问（host.docker.internal:8080），
+#   3. 后端通过宿主可达地址访问 ZLM，返回给浏览器的媒体 URL 也使用这个地址，
 #      hook 回调走宿主回环；
-#   4. **给节点下发 `rtc_extern_ip=127.0.0.1`** —— WebRTC 的 ICE 候选必须是
+#   4. **给节点下发宿主可达的 `rtc_extern_ip`** —— WebRTC 的 ICE 候选必须是
 #      浏览器可达的地址，否则只会拿到 ZLM 的容器内网 IP（172.18.x.x），
 #      `iceConnectionState` 永远停在 checking。
 # ============================================================================
 services:
   gbserver:
     environment:
-      # 桥接模式下 ZLM 的端口发布在宿主上：后端（容器或宿主进程）都从这里访问
-      GBSERVER__ZLM__SERVERS__0__IP: host.docker.internal
+      # 桥接模式下 ZLM 的端口发布在宿主上；此地址也会写进浏览器媒体 URL。
+      GBSERVER__ZLM__SERVERS__0__IP: ${GBSERVER_ZLM_IP:-${GBSERVER_SIP_ADVERTISE_IP}}
       GBSERVER__ZLM__SERVERS__0__HOOK_URL: http://host.docker.internal:18080/api/zlm/hook
-      # 本机调试：浏览器也在同一台机器上，候选填 127.0.0.1 即可
-      # （服务器同理换成公网 IP / 域名）
-      GBSERVER__ZLM__SERVERS__0__RTC_EXTERN_IP: 127.0.0.1
+      # 默认与设备可达的宿主 IPv4 一致；分离部署时可单独覆盖。
+      GBSERVER__ZLM__SERVERS__0__RTC_EXTERN_IP: ${GBSERVER_ZLM_RTC_EXTERN_IP:-${GBSERVER_SIP_ADVERTISE_IP}}
     extra_hosts:
       - "host.docker.internal:host-gateway"
 

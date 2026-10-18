@@ -102,8 +102,8 @@ USER gbserver
 # Default exposed ports (overridable via docker-compose):
 #   18080  — HTTP API + static frontend
 #   5060/udp — SIP signaling
-#   5061    — SIP over TCP
-EXPOSE 18080 5060/udp 5061
+#   5060/tcp — SIP over TCP (same port number as UDP)
+EXPOSE 18080 5060/udp 5060/tcp
 
 # Healthcheck hits the public /api/health endpoint (port follows GBSERVER__SERVER__PORT override)
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \

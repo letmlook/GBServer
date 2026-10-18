@@ -140,6 +140,15 @@ GBSERVER__SIP__PASSWORD='your-sip-password' \
 
 ### 1.9 Docker 部署
 
+先在 `.env` 设置 `GBSERVER_SIP_ADVERTISE_IP` 为**国标设备能够访问的宿主 IPv4**。
+Compose 将它写入 SIP Via/Contact 和 SDP，容器内仍通过 `sip.bind_ip=0.0.0.0`
+监听所有网卡。不能使用 `127.0.0.1`、`0.0.0.0` 或 Docker 桥接网段地址；
+缺少此值时 Compose 会拒绝启动，避免设备收到不可达的收流地址。
+默认也将此地址用于 ZLM 管理连接和浏览器媒体 URL；ZLM 独立部署时设置
+`GBSERVER_ZLM_IP` 为**后端与浏览器都可达**的媒体节点地址。Docker Desktop
+桥接方案的 WebRTC 候选默认使用同一宿主 IPv4，可用
+`GBSERVER_ZLM_RTC_EXTERN_IP` 单独覆盖。
+
 ```bash
 docker compose up -d --build       # 一键启动
 docker compose ps                  # 查看状态
@@ -156,6 +165,9 @@ docker compose down -v             # 停止并清空数据卷
 ```env
 GBSERVER_JWT_SECRET=<your-strong-jwt-secret>
 GBSERVER_SIP_PASSWORD=<your-sip-password>
+GBSERVER_SIP_ADVERTISE_IP=<host-ip-reachable-by-devices>
+# 可选：ZLM 独立部署时设置成后端与浏览器均可达的节点 IPv4
+# GBSERVER_ZLM_IP=<media-node-ip>
 ```
 
 `docker-compose.yml` 用 `${GBSERVER_JWT_SECRET:-<内置默认值>}` 语法读取 `.env`。
@@ -181,8 +193,8 @@ GBSERVER_SIP_PASSWORD=<your-sip-password>
 
 > ⚠️ **SIP 的 UDP 与 TCP 默认共用 5060**：国标设备按「同一 IP:端口 + 传输方式」接入，
 > `config/application.toml` 里 `port = 5060`、`tcp_port = 5060`（`src/config.rs:236`
-> 默认值同样是 5060）。**旧版本文档写的 5061 是错的** —— 照抄会让 TCP 设备注册不上
-> （`docker-compose.yml` 里仍留着 `5061:5061` 的发布，但当前没有人监听它）。
+> 默认值同样是 5060）。旧版本文档写的 5061 是错的；Compose 现已同时发布
+> `5060/udp` 与 `5060/tcp`，与容器内实际监听端口一致。
 > 只有明确要分离两种传输时才把 `tcp_port` 改成别的值，并同步防火墙与设备配置。
 
 ### 2.2 数据库 / 缓存
@@ -269,6 +281,8 @@ GBSERVER_SIP_PASSWORD=<your-sip-password>
 [sip]
 enabled = true
 ip = "0.0.0.0"
+# 容器部署改成宿主 IPv4，同时设置 bind_ip = "0.0.0.0"
+# bind_ip = "0.0.0.0"
 port = 5060                 # UDP
 tcp_port = 5060             # TCP；默认与 port 相同（国标"同端口+传输方式"接入）
 tcp_enabled = true
