@@ -71,7 +71,7 @@
 | E4 | 环境 | CI 自动触发按用户要求保持关闭（`workflow_dispatch`） | ⚪ |
 | E5 | 部署 | ZLM 改 host 网络 + 配置文件只读管理 + mac 叠加文件 | ✅ 已改 |
 | E6 | 环境 | 后端访问 `192.168.3.88:8080`（ZLM）偶发 `error sending request`（本机 HTTP 代理同名主机） | ⚪ |
-| E7 | 部署验收 | PostgreSQL 后端容器 + 真实 ZLM + SIP Mock 的 FLV 点播/停止和 MP4 下载已通过；容器 WebRTC、真机 LAN 与目标部署待验收 | 🟡 |
+| E7 | 部署验收 | PostgreSQL 后端容器 + 真实 ZLM + SIP Mock 的 FLV 点播/停止、MP4 下载及 Chromium WebRTC ICE 连通与视频帧解码已通过；真机 LAN 与目标 Linux Compose 部署待验收 | 🟡 |
 
 ---
 
