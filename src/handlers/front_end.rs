@@ -219,7 +219,24 @@ async fn send_via_sip(
 }
 
 fn success_json(msg: &str) -> serde_json::Value {
-    serde_json::json!({ "code": 0, "msg": msg })
+    serde_json::json!({
+        "code": 0,
+        "msg": msg,
+        "data": {"sipSent": true, "deviceResult": {"status": "sent"}}
+    })
+}
+
+#[cfg(test)]
+mod sent_response_tests {
+    use super::*;
+
+    #[test]
+    fn sent_response_does_not_claim_device_execution() {
+        let response = success_json("预置位调用命令已发送");
+        assert_eq!(response["code"], 0);
+        assert_eq!(response["data"]["sipSent"], true);
+        assert_eq!(response["data"]["deviceResult"]["status"], "sent");
+    }
 }
 
 // ========== PTZ ==========
@@ -237,7 +254,7 @@ fn success_json(msg: &str) -> serde_json::Value {
     responses(
         (status = 200, description = "云台命令下发结果 `{code,msg}`（非 ApiResult 信封，0/1 表示成功/失败）",
          body = serde_json::Value,
-         example = json!({"code":0,"msg":"PTZ 控制命令已发送"})),
+         example = json!({"code":0,"msg":"PTZ 控制命令已发送","data":{"sipSent":true,"deviceResult":{"status":"sent"}}})),
     ),
     security(("access_token" = [])),
 )]
@@ -292,7 +309,7 @@ pub async fn ptz(
     responses(
         (status = 200, description = "兼容端点：四段指令字节 + 累加校验后下发",
          body = serde_json::Value,
-         example = json!({"code":0,"msg":"前端控制命令已发送"})),
+         example = json!({"code":0,"msg":"前端控制命令已发送","data":{"sipSent":true,"deviceResult":{"status":"sent"}}})),
     ),
     security(("access_token" = [])),
 )]
@@ -338,7 +355,7 @@ pub async fn legacy_front_end_command(
     responses(
         (status = 200, description = "辅助开关（灯光/雨刷等）控制下发结果",
          body = serde_json::Value,
-         example = json!({"code":0,"msg":"辅助开关控制命令已发送"})),
+         example = json!({"code":0,"msg":"辅助开关控制命令已发送","data":{"sipSent":true,"deviceResult":{"status":"sent"}}})),
     ),
     security(("access_token" = [])),
 )]
@@ -380,7 +397,7 @@ pub async fn auxiliary(
     responses(
         (status = 200, description = "雨刷开关控制下发结果",
          body = serde_json::Value,
-         example = json!({"code":0,"msg":"雨刷控制命令已发送"})),
+         example = json!({"code":0,"msg":"雨刷控制命令已发送","data":{"sipSent":true,"deviceResult":{"status":"sent"}}})),
     ),
     security(("access_token" = [])),
 )]
@@ -420,7 +437,7 @@ pub async fn wiper(
     responses(
         (status = 200, description = "光圈控制下发结果",
          body = serde_json::Value,
-         example = json!({"code":0,"msg":"光圈控制命令已发送"})),
+         example = json!({"code":0,"msg":"光圈控制命令已发送","data":{"sipSent":true,"deviceResult":{"status":"sent"}}})),
     ),
     security(("access_token" = [])),
 )]
@@ -486,7 +503,7 @@ pub async fn iris(
     responses(
         (status = 200, description = "焦距控制下发结果",
          body = serde_json::Value,
-         example = json!({"code":0,"msg":"焦距控制命令已发送"})),
+         example = json!({"code":0,"msg":"焦距控制命令已发送","data":{"sipSent":true,"deviceResult":{"status":"sent"}}})),
     ),
     security(("access_token" = [])),
 )]
@@ -608,7 +625,7 @@ pub async fn preset_query(
     responses(
         (status = 200, description = "预置位添加结果",
          body = serde_json::Value,
-         example = json!({"code":0,"msg":"预置位添加成功"})),
+         example = json!({"code":0,"msg":"预置位添加命令已发送","data":{"sipSent":true,"deviceResult":{"status":"sent"}}})),
     ),
     security(("access_token" = [])),
 )]
@@ -638,7 +655,7 @@ pub async fn preset_add(
     )
     .await
     {
-        Ok(()) => Json(success_json("预置位添加成功")),
+        Ok(()) => Json(success_json("预置位添加命令已发送")),
         Err(e) => Json(serde_json::json!({ "code": 1, "msg": e })),
     }
 }
@@ -657,7 +674,7 @@ pub async fn preset_add(
     responses(
         (status = 200, description = "预置位调用结果",
          body = serde_json::Value,
-         example = json!({"code":0,"msg":"预置位调用成功"})),
+         example = json!({"code":0,"msg":"预置位调用命令已发送","data":{"sipSent":true,"deviceResult":{"status":"sent"}}})),
     ),
     security(("access_token" = [])),
 )]
@@ -687,7 +704,7 @@ pub async fn preset_call(
     )
     .await
     {
-        Ok(()) => Json(success_json("预置位调用成功")),
+        Ok(()) => Json(success_json("预置位调用命令已发送")),
         Err(e) => Json(serde_json::json!({ "code": 1, "msg": e })),
     }
 }
@@ -706,7 +723,7 @@ pub async fn preset_call(
     responses(
         (status = 200, description = "预置位删除结果",
          body = serde_json::Value,
-         example = json!({"code":0,"msg":"预置位删除成功"})),
+         example = json!({"code":0,"msg":"预置位删除命令已发送","data":{"sipSent":true,"deviceResult":{"status":"sent"}}})),
     ),
     security(("access_token" = [])),
 )]
@@ -736,7 +753,7 @@ pub async fn preset_delete(
     )
     .await
     {
-        Ok(()) => Json(success_json("预置位删除成功")),
+        Ok(()) => Json(success_json("预置位删除命令已发送")),
         Err(e) => Json(serde_json::json!({ "code": 1, "msg": e })),
     }
 }
@@ -756,7 +773,7 @@ pub async fn preset_delete(
     responses(
         (status = 200, description = "巡航点添加结果",
          body = serde_json::Value,
-         example = json!({"code":0,"msg":"巡航点添加成功"})),
+         example = json!({"code":0,"msg":"巡航点添加命令已发送","data":{"sipSent":true,"deviceResult":{"status":"sent"}}})),
     ),
     security(("access_token" = [])),
 )]
@@ -791,7 +808,7 @@ pub async fn cruise_point_add(
     )
     .await
     {
-        Ok(()) => Json(success_json("巡航点添加成功")),
+        Ok(()) => Json(success_json("巡航点添加命令已发送")),
         Err(e) => Json(serde_json::json!({ "code": 1, "msg": e })),
     }
 }
@@ -810,7 +827,7 @@ pub async fn cruise_point_add(
     responses(
         (status = 200, description = "巡航点删除结果",
          body = serde_json::Value,
-         example = json!({"code":0,"msg":"巡航点删除成功"})),
+         example = json!({"code":0,"msg":"巡航点删除命令已发送","data":{"sipSent":true,"deviceResult":{"status":"sent"}}})),
     ),
     security(("access_token" = [])),
 )]
@@ -845,7 +862,7 @@ pub async fn cruise_point_delete(
     )
     .await
     {
-        Ok(()) => Json(success_json("巡航点删除成功")),
+        Ok(()) => Json(success_json("巡航点删除命令已发送")),
         Err(e) => Json(serde_json::json!({ "code": 1, "msg": e })),
     }
 }
@@ -864,7 +881,7 @@ pub async fn cruise_point_delete(
     responses(
         (status = 200, description = "巡航速度设置结果",
          body = serde_json::Value,
-         example = json!({"code":0,"msg":"巡航速度设置成功"})),
+         example = json!({"code":0,"msg":"巡航速度设置命令已发送","data":{"sipSent":true,"deviceResult":{"status":"sent"}}})),
     ),
     security(("access_token" = [])),
 )]
@@ -899,7 +916,7 @@ pub async fn cruise_speed(
     )
     .await
     {
-        Ok(()) => Json(success_json("巡航速度设置成功")),
+        Ok(()) => Json(success_json("巡航速度设置命令已发送")),
         Err(e) => Json(serde_json::json!({ "code": 1, "msg": e })),
     }
 }
@@ -918,7 +935,7 @@ pub async fn cruise_speed(
     responses(
         (status = 200, description = "巡航停留时间设置结果",
          body = serde_json::Value,
-         example = json!({"code":0,"msg":"巡航时间设置成功"})),
+         example = json!({"code":0,"msg":"巡航时间设置命令已发送","data":{"sipSent":true,"deviceResult":{"status":"sent"}}})),
     ),
     security(("access_token" = [])),
 )]
@@ -953,7 +970,7 @@ pub async fn cruise_time(
     )
     .await
     {
-        Ok(()) => Json(success_json("巡航时间设置成功")),
+        Ok(()) => Json(success_json("巡航时间设置命令已发送")),
         Err(e) => Json(serde_json::json!({ "code": 1, "msg": e })),
     }
 }
@@ -972,7 +989,7 @@ pub async fn cruise_time(
     responses(
         (status = 200, description = "巡航启动结果",
          body = serde_json::Value,
-         example = json!({"code":0,"msg":"巡航启动成功"})),
+         example = json!({"code":0,"msg":"巡航启动命令已发送","data":{"sipSent":true,"deviceResult":{"status":"sent"}}})),
     ),
     security(("access_token" = [])),
 )]
@@ -1005,7 +1022,7 @@ pub async fn cruise_start(
     )
     .await
     {
-        Ok(()) => Json(success_json("巡航启动成功")),
+        Ok(()) => Json(success_json("巡航启动命令已发送")),
         Err(e) => Json(serde_json::json!({ "code": 1, "msg": e })),
     }
 }
@@ -1024,7 +1041,7 @@ pub async fn cruise_start(
     responses(
         (status = 200, description = "巡航停止结果",
          body = serde_json::Value,
-         example = json!({"code":0,"msg":"巡航停止成功"})),
+         example = json!({"code":0,"msg":"巡航停止命令已发送","data":{"sipSent":true,"deviceResult":{"status":"sent"}}})),
     ),
     security(("access_token" = [])),
 )]
@@ -1057,7 +1074,7 @@ pub async fn cruise_stop(
     )
     .await
     {
-        Ok(()) => Json(success_json("巡航停止成功")),
+        Ok(()) => Json(success_json("巡航停止命令已发送")),
         Err(e) => Json(serde_json::json!({ "code": 1, "msg": e })),
     }
 }
@@ -1077,7 +1094,7 @@ pub async fn cruise_stop(
     responses(
         (status = 200, description = "扫描速度设置结果",
          body = serde_json::Value,
-         example = json!({"code":0,"msg":"扫描速度设置成功"})),
+         example = json!({"code":0,"msg":"扫描速度设置命令已发送","data":{"sipSent":true,"deviceResult":{"status":"sent"}}})),
     ),
     security(("access_token" = [])),
 )]
@@ -1112,7 +1129,7 @@ pub async fn scan_set_speed(
     )
     .await
     {
-        Ok(()) => Json(success_json("扫描速度设置成功")),
+        Ok(()) => Json(success_json("扫描速度设置命令已发送")),
         Err(e) => Json(serde_json::json!({ "code": 1, "msg": e })),
     }
 }
@@ -1131,7 +1148,7 @@ pub async fn scan_set_speed(
     responses(
         (status = 200, description = "扫描左边界设置结果",
          body = serde_json::Value,
-         example = json!({"code":0,"msg":"左边界设置成功"})),
+         example = json!({"code":0,"msg":"左边界设置命令已发送","data":{"sipSent":true,"deviceResult":{"status":"sent"}}})),
     ),
     security(("access_token" = [])),
 )]
@@ -1164,7 +1181,7 @@ pub async fn scan_set_left(
     )
     .await
     {
-        Ok(()) => Json(success_json("左边界设置成功")),
+        Ok(()) => Json(success_json("左边界设置命令已发送")),
         Err(e) => Json(serde_json::json!({ "code": 1, "msg": e })),
     }
 }
@@ -1183,7 +1200,7 @@ pub async fn scan_set_left(
     responses(
         (status = 200, description = "扫描右边界设置结果",
          body = serde_json::Value,
-         example = json!({"code":0,"msg":"右边界设置成功"})),
+         example = json!({"code":0,"msg":"右边界设置命令已发送","data":{"sipSent":true,"deviceResult":{"status":"sent"}}})),
     ),
     security(("access_token" = [])),
 )]
@@ -1216,7 +1233,7 @@ pub async fn scan_set_right(
     )
     .await
     {
-        Ok(()) => Json(success_json("右边界设置成功")),
+        Ok(()) => Json(success_json("右边界设置命令已发送")),
         Err(e) => Json(serde_json::json!({ "code": 1, "msg": e })),
     }
 }
@@ -1235,7 +1252,7 @@ pub async fn scan_set_right(
     responses(
         (status = 200, description = "扫描启动结果",
          body = serde_json::Value,
-         example = json!({"code":0,"msg":"扫描启动成功"})),
+         example = json!({"code":0,"msg":"扫描启动命令已发送","data":{"sipSent":true,"deviceResult":{"status":"sent"}}})),
     ),
     security(("access_token" = [])),
 )]
@@ -1268,7 +1285,7 @@ pub async fn scan_start(
     )
     .await
     {
-        Ok(()) => Json(success_json("扫描启动成功")),
+        Ok(()) => Json(success_json("扫描启动命令已发送")),
         Err(e) => Json(serde_json::json!({ "code": 1, "msg": e })),
     }
 }
@@ -1287,7 +1304,7 @@ pub async fn scan_start(
     responses(
         (status = 200, description = "扫描停止结果",
          body = serde_json::Value,
-         example = json!({"code":0,"msg":"扫描停止成功"})),
+         example = json!({"code":0,"msg":"扫描停止命令已发送","data":{"sipSent":true,"deviceResult":{"status":"sent"}}})),
     ),
     security(("access_token" = [])),
 )]
@@ -1320,7 +1337,7 @@ pub async fn scan_stop(
     )
     .await
     {
-        Ok(()) => Json(success_json("扫描停止成功")),
+        Ok(()) => Json(success_json("扫描停止命令已发送")),
         Err(e) => Json(serde_json::json!({ "code": 1, "msg": e })),
     }
 }

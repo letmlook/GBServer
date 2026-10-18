@@ -26,12 +26,21 @@ async function authHeaders(page: Page): Promise<Record<string, string>> {
   return token ? { 'access-token': token } : {};
 }
 
-async function post(page: Page, path: string): Promise<number> {
+interface FrontEndResponse {
+  code: number
+  msg?: string
+  data?: { sipSent?: boolean; deviceResult?: { status?: string } }
+}
+
+async function postBody(page: Page, path: string): Promise<FrontEndResponse> {
   const headers = await authHeaders(page);
   const resp = await page.request.get(apiPath(`/front-end/${path}`), { headers });
   expect(resp.status(), path).toBe(200);
-  const body = (await resp.json()) as { code: number; msg?: string };
-  return body.code;
+  return (await resp.json()) as FrontEndResponse;
+}
+
+async function post(page: Page, path: string): Promise<number> {
+  return (await postBody(page, path)).code;
 }
 
 test.describe('Front-end control (/api/front-end/*)', () => {
@@ -39,6 +48,20 @@ test.describe('Front-end control (/api/front-end/*)', () => {
     // cookie 需在同源文档里才读得到
     await page.goto('/#/live', { waitUntil: 'domcontentloaded' });
     await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => {});
+  });
+
+  test('即时控制响应只声明 SIP 已发送', async ({ page }) => {
+    for (const path of [
+      `ptz/${DEVICE}/${CHANNEL}?command=stop&speed=0`,
+      `preset/call/${DEVICE}/${CHANNEL}?presetId=5`,
+    ]) {
+      const body = await postBody(page, path);
+      expect(body.code, path).toBe(0);
+      expect(body.msg, path).toContain('已发送');
+      expect(body.msg, path).not.toContain('成功');
+      expect(body.data?.sipSent, path).toBe(true);
+      expect(body.data?.deviceResult?.status, path).toBe('sent');
+    }
   });
 
   test('云台与聚焦/光圈：合法取值全部接受，拼错明确报错', async ({ page }) => {
