@@ -45,6 +45,20 @@ npx playwright show-report                # open the HTML report
 npm run test:health                        # 依赖进程健康检查单测（Node 22）
 ```
 
+后端直接托管 `web/dist` 时无需 Vite。媒体验收用例可将业务 API 前缀显式设为
+`/api`（默认 `/dev-api`，用于 Vite 代理）；必须有真实 ZLM 与持续在线的设备
+或推 RTP 的 SIP Mock，WebRTC 用例还需显式启用：
+
+```bash
+E2E_BASE_URL=http://127.0.0.1:18080 E2E_API_PREFIX=/api \
+  npx playwright test tests/playUrls.spec.ts tests/cloudRecord.spec.ts
+E2E_BASE_URL=http://127.0.0.1:18080 E2E_API_PREFIX=/api E2E_REQUIRE_WEBRTC=1 \
+  npx playwright test tests/webrtcMedia.spec.ts
+```
+
+SIP Mock 若关闭自动心跳，后端可能在两个用例之间将其判为离线；连续运行时保留
+默认心跳或设置 `--auto-keepalive 20`。
+
 `tests/cloudRecord.spec.ts` 会创建一个短时录像计划，录制后删除该计划，并且只接受
 本次新增、属于所选通道、文件大小大于零的 MP4 数据库记录。它会用这条记录验证页面、
 播放/下载和删除。没有在线通道时才跳过；创建计划后未产出文件会失败。运行该用例

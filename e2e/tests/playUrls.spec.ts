@@ -14,6 +14,7 @@
  */
 import { test, expect, type Page } from '@playwright/test';
 import * as http from 'node:http';
+import { apiPath } from '../test-helpers/api-path';
 
 /**
  * 读一个"永不结束"的 HTTP 流的前 N 个字节。
@@ -64,7 +65,7 @@ test('实时点播返回的 flvUrl 真的能取到 FLV 流，且不会给出 404
   await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => {});
 
   const headers = await authHeaders(page);
-  const resp = await page.request.get(`/dev-api/play/start/${DEVICE}/${CHANNEL}`, { headers });
+  const resp = await page.request.get(apiPath(`/play/start/${DEVICE}/${CHANNEL}`), { headers });
   expect(resp.status()).toBe(200);
   const body = (await resp.json()) as {
     code: number;
@@ -92,7 +93,7 @@ test('实时点播返回的 flvUrl 真的能取到 FLV 流，且不会给出 404
     // 3) rtsp 地址仍然给出（非浏览器客户端用）
     expect(data.playUrl ?? '').toMatch(/^rtsp:\/\//);
   } finally {
-    const stopped = await page.request.get(`/dev-api/play/stop/${DEVICE}/${CHANNEL}`, { headers });
+    const stopped = await page.request.get(apiPath(`/play/stop/${DEVICE}/${CHANNEL}`), { headers });
     const result = await stopped.json() as { code: number; msg?: string };
     expect(result.code, result.msg).toBe(0);
   }

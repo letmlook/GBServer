@@ -17,6 +17,7 @@
 
 import { test, expect, type APIRequestContext, type Page } from '@playwright/test';
 import { checkRuntimeHealth, type RuntimeDependency } from '../test-helpers/runtime-health';
+import { apiPath } from '../test-helpers/api-path';
 
 type RecordingEvidence = { planId: number; channelId: number; streamId: string; recordId: number; filePath: string; size: number };
 
@@ -64,7 +65,7 @@ async function gotoCloudRecord(page: Page) {
 /**
  * 前端的 token 存在 cookie `gbserver_token` 里（`utils/auth.ts`），
  * 而 axios 把它放进 `access-token` 头。用 `request` fixture 直接打后端时要手动带上。
- * 另外 dev 环境前端走 `/dev-api`（vite 重写成 `/api`）。
+ * dev 环境前端走 `/dev-api`（Vite 重写成 `/api`）；同源部署设 E2E_API_PREFIX=/api。
  */
 async function api(page: Page, request: APIRequestContext) {
   const token = await page.evaluate(() => {
@@ -73,9 +74,9 @@ async function api(page: Page, request: APIRequestContext) {
   });
   const headers = token ? { 'access-token': token } : {};
   return {
-    get: (url: string) => request.get(`/dev-api${url}`, { headers }),
-    post: (url: string, data: unknown) => request.post(`/dev-api${url}`, { data, headers }),
-    delete: (url: string) => request.delete(`/dev-api${url}`, { headers })
+    get: (url: string) => request.get(apiPath(url), { headers }),
+    post: (url: string, data: unknown) => request.post(apiPath(url), { data, headers }),
+    delete: (url: string) => request.delete(apiPath(url), { headers })
   };
 }
 
