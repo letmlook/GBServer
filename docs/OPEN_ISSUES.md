@@ -867,14 +867,17 @@ hook.on_send_rtp_progress
 **做法**：本机裸跑后端时设 `NO_PROXY=localhost,127.0.0.1,::1,192.168.3.88`
 （或干脆让后端也只走 127.0.0.1 访问 ZLM）。
 
-### E7 🟡 2.0 Docker 容器实际运行待验收
+### E7 🟡 2.0 Docker 媒体与目标部署待验收
 
 主 Compose、SQLite Compose 和 mac 叠加配置已要求设备可达的 SIP 通告 IP，
 容器绑定 `0.0.0.0`，同时发布 SIP UDP/TCP 5060，并让浏览器媒体 URL 与桥接
 WebRTC 候选使用可达地址。配置展开、Rust 测试和本机进程监听均已验证。
-`docker compose build gbserver` 仍在获取 Docker Hub `docker/dockerfile:1.7` 授权 token
-时因 IPv6 网络超时，未进入镜像编译；容器内 SIP/媒体、健康检查和目标服务器部署
-均未实测。恢复镜像源访问后应先构建镜像，再以真实设备和浏览器跑 M4 闭环。
+2026-10-18 在本机代理下 `docker compose build gbserver` 已构建 arm64 镜像。
+用隔离 PostgreSQL 库、Redis DB 15 和禁用 ZLM 节点的临时配置启动容器：
+健康检查为 healthy，容器内 SIP UDP/TCP 监听 `0.0.0.0:5060`，同源登录页、
+登录、版本接口及 OpenAPI 正常；Chromium 冒烟 20/20 通过。
+本轮未发布 SIP 宿主端口、未接入 ZLM 媒体，因此设备 LAN 可达性、容器内媒体
+闭环及目标 Linux 服务器部署仍待真实设备和目标环境验收。
 
 ---
 

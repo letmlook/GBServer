@@ -71,7 +71,7 @@ test.describe.configure({ mode: 'serial' });
 
 test.describe('GBServer admin UI smoke (Vue 3)', () => {
   test('backend health probe', async ({ request }) => {
-    const r = await request.get('http://127.0.0.1:18080/api/health');
+    const r = await request.get(process.env.E2E_BACKEND_HEALTH_URL ?? 'http://127.0.0.1:18080/api/health');
     expect(r.status(), 'backend /api/health').toBe(200);
   });
 
