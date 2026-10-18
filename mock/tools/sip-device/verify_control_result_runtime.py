@@ -18,6 +18,7 @@ from pathlib import Path
 
 BASE = os.environ.get("GBSERVER_TEST_URL", "http://127.0.0.1:18080").rstrip("/")
 DEVICE_ID = os.environ.get("GBSERVER_TEST_DEVICE_ID", "34020000001320000001")
+PTZ_CHANNEL_ID = f"{DEVICE_ID[:-4]}0002"
 PASSWORD = os.environ.get("GBSERVER_TEST_PASSWORD", "admin")
 SIP_PASSWORD = os.environ.get("GBSERVER_TEST_SIP_PASSWORD", "admin123")
 MOCK = Path(__file__).with_name("sip_device_mock.py")
@@ -93,6 +94,17 @@ def preset_command(token, wait_result=True):
     response = api("/api/device/control/preset?" + query, token=token)
     if response.get("code") != 0 or not response.get("data", {}).get("sipSent"):
         raise AssertionError("Preset DeviceControl was not sent: " + json.dumps(response, ensure_ascii=False))
+    return response["data"]["deviceResult"]
+
+
+def ptz_command(token, wait_result=True):
+    query = urllib.parse.urlencode({
+        "deviceId": DEVICE_ID, "channelId": PTZ_CHANNEL_ID, "command": "right",
+        "speed": "3", "waitResult": str(wait_result).lower(),
+    })
+    response = api("/api/device/control/ptz?" + query, token=token)
+    if response.get("code") != 0 or not response.get("data", {}).get("sipSent"):
+        raise AssertionError("PTZ DeviceControl was not sent: " + json.dumps(response, ensure_ascii=False))
     return response["data"]["deviceResult"]
 
 
@@ -208,6 +220,12 @@ def scenario(token, name, mode, expected, delay_ms=0, repeats=1, second=False):
                 assert preset["status"] == expected, f"{name} preset: {preset}"
                 assert preset["sn"] != reboot["sn"], "preset reused reboot request SN"
                 print(f"{name} preset: {preset['status']} sn={preset['sn']}")
+                immediate_ptz = ptz_command(token, wait_result=False)
+                assert immediate_ptz["status"] == "sent", f"{name} immediate PTZ: {immediate_ptz}"
+                ptz = ptz_command(token)
+                assert ptz["status"] == expected, f"{name} PTZ: {ptz}"
+                assert ptz["sn"] != preset["sn"], "PTZ reused preset request SN"
+                print(f"{name} PTZ: {ptz['status']} sn={ptz['sn']}")
                 if name == "ok":
                     sy_preset_command(token)
                     deadline = time.monotonic() + 2
@@ -240,6 +258,11 @@ def scenario(token, name, mode, expected, delay_ms=0, repeats=1, second=False):
                 next_result = command(token)
                 assert next_result["status"] == expected, f"{name} second: {next_result}"
                 assert next_result["sn"] != first["sn"], "new request reused the previous SN"
+                first_ptz = ptz_command(token)
+                next_ptz = ptz_command(token)
+                assert first_ptz["status"] == expected, f"{name} first PTZ: {first_ptz}"
+                assert next_ptz["status"] == expected, f"{name} second PTZ: {next_ptz}"
+                assert next_ptz["sn"] != first_ptz["sn"], "new PTZ request reused the previous SN"
             print(f"{name}: {first['status']} sn={first['sn']}")
         finally:
             proc.terminate()

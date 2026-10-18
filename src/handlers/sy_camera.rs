@@ -873,6 +873,7 @@ pub async fn camera_control_ptz(
         speed: q.speed.map(|v| v.clamp(0, 255) as u8),
         preset_index: q.preset.map(|p| p as u32),
         guard_cmd: None,
+        wait_result: false,
     };
     crate::handlers::device_control::device_ptz(State(state), Query(ptz)).await
 }

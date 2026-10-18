@@ -26,6 +26,9 @@ pub struct PtzQuery {
     /// 设防/撤防命令（`SetGuard` / `ResetGuard`；guard 命令专用）
     #[serde(alias = "guardCmd")]
     pub guard_cmd: Option<String>,
+    /// 等待设备返回 DeviceControl Result，最长 5 秒
+    #[serde(default, rename = "waitResult")]
+    pub wait_result: bool,
 }
 
 #[derive(Debug, Default, Deserialize, utoipa::IntoParams)]
@@ -53,7 +56,7 @@ pub struct PresetQuery {
     operation_id = "device_control_ptz",
     params(PtzQuery),
     responses(
-        (status = 200, description = "PTZ 命令下发结果",
+        (status = 200, description = "PTZ 命令下发及可选设备执行结果",
          body = ApiResult<serde_json::Value>,
          example = json!({"code":0,"msg":"成功","data":{
              "deviceId":"34020000001320000001","channelId":"34020000001310000001",
@@ -100,28 +103,72 @@ pub async fn device_ptz(
         if let Some(device) = server.device_manager().get(&device_id).await {
             if device.online && device.addr.is_some() {
                 let ptz_cmd = build_ptz_xml(&command, speed, preset_index, 0);
-                match server
-                    .send_device_control(&device_id, &channel_id, "DeviceControl", &ptz_cmd)
-                    .await
-                {
-                    Ok(_) => {
-                        tracing::info!("PTZ command sent via SIP: {}", device_id);
-                        return Json(ApiResult::success(serde_json::json!({
-                            "deviceId": device_id,
-                            "channelId": channel_id,
-                            "command": command,
-                            "speed": speed,
-                            "presetIndex": q.preset_index,
-                            "sipSent": true,
-                            "deviceResult": {"status": "sent"},
-                            "result": "PTZ command sent"
-                        })));
+                let device_result = if q.wait_result {
+                    match server
+                        .send_device_control_confirmable(
+                            &device_id,
+                            &channel_id,
+                            "DeviceControl",
+                            &ptz_cmd,
+                        )
+                        .await
+                    {
+                        Ok((sn, receiver)) => {
+                            let waited =
+                                tokio::time::timeout(std::time::Duration::from_secs(5), receiver)
+                                    .await;
+                            let (status, result_code) = match waited {
+                                Ok(Ok(xml)) => {
+                                    crate::handlers::device_stub::parse_device_control_result(&xml)
+                                }
+                                _ => {
+                                    server.cancel_device_control_pending(&device_id, sn);
+                                    ("unconfirmed", None)
+                                }
+                            };
+                            if status == "rejected" {
+                                tracing::warn!(
+                                    device_id,
+                                    channel_id,
+                                    sn,
+                                    result_code = ?result_code,
+                                    "PTZ command rejected by device"
+                                );
+                            }
+                            serde_json::json!({"status": status, "sn": sn, "resultCode": result_code})
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to send PTZ command: {}", e);
+                            return Json(ApiResult::error(format!(
+                                "Failed to send PTZ command: {e}"
+                            )));
+                        }
                     }
-                    Err(e) => {
-                        tracing::error!("Failed to send PTZ command: {}", e);
-                        return Json(ApiResult::error(format!("Failed to send PTZ command: {e}")));
+                } else {
+                    match server
+                        .send_device_control(&device_id, &channel_id, "DeviceControl", &ptz_cmd)
+                        .await
+                    {
+                        Ok(()) => serde_json::json!({"status": "sent"}),
+                        Err(e) => {
+                            tracing::error!("Failed to send PTZ command: {}", e);
+                            return Json(ApiResult::error(format!(
+                                "Failed to send PTZ command: {e}"
+                            )));
+                        }
                     }
-                }
+                };
+                tracing::info!("PTZ command sent via SIP: {}", device_id);
+                return Json(ApiResult::success(serde_json::json!({
+                    "deviceId": device_id,
+                    "channelId": channel_id,
+                    "command": command,
+                    "speed": speed,
+                    "presetIndex": q.preset_index,
+                    "sipSent": true,
+                    "deviceResult": device_result,
+                    "result": "PTZ command sent"
+                })));
             }
         }
     }
