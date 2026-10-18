@@ -83,7 +83,9 @@ RUN apt-get update \
         tzdata \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd -r -g 10001 gbserver \
-    && useradd -r -u 10001 -g gbserver -m -d /app -s /usr/sbin/nologin gbserver
+    && useradd -r -u 10001 -g gbserver -m -d /app -s /usr/sbin/nologin gbserver \
+    && mkdir -p /var/lib/gbserver \
+    && chown gbserver:gbserver /var/lib/gbserver
 
 WORKDIR /app
 
