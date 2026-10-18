@@ -3126,22 +3126,24 @@ pub(crate) async fn dispatch_playback_control(
     stream: &str,
     cmd: crate::sip::PlaybackControlCmd,
 ) -> Result<(String, String), String> {
-    let (device_id, channel_id) = resolve_playback_target(state, stream)
+    let session = state
+        .playback_manager
+        .as_ref()
+        .ok_or_else(|| "回放会话管理器未启用".to_string())?
+        .get(stream)
         .await
-        .ok_or_else(|| {
-            format!(
-                "无法解析 stream '{}' 的设备/通道：既无已登记的回放会话，也不符合 prefix_deviceId_channelId 格式",
-                stream
-            )
-        })?;
+        .ok_or_else(|| format!("没有已登记的回放 SIP 对话：stream {}", stream))?;
+    let (device_id, channel_id) = (session.device_id, session.channel_id);
+    let call_id = session
+        .call_id
+        .ok_or_else(|| format!("回放 SIP 对话缺少 Call-ID：stream {}", stream))?;
 
     let sip_server = state
         .sip_server
         .as_ref()
         .ok_or_else(|| "SIP 服务未启用，回放控制未能下发".to_string())?;
-
     sip_server
-        .send_playback_control(&device_id, &channel_id, cmd)
+        .send_playback_control_for_session(&device_id, &channel_id, Some(&call_id), cmd)
         .await
         .map_err(|e| format!("SIP 下发失败: {}", e))?;
 

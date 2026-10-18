@@ -562,8 +562,10 @@ Unhandled MESSAGE body: <?xml version="1.0" encoding="GB2312"?>
 OpenAPI 示例与实际响应一致；这些兼容入口仍未等待设备执行回执。
 回放暂停、恢复、跳转、倍速两组路由原先在 SIP 发送前更新本地会话，
 `/api/playback/*` 还可能在 SIP 缺失时返回成功；现先解析目标并发送，失败不更改会话，
-发送成功只标记 `deviceResult.status=sent`。Mock 独立 INFO 路径已测，
-活动回放对话内控制和真机执行仍待验收。
+发送成功只标记 `deviceResult.status=sent`。控制入口现要求已登记回放流及其
+准确 Call-ID，并验证活动回放 SIP 对话和双方 tag；无对话时拒绝，不再发送可能被
+设备丢弃的独立 INFO，也不会误用同通道直播。隔离 SQLite 后端 + 真实 ZLM +
+SIP Mock 已验证暂停 INFO 属于当前回放对话；真机执行仍待验收。
 批量控制保留原有 `success/failed` 发送计数，逐设备补充 `sipSent`、`deviceResult`；
 `ptzStop` 和 `reboot` 支持 `waitResult=true`，查询类命令不提供执行等待；
 批量请求最多并行处理 16 台设备并按请求顺序返回，避免每台无回执设备串行等待 5 秒。

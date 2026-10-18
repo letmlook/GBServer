@@ -99,7 +99,8 @@ use crate::sip::gb28181::catalog::{
 };
 use crate::sip::gb28181::invite::SessionStatus;
 use crate::sip::gb28181::invite_session::{
-    build_invite_sdp, build_playback_sdp, InviteSessionManager, InviteSessionStatus, SdpInfo,
+    build_invite_sdp, build_playback_sdp, InviteSession, InviteSessionManager, InviteSessionStatus,
+    SdpInfo, StreamType,
 };
 use crate::sip::gb28181::nat_helper::NatHelper;
 use crate::sip::gb28181::ssrc::SsrcManager;
@@ -444,6 +445,46 @@ use crate::sip::gb28181::device_commander::DeviceCommander;
 use crate::sip::gb28181::media_waiter::{MediaWaitResult, MediaWaiterManager};
 use crate::sip::gb28181::pending_request::PendingRequestManager;
 use crate::sip::gb28181::subscription_lifecycle::SubscriptionLifecycle;
+
+async fn select_playback_dialog(
+    manager: &InviteSessionManager,
+    device_id: &str,
+    channel_id: &str,
+    call_id: Option<&str>,
+) -> Result<InviteSession> {
+    let session = match call_id {
+        Some(id) => manager.get(id).await,
+        None => {
+            manager
+                .get_latest_by_device_channel_type(device_id, channel_id, StreamType::Playback)
+                .await
+        }
+    };
+    match session {
+        Some(session)
+            if session.device_id == device_id
+                && session.channel_id == channel_id
+                && session.stream_type == StreamType::Playback
+                && session.status == InviteSessionStatus::Active
+                && session
+                    .local_tag
+                    .as_deref()
+                    .is_some_and(|tag| !tag.is_empty())
+                && session
+                    .remote_tag
+                    .as_deref()
+                    .is_some_and(|tag| !tag.is_empty()) =>
+        {
+            Ok(session)
+        }
+        _ => Err(anyhow::anyhow!(
+            "没有可用的回放 SIP 对话：设备 {} 通道 {} Call-ID {:?}",
+            device_id,
+            channel_id,
+            call_id
+        )),
+    }
+}
 
 pub struct SipServer {
     config: Arc<SipConfig>,
@@ -6302,40 +6343,33 @@ f=v/1/96/1/2/1/1/0
         channel_id: &str,
         cmd: PlaybackControlCmd,
     ) -> Result<()> {
-        // 优先用活跃会话；没有会话时回退到旧的独立 INFO（保持兼容，
-        // 但要能看出"这次控制没有对话"）
-        let session = self
-            .invite_session_manager
-            .get_by_device_channel(device_id, channel_id)
-            .await;
+        self.send_playback_control_for_session(device_id, channel_id, None, cmd)
+            .await
+    }
 
-        let Some(session) = session else {
-            tracing::warn!(
-                "回放控制 {}/{} 没有活跃会话，按独立 INFO 发送（设备可能无法关联到会话）",
-                device_id,
-                channel_id
-            );
-            let sn = (chrono::Utc::now().timestamp() % 10000) as i64;
-            let xml = build_playback_control_xml(&cmd, device_id, channel_id, sn);
-            return self
-                .send_message_to_device(
-                    device_id,
-                    crate::sip::SipMethod::Info,
-                    Some(&xml),
-                    Some("Application/MANSCDP+xml"),
-                )
-                .await;
-        };
+    /// 指定 Call-ID 时只控制该回放；未指定时选择该通道最新的有效回放对话。
+    pub async fn send_playback_control_for_session(
+        &self,
+        device_id: &str,
+        channel_id: &str,
+        call_id: Option<&str>,
+        cmd: PlaybackControlCmd,
+    ) -> Result<()> {
+        let session =
+            select_playback_dialog(&self.invite_session_manager, device_id, channel_id, call_id)
+                .await?;
 
         let cseq_num = session.bye_cseq(); // CSeq 严格递增
         let body = build_playback_control_mansrtsp(&cmd, cseq_num);
         let call_id = session.call_id.clone();
-        let from_tag = session.local_tag.clone().unwrap_or_else(generate_tag);
+        let from_tag = session.local_tag.as_deref().ok_or_else(|| {
+            anyhow::anyhow!("Playback dialog {} has no local tag", session.call_id)
+        })?;
+        let remote_tag = session.remote_tag.as_deref().ok_or_else(|| {
+            anyhow::anyhow!("Playback dialog {} has no remote tag", session.call_id)
+        })?;
 
-        let addr = match self.device_manager.get_address(device_id).await {
-            Some(a) => a,
-            None => session.peer_addr,
-        };
+        let addr = session.peer_addr;
         let branch = generate_branch();
         let via = format!(
             "SIP/2.0/UDP {}:{};branch={};rport",
@@ -6345,10 +6379,13 @@ f=v/1/96/1/2/1/1/0
             "<sip:{}@{}:{}>;tag={}",
             self.config.device_id, self.config.ip, self.config.port, from_tag
         );
-        let mut to = format!("<sip:{}@{}:{}>", channel_id, addr.ip(), addr.port());
-        if let Some(remote_tag) = session.remote_tag.as_deref() {
-            to = format!("{};tag={}", to, remote_tag);
-        }
+        let to = format!(
+            "<sip:{}@{}:{}>;tag={}",
+            channel_id,
+            addr.ip(),
+            addr.port(),
+            remote_tag
+        );
         let cseq = cseq_header(cseq_num, "INFO");
 
         let headers: Vec<(&str, &str)> = vec![
@@ -8745,6 +8782,67 @@ pub fn build_upstream_device_status_response(sn: &str, local_device_id: &str, no
 #[cfg(test)]
 mod dialog_tag_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn playback_control_selects_only_matching_active_dialog() {
+        use crate::sip::gb28181::invite_session::{
+            InviteSession, InviteSessionManager, InviteSessionStatus, StreamType,
+        };
+        let manager = InviteSessionManager::new();
+        let addr: SocketAddr = "127.0.0.1:15060".parse().unwrap();
+        let mut live = InviteSession::new("live-call", "dev", "ch", StreamType::Play, addr);
+        live.status = InviteSessionStatus::Active;
+        live.set_local_dialog("live-local", 1);
+        live.set_remote_tag("live-remote");
+        manager.create(live).await;
+
+        assert!(select_playback_dialog(&manager, "dev", "ch", None)
+            .await
+            .is_err());
+        assert!(
+            select_playback_dialog(&manager, "dev", "ch", Some("live-call"))
+                .await
+                .is_err()
+        );
+
+        let mut playback =
+            InviteSession::new("playback-call", "dev", "ch", StreamType::Playback, addr);
+        playback.status = InviteSessionStatus::Active;
+        playback.set_local_dialog("playback-local", 1);
+        playback.set_remote_tag("playback-remote");
+        manager.create(playback).await;
+
+        assert_eq!(
+            select_playback_dialog(&manager, "dev", "ch", None)
+                .await
+                .unwrap()
+                .call_id,
+            "playback-call"
+        );
+        assert_eq!(
+            select_playback_dialog(&manager, "dev", "ch", Some("playback-call"))
+                .await
+                .unwrap()
+                .call_id,
+            "playback-call"
+        );
+        assert!(
+            select_playback_dialog(&manager, "dev", "ch", Some("other-call"))
+                .await
+                .is_err()
+        );
+        assert!(
+            select_playback_dialog(&manager, "other-dev", "ch", Some("playback-call"))
+                .await
+                .is_err()
+        );
+        manager
+            .update_status("playback-call", InviteSessionStatus::Terminated)
+            .await;
+        assert!(select_playback_dialog(&manager, "dev", "ch", None)
+            .await
+            .is_err());
+    }
 
     /// 对端 tag 只出现在 200 OK 的 `To` 头里。BYE 的 To 头必须带上它，
     /// 否则设备按"对话不存在"（481）处理，不会停止推流。

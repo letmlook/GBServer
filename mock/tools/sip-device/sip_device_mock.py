@@ -1596,6 +1596,12 @@ class SipDeviceMock:
         )
         self.transport.sendto(payload.encode(), addr)
         body = msg.split("\r\n\r\n", 1)[1] if "\r\n\r\n" in msg else ""
+        if "Application/MANSRTSP" in msg:
+            state = self._invite_state.get(call_id)
+            valid = bool(state and state["from_tag"] == from_tag
+                         and state["to_tag"] == to_tag)
+            log.info("Playback INFO dialog valid=%s call_id=%s body=%s",
+                     valid, call_id, body[:80])
         log.info("PTZ INFO 收到: %s", body[:80])
 
     async def _on_subscribe(self, msg: str, addr: tuple):
