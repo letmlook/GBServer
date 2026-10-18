@@ -43,8 +43,34 @@ fn play_sip_error(
     )
 }
 
+fn rtp_port_range_problem(port: u16, range: &str) -> Option<String> {
+    let (start, end) = match crate::zlm::client::parse_port_range(range) {
+        Ok(bounds) => bounds,
+        Err(_) => return Some(format!("RTP 端口范围配置无效：{range}")),
+    };
+    if start > end {
+        return Some(format!("RTP 端口范围配置无效：{range}"));
+    }
+    if port == 0 || !(start..=end).contains(&port) {
+        return Some(format!("分配端口 {port} 不在配置范围 {range} 内"));
+    }
+    None
+}
+
 #[cfg(test)]
 mod media_diagnostics_tests {
+    #[test]
+    fn allocated_rtp_port_must_fit_configured_range() {
+        assert!(super::rtp_port_range_problem(30050, "30000-30100").is_none());
+        assert!(super::rtp_port_range_problem(30050, "30000,30100").is_none());
+        assert!(super::rtp_port_range_problem(30050, "40000-40100")
+            .unwrap()
+            .contains("30050"));
+        assert!(super::rtp_port_range_problem(0, "30000-30100").is_some());
+        assert!(super::rtp_port_range_problem(30050, "invalid").is_some());
+        assert!(super::rtp_port_range_problem(30050, "30100-30000").is_some());
+    }
+
     #[test]
     fn open_failure_identifies_node_stream_and_request_without_secret() {
         let client = crate::zlm::ZlmClient::new("127.0.0.1", 8080, "private-zlm-secret");
@@ -400,30 +426,49 @@ pub async fn play_start(
             transport_mode
         );
 
-        // 端口是否落在"对外发布的收流范围"内。ZLM 的端口池是**启动时**按
-        // config.ini 的 rtp_proxy.port_range 建立的；如果 compose 只发布了
-        // 其中一段（例如 30000-30100 而池子到 35000），ZLM 可能把端口开在
-        // 未映射的端口上 —— 设备 RTP 到不了 ZLM，表现为"INVITE 200 OK 但
-        // 永远等不到媒体"，而且完全没有提示。这里把它变成一条明确的告警。
-        // 按 ip+http_port 找到该客户端对应的节点记录（play 路径用的是默认客户端）
-        if let Ok(servers) = crate::db::media_server::list_media_servers(&state.pool).await {
-            let matched = servers.into_iter().find(|m| {
-                m.ip.as_deref() == Some(zlm_client.ip.as_str())
-                    && m.http_port == Some(zlm_client.http_port as i32)
-            });
-            if let Some(range) = matched.and_then(|m| m.rtp_port_range) {
-                if let Ok((start, end)) = crate::zlm::client::parse_port_range(&range) {
-                    if rtp_server.port != 0 && !(start..=end).contains(&rtp_server.port) {
-                        tracing::error!(
-                            "ZLM 分配的收流端口 {} 不在配置的范围 {} 内：\
-                             容器端口映射与 ZLM 的 rtp_proxy.port_range 不一致，\
-                             设备发出的 RTP 到不了 ZLM（会表现为收流超时）",
-                            rtp_server.port,
-                            range
-                        );
-                    }
-                }
+        // ZLM 的 RTP 端口池在启动时建立；运行期下发新范围不一定会重建端口池。
+        // 先核对节点声明的范围，再向设备发 INVITE，避免把必然不可达的端口交给设备。
+        let configured_range = match crate::db::media_server::list_media_servers(&state.pool).await
+        {
+            Ok(servers) => servers
+                .into_iter()
+                .find(|server| {
+                    server.ip.as_deref() == Some(zlm_client.ip.as_str())
+                        && server.http_port == Some(zlm_client.http_port as i32)
+                })
+                .and_then(|server| server.rtp_port_range),
+            Err(error) => {
+                tracing::warn!(%stream_id, "查询媒体节点 RTP 端口范围失败: {error}");
+                None
             }
+        }
+        .or_else(|| {
+            state.config.zlm.as_ref().and_then(|zlm| {
+                zlm.servers
+                    .iter()
+                    .find(|server| {
+                        server.ip == zlm_client.ip && server.http_port == zlm_client.http_port
+                    })
+                    .and_then(|server| server.rtp_port_range.clone())
+            })
+        });
+        let port_problem = if rtp_server.port == 0 {
+            Some("ZLM 未分配有效的 RTP 端口".to_string())
+        } else {
+            configured_range
+                .as_deref()
+                .and_then(|range| rtp_port_range_problem(rtp_server.port, range))
+        };
+        if let Some(problem) = port_problem {
+            tracing::error!(%stream_id, node = %zlm_client.ip, port = zlm_client.http_port, %problem,
+                "ZLM RTP 端口与节点配置不一致，取消点播");
+            if let Err(error) = zlm_client.close_rtp_server(&stream_id).await {
+                tracing::warn!(%stream_id, "关闭无效 RTP 端口失败: {error}");
+            }
+            return Json(ApiResult::error(format!(
+                "RTP 收流端口不可用（节点 {}:{}, 流 {}, 请求 play/start）：{}",
+                zlm_client.ip, zlm_client.http_port, stream_id, problem
+            )));
         }
 
         // 调用 SIP Server 真正发送 INVITE，并等待设备回复 200 OK
