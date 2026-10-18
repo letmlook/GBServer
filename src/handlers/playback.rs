@@ -30,6 +30,152 @@ pub struct PlaybackSession {
     pub source: String,
 }
 
+#[cfg(all(test, feature = "sqlite"))]
+mod command_state_tests {
+    use super::*;
+    use crate::handlers::common_channel::{
+        channel_playback_pause, channel_playback_resume, channel_playback_seek,
+        channel_playback_speed, ChannelPlaybackPauseQ, ChannelPlaybackResumeQ,
+        ChannelPlaybackSeekQ, ChannelPlaybackSpeedQ,
+    };
+
+    async fn state_with_session() -> (AppState, Arc<PlaybackManager>, String) {
+        let mut state = crate::test_support::app_state().await;
+        let manager = Arc::new(PlaybackManager::new());
+        let stream = "playback_34020000001320000001_34020000001310000001_1700000000".to_string();
+        manager
+            .create(PlaybackSession {
+                stream_id: stream.clone(),
+                call_id: None,
+                device_id: "34020000001320000001".into(),
+                channel_id: "34020000001310000001".into(),
+                app: "rtp".into(),
+                stream: stream.clone(),
+                media_server_id: None,
+                schema: "rtsp".into(),
+                start_time: "2026-01-01T00:00:00".into(),
+                end_time: None,
+                current_time: "2026-01-01T00:00:00".into(),
+                speed: 1.0,
+                paused: false,
+                source: "device".into(),
+            })
+            .await;
+        state.playback_manager = Some(manager.clone());
+        (state, manager, stream)
+    }
+
+    #[tokio::test]
+    async fn playback_commands_without_sip_fail_without_changing_session() {
+        let (state, manager, stream) = state_with_session().await;
+        assert_ne!(
+            playback_pause(State(state.clone()), Path(stream.clone()))
+                .await
+                .0
+                .code,
+            0
+        );
+        assert!(!manager.get(&stream).await.unwrap().paused);
+        assert_ne!(
+            playback_speed(State(state.clone()), Path((stream.clone(), "2".into())))
+                .await
+                .0
+                .code,
+            0
+        );
+        assert_eq!(manager.get(&stream).await.unwrap().speed, 1.0);
+        let invalid_speed =
+            playback_speed(State(state.clone()), Path((stream.clone(), "-1".into())))
+                .await
+                .0;
+        assert_ne!(invalid_speed.code, 0);
+        assert!(invalid_speed.msg.contains("倍速"));
+        assert_ne!(
+            playback_seek(
+                State(state.clone()),
+                Path((stream.clone(), "2026-01-01T01:00:00".into()))
+            )
+            .await
+            .0
+            .code,
+            0
+        );
+        assert_eq!(
+            manager.get(&stream).await.unwrap().current_time,
+            "2026-01-01T00:00:00"
+        );
+        manager.pause(&stream).await;
+        assert_ne!(
+            playback_resume(State(state.clone()), Path(stream.clone()))
+                .await
+                .0
+                .code,
+            0
+        );
+        assert!(manager.get(&stream).await.unwrap().paused);
+
+        manager.resume(&stream).await;
+        assert_ne!(
+            channel_playback_pause(
+                State(state.clone()),
+                Query(ChannelPlaybackPauseQ {
+                    channel_id: None,
+                    stream: Some(stream.clone())
+                })
+            )
+            .await
+            .0["code"],
+            0
+        );
+        assert!(!manager.get(&stream).await.unwrap().paused);
+        assert_ne!(
+            channel_playback_speed(
+                State(state.clone()),
+                Query(ChannelPlaybackSpeedQ {
+                    channel_id: None,
+                    stream: Some(stream.clone()),
+                    speed: Some("2".into())
+                })
+            )
+            .await
+            .0["code"],
+            0
+        );
+        assert_eq!(manager.get(&stream).await.unwrap().speed, 1.0);
+        assert_ne!(
+            channel_playback_seek(
+                State(state.clone()),
+                Query(ChannelPlaybackSeekQ {
+                    channel_id: None,
+                    stream: Some(stream.clone()),
+                    seek_time: Some("2026-01-01T01:00:00".into())
+                })
+            )
+            .await
+            .0["code"],
+            0
+        );
+        assert_eq!(
+            manager.get(&stream).await.unwrap().current_time,
+            "2026-01-01T00:00:00"
+        );
+        manager.pause(&stream).await;
+        assert_ne!(
+            channel_playback_resume(
+                State(state),
+                Query(ChannelPlaybackResumeQ {
+                    channel_id: None,
+                    stream: Some(stream.clone())
+                })
+            )
+            .await
+            .0["code"],
+            0
+        );
+        assert!(manager.get(&stream).await.unwrap().paused);
+    }
+}
+
 pub struct PlaybackManager {
     sessions: Arc<RwLock<std::collections::HashMap<String, PlaybackSession>>>,
 }
@@ -470,7 +616,7 @@ pub async fn playback_start(
     responses(
         (status = 200, description = "已发 Resume 命令",
          body = ApiResult<serde_json::Value>,
-         example = json!({"code":0,"msg":"成功","data":{"streamId":"playback_dev_ch_1700000000","status":"playing","message":"Playback resumed"}})),
+         example = json!({"code":0,"msg":"成功","data":{"streamId":"playback_dev_ch_1700000000","status":"playing","statusSource":"local_requested","sipSent":true,"deviceResult":{"status":"sent"},"message":"Playback resume command sent"}})),
         (status = 401, description = "未鉴权"),
     ),
     security(("access_token" = [])),
@@ -480,36 +626,26 @@ pub async fn playback_resume(
     Path(stream_id): Path<String>,
 ) -> Json<ApiResult<serde_json::Value>> {
     tracing::info!("Playback resume: stream={}", stream_id);
+    if let Err(msg) = crate::handlers::common_channel::dispatch_playback_control(
+        &state,
+        &stream_id,
+        crate::sip::PlaybackControlCmd::Resume,
+    )
+    .await
+    {
+        return Json(ApiResult::error(msg));
+    }
     if let Some(ref playback_manager) = state.playback_manager {
         playback_manager.resume(&stream_id).await;
-    }
-
-    // Phase 3.2: 用 send_playback_control 走规范 PlaybackCtrl 消息（替代裸 XML）
-    if let Some(ref sip_server) = state.sip_server {
-        let sip = &*sip_server;
-        let parts: Vec<&str> = stream_id.split('_').collect();
-        if parts.len() >= 3 {
-            let device_id = parts[1];
-            let channel_id = parts[2].to_string();
-
-            if let Err(e) = sip
-                .send_playback_control(
-                    device_id,
-                    &channel_id,
-                    crate::sip::PlaybackControlCmd::Resume,
-                )
-                .await
-            {
-                tracing::error!("Failed to send resume command: {}", e);
-                return Json(ApiResult::error(format!("SIP error: {}", e)));
-            }
-        }
     }
 
     Json(ApiResult::success(serde_json::json!({
         "streamId": stream_id,
         "status": "playing",
-        "message": "Playback resumed"
+        "statusSource": "local_requested",
+        "sipSent": true,
+        "deviceResult": {"status": "sent"},
+        "message": "Playback resume command sent"
     })))
 }
 
@@ -527,7 +663,7 @@ pub async fn playback_resume(
     responses(
         (status = 200, description = "已发 Pause 命令",
          body = ApiResult<serde_json::Value>,
-         example = json!({"code":0,"msg":"成功","data":{"streamId":"playback_dev_ch_1700000000","status":"paused","message":"Playback paused"}})),
+         example = json!({"code":0,"msg":"成功","data":{"streamId":"playback_dev_ch_1700000000","status":"paused","statusSource":"local_requested","sipSent":true,"deviceResult":{"status":"sent"},"message":"Playback pause command sent"}})),
         (status = 401, description = "未鉴权"),
     ),
     security(("access_token" = [])),
@@ -537,42 +673,32 @@ pub async fn playback_pause(
     Path(stream_id): Path<String>,
 ) -> Json<ApiResult<serde_json::Value>> {
     tracing::info!("Playback pause: stream={}", stream_id);
+    if let Err(msg) = crate::handlers::common_channel::dispatch_playback_control(
+        &state,
+        &stream_id,
+        crate::sip::PlaybackControlCmd::Pause,
+    )
+    .await
+    {
+        return Json(ApiResult::error(msg));
+    }
     if let Some(ref playback_manager) = state.playback_manager {
         playback_manager.pause(&stream_id).await;
-    }
-
-    // Phase 3.2: 用 send_playback_control 走规范 PlaybackCtrl 消息（替代裸 XML）
-    if let Some(ref sip_server) = state.sip_server {
-        let sip = &*sip_server;
-        let parts: Vec<&str> = stream_id.split('_').collect();
-        if parts.len() >= 3 {
-            let device_id = parts[1];
-            let channel_id = parts[2].to_string();
-
-            if let Err(e) = sip
-                .send_playback_control(
-                    device_id,
-                    &channel_id,
-                    crate::sip::PlaybackControlCmd::Pause,
-                )
-                .await
-            {
-                tracing::error!("Failed to send pause command: {}", e);
-                return Json(ApiResult::error(format!("SIP error: {}", e)));
-            }
-        }
     }
 
     Json(ApiResult::success(serde_json::json!({
         "streamId": stream_id,
         "status": "paused",
-        "message": "Playback paused"
+        "statusSource": "local_requested",
+        "sipSent": true,
+        "deviceResult": {"status": "sent"},
+        "message": "Playback pause command sent"
     })))
 }
 
 /// GET /api/playback/speed/{stream_id}/{speed}
 ///
-/// 改变回放倍速（`speed` 是字符串形式的 f64；非法时按 1.0 处理）。
+/// 改变回放倍速（`speed` 必须是正的有限数）。
 #[utoipa::path(
     get,
     path = "/api/playback/speed/{stream_id}/{speed}",
@@ -585,7 +711,7 @@ pub async fn playback_pause(
     responses(
         (status = 200, description = "已改变倍速",
          body = ApiResult<serde_json::Value>,
-         example = json!({"code":0,"msg":"成功","data":{"streamId":"playback_dev_ch_1700000000","speed":2.0,"message":"Playback speed updated"}})),
+         example = json!({"code":0,"msg":"成功","data":{"streamId":"playback_dev_ch_1700000000","speed":2.0,"statusSource":"local_requested","sipSent":true,"deviceResult":{"status":"sent"},"message":"Playback speed command sent"}})),
         (status = 401, description = "未鉴权"),
     ),
     security(("access_token" = [])),
@@ -594,37 +720,31 @@ pub async fn playback_speed(
     State(state): State<AppState>,
     Path((stream_id, speed)): Path<(String, String)>,
 ) -> Json<ApiResult<serde_json::Value>> {
-    let speed: f64 = speed.parse().unwrap_or(1.0);
+    let speed: f64 = match speed.parse::<f64>() {
+        Ok(value) if value > 0.0 && value.is_finite() => value,
+        _ => return Json(ApiResult::error("无效的回放倍速，必须为正数")),
+    };
     tracing::info!("Playback speed: stream={}, speed={}", stream_id, speed);
+    if let Err(msg) = crate::handlers::common_channel::dispatch_playback_control(
+        &state,
+        &stream_id,
+        crate::sip::PlaybackControlCmd::Scale { speed },
+    )
+    .await
+    {
+        return Json(ApiResult::error(msg));
+    }
     if let Some(ref playback_manager) = state.playback_manager {
         playback_manager.update_speed(&stream_id, speed).await;
-    }
-
-    if let Some(ref sip_server) = state.sip_server {
-        let sip = &*sip_server;
-        let parts: Vec<&str> = stream_id.split('_').collect();
-        if parts.len() >= 3 {
-            let device_id = parts[1];
-            let channel_id = parts[2].to_string();
-
-            if let Err(e) = sip
-                .send_playback_control(
-                    device_id,
-                    &channel_id,
-                    crate::sip::PlaybackControlCmd::Scale { speed },
-                )
-                .await
-            {
-                tracing::error!("Failed to send speed command: {}", e);
-                return Json(ApiResult::error(format!("SIP error: {}", e)));
-            }
-        }
     }
 
     Json(ApiResult::success(serde_json::json!({
         "streamId": stream_id,
         "speed": speed,
-        "message": "Playback speed updated"
+        "statusSource": "local_requested",
+        "sipSent": true,
+        "deviceResult": {"status": "sent"},
+        "message": "Playback speed command sent"
     })))
 }
 
@@ -643,7 +763,7 @@ pub async fn playback_speed(
     responses(
         (status = 200, description = "已 seek",
          body = ApiResult<serde_json::Value>,
-         example = json!({"code":0,"msg":"成功","data":{"streamId":"playback_dev_ch_1700000000","currentTime":"2026-01-01T00:01:30","message":"Playback seeked"}})),
+         example = json!({"code":0,"msg":"成功","data":{"streamId":"playback_dev_ch_1700000000","currentTime":"2026-01-01T00:01:30","statusSource":"local_requested","sipSent":true,"deviceResult":{"status":"sent"},"message":"Playback seek command sent"}})),
         (status = 401, description = "未鉴权"),
     ),
     security(("access_token" = [])),
@@ -653,42 +773,33 @@ pub async fn playback_seek(
     Path((stream_id, seek_time)): Path<(String, String)>,
 ) -> Json<ApiResult<serde_json::Value>> {
     tracing::info!("Playback seek: stream={}, time={}", stream_id, seek_time);
-
-    // 更新本地会话状态
+    if seek_time.trim().is_empty() {
+        return Json(ApiResult::error("缺少回放跳转时间"));
+    }
+    if let Err(msg) = crate::handlers::common_channel::dispatch_playback_control(
+        &state,
+        &stream_id,
+        crate::sip::PlaybackControlCmd::Seek {
+            seek_time: seek_time.clone(),
+        },
+    )
+    .await
+    {
+        return Json(ApiResult::error(msg));
+    }
     if let Some(ref playback_manager) = state.playback_manager {
         playback_manager
             .update_current_time(&stream_id, seek_time.clone())
             .await;
     }
 
-    // 发送 SIP INFO 消息通知设备跳转
-    if let Some(ref sip_server) = state.sip_server {
-        let sip = &*sip_server;
-        let parts: Vec<&str> = stream_id.split('_').collect();
-        if parts.len() >= 3 {
-            let device_id = parts[1];
-            let channel_id = parts[2];
-
-            if let Err(e) = sip
-                .send_playback_control(
-                    device_id,
-                    &channel_id,
-                    crate::sip::PlaybackControlCmd::Seek {
-                        seek_time: seek_time.clone(),
-                    },
-                )
-                .await
-            {
-                tracing::error!("Failed to send seek command: {}", e);
-                return Json(ApiResult::error(format!("SIP error: {}", e)));
-            }
-        }
-    }
-
     Json(ApiResult::success(serde_json::json!({
         "streamId": stream_id,
         "currentTime": seek_time,
-        "message": "Playback seeked"
+        "statusSource": "local_requested",
+        "sipSent": true,
+        "deviceResult": {"status": "sent"},
+        "message": "Playback seek command sent"
     })))
 }
 

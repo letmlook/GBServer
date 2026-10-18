@@ -3121,7 +3121,7 @@ async fn resolve_playback_target(state: &AppState, stream: &str) -> Option<(Stri
 }
 
 /// 解析目标并下发 SIP `PlayBackCtrl`；成功返回 `(device_id, channel_id)`。
-async fn dispatch_playback_control(
+pub(crate) async fn dispatch_playback_control(
     state: &AppState,
     stream: &str,
     cmd: crate::sip::PlaybackControlCmd,
@@ -3148,7 +3148,7 @@ async fn dispatch_playback_control(
     Ok((device_id, channel_id))
 }
 
-/// 统一成功响应体（保持 commonChannel 既有的 `code` / `msg` 契约）
+/// 统一发送响应体（保持 commonChannel 既有的 `code` / `msg` 契约）
 fn playback_control_ok(
     stream: &str,
     device_id: &str,
@@ -3161,6 +3161,8 @@ fn playback_control_ok(
         "stream": stream,
         "deviceId": device_id,
         "channelId": channel_id,
+        "sipSent": true,
+        "deviceResult": {"status": "sent"},
     }))
 }
 
@@ -3181,7 +3183,7 @@ pub struct ChannelPlaybackStopQ {
     responses(
         (status = 200, description = "回放停止结果 `{code,msg,stream,deviceId,channelId}`",
          body = serde_json::Value,
-         example = json!({"code":0,"msg":"回放停止成功","stream":"playback_...","deviceId":"34020000001320000001","channelId":"34020000001310000001"})),
+         example = json!({"code":0,"msg":"回放停止请求已发送","stream":"playback_...","deviceId":"34020000001320000001","channelId":"34020000001310000001","sipSent":true,"deviceResult":{"status":"sent"}})),
     ),
     security(("access_token" = [])),
 )]
@@ -3255,7 +3257,7 @@ pub async fn channel_playback_stop(
         return Json(serde_json::json!({ "code": 1, "msg": format!("SIP BYE 下发失败: {}", e) }));
     }
 
-    playback_control_ok(&stream, &device_id, &channel_id, "回放停止成功")
+    playback_control_ok(&stream, &device_id, &channel_id, "回放停止请求已发送")
 }
 
 /// GET /api/common/channel/playback/pause
@@ -3274,7 +3276,7 @@ pub struct ChannelPlaybackPauseQ {
     responses(
         (status = 200, description = "回放暂停结果",
          body = serde_json::Value,
-         example = json!({"code":0,"msg":"回放暂停成功","stream":"playback_...","deviceId":"...","channelId":"..."})),
+         example = json!({"code":0,"msg":"回放暂停命令已发送","stream":"playback_...","deviceId":"...","channelId":"...","sipSent":true,"deviceResult":{"status":"sent"}})),
     ),
     security(("access_token" = [])),
 )]
@@ -3292,12 +3294,12 @@ pub async fn channel_playback_pause(
         return Json(serde_json::json!({ "code": 1, "msg": "缺少 stream 参数" }));
     }
 
-    if let Some(ref pm) = state.playback_manager {
-        pm.pause(&stream).await;
-    }
     match dispatch_playback_control(&state, &stream, crate::sip::PlaybackControlCmd::Pause).await {
         Ok((device_id, channel_id)) => {
-            playback_control_ok(&stream, &device_id, &channel_id, "回放暂停成功")
+            if let Some(ref pm) = state.playback_manager {
+                pm.pause(&stream).await;
+            }
+            playback_control_ok(&stream, &device_id, &channel_id, "回放暂停命令已发送")
         }
         Err(msg) => Json(serde_json::json!({ "code": 1, "msg": msg })),
     }
@@ -3319,7 +3321,7 @@ pub struct ChannelPlaybackResumeQ {
     responses(
         (status = 200, description = "回放恢复结果",
          body = serde_json::Value,
-         example = json!({"code":0,"msg":"回放恢复成功","stream":"playback_...","deviceId":"...","channelId":"..."})),
+         example = json!({"code":0,"msg":"回放恢复命令已发送","stream":"playback_...","deviceId":"...","channelId":"...","sipSent":true,"deviceResult":{"status":"sent"}})),
     ),
     security(("access_token" = [])),
 )]
@@ -3337,12 +3339,12 @@ pub async fn channel_playback_resume(
         return Json(serde_json::json!({ "code": 1, "msg": "缺少 stream 参数" }));
     }
 
-    if let Some(ref pm) = state.playback_manager {
-        pm.resume(&stream).await;
-    }
     match dispatch_playback_control(&state, &stream, crate::sip::PlaybackControlCmd::Resume).await {
         Ok((device_id, channel_id)) => {
-            playback_control_ok(&stream, &device_id, &channel_id, "回放恢复成功")
+            if let Some(ref pm) = state.playback_manager {
+                pm.resume(&stream).await;
+            }
+            playback_control_ok(&stream, &device_id, &channel_id, "回放恢复命令已发送")
         }
         Err(msg) => Json(serde_json::json!({ "code": 1, "msg": msg })),
     }
@@ -3365,7 +3367,7 @@ pub struct ChannelPlaybackSeekQ {
     responses(
         (status = 200, description = "回放跳转结果（带 currentTime）",
          body = serde_json::Value,
-         example = json!({"code":0,"msg":"回放跳转成功","stream":"playback_...","deviceId":"...","channelId":"...","currentTime":"2026-01-01 12:00:00"})),
+         example = json!({"code":0,"msg":"回放跳转命令已发送","stream":"playback_...","deviceId":"...","channelId":"...","currentTime":"2026-01-01 12:00:00","sipSent":true,"deviceResult":{"status":"sent"}})),
     ),
     security(("access_token" = [])),
 )]
@@ -3388,15 +3390,16 @@ pub async fn channel_playback_seek(
         return Json(serde_json::json!({ "code": 1, "msg": "缺少 seek_time 参数" }));
     }
 
-    if let Some(ref pm) = state.playback_manager {
-        pm.update_current_time(&stream, seek_time.clone()).await;
-    }
     let cmd = crate::sip::PlaybackControlCmd::Seek {
         seek_time: seek_time.clone(),
     };
     match dispatch_playback_control(&state, &stream, cmd).await {
         Ok((device_id, channel_id)) => {
-            let mut body = playback_control_ok(&stream, &device_id, &channel_id, "回放跳转成功");
+            if let Some(ref pm) = state.playback_manager {
+                pm.update_current_time(&stream, seek_time.clone()).await;
+            }
+            let mut body =
+                playback_control_ok(&stream, &device_id, &channel_id, "回放跳转命令已发送");
             if let Some(obj) = body.0.as_object_mut() {
                 obj.insert(
                     "currentTime".to_string(),
@@ -3434,7 +3437,7 @@ pub struct ChannelPlaybackSpeedQ {
     responses(
         (status = 200, description = "回放倍速设置结果",
          body = serde_json::Value,
-         example = json!({"code":0,"msg":"回放倍速设置成功","stream":"playback_...","deviceId":"...","channelId":"...","speed":2.0})),
+         example = json!({"code":0,"msg":"回放倍速设置命令已发送","stream":"playback_...","deviceId":"...","channelId":"...","speed":2.0,"sipSent":true,"deviceResult":{"status":"sent"}})),
     ),
     security(("access_token" = [])),
 )]
@@ -3463,14 +3466,14 @@ pub async fn channel_playback_speed(
         }
     };
 
-    if let Some(ref pm) = state.playback_manager {
-        pm.update_speed(&stream, speed).await;
-    }
     let cmd = crate::sip::PlaybackControlCmd::Scale { speed };
     match dispatch_playback_control(&state, &stream, cmd).await {
         Ok((device_id, channel_id)) => {
+            if let Some(ref pm) = state.playback_manager {
+                pm.update_speed(&stream, speed).await;
+            }
             let mut body =
-                playback_control_ok(&stream, &device_id, &channel_id, "回放倍速设置成功");
+                playback_control_ok(&stream, &device_id, &channel_id, "回放倍速设置命令已发送");
             if let Some(obj) = body.0.as_object_mut() {
                 obj.insert("speed".to_string(), serde_json::json!(speed));
             }

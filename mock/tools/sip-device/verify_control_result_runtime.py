@@ -203,6 +203,22 @@ def common_channel_commands(token, output):
     assert invalid.get("code") != 0 and "1-255" in invalid.get("msg", ""), invalid
 
 
+def playback_send_only_commands(token):
+    stream = f"playback_{DEVICE_ID}_{DEVICE_ID}_1700000000"
+    public = api(f"/api/playback/pause/{stream}", token=token)
+    data = public.get("data") or {}
+    assert public.get("code") == 0 and data.get("sipSent") is True, public
+    assert data.get("deviceResult", {}).get("status") == "sent", public
+    assert data.get("statusSource") == "local_requested", public
+
+    query = urllib.parse.urlencode({"stream": stream, "speed": "2"})
+    compatible = api("/api/common/channel/playback/speed?" + query, token=token)
+    assert compatible.get("code") == 0 and compatible.get("sipSent") is True, compatible
+    assert compatible.get("deviceResult", {}).get("status") == "sent", compatible
+    assert "命令已发送" in compatible.get("msg", ""), compatible
+    print("playback pause and compatible speed: SIP sent, device result pending")
+
+
 def record_command(token, action="Record"):
     query = urllib.parse.urlencode({
         "deviceId": DEVICE_ID, "channelId": DEVICE_ID, "recordCmdStr": action,
@@ -286,6 +302,7 @@ def scenario(token, name, mode, expected, delay_ms=0, repeats=1, second=False):
                     else:
                         raise AssertionError("SY GOTO_PRESET did not send PTZCmd for preset 3")
                     common_channel_commands(token, output)
+                    playback_send_only_commands(token)
                 guard = guard_command(token)
                 assert guard["status"] == expected, f"{name} guard: {guard}"
                 assert guard["sn"] != first["sn"], "guard reused transport request SN"
