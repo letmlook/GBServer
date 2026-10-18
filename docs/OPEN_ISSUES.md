@@ -49,7 +49,7 @@
 | B11 | 缺陷 | `on_server_started` 用 ZLM **内部** HTTP 端口覆盖库里的对外端口（80 覆盖 8080）→ 后端所有 ZLM 调用 502 | ✅ 已修 |
 | B12 | 缺陷 | ZLM 对同一路流**按协议各返回一行** → 控制台「重点通道」同一通道重复铺格子、「直播 N」虚高 | ✅ 已修并复验 |
 | B13 | 性能 | 控制台首屏"等最慢接口"才统一赋值 + `system/info` 被 3 个组件同时拉 → 卡片空等约 2s | ✅ 已修并复验 |
-| B14 | 缺陷 | `DeviceControl` / `DeviceConfig` 应答按设备、SN、类型和目标关联；传输模式、设防/撤防、远程录像、配置下发、重启、预置位及直接 PTZ 可返回设备执行状态；`/api/front-end/*` 明确只声明已发送；其它入口与真机仍待验收 | 🟡 |
+| B14 | 缺陷 | `DeviceControl` / `DeviceConfig` 应答按设备、SN、类型和目标关联；传输模式、设防/撤防、远程录像、配置下发、重启、预置位、直接 PTZ 与批量 PTZ 停止/重启可区分发送和执行；`/api/front-end/*` 明确只声明已发送；其它入口与真机仍待验收 | 🟡 |
 | B15 | 缺陷 | 设备保活/注册统计查了**库里不存在的表**（真实表名 `gb_device`）→ 两个统计接口恒返回 0 | ✅ 已修 |
 | B9 | 配置 | `rtc.externIP` 平台未下发 → 容器部署下浏览器 ICE 永远连不上 | ✅ 已修 |
 | A4 | 前端 | 直播页 WebRTC 播放入口（`postWebrtcPlay` 原先无调用方） | ✅ 已接 (2026-09-19) |
@@ -555,11 +555,15 @@ Unhandled MESSAGE body: <?xml version="1.0" encoding="GB2312"?>
 `rejected`、`unconfirmed`，并将 SIP 发送状态与设备结果分开；默认即时发送
 的离散操作保持 `sent` 语义。`/api/front-end/*` 的即时控制响应也统一携带
 `sipSent=true` 与 `deviceResult.status=sent`，不再把发送成功称为设备操作成功。
+批量控制保留原有 `success/failed` 发送计数，逐设备补充 `sipSent`、`deviceResult`；
+`ptzStop` 和 `reboot` 支持 `waitResult=true`，查询类命令不提供执行等待。
 
 **本轮运行证据**：真实后端 + Python SIP Mock 对传输模式接口执行了确认、拒绝、
 仅 SIP 200 无设备回执、重复回执、5.5 秒迟到回执及新旧 SN 隔离，结果符合预期。
 配置查询 `ConfigDownload` 的 Mock 回执延迟 11 秒，平台仍返回 `source=live`；
 此前 pending 默认 10 秒而接口等待 15 秒的预算错位已修复。
+2026-10-18 批量 PTZ 停止与重启又覆盖即时发送、确认、拒绝、无回执；
+不存在设备返回 `not_sent`，查询类命令要求执行等待时被明确拒绝。
 这只能证明 Mock 路径，不代表 2026-09-19 的真机缺陷已在同一设备上复验。
 
 **剩余**：真机传输模式或控制命令回执；其它控制入口按设备结果展示，而不把

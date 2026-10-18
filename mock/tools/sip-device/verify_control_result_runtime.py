@@ -108,6 +108,22 @@ def ptz_command(token, wait_result=True):
     return response["data"]["deviceResult"]
 
 
+def batch_command(token, command, wait_result=True):
+    payload = {"deviceIds": [DEVICE_ID], "command": command,
+               "waitResult": wait_result}
+    if command == "ptzStop":
+        payload["channelId"] = PTZ_CHANNEL_ID
+    response = api("/api/device/batch/control", token=token, post=True, payload=payload)
+    data = response.get("data") or {}
+    results = data.get("results") or []
+    if response.get("code") != 0 or data.get("success") != 1 or len(results) != 1:
+        raise AssertionError("Batch control was not sent: " + json.dumps(response, ensure_ascii=False))
+    result = results[0]
+    if not result.get("sipSent"):
+        raise AssertionError("Batch control lacks SIP send status: " + json.dumps(response, ensure_ascii=False))
+    return result["deviceResult"]
+
+
 def sy_preset_command(token):
     query = urllib.parse.urlencode({
         "deviceId": DEVICE_ID, "channelId": DEVICE_ID,
@@ -226,6 +242,12 @@ def scenario(token, name, mode, expected, delay_ms=0, repeats=1, second=False):
                 assert ptz["status"] == expected, f"{name} PTZ: {ptz}"
                 assert ptz["sn"] != preset["sn"], "PTZ reused preset request SN"
                 print(f"{name} PTZ: {ptz['status']} sn={ptz['sn']}")
+                for batch_type in ("ptzStop", "reboot"):
+                    immediate_batch = batch_command(token, batch_type, wait_result=False)
+                    assert immediate_batch["status"] == "sent", f"{name} immediate batch {batch_type}: {immediate_batch}"
+                    batch_result = batch_command(token, batch_type)
+                    assert batch_result["status"] == expected, f"{name} batch {batch_type}: {batch_result}"
+                    print(f"{name} batch {batch_type}: {batch_result['status']} sn={batch_result['sn']}")
                 if name == "ok":
                     sy_preset_command(token)
                     deadline = time.monotonic() + 2
@@ -281,6 +303,18 @@ def main():
     scenario(token, "silent", "silent", "unconfirmed")
     scenario(token, "duplicate", "ok", "confirmed", repeats=2)
     scenario(token, "late", "ok", "unconfirmed", delay_ms=5500, second=True)
+    for command_name in ("syncCatalog", "queryDeviceInfo", "queryDeviceStatus"):
+        response = api("/api/device/batch/control", token=token, post=True,
+                       payload={"deviceIds": [DEVICE_ID], "command": command_name,
+                                "waitResult": True})
+        assert response["code"] != 0, f"{command_name} incorrectly accepted waitResult: {response}"
+    response = api("/api/device/batch/control", token=token, post=True,
+                   payload={"deviceIds": ["34020000001320000099"], "command": "reboot"})
+    data = response.get("data") or {}
+    assert response["code"] == 0 and data.get("success") == 0 and data.get("failed") == 1, response
+    result = data["results"][0]
+    assert result["sipSent"] is False and result["deviceResult"]["status"] == "not_sent", response
+    print("batch query waitResult rejected; offline device not_sent")
 
 
 if __name__ == "__main__":
