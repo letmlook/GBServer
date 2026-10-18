@@ -1,4 +1,5 @@
 use axum::{extract::State, Json};
+use futures_util::{stream, StreamExt};
 use serde::Deserialize;
 use utoipa::ToSchema;
 
@@ -167,7 +168,6 @@ pub async fn batch_control(
         ));
     }
     let total = req.device_ids.len();
-    let mut results = Vec::new();
 
     let sip_server = match &state.sip_server {
         Some(s) => s.clone(),
@@ -176,63 +176,70 @@ pub async fn batch_control(
 
     let sip = &*sip_server;
 
-    for device_id in &req.device_ids {
-        let result = match req.command {
-            BatchCommand::PtzStop => {
-                if let Some(ref channel_id) = req.channel_id {
-                    // 停止云台：用国标 8 字节 PTZCmd（0xA5 起始 + 累加校验），
-                    // 此前硬编码的 "A500000000AF" 既不是 8 字节、校验也不对。
-                    //
-                    // 报文结构也必须对：`CmdType` 是 `DeviceControl`，8 字节指令要包在
-                    // `<PTZCmd>` 元素里。此前传的是 `cmd_type="PTZCmd"` + **裸十六进制串**
-                    // 当 body —— 生成出来的 XML 既没有 `<PTZCmd>` 元素、CmdType 也不是
-                    // 合法设备控制类型，真实设备只会丢弃。
-                    let stop_cmd = crate::sip::gb28181::front_end_control::build_ptz_cmd(
-                        crate::sip::gb28181::front_end_control::PtzAction::Stop,
-                        0,
-                    );
-                    let body = format!("<PTZCmd>{}</PTZCmd>", stop_cmd);
-                    send_control(sip, device_id, channel_id, &body, req.wait_result).await
-                } else {
-                    DeviceControlResult::failed(device_id, "Missing channel_id")
+    let command = req.command;
+    let channel_id = req.channel_id.as_deref();
+    let wait_result = req.wait_result;
+    // 保持请求顺序，同时限制并发 SIP 发送及待确认请求的数量。
+    let results = stream::iter(req.device_ids.into_iter())
+        .map(|device_id| async move {
+            match command {
+                BatchCommand::PtzStop => {
+                    if let Some(channel_id) = channel_id {
+                        // 停止云台：用国标 8 字节 PTZCmd（0xA5 起始 + 累加校验），
+                        // 此前硬编码的 "A500000000AF" 既不是 8 字节、校验也不对。
+                        //
+                        // 报文结构也必须对：`CmdType` 是 `DeviceControl`，8 字节指令要包在
+                        // `<PTZCmd>` 元素里。此前传的是 `cmd_type="PTZCmd"` + **裸十六进制串**
+                        // 当 body —— 生成出来的 XML 既没有 `<PTZCmd>` 元素、CmdType 也不是
+                        // 合法设备控制类型，真实设备只会丢弃。
+                        let stop_cmd = crate::sip::gb28181::front_end_control::build_ptz_cmd(
+                            crate::sip::gb28181::front_end_control::PtzAction::Stop,
+                            0,
+                        );
+                        let body = format!("<PTZCmd>{}</PTZCmd>", stop_cmd);
+                        send_control(sip, &device_id, channel_id, &body, wait_result).await
+                    } else {
+                        DeviceControlResult::failed(&device_id, "Missing channel_id")
+                    }
+                }
+                BatchCommand::SyncCatalog => match sip.send_catalog_query(&device_id).await {
+                    Ok(_) => DeviceControlResult::sent(&device_id),
+                    Err(e) => DeviceControlResult::failed(&device_id, e.to_string()),
+                },
+                BatchCommand::Reboot => {
+                    // 远程启动：`<CmdType>DeviceControl</CmdType>` + `<TeleBoot>Boot</TeleBoot>`。
+                    // 此前是 `cmd_type="Reboot"` + 空 body —— 设备端既认不出 CmdType，
+                    // 也没有 TeleBoot 元素，"批量重启"实际什么都不会发生。
+                    send_control(
+                        sip,
+                        &device_id,
+                        &device_id,
+                        "<TeleBoot>Boot</TeleBoot>",
+                        wait_result,
+                    )
+                    .await
+                }
+                BatchCommand::QueryDeviceInfo => {
+                    // 此前与 DeviceStatus / SyncCatalog 共用 `send_catalog_query`：
+                    // 三个不同的批量按钮下发的是同一条目录查询。现在各发各的。
+                    let sn = (chrono::Utc::now().timestamp_millis() % 900_000 + 100_000) as u32;
+                    match sip.send_device_info_query(&device_id, sn).await {
+                        Ok(_) => DeviceControlResult::sent(&device_id),
+                        Err(e) => DeviceControlResult::failed(&device_id, e.to_string()),
+                    }
+                }
+                BatchCommand::QueryDeviceStatus => {
+                    let sn = (chrono::Utc::now().timestamp_millis() % 900_000 + 100_000) as u32;
+                    match sip.send_device_status_query(&device_id, sn).await {
+                        Ok(_) => DeviceControlResult::sent(&device_id),
+                        Err(e) => DeviceControlResult::failed(&device_id, e.to_string()),
+                    }
                 }
             }
-            BatchCommand::SyncCatalog => match sip.send_catalog_query(device_id).await {
-                Ok(_) => DeviceControlResult::sent(device_id),
-                Err(e) => DeviceControlResult::failed(device_id, e.to_string()),
-            },
-            BatchCommand::Reboot => {
-                // 远程启动：`<CmdType>DeviceControl</CmdType>` + `<TeleBoot>Boot</TeleBoot>`。
-                // 此前是 `cmd_type="Reboot"` + 空 body —— 设备端既认不出 CmdType，
-                // 也没有 TeleBoot 元素，"批量重启"实际什么都不会发生。
-                send_control(
-                    sip,
-                    device_id,
-                    device_id,
-                    "<TeleBoot>Boot</TeleBoot>",
-                    req.wait_result,
-                )
-                .await
-            }
-            BatchCommand::QueryDeviceInfo => {
-                // 此前与 DeviceStatus / SyncCatalog 共用 `send_catalog_query`：
-                // 三个不同的批量按钮下发的是同一条目录查询。现在各发各的。
-                let sn = (chrono::Utc::now().timestamp_millis() % 900_000 + 100_000) as u32;
-                match sip.send_device_info_query(device_id, sn).await {
-                    Ok(_) => DeviceControlResult::sent(device_id),
-                    Err(e) => DeviceControlResult::failed(device_id, e.to_string()),
-                }
-            }
-            BatchCommand::QueryDeviceStatus => {
-                let sn = (chrono::Utc::now().timestamp_millis() % 900_000 + 100_000) as u32;
-                match sip.send_device_status_query(device_id, sn).await {
-                    Ok(_) => DeviceControlResult::sent(device_id),
-                    Err(e) => DeviceControlResult::failed(device_id, e.to_string()),
-                }
-            }
-        };
-        results.push(result);
-    }
+        })
+        .buffered(16)
+        .collect::<Vec<_>>()
+        .await;
 
     let success = results.iter().filter(|r| r.success).count();
     let failed = total - success;

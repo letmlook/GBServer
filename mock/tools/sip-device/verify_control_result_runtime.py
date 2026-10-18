@@ -124,6 +124,21 @@ def batch_command(token, command, wait_result=True):
     return result["deviceResult"]
 
 
+def batch_silent_commands_run_concurrently(token):
+    started = time.monotonic()
+    response = api("/api/device/batch/control", token=token, post=True,
+                   payload={"deviceIds": [DEVICE_ID, DEVICE_ID],
+                            "command": "reboot", "waitResult": True})
+    elapsed = time.monotonic() - started
+    data = response.get("data") or {}
+    results = data.get("results") or []
+    assert response["code"] == 0 and data.get("success") == 2 and len(results) == 2, response
+    assert all(r["sipSent"] and r["deviceResult"]["status"] == "unconfirmed" for r in results), response
+    assert results[0]["deviceResult"]["sn"] != results[1]["deviceResult"]["sn"], response
+    assert elapsed < 8, f"batch waited serially for two 5s timeouts: {elapsed:.2f}s"
+    print(f"silent batch two requests: unconfirmed in {elapsed:.2f}s")
+
+
 def sy_preset_command(token):
     query = urllib.parse.urlencode({
         "deviceId": DEVICE_ID, "channelId": DEVICE_ID,
@@ -248,6 +263,8 @@ def scenario(token, name, mode, expected, delay_ms=0, repeats=1, second=False):
                     batch_result = batch_command(token, batch_type)
                     assert batch_result["status"] == expected, f"{name} batch {batch_type}: {batch_result}"
                     print(f"{name} batch {batch_type}: {batch_result['status']} sn={batch_result['sn']}")
+                if name == "silent":
+                    batch_silent_commands_run_concurrently(token)
                 if name == "ok":
                     sy_preset_command(token)
                     deadline = time.monotonic() + 2

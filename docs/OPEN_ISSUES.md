@@ -556,7 +556,8 @@ Unhandled MESSAGE body: <?xml version="1.0" encoding="GB2312"?>
 的离散操作保持 `sent` 语义。`/api/front-end/*` 的即时控制响应也统一携带
 `sipSent=true` 与 `deviceResult.status=sent`，不再把发送成功称为设备操作成功。
 批量控制保留原有 `success/failed` 发送计数，逐设备补充 `sipSent`、`deviceResult`；
-`ptzStop` 和 `reboot` 支持 `waitResult=true`，查询类命令不提供执行等待。
+`ptzStop` 和 `reboot` 支持 `waitResult=true`，查询类命令不提供执行等待；
+批量请求最多并行处理 16 台设备并按请求顺序返回，避免每台无回执设备串行等待 5 秒。
 
 **本轮运行证据**：真实后端 + Python SIP Mock 对传输模式接口执行了确认、拒绝、
 仅 SIP 200 无设备回执、重复回执、5.5 秒迟到回执及新旧 SN 隔离，结果符合预期。
