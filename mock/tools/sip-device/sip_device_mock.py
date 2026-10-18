@@ -96,6 +96,8 @@ class DeviceConfig:
     # 收到 PLAY INVITE 后是否**真的推 RTP/PS**到平台宣告的收流端口。
     # 关掉时只做信令，平台会一直等媒体（用于单独验证信令链路的场景）。
     send_rtp: bool = False
+    # 非 200 时直接拒绝 INVITE，不建立会话或发送媒体。
+    invite_status: int = 200
     # 每路流的 RTP 负载类型（GB28181 常用 96 = PS）
     rtp_payload_type: int = 96
     # 应答「移动位置查询」时上报的经纬度（/api/position/realtime 用它验证解析与落库）
@@ -1387,7 +1389,7 @@ class SipDeviceMock:
         log.info("RecordInfo 应答已发送 sn=%s 共 %d 包", sn, pages)
 
     async def _on_invite(self, msg: str, addr: tuple):
-        """处理 INVITE，发送 200 OK + SDP，3 秒后 BYE"""
+        """处理 INVITE；默认 200 OK + SDP，可配置直接拒绝。"""
         try:
             invite_cseq = parse_cseq(msg)
         except MalformedCSeq as e:
@@ -1426,6 +1428,21 @@ class SipDeviceMock:
             ssrc_y or "(无)",
             f_line or "(无 f=)",
         )
+        if self.cfg.invite_status != 200:
+            reason = "Busy Here" if self.cfg.invite_status == 486 else "Service Unavailable"
+            response = (
+                f"{SIP_VERSION} {self.cfg.invite_status} {reason}\r\n"
+                f"Via: {self._extract_header(msg, 'Via', '')}\r\n"
+                f"From: {self._extract_header(msg, 'From', '')}\r\n"
+                f"To: {self._extract_header(msg, 'To', '')};tag={to_tag}\r\n"
+                f"Call-ID: {call_id}\r\n"
+                f"CSeq: {invite_cseq} INVITE\r\n"
+                "Content-Length: 0\r\n\r\n"
+            )
+            self._invite_state.pop(call_id, None)
+            self.transport.sendto(response.encode(), addr)
+            log.info("INVITE rejected: call=%s status=%d", call_id, self.cfg.invite_status)
+            return
         local = self.transport.get_extra_info("sockname")
         req_body = msg.split("\r\n\r\n", 1)[1] if "\r\n\r\n" in msg else ""
         # advertised_ip 是真实出口 IP（local[0] 在绑定通配地址时是 "0.0.0.0"）；
@@ -1811,6 +1828,8 @@ def main():
         "--auto-bye-secs", type=int, default=3,
         help="收到 INVITE 后自动挂断的秒数（0=不自动挂断，用于测试平台侧 BYE）",
     )
+    parser.add_argument("--invite-status", type=int, default=200, choices=[200, 486, 503],
+                        help="INVITE 的 SIP 应答状态；486/503 模拟设备拒绝")
     parser.add_argument(
         "--catalog-sum-num-override",
         type=int,
@@ -1850,6 +1869,7 @@ def main():
         expires_secs=args.expires,
         auto_bye_secs=args.auto_bye_secs,
         catalog_sum_num_override=args.catalog_sum_num_override,
+        invite_status=args.invite_status,
     )
 
     cfg.send_rtp = args.send_rtp

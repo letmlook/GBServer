@@ -4,6 +4,13 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration;
 
+#[derive(Debug, thiserror::Error)]
+#[error("Device rejected INVITE: {status} {reason}")]
+pub struct InviteRejected {
+    pub status: u16,
+    pub reason: String,
+}
+
 /// 进程随机起点 + 原子递增，避免同秒内并发设备命令复用 SN。
 pub(crate) fn next_sip_command_sn() -> u32 {
     static COUNTER: OnceLock<AtomicU32> = OnceLock::new();
@@ -6173,6 +6180,17 @@ f=v/1/96/1/2/1/1/0
         self.send_invite_session_bye(session).await
     }
 
+    /// 仅终止本次 INVITE，避免失败清理误关同通道的另一条会话。
+    pub async fn send_session_bye_by_call_id(&self, call_id: &str) -> Result<String> {
+        let session = self
+            .invite_session_manager
+            .get(call_id)
+            .await
+            .filter(|session| session.is_active())
+            .ok_or_else(|| anyhow::anyhow!("No active invite session for {}", call_id))?;
+        self.send_invite_session_bye(session).await
+    }
+
     /// 按 ZLM 流标识停止会话，供流 hook 精确清理。
     pub async fn send_session_bye_by_stream_id(&self, stream_id: &str) -> Result<String> {
         let session = self
@@ -6670,17 +6688,31 @@ f=v/1/96/1/2/1/1/0
         media_port: u16,
         ssrc: Option<&str>,
     ) -> Result<(String, SipResponse)> {
+        let call_id = format!(
+            "play_{}_{}",
+            device_id,
+            chrono::Utc::now().timestamp_millis()
+        );
+        self.send_play_invite_and_wait_with_call_id(
+            device_id, channel_id, media_port, ssrc, call_id,
+        )
+        .await
+    }
+
+    async fn send_play_invite_and_wait_with_call_id(
+        &self,
+        device_id: &str,
+        channel_id: &str,
+        media_port: u16,
+        ssrc: Option<&str>,
+        call_id: String,
+    ) -> Result<(String, SipResponse)> {
         let device_addr = self
             .device_manager
             .get_address(device_id)
             .await
             .ok_or_else(|| anyhow::anyhow!("Device {} not registered", device_id))?;
 
-        let call_id = format!(
-            "play_{}_{}",
-            device_id,
-            chrono::Utc::now().timestamp_millis()
-        );
         let branch = generate_branch();
         let cseq = cseq_header(1, "INVITE").to_string();
         let from_tag = generate_tag();
@@ -6765,7 +6797,12 @@ f=v/1/96/1/2/1/1/0
             device_addr.port()
         );
         let message = Parser::generate_request("INVITE", &uri, &headers, Some(&sdp));
-        self.send_request_to(device_addr, &message).await?;
+        if let Err(error) = self.send_request_to(device_addr, &message).await {
+            self.pending_invites.remove(&call_id);
+            self.session_manager.remove(&call_id).await;
+            self.invite_session_manager.remove(&call_id).await;
+            return Err(error);
+        }
         tracing::info!(
             "Sent PLAY INVITE to device={} channel={} port={} ssrc={} call_id={}",
             device_id,
@@ -6779,6 +6816,15 @@ f=v/1/96/1/2/1/1/0
         // 调用方需要根据设备宣告的 m= 端口调 ZLM connectRtpServer。
         match tokio::time::timeout(Duration::from_secs(15), rx).await {
             Ok(Ok(resp)) => {
+                if resp.status_code() != 200 {
+                    self.session_manager.remove(&call_id).await;
+                    self.invite_session_manager.remove(&call_id).await;
+                    return Err(InviteRejected {
+                        status: resp.status_code(),
+                        reason: resp.reason.clone(),
+                    }
+                    .into());
+                }
                 tracing::info!(
                     "INVITE 200 OK received for call_id={} has_body={}",
                     call_id,
@@ -6788,10 +6834,14 @@ f=v/1/96/1/2/1/1/0
             }
             Ok(Err(_)) => {
                 self.pending_invites.remove(&call_id);
+                self.session_manager.remove(&call_id).await;
+                self.invite_session_manager.remove(&call_id).await;
                 Err(anyhow::anyhow!("INVITE cancelled or device rejected"))
             }
             Err(_) => {
                 self.pending_invites.remove(&call_id);
+                self.session_manager.remove(&call_id).await;
+                self.invite_session_manager.remove(&call_id).await;
                 Err(anyhow::anyhow!(
                     "INVITE timeout – device did not respond in 15s"
                 ))
@@ -6834,7 +6884,13 @@ f=v/1/96/1/2/1/1/0
 
         // 2. 发送 SIP INVITE，等待 200 OK
         let invite_resp = match self
-            .send_play_invite_and_wait(device_id, channel_id, media_port, ssrc)
+            .send_play_invite_and_wait_with_call_id(
+                device_id,
+                channel_id,
+                media_port,
+                ssrc,
+                call_id.clone(),
+            )
             .await
         {
             Ok((_call_id, resp)) => {
@@ -6846,13 +6902,13 @@ f=v/1/96/1/2/1/1/0
             }
             Err(e) => {
                 // SIP 失败，清理等待器
-                let _ = self.media_waiter_manager.cleanup_expired();
+                self.media_waiter_manager.cancel_by_call_id(&call_id);
                 return Err(e);
             }
         };
 
         // 3. 等待 ZLM Hook 触发 media-ready
-        match tokio::time::timeout(Duration::from_secs(timeout_secs), media_rx).await {
+        let result = match tokio::time::timeout(Duration::from_secs(timeout_secs), media_rx).await {
             Ok(Ok(MediaWaitResult::MediaReady {
                 zlm_stream_id: zid,
                 app,
@@ -6860,7 +6916,7 @@ f=v/1/96/1/2/1/1/0
                 tracing::info!("Media ready: stream_id={} app={}", zid, app);
                 // 4. 更新 InviteSession 状态为 Active
                 self.invite_session_manager.activate(&call_id).await;
-                Ok((call_id, zid, invite_resp))
+                Ok((call_id.clone(), zid, invite_resp))
             }
             Ok(Ok(MediaWaitResult::Timeout)) => {
                 let _ = self.media_waiter_manager.cleanup_expired();
@@ -6870,11 +6926,9 @@ f=v/1/96/1/2/1/1/0
                 let _ = self.media_waiter_manager.cleanup_expired();
                 Err(anyhow::anyhow!("Media session not found"))
             }
-            Ok(Ok(MediaWaitResult::DeviceRejected { status, reason })) => Err(anyhow::anyhow!(
-                "Device rejected INVITE: {} {}",
-                status,
-                reason
-            )),
+            Ok(Ok(MediaWaitResult::DeviceRejected { status, reason })) => {
+                Err(InviteRejected { status, reason }.into())
+            }
             Ok(Err(_)) => {
                 let _ = self.media_waiter_manager.cleanup_expired();
                 Err(anyhow::anyhow!("Media wait channel closed unexpectedly"))
@@ -6886,7 +6940,14 @@ f=v/1/96/1/2/1/1/0
                     timeout_secs
                 ))
             }
+        };
+        if result.is_err() {
+            self.media_waiter_manager.cancel_by_call_id(&call_id);
+            if let Err(error) = self.send_session_bye_by_call_id(&call_id).await {
+                tracing::warn!(%call_id, "媒体未就绪后发送 BYE 失败: {error}");
+            }
         }
+        result
     }
 
     /// 通过 stream_id 触发 MediaWaiter（ZLM Hook 调用）

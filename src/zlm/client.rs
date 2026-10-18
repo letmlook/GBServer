@@ -6,6 +6,16 @@ use std::collections::HashMap;
 use super::types::*;
 use crate::config::ZlmServerConfig;
 
+fn request_error_kind(error: &reqwest::Error) -> &'static str {
+    if error.is_connect() {
+        "connect error"
+    } else if error.is_timeout() {
+        "timeout"
+    } else {
+        "request error"
+    }
+}
+
 #[derive(Clone)]
 pub struct ZlmClient {
     base_url: String,
@@ -154,11 +164,18 @@ impl ZlmClient {
         for (k, v) in params {
             req = req.query(&[(k, v)]);
         }
-        let resp = req.send().await?;
+        // reqwest 的错误文本包含完整 URL；这里的查询参数有 ZLM secret。
+        // 对外及日志只保留接口路径和错误类别。
+        let resp = req.send().await.map_err(|error| {
+            anyhow!("ZLM request {path} failed: {}", request_error_kind(&error))
+        })?;
         if !resp.status().is_success() {
             return Err(anyhow!("HTTP error: {}", resp.status()));
         }
-        let body: R = resp.json().await?;
+        let body: R = resp
+            .json()
+            .await
+            .map_err(|_| anyhow!("ZLM request {path} failed: invalid JSON response"))?;
         Ok(body)
     }
 
@@ -780,7 +797,10 @@ impl ZlmClient {
         for (k, v) in &params {
             req = req.query(&[(k, v)]);
         }
-        let resp = req.send().await?;
+        let resp = req
+            .send()
+            .await
+            .map_err(|error| anyhow!("ZLM getSnap failed: {}", request_error_kind(&error)))?;
         if !resp.status().is_success() {
             return Err(anyhow!("ZLM getSnap HTTP error: {}", resp.status()));
         }
@@ -792,7 +812,10 @@ impl ZlmClient {
             .and_then(|v| v.to_str().ok())
             .unwrap_or("")
             .to_string();
-        let bytes = resp.bytes().await?;
+        let bytes = resp
+            .bytes()
+            .await
+            .map_err(|error| anyhow!("ZLM getSnap body failed: {}", request_error_kind(&error)))?;
 
         if content_type.contains("json") {
             // 把 ZLM 的错误信息原样带出来，便于定位（"stream not found" 等）
@@ -1309,7 +1332,7 @@ impl ZlmClient {
     }
 
     /// 获取当前活跃流数量（从 ZLM API 获取）
-    pub async fn get_stream_count(&self) -> Result<i32, reqwest::Error> {
+    pub async fn get_stream_count(&self) -> Result<i32> {
         #[derive(Deserialize)]
         #[allow(dead_code)]
         struct StreamListResp {
@@ -1323,9 +1346,11 @@ impl ZlmClient {
             .get(format!("{}/api/stream/list", self.base_url))
             .query(&[("secret", &self.secret)])
             .send()
-            .await?
+            .await
+            .map_err(|error| anyhow!("ZLM stream list failed: {}", request_error_kind(&error)))?
             .json()
-            .await?;
+            .await
+            .map_err(|_| anyhow!("ZLM stream list failed: invalid JSON response"))?;
         Ok(resp.data.map(|v| v.len() as i32).unwrap_or(0))
     }
 
@@ -1364,6 +1389,25 @@ impl ZlmClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn request_failure_never_includes_secret_query() {
+        let client = ZlmClient::new("127.0.0.1", 9, "private-zlm-secret");
+        let error = client
+            .open_rtp_server(&OpenRtpServerRequest {
+                secret: client.secret.clone(),
+                stream_id: "device_channel".to_string(),
+                port: Some(0),
+                use_tcp: Some(false),
+                rtp_type: Some(0),
+                recv_port: None,
+            })
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(!error.contains("private-zlm-secret"), "{error}");
+        assert!(!error.contains("secret="), "{error}");
+    }
 
     /// 回归：`port` 必须无条件出现在 `openRtpServer` 参数里。
     ///

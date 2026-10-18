@@ -11,8 +11,34 @@ fn media_server_open_error(
     stream_id: &str,
     error: &anyhow::Error,
 ) -> String {
+    // reqwest 的 Display 会包含完整请求 URL（含 ZLM secret 查询参数）。
+    // 只向调用方暴露错误类别；节点和流由当前请求上下文补齐。
+    let detail = if let Some(request_error) = error.downcast_ref::<reqwest::Error>() {
+        if request_error.is_connect() {
+            "连接失败".to_string()
+        } else if request_error.is_timeout() {
+            "连接超时".to_string()
+        } else if let Some(status) = request_error.status() {
+            format!("HTTP {status}")
+        } else {
+            "请求失败".to_string()
+        }
+    } else {
+        error.to_string().replace(&client.secret, "[redacted]")
+    };
     format!(
         "打开 RTP 收流端口失败（节点 {}:{}, 流 {}, 请求 play/start）：{}",
+        client.ip, client.http_port, stream_id, detail
+    )
+}
+
+fn play_sip_error(
+    client: &crate::zlm::ZlmClient,
+    stream_id: &str,
+    error: &anyhow::Error,
+) -> String {
+    format!(
+        "点播信令失败（节点 {}:{}, 流 {}, 请求 play/start）：{}",
         client.ip, client.http_port, stream_id, error
     )
 }
@@ -32,6 +58,23 @@ mod media_diagnostics_tests {
         assert!(msg.contains("play/start"));
         assert!(msg.contains("connection refused"));
         assert!(!msg.contains("private-zlm-secret"));
+    }
+
+    #[tokio::test]
+    async fn connection_error_does_not_expose_zlm_query_secret() {
+        let client = crate::zlm::ZlmClient::new("127.0.0.1", 9, "private-zlm-secret");
+        let error = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap()
+            .get("http://127.0.0.1:9/index/api/openRtpServer?secret=private-zlm-secret")
+            .send()
+            .await
+            .unwrap_err();
+        let msg = super::media_server_open_error(&client, "device_channel", &error.into());
+        assert!(msg.contains("连接失败"), "{msg}");
+        assert!(!msg.contains("private-zlm-secret"));
+        assert!(!msg.contains("secret="));
     }
 }
 
@@ -314,7 +357,10 @@ pub async fn play_start(
                             match zlm_client.open_rtp_server(&rtp_req).await {
                                 Ok(s2) => s2,
                                 Err(e2) => {
-                                    tracing::error!("openRtpServer 重试仍失败 {stream_id}: {e2}");
+                                    tracing::error!(
+                                        "{}",
+                                        media_server_open_error(zlm_client, &stream_id, &e2)
+                                    );
                                     return Json(ApiResult::error(media_server_open_error(
                                         zlm_client, &stream_id, &e2,
                                     )));
@@ -328,7 +374,10 @@ pub async fn play_start(
                             match zlm_client.open_rtp_server(&rtp_req).await {
                                 Ok(s2) => s2,
                                 Err(e2) => {
-                                    tracing::error!("openRtpServer 重试仍失败 {stream_id}: {e2}");
+                                    tracing::error!(
+                                        "{}",
+                                        media_server_open_error(zlm_client, &stream_id, &e2)
+                                    );
                                     return Json(ApiResult::error(media_server_open_error(
                                         zlm_client, &stream_id, &e2,
                                     )));
@@ -337,7 +386,7 @@ pub async fn play_start(
                         }
                     }
                 } else {
-                    tracing::error!("Failed to open RTP server: {}", e);
+                    tracing::error!("{}", media_server_open_error(zlm_client, &stream_id, &e));
                     return Json(ApiResult::error(media_server_open_error(
                         zlm_client, &stream_id, &e,
                     )));
@@ -391,14 +440,7 @@ pub async fn play_start(
                 Err(e) => {
                     tracing::error!("SIP INVITE for TCP-PASSIVE failed: {}", e);
                     let _ = zlm_client.close_rtp_server(&stream_id).await;
-                    let _ = sip
-                        .send_session_bye_by_type(
-                            &device_id,
-                            &channel_id,
-                            crate::sip::gb28181::invite_session::StreamType::Play,
-                        )
-                        .await;
-                    return Json(ApiResult::error(format!("SIP error: {}", e)));
+                    return Json(ApiResult::error(play_sip_error(zlm_client, &stream_id, &e)));
                 }
             };
             tracing::info!(
@@ -422,14 +464,11 @@ pub async fn play_start(
                 Ok(p) => p,
                 Err(e) => {
                     let _ = zlm_client.close_rtp_server(&stream_id).await;
-                    let _ = sip
-                        .send_session_bye_by_type(
-                            &device_id,
-                            &channel_id,
-                            crate::sip::gb28181::invite_session::StreamType::Play,
-                        )
-                        .await;
-                    return Json(ApiResult::error(e));
+                    let _ = sip.send_session_bye_by_call_id(&call_id).await;
+                    return Json(ApiResult::error(format!(
+                        "设备 SDP 无媒体端口（节点 {}:{}, 流 {}, 请求 play/start）：{}",
+                        zlm_client.ip, zlm_client.http_port, stream_id, e
+                    )));
                 }
             };
 
@@ -453,14 +492,14 @@ pub async fn play_start(
                     e
                 );
                 let _ = zlm_client.close_rtp_server(&stream_id).await;
-                let _ = sip
-                    .send_session_bye_by_type(
-                        &device_id,
-                        &channel_id,
-                        crate::sip::gb28181::invite_session::StreamType::Play,
-                    )
-                    .await;
-                return Json(ApiResult::error(format!("ZLM connect error: {}", e)));
+                let _ = sip.send_session_bye_by_call_id(&call_id).await;
+                return Json(ApiResult::error(format!(
+                    "ZLM 主动连接失败（节点 {}:{}, 流 {}, 请求 play/start）：{}",
+                    zlm_client.ip,
+                    zlm_client.http_port,
+                    stream_id,
+                    e.to_string().replace(&zlm_client.secret, "[redacted]")
+                )));
             }
             tracing::info!(
                 "ZLM connectRtpServer (TCP-PASSIVE) -> {} (stream_id={})",
@@ -475,15 +514,10 @@ pub async fn play_start(
                 media_waiters.cancel_by_call_id(&call_id);
                 tracing::error!(%stream_id, transport = "TCP-PASSIVE", %reason, "主动连接后媒体未就绪");
                 let _ = zlm_client.close_rtp_server(&stream_id).await;
-                let _ = sip
-                    .send_session_bye_by_type(
-                        &device_id,
-                        &channel_id,
-                        crate::sip::gb28181::invite_session::StreamType::Play,
-                    )
-                    .await;
+                let _ = sip.send_session_bye_by_call_id(&call_id).await;
                 return Json(ApiResult::error(format!(
-                    "TCP-PASSIVE media error: {reason}"
+                    "TCP-PASSIVE 媒体未就绪（节点 {}:{}, 流 {}, 请求 play/start）：{reason}",
+                    zlm_client.ip, zlm_client.http_port, stream_id
                 )));
             }
 
@@ -576,15 +610,8 @@ pub async fn play_start(
                 tracing::error!("SIP INVITE or media wait failed: {}", e);
                 // 清理已开启的 RTP 端口
                 let _ = zlm_client.close_rtp_server(&stream_id).await;
-                // 兜底再发一次 BYE，确保设备端不会持续推流
-                let _ = sip
-                    .send_session_bye_by_type(
-                        &device_id,
-                        &channel_id,
-                        crate::sip::gb28181::invite_session::StreamType::Play,
-                    )
-                    .await;
-                return Json(ApiResult::error(format!("SIP error: {}", e)));
+                // SIP 层已按本次 Call-ID 清理；拒绝或超时的 INVITE 没有可用对话。
+                return Json(ApiResult::error(play_sip_error(zlm_client, &stream_id, &e)));
             }
         }
     }

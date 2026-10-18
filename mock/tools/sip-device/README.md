@@ -63,7 +63,7 @@ curl -X POST http://127.0.0.1:18080/api/device/query/subscribe/catalog \
 | 下行 | MESSAGE DeviceInfo | ✅ 响应 |
 | 下行 | MESSAGE DeviceStatus | ✅ 响应 |
 | 下行 | MESSAGE DeviceControl | ✅ 先回 SIP 200，再按参数发设备层 `<Response><Result>`；可模拟拒绝、缺失、迟到与重复 |
-| 下行 | INVITE 实时 | ✅ 200 OK + SDP + 3 秒后 BYE |
+| 下行 | INVITE 实时 | ✅ 默认 200 OK + SDP + 3 秒后 BYE；`--invite-status 486/503` 可模拟设备拒绝 |
 | 下行 | INFO（MANSRTSP PTZ） | ✅ 200 OK |
 
 ## 参数列表
@@ -78,6 +78,7 @@ curl -X POST http://127.0.0.1:18080/api/device/query/subscribe/catalog \
 | `--model` | `MOCK-IPC-100` | 型号 |
 | `--firmware` | `1.0.0-mock` | 固件版本 |
 | `--channels` | 4 | 通道数（Catalog 多包测试用） |
+| `--invite-status` | 200 | `486` 或 `503` 时拒绝 INVITE，不建立会话或发送媒体 |
 | `--username` | `admin` | Digest 用户名 |
 | `--password` | `admin123` | Digest 密码（**需与 config/[sip] password 一致**） |
 | `--realm` | 从 device-id 推断 | SIP 域 |
