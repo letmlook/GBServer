@@ -1,19 +1,16 @@
 /**
  * GBServer 直播页（/live）专项测试
  *
- * 覆盖本次提交的关键改动：
- *   - 「测试播放」按钮可见 + 可点击
+ * 覆盖当前直播页的关键路径：
+ *   - 刷新与四种布局可用
  *   - 通道树空态展示（el-empty）
  *   - 通道树非空时展示（带状态 tag）
- *   - 播放器状态 tag 三态（loading / playing / error）
+ *   - 选中通道后实际发起点播并显示播放器状态
  *   - 选中通道后播放器头部展示 deviceId/channelId
- *   - 不依赖任何 ZLM/SIP 真实环境（用 localStorage 关掉 demo 流避免外网请求）
- *
- * 注意：本 spec 不验证 HLS 实际播放（受限于沙箱环境无 HLS 测试源），
- * 仅验证 DOM 状态机的正确性。
+ * 本 spec 的选中通道场景需要在线设备或 SIP Mock 与真实 ZLM。
  */
 
-import { test, expect, type Page, type ConsoleMessage } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -37,14 +34,12 @@ test.describe('Live page (/live) — Vue 3 features', () => {
   // 此前这里每个用例都会新建一个带 storageState 的 context、再登录一次、
   // 然后立刻关掉 —— 登录结果从未被用例使用，纯属每次多花一次登录时间。
 
-  test('renders header actions + test-play button', async ({ page }) => {
+  test('顶部刷新与四种布局按钮各显示一次', async ({ page }) => {
     await gotoLive(page);
     await expect(page.getByRole('button', { name: '刷新' })).toBeVisible();
-    await expect(page.getByRole('button', { name: '测试播放' })).toBeVisible();
-    // 布局切换 radio
-    await expect(page.getByText('2×2')).toBeVisible();
-    await expect(page.getByText('3×3')).toBeVisible();
-    await expect(page.getByText('4×4')).toBeVisible();
+    for (const layout of ['1×1', '2×2', '3×3', '4×4']) {
+      await expect(page.getByRole('button', { name: layout, exact: true })).toHaveCount(1);
+    }
     await page.screenshot({ path: path.join(ARTIFACT_DIR, 'live-header.png'), fullPage: true });
   });
 
@@ -62,48 +57,34 @@ test.describe('Live page (/live) — Vue 3 features', () => {
     }
   });
 
-  test('player area shows initial empty hint or test-play CTA', async ({ page }) => {
+  test('未选中通道时显示明确的播放空态', async ({ page }) => {
     await gotoLive(page);
-    const hintText = await page.getByText(/请从左侧选择通道.*或点击右上.*测试播放/).first().isVisible().catch(() => false);
-    // 未选通道时显示空态；选了之后显示播放器 — 至少一种
-    expect(hintText || await page.locator('.video-grid').isVisible()).toBe(true);
+    await expect(page.locator('.grid-card').getByText('请从左侧选择通道开始播放')).toBeVisible();
+    await expect(page.locator('.video-grid')).toHaveCount(0);
   });
 
-  test('clicking 测试播放 triggers attachVideo (loading or playing state)', async ({ page }) => {
-    const errors: string[] = [];
-    page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
-    page.on('console', (m: ConsoleMessage) => {
-      if (m.type() === 'error') errors.push(`console.error: ${m.text()}`);
-    });
-
+  test('选中通道后显示播放器并可停止', async ({ page }) => {
     await gotoLive(page);
-    const btn = page.getByRole('button', { name: '测试播放' });
-    await expect(btn).toBeVisible();
-    await btn.click();
-
-    // 等待至少 1 秒让 attachVideo 跑完（hls.js / flv.js 动态 import）
-    await page.waitForTimeout(1500);
-
-    // 头部 player-bar 应出现（标题 + meta + status tag）
+    const channelNode = page.locator('.el-tree-node__children .el-tree-node__content').first();
+    if ((await channelNode.count()) === 0) test.skip(true, '没有可点播的通道');
+    const started = page.waitForResponse((r) => r.url().includes('/play/start/'), { timeout: 30_000 });
+    await channelNode.click();
+    const startBody = await (await started).json() as { code: number; msg?: string };
+    expect(startBody.code, startBody.msg).toBe(0);
     const playerBar = page.locator('.player-bar');
     await expect(playerBar).toBeVisible();
-
-    // 状态 tag 至少出现一次（loading / playing / error 都算正常）
-    const statusTag = playerBar.locator('.el-tag').last();
+    const statusTag = playerBar.locator('.el-tag');
     await expect(statusTag).toBeVisible();
-    const tagText = (await statusTag.textContent()) ?? '';
-    expect(tagText.length, 'status tag has text').toBeGreaterThan(0);
-
-    await page.screenshot({ path: path.join(ARTIFACT_DIR, 'live-after-test-play.png'), fullPage: true });
-
-    // 忽略网络/MediaError 类预期错误（沙箱外网受限）
-    const real = errors.filter(
-      (e) => !/favicon|net::ERR_ABORTED|Loading chunk \d+ failed|MediaError|AbortError|demo/i.test(e),
-    );
-    if (real.length > 0) {
-      console.warn(`[live] ${real.length} unexpected console issue(s):`);
-      for (const r of real.slice(0, 3)) console.warn(`  - ${r.slice(0, 200)}`);
-    }
+    await expect(page.locator('.video-grid .video-cell').first()).toBeVisible();
+    await page.screenshot({ path: path.join(ARTIFACT_DIR, 'live-after-channel-select.png'), fullPage: true });
+    const stopped = page.waitForResponse((r) => r.url().includes('/play/stop/'), { timeout: 15_000 });
+    await page.locator('.video-cell__footer').first().getByRole('button', { name: '停止' }).click();
+    const stopBody = await (await stopped).json() as { code: number; msg?: string };
+    expect(stopBody.code, stopBody.msg).toBe(0);
+    await expect(statusTag).toContainText('空闲');
+    // 迟到的 WebRTC SDP/ICE 回调也不能把已停止的画面改回“播放失败”。
+    await page.waitForTimeout(1500);
+    await expect(statusTag).toContainText('空闲');
   });
 
   /// 回归守卫：选中通道必须**先拉起流**（/api/play/start → SIP INVITE +
@@ -162,18 +143,19 @@ test.describe('Live page (/live) — Vue 3 features', () => {
     const r0 = startResults[0];
     if (r0?.code === 0) {
       expect(r0.url, '起流成功后应返回可播放地址').toBeTruthy();
+      const stopped = page.waitForResponse((r) => r.url().includes('/play/stop/'), { timeout: 15_000 });
+      await page.locator('.video-cell__footer').first().getByRole('button', { name: '停止' }).click();
+      const stopBody = await (await stopped).json() as { code: number; msg?: string };
+      expect(stopBody.code, stopBody.msg).toBe(0);
     } else {
       console.warn(`[live] 起流未成功（环境缺少 ZLM/在线设备？）: code=${r0?.code} msg=${r0?.msg}`);
     }
   });
 
-  test('PTZ bar renders after selecting a channel (7 PTZ + 对讲)', async ({ page }) => {
+  test('选中通道后显示抓图与停止操作', async ({ page }) => {
     await gotoLive(page);
 
-    // 通道节点形如 `GBServer ON`（设备为父节点）。若库里确实没有通道，
-    // 才允许跳过 —— 但必须先尝试选中，否则这个用例会**永远**被跳过、
-    // 等于什么都没断言（此前就是这样：只看 .video-grid 是否可见，
-    // 而它只在选中通道后才渲染，于是从未执行过按钮计数断言）。
+    // 通道节点形如 `GBServer ON`（设备为父节点）。
     // 必须点**通道**（设备节点的子节点）：设备节点没有 `raw`；且接口在设备
     // 无通道时会把设备自身当作一行返回（channel_id == device_id），点它只会
     // 去点播一个不存在的通道。
@@ -198,10 +180,13 @@ test.describe('Live page (/live) — Vue 3 features', () => {
     }
     await expect(grid).toBeVisible({ timeout: 15_000 });
 
-    // 上 / 下 / 左 / 右 / 停止 / 放大 / 缩小 = 7 个 PTZ 按钮，
-    // 外加工具条右侧的「对讲」按钮（components/TalkPanel）= 8 个。
-    const ptzButtons = page.locator('.ptz-bar .el-button');
-    await expect(ptzButtons).toHaveCount(8);
-    await expect(page.getByRole('button', { name: '对讲' })).toBeVisible();
+    // 本页只承担多画面直播；PTZ 与对讲已移到「通道播放」弹窗。
+    const footer = page.locator('.video-cell__footer').first();
+    await expect(footer.getByRole('button', { name: '抓图' })).toBeVisible();
+    await expect(footer.getByRole('button', { name: '停止' })).toBeVisible();
+    const stopped = page.waitForResponse((r) => r.url().includes('/play/stop/'), { timeout: 15_000 });
+    await footer.getByRole('button', { name: '停止' }).click();
+    const stopBody = await (await stopped).json() as { code: number; msg?: string };
+    expect(stopBody.code, stopBody.msg).toBe(0);
   });
 });

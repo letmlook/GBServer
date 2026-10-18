@@ -92,6 +92,9 @@ python3 mock/tools/sip-device/sip_device_mock.py \
 
 Mock 会优先选择本机 ffmpeg 的 `libopenh264`，没有时使用 `libx264`。需使用
 真实 ZLM 才能验证 MP4 文件；`mock/tools/zlm/zlm_mock.py` 不会录制文件。
+全量 Playwright 的报警页用例需要数据；Mock 可加 `--auto-alarm-secs 5`，否则这
+两项会明确跳过。`E2E_REQUIRE_WEBRTC=1` 会让 WebRTC 用例实际协商并验证 ICE、
+解码帧；未设置时该项按设计跳过。
 
 Screenshots per page land in `e2e/artifacts/<name>.png`.
 鉴权状态由 `global-setup.ts` 写入 `e2e/artifacts/.auth.json`（登录一次，

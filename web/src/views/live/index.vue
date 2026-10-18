@@ -205,6 +205,8 @@ const snapItems = ref<{ deviceId: string; channelId: string; name: string; snapU
 let hlsInstance: any = null
 let flvPlayer: any = null
 let webrtcPc: RTCPeerConnection | null = null
+// 停止或切换通道后，旧的 SDP / 动态播放器初始化不能回写当前播放状态。
+let playGeneration = 0
 
 const statusLabel = computed(() => {
   switch (playerStatus.value) {
@@ -308,6 +310,7 @@ async function onNodeClick(node: any) {
 }
 
 async function playChannel(s: { deviceId: string; channelId: string; name?: string }) {
+  const generation = ++playGeneration
   playError.value = ''
   playerStatus.value = 'loading'
   const label = { deviceId: s.deviceId, channelId: s.channelId, name: s.name ?? s.channelId }
@@ -318,8 +321,10 @@ async function playChannel(s: { deviceId: string; channelId: string; name?: stri
     if (currentChannel.value?.channelId && currentChannel.value.channelId !== s.channelId) {
       // 切换通道时先停掉上一路，避免设备侧与 ZLM 侧残留
       await stopPlay(currentChannel.value.deviceId, currentChannel.value.channelId).catch(() => {})
+      if (generation !== playGeneration) return
     }
     const res = await startPlay(s.deviceId, s.channelId)
+    if (generation !== playGeneration) return
     const data = res.data as any
     if (!data) {
       throw new Error(res.msg || '拉起实时流失败')
@@ -329,11 +334,13 @@ async function playChannel(s: { deviceId: string; channelId: string; name?: stri
     currentChannel.value = label
     buildGrid({ ...s, name: label.name }, data.hls || data.flvUrl || data.playUrl || '')
     await nextTick()
+    if (generation !== playGeneration) return
     if (data.webrtc) {
       try {
-        await attachVideoWebRTC(s.deviceId, s.channelId)
+        await attachVideoWebRTC(s.deviceId, s.channelId, generation)
         return
       } catch (e: any) {
+        if (generation !== playGeneration) return
         // WebRTC 协商失败时清理回退，再走 HLS/FLV 路径
         const msg = e?.message ?? String(e)
         playError.value = `WebRTC 协商失败，回退到 HLS/FLV：${msg}`
@@ -344,8 +351,9 @@ async function playChannel(s: { deviceId: string; channelId: string; name?: stri
     if (!url) {
       throw new Error('后端未返回可用的播放地址')
     }
-    await attachVideo(url)
+    await attachVideo(url, generation)
   } catch (e: any) {
+    if (generation !== playGeneration) return
     const msg = e?.message ?? '拉起实时流失败'
     playError.value = msg
     playerStatus.value = 'error'
@@ -353,7 +361,7 @@ async function playChannel(s: { deviceId: string; channelId: string; name?: stri
   }
 }
 
-async function attachVideoWebRTC(deviceId: string, channelId: string) {
+async function attachVideoWebRTC(deviceId: string, channelId: string, generation: number) {
   // 关掉任何残留
   cleanupWebRTC()
   hlsInstance?.destroy?.()
@@ -364,6 +372,8 @@ async function attachVideoWebRTC(deviceId: string, channelId: string) {
   // 192.168.3.x，能直接 host candidate 联通，**不需要 STUN**。空 iceServers
   // 比错的 STUN URL 强（错的 STUN 会让浏览器忽略 host candidate 走 relay）。
   const pc = new RTCPeerConnection({ iceServers: [] })
+  webrtcPc = pc
+  const isCurrent = () => generation === playGeneration && webrtcPc === pc
 
   pc.addTransceiver('video', { direction: 'recvonly' })
   pc.addTransceiver('audio', { direction: 'recvonly' })
@@ -376,6 +386,7 @@ async function attachVideoWebRTC(deviceId: string, channelId: string) {
 
   // 视频流拿到就喂进 srcObject
   pc.ontrack = (ev) => {
+    if (!isCurrent()) return
     if (ev.streams && ev.streams[0] && nativeVideo) {
       nativeVideo.srcObject = ev.streams[0]
       nativeVideo.style.display = 'block'
@@ -386,6 +397,7 @@ async function attachVideoWebRTC(deviceId: string, channelId: string) {
     }
   }
   pc.oniceconnectionstatechange = () => {
+    if (!isCurrent()) return
     if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected') {
       playerStatus.value = 'error'
       playError.value = `WebRTC ICE ${pc.iceConnectionState}（ZLM ${deviceId}/${channelId} 的 rtc 端口未开放或 ICE 候选不通）`
@@ -394,7 +406,9 @@ async function attachVideoWebRTC(deviceId: string, channelId: string) {
 
   // SDP 协商
   const offer = await pc.createOffer()
+  if (!isCurrent()) return
   await pc.setLocalDescription(offer)
+  if (!isCurrent()) return
 
   const res = await postWebrtcPlay({
     deviceId,
@@ -402,19 +416,20 @@ async function attachVideoWebRTC(deviceId: string, channelId: string) {
     sdp: offer.sdp ?? '',
     type: 'offer'
   })
+  if (!isCurrent()) return
   if (res.code !== 0) {
     pc.close()
     throw new Error(res.msg || 'WebRTC 协商失败')
   }
   await pc.setRemoteDescription({ type: 'answer', sdp: res.data.sdp })
-
-  webrtcPc = pc
+  if (!isCurrent()) return
 }
 
 function cleanupWebRTC() {
-  if (webrtcPc) {
-    try { webrtcPc.close() } catch { /* ignore */ }
-    webrtcPc = null
+  const pc = webrtcPc
+  webrtcPc = null
+  if (pc) {
+    try { pc.close() } catch { /* ignore */ }
   }
   const nativeVideo = Array.isArray(primaryVideoRef.value)
     ? primaryVideoRef.value.find((v: any) => v)
@@ -428,7 +443,7 @@ function cleanupWebRTC() {
   }
 }
 
-async function attachVideo(url: string) {
+async function attachVideo(url: string, generation: number) {
   // 清理之前的实例
   hlsInstance?.destroy?.()
   hlsInstance = null
@@ -460,6 +475,7 @@ async function attachVideo(url: string) {
   // Chrome/Firefox：先尝试 hls.js（HLS），失败则 flv.js（FLV）
   try {
     const Hls = (await import('hls.js')).default
+    if (generation !== playGeneration) return
     if (Hls.isSupported()) {
       nativeVideo.style.display = 'block'
       if (flvVideo) flvVideo.style.display = 'none'
@@ -467,7 +483,7 @@ async function attachVideo(url: string) {
       hls.loadSource(url)
       hls.attachMedia(nativeVideo)
       hls.on(Hls.Events.ERROR, (_e: any, data: any) => {
-        if (data?.fatal) {
+        if (generation === playGeneration && data?.fatal) {
           playError.value = `HLS 错误: ${data?.details ?? data?.type ?? 'unknown'}（确认 ZLM HLS 已启用或使用 FLV）`
           playerStatus.value = 'error'
         }
@@ -476,6 +492,7 @@ async function attachVideo(url: string) {
       return
     }
   } catch (e: any) {
+    if (generation !== playGeneration) return
     // hls.js 加载或初始化失败，回退到 flv.js
     playError.value = `hls.js 不可用: ${e?.message ?? e}`
   }
@@ -483,6 +500,7 @@ async function attachVideo(url: string) {
   // HLS 不支持或 hls.js 加载失败，尝试 flv.js
   try {
     const flvjs = (await import('flv.js')).default
+    if (generation !== playGeneration) return
     if (flvjs.isSupported() && flvVideo) {
       nativeVideo.style.display = 'none'
       flvVideo.style.display = 'block'
@@ -494,10 +512,12 @@ async function attachVideo(url: string) {
       player.attachMediaElement(flvVideo)
       try { player.load() } catch (e) { /* ignore */ }
       Promise.resolve(player.play()).catch((e: any) => {
+        if (generation !== playGeneration) return
         playError.value = `FLV 播放失败: ${e?.message ?? e}`
         playerStatus.value = 'error'
       })
       player.on(flvjs.Events.ERROR, (errType: string, errDetail: string) => {
+        if (generation !== playGeneration) return
         playError.value = `FLV 错误: ${errType} / ${errDetail}`
         playerStatus.value = 'error'
       })
@@ -505,10 +525,12 @@ async function attachVideo(url: string) {
       return
     }
   } catch (e: any) {
+    if (generation !== playGeneration) return
     playError.value = `flv.js 不可用: ${e?.message ?? e}`
   }
 
   // 最后尝试：直接用原生 <video> src（可能能播 RTMP 之外的格式）
+  if (generation !== playGeneration) return
   nativeVideo.style.display = 'block'
   if (flvVideo) flvVideo.style.display = 'none'
   nativeVideo.src = url
@@ -516,11 +538,13 @@ async function attachVideo(url: string) {
 }
 
 function onVideoLoaded() {
+  if (playerStatus.value === 'idle') return
   playerStatus.value = 'playing'
   playError.value = ''
 }
 
 function onVideoError(_e: Event) {
+  if (playerStatus.value === 'idle') return
   playerStatus.value = 'error'
   if (!playError.value) {
     playError.value = '视频流加载失败（确认 ZLM 已开启 HLS 或 FLV，且 stream_id 与 URL 一致）'
@@ -566,6 +590,7 @@ async function onSnap(cell: any) {
 }
 
 async function onStop(cell: any) {
+  ++playGeneration
   hlsInstance?.destroy?.()
   hlsInstance = null
   if (flvPlayer) { try { flvPlayer.destroy() } catch {} flvPlayer = null }
@@ -587,11 +612,13 @@ async function onStop(cell: any) {
     })
   }
   buildGrid(cell, '')
+  playError.value = ''
   playerStatus.value = 'idle'
   ElMessage.success('已停止')
 }
 
 onBeforeUnmount(() => {
+  ++playGeneration
   hlsInstance?.destroy?.()
   if (flvPlayer) { try { flvPlayer.destroy() } catch {} }
   cleanupWebRTC()
