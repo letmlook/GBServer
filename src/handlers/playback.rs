@@ -15,6 +15,7 @@ use crate::AppState;
 #[derive(Debug, Clone)]
 pub struct PlaybackSession {
     pub stream_id: String,
+    pub call_id: Option<String>,
     pub device_id: String,
     pub channel_id: String,
     pub app: String,
@@ -268,7 +269,7 @@ pub struct PlaybackQuery {
     responses(
         (status = 200, description = "回放会话已建立",
          body = ApiResult<serde_json::Value>,
-         example = json!({"code":0,"msg":"成功","data":{"streamId":"playback_dev_ch_1700000000","deviceId":"dev","channelId":"ch","app":"playback","stream":"playback_dev_ch_1700000000","playUrl":"rtsp://1.2.3.4:554/playback/...","flvUrl":"http://1.2.3.4:8080/live/playback/...","hlsAvailable":false,"startTime":"2026-01-01T00:00:00","endTime":null,"currentTime":"2026-01-01T00:00:00","speed":1.0,"source":"gb28181_playback_invite"}})),
+         example = json!({"code":0,"msg":"成功","data":{"streamId":"playback_dev_ch_1700000000","deviceId":"dev","channelId":"ch","app":"rtp","stream":"playback_dev_ch_1700000000","playUrl":"rtsp://1.2.3.4:554/rtp/...","flvUrl":"http://1.2.3.4:8080/rtp/...live.flv","hlsAvailable":false,"startTime":"2026-01-01T00:00:00","endTime":null,"currentTime":"2026-01-01T00:00:00","speed":1.0,"source":"gb28181_playback_invite"}})),
         (status = 500, description = "SIP 未启用 / ZLM 未配置 / INVITE 失败"),
         (status = 401, description = "未鉴权"),
     ),
@@ -298,7 +299,8 @@ pub async fn playback_start(
         channel_id,
         chrono::Utc::now().timestamp()
     );
-    let app = "playback".to_string();
+    // openRtpServer 注册的真实 ZLM 应用名是 rtp；回放业务类型由 stream_id 区分。
+    let app = "rtp".to_string();
     let media_server_id = state.list_zlm_servers().into_iter().next();
     // 只有真实成功的分支才会返回 session，`source` 恒为 INVITE 路径
     let source = "gb28181_playback_invite";
@@ -317,6 +319,17 @@ pub async fn playback_start(
             };
             match zlm_client.open_rtp_server(&rtp_req).await {
                 Ok(rtp_server) => {
+                    if let Err(problem) = crate::zlm::port_guard::validate_allocated_rtp_port(
+                        &state,
+                        zlm_client,
+                        &stream_id,
+                        rtp_server.port,
+                        "playback/start",
+                    )
+                    .await
+                    {
+                        return Err(AppError::business(ErrorCode::Error500, problem));
+                    }
                     // 2. 发 SIP INVITE + 等 ZLM 媒体到达
                     let sip = &*sip_server;
                     let end = end_time.clone().unwrap_or_else(|| start_time.clone());
@@ -332,21 +345,21 @@ pub async fn playback_start(
                         )
                         .await
                     {
-                        Ok((_call_id, _zlm_stream_id)) => {
+                        Ok((call_id, _zlm_stream_id)) => {
                             let media_ip = zlm_client.ip.clone();
                             let http_port = zlm_client.http_port;
                             let play_url = format!("rtsp://{}:554/{}/{}", media_ip, app, stream_id);
                             let flv_url = crate::zlm::address_builder::http_flv_url(
                                 &media_ip, http_port, &app, &stream_id,
                             );
-                            let hls_url = format!(
-                                "http://{}:{}/{}/{}/hls.m3u8",
-                                media_ip, http_port, app, stream_id
+                            let hls_url = crate::zlm::address_builder::hls_url(
+                                &media_ip, http_port, &app, &stream_id,
                             );
                             if let Some(ref playback_manager) = state.playback_manager {
                                 playback_manager
                                     .create(PlaybackSession {
                                         stream_id: stream_id.clone(),
+                                        call_id: Some(call_id),
                                         device_id: device_id.clone(),
                                         channel_id: channel_id.clone(),
                                         app: app.clone(),
@@ -390,19 +403,25 @@ pub async fn playback_start(
                             tracing::error!("Playback INVITE + media wait failed: {}", e);
                             // 清理已开 RTP 端口
                             let _ = zlm_client.close_rtp_server(&stream_id).await;
-                            // 兜底发 BYE
-                            let _ = sip
-                                .send_session_bye_by_type(
-                                    &device_id,
-                                    &channel_id,
-                                    crate::sip::gb28181::invite_session::StreamType::Playback,
-                                )
-                                .await;
+                            return Err(AppError::business(
+                                ErrorCode::Error500,
+                                format!(
+                                    "回放启动失败（节点 {}:{}, 流 {}, 请求 playback/start）：{}",
+                                    zlm_client.ip, zlm_client.http_port, stream_id, e
+                                ),
+                            ));
                         }
                     }
                 }
                 Err(e) => {
                     tracing::error!("Failed to open ZLM RTP server for playback: {}", e);
+                    return Err(AppError::business(
+                        ErrorCode::Error500,
+                        format!(
+                            "回放收流端口分配失败（节点 {}:{}, 流 {}, 请求 playback/start）：{}",
+                            zlm_client.ip, zlm_client.http_port, stream_id, e
+                        ),
+                    ));
                 }
             }
         }
@@ -699,55 +718,70 @@ pub async fn playback_stop(
         stream_id
     );
 
-    if let Some(ref playback_manager) = state.playback_manager {
-        if let Some(session) = playback_manager.get(&stream_id).await {
-            if let Some(zlm_client) = state
-                .get_zlm_client(session.media_server_id.as_deref())
-                .or_else(|| state.zlm_client.clone())
-            {
-                let _ = zlm_client
-                    .close_streams(
-                        Some(&session.schema),
-                        Some(&session.app),
-                        Some(&session.stream),
-                        true,
-                    )
-                    .await;
-            }
-            playback_manager.remove(&stream_id).await;
-
-            // Send SIP BYE to stop device playback push
-            if let Some(ref sip_server) = state.sip_server {
-                let sip = &*sip_server;
-                match sip
-                    .send_session_bye_by_type(
-                        &device_id,
-                        &channel_id,
-                        crate::sip::gb28181::invite_session::StreamType::Playback,
-                    )
-                    .await
-                {
-                    Ok(call_id) => tracing::info!("Playback BYE sent call_id={}", call_id),
-                    Err(e) => tracing::warn!("Failed to send playback BYE: {}", e),
-                }
-            }
-
-            return Json(ApiResult::<()>::success_empty());
-        }
+    let Some(ref playback_manager) = state.playback_manager else {
+        return Json(ApiResult::error("回放会话管理器不可用"));
+    };
+    let Some(session) = playback_manager.get(&stream_id).await else {
+        return Json(ApiResult::error("无活动回放会话"));
+    };
+    if session.device_id != device_id || session.channel_id != channel_id {
+        return Json(ApiResult::error("回放会话与设备或通道不匹配"));
     }
 
-    if let Some(ref zlm_client) = state.zlm_client {
-        let _ = zlm_client
+    let zlm_result = if let Some(zlm_client) = state
+        .get_zlm_client(session.media_server_id.as_deref())
+        .or_else(|| state.zlm_client.clone())
+    {
+        zlm_client
             .close_streams(
-                Some("rtsp"),
-                Some("playback"),
-                Some(&format!("{}${}", device_id, channel_id)),
+                Some(&session.schema),
+                Some(&session.app),
+                Some(&session.stream),
                 true,
             )
-            .await;
-    }
+            .await
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    } else {
+        Err("ZLM 媒体节点不可用".to_string())
+    };
 
-    Json(ApiResult::<()>::success_empty())
+    let bye_result = if session.source == "gb28181_playback_invite" {
+        match (state.sip_server.as_ref(), session.call_id.as_deref()) {
+            (Some(sip), Some(call_id)) => {
+                let prior = sip.invite_session_manager().get(call_id).await;
+                if prior.is_some_and(|invite| {
+                    invite.status
+                        == crate::sip::gb28181::invite_session::InviteSessionStatus::Terminated
+                }) {
+                    Ok(())
+                } else {
+                    sip.send_session_bye_by_call_id(call_id)
+                        .await
+                        .map(|_| ())
+                        .map_err(|error| error.to_string())
+                }
+            }
+            _ => Err("回放 SIP 会话不可用，BYE 未发送".to_string()),
+        }
+    } else {
+        Ok(())
+    };
+    match (zlm_result, bye_result) {
+        (Ok(()), Ok(())) => {
+            playback_manager.remove(&stream_id).await;
+            Json(ApiResult::<()>::success_empty())
+        }
+        (zlm, bye) => Json(ApiResult::error(format!(
+            "回放停止未完全成功（流 {}）：{}",
+            stream_id,
+            [zlm.err(), bye.err()]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join("; ")
+        ))),
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -971,7 +1005,22 @@ pub async fn gb_record_download_start(
                             })
                             .await
                         {
-                            Ok(info) => info.port,
+                            Ok(info) => {
+                                match crate::zlm::port_guard::validate_allocated_rtp_port(
+                                    &state,
+                                    zlm,
+                                    &stream_id,
+                                    info.port,
+                                    "gb_record/download/start",
+                                )
+                                .await
+                                {
+                                    Ok(()) => info.port,
+                                    Err(problem) => {
+                                        return Json(ApiResult::error(problem));
+                                    }
+                                }
+                            }
                             Err(e) => {
                                 tracing::error!(
                                     "openRtpServer for download {}/{} failed: {}",
@@ -1057,6 +1106,9 @@ pub async fn gb_record_download_start(
                         }
                         Err(e) => {
                             tracing::warn!("Failed to send GB28181 DOWNLOAD INVITE: {}", e);
+                            if let Some(zlm) = state.zlm_client.as_ref() {
+                                let _ = zlm.close_rtp_server(&stream_id).await;
+                            }
                         }
                     }
                 }

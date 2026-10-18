@@ -2993,7 +2993,23 @@ pub async fn channel_playback_start(
                                     })
                                     .await
                                 {
-                                    Ok(info) => info.port,
+                                    Ok(info) => {
+                                        if let Err(problem) =
+                                            crate::zlm::port_guard::validate_allocated_rtp_port(
+                                                &state,
+                                                zlm,
+                                                &stream_id,
+                                                info.port,
+                                                "commonChannel/playback/start",
+                                            )
+                                            .await
+                                        {
+                                            return Json(serde_json::json!({
+                                                "code": 1, "msg": problem
+                                            }));
+                                        }
+                                        info.port
+                                    }
                                     Err(e) => {
                                         tracing::error!(
                                             "openRtpServer for playback {}/{} failed: {}",
@@ -3041,6 +3057,9 @@ pub async fn channel_playback_start(
                             }
                             Err(e) => {
                                 tracing::error!("Playback invite failed: {}", e);
+                                if let Some(zlm) = state.zlm_client.as_ref() {
+                                    let _ = zlm.close_rtp_server(&stream_id).await;
+                                }
                                 return Json(
                                     serde_json::json!({ "code": 1, "msg": format!("回放邀请失败: {}", e) }),
                                 );

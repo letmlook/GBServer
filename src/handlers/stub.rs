@@ -1934,6 +1934,7 @@ pub async fn cloud_record_play_path(
                     playback_manager
                         .create(crate::handlers::playback::PlaybackSession {
                             stream_id: record_id.clone(),
+                            call_id: None,
                             device_id: media_server_id.clone(),
                             channel_id: file_name.clone(),
                             app: app.clone(),
@@ -2082,6 +2083,7 @@ pub async fn cloud_record_load(
                     playback_manager
                         .create(crate::handlers::playback::PlaybackSession {
                             stream_id: record_id.clone(),
+                            call_id: None,
                             device_id: media_server_id.clone(),
                             channel_id: file_name,
                             app: app.clone(),

@@ -7172,16 +7172,6 @@ f=v/1/96/1/2/1/1/0
         );
         let message = Parser::generate_request("INVITE", &uri, &headers, Some(&sdp));
 
-        self.send_request_to(device_addr, &message).await?;
-        tracing::info!(
-            "Sent PLAYBACK INVITE to device {} channel {} [{}-{}] at {}",
-            device_id,
-            channel_id,
-            start_time,
-            end_time,
-            device_addr
-        );
-
         // 保存 INVITE 上下文,handle_response 收到 200 OK 时发 ACK。
         // 设备 ack 后无 ACK 不推流 —— GB28181 三次握手必须完整。
         //
@@ -7207,6 +7197,19 @@ f=v/1/96/1/2/1/1/0
             Some(ssrc.as_str()),
         )
         .await;
+        if let Err(error) = self.send_request_to(device_addr, &message).await {
+            self.session_manager.remove(&call_id).await;
+            self.invite_session_manager.remove(&call_id).await;
+            return Err(error);
+        }
+        tracing::info!(
+            "Sent PLAYBACK INVITE to device {} channel {} [{}-{}] at {}",
+            device_id,
+            channel_id,
+            start_time,
+            end_time,
+            device_addr
+        );
         // 注：socket 读锁在此作用域结束自动释放，不需手动 drop(&socket)。
 
         Ok(())
@@ -7238,18 +7241,21 @@ f=v/1/96/1/2/1/1/0
             chrono::Utc::now().timestamp_millis()
         );
 
+        let device_addr = self
+            .device_manager
+            .get_address(device_id)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("Device {} not registered", device_id))?;
+
         // 1. 注册 media waiter（早于发包）
         let (_waiter_key, media_rx) =
             self.media_waiter_manager()
                 .register(&call_id, zlm_stream_id, "rtp", timeout_secs);
+        let (invite_tx, invite_rx) = oneshot::channel::<SipResponse>();
+        self.pending_invites.insert(call_id.clone(), invite_tx);
 
         // 2. 发送 SIP INVITE（自定义 Subject 字段第 4 段 SSRC 前缀 1 表示 Playback）
         {
-            let device_addr = self
-                .device_manager
-                .get_address(device_id)
-                .await
-                .ok_or_else(|| anyhow::anyhow!("Device {} not registered", device_id))?;
             let branch = generate_branch();
             let cseq = cseq_header(1, "INVITE").to_string();
             // 统一用 10 位 SSRC（前缀 1 = 回放）；此前这里是 11 位的
@@ -7308,15 +7314,6 @@ f=v/1/96/1/2/1/1/0
                 device_addr.port()
             );
             let message = Parser::generate_request("INVITE", &uri, &headers, Some(&sdp));
-            self.send_request_to(device_addr, &message).await?;
-            tracing::info!(
-                "Sent PLAYBACK INVITE (async) to device={} channel={} stream={} call_id={}",
-                device_id,
-                channel_id,
-                zlm_stream_id,
-                call_id
-            );
-
             // 保存 INVITE 上下文，handle_response 收到 200 OK 时发 ACK。
             // 设备收到 200 OK 后等不到 ACK 不会推流 —— GB28181 三次握手必须完整。
             // 这里直接用 SipServer 自己的 session_manager 字段。
@@ -7344,38 +7341,72 @@ f=v/1/96/1/2/1/1/0
             self.invite_session_manager
                 .set_zlm_stream_by_call_id(&call_id, zlm_stream_id, "rtp")
                 .await;
+            if let Err(error) = self.send_request_to(device_addr, &message).await {
+                self.pending_invites.remove(&call_id);
+                self.media_waiter_manager().cancel_by_call_id(&call_id);
+                self.session_manager.remove(&call_id).await;
+                self.invite_session_manager.remove(&call_id).await;
+                return Err(error);
+            }
+            tracing::info!(
+                "Sent PLAYBACK INVITE to device={} channel={} stream={} call_id={}",
+                device_id,
+                channel_id,
+                zlm_stream_id,
+                call_id
+            );
+        }
+
+        // SIP 接受和媒体就绪是两个不同的确认，不能只等媒体 Hook。
+        let invite_result =
+            match tokio::time::timeout(Duration::from_secs(timeout_secs), invite_rx).await {
+                Ok(Ok(response)) if response.status_code() == 200 => Ok(()),
+                Ok(Ok(response)) => Err(InviteRejected {
+                    status: response.status_code(),
+                    reason: response.reason,
+                }
+                .into()),
+                Ok(Err(_)) => Err(anyhow::anyhow!("Playback INVITE response channel closed")),
+                Err(_) => Err(anyhow::anyhow!("Playback INVITE timeout")),
+            };
+        if let Err(error) = invite_result {
+            self.pending_invites.remove(&call_id);
+            self.media_waiter_manager().cancel_by_call_id(&call_id);
+            self.session_manager.remove(&call_id).await;
+            self.invite_session_manager.remove(&call_id).await;
+            return Err(error);
         }
 
         // 3. 等 ZLM media waiter 触发（ZLM hook on_stream_changed 会 resolve）
-        match tokio::time::timeout(Duration::from_secs(timeout_secs), media_rx).await {
+        let result = match tokio::time::timeout(Duration::from_secs(timeout_secs), media_rx).await {
             Ok(Ok(MediaWaitResult::MediaReady {
                 zlm_stream_id: zid,
                 app: _,
             })) => {
                 tracing::info!("Playback media ready: stream_id={}", zid);
-                Ok((call_id, zid))
+                Ok((call_id.clone(), zid))
             }
             Ok(Ok(MediaWaitResult::Timeout | MediaWaitResult::SessionNotFound)) => {
-                let _ = self.media_waiter_manager().cleanup_expired();
                 Err(anyhow::anyhow!("Playback media wait failed: not found"))
             }
-            Ok(Ok(MediaWaitResult::DeviceRejected { status, reason })) => Err(anyhow::anyhow!(
-                "Playback device rejected: {} {}",
-                status,
-                reason
+            Ok(Ok(MediaWaitResult::DeviceRejected { status, reason })) => {
+                Err(InviteRejected { status, reason }.into())
+            }
+            Ok(Err(_cancelled)) => Err(anyhow::anyhow!("Playback media wait channel cancelled")),
+            Err(_elapsed) => Err(anyhow::anyhow!(
+                "Playback media timeout – stream did not arrive in {}s",
+                timeout_secs
             )),
-            Ok(Err(_cancelled)) => {
-                let _ = self.media_waiter_manager().cleanup_expired();
-                Err(anyhow::anyhow!("Playback media wait channel cancelled"))
+        };
+        if result.is_err() {
+            self.media_waiter_manager().cancel_by_call_id(&call_id);
+            if let Err(error) = self.send_session_bye_by_call_id(&call_id).await {
+                tracing::warn!(%call_id, "回放媒体失败后发送 BYE 失败: {error}");
             }
-            Err(_elapsed) => {
-                let _ = self.media_waiter_manager().cleanup_expired();
-                Err(anyhow::anyhow!(
-                    "Playback media timeout – stream did not arrive in {}s",
-                    timeout_secs
-                ))
-            }
+            self.session_manager.remove(&call_id).await;
+            self.invite_session_manager.remove(&call_id).await;
         }
+        result
     }
 
     /// 发送 GB28181 录像下载 INVITE（Subject 第 4 段 SSRC 前缀 2 表示 Download）
@@ -7462,16 +7493,6 @@ f=v/1/96/1/2/1/1/0
         );
         let message = Parser::generate_request("INVITE", &uri, &headers, Some(&sdp));
 
-        self.send_request_to(device_addr, &message).await?;
-        tracing::info!(
-            "Sent DOWNLOAD INVITE to device {} channel {} [{}-{}] ssrc={}",
-            device_id,
-            channel_id,
-            start_time,
-            end_time,
-            ssrc
-        );
-
         // ACK 上下文 + 业务会话登记。
         //
         // 修正：此前这里**什么都不登记** —— 既没有 `set_invite_context`，
@@ -7498,6 +7519,19 @@ f=v/1/96/1/2/1/1/0
             Some(ssrc.as_str()),
         )
         .await;
+        if let Err(error) = self.send_request_to(device_addr, &message).await {
+            self.session_manager.remove(&call_id).await;
+            self.invite_session_manager.remove(&call_id).await;
+            return Err(error);
+        }
+        tracing::info!(
+            "Sent DOWNLOAD INVITE to device {} channel {} [{}-{}] ssrc={}",
+            device_id,
+            channel_id,
+            start_time,
+            end_time,
+            ssrc
+        );
 
         Ok(call_id)
     }

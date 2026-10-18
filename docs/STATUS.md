@@ -7,6 +7,7 @@
 | 项目 | 本轮结果 | 证据范围 |
 |---|---|---|
 | Rust 测试 | `cargo test --no-fail-fast --locked`：804 通过、0 失败、3 个文档测试忽略 | SQLite 默认特性；本机自动化，ZLM + Mock 的实际运行证据见下文；真机仍待复验 |
+| M4 回放收流与停止复核 | 回放等待先确认设备 INVITE 200，再等 ZLM 媒体；486 拒绝及无媒体超时按本次 Call-ID 清理。回放媒体 URL 使用 ZLM 实际 `rtp` 应用名，停止核对设备、通道与会话 Call-ID，重复停止返回错误。普通回放、通道回放、下载邀请先登记 ACK 上下文再发包；三处在发包前校验 RTP 端口，发包失败关闭收流端口 | 本机隔离 SQLite + 真实 ZLM + SIP Mock：486 拒绝后无 RTP 残留；200 但无 RTP 时 15 秒超时；正常回放的 FLV 地址可读出 `FLV`，停止后 ZLM 无流且 Mock 收到有效对话内 BYE，错误通道和重复停止被拒绝。通道回放与下载的新增端口检查、真机、目标 Docker 部署仍待运行复验 |
 | M4 点播故障定位与拒绝清理 | 点播时 ZLM 未配置返回业务错误；RTP 开端口失败、设备拒绝及媒体超时均在响应中标出节点地址、流 ID 和请求入口。ZLM HTTP 错误不回显带 Secret 的查询 URL；486 拒绝的 INVITE 不再发送无效 BYE，等待媒体的 Call-ID 与实际 INVITE 一致，失败时按本次会话清理 | 本机隔离 SQLite 后端 + 真实 ZLM + SIP Mock：将 ZLM HTTP 端口指向无监听的 `18081`，点播返回连接错误且无 Secret；Mock 返回 486 时立即失败，ZLM `getRtpInfo` 确认无残留，Mock 未收到 BYE；Mock 回 200 但不发 RTP 时 15 秒超时，RTP 已清理且收到有效对话内 BYE。恢复正常推流后 `verify_play_stop_bye_runtime.py` 通过，停止后 11 秒未重连。定向脱敏测试及全量 Rust 测试通过；真机、目标部署与实际 RTP 端口映射错误仍待验收 |
 | M4 RTP 端口范围错误 | 点播在发送 INVITE 前校验 ZLM 分配端口与节点声明的 RTP 范围；端口为 0、范围无效或越界时关闭刚开启的 RTP Server，响应给出节点、流、分配端口与范围 | 本机隔离 SQLite 后端 + 真实 ZLM + SIP Mock：只把隔离库节点范围改为 `40000-40100`，ZLM 分配 `30034`，接口立即拒绝；Mock 未收到 INVITE，`getRtpInfo` 确认无残留。正常范围下 `verify_play_stop_bye_runtime.py` 通过。定向范围测试与全量 Rust 测试通过；实际容器端口映射和目标部署仍待验收 |
 | 版本一致性 | SIP `User-Agent` 统一从 Cargo 包版本生成，覆盖设备侧 SIP 和级联请求；HTTP `/api/server/version`、`/api/system/info` 与 OpenAPI 均返回 `2.0.0` | `cargo fmt --check`、Rust 全量测试与 `cargo build --locked` 通过；本机后端启动后对三个 HTTP 出口实测均为 `2.0.0`；级联 REGISTER/INVITE 的 SIP 报文构造测试通过，真机报文待复验 |
