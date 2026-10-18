@@ -71,7 +71,7 @@
 | E4 | 环境 | CI 自动触发按用户要求保持关闭（`workflow_dispatch`） | ⚪ |
 | E5 | 部署 | ZLM 改 host 网络 + 配置文件只读管理 + mac 叠加文件 | ✅ 已改 |
 | E6 | 环境 | 后端访问 `192.168.3.88:8080`（ZLM）偶发 `error sending request`（本机 HTTP 代理同名主机） | ⚪ |
-| E7 | 部署验收 | 2.0 镜像构建、Compose ZLM 环境变量修复、容器健康检查与同源浏览器冒烟通过；容器媒体、真机 LAN 与目标部署待验收 | 🟡 |
+| E7 | 部署验收 | PostgreSQL 后端容器 + 真实 ZLM + SIP Mock 的 FLV 点播/停止和 MP4 下载已通过；容器 WebRTC、真机 LAN 与目标部署待验收 | 🟡 |
 
 ---
 
@@ -881,8 +881,12 @@ IP、HTTP 端口与 RTC 地址。SQLite Compose 已对齐 ZLM 配置文件与端
 用隔离 PostgreSQL 库、Redis DB 15 和禁用 ZLM 节点的临时配置启动容器：
 健康检查为 healthy，容器内 SIP UDP/TCP 监听 `0.0.0.0:5060`，同源登录页、
 登录、版本接口及 OpenAPI 正常；Chromium 冒烟 20/20 通过。
-本轮未发布 SIP 宿主端口、未接入 ZLM 媒体，因此设备 LAN 可达性、容器内媒体
-闭环及目标 Linux 服务器部署仍待真实设备和目标环境验收。
+随后以独立 PostgreSQL 库重建后端镜像，发布 SIP UDP/TCP 5060，接入开发用真实
+ZLM 与 SIP Mock。发现 PostgreSQL 设备查询的 `COUNT(*)` 类型不匹配及 Catalog
+单条/批量写入的约束错误，修正并用隔离库测试后，容器点播/有效 BYE/停止后不重连、
+MP4 下载及 Range 读取、Chromium FLV 实拉均通过。此次是 Docker Desktop 本机拓扑；
+容器 WebRTC、真机 LAN 可达性和目标 Linux Compose 部署仍待验收。MySQL/SQLite
+通道写入路径没有在本轮按同样场景运行，不能由 PostgreSQL 结果推断通过。
 
 ---
 

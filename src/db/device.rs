@@ -615,10 +615,11 @@ pub async fn get_device_by_device_id(pool: &Pool, device_id: &str) -> sqlx::Resu
     // SELECT 会触发 "no such column: channel_count",handler 把 Err 当
     // None 返回 null,前端 /api/device/query/devices/:id 拿不到 onLine,
     // 国标通道列表的"播放"按钮被 :disabled="!device" 锁死。
-    let cols = DEVICE_SELECT_COLUMNS.replace(
-        "channel_count",
-        "(SELECT COUNT(*) FROM gb_device_channel WHERE device_id = gb_device.device_id) AS channel_count",
-    );
+    #[cfg(feature = "postgres")]
+    let count_expr = "(SELECT COUNT(*)::INTEGER FROM gb_device_channel WHERE device_id = gb_device.device_id) AS channel_count";
+    #[cfg(not(feature = "postgres"))]
+    let count_expr = "(SELECT COUNT(*) FROM gb_device_channel WHERE device_id = gb_device.device_id) AS channel_count";
+    let cols = DEVICE_SELECT_COLUMNS.replace("channel_count", count_expr);
     #[cfg(feature = "mysql")]
     return sqlx::query_as::<_, Device>(&format!(
         "SELECT {} FROM gb_device WHERE device_id = ?",
@@ -2241,14 +2242,19 @@ pub async fn upsert_channel_from_catalog(
             .await?;
             Ok(false)
         } else {
+            let parent_db_id: i32 =
+                sqlx::query_scalar("SELECT id FROM gb_device WHERE device_id = $1")
+                    .bind(device_id)
+                    .fetch_one(pool)
+                    .await?;
             sqlx::query(
                 r#"INSERT INTO gb_device_channel
                    (device_id, gb_device_id, name, manufacturer, model, owner, civil_code, address,
                     parent_id, status, longitude, latitude, ptz_type, has_audio, sub_count,
-                    create_time, update_time)
+                    create_time, update_time, data_type, data_device_id)
                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9,
                     CASE WHEN $10 THEN 'ON' ELSE 'OFF' END,
-                    $11, $12, $13, $14, $15, $16, $17)"#,
+                    $11, $12, $13, $14, $15, $16, $17, 0, $18)"#,
             )
             .bind(device_id)
             .bind(channel_device_id)
@@ -2267,6 +2273,7 @@ pub async fn upsert_channel_from_catalog(
             .bind(sub_count)
             .bind(&now)
             .bind(&now)
+            .bind(parent_db_id)
             .execute(pool)
             .await?;
             Ok(true)
@@ -2434,11 +2441,12 @@ pub async fn batch_upsert_channels(
 
         let result = sqlx::query(
             r#"INSERT INTO gb_device_channel
-               (device_id, gb_device_id, name, status, longitude, latitude, has_audio, channel_type, create_time, update_time)
-               SELECT $1, gb_id, name, status, longitude, latitude, has_audio, channel_type, $2, $2
+               (device_id, gb_device_id, name, status, longitude, latitude, has_audio, channel_type, create_time, update_time, data_type, data_device_id)
+               SELECT $1, gb_id, name, status, longitude, latitude, has_audio, COALESCE(channel_type, 0), $2, $2, 0,
+                      (SELECT id FROM gb_device WHERE device_id = $1)
                FROM UNNEST($3::text[], $4::text[], $5::text[], $6::float8[], $7::float8[], $8::bool[], $9::int4[])
                AS t(gb_id, name, status, longitude, latitude, has_audio, channel_type)
-               ON CONFLICT (device_id, gb_device_id) DO UPDATE SET
+               ON CONFLICT (gb_device_id) DO UPDATE SET
                    name = EXCLUDED.name,
                    status = EXCLUDED.status,
                    longitude = EXCLUDED.longitude,
