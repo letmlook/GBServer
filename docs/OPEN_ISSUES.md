@@ -885,8 +885,10 @@ IP、HTTP 端口与 RTC 地址。SQLite Compose 已对齐 ZLM 配置文件与端
 ZLM 与 SIP Mock。发现 PostgreSQL 设备查询的 `COUNT(*)` 类型不匹配及 Catalog
 单条/批量写入的约束错误，修正并用隔离库测试后，容器点播/有效 BYE/停止后不重连、
 MP4 下载及 Range 读取、Chromium FLV 实拉均通过。此次是 Docker Desktop 本机拓扑；
-容器 WebRTC、真机 LAN 可达性和目标 Linux Compose 部署仍待验收。MySQL/SQLite
-通道写入路径没有在本轮按同样场景运行，不能由 PostgreSQL 结果推断通过。
+容器 WebRTC、真机 LAN 可达性和目标 Linux Compose 部署仍待验收。随后补齐
+MySQL/SQLite 以及 PostgreSQL 的批量通道插入必填字段和可选通道类型默认值，
+分别用三种数据库的生产初始化 schema 运行单条、批量更新和批量插入定向测试；
+数据库路径已验证，MySQL/SQLite 的完整容器媒体拓扑仍未运行。
 
 ---
 

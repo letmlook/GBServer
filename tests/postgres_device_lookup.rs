@@ -96,6 +96,20 @@ async fn catalog_channels_satisfy_required_source_columns() {
     } else {
         Ok(0)
     };
+    let insert = gbserver::db::device::batch_insert_channels(
+        &pool,
+        device_id,
+        &[gbserver::db::device::ChannelInsertData {
+            name: "Camera 3".into(),
+            gb_device_id: "34020000001310009996".into(),
+            status: "ON".into(),
+            longitude: None,
+            latitude: None,
+            has_audio: Some(false),
+            channel_type: None,
+        }],
+    )
+    .await;
     let source_columns: Vec<(i32, i32)> = sqlx::query_as(
         "SELECT data_type, data_device_id FROM gb_device_channel WHERE device_id = $1 ORDER BY gb_device_id",
     )
@@ -117,5 +131,6 @@ async fn catalog_channels_satisfy_required_source_columns() {
 
     assert_eq!(single.expect("single catalog upsert"), true);
     assert_eq!(batch.expect("batch catalog upsert"), 1);
-    assert_eq!(source_columns, vec![(0, parent_id), (0, parent_id)]);
+    assert_eq!(insert.expect("batch insert"), 1);
+    assert_eq!(source_columns, vec![(0, parent_id); 3]);
 }

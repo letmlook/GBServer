@@ -2063,11 +2063,26 @@ pub async fn batch_insert_channels(
     }
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let mut total = 0u64;
+    #[cfg(feature = "mysql")]
+    let parent_db_id: i32 = sqlx::query_scalar("SELECT id FROM gb_device WHERE device_id = ?")
+        .bind(device_id)
+        .fetch_one(pool)
+        .await?;
+    #[cfg(feature = "sqlite")]
+    let parent_db_id: i64 = sqlx::query_scalar("SELECT id FROM gb_device WHERE device_id = ?")
+        .bind(device_id)
+        .fetch_one(pool)
+        .await?;
+    #[cfg(feature = "postgres")]
+    let parent_db_id: i32 = sqlx::query_scalar("SELECT id FROM gb_device WHERE device_id = $1")
+        .bind(device_id)
+        .fetch_one(pool)
+        .await?;
 
     for ch in channels {
         #[cfg(feature = "mysql")]
         let r = sqlx::query(
-            "INSERT INTO gb_device_channel (device_id, name, gb_device_id, status, longitude, latitude, has_audio, channel_type, create_time, update_time) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            "INSERT INTO gb_device_channel (device_id, name, gb_device_id, status, longitude, latitude, has_audio, channel_type, create_time, update_time, data_type, data_device_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)"
         )
         .bind(device_id)
         .bind(&ch.name)
@@ -2076,14 +2091,15 @@ pub async fn batch_insert_channels(
         .bind(ch.longitude)
         .bind(ch.latitude)
         .bind(ch.has_audio)
-        .bind(ch.channel_type)
+        .bind(ch.channel_type.unwrap_or(0))
         .bind(&now)
         .bind(&now)
+        .bind(parent_db_id)
         .execute(pool)
         .await?;
         #[cfg(feature = "postgres")]
         let r = sqlx::query(
-            "INSERT INTO gb_device_channel (device_id, name, gb_device_id, status, longitude, latitude, has_audio, channel_type, create_time, update_time) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)"
+            "INSERT INTO gb_device_channel (device_id, name, gb_device_id, status, longitude, latitude, has_audio, channel_type, create_time, update_time, data_type, data_device_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 0, $11)"
         )
         .bind(device_id)
         .bind(&ch.name)
@@ -2092,14 +2108,15 @@ pub async fn batch_insert_channels(
         .bind(ch.longitude)
         .bind(ch.latitude)
         .bind(ch.has_audio)
-        .bind(ch.channel_type)
+        .bind(ch.channel_type.unwrap_or(0))
         .bind(&now)
         .bind(&now)
+        .bind(parent_db_id)
         .execute(pool)
         .await?;
         #[cfg(feature = "sqlite")]
         let r = sqlx::query(
-            "INSERT INTO gb_device_channel (device_id, name, gb_device_id, status, longitude, latitude, has_audio, channel_type, create_time, update_time) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            "INSERT INTO gb_device_channel (device_id, name, gb_device_id, status, longitude, latitude, has_audio, channel_type, create_time, update_time, data_type, data_device_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)"
         )
         .bind(device_id)
         .bind(&ch.name)
@@ -2108,9 +2125,10 @@ pub async fn batch_insert_channels(
         .bind(ch.longitude)
         .bind(ch.latitude)
         .bind(ch.has_audio)
-        .bind(ch.channel_type)
+        .bind(ch.channel_type.unwrap_or(0))
         .bind(&now)
         .bind(&now)
+        .bind(parent_db_id)
         .execute(pool)
         .await?;
         total += r.rows_affected();
@@ -2282,14 +2300,18 @@ pub async fn upsert_channel_from_catalog(
 
     #[cfg(feature = "mysql")]
     {
+        let parent_db_id: i32 = sqlx::query_scalar("SELECT id FROM gb_device WHERE device_id = ?")
+            .bind(device_id)
+            .fetch_one(pool)
+            .await?;
         sqlx::query(
             r#"INSERT INTO gb_device_channel
                (device_id, gb_device_id, name, manufacturer, model, owner, civil_code, address,
                 parent_id, status, longitude, latitude, ptz_type, has_audio, sub_count,
-                create_time, update_time)
+                create_time, update_time, data_type, data_device_id)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,
                 CASE WHEN ? THEN 'ON' ELSE 'OFF' END,
-                ?, ?, ?, ?, ?, ?, ?)
+                ?, ?, ?, ?, ?, ?, ?, 0, ?)
                ON DUPLICATE KEY UPDATE
                name = COALESCE(VALUES(name), name),
                manufacturer = COALESCE(VALUES(manufacturer), manufacturer),
@@ -2318,6 +2340,7 @@ pub async fn upsert_channel_from_catalog(
         .bind(sub_count)
         .bind(&now)
         .bind(&now)
+        .bind(parent_db_id)
         .execute(pool)
         .await?;
         Ok(true)
@@ -2473,12 +2496,16 @@ pub async fn batch_upsert_channels(
     {
         // MySQL: 多次单条 INSERT ... ON DUPLICATE KEY UPDATE
         // 因为 MySQL 不支持 UNNEST，每个 channel 单独执行
+        let parent_db_id: i32 = sqlx::query_scalar("SELECT id FROM gb_device WHERE device_id = ?")
+            .bind(parent_device_id)
+            .fetch_one(pool)
+            .await?;
         let mut total: u64 = 0;
         for ch in channels {
             let res = sqlx::query(
                 r#"INSERT INTO gb_device_channel
-                   (device_id, gb_device_id, name, status, longitude, latitude, has_audio, channel_type, create_time, update_time)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   (device_id, gb_device_id, name, status, longitude, latitude, has_audio, channel_type, create_time, update_time, data_type, data_device_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
                    ON DUPLICATE KEY UPDATE
                        name = VALUES(name),
                        status = VALUES(status),
@@ -2495,9 +2522,10 @@ pub async fn batch_upsert_channels(
             .bind(ch.longitude)
             .bind(ch.latitude)
             .bind(ch.has_audio)
-            .bind(ch.channel_type)
+            .bind(ch.channel_type.unwrap_or(0))
             .bind(&now)
             .bind(&now)
+            .bind(parent_db_id)
             .execute(pool)
             .await?;
             total += res.rows_affected();
@@ -2508,12 +2536,16 @@ pub async fn batch_upsert_channels(
     {
         // SQLite: 多次单条 INSERT ... ON CONFLICT DO UPDATE
         // 复用 MySQL 风格 — SQLite 也不支持 UNNEST，每个 channel 单独执行
+        let parent_db_id: i64 = sqlx::query_scalar("SELECT id FROM gb_device WHERE device_id = ?")
+            .bind(parent_device_id)
+            .fetch_one(pool)
+            .await?;
         let mut total: u64 = 0;
         for ch in channels {
             let res = sqlx::query(
                 r#"INSERT INTO gb_device_channel
-                   (device_id, gb_device_id, name, status, longitude, latitude, has_audio, channel_type, create_time, update_time)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   (device_id, gb_device_id, name, status, longitude, latitude, has_audio, channel_type, create_time, update_time, data_type, data_device_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
                    ON CONFLICT(gb_device_id) DO UPDATE SET
                        name = excluded.name,
                        status = excluded.status,
@@ -2530,9 +2562,10 @@ pub async fn batch_upsert_channels(
             .bind(ch.longitude)
             .bind(ch.latitude)
             .bind(ch.has_audio)
-            .bind(ch.channel_type)
+            .bind(ch.channel_type.unwrap_or(0))
             .bind(&now)
             .bind(&now)
+            .bind(parent_db_id)
             .execute(pool)
             .await?;
             total += res.rows_affected();
