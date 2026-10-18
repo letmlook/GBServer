@@ -395,6 +395,12 @@ impl InviteSessionManager {
 
     pub async fn update(&self, session: &InviteSession) {
         let mut guard = self.sessions.write().await;
+        if guard
+            .get(&session.call_id)
+            .is_some_and(|current| current.status == InviteSessionStatus::Terminated)
+        {
+            return;
+        }
         guard.insert(session.call_id.clone(), session.clone());
         // E1: 同步 StateStore
         self.sync_to_store(session);
@@ -422,6 +428,9 @@ impl InviteSessionManager {
         let Some(session) = guard.get_mut(call_id) else {
             return false;
         };
+        if session.status == InviteSessionStatus::Terminated {
+            return false;
+        }
         if let Some(tag) = remote_tag.filter(|t| !t.is_empty()) {
             session.set_remote_tag(tag);
         }
@@ -585,6 +594,9 @@ impl InviteSessionManager {
     pub async fn update_status(&self, call_id: &str, status: InviteSessionStatus) {
         let mut guard = self.sessions.write().await;
         if let Some(session) = guard.get_mut(call_id) {
+            if session.status == InviteSessionStatus::Terminated {
+                return;
+            }
             session.status = status;
             session.last_activity = Utc::now();
             // E1: 同步 StateStore
@@ -665,6 +677,32 @@ pub fn build_playback_sdp(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn terminated_session_cannot_be_reactivated_by_late_updates() {
+        let manager = InviteSessionManager::new();
+        let peer = "127.0.0.1:15060".parse().unwrap();
+        let mut stale = InviteSession::new("play_1", "device", "channel", StreamType::Play, peer);
+        manager.create(stale.clone()).await;
+        manager
+            .update_status("play_1", InviteSessionStatus::Terminated)
+            .await;
+
+        stale.status = InviteSessionStatus::Active;
+        manager.update(&stale).await;
+        manager
+            .update_status("play_1", InviteSessionStatus::Active)
+            .await;
+        assert!(!manager.mark_answered("play_1", Some("late"), None).await);
+        assert!(manager
+            .get_latest_by_device_channel_type("device", "channel", StreamType::Play)
+            .await
+            .is_none());
+        assert_eq!(
+            manager.get("play_1").await.unwrap().status,
+            InviteSessionStatus::Terminated
+        );
+    }
 
     #[test]
     fn test_sdp_parse() {

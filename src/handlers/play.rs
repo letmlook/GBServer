@@ -183,6 +183,9 @@ pub async fn play_start(
     if let Some(ref zlm_client) = state.zlm_client {
         // 创建 ZLM 的流。stream_id 使用规范格式: 设备ID_通道ID
         let stream_id = format!("{}_{}", device_id, channel_id);
+        sip_server
+            .stream_reconnect_manager()
+            .clear_manual_stop(&stream_id);
         // 新一轮点播不能消费上一轮留下的流注册通知；本轮真正的媒体
         // Hook 若先于 waiter 注册到达，管理器会重新缓存它。
         sip_server
@@ -578,7 +581,7 @@ pub async fn play_start(
         ("channel_id" = String, Path, description = "通道国标编号（20 位）"),
     ),
     responses(
-        (status = 200, description = "停止指令已发送",
+        (status = 200, description = "成功仅表示 SIP BYE 已发送；发送失败返回业务错误（ZLM 清理已尝试）",
          body = ApiResult<serde_json::Value>,
          example = json!({"code":0,"msg":"成功","data":{"callId":"abc-123"}})),
         (status = 401, description = "未鉴权"),
@@ -597,6 +600,9 @@ pub async fn play_stop(
     };
 
     let stream_id = format!("{}_{}", device_id, channel_id);
+    sip_server
+        .stream_reconnect_manager()
+        .mark_manual_stop(&stream_id);
 
     // 1. 通知 ZLM 停止该流的接收
     if let Some(ref zlm_client) = state.zlm_client {
@@ -631,10 +637,11 @@ pub async fn play_stop(
         }
         Err(e) => {
             tracing::warn!("Failed to send session BYE for stream {}: {}", stream_id, e);
+            return Json(ApiResult::error(format!(
+                "ZLM 清理已尝试，但设备 BYE 未发送：{e}"
+            )));
         }
     }
-
-    Json(ApiResult::success(serde_json::json!({})))
 }
 
 /// GET /api/play/broadcast/{device_id}/{channel_id}

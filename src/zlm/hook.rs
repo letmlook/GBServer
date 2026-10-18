@@ -1206,30 +1206,40 @@ pub(crate) async fn handle_webhook_inner(
                     let sip = sip_server.as_ref();
                     let reconnect_mgr = sip.stream_reconnect_manager();
                     // 登记到重连管理器，按退避策略持续重试
-                    reconnect_mgr.on_stream_not_found(&data.app, &data.stream);
+                    let should_pull = reconnect_mgr
+                        .on_stream_not_found(&data.app, &data.stream)
+                        .is_some();
 
                     // 立刻做一次按需拉起
-                    if let Some((device_id, channel_id)) =
-                        crate::sip::gb28181::stream_reconnect::StreamReconnectManager::parse_stream_id(&data.stream)
-                    {
-                        if sip.is_device_online(&device_id).await {
-                            match sip.start_live_stream(&device_id, &channel_id, 15).await {
-                                Ok(stream_id) => {
-                                    tracing::info!(
-                                        "On-demand pull started: stream={} device={} channel={}",
-                                        stream_id, device_id, channel_id
-                                    );
-                                    reconnect_mgr.mark_success(&data.stream);
+                    if should_pull {
+                        let parsed = crate::sip::gb28181::stream_reconnect::StreamReconnectManager::parse_stream_id(&data.stream);
+                        if let Some((device_id, channel_id)) = parsed {
+                            if sip.is_device_online(&device_id).await {
+                                if !reconnect_mgr.is_suppressed(&data.stream) {
+                                    match sip.start_live_stream(&device_id, &channel_id, 15).await {
+                                        Ok(stream_id) => {
+                                            tracing::info!(
+                                                "On-demand pull started: stream={} device={} channel={}",
+                                                stream_id, device_id, channel_id
+                                            );
+                                            reconnect_mgr.mark_success(&data.stream);
+                                        }
+                                        Err(e) => {
+                                            tracing::warn!(
+                                                "On-demand pull failed for {}/{}: {}",
+                                                device_id,
+                                                channel_id,
+                                                e
+                                            );
+                                        }
+                                    }
                                 }
-                                Err(e) => {
-                                    tracing::warn!(
-                                        "On-demand pull failed for {}/{}: {}",
-                                        device_id, channel_id, e
-                                    );
-                                }
+                            } else {
+                                tracing::debug!(
+                                    "Device {} offline, skip on-demand pull",
+                                    device_id
+                                );
                             }
-                        } else {
-                            tracing::debug!("Device {} offline, skip on-demand pull", device_id);
                         }
                     }
                 }

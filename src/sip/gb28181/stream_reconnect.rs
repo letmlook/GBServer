@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,6 +26,7 @@ pub struct ReconnectEntry {
 
 pub struct StreamReconnectManager {
     entries: DashMap<String, ReconnectEntry>,
+    manual_stops: DashMap<String, Instant>,
     max_retries: u32,
     retry_interval_secs: u64,
     enabled: bool,
@@ -36,6 +38,7 @@ impl StreamReconnectManager {
     pub fn new(enabled: bool, max_retries: u32, retry_interval_secs: u64) -> Self {
         Self {
             entries: DashMap::new(),
+            manual_stops: DashMap::new(),
             max_retries,
             retry_interval_secs,
             enabled,
@@ -58,6 +61,30 @@ impl StreamReconnectManager {
 
     pub fn is_enabled(&self) -> bool {
         self.enabled
+    }
+
+    /// 用户主动停止后，短暂抑制旧播放器/缩略图的缺流 Hook 再次拉起设备。
+    /// 新的显式点播会立即清除该标记。
+    pub fn mark_manual_stop(&self, stream_id: &str) {
+        self.entries.remove(stream_id);
+        self.manual_stops
+            .insert(stream_id.to_string(), Instant::now());
+    }
+
+    pub fn clear_manual_stop(&self, stream_id: &str) {
+        self.manual_stops.remove(stream_id);
+    }
+
+    pub fn is_suppressed(&self, stream_id: &str) -> bool {
+        let Some(stopped_at) = self.manual_stops.get(stream_id) else {
+            return false;
+        };
+        if stopped_at.elapsed() < Duration::from_secs(30) {
+            return true;
+        }
+        drop(stopped_at);
+        self.manual_stops.remove(stream_id);
+        false
     }
 
     pub fn is_gb28181_stream(stream_id: &str) -> bool {
@@ -95,7 +122,7 @@ impl StreamReconnectManager {
     }
 
     pub fn on_stream_not_found(&self, app: &str, stream_id: &str) -> Option<ReconnectEntry> {
-        if !self.enabled {
+        if !self.enabled || self.is_suppressed(stream_id) {
             return None;
         }
 
@@ -212,6 +239,9 @@ impl StreamReconnectManager {
             let entries = self.get_reconnectable();
             let sip_server_opt = self.get_sip_server().await;
             for entry in entries {
+                if self.is_suppressed(&entry.stream_id) {
+                    continue;
+                }
                 if let Some(ref sip_server) = sip_server_opt {
                     tracing::info!(
                         "Attempting stream reconnect: {} (retry {}/{})",
@@ -311,6 +341,16 @@ mod tests {
         assert_eq!(e.device_id, "device1");
         assert_eq!(e.channel_id, "channel1");
         assert_eq!(e.state, ReconnectState::Reconnecting);
+    }
+
+    #[test]
+    fn manual_stop_suppresses_reconnect_until_explicit_start() {
+        let manager = StreamReconnectManager::new(true, 3, 5);
+        manager.mark_manual_stop("dev_ch");
+        assert!(manager.is_suppressed("dev_ch"));
+        assert!(manager.on_stream_not_found("rtp", "dev_ch").is_none());
+        manager.clear_manual_stop("dev_ch");
+        assert!(manager.on_stream_not_found("rtp", "dev_ch").is_some());
     }
 
     #[test]

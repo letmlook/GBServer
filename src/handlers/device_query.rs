@@ -465,6 +465,24 @@ pub fn spawn_snapshot_capture(state: AppState, device_id: String, channel_id: St
         let delays_ms: [u64; 3] = [2_000, 3_000, 5_000];
         for (i, delay) in delays_ms.iter().enumerate() {
             tokio::time::sleep(std::time::Duration::from_millis(*delay)).await;
+            // 用户可能在等待首帧期间已停止点播。继续向 ZLM 请求不存在的流会
+            // 触发 on_stream_not_found，反过来再次 INVITE 设备并恢复已停止的播放。
+            let Some(ref sip) = state.sip_server else {
+                return;
+            };
+            if sip
+                .invite_session_manager()
+                .get_latest_by_device_channel_type(
+                    &device_id,
+                    &channel_id,
+                    crate::sip::gb28181::invite_session::StreamType::Play,
+                )
+                .await
+                .is_none()
+            {
+                tracing::debug!("点播已停止，跳过缩略图抓取 {}/{}", device_id, channel_id);
+                return;
+            }
             match capture_snapshot(&state, &device_id, &channel_id).await {
                 Ok(version) => {
                     tracing::info!(

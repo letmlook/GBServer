@@ -6,7 +6,7 @@
 
 | 项目 | 本轮结果 | 证据范围 |
 |---|---|---|
-| Rust 测试 | `cargo test --no-fail-fast --locked`：798 通过、0 失败、3 个文档测试忽略 | SQLite 默认特性；本机自动化，ZLM + Mock 的实际运行证据见下文；真机仍待复验 |
+| Rust 测试 | `cargo test --no-fail-fast --locked`：800 通过、0 失败、3 个文档测试忽略 | SQLite 默认特性；本机自动化，ZLM + Mock 的实际运行证据见下文；真机仍待复验 |
 | 版本一致性 | SIP `User-Agent` 统一从 Cargo 包版本生成，覆盖设备侧 SIP 和级联请求；HTTP `/api/server/version`、`/api/system/info` 与 OpenAPI 均返回 `2.0.0` | `cargo fmt --check`、Rust 全量测试与 `cargo build --locked` 通过；本机后端启动后对三个 HTTP 出口实测均为 `2.0.0`；级联 REGISTER/INVITE 的 SIP 报文构造测试通过，真机报文待复验 |
 | 前端构建 | `web/npm run build` 通过 | Vue 类型检查与 Vite 打包，不代表浏览器播放通过 |
 | M1 播放收流 | 普通点播和级联点播在媒体 ready 后不再二次回连。`on_rtp_server_started` 仅表示端口已打开，不误报媒体到达。TCP-PASSIVE 使用 ZLM `tcp_mode=2`、纯主机 `dst_url` 主动连接，并等真实流注册后才返回成功；失败清理 RTP Server 和 Play 会话 | 回归测试覆盖媒体判定、被动模式等待及取消；本机真实 ZLM + SIP Mock：普通模式无 RTP 时 15.0 秒超时、有 RTP 时 FLV 可读；TCP-PASSIVE 无设备媒体时 15.0 秒失败，ZLM RTP Server 0 残留且 Mock 收到 BYE；使用本机 TCP RTP/PS relay 时约 5.73 秒成功、FLV 头为 `FLV`、停止成功。真机仍待复验 |
@@ -32,6 +32,7 @@
 | M2 通用通道镜头与预置位 | 聚焦、光圈仅接受明确开关动作和 1–255 速度，实际编码使用请求速度；预置位设置、调用、删除要求 1–255 编号，响应只声明命令已发送，避免将未收到设备回执写成操作成功 | 指令字节和参数定向测试通过；全量 Rust 测试 796 通过、0 失败、3 个文档测试忽略。本机后端 + SIP Mock 先同步目录再用通道数据库 ID 发聚焦速度 40、调用预置位 3，Mock 分别收到 `A50F01422800001F`、`A50F01820003003A`；编号 256 被拒绝，既有控制回执正反场景全部通过。通用通道兼容入口尚未在真机验证 |
 | M4 Catalog 多包同步 | 同步按 `SumNum` 声明的目录条目总数和唯一通道 ID 收齐，重复/乱序包不提前完成；收包数与目录条目数分开返回，未知总包数显示 `null`；旧 SN 响应不推进新会话或覆盖通道 | 定向测试先复现按包数统计导致 3 条目录在 2 包后不完成，修复后通过；本机后端 + SIP Mock 17 通道分 3 包，HTTP 返回 `done`、17/17 条目、3 包、无错误，原有控制回执场景同时通过。真实设备的分页/乱序/迟到报文仍待复验 |
 | M4 心跳超时与恢复 | 隔离后端设 `GBSERVER__SIP__KEEPALIVE_TIMEOUT=3`、`GBSERVER__SIP__HEARTBEAT__TIMEOUT_MULTIPLIER=1`、`GBSERVER__SIP__HEARTBEAT__CHECK_INTERVAL_SECS=1`；无自动心跳的 SIP Mock 注册后超时置离线，离线控制请求拒绝，重新注册恢复在线 | `mock/tools/sip-device/verify_heartbeat_timeout_runtime.py` 对本机后端 + 临时 SQLite 实际运行通过：在线 → 超时离线 → PTZ 拒绝 → 重注册在线。仅是 Mock 与缩短的超时配置；真实设备及生产默认心跳时序待验证 |
+| M4 主动停止点播 | `/api/play/stop` 在无活动会话或 BYE 发送失败时返回业务错误；主动停止会清理重连登记并短暂抑制旧播放器、缩略图的缺流 Hook，显式重新点播立即解除抑制；已终止会话不接受迟到响应或状态更新重新激活 | 本机真实 ZLM + SIP Mock：无会话停止返回错误，正常点播停止收到有效对话内 BYE；等待 11 秒覆盖缩略图重试窗口后再次停止返回无活动会话，未发第二次 BYE。`verify_play_stop_bye_runtime.py` 通过；仍需真机和目标部署复验 |
 | C8 直播音频标志 | 点播响应优先以当前 ZLM 流的 ready 音频 track 判定 `hasAudio`，无 track 时回退目录字段，并以 `audioSource` 标明来源 | 音频 track 单测、前端构建及 `cargo test --no-fail-fast --locked`（774 通过、3 文档测试忽略）通过；本轮 ZLM + Mock 点播返回 `audioSource=media` 且 `hasAudio=true`，ZLM 同流 ready 音频 track；真机待复验 |
 | M4 多方言运行 | PostgreSQL 与 MySQL 特性分别 `cargo build --no-default-features --features <dialect> --locked` 通过；独立测试库按对应初始化 SQL 建表，后端启动、登录、媒体节点/设备列表查询、收藏 GET 和 DELETE 往返均通过 | PostgreSQL 16 容器的隔离库与 MySQL 8 独立临时容器；各 31 张初始化表，测试后隔离库/容器已清理。证明本轮相关路径可运行，不等于全部业务及目标部署验收 |
 | M4 平台通道跨方言更新 | MySQL 自定义名称/地址更新缺少 `UPDATE ... SET`，隔离库测试先复现 1064 错误，修复后通过；PostgreSQL 改用参数绑定；SQLite 共享分支的往返测试通过 | MySQL 8 与 PostgreSQL 16 初始化隔离库分别运行 `mysql_platform_channel`、`postgres_platform_channel` 的忽略测试；两列同时/分别更新及含单引号值通过。默认 SQLite 全量测试包含 `sqlite_custom_fields_roundtrip` |
