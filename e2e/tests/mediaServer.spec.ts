@@ -10,6 +10,7 @@
  */
 
 import { test, expect, type Page } from '@playwright/test';
+import { apiPath } from '../test-helpers/api-path';
 
 const NODE_ID = 'zlmediakit-1';
 
@@ -53,6 +54,11 @@ test.describe.serial('Media server page (/mediaServer)', () => {
     await row.getByRole('button', { name: '编辑' }).click();
     const dialog = page.getByRole('dialog');
     await expect(dialog).toBeVisible();
+    const secretInput = dialog.getByRole('textbox', { name: /Secret/ });
+    await secretInput.fill('temporary-unsaved-secret');
+    await dialog.getByRole('button', { name: '取消' }).click();
+    await row.getByRole('button', { name: '编辑' }).click();
+    await expect(secretInput).toBeEmpty();
     const enableItem = dialog.locator('.el-form-item', { hasText: '启用' }).first();
     await enableItem.locator('.el-switch').click();
     const [resp] = await Promise.all([
@@ -64,7 +70,7 @@ test.describe.serial('Media server page (/mediaServer)', () => {
     await expect(nodeRow(page)).toContainText('已停用', { timeout: 10_000 });
 
     // 停用后 online/list（拉流代理 / 录像计划的节点下拉、负载均衡都用它）不再包含该节点
-    const online = await page.request.get('/dev-api/server/media_server/online/list', {
+    const online = await page.request.get(apiPath('/server/media_server/online/list'), {
       headers: await authHeaders(page)
     });
     const onlineBody = (await online.json()) as { data?: Array<{ id: string }> };
@@ -88,11 +94,19 @@ test.describe.serial('Media server page (/mediaServer)', () => {
     expect(((await resp.json()) as { code: number }).code).toBe(0);
     await expect(nodeRow(page)).toContainText('启用中', { timeout: 10_000 });
 
-    const online = await page.request.get('/dev-api/server/media_server/online/list', {
+    const online = await page.request.get(apiPath('/server/media_server/online/list'), {
       headers: await authHeaders(page)
     });
     const onlineBody = (await online.json()) as { data?: Array<{ id: string }> };
     expect((onlineBody.data ?? []).some((m) => m.id === NODE_ID)).toBe(true);
+
+    // 编辑表单未回填密钥；留空保存后原 Secret 必须仍能用于 ZLM 探测。
+    const probe = await page.request.get(apiPath(`/server/media_server/check?id=${NODE_ID}`), {
+      headers: await authHeaders(page)
+    });
+    const probeBody = (await probe.json()) as { code: number; data?: { reachable?: boolean } };
+    expect(probeBody.code).toBe(0);
+    expect(probeBody.data?.reachable).toBe(true);
   });
 });
 

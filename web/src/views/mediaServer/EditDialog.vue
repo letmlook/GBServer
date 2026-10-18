@@ -17,7 +17,7 @@
         <el-input-number v-model="form.rtspPort" :min="0" :max="65535" />
       </el-form-item>
       <el-form-item label="Secret" prop="secret">
-        <el-input v-model="form.secret" />
+        <el-input v-model="form.secret" :placeholder="isEdit ? '留空则保留现有 Secret' : '请输入 Secret'" />
       </el-form-item>
       <el-form-item label="启用">
         <el-switch v-model="form.enabled" />
@@ -78,12 +78,20 @@ const rules: FormRules = {
   id: [{ required: true, message: '请输入节点 ID', trigger: 'blur' }],
   ip: [{ required: true, message: '请输入 IP', trigger: 'blur' }],
   httpPort: [{ required: true, message: '请输入端口', trigger: 'blur' }],
-  secret: [{ required: true, message: '请输入 secret', trigger: 'blur' }]
+  secret: [{
+    validator: (_rule, value, callback) => {
+      if (!isEdit.value && !String(value ?? '').trim()) callback(new Error('请输入 secret'))
+      else callback()
+    },
+    trigger: 'blur'
+  }]
 }
 
 function onOpen() {
   if (props.server) {
     Object.assign(form, props.server)
+    // 列表不会返回 Secret；打开另一个节点时也不能沿用上次输入的密钥。
+    form.secret = ''
   } else {
     Object.assign(form, {
       id: '',
@@ -104,7 +112,9 @@ async function onSave() {
   await formRef.value.validate()
   saving.value = true
   try {
-    await saveMediaServer(form)
+    const payload = { ...form }
+    if (isEdit.value && !payload.secret?.trim()) delete payload.secret
+    await saveMediaServer(payload)
     ElMessage.success(isEdit.value ? '已保存' : '新增成功')
     visible.value = false
     emit('saved')

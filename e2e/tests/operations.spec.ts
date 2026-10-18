@@ -12,6 +12,7 @@
  */
 
 import { test, expect, type Page } from '@playwright/test';
+import { apiPath } from '../test-helpers/api-path';
 
 async function authHeaders(page: Page): Promise<Record<string, string>> {
   const token = await page.evaluate(() => {
@@ -59,7 +60,7 @@ test.describe('Operations pages', () => {
     await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => {});
 
     const headers = await authHeaders(page);
-    const resp = await page.request.get('/dev-api/log/list?format=csv&level=INFO', { headers });
+    const resp = await page.request.get(apiPath('/log/list?format=csv&level=INFO'), { headers });
     expect(resp.status()).toBe(200);
     expect(resp.headers()['content-type']).toContain('text/csv');
     expect(resp.headers()['content-disposition'] ?? '').toContain('gbserver-log-');
@@ -69,7 +70,7 @@ test.describe('Operations pages', () => {
     expect(text).toContain('id,time,level,logger,thread,source,message');
 
     // 不带 format 时仍是 JSON 分页契约
-    const jsonResp = await page.request.get('/dev-api/log/list?page=1&count=5', { headers });
+    const jsonResp = await page.request.get(apiPath('/log/list?page=1&count=5'), { headers });
     expect(jsonResp.headers()['content-type']).toContain('application/json');
     const body = (await jsonResp.json()) as { code: number; data: { list: unknown[] } };
     expect(body.code).toBe(0);

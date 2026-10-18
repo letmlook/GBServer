@@ -13,6 +13,7 @@
  * 本 spec 通过页内请求逐个下发，断言：合法取值全部 `code:0`、非法取值明确报错。
  */
 import { test, expect, type Page } from '@playwright/test';
+import { apiPath } from '../test-helpers/api-path';
 
 const DEVICE = '34020000001320000001';
 const CHANNEL = '34020000001320000001';
@@ -27,7 +28,7 @@ async function authHeaders(page: Page): Promise<Record<string, string>> {
 
 async function post(page: Page, path: string): Promise<number> {
   const headers = await authHeaders(page);
-  const resp = await page.request.get(`/dev-api/front-end/${path}`, { headers });
+  const resp = await page.request.get(apiPath(`/front-end/${path}`), { headers });
   expect(resp.status(), path).toBe(200);
   const body = (await resp.json()) as { code: number; msg?: string };
   return body.code;

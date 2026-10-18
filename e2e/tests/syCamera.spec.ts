@@ -11,10 +11,11 @@
  *   * `/camera/list` 返回的是**设备行**（`is_device=true`），而 live 页按
  *     `!c.is_device` 过滤 → 若改用它，通道树会是空的。
  *
- * 本 spec 通过页内请求直接打后端（走 `/dev-api` 代理），避免依赖 UI 细节。
+ * 本 spec 通过页内请求直接打后端（Vite 代理或同源 `/api`），避免依赖 UI 细节。
  */
 
 import { test, expect, type Page } from '@playwright/test';
+import { apiPath } from '../test-helpers/api-path';
 
 interface CameraRow {
   device_id: string
@@ -48,7 +49,7 @@ async function cameraPage(
   query = ''
 ): Promise<CameraPage> {
   const headers = await authHeaders(page);
-  const resp = await page.request.get(`/dev-api/sy/camera/${path}${query}`, { headers });
+  const resp = await page.request.get(apiPath(`/sy/camera/${path}${query}`), { headers });
   expect(resp.status()).toBe(200);
   const body = (await resp.json()) as { code: number; data: CameraPage };
   expect(body.code).toBe(0);

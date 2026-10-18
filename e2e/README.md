@@ -45,9 +45,9 @@ npx playwright show-report                # open the HTML report
 npm run test:health                        # 依赖进程健康检查单测（Node 22）
 ```
 
-后端直接托管 `web/dist` 时无需 Vite。媒体验收用例可将业务 API 前缀显式设为
+后端直接托管 `web/dist` 时无需 Vite。验收用例可将业务 API 前缀显式设为
 `/api`（默认 `/dev-api`，用于 Vite 代理）；必须有真实 ZLM 与持续在线的设备
-或推 RTP 的 SIP Mock，WebRTC 用例还需显式启用：
+或推 RTP 的 SIP Mock 才能运行媒体与录像用例，WebRTC 用例还需显式启用：
 
 ```bash
 E2E_BASE_URL=http://127.0.0.1:18080 E2E_API_PREFIX=/api \
