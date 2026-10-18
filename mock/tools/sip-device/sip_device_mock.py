@@ -1582,10 +1582,17 @@ class SipDeviceMock:
         branch = make_branch()
         from_tag = self._extract_from_tag(msg)
         to_tag = self._extract_to_tag(msg)
+        playback = "Application/MANSRTSP" in msg
+        state = self._invite_state.get(call_id) if playback else None
+        valid = bool(state and state["from_tag"] == from_tag
+                     and state["to_tag"] == to_tag
+                     and cseq > state["cseq"]) if playback else True
+        if playback and valid:
+            state["cseq"] = cseq
         realm = realm_from_device_id(self.cfg.device_id)
         local = self.transport.get_extra_info("sockname")
         payload = (
-            f"{SIP_VERSION} 200 OK\r\n"
+            f"{SIP_VERSION} {'200 OK' if valid else '481 Call/Transaction Does Not Exist'}\r\n"
             f"Via: {SIP_VERSION}/UDP {addr[0]}:{addr[1]};rport;branch={branch}\r\n"
             f"From: <sip:{self.cfg.device_id}@{realm}>;tag={from_tag}\r\n"
             f"To: <sip:{realm}@{realm}>;tag={to_tag}\r\n"
@@ -1596,12 +1603,9 @@ class SipDeviceMock:
         )
         self.transport.sendto(payload.encode(), addr)
         body = msg.split("\r\n\r\n", 1)[1] if "\r\n\r\n" in msg else ""
-        if "Application/MANSRTSP" in msg:
-            state = self._invite_state.get(call_id)
-            valid = bool(state and state["from_tag"] == from_tag
-                         and state["to_tag"] == to_tag)
-            log.info("Playback INFO dialog valid=%s call_id=%s body=%s",
-                     valid, call_id, body[:80])
+        if playback:
+            log.info("Playback INFO dialog valid=%s call_id=%s cseq=%s body=%s",
+                     valid, call_id, cseq, body[:80])
         log.info("PTZ INFO 收到: %s", body[:80])
 
     async def _on_subscribe(self, msg: str, addr: tuple):

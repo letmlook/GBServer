@@ -566,6 +566,8 @@ OpenAPI 示例与实际响应一致；这些兼容入口仍未等待设备执行
 准确 Call-ID，并验证活动回放 SIP 对话和双方 tag；无对话时拒绝，不再发送可能被
 设备丢弃的独立 INFO，也不会误用同通道直播。隔离 SQLite 后端 + 真实 ZLM +
 SIP Mock 已验证暂停 INFO 属于当前回放对话；真机执行仍待验收。
+并发控制的 INFO 和回放停止 BYE 已改为同一活动对话内按顺序分配 CSeq；
+本机 Mock 并发控制收到 `2,3,4,5,6`，随后 BYE 通过对话与递增序号校验。
 批量控制保留原有 `success/failed` 发送计数，逐设备补充 `sipSent`、`deviceResult`；
 `ptzStop` 和 `reboot` 支持 `waitResult=true`，查询类命令不提供执行等待；
 批量请求最多并行处理 16 台设备并按请求顺序返回，避免每台无回执设备串行等待 5 秒。

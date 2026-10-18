@@ -843,24 +843,8 @@ pub async fn playback_stop(
         return Json(ApiResult::error("回放会话与设备或通道不匹配"));
     }
 
-    let zlm_result = if let Some(zlm_client) = state
-        .get_zlm_client(session.media_server_id.as_deref())
-        .or_else(|| state.zlm_client.clone())
-    {
-        zlm_client
-            .close_streams(
-                Some(&session.schema),
-                Some(&session.app),
-                Some(&session.stream),
-                true,
-            )
-            .await
-            .map(|_| ())
-            .map_err(|error| error.to_string())
-    } else {
-        Err("ZLM 媒体节点不可用".to_string())
-    };
-
+    // 先发送 BYE：若先关闭 ZLM，缺流 Hook 可能抢先终止 SIP 会话，
+    // 导致设备没有收到停止指令。
     let bye_result = if session.source == "gb28181_playback_invite" {
         match (state.sip_server.as_ref(), session.call_id.as_deref()) {
             (Some(sip), Some(call_id)) => {
@@ -881,6 +865,23 @@ pub async fn playback_stop(
         }
     } else {
         Ok(())
+    };
+    let zlm_result = if let Some(zlm_client) = state
+        .get_zlm_client(session.media_server_id.as_deref())
+        .or_else(|| state.zlm_client.clone())
+    {
+        zlm_client
+            .close_streams(
+                Some(&session.schema),
+                Some(&session.app),
+                Some(&session.stream),
+                true,
+            )
+            .await
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    } else {
+        Err("ZLM 媒体节点不可用".to_string())
     };
     match (zlm_result, bye_result) {
         (Ok(()), Ok(())) => {

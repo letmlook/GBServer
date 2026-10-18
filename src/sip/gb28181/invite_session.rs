@@ -183,10 +183,10 @@ pub struct InviteSession {
     /// 出站 INVITE 的对端 tag 只在 200 OK 里出现，必须回填进会话，
     /// 否则 BYE 的 To 头 missing tag，同样会被设备判为 481。
     pub remote_tag: Option<String>,
-    /// 本对话最近一次 INVITE 的 CSeq 序号。
+    /// 本对话最近一次由平台发出的请求 CSeq 序号，初始值为 INVITE 的 CSeq。
     ///
     /// RFC 3261 §12.2.1.1：对话内请求的 CSeq 必须严格递增，
-    /// BYE 用 `invite_cseq + 1`（此前一律硬编码 `BYE 1`，与
+    /// BYE/INFO 用 `invite_cseq + 1`（此前一律硬编码 `BYE 1`，与
     /// `INVITE 1` 相等 → 设备按乱序请求拒绝）。
     pub invite_cseq: u32,
 }
@@ -384,6 +384,40 @@ impl InviteSessionManager {
 
     pub async fn get(&self, call_id: &str) -> Option<InviteSession> {
         self.sessions.read().await.get(call_id).cloned()
+    }
+
+    /// 为活动回放对话原子分配下一个本端请求 CSeq。
+    /// 发送失败也保留已分配的序号，避免重试与并发请求复用它。
+    pub async fn reserve_playback_cseq(
+        &self,
+        call_id: &str,
+        device_id: &str,
+        channel_id: &str,
+    ) -> Option<(InviteSession, u32)> {
+        let mut guard = self.sessions.write().await;
+        let session = guard.get_mut(call_id)?;
+        if session.device_id != device_id
+            || session.channel_id != channel_id
+            || session.stream_type != StreamType::Playback
+            || session.status != InviteSessionStatus::Active
+            || !session
+                .local_tag
+                .as_deref()
+                .is_some_and(|tag| !tag.is_empty())
+            || !session
+                .remote_tag
+                .as_deref()
+                .is_some_and(|tag| !tag.is_empty())
+        {
+            return None;
+        }
+        let cseq = session.invite_cseq.checked_add(1)?;
+        session.invite_cseq = cseq;
+        session.update_activity();
+        let snapshot = session.clone();
+        drop(guard);
+        self.sync_to_store(&snapshot);
+        Some((snapshot, cseq))
     }
 
     pub async fn get_mut(
@@ -677,6 +711,44 @@ pub fn build_playback_sdp(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn playback_cseq_reservation_is_unique_and_rejects_closed_dialog() {
+        let manager = InviteSessionManager::new();
+        let peer = "127.0.0.1:15060".parse().unwrap();
+        let mut session = InviteSession::new(
+            "playback-call",
+            "device",
+            "channel",
+            StreamType::Playback,
+            peer,
+        );
+        session.status = InviteSessionStatus::Active;
+        session.set_local_dialog("local", 1);
+        session.set_remote_tag("remote");
+        manager.create(session).await;
+
+        let (first, second) = tokio::join!(
+            manager.reserve_playback_cseq("playback-call", "device", "channel"),
+            manager.reserve_playback_cseq("playback-call", "device", "channel")
+        );
+        let mut numbers = [first.unwrap().1, second.unwrap().1];
+        numbers.sort();
+        assert_eq!(numbers, [2, 3]);
+        assert_eq!(manager.get("playback-call").await.unwrap().invite_cseq, 3);
+        assert!(manager
+            .reserve_playback_cseq("playback-call", "wrong-device", "channel")
+            .await
+            .is_none());
+
+        manager
+            .update_status("playback-call", InviteSessionStatus::Terminating)
+            .await;
+        assert!(manager
+            .reserve_playback_cseq("playback-call", "device", "channel")
+            .await
+            .is_none());
+    }
 
     #[tokio::test]
     async fn terminated_session_cannot_be_reactivated_by_late_updates() {

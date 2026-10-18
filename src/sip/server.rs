@@ -79,7 +79,7 @@ use dashmap::DashMap;
 use md5::{Digest, Md5};
 use rand::Rng;
 use tokio::net::UdpSocket;
-use tokio::sync::{oneshot, RwLock};
+use tokio::sync::{oneshot, Mutex, RwLock};
 
 use crate::cascade::CascadeRegistrar;
 use crate::config::SipConfig;
@@ -491,6 +491,8 @@ pub struct SipServer {
     device_manager: Arc<DeviceManager>,
     session_manager: Arc<SessionManager>,
     invite_session_manager: Arc<InviteSessionManager>,
+    /// 保证并发回放控制按预留的 CSeq 顺序发出。
+    playback_control_send_lock: Mutex<()>,
     talk_manager: Arc<TalkManager>,
     /// Phase 3.5: 语音广播会话管理（设备 → 多个客户端）
     broadcast_manager: Arc<BroadcastManager>,
@@ -547,6 +549,7 @@ impl SipServer {
             device_manager: Arc::new(DeviceManager::new()),
             session_manager: Arc::new(SessionManager::new()),
             invite_session_manager: Arc::new(InviteSessionManager::new()),
+            playback_control_send_lock: Mutex::new(()),
             talk_manager: Arc::new(TalkManager::new()),
             broadcast_manager: Arc::new(BroadcastManager::new()),
             catalog_subscription_manager: Arc::new(CatalogSubscriptionManager::new()),
@@ -6246,6 +6249,20 @@ f=v/1/96/1/2/1/1/0
         &self,
         session: crate::sip::gb28181::invite_session::InviteSession,
     ) -> Result<String> {
+        let playback_send_guard = if session.stream_type == StreamType::Playback {
+            Some(self.playback_control_send_lock.lock().await)
+        } else {
+            None
+        };
+        let session = if session.stream_type == StreamType::Playback {
+            self.invite_session_manager
+                .reserve_playback_cseq(&session.call_id, &session.device_id, &session.channel_id)
+                .await
+                .ok_or_else(|| anyhow::anyhow!("没有可停止的活动回放 SIP 对话"))?
+                .0
+        } else {
+            session
+        };
         let device_id = &session.device_id;
         let channel_id = &session.channel_id;
 
@@ -6259,7 +6276,12 @@ f=v/1/96/1/2/1/1/0
         let call_id = session.call_id.clone();
         let branch = generate_branch();
         // 对话内 CSeq 严格递增
-        let cseq = cseq_header(session.bye_cseq(), "BYE");
+        let cseq_num = if session.stream_type == StreamType::Playback {
+            session.invite_cseq
+        } else {
+            session.bye_cseq()
+        };
+        let cseq = cseq_header(cseq_num, "BYE");
 
         let via = format!(
             "SIP/2.0/UDP {}:{};branch={};rport",
@@ -6310,6 +6332,7 @@ f=v/1/96/1/2/1/1/0
         self.invite_session_manager
             .update_status(&call_id, InviteSessionStatus::Terminating)
             .await;
+        drop(playback_send_guard);
 
         if let Some(ref stream_id) = session.zlm_stream_id {
             if let Some(ref zlm) = self.zlm_client {
@@ -6355,11 +6378,15 @@ f=v/1/96/1/2/1/1/0
         call_id: Option<&str>,
         cmd: PlaybackControlCmd,
     ) -> Result<()> {
+        let _send_guard = self.playback_control_send_lock.lock().await;
         let session =
             select_playback_dialog(&self.invite_session_manager, device_id, channel_id, call_id)
                 .await?;
-
-        let cseq_num = session.bye_cseq(); // CSeq 严格递增
+        let (session, cseq_num) = self
+            .invite_session_manager
+            .reserve_playback_cseq(&session.call_id, device_id, channel_id)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("回放 SIP 对话已结束或 CSeq 已耗尽"))?;
         let body = build_playback_control_mansrtsp(&cmd, cseq_num);
         let call_id = session.call_id.clone();
         let from_tag = session.local_tag.as_deref().ok_or_else(|| {
@@ -6401,12 +6428,6 @@ f=v/1/96/1/2/1/1/0
         let message = Parser::generate_request("INFO", &uri, &headers, Some(&body));
 
         self.send_request_to(addr, &message).await?;
-        // 会话内 CSeq 递增，避免下一条控制命令复用同一序号
-        if let Some(mut s) = self.invite_session_manager.get(&call_id).await {
-            s.invite_cseq = cseq_num;
-            s.update_activity();
-            self.invite_session_manager.update(&s).await;
-        }
         tracing::info!(
             "回放控制已发送 {}/{} call_id={} cseq={} body={:?}",
             device_id,

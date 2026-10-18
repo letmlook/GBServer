@@ -4,12 +4,14 @@
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
 import time
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 BASE = os.environ.get("GBSERVER_TEST_URL", "http://127.0.0.1:18080").rstrip("/")
@@ -34,13 +36,15 @@ def main():
 
     with tempfile.TemporaryDirectory() as temp:
         with (Path(temp) / "mock.log").open("wb+") as output:
+            bye_report = Path(temp) / "bye.json"
             proc = subprocess.Popen([
                 sys.executable, str(MOCK), "--server", "127.0.0.1:5060",
                 "--device-id", DEVICE_ID, "--username", DEVICE_ID,
                 "--password", os.environ.get("GBSERVER_TEST_SIP_PASSWORD", "admin123"),
                 "--channels", "1", "--auto-keepalive", "0",
                 "--auto-bye-secs", "0", "--send-rtp",
-            ], stdout=output, stderr=subprocess.STDOUT)
+            ], stdout=output, stderr=subprocess.STDOUT,
+                env={**os.environ, "SIP_MOCK_BYE_REPORT": str(bye_report)})
             stream = None
             try:
                 deadline = time.monotonic() + 10
@@ -66,19 +70,39 @@ def main():
                 stream = started["data"]["streamId"]
                 paused = api(f"/api/playback/pause/{stream}", token)
                 assert paused["code"] == 0 and paused["data"]["sipSent"], paused
+                with ThreadPoolExecutor(max_workers=4) as executor:
+                    results = list(executor.map(
+                        lambda speed: api(f"/api/playback/speed/{stream}/{speed}", token),
+                        (1, 2, 3, 4),
+                    ))
+                assert all(result["code"] == 0 for result in results), results
 
                 deadline = time.monotonic() + 3
                 while time.monotonic() < deadline:
                     output.flush()
                     output.seek(0)
                     log = output.read().decode(errors="replace")
-                    if "Playback INFO dialog valid=True" in log:
+                    matches = re.findall(r"Playback INFO dialog valid=True call_id=(\S+) cseq=(\d+)", log)
+                    if len(matches) >= 5:
                         break
                     time.sleep(0.1)
                 else:
-                    raise AssertionError("Mock did not receive valid in-dialog INFO")
+                    raise AssertionError("Mock did not receive five valid in-dialog INFO messages")
                 assert "Playback INFO dialog valid=False" not in log, log[-1800:]
-                print("playback pause: valid in-dialog INFO; sipSent=true")
+                assert len({call_id for call_id, _ in matches}) == 1, matches
+                cseqs = [int(cseq) for _, cseq in matches]
+                assert cseqs == sorted(set(cseqs)), cseqs
+                stopped = api(f"/api/playback/stop/{DEVICE_ID}/{channel}/{stream}", token)
+                assert stopped["code"] == 0, stopped
+                stream = None
+                deadline = time.monotonic() + 3
+                while time.monotonic() < deadline and not bye_report.exists():
+                    time.sleep(0.1)
+                assert bye_report.exists(), "Mock did not receive playback BYE"
+                bye = json.loads(bye_report.read_text())
+                assert bye["valid"] == 1 and bye["invalid"] == 0, bye
+                print(f"playback controls: five valid INFO messages with increasing CSeq {cseqs}")
+                print("playback stop: BYE CSeq greater than the final INFO")
             except Exception:
                 output.flush()
                 output.seek(0)
