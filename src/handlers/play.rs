@@ -6,6 +6,35 @@ use crate::response::ApiResult;
 use crate::sip::gb28181::media_waiter::MediaWaitResult;
 use crate::AppState;
 
+fn media_server_open_error(
+    client: &crate::zlm::ZlmClient,
+    stream_id: &str,
+    error: &anyhow::Error,
+) -> String {
+    format!(
+        "打开 RTP 收流端口失败（节点 {}:{}, 流 {}, 请求 play/start）：{}",
+        client.ip, client.http_port, stream_id, error
+    )
+}
+
+#[cfg(test)]
+mod media_diagnostics_tests {
+    #[test]
+    fn open_failure_identifies_node_stream_and_request_without_secret() {
+        let client = crate::zlm::ZlmClient::new("127.0.0.1", 8080, "private-zlm-secret");
+        let msg = super::media_server_open_error(
+            &client,
+            "device_channel",
+            &anyhow::anyhow!("connection refused"),
+        );
+        assert!(msg.contains("127.0.0.1:8080"));
+        assert!(msg.contains("device_channel"));
+        assert!(msg.contains("play/start"));
+        assert!(msg.contains("connection refused"));
+        assert!(!msg.contains("private-zlm-secret"));
+    }
+}
+
 async fn wait_for_passive_media(
     media_rx: tokio::sync::oneshot::Receiver<MediaWaitResult>,
     stream_id: &str,
@@ -286,9 +315,8 @@ pub async fn play_start(
                                 Ok(s2) => s2,
                                 Err(e2) => {
                                     tracing::error!("openRtpServer 重试仍失败 {stream_id}: {e2}");
-                                    return Json(ApiResult::error(format!(
-                                        "Media Server error: {}",
-                                        e2
+                                    return Json(ApiResult::error(media_server_open_error(
+                                        zlm_client, &stream_id, &e2,
                                     )));
                                 }
                             }
@@ -301,9 +329,8 @@ pub async fn play_start(
                                 Ok(s2) => s2,
                                 Err(e2) => {
                                     tracing::error!("openRtpServer 重试仍失败 {stream_id}: {e2}");
-                                    return Json(ApiResult::error(format!(
-                                        "Media Server error: {}",
-                                        e2
+                                    return Json(ApiResult::error(media_server_open_error(
+                                        zlm_client, &stream_id, &e2,
                                     )));
                                 }
                             }
@@ -311,7 +338,9 @@ pub async fn play_start(
                     }
                 } else {
                     tracing::error!("Failed to open RTP server: {}", e);
-                    return Json(ApiResult::error(format!("Media Server error: {}", e)));
+                    return Json(ApiResult::error(media_server_open_error(
+                        zlm_client, &stream_id, &e,
+                    )));
                 }
             }
         };
@@ -560,12 +589,7 @@ pub async fn play_start(
         }
     }
 
-    Json(ApiResult::success(serde_json::json!({
-        "app": "",
-        "stream": "",
-        "tracks": [],
-        "msg": "ZLM not configured"
-    })))
+    Json(ApiResult::error("未配置 ZLM 媒体节点，无法发起点播"))
 }
 
 /// GET /api/play/stop/{device_id}/{channel_id}
