@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ZlmServerInfo {
@@ -49,6 +50,14 @@ pub struct MediaInfo {
     pub bytes_speed: u64,
     #[serde(default)]
     pub tracks: Vec<TrackInfo>,
+}
+
+/// `getMediaList` 按协议返回多行；同一虚拟主机、应用和流 ID 只算一路媒体。
+pub(crate) fn count_distinct_media_streams(rows: &[MediaInfo]) -> usize {
+    rows.iter()
+        .map(|row| (row.vhost.as_str(), row.app.as_str(), row.stream.as_str()))
+        .collect::<HashSet<_>>()
+        .len()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -462,5 +471,29 @@ mod track_fps_tests {
         });
         let t: TrackInfo = serde_json::from_value(missing).expect("fps 缺失要容忍");
         assert_eq!(t.fps, None);
+    }
+
+    #[test]
+    fn distinct_stream_count_ignores_protocol_rows_but_keeps_vhosts() {
+        let rows: Vec<MediaInfo> = [
+            ("__defaultVhost__", "rtp", "live-1", "hls"),
+            ("__defaultVhost__", "rtp", "live-1", "rtsp"),
+            ("__defaultVhost__", "rtp", "live-1", "ts"),
+            ("__defaultVhost__", "rtp", "live-1", "rtmp"),
+            ("__defaultVhost__", "rtp", "live-1", "fmp4"),
+            ("__defaultVhost__", "rtp", "live-2", "rtsp"),
+            ("other-vhost", "rtp", "live-1", "rtsp"),
+        ]
+        .into_iter()
+        .map(|(vhost, app, stream, schema)| {
+            serde_json::from_value(serde_json::json!({
+                "vhost": vhost, "app": app, "stream": stream, "schema": schema
+            }))
+            .unwrap()
+        })
+        .collect();
+
+        assert_eq!(count_distinct_media_streams(&rows), 3);
+        assert_eq!(count_distinct_media_streams(&[]), 0);
     }
 }

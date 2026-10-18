@@ -501,10 +501,11 @@ ZLM 相关功能（流列表、录像删除、截图…）一起 500 —— 因�
 `5 个格子 = 1 个通道` 失败，修复后 2/2 通过；`npm run build`（含 vue-tsc）通过、
 `smoke.spec.ts` 20/20 通过。
 
-**注意（同一根因的另一处，尚未修）**：后端把 `getMediaList().len()` 当"流数量"用的三处
-（`zlm/hook.rs` 的 `set_active_streams` 与 `update_flow_stats`、`zlm/client.rs::get_active_stream_count`
-的选路负载）也把 1 路流数成 5 路。前端没有展示 `stream_count`，选路是相对比较，
-故未在本次一并改动 —— 需要时同样按 (app, stream) 去重。
+**后端计数补修（2026-10-18）**：`zlm/hook.rs` 的活跃流指标与 flow report 落库统计、
+`zlm/client.rs::get_active_stream_count` 的选路负载不再使用 `getMediaList().len()`，
+统一按 `(vhost, app, stream)` 去重。同一流的不同协议行算一路，不同虚拟主机保留为
+不同流。单测覆盖 5 行协议记录计为 1 路；本机真实 ZLM 临时推流得到 4 行协议记录、
+1 路媒体。目标部署统计仍待验收。
 
 ### B13 ✅ 控制台首屏要等约 2s 才出数据（已修并复验）
 

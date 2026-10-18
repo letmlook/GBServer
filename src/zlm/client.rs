@@ -204,7 +204,7 @@ impl ZlmClient {
     /// 获取当前活跃的流数量（用于负载均衡）
     pub async fn get_active_stream_count(&self) -> Result<usize> {
         let list = self.get_media_list(None, None, None).await?;
-        Ok(list.len())
+        Ok(count_distinct_media_streams(&list))
     }
 
     pub async fn get_media_info(

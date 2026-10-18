@@ -656,7 +656,9 @@ async fn sync_stream_changed(state: &AppState, data: &StreamChangedData) {
     // Update global active stream metrics
     if let Some(ref zlm) = state.zlm_client {
         if let Ok(streams) = zlm.get_media_list(None, None, None).await {
-            crate::metrics::set_active_streams(streams.len());
+            crate::metrics::set_active_streams(crate::zlm::types::count_distinct_media_streams(
+                &streams,
+            ));
         }
     }
 
@@ -1718,7 +1720,7 @@ pub(crate) async fn handle_webhook_inner(
             // （不动 StateStore，也不覆盖 DB 列）。
             let streams: Option<i64> = match state.get_zlm_client(Some(media_server_id)) {
                 Some(client) => match client.get_media_list(None, None, None).await {
-                    Ok(list) => Some(list.len() as i64),
+                    Ok(list) => Some(crate::zlm::types::count_distinct_media_streams(&list) as i64),
                     Err(e) => {
                         tracing::warn!(
                             "flow report: getMediaList 失败，保持既有流数量 server={}: {}",
