@@ -71,7 +71,7 @@
 | E4 | 环境 | CI 自动触发按用户要求保持关闭（`workflow_dispatch`） | ⚪ |
 | E5 | 部署 | ZLM 改 host 网络 + 配置文件只读管理 + mac 叠加文件 | ✅ 已改 |
 | E6 | 环境 | 后端访问 `192.168.3.88:8080`（ZLM）偶发 `error sending request`（本机 HTTP 代理同名主机） | ⚪ |
-| E7 | 部署验收 | 2.0 Compose SIP/媒体地址与 TCP 5060 契约已修，Docker 镜像构建和容器内实测仍受 Docker Hub 授权网络超时阻断 | 🟡 |
+| E7 | 部署验收 | 2.0 镜像构建、Compose ZLM 环境变量修复、容器健康检查与同源浏览器冒烟通过；容器媒体、真机 LAN 与目标部署待验收 | 🟡 |
 
 ---
 
@@ -872,6 +872,11 @@ hook.on_send_rtp_progress
 主 Compose、SQLite Compose 和 mac 叠加配置已要求设备可达的 SIP 通告 IP，
 容器绑定 `0.0.0.0`，同时发布 SIP UDP/TCP 5060，并让浏览器媒体 URL 与桥接
 WebRTC 候选使用可达地址。配置展开、Rust 测试和本机进程监听均已验证。
+2026-10-18 发现旧的 `GBSERVER__ZLM__SERVERS__0__*` 环境变量会把数组解析成 map，
+导致容器启动失败；三套 Compose 已改用首节点标量覆盖。重建的 PostgreSQL 镜像
+在隔离库下用新变量启动成功，健康检查 healthy，数据库媒体节点保存了预期的
+IP、HTTP 端口与 RTC 地址。SQLite Compose 已对齐 ZLM 配置文件与端口，
+但尚未做该拓扑的实际媒体验收。
 2026-10-18 在本机代理下 `docker compose build gbserver` 已构建 arm64 镜像。
 用隔离 PostgreSQL 库、Redis DB 15 和禁用 ZLM 节点的临时配置启动容器：
 健康检查为 healthy，容器内 SIP UDP/TCP 监听 `0.0.0.0:5060`，同源登录页、

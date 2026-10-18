@@ -29,12 +29,12 @@ services:
       #     发布在宿主上，因此回环地址就是正确地址）
       # 节点 IP 同时进入浏览器播放 URL，不能填 host.docker.internal。
       # ZLM 若不在同一宿主机，可单独覆盖 GBSERVER_ZLM_IP。
-      GBSERVER__ZLM__SERVERS__0__IP: ${GBSERVER_ZLM_IP:-${GBSERVER_SIP_ADVERTISE_IP}}
-      GBSERVER__ZLM__SERVERS__0__HTTP_PORT: ${GBSERVER_ZLM_HTTP_PORT:-8080}
-      GBSERVER__ZLM__SERVERS__0__HOOK_URL: ${GBSERVER_ZLM_HOOK_URL:-http://127.0.0.1:18080/api/zlm/hook}
+      GBSERVER_ZLM_PRIMARY_IP: ${GBSERVER_ZLM_IP:-${GBSERVER_SIP_ADVERTISE_IP}}
+      GBSERVER_ZLM_PRIMARY_HTTP_PORT: ${GBSERVER_ZLM_HTTP_PORT:-8080}
+      GBSERVER_ZLM_PRIMARY_HOOK_URL: ${GBSERVER_ZLM_HOOK_URL:-http://127.0.0.1:18080/api/zlm/hook}
       # host 网络下 ZLM 会通告宿主真实网卡地址，**不要**设 rtc_extern_ip；
       # 桥接/容器部署才需要（见 docker-compose.mac.yml）。
-      GBSERVER__ZLM__SERVERS__0__RTC_EXTERN_IP: ${GBSERVER_ZLM_RTC_EXTERN_IP:-}
+      GBSERVER_ZLM_PRIMARY_RTC_EXTERN_IP: ${GBSERVER_ZLM_RTC_EXTERN_IP:-}
       RUST_LOG: info,gbserver=debug
     # ZLM 用 host 网络时，容器内的 `host.docker.internal` 必须能解析到宿主机。
     # Docker Desktop 自带该名字；Linux 上要靠 host-gateway（缺了它后端连不上 ZLM）。

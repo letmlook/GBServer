@@ -391,7 +391,30 @@ pub fn load_config() -> Result<AppConfig> {
         .add_source(config::File::with_name("config/application").required(false))
         .add_source(config::Environment::with_prefix("GBSERVER").separator("__"));
 
-    let cfg: AppConfig = base.build()?.try_deserialize()?;
+    let mut cfg: AppConfig = base.build()?.try_deserialize()?;
+    // config::Environment represents `servers__0` as a map, while TOML
+    // `[[zlm.servers]]` deserializes as a sequence. Keep Compose overrides
+    // scalar and apply them after the TOML/config merge.
+    if let Some(server) = cfg.zlm.as_mut().and_then(|zlm| zlm.servers.first_mut()) {
+        if let Ok(ip) = std::env::var("GBSERVER_ZLM_PRIMARY_IP") {
+            if !ip.is_empty() {
+                server.ip = ip;
+            }
+        }
+        if let Ok(port) = std::env::var("GBSERVER_ZLM_PRIMARY_HTTP_PORT") {
+            if !port.is_empty() {
+                server.http_port = port.parse()?;
+            }
+        }
+        if let Ok(hook_url) = std::env::var("GBSERVER_ZLM_PRIMARY_HOOK_URL") {
+            if !hook_url.is_empty() {
+                server.hook_url = Some(hook_url);
+            }
+        }
+        if let Ok(rtc_ip) = std::env::var("GBSERVER_ZLM_PRIMARY_RTC_EXTERN_IP") {
+            server.rtc_extern_ip = (!rtc_ip.is_empty()).then_some(rtc_ip);
+        }
+    }
     Ok(cfg)
 }
 

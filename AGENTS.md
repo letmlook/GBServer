@@ -309,7 +309,7 @@ work around, not try to fix.
   `docker-compose` binary is NOT installed; only the v2 plugin works.
 - **host.docker.internal is NOT resolvable** on this Linux box (that's
   a Docker Desktop-ism). For native backend runs, set
-  `GBSERVER__ZLM__SERVERS__0__HOOK_URL=http://127.0.0.1:18080/api/zlm/hook`
+  `GBSERVER_ZLM_PRIMARY_HOOK_URL=http://127.0.0.1:18080/api/zlm/hook`
   — do NOT commit `host.docker.internal` into the repo.
 
 ## Dashboard Layout (after recent redesign)

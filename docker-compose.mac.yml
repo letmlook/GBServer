@@ -25,10 +25,10 @@ services:
   gbserver:
     environment:
       # 桥接模式下 ZLM 的端口发布在宿主上；此地址也会写进浏览器媒体 URL。
-      GBSERVER__ZLM__SERVERS__0__IP: ${GBSERVER_ZLM_IP:-${GBSERVER_SIP_ADVERTISE_IP}}
-      GBSERVER__ZLM__SERVERS__0__HOOK_URL: http://host.docker.internal:18080/api/zlm/hook
+      GBSERVER_ZLM_PRIMARY_IP: ${GBSERVER_ZLM_IP:-${GBSERVER_SIP_ADVERTISE_IP}}
+      GBSERVER_ZLM_PRIMARY_HOOK_URL: http://host.docker.internal:18080/api/zlm/hook
       # 默认与设备可达的宿主 IPv4 一致；分离部署时可单独覆盖。
-      GBSERVER__ZLM__SERVERS__0__RTC_EXTERN_IP: ${GBSERVER_ZLM_RTC_EXTERN_IP:-${GBSERVER_SIP_ADVERTISE_IP}}
+      GBSERVER_ZLM_PRIMARY_RTC_EXTERN_IP: ${GBSERVER_ZLM_RTC_EXTERN_IP:-${GBSERVER_SIP_ADVERTISE_IP}}
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
