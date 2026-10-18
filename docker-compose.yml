@@ -12,6 +12,8 @@ services:
       - "5060:5060/udp"
       - "5060:5060/tcp"
     environment:
+      # 录像计划按容器本地星期/时刻调度；默认与国内浏览器、设备一致。
+      TZ: ${GBSERVER_TZ:-Asia/Shanghai}
       GBSERVER__SERVER__HOST: 0.0.0.0
       GBSERVER__SERVER__PORT: 18080
       # 设备可达的宿主 IPv4，用于 Via/Contact/SDP；不能是容器桥接 IP。
@@ -138,6 +140,7 @@ services:
     # host 网络：与宿主共用网络命名空间，不再需要 ports / extra_hosts。
     network_mode: host
     environment:
+      TZ: ${GBSERVER_TZ:-Asia/Shanghai}
       ZLM_HTTP_SECRET: S63648HLbxckv7YjpPTXXRTOsAVGo0Ia
     volumes:
       # ZLM 配置文件由本仓库维护，**只读**挂载：改完 `docker compose restart zlm`

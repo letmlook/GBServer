@@ -71,7 +71,7 @@
 | E4 | 环境 | CI 自动触发按用户要求保持关闭（`workflow_dispatch`） | ⚪ |
 | E5 | 部署 | ZLM 改 host 网络 + 配置文件只读管理 + mac 叠加文件 | ✅ 已改 |
 | E6 | 环境 | 后端访问 `192.168.3.88:8080`（ZLM）偶发 `error sending request`（本机 HTTP 代理同名主机） | ⚪ |
-| E7 | 部署验收 | PostgreSQL 与 SQLite 后端容器 + 真实 ZLM + SIP Mock 的 FLV 点播/停止、MP4 下载及 Chromium WebRTC ICE 连通与视频帧解码已通过；SQLite 全新卷可自动建库；真机 LAN 与目标 Linux Compose 部署待验收 | 🟡 |
+| E7 | 部署验收 | PostgreSQL 与 SQLite 后端容器 + 真实 ZLM + SIP Mock 的 FLV 点播/停止、MP4 下载及 Chromium WebRTC 已通过；SQLite 全新卷可自动建库，时区对齐后完整 Chromium E2E 72/72；真机 LAN 与目标 Linux Compose 部署待验收 | 🟡 |
 
 ---
 

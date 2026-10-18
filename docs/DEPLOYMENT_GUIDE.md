@@ -77,6 +77,7 @@ mysql -uroot -p gbserver < database/init-mysql-2.7.4.sql
 | 仅运行（已编译） | `./scripts/run.sh` | `.\scripts\run.ps1` |
 | 一键编译 + 运行 | `./scripts/build-and-run.sh` | `.\scripts\build-and-run.ps1` |
 | Docker 一键拉起 | `docker compose up -d --build`（PostgreSQL 镜像） | 同左 |
+| 初始化 PG schema（Docker 容器） | `bash <(curl ...)` 或手动 | `.\scripts\init-db-postgres.ps1` |
 
 Dockerfile 默认以 `postgres` Cargo 特性构建，主 Compose 也显式指定该特性，
 与 PostgreSQL URL 对应。
@@ -84,7 +85,11 @@ SQLite 独立部署使用 `docker compose -f docker-compose.sqlite.yml up -d --b
 该文件通过 `GBSERVER_DB_FEATURE=sqlite` 构建 SQLite 镜像。单独构建 MySQL 镜像可用
 `docker build --build-arg GBSERVER_DB_FEATURE=mysql -t gbserver:mysql .`。
 三种镜像的数据库特性是编译时确定的，运行时 URL 必须选择相同方言。
-| 初始化 PG schema（Docker 容器） | `bash <(curl ...)` 或手动 | `.\scripts\init-db-postgres.ps1` |
+
+录像计划使用后端容器的本地星期与时刻。两套 Compose 默认设置
+`TZ=Asia/Shanghai`，后端与 ZLM 保持一致；部署在其它时区时先设置
+`GBSERVER_TZ`（IANA 时区名），并确保计划录入者按同一时区填写时段。
+容器若保持 UTC 而浏览器按北京时间创建计划，录像会偏移 8 小时。
 
 ### 1.5 Linux / macOS 原生构建
 

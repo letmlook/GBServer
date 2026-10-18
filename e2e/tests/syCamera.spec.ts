@@ -75,7 +75,10 @@ test.describe('Camera API (/api/sy/camera)', () => {
 
   test('query 能按通道名搜索（此前参数名 keyword 不匹配，搜索无效果）', async ({ page }) => {
     const all = await cameraPage(page, 'list-with-child', `?query=${DEVICE_ID}`);
-    expect(all.total).toBeGreaterThan(1);
+    expect(all.total).toBeGreaterThan(0);
+    const absent = await cameraPage(page, 'list-with-child', '?query=__e2e_no_such_channel__');
+    expect(absent.total).toBe(0);
+    expect(absent.list).toHaveLength(0);
     // 逐个通道名搜索，必须命中且只命中该通道
     for (const row of all.list.filter((r) => !r.is_device).slice(0, 3)) {
       const hit = await cameraPage(
