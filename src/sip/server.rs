@@ -7424,7 +7424,9 @@ f=v/1/96/1/2/1/1/0
         channel_id: &str,
         start_time: &str,
         end_time: &str,
+        zlm_stream_id: &str,
         media_port: u16,
+        timeout_secs: u64,
     ) -> Result<String> {
         let device_addr = self
             .device_manager
@@ -7493,6 +7495,14 @@ f=v/1/96/1/2/1/1/0
         );
         let message = Parser::generate_request("INVITE", &uri, &headers, Some(&sdp));
 
+        self.media_waiter_manager()
+            .forget_early_ready(zlm_stream_id);
+        let (_, media_rx) =
+            self.media_waiter_manager()
+                .register(&call_id, zlm_stream_id, "rtp", timeout_secs);
+        let (invite_tx, invite_rx) = oneshot::channel::<SipResponse>();
+        self.pending_invites.insert(call_id.clone(), invite_tx);
+
         // ACK 上下文 + 业务会话登记。
         //
         // 修正：此前这里**什么都不登记** —— 既没有 `set_invite_context`，
@@ -7519,7 +7529,12 @@ f=v/1/96/1/2/1/1/0
             Some(ssrc.as_str()),
         )
         .await;
+        self.invite_session_manager
+            .set_zlm_stream_by_call_id(&call_id, zlm_stream_id, "rtp")
+            .await;
         if let Err(error) = self.send_request_to(device_addr, &message).await {
+            self.pending_invites.remove(&call_id);
+            self.media_waiter_manager().cancel_by_call_id(&call_id);
             self.session_manager.remove(&call_id).await;
             self.invite_session_manager.remove(&call_id).await;
             return Err(error);
@@ -7532,6 +7547,49 @@ f=v/1/96/1/2/1/1/0
             end_time,
             ssrc
         );
+
+        let invite_result =
+            match tokio::time::timeout(Duration::from_secs(timeout_secs), invite_rx).await {
+                Ok(Ok(response)) if response.status_code() == 200 => Ok(()),
+                Ok(Ok(response)) => Err(InviteRejected {
+                    status: response.status_code(),
+                    reason: response.reason,
+                }
+                .into()),
+                Ok(Err(_)) => Err(anyhow::anyhow!("Download INVITE response channel closed")),
+                Err(_) => Err(anyhow::anyhow!("Download INVITE timeout")),
+            };
+        if let Err(error) = invite_result {
+            self.pending_invites.remove(&call_id);
+            self.media_waiter_manager().cancel_by_call_id(&call_id);
+            self.session_manager.remove(&call_id).await;
+            self.invite_session_manager.remove(&call_id).await;
+            return Err(error);
+        }
+        let media_result =
+            match tokio::time::timeout(Duration::from_secs(timeout_secs), media_rx).await {
+                Ok(Ok(MediaWaitResult::MediaReady { .. })) => Ok(()),
+                Ok(Ok(MediaWaitResult::DeviceRejected { status, reason })) => {
+                    Err(InviteRejected { status, reason }.into())
+                }
+                Ok(Ok(MediaWaitResult::Timeout | MediaWaitResult::SessionNotFound)) => {
+                    Err(anyhow::anyhow!("Download media wait failed: not found"))
+                }
+                Ok(Err(_)) => Err(anyhow::anyhow!("Download media wait channel closed")),
+                Err(_) => Err(anyhow::anyhow!(
+                    "Download media timeout after {}s",
+                    timeout_secs
+                )),
+            };
+        if let Err(error) = media_result {
+            self.media_waiter_manager().cancel_by_call_id(&call_id);
+            if let Err(bye_error) = self.send_session_bye_by_call_id(&call_id).await {
+                tracing::warn!(%call_id, "下载媒体失败后发送 BYE 失败: {bye_error}");
+            }
+            self.session_manager.remove(&call_id).await;
+            self.invite_session_manager.remove(&call_id).await;
+            return Err(error);
+        }
 
         Ok(call_id)
     }

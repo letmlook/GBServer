@@ -90,6 +90,7 @@ impl Default for PlaybackManager {
 #[derive(Debug, Clone)]
 pub struct DownloadSession {
     pub stream_id: String,
+    pub call_id: Option<String>,
     pub device_id: String,
     pub channel_id: String,
     pub file_name: String,
@@ -199,6 +200,9 @@ impl DownloadManager {
     /// 只改状态，不动进度/字节数（停止下载后进入 `finalizing`，等 ZLM 落盘回调）。
     pub async fn set_status(&self, stream_id: &str, status: &str) {
         if let Some(s) = self.sessions.write().await.get_mut(stream_id) {
+            if status == "finalizing" && s.zlm_file_name.is_some() {
+                return;
+            }
             s.status = status.to_string();
         }
     }
@@ -1028,11 +1032,14 @@ pub async fn gb_record_download_start(
                                     channel_id,
                                     e
                                 );
-                                0
+                                return Json(ApiResult::error(format!(
+                                    "ZLM 下载收流端口分配失败（流 {}）：{}",
+                                    stream_id, e
+                                )));
                             }
                         }
                     }
-                    None => 0,
+                    None => return Json(ApiResult::error("ZLM 未配置，无法建立下载收流")),
                 };
                 if media_port == 0 {
                     // 端口 0 在 SDP 里表示媒体流被禁用，发出去也不会收到流。
@@ -1043,6 +1050,7 @@ pub async fn gb_record_download_start(
                         device_id,
                         channel_id
                     );
+                    return Json(ApiResult::error("ZLM 未分配有效的下载收流端口"));
                 } else {
                     match sip
                         .send_download_invite(
@@ -1050,14 +1058,14 @@ pub async fn gb_record_download_start(
                             &channel_id,
                             &start_time,
                             &end_time,
+                            &stream_id,
                             media_port,
+                            15,
                         )
                         .await
                     {
                         Ok(call_id) => {
                             tracing::info!("GB28181 DOWNLOAD INVITE sent, call_id={}", call_id);
-                            used_gb28181 = true;
-                            gb_invite_call_id = Some(call_id);
                             // **必须让 ZLM 真的把收到的 RTP 录成 MP4**。
                             //
                             // 此前这里只发了 INVITE：设备把录像 RTP 推到 ZLM
@@ -1085,30 +1093,35 @@ pub async fn gb_record_download_start(
                                             "rtp".to_string()
                                         }
                                     };
-                                match zlm
+                                if let Err(e) = zlm
                                     .start_record("1", "__defaultVhost__", &app, &stream_id)
                                     .await
                                 {
-                                    Ok(()) => tracing::info!(
-                                        "下载流已开始 MP4 录制 app={} stream={}",
-                                        app,
-                                        stream_id
-                                    ),
-                                    Err(e) => tracing::error!(
-                                        "下载流 MP4 录制启动失败 app={} stream={}: {} —— \
-                                         设备推流不会落盘，本次下载不会有文件",
-                                        app,
-                                        stream_id,
-                                        e
-                                    ),
+                                    let _ = sip.send_session_bye_by_call_id(&call_id).await;
+                                    let _ = zlm.close_rtp_server(&stream_id).await;
+                                    return Json(ApiResult::error(format!(
+                                        "下载流录制启动失败（流 {}）：{}",
+                                        stream_id, e
+                                    )));
                                 }
+                                tracing::info!(
+                                    "下载流已开始 MP4 录制 app={} stream={}",
+                                    app,
+                                    stream_id
+                                );
                             }
+                            used_gb28181 = true;
+                            gb_invite_call_id = Some(call_id);
                         }
                         Err(e) => {
                             tracing::warn!("Failed to send GB28181 DOWNLOAD INVITE: {}", e);
                             if let Some(zlm) = state.zlm_client.as_ref() {
                                 let _ = zlm.close_rtp_server(&stream_id).await;
                             }
+                            return Json(ApiResult::error(format!(
+                                "录像下载邀请失败（流 {}）：{}",
+                                stream_id, e
+                            )));
                         }
                     }
                 }
@@ -1119,6 +1132,7 @@ pub async fn gb_record_download_start(
     if used_gb28181 {
         let session = DownloadSession {
             stream_id: stream_id.clone(),
+            call_id: gb_invite_call_id,
             device_id: device_id.clone(),
             channel_id: channel_id.clone(),
             file_name: file_name.clone(),
@@ -1136,24 +1150,6 @@ pub async fn gb_record_download_start(
             zlm_file_path: None,
             zlm_folder: None,
         };
-        // Phase 3.4: 注册 media waiter，等设备推流到达；流到达后状态从 inviting → downloading
-        if let (Some(sip_server), Some(call_id)) =
-            (state.sip_server.as_ref(), gb_invite_call_id.as_deref())
-        {
-            let sip = &*sip_server;
-            let (_key, _rx) = sip.media_waiter_manager().register(
-                &format!("dlw_{}", stream_id),
-                &stream_id,
-                "rtp",
-                15,
-            );
-            // 把 ZLM 流名回填进业务会话：`send_download_invite` 发 INVITE 时
-            // 还不知道 stream_id（它只收 media_port），没有这一步，
-            // 之后停止下载 / 无人观看关流时找不到要释放的收流端口。
-            sip.invite_session_manager()
-                .set_zlm_stream_by_call_id(call_id, &stream_id, "rtp")
-                .await;
-        }
         if let Some(ref dm) = state.download_manager {
             dm.create(session).await;
         }
@@ -1166,7 +1162,7 @@ pub async fn gb_record_download_start(
             ),
             "transport": "gb28181",
             "progress": 0,
-            "status": "inviting"
+            "status": "downloading"
         })));
     }
 
@@ -1183,6 +1179,7 @@ pub async fn gb_record_download_start(
 
                 let session = DownloadSession {
                     stream_id: stream_id.clone(),
+                    call_id: None,
                     device_id: device_id.clone(),
                     channel_id: channel_id.clone(),
                     file_name: file_name.clone(),
@@ -1323,24 +1320,13 @@ pub async fn gb_record_download_stop(
     // 如果是 GB28181 下载会话：发 BYE + 关 ZLM RTP server
     if let Some(ref dm) = state.download_manager {
         if let Some(session) = dm.get(&stream_id).await {
+            if session.device_id != device_id || session.channel_id != channel_id {
+                return Json(ApiResult::error("下载会话与设备或通道不匹配"));
+            }
             if session.url.starts_with("gb28181://") {
-                if let Some(ref sip_server) = state.sip_server {
-                    let sip = &*sip_server;
-                    if let Err(e) = sip
-                        .send_session_bye_by_type(
-                            &session.device_id,
-                            &session.channel_id,
-                            crate::sip::gb28181::invite_session::StreamType::Download,
-                        )
-                        .await
-                    {
-                        tracing::warn!("GB28181 download BYE failed: {}", e);
-                    }
-                }
                 if let Some(ref zlm_client) = state.zlm_client {
-                    // 先停录制：ZLM 只有在停止录制时才会**写完 MP4 尾部并触发
-                    // on_record_mp4**。若直接 closeRtpServer，落盘文件不完整，
-                    // 云录像里也不会出现这条记录。
+                    // 先停录制，再发 BYE：BYE 后设备立即停推，ZLM 流可能先于
+                    // stopRecord 消失，导致 MP4 尾部未及时收尾。
                     let app = match zlm_client
                         .get_media_list(None, None, Some(&stream_id))
                         .await
@@ -1363,6 +1349,19 @@ pub async fn gb_record_download_stop(
                             e
                         );
                     }
+                }
+                if let Some(ref sip_server) = state.sip_server {
+                    let sip = &*sip_server;
+                    let Some(call_id) = session.call_id.as_deref() else {
+                        return Json(ApiResult::error("下载 SIP 会话缺少 Call-ID"));
+                    };
+                    if let Err(e) = sip.send_session_bye_by_call_id(call_id).await {
+                        return Json(ApiResult::error(format!("下载 BYE 发送失败：{}", e)));
+                    }
+                } else {
+                    return Json(ApiResult::error("SIP 服务不可用，下载 BYE 未发送"));
+                }
+                if let Some(ref zlm_client) = state.zlm_client {
                     let _ = zlm_client.close_rtp_server(&stream_id).await;
                 }
             } else if let Some(ref zlm_client) = state.zlm_client {
@@ -1373,7 +1372,11 @@ pub async fn gb_record_download_stop(
             // 用户就永远拿不到刚下载的文件（进度接口只会回"会话不存在"）。
             // 这里只标记终态，文件由回调补齐；过期的会话由 cleanup_finished 回收。
             dm.set_status(&stream_id, "finalizing").await;
+        } else {
+            return Json(ApiResult::error("无活动下载会话"));
         }
+    } else {
+        return Json(ApiResult::error("下载会话管理器不可用"));
     }
 
     Json(ApiResult::<()>::success_empty())
@@ -1492,6 +1495,7 @@ mod download_manager_tests {
     fn make_session(stream_id: &str, zlm_stream_id: &str) -> DownloadSession {
         DownloadSession {
             stream_id: stream_id.to_string(),
+            call_id: None,
             device_id: "dev1".to_string(),
             channel_id: "ch1".to_string(),
             file_name: "test.mp4".to_string(),
@@ -1554,6 +1558,7 @@ mod download_manager_tests {
 
         dm.set_zlm_file("download_dev_ch_2", "f.mp4".into(), None, None, 10)
             .await;
+        dm.set_status("download_dev_ch_2", "finalizing").await;
         let s = dm.get("download_dev_ch_2").await.unwrap();
         assert_eq!(s.status, "completed");
         assert!(s.zlm_file_name.is_some());
@@ -1643,6 +1648,7 @@ mod download_progress_tests {
         let dm = DownloadManager::new();
         dm.create(DownloadSession {
             stream_id: "download_dev_ch_1".into(),
+            call_id: None,
             device_id: "dev".into(),
             channel_id: "ch".into(),
             file_name: "f.mp4".into(),
