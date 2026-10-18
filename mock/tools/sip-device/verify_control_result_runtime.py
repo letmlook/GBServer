@@ -178,6 +178,8 @@ def common_channel_commands(token, output):
         result = api(path + "?" + query, token=token)
         if result.get("code") != 0 or "已发送" not in result.get("msg", ""):
             raise AssertionError("Common channel command failed: " + json.dumps(result, ensure_ascii=False))
+        data = result.get("data") or {}
+        assert data.get("sipSent") is True and data.get("deviceResult", {}).get("status") == "sent", result
         deadline = time.monotonic() + 2
         while time.monotonic() < deadline:
             output.flush()
@@ -187,6 +189,13 @@ def common_channel_commands(token, output):
             time.sleep(0.05)
         else:
             raise AssertionError("Common channel command missing " + expected)
+
+    home = api("/api/common/channel/front-end/home_position?" + urllib.parse.urlencode({
+        "channelId": channel_id, "enabled": "true", "resetTime": 30, "presetIndex": 3,
+    }), token=token)
+    assert home.get("code") == 0 and "命令已发送" in home.get("msg", ""), home
+    assert home.get("data", {}).get("sipSent") is True, home
+    assert home["data"]["deviceResult"]["status"] == "sent", home
 
     invalid = api("/api/common/channel/front-end/preset/call?" + urllib.parse.urlencode({
         "channel_id": channel_id, "preset_id": 256,

@@ -291,7 +291,7 @@ pub async fn front_end_common(
     };
 
     let success_msg = format!("指令 {} 已下发", cmd_upper);
-    // lookup_channel_and_send 采用 commonChannel 的 {code,msg} 契约；
+    // lookup_channel_and_send 采用 commonChannel 的 {code,msg,data} 契约；
     // 这里转成 ApiResult 信封，并把真实的失败原因透传出去
     let Json(inner) =
         crate::handlers::common_channel::lookup_channel_and_send(&state, channel_id, move |_| {

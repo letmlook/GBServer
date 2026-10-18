@@ -6,6 +6,7 @@
 
 | 项目 | 本轮结果 | 证据范围 |
 |---|---|---|
+| M2 通用通道控制发送状态 | `/api/common/channel/front-end/*` 的共享发送响应保留 `code/msg`，新增 `data.sipSent=true` 与 `data.deviceResult.status=sent`；巡航、扫描、看守位、拉框等 14 处文案由“成功”改为“命令已发送”，23 个 OpenAPI 示例同步 | 旧后端对聚焦命令返回 `code=0` 但无发送状态，新脚本先失败；修复后真实后端 + SIP Mock 的聚焦、预置位、看守位 HTTP/SIP 断言及全量控制回执脚本通过。定向 Rust 测试 16/16、全量 811 通过；实际 OpenAPI 看守位示例含相同字段。此兼容入口只报告发送状态，真机仍待验收 |
 | B12 后端流数去重 | ZLM `getMediaList` 同一路流按协议返回多行；节点选路负载、Hook 活跃流指标和 flow report 落库统计统一按 `(vhost, app, stream)` 计数 | 单测覆盖 5 个协议行计为 1 路、不同虚拟主机不合并及空列表；本机真实 ZLM 推入临时 RTMP 流后 `getMediaList` 返回 4 行（fmp4/rtmp/rtsp/ts），实际只有 1 路流。真机与目标部署待验收 |
 | M2 批量设备控制结果 | `/api/device/batch/control` 保留 `success/failed` 作为 SIP 发送统计，逐设备增加 `sipSent` 和 `deviceResult`；`ptzStop`、`reboot` 可用 `waitResult=true` 等待最多 5 秒的设备回执；查询类命令明确拒绝执行等待 | 本机真实后端 + SIP Mock：两种批量命令的即时发送、确认、拒绝、无回执均通过；同一脚本中的单设备控制重复和迟到回执场景通过；不存在设备返回 `not_sent`，三种查询命令的 `waitResult=true` 均被拒绝。仅覆盖 Mock，真机待验收 |
 | M2 批量等待并发 | 批量控制最多并行处理 16 台设备，仍按请求顺序返回结果；单设备 5 秒回执等待语义不变 | 同一 SIP Mock 脚本中，两条无回执的重启命令在旧实现耗时 10.02 秒并触发测试失败；有界并发后为 5.01 秒、两条均 `unconfirmed` 且 SN 不同。仅覆盖本机 Mock，真机待验收 |
