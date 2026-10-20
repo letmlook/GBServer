@@ -315,3 +315,86 @@ pub async fn delete_expired_keys(pool: &Pool, now_ts: i64) -> sqlx::Result<u64> 
             .await?;
     Ok(r.rows_affected())
 }
+
+#[cfg(all(test, feature = "sqlite"))]
+mod expiry_tests {
+    use super::*;
+
+    /// C4：过期记录必须能被清掉，未过期与"永不过期"的必须保留。
+    #[tokio::test]
+    async fn delete_expired_keys_removes_only_expired_rows() {
+        let pool = crate::test_support::sqlite_pool_with_schema().await;
+        let now = 1_000_000i64;
+        let now_str = "2026-01-01 00:00:00";
+
+        // 已过期
+        add(
+            &pool,
+            1,
+            "expired-app",
+            "key-expired",
+            Some(now - 60),
+            true,
+            None,
+            now_str,
+        )
+        .await
+        .unwrap();
+        // 未过期
+        add(
+            &pool,
+            1,
+            "live-app",
+            "key-live",
+            Some(now + 3600),
+            true,
+            None,
+            now_str,
+        )
+        .await
+        .unwrap();
+        // 永不过期（expired_at = NULL）
+        add(
+            &pool,
+            1,
+            "forever-app",
+            "key-forever",
+            None,
+            true,
+            None,
+            now_str,
+        )
+        .await
+        .unwrap();
+
+        let removed = delete_expired_keys(&pool, now).await.unwrap();
+        assert_eq!(removed, 1, "只应删掉 1 条过期记录");
+
+        let remaining = list_paged(&pool, 1, 100).await.unwrap();
+        let keys: Vec<String> = remaining.iter().filter_map(|k| k.api_key.clone()).collect();
+        assert!(keys.contains(&"key-live".to_string()), "{keys:?}");
+        assert!(keys.contains(&"key-forever".to_string()), "{keys:?}");
+        assert!(!keys.contains(&"key-expired".to_string()), "{keys:?}");
+    }
+
+    /// 没有过期记录时不应报错，删除数应为 0。
+    #[tokio::test]
+    async fn delete_expired_keys_is_a_noop_without_expired_rows() {
+        let pool = crate::test_support::sqlite_pool_with_schema().await;
+        let now = 1_000_000i64;
+        add(
+            &pool,
+            1,
+            "live-app",
+            "key-live",
+            Some(now + 3600),
+            true,
+            None,
+            "2026-01-01 00:00:00",
+        )
+        .await
+        .unwrap();
+        assert_eq!(delete_expired_keys(&pool, now).await.unwrap(), 0);
+        assert_eq!(count_all(&pool).await.unwrap(), 1);
+    }
+}

@@ -1250,6 +1250,28 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
         });
     }
 
+    // ---- 过期 API Key 记录清理（C4）----
+    //
+    // 鉴权侧已经会拒绝过期 Key，但**表里的记录不会自己消失** —— 每签发一张
+    // 带有效期的 Key，过期后就永久留下一行。`db::user_api_key::delete_expired_keys`
+    // 一直没人调用。这里按固定周期清一次，并记录删掉的条数。
+    {
+        let api_key_pool = state.pool.clone();
+        tokio::spawn(async move {
+            // 启动后先等一会儿，避免和启动期的建表/初始化抢库。
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            loop {
+                let now_ts = chrono::Utc::now().timestamp();
+                match db::user_api_key::delete_expired_keys(&api_key_pool, now_ts).await {
+                    Ok(0) => {}
+                    Ok(n) => tracing::info!("清理过期 API Key 记录 {} 条", n),
+                    Err(e) => tracing::warn!("清理过期 API Key 记录失败: {}", e),
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+            }
+        });
+    }
+
     // Start JT1078 server in background
     {
         if let Some(jcfg) = cfg.jt1078.as_ref() {
