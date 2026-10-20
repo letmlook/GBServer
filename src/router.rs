@@ -308,6 +308,27 @@ mod tests {
         );
     }
 
+    /// A1: SY 前缀的取消收藏别名必须与平台版本一样，GET 与 DELETE 都能进鉴权层。
+    ///
+    /// 若只注册了其中一个方法，另一个会落到路由层的 405（Method Not Allowed），
+    /// 对接方拿到的是"方法不支持"而不是"未登录"。
+    #[tokio::test]
+    async fn sy_record_collect_delete_accepts_both_methods() {
+        let base = spawn(app_state().await).await;
+        let url = format!("{base}/api/sy/record/collect/delete?id=1");
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        for method in [reqwest::Method::GET, reqwest::Method::DELETE] {
+            let status = client
+                .request(method.clone(), &url)
+                .send()
+                .await
+                .unwrap()
+                .status()
+                .as_u16();
+            assert_eq!(status, 401, "{method} should reach JWT middleware");
+        }
+    }
+
     /// C9: 前端的 GET 取消收藏与兼容 DELETE 路由都应存在；
     /// 未登录时由鉴权拒绝，而非路由层 405。
     #[tokio::test]
@@ -703,6 +724,17 @@ mod tests {
             "/api/server/version",
             "/api/platform/info/1",
             "/api/sy/camera/list",
+            // 中亿视图对接契约（A1 补齐的别名端点）
+            "/api/sy/camera/one",
+            "/api/sy/camera/update",
+            "/api/sy/push/play",
+            "/api/sy/push/play-without-check",
+            "/api/sy/test",
+            "/api/sy/record/collect/add",
+            "/api/sy/record/collect/delete",
+            "/api/sy/record/list-url",
+            "/api/sy/record/zip",
+            "/api/sy/forceClose",
             // JT1078 / RTP / PS / 推流代理
             "/api/jt1078/route/query",
             "/api/jt1078/record/start",

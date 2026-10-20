@@ -25,6 +25,7 @@ pub mod server;
 pub mod stream;
 pub mod stub;
 pub mod sy_camera;
+pub mod sy_contract;
 pub mod system;
 pub mod talk;
 pub mod user;

@@ -35,7 +35,7 @@
 
 | # | 类别 | 事项 | 标记 |
 |---|---|---|---|
-| A1 | 功能端点 | 中亿视图（SY）定制模块 10 条端点 | 🔴 |
+| A1 | 功能端点 | 中亿视图（SY）定制模块 10 条端点已补齐为 23 条 `/api/sy/*`，全部可路由且受鉴权保护 | ✅ |
 | A2 | 功能端点 | 管理员诊断及 Redis/ZLM 故障演练已完成；目标部署环境复验仍属 M4 | ✅ |
 | A3 | 功能端点 | 外部集成协议 `/api/v1/*` 11 条 + `/auth/login` | ⚪ |
 | B1 | 缺陷 | 普通流无效回连已移除，TCP-PASSIVE 参数与媒体等待已修；真实 ZLM + Mock 正反场景通过，真机待复验 | 🟡 |
@@ -99,7 +99,7 @@ e2e 最近一次运行 35 通过 / 0 失败（筛选运行）、三方言冒烟�
 
 | 事项 | 是否影响核心闭环 | 判定 |
 |---|---|---|
-| A1 中亿视图 10 端点 | 否（第三方定制集成模块） | 🟢 可发布，后续迭代 |
+| A1 中亿视图 10 端点 | 否（第三方定制集成模块） | ✅ 已补齐并复验 |
 | A2 `/api/test/*` | 否（运维诊断） | 🟢 可发布，后续迭代 |
 | A3 `/api/v1/*` 外部集成协议 | 否（另一套协议/鉴权） | 🟢 范围外 |
 | B1 端口不一致时的 `connectRtpServer` | 普通流无效回连已移除；真实 ZLM + Mock 证实 TCP-PASSIVE 成功流可拉 FLV、无媒体时清理资源 | 🟡 真机待复验 |
@@ -122,31 +122,40 @@ e2e 最近一次运行 35 通过 / 0 失败（筛选运行）、三方言冒烟�
 
 ## A. 未实现的功能端点
 
-### A1 🔴 中亿视图（SY）定制模块 10 条端点
+### A1 ✅ 中亿视图（SY）定制模块 10 条端点（已补齐并复验）
 
-来源：第三方地图视图（中亿 SY）定制对接需求，需与本模块既有 `/api/sy/*` 实现
-逐一比对 `router.rs` 的实际挂载情况。
+来源：第三方地图视图（中亿 SY）定制对接需求。原先 `/api/sy/*` 只挂了 13 条，
+契约清单里的 10 条要么没有实现，要么只有**非 SY 前缀**的等价实现 —— 对接方按
+契约请求 `/api/sy/...` 会拿到 404。
 
-缺失清单（本仓库 `/api/sy/*` 已实现 **13 条**：`camera/list`、`camera/list/ids`、
-`camera/list-with-child`、`camera/list-for-mobile`、`camera/cont-with-child`、
-`camera/list/{box,circle,polygon,address}`、`camera/meeting/list`、
-`camera/control/{play,stop,ptz}`）：
+现已补齐为 **23 条 `/api/sy/*`**，10 条契约端点全部可路由，且按
+「复用已有实现、只加前缀别名，不重写逻辑」的要求实现
+（`src/handlers/sy_contract.rs`）：
 
-| 端点 | 语义 | 本仓库等价实现 |
+| 端点 | 语义 | 复用的实现 |
 |---|---|---|
-| `GET /api/sy/camera/one` | 单通道详情 | ❌ 无 |
-| `GET /api/sy/camera/update` | 更新通道 | ❌ 无 |
-| `GET /api/sy/push/play` | 推送播放（含校验） | ❌ 无 |
-| `GET /api/sy/push/play-without-check` | 推送播放（跳过校验） | ❌ 无 |
-| `GET /api/sy/record/collect/add` | 录像收藏/加入收藏夹 | ✅ `/api/cloud/record/collect/add`（`router.rs:569`） |
-| `GET /api/sy/record/collect/delete` | 取消收藏 | ✅ `/api/cloud/record/collect/delete`（`router.rs:573` / `1082`） |
-| `GET /api/sy/record/zip` | 录像打包下载（ZIP） | ✅ `/api/cloud/record/zip`（`router.rs:1087`） |
-| `GET /api/sy/record/list-url` | 录像列表（仅 URL 形态） | ✅ `/api/cloud/record/list-url`（`router.rs:1086`） |
-| `GET /api/sy/forceClose` | 强制关闭流 | ✅ `/api/push/forceClose`（`router.rs:1069`） |
-| `GET /api/sy/test` | 自检 | ❌ 无 |
+| `GET /api/sy/camera/one` | 单通道详情 | `/api/common/channel/one` |
+| `GET /api/sy/camera/update` | 更新通道 | `/api/common/channel/update`（同一份 DTO 与落库逻辑） |
+| `GET /api/sy/push/play` | 推送播放（含校验） | `/api/play/start` + 平台侧前置校验 |
+| `GET /api/sy/push/play-without-check` | 推送播放（跳过校验） | `/api/play/start` |
+| `GET /api/sy/record/collect/add` | 录像收藏/加入收藏夹 | `/api/cloud/record/collect/add` |
+| `GET` + `DELETE /api/sy/record/collect/delete` | 取消收藏 | `/api/cloud/record/collect/delete` |
+| `GET /api/sy/record/zip` | 录像打包下载（ZIP） | `/api/cloud/record/zip` |
+| `GET /api/sy/record/list-url` | 录像列表（仅 URL 形态） | `/api/cloud/record/list-url` |
+| `GET /api/sy/forceClose` | 强制关闭流 | `/api/push/forceClose` |
+| `GET /api/sy/test` | 对接自检 | 平台就绪度（DB / 设备 / 媒体节点 / SIP） |
 
-**实现时应复用已有实现、只加前缀别名，不要重写逻辑。**
-（`/api/cloud/record/collect/delete` 的 GET 与 DELETE 路由均已注册；登录后 HTTP 业务往返已按 C9 验证。当前云录像页面没有收藏入口。）
+两点语义说明：
+
+- `push/play` 与 `push/play-without-check` 的唯一区别是**平台侧前置校验**：
+  前者先确认设备已登记、通道属于该设备且设备在线，不满足就返回业务错误而
+  **不发起任何 SIP**；后者直接进入点播链路，由点播链路自身回报失败。
+- `sy/test` 只回报就绪度（版本、计数、布尔、问题列表），**不**回报节点地址、
+  密钥或完整 Hook 载荷。
+
+全部挂在受保护路由表：未登录返回 401，而不是 404。
+（`/api/cloud/record/collect/delete` 的 GET 与 DELETE 路由均已注册；登录后 HTTP
+业务往返已按 C9 验证。当前云录像页面没有收藏入口。）
 
 ### A2 ✅ 管理员诊断端点（本机故障演练已完成）
 

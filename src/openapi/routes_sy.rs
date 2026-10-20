@@ -25,5 +25,25 @@ pub fn routes() -> DocumentedRoutes {
     acc.add(routes!(crate::handlers::sy_camera::camera_list_with_child));
     acc.add(routes!(crate::handlers::sy_camera::camera_meeting_list));
 
+    // A1 补齐的 5 条契约端点（别名路由，复用既有实现）。
+    acc.add(routes!(crate::handlers::sy_contract::camera_one));
+    acc.add(routes!(crate::handlers::sy_contract::camera_update));
+    acc.add(routes!(crate::handlers::sy_contract::push_play));
+    acc.add(routes!(
+        crate::handlers::sy_contract::push_play_without_check
+    ));
+    acc.add(routes!(crate::handlers::sy_contract::sy_test));
+
+    // A1 契约中已有等价实现、但缺少 SY 前缀的 5 条：只加别名，不重写逻辑。
+    // 收藏删除与平台版本一致，同时注册 GET 与 DELETE。
+    acc.add(routes!(crate::handlers::sy_contract::record_collect_add));
+    acc.add(routes!(crate::handlers::sy_contract::record_collect_delete));
+    acc.add(routes!(
+        crate::handlers::sy_contract::record_collect_delete_method
+    ));
+    acc.add(routes!(crate::handlers::sy_contract::record_list_url));
+    acc.add(routes!(crate::handlers::sy_contract::record_zip));
+    acc.add(routes!(crate::handlers::sy_contract::force_close));
+
     acc.finish()
 }
