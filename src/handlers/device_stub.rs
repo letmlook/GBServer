@@ -316,7 +316,7 @@ pub(crate) fn parse_device_control_result(xml: &str) -> (&'static str, Option<St
         .and_then(|(_, rest)| rest.split_once("</Result>"))
         .map(|(value, _)| value.trim());
     let Some(value) = result.filter(|value| !value.is_empty()) else {
-        return ("unconfirmed", None);
+        return (crate::handlers::device_result::STATUS_UNCONFIRMED, None);
     };
     let safe_code: String = value
         .chars()
@@ -324,9 +324,15 @@ pub(crate) fn parse_device_control_result(xml: &str) -> (&'static str, Option<St
         .take(32)
         .collect();
     if value.eq_ignore_ascii_case("OK") {
-        ("confirmed", Some("OK".to_string()))
+        (
+            crate::handlers::device_result::STATUS_CONFIRMED,
+            Some("OK".to_string()),
+        )
     } else {
-        ("rejected", Some(safe_code))
+        (
+            crate::handlers::device_result::STATUS_REJECTED,
+            Some(safe_code),
+        )
     }
 }
 
@@ -388,32 +394,27 @@ pub async fn device_transport(
     // 2) 向设备下发 SIP Control/Transport 消息（设备在线才发；不在线仅 DB 更新也合法）
     let mut sip_sent = false;
     let mut sip_error: Option<String> = None;
-    let mut device_result = serde_json::json!({"status": "not_sent"});
+    let mut device_result =
+        crate::handlers::device_result::CommandOutcome::not_sent().device_result;
     if let Some(ref sip_server) = state.sip_server {
         let server = &*sip_server;
         if server.is_device_online(&device_id).await {
             if options.wait_result {
                 let body = format!("<Transport>{}</Transport>", normalized_mode);
-                match server
-                    .send_device_control_confirmable(&device_id, &device_id, "DeviceControl", &body)
-                    .await
+                // 等待路径与其它设备命令入口共用同一套"发送 → 等回执 → 解释 Result"逻辑。
+                match crate::handlers::device_result::send_command_and_wait(
+                    server,
+                    &device_id,
+                    &device_id,
+                    "DeviceControl",
+                    &body,
+                    "Transport",
+                )
+                .await
                 {
-                    Ok((sn, receiver)) => {
-                        sip_sent = true;
-                        let result =
-                            tokio::time::timeout(std::time::Duration::from_secs(5), receiver).await;
-                        let (status, result_code) = match result {
-                            Ok(Ok(xml)) => parse_device_control_result(&xml),
-                            _ => {
-                                server.cancel_device_control_pending(&device_id, sn);
-                                ("unconfirmed", None)
-                            }
-                        };
-                        device_result = serde_json::json!({
-                            "status": status,
-                            "sn": sn,
-                            "resultCode": result_code,
-                        });
+                    Ok(outcome) => {
+                        sip_sent = outcome.sip_sent;
+                        device_result = outcome.device_result;
                     }
                     Err(e) => {
                         tracing::warn!("Failed to send Transport SIP: {}", e);

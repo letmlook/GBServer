@@ -49,7 +49,7 @@
 | B11 | 缺陷 | `on_server_started` 用 ZLM **内部** HTTP 端口覆盖库里的对外端口（80 覆盖 8080）→ 后端所有 ZLM 调用 502 | ✅ 已修 |
 | B12 | 缺陷 | ZLM 对同一路流**按协议各返回一行** → 控制台「重点通道」同一通道重复铺格子、「直播 N」虚高 | ✅ 已修并复验 |
 | B13 | 性能 | 控制台首屏"等最慢接口"才统一赋值 + `system/info` 被 3 个组件同时拉 → 卡片空等约 2s | ✅ 已修并复验 |
-| B14 | 缺陷 | `DeviceControl` / `DeviceConfig` 应答按设备、SN、类型和目标关联；传输模式、设防/撤防、远程录像、配置下发、重启、预置位、直接 PTZ 与批量 PTZ 停止/重启可区分发送和执行；前端控制与回放控制兼容入口明确只声明已发送；其它入口与真机仍待验收 | 🟡 |
+| B14 | 缺陷 | `DeviceControl` / `DeviceConfig` 应答按设备、SN、类型和目标关联；传输模式、设防/撤防、远程录像、配置下发、重启、预置位、直接 PTZ 与批量 PTZ 停止/重启可区分发送和执行；**远程启动、报警复位、强制关键帧、看守位、拉框、配置下发等其余控制入口已补齐 `sipSent`/`deviceResult` 与 `waitResult`**；前端控制与回放控制兼容入口明确只声明已发送 | 🟡 真机未验 |
 | B15 | 缺陷 | 设备保活/注册统计查了**库里不存在的表**（真实表名 `gb_device`）→ 两个统计接口恒返回 0 | ✅ 已修 |
 | B9 | 配置 | `rtc.externIP` 平台未下发 → 容器部署下浏览器 ICE 永远连不上 | ✅ 已修 |
 | A4 | 前端 | 直播页 WebRTC 播放入口（`postWebrtcPlay` 原先无调用方） | ✅ 已接 (2026-09-19) |
@@ -592,6 +592,20 @@ SIP Mock 已验证暂停 INFO 属于当前回放对话；真机执行仍待验�
 `ptzStop` 和 `reboot` 支持 `waitResult=true`，查询类命令不提供执行等待；
 批量请求最多并行处理 16 台设备并按请求顺序返回，避免每台无回执设备串行等待 5 秒。
 
+**2026-10-20 补齐"其它控制入口"**：远程启动（`teleboot`）、报警复位（`reset_alarm`）、
+强制关键帧（`i_frame`）、看守位（`home_position`）、拉框放大/缩小（`drag_zoom`）、
+基本配置与视频参数下发（`config/set/*`）此前只回 `result: "command sent"` ——
+既没有 `sipSent`/`deviceResult`，也无法等待设备回执，等于把"SIP 发出去了"
+当成"设备执行了"。现这 7 个入口统一返回 `sipSent` 与 `deviceResult`，并支持
+`waitResult=true`（最长 5 秒）区分 `confirmed`/`rejected`/`unconfirmed`。
+与之同时，`/api/device/control/i_frame` 与 `/api/device/control/home_position`
+的 OpenAPI 之前**没有声明任何查询参数**（`params(...)` 缺失），现已补上。
+
+**语义收敛到一处**：此前"发送 → 等回执 → 解释 `Result`"这段逻辑在 4 个文件里
+各写一份（device_control / device_stub / device_batch 等 7 处），容易悄悄漂移。
+现抽到 `src/handlers/device_result.rs`（`send_command` / `send_command_and_wait`），
+状态取值（`not_sent|sent|confirmed|rejected|unconfirmed`）也只有一份定义。
+
 **本轮运行证据**：真实后端 + Python SIP Mock 对传输模式接口执行了确认、拒绝、
 仅 SIP 200 无设备回执、重复回执、5.5 秒迟到回执及新旧 SN 隔离，结果符合预期。
 配置查询 `ConfigDownload` 的 Mock 回执延迟 11 秒，平台仍返回 `source=live`；
@@ -600,8 +614,9 @@ SIP Mock 已验证暂停 INFO 属于当前回放对话；真机执行仍待验�
 不存在设备返回 `not_sent`，查询类命令要求执行等待时被明确拒绝。
 这只能证明 Mock 路径，不代表 2026-09-19 的真机缺陷已在同一设备上复验。
 
-**剩余**：真机传输模式或控制命令回执；其它控制入口按设备结果展示，而不把
-SIP 发送成功当设备执行成功；若设备回 `Result != OK`，需有可定位日志。
+**剩余**：真机传输模式或控制命令回执。Mock 之外的设备结果证据仍缺，
+已覆盖的命令入口在真机上尚未逐一复验；真机若回 `Result != OK`，
+需有可定位日志。
 
 ### B15 ✅ 设备统计查了不存在的表（已修，2026-09-19）
 

@@ -6,6 +6,7 @@ pub mod device;
 pub mod device_batch;
 pub mod device_control;
 pub mod device_query;
+pub mod device_result;
 pub mod device_stub;
 pub mod diagnostics;
 pub mod front_end;

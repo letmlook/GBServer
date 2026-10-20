@@ -99,42 +99,49 @@ async fn send_control(
     body: &str,
     wait_result: bool,
 ) -> DeviceControlResult {
-    if wait_result {
-        match sip
-            .send_device_control_confirmable(device_id, channel_id, "DeviceControl", body)
-            .await
-        {
-            Ok((sn, receiver)) => {
-                let waited =
-                    tokio::time::timeout(std::time::Duration::from_secs(5), receiver).await;
-                let (status, result_code) = match waited {
-                    Ok(Ok(xml)) => crate::handlers::device_stub::parse_device_control_result(&xml),
-                    _ => {
-                        sip.cancel_device_control_pending(device_id, sn);
-                        ("unconfirmed", None)
-                    }
-                };
-                if status == "rejected" {
-                    tracing::warn!(
-                        device_id,
-                        channel_id,
-                        sn,
-                        result_code = ?result_code,
-                        "Batch DeviceControl rejected by device"
-                    );
-                }
-                DeviceControlResult::with_execution(device_id, status, sn, result_code)
+    match crate::handlers::device_result::send_command(
+        sip,
+        device_id,
+        channel_id,
+        "DeviceControl",
+        body,
+        wait_result,
+        "Batch DeviceControl",
+    )
+    .await
+    {
+        Ok(outcome) => {
+            let status = outcome
+                .device_result
+                .get("status")
+                .and_then(|v| v.as_str())
+                .unwrap_or(crate::handlers::device_result::STATUS_UNCONFIRMED);
+            let sn = outcome
+                .device_result
+                .get("sn")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32;
+            let result_code = outcome
+                .device_result
+                .get("resultCode")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            if status == crate::handlers::device_result::STATUS_REJECTED {
+                tracing::warn!(
+                    device_id,
+                    channel_id,
+                    sn,
+                    result_code = ?result_code,
+                    "Batch DeviceControl rejected by device"
+                );
             }
-            Err(error) => DeviceControlResult::failed(device_id, error.to_string()),
+            if wait_result {
+                DeviceControlResult::with_execution(device_id, status, sn, result_code)
+            } else {
+                DeviceControlResult::sent(device_id)
+            }
         }
-    } else {
-        match sip
-            .send_device_control(device_id, channel_id, "DeviceControl", body)
-            .await
-        {
-            Ok(()) => DeviceControlResult::sent(device_id),
-            Err(error) => DeviceControlResult::failed(device_id, error.to_string()),
-        }
+        Err(error) => DeviceControlResult::failed(device_id, error.to_string()),
     }
 }
 

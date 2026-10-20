@@ -103,59 +103,20 @@ pub async fn device_ptz(
         if let Some(device) = server.device_manager().get(&device_id).await {
             if device.online && device.addr.is_some() {
                 let ptz_cmd = build_ptz_xml(&command, speed, preset_index, 0);
-                let device_result = if q.wait_result {
-                    match server
-                        .send_device_control_confirmable(
-                            &device_id,
-                            &channel_id,
-                            "DeviceControl",
-                            &ptz_cmd,
-                        )
-                        .await
-                    {
-                        Ok((sn, receiver)) => {
-                            let waited =
-                                tokio::time::timeout(std::time::Duration::from_secs(5), receiver)
-                                    .await;
-                            let (status, result_code) = match waited {
-                                Ok(Ok(xml)) => {
-                                    crate::handlers::device_stub::parse_device_control_result(&xml)
-                                }
-                                _ => {
-                                    server.cancel_device_control_pending(&device_id, sn);
-                                    ("unconfirmed", None)
-                                }
-                            };
-                            if status == "rejected" {
-                                tracing::warn!(
-                                    device_id,
-                                    channel_id,
-                                    sn,
-                                    result_code = ?result_code,
-                                    "PTZ command rejected by device"
-                                );
-                            }
-                            serde_json::json!({"status": status, "sn": sn, "resultCode": result_code})
-                        }
-                        Err(e) => {
-                            tracing::error!("Failed to send PTZ command: {}", e);
-                            return Json(ApiResult::error(format!(
-                                "Failed to send PTZ command: {e}"
-                            )));
-                        }
-                    }
-                } else {
-                    match server
-                        .send_device_control(&device_id, &channel_id, "DeviceControl", &ptz_cmd)
-                        .await
-                    {
-                        Ok(()) => serde_json::json!({"status": "sent"}),
-                        Err(e) => {
-                            tracing::error!("Failed to send PTZ command: {}", e);
-                            return Json(ApiResult::error(format!(
-                                "Failed to send PTZ command: {e}"
-                            )));
-                        }
+                let outcome = match crate::handlers::device_result::send_command(
+                    server,
+                    &device_id,
+                    &channel_id,
+                    "DeviceControl",
+                    &ptz_cmd,
+                    q.wait_result,
+                    "PTZ command",
+                )
+                .await
+                {
+                    Ok(o) => o,
+                    Err(e) => {
+                        return Json(ApiResult::error(format!("Failed to send PTZ command: {e}")));
                     }
                 };
                 tracing::info!("PTZ command sent via SIP: {}", device_id);
@@ -165,8 +126,8 @@ pub async fn device_ptz(
                     "command": command,
                     "speed": speed,
                     "presetIndex": q.preset_index,
-                    "sipSent": true,
-                    "deviceResult": device_result,
+                    "sipSent": outcome.sip_sent,
+                    "deviceResult": outcome.device_result,
                     "result": "PTZ command sent"
                 })));
             }
@@ -255,52 +216,23 @@ pub async fn device_preset(
         if let Some(device) = server.device_manager().get(&device_id).await {
             if device.online && device.addr.is_some() {
                 let preset_cmd = build_preset_xml(&command, preset_index);
-                let device_result = if q.wait_result {
-                    match server
-                        .send_device_control_confirmable(
-                            &device_id,
-                            &channel_id,
-                            "DeviceControl",
-                            &preset_cmd,
-                        )
-                        .await
-                    {
-                        Ok((sn, receiver)) => {
-                            let waited =
-                                tokio::time::timeout(std::time::Duration::from_secs(5), receiver)
-                                    .await;
-                            let (status, result_code) = match waited {
-                                Ok(Ok(xml)) => {
-                                    crate::handlers::device_stub::parse_device_control_result(&xml)
-                                }
-                                _ => {
-                                    server.cancel_device_control_pending(&device_id, sn);
-                                    ("unconfirmed", None)
-                                }
-                            };
-                            serde_json::json!({"status": status, "sn": sn, "resultCode": result_code})
-                        }
-                        Err(e) => {
-                            tracing::error!("Failed to send preset command: {}", e);
-                            return Json(ApiResult::error(format!(
-                                "Failed to send preset command: {}",
-                                e
-                            )));
-                        }
-                    }
-                } else {
-                    match server
-                        .send_device_control(&device_id, &channel_id, "DeviceControl", &preset_cmd)
-                        .await
-                    {
-                        Ok(()) => serde_json::json!({"status": "sent"}),
-                        Err(e) => {
-                            tracing::error!("Failed to send preset command: {}", e);
-                            return Json(ApiResult::error(format!(
-                                "Failed to send preset command: {}",
-                                e
-                            )));
-                        }
+                let outcome = match crate::handlers::device_result::send_command(
+                    server,
+                    &device_id,
+                    &channel_id,
+                    "DeviceControl",
+                    &preset_cmd,
+                    q.wait_result,
+                    "DeviceControl",
+                )
+                .await
+                {
+                    Ok(o) => o,
+                    Err(e) => {
+                        tracing::error!("Failed to send preset command: {}", e);
+                        return Json(ApiResult::error(format!(
+                            "Failed to send preset command: {e}"
+                        )));
                     }
                 };
                 return Json(ApiResult::success(serde_json::json!({
@@ -308,8 +240,8 @@ pub async fn device_preset(
                     "channelId": channel_id,
                     "command": command,
                     "presetIndex": preset_index,
-                    "sipSent": true,
-                    "deviceResult": device_result,
+                    "sipSent": outcome.sip_sent,
+                    "deviceResult": outcome.device_result,
                     "result": "Preset command sent"
                 })));
             }
@@ -416,53 +348,28 @@ pub async fn device_guard(
         if let Some(device) = server.device_manager().get(&device_id).await {
             if device.online && device.addr.is_some() {
                 let guard_xml = format!(r#"<GuardCmd>{}</GuardCmd>"#, guard_cmd);
-                let device_result = if q.wait_result {
-                    match server
-                        .send_device_control_confirmable(
-                            &device_id,
-                            &device_id,
-                            "DeviceControl",
-                            &guard_xml,
-                        )
-                        .await
-                    {
-                        Ok((sn, receiver)) => {
-                            let waited =
-                                tokio::time::timeout(std::time::Duration::from_secs(5), receiver)
-                                    .await;
-                            let (status, result_code) = match waited {
-                                Ok(Ok(xml)) => {
-                                    crate::handlers::device_stub::parse_device_control_result(&xml)
-                                }
-                                _ => {
-                                    server.cancel_device_control_pending(&device_id, sn);
-                                    ("unconfirmed", None)
-                                }
-                            };
-                            serde_json::json!({"status": status, "sn": sn, "resultCode": result_code})
-                        }
-                        Err(e) => {
-                            tracing::error!("Guard command send failed device={device_id}: {e}");
-                            return Json(ApiResult::error(format!("设防指令发送失败: {e}")));
-                        }
-                    }
-                } else {
-                    match server
-                        .send_device_control(&device_id, &device_id, "DeviceControl", &guard_xml)
-                        .await
-                    {
-                        Ok(()) => serde_json::json!({"status": "sent"}),
-                        Err(e) => {
-                            tracing::error!("Guard command send failed device={device_id}: {e}");
-                            return Json(ApiResult::error(format!("设防指令发送失败: {e}")));
-                        }
+                let outcome = match crate::handlers::device_result::send_command(
+                    server,
+                    &device_id,
+                    &device_id,
+                    "DeviceControl",
+                    &guard_xml,
+                    q.wait_result,
+                    "DeviceControl",
+                )
+                .await
+                {
+                    Ok(o) => o,
+                    Err(e) => {
+                        tracing::error!("Guard command send failed device={device_id}: {e}");
+                        return Json(ApiResult::error(format!("设防指令发送失败: {e}")));
                     }
                 };
                 return Json(ApiResult::success(serde_json::json!({
                     "deviceId": device_id,
                     "guardCmd": guard_cmd,
-                    "sipSent": true,
-                    "deviceResult": device_result,
+                    "sipSent": outcome.sip_sent,
+                    "deviceResult": outcome.device_result,
                     "result": "command sent",
                 })));
             }
@@ -924,59 +831,30 @@ pub async fn device_config_update(
                 // 根据配置类型构建不同的配置XML
                 let config_xml = build_config_update_xml(&config_type, &config_data);
 
-                let device_result = if body.wait_result {
-                    match server
-                        .send_device_control_confirmable(
-                            &device_id,
-                            &device_id,
-                            "DeviceConfig",
-                            &config_xml,
-                        )
-                        .await
-                    {
-                        Ok((sn, receiver)) => {
-                            let waited =
-                                tokio::time::timeout(std::time::Duration::from_secs(5), receiver)
-                                    .await;
-                            let (status, result_code) = match waited {
-                                Ok(Ok(xml)) => {
-                                    crate::handlers::device_stub::parse_device_control_result(&xml)
-                                }
-                                _ => {
-                                    server.cancel_device_control_pending(&device_id, sn);
-                                    ("unconfirmed", None)
-                                }
-                            };
-                            serde_json::json!({"status": status, "sn": sn, "resultCode": result_code})
-                        }
-                        Err(e) => {
-                            tracing::error!("Failed to send config update: {}", e);
-                            return Json(ApiResult::error(format!(
-                                "Failed to send config update: {}",
-                                e
-                            )));
-                        }
-                    }
-                } else {
-                    match server
-                        .send_device_control(&device_id, &device_id, "DeviceConfig", &config_xml)
-                        .await
-                    {
-                        Ok(()) => serde_json::json!({"status": "sent"}),
-                        Err(e) => {
-                            tracing::error!("Failed to send config update: {}", e);
-                            return Json(ApiResult::error(format!(
-                                "Failed to send config update: {}",
-                                e
-                            )));
-                        }
+                let outcome = match crate::handlers::device_result::send_command(
+                    server,
+                    &device_id,
+                    &device_id,
+                    "DeviceConfig",
+                    &config_xml,
+                    body.wait_result,
+                    "DeviceConfig",
+                )
+                .await
+                {
+                    Ok(o) => o,
+                    Err(e) => {
+                        tracing::error!("Failed to send config update: {}", e);
+                        return Json(ApiResult::error(format!(
+                            "Failed to send config update: {e}"
+                        )));
                     }
                 };
                 return Json(ApiResult::success(serde_json::json!({
                     "deviceId": device_id,
                     "configType": config_type,
-                    "sipSent": true,
-                    "deviceResult": device_result,
+                    "sipSent": outcome.sip_sent,
+                    "deviceResult": outcome.device_result,
                     "result": "Config update sent"
                 })));
             }
@@ -1038,58 +916,29 @@ pub async fn device_reboot(
                 // 而且外面又套了一层 `<Control>`（嵌套 + 元素中间夹 XML 声明 = 非法 XML）。
                 let reboot_xml = "<TeleBoot>Boot</TeleBoot>".to_string();
 
-                let device_result = if q.wait_result {
-                    match server
-                        .send_device_control_confirmable(
-                            &device_id,
-                            &device_id,
-                            "DeviceControl",
-                            &reboot_xml,
-                        )
-                        .await
-                    {
-                        Ok((sn, receiver)) => {
-                            let waited =
-                                tokio::time::timeout(std::time::Duration::from_secs(5), receiver)
-                                    .await;
-                            let (status, result_code) = match waited {
-                                Ok(Ok(xml)) => {
-                                    crate::handlers::device_stub::parse_device_control_result(&xml)
-                                }
-                                _ => {
-                                    server.cancel_device_control_pending(&device_id, sn);
-                                    ("unconfirmed", None)
-                                }
-                            };
-                            serde_json::json!({"status": status, "sn": sn, "resultCode": result_code})
-                        }
-                        Err(e) => {
-                            tracing::error!("Failed to send reboot command: {}", e);
-                            return Json(ApiResult::error(format!(
-                                "Failed to send reboot command: {}",
-                                e
-                            )));
-                        }
-                    }
-                } else {
-                    match server
-                        .send_device_control(&device_id, &device_id, "DeviceControl", &reboot_xml)
-                        .await
-                    {
-                        Ok(()) => serde_json::json!({"status": "sent"}),
-                        Err(e) => {
-                            tracing::error!("Failed to send reboot command: {}", e);
-                            return Json(ApiResult::error(format!(
-                                "Failed to send reboot command: {}",
-                                e
-                            )));
-                        }
+                let outcome = match crate::handlers::device_result::send_command(
+                    server,
+                    &device_id,
+                    &device_id,
+                    "DeviceControl",
+                    &reboot_xml,
+                    q.wait_result,
+                    "DeviceControl",
+                )
+                .await
+                {
+                    Ok(o) => o,
+                    Err(e) => {
+                        tracing::error!("Failed to send reboot command: {}", e);
+                        return Json(ApiResult::error(format!(
+                            "Failed to send reboot command: {e}"
+                        )));
                     }
                 };
                 return Json(ApiResult::success(serde_json::json!({
                     "deviceId": device_id,
-                    "sipSent": true,
-                    "deviceResult": device_result,
+                    "sipSent": outcome.sip_sent,
+                    "deviceResult": outcome.device_result,
                     "result": "Reboot command sent"
                 })));
             }
@@ -1117,51 +966,55 @@ async fn send_control_element(
     channel_id: &str,
     element: &str,
     extra: serde_json::Value,
+    wait_result: bool,
 ) -> Json<ApiResult<serde_json::Value>> {
-    if device_id.is_empty() {
-        return Json(ApiResult::error("device_id is required"));
-    }
-    let Some(ref sip_server) = state.sip_server else {
-        return Json(ApiResult::error("SIP server not available"));
-    };
-    let server = &**sip_server;
-    let Some(device) = server.device_manager().get(device_id).await else {
-        return Json(ApiResult::error(format!("设备不存在或未注册: {device_id}")));
-    };
-    if !device.online || device.addr.is_none() {
-        return Json(ApiResult::error(format!("设备不在线: {device_id}")));
-    }
-    if let Err(e) = server
-        .send_device_control(device_id, channel_id, "DeviceControl", element)
-        .await
+    match crate::handlers::device_result::send_command_to_online_device(
+        state,
+        device_id,
+        channel_id,
+        "DeviceControl",
+        element,
+        wait_result,
+        "DeviceControl",
+    )
+    .await
     {
-        tracing::error!("DeviceControl 下发失败 device={}: {}", device_id, e);
-        return Json(ApiResult::error(format!("命令发送失败: {e}")));
-    }
-
-    let mut data = serde_json::json!({
-        "deviceId": device_id,
-        "channelId": channel_id,
-        "result": "command sent",
-        "xml": element,
-    });
-    if let (Some(obj), Some(extra_obj)) = (data.as_object_mut(), extra.as_object()) {
-        for (k, v) in extra_obj {
-            obj.insert(k.clone(), v.clone());
+        Ok(outcome) => {
+            let mut data = serde_json::json!({
+                "deviceId": device_id,
+                "channelId": channel_id,
+                "result": "command sent",
+                "xml": element,
+            });
+            crate::handlers::device_result::merge_into(&mut data, &outcome);
+            if let (Some(obj), Some(extra_obj)) = (data.as_object_mut(), extra.as_object()) {
+                for (k, v) in extra_obj {
+                    obj.insert(k.clone(), v.clone());
+                }
+            }
+            Json(ApiResult::success(data))
         }
+        Err(msg) => Json(ApiResult::error(msg)),
     }
-    Json(ApiResult::success(data))
 }
 
 /// GET /api/device/control/teleboot/{device_id} —— 远程启动
 ///
 /// 与 `device_reboot` 同语义；这里用路径参数版。
+/// `GET /api/device/control/teleboot/{device_id}` 的查询参数。
+#[derive(Debug, Default, Deserialize, utoipa::IntoParams)]
+pub struct TelebootQuery {
+    /// 等待设备返回 DeviceControl Result，最长 5 秒
+    #[serde(default, rename = "waitResult")]
+    pub wait_result: bool,
+}
+
 #[utoipa::path(
     get,
     path = "/api/device/control/teleboot/{device_id}",
     tag = "control",
     operation_id = "device_control_teleboot",
-    params(("device_id" = String, Path, description = "设备国标 ID")),
+    params(("device_id" = String, Path, description = "设备国标 ID"), TelebootQuery),
     responses(
         (status = 200, description = "远程启动命令下发结果",
          body = ApiResult<serde_json::Value>,
@@ -1176,6 +1029,7 @@ async fn send_control_element(
 pub async fn device_teleboot(
     State(state): State<AppState>,
     axum::extract::Path(device_id): axum::extract::Path<String>,
+    Query(q): Query<TelebootQuery>,
 ) -> Json<ApiResult<serde_json::Value>> {
     tracing::info!("Device teleboot: device={}", device_id);
     send_control_element(
@@ -1184,6 +1038,7 @@ pub async fn device_teleboot(
         &device_id,
         "<TeleBoot>Boot</TeleBoot>",
         serde_json::json!({}),
+        q.wait_result,
     )
     .await
 }
@@ -1203,6 +1058,9 @@ pub struct ResetAlarmQuery {
     /// 报警类型（可选）
     #[serde(alias = "alarmType")]
     pub alarm_type: Option<String>,
+    /// 等待设备返回 DeviceControl Result，最长 5 秒
+    #[serde(default, rename = "waitResult")]
+    pub wait_result: bool,
 }
 
 /// 构造报警复位的控制元素：
@@ -1272,17 +1130,21 @@ pub async fn device_reset_alarm(
             "alarmMethod": q.alarm_method,
             "alarmType": q.alarm_type,
         }),
+        q.wait_result,
     )
     .await
 }
 
 /// GET /api/device/control/i_frame —— 强制关键帧
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, utoipa::IntoParams)]
 pub struct IFrameQuery {
     #[serde(alias = "deviceId")]
     pub device_id: Option<String>,
     #[serde(alias = "channelId")]
     pub channel_id: Option<String>,
+    /// 等待设备返回 DeviceControl Result，最长 5 秒
+    #[serde(default, rename = "waitResult")]
+    pub wait_result: bool,
 }
 
 #[utoipa::path(
@@ -1290,6 +1152,7 @@ pub struct IFrameQuery {
     path = "/api/device/control/i_frame",
     tag = "control",
     operation_id = "device_control_device_iframe",
+    params(IFrameQuery),
     responses(
         (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
         (status = 401, description = "未鉴权"),
@@ -1316,12 +1179,13 @@ pub async fn device_iframe(
         &channel_id,
         "<IFrameCmd>IFrame</IFrameCmd>",
         serde_json::json!({}),
+        q.wait_result,
     )
     .await
 }
 
 /// GET /api/device/control/home_position —— 看守位设置
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, utoipa::IntoParams)]
 pub struct HomePositionQuery {
     #[serde(alias = "deviceId")]
     pub device_id: Option<String>,
@@ -1342,6 +1206,9 @@ pub struct HomePositionQuery {
         deserialize_with = "crate::serde_flex::de_opt_i64"
     )]
     pub preset_index: Option<i64>,
+    /// 等待设备返回 DeviceControl Result，最长 5 秒
+    #[serde(default, rename = "waitResult")]
+    pub wait_result: bool,
 }
 
 /// 构造看守位的控制元素：
@@ -1367,6 +1234,7 @@ pub(crate) fn build_home_position_element(
     path = "/api/device/control/home_position",
     tag = "control",
     operation_id = "device_control_device_home_position",
+    params(HomePositionQuery),
     responses(
         (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
         (status = 401, description = "未鉴权"),
@@ -1399,6 +1267,7 @@ pub async fn device_home_position(
             "resetTime": q.reset_time,
             "presetIndex": q.preset_index,
         }),
+        q.wait_result,
     )
     .await
 }
@@ -1446,6 +1315,9 @@ pub struct DragZoomQuery {
         deserialize_with = "crate::serde_flex::de_opt_i64"
     )]
     pub length_y: Option<i64>,
+    /// 等待设备返回 DeviceControl Result，最长 5 秒
+    #[serde(default, rename = "waitResult")]
+    pub wait_result: bool,
 }
 
 /// 构造拉框放大/缩小的控制元素。
@@ -1511,6 +1383,7 @@ async fn drag_zoom(
         &channel_id,
         &element,
         serde_json::json!({ "zoomIn": zoom_in }),
+        q.wait_result,
     )
     .await
 }
@@ -1931,6 +1804,9 @@ pub struct BasicParamQuery {
         deserialize_with = "crate::serde_flex::de_opt_string"
     )]
     pub heart_beat_count: Option<String>,
+    /// 等待设备返回 DeviceControl Result，最长 5 秒
+    #[serde(default, rename = "waitResult")]
+    pub wait_result: bool,
 }
 
 /// 基本配置下发的控制元素（只发非空项）。
@@ -1982,6 +1858,9 @@ pub struct VideoParamOptQuery {
         deserialize_with = "crate::serde_flex::de_opt_string"
     )]
     pub download_speed: Option<String>,
+    /// 等待设备返回 DeviceControl Result，最长 5 秒
+    #[serde(default, rename = "waitResult")]
+    pub wait_result: bool,
 }
 
 pub(crate) fn build_video_param_set_element(q: &VideoParamOptQuery) -> String {
@@ -2044,6 +1923,7 @@ pub async fn config_set_basic_param(
         "DeviceConfig",
         &element,
         serde_json::json!({ "configType": "BasicParam" }),
+        q.wait_result,
     )
     .await
 }
@@ -2084,6 +1964,7 @@ pub async fn config_set_video_param(
         "DeviceConfig",
         &element,
         serde_json::json!({ "configType": "VideoParamOpt" }),
+        q.wait_result,
     )
     .await
 }
@@ -2097,37 +1978,189 @@ pub(crate) async fn send_control_element_with_type(
     cmd_type: &str,
     element: &str,
     extra: serde_json::Value,
+    wait_result: bool,
 ) -> Json<ApiResult<serde_json::Value>> {
-    if device_id.is_empty() {
-        return Json(ApiResult::error("device_id is required"));
-    }
-    let Some(ref sip_server) = state.sip_server else {
-        return Json(ApiResult::error("SIP server not available"));
-    };
-    let server = &**sip_server;
-    let Some(device) = server.device_manager().get(device_id).await else {
-        return Json(ApiResult::error(format!("设备不存在或未注册: {device_id}")));
-    };
-    if !device.online || device.addr.is_none() {
-        return Json(ApiResult::error(format!("设备不在线: {device_id}")));
-    }
-    if let Err(e) = server
-        .send_device_control(device_id, channel_id, cmd_type, element)
-        .await
+    match crate::handlers::device_result::send_command_to_online_device(
+        state,
+        device_id,
+        channel_id,
+        cmd_type,
+        element,
+        wait_result,
+        cmd_type,
+    )
+    .await
     {
-        tracing::error!("{cmd_type} 下发失败 device={}: {}", device_id, e);
-        return Json(ApiResult::error(format!("命令发送失败: {e}")));
-    }
-    let mut data = serde_json::json!({
-        "deviceId": device_id,
-        "channelId": channel_id,
-        "result": "command sent",
-        "xml": element,
-    });
-    if let (Some(obj), Some(extra_obj)) = (data.as_object_mut(), extra.as_object()) {
-        for (k, v) in extra_obj {
-            obj.insert(k.clone(), v.clone());
+        Ok(outcome) => {
+            let mut data = serde_json::json!({
+                "deviceId": device_id,
+                "channelId": channel_id,
+                "result": "command sent",
+                "xml": element,
+            });
+            crate::handlers::device_result::merge_into(&mut data, &outcome);
+            if let (Some(obj), Some(extra_obj)) = (data.as_object_mut(), extra.as_object()) {
+                for (k, v) in extra_obj {
+                    obj.insert(k.clone(), v.clone());
+                }
+            }
+            Json(ApiResult::success(data))
         }
+        Err(msg) => Json(ApiResult::error(msg)),
     }
-    Json(ApiResult::success(data))
+}
+
+#[cfg(all(test, feature = "sqlite"))]
+mod command_result_tests {
+    use super::*;
+
+    /// B14：命令发不出去时，响应**不能**声称"已发送"或"设备已执行"。
+    ///
+    /// 这批入口此前只返回 `result: "command sent"`，即使 SIP 服务都没起来 ——
+    /// 调用方以为设备已经执行了。现在统一走 `device_result`，发不出去就是错误。
+    #[tokio::test]
+    async fn command_endpoints_do_not_claim_success_without_sip_server() {
+        let state = crate::test_support::app_state().await;
+        assert!(
+            state.sip_server.is_none(),
+            "本用例依赖 app_state() 不带 SIP 服务"
+        );
+
+        // 远程启动
+        let out = device_teleboot(
+            State(state.clone()),
+            axum::extract::Path("34020000001320000001".to_string()),
+            Query(TelebootQuery { wait_result: false }),
+        )
+        .await
+        .0;
+        assert_ne!(out.code, 0, "{out:?}");
+        assert!(out.data.is_none(), "发不出去时不应给出设备结论: {out:?}");
+
+        // 报警复位
+        let out = device_reset_alarm(
+            State(state.clone()),
+            Query(ResetAlarmQuery {
+                device_id: Some("34020000001320000001".into()),
+                channel_id: Some("34020000001310000001".into()),
+                alarm_method: None,
+                alarm_type: None,
+                wait_result: false,
+            }),
+        )
+        .await
+        .0;
+        assert_ne!(out.code, 0, "{out:?}");
+        assert!(out.data.is_none(), "{out:?}");
+
+        // 强制 I 帧
+        let out = device_iframe(
+            State(state.clone()),
+            Query(IFrameQuery {
+                device_id: Some("34020000001320000001".into()),
+                channel_id: Some("34020000001310000001".into()),
+                wait_result: false,
+            }),
+        )
+        .await
+        .0;
+        assert_ne!(out.code, 0, "{out:?}");
+        assert!(out.data.is_none(), "{out:?}");
+
+        // 看守位
+        let out = device_home_position(
+            State(state.clone()),
+            Query(HomePositionQuery {
+                device_id: Some("34020000001320000001".into()),
+                channel_id: Some("34020000001310000001".into()),
+                enabled: Some(true),
+                reset_time: None,
+                preset_index: None,
+                wait_result: false,
+            }),
+        )
+        .await
+        .0;
+        assert_ne!(out.code, 0, "{out:?}");
+        assert!(out.data.is_none(), "{out:?}");
+
+        // 拉框放大
+        let out = device_drag_zoom_in(
+            State(state.clone()),
+            Query(DragZoomQuery {
+                device_id: Some("34020000001320000001".into()),
+                channel_id: Some("34020000001310000001".into()),
+                length: Some(10),
+                width: Some(10),
+                mid_point_x: Some(1),
+                mid_point_y: Some(1),
+                length_x: Some(2),
+                length_y: Some(2),
+                wait_result: false,
+            }),
+        )
+        .await
+        .0;
+        assert_ne!(out.code, 0, "{out:?}");
+        assert!(out.data.is_none(), "{out:?}");
+
+        // 基本配置下发
+        let out = config_set_basic_param(
+            State(state.clone()),
+            Query(BasicParamQuery {
+                device_id: Some("34020000001320000001".into()),
+                name: Some("改名".into()),
+                expiration: None,
+                heart_beat_interval: None,
+                heart_beat_count: None,
+                wait_result: false,
+            }),
+        )
+        .await
+        .0;
+        assert_ne!(out.code, 0, "{out:?}");
+        assert!(out.data.is_none(), "{out:?}");
+
+        // 视频参数下发
+        let out = config_set_video_param(
+            State(state),
+            Query(VideoParamOptQuery {
+                device_id: Some("34020000001320000001".into()),
+                resolution: Some("1080P".into()),
+                download_speed: None,
+                wait_result: false,
+            }),
+        )
+        .await
+        .0;
+        assert_ne!(out.code, 0, "{out:?}");
+        assert!(out.data.is_none(), "{out:?}");
+    }
+
+    /// `send_command` 在设备不可达时必须返回 Err，而不是"假装已发送"。
+    #[tokio::test]
+    async fn shared_send_command_reports_failure_instead_of_fake_success() {
+        use crate::config::SipConfig;
+        use crate::sip::SipServer;
+
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_lazy("sqlite::memory:")
+            .unwrap();
+        let server = SipServer::new(SipConfig::default(), pool, None);
+
+        // 设备未注册 —— 发送必然失败。
+        let err = crate::handlers::device_result::send_command(
+            &server,
+            "34020000001320000001",
+            "34020000001310000001",
+            "DeviceControl",
+            "<PTZCmd>Up</PTZCmd>",
+            false,
+            "test",
+        )
+        .await
+        .expect_err("设备未注册时不应声称发送成功");
+        assert!(!err.to_string().is_empty());
+    }
 }
