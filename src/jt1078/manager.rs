@@ -64,6 +64,18 @@ pub struct Jt1078Manager {
     send_socket: std::sync::OnceLock<Arc<tokio::net::UdpSocket>>,
     /// Phase 6.3: media session manager (live/playback/download)
     media_session_manager: Arc<JtMediaSessionManager>,
+    /// 已通过 0x0102 鉴权的终端（手机号）。
+    ///
+    /// 终端鉴权（JT/T 808 0x0102）是"注册之后、干活之前"的一次证明：平台在
+    /// 0x8100 里下发了鉴权码，终端把它回送上来。鉴权过的终端记在这里。
+    authenticated_terminals: Arc<Mutex<std::collections::HashSet<String>>>,
+    /// 是否**强制**终端鉴权（JT/T 808 0x0102）。
+    ///
+    /// * 宽松（默认 `false`）：终端不鉴权也能正常用 —— 大量真实终端与本仓库的
+    ///   模拟器都不会回 0x0102，强制会让它们直接不可用。
+    /// * 强制（`true`）：终端必须先通过 0x0102 鉴权，才算注册成功；鉴权码
+    ///   不匹配的终端不登记为在线。
+    auth_required: bool,
 }
 
 impl Jt1078Manager {
@@ -87,7 +99,42 @@ impl Jt1078Manager {
             tcp_senders: Arc::new(Mutex::new(std::collections::HashMap::new())),
             command_waiter: Arc::new(JtCommandWaiter::new().with_timeout(10)),
             media_session_manager: Arc::new(JtMediaSessionManager::new()),
+            authenticated_terminals: Arc::new(Mutex::new(std::collections::HashSet::new())),
+            auth_required: false,
         }
+    }
+
+    /// 设置是否强制终端鉴权。
+    pub fn set_auth_required(&mut self, required: bool) {
+        self.auth_required = required;
+    }
+
+    /// 是否强制终端鉴权。
+    pub fn auth_required(&self) -> bool {
+        self.auth_required
+    }
+
+    /// 数据库连接池（终端注册/鉴权码落库用；未绑定时为 `None`）。
+    pub fn pool(&self) -> Option<crate::db::Pool> {
+        self.pool.get().cloned()
+    }
+
+    /// 记下已通过鉴权的终端。
+    pub async fn mark_authenticated(&self, phone: &str) {
+        self.authenticated_terminals
+            .lock()
+            .await
+            .insert(phone.to_string());
+    }
+
+    /// 该终端是否已通过鉴权。
+    pub async fn is_authenticated(&self, phone: &str) -> bool {
+        self.authenticated_terminals.lock().await.contains(phone)
+    }
+
+    /// 终端会话结束（超时/注销）时清掉鉴权状态。
+    pub async fn clear_authenticated(&self, phone: &str) {
+        self.authenticated_terminals.lock().await.remove(phone);
     }
 
     /// Access the command waiter (for tests / direct response resolution).
@@ -253,6 +300,15 @@ impl Jt1078Manager {
                 }
             }
             _ => {}
+        }
+        // 强制鉴权（JT/T 808 0x0102）时，**没通过鉴权的终端不算在线**：
+        // 登记与置在线是两件事 —— 元数据照常入库，在线状态要等鉴权通过。
+        if self.auth_required && !self.authenticated_terminals.lock().await.contains(phone) {
+            tracing::warn!(
+                "JT1078 终端尚未通过鉴权（0x0102），不置为在线 phone={}",
+                phone
+            );
+            return;
         }
         if let Err(e) = crate::db::jt1078::update_terminal_status(pool, phone, true).await {
             tracing::warn!("JT1078 终端在线状态写入失败 phone={}: {}", phone, e);

@@ -41,7 +41,9 @@ pub enum ParsedMessage {
     Heartbeat,
     /// 0x0100 Terminal register
     Register(crate::jt1078::response_parser::RegisterRequest),
-    /// 0x0102 Terminal attribute report
+    /// 0x0102 Terminal authentication（正文即鉴权码）
+    Authenticate(String),
+    /// 0x0102 Terminal attribute report（厂商非标用法，平台不按此处理）
     AttributeReport(crate::jt1078::response_parser::AttributeReport),
     /// 0x0200 Location report
     LocationReport(crate::jt1078::response_parser::LocationReport),
@@ -243,10 +245,13 @@ impl Jt1078Session {
                     }
                 }
             },
-            0x0102 => match response_parser::parse_attribute_report(body) {
-                Ok(a) => ParsedMessage::AttributeReport(a),
+            // 0x0102 是**终端鉴权**（JT/T 808），正文即鉴权码。
+            // 此前这里按「终端属性上报」解析，正文结构完全不同，鉴权码因此
+            // 一直收不到，平台也从未校验过（见 OPEN_ISSUES C3）。
+            0x0102 => match response_parser::parse_auth_request(body) {
+                Ok(code) => ParsedMessage::Authenticate(code),
                 Err(e) => {
-                    tracing::warn!("parse_attribute_report failed: {}", e);
+                    tracing::warn!("parse_auth_request failed: {}", e);
                     ParsedMessage::Unknown {
                         msg_id,
                         serial,

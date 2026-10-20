@@ -342,6 +342,23 @@ pub fn build_register_response(
     build_jt808_frame(0x8100, phone, 0, &body)
 }
 
+/// 0x8102: 终端鉴权应答正文。
+///
+/// Layout: 2 bytes reply_serial | 1 byte result
+/// Result codes: 0 = 鉴权通过, 1 = 鉴权失败
+pub fn build_auth_response_body(auth_serial: u16, result: u8) -> Vec<u8> {
+    let mut body = Vec::with_capacity(3);
+    body.extend_from_slice(&auth_serial.to_be_bytes());
+    body.push(result);
+    body
+}
+
+/// 0x8102: Build complete terminal authentication response frame.
+pub fn build_auth_response(phone: &str, auth_serial: u16, result: u8) -> Vec<u8> {
+    let body = build_auth_response_body(auth_serial, result);
+    build_jt808_frame(0x8102, phone, 0, &body)
+}
+
 /// 0x8801: Take photo
 pub fn build_take_photo(
     channel_id: u8,
@@ -666,5 +683,31 @@ mod tests {
         }
         // 宽松版本对同样输入不报错（这正是需要严格版本的原因）
         let _ = encode_time_bcd("not-a-time");
+    }
+}
+
+#[cfg(test)]
+mod auth_response_tests {
+    use super::*;
+
+    /// 0x8102 正文：应答流水号(2) + 结果(1)。
+    #[test]
+    fn auth_response_body_shape() {
+        let body = build_auth_response_body(0x1234, 0);
+        assert_eq!(body.len(), 3);
+        assert_eq!(u16::from_be_bytes([body[0], body[1]]), 0x1234);
+        assert_eq!(body[2], 0);
+
+        let failed = build_auth_response_body(0x1234, 1);
+        assert_eq!(failed[2], 1);
+    }
+
+    /// 0x8102 帧的 msg_id 必须是 0x8102。
+    #[test]
+    fn auth_response_frame_uses_8102() {
+        let frame = build_auth_response("13812345678", 7, 0);
+        let (_, parsed) =
+            crate::jt1078::frame::parse_jt808_frame(&frame).expect("frame should parse");
+        assert_eq!(parsed.msg_id, 0x8102);
     }
 }

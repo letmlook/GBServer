@@ -41,6 +41,14 @@ pub struct Jt1078Config {
     pub tcp_port: Option<u16>,
     /// UDP listen port for JT1078 (default 60000)
     pub udp_port: Option<u16>,
+    /// 是否强制终端鉴权（JT/T 808 0x0102）。
+    ///
+    /// * `false`（默认，宽松）：终端不鉴权也能用 —— 大量真实终端与本仓库的模拟器
+    ///   都不会回 0x0102。
+    /// * `true`（强制）：终端必须先通过 0x0102 鉴权才算注册成功；鉴权码不匹配的
+    ///   终端不登记为在线。
+    #[serde(default)]
+    pub auth_required: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

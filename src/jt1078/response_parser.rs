@@ -131,7 +131,36 @@ pub fn parse_location_report(body: &[u8]) -> Result<LocationReport, String> {
     })
 }
 
+/// 0x0102 终端鉴权：正文就是**鉴权码**（字节串，末尾可能补 NUL 填充）。
+///
+/// JT/T 808 里 0x0102 是「终端鉴权」，正文为鉴权码本身。此前本平台把它当成
+/// 「终端属性上报」解析（字段是终端类型/厂商/型号/ICCID/版本）—— 报文结构
+/// 与鉴权完全不同，两者混用会让平台既收不到鉴权码，又解析出一堆无意义的字段。
+/// 仓库自己的模拟器注释也写明「0x9101 = 平台下发的实时音视频传输请求
+/// （此前写 0x0102，那是终端鉴权）」。
+///
+/// 鉴权码是平台在 0x8100（终端注册应答）里下发给终端的，终端随后用 0x0102
+/// 原样回送，平台据此校验。
+pub fn parse_auth_request(body: &[u8]) -> Result<String, String> {
+    if body.is_empty() {
+        return Err("auth body is empty".to_string());
+    }
+    // 去掉尾部的 NUL 填充（平台下发的鉴权码按固定长度补齐）。
+    let mut end = body.len();
+    while end > 0 && body[end - 1] == 0 {
+        end -= 1;
+    }
+    if end == 0 {
+        return Err("auth code is empty".to_string());
+    }
+    Ok(String::from_utf8_lossy(&body[..end]).trim().to_string())
+}
+
 /// Terminal attribute report 0x0102
+///
+/// 保留此解析器：部分厂商在 0x0102 里塞属性字段（非标用法）。平台**不再**
+/// 把 0x0102 当属性上报处理（见 [`parse_auth_request`]），但解析能力保留，
+/// 以便将来确认为厂商扩展时直接复用。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AttributeReport {
     pub terminal_type: u16,
@@ -779,5 +808,37 @@ mod media_search_tests {
         assert!(parse_media_search_response(&[0]).is_err());
         // 只有总数目、没有条目 → 合法但空
         assert_eq!(parse_media_search_response(&[0, 0]).unwrap().len(), 0);
+    }
+}
+
+#[cfg(test)]
+mod auth_request_tests {
+    use super::*;
+
+    /// 0x0102 的正文就是鉴权码；平台下发时按固定长度补了 NUL，解析要能去掉。
+    #[test]
+    fn parse_auth_request_strips_trailing_nul_padding() {
+        let mut body = b"AUTH-1234".to_vec();
+        body.extend_from_slice(&[0u8; 60]);
+        assert_eq!(parse_auth_request(&body).unwrap(), "AUTH-1234");
+    }
+
+    /// 不补 NUL 的短码也要能解析。
+    #[test]
+    fn parse_auth_request_accepts_plain_code() {
+        assert_eq!(parse_auth_request(b"MOCK-AUTH").unwrap(), "MOCK-AUTH");
+    }
+
+    /// 全 NUL / 空正文都不是合法的鉴权码。
+    #[test]
+    fn parse_auth_request_rejects_empty_and_nul_only() {
+        assert!(parse_auth_request(&[]).is_err());
+        assert!(parse_auth_request(&[0u8; 16]).is_err());
+    }
+
+    /// 正文里的首尾空白不算鉴权码的一部分。
+    #[test]
+    fn parse_auth_request_trims_spaces() {
+        assert_eq!(parse_auth_request(b"  ABC  ").unwrap(), "ABC");
     }
 }

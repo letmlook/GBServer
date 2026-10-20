@@ -96,11 +96,40 @@ async fn feed_and_process(
         match parsed {
             ParsedMessage::Register(_reg) => {
                 manager.register_terminal(&msg.phone, addr).await;
+                // 注册应答（0x8100）里的鉴权码：优先用库里配置的，没配置就生成
+                // 一个并入库 —— 平台下发的与库里存的必须是同一个值，终端随后
+                // 用 0x0102 把它回送，平台才能校验。此前这里写死字面量
+                // "GBServer"，`gb_jt_terminal.auth_code` 因此只写不读。
+                let auth_code = resolve_auth_code(manager, &msg.phone).await;
                 replies.push((
                     msg.phone.clone(),
-                    command::build_register_response(&msg.phone, msg.serial, 0, "GBServer"),
+                    command::build_register_response(&msg.phone, msg.serial, 0, &auth_code),
                 ));
-                tracing::info!("JT1078 终端注册成功 phone={} from {}", msg.phone, addr);
+                tracing::info!(
+                    "JT1078 终端注册成功 phone={} from {} (鉴权码已下发)",
+                    msg.phone,
+                    addr
+                );
+            }
+            ParsedMessage::Authenticate(code) => {
+                // 终端鉴权（JT/T 808 0x0102 → 0x8102）。
+                let expected = resolve_auth_code(manager, &msg.phone).await;
+                let matched = !expected.is_empty() && code == expected;
+                if matched {
+                    manager.mark_authenticated(&msg.phone).await;
+                    // 强制鉴权时，终端要等这一刻才算上线（注册时还没鉴权）。
+                    manager.persist_terminal_online(&msg.phone, None).await;
+                    tracing::info!("JT1078 终端鉴权通过 phone={}", msg.phone);
+                } else {
+                    tracing::warn!(
+                        "JT1078 终端鉴权失败 phone={}（收到的鉴权码与平台下发的不一致）",
+                        msg.phone
+                    );
+                }
+                replies.push((
+                    msg.phone.clone(),
+                    command::build_auth_response(&msg.phone, msg.serial, u8::from(!matched)),
+                ));
             }
             ParsedMessage::Heartbeat => {
                 manager.register_terminal(&msg.phone, addr).await;
@@ -121,6 +150,43 @@ async fn feed_and_process(
     }
     (replies, handled)
 }
+
+/// 取终端应使用的鉴权码。
+///
+/// 优先用库里配置的（`gb_jt_terminal.auth_code`）；没有配置就**生成一个并入库**，
+/// 这样 0x8100 里下发的与库里存的永远是同一个值。没有数据库时退化为默认串
+/// （此时平台只能"宽松"工作，无法校验终端回送的鉴权码）。
+async fn resolve_auth_code(
+    manager: &std::sync::Arc<crate::jt1078::manager::Jt1078Manager>,
+    phone: &str,
+) -> String {
+    let Some(pool) = manager.pool() else {
+        return DEFAULT_AUTH_CODE.to_string();
+    };
+    match crate::db::jt1078::get_auth_code_by_phone(&pool, phone).await {
+        Ok(Some(code)) => {
+            let trimmed = code.trim().trim_end_matches('\0').trim();
+            if !trimmed.is_empty() {
+                return trimmed.to_string();
+            }
+        }
+        Ok(None) => {}
+        Err(e) => tracing::warn!("JT1078 读取终端鉴权码失败 phone={phone}: {e}"),
+    }
+    // 没有配置：生成一个并写回库里。
+    let generated = format!("{:016x}", rand::random::<u64>());
+    match crate::db::jt1078::update_auth_code(&pool, phone, &generated).await {
+        Ok(n) if n > 0 => {}
+        Ok(_) => tracing::warn!(
+            "JT1078 终端尚未入库，鉴权码未能持久化 phone={phone}（本次仍可用，但不参与校验）"
+        ),
+        Err(e) => tracing::warn!("JT1078 写入终端鉴权码失败 phone={phone}: {e}"),
+    }
+    generated
+}
+
+/// 没有数据库时的兜底鉴权码（宽松模式下不参与校验）。
+const DEFAULT_AUTH_CODE: &str = "GBServer";
 
 /// 0x8001 通用应答：<应答流水号><应答ID><结果>
 fn build_common_ack(phone: &str, serial: u16) -> Vec<u8> {
@@ -161,12 +227,25 @@ pub async fn start(
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
 
-    let manager = Arc::new(crate::jt1078::manager::Jt1078Manager::new(
+    let mut manager = crate::jt1078::manager::Jt1078Manager::new(
         timeout,
         retransmit_wait,
         retransmit_hook,
         retransmit_send_to_device,
-    ));
+    );
+    // 是否强制终端鉴权（JT/T 808 0x0102）。默认宽松 —— 大量真实终端与本仓库的
+    // 模拟器都不会回 0x0102，强制会让它们直接不可用。
+    let auth_required = cfg
+        .as_ref()
+        .and_then(|c| c.auth_required)
+        .or_else(|| {
+            std::env::var("GBSERVER__JT1078__AUTH_REQUIRED")
+                .ok()
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        })
+        .unwrap_or(false);
+    manager.set_auth_required(auth_required);
+    let manager = Arc::new(manager);
     // 注入数据库连接池：终端注册/心跳要写 gb_jt_terminal
     if let Some(pool) = server.pool() {
         manager.set_pool(pool);
@@ -325,4 +404,198 @@ pub async fn start(
     }
 
     Ok(())
+}
+
+#[cfg(all(test, feature = "sqlite"))]
+mod terminal_auth_tests {
+    use super::*;
+
+    const PHONE: &str = "13812345678";
+    const CONFIGURED_AUTH_CODE: &str = "VENDOR-SECRET-CODE";
+
+    fn manager_with_pool(pool: crate::db::Pool) -> Arc<crate::jt1078::manager::Jt1078Manager> {
+        let manager = crate::jt1078::manager::Jt1078Manager::new(
+            std::time::Duration::from_secs(30),
+            std::time::Duration::from_millis(200),
+            None,
+            false,
+        );
+        manager.set_pool(pool);
+        Arc::new(manager)
+    }
+
+    /// 构造一个 0x0100 终端注册帧（正文满足 REGISTER_MIN_LEN）。
+    fn register_frame(seq: u16) -> Vec<u8> {
+        let mut body = Vec::new();
+        body.extend_from_slice(&1u16.to_be_bytes()); // 省
+        body.extend_from_slice(&2u16.to_be_bytes()); // 市
+        body.extend_from_slice(b"TESTM"); // 厂商 5
+        body.extend_from_slice(b"MODEL-0000000000000000"); // 型号 20
+        body.extend_from_slice(b"TERM001"); // 终端编号 7
+        body.push(0); // 车牌颜色
+        body.extend_from_slice(b"\x00\x00"); // 车牌（GBK，空）
+        crate::jt1078::command::build_jt808_frame(0x0100, PHONE, seq, &body)
+    }
+
+    async fn seed_terminal(pool: &crate::db::Pool, auth_code: Option<&str>) {
+        let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        let fields = crate::db::jt1078::JtTerminalWrite {
+            terminal_id: Some("TERM001"),
+            plate_no: Some(""),
+            plate_color: Some(0),
+            maker_id: Some("TESTM"),
+            model: Some("MODEL-0000000000000000"),
+            media_server_id: None,
+            province_id: None,
+            city_id: None,
+        };
+        crate::db::jt1078::insert_terminal(pool, PHONE, &fields, &now)
+            .await
+            .unwrap();
+        if let Some(code) = auth_code {
+            crate::db::jt1078::update_auth_code(pool, PHONE, code)
+                .await
+                .unwrap();
+        }
+    }
+
+    /// 从 0x8100 注册应答里取出鉴权码。
+    fn auth_code_from_register_reply(reply: &[u8]) -> String {
+        let (_, msg) = crate::jt1078::frame::parse_jt808_frame(reply).expect("reply parses");
+        assert_eq!(msg.msg_id, 0x8100, "注册应答的 msg_id 必须是 0x8100");
+        // 正文：应答流水号(2) + 结果(1) + 鉴权码
+        assert_eq!(msg.body[2], 0, "注册结果应为 0（成功）");
+        String::from_utf8_lossy(&msg.body[3..])
+            .trim_end_matches('\0')
+            .trim()
+            .to_string()
+    }
+
+    /// C3：注册应答必须下发**库里配置的**鉴权码，而不是写死的字面量。
+    #[tokio::test]
+    async fn register_reply_carries_configured_auth_code() {
+        let pool = crate::test_support::sqlite_pool_with_schema().await;
+        seed_terminal(&pool, Some(CONFIGURED_AUTH_CODE)).await;
+        let manager = manager_with_pool(pool.clone());
+
+        let addr: std::net::SocketAddr = "127.0.0.1:60001".parse().unwrap();
+        let (replies, handled) = feed_and_process(&manager, addr, &register_frame(1)).await;
+        assert!(handled);
+        assert_eq!(replies.len(), 1, "注册必须回一条 0x8100");
+        let code = auth_code_from_register_reply(&replies[0].1);
+        assert_eq!(code, CONFIGURED_AUTH_CODE);
+    }
+
+    /// 终端没配置鉴权码时，平台生成一个**并存进库** ——
+    /// 下发的与存下的必须是同一个值，否则终端回送的 0x0102 永远校验不过。
+    #[tokio::test]
+    async fn register_generates_and_persists_auth_code_when_unconfigured() {
+        let pool = crate::test_support::sqlite_pool_with_schema().await;
+        seed_terminal(&pool, None).await;
+        let manager = manager_with_pool(pool.clone());
+
+        let addr: std::net::SocketAddr = "127.0.0.1:60002".parse().unwrap();
+        let (replies, _) = feed_and_process(&manager, addr, &register_frame(1)).await;
+        let issued = auth_code_from_register_reply(&replies[0].1);
+        assert!(!issued.is_empty(), "必须下发一个鉴权码");
+        assert_ne!(issued, "GBServer", "不应再写死默认字面量");
+
+        let stored = crate::db::jt1078::get_auth_code_by_phone(&pool, PHONE)
+            .await
+            .unwrap()
+            .expect("鉴权码必须落库");
+        assert_eq!(stored.trim_end_matches('\0'), issued);
+    }
+
+    /// C3：0x0102 是**终端鉴权**。鉴权码对得上 → 0x8102 结果 0 并记为已鉴权；
+    /// 对不上 → 0x8102 结果 1，且不记为已鉴权。
+    #[tokio::test]
+    async fn terminal_authentication_accepts_matching_code_only() {
+        let pool = crate::test_support::sqlite_pool_with_schema().await;
+        seed_terminal(&pool, Some(CONFIGURED_AUTH_CODE)).await;
+        let manager = manager_with_pool(pool.clone());
+        let addr: std::net::SocketAddr = "127.0.0.1:60003".parse().unwrap();
+
+        // 先注册，拿到平台下发的鉴权码。
+        let (replies, _) = feed_and_process(&manager, addr, &register_frame(1)).await;
+        let issued = auth_code_from_register_reply(&replies[0].1);
+
+        // 错误的鉴权码 → 失败。
+        let bad = crate::jt1078::command::build_jt808_frame(0x0102, PHONE, 2, b"WRONG-CODE");
+        let (replies, _) = feed_and_process(&manager, addr, &bad).await;
+        assert_eq!(replies.len(), 1);
+        let (_, msg) = crate::jt1078::frame::parse_jt808_frame(&replies[0].1).unwrap();
+        assert_eq!(msg.msg_id, 0x8102, "鉴权应答必须是 0x8102");
+        assert_eq!(msg.body[2], 1, "鉴权码不对时结果必须是 1（失败）");
+        assert!(!manager.is_authenticated(PHONE).await);
+
+        // 正确的鉴权码 → 通过。
+        let good = crate::jt1078::command::build_jt808_frame(0x0102, PHONE, 3, issued.as_bytes());
+        let (replies, _) = feed_and_process(&manager, addr, &good).await;
+        let (_, msg) = crate::jt1078::frame::parse_jt808_frame(&replies[0].1).unwrap();
+        assert_eq!(msg.msg_id, 0x8102);
+        assert_eq!(msg.body[2], 0, "鉴权码正确时结果必须是 0（成功）");
+        assert!(manager.is_authenticated(PHONE).await);
+    }
+
+    /// 强制鉴权档：未通过鉴权的终端**不置为在线**；通过后才置为在线。
+    #[tokio::test]
+    async fn strict_mode_keeps_unauthenticated_terminal_offline() {
+        let pool = crate::test_support::sqlite_pool_with_schema().await;
+        seed_terminal(&pool, Some(CONFIGURED_AUTH_CODE)).await;
+        let mut m = crate::jt1078::manager::Jt1078Manager::new(
+            std::time::Duration::from_secs(30),
+            std::time::Duration::from_millis(200),
+            None,
+            false,
+        );
+        m.set_pool(pool.clone());
+        m.set_auth_required(true);
+        let manager = Arc::new(m);
+        let addr: std::net::SocketAddr = "127.0.0.1:60004".parse().unwrap();
+
+        feed_and_process(&manager, addr, &register_frame(1)).await;
+        let status: Option<bool> =
+            sqlx::query_scalar("SELECT status FROM gb_jt_terminal WHERE phone_number = ?")
+                .bind(PHONE)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(status, Some(false), "未鉴权时不应置为在线");
+
+        // 鉴权通过后才置为在线。
+        let good = crate::jt1078::command::build_jt808_frame(
+            0x0102,
+            PHONE,
+            2,
+            CONFIGURED_AUTH_CODE.as_bytes(),
+        );
+        feed_and_process(&manager, addr, &good).await;
+        let status: Option<bool> =
+            sqlx::query_scalar("SELECT status FROM gb_jt_terminal WHERE phone_number = ?")
+                .bind(PHONE)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(status, Some(true), "鉴权通过后应置为在线");
+    }
+
+    /// 宽松档（默认）：终端不鉴权也能注册成功并在线 ——
+    /// 真实终端与本仓库的模拟器都不会回 0x0102。
+    #[tokio::test]
+    async fn lenient_mode_registers_without_authentication() {
+        let pool = crate::test_support::sqlite_pool_with_schema().await;
+        seed_terminal(&pool, Some(CONFIGURED_AUTH_CODE)).await;
+        let manager = manager_with_pool(pool.clone());
+        let addr: std::net::SocketAddr = "127.0.0.1:60005".parse().unwrap();
+
+        feed_and_process(&manager, addr, &register_frame(1)).await;
+        let status: Option<bool> =
+            sqlx::query_scalar("SELECT status FROM gb_jt_terminal WHERE phone_number = ?")
+                .bind(PHONE)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(status, Some(true), "宽松档下不鉴权也应在线");
+    }
 }

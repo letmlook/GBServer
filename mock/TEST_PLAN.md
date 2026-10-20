@@ -48,7 +48,7 @@
 | 真实依赖 | 协议 | mock 实现 | 替代能力 |
 |----------|------|-----------|----------|
 | GB28181 IPC / NVR | SIP UDP | `tools/sip-device/sip_device_mock.py` | REGISTER、200 OK、401 鉴权失败、心跳、Catalog 多包、DeviceInfo、Invite 200 OK + SDP、PTZ Info 响应 |
-| JT1078 部标终端 | UDP/TCP | `tools/jt1078-terminal/jt1078_terminal_mock.py` | 0x0100 注册、0x0002 心跳、0x0102 应答占位、0x0801 录像列表、0x8300 文本响应、0x1006-0x100B 报警、0x0200 位置上报、0x0005 重传 |
+| JT1078 部标终端 | UDP/TCP | `tools/jt1078-terminal/jt1078_terminal_mock.py` | 0x0100 注册、0x0002 心跳、0x9101 实时音视频占位、0x0801 录像列表、0x8300 文本响应、0x1006-0x100B 报警、0x0200 位置上报、0x0005 重传 |
 | 上级 GB28181 平台 | SIP REGISTER | `tools/cascade-platform/cascade_mock.py` | 接收 GBServer 作为下级的 REGISTER + 心跳 + 目录查询 |
 | 业务 Webhook 接收方 | HTTP POST | `tools/webhook-receiver/webhook_receiver.py` | 接收 JT1078 重传 / 云录像 / 业务回调 |
 | **ZLMediaKit** | HTTP API | **真实 ZLM** | `getServerConfig` / `addStreamProxy` / `openRtpServer` / 74 个 API |
@@ -171,7 +171,7 @@ python3 sip_device_mock.py \
 | 0x0101 | 注册应答 | ✅ |
 | 0x0002 | 心跳 | ✅ |
 | 0x0001 | 通用应答 | ✅ |
-| 0x0102 | 实时音视频 | ⚠️ 仅应答占位 |
+| 0x0102 | 终端鉴权 | 平台侧已实现，模拟器不发 |
 | 0x0801 | 录像列表查询应答 | ✅ |
 | 0x8300 | 文本信息下发 | ✅ 应答 |
 | 0x1006-0x100B | 报警 | ✅ 上报 |
