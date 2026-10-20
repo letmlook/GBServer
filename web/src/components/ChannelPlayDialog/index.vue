@@ -8,7 +8,6 @@
     destroy-on-close
     :close-on-click-modal="false"
     @open="onOpen"
-    @close="onClose"
   >
     <div v-loading="loading" class="play-dialog">
       <!-- 第一行：左视频 + 右云台 -->
@@ -451,6 +450,9 @@ const playerStatus = ref<'idle' | 'loading' | 'playing' | 'error'>('idle')
 const nativeRef = ref<HTMLVideoElement | null>(null)
 const flvRef = ref<HTMLVideoElement | null>(null)
 const playData = ref<PlayStartResult | null>(null)
+let stopRequest: Promise<void> | null = null
+let closeStopWarningShown = false
+let closeCleanupRequested = false
 
 /**
  * 协议切换：
@@ -612,9 +614,19 @@ async function onOpen() {
 }
 
 async function onClose() {
+  if (closeCleanupRequested) return
+  closeCleanupRequested = true
   // 关对话框时一定要先停云台，避免用户按住后关闭弹窗让设备一直转动
   stopMove()
-  await stopChannel()
+  try {
+    await stopChannel()
+  } catch {
+    playerStatus.value = 'error'
+    if (!closeStopWarningShown) {
+      closeStopWarningShown = true
+      ElMessage.warning('停止命令未确认，设备可能仍在推流')
+    }
+  }
 }
 
 watch(
@@ -622,18 +634,19 @@ watch(
   (v) => {
     if (!v) {
       stopMove()
-      stopChannel()
+      void onClose()
     }
   }
 )
 
 onBeforeUnmount(() => {
-  stopMove()
-  stopChannel()
+  if (!closeCleanupRequested) void onClose()
 })
 
 async function playChannel() {
   if (!props.channel) return
+  closeStopWarningShown = false
+  closeCleanupRequested = false
   const { deviceId, channelId } = props.channel
   playerStatus.value = 'loading'
   loading.value = true
@@ -641,6 +654,17 @@ async function playChannel() {
     const res = await startPlay(deviceId, channelId)
     const data = res.data as PlayStartResult
     if (!data) throw new Error(res.msg || '拉起实时流失败')
+    // 起流请求还没回来，弹窗就已经被关掉了：这时后端那条 SIP 会话和 ZLM
+    // 收流端口没人接管，必须立刻停掉，否则流会一直挂着。
+    if (closeCleanupRequested) {
+      await stopPlay(deviceId, channelId).catch(() => {
+        if (!closeStopWarningShown) {
+          closeStopWarningShown = true
+          ElMessage.warning('停止命令未确认，设备可能仍在推流')
+        }
+      })
+      return
+    }
     playData.value = data
     await nextTick()
     // 默认按"低延迟优先"：WebRTC → HLS → HTTP-FLV → RTSP/RTMP 链式兜底
@@ -863,10 +887,17 @@ function onError() {
 }
 
 async function onStop() {
-  await stopChannel()
-  playerStatus.value = 'idle'
-  playData.value = null
-  ElMessage.success('已停止')
+  if (!playData.value) {
+    ElMessage.info('当前没有活动点播')
+    return
+  }
+  try {
+    await stopChannel()
+    ElMessage.success('已停止')
+  } catch {
+    // request 拦截器已展示具体失败原因；保留会话以供用户重试。
+    playerStatus.value = 'error'
+  }
 }
 
 async function stopChannel() {
@@ -878,9 +909,19 @@ async function stopChannel() {
     v.removeAttribute('src')
     v.load()
   }
-  if (props.channel) {
-    await stopPlay(props.channel.deviceId, props.channel.channelId).catch(() => {})
+  if (!props.channel || !playData.value) return
+  if (!stopRequest) {
+    const { deviceId, channelId } = props.channel
+    stopRequest = stopPlay(deviceId, channelId)
+      .then(() => {
+        playerStatus.value = 'idle'
+        playData.value = null
+        currentProtocol.value = ''
+        closeStopWarningShown = false
+      })
+      .finally(() => { stopRequest = null })
   }
+  await stopRequest
 }
 
 async function sendPtz(cmd: string) {
