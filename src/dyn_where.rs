@@ -68,6 +68,36 @@ fn rewrite_placeholders(sql: &str, postgres: bool) -> std::borrow::Cow<'_, str> 
     std::borrow::Cow::Owned(out)
 }
 
+/// 把一个整数列渲染成**64 位**表达式，让 Rust 侧的 `i64` 在三种方言下都能解出来。
+///
+/// 背景：三方言的**整数列宽度不一样** ——
+/// postgres 的 `serial` 主键是 **INT4**，而 mysql 的 `bigint auto_increment`
+/// 与 sqlite 的 `INTEGER` 都是 64 位。sqlx-postgres 对类型是**严格**的：用 `i64`
+/// 去解 INT4 列直接报
+/// `mismatched types; Rust type i64 (as SQL type INT8) is not compatible with SQL type INT4`；
+/// sqlx-mysql / sqlx-sqlite 宽松，同一个洞**只在 postgres 上炸** ——
+/// sqlite 的单测与 mysql 的冒烟全绿，问题一路留到 postgres 才暴露。
+///
+/// 与占位符（`?` vs `$1`）、布尔列（`bool` vs `tinyint(1)`）是同一类问题，
+/// 处理方式也一样：**在 SQL 侧统一**，不要指望解码端兼容。
+///
+/// postgres 侧用 `::bigint` 显式转换；mysql/sqlite 本来就是 64 位，原样返回。
+///
+/// 2026-10-20 在 postgres 上实测命中 3 处：录像计划通道列表、报警列表/详情，
+/// 以及录像计划调度器 —— 其中调度器那处会让**云录像计划每一轮都失败**。
+pub fn bigint_col(col: &str) -> String {
+    bigint_col_for(col, cfg!(feature = "postgres"))
+}
+
+/// `bigint_col` 的可测版本：`postgres` 显式传入。
+fn bigint_col_for(col: &str, postgres: bool) -> String {
+    if postgres {
+        format!("{col}::bigint")
+    } else {
+        col.to_string()
+    }
+}
+
 /// 动态 WHERE 构造器（录像计划通道列表用）。
 ///
 /// 统一用 `?` 写条件，postgres 下按顺序把第 k 个 `?` 改写成 `$k`——同一份 SQL
@@ -174,5 +204,14 @@ mod tests {
             w.sql_for("SELECT * FROM t", false),
             "SELECT * FROM t WHERE a = ? AND b = ?"
         );
+    }
+
+    /// `bigint_col` 的可测版本：postgres 要加 `::bigint`，其它方言原样返回。
+    #[test]
+    fn bigint_col_casts_only_on_postgres() {
+        assert_eq!(bigint_col_for("c.id", true), "c.id::bigint");
+        assert_eq!(bigint_col_for("c.id", false), "c.id");
+        // 列名带别名时也要只作用于列本身
+        assert_eq!(bigint_col_for("handled", true), "handled::bigint");
     }
 }

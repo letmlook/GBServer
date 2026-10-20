@@ -412,8 +412,12 @@ pub struct ChannelUpdateBody {
     pub channel_id: Option<String>,
     #[serde(alias = "civilCode")]
     pub civil_code: Option<String>,
+    /// 父通道标识（国标父通道编号，**字符串**）。
+    ///
+    /// `gb_device_channel.parent_id` 是 VARCHAR 列；早先声明成 `Option<i64>`，
+    /// postgres 上 `COALESCE(bigint, varchar)` 会直接让整个更新 500。
     #[serde(alias = "parentId")]
-    pub parent_id: Option<i64>,
+    pub parent_id: Option<String>,
     #[serde(alias = "businessGroup")]
     pub business_group: Option<String>,
     #[serde(alias = "ptzType")]
@@ -460,7 +464,7 @@ pub async fn channel_update(
         name: body.name.as_deref(),
         data_device_id: None,
         civil_code: body.civil_code.as_deref(),
-        parent_id: body.parent_id,
+        parent_id: body.parent_id.as_deref(),
         business_group: body.business_group.as_deref(),
         ptz_type: body.ptz_type,
         custom_name: body.custom_name.as_deref(),
@@ -520,8 +524,12 @@ pub struct ChannelAddBody {
     pub channel_id: Option<String>,
     #[serde(alias = "civilCode")]
     pub civil_code: Option<String>,
+    /// 父通道标识（国标父通道编号，**字符串**）。
+    ///
+    /// `gb_device_channel.parent_id` 是 VARCHAR 列；早先声明成 `Option<i64>`，
+    /// postgres 上 `COALESCE(bigint, varchar)` 会直接让整个更新 500。
     #[serde(alias = "parentId")]
-    pub parent_id: Option<i64>,
+    pub parent_id: Option<String>,
     #[serde(alias = "businessGroup")]
     pub business_group: Option<String>,
     #[serde(alias = "ptzType")]
@@ -594,7 +602,7 @@ pub async fn channel_add(
         name: Some(name),
         data_device_id,
         civil_code: body.civil_code.as_deref(),
-        parent_id: body.parent_id,
+        parent_id: body.parent_id.as_deref(),
         business_group: body.business_group.as_deref(),
         ptz_type: body.ptz_type,
         custom_name: body.custom_name.as_deref(),

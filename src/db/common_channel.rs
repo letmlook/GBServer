@@ -47,7 +47,13 @@ pub struct ChannelWriteFields<'a> {
     pub data_device_id: Option<i32>,
     // 可选/可更新
     pub civil_code: Option<&'a str>,
-    pub parent_id: Option<i64>,
+    /// 父通道标识。
+    ///
+    /// `gb_device_channel.parent_id` 是 **VARCHAR**（国标父通道编号是字符串），
+    /// 不是整型 —— 早先这里声明成 `Option<i64>`，于是 postgres 上
+    /// `COALESCE(bigint, character varying)` 直接报错，**通道编辑在 postgres
+    /// 上整个 500**（sqlite/mysql 宽松，能存下但类型也不对）。
+    pub parent_id: Option<&'a str>,
     pub business_group: Option<&'a str>,
     pub ptz_type: Option<i32>,
     pub custom_name: Option<&'a str>,

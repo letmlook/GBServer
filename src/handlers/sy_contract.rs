@@ -160,9 +160,11 @@ pub struct SyChannelUpdateQuery {
     /// 行政区划编码。
     #[serde(alias = "civilCode")]
     pub civil_code: Option<String>,
-    /// 父通道主键。
+    /// 父通道标识（国标父通道编号，**字符串**）。
+    ///
+    /// `gb_device_channel.parent_id` 是 VARCHAR 列，不是整型。
     #[serde(alias = "parentId")]
-    pub parent_id: Option<i64>,
+    pub parent_id: Option<String>,
     /// 业务分组。
     #[serde(alias = "businessGroup")]
     pub business_group: Option<String>,

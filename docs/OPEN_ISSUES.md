@@ -51,6 +51,7 @@
 | B13 | 性能 | 控制台首屏"等最慢接口"才统一赋值 + `system/info` 被 3 个组件同时拉 → 卡片空等约 2s | ✅ 已修并复验 |
 | B14 | 缺陷 | `DeviceControl` / `DeviceConfig` 应答按设备、SN、类型和目标关联；传输模式、设防/撤防、远程录像、配置下发、重启、预置位、直接 PTZ 与批量 PTZ 停止/重启可区分发送和执行；**远程启动、报警复位、强制关键帧、看守位、拉框、配置下发等其余控制入口已补齐 `sipSent`/`deviceResult` 与 `waitResult`**；前端控制与回放控制兼容入口明确只声明已发送 | 🟡 真机未验 |
 | B15 | 缺陷 | 设备保活/注册统计查了**库里不存在的表**（真实表名 `gb_device`）→ 两个统计接口恒返回 0 | ✅ 已修 |
+| B16 | 缺陷 | 跨方言类型/宽度不匹配 —— postgres 主键是 INT4（解成 i64 报错）、`parent_id` 是 VARCHAR 却绑成 i64 → 云录像计划调度器、报警列表/详情、录像计划通道列表、**通道编辑**在 postgres 上整个不可用 | ✅ 已修并复验 |
 | B9 | 配置 | `rtc.externIP` 平台未下发 → 容器部署下浏览器 ICE 永远连不上 | ✅ 已修 |
 | A4 | 前端 | 直播页 WebRTC 播放入口（`postWebrtcPlay` 原先无调用方） | ✅ 已接 (2026-09-19) |
 | C1 | 代码债 | `handle_packet` 23 个参数 | 🔵 |
@@ -617,6 +618,58 @@ SIP Mock 已验证暂停 INFO 属于当前回放对话；真机执行仍待验�
 **剩余**：真机传输模式或控制命令回执。Mock 之外的设备结果证据仍缺，
 已覆盖的命令入口在真机上尚未逐一复验；真机若回 `Result != OK`，
 需有可定位日志。
+
+### B16 ✅ 跨方言类型/宽度不匹配：postgres 上多个功能整个不可用（2026-10-20 已修）
+
+这一类的根因是**三种方言的类型宽度/类型本身不一样**，而 sqlx-postgres 对类型是
+**严格**校验的（sqlx-mysql / sqlx-sqlite 宽松），于是同一个洞**只在 postgres 上炸** ——
+sqlite 的单测与 mysql 的冒烟全绿，问题一路留到 postgres 才暴露。
+
+2026-10-20 用**真实 PostgreSQL** 跑后端 + 全量 Playwright 时抓到两类：
+
+**(1) INT4 主键解成 `i64`**
+`postgres` 的 `serial` 主键是 **INT4**，而 mysql 的 `bigint auto_increment` 与
+sqlite 的 `INTEGER` 都是 64 位。Rust 侧按 `i64` 解 INT4 列 → sqlx 直接报
+`decoding column "id": mismatched types; Rust type i64 (as SQL type INT8) is not
+compatible with SQL type INT4`。命中 3 处：
+
+| 位置 | 影响 |
+|---|---|
+| `src/scheduler/record_plan.rs` 录像计划调度器 | **云录像计划每一轮都失败** —— 计划拉不起流、不落盘 |
+| `src/handlers/stub.rs` 录像计划通道列表 | 整个接口 500 |
+| `src/handlers/alarm.rs` 报警列表 / 详情 | 两个接口 500 |
+
+**(2) VARCHAR 列绑成 `i64`**
+`gb_device_channel.parent_id` 是 **VARCHAR**（国标父通道编号是字符串），但
+`ChannelWriteFields.parent_id` 声明成 `Option<i64>` → postgres 报
+`COALESCE types bigint and character varying cannot be matched`。
+注意这是**解析期**就失败：**哪怕请求根本没传 `parentId`**（绑的是 NULL，类型照样是
+int8），**通道编辑在 postgres 上也是整个 500**。
+
+**修复**：
+
+* 新增 `dyn_where::bigint_col`：postgres 侧把整数列显式转成 `::bigint`，
+  其它方言原样返回。与既有的 `dialect_sql`（占位符）、`BindValue::Bool`（布尔列）
+  是同一类问题的同一种处理方式 —— **在 SQL 侧统一**，不要指望解码端兼容。
+* `parent_id` 改回**字符串**：`ChannelWriteFields.parent_id`、`ChannelUpdateBody`、
+  `ChannelAddBody`、`SyChannelUpdateQuery` 全部改成 `Option<String>`。
+  这与列类型（VARCHAR）、前端本来就发的东西（`parentId?: string`）以及代码里
+  既有的 `parent_id = '0'` 查询一致。
+
+**验证**（真实 PostgreSQL 16 + MySQL 8 容器）：
+
+* `scripts/dialect_smoke.py`（仓库自带的方言运行期冒烟）**两个方言都只剩 2 项
+  "预期失败"**（CSV 导出不是 JSON、proxy/start 指向不存在的 RTSP 源）——
+  修前 postgres 上报警/录像计划通道列表/计划相关多条是失败项。
+* 全量 Playwright 在 postgres 上从 **72/79 → 79/79**（修复前 3 个失败里，2 个是
+  上述类型错误，第 3 个是通道编辑 500）。
+* 逐个打**全部 270 个安全 GET 端点**，修复后 **postgres 上再无任何
+  `mismatched types` / `operator does not exist` / 语法错误**。
+* 通道编辑实测：只改名称 → 名称已改，`manufacturer`/`channelType` 未被清空。
+* 全量 Rust 单测 778 通过 / 0 失败；`cargo fmt --check` 通过。
+
+**教训**：`cargo test`（默认 sqlite）**永远发现不了这一类问题**。方言冒烟必须
+对真实 pg/mysql 实例跑 —— 这正是 `scripts/dialect_smoke.py` 存在的理由。
 
 ### B15 ✅ 设备统计查了不存在的表（已修，2026-09-19）
 

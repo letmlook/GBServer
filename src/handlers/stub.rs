@@ -3438,14 +3438,19 @@ pub async fn record_plan_channel_list(
         }
     }
 
-    const BASE_COLS: &str = "SELECT c.id, \
+    // `c.id` 在 postgres 是 INT4（`serial`），Rust 侧是 i64 —— 显式转成 bigint，
+    // 否则这个列表在 postgres 上整个 500（"decoding column id: mismatched types"）。
+    let base_cols = format!(
+        "SELECT {} AS id, \
         coalesce(c.gb_device_id, c.device_id) AS gb_device_id, \
         coalesce(c.gb_name, c.name) AS gb_name, \
         coalesce(c.gb_manufacturer, c.manufacturer) AS gb_manufacturer, \
         coalesce(c.gb_model, c.model) AS gb_model, \
         coalesce(c.gb_status, c.status) AS gb_status, \
         c.data_type, c.record_plan_id \
-        FROM gb_device_channel c";
+        FROM gb_device_channel c",
+        crate::dyn_where::bigint_col("c.id")
+    );
     const BASE_COUNT: &str = "SELECT COUNT(*) FROM gb_device_channel c";
 
     let limit_ph = if cfg!(feature = "postgres") {
@@ -3459,7 +3464,7 @@ pub async fn record_plan_channel_list(
     };
     let sql_rows = format!(
         "{}{}",
-        w.sql(BASE_COLS),
+        w.sql(&base_cols),
         format!(" ORDER BY c.id DESC{limit_ph}")
     );
     let mut q_rows = sqlx::query_as::<_, RecordPlanChannelRow>(&sql_rows);

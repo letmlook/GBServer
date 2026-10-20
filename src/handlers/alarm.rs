@@ -116,11 +116,15 @@ pub async fn alarm_list(
 
     let w = alarm_filter(&q);
 
-    const COLS: &str =
+    // `handled` 在 postgres 是 INT4、mysql 是 tinyint(1)，Rust 侧统一按 i64 解 ——
+    // postgres 严格校验类型，必须在 SQL 侧转成 bigint，否则报警列表整个 500。
+    let cols = format!(
         "SELECT id, device_id, channel_id, alarm_priority, alarm_method, alarm_type, \
          alarm_time, alarm_description, longitude, latitude, create_time, \
-         handled, handle_user, handle_time, handle_result \
-         FROM gb_device_alarm";
+         {} AS handled, handle_user, handle_time, handle_result \
+         FROM gb_device_alarm",
+        crate::dyn_where::bigint_col("handled")
+    );
     const COUNT_BASE: &str = "SELECT COUNT(*) FROM gb_device_alarm";
 
     let limit_ph = if cfg!(feature = "postgres") {
@@ -132,7 +136,7 @@ pub async fn alarm_list(
     } else {
         " LIMIT ? OFFSET ?".to_string()
     };
-    let sql_rows = format!("{}{} ORDER BY create_time DESC{limit_ph}", w.sql(COLS), "");
+    let sql_rows = format!("{}{} ORDER BY create_time DESC{limit_ph}", w.sql(&cols), "");
     let mut query = sqlx::query_as::<_, AlarmRow>(&sql_rows);
     for b in &w.binds {
         query = match b {
@@ -265,12 +269,13 @@ pub async fn alarm_detail(
     axum::extract::Path(id): axum::extract::Path<i64>,
 ) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     #[cfg(feature = "postgres")]
-    let row: Option<AlarmRow> = sqlx::query_as(
+    let row: Option<AlarmRow> = sqlx::query_as(&format!(
         "SELECT id, device_id, channel_id, alarm_priority, \
         alarm_method, alarm_type, alarm_time, alarm_description, longitude, latitude, \
-        create_time, handled, handle_user, handle_time, handle_result \
+        create_time, {} AS handled, handle_user, handle_time, handle_result \
         FROM gb_device_alarm WHERE id = $1",
-    )
+        crate::dyn_where::bigint_col("handled"),
+    ))
     .bind(id)
     .fetch_optional(&state.pool)
     .await
