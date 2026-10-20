@@ -51,7 +51,7 @@
 | B13 | 性能 | 控制台首屏"等最慢接口"才统一赋值 + `system/info` 被 3 个组件同时拉 → 卡片空等约 2s | ✅ 已修并复验 |
 | B14 | 缺陷 | `DeviceControl` / `DeviceConfig` 应答按设备、SN、类型和目标关联；传输模式、设防/撤防、远程录像、配置下发、重启、预置位、直接 PTZ 与批量 PTZ 停止/重启可区分发送和执行；**远程启动、报警复位、强制关键帧、看守位、拉框、配置下发等其余控制入口已补齐 `sipSent`/`deviceResult` 与 `waitResult`**；前端控制与回放控制兼容入口明确只声明已发送 | 🟡 真机未验 |
 | B15 | 缺陷 | 设备保活/注册统计查了**库里不存在的表**（真实表名 `gb_device`）→ 两个统计接口恒返回 0 | ✅ 已修 |
-| B16 | 缺陷 | 跨方言类型/宽度不匹配 —— postgres 主键是 INT4（解成 i64 报错）、`parent_id` 是 VARCHAR 却绑成 i64 → 云录像计划调度器、报警列表/详情、录像计划通道列表、**通道编辑**在 postgres 上整个不可用 | ✅ 已修并复验 |
+| B16 | 缺陷 | 跨方言类型/宽度不匹配 —— postgres 主键是 INT4（解成 i64 报错）、`parent_id` 是 VARCHAR 却绑成 i64、`serial` 序列没跟上种子行、`SELECT 1` 字面量是 INT4、审计表少 `elapsed_ms` 列 → 云录像计划调度器、报警列表/详情、录像计划通道列表、**通道编辑**、**新建用户/角色**、审计耗时在 postgres 上整个不可用 | ✅ 已修并复验 |
 | B9 | 配置 | `rtc.externIP` 平台未下发 → 容器部署下浏览器 ICE 永远连不上 | ✅ 已修 |
 | A4 | 前端 | 直播页 WebRTC 播放入口（`postWebrtcPlay` 原先无调用方） | ✅ 已接 (2026-09-19) |
 | C1 | 代码债 | `handle_packet` 23 个参数 | 🔵 |
@@ -646,6 +646,25 @@ compatible with SQL type INT4`。命中 3 处：
 注意这是**解析期**就失败：**哪怕请求根本没传 `parentId`**（绑的是 NULL，类型照样是
 int8），**通道编辑在 postgres 上也是整个 500**。
 
+**(3) `serial` 序列没跟上表内容**
+初始化 SQL 用**显式 id=1** 播了 admin 用户与 admin 角色，而 `serial` 序列停在
+初始值且 `is_called=false` —— **下一次 `nextval` 仍然返回 1**，于是**第一次**往
+这两张表插数据就撞主键：`duplicate key value violates unique constraint
+"gb_user_pkey"`。sqlite 没有这个问题（`INTEGER PRIMARY KEY AUTOINCREMENT`
+自己算下一个 id），mysql 也没有（`AUTO_INCREMENT` 会扫表），**只有 postgres 会炸**。
+症状是"新建用户/角色报重复数据"，真因是序列没同步。
+
+**(4) `SELECT 1` 的字面量类型**
+postgres 里 `SELECT 1` 的字面量是 **INT4**，按 `i64` 解 → `decoding column 0:
+mismatched types`。`db::user::role_exists` 就是这么写的，于是**新建用户**在
+postgres 上必 500。
+
+**(5) 审计日志表少一列**
+`db::audit_log::ensure_table` 只有 sqlite 分支建了 `elapsed_ms`，postgres 与
+mysql 没有；而 `insert_with_metrics` 写的是带 `elapsed_ms` 的扩展列 ——
+每个被审计的请求都先失败一次再回退（postgres 日志里**每请求一条 ERROR**），
+而且请求耗时根本没落库。审计轨迹在主生产库上一直是缺的。
+
 **修复**：
 
 * 新增 `dyn_where::bigint_col`：postgres 侧把整数列显式转成 `::bigint`，
@@ -655,12 +674,31 @@ int8），**通道编辑在 postgres 上也是整个 500**。
   `ChannelAddBody`、`SyChannelUpdateQuery` 全部改成 `Option<String>`。
   这与列类型（VARCHAR）、前端本来就发的东西（`parentId?: string`）以及代码里
   既有的 `parent_id = '0'` 查询一致。
+* 新增 `db::seq_sync::sync_serial_sequences`：**每次启动**把所有 `serial` 主键的
+  序列推进到 `MAX(id)`。放在启动时而不是建表时，是因为**已装的库同样中招** ——
+  序列一旦停在 1，除非有人手动 `setval`，否则永远是坏的。
+  找序列用 `pg_depend` 的自动依赖（`deptype='a'`），**不要**用
+  `pg_get_serial_sequence(table,'id')` —— 它在列不存在时是**抛错**而不是返回 NULL，
+  对 `pg_class` 里的系统视图逐行调用会直接报
+  `column "id" of relation "pg_statistic" does not exist`。
+* `db::user::role_exists` 改用 `SELECT EXISTS(...)`（与 `db::device::device_exists`
+  同一套按方言分支的写法）：postgres 返回 `bool`、mysql/sqlite 返回整数。
+* `db::audit_log::ensure_table` 的 postgres / mysql 分支补上 `elapsed_ms BIGINT`，
+  并对**已存在的表**补 `ALTER TABLE ... ADD COLUMN`（postgres 用 `IF NOT EXISTS`，
+  mysql 忽略重复列错误）—— `CREATE TABLE IF NOT EXISTS` 不会给老表补列。
 
 **验证**（真实 PostgreSQL 16 + MySQL 8 容器）：
 
 * `scripts/dialect_smoke.py`（仓库自带的方言运行期冒烟）**两个方言都只剩 2 项
   "预期失败"**（CSV 导出不是 JSON、proxy/start 指向不存在的 RTSP 源）——
   修前 postgres 上报警/录像计划通道列表/计划相关多条是失败项。
+* **冒烟脚本已补上 `role/add` 与 `user/add`**：这两条只有管理员能调的写路径
+  之前没被覆盖，正是 (3)(4) 两个坑长期没人看见的原因。
+* 复现 (3)：把 `gb_user_id_seq` / `gb_user_role_id_seq` 复位成
+  `setval(seq, 1, false)`（模拟全新安装），重启后端 → 序列自动被推到
+  `MAX(id)`，随后 `role/add` 与 `user/add` 都成功建出 id=2 的新行。
+* 复现 (5)：修复后 postgres 日志不再新增 `column "elapsed_ms" ... does not exist`
+  的 ERROR，审计行的 `elapsed_ms` 也有值了。
 * 全量 Playwright 在 postgres 上从 **72/79 → 79/79**（修复前 3 个失败里，2 个是
   上述类型错误，第 3 个是通道编辑 500）。
 * 逐个打**全部 270 个安全 GET 端点**，修复后 **postgres 上再无任何

@@ -515,23 +515,36 @@ pub async fn update_user(
 }
 
 pub async fn role_exists(pool: &Pool, role_id: i32) -> sqlx::Result<bool> {
+    // 用 `EXISTS` 而不是 `SELECT 1`：postgres 里 `SELECT 1` 的字面量类型是
+    // **INT4**，按 `i64` 解会报 "decoding column 0: mismatched types"，
+    // 而 `EXISTS` 在 postgres 返回 `bool`、mysql/sqlite 返回整数 —— 与
+    // `db::device::device_exists` 用的是同一套按方言分支的写法。
     #[cfg(feature = "mysql")]
-    let row: (i64,) = sqlx::query_as("SELECT 1 FROM gb_user_role WHERE id = ?")
-        .bind(role_id)
-        .fetch_optional(pool)
-        .await?
-        .unwrap_or((0,));
+    {
+        let row: (i64,) = sqlx::query_as("SELECT EXISTS(SELECT 1 FROM gb_user_role WHERE id = ?)")
+            .bind(role_id)
+            .fetch_optional(pool)
+            .await?
+            .unwrap_or((0,));
+        Ok(row.0 > 0)
+    }
     #[cfg(feature = "postgres")]
-    let row: (i64,) = sqlx::query_as("SELECT 1 FROM gb_user_role WHERE id = $1")
-        .bind(role_id)
-        .fetch_optional(pool)
-        .await?
-        .unwrap_or((0,));
+    {
+        let row: (bool,) =
+            sqlx::query_as("SELECT EXISTS(SELECT 1 FROM gb_user_role WHERE id = $1)")
+                .bind(role_id)
+                .fetch_optional(pool)
+                .await?
+                .unwrap_or((false,));
+        Ok(row.0)
+    }
     #[cfg(feature = "sqlite")]
-    let row: (i64,) = sqlx::query_as("SELECT 1 FROM gb_user_role WHERE id = ?")
-        .bind(role_id)
-        .fetch_optional(pool)
-        .await?
-        .unwrap_or((0,));
-    Ok(row.0 > 0)
+    {
+        let row: (i64,) = sqlx::query_as("SELECT EXISTS(SELECT 1 FROM gb_user_role WHERE id = ?)")
+            .bind(role_id)
+            .fetch_optional(pool)
+            .await?
+            .unwrap_or((0,));
+        Ok(row.0 > 0)
+    }
 }

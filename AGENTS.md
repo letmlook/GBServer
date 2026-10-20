@@ -209,6 +209,16 @@ sqlx::query_as::<_, Device>(
 处理方式：`src/dyn_where.rs` 里的 `dialect_sql` / `BindValue::Bool` /
 `bigint_col`。**新增跨方言 SQL 时沿用这三件套，别自己抄一份。**
 
+3. **`serial` 序列与表内容要对齐。** postgres 的 `serial` 主键对应一个独立序列，
+   初始化 SQL 若用**显式 id** 播种子行（admin 用户/角色都是 id=1），序列会停在
+   初始值（`is_called=false`），**第一次**插数据就撞主键
+   （`duplicate key value violates unique constraint "gb_user_pkey"`）。
+   后端每次启动会调 `db::seq_sync::sync_serial_sequences` 把序列推到 `MAX(id)`；
+   **新增带显式 id 的种子 INSERT 时不用自己操心，但手工往库里插数据时要注意**
+   （插完记得 `setval` 或重启后端）。
+   找序列用 `pg_depend` 的自动依赖，**不要**用 `pg_get_serial_sequence(table,'id')`
+   —— 它在列不存在时是抛错而不是返回 NULL。
+
 > **`cargo test`（默认 sqlite）永远发现不了这一类问题。** 改完涉及 SQL 的代码，
 > 必须对**真实 pg / mysql 实例**跑一遍 `scripts/dialect_smoke.py`（见「Build
 > Commands」里的方言冒烟）——它历史上一次性抓到过 23 处只在 pg 上炸的缺陷。

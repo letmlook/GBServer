@@ -337,6 +337,21 @@ if al['code'] == 0 and (al['data'] or {}).get('list'):
 else:
     print('SKIP alarm/handle（库里没有告警行）')
 
+# ---------------- 用户 / 角色（写入路径）----------------
+# 为什么单独加这两条：`user/add` 与 `role/add` 是**只有管理员**能调的写路径，
+# 之前的冒烟没覆盖，于是 postgres 上两个坑一直没人看见：
+#   ① `gb_user` / `gb_user_role` 的 `serial` 序列停在初始值（初始化 SQL 用显式
+#      id=1 播了 admin 种子行），**第一次**插数据就撞主键；
+#   ② `role_exists` 用 `SELECT 1` 判断存在性，postgres 里字面量是 INT4，
+#      按 i64 解直接报 "decoding column 0: mismatched types"。
+# 这两条正是"只在真实 pg 上炸"的典型，别再漏掉。
+_su = 'smoke-user-%d' % (int(__import__('time').time()) % 100000)
+check('POST', '/role/add', {'name': _su + '-role', 'authority': '9'},
+      label='role/add', verbose=True)
+check('POST', f'/user/add?username={_su}&password=21232f297a57a5a743894a0e4a801fc3&roleId=1',
+      None, label='user/add', verbose=True)
+check('GET', '/user/users?page=1&count=5', label='user/users')
+
 # ---------------- 用户 API Key ----------------
 r = check('POST', '/userApiKey/add',
           {'userId': 1, 'app': 'pg-smoke', 'remark': 'smoke', 'enable': True},

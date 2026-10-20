@@ -18,6 +18,7 @@ mod read_smoke;
 pub mod record_plan;
 pub mod region;
 pub mod role;
+pub mod seq_sync;
 pub mod stream_proxy;
 pub mod stream_push;
 mod user;

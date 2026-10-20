@@ -394,6 +394,17 @@ async fn init_db_tables(pool: &db::Pool) -> anyhow::Result<()> {
         }
     }
 
+    // postgres 的 `serial` 序列必须与表内容对齐（见 `db::seq_sync`）。
+    // 初始化 SQL 用显式 id 播了 admin 用户/角色（都是 id=1），序列却仍停在
+    // 初始值 —— 于是**第一次**往这两张表插数据就撞主键，
+    // 报 `duplicate key value violates unique constraint "gb_user_pkey"`。
+    // 已装的库同样中招，所以每次启动都同步一次。
+    match db::seq_sync::sync_serial_sequences(pool).await {
+        Ok(n) if n > 0 => tracing::info!("serial 序列已同步（{} 个）", n),
+        Ok(_) => {}
+        Err(e) => tracing::warn!("同步 serial 序列失败（不影响启动）: {}", e),
+    }
+
     #[cfg(feature = "sqlite")]
     {
         // SQLite 用 sqlite_master 检测；Phase 1 仅覆盖核心 6 表最小集合

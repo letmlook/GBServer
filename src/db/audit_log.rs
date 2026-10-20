@@ -14,6 +14,7 @@ pub async fn ensure_table(pool: &Pool) -> sqlx::Result<()> {
                 ip VARCHAR(50),
                 status_code INT,
                 request_body TEXT,
+                elapsed_ms BIGINT,
                 create_time TIMESTAMP DEFAULT NOW()
             )"#,
         )
@@ -38,6 +39,18 @@ pub async fn ensure_table(pool: &Pool) -> sqlx::Result<()> {
         )
         .execute(pool)
         .await;
+
+        // `CREATE TABLE IF NOT EXISTS` **不会**给已存在的表补列，而
+        // `insert_with_metrics` 写的是带 `elapsed_ms` 的扩展列 —— 列不存在时
+        // 每个被审计的请求都会先失败一次再回退（postgres 日志里每请求一条
+        // ERROR），而且耗时根本没落库。这里补上。
+        if let Err(e) =
+            sqlx::query("ALTER TABLE gb_audit_log ADD COLUMN IF NOT EXISTS elapsed_ms BIGINT")
+                .execute(pool)
+                .await
+        {
+            tracing::warn!("为 gb_audit_log 补 elapsed_ms 列失败: {}", e);
+        }
     }
 
     #[cfg(feature = "mysql")]
@@ -53,6 +66,7 @@ pub async fn ensure_table(pool: &Pool) -> sqlx::Result<()> {
                 ip VARCHAR(50),
                 status_code INT,
                 request_body TEXT,
+                elapsed_ms BIGINT,
                 create_time DATETIME DEFAULT CURRENT_TIMESTAMP
             )"#,
         )
@@ -73,6 +87,18 @@ pub async fn ensure_table(pool: &Pool) -> sqlx::Result<()> {
         let _ = sqlx::query("CREATE INDEX idx_audit_log_username ON gb_audit_log(username)")
             .execute(pool)
             .await;
+
+        // 给已存在的表补 `elapsed_ms`（MySQL 不支持 `ADD COLUMN IF NOT EXISTS`，
+        // 重复列的 1060/1061 当成幂等重放的正常结果忽略掉）。
+        if let Err(e) = sqlx::query("ALTER TABLE gb_audit_log ADD COLUMN elapsed_ms BIGINT")
+            .execute(pool)
+            .await
+        {
+            let msg = e.to_string();
+            if !msg.contains("1060") && !msg.contains("1061") && !msg.contains("Duplicate") {
+                tracing::warn!("为 gb_audit_log 补 elapsed_ms 列失败: {}", e);
+            }
+        }
     }
 
     #[cfg(feature = "sqlite")]
