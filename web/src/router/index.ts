@@ -115,6 +115,12 @@ const constantRoutes: RouteRecordRaw[] = [
         meta: { title: '用户管理', icon: 'user' }
       },
       {
+        path: 'apiKey',
+        name: 'ApiKey',
+        component: () => import('@/views/apiKey/index.vue'),
+        meta: { title: 'API Key', icon: 'user' }
+      },
+      {
         path: 'jtDevice',
         name: 'JtDevice',
         component: () => import('@/views/jtDevice/index.vue'),

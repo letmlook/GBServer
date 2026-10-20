@@ -44,6 +44,7 @@ const ADMIN_PAGES: ReadonlyArray<{ name: string; path: string }> = [
   { name: 'alarm',        path: '/alarm' },
   { name: 'jtDevice',     path: '/jtDevice' },
   { name: 'user',         path: '/user' },
+  { name: 'apiKey',       path: '/apiKey' },
   { name: 'operations',   path: '/operations' },
 ];
 
