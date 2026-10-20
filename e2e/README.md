@@ -36,6 +36,26 @@ npm install
 npx playwright install chromium
 ```
 
+### 媒体节点的 IP 是**按机器写死**在 `config/application.toml` 里的
+
+`[[zlm.servers]]` 的 `ip` 与 `rtc_extern_ip` 默认填的是某台开发机的 LAN IP。
+换一台机器（或该机 IP 变了）就必须覆盖，否则：
+
+* 媒体节点连不上 → 点播/拉流用例全挂，后端日志里是 ZLM 节点 Unknown；
+* `rtc.externIP` 指向一个不可达地址 → 浏览器拿到的 ICE 候选连不上，
+  `iceConnectionState` 永远停在 `checking`（**表现和 WebRTC 实现坏了很像**，
+  但其实是地址问题）。
+
+用这两个**标量**环境变量覆盖（不要用 `GBSERVER__ZLM__SERVERS__0__*` ——
+那会让配置库把节点数组解析成 map，启动时报 `invalid type: map`）：
+
+```bash
+export GBSERVER_ZLM_PRIMARY_IP=127.0.0.1          # 后端 → ZLM HTTP
+export GBSERVER_ZLM_PRIMARY_RTC_EXTERN_IP=<本机LAN IP>  # 浏览器 → ZLM RTC
+```
+
+浏览器要能连上 ZLM 的 RTC 端口，ZLM 容器需发布 UDP 8000（mac 叠加文件已配）。
+
 ## Run
 
 ```bash
