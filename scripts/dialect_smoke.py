@@ -352,7 +352,49 @@ check('POST', f'/user/add?username={_su}&password=21232f297a57a5a743894a0e4a801f
       None, label='user/add', verbose=True)
 check('GET', '/user/users?page=1&count=5', label='user/users')
 
-# ---------------- 用户 API Key ----------------
+# ---------------- 通道 / 设备（写入路径）----------------
+# 这两条是 `parent_id`（VARCHAR 却曾被绑成 i64）的直接受害者：
+# 通道新增/更新在 postgres 上会因 `COALESCE(bigint, character varying)` 整个 500，
+# 而且是**解析期**失败 —— 哪怕请求根本没传 parentId 也一样。
+_stamp = int(__import__('time').time()) % 1000000
+_ch_id = '3402000000133%06d' % _stamp
+_dev_id = '3402000000134%06d' % _stamp
+r = check('POST', '/common/channel/add',
+          {'deviceId': _dev_id, 'channelId': _ch_id, 'name': 'smoke-channel',
+           'civilCode': '340200', 'manufacturer': '02', 'channelType': 3},
+          label='channel/add', verbose=True)
+_ch_pk = (r['data'] or {}).get('id') if isinstance(r['data'], dict) else None
+if _ch_pk is None:
+    _q = call('GET', '/common/channel/list?page=1&count=200&query=%s' % _ch_id)
+    for _row in (_q['data'] or {}).get('list') or []:
+        if _row.get('gbDeviceId') == _ch_id or _row.get('channelId') == _ch_id:
+            _ch_pk = _row.get('id')
+            break
+if _ch_pk is not None:
+    # 只改名称：其余字段（manufacturer / channelType）必须保持不变 ——
+    # 这正是 COALESCE 语义要保证的事。
+    check('POST', '/common/channel/update',
+          {'id': _ch_pk, 'name': 'smoke-channel-renamed'},
+          label='channel/update(只改名称)', verbose=True)
+    _one = call('GET', '/common/channel/one?id=%s' % _ch_pk)
+    if (_one['data'] or {}).get('manufacturer') != '02':
+        FAIL.append(('channel/update 保留 manufacturer', _one['st'], _one['code'],
+                      'manufacturer 被清空: %s' % str((_one['data'] or {}).get('manufacturer'))))
+    check('DELETE', '/common/channel/delete?id=%s' % _ch_pk, None,
+          label='channel/delete', verbose=True)
+
+r = check('POST', '/device/query/device/add',
+          {'deviceId': _dev_id, 'name': 'smoke-device', 'ip': '127.0.0.1',
+           'port': 5060, 'password': '123456', 'expires': 3600,
+           'heartBeatInterval': 60, 'heartBeatCount': 3},
+          label='device/add', verbose=True)
+check('POST', '/device/query/device/update',
+      {'deviceId': _dev_id, 'name': 'smoke-device-renamed'},
+      label='device/update', verbose=True)
+check('DELETE', '/device/query/devices/%s/delete' % _dev_id, None,
+      label='device/delete', verbose=True)
+
+# ---------------- 用户 / 角色（写入路径）----------------
 r = check('POST', '/userApiKey/add',
           {'userId': 1, 'app': 'pg-smoke', 'remark': 'smoke', 'enable': True},
           label='userApiKey/add', verbose=True)
