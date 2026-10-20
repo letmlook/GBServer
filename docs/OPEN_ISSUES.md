@@ -60,17 +60,17 @@
 | C5 | 代码债 | ~~`/api/user/users` 的 `UsersQuery` 无 `query` 字段~~ | ✅ 已修 (`bfa65f8`) |
 | C6 | 缺陷 | 用户管理权限缺口：9 个管理端点无角色校验（普通用户可造管理员级角色） | ✅ 已修 (`bfa65f8`) |
 | C7 | 缺陷 | 删角色不校验引用 → 悬空 `role_id` 用户被 INNER JOIN 静默吞掉 | ✅ 已修 (`bfa65f8`) |
-| C8 | 缺陷 | 直播响应已优先读取 ZLM ready 音频 track；真机复验及目录语义仍待确认 | 🟡 |
+| C8 | 缺陷 | 直播响应的 `hasAudio` 优先取 ZLM 当前流的 ready 音频 track，无 track 时才回退到目录字段，并用 `audioSource`（`media`/`catalog`）标明来源；目录字段在库里以 NULL 表示"设备没说"，与"设备说没有"可区分 | 🟡 真机未验 |
 | C9 | 契约核对 | GET/DELETE 登录后 HTTP 与两套存储状态、失败回滚均已验证；PostgreSQL/MySQL 隔离库往返通过 | ✅ 已关闭 |
 | D1 | 真机核验 | GB28181 真实设备（TCP 被动 / 401 鉴权 / SDP 端口差异 / 目录分页） | 🟡 已接入并核验主链路，剩余项见 D1 |
-| D2 | 真机核验 | JT1078 真实终端（0x0802 变体 / 0x8100 鉴权 / 双向对讲） | 🔴 |
+| D2 | 真机核验 | JT1078 真实终端（0x0802 变体 / 双向对讲）；**0x8100 鉴权码的平台侧已按标准实现**（见 C3），待真机核对实际报文 | 🔴 |
 | D3 | 真机核验 | 对讲音频互通（G.711A 时间戳/回声/抖动） | 🔴 |
 | E1 | 环境 | 冒烟脚本 2 项"预期为真"项（CSV 非 JSON、dummy 代理 404） | ⚪ |
 | E2 | 环境 | 本 ZLM 版本缺 7 个 hook 事件键（已如实告警） | ⚪ |
 | E3 | 环境 | 长驻服务需单独 job 启动（同组 job 中止会连带杀掉） | ⚪ |
 | E4 | 环境 | CI 自动触发按用户要求保持关闭（`workflow_dispatch`） | ⚪ |
 | E5 | 部署 | ZLM 改 host 网络 + 配置文件只读管理 + mac 叠加文件 | ✅ 已改 |
-| E6 | 环境 | 后端访问 `192.168.3.88:8080`（ZLM）偶发 `error sending request`（本机 HTTP 代理同名主机） | ⚪ |
+| E6 | 环境 | 后端访问 `192.168.3.88:8080`（ZLM）偶发 `error sending request`。**2026-10-20 复核**：该地址是 `config/application.toml` 里写死的开发机 LAN IP；本机 LAN IP 已变为 `192.168.3.149`，用旧值时 ZLM 节点连不上、WebRTC ICE 候选不可达（`iceConnectionState` 停在 `checking`）。用 `GBSERVER_ZLM_PRIMARY_IP` / `GBSERVER_ZLM_PRIMARY_RTC_EXTERN_IP` 覆盖后恢复（见 `e2e/README.md`） | ⚪ 需按本机 IP 覆盖 |
 | E7 | 部署验收 | PostgreSQL 与 SQLite 后端容器 + 真实 ZLM + SIP Mock 的 FLV 点播/停止、MP4 下载及 Chromium WebRTC 已通过；SQLite 全新卷可自动建库，时区对齐后完整 Chromium E2E 72/72；真机 LAN 与目标 Linux Compose 部署待验收 | 🟡 |
 
 ---
@@ -113,7 +113,7 @@ e2e 最近一次运行 35 通过 / 0 失败（筛选运行）、三方言冒烟�
 | C2 29 个无引用 db 函数 | 否 | 🟢 可发布（清理） |
 | C3 JT1078 鉴权码只存不用 | **仅真终端**有风险（平台自身不校验，mock 不校验） | ✅ 已修（0x0102 按标准作终端鉴权，鉴权码从库取，强制/宽松两档）；真机未验 |
 | C4 API Key 过期记录不清理 | 否（鉴权已正确拒绝） | ✅ 已关闭 |
-| C8 `hasAudio` 与实际流不符 | 否（仅元数据/前端图标不准） | 🟢 可发布 |
+| C8 `hasAudio` 与实际流不符 | 否（仅元数据/前端图标不准） | 🟢 来源语义已分清（`audioSource`），真机未验 |
 | C9 收藏删除方法核对 | GET/DELETE 登录后 HTTP 与两套存储状态、失败回滚通过；PostgreSQL/MySQL 运行复验通过。云录像页面当前没有收藏入口 | ✅ 已关闭 |
 | D1 真机剩余项 | 未知风险（模拟器覆盖不到的行为） | 🟡 主链路已通，其余项真机联调前不建议对外承诺 |
 | D2–D3 真机核验缺口 | 未知风险（模拟器覆盖不到的行为） | 🟡 真机联调前不建议对外承诺 |
@@ -822,6 +822,22 @@ PS 解封装结果）回填该字段，只沿用目录/入库时的值。
 直播响应已查询 ZLM track；有 track 时 `hasAudio` 表示 ready 音频，查不到时
 回退目录值，`audioSource` 标记 `media`/`catalog`。该值不会回填目录字段，
 因为目录描述通道能力、本次流描述当前媒体。真机返回仍未复验，C8 保持开放。
+
+**2026-10-20 复核（静态 + 自动化）**：ROADMAP M2 要求的"以真实流媒体信息和设备
+目录字段的语义划清边界"在代码层已成立：
+
+* 来源分离：`resolve_live_audio` 先问 ZLM 当前流的 track，问得到就用它并标
+  `audioSource="media"`；问不到才回退目录字段并标 `audioSource="catalog"`。
+  两个取值在 API 上是显式的，调用方不必猜 `hasAudio` 说的是"这条流"还是
+  "这台设备"。
+* "没说"与"说没有"可区分：目录里的 `<HasAudio>` 是**厂商扩展**（国标目录
+  Item 里没有这个元素），设备不发时解析出 `None`，入库时按 NULL 写 ——
+  与"设备明确说有音频/没音频"是两种状态，不会被压成 `false`。
+* 自动化覆盖：`live_audio_tests` 断言 ready 音频 track 覆盖目录标志、
+  无 track 返回 `None`、只有未就绪音轨返回 `Some(false)`。
+
+**仍未验证**：真机返回。目录语义（设备到底在什么条件下发 `<HasAudio>`）需要
+真机采样才能确认，这一项无法在 Mock 上定论。C8 保持 🟡（真机未验）。
 
 ### C9 ✅ 收藏删除 GET/DELETE 事务一致性已修并跨方言复验
 
