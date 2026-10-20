@@ -50,6 +50,36 @@ cargo build --no-default-features --features postgres
 cargo test --test sqlite_compat
 ```
 
+### 方言冒烟（改过 SQL 就必须跑）
+
+`cargo test` 跑的是 **SQLite**，而 sqlx-postgres 对列类型/宽度是**严格**校验的
+（mysql / sqlite 宽松）—— 只有 postgres 会因为"INT4 主键解成 i64"、"VARCHAR 列
+绑成整数"这类问题整条语句 500。**sqlite 的单测全绿不代表 postgres 能跑。**
+
+```bash
+# 1) 起库
+docker compose up -d postgres
+docker compose --profile mysql up -d mysql
+
+# 2) 用对应 feature 构建并起一个实例（端口与已有实例错开）
+cargo build --no-default-features --features postgres   # 或 mysql
+GBSERVER__DATABASE__URL='postgres://postgres:postgrespw@127.0.0.1:5432/gbserver' \
+  GBSERVER__SERVER__PORT=18081 \
+  GBSERVER__SIP__PORT=25060 GBSERVER__SIP__TCP_PORT=25061 \
+  GBSERVER__JT1078__TCP_PORT=60001 GBSERVER__JT1078__UDP_PORT=60002 \
+  ./target/debug/gbserver &
+
+# 3) 取 token 跑冒烟
+TOKEN=$(curl -s 'http://127.0.0.1:18081/api/user/login?username=admin&password=21232f297a57a5a743894a0e4a801fc3' \
+  | python3 -c 'import json,sys;print(json.load(sys.stdin)["data"]["accessToken"])')
+python3 scripts/dialect_smoke.py --base http://127.0.0.1:18081/api --token "$TOKEN"
+```
+
+**预期"失败"（不是缺陷）**：CSV 导出的 `/log/list?format=csv` 返回 CSV 文本而非
+JSON；`proxy/start` 指向不存在的 RTSP 源时真实 ZLM 回 404。
+
+详见 `docs/OPEN_ISSUES.md` 的 B16。
+
 ### Frontend (Vue 3)
 
 ```bash
@@ -139,6 +169,8 @@ Err(AppError::business(ErrorCode::Error400, "invalid input"))
 - Use `sqlx::query` for INSERT/UPDATE/DELETE
 - Handle SQLite / PostgreSQL / MySQL dialects with `#[cfg(feature = "sqlite")]` / `#[cfg(feature = "postgres")]` / `#[cfg(feature = "mysql")]` blocks in the same function
 - Use parameterized queries - never interpolate SQL directly
+- **⚠️ sqlx-postgres 严格校验列类型，sqlx-mysql / sqlx-sqlite 宽松** —— 见
+  「Gotchas」里的「postgres 只在运行期炸」一条。写任何跨方言 SQL 前先读那条。
 
 ```rust
 // Parameterized query (PostgreSQL)
@@ -149,6 +181,38 @@ sqlx::query_as::<_, Device>(
 .fetch_optional(pool)
 .await?
 ```
+
+#### 跨方言类型/宽度：先在 SQL 侧统一，别指望解码端兼容
+
+三种方言的**整数列宽度和列类型本身就不一样**，而 sqlx-postgres 对类型是**严格**
+校验的（mysql / sqlite 宽松），所以这类问题**只在 postgres 上炸**：
+
+| 差异 | postgres | mysql / sqlite |
+|---|---|---|
+| 主键 | `serial` → **INT4** | `bigint auto_increment` / `INTEGER` → 64 位 |
+| `gb_device_channel.parent_id` | VARCHAR | 同为 VARCHAR（但代码曾把它绑成 i64） |
+| 布尔列 | `bool` | `tinyint(1)` / INTEGER |
+
+已知的两类坑与对应写法：
+
+1. **INT4 列按 `i64` 解** → `decoding column "id": mismatched types; Rust type
+   i64 (as SQL type INT8) is not compatible with SQL type INT4`。
+   用 `dyn_where::bigint_col("c.id")` 把列渲染成 `c.id::bigint`（postgres 侧），
+   其它方言原样返回。
+2. **VARCHAR 列绑成整数** → postgres `COALESCE types bigint and character
+   varying cannot be matched`。这是**解析期**失败：即使请求根本没传该字段
+   （绑的是 NULL，类型照样是 int8），整条语句也会 500。
+   `parent_id` 已改回 `Option<String>`（与列类型、前端发的
+   `parentId?: string`、代码里既有的 `parent_id = '0'` 查询一致）。
+
+占位符（`?` vs `$1`）与布尔列（`bool` vs `tinyint(1)`）是同一类问题的同一种
+处理方式：`src/dyn_where.rs` 里的 `dialect_sql` / `BindValue::Bool` /
+`bigint_col`。**新增跨方言 SQL 时沿用这三件套，别自己抄一份。**
+
+> **`cargo test`（默认 sqlite）永远发现不了这一类问题。** 改完涉及 SQL 的代码，
+> 必须对**真实 pg / mysql 实例**跑一遍 `scripts/dialect_smoke.py`（见「Build
+> Commands」里的方言冒烟）——它历史上一次性抓到过 23 处只在 pg 上炸的缺陷。
+> 详见 `docs/OPEN_ISSUES.md` 的 B16。
 
 #### Naming Conventions
 - **Functions**: snake_case (`list_devices_paged`, `get_device_by_device_id`)
@@ -376,6 +440,19 @@ extending this one response.
   real fixes for THIS box but break docker-compose deployments. Either
   revert before commit, or split into a separate commit with clear
   message.
+  - **`[[zlm.servers]]` 的 `ip` 与 `rtc_extern_ip` 写死了一台开发机的 LAN IP。**
+    换机器、或那台机器 IP 变了，就必须用**标量**环境变量覆盖（不要用
+    `GBSERVER__ZLM__SERVERS__0__*` —— 那会把节点数组解析成 map，启动时报
+    `invalid type: map, expected a sequence`）：
+    ```bash
+    export GBSERVER_ZLM_PRIMARY_IP=127.0.0.1            # 后端 → ZLM HTTP
+    export GBSERVER_ZLM_PRIMARY_RTC_EXTERN_IP=<本机LAN IP>  # 浏览器 → ZLM RTC
+    ```
+    用旧值时的症状**很像 WebRTC 实现坏了**：浏览器拿到的 ICE 候选不可达，
+    `iceConnectionState` 永远停在 `checking`、一个字节都收不到。
+    排查顺序：先看后端日志里健康检查是否把节点判成 Online，再看
+    `getServerConfig` 的 `rtc.externIP` 是不是当前 IP，最后才怀疑实现。
+    同样的坑见 `e2e/README.md`。
 - **Dashboard chunk size**: `web/dist/static/index-*.js` for the
   dashboard view is currently ~27 kB. If a single PR adds much more,
   consider lazy-loading the view (`defineAsyncComponent`).
