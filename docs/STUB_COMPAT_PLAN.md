@@ -64,9 +64,12 @@ grep -cE 'stub::|device_stub::' src/router.rs      # 64
 
 ## 4. 无前端调用方的 16 条（仅这些是候选）
 
+> **2026-10-20 更新**：API Key 的 7 条已接入前端管理页（`/#/apiKey`），
+> 实际无调用方降为 **9 条**（区域/分组 4 条 + 设备 5 条）。
+
 | 类别 | 路由 | 说明 |
 |------|------|------|
-| API Key（7） | `/api/userApiKey/add`、`/delete`、`/enable`、`/disable`、`/remark`、`/reset`、`/userApiKeys` | 后端能力完整，但**当前前端没有任何 API Key 管理界面**（`web/src/` 中 `userApiKey`/`apiKey` 零引用） |
+| API Key（7） | `/api/userApiKey/add`、`/delete`、`/enable`、`/disable`、`/remark`、`/reset`、`/userApiKeys` | **2026-10-20 起已有前端管理界面**（`web/src/views/apiKey/index.vue`，路由 `/#/apiKey`），已从"无调用方"清单移出 |
 | 区域 / 分组（4） | `/api/region/description`、`/api/region/base/child/list`、`/api/region/queryChildListInBase`、`/api/group/path` | 当前 UI 未暴露这些操作（`region.ts` 未调用） |
 | 设备（5） | `/api/device/query/channel/one`、`/api/device/query/tree/channel/:device_id`、`/api/device/query/sub_channels/...`、`/api/device/query/subscribe/alarm`、`/api/device/query/channel/audio` | 见备注 |
 
@@ -139,4 +142,5 @@ grep -cE 'stub::|device_stub::' src/router.rs      # 64
 | 2026-09-07 | 初版：定义「兼容层」范围、退役触发条件、四步流程 |
 | 2026-09-19（早） | 按实测刷新行数/entry 数（3834/1273 行、47/18 entry、65 条路由） |
 | 2026-09-19（本版） | **按代码复核重写**：更正「空实现」与「真实实现已迁出」两类错误前提；补充当前前端依赖度实测（49 条活跃 / 16 条无调用方）；补正被写错的 handler 归属；结论改为「生产实现，非待退役兼容层」 |
+| 2026-10-20 | API Key 管理界面落地（`web/src/views/apiKey/index.vue` + `web/src/api/apiKey.ts` + 路由 `/#/apiKey`）：7 条端点全部有前端调用方，从"无调用方"清单移出；无调用方候选由 16 条降为 9 条 |
 | 2026-09-19（真机核验轮） | 按 `8ecec6a` 实测刷新：行数/entry 3834→**3843**、47→**46**、路由 65→**64**、`url:` 字面量 173→**174**、活跃路由 49→**48**；无调用方清单更正（移除误列的 `/api/group/delete`，补入漏列的 `/api/device/query/channel/audio`）；补记 `stub.rs` 内 `/api/role/*` 归属错误；新增「方法不匹配」提示（`cloud_record_collect_delete` 注册 DELETE / 前端 GET） |
