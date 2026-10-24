@@ -100,10 +100,12 @@ async fn feed_and_process(
                 // 一个并入库 —— 平台下发的与库里存的必须是同一个值，终端随后
                 // 用 0x0102 把它回送，平台才能校验。此前这里写死字面量
                 // "GBServer"，`gb_jt_terminal.auth_code` 因此只写不读。
-                let auth_code = match stored_auth_code(manager, &msg.phone).await {
-                    Some(code) => Ok(code),
-                    None => issue_auth_code(manager, &msg.phone).await,
-                };
+                //
+                // 直接用 `issue_auth_code`：它内部已经是"读 → 有就返回、没有就
+                // 生成并落库"的完整逻辑，而且**读失败会返回 Err**（不覆盖既有配置）。
+                // 不要再在外面套一层 `stored_auth_code` —— 那层会吞掉读错误，
+                // 还多打一次库。
+                let auth_code = issue_auth_code(manager, &msg.phone).await;
                 match auth_code {
                     Ok(code) => {
                         replies.push((
@@ -626,13 +628,26 @@ mod terminal_auth_tests {
         seed_terminal(&pool, Some(CONFIGURED_AUTH_CODE)).await;
         let manager = manager_with_pool(pool.clone());
 
-        // 让读取鉴权码失败：把 auth_code 列换成不可读的表达式
+        // 制造"读失败"：把表改名 → SELECT 报 "no such table"。
+        //
+        // 注意 sqlite 的 `String` 解码是 `value.text()`（**任何类型都强制转换**），
+        // 所以在 sqlite 里**造不出**"读失败但 UPDATE 还能写"的组合 ——
+        // 读失败必然是 schema 级失败，而 schema 级的失败同时也让 UPDATE 失败。
+        // 因此这里只断言**真正守得住**的那条行为：读失败必须**返回 Err**。
+        // （若读错误被当成"没配置"，代码会继续生成随机码并返回 `Ok` → 本断言变红。）
+        //
+        // "写不进去就不下发、不覆盖"由 `register_fails_when_auth_code_cannot_be_persisted`
+        // （用 trigger 拦 UPDATE）守着；"已配置的码原样使用"由
+        // `register_reply_carries_configured_auth_code` 守着。
         sqlx::query("ALTER TABLE gb_jt_terminal RENAME TO gb_jt_terminal_bak")
             .execute(&pool)
             .await
             .unwrap();
-        let r = issue_auth_code(&manager, PHONE).await;
-        let msg = r.err().expect("读失败必须报错，不能当成'没配置'");
+
+        let msg = issue_auth_code(&manager, PHONE)
+            .await
+            .err()
+            .expect("读失败必须报错，不能当成'没配置'");
         assert!(msg.contains("读取终端鉴权码失败"), "{msg}");
 
         // 恢复表，确认配置没被动过
@@ -648,6 +663,80 @@ mod terminal_auth_tests {
             stored.trim_end_matches('\0'),
             CONFIGURED_AUTH_CODE,
             "读失败不得覆盖运维配置的鉴权码"
+        );
+    }
+
+    /// 回归：**重复行**（同一 phone 多行）不得让运维配的鉴权码被静默覆盖。
+    ///
+    /// `phone_number` 在三方言里都**没有**唯一约束（唯一索引是
+    /// `(id, phone_number)`，而 id 是主键），历史脏数据可能让同一 phone 有多行。
+    /// 此时：
+    /// - 读侧若没有 `ORDER BY`，**取到哪一行是不确定的**（postgres 返回物理
+    ///   扫描顺序的第一行，而心跳每次都会重写这些行 → 取到的行会翻转）；
+    /// - 写侧 `UPDATE ... WHERE phone_number = ?` 会更新**所有**重复行。
+    /// 两者叠加：读侧若恰好取到一条 `auth_code` 为空的行 → 判定成"没配置" →
+    /// 生成随机码 → 写进**所有**行 → **运维配的码被抹掉**，终端随后全部鉴权失败。
+    ///
+    /// 现读侧固定为「优先取真配了码的那条，再按 id 取最早的」→ 不会误判成没配置。
+    #[tokio::test]
+    async fn duplicate_phone_rows_keep_the_operator_configured_auth_code() {
+        let pool = crate::test_support::sqlite_pool_with_schema().await;
+        // 第一行：没有配码
+        seed_terminal(&pool, None).await;
+        // 第二行：重复行，稍后**只给这一行**配码
+        let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        let fields = crate::db::jt1078::JtTerminalWrite {
+            terminal_id: Some("TERM002"),
+            plate_no: Some(""),
+            plate_color: Some(0),
+            maker_id: Some("TESTM"),
+            model: Some("MODEL-0000000000000000"),
+            media_server_id: None,
+            province_id: None,
+            city_id: None,
+        };
+        crate::db::jt1078::insert_terminal(&pool, PHONE, &fields, &now)
+            .await
+            .unwrap();
+        // **必须按 id 精确地只给第二行配码**：`update_auth_code` 的
+        // `WHERE phone_number = ?` 会更新**所有**重复行 —— 用它配码的话两行都有码，
+        // 根本测不出"读侧取错行 → 覆盖"的路径。
+        let coded_id: i64 =
+            sqlx::query_scalar("SELECT MAX(id) FROM gb_jt_terminal WHERE phone_number = ?")
+                .bind(PHONE)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        sqlx::query("UPDATE gb_jt_terminal SET auth_code = ? WHERE id = ?")
+            .bind(CONFIGURED_AUTH_CODE)
+            .bind(coded_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let manager = manager_with_pool(pool.clone());
+
+        let issued = issue_auth_code(&manager, PHONE)
+            .await
+            .expect("读成功就该拿到已配置的码");
+        assert_eq!(
+            issued.trim_end_matches('\0'),
+            CONFIGURED_AUTH_CODE,
+            "有重复行时也必须用运维配的码，不能另生成一个"
+        );
+
+        // 库里那条配了码的行仍在（没有被随机码覆盖）
+        let rows: Vec<(i64, Option<String>)> =
+            sqlx::query_as("SELECT id, auth_code FROM gb_jt_terminal WHERE phone_number = ?")
+                .bind(PHONE)
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert!(rows.len() >= 2, "本用例需要至少两行重复数据: {rows:?}");
+        assert!(
+            rows.iter()
+                .any(|(_, c)| c.as_deref().map(|s| s.trim_end_matches('\0'))
+                    == Some(CONFIGURED_AUTH_CODE)),
+            "运维配的码被覆盖了: {rows:?}"
         );
     }
 

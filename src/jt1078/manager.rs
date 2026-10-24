@@ -799,8 +799,22 @@ impl Jt1078Manager {
         // **整个 JT1078 信令面**（注册、心跳、0x0200 位置汇报、指令应答）
         // 都会被卡住 —— 一个后台清理任务不该有能力拖垮信令。
         //
-        // 第一段：移除超时会话（只动内存）。
-        let removed_addrs: Vec<SocketAddr> = {
+        // 第一段 + 第二段：**都在 `sessions` 锁内**（纯内存，无 IO），
+        // 这样"摘会话"与"清地址表"之间是原子的。
+        //
+        // `deadline` 在**摘掉会话的这一刻**取：它是"这些会话从现在起算已经失效"
+        // 的时刻基准。第四段的条件写要靠它区分"这行在会话失效之后又被更新过"
+        // （→ 终端其实是活的，不能置离线）与"这行在会话失效之后没被动过"
+        // （→ 确实可以置离线）。
+        // 若把 deadline 拖到 DB 写之前才取，那么"摘会话 ↔ 取 deadline"之间
+        // 到达的心跳，其 `update_time` 会落在 deadline **之前** → 被误判成
+        // "没有活动" → **活着的终端被标成离线**。
+        //
+        // 摘完会话后**复查一遍**：期间可能有报文把会话**复活**
+        // （`process_jt_message` 的 `map.entry(addr).or_insert_with(...)`）。
+        // 活着的终端不该被清掉地址映射 —— 映射没了，`get_terminal_addr` 就返回
+        // None、`is_terminal_online` 为 false，**命令下发会被拒**，直到下一个心跳。
+        let (removed_addrs, deadline, stale_phones): (Vec<SocketAddr>, String, Vec<String>) = {
             let mut map = self.sessions.lock().await;
             let now = Instant::now();
             let mut removed = Vec::new();
@@ -812,26 +826,30 @@ impl Jt1078Manager {
             for k in removed.iter() {
                 map.remove(k);
             }
-            removed
+            // 复查：已被复活的会话不算超时（终端其实是活的）
+            removed.retain(|addr| !map.contains_key(addr));
+
+            let deadline = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+
+            // 第二段：清终端地址登记表，并收集"因此超时"的终端（只动内存）。
+            // 锁序仍是 sessions → terminal_addrs（与 `remove()` 一致，不成环）。
+            let mut stale = Vec::new();
+            {
+                let mut terms = self.terminal_addrs.lock().await;
+                terms.retain(|phone, a| {
+                    let keep = !removed.contains(a);
+                    if !keep {
+                        stale.push(phone.clone());
+                    }
+                    keep
+                });
+            }
+            (removed, deadline, stale)
         };
 
         if removed_addrs.is_empty() {
             return 0;
         }
-
-        // 第二段：清终端地址登记表，并收集"因此超时"的终端（只动内存）。
-        let stale_phones: Vec<String> = {
-            let mut terms = self.terminal_addrs.lock().await;
-            let mut stale = Vec::new();
-            terms.retain(|phone, a| {
-                let keep = !removed_addrs.contains(a);
-                if !keep {
-                    stale.push(phone.clone());
-                }
-                keep
-            });
-            stale
-        };
 
         if stale_phones.is_empty() {
             return removed_addrs.len();
@@ -854,12 +872,15 @@ impl Jt1078Manager {
         // 而它其实从未重新鉴权过。
         // 这里补上写 false，"超时 ⇒ 真离线 ⇒ 需重新注册+重新鉴权"才闭环。
         //
-        // **条件写**（`mark_terminal_offline_if_stale`）：第三、四段之间不是原子的，
-        // 终端若在这期间发过心跳，`update_time` 已被刷新成更新的值 —— 此时
-        // **不能**再把它标成离线，否则活着的终端在库里被显示成"离线"，
-        // 而平台其实仍能给它下发命令。拿 `deadline`（清理开始的时刻）做界，
-        // 期间有更新的行就跳过。
-        let deadline = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        // **条件写**（`mark_terminal_offline_if_stale`）：第一段与第四段之间不是原子的，
+        // 终端若在这期间发过心跳，`update_time` 已被刷新 —— 此时**不能**再把它标成
+        // 离线，否则活着的终端在库里被显示成"离线"，而平台其实仍能给它下发命令。
+        // 条件是 `update_time < deadline`（**严格小于**）：
+        // `deadline` 取在会话被摘掉的那一刻，而 `update_time` 是**秒级**精度 ——
+        // 同一秒内到达的心跳，其 `update_time` 会**等于** deadline，用 `<=`
+        // 就会把它误判成"没有活动"。用严格小于，方向是安全的：
+        // 宁可晚一个清理周期再置离线（终端下次心跳本来也会把自己置回在线），
+        // 也不能把活着的终端误标成离线。
         if let Some(pool) = self.pool.get() {
             for phone in &stale_phones {
                 match crate::db::jt1078::mark_terminal_offline_if_stale(&pool, phone, &deadline)
@@ -1351,14 +1372,18 @@ mod tests {
     async fn session_timeout_marks_terminal_offline_in_db() {
         let pool = crate::test_support::sqlite_pool_with_schema().await;
         const PHONE: &str = "13812345678";
-        let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        // 这一行的时间戳要**早于**清理时刻 —— 真实场景里终端最后上报是
+        // 超时之前（默认超时 60s），`update_time` 自然比清理时刻早。
+        // 若写成"此刻"，就会与清理时刻同秒，条件写（严格小于）不会命中。
+        let old = chrono::Utc::now() - chrono::Duration::minutes(2);
+        let old = old.format("%Y-%m-%d %H:%M:%S").to_string();
         sqlx::query(
             "INSERT INTO gb_jt_terminal (phone_number, status, create_time, update_time) \
              VALUES (?, 1, ?, ?)",
         )
         .bind(PHONE)
-        .bind(&now)
-        .bind(&now)
+        .bind(&old)
+        .bind(&old)
         .execute(&pool)
         .await
         .unwrap();
@@ -1390,6 +1415,44 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(status, 0, "会话超时时必须把终端置为离线");
+    }
+
+    /// 回归：**同一秒**内到达的心跳也不能被误置离线。
+    ///
+    /// `update_time` 与 `deadline` 都是**秒级**精度，所以"摘掉会话那一刻"与
+    /// "心跳到达"落在同一秒时，两者**相等**。条件写若用 `<=` 就会把这次心跳
+    /// 误判成"没有活动" → **活着的终端被标成离线**。
+    /// 方向上宁可晚一个清理周期再置离线（终端下次心跳本来也会把自己置回在线）。
+    #[tokio::test]
+    async fn terminal_heartbeat_in_the_same_second_is_not_marked_offline() {
+        let pool = crate::test_support::sqlite_pool_with_schema().await;
+        const PHONE: &str = "13812345678";
+        let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        sqlx::query(
+            "INSERT INTO gb_jt_terminal (phone_number, status, create_time, update_time) \
+             VALUES (?, 1, ?, ?)",
+        )
+        .bind(PHONE)
+        .bind(&now)
+        .bind(&now)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // `deadline` 与 `update_time` 落在同一秒 → 严格小于不成立 → 不置离线
+        let deadline = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        let n = crate::db::jt1078::mark_terminal_offline_if_stale(&pool, PHONE, &deadline)
+            .await
+            .unwrap();
+        assert_eq!(n, 0, "同一秒内的心跳不应被置离线");
+
+        let status: i64 =
+            sqlx::query_scalar("SELECT status FROM gb_jt_terminal WHERE phone_number = ?")
+                .bind(PHONE)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(status, 1, "刚活跃过的终端必须保持在线");
     }
 
     /// 回归：**条件写** —— 清理与心跳之间若终端又有活动，就**不能**再把它置离线。

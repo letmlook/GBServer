@@ -270,7 +270,7 @@ pub async fn get_terminal_by_phone(pool: &Pool, phone: &str) -> sqlx::Result<Opt
          province_text, CAST(city_id AS CHAR) AS city_id, city_text, maker_id, model, \
          plate_color, plate_no, longitude, latitude, status, register_time, update_time, \
          create_time, geo_coord_sys, media_server_id, sdp_ip, auth_code \
-         FROM gb_jt_terminal WHERE phone_number = ? LIMIT 1",
+         FROM gb_jt_terminal WHERE phone_number = ? ORDER BY id LIMIT 1",
     )
     .bind(phone)
     .fetch_optional(pool)
@@ -281,7 +281,7 @@ pub async fn get_terminal_by_phone(pool: &Pool, phone: &str) -> sqlx::Result<Opt
          province_text, CAST(city_id AS TEXT) AS city_id, city_text, maker_id, model, \
          plate_color, plate_no, longitude, latitude, status, register_time, update_time, \
          create_time, geo_coord_sys, media_server_id, sdp_ip, auth_code \
-         FROM gb_jt_terminal WHERE phone_number = $1 LIMIT 1",
+         FROM gb_jt_terminal WHERE phone_number = $1 ORDER BY id LIMIT 1",
     )
     .bind(phone)
     .fetch_optional(pool)
@@ -721,13 +721,21 @@ pub async fn count_channels_by_terminal(pool: &Pool, terminal_db_id: i32) -> sql
 /// Look up the auth_code assigned to a terminal by phone number.
 /// Returns None if terminal not found OR if auth_code column is NULL.
 pub async fn get_auth_code_by_phone(pool: &Pool, phone: &str) -> sqlx::Result<Option<String>> {
-    // `LIMIT 1`：`phone_number` 在三方言里都**没有**唯一约束（唯一索引是
-    // `(id, phone_number)`，而 id 是主键），同一 phone 出现重复行时
-    // `fetch_optional` 会直接报 "expected at most one row" —— 读鉴权码一旦
-    // 报错，平台就永远校验不过这个终端的 0x0102。
-    // 取第一行即可：重复行是历史脏数据，不该让鉴权彻底失效。
+    // `LIMIT 1` + `ORDER BY`：`phone_number` 在三方言里都**没有**唯一约束
+    // （唯一索引是 `(id, phone_number)`，而 id 是主键），同一 phone 出现重复行时
+    // **取到哪一行是不确定的** —— 三个方言都不保证返回顺序，postgres 返回的是
+    // 物理扫描顺序的第一行，而心跳每次都会重写这些行（行版本搬移）→ **取到的行会翻转**。
+    //
+    // 若恰好取到一条 `auth_code` 为空的行，`stored_auth_code` 就返回 None →
+    // `issue_auth_code` 生成随机码 → 而 `update_auth_code` 的 `WHERE phone_number = ?`
+    // 会**更新所有**重复行 → 运维配好的码被静默抹掉，终端随后全部鉴权失败。
+    //
+    // 所以这里**优先取真配了码的那条**（`auth_code` 非空），再按 id 取最早的 ——
+    // 重复行是历史脏数据，不该让鉴权彻底失效，也不该让它变得不确定。
     let row: Option<(Option<String>,)> = sqlx::query_as(&crate::dyn_where::dialect_sql(
-        "SELECT auth_code FROM gb_jt_terminal WHERE phone_number = ? LIMIT 1",
+        "SELECT auth_code FROM gb_jt_terminal \
+         WHERE phone_number = ? AND auth_code IS NOT NULL AND auth_code <> '' \
+         ORDER BY id LIMIT 1",
     ))
     .bind(phone)
     .fetch_optional(pool)
@@ -757,7 +765,11 @@ pub async fn update_auth_code(pool: &Pool, phone: &str, auth_code: &str) -> sqlx
 ///
 /// 返回被置为离线的行数（0 = 期间这行被更新过，没动它）。
 ///
-/// `deadline` 是清理开始的时刻（UTC 墙钟纯格式，与 `update_time` 同基准）。
+/// `deadline` 是**会话被摘掉的那一刻**（UTC 墙钟纯格式，与 `update_time` 同基准）。
+/// 比较用**严格小于**：`update_time` 是秒级精度，同一秒内到达的心跳其
+/// `update_time` 会**等于** deadline —— 用 `<=` 会把活着的终端误置离线。
+/// 方向上宁可晚一个清理周期再置离线（终端下次心跳本来也会把自己置回在线），
+/// 也不能把活着的终端误标成离线。
 pub async fn mark_terminal_offline_if_stale(
     pool: &Pool,
     phone_number: &str,
@@ -767,7 +779,7 @@ pub async fn mark_terminal_offline_if_stale(
     #[cfg(any(feature = "mysql", feature = "sqlite"))]
     let r = sqlx::query(
         "UPDATE gb_jt_terminal SET status = ?, update_time = ? \
-         WHERE phone_number = ? AND (update_time IS NULL OR update_time <= ?)",
+         WHERE phone_number = ? AND (update_time IS NULL OR update_time < ?)",
     )
     .bind(false)
     .bind(&now)
@@ -778,7 +790,7 @@ pub async fn mark_terminal_offline_if_stale(
     #[cfg(feature = "postgres")]
     let r = sqlx::query(
         "UPDATE gb_jt_terminal SET status = $1, update_time = $2 \
-         WHERE phone_number = $3 AND (update_time IS NULL OR update_time <= $4)",
+         WHERE phone_number = $3 AND (update_time IS NULL OR update_time < $4)",
     )
     .bind(false)
     .bind(&now)
