@@ -1359,6 +1359,64 @@ mod tests {
     use super::*;
     use std::net::SocketAddr;
 
+    /// 回归（**源码契约**）：`cleanup_once` 里「摘会话」与「清终端地址表」必须
+    /// **在同一个 `sessions` 锁作用域内**。
+    ///
+    /// 为什么这条要有：这两步**分成两个作用域**时，中间存在一个窗口 ——
+    /// 会话被摘掉之后、地址表被清理之前，若有报文把会话**复活**
+    /// （`process_jt_message` 的 `map.entry(addr).or_insert_with`），活着的终端就会
+    /// 丢掉 `terminal_addrs` 映射 → `get_terminal_addr` 返回 None →
+    /// `is_terminal_online` 为 false → **命令下发被拒**，直到下一个心跳。
+    ///
+    /// **为什么是源码契约而不是功能测试**：变异测试实测 —— 把两段拆回独立作用域，
+    /// **所有 jt1078 测试仍然全绿**。这个竞态**没有功能测试能覆盖**（要在两段之间
+    /// 精确注入一次心跳，得在生产代码里加测试钩子，代价大于收益）。
+    /// 所以用源码契约守住这条**结构性**不变量。
+    ///
+    /// 判定方式：找 `self.sessions.lock().await` 与 `self.terminal_addrs.lock().await`
+    /// 两行的位置，再找**缩进比 sessions 锁更浅**的 `};`（那才是 sessions 作用域的
+    /// 结束点）—— `terminal_addrs` 必须落在它之前。
+    /// （用缩进而不是"第一个 `};`"：函数里还有内层代码块，它们的 `};` 更深。）
+    #[test]
+    fn cleanup_keeps_session_removal_and_address_cleanup_in_one_scope() {
+        let src = include_str!("manager.rs");
+        let body = src
+            .split("pub async fn cleanup_once")
+            .nth(1)
+            .expect("cleanup_once 存在")
+            .split("\n    pub ")
+            .next()
+            .expect("cleanup_once 函数体");
+
+        let lines: Vec<&str> = body.lines().collect();
+        let sessions_at = lines
+            .iter()
+            .position(|l| l.contains("self.sessions.lock().await"))
+            .expect("cleanup_once 里取了 sessions 锁");
+        let addrs_at = lines
+            .iter()
+            .position(|l| l.contains("self.terminal_addrs.lock().await"))
+            .expect("cleanup_once 里取了 terminal_addrs 锁");
+        let sessions_indent = lines[sessions_at].len() - lines[sessions_at].trim_start().len();
+        // sessions 作用域的结束点：之后第一个**缩进更浅**的 `};`
+        let scope_end = lines
+            .iter()
+            .enumerate()
+            .skip(sessions_at + 1)
+            .find(|(_, l)| {
+                let t = l.trim();
+                t == "};" && (l.len() - l.trim_start().len()) < sessions_indent
+            })
+            .map(|(i, _)| i)
+            .expect("sessions 作用域的结束点");
+
+        assert!(
+            addrs_at < scope_end,
+            "terminal_addrs 必须在 sessions 作用域**内**取锁（当前 addrs_at={addrs_at}, \
+             scope_end={scope_end}）—— 拆成两个作用域就有『会话被复活』的窗口"
+        );
+    }
+
     fn make_addr(port: u16) -> SocketAddr {
         format!("127.0.0.1:{}", port).parse().unwrap()
     }
