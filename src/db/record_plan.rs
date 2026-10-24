@@ -474,13 +474,17 @@ pub async fn channel_id_by_gb_id(pool: &Pool, gb_device_id: &str) -> sqlx::Resul
         .bind(gb_device_id)
         .fetch_optional(pool)
         .await?;
-    Ok(row.map(|r| {
-        use sqlx::Row;
-        r.try_get::<i32, _>("id")
-            .map(|v| v as i64)
-            .or_else(|_| r.try_get::<i64, _>("id"))
-            .unwrap_or_default()
-    }))
+    Ok(row
+        .map(|r| {
+            use sqlx::Row;
+            // postgres 的 `id` 是 INT4，mysql/sqlite 是 64 位 —— 先试 i32 再试 i64。
+            // **解码失败要往上抛**，不能 `unwrap_or_default()` 吞成 0：
+            // 0 会被上层当成"通道不存在"，把"解码失败"伪装成"查不到"。
+            r.try_get::<i32, _>("id")
+                .map(|v| v as i64)
+                .or_else(|_| r.try_get::<i64, _>("id"))
+        })
+        .transpose()?)
 }
 
 /// 通道主键是否真实存在（防止"关联了一个不存在的通道"被静默成功）。

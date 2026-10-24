@@ -153,10 +153,9 @@ async fn resolve_channel_pk(state: &AppState, raw: Option<&str>) -> Result<i64, 
         return Ok(0);
     }
 
-    // 1) 先按国标通道号查。
-    match crate::db::record_plan::channel_id_by_gb_id(&state.pool, raw).await {
-        Ok(Some(pk)) => return Ok(pk),
-        Ok(None) => {}
+    // 1) 按国标通道号查。
+    let by_gb = match crate::db::record_plan::channel_id_by_gb_id(&state.pool, raw).await {
+        Ok(v) => v,
         Err(e) => {
             // 数据库错误原文（表名/驱动错误码）不能回给第三方，只进日志。
             tracing::error!("按国标号查通道失败 (raw={raw}): {e}");
@@ -165,24 +164,37 @@ async fn resolve_channel_pk(state: &AppState, raw: Option<&str>) -> Result<i64, 
                 "通道解析失败",
             ));
         }
-    }
+    };
 
-    // 2) 再退回"数字主键"，并**校验它真实存在**。
-    if let Ok(pk) = raw.parse::<i64>() {
-        return match crate::db::record_plan::channel_exists(&state.pool, pk).await {
-            Ok(true) => Ok(pk),
-            Ok(false) => Ok(0),
+    // 2) 按数字主键查，并**校验它真实存在**。
+    let by_pk = match raw.parse::<i64>() {
+        Ok(pk) => match crate::db::record_plan::channel_exists(&state.pool, pk).await {
+            Ok(true) => Some(pk),
+            Ok(false) => None,
             Err(e) => {
                 tracing::error!("按主键查通道失败 (pk={pk}): {e}");
-                Err(AppError::business(
+                return Err(AppError::business(
                     crate::error::ErrorCode::Error500,
                     "通道解析失败",
-                ))
+                ));
             }
-        };
-    }
+        },
+        Err(_) => None,
+    };
 
-    Ok(0)
+    // 3) 两个口径都命中且**指向不同的通道** → id 形态有歧义，不能静默选一个。
+    //    （现实中概率很低：`gb_device_id` 正常是 20 位国标号，与自增主键不撞。
+    //    但一旦有通道的 `gb_device_id` 是短数字串，传主键就会拿到**另一条通道**，
+    //    随后按它改名 —— 改错了行还回成功。）
+    match (by_gb, by_pk) {
+        (Some(a), Some(b)) if a != b => Err(AppError::business(
+            crate::error::ErrorCode::Error400,
+            format!("id 形态有歧义: {raw} 同时是国标通道号与另一条通道的主键"),
+        )),
+        (Some(pk), _) => Ok(pk),
+        (None, Some(pk)) => Ok(pk),
+        (None, None) => Ok(0),
+    }
 }
 
 /// GET /api/sy/camera/update?id=&name=&...
@@ -492,9 +504,9 @@ pub async fn sy_test(
     // 对接方无论信哪条都是错的。
     let database =
         device_count.is_some() && online_device_count.is_some() && channel_count.is_some();
-    if !database {
-        issues.push("设备/通道统计失败：数据库核心表不可读".to_string());
-    }
+    // 这里**不再**额外追加一条聚合 issue —— 上面那几条"XX数统计失败"已经把
+    // 原因说清了，再加一条"核心表不可读"只是把同一件事说两遍
+    // （此前 issues 里会同时出现"设备数统计失败"和"设备/通道统计失败：数据库核心表不可读"）。
 
     let sip = state.sip_server.is_some();
     if !sip {
@@ -616,6 +628,57 @@ mod tests {
             names.iter().all(|n| n != "不该被写进去的名字"),
             "不存在的 id 不得改到别的通道上: {names:?}"
         );
+    }
+
+    /// 回归：id 形态**有歧义**时必须报错，不能静默选一个通道。
+    ///
+    /// 上一轮把解析改成"国标号优先"，但没处理"两个口径都命中且指向不同通道"：
+    /// 造一条 `gb_device_id='999999'` 的通道、另一条主键正好是 999999 的通道，
+    /// 传 `?id=999999` 时若静默选前者，就会**改错了行还回成功**。
+    #[tokio::test]
+    async fn camera_update_rejects_ambiguous_id_instead_of_guessing() {
+        let state = crate::test_support::app_state().await;
+        seed_device_and_channel(&state.pool, true).await;
+
+        // 通道 A：`gb_device_id` 是短数字串 '999999'（主键自增）
+        sqlx::query(
+            "INSERT INTO gb_device_channel (device_id, name, gb_device_id, status, has_audio, \
+             create_time, update_time, data_type, data_device_id, channel_type) \
+             VALUES (?, 'A', '999999', 'ON', 0, '2026-01-01 00:00:00', '2026-01-01 00:00:00', 0, 0, 0)",
+        )
+        .bind(DEVICE_ID)
+        .execute(&state.pool)
+        .await
+        .unwrap();
+        // 通道 B：主键正好是 999999
+        sqlx::query(
+            "INSERT INTO gb_device_channel (id, device_id, name, gb_device_id, status, has_audio, \
+             create_time, update_time, data_type, data_device_id, channel_type) \
+             VALUES (999999, ?, 'B', '34020000001310000992', 'ON', 0, \
+             '2026-01-01 00:00:00', '2026-01-01 00:00:00', 0, 0, 0)",
+        )
+        .bind(DEVICE_ID)
+        .execute(&state.pool)
+        .await
+        .unwrap();
+
+        let out = super::camera_update(
+            State(state),
+            Query(SyChannelUpdateQuery {
+                id: Some("999999".to_string()),
+                name: Some("不该被写进去的名字".to_string()),
+                ..Default::default()
+            }),
+        )
+        .await;
+
+        match out {
+            Ok(_) => panic!("id 形态有歧义时必须报错，不能静默选一个通道"),
+            Err(e) => {
+                let msg = e.to_string();
+                assert!(msg.contains("歧义"), "{msg}");
+            }
+        }
     }
 
     /// 回归：**能 parse 成 i64 的国标号也必须按国标号解析**。
