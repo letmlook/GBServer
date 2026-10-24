@@ -27,13 +27,22 @@ use serde::de::Error as _;
 use serde::{Deserialize, Deserializer};
 
 /// 任意标量 → 字符串。数字/布尔按字面量转，字符串原样返回，`null`/缺失 → `None`。
+///
+/// **变体顺序有意义**：`Str` 必须排在 `Int`/`Float` 前面。
+///
+/// untagged 枚举按声明顺序逐个尝试，而**字符串**会先被 `Int(i64)` 吃掉：
+/// 于是像国标通道号这种 20 位数字串（`34020000001310000001`）会先按 i64 解析
+/// 并**溢出报错** —— "number too large to fit in target type" ——
+/// 字符串根本走不到 `Str` 分支，**"字符串原样返回"的承诺就没兑现**。
+/// 把 `Str` 放最前面后：JSON 字符串一律原样返回；JSON 数字仍能落到
+/// `Int`/`Float`（`Str` 不接受 JSON 数字），JSON 布尔落到 `Bool`。
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum AnyScalar {
+    Str(String),
     Bool(bool),
     Int(i64),
     Float(f64),
-    Str(String),
 }
 
 impl AnyScalar {
@@ -168,6 +177,30 @@ where
 
 #[cfg(test)]
 mod tests {
+    /// 20 位国标号（数字串）必须原样返回，不能按 i64 解析后溢出。
+    #[test]
+    fn big_numeric_string_is_returned_verbatim() {
+        #[derive(Deserialize)]
+        struct Dto {
+            #[serde(default, deserialize_with = "super::de_opt_string")]
+            id: Option<String>,
+        }
+        // 走 axum 的 Query（就是查询串反序列化真正用的那条路）
+        let dto: axum::extract::Query<Dto> = axum::extract::Query::try_from_uri(
+            &axum::http::Uri::from_static("http://x/?id=34020000001310000001"),
+        )
+        .unwrap();
+        assert_eq!(dto.id.as_deref(), Some("34020000001310000001"));
+        // 普通数字串仍原样返回
+        let dto: axum::extract::Query<Dto> =
+            axum::extract::Query::try_from_uri(&axum::http::Uri::from_static("http://x/?id=123"))
+                .unwrap();
+        assert_eq!(dto.id.as_deref(), Some("123"));
+        // JSON 数字也能收
+        let dto: Dto = serde_json::from_str(r#"{"id":43}"#).unwrap();
+        assert_eq!(dto.id.as_deref(), Some("43"));
+    }
+
     use super::*;
 
     #[derive(Debug, Deserialize)]
