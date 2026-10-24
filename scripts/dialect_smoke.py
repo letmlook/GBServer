@@ -352,6 +352,32 @@ check('POST', f'/user/add?username={_su}&password=21232f297a57a5a743894a0e4a801f
       None, label='user/add', verbose=True)
 check('GET', '/user/users?page=1&count=5', label='user/users')
 
+# 记下刚建的 user / role 的 id，**脚本末尾要删掉**。
+#
+# 此前建完就再也不管了 —— 每跑一次冒烟就在库里留下一个 `smoke-user-*` 用户
+# 和一个同名角色（实测 e2e 共享库里已堆了 9 个用户 + 9 个角色，postgres / mysql
+# 两套库同样在涨）。共享库被历史垃圾堆满后，后面的断言会被**脏数据放大成别的
+# 症状**，排查成本极高（第八轮就踩过：23 行 API Key 残留把「排序方向」这个缺陷
+# 伪装成了「查不到刚建的 Key」）。
+_su_user_id = None
+_su_role_id = None
+try:
+    _ul = call('GET', '/user/users?page=1&count=500')
+    for _row in (_ul['data'] or {}).get('list') or []:
+        if _row.get('username') == _su:
+            _su_user_id = _row.get('id')
+            break
+except Exception:
+    pass
+try:
+    _rl = call('GET', '/role/all')
+    for _row in (_rl['data'] or []) or []:
+        if _row.get('name') == _su + '-role':
+            _su_role_id = _row.get('id')
+            break
+except Exception:
+    pass
+
 # ---------------- 通道 / 设备（写入路径）----------------
 # 这两条是 `parent_id`（VARCHAR 却曾被绑成 i64）的直接受害者：
 # 通道新增/更新在 postgres 上会因 `COALESCE(bigint, character varying)` 整个 500，
@@ -414,6 +440,23 @@ check('GET', '/server/media_server/load?id=zlmediakit-1', label='media_server/lo
 # ---------------- 日志导出 ----------------
 r = call('GET', '/log/list?format=csv&level=INFO')
 print('CSV 导出:', r['st'], str(r['msg'])[:60], '| 首行:', str(r['raw'])[:60].replace('\n', '\\n'))
+
+# ---------------- 清理本脚本自己造的数据 ----------------
+# 用户先删、角色后删（角色删除会拒绝「仍有用户引用」的角色）。
+# 逐条**校验结果**：清理失败要当场报错，而不是留脏数据等后面某条断言
+# 以另一种面貌炸掉（第八轮 `cleanupLeftovers` 就是这么空转了几个月的）。
+for _label, _method, _path in (
+        ('user/delete(冒烟残留)', 'DELETE', '/user/delete?id=%s' % _su_user_id),
+        ('role/delete(冒烟残留)', 'DELETE', '/role/delete?id=%s' % _su_role_id)):
+    if _path.endswith('id=None') or 'id=None' in _path:
+        print('跳过', _label, '（没拿到 id）')
+        continue
+    _r = call(_method, _path)
+    if _r['st'] != 200 or _r['code'] != 0:
+        print('BAD ', _label, '->', _r['st'], _r['code'], str(_r['msg'])[:80])
+        FAIL.append((_label, _r['st'], _r['code'], str(_r['msg'])[:200]))
+    else:
+        print('OK  ', _label)
 
 print()
 print('=== 失败项:', len(FAIL))
