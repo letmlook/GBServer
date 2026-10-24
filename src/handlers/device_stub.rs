@@ -804,7 +804,7 @@ pub async fn query_streams(
         });
     }
     let total = rows.len();
-    let offset = ((page - 1) * count) as usize;
+    let offset = crate::pagination::offset_usize(page, count);
     let list: Vec<serde_json::Value> = rows.into_iter().skip(offset).take(count as usize).collect();
 
     Json(ApiResult::success(serde_json::json!({

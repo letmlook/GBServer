@@ -159,7 +159,7 @@ pub async fn list_paged(
 ) -> sqlx::Result<(i64, Vec<LogEntry>)> {
     let page = page.max(1);
     let count = count.clamp(1, 500);
-    let offset = ((page - 1) * count) as i64;
+    let offset = crate::pagination::offset(page, count);
 
     let (where_clause, binds) = build_filter(query, level, start, end);
 

@@ -188,7 +188,7 @@ pub async fn list_paged(
     page: i64,
     count: i64,
 ) -> sqlx::Result<Vec<CloudRecord>> {
-    let offset = (page - 1) * count;
+    let offset = crate::pagination::offset_i64(page, count);
 
     #[cfg(feature = "postgres")]
     {
@@ -386,7 +386,7 @@ pub async fn list_filtered(
     count: i64,
 ) -> sqlx::Result<(Vec<CloudRecord>, i64)> {
     let w = f.to_where();
-    let offset = (page.max(1) - 1) * count;
+    let offset = crate::pagination::offset_i64(page, count);
 
     const COLS: &str = "SELECT id, app, stream, call_id, start_time, end_time, media_server_id, \
          server_id, file_name, folder, file_path, collect, file_size, time_len \

@@ -255,7 +255,7 @@ pub async fn list_paged(
     page: u32,
     count: u32,
 ) -> sqlx::Result<(i64, Vec<serde_json::Value>)> {
-    let offset = (page.saturating_sub(1)) * count;
+    let offset = crate::pagination::offset(page, count);
 
     #[derive(sqlx::FromRow)]
     struct AuditRow {
@@ -347,7 +347,7 @@ pub async fn list_paged(
     for b in &bind_values {
         data_q = data_q.bind(b);
     }
-    data_q = data_q.bind(count as i64).bind(offset as i64);
+    data_q = data_q.bind(count as i64).bind(offset);
 
     let rows: Vec<AuditRow> = data_q.fetch_all(pool).await.unwrap_or_default();
 

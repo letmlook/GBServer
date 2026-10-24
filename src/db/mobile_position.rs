@@ -130,7 +130,7 @@ pub async fn list_paged(
     page: i64,
     count: i64,
 ) -> sqlx::Result<Vec<MobilePosition>> {
-    let offset = (page - 1) * count;
+    let offset = crate::pagination::offset_i64(page, count);
 
     #[cfg(feature = "postgres")]
     {

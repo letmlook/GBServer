@@ -59,16 +59,16 @@ pub async fn list_by_platform_id(
     page: u32,
     count: u32,
 ) -> sqlx::Result<Vec<PlatformChannel>> {
-    let offset = (page.saturating_sub(1)) * count;
-    let limit = count.min(100) as i64;
+    let limit = count.min(100);
+    let offset = crate::pagination::offset(page, limit);
 
     #[cfg(feature = "mysql")]
     return sqlx::query_as::<_, PlatformChannel>(
         "SELECT * FROM gb_platform_channel WHERE platform_id = ? ORDER BY id LIMIT ? OFFSET ?",
     )
     .bind(platform_id)
-    .bind(limit)
-    .bind(offset as i64)
+    .bind(limit as i64)
+    .bind(offset)
     .fetch_all(pool)
     .await;
 
@@ -77,8 +77,8 @@ pub async fn list_by_platform_id(
         "SELECT * FROM gb_platform_channel WHERE platform_id = $1 ORDER BY id LIMIT $2 OFFSET $3",
     )
     .bind(platform_id)
-    .bind(limit)
-    .bind(offset as i64)
+    .bind(limit as i64)
+    .bind(offset)
     .fetch_all(pool)
     .await;
 
@@ -87,8 +87,8 @@ pub async fn list_by_platform_id(
         "SELECT * FROM gb_platform_channel WHERE platform_id = ? ORDER BY id LIMIT ? OFFSET ?",
     )
     .bind(platform_id)
-    .bind(limit)
-    .bind(offset as i64)
+    .bind(limit as i64)
+    .bind(offset)
     .fetch_all(pool)
     .await;
 }

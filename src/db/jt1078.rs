@@ -50,9 +50,8 @@ pub async fn list_terminals_paged(
     query: Option<&str>,
     online: Option<bool>,
 ) -> sqlx::Result<Vec<JtTerminal>> {
-    let offset = (page.saturating_sub(1)) * count;
-    let limit = count.min(100) as i64;
-    let offset = offset as i64;
+    let limit = count.min(100);
+    let offset = crate::pagination::offset(page, limit);
     let q = query.unwrap_or("").trim();
     let like = format!("%{q}%");
     let has_query = !q.is_empty();
@@ -73,7 +72,7 @@ pub async fn list_terminals_paged(
                 .bind(&like)
                 .bind(&like)
                 .bind(online.unwrap())
-                .bind(limit)
+                .bind(limit as i64)
                 .bind(offset)
                 .fetch_all(pool)
                 .await?
@@ -81,20 +80,20 @@ pub async fn list_terminals_paged(
             sqlx::query_as::<_, JtTerminal>(sql)
                 .bind(&like)
                 .bind(&like)
-                .bind(limit)
+                .bind(limit as i64)
                 .bind(offset)
                 .fetch_all(pool)
                 .await?
         } else if online.is_some() {
             sqlx::query_as::<_, JtTerminal>(sql)
                 .bind(online.unwrap())
-                .bind(limit)
+                .bind(limit as i64)
                 .bind(offset)
                 .fetch_all(pool)
                 .await?
         } else {
             sqlx::query_as::<_, JtTerminal>(sql)
-                .bind(limit)
+                .bind(limit as i64)
                 .bind(offset)
                 .fetch_all(pool)
                 .await?
@@ -118,7 +117,7 @@ pub async fn list_terminals_paged(
                 .bind(&like)
                 .bind(&like)
                 .bind(online.unwrap())
-                .bind(limit)
+                .bind(limit as i64)
                 .bind(offset)
                 .fetch_all(pool)
                 .await?
@@ -126,20 +125,20 @@ pub async fn list_terminals_paged(
             sqlx::query_as::<_, JtTerminal>(sql)
                 .bind(&like)
                 .bind(&like)
-                .bind(limit)
+                .bind(limit as i64)
                 .bind(offset)
                 .fetch_all(pool)
                 .await?
         } else if online.is_some() {
             sqlx::query_as::<_, JtTerminal>(sql)
                 .bind(online.unwrap())
-                .bind(limit)
+                .bind(limit as i64)
                 .bind(offset)
                 .fetch_all(pool)
                 .await?
         } else {
             sqlx::query_as::<_, JtTerminal>(sql)
-                .bind(limit)
+                .bind(limit as i64)
                 .bind(offset)
                 .fetch_all(pool)
                 .await?
@@ -163,7 +162,7 @@ pub async fn list_terminals_paged(
                 .bind(&like)
                 .bind(&like)
                 .bind(online.unwrap())
-                .bind(limit)
+                .bind(limit as i64)
                 .bind(offset)
                 .fetch_all(pool)
                 .await?
@@ -171,20 +170,20 @@ pub async fn list_terminals_paged(
             sqlx::query_as::<_, JtTerminal>(sql)
                 .bind(&like)
                 .bind(&like)
-                .bind(limit)
+                .bind(limit as i64)
                 .bind(offset)
                 .fetch_all(pool)
                 .await?
         } else if online.is_some() {
             sqlx::query_as::<_, JtTerminal>(sql)
                 .bind(online.unwrap())
-                .bind(limit)
+                .bind(limit as i64)
                 .bind(offset)
                 .fetch_all(pool)
                 .await?
         } else {
             sqlx::query_as::<_, JtTerminal>(sql)
-                .bind(limit)
+                .bind(limit as i64)
                 .bind(offset)
                 .fetch_all(pool)
                 .await?

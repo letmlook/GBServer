@@ -319,26 +319,26 @@ pub async fn get_unusual_civilcode(
     page: u32,
     count: u32,
 ) -> sqlx::Result<Vec<DeviceChannel>> {
-    let offset = (page.saturating_sub(1)) * count;
+    let offset = crate::pagination::offset(page, count);
     #[cfg(feature = "mysql")]
     return sqlx::query_as::<_, DeviceChannel>(
         &format!("SELECT {} FROM gb_device_channel WHERE civil_code IS NULL OR civil_code = '' ORDER BY id LIMIT ? OFFSET ?", DEVICE_CHANNEL_SELECT_COLUMNS),
     )
-    .bind(count as i64).bind(offset as i64)
+    .bind(count as i64).bind(offset)
     .fetch_all(pool)
     .await;
     #[cfg(feature = "postgres")]
     return sqlx::query_as::<_, DeviceChannel>(
         &format!("SELECT {} FROM gb_device_channel WHERE civil_code IS NULL OR civil_code = '' ORDER BY id LIMIT $1 OFFSET $2", DEVICE_CHANNEL_SELECT_COLUMNS),
     )
-    .bind(count as i64).bind(offset as i64)
+    .bind(count as i64).bind(offset)
     .fetch_all(pool)
     .await;
     #[cfg(feature = "sqlite")]
     return sqlx::query_as::<_, DeviceChannel>(
         &format!("SELECT {} FROM gb_device_channel WHERE civil_code IS NULL OR civil_code = '' ORDER BY id LIMIT ? OFFSET ?", DEVICE_CHANNEL_SELECT_COLUMNS),
     )
-    .bind(count as i64).bind(offset as i64)
+    .bind(count as i64).bind(offset)
     .fetch_all(pool)
     .await;
 }
@@ -396,26 +396,26 @@ pub async fn get_unusual_parent(
     page: u32,
     count: u32,
 ) -> sqlx::Result<Vec<DeviceChannel>> {
-    let offset = (page.saturating_sub(1)) * count;
+    let offset = crate::pagination::offset(page, count);
     #[cfg(feature = "mysql")]
     return sqlx::query_as::<_, DeviceChannel>(
         &format!("SELECT {} FROM gb_device_channel WHERE parent_id IS NULL OR parent_id = '0' ORDER BY id LIMIT ? OFFSET ?", DEVICE_CHANNEL_SELECT_COLUMNS),
     )
-    .bind(count as i64).bind(offset as i64)
+    .bind(count as i64).bind(offset)
     .fetch_all(pool)
     .await;
     #[cfg(feature = "postgres")]
     return sqlx::query_as::<_, DeviceChannel>(
         &format!("SELECT {} FROM gb_device_channel WHERE parent_id IS NULL OR parent_id = '0' ORDER BY id LIMIT $1 OFFSET $2", DEVICE_CHANNEL_SELECT_COLUMNS),
     )
-    .bind(count as i64).bind(offset as i64)
+    .bind(count as i64).bind(offset)
     .fetch_all(pool)
     .await;
     #[cfg(feature = "sqlite")]
     return sqlx::query_as::<_, DeviceChannel>(
         &format!("SELECT {} FROM gb_device_channel WHERE parent_id IS NULL OR parent_id = '0' ORDER BY id LIMIT ? OFFSET ?", DEVICE_CHANNEL_SELECT_COLUMNS),
     )
-    .bind(count as i64).bind(offset as i64)
+    .bind(count as i64).bind(offset)
     .fetch_all(pool)
     .await;
 }
@@ -487,14 +487,14 @@ pub async fn get_parent_channels(
     _online: Option<bool>,
     _channel_type: Option<i32>,
 ) -> sqlx::Result<Vec<DeviceChannel>> {
-    let offset = (page.saturating_sub(1)) * count;
+    let offset = crate::pagination::offset(page, count);
     let cols = DEVICE_CHANNEL_SELECT_COLUMNS;
     #[cfg(feature = "mysql")]
     return sqlx::query_as::<_, DeviceChannel>(&format!(
         "SELECT {} FROM gb_device_channel WHERE parent_id IS NOT NULL AND parent_id != '0' ORDER BY id LIMIT ? OFFSET ?",
         cols
     ))
-    .bind(count as i64).bind(offset as i64)
+    .bind(count as i64).bind(offset)
     .fetch_all(pool)
     .await;
     #[cfg(feature = "postgres")]
@@ -502,7 +502,7 @@ pub async fn get_parent_channels(
         "SELECT {} FROM gb_device_channel WHERE parent_id IS NOT NULL AND parent_id != '0' ORDER BY id LIMIT $1 OFFSET $2",
         cols
     ))
-    .bind(count as i64).bind(offset as i64)
+    .bind(count as i64).bind(offset)
     .fetch_all(pool)
     .await;
     #[cfg(feature = "sqlite")]
@@ -510,7 +510,7 @@ pub async fn get_parent_channels(
         "SELECT {} FROM gb_device_channel WHERE parent_id IS NOT NULL AND parent_id != '0' ORDER BY id LIMIT ? OFFSET ?",
         cols
     ))
-    .bind(count as i64).bind(offset as i64)
+    .bind(count as i64).bind(offset)
     .fetch_all(pool)
     .await;
 }

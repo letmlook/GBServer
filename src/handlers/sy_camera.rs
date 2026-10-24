@@ -312,7 +312,7 @@ async fn camera_rows(state: &AppState, q: &PageQuery) -> (Vec<CameraRow>, u64, u
     });
 
     let total = rows.len() as u64;
-    let start = (((page - 1) as usize) * count as usize).min(rows.len());
+    let start = crate::pagination::offset_usize(page, count).min(rows.len());
     let end = (start + count as usize).min(rows.len());
     (rows[start..end].to_vec(), total, page, count)
 }

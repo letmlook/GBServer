@@ -47,26 +47,26 @@ pub struct Platform {
 
 /// 分页列表查询
 pub async fn list_paged(pool: &Pool, page: u32, count: u32) -> sqlx::Result<Vec<Platform>> {
-    let offset = (page.saturating_sub(1)) * count;
-    let limit = count.min(100) as i64;
+    let limit = count.min(100);
+    let offset = crate::pagination::offset(page, limit);
     #[cfg(feature = "mysql")]
     return sqlx::query_as::<_, Platform>("SELECT * FROM gb_platform ORDER BY id LIMIT ? OFFSET ?")
-        .bind(limit)
-        .bind(offset as i64)
+        .bind(limit as i64)
+        .bind(offset)
         .fetch_all(pool)
         .await;
     #[cfg(feature = "postgres")]
     return sqlx::query_as::<_, Platform>(
         "SELECT * FROM gb_platform ORDER BY id LIMIT $1 OFFSET $2",
     )
-    .bind(limit)
-    .bind(offset as i64)
+    .bind(limit as i64)
+    .bind(offset)
     .fetch_all(pool)
     .await;
     #[cfg(feature = "sqlite")]
     return sqlx::query_as::<_, Platform>("SELECT * FROM gb_platform ORDER BY id LIMIT ? OFFSET ?")
-        .bind(limit)
-        .bind(offset as i64)
+        .bind(limit as i64)
+        .bind(offset)
         .fetch_all(pool)
         .await;
 }

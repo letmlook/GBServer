@@ -112,7 +112,7 @@ pub async fn alarm_list(
 ) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let page = q.page.unwrap_or(1).max(1);
     let count = q.count.unwrap_or(10).clamp(1, 500);
-    let offset = ((page - 1) * count) as i64;
+    let offset = crate::pagination::offset(page, count);
 
     let w = alarm_filter(&q);
 

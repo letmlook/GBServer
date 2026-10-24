@@ -224,7 +224,7 @@ pub async fn platform_query(
     let count = q.count.unwrap_or(10).min(100);
     let search = q.query.as_deref().unwrap_or("").trim().to_string();
     let like = format!("%{}%", search);
-    let offset = (page.saturating_sub(1) * count) as i64;
+    let offset = crate::pagination::offset(page, count);
 
     #[cfg(feature = "postgres")]
     let total = if search.is_empty() {
@@ -440,7 +440,7 @@ pub async fn platform_channel_list(
         }))));
     }
 
-    let offset = (page.saturating_sub(1) * count) as i64;
+    let offset = crate::pagination::offset(page, count);
     let search = q.query.as_deref().unwrap_or("").trim().to_string();
     let like = format!("%{}%", search);
     let online = match q.online.as_deref() {

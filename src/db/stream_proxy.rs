@@ -511,8 +511,8 @@ pub async fn list_paged(
     pulling: Option<bool>,
     query: Option<&str>,
 ) -> sqlx::Result<Vec<StreamProxy>> {
-    let offset = (page.saturating_sub(1)) * count;
-    let limit = count.min(100) as i64;
+    let limit = count.min(100);
+    let offset = crate::pagination::offset(page, limit);
     let w = proxy_filter(media_server_id, pulling, query);
     // 多方言共用同一份 SQL 文本：`DynWhere::sql` 把 `?` 改写成 `$n`。
     // 列名显式列出，不用 `SELECT *` —— 少了列时 `SELECT *` 不报错，只会让字段恒空。
@@ -538,7 +538,7 @@ pub async fn list_paged(
             crate::dyn_where::BindValue::Bool(v) => q.bind(*v),
         };
     }
-    q.bind(limit).bind(offset as i64).fetch_all(pool).await
+    q.bind(limit as i64).bind(offset).fetch_all(pool).await
 }
 
 pub async fn count_all(

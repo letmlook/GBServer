@@ -177,7 +177,7 @@ pub async fn get_users_paged(
     count: u32,
     query: Option<&str>,
 ) -> sqlx::Result<Vec<User>> {
-    let offset = (page - 1).max(0) * count;
+    let offset = crate::pagination::offset(page, count);
     let q = query.map(str::trim).filter(|s| !s.is_empty());
     let like = q.map(|s| format!("%{}%", s));
 
@@ -193,7 +193,7 @@ pub async fn get_users_paged(
                 )
                 .bind(pat)
                 .bind(count as i64)
-                .bind(offset as i64)
+                .bind(offset)
                 .fetch_all(pool)
                 .await
             }
@@ -204,7 +204,7 @@ pub async fn get_users_paged(
         FROM gb_user u LEFT JOIN gb_user_role r ON u.role_id = r.id ORDER BY u.id LIMIT ? OFFSET ?"#,
                 )
                 .bind(count as i64)
-                .bind(offset as i64)
+                .bind(offset)
                 .fetch_all(pool)
                 .await
             }
@@ -222,7 +222,7 @@ pub async fn get_users_paged(
                 )
                 .bind(pat)
                 .bind(count as i64)
-                .bind(offset as i64)
+                .bind(offset)
                 .fetch_all(pool)
                 .await
             }
@@ -233,7 +233,7 @@ pub async fn get_users_paged(
         FROM gb_user u LEFT JOIN gb_user_role r ON u.role_id = r.id ORDER BY u.id LIMIT $1 OFFSET $2"#,
                 )
                 .bind(count as i64)
-                .bind(offset as i64)
+                .bind(offset)
                 .fetch_all(pool)
                 .await
             }
@@ -251,7 +251,7 @@ pub async fn get_users_paged(
                 )
                 .bind(pat)
                 .bind(count as i64)
-                .bind(offset as i64)
+                .bind(offset)
                 .fetch_all(pool)
                 .await
             }
@@ -262,7 +262,7 @@ pub async fn get_users_paged(
         FROM gb_user u LEFT JOIN gb_user_role r ON u.role_id = r.id ORDER BY u.id LIMIT ? OFFSET ?"#,
                 )
                 .bind(count as i64)
-                .bind(offset as i64)
+                .bind(offset)
                 .fetch_all(pool)
                 .await
             }

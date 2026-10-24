@@ -133,7 +133,7 @@ pub async fn list_paged(
     count: u32,
     query: Option<&str>,
 ) -> sqlx::Result<Vec<RecordPlan>> {
-    let offset = (page.saturating_sub(1)) * count;
+    let offset = crate::pagination::offset(page, count);
     let like = query.map(|q| format!("%{}%", q));
     #[cfg(feature = "mysql")]
     return sqlx::query_as::<_, RecordPlan>(
@@ -143,7 +143,7 @@ pub async fn list_paged(
     .bind(like.as_deref())
     .bind(like.as_deref())
     .bind(count as i64)
-    .bind(offset as i64)
+    .bind(offset)
     .fetch_all(pool)
     .await;
     #[cfg(feature = "postgres")]
@@ -154,7 +154,7 @@ pub async fn list_paged(
     .bind(like.as_deref())
     .bind(like.as_deref())
     .bind(count as i64)
-    .bind(offset as i64)
+    .bind(offset)
     .fetch_all(pool)
     .await;
     #[cfg(feature = "sqlite")]
@@ -165,7 +165,7 @@ pub async fn list_paged(
     .bind(like.as_deref())
     .bind(like.as_deref())
     .bind(count as i64)
-    .bind(offset as i64)
+    .bind(offset)
     .fetch_all(pool)
     .await;
 }

@@ -2804,7 +2804,7 @@ async fn cloud_record_scan_zlm(
         list.reverse();
     }
     let total = list.len();
-    let start = ((page.max(1) - 1) * count) as usize;
+    let start = crate::pagination::offset_usize(page.max(1), count);
     let end = (start + count as usize).min(total);
     let paged = if start >= total {
         Vec::new()
@@ -3097,7 +3097,7 @@ pub async fn cloud_record_collect_list(
 
     let page = q.page.unwrap_or(1);
     let count = q.count.unwrap_or(20).min(100);
-    let offset = (page.saturating_sub(1) * count) as i64;
+    let offset = crate::pagination::offset(page, count);
 
     // 不再用 `create_time::text`（PostgreSQL 专有），也不再用
     // `unwrap_or_default()` 把错误吞成空列表 —— 那让"收藏列表恒为空"
@@ -3483,7 +3483,7 @@ pub async fn record_plan_channel_list(
 ) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let page = q.page.unwrap_or(1).max(1);
     let count = q.count.unwrap_or(15).clamp(1, 500);
-    let offset = ((page - 1) * count) as i64;
+    let offset = crate::pagination::offset(page, count);
     let plan_id = q.plan_id;
     let has_link = q.has_link.as_deref();
     let online = q.online.as_deref();

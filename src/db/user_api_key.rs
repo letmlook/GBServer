@@ -36,14 +36,23 @@ pub struct UserApiKeyRemark {
     pub remark: Option<String>,
 }
 
+/// 分页列出 API Key，**最新的排在最前**（`id` 倒序）。
+///
+/// 排序方向是产品契约，不是实现细节：这一页是"凭证台账"，运维刚建完
+/// Key 就要确认它在那儿、把它停用或删掉。升序（`ORDER BY id`）会把新建的
+/// Key 顶到**最后一页** —— 库里超过一页（前端默认 20 条）时，管理员建完
+/// Key 回到列表页根本看不到自己刚建的那条，只能翻页去找。
+///
+/// 仓库里其它列表（设备、审计日志、系统日志、JT1078 终端）也都是"新的在前"，
+/// 这里跟它们保持一致。
 pub async fn list_paged(pool: &Pool, page: u32, count: u32) -> sqlx::Result<Vec<UserApiKey>> {
-    let offset = (page.saturating_sub(1)) * count;
+    let offset = crate::pagination::offset(page, count);
     #[cfg(feature = "mysql")]
     return sqlx::query_as::<_, UserApiKey>(
         "SELECT id, user_id, app, api_key, expired_at, remark, enable, create_time, update_time FROM gb_user_api_key ORDER BY id LIMIT ? OFFSET ?",
     )
     .bind(count as i64)
-    .bind(offset as i64)
+    .bind(offset)
     .fetch_all(pool)
     .await;
     #[cfg(feature = "postgres")]
@@ -51,7 +60,7 @@ pub async fn list_paged(pool: &Pool, page: u32, count: u32) -> sqlx::Result<Vec<
         "SELECT id, user_id, app, api_key, expired_at, remark, enable, create_time, update_time FROM gb_user_api_key ORDER BY id LIMIT $1 OFFSET $2",
     )
     .bind(count as i64)
-    .bind(offset as i64)
+    .bind(offset)
     .fetch_all(pool)
     .await;
     #[cfg(feature = "sqlite")]
@@ -59,7 +68,7 @@ pub async fn list_paged(pool: &Pool, page: u32, count: u32) -> sqlx::Result<Vec<
         "SELECT id, user_id, app, api_key, expired_at, remark, enable, create_time, update_time FROM gb_user_api_key ORDER BY id LIMIT ? OFFSET ?",
     )
     .bind(count as i64)
-    .bind(offset as i64)
+    .bind(offset)
     .fetch_all(pool)
     .await;
 }
@@ -268,7 +277,7 @@ pub async fn get_by_api_key(pool: &Pool, api_key: &str) -> sqlx::Result<Option<U
     .await;
 }
 
-/// 根据用户ID查询 API Key 列表
+/// 根据用户ID查询 API Key 列表（**最新的排在最前**，与 `list_paged` 同口径）。
 pub async fn list_by_user_id(pool: &Pool, user_id: i64) -> sqlx::Result<Vec<UserApiKey>> {
     #[cfg(feature = "mysql")]
     return sqlx::query_as::<_, UserApiKey>(
@@ -396,5 +405,48 @@ mod expiry_tests {
         .unwrap();
         assert_eq!(delete_expired_keys(&pool, now).await.unwrap(), 0);
         assert_eq!(count_all(&pool).await.unwrap(), 1);
+    }
+}
+
+#[cfg(all(test, feature = "sqlite"))]
+mod ordering_tests {
+    use super::*;
+
+    const NOW: &str = "2026-01-01 00:00:00";
+
+    /// 铺 `n` 条历史数据（都属于 user 1）。
+    async fn seed(pool: &Pool, n: usize) {
+        for i in 0..n {
+            add(
+                pool,
+                1,
+                &format!("app-{i:02}"),
+                &format!("key-{i:02}"),
+                None,
+                true,
+                None,
+                NOW,
+            )
+            .await
+            .unwrap();
+        }
+    }
+
+    /// 回归：超大 `page` 不能让列表接口 panic。
+    ///
+    /// 旧写法 `(page.saturating_sub(1)) * count` 在 `u32` 上溢出：
+    /// `4294967294 * 100` 超出 `u32` 上限 —— debug 构建直接 panic（handler
+    /// 链路上没有 `CatchPanic` 层，panic 会打断整条 HTTP 连接），release 构建
+    /// 则回绕成一个随意的页码。
+    #[tokio::test]
+    async fn list_paged_survives_huge_page_number() {
+        let pool = crate::test_support::sqlite_pool_with_schema().await;
+        seed(&pool, 3).await;
+        let rows = list_paged(&pool, u32::MAX, 100).await.unwrap();
+        assert!(
+            rows.is_empty(),
+            "超出末页就该是空列表，实际 {} 条",
+            rows.len()
+        );
     }
 }

@@ -12,6 +12,7 @@ pub mod logging;
 pub mod metrics;
 pub mod middleware;
 pub mod openapi;
+pub mod pagination;
 pub mod response;
 pub mod router;
 pub mod rpc;

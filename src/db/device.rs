@@ -422,12 +422,13 @@ pub async fn list_devices_paged(
     query: Option<&str>,
     status: Option<bool>,
 ) -> sqlx::Result<Vec<Device>> {
-    let offset = (page.saturating_sub(1)) * count;
     // 上限 1000：摄像机树一次要 1000 条。此前硬截到 100，第 101 台设备及其通道
     // 会静默消失（响应里的 count 还是请求值）。想限制页大小的接口自行 clamp
     // （`/api/device/query/devices` 就是 `.min(100)`）。
     let limit = count.min(1000) as i64;
-    let offset = offset as i64;
+    // OFFSET 的步长必须跟 LIMIT 的页长一致（都用 clamp 后的 count），
+    // 否则 count 大于上限时翻页会跳过一整段数据。
+    let offset = crate::pagination::offset(page, count.min(1000));
     let q = query.unwrap_or("").trim();
     let has_query = !q.is_empty();
     let like = format!("%{q}%");
@@ -652,7 +653,7 @@ pub async fn list_channels_paged(
     page: u32,
     count: u32,
 ) -> sqlx::Result<Vec<DeviceChannel>> {
-    let offset = (page.saturating_sub(1)) * count;
+    let offset = crate::pagination::offset(page, count);
     #[cfg(feature = "mysql")]
     return sqlx::query_as::<_, DeviceChannel>(&format!(
         "SELECT {} FROM gb_device_channel WHERE device_id = ? ORDER BY id LIMIT ? OFFSET ?",
@@ -660,7 +661,7 @@ pub async fn list_channels_paged(
     ))
     .bind(device_id)
     .bind(count as i64)
-    .bind(offset as i64)
+    .bind(offset)
     .fetch_all(pool)
     .await;
     #[cfg(feature = "postgres")]
@@ -670,7 +671,7 @@ pub async fn list_channels_paged(
     ))
     .bind(device_id)
     .bind(count as i64)
-    .bind(offset as i64)
+    .bind(offset)
     .fetch_all(pool)
     .await;
     #[cfg(feature = "sqlite")]
@@ -680,7 +681,7 @@ pub async fn list_channels_paged(
     ))
     .bind(device_id)
     .bind(count as i64)
-    .bind(offset as i64)
+    .bind(offset)
     .fetch_all(pool)
     .await;
 }
@@ -699,7 +700,7 @@ pub async fn list_channels_filtered(
     count: u32,
 ) -> sqlx::Result<(Vec<DeviceChannel>, i64)> {
     use crate::dyn_where::{BindValue, DynWhere};
-    let offset = (page.saturating_sub(1) as i64) * count as i64;
+    let offset = crate::pagination::offset(page, count);
 
     let mut w = DynWhere::new();
     w.add(
@@ -955,9 +956,8 @@ pub async fn list_common_channels_paged(
     online: Option<bool>,
     channel_type: Option<i32>,
 ) -> sqlx::Result<Vec<DeviceChannel>> {
-    let offset = (page.saturating_sub(1)) * count;
     let limit = count.min(100) as i64;
-    let offset = offset as i64;
+    let offset = crate::pagination::offset(page, count.min(100));
     let q = query.unwrap_or("").trim();
     let like = format!("%{q}%");
     let has_query = !q.is_empty();

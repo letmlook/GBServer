@@ -381,8 +381,8 @@ pub async fn list_paged(
     query: Option<&str>,
 ) -> sqlx::Result<Vec<StreamPush>> {
     let (w, _) = push_filter(media_server_id, pushing, query);
-    let limit = count.min(100) as i64;
-    let offset = (page.saturating_sub(1) as i64) * limit;
+    let limit = count.min(100);
+    let offset = crate::pagination::offset(page, limit);
 
     const COLS: &str = "SELECT id, app, stream, create_time, media_server_id, server_id, \
          push_time, status, update_time, pushing, self as self_push, start_offline_push, stream_status, gb_device_id, gb_channel_id \
@@ -406,7 +406,7 @@ pub async fn list_paged(
             crate::dyn_where::BindValue::Bool(v) => q.bind(*v),
         };
     }
-    q.bind(limit).bind(offset).fetch_all(pool).await
+    q.bind(limit as i64).bind(offset).fetch_all(pool).await
 }
 
 /// 组装推流列表的 WHERE（`list_paged` 与 `count_all` 共用）。
