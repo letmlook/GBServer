@@ -42,7 +42,12 @@ services:
       # SQLite 设备上限（默认 500；超出需迁移到 PG）
       GBSERVER__DATABASE__SQLITE_MAX_DEVICES: "500"
       # Redis 留空 → 自动走 InMemoryBackend（StateStore 单机）
-      GBSERVER__JWT__SECRET: ${GBSERVER_JWT_SECRET:-a7f3c9e2b1d84f6a0e8c5b2d9f1a4e7c0b3d6f9a2e5c8b1d4f7a0e3c6b9d2f5}
+      # JWT 签名密钥：**必须**由部署方注入，没有默认值。
+      # 兜底一个仓库里公开的密钥 = 任何拿到仓库的人都能伪造管理员 token
+      # （HS256 对称签名，密钥即身份）。生成：openssl rand -hex 32
+      GBSERVER__JWT__SECRET: ${GBSERVER_JWT_SECRET:?Set GBSERVER_JWT_SECRET to a random >=32-char string (openssl rand -hex 32)}
+      # 弱密钥 / 默认密钥 → 启动即失败（容器化即生产路径）
+      GBSERVER__SECURITY__STRICT: "1"
       GBSERVER__SIP__PASSWORD: ${GBSERVER_SIP_PASSWORD:-admin123}
       # ZLM 在桥接网络中，但媒体 URL 和 ICE 候选必须指向浏览器可达的宿主地址。
       GBSERVER_ZLM_PRIMARY_IP: ${GBSERVER_ZLM_IP:-${GBSERVER_SIP_ADVERTISE_IP}}

@@ -22,7 +22,16 @@ services:
       GBSERVER__SIP__PORT: 5060
       GBSERVER__DATABASE__URL: postgres://postgres:postgrespw@postgres:5432/gbserver
       GBSERVER__REDIS__URL: redis://redis:6379
-      GBSERVER__JWT__SECRET: ${GBSERVER_JWT_SECRET:-a7f3c9e2b1d84f6a0e8c5b2d9f1a4e7c0b3d6f9a2e5c8b1d4f7a0e3c6b9d2f5}
+      # JWT 签名密钥：**必须**由部署方注入，没有默认值。
+      # 此前这里兜底的是仓库里那个已提交的公开密钥 —— HS256 是对称签名，
+      # 「密钥即身份」：拿到仓库的人拿它就能伪造一个管理员 token
+      # （`{"sub":"login","userName":"admin"}`），整个平台的管理面沦陷。
+      # 与 `GBSERVER_SIP_ADVERTISE_IP` 同一口径：没设就直接拒绝启动。
+      # 生成方式：openssl rand -hex 32
+      GBSERVER__JWT__SECRET: ${GBSERVER_JWT_SECRET:?Set GBSERVER_JWT_SECRET to a random >=32-char string (openssl rand -hex 32)}
+      # 弱密钥 / 默认密钥 → **启动即失败**（此前只 WARN，容器照常带着公开密钥起来）。
+      # 容器化就是生产路径，所以默认开启；本地 `cargo run` 不受此影响。
+      GBSERVER__SECURITY__STRICT: "1"
       GBSERVER__SIP__PASSWORD: ${GBSERVER_SIP_PASSWORD:-admin123}
       # ---- ZLM 节点地址（默认 compose：ZLM 用 host 网络）----
       # ZLM 与后端不在同一个网络命名空间：后端在桥接网络里，ZLM 直接占用宿主端口。
