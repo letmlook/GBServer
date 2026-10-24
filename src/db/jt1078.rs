@@ -824,11 +824,26 @@ pub async fn mark_terminal_offline_if_stale(
     let deadline_ts = parse_update_time(deadline).unwrap_or(0);
 
     // 取该 phone 的**所有**行（phone_number 无唯一约束，可能有重复行）
-    let rows: Vec<(i64, Option<String>)> =
-        sqlx::query_as("SELECT id, update_time FROM gb_jt_terminal WHERE phone_number = ?")
-            .bind(phone_number)
-            .fetch_all(pool)
-            .await?;
+    //
+    // **必须走 `dialect_sql`**：裸 `?` 只在 mysql/sqlite 下合法，postgres 的
+    // 预编译语句协议只认 `$1` —— 直接把 `?` 发给 pg 会得到
+    // `syntax error at end of input`，**每次会话超时都置不了离线**
+    // （错误被 `jt1078::manager::cleanup_once` 吞成一条 warn 日志，
+    // 终端于是永远显示在线，平台照样给它下发命令）。
+    // 详见 `src/dyn_where.rs` 的说明与 `dialect_guard` 回归测试。
+    //
+    // **`id` 必须解成 `i32` 而不是 `i64`**：postgres 的 `gb_jt_terminal.id`
+    // 是 `serial` → **INT4**，而 sqlx-postgres 的类型检查是**严格**的：
+    // 用 `i64`（INT8）去解 INT4 列直接报
+    // `mismatched types; Rust type i64 (as SQL type INT8) is not compatible
+    //  with SQL type INT4` —— 换了占位符照样在 postgres 上失败。
+    // 本文件的其它地方（`JtTerminal.id`）用的就是 `i32`，三方言都通。
+    let rows: Vec<(i32, Option<String>)> = sqlx::query_as(&crate::dyn_where::dialect_sql(
+        "SELECT id, update_time FROM gb_jt_terminal WHERE phone_number = ?",
+    ))
+    .bind(phone_number)
+    .fetch_all(pool)
+    .await?;
     if rows.is_empty() {
         return Ok(0);
     }
@@ -855,23 +870,43 @@ pub async fn mark_terminal_offline_if_stale(
     }
 
     // 全部过期 → 按 **id** 精确置离线（而不是按 phone 批量改）
+    //
+    // **条件写**：`WHERE id = ? AND update_time = ?` —— `update_time` 带上**读到的
+    // 原值**。这一条是**原子性**的关键：读（SELECT）与写（UPDATE）之间存在窗口，
+    // 终端若在这期间发过心跳，`update_time` 会被刷新成更新的值 —— 此时若不加这条
+    // 条件，仍会把它标成离线（**活着的终端被误判离线**）。
+    // 加了之后心跳把值改掉了 → 条件不成立 → 影响 0 行 → 终端保持在线。
+    //
+    // 为什么能拿字符串做等值比较：能走到这里的行，`update_time` 一定**非空且
+    // 可解析**（解析不出的一律按「还活跃」提前 return 了），所以不存在
+    // `NULL = NULL` 的坑；而这些值都是定长数字时间戳，三方言的 `=` 都是
+    // 字节/数字比较（MySQL 的 `utf8mb4_general_ci` 大小写不敏感，但这些值里
+    // 只有数字与分隔符，不受影响）。
     let mut affected = 0u64;
-    for (id, _) in &rows {
+    for (id, ts) in &rows {
+        let seen = ts.clone().unwrap_or_default();
         #[cfg(any(feature = "mysql", feature = "sqlite"))]
-        let r = sqlx::query("UPDATE gb_jt_terminal SET status = ?, update_time = ? WHERE id = ?")
-            .bind(false)
-            .bind(&now)
-            .bind(id)
-            .execute(pool)
-            .await?;
+        let r = sqlx::query(
+            "UPDATE gb_jt_terminal SET status = ?, update_time = ? \
+             WHERE id = ? AND update_time = ?",
+        )
+        .bind(false)
+        .bind(&now)
+        .bind(id)
+        .bind(&seen)
+        .execute(pool)
+        .await?;
         #[cfg(feature = "postgres")]
-        let r =
-            sqlx::query("UPDATE gb_jt_terminal SET status = $1, update_time = $2 WHERE id = $3")
-                .bind(false)
-                .bind(&now)
-                .bind(id)
-                .execute(pool)
-                .await?;
+        let r = sqlx::query(
+            "UPDATE gb_jt_terminal SET status = $1, update_time = $2 \
+             WHERE id = $3 AND update_time = $4",
+        )
+        .bind(false)
+        .bind(&now)
+        .bind(id)
+        .bind(&seen)
+        .execute(pool)
+        .await?;
         affected += r.rows_affected();
     }
     Ok(affected)
@@ -1043,13 +1078,19 @@ pub async fn insert_area_circle(
     radius_m: i32,
 ) -> sqlx::Result<i64> {
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    let sql = "INSERT INTO gb_jt_area_circle (phone_number, label, center_lat, center_lon, \
-               radius_m, create_time, update_time) VALUES (?, ?, ?, ?, ?, ?, ?)";
+    // `dialect_sql` 在**定义点**就把占位符改写成当前方言需要的形态
+    // （postgres → `$1..$7`；mysql / sqlite → 原样 `?`）。
+    // 放在定义点而不是只在执行点，是为了让「这段 SQL 文本从哪来、就是哪个方言的形态」
+    // —— 下面 mysql 分支与 not(mysql) 分支共用同一个 `sql`，postgres 分支直接拿来用。
+    let sql = crate::dyn_where::dialect_sql(
+        "INSERT INTO gb_jt_area_circle (phone_number, label, center_lat, center_lon, \
+         radius_m, create_time, update_time) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    );
     // `RETURNING` 只有 PostgreSQL / SQLite(≥3.35) 支持，**MySQL 不支持**
     // （会报 1064 语法错误）—— MySQL 走 `execute` + `last_insert_id()`。
     #[cfg(feature = "mysql")]
     {
-        let r = sqlx::query(sql)
+        let r = sqlx::query(&sql)
             .bind(phone_number)
             .bind(label)
             .bind(center_lat)
@@ -1063,8 +1104,10 @@ pub async fn insert_area_circle(
     }
     #[cfg(not(feature = "mysql"))]
     {
+        // `sql` 在定义点已经过 `dialect_sql` 处理，postgres 下就是 `$1..$n`，
+        // 这里不必（也不应）再改写一次。
         let with_returning = format!("{sql} RETURNING id");
-        let row: (i64,) = sqlx::query_as(&crate::dyn_where::dialect_sql(&with_returning))
+        let row: (i64,) = sqlx::query_as(&with_returning)
             .bind(phone_number)
             .bind(label)
             .bind(center_lat)
@@ -1127,12 +1170,14 @@ pub async fn insert_area_polygon(
     points_json: &str,
 ) -> sqlx::Result<i64> {
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    let sql = "INSERT INTO gb_jt_area_polygon (phone_number, label, points_json, create_time, \
-               update_time) VALUES (?, ?, ?, ?, ?)";
+    let sql = crate::dyn_where::dialect_sql(
+        "INSERT INTO gb_jt_area_polygon (phone_number, label, points_json, create_time, \
+         update_time) VALUES (?, ?, ?, ?, ?)",
+    );
     // 同 `insert_area_circle`：MySQL 没有 `RETURNING`。
     #[cfg(feature = "mysql")]
     {
-        let r = sqlx::query(sql)
+        let r = sqlx::query(&sql)
             .bind(phone_number)
             .bind(label)
             .bind(points_json)
@@ -1144,8 +1189,10 @@ pub async fn insert_area_polygon(
     }
     #[cfg(not(feature = "mysql"))]
     {
+        // `sql` 在定义点已经过 `dialect_sql` 处理，postgres 下就是 `$1..$n`，
+        // 这里不必（也不应）再改写一次。
         let with_returning = format!("{sql} RETURNING id");
-        let row: (i64,) = sqlx::query_as(&crate::dyn_where::dialect_sql(&with_returning))
+        let row: (i64,) = sqlx::query_as(&with_returning)
             .bind(phone_number)
             .bind(label)
             .bind(points_json)
@@ -1191,13 +1238,15 @@ pub async fn insert_area_rectangle(
     rb_lon: f64,
 ) -> sqlx::Result<i64> {
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    let sql = "INSERT INTO gb_jt_area_rectangle (phone_number, label, left_top_lat, left_top_lon, \
-               right_bottom_lat, right_bottom_lon, create_time, update_time) \
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
+    let sql = crate::dyn_where::dialect_sql(
+        "INSERT INTO gb_jt_area_rectangle (phone_number, label, left_top_lat, left_top_lon, \
+         right_bottom_lat, right_bottom_lon, create_time, update_time) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    );
     // 同 `insert_area_circle`：MySQL 没有 `RETURNING`。
     #[cfg(feature = "mysql")]
     {
-        let r = sqlx::query(sql)
+        let r = sqlx::query(&sql)
             .bind(phone_number)
             .bind(label)
             .bind(lt_lat)
@@ -1212,8 +1261,10 @@ pub async fn insert_area_rectangle(
     }
     #[cfg(not(feature = "mysql"))]
     {
+        // `sql` 在定义点已经过 `dialect_sql` 处理，postgres 下就是 `$1..$n`，
+        // 这里不必（也不应）再改写一次。
         let with_returning = format!("{sql} RETURNING id");
-        let row: (i64,) = sqlx::query_as(&crate::dyn_where::dialect_sql(&with_returning))
+        let row: (i64,) = sqlx::query_as(&with_returning)
             .bind(phone_number)
             .bind(label)
             .bind(lt_lat)
@@ -1278,12 +1329,14 @@ pub async fn insert_route(
     waypoints_json: &str,
 ) -> sqlx::Result<i64> {
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    let sql = "INSERT INTO gb_jt_route (phone_number, label, waypoints_json, create_time, \
-               update_time) VALUES (?, ?, ?, ?, ?)";
+    let sql = crate::dyn_where::dialect_sql(
+        "INSERT INTO gb_jt_route (phone_number, label, waypoints_json, create_time, \
+         update_time) VALUES (?, ?, ?, ?, ?)",
+    );
     // 同 `insert_area_circle`：MySQL 没有 `RETURNING`。
     #[cfg(feature = "mysql")]
     {
-        let r = sqlx::query(sql)
+        let r = sqlx::query(&sql)
             .bind(phone_number)
             .bind(label)
             .bind(waypoints_json)
@@ -1295,8 +1348,10 @@ pub async fn insert_route(
     }
     #[cfg(not(feature = "mysql"))]
     {
+        // `sql` 在定义点已经过 `dialect_sql` 处理，postgres 下就是 `$1..$n`，
+        // 这里不必（也不应）再改写一次。
         let with_returning = format!("{sql} RETURNING id");
-        let row: (i64,) = sqlx::query_as(&crate::dyn_where::dialect_sql(&with_returning))
+        let row: (i64,) = sqlx::query_as(&with_returning)
             .bind(phone_number)
             .bind(label)
             .bind(waypoints_json)
