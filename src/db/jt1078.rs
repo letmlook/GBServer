@@ -756,7 +756,46 @@ pub async fn update_auth_code(pool: &Pool, phone: &str, auth_code: &str) -> sqlx
     Ok(result.rows_affected())
 }
 
-/// **条件**置离线：只有当这一行在 `deadline` 之后**没有**被更新过，才置 `status = 0`。
+/// 解析 `gb_jt_terminal.update_time`，返回 **epoch 秒**。
+///
+/// **必须兼容历史遗留的两种旧格式** —— 这一列历史上被写过三种形状：
+/// 1. `%Y-%m-%d %H:%M:%S`（**UTC** 墙钟，当前写入用的就是它）；
+/// 2. **RFC3339**（`2026-10-24T04:04:11.123+00:00`，旧版 `update_auth_code` /
+///    `update_last_position` 写的）；
+/// 3. `%Y-%m-%d %H:%M:%S` 但基准是**本地时间**（旧版 `manager.rs` 用的
+///    `chrono::Local::now()`）。
+///
+/// 1 与 3 **格式相同、基准不同**，无法从字符串区分 —— 本函数按 UTC 解释（与当前
+/// 写入一致）。那一批历史行会被读成"未来 8 小时"，因而永远判不出过期；
+/// 彻底订正需要一次数据订正（见 `docs/OPEN_ISSUES.md` 的 B21）。
+/// 2 则是**确定性**可还原的，这里直接兼容。
+///
+/// 为什么要在 **Rust 里**解析、而不是在 SQL 里比字符串：
+/// RFC3339 的第 10 位是 `'T'`（0x54），纯格式的第 10 位是 `' '`（0x20）——
+/// 同一个日历日内，RFC3339 的值**恒大于**纯格式的值。于是"这行比 deadline 新"
+/// 这个判断对历史行**恒成立**，条件写等于没写 → 那些终端会**永远显示在线**。
+fn parse_update_time(raw: &str) -> Option<i64> {
+    let t = raw.trim();
+    if t.is_empty() {
+        return None;
+    }
+    // ① 纯格式（UTC 墙钟）
+    if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(t, "%Y-%m-%d %H:%M:%S") {
+        return Some(dt.and_utc().timestamp());
+    }
+    // ② RFC3339（带偏移或 Z）
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(t) {
+        return Some(dt.timestamp());
+    }
+    // ③ 再试一次带毫秒的纯格式（部分路径写过 "%Y-%m-%d %H:%M:%S%.3f"）
+    if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(t, "%Y-%m-%d %H:%M:%S%.f") {
+        return Some(dt.and_utc().timestamp());
+    }
+    None
+}
+
+/// **条件**置离线：只有当该终端**所有**行在 `deadline` 之后**都没有**被更新过，
+/// 才置 `status = 0`。
 ///
 /// 用于"会话超时 ⇒ 终端离线"这条语义。清理分两段（锁内摘会话、锁外写库），
 /// 两段之间存在窗口：终端若在这期间发过心跳，`persist_terminal_online` 会把
@@ -765,40 +804,78 @@ pub async fn update_auth_code(pool: &Pool, phone: &str, auth_code: &str) -> sqlx
 ///
 /// 返回被置为离线的行数（0 = 期间这行被更新过，没动它）。
 ///
-/// `deadline` 是**会话被摘掉的那一刻**（UTC 墙钟纯格式，与 `update_time` 同基准）。
+/// `deadline` 是**会话被摘掉的那一刻**（UTC 墙钟纯格式）。
 /// 比较用**严格小于**：`update_time` 是秒级精度，同一秒内到达的心跳其
 /// `update_time` 会**等于** deadline —— 用 `<=` 会把活着的终端误置离线。
-/// 方向上宁可晚一个清理周期再置离线（终端下次心跳本来也会把自己置回在线），
-/// 也不能把活着的终端误标成离线。
+///
+/// **为什么在 Rust 里比较、而不是交给 SQL 比字符串**：
+/// - `update_time` 这一列**历史上被写过三种格式**（见 [`parse_update_time`]），
+///   其中 RFC3339 的第 10 位是 `'T'`，**恒大于**纯格式的 `' '` → 用 SQL 字符串
+///   比较，历史行会被判成"比 deadline 新"，条件恒成立 → 那些终端**永远显示在线**。
+/// - `phone_number` **没有唯一约束**，同一 phone 可能有多行；逐行判定会出现
+///   "一半置离线、一半仍在线"的**半离线**状态（在线统计仍把死终端算在线）。
+///   故这里取全部行、逐行解析，**全部都过期才置离线**（保守方向：宁可晚点离线，
+///   也不能把活着的终端标成离线）。
 pub async fn mark_terminal_offline_if_stale(
     pool: &Pool,
     phone_number: &str,
     deadline: &str,
 ) -> sqlx::Result<u64> {
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    #[cfg(any(feature = "mysql", feature = "sqlite"))]
-    let r = sqlx::query(
-        "UPDATE gb_jt_terminal SET status = ?, update_time = ? \
-         WHERE phone_number = ? AND (update_time IS NULL OR update_time < ?)",
-    )
-    .bind(false)
-    .bind(&now)
-    .bind(phone_number)
-    .bind(deadline)
-    .execute(pool)
-    .await?;
-    #[cfg(feature = "postgres")]
-    let r = sqlx::query(
-        "UPDATE gb_jt_terminal SET status = $1, update_time = $2 \
-         WHERE phone_number = $3 AND (update_time IS NULL OR update_time < $4)",
-    )
-    .bind(false)
-    .bind(&now)
-    .bind(phone_number)
-    .bind(deadline)
-    .execute(pool)
-    .await?;
-    Ok(r.rows_affected())
+    let deadline_ts = parse_update_time(deadline).unwrap_or(0);
+
+    // 取该 phone 的**所有**行（phone_number 无唯一约束，可能有重复行）
+    let rows: Vec<(i64, Option<String>)> =
+        sqlx::query_as("SELECT id, update_time FROM gb_jt_terminal WHERE phone_number = ?")
+            .bind(phone_number)
+            .fetch_all(pool)
+            .await?;
+    if rows.is_empty() {
+        return Ok(0);
+    }
+
+    // 逐行解析：只要有**任何一行**比 deadline 新（= 这期间有活动），就整体不动。
+    //
+    // **解析不出来**（历史遗留的未知格式 / 被写坏的值）时按「**还活跃**」处理 ——
+    // 方向与整段设计一致：**宁可暂时不置离线，也不能把活着的终端误标成离线**。
+    // 代价是那种行永远不会被自动置离线（属于数据问题，需要一次性订正）。
+    let mut all_stale = true;
+    for (_, ts) in &rows {
+        let fresh = ts
+            .as_deref()
+            .and_then(parse_update_time)
+            .map(|t| t >= deadline_ts)
+            .unwrap_or(true);
+        if fresh {
+            all_stale = false;
+            break;
+        }
+    }
+    if !all_stale {
+        return Ok(0);
+    }
+
+    // 全部过期 → 按 **id** 精确置离线（而不是按 phone 批量改）
+    let mut affected = 0u64;
+    for (id, _) in &rows {
+        #[cfg(any(feature = "mysql", feature = "sqlite"))]
+        let r = sqlx::query("UPDATE gb_jt_terminal SET status = ?, update_time = ? WHERE id = ?")
+            .bind(false)
+            .bind(&now)
+            .bind(id)
+            .execute(pool)
+            .await?;
+        #[cfg(feature = "postgres")]
+        let r =
+            sqlx::query("UPDATE gb_jt_terminal SET status = $1, update_time = $2 WHERE id = $3")
+                .bind(false)
+                .bind(&now)
+                .bind(id)
+                .execute(pool)
+                .await?;
+        affected += r.rows_affected();
+    }
+    Ok(affected)
 }
 
 /// Phase 6.5: Update last reported position (longitude, latitude, time).
@@ -1445,5 +1522,214 @@ mod tests {
                 .len(),
             0
         );
+    }
+}
+
+/// 「会话超时 ⇒ 置离线」的条件写的专项测试。
+#[cfg(test)]
+mod offline_tests {
+    use super::*;
+    use chrono::Duration;
+
+    async fn make_pool() -> sqlx::Pool<sqlx::Sqlite> {
+        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+        use std::str::FromStr;
+        use std::time::Duration as StdDuration;
+
+        let opts = SqliteConnectOptions::from_str("sqlite::memory:")
+            .unwrap()
+            .create_if_missing(true)
+            .busy_timeout(StdDuration::from_secs(5));
+        let pool = SqlitePoolOptions::new()
+            .max_connections(4)
+            .connect_with(opts)
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE gb_jt_terminal (\
+                id INTEGER PRIMARY KEY AUTOINCREMENT, phone_number TEXT, status INTEGER, \
+                update_time TEXT, create_time TEXT)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        pool
+    }
+
+    async fn insert_row(
+        pool: &sqlx::Pool<sqlx::Sqlite>,
+        phone: &str,
+        status: i64,
+        ts: &str,
+    ) -> i64 {
+        sqlx::query(
+            "INSERT INTO gb_jt_terminal (phone_number, status, update_time, create_time) \
+             VALUES (?, ?, ?, ?)",
+        )
+        .bind(phone)
+        .bind(status)
+        .bind(ts)
+        .bind(ts)
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query_scalar::<_, i64>("SELECT MAX(id) FROM gb_jt_terminal WHERE phone_number = ?")
+            .bind(phone)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    async fn status_of(pool: &sqlx::Pool<sqlx::Sqlite>, id: i64) -> i64 {
+        sqlx::query_scalar::<_, i64>("SELECT status FROM gb_jt_terminal WHERE id = ?")
+            .bind(id)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    fn plain(ago: Duration) -> String {
+        (chrono::Utc::now() - ago)
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string()
+    }
+
+    /// 正常形态：**超时的终端**（最后一次上报早于 deadline）必须被置离线。
+    #[tokio::test]
+    async fn stale_terminal_is_marked_offline() {
+        let pool = make_pool().await;
+        // 生产超时是 60s，用同量级的时间差（此前测试回拨 2 分钟，绕开了真实形态）
+        let id = insert_row(&pool, "13800000001", 1, &plain(Duration::seconds(60))).await;
+        let deadline = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+
+        let n = mark_terminal_offline_if_stale(&pool, "13800000001", &deadline)
+            .await
+            .unwrap();
+        assert_eq!(n, 1, "超时的终端应被置离线");
+        assert_eq!(status_of(&pool, id).await, 0);
+    }
+
+    /// 刚活跃过的终端**不能**被置离线（同一秒也算活跃 → 严格小于）。
+    #[tokio::test]
+    async fn active_terminal_is_not_marked_offline() {
+        let pool = make_pool().await;
+        let id = insert_row(&pool, "13800000002", 1, &plain(Duration::seconds(0))).await;
+        let deadline = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+
+        let n = mark_terminal_offline_if_stale(&pool, "13800000002", &deadline)
+            .await
+            .unwrap();
+        assert_eq!(n, 0, "刚活跃过的终端不该被置离线");
+        assert_eq!(status_of(&pool, id).await, 1);
+    }
+
+    /// 回归：**历史遗留的 RFC3339 格式**也必须能正确判过期。
+    ///
+    /// 这一列历史上被写过 RFC3339（`2026-10-24T04:04:11.123+00:00`）。用 SQL
+    /// 直接比字符串时，同一日内 RFC3339 的第 10 位是 `'T'`（0x54）而纯格式是
+    /// `' '`（0x20）→ 历史行**恒被判成"比 deadline 新"** → 条件恒成立 →
+    /// 那些终端**永远显示在线**。现改为在 Rust 里解析成 epoch 再比。
+    #[tokio::test]
+    async fn legacy_rfc3339_timestamp_is_parsed_and_can_be_marked_offline() {
+        let pool = make_pool().await;
+        // 60 秒前的 RFC3339 时刻
+        let rfc = (chrono::Utc::now() - Duration::seconds(60)).to_rfc3339();
+        let id = insert_row(&pool, "13800000003", 1, &rfc).await;
+        let deadline = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+
+        let n = mark_terminal_offline_if_stale(&pool, "13800000003", &deadline)
+            .await
+            .unwrap();
+        assert_eq!(n, 1, "RFC3339 格式的历史行也必须能判出过期");
+        assert_eq!(status_of(&pool, id).await, 0);
+    }
+
+    /// 回归：**重复行**（同一 phone 多行）不得出现"半离线"。
+    ///
+    /// `phone_number` 没有唯一约束。逐行判定会把"一行旧、一行新"的 phone 判成
+    /// 过期（那一行被置离线），而新行仍在线 → 在线统计仍把死终端算在线。
+    /// 现在的语义是：**全部行都过期才置离线**。
+    #[tokio::test]
+    async fn duplicate_rows_are_not_left_half_offline() {
+        let pool = make_pool().await;
+        let old_id = insert_row(&pool, "13800000004", 1, &plain(Duration::seconds(600))).await;
+        let fresh_id = insert_row(&pool, "13800000004", 1, &plain(Duration::seconds(0))).await;
+        assert_ne!(old_id, fresh_id, "应为两行");
+        let deadline = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+
+        let n = mark_terminal_offline_if_stale(&pool, "13800000004", &deadline)
+            .await
+            .unwrap();
+        assert_eq!(n, 0, "只要有一行还活跃，整个 phone 都不该被置离线");
+        assert_eq!(status_of(&pool, old_id).await, 1, "旧行也不该被单独置离线");
+        assert_eq!(status_of(&pool, fresh_id).await, 1);
+    }
+
+    /// 回归：重复行**全部**过期时，两行都要被置离线。
+    #[tokio::test]
+    async fn duplicate_rows_all_stale_are_all_marked_offline() {
+        let pool = make_pool().await;
+        let a = insert_row(&pool, "13800000005", 1, &plain(Duration::seconds(600))).await;
+        let b = insert_row(&pool, "13800000005", 1, &plain(Duration::seconds(300))).await;
+        let deadline = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+
+        let n = mark_terminal_offline_if_stale(&pool, "13800000005", &deadline)
+            .await
+            .unwrap();
+        assert_eq!(n, 2, "全部过期的重复行都应被置离线");
+        assert_eq!(status_of(&pool, a).await, 0);
+        assert_eq!(status_of(&pool, b).await, 0);
+    }
+
+    /// 回归：**刚活跃的 RFC3339 历史行**不能被误置离线。
+    ///
+    /// 这是上面那条的**另一半**：解析不出来时按「还活跃」处理（安全方向），
+    /// 所以一个刚活跃的 RFC3339 行必须**解析成功**才能正确判出"活跃" ——
+    /// 若解析支被去掉，它会被当成"过期"而误置离线。
+    #[tokio::test]
+    async fn fresh_legacy_rfc3339_timestamp_is_not_marked_offline() {
+        let pool = make_pool().await;
+        let rfc = chrono::Utc::now().to_rfc3339();
+        let id = insert_row(&pool, "13800000006", 1, &rfc).await;
+        let deadline = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+
+        let n = mark_terminal_offline_if_stale(&pool, "13800000006", &deadline)
+            .await
+            .unwrap();
+        assert_eq!(n, 0, "刚活跃的 RFC3339 行不该被置离线");
+        assert_eq!(status_of(&pool, id).await, 1);
+    }
+
+    /// `parse_update_time` 的三种形状：纯格式（UTC 墙钟）、RFC3339、带毫秒的纯格式。
+    #[test]
+    fn update_time_parser_handles_legacy_formats() {
+        let plain_ts = "2026-10-24 04:04:11";
+        let parsed = parse_update_time(plain_ts).expect("纯格式应能解析");
+        assert_eq!(
+            parsed,
+            chrono::NaiveDateTime::parse_from_str(plain_ts, "%Y-%m-%d %H:%M:%S")
+                .unwrap()
+                .and_utc()
+                .timestamp()
+        );
+
+        let rfc_ts = "2026-10-24T04:04:11.123+00:00";
+        assert_eq!(
+            parse_update_time(rfc_ts),
+            Some(
+                chrono::DateTime::parse_from_rfc3339(rfc_ts)
+                    .unwrap()
+                    .timestamp()
+            )
+        );
+
+        let millis = "2026-10-24 04:04:11.123";
+        assert!(
+            parse_update_time(millis).is_some(),
+            "带毫秒的纯格式也应能解析"
+        );
+
+        assert!(parse_update_time("").is_none());
+        assert!(parse_update_time("not-a-time").is_none());
     }
 }

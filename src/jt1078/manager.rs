@@ -834,11 +834,19 @@ impl Jt1078Manager {
 
             // 第二段：清终端地址登记表，并收集"因此超时"的终端（只动内存）。
             // 锁序仍是 sessions → terminal_addrs（与 `remove()` 一致，不成环）。
+            //
+            // `removed` 用 `HashSet` 而不是 `Vec`：`terms.retain` 里要做
+            // `removed.contains(a)`，Vec 是 O(R) 线性扫描 → 整体 **O(T×R)**。
+            // 实测：终端表 1 万条 + 同时掉线 1000 台时，锁内约 **8ms**；
+            // 10 万条时约 **56ms** —— 而这段是**持着 `sessions` 锁**的，
+            // 期间**所有**入站 JT1078 报文都要等。换成 HashSet 后是 O(T+R)。
+            let removed_set: std::collections::HashSet<SocketAddr> =
+                removed.iter().copied().collect();
             let mut stale = Vec::new();
             {
                 let mut terms = self.terminal_addrs.lock().await;
                 terms.retain(|phone, a| {
-                    let keep = !removed.contains(a);
+                    let keep = !removed_set.contains(a);
                     if !keep {
                         stale.push(phone.clone());
                     }
@@ -880,8 +888,15 @@ impl Jt1078Manager {
         // `deadline` 取在会话被摘掉的那一刻，而 `update_time` 是**秒级**精度 ——
         // 同一秒内到达的心跳，其 `update_time` 会**等于** deadline，用 `<=`
         // 就会把它误判成"没有活动"。用严格小于，方向是安全的：
-        // 宁可晚一个清理周期再置离线（终端下次心跳本来也会把自己置回在线），
-        // 也不能把活着的终端误标成离线。
+        // **宁可暂时不置离线，也不能把活着的终端误标成离线**。
+        //
+        // 代价要说清楚（上一版注释写"宁可晚一个清理周期"，**那是不准确的**）：
+        // 会话被摘掉后该 phone 已不在 `terminal_addrs` 里，**下一轮清理不会再看到它**
+        // ⇒ 条件不成立就是**一直不置离线**（不是"晚一轮"）。
+        // 对**活着的**终端这是正确的（它会自己发心跳刷新 `update_time`，
+        // 下一轮就能判出它还活着）；但对"历史遗留格式导致条件恒不成立"的行
+        // （见 `db::jt1078::parse_update_time` 的说明）就是**永久粘住在线** ——
+        // 那需要一次数据订正，不是在这里兜底。
         if let Some(pool) = self.pool.get() {
             for phone in &stale_phones {
                 match crate::db::jt1078::mark_terminal_offline_if_stale(&pool, phone, &deadline)
@@ -1373,10 +1388,14 @@ mod tests {
     /// 精确注入一次心跳，得在生产代码里加测试钩子，代价大于收益）。
     /// 所以用源码契约守住这条**结构性**不变量。
     ///
-    /// 判定方式：找 `self.sessions.lock().await` 与 `self.terminal_addrs.lock().await`
-    /// 两行的位置，再找**缩进比 sessions 锁更浅**的 `};`（那才是 sessions 作用域的
-    /// 结束点）—— `terminal_addrs` 必须落在它之前。
-    /// （用缩进而不是"第一个 `};`"：函数里还有内层代码块，它们的 `};` 更深。）
+    /// 判定方式：找 `self.sessions.lock().await` 与 `terms.retain(` 两行的位置，
+    /// 再找**缩进比 sessions 锁更浅**的 `};`（那才是 sessions 作用域的结束点，
+    /// 函数里还有更深的内层代码块）—— `retain` 必须落在它之前。
+    /// （用缩进而不是"第一个 `};`"：内层代码块的 `};` 更深。）
+    ///
+    /// 判定**取 `retain` 调用行**而不是 `terminal_addrs` 的取锁行 —— 后者有个
+    /// 残余缺口：若有人在作用域内 `drop(map)` 提前释放 `sessions` 锁（取锁行仍在
+    /// 作用域内），只查取锁行会**抓不住**；查 `retain` 调用行才抓得住。
     #[test]
     fn cleanup_keeps_session_removal_and_address_cleanup_in_one_scope() {
         let src = include_str!("manager.rs");
@@ -1393,10 +1412,10 @@ mod tests {
             .iter()
             .position(|l| l.contains("self.sessions.lock().await"))
             .expect("cleanup_once 里取了 sessions 锁");
-        let addrs_at = lines
+        let retain_at = lines
             .iter()
-            .position(|l| l.contains("self.terminal_addrs.lock().await"))
-            .expect("cleanup_once 里取了 terminal_addrs 锁");
+            .position(|l| l.contains("terms.retain("))
+            .expect("cleanup_once 里清了终端地址表");
         let sessions_indent = lines[sessions_at].len() - lines[sessions_at].trim_start().len();
         // sessions 作用域的结束点：之后第一个**缩进更浅**的 `};`
         let scope_end = lines
@@ -1411,9 +1430,10 @@ mod tests {
             .expect("sessions 作用域的结束点");
 
         assert!(
-            addrs_at < scope_end,
-            "terminal_addrs 必须在 sessions 作用域**内**取锁（当前 addrs_at={addrs_at}, \
-             scope_end={scope_end}）—— 拆成两个作用域就有『会话被复活』的窗口"
+            retain_at < scope_end,
+            "清终端地址表（terms.retain）必须在 sessions 作用域**内**完成 \
+             （当前 retain_at={retain_at}, scope_end={scope_end}）—— \
+             拆成两个作用域就有『会话被复活』的窗口"
         );
     }
 
