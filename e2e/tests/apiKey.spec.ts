@@ -153,7 +153,12 @@ test.describe('API Key 管理', () => {
     await expect(addDialog).toBeVisible()
     await addDialog.getByLabel('应用标识').fill(appName)
     // 后端接受 `YYYY-MM-DD HH:mm:ss`，这里给一个已经过去的时间。
-    await addDialog.getByLabel('过期时间').fill('2020-01-01 00:00:00')
+    // 过期时间用的是 el-date-picker：填完要按回车把面板收掉，
+    // 否则浮层还在，"创建"按钮会一直被判为"不稳定"而点不动。
+    const expiryInput = addDialog.getByPlaceholder('留空表示永不过期')
+    await expiryInput.fill('2020-01-01 00:00:00')
+    await expiryInput.press('Enter')
+    await expect(page.locator('.el-picker__popper')).toBeHidden()
     await addDialog.getByRole('button', { name: '创建' }).click()
 
     const apiKey = await readSecretFromDialog(page)

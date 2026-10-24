@@ -1435,15 +1435,26 @@ pub struct UserApiKeyMutateQuery {
     pub remark: Option<String>,
 }
 
-fn parse_expired_at(raw: Option<&str>) -> Option<i64> {
-    let raw = raw?.trim();
+/// 解析过期时间。
+///
+/// **非空但解析不出来时必须报错**，不能静默当成"永不过期" —— 那等于把
+/// "本该过期的凭证"变成永久有效，而且调用方（前端）以为已经设上了。
+/// 之前这里是 `Option<i64>`：日期打错（比如 `2026-13-45 99:99:99` 或
+/// `2026-02-30`）会走到 `None`，接口照样回 `code: 0`。
+fn parse_expired_at(raw: Option<&str>) -> Result<Option<i64>, String> {
+    let raw = raw.map(str::trim).unwrap_or_default();
     if raw.is_empty() {
-        return None;
+        return Ok(None);
     }
-    chrono::NaiveDateTime::parse_from_str(raw, "%Y-%m-%d %H:%M:%S")
-        .ok()
-        .map(|dt| dt.and_utc().timestamp())
-        .or_else(|| raw.parse::<i64>().ok())
+    if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(raw, "%Y-%m-%d %H:%M:%S") {
+        return Ok(Some(dt.and_utc().timestamp()));
+    }
+    if let Ok(ts) = raw.parse::<i64>() {
+        return Ok(Some(ts));
+    }
+    Err(format!(
+        "过期时间格式不正确: {raw:?}（应为 YYYY-MM-DD HH:mm:ss 或 Unix 秒）"
+    ))
 }
 
 /// GET /api/userApiKey/userApiKeys
@@ -1672,7 +1683,8 @@ pub async fn user_api_key_add(
     let app = q.app.as_deref().unwrap_or("default").to_string();
     let remark = q.remark.clone();
     let enable = q.enable.unwrap_or(true);
-    let expired_at = parse_expired_at(q.expires_at.as_deref());
+    let expired_at = parse_expired_at(q.expires_at.as_deref())
+        .map_err(|e| AppError::business(ErrorCode::Error400, e))?;
     let api_key = format!("{:032x}", rand::random::<u128>());
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     user_api_key::add(

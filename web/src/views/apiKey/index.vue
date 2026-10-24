@@ -90,7 +90,18 @@
           <div class="tip">不填默认为 1（管理员账号）。</div>
         </el-form-item>
         <el-form-item label="过期时间">
-          <el-input v-model="addForm.expiresAt" placeholder="YYYY-MM-DD HH:mm:ss，留空表示永不过期" />
+          <!--
+            用日期选择器而不是文本框：手打日期很容易打错（月份 13、日 30 号…），
+            而打错的后果是**密钥变成永不过期** —— 本该过期的凭证永久有效。
+          -->
+          <el-date-picker
+            v-model="addForm.expiresAt"
+            type="datetime"
+            value-format="YYYY-MM-DD HH:mm:ss"
+            placeholder="留空表示永不过期"
+            class="full"
+            clearable
+          />
           <div class="tip">留空 = 永不过期；过期记录会被后台每小时自动清理。</div>
         </el-form-item>
         <el-form-item label="备注">
@@ -173,7 +184,8 @@ const addFormRef = ref<FormInstance>()
 const addForm = reactive({
   app: '',
   userId: 1 as number | undefined,
-  expiresAt: '',
+  /** 日期选择器的值（`YYYY-MM-DD HH:mm:ss` 字符串）；清空时为 null。 */
+  expiresAt: '' as string | null,
   remark: '',
   enable: true
 })
@@ -242,7 +254,7 @@ function onSizeChange(c: number) {
 function openAdd() {
   addForm.app = ''
   addForm.userId = 1
-  addForm.expiresAt = ''
+  addForm.expiresAt = null
   addForm.remark = ''
   addForm.enable = true
   addVisible.value = true
@@ -260,7 +272,8 @@ async function onAddSubmit() {
       userId: addForm.userId,
       app: addForm.app.trim(),
       enable: addForm.enable,
-      expiresAt: addForm.expiresAt.trim() || undefined,
+      // 日期选择器清空后是 null，不能直接 .trim()
+      expiresAt: (addForm.expiresAt || '').trim() || undefined,
       remark: addForm.remark.trim() || undefined
     })
     addVisible.value = false
