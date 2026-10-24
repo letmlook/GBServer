@@ -352,6 +352,11 @@ mod tests {
     ///
     /// 此前用 `Json<T>` 提取器，解析失败由 axum 直接回 **422 + `text/plain` 裸文本** ——
     /// 第三方按 `{code,msg,data}` 解析会直接炸（body 不是 JSON）。
+    ///
+    /// 还要挡住两类"看起来成功、实际什么都没删"的情况：
+    /// - **空 body**：请求体丢失/截断。此前 `Json<T>` 回 422；改用自解析后若把它
+    ///   当成"没给 ids"，就会回 `code:0` + 空删除列表 —— 看起来成功。
+    /// - **缺 ids**（`{}` / `{"ids":null}` / `{"ids":[]}`）：同理必须明确报错。
     #[tokio::test]
     async fn cloud_record_delete_rejects_bad_body_with_contract_envelope() {
         let state = app_state().await;
@@ -360,13 +365,18 @@ mod tests {
         let base = spawn(state).await;
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
 
-        for body in [
-            // 语法错误
-            r#"{"ids": ["1",]}"#,
-            // 类型错误：ids 不是数组
-            r#"{"ids": "1"}"#,
-            // 元素非法：20 位国标号超出整数可表示范围
-            r#"{"ids": [34020000001320000001]}"#,
+        for (label, body) in [
+            ("语法错误", r#"{"ids": ["1",]}"#),
+            ("类型错误：ids 不是数组", r#"{"ids": "1"}"#),
+            (
+                "元素非法：20 位国标号超出整数可表示范围",
+                r#"{"ids": [34020000001320000001]}"#,
+            ),
+            ("空 body（请求体丢失/截断）", ""),
+            ("纯空白 body", "   "),
+            ("缺 ids 的空对象", "{}"),
+            ("ids 为 null", r#"{"ids": null}"#),
+            ("ids 为空数组", r#"{"ids": []}"#),
         ] {
             let resp = client
                 .delete(format!("{base}/api/cloud/record/delete"))
@@ -382,11 +392,58 @@ mod tests {
                 .unwrap_or_else(|e| panic!("body 必须是契约信封（JSON），实际是 {text:?}（{e}）"));
             assert_eq!(
                 parsed["code"], 400,
-                "解析失败应回业务错误码 400，实际 {parsed:?}（body={body}）"
+                "{label} 应回业务错误码 400，实际 {parsed:?}（body={body:?}）"
             );
             assert!(parsed["msg"].is_string(), "{parsed:?}");
             assert!(status == 400 || status == 200, "{status}");
+            assert!(
+                parsed.get("deleted").is_none(),
+                "{label} 不得回出\"删成功但其实没删\"的 deleted 字段: {parsed:?}"
+            );
         }
+    }
+
+    /// 回归：**超大请求体**（超过 axum 的 2MB 默认上限）也必须回契约信封。
+    ///
+    /// 长度超限的拒绝发生在**提取器内**，直接冒泡出去是裸文本 413。
+    #[tokio::test]
+    async fn cloud_record_delete_rejects_oversized_body_with_contract_envelope() {
+        let state = app_state().await;
+        let jwt = crate::auth::JwtKeys::new(state.config.jwt.secret.as_bytes());
+        let token = jwt.create_token("admin", 60).unwrap();
+        let base = spawn(state).await;
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+
+        // 3MB 的合法 JSON（ids 数组很长）—— 超过 2MB 上限
+        let big = format!(
+            r#"{{"ids":[{}]}}"#,
+            (0..400_000)
+                .map(|i| format!("\"{i}\""))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        assert!(
+            big.len() > 2 * 1024 * 1024,
+            "body 应超过 2MB，实际 {}",
+            big.len()
+        );
+
+        let resp = client
+            .delete(format!("{base}/api/cloud/record/delete"))
+            .header("access-token", &token)
+            .header("content-type", "application/json")
+            .body(big)
+            .send()
+            .await
+            .unwrap();
+        let text = resp.text().await.unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&text).unwrap_or_else(|e| {
+            panic!(
+                "超大 body 也必须回契约信封（JSON），实际是 {} 字节的 {text:?}（{e}）",
+                text.len()
+            )
+        });
+        assert_eq!(parsed["code"], 400, "{parsed:?}");
     }
 
     #[tokio::test]

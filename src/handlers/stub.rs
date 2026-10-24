@@ -2371,37 +2371,66 @@ pub async fn cloud_record_task_list(
     tag = "cloud-record",
     operation_id = "api_cloud_record_delete",
     summary = "批量删除云录像（含媒体文件）",
-    request_body = CloudRecordDeleteBody,
+    request_body = Option<CloudRecordDeleteBody>,
     responses(
         (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 400, description = "请求体格式不正确、缺少 ids，或请求体超过 2MB 上限"),
         (status = 401, description = "未鉴权"),
     ),
     security(("access_token" = [])),
 )]
 pub async fn cloud_record_delete(
     State(state): State<AppState>,
-    body: axum::body::Bytes,
+    body: Result<axum::body::Bytes, axum::extract::rejection::BytesRejection>,
 ) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     // **不用 `Json<T>` 提取器**：它解析失败时会回 **422 + `text/plain` 裸文本**，
     // 破坏契约承诺的 `{code,msg,data}` 信封（第三方按信封解析会直接炸）。
     // 改成自己收原始字节再解析，失败时也能回信封 ——
-    // 与同族的 `/api/userApiKey/add` 口径一致（HTTP 400 + `code:400`）。
-    // 空 body 当作"没给 ids"（与原来的 `ids: None` 等价）。
-    let body = if body.is_empty() {
-        CloudRecordDeleteBody { ids: None }
-    } else {
-        match serde_json::from_slice::<CloudRecordDeleteBody>(&body) {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::warn!("云录像删除请求体解析失败: {e}");
-                return Err(AppError::business(
-                    crate::error::ErrorCode::Error400,
-                    format!("请求体格式不正确: {e}"),
-                ));
-            }
+    // 与同族的 `/api/userApiKey/add` 口径一致（HTTP 200 + `code:400`）。
+    //
+    // `Result<Bytes, BytesRejection>` 是为了连**超出 2MB 上限**的拒绝也能接住
+    // （`Bytes` 仍然受 axum 的 `DefaultBodyLimit` 保护，超大 body 不会被整个读进
+    // 内存；但拒绝发生在提取器内，直接冒泡出去就是裸文本 413）。
+    let raw = match body {
+        Ok(b) => b,
+        Err(rej) => {
+            tracing::warn!("云录像删除请求体读取失败: {}", rej.body_text());
+            return Err(AppError::business(
+                crate::error::ErrorCode::Error400,
+                "请求体过大或读取失败",
+            ));
+        }
+    };
+    // **空 body 不等于"没给 ids"**：axum 的 `Json<T>` 对空 body 回 422，
+    // 而 `{}` / `{"ids":null}` 才是"没给 ids"。两者混为一谈会让"请求体丢了"
+    // 的请求回 `code:0` + 空删除列表 —— **看起来成功，实际一条都没删**，
+    // 而且与 `{}` 的响应完全同形，调用方无法区分。
+    if raw.is_empty() {
+        return Err(AppError::business(
+            crate::error::ErrorCode::Error400,
+            "缺少 ids（请求体不能为空）",
+        ));
+    }
+    let body = match serde_json::from_slice::<CloudRecordDeleteBody>(&raw) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!("云录像删除请求体解析失败: {e}");
+            // 错误信息**截断**：serde 的 `invalid_type` 会把整个输入串带进
+            // `Display` —— 100KB 的 body 就能回出 100KB 的响应（反射放大）。
+            let brief: String = e.to_string().chars().take(200).collect();
+            return Err(AppError::business(
+                crate::error::ErrorCode::Error400,
+                format!("请求体格式不正确: {brief}"),
+            ));
         }
     };
     let ids = body.ids.unwrap_or_default();
+    if ids.is_empty() {
+        return Err(AppError::business(
+            crate::error::ErrorCode::Error400,
+            "缺少 ids",
+        ));
+    }
     let mut deleted = Vec::new();
     let mut failed = Vec::new();
 
