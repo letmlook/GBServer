@@ -51,6 +51,7 @@
 | B13 | 性能 | 控制台首屏"等最慢接口"才统一赋值 + `system/info` 被 3 个组件同时拉 → 卡片空等约 2s | ✅ 已修并复验 |
 | B14 | 缺陷 | `DeviceControl` / `DeviceConfig` 应答按设备、SN、类型和目标关联；传输模式、设防/撤防、远程录像、配置下发、重启、预置位、直接 PTZ 与批量 PTZ 停止/重启可区分发送和执行；**远程启动、报警复位、强制关键帧、看守位、拉框、配置下发等其余控制入口已补齐 `sipSent`/`deviceResult` 与 `waitResult`**；前端控制与回放控制兼容入口明确只声明已发送 | 🟡 真机未验 |
 | B15 | 缺陷 | 设备保活/注册统计查了**库里不存在的表**（真实表名 `gb_device`）→ 两个统计接口恒返回 0 | ✅ 已修 |
+| B17 | 缺陷 | 代码审查发现：录像列表过滤错列、SY collect/delete 入参不一致、SY 通道端点只收数字主键、sy/test 缺管理员校验与吞错、API Key 过期时间非法输入静默当"永不过期"、序列回拨致 id 重复发放、非 public schema 下序列同步静默失效、`MAX(int4)` 解码失败、JT1078 鉴权路径写副作用与鉴权状态残留、录像控制重复实现、`serde_flex` 变体顺序致 20 位数字串溢出 | ✅ 已修并复验 |
 | B16 | 缺陷 | 跨方言类型/宽度不匹配 —— postgres 主键是 INT4（解成 i64 报错）、`parent_id` 是 VARCHAR 却绑成 i64、`serial` 序列没跟上种子行、`SELECT 1` 字面量是 INT4、审计表少 `elapsed_ms` 列 → 云录像计划调度器、报警列表/详情、录像计划通道列表、**通道编辑**、**新建用户/角色**、审计耗时在 postgres 上整个不可用 | ✅ 已修并复验 |
 | B9 | 配置 | `rtc.externIP` 平台未下发 → 容器部署下浏览器 ICE 永远连不上 | ✅ 已修 |
 | A4 | 前端 | 直播页 WebRTC 播放入口（`postWebrtcPlay` 原先无调用方） | ✅ 已接 (2026-09-19) |
@@ -148,9 +149,11 @@ e2e 最近一次运行 35 通过 / 0 失败（筛选运行）、三方言冒烟�
 
 两点语义说明：
 
-- `push/play` 与 `push/play-without-check` 的唯一区别是**平台侧前置校验**：
-  前者先确认设备已登记、通道属于该设备且设备在线，不满足就返回业务错误而
-  **不发起任何 SIP**；后者直接进入点播链路，由点播链路自身回报失败。
+- `push/play` 与 `push/play-without-check` 的区别是**平台侧前置校验**：
+  前者先确认设备已登记、通道属于该设备且设备在线，不满足就返回业务错误。
+  但要说准确：点播链路（`play::play_start`）自己也会做同样的三项检查，而且
+  都在发起 INVITE **之前** —— 所以**两个端点都不会对着未知目标发 SIP**，
+  真正的差别只是错误文案（SY 口径 vs 平台口径）与检查顺序。
 - `sy/test` 只回报就绪度（版本、计数、布尔、问题列表），**不**回报节点地址、
   密钥或完整 Hook 载荷。
 
@@ -708,6 +711,101 @@ mysql 没有；而 `insert_with_metrics` 写的是带 `elapsed_ms` 的扩展列 
 
 **教训**：`cargo test`（默认 sqlite）**永远发现不了这一类问题**。方言冒烟必须
 对真实 pg/mysql 实例跑 —— 这正是 `scripts/dialect_smoke.py` 存在的理由。
+
+### B17 ✅ 代码审查发现的问题（2026-10-24 修复）
+
+对 v2.0 分支的改动做了一轮代码审查（两路独立审查 + 自查），修掉下列**确凿**问题。
+多数只在**真实 postgres** 上才暴露 —— sqlite 单测与 mysql 冒烟都是绿的。
+
+**① 录像列表的设备/通道过滤落在 `app` 列上 → 永远查不到录像**
+`cloud_record_extra::list_url` 把 `device_id`/`channel_id` 塞进了
+`db::cloud_record::list_paged` 的 **`app`** 参数，而该函数的第 2 个形参就是
+`app`（SQL 是 `WHERE app = ?`）。本平台的录像流名是 `{deviceId}_{channelId}`，
+设备/通道号在 **`stream`** 列里，`app` 列存的是 ZLM 应用名（'rtp'/'record'）。
+结果：`GET /api/cloud/record/list-url?deviceId=…` 恒 0 行、`total` 恒 0 ——
+"按设备/通道查录像"从来就没工作过。同一平台的 `/api/cloud/record/list` 走
+`CloudRecordFilter`（按 `stream` 前缀匹配），是对的 —— 两条列表接口因此结果不一致。
+现改为统一走 `CloudRecordFilter` + `list_filtered`，并给 `count` 加上限（1000）。
+
+**② SY 的 `record/collect/delete`（DELETE）入参与平台不一致 → 收藏根本没删掉**
+平台 DELETE 收 **JSON body**（`CloudRecordCollectQuery`，数字主键与组合串都收），
+而 SY 别名的 DELETE 转调的是 GET 版实现（只认 query 的数字主键）—— 对接方照平台
+写法发 body 会被 axum 忽略 → `missing id`，收藏还在。现两个方法都走同一套
+`clear_collect`，入参与返回形状（`{recordId,status}`）与平台完全一致。
+
+**③ SY 的 `camera/one` / `camera/update` 只收数字主键 → 国标号返回裸 HTTP 400**
+平台 DTO 的 `id` 是 `i64`，20 位国标通道号装不下 → axum 的 QueryRejection 直接回
+**纯文本 400**，不是 `{code,msg,data}` 信封；而同一 SY 模块的 `push/play` 用的恰恰是
+国标号 —— 两套 ID 口径并存。现 SY 侧改收字符串：数字主键与国标通道号都能用，
+查不到时按平台口径回 `data=null`。
+
+**④ `/api/sy/test` 没做管理员校验 → 部署拓扑泄露给普通用户**
+它是本轮**新增**的诊断端点（不是别名），会回报设备/通道/媒体节点数量。
+按仓库规约（AGENTS.md「新增任何管理类端点都必须调用 `authz::require_admin`」）与
+平台同类诊断口（`/api/test/hook/list`、`/api/test/redis`）一致 → 已加管理员校验。
+
+**⑤ `/api/sy/test` 的计数 `unwrap_or(0)` 吞错 → 可能报出 `ok:true` 的自相矛盾结论**
+某个计数 SQL 失败时会报 0，而 `database` 恰好成功 → 报告变成
+`{"database":true,"device_count":0,"ok":true}`，对接方据此判定"平台就绪"就错了。
+现逐项保留 `Result`，失败记进 `issues` 并让 `ok=false`。
+
+**⑥ API Key 的过期时间写错 → 静默变成"永不过期"**
+`parse_expired_at` 对无法解析的非空值返回 `None`，接口照样回 `code: 0` ——
+运维本想给密钥设过期，手滑打错日期（`2026-13-45 99:99:99`、`2026-02-30`），
+凭证就**永久有效**了。现改为业务错误（400）；前端也从文本框换成 `el-date-picker`，
+让非法日期根本输不出来。
+
+**⑦ `seq_sync` 会把序列往回拨 → id 被重复发放**
+postgres 的 `nextval` **不是事务性的**：回滚的 INSERT、或删掉最大 id 的行，都会让
+序列**停在 `MAX(id)` 之上** —— 这是常态。原实现无条件 `setval(seq, MAX(id), true)`，
+等于把序列拉回来，接下来几次插入会**复用已发放过的 id**。而本 schema **没有任何外键**
+（`init-postgresql-2.7.4.sql` 里没有 `REFERENCES`），引用完整性全靠应用层
+（`gb_device_channel.data_device_id`→`gb_device.id`、
+`gb_user_api_key.user_id`→`gb_user.id`），id 一旦复用，残留引用会**静默挂到另一行**。
+现改为**只前进不后退**：只有"下一个要发放的 id 已被占用"时才推进。
+
+**⑧ `seq_sync` 硬编码 `public` schema → 非 public 部署下静默失效**
+表名/序列名都没带 schema 限定；`search_path` 一改，整条 `setval` 语句直接报错，
+它要修的 duplicate key 依旧存在。现从 `pg_class`/`pg_namespace` 取出**表自己的
+schema** 并全程限定。
+
+**⑨ `seq_sync` 的 `MAX(int4)` 按 `Option<i64>` 解 → 推进步骤整条报错**
+postgres 里 `max(int4)` 的返回值仍是 **int4**（只有 `max(int8)` 才是 int8），
+按 i64 解会报 "mismatched types"。这与本仓库其它地方的 INT4 列处理是同一个坑。
+现显式 `::bigint`。判据（"要不要推进"）已抽成纯函数并补了单测。
+
+**⑩ JT1078 鉴权路径调用了带写副作用的 `resolve_auth_code`**
+鉴权时用"读取（没有就生成并写库）"的函数：库里没配置时会**现生成一个随机码**，
+再拿它跟终端回送的码比对 —— 必然对不上，终端从此再也鉴权不过（而库里还多了一条
+随机码）。现拆成纯读的 `stored_auth_code` 与有副作用的 `issue_auth_code`，
+**只有注册应答**才签发。
+
+**⑪ JT1078 会话超时不清鉴权状态**
+`cleanup_once` 移除超时会话时没清"已鉴权"集合 → 终端会话没了却仍算已鉴权。
+现在一并清除。
+
+**⑬ `serde_flex::AnyScalar` 的变体顺序让"字符串原样返回"的承诺落空**
+`AnyScalar` 是 `#[serde(untagged)]` 枚举，**按声明顺序逐个尝试**，而
+`Str` 排在 `Int(i64)` 后面 —— 于是**字符串**会先被 `Int` 吃掉：
+像国标通道号这种 20 位数字串（`34020000001310000001`）按 i64 解析**直接溢出
+报错**（"number too large to fit in target type"），根本走不到 `Str` 分支。
+凡是"ID 收字符串"的 DTO 都会因此拒绝国标号 —— ③ 的修复因此一度无效。
+现把 `Str` 放到最前：JSON 字符串一律原样返回，JSON 数字仍能落到
+`Int`/`Float`（`Str` 不接受 JSON 数字），JSON 布尔落到 `Bool`。
+
+**⑫ `device_stub` 的录像控制仍留着自己的一份"发送→等回执→解释 Result"**
+"收敛到一处"此前只是宣称，代码里还有第二份（连状态字面量都是各写各的）。
+现已改用共享实现。
+
+**本轮未改（先例问题，记录在案）**：`/api/cloud/record/zip` 的响应里带服务端
+**绝对路径** `filePath`（如 `/data/record/...`）。这是平台既有行为，SY 别名照搬
+同样形状，没有扩大暴露面（该端点本就要求登录）。改它会影响既有调用方，
+且它不是"改动引入的回归"，故本轮不动 —— 若要收紧，应作为独立改动统一处理
+平台版与 SY 版。
+
+**验证**：定向 Rust 单测 22 个（seq_sync 4 + sy_contract 13 + serde_flex 5）全部通过；全量
+`cargo test --no-fail-fast` 通过；三方言构建通过；`scripts/dialect_smoke.py`
+在 pg / mysql / sqlite 三方言上都只剩 2 项"预期失败"；全量 Playwright 79/79。
 
 ### B15 ✅ 设备统计查了不存在的表（已修，2026-09-19）
 
