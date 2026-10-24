@@ -175,23 +175,35 @@ pub async fn list_url(
     Query(q): Query<ListUrlQuery>,
 ) -> Json<ApiResult<serde_json::Value>> {
     let page = q.page.unwrap_or(1).max(1);
-    let count = q.count.unwrap_or(15);
-    let kw = q.device_id.as_deref().or(q.channel_id.as_deref());
-    let records = db::cloud_record::list_paged(
+    // 与 `/api/cloud/record/list` 同口径：单页上限 1000，避免第三方用一个
+    // 巨大的 count 把查询放大成全表扫。
+    let count = q.count.unwrap_or(15).clamp(1, 1000);
+    // **过滤必须走 `CloudRecordFilter`**：本平台的录像流名是
+    // `{deviceId}_{channelId}`，设备/通道号在 `stream` 列里，而 `app` 列存的是
+    // ZLM 应用名（'rtp' / 'record'）。
+    // 此前这里把 device_id/channel_id 塞进了 `list_paged` 的 **`app`** 参数，
+    // 于是 SQL 变成 `WHERE app = '34020000001320000001'` —— 永远 0 行，
+    // "按设备/通道查录像"恒查不到东西（同一平台的 `/api/cloud/record/list`
+    // 走 `CloudRecordFilter`，是对的 —— 两条列表接口因此结果不一致）。
+    let filter = db::cloud_record::CloudRecordFilter {
+        device_id: q.device_id.as_deref().filter(|s| !s.is_empty()),
+        channel_id: q.channel_id.as_deref().filter(|s| !s.is_empty()),
+        ..Default::default()
+    };
+    let (records, total) = match db::cloud_record::list_filtered(
         &state.pool,
-        kw,
-        None,
-        None,
-        None,
-        None,
+        &filter,
         page as i64,
         count as i64,
     )
     .await
-    .unwrap_or_default();
-    let total = db::cloud_record::count_all(&state.pool, kw, None, None, None, None)
-        .await
-        .unwrap_or(0);
+    {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!("查询云端录像 URL 列表失败: {e}");
+            (Vec::new(), 0)
+        }
+    };
     let urls: Vec<serde_json::Value> = records.iter().map(|r| {
         // 2026-09-11：此前这里给出 `/record/<path>`，但**没有对应路由**，
         // 点开必然 404。现改为真实可用的下载端点（支持 Range）。

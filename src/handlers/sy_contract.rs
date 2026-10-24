@@ -82,7 +82,7 @@ pub struct SyTestReport {
     tag = "channel",
     operation_id = "sy_camera_one",
     summary = "中亿视图：单通道详情（转调 common_channel/one）",
-    params(ChannelIdQuery),
+    params(SyChannelIdQuery),
     responses(
         (status = 200, description = "单个通道详情；id 缺失或为 0 时 data=null",
          body = ApiResult<serde_json::Value>,
@@ -93,9 +93,51 @@ pub struct SyTestReport {
 )]
 pub async fn camera_one(
     State(state): State<AppState>,
-    Query(q): Query<ChannelIdQuery>,
+    Query(q): Query<SyChannelIdQuery>,
 ) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
-    crate::handlers::common_channel::channel_one(State(state), Query(q)).await
+    let pk = resolve_channel_pk(&state, q.id.as_deref()).await?;
+    crate::handlers::common_channel::channel_one(
+        State(state),
+        Query(ChannelIdQuery {
+            channel_id: Some(pk),
+        }),
+    )
+    .await
+}
+
+/// SY 侧的通道标识：**数字主键**与 **20 位国标通道号**都接受。
+///
+/// 平台版的 `ChannelIdQuery.id` 是 `i64`，20 位国标号装不下 —— 传进去会
+/// 被 axum 的 QueryRejection 拒掉，返回**裸 HTTP 400 文本**（不是
+/// `{code,msg,data}` 信封），对接方拿到的不是契约里约定的格式。
+/// 而同一 SY 模块的 `push/play` 用的恰恰是国标 `deviceId`/`channelId`，
+/// 两套 ID 口径并存很容易踩坑，所以这里统一成"两种都收"。
+#[derive(Debug, Deserialize, Default, utoipa::IntoParams)]
+pub struct SyChannelIdQuery {
+    /// 通道主键（数字）或国标通道号，都接受。
+    #[serde(alias = "channelId", alias = "channel_id", alias = "id")]
+    #[serde(default, deserialize_with = "crate::serde_flex::de_opt_string")]
+    pub id: Option<String>,
+}
+
+/// 把"数字主键或国标通道号"解析成通道主键。
+async fn resolve_channel_pk(state: &AppState, raw: Option<&str>) -> Result<i64, AppError> {
+    let raw = raw.map(str::trim).unwrap_or_default();
+    if raw.is_empty() {
+        // 平台版在 id 缺失时回 data=null，这里保持一致。
+        return Ok(0);
+    }
+    if let Ok(pk) = raw.parse::<i64>() {
+        return Ok(pk);
+    }
+    match crate::db::record_plan::channel_id_by_gb_id(&state.pool, raw).await {
+        Ok(Some(pk)) => Ok(pk),
+        Ok(None) => Ok(0),
+        Err(e) => Err(AppError::business(
+            crate::error::ErrorCode::Error500,
+            format!("解析通道号失败: {e}"),
+        )),
+    }
 }
 
 /// GET /api/sy/camera/update?id=&name=&...
@@ -124,8 +166,22 @@ pub async fn camera_update(
     State(state): State<AppState>,
     Query(q): Query<SyChannelUpdateQuery>,
 ) -> Result<Json<ApiResult<()>>, AppError> {
+    // id 可能是数字主键，也可能是国标通道号 —— 先解析成主键再走平台的更新逻辑。
+    let id = match q.id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(raw) => {
+            let pk = resolve_channel_pk(&state, Some(raw)).await?;
+            if pk <= 0 {
+                return Err(AppError::business(
+                    crate::error::ErrorCode::Error400,
+                    format!("通道不存在: {raw}"),
+                ));
+            }
+            Some(pk)
+        }
+        None => None,
+    };
     let body = ChannelUpdateBody {
-        id: q.id,
+        id,
         name: q.name,
         channel_id: q.channel_id,
         civil_code: q.civil_code,
@@ -149,9 +205,10 @@ pub async fn camera_update(
 /// 本身的 `id` 就是必填项，语义一致）。
 #[derive(Debug, Deserialize, Default, utoipa::IntoParams)]
 pub struct SyChannelUpdateQuery {
-    /// 通道主键（必填）。
+    /// 通道主键（数字）或国标通道号，都接受（必填）。
     #[serde(alias = "id")]
-    pub id: Option<i64>,
+    #[serde(default, deserialize_with = "crate::serde_flex::de_opt_string")]
+    pub id: Option<String>,
     /// 通道名称。
     pub name: Option<String>,
     /// 通道国标 ID。
@@ -192,11 +249,18 @@ pub struct SyChannelUpdateQuery {
 
 /// GET /api/sy/push/play?deviceId=&channelId=
 ///
-/// 推送播放（**含校验**）。
+/// 推送播放（**带平台侧前置校验**）。
 ///
-/// 与 `/api/sy/push/play-without-check` 的区别只有一处：本端点先做**平台侧前置
-/// 校验** —— 目标设备必须已登记、通道必须属于该设备、设备必须在线。任一条不满足
-/// 就直接返回业务错误，**不发起任何 SIP**，避免对着未知目标发 INVITE。
+/// 先确认目标设备已登记、通道属于该设备、设备在线，不满足就直接返回业务错误。
+///
+/// 与 `/api/sy/push/play-without-check` 的**实际**区别要说准：
+/// 点播链路（`play::play_start`）自己也会做设备/通道/在线三项检查，而且都在
+/// 发起 INVITE **之前** —— 所以两个端点**都不会**对着未知目标发 SIP。
+/// 真正的差别只有两处：
+///   1. **错误文案**：本端点用 SY 口径（"设备不存在: X" / "设备离线: X" /
+///      "通道不存在或不属于该设备: X/Y"），另一个端点透出平台口径
+///      （"Device not found" / "Device is offline" / "Channel not found"）；
+///   2. **检查顺序**：本端点先看在线、再看通道归属；另一个端点是先看通道归属。
 ///
 /// 校验通过后与平台其它点播入口走同一条链路（SIP INVITE + ZLM 收流）。
 #[utoipa::path(
@@ -258,10 +322,13 @@ pub async fn push_play(
 
 /// GET /api/sy/push/play-without-check?deviceId=&channelId=
 ///
-/// 推送播放（**跳过校验**）。
+/// 推送播放（**不做平台侧前置校验**）。
 ///
-/// 不做平台侧前置校验，直接进入点播链路；目标不存在时由点播链路自身回报失败。
-/// 供已自行确认目标可用的调用方使用，省掉额外的库查询。
+/// 直接进入点播链路，由点播链路自身做设备/通道/在线检查并回报失败
+/// （错误文案是平台口径）。省掉了 SY 侧那一遍重复的库查询。
+///
+/// 注意：点播链路的检查同样在发起 INVITE **之前**，所以这个端点也**不会**
+/// 对着未知目标发 SIP —— 与 `push/play` 的差别只在错误文案与检查顺序。
 #[utoipa::path(
     get,
     path = "/api/sy/push/play-without-check",
@@ -308,29 +375,68 @@ pub async fn push_play_without_check(
          body = ApiResult<SyTestReport>,
          example = json!({"code":0,"msg":"成功","data":{"version":"2.0.0","ok":true,"database":true,"sip":true,"device_count":1,"online_device_count":1,"channel_count":2,"media_server_count":1,"media_server_online_count":1,"issues":[]}})),
         (status = 401, description = "未鉴权"),
+        (status = 403, description = "非管理员"),
     ),
     security(("access_token" = [])),
 )]
-pub async fn sy_test(State(state): State<AppState>) -> Json<ApiResult<SyTestReport>> {
+pub async fn sy_test(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+) -> Result<Json<ApiResult<SyTestReport>>, AppError> {
+    // 这是**新增的诊断端点**（不是别名），会回报部署拓扑（设备/通道/媒体节点
+    // 数量）。按仓库规约（AGENTS.md「新增任何管理类端点都必须调用
+    // authz::require_admin」）与平台同类诊断口（`/api/test/hook/list`、
+    // `/api/test/redis`）保持一致 —— 否则普通登录用户也能读到这些数字。
+    crate::handlers::authz::require_admin(&state, &headers).await?;
+
     let mut issues: Vec<String> = Vec::new();
 
-    let device_count = db::device::count_devices(&state.pool, None, None)
-        .await
-        .unwrap_or(0);
-    let online_device_count = db::device::count_devices(&state.pool, None, Some(true))
-        .await
-        .unwrap_or(0);
-    let channel_count = db::device::count_all_channels(&state.pool)
-        .await
-        .unwrap_or(0);
-    let media_server_count = db::media_server::count_all(&state.pool).await.unwrap_or(0);
-    let media_server_online_count = db::media_server::list_online_servers(&state.pool)
-        .await
-        .map(|v| v.len() as i64)
-        .unwrap_or(0);
+    // 计数**不能吞错**：某个查询失败时若还报 0，报告里就会出现
+    // `{"database":true,"device_count":0,"ok":true}` 这种自相矛盾的结论，
+    // 对接方据此判定"平台就绪"就错了。失败一律记进 issues 并让 ok=false。
+    let device_count = match db::device::count_devices(&state.pool, None, None).await {
+        Ok(n) => n,
+        Err(e) => {
+            tracing::warn!("自检：统计设备数失败: {e}");
+            issues.push("设备数统计失败".to_string());
+            0
+        }
+    };
+    let online_device_count = match db::device::count_devices(&state.pool, None, Some(true)).await {
+        Ok(n) => n,
+        Err(e) => {
+            tracing::warn!("自检：统计在线设备数失败: {e}");
+            issues.push("在线设备数统计失败".to_string());
+            0
+        }
+    };
+    let channel_count = match db::device::count_all_channels(&state.pool).await {
+        Ok(n) => n,
+        Err(e) => {
+            tracing::warn!("自检：统计通道数失败: {e}");
+            issues.push("通道数统计失败".to_string());
+            0
+        }
+    };
+    let media_server_count = match db::media_server::count_all(&state.pool).await {
+        Ok(n) => n,
+        Err(e) => {
+            tracing::warn!("自检：统计媒体节点数失败: {e}");
+            issues.push("媒体节点数统计失败".to_string());
+            0
+        }
+    };
+    let media_server_online_count = match db::media_server::list_online_servers(&state.pool).await {
+        Ok(v) => v.len() as i64,
+        Err(e) => {
+            tracing::warn!("自检：统计在线媒体节点数失败: {e}");
+            issues.push("在线媒体节点数统计失败".to_string());
+            0
+        }
+    };
 
-    // 数据库连通性：任一计数查询失败都说明库不可读。
-    let database = db::device::count_all_channels(&state.pool).await.is_ok();
+    // 数据库连通性：上面的通道数查询已经探过库了。
+    let database = !issues.iter().any(|i| i.contains("统计失败"));
     if !database {
         issues.push("数据库不可读".to_string());
     }
@@ -348,7 +454,7 @@ pub async fn sy_test(State(state): State<AppState>) -> Json<ApiResult<SyTestRepo
 
     let ok = database && sip && media_server_online_count > 0;
 
-    Json(ApiResult::success(SyTestReport {
+    Ok(Json(ApiResult::success(SyTestReport {
         version: env!("CARGO_PKG_VERSION").to_string(),
         ok,
         database,
@@ -359,7 +465,7 @@ pub async fn sy_test(State(state): State<AppState>) -> Json<ApiResult<SyTestRepo
         media_server_count,
         media_server_online_count,
         issues,
-    }))
+    })))
 }
 
 #[cfg(all(test, feature = "sqlite"))]
@@ -417,13 +523,14 @@ mod tests {
 
         let sy = super::camera_one(
             State(state.clone()),
-            Query(ChannelIdQuery {
-                channel_id: Some(channel_pk),
+            Query(SyChannelIdQuery {
+                id: Some(channel_pk.to_string()),
             }),
         )
         .await
         .unwrap()
         .0;
+        // 平台实现用的是自己的 DTO（数字主键）。
         let common = crate::handlers::common_channel::channel_one(
             State(state),
             Query(ChannelIdQuery {
@@ -450,7 +557,7 @@ mod tests {
     #[tokio::test]
     async fn camera_one_without_id_returns_null_data() {
         let state = crate::test_support::app_state().await;
-        let out = super::camera_one(State(state), Query(ChannelIdQuery { channel_id: None }))
+        let out = super::camera_one(State(state), Query(SyChannelIdQuery { id: None }))
             .await
             .unwrap()
             .0;
@@ -470,7 +577,7 @@ mod tests {
         let out = super::camera_update(
             State(state.clone()),
             Query(SyChannelUpdateQuery {
-                id: Some(channel_pk),
+                id: Some(channel_pk.to_string()),
                 name: Some("SY 改名后的通道".to_string()),
                 owner: Some("SY 对接方".to_string()),
                 ..Default::default()
@@ -598,7 +705,13 @@ mod tests {
         let state = crate::test_support::app_state().await;
         seed_device_and_channel(&state.pool, true).await;
 
-        let out = super::sy_test(State(state)).await.0;
+        // 自检是管理类端点，必须带管理员身份。
+        let token = crate::auth::JwtKeys::new(state.config.jwt.secret.as_bytes())
+            .create_token("admin", 60)
+            .unwrap();
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("access-token", token.parse().unwrap());
+        let out = super::sy_test(State(state), headers).await.unwrap().0;
         assert_eq!(out.code, 0, "{out:?}");
         let report = out.data.unwrap();
         assert_eq!(report.version, env!("CARGO_PKG_VERSION"));
@@ -611,6 +724,98 @@ mod tests {
             report.issues.iter().any(|i| i.contains("媒体节点")),
             "{report:?}"
         );
+    }
+
+    /// 自检是管理类端点：非管理员必须被拒。
+    ///
+    /// 它会回报部署拓扑（设备/通道/媒体节点数量），口径要与平台同类诊断口
+    /// （`/api/test/hook/list`、`/api/test/redis`）一致 —— 都要求管理员。
+    #[tokio::test]
+    async fn sy_test_requires_admin() {
+        let state = crate::test_support::app_state().await;
+        let token = crate::auth::JwtKeys::new(state.config.jwt.secret.as_bytes())
+            .create_token("nobody", 60)
+            .unwrap();
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("access-token", token.parse().unwrap());
+        // 用户存在但不是管理员 → 403（而不是放行）。
+        // 注意要同时建一个**非管理员角色**：`find_by_username` 是
+        // `gb_user JOIN gb_user_role`，role_id 指向不存在的角色时整行查不出来，
+        // 会走到 401 而不是 403 —— 那样就测不到"管理员粒度"这一层了。
+        sqlx::query(
+            "INSERT INTO gb_user_role (id, name, authority, create_time, update_time) \
+             VALUES (2, 'operator', '9', '2026-01-01 00:00:00', '2026-01-01 00:00:00')",
+        )
+        .execute(&state.pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO gb_user (username, password, role_id, push_key, create_time, update_time) \
+             VALUES ('nobody', 'x', 2, 'k', '2026-01-01 00:00:00', '2026-01-01 00:00:00')",
+        )
+        .execute(&state.pool)
+        .await
+        .unwrap();
+
+        let err = super::sy_test(State(state), headers).await.unwrap_err();
+        assert!(
+            format!("{err:?}").contains("403") || format!("{err:?}").contains("权限"),
+            "非管理员不应被放行: {err:?}"
+        );
+    }
+
+    /// `camera/one` 要能按**国标通道号**查到（20 位数字）。
+    ///
+    /// 平台版只收数字主键，20 位国标号会 i64 溢出 → axum 直接回裸 HTTP 400
+    /// 文本（不是 `{code,msg,data}` 信封）；而同一 SY 模块的 `push/play` 用的
+    /// 就是国标号，两套口径并存会让对接方踩坑。
+    #[tokio::test]
+    async fn camera_one_accepts_gb_channel_id() {
+        let state = crate::test_support::app_state().await;
+        seed_device_and_channel(&state.pool, true).await;
+
+        let by_pk = super::camera_one(
+            State(state.clone()),
+            Query(SyChannelIdQuery {
+                id: Some("1".to_string()),
+            }),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(by_pk.code, 0, "{by_pk:?}");
+
+        let by_gb = super::camera_one(
+            State(state.clone()),
+            Query(SyChannelIdQuery {
+                id: Some(CHANNEL_ID.to_string()),
+            }),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(by_gb.code, 0, "{by_gb:?}");
+        let data = by_gb.data.unwrap();
+        assert_eq!(data["channelId"], serde_json::json!(CHANNEL_ID), "{data}");
+        assert_eq!(data["deviceId"], serde_json::json!(DEVICE_ID), "{data}");
+    }
+
+    /// 查不到的通道号返回 `data=null`（而不是报错）。
+    #[tokio::test]
+    async fn camera_one_with_unknown_id_returns_null_data() {
+        let state = crate::test_support::app_state().await;
+        let out = super::camera_one(
+            State(state),
+            Query(SyChannelIdQuery {
+                id: Some("34020000001319999997".to_string()),
+            }),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(out.code, 0, "{out:?}");
+        // 与平台版一致：查不到时 data 是 JSON null（不是缺字段）。
+        assert_eq!(out.data, Some(serde_json::Value::Null), "{out:?}");
     }
 
     /// 查询串拼装辅助（保持测试可读）。
@@ -645,32 +850,55 @@ pub async fn record_collect_add(
     crate::handlers::stub::cloud_record_collect_add(State(state), Query(q)).await
 }
 
+/// 取消收藏的入参：数字主键与组合串 `recordId` 都接受。
+///
+/// 平台的 DELETE 版走 `CloudRecordCollectQuery`（string），GET 版走
+/// `CollectQuery`（i64）—— 两侧口径不一致，对接方很容易照着另一边写然后
+/// 收到"missing id"。SY 别名统一成**字符串**：两种 id 都收。
+#[derive(Debug, Deserialize, Default, utoipa::IntoParams)]
+pub struct CollectDeleteQuery {
+    /// 云端录像主键（数字）或组合串 recordId，都接受。
+    #[serde(default, deserialize_with = "crate::serde_flex::de_opt_string")]
+    pub id: Option<String>,
+}
+
 /// GET /api/sy/record/collect/delete?id=
 ///
 /// 取消收藏：`/api/cloud/record/collect/delete` 的 SY 前缀别名。
 ///
 /// 与平台版本一致：GET 与 DELETE 两种方法都注册，避免只支持一种方法的对接方
-/// 收到 405。
+/// 收到 405。两个方法都走同一套 `clear_collect` 逻辑，返回同一形状
+/// `{recordId, status}`。
 #[utoipa::path(
     get,
     path = "/api/sy/record/collect/delete",
     tag = "cloud",
     operation_id = "sy_record_collect_delete",
     summary = "中亿视图：取消收藏（转调 cloud/record/collect/delete）",
-    params(crate::handlers::cloud_record_extra::CollectQuery),
+    params(CollectDeleteQuery),
     responses(
         (status = 200, description = "取消收藏结果",
          body = ApiResult<serde_json::Value>,
-         example = json!({"code":0,"msg":"成功","data":{"status":"removed"}})),
+         example = json!({"code":0,"msg":"成功","data":{"recordId":"zlm-1::rtp::ch::a.mp4","status":"deleted"}})),
         (status = 401, description = "未鉴权"),
     ),
     security(("access_token" = [])),
 )]
 pub async fn record_collect_delete(
     State(state): State<AppState>,
-    Query(q): Query<crate::handlers::cloud_record_extra::CollectQuery>,
+    Query(q): Query<CollectDeleteQuery>,
 ) -> Json<ApiResult<serde_json::Value>> {
-    crate::handlers::cloud_record_extra::collect_delete(State(state), Query(q)).await
+    let raw_id = q.id.unwrap_or_default();
+    if raw_id.is_empty() {
+        return Json(ApiResult::error("record_id is required"));
+    }
+    match crate::handlers::cloud_record_extra::clear_collect(&state, &raw_id).await {
+        Ok(record_id) => Json(ApiResult::success(serde_json::json!({
+            "recordId": record_id,
+            "status": "deleted",
+        }))),
+        Err(e) => Json(ApiResult::error(e)),
+    }
 }
 
 /// DELETE /api/sy/record/collect/delete?id=
@@ -694,9 +922,26 @@ pub async fn record_collect_delete(
 )]
 pub async fn record_collect_delete_method(
     State(state): State<AppState>,
-    Query(q): Query<crate::handlers::cloud_record_extra::CollectQuery>,
+    Json(body): Json<crate::handlers::stub::CloudRecordCollectQuery>,
 ) -> Json<ApiResult<serde_json::Value>> {
-    crate::handlers::cloud_record_extra::collect_delete(State(state), Query(q)).await
+    // 入参与平台 DELETE 版**完全一致**（JSON body），返回同一形状。
+    // 此前这里转调的是 GET 版实现（只认 query 的数字主键），对接方照平台
+    // DELETE 的写法发 JSON body 会被 axum 忽略 → "missing id"，收藏根本没删掉。
+    let raw_id = body
+        .id
+        .or(body.record_id)
+        .or(body.cloud_record_id)
+        .unwrap_or_default();
+    if raw_id.is_empty() {
+        return Json(ApiResult::error("record_id is required"));
+    }
+    match crate::handlers::cloud_record_extra::clear_collect(&state, &raw_id).await {
+        Ok(record_id) => Json(ApiResult::success(serde_json::json!({
+            "recordId": record_id,
+            "status": "deleted",
+        }))),
+        Err(e) => Json(ApiResult::error(e)),
+    }
 }
 
 /// GET /api/sy/record/list-url
