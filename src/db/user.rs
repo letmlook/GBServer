@@ -64,100 +64,46 @@ pub async fn find_by_username_password(
     username: &str,
     password_md5: &str,
 ) -> sqlx::Result<Option<User>> {
-    #[cfg(feature = "mysql")]
-    let u = sqlx::query_as::<_, User>(
+    let sql = crate::db::dialect::current_sql(
         r#"SELECT u.id, u.username, u.password, u.role_id, u.create_time, u.update_time, u.push_key,
                r.name AS role_name, r.authority AS role_authority
         FROM gb_user u JOIN gb_user_role r ON u.role_id = r.id
         WHERE u.username = ? AND u.password = ?"#,
     )
-    .bind(username)
-    .bind(password_md5)
-    .fetch_optional(pool)
-    .await?;
-    #[cfg(feature = "postgres")]
-    let u = sqlx::query_as::<_, User>(
-        r#"SELECT u.id, u.username, u.password, u.role_id, u.create_time, u.update_time, u.push_key,
-               r.name AS role_name, r.authority AS role_authority
-        FROM gb_user u JOIN gb_user_role r ON u.role_id = r.id
-        WHERE u.username = $1 AND u.password = $2"#,
-    )
-    .bind(username)
-    .bind(password_md5)
-    .fetch_optional(pool)
-    .await?;
-    #[cfg(feature = "sqlite")]
-    let u = sqlx::query_as::<_, User>(
-        r#"SELECT u.id, u.username, u.password, u.role_id, u.create_time, u.update_time, u.push_key,
-               r.name AS role_name, r.authority AS role_authority
-        FROM gb_user u JOIN gb_user_role r ON u.role_id = r.id
-        WHERE u.username = ? AND u.password = ?"#,
-    )
-    .bind(username)
-    .bind(password_md5)
-    .fetch_optional(pool)
-    .await?;
+    .into_owned();
+    let u = crate::dispatch!(pool, |p| {
+        sqlx::query_as::<_, User>(&sql)
+            .bind(username)
+            .bind(password_md5)
+            .fetch_optional(p)
+    })?;
     Ok(u)
 }
 
 pub async fn find_by_id(pool: &Pool, id: i32) -> sqlx::Result<Option<User>> {
-    #[cfg(feature = "mysql")]
-    return sqlx::query_as::<_, User>(
+    let sql = crate::db::dialect::current_sql(
         r#"SELECT u.id, u.username, u.password, u.role_id, u.create_time, u.update_time, u.push_key,
                r.name AS role_name, r.authority AS role_authority
         FROM gb_user u JOIN gb_user_role r ON u.role_id = r.id WHERE u.id = ?"#,
     )
-    .bind(id)
-    .fetch_optional(pool)
-    .await;
-    #[cfg(feature = "postgres")]
-    return sqlx::query_as::<_, User>(
-        r#"SELECT u.id, u.username, u.password, u.role_id, u.create_time, u.update_time, u.push_key,
-               r.name AS role_name, r.authority AS role_authority
-        FROM gb_user u JOIN gb_user_role r ON u.role_id = r.id WHERE u.id = $1"#,
-    )
-    .bind(id)
-    .fetch_optional(pool)
-    .await;
-    #[cfg(feature = "sqlite")]
-    return sqlx::query_as::<_, User>(
-        r#"SELECT u.id, u.username, u.password, u.role_id, u.create_time, u.update_time, u.push_key,
-               r.name AS role_name, r.authority AS role_authority
-        FROM gb_user u JOIN gb_user_role r ON u.role_id = r.id WHERE u.id = ?"#,
-    )
-    .bind(id)
-    .fetch_optional(pool)
-    .await;
+    .into_owned();
+    return crate::dispatch!(pool, |p| {
+        sqlx::query_as::<_, User>(&sql).bind(id).fetch_optional(p)
+    });
 }
 
 pub async fn find_by_username(pool: &Pool, username: &str) -> sqlx::Result<Option<User>> {
-    #[cfg(feature = "mysql")]
-    return sqlx::query_as::<_, User>(
+    let sql = crate::db::dialect::current_sql(
         r#"SELECT u.id, u.username, u.password, u.role_id, u.create_time, u.update_time, u.push_key,
                r.name AS role_name, r.authority AS role_authority
         FROM gb_user u JOIN gb_user_role r ON u.role_id = r.id WHERE u.username = ?"#,
     )
-    .bind(username)
-    .fetch_optional(pool)
-    .await;
-    #[cfg(feature = "postgres")]
-    return sqlx::query_as::<_, User>(
-        r#"SELECT u.id, u.username, u.password, u.role_id, u.create_time, u.update_time, u.push_key,
-               r.name AS role_name, r.authority AS role_authority
-        FROM gb_user u JOIN gb_user_role r ON u.role_id = r.id WHERE u.username = $1"#,
-    )
-    .bind(username)
-    .fetch_optional(pool)
-    .await;
-    #[cfg(feature = "sqlite")]
-    return sqlx::query_as::<_, User>(
-        r#"SELECT u.id, u.username, u.password, u.role_id, u.create_time, u.update_time, u.push_key,
-               r.name AS role_name, r.authority AS role_authority
-        FROM gb_user u JOIN gb_user_role r ON u.role_id = r.id WHERE u.username = ?"#,
-    )
-    .bind(username)
-    .fetch_optional(pool)
-    .await;
+    .into_owned();
+    return crate::dispatch!(pool, |p| {
+        sqlx::query_as::<_, User>(&sql)
+            .bind(username)
+            .fetch_optional(p)
+    });
 }
 
 /// 分页查询用户，可按用户名模糊搜索。
@@ -181,104 +127,46 @@ pub async fn get_users_paged(
     let q = query.map(str::trim).filter(|s| !s.is_empty());
     let like = q.map(|s| format!("%{}%", s));
 
-    #[cfg(feature = "mysql")]
-    {
-        return match &like {
-            Some(pat) => {
-                sqlx::query_as::<_, User>(
-                    r#"SELECT u.id, u.username, u.password, u.role_id, u.create_time, u.update_time, u.push_key,
+    let sql = crate::db::dialect::current_sql(
+        r#"SELECT u.id, u.username, u.password, u.role_id, u.create_time, u.update_time, u.push_key,
                r.name AS role_name, r.authority AS role_authority
         FROM gb_user u LEFT JOIN gb_user_role r ON u.role_id = r.id
         WHERE u.username LIKE ? ORDER BY u.id LIMIT ? OFFSET ?"#,
-                )
-                .bind(pat)
-                .bind(count as i64)
-                .bind(offset)
-                .fetch_all(pool)
-                .await
-            }
-            None => {
-                sqlx::query_as::<_, User>(
-                    r#"SELECT u.id, u.username, u.password, u.role_id, u.create_time, u.update_time, u.push_key,
+    )
+    .into_owned();
+    // 宏体**不能**带 `.await`（`dispatch!` 自己 await），也不能用 `return`。
+    // 带 `?` 的 SQL 必须先在**宏外面**算好：`dialect_sql(...)` 返回的临时
+    // `Cow` 在宏体块尾就会被析构，而查询 future 还借着它。
+    let sql_no_like = crate::dyn_where::dialect_sql(
+        r#"SELECT u.id, u.username, u.password, u.role_id, u.create_time, u.update_time, u.push_key,
                r.name AS role_name, r.authority AS role_authority
         FROM gb_user u LEFT JOIN gb_user_role r ON u.role_id = r.id ORDER BY u.id LIMIT ? OFFSET ?"#,
-                )
-                .bind(count as i64)
-                .bind(offset)
-                .fetch_all(pool)
-                .await
-            }
-        };
-    }
-    #[cfg(feature = "postgres")]
-    {
-        return match &like {
-            Some(pat) => {
-                sqlx::query_as::<_, User>(
-                    r#"SELECT u.id, u.username, u.password, u.role_id, u.create_time, u.update_time, u.push_key,
-               r.name AS role_name, r.authority AS role_authority
-        FROM gb_user u LEFT JOIN gb_user_role r ON u.role_id = r.id
-        WHERE u.username LIKE $1 ORDER BY u.id LIMIT $2 OFFSET $3"#,
-                )
+    );
+    crate::dispatch!(pool, |p| {
+        match &like {
+            Some(pat) => sqlx::query_as::<_, User>(&sql)
                 .bind(pat)
                 .bind(count as i64)
                 .bind(offset)
-                .fetch_all(pool)
-                .await
-            }
-            None => {
-                sqlx::query_as::<_, User>(
-                    r#"SELECT u.id, u.username, u.password, u.role_id, u.create_time, u.update_time, u.push_key,
-               r.name AS role_name, r.authority AS role_authority
-        FROM gb_user u LEFT JOIN gb_user_role r ON u.role_id = r.id ORDER BY u.id LIMIT $1 OFFSET $2"#,
-                )
+                .fetch_all(p),
+            None => sqlx::query_as::<_, User>(&sql_no_like)
                 .bind(count as i64)
                 .bind(offset)
-                .fetch_all(pool)
-                .await
-            }
-        };
-    }
-    #[cfg(feature = "sqlite")]
-    {
-        return match &like {
-            Some(pat) => {
-                sqlx::query_as::<_, User>(
-                    r#"SELECT u.id, u.username, u.password, u.role_id, u.create_time, u.update_time, u.push_key,
-               r.name AS role_name, r.authority AS role_authority
-        FROM gb_user u LEFT JOIN gb_user_role r ON u.role_id = r.id
-        WHERE u.username LIKE ? ORDER BY u.id LIMIT ? OFFSET ?"#,
-                )
-                .bind(pat)
-                .bind(count as i64)
-                .bind(offset)
-                .fetch_all(pool)
-                .await
-            }
-            None => {
-                sqlx::query_as::<_, User>(
-                    r#"SELECT u.id, u.username, u.password, u.role_id, u.create_time, u.update_time, u.push_key,
-               r.name AS role_name, r.authority AS role_authority
-        FROM gb_user u LEFT JOIN gb_user_role r ON u.role_id = r.id ORDER BY u.id LIMIT ? OFFSET ?"#,
-                )
-                .bind(count as i64)
-                .bind(offset)
-                .fetch_all(pool)
-                .await
-            }
-        };
-    }
+                .fetch_all(p),
+        }
+    })
 }
 
 pub async fn get_all_users(pool: &Pool) -> sqlx::Result<Vec<User>> {
     // LEFT JOIN：理由同 `get_users_paged`（悬空 role_id 不能被丢掉）。
-    sqlx::query_as::<_, User>(
+    crate::dispatch!(pool, |p| {
+        sqlx::query_as::<_, User>(
         r#"SELECT u.id, u.username, u.password, u.role_id, u.create_time, u.update_time, u.push_key,
                r.name AS role_name, r.authority AS role_authority
         FROM gb_user u LEFT JOIN gb_user_role r ON u.role_id = r.id ORDER BY u.id"#,
     )
-    .fetch_all(pool)
-    .await
+    .fetch_all(p)
+    })
 }
 
 pub async fn add_user(
@@ -289,112 +177,53 @@ pub async fn add_user(
     push_key: &str,
     now: &str,
 ) -> sqlx::Result<u64> {
-    #[cfg(feature = "mysql")]
-    let r = sqlx::query(
+    let sql = crate::db::dialect::current_sql(
         r#"INSERT INTO gb_user (username, password, role_id, push_key, create_time, update_time)
         VALUES (?, ?, ?, ?, ?, ?)"#,
     )
-    .bind(username)
-    .bind(password_md5)
-    .bind(role_id)
-    .bind(push_key)
-    .bind(now)
-    .bind(now)
-    .execute(pool)
-    .await?;
-    #[cfg(feature = "postgres")]
-    let r = sqlx::query(
-        r#"INSERT INTO gb_user (username, password, role_id, push_key, create_time, update_time)
-        VALUES ($1, $2, $3, $4, $5, $6)"#,
-    )
-    .bind(username)
-    .bind(password_md5)
-    .bind(role_id)
-    .bind(push_key)
-    .bind(now)
-    .bind(now)
-    .execute(pool)
-    .await?;
-    #[cfg(feature = "sqlite")]
-    let r = sqlx::query(
-        r#"INSERT INTO gb_user (username, password, role_id, push_key, create_time, update_time)
-        VALUES (?, ?, ?, ?, ?, ?)"#,
-    )
-    .bind(username)
-    .bind(password_md5)
-    .bind(role_id)
-    .bind(push_key)
-    .bind(now)
-    .bind(now)
-    .execute(pool)
-    .await?;
+    .into_owned();
+    let r = crate::dispatch_exec!(pool, |p| {
+        sqlx::query(&sql)
+            .bind(username)
+            .bind(password_md5)
+            .bind(role_id)
+            .bind(push_key)
+            .bind(now)
+            .bind(now)
+            .execute(p)
+    })?;
     Ok(r.rows_affected())
 }
 
 pub async fn delete_user(pool: &Pool, id: i32) -> sqlx::Result<u64> {
-    #[cfg(feature = "mysql")]
-    let r = sqlx::query("DELETE FROM gb_user WHERE id != 1 AND id = ?")
-        .bind(id)
-        .execute(pool)
-        .await?;
-    #[cfg(feature = "postgres")]
-    let r = sqlx::query("DELETE FROM gb_user WHERE id != 1 AND id = $1")
-        .bind(id)
-        .execute(pool)
-        .await?;
-    #[cfg(feature = "sqlite")]
-    let r = sqlx::query("DELETE FROM gb_user WHERE id != 1 AND id = ?")
-        .bind(id)
-        .execute(pool)
-        .await?;
+    let sql = crate::db::dialect::current_sql("DELETE FROM gb_user WHERE id != 1 AND id = ?")
+        .into_owned();
+    let r = crate::dispatch_exec!(pool, |p| { sqlx::query(&sql).bind(id).execute(p) })?;
     Ok(r.rows_affected())
 }
 
 pub async fn change_password(pool: &Pool, user_id: i32, password_md5: &str) -> sqlx::Result<u64> {
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    #[cfg(feature = "mysql")]
-    let r = sqlx::query("UPDATE gb_user SET password = ?, update_time = ? WHERE id = ?")
-        .bind(password_md5)
-        .bind(&now)
-        .bind(user_id)
-        .execute(pool)
-        .await?;
-    #[cfg(feature = "postgres")]
-    let r = sqlx::query("UPDATE gb_user SET password = $1, update_time = $2 WHERE id = $3")
-        .bind(password_md5)
-        .bind(&now)
-        .bind(user_id)
-        .execute(pool)
-        .await?;
-    #[cfg(feature = "sqlite")]
-    let r = sqlx::query("UPDATE gb_user SET password = ?, update_time = ? WHERE id = ?")
-        .bind(password_md5)
-        .bind(&now)
-        .bind(user_id)
-        .execute(pool)
-        .await?;
+    let sql = crate::db::dialect::current_sql(
+        "UPDATE gb_user SET password = ?, update_time = ? WHERE id = ?",
+    )
+    .into_owned();
+    let r = crate::dispatch_exec!(pool, |p| {
+        sqlx::query(&sql)
+            .bind(password_md5)
+            .bind(&now)
+            .bind(user_id)
+            .execute(p)
+    })?;
     Ok(r.rows_affected())
 }
 
 pub async fn change_push_key(pool: &Pool, user_id: i32, push_key: &str) -> sqlx::Result<u64> {
-    #[cfg(feature = "mysql")]
-    let r = sqlx::query("UPDATE gb_user SET push_key = ? WHERE id = ?")
-        .bind(push_key)
-        .bind(user_id)
-        .execute(pool)
-        .await?;
-    #[cfg(feature = "postgres")]
-    let r = sqlx::query("UPDATE gb_user SET push_key = $1 WHERE id = $2")
-        .bind(push_key)
-        .bind(user_id)
-        .execute(pool)
-        .await?;
-    #[cfg(feature = "sqlite")]
-    let r = sqlx::query("UPDATE gb_user SET push_key = ? WHERE id = ?")
-        .bind(push_key)
-        .bind(user_id)
-        .execute(pool)
-        .await?;
+    let sql = crate::db::dialect::current_sql("UPDATE gb_user SET push_key = ? WHERE id = ?")
+        .into_owned();
+    let r = crate::dispatch_exec!(pool, |p| {
+        sqlx::query(&sql).bind(push_key).bind(user_id).execute(p)
+    })?;
     Ok(r.rows_affected())
 }
 
@@ -405,33 +234,29 @@ pub async fn count_users(pool: &Pool, query: Option<&str>) -> sqlx::Result<i64> 
     match q {
         Some(s) => {
             let like = format!("%{}%", s);
-            #[cfg(feature = "postgres")]
-            let sql = "SELECT COUNT(*) FROM gb_user WHERE username LIKE $1";
-            #[cfg(not(feature = "postgres"))]
-            let sql = "SELECT COUNT(*) FROM gb_user WHERE username LIKE ?";
-            sqlx::query_scalar::<_, i64>(sql)
-                .bind(like)
-                .fetch_one(pool)
-                .await
+            // SQLite 的 `?1` 编号占位符统一成 `?` —— 三种方言按顺序绑定，语义一致。
+            let sql = pool.sql("SELECT COUNT(*) FROM gb_user WHERE username LIKE ?");
+            crate::dispatch!(pool, |p| {
+                sqlx::query_scalar::<_, i64>(&sql).bind(like).fetch_one(p)
+            })
         }
         None => {
-            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_user")
-                .fetch_one(pool)
-                .await
+            crate::dispatch!(pool, |p| {
+                sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_user").fetch_one(p)
+            })
         }
     }
 }
 
 /// 统计仍引用某角色的用户数（删角色前的引用检查）。
 pub async fn count_users_by_role(pool: &Pool, role_id: i32) -> sqlx::Result<i64> {
-    #[cfg(feature = "postgres")]
-    let sql = "SELECT COUNT(*) FROM gb_user WHERE role_id = $1";
-    #[cfg(not(feature = "postgres"))]
-    let sql = "SELECT COUNT(*) FROM gb_user WHERE role_id = ?";
-    sqlx::query_scalar::<_, i64>(sql)
-        .bind(role_id)
-        .fetch_one(pool)
-        .await
+    // SQLite 的 `?1` 编号占位符统一成 `?` —— 三种方言按顺序绑定，语义一致。
+    let sql = pool.sql("SELECT COUNT(*) FROM gb_user WHERE role_id = ?");
+    crate::dispatch!(pool, |p| {
+        sqlx::query_scalar::<_, i64>(&sql)
+            .bind(role_id)
+            .fetch_one(p)
+    })
 }
 
 /// 用户名是否已被占用（`exclude_id` 用于「改用户名」时排除自己）。
@@ -442,26 +267,24 @@ pub async fn username_taken(
 ) -> sqlx::Result<bool> {
     match exclude_id {
         Some(id) => {
-            #[cfg(feature = "postgres")]
-            let sql = "SELECT COUNT(*) FROM gb_user WHERE username = $1 AND id != $2";
-            #[cfg(not(feature = "postgres"))]
-            let sql = "SELECT COUNT(*) FROM gb_user WHERE username = ? AND id != ?";
-            let n: i64 = sqlx::query_scalar(sql)
-                .bind(username)
-                .bind(id)
-                .fetch_one(pool)
-                .await?;
+            // SQLite 的 `?1/?2` 编号占位符统一成 `?` —— 三种方言按顺序绑定。
+            let sql = pool.sql("SELECT COUNT(*) FROM gb_user WHERE username = ? AND id != ?");
+            let n: i64 = crate::dispatch!(pool, |p| {
+                sqlx::query_scalar::<_, i64>(&sql)
+                    .bind(username)
+                    .bind(id)
+                    .fetch_one(p)
+            })?;
             Ok(n > 0)
         }
         None => {
-            #[cfg(feature = "postgres")]
-            let sql = "SELECT COUNT(*) FROM gb_user WHERE username = $1";
-            #[cfg(not(feature = "postgres"))]
-            let sql = "SELECT COUNT(*) FROM gb_user WHERE username = ?";
-            let n: i64 = sqlx::query_scalar(sql)
-                .bind(username)
-                .fetch_one(pool)
-                .await?;
+            // SQLite 的 `?1` 编号占位符统一成 `?` —— 三种方言按顺序绑定。
+            let sql = pool.sql("SELECT COUNT(*) FROM gb_user WHERE username = ?");
+            let n: i64 = crate::dispatch!(pool, |p| {
+                sqlx::query_scalar::<_, i64>(&sql)
+                    .bind(username)
+                    .fetch_one(p)
+            })?;
             Ok(n > 0)
         }
     }
@@ -478,39 +301,19 @@ pub async fn update_user(
     role_id: Option<i32>,
 ) -> sqlx::Result<u64> {
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    #[cfg(feature = "mysql")]
-    let r = sqlx::query(
+    let sql = crate::db::dialect::current_sql(
         "UPDATE gb_user SET username = COALESCE(?, username), role_id = COALESCE(?, role_id), \
          update_time = ? WHERE id = ?",
     )
-    .bind(username)
-    .bind(role_id)
-    .bind(&now)
-    .bind(user_id)
-    .execute(pool)
-    .await?;
-    #[cfg(feature = "postgres")]
-    let r = sqlx::query(
-        "UPDATE gb_user SET username = COALESCE($1, username), role_id = COALESCE($2, role_id), \
-         update_time = $3 WHERE id = $4",
-    )
-    .bind(username)
-    .bind(role_id)
-    .bind(&now)
-    .bind(user_id)
-    .execute(pool)
-    .await?;
-    #[cfg(feature = "sqlite")]
-    let r = sqlx::query(
-        "UPDATE gb_user SET username = COALESCE(?, username), role_id = COALESCE(?, role_id), \
-         update_time = ? WHERE id = ?",
-    )
-    .bind(username)
-    .bind(role_id)
-    .bind(&now)
-    .bind(user_id)
-    .execute(pool)
-    .await?;
+    .into_owned();
+    let r = crate::dispatch_exec!(pool, |p| {
+        sqlx::query(&sql)
+            .bind(username)
+            .bind(role_id)
+            .bind(&now)
+            .bind(user_id)
+            .execute(p)
+    })?;
     Ok(r.rows_affected())
 }
 
@@ -519,32 +322,39 @@ pub async fn role_exists(pool: &Pool, role_id: i32) -> sqlx::Result<bool> {
     // **INT4**，按 `i64` 解会报 "decoding column 0: mismatched types"，
     // 而 `EXISTS` 在 postgres 返回 `bool`、mysql/sqlite 返回整数 —— 与
     // `db::device::device_exists` 用的是同一套按方言分支的写法。
-    #[cfg(feature = "mysql")]
-    {
-        let row: (i64,) = sqlx::query_as("SELECT EXISTS(SELECT 1 FROM gb_user_role WHERE id = ?)")
-            .bind(role_id)
-            .fetch_optional(pool)
-            .await?
-            .unwrap_or((0,));
-        Ok(row.0 > 0)
-    }
-    #[cfg(feature = "postgres")]
-    {
-        let row: (bool,) =
-            sqlx::query_as("SELECT EXISTS(SELECT 1 FROM gb_user_role WHERE id = $1)")
+    if crate::db::dialect::current().is_mysql() {
+        {
+            let row: (i64,) = crate::dispatch!(pool, |p| {
+                sqlx::query_as(&crate::dyn_where::dialect_sql(
+                    "SELECT EXISTS(SELECT 1 FROM gb_user_role WHERE id = ?)",
+                ))
                 .bind(role_id)
-                .fetch_optional(pool)
-                .await?
-                .unwrap_or((false,));
-        Ok(row.0)
-    }
-    #[cfg(feature = "sqlite")]
-    {
-        let row: (i64,) = sqlx::query_as("SELECT EXISTS(SELECT 1 FROM gb_user_role WHERE id = ?)")
-            .bind(role_id)
-            .fetch_optional(pool)
-            .await?
+                .fetch_optional(p)
+            })?
             .unwrap_or((0,));
-        Ok(row.0 > 0)
+            Ok(row.0 > 0)
+        }
+    } else if crate::db::dialect::current().is_postgres() {
+        {
+            let row: (bool,) = crate::dispatch!(pool, |p| {
+                sqlx::query_as("SELECT EXISTS(SELECT 1 FROM gb_user_role WHERE id = $1)")
+                    .bind(role_id)
+                    .fetch_optional(p)
+            })?
+            .unwrap_or((false,));
+            Ok(row.0)
+        }
+    } else {
+        {
+            let row: (i64,) = crate::dispatch!(pool, |p| {
+                sqlx::query_as(&crate::dyn_where::dialect_sql(
+                    "SELECT EXISTS(SELECT 1 FROM gb_user_role WHERE id = ?)",
+                ))
+                .bind(role_id)
+                .fetch_optional(p)
+            })?
+            .unwrap_or((0,));
+            Ok(row.0 > 0)
+        }
     }
 }

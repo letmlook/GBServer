@@ -58,7 +58,8 @@ pub async fn insert_batch(pool: &Pool, rows: &[NewLogEntry]) -> sqlx::Result<u64
     let mut affected = 0u64;
     // 逐条插入：日志表写入频率低（秒级批量），且可避免三种方言的批量语法差异
     for r in rows {
-        affected += sqlx::query(&crate::dyn_where::dialect_sql(
+        affected += crate::dispatch_exec!(pool, |p| {
+sqlx::query(&crate::dyn_where::dialect_sql(
             "INSERT INTO gb_log (time, level, logger, thread, message, source) VALUES (?, ?, ?, ?, ?, ?)",
         ))
             .bind(&r.time)
@@ -67,8 +68,8 @@ pub async fn insert_batch(pool: &Pool, rows: &[NewLogEntry]) -> sqlx::Result<u64
             .bind(r.thread.as_deref())
             .bind(r.message.as_deref())
             .bind(r.source.as_deref())
-            .execute(pool)
-            .await?
+            .execute(p)
+   })?
             .rows_affected();
     }
     Ok(affected)
@@ -79,7 +80,7 @@ pub async fn insert_batch(pool: &Pool, rows: &[NewLogEntry]) -> sqlx::Result<u64
 /// 过滤条件：`query`（message 模糊）、`level`（等值）、`start` / `end`（time 闭区间）。
 /// 方言占位符：postgres 用 `$n`，sqlite/mysql 用 `?`。
 fn ph(i: usize) -> String {
-    if cfg!(feature = "postgres") {
+    if crate::db::dialect::current().is_postgres() {
         format!("${}", i)
     } else {
         "?".to_string()
@@ -141,11 +142,13 @@ pub async fn export(
         where_clause,
         ph(binds.len() + 1)
     );
-    let mut q = sqlx::query_as::<_, LogEntry>(&sql);
-    for b in &binds {
-        q = q.bind(b);
-    }
-    q.bind(limit as i64).fetch_all(pool).await
+    crate::dispatch!(pool, |p| {
+        let mut q = sqlx::query_as::<_, LogEntry>(&sql);
+        for b in &binds {
+            q = q.bind(b);
+        }
+        q.bind(limit as i64).fetch_all(p)
+    })
 }
 
 pub async fn list_paged(
@@ -164,11 +167,13 @@ pub async fn list_paged(
     let (where_clause, binds) = build_filter(query, level, start, end);
 
     let count_sql = format!("SELECT COUNT(*) FROM gb_log{}", where_clause);
-    let mut cq = sqlx::query_scalar::<_, i64>(&count_sql);
-    for b in &binds {
-        cq = cq.bind(b);
-    }
-    let total = cq.fetch_one(pool).await?;
+    let total = crate::dispatch!(pool, |p| {
+        let mut cq = sqlx::query_scalar::<_, i64>(&count_sql);
+        for b in &binds {
+            cq = cq.bind(b);
+        }
+        cq.fetch_one(p)
+    })?;
 
     let list_sql = format!(
         "SELECT id, time, level, logger, thread, message, source FROM gb_log{} ORDER BY id DESC LIMIT {} OFFSET {}",
@@ -176,23 +181,26 @@ pub async fn list_paged(
         ph(binds.len() + 1),
         ph(binds.len() + 2)
     );
-    let mut lq = sqlx::query_as::<_, LogEntry>(&list_sql);
-    for b in &binds {
-        lq = lq.bind(b);
-    }
-    let list = lq.bind(count as i64).bind(offset).fetch_all(pool).await?;
+    let list = crate::dispatch!(pool, |p| {
+        let mut lq = sqlx::query_as::<_, LogEntry>(&list_sql);
+        for b in &binds {
+            lq = lq.bind(b);
+        }
+        lq.bind(count as i64).bind(offset).fetch_all(p)
+    })?;
 
     Ok((total, list))
 }
 
 /// 保留策略：删除 `time < before` 的日志，返回删除行数。
 pub async fn delete_before(pool: &Pool, before: &str) -> sqlx::Result<u64> {
-    Ok(sqlx::query(&crate::dyn_where::dialect_sql(
-        "DELETE FROM gb_log WHERE time < ?",
-    ))
-    .bind(before)
-    .execute(pool)
-    .await?
+    Ok(crate::dispatch_exec!(pool, |p| {
+        sqlx::query(&crate::dyn_where::dialect_sql(
+            "DELETE FROM gb_log WHERE time < ?",
+        ))
+        .bind(before)
+        .execute(p)
+    })?
     .rows_affected())
 }
 
@@ -212,7 +220,7 @@ pub async fn delete_older_than(pool: &Pool, days: u32) -> sqlx::Result<u64> {
     delete_before(pool, &cutoff).await
 }
 
-#[cfg(all(test, feature = "sqlite"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::test_support::sqlite_pool_with_schema;

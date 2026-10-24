@@ -17,141 +17,78 @@ pub struct PlatformGroup {
 
 /// 添加平台分组关系
 pub async fn add(pool: &Pool, platform_id: i32, group_id: i32) -> sqlx::Result<i64> {
-    #[cfg(feature = "postgres")]
-    {
-        let result: (i64,) = sqlx::query_as(
-            "INSERT INTO gb_platform_group (platform_id, group_id) VALUES ($1, $2) RETURNING id",
+    // `RETURNING id` 只有 PostgreSQL / SQLite(≥3.35) 支持，**MySQL 不支持**
+    // —— MySQL 走 `execute()` 的自增 id。
+    //
+    // 改造前这里是三个 `#[cfg(feature = ...)]` 分支（编译期三选一），
+    // 现在按**运行期方言**分支。
+    if crate::db::dialect::current().is_mysql() {
+        let sql = crate::db::dialect::current_sql(
+            "INSERT INTO gb_platform_group (platform_id, group_id) VALUES (?, ?)",
         )
-        .bind(platform_id)
-        .bind(group_id)
-        .fetch_one(pool)
-        .await?;
-
-        Ok(result.0)
-    }
-
-    #[cfg(feature = "mysql")]
-    {
-        let result =
-            sqlx::query("INSERT INTO gb_platform_group (platform_id, group_id) VALUES (?, ?)")
+        .into_owned();
+        let r = crate::dispatch_exec!(pool, |p| {
+            sqlx::query(&sql)
                 .bind(platform_id)
                 .bind(group_id)
-                .execute(pool)
-                .await?;
-
-        Ok(result.last_insert_id() as i64)
+                .execute(p)
+        })?;
+        // MySQL 的自增 id 走 `last_insert_id()`（方言专有 API）
+        return Ok(r.last_insert_id().unwrap_or(0) as i64);
     }
 
-    #[cfg(feature = "sqlite")]
-    {
-        let result =
-            sqlx::query("INSERT INTO gb_platform_group (platform_id, group_id) VALUES (?, ?)")
-                .bind(platform_id)
-                .bind(group_id)
-                .execute(pool)
-                .await?;
-
-        Ok(result.last_insert_rowid() as i64)
-    }
+    let sql = crate::db::dialect::current_sql(
+        "INSERT INTO gb_platform_group (platform_id, group_id) VALUES (?, ?) RETURNING id",
+    )
+    .into_owned();
+    let row: (i64,) = crate::dispatch!(pool, |p| {
+        sqlx::query_as(&sql)
+            .bind(platform_id)
+            .bind(group_id)
+            .fetch_one(p)
+    })?;
+    Ok(row.0)
 }
 
-/// 查询平台的所有分组
 pub async fn list_by_platform(pool: &Pool, platform_id: i32) -> sqlx::Result<Vec<PlatformGroup>> {
-    #[cfg(feature = "postgres")]
-    {
-        sqlx::query_as::<_, PlatformGroup>(
-            "SELECT id, platform_id, group_id FROM gb_platform_group WHERE platform_id = $1",
-        )
-        .bind(platform_id)
-        .fetch_all(pool)
-        .await
-    }
-
-    #[cfg(feature = "mysql")]
-    {
-        sqlx::query_as::<_, PlatformGroup>(
-            "SELECT id, platform_id, group_id FROM gb_platform_group WHERE platform_id = ?",
-        )
-        .bind(platform_id)
-        .fetch_all(pool)
-        .await
-    }
-
-    #[cfg(feature = "sqlite")]
-    {
-        sqlx::query_as::<_, PlatformGroup>(
-            "SELECT id, platform_id, group_id FROM gb_platform_group WHERE platform_id = ?",
-        )
-        .bind(platform_id)
-        .fetch_all(pool)
-        .await
-    }
+    let sql = crate::db::dialect::current_sql(
+        "SELECT id, platform_id, group_id FROM gb_platform_group WHERE platform_id = ?",
+    )
+    .into_owned();
+    return crate::dispatch!(pool, |p| {
+        sqlx::query_as::<_, PlatformGroup>(&sql)
+            .bind(platform_id)
+            .fetch_all(p)
+    });
 }
 
 /// 删除平台分组关系
 pub async fn delete(pool: &Pool, platform_id: i32, group_id: i32) -> sqlx::Result<bool> {
-    #[cfg(feature = "postgres")]
-    {
-        let result =
-            sqlx::query("DELETE FROM gb_platform_group WHERE platform_id = $1 AND group_id = $2")
-                .bind(platform_id)
-                .bind(group_id)
-                .execute(pool)
-                .await?;
-        Ok(result.rows_affected() > 0)
-    }
+    let sql = crate::db::dialect::current_sql(
+        "DELETE FROM gb_platform_group WHERE platform_id = ? AND group_id = ?",
+    )
+    .into_owned();
 
-    #[cfg(feature = "mysql")]
-    {
-        let result =
-            sqlx::query("DELETE FROM gb_platform_group WHERE platform_id = ? AND group_id = ?")
-                .bind(platform_id)
-                .bind(group_id)
-                .execute(pool)
-                .await?;
-        Ok(result.rows_affected() > 0)
-    }
+    let result = crate::dispatch_exec!(pool, |p| {
+        sqlx::query(&sql)
+            .bind(platform_id)
+            .bind(group_id)
+            .execute(p)
+    })?;
 
-    #[cfg(feature = "sqlite")]
-    {
-        let result =
-            sqlx::query("DELETE FROM gb_platform_group WHERE platform_id = ? AND group_id = ?")
-                .bind(platform_id)
-                .bind(group_id)
-                .execute(pool)
-                .await?;
-        Ok(result.rows_affected() > 0)
-    }
+    Ok(result.rows_affected() > 0)
 }
 
 /// 删除平台的所有分组关系
 pub async fn delete_by_platform(pool: &Pool, platform_id: i32) -> sqlx::Result<u64> {
-    #[cfg(feature = "postgres")]
-    {
-        let result = sqlx::query("DELETE FROM gb_platform_group WHERE platform_id = $1")
-            .bind(platform_id)
-            .execute(pool)
-            .await?;
-        Ok(result.rows_affected())
-    }
+    let sql =
+        crate::db::dialect::current_sql("DELETE FROM gb_platform_group WHERE platform_id = ?")
+            .into_owned();
 
-    #[cfg(feature = "mysql")]
-    {
-        let result = sqlx::query("DELETE FROM gb_platform_group WHERE platform_id = ?")
-            .bind(platform_id)
-            .execute(pool)
-            .await?;
-        Ok(result.rows_affected())
-    }
+    let result =
+        crate::dispatch_exec!(pool, |p| { sqlx::query(&sql).bind(platform_id).execute(p) })?;
 
-    #[cfg(feature = "sqlite")]
-    {
-        let result = sqlx::query("DELETE FROM gb_platform_group WHERE platform_id = ?")
-            .bind(platform_id)
-            .execute(pool)
-            .await?;
-        Ok(result.rows_affected())
-    }
+    Ok(result.rows_affected())
 }
 
 /// 批量添加平台分组关系

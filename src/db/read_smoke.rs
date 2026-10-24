@@ -41,9 +41,7 @@ async fn seed(pool: &db::Pool) {
          VALUES (1, 'push', 's1', '2026-01-01 00:00:00', '2026-01-01 00:00:00')",
     ];
     for sql in stmts {
-        sqlx::query(sql)
-            .execute(pool)
-            .await
+        crate::dispatch_exec!(pool, |p| { sqlx::query(sql).execute(p) })
             .unwrap_or_else(|e| panic!("seed failed: {} | {}", e, sql));
     }
 }
@@ -202,9 +200,7 @@ async fn smoke_platform_plan_apikey_reads() {
          VALUES ('g-1', '分组1', 'bg-1', '2026-01-01 00:00:00', '2026-01-01 00:00:00')",
     ];
     for sql in stmts {
-        sqlx::query(sql)
-            .execute(&pool)
-            .await
+        crate::dispatch_exec!(pool, |p| { sqlx::query(sql).execute(p) })
             .unwrap_or_else(|e| panic!("seed failed: {} | {}", e, sql));
     }
 
@@ -275,9 +271,7 @@ async fn smoke_jt1078_and_history_reads() {
          VALUES (1, 1, '1', '2026-01-01 00:00:00', '2026-01-01 00:00:00')",
     ];
     for sql in stmts {
-        sqlx::query(sql)
-            .execute(&pool)
-            .await
+        crate::dispatch_exec!(pool, |p| { sqlx::query(sql).execute(p) })
             .unwrap_or_else(|e| panic!("seed failed: {} | {}", e, sql));
     }
 
@@ -326,46 +320,78 @@ async fn smoke_previously_missing_tables_exist_and_accept_writes() {
     let now = "2026-01-01 00:00:00";
 
     // 4 张 JT1078 区域/路线表
-    sqlx::query("INSERT INTO gb_jt_area_circle (phone_number, label, center_lat, center_lon, radius_m, create_time, update_time) VALUES ('13800000001','c',32.0,118.0,100,?,?)")
-        .bind(now).bind(now).execute(&pool).await.expect("gb_jt_area_circle 应存在且可写");
-    sqlx::query("INSERT INTO gb_jt_area_polygon (phone_number, label, points_json, create_time, update_time) VALUES ('13800000001','p','[]',?,?)")
-        .bind(now).bind(now).execute(&pool).await.expect("gb_jt_area_polygon 应存在且可写");
-    sqlx::query("INSERT INTO gb_jt_area_rectangle (phone_number, label, left_top_lat, left_top_lon, right_bottom_lat, right_bottom_lon, create_time, update_time) VALUES ('13800000001','r',33.0,119.0,32.0,118.0,?,?)")
-        .bind(now).bind(now).execute(&pool).await.expect("gb_jt_area_rectangle 应存在且可写");
-    sqlx::query("INSERT INTO gb_jt_route (phone_number, label, waypoints_json, create_time, update_time) VALUES ('13800000001','w','[]',?,?)")
-        .bind(now).bind(now).execute(&pool).await.expect("gb_jt_route 应存在且可写");
+    let sql = pool.sql(
+        "INSERT INTO gb_jt_area_circle (phone_number, label, center_lat, center_lon, radius_m, create_time, update_time) \
+         VALUES ('13800000001','c',32.0,118.0,100,?,?)",
+    );
+    crate::dispatch_exec!(pool, |p| {
+        sqlx::query(&sql).bind(now).bind(now).execute(p)
+    })
+    .expect("gb_jt_area_circle 应存在且可写");
+    let sql = pool.sql(
+        "INSERT INTO gb_jt_area_polygon (phone_number, label, points_json, create_time, update_time) \
+         VALUES ('13800000001','p','[]',?,?)",
+    );
+    crate::dispatch_exec!(pool, |p| {
+        sqlx::query(&sql).bind(now).bind(now).execute(p)
+    })
+    .expect("gb_jt_area_polygon 应存在且可写");
+    let sql = pool.sql(
+        "INSERT INTO gb_jt_area_rectangle (phone_number, label, left_top_lat, left_top_lon, right_bottom_lat, right_bottom_lon, create_time, update_time) \
+         VALUES ('13800000001','r',33.0,119.0,32.0,118.0,?,?)",
+    );
+    crate::dispatch_exec!(pool, |p| {
+        sqlx::query(&sql).bind(now).bind(now).execute(p)
+    })
+    .expect("gb_jt_area_rectangle 应存在且可写");
+    let sql = pool.sql(
+        "INSERT INTO gb_jt_route (phone_number, label, waypoints_json, create_time, update_time) \
+         VALUES ('13800000001','w','[]',?,?)",
+    );
+    crate::dispatch_exec!(pool, |p| {
+        sqlx::query(&sql).bind(now).bind(now).execute(p)
+    })
+    .expect("gb_jt_route 应存在且可写");
 
     // 系统日志表（log_list 一直在查它，但此前三库都没建）
-    sqlx::query(
+    let sql = pool.sql(
         "INSERT INTO gb_log (time, level, logger, thread, message, source) VALUES (?,?,?,?,?,?)",
-    )
-    .bind(now)
-    .bind("INFO")
-    .bind("t")
-    .bind("t1")
-    .bind("m")
-    .bind("s")
-    .execute(&pool)
-    .await
+    );
+    crate::dispatch_exec!(pool, |p| {
+        sqlx::query(&sql)
+            .bind(now)
+            .bind("INFO")
+            .bind("t")
+            .bind("t1")
+            .bind("m")
+            .bind("s")
+            .execute(p)
+    })
     .expect("gb_log 应存在且可写");
 
     // 平台目录表（catalog_add/edit 一直在写它）
-    sqlx::query("INSERT INTO gb_platform_catalog (name, parent, civil_code, business_group, platform_id, create_time, update_time) VALUES ('n','p','340200','g',1,?,?)")
-        .bind(now).bind(now).execute(&pool).await.expect("gb_platform_catalog 应存在且可写");
-    let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM gb_platform_catalog")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let sql = pool.sql(
+        "INSERT INTO gb_platform_catalog (name, parent, civil_code, business_group, platform_id, create_time, update_time) \
+         VALUES ('n','p','340200','g',1,?,?)",
+    );
+    crate::dispatch_exec!(pool, |p| {
+        sqlx::query(&sql).bind(now).bind(now).execute(p)
+    })
+    .expect("gb_platform_catalog 应存在且可写");
+    let sql = pool.sql("SELECT COUNT(*) FROM gb_platform_catalog");
+    let n: i64 = crate::dispatch!(pool, |p| {
+        sqlx::query_scalar::<_, i64>(&sql).fetch_one(p)
+    })
+    .unwrap();
     assert_eq!(n, 1);
 
     // 更新路径（catalog_edit）同样要能命中
-    let affected = sqlx::query(
+    let sql = pool.sql(
         "UPDATE gb_platform_catalog SET name = COALESCE(?, name), update_time = ? WHERE id = 1",
-    )
-    .bind(Some("renamed"))
-    .bind(now)
-    .execute(&pool)
-    .await
+    );
+    let affected = crate::dispatch_exec!(pool, |p| {
+        sqlx::query(&sql).bind(Some("renamed")).bind(now).execute(p)
+    })
     .unwrap()
     .rows_affected();
     assert_eq!(affected, 1, "目录更新应命中 1 行");

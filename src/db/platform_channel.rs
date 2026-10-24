@@ -62,164 +62,188 @@ pub async fn list_by_platform_id(
     let limit = count.min(100);
     let offset = crate::pagination::offset(page, limit);
 
-    #[cfg(feature = "mysql")]
-    return sqlx::query_as::<_, PlatformChannel>(
-        "SELECT * FROM gb_platform_channel WHERE platform_id = ? ORDER BY id LIMIT ? OFFSET ?",
+    crate::dispatch_dialect!(
+        pool,
+        |p| {
+            sqlx::query_as::<_, PlatformChannel>(
+                    "SELECT * FROM gb_platform_channel WHERE platform_id = $1 ORDER BY id LIMIT $2 OFFSET $3",
+                )
+                .bind(platform_id)
+                .bind(limit as i64)
+                .bind(offset)
+                .fetch_all(p)
+                .await
+        },
+        |p| {
+            sqlx::query_as::<_, PlatformChannel>(
+                    &crate::dyn_where::dialect_sql("SELECT * FROM gb_platform_channel WHERE platform_id = ? ORDER BY id LIMIT ? OFFSET ?"),
+                )
+                .bind(platform_id)
+                .bind(limit as i64)
+                .bind(offset)
+                .fetch_all(p)
+                .await
+        },
+        |p| {
+            sqlx::query_as::<_, PlatformChannel>(
+                    &crate::dyn_where::dialect_sql("SELECT * FROM gb_platform_channel WHERE platform_id = ? ORDER BY id LIMIT ? OFFSET ?"),
+                )
+                .bind(platform_id)
+                .bind(limit as i64)
+                .bind(offset)
+                .fetch_all(p)
+                .await
+        },
     )
-    .bind(platform_id)
-    .bind(limit as i64)
-    .bind(offset)
-    .fetch_all(pool)
-    .await;
-
-    #[cfg(feature = "postgres")]
-    return sqlx::query_as::<_, PlatformChannel>(
-        "SELECT * FROM gb_platform_channel WHERE platform_id = $1 ORDER BY id LIMIT $2 OFFSET $3",
-    )
-    .bind(platform_id)
-    .bind(limit as i64)
-    .bind(offset)
-    .fetch_all(pool)
-    .await;
-
-    #[cfg(feature = "sqlite")]
-    return sqlx::query_as::<_, PlatformChannel>(
-        "SELECT * FROM gb_platform_channel WHERE platform_id = ? ORDER BY id LIMIT ? OFFSET ?",
-    )
-    .bind(platform_id)
-    .bind(limit as i64)
-    .bind(offset)
-    .fetch_all(pool)
-    .await;
 }
 
 /// 统计平台通道数量
 pub async fn count_by_platform_id(pool: &Pool, platform_id: i64) -> sqlx::Result<i64> {
-    #[cfg(feature = "mysql")]
-    return sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM gb_platform_channel WHERE platform_id = ?",
+    crate::dispatch_dialect!(
+        pool,
+        |p| {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM gb_platform_channel WHERE platform_id = $1",
+            )
+            .bind(platform_id)
+            .fetch_one(p)
+            .await
+        },
+        |p| {
+            sqlx::query_scalar::<_, i64>(&crate::dyn_where::dialect_sql(
+                "SELECT COUNT(*) FROM gb_platform_channel WHERE platform_id = ?",
+            ))
+            .bind(platform_id)
+            .fetch_one(p)
+            .await
+        },
+        |p| {
+            sqlx::query_scalar::<_, i64>(&crate::dyn_where::dialect_sql(
+                "SELECT COUNT(*) FROM gb_platform_channel WHERE platform_id = ?",
+            ))
+            .bind(platform_id)
+            .fetch_one(p)
+            .await
+        },
     )
-    .bind(platform_id)
-    .fetch_one(pool)
-    .await;
-
-    #[cfg(feature = "postgres")]
-    return sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM gb_platform_channel WHERE platform_id = $1",
-    )
-    .bind(platform_id)
-    .fetch_one(pool)
-    .await;
-
-    #[cfg(feature = "sqlite")]
-    return sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM gb_platform_channel WHERE platform_id = ?",
-    )
-    .bind(platform_id)
-    .fetch_one(pool)
-    .await;
 }
 
 /// 添加平台通道
 pub async fn add(pool: &Pool, platform_id: i64, device_channel_id: i64) -> sqlx::Result<u64> {
-    #[cfg(feature = "mysql")]
-    let r = sqlx::query(
-        "INSERT INTO gb_platform_channel (platform_id, device_channel_id) VALUES (?, ?)",
-    )
-    .bind(platform_id)
-    .bind(device_channel_id)
-    .execute(pool)
-    .await?;
-
-    #[cfg(feature = "postgres")]
-    let r = sqlx::query(
-        "INSERT INTO gb_platform_channel (platform_id, device_channel_id) VALUES ($1, $2)",
-    )
-    .bind(platform_id)
-    .bind(device_channel_id)
-    .execute(pool)
-    .await?;
-
-    #[cfg(feature = "sqlite")]
-    let r = sqlx::query(
-        "INSERT INTO gb_platform_channel (platform_id, device_channel_id) VALUES (?, ?)",
-    )
-    .bind(platform_id)
-    .bind(device_channel_id)
-    .execute(pool)
-    .await?;
+    let r = crate::dispatch_exec_dialect!(
+        pool,
+        |p| {
+            sqlx::query(
+                "INSERT INTO gb_platform_channel (platform_id, device_channel_id) VALUES ($1, $2)",
+            )
+            .bind(platform_id)
+            .bind(device_channel_id)
+            .execute(p)
+        },
+        |p| {
+            sqlx::query(&crate::dyn_where::dialect_sql(
+                "INSERT INTO gb_platform_channel (platform_id, device_channel_id) VALUES (?, ?)",
+            ))
+            .bind(platform_id)
+            .bind(device_channel_id)
+            .execute(p)
+        },
+        |p| {
+            sqlx::query(&crate::dyn_where::dialect_sql(
+                "INSERT INTO gb_platform_channel (platform_id, device_channel_id) VALUES (?, ?)",
+            ))
+            .bind(platform_id)
+            .bind(device_channel_id)
+            .execute(p)
+        },
+    )?;
 
     Ok(r.rows_affected())
 }
 
 /// 删除平台通道
 pub async fn delete_by_id(pool: &Pool, id: i64) -> sqlx::Result<u64> {
-    #[cfg(feature = "mysql")]
-    let r = sqlx::query("DELETE FROM gb_platform_channel WHERE id = ?")
-        .bind(id)
-        .execute(pool)
-        .await?;
-
-    #[cfg(feature = "postgres")]
-    let r = sqlx::query("DELETE FROM gb_platform_channel WHERE id = $1")
-        .bind(id)
-        .execute(pool)
-        .await?;
-
-    #[cfg(feature = "sqlite")]
-    let r = sqlx::query("DELETE FROM gb_platform_channel WHERE id = ?")
-        .bind(id)
-        .execute(pool)
-        .await?;
+    let r = crate::dispatch_exec_dialect!(
+        pool,
+        |p| {
+            sqlx::query("DELETE FROM gb_platform_channel WHERE id = $1")
+                .bind(id)
+                .execute(p)
+        },
+        |p| {
+            sqlx::query(&crate::dyn_where::dialect_sql(
+                "DELETE FROM gb_platform_channel WHERE id = ?",
+            ))
+            .bind(id)
+            .execute(p)
+        },
+        |p| {
+            sqlx::query(&crate::dyn_where::dialect_sql(
+                "DELETE FROM gb_platform_channel WHERE id = ?",
+            ))
+            .bind(id)
+            .execute(p)
+        },
+    )?;
 
     Ok(r.rows_affected())
 }
 
 /// 批量删除平台通道
 pub async fn batch_delete_by_platform(pool: &Pool, platform_id: i64) -> sqlx::Result<u64> {
-    #[cfg(feature = "mysql")]
-    let r = sqlx::query("DELETE FROM gb_platform_channel WHERE platform_id = ?")
-        .bind(platform_id)
-        .execute(pool)
-        .await?;
-
-    #[cfg(feature = "postgres")]
-    let r = sqlx::query("DELETE FROM gb_platform_channel WHERE platform_id = $1")
-        .bind(platform_id)
-        .execute(pool)
-        .await?;
-
-    #[cfg(feature = "sqlite")]
-    let r = sqlx::query("DELETE FROM gb_platform_channel WHERE platform_id = ?")
-        .bind(platform_id)
-        .execute(pool)
-        .await?;
+    let r = crate::dispatch_exec_dialect!(
+        pool,
+        |p| {
+            sqlx::query("DELETE FROM gb_platform_channel WHERE platform_id = $1")
+                .bind(platform_id)
+                .execute(p)
+        },
+        |p| {
+            sqlx::query(&crate::dyn_where::dialect_sql(
+                "DELETE FROM gb_platform_channel WHERE platform_id = ?",
+            ))
+            .bind(platform_id)
+            .execute(p)
+        },
+        |p| {
+            sqlx::query(&crate::dyn_where::dialect_sql(
+                "DELETE FROM gb_platform_channel WHERE platform_id = ?",
+            ))
+            .bind(platform_id)
+            .execute(p)
+        },
+    )?;
 
     Ok(r.rows_affected())
 }
 
 /// 根据ID获取平台通道
 pub async fn get_by_id(pool: &Pool, id: i64) -> sqlx::Result<Option<PlatformChannel>> {
-    #[cfg(feature = "mysql")]
-    let row =
-        sqlx::query_as::<_, PlatformChannel>("SELECT * FROM gb_platform_channel WHERE id = ?")
+    let row = crate::dispatch_dialect!(
+        pool,
+        |p| {
+            sqlx::query_as::<_, PlatformChannel>("SELECT * FROM gb_platform_channel WHERE id = $1")
+                .bind(id)
+                .fetch_optional(p)
+                .await
+        },
+        |p| {
+            sqlx::query_as::<_, PlatformChannel>(&crate::dyn_where::dialect_sql(
+                "SELECT * FROM gb_platform_channel WHERE id = ?",
+            ))
             .bind(id)
-            .fetch_optional(pool)
-            .await;
-
-    #[cfg(feature = "postgres")]
-    let row =
-        sqlx::query_as::<_, PlatformChannel>("SELECT * FROM gb_platform_channel WHERE id = $1")
+            .fetch_optional(p)
+            .await
+        },
+        |p| {
+            sqlx::query_as::<_, PlatformChannel>(&crate::dyn_where::dialect_sql(
+                "SELECT * FROM gb_platform_channel WHERE id = ?",
+            ))
             .bind(id)
-            .fetch_optional(pool)
-            .await;
-
-    #[cfg(feature = "sqlite")]
-    let row =
-        sqlx::query_as::<_, PlatformChannel>("SELECT * FROM gb_platform_channel WHERE id = ?")
-            .bind(id)
-            .fetch_optional(pool)
-            .await;
+            .fetch_optional(p)
+            .await
+        },
+    );
 
     row
 }
@@ -235,66 +259,97 @@ pub async fn update(
         return Ok(0);
     }
 
-    #[cfg(feature = "postgres")]
-    {
-        let r = match (custom_name, custom_info) {
-            (Some(name), Some(info)) => sqlx::query(
-                "UPDATE gb_platform_channel SET custom_name = $1, custom_address = $2 WHERE id = $3",
-            )
-            .bind(name)
-            .bind(info)
-            .bind(id)
-            .execute(pool)
-            .await?,
-            (Some(name), None) => sqlx::query(
-                "UPDATE gb_platform_channel SET custom_name = $1 WHERE id = $2",
-            )
-            .bind(name)
-            .bind(id)
-            .execute(pool)
-            .await?,
-            (None, Some(info)) => sqlx::query(
-                "UPDATE gb_platform_channel SET custom_address = $1 WHERE id = $2",
-            )
-            .bind(info)
-            .bind(id)
-            .execute(pool)
-            .await?,
-            (None, None) => unreachable!(),
-        };
-        return Ok(r.rows_affected());
-    }
+    Ok(crate::dispatch_dialect!(
+        pool,
+        |p| {
+            let r = match (custom_name, custom_info) {
+                        (Some(name), Some(info)) => sqlx::query(
+                            "UPDATE gb_platform_channel SET custom_name = $1, custom_address = $2 WHERE id = $3",
+                        )
+                        .bind(name)
+                        .bind(info)
+                        .bind(id)
+                        .execute(p)
+                        .await?,
+                        (Some(name), None) => sqlx::query(
+                            "UPDATE gb_platform_channel SET custom_name = $1 WHERE id = $2",
+                        )
+                        .bind(name)
+                        .bind(id)
+                        .execute(p)
+                        .await?,
+                        (None, Some(info)) => sqlx::query(
+                            "UPDATE gb_platform_channel SET custom_address = $1 WHERE id = $2",
+                        )
+                        .bind(info)
+                        .bind(id)
+                        .execute(p)
+                        .await?,
+                        (None, None) => unreachable!(),
+                    };
+            Ok::<_, sqlx::Error>(r.rows_affected())
+        },
+        |p| {
+            // SQLite 与 MySQL 共用 ? 占位符；列名来自固定白名单，值只通过 bind 传递。
+            let mut updates = Vec::new();
+            if custom_name.is_some() {
+                updates.push("custom_name = ?");
+            }
+            if custom_info.is_some() {
+                updates.push("custom_address = ?");
+            }
 
-    #[cfg(any(feature = "sqlite", feature = "mysql"))]
-    {
-        // SQLite 与 MySQL 共用 ? 占位符；列名来自固定白名单，值只通过 bind 传递。
-        let mut updates = Vec::new();
-        if custom_name.is_some() {
-            updates.push("custom_name = ?");
-        }
-        if custom_info.is_some() {
-            updates.push("custom_address = ?");
-        }
+            if updates.is_empty() {
+                return Ok(0);
+            }
 
-        if updates.is_empty() {
-            return Ok(0);
-        }
+            // `{}` = 运行期拼进去的 SET 子句（列名来自固定白名单）；`?` = 占位符
+            // （由 **pool 自己的方言** 改写成 `$1..$n`）。
+            let sql = pool
+                .sql("UPDATE gb_platform_channel SET {} WHERE id = ?")
+                .replace("{}", &updates.join(", "));
+            let mut query = sqlx::query(&sql);
+            if let Some(name) = custom_name {
+                query = query.bind(name);
+            }
+            if let Some(info) = custom_info {
+                query = query.bind(info);
+            }
+            query = query.bind(id);
+            let r = query.execute(p).await?;
+            Ok::<_, sqlx::Error>(r.rows_affected())
+        },
+        |p| {
+            // SQLite 与 MySQL 共用 ? 占位符；列名来自固定白名单，值只通过 bind 传递。
+            let mut updates = Vec::new();
+            if custom_name.is_some() {
+                updates.push("custom_name = ?");
+            }
+            if custom_info.is_some() {
+                updates.push("custom_address = ?");
+            }
 
-        let sql = format!(
-            "UPDATE gb_platform_channel SET {} WHERE id = ?",
-            updates.join(", ")
-        );
-        let mut query = sqlx::query(&sql);
-        if let Some(name) = custom_name {
-            query = query.bind(name);
-        }
-        if let Some(info) = custom_info {
-            query = query.bind(info);
-        }
-        query = query.bind(id);
-        let r = query.execute(pool).await?;
-        return Ok(r.rows_affected());
-    }
+            if updates.is_empty() {
+                return Ok(0);
+            }
+
+            // `{}` = 运行期拼进去的 SET 子句（列名来自固定白名单）；`?` = 占位符
+            // （由 **pool 自己的方言** 改写成 `$1..$n`）。
+            let sql = pool
+                .sql("UPDATE gb_platform_channel SET {} WHERE id = ?")
+                .replace("{}", &updates.join(", "));
+            let mut query = sqlx::query(&sql);
+            if let Some(name) = custom_name {
+                query = query.bind(name);
+            }
+            if let Some(info) = custom_info {
+                query = query.bind(info);
+            }
+            query = query.bind(id);
+            let r = query.execute(p).await?;
+            Ok::<_, sqlx::Error>(r.rows_affected())
+        },
+    )?)
 }
 
 #[cfg(all(test, feature = "sqlite"))]
@@ -304,25 +359,28 @@ mod update_tests {
     #[tokio::test]
     async fn sqlite_custom_fields_roundtrip() {
         let pool = crate::test_support::sqlite_pool_with_schema().await;
-        let id = sqlx::query(
-            "INSERT INTO gb_platform_channel (platform_id, device_channel_id) VALUES (NULL, NULL)",
-        )
-        .execute(&pool)
-        .await
+        let id = crate::dispatch_exec!(pool, |p| {
+            sqlx::query(
+                "INSERT INTO gb_platform_channel (platform_id, device_channel_id) VALUES (NULL, NULL)",
+            )
+            .execute(p)
+        })
         .unwrap()
-        .last_insert_rowid();
+        .last_insert_id()
+        .expect("sqlite 自增 id");
         assert_eq!(
             update(&pool, id, Some("O'Brien"), Some("north gate"))
                 .await
                 .unwrap(),
             1
         );
-        let fields: (Option<String>, Option<String>) = sqlx::query_as(
-            "SELECT custom_name, custom_address FROM gb_platform_channel WHERE id = ?",
-        )
-        .bind(id)
-        .fetch_one(&pool)
-        .await
+        let sql =
+            pool.sql("SELECT custom_name, custom_address FROM gb_platform_channel WHERE id = ?");
+        let fields: (Option<String>, Option<String>) = crate::dispatch!(pool, |p| {
+            sqlx::query_as::<_, (Option<String>, Option<String>)>(&sql)
+                .bind(id)
+                .fetch_one(p)
+        })
         .unwrap();
         assert_eq!(fields.0.as_deref(), Some("O'Brien"));
         assert_eq!(fields.1.as_deref(), Some("north gate"));
@@ -335,32 +393,33 @@ pub async fn delete_by_device_channel_id(
     platform_id: i64,
     device_channel_id: i64,
 ) -> sqlx::Result<u64> {
-    #[cfg(feature = "mysql")]
-    let r = sqlx::query(
-        "DELETE FROM gb_platform_channel WHERE platform_id = ? AND device_channel_id = ?",
-    )
-    .bind(platform_id)
-    .bind(device_channel_id)
-    .execute(pool)
-    .await?;
-
-    #[cfg(feature = "postgres")]
-    let r = sqlx::query(
-        "DELETE FROM gb_platform_channel WHERE platform_id = $1 AND device_channel_id = $2",
-    )
-    .bind(platform_id)
-    .bind(device_channel_id)
-    .execute(pool)
-    .await?;
-
-    #[cfg(feature = "sqlite")]
-    let r = sqlx::query(
-        "DELETE FROM gb_platform_channel WHERE platform_id = ? AND device_channel_id = ?",
-    )
-    .bind(platform_id)
-    .bind(device_channel_id)
-    .execute(pool)
-    .await?;
+    let r = crate::dispatch_exec_dialect!(
+        pool,
+        |p| {
+            sqlx::query(
+                "DELETE FROM gb_platform_channel WHERE platform_id = $1 AND device_channel_id = $2",
+            )
+            .bind(platform_id)
+            .bind(device_channel_id)
+            .execute(p)
+        },
+        |p| {
+            sqlx::query(&crate::dyn_where::dialect_sql(
+                "DELETE FROM gb_platform_channel WHERE platform_id = ? AND device_channel_id = ?",
+            ))
+            .bind(platform_id)
+            .bind(device_channel_id)
+            .execute(p)
+        },
+        |p| {
+            sqlx::query(&crate::dyn_where::dialect_sql(
+                "DELETE FROM gb_platform_channel WHERE platform_id = ? AND device_channel_id = ?",
+            ))
+            .bind(platform_id)
+            .bind(device_channel_id)
+            .execute(p)
+        },
+    )?;
 
     Ok(r.rows_affected())
 }
@@ -371,32 +430,36 @@ pub async fn get_by_platform_and_channel(
     platform_id: i64,
     channel_id: &str,
 ) -> sqlx::Result<Option<PlatformChannel>> {
-    #[cfg(feature = "mysql")]
-    return sqlx::query_as::<_, PlatformChannel>(
-        "SELECT * FROM gb_platform_channel WHERE platform_id = ? AND channel_id = ?",
+    crate::dispatch_dialect!(
+        pool,
+        |p| {
+            sqlx::query_as::<_, PlatformChannel>(
+                "SELECT * FROM gb_platform_channel WHERE platform_id = $1 AND channel_id = $2",
+            )
+            .bind(platform_id)
+            .bind(channel_id)
+            .fetch_optional(p)
+            .await
+        },
+        |p| {
+            sqlx::query_as::<_, PlatformChannel>(&crate::dyn_where::dialect_sql(
+                "SELECT * FROM gb_platform_channel WHERE platform_id = ? AND channel_id = ?",
+            ))
+            .bind(platform_id)
+            .bind(channel_id)
+            .fetch_optional(p)
+            .await
+        },
+        |p| {
+            sqlx::query_as::<_, PlatformChannel>(&crate::dyn_where::dialect_sql(
+                "SELECT * FROM gb_platform_channel WHERE platform_id = ? AND channel_id = ?",
+            ))
+            .bind(platform_id)
+            .bind(channel_id)
+            .fetch_optional(p)
+            .await
+        },
     )
-    .bind(platform_id)
-    .bind(channel_id)
-    .fetch_optional(pool)
-    .await;
-
-    #[cfg(feature = "postgres")]
-    return sqlx::query_as::<_, PlatformChannel>(
-        "SELECT * FROM gb_platform_channel WHERE platform_id = $1 AND channel_id = $2",
-    )
-    .bind(platform_id)
-    .bind(channel_id)
-    .fetch_optional(pool)
-    .await;
-
-    #[cfg(feature = "sqlite")]
-    return sqlx::query_as::<_, PlatformChannel>(
-        "SELECT * FROM gb_platform_channel WHERE platform_id = ? AND channel_id = ?",
-    )
-    .bind(platform_id)
-    .bind(channel_id)
-    .fetch_optional(pool)
-    .await;
 }
 
 /// 批量添加平台通道
@@ -412,36 +475,39 @@ pub async fn batch_add_channels(
     let mut total = 0u64;
 
     for channel_id in channel_ids {
-        #[cfg(feature = "mysql")]
-        let r = sqlx::query(
-            "INSERT INTO gb_platform_channel (platform_id, channel_id, create_time, update_time) VALUES (?, ?, ?, ?)"
-        )
-        .bind(platform_id)
-        .bind(channel_id)
-        .bind(&now)
-        .bind(&now)
-        .execute(pool)
-        .await?;
-        #[cfg(feature = "postgres")]
-        let r = sqlx::query(
-            "INSERT INTO gb_platform_channel (platform_id, channel_id, create_time, update_time) VALUES ($1, $2, $3, $4)"
-        )
-        .bind(platform_id)
-        .bind(channel_id)
-        .bind(&now)
-        .bind(&now)
-        .execute(pool)
-        .await?;
-        #[cfg(feature = "sqlite")]
-        let r = sqlx::query(
-            "INSERT INTO gb_platform_channel (platform_id, channel_id, create_time, update_time) VALUES (?, ?, ?, ?)"
-        )
-        .bind(platform_id)
-        .bind(channel_id)
-        .bind(&now)
-        .bind(&now)
-        .execute(pool)
-        .await?;
+        let r = crate::dispatch_exec_dialect!(
+            pool,
+            |p| {
+                sqlx::query(
+                    "INSERT INTO gb_platform_channel (platform_id, channel_id, create_time, update_time) VALUES ($1, $2, $3, $4)",
+                )
+                .bind(platform_id)
+                .bind(channel_id)
+                .bind(&now)
+                .bind(&now)
+                .execute(p)
+            },
+            |p| {
+                sqlx::query(
+                    &crate::dyn_where::dialect_sql("INSERT INTO gb_platform_channel (platform_id, channel_id, create_time, update_time) VALUES (?, ?, ?, ?)"),
+                )
+                .bind(platform_id)
+                .bind(channel_id)
+                .bind(&now)
+                .bind(&now)
+                .execute(p)
+            },
+            |p| {
+                sqlx::query(
+                    &crate::dyn_where::dialect_sql("INSERT INTO gb_platform_channel (platform_id, channel_id, create_time, update_time) VALUES (?, ?, ?, ?)"),
+                )
+                .bind(platform_id)
+                .bind(channel_id)
+                .bind(&now)
+                .bind(&now)
+                .execute(p)
+            },
+        )?;
         total += r.rows_affected();
     }
     Ok(total)
@@ -459,28 +525,33 @@ pub async fn batch_delete_channels(
     let mut total = 0u64;
 
     for channel_id in channel_ids {
-        #[cfg(feature = "mysql")]
-        let r =
-            sqlx::query("DELETE FROM gb_platform_channel WHERE platform_id = ? AND channel_id = ?")
+        let r = crate::dispatch_exec_dialect!(
+            pool,
+            |p| {
+                sqlx::query(
+                    "DELETE FROM gb_platform_channel WHERE platform_id = $1 AND channel_id = $2",
+                )
                 .bind(platform_id)
                 .bind(channel_id)
-                .execute(pool)
-                .await?;
-        #[cfg(feature = "postgres")]
-        let r = sqlx::query(
-            "DELETE FROM gb_platform_channel WHERE platform_id = $1 AND channel_id = $2",
-        )
-        .bind(platform_id)
-        .bind(channel_id)
-        .execute(pool)
-        .await?;
-        #[cfg(feature = "sqlite")]
-        let r =
-            sqlx::query("DELETE FROM gb_platform_channel WHERE platform_id = ? AND channel_id = ?")
+                .execute(p)
+            },
+            |p| {
+                sqlx::query(&crate::dyn_where::dialect_sql(
+                    "DELETE FROM gb_platform_channel WHERE platform_id = ? AND channel_id = ?",
+                ))
                 .bind(platform_id)
                 .bind(channel_id)
-                .execute(pool)
-                .await?;
+                .execute(p)
+            },
+            |p| {
+                sqlx::query(&crate::dyn_where::dialect_sql(
+                    "DELETE FROM gb_platform_channel WHERE platform_id = ? AND channel_id = ?",
+                ))
+                .bind(platform_id)
+                .bind(channel_id)
+                .execute(p)
+            },
+        )?;
         total += r.rows_affected();
     }
     Ok(total)

@@ -48,83 +48,34 @@ pub struct GroupUpdate {
 }
 
 pub async fn list_all(pool: &Pool) -> sqlx::Result<Vec<Group>> {
-    sqlx::query_as::<_, Group>(
-        "SELECT id, device_id, name, parent_id, parent_device_id, business_group, create_time, update_time, civil_code FROM gb_common_group ORDER BY id",
-    )
-    .fetch_all(pool)
-    .await
+    let sql = crate::db::dialect::current_sql("SELECT id, device_id, name, parent_id, parent_device_id, business_group, create_time, update_time, civil_code FROM gb_common_group ORDER BY id").into_owned();
+
+    crate::dispatch!(pool, |p| { sqlx::query_as::<_, Group>(&sql,).fetch_all(p) })
 }
 
 pub async fn get_by_id(pool: &Pool, id: i32) -> sqlx::Result<Option<Group>> {
-    #[cfg(feature = "mysql")]
-    return sqlx::query_as::<_, Group>(
-        "SELECT id, device_id, name, parent_id, parent_device_id, business_group, create_time, update_time, civil_code FROM gb_common_group WHERE id = ?",
-    )
-    .bind(id)
-    .fetch_optional(pool)
-    .await;
-    #[cfg(feature = "postgres")]
-    return sqlx::query_as::<_, Group>(
-        "SELECT id, device_id, name, parent_id, parent_device_id, business_group, create_time, update_time, civil_code FROM gb_common_group WHERE id = $1",
-    )
-    .bind(id)
-    .fetch_optional(pool)
-    .await;
-    #[cfg(feature = "sqlite")]
-    return sqlx::query_as::<_, Group>(
-        "SELECT id, device_id, name, parent_id, parent_device_id, business_group, create_time, update_time, civil_code FROM gb_common_group WHERE id = ?",
-    )
-    .bind(id)
-    .fetch_optional(pool)
-    .await;
+    let sql = crate::db::dialect::current_sql("SELECT id, device_id, name, parent_id, parent_device_id, business_group, create_time, update_time, civil_code FROM gb_common_group WHERE id = ?").into_owned();
+    return crate::dispatch!(pool, |p| {
+        sqlx::query_as::<_, Group>(&sql).bind(id).fetch_optional(p)
+    });
 }
 
 pub async fn get_by_device_id(pool: &Pool, device_id: &str) -> sqlx::Result<Option<Group>> {
-    #[cfg(feature = "mysql")]
-    return sqlx::query_as::<_, Group>(
-        "SELECT id, device_id, name, parent_id, parent_device_id, business_group, create_time, update_time, civil_code FROM gb_common_group WHERE device_id = ?",
-    )
-    .bind(device_id)
-    .fetch_optional(pool)
-    .await;
-    #[cfg(feature = "postgres")]
-    return sqlx::query_as::<_, Group>(
-        "SELECT id, device_id, name, parent_id, parent_device_id, business_group, create_time, update_time, civil_code FROM gb_common_group WHERE device_id = $1",
-    )
-    .bind(device_id)
-    .fetch_optional(pool)
-    .await;
-    #[cfg(feature = "sqlite")]
-    return sqlx::query_as::<_, Group>(
-        "SELECT id, device_id, name, parent_id, parent_device_id, business_group, create_time, update_time, civil_code FROM gb_common_group WHERE device_id = ?",
-    )
-    .bind(device_id)
-    .fetch_optional(pool)
-    .await;
+    let sql = crate::db::dialect::current_sql("SELECT id, device_id, name, parent_id, parent_device_id, business_group, create_time, update_time, civil_code FROM gb_common_group WHERE device_id = ?").into_owned();
+    return crate::dispatch!(pool, |p| {
+        sqlx::query_as::<_, Group>(&sql)
+            .bind(device_id)
+            .fetch_optional(p)
+    });
 }
 
 pub async fn list_children(pool: &Pool, parent_id: i32) -> sqlx::Result<Vec<Group>> {
-    #[cfg(feature = "mysql")]
-    return sqlx::query_as::<_, Group>(
-        "SELECT id, device_id, name, parent_id, parent_device_id, business_group, create_time, update_time, civil_code FROM gb_common_group WHERE parent_id = ? ORDER BY id",
-    )
-    .bind(parent_id)
-    .fetch_all(pool)
-    .await;
-    #[cfg(feature = "postgres")]
-    return sqlx::query_as::<_, Group>(
-        "SELECT id, device_id, name, parent_id, parent_device_id, business_group, create_time, update_time, civil_code FROM gb_common_group WHERE parent_id = $1 ORDER BY id",
-    )
-    .bind(parent_id)
-    .fetch_all(pool)
-    .await;
-    #[cfg(feature = "sqlite")]
-    return sqlx::query_as::<_, Group>(
-        "SELECT id, device_id, name, parent_id, parent_device_id, business_group, create_time, update_time, civil_code FROM gb_common_group WHERE parent_id = ? ORDER BY id",
-    )
-    .bind(parent_id)
-    .fetch_all(pool)
-    .await;
+    let sql = crate::db::dialect::current_sql("SELECT id, device_id, name, parent_id, parent_device_id, business_group, create_time, update_time, civil_code FROM gb_common_group WHERE parent_id = ? ORDER BY id").into_owned();
+    return crate::dispatch!(pool, |p| {
+        sqlx::query_as::<_, Group>(&sql)
+            .bind(parent_id)
+            .fetch_all(p)
+    });
 }
 
 pub async fn add(
@@ -137,48 +88,19 @@ pub async fn add(
     now: &str,
     civil_code: Option<&str>,
 ) -> sqlx::Result<u64> {
-    #[cfg(feature = "mysql")]
-    let r = sqlx::query(
-        "INSERT INTO gb_common_group (device_id, name, parent_id, parent_device_id, business_group, create_time, update_time, civil_code) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-    )
-    .bind(device_id)
-    .bind(name)
-    .bind(parent_id)
-    .bind(parent_device_id)
-    .bind(business_group)
-    .bind(now)
-    .bind(now)
-    .bind(civil_code)
-    .execute(pool)
-    .await?;
-    #[cfg(feature = "postgres")]
-    let r = sqlx::query(
-        "INSERT INTO gb_common_group (device_id, name, parent_id, parent_device_id, business_group, create_time, update_time, civil_code) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
-    )
-    .bind(device_id)
-    .bind(name)
-    .bind(parent_id)
-    .bind(parent_device_id)
-    .bind(business_group)
-    .bind(now)
-    .bind(now)
-    .bind(civil_code)
-    .execute(pool)
-    .await?;
-    #[cfg(feature = "sqlite")]
-    let r = sqlx::query(
-        "INSERT INTO gb_common_group (device_id, name, parent_id, parent_device_id, business_group, create_time, update_time, civil_code) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-    )
-    .bind(device_id)
-    .bind(name)
-    .bind(parent_id)
-    .bind(parent_device_id)
-    .bind(business_group)
-    .bind(now)
-    .bind(now)
-    .bind(civil_code)
-    .execute(pool)
-    .await?;
+    let sql = crate::db::dialect::current_sql("INSERT INTO gb_common_group (device_id, name, parent_id, parent_device_id, business_group, create_time, update_time, civil_code) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").into_owned();
+    let r = crate::dispatch_exec!(pool, |p| {
+        sqlx::query(&sql)
+            .bind(device_id)
+            .bind(name)
+            .bind(parent_id)
+            .bind(parent_device_id)
+            .bind(business_group)
+            .bind(now)
+            .bind(now)
+            .bind(civil_code)
+            .execute(p)
+    })?;
     Ok(r.rows_affected())
 }
 
@@ -193,118 +115,54 @@ pub async fn update(
     civil_code: Option<&str>,
     now: &str,
 ) -> sqlx::Result<u64> {
-    #[cfg(feature = "mysql")]
-    let r = sqlx::query(
-        "UPDATE gb_common_group SET device_id = COALESCE(?, device_id), name = COALESCE(?, name), parent_id = COALESCE(?, parent_id), parent_device_id = COALESCE(?, parent_device_id), business_group = COALESCE(?, business_group), civil_code = COALESCE(?, civil_code), update_time = ? WHERE id = ?",
-    )
-    .bind(device_id)
-    .bind(name)
-    .bind(parent_id)
-    .bind(parent_device_id)
-    .bind(business_group)
-    .bind(civil_code)
-    .bind(now)
-    .bind(id)
-    .execute(pool)
-    .await?;
-    #[cfg(feature = "postgres")]
-    let r = sqlx::query(
-        "UPDATE gb_common_group SET device_id = COALESCE($1, device_id), name = COALESCE($2, name), parent_id = COALESCE($3, parent_id), parent_device_id = COALESCE($4, parent_device_id), business_group = COALESCE($5, business_group), civil_code = COALESCE($6, civil_code), update_time = $7 WHERE id = $8",
-    )
-    .bind(device_id)
-    .bind(name)
-    .bind(parent_id)
-    .bind(parent_device_id)
-    .bind(business_group)
-    .bind(civil_code)
-    .bind(now)
-    .bind(id)
-    .execute(pool)
-    .await?;
-    #[cfg(feature = "sqlite")]
-    let r = sqlx::query(
-        "UPDATE gb_common_group SET device_id = COALESCE(?, device_id), name = COALESCE(?, name), parent_id = COALESCE(?, parent_id), parent_device_id = COALESCE(?, parent_device_id), business_group = COALESCE(?, business_group), civil_code = COALESCE(?, civil_code), update_time = ? WHERE id = ?",
-    )
-    .bind(device_id)
-    .bind(name)
-    .bind(parent_id)
-    .bind(parent_device_id)
-    .bind(business_group)
-    .bind(civil_code)
-    .bind(now)
-    .bind(id)
-    .execute(pool)
-    .await?;
+    let sql = crate::db::dialect::current_sql("UPDATE gb_common_group SET device_id = COALESCE(?, device_id), name = COALESCE(?, name), parent_id = COALESCE(?, parent_id), parent_device_id = COALESCE(?, parent_device_id), business_group = COALESCE(?, business_group), civil_code = COALESCE(?, civil_code), update_time = ? WHERE id = ?").into_owned();
+    let r = crate::dispatch_exec!(pool, |p| {
+        sqlx::query(&sql)
+            .bind(device_id)
+            .bind(name)
+            .bind(parent_id)
+            .bind(parent_device_id)
+            .bind(business_group)
+            .bind(civil_code)
+            .bind(now)
+            .bind(id)
+            .execute(p)
+    })?;
     Ok(r.rows_affected())
 }
 
 pub async fn delete_by_id(pool: &Pool, id: i32) -> sqlx::Result<u64> {
-    #[cfg(feature = "mysql")]
-    let r = sqlx::query("DELETE FROM gb_common_group WHERE id = ?")
-        .bind(id)
-        .execute(pool)
-        .await?;
-    #[cfg(feature = "postgres")]
-    let r = sqlx::query("DELETE FROM gb_common_group WHERE id = $1")
-        .bind(id)
-        .execute(pool)
-        .await?;
-    #[cfg(feature = "sqlite")]
-    let r = sqlx::query("DELETE FROM gb_common_group WHERE id = ?")
-        .bind(id)
-        .execute(pool)
-        .await?;
+    let sql =
+        crate::db::dialect::current_sql("DELETE FROM gb_common_group WHERE id = ?").into_owned();
+    let r = crate::dispatch_exec!(pool, |p| { sqlx::query(&sql).bind(id).execute(p) })?;
     Ok(r.rows_affected())
 }
 
 /// 统计分组数量
 pub async fn count_all(pool: &Pool) -> sqlx::Result<i64> {
-    sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_common_group")
-        .fetch_one(pool)
-        .await
+    let sql = crate::db::dialect::current_sql("SELECT COUNT(*) FROM gb_common_group").into_owned();
+
+    crate::dispatch!(pool, |p| {
+        sqlx::query_scalar::<_, i64>(&sql).fetch_one(p)
+    })
 }
 
 /// 根据设备ID删除分组
 pub async fn delete_by_device_id(pool: &Pool, device_id: &str) -> sqlx::Result<u64> {
-    #[cfg(feature = "mysql")]
-    let r = sqlx::query("DELETE FROM gb_common_group WHERE device_id = ?")
-        .bind(device_id)
-        .execute(pool)
-        .await?;
-    #[cfg(feature = "postgres")]
-    let r = sqlx::query("DELETE FROM gb_common_group WHERE device_id = $1")
-        .bind(device_id)
-        .execute(pool)
-        .await?;
-    #[cfg(feature = "sqlite")]
-    let r = sqlx::query("DELETE FROM gb_common_group WHERE device_id = ?")
-        .bind(device_id)
-        .execute(pool)
-        .await?;
+    let sql = crate::db::dialect::current_sql("DELETE FROM gb_common_group WHERE device_id = ?")
+        .into_owned();
+    let r = crate::dispatch_exec!(pool, |p| { sqlx::query(&sql).bind(device_id).execute(p) })?;
     Ok(r.rows_affected())
 }
 
 /// 获取子分组数量
 pub async fn count_children(pool: &Pool, parent_id: i32) -> sqlx::Result<i64> {
-    #[cfg(feature = "mysql")]
-    return sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM gb_common_group WHERE parent_id = ?",
-    )
-    .bind(parent_id)
-    .fetch_one(pool)
-    .await;
-    #[cfg(feature = "postgres")]
-    return sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM gb_common_group WHERE parent_id = $1",
-    )
-    .bind(parent_id)
-    .fetch_one(pool)
-    .await;
-    #[cfg(feature = "sqlite")]
-    return sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM gb_common_group WHERE parent_id = ?",
-    )
-    .bind(parent_id)
-    .fetch_one(pool)
-    .await;
+    let sql =
+        crate::db::dialect::current_sql("SELECT COUNT(*) FROM gb_common_group WHERE parent_id = ?")
+            .into_owned();
+    return crate::dispatch!(pool, |p| {
+        sqlx::query_scalar::<_, i64>(&sql)
+            .bind(parent_id)
+            .fetch_one(p)
+    });
 }

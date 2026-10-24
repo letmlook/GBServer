@@ -1,34 +1,19 @@
 use crate::db::device::{DeviceChannel, DEVICE_CHANNEL_SELECT_COLUMNS};
 use crate::db::Pool;
 
-#[cfg(feature = "postgres")]
-use sqlx::Row;
-
 pub async fn get_by_id(pool: &Pool, id: i64) -> sqlx::Result<Option<DeviceChannel>> {
-    #[cfg(feature = "mysql")]
-    return sqlx::query_as::<_, DeviceChannel>(&format!(
-        "SELECT {} FROM gb_device_channel WHERE id = ?",
-        DEVICE_CHANNEL_SELECT_COLUMNS
-    ))
-    .bind(id)
-    .fetch_optional(pool)
-    .await;
-    #[cfg(feature = "postgres")]
-    return sqlx::query_as::<_, DeviceChannel>(&format!(
-        "SELECT {} FROM gb_device_channel WHERE id = $1",
-        DEVICE_CHANNEL_SELECT_COLUMNS
-    ))
-    .bind(id)
-    .fetch_optional(pool)
-    .await;
-    #[cfg(feature = "sqlite")]
-    return sqlx::query_as::<_, DeviceChannel>(&format!(
-        "SELECT {} FROM gb_device_channel WHERE id = ?",
-        DEVICE_CHANNEL_SELECT_COLUMNS
-    ))
-    .bind(id)
-    .fetch_optional(pool)
-    .await;
+    // `{}` = 运行期拼进去的列名；`?` = 占位符 —— 占位符形态由 **pool 自己的
+    // 方言** 决定（postgres 只认 `$1`）。方言必须看 pool，不能看进程级全局
+    // `dialect::current()` —— 后者在直接构造 `Pool::Postgres(..)` 的测试里仍是
+    // 默认值（sqlite），走错分支就会把 `?` 发给 postgres → `syntax error`。
+    let sql = pool
+        .sql("SELECT {} FROM gb_device_channel WHERE id = ?")
+        .replace("{}", DEVICE_CHANNEL_SELECT_COLUMNS);
+    return crate::dispatch!(pool, |p| {
+        sqlx::query_as::<_, DeviceChannel>(&sql)
+            .bind(id)
+            .fetch_optional(p)
+    });
 }
 
 /// 通道可写字段（表单里出现的全部列）。
@@ -71,156 +56,58 @@ pub async fn update(
     f: &ChannelWriteFields<'_>,
     now: &str,
 ) -> sqlx::Result<u64> {
-    // 全部 COALESCE：None = 保持原值
-    let set = "name = COALESCE({p1}, name), \
-               gb_device_id = COALESCE({p2}, gb_device_id), \
-               civil_code = COALESCE({p3}, civil_code), \
-               parent_id = COALESCE({p4}, parent_id), \
-               business_group_id = COALESCE({p5}, business_group_id), \
-               ptz_type = COALESCE({p6}, ptz_type), \
-               custom_name = COALESCE({p7}, custom_name), \
-               manufacturer = COALESCE({p8}, manufacturer), \
-               model = COALESCE({p9}, model), \
-               owner = COALESCE({p10}, owner), \
-               address = COALESCE({p11}, address), \
-               stream_identification = COALESCE({p12}, stream_identification), \
-               channel_type = COALESCE({p13}, channel_type), \
-               update_time = {p14} \
-               WHERE id = {p15}";
-    #[cfg(feature = "mysql")]
-    let r = {
-        let sql = set
-            .replace("{p1}", "?")
-            .replace("{p2}", "?")
-            .replace("{p3}", "?")
-            .replace("{p4}", "?")
-            .replace("{p5}", "?")
-            .replace("{p6}", "?")
-            .replace("{p7}", "?")
-            .replace("{p8}", "?")
-            .replace("{p9}", "?")
-            .replace("{p10}", "?")
-            .replace("{p11}", "?")
-            .replace("{p12}", "?")
-            .replace("{p13}", "?")
-            .replace("{p14}", "?")
-            .replace("{p15}", "?");
-        sqlx::query(&format!("UPDATE gb_device_channel SET {sql}"))
-            .bind(f.name)
-            .bind(f.channel_id)
-            .bind(f.civil_code)
-            .bind(f.parent_id)
-            .bind(f.business_group)
-            .bind(f.ptz_type)
-            .bind(f.custom_name)
-            .bind(f.manufacturer)
-            .bind(f.model)
-            .bind(f.owner)
-            .bind(f.address)
-            .bind(f.stream_identification)
-            .bind(f.channel_type)
-            .bind(now)
-            .bind(id)
-            .execute(pool)
-            .await?
-    };
-    #[cfg(feature = "postgres")]
-    let r = {
-        let sql = set
-            .replace("{p1}", "$1")
-            .replace("{p2}", "$2")
-            .replace("{p3}", "$3")
-            .replace("{p4}", "$4")
-            .replace("{p5}", "$5")
-            .replace("{p6}", "$6")
-            .replace("{p7}", "$7")
-            .replace("{p8}", "$8")
-            .replace("{p9}", "$9")
-            .replace("{p10}", "$10")
-            .replace("{p11}", "$11")
-            .replace("{p12}", "$12")
-            .replace("{p13}", "$13")
-            .replace("{p14}", "$14")
-            .replace("{p15}", "$15");
-        sqlx::query(&format!("UPDATE gb_device_channel SET {sql}"))
-            .bind(f.name)
-            .bind(f.channel_id)
-            .bind(f.civil_code)
-            .bind(f.parent_id)
-            .bind(f.business_group)
-            .bind(f.ptz_type)
-            .bind(f.custom_name)
-            .bind(f.manufacturer)
-            .bind(f.model)
-            .bind(f.owner)
-            .bind(f.address)
-            .bind(f.stream_identification)
-            .bind(f.channel_type)
-            .bind(now)
-            .bind(id)
-            .execute(pool)
-            .await?
-    };
-    #[cfg(feature = "sqlite")]
-    let r = {
-        let sql = set
-            .replace("{p1}", "?")
-            .replace("{p2}", "?")
-            .replace("{p3}", "?")
-            .replace("{p4}", "?")
-            .replace("{p5}", "?")
-            .replace("{p6}", "?")
-            .replace("{p7}", "?")
-            .replace("{p8}", "?")
-            .replace("{p9}", "?")
-            .replace("{p10}", "?")
-            .replace("{p11}", "?")
-            .replace("{p12}", "?")
-            .replace("{p13}", "?")
-            .replace("{p14}", "?")
-            .replace("{p15}", "?");
-        sqlx::query(&format!("UPDATE gb_device_channel SET {sql}"))
-            .bind(f.name)
-            .bind(f.channel_id)
-            .bind(f.civil_code)
-            .bind(f.parent_id)
-            .bind(f.business_group)
-            .bind(f.ptz_type)
-            .bind(f.custom_name)
-            .bind(f.manufacturer)
-            .bind(f.model)
-            .bind(f.owner)
-            .bind(f.address)
-            .bind(f.stream_identification)
-            .bind(f.channel_type)
-            .bind(now)
-            .bind(id)
-            .execute(pool)
-            .await?
-    };
+    let set = "name = COALESCE(?, name), \
+               gb_device_id = COALESCE(?, gb_device_id), \
+               civil_code = COALESCE(?, civil_code), \
+               parent_id = COALESCE(?, parent_id), \
+               business_group_id = COALESCE(?, business_group_id), \
+               ptz_type = COALESCE(?, ptz_type), \
+               custom_name = COALESCE(?, custom_name), \
+               manufacturer = COALESCE(?, manufacturer), \
+               model = COALESCE(?, model), \
+               owner = COALESCE(?, owner), \
+               address = COALESCE(?, address), \
+               stream_identification = COALESCE(?, stream_identification), \
+               channel_type = COALESCE(?, channel_type), \
+               update_time = ? \
+               WHERE id = ?";
+    let stmt = format!("UPDATE gb_device_channel SET {}", set);
+    let sql = pool.sql(&stmt).into_owned();
+    let r = crate::dispatch_exec!(pool, |p| {
+        sqlx::query(&sql)
+            .bind(f.name).bind(f.channel_id).bind(f.civil_code).bind(f.parent_id).bind(f.business_group).bind(f.ptz_type).bind(f.custom_name).bind(f.manufacturer).bind(f.model).bind(f.owner).bind(f.address).bind(f.stream_identification).bind(f.channel_type).bind(now).bind(id).execute(p)
+    })?;
     Ok(r.rows_affected())
 }
-
 pub async fn reset(pool: &Pool, id: i64, now: &str) -> sqlx::Result<u64> {
-    #[cfg(feature = "mysql")]
-    let r = sqlx::query("UPDATE gb_device_channel SET sub_count = 0, update_time = ? WHERE id = ?")
-        .bind(now)
-        .bind(id)
-        .execute(pool)
-        .await?;
-    #[cfg(feature = "postgres")]
-    let r =
-        sqlx::query("UPDATE gb_device_channel SET sub_count = 0, update_time = $1 WHERE id = $2")
-            .bind(now)
-            .bind(id)
-            .execute(pool)
-            .await?;
-    #[cfg(feature = "sqlite")]
-    let r = sqlx::query("UPDATE gb_device_channel SET sub_count = 0, update_time = ? WHERE id = ?")
-        .bind(now)
-        .bind(id)
-        .execute(pool)
-        .await?;
+    let r = if crate::db::dialect::current().is_mysql() {
+        let sql = crate::db::dialect::current_sql(
+            "UPDATE gb_device_channel SET sub_count = 0, update_time = ? WHERE id = ?",
+        )
+        .into_owned();
+
+        crate::dispatch_exec!(pool, |p| {
+            sqlx::query(&sql).bind(now).bind(id).execute(p)
+        })?
+    } else if crate::db::dialect::current().is_postgres() {
+        let sql = crate::db::dialect::current_sql(
+            "UPDATE gb_device_channel SET sub_count = 0, update_time = $1 WHERE id = $2",
+        )
+        .into_owned();
+
+        crate::dispatch_exec!(pool, |p| {
+            sqlx::query(&sql).bind(now).bind(id).execute(p)
+        })?
+    } else {
+        let sql = crate::db::dialect::current_sql(
+            "UPDATE gb_device_channel SET sub_count = 0, update_time = ? WHERE id = ?",
+        )
+        .into_owned();
+
+        crate::dispatch_exec!(pool, |p| {
+            sqlx::query(&sql).bind(now).bind(id).execute(p)
+        })?
+    };
     Ok(r.rows_affected())
 }
 
@@ -230,88 +117,101 @@ pub async fn add(pool: &Pool, f: &ChannelWriteFields<'_>, now: &str) -> sqlx::Re
     let cols = "device_id, name, gb_device_id, civil_code, parent_id, business_group_id, \
                 ptz_type, custom_name, manufacturer, model, owner, address, \
                 stream_identification, channel_type, create_time, update_time, data_type, data_device_id";
-    #[cfg(feature = "mysql")]
-    {
-        let sql = format!(
-            "INSERT INTO gb_device_channel ({cols}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?)"
-        );
-        let result = sqlx::query(&sql)
-            .bind(f.device_id)
-            .bind(f.name.unwrap_or(""))
-            .bind(f.channel_id.unwrap_or(""))
-            .bind(f.civil_code)
-            .bind(f.parent_id)
-            .bind(f.business_group)
-            .bind(f.ptz_type)
-            .bind(f.custom_name)
-            .bind(f.manufacturer)
-            .bind(f.model)
-            .bind(f.owner)
-            .bind(f.address)
-            .bind(f.stream_identification)
-            .bind(channel_type)
-            .bind(now)
-            .bind(now)
-            .bind(f.data_device_id.unwrap_or(0))
-            .execute(pool)
-            .await?;
-        Ok(result.last_insert_id() as i64)
-    }
-    #[cfg(feature = "postgres")]
-    {
-        let sql = format!(
-            "INSERT INTO gb_device_channel ({cols}) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,0,$17) RETURNING id"
-        );
-        let row = sqlx::query(&sql)
-            .bind(f.device_id)
-            .bind(f.name.unwrap_or(""))
-            .bind(f.channel_id.unwrap_or(""))
-            .bind(f.civil_code)
-            .bind(f.parent_id)
-            .bind(f.business_group)
-            .bind(f.ptz_type)
-            .bind(f.custom_name)
-            .bind(f.manufacturer)
-            .bind(f.model)
-            .bind(f.owner)
-            .bind(f.address)
-            .bind(f.stream_identification)
-            .bind(channel_type)
-            .bind(now)
-            .bind(now)
-            .bind(f.data_device_id.unwrap_or(0))
-            .fetch_one(pool)
-            .await?;
-        Ok(row.get::<i32, _>("id") as i64)
-    }
-    #[cfg(feature = "sqlite")]
-    {
-        let sql = format!(
-            "INSERT INTO gb_device_channel ({cols}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?)"
-        );
-        let result = sqlx::query(&sql)
-            .bind(f.device_id)
-            .bind(f.name.unwrap_or(""))
-            .bind(f.channel_id.unwrap_or(""))
-            .bind(f.civil_code)
-            .bind(f.parent_id)
-            .bind(f.business_group)
-            .bind(f.ptz_type)
-            .bind(f.custom_name)
-            .bind(f.manufacturer)
-            .bind(f.model)
-            .bind(f.owner)
-            .bind(f.address)
-            .bind(f.stream_identification)
-            .bind(channel_type)
-            .bind(now)
-            .bind(now)
-            .bind(f.data_device_id.unwrap_or(0))
-            .execute(pool)
-            .await?;
-        Ok(result.last_insert_rowid())
-    }
+    // 三个方言的 INSERT 语句**方言专属**：
+    // * postgres 用 `RETURNING id` 取自增主键（它没有 `last_insert_id()`）；
+    // * mysql 用 `last_insert_id()`，sqlite 用 `last_insert_rowid()`。
+    //
+    // 所以用 `dispatch_dialect!` 分派 —— 它按 **pool 的类型** 选分支，不是按
+    // 进程级全局 `dialect::current()`（后者在直接构造 `Pool::Postgres(..)` 的
+    // 测试里仍是默认值 sqlite，走错分支就会把 `?` 发给 postgres → `syntax error`）。
+    let id: i64 = crate::dispatch_dialect!(
+        pool,
+        |p| {
+            // PostgreSQL
+            let sql = format!(
+                "INSERT INTO gb_device_channel ({cols}) \
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,0,$17) RETURNING id"
+            );
+            let row = sqlx::query_scalar::<_, i32>(&sql)
+                .bind(f.device_id)
+                .bind(f.name.unwrap_or(""))
+                .bind(f.channel_id.unwrap_or(""))
+                .bind(f.civil_code)
+                .bind(f.parent_id)
+                .bind(f.business_group)
+                .bind(f.ptz_type)
+                .bind(f.custom_name)
+                .bind(f.manufacturer)
+                .bind(f.model)
+                .bind(f.owner)
+                .bind(f.address)
+                .bind(f.stream_identification)
+                .bind(channel_type)
+                .bind(now)
+                .bind(now)
+                .bind(f.data_device_id.unwrap_or(0))
+                .fetch_one(p)
+                .await?;
+            Ok::<i64, sqlx::Error>(row as i64)
+        },
+        |p| {
+            // MySQL
+            // `{}` = 运行期拼进去的列名；`?` = 占位符（由 **pool 自己的方言**
+            // 改写成 `$1..$n`）。
+            let sql = pool
+                .sql("INSERT INTO gb_device_channel ({cols}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?)")
+                .replace("{cols}", &cols);
+            let result = sqlx::query(&sql)
+                .bind(f.device_id)
+                .bind(f.name.unwrap_or(""))
+                .bind(f.channel_id.unwrap_or(""))
+                .bind(f.civil_code)
+                .bind(f.parent_id)
+                .bind(f.business_group)
+                .bind(f.ptz_type)
+                .bind(f.custom_name)
+                .bind(f.manufacturer)
+                .bind(f.model)
+                .bind(f.owner)
+                .bind(f.address)
+                .bind(f.stream_identification)
+                .bind(channel_type)
+                .bind(now)
+                .bind(now)
+                .bind(f.data_device_id.unwrap_or(0))
+                .execute(p)
+                .await?;
+            Ok(result.last_insert_id() as i64)
+        },
+        |p| {
+            // SQLite
+            let sql = pool
+                .sql("INSERT INTO gb_device_channel ({cols}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?)")
+                .replace("{cols}", &cols);
+            let result = sqlx::query(&sql)
+                .bind(f.device_id)
+                .bind(f.name.unwrap_or(""))
+                .bind(f.channel_id.unwrap_or(""))
+                .bind(f.civil_code)
+                .bind(f.parent_id)
+                .bind(f.business_group)
+                .bind(f.ptz_type)
+                .bind(f.custom_name)
+                .bind(f.manufacturer)
+                .bind(f.model)
+                .bind(f.owner)
+                .bind(f.address)
+                .bind(f.stream_identification)
+                .bind(channel_type)
+                .bind(now)
+                .bind(now)
+                .bind(f.data_device_id.unwrap_or(0))
+                .execute(p)
+                .await?;
+            Ok(result.last_insert_rowid())
+        },
+    )?;
+    Ok(id)
 }
 
 pub async fn get_unusual_civilcode(
@@ -320,75 +220,39 @@ pub async fn get_unusual_civilcode(
     count: u32,
 ) -> sqlx::Result<Vec<DeviceChannel>> {
     let offset = crate::pagination::offset(page, count);
-    #[cfg(feature = "mysql")]
-    return sqlx::query_as::<_, DeviceChannel>(
-        &format!("SELECT {} FROM gb_device_channel WHERE civil_code IS NULL OR civil_code = '' ORDER BY id LIMIT ? OFFSET ?", DEVICE_CHANNEL_SELECT_COLUMNS),
-    )
-    .bind(count as i64).bind(offset)
-    .fetch_all(pool)
-    .await;
-    #[cfg(feature = "postgres")]
-    return sqlx::query_as::<_, DeviceChannel>(
-        &format!("SELECT {} FROM gb_device_channel WHERE civil_code IS NULL OR civil_code = '' ORDER BY id LIMIT $1 OFFSET $2", DEVICE_CHANNEL_SELECT_COLUMNS),
-    )
-    .bind(count as i64).bind(offset)
-    .fetch_all(pool)
-    .await;
-    #[cfg(feature = "sqlite")]
-    return sqlx::query_as::<_, DeviceChannel>(
-        &format!("SELECT {} FROM gb_device_channel WHERE civil_code IS NULL OR civil_code = '' ORDER BY id LIMIT ? OFFSET ?", DEVICE_CHANNEL_SELECT_COLUMNS),
-    )
-    .bind(count as i64).bind(offset)
-    .fetch_all(pool)
-    .await;
+    let sql = pool
+        .sql("SELECT {} FROM gb_device_channel WHERE civil_code IS NULL OR civil_code = '' ORDER BY id LIMIT ? OFFSET ?")
+        .replace("{}", DEVICE_CHANNEL_SELECT_COLUMNS);
+    return crate::dispatch!(pool, |p| {
+        sqlx::query_as::<_, DeviceChannel>(&sql)
+            .bind(count as i64)
+            .bind(offset)
+            .fetch_all(p)
+    });
 }
 
 pub async fn count_unusual_civilcode(pool: &Pool) -> sqlx::Result<i64> {
-    #[cfg(feature = "mysql")]
-    return sqlx::query_scalar::<_, i64>(
+    let sql = crate::db::dialect::current_sql(
         "SELECT COUNT(*) FROM gb_device_channel WHERE civil_code IS NULL OR civil_code = ''",
     )
-    .fetch_one(pool)
-    .await;
-    #[cfg(feature = "postgres")]
-    return sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM gb_device_channel WHERE civil_code IS NULL OR civil_code = ''",
-    )
-    .fetch_one(pool)
-    .await;
-    #[cfg(feature = "sqlite")]
-    return sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM gb_device_channel WHERE civil_code IS NULL OR civil_code = ''",
-    )
-    .fetch_one(pool)
-    .await;
+    .into_owned();
+    return crate::dispatch!(pool, |p| {
+        sqlx::query_scalar::<_, i64>(&sql).fetch_one(p)
+    });
 }
 
 /// 取通道表中所有非空且去重的行政区划编码（civil_code），按编码升序。
 ///
 /// 供 `/api/region/sync` 按行政区划补齐区域表使用。
 pub async fn list_distinct_civil_codes(pool: &Pool) -> sqlx::Result<Vec<String>> {
-    #[cfg(feature = "mysql")]
-    return sqlx::query_scalar::<_, String>(
+    let sql = crate::db::dialect::current_sql(
         "SELECT DISTINCT civil_code FROM gb_device_channel \
          WHERE civil_code IS NOT NULL AND civil_code <> '' ORDER BY civil_code",
     )
-    .fetch_all(pool)
-    .await;
-    #[cfg(feature = "postgres")]
-    return sqlx::query_scalar::<_, String>(
-        "SELECT DISTINCT civil_code FROM gb_device_channel \
-         WHERE civil_code IS NOT NULL AND civil_code <> '' ORDER BY civil_code",
-    )
-    .fetch_all(pool)
-    .await;
-    #[cfg(feature = "sqlite")]
-    return sqlx::query_scalar::<_, String>(
-        "SELECT DISTINCT civil_code FROM gb_device_channel \
-         WHERE civil_code IS NOT NULL AND civil_code <> '' ORDER BY civil_code",
-    )
-    .fetch_all(pool)
-    .await;
+    .into_owned();
+    return crate::dispatch!(pool, |p| {
+        sqlx::query_scalar::<_, String>(&sql).fetch_all(p)
+    });
 }
 
 pub async fn get_unusual_parent(
@@ -397,85 +261,42 @@ pub async fn get_unusual_parent(
     count: u32,
 ) -> sqlx::Result<Vec<DeviceChannel>> {
     let offset = crate::pagination::offset(page, count);
-    #[cfg(feature = "mysql")]
-    return sqlx::query_as::<_, DeviceChannel>(
-        &format!("SELECT {} FROM gb_device_channel WHERE parent_id IS NULL OR parent_id = '0' ORDER BY id LIMIT ? OFFSET ?", DEVICE_CHANNEL_SELECT_COLUMNS),
-    )
-    .bind(count as i64).bind(offset)
-    .fetch_all(pool)
-    .await;
-    #[cfg(feature = "postgres")]
-    return sqlx::query_as::<_, DeviceChannel>(
-        &format!("SELECT {} FROM gb_device_channel WHERE parent_id IS NULL OR parent_id = '0' ORDER BY id LIMIT $1 OFFSET $2", DEVICE_CHANNEL_SELECT_COLUMNS),
-    )
-    .bind(count as i64).bind(offset)
-    .fetch_all(pool)
-    .await;
-    #[cfg(feature = "sqlite")]
-    return sqlx::query_as::<_, DeviceChannel>(
-        &format!("SELECT {} FROM gb_device_channel WHERE parent_id IS NULL OR parent_id = '0' ORDER BY id LIMIT ? OFFSET ?", DEVICE_CHANNEL_SELECT_COLUMNS),
-    )
-    .bind(count as i64).bind(offset)
-    .fetch_all(pool)
-    .await;
+    let sql = pool
+        .sql("SELECT {} FROM gb_device_channel WHERE parent_id IS NULL OR parent_id = '0' ORDER BY id LIMIT ? OFFSET ?")
+        .replace("{}", DEVICE_CHANNEL_SELECT_COLUMNS);
+    return crate::dispatch!(pool, |p| {
+        sqlx::query_as::<_, DeviceChannel>(&sql)
+            .bind(count as i64)
+            .bind(offset)
+            .fetch_all(p)
+    });
 }
 
 pub async fn count_unusual_parent(pool: &Pool) -> sqlx::Result<i64> {
-    #[cfg(feature = "mysql")]
-    return sqlx::query_scalar::<_, i64>(
+    let sql = crate::db::dialect::current_sql(
         "SELECT COUNT(*) FROM gb_device_channel WHERE parent_id IS NULL OR parent_id = '0'",
     )
-    .fetch_one(pool)
-    .await;
-    #[cfg(feature = "postgres")]
-    return sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM gb_device_channel WHERE parent_id IS NULL OR parent_id = '0'",
-    )
-    .fetch_one(pool)
-    .await;
-    #[cfg(feature = "sqlite")]
-    return sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM gb_device_channel WHERE parent_id IS NULL OR parent_id = '0'",
-    )
-    .fetch_one(pool)
-    .await;
+    .into_owned();
+    return crate::dispatch!(pool, |p| {
+        sqlx::query_scalar::<_, i64>(&sql).fetch_one(p)
+    });
 }
 
 pub async fn clear_unusual_civilcode(pool: &Pool, id: i64) -> sqlx::Result<u64> {
-    #[cfg(feature = "mysql")]
-    let r = sqlx::query("UPDATE gb_device_channel SET civil_code = NULL WHERE id = ?")
-        .bind(id)
-        .execute(pool)
-        .await?;
-    #[cfg(feature = "postgres")]
-    let r = sqlx::query("UPDATE gb_device_channel SET civil_code = NULL WHERE id = $1")
-        .bind(id)
-        .execute(pool)
-        .await?;
-    #[cfg(feature = "sqlite")]
-    let r = sqlx::query("UPDATE gb_device_channel SET civil_code = NULL WHERE id = ?")
-        .bind(id)
-        .execute(pool)
-        .await?;
+    let sql = crate::db::dialect::current_sql(
+        "UPDATE gb_device_channel SET civil_code = NULL WHERE id = ?",
+    )
+    .into_owned();
+    let r = crate::dispatch_exec!(pool, |p| { sqlx::query(&sql).bind(id).execute(p) })?;
     Ok(r.rows_affected())
 }
 
 pub async fn clear_unusual_parent(pool: &Pool, id: i64) -> sqlx::Result<u64> {
-    #[cfg(feature = "mysql")]
-    let r = sqlx::query("UPDATE gb_device_channel SET parent_id = '0' WHERE id = ?")
-        .bind(id)
-        .execute(pool)
-        .await?;
-    #[cfg(feature = "postgres")]
-    let r = sqlx::query("UPDATE gb_device_channel SET parent_id = '0' WHERE id = $1")
-        .bind(id)
-        .execute(pool)
-        .await?;
-    #[cfg(feature = "sqlite")]
-    let r = sqlx::query("UPDATE gb_device_channel SET parent_id = '0' WHERE id = ?")
-        .bind(id)
-        .execute(pool)
-        .await?;
+    let sql = crate::db::dialect::current_sql(
+        "UPDATE gb_device_channel SET parent_id = '0' WHERE id = ?",
+    )
+    .into_owned();
+    let r = crate::dispatch_exec!(pool, |p| { sqlx::query(&sql).bind(id).execute(p) })?;
     Ok(r.rows_affected())
 }
 
@@ -489,30 +310,15 @@ pub async fn get_parent_channels(
 ) -> sqlx::Result<Vec<DeviceChannel>> {
     let offset = crate::pagination::offset(page, count);
     let cols = DEVICE_CHANNEL_SELECT_COLUMNS;
-    #[cfg(feature = "mysql")]
-    return sqlx::query_as::<_, DeviceChannel>(&format!(
-        "SELECT {} FROM gb_device_channel WHERE parent_id IS NOT NULL AND parent_id != '0' ORDER BY id LIMIT ? OFFSET ?",
-        cols
-    ))
-    .bind(count as i64).bind(offset)
-    .fetch_all(pool)
-    .await;
-    #[cfg(feature = "postgres")]
-    return sqlx::query_as::<_, DeviceChannel>(&format!(
-        "SELECT {} FROM gb_device_channel WHERE parent_id IS NOT NULL AND parent_id != '0' ORDER BY id LIMIT $1 OFFSET $2",
-        cols
-    ))
-    .bind(count as i64).bind(offset)
-    .fetch_all(pool)
-    .await;
-    #[cfg(feature = "sqlite")]
-    return sqlx::query_as::<_, DeviceChannel>(&format!(
-        "SELECT {} FROM gb_device_channel WHERE parent_id IS NOT NULL AND parent_id != '0' ORDER BY id LIMIT ? OFFSET ?",
-        cols
-    ))
-    .bind(count as i64).bind(offset)
-    .fetch_all(pool)
-    .await;
+    let sql = pool
+        .sql("SELECT {} FROM gb_device_channel WHERE parent_id IS NOT NULL AND parent_id != '0' ORDER BY id LIMIT ? OFFSET ?")
+        .replace("{}", cols);
+    return crate::dispatch!(pool, |p| {
+        sqlx::query_as::<_, DeviceChannel>(&sql)
+            .bind(count as i64)
+            .bind(offset)
+            .fetch_all(p)
+    });
 }
 
 pub async fn count_parent_channels(
@@ -521,24 +327,13 @@ pub async fn count_parent_channels(
     _online: Option<bool>,
     _channel_type: Option<i32>,
 ) -> sqlx::Result<i64> {
-    #[cfg(feature = "mysql")]
-    return sqlx::query_scalar::<_, i64>(
+    let sql = crate::db::dialect::current_sql(
         "SELECT COUNT(*) FROM gb_device_channel WHERE parent_id IS NOT NULL AND parent_id != '0'",
     )
-    .fetch_one(pool)
-    .await;
-    #[cfg(feature = "postgres")]
-    return sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM gb_device_channel WHERE parent_id IS NOT NULL AND parent_id != '0'",
-    )
-    .fetch_one(pool)
-    .await;
-    #[cfg(feature = "sqlite")]
-    return sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM gb_device_channel WHERE parent_id IS NOT NULL AND parent_id != '0'",
-    )
-    .fetch_one(pool)
-    .await;
+    .into_owned();
+    return crate::dispatch!(pool, |p| {
+        sqlx::query_scalar::<_, i64>(&sql).fetch_one(p)
+    });
 }
 
 pub async fn update_civil_code(
@@ -547,56 +342,49 @@ pub async fn update_civil_code(
     civil_code: &str,
     now: &str,
 ) -> sqlx::Result<u64> {
-    #[cfg(feature = "mysql")]
-    let r =
-        sqlx::query("UPDATE gb_device_channel SET civil_code = ?, update_time = ? WHERE id = ?")
+    let sql = crate::db::dialect::current_sql(
+        "UPDATE gb_device_channel SET civil_code = ?, update_time = ? WHERE id = ?",
+    )
+    .into_owned();
+    let r = crate::dispatch_exec!(pool, |p| {
+        sqlx::query(&sql)
             .bind(civil_code)
             .bind(now)
             .bind(id)
-            .execute(pool)
-            .await?;
-    #[cfg(feature = "postgres")]
-    let r =
-        sqlx::query("UPDATE gb_device_channel SET civil_code = $1, update_time = $2 WHERE id = $3")
-            .bind(civil_code)
-            .bind(now)
-            .bind(id)
-            .execute(pool)
-            .await?;
-    #[cfg(feature = "sqlite")]
-    let r =
-        sqlx::query("UPDATE gb_device_channel SET civil_code = ?, update_time = ? WHERE id = ?")
-            .bind(civil_code)
-            .bind(now)
-            .bind(id)
-            .execute(pool)
-            .await?;
+            .execute(p)
+    })?;
     Ok(r.rows_affected())
 }
 
 pub async fn clear_civil_code(pool: &Pool, id: i64, now: &str) -> sqlx::Result<u64> {
-    #[cfg(feature = "mysql")]
-    let r =
-        sqlx::query("UPDATE gb_device_channel SET civil_code = NULL, update_time = ? WHERE id = ?")
-            .bind(now)
-            .bind(id)
-            .execute(pool)
-            .await?;
-    #[cfg(feature = "postgres")]
-    let r = sqlx::query(
-        "UPDATE gb_device_channel SET civil_code = NULL, update_time = $1 WHERE id = $2",
-    )
-    .bind(now)
-    .bind(id)
-    .execute(pool)
-    .await?;
-    #[cfg(feature = "sqlite")]
-    let r =
-        sqlx::query("UPDATE gb_device_channel SET civil_code = NULL, update_time = ? WHERE id = ?")
-            .bind(now)
-            .bind(id)
-            .execute(pool)
-            .await?;
+    let r = if crate::db::dialect::current().is_mysql() {
+        let sql = crate::db::dialect::current_sql(
+            "UPDATE gb_device_channel SET civil_code = NULL, update_time = ? WHERE id = ?",
+        )
+        .into_owned();
+
+        crate::dispatch_exec!(pool, |p| {
+            sqlx::query(&sql).bind(now).bind(id).execute(p)
+        })?
+    } else if crate::db::dialect::current().is_postgres() {
+        let sql = crate::db::dialect::current_sql(
+            "UPDATE gb_device_channel SET civil_code = NULL, update_time = $1 WHERE id = $2",
+        )
+        .into_owned();
+
+        crate::dispatch_exec!(pool, |p| {
+            sqlx::query(&sql).bind(now).bind(id).execute(p)
+        })?
+    } else {
+        let sql = crate::db::dialect::current_sql(
+            "UPDATE gb_device_channel SET civil_code = NULL, update_time = ? WHERE id = ?",
+        )
+        .into_owned();
+
+        crate::dispatch_exec!(pool, |p| {
+            sqlx::query(&sql).bind(now).bind(id).execute(p)
+        })?
+    };
     Ok(r.rows_affected())
 }
 
@@ -606,61 +394,28 @@ pub async fn update_device_civil_code(
     civil_code: &str,
     now: &str,
 ) -> sqlx::Result<u64> {
-    #[cfg(feature = "mysql")]
-    let r = sqlx::query(
+    let sql = crate::db::dialect::current_sql(
         "UPDATE gb_device_channel SET civil_code = ?, update_time = ? WHERE device_id = ?",
     )
-    .bind(civil_code)
-    .bind(now)
-    .bind(device_id)
-    .execute(pool)
-    .await?;
-    #[cfg(feature = "postgres")]
-    let r = sqlx::query(
-        "UPDATE gb_device_channel SET civil_code = $1, update_time = $2 WHERE device_id = $3",
-    )
-    .bind(civil_code)
-    .bind(now)
-    .bind(device_id)
-    .execute(pool)
-    .await?;
-    #[cfg(feature = "sqlite")]
-    let r = sqlx::query(
-        "UPDATE gb_device_channel SET civil_code = ?, update_time = ? WHERE device_id = ?",
-    )
-    .bind(civil_code)
-    .bind(now)
-    .bind(device_id)
-    .execute(pool)
-    .await?;
+    .into_owned();
+    let r = crate::dispatch_exec!(pool, |p| {
+        sqlx::query(&sql)
+            .bind(civil_code)
+            .bind(now)
+            .bind(device_id)
+            .execute(p)
+    })?;
     Ok(r.rows_affected())
 }
 
 pub async fn clear_device_civil_code(pool: &Pool, device_id: &str, now: &str) -> sqlx::Result<u64> {
-    #[cfg(feature = "mysql")]
-    let r = sqlx::query(
+    let sql = crate::db::dialect::current_sql(
         "UPDATE gb_device_channel SET civil_code = NULL, update_time = ? WHERE device_id = ?",
     )
-    .bind(now)
-    .bind(device_id)
-    .execute(pool)
-    .await?;
-    #[cfg(feature = "postgres")]
-    let r = sqlx::query(
-        "UPDATE gb_device_channel SET civil_code = NULL, update_time = $1 WHERE device_id = $2",
-    )
-    .bind(now)
-    .bind(device_id)
-    .execute(pool)
-    .await?;
-    #[cfg(feature = "sqlite")]
-    let r = sqlx::query(
-        "UPDATE gb_device_channel SET civil_code = NULL, update_time = ? WHERE device_id = ?",
-    )
-    .bind(now)
-    .bind(device_id)
-    .execute(pool)
-    .await?;
+    .into_owned();
+    let r = crate::dispatch_exec!(pool, |p| {
+        sqlx::query(&sql).bind(now).bind(device_id).execute(p)
+    })?;
     Ok(r.rows_affected())
 }
 
@@ -671,40 +426,23 @@ pub async fn update_group(
     business_group: &str,
     now: &str,
 ) -> sqlx::Result<u64> {
-    #[cfg(feature = "mysql")]
-    let r = sqlx::query("UPDATE gb_device_channel SET parent_id = ?, business_group_id = ?, update_time = ? WHERE id = ?")
-        .bind(parent_id).bind(business_group).bind(now).bind(id)
-        .execute(pool)
-        .await?;
-    #[cfg(feature = "postgres")]
-    let r = sqlx::query("UPDATE gb_device_channel SET parent_id = $1, business_group_id = $2, update_time = $3 WHERE id = $4")
-        .bind(parent_id).bind(business_group).bind(now).bind(id)
-        .execute(pool)
-        .await?;
-    #[cfg(feature = "sqlite")]
-    let r = sqlx::query("UPDATE gb_device_channel SET parent_id = ?, business_group_id = ?, update_time = ? WHERE id = ?")
-        .bind(parent_id).bind(business_group).bind(now).bind(id)
-        .execute(pool)
-        .await?;
+    let sql = crate::db::dialect::current_sql("UPDATE gb_device_channel SET parent_id = ?, business_group_id = ?, update_time = ? WHERE id = ?").into_owned();
+    let r = crate::dispatch_exec!(pool, |p| {
+        sqlx::query(&sql)
+            .bind(parent_id)
+            .bind(business_group)
+            .bind(now)
+            .bind(id)
+            .execute(p)
+    })?;
     Ok(r.rows_affected())
 }
 
 pub async fn clear_group(pool: &Pool, id: i64, now: &str) -> sqlx::Result<u64> {
-    #[cfg(feature = "mysql")]
-    let r = sqlx::query("UPDATE gb_device_channel SET parent_id = '0', business_group_id = NULL, update_time = ? WHERE id = ?")
-        .bind(now).bind(id)
-        .execute(pool)
-        .await?;
-    #[cfg(feature = "postgres")]
-    let r = sqlx::query("UPDATE gb_device_channel SET parent_id = '0', business_group_id = NULL, update_time = $1 WHERE id = $2")
-        .bind(now).bind(id)
-        .execute(pool)
-        .await?;
-    #[cfg(feature = "sqlite")]
-    let r = sqlx::query("UPDATE gb_device_channel SET parent_id = '0', business_group_id = NULL, update_time = ? WHERE id = ?")
-        .bind(now).bind(id)
-        .execute(pool)
-        .await?;
+    let sql = crate::db::dialect::current_sql("UPDATE gb_device_channel SET parent_id = '0', business_group_id = NULL, update_time = ? WHERE id = ?").into_owned();
+    let r = crate::dispatch_exec!(pool, |p| {
+        sqlx::query(&sql).bind(now).bind(id).execute(p)
+    })?;
     Ok(r.rows_affected())
 }
 
@@ -715,40 +453,23 @@ pub async fn update_device_group(
     business_group: &str,
     now: &str,
 ) -> sqlx::Result<u64> {
-    #[cfg(feature = "mysql")]
-    let r = sqlx::query("UPDATE gb_device_channel SET parent_id = ?, business_group_id = ?, update_time = ? WHERE device_id = ?")
-        .bind(parent_id).bind(business_group).bind(now).bind(device_id)
-        .execute(pool)
-        .await?;
-    #[cfg(feature = "postgres")]
-    let r = sqlx::query("UPDATE gb_device_channel SET parent_id = $1, business_group_id = $2, update_time = $3 WHERE device_id = $4")
-        .bind(parent_id).bind(business_group).bind(now).bind(device_id)
-        .execute(pool)
-        .await?;
-    #[cfg(feature = "sqlite")]
-    let r = sqlx::query("UPDATE gb_device_channel SET parent_id = ?, business_group_id = ?, update_time = ? WHERE device_id = ?")
-        .bind(parent_id).bind(business_group).bind(now).bind(device_id)
-        .execute(pool)
-        .await?;
+    let sql = crate::db::dialect::current_sql("UPDATE gb_device_channel SET parent_id = ?, business_group_id = ?, update_time = ? WHERE device_id = ?").into_owned();
+    let r = crate::dispatch_exec!(pool, |p| {
+        sqlx::query(&sql)
+            .bind(parent_id)
+            .bind(business_group)
+            .bind(now)
+            .bind(device_id)
+            .execute(p)
+    })?;
     Ok(r.rows_affected())
 }
 
 pub async fn clear_device_group(pool: &Pool, device_id: &str, now: &str) -> sqlx::Result<u64> {
-    #[cfg(feature = "mysql")]
-    let r = sqlx::query("UPDATE gb_device_channel SET parent_id = '0', business_group_id = NULL, update_time = ? WHERE device_id = ?")
-        .bind(now).bind(device_id)
-        .execute(pool)
-        .await?;
-    #[cfg(feature = "postgres")]
-    let r = sqlx::query("UPDATE gb_device_channel SET parent_id = '0', business_group_id = NULL, update_time = $1 WHERE device_id = $2")
-        .bind(now).bind(device_id)
-        .execute(pool)
-        .await?;
-    #[cfg(feature = "sqlite")]
-    let r = sqlx::query("UPDATE gb_device_channel SET parent_id = '0', business_group_id = NULL, update_time = ? WHERE device_id = ?")
-        .bind(now).bind(device_id)
-        .execute(pool)
-        .await?;
+    let sql = crate::db::dialect::current_sql("UPDATE gb_device_channel SET parent_id = '0', business_group_id = NULL, update_time = ? WHERE device_id = ?").into_owned();
+    let r = crate::dispatch_exec!(pool, |p| {
+        sqlx::query(&sql).bind(now).bind(device_id).execute(p)
+    })?;
     Ok(r.rows_affected())
 }
 
@@ -758,24 +479,28 @@ pub async fn get_channels_for_map(
     _online: Option<bool>,
     _channel_type: Option<i32>,
 ) -> sqlx::Result<Vec<DeviceChannel>> {
-    #[cfg(feature = "mysql")]
-    return sqlx::query_as::<_, DeviceChannel>(
-        &format!("SELECT {} FROM gb_device_channel WHERE longitude IS NOT NULL AND latitude IS NOT NULL ORDER BY id LIMIT 1000", DEVICE_CHANNEL_SELECT_COLUMNS),
-    )
-    .fetch_all(pool)
-    .await;
-    #[cfg(feature = "postgres")]
-    return sqlx::query_as::<_, DeviceChannel>(
-        &format!("SELECT {} FROM gb_device_channel WHERE longitude IS NOT NULL AND latitude IS NOT NULL ORDER BY id LIMIT 1000", DEVICE_CHANNEL_SELECT_COLUMNS),
-    )
-    .fetch_all(pool)
-    .await;
-    #[cfg(feature = "sqlite")]
-    return sqlx::query_as::<_, DeviceChannel>(
-        &format!("SELECT {} FROM gb_device_channel WHERE longitude IS NOT NULL AND latitude IS NOT NULL ORDER BY id LIMIT 1000", DEVICE_CHANNEL_SELECT_COLUMNS),
-    )
-    .fetch_all(pool)
-    .await;
+    if crate::db::dialect::current().is_mysql() {
+        return crate::dispatch!(pool, |p| {
+            sqlx::query_as::<_, DeviceChannel>(
+                &format!("SELECT {} FROM gb_device_channel WHERE longitude IS NOT NULL AND latitude IS NOT NULL ORDER BY id LIMIT 1000", DEVICE_CHANNEL_SELECT_COLUMNS),
+            )
+            .fetch_all(p)
+        });
+    } else if crate::db::dialect::current().is_postgres() {
+        return crate::dispatch!(pool, |p| {
+            sqlx::query_as::<_, DeviceChannel>(
+                &format!("SELECT {} FROM gb_device_channel WHERE longitude IS NOT NULL AND latitude IS NOT NULL ORDER BY id LIMIT 1000", DEVICE_CHANNEL_SELECT_COLUMNS),
+            )
+            .fetch_all(p)
+        });
+    } else {
+        return crate::dispatch!(pool, |p| {
+            sqlx::query_as::<_, DeviceChannel>(
+                &format!("SELECT {} FROM gb_device_channel WHERE longitude IS NOT NULL AND latitude IS NOT NULL ORDER BY id LIMIT 1000", DEVICE_CHANNEL_SELECT_COLUMNS),
+            )
+            .fetch_all(p)
+        });
+    }
 }
 
 pub async fn update_map_level(pool: &Pool, channel_ids: &[i64], level: i32) -> sqlx::Result<u64> {
@@ -784,71 +509,41 @@ pub async fn update_map_level(pool: &Pool, channel_ids: &[i64], level: i32) -> s
     }
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
 
-    #[cfg(feature = "mysql")]
-    {
-        let placeholders: Vec<String> = channel_ids.iter().map(|_| "?".to_string()).collect();
-        let sql = format!(
-            "UPDATE gb_device_channel SET map_level = ?, update_time = ? WHERE id IN ({})",
-            placeholders.join(",")
-        );
+    // IN 列表的占位符编号：mysql / sqlite 用 `?`（按顺序绑定），
+    // postgres 用 `$3` 起（前面已经有 map_level / update_time 两个 bind）。
+    // 整条语句的**前两个**占位符由 `pool.sql(..)` 改写，IN 列表按 pool 方言
+    // 自己编号 —— bind 的个数与顺序三方完全一致。
+    let placeholders: Vec<String> = channel_ids
+        .iter()
+        .enumerate()
+        .map(|(i, _)| {
+            if pool.dialect().is_postgres() {
+                format!("${}", i + 3)
+            } else {
+                "?".to_string()
+            }
+        })
+        .collect();
+    let sql = pool
+        .sql("UPDATE gb_device_channel SET map_level = ?, update_time = ? WHERE id IN ({})")
+        .replace("{}", &placeholders.join(","));
+    let r = crate::dispatch_exec!(pool, |p| {
         let mut q = sqlx::query(&sql).bind(level).bind(&now);
         for id in channel_ids {
             q = q.bind(id);
         }
-        let r = q.execute(pool).await?;
-        Ok(r.rows_affected())
-    }
-    #[cfg(feature = "postgres")]
-    {
-        let placeholders: Vec<String> = channel_ids
-            .iter()
-            .enumerate()
-            .map(|(i, _)| format!("${}", i + 3))
-            .collect();
-        let sql = format!(
-            "UPDATE gb_device_channel SET map_level = $1, update_time = $2 WHERE id IN ({})",
-            placeholders.join(",")
-        );
-        let mut q = sqlx::query(&sql).bind(level).bind(&now);
-        for id in channel_ids {
-            q = q.bind(id);
-        }
-        let r = q.execute(pool).await?;
-        Ok(r.rows_affected())
-    }
-    #[cfg(feature = "sqlite")]
-    {
-        let placeholders: Vec<String> = channel_ids.iter().map(|_| "?".to_string()).collect();
-        let sql = format!(
-            "UPDATE gb_device_channel SET map_level = ?, update_time = ? WHERE id IN ({})",
-            placeholders.join(",")
-        );
-        let mut q = sqlx::query(&sql).bind(level).bind(&now);
-        for id in channel_ids {
-            q = q.bind(id);
-        }
-        let r = q.execute(pool).await?;
-        Ok(r.rows_affected())
-    }
+        q.execute(p)
+    })?;
+    Ok(r.rows_affected())
 }
 
 pub async fn reset_map_level(pool: &Pool) -> sqlx::Result<u64> {
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    #[cfg(feature = "mysql")]
-    let r = sqlx::query("UPDATE gb_device_channel SET map_level = 0, update_time = ?")
-        .bind(&now)
-        .execute(pool)
-        .await?;
-    #[cfg(feature = "postgres")]
-    let r = sqlx::query("UPDATE gb_device_channel SET map_level = 0, update_time = $1")
-        .bind(&now)
-        .execute(pool)
-        .await?;
-    #[cfg(feature = "sqlite")]
-    let r = sqlx::query("UPDATE gb_device_channel SET map_level = 0, update_time = ?")
-        .bind(&now)
-        .execute(pool)
-        .await?;
+    let sql = crate::db::dialect::current_sql(
+        "UPDATE gb_device_channel SET map_level = 0, update_time = ?",
+    )
+    .into_owned();
+    let r = crate::dispatch_exec!(pool, |p| { sqlx::query(&sql).bind(&now).execute(p) })?;
     Ok(r.rows_affected())
 }
 
@@ -857,30 +552,34 @@ pub async fn reset_map_level(pool: &Pool) -> sqlx::Result<u64> {
 /// the original SQLite schema doesn't include it. Adding via ALTER TABLE
 /// (idempotent: swallows "duplicate column" errors).
 pub async fn ensure_columns(pool: &Pool) -> sqlx::Result<()> {
-    let _ = sqlx::query("ALTER TABLE gb_device_channel ADD COLUMN custom_name VARCHAR(255)")
-        .execute(pool)
-        .await;
+    let sql = crate::db::dialect::current_sql(
+        "ALTER TABLE gb_device_channel ADD COLUMN custom_name VARCHAR(255)",
+    )
+    .into_owned();
+
+    let _ = crate::dispatch_exec!(pool, |p| { sqlx::query(&sql).execute(p) });
     Ok(())
 }
 
-#[cfg(all(test, feature = "sqlite"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::test_support::sqlite_pool_with_schema;
 
     async fn seed_channel(pool: &Pool, device_id: &str, gb_id: &str, civil: Option<&str>) {
-        sqlx::query(
-            "INSERT INTO gb_device_channel \
+        let sql = crate::db::dialect::current_sql("INSERT INTO gb_device_channel \
              (device_id, name, gb_device_id, civil_code, status, data_type, data_device_id, \
               longitude, latitude, parent_id, create_time, update_time) \
-             VALUES (?, ?, ?, ?, 'ON', 0, 0, 118.7, 32.0, '0', '2026-01-01 00:00:00', '2026-01-01 00:00:00')",
-        )
-        .bind(device_id)
-        .bind(format!("ch-{}", gb_id))
-        .bind(gb_id)
-        .bind(civil)
-        .execute(pool)
-        .await
+             VALUES (?, ?, ?, ?, 'ON', 0, 0, 118.7, 32.0, '0', '2026-01-01 00:00:00', '2026-01-01 00:00:00')").into_owned();
+
+        crate::dispatch_exec!(pool, |p| {
+            sqlx::query(&sql)
+                .bind(device_id)
+                .bind(format!("ch-{}", gb_id))
+                .bind(gb_id)
+                .bind(civil)
+                .execute(p)
+        })
         .expect("insert channel");
     }
 

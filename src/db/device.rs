@@ -106,33 +106,18 @@ pub async fn update_channel_has_audio(
     channel_id: i64,
     has_audio: bool,
 ) -> sqlx::Result<u64> {
-    #[cfg(feature = "mysql")]
-    {
-        let result = sqlx::query("UPDATE gb_device_channel SET has_audio = ? WHERE id = ?")
+    let sql =
+        crate::db::dialect::current_sql("UPDATE gb_device_channel SET has_audio = ? WHERE id = ?")
+            .into_owned();
+
+    let result = crate::dispatch_exec!(pool, |p| {
+        sqlx::query(&sql)
             .bind(has_audio)
             .bind(channel_id)
-            .execute(pool)
-            .await?;
-        Ok(result.rows_affected())
-    }
-    #[cfg(feature = "postgres")]
-    {
-        let result = sqlx::query("UPDATE gb_device_channel SET has_audio = $1 WHERE id = $2")
-            .bind(has_audio)
-            .bind(channel_id)
-            .execute(pool)
-            .await?;
-        Ok(result.rows_affected())
-    }
-    #[cfg(feature = "sqlite")]
-    {
-        let result = sqlx::query("UPDATE gb_device_channel SET has_audio = ? WHERE id = ?")
-            .bind(has_audio)
-            .bind(channel_id)
-            .execute(pool)
-            .await?;
-        Ok(result.rows_affected())
-    }
+            .execute(p)
+    })?;
+
+    Ok(result.rows_affected())
 }
 
 pub async fn update_channel_stream_identification(
@@ -140,36 +125,19 @@ pub async fn update_channel_stream_identification(
     channel_id: i64,
     stream_identification: &str,
 ) -> sqlx::Result<u64> {
-    #[cfg(feature = "mysql")]
-    {
-        let result =
-            sqlx::query("UPDATE gb_device_channel SET stream_identification = ? WHERE id = ?")
-                .bind(stream_identification)
-                .bind(channel_id)
-                .execute(pool)
-                .await?;
-        Ok(result.rows_affected())
-    }
-    #[cfg(feature = "postgres")]
-    {
-        let result =
-            sqlx::query("UPDATE gb_device_channel SET stream_identification = $1 WHERE id = $2")
-                .bind(stream_identification)
-                .bind(channel_id)
-                .execute(pool)
-                .await?;
-        Ok(result.rows_affected())
-    }
-    #[cfg(feature = "sqlite")]
-    {
-        let result =
-            sqlx::query("UPDATE gb_device_channel SET stream_identification = ? WHERE id = ?")
-                .bind(stream_identification)
-                .bind(channel_id)
-                .execute(pool)
-                .await?;
-        Ok(result.rows_affected())
-    }
+    let sql = crate::db::dialect::current_sql(
+        "UPDATE gb_device_channel SET stream_identification = ? WHERE id = ?",
+    )
+    .into_owned();
+
+    let result = crate::dispatch_exec!(pool, |p| {
+        sqlx::query(&sql)
+            .bind(stream_identification)
+            .bind(channel_id)
+            .execute(p)
+    })?;
+
+    Ok(result.rows_affected())
 }
 
 /// 补全 `gb_device` 里**缺失**的 `transport` / `stream_mode`。
@@ -195,48 +163,22 @@ pub async fn fill_device_transport_if_missing(
     stream_mode: Option<&str>,
     now: &str,
 ) -> sqlx::Result<u64> {
-    #[cfg(feature = "mysql")]
-    let r = sqlx::query(
+    let sql = crate::db::dialect::current_sql(
         "UPDATE gb_device SET \
          transport = COALESCE(NULLIF(transport, ''), ?), \
          stream_mode = COALESCE(NULLIF(stream_mode, ''), ?), \
          update_time = ? \
          WHERE device_id = ?",
     )
-    .bind(transport)
-    .bind(stream_mode)
-    .bind(now)
-    .bind(device_id)
-    .execute(pool)
-    .await?;
-    #[cfg(feature = "postgres")]
-    let r = sqlx::query(
-        "UPDATE gb_device SET \
-         transport = COALESCE(NULLIF(transport, ''), $1), \
-         stream_mode = COALESCE(NULLIF(stream_mode, ''), $2), \
-         update_time = $3 \
-         WHERE device_id = $4",
-    )
-    .bind(transport)
-    .bind(stream_mode)
-    .bind(now)
-    .bind(device_id)
-    .execute(pool)
-    .await?;
-    #[cfg(feature = "sqlite")]
-    let r = sqlx::query(
-        "UPDATE gb_device SET \
-         transport = COALESCE(NULLIF(transport, ''), ?), \
-         stream_mode = COALESCE(NULLIF(stream_mode, ''), ?), \
-         update_time = ? \
-         WHERE device_id = ?",
-    )
-    .bind(transport)
-    .bind(stream_mode)
-    .bind(now)
-    .bind(device_id)
-    .execute(pool)
-    .await?;
+    .into_owned();
+    let r = crate::dispatch_exec!(pool, |p| {
+        sqlx::query(&sql)
+            .bind(transport)
+            .bind(stream_mode)
+            .bind(now)
+            .bind(device_id)
+            .execute(p)
+    })?;
     Ok(r.rows_affected())
 }
 
@@ -245,35 +187,41 @@ pub async fn update_device_stream_mode(
     device_id: &str,
     stream_mode: &str,
 ) -> sqlx::Result<u64> {
-    #[cfg(feature = "mysql")]
-    {
-        let result = sqlx::query(
+    if crate::db::dialect::current().is_mysql() {
+        let sql = crate::db::dialect::current_sql(
             "UPDATE gb_device SET stream_mode = ?, update_time = NOW() WHERE device_id = ?",
         )
-        .bind(stream_mode)
-        .bind(device_id)
-        .execute(pool)
-        .await?;
+        .into_owned();
+
+        let result = crate::dispatch_exec!(pool, |p| {
+            sqlx::query(&sql)
+                .bind(stream_mode)
+                .bind(device_id)
+                .execute(p)
+        })?;
         Ok(result.rows_affected())
-    }
-    #[cfg(feature = "postgres")]
-    {
-        let result = sqlx::query(
+    } else if crate::db::dialect::current().is_postgres() {
+        let sql = crate::db::dialect::current_sql(
             "UPDATE gb_device SET stream_mode = $1, update_time = NOW() WHERE device_id = $2",
         )
-        .bind(stream_mode)
-        .bind(device_id)
-        .execute(pool)
-        .await?;
+        .into_owned();
+
+        let result = crate::dispatch_exec!(pool, |p| {
+            sqlx::query(&sql)
+                .bind(stream_mode)
+                .bind(device_id)
+                .execute(p)
+        })?;
         Ok(result.rows_affected())
-    }
-    #[cfg(feature = "sqlite")]
-    {
-        let result = sqlx::query("UPDATE gb_device SET stream_mode = ?, update_time = datetime('now') WHERE device_id = ?")
-            .bind(stream_mode)
-            .bind(device_id)
-            .execute(pool)
-            .await?;
+    } else {
+        let sql = crate::db::dialect::current_sql("UPDATE gb_device SET stream_mode = ?, update_time = datetime('now') WHERE device_id = ?").into_owned();
+
+        let result = crate::dispatch_exec!(pool, |p| {
+            sqlx::query(&sql)
+                .bind(stream_mode)
+                .bind(device_id)
+                .execute(p)
+        })?;
         Ok(result.rows_affected())
     }
 }
@@ -283,39 +231,17 @@ pub async fn update_device_catalog_subscription(
     device_id: &str,
     cycle: i32,
 ) -> sqlx::Result<u64> {
-    #[cfg(feature = "mysql")]
-    {
-        let result = sqlx::query(
-            "UPDATE gb_device SET subscribe_cycle_for_catalog = ?, update_time = NOW() WHERE device_id = ?",
-        )
-        .bind(cycle)
-        .bind(device_id)
-        .execute(pool)
-        .await?;
-        Ok(result.rows_affected())
-    }
-    #[cfg(feature = "postgres")]
-    {
-        let result = sqlx::query(
-            "UPDATE gb_device SET subscribe_cycle_for_catalog = $1, update_time = NOW() WHERE device_id = $2",
-        )
-        .bind(cycle)
-        .bind(device_id)
-        .execute(pool)
-        .await?;
-        Ok(result.rows_affected())
-    }
-    #[cfg(feature = "sqlite")]
-    {
-        let result = sqlx::query(
-            "UPDATE gb_device SET subscribe_cycle_for_catalog = ?, update_time = datetime('now') WHERE device_id = ?",
-        )
-        .bind(cycle)
-        .bind(device_id)
-        .execute(pool)
-        .await?;
-        Ok(result.rows_affected())
-    }
+    let sql = match crate::db::dialect::current() {
+        crate::db::Dialect::MySql => crate::db::dialect::current_sql("UPDATE gb_device SET subscribe_cycle_for_catalog = ?, update_time = NOW() WHERE device_id = ?").into_owned(),
+        crate::db::Dialect::Sqlite => crate::db::dialect::current_sql("UPDATE gb_device SET subscribe_cycle_for_catalog = ?, update_time = datetime('now') WHERE device_id = ?").into_owned(),
+        _ => crate::db::dialect::current_sql("UPDATE gb_device SET subscribe_cycle_for_catalog = $1, update_time = NOW() WHERE device_id = $2").into_owned(),
+    };
+
+    let result = crate::dispatch_exec!(pool, |p| {
+        sqlx::query(&sql).bind(cycle).bind(device_id).execute(p)
+    })?;
+
+    Ok(result.rows_affected())
 }
 
 pub async fn update_device_mobile_position_subscription(
@@ -324,95 +250,38 @@ pub async fn update_device_mobile_position_subscription(
     cycle: i32,
     interval: i32,
 ) -> sqlx::Result<u64> {
-    #[cfg(feature = "mysql")]
-    {
-        let result = sqlx::query(
-            "UPDATE gb_device SET subscribe_cycle_for_mobile_position = ?, mobile_position_submission_interval = ?, update_time = NOW() WHERE device_id = ?",
-        )
-        .bind(cycle)
-        .bind(interval)
-        .bind(device_id)
-        .execute(pool)
-        .await?;
-        Ok(result.rows_affected())
-    }
-    #[cfg(feature = "postgres")]
-    {
-        let result = sqlx::query(
-            "UPDATE gb_device SET subscribe_cycle_for_mobile_position = $1, mobile_position_submission_interval = $2, update_time = NOW() WHERE device_id = $3",
-        )
-        .bind(cycle)
-        .bind(interval)
-        .bind(device_id)
-        .execute(pool)
-        .await?;
-        Ok(result.rows_affected())
-    }
-    #[cfg(feature = "sqlite")]
-    {
-        let result = sqlx::query(
-            "UPDATE gb_device SET subscribe_cycle_for_mobile_position = ?, mobile_position_submission_interval = ?, update_time = datetime('now') WHERE device_id = ?",
-        )
-        .bind(cycle)
-        .bind(interval)
-        .bind(device_id)
-        .execute(pool)
-        .await?;
-        Ok(result.rows_affected())
-    }
+    let sql = match crate::db::dialect::current() {
+        crate::db::Dialect::MySql => crate::db::dialect::current_sql("UPDATE gb_device SET subscribe_cycle_for_mobile_position = ?, mobile_position_submission_interval = ?, update_time = NOW() WHERE device_id = ?").into_owned(),
+        crate::db::Dialect::Sqlite => crate::db::dialect::current_sql("UPDATE gb_device SET subscribe_cycle_for_mobile_position = ?, mobile_position_submission_interval = ?, update_time = datetime('now') WHERE device_id = ?").into_owned(),
+        _ => crate::db::dialect::current_sql("UPDATE gb_device SET subscribe_cycle_for_mobile_position = $1, mobile_position_submission_interval = $2, update_time = NOW() WHERE device_id = $3").into_owned(),
+    };
+
+    let result = crate::dispatch_exec!(pool, |p| {
+        sqlx::query(&sql)
+            .bind(cycle)
+            .bind(interval)
+            .bind(device_id)
+            .execute(p)
+    })?;
+
+    Ok(result.rows_affected())
 }
 
 /// Count total device channels across all devices
 pub async fn count_all_channels(pool: &Pool) -> sqlx::Result<i64> {
-    #[cfg(feature = "mysql")]
-    {
-        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_device_channel")
-            .fetch_one(pool)
-            .await
-    }
-    #[cfg(feature = "postgres")]
-    {
-        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_device_channel")
-            .fetch_one(pool)
-            .await
-    }
-    #[cfg(feature = "sqlite")]
-    {
-        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_device_channel")
-            .fetch_one(pool)
-            .await
-    }
+    let sql =
+        crate::db::dialect::current_sql("SELECT COUNT(*) FROM gb_device_channel").into_owned();
+    return crate::dispatch!(pool, |p| {
+        sqlx::query_scalar::<_, i64>(&sql).fetch_one(p)
+    });
 }
 
 /// Count channels for online devices only
 pub async fn count_online_channels(pool: &Pool) -> sqlx::Result<i64> {
-    #[cfg(feature = "mysql")]
-    {
-        sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*) FROM gb_device_channel dc INNER JOIN gb_device d ON dc.device_id = d.device_id WHERE d.on_line = ?",
-        )
-        .bind(true)
-        .fetch_one(pool)
-        .await
-    }
-    #[cfg(feature = "postgres")]
-    {
-        sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*) FROM gb_device_channel dc INNER JOIN gb_device d ON dc.device_id = d.device_id WHERE d.on_line = $1",
-        )
-        .bind(true)
-        .fetch_one(pool)
-        .await
-    }
-    #[cfg(feature = "sqlite")]
-    {
-        sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*) FROM gb_device_channel dc INNER JOIN gb_device d ON dc.device_id = d.device_id WHERE d.on_line = ?",
-        )
-        .bind(true)
-        .fetch_one(pool)
-        .await
-    }
+    let sql = crate::db::dialect::current_sql("SELECT COUNT(*) FROM gb_device_channel dc INNER JOIN gb_device d ON dc.device_id = d.device_id WHERE d.on_line = ?").into_owned();
+    return crate::dispatch!(pool, |p| {
+        sqlx::query_scalar::<_, i64>(&sql).bind(true).fetch_one(p)
+    });
 }
 
 pub async fn list_devices_paged(
@@ -433,83 +302,108 @@ pub async fn list_devices_paged(
     let has_query = !q.is_empty();
     let like = format!("%{q}%");
 
-    #[cfg(feature = "mysql")]
-    let rows = if has_query && status.is_some() {
-        sqlx::query_as::<_, Device>(
-            "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, heart_beat_interval, heart_beat_count, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval, host_address, (SELECT COUNT(*) FROM gb_device_channel WHERE device_id = gb_device.device_id) AS channel_count, server_id FROM gb_device WHERE (device_id LIKE ? OR name LIKE ?) AND on_line = ? ORDER BY id LIMIT ? OFFSET ?",
-        )
-        .bind(&like).bind(&like).bind(status.unwrap()).bind(limit).bind(offset)
-        .fetch_all(pool).await?
-    } else if has_query {
-        sqlx::query_as::<_, Device>(
-            "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, heart_beat_interval, heart_beat_count, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval, host_address, (SELECT COUNT(*) FROM gb_device_channel WHERE device_id = gb_device.device_id) AS channel_count, server_id FROM gb_device WHERE (device_id LIKE ? OR name LIKE ?) ORDER BY id LIMIT ? OFFSET ?",
-        )
-        .bind(&like).bind(&like).bind(limit).bind(offset)
-        .fetch_all(pool).await?
-    } else if status.is_some() {
-        sqlx::query_as::<_, Device>(
-            "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, heart_beat_interval, heart_beat_count, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval, host_address, (SELECT COUNT(*) FROM gb_device_channel WHERE device_id = gb_device.device_id) AS channel_count, server_id FROM gb_device WHERE on_line = ? ORDER BY id LIMIT ? OFFSET ?",
-        )
-        .bind(status.unwrap()).bind(limit).bind(offset)
-        .fetch_all(pool).await?
+    let rows = if crate::db::dialect::current().is_mysql() {
+        if has_query && status.is_some() {
+            crate::dispatch!(pool, |p| {
+                sqlx::query_as::<_, Device>(
+                    &crate::dyn_where::dialect_sql("SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, heart_beat_interval, heart_beat_count, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval, host_address, (SELECT COUNT(*) FROM gb_device_channel WHERE device_id = gb_device.device_id) AS channel_count, server_id FROM gb_device WHERE (device_id LIKE ? OR name LIKE ?) AND on_line = ? ORDER BY id LIMIT ? OFFSET ?"),
+                )
+                .bind(&like).bind(&like).bind(status.unwrap()).bind(limit).bind(offset)
+                .fetch_all(p)
+            })?
+        } else if has_query {
+            crate::dispatch!(pool, |p| {
+                sqlx::query_as::<_, Device>(
+                    &crate::dyn_where::dialect_sql("SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, heart_beat_interval, heart_beat_count, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval, host_address, (SELECT COUNT(*) FROM gb_device_channel WHERE device_id = gb_device.device_id) AS channel_count, server_id FROM gb_device WHERE (device_id LIKE ? OR name LIKE ?) ORDER BY id LIMIT ? OFFSET ?"),
+                )
+                .bind(&like).bind(&like).bind(limit).bind(offset)
+                .fetch_all(p)
+            })?
+        } else if status.is_some() {
+            crate::dispatch!(pool, |p| {
+                sqlx::query_as::<_, Device>(
+                    &crate::dyn_where::dialect_sql("SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, heart_beat_interval, heart_beat_count, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval, host_address, (SELECT COUNT(*) FROM gb_device_channel WHERE device_id = gb_device.device_id) AS channel_count, server_id FROM gb_device WHERE on_line = ? ORDER BY id LIMIT ? OFFSET ?"),
+                )
+                .bind(status.unwrap()).bind(limit).bind(offset)
+                .fetch_all(p)
+            })?
+        } else {
+            crate::dispatch!(pool, |p| {
+                sqlx::query_as::<_, Device>(
+                    &crate::dyn_where::dialect_sql("SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, heart_beat_interval, heart_beat_count, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval, host_address, (SELECT COUNT(*) FROM gb_device_channel WHERE device_id = gb_device.device_id) AS channel_count, server_id FROM gb_device ORDER BY id LIMIT ? OFFSET ?"),
+                )
+                .bind(limit).bind(offset)
+                .fetch_all(p)
+            })?
+        }
+    } else if crate::db::dialect::current().is_postgres() {
+        if has_query && status.is_some() {
+            crate::dispatch!(pool, |p| {
+                sqlx::query_as::<_, Device>(
+                    "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, heart_beat_interval, heart_beat_count, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval, host_address, CAST((SELECT COUNT(*) FROM gb_device_channel WHERE device_id = gb_device.device_id) AS INTEGER) AS channel_count, server_id FROM gb_device WHERE (device_id LIKE $1 OR name LIKE $2) AND on_line = $3 ORDER BY id LIMIT $4 OFFSET $5",
+                )
+                .bind(&like).bind(&like).bind(status.unwrap()).bind(limit).bind(offset)
+                .fetch_all(p)
+            })?
+        } else if has_query {
+            crate::dispatch!(pool, |p| {
+                sqlx::query_as::<_, Device>(
+                    "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, heart_beat_interval, heart_beat_count, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval, host_address, CAST((SELECT COUNT(*) FROM gb_device_channel WHERE device_id = gb_device.device_id) AS INTEGER) AS channel_count, server_id FROM gb_device WHERE (device_id LIKE $1 OR name LIKE $2) ORDER BY id LIMIT $3 OFFSET $4",
+                )
+                .bind(&like).bind(&like).bind(limit).bind(offset)
+                .fetch_all(p)
+            })?
+        } else if status.is_some() {
+            crate::dispatch!(pool, |p| {
+                sqlx::query_as::<_, Device>(
+                    "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, heart_beat_interval, heart_beat_count, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval, host_address, CAST((SELECT COUNT(*) FROM gb_device_channel WHERE device_id = gb_device.device_id) AS INTEGER) AS channel_count, server_id FROM gb_device WHERE on_line = $1 ORDER BY id LIMIT $2 OFFSET $3",
+                )
+                .bind(status.unwrap()).bind(limit).bind(offset)
+                .fetch_all(p)
+            })?
+        } else {
+            crate::dispatch!(pool, |p| {
+                sqlx::query_as::<_, Device>(
+                    "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, heart_beat_interval, heart_beat_count, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval, host_address, CAST((SELECT COUNT(*) FROM gb_device_channel WHERE device_id = gb_device.device_id) AS INTEGER) AS channel_count, server_id FROM gb_device ORDER BY id LIMIT $1 OFFSET $2",
+                )
+                .bind(limit).bind(offset)
+                .fetch_all(p)
+            })?
+        }
     } else {
-        sqlx::query_as::<_, Device>(
-            "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, heart_beat_interval, heart_beat_count, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval, host_address, (SELECT COUNT(*) FROM gb_device_channel WHERE device_id = gb_device.device_id) AS channel_count, server_id FROM gb_device ORDER BY id LIMIT ? OFFSET ?",
-        )
-        .bind(limit).bind(offset)
-        .fetch_all(pool).await?
-    };
-    #[cfg(feature = "postgres")]
-    let rows = if has_query && status.is_some() {
-        sqlx::query_as::<_, Device>(
-            "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, heart_beat_interval, heart_beat_count, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval, host_address, CAST((SELECT COUNT(*) FROM gb_device_channel WHERE device_id = gb_device.device_id) AS INTEGER) AS channel_count, server_id FROM gb_device WHERE (device_id LIKE $1 OR name LIKE $2) AND on_line = $3 ORDER BY id LIMIT $4 OFFSET $5",
-        )
-        .bind(&like).bind(&like).bind(status.unwrap()).bind(limit).bind(offset)
-        .fetch_all(pool).await?
-    } else if has_query {
-        sqlx::query_as::<_, Device>(
-            "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, heart_beat_interval, heart_beat_count, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval, host_address, CAST((SELECT COUNT(*) FROM gb_device_channel WHERE device_id = gb_device.device_id) AS INTEGER) AS channel_count, server_id FROM gb_device WHERE (device_id LIKE $1 OR name LIKE $2) ORDER BY id LIMIT $3 OFFSET $4",
-        )
-        .bind(&like).bind(&like).bind(limit).bind(offset)
-        .fetch_all(pool).await?
-    } else if status.is_some() {
-        sqlx::query_as::<_, Device>(
-            "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, heart_beat_interval, heart_beat_count, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval, host_address, CAST((SELECT COUNT(*) FROM gb_device_channel WHERE device_id = gb_device.device_id) AS INTEGER) AS channel_count, server_id FROM gb_device WHERE on_line = $1 ORDER BY id LIMIT $2 OFFSET $3",
-        )
-        .bind(status.unwrap()).bind(limit).bind(offset)
-        .fetch_all(pool).await?
-    } else {
-        sqlx::query_as::<_, Device>(
-            "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, heart_beat_interval, heart_beat_count, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval, host_address, CAST((SELECT COUNT(*) FROM gb_device_channel WHERE device_id = gb_device.device_id) AS INTEGER) AS channel_count, server_id FROM gb_device ORDER BY id LIMIT $1 OFFSET $2",
-        )
-        .bind(limit).bind(offset)
-        .fetch_all(pool).await?
-    };
-    #[cfg(feature = "sqlite")]
-    let rows = if has_query && status.is_some() {
-        sqlx::query_as::<_, Device>(
-            "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, heart_beat_interval, heart_beat_count, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval, host_address, (SELECT COUNT(*) FROM gb_device_channel WHERE device_id = gb_device.device_id) AS channel_count, server_id FROM gb_device WHERE (device_id LIKE ? OR name LIKE ?) AND on_line = ? ORDER BY id LIMIT ? OFFSET ?",
-        )
-        .bind(&like).bind(&like).bind(status.unwrap()).bind(limit).bind(offset)
-        .fetch_all(pool).await?
-    } else if has_query {
-        sqlx::query_as::<_, Device>(
-            "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, heart_beat_interval, heart_beat_count, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval, host_address, (SELECT COUNT(*) FROM gb_device_channel WHERE device_id = gb_device.device_id) AS channel_count, server_id FROM gb_device WHERE (device_id LIKE ? OR name LIKE ?) ORDER BY id LIMIT ? OFFSET ?",
-        )
-        .bind(&like).bind(&like).bind(limit).bind(offset)
-        .fetch_all(pool).await?
-    } else if status.is_some() {
-        sqlx::query_as::<_, Device>(
-            "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, heart_beat_interval, heart_beat_count, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval, host_address, (SELECT COUNT(*) FROM gb_device_channel WHERE device_id = gb_device.device_id) AS channel_count, server_id FROM gb_device WHERE on_line = ? ORDER BY id LIMIT ? OFFSET ?",
-        )
-        .bind(status.unwrap()).bind(limit).bind(offset)
-        .fetch_all(pool).await?
-    } else {
-        sqlx::query_as::<_, Device>(
-            "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, heart_beat_interval, heart_beat_count, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval, host_address, (SELECT COUNT(*) FROM gb_device_channel WHERE device_id = gb_device.device_id) AS channel_count, server_id FROM gb_device ORDER BY id LIMIT ? OFFSET ?",
-        )
-        .bind(limit).bind(offset)
-        .fetch_all(pool).await?
+        if has_query && status.is_some() {
+            crate::dispatch!(pool, |p| {
+                sqlx::query_as::<_, Device>(
+                    &crate::dyn_where::dialect_sql("SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, heart_beat_interval, heart_beat_count, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval, host_address, (SELECT COUNT(*) FROM gb_device_channel WHERE device_id = gb_device.device_id) AS channel_count, server_id FROM gb_device WHERE (device_id LIKE ? OR name LIKE ?) AND on_line = ? ORDER BY id LIMIT ? OFFSET ?"),
+                )
+                .bind(&like).bind(&like).bind(status.unwrap()).bind(limit).bind(offset)
+                .fetch_all(p)
+            })?
+        } else if has_query {
+            crate::dispatch!(pool, |p| {
+                sqlx::query_as::<_, Device>(
+                    &crate::dyn_where::dialect_sql("SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, heart_beat_interval, heart_beat_count, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval, host_address, (SELECT COUNT(*) FROM gb_device_channel WHERE device_id = gb_device.device_id) AS channel_count, server_id FROM gb_device WHERE (device_id LIKE ? OR name LIKE ?) ORDER BY id LIMIT ? OFFSET ?"),
+                )
+                .bind(&like).bind(&like).bind(limit).bind(offset)
+                .fetch_all(p)
+            })?
+        } else if status.is_some() {
+            crate::dispatch!(pool, |p| {
+                sqlx::query_as::<_, Device>(
+                    &crate::dyn_where::dialect_sql("SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, heart_beat_interval, heart_beat_count, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval, host_address, (SELECT COUNT(*) FROM gb_device_channel WHERE device_id = gb_device.device_id) AS channel_count, server_id FROM gb_device WHERE on_line = ? ORDER BY id LIMIT ? OFFSET ?"),
+                )
+                .bind(status.unwrap()).bind(limit).bind(offset)
+                .fetch_all(p)
+            })?
+        } else {
+            crate::dispatch!(pool, |p| {
+                sqlx::query_as::<_, Device>(
+                    &crate::dyn_where::dialect_sql("SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, heart_beat_interval, heart_beat_count, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval, host_address, (SELECT COUNT(*) FROM gb_device_channel WHERE device_id = gb_device.device_id) AS channel_count, server_id FROM gb_device ORDER BY id LIMIT ? OFFSET ?"),
+                )
+                .bind(limit).bind(offset)
+                .fetch_all(p)
+            })?
+        }
     };
     Ok(rows)
 }
@@ -522,87 +416,39 @@ pub async fn count_devices(
     let q = query.unwrap_or("").trim();
     let like = format!("%{q}%");
     let has_query = !q.is_empty();
-    #[cfg(feature = "mysql")]
-    {
+    let sql = crate::db::dialect::current_sql(
+        "SELECT COUNT(*) FROM gb_device WHERE (device_id LIKE ? OR name LIKE ?) AND on_line = ?",
+    )
+    .into_owned();
+    // 带 `?` 的 SQL 必须先在**宏外面**算好：`dialect_sql(...)` 返回的临时
+    // `Cow` 在宏体块尾就会被析构，而查询 future 还借着它。
+    let sql_like = crate::dyn_where::dialect_sql(
+        "SELECT COUNT(*) FROM gb_device WHERE (device_id LIKE ? OR name LIKE ?)",
+    );
+    let sql_online =
+        crate::dyn_where::dialect_sql("SELECT COUNT(*) FROM gb_device WHERE on_line = ?");
+    // 宏体**不能**带 `.await`（`dispatch!` 自己 await），也不能用 `return`
+    // （那会让分支块的值变成 `!`）—— 改成一条 if/else 链，尾部是表达式。
+    crate::dispatch!(pool, |p| {
         if has_query && status.is_some() {
-            return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_device WHERE (device_id LIKE ? OR name LIKE ?) AND on_line = ?")
-                .bind(&like).bind(&like).bind(status.unwrap()).fetch_one(pool).await;
+            sqlx::query_scalar::<_, i64>(&sql)
+                .bind(&like)
+                .bind(&like)
+                .bind(status.unwrap())
+                .fetch_one(p)
+        } else if has_query {
+            sqlx::query_scalar::<_, i64>(&sql_like)
+                .bind(&like)
+                .bind(&like)
+                .fetch_one(p)
+        } else if status.is_some() {
+            sqlx::query_scalar::<_, i64>(&sql_online)
+                .bind(status.unwrap())
+                .fetch_one(p)
+        } else {
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_device").fetch_one(p)
         }
-        if has_query {
-            return sqlx::query_scalar::<_, i64>(
-                "SELECT COUNT(*) FROM gb_device WHERE (device_id LIKE ? OR name LIKE ?)",
-            )
-            .bind(&like)
-            .bind(&like)
-            .fetch_one(pool)
-            .await;
-        }
-        if status.is_some() {
-            return sqlx::query_scalar::<_, i64>(
-                "SELECT COUNT(*) FROM gb_device WHERE on_line = ?",
-            )
-            .bind(status.unwrap())
-            .fetch_one(pool)
-            .await;
-        }
-        return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_device")
-            .fetch_one(pool)
-            .await;
-    }
-    #[cfg(feature = "postgres")]
-    {
-        if has_query && status.is_some() {
-            return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_device WHERE (device_id LIKE $1 OR name LIKE $2) AND on_line = $3")
-                .bind(&like).bind(&like).bind(status.unwrap()).fetch_one(pool).await;
-        }
-        if has_query {
-            return sqlx::query_scalar::<_, i64>(
-                "SELECT COUNT(*) FROM gb_device WHERE (device_id LIKE $1 OR name LIKE $2)",
-            )
-            .bind(&like)
-            .bind(&like)
-            .fetch_one(pool)
-            .await;
-        }
-        if status.is_some() {
-            return sqlx::query_scalar::<_, i64>(
-                "SELECT COUNT(*) FROM gb_device WHERE on_line = $1",
-            )
-            .bind(status.unwrap())
-            .fetch_one(pool)
-            .await;
-        }
-        return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_device")
-            .fetch_one(pool)
-            .await;
-    }
-    #[cfg(feature = "sqlite")]
-    {
-        if has_query && status.is_some() {
-            return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_device WHERE (device_id LIKE ? OR name LIKE ?) AND on_line = ?")
-                .bind(&like).bind(&like).bind(status.unwrap()).fetch_one(pool).await;
-        }
-        if has_query {
-            return sqlx::query_scalar::<_, i64>(
-                "SELECT COUNT(*) FROM gb_device WHERE (device_id LIKE ? OR name LIKE ?)",
-            )
-            .bind(&like)
-            .bind(&like)
-            .fetch_one(pool)
-            .await;
-        }
-        if status.is_some() {
-            return sqlx::query_scalar::<_, i64>(
-                "SELECT COUNT(*) FROM gb_device WHERE on_line = ?",
-            )
-            .bind(status.unwrap())
-            .fetch_one(pool)
-            .await;
-        }
-        return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_device")
-            .fetch_one(pool)
-            .await;
-    }
+    })
 }
 
 pub async fn get_device_by_device_id(pool: &Pool, device_id: &str) -> sqlx::Result<Option<Device>> {
@@ -616,35 +462,28 @@ pub async fn get_device_by_device_id(pool: &Pool, device_id: &str) -> sqlx::Resu
     // SELECT 会触发 "no such column: channel_count",handler 把 Err 当
     // None 返回 null,前端 /api/device/query/devices/:id 拿不到 onLine,
     // 国标通道列表的"播放"按钮被 :disabled="!device" 锁死。
-    #[cfg(feature = "postgres")]
-    let count_expr = "(SELECT COUNT(*)::INTEGER FROM gb_device_channel WHERE device_id = gb_device.device_id) AS channel_count";
-    #[cfg(not(feature = "postgres"))]
-    let count_expr = "(SELECT COUNT(*) FROM gb_device_channel WHERE device_id = gb_device.device_id) AS channel_count";
+    let count_expr = if crate::db::dialect::current().is_postgres() {
+        // PostgreSQL 需要显式 cast（COUNT(*) 是 bigint，Rust 侧按 i32 解）
+        "(SELECT COUNT(*)::INTEGER FROM gb_device_channel WHERE device_id = gb_device.device_id) AS channel_count"
+    } else {
+        "(SELECT COUNT(*) FROM gb_device_channel WHERE device_id = gb_device.device_id) AS channel_count"
+    };
     let cols = DEVICE_SELECT_COLUMNS.replace("channel_count", count_expr);
-    #[cfg(feature = "mysql")]
-    return sqlx::query_as::<_, Device>(&format!(
-        "SELECT {} FROM gb_device WHERE device_id = ?",
-        cols
-    ))
-    .bind(device_id)
-    .fetch_optional(pool)
-    .await;
-    #[cfg(feature = "postgres")]
-    return sqlx::query_as::<_, Device>(&format!(
-        "SELECT {} FROM gb_device WHERE device_id = $1",
-        cols
-    ))
-    .bind(device_id)
-    .fetch_optional(pool)
-    .await;
-    #[cfg(feature = "sqlite")]
-    return sqlx::query_as::<_, Device>(&format!(
-        "SELECT {} FROM gb_device WHERE device_id = ?",
-        cols
-    ))
-    .bind(device_id)
-    .fetch_optional(pool)
-    .await;
+    // SQL 文本只写一份 `?`，由 **pool 自己的方言** 在运行期改写成 `$1..$n`
+    // （postgres 不认 `?`）。方言必须看 pool，不能看进程级全局
+    // `dialect::current()` —— 后者在直接构造 `Pool::Postgres(..)` 的测试里
+    // 仍是默认值（sqlite），会让 postgres 收到 `?` → `syntax error`。
+    // `{}` 是运行期拼进去的列名，`?` 是占位符 —— 占位符形态由 **pool 自己的
+    // 方言** 决定（postgres 只认 `$1`），所以先把模板交给 `pool.sql(..)` 改写，
+    // 再把列名填进去（顺序不能反）。
+    let sql = pool
+        .sql("SELECT {} FROM gb_device WHERE device_id = ?")
+        .replace("{}", &cols);
+    return crate::dispatch!(pool, |p| {
+        sqlx::query_as::<_, Device>(&sql)
+            .bind(device_id)
+            .fetch_optional(p)
+    });
 }
 
 pub async fn list_channels_paged(
@@ -654,36 +493,16 @@ pub async fn list_channels_paged(
     count: u32,
 ) -> sqlx::Result<Vec<DeviceChannel>> {
     let offset = crate::pagination::offset(page, count);
-    #[cfg(feature = "mysql")]
-    return sqlx::query_as::<_, DeviceChannel>(&format!(
-        "SELECT {} FROM gb_device_channel WHERE device_id = ? ORDER BY id LIMIT ? OFFSET ?",
-        DEVICE_CHANNEL_SELECT_COLUMNS,
-    ))
-    .bind(device_id)
-    .bind(count as i64)
-    .bind(offset)
-    .fetch_all(pool)
-    .await;
-    #[cfg(feature = "postgres")]
-    return sqlx::query_as::<_, DeviceChannel>(&format!(
-        "SELECT {} FROM gb_device_channel WHERE device_id = $1 ORDER BY id LIMIT $2 OFFSET $3",
-        DEVICE_CHANNEL_SELECT_COLUMNS,
-    ))
-    .bind(device_id)
-    .bind(count as i64)
-    .bind(offset)
-    .fetch_all(pool)
-    .await;
-    #[cfg(feature = "sqlite")]
-    return sqlx::query_as::<_, DeviceChannel>(&format!(
-        "SELECT {} FROM gb_device_channel WHERE device_id = ? ORDER BY id LIMIT ? OFFSET ?",
-        DEVICE_CHANNEL_SELECT_COLUMNS,
-    ))
-    .bind(device_id)
-    .bind(count as i64)
-    .bind(offset)
-    .fetch_all(pool)
-    .await;
+    let sql = pool
+        .sql("SELECT {} FROM gb_device_channel WHERE device_id = ? ORDER BY id LIMIT ? OFFSET ?")
+        .replace("{}", DEVICE_CHANNEL_SELECT_COLUMNS);
+    return crate::dispatch!(pool, |p| {
+        sqlx::query_as::<_, DeviceChannel>(&sql)
+            .bind(device_id)
+            .bind(count as i64)
+            .bind(offset)
+            .fetch_all(p)
+    });
 }
 
 /// 某设备下的通道（可带关键字/在线/类型过滤）。
@@ -728,7 +547,7 @@ pub async fn list_channels_filtered(
         "SELECT {} FROM gb_device_channel",
         DEVICE_CHANNEL_SELECT_COLUMNS
     );
-    let limit_ph = if cfg!(feature = "postgres") {
+    let limit_ph = if crate::db::dialect::current().is_postgres() {
         format!(
             " LIMIT ${} OFFSET ${}",
             w.binds.len() + 1,
@@ -738,53 +557,45 @@ pub async fn list_channels_filtered(
         " LIMIT ? OFFSET ?".to_string()
     };
     let sql_rows = format!("{}{} ORDER BY id{limit_ph}", w.sql(&base), "");
-    let mut q = sqlx::query_as::<_, DeviceChannel>(&sql_rows);
-    for b in &w.binds {
-        q = match b {
-            BindValue::Text(v) => q.bind(v.as_str()),
-            BindValue::Int(v) => q.bind(*v),
-            BindValue::Big(v) => q.bind(*v),
-            BindValue::Bool(v) => q.bind(*v),
-        };
-    }
-    let rows = q.bind(count as i64).bind(offset).fetch_all(pool).await?;
+    let rows = crate::dispatch!(pool, |p| {
+        let mut q = sqlx::query_as::<_, DeviceChannel>(&sql_rows);
+        for b in &w.binds {
+            q = match b {
+                BindValue::Text(v) => q.bind(v.as_str()),
+                BindValue::Int(v) => q.bind(*v),
+                BindValue::Big(v) => q.bind(*v),
+                BindValue::Bool(v) => q.bind(*v),
+            };
+        }
+        q.bind(count as i64).bind(offset).fetch_all(p)
+    })?;
 
     let count_sql = w.sql("SELECT COUNT(*) FROM gb_device_channel");
-    let mut cq = sqlx::query_scalar::<_, i64>(&count_sql);
-    for b in &w.binds {
-        cq = match b {
-            BindValue::Text(v) => cq.bind(v.as_str()),
-            BindValue::Int(v) => cq.bind(*v),
-            BindValue::Big(v) => cq.bind(*v),
-            BindValue::Bool(v) => cq.bind(*v),
-        };
-    }
-    let total = cq.fetch_one(pool).await?;
+    let total = crate::dispatch!(pool, |p| {
+        let mut cq = sqlx::query_scalar::<_, i64>(&count_sql);
+        for b in &w.binds {
+            cq = match b {
+                BindValue::Text(v) => cq.bind(v.as_str()),
+                BindValue::Int(v) => cq.bind(*v),
+                BindValue::Big(v) => cq.bind(*v),
+                BindValue::Bool(v) => cq.bind(*v),
+            };
+        }
+        cq.fetch_one(p)
+    })?;
     Ok((rows, total))
 }
 
 pub async fn count_channels(pool: &Pool, device_id: &str) -> sqlx::Result<i64> {
-    #[cfg(feature = "mysql")]
-    return sqlx::query_scalar::<_, i64>(
+    let sql = crate::db::dialect::current_sql(
         "SELECT COUNT(*) FROM gb_device_channel WHERE device_id = ?",
     )
-    .bind(device_id)
-    .fetch_one(pool)
-    .await;
-    #[cfg(feature = "postgres")]
-    return sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM gb_device_channel WHERE device_id = $1",
-    )
-    .bind(device_id)
-    .fetch_one(pool)
-    .await;
-    #[cfg(feature = "sqlite")]
-    return sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM gb_device_channel WHERE device_id = ?",
-    )
-    .bind(device_id)
-    .fetch_one(pool)
-    .await;
+    .into_owned();
+    return crate::dispatch!(pool, |p| {
+        sqlx::query_scalar::<_, i64>(&sql)
+            .bind(device_id)
+            .fetch_one(p)
+    });
 }
 
 pub async fn get_channel_by_device_and_channel_id(
@@ -793,27 +604,16 @@ pub async fn get_channel_by_device_and_channel_id(
     channel_id: &str,
 ) -> sqlx::Result<Option<DeviceChannel>> {
     let id_val = channel_id.parse::<i64>().unwrap_or(0);
-    #[cfg(feature = "mysql")]
-    return sqlx::query_as::<_, DeviceChannel>(&format!(
-        "SELECT {} FROM gb_device_channel WHERE device_id = ? AND (gb_device_id = ? OR id = ?) LIMIT 1",
-        DEVICE_CHANNEL_SELECT_COLUMNS,
-    ))
-    .bind(device_id).bind(channel_id).bind(id_val)
-    .fetch_optional(pool).await;
-    #[cfg(feature = "postgres")]
-    return sqlx::query_as::<_, DeviceChannel>(&format!(
-        "SELECT {} FROM gb_device_channel WHERE device_id = $1 AND (gb_device_id = $2 OR id = $3) LIMIT 1",
-        DEVICE_CHANNEL_SELECT_COLUMNS,
-    ))
-    .bind(device_id).bind(channel_id).bind(id_val)
-    .fetch_optional(pool).await;
-    #[cfg(feature = "sqlite")]
-    return sqlx::query_as::<_, DeviceChannel>(&format!(
-        "SELECT {} FROM gb_device_channel WHERE device_id = ? AND (gb_device_id = ? OR id = ?) LIMIT 1",
-        DEVICE_CHANNEL_SELECT_COLUMNS,
-    ))
-    .bind(device_id).bind(channel_id).bind(id_val)
-    .fetch_optional(pool).await;
+    let sql = pool
+        .sql("SELECT {} FROM gb_device_channel WHERE device_id = ? AND (gb_device_id = ? OR id = ?) LIMIT 1")
+        .replace("{}", DEVICE_CHANNEL_SELECT_COLUMNS);
+    return crate::dispatch!(pool, |p| {
+        sqlx::query_as::<_, DeviceChannel>(&sql)
+            .bind(device_id)
+            .bind(channel_id)
+            .bind(id_val)
+            .fetch_optional(p)
+    });
 }
 
 /// 按**主键 id** 取通道行（`/api/device/query/channel/raw?id=` 的数据源）。
@@ -821,30 +621,14 @@ pub async fn get_channel_by_device_and_channel_id(
 /// 通道编辑弹窗先按主键拉原始行做回显；此前本平台没有按主键取通道的
 /// 查询，该端点在路由里根本不存在。
 pub async fn get_channel_by_id(pool: &Pool, id: i64) -> sqlx::Result<Option<DeviceChannel>> {
-    #[cfg(feature = "mysql")]
-    return sqlx::query_as::<_, DeviceChannel>(&format!(
-        "SELECT {} FROM gb_device_channel WHERE id = ?",
-        DEVICE_CHANNEL_SELECT_COLUMNS,
-    ))
-    .bind(id)
-    .fetch_optional(pool)
-    .await;
-    #[cfg(feature = "postgres")]
-    return sqlx::query_as::<_, DeviceChannel>(&format!(
-        "SELECT {} FROM gb_device_channel WHERE id = $1",
-        DEVICE_CHANNEL_SELECT_COLUMNS,
-    ))
-    .bind(id)
-    .fetch_optional(pool)
-    .await;
-    #[cfg(feature = "sqlite")]
-    return sqlx::query_as::<_, DeviceChannel>(&format!(
-        "SELECT {} FROM gb_device_channel WHERE id = ?",
-        DEVICE_CHANNEL_SELECT_COLUMNS,
-    ))
-    .bind(id)
-    .fetch_optional(pool)
-    .await;
+    let sql = pool
+        .sql("SELECT {} FROM gb_device_channel WHERE id = ?")
+        .replace("{}", DEVICE_CHANNEL_SELECT_COLUMNS);
+    return crate::dispatch!(pool, |p| {
+        sqlx::query_as::<_, DeviceChannel>(&sql)
+            .bind(id)
+            .fetch_optional(p)
+    });
 }
 
 /// 按**通道国标 ID** 反查通道（不限设备）。
@@ -857,33 +641,15 @@ pub async fn get_channel_by_channel_id(
     channel_id: &str,
 ) -> sqlx::Result<Option<DeviceChannel>> {
     let id_val = channel_id.parse::<i64>().unwrap_or(0);
-    #[cfg(feature = "mysql")]
-    return sqlx::query_as::<_, DeviceChannel>(&format!(
-        "SELECT {} FROM gb_device_channel WHERE gb_device_id = ? OR id = ? LIMIT 1",
-        DEVICE_CHANNEL_SELECT_COLUMNS,
-    ))
-    .bind(channel_id)
-    .bind(id_val)
-    .fetch_optional(pool)
-    .await;
-    #[cfg(feature = "postgres")]
-    return sqlx::query_as::<_, DeviceChannel>(&format!(
-        "SELECT {} FROM gb_device_channel WHERE gb_device_id = $1 OR id = $2 LIMIT 1",
-        DEVICE_CHANNEL_SELECT_COLUMNS,
-    ))
-    .bind(channel_id)
-    .bind(id_val)
-    .fetch_optional(pool)
-    .await;
-    #[cfg(feature = "sqlite")]
-    return sqlx::query_as::<_, DeviceChannel>(&format!(
-        "SELECT {} FROM gb_device_channel WHERE gb_device_id = ? OR id = ? LIMIT 1",
-        DEVICE_CHANNEL_SELECT_COLUMNS,
-    ))
-    .bind(channel_id)
-    .bind(id_val)
-    .fetch_optional(pool)
-    .await;
+    let sql = pool
+        .sql("SELECT {} FROM gb_device_channel WHERE gb_device_id = ? OR id = ? LIMIT 1")
+        .replace("{}", DEVICE_CHANNEL_SELECT_COLUMNS);
+    return crate::dispatch!(pool, |p| {
+        sqlx::query_as::<_, DeviceChannel>(&sql)
+            .bind(channel_id)
+            .bind(id_val)
+            .fetch_optional(p)
+    });
 }
 
 pub async fn list_channels_by_parent(
@@ -891,27 +657,16 @@ pub async fn list_channels_by_parent(
     device_id: &str,
     parent_channel_id: &str,
 ) -> sqlx::Result<Vec<DeviceChannel>> {
-    #[cfg(feature = "mysql")]
-    return sqlx::query_as::<_, DeviceChannel>(&format!(
-        "SELECT {} FROM gb_device_channel WHERE device_id = ? AND (parent_id = ? OR gb_parent_id = ?) ORDER BY id",
-        DEVICE_CHANNEL_SELECT_COLUMNS,
-    ))
-    .bind(device_id).bind(parent_channel_id).bind(parent_channel_id)
-    .fetch_all(pool).await;
-    #[cfg(feature = "postgres")]
-    return sqlx::query_as::<_, DeviceChannel>(&format!(
-        "SELECT {} FROM gb_device_channel WHERE device_id = $1 AND (parent_id = $2 OR gb_parent_id = $3) ORDER BY id",
-        DEVICE_CHANNEL_SELECT_COLUMNS,
-    ))
-    .bind(device_id).bind(parent_channel_id).bind(parent_channel_id)
-    .fetch_all(pool).await;
-    #[cfg(feature = "sqlite")]
-    return sqlx::query_as::<_, DeviceChannel>(&format!(
-        "SELECT {} FROM gb_device_channel WHERE device_id = ? AND (parent_id = ? OR gb_parent_id = ?) ORDER BY id",
-        DEVICE_CHANNEL_SELECT_COLUMNS,
-    ))
-    .bind(device_id).bind(parent_channel_id).bind(parent_channel_id)
-    .fetch_all(pool).await;
+    let sql = pool
+        .sql("SELECT {} FROM gb_device_channel WHERE device_id = ? AND (parent_id = ? OR gb_parent_id = ?) ORDER BY id")
+        .replace("{}", DEVICE_CHANNEL_SELECT_COLUMNS);
+    return crate::dispatch!(pool, |p| {
+        sqlx::query_as::<_, DeviceChannel>(&sql)
+            .bind(device_id)
+            .bind(parent_channel_id)
+            .bind(parent_channel_id)
+            .fetch_all(p)
+    });
 }
 
 pub async fn list_channels_for_device(
@@ -921,30 +676,14 @@ pub async fn list_channels_for_device(
     // Phase 4.x: SELECT 必须覆盖 DeviceChannel 全部字段,否则 FromRow 报
     // "no column found for name: <field>" 500。
     let cols = "id, device_id, name, manufacturer, model, owner, civil_code, address, parental, parent_id, gb_device_id, status, longitude, latitude, ptz_type, create_time, update_time, sub_count, stream_id, has_audio, stream_identification, channel_type, map_level, gb_name, gb_manufacturer, gb_model, gb_civil_code, gb_address, gb_status, gb_longitude, gb_latitude, record_plan_id";
-    #[cfg(feature = "mysql")]
-    return sqlx::query_as::<_, DeviceChannel>(&format!(
-        "SELECT {} FROM gb_device_channel WHERE device_id = ? ORDER BY id",
-        cols
-    ))
-    .bind(device_id)
-    .fetch_all(pool)
-    .await;
-    #[cfg(feature = "postgres")]
-    return sqlx::query_as::<_, DeviceChannel>(&format!(
-        "SELECT {} FROM gb_device_channel WHERE device_id = $1 ORDER BY id",
-        cols
-    ))
-    .bind(device_id)
-    .fetch_all(pool)
-    .await;
-    #[cfg(feature = "sqlite")]
-    return sqlx::query_as::<_, DeviceChannel>(&format!(
-        "SELECT {} FROM gb_device_channel WHERE device_id = ? ORDER BY id",
-        cols
-    ))
-    .bind(device_id)
-    .fetch_all(pool)
-    .await;
+    let sql = pool
+        .sql("SELECT {} FROM gb_device_channel WHERE device_id = ? ORDER BY id")
+        .replace("{}", &cols);
+    return crate::dispatch!(pool, |p| {
+        sqlx::query_as::<_, DeviceChannel>(&sql)
+            .bind(device_id)
+            .fetch_all(p)
+    });
 }
 
 /// 通用通道列表：全量分页，支持 query(名称/通道号)、online(设备在线)、channel_type
@@ -962,229 +701,113 @@ pub async fn list_common_channels_paged(
     let like = format!("%{q}%");
     let has_query = !q.is_empty();
 
-    #[cfg(feature = "mysql")]
-    {
-        // Phase 4.x: 改用 SELECT *,避免遗漏 DeviceChannel 字段导致
-        // "no column found for name: <field>" 500;多读若干冗余字段可控。
-        let rows = if has_query && online.is_some() && channel_type.is_some() {
-            sqlx::query_as::<_, DeviceChannel>("SELECT c.* FROM gb_device_channel c INNER JOIN gb_device d ON c.device_id = d.device_id WHERE (c.name LIKE ? OR c.gb_device_id LIKE ?) AND d.on_line = ? AND c.channel_type = ? ORDER BY c.id LIMIT ? OFFSET ?")
-                .bind(&like).bind(&like).bind(online.unwrap()).bind(channel_type.unwrap()).bind(limit).bind(offset)
-                .fetch_all(pool).await?
-        } else if has_query && online.is_some() {
-            sqlx::query_as::<_, DeviceChannel>("SELECT c.* FROM gb_device_channel c INNER JOIN gb_device d ON c.device_id = d.device_id WHERE (c.name LIKE ? OR c.gb_device_id LIKE ?) AND d.on_line = ? ORDER BY c.id LIMIT ? OFFSET ?")
-                .bind(&like).bind(&like).bind(online.unwrap()).bind(limit).bind(offset)
-                .fetch_all(pool).await?
-        } else if has_query && channel_type.is_some() {
-            sqlx::query_as::<_, DeviceChannel>("SELECT c.* FROM gb_device_channel c WHERE (c.name LIKE ? OR c.gb_device_id LIKE ?) AND c.channel_type = ? ORDER BY c.id LIMIT ? OFFSET ?")
-                .bind(&like).bind(&like).bind(channel_type.unwrap()).bind(limit).bind(offset)
-                .fetch_all(pool).await?
-        } else if has_query {
-            sqlx::query_as::<_, DeviceChannel>("SELECT c.* FROM gb_device_channel c WHERE (c.name LIKE ? OR c.gb_device_id LIKE ?) ORDER BY c.id LIMIT ? OFFSET ?")
-                .bind(&like).bind(&like).bind(limit).bind(offset)
-                .fetch_all(pool).await?
-        } else if online.is_some() && channel_type.is_some() {
-            sqlx::query_as::<_, DeviceChannel>("SELECT c.* FROM gb_device_channel c INNER JOIN gb_device d ON c.device_id = d.device_id WHERE d.on_line = ? AND c.channel_type = ? ORDER BY c.id LIMIT ? OFFSET ?")
-                .bind(online.unwrap()).bind(channel_type.unwrap()).bind(limit).bind(offset)
-                .fetch_all(pool).await?
-        } else if online.is_some() {
-            sqlx::query_as::<_, DeviceChannel>("SELECT c.* FROM gb_device_channel c INNER JOIN gb_device d ON c.device_id = d.device_id WHERE d.on_line = ? ORDER BY c.id LIMIT ? OFFSET ?")
-                .bind(online.unwrap()).bind(limit).bind(offset)
-                .fetch_all(pool).await?
-        } else if channel_type.is_some() {
-            sqlx::query_as::<_, DeviceChannel>("SELECT c.* FROM gb_device_channel c WHERE c.channel_type = ? ORDER BY c.id LIMIT ? OFFSET ?")
-                .bind(channel_type.unwrap()).bind(limit).bind(offset)
-                .fetch_all(pool).await?
-        } else {
-            sqlx::query_as::<_, DeviceChannel>(
-                "SELECT * FROM gb_device_channel ORDER BY id LIMIT ? OFFSET ?",
-            )
-            .bind(limit)
-            .bind(offset)
-            .fetch_all(pool)
-            .await?
-        };
-        Ok(rows)
-    }
+    // Phase 4.x: 改用 SELECT *,避免遗漏 DeviceChannel 字段导致
+    // "no column found for name: <field>" 500;多读若干冗余字段可控。
+    //
+    // SQL 文本只写一份 `?`，由 **pool 自己的方言** 在运行期改写成 `$1..$n`
+    // （postgres 不认 `?`）。方言必须看 pool，不能看进程级全局
+    // `dialect::current()` —— 后者在直接构造 `Pool::Postgres(..)` 的测试里
+    // 仍是默认值（sqlite），会让 postgres 收到 `?` → `syntax error`。
+    let sql = if has_query && online.is_some() && channel_type.is_some() {
+        pool.sql("SELECT c.* FROM gb_device_channel c INNER JOIN gb_device d ON c.device_id = d.device_id WHERE (c.name LIKE ? OR c.gb_device_id LIKE ?) AND d.on_line = ? AND c.channel_type = ? ORDER BY c.id LIMIT ? OFFSET ?")
+            .into_owned()
+    } else if has_query && online.is_some() {
+        pool.sql("SELECT c.* FROM gb_device_channel c INNER JOIN gb_device d ON c.device_id = d.device_id WHERE (c.name LIKE ? OR c.gb_device_id LIKE ?) AND d.on_line = ? ORDER BY c.id LIMIT ? OFFSET ?")
+            .into_owned()
+    } else if has_query && channel_type.is_some() {
+        pool.sql("SELECT c.* FROM gb_device_channel c WHERE (c.name LIKE ? OR c.gb_device_id LIKE ?) AND c.channel_type = ? ORDER BY c.id LIMIT ? OFFSET ?")
+            .into_owned()
+    } else if has_query {
+        pool.sql("SELECT c.* FROM gb_device_channel c WHERE (c.name LIKE ? OR c.gb_device_id LIKE ?) ORDER BY c.id LIMIT ? OFFSET ?")
+            .into_owned()
+    } else if online.is_some() && channel_type.is_some() {
+        pool.sql("SELECT c.* FROM gb_device_channel c INNER JOIN gb_device d ON c.device_id = d.device_id WHERE d.on_line = ? AND c.channel_type = ? ORDER BY c.id LIMIT ? OFFSET ?")
+            .into_owned()
+    } else if online.is_some() {
+        pool.sql("SELECT c.* FROM gb_device_channel c INNER JOIN gb_device d ON c.device_id = d.device_id WHERE d.on_line = ? ORDER BY c.id LIMIT ? OFFSET ?")
+            .into_owned()
+    } else if channel_type.is_some() {
+        pool.sql("SELECT c.* FROM gb_device_channel c WHERE c.channel_type = ? ORDER BY c.id LIMIT ? OFFSET ?")
+            .into_owned()
+    } else {
+        pool.sql("SELECT * FROM gb_device_channel ORDER BY id LIMIT ? OFFSET ?")
+            .into_owned()
+    };
 
-    #[cfg(feature = "postgres")]
-    {
-        let (sql, _): (_, Vec<i64>) = if has_query && online.is_some() && channel_type.is_some() {
-            ("SELECT c.* FROM gb_device_channel c INNER JOIN gb_device d ON c.device_id = d.device_id WHERE (c.name LIKE $1 OR c.gb_device_id LIKE $2) AND d.on_line = $3 AND c.channel_type = $4 ORDER BY c.id LIMIT $5 OFFSET $6", vec![])
-        } else if has_query && online.is_some() {
-            ("SELECT c.* FROM gb_device_channel c INNER JOIN gb_device d ON c.device_id = d.device_id WHERE (c.name LIKE $1 OR c.gb_device_id LIKE $2) AND d.on_line = $3 ORDER BY c.id LIMIT $4 OFFSET $5", vec![])
-        } else if has_query && channel_type.is_some() {
-            ("SELECT c.* FROM gb_device_channel c WHERE (c.name LIKE $1 OR c.gb_device_id LIKE $2) AND c.channel_type = $3 ORDER BY c.id LIMIT $4 OFFSET $5", vec![])
-        } else if has_query {
-            ("SELECT c.* FROM gb_device_channel c WHERE (c.name LIKE $1 OR c.gb_device_id LIKE $2) ORDER BY c.id LIMIT $3 OFFSET $4", vec![])
-        } else if online.is_some() && channel_type.is_some() {
-            ("SELECT c.* FROM gb_device_channel c INNER JOIN gb_device d ON c.device_id = d.device_id WHERE d.on_line = $1 AND c.channel_type = $2 ORDER BY c.id LIMIT $3 OFFSET $4", vec![])
-        } else if online.is_some() {
-            ("SELECT c.* FROM gb_device_channel c INNER JOIN gb_device d ON c.device_id = d.device_id WHERE d.on_line = $1 ORDER BY c.id LIMIT $2 OFFSET $3", vec![])
-        } else if channel_type.is_some() {
-            ("SELECT c.* FROM gb_device_channel c WHERE c.channel_type = $1 ORDER BY c.id LIMIT $2 OFFSET $3", vec![])
-        } else {
-            (
-                "SELECT * FROM gb_device_channel ORDER BY id LIMIT $1 OFFSET $2",
-                vec![],
-            )
-        };
-        // Build query with bind - use raw to avoid dynamic param count
-        let rows = if has_query && online.is_some() && channel_type.is_some() {
-            sqlx::query_as::<_, DeviceChannel>(sql)
+    let rows = if has_query && online.is_some() && channel_type.is_some() {
+        crate::dispatch!(pool, |p| {
+            sqlx::query_as::<_, DeviceChannel>(&sql)
                 .bind(&like)
                 .bind(&like)
                 .bind(online.unwrap())
                 .bind(channel_type.unwrap())
                 .bind(limit)
                 .bind(offset)
-                .fetch_all(pool)
-                .await?
-        } else if has_query && online.is_some() {
-            sqlx::query_as::<_, DeviceChannel>(sql)
+                .fetch_all(p)
+        })?
+    } else if has_query && online.is_some() {
+        crate::dispatch!(pool, |p| {
+            sqlx::query_as::<_, DeviceChannel>(&sql)
                 .bind(&like)
                 .bind(&like)
                 .bind(online.unwrap())
                 .bind(limit)
                 .bind(offset)
-                .fetch_all(pool)
-                .await?
-        } else if has_query && channel_type.is_some() {
-            sqlx::query_as::<_, DeviceChannel>(sql)
+                .fetch_all(p)
+        })?
+    } else if has_query && channel_type.is_some() {
+        crate::dispatch!(pool, |p| {
+            sqlx::query_as::<_, DeviceChannel>(&sql)
                 .bind(&like)
                 .bind(&like)
                 .bind(channel_type.unwrap())
                 .bind(limit)
                 .bind(offset)
-                .fetch_all(pool)
-                .await?
-        } else if has_query {
-            sqlx::query_as::<_, DeviceChannel>(sql)
+                .fetch_all(p)
+        })?
+    } else if has_query {
+        crate::dispatch!(pool, |p| {
+            sqlx::query_as::<_, DeviceChannel>(&sql)
                 .bind(&like)
                 .bind(&like)
                 .bind(limit)
                 .bind(offset)
-                .fetch_all(pool)
-                .await?
-        } else if online.is_some() && channel_type.is_some() {
-            sqlx::query_as::<_, DeviceChannel>(sql)
+                .fetch_all(p)
+        })?
+    } else if online.is_some() && channel_type.is_some() {
+        crate::dispatch!(pool, |p| {
+            sqlx::query_as::<_, DeviceChannel>(&sql)
                 .bind(online.unwrap())
                 .bind(channel_type.unwrap())
                 .bind(limit)
                 .bind(offset)
-                .fetch_all(pool)
-                .await?
-        } else if online.is_some() {
-            sqlx::query_as::<_, DeviceChannel>(sql)
+                .fetch_all(p)
+        })?
+    } else if online.is_some() {
+        crate::dispatch!(pool, |p| {
+            sqlx::query_as::<_, DeviceChannel>(&sql)
                 .bind(online.unwrap())
                 .bind(limit)
                 .bind(offset)
-                .fetch_all(pool)
-                .await?
-        } else if channel_type.is_some() {
-            sqlx::query_as::<_, DeviceChannel>(sql)
+                .fetch_all(p)
+        })?
+    } else if channel_type.is_some() {
+        crate::dispatch!(pool, |p| {
+            sqlx::query_as::<_, DeviceChannel>(&sql)
                 .bind(channel_type.unwrap())
                 .bind(limit)
                 .bind(offset)
-                .fetch_all(pool)
-                .await?
-        } else {
-            sqlx::query_as::<_, DeviceChannel>(sql)
+                .fetch_all(p)
+        })?
+    } else {
+        crate::dispatch!(pool, |p| {
+            sqlx::query_as::<_, DeviceChannel>(&sql)
                 .bind(limit)
                 .bind(offset)
-                .fetch_all(pool)
-                .await?
-        };
-        Ok(rows)
-    }
-    #[cfg(feature = "sqlite")]
-    {
-        let (sql, _): (_, Vec<i64>) = if has_query && online.is_some() && channel_type.is_some() {
-            ("SELECT c.* FROM gb_device_channel c INNER JOIN gb_device d ON c.device_id = d.device_id WHERE (c.name LIKE ? OR c.gb_device_id LIKE ?) AND d.on_line = ? AND c.channel_type = ? ORDER BY c.id LIMIT ? OFFSET ?", vec![])
-        } else if has_query && online.is_some() {
-            ("SELECT c.* FROM gb_device_channel c INNER JOIN gb_device d ON c.device_id = d.device_id WHERE (c.name LIKE ? OR c.gb_device_id LIKE ?) AND d.on_line = ? ORDER BY c.id LIMIT ? OFFSET ?", vec![])
-        } else if has_query && channel_type.is_some() {
-            ("SELECT c.* FROM gb_device_channel c WHERE (c.name LIKE ? OR c.gb_device_id LIKE ?) AND c.channel_type = ? ORDER BY c.id LIMIT ? OFFSET ?", vec![])
-        } else if has_query {
-            ("SELECT c.* FROM gb_device_channel c WHERE (c.name LIKE ? OR c.gb_device_id LIKE ?) ORDER BY c.id LIMIT ? OFFSET ?", vec![])
-        } else if online.is_some() && channel_type.is_some() {
-            ("SELECT c.* FROM gb_device_channel c INNER JOIN gb_device d ON c.device_id = d.device_id WHERE d.on_line = ? AND c.channel_type = ? ORDER BY c.id LIMIT ? OFFSET ?", vec![])
-        } else if online.is_some() {
-            ("SELECT c.* FROM gb_device_channel c INNER JOIN gb_device d ON c.device_id = d.device_id WHERE d.on_line = ? ORDER BY c.id LIMIT ? OFFSET ?", vec![])
-        } else if channel_type.is_some() {
-            ("SELECT c.* FROM gb_device_channel c WHERE c.channel_type = ? ORDER BY c.id LIMIT ? OFFSET ?", vec![])
-        } else {
-            (
-                "SELECT * FROM gb_device_channel ORDER BY id LIMIT ? OFFSET ?",
-                vec![],
-            )
-        };
-        let rows = if has_query && online.is_some() && channel_type.is_some() {
-            sqlx::query_as::<_, DeviceChannel>(sql)
-                .bind(&like)
-                .bind(&like)
-                .bind(online.unwrap())
-                .bind(channel_type.unwrap())
-                .bind(limit)
-                .bind(offset)
-                .fetch_all(pool)
-                .await?
-        } else if has_query && online.is_some() {
-            sqlx::query_as::<_, DeviceChannel>(sql)
-                .bind(&like)
-                .bind(&like)
-                .bind(online.unwrap())
-                .bind(limit)
-                .bind(offset)
-                .fetch_all(pool)
-                .await?
-        } else if has_query && channel_type.is_some() {
-            sqlx::query_as::<_, DeviceChannel>(sql)
-                .bind(&like)
-                .bind(&like)
-                .bind(channel_type.unwrap())
-                .bind(limit)
-                .bind(offset)
-                .fetch_all(pool)
-                .await?
-        } else if has_query {
-            sqlx::query_as::<_, DeviceChannel>(sql)
-                .bind(&like)
-                .bind(&like)
-                .bind(limit)
-                .bind(offset)
-                .fetch_all(pool)
-                .await?
-        } else if online.is_some() && channel_type.is_some() {
-            sqlx::query_as::<_, DeviceChannel>(sql)
-                .bind(online.unwrap())
-                .bind(channel_type.unwrap())
-                .bind(limit)
-                .bind(offset)
-                .fetch_all(pool)
-                .await?
-        } else if online.is_some() {
-            sqlx::query_as::<_, DeviceChannel>(sql)
-                .bind(online.unwrap())
-                .bind(limit)
-                .bind(offset)
-                .fetch_all(pool)
-                .await?
-        } else if channel_type.is_some() {
-            sqlx::query_as::<_, DeviceChannel>(sql)
-                .bind(channel_type.unwrap())
-                .bind(limit)
-                .bind(offset)
-                .fetch_all(pool)
-                .await?
-        } else {
-            sqlx::query_as::<_, DeviceChannel>(sql)
-                .bind(limit)
-                .bind(offset)
-                .fetch_all(pool)
-                .await?
-        };
-        Ok(rows)
-    }
+                .fetch_all(p)
+        })?
+    };
+    Ok(rows)
 }
 
 pub async fn count_common_channels(
@@ -1197,223 +820,108 @@ pub async fn count_common_channels(
     let like = format!("%{q}%");
     let has_query = !q.is_empty();
 
-    #[cfg(feature = "mysql")]
-    {
-        let row = if has_query && online.is_some() && channel_type.is_some() {
-            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_device_channel c INNER JOIN gb_device d ON c.device_id = d.device_id WHERE (c.name LIKE ? OR c.gb_device_id LIKE ?) AND d.on_line = ? AND c.channel_type = ?")
-                .bind(&like).bind(&like).bind(online.unwrap()).bind(channel_type.unwrap())
-                .fetch_one(pool).await?
-        } else if has_query && online.is_some() {
-            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_device_channel c INNER JOIN gb_device d ON c.device_id = d.device_id WHERE (c.name LIKE ? OR c.gb_device_id LIKE ?) AND d.on_line = ?")
-                .bind(&like).bind(&like).bind(online.unwrap())
-                .fetch_one(pool).await?
-        } else if has_query && channel_type.is_some() {
-            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_device_channel c WHERE (c.name LIKE ? OR c.gb_device_id LIKE ?) AND c.channel_type = ?")
-                .bind(&like).bind(&like).bind(channel_type.unwrap())
-                .fetch_one(pool).await?
-        } else if has_query {
-            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_device_channel c WHERE (c.name LIKE ? OR c.gb_device_id LIKE ?)")
-                .bind(&like).bind(&like)
-                .fetch_one(pool).await?
-        } else if online.is_some() && channel_type.is_some() {
-            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_device_channel c INNER JOIN gb_device d ON c.device_id = d.device_id WHERE d.on_line = ? AND c.channel_type = ?")
-                .bind(online.unwrap()).bind(channel_type.unwrap())
-                .fetch_one(pool).await?
-        } else if online.is_some() {
-            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_device_channel c INNER JOIN gb_device d ON c.device_id = d.device_id WHERE d.on_line = ?")
-                .bind(online.unwrap())
-                .fetch_one(pool).await?
-        } else if channel_type.is_some() {
-            sqlx::query_scalar::<_, i64>(
-                "SELECT COUNT(*) FROM gb_device_channel c WHERE c.channel_type = ?",
-            )
-            .bind(channel_type.unwrap())
-            .fetch_one(pool)
-            .await?
-        } else {
-            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_device_channel")
-                .fetch_one(pool)
-                .await?
-        };
-        Ok(row)
-    }
+    // SQL 文本只写一份 `?`，由 **pool 自己的方言** 在运行期改写成 `$1..$n`
+    // （postgres 不认 `?`）。方言必须看 pool，不能看进程级全局
+    // `dialect::current()` —— 后者在直接构造 `Pool::Postgres(..)` 的测试里
+    // 仍是默认值（sqlite），会让 postgres 收到 `?` → `syntax error`。
+    let sql = if has_query && online.is_some() && channel_type.is_some() {
+        pool.sql("SELECT COUNT(*) FROM gb_device_channel c INNER JOIN gb_device d ON c.device_id = d.device_id WHERE (c.name LIKE ? OR c.gb_device_id LIKE ?) AND d.on_line = ? AND c.channel_type = ?")
+            .into_owned()
+    } else if has_query && online.is_some() {
+        pool.sql("SELECT COUNT(*) FROM gb_device_channel c INNER JOIN gb_device d ON c.device_id = d.device_id WHERE (c.name LIKE ? OR c.gb_device_id LIKE ?) AND d.on_line = ?")
+            .into_owned()
+    } else if has_query && channel_type.is_some() {
+        pool.sql("SELECT COUNT(*) FROM gb_device_channel c WHERE (c.name LIKE ? OR c.gb_device_id LIKE ?) AND c.channel_type = ?")
+            .into_owned()
+    } else if has_query {
+        pool.sql("SELECT COUNT(*) FROM gb_device_channel c WHERE (c.name LIKE ? OR c.gb_device_id LIKE ?)")
+            .into_owned()
+    } else if online.is_some() && channel_type.is_some() {
+        pool.sql("SELECT COUNT(*) FROM gb_device_channel c INNER JOIN gb_device d ON c.device_id = d.device_id WHERE d.on_line = ? AND c.channel_type = ?")
+            .into_owned()
+    } else if online.is_some() {
+        pool.sql("SELECT COUNT(*) FROM gb_device_channel c INNER JOIN gb_device d ON c.device_id = d.device_id WHERE d.on_line = ?")
+            .into_owned()
+    } else if channel_type.is_some() {
+        pool.sql("SELECT COUNT(*) FROM gb_device_channel c WHERE c.channel_type = ?")
+            .into_owned()
+    } else {
+        pool.sql("SELECT COUNT(*) FROM gb_device_channel")
+            .into_owned()
+    };
 
-    #[cfg(feature = "postgres")]
-    {
-        let sql = if has_query && online.is_some() && channel_type.is_some() {
-            "SELECT COUNT(*) FROM gb_device_channel c INNER JOIN gb_device d ON c.device_id = d.device_id WHERE (c.name LIKE $1 OR c.gb_device_id LIKE $2) AND d.on_line = $3 AND c.channel_type = $4"
-        } else if has_query && online.is_some() {
-            "SELECT COUNT(*) FROM gb_device_channel c INNER JOIN gb_device d ON c.device_id = d.device_id WHERE (c.name LIKE $1 OR c.gb_device_id LIKE $2) AND d.on_line = $3"
-        } else if has_query && channel_type.is_some() {
-            "SELECT COUNT(*) FROM gb_device_channel c WHERE (c.name LIKE $1 OR c.gb_device_id LIKE $2) AND c.channel_type = $3"
-        } else if has_query {
-            "SELECT COUNT(*) FROM gb_device_channel c WHERE (c.name LIKE $1 OR c.gb_device_id LIKE $2)"
-        } else if online.is_some() && channel_type.is_some() {
-            "SELECT COUNT(*) FROM gb_device_channel c INNER JOIN gb_device d ON c.device_id = d.device_id WHERE d.on_line = $1 AND c.channel_type = $2"
-        } else if online.is_some() {
-            "SELECT COUNT(*) FROM gb_device_channel c INNER JOIN gb_device d ON c.device_id = d.device_id WHERE d.on_line = $1"
-        } else if channel_type.is_some() {
-            "SELECT COUNT(*) FROM gb_device_channel c WHERE c.channel_type = $1"
-        } else {
-            "SELECT COUNT(*) FROM gb_device_channel"
-        };
-        let row = if has_query && online.is_some() && channel_type.is_some() {
-            sqlx::query_scalar::<_, i64>(sql)
+    let row = if has_query && online.is_some() && channel_type.is_some() {
+        crate::dispatch!(pool, |p| {
+            sqlx::query_scalar::<_, i64>(&sql)
                 .bind(&like)
                 .bind(&like)
                 .bind(online.unwrap())
                 .bind(channel_type.unwrap())
-                .fetch_one(pool)
-                .await?
-        } else if has_query && online.is_some() {
-            sqlx::query_scalar::<_, i64>(sql)
+                .fetch_one(p)
+        })?
+    } else if has_query && online.is_some() {
+        crate::dispatch!(pool, |p| {
+            sqlx::query_scalar::<_, i64>(&sql)
                 .bind(&like)
                 .bind(&like)
                 .bind(online.unwrap())
-                .fetch_one(pool)
-                .await?
-        } else if has_query && channel_type.is_some() {
-            sqlx::query_scalar::<_, i64>(sql)
+                .fetch_one(p)
+        })?
+    } else if has_query && channel_type.is_some() {
+        crate::dispatch!(pool, |p| {
+            sqlx::query_scalar::<_, i64>(&sql)
                 .bind(&like)
                 .bind(&like)
                 .bind(channel_type.unwrap())
-                .fetch_one(pool)
-                .await?
-        } else if has_query {
-            sqlx::query_scalar::<_, i64>(sql)
+                .fetch_one(p)
+        })?
+    } else if has_query {
+        crate::dispatch!(pool, |p| {
+            sqlx::query_scalar::<_, i64>(&sql)
                 .bind(&like)
                 .bind(&like)
-                .fetch_one(pool)
-                .await?
-        } else if online.is_some() && channel_type.is_some() {
-            sqlx::query_scalar::<_, i64>(sql)
+                .fetch_one(p)
+        })?
+    } else if online.is_some() && channel_type.is_some() {
+        crate::dispatch!(pool, |p| {
+            sqlx::query_scalar::<_, i64>(&sql)
                 .bind(online.unwrap())
                 .bind(channel_type.unwrap())
-                .fetch_one(pool)
-                .await?
-        } else if online.is_some() {
-            sqlx::query_scalar::<_, i64>(sql)
+                .fetch_one(p)
+        })?
+    } else if online.is_some() {
+        crate::dispatch!(pool, |p| {
+            sqlx::query_scalar::<_, i64>(&sql)
                 .bind(online.unwrap())
-                .fetch_one(pool)
-                .await?
-        } else if channel_type.is_some() {
-            sqlx::query_scalar::<_, i64>(sql)
+                .fetch_one(p)
+        })?
+    } else if channel_type.is_some() {
+        crate::dispatch!(pool, |p| {
+            sqlx::query_scalar::<_, i64>(&sql)
                 .bind(channel_type.unwrap())
-                .fetch_one(pool)
-                .await?
-        } else {
-            sqlx::query_scalar::<_, i64>(sql).fetch_one(pool).await?
-        };
-        Ok(row)
-    }
-
-    #[cfg(feature = "sqlite")]
-    {
-        let sql = if has_query && online.is_some() && channel_type.is_some() {
-            "SELECT COUNT(*) FROM gb_device_channel c INNER JOIN gb_device d ON c.device_id = d.device_id WHERE (c.name LIKE ? OR c.gb_device_id LIKE ?) AND d.on_line = ? AND c.channel_type = ?"
-        } else if has_query && online.is_some() {
-            "SELECT COUNT(*) FROM gb_device_channel c INNER JOIN gb_device d ON c.device_id = d.device_id WHERE (c.name LIKE ? OR c.gb_device_id LIKE ?) AND d.on_line = ?"
-        } else if has_query && channel_type.is_some() {
-            "SELECT COUNT(*) FROM gb_device_channel c WHERE (c.name LIKE ? OR c.gb_device_id LIKE ?) AND c.channel_type = ?"
-        } else if has_query {
-            "SELECT COUNT(*) FROM gb_device_channel c WHERE (c.name LIKE ? OR c.gb_device_id LIKE ?)"
-        } else if online.is_some() && channel_type.is_some() {
-            "SELECT COUNT(*) FROM gb_device_channel c INNER JOIN gb_device d ON c.device_id = d.device_id WHERE d.on_line = ? AND c.channel_type = ?"
-        } else if online.is_some() {
-            "SELECT COUNT(*) FROM gb_device_channel c INNER JOIN gb_device d ON c.device_id = d.device_id WHERE d.on_line = ?"
-        } else if channel_type.is_some() {
-            "SELECT COUNT(*) FROM gb_device_channel c WHERE c.channel_type = ?"
-        } else {
-            "SELECT COUNT(*) FROM gb_device_channel"
-        };
-        let row = if has_query && online.is_some() && channel_type.is_some() {
-            sqlx::query_scalar::<_, i64>(sql)
-                .bind(&like)
-                .bind(&like)
-                .bind(online.unwrap())
-                .bind(channel_type.unwrap())
-                .fetch_one(pool)
-                .await?
-        } else if has_query && online.is_some() {
-            sqlx::query_scalar::<_, i64>(sql)
-                .bind(&like)
-                .bind(&like)
-                .bind(online.unwrap())
-                .fetch_one(pool)
-                .await?
-        } else if has_query && channel_type.is_some() {
-            sqlx::query_scalar::<_, i64>(sql)
-                .bind(&like)
-                .bind(&like)
-                .bind(channel_type.unwrap())
-                .fetch_one(pool)
-                .await?
-        } else if has_query {
-            sqlx::query_scalar::<_, i64>(sql)
-                .bind(&like)
-                .bind(&like)
-                .fetch_one(pool)
-                .await?
-        } else if online.is_some() && channel_type.is_some() {
-            sqlx::query_scalar::<_, i64>(sql)
-                .bind(online.unwrap())
-                .bind(channel_type.unwrap())
-                .fetch_one(pool)
-                .await?
-        } else if online.is_some() {
-            sqlx::query_scalar::<_, i64>(sql)
-                .bind(online.unwrap())
-                .fetch_one(pool)
-                .await?
-        } else if channel_type.is_some() {
-            sqlx::query_scalar::<_, i64>(sql)
-                .bind(channel_type.unwrap())
-                .fetch_one(pool)
-                .await?
-        } else {
-            sqlx::query_scalar::<_, i64>(sql).fetch_one(pool).await?
-        };
-        Ok(row)
-    }
+                .fetch_one(p)
+        })?
+    } else {
+        crate::dispatch!(pool, |p| {
+            sqlx::query_scalar::<_, i64>(&sql).fetch_one(p)
+        })?
+    };
+    Ok(row)
 }
 
 pub async fn delete_device_cascade(pool: &Pool, device_id: &str) -> sqlx::Result<u64> {
-    #[cfg(feature = "mysql")]
-    {
-        let _ = sqlx::query("DELETE FROM gb_device_channel WHERE device_id = ?")
-            .bind(device_id)
-            .execute(pool)
-            .await?;
-        let r = sqlx::query("DELETE FROM gb_device WHERE device_id = ?")
-            .bind(device_id)
-            .execute(pool)
-            .await?;
-        return Ok(r.rows_affected());
-    }
-    #[cfg(feature = "postgres")]
-    {
-        let _ = sqlx::query("DELETE FROM gb_device_channel WHERE device_id = $1")
-            .bind(device_id)
-            .execute(pool)
-            .await?;
-        let r = sqlx::query("DELETE FROM gb_device WHERE device_id = $1")
-            .bind(device_id)
-            .execute(pool)
-            .await?;
-        return Ok(r.rows_affected());
-    }
-    #[cfg(feature = "sqlite")]
-    {
-        let _ = sqlx::query("DELETE FROM gb_device_channel WHERE device_id = ?")
-            .bind(device_id)
-            .execute(pool)
-            .await?;
-        let r = sqlx::query("DELETE FROM gb_device WHERE device_id = ?")
-            .bind(device_id)
-            .execute(pool)
-            .await?;
-        return Ok(r.rows_affected());
-    }
+    let sql = crate::db::dialect::current_sql("DELETE FROM gb_device_channel WHERE device_id = ?")
+        .into_owned();
+    // 两条语句要分两次 dispatch（宏体只能是一个 future）。
+    let _ = crate::dispatch_exec!(pool, |p| { sqlx::query(&sql).bind(device_id).execute(p) })?;
+    crate::dispatch_exec!(pool, |p| {
+        sqlx::query(&crate::dyn_where::dialect_sql(
+            "DELETE FROM gb_device WHERE device_id = ?",
+        ))
+        .bind(device_id)
+        .execute(p)
+    })
+    .map(|r| r.rows_affected())
 }
 
 /// SQLite 模式专用：检查新增设备是否超过上限。
@@ -1448,35 +956,40 @@ pub async fn check_sqlite_device_limit(
 
 /// 设备存在性查询（用于限制检查）
 pub async fn device_exists(pool: &Pool, device_id: &str) -> sqlx::Result<bool> {
-    #[cfg(feature = "mysql")]
-    {
-        let row: (i64,) =
-            sqlx::query_as("SELECT EXISTS(SELECT 1 FROM gb_device WHERE device_id = ?)")
+    if crate::db::dialect::current().is_mysql() {
+        {
+            let row: (i64,) = crate::dispatch!(pool, |p| {
+                sqlx::query_as(&crate::dyn_where::dialect_sql(
+                    "SELECT EXISTS(SELECT 1 FROM gb_device WHERE device_id = ?)",
+                ))
                 .bind(device_id)
-                .fetch_optional(pool)
-                .await?
-                .unwrap_or((0,));
-        Ok(row.0 > 0)
-    }
-    #[cfg(feature = "postgres")]
-    {
-        let row: (bool,) =
-            sqlx::query_as("SELECT EXISTS(SELECT 1 FROM gb_device WHERE device_id = $1)")
+                .fetch_optional(p)
+            })?
+            .unwrap_or((0,));
+            Ok(row.0 > 0)
+        }
+    } else if crate::db::dialect::current().is_postgres() {
+        {
+            let row: (bool,) = crate::dispatch!(pool, |p| {
+                sqlx::query_as("SELECT EXISTS(SELECT 1 FROM gb_device WHERE device_id = $1)")
+                    .bind(device_id)
+                    .fetch_optional(p)
+            })?
+            .unwrap_or((false,));
+            Ok(row.0)
+        }
+    } else {
+        {
+            let row: (i64,) = crate::dispatch!(pool, |p| {
+                sqlx::query_as(&crate::dyn_where::dialect_sql(
+                    "SELECT EXISTS(SELECT 1 FROM gb_device WHERE device_id = ?)",
+                ))
                 .bind(device_id)
-                .fetch_optional(pool)
-                .await?
-                .unwrap_or((false,));
-        Ok(row.0)
-    }
-    #[cfg(feature = "sqlite")]
-    {
-        let row: (i64,) =
-            sqlx::query_as("SELECT EXISTS(SELECT 1 FROM gb_device WHERE device_id = ?)")
-                .bind(device_id)
-                .fetch_optional(pool)
-                .await?
-                .unwrap_or((0,));
-        Ok(row.0 > 0)
+                .fetch_optional(p)
+            })?
+            .unwrap_or((0,));
+            Ok(row.0 > 0)
+        }
     }
 }
 
@@ -1533,73 +1046,109 @@ pub async fn insert_device(
     let cols = "device_id, name, manufacturer, model, ip, port, password, expires, \
                 heart_beat_interval, heart_beat_count, transport, stream_mode, on_line, \
                 create_time, update_time, media_server_id, custom_name";
-    #[cfg(feature = "mysql")]
-    let r = sqlx::query(&format!(
-        "INSERT INTO gb_device ({cols}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?)"
-    ))
-    .bind(device_id)
-    .bind(f.name)
-    .bind(f.manufacturer)
-    .bind(f.model)
-    .bind(f.ip)
-    .bind(f.port)
-    .bind(f.password)
-    .bind(f.expires)
-    .bind(f.heart_beat_interval)
-    .bind(f.heart_beat_count)
-    .bind(f.transport)
-    .bind(f.stream_mode)
-    .bind(now)
-    .bind(now)
-    .bind(mid)
-    .bind(f.custom_name)
-    .execute(pool)
-    .await?;
-    #[cfg(feature = "postgres")]
-    let r = sqlx::query(&format!(
-        "INSERT INTO gb_device ({cols}) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,false,$13,$14,$15,$16)"
-    ))
-    .bind(device_id)
-    .bind(f.name)
-    .bind(f.manufacturer)
-    .bind(f.model)
-    .bind(f.ip)
-    .bind(f.port)
-    .bind(f.password)
-    .bind(f.expires)
-    .bind(f.heart_beat_interval)
-    .bind(f.heart_beat_count)
-    .bind(f.transport)
-    .bind(f.stream_mode)
-    .bind(now)
-    .bind(now)
-    .bind(mid)
-    .bind(f.custom_name)
-    .execute(pool)
-    .await?;
-    #[cfg(feature = "sqlite")]
-    let r = sqlx::query(&format!(
-        "INSERT INTO gb_device ({cols}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?)"
-    ))
-    .bind(device_id)
-    .bind(f.name)
-    .bind(f.manufacturer)
-    .bind(f.model)
-    .bind(f.ip)
-    .bind(f.port)
-    .bind(f.password)
-    .bind(f.expires)
-    .bind(f.heart_beat_interval)
-    .bind(f.heart_beat_count)
-    .bind(f.transport)
-    .bind(f.stream_mode)
-    .bind(now)
-    .bind(now)
-    .bind(mid)
-    .bind(f.custom_name)
-    .execute(pool)
-    .await?;
-    Ok(r.rows_affected())
+    // `on_line` 在 SQL 文本里是**字面量**（不是占位符）：postgres 的 `on_line`
+    // 是 BOOLEAN 列，只能写 `false`；mysql / sqlite 写 `0`。因此这条语句是
+    // **方言专属**的 —— 用 `dispatch_dialect!` 每分支一份，
+    // 占位符数量三方一致（都是 16 个 bind），bind 顺序也完全一致。
+    //
+    // 分支由 **pool 的类型**决定（不是进程级全局 `dialect::current()`）：
+    // 直接构造 `Pool::Postgres(..)` 的测试里全局仍是默认值（sqlite），
+    // 走错分支就会把 `?` 发给 postgres → `syntax error`。
+    // `on_line` 在 SQL 文本里是**字面量**（不是占位符）：postgres 的 `on_line`
+    // 是 BOOLEAN 列，只能写 `false`；mysql / sqlite 写 `0`。因此这条语句是
+    // **方言专属**的 —— 用 `dispatch_dialect!` 每分支一份，
+    // 占位符数量三方一致（都是 16 个 bind），bind 顺序也完全一致。
+    //
+    // 分支由 **pool 的类型**决定（不是进程级全局 `dialect::current()`）：
+    // 直接构造 `Pool::Postgres(..)` 的测试里全局仍是默认值（sqlite），
+    // 走错分支就会把 `?` 发给 postgres → `syntax error`。
+    let r: u64 = crate::dispatch_dialect!(
+        pool,
+        |p| {
+            // PostgreSQL
+            let raw = format!(
+                "INSERT INTO gb_device ({cols}) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,false,$13,$14,$15,$16)"
+            );
+            let sql = pool.sql(&raw).into_owned();
+            sqlx::query(&sql)
+                .bind(device_id)
+                .bind(f.name)
+                .bind(f.manufacturer)
+                .bind(f.model)
+                .bind(f.ip)
+                .bind(f.port)
+                .bind(f.password)
+                .bind(f.expires)
+                .bind(f.heart_beat_interval)
+                .bind(f.heart_beat_count)
+                .bind(f.transport)
+                .bind(f.stream_mode)
+                .bind(now)
+                .bind(now)
+                .bind(mid)
+                .bind(f.custom_name)
+                .execute(p)
+                .await
+                .map(|r| r.rows_affected())
+        },
+        |p| {
+            // MySQL
+            // `{}` = 运行期拼进去的列名；`?` = 占位符（由 **pool 自己的方言**
+            // 改写成 `$1..$n`）。
+            let sql = pool
+                .sql("INSERT INTO gb_device ({cols}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?)")
+                .replace("{cols}", &cols);
+            sqlx::query(&sql)
+                .bind(device_id)
+                .bind(f.name)
+                .bind(f.manufacturer)
+                .bind(f.model)
+                .bind(f.ip)
+                .bind(f.port)
+                .bind(f.password)
+                .bind(f.expires)
+                .bind(f.heart_beat_interval)
+                .bind(f.heart_beat_count)
+                .bind(f.transport)
+                .bind(f.stream_mode)
+                .bind(now)
+                .bind(now)
+                .bind(mid)
+                .bind(f.custom_name)
+                .execute(p)
+                .await
+                .map(|r| r.rows_affected())
+        },
+        |p| {
+            // SQLite
+            // `{}` = 运行期拼进去的列名；`?` = 占位符（由 **pool 自己的方言**
+            // 改写成 `$1..$n`）。
+            let sql = pool
+                .sql("INSERT INTO gb_device ({cols}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?)")
+                .replace("{cols}", &cols);
+            sqlx::query(&sql)
+                .bind(device_id)
+                .bind(f.name)
+                .bind(f.manufacturer)
+                .bind(f.model)
+                .bind(f.ip)
+                .bind(f.port)
+                .bind(f.password)
+                .bind(f.expires)
+                .bind(f.heart_beat_interval)
+                .bind(f.heart_beat_count)
+                .bind(f.transport)
+                .bind(f.stream_mode)
+                .bind(now)
+                .bind(now)
+                .bind(mid)
+                .bind(f.custom_name)
+                .execute(p)
+                .await
+                .map(|r| r.rows_affected())
+        },
+    )?;
+    Ok(r)
 }
 
 pub async fn update_device(
@@ -1608,94 +1157,25 @@ pub async fn update_device(
     f: &DeviceWriteFields<'_>,
     now: &str,
 ) -> sqlx::Result<u64> {
-    // 全部 COALESCE：None = 保持原值。密码用 NULLIF(?, '') 让空串也视为"不改"，
-    // 否则前端「编辑时不回填密码」会把已有密码清空。
-    let set = "name = COALESCE({p1}, name), manufacturer = COALESCE({p2}, manufacturer), \
-               model = COALESCE({p3}, model), transport = COALESCE({p4}, transport), \
-               stream_mode = COALESCE({p5}, stream_mode), \
-               media_server_id = COALESCE({p6}, media_server_id), \
-               custom_name = COALESCE({p7}, custom_name), ip = COALESCE({p8}, ip), \
-               port = COALESCE({p9}, port), \
-               password = COALESCE(NULLIF({p10}, ''), password), \
-               expires = COALESCE({p11}, expires), \
-               heart_beat_interval = COALESCE({p12}, heart_beat_interval), \
-               heart_beat_count = COALESCE({p13}, heart_beat_count), \
-               update_time = {p14} WHERE device_id = {p15}";
-    #[cfg(feature = "mysql")]
-    let r = {
-        let sql: String = (1..=15).fold(set.to_string(), |acc, i| {
-            acc.replace(&format!("{{p{i}}}"), "?")
-        });
-        sqlx::query(&format!("UPDATE gb_device SET {sql}"))
-            .bind(f.name)
-            .bind(f.manufacturer)
-            .bind(f.model)
-            .bind(f.transport)
-            .bind(f.stream_mode)
-            .bind(f.media_server_id)
-            .bind(f.custom_name)
-            .bind(f.ip)
-            .bind(f.port)
-            .bind(f.password)
-            .bind(f.expires)
-            .bind(f.heart_beat_interval)
-            .bind(f.heart_beat_count)
-            .bind(now)
-            .bind(device_id)
-            .execute(pool)
-            .await?
-    };
-    #[cfg(feature = "postgres")]
-    let r = {
-        let sql: String = (1..=15).fold(set.to_string(), |acc, i| {
-            acc.replace(&format!("{{p{i}}}"), &format!("${i}"))
-        });
-        sqlx::query(&format!("UPDATE gb_device SET {sql}"))
-            .bind(f.name)
-            .bind(f.manufacturer)
-            .bind(f.model)
-            .bind(f.transport)
-            .bind(f.stream_mode)
-            .bind(f.media_server_id)
-            .bind(f.custom_name)
-            .bind(f.ip)
-            .bind(f.port)
-            .bind(f.password)
-            .bind(f.expires)
-            .bind(f.heart_beat_interval)
-            .bind(f.heart_beat_count)
-            .bind(now)
-            .bind(device_id)
-            .execute(pool)
-            .await?
-    };
-    #[cfg(feature = "sqlite")]
-    let r = {
-        let sql: String = (1..=15).fold(set.to_string(), |acc, i| {
-            acc.replace(&format!("{{p{i}}}"), "?")
-        });
-        sqlx::query(&format!("UPDATE gb_device SET {sql}"))
-            .bind(f.name)
-            .bind(f.manufacturer)
-            .bind(f.model)
-            .bind(f.transport)
-            .bind(f.stream_mode)
-            .bind(f.media_server_id)
-            .bind(f.custom_name)
-            .bind(f.ip)
-            .bind(f.port)
-            .bind(f.password)
-            .bind(f.expires)
-            .bind(f.heart_beat_interval)
-            .bind(f.heart_beat_count)
-            .bind(now)
-            .bind(device_id)
-            .execute(pool)
-            .await?
-    };
+    let set = "name = COALESCE(?, name), manufacturer = COALESCE(?, manufacturer), \
+               model = COALESCE(?, model), transport = COALESCE(?, transport), \
+               stream_mode = COALESCE(?, stream_mode), \
+               media_server_id = COALESCE(?, media_server_id), \
+               custom_name = COALESCE(?, custom_name), ip = COALESCE(?, ip), \
+               port = COALESCE(?, port), \
+               password = COALESCE(NULLIF(?, ''), password), \
+               expires = COALESCE(?, expires), \
+               heart_beat_interval = COALESCE(?, heart_beat_interval), \
+               heart_beat_count = COALESCE(?, heart_beat_count), \
+               update_time = ? WHERE device_id = ?";
+    let stmt = format!("UPDATE gb_device SET {}", set);
+    let sql = pool.sql(&stmt).into_owned();
+    let r = crate::dispatch_exec!(pool, |p| {
+        sqlx::query(&sql)
+            .bind(f.name).bind(f.manufacturer).bind(f.model).bind(f.transport).bind(f.stream_mode).bind(f.media_server_id).bind(f.custom_name).bind(f.ip).bind(f.port).bind(f.password).bind(f.expires).bind(f.heart_beat_interval).bind(f.heart_beat_count).bind(now).bind(device_id).execute(p)
+    })?;
     Ok(r.rows_affected())
 }
-
 pub async fn update_device_online(
     pool: &Pool,
     device_id: &str,
@@ -1704,27 +1184,17 @@ pub async fn update_device_online(
     port: Option<i32>,
     now: &str,
 ) -> sqlx::Result<u64> {
-    #[cfg(feature = "mysql")]
-    let r = sqlx::query(
-        r#"UPDATE gb_device SET on_line = ?, ip = COALESCE(?, ip), port = COALESCE(?, port), update_time = ?
-           WHERE device_id = ?"#,
-    )
-    .bind(online).bind(ip).bind(port).bind(now).bind(device_id)
-    .execute(pool).await?;
-    #[cfg(feature = "postgres")]
-    let r = sqlx::query(
-        r#"UPDATE gb_device SET on_line = $1, ip = COALESCE($2, ip), port = COALESCE($3, port), update_time = $4
-           WHERE device_id = $5"#,
-    )
-    .bind(online).bind(ip).bind(port).bind(now).bind(device_id)
-    .execute(pool).await?;
-    #[cfg(feature = "sqlite")]
-    let r = sqlx::query(
-        r#"UPDATE gb_device SET on_line = ?, ip = COALESCE(?, ip), port = COALESCE(?, port), update_time = ?
-           WHERE device_id = ?"#,
-    )
-    .bind(online).bind(ip).bind(port).bind(now).bind(device_id)
-    .execute(pool).await?;
+    let sql = crate::db::dialect::current_sql(r#"UPDATE gb_device SET on_line = ?, ip = COALESCE(?, ip), port = COALESCE(?, port), update_time = ?
+           WHERE device_id = ?"#).into_owned();
+    let r = crate::dispatch_exec!(pool, |p| {
+        sqlx::query(&sql)
+            .bind(online)
+            .bind(ip)
+            .bind(port)
+            .bind(now)
+            .bind(device_id)
+            .execute(p)
+    })?;
     Ok(r.rows_affected())
 }
 
@@ -1742,8 +1212,7 @@ pub async fn update_device_info_fields(
     firmware: Option<&str>,
     now: &str,
 ) -> sqlx::Result<u64> {
-    #[cfg(feature = "mysql")]
-    let r = sqlx::query(
+    let sql = crate::db::dialect::current_sql(
         r#"UPDATE gb_device
            SET name = COALESCE(NULLIF(?, ''), name),
                manufacturer = COALESCE(NULLIF(?, ''), manufacturer),
@@ -1752,50 +1221,17 @@ pub async fn update_device_info_fields(
                update_time = ?
            WHERE device_id = ?"#,
     )
-    .bind(name)
-    .bind(manufacturer)
-    .bind(model)
-    .bind(firmware)
-    .bind(now)
-    .bind(device_id)
-    .execute(pool)
-    .await?;
-    #[cfg(feature = "postgres")]
-    let r = sqlx::query(
-        r#"UPDATE gb_device
-           SET name = COALESCE(NULLIF($1, ''), name),
-               manufacturer = COALESCE(NULLIF($2, ''), manufacturer),
-               model = COALESCE(NULLIF($3, ''), model),
-               firmware = COALESCE(NULLIF($4, ''), firmware),
-               update_time = $5
-           WHERE device_id = $6"#,
-    )
-    .bind(name)
-    .bind(manufacturer)
-    .bind(model)
-    .bind(firmware)
-    .bind(now)
-    .bind(device_id)
-    .execute(pool)
-    .await?;
-    #[cfg(feature = "sqlite")]
-    let r = sqlx::query(
-        r#"UPDATE gb_device
-           SET name = COALESCE(NULLIF(?, ''), name),
-               manufacturer = COALESCE(NULLIF(?, ''), manufacturer),
-               model = COALESCE(NULLIF(?, ''), model),
-               firmware = COALESCE(NULLIF(?, ''), firmware),
-               update_time = ?
-           WHERE device_id = ?"#,
-    )
-    .bind(name)
-    .bind(manufacturer)
-    .bind(model)
-    .bind(firmware)
-    .bind(now)
-    .bind(device_id)
-    .execute(pool)
-    .await?;
+    .into_owned();
+    let r = crate::dispatch_exec!(pool, |p| {
+        sqlx::query(&sql)
+            .bind(name)
+            .bind(manufacturer)
+            .bind(model)
+            .bind(firmware)
+            .bind(now)
+            .bind(device_id)
+            .execute(p)
+    })?;
     Ok(r.rows_affected())
 }
 
@@ -1815,26 +1251,20 @@ pub async fn upsert_device(
     now: &str,
 ) -> sqlx::Result<()> {
     let mid = media_server_id.unwrap_or("auto");
-    #[cfg(feature = "mysql")]
-    {
-        sqlx::query(
-            r#"INSERT INTO gb_device (device_id, name, manufacturer, model, firmware, transport, stream_mode, ip, port, on_line, create_time, update_time, media_server_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-               ON DUPLICATE KEY UPDATE
-               name = COALESCE(?, name), manufacturer = COALESCE(?, manufacturer), model = COALESCE(?, model),
-               firmware = COALESCE(?, firmware), transport = COALESCE(?, transport), stream_mode = COALESCE(?, stream_mode),
-               ip = COALESCE(?, ip), port = COALESCE(?, port), on_line = ?, update_time = ?, media_server_id = COALESCE(?, media_server_id)"#,
-        )
-        .bind(device_id).bind(name).bind(manufacturer).bind(model).bind(firmware).bind(transport).bind(stream_mode)
-        .bind(ip).bind(port).bind(online).bind(now).bind(now).bind(mid)
-        .bind(name).bind(manufacturer).bind(model).bind(firmware).bind(transport).bind(stream_mode)
-        .bind(ip).bind(port).bind(online).bind(now).bind(mid)
-        .execute(pool).await?;
-    }
-    #[cfg(feature = "postgres")]
-    {
-        sqlx::query(
-            r#"INSERT INTO gb_device (device_id, name, manufacturer, model, firmware, transport, stream_mode, ip, port, on_line, create_time, update_time, media_server_id)
+    // 三个方言的 INSERT 语句**占位符数量不同**：
+    // * MySQL 的 `ON DUPLICATE KEY UPDATE` 要把被更新的列**再绑定一遍**（24 个）；
+    // * PostgreSQL / SQLite 的 `ON CONFLICT ... DO UPDATE` 用 `excluded.<列>` /
+    //   `gb_device.<列>` 引用新行，**不用重复绑定**（13 个）。
+    //
+    // 所以这三个分支必须各带自己的 SQL 与 bind 链 —— 不能合成一条。
+    // 分支值统一成 `Result<u64, Error>`（`rows_affected`），否则三个分支的
+    // `QueryResult` 类型不同（`PgQueryResult` / `MySqlQueryResult` / `SqliteQueryResult`）
+    // 无法放进同一个 `match`。
+    crate::dispatch_dialect!(
+        pool,
+        |p| {
+            sqlx::query(
+                r#"INSERT INTO gb_device (device_id, name, manufacturer, model, firmware, transport, stream_mode, ip, port, on_line, create_time, update_time, media_server_id)
                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
                ON CONFLICT (device_id) DO UPDATE SET
                name = COALESCE($2, gb_device.name), manufacturer = COALESCE($3, gb_device.manufacturer),
@@ -1842,75 +1272,71 @@ pub async fn upsert_device(
                transport = COALESCE($6, gb_device.transport), stream_mode = COALESCE($7, gb_device.stream_mode),
                 ip = COALESCE($8, gb_device.ip), port = COALESCE($9, gb_device.port),
                 on_line = $10, update_time = $12, media_server_id = COALESCE($13, gb_device.media_server_id)"#,
-        )
-        .bind(device_id).bind(name).bind(manufacturer).bind(model).bind(firmware).bind(transport).bind(stream_mode)
-        .bind(ip).bind(port).bind(online).bind(now).bind(now).bind(mid)
-        .execute(pool).await?;
-    }
-    #[cfg(feature = "sqlite")]
-    {
-        sqlx::query(
-            r#"INSERT INTO gb_device (device_id, name, manufacturer, model, firmware, transport, stream_mode, ip, port, on_line, create_time, update_time, media_server_id)
+            )
+            .bind(device_id).bind(name).bind(manufacturer).bind(model).bind(firmware).bind(transport).bind(stream_mode)
+            .bind(ip).bind(port).bind(online).bind(now).bind(now).bind(mid)
+            .execute(p)
+            .await
+            .map(|r| r.rows_affected())
+        },
+        |p| {
+            sqlx::query(
+                &crate::dyn_where::dialect_sql(r#"INSERT INTO gb_device (device_id, name, manufacturer, model, firmware, transport, stream_mode, ip, port, on_line, create_time, update_time, media_server_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON DUPLICATE KEY UPDATE
+               name = COALESCE(?, name), manufacturer = COALESCE(?, manufacturer), model = COALESCE(?, model),
+               firmware = COALESCE(?, firmware), transport = COALESCE(?, transport), stream_mode = COALESCE(?, stream_mode),
+               ip = COALESCE(?, ip), port = COALESCE(?, port), on_line = ?, update_time = ?, media_server_id = COALESCE(?, media_server_id)"#),
+            )
+            .bind(device_id).bind(name).bind(manufacturer).bind(model).bind(firmware).bind(transport).bind(stream_mode)
+            .bind(ip).bind(port).bind(online).bind(now).bind(now).bind(mid)
+            .bind(name).bind(manufacturer).bind(model).bind(firmware).bind(transport).bind(stream_mode)
+            .bind(ip).bind(port).bind(online).bind(now).bind(mid)
+            .execute(p)
+            .await
+            .map(|r| r.rows_affected())
+        },
+        |p| {
+            sqlx::query(
+                &crate::dyn_where::dialect_sql(r#"INSERT INTO gb_device (device_id, name, manufacturer, model, firmware, transport, stream_mode, ip, port, on_line, create_time, update_time, media_server_id)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(device_id) DO UPDATE SET
                name = COALESCE(excluded.name, gb_device.name), manufacturer = COALESCE(excluded.manufacturer, gb_device.manufacturer),
                model = COALESCE(excluded.model, gb_device.model), firmware = COALESCE(excluded.firmware, gb_device.firmware),
                transport = COALESCE(excluded.transport, gb_device.transport), stream_mode = COALESCE(excluded.stream_mode, gb_device.stream_mode),
                ip = COALESCE(excluded.ip, gb_device.ip), port = COALESCE(excluded.port, gb_device.port),
-               on_line = excluded.on_line, update_time = excluded.update_time, media_server_id = COALESCE(excluded.media_server_id, gb_device.media_server_id)"#,
-        )
-        .bind(device_id).bind(name).bind(manufacturer).bind(model).bind(firmware).bind(transport).bind(stream_mode)
-        .bind(ip).bind(port).bind(online).bind(now).bind(now).bind(mid)
-        .execute(pool).await?;
-    }
-    Ok(())
+               on_line = excluded.on_line, update_time = excluded.update_time, media_server_id = COALESCE(excluded.media_server_id, gb_device.media_server_id)"#),
+            )
+            .bind(device_id).bind(name).bind(manufacturer).bind(model).bind(firmware).bind(transport).bind(stream_mode)
+            .bind(ip).bind(port).bind(online).bind(now).bind(now).bind(mid)
+            .execute(p)
+            .await
+            .map(|r| r.rows_affected())
+        },
+    )
+    .map(|_| ())
 }
 
 pub async fn list_all_channels(pool: &Pool) -> sqlx::Result<Vec<DeviceChannel>> {
-    #[cfg(feature = "mysql")]
-    return sqlx::query_as::<_, DeviceChannel>("SELECT * FROM gb_device_channel")
-        .fetch_all(pool)
-        .await;
-    #[cfg(feature = "postgres")]
-    return sqlx::query_as::<_, DeviceChannel>("SELECT * FROM gb_device_channel")
-        .fetch_all(pool)
-        .await;
-    #[cfg(feature = "sqlite")]
-    return sqlx::query_as::<_, DeviceChannel>("SELECT * FROM gb_device_channel")
-        .fetch_all(pool)
-        .await;
+    let sql = crate::db::dialect::current_sql("SELECT * FROM gb_device_channel").into_owned();
+    return crate::dispatch!(pool, |p| {
+        sqlx::query_as::<_, DeviceChannel>(&sql).fetch_all(p)
+    });
 }
 
 /// 获取所有需要目录订阅续期的在线设备
 /// 返回 (device_id, subscribe_cycle_for_catalog) 列表
 pub async fn get_devices_for_catalog_renewal(pool: &Pool) -> sqlx::Result<Vec<(String, i32)>> {
-    #[cfg(feature = "mysql")]
-    {
-        let rows: Vec<(String, i32)> = sqlx::query_as(
-            "SELECT device_id, subscribe_cycle_for_catalog FROM gb_device WHERE on_line = 1 AND subscribe_cycle_for_catalog > 0"
-        )
-        .fetch_all(pool)
-        .await?;
-        Ok(rows)
-    }
-    #[cfg(feature = "postgres")]
-    {
-        let rows: Vec<(String, i32)> = sqlx::query_as(
-            "SELECT device_id, subscribe_cycle_for_catalog FROM gb_device WHERE on_line = true AND subscribe_cycle_for_catalog > 0"
-        )
-        .fetch_all(pool)
-        .await?;
-        Ok(rows)
-    }
-    #[cfg(feature = "sqlite")]
-    {
-        let rows: Vec<(String, i32)> = sqlx::query_as(
-            "SELECT device_id, subscribe_cycle_for_catalog FROM gb_device WHERE on_line = 1 AND subscribe_cycle_for_catalog > 0"
-        )
-        .fetch_all(pool)
-        .await?;
-        Ok(rows)
-    }
+    let sql = pool.sql(
+        "SELECT device_id, subscribe_cycle_for_catalog FROM gb_device \
+         WHERE on_line = ? AND subscribe_cycle_for_catalog > 0",
+    );
+    let rows: Vec<(String, i32)> = crate::dispatch!(pool, |p| {
+        sqlx::query_as::<_, (String, i32)>(&sql)
+            .bind(true)
+            .fetch_all(p)
+    })?;
+    Ok(rows)
 }
 
 /// 获取所有需要移动位置订阅续期的在线设备
@@ -1918,33 +1344,16 @@ pub async fn get_devices_for_catalog_renewal(pool: &Pool) -> sqlx::Result<Vec<(S
 pub async fn get_devices_for_mobile_position_renewal(
     pool: &Pool,
 ) -> sqlx::Result<Vec<(String, i32)>> {
-    #[cfg(feature = "mysql")]
-    {
-        let rows: Vec<(String, i32)> = sqlx::query_as(
-            "SELECT device_id, subscribe_cycle_for_mobile_position FROM gb_device WHERE on_line = 1 AND subscribe_cycle_for_mobile_position > 0"
-        )
-        .fetch_all(pool)
-        .await?;
-        Ok(rows)
-    }
-    #[cfg(feature = "postgres")]
-    {
-        let rows: Vec<(String, i32)> = sqlx::query_as(
-            "SELECT device_id, subscribe_cycle_for_mobile_position FROM gb_device WHERE on_line = true AND subscribe_cycle_for_mobile_position > 0"
-        )
-        .fetch_all(pool)
-        .await?;
-        Ok(rows)
-    }
-    #[cfg(feature = "sqlite")]
-    {
-        let rows: Vec<(String, i32)> = sqlx::query_as(
-            "SELECT device_id, subscribe_cycle_for_mobile_position FROM gb_device WHERE on_line = 1 AND subscribe_cycle_for_mobile_position > 0"
-        )
-        .fetch_all(pool)
-        .await?;
-        Ok(rows)
-    }
+    let sql = pool.sql(
+        "SELECT device_id, subscribe_cycle_for_mobile_position FROM gb_device \
+         WHERE on_line = ? AND subscribe_cycle_for_mobile_position > 0",
+    );
+    let rows: Vec<(String, i32)> = crate::dispatch!(pool, |p| {
+        sqlx::query_as::<_, (String, i32)>(&sql)
+            .bind(true)
+            .fetch_all(p)
+    })?;
+    Ok(rows)
 }
 
 /// 批量更新通道在线状态
@@ -1960,30 +1369,15 @@ pub async fn batch_update_channel_status(
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let mut total = 0u64;
     for channel_id in channel_ids {
-        #[cfg(feature = "mysql")]
-        let r = sqlx::query("UPDATE gb_device_channel SET status = ?, update_time = ? WHERE device_id = ? AND gb_device_id = ?")
-            .bind(status)
-            .bind(&now)
-            .bind(device_id)
-            .bind(channel_id)
-            .execute(pool)
-            .await?;
-        #[cfg(feature = "postgres")]
-        let r = sqlx::query("UPDATE gb_device_channel SET status = $1, update_time = $2 WHERE device_id = $3 AND gb_device_id = $4")
-            .bind(status)
-            .bind(&now)
-            .bind(device_id)
-            .bind(channel_id)
-            .execute(pool)
-            .await?;
-        #[cfg(feature = "sqlite")]
-        let r = sqlx::query("UPDATE gb_device_channel SET status = ?, update_time = ? WHERE device_id = ? AND gb_device_id = ?")
-            .bind(status)
-            .bind(&now)
-            .bind(device_id)
-            .bind(channel_id)
-            .execute(pool)
-            .await?;
+        let sql = crate::db::dialect::current_sql("UPDATE gb_device_channel SET status = ?, update_time = ? WHERE device_id = ? AND gb_device_id = ?").into_owned();
+        let r = crate::dispatch_exec!(pool, |p| {
+            sqlx::query(&sql)
+                .bind(status)
+                .bind(&now)
+                .bind(device_id)
+                .bind(channel_id)
+                .execute(p)
+        })?;
         total += r.rows_affected();
     }
     Ok(total)
@@ -1991,64 +1385,32 @@ pub async fn batch_update_channel_status(
 
 /// 删除设备的所有通道
 pub async fn delete_channels_by_device(pool: &Pool, device_id: &str) -> sqlx::Result<u64> {
-    #[cfg(feature = "mysql")]
-    let r = sqlx::query("DELETE FROM gb_device_channel WHERE device_id = ?")
-        .bind(device_id)
-        .execute(pool)
-        .await?;
-    #[cfg(feature = "postgres")]
-    let r = sqlx::query("DELETE FROM gb_device_channel WHERE device_id = $1")
-        .bind(device_id)
-        .execute(pool)
-        .await?;
-    #[cfg(feature = "sqlite")]
-    let r = sqlx::query("DELETE FROM gb_device_channel WHERE device_id = ?")
-        .bind(device_id)
-        .execute(pool)
-        .await?;
+    let sql = crate::db::dialect::current_sql("DELETE FROM gb_device_channel WHERE device_id = ?")
+        .into_owned();
+    let r = crate::dispatch_exec!(pool, |p| { sqlx::query(&sql).bind(device_id).execute(p) })?;
     Ok(r.rows_affected())
 }
 
 /// 删除单个通道
 pub async fn delete_channel_by_id(pool: &Pool, id: i64) -> sqlx::Result<u64> {
-    #[cfg(feature = "mysql")]
-    let r = sqlx::query("DELETE FROM gb_device_channel WHERE id = ?")
-        .bind(id)
-        .execute(pool)
-        .await?;
-    #[cfg(feature = "postgres")]
-    let r = sqlx::query("DELETE FROM gb_device_channel WHERE id = $1")
-        .bind(id)
-        .execute(pool)
-        .await?;
-    #[cfg(feature = "sqlite")]
-    let r = sqlx::query("DELETE FROM gb_device_channel WHERE id = ?")
-        .bind(id)
-        .execute(pool)
-        .await?;
+    let sql =
+        crate::db::dialect::current_sql("DELETE FROM gb_device_channel WHERE id = ?").into_owned();
+    let r = crate::dispatch_exec!(pool, |p| { sqlx::query(&sql).bind(id).execute(p) })?;
     Ok(r.rows_affected())
 }
 
 /// 删除指定设备的指定通道
 pub async fn delete_channel(pool: &Pool, device_id: &str, channel_id: &str) -> sqlx::Result<u64> {
-    #[cfg(feature = "mysql")]
-    let r = sqlx::query("DELETE FROM gb_device_channel WHERE device_id = ? AND gb_device_id = ?")
-        .bind(device_id)
-        .bind(channel_id)
-        .execute(pool)
-        .await?;
-    #[cfg(feature = "postgres")]
-    let r = sqlx::query("DELETE FROM gb_device_channel WHERE device_id = $1 AND gb_device_id = $2")
-        .bind(device_id)
-        .bind(channel_id)
-        .execute(pool)
-        .await?;
-    #[cfg(feature = "sqlite")]
-    let r = sqlx::query("DELETE FROM gb_device_channel WHERE device_id = ? AND gb_device_id = ?")
-        .bind(device_id)
-        .bind(channel_id)
-        .execute(pool)
-        .await?;
+    let sql = crate::db::dialect::current_sql(
+        "DELETE FROM gb_device_channel WHERE device_id = ? AND gb_device_id = ?",
+    )
+    .into_owned();
+    let r = crate::dispatch_exec!(pool, |p| {
+        sqlx::query(&sql)
+            .bind(device_id)
+            .bind(channel_id)
+            .execute(p)
+    })?;
     Ok(r.rows_affected())
 }
 
@@ -2063,74 +1425,34 @@ pub async fn batch_insert_channels(
     }
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let mut total = 0u64;
-    #[cfg(feature = "mysql")]
-    let parent_db_id: i32 = sqlx::query_scalar("SELECT id FROM gb_device WHERE device_id = ?")
+    // 三个方言的 SQL 只差占位符，统一用 `?`。
+    // `id` 一律按 i32 读（MySQL 的 bigint / PG 的 serial / SQLite 的 INTEGER
+    // 都落在这条口径上，见 `docs/DB_DIALECT_NOTES.md` 规则 2）。
+    let parent_db_id: i32 = crate::dispatch!(pool, |p| {
+        sqlx::query_scalar::<_, i32>(&crate::dyn_where::dialect_sql(
+            "SELECT id FROM gb_device WHERE device_id = ?",
+        ))
         .bind(device_id)
-        .fetch_one(pool)
-        .await?;
-    #[cfg(feature = "sqlite")]
-    let parent_db_id: i64 = sqlx::query_scalar("SELECT id FROM gb_device WHERE device_id = ?")
-        .bind(device_id)
-        .fetch_one(pool)
-        .await?;
-    #[cfg(feature = "postgres")]
-    let parent_db_id: i32 = sqlx::query_scalar("SELECT id FROM gb_device WHERE device_id = $1")
-        .bind(device_id)
-        .fetch_one(pool)
-        .await?;
+        .fetch_one(p)
+    })?;
 
     for ch in channels {
-        #[cfg(feature = "mysql")]
-        let r = sqlx::query(
-            "INSERT INTO gb_device_channel (device_id, name, gb_device_id, status, longitude, latitude, has_audio, channel_type, create_time, update_time, data_type, data_device_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)"
-        )
-        .bind(device_id)
-        .bind(&ch.name)
-        .bind(&ch.gb_device_id)
-        .bind(&ch.status)
-        .bind(ch.longitude)
-        .bind(ch.latitude)
-        .bind(ch.has_audio)
-        .bind(ch.channel_type.unwrap_or(0))
-        .bind(&now)
-        .bind(&now)
-        .bind(parent_db_id)
-        .execute(pool)
-        .await?;
-        #[cfg(feature = "postgres")]
-        let r = sqlx::query(
-            "INSERT INTO gb_device_channel (device_id, name, gb_device_id, status, longitude, latitude, has_audio, channel_type, create_time, update_time, data_type, data_device_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 0, $11)"
-        )
-        .bind(device_id)
-        .bind(&ch.name)
-        .bind(&ch.gb_device_id)
-        .bind(&ch.status)
-        .bind(ch.longitude)
-        .bind(ch.latitude)
-        .bind(ch.has_audio)
-        .bind(ch.channel_type.unwrap_or(0))
-        .bind(&now)
-        .bind(&now)
-        .bind(parent_db_id)
-        .execute(pool)
-        .await?;
-        #[cfg(feature = "sqlite")]
-        let r = sqlx::query(
-            "INSERT INTO gb_device_channel (device_id, name, gb_device_id, status, longitude, latitude, has_audio, channel_type, create_time, update_time, data_type, data_device_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)"
-        )
-        .bind(device_id)
-        .bind(&ch.name)
-        .bind(&ch.gb_device_id)
-        .bind(&ch.status)
-        .bind(ch.longitude)
-        .bind(ch.latitude)
-        .bind(ch.has_audio)
-        .bind(ch.channel_type.unwrap_or(0))
-        .bind(&now)
-        .bind(&now)
-        .bind(parent_db_id)
-        .execute(pool)
-        .await?;
+        let sql = crate::db::dialect::current_sql("INSERT INTO gb_device_channel (device_id, name, gb_device_id, status, longitude, latitude, has_audio, channel_type, create_time, update_time, data_type, data_device_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)").into_owned();
+        let r = crate::dispatch_exec!(pool, |p| {
+            sqlx::query(&sql)
+                .bind(device_id)
+                .bind(&ch.name)
+                .bind(&ch.gb_device_id)
+                .bind(&ch.status)
+                .bind(ch.longitude)
+                .bind(ch.latitude)
+                .bind(ch.has_audio)
+                .bind(ch.channel_type.unwrap_or(0))
+                .bind(&now)
+                .bind(&now)
+                .bind(parent_db_id)
+                .execute(p)
+        })?;
         total += r.rows_affected();
     }
     Ok(total)
@@ -2150,40 +1472,37 @@ pub struct ChannelInsertData {
 
 /// 统计在线设备数量
 pub async fn count_online_devices(pool: &Pool) -> sqlx::Result<i64> {
-    #[cfg(feature = "mysql")]
-    return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_device WHERE on_line = 1")
-        .fetch_one(pool)
-        .await;
-    #[cfg(feature = "postgres")]
-    return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_device WHERE on_line = true")
-        .fetch_one(pool)
-        .await;
-    #[cfg(feature = "sqlite")]
-    return sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_device WHERE on_line = 1")
-        .fetch_one(pool)
-        .await;
+    // `on_line` 是布尔列：PG 是 BOOL、MySQL 是 TINYINT(1)、SQLite 是 INTEGER。
+    // 统一用**参数绑定**传 Rust `bool`（pg 走 BOOLEAN、mysql 走 TINYINT、
+    // sqlite 走 INTEGER），不必在 SQL 文本里分叉 `true` / `1`。
+    let sql = pool.sql("SELECT COUNT(*) FROM gb_device WHERE on_line = ?");
+    crate::dispatch!(pool, |p| {
+        sqlx::query_scalar::<_, i64>(&sql).bind(true).fetch_one(p)
+    })
 }
 
 /// 获取所有设备列表（不分页）
 pub async fn list_all_devices(pool: &Pool) -> sqlx::Result<Vec<Device>> {
-    #[cfg(feature = "mysql")]
-    return sqlx::query_as::<_, Device>(
-        "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, heart_beat_interval, heart_beat_count, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval, host_address, (SELECT COUNT(*) FROM gb_device_channel WHERE device_id = gb_device.device_id) AS channel_count, server_id FROM gb_device ORDER BY id"
-    )
-    .fetch_all(pool)
-    .await;
-    #[cfg(feature = "postgres")]
-    return sqlx::query_as::<_, Device>(
-        "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, heart_beat_interval, heart_beat_count, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval, host_address, CAST((SELECT COUNT(*) FROM gb_device_channel WHERE device_id = gb_device.device_id) AS INTEGER) AS channel_count, server_id FROM gb_device ORDER BY id"
-    )
-    .fetch_all(pool)
-    .await;
-    #[cfg(feature = "sqlite")]
-    return sqlx::query_as::<_, Device>(
-        "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, on_line, register_time, keepalive_time, ip, port, expires, heart_beat_interval, heart_beat_count, create_time, update_time, media_server_id, custom_name, charset, ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, subscribe_cycle_for_mobile_position, mobile_position_submission_interval, host_address, (SELECT COUNT(*) FROM gb_device_channel WHERE device_id = gb_device.device_id) AS channel_count, server_id FROM gb_device ORDER BY id"
-    )
-    .fetch_all(pool)
-    .await;
+    // `channel_count` 在 Rust 侧是 `Option<i32>`：PG 的 `COUNT(*)` 返回 int8，
+    // 必须显式 `CAST(... AS INTEGER)`；MySQL / SQLite 直接取（宽进严出 / 亲和性）。
+    // `CAST(x AS INTEGER)` 在 MySQL 上不合法（要用 SIGNED），所以只有这一段分方言。
+    let channel_count_expr = match pool.dialect() {
+        crate::db::Dialect::Postgres => {
+            "CAST((SELECT COUNT(*) FROM gb_device_channel WHERE device_id = gb_device.device_id) AS INTEGER)"
+        }
+        _ => "(SELECT COUNT(*) FROM gb_device_channel WHERE device_id = gb_device.device_id)",
+    };
+    let sql = pool
+        .sql(&format!(
+            "SELECT id, device_id, name, manufacturer, model, firmware, transport, stream_mode, \
+             on_line, register_time, keepalive_time, ip, port, expires, heart_beat_interval, \
+             heart_beat_count, create_time, update_time, media_server_id, custom_name, charset, \
+             ssrc_check, geo_coord_sys, sdp_ip, local_ip, password, subscribe_cycle_for_catalog, \
+             subscribe_cycle_for_mobile_position, mobile_position_submission_interval, \
+             host_address, {channel_count_expr} AS channel_count, server_id FROM gb_device ORDER BY id"
+        ))
+        .into_owned();
+    crate::dispatch!(pool, |p| { sqlx::query_as::<_, Device>(&sql).fetch_all(p) })
 }
 
 pub async fn upsert_channel_from_catalog(
@@ -2206,74 +1525,126 @@ pub async fn upsert_channel_from_catalog(
 ) -> sqlx::Result<bool> {
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
 
-    #[cfg(feature = "postgres")]
-    {
-        let existing = sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*) FROM gb_device_channel WHERE device_id = $1 AND gb_device_id = $2",
-        )
-        .bind(device_id)
-        .bind(channel_device_id)
-        .fetch_one(pool)
-        .await
-        .unwrap_or(0);
-
-        if existing > 0 {
-            sqlx::query(
-                r#"UPDATE gb_device_channel SET
-                   name = COALESCE($3, name),
-                   manufacturer = COALESCE($4, manufacturer),
-                   model = COALESCE($5, model),
-                   owner = COALESCE($6, owner),
-                   civil_code = COALESCE($7, civil_code),
-                   address = COALESCE($8, address),
-                   parent_id = COALESCE($9, parent_id),
-                   status = CASE WHEN $10 THEN 'ON' ELSE 'OFF' END,
-                   longitude = COALESCE($11, longitude),
-                   latitude = COALESCE($12, latitude),
-                   ptz_type = COALESCE($13, ptz_type),
-                   has_audio = COALESCE($14, has_audio),
-                   sub_count = COALESCE($15, sub_count),
-                   update_time = $16
-                   WHERE device_id = $1 AND gb_device_id = $2"#,
+    crate::dispatch_dialect!(
+        pool,
+        // ---- PostgreSQL：先看有没有，有就 UPDATE，没有才 INSERT ----
+        |p| {
+            let existing: i64 = sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM gb_device_channel WHERE device_id = $1 AND gb_device_id = $2",
             )
             .bind(device_id)
             .bind(channel_device_id)
-            .bind(if name.is_empty() {
-                None as Option<&str>
+            .fetch_one(p)
+            .await
+            .unwrap_or(0);
+
+            if existing > 0 {
+                sqlx::query(
+                    r#"UPDATE gb_device_channel SET
+                       name = COALESCE($3, name),
+                       manufacturer = COALESCE($4, manufacturer),
+                       model = COALESCE($5, model),
+                       owner = COALESCE($6, owner),
+                       civil_code = COALESCE($7, civil_code),
+                       address = COALESCE($8, address),
+                       parent_id = COALESCE($9, parent_id),
+                       status = CASE WHEN $10 THEN 'ON' ELSE 'OFF' END,
+                       longitude = COALESCE($11, longitude),
+                       latitude = COALESCE($12, latitude),
+                       ptz_type = COALESCE($13, ptz_type),
+                       has_audio = COALESCE($14, has_audio),
+                       sub_count = COALESCE($15, sub_count),
+                       update_time = $16
+                       WHERE device_id = $1 AND gb_device_id = $2"#,
+                )
+                .bind(device_id)
+                .bind(channel_device_id)
+                .bind(if name.is_empty() {
+                    None as Option<&str>
+                } else {
+                    Some(name)
+                })
+                .bind(manufacturer)
+                .bind(model)
+                .bind(owner)
+                .bind(civil_code)
+                .bind(address)
+                .bind(parent_id)
+                .bind(online)
+                .bind(longitude)
+                .bind(latitude)
+                .bind(ptz_type)
+                .bind(has_audio)
+                .bind(sub_count)
+                .bind(&now)
+                .execute(p)
+                .await?;
+                Ok(false)
             } else {
-                Some(name)
-            })
-            .bind(manufacturer)
-            .bind(model)
-            .bind(owner)
-            .bind(civil_code)
-            .bind(address)
-            .bind(parent_id)
-            .bind(online)
-            .bind(longitude)
-            .bind(latitude)
-            .bind(ptz_type)
-            .bind(has_audio)
-            .bind(sub_count)
-            .bind(&now)
-            .execute(pool)
+                let parent_db_id: i32 =
+                    sqlx::query_scalar::<_, i32>("SELECT id FROM gb_device WHERE device_id = $1")
+                        .bind(device_id)
+                        .fetch_one(p)
+                        .await?;
+                sqlx::query(
+                    r#"INSERT INTO gb_device_channel
+                       (device_id, gb_device_id, name, manufacturer, model, owner, civil_code, address,
+                        parent_id, status, longitude, latitude, ptz_type, has_audio, sub_count,
+                        create_time, update_time, data_type, data_device_id)
+                       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9,
+                        CASE WHEN $10 THEN 'ON' ELSE 'OFF' END,
+                        $11, $12, $13, $14, $15, $16, $17, 0, $18)"#,
+                )
+                .bind(device_id)
+                .bind(channel_device_id)
+                .bind(if name.is_empty() { "Unknown" } else { name })
+                .bind(manufacturer)
+                .bind(model)
+                .bind(owner)
+                .bind(civil_code)
+                .bind(address)
+                .bind(parent_id)
+                .bind(online)
+                .bind(longitude)
+                .bind(latitude)
+                .bind(ptz_type)
+                .bind(has_audio)
+                .bind(sub_count)
+                .bind(&now)
+                .bind(&now)
+                .bind(parent_db_id)
+                .execute(p)
+                .await?;
+                Ok(true)
+            }
+        },
+        // ---- MySQL：ON DUPLICATE KEY UPDATE ----
+        |p| {
+            let parent_db_id: i32 = sqlx::query_scalar::<_, i32>(&crate::dyn_where::dialect_sql(
+                "SELECT id FROM gb_device WHERE device_id = ?",
+            ))
+            .bind(device_id)
+            .fetch_one(p)
             .await?;
-            Ok(false)
-        } else {
-            let parent_db_id: i32 =
-                sqlx::query_scalar("SELECT id FROM gb_device WHERE device_id = $1")
-                    .bind(device_id)
-                    .fetch_one(pool)
-                    .await?;
-            sqlx::query(
+            sqlx::query(&crate::dyn_where::dialect_sql(
                 r#"INSERT INTO gb_device_channel
                    (device_id, gb_device_id, name, manufacturer, model, owner, civil_code, address,
                     parent_id, status, longitude, latitude, ptz_type, has_audio, sub_count,
                     create_time, update_time, data_type, data_device_id)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9,
-                    CASE WHEN $10 THEN 'ON' ELSE 'OFF' END,
-                    $11, $12, $13, $14, $15, $16, $17, 0, $18)"#,
-            )
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    CASE WHEN ? THEN 'ON' ELSE 'OFF' END,
+                    ?, ?, ?, ?, ?, ?, ?, 0, ?)
+                   ON DUPLICATE KEY UPDATE
+                   name = COALESCE(VALUES(name), name),
+                   manufacturer = COALESCE(VALUES(manufacturer), manufacturer),
+                   parent_id = COALESCE(VALUES(parent_id), parent_id),
+                   status = VALUES(status),
+                   longitude = COALESCE(VALUES(longitude), longitude),
+                   latitude = COALESCE(VALUES(latitude), latitude),
+                   has_audio = COALESCE(VALUES(has_audio), has_audio),
+                   sub_count = COALESCE(VALUES(sub_count), sub_count),
+                   update_time = VALUES(update_time)"#,
+            ))
             .bind(device_id)
             .bind(channel_device_id)
             .bind(if name.is_empty() { "Unknown" } else { name })
@@ -2292,145 +1663,112 @@ pub async fn upsert_channel_from_catalog(
             .bind(&now)
             .bind(&now)
             .bind(parent_db_id)
-            .execute(pool)
+            .execute(p)
             .await?;
             Ok(true)
-        }
-    }
-
-    #[cfg(feature = "mysql")]
-    {
-        let parent_db_id: i32 = sqlx::query_scalar("SELECT id FROM gb_device WHERE device_id = ?")
+        },
+        // ---- SQLite：ON CONFLICT ... DO UPDATE ----
+        |p| {
+            // Phase 4.x: 查询父设备 db id,作为 data_device_id;data_type = 0 (channel)
+            // 否则受 NOT NULL 约束直接 INSERT 失败。
+            let parent_db_id: i64 = sqlx::query_scalar::<_, i64>(&crate::dyn_where::dialect_sql(
+                "SELECT COALESCE(id, 0) FROM gb_device WHERE device_id = ?",
+            ))
             .bind(device_id)
-            .fetch_one(pool)
-            .await?;
-        sqlx::query(
-            r#"INSERT INTO gb_device_channel
-               (device_id, gb_device_id, name, manufacturer, model, owner, civil_code, address,
-                parent_id, status, longitude, latitude, ptz_type, has_audio, sub_count,
-                create_time, update_time, data_type, data_device_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,
-                CASE WHEN ? THEN 'ON' ELSE 'OFF' END,
-                ?, ?, ?, ?, ?, ?, ?, 0, ?)
-               ON DUPLICATE KEY UPDATE
-               name = COALESCE(VALUES(name), name),
-               manufacturer = COALESCE(VALUES(manufacturer), manufacturer),
-               parent_id = COALESCE(VALUES(parent_id), parent_id),
-               status = VALUES(status),
-               longitude = COALESCE(VALUES(longitude), longitude),
-               latitude = COALESCE(VALUES(latitude), latitude),
-               has_audio = COALESCE(VALUES(has_audio), has_audio),
-               sub_count = COALESCE(VALUES(sub_count), sub_count),
-               update_time = VALUES(update_time)"#,
-        )
-        .bind(device_id)
-        .bind(channel_device_id)
-        .bind(if name.is_empty() { "Unknown" } else { name })
-        .bind(manufacturer)
-        .bind(model)
-        .bind(owner)
-        .bind(civil_code)
-        .bind(address)
-        .bind(parent_id)
-        .bind(online)
-        .bind(longitude)
-        .bind(latitude)
-        .bind(ptz_type)
-        .bind(has_audio)
-        .bind(sub_count)
-        .bind(&now)
-        .bind(&now)
-        .bind(parent_db_id)
-        .execute(pool)
-        .await?;
-        Ok(true)
-    }
-    #[cfg(feature = "sqlite")]
-    {
-        // Phase 4.x: 查询父设备 db id,作为 data_device_id;data_type = 0 (channel)
-        // 否则受 NOT NULL 约束直接 INSERT 失败。
-        let parent_db_id: i64 = sqlx::query_scalar::<_, i64>(
-            "SELECT COALESCE(id, 0) FROM gb_device WHERE device_id = ?",
-        )
-        .bind(device_id)
-        .fetch_optional(pool)
-        .await
-        .unwrap_or(None)
-        .unwrap_or(0);
+            .fetch_optional(p)
+            .await
+            .unwrap_or(None)
+            .unwrap_or(0);
 
-        sqlx::query(
-            r#"INSERT INTO gb_device_channel
-               (device_id, gb_device_id, name, manufacturer, model, owner, civil_code, address,
-                parent_id, status, longitude, latitude, ptz_type, has_audio, sub_count,
-                create_time, update_time, data_type, data_device_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,
-                CASE WHEN ? THEN 'ON' ELSE 'OFF' END,
-                ?, ?, ?, ?, ?, ?, ?, 0, ?)
-               ON CONFLICT(gb_device_id) DO UPDATE SET
-               name = COALESCE(excluded.name, gb_device_channel.name),
-               manufacturer = COALESCE(excluded.manufacturer, gb_device_channel.manufacturer),
-               parent_id = COALESCE(excluded.parent_id, gb_device_channel.parent_id),
-               status = excluded.status,
-               longitude = COALESCE(excluded.longitude, gb_device_channel.longitude),
-               latitude = COALESCE(excluded.latitude, gb_device_channel.latitude),
-               has_audio = COALESCE(excluded.has_audio, gb_device_channel.has_audio),
-               sub_count = COALESCE(excluded.sub_count, gb_device_channel.sub_count),
-               update_time = excluded.update_time"#,
-        )
-        .bind(device_id)
-        .bind(channel_device_id)
-        .bind(if name.is_empty() { "Unknown" } else { name })
-        .bind(manufacturer)
-        .bind(model)
-        .bind(owner)
-        .bind(civil_code)
-        .bind(address)
-        .bind(parent_id)
-        .bind(online)
-        .bind(longitude)
-        .bind(latitude)
-        .bind(ptz_type)
-        .bind(has_audio)
-        .bind(sub_count)
-        .bind(&now)
-        .bind(&now)
-        .bind(parent_db_id)
-        .execute(pool)
-        .await?;
-        Ok(true)
-    }
+            sqlx::query(&crate::dyn_where::dialect_sql(
+                r#"INSERT INTO gb_device_channel
+                   (device_id, gb_device_id, name, manufacturer, model, owner, civil_code, address,
+                    parent_id, status, longitude, latitude, ptz_type, has_audio, sub_count,
+                    create_time, update_time, data_type, data_device_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    CASE WHEN ? THEN 'ON' ELSE 'OFF' END,
+                    ?, ?, ?, ?, ?, ?, ?, 0, ?)
+                   ON CONFLICT(gb_device_id) DO UPDATE SET
+                   name = COALESCE(excluded.name, gb_device_channel.name),
+                   manufacturer = COALESCE(excluded.manufacturer, gb_device_channel.manufacturer),
+                   parent_id = COALESCE(excluded.parent_id, gb_device_channel.parent_id),
+                   status = excluded.status,
+                   longitude = COALESCE(excluded.longitude, gb_device_channel.longitude),
+                   latitude = COALESCE(excluded.latitude, gb_device_channel.latitude),
+                   has_audio = COALESCE(excluded.has_audio, gb_device_channel.has_audio),
+                   sub_count = COALESCE(excluded.sub_count, gb_device_channel.sub_count),
+                   update_time = excluded.update_time"#,
+            ))
+            .bind(device_id)
+            .bind(channel_device_id)
+            .bind(if name.is_empty() { "Unknown" } else { name })
+            .bind(manufacturer)
+            .bind(model)
+            .bind(owner)
+            .bind(civil_code)
+            .bind(address)
+            .bind(parent_id)
+            .bind(online)
+            .bind(longitude)
+            .bind(latitude)
+            .bind(ptz_type)
+            .bind(has_audio)
+            .bind(sub_count)
+            .bind(&now)
+            .bind(&now)
+            .bind(parent_db_id)
+            .execute(p)
+            .await?;
+            Ok(true)
+        },
+    )
 }
+
 /// 在线注册设备数（与 on_line 字段一致）
 pub async fn count_registered_devices(pool: &Pool) -> sqlx::Result<i64> {
-    let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM gb_device")
-        .fetch_one(pool)
-        .await?;
+    let n: i64 = crate::dispatch!(pool, |p| {
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_device").fetch_one(p)
+    })?;
     Ok(n)
 }
 
 /// 在线设备数（最近 60s 内收到过 keepalive 的设备视为在线）
 pub async fn count_alive_devices(pool: &Pool, alive_window_secs: i64) -> sqlx::Result<i64> {
-    #[cfg(feature = "postgres")]
-    let n: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM gb_device          WHERE on_line = true            AND keepalive_time IS NOT NULL            AND EXTRACT(EPOCH FROM (NOW() - keepalive_time)) <= $1"
-    )
-    .bind(alive_window_secs)
-    .fetch_one(pool)
-    .await?;
-    #[cfg(feature = "mysql")]
-    let n: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM gb_device          WHERE on_line = true            AND keepalive_time IS NOT NULL            AND TIMESTAMPDIFF(SECOND, keepalive_time, NOW()) <= $1"
-    )
-    .bind(alive_window_secs)
-    .fetch_one(pool)
-    .await?;
-    #[cfg(feature = "sqlite")]
-    let n: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM gb_device WHERE on_line = 1 AND keepalive_time IS NOT NULL AND (julianday('now') - julianday(keepalive_time)) * 86400 <= ?"
-    )
-    .bind(alive_window_secs as f64)
-    .fetch_one(pool)
-    .await?;
+    // "最近 N 秒内收到过心跳" —— 时间差算子三种方言各不相同，属于**方言专属语法**：
+    // * PostgreSQL：`EXTRACT(EPOCH FROM (NOW() - keepalive_time))`
+    // * MySQL：`TIMESTAMPDIFF(SECOND, keepalive_time, NOW())`
+    // * SQLite：`(julianday('now') - julianday(keepalive_time)) * 86400`
+    // 三个分支各带自己的 SQL（MySQL 分支此前被错配成了 pg 的 `$1` 占位符）。
+    let n: i64 = crate::dispatch_dialect!(
+        pool,
+        |p| {
+            sqlx::query_scalar::<_, i64>(
+                &crate::dyn_where::dialect_sql("SELECT COUNT(*) FROM gb_device                  WHERE on_line = ? AND keepalive_time IS NOT NULL                  AND EXTRACT(EPOCH FROM (NOW() - keepalive_time)) <= $1"),
+            )
+            .bind(true)
+            .bind(alive_window_secs)
+            .fetch_one(p)
+            .await
+        },
+        |p| {
+            sqlx::query_scalar::<_, i64>(
+                &crate::dyn_where::dialect_sql("SELECT COUNT(*) FROM gb_device                  WHERE on_line = ? AND keepalive_time IS NOT NULL                  AND TIMESTAMPDIFF(SECOND, keepalive_time, NOW()) <= ?"),
+            )
+            .bind(true)
+            .bind(alive_window_secs)
+            .fetch_one(p)
+            .await
+        },
+        |p| {
+            sqlx::query_scalar::<_, i64>(
+                &crate::dyn_where::dialect_sql("SELECT COUNT(*) FROM gb_device                  WHERE on_line = ? AND keepalive_time IS NOT NULL                  AND (julianday('now') - julianday(keepalive_time)) * 86400 <= ?"),
+            )
+            .bind(true)
+            .bind(alive_window_secs as f64)
+            .fetch_one(p)
+            .await
+        },
+    )?;
     Ok(n)
 }
 
@@ -2450,126 +1788,126 @@ pub async fn batch_upsert_channels(
     }
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
 
-    #[cfg(feature = "postgres")]
-    {
-        // PostgreSQL: 单条 INSERT ... ON CONFLICT DO UPDATE
-        // VALUES ($1, $2, ...), ($3, $4, ...), ... — 用 UNNEST 模式避免 N 个参数
-        let gb_ids: Vec<&str> = channels.iter().map(|c| c.gb_device_id.as_str()).collect();
-        let names: Vec<&str> = channels.iter().map(|c| c.name.as_str()).collect();
-        let statuses: Vec<&str> = channels.iter().map(|c| c.status.as_str()).collect();
-        let longitudes: Vec<Option<f64>> = channels.iter().map(|c| c.longitude).collect();
-        let latitudes: Vec<Option<f64>> = channels.iter().map(|c| c.latitude).collect();
-        let has_audios: Vec<Option<bool>> = channels.iter().map(|c| c.has_audio).collect();
-        let channel_types: Vec<Option<i32>> = channels.iter().map(|c| c.channel_type).collect();
+    crate::dispatch_dialect!(
+        pool,
+        // ---- PostgreSQL：单条 INSERT ... ON CONFLICT DO UPDATE（UNNEST 避免 N 个参数）----
+        |p| {
+            let gb_ids: Vec<&str> = channels.iter().map(|c| c.gb_device_id.as_str()).collect();
+            let names: Vec<&str> = channels.iter().map(|c| c.name.as_str()).collect();
+            let statuses: Vec<&str> = channels.iter().map(|c| c.status.as_str()).collect();
+            let longitudes: Vec<Option<f64>> = channels.iter().map(|c| c.longitude).collect();
+            let latitudes: Vec<Option<f64>> = channels.iter().map(|c| c.latitude).collect();
+            let has_audios: Vec<Option<bool>> = channels.iter().map(|c| c.has_audio).collect();
+            let channel_types: Vec<Option<i32>> = channels.iter().map(|c| c.channel_type).collect();
 
-        let result = sqlx::query(
-            r#"INSERT INTO gb_device_channel
-               (device_id, gb_device_id, name, status, longitude, latitude, has_audio, channel_type, create_time, update_time, data_type, data_device_id)
-               SELECT $1, gb_id, name, status, longitude, latitude, has_audio, COALESCE(channel_type, 0), $2, $2, 0,
-                      (SELECT id FROM gb_device WHERE device_id = $1)
-               FROM UNNEST($3::text[], $4::text[], $5::text[], $6::float8[], $7::float8[], $8::bool[], $9::int4[])
-               AS t(gb_id, name, status, longitude, latitude, has_audio, channel_type)
-               ON CONFLICT (gb_device_id) DO UPDATE SET
-                   name = EXCLUDED.name,
-                   status = EXCLUDED.status,
-                   longitude = EXCLUDED.longitude,
-                   latitude = EXCLUDED.latitude,
-                   has_audio = EXCLUDED.has_audio,
-                   channel_type = EXCLUDED.channel_type,
-                   update_time = EXCLUDED.update_time"#,
-        )
-        .bind(parent_device_id)
-        .bind(&now)
-        .bind(&gb_ids)
-        .bind(&names)
-        .bind(&statuses)
-        .bind(&longitudes)
-        .bind(&latitudes)
-        .bind(&has_audios)
-        .bind(&channel_types)
-        .execute(pool)
-        .await?;
-        Ok(result.rows_affected())
-    }
-
-    #[cfg(feature = "mysql")]
-    {
-        // MySQL: 多次单条 INSERT ... ON DUPLICATE KEY UPDATE
-        // 因为 MySQL 不支持 UNNEST，每个 channel 单独执行
-        let parent_db_id: i32 = sqlx::query_scalar("SELECT id FROM gb_device WHERE device_id = ?")
-            .bind(parent_device_id)
-            .fetch_one(pool)
-            .await?;
-        let mut total: u64 = 0;
-        for ch in channels {
-            let res = sqlx::query(
+            let result = sqlx::query(
                 r#"INSERT INTO gb_device_channel
                    (device_id, gb_device_id, name, status, longitude, latitude, has_audio, channel_type, create_time, update_time, data_type, data_device_id)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
-                   ON DUPLICATE KEY UPDATE
-                       name = VALUES(name),
-                       status = VALUES(status),
-                       longitude = VALUES(longitude),
-                       latitude = VALUES(latitude),
-                       has_audio = VALUES(has_audio),
-                       channel_type = VALUES(channel_type),
-                       update_time = VALUES(update_time)"#,
+                   SELECT $1, gb_id, name, status, longitude, latitude, has_audio, COALESCE(channel_type, 0), $2, $2, 0,
+                          (SELECT id FROM gb_device WHERE device_id = $1)
+                   FROM UNNEST($3::text[], $4::text[], $5::text[], $6::float8[], $7::float8[], $8::bool[], $9::int4[])
+                   AS t(gb_id, name, status, longitude, latitude, has_audio, channel_type)
+                   ON CONFLICT (gb_device_id) DO UPDATE SET
+                       name = EXCLUDED.name,
+                       status = EXCLUDED.status,
+                       longitude = EXCLUDED.longitude,
+                       latitude = EXCLUDED.latitude,
+                       has_audio = EXCLUDED.has_audio,
+                       channel_type = EXCLUDED.channel_type,
+                       update_time = EXCLUDED.update_time"#,
             )
             .bind(parent_device_id)
-            .bind(&ch.gb_device_id)
-            .bind(&ch.name)
-            .bind(&ch.status)
-            .bind(ch.longitude)
-            .bind(ch.latitude)
-            .bind(ch.has_audio)
-            .bind(ch.channel_type.unwrap_or(0))
             .bind(&now)
-            .bind(&now)
-            .bind(parent_db_id)
-            .execute(pool)
+            .bind(&gb_ids)
+            .bind(&names)
+            .bind(&statuses)
+            .bind(&longitudes)
+            .bind(&latitudes)
+            .bind(&has_audios)
+            .bind(&channel_types)
+            .execute(p)
             .await?;
-            total += res.rows_affected();
-        }
-        Ok(total)
-    }
-    #[cfg(feature = "sqlite")]
-    {
-        // SQLite: 多次单条 INSERT ... ON CONFLICT DO UPDATE
-        // 复用 MySQL 风格 — SQLite 也不支持 UNNEST，每个 channel 单独执行
-        let parent_db_id: i64 = sqlx::query_scalar("SELECT id FROM gb_device WHERE device_id = ?")
+            Ok(result.rows_affected())
+        },
+        // ---- MySQL：多次单条 INSERT ... ON DUPLICATE KEY UPDATE（不支持 UNNEST）----
+        |p| {
+            let parent_db_id: i32 = sqlx::query_scalar::<_, i32>(&crate::dyn_where::dialect_sql(
+                "SELECT id FROM gb_device WHERE device_id = ?",
+            ))
             .bind(parent_device_id)
-            .fetch_one(pool)
+            .fetch_one(p)
             .await?;
-        let mut total: u64 = 0;
-        for ch in channels {
-            let res = sqlx::query(
-                r#"INSERT INTO gb_device_channel
-                   (device_id, gb_device_id, name, status, longitude, latitude, has_audio, channel_type, create_time, update_time, data_type, data_device_id)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
-                   ON CONFLICT(gb_device_id) DO UPDATE SET
-                       name = excluded.name,
-                       status = excluded.status,
-                       longitude = excluded.longitude,
-                       latitude = excluded.latitude,
-                       has_audio = excluded.has_audio,
-                       channel_type = excluded.channel_type,
-                       update_time = excluded.update_time"#,
-            )
+            let mut total: u64 = 0;
+            for ch in channels {
+                let res = sqlx::query(
+                    &crate::dyn_where::dialect_sql(r#"INSERT INTO gb_device_channel
+                       (device_id, gb_device_id, name, status, longitude, latitude, has_audio, channel_type, create_time, update_time, data_type, data_device_id)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+                       ON DUPLICATE KEY UPDATE
+                           name = VALUES(name),
+                           status = VALUES(status),
+                           longitude = VALUES(longitude),
+                           latitude = VALUES(latitude),
+                           has_audio = VALUES(has_audio),
+                           channel_type = VALUES(channel_type),
+                           update_time = VALUES(update_time)"#),
+                )
+                .bind(parent_device_id)
+                .bind(&ch.gb_device_id)
+                .bind(&ch.name)
+                .bind(&ch.status)
+                .bind(ch.longitude)
+                .bind(ch.latitude)
+                .bind(ch.has_audio)
+                .bind(ch.channel_type.unwrap_or(0))
+                .bind(&now)
+                .bind(&now)
+                .bind(parent_db_id)
+                .execute(p)
+                .await?;
+                total += res.rows_affected();
+            }
+            Ok(total)
+        },
+        // ---- SQLite：多次单条 INSERT ... ON CONFLICT DO UPDATE（复用 MySQL 风格）----
+        |p| {
+            let parent_db_id: i64 = sqlx::query_scalar::<_, i64>(&crate::dyn_where::dialect_sql(
+                "SELECT id FROM gb_device WHERE device_id = ?",
+            ))
             .bind(parent_device_id)
-            .bind(&ch.gb_device_id)
-            .bind(&ch.name)
-            .bind(&ch.status)
-            .bind(ch.longitude)
-            .bind(ch.latitude)
-            .bind(ch.has_audio)
-            .bind(ch.channel_type.unwrap_or(0))
-            .bind(&now)
-            .bind(&now)
-            .bind(parent_db_id)
-            .execute(pool)
+            .fetch_one(p)
             .await?;
-            total += res.rows_affected();
-        }
-        Ok(total)
-    }
+            let mut total: u64 = 0;
+            for ch in channels {
+                let res = sqlx::query(
+                    &crate::dyn_where::dialect_sql(r#"INSERT INTO gb_device_channel
+                       (device_id, gb_device_id, name, status, longitude, latitude, has_audio, channel_type, create_time, update_time, data_type, data_device_id)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+                       ON CONFLICT(gb_device_id) DO UPDATE SET
+                           name = excluded.name,
+                           status = excluded.status,
+                           longitude = excluded.longitude,
+                           latitude = excluded.latitude,
+                           has_audio = excluded.has_audio,
+                           channel_type = excluded.channel_type,
+                           update_time = excluded.update_time"#),
+                )
+                .bind(parent_device_id)
+                .bind(&ch.gb_device_id)
+                .bind(&ch.name)
+                .bind(&ch.status)
+                .bind(ch.longitude)
+                .bind(ch.latitude)
+                .bind(ch.has_audio)
+                .bind(ch.channel_type.unwrap_or(0))
+                .bind(&now)
+                .bind(&now)
+                .bind(parent_db_id)
+                .execute(p)
+                .await?;
+                total += res.rows_affected();
+            }
+            Ok(total)
+        },
+    )
 }

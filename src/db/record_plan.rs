@@ -2,7 +2,6 @@
 
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
-#[cfg(feature = "postgres")]
 use sqlx::Row;
 
 use super::Pool;
@@ -102,27 +101,33 @@ impl RecordPlanItemPayload {
 }
 
 pub async fn get_by_id(pool: &Pool, id: i32) -> sqlx::Result<Option<RecordPlan>> {
-    #[cfg(feature = "mysql")]
-    return sqlx::query_as::<_, RecordPlan>(
-        "SELECT id, snap, name, create_time, update_time FROM gb_record_plan WHERE id = ?",
+    crate::dispatch_dialect!(
+        pool,
+        |p| {
+            sqlx::query_as::<_, RecordPlan>(
+                "SELECT id, snap, name, create_time, update_time FROM gb_record_plan WHERE id = $1",
+            )
+            .bind(id)
+            .fetch_optional(p)
+            .await
+        },
+        |p| {
+            sqlx::query_as::<_, RecordPlan>(&crate::dyn_where::dialect_sql(
+                "SELECT id, snap, name, create_time, update_time FROM gb_record_plan WHERE id = ?",
+            ))
+            .bind(id)
+            .fetch_optional(p)
+            .await
+        },
+        |p| {
+            sqlx::query_as::<_, RecordPlan>(&crate::dyn_where::dialect_sql(
+                "SELECT id, snap, name, create_time, update_time FROM gb_record_plan WHERE id = ?",
+            ))
+            .bind(id)
+            .fetch_optional(p)
+            .await
+        },
     )
-    .bind(id)
-    .fetch_optional(pool)
-    .await;
-    #[cfg(feature = "postgres")]
-    return sqlx::query_as::<_, RecordPlan>(
-        "SELECT id, snap, name, create_time, update_time FROM gb_record_plan WHERE id = $1",
-    )
-    .bind(id)
-    .fetch_optional(pool)
-    .await;
-    #[cfg(feature = "sqlite")]
-    return sqlx::query_as::<_, RecordPlan>(
-        "SELECT id, snap, name, create_time, update_time FROM gb_record_plan WHERE id = ?",
-    )
-    .bind(id)
-    .fetch_optional(pool)
-    .await;
 }
 
 /// 分页查询计划；`query` 为名称模糊匹配（`/api/record/plan/query` 的
@@ -135,67 +140,79 @@ pub async fn list_paged(
 ) -> sqlx::Result<Vec<RecordPlan>> {
     let offset = crate::pagination::offset(page, count);
     let like = query.map(|q| format!("%{}%", q));
-    #[cfg(feature = "mysql")]
-    return sqlx::query_as::<_, RecordPlan>(
-        "SELECT id, snap, name, create_time, update_time FROM gb_record_plan \
-         WHERE (? IS NULL OR name LIKE ?) ORDER BY id LIMIT ? OFFSET ?",
+    crate::dispatch_dialect!(
+        pool,
+        |p| {
+            sqlx::query_as::<_, RecordPlan>(
+                "SELECT id, snap, name, create_time, update_time FROM gb_record_plan \
+                     WHERE ($1::text IS NULL OR name ILIKE $2) ORDER BY id LIMIT $3 OFFSET $4",
+            )
+            .bind(like.as_deref())
+            .bind(like.as_deref())
+            .bind(count as i64)
+            .bind(offset)
+            .fetch_all(p)
+            .await
+        },
+        |p| {
+            sqlx::query_as::<_, RecordPlan>(&crate::dyn_where::dialect_sql(
+                "SELECT id, snap, name, create_time, update_time FROM gb_record_plan \
+                     WHERE (? IS NULL OR name LIKE ?) ORDER BY id LIMIT ? OFFSET ?",
+            ))
+            .bind(like.as_deref())
+            .bind(like.as_deref())
+            .bind(count as i64)
+            .bind(offset)
+            .fetch_all(p)
+            .await
+        },
+        |p| {
+            sqlx::query_as::<_, RecordPlan>(&crate::dyn_where::dialect_sql(
+                "SELECT id, snap, name, create_time, update_time FROM gb_record_plan \
+                     WHERE (? IS NULL OR name LIKE ?) ORDER BY id LIMIT ? OFFSET ?",
+            ))
+            .bind(like.as_deref())
+            .bind(like.as_deref())
+            .bind(count as i64)
+            .bind(offset)
+            .fetch_all(p)
+            .await
+        },
     )
-    .bind(like.as_deref())
-    .bind(like.as_deref())
-    .bind(count as i64)
-    .bind(offset)
-    .fetch_all(pool)
-    .await;
-    #[cfg(feature = "postgres")]
-    return sqlx::query_as::<_, RecordPlan>(
-        "SELECT id, snap, name, create_time, update_time FROM gb_record_plan \
-         WHERE ($1::text IS NULL OR name ILIKE $2) ORDER BY id LIMIT $3 OFFSET $4",
-    )
-    .bind(like.as_deref())
-    .bind(like.as_deref())
-    .bind(count as i64)
-    .bind(offset)
-    .fetch_all(pool)
-    .await;
-    #[cfg(feature = "sqlite")]
-    return sqlx::query_as::<_, RecordPlan>(
-        "SELECT id, snap, name, create_time, update_time FROM gb_record_plan \
-         WHERE (? IS NULL OR name LIKE ?) ORDER BY id LIMIT ? OFFSET ?",
-    )
-    .bind(like.as_deref())
-    .bind(like.as_deref())
-    .bind(count as i64)
-    .bind(offset)
-    .fetch_all(pool)
-    .await;
 }
 
 pub async fn count_all(pool: &Pool, query: Option<&str>) -> sqlx::Result<i64> {
     let like = query.map(|q| format!("%{}%", q));
-    #[cfg(feature = "mysql")]
-    return sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM gb_record_plan WHERE (? IS NULL OR name LIKE ?)",
+    crate::dispatch_dialect!(
+        pool,
+        |p| {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM gb_record_plan WHERE ($1::text IS NULL OR name ILIKE $2)",
+            )
+            .bind(like.as_deref())
+            .bind(like.as_deref())
+            .fetch_one(p)
+            .await
+        },
+        |p| {
+            sqlx::query_scalar::<_, i64>(&crate::dyn_where::dialect_sql(
+                "SELECT COUNT(*) FROM gb_record_plan WHERE (? IS NULL OR name LIKE ?)",
+            ))
+            .bind(like.as_deref())
+            .bind(like.as_deref())
+            .fetch_one(p)
+            .await
+        },
+        |p| {
+            sqlx::query_scalar::<_, i64>(&crate::dyn_where::dialect_sql(
+                "SELECT COUNT(*) FROM gb_record_plan WHERE (? IS NULL OR name LIKE ?)",
+            ))
+            .bind(like.as_deref())
+            .bind(like.as_deref())
+            .fetch_one(p)
+            .await
+        },
     )
-    .bind(like.as_deref())
-    .bind(like.as_deref())
-    .fetch_one(pool)
-    .await;
-    #[cfg(feature = "postgres")]
-    return sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM gb_record_plan WHERE ($1::text IS NULL OR name ILIKE $2)",
-    )
-    .bind(like.as_deref())
-    .bind(like.as_deref())
-    .fetch_one(pool)
-    .await;
-    #[cfg(feature = "sqlite")]
-    return sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM gb_record_plan WHERE (? IS NULL OR name LIKE ?)",
-    )
-    .bind(like.as_deref())
-    .bind(like.as_deref())
-    .fetch_one(pool)
-    .await;
 }
 
 /// 计划关联的通道数。
@@ -204,127 +221,142 @@ pub async fn count_all(pool: &Pool, query: Option<&str>) -> sqlx::Result<i64> {
 /// `(select count(1) from gb_device_channel where record_plan_id = wrp.id)`），
 /// 前端"关联通道"那一列直接显示它。
 pub async fn count_linked_channels(pool: &Pool, plan_id: i64) -> sqlx::Result<i64> {
-    #[cfg(feature = "mysql")]
-    return sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM gb_device_channel WHERE record_plan_id = ?",
+    crate::dispatch_dialect!(
+        pool,
+        |p| {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM gb_device_channel WHERE record_plan_id = $1",
+            )
+            .bind(plan_id as i32)
+            .fetch_one(p)
+            .await
+        },
+        |p| {
+            sqlx::query_scalar::<_, i64>(&crate::dyn_where::dialect_sql(
+                "SELECT COUNT(*) FROM gb_device_channel WHERE record_plan_id = ?",
+            ))
+            .bind(plan_id as i32)
+            .fetch_one(p)
+            .await
+        },
+        |p| {
+            sqlx::query_scalar::<_, i64>(&crate::dyn_where::dialect_sql(
+                "SELECT COUNT(*) FROM gb_device_channel WHERE record_plan_id = ?",
+            ))
+            .bind(plan_id as i32)
+            .fetch_one(p)
+            .await
+        },
     )
-    .bind(plan_id as i32)
-    .fetch_one(pool)
-    .await;
-    #[cfg(feature = "postgres")]
-    return sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM gb_device_channel WHERE record_plan_id = $1",
-    )
-    .bind(plan_id as i32)
-    .fetch_one(pool)
-    .await;
-    #[cfg(feature = "sqlite")]
-    return sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM gb_device_channel WHERE record_plan_id = ?",
-    )
-    .bind(plan_id as i32)
-    .fetch_one(pool)
-    .await;
 }
 
 pub async fn list_items(pool: &Pool, plan_id: i64) -> sqlx::Result<Vec<RecordPlanItem>> {
-    #[cfg(feature = "mysql")]
-    return sqlx::query_as::<_, RecordPlanItem>(
-        "SELECT id, start, stop, week_day, plan_id, create_time, update_time FROM gb_record_plan_item WHERE plan_id = ? ORDER BY id",
+    crate::dispatch_dialect!(
+        pool,
+        |p| {
+            sqlx::query_as::<_, RecordPlanItem>(
+                    "SELECT id, start, stop, week_day, plan_id, create_time, update_time FROM gb_record_plan_item WHERE plan_id = $1 ORDER BY id",
+                )
+                .bind(plan_id)
+                .fetch_all(p)
+                .await
+        },
+        |p| {
+            sqlx::query_as::<_, RecordPlanItem>(
+                    &crate::dyn_where::dialect_sql("SELECT id, start, stop, week_day, plan_id, create_time, update_time FROM gb_record_plan_item WHERE plan_id = ? ORDER BY id"),
+                )
+                .bind(plan_id)
+                .fetch_all(p)
+                .await
+        },
+        |p| {
+            sqlx::query_as::<_, RecordPlanItem>(
+                    &crate::dyn_where::dialect_sql("SELECT id, start, stop, week_day, plan_id, create_time, update_time FROM gb_record_plan_item WHERE plan_id = ? ORDER BY id"),
+                )
+                .bind(plan_id)
+                .fetch_all(p)
+                .await
+        },
     )
-    .bind(plan_id)
-    .fetch_all(pool)
-    .await;
-    #[cfg(feature = "postgres")]
-    return sqlx::query_as::<_, RecordPlanItem>(
-        "SELECT id, start, stop, week_day, plan_id, create_time, update_time FROM gb_record_plan_item WHERE plan_id = $1 ORDER BY id",
-    )
-    .bind(plan_id)
-    .fetch_all(pool)
-    .await;
-    #[cfg(feature = "sqlite")]
-    return sqlx::query_as::<_, RecordPlanItem>(
-        "SELECT id, start, stop, week_day, plan_id, create_time, update_time FROM gb_record_plan_item WHERE plan_id = ? ORDER BY id",
-    )
-    .bind(plan_id)
-    .fetch_all(pool)
-    .await;
 }
 
 pub async fn add(pool: &Pool, name: &str, snap: bool, now: &str) -> sqlx::Result<u64> {
-    #[cfg(feature = "mysql")]
-    let r = sqlx::query(
-        "INSERT INTO gb_record_plan (name, snap, create_time, update_time) VALUES (?, ?, ?, ?)",
-    )
-    .bind(name)
-    .bind(snap)
-    .bind(now)
-    .bind(now)
-    .execute(pool)
-    .await?;
-    #[cfg(feature = "postgres")]
-    let r = sqlx::query(
-        "INSERT INTO gb_record_plan (name, snap, create_time, update_time) VALUES ($1, $2, $3, $4)",
-    )
-    .bind(name)
-    .bind(snap)
-    .bind(now)
-    .bind(now)
-    .execute(pool)
-    .await?;
-    #[cfg(feature = "sqlite")]
-    let r = sqlx::query(
-        "INSERT INTO gb_record_plan (name, snap, create_time, update_time) VALUES (?, ?, ?, ?)",
-    )
-    .bind(name)
-    .bind(snap)
-    .bind(now)
-    .bind(now)
-    .execute(pool)
-    .await?;
+    let r = crate::dispatch_exec_dialect!(
+        pool,
+        |p| {
+            sqlx::query(
+                    "INSERT INTO gb_record_plan (name, snap, create_time, update_time) VALUES ($1, $2, $3, $4)",
+                )
+                .bind(name)
+                .bind(snap)
+                .bind(now)
+                .bind(now)
+                .execute(p)
+        },
+        |p| {
+            sqlx::query(
+                    &crate::dyn_where::dialect_sql("INSERT INTO gb_record_plan (name, snap, create_time, update_time) VALUES (?, ?, ?, ?)"),
+                )
+                .bind(name)
+                .bind(snap)
+                .bind(now)
+                .bind(now)
+                .execute(p)
+        },
+        |p| {
+            sqlx::query(
+                    &crate::dyn_where::dialect_sql("INSERT INTO gb_record_plan (name, snap, create_time, update_time) VALUES (?, ?, ?, ?)"),
+                )
+                .bind(name)
+                .bind(snap)
+                .bind(now)
+                .bind(now)
+                .execute(p)
+        },
+    )?;
     Ok(r.rows_affected())
 }
 
 pub async fn add_with_id(pool: &Pool, name: &str, snap: bool, now: &str) -> sqlx::Result<i64> {
-    #[cfg(feature = "mysql")]
-    {
-        let r = sqlx::query(
-            "INSERT INTO gb_record_plan (name, snap, create_time, update_time) VALUES (?, ?, ?, ?)",
-        )
-        .bind(name)
-        .bind(snap)
-        .bind(now)
-        .bind(now)
-        .execute(pool)
-        .await?;
-        Ok(r.last_insert_id() as i64)
-    }
-    #[cfg(feature = "postgres")]
-    {
-        let row = sqlx::query(
-            "INSERT INTO gb_record_plan (name, snap, create_time, update_time) VALUES ($1, $2, $3, $4) RETURNING id",
-        )
-        .bind(name)
-        .bind(snap)
-        .bind(now)
-        .bind(now)
-        .fetch_one(pool)
-        .await?;
-        Ok(row.get::<i32, _>("id") as i64)
-    }
-    #[cfg(feature = "sqlite")]
-    {
-        let r = sqlx::query(
-            "INSERT INTO gb_record_plan (name, snap, create_time, update_time) VALUES (?, ?, ?, ?)",
-        )
-        .bind(name)
-        .bind(snap)
-        .bind(now)
-        .bind(now)
-        .execute(pool)
-        .await?;
-        Ok(r.last_insert_rowid())
-    }
+    crate::dispatch_dialect!(
+        pool,
+        |p| {
+            let row = sqlx::query(
+                        "INSERT INTO gb_record_plan (name, snap, create_time, update_time) VALUES ($1, $2, $3, $4) RETURNING id",
+                    )
+                    .bind(name)
+                    .bind(snap)
+                    .bind(now)
+                    .bind(now)
+                    .fetch_one(p)
+                    .await?;
+            Ok(row.get::<i32, _>("id") as i64)
+        },
+        |p| {
+            let r = sqlx::query(
+                        &crate::dyn_where::dialect_sql("INSERT INTO gb_record_plan (name, snap, create_time, update_time) VALUES (?, ?, ?, ?)"),
+                    )
+                    .bind(name)
+                    .bind(snap)
+                    .bind(now)
+                    .bind(now)
+                    .execute(p)
+                    .await?;
+            Ok(r.last_insert_id() as i64)
+        },
+        |p| {
+            let r = sqlx::query(
+                        &crate::dyn_where::dialect_sql("INSERT INTO gb_record_plan (name, snap, create_time, update_time) VALUES (?, ?, ?, ?)"),
+                    )
+                    .bind(name)
+                    .bind(snap)
+                    .bind(now)
+                    .bind(now)
+                    .execute(p)
+                    .await?;
+            Ok(r.last_insert_rowid())
+        },
+    )
 }
 
 pub async fn update(
@@ -334,36 +366,39 @@ pub async fn update(
     snap: Option<bool>,
     now: &str,
 ) -> sqlx::Result<u64> {
-    #[cfg(feature = "mysql")]
-    let r = sqlx::query(
-        "UPDATE gb_record_plan SET name = COALESCE(?, name), snap = COALESCE(?, snap), update_time = ? WHERE id = ?",
-    )
-    .bind(name)
-    .bind(snap)
-    .bind(now)
-    .bind(id)
-    .execute(pool)
-    .await?;
-    #[cfg(feature = "postgres")]
-    let r = sqlx::query(
-        "UPDATE gb_record_plan SET name = COALESCE($1, name), snap = COALESCE($2, snap), update_time = $3 WHERE id = $4",
-    )
-    .bind(name)
-    .bind(snap)
-    .bind(now)
-    .bind(id)
-    .execute(pool)
-    .await?;
-    #[cfg(feature = "sqlite")]
-    let r = sqlx::query(
-        "UPDATE gb_record_plan SET name = COALESCE(?, name), snap = COALESCE(?, snap), update_time = ? WHERE id = ?",
-    )
-    .bind(name)
-    .bind(snap)
-    .bind(now)
-    .bind(id)
-    .execute(pool)
-    .await?;
+    let r = crate::dispatch_exec_dialect!(
+        pool,
+        |p| {
+            sqlx::query(
+                    "UPDATE gb_record_plan SET name = COALESCE($1, name), snap = COALESCE($2, snap), update_time = $3 WHERE id = $4",
+                )
+                .bind(name)
+                .bind(snap)
+                .bind(now)
+                .bind(id)
+                .execute(p)
+        },
+        |p| {
+            sqlx::query(
+                    &crate::dyn_where::dialect_sql("UPDATE gb_record_plan SET name = COALESCE(?, name), snap = COALESCE(?, snap), update_time = ? WHERE id = ?"),
+                )
+                .bind(name)
+                .bind(snap)
+                .bind(now)
+                .bind(id)
+                .execute(p)
+        },
+        |p| {
+            sqlx::query(
+                    &crate::dyn_where::dialect_sql("UPDATE gb_record_plan SET name = COALESCE(?, name), snap = COALESCE(?, snap), update_time = ? WHERE id = ?"),
+                )
+                .bind(name)
+                .bind(snap)
+                .bind(now)
+                .bind(id)
+                .execute(p)
+        },
+    )?;
     Ok(r.rows_affected())
 }
 
@@ -373,84 +408,99 @@ pub async fn update(
 /// 只删主表会留下指向已删计划的 `record_plan_id`，
 /// 通道列表里就会显示"已关联到不存在的计划"。
 pub async fn delete_by_id(pool: &Pool, id: i32) -> sqlx::Result<u64> {
-    #[cfg(feature = "mysql")]
-    {
-        let _ = sqlx::query(
-            "UPDATE gb_device_channel SET record_plan_id = NULL WHERE record_plan_id = ?",
-        )
-        .bind(id)
-        .execute(pool)
-        .await?;
-        let _ = sqlx::query("DELETE FROM gb_record_plan_item WHERE plan_id = ?")
+    Ok(crate::dispatch_dialect!(
+        pool,
+        |p| {
+            let _ = sqlx::query(
+                "UPDATE gb_device_channel SET record_plan_id = NULL WHERE record_plan_id = $1",
+            )
             .bind(id)
-            .execute(pool)
+            .execute(p)
             .await?;
-        let r = sqlx::query("DELETE FROM gb_record_plan WHERE id = ?")
+            let _ = sqlx::query("DELETE FROM gb_record_plan_item WHERE plan_id = $1")
+                .bind(id)
+                .execute(p)
+                .await?;
+            let r = sqlx::query("DELETE FROM gb_record_plan WHERE id = $1")
+                .bind(id)
+                .execute(p)
+                .await?;
+            Ok::<_, sqlx::Error>(r.rows_affected())
+        },
+        |p| {
+            let _ = sqlx::query(&crate::dyn_where::dialect_sql(
+                "UPDATE gb_device_channel SET record_plan_id = NULL WHERE record_plan_id = ?",
+            ))
             .bind(id)
-            .execute(pool)
+            .execute(p)
             .await?;
-        return Ok(r.rows_affected());
-    }
-    #[cfg(feature = "postgres")]
-    {
-        let _ = sqlx::query(
-            "UPDATE gb_device_channel SET record_plan_id = NULL WHERE record_plan_id = $1",
-        )
-        .bind(id)
-        .execute(pool)
-        .await?;
-        let _ = sqlx::query("DELETE FROM gb_record_plan_item WHERE plan_id = $1")
+            let _ = sqlx::query(&crate::dyn_where::dialect_sql(
+                "DELETE FROM gb_record_plan_item WHERE plan_id = ?",
+            ))
             .bind(id)
-            .execute(pool)
+            .execute(p)
             .await?;
-        let r = sqlx::query("DELETE FROM gb_record_plan WHERE id = $1")
+            let r = sqlx::query(&crate::dyn_where::dialect_sql(
+                "DELETE FROM gb_record_plan WHERE id = ?",
+            ))
             .bind(id)
-            .execute(pool)
+            .execute(p)
             .await?;
-        return Ok(r.rows_affected());
-    }
-    #[cfg(feature = "sqlite")]
-    {
-        let _ = sqlx::query(
-            "UPDATE gb_device_channel SET record_plan_id = NULL WHERE record_plan_id = ?",
-        )
-        .bind(id)
-        .execute(pool)
-        .await?;
-        let _ = sqlx::query("DELETE FROM gb_record_plan_item WHERE plan_id = ?")
+            Ok::<_, sqlx::Error>(r.rows_affected())
+        },
+        |p| {
+            let _ = sqlx::query(&crate::dyn_where::dialect_sql(
+                "UPDATE gb_device_channel SET record_plan_id = NULL WHERE record_plan_id = ?",
+            ))
             .bind(id)
-            .execute(pool)
+            .execute(p)
             .await?;
-        let r = sqlx::query("DELETE FROM gb_record_plan WHERE id = ?")
+            let _ = sqlx::query(&crate::dyn_where::dialect_sql(
+                "DELETE FROM gb_record_plan_item WHERE plan_id = ?",
+            ))
             .bind(id)
-            .execute(pool)
+            .execute(p)
             .await?;
-        return Ok(r.rows_affected());
-    }
+            let r = sqlx::query(&crate::dyn_where::dialect_sql(
+                "DELETE FROM gb_record_plan WHERE id = ?",
+            ))
+            .bind(id)
+            .execute(p)
+            .await?;
+            Ok::<_, sqlx::Error>(r.rows_affected())
+        },
+    )?)
 }
 
 /// 按**通道主键**（`gb_device_channel.id`，即前端里的 `gbId`）关联/取消关联。
 ///
 /// `plan_id = None` 表示取消关联。
 pub async fn link_channel(pool: &Pool, channel_id: i64, plan_id: Option<i64>) -> sqlx::Result<u64> {
-    #[cfg(feature = "mysql")]
-    let r = sqlx::query("UPDATE gb_device_channel SET record_plan_id = ? WHERE id = ?")
-        .bind(plan_id.map(|x| x as i32))
-        .bind(channel_id)
-        .execute(pool)
-        .await?;
-    #[cfg(feature = "postgres")]
-    let r = sqlx::query("UPDATE gb_device_channel SET record_plan_id = $1 WHERE id = $2")
-        .bind(plan_id.map(|x| x as i32))
-        .bind(channel_id)
-        .execute(pool)
-        .await?;
-    #[cfg(feature = "sqlite")]
-    let r = sqlx::query("UPDATE gb_device_channel SET record_plan_id = ? WHERE id = ?")
-        .bind(plan_id.map(|x| x as i32))
-        .bind(channel_id)
-        .execute(pool)
-        .await?;
+    let r = crate::dispatch_exec_dialect!(
+        pool,
+        |p| {
+            sqlx::query("UPDATE gb_device_channel SET record_plan_id = $1 WHERE id = $2")
+                .bind(plan_id.map(|x| x as i32))
+                .bind(channel_id)
+                .execute(p)
+        },
+        |p| {
+            sqlx::query(&crate::dyn_where::dialect_sql(
+                "UPDATE gb_device_channel SET record_plan_id = ? WHERE id = ?",
+            ))
+            .bind(plan_id.map(|x| x as i32))
+            .bind(channel_id)
+            .execute(p)
+        },
+        |p| {
+            sqlx::query(&crate::dyn_where::dialect_sql(
+                "UPDATE gb_device_channel SET record_plan_id = ? WHERE id = ?",
+            ))
+            .bind(plan_id.map(|x| x as i32))
+            .bind(channel_id)
+            .execute(p)
+        },
+    )?;
     Ok(r.rows_affected())
 }
 
@@ -459,119 +509,176 @@ pub async fn link_channel(pool: &Pool, channel_id: i64, plan_id: Option<i64>) ->
 /// 关联只认主键，但更早版本的调用方传的是国标编号字符串，
 /// 所以这里两种都能解析（先在 handler 里尝试按主键命中，再退回这里）。
 pub async fn channel_id_by_gb_id(pool: &Pool, gb_device_id: &str) -> sqlx::Result<Option<i64>> {
-    #[cfg(feature = "mysql")]
-    let row = sqlx::query("SELECT id FROM gb_device_channel WHERE gb_device_id = ?")
-        .bind(gb_device_id)
-        .fetch_optional(pool)
-        .await?;
-    #[cfg(feature = "postgres")]
-    let row = sqlx::query("SELECT id FROM gb_device_channel WHERE gb_device_id = $1")
-        .bind(gb_device_id)
-        .fetch_optional(pool)
-        .await?;
-    #[cfg(feature = "sqlite")]
-    let row = sqlx::query("SELECT id FROM gb_device_channel WHERE gb_device_id = ?")
-        .bind(gb_device_id)
-        .fetch_optional(pool)
-        .await?;
-    row.map(|r| {
-        use sqlx::Row;
-        // postgres 的 `id` 是 INT4，mysql/sqlite 是 64 位 —— 先试 i32 再试 i64。
-        // **解码失败要往上抛**，不能 `unwrap_or_default()` 吞成 0：
-        // 0 会被上层当成"通道不存在"，把"解码失败"伪装成"查不到"。
-        r.try_get::<i32, _>("id")
-            .map(|v| v as i64)
-            .or_else(|_| r.try_get::<i64, _>("id"))
-    })
-    .transpose()
+    // `gb_device_channel.id` 的类型按方言不同：postgres 是 `serial`（INT4），
+    // mysql 是 `bigint`，sqlite 是 `INTEGER` —— **pg 严格校验列类型**，
+    // 所以按方言各自解码（pg 用 i32，其余用 i64），不能一份 SQL 走同一个泛型。
+    let row: Option<i64> = crate::dispatch_dialect!(
+        pool,
+        |p| {
+            sqlx::query_as::<_, (i32,)>("SELECT id FROM gb_device_channel WHERE gb_device_id = $1")
+                .bind(gb_device_id)
+                .fetch_optional(p)
+                .await?
+                .map(|r| r.0 as i64)
+        },
+        |p| {
+            sqlx::query_as::<_, (i64,)>(&crate::dyn_where::dialect_sql(
+                "SELECT id FROM gb_device_channel WHERE gb_device_id = ?",
+            ))
+            .bind(gb_device_id)
+            .fetch_optional(p)
+            .await?
+            .map(|r| r.0)
+        },
+        |p| {
+            sqlx::query_as::<_, (i64,)>(&crate::dyn_where::dialect_sql(
+                "SELECT id FROM gb_device_channel WHERE gb_device_id = ?",
+            ))
+            .bind(gb_device_id)
+            .fetch_optional(p)
+            .await?
+            .map(|r| r.0)
+        },
+    );
+    Ok(row)
 }
 
 /// 通道主键是否真实存在（防止"关联了一个不存在的通道"被静默成功）。
 pub async fn channel_exists(pool: &Pool, channel_id: i64) -> sqlx::Result<bool> {
-    #[cfg(feature = "mysql")]
-    let n = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_device_channel WHERE id = ?")
-        .bind(channel_id)
-        .fetch_one(pool)
-        .await?;
-    #[cfg(feature = "postgres")]
-    let n = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_device_channel WHERE id = $1")
-        .bind(channel_id)
-        .fetch_one(pool)
-        .await?;
-    #[cfg(feature = "sqlite")]
-    let n = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_device_channel WHERE id = ?")
-        .bind(channel_id)
-        .fetch_one(pool)
-        .await?;
+    let n = crate::dispatch_dialect!(
+        pool,
+        |p| {
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_device_channel WHERE id = $1")
+                .bind(channel_id)
+                .fetch_one(p)
+                .await?
+        },
+        |p| {
+            sqlx::query_scalar::<_, i64>(&crate::dyn_where::dialect_sql(
+                "SELECT COUNT(*) FROM gb_device_channel WHERE id = ?",
+            ))
+            .bind(channel_id)
+            .fetch_one(p)
+            .await?
+        },
+        |p| {
+            sqlx::query_scalar::<_, i64>(&crate::dyn_where::dialect_sql(
+                "SELECT COUNT(*) FROM gb_device_channel WHERE id = ?",
+            ))
+            .bind(channel_id)
+            .fetch_one(p)
+            .await?
+        },
+    );
     Ok(n > 0)
 }
 
 /// 某设备（`gb_device.id`，即 `deviceDbIds`）下的所有通道主键。
 pub async fn channel_ids_by_device_db_id(pool: &Pool, device_db_id: i64) -> sqlx::Result<Vec<i64>> {
-    #[cfg(feature = "mysql")]
-    let rows = sqlx::query("SELECT id FROM gb_device_channel WHERE data_device_id = ?")
-        .bind(device_db_id as i32)
-        .fetch_all(pool)
-        .await?;
-    #[cfg(feature = "postgres")]
-    let rows = sqlx::query("SELECT id FROM gb_device_channel WHERE data_device_id = $1")
-        .bind(device_db_id as i32)
-        .fetch_all(pool)
-        .await?;
-    #[cfg(feature = "sqlite")]
-    let rows = sqlx::query("SELECT id FROM gb_device_channel WHERE data_device_id = ?")
-        .bind(device_db_id as i32)
-        .fetch_all(pool)
-        .await?;
-    use sqlx::Row;
-    Ok(rows
-        .iter()
-        .map(|r| {
-            r.try_get::<i32, _>("id")
-                .map(|v| v as i64)
-                .or_else(|_| r.try_get::<i64, _>("id"))
-                .unwrap_or_default()
-        })
-        .collect())
+    // 同上：`id` 的列类型按方言不同（pg INT4 / mysql BIGINT / sqlite INTEGER），
+    // 按方言各自解码。
+    let rows: Vec<i64> = crate::dispatch_dialect!(
+        pool,
+        |p| {
+            sqlx::query_as::<_, (i32,)>(
+                "SELECT id FROM gb_device_channel WHERE data_device_id = $1",
+            )
+            .bind(device_db_id as i32)
+            .fetch_all(p)
+            .await?
+            .into_iter()
+            .map(|r| r.0 as i64)
+            .collect()
+        },
+        |p| {
+            sqlx::query_as::<_, (i64,)>(&crate::dyn_where::dialect_sql(
+                "SELECT id FROM gb_device_channel WHERE data_device_id = ?",
+            ))
+            .bind(device_db_id as i32)
+            .fetch_all(p)
+            .await?
+            .into_iter()
+            .map(|r| r.0)
+            .collect()
+        },
+        |p| {
+            sqlx::query_as::<_, (i64,)>(&crate::dyn_where::dialect_sql(
+                "SELECT id FROM gb_device_channel WHERE data_device_id = ?",
+            ))
+            .bind(device_db_id as i32)
+            .fetch_all(p)
+            .await?
+            .into_iter()
+            .map(|r| r.0)
+            .collect()
+        },
+    );
+    Ok(rows)
 }
 
 /// 全部通道的主键（`allLink` 用）。
 pub async fn all_channel_ids(pool: &Pool) -> sqlx::Result<Vec<i64>> {
-    let rows = sqlx::query("SELECT id FROM gb_device_channel")
-        .fetch_all(pool)
-        .await?;
-    use sqlx::Row;
-    Ok(rows
-        .iter()
-        .map(|r| {
-            r.try_get::<i32, _>("id")
-                .map(|v| v as i64)
-                .or_else(|_| r.try_get::<i64, _>("id"))
-                .unwrap_or_default()
-        })
-        .collect())
+    let sql = crate::db::dialect::current_sql("SELECT id FROM gb_device_channel").into_owned();
+
+    // `gb_device_channel.id` 的类型按方言不同：postgres 是 `serial`（INT4），
+    // mysql 是 `bigint`，sqlite 是 `INTEGER` —— **pg 严格校验列类型**，
+    // 所以按方言各自解码（pg 用 i32，其余用 i64），不能一份 SQL 走同一个泛型。
+    let rows: Vec<i64> = crate::dispatch_dialect!(
+        pool,
+        |p| {
+            sqlx::query_as::<_, (i32,)>(&sql)
+                .fetch_all(p)
+                .await?
+                .into_iter()
+                .map(|r| r.0 as i64)
+                .collect()
+        },
+        |p| {
+            sqlx::query_as::<_, (i64,)>(&sql)
+                .fetch_all(p)
+                .await?
+                .into_iter()
+                .map(|r| r.0)
+                .collect()
+        },
+        |p| {
+            sqlx::query_as::<_, (i64,)>(&sql)
+                .fetch_all(p)
+                .await?
+                .into_iter()
+                .map(|r| r.0)
+                .collect()
+        },
+    );
+    Ok(rows)
 }
 
 /// 清掉某个计划下所有通道的关联。
 pub async fn unlink_all_channels(pool: &Pool, plan_id: i64) -> sqlx::Result<u64> {
-    #[cfg(feature = "mysql")]
-    let r =
-        sqlx::query("UPDATE gb_device_channel SET record_plan_id = NULL WHERE record_plan_id = ?")
+    let r = crate::dispatch_exec_dialect!(
+        pool,
+        |p| {
+            sqlx::query(
+                "UPDATE gb_device_channel SET record_plan_id = NULL WHERE record_plan_id = $1",
+            )
             .bind(plan_id as i32)
-            .execute(pool)
-            .await?;
-    #[cfg(feature = "postgres")]
-    let r =
-        sqlx::query("UPDATE gb_device_channel SET record_plan_id = NULL WHERE record_plan_id = $1")
+            .execute(p)
+        },
+        |p| {
+            sqlx::query(&crate::dyn_where::dialect_sql(
+                "UPDATE gb_device_channel SET record_plan_id = NULL WHERE record_plan_id = ?",
+            ))
             .bind(plan_id as i32)
-            .execute(pool)
-            .await?;
-    #[cfg(feature = "sqlite")]
-    let r =
-        sqlx::query("UPDATE gb_device_channel SET record_plan_id = NULL WHERE record_plan_id = ?")
+            .execute(p)
+        },
+        |p| {
+            sqlx::query(&crate::dyn_where::dialect_sql(
+                "UPDATE gb_device_channel SET record_plan_id = NULL WHERE record_plan_id = ?",
+            ))
             .bind(plan_id as i32)
-            .execute(pool)
-            .await?;
+            .execute(p)
+        },
+    )?;
     Ok(r.rows_affected())
 }
 
@@ -586,80 +693,84 @@ pub async fn replace_items(
     now: &str,
 ) -> sqlx::Result<u64> {
     let items: Vec<&RecordPlanItemPayload> = items.iter().filter(|i| i.is_complete()).collect();
-    #[cfg(feature = "mysql")]
-    {
-        let _ = sqlx::query("DELETE FROM gb_record_plan_item WHERE plan_id = ?")
+    Ok(crate::dispatch_dialect!(
+        pool,
+        |p| {
+            // 参数类型必须与 `delete_by_id` 里的同文本 DELETE 一致（都是 i32）：
+            // sqlx-postgres 的语句缓存以 SQL 文本为 key 且命中时不校验参数类型，
+            // i32 / i64 混绑会让后一次按错误的 OID 发送二进制参数，服务端报
+            // `insufficient data left in message`。缓存已在 `db::create_pool`
+            // 关闭以兜住全仓同类问题，这里保持类型一致作为第二道防线。
+            let _ = sqlx::query("DELETE FROM gb_record_plan_item WHERE plan_id = $1")
+                .bind(plan_id as i32)
+                .execute(p)
+                .await?;
+            let mut affected = 0;
+            for item in items {
+                let r = sqlx::query(
+                            "INSERT INTO gb_record_plan_item (\"start\", stop, week_day, plan_id, create_time, update_time) VALUES ($1, $2, $3, $4, $5, $6)",
+                        )
+                        .bind(item.start)
+                        .bind(item.stop)
+                        .bind(item.week_day)
+                        .bind(plan_id)
+                        .bind(now)
+                        .bind(now)
+                        .execute(p)
+                        .await?;
+                affected += r.rows_affected();
+            }
+            Ok::<_, sqlx::Error>(affected)
+        },
+        |p| {
+            let _ = sqlx::query(&crate::dyn_where::dialect_sql(
+                "DELETE FROM gb_record_plan_item WHERE plan_id = ?",
+            ))
             .bind(plan_id)
-            .execute(pool)
+            .execute(p)
             .await?;
-        let mut affected = 0;
-        for item in items {
-            let r = sqlx::query(
-                "INSERT INTO gb_record_plan_item (`start`, stop, week_day, plan_id, create_time, update_time) VALUES (?, ?, ?, ?, ?, ?)",
-            )
-            .bind(item.start)
-            .bind(item.stop)
-            .bind(item.week_day)
+            let mut affected = 0;
+            for item in items {
+                let r = sqlx::query(
+                            &crate::dyn_where::dialect_sql("INSERT INTO gb_record_plan_item (`start`, stop, week_day, plan_id, create_time, update_time) VALUES (?, ?, ?, ?, ?, ?)"),
+                        )
+                        .bind(item.start)
+                        .bind(item.stop)
+                        .bind(item.week_day)
+                        .bind(plan_id)
+                        .bind(now)
+                        .bind(now)
+                        .execute(p)
+                        .await?;
+                affected += r.rows_affected();
+            }
+            Ok::<_, sqlx::Error>(affected)
+        },
+        |p| {
+            let _ = sqlx::query(&crate::dyn_where::dialect_sql(
+                "DELETE FROM gb_record_plan_item WHERE plan_id = ?",
+            ))
             .bind(plan_id)
-            .bind(now)
-            .bind(now)
-            .execute(pool)
+            .execute(p)
             .await?;
-            affected += r.rows_affected();
-        }
-        Ok(affected)
-    }
-    #[cfg(feature = "postgres")]
-    {
-        // 参数类型必须与 `delete_by_id` 里的同文本 DELETE 一致（都是 i32）：
-        // sqlx-postgres 的语句缓存以 SQL 文本为 key 且命中时不校验参数类型，
-        // i32 / i64 混绑会让后一次按错误的 OID 发送二进制参数，服务端报
-        // `insufficient data left in message`。缓存已在 `db::create_pool`
-        // 关闭以兜住全仓同类问题，这里保持类型一致作为第二道防线。
-        let _ = sqlx::query("DELETE FROM gb_record_plan_item WHERE plan_id = $1")
-            .bind(plan_id as i32)
-            .execute(pool)
-            .await?;
-        let mut affected = 0;
-        for item in items {
-            let r = sqlx::query(
-                "INSERT INTO gb_record_plan_item (\"start\", stop, week_day, plan_id, create_time, update_time) VALUES ($1, $2, $3, $4, $5, $6)",
-            )
-            .bind(item.start)
-            .bind(item.stop)
-            .bind(item.week_day)
-            .bind(plan_id)
-            .bind(now)
-            .bind(now)
-            .execute(pool)
-            .await?;
-            affected += r.rows_affected();
-        }
-        Ok(affected)
-    }
-    #[cfg(feature = "sqlite")]
-    {
-        let _ = sqlx::query("DELETE FROM gb_record_plan_item WHERE plan_id = ?")
-            .bind(plan_id)
-            .execute(pool)
-            .await?;
-        let mut affected = 0;
-        for item in items {
-            let r = sqlx::query(
-                "INSERT INTO gb_record_plan_item (\"start\", stop, week_day, plan_id, create_time, update_time) VALUES (?, ?, ?, ?, ?, ?)",
-            )
-            .bind(item.start)
-            .bind(item.stop)
-            .bind(item.week_day)
-            .bind(plan_id)
-            .bind(now)
-            .bind(now)
-            .execute(pool)
-            .await?;
-            affected += r.rows_affected();
-        }
-        Ok(affected)
-    }
+            let mut affected = 0;
+            for item in items {
+                let r = sqlx::query(
+                            &crate::dyn_where::dialect_sql("INSERT INTO gb_record_plan_item (\"start\", stop, week_day, plan_id, create_time, update_time) VALUES (?, ?, ?, ?, ?, ?)"),
+                        )
+                        .bind(item.start)
+                        .bind(item.stop)
+                        .bind(item.week_day)
+                        .bind(plan_id)
+                        .bind(now)
+                        .bind(now)
+                        .execute(p)
+                        .await?;
+                affected += r.rows_affected();
+            }
+            Ok::<_, sqlx::Error>(affected)
+        },
+    )?)
 }
 
 #[cfg(all(test, feature = "sqlite"))]
@@ -668,18 +779,22 @@ mod plan_db_tests {
     use crate::test_support::sqlite_pool_with_schema;
 
     async fn seed_channel(pool: &Pool, gb_id: &str) -> i64 {
-        let row = sqlx::query(
+        let sql = crate::db::dialect::current_sql(
             "INSERT INTO gb_device_channel \
              (device_id, name, gb_device_id, status, data_type, data_device_id, channel_type, \
               create_time, update_time) \
              VALUES ('dev1', ?, ?, 'ON', 0, 1, 0, '2026-01-01 00:00:00', '2026-01-01 00:00:00')",
         )
-        .bind(format!("ch-{gb_id}"))
-        .bind(gb_id)
-        .execute(pool)
-        .await
+        .into_owned();
+
+        let row = crate::dispatch_exec!(pool, |p| {
+            sqlx::query(&sql)
+                .bind(format!("ch-{gb_id}"))
+                .bind(gb_id)
+                .execute(p)
+        })
         .expect("insert channel");
-        row.last_insert_rowid()
+        row.last_insert_id().expect("sqlite 自增 id")
     }
 
     fn payload(start: i32, stop: i32, day: i32) -> RecordPlanItemPayload {

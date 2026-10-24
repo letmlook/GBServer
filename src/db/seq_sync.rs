@@ -45,9 +45,9 @@ use crate::db::Pool;
 
 /// 一个 `serial` 列及其所属的序列。
 ///
-/// 只在 postgres 构建里用得上（sqlite/mysql 的自增主键不依赖序列），
-/// 所以门在 feature 上 —— 否则默认（SQLite）构建会报"never constructed"。
-#[cfg(feature = "postgres")]
+/// 只在 **postgres 方言**下用得上（sqlite/mysql 的自增主键不依赖序列），
+/// 但**门在运行期**而不是编译期 —— 三个驱动同时编进一个二进制之后，
+/// 编译期 feature 门永远为真，非 postgres 的那一份也会被执行。
 struct SerialColumn {
     /// 表所在 schema（不用硬编码 `public` —— 部署可能改过 `search_path`）。
     schema: String,
@@ -61,9 +61,15 @@ struct SerialColumn {
 
 /// 把所有落后的 `serial` 序列推进到当前 `MAX(列)`。
 ///
-/// 返回被调整过的序列数量；非 postgres 构建是空实现。
-#[cfg(feature = "postgres")]
+/// 返回被调整过的序列数量；**非 postgres 方言是空实现**
+/// （sqlite/mysql 的自增主键不依赖序列）。
 pub async fn sync_serial_sequences(pool: &Pool) -> sqlx::Result<u64> {
+    // 运行期守卫：三个驱动同时编进一个二进制之后，编译期 feature 门已失效，
+    // 这里必须按**当前连接的方言**决定要不要真的同步序列。
+    if !crate::db::dialect::current().is_postgres() {
+        return Ok(0);
+    }
+
     let columns = discover_serial_columns(pool).await?;
     let mut adjusted = 0u64;
     for col in columns {
@@ -79,12 +85,6 @@ pub async fn sync_serial_sequences(pool: &Pool) -> sqlx::Result<u64> {
     Ok(adjusted)
 }
 
-/// 非 postgres 构建是空实现（sqlite/mysql 的自增主键不依赖序列）。
-#[cfg(not(feature = "postgres"))]
-pub async fn sync_serial_sequences(_pool: &Pool) -> sqlx::Result<u64> {
-    Ok(0)
-}
-
 /// 找出所有「表 ← 自增列 ← 序列」的自动依赖关系。
 ///
 /// 用 `pg_depend` 的 `deptype = 'a'`（auto）关联：序列**拥有**那一列。
@@ -94,10 +94,10 @@ pub async fn sync_serial_sequences(_pool: &Pool) -> sqlx::Result<u64> {
 /// **不要**用 `pg_get_serial_sequence(table, 'id')` —— 它在列不存在时是
 /// **抛错**而不是返回 NULL，对 `pg_class` 里的系统视图逐行调用会直接报
 /// `column "id" of relation "pg_statistic" does not exist`。
-#[cfg(feature = "postgres")]
 async fn discover_serial_columns(pool: &Pool) -> sqlx::Result<Vec<SerialColumn>> {
-    let rows: Vec<(String, String, String, String)> = sqlx::query_as(
-        "SELECT n.nspname, t.relname, a.attname, s.relname \
+    let rows: Vec<(String, String, String, String)> = crate::dispatch!(pool, |p| {
+        sqlx::query_as(
+            "SELECT n.nspname, t.relname, a.attname, s.relname \
          FROM pg_class t \
          JOIN pg_namespace n ON n.oid = t.relnamespace \
          JOIN pg_class s ON s.relkind = 'S' \
@@ -106,9 +106,9 @@ async fn discover_serial_columns(pool: &Pool) -> sqlx::Result<Vec<SerialColumn>>
               AND d.refobjid = t.oid AND d.deptype = 'a' \
          JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = d.refobjsubid \
          WHERE t.relkind = 'r' AND a.attnum > 0 AND NOT a.attisdropped",
-    )
-    .fetch_all(pool)
-    .await?;
+        )
+        .fetch_all(p)
+    })?;
 
     Ok(rows
         .into_iter()
@@ -124,7 +124,6 @@ async fn discover_serial_columns(pool: &Pool) -> sqlx::Result<Vec<SerialColumn>>
 /// 把一个落后的序列推上去；已经领先的不动。
 ///
 /// 返回 `true` 表示确实调整过。
-#[cfg(feature = "postgres")]
 async fn advance_sequence(pool: &Pool, col: &SerialColumn) -> sqlx::Result<bool> {
     // 表里当前的最大 id（空表为 None）。
     // 注意两处：
@@ -133,24 +132,26 @@ async fn advance_sequence(pool: &Pool, col: &SerialColumn) -> sqlx::Result<bool>
     // 2. postgres 里 `max(int4)` 的返回值仍是 **int4**（只有 `max(int8)` 才是
     //    int8），按 `Option<i64>` 解会报 "mismatched types"。必须显式
     //    `::bigint` 转一道 —— 这与本仓库其它地方的 INT4 列处理是同一个道理。
-    let max_col: Option<i64> = sqlx::query_scalar(&format!(
-        "SELECT MAX({})::bigint FROM {}.{}",
-        quote_ident(&col.column),
-        quote_ident(&col.schema),
-        quote_ident(&col.table)
-    ))
-    .fetch_one(pool)
-    .await?;
+    let max_col: Option<i64> = crate::dispatch!(pool, |p| {
+        sqlx::query_scalar(&format!(
+            "SELECT MAX({})::bigint FROM {}.{}",
+            quote_ident(&col.column),
+            quote_ident(&col.schema),
+            quote_ident(&col.table)
+        ))
+        .fetch_one(p)
+    })?;
 
     // 序列当前状态：`last_value` 是最后发放的值，`is_called=false` 表示
     // 还没发放过 —— 此时下一次 nextval 返回的就是 `last_value` 本身。
-    let (last_value, is_called): (i64, bool) = sqlx::query_as(&format!(
-        "SELECT last_value, is_called FROM {}.{}",
-        quote_ident(&col.schema),
-        quote_ident(&col.sequence)
-    ))
-    .fetch_one(pool)
-    .await?;
+    let (last_value, is_called): (i64, bool) = crate::dispatch!(pool, |p| {
+        sqlx::query_as(&format!(
+            "SELECT last_value, is_called FROM {}.{}",
+            quote_ident(&col.schema),
+            quote_ident(&col.sequence)
+        ))
+        .fetch_one(p)
+    })?;
 
     let next_value = next_value_of(last_value, is_called);
     let max_value = max_col.unwrap_or(0);
@@ -159,13 +160,14 @@ async fn advance_sequence(pool: &Pool, col: &SerialColumn) -> sqlx::Result<bool>
         return Ok(false);
     }
 
-    sqlx::query(&format!(
-        "SELECT setval({}, $1, true)",
-        regclass_literal(&col.schema, &col.sequence)
-    ))
-    .bind(max_value)
-    .execute(pool)
-    .await?;
+    crate::dispatch_exec!(pool, |p| {
+        sqlx::query(&format!(
+            "SELECT setval({}, $1, true)",
+            regclass_literal(&col.schema, &col.sequence)
+        ))
+        .bind(max_value)
+        .execute(p)
+    })?;
     Ok(true)
 }
 
@@ -173,7 +175,6 @@ async fn advance_sequence(pool: &Pool, col: &SerialColumn) -> sqlx::Result<bool>
 ///
 /// `is_called = false` 表示还没发放过 —— 此时 `nextval` 返回的就是
 /// `last_value` 本身（而不是 `last_value + 1`）。
-#[cfg(any(feature = "postgres", test))]
 fn next_value_of(last_value: i64, is_called: bool) -> i64 {
     if is_called {
         last_value + 1
@@ -188,7 +189,6 @@ fn next_value_of(last_value: i64, is_called: bool) -> i64 {
 /// 序列**领先**时（postgres 的 nextval 非事务性，回滚的 INSERT 或删掉最大 id
 /// 的行都会让序列领先 —— 这是常态）必须**原样不动**：往回拨会让后面几次插入
 /// **复用已经发放过的 id**，而本 schema 没有任何外键，残留引用会静默挂错行。
-#[cfg(any(feature = "postgres", test))]
 fn needs_advance(next_value: i64, max_value: i64) -> bool {
     next_value <= max_value
 }
@@ -203,7 +203,7 @@ fn needs_advance(next_value: i64, max_value: i64) -> bool {
 /// （`"GB_Mixed"`）和非 ASCII 表名（`"终端表"`）**静默跳过** —— 而这些表
 /// 恰恰是最可能带显式种子 id 的表。跳过它们等于本模块要修的
 /// "种子行主键冲突"原样复发，而且日志里一行提示都没有（静默失败最难查）。
-#[cfg(any(feature = "postgres", test))]
+#[allow(dead_code)]
 fn quote_ident(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
 }
@@ -211,7 +211,7 @@ fn quote_ident(name: &str) -> String {
 /// 拼出 `setval()` 需要的 `regclass` 字面量（`'"schema"."name"'`）。
 ///
 /// 字面量里的 `'` 要转义成 `''`。
-#[cfg(any(feature = "postgres", test))]
+#[allow(dead_code)]
 fn regclass_literal(schema: &str, name: &str) -> String {
     let raw = format!("{}.{}", quote_ident(schema), quote_ident(name));
     format!("'{}'", raw.replace('\'', "''"))

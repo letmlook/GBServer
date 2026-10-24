@@ -75,68 +75,84 @@ pub struct MediaServer {
 
 /// 获取所有媒体服务器
 pub async fn list_media_servers(pool: &Pool) -> sqlx::Result<Vec<MediaServer>> {
-    sqlx::query_as::<_, MediaServer>("SELECT * FROM gb_media_server ORDER BY id")
-        .fetch_all(pool)
-        .await
+    let sql =
+        crate::db::dialect::current_sql("SELECT * FROM gb_media_server ORDER BY id").into_owned();
+
+    crate::dispatch!(pool, |p| {
+        sqlx::query_as::<_, MediaServer>(&sql).fetch_all(p)
+    })
 }
 
 /// 根据ID获取媒体服务器
 pub async fn get_media_server_by_id(pool: &Pool, id: &str) -> sqlx::Result<Option<MediaServer>> {
-    #[cfg(feature = "mysql")]
-    return sqlx::query_as::<_, MediaServer>("SELECT * FROM gb_media_server WHERE id = ?")
-        .bind(id)
-        .fetch_optional(pool)
-        .await;
-    #[cfg(feature = "postgres")]
-    return sqlx::query_as::<_, MediaServer>("SELECT * FROM gb_media_server WHERE id = $1")
-        .bind(id)
-        .fetch_optional(pool)
-        .await;
-    #[cfg(feature = "sqlite")]
-    return sqlx::query_as::<_, MediaServer>("SELECT * FROM gb_media_server WHERE id = ?")
-        .bind(id)
-        .fetch_optional(pool)
-        .await;
+    crate::dispatch_dialect!(
+        pool,
+        |p| {
+            sqlx::query_as::<_, MediaServer>("SELECT * FROM gb_media_server WHERE id = $1")
+                .bind(id)
+                .fetch_optional(p)
+                .await
+        },
+        |p| {
+            sqlx::query_as::<_, MediaServer>(&crate::dyn_where::dialect_sql(
+                "SELECT * FROM gb_media_server WHERE id = ?",
+            ))
+            .bind(id)
+            .fetch_optional(p)
+            .await
+        },
+        |p| {
+            sqlx::query_as::<_, MediaServer>(&crate::dyn_where::dialect_sql(
+                "SELECT * FROM gb_media_server WHERE id = ?",
+            ))
+            .bind(id)
+            .fetch_optional(p)
+            .await
+        },
+    )
 }
 
 /// 添加媒体服务器
 pub async fn add(pool: &Pool, id: &str, ip: &str, http_port: i32, now: &str) -> sqlx::Result<u64> {
-    #[cfg(feature = "mysql")]
-    let r = sqlx::query(
-        r#"INSERT INTO gb_media_server (id, ip, http_port, create_time, update_time, auto_config, rtp_enable, default_server)
-           VALUES (?, ?, ?, ?, ?, false, false, false)"#
-    )
-    .bind(id)
-    .bind(ip)
-    .bind(http_port)
-    .bind(now)
-    .bind(now)
-    .execute(pool)
-    .await?;
-    #[cfg(feature = "postgres")]
-    let r = sqlx::query(
-        r#"INSERT INTO gb_media_server (id, ip, http_port, create_time, update_time, auto_config, rtp_enable, default_server)
-           VALUES ($1, $2, $3, $4, $5, false, false, false)"#
-    )
-    .bind(id)
-    .bind(ip)
-    .bind(http_port)
-    .bind(now)
-    .bind(now)
-    .execute(pool)
-    .await?;
-    #[cfg(feature = "sqlite")]
-    let r = sqlx::query(
-        r#"INSERT INTO gb_media_server (id, ip, http_port, create_time, update_time, auto_config, rtp_enable, default_server)
-           VALUES (?, ?, ?, ?, ?, 0, 0, 0)"#
-    )
-    .bind(id)
-    .bind(ip)
-    .bind(http_port)
-    .bind(now)
-    .bind(now)
-    .execute(pool)
-    .await?;
+    let r = crate::dispatch_exec_dialect!(
+        pool,
+        |p| {
+            sqlx::query(
+                    r#"INSERT INTO gb_media_server (id, ip, http_port, create_time, update_time, auto_config, rtp_enable, default_server)
+                       VALUES ($1, $2, $3, $4, $5, false, false, false)"#
+                )
+                .bind(id)
+                .bind(ip)
+                .bind(http_port)
+                .bind(now)
+                .bind(now)
+                .execute(p)
+        },
+        |p| {
+            sqlx::query(
+                    &crate::dyn_where::dialect_sql(r#"INSERT INTO gb_media_server (id, ip, http_port, create_time, update_time, auto_config, rtp_enable, default_server)
+                       VALUES (?, ?, ?, ?, ?, false, false, false)"#)
+                )
+                .bind(id)
+                .bind(ip)
+                .bind(http_port)
+                .bind(now)
+                .bind(now)
+                .execute(p)
+        },
+        |p| {
+            sqlx::query(
+                    &crate::dyn_where::dialect_sql(r#"INSERT INTO gb_media_server (id, ip, http_port, create_time, update_time, auto_config, rtp_enable, default_server)
+                       VALUES (?, ?, ?, ?, ?, 0, 0, 0)"#)
+                )
+                .bind(id)
+                .bind(ip)
+                .bind(http_port)
+                .bind(now)
+                .bind(now)
+                .execute(p)
+        },
+    )?;
     Ok(r.rows_affected())
 }
 
@@ -149,74 +165,84 @@ pub async fn update(
     http_port: Option<i32>,
     now: &str,
 ) -> sqlx::Result<u64> {
-    #[cfg(feature = "mysql")]
-    let r = sqlx::query(
-        r#"UPDATE gb_media_server SET
-           ip = COALESCE(?, ip),
-           hook_ip = COALESCE(?, hook_ip),
-           http_port = CASE WHEN http_port IS NULL OR http_port = 0 THEN ? ELSE http_port END,
-           update_time = ?
-           WHERE id = ?"#,
-    )
-    .bind(ip)
-    .bind(hook_ip)
-    .bind(http_port)
-    .bind(now)
-    .bind(id)
-    .execute(pool)
-    .await?;
-    #[cfg(feature = "postgres")]
-    let r = sqlx::query(
-        r#"UPDATE gb_media_server SET
-           ip = COALESCE($1, ip),
-           hook_ip = COALESCE($2, hook_ip),
-           http_port = COALESCE($3, http_port),
-           update_time = $4
-           WHERE id = $5"#,
-    )
-    .bind(ip)
-    .bind(hook_ip)
-    .bind(http_port)
-    .bind(now)
-    .bind(id)
-    .execute(pool)
-    .await?;
-    #[cfg(feature = "sqlite")]
-    let r = sqlx::query(
-        r#"UPDATE gb_media_server SET
-           ip = COALESCE(?, ip),
-           hook_ip = COALESCE(?, hook_ip),
-           http_port = CASE WHEN http_port IS NULL OR http_port = 0 THEN ? ELSE http_port END,
-           update_time = ?
-           WHERE id = ?"#,
-    )
-    .bind(ip)
-    .bind(hook_ip)
-    .bind(http_port)
-    .bind(now)
-    .bind(id)
-    .execute(pool)
-    .await?;
+    let r = crate::dispatch_exec_dialect!(
+        pool,
+        |p| {
+            sqlx::query(
+                r#"UPDATE gb_media_server SET
+                       ip = COALESCE($1, ip),
+                       hook_ip = COALESCE($2, hook_ip),
+                       http_port = COALESCE($3, http_port),
+                       update_time = $4
+                       WHERE id = $5"#,
+            )
+            .bind(ip)
+            .bind(hook_ip)
+            .bind(http_port)
+            .bind(now)
+            .bind(id)
+            .execute(p)
+        },
+        |p| {
+            sqlx::query(
+                    &crate::dyn_where::dialect_sql(r#"UPDATE gb_media_server SET
+                       ip = COALESCE(?, ip),
+                       hook_ip = COALESCE(?, hook_ip),
+                       http_port = CASE WHEN http_port IS NULL OR http_port = 0 THEN ? ELSE http_port END,
+                       update_time = ?
+                       WHERE id = ?"#),
+                )
+                .bind(ip)
+                .bind(hook_ip)
+                .bind(http_port)
+                .bind(now)
+                .bind(id)
+                .execute(p)
+        },
+        |p| {
+            sqlx::query(
+                    &crate::dyn_where::dialect_sql(r#"UPDATE gb_media_server SET
+                       ip = COALESCE(?, ip),
+                       hook_ip = COALESCE(?, hook_ip),
+                       http_port = CASE WHEN http_port IS NULL OR http_port = 0 THEN ? ELSE http_port END,
+                       update_time = ?
+                       WHERE id = ?"#),
+                )
+                .bind(ip)
+                .bind(hook_ip)
+                .bind(http_port)
+                .bind(now)
+                .bind(id)
+                .execute(p)
+        },
+    )?;
     Ok(r.rows_affected())
 }
 
 /// 删除媒体服务器
 pub async fn delete_by_id(pool: &Pool, id: &str) -> sqlx::Result<u64> {
-    #[cfg(feature = "mysql")]
-    let r = sqlx::query("DELETE FROM gb_media_server WHERE id = ?")
-        .bind(id)
-        .execute(pool)
-        .await?;
-    #[cfg(feature = "postgres")]
-    let r = sqlx::query("DELETE FROM gb_media_server WHERE id = $1")
-        .bind(id)
-        .execute(pool)
-        .await?;
-    #[cfg(feature = "sqlite")]
-    let r = sqlx::query("DELETE FROM gb_media_server WHERE id = ?")
-        .bind(id)
-        .execute(pool)
-        .await?;
+    let r = crate::dispatch_exec_dialect!(
+        pool,
+        |p| {
+            sqlx::query("DELETE FROM gb_media_server WHERE id = $1")
+                .bind(id)
+                .execute(p)
+        },
+        |p| {
+            sqlx::query(&crate::dyn_where::dialect_sql(
+                "DELETE FROM gb_media_server WHERE id = ?",
+            ))
+            .bind(id)
+            .execute(p)
+        },
+        |p| {
+            sqlx::query(&crate::dyn_where::dialect_sql(
+                "DELETE FROM gb_media_server WHERE id = ?",
+            ))
+            .bind(id)
+            .execute(p)
+        },
+    )?;
     Ok(r.rows_affected())
 }
 
@@ -246,110 +272,121 @@ pub async fn sync_from_config_full(
     now: &str,
 ) -> sqlx::Result<u64> {
     // 端口范围只在配置里显式给了才覆盖（None = 保持库里已有值）
-    #[cfg(feature = "mysql")]
-    let r = sqlx::query(
-        r#"INSERT INTO gb_media_server
-           (id, ip, http_port, secret, rtp_port_range, send_rtp_port_range, rtc_extern_ip,
-            create_time, update_time, auto_config, rtp_enable, default_server, server_id, type)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, false, false, true, ?, 'zlm')
-           ON DUPLICATE KEY UPDATE ip = VALUES(ip), http_port = VALUES(http_port),
-            secret = VALUES(secret),
-            rtp_port_range = COALESCE(VALUES(rtp_port_range), rtp_port_range),
-            send_rtp_port_range = COALESCE(VALUES(send_rtp_port_range), send_rtp_port_range),
-            rtc_extern_ip = COALESCE(VALUES(rtc_extern_ip), rtc_extern_ip),
-            update_time = VALUES(update_time)"#,
-    )
-    .bind(id)
-    .bind(ip)
-    .bind(http_port)
-    .bind(secret)
-    .bind(rtp_port_range)
-    .bind(send_rtp_port_range)
-    .bind(rtc_extern_ip)
-    .bind(now)
-    .bind(now)
-    .bind(id)
-    .execute(pool)
-    .await?;
-    #[cfg(feature = "postgres")]
-    let r = sqlx::query(
-        r#"INSERT INTO gb_media_server
-           (id, ip, http_port, secret, rtp_port_range, send_rtp_port_range, rtc_extern_ip,
-            create_time, update_time, auto_config, rtp_enable, default_server, server_id, type)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, false, false, true, $1, 'zlm')
-           ON CONFLICT (id) DO UPDATE SET ip = EXCLUDED.ip, http_port = EXCLUDED.http_port,
-            secret = EXCLUDED.secret,
-            rtp_port_range = COALESCE(EXCLUDED.rtp_port_range, gb_media_server.rtp_port_range),
-            send_rtp_port_range = COALESCE(EXCLUDED.send_rtp_port_range, gb_media_server.send_rtp_port_range),
-            rtc_extern_ip = COALESCE(EXCLUDED.rtc_extern_ip, gb_media_server.rtc_extern_ip),
-            update_time = EXCLUDED.update_time"#
-    )
-    .bind(id)
-    .bind(ip)
-    .bind(http_port)
-    .bind(secret)
-    .bind(rtp_port_range)
-    .bind(send_rtp_port_range)
-    .bind(rtc_extern_ip)
-    .bind(now)
-    .bind(now)
-    .execute(pool)
-    .await?;
-    #[cfg(feature = "sqlite")]
-    let r = sqlx::query(
-        r#"INSERT INTO gb_media_server
-           (id, ip, http_port, secret, rtp_port_range, send_rtp_port_range, rtc_extern_ip,
-            create_time, update_time, auto_config, rtp_enable, default_server, server_id, type)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 1, ?, 'zlm')
-           ON CONFLICT(id) DO UPDATE SET ip = excluded.ip, http_port = excluded.http_port,
-            secret = excluded.secret,
-            rtp_port_range = COALESCE(excluded.rtp_port_range, rtp_port_range),
-            send_rtp_port_range = COALESCE(excluded.send_rtp_port_range, send_rtp_port_range),
-            rtc_extern_ip = COALESCE(excluded.rtc_extern_ip, rtc_extern_ip),
-            update_time = excluded.update_time"#,
-    )
-    .bind(id)
-    .bind(ip)
-    .bind(http_port)
-    .bind(secret)
-    .bind(rtp_port_range)
-    .bind(send_rtp_port_range)
-    .bind(rtc_extern_ip)
-    .bind(now)
-    .bind(now)
-    .bind(id)
-    .execute(pool)
-    .await?;
+    let r = crate::dispatch_exec_dialect!(
+        pool,
+        |p| {
+            sqlx::query(
+                    r#"INSERT INTO gb_media_server
+                       (id, ip, http_port, secret, rtp_port_range, send_rtp_port_range, rtc_extern_ip,
+                        create_time, update_time, auto_config, rtp_enable, default_server, server_id, type)
+                       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, false, false, true, $1, 'zlm')
+                       ON CONFLICT (id) DO UPDATE SET ip = EXCLUDED.ip, http_port = EXCLUDED.http_port,
+                        secret = EXCLUDED.secret,
+                        rtp_port_range = COALESCE(EXCLUDED.rtp_port_range, gb_media_server.rtp_port_range),
+                        send_rtp_port_range = COALESCE(EXCLUDED.send_rtp_port_range, gb_media_server.send_rtp_port_range),
+                        rtc_extern_ip = COALESCE(EXCLUDED.rtc_extern_ip, gb_media_server.rtc_extern_ip),
+                        update_time = EXCLUDED.update_time"#
+                )
+                .bind(id)
+                .bind(ip)
+                .bind(http_port)
+                .bind(secret)
+                .bind(rtp_port_range)
+                .bind(send_rtp_port_range)
+                .bind(rtc_extern_ip)
+                .bind(now)
+                .bind(now)
+                .execute(p)
+        },
+        |p| {
+            sqlx::query(
+                    &crate::dyn_where::dialect_sql(r#"INSERT INTO gb_media_server
+                       (id, ip, http_port, secret, rtp_port_range, send_rtp_port_range, rtc_extern_ip,
+                        create_time, update_time, auto_config, rtp_enable, default_server, server_id, type)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, false, false, true, ?, 'zlm')
+                       ON DUPLICATE KEY UPDATE ip = VALUES(ip), http_port = VALUES(http_port),
+                        secret = VALUES(secret),
+                        rtp_port_range = COALESCE(VALUES(rtp_port_range), rtp_port_range),
+                        send_rtp_port_range = COALESCE(VALUES(send_rtp_port_range), send_rtp_port_range),
+                        rtc_extern_ip = COALESCE(VALUES(rtc_extern_ip), rtc_extern_ip),
+                        update_time = VALUES(update_time)"#),
+                )
+                .bind(id)
+                .bind(ip)
+                .bind(http_port)
+                .bind(secret)
+                .bind(rtp_port_range)
+                .bind(send_rtp_port_range)
+                .bind(rtc_extern_ip)
+                .bind(now)
+                .bind(now)
+                .bind(id)
+                .execute(p)
+        },
+        |p| {
+            sqlx::query(
+                    &crate::dyn_where::dialect_sql(r#"INSERT INTO gb_media_server
+                       (id, ip, http_port, secret, rtp_port_range, send_rtp_port_range, rtc_extern_ip,
+                        create_time, update_time, auto_config, rtp_enable, default_server, server_id, type)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 1, ?, 'zlm')
+                       ON CONFLICT(id) DO UPDATE SET ip = excluded.ip, http_port = excluded.http_port,
+                        secret = excluded.secret,
+                        rtp_port_range = COALESCE(excluded.rtp_port_range, rtp_port_range),
+                        send_rtp_port_range = COALESCE(excluded.send_rtp_port_range, send_rtp_port_range),
+                        rtc_extern_ip = COALESCE(excluded.rtc_extern_ip, rtc_extern_ip),
+                        update_time = excluded.update_time"#),
+                )
+                .bind(id)
+                .bind(ip)
+                .bind(http_port)
+                .bind(secret)
+                .bind(rtp_port_range)
+                .bind(send_rtp_port_range)
+                .bind(rtc_extern_ip)
+                .bind(now)
+                .bind(now)
+                .bind(id)
+                .execute(p)
+        },
+    )?;
     Ok(r.rows_affected())
 }
 
 /// 获取默认媒体服务器
 pub async fn get_default_server(pool: &Pool) -> sqlx::Result<Option<MediaServer>> {
-    #[cfg(feature = "mysql")]
-    return sqlx::query_as::<_, MediaServer>(
-        "SELECT * FROM gb_media_server WHERE default_server = 1 LIMIT 1",
+    crate::dispatch_dialect!(
+        pool,
+        |p| {
+            sqlx::query_as::<_, MediaServer>(
+                "SELECT * FROM gb_media_server WHERE default_server = true LIMIT 1",
+            )
+            .fetch_optional(p)
+            .await
+        },
+        |p| {
+            sqlx::query_as::<_, MediaServer>(
+                "SELECT * FROM gb_media_server WHERE default_server = 1 LIMIT 1",
+            )
+            .fetch_optional(p)
+            .await
+        },
+        |p| {
+            sqlx::query_as::<_, MediaServer>(
+                "SELECT * FROM gb_media_server WHERE default_server = 1 LIMIT 1",
+            )
+            .fetch_optional(p)
+            .await
+        },
     )
-    .fetch_optional(pool)
-    .await;
-    #[cfg(feature = "postgres")]
-    return sqlx::query_as::<_, MediaServer>(
-        "SELECT * FROM gb_media_server WHERE default_server = true LIMIT 1",
-    )
-    .fetch_optional(pool)
-    .await;
-    #[cfg(feature = "sqlite")]
-    return sqlx::query_as::<_, MediaServer>(
-        "SELECT * FROM gb_media_server WHERE default_server = 1 LIMIT 1",
-    )
-    .fetch_optional(pool)
-    .await;
 }
 
 /// 统计媒体服务器数量
 pub async fn count_all(pool: &Pool) -> sqlx::Result<i64> {
-    sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_media_server")
-        .fetch_one(pool)
-        .await
+    let sql = crate::db::dialect::current_sql("SELECT COUNT(*) FROM gb_media_server").into_owned();
+
+    crate::dispatch!(pool, |p| {
+        sqlx::query_scalar::<_, i64>(&sql).fetch_one(p)
+    })
 }
 
 /// 更新服务器状态
@@ -359,54 +396,65 @@ pub async fn update_status(
     status: bool,
     last_keepalive: &str,
 ) -> sqlx::Result<u64> {
-    #[cfg(feature = "mysql")]
-    let r =
-        sqlx::query("UPDATE gb_media_server SET status = ?, last_keepalive_time = ? WHERE id = ?")
+    let r = crate::dispatch_exec_dialect!(
+        pool,
+        |p| {
+            sqlx::query(
+                "UPDATE gb_media_server SET status = $1, last_keepalive_time = $2 WHERE id = $3",
+            )
             .bind(status)
             .bind(last_keepalive)
             .bind(id)
-            .execute(pool)
-            .await?;
-    #[cfg(feature = "postgres")]
-    let r = sqlx::query(
-        "UPDATE gb_media_server SET status = $1, last_keepalive_time = $2 WHERE id = $3",
-    )
-    .bind(status)
-    .bind(last_keepalive)
-    .bind(id)
-    .execute(pool)
-    .await?;
-    #[cfg(feature = "sqlite")]
-    let r =
-        sqlx::query("UPDATE gb_media_server SET status = ?, last_keepalive_time = ? WHERE id = ?")
+            .execute(p)
+        },
+        |p| {
+            sqlx::query(&crate::dyn_where::dialect_sql(
+                "UPDATE gb_media_server SET status = ?, last_keepalive_time = ? WHERE id = ?",
+            ))
             .bind(status)
             .bind(last_keepalive)
             .bind(id)
-            .execute(pool)
-            .await?;
+            .execute(p)
+        },
+        |p| {
+            sqlx::query(&crate::dyn_where::dialect_sql(
+                "UPDATE gb_media_server SET status = ?, last_keepalive_time = ? WHERE id = ?",
+            ))
+            .bind(status)
+            .bind(last_keepalive)
+            .bind(id)
+            .execute(p)
+        },
+    )?;
     Ok(r.rows_affected())
 }
 
 /// 获取所有在线的媒体服务器
 pub async fn list_online_servers(pool: &Pool) -> sqlx::Result<Vec<MediaServer>> {
-    #[cfg(feature = "mysql")]
-    return sqlx::query_as::<_, MediaServer>(
-        "SELECT * FROM gb_media_server WHERE status = 1 AND COALESCE(enabled, 1) = 1 ORDER BY id",
+    crate::dispatch_dialect!(
+        pool,
+        |p| {
+            sqlx::query_as::<_, MediaServer>(
+                    "SELECT * FROM gb_media_server WHERE status = true AND COALESCE(enabled, true) = true ORDER BY id",
+                )
+                .fetch_all(p)
+                .await
+        },
+        |p| {
+            sqlx::query_as::<_, MediaServer>(
+                    "SELECT * FROM gb_media_server WHERE status = 1 AND COALESCE(enabled, 1) = 1 ORDER BY id",
+                )
+                .fetch_all(p)
+                .await
+        },
+        |p| {
+            sqlx::query_as::<_, MediaServer>(
+                    "SELECT * FROM gb_media_server WHERE status = 1 AND COALESCE(enabled, 1) = 1 ORDER BY id",
+                )
+                .fetch_all(p)
+                .await
+        },
     )
-    .fetch_all(pool)
-    .await;
-    #[cfg(feature = "postgres")]
-    return sqlx::query_as::<_, MediaServer>(
-        "SELECT * FROM gb_media_server WHERE status = true AND COALESCE(enabled, true) = true ORDER BY id",
-    )
-    .fetch_all(pool)
-    .await;
-    #[cfg(feature = "sqlite")]
-    return sqlx::query_as::<_, MediaServer>(
-        "SELECT * FROM gb_media_server WHERE status = 1 AND COALESCE(enabled, 1) = 1 ORDER BY id",
-    )
-    .fetch_all(pool)
-    .await;
 }
 
 /// Update media server ports from ZLM on_server_started hook
@@ -419,63 +467,66 @@ pub async fn update_ports(
     rtmp_port: Option<i32>,
     now: &str,
 ) -> sqlx::Result<u64> {
-    #[cfg(feature = "mysql")]
-    let r = sqlx::query(
-        r#"UPDATE gb_media_server SET
-           http_port = CASE WHEN http_port IS NULL OR http_port = 0 THEN ? ELSE http_port END,
-           http_ssl_port = COALESCE(?, http_ssl_port),
-           rtsp_port = COALESCE(?, rtsp_port),
-           rtmp_port = COALESCE(?, rtmp_port),
-           status = 1,
-           update_time = ?
-           WHERE id = ?"#,
-    )
-    .bind(http_port)
-    .bind(http_ssl_port)
-    .bind(rtsp_port)
-    .bind(rtmp_port)
-    .bind(now)
-    .bind(id)
-    .execute(pool)
-    .await?;
-    #[cfg(feature = "postgres")]
-    let r = sqlx::query(
-        r#"UPDATE gb_media_server SET
-           http_port = COALESCE($1, http_port),
-           http_ssl_port = COALESCE($2, http_ssl_port),
-           rtsp_port = COALESCE($3, rtsp_port),
-           rtmp_port = COALESCE($4, rtmp_port),
-           status = true,
-           update_time = $5
-           WHERE id = $6"#,
-    )
-    .bind(http_port)
-    .bind(http_ssl_port)
-    .bind(rtsp_port)
-    .bind(rtmp_port)
-    .bind(now)
-    .bind(id)
-    .execute(pool)
-    .await?;
-    #[cfg(feature = "sqlite")]
-    let r = sqlx::query(
-        r#"UPDATE gb_media_server SET
-           http_port = CASE WHEN http_port IS NULL OR http_port = 0 THEN ? ELSE http_port END,
-           http_ssl_port = COALESCE(?, http_ssl_port),
-           rtsp_port = COALESCE(?, rtsp_port),
-           rtmp_port = COALESCE(?, rtmp_port),
-           status = 1,
-           update_time = ?
-           WHERE id = ?"#,
-    )
-    .bind(http_port)
-    .bind(http_ssl_port)
-    .bind(rtsp_port)
-    .bind(rtmp_port)
-    .bind(now)
-    .bind(id)
-    .execute(pool)
-    .await?;
+    let r = crate::dispatch_exec_dialect!(
+        pool,
+        |p| {
+            sqlx::query(
+                r#"UPDATE gb_media_server SET
+                       http_port = COALESCE($1, http_port),
+                       http_ssl_port = COALESCE($2, http_ssl_port),
+                       rtsp_port = COALESCE($3, rtsp_port),
+                       rtmp_port = COALESCE($4, rtmp_port),
+                       status = true,
+                       update_time = $5
+                       WHERE id = $6"#,
+            )
+            .bind(http_port)
+            .bind(http_ssl_port)
+            .bind(rtsp_port)
+            .bind(rtmp_port)
+            .bind(now)
+            .bind(id)
+            .execute(p)
+        },
+        |p| {
+            sqlx::query(
+                    &crate::dyn_where::dialect_sql(r#"UPDATE gb_media_server SET
+                       http_port = CASE WHEN http_port IS NULL OR http_port = 0 THEN ? ELSE http_port END,
+                       http_ssl_port = COALESCE(?, http_ssl_port),
+                       rtsp_port = COALESCE(?, rtsp_port),
+                       rtmp_port = COALESCE(?, rtmp_port),
+                       status = 1,
+                       update_time = ?
+                       WHERE id = ?"#),
+                )
+                .bind(http_port)
+                .bind(http_ssl_port)
+                .bind(rtsp_port)
+                .bind(rtmp_port)
+                .bind(now)
+                .bind(id)
+                .execute(p)
+        },
+        |p| {
+            sqlx::query(
+                    &crate::dyn_where::dialect_sql(r#"UPDATE gb_media_server SET
+                       http_port = CASE WHEN http_port IS NULL OR http_port = 0 THEN ? ELSE http_port END,
+                       http_ssl_port = COALESCE(?, http_ssl_port),
+                       rtsp_port = COALESCE(?, rtsp_port),
+                       rtmp_port = COALESCE(?, rtmp_port),
+                       status = 1,
+                       update_time = ?
+                       WHERE id = ?"#),
+                )
+                .bind(http_port)
+                .bind(http_ssl_port)
+                .bind(rtsp_port)
+                .bind(rtmp_port)
+                .bind(now)
+                .bind(id)
+                .execute(p)
+        },
+    )?;
     Ok(r.rows_affected())
 }
 
@@ -509,108 +560,111 @@ pub async fn sync_ports_from_zlm(
     ws_flv_ssl_port: Option<i32>,
     now: &str,
 ) -> sqlx::Result<u64> {
-    #[cfg(feature = "mysql")]
-    let r = sqlx::query(
-        r#"UPDATE gb_media_server SET
-           http_port = COALESCE(?, http_port),
-           http_ssl_port = COALESCE(?, http_ssl_port),
-           rtsp_port = COALESCE(?, rtsp_port),
-           rtsp_ssl_port = COALESCE(?, rtsp_ssl_port),
-           rtmp_port = COALESCE(?, rtmp_port),
-           rtmp_ssl_port = COALESCE(?, rtmp_ssl_port),
-           flv_port = COALESCE(?, flv_port),
-           flv_ssl_port = COALESCE(?, flv_ssl_port),
-           mp4_port = COALESCE(?, mp4_port),
-           mp4_ssl_port = COALESCE(?, mp4_ssl_port),
-           ws_flv_port = COALESCE(?, ws_flv_port),
-           ws_flv_ssl_port = COALESCE(?, ws_flv_ssl_port),
-           update_time = ?
-           WHERE id = ?"#,
-    )
-    .bind(http_port)
-    .bind(http_ssl_port)
-    .bind(rtsp_port)
-    .bind(rtsp_ssl_port)
-    .bind(rtmp_port)
-    .bind(rtmp_ssl_port)
-    .bind(flv_port)
-    .bind(flv_ssl_port)
-    .bind(mp4_port)
-    .bind(mp4_ssl_port)
-    .bind(ws_flv_port)
-    .bind(ws_flv_ssl_port)
-    .bind(now)
-    .bind(id)
-    .execute(pool)
-    .await?;
-    #[cfg(feature = "postgres")]
-    let r = sqlx::query(
-        r#"UPDATE gb_media_server SET
-           http_port = COALESCE($1, http_port),
-           http_ssl_port = COALESCE($2, http_ssl_port),
-           rtsp_port = COALESCE($3, rtsp_port),
-           rtsp_ssl_port = COALESCE($4, rtsp_ssl_port),
-           rtmp_port = COALESCE($5, rtmp_port),
-           rtmp_ssl_port = COALESCE($6, rtmp_ssl_port),
-           flv_port = COALESCE($7, flv_port),
-           flv_ssl_port = COALESCE($8, flv_ssl_port),
-           mp4_port = COALESCE($9, mp4_port),
-           mp4_ssl_port = COALESCE($10, mp4_ssl_port),
-           ws_flv_port = COALESCE($11, ws_flv_port),
-           ws_flv_ssl_port = COALESCE($12, ws_flv_ssl_port),
-           update_time = $13
-           WHERE id = $14"#,
-    )
-    .bind(http_port)
-    .bind(http_ssl_port)
-    .bind(rtsp_port)
-    .bind(rtsp_ssl_port)
-    .bind(rtmp_port)
-    .bind(rtmp_ssl_port)
-    .bind(flv_port)
-    .bind(flv_ssl_port)
-    .bind(mp4_port)
-    .bind(mp4_ssl_port)
-    .bind(ws_flv_port)
-    .bind(ws_flv_ssl_port)
-    .bind(now)
-    .bind(id)
-    .execute(pool)
-    .await?;
-    #[cfg(feature = "sqlite")]
-    let r = sqlx::query(
-        r#"UPDATE gb_media_server SET
-           http_port = COALESCE(?, http_port),
-           http_ssl_port = COALESCE(?, http_ssl_port),
-           rtsp_port = COALESCE(?, rtsp_port),
-           rtsp_ssl_port = COALESCE(?, rtsp_ssl_port),
-           rtmp_port = COALESCE(?, rtmp_port),
-           rtmp_ssl_port = COALESCE(?, rtmp_ssl_port),
-           flv_port = COALESCE(?, flv_port),
-           flv_ssl_port = COALESCE(?, flv_ssl_port),
-           mp4_port = COALESCE(?, mp4_port),
-           mp4_ssl_port = COALESCE(?, mp4_ssl_port),
-           ws_flv_port = COALESCE(?, ws_flv_port),
-           ws_flv_ssl_port = COALESCE(?, ws_flv_ssl_port),
-           update_time = ?
-           WHERE id = ?"#,
-    )
-    .bind(http_port)
-    .bind(http_ssl_port)
-    .bind(rtsp_port)
-    .bind(rtsp_ssl_port)
-    .bind(rtmp_port)
-    .bind(rtmp_ssl_port)
-    .bind(flv_port)
-    .bind(flv_ssl_port)
-    .bind(mp4_port)
-    .bind(mp4_ssl_port)
-    .bind(ws_flv_port)
-    .bind(ws_flv_ssl_port)
-    .bind(now)
-    .bind(id)
-    .execute(pool)
-    .await?;
+    let r = crate::dispatch_exec_dialect!(
+        pool,
+        |p| {
+            sqlx::query(
+                r#"UPDATE gb_media_server SET
+                       http_port = COALESCE($1, http_port),
+                       http_ssl_port = COALESCE($2, http_ssl_port),
+                       rtsp_port = COALESCE($3, rtsp_port),
+                       rtsp_ssl_port = COALESCE($4, rtsp_ssl_port),
+                       rtmp_port = COALESCE($5, rtmp_port),
+                       rtmp_ssl_port = COALESCE($6, rtmp_ssl_port),
+                       flv_port = COALESCE($7, flv_port),
+                       flv_ssl_port = COALESCE($8, flv_ssl_port),
+                       mp4_port = COALESCE($9, mp4_port),
+                       mp4_ssl_port = COALESCE($10, mp4_ssl_port),
+                       ws_flv_port = COALESCE($11, ws_flv_port),
+                       ws_flv_ssl_port = COALESCE($12, ws_flv_ssl_port),
+                       update_time = $13
+                       WHERE id = $14"#,
+            )
+            .bind(http_port)
+            .bind(http_ssl_port)
+            .bind(rtsp_port)
+            .bind(rtsp_ssl_port)
+            .bind(rtmp_port)
+            .bind(rtmp_ssl_port)
+            .bind(flv_port)
+            .bind(flv_ssl_port)
+            .bind(mp4_port)
+            .bind(mp4_ssl_port)
+            .bind(ws_flv_port)
+            .bind(ws_flv_ssl_port)
+            .bind(now)
+            .bind(id)
+            .execute(p)
+        },
+        |p| {
+            sqlx::query(&crate::dyn_where::dialect_sql(
+                r#"UPDATE gb_media_server SET
+                       http_port = COALESCE(?, http_port),
+                       http_ssl_port = COALESCE(?, http_ssl_port),
+                       rtsp_port = COALESCE(?, rtsp_port),
+                       rtsp_ssl_port = COALESCE(?, rtsp_ssl_port),
+                       rtmp_port = COALESCE(?, rtmp_port),
+                       rtmp_ssl_port = COALESCE(?, rtmp_ssl_port),
+                       flv_port = COALESCE(?, flv_port),
+                       flv_ssl_port = COALESCE(?, flv_ssl_port),
+                       mp4_port = COALESCE(?, mp4_port),
+                       mp4_ssl_port = COALESCE(?, mp4_ssl_port),
+                       ws_flv_port = COALESCE(?, ws_flv_port),
+                       ws_flv_ssl_port = COALESCE(?, ws_flv_ssl_port),
+                       update_time = ?
+                       WHERE id = ?"#,
+            ))
+            .bind(http_port)
+            .bind(http_ssl_port)
+            .bind(rtsp_port)
+            .bind(rtsp_ssl_port)
+            .bind(rtmp_port)
+            .bind(rtmp_ssl_port)
+            .bind(flv_port)
+            .bind(flv_ssl_port)
+            .bind(mp4_port)
+            .bind(mp4_ssl_port)
+            .bind(ws_flv_port)
+            .bind(ws_flv_ssl_port)
+            .bind(now)
+            .bind(id)
+            .execute(p)
+        },
+        |p| {
+            sqlx::query(&crate::dyn_where::dialect_sql(
+                r#"UPDATE gb_media_server SET
+                       http_port = COALESCE(?, http_port),
+                       http_ssl_port = COALESCE(?, http_ssl_port),
+                       rtsp_port = COALESCE(?, rtsp_port),
+                       rtsp_ssl_port = COALESCE(?, rtsp_ssl_port),
+                       rtmp_port = COALESCE(?, rtmp_port),
+                       rtmp_ssl_port = COALESCE(?, rtmp_ssl_port),
+                       flv_port = COALESCE(?, flv_port),
+                       flv_ssl_port = COALESCE(?, flv_ssl_port),
+                       mp4_port = COALESCE(?, mp4_port),
+                       mp4_ssl_port = COALESCE(?, mp4_ssl_port),
+                       ws_flv_port = COALESCE(?, ws_flv_port),
+                       ws_flv_ssl_port = COALESCE(?, ws_flv_ssl_port),
+                       update_time = ?
+                       WHERE id = ?"#,
+            ))
+            .bind(http_port)
+            .bind(http_ssl_port)
+            .bind(rtsp_port)
+            .bind(rtsp_ssl_port)
+            .bind(rtmp_port)
+            .bind(rtmp_ssl_port)
+            .bind(flv_port)
+            .bind(flv_ssl_port)
+            .bind(mp4_port)
+            .bind(mp4_ssl_port)
+            .bind(ws_flv_port)
+            .bind(ws_flv_ssl_port)
+            .bind(now)
+            .bind(id)
+            .execute(p)
+        },
+    )?;
     Ok(r.rows_affected())
 }
 
@@ -619,30 +673,33 @@ pub async fn sync_ports_from_zlm(
 /// Phase 4 follow-up: 同时 reset `consecutive_misses = 0`，避免 grace count
 /// 在节点恢复后还保留旧的丢失计数。
 pub async fn update_last_keepalive(pool: &Pool, id: &str, now: &str) -> sqlx::Result<u64> {
-    #[cfg(feature = "mysql")]
-    let r = sqlx::query(
-        "UPDATE gb_media_server SET last_keepalive_time = ?, status = 1, consecutive_misses = 0 WHERE id = ?"
-    )
-    .bind(now)
-    .bind(id)
-    .execute(pool)
-    .await?;
-    #[cfg(feature = "postgres")]
-    let r = sqlx::query(
-        "UPDATE gb_media_server SET last_keepalive_time = $1, status = true, consecutive_misses = 0 WHERE id = $2"
-    )
-    .bind(now)
-    .bind(id)
-    .execute(pool)
-    .await?;
-    #[cfg(feature = "sqlite")]
-    let r = sqlx::query(
-        "UPDATE gb_media_server SET last_keepalive_time = ?, status = 1, consecutive_misses = 0 WHERE id = ?"
-    )
-    .bind(now)
-    .bind(id)
-    .execute(pool)
-    .await?;
+    let r = crate::dispatch_exec_dialect!(
+        pool,
+        |p| {
+            sqlx::query(
+                    "UPDATE gb_media_server SET last_keepalive_time = $1, status = true, consecutive_misses = 0 WHERE id = $2"
+                )
+                .bind(now)
+                .bind(id)
+                .execute(p)
+        },
+        |p| {
+            sqlx::query(
+                    &crate::dyn_where::dialect_sql("UPDATE gb_media_server SET last_keepalive_time = ?, status = 1, consecutive_misses = 0 WHERE id = ?")
+                )
+                .bind(now)
+                .bind(id)
+                .execute(p)
+        },
+        |p| {
+            sqlx::query(
+                    &crate::dyn_where::dialect_sql("UPDATE gb_media_server SET last_keepalive_time = ?, status = 1, consecutive_misses = 0 WHERE id = ?")
+                )
+                .bind(now)
+                .bind(id)
+                .execute(p)
+        },
+    )?;
     Ok(r.rows_affected())
 }
 
@@ -654,27 +711,30 @@ pub async fn update_last_keepalive(pool: &Pool, id: &str, now: &str) -> sqlx::Re
 ///
 /// Returns the number of rows updated (i.e. newly-offline nodes).
 pub async fn mark_offline_if_expired(pool: &Pool, before_time: &str) -> sqlx::Result<u64> {
-    #[cfg(feature = "mysql")]
-    let r = sqlx::query(
-        "UPDATE gb_media_server SET status = 0 WHERE status = 1 AND last_keepalive_time < ?",
-    )
-    .bind(before_time)
-    .execute(pool)
-    .await?;
-    #[cfg(feature = "postgres")]
-    let r = sqlx::query(
-        "UPDATE gb_media_server SET status = 0 WHERE status = 1 AND last_keepalive_time < $1",
-    )
-    .bind(before_time)
-    .execute(pool)
-    .await?;
-    #[cfg(feature = "sqlite")]
-    let r = sqlx::query(
-        "UPDATE gb_media_server SET status = 0 WHERE status = 1 AND last_keepalive_time < ?",
-    )
-    .bind(before_time)
-    .execute(pool)
-    .await?;
+    let r = crate::dispatch_exec_dialect!(
+        pool,
+        |p| {
+            sqlx::query(
+                    "UPDATE gb_media_server SET status = 0 WHERE status = 1 AND last_keepalive_time < $1",
+                )
+                .bind(before_time)
+                .execute(p)
+        },
+        |p| {
+            sqlx::query(
+                    &crate::dyn_where::dialect_sql("UPDATE gb_media_server SET status = 0 WHERE status = 1 AND last_keepalive_time < ?"),
+                )
+                .bind(before_time)
+                .execute(p)
+        },
+        |p| {
+            sqlx::query(
+                    &crate::dyn_where::dialect_sql("UPDATE gb_media_server SET status = 0 WHERE status = 1 AND last_keepalive_time < ?"),
+                )
+                .bind(before_time)
+                .execute(p)
+        },
+    )?;
     Ok(r.rows_affected())
 }
 
@@ -684,30 +744,33 @@ pub async fn mark_offline_if_expired(pool: &Pool, before_time: &str) -> sqlx::Re
 /// 对每个 status=1 且 `last_keepalive_time < before_time` 的节点，
 /// 仅 `consecutive_misses += 1`。返回被递增的节点数。
 pub async fn increment_miss_count_if_expired(pool: &Pool, before_time: &str) -> sqlx::Result<u64> {
-    #[cfg(feature = "mysql")]
-    let r = sqlx::query(
-        "UPDATE gb_media_server SET consecutive_misses = consecutive_misses + 1 \
-         WHERE status = 1 AND last_keepalive_time < ?",
-    )
-    .bind(before_time)
-    .execute(pool)
-    .await?;
-    #[cfg(feature = "postgres")]
-    let r = sqlx::query(
-        "UPDATE gb_media_server SET consecutive_misses = consecutive_misses + 1 \
-         WHERE status = true AND last_keepalive_time < $1",
-    )
-    .bind(before_time)
-    .execute(pool)
-    .await?;
-    #[cfg(feature = "sqlite")]
-    let r = sqlx::query(
-        "UPDATE gb_media_server SET consecutive_misses = consecutive_misses + 1 \
-         WHERE status = 1 AND last_keepalive_time < ?",
-    )
-    .bind(before_time)
-    .execute(pool)
-    .await?;
+    let r = crate::dispatch_exec_dialect!(
+        pool,
+        |p| {
+            sqlx::query(
+                "UPDATE gb_media_server SET consecutive_misses = consecutive_misses + 1 \
+                     WHERE status = true AND last_keepalive_time < $1",
+            )
+            .bind(before_time)
+            .execute(p)
+        },
+        |p| {
+            sqlx::query(&crate::dyn_where::dialect_sql(
+                "UPDATE gb_media_server SET consecutive_misses = consecutive_misses + 1 \
+                     WHERE status = 1 AND last_keepalive_time < ?",
+            ))
+            .bind(before_time)
+            .execute(p)
+        },
+        |p| {
+            sqlx::query(&crate::dyn_where::dialect_sql(
+                "UPDATE gb_media_server SET consecutive_misses = consecutive_misses + 1 \
+                     WHERE status = 1 AND last_keepalive_time < ?",
+            ))
+            .bind(before_time)
+            .execute(p)
+        },
+    )?;
     Ok(r.rows_affected())
 }
 
@@ -722,59 +785,65 @@ pub async fn mark_offline_if_miss_count_exceeded(
     pool: &Pool,
     grace_count: i32,
 ) -> sqlx::Result<u64> {
-    #[cfg(feature = "mysql")]
-    let r = sqlx::query(
-        "UPDATE gb_media_server SET status = 0, consecutive_misses = 0 \
-         WHERE status = 1 AND consecutive_misses >= ?",
-    )
-    .bind(grace_count)
-    .execute(pool)
-    .await?;
-    #[cfg(feature = "postgres")]
-    let r = sqlx::query(
-        "UPDATE gb_media_server SET status = false, consecutive_misses = 0 \
-         WHERE status = true AND consecutive_misses >= $1",
-    )
-    .bind(grace_count)
-    .execute(pool)
-    .await?;
-    #[cfg(feature = "sqlite")]
-    let r = sqlx::query(
-        "UPDATE gb_media_server SET status = 0, consecutive_misses = 0 \
-         WHERE status = 1 AND consecutive_misses >= ?",
-    )
-    .bind(grace_count)
-    .execute(pool)
-    .await?;
+    let r = crate::dispatch_exec_dialect!(
+        pool,
+        |p| {
+            sqlx::query(
+                "UPDATE gb_media_server SET status = false, consecutive_misses = 0 \
+                     WHERE status = true AND consecutive_misses >= $1",
+            )
+            .bind(grace_count)
+            .execute(p)
+        },
+        |p| {
+            sqlx::query(&crate::dyn_where::dialect_sql(
+                "UPDATE gb_media_server SET status = 0, consecutive_misses = 0 \
+                     WHERE status = 1 AND consecutive_misses >= ?",
+            ))
+            .bind(grace_count)
+            .execute(p)
+        },
+        |p| {
+            sqlx::query(&crate::dyn_where::dialect_sql(
+                "UPDATE gb_media_server SET status = 0, consecutive_misses = 0 \
+                     WHERE status = 1 AND consecutive_misses >= ?",
+            ))
+            .bind(grace_count)
+            .execute(p)
+        },
+    )?;
     Ok(r.rows_affected())
 }
 
 /// Phase 4 follow-up: 重置健康节点的 `consecutive_misses = 0`（keepalive 恢复）
 pub async fn reset_miss_count_for_fresh_nodes(pool: &Pool, before_time: &str) -> sqlx::Result<u64> {
-    #[cfg(feature = "mysql")]
-    let r = sqlx::query(
-        "UPDATE gb_media_server SET consecutive_misses = 0 \
-         WHERE status = 1 AND last_keepalive_time >= ? AND consecutive_misses > 0",
-    )
-    .bind(before_time)
-    .execute(pool)
-    .await?;
-    #[cfg(feature = "postgres")]
-    let r = sqlx::query(
-        "UPDATE gb_media_server SET consecutive_misses = 0 \
-         WHERE status = true AND last_keepalive_time >= $1 AND consecutive_misses > 0",
-    )
-    .bind(before_time)
-    .execute(pool)
-    .await?;
-    #[cfg(feature = "sqlite")]
-    let r = sqlx::query(
-        "UPDATE gb_media_server SET consecutive_misses = 0 \
-         WHERE status = 1 AND last_keepalive_time >= ? AND consecutive_misses > 0",
-    )
-    .bind(before_time)
-    .execute(pool)
-    .await?;
+    let r = crate::dispatch_exec_dialect!(
+        pool,
+        |p| {
+            sqlx::query(
+                "UPDATE gb_media_server SET consecutive_misses = 0 \
+                     WHERE status = true AND last_keepalive_time >= $1 AND consecutive_misses > 0",
+            )
+            .bind(before_time)
+            .execute(p)
+        },
+        |p| {
+            sqlx::query(&crate::dyn_where::dialect_sql(
+                "UPDATE gb_media_server SET consecutive_misses = 0 \
+                     WHERE status = 1 AND last_keepalive_time >= ? AND consecutive_misses > 0",
+            ))
+            .bind(before_time)
+            .execute(p)
+        },
+        |p| {
+            sqlx::query(&crate::dyn_where::dialect_sql(
+                "UPDATE gb_media_server SET consecutive_misses = 0 \
+                     WHERE status = 1 AND last_keepalive_time >= ? AND consecutive_misses > 0",
+            ))
+            .bind(before_time)
+            .execute(p)
+        },
+    )?;
     Ok(r.rows_affected())
 }
 
@@ -791,36 +860,39 @@ pub async fn update_flow_stats(
     active_streams: Option<i32>,
     now: &str,
 ) -> sqlx::Result<u64> {
-    #[cfg(feature = "mysql")]
-    let r = sqlx::query(
-        "UPDATE gb_media_server SET total_bytes = COALESCE(total_bytes, 0) + ?, active_stream_count = COALESCE(?, active_stream_count), update_time = ? WHERE id = ?"
-    )
-    .bind(total_bytes)
-    .bind(active_streams)
-    .bind(now)
-    .bind(id)
-    .execute(pool)
-    .await?;
-    #[cfg(feature = "postgres")]
-    let r = sqlx::query(
-        "UPDATE gb_media_server SET total_bytes = COALESCE(total_bytes, 0) + $1, active_stream_count = COALESCE($2, active_stream_count), update_time = $3 WHERE id = $4"
-    )
-    .bind(total_bytes)
-    .bind(active_streams)
-    .bind(now)
-    .bind(id)
-    .execute(pool)
-    .await?;
-    #[cfg(feature = "sqlite")]
-    let r = sqlx::query(
-        "UPDATE gb_media_server SET total_bytes = COALESCE(total_bytes, 0) + ?, active_stream_count = COALESCE(?, active_stream_count), update_time = ? WHERE id = ?"
-    )
-    .bind(total_bytes)
-    .bind(active_streams)
-    .bind(now)
-    .bind(id)
-    .execute(pool)
-    .await?;
+    let r = crate::dispatch_exec_dialect!(
+        pool,
+        |p| {
+            sqlx::query(
+                    "UPDATE gb_media_server SET total_bytes = COALESCE(total_bytes, 0) + $1, active_stream_count = COALESCE($2, active_stream_count), update_time = $3 WHERE id = $4"
+                )
+                .bind(total_bytes)
+                .bind(active_streams)
+                .bind(now)
+                .bind(id)
+                .execute(p)
+        },
+        |p| {
+            sqlx::query(
+                    &crate::dyn_where::dialect_sql("UPDATE gb_media_server SET total_bytes = COALESCE(total_bytes, 0) + ?, active_stream_count = COALESCE(?, active_stream_count), update_time = ? WHERE id = ?")
+                )
+                .bind(total_bytes)
+                .bind(active_streams)
+                .bind(now)
+                .bind(id)
+                .execute(p)
+        },
+        |p| {
+            sqlx::query(
+                    &crate::dyn_where::dialect_sql("UPDATE gb_media_server SET total_bytes = COALESCE(total_bytes, 0) + ?, active_stream_count = COALESCE(?, active_stream_count), update_time = ? WHERE id = ?")
+                )
+                .bind(total_bytes)
+                .bind(active_streams)
+                .bind(now)
+                .bind(id)
+                .execute(p)
+        },
+    )?;
     Ok(r.rows_affected())
 }
 
@@ -833,27 +905,33 @@ pub async fn update_flow_stats(
 
 /// 获取指定媒体服务器的全部白名单 CIDR
 pub async fn get_white_list_cidrs(pool: &Pool, media_server_id: &str) -> sqlx::Result<Vec<String>> {
-    #[cfg(feature = "mysql")]
-    let rows = sqlx::query_scalar::<_, String>(
-        "SELECT cidr FROM gb_media_server_white_list WHERE media_server_id = ? ORDER BY id",
-    )
-    .bind(media_server_id)
-    .fetch_all(pool)
-    .await?;
-    #[cfg(feature = "postgres")]
-    let rows = sqlx::query_scalar::<_, String>(
-        "SELECT cidr FROM gb_media_server_white_list WHERE media_server_id = $1 ORDER BY id",
-    )
-    .bind(media_server_id)
-    .fetch_all(pool)
-    .await?;
-    #[cfg(feature = "sqlite")]
-    let rows = sqlx::query_scalar::<_, String>(
-        "SELECT cidr FROM gb_media_server_white_list WHERE media_server_id = ? ORDER BY id",
-    )
-    .bind(media_server_id)
-    .fetch_all(pool)
-    .await?;
+    let rows = crate::dispatch_dialect!(
+        pool,
+        |p| {
+            sqlx::query_scalar::<_, String>(
+                    "SELECT cidr FROM gb_media_server_white_list WHERE media_server_id = $1 ORDER BY id",
+                )
+                .bind(media_server_id)
+                .fetch_all(p)
+                .await?
+        },
+        |p| {
+            sqlx::query_scalar::<_, String>(&crate::dyn_where::dialect_sql(
+                "SELECT cidr FROM gb_media_server_white_list WHERE media_server_id = ? ORDER BY id",
+            ))
+            .bind(media_server_id)
+            .fetch_all(p)
+            .await?
+        },
+        |p| {
+            sqlx::query_scalar::<_, String>(&crate::dyn_where::dialect_sql(
+                "SELECT cidr FROM gb_media_server_white_list WHERE media_server_id = ? ORDER BY id",
+            ))
+            .bind(media_server_id)
+            .fetch_all(p)
+            .await?
+        },
+    );
     Ok(rows)
 }
 
@@ -864,33 +942,36 @@ pub async fn add_white_list_cidr(
     cidr: &str,
     now: &str,
 ) -> sqlx::Result<u64> {
-    #[cfg(feature = "mysql")]
-    let r = sqlx::query(
-        "INSERT INTO gb_media_server_white_list (media_server_id, cidr, create_time) VALUES (?, ?, ?)"
-    )
-    .bind(media_server_id)
-    .bind(cidr)
-    .bind(now)
-    .execute(pool)
-    .await?;
-    #[cfg(feature = "postgres")]
-    let r = sqlx::query(
-        "INSERT INTO gb_media_server_white_list (media_server_id, cidr, create_time) VALUES ($1, $2, $3)"
-    )
-    .bind(media_server_id)
-    .bind(cidr)
-    .bind(now)
-    .execute(pool)
-    .await?;
-    #[cfg(feature = "sqlite")]
-    let r = sqlx::query(
-        "INSERT INTO gb_media_server_white_list (media_server_id, cidr, create_time) VALUES (?, ?, ?)"
-    )
-    .bind(media_server_id)
-    .bind(cidr)
-    .bind(now)
-    .execute(pool)
-    .await?;
+    let r = crate::dispatch_exec_dialect!(
+        pool,
+        |p| {
+            sqlx::query(
+                    "INSERT INTO gb_media_server_white_list (media_server_id, cidr, create_time) VALUES ($1, $2, $3)"
+                )
+                .bind(media_server_id)
+                .bind(cidr)
+                .bind(now)
+                .execute(p)
+        },
+        |p| {
+            sqlx::query(
+                    &crate::dyn_where::dialect_sql("INSERT INTO gb_media_server_white_list (media_server_id, cidr, create_time) VALUES (?, ?, ?)")
+                )
+                .bind(media_server_id)
+                .bind(cidr)
+                .bind(now)
+                .execute(p)
+        },
+        |p| {
+            sqlx::query(
+                    &crate::dyn_where::dialect_sql("INSERT INTO gb_media_server_white_list (media_server_id, cidr, create_time) VALUES (?, ?, ?)")
+                )
+                .bind(media_server_id)
+                .bind(cidr)
+                .bind(now)
+                .execute(p)
+        },
+    )?;
     Ok(r.rows_affected())
 }
 
@@ -900,30 +981,33 @@ pub async fn remove_white_list_cidr(
     media_server_id: &str,
     cidr: &str,
 ) -> sqlx::Result<u64> {
-    #[cfg(feature = "mysql")]
-    let r = sqlx::query(
-        "DELETE FROM gb_media_server_white_list WHERE media_server_id = ? AND cidr = ?",
-    )
-    .bind(media_server_id)
-    .bind(cidr)
-    .execute(pool)
-    .await?;
-    #[cfg(feature = "postgres")]
-    let r = sqlx::query(
-        "DELETE FROM gb_media_server_white_list WHERE media_server_id = $1 AND cidr = $2",
-    )
-    .bind(media_server_id)
-    .bind(cidr)
-    .execute(pool)
-    .await?;
-    #[cfg(feature = "sqlite")]
-    let r = sqlx::query(
-        "DELETE FROM gb_media_server_white_list WHERE media_server_id = ? AND cidr = ?",
-    )
-    .bind(media_server_id)
-    .bind(cidr)
-    .execute(pool)
-    .await?;
+    let r = crate::dispatch_exec_dialect!(
+        pool,
+        |p| {
+            sqlx::query(
+                "DELETE FROM gb_media_server_white_list WHERE media_server_id = $1 AND cidr = $2",
+            )
+            .bind(media_server_id)
+            .bind(cidr)
+            .execute(p)
+        },
+        |p| {
+            sqlx::query(&crate::dyn_where::dialect_sql(
+                "DELETE FROM gb_media_server_white_list WHERE media_server_id = ? AND cidr = ?",
+            ))
+            .bind(media_server_id)
+            .bind(cidr)
+            .execute(p)
+        },
+        |p| {
+            sqlx::query(&crate::dyn_where::dialect_sql(
+                "DELETE FROM gb_media_server_white_list WHERE media_server_id = ? AND cidr = ?",
+            ))
+            .bind(media_server_id)
+            .bind(cidr)
+            .execute(p)
+        },
+    )?;
     Ok(r.rows_affected())
 }
 
@@ -933,82 +1017,77 @@ pub async fn remove_white_list_cidr(
 /// `SELECT *` 里没有 `enabled`，结构体的 `enabled` 恒为 None，
 /// 界面上的"启用"开关读回来永远是关的。
 pub async fn ensure_columns(pool: &Pool) -> sqlx::Result<()> {
-    #[cfg(feature = "postgres")]
-    {
-        let _ = sqlx::query(
-            "ALTER TABLE gb_media_server ADD COLUMN IF NOT EXISTS enabled bool DEFAULT true",
-        )
-        .execute(pool)
-        .await?;
-    }
-    #[cfg(feature = "sqlite")]
-    {
-        let exists: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM pragma_table_info('gb_media_server') WHERE name = 'enabled'",
-        )
-        .fetch_one(pool)
-        .await
-        .unwrap_or(0);
-        if exists == 0 {
-            let _ = sqlx::query("ALTER TABLE gb_media_server ADD COLUMN enabled INTEGER DEFAULT 1")
-                .execute(pool)
-                .await?;
+    // 三个驱动同时编进一个二进制之后，编译期 `#[cfg(feature = ...)]` 的
+    // 三份 DDL 会**全部执行** —— pg 的 `ADD COLUMN IF NOT EXISTS` 在 sqlite 上
+    // 直接语法错（`near "EXISTS": syntax error`）。
+    // 改成**运行期**按当前方言三选一。
+    match crate::db::dialect::current() {
+        crate::db::Dialect::Postgres => {
+            let sql =
+                "ALTER TABLE gb_media_server ADD COLUMN IF NOT EXISTS enabled bool DEFAULT true";
+
+            let _ = crate::dispatch_exec!(pool, |p| { sqlx::query(sql).execute(p) })?;
         }
-    }
-    #[cfg(feature = "mysql")]
-    {
-        let exists: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'gb_media_server' AND column_name = 'enabled'",
-        )
-        .fetch_one(pool)
-        .await
-        .unwrap_or(0);
-        if exists == 0 {
-            let _ = sqlx::query("ALTER TABLE gb_media_server ADD COLUMN enabled bool DEFAULT true")
-                .execute(pool)
-                .await?;
+        crate::db::Dialect::MySql => {
+            let exists_sql = "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'gb_media_server' AND column_name = 'enabled'";
+
+            let exists: i64 =
+                crate::dispatch!(pool, |p| { sqlx::query_scalar(exists_sql).fetch_one(p) })
+                    .unwrap_or(0);
+            if exists == 0 {
+                let sql = "ALTER TABLE gb_media_server ADD COLUMN enabled bool DEFAULT true";
+
+                let _ = crate::dispatch_exec!(pool, |p| { sqlx::query(sql).execute(p) })?;
+            }
+        }
+        crate::db::Dialect::Sqlite => {
+            let exists_sql =
+                "SELECT COUNT(*) FROM pragma_table_info('gb_media_server') WHERE name = 'enabled'";
+
+            let exists: i64 =
+                crate::dispatch!(pool, |p| { sqlx::query_scalar(exists_sql).fetch_one(p) })
+                    .unwrap_or(0);
+            if exists == 0 {
+                let sql = "ALTER TABLE gb_media_server ADD COLUMN enabled INTEGER DEFAULT 1";
+
+                let _ = crate::dispatch_exec!(pool, |p| { sqlx::query(sql).execute(p) })?;
+            }
         }
     }
 
     // WebRTC 对外通告 IP（旧库补列）。不补的话节点上线时的
     // `get_media_server_by_id` 会因为结构体多了一个字段而整行解码失败，
     // 连带 rtp_port_range 的下发也一起失效。
-    #[cfg(feature = "postgres")]
-    {
-        let _ = sqlx::query(
-            "ALTER TABLE gb_media_server ADD COLUMN IF NOT EXISTS rtc_extern_ip varchar(100)",
-        )
-        .execute(pool)
-        .await?;
-    }
-    #[cfg(feature = "sqlite")]
-    {
-        let exists: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM pragma_table_info('gb_media_server') WHERE name = 'rtc_extern_ip'",
-        )
-        .fetch_one(pool)
-        .await
-        .unwrap_or(0);
-        if exists == 0 {
-            let _ =
-                sqlx::query("ALTER TABLE gb_media_server ADD COLUMN rtc_extern_ip VARCHAR(100)")
-                    .execute(pool)
-                    .await?;
+    match crate::db::dialect::current() {
+        crate::db::Dialect::Postgres => {
+            let sql =
+                "ALTER TABLE gb_media_server ADD COLUMN IF NOT EXISTS rtc_extern_ip varchar(100)";
+
+            let _ = crate::dispatch_exec!(pool, |p| { sqlx::query(sql).execute(p) })?;
         }
-    }
-    #[cfg(feature = "mysql")]
-    {
-        let exists: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'gb_media_server' AND column_name = 'rtc_extern_ip'",
-        )
-        .fetch_one(pool)
-        .await
-        .unwrap_or(0);
-        if exists == 0 {
-            let _ =
-                sqlx::query("ALTER TABLE gb_media_server ADD COLUMN rtc_extern_ip VARCHAR(100)")
-                    .execute(pool)
-                    .await?;
+        crate::db::Dialect::MySql => {
+            let exists_sql = "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'gb_media_server' AND column_name = 'rtc_extern_ip'";
+
+            let exists: i64 =
+                crate::dispatch!(pool, |p| { sqlx::query_scalar(exists_sql).fetch_one(p) })
+                    .unwrap_or(0);
+            if exists == 0 {
+                let sql = "ALTER TABLE gb_media_server ADD COLUMN rtc_extern_ip VARCHAR(100)";
+
+                let _ = crate::dispatch_exec!(pool, |p| { sqlx::query(sql).execute(p) })?;
+            }
+        }
+        crate::db::Dialect::Sqlite => {
+            let exists_sql = "SELECT COUNT(*) FROM pragma_table_info('gb_media_server') WHERE name = 'rtc_extern_ip'";
+
+            let exists: i64 =
+                crate::dispatch!(pool, |p| { sqlx::query_scalar(exists_sql).fetch_one(p) })
+                    .unwrap_or(0);
+            if exists == 0 {
+                let sql = "ALTER TABLE gb_media_server ADD COLUMN rtc_extern_ip VARCHAR(100)";
+
+                let _ = crate::dispatch_exec!(pool, |p| { sqlx::query(sql).execute(p) })?;
+            }
         }
     }
     Ok(())
