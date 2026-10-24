@@ -1413,6 +1413,308 @@ MySQL 侧 sqlx 握手时开了 `CLIENT_FOUND_ROWS`（`sqlx-mysql-0.7.4`
 * `record/zip` 返回服务端绝对路径、`phone_number` 表级唯一约束需先做历史去重
   —— 两项沿用前几轮结论，仍未改。
 
+### B25 ◐ 第九轮（PostgreSQL 上 JT1078「置离线」整条链路失效）
+
+本轮由**三条独立线索**同时指向同一个位置（`db/jt1078.rs` 的
+`mark_terminal_offline_if_stale`），最后**两路独立 verifier** 与自查在
+**真实 PostgreSQL** 上把它坐实。
+
+**① P0 第七轮引入的 PostgreSQL 方言回归 —— 「超时 ⇒ 终端离线 ⇒ 需重新注册 + 重新鉴权」在 PG 上 100% 失效**
+
+第七轮（`fd13cfe`）把原先**单条原子条件写**改成了「Rust 里 SELECT 判定 → 再按 id UPDATE」，
+改写时丢了**方言分支**，留下**两个各自独立**的 PostgreSQL-only 失败点：
+
+* **裸 `?` 占位符**：postgres 的预编译语句协议只认 `$1`。直接发 `?` →
+  `ERROR: syntax error at end of input`（`?` 在语句末尾时）或
+  `syntax error at or near ","`（后面还有内容时）。
+* **`id` 解码成 `i64`，而列是 INT4**：postgres 的 `gb_jt_terminal.id` 是 `serial` →
+  **integer(4)**，sqlx-postgres 的类型检查是**严格**的：`i64`（INT8）解 INT4 列直接报
+  `mismatched types; Rust type i64 (as SQL type INT8) is not compatible with SQL type INT4`。
+  仓库自己的 `src/dyn_where.rs` 早就写下了这个坑并提供了 `bigint_col()`，
+  本轮那行 SQL **两个既有工具都绕过了**。
+
+**只修占位符仍然失败** —— 实测两步分别触发：
+`① 改回裸 ? → syntax error at end of input`；`② 只把 i32 改回 i64（占位符已修）→
+mismatched types ... INT8 vs INT4`。两处都必须改。
+
+错误被 `jt1078/manager.rs::cleanup_once` 吞成一条 `tracing::warn!` → **无声失败**：
+终端永远显示在线，平台照样给它下发命令，而它其实从未重新鉴权过。
+`config/application.toml` 明写 PostgreSQL 是「生产主力」库。
+
+现：占位符走 `crate::dyn_where::dialect_sql`（自动改写成 `$1..$n`），
+`id` 解码改成 `i32`（与 `JtTerminal.id` 一致，三方言都通）。
+
+**② P2 第七轮把原子的条件写退化成「先查后写」，引入 TOCTOU**
+
+旧实现是**一条** `UPDATE … WHERE phone_number = ? AND (update_time IS NULL OR update_time < ?)`，
+条件在 `WHERE` 里，天然无竞态。新实现的 `UPDATE` 只带 `WHERE id = ?` —— 读（SELECT）与
+写（UPDATE）之间的窗口里若到达心跳，`update_time` 被刷新，但**活着的终端仍会被写回离线**。
+心跳路径确实会刷新 `update_time`（`manager.rs` → `persist_terminal_online` →
+`update_terminal_status`），所以这个竞态在生产里真实存在。
+
+现：`UPDATE … WHERE id = ? AND update_time = ?`，`update_time` 带上**读到的原值** ——
+心跳把值改掉了 → 条件不成立 → 影响 0 行 → 终端保持在线。
+能走到写这一段的行，其 `update_time` 一定非空且可解析（解析不出的按「还活跃」提前返回了），
+所以不存在 `NULL = NULL` 的坑；这些值都是定长数字时间戳，三方言的 `=` 都是字节/数字比较
+（MySQL 的 `utf8mb4_general_ci` 大小写不敏感，但值里只有数字与分隔符，不受影响）。
+**顺带修掉两处注释与实现脱节**（注释还在描述旧的条件写语义）。
+
+**③ P2 方言占位符必须走统一出口 —— 加一条源码扫描守卫**
+
+2026-09-12 的 postgres 冒烟一次性抓到 23 处「固定 SQL 直接写 `?`」的同类问题
+（见 `src/dyn_where.rs` 的说明），修完没有机制防复发；第七轮又新引入 1 处。
+现新增 `src/dialect_guard.rs`（`#![cfg(test)]`，生产构建不含本模块）：
+扫描 `src/` 下所有 `.rs`，找出**在 postgres 构建里会被编译**、且 SQL 里带**裸 `?`** 的语句，
+它们必须被 `dialect_sql(...)` 包裹，或位于 `#[cfg(feature = "mysql" / "sqlite")]` 分支里。
+守卫用的是「cfg 分段 + 字面量归属」的静态分析（不是正则），**新增语句即被覆盖**。
+
+**验证**
+* 新增 `tests/postgres_jt1078.rs`（`#![cfg(feature = "postgres")]` + `#[ignore]`，
+  需 `TEST_POSTGRES_URL` 指向隔离库）：4 条用例（过期置离线 / 活跃不置离线 /
+  重复行一半活跃整体不动 / 重复行全过期全置离线）。**在真实 PostgreSQL 上 4/4 通过**。
+* 新增 `src/dialect_guard.rs` 守卫 1 条。
+* **变异双向验证**（逐组确认「改回旧实现 → 变红 → 改回 → 变绿」）：
+  ① 把 `SELECT` 改回第七轮原样（裸 `?` + `i64`）→ postgres 上 **4 条全红**
+  （`syntax error at end of input`）；
+  ② 只把 `i32` 改回 `i64`（占位符已修）→ **4 条全红**
+  （`mismatched types; Rust type i64 (as SQL type INT8) is not compatible with SQL type INT4`）；
+  ③ 守卫：把 `dialect_sql` 去掉 → 守卫**变红并精确指出行号**。
+
+**本轮未覆盖 / 已知但未改**
+* `phone_number` **没有唯一约束**（三方言的 `unique (id, phone_number)` 里 `id` 是主键，
+  等价于没有约束），且**没有历史去重脚本** —— 重复行仍会产生。现已做到
+  「重复行不再半离线」，但**在线统计仍按行计数**（`count_online_terminals` 是
+  `COUNT(*)` 而不是 `COUNT(DISTINCT phone_number)`），1 个物理终端的 2 行仍计 2。
+  改统计口径要先做历史去重，另立。
+* `handlers/jt1078.rs::terminal_add` **没有存在性检查**，管理员重复提交同一手机号即多一行；
+  `insert_terminal` 是裸 INSERT，配合「读不到才插」存在 get→insert 竞态。
+  需与上面的去重一起做。
+* 「本地墙钟」历史行（旧版用 `chrono::Local::now()` 写过 `update_time`）被按 UTC 解释 →
+  读出「未来 8 小时」→ 永远判不出过期 → 永远在线。这是**数据问题**，
+  订正需要知道部署时区，不能拍脑袋减 8 小时。沿用 B23 ② 的结论。
+
+### B26 ◐ 第九轮续（7 处写端点「目标不存在仍回 200」的假成功）
+
+第八轮修掉了 API Key 的同类缺陷（`remark` / `enable` / `disable` / `reset`），
+但**只修了那 4 个端点**。第九轮把全仓 **242 个写端点**（由 `utoipa::path` 注解驱动，
+逐个核对是否在 `src/openapi/routes_*.rs` 注册过）扫了一遍，
+查出**同一模式还有 7 处**，其中 1 处连写法都像「已经检查过了」。
+
+| 端点 | 位置 | 现象 |
+|---|---|---|
+| `POST /api/common/channel/update` | `handlers/common_channel.rs` | 通道不存在 → 回 200「更新成功」，一行都没改 |
+| `POST /api/common/channel/reset` | `handlers/common_channel.rs` | 同上，「重置成功」是假的 |
+| `POST /api/region/update` | `handlers/stub.rs` | 区域不存在 → 回 200「成功」 |
+| `POST /api/group/update` | `handlers/stub.rs` | 分组不存在 → 回 200「成功」 |
+| `POST /api/platform/update` | `handlers/platform.rs` | 平台不存在 → 回 200「平台更新成功」；紧接着的 `get_by_id()` 回 `None` → `sync_platform_registration` 被跳过，**级联注册状态从未被触碰** |
+| `POST /api/platform/channel/custom/update` | `handlers/platform.rs` | 通道不存在 → 回 200「自定义通道更新成功」 |
+| `POST /api/push/update` | `handlers/stream.rs` | `Ok(_)` 把 `u64` 直接丢掉 —— **写法像「已 match 检查过」，实际什么也没比对** |
+
+现：统一走 `handlers/mod.rs::require_affected(affected, 什么, id)` 一个出口，
+命中 0 行 → 回 **404**（与仓库既有约定一致：`jt1078` 的终端删除、`platform` 的目录删除、
+`device_update`、`channel_audio`、`role` / `proxy` 的删除端点都是「影响 0 行 → 404」）。
+5 个端点补上了 OpenAPI 的 404 响应声明。
+
+**`platform/channel/custom/update` 不能用返回值判存在性**：
+`db/platform_channel::update` 在 `custom_name` 与 `custom_info` **都为空**时会提前
+`return Ok(0)`（「没有要改的字段」），此时通道**存在**也会拿到 0 → 会被误判成 404。
+该端点改为先按 id 查存在性，不存在 → 404。
+
+**三方言的 `rows_affected` 语义一致**（= 命中行数，与「值有没有变」无关）：
+PostgreSQL 统计匹配的；SQLite 的 `sqlite3_changes()` **实测**统计的是被 UPDATE
+处理过的行（即**匹配**行，不是「值变了」的行）；MySQL 侧 sqlx 握手时开了
+`CLIENT_FOUND_ROWS`（`sqlx-mysql-0.7.4` 的 `connection/stream.rs`），回的是**匹配**行数。
+所以 `affected == 0` ⇔「目标不存在」在三方言上等价。
+
+**不动 `delete`**：DELETE 幂等是仓库写下的契约
+（`router::tests::authenticated_collect_roundtrip_updates_business_storage`
+断言重复删除回 `code:0`），改它属于改契约而不是修缺陷。
+**但仓库内 DELETE 端点存在 200 / 404 两套口径**（`proxy/delete`、`jt1078/terminal/delete`、
+`role/delete` 回 404；`push/remove`、`region/delete`、`group/delete`、`record/plan/delete`、
+`userApiKey/delete` 回 200）—— 这是**一致性**问题，需单独立项决策，本轮不动。
+
+**已补回归测试守护**（`router::tests::write_endpoints_on_missing_row_return_404`）：
+一条用例覆盖上表全部 7 个端点，断言目标不存在时 **HTTP 404 + 信封 `code:404`**。
+断言用「收集全部结果再统一报错」而不是逐条 `assert_eq!` —— 后者回归时只会在
+第一个坏掉的端点上 panic，看不出其余 6 个是修好了还是同样坏了。
+**两组互斥的变异验证**（合起来正好覆盖 7 个端点）：① 去掉 `require_affected`
+的 404 检查 → **5 处**变红；② 去掉 `platform/channel/custom/update` 的存在性
+查询、把 `push/update` 的 `Ok(0) => Err(404)` 改回 `Ok(_)` → **另 2 处**变红。
+
+### B27 ◐ 第九轮续（JT1078 终端手机号的 BCD 填充方向与国标相反）
+
+`jt1078/command.rs` 的 `phone_to_bcd` / `bcd_to_phone` 是一对**不互为逆运算**的函数：
+
+* 编码是**右补零**（号码靠左放，尾部补 0 到 12 位）；
+* 解码是 `trim_end_matches('0')` —— 把**尾随**的 0 全去掉。
+
+尾随 0 分不清是「号码本身的 0」还是「补零的填充」，于是：
+
+* **真实号码以 0 结尾时被截断一位**：`13812345670` → BCD `138123456700` →
+  解码成 `1381234567`。平台用它当终端身份（`terminal_addrs` 的 key、
+  `gb_jt_terminal.phone_number` 的值、下发给终端的帧头号码），
+  管理员看到的却是少一位的号，按真实号码**查不到**这个终端。
+* **不同号码塌缩到同一个 key**：`terminal_addrs` 是 `HashMap<String, SocketAddr>`，
+  一个 key 只留一个地址 → **A 车的指令发给了 B 车**。
+* 对**真实终端**（按国标发报）更糟：标准是**左补零**，终端发来的 BCD 是
+  `013912345678`，解码后 `trim_end_matches('0')` 保留前导 0 → 库里存的是
+  `013912345678`，而管理员填的是 `13912345678` → `get_terminal_by_phone` 是精确匹配，
+  **对不上**。
+
+**国标依据**（多个独立来源一致，JT/T 808-2013 §5.4.1.2 的消息头定义）：
+> 起始字节 4　终端手机号　BCD　**手机号不足 12 位，则在前补充数字**，
+> 大陆手机号补充数字 0，港澳台则根据其区号进行位数补充。
+
+即 11 位大陆手机号 `13912345678` → `013912345678` → `0x01 0x39 0x12 0x34 0x56 0x78`。
+
+现：编码改**左补零**（号码靠右放，超 12 位保留低 12 位），解码改**去前导 0**，
+两者成为**严格逆运算**。仓库自带的 JT1078 模拟器
+（`mock/tools/jt1078-terminal/jt1078_terminal_mock.py`）同步改成左补零 ——
+两边约定必须一致，否则终端注册必然失败。
+
+另加 `jt1078::command::canonical_phone`：只保留数字、去掉前导 0，
+用于管理员手填号码的路径（`handlers/jt1078.rs` 的 `terminal_add` / `terminal_update`），
+让「管理员填的形态」与「设备上报的形态」统一，否则同一个终端会在库里留下两行。
+
+**验证**：新增 3 条单测（往返保真（含末位为 0 的号码）/ BCD 字节布局必须是左补零 /
+号码规范化）。**数据无需迁移**：现存终端号码是 `13912345678`（模拟器产的），
+左补零后模拟器与平台解出的仍是同一个值。
+
+### B28 ◐ 第九轮续（日志保留策略是死配置；系统日志端点缺管理员门禁）
+
+**① P1 日志保留策略**只存在于配置里，没有任何代码消费**
+
+* `config/application.toml` 的 `audit.retention_days = 90` —— 定义了，但
+  `grep -rn "retention_days" src/` **除定义处外零命中**；
+* `db/log.rs::delete_before` —— 函数在、单测在，**没有任何生产调用点**；
+* `db/audit_log.rs` —— **连删除函数都没有**。
+
+结果两张表**无限增长**：实测 e2e 共享库里 `gb_audit_log` **19 万行**、
+`gb_log` **6.8 万行**，库文件 **49MB**。长期运行的平台会一直涨。
+
+现：新增 `db::audit_log::delete_before(pool, days)` 与
+`db::log::delete_older_than(pool, days)`，并由 `src/lib.rs` 的后台任务按
+`log.cleanup_interval_hours`（默认 6 小时）清理；启动时第一次 tick 立即触发，
+把历史遗留的老数据一并收掉。配置新增 `[log]` 段
+（`system_retention_days` 默认 30、`cleanup_interval_hours` 默认 6），
+`audit.retention_days` 的死配置**就此变成真的**。
+
+**截止时间必须在正确的时钟里算**，两张表的时钟不一样：
+
+* `gb_audit_log.create_time` 由**数据库**写入（`CURRENT_TIMESTAMP` / `NOW()`）——
+  SQLite 是 **UTC**，MySQL / PostgreSQL 是**会话时区**。在 Rust 里按 UTC 算再拿去比，
+  MySQL / PG 上会**整体偏一个时区**（UTC+8 部署下差 8 小时）→ 保留期变成 90 天 ± 8 小时。
+  现由 `dyn_where::days_ago_expr(days)` **在数据库自己的时钟里**算
+  （sqlite `datetime('now', '-N days')` / mysql `DATE_SUB(NOW(), INTERVAL N DAY)` /
+  pg `NOW() - INTERVAL 'N days'`）。
+* `gb_log.time` 由**平台自己**写（`logging::CaptureLayer` 用
+  `chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f")`）→ 截止时间必须在
+  **同一个时钟、同一格式**里算，否则字符串比较会错（`%.3f` 的毫秒位）。
+  现由 `db::log::delete_older_than` 在 Rust 里用 `Local::now()` 算。
+
+**② P1 系统日志端点没有管理员门禁，且日志里曾有 JWT 签名密钥明文**
+
+* `/api/log/list` 与 `/api/log/file/{name}` 的函数签名里**根本没有 `HeaderMap`** ——
+  结构上就做不了鉴权；任何**已登录**用户都能导出 5 万行日志。
+* `src/security.rs` 的弱密钥校验失败信息里**回显了密钥值**
+  （`starts with 'a7f3c9e2…'`）→ 这条告警进 `gb_log` → 普通用户导出日志就能拿到
+  **签名密钥** → 拿它伪造 HS256 token（对称签名，**密钥即身份**）→ **管理员提权**。
+
+现：弱密钥表改成 `(密钥, 说明)` 二元组，报错只说**说明**、**不回显密钥值**（连前缀也不回）；
+两个日志端点补 `HeaderMap` 并走 `authz::require_admin`（与 API Key 管理端点同一口径），
+OpenAPI 补 403 声明。
+
+**③ P0 容器化部署用的是仓库里公开的 JWT 密钥，且启动只告警不阻断**
+
+`config/application.toml` 的 `secret` 与 `docker-compose*.yml` 的
+`${GBSERVER_JWT_SECRET:-a7f3c9e2…}` 是**同一个已进公开 Git 历史的值**。
+HS256 是对称签名 —— 拿到仓库的人拿它就能伪造管理员 token，**整个平台的管理面沦陷**。
+仓库早就有弱密钥检测（`src/security.rs`）与 `GBSERVER__SECURITY__STRICT=1` 的 fail-fast，
+但**默认只 WARN**。
+
+现：`docker-compose.yml` 与 `docker-compose.sqlite.yml` 的
+`GBSERVER_JWT_SECRET` 改成**必填**（`${GBSERVER_JWT_SECRET:?…}`，与同文件的
+`GBSERVER_SIP_ADVERTISE_IP` 同一口径 —— 没设就拒绝启动），并默认开启
+`GBSERVER__SECURITY__STRICT: "1"`（弱密钥 → **启动即失败**）。
+本地 `cargo run` 不受影响（仍走配置文件里的值，只告警）。
+
+**本轮未改（已记录，见 B29）**：登录失败回 HTTP 200 且无审计无限流、
+`/api/play/share` 无凭据即可铸令牌、ZLM hook 只有 `on_play` / `on_publish` 校验 secret、
+`/api/rpc` 在 `[rpc].secret` 未配置时无鉴权、审计中间件层序导致 401 不落库、
+API Key 明文入库且支持查询串传递、CORS 全开、DB 原始错误串回客户端、
+ZLM 管理 secret 与 ZLM 端口全网暴露。
+
+### B29 ◐ 第九轮续（冒烟脚本的残留数据 + 本轮查出的 P2/P3 清单）
+
+**① P2 `scripts/dialect_smoke.py` 建了 `smoke-user-*` 用户与同名角色，从不清理**
+
+实测 e2e 共享库里已堆了 **9 个** `smoke-user-*` 用户与 9 个同名角色
+（`gb_user` 10 行、`gb_user_role` 10 行），postgres / mysql 两套库同样在涨。
+每跑一次冒烟就多一行 —— 与第八轮 `cleanupLeftovers` 是同一类问题：
+「清理」根本没做，于是**共享库被历史垃圾堆满**，后面的断言被脏数据放大成别的症状
+（第八轮就踩过：23 行 API Key 残留把「排序方向」这个缺陷伪装成了「查不到刚建的 Key」）。
+
+现：脚本在建完用户 / 角色后**记下 id**，末尾**先删用户再删角色**（角色删除会拒绝
+「仍有用户引用」的角色），并**逐条校验结果** —— 清理失败当场进 `FAIL` 列表，
+而不是留脏数据等后面某条断言以另一种面貌炸掉。
+
+**② 本轮查出的 P2 / P3（本轮未改，已记录）**
+
+* **P2 吞错**：`handlers/device_stub.rs::subscribe_mobile_position` 用
+  `unwrap_or_default()` 把 DB 写失败吞成 0，响应里却回「位置订阅已发送」。
+  同功能的姊妹端点 `handlers/position.rs` 已经做对了（先查存在性再写）。
+* **P2 批量端点丢计数**：`common_channel` 的 8 个「批量关联 / 解关联」端点
+  （region / group 的 add / delete，以及各自的 device 变体）把 `rows_affected` 全丢掉，
+  全部 id 都不存在时仍回 200「成功」。仓库对批量写的既有做法是**回计数**
+  （`alarm` 的 `{"deleted": n}`、`stream` 的 `{"removed": n, "errors": []}`）。
+* **P2 先查后写的 TOCTOU**：5 个端点（`record/plan/update`、`platform/delete`、
+  `media_server/save`、`proxy/save`、`proxy/update`）把存在性判定放在读取侧，
+  写入侧的 `rows_affected` 作为权威信号被忽略 → 并发删除的窗口里仍回 200「成功」。
+* **P3 计数可观测但口径不一致**：`platform/channel/remove` 回
+  `{"removedCount": 0, "message": "通道移除成功"}` —— 调用方能从响应体察觉，
+  不算完全静默，但文案误导。
+* **P3 解析失败的脏值永久粘住在线**：`parse_update_time` 解析不出时按「还活跃」处理，
+  方向安全（宁可漏置离线也不误置），但那种行**永远**不会被自动置离线且没有任何告警。
+* **P3 置离线时覆盖了 `update_time`**：写的是「清理那一刻」而不是「最后一次上报那一刻」，
+  管理员无法从离线行看出它到底多久没上报了。
+
+**③ 已被独立复核推翻 / 排除的怀疑项（避免下一个人重复踩坑）**
+
+* **持 `sessions` 锁时做 DB IO**（本仓库历史踩过的队头阻塞坑）—— **不成立**：
+  `cleanup_once` 的锁作用域内只有内存操作与 `terminal_addrs.lock().await`，
+  DB 写在锁外。
+* **锁序成环** —— 不成立：唯一同时持两把锁的地方（`cleanup_once` 与 `remove()`）同序。
+* **`HashSet` 去重键会不会因 phone 前后空格 / 大小写漏判** —— 不成立：
+  去重键是 `SocketAddr`；phone 来自定长数字串，不可能有空格或大小写差异。
+  （真正的问题在 B27 的**截断**，不在空格 / 大小写。）
+* **JT1078 时间写入是否还有现行代码用本地墙钟** —— 不成立：当前所有写入点都用
+  `chrono::Utc::now()`，偏移只存在于 `411daf7` 之前的历史行。
+* **静态资源路径穿越**（`/../config/application.toml`）—— 不成立：
+  `ServeDir` 拒绝 `..`，随后落到 SPA fallback，响应体是 `index.html`。
+* **`/api/log/file/{name}` 目录穿越** —— 已被修且有测试
+  （`safe_log_file_name` + `safe_log_file_name_rejects_traversal_and_separators`）。
+* **「被 disable 的 API Key 仍然能用」** —— 不成立：鉴权层确实读 `enable` 与 `expired_at`，
+  禁用后回 401。
+* **「普通用户能改别人的 API Key」** —— 不成立：6 个端点全部先 `require_admin`。
+* **「审计表里写进了明文口令」** —— 不成立：`request_body` 列从未被写入，
+  `path` 取自 `uri().path()`（不含查询串）。
+* **「登录用户名枚举」** —— 不成立：不存在用户与密码错误返回完全相同的 code / msg / 状态码。
+
+**④ 本轮新增的一条排查纪律（差点把环境问题当代码回归去「修」）**
+
+全量 Playwright 首跑 **76 通过 / 5 失败**，失败的 5 条全是**媒体类**用例
+（live 播放器 ×3、`playUrls` 的 FLV、WebRTC）。本轮改动完全没碰 SIP / SDP / SSRC /
+RTP 这条链路 —— 但「没碰」不等于「不是回归」，所以必须查清。查下来是
+**环境配置**：重启 SIP 终端模拟器时漏了 `--auto-bye-secs 0`（默认值 3 秒 = 设备端
+收到 INVITE 就主动 BYE），于是设备端在平台还在等流的时候就挂断了会话，平台
+`/api/play/stop` 随后自然报 `No matching invite session`。补上该参数后单跑 8/8
+通过、全量复跑 81/81。
+
+**教训**：`--auto-bye-secs` 的默认值 3 与「测试平台侧 BYE 时的期望值 0」正好相反，
+而模拟器的注释里写得很清楚（"0 = 不自动挂断，用于测试平台侧 BYE"）。**重启任何
+外部进程前先核对它的启动参数**——尤其是那些**默认值与测试期望相反**的参数；
+否则「测试失败」会被误判成「代码回归」，把时间花在不存在的缺陷上。
+
 ### B15 ✅ 设备统计查了不存在的表（已修，2026-09-19）
 
 **现象**：`/api/device/query/statistics/keepalive` 与 `.../register` 恒返回
@@ -1904,3 +2206,4 @@ cd e2e && npx playwright test
 | 2026-09-19 | 冻结轮：登记用户管理三项（C5/C6/C7）与 A4；B12/B13 修复并复验 |
 | 2026-09-19 | 解冻并修复用户管理（`bfa65f8`）；C5/C6/C7 关闭 |
 | 2026-09-19 | **真实设备接入核验轮**：D1 🔴→🟡（真机 EasyGBD 已接入，主链路核验通过，剩余项列明）；B1 补真机复现（并更正影响评估：该设备仍按 INVITE 端口推流，流不受影响）；B6 补真机复现（stop 把 BYE 发给已终止的旧会话）；C2 由 36 重算为 29（`get_by_name` 已接上、`update_user_role`/`update_username` 已删除）；新增 B14（应答未解析）、C8（`hasAudio` 与实际流不符）、C9（收藏删除方法不匹配）、E6（本机代理导致的 ZLM 请求偶发失败）；F/G 段更新为真机联调口径 |
+| 2026-10-25 | **第九轮代码审查**：新增 B25（PostgreSQL 方言回归 + TOCTOU + 方言守卫）、B26（7 处写端点假成功 + 已补回归测试）、B27（JT1078 号码 BCD 方向与国标相反）、B28（日志保留死配置 + 日志端点缺管理员门禁 + 弱密钥回显）、B29（冒烟脚本残留 + 本轮 P2/P3 清单 + 已排除怀疑项 + e2e 首跑失败的环境归因）；全部已修并复验（5 组变异双向验证） |
