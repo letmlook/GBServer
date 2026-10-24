@@ -307,19 +307,34 @@ impl<'a> CloudRecordFilter<'a> {
         }
         // 用 substr 做**精确**的前缀/后缀匹配：LIKE 里的 `_` 是通配符，
         // `dev_%` 会连 `devX...` 一起匹配上，不是我们想要的语义。
+        //
+        // **必须带分隔符边界**。流名的规范形状是 `{deviceId}_{channelId}`
+        // （见 `handlers/play.rs` 的 `format!("{}_{}", device_id, channel_id)`），
+        // 所以设备号后面紧跟的一定是 `_`。不加边界时，19 位的截断设备号
+        // （`3402000000132000000`）会同时命中 `34020000001320000001` 和
+        // `34020000001320000002` 两条**不同设备**的录像 —— 静默多查，
+        // 对接方拿到的是别人的录像。
         if let Some(v) = self.device_id.filter(|s| !s.is_empty()) {
             w.add(
-                "substr(stream, 1, length(?)) = ?",
+                "substr(stream, 1, length(?)) = ? AND substr(stream, length(?) + 1, 1) = ?",
                 vec![
                     BindValue::Text(v.to_string()),
                     BindValue::Text(v.to_string()),
+                    BindValue::Text(v.to_string()),
+                    BindValue::Text("_".to_string()),
                 ],
             );
         }
+        // 通道号是流名的**最后一段**，同理要求它前面紧邻分隔符，
+        // 否则短通道号会命中以它结尾的别的通道（"…_11" 被 "…_1" 命中）。
         if let Some(v) = self.channel_id.filter(|s| !s.is_empty()) {
             w.add(
-                "substr(stream, length(stream) - length(?) + 1) = ?",
+                "substr(stream, length(stream) - length(?), 1) = ? \
+                 AND substr(stream, length(stream) - length(?) + 1) = ?",
                 vec![
+                    // 顺序与 SQL 里的 ? 一一对应：length(?) / = ? / length(?) / = ?
+                    BindValue::Text(v.to_string()),
+                    BindValue::Text("_".to_string()),
                     BindValue::Text(v.to_string()),
                     BindValue::Text(v.to_string()),
                 ],
@@ -1119,5 +1134,87 @@ mod tests {
             .await
             .unwrap()
             .is_none());
+    }
+
+    /// 回归：按设备/通道过滤必须**带分隔符边界**。
+    ///
+    /// 此前是纯前缀/后缀匹配：19 位的截断设备号会同时命中
+    /// `…_34020000001320000001` 和 `…_34020000001320000002` 两条**不同设备**的
+    /// 录像 —— 静默多查，对接方拿到的是别人的录像。
+    #[tokio::test]
+    async fn device_and_channel_filters_respect_separator_boundary() {
+        let pool = sqlite_pool_with_schema().await;
+        let dev_a = "34020000001320000001";
+        let dev_b = "34020000001320000002";
+        let ch_a = "34020000001310000001";
+        let ch_b = "34020000001310000002";
+
+        insert_rec(&pool, &format!("{dev_a}_{ch_a}"), "a.mp4", 10).await;
+        insert_rec(&pool, &format!("{dev_b}_{ch_b}"), "b.mp4", 20).await;
+
+        // 完整设备号：只命中自己的
+        let rows = list_filtered(
+            &pool,
+            &CloudRecordFilter {
+                device_id: Some(dev_a),
+                ..Default::default()
+            },
+            0,
+            15,
+        )
+        .await
+        .unwrap();
+        let (rows, _total) = rows;
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].file_name.as_deref(), Some("a.mp4"));
+
+        // **截断**的设备号（19 位）不得命中两个设备
+        let prefix = &dev_a[..19];
+        let rows = list_filtered(
+            &pool,
+            &CloudRecordFilter {
+                device_id: Some(prefix),
+                ..Default::default()
+            },
+            0,
+            15,
+        )
+        .await
+        .unwrap();
+        let (rows, _total) = rows;
+        assert!(rows.is_empty(), "截断的设备号不得命中别的设备: {rows:?}");
+
+        // 完整通道号：命中（它前面紧邻分隔符）
+        let rows = list_filtered(
+            &pool,
+            &CloudRecordFilter {
+                channel_id: Some(ch_a),
+                ..Default::default()
+            },
+            0,
+            15,
+        )
+        .await
+        .unwrap();
+        let (rows, _total) = rows;
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].file_name.as_deref(), Some("a.mp4"));
+
+        // **截断**的通道号（末 19 位）不得命中 —— 它也是流名的后缀，
+        // 但它前面紧邻的不是分隔符，说明那不是完整的最后一段。
+        let ch_tail = &ch_a[1..];
+        let rows = list_filtered(
+            &pool,
+            &CloudRecordFilter {
+                channel_id: Some(ch_tail),
+                ..Default::default()
+            },
+            0,
+            15,
+        )
+        .await
+        .unwrap();
+        let (rows, _total) = rows;
+        assert!(rows.is_empty(), "截断的通道号不得命中: {rows:?}");
     }
 }
