@@ -156,7 +156,7 @@ pub fn app(state: AppState) -> Router<AppState> {
     app.layer(cors)
 }
 
-#[cfg(all(test, feature = "sqlite"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::test_support::app_state;
@@ -649,16 +649,19 @@ mod tests {
     #[tokio::test]
     async fn authenticated_collect_roundtrip_updates_business_storage() {
         let state = app_state().await;
-        sqlx::query(
-            "INSERT INTO gb_cloud_record (app, stream, start_time, end_time, file_name, file_path, media_server_id) \
-             VALUES ('rtp', 'auth_roundtrip', 1, 2, 'a.mp4', '/tmp/a.mp4', 'zlm-1')",
-        )
-        .execute(&state.pool).await.unwrap();
-        let record_pk: i64 =
-            sqlx::query_scalar("SELECT id FROM gb_cloud_record ORDER BY id DESC LIMIT 1")
-                .fetch_one(&state.pool)
-                .await
-                .unwrap();
+        crate::dispatch_exec!(&state.pool, |p| {
+            sqlx::query(
+                "INSERT INTO gb_cloud_record (app, stream, start_time, end_time, file_name, file_path, media_server_id) \
+                 VALUES ('rtp', 'auth_roundtrip', 1, 2, 'a.mp4', '/tmp/a.mp4', 'zlm-1')",
+            )
+            .execute(p)
+        })
+        .unwrap();
+        let record_pk: i64 = crate::dispatch!(&state.pool, |p| {
+            sqlx::query_scalar::<_, i64>("SELECT id FROM gb_cloud_record ORDER BY id DESC LIMIT 1")
+                .fetch_one(p)
+        })
+        .unwrap();
         let jwt = crate::auth::JwtKeys::new(state.config.jwt.secret.as_bytes());
         let token = jwt.create_token("admin", 60).unwrap();
         let pool = state.pool.clone();
@@ -701,12 +704,14 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(list["data"]["total"], 1, "{list}");
-        let collect_flag: i64 =
-            sqlx::query_scalar("SELECT collect FROM gb_cloud_record WHERE id = ?")
-                .bind(record_pk)
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+        let collect_flag: i64 = crate::dispatch!(&pool, |p| {
+            sqlx::query_scalar::<_, i64>(&crate::dyn_where::dialect_sql(
+                "SELECT collect FROM gb_cloud_record WHERE id = ?",
+            ))
+            .bind(record_pk)
+            .fetch_one(p)
+        })
+        .unwrap();
         assert_eq!(collect_flag, 1, "add must set gb_cloud_record.collect");
         let deleted: serde_json::Value = client
             .get(format!(
@@ -742,12 +747,14 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(list["data"]["total"], 0, "{list}");
-        let collect_flag: i64 =
-            sqlx::query_scalar("SELECT collect FROM gb_cloud_record WHERE id = ?")
-                .bind(record_pk)
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+        let collect_flag: i64 = crate::dispatch!(&pool, |p| {
+            sqlx::query_scalar::<_, i64>(&crate::dyn_where::dialect_sql(
+                "SELECT collect FROM gb_cloud_record WHERE id = ?",
+            ))
+            .bind(record_pk)
+            .fetch_one(p)
+        })
+        .unwrap();
         assert_eq!(collect_flag, 0, "GET must clear gb_cloud_record.collect");
 
         let add: serde_json::Value = client
@@ -762,12 +769,14 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(add["code"], 0, "{add}");
-        let collect_flag: i64 =
-            sqlx::query_scalar("SELECT collect FROM gb_cloud_record WHERE id = ?")
-                .bind(record_pk)
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+        let collect_flag: i64 = crate::dispatch!(&pool, |p| {
+            sqlx::query_scalar::<_, i64>(&crate::dyn_where::dialect_sql(
+                "SELECT collect FROM gb_cloud_record WHERE id = ?",
+            ))
+            .bind(record_pk)
+            .fetch_one(p)
+        })
+        .unwrap();
         assert_eq!(collect_flag, 1, "second add must restore collect flag");
         let delete_response = client
             .delete(format!("{base}/api/cloud/record/collect/delete"))
@@ -802,26 +811,30 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(list["data"]["total"], 0, "{list}");
-        let collect_flag: i64 =
-            sqlx::query_scalar("SELECT collect FROM gb_cloud_record WHERE id = ?")
-                .bind(record_pk)
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+        let collect_flag: i64 = crate::dispatch!(&pool, |p| {
+            sqlx::query_scalar::<_, i64>(&crate::dyn_where::dialect_sql(
+                "SELECT collect FROM gb_cloud_record WHERE id = ?",
+            ))
+            .bind(record_pk)
+            .fetch_one(p)
+        })
+        .unwrap();
         assert_eq!(collect_flag, 0, "DELETE must clear gb_cloud_record.collect");
     }
 
     #[tokio::test]
     async fn diagnostics_routes_require_admin_and_hide_internal_state() {
         let state = app_state().await;
-        sqlx::query("INSERT INTO gb_user_role (id, name, authority, create_time, update_time) VALUES (2, 'viewer', '1', '2026-10-17', '2026-10-17')")
-            .execute(&state.pool)
-            .await
-            .unwrap();
-        sqlx::query("INSERT INTO gb_user (id, username, password, role_id, create_time, update_time) VALUES (2, 'viewer', 'unused', 2, '2026-10-17', '2026-10-17')")
-            .execute(&state.pool)
-            .await
-            .unwrap();
+        crate::dispatch_exec!(&state.pool, |p| {
+            sqlx::query("INSERT INTO gb_user_role (id, name, authority, create_time, update_time) VALUES (2, 'viewer', '1', '2026-10-17', '2026-10-17')")
+                .execute(p)
+        })
+        .unwrap();
+        crate::dispatch_exec!(&state.pool, |p| {
+            sqlx::query("INSERT INTO gb_user (id, username, password, role_id, create_time, update_time) VALUES (2, 'viewer', 'unused', 2, '2026-10-17', '2026-10-17')")
+                .execute(p)
+        })
+        .unwrap();
         let jwt = crate::auth::JwtKeys::new(state.config.jwt.secret.as_bytes());
         let admin_token = jwt.create_token("admin", 60).unwrap();
         let viewer_token = jwt.create_token("viewer", 60).unwrap();
@@ -864,10 +877,16 @@ mod tests {
     #[tokio::test]
     async fn zlm_proxy_requires_admin_and_blocks_raw_server_config() {
         let state = app_state().await;
-        sqlx::query("INSERT INTO gb_user_role (id, name, authority, create_time, update_time) VALUES (2, 'viewer', '1', '2026-10-17', '2026-10-17')")
-            .execute(&state.pool).await.unwrap();
-        sqlx::query("INSERT INTO gb_user (id, username, password, role_id, create_time, update_time) VALUES (2, 'viewer', 'unused', 2, '2026-10-17', '2026-10-17')")
-            .execute(&state.pool).await.unwrap();
+        crate::dispatch_exec!(&state.pool, |p| {
+            sqlx::query("INSERT INTO gb_user_role (id, name, authority, create_time, update_time) VALUES (2, 'viewer', '1', '2026-10-17', '2026-10-17')")
+                .execute(p)
+        })
+        .unwrap();
+        crate::dispatch_exec!(&state.pool, |p| {
+            sqlx::query("INSERT INTO gb_user (id, username, password, role_id, create_time, update_time) VALUES (2, 'viewer', 'unused', 2, '2026-10-17', '2026-10-17')")
+                .execute(p)
+        })
+        .unwrap();
         let jwt = crate::auth::JwtKeys::new(state.config.jwt.secret.as_bytes());
         let viewer_token = jwt.create_token("viewer", 60).unwrap();
         let admin_token = jwt.create_token("admin", 60).unwrap();

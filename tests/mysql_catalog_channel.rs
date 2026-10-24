@@ -6,6 +6,9 @@
 async fn catalog_writes_satisfy_required_channel_columns() {
     let url = std::env::var("TEST_MYSQL_URL").expect("TEST_MYSQL_URL is required");
     let pool = sqlx::MySqlPool::connect(&url).await.expect("connect MySQL");
+    // `db::device::*` 现在接受运行期多态的 `db::Pool`
+    // （原生 MySqlPool 仍用于直连 sqlx 查询）。
+    let db_pool = gbserver::db::Pool::MySql(pool.clone());
     let device_id = "34020000001320009996";
     sqlx::query("DELETE FROM gb_device_channel WHERE device_id = ?")
         .bind(device_id)
@@ -29,7 +32,7 @@ async fn catalog_writes_satisfy_required_channel_columns() {
         .expect("parent id");
 
     let single = gbserver::db::device::upsert_channel_from_catalog(
-        &pool,
+        &db_pool,
         device_id,
         "34020000001310009996",
         "Camera 1",
@@ -57,13 +60,13 @@ async fn catalog_writes_satisfy_required_channel_columns() {
         channel_type: None,
     };
     let batch = gbserver::db::device::batch_upsert_channels(
-        &pool,
+        &db_pool,
         device_id,
         &[channel("34020000001310009995")],
     )
     .await;
     let insert = gbserver::db::device::batch_insert_channels(
-        &pool,
+        &db_pool,
         device_id,
         &[channel("34020000001310009994")],
     )

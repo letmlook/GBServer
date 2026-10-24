@@ -398,17 +398,23 @@ mod tests {
         let dev = "34020000001320128497";
         let ch = "34020000001310000001";
 
-        sqlx::query("INSERT INTO gb_device (device_id, name, on_line) VALUES (?, ?, 1)")
-            .bind(dev)
-            .bind("test-dev")
-            .execute(&pool)
-            .await
-            .unwrap();
-        sqlx::query(
+        let ins_dev = pool.sql("INSERT INTO gb_device (device_id, name, on_line) VALUES (?, ?, 1)");
+        crate::dispatch_exec!(pool, |p| {
+            sqlx::query(&ins_dev).bind(dev).bind("test-dev").execute(p)
+        })
+        .unwrap();
+        let ins_ch = pool.sql(
             "INSERT INTO gb_device_channel (device_id, gb_device_id, name, status, create_time, update_time, data_type, data_device_id) \
              VALUES (?, ?, ?, 'ON', '2026-09-19 00:00:00', '2026-09-19 00:00:00', 0, 0)",
-        )
-        .bind(dev).bind(ch).bind("ch1").execute(&pool).await.unwrap();
+        );
+        crate::dispatch_exec!(pool, |p| {
+            sqlx::query(&ins_ch)
+                .bind(dev)
+                .bind(ch)
+                .bind("ch1")
+                .execute(p)
+        })
+        .unwrap();
 
         let xml = format!(
             r#"<?xml version="1.0" encoding="GB2312"?>
@@ -422,19 +428,21 @@ mod tests {
             .expect("NOTIFY 处理应成功");
 
         // 1) 位置表有记录
-        let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM gb_device_mobile_position")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+        let cnt_sql = pool.sql("SELECT COUNT(*) FROM gb_device_mobile_position");
+        let n: i64 = crate::dispatch!(pool, |p| {
+            sqlx::query_scalar::<_, i64>(&cnt_sql).fetch_one(p)
+        })
+        .unwrap();
         assert_eq!(n, 1, "位置表应有 1 条");
 
         // 2) 通道坐标已回写（地图读的就是这两个字段）
-        let (lng, lat): (Option<f64>, Option<f64>) = sqlx::query_as(
-            "SELECT longitude, latitude FROM gb_device_channel WHERE gb_device_id = ?",
-        )
-        .bind(ch)
-        .fetch_one(&pool)
-        .await
+        let coord_sql =
+            pool.sql("SELECT longitude, latitude FROM gb_device_channel WHERE gb_device_id = ?");
+        let (lng, lat): (Option<f64>, Option<f64>) = crate::dispatch!(pool, |p| {
+            sqlx::query_as::<_, (Option<f64>, Option<f64>)>(&coord_sql)
+                .bind(ch)
+                .fetch_one(p)
+        })
         .unwrap();
         assert_eq!(lng, Some(116.397128), "通道经度应被回写");
         assert_eq!(lat, Some(39.916527), "通道纬度应被回写");
@@ -449,17 +457,23 @@ mod tests {
         let dev = "34020000001320128497";
         let ch = "34020000001310000001";
 
-        sqlx::query("INSERT INTO gb_device (device_id, name, on_line) VALUES (?, ?, 1)")
-            .bind(dev)
-            .bind("test-dev")
-            .execute(&pool)
-            .await
-            .unwrap();
-        sqlx::query(
+        let ins_dev = pool.sql("INSERT INTO gb_device (device_id, name, on_line) VALUES (?, ?, 1)");
+        crate::dispatch_exec!(pool, |p| {
+            sqlx::query(&ins_dev).bind(dev).bind("test-dev").execute(p)
+        })
+        .unwrap();
+        let ins_ch = pool.sql(
             "INSERT INTO gb_device_channel (device_id, gb_device_id, name, status, longitude, latitude, create_time, update_time, data_type, data_device_id) \
              VALUES (?, ?, ?, 'ON', 116.4, 39.9, '2026-09-19 00:00:00', '2026-09-19 00:00:00', 0, 0)",
-        )
-        .bind(dev).bind(ch).bind("ch1").execute(&pool).await.unwrap();
+        );
+        crate::dispatch_exec!(pool, |p| {
+            sqlx::query(&ins_ch)
+                .bind(dev)
+                .bind(ch)
+                .bind("ch1")
+                .execute(p)
+        })
+        .unwrap();
 
         let xml = format!(
             r#"<Notify><CmdType>MobilePosition</CmdType><SN>2</SN><DeviceID>{dev}</DeviceID>
@@ -470,12 +484,13 @@ mod tests {
             .await
             .expect("NOTIFY 处理应成功");
 
-        let (lng, lat): (Option<f64>, Option<f64>) = sqlx::query_as(
-            "SELECT longitude, latitude FROM gb_device_channel WHERE gb_device_id = ?",
-        )
-        .bind(ch)
-        .fetch_one(&pool)
-        .await
+        let coord_sql =
+            pool.sql("SELECT longitude, latitude FROM gb_device_channel WHERE gb_device_id = ?");
+        let (lng, lat): (Option<f64>, Option<f64>) = crate::dispatch!(pool, |p| {
+            sqlx::query_as::<_, (Option<f64>, Option<f64>)>(&coord_sql)
+                .bind(ch)
+                .fetch_one(p)
+        })
         .unwrap();
         assert_eq!(lng, Some(116.4), "0,0 上报不得覆盖已有经度");
         assert_eq!(lat, Some(39.9), "0,0 上报不得覆盖已有纬度");

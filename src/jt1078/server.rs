@@ -477,7 +477,7 @@ pub async fn start(
     Ok(())
 }
 
-#[cfg(all(test, feature = "sqlite"))]
+#[cfg(test)]
 mod terminal_auth_tests {
     use super::*;
 
@@ -589,12 +589,13 @@ mod terminal_auth_tests {
         let pool = crate::test_support::sqlite_pool_with_schema().await;
         seed_terminal(&pool, None).await;
         // 让鉴权码的写入失败（只拦 auth_code 这一列，不影响其它 UPDATE）
-        sqlx::query(
-            "CREATE TRIGGER deny_auth_code BEFORE UPDATE OF auth_code ON gb_jt_terminal \
+        crate::dispatch_exec!(pool, |p| {
+            sqlx::query(
+                "CREATE TRIGGER deny_auth_code BEFORE UPDATE OF auth_code ON gb_jt_terminal \
              BEGIN SELECT RAISE(FAIL, 'blocked'); END",
-        )
-        .execute(&pool)
-        .await
+            )
+            .execute(p)
+        })
         .unwrap();
         let manager = manager_with_pool(pool.clone());
 
@@ -639,10 +640,10 @@ mod terminal_auth_tests {
         // "写不进去就不下发、不覆盖"由 `register_fails_when_auth_code_cannot_be_persisted`
         // （用 trigger 拦 UPDATE）守着；"已配置的码原样使用"由
         // `register_reply_carries_configured_auth_code` 守着。
-        sqlx::query("ALTER TABLE gb_jt_terminal RENAME TO gb_jt_terminal_bak")
-            .execute(&pool)
-            .await
-            .unwrap();
+        crate::dispatch_exec!(pool, |p| {
+            sqlx::query("ALTER TABLE gb_jt_terminal RENAME TO gb_jt_terminal_bak").execute(p)
+        })
+        .unwrap();
 
         let msg = issue_auth_code(&manager, PHONE)
             .await
@@ -651,10 +652,10 @@ mod terminal_auth_tests {
         assert!(msg.contains("读取终端鉴权码失败"), "{msg}");
 
         // 恢复表，确认配置没被动过
-        sqlx::query("ALTER TABLE gb_jt_terminal_bak RENAME TO gb_jt_terminal")
-            .execute(&pool)
-            .await
-            .unwrap();
+        crate::dispatch_exec!(pool, |p| {
+            sqlx::query("ALTER TABLE gb_jt_terminal_bak RENAME TO gb_jt_terminal").execute(p)
+        })
+        .unwrap();
         let stored = crate::db::jt1078::get_auth_code_by_phone(&pool, PHONE)
             .await
             .unwrap()
@@ -701,18 +702,21 @@ mod terminal_auth_tests {
         // **必须按 id 精确地只给第二行配码**：`update_auth_code` 的
         // `WHERE phone_number = ?` 会更新**所有**重复行 —— 用它配码的话两行都有码，
         // 根本测不出"读侧取错行 → 覆盖"的路径。
-        let coded_id: i64 =
-            sqlx::query_scalar("SELECT MAX(id) FROM gb_jt_terminal WHERE phone_number = ?")
+        let coded_sql = pool.sql("SELECT MAX(id) FROM gb_jt_terminal WHERE phone_number = ?");
+        let coded_id: i64 = crate::dispatch!(pool, |p| {
+            sqlx::query_scalar::<_, i64>(&coded_sql)
                 .bind(PHONE)
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-        sqlx::query("UPDATE gb_jt_terminal SET auth_code = ? WHERE id = ?")
-            .bind(CONFIGURED_AUTH_CODE)
-            .bind(coded_id)
-            .execute(&pool)
-            .await
-            .unwrap();
+                .fetch_one(p)
+        })
+        .unwrap();
+        let upd_sql = pool.sql("UPDATE gb_jt_terminal SET auth_code = ? WHERE id = ?");
+        crate::dispatch_exec!(pool, |p| {
+            sqlx::query(&upd_sql)
+                .bind(CONFIGURED_AUTH_CODE)
+                .bind(coded_id)
+                .execute(p)
+        })
+        .unwrap();
         let manager = manager_with_pool(pool.clone());
 
         let issued = issue_auth_code(&manager, PHONE)
@@ -725,12 +729,13 @@ mod terminal_auth_tests {
         );
 
         // 库里那条配了码的行仍在（没有被随机码覆盖）
-        let rows: Vec<(i64, Option<String>)> =
-            sqlx::query_as("SELECT id, auth_code FROM gb_jt_terminal WHERE phone_number = ?")
+        let rows_sql = pool.sql("SELECT id, auth_code FROM gb_jt_terminal WHERE phone_number = ?");
+        let rows: Vec<(i64, Option<String>)> = crate::dispatch!(pool, |p| {
+            sqlx::query_as::<_, (i64, Option<String>)>(&rows_sql)
                 .bind(PHONE)
-                .fetch_all(&pool)
-                .await
-                .unwrap();
+                .fetch_all(p)
+        })
+        .unwrap();
         assert!(rows.len() >= 2, "本用例需要至少两行重复数据: {rows:?}");
         assert!(
             rows.iter()
@@ -788,12 +793,13 @@ mod terminal_auth_tests {
         let addr: std::net::SocketAddr = "127.0.0.1:60004".parse().unwrap();
 
         feed_and_process(&manager, addr, &register_frame(1)).await;
-        let status: Option<bool> =
-            sqlx::query_scalar("SELECT status FROM gb_jt_terminal WHERE phone_number = ?")
+        let status_sql = pool.sql("SELECT status FROM gb_jt_terminal WHERE phone_number = ?");
+        let status: Option<bool> = crate::dispatch!(pool, |p| {
+            sqlx::query_scalar::<_, Option<bool>>(&status_sql)
                 .bind(PHONE)
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+                .fetch_one(p)
+        })
+        .unwrap();
         assert_eq!(status, Some(false), "未鉴权时不应置为在线");
 
         // 鉴权通过后才置为在线。
@@ -804,12 +810,13 @@ mod terminal_auth_tests {
             CONFIGURED_AUTH_CODE.as_bytes(),
         );
         feed_and_process(&manager, addr, &good).await;
-        let status: Option<bool> =
-            sqlx::query_scalar("SELECT status FROM gb_jt_terminal WHERE phone_number = ?")
+        let status_sql = pool.sql("SELECT status FROM gb_jt_terminal WHERE phone_number = ?");
+        let status: Option<bool> = crate::dispatch!(pool, |p| {
+            sqlx::query_scalar::<_, Option<bool>>(&status_sql)
                 .bind(PHONE)
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+                .fetch_one(p)
+        })
+        .unwrap();
         assert_eq!(status, Some(true), "鉴权通过后应置为在线");
     }
 
@@ -823,12 +830,13 @@ mod terminal_auth_tests {
         let addr: std::net::SocketAddr = "127.0.0.1:60005".parse().unwrap();
 
         feed_and_process(&manager, addr, &register_frame(1)).await;
-        let status: Option<bool> =
-            sqlx::query_scalar("SELECT status FROM gb_jt_terminal WHERE phone_number = ?")
+        let status_sql = pool.sql("SELECT status FROM gb_jt_terminal WHERE phone_number = ?");
+        let status: Option<bool> = crate::dispatch!(pool, |p| {
+            sqlx::query_scalar::<_, Option<bool>>(&status_sql)
                 .bind(PHONE)
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+                .fetch_one(p)
+        })
+        .unwrap();
         assert_eq!(status, Some(true), "宽松档下不鉴权也应在线");
     }
 }

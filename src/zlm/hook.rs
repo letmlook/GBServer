@@ -2169,7 +2169,7 @@ mod abl_payload_tests {
 mod tests {
     use super::*;
 
-    #[cfg(feature = "sqlite")]
+    #[cfg(test)]
     #[tokio::test]
     async fn opening_rtp_port_does_not_confirm_media_arrival() {
         let mut state = crate::test_support::app_state().await;
@@ -2209,7 +2209,7 @@ mod tests {
         ));
     }
 
-    #[cfg(feature = "sqlite")]
+    #[cfg(test)]
     #[tokio::test]
     async fn hook_diagnostics_only_capture_authenticated_play_metadata() {
         let mut state = crate::test_support::app_state().await;

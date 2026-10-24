@@ -137,7 +137,7 @@ pub async fn device_ptz(
     Json(ApiResult::error("Device not online"))
 }
 
-#[cfg(all(test, feature = "sqlite"))]
+#[cfg(test)]
 mod ptz_validation_tests {
     use super::*;
 
@@ -251,7 +251,7 @@ pub async fn device_preset(
     Json(ApiResult::error("Device not online"))
 }
 
-#[cfg(all(test, feature = "sqlite"))]
+#[cfg(test)]
 mod preset_validation_tests {
     use super::*;
 
@@ -379,7 +379,7 @@ pub async fn device_guard(
     Json(ApiResult::error("Device not online"))
 }
 
-#[cfg(all(test, feature = "sqlite"))]
+#[cfg(test)]
 mod guard_result_tests {
     use super::*;
 
@@ -2010,7 +2010,7 @@ pub(crate) async fn send_control_element_with_type(
     }
 }
 
-#[cfg(all(test, feature = "sqlite"))]
+#[cfg(test)]
 mod command_result_tests {
     use super::*;
 
@@ -2147,7 +2147,7 @@ mod command_result_tests {
             .max_connections(1)
             .connect_lazy("sqlite::memory:")
             .unwrap();
-        let server = SipServer::new(SipConfig::default(), pool, None);
+        let server = SipServer::new(SipConfig::default(), crate::db::Pool::Sqlite(pool), None);
 
         // 设备未注册 —— 发送必然失败。
         let err = crate::handlers::device_result::send_command(

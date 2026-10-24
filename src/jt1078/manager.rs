@@ -1456,15 +1456,17 @@ mod tests {
         // 若写成"此刻"，就会与清理时刻同秒，条件写（严格小于）不会命中。
         let old = chrono::Utc::now() - chrono::Duration::minutes(2);
         let old = old.format("%Y-%m-%d %H:%M:%S").to_string();
-        sqlx::query(
+        let ins_sql = pool.sql(
             "INSERT INTO gb_jt_terminal (phone_number, status, create_time, update_time) \
              VALUES (?, 1, ?, ?)",
-        )
-        .bind(PHONE)
-        .bind(&old)
-        .bind(&old)
-        .execute(&pool)
-        .await
+        );
+        crate::dispatch_exec!(pool, |p| {
+            sqlx::query(&ins_sql)
+                .bind(PHONE)
+                .bind(&old)
+                .bind(&old)
+                .execute(p)
+        })
         .unwrap();
 
         let manager = Jt1078Manager::new(
@@ -1487,12 +1489,13 @@ mod tests {
         let removed = manager.cleanup_once().await;
         assert_eq!(removed, 1, "超时会话应被清掉");
 
-        let status: i64 =
-            sqlx::query_scalar("SELECT status FROM gb_jt_terminal WHERE phone_number = ?")
+        let sel_sql = pool.sql("SELECT status FROM gb_jt_terminal WHERE phone_number = ?");
+        let status: i64 = crate::dispatch!(pool, |p| {
+            sqlx::query_scalar::<_, i64>(&sel_sql)
                 .bind(PHONE)
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+                .fetch_one(p)
+        })
+        .unwrap();
         assert_eq!(status, 0, "会话超时时必须把终端置为离线");
     }
 
@@ -1507,15 +1510,17 @@ mod tests {
         let pool = crate::test_support::sqlite_pool_with_schema().await;
         const PHONE: &str = "13812345678";
         let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-        sqlx::query(
+        let ins_sql = pool.sql(
             "INSERT INTO gb_jt_terminal (phone_number, status, create_time, update_time) \
              VALUES (?, 1, ?, ?)",
-        )
-        .bind(PHONE)
-        .bind(&now)
-        .bind(&now)
-        .execute(&pool)
-        .await
+        );
+        crate::dispatch_exec!(pool, |p| {
+            sqlx::query(&ins_sql)
+                .bind(PHONE)
+                .bind(&now)
+                .bind(&now)
+                .execute(p)
+        })
         .unwrap();
 
         // `deadline` 与 `update_time` 落在同一秒 → 严格小于不成立 → 不置离线
@@ -1525,12 +1530,13 @@ mod tests {
             .unwrap();
         assert_eq!(n, 0, "同一秒内的心跳不应被置离线");
 
-        let status: i64 =
-            sqlx::query_scalar("SELECT status FROM gb_jt_terminal WHERE phone_number = ?")
+        let sel_sql = pool.sql("SELECT status FROM gb_jt_terminal WHERE phone_number = ?");
+        let status: i64 = crate::dispatch!(pool, |p| {
+            sqlx::query_scalar::<_, i64>(&sel_sql)
                 .bind(PHONE)
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+                .fetch_one(p)
+        })
+        .unwrap();
         assert_eq!(status, 1, "刚活跃过的终端必须保持在线");
     }
 
@@ -1544,25 +1550,29 @@ mod tests {
         let pool = crate::test_support::sqlite_pool_with_schema().await;
         const PHONE: &str = "13812345678";
         let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-        sqlx::query(
+        let ins_sql = pool.sql(
             "INSERT INTO gb_jt_terminal (phone_number, status, create_time, update_time) \
              VALUES (?, 1, ?, ?)",
-        )
-        .bind(PHONE)
-        .bind(&now)
-        .bind(&now)
-        .execute(&pool)
-        .await
+        );
+        crate::dispatch_exec!(pool, |p| {
+            sqlx::query(&ins_sql)
+                .bind(PHONE)
+                .bind(&now)
+                .bind(&now)
+                .execute(p)
+        })
         .unwrap();
 
         // 模拟"清理开始之后终端又发了心跳"：把 update_time 刷新成更新的值
         let later = chrono::Utc::now() + chrono::Duration::seconds(5);
-        sqlx::query("UPDATE gb_jt_terminal SET update_time = ? WHERE phone_number = ?")
-            .bind(later.format("%Y-%m-%d %H:%M:%S").to_string())
-            .bind(PHONE)
-            .execute(&pool)
-            .await
-            .unwrap();
+        let upd_sql = pool.sql("UPDATE gb_jt_terminal SET update_time = ? WHERE phone_number = ?");
+        crate::dispatch_exec!(pool, |p| {
+            sqlx::query(&upd_sql)
+                .bind(later.format("%Y-%m-%d %H:%M:%S").to_string())
+                .bind(PHONE)
+                .execute(p)
+        })
+        .unwrap();
 
         // 用一个"截止时刻"早于该心跳的时刻去条件置离线 → 不应命中
         let deadline = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
@@ -1571,12 +1581,13 @@ mod tests {
             .unwrap();
         assert_eq!(n, 0, "期间有更新的行不应被置离线");
 
-        let status: i64 =
-            sqlx::query_scalar("SELECT status FROM gb_jt_terminal WHERE phone_number = ?")
+        let sel_sql = pool.sql("SELECT status FROM gb_jt_terminal WHERE phone_number = ?");
+        let status: i64 = crate::dispatch!(pool, |p| {
+            sqlx::query_scalar::<_, i64>(&sel_sql)
                 .bind(PHONE)
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+                .fetch_one(p)
+        })
+        .unwrap();
         assert_eq!(status, 1, "有活动的终端必须保持在线");
     }
 

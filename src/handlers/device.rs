@@ -228,17 +228,24 @@ pub struct ChannelPage {
 pub async fn device_keepalive_statistics(
     State(state): State<AppState>,
 ) -> Json<ApiResult<serde_json::Value>> {
-    let online_count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM gb_device WHERE on_line = true")
-            .fetch_one(&state.pool)
-            .await
-            .unwrap_or(0);
+    // `on_line` 是布尔列：PG 是 BOOL、MySQL 是 TINYINT(1)、SQLite 是 INTEGER。
+    // 统一用**参数绑定**传 Rust `bool`，不在 SQL 文本里分叉 `true` / `1`。
+    let online_count: i64 = crate::dispatch!(&state.pool, |p| {
+        sqlx::query_scalar::<_, i64>(&crate::dyn_where::dialect_sql(
+            "SELECT COUNT(*) FROM gb_device WHERE on_line = ?",
+        ))
+        .bind(true)
+        .fetch_one(p)
+    })
+    .unwrap_or(0);
 
-    let offline_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM gb_device WHERE on_line = false OR on_line IS NULL",
-    )
-    .fetch_one(&state.pool)
-    .await
+    let offline_count: i64 = crate::dispatch!(&state.pool, |p| {
+        sqlx::query_scalar::<_, i64>(&crate::dyn_where::dialect_sql(
+            "SELECT COUNT(*) FROM gb_device WHERE on_line = ? OR on_line IS NULL",
+        ))
+        .bind(false)
+        .fetch_one(p)
+    })
     .unwrap_or(0);
 
     let total = online_count + offline_count;
@@ -269,22 +276,27 @@ pub async fn device_keepalive_statistics(
 pub async fn device_register_statistics(
     State(state): State<AppState>,
 ) -> Json<ApiResult<serde_json::Value>> {
-    let today_register: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM gb_device WHERE DATE(create_time) = CURRENT_DATE")
-            .fetch_one(&state.pool)
-            .await
-            .unwrap_or(0);
+    let today_register: i64 = crate::dispatch!(&state.pool, |p| {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM gb_device WHERE DATE(create_time) = CURRENT_DATE",
+        )
+        .fetch_one(p)
+    })
+    .unwrap_or(0);
 
-    let total_devices: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM gb_device")
-        .fetch_one(&state.pool)
-        .await
-        .unwrap_or(0);
+    let total_devices: i64 = crate::dispatch!(&state.pool, |p| {
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_device").fetch_one(p)
+    })
+    .unwrap_or(0);
 
-    let active_devices: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM gb_device WHERE on_line = true")
-            .fetch_one(&state.pool)
-            .await
-            .unwrap_or(0);
+    let active_devices: i64 = crate::dispatch!(&state.pool, |p| {
+        sqlx::query_scalar::<_, i64>(&crate::dyn_where::dialect_sql(
+            "SELECT COUNT(*) FROM gb_device WHERE on_line = ?",
+        ))
+        .bind(true)
+        .fetch_one(p)
+    })
+    .unwrap_or(0);
 
     Json(ApiResult::success(serde_json::json!({
         "todayRegister": today_register,

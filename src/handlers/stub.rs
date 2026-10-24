@@ -26,7 +26,6 @@ use crate::dyn_where::{BindValue, DynWhere};
 use crate::error::{AppError, ErrorCode};
 use crate::response::ApiResult;
 use crate::AppState;
-use sqlx::Row;
 use std::collections::HashSet;
 
 /// 把各种时间写法归一成毫秒时间戳。
@@ -1856,8 +1855,15 @@ pub struct CloudRecordCollectQuery {
 }
 
 async fn ensure_cloud_record_task_table(pool: &crate::db::Pool) {
-    #[cfg(feature = "postgres")]
-    let query = r#"
+    // 建表 DDL **按方言不同**（自增列的类型关键字不一样），运行期按实际连接的库选。
+    //
+    // 此前是三个 `#[cfg(feature = ...)]` 常量 —— 三个驱动同时编进一个二进制之后，
+    // 三个分支会同时存在（后者遮蔽前者），非 sqlite 库会拿到 sqlite 的 DDL。
+    let _ = crate::dispatch_exec_dialect!(
+        pool,
+        |p| {
+            sqlx::query(
+                r#"
         CREATE TABLE IF NOT EXISTS gb_cloud_record_task (
             id BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
             app TEXT,
@@ -1870,9 +1876,13 @@ async fn ensure_cloud_record_task_table(pool: &crate::db::Pool) {
             create_time TEXT,
             update_time TEXT
         )
-    "#;
-    #[cfg(feature = "mysql")]
-    let query = r#"
+    "#,
+            )
+            .execute(p)
+        },
+        |p| {
+            sqlx::query(
+                r#"
         CREATE TABLE IF NOT EXISTS gb_cloud_record_task (
             id BIGINT AUTO_INCREMENT PRIMARY KEY,
             app VARCHAR(255),
@@ -1885,9 +1895,13 @@ async fn ensure_cloud_record_task_table(pool: &crate::db::Pool) {
             create_time VARCHAR(64),
             update_time VARCHAR(64)
         )
-    "#;
-    #[cfg(feature = "sqlite")]
-    let query = r#"
+    "#,
+            )
+            .execute(p)
+        },
+        |p| {
+            sqlx::query(
+                r#"
         CREATE TABLE IF NOT EXISTS gb_cloud_record_task (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             app TEXT,
@@ -1900,8 +1914,11 @@ async fn ensure_cloud_record_task_table(pool: &crate::db::Pool) {
             create_time TEXT,
             update_time TEXT
         )
-    "#;
-    let _ = sqlx::query(query).execute(pool).await;
+    "#,
+            )
+            .execute(p)
+        },
+    );
 }
 
 /// 把查询参数里的录像标识统一成**组合串**（seek/speed/collect 需要它做会话 key）。
@@ -2295,62 +2312,28 @@ pub async fn cloud_record_task_add(
     let start_time = q.start_time.unwrap_or_default();
     let end_time = q.end_time.unwrap_or_default();
 
-    #[cfg(feature = "postgres")]
-    let result = sqlx::query(
-        r#"INSERT INTO gb_cloud_record_task
-           (app, stream, media_server_id, start_time, end_time, status, progress, create_time, update_time)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)"#,
-    )
-    .bind(&app)
-    .bind(&stream)
-    .bind(&media_server_id)
-    .bind(&start_time)
-    .bind(&end_time)
-    .bind("pending")
-    .bind(0.0_f64)
-    .bind(&now)
-    .bind(&now)
-    .execute(&state.pool)
-    .await;
-    #[cfg(feature = "mysql")]
-    let result = sqlx::query(
+    // 一份 SQL 文本服务三种方言：`?` 占位符由 `pool.sql()` 按运行期方言改写
+    // （postgres → `$1..$n`）。
+    let sql = state.pool.sql(
         r#"INSERT INTO gb_cloud_record_task
            (app, stream, media_server_id, start_time, end_time, status, progress, create_time, update_time)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
-    )
-    .bind(&app)
-    .bind(&stream)
-    .bind(&media_server_id)
-    .bind(&start_time)
-    .bind(&end_time)
-    .bind("pending")
-    .bind(0.0_f64)
-    .bind(&now)
-    .bind(&now)
-    .execute(&state.pool)
-    .await;
-    #[cfg(feature = "sqlite")]
-    let result = sqlx::query(
-        r#"INSERT INTO gb_cloud_record_task
-           (app, stream, media_server_id, start_time, end_time, status, progress, create_time, update_time)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
-    )
-    .bind(&app)
-    .bind(&stream)
-    .bind(&media_server_id)
-    .bind(&start_time)
-    .bind(&end_time)
-    .bind("pending")
-    .bind(0.0_f64)
-    .bind(&now)
-    .bind(&now)
-    .execute(&state.pool)
-    .await;
-
-    let inserted = result
-        .ok()
-        .map(|res| res.rows_affected())
-        .unwrap_or_default();
+    );
+    let inserted = crate::dispatch_exec!(&state.pool, |p| {
+        sqlx::query(&sql)
+            .bind(&app)
+            .bind(&stream)
+            .bind(&media_server_id)
+            .bind(&start_time)
+            .bind(&end_time)
+            .bind("pending")
+            .bind(0.0_f64)
+            .bind(&now)
+            .bind(&now)
+            .execute(p)
+    })
+    .map(|r| r.rows_affected())
+    .unwrap_or_default();
     Json(ApiResult::success(serde_json::json!({
         "app": app,
         "stream": stream,
@@ -2381,16 +2364,34 @@ pub async fn cloud_record_task_list(
     Query(q): Query<CloudRecordQuery>,
 ) -> Json<ApiResult<serde_json::Value>> {
     ensure_cloud_record_task_table(&state.pool).await;
-    let rows = sqlx::query(
-        "SELECT id, app, stream, media_server_id, start_time, end_time, status, progress, create_time, update_time FROM gb_cloud_record_task ORDER BY id DESC",
-    )
-    .fetch_all(&state.pool)
-    .await
+
+    // `sqlx::query` 返回的动态行（`DB::Row`）是**方言相关**的，放进 `dispatch!`
+    // 会得到 "match arms have incompatible types" —— 必须 `query_as` 映射到具体结构体。
+    #[derive(sqlx::FromRow)]
+    struct CloudRecordTaskRow {
+        id: i64,
+        app: Option<String>,
+        stream: Option<String>,
+        media_server_id: Option<String>,
+        start_time: Option<String>,
+        end_time: Option<String>,
+        status: Option<String>,
+        progress: Option<f64>,
+        create_time: Option<String>,
+        update_time: Option<String>,
+    }
+
+    let rows: Vec<CloudRecordTaskRow> = crate::dispatch!(&state.pool, |p| {
+        sqlx::query_as::<_, CloudRecordTaskRow>(
+            "SELECT id, app, stream, media_server_id, start_time, end_time, status, progress, create_time, update_time FROM gb_cloud_record_task ORDER BY id DESC",
+        )
+        .fetch_all(p)
+    })
     .unwrap_or_default();
     let list: Vec<serde_json::Value> = rows
         .into_iter()
         .filter_map(|r| {
-            let status = r.try_get::<String, _>("status").unwrap_or_default();
+            let status = r.status.clone().unwrap_or_default();
             if let Some(want_end) = q.is_end {
                 let finished = matches!(status.as_str(), "done" | "completed" | "failed");
                 if finished != want_end {
@@ -2398,16 +2399,16 @@ pub async fn cloud_record_task_list(
                 }
             }
             Some(serde_json::json!({
-                "id": r.try_get::<i64, _>("id").unwrap_or_default(),
-                "app": r.try_get::<Option<String>, _>("app").ok().flatten(),
-                "stream": r.try_get::<Option<String>, _>("stream").ok().flatten(),
-                "mediaServerId": r.try_get::<Option<String>, _>("media_server_id").ok().flatten(),
-                "startTime": r.try_get::<Option<String>, _>("start_time").ok().flatten(),
-                "endTime": r.try_get::<Option<String>, _>("end_time").ok().flatten(),
+                "id": r.id,
+                "app": r.app,
+                "stream": r.stream,
+                "mediaServerId": r.media_server_id,
+                "startTime": r.start_time,
+                "endTime": r.end_time,
                 "status": status,
-                "progress": r.try_get::<Option<f64>, _>("progress").ok().flatten().unwrap_or_default(),
-                "createTime": r.try_get::<Option<String>, _>("create_time").ok().flatten(),
-                "updateTime": r.try_get::<Option<String>, _>("update_time").ok().flatten()
+                "progress": r.progress.unwrap_or_default(),
+                "createTime": r.create_time,
+                "updateTime": r.update_time
             }))
         })
         .collect();
@@ -2886,90 +2887,103 @@ async fn cloud_record_scan_zlm(
 ///
 /// 因此这里按方言建表，并对**既有库**做一次类型迁移（保留已有收藏数据）。
 pub(crate) async fn ensure_record_collect_table(pool: &crate::db::Pool) {
-    #[cfg(feature = "postgres")]
-    const DDL: &str = r#"CREATE TABLE IF NOT EXISTS gb_record_collect (
+    // 建表 DDL **按方言不同**（自增列的类型关键字不一样），运行期按实际连接的库选。
+    let ddl: &str = match pool.dialect() {
+        crate::db::Dialect::Postgres => {
+            r#"CREATE TABLE IF NOT EXISTS gb_record_collect (
             id BIGSERIAL PRIMARY KEY,
             record_id VARCHAR(255) NOT NULL UNIQUE,
             device_id VARCHAR(64),
             channel_id VARCHAR(64),
             name VARCHAR(255),
             create_time VARCHAR(50)
-        )"#;
-    #[cfg(feature = "mysql")]
-    const DDL: &str = r#"CREATE TABLE IF NOT EXISTS gb_record_collect (
+        )"#
+        }
+        crate::db::Dialect::MySql => {
+            r#"CREATE TABLE IF NOT EXISTS gb_record_collect (
             id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
             record_id VARCHAR(255) NOT NULL UNIQUE,
             device_id VARCHAR(64),
             channel_id VARCHAR(64),
             name VARCHAR(255),
             create_time VARCHAR(50)
-        )"#;
-    #[cfg(feature = "sqlite")]
-    const DDL: &str = r#"CREATE TABLE IF NOT EXISTS gb_record_collect (
+        )"#
+        }
+        crate::db::Dialect::Sqlite => {
+            r#"CREATE TABLE IF NOT EXISTS gb_record_collect (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             record_id VARCHAR(255) NOT NULL UNIQUE,
             device_id VARCHAR(64),
             channel_id VARCHAR(64),
             name VARCHAR(255),
             create_time VARCHAR(50)
-        )"#;
+        )"#
+        }
+    };
 
     // ---- 既有库的类型迁移 ----
-    #[cfg(feature = "sqlite")]
-    {
-        let id_type: Option<String> = sqlx::query_scalar(
-            "SELECT type FROM pragma_table_info('gb_record_collect') WHERE name = 'id'",
-        )
-        .fetch_optional(pool)
-        .await
-        .ok()
-        .flatten();
-        if let Some(t) = id_type.filter(|t| !t.eq_ignore_ascii_case("INTEGER")) {
-            tracing::warn!(
-                "[schema] gb_record_collect.id 当前类型为 {}（应为 INTEGER），迁移中（保留数据）",
-                t
-            );
-            let old = "gb_record_collect_legacy";
-            for stmt in [
-                format!("ALTER TABLE gb_record_collect RENAME TO {old}"),
-                DDL.to_string(),
-                format!(
-                    "INSERT INTO gb_record_collect (record_id, device_id, channel_id, name, create_time) \
-                     SELECT record_id, device_id, channel_id, name, create_time FROM {old}"
-                ),
-                format!("DROP TABLE {old}"),
-            ] {
-                if let Err(e) = sqlx::query(&stmt).execute(pool).await {
-                    tracing::error!("[schema] gb_record_collect 迁移失败: {} | {}", e, stmt);
-                    return;
-                }
-            }
-        }
-    }
-    #[cfg(feature = "mysql")]
-    {
-        if let Ok(Some(t)) = sqlx::query_scalar::<_, String>(
-            "SELECT data_type FROM information_schema.columns \
-             WHERE table_schema = DATABASE() AND table_name = 'gb_record_collect' AND column_name = 'id'",
-        )
-        .fetch_optional(pool)
-        .await
-        {
-            if t != "bigint" {
-                tracing::warn!("[schema] gb_record_collect.id 类型为 {}，迁移为有符号 BIGINT", t);
-                if let Err(e) = sqlx::query(
-                    "ALTER TABLE gb_record_collect MODIFY id BIGINT NOT NULL AUTO_INCREMENT",
+    match pool.dialect() {
+        crate::db::Dialect::Sqlite => {
+            let id_type: Option<String> = crate::dispatch!(pool, |p| {
+                sqlx::query_scalar::<_, String>(
+                    "SELECT type FROM pragma_table_info('gb_record_collect') WHERE name = 'id'",
                 )
-                .execute(pool)
-                .await
-                {
-                    tracing::error!("[schema] gb_record_collect.id 迁移失败: {}", e);
+                .fetch_optional(p)
+            })
+            .ok()
+            .flatten();
+            if let Some(t) = id_type.filter(|t| !t.eq_ignore_ascii_case("INTEGER")) {
+                tracing::warn!(
+                    "[schema] gb_record_collect.id 当前类型为 {}（应为 INTEGER），迁移中（保留数据）",
+                    t
+                );
+                let old = "gb_record_collect_legacy";
+                for stmt in [
+                    format!("ALTER TABLE gb_record_collect RENAME TO {old}"),
+                    ddl.to_string(),
+                    format!(
+                        "INSERT INTO gb_record_collect (record_id, device_id, channel_id, name, create_time) \
+                         SELECT record_id, device_id, channel_id, name, create_time FROM {old}"
+                    ),
+                    format!("DROP TABLE {old}"),
+                ] {
+                    if let Err(e) = crate::dispatch_exec!(pool, |p| {
+                        sqlx::query(&stmt).execute(p)
+                    }) {
+                        tracing::error!("[schema] gb_record_collect 迁移失败: {} | {}", e, stmt);
+                        return;
+                    }
                 }
             }
         }
+        crate::db::Dialect::MySql => {
+            if let Ok(Some(t)) = crate::dispatch!(pool, |p| {
+                sqlx::query_scalar::<_, String>(
+                    "SELECT data_type FROM information_schema.columns \
+                     WHERE table_schema = DATABASE() AND table_name = 'gb_record_collect' AND column_name = 'id'",
+                )
+                .fetch_optional(p)
+            }) {
+                if t != "bigint" {
+                    tracing::warn!(
+                        "[schema] gb_record_collect.id 类型为 {}，迁移为有符号 BIGINT",
+                        t
+                    );
+                    if let Err(e) = crate::dispatch_exec!(pool, |p| {
+                        sqlx::query(
+                            "ALTER TABLE gb_record_collect MODIFY id BIGINT NOT NULL AUTO_INCREMENT",
+                        )
+                        .execute(p)
+                    }) {
+                        tracing::error!("[schema] gb_record_collect.id 迁移失败: {}", e);
+                    }
+                }
+            }
+        }
+        crate::db::Dialect::Postgres => {}
     }
 
-    if let Err(e) = sqlx::query(DDL).execute(pool).await {
+    if let Err(e) = crate::dispatch_exec!(pool, |p| { sqlx::query(ddl).execute(p) }) {
         let msg = e.to_string();
         if !msg.contains("already exists") {
             tracing::error!("创建 gb_record_collect 失败（收藏功能不可用）: {}", msg);
@@ -3022,64 +3036,103 @@ pub async fn cloud_record_collect_add(
     // MySQL 用 `INSERT IGNORE`（此前只有 pg 写法，MySQL 上必然报错，
     // 而 `Err` 又被当成"已收藏"静默吞掉）。
     let now = crate::handlers::stream::local_now_str();
-    #[cfg(any(feature = "postgres", feature = "sqlite"))]
-    let sql = crate::dyn_where::dialect_sql(
-        "INSERT INTO gb_record_collect (record_id, device_id, channel_id, name, create_time) \
-         VALUES (?, ?, ?, ?, ?) ON CONFLICT (record_id) DO NOTHING",
-    );
-    #[cfg(feature = "mysql")]
-    let sql = std::borrow::Cow::Borrowed(
-        "INSERT IGNORE INTO gb_record_collect (record_id, device_id, channel_id, name, create_time) \
-         VALUES (?, ?, ?, ?, ?)",
-    );
+    let sql_on_conflict = state
+        .pool
+        .sql(
+            "INSERT INTO gb_record_collect (record_id, device_id, channel_id, name, create_time) \
+             VALUES (?, ?, ?, ?, ?) ON CONFLICT (record_id) DO NOTHING",
+        )
+        .into_owned();
+    let sql_insert_ignore = state
+        .pool
+        .sql(
+            "INSERT IGNORE INTO gb_record_collect (record_id, device_id, channel_id, name, create_time) \
+             VALUES (?, ?, ?, ?, ?)",
+        )
+        .into_owned();
 
-    let mut tx = match state.pool.begin().await {
-        Ok(tx) => tx,
-        Err(e) => return Json(ApiResult::error(format!("收藏失败: {e}"))),
-    };
-    let inserted = match sqlx::query(&sql)
-        .bind(&record_id)
-        .bind(&device_id)
-        .bind(&channel_id)
-        .bind(&name)
-        .bind(&now)
-        .execute(&mut *tx)
-        .await
-    {
-        Ok(r) => r.rows_affected() > 0,
-        Err(e) => {
-            tracing::error!("收藏录像失败 record_id={}: {}", record_id, e);
-            return Json(ApiResult::error(format!("收藏失败: {e}")));
-        }
-    };
-    if let Some(id) = cloud_record_id {
-        let exists_sql =
-            crate::dyn_where::dialect_sql("SELECT COUNT(*) FROM gb_cloud_record WHERE id = ?");
-        let exists: i64 = match sqlx::query_scalar(&exists_sql)
-            .bind(id)
-            .fetch_one(&mut *tx)
-            .await
-        {
-            Ok(exists) => exists,
-            Err(e) => return Json(ApiResult::error(format!("收藏失败: {e}"))),
-        };
-        if exists == 0 {
-            return Json(ApiResult::error("record not found"));
-        }
-        let update_sql =
-            crate::dyn_where::dialect_sql("UPDATE gb_cloud_record SET collect = ? WHERE id = ?");
-        if let Err(e) = sqlx::query(&update_sql)
-            .bind(true)
-            .bind(id)
-            .execute(&mut *tx)
-            .await
-        {
-            return Json(ApiResult::error(format!("收藏失败: {e}")));
-        }
+    // 事务体：三个方言的**逻辑完全一样**，只有上面那条 INSERT 语句不同。
+    //
+    // `Transaction` 的类型是**方言相关**的（`Transaction<'_, Sqlite|Pg|MySql>`），
+    // 不能跨方言共用一个变量 —— 所以把事务体抽成宏，由 `dispatch_dialect!`
+    // 在三个方言分支里各展开一次。
+    // 另外 `Transaction` 本身不是 `Executor`，要 `&mut *tx` 才是连接。
+    macro_rules! collect_tx_body {
+        ($tx:ident, $sql:expr) => {{
+            let inserted = match sqlx::query($sql)
+                .bind(&record_id)
+                .bind(&device_id)
+                .bind(&channel_id)
+                .bind(&name)
+                .bind(&now)
+                .execute(&mut *$tx)
+                .await
+            {
+                Ok(r) => r.rows_affected() > 0,
+                Err(e) => {
+                    tracing::error!("收藏录像失败 record_id={}: {}", record_id, e);
+                    return Err(format!("收藏失败: {e}"));
+                }
+            };
+            if let Some(id) = cloud_record_id {
+                let exists: i64 = sqlx::query_scalar::<_, i64>(&crate::dyn_where::dialect_sql(
+                    "SELECT COUNT(*) FROM gb_cloud_record WHERE id = ?",
+                ))
+                .bind(id)
+                .fetch_one(&mut *$tx)
+                .await
+                .map_err(|e| format!("收藏失败: {e}"))?;
+                if exists == 0 {
+                    return Err("record not found".to_string());
+                }
+                sqlx::query(&crate::dyn_where::dialect_sql(
+                    "UPDATE gb_cloud_record SET collect = ? WHERE id = ?",
+                ))
+                .bind(true)
+                .bind(id)
+                .execute(&mut *$tx)
+                .await
+                .map_err(|e| format!("收藏失败: {e}"))?;
+            }
+            inserted
+        }};
     }
-    if let Err(e) = tx.commit().await {
-        return Json(ApiResult::error(format!("收藏失败: {e}")));
-    }
+
+    // `async { .. }` 里的 `?` / `return` 作用于**块本身**（不是外层函数），
+    // 所以事务体可以自己提前返回错误，不必把整个 handler 改成 Result。
+    let inserted = match crate::dispatch_dialect!(
+        &state.pool,
+        |p| {
+            async {
+                let mut tx = p.begin().await.map_err(|e| format!("收藏失败: {e}"))?;
+                let out = collect_tx_body!(tx, sql_on_conflict.as_str());
+                tx.commit().await.map_err(|e| format!("收藏失败: {e}"))?;
+                Ok::<_, String>(out)
+            }
+            .await
+        },
+        |p| {
+            async {
+                let mut tx = p.begin().await.map_err(|e| format!("收藏失败: {e}"))?;
+                let out = collect_tx_body!(tx, sql_insert_ignore.as_str());
+                tx.commit().await.map_err(|e| format!("收藏失败: {e}"))?;
+                Ok::<_, String>(out)
+            }
+            .await
+        },
+        |p| {
+            async {
+                let mut tx = p.begin().await.map_err(|e| format!("收藏失败: {e}"))?;
+                let out = collect_tx_body!(tx, sql_on_conflict.as_str());
+                tx.commit().await.map_err(|e| format!("收藏失败: {e}"))?;
+                Ok::<_, String>(out)
+            }
+            .await
+        },
+    ) {
+        Ok(v) => v,
+        Err(msg) => return Json(ApiResult::error(msg)),
+    };
     Json(ApiResult::success(serde_json::json!({
         "recordId": record_id,
         "status": if inserted { "collected" } else { "already_collected" },
@@ -3163,15 +3216,25 @@ pub async fn cloud_record_collect_list(
         Option<String>,
         Option<String>,
         Option<String>,
-    )> = match sqlx::query_as(&crate::dyn_where::dialect_sql(
-        "SELECT id, record_id, device_id, channel_id, name, create_time \
+    )> = match crate::dispatch!(&state.pool, |p| {
+        sqlx::query_as::<
+            _,
+            (
+                i64,
+                String,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+            ),
+        >(&crate::dyn_where::dialect_sql(
+            "SELECT id, record_id, device_id, channel_id, name, create_time \
              FROM gb_record_collect ORDER BY id DESC LIMIT ? OFFSET ?",
-    ))
-    .bind(count as i64)
-    .bind(offset)
-    .fetch_all(&state.pool)
-    .await
-    {
+        ))
+        .bind(count as i64)
+        .bind(offset)
+        .fetch_all(p)
+    }) {
         Ok(rows) => rows,
         Err(e) => {
             tracing::error!("查询收藏列表失败: {}", e);
@@ -3589,7 +3652,7 @@ pub async fn record_plan_channel_list(
     );
     const BASE_COUNT: &str = "SELECT COUNT(*) FROM gb_device_channel c";
 
-    let limit_ph = if cfg!(feature = "postgres") {
+    let limit_ph = if crate::db::dialect::current().is_postgres() {
         format!(
             " LIMIT ${} OFFSET ${}",
             w.binds.len() + 1,
@@ -3603,32 +3666,34 @@ pub async fn record_plan_channel_list(
         w.sql(&base_cols),
         format!(" ORDER BY c.id DESC{limit_ph}")
     );
-    let mut q_rows = sqlx::query_as::<_, RecordPlanChannelRow>(&sql_rows);
-    for b in &w.binds {
-        q_rows = match b {
-            BindValue::Text(v) => q_rows.bind(v.as_str()),
-            BindValue::Int(v) => q_rows.bind(v),
-            BindValue::Big(v) => q_rows.bind(*v),
-            BindValue::Bool(v) => q_rows.bind(*v),
-        };
-    }
-    let rows: Vec<RecordPlanChannelRow> = q_rows
-        .bind(count as i64)
-        .bind(offset)
-        .fetch_all(&state.pool)
-        .await?;
+    // 查询链必须整体包进 `dispatch!`：`db::Pool` 本身不是 `Executor`，
+    // 而 `dispatch!` 的宏体会在三个方言分支里各展开一次（`p` 是各自的连接池）。
+    let rows: Vec<RecordPlanChannelRow> = crate::dispatch!(&state.pool, |p| {
+        let mut q_rows = sqlx::query_as::<_, RecordPlanChannelRow>(&sql_rows);
+        for b in &w.binds {
+            q_rows = match b {
+                BindValue::Text(v) => q_rows.bind(v.as_str()),
+                BindValue::Int(v) => q_rows.bind(v),
+                BindValue::Big(v) => q_rows.bind(*v),
+                BindValue::Bool(v) => q_rows.bind(*v),
+            };
+        }
+        q_rows.bind(count as i64).bind(offset).fetch_all(p)
+    })?;
 
     let sql_count = w.sql(BASE_COUNT);
-    let mut q_count = sqlx::query_scalar::<_, i64>(&sql_count);
-    for b in &w.binds {
-        q_count = match b {
-            BindValue::Text(v) => q_count.bind(v.as_str()),
-            BindValue::Int(v) => q_count.bind(v),
-            BindValue::Big(v) => q_count.bind(*v),
-            BindValue::Bool(v) => q_count.bind(*v),
-        };
-    }
-    let total: i64 = q_count.fetch_one(&state.pool).await?;
+    let total: i64 = crate::dispatch!(&state.pool, |p| {
+        let mut q_count = sqlx::query_scalar::<_, i64>(&sql_count);
+        for b in &w.binds {
+            q_count = match b {
+                BindValue::Text(v) => q_count.bind(v.as_str()),
+                BindValue::Int(v) => q_count.bind(v),
+                BindValue::Big(v) => q_count.bind(*v),
+                BindValue::Bool(v) => q_count.bind(*v),
+            };
+        }
+        q_count.fetch_one(p)
+    })?;
 
     let list: Vec<serde_json::Value> = rows.iter().map(|r| r.to_json()).collect();
     Ok(Json(ApiResult::success(serde_json::json!({
@@ -4089,18 +4154,22 @@ mod record_plan_handler_tests {
     }
 
     async fn seed_channel(state: &AppState, gb_id: &str) -> i64 {
-        let r = sqlx::query(
+        // `last_insert_rowid()` 是 SQLite 专有 API —— 走 `dispatch_exec!` 拿跨方言的
+        // `ExecResult::last_insert_id()`（postgres 为 None，但本模块只在 sqlite 跑）。
+        let sql = state.pool.sql(
             "INSERT INTO gb_device_channel \
              (device_id, name, gb_device_id, status, data_type, data_device_id, channel_type, \
               create_time, update_time) \
              VALUES ('dev1', ?, ?, 'ON', 0, 1, 0, '2026-01-01 00:00:00', '2026-01-01 00:00:00')",
-        )
-        .bind(format!("ch-{gb_id}"))
-        .bind(gb_id)
-        .execute(&state.pool)
-        .await
+        );
+        let r = crate::dispatch_exec!(&state.pool, |p| {
+            sqlx::query(&sql)
+                .bind(format!("ch-{gb_id}"))
+                .bind(gb_id)
+                .execute(p)
+        })
         .expect("insert channel");
-        r.last_insert_rowid()
+        r.last_insert_id().unwrap_or_default()
     }
 
     /// 对空 `planItemList` 直接报错。
@@ -4605,27 +4674,28 @@ mod record_collect_tests {
     use crate::test_support::app_state;
 
     async fn seed_record(state: &AppState) -> i64 {
-        sqlx::query(
+        let sql = state.pool.sql(
             "INSERT INTO gb_cloud_record (app, stream, start_time, end_time, file_name, file_path, media_server_id) \
              VALUES ('rtp', 'dev_ch', 1, 2, 'a.mp4', '/tmp/a.mp4', 'zlm-1')",
-        )
-        .execute(&state.pool)
-        .await
-        .expect("seed cloud record");
-        sqlx::query_scalar("SELECT id FROM gb_cloud_record ORDER BY id DESC LIMIT 1")
-            .fetch_one(&state.pool)
-            .await
-            .expect("record id")
+        );
+        crate::dispatch_exec!(&state.pool, |p| { sqlx::query(&sql).execute(p) })
+            .expect("seed cloud record");
+        crate::dispatch!(&state.pool, |p| {
+            sqlx::query_scalar::<_, i64>("SELECT id FROM gb_cloud_record ORDER BY id DESC LIMIT 1")
+                .fetch_one(p)
+        })
+        .expect("record id")
     }
 
     #[tokio::test]
     async fn collect_add_failure_rolls_back_collect_table() {
         let state = app_state().await;
         let id = seed_record(&state).await;
-        sqlx::query("CREATE TRIGGER deny_collect_flag BEFORE UPDATE OF collect ON gb_cloud_record BEGIN SELECT RAISE(FAIL, 'blocked'); END")
-            .execute(&state.pool)
-            .await
-            .unwrap();
+        crate::dispatch_exec!(&state.pool, |p| {
+            sqlx::query("CREATE TRIGGER deny_collect_flag BEFORE UPDATE OF collect ON gb_cloud_record BEGIN SELECT RAISE(FAIL, 'blocked'); END")
+                .execute(p)
+        })
+        .unwrap();
 
         let added = cloud_record_collect_add(
             State(state.clone()),
@@ -4636,10 +4706,10 @@ mod record_collect_tests {
         )
         .await;
         assert_ne!(added.0.code, 0);
-        let collected: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM gb_record_collect")
-            .fetch_one(&state.pool)
-            .await
-            .unwrap();
+        let collected: i64 = crate::dispatch!(&state.pool, |p| {
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_record_collect").fetch_one(p)
+        })
+        .unwrap();
         assert_eq!(
             collected, 0,
             "failed flag update must roll back table insert"

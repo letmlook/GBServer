@@ -432,44 +432,47 @@ pub async fn position_subscribe(
     }))))
 }
 
-#[cfg(all(test, feature = "sqlite"))]
+#[cfg(test)]
 mod position_contract_tests {
     use super::*;
     use crate::test_support::app_state;
 
     async fn seed(state: &AppState) {
-        sqlx::query(
-            "INSERT INTO gb_device (device_id, name, on_line, create_time, update_time) \
-             VALUES ('34020000001320000001', 'cam-1', 1, '2026-01-01 00:00:00', '2026-01-01 00:00:00')",
-        )
-        .execute(&state.pool)
-        .await
+        crate::dispatch_exec!(&state.pool, |p| {
+            sqlx::query(
+                "INSERT INTO gb_device (device_id, name, on_line, create_time, update_time) \
+                 VALUES ('34020000001320000001', 'cam-1', 1, '2026-01-01 00:00:00', '2026-01-01 00:00:00')",
+            )
+            .execute(p)
+        })
         .expect("seed device");
-        sqlx::query(
-            "INSERT INTO gb_device_channel \
-             (device_id, name, gb_device_id, status, data_type, data_device_id, channel_type, \
-              create_time, update_time) \
-             VALUES ('34020000001320000001', 'ch-1', '34020000001310000001', 'ON', 0, 0, 0, \
-                     '2026-01-01 00:00:00', '2026-01-01 00:00:00')",
-        )
-        .execute(&state.pool)
-        .await
+        crate::dispatch_exec!(&state.pool, |p| {
+            sqlx::query(
+                "INSERT INTO gb_device_channel \
+                 (device_id, name, gb_device_id, status, data_type, data_device_id, channel_type, \
+                  create_time, update_time) \
+                 VALUES ('34020000001320000001', 'ch-1', '34020000001310000001', 'ON', 0, 0, 0, \
+                         '2026-01-01 00:00:00', '2026-01-01 00:00:00')",
+            )
+            .execute(p)
+        })
         .expect("seed channel");
         for (t, lon, lat) in [
             ("2026-01-01 10:00:00", 120.1, 30.1),
             ("2026-01-01 11:00:00", 120.2, 30.2),
         ] {
-            sqlx::query(
-                "INSERT INTO gb_device_mobile_position \
-                 (device_id, channel_id, time, longitude, latitude, speed, direction, create_time) \
-                 VALUES ('34020000001320000001', '34020000001310000001', ?, ?, ?, 5.0, 90.0, ?)",
-            )
-            .bind(t)
-            .bind(lon)
-            .bind(lat)
-            .bind(t)
-            .execute(&state.pool)
-            .await
+            crate::dispatch_exec!(&state.pool, |p| {
+                sqlx::query(
+                    &crate::dyn_where::dialect_sql("INSERT INTO gb_device_mobile_position \
+                     (device_id, channel_id, time, longitude, latitude, speed, direction, create_time) \
+                     VALUES ('34020000001320000001', '34020000001310000001', ?, ?, ?, 5.0, 90.0, ?)"),
+                )
+                .bind(t)
+                .bind(lon)
+                .bind(lat)
+                .bind(t)
+                .execute(p)
+            })
             .expect("seed position");
         }
     }
@@ -479,10 +482,10 @@ mod position_contract_tests {
     async fn test_position_latest_resolves_channel_db_id() {
         let state = app_state().await;
         seed(&state).await;
-        let ch_id: i64 = sqlx::query_scalar("SELECT id FROM gb_device_channel LIMIT 1")
-            .fetch_one(&state.pool)
-            .await
-            .unwrap();
+        let ch_id: i64 = crate::dispatch!(&state.pool, |p| {
+            sqlx::query_scalar::<_, i64>("SELECT id FROM gb_device_channel LIMIT 1").fetch_one(p)
+        })
+        .unwrap();
 
         let resp = position_latest(
             State(state.clone()),
@@ -537,10 +540,10 @@ mod position_contract_tests {
     async fn test_position_history_by_channel_id_filters_time() {
         let state = app_state().await;
         seed(&state).await;
-        let ch_id: i64 = sqlx::query_scalar("SELECT id FROM gb_device_channel LIMIT 1")
-            .fetch_one(&state.pool)
-            .await
-            .unwrap();
+        let ch_id: i64 = crate::dispatch!(&state.pool, |p| {
+            sqlx::query_scalar::<_, i64>("SELECT id FROM gb_device_channel LIMIT 1").fetch_one(p)
+        })
+        .unwrap();
 
         let resp = position_history(
             State(state.clone()),
@@ -567,13 +570,14 @@ mod position_contract_tests {
         db::position_history::ensure_table(&state.pool)
             .await
             .expect("建 gb_position_history");
-        sqlx::query(
-            "INSERT INTO gb_position_history \
-             (device_id, timestamp, longitude, latitude, altitude, speed, direction) \
-             VALUES ('dev-1', '2026-01-01 10:00:00', 1.0, 2.0, 3.0, 4.0, 5.0)",
-        )
-        .execute(&state.pool)
-        .await
+        crate::dispatch_exec!(&state.pool, |p| {
+            sqlx::query(
+                "INSERT INTO gb_position_history \
+                 (device_id, timestamp, longitude, latitude, altitude, speed, direction) \
+                 VALUES ('dev-1', '2026-01-01 10:00:00', 1.0, 2.0, 3.0, 4.0, 5.0)",
+            )
+            .execute(p)
+        })
         .unwrap();
 
         let resp = position_history(
@@ -610,12 +614,13 @@ mod position_contract_tests {
         // 测试 AppState 没有 SIP server，必须如实告知"未下发"，而不是假成功
         assert_eq!(data["subscribeSent"], false);
 
-        let row: (Option<i32>, Option<i32>) = sqlx::query_as(
-            "SELECT subscribe_cycle_for_mobile_position, mobile_position_submission_interval \
-             FROM gb_device WHERE device_id = '34020000001320000001'",
-        )
-        .fetch_one(&state.pool)
-        .await
+        let row: (Option<i32>, Option<i32>) = crate::dispatch!(&state.pool, |p| {
+            sqlx::query_as(
+                "SELECT subscribe_cycle_for_mobile_position, mobile_position_submission_interval \
+                 FROM gb_device WHERE device_id = '34020000001320000001'",
+            )
+            .fetch_one(p)
+        })
         .unwrap();
         assert_eq!(row.0, Some(600));
         assert_eq!(row.1, Some(15));

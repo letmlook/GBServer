@@ -57,7 +57,8 @@ pub async fn readiness(State(state): State<AppState>) -> (StatusCode, Json<serde
     // type decoding (PG `SELECT 1` returns INTEGER → i32, SQLite returns INTEGER
     // → i64; decoding would fail across the boundary). `execute` only checks
     // the result rows-affected — sufficient for a liveness probe.
-    let db_ok = sqlx::query("SELECT 1").execute(&state.pool).await.is_ok();
+    let db_ok =
+        crate::dispatch_exec!(&state.pool, |p| { sqlx::query("SELECT 1").execute(p) }).is_ok();
 
     let cluster_ok = if state.config.cluster.single_node_mode {
         true

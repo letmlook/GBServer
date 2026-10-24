@@ -8,7 +8,6 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-#[cfg(feature = "postgres")]
 use sqlx::Row;
 
 use crate::db::jt1078 as jt_db;
@@ -1749,14 +1748,13 @@ pub async fn record_list(
     }
 
     // Final fallback: cloud_record DB
-    if let Ok(records) =
+    if let Ok(records) = crate::dispatch!(&state.pool, |p| {
         sqlx::query_as::<_, crate::db::cloud_record::CloudRecord>(&crate::dyn_where::dialect_sql(
             "SELECT * FROM gb_cloud_record WHERE stream = ? ORDER BY start_time DESC LIMIT 50",
         ))
         .bind(&phone)
-        .fetch_all(&state.pool)
-        .await
-    {
+        .fetch_all(p)
+    }) {
         let list: Vec<serde_json::Value> = records
             .iter()
             .map(|r| {
@@ -2088,13 +2086,16 @@ pub async fn position_info(
     }
 
     // Query from mobile_position table (real-time position)
-    #[cfg(feature = "postgres")]
-    {
+    //
+    // 这一段**只有 postgres 走**（原实现是 `#[cfg(feature = "postgres")]`）——
+    // 运行期按实际连接的库判断。pg 分支用的是 pg 专属的**动态行**
+    // （`try_get` 读的是 `PgRow`，跨方言不通用），所以这里直接匹配 pg 分支。
+    if let crate::db::Pool::Postgres(pg_pool) = &state.pool {
         let row = sqlx::query(
             "SELECT device_id, longitude, latitude, speed, direction, altitude, create_time FROM gb_device_mobile_position WHERE device_id = $1 ORDER BY create_time DESC LIMIT 1"
         )
         .bind(&phone)
-        .fetch_optional(&state.pool)
+        .fetch_optional(pg_pool)
         .await;
         if let Ok(Some(r)) = row {
             let device_id: String = r.try_get("device_id").unwrap_or_default();

@@ -948,35 +948,38 @@ mod camera_contract_tests {
     async fn seed(state: &AppState) -> (String, String) {
         let now = "2026-01-01 00:00:00";
         // 一台在线设备（2 个通道）+ 一台离线设备（无通道）
-        sqlx::query(
-            "INSERT INTO gb_device (device_id, name, on_line, create_time, update_time) \
-             VALUES ('34020000001320000001', '在线设备', 1, ?1, ?1)",
-        )
-        .bind(now)
-        .execute(&state.pool)
-        .await
+        crate::dispatch_exec!(&state.pool, |p| {
+            sqlx::query(&crate::dyn_where::dialect_sql(
+                "INSERT INTO gb_device (device_id, name, on_line, create_time, update_time) \
+                 VALUES ('34020000001320000001', '在线设备', 1, ?1, ?1)",
+            ))
+            .bind(now)
+            .execute(p)
+        })
         .unwrap();
-        sqlx::query(
-            "INSERT INTO gb_device (device_id, name, on_line, create_time, update_time) \
-             VALUES ('34020000001320000002', '离线设备', 0, ?1, ?1)",
-        )
-        .bind(now)
-        .execute(&state.pool)
-        .await
+        crate::dispatch_exec!(&state.pool, |p| {
+            sqlx::query(&crate::dyn_where::dialect_sql(
+                "INSERT INTO gb_device (device_id, name, on_line, create_time, update_time) \
+                 VALUES ('34020000001320000002', '离线设备', 0, ?1, ?1)",
+            ))
+            .bind(now)
+            .execute(p)
+        })
         .unwrap();
         for (ch, name) in [
             ("34020000001310000001", "通道一"),
             ("34020000001310000002", "通道二"),
         ] {
-            sqlx::query(
-                "INSERT INTO gb_device_channel (device_id, gb_device_id, name, civil_code, status, data_type, data_device_id, create_time, update_time) \
-                 VALUES ('34020000001320000001', ?1, ?2, '340200', 'ON', 1, 1, ?3, ?3)",
-            )
-            .bind(ch)
-            .bind(name)
-            .bind(now)
-            .execute(&state.pool)
-            .await
+            crate::dispatch_exec!(&state.pool, |p| {
+                sqlx::query(
+                    &crate::dyn_where::dialect_sql("INSERT INTO gb_device_channel (device_id, gb_device_id, name, civil_code, status, data_type, data_device_id, create_time, update_time) \
+                     VALUES ('34020000001320000001', ?1, ?2, '340200', 'ON', 1, 1, ?3, ?3)"),
+                )
+                .bind(ch)
+                .bind(name)
+                .bind(now)
+                .execute(p)
+            })
             .unwrap();
         }
         (
@@ -1074,15 +1077,16 @@ mod camera_contract_tests {
         let state = app_state().await;
         let now = "2026-01-01 00:00:00";
         for i in 1..=150 {
-            sqlx::query(
-                "INSERT INTO gb_device (device_id, name, on_line, create_time, update_time) \
-                 VALUES (?1, ?2, 1, ?3, ?3)",
-            )
-            .bind(format!("3402000000132{:06}", i))
-            .bind(format!("设备{i}"))
-            .bind(now)
-            .execute(&state.pool)
-            .await
+            crate::dispatch_exec!(&state.pool, |p| {
+                sqlx::query(&crate::dyn_where::dialect_sql(
+                    "INSERT INTO gb_device (device_id, name, on_line, create_time, update_time) \
+                     VALUES (?1, ?2, 1, ?3, ?3)",
+                ))
+                .bind(format!("3402000000132{:06}", i))
+                .bind(format!("设备{i}"))
+                .bind(now)
+                .execute(p)
+            })
             .unwrap();
         }
         let res = camera_list_with_child(

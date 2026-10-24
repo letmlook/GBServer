@@ -2224,16 +2224,17 @@ mod proxy_tests {
     #[tokio::test]
     async fn proxy_start_rejects_incomplete_record() {
         let state = app_state().await;
-        sqlx::query(
-            "INSERT INTO gb_stream_proxy (app, stream, src_url, pulling, enable) VALUES ('live', '', 'rtsp://x', 0, 0)",
-        )
-        .execute(&state.pool)
-        .await
+        crate::dispatch_exec!(&state.pool, |p| {
+            sqlx::query(
+                "INSERT INTO gb_stream_proxy (app, stream, src_url, pulling, enable) VALUES ('live', '', 'rtsp://x', 0, 0)",
+            )
+            .execute(p)
+        })
         .unwrap();
-        let id: i32 = sqlx::query_scalar("SELECT id FROM gb_stream_proxy LIMIT 1")
-            .fetch_one(&state.pool)
-            .await
-            .unwrap();
+        let id: i32 = crate::dispatch!(&state.pool, |p| {
+            sqlx::query_scalar::<_, i32>("SELECT id FROM gb_stream_proxy LIMIT 1").fetch_one(p)
+        })
+        .unwrap();
         let resp = proxy_start(
             State(state.clone()),
             Query(ProxyActionQuery {

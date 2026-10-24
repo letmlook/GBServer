@@ -225,28 +225,23 @@ impl RecordPlanScheduler {
                 media_server_id: Option<String>,
             }
 
-            #[cfg(feature = "postgres")]
-            let channels: Vec<ChannelRow> = sqlx::query_as(&format!(
-                // `c.id` 在 postgres 是 INT4（`serial`），Rust 侧是 i64 —— 必须显式
-                // 转成 bigint，否则整个 tick 都会因类型不匹配而失败（云录像计划不落盘）。
-                "SELECT {} AS id, c.device_id, c.gb_device_id, d.media_server_id \
-                 FROM gb_device_channel c LEFT JOIN gb_device d ON c.device_id = d.device_id \
-                 WHERE c.record_plan_id = $1",
-                crate::dyn_where::bigint_col("c.id"),
-            ))
-            .bind(plan.id)
-            .fetch_all(&self.pool)
-            .await?;
-
-            #[cfg(any(feature = "mysql", feature = "sqlite"))]
-            let channels: Vec<ChannelRow> = sqlx::query_as(
-                "SELECT c.id, c.device_id, c.gb_device_id, d.media_server_id \
+            // `c.id` 在 postgres 是 INT4（`serial`），Rust 侧是 i64 —— 必须显式
+            // 转成 bigint，否则整个 tick 都会因类型不匹配而失败（云录像计划不落盘）。
+            // **按 pool 自己的方言**取 cast（不能用进程级 `bigint_col`：直接构造
+            // `Pool::Postgres(..)` 的测试里进程级方言仍是 sqlite，会漏掉 cast）。
+            let sql = crate::db::dialect::dialect_sql_for(
+                &format!(
+                    "SELECT {} AS id, c.device_id, c.gb_device_id, d.media_server_id \
                  FROM gb_device_channel c LEFT JOIN gb_device d ON c.device_id = d.device_id \
                  WHERE c.record_plan_id = ?",
+                    crate::db::dialect::bigint_col_for("c.id", self.pool.dialect()),
+                ),
+                self.pool.dialect(),
             )
-            .bind(plan.id)
-            .fetch_all(&self.pool)
-            .await?;
+            .into_owned();
+            let channels: Vec<ChannelRow> = crate::dispatch!(&self.pool, |p| {
+                sqlx::query_as(&sql).bind(plan.id).fetch_all(p)
+            })?;
 
             for ch in channels {
                 let device_id = ch.device_id.unwrap_or_default();

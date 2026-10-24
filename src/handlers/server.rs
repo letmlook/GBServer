@@ -1805,105 +1805,109 @@ pub async fn media_server_save(
         media_server::add(&state.pool, &id, &ip, http_port, &now).await?;
     }
 
-    #[cfg(feature = "postgres")]
-    sqlx::query(
-        r#"UPDATE gb_media_server SET
-           hook_ip = COALESCE($1, hook_ip),
-           sdp_ip = COALESCE($2, sdp_ip),
-           stream_ip = COALESCE($3, stream_ip),
-           http_ssl_port = COALESCE($4, http_ssl_port),
-           secret = COALESCE($5, secret),
-           type = COALESCE($6, type),
-           auto_config = COALESCE($7, auto_config),
-           rtmp_port = COALESCE($8, rtmp_port),
-           rtmp_ssl_port = COALESCE($9, rtmp_ssl_port),
-           rtsp_port = COALESCE($10, rtsp_port),
-           rtsp_ssl_port = COALESCE($11, rtsp_ssl_port),
-           rtp_enable = COALESCE($12, rtp_enable),
-           rtp_port_range = COALESCE($13, rtp_port_range),
-           send_rtp_port_range = COALESCE($14, send_rtp_port_range),
-           rtp_proxy_port = COALESCE($15, rtp_proxy_port),
-           record_assist_port = COALESCE($16, record_assist_port),
-           default_server = COALESCE($17, default_server),
-           enabled = COALESCE($18, enabled),
-           rtc_extern_ip = COALESCE($19, rtc_extern_ip),
-           update_time = $20
-           WHERE id = $21"#,
-    )
-    .bind(body.hook_ip.as_deref())
-    .bind(body.sdp_ip.as_deref())
-    .bind(body.stream_ip.as_deref())
-    .bind(body.http_ssl_port)
-    .bind(body.secret.as_deref())
-    .bind(body.type_.as_deref())
-    .bind(body.auto_config)
-    .bind(body.rtmp_port)
-    .bind(body.rtmp_ssl_port)
-    .bind(body.rtsp_port)
-    .bind(body.rtsp_ssl_port)
-    .bind(body.rtp_enable)
-    .bind(body.rtp_port_range.as_deref())
-    .bind(body.send_rtp_port_range.as_deref())
-    .bind(body.rtp_proxy_port)
-    .bind(body.record_assist_port)
-    .bind(body.default_server)
-    .bind(body.enabled)
-    .bind(body.rtc_extern_ip.as_deref())
-    .bind(&now)
-    .bind(&id)
-    .execute(&state.pool)
-    .await?;
+    if crate::db::dialect::current().is_postgres() {
+        crate::dispatch_exec!(&state.pool, |p| {
+            sqlx::query(
+                r#"UPDATE gb_media_server SET
+               hook_ip = COALESCE($1, hook_ip),
+               sdp_ip = COALESCE($2, sdp_ip),
+               stream_ip = COALESCE($3, stream_ip),
+               http_ssl_port = COALESCE($4, http_ssl_port),
+               secret = COALESCE($5, secret),
+               type = COALESCE($6, type),
+               auto_config = COALESCE($7, auto_config),
+               rtmp_port = COALESCE($8, rtmp_port),
+               rtmp_ssl_port = COALESCE($9, rtmp_ssl_port),
+               rtsp_port = COALESCE($10, rtsp_port),
+               rtsp_ssl_port = COALESCE($11, rtsp_ssl_port),
+               rtp_enable = COALESCE($12, rtp_enable),
+               rtp_port_range = COALESCE($13, rtp_port_range),
+               send_rtp_port_range = COALESCE($14, send_rtp_port_range),
+               rtp_proxy_port = COALESCE($15, rtp_proxy_port),
+               record_assist_port = COALESCE($16, record_assist_port),
+               default_server = COALESCE($17, default_server),
+               enabled = COALESCE($18, enabled),
+               rtc_extern_ip = COALESCE($19, rtc_extern_ip),
+               update_time = $20
+               WHERE id = $21"#,
+            )
+            .bind(body.hook_ip.as_deref())
+            .bind(body.sdp_ip.as_deref())
+            .bind(body.stream_ip.as_deref())
+            .bind(body.http_ssl_port)
+            .bind(body.secret.as_deref())
+            .bind(body.type_.as_deref())
+            .bind(body.auto_config)
+            .bind(body.rtmp_port)
+            .bind(body.rtmp_ssl_port)
+            .bind(body.rtsp_port)
+            .bind(body.rtsp_ssl_port)
+            .bind(body.rtp_enable)
+            .bind(body.rtp_port_range.as_deref())
+            .bind(body.send_rtp_port_range.as_deref())
+            .bind(body.rtp_proxy_port)
+            .bind(body.record_assist_port)
+            .bind(body.default_server)
+            .bind(body.enabled)
+            .bind(body.rtc_extern_ip.as_deref())
+            .bind(&now)
+            .bind(&id)
+            .execute(p)
+        })?;
+    }
     // 2026-09-12：SQLite 与 MySQL 占位符语法一致，故共用同一分支。
     // 此前只 cfg(mysql)，导致默认 SQLite 部署下扩展字段（secret / 各类端口 /
     // rtp_port_range 等）被**静默丢弃**。
-    #[cfg(any(feature = "mysql", feature = "sqlite"))]
-    sqlx::query(
-        r#"UPDATE gb_media_server SET
-           hook_ip = COALESCE(?, hook_ip),
-           sdp_ip = COALESCE(?, sdp_ip),
-           stream_ip = COALESCE(?, stream_ip),
-           http_ssl_port = COALESCE(?, http_ssl_port),
-           secret = COALESCE(?, secret),
-           type = COALESCE(?, type),
-           auto_config = COALESCE(?, auto_config),
-           rtmp_port = COALESCE(?, rtmp_port),
-           rtmp_ssl_port = COALESCE(?, rtmp_ssl_port),
-           rtsp_port = COALESCE(?, rtsp_port),
-           rtsp_ssl_port = COALESCE(?, rtsp_ssl_port),
-           rtp_enable = COALESCE(?, rtp_enable),
-           rtp_port_range = COALESCE(?, rtp_port_range),
-           send_rtp_port_range = COALESCE(?, send_rtp_port_range),
-           rtp_proxy_port = COALESCE(?, rtp_proxy_port),
-           record_assist_port = COALESCE(?, record_assist_port),
-           default_server = COALESCE(?, default_server),
-           enabled = COALESCE(?, enabled),
-           rtc_extern_ip = COALESCE(?, rtc_extern_ip),
-           update_time = ?
-           WHERE id = ?"#,
-    )
-    .bind(body.hook_ip.as_deref())
-    .bind(body.sdp_ip.as_deref())
-    .bind(body.stream_ip.as_deref())
-    .bind(body.http_ssl_port)
-    .bind(body.secret.as_deref())
-    .bind(body.type_.as_deref())
-    .bind(body.auto_config)
-    .bind(body.rtmp_port)
-    .bind(body.rtmp_ssl_port)
-    .bind(body.rtsp_port)
-    .bind(body.rtsp_ssl_port)
-    .bind(body.rtp_enable)
-    .bind(body.rtp_port_range.as_deref())
-    .bind(body.send_rtp_port_range.as_deref())
-    .bind(body.rtp_proxy_port)
-    .bind(body.record_assist_port)
-    .bind(body.default_server)
-    .bind(body.enabled)
-    .bind(body.rtc_extern_ip.as_deref())
-    .bind(&now)
-    .bind(&id)
-    .execute(&state.pool)
-    .await?;
+    if crate::db::dialect::current().is_mysql() || crate::db::dialect::current().is_sqlite() {
+        crate::dispatch_exec!(&state.pool, |p| {
+            sqlx::query(&crate::dyn_where::dialect_sql(
+                r#"UPDATE gb_media_server SET
+               hook_ip = COALESCE(?, hook_ip),
+               sdp_ip = COALESCE(?, sdp_ip),
+               stream_ip = COALESCE(?, stream_ip),
+               http_ssl_port = COALESCE(?, http_ssl_port),
+               secret = COALESCE(?, secret),
+               type = COALESCE(?, type),
+               auto_config = COALESCE(?, auto_config),
+               rtmp_port = COALESCE(?, rtmp_port),
+               rtmp_ssl_port = COALESCE(?, rtmp_ssl_port),
+               rtsp_port = COALESCE(?, rtsp_port),
+               rtsp_ssl_port = COALESCE(?, rtsp_ssl_port),
+               rtp_enable = COALESCE(?, rtp_enable),
+               rtp_port_range = COALESCE(?, rtp_port_range),
+               send_rtp_port_range = COALESCE(?, send_rtp_port_range),
+               rtp_proxy_port = COALESCE(?, rtp_proxy_port),
+               record_assist_port = COALESCE(?, record_assist_port),
+               default_server = COALESCE(?, default_server),
+               enabled = COALESCE(?, enabled),
+               rtc_extern_ip = COALESCE(?, rtc_extern_ip),
+               update_time = ?
+               WHERE id = ?"#,
+            ))
+            .bind(body.hook_ip.as_deref())
+            .bind(body.sdp_ip.as_deref())
+            .bind(body.stream_ip.as_deref())
+            .bind(body.http_ssl_port)
+            .bind(body.secret.as_deref())
+            .bind(body.type_.as_deref())
+            .bind(body.auto_config)
+            .bind(body.rtmp_port)
+            .bind(body.rtmp_ssl_port)
+            .bind(body.rtsp_port)
+            .bind(body.rtsp_ssl_port)
+            .bind(body.rtp_enable)
+            .bind(body.rtp_port_range.as_deref())
+            .bind(body.send_rtp_port_range.as_deref())
+            .bind(body.rtp_proxy_port)
+            .bind(body.record_assist_port)
+            .bind(body.default_server)
+            .bind(body.enabled)
+            .bind(body.rtc_extern_ip.as_deref())
+            .bind(&now)
+            .bind(&id)
+            .execute(p)
+        })?;
+    }
 
     let auto_config = body.auto_config.unwrap_or(true);
     let mut zlm_hook_errors = Vec::new();
@@ -2419,11 +2423,12 @@ mod media_server_contract_tests {
         )
         .await
         .unwrap();
-        sqlx::query(
-            "UPDATE gb_media_server SET secret = 'sentinel-zlm-secret' WHERE id = 'ms-secret'",
-        )
-        .execute(&state.pool)
-        .await
+        crate::dispatch_exec!(&state.pool, |p| {
+            sqlx::query(
+                "UPDATE gb_media_server SET secret = 'sentinel-zlm-secret' WHERE id = 'ms-secret'",
+            )
+            .execute(p)
+        })
         .unwrap();
         let list = media_server_list(State(state)).await.unwrap();
         let serialized = serde_json::to_string(&list.0).unwrap();
@@ -2640,12 +2645,13 @@ mod system_info_contract_tests {
     #[tokio::test]
     async fn system_info_resource_counts_match_db() {
         let state = app_state().await;
-        sqlx::query(
-            "INSERT INTO gb_device (device_id, name, on_line, create_time, update_time) \
-             VALUES ('34020000001320000001', 'dev1', 1, '2026-01-01 00:00:00', '2026-01-01 00:00:00')",
-        )
-        .execute(&state.pool)
-        .await
+        crate::dispatch_exec!(&state.pool, |p| {
+            sqlx::query(
+                "INSERT INTO gb_device (device_id, name, on_line, create_time, update_time) \
+                 VALUES ('34020000001320000001', 'dev1', 1, '2026-01-01 00:00:00', '2026-01-01 00:00:00')",
+            )
+            .execute(p)
+        })
         .unwrap();
 
         let res = system_info(State(state.clone())).await;
@@ -2684,12 +2690,13 @@ mod log_export_contract_tests {
     #[tokio::test]
     async fn log_list_format_csv_returns_csv_attachment() {
         let state = app_state().await;
-        sqlx::query(
-            "INSERT INTO gb_log (time, level, logger, thread, message, source) \
-             VALUES ('2026-01-01 00:00:00.000', 'ERROR', 'gbserver::x', 't1', 'boom, \"quoted\"', 'src/x.rs:1')",
-        )
-        .execute(&state.pool)
-        .await
+        crate::dispatch_exec!(&state.pool, |p| {
+            sqlx::query(
+                "INSERT INTO gb_log (time, level, logger, thread, message, source) \
+                 VALUES ('2026-01-01 00:00:00.000', 'ERROR', 'gbserver::x', 't1', 'boom, \"quoted\"', 'src/x.rs:1')",
+            )
+            .execute(p)
+        })
         .unwrap();
 
         let res = crate::handlers::stub::log_list(

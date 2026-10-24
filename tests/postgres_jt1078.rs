@@ -78,6 +78,8 @@ async fn cleanup(pool: &sqlx::PgPool, phone: &str) {
 #[ignore = "requires TEST_POSTGRES_URL and an isolated PostgreSQL database"]
 async fn stale_terminal_is_marked_offline_on_postgres() {
     let pool = test_pool().await;
+    // `db::jt1078::*` 现在接受运行期多态的 `db::Pool`（原生 PgPool 仍用于直连 sqlx 查询）。
+    let db_pool = gbserver::db::Pool::Postgres(pool.clone());
     let phone = "13900000001";
     cleanup(&pool, phone).await;
 
@@ -88,7 +90,7 @@ async fn stale_terminal_is_marked_offline_on_postgres() {
     let id = insert_terminal(&pool, phone, &old).await;
 
     let deadline = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    let affected = gbserver::db::jt1078::mark_terminal_offline_if_stale(&pool, phone, &deadline)
+    let affected = gbserver::db::jt1078::mark_terminal_offline_if_stale(&db_pool, phone, &deadline)
         .await
         .expect("mark_terminal_offline_if_stale 必须在 postgres 上成功执行");
 
@@ -107,6 +109,8 @@ async fn stale_terminal_is_marked_offline_on_postgres() {
 #[ignore = "requires TEST_POSTGRES_URL and an isolated PostgreSQL database"]
 async fn fresh_terminal_is_not_marked_offline_on_postgres() {
     let pool = test_pool().await;
+    // `db::jt1078::*` 现在接受运行期多态的 `db::Pool`（原生 PgPool 仍用于直连 sqlx 查询）。
+    let db_pool = gbserver::db::Pool::Postgres(pool.clone());
     let phone = "13900000002";
     cleanup(&pool, phone).await;
 
@@ -119,7 +123,7 @@ async fn fresh_terminal_is_not_marked_offline_on_postgres() {
     let deadline = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let id = insert_terminal(&pool, phone, &deadline).await;
 
-    let affected = gbserver::db::jt1078::mark_terminal_offline_if_stale(&pool, phone, &deadline)
+    let affected = gbserver::db::jt1078::mark_terminal_offline_if_stale(&db_pool, phone, &deadline)
         .await
         .expect("mark_terminal_offline_if_stale 必须在 postgres 上成功执行");
 
@@ -138,6 +142,8 @@ async fn fresh_terminal_is_not_marked_offline_on_postgres() {
 #[ignore = "requires TEST_POSTGRES_URL and an isolated PostgreSQL database"]
 async fn duplicate_phone_rows_are_not_left_half_offline_on_postgres() {
     let pool = test_pool().await;
+    // `db::jt1078::*` 现在接受运行期多态的 `db::Pool`（原生 PgPool 仍用于直连 sqlx 查询）。
+    let db_pool = gbserver::db::Pool::Postgres(pool.clone());
     let phone = "13900000003";
     cleanup(&pool, phone).await;
 
@@ -150,7 +156,7 @@ async fn duplicate_phone_rows_are_not_left_half_offline_on_postgres() {
     let id_old = insert_terminal(&pool, phone, &old).await;
     let id_new = insert_terminal(&pool, phone, &deadline).await;
 
-    let affected = gbserver::db::jt1078::mark_terminal_offline_if_stale(&pool, phone, &deadline)
+    let affected = gbserver::db::jt1078::mark_terminal_offline_if_stale(&db_pool, phone, &deadline)
         .await
         .expect("mark_terminal_offline_if_stale 必须在 postgres 上成功执行");
 
@@ -166,6 +172,8 @@ async fn duplicate_phone_rows_are_not_left_half_offline_on_postgres() {
 #[ignore = "requires TEST_POSTGRES_URL and an isolated PostgreSQL database"]
 async fn duplicate_phone_rows_all_stale_are_all_marked_offline_on_postgres() {
     let pool = test_pool().await;
+    // `db::jt1078::*` 现在接受运行期多态的 `db::Pool`（原生 PgPool 仍用于直连 sqlx 查询）。
+    let db_pool = gbserver::db::Pool::Postgres(pool.clone());
     let phone = "13900000004";
     cleanup(&pool, phone).await;
 
@@ -176,7 +184,7 @@ async fn duplicate_phone_rows_all_stale_are_all_marked_offline_on_postgres() {
     let id_b = insert_terminal(&pool, phone, &old).await;
 
     let deadline = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    let affected = gbserver::db::jt1078::mark_terminal_offline_if_stale(&pool, phone, &deadline)
+    let affected = gbserver::db::jt1078::mark_terminal_offline_if_stale(&db_pool, phone, &deadline)
         .await
         .expect("mark_terminal_offline_if_stale 必须在 postgres 上成功执行");
 

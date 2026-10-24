@@ -376,7 +376,7 @@ mod tests {
     }
 
     /// 管理器层面的收尾：`finalize_partial` 必须真的改写 map 里的会话状态。
-    #[cfg(feature = "sqlite")]
+    #[cfg(test)]
     #[tokio::test]
     async fn manager_finalize_partial_rewrites_session() {
         let pool = crate::test_support::sqlite_pool_with_schema().await;
@@ -397,7 +397,7 @@ mod tests {
         assert!(!mgr.finalize_partial("nope", 8));
     }
 
-    #[cfg(feature = "sqlite")]
+    #[cfg(test)]
     #[tokio::test]
     async fn manager_ignores_catalog_packet_from_previous_sn() {
         let pool = crate::test_support::sqlite_pool_with_schema().await;

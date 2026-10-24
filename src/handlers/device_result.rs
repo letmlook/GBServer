@@ -267,7 +267,7 @@ pub(crate) async fn send_command_to_online_device(
     .map_err(|e| format!("命令发送失败: {e}"))
 }
 
-#[cfg(all(test, feature = "sqlite"))]
+#[cfg(test)]
 mod tests {
     use super::*;
 

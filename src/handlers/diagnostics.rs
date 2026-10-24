@@ -94,7 +94,7 @@ pub async fn redis_status(
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "sqlite")]
+    #[cfg(test)]
     #[tokio::test]
     async fn configured_redis_without_connection_is_unavailable_without_leaking_url() {
         let mut state = crate::test_support::app_state().await;

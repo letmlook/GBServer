@@ -64,14 +64,14 @@ pub async fn system_info(State(state): State<AppState>) -> Json<ApiResult<serde_
 )]
 pub async fn system_stats(State(state): State<AppState>) -> Json<ApiResult<serde_json::Value>> {
     // DB-side count (best-effort, never error)
-    let devices_total = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_device")
-        .fetch_one(&state.pool)
-        .await
-        .unwrap_or(0);
-    let channels_total = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_device_channel")
-        .fetch_one(&state.pool)
-        .await
-        .unwrap_or(0);
+    let devices_total = crate::dispatch!(&state.pool, |p| {
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_device").fetch_one(p)
+    })
+    .unwrap_or(0);
+    let channels_total = crate::dispatch!(&state.pool, |p| {
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM gb_device_channel").fetch_one(p)
+    })
+    .unwrap_or(0);
 
     // StateStore counts
     let online = state.state_repo.count_online_devices();

@@ -7,6 +7,9 @@
 async fn update_custom_fields_roundtrip() {
     let url = std::env::var("TEST_MYSQL_URL").expect("TEST_MYSQL_URL is required");
     let pool = sqlx::MySqlPool::connect(&url).await.expect("connect MySQL");
+    // `db::platform_channel::*` 现在接受运行期多态的 `db::Pool`
+    // （原生 MySqlPool 仍用于直连 sqlx 查询）。
+    let db_pool = gbserver::db::Pool::MySql(pool.clone());
     let id = sqlx::query(
         "INSERT INTO gb_platform_channel (platform_id, device_channel_id) VALUES (NULL, NULL)",
     )
@@ -16,7 +19,7 @@ async fn update_custom_fields_roundtrip() {
     .last_insert_id() as i64;
 
     let changed = gbserver::db::platform_channel::update(
-        &pool,
+        &db_pool,
         id,
         Some("V2 custom name"),
         Some("V2 custom address"),
@@ -34,19 +37,19 @@ async fn update_custom_fields_roundtrip() {
     assert_eq!(fields.1.as_deref(), Some("V2 custom address"));
 
     assert_eq!(
-        gbserver::db::platform_channel::update(&pool, id, Some("O'Brien"), None)
+        gbserver::db::platform_channel::update(&db_pool, id, Some("O'Brien"), None)
             .await
             .expect("update name only"),
         1,
     );
     assert_eq!(
-        gbserver::db::platform_channel::update(&pool, id, None, Some("north gate"))
+        gbserver::db::platform_channel::update(&db_pool, id, None, Some("north gate"))
             .await
             .expect("update address only"),
         1,
     );
     assert_eq!(
-        gbserver::db::platform_channel::update(&pool, id, None, None)
+        gbserver::db::platform_channel::update(&db_pool, id, None, None)
             .await
             .expect("empty update"),
         0,

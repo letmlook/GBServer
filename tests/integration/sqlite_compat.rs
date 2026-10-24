@@ -120,6 +120,9 @@ async fn sqlite_device_crud_roundtrip() {
         .await
         .unwrap();
 
+    // `db::*` 函数现在接受运行期多态的 `db::Pool`；原生 pool 仍用于直连 sqlx 查询。
+    let db_pool = db::Pool::Sqlite(pool.clone());
+
     let sql = include_str!("../../database/init-sqlite-2.7.4.sql");
     let cleaned: String = sql
         .lines()
@@ -143,7 +146,7 @@ async fn sqlite_device_crud_roundtrip() {
 
     // 用 db::device::upsert_device 验证 SQLite 分支可工作
     db::device::upsert_device(
-        &pool,
+        &db_pool,
         "34020000001110000001",
         Some("测试摄像头-001"),
         Some("海康"),
@@ -162,7 +165,7 @@ async fn sqlite_device_crud_roundtrip() {
 
     // 重新注册同一 device_id 应更新而非插入新行
     db::device::upsert_device(
-        &pool,
+        &db_pool,
         "34020000001110000001",
         Some("测试摄像头-001-更新"),
         None,
@@ -232,12 +235,15 @@ async fn sqlite_device_limit_blocks_new_registration() {
         let _ = sqlx::query(stmt).execute(&pool).await;
     }
 
+    // `db::*` 函数现在接受运行期多态的 `db::Pool`；原生 pool 仍用于直连 sqlx 查询。
+    let db_pool = db::Pool::Sqlite(pool.clone());
+
     // 上限 2 设备
     let limit = Some(2usize);
 
     // 1. 添加第一个设备 → 允许
     db::device::upsert_device(
-        &pool,
+        &db_pool,
         "device-1",
         Some("d1"),
         None,
@@ -253,18 +259,18 @@ async fn sqlite_device_limit_blocks_new_registration() {
     )
     .await
     .unwrap();
-    db::device::check_sqlite_device_limit(&pool, "device-1", limit)
+    db::device::check_sqlite_device_limit(&db_pool, "device-1", limit)
         .await
         .expect("first device should be allowed");
 
     // 2. 同一设备重注册（更新） → 允许
-    db::device::check_sqlite_device_limit(&pool, "device-1", limit)
+    db::device::check_sqlite_device_limit(&db_pool, "device-1", limit)
         .await
         .expect("existing device update should be allowed");
 
     // 3. 添加第二个设备 → 允许
     db::device::upsert_device(
-        &pool,
+        &db_pool,
         "device-2",
         Some("d2"),
         None,
@@ -280,12 +286,12 @@ async fn sqlite_device_limit_blocks_new_registration() {
     )
     .await
     .unwrap();
-    db::device::check_sqlite_device_limit(&pool, "device-2", limit)
+    db::device::check_sqlite_device_limit(&db_pool, "device-2", limit)
         .await
         .expect("second device should be allowed");
 
     // 4. 第三个新设备 → 拒绝（已达上限）
-    let err = db::device::check_sqlite_device_limit(&pool, "device-3", limit)
+    let err = db::device::check_sqlite_device_limit(&db_pool, "device-3", limit)
         .await
         .expect_err("third new device must be rejected");
     assert_eq!(err.current, 2);
@@ -373,6 +379,9 @@ async fn test_list_all_streams_unified_format() {
         .await
         .expect("sqlite in-memory pool");
 
+    // `db::*` 函数现在接受运行期多态的 `db::Pool`；原生 pool 仍用于直连 sqlx 查询。
+    let db_pool = db::Pool::Sqlite(pool.clone());
+
     // Init schema (includes gb_stream_push and gb_stream_proxy with stream_status column)
     let sql = include_str!("../../database/init-sqlite-2.7.4.sql");
     let cleaned: String = sql
@@ -389,21 +398,21 @@ async fn test_list_all_streams_unified_format() {
     }
 
     // Ensure stream_status column exists (defensive — init SQL has it but be safe)
-    stream_push::ensure_stream_status_column(&pool)
+    stream_push::ensure_stream_status_column(&db_pool)
         .await
         .expect("ensure push column");
-    stream_proxy::ensure_stream_status_column(&pool)
+    stream_proxy::ensure_stream_status_column(&db_pool)
         .await
         .expect("ensure proxy column");
 
     let now = "2026-06-20 10:00:00";
 
     // Insert one gb_stream_push row (pushing=true, stream_status='pushing')
-    stream_push::add(&pool, "live", "push-test", "ms-1", now)
+    stream_push::add(&db_pool, "live", "push-test", "ms-1", now)
         .await
         .expect("stream_push add");
     // Fetch it back and update stream_status to pushing
-    let pushes = stream_push::list_paged(&pool, 1, 10, None, None, None)
+    let pushes = stream_push::list_paged(&db_pool, 1, 10, None, None, None)
         .await
         .expect("list_paged push");
     assert!(!pushes.is_empty(), "should have at least one push row");
@@ -426,11 +435,11 @@ async fn test_list_all_streams_unified_format() {
         enable: Some(true),
         ..Default::default()
     };
-    stream_proxy::add(&pool, &w, now)
+    stream_proxy::add(&db_pool, &w, now)
         .await
         .expect("stream_proxy add");
     // Update stream_status to 'active'
-    let proxies = stream_proxy::list_paged(&pool, 1, 10, None, None, None)
+    let proxies = stream_proxy::list_paged(&db_pool, 1, 10, None, None, None)
         .await
         .expect("list_paged proxy");
     assert!(!proxies.is_empty(), "should have at least one proxy row");
@@ -442,10 +451,10 @@ async fn test_list_all_streams_unified_format() {
         .expect("update proxy stream_status");
 
     // Re-fetch and verify unified format fields
-    let pushes = stream_push::list_paged(&pool, 1, 10, None, None, None)
+    let pushes = stream_push::list_paged(&db_pool, 1, 10, None, None, None)
         .await
         .expect("list_paged push re-fetch");
-    let proxies = stream_proxy::list_paged(&pool, 1, 10, None, None, None)
+    let proxies = stream_proxy::list_paged(&db_pool, 1, 10, None, None, None)
         .await
         .expect("list_paged proxy re-fetch");
 
@@ -505,6 +514,9 @@ async fn sqlite_cloud_record_insert_and_query_roundtrip() {
         .await
         .expect("sqlite in-memory pool");
 
+    // `db::*` 函数现在接受运行期多态的 `db::Pool`；原生 pool 仍用于直连 sqlx 查询。
+    let db_pool = db::Pool::Sqlite(pool.clone());
+
     // 复用生产 init SQL
     let sql = include_str!("../../database/init-sqlite-2.7.4.sql");
     let cleaned: String = sql
@@ -546,7 +558,7 @@ async fn sqlite_cloud_record_insert_and_query_roundtrip() {
 
     // 落库
     let inserted = cloud_record::insert_records(
-        &pool,
+        &db_pool,
         "dev-1",
         "ch1",
         "2026-06-10T00:00:00",
@@ -558,16 +570,17 @@ async fn sqlite_cloud_record_insert_and_query_roundtrip() {
     assert_eq!(inserted, 2, "应该插入 2 条 record");
 
     // 查询（page=1&count=10）
-    let queried = cloud_record::query_by_device_channel(&pool, "dev-1", "ch1", None, None, 1, 10)
-        .await
-        .expect("query_by_device_channel should succeed on sqlite");
+    let queried =
+        cloud_record::query_by_device_channel(&db_pool, "dev-1", "ch1", None, None, 1, 10)
+            .await
+            .expect("query_by_device_channel should succeed on sqlite");
     assert_eq!(queried.len(), 2);
     let names: Vec<String> = queried.iter().filter_map(|r| r.file_name.clone()).collect();
     assert!(names.contains(&"seg-1.mp4".to_string()));
     assert!(names.contains(&"seg-2.mp4".to_string()));
 
     // 分页：page=1&count=1
-    let paged = cloud_record::query_by_device_channel(&pool, "dev-1", "ch1", None, None, 1, 1)
+    let paged = cloud_record::query_by_device_channel(&db_pool, "dev-1", "ch1", None, None, 1, 1)
         .await
         .expect("paged query should succeed");
     assert_eq!(paged.len(), 1, "page=1&count=1 应只返回 1 条");

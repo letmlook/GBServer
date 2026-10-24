@@ -1982,7 +1982,6 @@ impl SipServer {
         // `sqlite_max_devices` 只在 SQLite 模式下有意义（配置项的注释也写着
         // "PG/MySQL 后端忽略此字段"），其它方言构建下它是未使用参数 ——
         // 显式吞掉，避免构建告警。
-        #[cfg(not(feature = "sqlite"))]
         let _ = sqlite_max_devices;
         let from = req.header("from").cloned().unwrap_or_default();
         let to = req.header("to").cloned().unwrap_or_default();
@@ -2078,11 +2077,12 @@ impl SipServer {
             tracing::info!("Device unregistered: {}", device_id);
         } else {
             // SQLite 模式下检查设备数量上限
-            #[cfg(feature = "sqlite")]
-            if let Err(e) =
-                db_device::check_sqlite_device_limit(pool, &device_id, sqlite_max_devices).await
-            {
-                tracing::warn!("REGISTER rejected: {}", e);
+            if crate::db::dialect::current().is_sqlite() {
+                if let Err(e) =
+                    db_device::check_sqlite_device_limit(pool, &device_id, sqlite_max_devices).await
+                {
+                    tracing::warn!("REGISTER rejected: {}", e);
+                }
                 let response = Parser::generate_response(
                     503,
                     "Service Unavailable",
@@ -9259,10 +9259,9 @@ mod playback_control_tests {
             for (prefix, _name) in [(0u8, "play"), (1, "playback"), (2, "download"), (4, "talk")] {
                 let ssrc = build_ssrc(prefix, device);
                 assert_eq!(ssrc.len(), 10, "{device} prefix={prefix} -> {ssrc}");
-                let n: u32 = ssrc
-                    .parse()
+                // 必须能解析成 u32（SSRC 就是 10 位十进制数）—— 解析失败直接 panic。
+                ssrc.parse::<u32>()
                     .unwrap_or_else(|_| panic!("{device} prefix={prefix} -> {ssrc} 不是合法 u32"));
-                assert!(n <= u32::MAX);
             }
         }
     }
@@ -9604,26 +9603,27 @@ mod upstream_message_tests {
     async fn phase5_register_cascade_invite_creates_session() {
         // 用 lazy pool（与 src/sip/gb28181/cascade_service.rs::dummy_pool 模式一致）
         let pool = {
-            #[cfg(feature = "postgres")]
-            {
-                sqlx::postgres::PgPoolOptions::new()
-                    .max_connections(1)
-                    .connect_lazy("postgres://x:x@127.0.0.1/x")
-                    .unwrap()
-            }
-            #[cfg(feature = "mysql")]
-            {
-                sqlx::mysql::MySqlPoolOptions::new()
-                    .max_connections(1)
-                    .connect_lazy("mysql://x:x@127.0.0.1/x")
-                    .unwrap()
-            }
-            #[cfg(feature = "sqlite")]
-            {
-                sqlx::sqlite::SqlitePoolOptions::new()
-                    .max_connections(1)
-                    .connect_lazy("sqlite::memory:")
-                    .unwrap()
+            if crate::db::dialect::current().is_mysql() {
+                crate::db::Pool::MySql(
+                    sqlx::mysql::MySqlPoolOptions::new()
+                        .max_connections(1)
+                        .connect_lazy("mysql://x:x@127.0.0.1/x")
+                        .unwrap(),
+                )
+            } else if crate::db::dialect::current().is_postgres() {
+                crate::db::Pool::Postgres(
+                    sqlx::postgres::PgPoolOptions::new()
+                        .max_connections(1)
+                        .connect_lazy("postgres://x:x@127.0.0.1/x")
+                        .unwrap(),
+                )
+            } else {
+                crate::db::Pool::Sqlite(
+                    sqlx::sqlite::SqlitePoolOptions::new()
+                        .max_connections(1)
+                        .connect_lazy("sqlite::memory:")
+                        .unwrap(),
+                )
             }
         };
 
@@ -9661,26 +9661,27 @@ mod upstream_message_tests {
     #[tokio::test]
     async fn phase5_register_cascade_invite_bad_sdp_no_session() {
         let pool = {
-            #[cfg(feature = "postgres")]
-            {
-                sqlx::postgres::PgPoolOptions::new()
-                    .max_connections(1)
-                    .connect_lazy("postgres://x:x@127.0.0.1/x")
-                    .unwrap()
-            }
-            #[cfg(feature = "mysql")]
-            {
-                sqlx::mysql::MySqlPoolOptions::new()
-                    .max_connections(1)
-                    .connect_lazy("mysql://x:x@127.0.0.1/x")
-                    .unwrap()
-            }
-            #[cfg(feature = "sqlite")]
-            {
-                sqlx::sqlite::SqlitePoolOptions::new()
-                    .max_connections(1)
-                    .connect_lazy("sqlite::memory:")
-                    .unwrap()
+            if crate::db::dialect::current().is_mysql() {
+                crate::db::Pool::MySql(
+                    sqlx::mysql::MySqlPoolOptions::new()
+                        .max_connections(1)
+                        .connect_lazy("mysql://x:x@127.0.0.1/x")
+                        .unwrap(),
+                )
+            } else if crate::db::dialect::current().is_postgres() {
+                crate::db::Pool::Postgres(
+                    sqlx::postgres::PgPoolOptions::new()
+                        .max_connections(1)
+                        .connect_lazy("postgres://x:x@127.0.0.1/x")
+                        .unwrap(),
+                )
+            } else {
+                crate::db::Pool::Sqlite(
+                    sqlx::sqlite::SqlitePoolOptions::new()
+                        .max_connections(1)
+                        .connect_lazy("sqlite::memory:")
+                        .unwrap(),
+                )
             }
         };
 
@@ -9702,26 +9703,27 @@ mod upstream_message_tests {
     #[tokio::test]
     async fn phase5_forward_mobile_position_no_platforms() {
         let pool = {
-            #[cfg(feature = "postgres")]
-            {
-                sqlx::postgres::PgPoolOptions::new()
-                    .max_connections(1)
-                    .connect_lazy("postgres://x:x@127.0.0.1/x")
-                    .unwrap()
-            }
-            #[cfg(feature = "mysql")]
-            {
-                sqlx::mysql::MySqlPoolOptions::new()
-                    .max_connections(1)
-                    .connect_lazy("mysql://x:x@127.0.0.1/x")
-                    .unwrap()
-            }
-            #[cfg(feature = "sqlite")]
-            {
-                sqlx::sqlite::SqlitePoolOptions::new()
-                    .max_connections(1)
-                    .connect_lazy("sqlite::memory:")
-                    .unwrap()
+            if crate::db::dialect::current().is_mysql() {
+                crate::db::Pool::MySql(
+                    sqlx::mysql::MySqlPoolOptions::new()
+                        .max_connections(1)
+                        .connect_lazy("mysql://x:x@127.0.0.1/x")
+                        .unwrap(),
+                )
+            } else if crate::db::dialect::current().is_postgres() {
+                crate::db::Pool::Postgres(
+                    sqlx::postgres::PgPoolOptions::new()
+                        .max_connections(1)
+                        .connect_lazy("postgres://x:x@127.0.0.1/x")
+                        .unwrap(),
+                )
+            } else {
+                crate::db::Pool::Sqlite(
+                    sqlx::sqlite::SqlitePoolOptions::new()
+                        .max_connections(1)
+                        .connect_lazy("sqlite::memory:")
+                        .unwrap(),
+                )
             }
         };
         let server = SipServer::new(SipConfig::default(), pool, None);
@@ -9744,26 +9746,27 @@ mod upstream_message_tests {
     #[tokio::test]
     async fn phase5_forward_mobile_position_optional_fields() {
         let pool = {
-            #[cfg(feature = "postgres")]
-            {
-                sqlx::postgres::PgPoolOptions::new()
-                    .max_connections(1)
-                    .connect_lazy("postgres://x:x@127.0.0.1/x")
-                    .unwrap()
-            }
-            #[cfg(feature = "mysql")]
-            {
-                sqlx::mysql::MySqlPoolOptions::new()
-                    .max_connections(1)
-                    .connect_lazy("mysql://x:x@127.0.0.1/x")
-                    .unwrap()
-            }
-            #[cfg(feature = "sqlite")]
-            {
-                sqlx::sqlite::SqlitePoolOptions::new()
-                    .max_connections(1)
-                    .connect_lazy("sqlite::memory:")
-                    .unwrap()
+            if crate::db::dialect::current().is_mysql() {
+                crate::db::Pool::MySql(
+                    sqlx::mysql::MySqlPoolOptions::new()
+                        .max_connections(1)
+                        .connect_lazy("mysql://x:x@127.0.0.1/x")
+                        .unwrap(),
+                )
+            } else if crate::db::dialect::current().is_postgres() {
+                crate::db::Pool::Postgres(
+                    sqlx::postgres::PgPoolOptions::new()
+                        .max_connections(1)
+                        .connect_lazy("postgres://x:x@127.0.0.1/x")
+                        .unwrap(),
+                )
+            } else {
+                crate::db::Pool::Sqlite(
+                    sqlx::sqlite::SqlitePoolOptions::new()
+                        .max_connections(1)
+                        .connect_lazy("sqlite::memory:")
+                        .unwrap(),
+                )
             }
         };
         let server = SipServer::new(SipConfig::default(), pool, None);
@@ -9788,26 +9791,27 @@ mod upstream_message_tests {
     #[tokio::test]
     async fn phase5_forward_alarm_no_platforms() {
         let pool = {
-            #[cfg(feature = "postgres")]
-            {
-                sqlx::postgres::PgPoolOptions::new()
-                    .max_connections(1)
-                    .connect_lazy("postgres://x:x@127.0.0.1/x")
-                    .unwrap()
-            }
-            #[cfg(feature = "mysql")]
-            {
-                sqlx::mysql::MySqlPoolOptions::new()
-                    .max_connections(1)
-                    .connect_lazy("mysql://x:x@127.0.0.1/x")
-                    .unwrap()
-            }
-            #[cfg(feature = "sqlite")]
-            {
-                sqlx::sqlite::SqlitePoolOptions::new()
-                    .max_connections(1)
-                    .connect_lazy("sqlite::memory:")
-                    .unwrap()
+            if crate::db::dialect::current().is_mysql() {
+                crate::db::Pool::MySql(
+                    sqlx::mysql::MySqlPoolOptions::new()
+                        .max_connections(1)
+                        .connect_lazy("mysql://x:x@127.0.0.1/x")
+                        .unwrap(),
+                )
+            } else if crate::db::dialect::current().is_postgres() {
+                crate::db::Pool::Postgres(
+                    sqlx::postgres::PgPoolOptions::new()
+                        .max_connections(1)
+                        .connect_lazy("postgres://x:x@127.0.0.1/x")
+                        .unwrap(),
+                )
+            } else {
+                crate::db::Pool::Sqlite(
+                    sqlx::sqlite::SqlitePoolOptions::new()
+                        .max_connections(1)
+                        .connect_lazy("sqlite::memory:")
+                        .unwrap(),
+                )
             }
         };
         let server = SipServer::new(SipConfig::default(), pool, None);
@@ -9829,26 +9833,27 @@ mod upstream_message_tests {
     #[tokio::test]
     async fn phase5_forward_alarm_no_description() {
         let pool = {
-            #[cfg(feature = "postgres")]
-            {
-                sqlx::postgres::PgPoolOptions::new()
-                    .max_connections(1)
-                    .connect_lazy("postgres://x:x@127.0.0.1/x")
-                    .unwrap()
-            }
-            #[cfg(feature = "mysql")]
-            {
-                sqlx::mysql::MySqlPoolOptions::new()
-                    .max_connections(1)
-                    .connect_lazy("mysql://x:x@127.0.0.1/x")
-                    .unwrap()
-            }
-            #[cfg(feature = "sqlite")]
-            {
-                sqlx::sqlite::SqlitePoolOptions::new()
-                    .max_connections(1)
-                    .connect_lazy("sqlite::memory:")
-                    .unwrap()
+            if crate::db::dialect::current().is_mysql() {
+                crate::db::Pool::MySql(
+                    sqlx::mysql::MySqlPoolOptions::new()
+                        .max_connections(1)
+                        .connect_lazy("mysql://x:x@127.0.0.1/x")
+                        .unwrap(),
+                )
+            } else if crate::db::dialect::current().is_postgres() {
+                crate::db::Pool::Postgres(
+                    sqlx::postgres::PgPoolOptions::new()
+                        .max_connections(1)
+                        .connect_lazy("postgres://x:x@127.0.0.1/x")
+                        .unwrap(),
+                )
+            } else {
+                crate::db::Pool::Sqlite(
+                    sqlx::sqlite::SqlitePoolOptions::new()
+                        .max_connections(1)
+                        .connect_lazy("sqlite::memory:")
+                        .unwrap(),
+                )
             }
         };
         let server = SipServer::new(SipConfig::default(), pool, None);

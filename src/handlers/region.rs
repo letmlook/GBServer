@@ -198,7 +198,7 @@ pub struct PageList {
     pub count: Option<u32>,
 }
 
-#[cfg(all(test, feature = "sqlite"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::test_support::sqlite_pool_with_schema;
@@ -209,17 +209,18 @@ mod tests {
         gb_id: &str,
         civil: &str,
     ) {
-        sqlx::query(
-            "INSERT INTO gb_device_channel \
+        crate::dispatch_exec!(pool, |p| {
+sqlx::query(
+            &crate::dyn_where::dialect_sql("INSERT INTO gb_device_channel \
              (device_id, name, gb_device_id, civil_code, status, data_type, data_device_id, create_time, update_time) \
-             VALUES (?, ?, ?, ?, 1, 0, 0, '2026-01-01 00:00:00', '2026-01-01 00:00:00')",
+             VALUES (?, ?, ?, ?, 1, 0, 0, '2026-01-01 00:00:00', '2026-01-01 00:00:00')"),
         )
         .bind(device_id)
         .bind(format!("ch-{}", gb_id))
         .bind(gb_id)
         .bind(civil)
-        .execute(pool)
-        .await
+        .execute(p)
+   })
         .expect("insert channel");
     }
 
@@ -231,11 +232,11 @@ mod tests {
             .await
             .unwrap();
         assert!(parent > 0);
-        let parent_id: i32 =
-            sqlx::query_scalar("SELECT id FROM gb_common_region WHERE device_id = 'ROOT'")
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+        let parent_id: i32 = crate::dispatch!(&pool, |p| {
+            sqlx::query_scalar::<_, i32>("SELECT id FROM gb_common_region WHERE device_id = 'ROOT'")
+                .fetch_one(p)
+        })
+        .unwrap();
         db::region::add(
             &pool,
             "340200",
@@ -246,11 +247,13 @@ mod tests {
         )
         .await
         .unwrap();
-        let child_id: i32 =
-            sqlx::query_scalar("SELECT id FROM gb_common_region WHERE device_id = '340200'")
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+        let child_id: i32 = crate::dispatch!(&pool, |p| {
+            sqlx::query_scalar::<_, i32>(
+                "SELECT id FROM gb_common_region WHERE device_id = '340200'",
+            )
+            .fetch_one(p)
+        })
+        .unwrap();
 
         let detail = load_region_detail(&pool, child_id).await.unwrap().unwrap();
         // 关键：name 必须来自数据库，而不是 `region-{id}` 这类编造值

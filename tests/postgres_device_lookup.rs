@@ -8,6 +8,9 @@ async fn registered_device_can_be_read_with_channel_count() {
     let pool = sqlx::PgPool::connect(&url)
         .await
         .expect("connect PostgreSQL");
+    // `db::device::*` 现在接受运行期多态的 `db::Pool`
+    // （原生 PgPool 仍用于直连 sqlx 查询）。
+    let db_pool = gbserver::db::Pool::Postgres(pool.clone());
     let device_id = "34020000001320009999";
     sqlx::query("DELETE FROM gb_device WHERE device_id = $1")
         .bind(device_id)
@@ -20,7 +23,7 @@ async fn registered_device_can_be_read_with_channel_count() {
         .await
         .expect("insert fixture");
 
-    let result = gbserver::db::device::get_device_by_device_id(&pool, device_id).await;
+    let result = gbserver::db::device::get_device_by_device_id(&db_pool, device_id).await;
     sqlx::query("DELETE FROM gb_device WHERE device_id = $1")
         .bind(device_id)
         .execute(&pool)
@@ -40,6 +43,9 @@ async fn catalog_channels_satisfy_required_source_columns() {
     let pool = sqlx::PgPool::connect(&url)
         .await
         .expect("connect PostgreSQL");
+    // `db::device::*` 现在接受运行期多态的 `db::Pool`
+    // （原生 PgPool 仍用于直连 sqlx 查询）。
+    let db_pool = gbserver::db::Pool::Postgres(pool.clone());
     let device_id = "34020000001320009998";
     sqlx::query("DELETE FROM gb_device_channel WHERE device_id = $1")
         .bind(device_id)
@@ -60,7 +66,7 @@ async fn catalog_channels_satisfy_required_source_columns() {
     .expect("seed device");
 
     let single = gbserver::db::device::upsert_channel_from_catalog(
-        &pool,
+        &db_pool,
         device_id,
         "34020000001310009998",
         "Camera",
@@ -80,7 +86,7 @@ async fn catalog_channels_satisfy_required_source_columns() {
     .await;
     let batch = if single.is_ok() {
         gbserver::db::device::batch_upsert_channels(
-            &pool,
+            &db_pool,
             device_id,
             &[gbserver::db::device::ChannelInsertData {
                 name: "Camera 2".into(),
@@ -97,7 +103,7 @@ async fn catalog_channels_satisfy_required_source_columns() {
         Ok(0)
     };
     let insert = gbserver::db::device::batch_insert_channels(
-        &pool,
+        &db_pool,
         device_id,
         &[gbserver::db::device::ChannelInsertData {
             name: "Camera 3".into(),

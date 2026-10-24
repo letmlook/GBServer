@@ -127,7 +127,7 @@ pub async fn alarm_list(
     );
     const COUNT_BASE: &str = "SELECT COUNT(*) FROM gb_device_alarm";
 
-    let limit_ph = if cfg!(feature = "postgres") {
+    let limit_ph = if crate::db::dialect::current().is_postgres() {
         format!(
             " LIMIT ${} OFFSET ${}",
             w.binds.len() + 1,
@@ -137,36 +137,35 @@ pub async fn alarm_list(
         " LIMIT ? OFFSET ?".to_string()
     };
     let sql_rows = format!("{}{} ORDER BY create_time DESC{limit_ph}", w.sql(&cols), "");
-    let mut query = sqlx::query_as::<_, AlarmRow>(&sql_rows);
-    for b in &w.binds {
-        query = match b {
-            BindValue::Text(v) => query.bind(v.as_str()),
-            BindValue::Int(v) => query.bind(*v),
-            BindValue::Big(v) => query.bind(*v),
-            BindValue::Bool(v) => query.bind(*v),
-        };
-    }
-    let rows: Vec<AlarmRow> = query
-        .bind(count as i64)
-        .bind(offset)
-        .fetch_all(&state.pool)
-        .await
-        .map_err(|e| AppError::business(ErrorCode::Error500, format!("数据库查询失败: {e}")))?;
+    // 查询构造必须在 dispatch **内部**：`sqlx::query_as` 的类型随执行器变化。
+    let rows: Vec<AlarmRow> = crate::dispatch!(&state.pool, |p| {
+        let mut query = sqlx::query_as::<_, AlarmRow>(&sql_rows);
+        for b in &w.binds {
+            query = match b {
+                BindValue::Text(v) => query.bind(v.as_str()),
+                BindValue::Int(v) => query.bind(*v),
+                BindValue::Big(v) => query.bind(*v),
+                BindValue::Bool(v) => query.bind(*v),
+            };
+        }
+        query.bind(count as i64).bind(offset).fetch_all(p)
+    })
+    .map_err(|e| AppError::business(ErrorCode::Error500, format!("数据库查询失败: {e}")))?;
 
     let count_sql = w.sql(COUNT_BASE);
-    let mut query = sqlx::query_scalar::<_, i64>(&count_sql);
-    for b in &w.binds {
-        query = match b {
-            BindValue::Text(v) => query.bind(v.as_str()),
-            BindValue::Int(v) => query.bind(*v),
-            BindValue::Big(v) => query.bind(*v),
-            BindValue::Bool(v) => query.bind(*v),
-        };
-    }
-    let total: i64 = query
-        .fetch_one(&state.pool)
-        .await
-        .map_err(|e| AppError::business(ErrorCode::Error500, format!("数据库查询失败: {e}")))?;
+    let total: i64 = crate::dispatch!(&state.pool, |p| {
+        let mut query = sqlx::query_scalar::<_, i64>(&count_sql);
+        for b in &w.binds {
+            query = match b {
+                BindValue::Text(v) => query.bind(v.as_str()),
+                BindValue::Int(v) => query.bind(*v),
+                BindValue::Big(v) => query.bind(*v),
+                BindValue::Bool(v) => query.bind(*v),
+            };
+        }
+        query.fetch_one(p)
+    })
+    .map_err(|e| AppError::business(ErrorCode::Error500, format!("数据库查询失败: {e}")))?;
 
     let list: Vec<serde_json::Value> = rows.iter().map(|r| r.to_json()).collect();
     Ok(Json(ApiResult::success(serde_json::json!({
@@ -268,30 +267,46 @@ pub async fn alarm_detail(
     State(state): State<AppState>,
     axum::extract::Path(id): axum::extract::Path<i64>,
 ) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
-    #[cfg(feature = "postgres")]
-    let row: Option<AlarmRow> = sqlx::query_as(&format!(
-        "SELECT id, device_id, channel_id, alarm_priority, \
-        alarm_method, alarm_type, alarm_time, alarm_description, longitude, latitude, \
-        create_time, {} AS handled, handle_user, handle_time, handle_result \
-        FROM gb_device_alarm WHERE id = $1",
-        crate::dyn_where::bigint_col("handled"),
-    ))
-    .bind(id)
-    .fetch_optional(&state.pool)
-    .await
-    .map_err(|e| AppError::business(ErrorCode::Error500, format!("数据库查询失败: {e}")))?;
-
-    #[cfg(any(feature = "mysql", feature = "sqlite"))]
-    let row: Option<AlarmRow> = sqlx::query_as(
-        "SELECT id, device_id, channel_id, alarm_priority, \
-        alarm_method, alarm_type, alarm_time, alarm_description, longitude, latitude, \
-        create_time, handled, handle_user, handle_time, handle_result \
-        FROM gb_device_alarm WHERE id = ?",
-    )
-    .bind(id)
-    .fetch_optional(&state.pool)
-    .await
-    .map_err(|e| AppError::business(ErrorCode::Error500, format!("数据库查询失败: {e}")))?;
+    let row: Option<AlarmRow> = crate::dispatch_dialect!(
+        state.pool,
+        |p| {
+            sqlx::query_as(&format!(
+                "SELECT id, device_id, channel_id, alarm_priority, \
+                    alarm_method, alarm_type, alarm_time, alarm_description, longitude, latitude, \
+                    create_time, {} AS handled, handle_user, handle_time, handle_result \
+                    FROM gb_device_alarm WHERE id = $1",
+                crate::dyn_where::bigint_col("handled"),
+            ))
+            .bind(id)
+            .fetch_optional(p)
+            .await
+            .map_err(|e| AppError::business(ErrorCode::Error500, format!("数据库查询失败: {e}")))?
+        },
+        |p| {
+            sqlx::query_as(&crate::dyn_where::dialect_sql(
+                "SELECT id, device_id, channel_id, alarm_priority, \
+                    alarm_method, alarm_type, alarm_time, alarm_description, longitude, latitude, \
+                    create_time, handled, handle_user, handle_time, handle_result \
+                    FROM gb_device_alarm WHERE id = ?",
+            ))
+            .bind(id)
+            .fetch_optional(p)
+            .await
+            .map_err(|e| AppError::business(ErrorCode::Error500, format!("数据库查询失败: {e}")))?
+        },
+        |p| {
+            sqlx::query_as(&crate::dyn_where::dialect_sql(
+                "SELECT id, device_id, channel_id, alarm_priority, \
+                    alarm_method, alarm_type, alarm_time, alarm_description, longitude, latitude, \
+                    create_time, handled, handle_user, handle_time, handle_result \
+                    FROM gb_device_alarm WHERE id = ?",
+            ))
+            .bind(id)
+            .fetch_optional(p)
+            .await
+            .map_err(|e| AppError::business(ErrorCode::Error500, format!("数据库查询失败: {e}")))?
+        },
+    );
 
     match row {
         Some(r) => Ok(Json(ApiResult::success(r.to_json()))),
@@ -385,23 +400,43 @@ pub async fn alarm_delete(
     State(state): State<AppState>,
     axum::extract::Path(id): axum::extract::Path<i64>,
 ) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
-    #[cfg(feature = "postgres")]
-    let r = sqlx::query("DELETE FROM gb_device_alarm WHERE id = $1")
-        .bind(id)
-        .execute(&state.pool)
-        .await
-        .map_err(|e| AppError::business(ErrorCode::Error500, format!("数据库删除失败: {}", e)))?;
-
-    #[cfg(any(feature = "mysql", feature = "sqlite"))]
-    let r = sqlx::query("DELETE FROM gb_device_alarm WHERE id = ?")
-        .bind(id)
-        .execute(&state.pool)
-        .await
-        .map_err(|e| AppError::business(ErrorCode::Error500, format!("数据库删除失败: {}", e)))?;
+    let r = crate::dispatch_dialect!(
+        state.pool,
+        |p| {
+            sqlx::query("DELETE FROM gb_device_alarm WHERE id = $1")
+                .bind(id)
+                .execute(p)
+                .await
+                .map(|r| r.rows_affected())
+                .map_err(|e| {
+                    AppError::business(ErrorCode::Error500, format!("数据库删除失败: {}", e))
+                })
+        },
+        |p| {
+            sqlx::query(&crate::dyn_where::dialect_sql(
+                "DELETE FROM gb_device_alarm WHERE id = ?",
+            ))
+            .bind(id)
+            .execute(p)
+            .await
+            .map(|r| r.rows_affected())
+            .map_err(|e| AppError::business(ErrorCode::Error500, format!("数据库删除失败: {}", e)))
+        },
+        |p| {
+            sqlx::query(&crate::dyn_where::dialect_sql(
+                "DELETE FROM gb_device_alarm WHERE id = ?",
+            ))
+            .bind(id)
+            .execute(p)
+            .await
+            .map(|r| r.rows_affected())
+            .map_err(|e| AppError::business(ErrorCode::Error500, format!("数据库删除失败: {}", e)))
+        },
+    )?;
 
     // 返回被删除的条数：前端/自动化可以据此确认"只删了这一条"，
     // 而不是靠刷新后的行数（列表可能同时在增长）。
-    let deleted = r.rows_affected();
+    let deleted = r;
     if deleted == 0 {
         return Ok(Json(ApiResult::error("告警不存在")));
     }
@@ -476,23 +511,44 @@ async fn delete_alarm_ids(
     let mut deleted = 0u64;
     for id in ids {
         let id = *id;
-        #[cfg(feature = "postgres")]
-        let r = sqlx::query("DELETE FROM gb_device_alarm WHERE id = $1")
-            .bind(id)
-            .execute(pool)
-            .await
-            .map_err(|e| {
-                AppError::business(ErrorCode::Error500, format!("数据库删除失败: {}", e))
-            })?;
-        #[cfg(any(feature = "mysql", feature = "sqlite"))]
-        let r = sqlx::query("DELETE FROM gb_device_alarm WHERE id = ?")
-            .bind(id)
-            .execute(pool)
-            .await
-            .map_err(|e| {
-                AppError::business(ErrorCode::Error500, format!("数据库删除失败: {}", e))
-            })?;
-        deleted += r.rows_affected();
+        let r = crate::dispatch_dialect!(
+            pool,
+            |p| {
+                sqlx::query("DELETE FROM gb_device_alarm WHERE id = $1")
+                    .bind(id)
+                    .execute(p)
+                    .await
+                    .map(|r| r.rows_affected())
+                    .map_err(|e| {
+                        AppError::business(ErrorCode::Error500, format!("数据库删除失败: {}", e))
+                    })
+            },
+            |p| {
+                sqlx::query(&crate::dyn_where::dialect_sql(
+                    "DELETE FROM gb_device_alarm WHERE id = ?",
+                ))
+                .bind(id)
+                .execute(p)
+                .await
+                .map(|r| r.rows_affected())
+                .map_err(|e| {
+                    AppError::business(ErrorCode::Error500, format!("数据库删除失败: {}", e))
+                })
+            },
+            |p| {
+                sqlx::query(&crate::dyn_where::dialect_sql(
+                    "DELETE FROM gb_device_alarm WHERE id = ?",
+                ))
+                .bind(id)
+                .execute(p)
+                .await
+                .map(|r| r.rows_affected())
+                .map_err(|e| {
+                    AppError::business(ErrorCode::Error500, format!("数据库删除失败: {}", e))
+                })
+            },
+        )?;
+        deleted += r;
     }
 
     Ok(Json(ApiResult::success(
@@ -572,22 +628,42 @@ pub async fn alarm_delete_by_device(
     State(state): State<AppState>,
     axum::extract::Path(device_id): axum::extract::Path<String>,
 ) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
-    #[cfg(feature = "postgres")]
-    let r = sqlx::query("DELETE FROM gb_device_alarm WHERE device_id = $1")
-        .bind(&device_id)
-        .execute(&state.pool)
-        .await
-        .map_err(|e| AppError::business(ErrorCode::Error500, format!("数据库删除失败: {}", e)))?;
-
-    #[cfg(any(feature = "mysql", feature = "sqlite"))]
-    let r = sqlx::query("DELETE FROM gb_device_alarm WHERE device_id = ?")
-        .bind(&device_id)
-        .execute(&state.pool)
-        .await
-        .map_err(|e| AppError::business(ErrorCode::Error500, format!("数据库删除失败: {}", e)))?;
+    let r = crate::dispatch_dialect!(
+        state.pool,
+        |p| {
+            sqlx::query("DELETE FROM gb_device_alarm WHERE device_id = $1")
+                .bind(&device_id)
+                .execute(p)
+                .await
+                .map(|r| r.rows_affected())
+                .map_err(|e| {
+                    AppError::business(ErrorCode::Error500, format!("数据库删除失败: {}", e))
+                })
+        },
+        |p| {
+            sqlx::query(&crate::dyn_where::dialect_sql(
+                "DELETE FROM gb_device_alarm WHERE device_id = ?",
+            ))
+            .bind(&device_id)
+            .execute(p)
+            .await
+            .map(|r| r.rows_affected())
+            .map_err(|e| AppError::business(ErrorCode::Error500, format!("数据库删除失败: {}", e)))
+        },
+        |p| {
+            sqlx::query(&crate::dyn_where::dialect_sql(
+                "DELETE FROM gb_device_alarm WHERE device_id = ?",
+            ))
+            .bind(&device_id)
+            .execute(p)
+            .await
+            .map(|r| r.rows_affected())
+            .map_err(|e| AppError::business(ErrorCode::Error500, format!("数据库删除失败: {}", e)))
+        },
+    )?;
 
     Ok(Json(ApiResult::success(
-        serde_json::json!({ "deleted": r.rows_affected() }),
+        serde_json::json!({ "deleted": r }),
     )))
 }
 
@@ -610,22 +686,42 @@ pub async fn alarm_delete_before_time(
     State(state): State<AppState>,
     axum::extract::Path(before_time): axum::extract::Path<String>,
 ) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
-    #[cfg(feature = "postgres")]
-    let r = sqlx::query("DELETE FROM gb_device_alarm WHERE create_time < $1")
-        .bind(&before_time)
-        .execute(&state.pool)
-        .await
-        .map_err(|e| AppError::business(ErrorCode::Error500, format!("数据库删除失败: {}", e)))?;
-
-    #[cfg(any(feature = "mysql", feature = "sqlite"))]
-    let r = sqlx::query("DELETE FROM gb_device_alarm WHERE create_time < ?")
-        .bind(&before_time)
-        .execute(&state.pool)
-        .await
-        .map_err(|e| AppError::business(ErrorCode::Error500, format!("数据库删除失败: {}", e)))?;
+    let r = crate::dispatch_dialect!(
+        state.pool,
+        |p| {
+            sqlx::query("DELETE FROM gb_device_alarm WHERE create_time < $1")
+                .bind(&before_time)
+                .execute(p)
+                .await
+                .map(|r| r.rows_affected())
+                .map_err(|e| {
+                    AppError::business(ErrorCode::Error500, format!("数据库删除失败: {}", e))
+                })
+        },
+        |p| {
+            sqlx::query(&crate::dyn_where::dialect_sql(
+                "DELETE FROM gb_device_alarm WHERE create_time < ?",
+            ))
+            .bind(&before_time)
+            .execute(p)
+            .await
+            .map(|r| r.rows_affected())
+            .map_err(|e| AppError::business(ErrorCode::Error500, format!("数据库删除失败: {}", e)))
+        },
+        |p| {
+            sqlx::query(&crate::dyn_where::dialect_sql(
+                "DELETE FROM gb_device_alarm WHERE create_time < ?",
+            ))
+            .bind(&before_time)
+            .execute(p)
+            .await
+            .map(|r| r.rows_affected())
+            .map_err(|e| AppError::business(ErrorCode::Error500, format!("数据库删除失败: {}", e)))
+        },
+    )?;
 
     Ok(Json(ApiResult::success(
-        serde_json::json!({ "deleted": r.rows_affected() }),
+        serde_json::json!({ "deleted": r }),
     )))
 }
 
@@ -635,18 +731,19 @@ mod alarm_contract_tests {
     use crate::test_support::app_state;
 
     async fn seed(state: &AppState, device: &str, atype: &str, atime: &str, priority: &str) {
-        sqlx::query(
-            "INSERT INTO gb_device_alarm \
-             (device_id, channel_id, alarm_priority, alarm_method, alarm_type, alarm_time, \
-              alarm_description, create_time, handled) \
-             VALUES (?, 'ch1', ?, '1', ?, ?, 'desc', '2026-09-12 10:00:00', 0)",
-        )
-        .bind(device)
-        .bind(priority)
-        .bind(atype)
-        .bind(atime)
-        .execute(&state.pool)
-        .await
+        crate::dispatch_exec!(&state.pool, |p| {
+            sqlx::query(&crate::dyn_where::dialect_sql(
+                "INSERT INTO gb_device_alarm \
+                 (device_id, channel_id, alarm_priority, alarm_method, alarm_type, alarm_time, \
+                  alarm_description, create_time, handled) \
+                 VALUES (?, 'ch1', ?, '1', ?, ?, 'desc', '2026-09-12 10:00:00', 0)",
+            ))
+            .bind(device)
+            .bind(priority)
+            .bind(atype)
+            .bind(atime)
+            .execute(p)
+        })
         .expect("seed alarm");
     }
 

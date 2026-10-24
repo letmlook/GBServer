@@ -5,6 +5,9 @@ async fn catalog_writes_use_production_sqlite_schema() {
     let pool = sqlx::SqlitePool::connect("sqlite::memory:")
         .await
         .expect("open SQLite");
+    // `db::device::*` 现在接受运行期多态的 `db::Pool`
+    // （原生 SqlitePool 仍用于直连 sqlx 查询）。
+    let db_pool = gbserver::db::Pool::Sqlite(pool.clone());
     let schema = include_str!("../database/init-sqlite-2.7.4.sql");
     let cleaned = schema
         .lines()
@@ -33,7 +36,7 @@ async fn catalog_writes_use_production_sqlite_schema() {
         .expect("parent id");
 
     assert!(gbserver::db::device::upsert_channel_from_catalog(
-        &pool,
+        &db_pool,
         device_id,
         "34020000001310009993",
         "Camera 1",
@@ -63,7 +66,7 @@ async fn catalog_writes_use_production_sqlite_schema() {
     };
     assert_eq!(
         gbserver::db::device::batch_upsert_channels(
-            &pool,
+            &db_pool,
             device_id,
             &[channel("34020000001310009992")],
         )
@@ -73,7 +76,7 @@ async fn catalog_writes_use_production_sqlite_schema() {
     );
     assert_eq!(
         gbserver::db::device::batch_insert_channels(
-            &pool,
+            &db_pool,
             device_id,
             &[channel("34020000001310009991")],
         )

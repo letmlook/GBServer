@@ -1652,7 +1652,7 @@ mod device_result_tests {
     }
 }
 
-#[cfg(all(test, feature = "sqlite"))]
+#[cfg(test)]
 mod transport_result_handler_tests {
     use super::*;
 
@@ -1696,7 +1696,7 @@ mod transport_result_handler_tests {
     }
 }
 
-#[cfg(all(test, feature = "sqlite"))]
+#[cfg(test)]
 mod device_write_tests {
     use super::*;
     use crate::test_support::app_state;

@@ -689,7 +689,7 @@ pub struct ChangePushKeyParams {
 // 角色的成员会被误判为非管理员。现按 `authority` 判定，内置角色 id=1 仍兜底。
 use crate::handlers::authz;
 
-#[cfg(all(test, feature = "sqlite"))]
+#[cfg(test)]
 mod password_flow_tests {
     use super::*;
     use crate::test_support::app_state;

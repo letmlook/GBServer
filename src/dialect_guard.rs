@@ -415,15 +415,29 @@ fn looks_like_sql(text: &str) -> bool {
         || up.contains(" FROM ")
 }
 
-/// 这个字面量是不是被 `dialect_sql(...)` 包裹的？
+/// 这个字面量是不是被「运行期方言改写」包裹的？
+///
+/// 两种写法都算：
+/// * `crate::dyn_where::dialect_sql("...")` —— 按**进程级**当前方言改写；
+/// * `pool.sql("...")` —— 按**这个 pool** 的方言改写（多方言运行时更准确）。
 fn wrapped_by_dialect_sql(src: &str, lit_pos: usize) -> bool {
     let head = &src[..lit_pos];
-    let Some(idx) = head.rfind("dialect_sql(") else {
-        return false;
-    };
-    let between = src[idx + "dialect_sql(".len()..lit_pos].trim();
-    // `dialect_sql(` 与字面量之间只允许空白和 `&`
-    between.is_empty() || between == "&"
+    for marker in ["dialect_sql_for(", "dialect_sql(", "current_sql(", ".sql("] {
+        let Some(idx) = head.rfind(marker) else {
+            continue;
+        };
+        let between = src[idx + marker.len()..lit_pos].trim();
+        // 包裹函数与字面量之间只允许空白和 `&`
+        if between.is_empty() || between == "&" {
+            return true;
+        }
+        // 也允许 `&format!(` —— 动态 SQL 的模板字面量在 format! 里，
+        // 外层再套一个方言改写器（`dialect_sql_for(&format!(...), dialect)`）。
+        if between.starts_with("&format!(") || between.starts_with("format!(") {
+            return true;
+        }
+    }
+    false
 }
 
 #[test]

@@ -9,6 +9,9 @@ async fn update_custom_fields_roundtrip() {
     let pool = sqlx::PgPool::connect(&url)
         .await
         .expect("connect PostgreSQL");
+    // `db::platform_channel::*` 现在接受运行期多态的 `db::Pool`
+    // （原生 PgPool 仍用于直连 sqlx 查询）。
+    let db_pool = gbserver::db::Pool::Postgres(pool.clone());
     let id: i32 = sqlx::query_scalar(
         "INSERT INTO gb_platform_channel (platform_id, device_channel_id) VALUES (NULL, NULL) RETURNING id",
     )
@@ -18,7 +21,7 @@ async fn update_custom_fields_roundtrip() {
     let id = i64::from(id);
 
     let changed = gbserver::db::platform_channel::update(
-        &pool,
+        &db_pool,
         id,
         Some("O'Brien"),
         Some("V2 custom address"),
@@ -36,19 +39,19 @@ async fn update_custom_fields_roundtrip() {
     assert_eq!(fields.1.as_deref(), Some("V2 custom address"));
 
     assert_eq!(
-        gbserver::db::platform_channel::update(&pool, id, None, Some("north gate"))
+        gbserver::db::platform_channel::update(&db_pool, id, None, Some("north gate"))
             .await
             .expect("update address only"),
         1,
     );
     assert_eq!(
-        gbserver::db::platform_channel::update(&pool, id, Some("V2 name"), None)
+        gbserver::db::platform_channel::update(&db_pool, id, Some("V2 name"), None)
             .await
             .expect("update name only"),
         1,
     );
     assert_eq!(
-        gbserver::db::platform_channel::update(&pool, id, None, None)
+        gbserver::db::platform_channel::update(&db_pool, id, None, None)
             .await
             .expect("empty update"),
         0,

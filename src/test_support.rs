@@ -46,7 +46,13 @@ pub(crate) async fn sqlite_pool_with_schema() -> db::Pool {
         if !upper.starts_with("CREATE") && !upper.starts_with("INSERT") {
             continue;
         }
-        sqlx::query(stmt).execute(&pool).await.unwrap_or_else(|e| {
+        // `db::Pool` 是**运行期多态**的枚举（`Pool::Sqlite(..)` / `Pool::Postgres(..)` /
+        // `Pool::MySql(..)`），它本身不是 `sqlx::Executor` —— 这里用 `dispatch_exec!`
+        // 把语句分发到当前方言的具体 pool 上。
+        crate::dispatch_exec!(&db::Pool::Sqlite(pool.clone()), |p| {
+            sqlx::query(stmt).execute(p)
+        })
+        .unwrap_or_else(|e| {
             panic!(
                 "init SQL failed: {} | stmt: {}",
                 e,
@@ -54,7 +60,7 @@ pub(crate) async fn sqlite_pool_with_schema() -> db::Pool {
             )
         });
     }
-    pool
+    db::Pool::Sqlite(pool)
 }
 
 /// 最小可用 `AppConfig`（只填充测试关心的字段，其余为默认）

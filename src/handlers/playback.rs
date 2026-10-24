@@ -30,7 +30,7 @@ pub struct PlaybackSession {
     pub source: String,
 }
 
-#[cfg(all(test, feature = "sqlite"))]
+#[cfg(test)]
 mod command_state_tests {
     use super::*;
     use crate::handlers::common_channel::{

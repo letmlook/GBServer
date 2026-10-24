@@ -587,19 +587,16 @@ pub async fn channel_add(
 
     // 手工新增的通道必须挂到父设备的自增主键上：录像计划的"按设备关联"
     // 与 `channel_ids_by_device_db_id` 都依赖 `data_device_id`。
-    let data_device_id: Option<i32> = sqlx::query_scalar(
-        #[cfg(feature = "postgres")]
-        {
-            "SELECT id FROM gb_device WHERE device_id = $1"
-        },
-        #[cfg(not(feature = "postgres"))]
-        {
-            "SELECT id FROM gb_device WHERE device_id = ?"
-        },
-    )
-    .bind(device_id)
-    .fetch_optional(&state.pool)
-    .await
+    // 这里的方言差异**只有占位符**（pg 用 `$1`、其余用 `?`），不必分方言：
+    // 一份 SQL 文本交给 `pool.sql()` 按运行期方言改写即可。
+    let sql = state
+        .pool
+        .sql("SELECT id FROM gb_device WHERE device_id = ?");
+    let data_device_id: Option<i32> = crate::dispatch!(&state.pool, |p| {
+        sqlx::query_scalar::<_, i32>(&sql)
+            .bind(device_id)
+            .fetch_optional(p)
+    })
     .unwrap_or(None);
 
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
@@ -1418,22 +1415,15 @@ pub async fn map_thin_clear(
 ) -> Result<Json<ApiResult<()>>, AppError> {
     let channel_id = q.channel_id.unwrap_or(0);
     if channel_id > 0 {
-        #[cfg(feature = "postgres")]
-        sqlx::query("UPDATE gb_device_channel SET geojson = NULL WHERE id = $1")
-            .bind(channel_id)
-            .execute(&state.pool)
-            .await
-            .map_err(|e| {
-                AppError::business(ErrorCode::Error500, format!("清除稀化数据失败: {}", e))
-            })?;
-        #[cfg(any(feature = "mysql", feature = "sqlite"))]
-        sqlx::query("UPDATE gb_device_channel SET geojson = NULL WHERE id = ?")
-            .bind(channel_id)
-            .execute(&state.pool)
-            .await
-            .map_err(|e| {
-                AppError::business(ErrorCode::Error500, format!("清除稀化数据失败: {}", e))
-            })?;
+        // 只有占位符差异（pg `$1`、其余 `?`），一份 SQL 文本即可；
+        // `dispatch_exec!` 的宏体必须是**未 await 的 future**，`?` 写在宏外面。
+        let sql = state
+            .pool
+            .sql("UPDATE gb_device_channel SET geojson = NULL WHERE id = ?");
+        crate::dispatch_exec!(&state.pool, |p| {
+            sqlx::query(&sql).bind(channel_id).execute(p)
+        })
+        .map_err(|e| AppError::business(ErrorCode::Error500, format!("清除稀化数据失败: {}", e)))?;
         tracing::info!("Cleared thinned geojson for channel {}", channel_id);
     }
     Ok(Json(ApiResult::<()>::success_empty()))
@@ -1459,25 +1449,42 @@ pub async fn map_thin_progress(
 ) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
     let channel_id = q.channel_id.unwrap_or(0);
     if channel_id > 0 {
-        #[cfg(feature = "postgres")]
-        let has_geojson: bool =
-            sqlx::query_scalar("SELECT (geojson IS NOT NULL) FROM gb_device_channel WHERE id = $1")
+        let has_geojson: bool = crate::dispatch_dialect!(
+            state.pool,
+            |p| {
+                sqlx::query_scalar(
+                    "SELECT (geojson IS NOT NULL) FROM gb_device_channel WHERE id = $1",
+                )
                 .bind(channel_id)
-                .fetch_optional(&state.pool)
+                .fetch_optional(p)
                 .await
                 .ok()
                 .flatten()
-                .unwrap_or(false);
-
-        #[cfg(any(feature = "mysql", feature = "sqlite"))]
-        let has_geojson: bool =
-            sqlx::query_scalar("SELECT (geojson IS NOT NULL) FROM gb_device_channel WHERE id = ?")
+                .unwrap_or(false)
+            },
+            |p| {
+                sqlx::query_scalar(&crate::dyn_where::dialect_sql(
+                    "SELECT (geojson IS NOT NULL) FROM gb_device_channel WHERE id = ?",
+                ))
                 .bind(channel_id)
-                .fetch_optional(&state.pool)
+                .fetch_optional(p)
                 .await
                 .ok()
                 .flatten()
-                .unwrap_or(false);
+                .unwrap_or(false)
+            },
+            |p| {
+                sqlx::query_scalar(&crate::dyn_where::dialect_sql(
+                    "SELECT (geojson IS NOT NULL) FROM gb_device_channel WHERE id = ?",
+                ))
+                .bind(channel_id)
+                .fetch_optional(p)
+                .await
+                .ok()
+                .flatten()
+                .unwrap_or(false)
+            },
+        );
 
         let progress = if has_geojson { 100 } else { 0 };
         return Ok(Json(ApiResult::success(serde_json::json!({
@@ -1536,23 +1543,36 @@ pub async fn map_thin_save(
         latitude: Option<f64>,
     }
 
-    #[cfg(feature = "postgres")]
-    let points: Vec<PositionPoint> = sqlx::query_as(
-        "SELECT longitude, latitude FROM gb_position_history WHERE device_id = $1 ORDER BY time",
-    )
-    .bind(&device_id)
-    .fetch_all(&state.pool)
-    .await
-    .unwrap_or_default();
-
-    #[cfg(any(feature = "mysql", feature = "sqlite"))]
-    let points: Vec<PositionPoint> = sqlx::query_as(
-        "SELECT longitude, latitude FROM gb_position_history WHERE device_id = ? ORDER BY time",
-    )
-    .bind(&device_id)
-    .fetch_all(&state.pool)
-    .await
-    .unwrap_or_default();
+    let points: Vec<PositionPoint> = crate::dispatch_dialect!(
+        state.pool,
+        |p| {
+            sqlx::query_as(
+                    "SELECT longitude, latitude FROM gb_position_history WHERE device_id = $1 ORDER BY time",
+                )
+                .bind(&device_id)
+                .fetch_all(p)
+                .await
+                .unwrap_or_default()
+        },
+        |p| {
+            sqlx::query_as(
+                    &crate::dyn_where::dialect_sql("SELECT longitude, latitude FROM gb_position_history WHERE device_id = ? ORDER BY time"),
+                )
+                .bind(&device_id)
+                .fetch_all(p)
+                .await
+                .unwrap_or_default()
+        },
+        |p| {
+            sqlx::query_as(
+                    &crate::dyn_where::dialect_sql("SELECT longitude, latitude FROM gb_position_history WHERE device_id = ? ORDER BY time"),
+                )
+                .bind(&device_id)
+                .fetch_all(p)
+                .await
+                .unwrap_or_default()
+        },
+    );
 
     if points.len() < 2 {
         return Ok(Json(ApiResult::<()>::success_empty()));
@@ -1591,23 +1611,20 @@ pub async fn map_thin_save(
     // Save to channel's geojson field
     // 修正：此前两条分支都用 `let _ =` 吞掉错误，稀化算了半天却可能根本没落库，
     // 接口仍返回成功。现在如实传播。
-    #[cfg(feature = "postgres")]
-    let affected = sqlx::query("UPDATE gb_device_channel SET geojson = $1 WHERE id = $2")
-        .bind(&geojson_str)
-        .bind(channel_id)
-        .execute(&state.pool)
-        .await
-        .map_err(|e| AppError::business(ErrorCode::Error500, format!("保存稀化数据失败: {}", e)))?
-        .rows_affected();
-
-    #[cfg(any(feature = "mysql", feature = "sqlite"))]
-    let affected = sqlx::query("UPDATE gb_device_channel SET geojson = ? WHERE id = ?")
-        .bind(&geojson_str)
-        .bind(channel_id)
-        .execute(&state.pool)
-        .await
-        .map_err(|e| AppError::business(ErrorCode::Error500, format!("保存稀化数据失败: {}", e)))?
-        .rows_affected();
+    //
+    // 只有占位符差异（pg `$1/$2`、其余 `?`），一份 SQL 文本即可；
+    // `dispatch_exec!` 的宏体必须是**未 await 的 future**，`?` 写在宏外面。
+    let sql = state
+        .pool
+        .sql("UPDATE gb_device_channel SET geojson = ? WHERE id = ?");
+    let affected = crate::dispatch_exec!(&state.pool, |p| {
+        sqlx::query(&sql)
+            .bind(&geojson_str)
+            .bind(channel_id)
+            .execute(p)
+    })
+    .map_err(|e| AppError::business(ErrorCode::Error500, format!("保存稀化数据失败: {}", e)))?
+    .rows_affected();
 
     if affected == 0 {
         return Err(AppError::business(
@@ -1665,26 +1682,20 @@ pub async fn map_thin_draw(
     if let Some(ref geojson) = body.geojson {
         let geojson_str = serde_json::to_string(geojson).unwrap_or_default();
         // 修正：此前写入失败会被静默忽略，但仍把入参回显为“已保存”
-        #[cfg(feature = "postgres")]
-        let affected = sqlx::query("UPDATE gb_device_channel SET geojson = $1 WHERE id = $2")
-            .bind(&geojson_str)
-            .bind(channel_id)
-            .execute(&state.pool)
-            .await
-            .map_err(|e| {
-                AppError::business(ErrorCode::Error500, format!("保存绘制数据失败: {}", e))
-            })?
-            .rows_affected();
-        #[cfg(any(feature = "mysql", feature = "sqlite"))]
-        let affected = sqlx::query("UPDATE gb_device_channel SET geojson = ? WHERE id = ?")
-            .bind(&geojson_str)
-            .bind(channel_id)
-            .execute(&state.pool)
-            .await
-            .map_err(|e| {
-                AppError::business(ErrorCode::Error500, format!("保存绘制数据失败: {}", e))
-            })?
-            .rows_affected();
+        //
+        // 只有占位符差异（pg `$1/$2`、其余 `?`），一份 SQL 文本即可；
+        // `dispatch_exec!` 的宏体必须是**未 await 的 future**，`?` 写在宏外面。
+        let sql = state
+            .pool
+            .sql("UPDATE gb_device_channel SET geojson = ? WHERE id = ?");
+        let affected = crate::dispatch_exec!(&state.pool, |p| {
+            sqlx::query(&sql)
+                .bind(&geojson_str)
+                .bind(channel_id)
+                .execute(p)
+        })
+        .map_err(|e| AppError::business(ErrorCode::Error500, format!("保存绘制数据失败: {}", e)))?
+        .rows_affected();
         if affected == 0 {
             return Err(AppError::business(
                 ErrorCode::Error404,
@@ -1700,23 +1711,37 @@ pub async fn map_thin_draw(
         geojson: Option<String>,
     }
 
-    #[cfg(feature = "postgres")]
-    let row: Option<GeojsonRow> =
-        sqlx::query_as("SELECT geojson FROM gb_device_channel WHERE id = $1")
+    let row: Option<GeojsonRow> = crate::dispatch_dialect!(
+        state.pool,
+        |p| {
+            sqlx::query_as("SELECT geojson FROM gb_device_channel WHERE id = $1")
+                .bind(channel_id)
+                .fetch_optional(p)
+                .await
+                .ok()
+                .flatten()
+        },
+        |p| {
+            sqlx::query_as(&crate::dyn_where::dialect_sql(
+                "SELECT geojson FROM gb_device_channel WHERE id = ?",
+            ))
             .bind(channel_id)
-            .fetch_optional(&state.pool)
+            .fetch_optional(p)
             .await
             .ok()
-            .flatten();
-
-    #[cfg(any(feature = "mysql", feature = "sqlite"))]
-    let row: Option<GeojsonRow> =
-        sqlx::query_as("SELECT geojson FROM gb_device_channel WHERE id = ?")
+            .flatten()
+        },
+        |p| {
+            sqlx::query_as(&crate::dyn_where::dialect_sql(
+                "SELECT geojson FROM gb_device_channel WHERE id = ?",
+            ))
             .bind(channel_id)
-            .fetch_optional(&state.pool)
+            .fetch_optional(p)
             .await
             .ok()
-            .flatten();
+            .flatten()
+        },
+    );
 
     let geojson = row
         .and_then(|r| r.geojson)
@@ -3661,19 +3686,22 @@ mod channel_crud_contract_tests {
     use crate::test_support::app_state;
 
     async fn seed_device(state: &AppState, device_id: &str) -> i32 {
-        sqlx::query(
+        let sql = state.pool.sql(
             "INSERT INTO gb_device (device_id, name, on_line, create_time, update_time) \
              VALUES (?, 'dev', 1, '2026-01-01 00:00:00', '2026-01-01 00:00:00')",
-        )
-        .bind(device_id)
-        .execute(&state.pool)
-        .await
+        );
+        crate::dispatch_exec!(&state.pool, |p| {
+            sqlx::query(&sql).bind(device_id).execute(p)
+        })
         .expect("insert device");
-        sqlx::query_scalar::<_, i32>("SELECT id FROM gb_device WHERE device_id = ?")
+        crate::dispatch!(&state.pool, |p| {
+            sqlx::query_scalar::<_, i32>(&crate::dyn_where::dialect_sql(
+                "SELECT id FROM gb_device WHERE device_id = ?",
+            ))
             .bind(device_id)
-            .fetch_one(&state.pool)
-            .await
-            .unwrap()
+            .fetch_one(p)
+        })
+        .unwrap()
     }
 
     /// 前端 `EditDialog.vue` 发的是 camelCase。缺 alias 时
@@ -3716,11 +3744,13 @@ mod channel_crud_contract_tests {
         assert_eq!(ch.channel_type, Some(3), "类型必须落库");
         assert_eq!(ch.address.as_deref(), Some("1 号楼"), "安装地址必须落库");
         // 手工新增的通道要挂到父设备主键上（录像计划"按设备关联"依赖它）
-        let stored_dev_pk: Option<i32> =
-            sqlx::query_scalar("SELECT data_device_id FROM gb_device_channel WHERE id = 1")
-                .fetch_one(&state.pool)
-                .await
-                .unwrap();
+        let stored_dev_pk: Option<i32> = crate::dispatch!(&state.pool, |p| {
+            sqlx::query_scalar::<_, Option<i32>>(
+                "SELECT data_device_id FROM gb_device_channel WHERE id = 1",
+            )
+            .fetch_one(p)
+        })
+        .unwrap();
         assert_eq!(
             stored_dev_pk,
             Some(dev_pk),

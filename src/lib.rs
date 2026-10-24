@@ -24,7 +24,7 @@ pub mod serde_flex;
 pub mod sip;
 pub mod state;
 pub mod state_store;
-#[cfg(all(test, feature = "sqlite"))]
+#[cfg(test)]
 pub(crate) mod test_support;
 pub mod ws;
 pub mod zlm;
@@ -47,12 +47,17 @@ use std::sync::Arc;
 /// （见「静默失败」修复），全新部署会**直接启动失败** —— 这正是运行时冒烟
 /// 测试抓到的第一个问题。
 /// 当前 feature 对应的 schema 脚本（与 §2 全量初始化用的是同一份文件）。
-#[cfg(feature = "postgres")]
-const SCHEMA_SQL: &str = include_str!("../database/init-postgresql-2.7.4.sql");
-#[cfg(feature = "mysql")]
-const SCHEMA_SQL: &str = include_str!("../database/init-mysql-2.7.4.sql");
-#[cfg(feature = "sqlite")]
-const SCHEMA_SQL: &str = include_str!("../database/init-sqlite-2.7.4.sql");
+/// 当前方言对应的 schema 脚本。
+///
+/// 改造前这里是三个 `#[cfg(feature = ...)]` 常量（编译期三选一）；
+/// 现在三种方言**同时编进同一个二进制**，由运行期的 [`db::Dialect`] 决定用哪一份。
+fn schema_sql(dialect: db::Dialect) -> &'static str {
+    match dialect {
+        db::Dialect::Postgres => include_str!("../database/init-postgresql-2.7.4.sql"),
+        db::Dialect::MySql => include_str!("../database/init-mysql-2.7.4.sql"),
+        db::Dialect::Sqlite => include_str!("../database/init-sqlite-2.7.4.sql"),
+    }
+}
 
 /// 取一条 SQL 语句的**首个非注释行**（用于判断语句类型）。
 fn first_sql_keyword(stmt: &str) -> String {
@@ -82,7 +87,7 @@ fn first_sql_keyword(stmt: &str) -> String {
 /// `INSERT`（会重复种子数据）与 `ALTER`（列级迁移有专门的 `ensure_columns`）。
 async fn ensure_missing_tables(pool: &db::Pool) -> anyhow::Result<()> {
     let mut replayed = 0usize;
-    for raw in SCHEMA_SQL.split(';') {
+    for raw in schema_sql(pool.dialect()).split(';') {
         let stmt = raw.trim();
         if stmt.is_empty() {
             continue;
@@ -95,7 +100,8 @@ async fn ensure_missing_tables(pool: &db::Pool) -> anyhow::Result<()> {
             continue;
         }
         replayed += 1;
-        if let Err(e) = sqlx::query(stmt).execute(pool).await {
+        let res = crate::dispatch_exec!(pool, |p| { sqlx::query(stmt).execute(p) });
+        if let Err(e) = res {
             let msg = e.to_string();
             // "already exists" / MySQL 的 "Duplicate key name" 都是幂等重放的正常结果
             let benign = msg.contains("already exists") || msg.contains("Duplicate key name");
@@ -115,7 +121,6 @@ async fn ensure_missing_tables(pool: &db::Pool) -> anyhow::Result<()> {
 ///
 /// `using` 是 PostgreSQL `ALTER COLUMN … TYPE … USING <expr>` 的表达式
 /// （旧列与目标类型不兼容时必须给；空的表示可隐式转换）。
-#[cfg(feature = "postgres")]
 struct PgColumnFix {
     table: &'static str,
     column: &'static str,
@@ -140,8 +145,11 @@ struct PgColumnFix {
 /// JT1078 围栏列表无法解码（`gb_jt_area_*.id` INT4）。
 ///
 /// 列表是**硬编码常量**（不来自用户输入），因此这里的 `format!` 不构成注入面。
-#[cfg(feature = "postgres")]
 async fn ensure_pg_column_types(pool: &db::Pool) -> anyhow::Result<()> {
+    // 列宽纠正是 postgres 独有的（只有它严格校验列类型），其它方言直接跳过。
+    if !pool.dialect().is_postgres() {
+        return Ok(());
+    }
     const FIXES: &[PgColumnFix] = &[
         // Rust 侧以 `i64` 解码的 id 列。serial → bigserial。
         PgColumnFix {
@@ -234,14 +242,15 @@ async fn ensure_pg_column_types(pool: &db::Pool) -> anyhow::Result<()> {
     ];
 
     for fix in FIXES {
-        let data_type: Option<String> = sqlx::query_scalar(
-            "SELECT data_type FROM information_schema.columns \
-             WHERE table_schema = current_schema() AND table_name = $1 AND column_name = $2",
-        )
-        .bind(fix.table)
-        .bind(fix.column)
-        .fetch_optional(pool)
-        .await?;
+        let data_type: Option<String> = crate::dispatch!(pool, |p| {
+            sqlx::query_scalar::<_, String>(&crate::dyn_where::dialect_sql(
+                "SELECT data_type FROM information_schema.columns \
+                 WHERE table_schema = current_schema() AND table_name = ? AND column_name = ?",
+            ))
+            .bind(fix.table)
+            .bind(fix.column)
+            .fetch_optional(p)
+        })?;
 
         // 表/列不存在（老版本库）：跳过，`ensure_missing_tables` 负责建表。
         if data_type.as_deref() != Some(fix.from) {
@@ -253,20 +262,18 @@ async fn ensure_pg_column_types(pool: &db::Pool) -> anyhow::Result<()> {
         } else {
             format!(" {}", fix.using)
         };
-        sqlx::query(&format!(
+        let alter_sql = format!(
             "ALTER TABLE {} ALTER COLUMN {} TYPE {}{}",
             fix.table, fix.column, fix.target, using
-        ))
-        .execute(pool)
-        .await?;
+        );
+        crate::dispatch_exec!(pool, |p| { sqlx::query(&alter_sql).execute(p) })?;
 
         // 自增序列自身也要提升，否则超过 2^31 时序列先溢出。
         if fix.target == "bigint" {
             let seq = format!("{}_{}_seq", fix.table, fix.column);
-            if let Err(e) = sqlx::query(&format!("ALTER SEQUENCE IF EXISTS {seq} AS bigint"))
-                .execute(pool)
-                .await
-            {
+            let seq_sql = format!("ALTER SEQUENCE IF EXISTS {seq} AS bigint");
+            let res = crate::dispatch_exec!(pool, |p| { sqlx::query(&seq_sql).execute(p) });
+            if let Err(e) = res {
                 tracing::warn!("[schema][pg] 序列 {seq} 提升为 bigint 失败（已忽略）: {e}");
             }
         }
@@ -281,12 +288,6 @@ async fn ensure_pg_column_types(pool: &db::Pool) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// 非 postgres 构建下的空实现，保持 `init_db_tables` 单一调用点。
-#[cfg(not(feature = "postgres"))]
-async fn ensure_pg_column_types(_pool: &db::Pool) -> anyhow::Result<()> {
-    Ok(())
-}
-
 /// MySQL 列类型纠正（幂等）：与 `ensure_pg_column_types` 对应。
 ///
 /// MySQL 的数据类型检查比 postgres 宽松（`i32` 能读 `varchar`），但
@@ -294,37 +295,34 @@ async fn ensure_pg_column_types(_pool: &db::Pool) -> anyhow::Result<()> {
 /// `COALESCE types integer and character varying cannot be matched`
 /// （2026-09-12 postgres 冒烟时顺带在 mysql 上复核出来的同源问题），
 /// 所以旧库也要把 `plate_color` 收敛成 `int`。
-#[cfg(feature = "mysql")]
 async fn ensure_mysql_column_types(pool: &db::Pool) -> anyhow::Result<()> {
+    // 只有 mysql 需要把 `plate_color` 收敛成 int（其余方言该列本来就是整数）。
+    if !pool.dialect().is_mysql() {
+        return Ok(());
+    }
     const FIXES: &[(&str, &str, &str)] = &[("gb_jt_terminal", "plate_color", "int")];
 
     for (table, column, target) in FIXES {
-        let data_type: Option<String> = sqlx::query_scalar(
-            "SELECT data_type FROM information_schema.columns \
-             WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?",
-        )
-        .bind(table)
-        .bind(column)
-        .fetch_optional(pool)
-        .await?;
+        let data_type: Option<String> = crate::dispatch!(pool, |p| {
+            sqlx::query_scalar::<_, String>(&crate::dyn_where::dialect_sql(
+                "SELECT data_type FROM information_schema.columns \
+                 WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?",
+            ))
+            .bind(table)
+            .bind(column)
+            .fetch_optional(p)
+        })?;
 
         match data_type.as_deref() {
             None => continue, // 表/列不存在，交由建表阶段处理
             Some(t) if t == "int" => continue,
             Some(t) => {
-                sqlx::query(&format!("ALTER TABLE {table} MODIFY {column} {target}"))
-                    .execute(pool)
-                    .await?;
+                let alter_sql = format!("ALTER TABLE {table} MODIFY {column} {target}");
+                crate::dispatch_exec!(pool, |p| { sqlx::query(&alter_sql).execute(p) })?;
                 tracing::info!("[schema][mysql] {table}.{column} 已由 {t} 改为 {target}");
             }
         }
     }
-    Ok(())
-}
-
-/// 非 mysql 构建下的空实现。
-#[cfg(not(feature = "mysql"))]
-async fn ensure_mysql_column_types(_pool: &db::Pool) -> anyhow::Result<()> {
     Ok(())
 }
 
@@ -334,148 +332,137 @@ async fn init_db_tables(pool: &db::Pool) -> anyhow::Result<()> {
     db::audit_log::ensure_table(pool).await?;
 
     // Check if core tables exist; if not, run full schema init
-    #[cfg(feature = "postgres")]
-    {
-        let table_exists: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name = 'gb_device')",
-        )
-        .fetch_one(pool)
-        .await
-        .unwrap_or(false);
+    // Check if core tables exist; if not, run full schema init
+    // 三个方言的检测方式不同（information_schema / sqlite_master），
+    // 但「缺表就全量初始化」的语义一致 —— 运行期按实际连接的库分支。
+    match pool.dialect() {
+        db::Dialect::Postgres => {
+            let table_exists: bool = crate::dispatch!(pool, |p| {
+sqlx::query_scalar::<_, bool>(
+                    "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name = 'gb_device')",
+                )
+                .fetch_one(p)
+   })
+                .unwrap_or(false);
 
-        if !table_exists {
-            tracing::info!("Schema tables not found, initializing from SQL script...");
-            let sql = include_str!("../database/init-postgresql-2.7.4.sql");
-            // Execute each statement separately (split by semicolons, skip comments)
-            for stmt in sql.split(';') {
-                let stmt = stmt.trim();
-                if stmt.is_empty() || stmt.starts_with("--") || stmt.starts_with("/*") {
-                    continue;
+            if !table_exists {
+                tracing::info!("Schema tables not found, initializing from SQL script...");
+                let sql = include_str!("../database/init-postgresql-2.7.4.sql");
+                // Execute each statement separately (split by semicolons, skip comments)
+                for stmt in sql.split(';') {
+                    let stmt = stmt.trim();
+                    if stmt.is_empty() || stmt.starts_with("--") || stmt.starts_with("/*") {
+                        continue;
+                    }
+                    // Skip non-DML/DDL statements
+                    if !stmt.starts_with("CREATE")
+                        && !stmt.starts_with("INSERT")
+                        && !stmt.starts_with("ALTER")
+                        && !stmt.starts_with("COMMENT")
+                        && !stmt.starts_with("DROP")
+                        && !stmt.starts_with("DO")
+                    {
+                        continue;
+                    }
+                    let _ = crate::dispatch_exec!(pool, |p| { sqlx::query(stmt).execute(p) });
                 }
-                // Skip non-DML/DDL statements
-                if !stmt.starts_with("CREATE")
-                    && !stmt.starts_with("INSERT")
-                    && !stmt.starts_with("ALTER")
-                    && !stmt.starts_with("COMMENT")
-                    && !stmt.starts_with("DROP")
-                    && !stmt.starts_with("DO")
-                {
-                    continue;
-                }
-                let _ = sqlx::query(stmt).execute(pool).await;
-            }
-            tracing::info!("Schema initialization complete");
-        }
-    }
-
-    #[cfg(feature = "mysql")]
-    {
-        let table_exists: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'gb_device')"
-        )
-        .fetch_one(pool)
-        .await.unwrap_or(false);
-
-        if !table_exists {
-            tracing::info!("Schema tables not found, initializing from SQL script...");
-            let sql = include_str!("../database/init-mysql-2.7.4.sql");
-            for stmt in sql.split(';') {
-                let stmt = stmt.trim();
-                if stmt.is_empty() || stmt.starts_with("--") || stmt.starts_with("/*") {
-                    continue;
-                }
-                if !stmt.starts_with("CREATE")
-                    && !stmt.starts_with("INSERT")
-                    && !stmt.starts_with("ALTER")
-                    && !stmt.starts_with("DROP")
-                {
-                    continue;
-                }
-                let _ = sqlx::query(stmt).execute(pool).await;
-            }
-            tracing::info!("Schema initialization complete");
-        }
-    }
-
-    // postgres 的 `serial` 序列必须与表内容对齐（见 `db::seq_sync`）。
-    // 初始化 SQL 用显式 id 播了 admin 用户/角色（都是 id=1），序列却仍停在
-    // 初始值 —— 于是**第一次**往这两张表插数据就撞主键，
-    // 报 `duplicate key value violates unique constraint "gb_user_pkey"`。
-    // 已装的库同样中招，所以每次启动都同步一次。
-    match db::seq_sync::sync_serial_sequences(pool).await {
-        Ok(n) if n > 0 => tracing::info!("serial 序列已同步（{} 个）", n),
-        Ok(_) => {}
-        Err(e) => tracing::warn!(
-            "同步 serial 序列失败（不影响启动，但\"种子行主键冲突\"可能复现）: {}",
-            e
-        ),
-    }
-
-    #[cfg(feature = "sqlite")]
-    {
-        // SQLite 用 sqlite_master 检测；Phase 1 仅覆盖核心 6 表最小集合
-        // Phase 7.6: 检测多个核心表确保 schema 完整；任一缺失即触发 init。
-        let core_tables = [
-            "gb_device",
-            "gb_common_region",
-            "gb_online_user",
-            "gb_cluster_node",
-        ];
-        let mut missing_any = false;
-        for tbl in &core_tables {
-            let exists: bool = sqlx::query_scalar(
-                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?)",
-            )
-            .bind(tbl)
-            .fetch_one(pool)
-            .await
-            .unwrap_or(false);
-            if !exists {
-                missing_any = true;
-                tracing::warn!("[sqlite] missing core table: {}", tbl);
+                tracing::info!("Schema initialization complete");
             }
         }
+        db::Dialect::MySql => {
+            let table_exists: bool = crate::dispatch!(pool, |p| {
+sqlx::query_scalar::<_, bool>(
+                    "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'gb_device')"
+                )
+                .fetch_one(p)
+   }).unwrap_or(false);
 
-        if missing_any {
-            tracing::info!("[sqlite] schema tables missing — running incremental init");
-            let sql = include_str!("../database/init-sqlite-2.7.4.sql");
-            // 逐行去除 `--` 行注释和空行，然后按 `;` 切分执行
-            let cleaned: String = sql
-                .lines()
-                .filter(|line| {
-                    let t = line.trim_start();
-                    !t.is_empty() && !t.starts_with("--")
+            if !table_exists {
+                tracing::info!("Schema tables not found, initializing from SQL script...");
+                let sql = include_str!("../database/init-mysql-2.7.4.sql");
+                for stmt in sql.split(';') {
+                    let stmt = stmt.trim();
+                    if stmt.is_empty() || stmt.starts_with("--") || stmt.starts_with("/*") {
+                        continue;
+                    }
+                    if !stmt.starts_with("CREATE")
+                        && !stmt.starts_with("INSERT")
+                        && !stmt.starts_with("ALTER")
+                        && !stmt.starts_with("DROP")
+                    {
+                        continue;
+                    }
+                    let _ = crate::dispatch_exec!(pool, |p| { sqlx::query(stmt).execute(p) });
+                }
+                tracing::info!("Schema initialization complete");
+            }
+        }
+        db::Dialect::Sqlite => {
+            // SQLite 用 sqlite_master 检测；Phase 1 仅覆盖核心 6 表最小集合
+            // Phase 7.6: 检测多个核心表确保 schema 完整；任一缺失即触发 init。
+            let core_tables = [
+                "gb_device",
+                "gb_common_region",
+                "gb_online_user",
+                "gb_cluster_node",
+            ];
+            let mut missing_any = false;
+            for tbl in &core_tables {
+                let exists: bool = crate::dispatch!(pool, |p| {
+                    sqlx::query_scalar::<_, bool>(&crate::dyn_where::dialect_sql(
+                        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?)",
+                    ))
+                    .bind(tbl)
+                    .fetch_one(p)
                 })
-                .collect::<Vec<_>>()
-                .join("\n");
-            for (idx, raw_stmt) in cleaned.split(';').enumerate() {
-                let stmt = raw_stmt.trim();
-                if stmt.is_empty() {
-                    continue;
-                }
-                let upper = stmt.to_uppercase();
-                if !upper.starts_with("CREATE")
-                    && !upper.starts_with("INSERT")
-                    && !upper.starts_with("ALTER")
-                    && !upper.starts_with("DROP")
-                {
-                    continue;
-                }
-                // Only CREATE statements use IF NOT EXISTS so they're safe to
-                // re-run; INSERT statements inside init-sqlite would only apply
-                // to a fresh schema. We accept re-execution since core seeds
-                // are idempotent (use INSERT OR IGNORE equivalent via WHERE NOT EXISTS).
-                match sqlx::query(stmt).execute(pool).await {
-                    Ok(_) => tracing::debug!("[sqlite] stmt #{} OK", idx),
-                    Err(e) => tracing::warn!(
-                        "[sqlite] stmt #{} SKIP: {} | error: {}",
-                        idx,
-                        stmt.chars().take(120).collect::<String>(),
-                        e
-                    ),
+                .unwrap_or(false);
+                if !exists {
+                    missing_any = true;
+                    tracing::warn!("[sqlite] missing core table: {}", tbl);
                 }
             }
-            tracing::info!("[sqlite] schema initialization complete");
+
+            if missing_any {
+                tracing::info!("[sqlite] schema tables missing — running incremental init");
+                let sql = include_str!("../database/init-sqlite-2.7.4.sql");
+                // 逐行去除 `--` 行注释和空行，然后按 `;` 切分执行
+                let cleaned: String = sql
+                    .lines()
+                    .filter(|line| {
+                        let t = line.trim_start();
+                        !t.is_empty() && !t.starts_with("--")
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                for (idx, raw_stmt) in cleaned.split(';').enumerate() {
+                    let stmt = raw_stmt.trim();
+                    if stmt.is_empty() {
+                        continue;
+                    }
+                    let upper = stmt.to_uppercase();
+                    if !upper.starts_with("CREATE")
+                        && !upper.starts_with("INSERT")
+                        && !upper.starts_with("ALTER")
+                        && !upper.starts_with("DROP")
+                    {
+                        continue;
+                    }
+                    // Only CREATE statements use IF NOT EXISTS so they're safe to
+                    // re-run; INSERT statements inside init-sqlite would only apply
+                    // to a fresh schema. We accept re-execution since core seeds
+                    // are idempotent (use INSERT OR IGNORE equivalent via WHERE NOT EXISTS).
+                    match crate::dispatch_exec!(pool, |p| { sqlx::query(stmt).execute(p) }) {
+                        Ok(_) => tracing::debug!("[sqlite] stmt #{} OK", idx),
+                        Err(e) => tracing::warn!(
+                            "[sqlite] stmt #{} SKIP: {} | error: {}",
+                            idx,
+                            stmt.chars().take(120).collect::<String>(),
+                            e
+                        ),
+                    }
+                }
+                tracing::info!("[sqlite] schema initialization complete");
+            }
         }
     }
 
@@ -495,8 +482,9 @@ async fn init_db_tables(pool: &db::Pool) -> anyhow::Result<()> {
     // gb_platform_channel / gb_platform_group / gb_platform_region / gb_jt_channel
     // 曾缺失于 init-sqlite-2.7.4.sql；旧库核心表检测通过而跳过全量 init，
     // 需在此单独补齐（仅 SQLite 需要，PG/MySQL 脚本一直包含这些表）。
-    #[cfg(feature = "sqlite")]
-    ensure_sqlite_upgrade_tables(pool).await?;
+    if pool.dialect().is_sqlite() {
+        ensure_sqlite_upgrade_tables(pool).await?;
+    }
 
     // ---- 阶段 5：**补齐缺失的表**（三种方言都要；幂等，绝不删数据） ----
     ensure_missing_tables(pool).await?;
@@ -513,8 +501,10 @@ async fn init_db_tables(pool: &db::Pool) -> anyhow::Result<()> {
 /// gb_platform_region / gb_jt_channel 曾缺失于 init-sqlite-2.7.4.sql，
 /// 已有库因核心表检测通过而跳过全量 init，这里幂等补齐（列定义与
 /// PostgreSQL/MySQL 脚本对齐，见 db::platform_channel / db::jt1078）。
-#[cfg(feature = "sqlite")]
 async fn ensure_sqlite_upgrade_tables(pool: &db::Pool) -> anyhow::Result<()> {
+    if !pool.dialect().is_sqlite() {
+        return Ok(());
+    }
     const STMTS: &[&str] = &[
         r#"CREATE TABLE IF NOT EXISTS gb_platform_channel (
             id                           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -645,7 +635,8 @@ async fn ensure_sqlite_upgrade_tables(pool: &db::Pool) -> anyhow::Result<()> {
         )"#,
     ];
     for stmt in STMTS {
-        if let Err(e) = sqlx::query(stmt).execute(pool).await {
+        let res = crate::dispatch_exec!(pool, |p| { sqlx::query(stmt).execute(p) });
+        if let Err(e) = res {
             // 语句均带 IF NOT EXISTS，唯一可能的失败是磁盘/权限问题，记录后继续
             tracing::warn!("[sqlite] upgrade table stmt skip: {}", e);
         }
@@ -751,8 +742,11 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
     let ws_state = Arc::new(crate::handlers::websocket::WsState::new());
 
     // SQLite 启动期设备数检查
-    #[cfg(feature = "sqlite")]
-    if let Some(limit) = cfg.database.sqlite_max_devices {
+    if let Some(limit) = cfg
+        .database
+        .sqlite_max_devices
+        .filter(|_| pool.dialect().is_sqlite())
+    {
         match db::device::count_devices(&pool, None, None).await {
             Ok(current) => {
                 let cur = current as usize;
@@ -1574,7 +1568,7 @@ impl AppState {
 
 // Phase 5.6: 这些测试是 SQLite-specific（使用 SqlitePoolOptions / SQLite DDL），
 // 在 --features postgres / mysql 下编译会失败。整组测试 cfg-gate。
-#[cfg(all(test, feature = "sqlite"))]
+#[cfg(test)]
 mod tests {
     //! Phase 4.6 — `select_least_loaded` integration with `state_store` +
     //! `db::media_server::list_online_servers`.
@@ -1587,21 +1581,21 @@ mod tests {
     use super::*;
     use crate::config::{DatabaseConfig, JwtConfig, ServerConfig};
     use chrono::Utc;
-    #[cfg(feature = "sqlite")]
     use sqlx::sqlite::SqlitePoolOptions;
 
     /// Build a minimal `gb_media_server` table on an in-memory SQLite pool.
     /// Returns the pool and a `status=1`/`status=0` inserter closure.
     async fn make_pool_with_servers(rows: &[(&str, i32)], // (id, status 0/1)
     ) -> db::Pool {
-        let pool: db::Pool = SqlitePoolOptions::new()
+        let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect_lazy("sqlite::memory:")
             .expect("lazy pool");
 
         // Minimal schema covering list_online_servers columns.
-        sqlx::query(
-            r#"CREATE TABLE IF NOT EXISTS gb_media_server (
+        crate::dispatch_exec!(&db::Pool::Sqlite(pool.clone()), |p| {
+            sqlx::query(
+                r#"CREATE TABLE IF NOT EXISTS gb_media_server (
                 id VARCHAR(255) PRIMARY KEY,
                 ip VARCHAR(50),
                 hook_ip VARCHAR(50),
@@ -1645,20 +1639,23 @@ mod tests {
                 total_bytes BIGINT,
                 active_stream_count INTEGER
             )"#,
-        )
-        .execute(&pool)
-        .await
+            )
+            .execute(p)
+        })
         .expect("create table");
 
         for (id, status) in rows {
-            sqlx::query("INSERT INTO gb_media_server (id, status) VALUES (?, ?)")
+            crate::dispatch_exec!(&db::Pool::Sqlite(pool.clone()), |p| {
+                sqlx::query(&crate::dyn_where::dialect_sql(
+                    "INSERT INTO gb_media_server (id, status) VALUES (?, ?)",
+                ))
                 .bind(id)
                 .bind(status)
-                .execute(&pool)
-                .await
-                .expect("insert");
+                .execute(p)
+            })
+            .expect("insert");
         }
-        pool
+        db::Pool::Sqlite(pool)
     }
 
     /// Build a minimal `AppConfig` for tests. Only fields used by

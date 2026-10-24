@@ -84,39 +84,68 @@ pub(crate) async fn clear_collect(state: &AppState, raw_id: &str) -> Result<Stri
             .ok_or_else(|| "record not found".to_string())?;
     let record_id =
         crate::handlers::stub::build_cloud_record_id(&media_server, &app, &stream, &file_name);
-    let mut tx = state
-        .pool
-        .begin()
-        .await
-        .map_err(|e| format!("DB error: {e}"))?;
-    if let Some(id) = cloud_record_id {
-        let exists_sql =
-            crate::dyn_where::dialect_sql("SELECT COUNT(*) FROM gb_cloud_record WHERE id = ?");
-        let exists: i64 = sqlx::query_scalar(&exists_sql)
-            .bind(id)
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(|e| format!("DB error: {e}"))?;
-        if exists == 0 {
-            return Err("record not found".to_string());
-        }
-        let sql =
-            crate::dyn_where::dialect_sql("UPDATE gb_cloud_record SET collect = ? WHERE id = ?");
-        sqlx::query(&sql)
-            .bind(false)
-            .bind(id)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| format!("DB error: {e}"))?;
+    // 事务的**类型**是方言相关的（`Transaction<'_, Sqlite|Pg|MySql>`），
+    // 而事务体里的 SQL 是方言中立的（占位符由 `dialect_sql` 统一改写）——
+    // 所以事务体抽成一个**局部宏**：三个方言各展开一次，每次各自推断类型。
+    //
+    // 注意 `Transaction` 本身不是 Executor，它 `Deref` 到 `DB::Connection`，
+    // 所以执行时写 `&mut *tx`。
+    let sql_exists =
+        crate::dyn_where::dialect_sql("SELECT COUNT(*) FROM gb_cloud_record WHERE id = ?");
+    let sql_update =
+        crate::dyn_where::dialect_sql("UPDATE gb_cloud_record SET collect = ? WHERE id = ?");
+    let sql_delete =
+        crate::dyn_where::dialect_sql("DELETE FROM gb_record_collect WHERE record_id = ?");
+
+    macro_rules! clear_collect_body {
+        ($tx:ident) => {{
+            if let Some(id) = cloud_record_id {
+                let exists: i64 = sqlx::query_scalar::<_, i64>(&sql_exists)
+                    .bind(id)
+                    .fetch_one(&mut *$tx)
+                    .await
+                    .map_err(|e| format!("DB error: {e}"))?;
+                if exists == 0 {
+                    return Err("record not found".to_string());
+                }
+                sqlx::query(&sql_update)
+                    .bind(false)
+                    .bind(id)
+                    .execute(&mut *$tx)
+                    .await
+                    .map_err(|e| format!("DB error: {e}"))?;
+            }
+            sqlx::query(&sql_delete)
+                .bind(&record_id)
+                .execute(&mut *$tx)
+                .await
+                .map_err(|e| format!("DB error: {e}"))?;
+            Ok::<_, String>(record_id.clone())
+        }};
     }
-    let sql = crate::dyn_where::dialect_sql("DELETE FROM gb_record_collect WHERE record_id = ?");
-    sqlx::query(&sql)
-        .bind(&record_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| format!("DB error: {e}"))?;
-    tx.commit().await.map_err(|e| format!("DB error: {e}"))?;
-    Ok(record_id)
+
+    // 每个方言各自开事务（事务对象类型不同，无法跨方言共用同一个变量）。
+    crate::dispatch_dialect!(
+        &state.pool,
+        |p| {
+            let mut tx = p.begin().await.map_err(|e| format!("DB error: {e}"))?;
+            let out = clear_collect_body!(tx)?;
+            tx.commit().await.map_err(|e| format!("DB error: {e}"))?;
+            Ok(out)
+        },
+        |p| {
+            let mut tx = p.begin().await.map_err(|e| format!("DB error: {e}"))?;
+            let out = clear_collect_body!(tx)?;
+            tx.commit().await.map_err(|e| format!("DB error: {e}"))?;
+            Ok(out)
+        },
+        |p| {
+            let mut tx = p.begin().await.map_err(|e| format!("DB error: {e}"))?;
+            let out = clear_collect_body!(tx)?;
+            tx.commit().await.map_err(|e| format!("DB error: {e}"))?;
+            Ok(out)
+        },
+    )
 }
 
 #[utoipa::path(
@@ -711,22 +740,22 @@ pub async fn download_file(
 mod tests {
     use super::*;
 
-    #[cfg(feature = "sqlite")]
     #[tokio::test]
     async fn collect_delete_failure_keeps_record_flag() {
         let state = crate::test_support::app_state().await;
-        sqlx::query(
-            "INSERT INTO gb_cloud_record (app, stream, file_name, media_server_id, collect) \
-             VALUES ('rtp', 'rollback', 'rollback.mp4', 'zlm-1', 1)",
-        )
-        .execute(&state.pool)
-        .await
+        crate::dispatch_exec!(&state.pool, |p| {
+            sqlx::query(
+                "INSERT INTO gb_cloud_record (app, stream, file_name, media_server_id, collect) \
+                 VALUES ('rtp', 'rollback', 'rollback.mp4', 'zlm-1', 1)",
+            )
+            .execute(p)
+        })
         .unwrap();
-        let id: i64 =
-            sqlx::query_scalar("SELECT id FROM gb_cloud_record WHERE stream = 'rollback'")
-                .fetch_one(&state.pool)
-                .await
-                .unwrap();
+        let id: i64 = crate::dispatch!(&state.pool, |p| {
+            sqlx::query_scalar::<_, i64>("SELECT id FROM gb_cloud_record WHERE stream = 'rollback'")
+                .fetch_one(p)
+        })
+        .unwrap();
         crate::handlers::stub::ensure_record_collect_table(&state.pool).await;
         let record_id = crate::handlers::stub::build_cloud_record_id(
             "zlm-1",
@@ -734,26 +763,31 @@ mod tests {
             "rollback",
             "rollback.mp4",
         );
-        sqlx::query("INSERT INTO gb_record_collect (record_id, device_id, channel_id, name, create_time) VALUES (?, '', '', '', '')")
-            .bind(&record_id)
-            .execute(&state.pool)
-            .await
-            .unwrap();
-        sqlx::query("CREATE TRIGGER deny_collect_delete BEFORE DELETE ON gb_record_collect BEGIN SELECT RAISE(FAIL, 'blocked'); END")
-            .execute(&state.pool)
-            .await
-            .unwrap();
+        crate::dispatch_exec!(&state.pool, |p| {
+            sqlx::query(&crate::dyn_where::dialect_sql("INSERT INTO gb_record_collect (record_id, device_id, channel_id, name, create_time) VALUES (?, '', '', '', '')"))
+                .bind(&record_id)
+                .execute(p)
+        })
+        .unwrap();
+        crate::dispatch_exec!(&state.pool, |p| {
+            sqlx::query("CREATE TRIGGER deny_collect_delete BEFORE DELETE ON gb_record_collect BEGIN SELECT RAISE(FAIL, 'blocked'); END")
+                .execute(p)
+        })
+        .unwrap();
 
         let result = clear_collect(&state, &id.to_string()).await;
         assert!(
             result.is_err(),
             "blocked collect delete must fail: {result:?}"
         );
-        let flag: i64 = sqlx::query_scalar("SELECT collect FROM gb_cloud_record WHERE id = ?")
+        let flag: i64 = crate::dispatch!(&state.pool, |p| {
+            sqlx::query_scalar::<_, i64>(&crate::dyn_where::dialect_sql(
+                "SELECT collect FROM gb_cloud_record WHERE id = ?",
+            ))
             .bind(id)
-            .fetch_one(&state.pool)
-            .await
-            .unwrap();
+            .fetch_one(p)
+        })
+        .unwrap();
         assert_eq!(flag, 1, "failed delete must roll back flag update");
     }
 
@@ -882,10 +916,8 @@ mod tests {
 
     // ============ 端到端：真实 SQLite + 真实磁盘文件 + 真实 ZIP ============
 
-    #[cfg(feature = "sqlite")]
     use crate::test_support::sqlite_pool_with_schema;
 
-    #[cfg(feature = "sqlite")]
     fn insert_cfg(
         file_name: &str,
         folder: &str,
@@ -907,7 +939,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "sqlite")]
     #[tokio::test]
     async fn test_build_cloud_record_zip_end_to_end() {
         let pool = sqlite_pool_with_schema().await;
@@ -976,7 +1007,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&work);
     }
 
-    #[cfg(feature = "sqlite")]
     #[tokio::test]
     async fn test_build_cloud_record_zip_all_unavailable_is_error() {
         // 关键回归保护：以前这里会返回编造的 taskId + "queued"。
@@ -1015,7 +1045,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&out_dir);
     }
 
-    #[cfg(feature = "sqlite")]
     #[tokio::test]
     async fn test_build_cloud_record_zip_partial_success_reports_skipped() {
         // 一条可用 + 一条文件缺失 → 打包成功 1 个，skipped 如实列出 1 条

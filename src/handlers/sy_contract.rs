@@ -542,7 +542,7 @@ pub async fn sy_test(
     })))
 }
 
-#[cfg(all(test, feature = "sqlite"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::db::Pool;
@@ -552,33 +552,38 @@ mod tests {
 
     /// 插入一台在线设备 + 一条属于它的通道。
     async fn seed_device_and_channel(pool: &Pool, on_line: bool) -> i64 {
-        sqlx::query(
-            "INSERT INTO gb_device (device_id, name, on_line, create_time, update_time) \
+        crate::dispatch_exec!(pool, |p| {
+            sqlx::query(&crate::dyn_where::dialect_sql(
+                "INSERT INTO gb_device (device_id, name, on_line, create_time, update_time) \
              VALUES (?, ?, ?, '2026-01-01 00:00:00', '2026-01-01 00:00:00')",
-        )
-        .bind(DEVICE_ID)
-        .bind("SY 契约测试设备")
-        .bind(if on_line { 1 } else { 0 })
-        .execute(pool)
-        .await
+            ))
+            .bind(DEVICE_ID)
+            .bind("SY 契约测试设备")
+            .bind(if on_line { 1 } else { 0 })
+            .execute(p)
+        })
         .unwrap();
 
-        sqlx::query(
-            "INSERT INTO gb_device_channel (device_id, name, gb_device_id, status, has_audio, \
+        crate::dispatch_exec!(pool, |p| {
+            sqlx::query(&crate::dyn_where::dialect_sql(
+                "INSERT INTO gb_device_channel (device_id, name, gb_device_id, status, has_audio, \
              create_time, update_time, data_type, data_device_id, channel_type) \
              VALUES (?, ?, ?, 'ON', 0, '2026-01-01 00:00:00', '2026-01-01 00:00:00', 0, 0, 0)",
-        )
-        .bind(DEVICE_ID)
-        .bind("SY 契约测试通道")
-        .bind(CHANNEL_ID)
-        .execute(pool)
-        .await
+            ))
+            .bind(DEVICE_ID)
+            .bind("SY 契约测试通道")
+            .bind(CHANNEL_ID)
+            .execute(p)
+        })
         .unwrap();
 
-        sqlx::query_scalar::<_, i64>("SELECT id FROM gb_device_channel ORDER BY id DESC LIMIT 1")
-            .fetch_one(pool)
-            .await
-            .unwrap()
+        crate::dispatch!(pool, |p| {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT id FROM gb_device_channel ORDER BY id DESC LIMIT 1",
+            )
+            .fetch_one(p)
+        })
+        .unwrap()
     }
 
     fn query(pairs: &[(&str, &str)]) -> String {
@@ -618,12 +623,14 @@ mod tests {
         }
 
         // 通道名必须真的没被改掉
-        let names: Vec<String> =
-            sqlx::query_scalar("SELECT name FROM gb_device_channel WHERE gb_device_id = ?")
-                .bind(CHANNEL_ID)
-                .fetch_all(&state.pool)
-                .await
-                .unwrap();
+        let names: Vec<String> = crate::dispatch!(&state.pool, |p| {
+            sqlx::query_scalar::<_, String>(&crate::dyn_where::dialect_sql(
+                "SELECT name FROM gb_device_channel WHERE gb_device_id = ?",
+            ))
+            .bind(CHANNEL_ID)
+            .fetch_all(p)
+        })
+        .unwrap();
         assert!(
             names.iter().all(|n| n != "不该被写进去的名字"),
             "不存在的 id 不得改到别的通道上: {names:?}"
@@ -641,25 +648,27 @@ mod tests {
         seed_device_and_channel(&state.pool, true).await;
 
         // 通道 A：`gb_device_id` 是短数字串 '999999'（主键自增）
-        sqlx::query(
-            "INSERT INTO gb_device_channel (device_id, name, gb_device_id, status, has_audio, \
-             create_time, update_time, data_type, data_device_id, channel_type) \
-             VALUES (?, 'A', '999999', 'ON', 0, '2026-01-01 00:00:00', '2026-01-01 00:00:00', 0, 0, 0)",
-        )
-        .bind(DEVICE_ID)
-        .execute(&state.pool)
-        .await
+        crate::dispatch_exec!(&state.pool, |p| {
+            sqlx::query(
+                &crate::dyn_where::dialect_sql("INSERT INTO gb_device_channel (device_id, name, gb_device_id, status, has_audio, \
+                 create_time, update_time, data_type, data_device_id, channel_type) \
+                 VALUES (?, 'A', '999999', 'ON', 0, '2026-01-01 00:00:00', '2026-01-01 00:00:00', 0, 0, 0)"),
+            )
+            .bind(DEVICE_ID)
+            .execute(p)
+        })
         .unwrap();
         // 通道 B：主键正好是 999999
-        sqlx::query(
-            "INSERT INTO gb_device_channel (id, device_id, name, gb_device_id, status, has_audio, \
-             create_time, update_time, data_type, data_device_id, channel_type) \
-             VALUES (999999, ?, 'B', '34020000001310000992', 'ON', 0, \
-             '2026-01-01 00:00:00', '2026-01-01 00:00:00', 0, 0, 0)",
-        )
-        .bind(DEVICE_ID)
-        .execute(&state.pool)
-        .await
+        crate::dispatch_exec!(&state.pool, |p| {
+            sqlx::query(
+                &crate::dyn_where::dialect_sql("INSERT INTO gb_device_channel (id, device_id, name, gb_device_id, status, has_audio, \
+                 create_time, update_time, data_type, data_device_id, channel_type) \
+                 VALUES (999999, ?, 'B', '34020000001310000992', 'ON', 0, \
+                 '2026-01-01 00:00:00', '2026-01-01 00:00:00', 0, 0, 0)"),
+            )
+            .bind(DEVICE_ID)
+            .execute(p)
+        })
         .unwrap();
 
         let out = super::camera_update(
@@ -698,12 +707,15 @@ mod tests {
             stripped.parse::<i64>().is_ok(),
             "本用例的前提：该号必须能 parse 成 i64（实际 {stripped}）"
         );
-        sqlx::query("UPDATE gb_device_channel SET gb_device_id = ? WHERE gb_device_id = ?")
+        crate::dispatch_exec!(&state.pool, |p| {
+            sqlx::query(&crate::dyn_where::dialect_sql(
+                "UPDATE gb_device_channel SET gb_device_id = ? WHERE gb_device_id = ?",
+            ))
             .bind(stripped)
             .bind(CHANNEL_ID)
-            .execute(&state.pool)
-            .await
-            .unwrap();
+            .execute(p)
+        })
+        .unwrap();
 
         let out = super::camera_one(
             State(state),
@@ -793,12 +805,14 @@ mod tests {
         .0;
         assert_eq!(out.code, 0, "{out:?}");
 
-        let saved: (Option<String>, Option<String>) =
-            sqlx::query_as("SELECT name, owner FROM gb_device_channel WHERE id = ?")
-                .bind(channel_pk)
-                .fetch_one(&state.pool)
-                .await
-                .unwrap();
+        let saved: (Option<String>, Option<String>) = crate::dispatch!(&state.pool, |p| {
+            sqlx::query_as::<_, (Option<String>, Option<String>)>(
+                "SELECT name, owner FROM gb_device_channel WHERE id = ?",
+            )
+            .bind(channel_pk)
+            .fetch_one(p)
+        })
+        .unwrap();
         assert_eq!(saved.0.as_deref(), Some("SY 改名后的通道"));
         assert_eq!(saved.1.as_deref(), Some("SY 对接方"));
     }
@@ -821,12 +835,14 @@ mod tests {
         .unwrap_err();
         assert!(err.to_string().contains("id"), "{err}");
 
-        let saved: Option<String> =
-            sqlx::query_scalar("SELECT name FROM gb_device_channel WHERE id = ?")
-                .bind(channel_pk)
-                .fetch_one(&state.pool)
-                .await
-                .unwrap();
+        let saved: Option<String> = crate::dispatch!(&state.pool, |p| {
+            sqlx::query_scalar::<_, Option<String>>(
+                "SELECT name FROM gb_device_channel WHERE id = ?",
+            )
+            .bind(channel_pk)
+            .fetch_one(p)
+        })
+        .unwrap();
         assert_eq!(saved.as_deref(), Some("SY 契约测试通道"));
     }
 
@@ -947,19 +963,21 @@ mod tests {
         // 注意要同时建一个**非管理员角色**：`find_by_username` 是
         // `gb_user JOIN gb_user_role`，role_id 指向不存在的角色时整行查不出来，
         // 会走到 401 而不是 403 —— 那样就测不到"管理员粒度"这一层了。
-        sqlx::query(
-            "INSERT INTO gb_user_role (id, name, authority, create_time, update_time) \
-             VALUES (2, 'operator', '9', '2026-01-01 00:00:00', '2026-01-01 00:00:00')",
-        )
-        .execute(&state.pool)
-        .await
+        crate::dispatch_exec!(&state.pool, |p| {
+            sqlx::query(
+                "INSERT INTO gb_user_role (id, name, authority, create_time, update_time) \
+                 VALUES (2, 'operator', '9', '2026-01-01 00:00:00', '2026-01-01 00:00:00')",
+            )
+            .execute(p)
+        })
         .unwrap();
-        sqlx::query(
-            "INSERT INTO gb_user (username, password, role_id, push_key, create_time, update_time) \
-             VALUES ('nobody', 'x', 2, 'k', '2026-01-01 00:00:00', '2026-01-01 00:00:00')",
-        )
-        .execute(&state.pool)
-        .await
+        crate::dispatch_exec!(&state.pool, |p| {
+            sqlx::query(
+                "INSERT INTO gb_user (username, password, role_id, push_key, create_time, update_time) \
+                 VALUES ('nobody', 'x', 2, 'k', '2026-01-01 00:00:00', '2026-01-01 00:00:00')",
+            )
+            .execute(p)
+        })
         .unwrap();
 
         let err = super::sy_test(State(state), headers).await.unwrap_err();
