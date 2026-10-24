@@ -44,6 +44,10 @@
 use crate::db::Pool;
 
 /// 一个 `serial` 列及其所属的序列。
+///
+/// 只在 postgres 构建里用得上（sqlite/mysql 的自增主键不依赖序列），
+/// 所以门在 feature 上 —— 否则默认（SQLite）构建会报"never constructed"。
+#[cfg(feature = "postgres")]
 struct SerialColumn {
     /// 表所在 schema（不用硬编码 `public` —— 部署可能改过 `search_path`）。
     schema: String,
@@ -108,12 +112,6 @@ async fn discover_serial_columns(pool: &Pool) -> sqlx::Result<Vec<SerialColumn>>
 
     Ok(rows
         .into_iter()
-        .filter(|(schema, table, column, sequence)| {
-            is_safe_ident(schema)
-                && is_safe_ident(table)
-                && is_safe_ident(column)
-                && is_safe_ident(sequence)
-        })
         .map(|(schema, table, column, sequence)| SerialColumn {
             schema,
             table,
@@ -136,8 +134,10 @@ async fn advance_sequence(pool: &Pool, col: &SerialColumn) -> sqlx::Result<bool>
     //    int8），按 `Option<i64>` 解会报 "mismatched types"。必须显式
     //    `::bigint` 转一道 —— 这与本仓库其它地方的 INT4 列处理是同一个道理。
     let max_col: Option<i64> = sqlx::query_scalar(&format!(
-        "SELECT MAX(\"{}\")::bigint FROM \"{}\".\"{}\"",
-        col.column, col.schema, col.table
+        "SELECT MAX({})::bigint FROM {}.{}",
+        quote_ident(&col.column),
+        quote_ident(&col.schema),
+        quote_ident(&col.table)
     ))
     .fetch_one(pool)
     .await?;
@@ -145,8 +145,9 @@ async fn advance_sequence(pool: &Pool, col: &SerialColumn) -> sqlx::Result<bool>
     // 序列当前状态：`last_value` 是最后发放的值，`is_called=false` 表示
     // 还没发放过 —— 此时下一次 nextval 返回的就是 `last_value` 本身。
     let (last_value, is_called): (i64, bool) = sqlx::query_as(&format!(
-        "SELECT last_value, is_called FROM \"{}\".\"{}\"",
-        col.schema, col.sequence
+        "SELECT last_value, is_called FROM {}.{}",
+        quote_ident(&col.schema),
+        quote_ident(&col.sequence)
     ))
     .fetch_one(pool)
     .await?;
@@ -159,8 +160,8 @@ async fn advance_sequence(pool: &Pool, col: &SerialColumn) -> sqlx::Result<bool>
     }
 
     sqlx::query(&format!(
-        "SELECT setval('\"{}\".\"{}\"', $1, true)",
-        col.schema, col.sequence
+        "SELECT setval({}, $1, true)",
+        regclass_literal(&col.schema, &col.sequence)
     ))
     .bind(max_value)
     .execute(pool)
@@ -172,6 +173,7 @@ async fn advance_sequence(pool: &Pool, col: &SerialColumn) -> sqlx::Result<bool>
 ///
 /// `is_called = false` 表示还没发放过 —— 此时 `nextval` 返回的就是
 /// `last_value` 本身（而不是 `last_value + 1`）。
+#[cfg(any(feature = "postgres", test))]
 fn next_value_of(last_value: i64, is_called: bool) -> i64 {
     if is_called {
         last_value + 1
@@ -186,20 +188,33 @@ fn next_value_of(last_value: i64, is_called: bool) -> i64 {
 /// 序列**领先**时（postgres 的 nextval 非事务性，回滚的 INSERT 或删掉最大 id
 /// 的行都会让序列领先 —— 这是常态）必须**原样不动**：往回拨会让后面几次插入
 /// **复用已经发放过的 id**，而本 schema 没有任何外键，残留引用会静默挂错行。
+#[cfg(any(feature = "postgres", test))]
 fn needs_advance(next_value: i64, max_value: i64) -> bool {
     next_value <= max_value
 }
 
-/// 只放行小写字母、数字与下划线 —— 拼进 SQL 的标识符必须过这一关。
+/// 把标识符安全地嵌进 SQL（postgres 的带引号标识符）。
 ///
-/// 表名/列名/序列名/schema 都来自系统目录，不是用户输入；但仍然过一遍白名单，
-/// 这样即使将来改成从别处取值也不会留下拼接口子。
-#[allow(dead_code)]
-fn is_safe_ident(name: &str) -> bool {
-    !name.is_empty()
-        && name
-            .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+/// 这些名字来自**系统目录**（`pg_class` / `pg_namespace`），不是运行时输入，
+/// 注入面为零 —— 但拼进 SQL 仍必须正确转义：postgres 的带引号标识符里
+/// 出现 `"` 要写成 `""`。
+///
+/// **不要**改回"只放行 `[a-z0-9_]+`"的白名单：那样会把带引号的大写表名
+/// （`"GB_Mixed"`）和非 ASCII 表名（`"终端表"`）**静默跳过** —— 而这些表
+/// 恰恰是最可能带显式种子 id 的表。跳过它们等于本模块要修的
+/// "种子行主键冲突"原样复发，而且日志里一行提示都没有（静默失败最难查）。
+#[cfg(any(feature = "postgres", test))]
+fn quote_ident(name: &str) -> String {
+    format!("\"{}\"", name.replace('"', "\"\""))
+}
+
+/// 拼出 `setval()` 需要的 `regclass` 字面量（`'"schema"."name"'`）。
+///
+/// 字面量里的 `'` 要转义成 `''`。
+#[cfg(any(feature = "postgres", test))]
+fn regclass_literal(schema: &str, name: &str) -> String {
+    let raw = format!("{}.{}", quote_ident(schema), quote_ident(name));
+    format!("'{}'", raw.replace('\'', "''"))
 }
 
 #[cfg(test)]
@@ -239,16 +254,31 @@ mod tests {
         assert_eq!(next_value_of(7, false), 7);
     }
 
-    /// 白名单只放行小写字母、数字与下划线。
+    /// 标识符转义：postgres 的带引号标识符里 `"` 要写成 `""`。
+    ///
+    /// 关键点：**不能**再用"只放行 `[a-z0-9_]+`"的白名单 —— 那会把
+    /// `"GB_Mixed"`、`"终端表"` 这类表**静默跳过**，而它们恰恰是最可能带
+    /// 显式种子 id 的表（跳过 = 本模块要修的主键冲突原样复发，且无日志）。
     #[test]
-    fn safe_ident_rejects_injection_shapes() {
-        assert!(is_safe_ident("gb_user_id_seq"));
-        assert!(is_safe_ident("public"));
-        assert!(!is_safe_ident(""));
-        assert!(!is_safe_ident("GB_USER"));
-        assert!(!is_safe_ident("gb user"));
-        assert!(!is_safe_ident("gb\"user"));
-        assert!(!is_safe_ident("gb_user; drop table x"));
-        assert!(!is_safe_ident("用户"));
+    fn quote_ident_escapes_quotes_and_keeps_exotic_names() {
+        assert_eq!(quote_ident("gb_user"), "\"gb_user\"");
+        assert_eq!(quote_ident("GB_Mixed"), "\"GB_Mixed\"");
+        assert_eq!(quote_ident("终端表"), "\"终端表\"");
+        // 内嵌的 `"` 必须翻倍，否则会提前闭合标识符
+        assert_eq!(quote_ident("gb\"user"), "\"gb\"\"user\"");
+        assert_eq!(
+            quote_ident("a\"; drop table x; --"),
+            "\"a\"\"; drop table x; --\""
+        );
+    }
+
+    /// `setval()` 的 `regclass` 字面量：单引号要转义成两个。
+    #[test]
+    fn regclass_literal_escapes_single_quote() {
+        assert_eq!(
+            regclass_literal("public", "gb_user_id_seq"),
+            "'\"public\".\"gb_user_id_seq\"'"
+        );
+        assert_eq!(regclass_literal("pub'lic", "seq"), "'\"pub''lic\".\"seq\"'");
     }
 }
