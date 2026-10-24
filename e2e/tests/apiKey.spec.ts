@@ -83,23 +83,46 @@ async function readSecretFromDialog(page: Page): Promise<string> {
   return value
 }
 
-/** 清掉上一轮遗留的用例数据，避免多行同名导致严格模式失败。 */
+/**
+ * 清掉上一轮遗留的用例数据，避免多行同名导致严格模式失败。
+ *
+ * **删除必须带 `id`**：删除端点靠查询串里的 `id` 定位行（后端 `IdQuery.id`），
+ * 缺 id 时一律回 400「缺少 id」。此前这里只把列表 URL 换成了删除 URL、没带
+ * id —— 所谓"清理"其实是**空操作**：库里越积越多，最后把"新建的 Key 出现在
+ * 列表里"这条断言挤到第二页去，失败原因看起来像是排序问题。
+ *
+ * 所以这里对每一次删除都**校验结果**：删除失败直接抛错，让用例立刻失败，
+ * 而不是留下一堆脏数据、等后面某条断言以另一种面貌炸掉。
+ */
 async function cleanupLeftovers(page: Page) {
-  await page.evaluate(async (listUrl) => {
+  await page.evaluate(async (base) => {
     const token = (document.cookie.match(/(?:^|; )gbserver_token=([^;]+)/) || [])[1]
     const headers = { 'access-token': decodeURIComponent(token || '') }
-    const list = await (await fetch(listUrl, { headers, credentials: 'omit' })).json()
-    const rows: any[] = list?.data?.list ?? []
-    for (const row of rows) {
-      if (String(row.app || '').startsWith('e2e-apikey')) {
-        await fetch(listUrl.replace('/userApiKeys', '/delete'), {
+    // 列表端点的单页上限是 100，所以这里翻页清，直到某一页为空为止。
+    for (let p = 1; p <= 50; p += 1) {
+      const listRes = await fetch(`${base}/userApiKeys?page=${p}&count=100`, {
+        headers,
+        credentials: 'omit'
+      })
+      const listBody = await listRes.json()
+      const rows: any[] = listBody?.data?.list ?? []
+      if (!rows.length) break
+      for (const row of rows) {
+        if (!String(row.app || '').startsWith('e2e-apikey')) continue
+        const delRes = await fetch(`${base}/delete?id=${encodeURIComponent(row.id)}`, {
           method: 'DELETE',
           headers,
           credentials: 'omit'
         })
+        const delBody = await delRes.json().catch(() => null)
+        if (!delRes.ok || delBody?.code !== 0) {
+          throw new Error(
+            `清理遗留用例数据失败：id=${row.id} HTTP ${delRes.status} body=${JSON.stringify(delBody)}`
+          )
+        }
       }
     }
-  }, apiPath('/userApiKey/userApiKeys?page=1&count=100'))
+  }, apiPath('/userApiKey'))
 }
 
 /** 打开页面并确认有管理员权限（否则跳过）。 */
