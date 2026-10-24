@@ -203,6 +203,17 @@ fn seek_time_to_npt(seek_time: &str) -> f64 {
     0.0
 }
 
+/// **遗留参考实现**：回放控制早就不用它了。
+///
+/// 现在回放控制走 [`build_playback_control_mansrtsp`]（MANSRTSP 报文）——
+/// 本函数生成的是 `<Control><CmdType>DeviceControl>` 的 **MANSCDP** 报文，
+/// 那是"设备控制"（云台/报警/录像）的报文族，设备收到只会当成无法识别的控制命令，
+/// **暂停/继续/拖动/倍速全都不会生效**，而平台侧还返回 success。
+///
+/// 生产代码已无调用点（`grep` 确认），只被本文件的格式断言测试引用，
+/// 因此门在 `cfg(test)` 上 —— 留着它是为了把"当年长什么样"钉住，
+/// 同时不让它以死代码的身份进入生产构建（否则会触发 dead_code 警告）。
+#[cfg(test)]
 pub(crate) fn build_playback_control_xml(
     cmd: &PlaybackControlCmd,
     device_id: &str,
@@ -483,6 +494,31 @@ async fn select_playback_dialog(
             channel_id,
             call_id
         )),
+    }
+}
+
+/// pending 登记的撤销守卫（作用域内析构即撤销）。
+///
+/// 用于"登记了回执、但还没等到回执"这段生命周期：函数提前返回或 future 被
+/// drop（客户端断开）时，pending 会被撤销，而不是一直挂到过期清理。
+struct PendingDropGuard<'a> {
+    manager: &'a Arc<PendingRequestManager>,
+    call_id: String,
+    armed: bool,
+}
+
+impl PendingDropGuard<'_> {
+    /// 解除武装：pending 的生命周期交给调用方继续负责。
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for PendingDropGuard<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            self.manager.cancel(&self.call_id);
+        }
     }
 }
 
@@ -1943,6 +1979,11 @@ impl SipServer {
         _pending_request_manager: &Arc<PendingRequestManager>,
         sqlite_max_devices: Option<usize>,
     ) -> Result<()> {
+        // `sqlite_max_devices` 只在 SQLite 模式下有意义（配置项的注释也写着
+        // "PG/MySQL 后端忽略此字段"），其它方言构建下它是未使用参数 ——
+        // 显式吞掉，避免构建告警。
+        #[cfg(not(feature = "sqlite"))]
+        let _ = sqlite_max_devices;
         let from = req.header("from").cloned().unwrap_or_default();
         let to = req.header("to").cloned().unwrap_or_default();
         let via = req.header("via").cloned().unwrap_or_default();
@@ -5353,6 +5394,17 @@ f=v/1/96/1/2/1/1/0
                 Some(5),
                 target_id,
             );
+        // 从**登记成功**起，本函数被取消（future 被 drop）时也必须撤掉这条 pending。
+        //
+        // 此前这个窗口是漏的：登记发生在 `send_message_to_device` 的 await 之前，
+        // 而撤销守卫在调用方（handlers 层）才建立 —— 两者之间隔着一次 await，
+        // 客户端在这一刻断开就会留下一条 pending，只能等 SIP 层的过期清理
+        // （10s）才消失。守卫放在这里就补上了这段窗口。
+        let mut guard = PendingDropGuard {
+            manager: &self.pending_request_manager,
+            call_id: pending_call_id.clone(),
+            armed: true,
+        };
         let xml_body = build_device_control_xml(device_id, channel_id, cmd_type, body, sn);
         if let Err(error) = self
             .send_message_to_device(
@@ -5363,9 +5415,12 @@ f=v/1/96/1/2/1/1/0
             )
             .await
         {
-            self.pending_request_manager.cancel(&pending_call_id);
+            // guard 在这里析构 → 撤销登记。
             return Err(error);
         }
+        // 发送成功：pending 的生命周期交给调用方（由调用方的守卫负责收尾），
+        // 这里解除武装，别把刚登记好的 pending 撤掉。
+        guard.disarm();
         Ok((sn, receiver))
     }
 

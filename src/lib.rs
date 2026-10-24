@@ -402,7 +402,10 @@ async fn init_db_tables(pool: &db::Pool) -> anyhow::Result<()> {
     match db::seq_sync::sync_serial_sequences(pool).await {
         Ok(n) if n > 0 => tracing::info!("serial 序列已同步（{} 个）", n),
         Ok(_) => {}
-        Err(e) => tracing::warn!("同步 serial 序列失败（不影响启动）: {}", e),
+        Err(e) => tracing::warn!(
+            "同步 serial 序列失败（不影响启动，但\"种子行主键冲突\"可能复现）: {}",
+            e
+        ),
     }
 
     #[cfg(feature = "sqlite")]

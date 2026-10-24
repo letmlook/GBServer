@@ -99,11 +99,45 @@ pub(crate) async fn send_command(
     send_command_and_wait(server, device_id, channel_id, cmd_type, body, label).await
 }
 
+/// 解析设备回执里的 `<Result>`，得出"确认 / 拒绝 / 未确认"与结果码。
+///
+/// **纯函数**，不碰 SIP、不碰 DB —— 所以放在本模块（共享实现所在处），
+/// 而不是留在 `device_stub` 里：那样 `device_stub → device_result` 与
+/// `device_result → device_stub` 会构成**模块环**（Rust 允许同 crate 互引，
+/// 编译不会报错，但职责边界是糊的）。
+pub(crate) fn parse_device_control_result(xml: &str) -> (&'static str, Option<String>) {
+    let result = xml
+        .split_once("<Result>")
+        .and_then(|(_, rest)| rest.split_once("</Result>"))
+        .map(|(value, _)| value.trim());
+    let Some(value) = result.filter(|value| !value.is_empty()) else {
+        return (STATUS_UNCONFIRMED, None);
+    };
+    // 结果码会被回给前端，只保留安全字符并截断，避免把设备侧的任意文本
+    // 原样透出去。
+    let safe_code: String = value
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .take(32)
+        .collect();
+    if value.eq_ignore_ascii_case("OK") {
+        (STATUS_CONFIRMED, Some("OK".to_string()))
+    } else {
+        (STATUS_REJECTED, Some(safe_code))
+    }
+}
+
 /// 等待设备回执期间的 pending 撤销守卫。
 ///
 /// 正常路径上 pending 由回执完成、或被显式取消；但如果 **handler future 被
 /// drop**（HTTP 客户端在等待期间断开），函数体不会跑完，pending 就会残留到
 /// SIP 层的过期清理（10s）才消失。守卫的析构函数保证这种情况下也会撤销。
+///
+/// **收益的准确范围**：只是"提前回收一条 pending"（省下最多 10s 的挂账）。
+/// 仓库里**没有**"该设备已有请求在飞 → 拒绝新命令"的生产判断
+/// （`has_pending_for_device` / `has_pending_for` 只被测试引用），
+/// 所以别按"防止并发命令串扰"来理解这个守卫 —— 它解决的是资源回收，
+/// 不是并发控制。
 struct PendingGuard<'a> {
     server: &'a crate::sip::SipServer,
     device_id: String,
@@ -159,7 +193,7 @@ pub(crate) async fn send_command_and_wait(
     let (status, result_code) = match waited {
         Ok(Ok(xml)) => {
             guard.armed = false;
-            crate::handlers::device_stub::parse_device_control_result(&xml)
+            parse_device_control_result(&xml)
         }
         _ => {
             // 超时或通道被丢弃：撤掉 pending，避免迟到的回执去完成下一代请求。

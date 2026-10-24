@@ -310,32 +310,6 @@ pub struct TransportResultQuery {
     pub wait_result: bool,
 }
 
-pub(crate) fn parse_device_control_result(xml: &str) -> (&'static str, Option<String>) {
-    let result = xml
-        .split_once("<Result>")
-        .and_then(|(_, rest)| rest.split_once("</Result>"))
-        .map(|(value, _)| value.trim());
-    let Some(value) = result.filter(|value| !value.is_empty()) else {
-        return (crate::handlers::device_result::STATUS_UNCONFIRMED, None);
-    };
-    let safe_code: String = value
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
-        .take(32)
-        .collect();
-    if value.eq_ignore_ascii_case("OK") {
-        (
-            crate::handlers::device_result::STATUS_CONFIRMED,
-            Some("OK".to_string()),
-        )
-    } else {
-        (
-            crate::handlers::device_result::STATUS_REJECTED,
-            Some(safe_code),
-        )
-    }
-}
-
 #[utoipa::path(
     post,
     path = "/api/device/query/transport/{device_id}/{stream_mode}",
@@ -1037,7 +1011,9 @@ pub async fn control_record(
                         })));
                     }
                     Err(e) => {
-                        tracing::error!("Failed to send record control: {}", e);
+                        // 共享实现（device_result::send_command_and_wait）已经记过
+                        // 一条带 label 的错误日志，这里不再重复记一条英文的 ——
+                        // 同一次失败两条日志只会干扰排查。
                         return Json(ApiResult::error(format!("远程录像控制命令发送失败: {e}")));
                     }
                 }
@@ -1656,15 +1632,21 @@ mod device_result_tests {
     #[test]
     fn device_result_distinguishes_ok_rejection_and_missing_result() {
         assert_eq!(
-            super::parse_device_control_result("<Response><Result>OK</Result></Response>"),
+            crate::handlers::device_result::parse_device_control_result(
+                "<Response><Result>OK</Result></Response>"
+            ),
             ("confirmed", Some("OK".to_string()))
         );
         assert_eq!(
-            super::parse_device_control_result("<Response><Result>ERROR</Result></Response>"),
+            crate::handlers::device_result::parse_device_control_result(
+                "<Response><Result>ERROR</Result></Response>"
+            ),
             ("rejected", Some("ERROR".to_string()))
         );
         assert_eq!(
-            super::parse_device_control_result("<Response><SN>1</SN></Response>"),
+            crate::handlers::device_result::parse_device_control_result(
+                "<Response><SN>1</SN></Response>"
+            ),
             ("unconfirmed", None)
         );
     }
