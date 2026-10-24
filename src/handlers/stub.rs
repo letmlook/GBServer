@@ -1182,13 +1182,20 @@ pub struct LogListQuery {
     responses(
         (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
         (status = 401, description = "未鉴权"),
+        (status = 403, description = "需要管理员权限"),
     ),
     security(("access_token" = [])),
 )]
 pub async fn log_list(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Query(q): Query<LogListQuery>,
 ) -> Result<axum::response::Response, AppError> {
+    // **管理员门禁**：系统日志里会出现内部错误细节、拓扑信息，且历史上
+    // 曾经把 **JWT 签名密钥原文**写进过告警（见 `src/security.rs` 的说明）。
+    // 普通用户能导出 5 万行日志 = 能读到自己不该读的东西。
+    // 与 API Key 管理端点（`stub.rs` 里的 `require_admin`）同一口径。
+    crate::handlers::authz::require_admin(&state, &headers).await?;
     let page = q.page.unwrap_or(1).max(1);
     let count = q.count.unwrap_or(15).clamp(1, 500);
     // 前端 historyLog 用 level 过滤；旧结构体里叫 log_type，这里两者都接受
@@ -1278,14 +1285,18 @@ pub async fn log_list(
     responses(
         (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
         (status = 401, description = "未鉴权"),
+        (status = 403, description = "需要管理员权限"),
     ),
     security(("access_token" = [])),
 )]
 pub async fn log_file_download(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Path(file_name): Path<String>,
     Query(q): Query<LogExportQuery>,
 ) -> Result<axum::response::Response, AppError> {
+    // **管理员门禁**（同 `log_list`）：导出的是整表日志，普通用户不该能导。
+    crate::handlers::authz::require_admin(&state, &headers).await?;
     use axum::body::Body;
     use axum::http::{header, StatusCode};
     use axum::response::Response;

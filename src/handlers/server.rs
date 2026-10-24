@@ -2666,6 +2666,19 @@ mod log_export_contract_tests {
     use super::*;
     use crate::test_support::app_state;
 
+    /// 构造一个**管理员**身份的请求头。
+    ///
+    /// `/api/log/list` 自 2026-10-25 起要求管理员（系统日志里有内部错误细节，
+    /// 且历史上曾把 JWT 签名密钥原文写进过告警 —— 普通用户能导日志 = 能提权）。
+    /// 测试库里由 schema 种了 `admin` 用户（role_id=1，authority='0'）。
+    fn admin_headers(state: &crate::AppState) -> axum::http::HeaderMap {
+        let jwt = crate::auth::JwtKeys::new(state.config.jwt.secret.as_bytes());
+        let token = jwt.create_token("admin", 60).expect("create admin token");
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("access-token", token.parse().expect("header value"));
+        headers
+    }
+
     /// `?format=csv` 必须真的返回 CSV 附件 —— 此前 `format` 被静默丢弃，
     /// 接口回 JSON 而前端把它存成 `.csv`。
     #[tokio::test]
@@ -2681,6 +2694,7 @@ mod log_export_contract_tests {
 
         let res = crate::handlers::stub::log_list(
             State(state.clone()),
+            admin_headers(&state),
             Query(crate::handlers::stub::LogListQuery {
                 page: None,
                 count: None,
@@ -2721,6 +2735,7 @@ mod log_export_contract_tests {
         let state = app_state().await;
         let res = crate::handlers::stub::log_list(
             State(state.clone()),
+            admin_headers(&state),
             Query(crate::handlers::stub::LogListQuery {
                 page: Some(1),
                 count: Some(10),

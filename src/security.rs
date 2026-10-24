@@ -16,16 +16,29 @@ pub const COMMITTED_DEMO_JWT_SECRET: &str =
     "a7f3c9e2b1d84f6a0e8c5b2d9f1a4e7c0b3d6f9a2e5c8b1d4f7a0e3c6b9d2f5";
 
 /// Built-in weak / demo secrets that must never be used in production.
-const WEAK_SECRETS: &[&str] = &[
-    COMMITTED_DEMO_JWT_SECRET,
-    "change-me",
-    "change-me-in-production",
-    "secret",
-    "admin",
-    "admin123",
-    "password",
-    "1234567890",
-    "0123456789abcdef",
+///
+/// 每项配一句**说明**（不含密钥值）—— 报错时只说说明，**绝不回显密钥**。
+///
+/// 为什么这么较真：校验失败的提示会原样进 `gb_log`，而系统日志的导出端点
+/// （`/api/log/list`、`/api/log/file/*`）此前对**普通用户**开放 —— 提示里
+/// 回显签名密钥，就等于把**管理员身份**白送（拿它伪造一个 HS256 token 即可）。
+/// 所以这里连「密钥的前缀」都不能出现。
+const WEAK_SECRETS: &[(&str, &str)] = &[
+    (
+        COMMITTED_DEMO_JWT_SECRET,
+        "the demo secret committed in config/application.toml",
+    ),
+    ("change-me", "a 'change-me' style placeholder"),
+    (
+        "change-me-in-production",
+        "a 'change-me-in-production' style placeholder",
+    ),
+    ("secret", "a generic placeholder"),
+    ("admin", "a default administrator password"),
+    ("admin123", "a default administrator password"),
+    ("password", "a generic placeholder"),
+    ("1234567890", "a short numeric placeholder"),
+    ("0123456789abcdef", "a short hex placeholder"),
 ];
 
 /// Returns Ok(()) if `secret` is acceptable for a production JWT signing key.
@@ -42,12 +55,12 @@ pub fn validate_jwt_secret(secret: &str) -> Result<(), String> {
         ));
     }
     let lower = secret.to_ascii_lowercase();
-    for weak in WEAK_SECRETS {
+    for (weak, label) in WEAK_SECRETS {
         if lower == *weak || lower.starts_with(weak) {
+            // **不回显密钥值**（连前缀也不回）—— 见 `WEAK_SECRETS` 的说明。
             return Err(format!(
-                "JWT secret matches a known weak/default value (starts with '{}'); \
-                 generate a fresh secret with `openssl rand -hex 32`",
-                weak
+                "JWT secret matches a known weak/default value ({label}); \
+                 generate a fresh secret with `openssl rand -hex 32`"
             ));
         }
     }
