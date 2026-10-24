@@ -48,31 +48,74 @@ pub fn build_jt808_frame(msg_id: u16, phone: &str, seq: u16, body: &[u8]) -> Vec
     frame
 }
 
-/// Convert phone number string (e.g. "13812345678") to BCD bytes (6 bytes, padded with 0)
+/// Convert phone number string (e.g. "13812345678") to BCD bytes (6 bytes).
+///
+/// JT/T 808 消息头第 4~9 字节是「终端手机号」：6 字节 BCD = 12 位数字。
+/// **不足 12 位时在前面补 0**（大陆手机号补 0，港澳台按区号位数补）——
+/// 见 JT/T 808-2013 §5.4.1.2 的消息头定义：
+/// > 起始字节 4　终端手机号　BCD　手机号不足 12 位，则在前补充数字，
+/// > 大陆手机号补充数字 0，港澳台则根据其区号进行位数补充。
+///
+/// 所以这里是**左补零**（号码整体靠右放）：
+/// `"13812345678"` → `"013812345678"` → `0x01 0x38 0x12 0x34 0x56 0x78`。
+///
+/// 超过 12 位时保留**低 12 位**（港澳台的区号 + 号码可能超长）。
+///
+/// **为什么不能右补零**：右补零不是单射 —— `"13812345678"` 与 `"138123456780"`
+/// 会编码成同一串字节；而解码端再「去掉尾随 0」更糟：真实号码本身以 0 结尾时
+/// （约 10% 的手机号）会被**截掉一位**，不同终端塌缩到同一个 key
+/// （`terminal_addrs` 是 `HashMap<String, SocketAddr>`，一个 key 只留一个地址
+/// → A 车的指令会发到 B 车）。
 fn phone_to_bcd(phone: &str) -> [u8; 6] {
-    let mut bcd = [0u8; 6];
     let digits: Vec<u8> = phone
         .chars()
         .filter(|c| c.is_ascii_digit())
-        .take(12)
         .map(|c| c as u8 - b'0')
         .collect();
+    // 12 位数字，**左侧**补 0
+    let mut s = [0u8; 12];
+    let n = digits.len().min(12);
+    s[12 - n..].copy_from_slice(&digits[digits.len() - n..]);
+    let mut bcd = [0u8; 6];
     for i in 0..6 {
-        let hi = digits.get(i * 2).copied().unwrap_or(0);
-        let lo = digits.get(i * 2 + 1).copied().unwrap_or(0);
-        bcd[i] = (hi << 4) | lo;
+        bcd[i] = (s[i * 2] << 4) | s[i * 2 + 1];
     }
     bcd
 }
 
-/// Parse BCD bytes back to phone number string
+/// 把号码规范化成**平台内部唯一形态**：只保留数字、去掉前导 0。
+///
+/// 为什么需要：管理员在「JT1078 终端」页手填号码，可能带前导 0
+/// （`"013912345678"`）；而设备注册上报的号码经 [`bcd_to_phone`] 解出来
+/// **已经不带前导 0**（`"13912345678"`）。两种写法不统一的话，同一个终端
+/// 在库里就会留下两行，而且管理员按自己填的号码**查不到**设备
+/// （`get_terminal_by_phone` 是精确匹配）。
+///
+/// 全部是 0 的输入按原样返回（不返回空串）—— 那是无意义的号码，
+/// 由调用方按「缺少 phoneNumber」拒绝。
+pub fn canonical_phone(phone: &str) -> String {
+    let digits: String = phone.chars().filter(|c| c.is_ascii_digit()).collect();
+    let trimmed = digits.trim_start_matches('0');
+    if trimmed.is_empty() {
+        digits
+    } else {
+        trimmed.to_string()
+    }
+}
+
+/// Parse BCD bytes back to phone number string.
+///
+/// 与 [`phone_to_bcd`] 互为**严格逆运算**：解出 12 位数字后去掉**前导**的补 0。
+///
+/// 去掉的是**前导** 0 而不是尾随 0 —— 见 [`phone_to_bcd`] 的注释：
+/// 尾随 0 分不清是「号码本身的 0」还是「右补零的填充」，去掉就会截断真实号码。
 pub fn bcd_to_phone(bcd: &[u8; 6]) -> String {
     let mut s = String::with_capacity(12);
     for &b in bcd.iter() {
         s.push(((b >> 4) + b'0') as char);
         s.push(((b & 0x0F) + b'0') as char);
     }
-    s.trim_end_matches('0').to_string()
+    s.trim_start_matches('0').to_string()
 }
 
 // ── JT1078 command builders ──
@@ -568,6 +611,62 @@ mod tests {
         let bcd = phone_to_bcd("13812345678");
         let phone = bcd_to_phone(&bcd);
         assert_eq!(phone, "13812345678");
+    }
+
+    /// 回归：号码**以 0 结尾**时不能被截断。
+    ///
+    /// 旧实现是「右补零 + 去尾随 0」：解码 `"138123456700"` 时把尾随的 0
+    /// 全去掉 → `"1381234567"`，真实号码被**截掉一位**；而且不同号码会塌缩到
+    /// 同一个 `terminal_addrs` key（`HashMap<String, SocketAddr>` 一个 key 只留
+    /// 一个地址 → **A 车的指令发给了 B 车**）。
+    ///
+    /// 现在按 JT/T 808-2013 §5.4.1.2 **左补零**，解码去的是**前导** 0 ——
+    /// 往返对任意号码都是恒等的。
+    #[test]
+    fn phone_bcd_roundtrip_keeps_trailing_zeros() {
+        for phone in [
+            "13812345678",
+            "13812345670", // 末位是 0 —— 旧实现会截成 "1381234567"
+            "13812345600",
+            "13900000000",
+            "13800000001",
+            "138",
+        ] {
+            let bcd = phone_to_bcd(phone);
+            assert_eq!(
+                bcd_to_phone(&bcd),
+                phone,
+                "BCD 往返必须还原原号码（{phone} → {bcd:02X?} → {}）",
+                bcd_to_phone(&bcd)
+            );
+        }
+    }
+
+    /// 回归：BCD 的字节布局必须是**左补零**（JT/T 808 标准）。
+    ///
+    /// `"13812345678"` → `"013812345678"` → `0x01 0x38 0x12 0x34 0x56 0x78`。
+    /// 右补零（`0x13 0x81 ... 0x80`）与真实终端不兼容 —— 标准明确要求
+    /// 「手机号不足 12 位，则在前补充数字」。
+    #[test]
+    fn phone_bcd_layout_is_left_padded() {
+        assert_eq!(
+            phone_to_bcd("13812345678"),
+            [0x01, 0x38, 0x12, 0x34, 0x56, 0x78]
+        );
+        assert_eq!(
+            phone_to_bcd("13912345678"),
+            [0x01, 0x39, 0x12, 0x34, 0x56, 0x78]
+        );
+    }
+
+    /// 回归：号码规范化 —— 管理员带前导 0 手填，要与设备上报的形态一致。
+    #[test]
+    fn canonical_phone_strips_leading_zeros() {
+        assert_eq!(canonical_phone("013912345678"), "13912345678");
+        assert_eq!(canonical_phone(" 13912345678 "), "13912345678");
+        assert_eq!(canonical_phone("13912345670"), "13912345670");
+        assert_eq!(canonical_phone("0000"), "0000"); // 全 0 按原样返回
+        assert_eq!(canonical_phone(""), "");
     }
 
     #[test]

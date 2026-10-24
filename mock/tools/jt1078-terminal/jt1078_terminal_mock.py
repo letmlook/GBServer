@@ -629,14 +629,18 @@ def main():
     host, _, port = args.server.partition(":")
     server_addr = (host, int(port))
 
-    # 解析手机号：**BCD 编码**（JT/T 808 规定终端手机号为 6 字节 BCD）。
+    # 解析手机号：**BCD 编码**（JT/T 808 规定终端手机号为 6 字节 BCD = 12 位数字）。
     #
     # 此前用 `int(x).to_bytes(6, "big")` 写成**二进制**，而平台按 BCD 解码，
     # 得到的是 "00033=3=8<4>" 这种乱码 —— 终端注册必然失败。
+    #
+    # **补 0 在前面**（JT/T 808-2013 §5.4.1.2 消息头定义：手机号不足 12 位，
+    # 则在前补充数字，大陆手机号补 0）：13912345678 → 013912345678。
+    # 平台侧 `command::bcd_to_phone` 去掉的也是**前导** 0 —— 两边必须一致，
+    # 否则平台存下来的号码与管理员填的号码对不上（真实终端会带前导 0）。
     if hasattr(args, "phone_decimal") and args.phone_decimal:
-        digits = [int(c) for c in args.phone_decimal if c.isdigit()][:12]
-        while len(digits) < 12:
-            digits.append(0)
+        digits = [int(c) for c in args.phone_decimal if c.isdigit()][-12:]
+        digits = [0] * (12 - len(digits)) + digits
         phone = bytes(
             (digits[i * 2] << 4) | digits[i * 2 + 1] for i in range(6)
         )

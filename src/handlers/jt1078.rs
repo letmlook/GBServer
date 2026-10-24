@@ -606,7 +606,12 @@ pub async fn terminal_add(
     State(state): State<AppState>,
     Json(body): Json<TerminalAddBody>,
 ) -> Result<Json<ApiResult<()>>, AppError> {
-    let phone = body.phone_number.as_deref().unwrap_or("").trim();
+    // 规范化号码：管理员可能带前导 0 手填（"013912345678"），而设备注册
+    // 上报的号码解出来不带前导 0（"13912345678"）—— 不统一就是同一个终端
+    // 两行、且管理员按自己填的号码查不到。详见 `jt1078::command::canonical_phone`。
+    let phone_raw = body.phone_number.as_deref().unwrap_or("").trim();
+    let phone = crate::jt1078::command::canonical_phone(phone_raw);
+    let phone = phone.as_str();
     if phone.is_empty() {
         return Err(AppError::business(ErrorCode::Error400, "缺少 phoneNumber"));
     }
@@ -651,7 +656,12 @@ pub async fn terminal_update(
     State(state): State<AppState>,
     Json(body): Json<TerminalUpdateBody>,
 ) -> Result<Json<ApiResult<()>>, AppError> {
-    let phone = body.phone_number.as_deref().unwrap_or("").trim();
+    // 规范化号码：管理员可能带前导 0 手填（"013912345678"），而设备注册
+    // 上报的号码解出来不带前导 0（"13912345678"）—— 不统一就是同一个终端
+    // 两行、且管理员按自己填的号码查不到。详见 `jt1078::command::canonical_phone`。
+    let phone_raw = body.phone_number.as_deref().unwrap_or("").trim();
+    let phone = crate::jt1078::command::canonical_phone(phone_raw);
+    let phone = phone.as_str();
     if phone.is_empty() {
         return Err(AppError::business(ErrorCode::Error400, "缺少 phoneNumber"));
     }
