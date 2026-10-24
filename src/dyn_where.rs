@@ -24,7 +24,7 @@
 /// 一次性抓到 23 处。写法上刻意保留 `?`：三种方言共用**同一份 SQL 文本**，
 /// 避免再把一条语句抄三遍（"改了这里忘了那里"）。
 pub fn dialect_sql(sql: &str) -> std::borrow::Cow<'_, str> {
-    rewrite_placeholders(sql, cfg!(feature = "postgres"))
+    rewrite_placeholders(sql, crate::db::dialect::current().is_postgres())
 }
 
 /// `dialect_sql` 的可测版本：`postgres` 显式传入，便于在 sqlite 构建下
@@ -86,7 +86,7 @@ fn rewrite_placeholders(sql: &str, postgres: bool) -> std::borrow::Cow<'_, str> 
 /// 2026-10-20 在 postgres 上实测命中 3 处：录像计划通道列表、报警列表/详情，
 /// 以及录像计划调度器 —— 其中调度器那处会让**云录像计划每一轮都失败**。
 pub fn bigint_col(col: &str) -> String {
-    bigint_col_for(col, cfg!(feature = "postgres"))
+    bigint_col_for(col, crate::db::dialect::current().is_postgres())
 }
 
 /// `bigint_col` 的可测版本：`postgres` 显式传入。
@@ -122,13 +122,7 @@ fn bigint_col_for(col: &str, postgres: bool) -> String {
 /// 由**平台自己**写的时间列（如 `gb_log.time`，Rust 用 `Local::now()` 写的）
 /// 必须在 Rust 里用同一个时钟算 —— 见 `db::log::delete_older_than`。
 pub fn days_ago_expr(days: u32) -> String {
-    if cfg!(feature = "postgres") {
-        format!("NOW() - INTERVAL '{days} days'")
-    } else if cfg!(feature = "mysql") {
-        format!("DATE_SUB(NOW(), INTERVAL {days} DAY)")
-    } else {
-        format!("datetime('now', '-{days} days')")
-    }
+    crate::db::dialect::days_ago_expr_for(days, crate::db::dialect::current())
 }
 
 /// 动态 WHERE 构造器（录像计划通道列表用）。
@@ -173,7 +167,7 @@ impl DynWhere {
 
     /// 按方言生成最终 SQL（postgres 把 `?` 换成 `$1..$n`）。
     pub(crate) fn sql(&self, base: &str) -> String {
-        self.sql_for(base, cfg!(feature = "postgres"))
+        self.sql_for(base, crate::db::dialect::current().is_postgres())
     }
 
     /// `sql` 的可测版本：`postgres` 显式传入，便于在 sqlite 构建下也能

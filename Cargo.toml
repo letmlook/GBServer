@@ -5,10 +5,18 @@ edition = "2021"
 description = "GBServer — GB28181 国标信令、流媒体接入与级联管理平台"
 
 [features]
-default = ["sqlite"]
-# 数据库三选一：默认 SQLite（轻量、零依赖、适合开发/演示/边缘节点/小规模生产）；
-#   MySQL 使用 --no-default-features --features mysql；
-#   PostgreSQL 使用 --no-default-features --features postgres
+# 数据库后端：**三种方言同时编进同一个二进制**，运行时按 `database.url`
+# 的 scheme 选库（sqlite / postgres / mysql）。
+#
+#   sqlite:  / file:        → SQLite
+#   postgres: / postgresql: → PostgreSQL
+#   mysql:   / mariadb:    → MySQL
+#
+# 三个驱动**必须同时启用** —— `db::Pool` 是运行期多态枚举，引用了三种
+# 具体 pool 类型。少开会直接 `compile_error!`（见 `src/db/mod.rs`）。
+#
+# 运行时选择由 `src/db/dialect.rs` 的 `Dialect` 枚举承担。
+default = ["sqlite", "mysql", "postgres"]
 mysql = ["sqlx/mysql"]
 postgres = ["sqlx/postgres"]
 sqlite = ["sqlx/sqlite"]
