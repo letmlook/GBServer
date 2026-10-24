@@ -2071,14 +2071,14 @@ pub async fn catalog_add(
     );
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
 
-    let sql = if cfg!(feature = "postgres") {
+    // `dialect_sql` 在**定义点**改写占位符：postgres → `$1..$7`，mysql / sqlite → 原样 `?`。
+    // 此前是 `cfg!(feature = "postgres")` 的 if/else **两份手写 SQL** —— 两份必须同步改，
+    // 漏改一份就在某个方言上炸；现在只有一份文本，占位符由 `dialect_sql` 统一处理。
+    let sql = crate::dyn_where::dialect_sql(
         "INSERT INTO gb_platform_catalog (name, parent, civil_code, business_group, platform_id, create_time, update_time) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7)"
-    } else {
-        "INSERT INTO gb_platform_catalog (name, parent, civil_code, business_group, platform_id, create_time, update_time) \
-         VALUES (?, ?, ?, ?, ?, ?, ?)"
-    };
-    let affected = sqlx::query(sql)
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
+    );
+    let affected = sqlx::query(&sql)
         .bind(&name)
         .bind(&parent)
         .bind(&civil_code)
@@ -2163,16 +2163,13 @@ pub async fn catalog_edit(
     let platform_id = body.platform_id;
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
 
-    let sql = if cfg!(feature = "postgres") {
-        "UPDATE gb_platform_catalog SET name = COALESCE($1, name), parent = COALESCE($2, parent), \
-         civil_code = COALESCE($3, civil_code), business_group = COALESCE($4, business_group), \
-         platform_id = COALESCE($5, platform_id), update_time = $6 WHERE id = $7"
-    } else {
+    // 同上：`dialect_sql` 在定义点统一改写占位符，不再手写两份 SQL。
+    let sql = crate::dyn_where::dialect_sql(
         "UPDATE gb_platform_catalog SET name = COALESCE(?, name), parent = COALESCE(?, parent), \
          civil_code = COALESCE(?, civil_code), business_group = COALESCE(?, business_group), \
-         platform_id = COALESCE(?, platform_id), update_time = ? WHERE id = ?"
-    };
-    let affected = sqlx::query(sql)
+         platform_id = COALESCE(?, platform_id), update_time = ? WHERE id = ?",
+    );
+    let affected = sqlx::query(&sql)
         .bind(name.as_deref())
         .bind(parent.as_deref())
         .bind(civil_code.as_deref())
