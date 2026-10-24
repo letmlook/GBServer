@@ -234,6 +234,13 @@ pub async fn push_update(
     )
     .await
     {
+        // 命中 0 行 = 推流记录不存在 → 回 404。
+        // 此前写的是 `Ok(_)` —— 看着像「已 match 检查过」，实际把 `u64` 直接丢掉，
+        // 目标不存在也回 200「updated successfully」（**假成功**）。
+        Ok(0) => Err(AppError::business(
+            ErrorCode::Error404,
+            format!("推流记录不存在: id={id}"),
+        )),
         Ok(_) => Ok(Json(ApiResult::success(serde_json::json!({
             "id": id,
             "message": "Push stream updated successfully"

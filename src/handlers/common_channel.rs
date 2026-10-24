@@ -444,6 +444,7 @@ pub struct ChannelUpdateBody {
         (status = 200, description = "更新成功",
          body = ApiResult<utoipa::TupleUnit>),
         (status = 400, description = "缺少 id"),
+        (status = 404, description = "通道不存在"),
     ),
     security(("access_token" = [])),
 )]
@@ -475,7 +476,10 @@ pub async fn channel_update(
         stream_identification: body.stream_identification.as_deref(),
         channel_type: body.channel_type,
     };
-    common_channel::update(&state.pool, id, &fields, &now).await?;
+    // 命中 0 行 = 通道不存在 → 回 404。此前直接丢弃返回值、回 200「更新成功」，
+    // 是**假成功**：前端弹「保存成功」，实际一行都没改。
+    let affected = common_channel::update(&state.pool, id, &fields, &now).await?;
+    crate::handlers::require_affected(affected, "通道", id)?;
     Ok(Json(ApiResult::<()>::success_empty()))
 }
 
@@ -495,6 +499,7 @@ pub struct ChannelResetBody {
         (status = 200, description = "重置成功",
          body = ApiResult<utoipa::TupleUnit>),
         (status = 400, description = "缺少 id"),
+        (status = 404, description = "通道不存在"),
     ),
     security(("access_token" = [])),
 )]
@@ -506,7 +511,9 @@ pub async fn channel_reset(
         .id
         .ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id"))?;
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    common_channel::reset(&state.pool, id, &now).await?;
+    // 命中 0 行 = 通道不存在 → 回 404（同 `channel_update`）。
+    let affected = common_channel::reset(&state.pool, id, &now).await?;
+    crate::handlers::require_affected(affected, "通道", id)?;
     Ok(Json(ApiResult::<()>::success_empty()))
 }
 

@@ -615,7 +615,9 @@ pub async fn region_update(
         .id
         .ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id"))?;
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    region::update(
+    // 命中 0 行 = 区域不存在 → 回 404。此前丢弃返回值、回 200「成功」，
+    // 是**假成功**（前端弹「保存成功」，实际一行都没改）。
+    let affected = region::update(
         &state.pool,
         id,
         body.device_id.as_deref(),
@@ -625,6 +627,7 @@ pub async fn region_update(
         &now,
     )
     .await?;
+    crate::handlers::require_affected(affected, "区域", id)?;
     Ok(Json(ApiResult::<()>::success_empty()))
 }
 
@@ -946,7 +949,8 @@ pub async fn group_update(
         .id
         .ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id"))?;
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    group::update(
+    // 命中 0 行 = 分组不存在 → 回 404（同 `region_update`）。
+    let affected = group::update(
         &state.pool,
         id,
         body.device_id.as_deref(),
@@ -958,6 +962,7 @@ pub async fn group_update(
         &now,
     )
     .await?;
+    crate::handlers::require_affected(affected, "分组", id)?;
     Ok(Json(ApiResult::<()>::success_empty()))
 }
 

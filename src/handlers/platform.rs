@@ -1253,7 +1253,10 @@ pub async fn platform_update(
 
     let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
 
-    platform_db::update(
+    // 命中 0 行 = 平台不存在 → 回 404。此前丢弃返回值、回 200「平台更新成功」，
+    // 是**假成功**：紧接着的 `get_by_id()` 返回 None → `sync_platform_registration`
+    // 被跳过，级联注册状态从未被触碰，用户却看到「更新成功」。
+    let affected = platform_db::update(
         &state.pool,
         id,
         name,
@@ -1267,6 +1270,7 @@ pub async fn platform_update(
         &now,
     )
     .await?;
+    crate::handlers::require_affected(affected, "平台", id)?;
 
     #[cfg(feature = "postgres")]
     sqlx::query(
@@ -1988,6 +1992,22 @@ pub async fn platform_channel_custom_update(
 
     let custom_name = body.custom_name.as_deref().or(body.name.as_deref());
     let custom_info = body.custom_info.as_deref();
+
+    // 目标通道不存在 → 回 404（此前一律回 200「自定义通道更新成功」，是**假成功**）。
+    //
+    // **不能**直接拿 `platform_channel::update` 的返回值判存在性：那个函数在
+    // `custom_name` 与 `custom_info` **都为空**时会提前 `return Ok(0)`
+    // （「没有要改的字段」），此时通道**存在**也会拿到 0 → 会被误判成 404。
+    // 所以这里先按 id 查存在性。
+    if platform_channel::get_by_id(&state.pool, id)
+        .await?
+        .is_none()
+    {
+        return Err(AppError::business(
+            ErrorCode::Error404,
+            format!("通道不存在: id={id}"),
+        ));
+    }
 
     platform_channel::update(&state.pool, id, custom_name, custom_info).await?;
     if let Some(custom_device_id) = body.custom_device_id.as_deref() {
