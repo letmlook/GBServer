@@ -236,7 +236,14 @@ async fn issue_auth_code(
             }
         }
         Ok(None) => {}
-        Err(e) => tracing::warn!("JT1078 读取终端鉴权码失败 phone={phone}: {e}"),
+        Err(e) => {
+            // **读失败 ≠ 没配置**。若在这里继续往下走（生成随机码并写库），
+            // 一次瞬时的读失败就会把运维在管理页配好的 `auth_code` **覆盖掉** ——
+            // 那些终端随后全部鉴权失败，而平台完全看不出发生过覆盖。
+            // 读失败时宁可注册失败（可重试），也不能覆盖既有配置。
+            tracing::warn!("JT1078 读取终端鉴权码失败 phone={phone}: {e}");
+            return Err(format!("读取终端鉴权码失败（phone={phone}）"));
+        }
     }
     // 没有配置：生成一个并写回库里。
     let generated = format!("{:016x}", rand::random::<u64>());
@@ -567,6 +574,81 @@ mod terminal_auth_tests {
             .unwrap()
             .expect("鉴权码必须落库");
         assert_eq!(stored.trim_end_matches('\0'), issued);
+    }
+
+    /// 回归：**鉴权码写不进库时，注册必须回 `result=1`，绝不能下发一个必然被拒的码**。
+    ///
+    /// 校验路径（0x0102）只认**库里存的**码。若签发时没落库，平台下发的码就永远
+    /// 校验不过 —— 终端拿到码、回送、被拒，而且**再也自愈不了**（库里没码）。
+    /// 回 `result=1` 让终端知道"没成功"，重试时数据库若已恢复就能正常注册 ——
+    /// 失败因此**可恢复**，而不是一次性的永久锁死。
+    #[tokio::test]
+    async fn register_fails_when_auth_code_cannot_be_persisted() {
+        let pool = crate::test_support::sqlite_pool_with_schema().await;
+        seed_terminal(&pool, None).await;
+        // 让鉴权码的写入失败（只拦 auth_code 这一列，不影响其它 UPDATE）
+        sqlx::query(
+            "CREATE TRIGGER deny_auth_code BEFORE UPDATE OF auth_code ON gb_jt_terminal \
+             BEGIN SELECT RAISE(FAIL, 'blocked'); END",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let manager = manager_with_pool(pool.clone());
+
+        let addr: std::net::SocketAddr = "127.0.0.1:60007".parse().unwrap();
+        let (replies, _) = feed_and_process(&manager, addr, &register_frame(1)).await;
+        assert_eq!(replies.len(), 1, "注册必须回一条 0x8100");
+        let (_, msg) = crate::jt1078::frame::parse_jt808_frame(&replies[0].1).unwrap();
+        assert_eq!(msg.msg_id, 0x8100);
+        assert_eq!(msg.body[2], 1, "写不进库时注册结果必须是 1（失败）");
+        assert!(
+            msg.body.len() <= 3,
+            "失败时不应下发任何鉴权码（body 只有 流水号2 + 结果1）"
+        );
+        // 库里本来就没有码（写失败了），不能凭空出现一个
+        let stored = crate::db::jt1078::get_auth_code_by_phone(&pool, PHONE)
+            .await
+            .unwrap();
+        assert!(
+            stored.as_ref().map(|c| c.trim().is_empty()).unwrap_or(true),
+            "写失败时库里不应留下鉴权码: {stored:?}"
+        );
+    }
+
+    /// 回归：**读**失败不能覆盖运维手工配置的鉴权码。
+    ///
+    /// "读失败"与"没配置"是两件事。此前读失败被当成"没配置" → 生成随机码并
+    /// **覆盖**库里配好的码 → 那些终端全部鉴权失败，而平台完全看不出发生过覆盖。
+    #[tokio::test]
+    async fn auth_code_read_failure_does_not_overwrite_configured_code() {
+        let pool = crate::test_support::sqlite_pool_with_schema().await;
+        seed_terminal(&pool, Some(CONFIGURED_AUTH_CODE)).await;
+        let manager = manager_with_pool(pool.clone());
+
+        // 让读取鉴权码失败：把 auth_code 列换成不可读的表达式
+        sqlx::query("ALTER TABLE gb_jt_terminal RENAME TO gb_jt_terminal_bak")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let r = issue_auth_code(&manager, PHONE).await;
+        let msg = r.err().expect("读失败必须报错，不能当成'没配置'");
+        assert!(msg.contains("读取终端鉴权码失败"), "{msg}");
+
+        // 恢复表，确认配置没被动过
+        sqlx::query("ALTER TABLE gb_jt_terminal_bak RENAME TO gb_jt_terminal")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let stored = crate::db::jt1078::get_auth_code_by_phone(&pool, PHONE)
+            .await
+            .unwrap()
+            .expect("鉴权码应仍在");
+        assert_eq!(
+            stored.trim_end_matches('\0'),
+            CONFIGURED_AUTH_CODE,
+            "读失败不得覆盖运维配置的鉴权码"
+        );
     }
 
     /// C3：0x0102 是**终端鉴权**。鉴权码对得上 → 0x8102 结果 0 并记为已鉴权；

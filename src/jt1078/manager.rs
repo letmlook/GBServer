@@ -790,58 +790,92 @@ impl Jt1078Manager {
     }
 
     pub async fn cleanup_once(&self) -> usize {
-        let mut map = self.sessions.lock().await;
-        let now = Instant::now();
-        let mut removed_addrs = Vec::new();
-        for (k, v) in map.iter() {
-            if now.duration_since(v.last_heartbeat) > self.timeout {
-                removed_addrs.push(*k);
+        // **锁的作用域要收窄**：下面几段各自用独立的作用域把锁取出来又放掉，
+        // 最后一段（DB 写）在**所有锁之外**执行。
+        //
+        // 原因：`self.sessions` 是**所有**入站 JT1078 报文都要拿的锁
+        // （`process_jt_message` 一进来就 `sessions.lock().await`）。如果在这把
+        // 锁的持有期内做 DB 往返（置终端离线），那么 DB 一慢、连接池一满，
+        // **整个 JT1078 信令面**（注册、心跳、0x0200 位置汇报、指令应答）
+        // 都会被卡住 —— 一个后台清理任务不该有能力拖垮信令。
+        //
+        // 第一段：移除超时会话（只动内存）。
+        let removed_addrs: Vec<SocketAddr> = {
+            let mut map = self.sessions.lock().await;
+            let now = Instant::now();
+            let mut removed = Vec::new();
+            for (k, v) in map.iter() {
+                if now.duration_since(v.last_heartbeat) > self.timeout {
+                    removed.push(*k);
+                }
             }
+            for k in removed.iter() {
+                map.remove(k);
+            }
+            removed
+        };
+
+        if removed_addrs.is_empty() {
+            return 0;
         }
-        for k in removed_addrs.iter() {
-            map.remove(k);
-        }
-        // Also clean terminal registry
-        if !removed_addrs.is_empty() {
+
+        // 第二段：清终端地址登记表，并收集"因此超时"的终端（只动内存）。
+        let stale_phones: Vec<String> = {
             let mut terms = self.terminal_addrs.lock().await;
-            // 顺带把这些终端的**鉴权状态**也清掉：会话超时 = 终端已经不在了，
-            // 留着"已鉴权"会让它下次进来时被当成已鉴权通过（强制鉴权档下尤其不对）。
-            let mut stale_phones: Vec<String> = Vec::new();
+            let mut stale = Vec::new();
             terms.retain(|phone, a| {
                 let keep = !removed_addrs.contains(a);
                 if !keep {
-                    stale_phones.push(phone.clone());
+                    stale.push(phone.clone());
                 }
                 keep
             });
-            drop(terms);
-            if !stale_phones.is_empty() {
-                // 1) 清掉内存里的"已鉴权"标记（复用现成的 helper，别让两份
-                //    清理逻辑分叉）。
-                for phone in &stale_phones {
-                    self.clear_authenticated(phone).await;
-                }
-                // 2) **同时把库里的在线标志置回 false**。
-                //    `gb_jt_terminal.status` 全仓库只有一处会写（`persist_terminal_online`），
-                //    而且参数恒为 `true` —— 也就是"粘 true"的：终端超时后库里的在线
-                //    标志纹丝不动，心跳路径还会把地址重新登记回来。结果是
-                //    "会话超时=终端已经不在了"这条语义**没有真正落地**：
-                //    超时的终端仍被当作在线、平台照样能给它下发命令，
-                //    而它其实从未重新鉴权过。
-                //    这里补上写 false，"超时 ⇒ 真离线 ⇒ 需重新注册+重新鉴权"才闭环。
-                if let Some(pool) = self.pool.get() {
-                    for phone in &stale_phones {
-                        if let Err(e) =
-                            crate::db::jt1078::update_terminal_status(&pool, phone, false).await
-                        {
-                            tracing::warn!(
-                                "JT1078 置终端离线失败 phone={phone}（会话已超时）: {e}"
-                            );
-                        }
+            stale
+        };
+
+        if stale_phones.is_empty() {
+            return removed_addrs.len();
+        }
+
+        // 第三段：清掉内存里的"已鉴权"标记（复用现成的 helper，别让两份
+        // 清理逻辑分叉）。会话超时 = 终端已经不在了，留着"已鉴权"会让它
+        // 下次进来时被当成已鉴权通过（强制鉴权档下尤其不对）。
+        for phone in &stale_phones {
+            self.clear_authenticated(phone).await;
+        }
+
+        // 第四段：**在所有锁之外**把库里的在线标志置回 false。
+        //
+        // `gb_jt_terminal.status` 全仓库只有一处会写（`persist_terminal_online`），
+        // 而且参数恒为 `true` —— 也就是"粘 true"的：终端超时后库里的在线标志
+        // 纹丝不动，心跳路径还会把地址重新登记回来。结果是
+        // "会话超时=终端已经不在了"这条语义**没有真正落地**：
+        // 超时的终端仍被当作在线、平台照样能给它下发命令，
+        // 而它其实从未重新鉴权过。
+        // 这里补上写 false，"超时 ⇒ 真离线 ⇒ 需重新注册+重新鉴权"才闭环。
+        //
+        // **条件写**（`mark_terminal_offline_if_stale`）：第三、四段之间不是原子的，
+        // 终端若在这期间发过心跳，`update_time` 已被刷新成更新的值 —— 此时
+        // **不能**再把它标成离线，否则活着的终端在库里被显示成"离线"，
+        // 而平台其实仍能给它下发命令。拿 `deadline`（清理开始的时刻）做界，
+        // 期间有更新的行就跳过。
+        let deadline = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        if let Some(pool) = self.pool.get() {
+            for phone in &stale_phones {
+                match crate::db::jt1078::mark_terminal_offline_if_stale(&pool, phone, &deadline)
+                    .await
+                {
+                    Ok(0) => {
+                        tracing::debug!("JT1078 终端在会话超时后又有活动，不置离线 phone={phone}")
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        tracing::warn!("JT1078 置终端离线失败 phone={phone}（会话已超时）: {e}");
                     }
                 }
             }
         }
+
         removed_addrs.len()
     }
 
@@ -1305,6 +1339,103 @@ mod tests {
 
     fn make_addr(port: u16) -> SocketAddr {
         format!("127.0.0.1:{}", port).parse().unwrap()
+    }
+
+    /// 回归：会话超时时，库里的 `gb_jt_terminal.status` 必须被置回 **0**。
+    ///
+    /// `status` 全仓库只有一处会写（`persist_terminal_online`）且参数恒为 `true`
+    /// —— "粘 true"。会话超时时若不把它置 0，终端超时后**仍被当作在线**，
+    /// 平台照样能给它下发命令，而它其实从未重新鉴权过。
+    /// "超时 ⇒ 真离线 ⇒ 需重新注册 + 重新鉴权"这条语义要闭环。
+    #[tokio::test]
+    async fn session_timeout_marks_terminal_offline_in_db() {
+        let pool = crate::test_support::sqlite_pool_with_schema().await;
+        const PHONE: &str = "13812345678";
+        let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        sqlx::query(
+            "INSERT INTO gb_jt_terminal (phone_number, status, create_time, update_time) \
+             VALUES (?, 1, ?, ?)",
+        )
+        .bind(PHONE)
+        .bind(&now)
+        .bind(&now)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let manager = Jt1078Manager::new(
+            Duration::from_millis(100),
+            Duration::from_millis(200),
+            None,
+            false,
+        );
+        manager.set_pool(pool.clone());
+        let addr = make_addr(60099);
+        // 造一个会话 + 地址登记（心跳路径做的两件事）
+        manager.register_terminal(PHONE, addr).await;
+        {
+            let mut map = manager.sessions.lock().await;
+            map.insert(addr, crate::jt1078::session::Jt1078Session::new(addr));
+        }
+
+        // 会话超时 → 清理
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let removed = manager.cleanup_once().await;
+        assert_eq!(removed, 1, "超时会话应被清掉");
+
+        let status: i64 =
+            sqlx::query_scalar("SELECT status FROM gb_jt_terminal WHERE phone_number = ?")
+                .bind(PHONE)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(status, 0, "会话超时时必须把终端置为离线");
+    }
+
+    /// 回归：**条件写** —— 清理与心跳之间若终端又有活动，就**不能**再把它置离线。
+    ///
+    /// 清理分两段（锁内摘会话、锁外写库），两段之间不是原子的：终端若在这期间
+    /// 发过心跳，`update_time` 已被刷新 —— 此时无条件写 `status=0` 会把**活着的**
+    /// 终端在库里标成离线，而平台其实仍能给它下发命令。
+    #[tokio::test]
+    async fn terminal_with_activity_after_timeout_is_not_marked_offline() {
+        let pool = crate::test_support::sqlite_pool_with_schema().await;
+        const PHONE: &str = "13812345678";
+        let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        sqlx::query(
+            "INSERT INTO gb_jt_terminal (phone_number, status, create_time, update_time) \
+             VALUES (?, 1, ?, ?)",
+        )
+        .bind(PHONE)
+        .bind(&now)
+        .bind(&now)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // 模拟"清理开始之后终端又发了心跳"：把 update_time 刷新成更新的值
+        let later = chrono::Utc::now() + chrono::Duration::seconds(5);
+        sqlx::query("UPDATE gb_jt_terminal SET update_time = ? WHERE phone_number = ?")
+            .bind(later.format("%Y-%m-%d %H:%M:%S").to_string())
+            .bind(PHONE)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        // 用一个"截止时刻"早于该心跳的时刻去条件置离线 → 不应命中
+        let deadline = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        let n = crate::db::jt1078::mark_terminal_offline_if_stale(&pool, PHONE, &deadline)
+            .await
+            .unwrap();
+        assert_eq!(n, 0, "期间有更新的行不应被置离线");
+
+        let status: i64 =
+            sqlx::query_scalar("SELECT status FROM gb_jt_terminal WHERE phone_number = ?")
+                .bind(PHONE)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(status, 1, "有活动的终端必须保持在线");
     }
 
     #[tokio::test]

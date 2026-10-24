@@ -270,7 +270,7 @@ pub async fn get_terminal_by_phone(pool: &Pool, phone: &str) -> sqlx::Result<Opt
          province_text, CAST(city_id AS CHAR) AS city_id, city_text, maker_id, model, \
          plate_color, plate_no, longitude, latitude, status, register_time, update_time, \
          create_time, geo_coord_sys, media_server_id, sdp_ip, auth_code \
-         FROM gb_jt_terminal WHERE phone_number = ?",
+         FROM gb_jt_terminal WHERE phone_number = ? LIMIT 1",
     )
     .bind(phone)
     .fetch_optional(pool)
@@ -281,7 +281,7 @@ pub async fn get_terminal_by_phone(pool: &Pool, phone: &str) -> sqlx::Result<Opt
          province_text, CAST(city_id AS TEXT) AS city_id, city_text, maker_id, model, \
          plate_color, plate_no, longitude, latitude, status, register_time, update_time, \
          create_time, geo_coord_sys, media_server_id, sdp_ip, auth_code \
-         FROM gb_jt_terminal WHERE phone_number = $1",
+         FROM gb_jt_terminal WHERE phone_number = $1 LIMIT 1",
     )
     .bind(phone)
     .fetch_optional(pool)
@@ -721,8 +721,13 @@ pub async fn count_channels_by_terminal(pool: &Pool, terminal_db_id: i32) -> sql
 /// Look up the auth_code assigned to a terminal by phone number.
 /// Returns None if terminal not found OR if auth_code column is NULL.
 pub async fn get_auth_code_by_phone(pool: &Pool, phone: &str) -> sqlx::Result<Option<String>> {
+    // `LIMIT 1`：`phone_number` 在三方言里都**没有**唯一约束（唯一索引是
+    // `(id, phone_number)`，而 id 是主键），同一 phone 出现重复行时
+    // `fetch_optional` 会直接报 "expected at most one row" —— 读鉴权码一旦
+    // 报错，平台就永远校验不过这个终端的 0x0102。
+    // 取第一行即可：重复行是历史脏数据，不该让鉴权彻底失效。
     let row: Option<(Option<String>,)> = sqlx::query_as(&crate::dyn_where::dialect_sql(
-        "SELECT auth_code FROM gb_jt_terminal WHERE phone_number = ?",
+        "SELECT auth_code FROM gb_jt_terminal WHERE phone_number = ? LIMIT 1",
     ))
     .bind(phone)
     .fetch_optional(pool)
@@ -741,6 +746,47 @@ pub async fn update_auth_code(pool: &Pool, phone: &str, auth_code: &str) -> sqlx
     .execute(pool)
     .await?;
     Ok(result.rows_affected())
+}
+
+/// **条件**置离线：只有当这一行在 `deadline` 之后**没有**被更新过，才置 `status = 0`。
+///
+/// 用于"会话超时 ⇒ 终端离线"这条语义。清理分两段（锁内摘会话、锁外写库），
+/// 两段之间存在窗口：终端若在这期间发过心跳，`persist_terminal_online` 会把
+/// `update_time` 刷新成更新的值 —— 此时**不能**再把它标成离线，否则活着的终端
+/// 在库里被显示成"离线"，而平台其实仍能给它下发命令。
+///
+/// 返回被置为离线的行数（0 = 期间这行被更新过，没动它）。
+///
+/// `deadline` 是清理开始的时刻（UTC 墙钟纯格式，与 `update_time` 同基准）。
+pub async fn mark_terminal_offline_if_stale(
+    pool: &Pool,
+    phone_number: &str,
+    deadline: &str,
+) -> sqlx::Result<u64> {
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    #[cfg(any(feature = "mysql", feature = "sqlite"))]
+    let r = sqlx::query(
+        "UPDATE gb_jt_terminal SET status = ?, update_time = ? \
+         WHERE phone_number = ? AND (update_time IS NULL OR update_time <= ?)",
+    )
+    .bind(false)
+    .bind(&now)
+    .bind(phone_number)
+    .bind(deadline)
+    .execute(pool)
+    .await?;
+    #[cfg(feature = "postgres")]
+    let r = sqlx::query(
+        "UPDATE gb_jt_terminal SET status = $1, update_time = $2 \
+         WHERE phone_number = $3 AND (update_time IS NULL OR update_time <= $4)",
+    )
+    .bind(false)
+    .bind(&now)
+    .bind(phone_number)
+    .bind(deadline)
+    .execute(pool)
+    .await?;
+    Ok(r.rows_affected())
 }
 
 /// Phase 6.5: Update last reported position (longitude, latitude, time).
