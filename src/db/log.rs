@@ -196,6 +196,22 @@ pub async fn delete_before(pool: &Pool, before: &str) -> sqlx::Result<u64> {
     .rows_affected())
 }
 
+/// **保留策略**：删除「N 天前」的系统日志，返回删除行数。
+///
+/// 与审计日志的 [`crate::db::audit_log::delete_before`] 不同，这里截止时间在
+/// **Rust 里**算 —— 因为 `gb_log.time` 是**平台自己**写的（`logging::CaptureLayer`
+/// 用 `chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f")`），必须用**同一个
+/// 时钟 + 同一个格式**才能比。格式不一致时字符串比较会错（`%.3f` 的毫秒位）。
+///
+/// 此前 [`delete_before`] **没有任何调用点** —— 函数在、测试在、就是没人调，
+/// 系统日志表无限增长。
+pub async fn delete_older_than(pool: &Pool, days: u32) -> sqlx::Result<u64> {
+    let cutoff = (chrono::Local::now() - chrono::Duration::days(days as i64))
+        .format("%Y-%m-%d %H:%M:%S%.3f")
+        .to_string();
+    delete_before(pool, &cutoff).await
+}
+
 #[cfg(all(test, feature = "sqlite"))]
 mod tests {
     use super::*;

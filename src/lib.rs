@@ -699,6 +699,55 @@ pub async fn run(cfg: AppConfig) -> anyhow::Result<()> {
             }
         });
     }
+
+    // ── 日志保留策略（2026-10-25，第九轮）────────────────────────────────
+    //
+    // 此前 `audit.retention_days`（默认 90）是一个**死配置**：定义了却没有任何
+    // 代码读取 —— `gb_audit_log` / `gb_log` 两张表**无限增长**（实测 e2e 共享库：
+    // 审计 19 万行 + 系统日志 6.8 万行，库文件 49MB；`db::log::delete_before`
+    // 函数在、测试在，就是**没有调用点**）。
+    //
+    // 这里把它接上：审计日志按 `audit.retention_days`、系统日志按
+    // `log.system_retention_days`，每隔 `log.cleanup_interval_hours` 跑一次。
+    // `tokio::time::interval` 的第一次 tick **立即触发** → 启动时清一次，
+    // 把历史遗留的老数据一并收掉。
+    {
+        let cleanup_pool = pool.clone();
+        let audit_days = cfg.audit.retention_days;
+        let system_days = cfg.log.system_retention_days;
+        let interval_hours = cfg.log.cleanup_interval_hours;
+        if interval_hours > 0 {
+            tokio::spawn(async move {
+                let mut ticker = tokio::time::interval(std::time::Duration::from_secs(
+                    interval_hours.saturating_mul(3600),
+                ));
+                loop {
+                    ticker.tick().await;
+                    if audit_days > 0 {
+                        match db::audit_log::delete_before(&cleanup_pool, audit_days).await {
+                            Ok(n) if n > 0 => {
+                                tracing::info!("清理过期审计日志 {n} 行（保留 {audit_days} 天）")
+                            }
+                            Ok(_) => {}
+                            Err(e) => tracing::warn!("清理过期审计日志失败: {e}"),
+                        }
+                    }
+                    if system_days > 0 {
+                        match db::log::delete_older_than(&cleanup_pool, system_days).await {
+                            Ok(n) if n > 0 => {
+                                tracing::info!("清理过期系统日志 {n} 行（保留 {system_days} 天）")
+                            }
+                            Ok(_) => {}
+                            Err(e) => tracing::warn!("清理过期系统日志失败: {e}"),
+                        }
+                    }
+                }
+            });
+        } else {
+            tracing::warn!("日志保留清理任务已禁用（log.cleanup_interval_hours = 0）");
+        }
+    }
+
     let ws_state = Arc::new(crate::handlers::websocket::WsState::new());
 
     // SQLite 启动期设备数检查
@@ -1640,6 +1689,7 @@ mod tests {
             jt1078: None,
             cluster: crate::config::ClusterAppConfig::default(),
             audit: crate::config::AuditConfig::default(),
+            log: crate::config::LogConfig::default(),
             rpc: crate::config::RpcAppConfig::default(),
         }
     }

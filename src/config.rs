@@ -22,6 +22,13 @@ pub struct AppConfig {
     /// Phase 7.4: audit middleware config. When disabled, no audit log is written.
     #[serde(default)]
     pub audit: AuditConfig,
+    /// 日志保留策略（后台定时任务消费）。
+    ///
+    /// 此前 `audit.retention_days` 是**死配置** —— 定义了却没有任何代码读取，
+    /// `gb_audit_log` / `gb_log` 两张表**无限增长**（实测 e2e 共享库：
+    /// 审计 19 万行、系统日志 6.8 万行，库文件 49MB）。
+    #[serde(default)]
+    pub log: LogConfig,
     /// E2: 跨节点 RPC 配置（[rpc] 段落）。peer_endpoints 非空时启用 HTTP RPC
     /// 出站传输（POST 各对端 /api/rpc）；Redis 可用时自动叠加 Redis Pub/Sub
     /// 传输，两者可并存。node_id 缺省复用 cluster.node_id。
@@ -529,8 +536,42 @@ pub struct AuditConfig {
 fn default_audit_enabled() -> bool {
     true
 }
+
 fn default_audit_retention_days() -> u32 {
     90
+}
+
+/// 日志保留策略。
+///
+/// - **审计日志**（`gb_audit_log`）的保留天数用 `audit.retention_days`（默认 90）；
+/// - **系统日志**（`gb_log`）的保留天数在这里（默认 30 天 —— 系统日志量大、
+///   排障价值期短）；
+/// - 两者都由同一个后台任务按 `cleanup_interval_hours` 清理。
+#[derive(Debug, Clone, Deserialize)]
+pub struct LogConfig {
+    /// 系统日志表 `gb_log` 的保留天数。0 = 不清理。
+    #[serde(default = "default_system_log_retention_days")]
+    pub system_retention_days: u32,
+    /// 清理任务的执行间隔（小时）。0 = 不启动清理任务。
+    #[serde(default = "default_log_cleanup_interval_hours")]
+    pub cleanup_interval_hours: u64,
+}
+
+fn default_system_log_retention_days() -> u32 {
+    30
+}
+
+fn default_log_cleanup_interval_hours() -> u64 {
+    6
+}
+
+impl Default for LogConfig {
+    fn default() -> Self {
+        Self {
+            system_retention_days: default_system_log_retention_days(),
+            cleanup_interval_hours: default_log_cleanup_interval_hours(),
+        }
+    }
 }
 
 impl Default for AuditConfig {

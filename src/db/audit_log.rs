@@ -200,6 +200,23 @@ pub async fn insert(
     Ok(r.rows_affected())
 }
 
+/// **保留策略**：删除 `create_time` 早于「N 天前」的审计日志，返回删除行数。
+///
+/// `create_time` 的默认值是 `CURRENT_TIMESTAMP` / `NOW()` —— **由数据库写入**，
+/// 所以截止时间也必须**在数据库自己的时钟里**算（见
+/// [`crate::dyn_where::days_ago_expr`]）。在 Rust 里按 UTC 算再拿去比，
+/// MySQL / PostgreSQL 上会整体偏一个时区（UTC+8 部署下差 8 小时）。
+///
+/// 此前**根本没有这个函数**：`audit.retention_days`（默认 90）是一个**死配置**
+/// —— 定义了却没有任何代码读取，审计表无限增长。
+pub async fn delete_before(pool: &Pool, days: u32) -> sqlx::Result<u64> {
+    let sql = format!(
+        "DELETE FROM gb_audit_log WHERE create_time < {}",
+        crate::dyn_where::days_ago_expr(days)
+    );
+    Ok(sqlx::query(&sql).execute(pool).await?.rows_affected())
+}
+
 /// Phase 7.4: extended insert with `elapsed_ms` column. Caller (audit_middleware)
 /// already times the request; we just persist it.
 pub async fn insert_with_metrics(

@@ -69,7 +69,16 @@ heartbeat_ttl_secs = 60
 # Phase 7.4: 审计日志 middleware 配置
 [audit]
 enabled = true
+# 审计日志（gb_audit_log）保留天数。**此前这个值是死配置**（没有任何代码读它），
+# 审计表无限增长；现已由后台清理任务消费。
 retention_days = 90
+
+# 日志保留策略（后台清理任务）
+[log]
+# 系统日志（gb_log）保留天数。0 = 不清理。
+system_retention_days = 30
+# 清理任务执行间隔（小时）。0 = 不启动清理任务。
+cleanup_interval_hours = 6
 
 # SIP 服务配置
 [sip]

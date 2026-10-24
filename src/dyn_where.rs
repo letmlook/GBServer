@@ -98,6 +98,39 @@ fn bigint_col_for(col: &str, postgres: bool) -> String {
     }
 }
 
+/// 生成「N 天前」的时间表达式 —— **在数据库自己的时钟里**算。
+///
+/// ## 为什么不能在 Rust 里算
+///
+/// `gb_audit_log.create_time` 的默认值是 `CURRENT_TIMESTAMP`（sqlite）/
+/// `NOW()`（mysql / postgres），而这三者的时钟**不是一回事**：
+/// - SQLite 的 `CURRENT_TIMESTAMP` 是 **UTC**；
+/// - MySQL 的 `NOW()` 是**会话时区**；
+/// - PostgreSQL 的 `NOW()` 也是**会话时区**。
+///
+/// 若在 Rust 里按 UTC 算出截止时间再拿去比，MySQL / PG 上会**整体偏一个时区**
+/// （UTC+8 部署下差 8 小时）—— 保留期直接变成 90 天 ± 8 小时。
+///
+/// 三种方言的写法：
+/// - SQLite：`datetime('now', '-90 days')` → `'YYYY-MM-DD HH:MM:SS'`（UTC）
+/// - MySQL：`DATE_SUB(NOW(), INTERVAL 90 DAY)` → DATETIME（会话时区）
+/// - PostgreSQL：`NOW() - INTERVAL '90 days'` → timestamptz（会话时区）
+///
+/// 与列的默认值的**类型/时区**一致，比较才有意义。
+///
+/// **注意**：这个表达式只能配**由数据库写入**的时间列（如 `create_time`）。
+/// 由**平台自己**写的时间列（如 `gb_log.time`，Rust 用 `Local::now()` 写的）
+/// 必须在 Rust 里用同一个时钟算 —— 见 `db::log::delete_older_than`。
+pub fn days_ago_expr(days: u32) -> String {
+    if cfg!(feature = "postgres") {
+        format!("NOW() - INTERVAL '{days} days'")
+    } else if cfg!(feature = "mysql") {
+        format!("DATE_SUB(NOW(), INTERVAL {days} DAY)")
+    } else {
+        format!("datetime('now', '-{days} days')")
+    }
+}
+
 /// 动态 WHERE 构造器（录像计划通道列表用）。
 ///
 /// 统一用 `?` 写条件，postgres 下按顺序把第 k 个 `?` 改写成 `$k`——同一份 SQL

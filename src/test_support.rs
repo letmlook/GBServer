@@ -74,6 +74,7 @@ pub(crate) fn app_config() -> crate::config::AppConfig {
             url: "sqlite::memory:".into(),
             sqlite_max_devices: None,
         },
+        log: Default::default(),
         redis: None,
         jwt: JwtConfig {
             secret: "test-secret-test-secret-test-secret-1234".into(),
