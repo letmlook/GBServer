@@ -736,7 +736,7 @@ pub async fn update_auth_code(pool: &Pool, phone: &str, auth_code: &str) -> sqlx
         "UPDATE gb_jt_terminal SET auth_code = ?, update_time = ? WHERE phone_number = ?",
     ))
     .bind(auth_code)
-    .bind(chrono::Utc::now().to_rfc3339())
+    .bind(chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string())
     .bind(phone)
     .execute(pool)
     .await?;
@@ -757,7 +757,7 @@ pub async fn update_last_position(
     .bind(longitude)
     .bind(latitude)
     .bind(time.to_rfc3339())
-    .bind(chrono::Utc::now().to_rfc3339())
+    .bind(chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string())
     .bind(phone)
     .execute(pool)
     .await?;
@@ -793,7 +793,7 @@ pub async fn insert_media_item(
     start_time: &str,
     end_time: &str,
 ) -> sqlx::Result<u64> {
-    let now = chrono::Utc::now().to_rfc3339();
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let result = sqlx::query(
         &crate::dyn_where::dialect_sql("INSERT INTO gb_jt_media_item (phone_number, channel_id, media_id, media_type, media_format, event_code, start_time, end_time, create_time) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
     )
@@ -908,7 +908,7 @@ pub async fn insert_area_circle(
     center_lon: f64,
     radius_m: i32,
 ) -> sqlx::Result<i64> {
-    let now = chrono::Utc::now().to_rfc3339();
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let sql = "INSERT INTO gb_jt_area_circle (phone_number, label, center_lat, center_lon, \
                radius_m, create_time, update_time) VALUES (?, ?, ?, ?, ?, ?, ?)";
     // `RETURNING` 只有 PostgreSQL / SQLite(≥3.35) 支持，**MySQL 不支持**
@@ -952,7 +952,7 @@ pub async fn update_area_circle(
     center_lon: f64,
     radius_m: i32,
 ) -> sqlx::Result<u64> {
-    let now = chrono::Utc::now().to_rfc3339();
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let n = sqlx::query(
         &crate::dyn_where::dialect_sql("UPDATE gb_jt_area_circle SET label = ?, center_lat = ?, center_lon = ?, radius_m = ?, update_time = ? WHERE id = ?")
     )
@@ -992,7 +992,7 @@ pub async fn insert_area_polygon(
     label: Option<&str>,
     points_json: &str,
 ) -> sqlx::Result<i64> {
-    let now = chrono::Utc::now().to_rfc3339();
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let sql = "INSERT INTO gb_jt_area_polygon (phone_number, label, points_json, create_time, \
                update_time) VALUES (?, ?, ?, ?, ?)";
     // 同 `insert_area_circle`：MySQL 没有 `RETURNING`。
@@ -1056,7 +1056,7 @@ pub async fn insert_area_rectangle(
     rb_lat: f64,
     rb_lon: f64,
 ) -> sqlx::Result<i64> {
-    let now = chrono::Utc::now().to_rfc3339();
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let sql = "INSERT INTO gb_jt_area_rectangle (phone_number, label, left_top_lat, left_top_lon, \
                right_bottom_lat, right_bottom_lon, create_time, update_time) \
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
@@ -1103,7 +1103,7 @@ pub async fn update_area_rectangle(
     rb_lat: f64,
     rb_lon: f64,
 ) -> sqlx::Result<u64> {
-    let now = chrono::Utc::now().to_rfc3339();
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let n = sqlx::query(
         &crate::dyn_where::dialect_sql("UPDATE gb_jt_area_rectangle SET label = ?, left_top_lat = ?, left_top_lon = ?, right_bottom_lat = ?, right_bottom_lon = ?, update_time = ? WHERE id = ?")
     )
@@ -1143,7 +1143,7 @@ pub async fn insert_route(
     label: Option<&str>,
     waypoints_json: &str,
 ) -> sqlx::Result<i64> {
-    let now = chrono::Utc::now().to_rfc3339();
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let sql = "INSERT INTO gb_jt_route (phone_number, label, waypoints_json, create_time, \
                update_time) VALUES (?, ?, ?, ?, ?)";
     // 同 `insert_area_circle`：MySQL 没有 `RETURNING`。

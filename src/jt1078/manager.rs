@@ -261,7 +261,7 @@ impl Jt1078Manager {
         reg: Option<&crate::jt1078::response_parser::RegisterRequest>,
     ) {
         let Some(pool) = self.pool.get() else { return };
-        let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
         let existing = crate::db::jt1078::get_terminal_by_phone(pool, phone)
             .await
             .ok()
@@ -816,9 +816,29 @@ impl Jt1078Manager {
             });
             drop(terms);
             if !stale_phones.is_empty() {
-                let mut authed = self.authenticated_terminals.lock().await;
+                // 1) 清掉内存里的"已鉴权"标记（复用现成的 helper，别让两份
+                //    清理逻辑分叉）。
                 for phone in &stale_phones {
-                    authed.remove(phone);
+                    self.clear_authenticated(phone).await;
+                }
+                // 2) **同时把库里的在线标志置回 false**。
+                //    `gb_jt_terminal.status` 全仓库只有一处会写（`persist_terminal_online`），
+                //    而且参数恒为 `true` —— 也就是"粘 true"的：终端超时后库里的在线
+                //    标志纹丝不动，心跳路径还会把地址重新登记回来。结果是
+                //    "会话超时=终端已经不在了"这条语义**没有真正落地**：
+                //    超时的终端仍被当作在线、平台照样能给它下发命令，
+                //    而它其实从未重新鉴权过。
+                //    这里补上写 false，"超时 ⇒ 真离线 ⇒ 需重新注册+重新鉴权"才闭环。
+                if let Some(pool) = self.pool.get() {
+                    for phone in &stale_phones {
+                        if let Err(e) =
+                            crate::db::jt1078::update_terminal_status(&pool, phone, false).await
+                        {
+                            tracing::warn!(
+                                "JT1078 置终端离线失败 phone={phone}（会话已超时）: {e}"
+                            );
+                        }
+                    }
                 }
             }
         }

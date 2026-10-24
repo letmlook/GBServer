@@ -101,18 +101,38 @@ async fn feed_and_process(
                 // 用 0x0102 把它回送，平台才能校验。此前这里写死字面量
                 // "GBServer"，`gb_jt_terminal.auth_code` 因此只写不读。
                 let auth_code = match stored_auth_code(manager, &msg.phone).await {
-                    Some(code) => code,
+                    Some(code) => Ok(code),
                     None => issue_auth_code(manager, &msg.phone).await,
                 };
-                replies.push((
-                    msg.phone.clone(),
-                    command::build_register_response(&msg.phone, msg.serial, 0, &auth_code),
-                ));
-                tracing::info!(
-                    "JT1078 终端注册成功 phone={} from {} (鉴权码已下发)",
-                    msg.phone,
-                    addr
-                );
+                match auth_code {
+                    Ok(code) => {
+                        replies.push((
+                            msg.phone.clone(),
+                            command::build_register_response(&msg.phone, msg.serial, 0, &code),
+                        ));
+                        tracing::info!(
+                            "JT1078 终端注册成功 phone={} from {} (鉴权码已下发)",
+                            msg.phone,
+                            addr
+                        );
+                    }
+                    Err(e) => {
+                        // 签发失败 → **注册失败**（result=1），绝不能下发一个
+                        // 平台自己都不认的码：那会让终端拿到码、回送、然后被拒，
+                        // 而且**再也自愈不了**（库里没码，校验永远不通过）。
+                        // 回 result=1 让终端知道"没成功"，等它重试；
+                        // 重试时数据库若已恢复，行能入库、码能落库，自然就通了。
+                        replies.push((
+                            msg.phone.clone(),
+                            command::build_register_response(&msg.phone, msg.serial, 1, ""),
+                        ));
+                        tracing::error!(
+                            "JT1078 终端注册失败 phone={} from {}: {e}",
+                            msg.phone,
+                            addr
+                        );
+                    }
+                }
             }
             ParsedMessage::Authenticate(code) => {
                 // 终端鉴权（JT/T 808 0x0102 → 0x8102）。
@@ -189,18 +209,30 @@ async fn stored_auth_code(
 /// 只在**注册应答**时调用 —— 这样 0x8100 里下发的与库里存的永远是同一个值，
 /// 终端随后用 0x0102 回送时才能校验通过。没有数据库时退化为默认串
 /// （此时平台只能"宽松"工作，无法校验终端回送的鉴权码）。
+///
+/// **写不进去就返回 Err，绝不把码下发出去。**
+///
+/// 校验路径（0x0102）只认**库里存的**码。所以只要签发时没落库，
+/// 平台下发的码就永远校验不过 —— 终端拿到码、回送、被拒，而且**再也自愈不了**
+/// （库里没码，校验永远失败；重试注册也只会再生成一个新码，同样不落库）。
+/// 一次瞬时的写库失败（连接抖动、只读副本、约束冲突、序列没同步导致 INSERT
+/// 撞主键……）就足以让终端**永久**锁死。
+///
+/// 所以这里把"落库失败"当成**签发失败**上报，调用方据此回注册失败（result=1），
+/// 终端重试时数据库若已恢复就能正常注册 —— 失败因此是**可恢复**的，
+/// 而不是一次性的永久锁死。
 async fn issue_auth_code(
     manager: &std::sync::Arc<crate::jt1078::manager::Jt1078Manager>,
     phone: &str,
-) -> String {
+) -> Result<String, String> {
     let Some(pool) = manager.pool() else {
-        return DEFAULT_AUTH_CODE.to_string();
+        return Ok(DEFAULT_AUTH_CODE.to_string());
     };
     match crate::db::jt1078::get_auth_code_by_phone(&pool, phone).await {
         Ok(Some(code)) => {
             let trimmed = code.trim().trim_end_matches('\0').trim();
             if !trimmed.is_empty() {
-                return trimmed.to_string();
+                return Ok(trimmed.to_string());
             }
         }
         Ok(None) => {}
@@ -209,13 +241,10 @@ async fn issue_auth_code(
     // 没有配置：生成一个并写回库里。
     let generated = format!("{:016x}", rand::random::<u64>());
     match crate::db::jt1078::update_auth_code(&pool, phone, &generated).await {
-        Ok(n) if n > 0 => {}
-        Ok(_) => tracing::warn!(
-            "JT1078 终端尚未入库，鉴权码未能持久化 phone={phone}（本次仍可用，但不参与校验）"
-        ),
-        Err(e) => tracing::warn!("JT1078 写入终端鉴权码失败 phone={phone}: {e}"),
+        Ok(n) if n > 0 => Ok(generated),
+        Ok(_) => Err(format!("终端尚未入库（phone={phone}），鉴权码无法持久化")),
+        Err(e) => Err(format!("写入终端鉴权码失败（phone={phone}）: {e}")),
     }
-    generated
 }
 
 /// 没有数据库时的兜底鉴权码（宽松模式下不参与校验）。
@@ -471,7 +500,7 @@ mod terminal_auth_tests {
     }
 
     async fn seed_terminal(pool: &crate::db::Pool, auth_code: Option<&str>) {
-        let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
         let fields = crate::db::jt1078::JtTerminalWrite {
             terminal_id: Some("TERM001"),
             plate_no: Some(""),
