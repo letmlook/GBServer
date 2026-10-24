@@ -1269,6 +1269,150 @@ handler 里怎么写都救不回来。SY 是**第三方对接面**，对接方�
 23 个 SY 端点的参数都正确渲染为 `in:query`）。新增 2 条回归测试
 （非法查询串必须回 JSON 信封；`online` 必须同时接受 `true/false` 与 `1/0`）。
 
+### B23 ◐ 第七轮（第四轮独立复核的结论 + 据此修的 5 处）
+
+第四轮派了**一路**独立 verifier 复核 JT1078 的清理任务与条件写（B21 遗留的最后一项），
+结论 **PASS**：条件写确实有效、锁序无环、合并作用域确实关闭了复活窗口、被删的空操作
+确为空操作。但它同时指出 2 个 P2、5 个 P3。**P2 与部分 P3 本轮已修**。
+
+**① P2 条件写**逐行**判定 → 重复 `phone_number` 造成「半离线」**
+`phone_number` 没有唯一约束，同一 phone 可能有多行；原来的 `WHERE phone_number = ?
+AND update_time < ?` **逐行**求值 → "一行旧、一行新"时旧行被置离线、新行仍在线，
+在线统计（`count_online_terminals` / `get_online_terminals`）仍把死终端算在线。
+现：取该 phone 的**全部**行、逐行解析，**全部都过期才置离线**（保守方向），
+并按 **id** 精确写（不再按 phone 批量改）。
+
+**② P3 历史遗留的 `update_time` 格式让条件写**恒成立**
+`gb_jt_terminal.update_time` 这一列**历史上被写过三种形状**：当前是
+`%Y-%m-%d %H:%M:%S`（UTC 墙钟），旧版 `update_auth_code` / `update_last_position`
+写的是 **RFC3339**，还有一段时间 `manager.rs` 用的是 `chrono::Local::now()`
+（**本地**墙钟）。用 SQL 直接比字符串时：RFC3339 的第 10 位是 `'T'`（0x54）而纯格式
+是 `' '`（0x20）→ 同一日历日内 **RFC3339 的值恒大于** deadline → 条件恒成立 →
+那些终端**永远显示在线**。
+现：改在 **Rust 里**解析成 epoch 再比（`db::jt1078::parse_update_time`，
+兼容纯格式 / RFC3339 / 带毫秒的纯格式）。
+**遗留**：「本地时间」那批与纯格式**同形不同基准**，无法从字符串区分 → 会被读成
+"未来 8 小时"因而永远判不出过期。彻底订正需要一次数据订正（不在本轮范围）。
+另：**解析不出来**时按「**还活跃**」处理（宁可暂不置离线，也不能把活着的终端误标成离线），
+代价是那种行永远不会被自动置离线 —— 同样是数据问题。
+
+**③ P3 `terms.retain` 的 O(T×R) 扫描在 `sessions` 锁内**
+`removed.contains(a)` 是 Vec 线性扫描 → 整体 O(T×R)。实测终端表 1 万条 + 同时掉线
+1000 台时**锁内约 8ms**，10 万条时约 **56ms** —— 期间**所有**入站 JT1078 报文都要等。
+现：`removed` 改用 `HashSet` → O(T+R)。
+
+**④ P3 注释「宁可晚一个清理周期再置离线」不实**
+会话被摘掉后该 phone 已不在 `terminal_addrs` → **下一轮清理不会再看到它** ⇒
+条件不成立就是**一直不置离线**（不是"晚一轮"）。注释已改准。
+
+**⑤ P3 新增的源码契约测试有残余缺口**
+原契约只判「`terminal_addrs` 的**取锁行**在 sessions 作用域结束之前」——
+若有人 `drop(map)` 提前释放 sessions 锁（取锁行仍在作用域内）就**抓不住**。
+现改为判「`terms.retain(` **调用行**在作用域结束之前」（retain 才是真正清地址表的
+动作），并做了双向变异验证。
+
+**⑥ P3 既有测试的夹具绕开了生产形态**
+原先把行的 `update_time` **回拨 2 分钟**来避开同秒 —— 生产超时是 60s，
+真实形态没被覆盖。现补了一条按**生产量级**（60 秒）的用例。
+
+**验证**：新增 7 条离线标记专项测试（正常超时 / 刚活跃 / 历史 RFC3339 过期 /
+历史 RFC3339 刚活跃 / 重复行半离线 / 重复行全过期 / 解析器三种形状），
+并做了**变异双向验证**（去掉 RFC3339 解析支 → 2 条测试变红；恢复 → 变绿）。
+全量 `cargo test --no-fail-fast` **882 通过 / 0 失败**（lib 817 / 集成 65）；
+三方言构建零告警；dialect_smoke 三方言都只剩 2 项「预期失败」；全量 Playwright 81/81。
+
+**第四轮独立复核未能覆盖的部分**（记录在案）：pg/mysql 方言下条件写的实机行为
+（本轮只跑 SQLite；SQL 三方言同构，但 pg/mysql 的 collation 对定宽 ASCII 时间戳的
+排序只有推理、没有实机证据，schema 里 `update_time` 是 `varchar(50)` 且**未指定
+collation**）；真机 JT1078 终端；多实例共享 DB、机器时钟不一致时的行为。
+
+### B24 ◐ 第八轮（API Key 台账的排序、e2e 清理空操作、分页偏移溢出）
+
+本轮起点是第七轮之后残留的一个 e2e 失败：`e2e/tests/apiKey.spec.ts` 的
+「创建后可鉴权调用…」与「选了未来的过期时间后…」两条用例查不到自己刚建的那行。
+查下来是**三个独立缺陷**叠在一起。
+
+**① P1 API Key 列表按 `id` 升序 → 新建的 Key 落在最后一页**
+`db/user_api_key.rs` 的 `list_paged`（三方言分支）与 `list_by_user_id` 都是
+`ORDER BY id`（**升序**）。前端 `web/src/views/apiKey/index.vue` 每页 20 条。
+库里一旦超过 20 条（共享 e2e 库里实测 23 条，含 `e2e-partner` / `curltest` /
+`proxytest` 等历史遗留），**新建的 Key（`id` 最大）就落到第二页** → 管理员建完
+Key 回到列表页，页面上根本看不到自己刚建的那条。
+这是产品缺陷，不是"数据脏"：凭证台账页的主要用途就是"刚建的那条要能立刻找到、
+立刻停用或删掉"。仓库其它列表（设备、审计日志、系统日志、JT1078 终端、录像）
+一律"新的在前"，API Key 列表是异类。
+现：三方言分支与 `list_by_user_id` 全改 `ORDER BY id DESC`。
+
+**② P1 e2e 的 `cleanupLeftovers` 不传 `id` → "清理"一直是空操作**
+删除端点是 `DELETE /api/userApiKey/delete?id=`（`IdQuery.id`）。而 e2e 的清理
+helper 只把列表 URL 换成了删除 URL、**没带 `id`** → 后端一律回 400「缺少 id」，
+**一行都没删掉**。于是 ① 的现象被放大：库里越积越多，新建的 Key 越往后排。
+现：删除时带上 `?id=`，并**逐条校验结果**（`!res.ok || body.code !== 0` 就抛错），
+让"清理失效"当场失败，而不是留下脏数据、等后面某条断言以另一种面貌炸掉。
+
+**③ P2 分页偏移的 `u32` 乘法溢出**
+`(page.saturating_sub(1)) * count` 里的 `page` / `count` 都是 `u32`，而 `page`
+直接来自查询串、没有上限。`page = 4294967295`、`count = 100` 时
+`4294967294 × 100 = 429 496 729 400` **超出 `u32` 上限**：
+  * debug 构建直接 panic（`attempt to multiply with overflow`）—— handler 链路上
+    **没有 `CatchPanic` 层**，panic 会打断整条 HTTP 连接；
+  * release 构建则**回绕**成 `4 294 967 096` —— 请求第 N 页却拿到了别的页。
+同类写法共 **29 处**（`db/` 21 处 + `handlers/` 8 处），涉及平台、通道、推流、
+代理、录像计划、日志、审计、用户、API Key、JT1078 终端、公共通道、设备、设备通道、
+报警、移动位置、SY 相机等几乎所有列表端点。
+现：新增 `src/pagination.rs`，统一用 `i64` / `usize` 算偏移
+（`offset` / `offset_usize` / `offset_i64`），29 处全部改用。
+其中 4 处 `page` / `count` 本来就是 `i64` 的（`cloud_record` ×2、`alarm`、
+`mobile_position`），旧写法 `(page - 1) * count` 在 `page = 0` 时会算出**负的
+OFFSET** —— PostgreSQL / MySQL 直接报错、SQLite 当成 0，三种方言行为不一致；
+`offset_i64` 把 `page < 1` 一律按第 1 页算。
+顺带修掉一个**步长与页长不一致**的隐患：`device` / `jt1078` / `platform` /
+`platform_channel` / `stream_proxy` 这几处的 `LIMIT` 用的是 clamp 后的值、
+`OFFSET` 用的是 clamp 前的 `count`，`count` 超过上限时翻页会跳过整段数据
+（当前所有调用方都先 clamp 到同一上限，所以尚未触发）。
+
+**④ P2 API Key 的写操作在目标不存在时静默「成功」**
+`remark` / `enable` / `disable` / `reset` 四个端点都**忽略 `UPDATE` 的
+`rows_affected`** —— id 不存在时 `rows_affected == 0`，但那不等于"成功"。
+`reset` 最有害：目标不存在时它照样回 200 + 一个**从未被存储**的 32 位十六进制
+密钥 → 前端弹出"请立即复制密钥"、管理员把它当回事抄走 → 用它调接口必然 401，
+而界面全程显示"成功"。
+现：按仓库既有约定（`jt1078` 的终端删除、`platform` 的目录删除都是
+"影响 0 行 → 404"）回 **404「API Key 不存在: id=…」**，并给 4 个端点补上
+OpenAPI 的 404 响应声明。
+**三方言的 `rows_affected` 语义一致**（= 命中行数，与"值有没有变"无关）：
+PostgreSQL 统计匹配的；SQLite 的 `sqlite3_changes()` 统计被 UPDATE 处理过的行；
+MySQL 侧 sqlx 握手时开了 `CLIENT_FOUND_ROWS`（`sqlx-mysql-0.7.4`
+`connection/stream.rs`），所以回的是**匹配**行数而不是**改变**行数 ——
+否则"启用一个已经启用的 Key"会被误判成 404。
+**不动 `delete`**：DELETE 幂等是仓库明确写下的契约
+（`router::tests::authenticated_collect_roundtrip_updates_business_storage`
+断言重复删除回 `code:0`），改它属于改契约而不是修缺陷。
+
+**验证**
+* 新增 `src/pagination.rs` 单测 4 条（`offset` / `offset_usize` 溢出、正常翻页、
+  `offset_i64` 不出负值）；
+* 新增 `src/db/user_api_key.rs` 的 `ordering_tests` 4 条（新 Key 必须落在第一页
+  第一行、倒序翻页不重不漏、`list_by_user_id` 同口径、超大 `page` 不 panic）；
+* 新增 `src/router.rs` 的 `api_key_write_on_missing_row_returns_404` 1 条
+  （四个写端点在目标不存在时必须回 404，且**不得回出密钥**）；
+* **变异双向验证**（5 组，逐组确认"改回旧实现 → 变红 → 改回 → 变绿"）：
+  ① `list_paged` 改回 `ORDER BY id` → 2 条红；
+  ② `list_by_user_id` 改回 `ORDER BY id` → 1 条红；
+  ③ 偏移改回 `(page.saturating_sub(1)) * count` → 超大页码那条红（panic）；
+  ④ `pagination` helper 改回旧的 `u32` 算法 → 2 条红；
+  ⑤ 去掉 `require_api_key_affected` 的 404 检查 → 404 那条红（回 `code:0`）。
+
+**本轮未覆盖 / 已知但未改**
+* `handlers/sy_camera.rs` 的相机列表是"先取全量再在内存里切页"，
+  `total` 语义与分页器的配合此前已单独修过（见 B 系列旧条目），本轮只统一了偏移算法。
+* `db/cloud_record.rs` 等 4 处 `i64` 分页的调用方目前都自带 `.max(1)` 兜底，
+  `offset_i64` 只是把兜底下沉到 db 层，不改变现有可达行为。
+* **前端补了一条**：建完 Key 后把页码重置回第 1 页 —— 列表是"新的在前"，
+  若停在第 3 页再刷新，新建的 Key 仍在别的页里，"刚建完却看不到"等于没建。
+* `record/zip` 返回服务端绝对路径、`phone_number` 表级唯一约束需先做历史去重
+  —— 两项沿用前几轮结论，仍未改。
+
 ### B15 ✅ 设备统计查了不存在的表（已修，2026-09-19）
 
 **现象**：`/api/device/query/statistics/keepalive` 与 `.../register` 恒返回
