@@ -460,6 +460,94 @@ mod tests {
         }
     }
 
+    /// 回归：按主键定位的**单行 UPDATE** 写端点，目标不存在时必须回 **404**。
+    ///
+    /// 第九轮审计把全仓 **242 个写端点**逐个核过，在 API Key 那 4 个之外又挖出
+    /// **7 处**丢弃 `rows_affected` 的地方 —— 目标不存在时照旧回 200 + `code:0`，
+    /// 于是前端弹「保存成功」，实际**一行都没改**（管理员以为改完了）。
+    ///
+    /// 其中 `push/update` 写的是 `Ok(_)`：看着像「已 match 检查过」，实际把
+    /// `u64` 直接丢掉；而 `platform/channel/custom/update` **不能**用返回值判
+    /// 存在性（`db::platform_channel::update` 在两个字段皆空时提前
+    /// `return Ok(0)`），它改为先按 id 查存在性 —— 两条路径都要被这条用例挡住。
+    #[tokio::test]
+    async fn write_endpoints_on_missing_row_return_404() {
+        let state = app_state().await;
+        let jwt = crate::auth::JwtKeys::new(state.config.jwt.secret.as_bytes());
+        let token = jwt.create_token("admin", 60).unwrap();
+        let base = spawn(state).await;
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+
+        // 内存库里没有这些 id（999999 必然不存在）。
+        // body 只给 `id`（+ 一个可变字段，避免 db 层「没有要改的字段」的短路）。
+        //
+        // 这里**收集全部结果再统一断言**：若逐个 `assert_eq!`，回归时只会在
+        // 第一个失败的端点上 panic，看不到其余 6 个是修好了还是同样坏了。
+        let mut failures: Vec<String> = Vec::new();
+        for (label, path, body) in [
+            (
+                "公共通道更新",
+                "/api/common/channel/update",
+                r#"{"id":999999,"name":"x"}"#,
+            ),
+            (
+                "公共通道重置",
+                "/api/common/channel/reset",
+                r#"{"id":999999}"#,
+            ),
+            (
+                "区域更新",
+                "/api/region/update",
+                r#"{"id":999999,"name":"x"}"#,
+            ),
+            (
+                "分组更新",
+                "/api/group/update",
+                r#"{"id":999999,"name":"x"}"#,
+            ),
+            (
+                "级联平台更新",
+                "/api/platform/update",
+                r#"{"id":999999,"name":"x"}"#,
+            ),
+            (
+                "共享通道自定义更新",
+                "/api/platform/channel/custom/update",
+                r#"{"id":999999,"customName":"x"}"#,
+            ),
+            (
+                "推流更新",
+                "/api/push/update",
+                r#"{"id":999999,"app":"live"}"#,
+            ),
+        ] {
+            let resp = client
+                .post(format!("{base}{path}"))
+                .header("access-token", &token)
+                .header("content-type", "application/json")
+                .body(body)
+                .send()
+                .await
+                .unwrap();
+            let status = resp.status().as_u16();
+            let text = resp.text().await.unwrap();
+            let parsed: serde_json::Value = serde_json::from_str(&text).unwrap_or_else(|e| {
+                panic!("{label} 必须是契约信封（JSON），实际是 {text:?}（{e}）")
+            });
+            if parsed["code"] != 404 || status != 404 {
+                failures.push(format!(
+                    "{label}: code={} http={status} body={parsed}",
+                    parsed["code"]
+                ));
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "以下写端点在目标不存在时没有回 404（假成功）：\n{}",
+            failures.join("\n")
+        );
+    }
+
     /// 回归：云录像删除端点的**请求体不合法**时，也必须回**契约信封**。
     ///
     /// 此前用 `Json<T>` 提取器，解析失败由 axum 直接回 **422 + `text/plain` 裸文本** ——
