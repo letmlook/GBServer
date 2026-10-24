@@ -1441,13 +1441,34 @@ pub struct UserApiKeyMutateQuery {
 /// "本该过期的凭证"变成永久有效，而且调用方（前端）以为已经设上了。
 /// 之前这里是 `Option<i64>`：日期打错（比如 `2026-13-45 99:99:99` 或
 /// `2026-02-30`）会走到 `None`，接口照样回 `code: 0`。
+///
+/// **时区**：`YYYY-MM-DD HH:mm:ss` 是**墙钟时间**（没有时区信息），
+/// 前端从日历选出来就是这个形状。必须按**服务器本地时区**解释 ——
+/// 此前用 `and_utc()` 等于把墙钟当成 UTC，容器 TZ=+8 时整体**偏移 8 小时**，
+/// 列表回显的时间和用户选的日历时间对不上，"到点即失效"的凭证也多活 8 小时。
+///
+/// 另两种输入：
+/// - Unix 秒（含负数）→ 原样透传（时区无关，第三方脚本常用）；
+/// - 其它格式 → 400 业务错误。
 fn parse_expired_at(raw: Option<&str>) -> Result<Option<i64>, String> {
     let raw = raw.map(str::trim).unwrap_or_default();
     if raw.is_empty() {
         return Ok(None);
     }
     if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(raw, "%Y-%m-%d %H:%M:%S") {
-        return Ok(Some(dt.and_utc().timestamp()));
+        use chrono::TimeZone;
+        // 墙钟 → 本地时区。`LocalResult` 三态：
+        // - Single：正常；
+        // - Ambiguous：夏令时回拨时同一个墙钟对应两个瞬间，取较早的；
+        // - None：这个墙钟在本地时区**不存在**（夏令时前跳），拒绝而不是猜。
+        let local = match chrono::Local.from_local_datetime(&dt) {
+            chrono::LocalResult::Single(t) => t,
+            chrono::LocalResult::Ambiguous(earlier, _later) => earlier,
+            chrono::LocalResult::None => {
+                return Err(format!("过期时间在本地时区不存在: {raw:?}"));
+            }
+        };
+        return Ok(Some(local.timestamp()));
     }
     if let Ok(ts) = raw.parse::<i64>() {
         return Ok(Some(ts));
@@ -3730,6 +3751,78 @@ pub async fn record_plan_link(
 // shutdown 没有）。它是一个"只会说谎"的孤儿函数，已删除。
 // 若将来要做远程关停，应端到端实现（鉴权 + axum graceful shutdown + SIP/ZLM 清理），
 // 而不是恢复这个空壳。
+
+#[cfg(test)]
+mod api_key_expiry_tests {
+    use super::*;
+
+    /// 空输入 = "永不过期"（这是**唯一**允许静默变永不过期的路径）。
+    #[test]
+    fn empty_input_means_never_expires() {
+        assert_eq!(parse_expired_at(None).unwrap(), None);
+        assert_eq!(parse_expired_at(Some("")).unwrap(), None);
+        assert_eq!(parse_expired_at(Some("   ")).unwrap(), None);
+    }
+
+    /// Unix 秒原样透传（时区无关，第三方脚本常用）。
+    #[test]
+    fn epoch_seconds_pass_through() {
+        assert_eq!(
+            parse_expired_at(Some("1893456000")).unwrap(),
+            Some(1893456000)
+        );
+        assert_eq!(parse_expired_at(Some("-1")).unwrap(), Some(-1));
+    }
+
+    /// **非法输入必须报错** —— 不能静默变成"永不过期"。
+    ///
+    /// 这条是本轮修的核心契约：此前解析失败返回 `None`，于是一个填错的过期时间
+    /// 会被静默升级成**永久有效**，而接口还回 `code: 0`。
+    #[test]
+    fn garbage_expiry_is_rejected() {
+        for bad in [
+            "2026-13-45 99:99:99", // 月份 13、时分秒越界
+            "2026-02-30 10:00:00", // 2 月没有 30 号
+            "not-a-date",
+            "2026-12-31T23:59:59Z", // ISO 带 T / 带时区：不是本接口约定的格式
+            "2026-12-31T23:59:59",
+            "2026-12-31", // 只有日期
+            "2026/12/31 10:00:00",
+        ] {
+            assert!(
+                parse_expired_at(Some(bad)).is_err(),
+                "非法过期时间必须报错而不是静默当永不过期: {bad:?}"
+            );
+        }
+    }
+
+    /// 墙钟时间按**本地时区**解释，不能当成 UTC。
+    ///
+    /// 此前用 `and_utc()`，容器 TZ=+8 时整体偏移 8 小时：列表回显的时间和
+    /// 用户在日历里选的时间对不上，"到点即失效"的凭证也多活 8 小时。
+    #[test]
+    fn wall_clock_is_interpreted_in_local_timezone() {
+        let raw = "2026-12-31 23:59:59";
+        use chrono::TimeZone;
+        let got = parse_expired_at(Some(raw)).unwrap().expect("应解析出时间");
+        let naive = chrono::NaiveDateTime::parse_from_str(raw, "%Y-%m-%d %H:%M:%S").unwrap();
+        let expect = chrono::Local
+            .from_local_datetime(&naive)
+            .single()
+            .expect("该墙钟应能映射到本地时区")
+            .timestamp();
+        assert_eq!(got, expect);
+        // UTC 解释会差一个时区偏移；两者不应相等（除非本机就是 UTC）。
+        let utc_misread = naive.and_utc().timestamp();
+        if chrono::Local
+            .offset_from_utc_datetime(&naive)
+            .local_minus_utc()
+            != 0
+        {
+            assert_ne!(got, utc_misread, "墙钟不得再按 UTC 解释");
+        }
+    }
+}
 
 #[cfg(test)]
 mod log_export_tests {

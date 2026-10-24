@@ -13,11 +13,50 @@
  * "resolved to N elements"，把真正的断言盖掉。
  */
 
-import { test, expect, type Page } from '@playwright/test'
+import { test, expect, type Page, type Locator } from '@playwright/test'
 import { apiPath } from '../test-helpers/api-path'
 
 /** 本轮用例专用的应用标识前缀（用于定位与清理）。 */
 const APP_PREFIX = 'e2e-apikey'
+
+/**
+ * 在 el-date-picker 面板里选一个日期。
+ *
+ * **为什么不能直接 fill 输入框**：日期选择器已改成 `:editable="false"`
+ * （输入框只读），否则用户能打出非法日期 —— 而 element-plus 的用户输入解析
+ * 走 dayjs 的**非严格**模式，"2026-02-30" 会被**归一化**成 "2026-03-02"，
+ * 解析不出来的又会被**静默丢弃**成"永不过期"。两条路都会让后端新加的 400
+ * 保护根本触发不到。只读之后，非法日期在浏览器里就输不出来。
+ *
+ * 面板的默认时间是 **00:00:00**，所以：
+ * - 选「今天」→ 今天午夜 → **已经过去**（用于验证过期即拒绝）；
+ * - 选「下个月」→ 将来（用于验证设置了过期时间后仍然可用）。
+ *
+ * 返回输入框里的最终值。
+ */
+async function pickDate(
+  page: Page,
+  dialog: Locator,
+  opts: { monthOffset: number; day?: number }
+): Promise<string> {
+  const popper = page.locator('.el-picker__popper')
+  const input = dialog.getByPlaceholder('留空表示永不过期')
+  await input.click()
+  // 先断言浮层**真的打开**了 —— 否则后面的 toBeHidden 会变成"元素不存在也算过"的
+  // 空断言，交互写坏了测试照样绿。
+  await expect(popper).toBeVisible()
+  for (let i = 0; i < opts.monthOffset; i += 1) {
+    await popper.locator('button.el-picker-panel__icon-btn.arrow-right').click()
+  }
+  if (opts.day === undefined) {
+    await popper.locator('td.today').click()
+  } else {
+    await popper.locator('td.available', { hasText: new RegExp(`^${opts.day}$`) }).first().click()
+  }
+  await popper.getByRole('button', { name: '确定' }).click()
+  await expect(popper).toBeHidden()
+  return input.inputValue()
+}
 
 /** 用 X-API-Key 调受保护接口，返回 HTTP 状态码。 */
 async function statusWithApiKey(page: Page, apiKey: string, path: string): Promise<number> {
@@ -152,13 +191,9 @@ test.describe('API Key 管理', () => {
     const addDialog = page.getByRole('dialog', { name: '新增 API Key' })
     await expect(addDialog).toBeVisible()
     await addDialog.getByLabel('应用标识').fill(appName)
-    // 后端接受 `YYYY-MM-DD HH:mm:ss`，这里给一个已经过去的时间。
-    // 过期时间用的是 el-date-picker：填完要按回车把面板收掉，
-    // 否则浮层还在，"创建"按钮会一直被判为"不稳定"而点不动。
-    const expiryInput = addDialog.getByPlaceholder('留空表示永不过期')
-    await expiryInput.fill('2020-01-01 00:00:00')
-    await expiryInput.press('Enter')
-    await expect(page.locator('.el-picker__popper')).toBeHidden()
+    // 选「今天」→ 面板默认时间 00:00:00 → 已经过去的时刻 → 创建即过期。
+    const picked = await pickDate(page, addDialog, { monthOffset: 0 })
+    expect(picked, '日期选择器应写入一个时间').toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/)
     await addDialog.getByRole('button', { name: '创建' }).click()
 
     const apiKey = await readSecretFromDialog(page)
@@ -175,5 +210,36 @@ test.describe('API Key 管理', () => {
       await row.getByRole('button', { name: '删除' }).click()
       await messageBoxButton(page, '删除').click()
     }
+  })
+
+  test('选了未来的过期时间后，密钥在到期前仍然可用', async ({ page }) => {
+    if (!(await openPage(page))) {
+      test.skip(true, '当前登录账号不是管理员，跳过 API Key 管理用例')
+    }
+    await cleanupLeftovers(page)
+    await page.reload({ waitUntil: 'domcontentloaded' })
+
+    const appName = `${APP_PREFIX}-future-${Date.now()}`
+
+    await page.getByRole('button', { name: '新增 API Key' }).click()
+    const addDialog = page.getByRole('dialog', { name: '新增 API Key' })
+    await expect(addDialog).toBeVisible()
+    await addDialog.getByLabel('应用标识').fill(appName)
+    // 选「下个月的 15 号」→ 将来 → 到期前必须仍然可用。
+    const picked = await pickDate(page, addDialog, { monthOffset: 1, day: 15 })
+    await addDialog.getByRole('button', { name: '创建' }).click()
+
+    const apiKey = await readSecretFromDialog(page)
+    await page.getByRole('button', { name: '我已复制' }).click()
+
+    // 核心断言：过期时间真的被带上了（不是"永不过期"），且到期前可用。
+    const row = page.getByRole('row', { name: new RegExp(appName) })
+    await expect(row).toBeVisible()
+    await expect(row).not.toContainText('永不过期')
+    await expect(row).toContainText(picked.slice(0, 10))
+    expect(await statusWithApiKey(page, apiKey, apiPath('/server/version'))).toBe(200)
+
+    await row.getByRole('button', { name: '删除' }).click()
+    await messageBoxButton(page, '删除').click()
   })
 })

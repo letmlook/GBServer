@@ -89,10 +89,19 @@
           <el-input-number v-model="addForm.userId" :min="1" :controls="false" class="full" />
           <div class="tip">不填默认为 1（管理员账号）。</div>
         </el-form-item>
-        <el-form-item label="过期时间">
+        <el-form-item label="过期时间" prop="expiresAt">
           <!--
             用日期选择器而不是文本框：手打日期很容易打错（月份 13、日 30 号…），
             而打错的后果是**密钥变成永不过期** —— 本该过期的凭证永久有效。
+
+            `:editable="false"` 是关键，**不能去掉**：el-date-picker 的输入框默认
+            可编辑，而它的用户输入走 dayjs 的**非严格**解析，两条路都会让"打错的
+            日期"变成一个看起来合法的值：
+              · 解析不出来 → 不 emit → v-model 仍是 null → 提交时变成"永不过期"；
+              · 解析得出来但日期非法 → dayjs **归一化**："2026-02-30" 变 "2026-03-02"、
+                "2026-13-45 99:99:99" 变 "2027-02-18 04:40:39"。
+            两条路都让后端新加的 400 保护**根本触发不到**。
+            改成只能从面板选之后，非法日期在浏览器里就输不出来。
           -->
           <el-date-picker
             v-model="addForm.expiresAt"
@@ -101,6 +110,7 @@
             placeholder="留空表示永不过期"
             class="full"
             clearable
+            :editable="false"
           />
           <div class="tip">留空 = 永不过期；过期记录会被后台每小时自动清理。</div>
         </el-form-item>
@@ -190,7 +200,21 @@ const addForm = reactive({
   enable: true
 })
 const addRules: FormRules = {
-  app: [{ required: true, message: '请填写应用标识', trigger: 'blur' }]
+  app: [{ required: true, message: '请填写应用标识', trigger: 'blur' }],
+  // 兜底：`:editable="false"` 之后正常路径进不来，但万一有人把它去掉、
+  // 或者别的途径塞进来一个非法串，这里拦住，别让它变成"永不过期"。
+  expiresAt: [
+    {
+      validator: (_rule: any, value: string | null, cb: (e?: Error) => void) => {
+        if (!value || /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value)) {
+          cb()
+        } else {
+          cb(new Error('过期时间格式不正确'))
+        }
+      },
+      trigger: 'change'
+    }
+  ]
 }
 
 const secretVisible = ref(false)
@@ -280,7 +304,10 @@ async function onAddSubmit() {
     showSecret(res.data?.apiKey ?? '')
     loadData()
   } catch (e: any) {
-    ElMessage.error(e?.message ?? '创建 API Key 失败')
+    // 优先用后端返回的 msg：axios 的错误拦截器已经弹过一次后端 msg，
+    // 这里再弹 `e.message` 会变成"中文提示 + 一条无用的英文"两条。
+    // 而当"登录失效"的提示被关掉时，拦截器那条不会弹 —— 只剩这里的英文。
+    ElMessage.error(e?.response?.data?.msg ?? e?.message ?? '创建 API Key 失败')
   } finally {
     saving.value = false
   }
