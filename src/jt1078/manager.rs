@@ -799,21 +799,25 @@ impl Jt1078Manager {
         // **整个 JT1078 信令面**（注册、心跳、0x0200 位置汇报、指令应答）
         // 都会被卡住 —— 一个后台清理任务不该有能力拖垮信令。
         //
-        // 第一段 + 第二段：**都在 `sessions` 锁内**（纯内存，无 IO），
-        // 这样"摘会话"与"清地址表"之间是原子的。
+        // 第一段 + 第二段：**都在 `sessions` 锁内**（纯内存，无 IO）。
         //
-        // `deadline` 在**摘掉会话的这一刻**取：它是"这些会话从现在起算已经失效"
-        // 的时刻基准。第四段的条件写要靠它区分"这行在会话失效之后又被更新过"
-        // （→ 终端其实是活的，不能置离线）与"这行在会话失效之后没被动过"
-        // （→ 确实可以置离线）。
+        // **合并这两个作用域本身就是那道保护**：第三轮把它们分成两段，
+        // 于是"摘会话 ↔ 清地址表"之间可能有报文把会话**复活**
+        // （`process_jt_message` 的 `map.entry(addr).or_insert_with`），
+        // 活着的终端会丢掉 `terminal_addrs` 映射 → `get_terminal_addr` 返回 None
+        // → `is_terminal_online` 为 false → **命令下发被拒**，直到下一个心跳。
+        // 合并之后，这段窗口**不存在**了：我们持着锁时谁也进不来。
+        //
+        // （注意：这里**不需要**再"复查会话是否已复活"—— 持锁期间不可能有复活，
+        //   那种复查是恒真的空操作，写在那里只会**看起来**像有保护。）
+        //
+        // `deadline` 在**摘掉会话之后立刻**取：此刻仍持锁，不可能有心跳插进来，
+        // 所以它就是"这些会话从现在起算已经失效"的时刻基准。第四段的条件写要靠它
+        // 区分"这行在会话失效之后又被更新过"（→ 终端其实是活的，不能置离线）与
+        // "这行在会话失效之后没被动过"（→ 确实可以置离线）。
         // 若把 deadline 拖到 DB 写之前才取，那么"摘会话 ↔ 取 deadline"之间
         // 到达的心跳，其 `update_time` 会落在 deadline **之前** → 被误判成
         // "没有活动" → **活着的终端被标成离线**。
-        //
-        // 摘完会话后**复查一遍**：期间可能有报文把会话**复活**
-        // （`process_jt_message` 的 `map.entry(addr).or_insert_with(...)`）。
-        // 活着的终端不该被清掉地址映射 —— 映射没了，`get_terminal_addr` 就返回
-        // None、`is_terminal_online` 为 false，**命令下发会被拒**，直到下一个心跳。
         let (removed_addrs, deadline, stale_phones): (Vec<SocketAddr>, String, Vec<String>) = {
             let mut map = self.sessions.lock().await;
             let now = Instant::now();
@@ -826,9 +830,6 @@ impl Jt1078Manager {
             for k in removed.iter() {
                 map.remove(k);
             }
-            // 复查：已被复活的会话不算超时（终端其实是活的）
-            removed.retain(|addr| !map.contains_key(addr));
-
             let deadline = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
 
             // 第二段：清终端地址登记表，并收集"因此超时"的终端（只动内存）。
