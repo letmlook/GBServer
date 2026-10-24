@@ -414,6 +414,52 @@ mod tests {
         }
     }
 
+    /// 回归：API Key 的写操作在**目标不存在**时不得回"成功"。
+    ///
+    /// `remark` / `enable` / `disable` / `reset` 都忽略 `UPDATE` 的
+    /// `rows_affected` —— id 不存在时也回 200。而 `reset` 更糟：它会回一个
+    /// **从未被存储**的密钥，前端弹出"请立即复制密钥"、管理员把它抄走，
+    /// 用起来必然 401，而界面全程显示"成功"。
+    ///
+    /// 仓库既有约定是"影响 0 行 → 404"（见 `jt1078` 的终端删除、`platform` 的
+    /// 目录删除），这里跟它保持一致。
+    #[tokio::test]
+    async fn api_key_write_on_missing_row_returns_404() {
+        let state = app_state().await;
+        let jwt = crate::auth::JwtKeys::new(state.config.jwt.secret.as_bytes());
+        let token = jwt.create_token("admin", 60).unwrap();
+        let base = spawn(state).await;
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+
+        // 内存库里没有任何 API Key，取一个必然不存在的 id。
+        for (label, url) in [
+            ("启用", format!("{base}/api/userApiKey/enable?id=999999")),
+            ("停用", format!("{base}/api/userApiKey/disable?id=999999")),
+            ("重置", format!("{base}/api/userApiKey/reset?id=999999")),
+            (
+                "备注",
+                format!("{base}/api/userApiKey/remark?id=999999&remark=x"),
+            ),
+        ] {
+            let resp = client
+                .post(&url)
+                .header("access-token", &token)
+                .send()
+                .await
+                .unwrap();
+            let status = resp.status().as_u16();
+            let text = resp.text().await.unwrap();
+            let parsed: serde_json::Value = serde_json::from_str(&text)
+                .unwrap_or_else(|e| panic!("必须是契约信封（JSON），实际是 {text:?}（{e}）"));
+            assert_eq!(parsed["code"], 404, "{label} 必须回 404，实际 {parsed:?}");
+            assert_eq!(status, 404, "{label} 的 HTTP 状态必须是 404，实际 {status}");
+            assert!(
+                parsed["data"]["apiKey"].is_null(),
+                "{label} 不得回出密钥（那是从未被存储的字符串），实际 {parsed:?}"
+            );
+        }
+    }
+
     /// 回归：云录像删除端点的**请求体不合法**时，也必须回**契约信封**。
     ///
     /// 此前用 `Json<T>` 提取器，解析失败由 axum 直接回 **422 + `text/plain` 裸文本** ——

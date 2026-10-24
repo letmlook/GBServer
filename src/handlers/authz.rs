@@ -60,7 +60,8 @@ pub async fn is_admin(state: &AppState, headers: &HeaderMap) -> Result<bool, App
 
 /// 要求管理员身份；返回请求主体。
 ///
-/// 非管理员 → `ErrorCode::Error403`（HTTP 200 + code 403，与本仓库既有约定一致）。
+/// 非管理员 → `ErrorCode::Error403`（HTTP 403 + `code:403`，见
+/// `error::AppError::into_response` 的状态码映射）。
 pub async fn require_admin(state: &AppState, headers: &HeaderMap) -> Result<(), AppError> {
     let (_, user) = current_user(state, headers).await?;
     if !is_admin_role(user.role_id, user.role_authority.as_deref()) {

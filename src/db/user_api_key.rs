@@ -49,7 +49,7 @@ pub async fn list_paged(pool: &Pool, page: u32, count: u32) -> sqlx::Result<Vec<
     let offset = crate::pagination::offset(page, count);
     #[cfg(feature = "mysql")]
     return sqlx::query_as::<_, UserApiKey>(
-        "SELECT id, user_id, app, api_key, expired_at, remark, enable, create_time, update_time FROM gb_user_api_key ORDER BY id LIMIT ? OFFSET ?",
+        "SELECT id, user_id, app, api_key, expired_at, remark, enable, create_time, update_time FROM gb_user_api_key ORDER BY id DESC LIMIT ? OFFSET ?",
     )
     .bind(count as i64)
     .bind(offset)
@@ -57,7 +57,7 @@ pub async fn list_paged(pool: &Pool, page: u32, count: u32) -> sqlx::Result<Vec<
     .await;
     #[cfg(feature = "postgres")]
     return sqlx::query_as::<_, UserApiKey>(
-        "SELECT id, user_id, app, api_key, expired_at, remark, enable, create_time, update_time FROM gb_user_api_key ORDER BY id LIMIT $1 OFFSET $2",
+        "SELECT id, user_id, app, api_key, expired_at, remark, enable, create_time, update_time FROM gb_user_api_key ORDER BY id DESC LIMIT $1 OFFSET $2",
     )
     .bind(count as i64)
     .bind(offset)
@@ -65,7 +65,7 @@ pub async fn list_paged(pool: &Pool, page: u32, count: u32) -> sqlx::Result<Vec<
     .await;
     #[cfg(feature = "sqlite")]
     return sqlx::query_as::<_, UserApiKey>(
-        "SELECT id, user_id, app, api_key, expired_at, remark, enable, create_time, update_time FROM gb_user_api_key ORDER BY id LIMIT ? OFFSET ?",
+        "SELECT id, user_id, app, api_key, expired_at, remark, enable, create_time, update_time FROM gb_user_api_key ORDER BY id DESC LIMIT ? OFFSET ?",
     )
     .bind(count as i64)
     .bind(offset)
@@ -281,21 +281,21 @@ pub async fn get_by_api_key(pool: &Pool, api_key: &str) -> sqlx::Result<Option<U
 pub async fn list_by_user_id(pool: &Pool, user_id: i64) -> sqlx::Result<Vec<UserApiKey>> {
     #[cfg(feature = "mysql")]
     return sqlx::query_as::<_, UserApiKey>(
-        "SELECT id, user_id, app, api_key, expired_at, remark, enable, create_time, update_time FROM gb_user_api_key WHERE user_id = ? ORDER BY id",
+        "SELECT id, user_id, app, api_key, expired_at, remark, enable, create_time, update_time FROM gb_user_api_key WHERE user_id = ? ORDER BY id DESC",
     )
     .bind(user_id)
     .fetch_all(pool)
     .await;
     #[cfg(feature = "postgres")]
     return sqlx::query_as::<_, UserApiKey>(
-        "SELECT id, user_id, app, api_key, expired_at, remark, enable, create_time, update_time FROM gb_user_api_key WHERE user_id = $1 ORDER BY id",
+        "SELECT id, user_id, app, api_key, expired_at, remark, enable, create_time, update_time FROM gb_user_api_key WHERE user_id = $1 ORDER BY id DESC",
     )
     .bind(user_id)
     .fetch_all(pool)
     .await;
     #[cfg(feature = "sqlite")]
     return sqlx::query_as::<_, UserApiKey>(
-        "SELECT id, user_id, app, api_key, expired_at, remark, enable, create_time, update_time FROM gb_user_api_key WHERE user_id = ? ORDER BY id",
+        "SELECT id, user_id, app, api_key, expired_at, remark, enable, create_time, update_time FROM gb_user_api_key WHERE user_id = ? ORDER BY id DESC",
     )
     .bind(user_id)
     .fetch_all(pool)
@@ -430,6 +430,111 @@ mod ordering_tests {
             .await
             .unwrap();
         }
+    }
+
+    /// 回归：列表必须**最新的在最前**（`id` 倒序）。
+    ///
+    /// 这不是审美偏好，而是产品契约：这一页是"凭证台账"，管理员建完 Key 回到
+    /// 列表页就要看见它、马上停用或删掉。升序（`ORDER BY id`）会把新建的 Key
+    /// 顶到**最后一页** —— 库里超过一页（前端默认 20 条）时，页面上根本看不到
+    /// 自己刚建的那条，只能靠翻页去找。
+    ///
+    /// 变异验证：把 `list_paged` 的 `ORDER BY id DESC` 改回 `ORDER BY id`，
+    /// 本用例立刻失败（`just-created` 跑到了第 26 条、即第二页）。
+    #[tokio::test]
+    async fn list_paged_returns_newest_first() {
+        let pool = crate::test_support::sqlite_pool_with_schema().await;
+        seed(&pool, 25).await;
+        add(
+            &pool,
+            1,
+            "just-created",
+            "key-just-created",
+            None,
+            true,
+            None,
+            NOW,
+        )
+        .await
+        .unwrap();
+
+        let page1 = list_paged(&pool, 1, 20).await.unwrap();
+        assert_eq!(page1.len(), 20, "第一页应当有 20 条");
+        assert_eq!(
+            page1[0].app.as_deref(),
+            Some("just-created"),
+            "刚创建的 Key 必须落在第一页第一行，而不是被顶到最后一页"
+        );
+        let ids: Vec<i32> = page1.iter().map(|k| k.id).collect();
+        let mut desc = ids.clone();
+        desc.sort_by(|a, b| b.cmp(a));
+        assert_eq!(ids, desc, "整页必须按 id 倒序（新的在前），实际 {ids:?}");
+    }
+
+    /// 回归：倒序 + LIMIT/OFFSET 翻页必须**不重不漏**。
+    #[tokio::test]
+    async fn list_paged_pages_do_not_skip_or_duplicate() {
+        let pool = crate::test_support::sqlite_pool_with_schema().await;
+        seed(&pool, 25).await;
+
+        let first_page: Vec<i32> = list_paged(&pool, 1, 10)
+            .await
+            .unwrap()
+            .iter()
+            .map(|k| k.id)
+            .collect();
+        let second_page: Vec<i32> = list_paged(&pool, 2, 10)
+            .await
+            .unwrap()
+            .iter()
+            .map(|k| k.id)
+            .collect();
+
+        assert_eq!(first_page.len(), 10);
+        assert_eq!(second_page.len(), 10);
+        let mut all: Vec<i32> = first_page
+            .iter()
+            .chain(second_page.iter())
+            .copied()
+            .collect();
+        let total = all.len();
+        all.sort_unstable();
+        all.dedup();
+        assert_eq!(all.len(), total, "两页之间不能有重复行");
+        assert!(
+            *second_page.iter().max().unwrap() < *first_page.iter().min().unwrap(),
+            "第二页必须整体排在第一页之后：{second_page:?} vs {first_page:?}"
+        );
+    }
+
+    /// 回归：`list_by_user_id` 与 `list_paged` 同口径（新的在前）。
+    #[tokio::test]
+    async fn list_by_user_id_is_newest_first() {
+        let pool = crate::test_support::sqlite_pool_with_schema().await;
+        seed(&pool, 2).await;
+        add(&pool, 2, "other-user", "key-other", None, true, None, NOW)
+            .await
+            .unwrap();
+        add(
+            &pool,
+            1,
+            "my-newest",
+            "key-my-newest",
+            None,
+            true,
+            None,
+            NOW,
+        )
+        .await
+        .unwrap();
+
+        let rows = list_by_user_id(&pool, 1).await.unwrap();
+        assert_eq!(rows.len(), 3, "只应返回 user 1 的 3 条");
+        assert_eq!(rows[0].app.as_deref(), Some("my-newest"));
+        let ids: Vec<i32> = rows.iter().map(|k| k.id).collect();
+        let mut desc = ids.clone();
+        desc.sort_by(|a, b| b.cmp(a));
+        assert_eq!(ids, desc, "必须按 id 倒序，实际 {ids:?}");
     }
 
     /// 回归：超大 `page` 不能让列表接口 panic。

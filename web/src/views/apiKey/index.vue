@@ -302,6 +302,10 @@ async function onAddSubmit() {
     })
     addVisible.value = false
     showSecret(res.data?.apiKey ?? '')
+    // 回到第 1 页：列表是"新的在前"（后端 `ORDER BY id DESC`），
+    // 新建的 Key 一定排在第一页第一行。若停在第 3 页再刷新，
+    // 新 Key 仍在别的页里 —— 刚建完却"看不到"，等于没有建。
+    page.value = 1
     loadData()
   } catch (e: any) {
     // 优先用后端返回的 msg：axios 的错误拦截器已经弹过一次后端 msg，
@@ -343,7 +347,7 @@ async function onRemarkSubmit() {
     ElMessage.success('备注已更新')
     loadData()
   } catch (e: any) {
-    ElMessage.error(e?.message ?? '更新备注失败')
+    ElMessage.error(e?.response?.data?.msg ?? e?.message ?? '更新备注失败')
   } finally {
     saving.value = false
   }
@@ -355,7 +359,7 @@ async function onEnable(row: any) {
     ElMessage.success('已启用')
     loadData()
   } catch (e: any) {
-    ElMessage.error(e?.message ?? '启用失败')
+    ElMessage.error(e?.response?.data?.msg ?? e?.message ?? '启用失败')
   }
 }
 
@@ -365,7 +369,7 @@ async function onDisable(row: any) {
     ElMessage.success('已停用')
     loadData()
   } catch (e: any) {
-    ElMessage.error(e?.message ?? '停用失败')
+    ElMessage.error(e?.response?.data?.msg ?? e?.message ?? '停用失败')
   }
 }
 
@@ -384,7 +388,7 @@ async function onReset(row: any) {
     showSecret(res.data?.apiKey ?? '')
     loadData()
   } catch (e: any) {
-    ElMessage.error(e?.message ?? '重置密钥失败')
+    ElMessage.error(e?.response?.data?.msg ?? e?.message ?? '重置密钥失败')
   }
 }
 
@@ -403,7 +407,7 @@ async function onDelete(row: any) {
     ElMessage.success('已删除')
     loadData()
   } catch (e: any) {
-    ElMessage.error(e?.message ?? '删除失败')
+    ElMessage.error(e?.response?.data?.msg ?? e?.message ?? '删除失败')
   }
 }
 

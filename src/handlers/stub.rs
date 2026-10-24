@@ -1423,6 +1423,32 @@ pub struct UserApiKeyQuery {
     pub count: Option<u32>,
 }
 
+/// 写操作必须确认**真的改到了行**。
+///
+/// `UPDATE ... WHERE id = ?` 在 id 不存在时 `rows_affected == 0` —— 但那**不等于
+/// "成功"**。此前 `remark` / `enable` / `disable` / `reset` 四个端点都直接忽略
+/// `rows_affected`：目标不存在也回 200，而 `reset` 还会回一个**从未被存储**的
+/// 密钥 → 前端弹出"请立即复制密钥"、管理员把它当回事抄走 → 用起来 401，
+/// 界面全程显示"成功"。
+///
+/// 仓库既有约定就是"影响 0 行 → 404"（见 `jt1078` 的终端删除、`platform` 的
+/// 目录删除），这里跟它保持一致。
+///
+/// **三种方言的 `rows_affected` 语义一致**（= 命中行数，与"值有没有变"无关）：
+/// PostgreSQL 统计匹配的；SQLite 的 `sqlite3_changes()` 统计被 UPDATE
+/// 处理过的行；MySQL 侧 sqlx 握手时开了 `CLIENT_FOUND_ROWS`，所以回的是
+/// **匹配**行数而不是**改变**行数（否则"启用一个已经启用的 Key"会被误判成
+/// 404）。
+fn require_api_key_affected(affected: u64, id: i32) -> Result<(), AppError> {
+    if affected == 0 {
+        return Err(AppError::business(
+            ErrorCode::Error404,
+            format!("API Key 不存在: id={id}"),
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct UserApiKeyMutateQuery {
     pub id: Option<i32>,
@@ -1539,6 +1565,7 @@ pub async fn user_api_key_list(
     ),
     responses(
         (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 404, description = "API Key 不存在"),
         (status = 401, description = "未鉴权"),
     ),
     security(("access_token" = [])),
@@ -1553,7 +1580,8 @@ pub async fn user_api_key_remark(
         q.id.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id"))?;
     let remark = q.remark.as_deref().unwrap_or("");
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    user_api_key::update_remark(&state.pool, id as i64, remark, &now).await?;
+    let affected = user_api_key::update_remark(&state.pool, id as i64, remark, &now).await?;
+    require_api_key_affected(affected, id)?;
     Ok(Json(ApiResult::<()>::success_empty()))
 }
 
@@ -1574,6 +1602,7 @@ pub struct UserApiKeyId {
     ),
     responses(
         (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 404, description = "API Key 不存在"),
         (status = 401, description = "未鉴权"),
     ),
     security(("access_token" = [])),
@@ -1587,7 +1616,8 @@ pub async fn user_api_key_enable(
     let id =
         q.id.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id"))?;
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    user_api_key::set_enable(&state.pool, id, true, &now).await?;
+    let affected = user_api_key::set_enable(&state.pool, id, true, &now).await?;
+    require_api_key_affected(affected, id)?;
     Ok(Json(ApiResult::<()>::success_empty()))
 }
 
@@ -1602,6 +1632,7 @@ pub async fn user_api_key_enable(
     ),
     responses(
         (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 404, description = "API Key 不存在"),
         (status = 401, description = "未鉴权"),
     ),
     security(("access_token" = [])),
@@ -1615,7 +1646,8 @@ pub async fn user_api_key_disable(
     let id =
         q.id.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id"))?;
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    user_api_key::set_enable(&state.pool, id, false, &now).await?;
+    let affected = user_api_key::set_enable(&state.pool, id, false, &now).await?;
+    require_api_key_affected(affected, id)?;
     Ok(Json(ApiResult::<()>::success_empty()))
 }
 
@@ -1630,6 +1662,7 @@ pub async fn user_api_key_disable(
     ),
     responses(
         (status = 200, description = "成功", body = ApiResult<serde_json::Value>),
+        (status = 404, description = "API Key 不存在"),
         (status = 401, description = "未鉴权"),
     ),
     security(("access_token" = [])),
@@ -1644,7 +1677,10 @@ pub async fn user_api_key_reset(
         q.id.ok_or_else(|| AppError::business(ErrorCode::Error400, "缺少 id"))?;
     let new_key = format!("{:032x}", rand::random::<u128>());
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    user_api_key::reset_api_key(&state.pool, id, &new_key, &now).await?;
+    let affected = user_api_key::reset_api_key(&state.pool, id, &new_key, &now).await?;
+    // 目标不存在时**不能**回密钥：那是**从未被存储**的字符串，前端会弹
+    // "请立即复制密钥"、管理员会把它抄走 —— 然后用它调接口必然 401。
+    require_api_key_affected(affected, id)?;
     Ok(Json(ApiResult::success(
         serde_json::json!({ "apiKey": new_key }),
     )))
