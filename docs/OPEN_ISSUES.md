@@ -927,9 +927,15 @@ verifier（分别审 `sy_contract`+`cloud_record_extra`、`seq_sync`+`jt1078`、
 （`has_pending_for_device` / `has_pending_for` 只被测试引用），真实收益只是
 "提前回收一条 pending"。代码注释已改写。
 
-**⑯ P3 e2e 的浮层断言可能是空断言**
+**⑯ P3 OpenAPI 文档没列出等价参数名 + e2e 的浮层断言可能是空断言**
 `toBeHidden()` 在元素**不存在**时也算通过 —— 浮层从未打开（交互写坏）时用例照样绿。
 现先断言浮层 `toBeVisible()` 再 `toBeHidden()`；并新增一条"未来过期时间仍可用"的用例。
+
+另：utoipa 不支持 serde 的 `alias`，所以 OpenAPI 里只显示 `id`，而
+`id` / `channelId` / `channel_id`（以及收藏侧的 `id` / `recordId` / `cloudRecordId`）
+**实际等价**。utoipa 不会把手工写在字段说明里的文字当成参数名，所以这几句
+只进 `description`、不进 `parameters` —— 文档消费者仍只会看到 `id` 一个名字，
+但 `id` 本来就是能用的那个，不影响对接。
 
 **⑰ P3 jt1078 模块的时间写入混了三种格式**
 `update_time`/`create_time` 同一列混着 UTC 墙钟纯格式、RFC3339 与本地墙钟，
@@ -939,7 +945,7 @@ verifier（分别审 `sy_contract`+`cloud_record_extra`、`seq_sync`+`jt1078`、
 **验证**：定向 Rust 单测 34 个（seq_sync 5 + sy_contract 15 + serde_flex 9 +
 api_key_expiry 4 + cloud_record 过滤 1）全部通过；全量
 `cargo test --no-fail-fast` 通过；三方言构建通过；`scripts/dialect_smoke.py`
-在 pg / mysql / sqlite 三方言上都只剩 2 项"预期失败"；全量 Playwright 80/80。
+在 pg / mysql / sqlite 三方言上都只剩 2 项"预期失败"；全量 Playwright 81/81。
 
 **仍未改（沿用 B17 的先例判断）**：`/api/cloud/record/zip` 的响应里带服务端绝对路径
 `filePath`。理由同上：平台既有行为、SY 别名照搬同样形状、端点本就要求登录，

@@ -242,4 +242,34 @@ test.describe('API Key 管理', () => {
     await row.getByRole('button', { name: '删除' }).click()
     await messageBoxButton(page, '删除').click()
   })
+
+  test('非法的过期时间被直接拒绝（400 + 契约信封）', async ({ page }) => {
+    if (!(await openPage(page))) {
+      test.skip(true, '当前登录账号不是管理员，跳过 API Key 管理用例')
+    }
+    const token = await page.evaluate(() => {
+      const m = document.cookie.match(/(?:^|; )gbserver_token=([^;]+)/)
+      return m ? decodeURIComponent(m[1]) : ''
+    })
+    const headers = token ? { 'access-token': token } : {}
+
+    // 前端已经把日期选择器改成只读，**从 UI 发不出非法值** ——
+    // 所以这条行为只能直接打 HTTP 验。必须回 400 + `{code,msg,data}` 信封，
+    // 而不是裸文本，更不能是 `code:0`（那等于把"本该过期的凭证"变成永久有效）。
+    for (const bad of [
+      '2026-13-45 99:99:99', // 月份/时分秒越界
+      '2026-02-30 10:00:00', // 2 月没有 30 号
+      'not-a-date',
+      '2026-12-31T23:59:59Z' // ISO 带 T：不是本接口约定的格式
+    ]) {
+      const resp = await page.request.post(
+        apiPath(`/userApiKey/add?app=${APP_PREFIX}-bad&expiresAt=${encodeURIComponent(bad)}`),
+        { headers }
+      )
+      expect(resp.status(), `非法过期时间必须回 400: ${bad}`).toBe(400)
+      const body = await resp.json()
+      expect(body.code, `${bad} 的响应体必须是契约信封`).toBe(400)
+      expect(String(body.msg)).toContain('过期时间格式不正确')
+    }
+  })
 })

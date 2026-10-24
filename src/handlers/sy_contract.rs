@@ -120,6 +120,10 @@ pub async fn camera_one(
 #[derive(Debug, Deserialize, Default, utoipa::IntoParams)]
 pub struct SyChannelIdQuery {
     /// 通道主键（数字）或国标通道号，都接受。
+    ///
+    /// **参数名 `id` / `channelId` / `channel_id` 三者等价**（utoipa 不支持
+    /// serde 的 alias，这里手工在说明里写出来，省得对接方只看文档时
+    /// 以为只有 `id` 一种写法）。
     #[serde(alias = "channelId", alias = "channel_id", alias = "id")]
     #[serde(default, deserialize_with = "crate::serde_flex::de_opt_string")]
     pub id: Option<String>,
@@ -247,6 +251,9 @@ pub async fn camera_update(
 #[derive(Debug, Deserialize, Default, utoipa::IntoParams)]
 pub struct SyChannelUpdateQuery {
     /// 通道主键（数字）或国标通道号，都接受（必填）。
+    ///
+    /// **参数名 `id` / `channelId` / `channel_id` 三者等价**（utoipa 不支持
+    /// serde 的 alias，这里手工在说明里写出来）。
     #[serde(alias = "id")]
     #[serde(default, deserialize_with = "crate::serde_flex::de_opt_string")]
     pub id: Option<String>,

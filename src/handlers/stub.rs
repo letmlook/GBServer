@@ -1778,7 +1778,10 @@ pub struct CloudRecordDeleteBody {
 
 #[derive(Debug, Deserialize, Serialize, utoipa::ToSchema, utoipa::IntoParams, Default)]
 pub struct CloudRecordCollectQuery {
-    /// 数字主键（列表返回的 id）与组合串 recordId 都接受
+    /// 数字主键（列表返回的 id）与组合串 recordId 都接受。
+    ///
+    /// **参数名 `id` / `recordId` / `cloudRecordId` 三者等价**（utoipa 不支持
+    /// serde 的 alias，这里手工在说明里写出来 —— 对接方只看文档时不必猜）。
     #[serde(default, deserialize_with = "crate::serde_flex::de_opt_string")]
     pub id: Option<String>,
     #[serde(
