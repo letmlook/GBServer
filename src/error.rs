@@ -57,6 +57,58 @@ impl AppError {
     }
 }
 
+/// 把 axum 提取器拒绝产生的**裸文本**错误响应改写成契约信封 `{code,msg,data}`。
+///
+/// axum 的 `Query` / `Json` / `Path` 提取器在解析失败时**直接**回
+/// `text/plain` 的 400/415/422（例：`Failed to deserialize query string: ...`），
+/// 绕过了 handler —— 所以 handler 里怎么写都救不回来。
+///
+/// 对**第三方对接面**（`/api/sy/*`）这是硬伤：对接方按 `{code,msg,data}` 解析，
+/// 拿到裸文本会直接让它的解析器炸。本中间件把这类响应包回信封，
+/// **只改写「纯文本的错误响应」**，其它响应（JSON 信封、404 路由未命中等）一律放行。
+///
+/// 用法：`router.layer(middleware::from_fn(envelope_rejection_errors))`。
+///
+/// 只挂在第三方对接面上：平台自己的端点调用方是本仓库的前端（axios 对非 2xx
+/// 有统一处理），全量迁移属于独立改动（见 `docs/OPEN_ISSUES.md` 的 B20 记录）。
+pub async fn envelope_rejection_errors(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let resp = next.run(req).await;
+
+    let is_plain_text = resp
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.starts_with("text/plain"))
+        .unwrap_or(false);
+    let status = resp.status();
+    let is_rejection = status == StatusCode::BAD_REQUEST
+        || status == StatusCode::UNSUPPORTED_MEDIA_TYPE
+        || status == StatusCode::UNPROCESSABLE_ENTITY;
+    if !is_plain_text || !is_rejection {
+        return resp;
+    }
+
+    // 取回裸文本正文（上限 64KB，避免异常大的错误页被整体读进内存）
+    let body = axum::body::to_bytes(resp.into_body(), 64 * 1024)
+        .await
+        .unwrap_or_default();
+    let raw = String::from_utf8_lossy(&body);
+    let msg: String = raw.trim().chars().take(200).collect::<String>();
+    let msg = if msg.is_empty() {
+        "请求参数格式不正确".to_string()
+    } else {
+        msg
+    };
+    (
+        status,
+        Json(ApiResult::<()>::fail(status.as_u16() as i32, msg)),
+    )
+        .into_response()
+}
+
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let (code, status, msg) = match &self {

@@ -123,7 +123,17 @@ pub struct PageQuery {
     /// 在线过滤。参数别名 `status`；本平台前端叫 `online`。
     /// 此前 DTO 里根本没有这个字段，handler 还把这个参数**硬编码为 None**，
     /// 于是"只看在线"完全无效。
-    #[serde(default, alias = "status")]
+    ///
+    /// 用 `de_opt_bool` 而不是原生 `bool`：原生 bool 在查询串里**只认
+    /// `"true"`/`"false"`**，第三方传 `online=1` 会整个请求 422
+    /// （且回的是 axum 的裸文本，不是契约信封）。仓库自己的 `serde_flex`
+    /// 就是为这个场景写的 —— 注释里明确说"前端把开关值放在查询串里时常常是
+    /// `"true"`/`"1"`；只认 `bool` 会 422"。此处此前**违反了自己的约定**。
+    #[serde(
+        default,
+        alias = "status",
+        deserialize_with = "crate::serde_flex::de_opt_bool"
+    )]
     pub online: Option<bool>,
     /// 行政区划前缀过滤（作用于通道的 `civil_code`）
     #[serde(default, alias = "civilCode")]

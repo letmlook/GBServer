@@ -45,5 +45,17 @@ pub fn routes() -> DocumentedRoutes {
     acc.add(routes!(crate::handlers::sy_contract::record_zip));
     acc.add(routes!(crate::handlers::sy_contract::force_close));
 
-    acc.finish()
+    // SY 是**第三方对接面**：对接方按 `{code,msg,data}` 信封解析响应。
+    // axum 的提取器拒绝（查询串/请求体解析失败）会**绕过 handler** 直接回
+    // `text/plain` 的 400/415/422 —— 裸文本会让对接方的解析器直接炸。
+    // 这里挂一层中间件把这类响应包回信封（只改写纯文本的错误响应，
+    // 其它响应一律放行）。详见 `crate::error::envelope_rejection_errors`。
+    let (schemas, paths, router) = acc.finish();
+    (
+        schemas,
+        paths,
+        router.layer(axum::middleware::from_fn(
+            crate::error::envelope_rejection_errors,
+        )),
+    )
 }

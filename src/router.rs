@@ -348,6 +348,72 @@ mod tests {
         }
     }
 
+    /// 回归：SY 契约面遇到**非法的查询串**也必须回契约信封。
+    ///
+    /// axum 的 `Query` 提取器拒绝会**绕过 handler** 直接回 `text/plain` 的 400
+    /// （`Failed to deserialize query string: ...`）—— SY 是第三方对接面，
+    /// 对接方按 `{code,msg,data}` 解析，裸文本会直接让它的解析器炸。
+    /// 现由 `crate::error::envelope_rejection_errors` 中间件包回信封。
+    #[tokio::test]
+    async fn sy_endpoint_returns_contract_envelope_for_malformed_query() {
+        let state = app_state().await;
+        let jwt = crate::auth::JwtKeys::new(state.config.jwt.secret.as_bytes());
+        let token = jwt.create_token("admin", 60).unwrap();
+        let base = spawn(state).await;
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+
+        let resp = client
+            .get(format!("{base}/api/sy/camera/list?page=abc"))
+            .header("access-token", &token)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status().as_u16(), 400);
+        let ct = resp
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        assert!(
+            ct.starts_with("application/json"),
+            "错误响应必须是 JSON（契约信封），实际 content-type={ct}"
+        );
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["code"], 400, "{body:?}");
+        assert!(body["msg"].is_string(), "{body:?}");
+    }
+
+    /// 回归：SY 相机列表的 `online` 要同时接受 `true/false` 与 `1/0`。
+    ///
+    /// 原生 `bool` 在查询串里只认 `"true"`/`"false"`，第三方传 `online=1`
+    /// 会整个请求 422 —— 违反仓库自己的 `serde_flex::de_opt_bool` 约定
+    /// （它的注释里就写着"只认 bool 会 422"）。
+    #[tokio::test]
+    async fn sy_camera_list_accepts_numeric_boolean_filter() {
+        let state = app_state().await;
+        let jwt = crate::auth::JwtKeys::new(state.config.jwt.secret.as_bytes());
+        let token = jwt.create_token("admin", 60).unwrap();
+        let base = spawn(state).await;
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+
+        for v in ["true", "false", "1", "0"] {
+            let resp = client
+                .get(format!("{base}/api/sy/camera/list?online={v}"))
+                .header("access-token", &token)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(
+                resp.status().as_u16(),
+                200,
+                "online={v} 应当被接受（查询串里的布尔值要兼容 1/0）"
+            );
+            let body: serde_json::Value = resp.json().await.unwrap();
+            assert_eq!(body["code"], 0, "online={v} → {body:?}");
+        }
+    }
+
     /// 回归：云录像删除端点的**请求体不合法**时，也必须回**契约信封**。
     ///
     /// 此前用 `Json<T>` 提取器，解析失败由 axum 直接回 **422 + `text/plain` 裸文本** ——

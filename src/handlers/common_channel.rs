@@ -1788,6 +1788,9 @@ pub struct CameraListQuery {
     #[serde(alias = "deviceIds", alias = "deviceId")]
     pub device_ids: Option<String>,
     pub geo_coord_sys: Option<String>,
+    /// 用 `de_opt_bool`：原生 bool 在查询串里只认 `"true"`/`"false"`，
+    /// 第三方传 `traditional=1` 会整个请求 422。详见 `serde_flex::de_opt_bool`。
+    #[serde(default, deserialize_with = "crate::serde_flex::de_opt_bool")]
     pub traditional: Option<bool>,
 }
 
@@ -1808,6 +1811,7 @@ pub struct CameraListQuery {
         (status = 200, description = "按设备返回真实通道 `{list,total}`",
          body = ApiResult<serde_json::Value>,
          example = json!({"code":0,"msg":"成功","data":{"list":[],"total":0}})),
+        (status = 401, description = "未鉴权"),
     ),
     security(("access_token" = [])),
 )]
