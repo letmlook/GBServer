@@ -4,6 +4,8 @@ pub mod cascade;
 pub mod cluster;
 pub mod config;
 pub mod db;
+#[cfg(test)]
+mod dialect_guard;
 pub mod dyn_where;
 pub mod error;
 pub mod handlers;
