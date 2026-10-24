@@ -1218,6 +1218,44 @@ pg / mysql / sqlite 三方言都只剩 2 项「预期失败」；全量 Playwrig
 **未完成的核验**（下一轮要补）：JT1078 锁序与条件写的**独立**复核；
 台账 B17~B20 全部条目的**逐条**代码对照；本轮改动的**变异测试**。
 
+### B22 ◐ 第六轮代码审查（SY 第三方契约面专项）
+
+前五轮修的是「最近几轮改动引入的缺陷」。本轮换了个角度：**把 `/api/sy/*` 这个第三方
+对接面当成一个对外 API 来审** —— 逐个端点核对「鉴权、错误形状、参数容忍度、OpenAPI 描述」，
+并对 24 个 SY 端点做**运行时**审计（真实 HTTP 请求，逐条检查响应形状）。
+
+**① P1 非法查询串回的是 axum 的裸文本，不是契约信封**
+`Query` 提取器在解析失败时**绕过 handler** 直接回 `text/plain` 的 400
+（`Failed to deserialize query string: page: invalid digit found in string`）——
+handler 里怎么写都救不回来。SY 是**第三方对接面**，对接方按 `{code,msg,data}` 解析，
+拿到裸文本会**直接让它的解析器炸**。
+实测（修复前）：`GET /api/sy/camera/list?online=1` → **HTTP 422 + text/plain**。
+现：`src/error.rs` 新增 `envelope_rejection_errors` 中间件，挂在 SY 子树上，
+把「纯文本的 400/415/422」包回信封（`code` 取 HTTP 状态码）；其它响应一律放行。
+
+**② P2 SY 相机列表的布尔参数违反仓库自己的约定**
+`online` / `traditional` 用的是 serde 原生 `Option<bool>`，查询串里**只认
+`"true"`/`"false"`**；第三方按最常见的方式传 `online=1` 会整个请求 422。
+而仓库的 `serde_flex::de_opt_bool` 注释里明确写着"前端把开关值放在查询串里时常常是
+`"true"`/`"1"`；只认 `bool` 会 422" —— **SY 端点违反了自己的约定**。
+现两处都改用 `de_opt_bool`（接受 `true/false/1/0/on/yes/no`）。
+前端传的是 JS 布尔（`online=true`），**向后兼容** ✓。
+
+**③ P3 `/api/sy/camera/list/ids` 的 OpenAPI 缺 401 响应声明**
+它声明了 `security`，但 `responses` 里只有 200。已补。
+
+**④ 顺带核出的全仓现象（记录在案，本轮未改）**
+全仓有 **99 个端点**「声明了鉴权但没写 401 响应」——OpenAPI 描述与实际行为不符
+（实际都会回 401）。这是**文档约定**问题，不是功能缺陷；平台侧的调用方是本仓库前端
+（axios 对非 2xx 有统一处理），要全量补齐属于独立的文档改动。
+本轮只在**第三方对接面**（`/api/sy/*`）补齐 —— 那里的文档是给外部对接方看的。
+
+**验证**：24 个 SY 端点**运行时**逐条审计 —— 无鉴权全部 401、有鉴权全部返回
+`{code,msg,data}` 信封；OpenAPI 层面逐条核对（`security` 齐全、401 齐全、
+无误渲染成 `path` 的参数 —— 此前担心的「全限定路径导致 utoipa 退化」经实测**不成立**，
+23 个 SY 端点的参数都正确渲染为 `in:query`）。新增 2 条回归测试
+（非法查询串必须回 JSON 信封；`online` 必须同时接受 `true/false` 与 `1/0`）。
+
 ### B15 ✅ 设备统计查了不存在的表（已修，2026-09-19）
 
 **现象**：`/api/device/query/statistics/keepalive` 与 `.../register` 恒返回
