@@ -28,6 +28,7 @@ use serde::{Deserialize, Serialize};
 use crate::db;
 use crate::error::AppError;
 use crate::handlers::common_channel::{ChannelIdQuery, ChannelUpdateBody};
+use crate::handlers::stub::CloudRecordCollectQuery;
 use crate::response::ApiResult;
 use crate::AppState;
 
@@ -47,26 +48,30 @@ pub struct PushPlayQuery {
 ///
 /// 只回报**就绪度**（数量、布尔、版本），不含节点地址、密钥等部署细节，
 /// 避免对接方把诊断接口当成配置读取口。
+///
+/// 计数是**可空**的：统计失败时给 `null`（未知），**不是 0** ——
+/// "0 个设备"和"查不到设备数"是两件完全不同的事，混为一谈会让对接方
+/// 在 `device_count: 0` 上做出错误判断。
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct SyTestReport {
     /// 平台版本号。
     pub version: String,
     /// 整体是否就绪：DB 可读且 SIP 已初始化且至少有一个可用媒体节点。
     pub ok: bool,
-    /// 数据库连通性。
+    /// 数据库**核心表**（设备/通道）是否可读。
     pub database: bool,
     /// SIP 服务是否已初始化。
     pub sip: bool,
-    /// 已登记的 GB28181 设备数。
-    pub device_count: i64,
-    /// 在线设备数。
-    pub online_device_count: i64,
-    /// 已登记的通道数。
-    pub channel_count: i64,
-    /// 媒体节点总数。
-    pub media_server_count: i64,
-    /// 已启用且在线的媒体节点数。
-    pub media_server_online_count: i64,
+    /// 已登记的 GB28181 设备数（统计失败为 `null`）。
+    pub device_count: Option<i64>,
+    /// 在线设备数（统计失败为 `null`）。
+    pub online_device_count: Option<i64>,
+    /// 已登记的通道数（统计失败为 `null`）。
+    pub channel_count: Option<i64>,
+    /// 媒体节点总数（统计失败为 `null`）。
+    pub media_server_count: Option<i64>,
+    /// 已启用且在线的媒体节点数（统计失败为 `null`）。
+    pub media_server_online_count: Option<i64>,
     /// 自检过程中的问题列表（成功时为空）。
     pub issues: Vec<String>,
 }
@@ -121,23 +126,59 @@ pub struct SyChannelIdQuery {
 }
 
 /// 把"数字主键或国标通道号"解析成通道主键。
+///
+/// **解析顺序：先按国标通道号查，再退回数字主键**，两条分支都校验存在性。
+///
+/// 为什么不能"能 parse 成 i64 就当主键"：
+/// - 20 位国标号（`34020000001320000001`）超出 i64，会正确落到国标查表分支；
+/// - 但**19 位及以下**的数字串（包括对接方去掉前导 0 的 20 位号，如
+///   `4020000001320000001`）**能** parse 成 i64，会被当成主键 —— 于是
+///   `camera/one` 明明有通道却回 `data=null`，`camera/update` 更糟：
+///   UPDATE 命中 0 行却不报错，对接方拿到"改名成功"的**假象**。
+/// - 数字主键**不存在**时同样不能静默成功：那也是"回成功但什么都没改"。
+///
+/// 国标查表优先不会误命中别的设备：`gb_device_id` 在三种方言里都有唯一索引，
+/// 最多命中一行；真实值是 20 位国标号，不会和自增主键撞。
+///
+/// 查不到时统一回 `0`：调用方据此走"通道不存在"分支，两种 id 形态语义一致
+/// （此前 GB 号回 400、数字主键回成功，是相反的两种结论）。
 async fn resolve_channel_pk(state: &AppState, raw: Option<&str>) -> Result<i64, AppError> {
     let raw = raw.map(str::trim).unwrap_or_default();
     if raw.is_empty() {
         // 平台版在 id 缺失时回 data=null，这里保持一致。
         return Ok(0);
     }
-    if let Ok(pk) = raw.parse::<i64>() {
-        return Ok(pk);
-    }
+
+    // 1) 先按国标通道号查。
     match crate::db::record_plan::channel_id_by_gb_id(&state.pool, raw).await {
-        Ok(Some(pk)) => Ok(pk),
-        Ok(None) => Ok(0),
-        Err(e) => Err(AppError::business(
-            crate::error::ErrorCode::Error500,
-            format!("解析通道号失败: {e}"),
-        )),
+        Ok(Some(pk)) => return Ok(pk),
+        Ok(None) => {}
+        Err(e) => {
+            // 数据库错误原文（表名/驱动错误码）不能回给第三方，只进日志。
+            tracing::error!("按国标号查通道失败 (raw={raw}): {e}");
+            return Err(AppError::business(
+                crate::error::ErrorCode::Error500,
+                "通道解析失败",
+            ));
+        }
     }
+
+    // 2) 再退回"数字主键"，并**校验它真实存在**。
+    if let Ok(pk) = raw.parse::<i64>() {
+        return match crate::db::record_plan::channel_exists(&state.pool, pk).await {
+            Ok(true) => Ok(pk),
+            Ok(false) => Ok(0),
+            Err(e) => {
+                tracing::error!("按主键查通道失败 (pk={pk}): {e}");
+                Err(AppError::business(
+                    crate::error::ErrorCode::Error500,
+                    "通道解析失败",
+                ))
+            }
+        };
+    }
+
+    Ok(0)
 }
 
 /// GET /api/sy/camera/update?id=&name=&...
@@ -393,52 +434,59 @@ pub async fn sy_test(
 
     // 计数**不能吞错**：某个查询失败时若还报 0，报告里就会出现
     // `{"database":true,"device_count":0,"ok":true}` 这种自相矛盾的结论，
-    // 对接方据此判定"平台就绪"就错了。失败一律记进 issues 并让 ok=false。
+    // 对接方据此判定"平台就绪"就错了。失败一律记进 issues、让 ok=false，
+    // 并且计数给 `null`（未知）而不是 0（"一个都没有"）。
     let device_count = match db::device::count_devices(&state.pool, None, None).await {
-        Ok(n) => n,
+        Ok(n) => Some(n),
         Err(e) => {
             tracing::warn!("自检：统计设备数失败: {e}");
             issues.push("设备数统计失败".to_string());
-            0
+            None
         }
     };
     let online_device_count = match db::device::count_devices(&state.pool, None, Some(true)).await {
-        Ok(n) => n,
+        Ok(n) => Some(n),
         Err(e) => {
             tracing::warn!("自检：统计在线设备数失败: {e}");
             issues.push("在线设备数统计失败".to_string());
-            0
+            None
         }
     };
     let channel_count = match db::device::count_all_channels(&state.pool).await {
-        Ok(n) => n,
+        Ok(n) => Some(n),
         Err(e) => {
             tracing::warn!("自检：统计通道数失败: {e}");
             issues.push("通道数统计失败".to_string());
-            0
+            None
         }
     };
     let media_server_count = match db::media_server::count_all(&state.pool).await {
-        Ok(n) => n,
+        Ok(n) => Some(n),
         Err(e) => {
             tracing::warn!("自检：统计媒体节点数失败: {e}");
             issues.push("媒体节点数统计失败".to_string());
-            0
+            None
         }
     };
     let media_server_online_count = match db::media_server::list_online_servers(&state.pool).await {
-        Ok(v) => v.len() as i64,
+        Ok(v) => Some(v.len() as i64),
         Err(e) => {
             tracing::warn!("自检：统计在线媒体节点数失败: {e}");
             issues.push("在线媒体节点数统计失败".to_string());
-            0
+            None
         }
     };
 
-    // 数据库连通性：上面的通道数查询已经探过库了。
-    let database = !issues.iter().any(|i| i.contains("统计失败"));
+    // 数据库可读性**只由核心表（设备/通道）决定**。
+    //
+    // 此前是"5 个计数里有没有失败"反推的 —— 而这 5 个计数查的是 5 张**不同**的表：
+    // 媒体节点表坏掉 ≠ 数据库不可读。实测只 DROP `gb_media_server` 时，
+    // 报告会同时给出"媒体节点数统计失败"和"数据库不可读"两条**互相矛盾**的结论，
+    // 对接方无论信哪条都是错的。
+    let database =
+        device_count.is_some() && online_device_count.is_some() && channel_count.is_some();
     if !database {
-        issues.push("数据库不可读".to_string());
+        issues.push("设备/通道统计失败：数据库核心表不可读".to_string());
     }
 
     let sip = state.sip_server.is_some();
@@ -446,13 +494,20 @@ pub async fn sy_test(
         issues.push("SIP 服务未初始化".to_string());
     }
 
-    if media_server_count == 0 {
-        issues.push("未配置媒体节点".to_string());
-    } else if media_server_online_count == 0 {
-        issues.push("没有在线的媒体节点".to_string());
+    // 媒体节点：统计**失败**时不能断言"未配置" —— 查不到 ≠ 没有。
+    // （此前两条结论会同时出现：既"统计失败"又"未配置媒体节点"，自相矛盾。）
+    match (media_server_count, media_server_online_count) {
+        (Some(0), _) => issues.push("未配置媒体节点".to_string()),
+        (Some(_), Some(0)) => issues.push("没有在线的媒体节点".to_string()),
+        (None, _) | (_, None) => {
+            // 统计失败已在上面单独记录，不再追加任何结论
+        }
+        _ => {}
     }
 
-    let ok = database && sip && media_server_online_count > 0;
+    // 就绪 = 核心表可读 + SIP 已初始化 + 至少有一个在线媒体节点。
+    // 媒体节点数统计失败时 `unwrap_or(0)` → 0 → ok=false（"查不到"不等于"就绪"）。
+    let ok = database && sip && media_server_online_count.unwrap_or(0) > 0;
 
     Ok(Json(ApiResult::success(SyTestReport {
         version: env!("CARGO_PKG_VERSION").to_string(),
@@ -513,6 +568,86 @@ mod tests {
             .map(|(k, v)| format!("{k}={v}"))
             .collect::<Vec<_>>()
             .join("&")
+    }
+
+    /// 回归：**不存在的数字主键不能再回"成功"**。
+    ///
+    /// 此前 `resolve_channel_pk` 是"能 parse 成 i64 就当主键"，且**不校验存在性**：
+    /// `UPDATE` 命中 0 行也不报错，于是对接方拿到 `code:0`（"改名成功"），
+    /// 实际什么都没改 —— 这种静默假成功会被推迟到线上才爆。
+    #[tokio::test]
+    async fn camera_update_rejects_unknown_numeric_id_instead_of_fake_success() {
+        let state = crate::test_support::app_state().await;
+        let _pk = seed_device_and_channel(&state.pool, true).await;
+
+        let out = super::camera_update(
+            State(state.clone()),
+            Query(SyChannelUpdateQuery {
+                id: Some("999999".to_string()),
+                name: Some("不该被写进去的名字".to_string()),
+                ..Default::default()
+            }),
+        )
+        .await;
+
+        match out {
+            Ok(_) => panic!("不存在的通道主键必须报错，不能回成功"),
+            Err(e) => {
+                let msg = e.to_string();
+                assert!(msg.contains("通道不存在"), "{msg}");
+            }
+        }
+
+        // 通道名必须真的没被改掉
+        let names: Vec<String> =
+            sqlx::query_scalar("SELECT name FROM gb_device_channel WHERE gb_device_id = ?")
+                .bind(CHANNEL_ID)
+                .fetch_all(&state.pool)
+                .await
+                .unwrap();
+        assert!(
+            names.iter().all(|n| n != "不该被写进去的名字"),
+            "不存在的 id 不得改到别的通道上: {names:?}"
+        );
+    }
+
+    /// 回归：**能 parse 成 i64 的国标号也必须按国标号解析**。
+    ///
+    /// 20 位国标号超出 i64 会自动落到国标查表分支，但对接方去掉前导 0 后的
+    /// 19 位号（`4020000001320000001`）**能** parse 成 i64 —— 此前会被当成
+    /// 内部主键，于是 `camera/one` 明明有通道却回 `data=null`。
+    #[tokio::test]
+    async fn camera_one_resolves_gb_id_that_fits_in_i64() {
+        let state = crate::test_support::app_state().await;
+        seed_device_and_channel(&state.pool, true).await;
+
+        // 造一个"19 位、仍小于 i64::MAX"的国标号
+        // （对接方去掉前导 0 后常见的形态；20 位的 34… 开头本身就超 i64）
+        let stripped = "4020000001320000001";
+        assert!(
+            stripped.parse::<i64>().is_ok(),
+            "本用例的前提：该号必须能 parse 成 i64（实际 {stripped}）"
+        );
+        sqlx::query("UPDATE gb_device_channel SET gb_device_id = ? WHERE gb_device_id = ?")
+            .bind(stripped)
+            .bind(CHANNEL_ID)
+            .execute(&state.pool)
+            .await
+            .unwrap();
+
+        let out = super::camera_one(
+            State(state),
+            Query(SyChannelIdQuery {
+                id: Some(stripped.to_string()),
+            }),
+        )
+        .await
+        .unwrap()
+        .0;
+
+        assert_eq!(out.code, 0, "{out:?}");
+        let data = out.data.expect("按国标号也应能查到通道");
+        assert_eq!(data["channelId"], serde_json::json!(stripped), "{data:?}");
     }
 
     /// `/api/sy/camera/one` 必须与 `/api/common/channel/one` 返回同一条通道。
@@ -716,8 +851,8 @@ mod tests {
         let report = out.data.unwrap();
         assert_eq!(report.version, env!("CARGO_PKG_VERSION"));
         assert!(report.database, "数据库应可读");
-        assert_eq!(report.device_count, 1, "{report:?}");
-        assert_eq!(report.channel_count, 1, "{report:?}");
+        assert_eq!(report.device_count, Some(1), "{report:?}");
+        assert_eq!(report.channel_count, Some(1), "{report:?}");
         // 没有配置媒体节点时必须报出来，而不是谎报"就绪"。
         assert!(!report.ok, "{report:?}");
         assert!(
@@ -850,16 +985,17 @@ pub async fn record_collect_add(
     crate::handlers::stub::cloud_record_collect_add(State(state), Query(q)).await
 }
 
-/// 取消收藏的入参：数字主键与组合串 `recordId` 都接受。
+/// 从收藏 DTO 里取出待删除的录像 id（`id` / `recordId` / `cloudRecordId` 都认）。
 ///
-/// 平台的 DELETE 版走 `CloudRecordCollectQuery`（string），GET 版走
-/// `CollectQuery`（i64）—— 两侧口径不一致，对接方很容易照着另一边写然后
-/// 收到"missing id"。SY 别名统一成**字符串**：两种 id 都收。
-#[derive(Debug, Deserialize, Default, utoipa::IntoParams)]
-pub struct CollectDeleteQuery {
-    /// 云端录像主键（数字）或组合串 recordId，都接受。
-    #[serde(default, deserialize_with = "crate::serde_flex::de_opt_string")]
-    pub id: Option<String>,
+/// 三个名字与平台版 `CloudRecordCollectQuery` 完全一致 —— SY 别名此前自己
+/// 定义了一个只认 `id` 的窄 DTO，导致对接方按平台口径用 `recordId` 调
+/// **同一个 URL 的 GET 方法**会被拒（"record_id is required"），而 DELETE
+/// 方法却认 —— 同一个地址两种方法参数名不一样，是很难排查的坑。
+fn collect_delete_id(q: &CloudRecordCollectQuery) -> String {
+    q.id.clone()
+        .or_else(|| q.record_id.clone())
+        .or_else(|| q.cloud_record_id.clone())
+        .unwrap_or_default()
 }
 
 /// GET /api/sy/record/collect/delete?id=
@@ -867,15 +1003,15 @@ pub struct CollectDeleteQuery {
 /// 取消收藏：`/api/cloud/record/collect/delete` 的 SY 前缀别名。
 ///
 /// 与平台版本一致：GET 与 DELETE 两种方法都注册，避免只支持一种方法的对接方
-/// 收到 405。两个方法都走同一套 `clear_collect` 逻辑，返回同一形状
-/// `{recordId, status}`。
+/// 收到 405。两个方法都走同一套 `clear_collect` 逻辑、同一份入参 DTO
+/// （`id` / `recordId` / `cloudRecordId` 都认），返回同一形状 `{recordId, status}`。
 #[utoipa::path(
     get,
     path = "/api/sy/record/collect/delete",
     tag = "cloud",
     operation_id = "sy_record_collect_delete",
     summary = "中亿视图：取消收藏（转调 cloud/record/collect/delete）",
-    params(CollectDeleteQuery),
+    params(CloudRecordCollectQuery),
     responses(
         (status = 200, description = "取消收藏结果",
          body = ApiResult<serde_json::Value>,
@@ -886,9 +1022,9 @@ pub struct CollectDeleteQuery {
 )]
 pub async fn record_collect_delete(
     State(state): State<AppState>,
-    Query(q): Query<CollectDeleteQuery>,
+    Query(q): Query<CloudRecordCollectQuery>,
 ) -> Json<ApiResult<serde_json::Value>> {
-    let raw_id = q.id.unwrap_or_default();
+    let raw_id = collect_delete_id(&q);
     if raw_id.is_empty() {
         return Json(ApiResult::error("record_id is required"));
     }
@@ -901,37 +1037,44 @@ pub async fn record_collect_delete(
     }
 }
 
-/// DELETE /api/sy/record/collect/delete?id=
+/// DELETE /api/sy/record/collect/delete
 ///
-/// 与 GET 版本同一条逻辑：平台侧的收藏删除同时支持 GET 与 DELETE，
+/// 与 GET 版本同一条逻辑、同一份 DTO：平台侧的收藏删除同时支持 GET 与 DELETE，
 /// SY 别名也保持一致。
+///
+/// **body 与查询串双通道**：body 走 JSON（与平台 DELETE 版一致），查询串兜底。
+/// 用 `Option<Json<..>>` 而不是 `Json<..>`：axum 在**缺 Content-Type** 时会把
+/// `Json` extractor 拒成 415 + `text/plain` 裸文本（不是 `{code,msg,data}` 信封），
+/// 而 `Option<Json<..>>` 在这种情况下给 `None`，于是能落到查询串那条通道。
+/// 照文档生成的客户端可能两种都不带 —— 那时也要回契约信封，而不是裸文本。
 #[utoipa::path(
     delete,
     path = "/api/sy/record/collect/delete",
     tag = "cloud",
     operation_id = "sy_record_collect_delete_method",
     summary = "中亿视图：取消收藏（DELETE 方法，转调 cloud/record/collect/delete）",
-    params(crate::handlers::cloud_record_extra::CollectQuery),
+    params(CloudRecordCollectQuery),
+    request_body = CloudRecordCollectQuery,
     responses(
         (status = 200, description = "取消收藏结果",
          body = ApiResult<serde_json::Value>,
-         example = json!({"code":0,"msg":"成功","data":{"status":"removed"}})),
+         example = json!({"code":0,"msg":"成功","data":{"recordId":"zlm-1::rtp::ch::a.mp4","status":"deleted"}})),
         (status = 401, description = "未鉴权"),
     ),
     security(("access_token" = [])),
 )]
 pub async fn record_collect_delete_method(
     State(state): State<AppState>,
-    Json(body): Json<crate::handlers::stub::CloudRecordCollectQuery>,
+    Query(q): Query<CloudRecordCollectQuery>,
+    body: Option<Json<CloudRecordCollectQuery>>,
 ) -> Json<ApiResult<serde_json::Value>> {
-    // 入参与平台 DELETE 版**完全一致**（JSON body），返回同一形状。
-    // 此前这里转调的是 GET 版实现（只认 query 的数字主键），对接方照平台
-    // DELETE 的写法发 JSON body 会被 axum 忽略 → "missing id"，收藏根本没删掉。
+    // 入参与平台 DELETE 版**完全一致**（JSON body，id/recordId/cloudRecordId 都认），
+    // 返回同一形状。此前这里转调的是 GET 版实现（只认 query 的数字主键），对接方
+    // 照平台 DELETE 的写法发 JSON body 会被 axum 忽略 → "missing id"，收藏根本没删掉。
     let raw_id = body
-        .id
-        .or(body.record_id)
-        .or(body.cloud_record_id)
-        .unwrap_or_default();
+        .map(|Json(b)| collect_delete_id(&b))
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| collect_delete_id(&q));
     if raw_id.is_empty() {
         return Json(ApiResult::error("record_id is required"));
     }
