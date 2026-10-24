@@ -308,33 +308,46 @@ impl<'a> CloudRecordFilter<'a> {
         // 用 substr 做**精确**的前缀/后缀匹配：LIKE 里的 `_` 是通配符，
         // `dev_%` 会连 `devX...` 一起匹配上，不是我们想要的语义。
         //
-        // **必须带分隔符边界**。流名的规范形状是 `{deviceId}_{channelId}`
-        // （见 `handlers/play.rs` 的 `format!("{}_{}", device_id, channel_id)`），
-        // 所以设备号后面紧跟的一定是 `_`。不加边界时，19 位的截断设备号
-        // （`3402000000132000000`）会同时命中 `34020000001320000001` 和
-        // `34020000001320000002` 两条**不同设备**的录像 —— 静默多查，
-        // 对接方拿到的是别人的录像。
+        // **必须带分隔符边界**，但分隔符**不止 `_` 一个**。
+        //
+        // 仓库往 `gb_cloud_record.stream` 写的流名有**四种**形状
+        // （见 `sip/gb28181/stream_reconnect.rs` 的 `parse_stream_id` —— 那是
+        // 仓库自称"全局唯一"的流名解析器，它认的分隔符集合就是 `_` / `$` / `/`）：
+        //   * `{device}_{channel}` —— `handlers/play.rs` 的 `openRtpServer` 规范写法；
+        //   * `{device}/{channel}` —— `db/cloud_record.rs::insert_records` 落
+        //     `record_info` 时用的（设备通过 GB28181 RecordInfo 上报的历史录像，
+        //     **活路径**：`sip/server.rs` 应答 RecordInfo 查询时调用它）；
+        //   * `{device}${channel}` —— 部分早期实现 / 上级平台下发的写法；
+        //   * `{phone}` —— JT1078 通道号为 0 时**没有分隔符**
+        //     （`handlers/jt1078.rs`）。
+        //
+        // 边界只认 `_` 的话，后两种形状会被**静默整段过滤掉** —— 平台 UI 的
+        // "设备/通道"输入框和第三方对接方的 list-url 都会"少查数据但总数看着正常"，
+        // 全程无报错。
+        //
+        // 分隔符集合用**字面量** IN 列表，不新增占位符（省得三个方言的
+        // 占位符改写再出一次幺蛾子）。
         if let Some(v) = self.device_id.filter(|s| !s.is_empty()) {
             w.add(
-                "substr(stream, 1, length(?)) = ? AND substr(stream, length(?) + 1, 1) = ?",
+                "(substr(stream, 1, length(?)) = ? AND substr(stream, length(?) + 1, 1) IN ('_', '$', '/')) \
+                 OR stream = ?",
                 vec![
                     BindValue::Text(v.to_string()),
                     BindValue::Text(v.to_string()),
                     BindValue::Text(v.to_string()),
-                    BindValue::Text("_".to_string()),
+                    BindValue::Text(v.to_string()),
                 ],
             );
         }
         // 通道号是流名的**最后一段**，同理要求它前面紧邻分隔符，
         // 否则短通道号会命中以它结尾的别的通道（"…_11" 被 "…_1" 命中）。
+        // 纯号码流（JT1078 通道号=0）没有"最后一段"，不参与通道过滤 —— 正确。
         if let Some(v) = self.channel_id.filter(|s| !s.is_empty()) {
             w.add(
-                "substr(stream, length(stream) - length(?), 1) = ? \
+                "substr(stream, length(stream) - length(?), 1) IN ('_', '$', '/') \
                  AND substr(stream, length(stream) - length(?) + 1) = ?",
                 vec![
-                    // 顺序与 SQL 里的 ? 一一对应：length(?) / = ? / length(?) / = ?
                     BindValue::Text(v.to_string()),
-                    BindValue::Text("_".to_string()),
                     BindValue::Text(v.to_string()),
                     BindValue::Text(v.to_string()),
                 ],
@@ -1136,11 +1149,16 @@ mod tests {
             .is_none());
     }
 
-    /// 回归：按设备/通道过滤必须**带分隔符边界**。
+    /// 回归：按设备/通道过滤必须**带分隔符边界**，但分隔符**不止 `_`**。
     ///
     /// 此前是纯前缀/后缀匹配：19 位的截断设备号会同时命中
     /// `…_34020000001320000001` 和 `…_34020000001320000002` 两条**不同设备**的
     /// 录像 —— 静默多查，对接方拿到的是别人的录像。
+    ///
+    /// 而如果边界只认 `_`，仓库**自己**写的另外几种流名形状
+    /// （`{dev}/{ch}` 的 record_info、`{dev}${ch}`、JT1078 的纯 `{phone}`）
+    /// 又会被**整段静默过滤掉** —— 少查数据但总数看着正常，全程无报错。
+    /// 两种错法都要挡住，所以这里把四种形状都测一遍。
     #[tokio::test]
     async fn device_and_channel_filters_respect_separator_boundary() {
         let pool = sqlite_pool_with_schema().await;
@@ -1149,11 +1167,16 @@ mod tests {
         let ch_a = "34020000001310000001";
         let ch_b = "34020000001310000002";
 
-        insert_rec(&pool, &format!("{dev_a}_{ch_a}"), "a.mp4", 10).await;
-        insert_rec(&pool, &format!("{dev_b}_{ch_b}"), "b.mp4", 20).await;
+        // 四种形状各来一条（分属两个设备）
+        insert_rec(&pool, &format!("{dev_a}_{ch_a}"), "underscore.mp4", 10).await;
+        insert_rec(&pool, &format!("{dev_a}/{ch_a}"), "slash.mp4", 20).await;
+        insert_rec(&pool, &format!("{dev_a}${ch_a}"), "dollar.mp4", 30).await;
+        insert_rec(&pool, &format!("{dev_b}_{ch_b}"), "other-device.mp4", 40).await;
+        // JT1078：通道号为 0 时没有分隔符，流名就是手机号本身
+        insert_rec(&pool, "13800138000", "jt-no-sep.mp4", 50).await;
 
-        // 完整设备号：只命中自己的
-        let rows = list_filtered(
+        // 完整设备号：命中它的全部三种分隔符形状 + 别的设备不命中
+        let (rows, _t) = list_filtered(
             &pool,
             &CloudRecordFilter {
                 device_id: Some(dev_a),
@@ -1164,13 +1187,30 @@ mod tests {
         )
         .await
         .unwrap();
-        let (rows, _total) = rows;
+        assert_eq!(rows.len(), 3, "{rows:?}");
+        let names: Vec<&str> = rows.iter().filter_map(|r| r.file_name.as_deref()).collect();
+        assert!(names.contains(&"underscore.mp4"), "{names:?}");
+        assert!(names.contains(&"slash.mp4"), "{names:?}");
+        assert!(names.contains(&"dollar.mp4"), "{names:?}");
+
+        // 纯号码流（JT1078）：设备过滤要能命中它自己
+        let (rows, _t) = list_filtered(
+            &pool,
+            &CloudRecordFilter {
+                device_id: Some("13800138000"),
+                ..Default::default()
+            },
+            0,
+            15,
+        )
+        .await
+        .unwrap();
         assert_eq!(rows.len(), 1, "{rows:?}");
-        assert_eq!(rows[0].file_name.as_deref(), Some("a.mp4"));
+        assert_eq!(rows[0].file_name.as_deref(), Some("jt-no-sep.mp4"));
 
         // **截断**的设备号（19 位）不得命中两个设备
         let prefix = &dev_a[..19];
-        let rows = list_filtered(
+        let (rows, _t) = list_filtered(
             &pool,
             &CloudRecordFilter {
                 device_id: Some(prefix),
@@ -1181,11 +1221,10 @@ mod tests {
         )
         .await
         .unwrap();
-        let (rows, _total) = rows;
         assert!(rows.is_empty(), "截断的设备号不得命中别的设备: {rows:?}");
 
-        // 完整通道号：命中（它前面紧邻分隔符）
-        let rows = list_filtered(
+        // 完整通道号：三种分隔符形状都要命中
+        let (rows, _t) = list_filtered(
             &pool,
             &CloudRecordFilter {
                 channel_id: Some(ch_a),
@@ -1196,14 +1235,12 @@ mod tests {
         )
         .await
         .unwrap();
-        let (rows, _total) = rows;
-        assert_eq!(rows.len(), 1, "{rows:?}");
-        assert_eq!(rows[0].file_name.as_deref(), Some("a.mp4"));
+        assert_eq!(rows.len(), 3, "{rows:?}");
 
         // **截断**的通道号（末 19 位）不得命中 —— 它也是流名的后缀，
         // 但它前面紧邻的不是分隔符，说明那不是完整的最后一段。
         let ch_tail = &ch_a[1..];
-        let rows = list_filtered(
+        let (rows, _t) = list_filtered(
             &pool,
             &CloudRecordFilter {
                 channel_id: Some(ch_tail),
@@ -1214,7 +1251,6 @@ mod tests {
         )
         .await
         .unwrap();
-        let (rows, _total) = rows;
         assert!(rows.is_empty(), "截断的通道号不得命中: {rows:?}");
     }
 }
