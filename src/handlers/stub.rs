@@ -2380,8 +2380,27 @@ pub async fn cloud_record_task_list(
 )]
 pub async fn cloud_record_delete(
     State(state): State<AppState>,
-    Json(body): Json<CloudRecordDeleteBody>,
-) -> Json<ApiResult<serde_json::Value>> {
+    body: axum::body::Bytes,
+) -> Result<Json<ApiResult<serde_json::Value>>, AppError> {
+    // **不用 `Json<T>` 提取器**：它解析失败时会回 **422 + `text/plain` 裸文本**，
+    // 破坏契约承诺的 `{code,msg,data}` 信封（第三方按信封解析会直接炸）。
+    // 改成自己收原始字节再解析，失败时也能回信封 ——
+    // 与同族的 `/api/userApiKey/add` 口径一致（HTTP 400 + `code:400`）。
+    // 空 body 当作"没给 ids"（与原来的 `ids: None` 等价）。
+    let body = if body.is_empty() {
+        CloudRecordDeleteBody { ids: None }
+    } else {
+        match serde_json::from_slice::<CloudRecordDeleteBody>(&body) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("云录像删除请求体解析失败: {e}");
+                return Err(AppError::business(
+                    crate::error::ErrorCode::Error400,
+                    format!("请求体格式不正确: {e}"),
+                ));
+            }
+        }
+    };
     let ids = body.ids.unwrap_or_default();
     let mut deleted = Vec::new();
     let mut failed = Vec::new();
@@ -2467,7 +2486,7 @@ pub async fn cloud_record_delete(
         }
     }
 
-    Json(ApiResult::success(serde_json::json!({
+    Ok(Json(ApiResult::success(serde_json::json!({
         "deleted": deleted,
         "failed": failed,
         "message": if file_failures.is_empty() {
@@ -2475,7 +2494,7 @@ pub async fn cloud_record_delete(
         } else {
             format!("部分录像文件删除失败（记录已保留，需在媒体服务器侧清理）：{}", file_failures.join("; "))
         }
-    })))
+    }))))
 }
 
 /// GET /api/cloud/record/list — 云端录像检索

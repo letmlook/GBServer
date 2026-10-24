@@ -348,6 +348,47 @@ mod tests {
         }
     }
 
+    /// 回归：云录像删除端点的**请求体不合法**时，也必须回**契约信封**。
+    ///
+    /// 此前用 `Json<T>` 提取器，解析失败由 axum 直接回 **422 + `text/plain` 裸文本** ——
+    /// 第三方按 `{code,msg,data}` 解析会直接炸（body 不是 JSON）。
+    #[tokio::test]
+    async fn cloud_record_delete_rejects_bad_body_with_contract_envelope() {
+        let state = app_state().await;
+        let jwt = crate::auth::JwtKeys::new(state.config.jwt.secret.as_bytes());
+        let token = jwt.create_token("admin", 60).unwrap();
+        let base = spawn(state).await;
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+
+        for body in [
+            // 语法错误
+            r#"{"ids": ["1",]}"#,
+            // 类型错误：ids 不是数组
+            r#"{"ids": "1"}"#,
+            // 元素非法：20 位国标号超出整数可表示范围
+            r#"{"ids": [34020000001320000001]}"#,
+        ] {
+            let resp = client
+                .delete(format!("{base}/api/cloud/record/delete"))
+                .header("access-token", &token)
+                .header("content-type", "application/json")
+                .body(body)
+                .send()
+                .await
+                .unwrap();
+            let status = resp.status().as_u16();
+            let text = resp.text().await.unwrap();
+            let parsed: serde_json::Value = serde_json::from_str(&text)
+                .unwrap_or_else(|e| panic!("body 必须是契约信封（JSON），实际是 {text:?}（{e}）"));
+            assert_eq!(
+                parsed["code"], 400,
+                "解析失败应回业务错误码 400，实际 {parsed:?}（body={body}）"
+            );
+            assert!(parsed["msg"].is_string(), "{parsed:?}");
+            assert!(status == 400 || status == 200, "{status}");
+        }
+    }
+
     #[tokio::test]
     async fn authenticated_collect_roundtrip_updates_business_storage() {
         let state = app_state().await;
