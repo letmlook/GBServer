@@ -100,7 +100,10 @@ async fn feed_and_process(
                 // 一个并入库 —— 平台下发的与库里存的必须是同一个值，终端随后
                 // 用 0x0102 把它回送，平台才能校验。此前这里写死字面量
                 // "GBServer"，`gb_jt_terminal.auth_code` 因此只写不读。
-                let auth_code = resolve_auth_code(manager, &msg.phone).await;
+                let auth_code = match stored_auth_code(manager, &msg.phone).await {
+                    Some(code) => code,
+                    None => issue_auth_code(manager, &msg.phone).await,
+                };
                 replies.push((
                     msg.phone.clone(),
                     command::build_register_response(&msg.phone, msg.serial, 0, &auth_code),
@@ -113,8 +116,13 @@ async fn feed_and_process(
             }
             ParsedMessage::Authenticate(code) => {
                 // 终端鉴权（JT/T 808 0x0102 → 0x8102）。
-                let expected = resolve_auth_code(manager, &msg.phone).await;
-                let matched = !expected.is_empty() && code == expected;
+                // 这里**只读**库里已配置的鉴权码，不签发新的：
+                // 签发是有副作用的（生成 + 写库），放在校验路径上会出问题 ——
+                // 库里没有配置时会现生成一个随机码，再拿它跟终端回送的码比对，
+                // 必然对不上，终端从此再也鉴权不过（而库里还多了一条随机码）。
+                let expected = stored_auth_code(manager, &msg.phone).await;
+                let matched =
+                    matches!(&expected, Some(expect) if !expect.is_empty() && code == *expect);
                 if matched {
                     manager.mark_authenticated(&msg.phone).await;
                     // 强制鉴权时，终端要等这一刻才算上线（注册时还没鉴权）。
@@ -151,12 +159,37 @@ async fn feed_and_process(
     (replies, handled)
 }
 
-/// 取终端应使用的鉴权码。
+/// 读终端**已配置**的鉴权码（纯读，无副作用）。
 ///
-/// 优先用库里配置的（`gb_jt_terminal.auth_code`）；没有配置就**生成一个并入库**，
-/// 这样 0x8100 里下发的与库里存的永远是同一个值。没有数据库时退化为默认串
+/// 没有配置过（或读失败）返回 `None`。
+async fn stored_auth_code(
+    manager: &std::sync::Arc<crate::jt1078::manager::Jt1078Manager>,
+    phone: &str,
+) -> Option<String> {
+    let pool = manager.pool()?;
+    match crate::db::jt1078::get_auth_code_by_phone(&pool, phone).await {
+        Ok(Some(code)) => {
+            let trimmed = code.trim().trim_end_matches('\0').trim().to_string();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed)
+            }
+        }
+        Ok(None) => None,
+        Err(e) => {
+            tracing::warn!("JT1078 读取终端鉴权码失败 phone={phone}: {e}");
+            None
+        }
+    }
+}
+
+/// 签发并持久化一个鉴权码（**有副作用**：生成 + 写库）。
+///
+/// 只在**注册应答**时调用 —— 这样 0x8100 里下发的与库里存的永远是同一个值，
+/// 终端随后用 0x0102 回送时才能校验通过。没有数据库时退化为默认串
 /// （此时平台只能"宽松"工作，无法校验终端回送的鉴权码）。
-async fn resolve_auth_code(
+async fn issue_auth_code(
     manager: &std::sync::Arc<crate::jt1078::manager::Jt1078Manager>,
     phone: &str,
 ) -> String {

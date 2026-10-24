@@ -804,7 +804,23 @@ impl Jt1078Manager {
         // Also clean terminal registry
         if !removed_addrs.is_empty() {
             let mut terms = self.terminal_addrs.lock().await;
-            terms.retain(|_, a| !removed_addrs.contains(a));
+            // 顺带把这些终端的**鉴权状态**也清掉：会话超时 = 终端已经不在了，
+            // 留着"已鉴权"会让它下次进来时被当成已鉴权通过（强制鉴权档下尤其不对）。
+            let mut stale_phones: Vec<String> = Vec::new();
+            terms.retain(|phone, a| {
+                let keep = !removed_addrs.contains(a);
+                if !keep {
+                    stale_phones.push(phone.clone());
+                }
+                keep
+            });
+            drop(terms);
+            if !stale_phones.is_empty() {
+                let mut authed = self.authenticated_terminals.lock().await;
+                for phone in &stale_phones {
+                    authed.remove(phone);
+                }
+            }
         }
         removed_addrs.len()
     }
