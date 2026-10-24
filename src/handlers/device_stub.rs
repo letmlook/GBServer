@@ -974,26 +974,36 @@ pub async fn control_record(
         let server = &*sip_server;
         if let Some(device) = server.device_manager().get(&device_id).await {
             if device.online && device.addr.is_some() {
-                match server
-                    .send_device_control_confirmable(
-                        &device_id,
-                        &channel_id,
-                        "DeviceControl",
-                        &record_cmd_xml,
-                    )
-                    .await
+                // 录像控制走**同一套**"发送 → 等回执 → 解释 Result"实现
+                // （此前这里自己抄了一份：同样的 confirmable + timeout + parse，
+                // 状态字面量也各写各的，很容易漂移）。
+                match crate::handlers::device_result::send_command_and_wait(
+                    server,
+                    &device_id,
+                    &channel_id,
+                    "DeviceControl",
+                    &record_cmd_xml,
+                    "RecordCmd",
+                )
+                .await
                 {
-                    Ok((sn, receiver)) => {
-                        let waited =
-                            tokio::time::timeout(std::time::Duration::from_secs(5), receiver).await;
-                        let (status, result_code) = match waited {
-                            Ok(Ok(xml)) => parse_device_control_result(&xml),
-                            _ => {
-                                server.cancel_device_control_pending(&device_id, sn);
-                                ("unconfirmed", None)
-                            }
-                        };
-                        let confirmed = status == "confirmed";
+                    Ok(outcome) => {
+                        let status = outcome
+                            .device_result
+                            .get("status")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or(crate::handlers::device_result::STATUS_UNCONFIRMED);
+                        let result_code = outcome
+                            .device_result
+                            .get("resultCode")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string());
+                        let sn = outcome
+                            .device_result
+                            .get("sn")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0);
+                        let confirmed = status == crate::handlers::device_result::STATUS_CONFIRMED;
                         if confirmed {
                             if is_start {
                                 state.state_repo.as_ref().set_recording(

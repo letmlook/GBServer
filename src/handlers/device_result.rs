@@ -99,6 +99,28 @@ pub(crate) async fn send_command(
     send_command_and_wait(server, device_id, channel_id, cmd_type, body, label).await
 }
 
+/// 等待设备回执期间的 pending 撤销守卫。
+///
+/// 正常路径上 pending 由回执完成、或被显式取消；但如果 **handler future 被
+/// drop**（HTTP 客户端在等待期间断开），函数体不会跑完，pending 就会残留到
+/// SIP 层的过期清理（10s）才消失。守卫的析构函数保证这种情况下也会撤销。
+struct PendingGuard<'a> {
+    server: &'a crate::sip::SipServer,
+    device_id: String,
+    sn: u32,
+    /// 已收到回执 / 已显式取消时置 false，避免重复撤销。
+    armed: bool,
+}
+
+impl Drop for PendingGuard<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            self.server
+                .cancel_device_control_pending(&self.device_id, self.sn);
+        }
+    }
+}
+
 /// 发送一条设备命令并**等待**设备回执。
 ///
 /// 与 [`send_command`] 的区别只在于"一定等回执"：有些入口（如传输模式）的
@@ -123,12 +145,27 @@ pub(crate) async fn send_command_and_wait(
         }
     };
 
+    // 守卫：等待期间 handler future 被 drop（客户端断开）时也要撤掉 pending ——
+    // 否则它会一直挂到 SIP 层的过期清理（10s）才消失。收到回执后解除武装
+    // （pending 此时已完成，不需要再撤）。
+    let mut guard = PendingGuard {
+        server,
+        device_id: device_id.to_string(),
+        sn,
+        armed: true,
+    };
+
     let waited = tokio::time::timeout(WAIT_TIMEOUT, receiver).await;
     let (status, result_code) = match waited {
-        Ok(Ok(xml)) => crate::handlers::device_stub::parse_device_control_result(&xml),
+        Ok(Ok(xml)) => {
+            guard.armed = false;
+            crate::handlers::device_stub::parse_device_control_result(&xml)
+        }
         _ => {
             // 超时或通道被丢弃：撤掉 pending，避免迟到的回执去完成下一代请求。
+            // （守卫在离开作用域时也会撤，这里显式撤一次是为了语义显式。）
             server.cancel_device_control_pending(device_id, sn);
+            guard.armed = false;
             (STATUS_UNCONFIRMED, None)
         }
     };
