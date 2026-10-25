@@ -179,15 +179,44 @@ impl Jt1078Session {
         let mut timed_out = Vec::new();
         if let Some(start) = self.expected_seq {
             if let Some((&max_seq, _)) = self.pending.iter().next_back() {
-                let mut s = start;
-                while s != max_seq.wrapping_add(1) {
+                // 序号是 u16 且会回绕。`max_seq` 必须**在 start 之后**才谈得上
+                // 「中间缺了一段」；否则按回绕算出来的「缺失区间」会横跨整个
+                // 序号空间。
+                //
+                // 典型触发：先收到 seq=5 并被投递（expected_seq 变 6），随后收到
+                // 一个**过期/重复**的 seq=3 的旧帧 —— 此时 pending 里最大键是 3，
+                // 修复前的 `while s != max_seq.wrapping_add(1)` 会绕 65534 圈，
+                // 把 65533 个序号塞进 `timed_out`，再由调用方灌进重传 hook 的
+                // JSON（约 400KB）与 UDP 重传报文（必然超过 65507 字节上限，
+                // 发送失败还被 `let _ =` 吞掉）。
+                //
+                // 这里用回绕距离判定：距离为 0 表示没有缺失区间；距离大于半个
+                // 序号空间表示 `max_seq` **落后于** `start`（收到的是过期帧），
+                // 同样没有可报���的缺失区间。
+                let dist = max_seq.wrapping_sub(start);
+                if dist == 0 || dist > 0x8000 {
+                    return timed_out;
+                }
+                // 再加一道业务上限：`pending` 最多保留 `max_pending` 帧，
+                // 缺失区间不可能比它还长。超出说明序号已经乱序到不可解释。
+                if dist as usize > self.max_pending {
+                    tracing::warn!(
+                        "JT1078 会话 {} 的缺失序号区间长度 {} 超过 pending 上限 {}，忽略（序号已乱序）",
+                        self.peer,
+                        dist,
+                        self.max_pending
+                    );
+                    return timed_out;
+                }
+
+                for i in 0..dist {
+                    let s = start.wrapping_add(i);
                     if !self.pending.contains_key(&s) {
                         // Use last_heartbeat as a conservative baseline for age; caller will decide rate-limit
                         if now.duration_since(self.last_heartbeat) > timeout {
                             timed_out.push(s);
                         }
                     }
-                    s = s.wrapping_add(1);
                 }
             }
         }
@@ -555,4 +584,62 @@ mod session_buffer_bound_tests {
         assert!(s.buffer.is_empty());
     }
 
+}
+
+#[cfg(test)]
+mod missing_seq_tests {
+    use super::*;
+    use std::net::SocketAddr;
+
+    fn make_addr() -> SocketAddr {
+        "127.0.0.1:60000".parse().unwrap()
+    }
+
+    /// **回归**：缺失序号统计**不能**因为 u16 回绕而构造出 65533 条。
+    ///
+    /// 触发条件：先收到 seq=5 并被投递（expected_seq 变 6），随后收到一个
+    /// 过期/重复的 seq=3 的旧帧 —— 此时 pending 的最大键是 3。修复前的
+    /// `while s != max_seq.wrapping_add(1)` 会绕 65534 圈，把 65533 个序号
+    /// 塞进结果，再被灌进重传 hook 的 JSON 与 UDP 重传报文。
+    #[test]
+    fn missing_seq_scan_does_not_wrap_around() {
+        let mut s = Jt1078Session::new(make_addr());
+        s.expected_seq = Some(6);
+        // 收到一个过期帧：seq=3（比 expected_seq 小）
+        s.pending.insert(
+            3,
+            Jt1078Frame {
+                seq: 3,
+                timestamp: 0,
+                payload: vec![1, 2, 3],
+                checksum: 0,
+            },
+        );
+
+        let missing = s.collect_timed_out_missing(Duration::from_secs(0));
+        assert!(
+            missing.len() <= s.max_pending,
+            "缺失序号数量必须受限，实际 {} 条",
+            missing.len()
+        );
+    }
+
+    /// **对照**：正常场景下缺失区间仍要被如实报出（修复不能把功能改没了）。
+    #[test]
+    fn missing_seq_scan_reports_real_gap() {
+        let mut s = Jt1078Session::new(make_addr());
+        s.expected_seq = Some(10);
+        s.pending.insert(
+            13,
+            Jt1078Frame {
+                seq: 13,
+                timestamp: 0,
+                payload: vec![1],
+                checksum: 0,
+            },
+        );
+
+        let missing = s.collect_timed_out_missing(Duration::from_secs(0));
+        assert_eq!(missing, vec![10, 11, 12]);
+    }
 }
