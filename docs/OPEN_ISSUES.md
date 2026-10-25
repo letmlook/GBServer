@@ -1,8 +1,18 @@
 # GBServer 遗留问题与进度（Open Issues）
 
 > 生成时间：2026-09-13（本地 08:3x）
-> **最近更新：2026-09-19（真实设备接入核验轮，HEAD `8ecec6a`）**
-> —— 本轮把第一台**真实国标设备**（EasyGBD `34020000001320128497`，TCP）接入平台并端到端实测，
+> **最近更新：2026-10-25（第十一轮深度代码审查，HEAD `14292cf`）**
+> —— 本轮做了一次**深度代码审查**：聚焦**多方言运行期改造的爆炸半径**与
+> **十轮以来几乎没被正面覆盖的协议层**（`sip/`、`jt1078/`、`zlm/`、
+> `scheduler/`、`cascade/`），并派两个只读侦察 Agent 并行覆盖非 DB 层。
+> 共 **13 条**发现：**7 条已修并逐条变异验证**（B32~B38）、**6 条已定位未修**
+> （B39~B44）。已修的 7 条含 **2 条 P0**（SIP Keepalive 无鉴权可劫持任意设备；
+> JT1078 接收缓冲无上限可致 OOM）。
+> 门禁：`cargo test --lib` **853 通过 / 0 失败**；真实库专项 **11 通过 / 0 失败**
+> （PG 16 / MySQL 8 容器）；`cargo fmt --check` **exit 0**；**每条修复都做了
+> 变异验证**（先让测试变红再还原）。
+> 上一轮（2026-09-19 真实设备接入核验轮）把第一台**真实国标设备**
+> （EasyGBD `34020000001320128497`，TCP）接入平台并端到端实测，
 > 据此更新 D1（真机核验）、B1 / B6（真机复现的新证据）、C2（零引用 db 函数重算），
 > 并新增 B14 / C8 / C9 / E6 四项。
 > 代码基线：2026-09-13~19 的功能提交（延迟列 / 通道播放对话框 / 缩略图落盘 / 直播页 WebRTC /
@@ -77,6 +87,19 @@
 | E5 | 部署 | ZLM 改 host 网络 + 配置文件只读管理 + mac 叠加文件 | ✅ 已改 |
 | E6 | 环境 | 后端访问 `192.168.3.88:8080`（ZLM）偶发 `error sending request`。**2026-10-20 复核**：该地址是 `config/application.toml` 里写死的开发机 LAN IP；本机 LAN IP 已变为 `192.168.3.149`，用旧值时 ZLM 节点连不上、WebRTC ICE 候选不可达（`iceConnectionState` 停在 `checking`）。用 `GBSERVER_ZLM_PRIMARY_IP` / `GBSERVER_ZLM_PRIMARY_RTC_EXTERN_IP` 覆盖后恢复（见 `e2e/README.md`） | ⚪ 需按本机 IP 覆盖 |
 | E7 | 部署验收 | PostgreSQL 与 SQLite 后端容器 + 真实 ZLM + SIP Mock 的 FLV 点播/停止、MP4 下载及 Chromium WebRTC 已通过；SQLite 全新卷可自动建库，时区对齐后完整 Chromium E2E 72/72；真机 LAN 与目标 Linux Compose 部署待验收 | 🟡 |
+| B32 | 缺陷 | **第十一轮**：SIP Keepalive（MESSAGE，**无鉴权**）可改写**任意已注册设备**的信令地址 → 设备被劫持 + 平台变成出站跳板（19 处出站信令全改发攻击者） | ✅ 已修并复验 |
+| B33 | 缺陷 | **第十一轮**：JT1078 会话接收缓冲无上限 + `last_heartbeat` 在解析前刷新 → 未认证 UDP 可把服务端内存撑爆（OOM） | ✅ 已修并复验 |
+| B34 | 缺陷 | **第十一轮**：JT808 校验码按**转义后**字节计算 → 正文含**奇数个** `0x7E`/`0x7D` 时差 `0x01`，终端拒收（既有往返测试用偶数个，把洞掩盖了） | ✅ 已修并复验 |
+| B35 | 缺陷 | **第十一轮**：SIP TCP 分帧要求整块缓冲是合法 UTF-8 → GB2312 正文里的一个字节让**整条连接**永久卡死 + 缓冲无上限增长 | ✅ 已修并复验 |
+| B36 | 缺陷 | **第十一轮**：级联「keepalive 超时检测」判的是**距上次 REGISTER 多久**（`note_liveness` 生产调用点为 0）→ 健康上级每 3~4 分钟被误判 `Failed` | ✅ 已修并复验 |
+| B37 | 缺陷 | **第十一轮**：全局方言入口未收口（14 处调用点手上有 pool 却读进程级全局）→ 审计日志保留策略在 **PG/MySQL 上 100% 失效** | ✅ 已修并复验 |
+| B38 | 缺陷 | **第十一轮**：JT1078 缺失序号统计因 u16 回绕构造出 **65533** 条 → hook 收 400KB、UDP 重传必超包长 | ✅ 已修并复验 |
+| B39 | 缺陷 | **第十一轮**：入站 INVITE 无重传去重（服务端事务层是死代码）→ 每次重传新开一个 RTP 端口，设备仍推流到孤儿端口，且端口泄漏 | 🔴 已定位，**未修** |
+| B40 | 缺陷 | **第十一轮**：级联注册不读服务端在 200 OK 里授予的 `Expires` → 上游侧已过期而本级自认在线 | 🔴 已定位，**未修** |
+| B41 | 缺陷 | **第十一轮**：级联 `server_port` 用 `as u16` 静默回绕（70000 → 4464），入库无范围校验 | 🔴 已定位，**未修** |
+| B42 | 缺陷 | **第十一轮**：录像调度器「本次不录像」但仍跑满 20s 重试 → tick 超时后 `interval` Burst 退化成连续紧循环 | 🔴 已定位，**未修** |
+| B43 | 缺陷 | **第十一轮**：ZLM 节点流计数是**事件计数**而非实际流数 → 漂移永久偏高，多节点选路长期偏斜且无告警 | 🔴 已定位，**未修** |
+| B44 | 缺陷 | **第十一轮**：`has_schema` 把所有错误吞成 `false` → ZLM 不可达时静默摘掉 `hlsUrl`，现场无法区分 | 🔴 已定位，**未修** |
 
 ---
 
@@ -1850,6 +1873,292 @@ Dockerfile、测试脚本、文档里的复现步骤）都依赖旧假设 ——
 只会在**执行到那一步时**才炸，而那一步往往在**部署**或**别人 clone 之后**。
 判据：**凡是能执行「按方言编译」这个动作的位置，都要逐个复查**。
 
+### B32 ✅ 第十一轮 A：SIP Keepalive 未鉴权 → 一条 MESSAGE 劫持任意设备（P0，已修）
+
+**现象**：任何能连到平台 SIP 端口（UDP/TCP 5060）的人，发一条 **MESSAGE**，
+就能把**任意已注册设备**的信令地址改到自己名下。
+
+**根因**：GB28181 的 Keepalive 走 SIP MESSAGE —— 这条路径**没有任何鉴权**
+（平台侧也没有；SIP 头 From/Call-ID 在 UDP 上可随意伪造），而设备号取自
+**XML 正文**（`<DeviceID>` 可任意填）。修复前 `handle_message` 的 Keepalive
+分支无条件把「本次的来源地址」写进两处：
+
+* 库：`update_device_online(..., Some(&ip_str), Some(addr.port()), ...)`
+* 内存：`device_manager.update_keepalive(&dev_id, addr)`（写 `ip`/`port`/`addr`）
+
+而信令地址正是平台**全部出站信令**的目标（**19 处** `get_address()` 调用点：
+点播/回放/下载的 INVITE、PTZ、目录查询、SUBSCRIBE、BYE……）。于是平台的后续
+信令**全部改发给攻击者** —— 既劫持了设备，又把平台变成一个可探测任意
+`host:port` 的**出站跳板**（SSRF）。设备号甚至不需要猜：From 头填任意值、
+正文填目标设备号即可。
+
+**与 REGISTER 的不对称就是根因**：REGISTER 带 digest 摘要鉴权（401 挑战 →
+校验 → 403 拒绝），写的是 REGISTER 的**源地址**；Keepalive 两样都没有，
+却享有同样的写权限。
+
+**修法**：
+
+1. **地址只由带鉴权的 REGISTER 写入**。Keepalive 路径不再传 ip/port
+   （SQL 是 `ip = COALESCE(?, ip)`，传 `None` 即保持原值）。
+2. `DeviceManager::update_keepalive` 不再接收来源地址，只刷新
+   `keepalive_time`/`online` —— 内存地址同样不再被心跳改写。
+3. 新增来源校验闸门 `keepalive_source_allowed`：来源 **IP** 必须与该设备
+   **已登记**的地址一致，否则整条 Keepalive 被忽略并告警。判据用 IP 而非
+   `IP:port` —— SIP 头可伪造，只有源地址是网络层事实；而 NAT 可能让同一设备
+   的心跳换源端口，只比 IP 可避免误杀正常设备。
+
+**测试**：`keepalive_gate_tests`（陌生 IP 拒 / 同 IP 换端口放行 / 未登记拒）、
+`keepalive_refresh_preserves_registered_address`、
+`db::device::address_preservation_tests`。**变异验证**：闸门改成永远放行 →
+`rejects_foreign_source_ip` 变红；SQL 的 `COALESCE` 去掉 → 库层地址保全测试
+变红（`left: None, right: Some("192.168.1.7")`）。
+**提交**：`0616826`。**证据强度**：P0（远程、无需凭据）。
+
+### B33 ✅ 第十一轮 B：JT1078 接收缓冲无上限 → 未认证 UDP 可 OOM（P0，已修）
+
+**现象**：任何能连到 JT1078 UDP/TCP 端口的对端（**无需鉴权**）都能让服务端
+内存按线速增长直至 OOM，且日志里看不到任何异常。
+
+**根因**：`Jt1078Session::feed_bytes` 对 `self.buffer` 无条件
+`extend_from_slice`，既没有上限，也没有「声明长度永远凑不齐」的保护。旧格式
+（4 字节大端长度前缀）可以声明 `0xFFFFFFFF` 字节的正文 —— 帧永远解析不出来，
+缓冲只增不减。更糟的是 `manager::feed_bytes` 在解析**之前**就刷新了
+`last_heartbeat`，于是未认证的对端持续发垃圾就能让会话**永不过期**，清理任务
+也回收不掉它；再叠加「每个新源地址新建一个会话」，还能横向放大。
+
+**修法**：`feed_bytes` 入口给缓冲封顶 256KB（JT808 单帧上限 64KB，余量充足）；
+超限时告警并清空缓冲、流失步后重建，不返回任何帧。合法大帧不受影响。
+
+**测试**：`session_buffer_bound_tests`（封顶生效 + 合法旧格式帧仍能解析）。
+**变异验证**：把上限改成 `usize::MAX` → 封顶测试变红、对照测试仍绿。
+**提交**：`a34f223`。**证据强度**：P0（远程、无需鉴权）。
+
+### B34 ✅ 第十一轮 C：JT808 校验码按「转义后」字节计算（P1，已修）
+
+**现象**：正文里出现**奇数个** `0x7E`/`0x7D` 时，平台下发的帧校验码差 `0x01`
+—— 平台自己 `split_jt808` 判坏帧丢弃；真实终端按 JT/T 808 算出的期望值也对不
+上 → 直接丢帧不回 ACK，平台侧命令等待器超时。典型触发：
+`POST /api/jt1078/text-message` 的正文里带**一个** `~` 或 `}`。
+
+**根因**：`build_jt808_frame` 是「先转义正文、再对**转义后**的字节做 XOR」。
+转义把 1 个字节变成 2 个，且 `0x7D^0x02 = 0x7F`（原字节 `0x7E`）、
+`0x7D^0x01 = 0x7C`（原字节 `0x7D`）—— **每转义一个字节就多异或一次 `0x01`**。
+于是转义字节数为偶数时两边碰巧相等、为奇数时恰好差 `0x01`。而 JT/T 808-2013
+§5.3 规定校验码算在**未转义**的内容上，平台自己的解析端
+（`frame.rs`：先去转义再算 XOR）也是这个口径 —— **两端不一致**。
+
+**为什么一直没被发现**：既有往返测试 `roundtrip_with_escaped_bytes` 的正文
+恰好含 **4** 个需转义字节（偶数），把这个洞完整地掩盖了。
+
+**修法**：按标准顺序重建帧 —— 先拼未转义内容并算校验码，再把整帧（含校验码）
+统一转义。
+
+**测试**：新增 `roundtrip_with_odd_number_of_escaped_bytes`（1/1/2/2/1 个转义
+字节），修复前复现失败（`正文 [126] 的帧被判为坏帧`），修复后转绿。
+**提交**：`cb3129a`。**证据强度**：P1。
+
+### B35 ✅ 第十一轮 D：SIP TCP 分帧要求整块缓冲是合法 UTF-8（P1，已修）
+
+**现象**：真实国标设备的报文正文常见
+`<?xml version="1.0" encoding="GB2312"?>`，其中的中文按 GB2312 编码 —— 对
+UTF-8 就是非法字节。走 TCP 的设备此后**所有**报文（ACK/BYE/目录/心跳）都堵在
+缓冲里不再被处理，表现为「设备在线但平台毫无反应」，且内存单调增长。
+
+**根因**：`TcpReader::try_parse_message` 对**整个接收缓冲**做严格
+`String::from_utf8`，失败就 `return Ok(None)` —— 而 `Ok(None)` 的语义是
+「消息还没收全」。于是正文里一个非法字节让整块缓冲永远变成 `Err`。
+（UDP 路径走 `Parser::parse` 的 `from_utf8_lossy`，所以同一台设备走 UDP 一切
+正常 —— **只有 TCP 会被这一个字节废掉**。`sip.tcp_enabled` 默认 `true`。）
+
+**修法**：把分帧抽成自由函数 `take_sip_message`，**只在头部做文本化**（头部恒为
+ASCII，正文原样切出，解析交给已是 lossy 的 `Parser::parse`）；并加三道上限：
+`Content-Length` 超 1MB 报错 / 头未结束且缓冲超 1MB 报错 / 接收缓冲超 2MB 报错
+（调用方据此断开连接）。
+
+**测试**：新增 `sip_framing_tests`（GB2312 正文必须能切出 / 粘包两条都要切出 /
+两条超限报错）。**变异验证**：把「整块缓冲严格 UTF-8」注回去 →
+`takes_message_with_non_utf8_body` 变红、其余仍绿。
+**提交**：`70939b5`。**证据强度**：P1。
+
+### B36 ✅ 第十一轮 E：级联「keepalive 超时检测」其实测的是 REGISTER 间隔（P1，已修）
+
+**现象**：健康的**上级平台**每 3~4 分钟就被误判 `Failed`，日志出现自相矛盾的
+告警 `keepalive timeout (181s > 3s * 60)` —— 而此刻上级**一直在正常回应
+keepalive**。
+
+**根因**：两个概念被混成了一个字段。
+`last_register`（距上次 REGISTER 多久）是**注册刷新节奏**的判据（刷新周期
+`expires/2`，默认 1800s）；「上级还活着吗」（距上次**双向通信**多久）才是
+**存活判定**的判据（超时阈值 `3×60 = 180s`）。修复前超时检测读的是
+`last_register`，而记录双向通信的 `note_liveness` 在**生产路径上从未被调用**
+（生产调用点为 0，只有它自己的单测在调）。
+
+**影响链**：① 状态被置 `Failed` → `send_keepalive_all` 只给 `Registered` 发
+keepalive → 超时窗口内 keepalive 停发（对端若要求间隔 ≤60s，会把本级判为
+离线）；② 注册循环补发一轮**不带 Authorization** 的 REGISTER → 401 → 带摘要
+重发 —— 对端可见的注册抖动从 30 分钟一次变成约 4 分钟一次。
+
+**修法**：`RegistrationState` 新增 `last_liveness`，把两个概念拆开；
+新增 `resolve_platform_from_keepalive_call_id`（按 `cascade_ka_{platform_id}_`
+前缀匹配，`platform_id` 自身含下划线也安全）与 `note_liveness_from_response`；
+**补上生产接线** —— SIP 响应路径收到级联 keepalive 的 200 OK 时调用它。
+
+**测试**：`healthy_platform_answering_keepalive_is_not_marked_failed`（回应了
+keepalive 的健康上级不得被判 Failed；反向对照「上级不再回应」必须仍判超时）、
+`production_response_path_refreshes_cascade_liveness`（接线守卫，文本扫描）。
+另修正既有两个 c3 用例 —— 它们此前**手动改写 `last_register` 来模拟超时**，
+等于自证。**变异验证**：语义退回 + 拆掉接线 → 4 条用例变红，决定性断言报
+`left: [], right: ["plat-live"]`。
+**提交**：`e4f7377`。**证据强度**：P1。
+
+### B37 ✅ 第十一轮 F：全局方言入口未收口，判据仍然可能用错（P1，已修）
+
+**现象**：审计日志保留策略在 **postgres / MySQL 上 100% 失效**；报警列表与
+通道列表在 postgres 上类型不匹配。
+
+**根因**：第十轮（B31）把方言分支的判据改成「pool 自己的类型」，但**全局方言
+的入口函数没被一起收口**：`dyn_where::{bigint_col, days_ago_expr, dialect_sql}`
+与 `db::dialect::{dialect_sql, current_sql, bigint_col, days_ago_expr}` 读的仍是
+**进程级全局** `dialect::current()` —— 只在「一个进程一个库」时与 pool 一致。
+生产代码里有 **14 处**调用点手上明明有 pool（`bigint_col` ×3、
+`days_ago_expr` ×1、`DynWhere::sql()` ×12）。在「直接构造 `Pool::Postgres(..)`」
+的场景（**仓库自己的真库回归测试就是这么做的**）会按 **sqlite** 生成 SQL：
+`datetime('now','-90 days')` → postgres 报
+`42883 function datetime(unknown, unknown) does not exist`。
+
+**修法**：把「全局方言」这一整类入口**删除**，让编译器强制每个调用点显式给
+方言：① `DynWhere::sql(base, dialect)` —— 方言改成**必填参数**（12 处调用点
+全部由编译器强制改写）；② 新增 `Pool::bigint_col` / `Pool::days_ago_expr`；
+③ 删除 7 个读全局方言的函数，只留显式传方言的 `*_for` 版本；
+④ 守卫收紧：`src/dyn_where.rs` 从守门人豁免名单里移除。
+
+**测试**：新增**真实数据库**回归 `tests/postgres_dialect_judgment.rs` 与
+`tests/mysql_dialect_judgment.rs`（sqlite 下 `datetime()` 合法，单测全绿也
+证明不了任何事）。**变异验证**：退回读全局后两条真库测试同时变红 —— postgres
+报 `42883 function datetime(unknown, unknown) does not exist`。
+**提交**：`14292cf`。**证据强度**：P1。
+
+### B38 ✅ 第十一轮 G：JT1078 缺失序号统计因 u16 回绕构造出 65533 条（P2，已修）
+
+**现象**：`missing seqs` 的序号数组长度接近 65533，hook 收包体量约 400KB，
+重传 UDP 报文必然超过 65507 字节上限（`send_to` 失败且被 `let _ =` 吞掉）。
+
+**根因**：`collect_timed_out_missing` 用 `while s != max_seq.wrapping_add(1)`
+扫描缺口。序号是 u16 且会回绕，于是循环上界不是「差值」而是「到 65536 的
+距离」。触发：先收到 seq=5 并被投递（`expected_seq` 变 6），随后收到一个
+**过期/重复**的 seq=3 的旧帧 —— pending 的最大键变成 3，循环便绕 65534 圈。
+
+**修法**：用回绕距离判定（距离为 0 = 没有缺失区间；距离大于半个序号空间 =
+`max_seq` 落后于 `start`，收到的是过期帧）；再加一道业务上限（缺失区间不可能
+比 `pending` 容量还长）。
+
+**测试**：`missing_seq_tests`（回绕场景下数量受限 / 正常缺口 `10,11,12` 仍被
+如实报出）。**提交**：`3ec77a6`。
+
+---
+
+### B39 🔴 第十一轮 H：入站 INVITE 没有重传去重 → 每次重传新开一个 RTP 端口（P1，**未修**）
+
+> **状态**：已定位并独立复核，**本轮未修**（改动面涉及 INVITE 会话主流程，
+> 需要单独一轮处理）。修复前的现状是：行为仍与下述描述一致。
+
+**现象**：设备重发 INVITE（没收到 200 OK 时的正常行为）或攻击者直接重放同一条
+INVITE 时，平台**每次都新开一个 ZLM RTP 收流端口**，200 OK 里通告的 `m=` 端口
+随之改变 —— 而设备仍按**第一次** 200 OK 的端口推流，媒体落到已被覆盖掉的孤儿
+端口。表现正是台账里那类「设备在线但一帧 RTP 都没有」。
+
+**根因**：RFC 3261 §17.2.1 要求服务端对**重传的同一请求重发同一份响应**。
+本平台没有服务端事务层 —— `sip/core/transaction.rs:449` 的
+`TransactionManager::handle_request` 是**死代码**（全仓库无调用点）。
+`handle_invite`（`src/sip/server.rs:2604`）取出 `call_id`/`cseq`/`via` 后
+**不做任何去重**，直接 `open_rtp_server`（`:2763`）→
+`invite_session_manager.create`（`:2854`，`insert` **覆盖**同 Call-ID 的旧会话）。
+
+**影响**：① 每次重传泄漏一个 ZLM 收流端口（旧会话的 `zlm_stream_id` 随之丢失，
+BYE 与超时清理都只作用于当前会话那一个端口）；② 媒体流与平台会话跟踪的端口
+对不上，会话永远不 Active。
+
+**复现**：向平台发一条带合法 SDP 的 `INVITE sip:<channel>@<平台> SIP/2.0`，
+收到 200 OK 记下 `m=video <port1>`；**原样重发**（同 Call-ID、同 branch），
+平台回 200 OK 且 `m=video <port2>`（≠ port1）。向 port1 推 RTP：ZLM 能收到流，
+但平台会话跟踪的是 port2。重复 N 次即泄漏 N 个端口。
+
+**修法方向**：按 `(Call-ID, Via branch, CSeq)` 做去重 —— 命中则**重发同一份
+200 OK**（含同一 SDP / 同一端口），不再重新处理、不再开新端口；并在
+`InviteSessionManager::create` 覆盖旧会话时，把旧会话的 ZLM 端口关掉
+（堵住端口泄漏这一半）。
+
+### B40 🔴 第十一轮 I：级联注册不读取服务端在 200 OK 里授予的 Expires（P2，未修）
+
+**现象**：本级在上游侧显示「已过期/注册过期」，而本级日志无任何告警、
+`RegistrationStatus` 仍是 `Registered`。
+
+**根因**：SIP 注册的有效期以**服务端授予的 `Expires`**（200 OK 的 `Expires` 头
+或 `Contact` 的 `expires` 参数）为准，服务端有权把它压到比请求值更短。
+`src/cascade/register.rs:733-739` 的刷新定时器只用「**我们请求的** expires」
+的一半；`src/sip/server.rs` 的 200 OK 分支只调 `mark_registered`，
+`Expires` / `Contact` 的 expires 参数被**完全丢弃**。
+
+**影响**：上游 300s 过期、平台 1800s 才刷新 → 中间 1500s 里本级在上游侧是
+「已过期」状态（上游停止向本级发 INVITE、拒绝目录订阅），而本级自认为在线。
+
+**修法方向**：在 `mark_registered` 一并记录服务端授予的 expires，并用它
+（而不是请求值的一半）驱动刷新定时器。
+
+### B41 🔴 第十一轮 J：级联 `server_port` 用 `as u16` 静默截断（P2，未修）
+
+**现象**：管理页回显 `serverPort: 70000`，但抓包看到 REGISTER 发往 **4464**
+（`70000 as u16 == 4464`；`-1 as u16 == 65535`），日志只出现「无响应」，
+查不到根因。
+
+**根因**：`src/cascade/register.rs` 三处 `as u16` 静默回绕；
+`src/handlers/platform.rs` 的 `server_port: Option<i32>` 入库路径**没有
+1..=65535 的范围校验**。`serverPort=0` 时 `SocketAddr::new(ip, 0)`，
+`run_registration_loop` 里 `Err(_) => continue` **一次都不试**。
+
+**修法方向**：入库时校验端口范围；发包前对超范围值显式报错而不是 `as u16` 回绕。
+
+### B42 🔴 第十一轮 K：录像调度器「本次不录像」但仍跑满 20 秒重试（P2，未修）
+
+**现象**：日志写着「拉起设备流失败 …（本次不录像）」，紧接着却是约 20 秒的
+`startRecord` 重试；通道数一多，轮次间隔明显小于 60 秒且首尾相接。
+
+**根因**：`src/scheduler/record_plan.rs:281-300` 的失败分支**没有 `continue`**，
+代码继续往下走 `start_record_with_retry(..., 25, 800ms)` —— 对着一路并不存在的
+流做 **25 × 800ms ≈ 20 秒**的重试。单轮 tick 超过 60s 间隔后，
+`tokio::time::interval` 默认的 **Burst** 行为会把错过的 tick 立即补发 →
+调度器从「每分钟一轮」退化成**连续紧循环**，持续对 ZLM 发起 startRecord。
+
+**修法方向**：失败分支真的 `continue`（本次不录像）；并把 interval 的
+`MissedTickBehavior` 设为 `Skip`，避免一轮超时后连续补发。
+
+### B43 🔴 第十一轮 L：ZLM 节点流计数是「事件计数」而非实际流数（P2，未修）
+
+**现象**：多节点部署下，某些节点被长期跳过（负载均衡长期选错节点），且**没有
+任何告警**。
+
+**根因**：`src/zlm/hook.rs:630-654` 的增减逻辑是**增量计数**：`regist=true`
+无条件 +1（不判断该流是否已计入），配对的 `regist=false` 只 -1，差额**永久留在
+计数里**；减法又饱和在 0，多余的注销会**吞掉后续其它流的减法**，让计数偏高。
+唯一的绝对值校正路径 `sync_media_server_stream_count` 需要**有连接断开事件**
+才会发生 —— 长期没有播放器的节点永远得不到校正。
+`src/state_store.rs:407` 的选路直接按这个计数取最小。
+
+**修法方向**：改为按 ZLM 实际流列表做绝对值同步，或给增量路径加幂等判定
+（记录已计入的流 id 集合）。
+
+### B44 🔴 第十一轮 M：`has_schema` 把所有错误吞成 `false`（P2，未修）
+
+**现象**：ZLM 不可达（节点重启、网络抖动、secret 轮换导致 401）时，播放地址里
+的 `hlsUrl` 被**静默摘掉**，前端降级到 flv/playUrl；而整条链路上**没有一行
+错误日志**，现场无法区分「设备没推 hls」与「ZLM 挂了」。
+
+**根因**：`src/zlm/client.rs:242` 的 `Err(_) => false` 丢弃了 error。
+
+**修法方向**：至少补一条 `warn!`，把「查不到」与「这一路流没有 hls 源」区分开。
+
+---
+
 ### B15 ✅ 设备统计查了不存在的表（已修，2026-09-19）
 
 **现象**：`/api/device/query/statistics/keepalive` 与 `.../register` 恒返回
@@ -2230,7 +2539,48 @@ MySQL/SQLite 以及 PostgreSQL 的批量通道插入必填字段和可选通道�
 
 ## F. 本轮改动清单（随本文档一起提交）
 
-### F.0 2026-10-25 多方言运行期改造（本轮）
+### F.0 2026-10-25 第十一轮深度代码审查（本轮）
+
+本轮针对**多方言运行期改造的爆炸半径**与**十轮以来几乎没被正面覆盖的协议层**
+做了一次深度审查，并派两个只读侦察 Agent 并行覆盖 `zlm/`+`scheduler/`+`cascade/`
+与 `sip/`+`jt1078/`。共 **13 条**发现：**7 条已修并逐条变异验证**（B32~B38），
+**6 条已定位未修**（B39~B44）。
+
+| 文件 | 内容 | 状态 |
+|---|---|---|
+| `src/sip/server.rs`、`src/sip/gb28181/device.rs` | **B32（P0）**：Keepalive（MESSAGE，**无鉴权**）不再改写信令地址；地址只由带摘要鉴权的 REGISTER 写入；新增来源 IP 校验闸门 `keepalive_source_allowed`；`DeviceManager::update_keepalive` 不再接收来源地址 | ✅ 本轮 `0616826` |
+| `src/db/device.rs` | **B32**：新增「只刷在线状态时地址原样保留」的库层回归 | ✅ 本轮 `0616826` |
+| `src/jt1078/session.rs` | **B33（P0）**：会话接收缓冲封顶 256KB（未认证对端不能把内存撑爆）；**B38**：缺失序号统计改用回绕距离判定，不再构造 65533 条 | ✅ 本轮 `a34f223` / `3ec77a6` |
+| `src/jt1078/command.rs`、`src/jt1078/frame.rs` | **B34（P1）**：JT808 校验码改按**未转义**内容计算（JT/T 808-2013 §5.3），与平台自己的解析端口径对齐；新增奇数个转义字节的回归 | ✅ 本轮 `cb3129a` |
+| `src/sip/transport/tcp.rs` | **B35（P1）**：TCP 分帧抽成自由函数 `take_sip_message`，**只在头部做文本化**（正文可能是 GB2312）；三道缓冲/长度上限 | ✅ 本轮 `70939b5` |
+| `src/cascade/register.rs`、`src/sip/server.rs` | **B36（P1）**：`RegistrationState` 新增 `last_liveness`，把「注册时间」与「存活时间」拆开；新增 `note_liveness_from_response` 并**补上生产接线**（级联 keepalive 的 200 OK） | ✅ 本轮 `e4f7377` |
+| `src/db/dialect.rs`、`src/dyn_where.rs`、`src/db/mod.rs`、`src/db/{device,stream_proxy,stream_push,cloud_record,audit_log}.rs`、`src/handlers/{alarm,stub}.rs` | **B37（P1）**：删除全部「读进程级全局方言」的入口（7 个函数），`DynWhere::sql` 的方言改成**必填参数**，新增 `Pool::bigint_col` / `Pool::days_ago_expr` | ✅ 本轮 `14292cf` |
+| `src/dialect_guard.rs` | 守门人收紧：`src/dyn_where.rs` 从「进程级全局方言」守门人的豁免名单里移除 | ✅ 本轮 `14292cf` |
+| `tests/postgres_dialect_judgment.rs`、`tests/mysql_dialect_judgment.rs` | **B37** 的真实库回归（sqlite 下 `datetime()` 合法，单测全绿证明不了任何事） | ✅ 本轮 `14292cf` |
+| `docs/OPEN_ISSUES.md`、`docs/STATUS.md` | 新增 **B32~B44** 共 13 条；总览表补 13 行；本节改动清单 | ✅ 本轮 |
+
+**本轮门禁数字**（均为只读判据复跑，可独立复现）：
+
+| 门禁 | 结果 |
+|---|---|
+| `cargo test --lib` | **853 通过 / 0 失败** |
+| 真实库专项（postgres 5 + mysql 3 + 方言判据 2） | **11 通过 / 0 失败**（PG 16 / MySQL 8 容器，隔离库 `gbserver_pg_test` / `gbserver_mysql_test`） |
+| `cargo fmt --check` | **exit 0**（0 违规） |
+| 变异验证 | 每条修复都**先让测试变红再还原**：JT808 奇数转义、JT1078 缓冲封顶、缺包回绕、TCP 非 UTF-8 正文、Keepalive 闸门、库层地址保全、cascade 存活语义与接线、方言判据（PG 报 `42883 function datetime(unknown, unknown) does not exist`） |
+
+**本轮未验证 / 明确不声称已验证**：
+
+* 真机 GB28181 / JT1078 终端在修复后的行为（尤其 B32 的来源 IP 闸门对
+  **NAT 换源端口**的容忍度）—— **未验**，需真机复验；
+* B32 的修复会让**从未 REGISTER 过**的设备的 Keepalive 一律被拒（查不到已登记
+  地址 ⇒ 无法确认身份）—— 这是**有意为之**的取舍，但真机侧是否有设备依赖
+  「不注册只发心跳」的非常规流程，**未验**；
+* B39~B44 六条**已定位未修**（见各条目）；
+* `cargo build --release` 本轮**未复跑**；`cargo clippy --all-targets --all-features`
+  本轮**未跑**；
+* 目标部署环境（Linux Compose）的实跑**未验**。
+
+### F.0.1 2026-10-25 多方言运行期改造（上一轮，保留备查）
 
 | 文件 | 内容 | 状态 |
 |---|---|---|
