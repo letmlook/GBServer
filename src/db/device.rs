@@ -1912,3 +1912,60 @@ pub async fn batch_upsert_channels(
         },
     )
 }
+
+#[cfg(all(test, feature = "sqlite"))]
+mod address_preservation_tests {
+    use crate::db;
+    use crate::test_support::sqlite_pool_with_schema;
+
+    /// **安全回归**：只刷新在线状态（ip/port 传 `None`）时，库里**已登记**的
+    /// 地址必须原样保留。
+    ///
+    /// 修复前 Keepalive 分支把「本次的来源地址」一起写进库里 —— 而 Keepalive
+    /// 走的是 SIP MESSAGE，**没有任何鉴权**，设备号还取自 XML 正文。于是任何
+    /// 能连到 SIP 端口的人发一条 MESSAGE，就能改写**任意已注册设备**的信令
+    /// 地址；而信令地址正是平台全部出站信令的目标（设备劫持 + 出站跳板）。
+    ///
+    /// 现在地址只由带摘要鉴权的 REGISTER 写入。
+    #[tokio::test]
+    async fn refreshing_online_state_keeps_registered_address() {
+        let pool = sqlite_pool_with_schema().await;
+        let device_id = "34020000001320000001";
+
+        crate::dispatch_exec!(&pool, |p| {
+            sqlx::query(
+                "INSERT INTO gb_device (device_id, ip, port, on_line, create_time, update_time) \
+                 VALUES (?, ?, ?, 1, '2026-01-01 00:00:00', '2026-01-01 00:00:00')",
+            )
+            .bind(device_id)
+            .bind("192.168.1.7")
+            .bind(5060_i32)
+            .execute(p)
+        })
+        .expect("seed device");
+
+        // 心跳：只刷在线状态，ip/port 传 None
+        db::device::update_device_online(
+            &pool,
+            device_id,
+            true,
+            None,
+            None,
+            "2026-01-02 00:00:00",
+        )
+        .await
+        .expect("refresh online state");
+
+        let d = db::device::get_device_by_device_id(&pool, device_id)
+            .await
+            .expect("query device")
+            .expect("device exists");
+        assert_eq!(
+            d.ip.as_deref(),
+            Some("192.168.1.7"),
+            "只刷在线状态时，已登记的 ip 不得被改写"
+        );
+        assert_eq!(d.port, Some(5060), "已登记的 port 不得被改写");
+        assert_eq!(d.on_line, Some(true));
+    }
+}

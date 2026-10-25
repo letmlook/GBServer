@@ -2202,6 +2202,33 @@ impl SipServer {
         Ok(())
     }
 
+    /// 取某设备**已登记**的信令地址（IP），用于 Keepalive 的来源校验。
+    ///
+    /// 「已登记」= 带摘要鉴权的 REGISTER 写下的那个地址：
+    /// - 内存里的 `DeviceManager`（REGISTER 时写入；服务重启后由
+    ///   `restore_online_devices_from_db` 从库里恢复）；
+    /// - 内存没有就查库（设备在本进程启动前就注册过）。
+    ///
+    /// 查不到就返回 `None` —— 调用方据此**拒绝**这次心跳（无法确认来源身份，
+    /// 宁可不心跳，不可错认）。
+    async fn registered_signal_ip(
+        device_manager: &Arc<DeviceManager>,
+        pool: &Pool,
+        device_id: &str,
+    ) -> Option<String> {
+        if let Some(addr) = device_manager.get_address(device_id).await {
+            return Some(addr.ip().to_string());
+        }
+        match db_device::get_device_by_device_id(pool, device_id).await {
+            Ok(Some(d)) => d.ip,
+            Ok(None) => None,
+            Err(e) => {
+                tracing::debug!("查询设备 {} 的已登记地址失败: {}", device_id, e);
+                None
+            }
+        }
+    }
+
     async fn handle_message(
         req: SipRequest,
         addr: SocketAddr,
@@ -2367,38 +2394,65 @@ impl SipServer {
                 Some("Keepalive") | Some("keepalive") => {
                     let now = Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
                     if let Some(dev_id) = XmlParser::get_device_id(body) {
-                        let ip_str = addr.ip().to_string();
-                        db_device::update_device_online(
-                            pool,
-                            &dev_id,
-                            true,
-                            Some(&ip_str),
-                            Some(addr.port() as i32),
-                            &now,
-                        )
-                        .await?;
-                        // 顺手补齐「信令 / 流模式」两列的空值。
+                        // ── 安全闸门：Keepalive 不带鉴权，地址不能由它改写 ──────
                         //
-                        // 修复前注册流程从没写过这两列，历史设备全是 NULL；
-                        // 而设备重新注册可能要等一小时（register_timeout 默认 3600s）。
-                        // 心跳是每设备 60s 一次（heart_beat_interval 默认值），
-                        // 借它把老数据在**一个心跳周期内**补上，用户不用干等。
+                        // MESSAGE 在 GB28181 里没有摘要认证，平台这条路径上也**没有**
+                        // 任何校验，而这里的设备号取自 **XML 正文** —— 正文里的
+                        // `<DeviceID>` 可以任意填。
                         //
-                        // `fill_..._if_missing` 是幂等的（已有值不覆盖），
-                        // 所以之后的每次心跳都只是一条 no-op UPDATE。
-                        let signal_transport = Self::transport_from_via(&via);
-                        if let Err(e) = db_device::fill_device_transport_if_missing(
-                            pool,
-                            &dev_id,
-                            signal_transport,
-                            Some(DEFAULT_STREAM_MODE),
-                            &now,
-                        )
-                        .await
-                        {
-                            tracing::debug!("补齐设备 {} 的信令/流模式失败: {}", dev_id, e);
+                        // 修复前这里无条件把「本次的来源地址」写进库（ip/port）与
+                        // 内存（`device_manager.update_keepalive`），于是任何能连到
+                        // SIP 端口的人发一条 MESSAGE，就能把**任意已注册设备**的
+                        // 信令地址改到自己名下 —— 而信令地址正是平台**全部出站
+                        // 信令**的目标（19 处 `get_address()` 调用点：点播/回放/
+                        // 下载的 INVITE、PTZ、目录查询、SUBSCRIBE、BYE……），
+                        // 后果是设备被劫持，且平台变成可探测任意 host:port 的
+                        // 出站跳板。
+                        //
+                        // 现在：**地址只由带摘要鉴权的 REGISTER 写入**
+                        // （`handle_register` 写的就是 REGISTER 的源地址），
+                        // Keepalive 只在「来源 IP 与已登记地址一致」时刷新存活状态，
+                        // 且**不再写地址**。
+                        let registered_ip =
+                            Self::registered_signal_ip(device_manager, pool, &dev_id).await;
+                        if crate::sip::gb28181::device::keepalive_source_allowed(
+                            &addr,
+                            registered_ip.as_deref(),
+                        ) {
+                            // 只刷新在线状态；ip/port 传 None → COALESCE 保持原值
+                            db_device::update_device_online(pool, &dev_id, true, None, None, &now)
+                                .await?;
+                            // 顺手补齐「信令 / 流模式」两列的空值。
+                            //
+                            // 修复前注册流程从没写过这两列，历史设备全是 NULL；
+                            // 而设备重新注册可能要等一小时（register_timeout 默认 3600s）。
+                            // 心跳是每设备 60s 一次（heart_beat_interval 默认值），
+                            // 借它把老数据在**一个心跳周期内**补上，用户不用干等。
+                            //
+                            // `fill_..._if_missing` 是幂等的（已有值不覆盖），
+                            // 所以之后的每次心跳都只是一条 no-op UPDATE。
+                            let signal_transport = Self::transport_from_via(&via);
+                            if let Err(e) = db_device::fill_device_transport_if_missing(
+                                pool,
+                                &dev_id,
+                                signal_transport,
+                                Some(DEFAULT_STREAM_MODE),
+                                &now,
+                            )
+                            .await
+                            {
+                                tracing::debug!("补齐设备 {} 的信令/流模式失败: {}", dev_id, e);
+                            }
+                            device_manager.update_keepalive(&dev_id).await;
+                        } else {
+                            tracing::warn!(
+                                "Keepalive 来源 {} 与设备 {} 的已登记地址 {:?} 不一致 —— 已忽略 \
+                                 （信令地址只由带摘要鉴权的 REGISTER 改写）",
+                                addr,
+                                dev_id,
+                                registered_ip
+                            );
                         }
-                        device_manager.update_keepalive(&dev_id, addr).await;
                     }
                     tracing::debug!("Keepalive from device: {}", device_id);
                 }
