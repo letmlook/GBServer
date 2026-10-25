@@ -206,7 +206,7 @@ pub async fn insert(
 ///
 /// `create_time` 的默认值是 `CURRENT_TIMESTAMP` / `NOW()` —— **由数据库写入**，
 /// 所以截止时间也必须**在数据库自己的时钟里**算（见
-/// [`crate::dyn_where::days_ago_expr`]）。在 Rust 里按 UTC 算再拿去比，
+/// [`crate::db::Pool::days_ago_expr`]）。在 Rust 里按 UTC 算再拿去比，
 /// MySQL / PostgreSQL 上会整体偏一个时区（UTC+8 部署下差 8 小时）。
 ///
 /// 此前**根本没有这个函数**：`audit.retention_days`（默认 90）是一个**死配置**
@@ -214,7 +214,7 @@ pub async fn insert(
 pub async fn delete_before(pool: &Pool, days: u32) -> sqlx::Result<u64> {
     let sql = format!(
         "DELETE FROM gb_audit_log WHERE create_time < {}",
-        crate::dyn_where::days_ago_expr(days)
+        pool.days_ago_expr(days)
     );
     Ok(crate::dispatch_exec!(pool, |p| { sqlx::query(&sql).execute(p) })?.rows_affected())
 }

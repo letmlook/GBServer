@@ -123,7 +123,7 @@ pub async fn alarm_list(
          alarm_time, alarm_description, longitude, latitude, create_time, \
          {} AS handled, handle_user, handle_time, handle_result \
          FROM gb_device_alarm",
-        crate::dyn_where::bigint_col("handled")
+        state.pool.bigint_col("handled")
     );
     const COUNT_BASE: &str = "SELECT COUNT(*) FROM gb_device_alarm";
 
@@ -136,7 +136,11 @@ pub async fn alarm_list(
     } else {
         " LIMIT ? OFFSET ?".to_string()
     };
-    let sql_rows = format!("{}{} ORDER BY create_time DESC{limit_ph}", w.sql(&cols), "");
+    let sql_rows = format!(
+        "{}{} ORDER BY create_time DESC{limit_ph}",
+        w.sql(&cols, state.pool.dialect()),
+        ""
+    );
     // 查询构造必须在 dispatch **内部**：`sqlx::query_as` 的类型随执行器变化。
     let rows: Vec<AlarmRow> = crate::dispatch!(&state.pool, |p| {
         let mut query = sqlx::query_as::<_, AlarmRow>(&sql_rows);
@@ -152,7 +156,7 @@ pub async fn alarm_list(
     })
     .map_err(|e| AppError::business(ErrorCode::Error500, format!("数据库查询失败: {e}")))?;
 
-    let count_sql = w.sql(COUNT_BASE);
+    let count_sql = w.sql(COUNT_BASE, state.pool.dialect());
     let total: i64 = crate::dispatch!(&state.pool, |p| {
         let mut query = sqlx::query_scalar::<_, i64>(&count_sql);
         for b in &w.binds {
@@ -275,7 +279,7 @@ pub async fn alarm_detail(
                     alarm_method, alarm_type, alarm_time, alarm_description, longitude, latitude, \
                     create_time, {} AS handled, handle_user, handle_time, handle_result \
                     FROM gb_device_alarm WHERE id = $1",
-                crate::dyn_where::bigint_col("handled"),
+                state.pool.bigint_col("handled"),
             ))
             .bind(id)
             .fetch_optional(p)

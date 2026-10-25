@@ -676,11 +676,10 @@ fn dialect_branch_must_use_pool_dialect_not_process_global() {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     let src_root = manifest.join("src");
     // 这几个文件**定义**全局方言本身，或就是这条规则本身
-    let skip = [
-        "src/db/dialect.rs",
-        "src/dyn_where.rs",
-        "src/dialect_guard.rs",
-    ];
+    // `src/db/dialect.rs` 定义全局方言本身，必须豁免；
+    // `src/dyn_where.rs` **不再豁免** —— 它原来读全局方言（DynWhere::sql），
+    // 现在方言是必填参数，由调用方（也就是持有 pool 的那一层）显式传入。
+    let skip = ["src/db/dialect.rs", "src/dialect_guard.rs"];
     let mut files = Vec::new();
     collect_rs_files(&src_root, &mut files);
     let mut violations = Vec::new();

@@ -69,7 +69,7 @@ pub use dialect::Dialect;
 // 每个 db 函数用 `#[cfg(feature = ...)]` 抄三份 SQL。改造后：
 //
 // - 部署方只发一个二进制，配置改一行就换库；
-// - SQL 文本**一份**，由 [`dialect::dialect_sql`] 按运行期方言改写占位符；
+// - SQL 文本**一份**，由 [`Pool::sql`] 按**这个 pool 的**方言改写占位符；
 // - 各方言**原生** pool —— 布尔列、TINYINT、REAL 的解码语义与各自
 //   原生驱动完全一致（这是不用 sqlx `Any` 驱动的原因，详见 `docs/DB_DIALECT_NOTES.md`）。
 //
@@ -121,6 +121,25 @@ impl Pool {
     /// **一份 SQL 文本服务三种方言**，避免"改了这里忘了那里"。
     pub fn sql<'a>(&self, sql: &'a str) -> std::borrow::Cow<'a, str> {
         dialect::dialect_sql_for(sql, self.dialect())
+    }
+
+    /// 把一个整数列渲染成**64 位**表达式，让 Rust 侧的 `i64` 在三种方言下都能解出来。
+    ///
+    /// 必须按 **pool 自己的方言**判定 —— 进程级全局只在「一个进程一个库」时
+    /// 与 pool 一致；测试里直接构造 `Pool::Postgres(..)` 时全局仍是默认
+    /// sqlite，于是 postgres 上会漏掉 `::bigint` 转换，报类型不匹配。
+    ///
+    /// （此前仓库里存在一个读全局方言的同名函数，生产代码有 3 处调用 ——
+    /// 现在这类入口已被**删除**，编译器强制走这里。）
+    pub fn bigint_col(&self, col: &str) -> String {
+        dialect::bigint_col_for(col, self.dialect())
+    }
+
+    /// 「N 天前」的时间表达式 —— 在**数据库自己的时钟**里算。
+    ///
+    /// 同样必须按 pool 自己的方言判定（sqlite 是 UTC、mysql/pg 是会话时区）。
+    pub fn days_ago_expr(&self, days: u32) -> String {
+        dialect::days_ago_expr_for(days, self.dialect())
     }
 }
 

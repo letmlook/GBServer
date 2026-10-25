@@ -394,7 +394,11 @@ pub async fn list_filtered(
     } else {
         " LIMIT ? OFFSET ?".to_string()
     };
-    let sql_rows = format!("{}{} ORDER BY start_time DESC{limit_ph}", w.sql(COLS), "");
+    let sql_rows = format!(
+        "{}{} ORDER BY start_time DESC{limit_ph}",
+        w.sql(COLS, pool.dialect()),
+        ""
+    );
     let rows = crate::dispatch!(pool, |p| {
         let mut q = sqlx::query_as::<_, CloudRecord>(&sql_rows);
         for b in &w.binds {
@@ -408,7 +412,7 @@ pub async fn list_filtered(
         q.bind(count).bind(offset).fetch_all(p)
     })?;
 
-    let count_sql = w.sql(COUNT_BASE);
+    let count_sql = w.sql(COUNT_BASE, pool.dialect());
     let total = crate::dispatch!(pool, |p| {
         let mut cq = sqlx::query_scalar::<_, i64>(&count_sql);
         for b in &w.binds {

@@ -138,40 +138,9 @@ fn decode(v: u8) -> Dialect {
     }
 }
 
-/// 把 SQL 里的 `?` 占位符改写成**当前方言**需要的形式。
-///
-/// - PostgreSQL：`?` → `$1`、`$2` ……
-/// - MySQL / SQLite：原样返回（零拷贝）
-///
-/// 会跳过字符串字面量（`'...'`）与带引号标识符（`"..."`），
-/// 避免把 `LIKE '%?%'` 里的问号也当成占位符。
-pub fn dialect_sql(sql: &str) -> std::borrow::Cow<'_, str> {
-    rewrite_placeholders(sql, current().is_postgres())
-}
-
-/// 按**全局当前方言**改写 SQL 文本（`?` → `$n`）。
-///
-/// 与 [`Pool::sql`](crate::db::Pool::sql) 等价，但不要求调用方手里有 pool ——
-/// handlers 层的 pool 通常是 `state.pool`，脚本/宏不好统一拿到它的名字。
-/// 进程内只有一个库，全局方言就是当前库的方言。
-pub fn current_sql(sql: &str) -> std::borrow::Cow<'_, str> {
-    dialect_sql(sql)
-}
-
 /// [`dialect_sql`] 的可测版本：方言显式传入。
 pub fn dialect_sql_for(sql: &str, dialect: Dialect) -> std::borrow::Cow<'_, str> {
     rewrite_placeholders(sql, dialect.is_postgres())
-}
-
-/// 把一个整数列渲染成**64 位**表达式，让 Rust 侧的 `i64` 在三种方言下都能解出来。
-///
-/// PostgreSQL 的 `serial` 主键是 INT4，而 MySQL 的 `bigint auto_increment`
-/// 与 SQLite 的 `INTEGER` 都是 64 位；postgres 对类型是**严格**的，
-/// 用 `i64` 去解 INT4 列直接报类型不兼容。
-///
-/// 与占位符、布尔列是同一类问题，处理方式也一样：**在 SQL 侧统一**。
-pub fn bigint_col(col: &str) -> String {
-    bigint_col_for(col, current())
 }
 
 /// [`bigint_col`] 的可测版本。
@@ -181,18 +150,6 @@ pub fn bigint_col_for(col: &str, dialect: Dialect) -> String {
     } else {
         col.to_string()
     }
-}
-
-/// 生成「N 天前」的时间表达式 —— **在数据库自己的时钟里**算。
-///
-/// 三种方言的写法：
-/// - SQLite：`datetime('now', '-90 days')`（UTC）
-/// - MySQL：`DATE_SUB(NOW(), INTERVAL 90 DAY)`（会话时区）
-/// - PostgreSQL：`NOW() - INTERVAL '90 days'`（会话时区）
-///
-/// 必须在 Rust 里用同一个时钟算 —— 与列默认值的类型/时区一致，比较才有意义。
-pub fn days_ago_expr(days: u32) -> String {
-    days_ago_expr_for(days, current())
 }
 
 /// [`days_ago_expr`] 的可测版本。

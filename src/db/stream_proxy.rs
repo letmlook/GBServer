@@ -554,7 +554,7 @@ pub async fn list_paged(
     };
     let sql = format!(
         "SELECT {PROXY_COLS}{PROXY_FROM}{} ORDER BY id{limit_ph}",
-        w.sql("")
+        w.sql("", pool.dialect())
     );
     // 查询构造必须在 dispatch **内部**：`sqlx::query_as` 的类型随执行器变化。
     crate::dispatch!(pool, |p| {
@@ -578,7 +578,7 @@ pub async fn count_all(
     query: Option<&str>,
 ) -> sqlx::Result<i64> {
     let w = proxy_filter(media_server_id, pulling, query);
-    let sql = format!("SELECT COUNT(*){PROXY_FROM}{}", w.sql(""));
+    let sql = format!("SELECT COUNT(*){PROXY_FROM}{}", w.sql("", pool.dialect()));
     crate::dispatch!(pool, |p| {
         let mut cq = sqlx::query_scalar::<_, i64>(&sql);
         for b in &w.binds {

@@ -396,11 +396,11 @@ mod jt808_inbound_tests {
     #[test]
     fn roundtrip_with_odd_number_of_escaped_bytes() {
         for body in [
-            vec![0x7E],                       // 1 个
-            vec![0x7D],                       // 1 个
-            vec![0x7E, 0x00, 0x7E],           // 2 个（偶数，作为对照）
-            vec![0x01, 0x7E, 0x02, 0x7D],     // 2 个（偶数）
-            vec![0x01, 0x02, 0x7E],           // 1 个
+            vec![0x7E],                   // 1 个
+            vec![0x7D],                   // 1 个
+            vec![0x7E, 0x00, 0x7E],       // 2 个（偶数，作为对照）
+            vec![0x01, 0x7E, 0x02, 0x7D], // 2 个（偶数）
+            vec![0x01, 0x02, 0x7E],       // 1 个
         ] {
             let frame = command::build_jt808_frame(0x0200, "13912345678", 9, &body);
             let (_c, msgs, bad) = split_jt808(&frame);

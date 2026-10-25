@@ -553,7 +553,11 @@ pub async fn list_channels_filtered(
     } else {
         " LIMIT ? OFFSET ?".to_string()
     };
-    let sql_rows = format!("{}{} ORDER BY id{limit_ph}", w.sql(&base), "");
+    let sql_rows = format!(
+        "{}{} ORDER BY id{limit_ph}",
+        w.sql(&base, pool.dialect()),
+        ""
+    );
     let rows = crate::dispatch!(pool, |p| {
         let mut q = sqlx::query_as::<_, DeviceChannel>(&sql_rows);
         for b in &w.binds {
@@ -567,7 +571,7 @@ pub async fn list_channels_filtered(
         q.bind(count as i64).bind(offset).fetch_all(p)
     })?;
 
-    let count_sql = w.sql("SELECT COUNT(*) FROM gb_device_channel");
+    let count_sql = w.sql("SELECT COUNT(*) FROM gb_device_channel", pool.dialect());
     let total = crate::dispatch!(pool, |p| {
         let mut cq = sqlx::query_scalar::<_, i64>(&count_sql);
         for b in &w.binds {
@@ -1945,16 +1949,9 @@ mod address_preservation_tests {
         .expect("seed device");
 
         // 心跳：只刷在线状态，ip/port 传 None
-        db::device::update_device_online(
-            &pool,
-            device_id,
-            true,
-            None,
-            None,
-            "2026-01-02 00:00:00",
-        )
-        .await
-        .expect("refresh online state");
+        db::device::update_device_online(&pool, device_id, true, None, None, "2026-01-02 00:00:00")
+            .await
+            .expect("refresh online state");
 
         let d = db::device::get_device_by_device_id(&pool, device_id)
             .await

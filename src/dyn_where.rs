@@ -9,24 +9,6 @@
 //!
 //! 只放这一份：`stub.rs` / `alarm.rs` / `db::cloud_record` 共用。
 
-/// 把 SQL 里的 `?` 占位符改写成**当前方言**需要的形式。
-///
-/// - PostgreSQL：`?` → `$1`、`$2` ……（pg 不接受 `?`）
-/// - MySQL / SQLite：原样返回
-///
-/// 为什么需要它：`DynWhere` 覆盖的是"动态拼 WHERE"的查询，而**固定 SQL** 的
-/// 那些函数（JT1078 围栏/路线/媒体检索、推流绑定、平台注销、告警处置、审计日志）
-/// 直接写了 `?`，一旦用 postgres 构建跑，sqlx 不会做任何改写，pg 直接报
-/// `syntax error at or near ","`。
-///
-/// 这类 bug 只在 postgres 运行时才炸（sqlite/mysql 完全正常），静态检查和
-/// `cargo test`（默认 sqlite）都发现不了 —— 2026-09-12 的 postgres 冒烟测试
-/// 一次性抓到 23 处。写法上刻意保留 `?`：三种方言共用**同一份 SQL 文本**，
-/// 避免再把一条语句抄三遍（"改了这里忘了那里"）。
-pub fn dialect_sql(sql: &str) -> std::borrow::Cow<'_, str> {
-    rewrite_placeholders(sql, crate::db::dialect::current().is_postgres())
-}
-
 /// `dialect_sql` 的可测版本：`postgres` 显式传入，便于在 sqlite 构建下
 /// 也能验证改写逻辑（否则这段代码只在 postgres 构建里才跑到）。
 fn rewrite_placeholders(sql: &str, postgres: bool) -> std::borrow::Cow<'_, str> {
@@ -85,46 +67,6 @@ fn rewrite_placeholders(sql: &str, postgres: bool) -> std::borrow::Cow<'_, str> 
 ///
 /// 2026-10-20 在 postgres 上实测命中 3 处：录像计划通道列表、报警列表/详情，
 /// 以及录像计划调度器 —— 其中调度器那处会让**云录像计划每一轮都失败**。
-pub fn bigint_col(col: &str) -> String {
-    bigint_col_for(col, crate::db::dialect::current().is_postgres())
-}
-
-/// `bigint_col` 的可测版本：`postgres` 显式传入。
-fn bigint_col_for(col: &str, postgres: bool) -> String {
-    if postgres {
-        format!("{col}::bigint")
-    } else {
-        col.to_string()
-    }
-}
-
-/// 生成「N 天前」的时间表达式 —— **在数据库自己的时钟里**算。
-///
-/// ## 为什么不能在 Rust 里算
-///
-/// `gb_audit_log.create_time` 的默认值是 `CURRENT_TIMESTAMP`（sqlite）/
-/// `NOW()`（mysql / postgres），而这三者的时钟**不是一回事**：
-/// - SQLite 的 `CURRENT_TIMESTAMP` 是 **UTC**；
-/// - MySQL 的 `NOW()` 是**会话时区**；
-/// - PostgreSQL 的 `NOW()` 也是**会话时区**。
-///
-/// 若在 Rust 里按 UTC 算出截止时间再拿去比，MySQL / PG 上会**整体偏一个时区**
-/// （UTC+8 部署下差 8 小时）—— 保留期直接变成 90 天 ± 8 小时。
-///
-/// 三种方言的写法：
-/// - SQLite：`datetime('now', '-90 days')` → `'YYYY-MM-DD HH:MM:SS'`（UTC）
-/// - MySQL：`DATE_SUB(NOW(), INTERVAL 90 DAY)` → DATETIME（会话时区）
-/// - PostgreSQL：`NOW() - INTERVAL '90 days'` → timestamptz（会话时区）
-///
-/// 与列的默认值的**类型/时区**一致，比较才有意义。
-///
-/// **注意**：这个表达式只能配**由数据库写入**的时间列（如 `create_time`）。
-/// 由**平台自己**写的时间列（如 `gb_log.time`，Rust 用 `Local::now()` 写的）
-/// 必须在 Rust 里用同一个时钟算 —— 见 `db::log::delete_older_than`。
-pub fn days_ago_expr(days: u32) -> String {
-    crate::db::dialect::days_ago_expr_for(days, crate::db::dialect::current())
-}
-
 /// 动态 WHERE 构造器（录像计划通道列表用）。
 ///
 /// 统一用 `?` 写条件，postgres 下按顺序把第 k 个 `?` 改写成 `$k`——同一份 SQL
@@ -166,8 +108,16 @@ impl DynWhere {
     }
 
     /// 按方言生成最终 SQL（postgres 把 `?` 换成 `$1..$n`）。
-    pub(crate) fn sql(&self, base: &str) -> String {
-        self.sql_for(base, crate::db::dialect::current().is_postgres())
+    ///
+    /// **方言必须由调用方显式给出**（通常是 `pool.dialect()`）——
+    /// 此前这里读的是**进程级全局** `dialect::current()`，它只在
+    /// 「一个进程一个库」时与 pool 的方言一致；测试里直接构造
+    /// `Pool::Postgres(..)` 时全局仍是默认 sqlite，于是 postgres 上
+    /// 会收到没被改写的 `?` → `syntax error`。
+    /// 把方言改成**必填参数**，等于让编译器强制每一个调用点把 pool 的方言
+    /// 显式传进来 —— 这类「判据用错对象」的缺陷从此无法悄悄回归。
+    pub(crate) fn sql(&self, base: &str, dialect: crate::db::Dialect) -> String {
+        self.sql_for(base, dialect.is_postgres())
     }
 
     /// `sql` 的可测版本：`postgres` 显式传入，便于在 sqlite 构建下也能
@@ -231,14 +181,5 @@ mod tests {
             w.sql_for("SELECT * FROM t", false),
             "SELECT * FROM t WHERE a = ? AND b = ?"
         );
-    }
-
-    /// `bigint_col` 的可测版本：postgres 要加 `::bigint`，其它方言原样返回。
-    #[test]
-    fn bigint_col_casts_only_on_postgres() {
-        assert_eq!(bigint_col_for("c.id", true), "c.id::bigint");
-        assert_eq!(bigint_col_for("c.id", false), "c.id");
-        // 列名带别名时也要只作用于列本身
-        assert_eq!(bigint_col_for("handled", true), "handled::bigint");
     }
 }

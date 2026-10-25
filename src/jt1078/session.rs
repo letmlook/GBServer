@@ -583,7 +583,6 @@ mod session_buffer_bound_tests {
         assert_eq!(out[0], payload);
         assert!(s.buffer.is_empty());
     }
-
 }
 
 #[cfg(test)]

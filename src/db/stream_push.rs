@@ -410,7 +410,11 @@ pub async fn list_paged(
     } else {
         " LIMIT ? OFFSET ?".to_string()
     };
-    let sql = format!("{}{} ORDER BY id{limit_ph}", w.sql(COLS), "");
+    let sql = format!(
+        "{}{} ORDER BY id{limit_ph}",
+        w.sql(COLS, pool.dialect()),
+        ""
+    );
     // 查询构造必须在 dispatch **内部**：`sqlx::query_as` 的类型随执行器变化。
     crate::dispatch!(pool, |p| {
         let mut q = sqlx::query_as::<_, StreamPush>(&sql);
@@ -461,7 +465,7 @@ pub async fn count_all(
     query: Option<&str>,
 ) -> sqlx::Result<i64> {
     let (w, _) = push_filter(media_server_id, pushing, query);
-    let sql = w.sql("SELECT COUNT(*) FROM gb_stream_push");
+    let sql = w.sql("SELECT COUNT(*) FROM gb_stream_push", pool.dialect());
     crate::dispatch!(pool, |p| {
         let mut q = sqlx::query_scalar::<_, i64>(&sql);
         for b in &w.binds {

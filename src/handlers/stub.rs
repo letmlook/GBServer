@@ -3652,7 +3652,7 @@ pub async fn record_plan_channel_list(
         coalesce(c.gb_status, c.status) AS gb_status, \
         c.data_type, c.record_plan_id \
         FROM gb_device_channel c",
-        crate::dyn_where::bigint_col("c.id")
+        state.pool.bigint_col("c.id")
     );
     const BASE_COUNT: &str = "SELECT COUNT(*) FROM gb_device_channel c";
 
@@ -3667,7 +3667,7 @@ pub async fn record_plan_channel_list(
     };
     let sql_rows = format!(
         "{}{}",
-        w.sql(&base_cols),
+        w.sql(&base_cols, state.pool.dialect()),
         format!(" ORDER BY c.id DESC{limit_ph}")
     );
     // 查询链必须整体包进 `dispatch!`：`db::Pool` 本身不是 `Executor`，
@@ -3685,7 +3685,7 @@ pub async fn record_plan_channel_list(
         q_rows.bind(count as i64).bind(offset).fetch_all(p)
     })?;
 
-    let sql_count = w.sql(BASE_COUNT);
+    let sql_count = w.sql(BASE_COUNT, state.pool.dialect());
     let total: i64 = crate::dispatch!(&state.pool, |p| {
         let mut q_count = sqlx::query_scalar::<_, i64>(&sql_count);
         for b in &w.binds {
