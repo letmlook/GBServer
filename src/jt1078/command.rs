@@ -4,20 +4,43 @@
 
 /// Build a complete JT808 frame from message ID, phone number, sequence, and body bytes.
 /// Returns the full byte vector ready to send over TCP/UDP.
+///
+/// ## 顺序：先算校验码，再统一转义
+///
+/// JT/T 808-2013 §5.3 规定：校验码是**除 0x7E 标志、校验码本身之外**的所有字节
+/// 逐位异或，而**转义发生在校验码计算之后**——整帧（含校验码）最后统一转义。
+///
+/// 此前本函数是「先转义正文、再对**转义后**的字节算 XOR」，于是每转义一个字节就
+/// 多异或一次 0x01（`0x7D^0x02 = 0x7F` 而原字节是 0x7E；`0x7D^0x01 = 0x7C` 而原
+/// 字节是 0x7D）：
+/// - 转义字节数为**偶数**时两边碰巧相等 → 看不出问题；
+/// - 转义字节数为**奇数**时校验码恰好差 0x01 → 平台自己的 `split_jt808` 判坏帧
+///   丢弃，真实终端按标准算出的期望值也对不上 → 直接丢帧不回 ACK。
+///
+/// 而平台自己解析端（[`crate::jt1078::frame`]）是**先去转义、再对去转义后的字节**
+/// 算 XOR 的 —— 两端口径必须一致，所以这里改成标准顺序。
 pub fn build_jt808_frame(msg_id: u16, phone: &str, seq: u16, body: &[u8]) -> Vec<u8> {
     let phone_bcd = phone_to_bcd(phone);
     let body_len = body.len() as u16;
     // Body attributes: bit 0-9 = body length, bit 10-12 = encryption (0=none), bit 13 = sub-package flag
     let body_attrs: u16 = body_len & 0x03FF;
 
-    let mut frame = Vec::with_capacity(body.len() + 20);
+    // ── 第 1 步：拼**未转义**的内容（校验码算在这一段上）──────────────────
+    let mut content = Vec::with_capacity(body.len() + 13);
+    content.extend_from_slice(&msg_id.to_be_bytes());
+    content.extend_from_slice(&body_attrs.to_be_bytes());
+    content.extend_from_slice(&phone_bcd);
+    content.extend_from_slice(&seq.to_be_bytes());
+    content.extend_from_slice(body);
+
+    // ── 第 2 步：校验码 = 未转义内容的逐位异或 ────────────────────────────
+    let checksum = content.iter().fold(0u8, |acc, &b| acc ^ b);
+    content.push(checksum);
+
+    // ── 第 3 步：整帧（含校验码）统一转义 ────────────────────────────────
+    let mut frame = Vec::with_capacity(content.len() + 20);
     frame.push(0x7E);
-    frame.extend_from_slice(&msg_id.to_be_bytes());
-    frame.extend_from_slice(&body_attrs.to_be_bytes());
-    frame.extend_from_slice(&phone_bcd);
-    frame.extend_from_slice(&seq.to_be_bytes());
-    // Escape: replace 0x7E with 0x7D 0x02, 0x7D with 0x7D 0x01
-    for &b in body {
+    for &b in &content {
         match b {
             0x7E => {
                 frame.push(0x7D);
@@ -29,20 +52,6 @@ pub fn build_jt808_frame(msg_id: u16, phone: &str, seq: u16, body: &[u8]) -> Vec
             }
             _ => frame.push(b),
         }
-    }
-    // Checksum: XOR of all bytes between 0x7E markers (excluding them)
-    let checksum = frame[1..].iter().fold(0u8, |acc, &b| acc ^ b);
-    // 0x7E in checksum is also escaped
-    match checksum {
-        0x7E => {
-            frame.push(0x7D);
-            frame.push(0x02);
-        }
-        0x7D => {
-            frame.push(0x7D);
-            frame.push(0x01);
-        }
-        _ => frame.push(checksum),
     }
     frame.push(0x7E);
     frame
