@@ -1757,6 +1757,12 @@ bash scripts/dialect-migrate/run.sh
 # 然后比对符号体检与 dialect_guard 守门人
 ```
 
+> 补记（`eda04f6`）：这条闭环此前**即使跑通也会产出带格式违规的树** —— 流水线最后
+> 一步只**打印**「接下来：cargo fmt」而**不执行**，而转换器合并方言分支时产出的
+> 超长单行 `.bind(...)` 链本就会触发 rustfmt diff。现已把 `cargo fmt --check`
+> 变成流水线**第 7 步门禁**（不合规即 exit 1）。**本条仍未验证**：门禁加上了，
+> 但「整条流水线重跑能否得到与当前 HEAD 等价的结果」依旧没跑过。
+
 **⑥ 已知非缺陷（不算缺陷，但别当回归查）** —— 三方言冒烟各有 **5 项**失败，
 **失败项集合三方言完全一致**：CSV 导出不是 JSON（E1）、
 `proxy/start` / `push/start` / `push/stop` / `media_server/check` 全部是
@@ -2153,7 +2159,7 @@ MySQL/SQLite 以及 PostgreSQL 的批量通道插入必填字段和可选通道�
 | `src/lib.rs` | schema 初始化改运行期 `schema_sql(dialect)`；`src/dyn_where.rs` 委托给 `db/dialect.rs` | ✅ 本轮 |
 | `src/db/**`、`src/handlers/**`、`src/sip/**`、`src/zlm/**`、`src/scheduler/**` | 全部 DB 调用点由 `#[cfg(feature=...)]` 编译期分支改**运行期方言分发**（cfg 方言块 28 → 0；`dispatch!` 宏体内裸 `?` 411 → 0） | ✅ 本轮 |
 | `src/dialect_guard.rs` | 既有守门人测试扩展为识别 `dialect_sql_for(` / `current_sql(` / `.sql(` / `&format!(`，作为本轮验收 oracle | ✅ 本轮 |
-| `scripts/dialect-migrate/` | 转换工具链入库（30 个脚本）：`cfg_runtime.py` 主转换器、`fix_raw_placeholders.py`、`audit_symbols.py` 符号体检、`guard.sh` 膨胀双阈值、`run.sh` 流水线 | ✅ 本轮 |
+| `scripts/dialect-migrate/` | 转换工具链入库（**33 个脚本** = 31 个 Python 转换/体检 + 2 个 shell 门禁/流水线）：`cfg_runtime.py` 主转换器、`fix_raw_placeholders.py`、`audit_symbols.py` 符号体检、`guard.sh` 膨胀双阈值、`run.sh` 流水线（**第 7 步新增 `cargo fmt --check` 格式门禁**，由 `eda04f6` 补） | ✅ 本轮 |
 | `scripts/dialect_smoke_all.sh` | **一个二进制起三个实例**，只改 `GBSERVER__DATABASE__URL` | ✅ 本轮 |
 | `docs/DB_RUNTIME_DIALECT_PLAN.md` | 新增：选型证据（为何否决 `Any` 驱动）、四个宏的语义边界、事务方案、验收要求、工具链说明 | ✅ 本轮 |
 | `docs/DB_DIALECT_NOTES.md` | 补运行期方言的权威差异清单（占位符统一 `?`、id 列按 i32、CAST 类型名、布尔绑定） | ✅ 本轮 |
@@ -2285,3 +2291,4 @@ cd e2e && npx playwright test
 | 2026-09-19 | **真实设备接入核验轮**：D1 🔴→🟡（真机 EasyGBD 已接入，主链路核验通过，剩余项列明）；B1 补真机复现（并更正影响评估：该设备仍按 INVITE 端口推流，流不受影响）；B6 补真机复现（stop 把 BYE 发给已终止的旧会话）；C2 由 36 重算为 29（`get_by_name` 已接上、`update_user_role`/`update_username` 已删除）；新增 B14（应答未解析）、C8（`hasAudio` 与实际流不符）、C9（收藏删除方法不匹配）、E6（本机代理导致的 ZLM 请求偶发失败）；F/G 段更新为真机联调口径 |
 | 2026-10-25 | **第九轮代码审查**：新增 B25（PostgreSQL 方言回归 + TOCTOU + 方言守卫）、B26（7 处写端点假成功 + 已补回归测试）、B27（JT1078 号码 BCD 方向与国标相反）、B28（日志保留死配置 + 日志端点缺管理员门禁 + 弱密钥回显）、B29（冒烟脚本残留 + 本轮 P2/P3 清单 + 已排除怀疑项 + e2e 首跑失败的环境归因）；全部已修并复验（5 组变异双向验证） |
 | 2026-10-25 | **多方言运行期改造**：数据库后端从「编译期互斥三选一」改为「**三驱动同编一个二进制 + 运行期按 `database.url` 选库**」（`default = ["sqlite","mysql","postgres"]`）。否决 sqlx `Any` 驱动（PG `BOOLEAN` / MySQL `TINYINT` / PG `REAL` / SQLite 布尔列四类类型覆盖硬缺口，失败在类型映射层）；改为各方言原生 pool + 运行期枚举分发。修掉三类「编译能过、运行才炸」：cfg 方言块不再互斥（28 → 0）、`dispatch!` 宏体内裸 `?`（411 → 0，用 `dialect_guard` 守门人当 oracle）、三方言占位符数不同（MySQL 24 vs 其余 13）导致 PG `Malformed communication packet`。新增 **B30**（本轮仍未验证：9 条 `#[ignore]` 真实库用例、release 构建、真机、目标部署环境、流水线整条重跑的可复现性）。G.2 的「各自 feature 构建 + 独立 target 目录」与「陈旧二进制陷阱」两条**已失效**，按新形态改写 |
+| 2026-10-25 | **更正上一条台账里不可复现的结论 + 堵住复发路径**：`9c7018f` 写了「`cargo fmt` 干净」，实测 `cargo fmt --check` 报 **2 处 diff**（`src/db/common_channel.rs` / `src/db/device.rs`）→ **该结论作废**，`4ffb5ea` 提交正文里同一句「`cargo fmt`：干净」一并作废。根因：转换器把三个方言分支合并成**一条超长单行 `.bind(...)` 链**（基线是三条短链）超出 rustfmt 行宽，而 `scripts/dialect-migrate/run.sh` 的最后一步**只打印**「接下来：cargo fmt」而**不执行** → 流水线每次都交出带格式违规的树。已由 `eda04f6` 修掉这 2 处，并把 `cargo fmt --check` 变成流水线**第 7 步门禁**（不合规即 exit 1），后续同一入口还会跑 `cargo check` + `cargo clippy`。**教训**：门禁数字必须**能被独立复现** —— 写「fmt 干净」用的判据必须是 `cargo fmt --check`（只读），而不是 `cargo fmt`（会重写文件、看不出"当时到底脏不脏"） |
