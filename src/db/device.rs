@@ -1054,22 +1054,13 @@ pub async fn insert_device(
     // 分支由 **pool 的类型**决定（不是进程级全局 `dialect::current()`）：
     // 直接构造 `Pool::Postgres(..)` 的测试里全局仍是默认值（sqlite），
     // 走错分支就会把 `?` 发给 postgres → `syntax error`。
-    // `on_line` 在 SQL 文本里是**字面量**（不是占位符）：postgres 的 `on_line`
-    // 是 BOOLEAN 列，只能写 `false`；mysql / sqlite 写 `0`。因此这条语句是
-    // **方言专属**的 —— 用 `dispatch_dialect!` 每分支一份，
-    // 占位符数量三方一致（都是 16 个 bind），bind 顺序也完全一致。
-    //
-    // 分支由 **pool 的类型**决定（不是进程级全局 `dialect::current()`）：
-    // 直接构造 `Pool::Postgres(..)` 的测试里全局仍是默认值（sqlite），
-    // 走错分支就会把 `?` 发给 postgres → `syntax error`。
     let r: u64 = crate::dispatch_dialect!(
         pool,
         |p| {
             // PostgreSQL
-            let raw = format!(
-                "INSERT INTO gb_device ({cols}) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,false,$13,$14,$15,$16)"
-            );
-            let sql = pool.sql(&raw).into_owned();
+            let sql = pool
+                .sql("INSERT INTO gb_device ({cols}) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,false,$13,$14,$15,$16)")
+                .replace("{cols}", &cols);
             sqlx::query(&sql)
                 .bind(device_id)
                 .bind(f.name)
