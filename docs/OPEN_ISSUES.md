@@ -1715,6 +1715,54 @@ RTP 这条链路 —— 但「没碰」不等于「不是回归」，所以必�
 外部进程前先核对它的启动参数**——尤其是那些**默认值与测试期望相反**的参数；
 否则「测试失败」会被误判成「代码回归」，把时间花在不存在的缺陷上。
 
+### B30 🟡 多方言运行期改造后**仍未验证**的事项（2026-10-25）
+
+数据库后端已从「编译期互斥三选一」改为「三驱动同编一个二进制 + 运行期按 `database.url`
+选库」，本条目登记**改造完成后仍未拿到证据**的部分 —— 每条都写明复现条件。
+方案见 [`DB_RUNTIME_DIALECT_PLAN.md`](DB_RUNTIME_DIALECT_PLAN.md)。
+
+**① pg / mysql 的 9 条真实库专项用例本轮未跑**
+
+`tests/postgres_jt1078.rs`(4) / `postgres_device_lookup.rs`(2) / `postgres_platform_channel.rs`(1)
+/ `mysql_catalog_channel.rs`(1) / `mysql_platform_channel.rs`(1) 都是 `#[ignore]`，
+`cargo test` 里是**跳过**状态 —— 902 通过这个数字**不包含**它们。
+
+```bash
+export TEST_POSTGRES_URL="postgres://postgres:postgrespw@127.0.0.1:5432/gbserver_test"
+export TEST_MYSQL_URL="mysql://root:rootpw@127.0.0.1:3306/gbserver_test"
+cargo test -- --ignored --nocapture
+```
+
+**② `cargo build --release` 本轮未复跑** —— 只验证了 debug 构建。release 关闭了
+溢出检查，本轮改过的算术表达式（分页偏移等）若仍有 `u32` 乘法，**release 下不回绕报错
+而是静默返回别的页**。复现条件：`cargo build --release` + 跑
+`cargo test --release -- --ignored`（带 `TEST_*_URL`）。
+
+**③ 真机（GB28181 设备 / JT1078 终端）在多方言二进制下未验** —— 本轮的真机证据是
+**改造前**在 sqlite 后端上取得的。多方言改造动的是**全部 DB 调用点**，D1 / D2 / D3
+三档真机结论**不能直接继承**到 PG / MySQL 后端。复现条件：按 D1 条目接真机 +
+`GBSERVER__DATABASE__URL` 指向 PG 或 MySQL。
+
+**④ 目标部署环境（Linux Compose）的三方言实跑未验** —— 本轮三方言冒烟全部在本机
+macOS 上跑（pg / mysql 走本机 Docker 容器）。E7 的「部署验收」仍是 🟡，
+本轮**没有**改变它的状态。
+
+**⑤ 转换流水线 `scripts/dialect-migrate/run.sh` 从基线整条重跑的可复现性未验** ——
+本轮是**增量**改的（基线 `43b178b` → 逐层提交），**没有**执行过「checkout 基线 →
+跑整条流水线 → 得到与当前 HEAD 等价的结果」这一闭环。复现条件：
+
+```bash
+git checkout 43b178b -- src/
+bash scripts/dialect-migrate/run.sh
+# 然后比对符号体检与 dialect_guard 守门人
+```
+
+**⑥ 已知非缺陷（不算缺陷，但别当回归查）** —— 三方言冒烟各有 **5 项**失败，
+**失败项集合三方言完全一致**：CSV 导出不是 JSON（E1）、
+`proxy/start` / `push/start` / `push/stop` / `media_server/check` 全部是
+**ZLM 不可达**（媒体节点仍记着旧 LAN IP `192.168.3.88`，本机已变 `192.168.3.149`，
+见 E6）。**三方言同样失败 ⇒ 不是方言回归**。
+
 ### B15 ✅ 设备统计查了不存在的表（已修，2026-09-19）
 
 **现象**：`/api/device/query/statistics/keepalive` 与 `.../register` 恒返回
@@ -2095,6 +2143,25 @@ MySQL/SQLite 以及 PostgreSQL 的批量通道插入必填字段和可选通道�
 
 ## F. 本轮改动清单（随本文档一起提交）
 
+### F.0 2026-10-25 多方言运行期改造（本轮）
+
+| 文件 | 内容 | 状态 |
+|---|---|---|
+| `Cargo.toml` | `default = ["sqlite", "mysql", "postgres"]` —— 三个驱动**同时**编进一个二进制（少开直接 `compile_error!`） | ✅ 本轮 |
+| `src/db/dialect.rs` | 新增：`Dialect` 枚举、URL scheme 推断、`dialect_sql`/`current_sql`/`dialect_sql_for`/`bigint_col`/`days_ago_expr` | ✅ 本轮 |
+| `src/db/mod.rs` | `Pool` 改运行期多态枚举（`Sqlite`/`Postgres`/`MySql`）+ 四个分发宏（`dispatch!` / `dispatch_exec!` / `dispatch_dialect!` / `dispatch_exec_dialect!`）+ `ExecResult` | ✅ 本轮 |
+| `src/lib.rs` | schema 初始化改运行期 `schema_sql(dialect)`；`src/dyn_where.rs` 委托给 `db/dialect.rs` | ✅ 本轮 |
+| `src/db/**`、`src/handlers/**`、`src/sip/**`、`src/zlm/**`、`src/scheduler/**` | 全部 DB 调用点由 `#[cfg(feature=...)]` 编译期分支改**运行期方言分发**（cfg 方言块 28 → 0；`dispatch!` 宏体内裸 `?` 411 → 0） | ✅ 本轮 |
+| `src/dialect_guard.rs` | 既有守门人测试扩展为识别 `dialect_sql_for(` / `current_sql(` / `.sql(` / `&format!(`，作为本轮验收 oracle | ✅ 本轮 |
+| `scripts/dialect-migrate/` | 转换工具链入库（30 个脚本）：`cfg_runtime.py` 主转换器、`fix_raw_placeholders.py`、`audit_symbols.py` 符号体检、`guard.sh` 膨胀双阈值、`run.sh` 流水线 | ✅ 本轮 |
+| `scripts/dialect_smoke_all.sh` | **一个二进制起三个实例**，只改 `GBSERVER__DATABASE__URL` | ✅ 本轮 |
+| `docs/DB_RUNTIME_DIALECT_PLAN.md` | 新增：选型证据（为何否决 `Any` 驱动）、四个宏的语义边界、事务方案、验收要求、工具链说明 | ✅ 本轮 |
+| `docs/DB_DIALECT_NOTES.md` | 补运行期方言的权威差异清单（占位符统一 `?`、id 列按 i32、CAST 类型名、布尔绑定） | ✅ 本轮 |
+| `docs/STATUS.md` | 顶部增量表新增「多方言运行期改造」行；§3 关键设计决策补运行期方言条目；§7 相关文档补方案文档 | ✅ 本轮 |
+| `docs/OPEN_ISSUES.md` | 新增 **B30**（本轮仍未验证事项 + 复现条件）；G.2 方言冒烟命令与「陈旧二进制」注意事项按新形态改写；变更记录补本轮 | ✅ 本轮 |
+
+### F.1 2026-09-19 真机核验轮（历史轮次，保留备查）
+
 | 文件 | 内容 | 状态 |
 |---|---|---|
 | `docs/STATUS.md` | 规模基线全量重测（@ `8ecec6a`）；新增 §4「真实设备接入核验」；能力矩阵加「真机」列；§6 验证证据补真机链路 | ✅ 本轮 |
@@ -2172,7 +2239,12 @@ python3 mock/tools/sip-device/sip_device_mock.py --server 127.0.0.1:5060 \
   --device-id 34020000001320000001 --username 34020000001320000001 \
   --password admin123 --auto-bye-secs 0 --auto-alarm-secs 5 --send-rtp &
 
-# 方言冒烟（pg:18081 / mysql:18082 需用各自 feature 构建并独立 target 目录）
+# 方言冒烟（**一个二进制起三个实例**，只改 database.url）
+# 2026-10-25 起不再需要「各自 feature 构建 + 独立 target 目录」：
+# 三个驱动已同时编进同一个二进制（default = sqlite + mysql + postgres）。
+bash scripts/dialect_smoke_all.sh
+
+# 单方言手动起（登录参数走 Query，不是 JSON body）
 python3 scripts/dialect_smoke.py --base http://127.0.0.1:18080/api --token "$TOKEN"
 
 # UI e2e（需 18080 后端 + 9528 前端 dev）
@@ -2180,8 +2252,13 @@ cd e2e && npx playwright test
 ```
 
 **环境注意事项**（踩过的坑，写下来避免重复排查）：
-* `target/debug/gbserver` 是**最后一次构建的 feature**；用 pg/mysql 构建时务必加
-  `CARGO_TARGET_DIR=/tmp/gbt-pg`（或 `-my`），否则会覆盖 sqlite 二进制（"陈旧二进制陷阱"）。
+* ~~`target/debug/gbserver` 是**最后一次构建的 feature**；用 pg/mysql 构建时务必加
+  `CARGO_TARGET_DIR=/tmp/gbt-pg`（或 `-my`），否则会覆盖 sqlite 二进制（"陈旧二进制陷阱"）。~~
+  —— **2026-10-25 起失效**：三个驱动已同时编进同一个二进制
+  （`default = ["sqlite", "mysql", "postgres"]`），`target/debug/gbserver` 换库只需改
+  `GBSERVER__DATABASE__URL`，**不再有「陈旧二进制 / 覆盖 sqlite 二进制」问题**。
+  仍需注意：改完 `database.url` 后**必须重启进程** —— 方言在**启动时**确定，
+  不是每次查询现读配置；只改环境变量不重启，跑的仍是旧方言。
 * mock 崩溃后**平台侧仍显示设备在线**（keepalive 未超时）—— 排查"收不到流"时
   先确认 `ps aux | grep sip_device_mock`。
 * `gb_cloud_record` 里的行会被 `cloudRecord` 的"删除"用例清掉；排查录像落库时
@@ -2207,3 +2284,4 @@ cd e2e && npx playwright test
 | 2026-09-19 | 解冻并修复用户管理（`bfa65f8`）；C5/C6/C7 关闭 |
 | 2026-09-19 | **真实设备接入核验轮**：D1 🔴→🟡（真机 EasyGBD 已接入，主链路核验通过，剩余项列明）；B1 补真机复现（并更正影响评估：该设备仍按 INVITE 端口推流，流不受影响）；B6 补真机复现（stop 把 BYE 发给已终止的旧会话）；C2 由 36 重算为 29（`get_by_name` 已接上、`update_user_role`/`update_username` 已删除）；新增 B14（应答未解析）、C8（`hasAudio` 与实际流不符）、C9（收藏删除方法不匹配）、E6（本机代理导致的 ZLM 请求偶发失败）；F/G 段更新为真机联调口径 |
 | 2026-10-25 | **第九轮代码审查**：新增 B25（PostgreSQL 方言回归 + TOCTOU + 方言守卫）、B26（7 处写端点假成功 + 已补回归测试）、B27（JT1078 号码 BCD 方向与国标相反）、B28（日志保留死配置 + 日志端点缺管理员门禁 + 弱密钥回显）、B29（冒烟脚本残留 + 本轮 P2/P3 清单 + 已排除怀疑项 + e2e 首跑失败的环境归因）；全部已修并复验（5 组变异双向验证） |
+| 2026-10-25 | **多方言运行期改造**：数据库后端从「编译期互斥三选一」改为「**三驱动同编一个二进制 + 运行期按 `database.url` 选库**」（`default = ["sqlite","mysql","postgres"]`）。否决 sqlx `Any` 驱动（PG `BOOLEAN` / MySQL `TINYINT` / PG `REAL` / SQLite 布尔列四类类型覆盖硬缺口，失败在类型映射层）；改为各方言原生 pool + 运行期枚举分发。修掉三类「编译能过、运行才炸」：cfg 方言块不再互斥（28 → 0）、`dispatch!` 宏体内裸 `?`（411 → 0，用 `dialect_guard` 守门人当 oracle）、三方言占位符数不同（MySQL 24 vs 其余 13）导致 PG `Malformed communication packet`。新增 **B30**（本轮仍未验证：9 条 `#[ignore]` 真实库用例、release 构建、真机、目标部署环境、流水线整条重跑的可复现性）。G.2 的「各自 feature 构建 + 独立 target 目录」与「陈旧二进制陷阱」两条**已失效**，按新形态改写 |
