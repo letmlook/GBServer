@@ -1110,7 +1110,7 @@ pub async fn proxy_start(
                 state.zlm_server_id(&zlm).or(ms_hint).unwrap_or_default();
             let media_ip = zlm.ip.clone();
             let http_port = zlm.http_port;
-            let hls_available = zlm.has_schema(&app, &stream, "hls").await;
+            let hls_available = zlm.has_schema_lossy(&app, &stream, "hls").await;
             tracing::info!("拉流代理 {app}/{stream} 在节点上已存在，直接复用");
             return Ok(Json(ApiResult::success(serde_json::json!({
                 "id": rec.id,
@@ -1203,7 +1203,7 @@ pub async fn proxy_start(
     let stream_url = format!("{app}/{stream}");
     // 代理流的 `enable_hls` 由创建时的参数决定（默认 false）→ 没有 hls 源时
     // 不要给出 404 地址（前端优先用 hls）
-    let hls_available = zlm.has_schema(&app, &stream, "hls").await;
+    let hls_available = zlm.has_schema_lossy(&app, &stream, "hls").await;
     Ok(Json(ApiResult::success(serde_json::json!({
         "id": rec.id,
         "app": app,

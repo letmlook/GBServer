@@ -528,7 +528,7 @@ pub async fn playback_start(
                             // `hls` 同样只在真的有源时给出（回放流在多数 ZLM 版本上
                             // 没有 hls 源，给出 404 地址会让前端优先选它而播不出来）
                             let hls_available =
-                                zlm_client.has_schema(&app, &stream_id, "hls").await;
+                                zlm_client.has_schema_lossy(&app, &stream_id, "hls").await;
                             let mut payload = serde_json::json!({
                                 "streamId": stream_id,
                                 "deviceId": device_id,

@@ -164,7 +164,7 @@ async fn play_urls_json(
     let ip = &zlm_client.ip;
     let http = zlm_client.http_port;
     let (hls_available, (has_audio, audio_source)) = tokio::join!(
-        zlm_client.has_schema("rtp", stream_id, "hls"),
+        zlm_client.has_schema_lossy("rtp", stream_id, "hls"),
         resolve_live_audio(zlm_client, stream_id, catalog_has_audio)
     );
     let mut out = serde_json::json!({

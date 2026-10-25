@@ -126,6 +126,26 @@ fn open_rtp_server_params(secret: &str, req: &OpenRtpServerRequest) -> Vec<(&'st
     params
 }
 
+/// 从 `getMediaList` 的响应里判断该流是否有某个 schema 的源。
+///
+/// `Ok(false)` = 确实没有这个 schema 的源；`Err` = **响应结构不符合预期**
+/// —— 那不是「没有」，而是「查不到」，两者必须区分（见 [`ZlmClient::has_schema`]）。
+fn media_list_has_schema(
+    resp: &serde_json::Value,
+    app: &str,
+    stream: &str,
+    schema: &str,
+) -> Result<bool, String> {
+    let arr = resp.get("data").and_then(|d| d.as_array()).ok_or_else(|| {
+        format!("ZLM getMediaList 响应里没有 data 数组（app={app} stream={stream} schema={schema}）")
+    })?;
+    Ok(arr.iter().any(|m| {
+        m.get("app").and_then(|v| v.as_str()) == Some(app)
+            && m.get("stream").and_then(|v| v.as_str()) == Some(stream)
+            && m.get("schema").and_then(|v| v.as_str()) == Some(schema)
+    }))
+}
+
 impl ZlmClient {
     pub fn new(ip: &str, port: u16, secret: &str) -> Self {
         Self {
@@ -233,7 +253,7 @@ impl ZlmClient {
     /// 用 `getMediaList` 精确查询 app+stream：ZLM 并非对每一路流都生成所有协议
     /// （本仓库实测的镜像上，GB28181 的 RTP/PS 流**没有 hls 源**，而 RTMP 推流有）。
     /// 调用方据此决定要不要把某个播放地址放进响应，避免"给了地址但 404"。
-    pub async fn has_schema(&self, app: &str, stream: &str, schema: &str) -> bool {
+    pub async fn has_schema(&self, app: &str, stream: &str, schema: &str) -> Result<bool, String> {
         let params = vec![
             ("secret", self.secret.clone()),
             ("app", app.to_string()),
@@ -243,18 +263,33 @@ impl ZlmClient {
             .request::<serde_json::Value>("/index/api/getMediaList", &params)
             .await
         {
-            Ok(resp) => resp
-                .get("data")
-                .and_then(|d| d.as_array())
-                .map(|arr| {
-                    arr.iter().any(|m| {
-                        m.get("app").and_then(|v| v.as_str()) == Some(app)
-                            && m.get("stream").and_then(|v| v.as_str()) == Some(stream)
-                            && m.get("schema").and_then(|v| v.as_str()) == Some(schema)
-                    })
-                })
-                .unwrap_or(false),
-            Err(_) => false,
+            Ok(resp) => media_list_has_schema(&resp, app, stream, schema),
+            Err(e) => Err(format!(
+                "查询 ZLM 流 schema 失败（app={app} stream={stream} schema={schema}）: {e}"
+            )),
+        }
+    }
+
+    /// 「该流有没有这个 schema 的源」；**查不到**时按「没有」处理，但留下告警。
+    ///
+    /// 调用方需要区分两件事：
+    /// - `Ok(false)` —— **确实**没有这个 schema 的源（ZLM 答了，只是没有）；
+    /// - `Err(_)` —— **查不到**（ZLM 不可达 / secret 不对 / 响应结构异常）。
+    ///
+    /// 此前两者都塌成 `false`（`Err(_) => false`），于是 ZLM 不可达时
+    /// （节点重启、网络抖动、secret 轮换导致 401）播放地址里的 `hlsUrl` 被
+    /// **静默摘掉**，前端降级到 flv/playUrl；而整条链路上**没有一行错误日志**
+    /// —— 现场无法区分「设备没推 hls」与「ZLM 挂了」。
+    pub async fn has_schema_lossy(&self, app: &str, stream: &str, schema: &str) -> bool {
+        match self.has_schema(app, stream, schema).await {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!(
+                    "{} —— 该流按「无 {schema} 源」处理（播放地址里不会给出 hls）",
+                    e
+                );
+                false
+            }
         }
     }
 
@@ -1770,5 +1805,92 @@ mod rtp_info_tests {
         let info = parse_rtp_info("fallback", &raw).expect("嵌套响应也要兼容");
         assert_eq!(info.stream_id, "s");
         assert_eq!(info.local_port, 6);
+    }
+}
+
+#[cfg(test)]
+mod has_schema_tests {
+    use super::*;
+
+    /// **回归**：「确实没有这个 schema 的源」与「**查不到**」必须能区分。
+    ///
+    /// 此前 `has_schema` 返回 `bool`，`Err(_) => false` 把**所有**失败
+    /// （ZLM 不可达 / secret 不对 / 响应结构异常）都塌成「没有」——
+    /// 于是 ZLM 挂掉时播放地址里的 `hlsUrl` 被**静默摘掉**，而整条链路上
+    /// **没有一行错误日志**，现场无法区分「设备没推 hls」与「ZLM 挂了」。
+    #[test]
+    fn media_list_has_schema_distinguishes_absent_from_unreadable() {
+        // 正常响应里没有该 schema → 确实没有
+        let resp = serde_json::json!({"code": 0, "data": [
+            {"app": "rtp", "stream": "s1", "schema": "rtsp"}
+        ]});
+        assert_eq!(
+            media_list_has_schema(&resp, "rtp", "s1", "hls"),
+            Ok(false),
+            "响应里确实没有 hls 源"
+        );
+
+        // 正常响应里有该 schema → 有
+        let resp = serde_json::json!({"code": 0, "data": [
+            {"app": "rtp", "stream": "s1", "schema": "rtsp"},
+            {"app": "rtp", "stream": "s1", "schema": "hls"}
+        ]});
+        assert_eq!(media_list_has_schema(&resp, "rtp", "s1", "hls"), Ok(true));
+
+        // app/stream 不匹配 → 确实没有
+        assert_eq!(
+            media_list_has_schema(&resp, "rtp", "other", "hls"),
+            Ok(false)
+        );
+
+        // 响应结构异常 → **查不到**（Err），不能当成「没有」
+        for bad in [
+            serde_json::json!({"code": 0}),
+            serde_json::json!({"code": -1, "msg": "unauthorized"}),
+            serde_json::json!({"data": "not-an-array"}),
+        ] {
+            assert!(
+                media_list_has_schema(&bad, "rtp", "s1", "hls").is_err(),
+                "响应结构异常必须报 Err（查不到），不能当成「没有该源」"
+            );
+        }
+    }
+
+    /// **回归**：ZLM 不可达时，宽松版按「没有」处理但**不得**panic，
+    /// 严格版必须**报错**（而不是静默返回 false）。
+    mod wiremock {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        async fn client_for(server: &MockServer) -> crate::zlm::ZlmClient {
+            let uri = server.uri();
+            let stripped = uri.trim_start_matches("http://");
+            let mut parts = stripped.splitn(2, ':');
+            let ip = parts.next().unwrap_or("127.0.0.1").to_string();
+            let port: u16 = parts.next().and_then(|p| p.parse().ok()).unwrap_or(80);
+            crate::zlm::ZlmClient::new(&ip, port, "test-secret")
+        }
+
+        #[tokio::test]
+        async fn zlm_unreachable_is_reported_not_swallowed() {
+            let mock_server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/index/api/getMediaList"))
+                .respond_with(ResponseTemplate::new(500).set_body_string("boom"))
+                .mount(&mock_server)
+                .await;
+
+            let client = client_for(&mock_server).await;
+
+            // 严格版：必须报错
+            let strict = client.has_schema("rtp", "s1", "hls").await;
+            assert!(
+                strict.is_err(),
+                "ZLM 不可达时严格版必须报错，而不是静默返回 false"
+            );
+
+            // 宽松版：按「没有」处理，但不 panic
+            assert!(!client.has_schema_lossy("rtp", "s1", "hls").await);
+        }
     }
 }

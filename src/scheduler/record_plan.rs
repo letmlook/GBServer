@@ -78,24 +78,6 @@ where
         .await
 }
 
-/// 带重试的 `startRecord`：只在"流还没到"时重试，其它错误立即返回。
-async fn start_record_with_retry(
-    zlm: &ZlmClient,
-    app: &str,
-    stream: &str,
-    attempts: u32,
-    interval: std::time::Duration,
-) -> anyhow::Result<()> {
-    start_record_with_retry_fn(
-        || zlm.start_record("1", "__defaultVhost__", app, &stream),
-        attempts,
-        interval,
-        app,
-        stream,
-    )
-    .await
-}
-
 async fn start_record_with_retry_fn<F, Fut>(
     mut start_record: F,
     attempts: u32,
