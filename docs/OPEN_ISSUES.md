@@ -1764,14 +1764,25 @@ cargo test --locked \
   -- --ignored
 ```
 
+**2026-10-25 第十一轮再补 2 条**：`tests/postgres_dialect_judgment.rs` /
+`tests/mysql_dialect_judgment.rs`（方言判据必须是 pool 自己的类型，见 B37）——
+**合计 11 条真库用例全部通过**。
+
 **这条已经在 CI 里接上**（新的 `dialect` job，用 service container 起
 PostgreSQL / MySQL）—— 但**该 job 未在 GitHub Actions 上实跑过**（CI 是
 `workflow_dispatch` 手动触发），其底层命令已在本地真实库上验证通过。
 
-**② `cargo build --release` 本轮未复跑** —— 只验证了 debug 构建。release 关闭了
-溢出检查，本轮改过的算术表达式（分页偏移等）若仍有 `u32` 乘法，**release 下不回绕报错
-而是静默返回别的页**。复现条件：`cargo build --release` + 跑
-`cargo test --release -- --ignored`（带 `TEST_*_URL`）。
+**② `cargo build --release` —— ✅ 已跑通（2026-10-25，第十一轮补跑）**
+
+release 关闭了溢出检查，本轮改过的算术表达式（分页偏移等）若仍有 `u32` 乘法，
+**release 下不回绕报错而是静默返回别的页** —— 所以这一项必须单独验。
+
+**2026-10-25 第十一轮补跑：`cargo build --release` exit 0**（本仓库零告警，
+仅第三方 crate 的 future-incompat 提示：redis 0.25.4 / sqlx-postgres 0.7.4）。
+
+⚠️ **仍未验的是「release 模式下的测试执行」** —— 复现条件：
+`cargo test --release -- --ignored`（带 `TEST_*_URL`）。build 通过只证明能编译，
+不证明 release 下的行为（溢出检查关闭会改变语义）。
 
 **③ 真机（GB28181 设备 / JT1078 终端）在多方言二进制下未验** —— 本轮的真机证据是
 **改造前**在 sqlite 后端上取得的。多方言改造动的是**全部 DB 调用点**，D1 / D2 / D3
@@ -2619,6 +2630,7 @@ MySQL/SQLite 以及 PostgreSQL 的批量通道插入必填字段和可选通道�
 | 真实库专项（postgres 5 + mysql 3 + 方言判据 2） | **11 通过 / 0 失败**（PG 16 / MySQL 8 容器，隔离库 `gbserver_pg_test` / `gbserver_mysql_test`） |
 | `cargo fmt --check` | **exit 0**（0 违规） |
 | `cargo clippy --all-targets --all-features` | **exit 0**（0 error / 0 warning） |
+| `cargo build --release` | **exit 0**（仅第三方 crate 的 future-incompat 提示：redis 0.25.4 / sqlx-postgres 0.7.4，本仓库零告警） |
 | 变异验证 | 每条修复都**先让测试变红再还原**：JT808 奇数转义、JT1078 缓冲封顶、缺包回绕、TCP 非 UTF-8 正文、Keepalive 闸门、库层地址保全、cascade 存活语义与接线、方言判据（PG 报 `42883 function datetime(unknown, unknown) does not exist`） |
 
 **本轮未验证 / 明确不声称已验证**：
@@ -2628,7 +2640,6 @@ MySQL/SQLite 以及 PostgreSQL 的批量通道插入必填字段和可选通道�
 * B32 的修复会让**从未 REGISTER 过**的设备的 Keepalive 一律被拒（查不到已登记
   地址 ⇒ 无法确认身份）—— 这是**有意为之**的取舍，但真机侧是否有设备依赖
   「不注册只发心跳」的非常规流程，**未验**；
-* `cargo build --release` 本轮**未复跑**（发布制品形态未验证）；
 * 目标部署环境（Linux Compose）的实跑**未验**。
 
 ### F.0.1 2026-10-25 多方言运行期改造（上一轮，保留备查）
