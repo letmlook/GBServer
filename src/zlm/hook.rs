@@ -577,6 +577,48 @@ async fn save_record(
     }
 }
 
+/// 把 ZLM 的**绝对**流数写回 StateStore。
+///
+/// `absolute = None` 表示**问不到**（ZLM 不可达 / 节点未知）—— 此时**保持原值**
+/// （不动 StateStore），绝不用猜的增量去覆盖。
+///
+/// 写绝对值而不是做增量，是因为增量路径有两个洞：① `regist=true` 无条件 +1
+/// （不判断该流是否已计入），重复事件会让计数虚高，而配对的 `regist=false` 只
+/// -1 ⇒ 差额**永久留在计数里**；② 减法饱和在 0，多余的注销会**吞掉后续其它流
+/// 的减法**。而 `select_least_loaded` 直接按这个计数选节点 ⇒ 计数偏高会让该
+/// 节点被长期跳过。
+///
+/// 返回是否真的写了。
+fn apply_absolute_stream_count(
+    state_store: &crate::state_store::StateStore,
+    media_server_id: &str,
+    absolute: Option<i64>,
+) -> bool {
+    let Some(count) = absolute else {
+        return false;
+    };
+    match state_store.get_media_server(media_server_id) {
+        Some(mut s) => {
+            s.stream_count = count;
+            s.last_keepalive = chrono::Utc::now();
+            state_store.set_media_server(media_server_id, s);
+        }
+        None => {
+            state_store.set_media_server(
+                media_server_id,
+                crate::state_store::MediaServerLoad {
+                    server_id: media_server_id.to_string(),
+                    stream_count: count,
+                    rtp_server_count: 0,
+                    online: true,
+                    last_keepalive: chrono::Utc::now(),
+                },
+            );
+        }
+    }
+    true
+}
+
 async fn sync_stream_changed(state: &AppState, data: &StreamChangedData) {
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let media_server_id = data.media_server_id.as_deref();
@@ -628,30 +670,37 @@ async fn sync_stream_changed(state: &AppState, data: &StreamChangedData) {
     // Phase 7.1: media_server stream_count now goes through StateStore so it's
     // available to select_least_loaded_server_filtered even on single-node deploys.
     if let Some(media_server_id) = media_server_id {
-        if data.register {
-            state.state_store.set_media_server(
-                media_server_id,
-                crate::state_store::MediaServerLoad {
-                    server_id: media_server_id.to_string(),
-                    stream_count: state
-                        .state_store
-                        .get_media_server(media_server_id)
-                        .map(|s| s.stream_count + 1)
-                        .unwrap_or(1),
-                    rtp_server_count: state
-                        .state_store
-                        .get_media_server(media_server_id)
-                        .map(|s| s.rtp_server_count)
-                        .unwrap_or(0),
-                    online: true,
-                    last_keepalive: chrono::Utc::now(),
-                },
-            );
-        } else if let Some(mut s) = state.state_store.get_media_server(media_server_id) {
-            s.stream_count = (s.stream_count - 1).max(0);
-            s.last_keepalive = chrono::Utc::now();
-            state.state_store.set_media_server(media_server_id, s);
-        }
+        // **绝对值覆盖，而不是增量 +1/-1**（修复 B43）。
+        //
+        // 增量计数有两个洞：
+        // ① `regist=true` 无条件 +1（**不判断该流是否已计入**）—— 同一路流
+        //    重注册、或事件被投递两次，都会让计数 +1，而配对的 `regist=false`
+        //    只 -1 ⇒ 差额**永久留在计数里**；
+        // ② 减法饱和在 0 —— 多余的注销会把计数压到 0 并**吞掉后续其它流的
+        //    减法**，同样让计数偏高。
+        // 唯一的绝对值校正路径（`on_flow_report`）需要**有连接断开事件**才会
+        // 发生 —— 长期没有播放器的节点永远得不到校正。计数偏高后
+        // `select_least_loaded` 永远把该节点排在最后，新流被持续挤到别处。
+        //
+        // 改为直接问 ZLM 要**绝对流数**（与 `on_flow_report` 路径同一口径）；
+        // 问不到就**保持原值**（不动 StateStore），绝不用猜的增量去覆盖。
+        let absolute: Option<i64> = match state.get_zlm_client(Some(media_server_id)) {
+            Some(client) => match client.get_media_list(None, None, None).await {
+                Ok(list) => {
+                    Some(crate::zlm::types::count_distinct_media_streams(&list) as i64)
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "stream_changed: getMediaList 失败，保持既有流数量 server={}: {}",
+                        media_server_id,
+                        e
+                    );
+                    None
+                }
+            },
+            None => None,
+        };
+        apply_absolute_stream_count(&state.state_store, media_server_id, absolute);
     }
     // Update global active stream metrics
     if let Some(ref zlm) = state.zlm_client {
@@ -2743,5 +2792,76 @@ mod hook_config_tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod stream_count_tests {
+    use super::*;
+    use crate::state_store::StateStore;
+
+    /// **回归**：流计数必须由**绝对值**决定 —— 重复的 register 事件不得让它虚高。
+    ///
+    /// 修复前是增量计数：`regist=true` 无条件 +1（不判断该流是否已计入），
+    /// 同一路流重注册 / 事件被投递两次都会 +1，而配对的 `regist=false` 只 -1
+    /// ⇒ 差额**永久留在计数里**；减法又饱和在 0，多余的注销会吞掉后续其它流
+    /// 的减法。而 `select_least_loaded` 直接按这个计数选节点 ⇒ 计数偏高会让
+    /// 该节点被长期跳过。
+    #[test]
+    fn absolute_count_overwrite_is_idempotent() {
+        let store = StateStore::in_memory();
+
+        // 第一次：ZLM 报 2 路流
+        assert!(apply_absolute_stream_count(&store, "zlm-a", Some(2)));
+        assert_eq!(
+            store.get_media_server("zlm-a").unwrap().stream_count,
+            2,
+            "首次应写入绝对值"
+        );
+
+        // 重复的 register 事件 —— ZLM 仍然报 2 路流 → 计数必须仍是 2
+        // （增量路径在这里会变成 3、4、5…）
+        for _ in 0..5 {
+            apply_absolute_stream_count(&store, "zlm-a", Some(2));
+        }
+        assert_eq!(
+            store.get_media_server("zlm-a").unwrap().stream_count,
+            2,
+            "重复事件不得让计数虚高"
+        );
+
+        // 流真的少了一路 → 绝对值跟着降
+        apply_absolute_stream_count(&store, "zlm-a", Some(1));
+        assert_eq!(store.get_media_server("zlm-a").unwrap().stream_count, 1);
+    }
+
+    /// **回归**：问不到 ZLM 时**保持原值**，不得用猜的增量去覆盖。
+    #[test]
+    fn keeps_previous_value_when_zlm_is_unreachable() {
+        let store = StateStore::in_memory();
+        apply_absolute_stream_count(&store, "zlm-b", Some(7));
+        assert_eq!(store.get_media_server("zlm-b").unwrap().stream_count, 7);
+
+        // 问不到 → 不写
+        assert!(
+            !apply_absolute_stream_count(&store, "zlm-b", None),
+            "问不到 ZLM 时不应写入"
+        );
+        assert_eq!(
+            store.get_media_server("zlm-b").unwrap().stream_count,
+            7,
+            "问不到 ZLM 时必须保持原值"
+        );
+    }
+
+    /// **回归**：节点首次出现在 StateStore 时也能正确落绝对值。
+    #[test]
+    fn creates_entry_for_unknown_node() {
+        let store = StateStore::in_memory();
+        assert!(store.get_media_server("zlm-new").is_none());
+        assert!(apply_absolute_stream_count(&store, "zlm-new", Some(3)));
+        let s = store.get_media_server("zlm-new").expect("entry created");
+        assert_eq!(s.stream_count, 3);
+        assert_eq!(s.server_id, "zlm-new");
     }
 }
