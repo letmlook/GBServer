@@ -2618,6 +2618,7 @@ MySQL/SQLite 以及 PostgreSQL 的批量通道插入必填字段和可选通道�
 | `cargo test --lib` | **871 通过 / 0 失败** |
 | 真实库专项（postgres 5 + mysql 3 + 方言判据 2） | **11 通过 / 0 失败**（PG 16 / MySQL 8 容器，隔离库 `gbserver_pg_test` / `gbserver_mysql_test`） |
 | `cargo fmt --check` | **exit 0**（0 违规） |
+| `cargo clippy --all-targets --all-features` | **exit 0**（0 error / 0 warning） |
 | 变异验证 | 每条修复都**先让测试变红再还原**：JT808 奇数转义、JT1078 缓冲封顶、缺包回绕、TCP 非 UTF-8 正文、Keepalive 闸门、库层地址保全、cascade 存活语义与接线、方言判据（PG 报 `42883 function datetime(unknown, unknown) does not exist`） |
 
 **本轮未验证 / 明确不声称已验证**：
@@ -2627,8 +2628,7 @@ MySQL/SQLite 以及 PostgreSQL 的批量通道插入必填字段和可选通道�
 * B32 的修复会让**从未 REGISTER 过**的设备的 Keepalive 一律被拒（查不到已登记
   地址 ⇒ 无法确认身份）—— 这是**有意为之**的取舍，但真机侧是否有设备依赖
   「不注册只发心跳」的非常规流程，**未验**；
-* `cargo build --release` 本轮**未复跑**；`cargo clippy --all-targets --all-features`
-  本轮**未跑**；
+* `cargo build --release` 本轮**未复跑**（发布制品形态未验证）；
 * 目标部署环境（Linux Compose）的实跑**未验**。
 
 ### F.0.1 2026-10-25 多方言运行期改造（上一轮，保留备查）
