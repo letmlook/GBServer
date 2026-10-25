@@ -4105,6 +4105,21 @@ impl SipServer {
             crate::sip::gb28181::latency_registry().on_response(&call_id, resp.status_code());
         }
 
+        // 级联 keepalive 的 200 OK → 刷新该上级的**存活**时间。
+        //
+        // 此前「keepalive 超时检测」的判据是 `last_register`，而记录双向通信的
+        // `note_liveness` 在生产路径上**从未被调用**（只有单测在调）——
+        // 于是它实际测的是「距上次 REGISTER 多久」。REGISTER 的正常刷新周期
+        // 是 `expires/2`（默认 1800s），超时阈值却只有 `3×60 = 180s`：
+        // **健康的上级平台每 3~4 分钟就被误判 Failed**，进而停发 keepalive，
+        // 并触发一轮「不带摘要的 REGISTER → 401 → 带摘要重发」。
+        //
+        // 关联依据是 Call-ID：级联 keepalive 的 Call-ID 形如
+        // `cascade_ka_{platform_id}_{sn}`；非级联的 MESSAGE 响应命中不了。
+        if let Some(ref registrar) = cascade_registrar {
+            registrar.note_liveness_from_response(&call_id);
+        }
+
         // Route REGISTER responses to cascade registrar
         if cseq.contains("REGISTER") {
             if let Some(ref registrar) = cascade_registrar {

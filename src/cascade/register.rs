@@ -23,7 +23,18 @@ pub struct RegistrationState {
     pub realm: String,
     pub status: RegistrationStatus,
     pub register_interval_secs: u64,
+    /// 最近一次**发出/收到 REGISTER** 的时间。
+    ///
+    /// 只用于**注册刷新节奏**（`register_interval_secs / 2`）—— 与存活判定无关。
     pub last_register: Option<DateTime<Utc>>,
+    /// 最近一次与该平台发生**双向通信**的时间（REGISTER 200 OK、keepalive 的
+    /// 200 OK、上级发来的 INVITE 等）。
+    ///
+    /// 「keepalive 超时检测」判的必须是这个，而不是 `last_register` ——
+    /// 两者周期差着一��数量级：注册刷新周期是 `expires/2`（默认 1800s），
+    /// 而超时阈值只有 3×60=180s。混用会让**健康的上级平台每 3~4 分钟就被
+    /// 误判 Failed**。
+    pub last_liveness: Option<DateTime<Utc>>,
     pub retry_count: u32,
     pub max_retries: u32,
     pub nonce: Option<String>,
@@ -90,6 +101,7 @@ impl CascadeRegistrar {
                 status: RegistrationStatus::NotRegistered,
                 register_interval_secs,
                 last_register: None,
+                last_liveness: None,
                 retry_count: 0,
                 max_retries: 5,
                 nonce: None,
@@ -116,14 +128,63 @@ impl CascadeRegistrar {
         self.states.get(platform_id).map(|s| s.clone())
     }
 
-    /// C3.2: 记录最近一次与该平台的双向通信时间（register 成功、keepalive 响应、上级 INVITE 等）
+    /// 记录最近一次与该平台的双向通信时间（register 成功、keepalive 响应、上级 INVITE 等）。
+    ///
+    /// 写的是 **`last_liveness`** 而不是 `last_register` ——
+    /// 「距上次 REGISTER 多久」是**注册刷新节奏**的判据，
+    /// 「距上次通信多久」才是**存活判定**的判据。两者周期差着一个数量级
+    /// （刷新周期 `expires/2` 默认 1800s vs 超时阈值 180s），混用会把
+    /// 健康的上级平台每 3~4 分钟误判成 Failed。
     pub fn note_liveness(&self, platform_id: &str) {
         if let Some(mut s) = self.states.get_mut(platform_id) {
-            s.last_register = Some(Utc::now());
+            s.last_liveness = Some(Utc::now());
         }
     }
 
-    /// C3.2: 检测所有 Registered 平台中超过阈值未响应的，标记为 Failed（外层会触发重试）
+    /// 收到一条**来自上级平台的响应**时，刷新该平台的存活时间。
+    ///
+    /// 关联依据是 Call-ID：级联 keepalive 的 Call-ID 形如
+    /// `cascade_ka_{platform_id}_{sn}`（见 [`Self::build_keepalive_message`]）。
+    ///
+    /// 返回是否命中了某个平台。
+    ///
+    /// ## 为什么需要它
+    ///
+    /// 此前「keepalive 超时检测」的判据是 `last_register`，而 `note_liveness`
+    /// 在**生产路径上从未被调用**（只有单测在调）—— 于是它实际测的是
+    /// 「距上次 REGISTER 多久」。REGISTER 的正常刷新周期是 `expires/2`
+    /// （默认 1800s），超时阈值却只有 `3 × 60 = 180s`：
+    /// **健康的上级平台每 3~4 分钟就被误判 Failed**，进而停发 keepalive，
+    /// 并触发一轮「不带摘要的 REGISTER → 401 → 带摘要重发」。
+    pub fn note_liveness_from_response(&self, call_id: &str) -> bool {
+        match self.resolve_platform_from_keepalive_call_id(call_id) {
+            Some(pid) => {
+                self.note_liveness(&pid);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// 从级联 keepalive 的 Call-ID 反查平台 id。
+    ///
+    /// Call-ID 形如 `cascade_ka_{platform_id}_{sn}`。`platform_id` 自身可能
+    /// 含下划线，所以不能简单 `split('_')`；这里改成**前缀匹配**：
+    /// 对每个已知平台检查 `cascade_ka_{platform_id}_` 是否为前缀。
+    pub fn resolve_platform_from_keepalive_call_id(&self, call_id: &str) -> Option<String> {
+        if call_id.is_empty() {
+            return None;
+        }
+        self.states
+            .iter()
+            .find(|e| {
+                let prefix = format!("cascade_ka_{}_", e.value().platform_id);
+                call_id.starts_with(&prefix)
+            })
+            .map(|e| e.key().clone())
+    }
+
+    /// 检测所有 Registered 平台中超过阈值未响应的，标记为 Failed（外层会触发重试）
     pub fn detect_keepalive_timeouts(&self, max_misses: i64) -> Vec<String> {
         let now = Utc::now();
         let cutoff_secs = max_misses * 60;
@@ -137,7 +198,10 @@ impl CascadeRegistrar {
             .iter()
             .filter(|entry| {
                 entry.status == RegistrationStatus::Registered
-                    && match entry.last_register {
+                    // 判据是**存活时间**（最近一次双向通信），不是注册时间。
+                    // 回退到 last_register：刚注册成功、还没收到第一个 keepalive
+                    // 响应时，last_liveness 已由 mark_registered 一并写入。
+                    && match entry.last_liveness.or(entry.last_register) {
                         Some(t) => (now - t).num_seconds() > cutoff_secs,
                         None => true,
                     }
@@ -543,6 +607,8 @@ impl CascadeRegistrar {
         if let Some(mut state) = self.states.get_mut(platform_id) {
             state.status = RegistrationStatus::Registered;
             state.last_register = Some(Utc::now());
+            // REGISTER 的 200 OK 本身就是一次双向通信 → 存活时间一并刷新
+            state.last_liveness = Some(Utc::now());
             state.retry_count = 0;
             tracing::info!("Cascade platform {} registered successfully", platform_id);
         }
@@ -1002,10 +1068,10 @@ mod c3_tests {
         );
         r.mark_registered("plat-ka");
 
-        // 模拟 10 分钟前最后活跃
+        // 模拟 10 分钟前最后活跃（判据是**存活时间**，不是注册时间）
         let old = Utc::now() - chrono::Duration::seconds(600);
         if let Some(mut s) = r.states.get_mut("plat-ka") {
-            s.last_register = Some(old);
+            s.last_liveness = Some(old);
         }
 
         // 阈值 3 次（180s）→ 600s 超时
@@ -1032,7 +1098,7 @@ mod c3_tests {
 
         // 5 分钟前
         if let Some(mut s) = r.states.get_mut("plat-live") {
-            s.last_register = Some(Utc::now() - chrono::Duration::seconds(300));
+            s.last_liveness = Some(Utc::now() - chrono::Duration::seconds(300));
         }
         // 检测会超时
         assert_eq!(
@@ -1043,8 +1109,80 @@ mod c3_tests {
         r.mark_registered("plat-live");
         r.note_liveness("plat-live");
         let live = r.state("plat-live").unwrap();
-        let elapsed = (Utc::now() - live.last_register.unwrap()).num_seconds();
-        assert!(elapsed < 5, "note_liveness 应该重置 last_register");
+        let elapsed = (Utc::now() - live.last_liveness.unwrap()).num_seconds();
+        assert!(elapsed < 5, "note_liveness 应该重置 last_liveness");
+    }
+
+    /// **回归**：回应了 keepalive 的**健康**上级平台不得被误判 Failed。
+    ///
+    /// 修复前「keepalive 超时检测」的判据是 `last_register`（只有 REGISTER
+    /// 路径会写），而记录双向通信的 `note_liveness` 在生产路径上**从未被调用**
+    /// —— 于是它实际测的是「距上次 REGISTER 多久」。REGISTER 的正常刷新周期是
+    /// `expires/2`（默认 1800s），超时阈值却只有 `3×60 = 180s`：
+    /// **健康的上级平台每 3~4 分钟就被误判 Failed**，进而停发 keepalive，
+    /// 并触发一轮「不带摘要的 REGISTER → 401 → 带摘要重发」。
+    #[test]
+    fn healthy_platform_answering_keepalive_is_not_marked_failed() {
+        let r = make_registrar();
+        r.add_platform(
+            "plat-healthy",
+            "37010000002000000006",
+            "127.0.0.1",
+            5060,
+            "34020000002000000001",
+            "secret",
+            "GBServer",
+            3600,
+        );
+        r.mark_registered("plat-healthy");
+
+        // 「距上次 REGISTER 已 600s」—— 仍在 expires/2=1800s 的正常刷新周期内
+        let old = Utc::now() - chrono::Duration::seconds(600);
+        if let Some(mut s) = r.states.get_mut("plat-healthy") {
+            s.last_register = Some(old);
+            s.last_liveness = Some(old);
+        }
+
+        // 上级回应了 keepalive（Call-ID 形如 cascade_ka_{platform_id}_{sn}）
+        assert!(r.note_liveness_from_response("cascade_ka_plat-healthy_12345"));
+
+        // 健康平台不得被误判
+        assert!(
+            r.detect_keepalive_timeouts(3).is_empty(),
+            "回应了 keepalive 的健康上级不得被误判 Failed"
+        );
+        assert_eq!(
+            r.get_status("plat-healthy"),
+            Some(RegistrationStatus::Registered)
+        );
+
+        // 反向对照：上级不再回应 keepalive（存活时间也推回 600s 前）
+        // → 必须仍然被判超时
+        if let Some(mut s) = r.states.get_mut("plat-healthy") {
+            s.last_liveness = Some(old);
+        }
+        assert_eq!(
+            r.detect_keepalive_timeouts(3),
+            vec!["plat-healthy".to_string()],
+            "上级不再回应 keepalive 时必须判超时"
+        );
+    }
+
+    /// **回归（接线守卫）**：生产响应路径必须真的调用存活刷新。
+    ///
+    /// 本条缺陷的核心不是某个函数写错了，而是**生产路径从未调用它**
+    /// （`note_liveness` 此前只有单测在调，生产调用点为 0）——
+    /// 单元函数自洽，生产却断线。这里用文本扫描守住这条接线
+    /// （与 `src/dialect_guard.rs` 同一套路）。
+    #[test]
+    fn production_response_path_refreshes_cascade_liveness() {
+        let src = include_str!("../sip/server.rs");
+        assert!(
+            src.contains("note_liveness_from_response"),
+            "src/sip/server.rs 的 SIP 响应路径必须调用 note_liveness_from_response —— \
+             否则级联 keepalive 的 200 OK 不会刷新存活时间，「keepalive 超时检测」\
+             会退化成「距上次 REGISTER 多久」，健康上级每 3~4 分钟被误判 Failed"
+        );
     }
 
     /// C3.3: remove_platform → 完全移除（disable 路径）
