@@ -32,7 +32,8 @@ tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-# 数据库（通过 features 选择 mysql 或 postgres）
+# 数据库：三个驱动**同时**编进同一个二进制（见上面的 [features]），
+# 运行期按 config 里 [database] url 的 scheme 选库。
 sqlx = { version = "0.7", features = ["runtime-tokio", "chrono", "macros"], default-features = false }
 chrono = { version = "0.4", features = ["serde"] }
 

@@ -97,8 +97,9 @@ bash mock/scripts/discover-services.sh
 ```bash
 cd /Users/letmlook/code/GBServer
 cargo run                                      # SQLite 默认（已就绪）
-cargo run --no-default-features --features postgres
-cargo run --no-default-features --features mysql
+# 换库只改 database.url（三个驱动编在同一个二进制里），改完重启进程
+GBSERVER__DATABASE__URL='postgres://postgres:postgrespw@127.0.0.1:5432/gbserver' cargo run
+GBSERVER__DATABASE__URL='mysql://root:rootpw@127.0.0.1:3306/gbserver' cargo run
 ```
 
 ### 4.3 灌入种子数据

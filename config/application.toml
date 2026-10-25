@@ -18,10 +18,14 @@ port = 18080
 # 缺省不启用（仅按 file_path 原样查找）。
 # record_root = "/mnt/zlm/media"
 
-# 数据库三选一：默认 SQLite（与 Cargo.toml default = ["sqlite"] 一致）
+# 数据库后端：**一个二进制同时编进 sqlite / mysql / postgres 三个驱动**，
+# 运行期按这里的 url 的 scheme 选库（2026-10-25 起；此前是编译期三选一）。
 # - SQLite（默认）：零依赖，文件即库；适合开发 / 演示 / 边缘 / 小规模（≤500 设备）
 # - PostgreSQL：生产主力；多实例需配 [redis] + [rpc] peer_endpoints
 # - MySQL：MySQL 平迁 / 兼容历史部署；schema 与 database/init-mysql-2.7.4.sql 完全兼容
+#
+# 改完 url **必须重启进程** —— 方言在启动时确定。
+# 环境变量覆盖：GBSERVER__DATABASE__URL=postgres://... ./gbserver
 [database]
 url = "sqlite://data/gbserver.db?mode=rwc"
 # url = "postgres://postgres:postgres@127.0.0.1:5432/gbserver"

@@ -1721,17 +1721,29 @@ RTP 这条链路 —— 但「没碰」不等于「不是回归」，所以必�
 选库」，本条目登记**改造完成后仍未拿到证据**的部分 —— 每条都写明复现条件。
 方案见 [`DB_RUNTIME_DIALECT_PLAN.md`](DB_RUNTIME_DIALECT_PLAN.md)。
 
-**① pg / mysql 的 9 条真实库专项用例本轮未跑**
+**① pg / mysql 的 9 条真实库专项用例 —— ✅ 已跑通（2026-10-25）**
 
 `tests/postgres_jt1078.rs`(4) / `postgres_device_lookup.rs`(2) / `postgres_platform_channel.rs`(1)
 / `mysql_catalog_channel.rs`(1) / `mysql_platform_channel.rs`(1) 都是 `#[ignore]`，
-`cargo test` 里是**跳过**状态 —— 902 通过这个数字**不包含**它们。
+`cargo test` 里是**跳过**状态 —— 「903 通过」这个数字**不包含**它们。
+
+**2026-10-25 补跑：在真实 PostgreSQL 16 / MySQL 8 上 9/9 通过**，并且
+**当场抓出 2 个真实缺陷**（见 B31）—— 此前一直绿是因为它们从没被真正执行过。
 
 ```bash
 export TEST_POSTGRES_URL="postgres://postgres:postgrespw@127.0.0.1:5432/gbserver_test"
 export TEST_MYSQL_URL="mysql://root:rootpw@127.0.0.1:3306/gbserver_test"
-cargo test -- --ignored --nocapture
+# ⚠️ 必须逐个 test target 指定，**不要**用 `cargo test -- --ignored` ——
+# 那会把标记为 ignore 的 doc-test 伪代码示例也拉出来跑（它们本来就跑不通）。
+cargo test --locked \
+  --test postgres_jt1078 --test postgres_device_lookup --test postgres_platform_channel \
+  --test mysql_catalog_channel --test mysql_platform_channel \
+  -- --ignored
 ```
+
+**这条已经在 CI 里接上**（新的 `dialect` job，用 service container 起
+PostgreSQL / MySQL）—— 但**该 job 未在 GitHub Actions 上实跑过**（CI 是
+`workflow_dispatch` 手动触发），其底层命令已在本地真实库上验证通过。
 
 **② `cargo build --release` 本轮未复跑** —— 只验证了 debug 构建。release 关闭了
 溢出检查，本轮改过的算术表达式（分页偏移等）若仍有 `u32` 乘法，**release 下不回绕报错
@@ -1768,6 +1780,75 @@ bash scripts/dialect-migrate/run.sh
 `proxy/start` / `push/start` / `push/stop` / `media_server/check` 全部是
 **ZLM 不可达**（媒体节点仍记着旧 LAN IP `192.168.3.88`，本机已变 `192.168.3.149`，
 见 E6）。**三方言同样失败 ⇒ 不是方言回归**。
+
+### B31 ◐ 第十轮（运行期方言改造的连锁问题：判据用错 + CI / 容器构建失效）
+
+多方言改造把编译期方言分支改成了运行期，但**判据选错了对象**，且**下游的可执行
+步骤没跟着改**。本条目登记这一串连锁问题。
+
+**① 判据用错：505 处用了进程级全局而不是 pool 自己的类型**
+
+改造前方言分支是 `#[cfg(feature = "postgres")]` —— **编译期**决定，对某个构建
+永远正确。改成运行期后，部分站点被写成了 `crate::db::dialect::current()`
+（**进程级全局**）：它在「一个进程一个库」的生产场景下与 pool 的方言一致，
+但**测试里直接构造 `Pool::Postgres(..)` 时全局仍是默认 sqlite** → 走错分支。
+（讽刺的是，同一批文件里有 6 处注释明确写着「方言必须看 pool，不能看进程级全局
+`dialect::current()`」—— 代码与自己的注释互相矛盾。）
+
+实测抓到 **2 个只在 PG 上炸的缺陷**：
+
+* **`get_device_by_device_id` 的 `channel_count`** —— 少了 PG 专有的
+  `::INTEGER`，而 PG 的 `COUNT(*)` 是 **int8**、Rust 侧按 `Option<i32>` 解 →
+  `mismatched types; Rust type Option<i32> (as SQL type INT4) is not
+  compatible with SQL type INT8`；
+* **`batch_insert_channels`** —— SQL 走了全局的占位符改写，`?` 没被改成
+  `$1` → PG 报 **`syntax error at end of input`**。
+
+修法：全仓 **505 处**判据统一改成 **pool 自己的类型**（`pool.dialect()` /
+`pool.sql(...)`）。转换器 `scripts/dialect-migrate/fix_pool_dialect.py`，
+**编译器当 oracle**（脚本改完用 `cargo check --all-targets` 的报错行号定点
+修 pool 变量名 —— handlers 层是 `state.pool`，db 层是 `pool`）。
+**真正需要全局的两类保留并注明理由**：`#[cfg(test)]` 里「该造哪个方言的
+mock pool」（那一刻**还没有 pool 可问**）、明确的 SQLite 测试直接用字面量。
+
+**② 新增第二条守门人，防止复发**
+
+`src/dialect_guard.rs` 增加 `dialect_branch_must_use_pool_dialect_not_process_global`
+—— 扫出**非测试代码**里用进程级全局选方言分支的地方。**变异双向验证**过：
+故意在 `src/db/role.rs` 注入 1 处 → 守门人**精确报出行号并变红** → 还原后恢复绿。
+（守门人本身要能红才有意义 —— 只会绿的那种等于没写。）
+
+**③ CI 与容器构建曾经都是坏的**
+
+这轮改造让 `--no-default-features --features <单个方言>` **必然编译失败**
+（`src/db/mod.rs` 的 `compile_error!` 要求三个 feature 同时启用），而下面
+这些地方用的正是这条命令：
+
+| 位置 | 后果 |
+|---|---|
+| `.github/workflows/ci.yml` 的 `feature-matrix`（三条 leg） | **每次推送 CI 全红** |
+| `justfile` 的 `pg` / `mysql` / `build-pg` / `build-mysql` / `feature-check` | 开发者命令全炸 |
+| `Dockerfile` 的 `GBSERVER_DB_FEATURE` 建参 | **镜像构建必失败**（部署路径） |
+| `mock/scripts/run-all-tests.sh` 的方言分支 | 脚本跑到那一段就报错 |
+
+修法：CI 的 `feature-matrix` 换成 **`dialect` job**（三驱动同编 +
+`dialect_guard` 守门人 + **PostgreSQL / MySQL service container 上的真实库
+专项用例** —— 这才是新模型下「各方言可用」的等价验收）；`justfile` 的 `pg` /
+`mysql` 改成「改 `database.url` 不改编译」，`feature-check` → `dialect-check`；
+Dockerfile 去掉方言建参（**一个镜像服务三种方言**），两个 compose 同步去掉
+build args。
+
+**④ 文档与注释的旧模型说法**（会让人照着做错事）—— 已逐处改掉：
+`CLAUDE.md` / `AGENTS.md` / `database/README.md` / `config/application.toml` /
+`Cargo.toml` / `scripts/dialect_smoke.py` / `mock/TEST_PLAN.md` /
+`mock/scripts/run-all-tests.sh` / `docs/DB_DIALECT_NOTES.md` /
+`docs/DEPLOYMENT_GUIDE.md`。
+
+**教训**：**架构变更不是只改「用到它的那一层」**。方言模型从「编译期」变成
+「运行期」时，除了被改的 `src/`，**所有会执行构建命令的地方**（CI、justfile、
+Dockerfile、测试脚本、文档里的复现步骤）都依赖旧假设 —— 它们**不会编译报错**，
+只会在**执行到那一步时**才炸，而那一步往往在**部署**或**别人 clone 之后**。
+判据：**凡是能执行「按方言编译」这个动作的位置，都要逐个复查**。
 
 ### B15 ✅ 设备统计查了不存在的表（已修，2026-09-19）
 
@@ -2165,6 +2246,13 @@ MySQL/SQLite 以及 PostgreSQL 的批量通道插入必填字段和可选通道�
 | `docs/DB_DIALECT_NOTES.md` | 补运行期方言的权威差异清单（占位符统一 `?`、id 列按 i32、CAST 类型名、布尔绑定） | ✅ 本轮 |
 | `docs/STATUS.md` | 顶部增量表新增「多方言运行期改造」行；§3 关键设计决策补运行期方言条目；§7 相关文档补方案文档 | ✅ 本轮 |
 | `docs/OPEN_ISSUES.md` | 新增 **B30**（本轮仍未验证事项 + 复现条件）；G.2 方言冒烟命令与「陈旧二进制」注意事项按新形态改写；变更记录补本轮 | ✅ 本轮 |
+| `src/db/**`、`src/handlers/**`、`src/sip/**`、`src/zlm/**`、`src/lib.rs`（**第二轮**） | 方言判据从**进程级全局** `dialect::current()` 统一改为 **pool 自己的类型**（`pool.dialect()` / `pool.sql(...)`）—— **505 处**。修掉 2 个只在 PG 上炸的真实缺陷（`channel_count` 的 INT8、`batch_insert_channels` 的裸 `?`） | ✅ 本轮 |
+| `src/dialect_guard.rs` | 新增第二条守门人 `dialect_branch_must_use_pool_dialect_not_process_global`（非测试代码里用全局选方言分支 → 变红；**变异验证过**） | ✅ 本轮 |
+| `scripts/dialect-migrate/fix_pool_dialect.py` | 新增：把进程级全局判据改写成 pool 判据的转换器（**编译器当 oracle** 定点修 pool 变量名） | ✅ 本轮 |
+| `.github/workflows/ci.yml` | `feature-matrix`（三条 leg 用已失效的单方言构建）→ 换成 `dialect` job：三驱动同编 + `dialect_guard` 守门人 + **PostgreSQL / MySQL service container 上的真实库专项用例** | ✅ 本轮 |
+| `justfile` | `pg` / `mysql` 改成「改 `database.url` 不改编译」；`feature-check` → `dialect-check`；`clippy` 用 `--all-features` 并更正那条已作废的注释；新增 `test-realdb` | ✅ 本轮 |
+| `Dockerfile`、`docker-compose.yml`、`docker-compose.sqlite.yml` | 去掉 `GBSERVER_DB_FEATURE` 建参 —— **一个镜像服务三种方言**（此前按单个方言构建在改造后必然失败） | ✅ 本轮 |
+| `CLAUDE.md`、`AGENTS.md`、`database/README.md`、`config/application.toml`、`Cargo.toml`、`scripts/dialect_smoke.py`、`mock/TEST_PLAN.md`、`mock/scripts/run-all-tests.sh`、`docs/DB_DIALECT_NOTES.md`、`docs/DEPLOYMENT_GUIDE.md` | 清理「按方言分别编译」的旧说法与命令（其中 `mock/scripts/run-all-tests.sh` 与 Dockerfile 是**可执行**的，照旧会失败） | ✅ 本轮 |
 
 ### F.1 2026-09-19 真机核验轮（历史轮次，保留备查）
 
@@ -2292,3 +2380,4 @@ cd e2e && npx playwright test
 | 2026-10-25 | **第九轮代码审查**：新增 B25（PostgreSQL 方言回归 + TOCTOU + 方言守卫）、B26（7 处写端点假成功 + 已补回归测试）、B27（JT1078 号码 BCD 方向与国标相反）、B28（日志保留死配置 + 日志端点缺管理员门禁 + 弱密钥回显）、B29（冒烟脚本残留 + 本轮 P2/P3 清单 + 已排除怀疑项 + e2e 首跑失败的环境归因）；全部已修并复验（5 组变异双向验证） |
 | 2026-10-25 | **多方言运行期改造**：数据库后端从「编译期互斥三选一」改为「**三驱动同编一个二进制 + 运行期按 `database.url` 选库**」（`default = ["sqlite","mysql","postgres"]`）。否决 sqlx `Any` 驱动（PG `BOOLEAN` / MySQL `TINYINT` / PG `REAL` / SQLite 布尔列四类类型覆盖硬缺口，失败在类型映射层）；改为各方言原生 pool + 运行期枚举分发。修掉三类「编译能过、运行才炸」：cfg 方言块不再互斥（28 → 0）、`dispatch!` 宏体内裸 `?`（411 → 0，用 `dialect_guard` 守门人当 oracle）、三方言占位符数不同（MySQL 24 vs 其余 13）导致 PG `Malformed communication packet`。新增 **B30**（本轮仍未验证：9 条 `#[ignore]` 真实库用例、release 构建、真机、目标部署环境、流水线整条重跑的可复现性）。G.2 的「各自 feature 构建 + 独立 target 目录」与「陈旧二进制陷阱」两条**已失效**，按新形态改写 |
 | 2026-10-25 | **更正上一条台账里不可复现的结论 + 堵住复发路径**：`9c7018f` 写了「`cargo fmt` 干净」，实测 `cargo fmt --check` 报 **2 处 diff**（`src/db/common_channel.rs` / `src/db/device.rs`）→ **该结论作废**，`4ffb5ea` 提交正文里同一句「`cargo fmt`：干净」一并作废。根因：转换器把三个方言分支合并成**一条超长单行 `.bind(...)` 链**（基线是三条短链）超出 rustfmt 行宽，而 `scripts/dialect-migrate/run.sh` 的最后一步**只打印**「接下来：cargo fmt」而**不执行** → 流水线每次都交出带格式违规的树。已由 `eda04f6` 修掉这 2 处，并把 `cargo fmt --check` 变成流水线**第 7 步门禁**（不合规即 exit 1），后续同一入口还会跑 `cargo check` + `cargo clippy`。**教训**：门禁数字必须**能被独立复现** —— 写「fmt 干净」用的判据必须是 `cargo fmt --check`（只读），而不是 `cargo fmt`（会重写文件、看不出"当时到底脏不脏"） |
+| 2026-10-25 | **多方言改造的连锁修复**：补跑 9 条 `#[ignore]` 真实库专项用例（真实 PG 16 / MySQL 8）→ **当场抓出 2 个真实缺陷**（`get_device_by_device_id` 的 `channel_count` 缺 PG 专有 `::INTEGER` → INT8 vs `Option<i32>`；`batch_insert_channels` 走了全局的占位符改写 → PG `syntax error at end of input`）。根因：改造前方言分支是**编译期** `#[cfg(feature=...)]`（永远正确），改成运行期后 505 处用了**进程级全局** `dialect::current()` 而非 **pool 自己的类型** —— 生产单库时等价，测试里直接构造 `Pool::Postgres(..)` 就走错分支。已全仓改为 `pool.dialect()` / `pool.sql(...)`（转换器 `fix_pool_dialect.py` + 编译器当 oracle），并新增第二条守门人 `dialect_branch_must_use_pool_dialect_not_process_global`（变异验证过：注入 1 处 → 精确报行号并变红）。**同时发现 CI 与容器构建都是坏的**：改造让 `--no-default-features --features <单个方言>` 必然编译失败，而 CI 的 `feature-matrix`、`justfile` 的 6 个 recipe、**Dockerfile 的 `GBSERVER_DB_FEATURE` 建参**用的正是这条命令 → CI 每次推送全红、镜像构建必失败。已重写 CI（`dialect` job：三驱动同编 + 守门人 + service container 上的真实库用例）、`justfile`、`Dockerfile`、两个 compose，并清理 10 个文件里的旧模型说法。详见 **B31** |

@@ -39,12 +39,8 @@ NO_PROXY=localhost,127.0.0.1,::1 no_proxy=localhost,127.0.0.1,::1 \
 
 # Release (only when packaging / tagging / production image)
 cargo build --release      # → target/release/gbserver
-
-# With MySQL instead of SQLite
-cargo build --no-default-features --features mysql
-
-# With PostgreSQL instead of SQLite
-cargo build --no-default-features --features postgres
+# 三个驱动同编在这个二进制里；换库 = 改 config/application.toml 的 [database] url
+# （或 GBSERVER__DATABASE__URL 覆盖）+ 重启进程。没有「按方言分别编译」这回事。
 
 # Focused tests
 cargo test --test sqlite_compat
@@ -61,13 +57,16 @@ cargo test --test sqlite_compat
 docker compose up -d postgres
 docker compose --profile mysql up -d mysql
 
-# 2) 用对应 feature 构建并起一个实例（端口与已有实例错开）
-cargo build --no-default-features --features postgres   # 或 mysql
+# 2) 一个二进制起三个实例（端口与已有实例错开）—— 只改 database.url，不改编译
+cargo build
 GBSERVER__DATABASE__URL='postgres://postgres:postgrespw@127.0.0.1:5432/gbserver' \
   GBSERVER__SERVER__PORT=18081 \
   GBSERVER__SIP__PORT=25060 GBSERVER__SIP__TCP_PORT=25061 \
   GBSERVER__JT1078__TCP_PORT=60001 GBSERVER__JT1078__UDP_PORT=60002 \
   ./target/debug/gbserver &
+
+# 2') 或者直接跑一键脚本（sqlite / postgres / mysql 三实例全跑一遍并对比）
+bash scripts/dialect_smoke_all.sh
 
 # 3) 取 token 跑冒烟
 TOKEN=$(curl -s 'http://127.0.0.1:18081/api/user/login?username=admin&password=21232f297a57a5a743894a0e4a801fc3' \
@@ -75,10 +74,24 @@ TOKEN=$(curl -s 'http://127.0.0.1:18081/api/user/login?username=admin&password=2
 python3 scripts/dialect_smoke.py --base http://127.0.0.1:18081/api --token "$TOKEN"
 ```
 
+**`#[ignore]` 的真实库专项用例**（sqlite 跑不到，必须显式指定库）：
+
+```bash
+export TEST_POSTGRES_URL='postgres://postgres:postgrespw@127.0.0.1:5432/gbserver'
+export TEST_MYSQL_URL='mysql://root:rootpw@127.0.0.1:3306/gbserver'
+cargo test --locked \
+  --test postgres_jt1078 --test postgres_device_lookup --test postgres_platform_channel \
+  --test mysql_catalog_channel --test mysql_platform_channel \
+  -- --ignored
+```
+
+> 不要用 `cargo test -- --ignored` 一把梭 —— 那会把标记为 `ignore` 的 doc-test
+> 伪代码示例也拉出来跑（它们本来就跑不通），**必须逐个 test target 指定**。
+
 **预期"失败"（不是缺陷）**：CSV 导出的 `/log/list?format=csv` 返回 CSV 文本而非
 JSON；`proxy/start` 指向不存在的 RTSP 源时真实 ZLM 回 404。
 
-详见 `docs/OPEN_ISSUES.md` 的 B16。
+详见 `docs/OPEN_ISSUES.md` 的 B16 / B30。
 
 ### Frontend (Vue 3)
 
@@ -167,7 +180,15 @@ Err(AppError::business(ErrorCode::Error400, "invalid input"))
 - Use `sqlx::query_as` for queries returning rows
 - Use `sqlx::query_scalar` for aggregate queries
 - Use `sqlx::query` for INSERT/UPDATE/DELETE
-- Handle SQLite / PostgreSQL / MySQL dialects with `#[cfg(feature = "sqlite")]` / `#[cfg(feature = "postgres")]` / `#[cfg(feature = "mysql")]` blocks in the same function
+- Handle SQLite / PostgreSQL / MySQL dialects by dispatching at RUNTIME on the
+  **pool's own type** (`pool.dialect()` / `pool.sql()`) — e.g.
+  `match pool.dialect() { Dialect::Postgres => ..., _ => ... }`.
+  Do NOT use `#[cfg(feature = "sqlite"/"postgres"/"mysql")]` (all three features are
+  always on together — a `compile_error!` guard enforces it), and do NOT use the
+  process-global `dialect::current()` to pick a branch: it is the startup-time
+  default, so a test that builds `Pool::Postgres(..)` directly would get the wrong
+  branch. Only use the global where there is genuinely no pool yet (e.g. choosing
+  which mock pool a test should create).
 - Use parameterized queries - never interpolate SQL directly
 - **⚠️ sqlx-postgres 严格校验列类型，sqlx-mysql / sqlx-sqlite 宽松** —— 见
   「Gotchas」里的「postgres 只在运行期炸」一条。写任何跨方言 SQL 前先读那条。

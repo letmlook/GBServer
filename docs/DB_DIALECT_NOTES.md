@@ -104,11 +104,26 @@ sqlx::query("DELETE FROM gb_record_plan_item WHERE plan_id = $1").bind(plan_id /
 ## 验证要求
 
 * `cargo test`（SQLite）**不能**证明 postgres 可用；
-* 任何涉及 SQL 的改动，至少要跑一次
-  `cargo build --no-default-features --features postgres`（编译期能抓类型/语法错误的一部分）
-  **以及** 真实 postgres 运行时冒烟（`docker compose up -d postgres`，用
-  `GBSERVER__DATABASE__URL=postgres://…` 起第二个实例，跑读+写路径）；
-* MySQL 同理：`cargo build --no-default-features --features mysql` 构建 + 运行时冒烟。
+* 任何涉及 SQL 的改动，至少要跑一次**真实 postgres / mysql 上的专项用例**
+  以及**真实库冒烟**：
+
+```bash
+# 真实库专项用例（sqlite 跑不到，必须显式指定库）
+export TEST_POSTGRES_URL='postgres://postgres:postgrespw@127.0.0.1:5432/gbserver'
+export TEST_MYSQL_URL='mysql://root:rootpw@127.0.0.1:3306/gbserver'
+cargo test --locked \
+  --test postgres_jt1078 --test postgres_device_lookup --test postgres_platform_channel \
+  --test mysql_catalog_channel --test mysql_platform_channel \
+  -- --ignored
+
+# 三方言真实库冒烟（一个二进制起三个实例，只改 database.url）
+bash scripts/dialect_smoke_all.sh
+```
+
+> **不要**再用 `cargo build --no-default-features --features postgres` 来"验证
+> postgres 能编译" —— 三个驱动现在**必须同时启用**（`src/db/mod.rs` 有
+> `compile_error!` 守卫），那样构建会直接失败。编译期能抓到的类型/语法错误
+> 由 `cargo check --all-targets`（默认已含三驱动）覆盖。
 
 ### 一条命令的方言冒烟
 
@@ -116,8 +131,8 @@ sqlx::query("DELETE FROM gb_record_plan_item WHERE plan_id = $1").bind(plan_id /
 docker compose up -d postgres
 docker compose --profile mysql up -d mysql        # 首次会拉 mysql:8 并执行 init-mysql-2.7.4.sql
 
-# 用对应 feature 起一个实例（端口自定；SIP/JT1078 端口要和已有实例错开）
-cargo build --no-default-features --features postgres   # 或 mysql
+# 一个二进制起三个实例（端口自定；SIP/JT1078 端口要和已有实例错开）
+cargo build
 GBSERVER__DATABASE__URL='postgres://postgres:postgrespw@127.0.0.1:5432/gbserver' \
   GBSERVER__SERVER__PORT=18081 \
   GBSERVER__SIP__PORT=25060 GBSERVER__SIP__TCP_PORT=25061 \

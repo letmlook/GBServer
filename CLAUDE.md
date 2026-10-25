@@ -22,12 +22,21 @@ cargo test --test device_simulator_test  # SIP message format + heartbeat scenar
 cargo test --test state_store_two_node   # cross-node state consistency
 cargo test --test jt1078_e2e_test        # JT1078 command/response lifecycle
 
-# Backend with MySQL instead of SQLite (--no-default-features --features mysql)
-# Backend with PostgreSQL instead of SQLite (--no-default-features --features postgres)
-cargo build --release --no-default-features --features mysql
-cargo test --no-default-features --features mysql
-cargo build --release --no-default-features --features postgres
-cargo test --no-default-features --features postgres
+# The three DB drivers are compiled into ONE binary (default = sqlite + mysql + postgres).
+# Switching databases = change `[database] url` in config/application.toml (or override
+# with GBSERVER__DATABASE__URL) and RESTART. There is no per-dialect build any more:
+# `cargo build --no-default-features --features postgres` now FAILS on purpose
+# (see the `compile_error!` guard in src/db/mod.rs).
+cargo build --release
+GBSERVER__DATABASE__URL='postgres://postgres:postgrespw@127.0.0.1:5432/gbserver' ./target/release/gbserver
+
+# Real-DB regression tests (need a local PostgreSQL / MySQL running)
+export TEST_POSTGRES_URL='postgres://postgres:postgrespw@127.0.0.1:5432/gbserver'
+export TEST_MYSQL_URL='mysql://root:rootpw@127.0.0.1:3306/gbserver'
+cargo test --locked --test postgres_jt1078 --test postgres_device_lookup -- --ignored
+
+# One binary, three live databases (sqlite / postgres / mysql) in one shot
+bash scripts/dialect_smoke_all.sh
 
 # Local services used by the default config
 docker compose up -d          # PostgreSQL + Redis + ZLMediaKit（ZLM 用 host 网络）
@@ -81,7 +90,7 @@ handlers/ ──→ db/ ──→ SQLx (SQLite by default; MySQL/PostgreSQL behi
 
 - `router.rs` is the central route map. Public routes include login, health, metrics, ZLM hooks, and selected frontend/static routes; most `/api/...` routes are wrapped by `auth_middleware`.
 - `handlers/` should stay thin: extract Axum params/state, call `db::` or protocol/service modules, and return `ApiResult<T>` or `AppError`. Several `stub.rs` / `device_stub.rs` endpoints intentionally return empty compatibility responses for frontend/API parity.
-- `db/` uses one module per table/domain. Functions are free functions over `&db::Pool`; structs typically derive `sqlx::FromRow`. SQLite is the default feature; MySQL/PostgreSQL-specific SQL is gated with `#[cfg(feature = "mysql")]` / `#[cfg(feature = "postgres")]` where needed.
+- `db/` uses one module per table/domain. Functions are free functions over `&db::Pool` (a runtime-polymorphic enum over the three native pools); structs typically derive `sqlx::FromRow`. **Dialect-specific SQL is dispatched at RUNTIME, keyed on the pool's own type** (`pool.dialect()` / `pool.sql()`) — NOT on the process-global `dialect::current()`, and NOT via `#[cfg(feature = ...)]` (three features are always on together; the `compile_error!` in `src/db/mod.rs` enforces it).
 - `sip/core/` contains low-level SIP message/header/method/status parsing and transaction/dialog primitives. `sip/transport/` owns UDP/TCP networking. `sip/gb28181/` contains application-level device registration, catalog subscription, live/playback/talk INVITE sessions, PTZ, SDP, SSRC, NAT handling, and reconnect behavior.
 - `zlm/` wraps ZLMediaKit HTTP APIs and webhook handling. `AppState::get_zlm_client_auto()` selects the least-loaded node, preferring Redis stream counters and falling back to live ZLM API counts.
 - `jt1078/` handles vehicle protocol networking and session state. Config supports timeout/retransmit settings and optional hook notification for missing sequence ranges.

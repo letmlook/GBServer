@@ -16,8 +16,8 @@
 docker compose up -d postgres
 docker compose --profile mysql up -d mysql
 
-# 2) 用对应 feature 构建并起一个实例（端口自定，注意 SIP/JT1078 端口别冲突）
-cargo build --no-default-features --features postgres   # 或 mysql
+# 2) 起一个实例（**一个二进制三驱动同编**；只改 database.url，不改编译）
+cargo build
 GBSERVER__DATABASE__URL='postgres://postgres:postgrespw@127.0.0.1:5432/gbserver' \
   GBSERVER__SERVER__PORT=18081 \
   GBSERVER__SIP__PORT=25060 GBSERVER__SIP__TCP_PORT=25061 \

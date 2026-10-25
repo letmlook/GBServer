@@ -32,11 +32,17 @@
 
 ## ⚖️ 后端对比
 
-| 后端 | Cargo feature | 启动命令 | 设备上限 | 适用场景 |
+| 后端 | 选库方式（改配置，不改编译） | 启动命令 | 设备上限 | 适用场景 |
 |------|---------------|----------|----------|----------|
-| **SQLite** ✅ | `default = ["sqlite"]` | `cargo run` | 建议 ≤ 500 | 开发 / 演示 / 边缘节点 / 小规模生产 |
-| **PostgreSQL** | `--no-default-features --features postgres` | `cargo run --no-default-features --features postgres` | 无 | 生产主力 / 多实例 / Patroni 集群 |
-| **MySQL** | `--no-default-features --features mysql` | `cargo run --no-default-features --features mysql` | 无 | MySQL 平迁 / 兼容历史部署 |
+| **SQLite** ✅ | `[database] url = "sqlite://data/gbserver.db?mode=rwc"` | `cargo run` | 建议 ≤ 500 | 开发 / 演示 / 边缘节点 / 小规模生产 |
+| **PostgreSQL** | `[database] url = "postgres://user:pass@host:5432/gbserver"` | `GBSERVER__DATABASE__URL='postgres://...' cargo run` | 无 | 生产主力 / 多实例 / Patroni 集群 |
+| **MySQL** | `[database] url = "mysql://user:pass@host:3306/gbserver"` | `GBSERVER__DATABASE__URL='mysql://...' cargo run` | 无 | MySQL 平迁 / 兼容历史部署 |
+
+> **2026-10-25 起三个驱动同时编进同一个二进制**（`Cargo.toml` 的
+> `default = ["sqlite", "mysql", "postgres"]`），运行期按 url 的 scheme 选库。
+> 改造前是「编译期互斥三选一」，每换一个库要重新编译一次。
+> **换库后必须重启进程** —— 方言在启动时确定，不是每次查询现读。
+> 详见 [`../docs/DB_RUNTIME_DIALECT_PLAN.md`](../docs/DB_RUNTIME_DIALECT_PLAN.md)。
 
 ---
 

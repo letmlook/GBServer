@@ -42,25 +42,54 @@
 | Redis | 多实例必选 | Redis 7 |
 | ZLMediaKit | 视频流媒体 | 2024-01-01+ |
 
-### 1.2 数据库三选一
+### 1.2 数据库后端：一个二进制支持三种
 
-| 后端 | 编译命令 | 适用 |
+> **2026-10-25 起**：三个驱动**同时编进同一个二进制**（`Cargo.toml` 的
+> `default = ["sqlite", "mysql", "postgres"]`，少开任一个会直接 `compile_error!`），
+> **运行期**按 `config/application.toml` 里 `[database] url` 的 scheme 选库。
+> 改造前是「编译期互斥三选一」，每次换库都要重新编译 —— 下面那张表里的
+> 「编译命令」列因此只剩一条命令了。
+
+| 后端 | 选库方式（改配置，不改编译） | 适用 |
 |------|---------|------|
-| **SQLite（默认）** | `cargo build --release` | 开发 / 演示 / 边缘 / ≤ 500 设备 |
-| PostgreSQL | `cargo build --release --no-default-features --features postgres` | 生产主力 / 多实例 / Patroni |
-| MySQL | `cargo build --release --no-default-features --features mysql` | MySQL 平迁 / 兼容历史部署 |
+| **SQLite** | `database.url = "sqlite://data/gbserver.db?mode=rwc"` | 开发 / 演示 / 边缘 / ≤ 500 设备 |
+| PostgreSQL | `database.url = "postgres://user:pass@host:5432/gbserver"` | 生产主力 / 多实例 / Patroni |
+| MySQL | `database.url = "mysql://user:pass@host:3306/gbserver"` | MySQL 平迁 / 兼容历史部署 |
+
+**编译命令只有一条**（三个驱动都在这个二进制里）：
+
+```bash
+cargo build --release
+```
+
+**换库 = 改一行配置 + 重启进程** —— 方言在**启动时**确定，不是每次查询现读：
+
+```bash
+# 方式一：改配置文件 config/application.toml 的 [database] url
+# 方式二：环境变量覆盖（优先级更高）
+GBSERVER__DATABASE__URL="postgres://user:pass@host:5432/gbserver" ./target/release/gbserver
+```
+
+方案与选型证据见 [`DB_RUNTIME_DIALECT_PLAN.md`](DB_RUNTIME_DIALECT_PLAN.md)。
 
 ### 1.3 初始化数据库
+
+> **三个后端都支持首次启动自动建表** —— 启动时若发现核心表缺失，会按运行期方言
+> 重放对应方言的初始化脚本（`src/lib.rs` 的 `schema_sql(dialect)` +
+> `ensure_missing_tables`），只重放 `CREATE TABLE` / `CREATE INDEX`
+> （脚本里的 `drop table` 与 `INSERT` 种子数据不会重放，避免清库与重复播种）。
+> 下面手动执行初始化 SQL 的步骤**变成可选** —— 仅在需要预置种子数据、
+> 或希望由 DBA 掌控建表时机时使用。
 
 ```bash
 # SQLite：首次启动自动建表（执行 init-sqlite-2.7.4.sql）
 cargo run --release
 
-# PostgreSQL
+# PostgreSQL（手动建表，可选；也可以直接让后端启动时自动建）
 createdb gbserver
 psql -U postgres -d gbserver -f database/init-postgresql-2.7.4.sql
 
-# MySQL
+# MySQL（手动建表，可选；也可以直接让后端启动时自动建）
 mysql -uroot -p -e "CREATE DATABASE gbserver DEFAULT CHARACTER SET utf8mb4;"
 mysql -uroot -p gbserver < database/init-mysql-2.7.4.sql
 ```
@@ -79,12 +108,22 @@ mysql -uroot -p gbserver < database/init-mysql-2.7.4.sql
 | Docker 一键拉起 | `docker compose up -d --build`（PostgreSQL 镜像） | 同左 |
 | 初始化 PG schema（Docker 容器） | `bash <(curl ...)` 或手动 | `.\scripts\init-db-postgres.ps1` |
 
-Dockerfile 默认以 `postgres` Cargo 特性构建，主 Compose 也显式指定该特性，
-与 PostgreSQL URL 对应。
-SQLite 独立部署使用 `docker compose -f docker-compose.sqlite.yml up -d --build`，
-该文件通过 `GBSERVER_DB_FEATURE=sqlite` 构建 SQLite 镜像。单独构建 MySQL 镜像可用
-`docker build --build-arg GBSERVER_DB_FEATURE=mysql -t gbserver:mysql .`。
-三种镜像的数据库特性是编译时确定的，运行时 URL 必须选择相同方言。
+Dockerfile **不再按方言构建**：三个驱动（sqlite / mysql / postgres）同时编进
+同一个镜像，运行期按 config 里 `[database] url` 的 scheme 选库。因此
+**同一个镜像既能跑 SQLite 也能跑 PostgreSQL / MySQL**，
+`GBSERVER_DB_FEATURE` 这个 build arg 已作废（按它构建会直接失败 ——
+`src/db/mod.rs` 的 `compile_error!` 要求三个 feature 同时启用）。
+
+选库只由**运行期**的环境变量决定：
+
+```bash
+# PostgreSQL
+GBSERVER__DATABASE__URL=postgres://user:pass@postgres:5432/gbserver \
+  docker compose up -d --build
+
+# SQLite（改 compose 文件里的 database.url，或直接用 sqlite 那套 compose）
+docker compose -f docker-compose.sqlite.yml up -d --build
+```
 
 录像计划使用后端容器的本地星期与时刻。两套 Compose 默认设置
 `TZ=Asia/Shanghai`，后端与 ZLM 保持一致；部署在其它时区时先设置
@@ -179,6 +218,41 @@ GBSERVER_SIP_ADVERTISE_IP=<host-ip-reachable-by-devices>
 ⚠️ **内置默认值就是仓库里那份演示密钥**（`config/application.toml` 与
 `src/security.rs::COMMITTED_DEMO_JWT_SECRET` 相同，会被 `validate_jwt_secret`
 判为弱密钥并在启动日志里告警）。**生产必须显式设置 `GBSERVER_JWT_SECRET`。**
+
+### 1.10 内网代码镜像（Gitea）
+
+本仓库在内网 allstack 部署机（`192.168.3.87`）的 Gitea 上有一份**私有镜像**：
+`letmlook/GBServer`（HTTP `http://192.168.3.87:3080/letmlook/GBServer`，
+**SSH 端口是 3022，不是 3080**）。主源仍在 GitHub
+（`https://github.com/letmlook/GBServer`），内网镜像用于**内网可达时的留档与协作**。
+
+```bash
+# 加第二个 remote（名字约定叫 allstack）
+cd /Users/letmlook/code/GBServer
+git remote add allstack ssh://git@192.168.3.87:3022/letmlook/GBServer.git
+
+# 推全量分支与标签（**用显式 refspec**）
+git push allstack \
+  refs/heads/main:refs/heads/main \
+  refs/heads/v2.0:refs/heads/v2.0 \
+  refs/tags/v0.1.0:refs/tags/v0.1.0
+
+# 推完逐条核对（ls-remote 会多一行 HEAD 符号引用，比对时要排除）
+git ls-remote allstack 'refs/heads/*' 'refs/tags/*'
+```
+
+**三条限制**（都是踩过的）：
+
+- **不能推 `refs/pull/*`** —— Gitea 的 PR ref 属于平台内部命名空间，git 直推会被
+  `hook declined` 拒绝（Gitea 的设计：允许客户端直推就能伪造 PR 头部）。
+  GitHub 上的 PR #1 / #2 都已合入 `main`，其提交内容在镜像里**不会丢**。
+- **别用 `git push --mirror`** —— 它会把 `refs/remotes/*` 以及本地 agent 的
+  checkpoint ref 一并推上去；用上面的显式 refspec。
+- **`--all` 与 `--tags` 不能同时用** —— git 会报
+  "options '--tags' and '--all/--branches' cannot be used together"，
+  所以要么用显式 refspec，要么分两条推。
+
+镜像仓库默认设**私有**：`docs/OPEN_ISSUES.md` 含内部拓扑、端口、LAN IP 等细节。
 
 ---
 
@@ -370,7 +444,7 @@ retention_days = 90
 | 集群 / HA | ❌（LiteFS / rqlite 不推荐） | ✅ Patroni / Citus | ✅ MGR / PXC / TiDB |
 | 高频位置 / 告警写入 | 一般 | 强（TimescaleDB 可加时序扩展） | 强 |
 | 备份 | 文件拷贝 / `VACUUM INTO` | `pg_dump` / WAL-G | `mysqldump` / xtrabackup |
-| Cargo feature | `default = ["sqlite"]` | `--features postgres` | `--features mysql` |
+| 编译 / 选库 | 同一个二进制三驱动同编；运行期按 `database.url` 的 scheme 选 | 同左 | 同左 |
 
 ### 4.2 SQLite 适用判断
 
