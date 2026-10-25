@@ -4181,7 +4181,23 @@ impl SipServer {
                             }
                         }
                     } else if resp.status_code() == 200 {
-                        registrar.mark_registered(pid);
+                        // 服务端**授予**的注册有效期（200 OK 的 `Expires` 头，
+                        // 或 `Contact` 头的 `expires` 参数）才是真实有效期 ——
+                        // 服务端有权把它压到比请求值更短。不读它，刷新定时器
+                        // 就可能长于真实有效期：本级在上游侧已过期（上游停发
+                        // INVITE、拒绝目录订阅），而本级自认为在线。
+                        let granted = crate::cascade::register::parse_granted_expires(
+                            resp.headers.get("contact").map(|s| s.as_str()),
+                            resp.headers.get("expires").map(|s| s.as_str()),
+                        );
+                        if let Some(secs) = granted {
+                            tracing::debug!(
+                                "Cascade {} granted expires = {}s",
+                                pid,
+                                secs
+                            );
+                        }
+                        registrar.mark_registered(pid, granted);
                     } else if resp.status_code() >= 400 {
                         registrar.mark_failed(pid);
                     }

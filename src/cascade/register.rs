@@ -23,6 +23,14 @@ pub struct RegistrationState {
     pub realm: String,
     pub status: RegistrationStatus,
     pub register_interval_secs: u64,
+    /// 服务端在 REGISTER 的 200 OK 里**授予**的注册有效期（秒）。
+    ///
+    /// SIP 的注册有效期以**服务端**给的为准（RFC 3261 §10.3）：服务端可以把
+    /// 它压到比请求值更短。此前完全不读它 —— 刷新定时器只按「我们请求的」
+    /// expires 的一半走，于是上游 300s 过期、平台 1800s 才刷新，中间 1500s
+    /// 里本级在上游侧已经是「已过期」（上游停发 INVITE、拒绝目录订阅），
+    /// 而本级自认为在线。
+    pub granted_expires_secs: Option<u64>,
     /// 最近一次**发出/收到 REGISTER** 的时间。
     ///
     /// 只用于**注册刷新节奏**（`register_interval_secs / 2`）—— 与存活判定无关。
@@ -79,6 +87,66 @@ fn server_port_u16(raw: Option<i32>) -> Option<u16> {
     }
 }
 
+/// 从 REGISTER 的 **200 OK** 里取出**服务端授予的**注册有效期（秒）。
+///
+/// SIP 的注册有效期以**服务端**给的为准（RFC 3261 §10.3）：服务端可以在
+/// 200 OK 的 `Expires` 头（默认值）或 `Contact` 头的 `expires` 参数
+/// （针对某个 contact）里把它压到比请求值更短，**Contact 参数优先**。
+///
+/// 不读它 → 刷新定时器可能长于真实有效期 → 中间那段窗口里本级在上游侧
+/// 已经是「已过期」状态（上游停发 INVITE、拒绝目录订阅），而本级自认在线。
+///
+/// 解析不出来（对端没给、或给了非法值）时返回 `None`，调用方回退到「我们
+/// 请求的 expires」—— 即维持原行为，不凭空猜一个有效期。
+pub fn parse_granted_expires(contact: Option<&str>, expires_header: Option<&str>) -> Option<u64> {
+    // Contact 头：`<sip:x@1.2.3.4:5060>;expires=300`（参数名大小写不敏感）
+    if let Some(c) = contact {
+        for part in c.split(';') {
+            let part = part.trim();
+            let lower = part.to_ascii_lowercase();
+            if let Some(v) = lower.strip_prefix("expires=") {
+                if let Ok(n) = v.trim().parse::<u64>() {
+                    if n > 0 {
+                        return Some(n);
+                    }
+                }
+            }
+        }
+    }
+    // Expires 头（默认有效期）
+    if let Some(e) = expires_header {
+        if let Ok(n) = e.trim().parse::<u64>() {
+            if n > 0 {
+                return Some(n);
+            }
+        }
+    }
+    None
+}
+
+/// 该平台现在**是否需要重新 REGISTER**。
+///
+/// 刷新节奏按**有效期的��半**走。有效期以**服务端授予的**为准 —— 服务端有权
+/// 把 TTL 压到比请求值更短（RFC 3261 §10.3）；不读它就会用请求值的一半当刷新
+/// 周期，在对端给了更短 TTL 时**长于真实有效期**：本级在上游侧已过期约
+/// 1500s（上游停发 INVITE、拒绝目录订阅），而本级自认在线。
+///
+/// 纯函数（不碰 `DashMap`）—— 注册循环的筛选器正持有 shard 读锁，
+/// 这里若去 `self.states.get()` 会与 `get_mut` 的写锁互锁。
+pub fn needs_register_refresh(
+    last_register: Option<DateTime<Utc>>,
+    register_interval_secs: u64,
+    granted_expires_secs: Option<u64>,
+) -> bool {
+    let Some(last) = last_register else {
+        return true;
+    };
+    let effective = granted_expires_secs.unwrap_or(register_interval_secs);
+    // 下限 1s：effective=1 时 1/2=0 会变成「永远该刷新」
+    let half = (effective / 2).max(1);
+    (Utc::now() - last).num_seconds() as u64 >= half
+}
+
 impl CascadeRegistrar {
     pub fn new() -> Self {
         Self {
@@ -123,6 +191,7 @@ impl CascadeRegistrar {
                 realm: realm.to_string(),
                 status: RegistrationStatus::NotRegistered,
                 register_interval_secs,
+                granted_expires_secs: None,
                 last_register: None,
                 last_liveness: None,
                 retry_count: 0,
@@ -634,9 +703,12 @@ impl CascadeRegistrar {
         }
     }
 
-    pub fn mark_registered(&self, platform_id: &str) {
+    pub fn mark_registered(&self, platform_id: &str, granted_expires: Option<u64>) {
         if let Some(mut state) = self.states.get_mut(platform_id) {
             state.status = RegistrationStatus::Registered;
+            if let Some(secs) = granted_expires {
+                state.granted_expires_secs = Some(secs);
+            }
             state.last_register = Some(Utc::now());
             // REGISTER 的 200 OK 本身就是一次双向通信 → 存活时间一并刷新
             state.last_liveness = Some(Utc::now());
@@ -829,13 +901,13 @@ impl CascadeRegistrar {
                         Some(last) => (Utc::now() - last).num_seconds() >= 5,
                         None => true,
                     },
-                    RegistrationStatus::Registered => match entry.last_register {
-                        Some(last) => {
-                            let elapsed = (Utc::now() - last).num_seconds() as u64;
-                            elapsed >= entry.register_interval_secs / 2
-                        }
-                        None => true,
-                    },
+                    // 刷新周期按**服务端授予的**有效期的一半算（没有授予值时
+                    // 回退到「我们请求的」expires）。
+                    RegistrationStatus::Registered => needs_register_refresh(
+                        entry.last_register,
+                        entry.register_interval_secs,
+                        entry.granted_expires_secs,
+                    ),
                 })
                 .map(|entry| {
                     (
@@ -1039,7 +1111,7 @@ mod c3_tests {
         assert_eq!(resp_end, 32);
 
         // 注册成功
-        r.mark_registered("plat-401");
+        r.mark_registered("plat-401", None);
         assert_eq!(
             r.get_status("plat-401"),
             Some(RegistrationStatus::Registered)
@@ -1081,7 +1153,7 @@ mod c3_tests {
         assert_eq!(s5.retry_count, 5);
 
         // 注册成功后 retry_count 归零
-        r.mark_registered("plat-retry");
+        r.mark_registered("plat-retry", None);
         assert_eq!(r.state("plat-retry").unwrap().retry_count, 0);
     }
 
@@ -1099,7 +1171,7 @@ mod c3_tests {
             "GBServer",
             3600,
         );
-        r.mark_registered("plat-ka");
+        r.mark_registered("plat-ka", None);
 
         // 模拟 10 分钟前最后活跃（判据是**存活时间**，不是注册时间）
         let old = Utc::now() - chrono::Duration::seconds(600);
@@ -1127,7 +1199,7 @@ mod c3_tests {
             "GBServer",
             3600,
         );
-        r.mark_registered("plat-live");
+        r.mark_registered("plat-live", None);
 
         // 5 分钟前
         if let Some(mut s) = r.states.get_mut("plat-live") {
@@ -1139,7 +1211,7 @@ mod c3_tests {
             vec!["plat-live".to_string()]
         );
         // 重新 mark_registered 后再 note_liveness
-        r.mark_registered("plat-live");
+        r.mark_registered("plat-live", None);
         r.note_liveness("plat-live");
         let live = r.state("plat-live").unwrap();
         let elapsed = (Utc::now() - live.last_liveness.unwrap()).num_seconds();
@@ -1167,7 +1239,7 @@ mod c3_tests {
             "GBServer",
             3600,
         );
-        r.mark_registered("plat-healthy");
+        r.mark_registered("plat-healthy", None);
 
         // 「距上次 REGISTER 已 600s」—— 仍在 expires/2=1800s 的正常刷新周期内
         let old = Utc::now() - chrono::Duration::seconds(600);
@@ -1237,6 +1309,77 @@ mod c3_tests {
         assert_eq!(server_port_u16(Some(65535)), Some(65535));
     }
 
+    /// **回归**：从 200 OK 里解析**服务端授予的**注册有效期。
+    ///
+    /// SIP 的注册有效期以服务端给的为准（RFC 3261 §10.3），服务端可以把它
+    /// 压到比请求值更短。此前完全不读它 → 刷新定时器长于真实有效期 →
+    /// 本级在上游侧已过期（上游停发 INVITE、拒绝目录订阅）而本级自认在线。
+    #[test]
+    fn granted_expires_is_parsed_from_the_200_ok() {
+        // Contact 的 expires 参数优先于 Expires 头
+        assert_eq!(
+            parse_granted_expires(Some("<sip:x@1.2.3.4:5060>;expires=300"), Some("3600")),
+            Some(300)
+        );
+        // 只有 Expires 头
+        assert_eq!(parse_granted_expires(None, Some("1800")), Some(1800));
+        // 参数名大小写不敏感
+        assert_eq!(
+            parse_granted_expires(Some("<sip:x@1.2.3.4>;EXPIRES=600"), None),
+            Some(600)
+        );
+        // 多个参数
+        assert_eq!(
+            parse_granted_expires(
+                Some("<sip:x@1.2.3.4>;transport=udp;expires=900"),
+                None
+            ),
+            Some(900)
+        );
+        // 解析不出来 → None（调用方回退到请求值）
+        assert_eq!(parse_granted_expires(None, None), None);
+        assert_eq!(parse_granted_expires(Some("<sip:x@1.2.3.4>"), None), None);
+        assert_eq!(parse_granted_expires(None, Some("abc")), None);
+        assert_eq!(parse_granted_expires(None, Some("0")), None);
+    }
+
+    /// **回归**：刷新周期必须按**服务端授予的**有效期算，而不是请求值。
+    ///
+    /// 场景：平台请求 expires=3600，上游只给 300s。若按请求值的一半（1800s）
+    /// 刷新，本级在上游侧会「已过期」约 1500s（上游停发 INVITE、拒绝目录
+    /// 订阅），而本级日志无任何告警、`RegistrationStatus` 仍是 Registered。
+    #[test]
+    fn refresh_interval_follows_the_granted_expires() {
+        let now = Utc::now();
+
+        // 距上次 REGISTER 200s：
+        //   按请求值（3600/2 = 1800s）→ 还早得很，不该刷新；
+        //   按授予值（300/2 = 150s）   → 早就该刷新了。
+        let last = now - chrono::Duration::seconds(200);
+        assert!(
+            !needs_register_refresh(Some(last), 3600, None),
+            "没有授予值时应按请求值的一半（1800s）判断 —— 200s 还早"
+        );
+        assert!(
+            needs_register_refresh(Some(last), 3600, Some(300)),
+            "授予值 300s 时，200s 已超过其一半（150s）—— 必须刷新"
+        );
+
+        // 授予值与请求值一致时行为不变
+        let last = now - chrono::Duration::seconds(200);
+        assert!(!needs_register_refresh(Some(last), 3600, Some(3600)));
+        assert!(needs_register_refresh(Some(last), 3600, Some(100)));
+
+        // 从没注册过 → 该注册
+        assert!(needs_register_refresh(None, 3600, Some(300)));
+
+        // 边界：effective=1 时下限 1s，不能变成「永远该刷新」
+        let last = now;
+        assert!(!needs_register_refresh(Some(last), 3600, Some(1)));
+        let last = now - chrono::Duration::seconds(2);
+        assert!(needs_register_refresh(Some(last), 3600, Some(1)));
+    }
+
     /// C3.3: remove_platform → 完全移除（disable 路径）
     #[test]
     fn c3_disable_removes_session() {
@@ -1251,7 +1394,7 @@ mod c3_tests {
             "GBServer",
             3600,
         );
-        r.mark_registered("plat-dis");
+        r.mark_registered("plat-dis", None);
         assert!(r.get_status("plat-dis").is_some());
 
         r.remove_platform("plat-dis");
