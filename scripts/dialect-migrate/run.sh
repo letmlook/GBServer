@@ -13,6 +13,8 @@
 #      裸 `?` 在 PG 上必然 syntax error，而 SQLite/MySQL 完全看不出来。
 #      这次改造里它一次抓出 411 处。
 #   3. 流水线**幂等**：中途失败可以从头重跑。
+#   4. **格式门禁是"执行"不是"提示"** —— 转换器合并方言分支时会产出超长单行
+#      `.bind(...)` 链，必须由 `cargo fmt --check` 卡住（见第 7 步）。
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
@@ -60,7 +62,29 @@ python3 $S/audit_symbols.py
 echo "==> 6. 内容膨胀守卫"
 bash $S/guard.sh
 
+echo "==> 7. 格式化门禁（**必须真的执行**，不是打印一句提示）"
+# 为什么这一步必须是"执行"而不是"提示"：转换器会把三个方言分支合并成
+# **一条超长单行 `.bind(...)` 链**（三个分支各一条短链 → 合并后超出 rustfmt
+# 的行宽上限）→ `cargo fmt --check` 必然报 diff。曾经把这步只写成一行
+# "接下来：cargo fmt && ..." 的提示，于是流水线产出的树**带着格式违规**，
+# 而台账却写着「cargo fmt 干净」—— 结论不可复现。
+#
+# 判据用 `--check`（只读、不改文件）而不是 `cargo fmt`（会重写）：
+# 这里就是要**卡住**流水线，不让它把未格式化的产物交出去。
+if ! cargo fmt --check >/tmp/dialect_fmt_check.log 2>&1; then
+  echo "❌ 格式不合规（rustfmt 有 diff）："
+  head -40 /tmp/dialect_fmt_check.log
+  echo
+  echo "   修法：cargo fmt   # 重写后再重跑本步骤"
+  exit 1
+fi
+echo "   ✅ cargo fmt --check 0 违规"
+
+echo "==> 8. 编译与静态检查门禁"
+cargo check --message-format=short 2>&1 | tail -5
+cargo clippy --all-targets --all-features --message-format=short 2>&1 | tail -5
+
 echo
-echo "接下来：cargo fmt && cargo clippy --all-targets --all-features && cargo test --no-fail-fast，"
-echo "然后用 scripts/dialect_smoke_all.sh 起三个实例（sqlite / postgres / mysql，"
-echo "只改 GBSERVER__DATABASE__URL）跑真实库冒烟。"
+echo "==> 接下来：cargo test --no-fail-fast，"
+echo "   然后用 scripts/dialect_smoke_all.sh 起三个实例（sqlite / postgres / mysql，"
+echo "   只改 GBSERVER__DATABASE__URL）跑真实库冒烟。"

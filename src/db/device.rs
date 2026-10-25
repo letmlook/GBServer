@@ -1172,7 +1172,22 @@ pub async fn update_device(
     let sql = pool.sql(&stmt).into_owned();
     let r = crate::dispatch_exec!(pool, |p| {
         sqlx::query(&sql)
-            .bind(f.name).bind(f.manufacturer).bind(f.model).bind(f.transport).bind(f.stream_mode).bind(f.media_server_id).bind(f.custom_name).bind(f.ip).bind(f.port).bind(f.password).bind(f.expires).bind(f.heart_beat_interval).bind(f.heart_beat_count).bind(now).bind(device_id).execute(p)
+            .bind(f.name)
+            .bind(f.manufacturer)
+            .bind(f.model)
+            .bind(f.transport)
+            .bind(f.stream_mode)
+            .bind(f.media_server_id)
+            .bind(f.custom_name)
+            .bind(f.ip)
+            .bind(f.port)
+            .bind(f.password)
+            .bind(f.expires)
+            .bind(f.heart_beat_interval)
+            .bind(f.heart_beat_count)
+            .bind(now)
+            .bind(device_id)
+            .execute(p)
     })?;
     Ok(r.rows_affected())
 }

@@ -75,7 +75,22 @@ pub async fn update(
     let sql = pool.sql(&stmt).into_owned();
     let r = crate::dispatch_exec!(pool, |p| {
         sqlx::query(&sql)
-            .bind(f.name).bind(f.channel_id).bind(f.civil_code).bind(f.parent_id).bind(f.business_group).bind(f.ptz_type).bind(f.custom_name).bind(f.manufacturer).bind(f.model).bind(f.owner).bind(f.address).bind(f.stream_identification).bind(f.channel_type).bind(now).bind(id).execute(p)
+            .bind(f.name)
+            .bind(f.channel_id)
+            .bind(f.civil_code)
+            .bind(f.parent_id)
+            .bind(f.business_group)
+            .bind(f.ptz_type)
+            .bind(f.custom_name)
+            .bind(f.manufacturer)
+            .bind(f.model)
+            .bind(f.owner)
+            .bind(f.address)
+            .bind(f.stream_identification)
+            .bind(f.channel_type)
+            .bind(now)
+            .bind(id)
+            .execute(p)
     })?;
     Ok(r.rows_affected())
 }
