@@ -553,7 +553,7 @@ mod tests {
     /// 插入一台在线设备 + 一条属于它的通道。
     async fn seed_device_and_channel(pool: &Pool, on_line: bool) -> i64 {
         crate::dispatch_exec!(pool, |p| {
-            sqlx::query(&crate::dyn_where::dialect_sql(
+            sqlx::query(&pool.sql(
                 "INSERT INTO gb_device (device_id, name, on_line, create_time, update_time) \
              VALUES (?, ?, ?, '2026-01-01 00:00:00', '2026-01-01 00:00:00')",
             ))
@@ -565,7 +565,7 @@ mod tests {
         .unwrap();
 
         crate::dispatch_exec!(pool, |p| {
-            sqlx::query(&crate::dyn_where::dialect_sql(
+            sqlx::query(&pool.sql(
                 "INSERT INTO gb_device_channel (device_id, name, gb_device_id, status, has_audio, \
              create_time, update_time, data_type, data_device_id, channel_type) \
              VALUES (?, ?, ?, 'ON', 0, '2026-01-01 00:00:00', '2026-01-01 00:00:00', 0, 0, 0)",
@@ -624,9 +624,11 @@ mod tests {
 
         // 通道名必须真的没被改掉
         let names: Vec<String> = crate::dispatch!(&state.pool, |p| {
-            sqlx::query_scalar::<_, String>(&crate::dyn_where::dialect_sql(
-                "SELECT name FROM gb_device_channel WHERE gb_device_id = ?",
-            ))
+            sqlx::query_scalar::<_, String>(
+                &state
+                    .pool
+                    .sql("SELECT name FROM gb_device_channel WHERE gb_device_id = ?"),
+            )
             .bind(CHANNEL_ID)
             .fetch_all(p)
         })
@@ -650,7 +652,7 @@ mod tests {
         // 通道 A：`gb_device_id` 是短数字串 '999999'（主键自增）
         crate::dispatch_exec!(&state.pool, |p| {
             sqlx::query(
-                &crate::dyn_where::dialect_sql("INSERT INTO gb_device_channel (device_id, name, gb_device_id, status, has_audio, \
+                &state.pool.sql("INSERT INTO gb_device_channel (device_id, name, gb_device_id, status, has_audio, \
                  create_time, update_time, data_type, data_device_id, channel_type) \
                  VALUES (?, 'A', '999999', 'ON', 0, '2026-01-01 00:00:00', '2026-01-01 00:00:00', 0, 0, 0)"),
             )
@@ -661,7 +663,7 @@ mod tests {
         // 通道 B：主键正好是 999999
         crate::dispatch_exec!(&state.pool, |p| {
             sqlx::query(
-                &crate::dyn_where::dialect_sql("INSERT INTO gb_device_channel (id, device_id, name, gb_device_id, status, has_audio, \
+                &state.pool.sql("INSERT INTO gb_device_channel (id, device_id, name, gb_device_id, status, has_audio, \
                  create_time, update_time, data_type, data_device_id, channel_type) \
                  VALUES (999999, ?, 'B', '34020000001310000992', 'ON', 0, \
                  '2026-01-01 00:00:00', '2026-01-01 00:00:00', 0, 0, 0)"),
@@ -708,9 +710,11 @@ mod tests {
             "本用例的前提：该号必须能 parse 成 i64（实际 {stripped}）"
         );
         crate::dispatch_exec!(&state.pool, |p| {
-            sqlx::query(&crate::dyn_where::dialect_sql(
-                "UPDATE gb_device_channel SET gb_device_id = ? WHERE gb_device_id = ?",
-            ))
+            sqlx::query(
+                &state
+                    .pool
+                    .sql("UPDATE gb_device_channel SET gb_device_id = ? WHERE gb_device_id = ?"),
+            )
             .bind(stripped)
             .bind(CHANNEL_ID)
             .execute(p)

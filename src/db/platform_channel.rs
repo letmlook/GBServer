@@ -76,7 +76,7 @@ pub async fn list_by_platform_id(
         },
         |p| {
             sqlx::query_as::<_, PlatformChannel>(
-                    &crate::dyn_where::dialect_sql("SELECT * FROM gb_platform_channel WHERE platform_id = ? ORDER BY id LIMIT ? OFFSET ?"),
+                    &pool.sql("SELECT * FROM gb_platform_channel WHERE platform_id = ? ORDER BY id LIMIT ? OFFSET ?"),
                 )
                 .bind(platform_id)
                 .bind(limit as i64)
@@ -86,7 +86,7 @@ pub async fn list_by_platform_id(
         },
         |p| {
             sqlx::query_as::<_, PlatformChannel>(
-                    &crate::dyn_where::dialect_sql("SELECT * FROM gb_platform_channel WHERE platform_id = ? ORDER BY id LIMIT ? OFFSET ?"),
+                    &pool.sql("SELECT * FROM gb_platform_channel WHERE platform_id = ? ORDER BY id LIMIT ? OFFSET ?"),
                 )
                 .bind(platform_id)
                 .bind(limit as i64)
@@ -110,17 +110,17 @@ pub async fn count_by_platform_id(pool: &Pool, platform_id: i64) -> sqlx::Result
             .await
         },
         |p| {
-            sqlx::query_scalar::<_, i64>(&crate::dyn_where::dialect_sql(
-                "SELECT COUNT(*) FROM gb_platform_channel WHERE platform_id = ?",
-            ))
+            sqlx::query_scalar::<_, i64>(
+                &pool.sql("SELECT COUNT(*) FROM gb_platform_channel WHERE platform_id = ?"),
+            )
             .bind(platform_id)
             .fetch_one(p)
             .await
         },
         |p| {
-            sqlx::query_scalar::<_, i64>(&crate::dyn_where::dialect_sql(
-                "SELECT COUNT(*) FROM gb_platform_channel WHERE platform_id = ?",
-            ))
+            sqlx::query_scalar::<_, i64>(
+                &pool.sql("SELECT COUNT(*) FROM gb_platform_channel WHERE platform_id = ?"),
+            )
             .bind(platform_id)
             .fetch_one(p)
             .await
@@ -141,7 +141,7 @@ pub async fn add(pool: &Pool, platform_id: i64, device_channel_id: i64) -> sqlx:
             .execute(p)
         },
         |p| {
-            sqlx::query(&crate::dyn_where::dialect_sql(
+            sqlx::query(&pool.sql(
                 "INSERT INTO gb_platform_channel (platform_id, device_channel_id) VALUES (?, ?)",
             ))
             .bind(platform_id)
@@ -149,7 +149,7 @@ pub async fn add(pool: &Pool, platform_id: i64, device_channel_id: i64) -> sqlx:
             .execute(p)
         },
         |p| {
-            sqlx::query(&crate::dyn_where::dialect_sql(
+            sqlx::query(&pool.sql(
                 "INSERT INTO gb_platform_channel (platform_id, device_channel_id) VALUES (?, ?)",
             ))
             .bind(platform_id)
@@ -171,18 +171,14 @@ pub async fn delete_by_id(pool: &Pool, id: i64) -> sqlx::Result<u64> {
                 .execute(p)
         },
         |p| {
-            sqlx::query(&crate::dyn_where::dialect_sql(
-                "DELETE FROM gb_platform_channel WHERE id = ?",
-            ))
-            .bind(id)
-            .execute(p)
+            sqlx::query(&pool.sql("DELETE FROM gb_platform_channel WHERE id = ?"))
+                .bind(id)
+                .execute(p)
         },
         |p| {
-            sqlx::query(&crate::dyn_where::dialect_sql(
-                "DELETE FROM gb_platform_channel WHERE id = ?",
-            ))
-            .bind(id)
-            .execute(p)
+            sqlx::query(&pool.sql("DELETE FROM gb_platform_channel WHERE id = ?"))
+                .bind(id)
+                .execute(p)
         },
     )?;
 
@@ -199,18 +195,14 @@ pub async fn batch_delete_by_platform(pool: &Pool, platform_id: i64) -> sqlx::Re
                 .execute(p)
         },
         |p| {
-            sqlx::query(&crate::dyn_where::dialect_sql(
-                "DELETE FROM gb_platform_channel WHERE platform_id = ?",
-            ))
-            .bind(platform_id)
-            .execute(p)
+            sqlx::query(&pool.sql("DELETE FROM gb_platform_channel WHERE platform_id = ?"))
+                .bind(platform_id)
+                .execute(p)
         },
         |p| {
-            sqlx::query(&crate::dyn_where::dialect_sql(
-                "DELETE FROM gb_platform_channel WHERE platform_id = ?",
-            ))
-            .bind(platform_id)
-            .execute(p)
+            sqlx::query(&pool.sql("DELETE FROM gb_platform_channel WHERE platform_id = ?"))
+                .bind(platform_id)
+                .execute(p)
         },
     )?;
 
@@ -228,17 +220,17 @@ pub async fn get_by_id(pool: &Pool, id: i64) -> sqlx::Result<Option<PlatformChan
                 .await
         },
         |p| {
-            sqlx::query_as::<_, PlatformChannel>(&crate::dyn_where::dialect_sql(
-                "SELECT * FROM gb_platform_channel WHERE id = ?",
-            ))
+            sqlx::query_as::<_, PlatformChannel>(
+                &pool.sql("SELECT * FROM gb_platform_channel WHERE id = ?"),
+            )
             .bind(id)
             .fetch_optional(p)
             .await
         },
         |p| {
-            sqlx::query_as::<_, PlatformChannel>(&crate::dyn_where::dialect_sql(
-                "SELECT * FROM gb_platform_channel WHERE id = ?",
-            ))
+            sqlx::query_as::<_, PlatformChannel>(
+                &pool.sql("SELECT * FROM gb_platform_channel WHERE id = ?"),
+            )
             .bind(id)
             .fetch_optional(p)
             .await
@@ -404,7 +396,7 @@ pub async fn delete_by_device_channel_id(
             .execute(p)
         },
         |p| {
-            sqlx::query(&crate::dyn_where::dialect_sql(
+            sqlx::query(&pool.sql(
                 "DELETE FROM gb_platform_channel WHERE platform_id = ? AND device_channel_id = ?",
             ))
             .bind(platform_id)
@@ -412,7 +404,7 @@ pub async fn delete_by_device_channel_id(
             .execute(p)
         },
         |p| {
-            sqlx::query(&crate::dyn_where::dialect_sql(
+            sqlx::query(&pool.sql(
                 "DELETE FROM gb_platform_channel WHERE platform_id = ? AND device_channel_id = ?",
             ))
             .bind(platform_id)
@@ -442,18 +434,22 @@ pub async fn get_by_platform_and_channel(
             .await
         },
         |p| {
-            sqlx::query_as::<_, PlatformChannel>(&crate::dyn_where::dialect_sql(
-                "SELECT * FROM gb_platform_channel WHERE platform_id = ? AND channel_id = ?",
-            ))
+            sqlx::query_as::<_, PlatformChannel>(
+                &pool.sql(
+                    "SELECT * FROM gb_platform_channel WHERE platform_id = ? AND channel_id = ?",
+                ),
+            )
             .bind(platform_id)
             .bind(channel_id)
             .fetch_optional(p)
             .await
         },
         |p| {
-            sqlx::query_as::<_, PlatformChannel>(&crate::dyn_where::dialect_sql(
-                "SELECT * FROM gb_platform_channel WHERE platform_id = ? AND channel_id = ?",
-            ))
+            sqlx::query_as::<_, PlatformChannel>(
+                &pool.sql(
+                    "SELECT * FROM gb_platform_channel WHERE platform_id = ? AND channel_id = ?",
+                ),
+            )
             .bind(platform_id)
             .bind(channel_id)
             .fetch_optional(p)
@@ -489,7 +485,7 @@ pub async fn batch_add_channels(
             },
             |p| {
                 sqlx::query(
-                    &crate::dyn_where::dialect_sql("INSERT INTO gb_platform_channel (platform_id, channel_id, create_time, update_time) VALUES (?, ?, ?, ?)"),
+                    &pool.sql("INSERT INTO gb_platform_channel (platform_id, channel_id, create_time, update_time) VALUES (?, ?, ?, ?)"),
                 )
                 .bind(platform_id)
                 .bind(channel_id)
@@ -499,7 +495,7 @@ pub async fn batch_add_channels(
             },
             |p| {
                 sqlx::query(
-                    &crate::dyn_where::dialect_sql("INSERT INTO gb_platform_channel (platform_id, channel_id, create_time, update_time) VALUES (?, ?, ?, ?)"),
+                    &pool.sql("INSERT INTO gb_platform_channel (platform_id, channel_id, create_time, update_time) VALUES (?, ?, ?, ?)"),
                 )
                 .bind(platform_id)
                 .bind(channel_id)
@@ -536,7 +532,7 @@ pub async fn batch_delete_channels(
                 .execute(p)
             },
             |p| {
-                sqlx::query(&crate::dyn_where::dialect_sql(
+                sqlx::query(&pool.sql(
                     "DELETE FROM gb_platform_channel WHERE platform_id = ? AND channel_id = ?",
                 ))
                 .bind(platform_id)
@@ -544,7 +540,7 @@ pub async fn batch_delete_channels(
                 .execute(p)
             },
             |p| {
-                sqlx::query(&crate::dyn_where::dialect_sql(
+                sqlx::query(&pool.sql(
                     "DELETE FROM gb_platform_channel WHERE platform_id = ? AND channel_id = ?",
                 ))
                 .bind(platform_id)

@@ -22,11 +22,10 @@ pub async fn add(pool: &Pool, platform_id: i32, group_id: i32) -> sqlx::Result<i
     //
     // 改造前这里是三个 `#[cfg(feature = ...)]` 分支（编译期三选一），
     // 现在按**运行期方言**分支。
-    if crate::db::dialect::current().is_mysql() {
-        let sql = crate::db::dialect::current_sql(
-            "INSERT INTO gb_platform_group (platform_id, group_id) VALUES (?, ?)",
-        )
-        .into_owned();
+    if pool.dialect().is_mysql() {
+        let sql = pool
+            .sql("INSERT INTO gb_platform_group (platform_id, group_id) VALUES (?, ?)")
+            .into_owned();
         let r = crate::dispatch_exec!(pool, |p| {
             sqlx::query(&sql)
                 .bind(platform_id)
@@ -37,10 +36,9 @@ pub async fn add(pool: &Pool, platform_id: i32, group_id: i32) -> sqlx::Result<i
         return Ok(r.last_insert_id().unwrap_or(0) as i64);
     }
 
-    let sql = crate::db::dialect::current_sql(
-        "INSERT INTO gb_platform_group (platform_id, group_id) VALUES (?, ?) RETURNING id",
-    )
-    .into_owned();
+    let sql = pool
+        .sql("INSERT INTO gb_platform_group (platform_id, group_id) VALUES (?, ?) RETURNING id")
+        .into_owned();
     let row: (i64,) = crate::dispatch!(pool, |p| {
         sqlx::query_as(&sql)
             .bind(platform_id)
@@ -51,10 +49,9 @@ pub async fn add(pool: &Pool, platform_id: i32, group_id: i32) -> sqlx::Result<i
 }
 
 pub async fn list_by_platform(pool: &Pool, platform_id: i32) -> sqlx::Result<Vec<PlatformGroup>> {
-    let sql = crate::db::dialect::current_sql(
-        "SELECT id, platform_id, group_id FROM gb_platform_group WHERE platform_id = ?",
-    )
-    .into_owned();
+    let sql = pool
+        .sql("SELECT id, platform_id, group_id FROM gb_platform_group WHERE platform_id = ?")
+        .into_owned();
     return crate::dispatch!(pool, |p| {
         sqlx::query_as::<_, PlatformGroup>(&sql)
             .bind(platform_id)
@@ -64,10 +61,9 @@ pub async fn list_by_platform(pool: &Pool, platform_id: i32) -> sqlx::Result<Vec
 
 /// 删除平台分组关系
 pub async fn delete(pool: &Pool, platform_id: i32, group_id: i32) -> sqlx::Result<bool> {
-    let sql = crate::db::dialect::current_sql(
-        "DELETE FROM gb_platform_group WHERE platform_id = ? AND group_id = ?",
-    )
-    .into_owned();
+    let sql = pool
+        .sql("DELETE FROM gb_platform_group WHERE platform_id = ? AND group_id = ?")
+        .into_owned();
 
     let result = crate::dispatch_exec!(pool, |p| {
         sqlx::query(&sql)
@@ -81,9 +77,9 @@ pub async fn delete(pool: &Pool, platform_id: i32, group_id: i32) -> sqlx::Resul
 
 /// 删除平台的所有分组关系
 pub async fn delete_by_platform(pool: &Pool, platform_id: i32) -> sqlx::Result<u64> {
-    let sql =
-        crate::db::dialect::current_sql("DELETE FROM gb_platform_group WHERE platform_id = ?")
-            .into_owned();
+    let sql = pool
+        .sql("DELETE FROM gb_platform_group WHERE platform_id = ?")
+        .into_owned();
 
     let result =
         crate::dispatch_exec!(pool, |p| { sqlx::query(&sql).bind(platform_id).execute(p) })?;

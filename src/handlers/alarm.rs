@@ -127,7 +127,7 @@ pub async fn alarm_list(
     );
     const COUNT_BASE: &str = "SELECT COUNT(*) FROM gb_device_alarm";
 
-    let limit_ph = if crate::db::dialect::current().is_postgres() {
+    let limit_ph = if state.pool.dialect().is_postgres() {
         format!(
             " LIMIT ${} OFFSET ${}",
             w.binds.len() + 1,
@@ -283,7 +283,7 @@ pub async fn alarm_detail(
             .map_err(|e| AppError::business(ErrorCode::Error500, format!("数据库查询失败: {e}")))?
         },
         |p| {
-            sqlx::query_as(&crate::dyn_where::dialect_sql(
+            sqlx::query_as(&state.pool.sql(
                 "SELECT id, device_id, channel_id, alarm_priority, \
                     alarm_method, alarm_type, alarm_time, alarm_description, longitude, latitude, \
                     create_time, handled, handle_user, handle_time, handle_result \
@@ -295,7 +295,7 @@ pub async fn alarm_detail(
             .map_err(|e| AppError::business(ErrorCode::Error500, format!("数据库查询失败: {e}")))?
         },
         |p| {
-            sqlx::query_as(&crate::dyn_where::dialect_sql(
+            sqlx::query_as(&state.pool.sql(
                 "SELECT id, device_id, channel_id, alarm_priority, \
                     alarm_method, alarm_type, alarm_time, alarm_description, longitude, latitude, \
                     create_time, handled, handle_user, handle_time, handle_result \
@@ -413,24 +413,24 @@ pub async fn alarm_delete(
                 })
         },
         |p| {
-            sqlx::query(&crate::dyn_where::dialect_sql(
-                "DELETE FROM gb_device_alarm WHERE id = ?",
-            ))
-            .bind(id)
-            .execute(p)
-            .await
-            .map(|r| r.rows_affected())
-            .map_err(|e| AppError::business(ErrorCode::Error500, format!("数据库删除失败: {}", e)))
+            sqlx::query(&state.pool.sql("DELETE FROM gb_device_alarm WHERE id = ?"))
+                .bind(id)
+                .execute(p)
+                .await
+                .map(|r| r.rows_affected())
+                .map_err(|e| {
+                    AppError::business(ErrorCode::Error500, format!("数据库删除失败: {}", e))
+                })
         },
         |p| {
-            sqlx::query(&crate::dyn_where::dialect_sql(
-                "DELETE FROM gb_device_alarm WHERE id = ?",
-            ))
-            .bind(id)
-            .execute(p)
-            .await
-            .map(|r| r.rows_affected())
-            .map_err(|e| AppError::business(ErrorCode::Error500, format!("数据库删除失败: {}", e)))
+            sqlx::query(&state.pool.sql("DELETE FROM gb_device_alarm WHERE id = ?"))
+                .bind(id)
+                .execute(p)
+                .await
+                .map(|r| r.rows_affected())
+                .map_err(|e| {
+                    AppError::business(ErrorCode::Error500, format!("数据库删除失败: {}", e))
+                })
         },
     )?;
 
@@ -524,28 +524,24 @@ async fn delete_alarm_ids(
                     })
             },
             |p| {
-                sqlx::query(&crate::dyn_where::dialect_sql(
-                    "DELETE FROM gb_device_alarm WHERE id = ?",
-                ))
-                .bind(id)
-                .execute(p)
-                .await
-                .map(|r| r.rows_affected())
-                .map_err(|e| {
-                    AppError::business(ErrorCode::Error500, format!("数据库删除失败: {}", e))
-                })
+                sqlx::query(&pool.sql("DELETE FROM gb_device_alarm WHERE id = ?"))
+                    .bind(id)
+                    .execute(p)
+                    .await
+                    .map(|r| r.rows_affected())
+                    .map_err(|e| {
+                        AppError::business(ErrorCode::Error500, format!("数据库删除失败: {}", e))
+                    })
             },
             |p| {
-                sqlx::query(&crate::dyn_where::dialect_sql(
-                    "DELETE FROM gb_device_alarm WHERE id = ?",
-                ))
-                .bind(id)
-                .execute(p)
-                .await
-                .map(|r| r.rows_affected())
-                .map_err(|e| {
-                    AppError::business(ErrorCode::Error500, format!("数据库删除失败: {}", e))
-                })
+                sqlx::query(&pool.sql("DELETE FROM gb_device_alarm WHERE id = ?"))
+                    .bind(id)
+                    .execute(p)
+                    .await
+                    .map(|r| r.rows_affected())
+                    .map_err(|e| {
+                        AppError::business(ErrorCode::Error500, format!("数据库删除失败: {}", e))
+                    })
             },
         )?;
         deleted += r;
@@ -641,9 +637,11 @@ pub async fn alarm_delete_by_device(
                 })
         },
         |p| {
-            sqlx::query(&crate::dyn_where::dialect_sql(
-                "DELETE FROM gb_device_alarm WHERE device_id = ?",
-            ))
+            sqlx::query(
+                &state
+                    .pool
+                    .sql("DELETE FROM gb_device_alarm WHERE device_id = ?"),
+            )
             .bind(&device_id)
             .execute(p)
             .await
@@ -651,9 +649,11 @@ pub async fn alarm_delete_by_device(
             .map_err(|e| AppError::business(ErrorCode::Error500, format!("数据库删除失败: {}", e)))
         },
         |p| {
-            sqlx::query(&crate::dyn_where::dialect_sql(
-                "DELETE FROM gb_device_alarm WHERE device_id = ?",
-            ))
+            sqlx::query(
+                &state
+                    .pool
+                    .sql("DELETE FROM gb_device_alarm WHERE device_id = ?"),
+            )
             .bind(&device_id)
             .execute(p)
             .await
@@ -699,9 +699,11 @@ pub async fn alarm_delete_before_time(
                 })
         },
         |p| {
-            sqlx::query(&crate::dyn_where::dialect_sql(
-                "DELETE FROM gb_device_alarm WHERE create_time < ?",
-            ))
+            sqlx::query(
+                &state
+                    .pool
+                    .sql("DELETE FROM gb_device_alarm WHERE create_time < ?"),
+            )
             .bind(&before_time)
             .execute(p)
             .await
@@ -709,9 +711,11 @@ pub async fn alarm_delete_before_time(
             .map_err(|e| AppError::business(ErrorCode::Error500, format!("数据库删除失败: {}", e)))
         },
         |p| {
-            sqlx::query(&crate::dyn_where::dialect_sql(
-                "DELETE FROM gb_device_alarm WHERE create_time < ?",
-            ))
+            sqlx::query(
+                &state
+                    .pool
+                    .sql("DELETE FROM gb_device_alarm WHERE create_time < ?"),
+            )
             .bind(&before_time)
             .execute(p)
             .await
@@ -732,7 +736,7 @@ mod alarm_contract_tests {
 
     async fn seed(state: &AppState, device: &str, atype: &str, atime: &str, priority: &str) {
         crate::dispatch_exec!(&state.pool, |p| {
-            sqlx::query(&crate::dyn_where::dialect_sql(
+            sqlx::query(&state.pool.sql(
                 "INSERT INTO gb_device_alarm \
                  (device_id, channel_id, alarm_priority, alarm_method, alarm_type, alarm_time, \
                   alarm_description, create_time, handled) \

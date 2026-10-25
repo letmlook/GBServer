@@ -418,7 +418,7 @@ fn looks_like_sql(text: &str) -> bool {
 /// 这个字面量是不是被「运行期方言改写」包裹的？
 ///
 /// 两种写法都算：
-/// * `crate::dyn_where::dialect_sql("...")` —— 按**进程级**当前方言改写；
+/// * `pool.sql("...")` —— 按**进程级**当前方言改写；
 /// * `pool.sql("...")` —— 按**这个 pool** 的方言改写（多方言运行时更准确）。
 fn wrapped_by_dialect_sql(src: &str, lit_pos: usize) -> bool {
     let head = &src[..lit_pos];
@@ -490,9 +490,230 @@ fn no_raw_question_mark_sql_in_postgres_build() {
         violations.is_empty(),
         "发现 {} 处**在 postgres 构建下会被编译**、却仍用裸 `?` 占位符的 SQL —— \
          postgres 只认 `$1`，直接发 `?` 会得到 `syntax error`，该语句必然执行失败。\n\
-         修法二选一：\n  1) 用 `crate::dyn_where::dialect_sql(...)` 包起来（自动改写成 `$1..$n`）；\n\
+         修法二选一：\n  1) 用 `pool.sql(...)` 包起来（自动改写成 `$1..$n`）；\n\
          2) 写成 `#[cfg(feature = \"postgres\")]` 与 `#[cfg(any(feature = \"mysql\", feature = \"sqlite\"))]` \
          两份，postgres 那份用 `$1..$n`。\n\
+         命中清单：\n  {}",
+        violations.len(),
+        violations.join("\n  ")
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 第二条规则：方言分支必须看 **pool 自己的类型**，不能看进程级全局
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// 标出「注释」与「字符串字面量」覆盖的字节位置（这些位置不算代码）。
+///
+/// 只做一次线性扫描：行注释 / 块注释 / 普通字符串 / raw string / 字符字面量。
+fn non_code_mask(src: &str) -> Vec<bool> {
+    let b = src.as_bytes();
+    let n = src.len();
+    let mut mask = vec![false; n];
+    let mut i = 0usize;
+    while i < n {
+        if b[i] == b'/' && i + 1 < n && b[i + 1] == b'/' {
+            while i < n && b[i] != b'\n' {
+                mask[i] = true;
+                i += 1;
+            }
+            continue;
+        }
+        if b[i] == b'/' && i + 1 < n && b[i + 1] == b'*' {
+            mask[i] = true;
+            mask[i + 1] = true;
+            i += 2;
+            while i + 1 < n && !(b[i] == b'*' && b[i + 1] == b'/') {
+                if b[i] != b'\n' {
+                    mask[i] = true;
+                }
+                i += 1;
+            }
+            if i + 1 < n {
+                mask[i] = true;
+                mask[i + 1] = true;
+                i += 2;
+            } else {
+                i = n;
+            }
+            continue;
+        }
+        // raw string: r"..." / r#"..."#
+        if b[i] == b'r' && i + 1 < n && (b[i + 1] == b'"' || b[i + 1] == b'#') {
+            let mut j = i + 1;
+            let mut hashes = 0usize;
+            while j < n && b[j] == b'#' {
+                hashes += 1;
+                j += 1;
+            }
+            if j < n && b[j] == b'"' {
+                let start = i;
+                j += 1;
+                let mut closed = false;
+                while j < n {
+                    if b[j] == b'"'
+                        && j + hashes < n
+                        && b[j + 1..j + 1 + hashes].iter().all(|c| *c == b'#')
+                    {
+                        for k in start..(j + 1 + hashes).min(n) {
+                            mask[k] = true;
+                        }
+                        j += 1 + hashes;
+                        closed = true;
+                        break;
+                    }
+                    j += 1;
+                }
+                if !closed {
+                    for k in start..n {
+                        mask[k] = true;
+                    }
+                }
+                i = j;
+                continue;
+            }
+        }
+        if b[i] == b'"' {
+            let start = i;
+            i += 1;
+            while i < n {
+                if b[i] == b'\\' {
+                    i += 2;
+                    continue;
+                }
+                if b[i] == b'"' {
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
+            for k in start..i.min(n) {
+                mask[k] = true;
+            }
+            continue;
+        }
+        if b[i] == b'\'' {
+            // 生命周期标注 `'a` 不是字面量；只有紧跟字符/转义才当字面量
+            let is_lifetime = i + 1 < n
+                && (b[i + 1].is_ascii_alphabetic() || b[i + 1] == b'_')
+                && !(i + 2 < n && b[i + 2] == b'\'');
+            if is_lifetime {
+                i += 1;
+                continue;
+            }
+            let start = i;
+            i += 1;
+            while i < n {
+                if b[i] == b'\\' {
+                    i += 2;
+                    continue;
+                }
+                if b[i] == b'\'' {
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
+            for k in start..i.min(n) {
+                mask[k] = true;
+            }
+            continue;
+        }
+        i += 1;
+    }
+    mask
+}
+
+/// 找出 `dialect::current()` 在**代码区**（不含注释与字符串）里的所有位置。
+fn find_global_dialect_calls(src: &str) -> Vec<usize> {
+    let mask = non_code_mask(src);
+    const PAT: &str = "dialect::current()";
+    let mut out = Vec::new();
+    let mut from = 0usize;
+    while let Some(idx) = src[from..].find(PAT) {
+        let pos = from + idx;
+        if !mask[pos] {
+            out.push(pos);
+        }
+        from = pos + PAT.len();
+    }
+    out
+}
+
+/// `#[cfg(...)]` 条件是否把这段代码划进**测试作用域**。
+fn cond_is_test_scope(cond: &str) -> bool {
+    let toks: Vec<&str> = cond
+        .split(|ch: char| !ch.is_alphanumeric() && ch != '_')
+        .filter(|s| !s.is_empty())
+        .collect();
+    for (i, t) in toks.iter().enumerate() {
+        if *t == "test" {
+            // `not(test)` = 非测试作用域
+            if i > 0 && toks[i - 1] == "not" {
+                return false;
+            }
+            return true;
+        }
+    }
+    false
+}
+
+/// **方言分支的判据必须是 pool 自己的类型**，不能是进程级全局。
+///
+/// 改造前方言分支是 `#[cfg(feature = "postgres")]` —— **编译期**决定，
+/// 对某个构建永远正确。改造成运行期后，部分站点被写成了
+/// `dialect::current().is_postgres()`：那是**进程级全局**，只在
+/// 「一个进程一个库」的生产场景下与 pool 的方言一致；测试里直接构造
+/// `Pool::Postgres(..)` 时全局仍是默认 sqlite，就会走错分支：
+///
+/// - PG 上收到没被改写的 `?` → `syntax error at end of input`；
+/// - PG 的 `COUNT(*)` 少了 `::INTEGER` → `INT8` 与 `Option<i32>` 类型不匹配。
+///
+/// 这两个都是**实测**出来的（`tests/postgres_device_lookup.rs` 在真实
+/// PostgreSQL 上失败）。正确判据是 `pool.dialect()` / `pool.sql()`。
+#[test]
+fn dialect_branch_must_use_pool_dialect_not_process_global() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let src_root = manifest.join("src");
+    // 这几个文件**定义**全局方言本身，或就是这条规则本身
+    let skip = [
+        "src/db/dialect.rs",
+        "src/dyn_where.rs",
+        "src/dialect_guard.rs",
+    ];
+    let mut files = Vec::new();
+    collect_rs_files(&src_root, &mut files);
+    let mut violations = Vec::new();
+    for path in files {
+        let rel = path.strip_prefix(manifest).unwrap_or(&path);
+        let rel_s = rel.to_string_lossy().to_string();
+        if skip.contains(&rel_s.as_str()) {
+            continue;
+        }
+        let Ok(src) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let spans = cfg_spans(&src);
+        for pos in find_global_dialect_calls(&src) {
+            // 测试作用域里允许用全局 —— 那里往往**还没有 pool** 可问
+            // （例如「该造哪个方言的 mock pool」这种选择）。
+            if let Some(cond) = governing(&spans, pos) {
+                if cond_is_test_scope(cond) {
+                    continue;
+                }
+            }
+            let line = src[..pos].matches('\n').count() + 1;
+            violations.push(format!("{}:{}", rel_s, line));
+        }
+    }
+    assert!(
+        violations.is_empty(),
+        "发现 {} 处在**非测试代码**里用进程级全局 `dialect::current()` 选方言分支 —— \
+         它只在「一个进程一个库」时与 pool 的方言一致，测试里直接构造 \
+         `Pool::Postgres(..)` 就会走错分支（PG 上实测报 `syntax error at end of input` \
+         与 `INT8` vs `Option<i32>` 类型不匹配）。\n\
+         修法：改用 `pool.dialect()` / `pool.sql(...)`（判据是**池的类型本身**）。\n\
+         真正需要全局的场景只有「此刻还没有 pool 可问」，那种必须放进 `#[cfg(test)]` 作用域。\n\
          命中清单：\n  {}",
         violations.len(),
         violations.join("\n  ")

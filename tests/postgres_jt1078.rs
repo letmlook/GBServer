@@ -23,13 +23,13 @@
 ///
 /// `cargo test` 默认跑 sqlite —— `?` 合法、`INTEGER` 兼容 `i64`，**两个坑都不存在**，
 /// 单测全绿也证明不了任何事。sqlite / mysql 的方言冒烟同样全绿。
-/// 只有**真的连上 postgres** 才能暴露。所以本文件是 `#![cfg(feature = "postgres")]`
-/// 且默认 `#[ignore]`，需要显式跑：
+/// 只有**真的连上 postgres** 才能暴露。所以本文件默认 `#[ignore]`，
+/// 需要显式跑（**逐个 test target 指定**，不要用 `cargo test -- --ignored` ——
+/// 那会把标记为 ignore 的 doc-test 伪代码示例也拉出来跑）：
 ///
 /// ```bash
 /// export TEST_POSTGRES_URL='postgres://postgres:postgres@127.0.0.1:5432/gbserver_test'
-/// cargo test --locked --no-default-features --features postgres \
-///             --test postgres_jt1078 -- --ignored
+/// cargo test --locked --test postgres_jt1078 -- --ignored
 /// ```
 use std::time::Duration;
 

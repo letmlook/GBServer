@@ -1749,7 +1749,7 @@ pub async fn record_list(
 
     // Final fallback: cloud_record DB
     if let Ok(records) = crate::dispatch!(&state.pool, |p| {
-        sqlx::query_as::<_, crate::db::cloud_record::CloudRecord>(&crate::dyn_where::dialect_sql(
+        sqlx::query_as::<_, crate::db::cloud_record::CloudRecord>(&state.pool.sql(
             "SELECT * FROM gb_cloud_record WHERE stream = ? ORDER BY start_time DESC LIMIT 50",
         ))
         .bind(&phone)

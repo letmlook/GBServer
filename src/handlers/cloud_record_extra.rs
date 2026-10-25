@@ -90,12 +90,15 @@ pub(crate) async fn clear_collect(state: &AppState, raw_id: &str) -> Result<Stri
     //
     // 注意 `Transaction` 本身不是 Executor，它 `Deref` 到 `DB::Connection`，
     // 所以执行时写 `&mut *tx`。
-    let sql_exists =
-        crate::dyn_where::dialect_sql("SELECT COUNT(*) FROM gb_cloud_record WHERE id = ?");
-    let sql_update =
-        crate::dyn_where::dialect_sql("UPDATE gb_cloud_record SET collect = ? WHERE id = ?");
-    let sql_delete =
-        crate::dyn_where::dialect_sql("DELETE FROM gb_record_collect WHERE record_id = ?");
+    let sql_exists = state
+        .pool
+        .sql("SELECT COUNT(*) FROM gb_cloud_record WHERE id = ?");
+    let sql_update = state
+        .pool
+        .sql("UPDATE gb_cloud_record SET collect = ? WHERE id = ?");
+    let sql_delete = state
+        .pool
+        .sql("DELETE FROM gb_record_collect WHERE record_id = ?");
 
     macro_rules! clear_collect_body {
         ($tx:ident) => {{
@@ -764,7 +767,7 @@ mod tests {
             "rollback.mp4",
         );
         crate::dispatch_exec!(&state.pool, |p| {
-            sqlx::query(&crate::dyn_where::dialect_sql("INSERT INTO gb_record_collect (record_id, device_id, channel_id, name, create_time) VALUES (?, '', '', '', '')"))
+            sqlx::query(&state.pool.sql("INSERT INTO gb_record_collect (record_id, device_id, channel_id, name, create_time) VALUES (?, '', '', '', '')"))
                 .bind(&record_id)
                 .execute(p)
         })
@@ -781,9 +784,11 @@ mod tests {
             "blocked collect delete must fail: {result:?}"
         );
         let flag: i64 = crate::dispatch!(&state.pool, |p| {
-            sqlx::query_scalar::<_, i64>(&crate::dyn_where::dialect_sql(
-                "SELECT collect FROM gb_cloud_record WHERE id = ?",
-            ))
+            sqlx::query_scalar::<_, i64>(
+                &state
+                    .pool
+                    .sql("SELECT collect FROM gb_cloud_record WHERE id = ?"),
+            )
             .bind(id)
             .fetch_one(p)
         })

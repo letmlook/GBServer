@@ -42,7 +42,7 @@ pub struct AlarmInsert {
 
 /// 插入报警记录
 pub async fn insert_alarm(pool: &Pool, alarm: &AlarmInsert) -> sqlx::Result<u64> {
-    let sql = crate::db::dialect::current_sql("INSERT INTO gb_device_alarm (device_id, channel_id, alarm_priority, alarm_method, alarm_time, alarm_description, longitude, latitude, alarm_type, create_time) \
+    let sql = pool.sql("INSERT INTO gb_device_alarm (device_id, channel_id, alarm_priority, alarm_method, alarm_time, alarm_description, longitude, latitude, alarm_type, create_time) \
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").into_owned();
 
     let result = crate::dispatch_exec!(pool, |p| {
@@ -76,9 +76,10 @@ pub async fn list_alarms_paged(
 ) -> sqlx::Result<Vec<Alarm>> {
     let offset = crate::pagination::offset_i64(page, count);
 
-    let sql = match crate::db::dialect::current() {
-        crate::db::Dialect::MySql => crate::db::dialect::current_sql(
-            "SELECT id, device_id, channel_id, alarm_priority, alarm_method, alarm_time, \
+    let sql = match pool.dialect() {
+        crate::db::Dialect::MySql => pool
+            .sql(
+                "SELECT id, device_id, channel_id, alarm_priority, alarm_method, alarm_time, \
              alarm_description, longitude, latitude, alarm_type, create_time \
              FROM gb_device_alarm \
              WHERE (? IS NULL OR device_id LIKE CONCAT('%', ?, '%')) \
@@ -88,10 +89,11 @@ pub async fn list_alarms_paged(
                AND (? IS NULL OR alarm_time <= ?) \
              ORDER BY create_time DESC \
              LIMIT ? OFFSET ?",
-        )
-        .into_owned(),
-        crate::db::Dialect::Sqlite => crate::db::dialect::current_sql(
-            "SELECT id, device_id, channel_id, alarm_priority, alarm_method, alarm_time, \
+            )
+            .into_owned(),
+        crate::db::Dialect::Sqlite => pool
+            .sql(
+                "SELECT id, device_id, channel_id, alarm_priority, alarm_method, alarm_time, \
              alarm_description, longitude, latitude, alarm_type, create_time \
              FROM gb_device_alarm \
              WHERE (? IS NULL OR device_id LIKE '%' || ? || '%') \
@@ -101,10 +103,11 @@ pub async fn list_alarms_paged(
                AND (? IS NULL OR alarm_time <= ?) \
              ORDER BY create_time DESC \
              LIMIT ? OFFSET ?",
-        )
-        .into_owned(),
-        _ => crate::db::dialect::current_sql(
-            "SELECT id, device_id, channel_id, alarm_priority, alarm_method, alarm_time, \
+            )
+            .into_owned(),
+        _ => pool
+            .sql(
+                "SELECT id, device_id, channel_id, alarm_priority, alarm_method, alarm_time, \
              alarm_description, longitude, latitude, alarm_type, create_time \
              FROM gb_device_alarm \
              WHERE ($1::text IS NULL OR device_id LIKE '%' || $1 || '%') \
@@ -114,8 +117,8 @@ pub async fn list_alarms_paged(
                AND ($5::text IS NULL OR alarm_time <= $5) \
              ORDER BY create_time DESC \
              LIMIT $6 OFFSET $7",
-        )
-        .into_owned(),
+            )
+            .into_owned(),
     };
     return crate::dispatch!(pool, |p| {
         let query = sqlx::query_as::<_, Alarm>(&sql)
@@ -145,34 +148,37 @@ pub async fn count_alarms(
     start_time: Option<&str>,
     end_time: Option<&str>,
 ) -> sqlx::Result<i64> {
-    let sql = match crate::db::dialect::current() {
-        crate::db::Dialect::MySql => crate::db::dialect::current_sql(
-            "SELECT COUNT(*) FROM gb_device_alarm \
+    let sql = match pool.dialect() {
+        crate::db::Dialect::MySql => pool
+            .sql(
+                "SELECT COUNT(*) FROM gb_device_alarm \
              WHERE (? IS NULL OR device_id LIKE CONCAT('%', ?, '%')) \
                AND (? IS NULL OR alarm_type = ?) \
                AND (? IS NULL OR alarm_priority = ?) \
                AND (? IS NULL OR alarm_time >= ?) \
                AND (? IS NULL OR alarm_time <= ?)",
-        )
-        .into_owned(),
-        crate::db::Dialect::Sqlite => crate::db::dialect::current_sql(
-            "SELECT COUNT(*) FROM gb_device_alarm \
+            )
+            .into_owned(),
+        crate::db::Dialect::Sqlite => pool
+            .sql(
+                "SELECT COUNT(*) FROM gb_device_alarm \
              WHERE (?1 IS NULL OR device_id LIKE '%' || ?1 || '%') \
                AND (?2 IS NULL OR alarm_type = ?2) \
                AND (?3 IS NULL OR alarm_priority = ?3) \
                AND (?4 IS NULL OR alarm_time >= ?4) \
                AND (?5 IS NULL OR alarm_time <= ?5)",
-        )
-        .into_owned(),
-        _ => crate::db::dialect::current_sql(
-            "SELECT COUNT(*) FROM gb_device_alarm \
+            )
+            .into_owned(),
+        _ => pool
+            .sql(
+                "SELECT COUNT(*) FROM gb_device_alarm \
              WHERE ($1::text IS NULL OR device_id LIKE '%' || $1 || '%') \
                AND ($2::text IS NULL OR alarm_type = $2) \
                AND ($3::text IS NULL OR alarm_priority = $3) \
                AND ($4::text IS NULL OR alarm_time >= $4) \
                AND ($5::text IS NULL OR alarm_time <= $5)",
-        )
-        .into_owned(),
+            )
+            .into_owned(),
     };
 
     let result: (i64,) = crate::dispatch!(pool, |p| {
@@ -195,12 +201,13 @@ pub async fn count_alarms(
 
 /// 根据ID查询报警详情
 pub async fn get_alarm_by_id(pool: &Pool, id: i64) -> sqlx::Result<Option<Alarm>> {
-    let sql = crate::db::dialect::current_sql(
-        "SELECT id, device_id, channel_id, alarm_priority, alarm_method, alarm_time, \
+    let sql = pool
+        .sql(
+            "SELECT id, device_id, channel_id, alarm_priority, alarm_method, alarm_time, \
              alarm_description, longitude, latitude, alarm_type, create_time \
              FROM gb_device_alarm WHERE id = ?",
-    )
-    .into_owned();
+        )
+        .into_owned();
     return crate::dispatch!(pool, |p| {
         sqlx::query_as::<_, Alarm>(&sql).bind(id).fetch_optional(p)
     });
@@ -209,15 +216,16 @@ pub async fn get_alarm_by_id(pool: &Pool, id: i64) -> sqlx::Result<Option<Alarm>
 /// 删除报警记录
 /// Delete ALL alarms (used by /api/alarm/clear). Returns count deleted.
 pub async fn delete_all(pool: &Pool) -> sqlx::Result<u64> {
-    let sql = crate::db::dialect::current_sql("DELETE FROM gb_device_alarm").into_owned();
+    let sql = pool.sql("DELETE FROM gb_device_alarm").into_owned();
     // `dispatch_exec!` 自己会 await 并把方言相关的 `QueryResult` 统一映射成
     // `ExecResult` —— 宏体里**只能**留未 await 的 `execute(p)`。
     crate::dispatch_exec!(pool, |p| { sqlx::query(&sql).execute(p) }).map(|r| r.rows_affected())
 }
 
 pub async fn delete_alarm(pool: &Pool, id: i64) -> sqlx::Result<bool> {
-    let sql =
-        crate::db::dialect::current_sql("DELETE FROM gb_device_alarm WHERE id = ?").into_owned();
+    let sql = pool
+        .sql("DELETE FROM gb_device_alarm WHERE id = ?")
+        .into_owned();
 
     let result = crate::dispatch_exec!(pool, |p| { sqlx::query(&sql).bind(id).execute(p) })?;
 
@@ -280,7 +288,7 @@ pub async fn set_handled(
     handle_result: Option<&str>,
 ) -> sqlx::Result<u64> {
     let r = crate::dispatch_exec!(pool, |p| {
-        sqlx::query(&crate::dyn_where::dialect_sql(
+        sqlx::query(&pool.sql(
             "UPDATE gb_device_alarm SET handled = 1, handle_user = ?, handle_time = ?, \
          handle_result = COALESCE(?, handle_result) WHERE id = ?",
         ))

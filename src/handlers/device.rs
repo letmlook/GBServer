@@ -231,18 +231,22 @@ pub async fn device_keepalive_statistics(
     // `on_line` 是布尔列：PG 是 BOOL、MySQL 是 TINYINT(1)、SQLite 是 INTEGER。
     // 统一用**参数绑定**传 Rust `bool`，不在 SQL 文本里分叉 `true` / `1`。
     let online_count: i64 = crate::dispatch!(&state.pool, |p| {
-        sqlx::query_scalar::<_, i64>(&crate::dyn_where::dialect_sql(
-            "SELECT COUNT(*) FROM gb_device WHERE on_line = ?",
-        ))
+        sqlx::query_scalar::<_, i64>(
+            &state
+                .pool
+                .sql("SELECT COUNT(*) FROM gb_device WHERE on_line = ?"),
+        )
         .bind(true)
         .fetch_one(p)
     })
     .unwrap_or(0);
 
     let offline_count: i64 = crate::dispatch!(&state.pool, |p| {
-        sqlx::query_scalar::<_, i64>(&crate::dyn_where::dialect_sql(
-            "SELECT COUNT(*) FROM gb_device WHERE on_line = ? OR on_line IS NULL",
-        ))
+        sqlx::query_scalar::<_, i64>(
+            &state
+                .pool
+                .sql("SELECT COUNT(*) FROM gb_device WHERE on_line = ? OR on_line IS NULL"),
+        )
         .bind(false)
         .fetch_one(p)
     })
@@ -290,9 +294,11 @@ pub async fn device_register_statistics(
     .unwrap_or(0);
 
     let active_devices: i64 = crate::dispatch!(&state.pool, |p| {
-        sqlx::query_scalar::<_, i64>(&crate::dyn_where::dialect_sql(
-            "SELECT COUNT(*) FROM gb_device WHERE on_line = ?",
-        ))
+        sqlx::query_scalar::<_, i64>(
+            &state
+                .pool
+                .sql("SELECT COUNT(*) FROM gb_device WHERE on_line = ?"),
+        )
         .bind(true)
         .fetch_one(p)
     })

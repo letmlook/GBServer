@@ -243,7 +243,7 @@ async fn ensure_pg_column_types(pool: &db::Pool) -> anyhow::Result<()> {
 
     for fix in FIXES {
         let data_type: Option<String> = crate::dispatch!(pool, |p| {
-            sqlx::query_scalar::<_, String>(&crate::dyn_where::dialect_sql(
+            sqlx::query_scalar::<_, String>(&pool.sql(
                 "SELECT data_type FROM information_schema.columns \
                  WHERE table_schema = current_schema() AND table_name = ? AND column_name = ?",
             ))
@@ -304,7 +304,7 @@ async fn ensure_mysql_column_types(pool: &db::Pool) -> anyhow::Result<()> {
 
     for (table, column, target) in FIXES {
         let data_type: Option<String> = crate::dispatch!(pool, |p| {
-            sqlx::query_scalar::<_, String>(&crate::dyn_where::dialect_sql(
+            sqlx::query_scalar::<_, String>(&pool.sql(
                 "SELECT data_type FROM information_schema.columns \
                  WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?",
             ))
@@ -409,7 +409,7 @@ sqlx::query_scalar::<_, bool>(
             let mut missing_any = false;
             for tbl in &core_tables {
                 let exists: bool = crate::dispatch!(pool, |p| {
-                    sqlx::query_scalar::<_, bool>(&crate::dyn_where::dialect_sql(
+                    sqlx::query_scalar::<_, bool>(&pool.sql(
                         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?)",
                     ))
                     .bind(tbl)
@@ -1646,12 +1646,12 @@ mod tests {
 
         for (id, status) in rows {
             crate::dispatch_exec!(&db::Pool::Sqlite(pool.clone()), |p| {
-                sqlx::query(&crate::dyn_where::dialect_sql(
-                    "INSERT INTO gb_media_server (id, status) VALUES (?, ?)",
-                ))
-                .bind(id)
-                .bind(status)
-                .execute(p)
+                // 明确是 SQLite pool（`db::Pool::Sqlite`），SQL 本就是 `?` 风格，
+                // 不需要任何方言改写。
+                sqlx::query("INSERT INTO gb_media_server (id, status) VALUES (?, ?)")
+                    .bind(id)
+                    .bind(status)
+                    .execute(p)
             })
             .expect("insert");
         }

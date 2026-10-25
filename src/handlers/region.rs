@@ -211,7 +211,7 @@ mod tests {
     ) {
         crate::dispatch_exec!(pool, |p| {
 sqlx::query(
-            &crate::dyn_where::dialect_sql("INSERT INTO gb_device_channel \
+            &pool.sql("INSERT INTO gb_device_channel \
              (device_id, name, gb_device_id, civil_code, status, data_type, data_device_id, create_time, update_time) \
              VALUES (?, ?, ?, ?, 1, 0, 0, '2026-01-01 00:00:00', '2026-01-01 00:00:00')"),
         )

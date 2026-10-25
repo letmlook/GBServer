@@ -223,15 +223,15 @@ pub async fn count_terminals(
         },
         |p| {
             if has_query && online.is_some() {
-                sqlx::query_scalar::<_, i64>(&crate::dyn_where::dialect_sql("SELECT COUNT(*) FROM gb_jt_terminal WHERE (phone_number LIKE ? OR plate_no LIKE ?) AND status = ?"))
+                sqlx::query_scalar::<_, i64>(&pool.sql("SELECT COUNT(*) FROM gb_jt_terminal WHERE (phone_number LIKE ? OR plate_no LIKE ?) AND status = ?"))
                             .bind(&like).bind(&like).bind(online.unwrap()).fetch_one(p).await
             } else if has_query {
-                sqlx::query_scalar::<_, i64>(&crate::dyn_where::dialect_sql("SELECT COUNT(*) FROM gb_jt_terminal WHERE (phone_number LIKE ? OR plate_no LIKE ?)"))
+                sqlx::query_scalar::<_, i64>(&pool.sql("SELECT COUNT(*) FROM gb_jt_terminal WHERE (phone_number LIKE ? OR plate_no LIKE ?)"))
                             .bind(&like).bind(&like).fetch_one(p).await
             } else if online.is_some() {
-                sqlx::query_scalar::<_, i64>(&crate::dyn_where::dialect_sql(
-                    "SELECT COUNT(*) FROM gb_jt_terminal WHERE status = ?",
-                ))
+                sqlx::query_scalar::<_, i64>(
+                    &pool.sql("SELECT COUNT(*) FROM gb_jt_terminal WHERE status = ?"),
+                )
                 .bind(online.unwrap())
                 .fetch_one(p)
                 .await
@@ -243,15 +243,15 @@ pub async fn count_terminals(
         },
         |p| {
             if has_query && online.is_some() {
-                sqlx::query_scalar::<_, i64>(&crate::dyn_where::dialect_sql("SELECT COUNT(*) FROM gb_jt_terminal WHERE (phone_number LIKE ? OR plate_no LIKE ?) AND status = ?"))
+                sqlx::query_scalar::<_, i64>(&pool.sql("SELECT COUNT(*) FROM gb_jt_terminal WHERE (phone_number LIKE ? OR plate_no LIKE ?) AND status = ?"))
                             .bind(&like).bind(&like).bind(online.unwrap()).fetch_one(p).await
             } else if has_query {
-                sqlx::query_scalar::<_, i64>(&crate::dyn_where::dialect_sql("SELECT COUNT(*) FROM gb_jt_terminal WHERE (phone_number LIKE ? OR plate_no LIKE ?)"))
+                sqlx::query_scalar::<_, i64>(&pool.sql("SELECT COUNT(*) FROM gb_jt_terminal WHERE (phone_number LIKE ? OR plate_no LIKE ?)"))
                             .bind(&like).bind(&like).fetch_one(p).await
             } else if online.is_some() {
-                sqlx::query_scalar::<_, i64>(&crate::dyn_where::dialect_sql(
-                    "SELECT COUNT(*) FROM gb_jt_terminal WHERE status = ?",
-                ))
+                sqlx::query_scalar::<_, i64>(
+                    &pool.sql("SELECT COUNT(*) FROM gb_jt_terminal WHERE status = ?"),
+                )
                 .bind(online.unwrap())
                 .fetch_one(p)
                 .await
@@ -385,20 +385,16 @@ pub async fn get_channel_by_id(pool: &Pool, id: i32) -> sqlx::Result<Option<JtCh
                 .await
         },
         |p| {
-            sqlx::query_as::<_, JtChannel>(&crate::dyn_where::dialect_sql(
-                "SELECT * FROM gb_jt_channel WHERE id = ?",
-            ))
-            .bind(id)
-            .fetch_optional(p)
-            .await
+            sqlx::query_as::<_, JtChannel>(&pool.sql("SELECT * FROM gb_jt_channel WHERE id = ?"))
+                .bind(id)
+                .fetch_optional(p)
+                .await
         },
         |p| {
-            sqlx::query_as::<_, JtChannel>(&crate::dyn_where::dialect_sql(
-                "SELECT * FROM gb_jt_channel WHERE id = ?",
-            ))
-            .bind(id)
-            .fetch_optional(p)
-            .await
+            sqlx::query_as::<_, JtChannel>(&pool.sql("SELECT * FROM gb_jt_channel WHERE id = ?"))
+                .bind(id)
+                .fetch_optional(p)
+                .await
         },
     )
 }
@@ -473,7 +469,7 @@ pub async fn insert_channel(
             |p| {
                 let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
                 let r = sqlx::query(
-                                &crate::dyn_where::dialect_sql("INSERT INTO gb_jt_channel (terminal_db_id, channel_id, name, create_time, update_time) VALUES (?, ?, ?, ?, ?)"),
+                                &pool.sql("INSERT INTO gb_jt_channel (terminal_db_id, channel_id, name, create_time, update_time) VALUES (?, ?, ?, ?, ?)"),
                             )
                             .bind(term.id)
                             .bind(channel_id)
@@ -487,7 +483,7 @@ pub async fn insert_channel(
             |p| {
                 let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
                 let r = sqlx::query(
-                                &crate::dyn_where::dialect_sql("INSERT INTO gb_jt_channel (terminal_db_id, channel_id, name, create_time, update_time) VALUES (?, ?, ?, ?, ?)"),
+                                &pool.sql("INSERT INTO gb_jt_channel (terminal_db_id, channel_id, name, create_time, update_time) VALUES (?, ?, ?, ?, ?)"),
                             )
                             .bind(term.id)
                             .bind(channel_id)
@@ -531,7 +527,7 @@ pub async fn update_channel(
         |p| {
             let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
             let r = sqlx::query(
-                        &crate::dyn_where::dialect_sql("UPDATE gb_jt_channel SET name = COALESCE(?, name), channel_id = COALESCE(?, channel_id), update_time = ? WHERE id = ?"),
+                        &pool.sql("UPDATE gb_jt_channel SET name = COALESCE(?, name), channel_id = COALESCE(?, channel_id), update_time = ? WHERE id = ?"),
                     )
                     .bind(name)
                     .bind(channel_id)
@@ -544,7 +540,7 @@ pub async fn update_channel(
         |p| {
             let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
             let r = sqlx::query(
-                        &crate::dyn_where::dialect_sql("UPDATE gb_jt_channel SET name = COALESCE(?, name), channel_id = COALESCE(?, channel_id), update_time = ? WHERE id = ?"),
+                        &pool.sql("UPDATE gb_jt_channel SET name = COALESCE(?, name), channel_id = COALESCE(?, channel_id), update_time = ? WHERE id = ?"),
                     )
                     .bind(name)
                     .bind(channel_id)
@@ -572,17 +568,21 @@ pub async fn list_channels_by_terminal(
             .await
         },
         |p| {
-            sqlx::query_as::<_, JtChannel>(&crate::dyn_where::dialect_sql(
-                "SELECT * FROM gb_jt_channel WHERE terminal_db_id = ? ORDER BY channel_id",
-            ))
+            sqlx::query_as::<_, JtChannel>(
+                &pool.sql(
+                    "SELECT * FROM gb_jt_channel WHERE terminal_db_id = ? ORDER BY channel_id",
+                ),
+            )
             .bind(terminal_db_id)
             .fetch_all(p)
             .await
         },
         |p| {
-            sqlx::query_as::<_, JtChannel>(&crate::dyn_where::dialect_sql(
-                "SELECT * FROM gb_jt_channel WHERE terminal_db_id = ? ORDER BY channel_id",
-            ))
+            sqlx::query_as::<_, JtChannel>(
+                &pool.sql(
+                    "SELECT * FROM gb_jt_channel WHERE terminal_db_id = ? ORDER BY channel_id",
+                ),
+            )
             .bind(terminal_db_id)
             .fetch_all(p)
             .await
@@ -633,7 +633,7 @@ pub async fn insert_terminal(
         },
         |p| {
             sqlx::query(
-                    &crate::dyn_where::dialect_sql("INSERT INTO gb_jt_terminal (phone_number, terminal_id, plate_no, plate_color, maker_id, model, media_server_id, province_id, city_id, status, create_time, update_time) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)"),
+                    &pool.sql("INSERT INTO gb_jt_terminal (phone_number, terminal_id, plate_no, plate_color, maker_id, model, media_server_id, province_id, city_id, status, create_time, update_time) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)"),
                 )
                 .bind(phone_number)
                 .bind(f.terminal_id)
@@ -650,7 +650,7 @@ pub async fn insert_terminal(
         },
         |p| {
             sqlx::query(
-                    &crate::dyn_where::dialect_sql("INSERT INTO gb_jt_terminal (phone_number, terminal_id, plate_no, plate_color, maker_id, model, media_server_id, province_id, city_id, status, create_time, update_time) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)"),
+                    &pool.sql("INSERT INTO gb_jt_terminal (phone_number, terminal_id, plate_no, plate_color, maker_id, model, media_server_id, province_id, city_id, status, create_time, update_time) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)"),
                 )
                 .bind(phone_number)
                 .bind(f.terminal_id)
@@ -761,22 +761,18 @@ pub async fn delete_terminal_by_phone(pool: &Pool, phone_number: &str) -> sqlx::
                 .map(|r| r.rows_affected())
         },
         |p| {
-            sqlx::query(&crate::dyn_where::dialect_sql(
-                "DELETE FROM gb_jt_terminal WHERE phone_number = ?",
-            ))
-            .bind(phone_number)
-            .execute(p)
-            .await
-            .map(|r| r.rows_affected())
+            sqlx::query(&pool.sql("DELETE FROM gb_jt_terminal WHERE phone_number = ?"))
+                .bind(phone_number)
+                .execute(p)
+                .await
+                .map(|r| r.rows_affected())
         },
         |p| {
-            sqlx::query(&crate::dyn_where::dialect_sql(
-                "DELETE FROM gb_jt_terminal WHERE phone_number = ?",
-            ))
-            .bind(phone_number)
-            .execute(p)
-            .await
-            .map(|r| r.rows_affected())
+            sqlx::query(&pool.sql("DELETE FROM gb_jt_terminal WHERE phone_number = ?"))
+                .bind(phone_number)
+                .execute(p)
+                .await
+                .map(|r| r.rows_affected())
         },
     )?)
 }
@@ -793,22 +789,18 @@ pub async fn delete_terminal_by_id(pool: &Pool, id: i64) -> sqlx::Result<u64> {
                 .map(|r| r.rows_affected())
         },
         |p| {
-            sqlx::query(&crate::dyn_where::dialect_sql(
-                "DELETE FROM gb_jt_terminal WHERE id = ?",
-            ))
-            .bind(id)
-            .execute(p)
-            .await
-            .map(|r| r.rows_affected())
+            sqlx::query(&pool.sql("DELETE FROM gb_jt_terminal WHERE id = ?"))
+                .bind(id)
+                .execute(p)
+                .await
+                .map(|r| r.rows_affected())
         },
         |p| {
-            sqlx::query(&crate::dyn_where::dialect_sql(
-                "DELETE FROM gb_jt_terminal WHERE id = ?",
-            ))
-            .bind(id)
-            .execute(p)
-            .await
-            .map(|r| r.rows_affected())
+            sqlx::query(&pool.sql("DELETE FROM gb_jt_terminal WHERE id = ?"))
+                .bind(id)
+                .execute(p)
+                .await
+                .map(|r| r.rows_affected())
         },
     )?)
 }
@@ -832,7 +824,7 @@ pub async fn update_terminal_status(
             .execute(p)
         },
         |p| {
-            sqlx::query(&crate::dyn_where::dialect_sql(
+            sqlx::query(&pool.sql(
                 "UPDATE gb_jt_terminal SET status = ?, update_time = ? WHERE phone_number = ?",
             ))
             .bind(status)
@@ -841,7 +833,7 @@ pub async fn update_terminal_status(
             .execute(p)
         },
         |p| {
-            sqlx::query(&crate::dyn_where::dialect_sql(
+            sqlx::query(&pool.sql(
                 "UPDATE gb_jt_terminal SET status = ?, update_time = ? WHERE phone_number = ?",
             ))
             .bind(status)
@@ -863,18 +855,14 @@ pub async fn delete_channel(pool: &Pool, id: i64) -> sqlx::Result<u64> {
                 .execute(p)
         },
         |p| {
-            sqlx::query(&crate::dyn_where::dialect_sql(
-                "DELETE FROM gb_jt_channel WHERE id = ?",
-            ))
-            .bind(id)
-            .execute(p)
+            sqlx::query(&pool.sql("DELETE FROM gb_jt_channel WHERE id = ?"))
+                .bind(id)
+                .execute(p)
         },
         |p| {
-            sqlx::query(&crate::dyn_where::dialect_sql(
-                "DELETE FROM gb_jt_channel WHERE id = ?",
-            ))
-            .bind(id)
-            .execute(p)
+            sqlx::query(&pool.sql("DELETE FROM gb_jt_channel WHERE id = ?"))
+                .bind(id)
+                .execute(p)
         },
     );
     Ok(r?.rows_affected())
@@ -890,18 +878,14 @@ pub async fn delete_channels_by_terminal(pool: &Pool, terminal_db_id: i32) -> sq
                 .execute(p)
         },
         |p| {
-            sqlx::query(&crate::dyn_where::dialect_sql(
-                "DELETE FROM gb_jt_channel WHERE terminal_db_id = ?",
-            ))
-            .bind(terminal_db_id)
-            .execute(p)
+            sqlx::query(&pool.sql("DELETE FROM gb_jt_channel WHERE terminal_db_id = ?"))
+                .bind(terminal_db_id)
+                .execute(p)
         },
         |p| {
-            sqlx::query(&crate::dyn_where::dialect_sql(
-                "DELETE FROM gb_jt_channel WHERE terminal_db_id = ?",
-            ))
-            .bind(terminal_db_id)
-            .execute(p)
+            sqlx::query(&pool.sql("DELETE FROM gb_jt_channel WHERE terminal_db_id = ?"))
+                .bind(terminal_db_id)
+                .execute(p)
         },
     );
     Ok(r?.rows_affected())
@@ -926,7 +910,7 @@ pub async fn update_terminal_position(
                     .execute(p)
         },
         |p| {
-            sqlx::query(&crate::dyn_where::dialect_sql("UPDATE gb_jt_terminal SET longitude = ?, latitude = ?, update_time = ? WHERE phone_number = ?"))
+            sqlx::query(&pool.sql("UPDATE gb_jt_terminal SET longitude = ?, latitude = ?, update_time = ? WHERE phone_number = ?"))
                     .bind(longitude)
                     .bind(latitude)
                     .bind(&now)
@@ -934,7 +918,7 @@ pub async fn update_terminal_position(
                     .execute(p)
         },
         |p| {
-            sqlx::query(&crate::dyn_where::dialect_sql("UPDATE gb_jt_terminal SET longitude = ?, latitude = ?, update_time = ? WHERE phone_number = ?"))
+            sqlx::query(&pool.sql("UPDATE gb_jt_terminal SET longitude = ?, latitude = ?, update_time = ? WHERE phone_number = ?"))
                     .bind(longitude)
                     .bind(latitude)
                     .bind(&now)
@@ -958,17 +942,17 @@ pub async fn count_channels_by_terminal(pool: &Pool, terminal_db_id: i32) -> sql
             .await?
         },
         |p| {
-            sqlx::query_scalar::<_, i64>(&crate::dyn_where::dialect_sql(
-                "SELECT COUNT(*) FROM gb_jt_channel WHERE terminal_db_id = ?",
-            ))
+            sqlx::query_scalar::<_, i64>(
+                &pool.sql("SELECT COUNT(*) FROM gb_jt_channel WHERE terminal_db_id = ?"),
+            )
             .bind(terminal_db_id)
             .fetch_one(p)
             .await?
         },
         |p| {
-            sqlx::query_scalar::<_, i64>(&crate::dyn_where::dialect_sql(
-                "SELECT COUNT(*) FROM gb_jt_channel WHERE terminal_db_id = ?",
-            ))
+            sqlx::query_scalar::<_, i64>(
+                &pool.sql("SELECT COUNT(*) FROM gb_jt_channel WHERE terminal_db_id = ?"),
+            )
             .bind(terminal_db_id)
             .fetch_one(p)
             .await?
@@ -994,7 +978,7 @@ pub async fn get_auth_code_by_phone(pool: &Pool, phone: &str) -> sqlx::Result<Op
     // 所以这里**优先取真配了码的那条**（`auth_code` 非空），再按 id 取最早的 ——
     // 重复行是历史脏数据，不该让鉴权彻底失效，也不该让它变得不确定。
     let row: Option<(Option<String>,)> = crate::dispatch!(pool, |p| {
-        sqlx::query_as(&crate::dyn_where::dialect_sql(
+        sqlx::query_as(&pool.sql(
             "SELECT auth_code FROM gb_jt_terminal \
          WHERE phone_number = ? AND auth_code IS NOT NULL AND auth_code <> '' \
          ORDER BY id LIMIT 1",
@@ -1007,15 +991,16 @@ pub async fn get_auth_code_by_phone(pool: &Pool, phone: &str) -> sqlx::Result<Op
 
 /// Update the auth_code for a terminal (admin operation).
 pub async fn update_auth_code(pool: &Pool, phone: &str, auth_code: &str) -> sqlx::Result<u64> {
-    let result = crate::dispatch_exec!(pool, |p| {
-        sqlx::query(&crate::dyn_where::dialect_sql(
-            "UPDATE gb_jt_terminal SET auth_code = ?, update_time = ? WHERE phone_number = ?",
-        ))
-        .bind(auth_code)
-        .bind(chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string())
-        .bind(phone)
-        .execute(p)
-    })?;
+    let result =
+        crate::dispatch_exec!(pool, |p| {
+            sqlx::query(&pool.sql(
+                "UPDATE gb_jt_terminal SET auth_code = ?, update_time = ? WHERE phone_number = ?",
+            ))
+            .bind(auth_code)
+            .bind(chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string())
+            .bind(phone)
+            .execute(p)
+        })?;
     Ok(result.rows_affected())
 }
 
@@ -1103,9 +1088,9 @@ pub async fn mark_terminal_offline_if_stale(
     //  with SQL type INT4` —— 换了占位符照样在 postgres 上失败。
     // 本文件的其它地方（`JtTerminal.id`）用的就是 `i32`，三方言都通。
     let rows: Vec<(i32, Option<String>)> = crate::dispatch!(pool, |p| {
-        sqlx::query_as(&crate::dyn_where::dialect_sql(
-            "SELECT id, update_time FROM gb_jt_terminal WHERE phone_number = ?",
-        ))
+        sqlx::query_as(
+            &pool.sql("SELECT id, update_time FROM gb_jt_terminal WHERE phone_number = ?"),
+        )
         .bind(phone_number)
         .fetch_all(p)
     })?;
@@ -1164,7 +1149,7 @@ pub async fn mark_terminal_offline_if_stale(
                 .execute(p)
             },
             |p| {
-                sqlx::query(&crate::dyn_where::dialect_sql(
+                sqlx::query(&pool.sql(
                     "UPDATE gb_jt_terminal SET status = ?, update_time = ? \
                              WHERE id = ? AND update_time = ?",
                 ))
@@ -1175,7 +1160,7 @@ pub async fn mark_terminal_offline_if_stale(
                 .execute(p)
             },
             |p| {
-                sqlx::query(&crate::dyn_where::dialect_sql(
+                sqlx::query(&pool.sql(
                     "UPDATE gb_jt_terminal SET status = ?, update_time = ? \
                              WHERE id = ? AND update_time = ?",
                 ))
@@ -1201,7 +1186,7 @@ pub async fn update_last_position(
 ) -> sqlx::Result<u64> {
     let result = crate::dispatch_exec!(pool, |p| {
         sqlx::query(
-        &crate::dyn_where::dialect_sql("UPDATE gb_jt_terminal SET longitude = ?, latitude = ?, register_time = ?, update_time = ? WHERE phone_number = ?")
+        &pool.sql("UPDATE gb_jt_terminal SET longitude = ?, latitude = ?, register_time = ?, update_time = ? WHERE phone_number = ?")
     )
     .bind(longitude)
     .bind(latitude)
@@ -1245,7 +1230,7 @@ pub async fn insert_media_item(
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let result = crate::dispatch_exec!(pool, |p| {
         sqlx::query(
-        &crate::dyn_where::dialect_sql("INSERT INTO gb_jt_media_item (phone_number, channel_id, media_id, media_type, media_format, event_code, start_time, end_time, create_time) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        &pool.sql("INSERT INTO gb_jt_media_item (phone_number, channel_id, media_id, media_type, media_format, event_code, start_time, end_time, create_time) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
     )
     .bind(phone)
     .bind(channel_id)
@@ -1273,14 +1258,14 @@ pub async fn list_media_items_by_terminal(
     let rows: Vec<JtMediaItem> = match (start_time, end_time) {
         (Some(s), Some(e)) => crate::dispatch!(pool, |p| {
             sqlx::query_as::<_, JtMediaItem>(
-                &crate::dyn_where::dialect_sql("SELECT * FROM gb_jt_media_item WHERE phone_number = ? AND start_time >= ? AND end_time <= ? ORDER BY start_time DESC LIMIT ?")
+                &pool.sql("SELECT * FROM gb_jt_media_item WHERE phone_number = ? AND start_time >= ? AND end_time <= ? ORDER BY start_time DESC LIMIT ?")
             )
             .bind(phone).bind(s).bind(e).bind(limit_64)
             .fetch_all(p)
         })?,
         _ => crate::dispatch!(pool, |p| {
             sqlx::query_as::<_, JtMediaItem>(
-                &crate::dyn_where::dialect_sql("SELECT * FROM gb_jt_media_item WHERE phone_number = ? ORDER BY start_time DESC LIMIT ?")
+                &pool.sql("SELECT * FROM gb_jt_media_item WHERE phone_number = ? ORDER BY start_time DESC LIMIT ?")
             )
             .bind(phone).bind(limit_64)
             .fetch_all(p)
@@ -1363,7 +1348,7 @@ pub async fn insert_area_circle(
     // （postgres → `$1..$7`；mysql / sqlite → 原样 `?`）。
     // 放在定义点而不是只在执行点，是为了让「这段 SQL 文本从哪来、就是哪个方言的形态」
     // —— 下面 mysql 分支与 not(mysql) 分支共用同一个 `sql`，postgres 分支直接拿来用。
-    let sql = crate::dyn_where::dialect_sql(
+    let sql = pool.sql(
         "INSERT INTO gb_jt_area_circle (phone_number, label, center_lat, center_lon, \
          radius_m, create_time, update_time) VALUES (?, ?, ?, ?, ?, ?, ?)",
     );
@@ -1430,7 +1415,7 @@ pub async fn update_area_circle(
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let n = crate::dispatch_exec!(pool, |p| {
 sqlx::query(
-        &crate::dyn_where::dialect_sql("UPDATE gb_jt_area_circle SET label = ?, center_lat = ?, center_lon = ?, radius_m = ?, update_time = ? WHERE id = ?")
+        &pool.sql("UPDATE gb_jt_area_circle SET label = ?, center_lat = ?, center_lon = ?, radius_m = ?, update_time = ? WHERE id = ?")
     )
     .bind(label).bind(center_lat).bind(center_lon).bind(radius_m).bind(&now).bind(id)
     .execute(p)
@@ -1441,11 +1426,9 @@ sqlx::query(
 
 pub async fn delete_area_circle(pool: &Pool, id: i64) -> sqlx::Result<u64> {
     let n = crate::dispatch_exec!(pool, |p| {
-        sqlx::query(&crate::dyn_where::dialect_sql(
-            "DELETE FROM gb_jt_area_circle WHERE id = ?",
-        ))
-        .bind(id)
-        .execute(p)
+        sqlx::query(&pool.sql("DELETE FROM gb_jt_area_circle WHERE id = ?"))
+            .bind(id)
+            .execute(p)
     })?
     .rows_affected();
     Ok(n)
@@ -1456,9 +1439,9 @@ pub async fn list_area_circles_by_phone(
     phone_number: &str,
 ) -> sqlx::Result<Vec<JtAreaCircle>> {
     let rows = crate::dispatch!(pool, |p| {
-        sqlx::query_as::<_, JtAreaCircle>(&crate::dyn_where::dialect_sql(
-            "SELECT * FROM gb_jt_area_circle WHERE phone_number = ? ORDER BY id DESC",
-        ))
+        sqlx::query_as::<_, JtAreaCircle>(
+            &pool.sql("SELECT * FROM gb_jt_area_circle WHERE phone_number = ? ORDER BY id DESC"),
+        )
         .bind(phone_number)
         .fetch_all(p)
     })?;
@@ -1472,7 +1455,7 @@ pub async fn insert_area_polygon(
     points_json: &str,
 ) -> sqlx::Result<i64> {
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    let sql = crate::dyn_where::dialect_sql(
+    let sql = pool.sql(
         "INSERT INTO gb_jt_area_polygon (phone_number, label, points_json, create_time, \
          update_time) VALUES (?, ?, ?, ?, ?)",
     );
@@ -1523,11 +1506,9 @@ pub async fn insert_area_polygon(
 
 pub async fn delete_area_polygon(pool: &Pool, id: i64) -> sqlx::Result<u64> {
     let n = crate::dispatch_exec!(pool, |p| {
-        sqlx::query(&crate::dyn_where::dialect_sql(
-            "DELETE FROM gb_jt_area_polygon WHERE id = ?",
-        ))
-        .bind(id)
-        .execute(p)
+        sqlx::query(&pool.sql("DELETE FROM gb_jt_area_polygon WHERE id = ?"))
+            .bind(id)
+            .execute(p)
     })?
     .rows_affected();
     Ok(n)
@@ -1538,9 +1519,9 @@ pub async fn list_area_polygons_by_phone(
     phone_number: &str,
 ) -> sqlx::Result<Vec<JtAreaPolygon>> {
     let rows = crate::dispatch!(pool, |p| {
-        sqlx::query_as::<_, JtAreaPolygon>(&crate::dyn_where::dialect_sql(
-            "SELECT * FROM gb_jt_area_polygon WHERE phone_number = ? ORDER BY id DESC",
-        ))
+        sqlx::query_as::<_, JtAreaPolygon>(
+            &pool.sql("SELECT * FROM gb_jt_area_polygon WHERE phone_number = ? ORDER BY id DESC"),
+        )
         .bind(phone_number)
         .fetch_all(p)
     })?;
@@ -1557,7 +1538,7 @@ pub async fn insert_area_rectangle(
     rb_lon: f64,
 ) -> sqlx::Result<i64> {
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    let sql = crate::dyn_where::dialect_sql(
+    let sql = pool.sql(
         "INSERT INTO gb_jt_area_rectangle (phone_number, label, left_top_lat, left_top_lon, \
          right_bottom_lat, right_bottom_lon, create_time, update_time) \
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -1628,7 +1609,7 @@ pub async fn update_area_rectangle(
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let n = crate::dispatch_exec!(pool, |p| {
 sqlx::query(
-        &crate::dyn_where::dialect_sql("UPDATE gb_jt_area_rectangle SET label = ?, left_top_lat = ?, left_top_lon = ?, right_bottom_lat = ?, right_bottom_lon = ?, update_time = ? WHERE id = ?")
+        &pool.sql("UPDATE gb_jt_area_rectangle SET label = ?, left_top_lat = ?, left_top_lon = ?, right_bottom_lat = ?, right_bottom_lon = ?, update_time = ? WHERE id = ?")
     )
     .bind(label).bind(lt_lat).bind(lt_lon).bind(rb_lat).bind(rb_lon).bind(&now).bind(id)
     .execute(p)
@@ -1639,11 +1620,9 @@ sqlx::query(
 
 pub async fn delete_area_rectangle(pool: &Pool, id: i64) -> sqlx::Result<u64> {
     let n = crate::dispatch_exec!(pool, |p| {
-        sqlx::query(&crate::dyn_where::dialect_sql(
-            "DELETE FROM gb_jt_area_rectangle WHERE id = ?",
-        ))
-        .bind(id)
-        .execute(p)
+        sqlx::query(&pool.sql("DELETE FROM gb_jt_area_rectangle WHERE id = ?"))
+            .bind(id)
+            .execute(p)
     })?
     .rows_affected();
     Ok(n)
@@ -1654,9 +1633,9 @@ pub async fn list_area_rectangles_by_phone(
     phone_number: &str,
 ) -> sqlx::Result<Vec<JtAreaRectangle>> {
     let rows = crate::dispatch!(pool, |p| {
-        sqlx::query_as::<_, JtAreaRectangle>(&crate::dyn_where::dialect_sql(
-            "SELECT * FROM gb_jt_area_rectangle WHERE phone_number = ? ORDER BY id DESC",
-        ))
+        sqlx::query_as::<_, JtAreaRectangle>(
+            &pool.sql("SELECT * FROM gb_jt_area_rectangle WHERE phone_number = ? ORDER BY id DESC"),
+        )
         .bind(phone_number)
         .fetch_all(p)
     })?;
@@ -1670,7 +1649,7 @@ pub async fn insert_route(
     waypoints_json: &str,
 ) -> sqlx::Result<i64> {
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    let sql = crate::dyn_where::dialect_sql(
+    let sql = pool.sql(
         "INSERT INTO gb_jt_route (phone_number, label, waypoints_json, create_time, \
          update_time) VALUES (?, ?, ?, ?, ?)",
     );
@@ -1721,11 +1700,9 @@ pub async fn insert_route(
 
 pub async fn delete_route(pool: &Pool, id: i64) -> sqlx::Result<u64> {
     let n = crate::dispatch_exec!(pool, |p| {
-        sqlx::query(&crate::dyn_where::dialect_sql(
-            "DELETE FROM gb_jt_route WHERE id = ?",
-        ))
-        .bind(id)
-        .execute(p)
+        sqlx::query(&pool.sql("DELETE FROM gb_jt_route WHERE id = ?"))
+            .bind(id)
+            .execute(p)
     })?
     .rows_affected();
     Ok(n)
@@ -1733,9 +1710,9 @@ pub async fn delete_route(pool: &Pool, id: i64) -> sqlx::Result<u64> {
 
 pub async fn list_routes_by_phone(pool: &Pool, phone_number: &str) -> sqlx::Result<Vec<JtRoute>> {
     let rows = crate::dispatch!(pool, |p| {
-        sqlx::query_as::<_, JtRoute>(&crate::dyn_where::dialect_sql(
-            "SELECT * FROM gb_jt_route WHERE phone_number = ? ORDER BY id DESC",
-        ))
+        sqlx::query_as::<_, JtRoute>(
+            &pool.sql("SELECT * FROM gb_jt_route WHERE phone_number = ? ORDER BY id DESC"),
+        )
         .bind(phone_number)
         .fetch_all(p)
     })?;

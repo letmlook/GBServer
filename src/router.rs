@@ -705,9 +705,9 @@ mod tests {
             .unwrap();
         assert_eq!(list["data"]["total"], 1, "{list}");
         let collect_flag: i64 = crate::dispatch!(&pool, |p| {
-            sqlx::query_scalar::<_, i64>(&crate::dyn_where::dialect_sql(
-                "SELECT collect FROM gb_cloud_record WHERE id = ?",
-            ))
+            sqlx::query_scalar::<_, i64>(
+                &pool.sql("SELECT collect FROM gb_cloud_record WHERE id = ?"),
+            )
             .bind(record_pk)
             .fetch_one(p)
         })
@@ -748,9 +748,9 @@ mod tests {
             .unwrap();
         assert_eq!(list["data"]["total"], 0, "{list}");
         let collect_flag: i64 = crate::dispatch!(&pool, |p| {
-            sqlx::query_scalar::<_, i64>(&crate::dyn_where::dialect_sql(
-                "SELECT collect FROM gb_cloud_record WHERE id = ?",
-            ))
+            sqlx::query_scalar::<_, i64>(
+                &pool.sql("SELECT collect FROM gb_cloud_record WHERE id = ?"),
+            )
             .bind(record_pk)
             .fetch_one(p)
         })
@@ -770,9 +770,9 @@ mod tests {
             .unwrap();
         assert_eq!(add["code"], 0, "{add}");
         let collect_flag: i64 = crate::dispatch!(&pool, |p| {
-            sqlx::query_scalar::<_, i64>(&crate::dyn_where::dialect_sql(
-                "SELECT collect FROM gb_cloud_record WHERE id = ?",
-            ))
+            sqlx::query_scalar::<_, i64>(
+                &pool.sql("SELECT collect FROM gb_cloud_record WHERE id = ?"),
+            )
             .bind(record_pk)
             .fetch_one(p)
         })
@@ -812,9 +812,9 @@ mod tests {
             .unwrap();
         assert_eq!(list["data"]["total"], 0, "{list}");
         let collect_flag: i64 = crate::dispatch!(&pool, |p| {
-            sqlx::query_scalar::<_, i64>(&crate::dyn_where::dialect_sql(
-                "SELECT collect FROM gb_cloud_record WHERE id = ?",
-            ))
+            sqlx::query_scalar::<_, i64>(
+                &pool.sql("SELECT collect FROM gb_cloud_record WHERE id = ?"),
+            )
             .bind(record_pk)
             .fetch_one(p)
         })

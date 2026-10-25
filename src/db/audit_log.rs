@@ -174,7 +174,7 @@ pub async fn insert(
         },
         |p| {
             sqlx::query(
-                    &crate::dyn_where::dialect_sql("INSERT INTO gb_audit_log (username, action, resource, method, path, ip, status_code) VALUES (?, ?, ?, ?, ?, ?, ?)")
+                    &pool.sql("INSERT INTO gb_audit_log (username, action, resource, method, path, ip, status_code) VALUES (?, ?, ?, ?, ?, ?, ?)")
                 )
                 .bind(username)
                 .bind(action)
@@ -187,7 +187,7 @@ pub async fn insert(
         },
         |p| {
             sqlx::query(
-                    &crate::dyn_where::dialect_sql("INSERT INTO gb_audit_log (username, action, resource, method, path, ip, status_code) VALUES (?, ?, ?, ?, ?, ?, ?)")
+                    &pool.sql("INSERT INTO gb_audit_log (username, action, resource, method, path, ip, status_code) VALUES (?, ?, ?, ?, ?, ?, ?)")
                 )
                 .bind(username)
                 .bind(action)
@@ -236,7 +236,7 @@ pub async fn insert_with_metrics(
     // We do this with INSERT IGNORE-style fallback: attempt to insert with elapsed_ms;
     // if the column doesn't exist, retry without it.
     let with_elapsed_result = crate::dispatch_exec!(pool, |p| {
-        sqlx::query(&crate::dyn_where::dialect_sql(
+        sqlx::query(&pool.sql(
         "INSERT INTO gb_audit_log (username, action, resource, method, path, ip, status_code, elapsed_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
     ))
     .bind(username).bind(action).bind(resource).bind(method).bind(path).bind(ip).bind(status_code).bind(elapsed_ms)
@@ -254,12 +254,12 @@ pub async fn insert_with_metrics(
                     .execute(p)
         },
         |p| {
-            sqlx::query(&crate::dyn_where::dialect_sql("INSERT INTO gb_audit_log (username, action, resource, method, path, ip, status_code) VALUES (?, ?, ?, ?, ?, ?, ?)"))
+            sqlx::query(&pool.sql("INSERT INTO gb_audit_log (username, action, resource, method, path, ip, status_code) VALUES (?, ?, ?, ?, ?, ?, ?)"))
                     .bind(username).bind(action).bind(resource).bind(method).bind(path).bind(ip).bind(status_code)
                     .execute(p)
         },
         |p| {
-            sqlx::query(&crate::dyn_where::dialect_sql("INSERT INTO gb_audit_log (username, action, resource, method, path, ip, status_code) VALUES (?, ?, ?, ?, ?, ?, ?)"))
+            sqlx::query(&pool.sql("INSERT INTO gb_audit_log (username, action, resource, method, path, ip, status_code) VALUES (?, ?, ?, ?, ?, ?, ?)"))
                     .bind(username).bind(action).bind(resource).bind(method).bind(path).bind(ip).bind(status_code)
                     .execute(p)
         },

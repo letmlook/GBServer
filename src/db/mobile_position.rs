@@ -50,7 +50,7 @@ pub struct MobilePositionInsert {
 
 /// 插入移动位置记录
 pub async fn insert(pool: &Pool, pos: &MobilePositionInsert) -> sqlx::Result<u64> {
-    let sql = crate::db::dialect::current_sql("INSERT INTO gb_device_mobile_position \
+    let sql = pool.sql("INSERT INTO gb_device_mobile_position \
              (device_id, channel_id, device_name, time, longitude, latitude, altitude, speed, direction, report_source, create_time) \
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").into_owned();
 
@@ -233,9 +233,9 @@ pub async fn count(
 
 /// 删除指定时间之前的位置记录
 pub async fn delete_before_time(pool: &Pool, before_time: &str) -> sqlx::Result<u64> {
-    let sql =
-        crate::db::dialect::current_sql("DELETE FROM gb_device_mobile_position WHERE time < ?")
-            .into_owned();
+    let sql = pool
+        .sql("DELETE FROM gb_device_mobile_position WHERE time < ?")
+        .into_owned();
 
     let result =
         crate::dispatch_exec!(pool, |p| { sqlx::query(&sql).bind(before_time).execute(p) })?;
@@ -301,10 +301,9 @@ pub async fn get_latest_position(
 
 /// 删除设备的所有位置记录
 pub async fn delete_by_device(pool: &Pool, device_id: &str) -> sqlx::Result<u64> {
-    let sql = crate::db::dialect::current_sql(
-        "DELETE FROM gb_device_mobile_position WHERE device_id = ?",
-    )
-    .into_owned();
+    let sql = pool
+        .sql("DELETE FROM gb_device_mobile_position WHERE device_id = ?")
+        .into_owned();
 
     let result = crate::dispatch_exec!(pool, |p| { sqlx::query(&sql).bind(device_id).execute(p) })?;
 
@@ -313,7 +312,7 @@ pub async fn delete_by_device(pool: &Pool, device_id: &str) -> sqlx::Result<u64>
 
 /// 根据ID查询单条记录
 pub async fn get_by_id(pool: &Pool, id: i64) -> sqlx::Result<Option<MobilePosition>> {
-    let sql = crate::db::dialect::current_sql("SELECT id, device_id, channel_id, device_name, time, longitude, latitude, altitude, speed, direction, report_source, create_time FROM gb_device_mobile_position WHERE id = ?").into_owned();
+    let sql = pool.sql("SELECT id, device_id, channel_id, device_name, time, longitude, latitude, altitude, speed, direction, report_source, create_time FROM gb_device_mobile_position WHERE id = ?").into_owned();
     return crate::dispatch!(pool, |p| {
         sqlx::query_as::<_, MobilePosition>(&sql)
             .bind(id)
@@ -350,7 +349,7 @@ pub async fn sync_channel_coords(
     }
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let result = crate::dispatch_exec!(pool, |p| {
-        sqlx::query(&crate::dyn_where::dialect_sql(
+        sqlx::query(&pool.sql(
             "UPDATE gb_device_channel SET longitude = ?, latitude = ?, update_time = ? \
          WHERE device_id = ?",
         ))

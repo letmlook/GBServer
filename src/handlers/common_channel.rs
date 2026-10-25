@@ -1463,9 +1463,11 @@ pub async fn map_thin_progress(
                 .unwrap_or(false)
             },
             |p| {
-                sqlx::query_scalar(&crate::dyn_where::dialect_sql(
-                    "SELECT (geojson IS NOT NULL) FROM gb_device_channel WHERE id = ?",
-                ))
+                sqlx::query_scalar(
+                    &state
+                        .pool
+                        .sql("SELECT (geojson IS NOT NULL) FROM gb_device_channel WHERE id = ?"),
+                )
                 .bind(channel_id)
                 .fetch_optional(p)
                 .await
@@ -1474,9 +1476,11 @@ pub async fn map_thin_progress(
                 .unwrap_or(false)
             },
             |p| {
-                sqlx::query_scalar(&crate::dyn_where::dialect_sql(
-                    "SELECT (geojson IS NOT NULL) FROM gb_device_channel WHERE id = ?",
-                ))
+                sqlx::query_scalar(
+                    &state
+                        .pool
+                        .sql("SELECT (geojson IS NOT NULL) FROM gb_device_channel WHERE id = ?"),
+                )
                 .bind(channel_id)
                 .fetch_optional(p)
                 .await
@@ -1556,7 +1560,7 @@ pub async fn map_thin_save(
         },
         |p| {
             sqlx::query_as(
-                    &crate::dyn_where::dialect_sql("SELECT longitude, latitude FROM gb_position_history WHERE device_id = ? ORDER BY time"),
+                    &state.pool.sql("SELECT longitude, latitude FROM gb_position_history WHERE device_id = ? ORDER BY time"),
                 )
                 .bind(&device_id)
                 .fetch_all(p)
@@ -1565,7 +1569,7 @@ pub async fn map_thin_save(
         },
         |p| {
             sqlx::query_as(
-                    &crate::dyn_where::dialect_sql("SELECT longitude, latitude FROM gb_position_history WHERE device_id = ? ORDER BY time"),
+                    &state.pool.sql("SELECT longitude, latitude FROM gb_position_history WHERE device_id = ? ORDER BY time"),
                 )
                 .bind(&device_id)
                 .fetch_all(p)
@@ -1722,9 +1726,11 @@ pub async fn map_thin_draw(
                 .flatten()
         },
         |p| {
-            sqlx::query_as(&crate::dyn_where::dialect_sql(
-                "SELECT geojson FROM gb_device_channel WHERE id = ?",
-            ))
+            sqlx::query_as(
+                &state
+                    .pool
+                    .sql("SELECT geojson FROM gb_device_channel WHERE id = ?"),
+            )
             .bind(channel_id)
             .fetch_optional(p)
             .await
@@ -1732,9 +1738,11 @@ pub async fn map_thin_draw(
             .flatten()
         },
         |p| {
-            sqlx::query_as(&crate::dyn_where::dialect_sql(
-                "SELECT geojson FROM gb_device_channel WHERE id = ?",
-            ))
+            sqlx::query_as(
+                &state
+                    .pool
+                    .sql("SELECT geojson FROM gb_device_channel WHERE id = ?"),
+            )
             .bind(channel_id)
             .fetch_optional(p)
             .await
@@ -3695,9 +3703,11 @@ mod channel_crud_contract_tests {
         })
         .expect("insert device");
         crate::dispatch!(&state.pool, |p| {
-            sqlx::query_scalar::<_, i32>(&crate::dyn_where::dialect_sql(
-                "SELECT id FROM gb_device WHERE device_id = ?",
-            ))
+            sqlx::query_scalar::<_, i32>(
+                &state
+                    .pool
+                    .sql("SELECT id FROM gb_device WHERE device_id = ?"),
+            )
             .bind(device_id)
             .fetch_one(p)
         })

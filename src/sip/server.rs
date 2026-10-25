@@ -2077,7 +2077,7 @@ impl SipServer {
             tracing::info!("Device unregistered: {}", device_id);
         } else {
             // SQLite 模式下检查设备数量上限
-            if crate::db::dialect::current().is_sqlite() {
+            if pool.dialect().is_sqlite() {
                 if let Err(e) =
                     db_device::check_sqlite_device_limit(pool, &device_id, sqlite_max_devices).await
                 {

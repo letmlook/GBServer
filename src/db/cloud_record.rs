@@ -58,14 +58,15 @@ pub struct CloudRecordUpdate {
 
 /// 插入云端录像记录
 pub async fn insert(pool: &Pool, record: &CloudRecordInsert) -> sqlx::Result<i64> {
-    if crate::db::dialect::current().is_mysql() {
-        let sql = crate::db::dialect::current_sql(
-            "INSERT INTO gb_cloud_record \
+    if pool.dialect().is_mysql() {
+        let sql = pool
+            .sql(
+                "INSERT INTO gb_cloud_record \
                      (app, stream, call_id, start_time, end_time, media_server_id, server_id, \
                       file_name, folder, file_path, file_size, time_len) \
                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .into_owned();
+            )
+            .into_owned();
 
         let result = crate::dispatch_exec!(pool, |p| {
             sqlx::query(&sql)
@@ -85,15 +86,16 @@ pub async fn insert(pool: &Pool, record: &CloudRecordInsert) -> sqlx::Result<i64
         })?;
 
         Ok(result.last_insert_id().unwrap_or(0) as i64)
-    } else if crate::db::dialect::current().is_postgres() {
-        let sql = crate::db::dialect::current_sql(
-            "INSERT INTO gb_cloud_record \
+    } else if pool.dialect().is_postgres() {
+        let sql = pool
+            .sql(
+                "INSERT INTO gb_cloud_record \
                      (app, stream, call_id, start_time, end_time, media_server_id, server_id, \
                       file_name, folder, file_path, file_size, time_len) \
                      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) \
                      RETURNING id",
-        )
-        .into_owned();
+            )
+            .into_owned();
 
         let result: (i64,) = crate::dispatch!(pool, |p| {
             sqlx::query_as(&sql)
@@ -114,13 +116,14 @@ pub async fn insert(pool: &Pool, record: &CloudRecordInsert) -> sqlx::Result<i64
 
         Ok(result.0)
     } else {
-        let sql = crate::db::dialect::current_sql(
-            "INSERT INTO gb_cloud_record \
+        let sql = pool
+            .sql(
+                "INSERT INTO gb_cloud_record \
                      (app, stream, call_id, start_time, end_time, media_server_id, server_id, \
                       file_name, folder, file_path, file_size, time_len) \
                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .into_owned();
+            )
+            .into_owned();
 
         let result = crate::dispatch_exec!(pool, |p| {
             sqlx::query(&sql)
@@ -145,12 +148,13 @@ pub async fn insert(pool: &Pool, record: &CloudRecordInsert) -> sqlx::Result<i64
 
 /// 根据ID查询云端录像
 pub async fn get_by_id(pool: &Pool, id: i64) -> sqlx::Result<Option<CloudRecord>> {
-    let sql = crate::db::dialect::current_sql(
-        "SELECT id, app, stream, call_id, start_time, end_time, media_server_id, \
+    let sql = pool
+        .sql(
+            "SELECT id, app, stream, call_id, start_time, end_time, media_server_id, \
              server_id, file_name, folder, file_path, collect, file_size, time_len \
              FROM gb_cloud_record WHERE id = ?",
-    )
-    .into_owned();
+        )
+        .into_owned();
     return crate::dispatch!(pool, |p| {
         sqlx::query_as::<_, CloudRecord>(&sql)
             .bind(id)
@@ -381,7 +385,7 @@ pub async fn list_filtered(
          FROM gb_cloud_record";
     const COUNT_BASE: &str = "SELECT COUNT(*) FROM gb_cloud_record";
 
-    let limit_ph = if crate::db::dialect::current().is_postgres() {
+    let limit_ph = if pool.dialect().is_postgres() {
         format!(
             " LIMIT ${} OFFSET ${}",
             w.binds.len() + 1,
@@ -429,34 +433,37 @@ pub async fn count_all(
     start_time: Option<i64>,
     end_time: Option<i64>,
 ) -> sqlx::Result<i64> {
-    let sql = match crate::db::dialect::current() {
-        crate::db::Dialect::MySql => crate::db::dialect::current_sql(
-            "SELECT COUNT(*) FROM gb_cloud_record \
+    let sql = match pool.dialect() {
+        crate::db::Dialect::MySql => pool
+            .sql(
+                "SELECT COUNT(*) FROM gb_cloud_record \
              WHERE (? IS NULL OR app = ?) \
                AND (? IS NULL OR stream = ?) \
                AND (? IS NULL OR media_server_id = ?) \
                AND (? IS NULL OR start_time >= ?) \
                AND (? IS NULL OR end_time <= ?)",
-        )
-        .into_owned(),
-        crate::db::Dialect::Sqlite => crate::db::dialect::current_sql(
-            "SELECT COUNT(*) FROM gb_cloud_record \
+            )
+            .into_owned(),
+        crate::db::Dialect::Sqlite => pool
+            .sql(
+                "SELECT COUNT(*) FROM gb_cloud_record \
              WHERE (?1 IS NULL OR app = ?1) \
                AND (?2 IS NULL OR stream = ?2) \
                AND (?3 IS NULL OR media_server_id = ?3) \
                AND (?4 IS NULL OR start_time >= ?4) \
                AND (?5 IS NULL OR end_time <= ?5)",
-        )
-        .into_owned(),
-        _ => crate::db::dialect::current_sql(
-            "SELECT COUNT(*) FROM gb_cloud_record \
+            )
+            .into_owned(),
+        _ => pool
+            .sql(
+                "SELECT COUNT(*) FROM gb_cloud_record \
              WHERE ($1::text IS NULL OR app = $1) \
                AND ($2::text IS NULL OR stream = $2) \
                AND ($3::text IS NULL OR media_server_id = $3) \
                AND ($4::bigint IS NULL OR start_time >= $4) \
                AND ($5::bigint IS NULL OR end_time <= $5)",
-        )
-        .into_owned(),
+            )
+            .into_owned(),
     };
 
     let result: (i64,) = crate::dispatch!(pool, |p| {
@@ -479,14 +486,15 @@ pub async fn count_all(
 
 /// 更新云端录像
 pub async fn update(pool: &Pool, record: &CloudRecordUpdate) -> sqlx::Result<bool> {
-    let sql = crate::db::dialect::current_sql(
-        "UPDATE gb_cloud_record SET \
+    let sql = pool
+        .sql(
+            "UPDATE gb_cloud_record SET \
              end_time = COALESCE(?, end_time), \
              file_size = COALESCE(?, file_size), \
              time_len = COALESCE(?, time_len) \
              WHERE id = ?",
-    )
-    .into_owned();
+        )
+        .into_owned();
 
     let result = crate::dispatch_exec!(pool, |p| {
         sqlx::query(&sql)
@@ -502,8 +510,9 @@ pub async fn update(pool: &Pool, record: &CloudRecordUpdate) -> sqlx::Result<boo
 
 /// 删除云端录像
 pub async fn delete(pool: &Pool, id: i64) -> sqlx::Result<bool> {
-    let sql =
-        crate::db::dialect::current_sql("DELETE FROM gb_cloud_record WHERE id = ?").into_owned();
+    let sql = pool
+        .sql("DELETE FROM gb_cloud_record WHERE id = ?")
+        .into_owned();
 
     let result = crate::dispatch_exec!(pool, |p| { sqlx::query(&sql).bind(id).execute(p) })?;
 
@@ -534,9 +543,9 @@ pub async fn batch_delete(pool: &Pool, ids: &[i64]) -> sqlx::Result<u64> {
 
 /// 设置/取消收藏
 pub async fn set_collect(pool: &Pool, id: i64, collect: bool) -> sqlx::Result<bool> {
-    let sql =
-        crate::db::dialect::current_sql("UPDATE gb_cloud_record SET collect = ? WHERE id = ?")
-            .into_owned();
+    let sql = pool
+        .sql("UPDATE gb_cloud_record SET collect = ? WHERE id = ?")
+        .into_owned();
 
     let result = crate::dispatch_exec!(pool, |p| {
         sqlx::query(&sql).bind(collect).bind(id).execute(p)
@@ -547,7 +556,7 @@ pub async fn set_collect(pool: &Pool, id: i64, collect: bool) -> sqlx::Result<bo
 
 /// 根据 call_id 查询录像
 pub async fn get_by_call_id(pool: &Pool, call_id: &str) -> sqlx::Result<Option<CloudRecord>> {
-    let sql = crate::db::dialect::current_sql("SELECT id, app, stream, call_id, start_time, end_time, media_server_id, file_name, file_path, file_size, collect, server_id, folder, time_len FROM gb_cloud_record WHERE call_id = ?").into_owned();
+    let sql = pool.sql("SELECT id, app, stream, call_id, start_time, end_time, media_server_id, file_name, file_path, file_size, collect, server_id, folder, time_len FROM gb_cloud_record WHERE call_id = ?").into_owned();
     return crate::dispatch!(pool, |p| {
         sqlx::query_as::<_, CloudRecord>(&sql)
             .bind(call_id)
@@ -557,9 +566,9 @@ pub async fn get_by_call_id(pool: &Pool, call_id: &str) -> sqlx::Result<Option<C
 
 /// 删除指定流的录像
 pub async fn delete_by_app_stream(pool: &Pool, app: &str, stream: &str) -> sqlx::Result<u64> {
-    let sql =
-        crate::db::dialect::current_sql("DELETE FROM gb_cloud_record WHERE app = ? AND stream = ?")
-            .into_owned();
+    let sql = pool
+        .sql("DELETE FROM gb_cloud_record WHERE app = ? AND stream = ?")
+        .into_owned();
     let r = crate::dispatch_exec!(pool, |p| {
         sqlx::query(&sql).bind(app).bind(stream).execute(p)
     })?;
@@ -582,7 +591,7 @@ pub async fn delete_by_app_stream_period(
     let name_like = format!("{period}%");
     let path_like = format!("%/{period}/%");
     let r = crate::dispatch_exec!(pool, |p| {
-        sqlx::query(&crate::dyn_where::dialect_sql(
+        sqlx::query(&pool.sql(
             "DELETE FROM gb_cloud_record WHERE app = ? AND stream = ? \
          AND (file_name LIKE ? OR file_path LIKE ?)",
         ))
@@ -597,9 +606,9 @@ pub async fn delete_by_app_stream_period(
 
 /// 获取收藏的录像
 pub async fn get_collect_records(pool: &Pool) -> sqlx::Result<Vec<CloudRecord>> {
-    let sql = match crate::db::dialect::current() {
-        crate::db::Dialect::Postgres => crate::db::dialect::current_sql("SELECT id, app, stream, call_id, start_time, end_time, media_server_id, file_name, file_path, file_size, collect, server_id, folder, time_len FROM gb_cloud_record WHERE collect = true ORDER BY create_time DESC").into_owned(),
-        _ => crate::db::dialect::current_sql("SELECT id, app, stream, call_id, start_time, end_time, media_server_id, file_name, file_path, file_size, collect, server_id, folder, time_len FROM gb_cloud_record WHERE collect = 1 ORDER BY create_time DESC").into_owned(),
+    let sql = match pool.dialect() {
+        crate::db::Dialect::Postgres => pool.sql("SELECT id, app, stream, call_id, start_time, end_time, media_server_id, file_name, file_path, file_size, collect, server_id, folder, time_len FROM gb_cloud_record WHERE collect = true ORDER BY create_time DESC").into_owned(),
+        _ => pool.sql("SELECT id, app, stream, call_id, start_time, end_time, media_server_id, file_name, file_path, file_size, collect, server_id, folder, time_len FROM gb_cloud_record WHERE collect = 1 ORDER BY create_time DESC").into_owned(),
     };
     return crate::dispatch!(pool, |p| {
         sqlx::query_as::<_, CloudRecord>(&sql).fetch_all(p)
@@ -608,7 +617,8 @@ pub async fn get_collect_records(pool: &Pool) -> sqlx::Result<Vec<CloudRecord>> 
 
 /// 删除指定时间之前的录像
 pub async fn delete_before_time(pool: &Pool, before_time: i64) -> sqlx::Result<u64> {
-    let sql = crate::db::dialect::current_sql("DELETE FROM gb_cloud_record WHERE end_time < ?")
+    let sql = pool
+        .sql("DELETE FROM gb_cloud_record WHERE end_time < ?")
         .into_owned();
     let r = crate::dispatch_exec!(pool, |p| { sqlx::query(&sql).bind(before_time).execute(p) })?;
     Ok(r.rows_affected())
@@ -657,9 +667,10 @@ pub async fn update_recording_progress(
 ) -> sqlx::Result<u64> {
     let now = chrono::Utc::now().timestamp();
     let duration_secs = current_duration_secs as i64;
-    let sql = match crate::db::dialect::current() {
-        crate::db::Dialect::MySql => crate::db::dialect::current_sql(
-            r#"UPDATE gb_cloud_record
+    let sql = match pool.dialect() {
+        crate::db::Dialect::MySql => pool
+            .sql(
+                r#"UPDATE gb_cloud_record
                SET time_len = ?, file_size = ?, end_time = ?
                WHERE id = (
                    SELECT id FROM (
@@ -669,10 +680,11 @@ pub async fn update_recording_progress(
                        LIMIT 1
                    ) AS t
                )"#,
-        )
-        .into_owned(),
-        crate::db::Dialect::Sqlite => crate::db::dialect::current_sql(
-            r#"UPDATE gb_cloud_record
+            )
+            .into_owned(),
+        crate::db::Dialect::Sqlite => pool
+            .sql(
+                r#"UPDATE gb_cloud_record
                SET time_len = ?, file_size = ?, end_time = ?
                WHERE id = (
                    SELECT id FROM gb_cloud_record
@@ -680,10 +692,11 @@ pub async fn update_recording_progress(
                    ORDER BY (start_time IS NULL), start_time DESC
                    LIMIT 1
                )"#,
-        )
-        .into_owned(),
-        _ => crate::db::dialect::current_sql(
-            r#"UPDATE gb_cloud_record
+            )
+            .into_owned(),
+        _ => pool
+            .sql(
+                r#"UPDATE gb_cloud_record
                SET time_len = $3,
                    file_size = $4,
                    end_time = $5
@@ -693,8 +706,8 @@ pub async fn update_recording_progress(
                    ORDER BY start_time DESC NULLS LAST
                    LIMIT 1
                )"#,
-        )
-        .into_owned(),
+            )
+            .into_owned(),
     };
     crate::dispatch_exec!(pool, |p| {
         sqlx::query(&sql)
@@ -822,7 +835,7 @@ pub async fn find_latest_by_stream_like(
     needle: &str,
 ) -> sqlx::Result<Option<CloudRecord>> {
     let pattern = format!("%{}%", needle);
-    let sql = crate::db::dialect::current_sql(
+    let sql = pool.sql(
         "SELECT * FROM gb_cloud_record WHERE stream LIKE ? ORDER BY end_time DESC, id DESC LIMIT 1",
     )
     .into_owned();

@@ -112,7 +112,7 @@ pub async fn get_by_id(pool: &Pool, id: i32) -> sqlx::Result<Option<RecordPlan>>
             .await
         },
         |p| {
-            sqlx::query_as::<_, RecordPlan>(&crate::dyn_where::dialect_sql(
+            sqlx::query_as::<_, RecordPlan>(&pool.sql(
                 "SELECT id, snap, name, create_time, update_time FROM gb_record_plan WHERE id = ?",
             ))
             .bind(id)
@@ -120,7 +120,7 @@ pub async fn get_by_id(pool: &Pool, id: i32) -> sqlx::Result<Option<RecordPlan>>
             .await
         },
         |p| {
-            sqlx::query_as::<_, RecordPlan>(&crate::dyn_where::dialect_sql(
+            sqlx::query_as::<_, RecordPlan>(&pool.sql(
                 "SELECT id, snap, name, create_time, update_time FROM gb_record_plan WHERE id = ?",
             ))
             .bind(id)
@@ -155,7 +155,7 @@ pub async fn list_paged(
             .await
         },
         |p| {
-            sqlx::query_as::<_, RecordPlan>(&crate::dyn_where::dialect_sql(
+            sqlx::query_as::<_, RecordPlan>(&pool.sql(
                 "SELECT id, snap, name, create_time, update_time FROM gb_record_plan \
                      WHERE (? IS NULL OR name LIKE ?) ORDER BY id LIMIT ? OFFSET ?",
             ))
@@ -167,7 +167,7 @@ pub async fn list_paged(
             .await
         },
         |p| {
-            sqlx::query_as::<_, RecordPlan>(&crate::dyn_where::dialect_sql(
+            sqlx::query_as::<_, RecordPlan>(&pool.sql(
                 "SELECT id, snap, name, create_time, update_time FROM gb_record_plan \
                      WHERE (? IS NULL OR name LIKE ?) ORDER BY id LIMIT ? OFFSET ?",
             ))
@@ -195,18 +195,18 @@ pub async fn count_all(pool: &Pool, query: Option<&str>) -> sqlx::Result<i64> {
             .await
         },
         |p| {
-            sqlx::query_scalar::<_, i64>(&crate::dyn_where::dialect_sql(
-                "SELECT COUNT(*) FROM gb_record_plan WHERE (? IS NULL OR name LIKE ?)",
-            ))
+            sqlx::query_scalar::<_, i64>(
+                &pool.sql("SELECT COUNT(*) FROM gb_record_plan WHERE (? IS NULL OR name LIKE ?)"),
+            )
             .bind(like.as_deref())
             .bind(like.as_deref())
             .fetch_one(p)
             .await
         },
         |p| {
-            sqlx::query_scalar::<_, i64>(&crate::dyn_where::dialect_sql(
-                "SELECT COUNT(*) FROM gb_record_plan WHERE (? IS NULL OR name LIKE ?)",
-            ))
+            sqlx::query_scalar::<_, i64>(
+                &pool.sql("SELECT COUNT(*) FROM gb_record_plan WHERE (? IS NULL OR name LIKE ?)"),
+            )
             .bind(like.as_deref())
             .bind(like.as_deref())
             .fetch_one(p)
@@ -232,17 +232,17 @@ pub async fn count_linked_channels(pool: &Pool, plan_id: i64) -> sqlx::Result<i6
             .await
         },
         |p| {
-            sqlx::query_scalar::<_, i64>(&crate::dyn_where::dialect_sql(
-                "SELECT COUNT(*) FROM gb_device_channel WHERE record_plan_id = ?",
-            ))
+            sqlx::query_scalar::<_, i64>(
+                &pool.sql("SELECT COUNT(*) FROM gb_device_channel WHERE record_plan_id = ?"),
+            )
             .bind(plan_id as i32)
             .fetch_one(p)
             .await
         },
         |p| {
-            sqlx::query_scalar::<_, i64>(&crate::dyn_where::dialect_sql(
-                "SELECT COUNT(*) FROM gb_device_channel WHERE record_plan_id = ?",
-            ))
+            sqlx::query_scalar::<_, i64>(
+                &pool.sql("SELECT COUNT(*) FROM gb_device_channel WHERE record_plan_id = ?"),
+            )
             .bind(plan_id as i32)
             .fetch_one(p)
             .await
@@ -263,7 +263,7 @@ pub async fn list_items(pool: &Pool, plan_id: i64) -> sqlx::Result<Vec<RecordPla
         },
         |p| {
             sqlx::query_as::<_, RecordPlanItem>(
-                    &crate::dyn_where::dialect_sql("SELECT id, start, stop, week_day, plan_id, create_time, update_time FROM gb_record_plan_item WHERE plan_id = ? ORDER BY id"),
+                    &pool.sql("SELECT id, start, stop, week_day, plan_id, create_time, update_time FROM gb_record_plan_item WHERE plan_id = ? ORDER BY id"),
                 )
                 .bind(plan_id)
                 .fetch_all(p)
@@ -271,7 +271,7 @@ pub async fn list_items(pool: &Pool, plan_id: i64) -> sqlx::Result<Vec<RecordPla
         },
         |p| {
             sqlx::query_as::<_, RecordPlanItem>(
-                    &crate::dyn_where::dialect_sql("SELECT id, start, stop, week_day, plan_id, create_time, update_time FROM gb_record_plan_item WHERE plan_id = ? ORDER BY id"),
+                    &pool.sql("SELECT id, start, stop, week_day, plan_id, create_time, update_time FROM gb_record_plan_item WHERE plan_id = ? ORDER BY id"),
                 )
                 .bind(plan_id)
                 .fetch_all(p)
@@ -295,7 +295,7 @@ pub async fn add(pool: &Pool, name: &str, snap: bool, now: &str) -> sqlx::Result
         },
         |p| {
             sqlx::query(
-                    &crate::dyn_where::dialect_sql("INSERT INTO gb_record_plan (name, snap, create_time, update_time) VALUES (?, ?, ?, ?)"),
+                    &pool.sql("INSERT INTO gb_record_plan (name, snap, create_time, update_time) VALUES (?, ?, ?, ?)"),
                 )
                 .bind(name)
                 .bind(snap)
@@ -305,7 +305,7 @@ pub async fn add(pool: &Pool, name: &str, snap: bool, now: &str) -> sqlx::Result
         },
         |p| {
             sqlx::query(
-                    &crate::dyn_where::dialect_sql("INSERT INTO gb_record_plan (name, snap, create_time, update_time) VALUES (?, ?, ?, ?)"),
+                    &pool.sql("INSERT INTO gb_record_plan (name, snap, create_time, update_time) VALUES (?, ?, ?, ?)"),
                 )
                 .bind(name)
                 .bind(snap)
@@ -334,7 +334,7 @@ pub async fn add_with_id(pool: &Pool, name: &str, snap: bool, now: &str) -> sqlx
         },
         |p| {
             let r = sqlx::query(
-                        &crate::dyn_where::dialect_sql("INSERT INTO gb_record_plan (name, snap, create_time, update_time) VALUES (?, ?, ?, ?)"),
+                        &pool.sql("INSERT INTO gb_record_plan (name, snap, create_time, update_time) VALUES (?, ?, ?, ?)"),
                     )
                     .bind(name)
                     .bind(snap)
@@ -346,7 +346,7 @@ pub async fn add_with_id(pool: &Pool, name: &str, snap: bool, now: &str) -> sqlx
         },
         |p| {
             let r = sqlx::query(
-                        &crate::dyn_where::dialect_sql("INSERT INTO gb_record_plan (name, snap, create_time, update_time) VALUES (?, ?, ?, ?)"),
+                        &pool.sql("INSERT INTO gb_record_plan (name, snap, create_time, update_time) VALUES (?, ?, ?, ?)"),
                     )
                     .bind(name)
                     .bind(snap)
@@ -380,7 +380,7 @@ pub async fn update(
         },
         |p| {
             sqlx::query(
-                    &crate::dyn_where::dialect_sql("UPDATE gb_record_plan SET name = COALESCE(?, name), snap = COALESCE(?, snap), update_time = ? WHERE id = ?"),
+                    &pool.sql("UPDATE gb_record_plan SET name = COALESCE(?, name), snap = COALESCE(?, snap), update_time = ? WHERE id = ?"),
                 )
                 .bind(name)
                 .bind(snap)
@@ -390,7 +390,7 @@ pub async fn update(
         },
         |p| {
             sqlx::query(
-                    &crate::dyn_where::dialect_sql("UPDATE gb_record_plan SET name = COALESCE(?, name), snap = COALESCE(?, snap), update_time = ? WHERE id = ?"),
+                    &pool.sql("UPDATE gb_record_plan SET name = COALESCE(?, name), snap = COALESCE(?, snap), update_time = ? WHERE id = ?"),
                 )
                 .bind(name)
                 .bind(snap)
@@ -428,45 +428,37 @@ pub async fn delete_by_id(pool: &Pool, id: i32) -> sqlx::Result<u64> {
             Ok::<_, sqlx::Error>(r.rows_affected())
         },
         |p| {
-            let _ = sqlx::query(&crate::dyn_where::dialect_sql(
+            let _ = sqlx::query(&pool.sql(
                 "UPDATE gb_device_channel SET record_plan_id = NULL WHERE record_plan_id = ?",
             ))
             .bind(id)
             .execute(p)
             .await?;
-            let _ = sqlx::query(&crate::dyn_where::dialect_sql(
-                "DELETE FROM gb_record_plan_item WHERE plan_id = ?",
-            ))
-            .bind(id)
-            .execute(p)
-            .await?;
-            let r = sqlx::query(&crate::dyn_where::dialect_sql(
-                "DELETE FROM gb_record_plan WHERE id = ?",
-            ))
-            .bind(id)
-            .execute(p)
-            .await?;
+            let _ = sqlx::query(&pool.sql("DELETE FROM gb_record_plan_item WHERE plan_id = ?"))
+                .bind(id)
+                .execute(p)
+                .await?;
+            let r = sqlx::query(&pool.sql("DELETE FROM gb_record_plan WHERE id = ?"))
+                .bind(id)
+                .execute(p)
+                .await?;
             Ok::<_, sqlx::Error>(r.rows_affected())
         },
         |p| {
-            let _ = sqlx::query(&crate::dyn_where::dialect_sql(
+            let _ = sqlx::query(&pool.sql(
                 "UPDATE gb_device_channel SET record_plan_id = NULL WHERE record_plan_id = ?",
             ))
             .bind(id)
             .execute(p)
             .await?;
-            let _ = sqlx::query(&crate::dyn_where::dialect_sql(
-                "DELETE FROM gb_record_plan_item WHERE plan_id = ?",
-            ))
-            .bind(id)
-            .execute(p)
-            .await?;
-            let r = sqlx::query(&crate::dyn_where::dialect_sql(
-                "DELETE FROM gb_record_plan WHERE id = ?",
-            ))
-            .bind(id)
-            .execute(p)
-            .await?;
+            let _ = sqlx::query(&pool.sql("DELETE FROM gb_record_plan_item WHERE plan_id = ?"))
+                .bind(id)
+                .execute(p)
+                .await?;
+            let r = sqlx::query(&pool.sql("DELETE FROM gb_record_plan WHERE id = ?"))
+                .bind(id)
+                .execute(p)
+                .await?;
             Ok::<_, sqlx::Error>(r.rows_affected())
         },
     )?)
@@ -485,20 +477,16 @@ pub async fn link_channel(pool: &Pool, channel_id: i64, plan_id: Option<i64>) ->
                 .execute(p)
         },
         |p| {
-            sqlx::query(&crate::dyn_where::dialect_sql(
-                "UPDATE gb_device_channel SET record_plan_id = ? WHERE id = ?",
-            ))
-            .bind(plan_id.map(|x| x as i32))
-            .bind(channel_id)
-            .execute(p)
+            sqlx::query(&pool.sql("UPDATE gb_device_channel SET record_plan_id = ? WHERE id = ?"))
+                .bind(plan_id.map(|x| x as i32))
+                .bind(channel_id)
+                .execute(p)
         },
         |p| {
-            sqlx::query(&crate::dyn_where::dialect_sql(
-                "UPDATE gb_device_channel SET record_plan_id = ? WHERE id = ?",
-            ))
-            .bind(plan_id.map(|x| x as i32))
-            .bind(channel_id)
-            .execute(p)
+            sqlx::query(&pool.sql("UPDATE gb_device_channel SET record_plan_id = ? WHERE id = ?"))
+                .bind(plan_id.map(|x| x as i32))
+                .bind(channel_id)
+                .execute(p)
         },
     )?;
     Ok(r.rows_affected())
@@ -522,18 +510,18 @@ pub async fn channel_id_by_gb_id(pool: &Pool, gb_device_id: &str) -> sqlx::Resul
                 .map(|r| r.0 as i64)
         },
         |p| {
-            sqlx::query_as::<_, (i64,)>(&crate::dyn_where::dialect_sql(
-                "SELECT id FROM gb_device_channel WHERE gb_device_id = ?",
-            ))
+            sqlx::query_as::<_, (i64,)>(
+                &pool.sql("SELECT id FROM gb_device_channel WHERE gb_device_id = ?"),
+            )
             .bind(gb_device_id)
             .fetch_optional(p)
             .await?
             .map(|r| r.0)
         },
         |p| {
-            sqlx::query_as::<_, (i64,)>(&crate::dyn_where::dialect_sql(
-                "SELECT id FROM gb_device_channel WHERE gb_device_id = ?",
-            ))
+            sqlx::query_as::<_, (i64,)>(
+                &pool.sql("SELECT id FROM gb_device_channel WHERE gb_device_id = ?"),
+            )
             .bind(gb_device_id)
             .fetch_optional(p)
             .await?
@@ -554,17 +542,17 @@ pub async fn channel_exists(pool: &Pool, channel_id: i64) -> sqlx::Result<bool> 
                 .await?
         },
         |p| {
-            sqlx::query_scalar::<_, i64>(&crate::dyn_where::dialect_sql(
-                "SELECT COUNT(*) FROM gb_device_channel WHERE id = ?",
-            ))
+            sqlx::query_scalar::<_, i64>(
+                &pool.sql("SELECT COUNT(*) FROM gb_device_channel WHERE id = ?"),
+            )
             .bind(channel_id)
             .fetch_one(p)
             .await?
         },
         |p| {
-            sqlx::query_scalar::<_, i64>(&crate::dyn_where::dialect_sql(
-                "SELECT COUNT(*) FROM gb_device_channel WHERE id = ?",
-            ))
+            sqlx::query_scalar::<_, i64>(
+                &pool.sql("SELECT COUNT(*) FROM gb_device_channel WHERE id = ?"),
+            )
             .bind(channel_id)
             .fetch_one(p)
             .await?
@@ -591,9 +579,9 @@ pub async fn channel_ids_by_device_db_id(pool: &Pool, device_db_id: i64) -> sqlx
             .collect()
         },
         |p| {
-            sqlx::query_as::<_, (i64,)>(&crate::dyn_where::dialect_sql(
-                "SELECT id FROM gb_device_channel WHERE data_device_id = ?",
-            ))
+            sqlx::query_as::<_, (i64,)>(
+                &pool.sql("SELECT id FROM gb_device_channel WHERE data_device_id = ?"),
+            )
             .bind(device_db_id as i32)
             .fetch_all(p)
             .await?
@@ -602,9 +590,9 @@ pub async fn channel_ids_by_device_db_id(pool: &Pool, device_db_id: i64) -> sqlx
             .collect()
         },
         |p| {
-            sqlx::query_as::<_, (i64,)>(&crate::dyn_where::dialect_sql(
-                "SELECT id FROM gb_device_channel WHERE data_device_id = ?",
-            ))
+            sqlx::query_as::<_, (i64,)>(
+                &pool.sql("SELECT id FROM gb_device_channel WHERE data_device_id = ?"),
+            )
             .bind(device_db_id as i32)
             .fetch_all(p)
             .await?
@@ -618,7 +606,7 @@ pub async fn channel_ids_by_device_db_id(pool: &Pool, device_db_id: i64) -> sqlx
 
 /// 全部通道的主键（`allLink` 用）。
 pub async fn all_channel_ids(pool: &Pool) -> sqlx::Result<Vec<i64>> {
-    let sql = crate::db::dialect::current_sql("SELECT id FROM gb_device_channel").into_owned();
+    let sql = pool.sql("SELECT id FROM gb_device_channel").into_owned();
 
     // `gb_device_channel.id` 的类型按方言不同：postgres 是 `serial`（INT4），
     // mysql 是 `bigint`，sqlite 是 `INTEGER` —— **pg 严格校验列类型**，
@@ -655,30 +643,31 @@ pub async fn all_channel_ids(pool: &Pool) -> sqlx::Result<Vec<i64>> {
 
 /// 清掉某个计划下所有通道的关联。
 pub async fn unlink_all_channels(pool: &Pool, plan_id: i64) -> sqlx::Result<u64> {
-    let r = crate::dispatch_exec_dialect!(
-        pool,
-        |p| {
-            sqlx::query(
-                "UPDATE gb_device_channel SET record_plan_id = NULL WHERE record_plan_id = $1",
-            )
-            .bind(plan_id as i32)
-            .execute(p)
-        },
-        |p| {
-            sqlx::query(&crate::dyn_where::dialect_sql(
-                "UPDATE gb_device_channel SET record_plan_id = NULL WHERE record_plan_id = ?",
-            ))
-            .bind(plan_id as i32)
-            .execute(p)
-        },
-        |p| {
-            sqlx::query(&crate::dyn_where::dialect_sql(
-                "UPDATE gb_device_channel SET record_plan_id = NULL WHERE record_plan_id = ?",
-            ))
-            .bind(plan_id as i32)
-            .execute(p)
-        },
-    )?;
+    let r =
+        crate::dispatch_exec_dialect!(
+            pool,
+            |p| {
+                sqlx::query(
+                    "UPDATE gb_device_channel SET record_plan_id = NULL WHERE record_plan_id = $1",
+                )
+                .bind(plan_id as i32)
+                .execute(p)
+            },
+            |p| {
+                sqlx::query(&pool.sql(
+                    "UPDATE gb_device_channel SET record_plan_id = NULL WHERE record_plan_id = ?",
+                ))
+                .bind(plan_id as i32)
+                .execute(p)
+            },
+            |p| {
+                sqlx::query(&pool.sql(
+                    "UPDATE gb_device_channel SET record_plan_id = NULL WHERE record_plan_id = ?",
+                ))
+                .bind(plan_id as i32)
+                .execute(p)
+            },
+        )?;
     Ok(r.rows_affected())
 }
 
@@ -723,16 +712,14 @@ pub async fn replace_items(
             Ok::<_, sqlx::Error>(affected)
         },
         |p| {
-            let _ = sqlx::query(&crate::dyn_where::dialect_sql(
-                "DELETE FROM gb_record_plan_item WHERE plan_id = ?",
-            ))
-            .bind(plan_id)
-            .execute(p)
-            .await?;
+            let _ = sqlx::query(&pool.sql("DELETE FROM gb_record_plan_item WHERE plan_id = ?"))
+                .bind(plan_id)
+                .execute(p)
+                .await?;
             let mut affected = 0;
             for item in items {
                 let r = sqlx::query(
-                            &crate::dyn_where::dialect_sql("INSERT INTO gb_record_plan_item (`start`, stop, week_day, plan_id, create_time, update_time) VALUES (?, ?, ?, ?, ?, ?)"),
+                            &pool.sql("INSERT INTO gb_record_plan_item (`start`, stop, week_day, plan_id, create_time, update_time) VALUES (?, ?, ?, ?, ?, ?)"),
                         )
                         .bind(item.start)
                         .bind(item.stop)
@@ -747,16 +734,14 @@ pub async fn replace_items(
             Ok::<_, sqlx::Error>(affected)
         },
         |p| {
-            let _ = sqlx::query(&crate::dyn_where::dialect_sql(
-                "DELETE FROM gb_record_plan_item WHERE plan_id = ?",
-            ))
-            .bind(plan_id)
-            .execute(p)
-            .await?;
+            let _ = sqlx::query(&pool.sql("DELETE FROM gb_record_plan_item WHERE plan_id = ?"))
+                .bind(plan_id)
+                .execute(p)
+                .await?;
             let mut affected = 0;
             for item in items {
                 let r = sqlx::query(
-                            &crate::dyn_where::dialect_sql("INSERT INTO gb_record_plan_item (\"start\", stop, week_day, plan_id, create_time, update_time) VALUES (?, ?, ?, ?, ?, ?)"),
+                            &pool.sql("INSERT INTO gb_record_plan_item (\"start\", stop, week_day, plan_id, create_time, update_time) VALUES (?, ?, ?, ?, ?, ?)"),
                         )
                         .bind(item.start)
                         .bind(item.stop)
@@ -779,13 +764,14 @@ mod plan_db_tests {
     use crate::test_support::sqlite_pool_with_schema;
 
     async fn seed_channel(pool: &Pool, gb_id: &str) -> i64 {
-        let sql = crate::db::dialect::current_sql(
-            "INSERT INTO gb_device_channel \
+        let sql = pool
+            .sql(
+                "INSERT INTO gb_device_channel \
              (device_id, name, gb_device_id, status, data_type, data_device_id, channel_type, \
               create_time, update_time) \
              VALUES ('dev1', ?, ?, 'ON', 0, 1, 0, '2026-01-01 00:00:00', '2026-01-01 00:00:00')",
-        )
-        .into_owned();
+            )
+            .into_owned();
 
         let row = crate::dispatch_exec!(pool, |p| {
             sqlx::query(&sql)

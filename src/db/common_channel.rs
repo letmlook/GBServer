@@ -95,29 +95,26 @@ pub async fn update(
     Ok(r.rows_affected())
 }
 pub async fn reset(pool: &Pool, id: i64, now: &str) -> sqlx::Result<u64> {
-    let r = if crate::db::dialect::current().is_mysql() {
-        let sql = crate::db::dialect::current_sql(
-            "UPDATE gb_device_channel SET sub_count = 0, update_time = ? WHERE id = ?",
-        )
-        .into_owned();
+    let r = if pool.dialect().is_mysql() {
+        let sql = pool
+            .sql("UPDATE gb_device_channel SET sub_count = 0, update_time = ? WHERE id = ?")
+            .into_owned();
 
         crate::dispatch_exec!(pool, |p| {
             sqlx::query(&sql).bind(now).bind(id).execute(p)
         })?
-    } else if crate::db::dialect::current().is_postgres() {
-        let sql = crate::db::dialect::current_sql(
-            "UPDATE gb_device_channel SET sub_count = 0, update_time = $1 WHERE id = $2",
-        )
-        .into_owned();
+    } else if pool.dialect().is_postgres() {
+        let sql = pool
+            .sql("UPDATE gb_device_channel SET sub_count = 0, update_time = $1 WHERE id = $2")
+            .into_owned();
 
         crate::dispatch_exec!(pool, |p| {
             sqlx::query(&sql).bind(now).bind(id).execute(p)
         })?
     } else {
-        let sql = crate::db::dialect::current_sql(
-            "UPDATE gb_device_channel SET sub_count = 0, update_time = ? WHERE id = ?",
-        )
-        .into_owned();
+        let sql = pool
+            .sql("UPDATE gb_device_channel SET sub_count = 0, update_time = ? WHERE id = ?")
+            .into_owned();
 
         crate::dispatch_exec!(pool, |p| {
             sqlx::query(&sql).bind(now).bind(id).execute(p)
@@ -247,10 +244,9 @@ pub async fn get_unusual_civilcode(
 }
 
 pub async fn count_unusual_civilcode(pool: &Pool) -> sqlx::Result<i64> {
-    let sql = crate::db::dialect::current_sql(
-        "SELECT COUNT(*) FROM gb_device_channel WHERE civil_code IS NULL OR civil_code = ''",
-    )
-    .into_owned();
+    let sql = pool
+        .sql("SELECT COUNT(*) FROM gb_device_channel WHERE civil_code IS NULL OR civil_code = ''")
+        .into_owned();
     return crate::dispatch!(pool, |p| {
         sqlx::query_scalar::<_, i64>(&sql).fetch_one(p)
     });
@@ -260,11 +256,12 @@ pub async fn count_unusual_civilcode(pool: &Pool) -> sqlx::Result<i64> {
 ///
 /// 供 `/api/region/sync` 按行政区划补齐区域表使用。
 pub async fn list_distinct_civil_codes(pool: &Pool) -> sqlx::Result<Vec<String>> {
-    let sql = crate::db::dialect::current_sql(
-        "SELECT DISTINCT civil_code FROM gb_device_channel \
+    let sql = pool
+        .sql(
+            "SELECT DISTINCT civil_code FROM gb_device_channel \
          WHERE civil_code IS NOT NULL AND civil_code <> '' ORDER BY civil_code",
-    )
-    .into_owned();
+        )
+        .into_owned();
     return crate::dispatch!(pool, |p| {
         sqlx::query_scalar::<_, String>(&sql).fetch_all(p)
     });
@@ -288,29 +285,26 @@ pub async fn get_unusual_parent(
 }
 
 pub async fn count_unusual_parent(pool: &Pool) -> sqlx::Result<i64> {
-    let sql = crate::db::dialect::current_sql(
-        "SELECT COUNT(*) FROM gb_device_channel WHERE parent_id IS NULL OR parent_id = '0'",
-    )
-    .into_owned();
+    let sql = pool
+        .sql("SELECT COUNT(*) FROM gb_device_channel WHERE parent_id IS NULL OR parent_id = '0'")
+        .into_owned();
     return crate::dispatch!(pool, |p| {
         sqlx::query_scalar::<_, i64>(&sql).fetch_one(p)
     });
 }
 
 pub async fn clear_unusual_civilcode(pool: &Pool, id: i64) -> sqlx::Result<u64> {
-    let sql = crate::db::dialect::current_sql(
-        "UPDATE gb_device_channel SET civil_code = NULL WHERE id = ?",
-    )
-    .into_owned();
+    let sql = pool
+        .sql("UPDATE gb_device_channel SET civil_code = NULL WHERE id = ?")
+        .into_owned();
     let r = crate::dispatch_exec!(pool, |p| { sqlx::query(&sql).bind(id).execute(p) })?;
     Ok(r.rows_affected())
 }
 
 pub async fn clear_unusual_parent(pool: &Pool, id: i64) -> sqlx::Result<u64> {
-    let sql = crate::db::dialect::current_sql(
-        "UPDATE gb_device_channel SET parent_id = '0' WHERE id = ?",
-    )
-    .into_owned();
+    let sql = pool
+        .sql("UPDATE gb_device_channel SET parent_id = '0' WHERE id = ?")
+        .into_owned();
     let r = crate::dispatch_exec!(pool, |p| { sqlx::query(&sql).bind(id).execute(p) })?;
     Ok(r.rows_affected())
 }
@@ -342,7 +336,7 @@ pub async fn count_parent_channels(
     _online: Option<bool>,
     _channel_type: Option<i32>,
 ) -> sqlx::Result<i64> {
-    let sql = crate::db::dialect::current_sql(
+    let sql = pool.sql(
         "SELECT COUNT(*) FROM gb_device_channel WHERE parent_id IS NOT NULL AND parent_id != '0'",
     )
     .into_owned();
@@ -357,10 +351,9 @@ pub async fn update_civil_code(
     civil_code: &str,
     now: &str,
 ) -> sqlx::Result<u64> {
-    let sql = crate::db::dialect::current_sql(
-        "UPDATE gb_device_channel SET civil_code = ?, update_time = ? WHERE id = ?",
-    )
-    .into_owned();
+    let sql = pool
+        .sql("UPDATE gb_device_channel SET civil_code = ?, update_time = ? WHERE id = ?")
+        .into_owned();
     let r = crate::dispatch_exec!(pool, |p| {
         sqlx::query(&sql)
             .bind(civil_code)
@@ -372,29 +365,26 @@ pub async fn update_civil_code(
 }
 
 pub async fn clear_civil_code(pool: &Pool, id: i64, now: &str) -> sqlx::Result<u64> {
-    let r = if crate::db::dialect::current().is_mysql() {
-        let sql = crate::db::dialect::current_sql(
-            "UPDATE gb_device_channel SET civil_code = NULL, update_time = ? WHERE id = ?",
-        )
-        .into_owned();
+    let r = if pool.dialect().is_mysql() {
+        let sql = pool
+            .sql("UPDATE gb_device_channel SET civil_code = NULL, update_time = ? WHERE id = ?")
+            .into_owned();
 
         crate::dispatch_exec!(pool, |p| {
             sqlx::query(&sql).bind(now).bind(id).execute(p)
         })?
-    } else if crate::db::dialect::current().is_postgres() {
-        let sql = crate::db::dialect::current_sql(
-            "UPDATE gb_device_channel SET civil_code = NULL, update_time = $1 WHERE id = $2",
-        )
-        .into_owned();
+    } else if pool.dialect().is_postgres() {
+        let sql = pool
+            .sql("UPDATE gb_device_channel SET civil_code = NULL, update_time = $1 WHERE id = $2")
+            .into_owned();
 
         crate::dispatch_exec!(pool, |p| {
             sqlx::query(&sql).bind(now).bind(id).execute(p)
         })?
     } else {
-        let sql = crate::db::dialect::current_sql(
-            "UPDATE gb_device_channel SET civil_code = NULL, update_time = ? WHERE id = ?",
-        )
-        .into_owned();
+        let sql = pool
+            .sql("UPDATE gb_device_channel SET civil_code = NULL, update_time = ? WHERE id = ?")
+            .into_owned();
 
         crate::dispatch_exec!(pool, |p| {
             sqlx::query(&sql).bind(now).bind(id).execute(p)
@@ -409,10 +399,9 @@ pub async fn update_device_civil_code(
     civil_code: &str,
     now: &str,
 ) -> sqlx::Result<u64> {
-    let sql = crate::db::dialect::current_sql(
-        "UPDATE gb_device_channel SET civil_code = ?, update_time = ? WHERE device_id = ?",
-    )
-    .into_owned();
+    let sql = pool
+        .sql("UPDATE gb_device_channel SET civil_code = ?, update_time = ? WHERE device_id = ?")
+        .into_owned();
     let r = crate::dispatch_exec!(pool, |p| {
         sqlx::query(&sql)
             .bind(civil_code)
@@ -424,10 +413,9 @@ pub async fn update_device_civil_code(
 }
 
 pub async fn clear_device_civil_code(pool: &Pool, device_id: &str, now: &str) -> sqlx::Result<u64> {
-    let sql = crate::db::dialect::current_sql(
-        "UPDATE gb_device_channel SET civil_code = NULL, update_time = ? WHERE device_id = ?",
-    )
-    .into_owned();
+    let sql = pool
+        .sql("UPDATE gb_device_channel SET civil_code = NULL, update_time = ? WHERE device_id = ?")
+        .into_owned();
     let r = crate::dispatch_exec!(pool, |p| {
         sqlx::query(&sql).bind(now).bind(device_id).execute(p)
     })?;
@@ -441,7 +429,7 @@ pub async fn update_group(
     business_group: &str,
     now: &str,
 ) -> sqlx::Result<u64> {
-    let sql = crate::db::dialect::current_sql("UPDATE gb_device_channel SET parent_id = ?, business_group_id = ?, update_time = ? WHERE id = ?").into_owned();
+    let sql = pool.sql("UPDATE gb_device_channel SET parent_id = ?, business_group_id = ?, update_time = ? WHERE id = ?").into_owned();
     let r = crate::dispatch_exec!(pool, |p| {
         sqlx::query(&sql)
             .bind(parent_id)
@@ -454,7 +442,7 @@ pub async fn update_group(
 }
 
 pub async fn clear_group(pool: &Pool, id: i64, now: &str) -> sqlx::Result<u64> {
-    let sql = crate::db::dialect::current_sql("UPDATE gb_device_channel SET parent_id = '0', business_group_id = NULL, update_time = ? WHERE id = ?").into_owned();
+    let sql = pool.sql("UPDATE gb_device_channel SET parent_id = '0', business_group_id = NULL, update_time = ? WHERE id = ?").into_owned();
     let r = crate::dispatch_exec!(pool, |p| {
         sqlx::query(&sql).bind(now).bind(id).execute(p)
     })?;
@@ -468,7 +456,7 @@ pub async fn update_device_group(
     business_group: &str,
     now: &str,
 ) -> sqlx::Result<u64> {
-    let sql = crate::db::dialect::current_sql("UPDATE gb_device_channel SET parent_id = ?, business_group_id = ?, update_time = ? WHERE device_id = ?").into_owned();
+    let sql = pool.sql("UPDATE gb_device_channel SET parent_id = ?, business_group_id = ?, update_time = ? WHERE device_id = ?").into_owned();
     let r = crate::dispatch_exec!(pool, |p| {
         sqlx::query(&sql)
             .bind(parent_id)
@@ -481,7 +469,7 @@ pub async fn update_device_group(
 }
 
 pub async fn clear_device_group(pool: &Pool, device_id: &str, now: &str) -> sqlx::Result<u64> {
-    let sql = crate::db::dialect::current_sql("UPDATE gb_device_channel SET parent_id = '0', business_group_id = NULL, update_time = ? WHERE device_id = ?").into_owned();
+    let sql = pool.sql("UPDATE gb_device_channel SET parent_id = '0', business_group_id = NULL, update_time = ? WHERE device_id = ?").into_owned();
     let r = crate::dispatch_exec!(pool, |p| {
         sqlx::query(&sql).bind(now).bind(device_id).execute(p)
     })?;
@@ -494,14 +482,14 @@ pub async fn get_channels_for_map(
     _online: Option<bool>,
     _channel_type: Option<i32>,
 ) -> sqlx::Result<Vec<DeviceChannel>> {
-    if crate::db::dialect::current().is_mysql() {
+    if pool.dialect().is_mysql() {
         return crate::dispatch!(pool, |p| {
             sqlx::query_as::<_, DeviceChannel>(
                 &format!("SELECT {} FROM gb_device_channel WHERE longitude IS NOT NULL AND latitude IS NOT NULL ORDER BY id LIMIT 1000", DEVICE_CHANNEL_SELECT_COLUMNS),
             )
             .fetch_all(p)
         });
-    } else if crate::db::dialect::current().is_postgres() {
+    } else if pool.dialect().is_postgres() {
         return crate::dispatch!(pool, |p| {
             sqlx::query_as::<_, DeviceChannel>(
                 &format!("SELECT {} FROM gb_device_channel WHERE longitude IS NOT NULL AND latitude IS NOT NULL ORDER BY id LIMIT 1000", DEVICE_CHANNEL_SELECT_COLUMNS),
@@ -554,10 +542,9 @@ pub async fn update_map_level(pool: &Pool, channel_ids: &[i64], level: i32) -> s
 
 pub async fn reset_map_level(pool: &Pool) -> sqlx::Result<u64> {
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    let sql = crate::db::dialect::current_sql(
-        "UPDATE gb_device_channel SET map_level = 0, update_time = ?",
-    )
-    .into_owned();
+    let sql = pool
+        .sql("UPDATE gb_device_channel SET map_level = 0, update_time = ?")
+        .into_owned();
     let r = crate::dispatch_exec!(pool, |p| { sqlx::query(&sql).bind(&now).execute(p) })?;
     Ok(r.rows_affected())
 }
@@ -567,10 +554,9 @@ pub async fn reset_map_level(pool: &Pool) -> sqlx::Result<u64> {
 /// the original SQLite schema doesn't include it. Adding via ALTER TABLE
 /// (idempotent: swallows "duplicate column" errors).
 pub async fn ensure_columns(pool: &Pool) -> sqlx::Result<()> {
-    let sql = crate::db::dialect::current_sql(
-        "ALTER TABLE gb_device_channel ADD COLUMN custom_name VARCHAR(255)",
-    )
-    .into_owned();
+    let sql = pool
+        .sql("ALTER TABLE gb_device_channel ADD COLUMN custom_name VARCHAR(255)")
+        .into_owned();
 
     let _ = crate::dispatch_exec!(pool, |p| { sqlx::query(&sql).execute(p) });
     Ok(())
@@ -582,7 +568,7 @@ mod tests {
     use crate::test_support::sqlite_pool_with_schema;
 
     async fn seed_channel(pool: &Pool, device_id: &str, gb_id: &str, civil: Option<&str>) {
-        let sql = crate::db::dialect::current_sql("INSERT INTO gb_device_channel \
+        let sql = pool.sql("INSERT INTO gb_device_channel \
              (device_id, name, gb_device_id, civil_code, status, data_type, data_device_id, \
               longitude, latitude, parent_id, create_time, update_time) \
              VALUES (?, ?, ?, ?, 'ON', 0, 0, 118.7, 32.0, '0', '2026-01-01 00:00:00', '2026-01-01 00:00:00')").into_owned();

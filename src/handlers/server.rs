@@ -1805,7 +1805,7 @@ pub async fn media_server_save(
         media_server::add(&state.pool, &id, &ip, http_port, &now).await?;
     }
 
-    if crate::db::dialect::current().is_postgres() {
+    if state.pool.dialect().is_postgres() {
         crate::dispatch_exec!(&state.pool, |p| {
             sqlx::query(
                 r#"UPDATE gb_media_server SET
@@ -1858,9 +1858,9 @@ pub async fn media_server_save(
     // 2026-09-12：SQLite 与 MySQL 占位符语法一致，故共用同一分支。
     // 此前只 cfg(mysql)，导致默认 SQLite 部署下扩展字段（secret / 各类端口 /
     // rtp_port_range 等）被**静默丢弃**。
-    if crate::db::dialect::current().is_mysql() || crate::db::dialect::current().is_sqlite() {
+    if state.pool.dialect().is_mysql() || state.pool.dialect().is_sqlite() {
         crate::dispatch_exec!(&state.pool, |p| {
-            sqlx::query(&crate::dyn_where::dialect_sql(
+            sqlx::query(&state.pool.sql(
                 r#"UPDATE gb_media_server SET
                hook_ip = COALESCE(?, hook_ip),
                sdp_ip = COALESCE(?, sdp_ip),

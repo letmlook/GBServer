@@ -47,7 +47,7 @@ pub struct UserApiKeyRemark {
 /// 这里跟它们保持一致。
 pub async fn list_paged(pool: &Pool, page: u32, count: u32) -> sqlx::Result<Vec<UserApiKey>> {
     let offset = crate::pagination::offset(page, count);
-    let sql = crate::db::dialect::current_sql("SELECT id, user_id, app, api_key, expired_at, remark, enable, create_time, update_time FROM gb_user_api_key ORDER BY id DESC LIMIT ? OFFSET ?").into_owned();
+    let sql = pool.sql("SELECT id, user_id, app, api_key, expired_at, remark, enable, create_time, update_time FROM gb_user_api_key ORDER BY id DESC LIMIT ? OFFSET ?").into_owned();
     return crate::dispatch!(pool, |p| {
         sqlx::query_as::<_, UserApiKey>(&sql)
             .bind(count as i64)
@@ -57,7 +57,9 @@ pub async fn list_paged(pool: &Pool, page: u32, count: u32) -> sqlx::Result<Vec<
 }
 
 pub async fn count_all(pool: &Pool) -> sqlx::Result<i64> {
-    let sql = crate::db::dialect::current_sql("SELECT COUNT(*) FROM gb_user_api_key").into_owned();
+    let sql = pool
+        .sql("SELECT COUNT(*) FROM gb_user_api_key")
+        .into_owned();
 
     crate::dispatch!(pool, |p| {
         sqlx::query_scalar::<_, i64>(&sql).fetch_one(p)
@@ -65,7 +67,7 @@ pub async fn count_all(pool: &Pool) -> sqlx::Result<i64> {
 }
 
 pub async fn get_by_id(pool: &Pool, id: i32) -> sqlx::Result<Option<UserApiKey>> {
-    let sql = crate::db::dialect::current_sql("SELECT id, user_id, app, api_key, expired_at, remark, enable, create_time, update_time FROM gb_user_api_key WHERE id = ?").into_owned();
+    let sql = pool.sql("SELECT id, user_id, app, api_key, expired_at, remark, enable, create_time, update_time FROM gb_user_api_key WHERE id = ?").into_owned();
     return crate::dispatch!(pool, |p| {
         sqlx::query_as::<_, UserApiKey>(&sql)
             .bind(id)
@@ -83,7 +85,7 @@ pub async fn add(
     remark: Option<&str>,
     now: &str,
 ) -> sqlx::Result<u64> {
-    let sql = crate::db::dialect::current_sql("INSERT INTO gb_user_api_key (user_id, app, api_key, expired_at, remark, enable, create_time, update_time) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").into_owned();
+    let sql = pool.sql("INSERT INTO gb_user_api_key (user_id, app, api_key, expired_at, remark, enable, create_time, update_time) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").into_owned();
     let r = crate::dispatch_exec!(pool, |p| {
         sqlx::query(&sql)
             .bind(user_id)
@@ -100,10 +102,9 @@ pub async fn add(
 }
 
 pub async fn update_remark(pool: &Pool, id: i64, remark: &str, now: &str) -> sqlx::Result<u64> {
-    let sql = crate::db::dialect::current_sql(
-        "UPDATE gb_user_api_key SET remark = ?, update_time = ? WHERE id = ?",
-    )
-    .into_owned();
+    let sql = pool
+        .sql("UPDATE gb_user_api_key SET remark = ?, update_time = ? WHERE id = ?")
+        .into_owned();
     let r = crate::dispatch_exec!(pool, |p| {
         sqlx::query(&sql).bind(remark).bind(now).bind(id).execute(p)
     })?;
@@ -111,10 +112,9 @@ pub async fn update_remark(pool: &Pool, id: i64, remark: &str, now: &str) -> sql
 }
 
 pub async fn set_enable(pool: &Pool, id: i32, enable: bool, now: &str) -> sqlx::Result<u64> {
-    let sql = crate::db::dialect::current_sql(
-        "UPDATE gb_user_api_key SET enable = ?, update_time = ? WHERE id = ?",
-    )
-    .into_owned();
+    let sql = pool
+        .sql("UPDATE gb_user_api_key SET enable = ?, update_time = ? WHERE id = ?")
+        .into_owned();
     let r = crate::dispatch_exec!(pool, |p| {
         sqlx::query(&sql).bind(enable).bind(now).bind(id).execute(p)
     })?;
@@ -122,10 +122,9 @@ pub async fn set_enable(pool: &Pool, id: i32, enable: bool, now: &str) -> sqlx::
 }
 
 pub async fn reset_api_key(pool: &Pool, id: i32, new_key: &str, now: &str) -> sqlx::Result<u64> {
-    let sql = crate::db::dialect::current_sql(
-        "UPDATE gb_user_api_key SET api_key = ?, update_time = ? WHERE id = ?",
-    )
-    .into_owned();
+    let sql = pool
+        .sql("UPDATE gb_user_api_key SET api_key = ?, update_time = ? WHERE id = ?")
+        .into_owned();
     let r = crate::dispatch_exec!(pool, |p| {
         sqlx::query(&sql)
             .bind(new_key)
@@ -137,15 +136,16 @@ pub async fn reset_api_key(pool: &Pool, id: i32, new_key: &str, now: &str) -> sq
 }
 
 pub async fn delete_by_id(pool: &Pool, id: i32) -> sqlx::Result<u64> {
-    let sql =
-        crate::db::dialect::current_sql("DELETE FROM gb_user_api_key WHERE id = ?").into_owned();
+    let sql = pool
+        .sql("DELETE FROM gb_user_api_key WHERE id = ?")
+        .into_owned();
     let r = crate::dispatch_exec!(pool, |p| { sqlx::query(&sql).bind(id).execute(p) })?;
     Ok(r.rows_affected())
 }
 
 /// 根据 API Key 查询（用于认证）
 pub async fn get_by_api_key(pool: &Pool, api_key: &str) -> sqlx::Result<Option<UserApiKey>> {
-    let sql = crate::db::dialect::current_sql("SELECT id, user_id, app, api_key, expired_at, remark, enable, create_time, update_time FROM gb_user_api_key WHERE api_key = ?").into_owned();
+    let sql = pool.sql("SELECT id, user_id, app, api_key, expired_at, remark, enable, create_time, update_time FROM gb_user_api_key WHERE api_key = ?").into_owned();
     return crate::dispatch!(pool, |p| {
         sqlx::query_as::<_, UserApiKey>(&sql)
             .bind(api_key)
@@ -155,7 +155,7 @@ pub async fn get_by_api_key(pool: &Pool, api_key: &str) -> sqlx::Result<Option<U
 
 /// 根据用户ID查询 API Key 列表（**最新的排在最前**，与 `list_paged` 同口径）。
 pub async fn list_by_user_id(pool: &Pool, user_id: i64) -> sqlx::Result<Vec<UserApiKey>> {
-    let sql = crate::db::dialect::current_sql("SELECT id, user_id, app, api_key, expired_at, remark, enable, create_time, update_time FROM gb_user_api_key WHERE user_id = ? ORDER BY id DESC").into_owned();
+    let sql = pool.sql("SELECT id, user_id, app, api_key, expired_at, remark, enable, create_time, update_time FROM gb_user_api_key WHERE user_id = ? ORDER BY id DESC").into_owned();
     return crate::dispatch!(pool, |p| {
         sqlx::query_as::<_, UserApiKey>(&sql)
             .bind(user_id)
@@ -165,10 +165,9 @@ pub async fn list_by_user_id(pool: &Pool, user_id: i64) -> sqlx::Result<Vec<User
 
 /// 删除过期的 API Key
 pub async fn delete_expired_keys(pool: &Pool, now_ts: i64) -> sqlx::Result<u64> {
-    let sql = crate::db::dialect::current_sql(
-        "DELETE FROM gb_user_api_key WHERE expired_at IS NOT NULL AND expired_at < ?",
-    )
-    .into_owned();
+    let sql = pool
+        .sql("DELETE FROM gb_user_api_key WHERE expired_at IS NOT NULL AND expired_at < ?")
+        .into_owned();
     let r = crate::dispatch_exec!(pool, |p| { sqlx::query(&sql).bind(now_ts).execute(p) })?;
     Ok(r.rows_affected())
 }

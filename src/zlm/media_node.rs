@@ -227,7 +227,7 @@ mod tests {
             .to_string();
 
         sqlx::query(
-            &crate::dyn_where::dialect_sql("INSERT INTO gb_media_server (id, ip, http_port, status, last_keepalive_time, consecutive_misses) VALUES (?, ?, ?, ?, ?, ?)"),
+            "INSERT INTO gb_media_server (id, ip, http_port, status, last_keepalive_time, consecutive_misses) VALUES (?, ?, ?, ?, ?, ?)",
         )
         .bind("zlm-expired")
         .bind("10.0.0.1")
@@ -240,7 +240,7 @@ mod tests {
         .expect("insert expired");
 
         sqlx::query(
-            &crate::dyn_where::dialect_sql("INSERT INTO gb_media_server (id, ip, http_port, status, last_keepalive_time, consecutive_misses) VALUES (?, ?, ?, ?, ?, ?)"),
+            "INSERT INTO gb_media_server (id, ip, http_port, status, last_keepalive_time, consecutive_misses) VALUES (?, ?, ?, ?, ?, ?)",
         )
         .bind("zlm-fresh")
         .bind("10.0.0.2")
@@ -266,23 +266,21 @@ mod tests {
         assert_eq!(affected, 1, "exactly one row should be marked offline");
 
         // 验证 expired 已被切到 status=0
-        let expired_status: i32 = sqlx::query_scalar::<_, i32>(&crate::dyn_where::dialect_sql(
-            "SELECT status FROM gb_media_server WHERE id = ?",
-        ))
-        .bind("zlm-expired")
-        .fetch_one(&pool)
-        .await
-        .expect("select expired");
+        let expired_status: i32 =
+            sqlx::query_scalar::<_, i32>("SELECT status FROM gb_media_server WHERE id = ?")
+                .bind("zlm-expired")
+                .fetch_one(&pool)
+                .await
+                .expect("select expired");
         assert_eq!(expired_status, 0, "expired node should be offline");
 
         // 验证 fresh 仍为 status=1
-        let fresh_status: i32 = sqlx::query_scalar::<_, i32>(&crate::dyn_where::dialect_sql(
-            "SELECT status FROM gb_media_server WHERE id = ?",
-        ))
-        .bind("zlm-fresh")
-        .fetch_one(&pool)
-        .await
-        .expect("select fresh");
+        let fresh_status: i32 =
+            sqlx::query_scalar::<_, i32>("SELECT status FROM gb_media_server WHERE id = ?")
+                .bind("zlm-fresh")
+                .fetch_one(&pool)
+                .await
+                .expect("select fresh");
         assert_eq!(fresh_status, 1, "fresh node should stay online");
     }
 
@@ -319,7 +317,7 @@ mod tests {
             .format("%Y-%m-%d %H:%M:%S")
             .to_string();
         sqlx::query(
-            &crate::dyn_where::dialect_sql("INSERT INTO gb_media_server (id, ip, http_port, status, last_keepalive_time, consecutive_misses) VALUES (?, ?, ?, ?, ?, ?)"),
+            "INSERT INTO gb_media_server (id, ip, http_port, status, last_keepalive_time, consecutive_misses) VALUES (?, ?, ?, ?, ?, ?)",
         )
         .bind("zlm-gc1")
         .bind("10.0.0.1")
@@ -345,18 +343,16 @@ mod tests {
         assert_eq!(affected, 0, "第一次未达 grace_count 不应切 offline");
 
         // consecutive_misses 应该 +1 到 1，但 status 仍 1
-        let status: i32 = sqlx::query_scalar(&crate::dyn_where::dialect_sql(
-            "SELECT status FROM gb_media_server WHERE id = ?",
-        ))
-        .bind("zlm-gc1")
-        .fetch_one(&pool)
-        .await
-        .expect("select status");
+        let status: i32 = sqlx::query_scalar("SELECT status FROM gb_media_server WHERE id = ?")
+            .bind("zlm-gc1")
+            .fetch_one(&pool)
+            .await
+            .expect("select status");
         assert_eq!(status, 1, "第一次未达 grace_count 仍应 online");
 
-        let misses: i32 = sqlx::query_scalar::<_, i32>(&crate::dyn_where::dialect_sql(
+        let misses: i32 = sqlx::query_scalar::<_, i32>(
             "SELECT consecutive_misses FROM gb_media_server WHERE id = ?",
-        ))
+        )
         .bind("zlm-gc1")
         .fetch_one(&pool)
         .await
@@ -394,7 +390,7 @@ mod tests {
             .format("%Y-%m-%d %H:%M:%S")
             .to_string();
         sqlx::query(
-            &crate::dyn_where::dialect_sql("INSERT INTO gb_media_server (id, ip, http_port, status, last_keepalive_time, consecutive_misses) VALUES (?, ?, ?, ?, ?, ?)"),
+            "INSERT INTO gb_media_server (id, ip, http_port, status, last_keepalive_time, consecutive_misses) VALUES (?, ?, ?, ?, ?, ?)",
         )
         .bind("zlm-gc2")
         .bind("10.0.0.2")
@@ -419,13 +415,11 @@ mod tests {
         .expect("health check");
         assert_eq!(affected, 1, "达到 grace_count 应该切 offline");
 
-        let status: i32 = sqlx::query_scalar(&crate::dyn_where::dialect_sql(
-            "SELECT status FROM gb_media_server WHERE id = ?",
-        ))
-        .bind("zlm-gc2")
-        .fetch_one(&pool)
-        .await
-        .expect("select status");
+        let status: i32 = sqlx::query_scalar("SELECT status FROM gb_media_server WHERE id = ?")
+            .bind("zlm-gc2")
+            .fetch_one(&pool)
+            .await
+            .expect("select status");
         assert_eq!(status, 0, "达到 grace_count 后应 offline");
     }
 
@@ -456,7 +450,7 @@ mod tests {
 
         let now_ts = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
         sqlx::query(
-            &crate::dyn_where::dialect_sql("INSERT INTO gb_media_server (id, ip, http_port, status, last_keepalive_time, consecutive_misses) VALUES (?, ?, ?, ?, ?, ?)"),
+            "INSERT INTO gb_media_server (id, ip, http_port, status, last_keepalive_time, consecutive_misses) VALUES (?, ?, ?, ?, ?, ?)",
         )
         .bind("zlm-gc3")
         .bind("10.0.0.3")
@@ -479,9 +473,9 @@ mod tests {
         assert_eq!(updated, 1);
 
         // consecutive_misses 应被重置为 0
-        let misses: i32 = sqlx::query_scalar::<_, i32>(&crate::dyn_where::dialect_sql(
+        let misses: i32 = sqlx::query_scalar::<_, i32>(
             "SELECT consecutive_misses FROM gb_media_server WHERE id = ?",
-        ))
+        )
         .bind("zlm-gc3")
         .fetch_one(&pool)
         .await

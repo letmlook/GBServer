@@ -949,7 +949,7 @@ mod camera_contract_tests {
         let now = "2026-01-01 00:00:00";
         // 一台在线设备（2 个通道）+ 一台离线设备（无通道）
         crate::dispatch_exec!(&state.pool, |p| {
-            sqlx::query(&crate::dyn_where::dialect_sql(
+            sqlx::query(&state.pool.sql(
                 "INSERT INTO gb_device (device_id, name, on_line, create_time, update_time) \
                  VALUES ('34020000001320000001', '在线设备', 1, ?1, ?1)",
             ))
@@ -958,7 +958,7 @@ mod camera_contract_tests {
         })
         .unwrap();
         crate::dispatch_exec!(&state.pool, |p| {
-            sqlx::query(&crate::dyn_where::dialect_sql(
+            sqlx::query(&state.pool.sql(
                 "INSERT INTO gb_device (device_id, name, on_line, create_time, update_time) \
                  VALUES ('34020000001320000002', '离线设备', 0, ?1, ?1)",
             ))
@@ -972,7 +972,7 @@ mod camera_contract_tests {
         ] {
             crate::dispatch_exec!(&state.pool, |p| {
                 sqlx::query(
-                    &crate::dyn_where::dialect_sql("INSERT INTO gb_device_channel (device_id, gb_device_id, name, civil_code, status, data_type, data_device_id, create_time, update_time) \
+                    &state.pool.sql("INSERT INTO gb_device_channel (device_id, gb_device_id, name, civil_code, status, data_type, data_device_id, create_time, update_time) \
                      VALUES ('34020000001320000001', ?1, ?2, '340200', 'ON', 1, 1, ?3, ?3)"),
                 )
                 .bind(ch)
@@ -1078,7 +1078,7 @@ mod camera_contract_tests {
         let now = "2026-01-01 00:00:00";
         for i in 1..=150 {
             crate::dispatch_exec!(&state.pool, |p| {
-                sqlx::query(&crate::dyn_where::dialect_sql(
+                sqlx::query(&state.pool.sql(
                     "INSERT INTO gb_device (device_id, name, on_line, create_time, update_time) \
                      VALUES (?1, ?2, 1, ?3, ?3)",
                 ))

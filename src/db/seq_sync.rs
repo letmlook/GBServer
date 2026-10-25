@@ -66,7 +66,7 @@ struct SerialColumn {
 pub async fn sync_serial_sequences(pool: &Pool) -> sqlx::Result<u64> {
     // 运行期守卫：三个驱动同时编进一个二进制之后，编译期 feature 门已失效，
     // 这里必须按**当前连接的方言**决定要不要真的同步序列。
-    if !crate::db::dialect::current().is_postgres() {
+    if !pool.dialect().is_postgres() {
         return Ok(0);
     }
 

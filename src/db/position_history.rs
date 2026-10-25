@@ -22,7 +22,7 @@ pub async fn ensure_table(pool: &Pool) -> sqlx::Result<()> {
     // 于是 sqlite 上建出 `id BIGINT AUTO_INCREMENT PRIMARY KEY` 的表
     // （不是 rowid 别名），后续 INSERT 报 "datatype mismatch"。
     // 改成**运行期**按当前方言三选一。
-    let sql = match crate::db::dialect::current() {
+    let sql = match pool.dialect() {
         crate::db::Dialect::MySql => "CREATE TABLE IF NOT EXISTS gb_position_history (\n\n  id BIGINT AUTO_INCREMENT PRIMARY KEY,\n  device_id VARCHAR(50) NOT NULL,\n  timestamp VARCHAR(50) NOT NULL,\n  longitude DOUBLE,\n  latitude DOUBLE,\n  altitude DOUBLE,\n  speed DOUBLE,\n  direction DOUBLE\n)",
         crate::db::Dialect::Postgres => "CREATE TABLE IF NOT EXISTS gb_position_history (\n\n  id BIGSERIAL PRIMARY KEY,\n  device_id VARCHAR(50) NOT NULL,\n  timestamp VARCHAR(50) NOT NULL,\n  longitude DOUBLE PRECISION,\n  latitude DOUBLE PRECISION,\n  altitude DOUBLE PRECISION,\n  speed DOUBLE PRECISION,\n  direction DOUBLE PRECISION\n)",
         crate::db::Dialect::Sqlite => "CREATE TABLE IF NOT EXISTS gb_position_history (\n\n  id INTEGER PRIMARY KEY AUTOINCREMENT,\n  device_id VARCHAR(50) NOT NULL,\n  timestamp VARCHAR(50) NOT NULL,\n  longitude REAL,\n  latitude REAL,\n  altitude REAL,\n  speed REAL,\n  direction REAL\n)",
@@ -42,7 +42,7 @@ pub async fn insert_position(
     speed: f64,
     direction: f64,
 ) -> sqlx::Result<u64> {
-    let sql = crate::db::dialect::current_sql("INSERT INTO gb_position_history (device_id, timestamp, longitude, latitude, altitude, speed, direction) VALUES (?, ?, ?, ?, ?, ?, ?)").into_owned();
+    let sql = pool.sql("INSERT INTO gb_position_history (device_id, timestamp, longitude, latitude, altitude, speed, direction) VALUES (?, ?, ?, ?, ?, ?, ?)").into_owned();
 
     let r = crate::dispatch_exec!(pool, |p| {
         sqlx::query(&sql)
@@ -66,7 +66,7 @@ pub async fn list_by_device_and_time(
     end: Option<&str>,
 ) -> sqlx::Result<Vec<PositionHistory>> {
     if let (Some(s), Some(e)) = (start, end) {
-        let sql = crate::db::dialect::current_sql("SELECT id, device_id, timestamp, longitude, latitude, altitude, speed, direction FROM gb_position_history WHERE device_id = ? AND timestamp >= ? AND timestamp <= ? ORDER BY timestamp ASC").into_owned();
+        let sql = pool.sql("SELECT id, device_id, timestamp, longitude, latitude, altitude, speed, direction FROM gb_position_history WHERE device_id = ? AND timestamp >= ? AND timestamp <= ? ORDER BY timestamp ASC").into_owned();
         return crate::dispatch!(pool, |p| {
             sqlx::query_as::<_, PositionHistory>(&sql)
                 .bind(device_id)
@@ -75,7 +75,7 @@ pub async fn list_by_device_and_time(
                 .fetch_all(p)
         });
     } else {
-        let sql = crate::db::dialect::current_sql("SELECT id, device_id, timestamp, longitude, latitude, altitude, speed, direction FROM gb_position_history WHERE device_id = ? ORDER BY timestamp ASC").into_owned();
+        let sql = pool.sql("SELECT id, device_id, timestamp, longitude, latitude, altitude, speed, direction FROM gb_position_history WHERE device_id = ? ORDER BY timestamp ASC").into_owned();
         return crate::dispatch!(pool, |p| {
             sqlx::query_as::<_, PositionHistory>(&sql)
                 .bind(device_id)

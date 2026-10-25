@@ -91,7 +91,7 @@ pub async fn ensure_stream_status_column(pool: &Pool) -> sqlx::Result<()> {
     // 三态 cfg 防御：PG 用 `ADD COLUMN IF NOT EXISTS`；SQLite / MySQL 用 information_schema 检测后条件执行。
     // 三个驱动同时编进一个二进制之后，编译期 cfg 的三份会**全部执行** ——
     // 改成**运行期**按当前方言三选一。
-    match crate::db::dialect::current() {
+    match pool.dialect() {
         crate::db::Dialect::Postgres => {
             let sql = "ALTER TABLE gb_stream_push ADD COLUMN IF NOT EXISTS stream_status VARCHAR(32) NOT NULL DEFAULT 'ready'";
 
@@ -142,7 +142,7 @@ pub async fn get_by_id(pool: &Pool, id: i64) -> sqlx::Result<Option<StreamPush>>
         },
         |p| {
             sqlx::query_as::<_, StreamPush>(
-                    &crate::dyn_where::dialect_sql("SELECT id, app, stream, create_time, media_server_id, server_id, push_time, status, update_time, pushing, self as self_push, start_offline_push, stream_status, gb_device_id, gb_channel_id FROM gb_stream_push WHERE id = ?")
+                    &pool.sql("SELECT id, app, stream, create_time, media_server_id, server_id, push_time, status, update_time, pushing, self as self_push, start_offline_push, stream_status, gb_device_id, gb_channel_id FROM gb_stream_push WHERE id = ?")
                 )
                 .bind(id)
                 .fetch_optional(p)
@@ -150,7 +150,7 @@ pub async fn get_by_id(pool: &Pool, id: i64) -> sqlx::Result<Option<StreamPush>>
         },
         |p| {
             sqlx::query_as::<_, StreamPush>(
-                    &crate::dyn_where::dialect_sql("SELECT id, app, stream, create_time, media_server_id, server_id, push_time, status, update_time, pushing, self as self_push, start_offline_push, stream_status, gb_device_id, gb_channel_id FROM gb_stream_push WHERE id = ?")
+                    &pool.sql("SELECT id, app, stream, create_time, media_server_id, server_id, push_time, status, update_time, pushing, self as self_push, start_offline_push, stream_status, gb_device_id, gb_channel_id FROM gb_stream_push WHERE id = ?")
                 )
                 .bind(id)
                 .fetch_optional(p)
@@ -183,7 +183,7 @@ pub async fn add(
         },
         |p| {
             sqlx::query(
-                    &crate::dyn_where::dialect_sql(r#"INSERT INTO gb_stream_push (app, stream, media_server_id, create_time, update_time, pushing, self, start_offline_push)
+                    &pool.sql(r#"INSERT INTO gb_stream_push (app, stream, media_server_id, create_time, update_time, pushing, self, start_offline_push)
                        VALUES (?, ?, ?, ?, ?, false, true, true)"#)
                 )
                 .bind(app)
@@ -195,7 +195,7 @@ pub async fn add(
         },
         |p| {
             sqlx::query(
-                    &crate::dyn_where::dialect_sql(r#"INSERT INTO gb_stream_push (app, stream, media_server_id, create_time, update_time, pushing, self, start_offline_push)
+                    &pool.sql(r#"INSERT INTO gb_stream_push (app, stream, media_server_id, create_time, update_time, pushing, self, start_offline_push)
                        VALUES (?, ?, ?, ?, ?, 0, 1, 1)"#)
                 )
                 .bind(app)
@@ -242,7 +242,7 @@ pub async fn upsert_discovered(
         },
         |p| {
             sqlx::query(
-                    &crate::dyn_where::dialect_sql(r#"INSERT INTO gb_stream_push
+                    &pool.sql(r#"INSERT INTO gb_stream_push
                        (app, stream, media_server_id, server_id, create_time, push_time, update_time, status, pushing, self, start_offline_push)
                        VALUES (?, ?, ?, ?, ?, ?, ?, true, true, false, false)
                        ON DUPLICATE KEY UPDATE
@@ -264,7 +264,7 @@ pub async fn upsert_discovered(
         },
         |p| {
             sqlx::query(
-                    &crate::dyn_where::dialect_sql(r#"INSERT INTO gb_stream_push
+                    &pool.sql(r#"INSERT INTO gb_stream_push
                        (app, stream, media_server_id, server_id, create_time, push_time, update_time, status, pushing, self, start_offline_push)
                        VALUES (?, ?, ?, ?, ?, ?, ?, 1, 1, 0, 0)
                        ON CONFLICT(app, stream) DO UPDATE SET
@@ -317,7 +317,7 @@ pub async fn update(
             .execute(p)
         },
         |p| {
-            sqlx::query(&crate::dyn_where::dialect_sql(
+            sqlx::query(&pool.sql(
                 r#"UPDATE gb_stream_push SET
                        app = COALESCE(?, app),
                        stream = COALESCE(?, stream),
@@ -333,7 +333,7 @@ pub async fn update(
             .execute(p)
         },
         |p| {
-            sqlx::query(&crate::dyn_where::dialect_sql(
+            sqlx::query(&pool.sql(
                 r#"UPDATE gb_stream_push SET
                        app = COALESCE(?, app),
                        stream = COALESCE(?, stream),
@@ -362,18 +362,14 @@ pub async fn delete_by_id(pool: &Pool, id: i64) -> sqlx::Result<u64> {
                 .execute(p)
         },
         |p| {
-            sqlx::query(&crate::dyn_where::dialect_sql(
-                "DELETE FROM gb_stream_push WHERE id = ?",
-            ))
-            .bind(id)
-            .execute(p)
+            sqlx::query(&pool.sql("DELETE FROM gb_stream_push WHERE id = ?"))
+                .bind(id)
+                .execute(p)
         },
         |p| {
-            sqlx::query(&crate::dyn_where::dialect_sql(
-                "DELETE FROM gb_stream_push WHERE id = ?",
-            ))
-            .bind(id)
-            .execute(p)
+            sqlx::query(&pool.sql("DELETE FROM gb_stream_push WHERE id = ?"))
+                .bind(id)
+                .execute(p)
         },
     )?;
     Ok(r.rows_affected())
@@ -405,7 +401,7 @@ pub async fn list_paged(
     const COLS: &str = "SELECT id, app, stream, create_time, media_server_id, server_id, \
          push_time, status, update_time, pushing, self as self_push, start_offline_push, stream_status, gb_device_id, gb_channel_id \
          FROM gb_stream_push";
-    let limit_ph = if crate::db::dialect::current().is_postgres() {
+    let limit_ph = if pool.dialect().is_postgres() {
         format!(
             " LIMIT ${} OFFSET ${}",
             w.binds.len() + 1,
@@ -489,7 +485,7 @@ pub async fn set_gb_binding(
     now: &str,
 ) -> sqlx::Result<u64> {
     let r = crate::dispatch_exec!(pool, |p| {
-        sqlx::query(&crate::dyn_where::dialect_sql(
+        sqlx::query(&pool.sql(
         "UPDATE gb_stream_push SET gb_device_id = ?, gb_channel_id = ?, update_time = ? WHERE id = ?",
     ))
     .bind(device_id.filter(|s| !s.is_empty()))
@@ -511,20 +507,16 @@ pub async fn update_pushing_status(pool: &Pool, id: i64, pushing: bool) -> sqlx:
                 .execute(p)
         },
         |p| {
-            sqlx::query(&crate::dyn_where::dialect_sql(
-                "UPDATE gb_stream_push SET pushing = ? WHERE id = ?",
-            ))
-            .bind(pushing)
-            .bind(id)
-            .execute(p)
+            sqlx::query(&pool.sql("UPDATE gb_stream_push SET pushing = ? WHERE id = ?"))
+                .bind(pushing)
+                .bind(id)
+                .execute(p)
         },
         |p| {
-            sqlx::query(&crate::dyn_where::dialect_sql(
-                "UPDATE gb_stream_push SET pushing = ? WHERE id = ?",
-            ))
-            .bind(pushing)
-            .bind(id)
-            .execute(p)
+            sqlx::query(&pool.sql("UPDATE gb_stream_push SET pushing = ? WHERE id = ?"))
+                .bind(pushing)
+                .bind(id)
+                .execute(p)
         },
     )?;
     Ok(r.rows_affected())
@@ -554,7 +546,7 @@ pub async fn update_pushing_status_by_app_stream(
         },
         |p| {
             sqlx::query(
-                    &crate::dyn_where::dialect_sql("UPDATE gb_stream_push SET pushing = ?, status = ?, media_server_id = COALESCE(?, media_server_id), push_time = CASE WHEN ? THEN COALESCE(push_time, ?) ELSE push_time END, update_time = ? WHERE app = ? AND stream = ?")
+                    &pool.sql("UPDATE gb_stream_push SET pushing = ?, status = ?, media_server_id = COALESCE(?, media_server_id), push_time = CASE WHEN ? THEN COALESCE(push_time, ?) ELSE push_time END, update_time = ? WHERE app = ? AND stream = ?")
                 )
                 .bind(pushing)
                 .bind(pushing)
@@ -568,7 +560,7 @@ pub async fn update_pushing_status_by_app_stream(
         },
         |p| {
             sqlx::query(
-                    &crate::dyn_where::dialect_sql("UPDATE gb_stream_push SET pushing = ?, status = ?, media_server_id = COALESCE(?, media_server_id), push_time = CASE WHEN ? THEN COALESCE(push_time, ?) ELSE push_time END, update_time = ? WHERE app = ? AND stream = ?")
+                    &pool.sql("UPDATE gb_stream_push SET pushing = ?, status = ?, media_server_id = COALESCE(?, media_server_id), push_time = CASE WHEN ? THEN COALESCE(push_time, ?) ELSE push_time END, update_time = ? WHERE app = ? AND stream = ?")
                 )
                 .bind(pushing)
                 .bind(pushing)
@@ -596,20 +588,16 @@ pub async fn update_status(pool: &Pool, id: i64, status: bool) -> sqlx::Result<u
                 .execute(p)
         },
         |p| {
-            sqlx::query(&crate::dyn_where::dialect_sql(
-                "UPDATE gb_stream_push SET status = ? WHERE id = ?",
-            ))
-            .bind(status)
-            .bind(id)
-            .execute(p)
+            sqlx::query(&pool.sql("UPDATE gb_stream_push SET status = ? WHERE id = ?"))
+                .bind(status)
+                .bind(id)
+                .execute(p)
         },
         |p| {
-            sqlx::query(&crate::dyn_where::dialect_sql(
-                "UPDATE gb_stream_push SET status = ? WHERE id = ?",
-            ))
-            .bind(status)
-            .bind(id)
-            .execute(p)
+            sqlx::query(&pool.sql("UPDATE gb_stream_push SET status = ? WHERE id = ?"))
+                .bind(status)
+                .bind(id)
+                .execute(p)
         },
     )?;
     Ok(r.rows_affected())
@@ -634,7 +622,7 @@ pub async fn get_by_app_stream(
         },
         |p| {
             sqlx::query_as::<_, StreamPush>(
-                    &crate::dyn_where::dialect_sql("SELECT id, app, stream, create_time, media_server_id, server_id, push_time, status, update_time, pushing, self as self_push, start_offline_push, stream_status, gb_device_id, gb_channel_id FROM gb_stream_push WHERE app = ? AND stream = ?")
+                    &pool.sql("SELECT id, app, stream, create_time, media_server_id, server_id, push_time, status, update_time, pushing, self as self_push, start_offline_push, stream_status, gb_device_id, gb_channel_id FROM gb_stream_push WHERE app = ? AND stream = ?")
                 )
                 .bind(app)
                 .bind(stream)
@@ -643,7 +631,7 @@ pub async fn get_by_app_stream(
         },
         |p| {
             sqlx::query_as::<_, StreamPush>(
-                    &crate::dyn_where::dialect_sql("SELECT id, app, stream, create_time, media_server_id, server_id, push_time, status, update_time, pushing, self as self_push, start_offline_push, stream_status, gb_device_id, gb_channel_id FROM gb_stream_push WHERE app = ? AND stream = ?")
+                    &pool.sql("SELECT id, app, stream, create_time, media_server_id, server_id, push_time, status, update_time, pushing, self as self_push, start_offline_push, stream_status, gb_device_id, gb_channel_id FROM gb_stream_push WHERE app = ? AND stream = ?")
                 )
                 .bind(app)
                 .bind(stream)
@@ -660,7 +648,7 @@ mod push_filter_tests {
     async fn seed(pool: &crate::db::Pool, app: &str, stream: &str) {
         crate::dispatch_exec!(pool, |p| {
 sqlx::query(
-            &crate::dyn_where::dialect_sql("INSERT INTO gb_stream_push (app, stream, create_time, update_time, media_server_id, status, pushing) \
+            &pool.sql("INSERT INTO gb_stream_push (app, stream, create_time, update_time, media_server_id, status, pushing) \
              VALUES (?, ?, '2026-01-01 00:00:00', '2026-01-01 00:00:00', 'zlmediakit-1', 0, 0)"),
         )
         .bind(app)

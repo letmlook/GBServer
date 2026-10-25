@@ -59,7 +59,7 @@ pub async fn insert_batch(pool: &Pool, rows: &[NewLogEntry]) -> sqlx::Result<u64
     // 逐条插入：日志表写入频率低（秒级批量），且可避免三种方言的批量语法差异
     for r in rows {
         affected += crate::dispatch_exec!(pool, |p| {
-sqlx::query(&crate::dyn_where::dialect_sql(
+sqlx::query(&pool.sql(
             "INSERT INTO gb_log (time, level, logger, thread, message, source) VALUES (?, ?, ?, ?, ?, ?)",
         ))
             .bind(&r.time)
@@ -79,8 +79,8 @@ sqlx::query(&crate::dyn_where::dialect_sql(
 ///
 /// 过滤条件：`query`（message 模糊）、`level`（等值）、`start` / `end`（time 闭区间）。
 /// 方言占位符：postgres 用 `$n`，sqlite/mysql 用 `?`。
-fn ph(i: usize) -> String {
-    if crate::db::dialect::current().is_postgres() {
+fn ph(i: usize, dialect: crate::db::Dialect) -> String {
+    if dialect.is_postgres() {
         format!("${}", i)
     } else {
         "?".to_string()
@@ -94,25 +94,26 @@ fn build_filter(
     level: Option<&str>,
     start: Option<&str>,
     end: Option<&str>,
+    dialect: crate::db::Dialect,
 ) -> (String, Vec<String>) {
     let mut conds: Vec<String> = Vec::new();
     let mut binds: Vec<String> = Vec::new();
     if let Some(q) = query.map(str::trim).filter(|s| !s.is_empty()) {
         // 子串匹配：必须带通配符，否则 LIKE 退化为等值比较
         binds.push(format!("%{}%", q));
-        conds.push(format!("message LIKE {}", ph(binds.len())));
+        conds.push(format!("message LIKE {}", ph(binds.len(), dialect)));
     }
     if let Some(l) = level.map(str::trim).filter(|s| !s.is_empty()) {
         binds.push(l.to_string());
-        conds.push(format!("level = {}", ph(binds.len())));
+        conds.push(format!("level = {}", ph(binds.len(), dialect)));
     }
     if let Some(s) = start.map(str::trim).filter(|s| !s.is_empty()) {
         binds.push(s.to_string());
-        conds.push(format!("time >= {}", ph(binds.len())));
+        conds.push(format!("time >= {}", ph(binds.len(), dialect)));
     }
     if let Some(e) = end.map(str::trim).filter(|s| !s.is_empty()) {
         binds.push(e.to_string());
-        conds.push(format!("time <= {}", ph(binds.len())));
+        conds.push(format!("time <= {}", ph(binds.len(), dialect)));
     }
     let where_clause = if conds.is_empty() {
         String::new()
@@ -134,13 +135,13 @@ pub async fn export(
     end: Option<&str>,
     limit: u32,
 ) -> sqlx::Result<Vec<LogEntry>> {
-    let (where_clause, binds) = build_filter(query, level, start, end);
+    let (where_clause, binds) = build_filter(query, level, start, end, pool.dialect());
     let limit = limit.clamp(1, 50_000);
     // 正序：日志文件按时间阅读
     let sql = format!(
         "SELECT id, time, level, logger, thread, message, source FROM gb_log{} ORDER BY id ASC LIMIT {}",
         where_clause,
-        ph(binds.len() + 1)
+        ph(binds.len() + 1, pool.dialect())
     );
     crate::dispatch!(pool, |p| {
         let mut q = sqlx::query_as::<_, LogEntry>(&sql);
@@ -164,7 +165,7 @@ pub async fn list_paged(
     let count = count.clamp(1, 500);
     let offset = crate::pagination::offset(page, count);
 
-    let (where_clause, binds) = build_filter(query, level, start, end);
+    let (where_clause, binds) = build_filter(query, level, start, end, pool.dialect());
 
     let count_sql = format!("SELECT COUNT(*) FROM gb_log{}", where_clause);
     let total = crate::dispatch!(pool, |p| {
@@ -178,8 +179,8 @@ pub async fn list_paged(
     let list_sql = format!(
         "SELECT id, time, level, logger, thread, message, source FROM gb_log{} ORDER BY id DESC LIMIT {} OFFSET {}",
         where_clause,
-        ph(binds.len() + 1),
-        ph(binds.len() + 2)
+        ph(binds.len() + 1, pool.dialect()),
+        ph(binds.len() + 2, pool.dialect())
     );
     let list = crate::dispatch!(pool, |p| {
         let mut lq = sqlx::query_as::<_, LogEntry>(&list_sql);
@@ -195,11 +196,9 @@ pub async fn list_paged(
 /// 保留策略：删除 `time < before` 的日志，返回删除行数。
 pub async fn delete_before(pool: &Pool, before: &str) -> sqlx::Result<u64> {
     Ok(crate::dispatch_exec!(pool, |p| {
-        sqlx::query(&crate::dyn_where::dialect_sql(
-            "DELETE FROM gb_log WHERE time < ?",
-        ))
-        .bind(before)
-        .execute(p)
+        sqlx::query(&pool.sql("DELETE FROM gb_log WHERE time < ?"))
+            .bind(before)
+            .execute(p)
     })?
     .rows_affected())
 }

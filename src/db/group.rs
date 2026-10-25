@@ -48,20 +48,20 @@ pub struct GroupUpdate {
 }
 
 pub async fn list_all(pool: &Pool) -> sqlx::Result<Vec<Group>> {
-    let sql = crate::db::dialect::current_sql("SELECT id, device_id, name, parent_id, parent_device_id, business_group, create_time, update_time, civil_code FROM gb_common_group ORDER BY id").into_owned();
+    let sql = pool.sql("SELECT id, device_id, name, parent_id, parent_device_id, business_group, create_time, update_time, civil_code FROM gb_common_group ORDER BY id").into_owned();
 
     crate::dispatch!(pool, |p| { sqlx::query_as::<_, Group>(&sql,).fetch_all(p) })
 }
 
 pub async fn get_by_id(pool: &Pool, id: i32) -> sqlx::Result<Option<Group>> {
-    let sql = crate::db::dialect::current_sql("SELECT id, device_id, name, parent_id, parent_device_id, business_group, create_time, update_time, civil_code FROM gb_common_group WHERE id = ?").into_owned();
+    let sql = pool.sql("SELECT id, device_id, name, parent_id, parent_device_id, business_group, create_time, update_time, civil_code FROM gb_common_group WHERE id = ?").into_owned();
     return crate::dispatch!(pool, |p| {
         sqlx::query_as::<_, Group>(&sql).bind(id).fetch_optional(p)
     });
 }
 
 pub async fn get_by_device_id(pool: &Pool, device_id: &str) -> sqlx::Result<Option<Group>> {
-    let sql = crate::db::dialect::current_sql("SELECT id, device_id, name, parent_id, parent_device_id, business_group, create_time, update_time, civil_code FROM gb_common_group WHERE device_id = ?").into_owned();
+    let sql = pool.sql("SELECT id, device_id, name, parent_id, parent_device_id, business_group, create_time, update_time, civil_code FROM gb_common_group WHERE device_id = ?").into_owned();
     return crate::dispatch!(pool, |p| {
         sqlx::query_as::<_, Group>(&sql)
             .bind(device_id)
@@ -70,7 +70,7 @@ pub async fn get_by_device_id(pool: &Pool, device_id: &str) -> sqlx::Result<Opti
 }
 
 pub async fn list_children(pool: &Pool, parent_id: i32) -> sqlx::Result<Vec<Group>> {
-    let sql = crate::db::dialect::current_sql("SELECT id, device_id, name, parent_id, parent_device_id, business_group, create_time, update_time, civil_code FROM gb_common_group WHERE parent_id = ? ORDER BY id").into_owned();
+    let sql = pool.sql("SELECT id, device_id, name, parent_id, parent_device_id, business_group, create_time, update_time, civil_code FROM gb_common_group WHERE parent_id = ? ORDER BY id").into_owned();
     return crate::dispatch!(pool, |p| {
         sqlx::query_as::<_, Group>(&sql)
             .bind(parent_id)
@@ -88,7 +88,7 @@ pub async fn add(
     now: &str,
     civil_code: Option<&str>,
 ) -> sqlx::Result<u64> {
-    let sql = crate::db::dialect::current_sql("INSERT INTO gb_common_group (device_id, name, parent_id, parent_device_id, business_group, create_time, update_time, civil_code) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").into_owned();
+    let sql = pool.sql("INSERT INTO gb_common_group (device_id, name, parent_id, parent_device_id, business_group, create_time, update_time, civil_code) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").into_owned();
     let r = crate::dispatch_exec!(pool, |p| {
         sqlx::query(&sql)
             .bind(device_id)
@@ -115,7 +115,7 @@ pub async fn update(
     civil_code: Option<&str>,
     now: &str,
 ) -> sqlx::Result<u64> {
-    let sql = crate::db::dialect::current_sql("UPDATE gb_common_group SET device_id = COALESCE(?, device_id), name = COALESCE(?, name), parent_id = COALESCE(?, parent_id), parent_device_id = COALESCE(?, parent_device_id), business_group = COALESCE(?, business_group), civil_code = COALESCE(?, civil_code), update_time = ? WHERE id = ?").into_owned();
+    let sql = pool.sql("UPDATE gb_common_group SET device_id = COALESCE(?, device_id), name = COALESCE(?, name), parent_id = COALESCE(?, parent_id), parent_device_id = COALESCE(?, parent_device_id), business_group = COALESCE(?, business_group), civil_code = COALESCE(?, civil_code), update_time = ? WHERE id = ?").into_owned();
     let r = crate::dispatch_exec!(pool, |p| {
         sqlx::query(&sql)
             .bind(device_id)
@@ -132,15 +132,18 @@ pub async fn update(
 }
 
 pub async fn delete_by_id(pool: &Pool, id: i32) -> sqlx::Result<u64> {
-    let sql =
-        crate::db::dialect::current_sql("DELETE FROM gb_common_group WHERE id = ?").into_owned();
+    let sql = pool
+        .sql("DELETE FROM gb_common_group WHERE id = ?")
+        .into_owned();
     let r = crate::dispatch_exec!(pool, |p| { sqlx::query(&sql).bind(id).execute(p) })?;
     Ok(r.rows_affected())
 }
 
 /// 统计分组数量
 pub async fn count_all(pool: &Pool) -> sqlx::Result<i64> {
-    let sql = crate::db::dialect::current_sql("SELECT COUNT(*) FROM gb_common_group").into_owned();
+    let sql = pool
+        .sql("SELECT COUNT(*) FROM gb_common_group")
+        .into_owned();
 
     crate::dispatch!(pool, |p| {
         sqlx::query_scalar::<_, i64>(&sql).fetch_one(p)
@@ -149,7 +152,8 @@ pub async fn count_all(pool: &Pool) -> sqlx::Result<i64> {
 
 /// 根据设备ID删除分组
 pub async fn delete_by_device_id(pool: &Pool, device_id: &str) -> sqlx::Result<u64> {
-    let sql = crate::db::dialect::current_sql("DELETE FROM gb_common_group WHERE device_id = ?")
+    let sql = pool
+        .sql("DELETE FROM gb_common_group WHERE device_id = ?")
         .into_owned();
     let r = crate::dispatch_exec!(pool, |p| { sqlx::query(&sql).bind(device_id).execute(p) })?;
     Ok(r.rows_affected())
@@ -157,9 +161,9 @@ pub async fn delete_by_device_id(pool: &Pool, device_id: &str) -> sqlx::Result<u
 
 /// 获取子分组数量
 pub async fn count_children(pool: &Pool, parent_id: i32) -> sqlx::Result<i64> {
-    let sql =
-        crate::db::dialect::current_sql("SELECT COUNT(*) FROM gb_common_group WHERE parent_id = ?")
-            .into_owned();
+    let sql = pool
+        .sql("SELECT COUNT(*) FROM gb_common_group WHERE parent_id = ?")
+        .into_owned();
     return crate::dispatch!(pool, |p| {
         sqlx::query_scalar::<_, i64>(&sql)
             .bind(parent_id)

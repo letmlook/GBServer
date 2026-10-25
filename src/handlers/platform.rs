@@ -288,9 +288,11 @@ pub async fn platform_query(
     );
     let raw_list: Vec<Platform> = if search.is_empty() {
         crate::dispatch!(&state.pool, |p| {
-            sqlx::query_as::<_, Platform>(&crate::dyn_where::dialect_sql(
-                "SELECT * FROM gb_platform ORDER BY id DESC LIMIT ? OFFSET ?",
-            ))
+            sqlx::query_as::<_, Platform>(
+                &state
+                    .pool
+                    .sql("SELECT * FROM gb_platform ORDER BY id DESC LIMIT ? OFFSET ?"),
+            )
             .bind(count as i64)
             .bind(offset)
             .fetch_all(p)
@@ -459,7 +461,7 @@ pub async fn platform_channel_list(
             .await?
         },
         |p| {
-            sqlx::query_scalar::<_, i64>(&crate::dyn_where::dialect_sql(
+            sqlx::query_scalar::<_, i64>(&state.pool.sql(
                 r#"
                     SELECT COUNT(*)
                     FROM gb_device_channel c
@@ -486,7 +488,7 @@ pub async fn platform_channel_list(
             .await?
         },
         |p| {
-            sqlx::query_scalar::<_, i64>(&crate::dyn_where::dialect_sql(
+            sqlx::query_scalar::<_, i64>(&state.pool.sql(
                 r#"
                     SELECT COUNT(*)
                     FROM gb_device_channel c
@@ -551,7 +553,7 @@ pub async fn platform_channel_list(
             .await?
         },
         |p| {
-            sqlx::query_as::<_, PlatformChannelRow>(&crate::dyn_where::dialect_sql(
+            sqlx::query_as::<_, PlatformChannelRow>(&state.pool.sql(
                 r#"
                     SELECT c.id, c.device_id, c.name, c.gb_device_id, c.status, c.channel_type,
                            d.manufacturer,
@@ -584,7 +586,7 @@ pub async fn platform_channel_list(
             .await?
         },
         |p| {
-            sqlx::query_as::<_, PlatformChannelRow>(&crate::dyn_where::dialect_sql(
+            sqlx::query_as::<_, PlatformChannelRow>(&state.pool.sql(
                 r#"
                     SELECT c.id, c.device_id, c.name, c.gb_device_id, c.status, c.channel_type,
                            d.manufacturer,
@@ -1087,7 +1089,7 @@ pub async fn platform_add(
             .execute(p)
         },
         |p| {
-            sqlx::query(&crate::dyn_where::dialect_sql(
+            sqlx::query(&state.pool.sql(
                 r#"UPDATE gb_platform SET
                        server_gb_domain = COALESCE(?, server_gb_domain),
                        device_ip = COALESCE(?, device_ip),
@@ -1137,7 +1139,7 @@ pub async fn platform_add(
             .execute(p)
         },
         |p| {
-            sqlx::query(&crate::dyn_where::dialect_sql(
+            sqlx::query(&state.pool.sql(
                 r#"UPDATE gb_platform SET
                        server_gb_domain = COALESCE(?, server_gb_domain),
                        device_ip = COALESCE(?, device_ip),
@@ -1319,7 +1321,7 @@ pub async fn platform_update(
             .execute(p)
         },
         |p| {
-            sqlx::query(&crate::dyn_where::dialect_sql(
+            sqlx::query(&state.pool.sql(
                 r#"UPDATE gb_platform SET
                        server_gb_domain = COALESCE(?, server_gb_domain),
                        device_ip = COALESCE(?, device_ip),
@@ -1371,7 +1373,7 @@ pub async fn platform_update(
             .execute(p)
         },
         |p| {
-            sqlx::query(&crate::dyn_where::dialect_sql(
+            sqlx::query(&state.pool.sql(
                 r#"UPDATE gb_platform SET
                        server_gb_domain = COALESCE(?, server_gb_domain),
                        device_ip = COALESCE(?, device_ip),
@@ -1677,14 +1679,14 @@ pub async fn platform_channel_add(
                                     .await?
                 },
                 |p| {
-                    sqlx::query_as::<_, DeviceChannelRef>(&crate::dyn_where::dialect_sql("SELECT id, gb_device_id FROM gb_device_channel WHERE gb_device_id = ? OR CAST(id AS CHAR) = ? LIMIT 1"))
+                    sqlx::query_as::<_, DeviceChannelRef>(&state.pool.sql("SELECT id, gb_device_id FROM gb_device_channel WHERE gb_device_id = ? OR CAST(id AS CHAR) = ? LIMIT 1"))
                                     .bind(&channel_id_str)
                                     .bind(&channel_id_str)
                                     .fetch_optional(p)
                                     .await?
                 },
                 |p| {
-                    sqlx::query_as::<_, DeviceChannelRef>(&crate::dyn_where::dialect_sql("SELECT id, gb_device_id FROM gb_device_channel WHERE gb_device_id = ? OR CAST(id AS TEXT) = ? LIMIT 1"))
+                    sqlx::query_as::<_, DeviceChannelRef>(&state.pool.sql("SELECT id, gb_device_id FROM gb_device_channel WHERE gb_device_id = ? OR CAST(id AS TEXT) = ? LIMIT 1"))
                                     .bind(&channel_id_str)
                                     .bind(&channel_id_str)
                                     .fetch_optional(p)
@@ -1906,14 +1908,14 @@ pub async fn platform_channel_remove(
                                     .await?
                 },
                 |p| {
-                    sqlx::query_scalar::<_, i32>(&crate::dyn_where::dialect_sql("SELECT id FROM gb_device_channel WHERE gb_device_id = ? OR CAST(id AS CHAR) = ? LIMIT 1"))
+                    sqlx::query_scalar::<_, i32>(&state.pool.sql("SELECT id FROM gb_device_channel WHERE gb_device_id = ? OR CAST(id AS CHAR) = ? LIMIT 1"))
                                     .bind(&channel_id_str)
                                     .bind(&channel_id_str)
                                     .fetch_optional(p)
                                     .await?
                 },
                 |p| {
-                    sqlx::query_scalar::<_, i32>(&crate::dyn_where::dialect_sql("SELECT id FROM gb_device_channel WHERE gb_device_id = ? OR CAST(id AS TEXT) = ? LIMIT 1"))
+                    sqlx::query_scalar::<_, i32>(&state.pool.sql("SELECT id FROM gb_device_channel WHERE gb_device_id = ? OR CAST(id AS TEXT) = ? LIMIT 1"))
                                     .bind(&channel_id_str)
                                     .bind(&channel_id_str)
                                     .fetch_optional(p)
@@ -2012,17 +2014,21 @@ pub async fn platform_channel_custom_update(
                     .execute(p)
             },
             |p| {
-                sqlx::query(&crate::dyn_where::dialect_sql(
-                    "UPDATE gb_platform_channel SET custom_device_id = ? WHERE id = ?",
-                ))
+                sqlx::query(
+                    &state
+                        .pool
+                        .sql("UPDATE gb_platform_channel SET custom_device_id = ? WHERE id = ?"),
+                )
                 .bind(custom_device_id)
                 .bind(id)
                 .execute(p)
             },
             |p| {
-                sqlx::query(&crate::dyn_where::dialect_sql(
-                    "UPDATE gb_platform_channel SET custom_device_id = ? WHERE id = ?",
-                ))
+                sqlx::query(
+                    &state
+                        .pool
+                        .sql("UPDATE gb_platform_channel SET custom_device_id = ? WHERE id = ?"),
+                )
                 .bind(custom_device_id)
                 .bind(id)
                 .execute(p)
@@ -2530,9 +2536,11 @@ mod platform_contract_tests {
             .unwrap();
 
         let (name, parent, civil): (String, String, String) = crate::dispatch!(&state.pool, |p| {
-            sqlx::query_as::<_, (String, String, String)>(&crate::dyn_where::dialect_sql(
-                "SELECT name, parent, civil_code FROM gb_platform_catalog WHERE id = ?",
-            ))
+            sqlx::query_as::<_, (String, String, String)>(
+                &state
+                    .pool
+                    .sql("SELECT name, parent, civil_code FROM gb_platform_catalog WHERE id = ?"),
+            )
             .bind(catalog_id)
             .fetch_one(p)
         })

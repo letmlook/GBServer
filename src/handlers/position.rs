@@ -463,7 +463,7 @@ mod position_contract_tests {
         ] {
             crate::dispatch_exec!(&state.pool, |p| {
                 sqlx::query(
-                    &crate::dyn_where::dialect_sql("INSERT INTO gb_device_mobile_position \
+                    &state.pool.sql("INSERT INTO gb_device_mobile_position \
                      (device_id, channel_id, time, longitude, latitude, speed, direction, create_time) \
                      VALUES ('34020000001320000001', '34020000001310000001', ?, ?, ?, 5.0, 90.0, ?)"),
                 )

@@ -3075,9 +3075,11 @@ pub async fn cloud_record_collect_add(
                 }
             };
             if let Some(id) = cloud_record_id {
-                let exists: i64 = sqlx::query_scalar::<_, i64>(&crate::dyn_where::dialect_sql(
-                    "SELECT COUNT(*) FROM gb_cloud_record WHERE id = ?",
-                ))
+                let exists: i64 = sqlx::query_scalar::<_, i64>(
+                    &state
+                        .pool
+                        .sql("SELECT COUNT(*) FROM gb_cloud_record WHERE id = ?"),
+                )
                 .bind(id)
                 .fetch_one(&mut *$tx)
                 .await
@@ -3085,9 +3087,11 @@ pub async fn cloud_record_collect_add(
                 if exists == 0 {
                     return Err("record not found".to_string());
                 }
-                sqlx::query(&crate::dyn_where::dialect_sql(
-                    "UPDATE gb_cloud_record SET collect = ? WHERE id = ?",
-                ))
+                sqlx::query(
+                    &state
+                        .pool
+                        .sql("UPDATE gb_cloud_record SET collect = ? WHERE id = ?"),
+                )
                 .bind(true)
                 .bind(id)
                 .execute(&mut *$tx)
@@ -3227,7 +3231,7 @@ pub async fn cloud_record_collect_list(
                 Option<String>,
                 Option<String>,
             ),
-        >(&crate::dyn_where::dialect_sql(
+        >(&state.pool.sql(
             "SELECT id, record_id, device_id, channel_id, name, create_time \
              FROM gb_record_collect ORDER BY id DESC LIMIT ? OFFSET ?",
         ))
@@ -3652,7 +3656,7 @@ pub async fn record_plan_channel_list(
     );
     const BASE_COUNT: &str = "SELECT COUNT(*) FROM gb_device_channel c";
 
-    let limit_ph = if crate::db::dialect::current().is_postgres() {
+    let limit_ph = if state.pool.dialect().is_postgres() {
         format!(
             " LIMIT ${} OFFSET ${}",
             w.binds.len() + 1,
