@@ -45,15 +45,19 @@ RUN apt-get update \
 
 WORKDIR /build
 
-# 默认 Compose 使用 PostgreSQL；SQLite Compose 通过 build.args 显式覆盖。
-ARG GBSERVER_DB_FEATURE=postgres
+# 2026-10-25 起：**三个数据库驱动同时编进同一个镜像**（Cargo.toml 的
+# default = ["sqlite", "mysql", "postgres"]），运行期按 config 里
+# `[database] url` 的 scheme 选库 —— 所以**镜像不再按方言区分**，
+# 同一个镜像既能跑 SQLite 也能跑 PostgreSQL / MySQL。
+# 此前这里按 `GBSERVER_DB_FEATURE` 建参分别构建，改造后那种构建方式会直接失败
+# （src/db/mod.rs 的 compile_error! 要求三个 feature 同时启用）。
 
 # Pre-fetch dependency layer (so source edits don't bust the cargo cache)
 COPY Cargo.toml Cargo.lock ./
 RUN mkdir -p src tests \
     && echo 'fn main() { println!("stub"); }' > src/main.rs \
     && echo '' > tests/.gitkeep \
-    && cargo build --release --locked --no-default-features --features "$GBSERVER_DB_FEATURE" \
+    && cargo build --release --locked \
     && rm -rf src tests target/release/gbserver* target/release/deps/gbserver-*
 
 # Real build
@@ -61,7 +65,7 @@ COPY src ./src
 COPY tests ./tests
 COPY config ./config
 COPY database ./database
-RUN cargo build --release --locked --no-default-features --features "$GBSERVER_DB_FEATURE" \
+RUN cargo build --release --locked \
     && strip target/release/gbserver \
     && echo "backend build OK: $(du -sh target/release/gbserver | cut -f1)"
 

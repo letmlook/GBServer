@@ -185,13 +185,13 @@ if [ "$SKIP_RUST" -eq 0 ]; then
       echo "  cargo test (SQLite)..."
       cargo test --quiet --lib 2>&1 | tail -3 || true
       ;;
-    postgres)
-      echo "  cargo test (PostgreSQL)..."
-      cargo test --quiet --no-default-features --features postgres --lib 2>&1 | tail -3 || true
-      ;;
-    mysql)
-      echo "  cargo test (MySQL)..."
-      cargo test --quiet --no-default-features --features mysql --lib 2>&1 | tail -3 || true
+    postgres|mysql)
+      # 2026-10-25 起三个驱动**编在同一个二进制**里（default = sqlite+mysql+postgres），
+      # 「编译」不再按方言分叉 —— 差异在**运行期**的 database.url。
+      # 所以单测的跑法与 SQLite 完全相同；方言专属的差异由真实库专项用例覆盖
+      # （需 TEST_POSTGRES_URL / TEST_MYSQL_URL，见 docs/DB_DIALECT_NOTES.md）。
+      echo "  cargo test ($BACKEND 模式：同一个二进制，单测与 SQLite 相同)..."
+      cargo test --quiet --lib 2>&1 | tail -3 || true
       ;;
   esac
 fi

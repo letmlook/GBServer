@@ -1,16 +1,16 @@
-# GBServer CI — 编译 / 测试 / 三库 feature / 前端构建门禁
+# GBServer CI — 编译 / 测试 / 方言门禁 / 前端构建
 #
 # 背景：本仓库曾因 `602036b`（未完整编译就提交的 auto-fix）叠加 `e132db2`（删除 CI）
 # 而进入"无法 cargo run"的状态，靠事后人工抢救才恢复。
 # 本工作流的目的就是让"提交必须能编译 + 测试必须通过"重新成为硬约束。
 #
 # 门禁（失败即拦截）：
-#   - backend        : SQLite 默认 feature 下 cargo check --all-targets + 全量测试
-#   - feature-matrix : SQLite / PostgreSQL / MySQL 三种数据库 feature 各自可编译
-#   - frontend       : vue-tsc 类型检查 + vite 生产构建
+#   - backend  : cargo check --all-targets + 全量测试（默认 feature 已是三驱动同编）
+#   - dialect  : 三驱动同编检查 + 方言占位符守门人 + PostgreSQL/MySQL **真实库**用例
+#   - frontend : vue-tsc 类型检查 + vite 生产构建
 #
 # 非门禁（仅报告，不拦截；见 hygiene job 的 continue-on-error）：
-#   - rustfmt / clippy —— 当前基线尚未清零（约 2.6 万行 fmt 差异 + 50+ warning），
+#   - rustfmt / clippy —— 当前基线尚未清零（353 个 clippy warning），
 #     直接设为门禁会让 CI 从第一天起一直红。待清理完成后再摘掉 continue-on-error。
 #
 # 无需 service 容器：默认 feature 下测试完全自包含
@@ -41,9 +41,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # ── 后端：默认 SQLite feature，编译 + 全量测试 ────────────────────────────
+  # ── 后端：默认 feature（= sqlite + mysql + postgres 三驱动同编），编译 + 全量测试 ──
   backend:
-    name: Backend (sqlite) · check + test
+    name: Backend · check + test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -60,16 +60,47 @@ jobs:
       - name: cargo test
         run: cargo test --no-fail-fast --locked
 
-  # ── 后端：三种数据库 feature 各自可编译 ───────────────────────────────────
-  # 历史教训：postgres / mysql 两条分支曾长期处于编译失败状态而无人发现
-  # （HEAD 9674844 才顺手修掉三处缺 sqlx::Row 导入）。
-  feature-matrix:
-    name: Backend feature · ${{ matrix.feature }}
+  # ── 方言：三驱动同编 + 占位符守门人 + 真实库用例 ───────────────────────────
+  #
+  # 2026-10-25 之前这里叫 `feature-matrix`，用
+  # `--no-default-features --features <sqlite|postgres|mysql>` 分三条腿各编一次。
+  # 那是**改造前**的模型（三个驱动编译期互斥），改造后三个驱动**必须同时启用**
+  # （`src/db/mod.rs` 有 `compile_error!` 守卫）—— 照旧跑会直接编译失败。
+  #
+  # 新模型下真正要防的回归变了：
+  #   1. 三个驱动同编能不能过（`cargo check`）→ 留在 backend job；
+  #   2. **裸 `?` 占位符**混进 PG 分支（编译期看不出来，PG 上才 syntax error）
+  #      → `dialect_guard` 守门人测试；
+  #   3. **方言专属的类型/语法差异**（PG 的 `COUNT(*)` 是 int8、`?` vs `$n`、
+  #      `ON DUPLICATE KEY` 与 `ON CONFLICT` 的 bind 数不同）
+  #      → 真实 PostgreSQL / MySQL 上跑 `#[ignore]` 的专项用例。
+  dialect:
+    name: Dialect · 三驱动同编 + 真实库用例
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        feature: [sqlite, postgres, mysql]
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: gbserver_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 10
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_ROOT_PASSWORD: rootpw
+          MYSQL_DATABASE: gbserver_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1" --health-interval 10s
+          --health-timeout 5s --health-retries 20
+    env:
+      # 必须是**隔离库**（用例会建表 / 插数据 / 删数据）
+      TEST_POSTGRES_URL: postgres://postgres:postgres@127.0.0.1:5432/gbserver_test
+      TEST_MYSQL_URL: mysql://root:rootpw@127.0.0.1:3306/gbserver_test
     steps:
       - uses: actions/checkout@v4
 
@@ -79,12 +110,32 @@ jobs:
       - name: Cache cargo registry + target
         uses: Swatinem/rust-cache@v2
         with:
-          key: feature-${{ matrix.feature }}
+          key: dialect
 
-      - name: cargo check (${{ matrix.feature }})
+      - name: 三个驱动同编
+        run: cargo check --all-targets --locked
+
+      - name: 方言占位符守门人
+        # 扫出「在 postgres 下会被编译、却仍用裸 ? 的 SQL」—— 411 处 → 0
+        run: cargo test --locked --lib dialect_guard
+
+      - name: 初始化 PostgreSQL 隔离库
+        run: psql -v ON_ERROR_STOP=1 "$TEST_POSTGRES_URL" -f database/init-postgresql-2.7.4.sql
+
+      - name: 初始化 MySQL 隔离库
+        run: mysql -h 127.0.0.1 -P 3306 -uroot -prootpw gbserver_test < database/init-mysql-2.7.4.sql
+
+      - name: 真实库专项用例（PostgreSQL / MySQL）
+        # **逐个 test target 跑**，不要用 `cargo test -- --ignored` ——
+        # 那会把标记为 ignore 的 doc-test 伪代码示例也拉出来跑（它们本来就跑不通）。
         run: |
-          cargo check --all-targets --locked \
-            --no-default-features --features ${{ matrix.feature }}
+          cargo test --locked \
+            --test postgres_jt1078 \
+            --test postgres_device_lookup \
+            --test postgres_platform_channel \
+            --test mysql_catalog_channel \
+            --test mysql_platform_channel \
+            -- --ignored
 
   # ── 前端：Vue 3 + Element Plus + Vite，类型检查 + 生产构建 ────────────────
   frontend:
@@ -131,7 +182,7 @@ jobs:
       - name: cargo fmt --check
         run: cargo fmt --all -- --check
 
-      # 注意：不用 --all-features —— sqlite/postgres/mysql 三选一，
-      # 同时开启会得到无意义的 feature 组合；用默认（sqlite）。
+      # `--all-features` 现在是**正确**的用法：三个驱动本来就必须同时启用。
+      # （改造前这里写着「不要用 --all-features，三选一互斥」—— 那条注释已作废。）
       - name: cargo clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --all-targets --all-features -- -D warnings
