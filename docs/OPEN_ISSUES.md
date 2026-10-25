@@ -2589,6 +2589,32 @@ MySQL/SQLite 以及 PostgreSQL 的批量通道插入必填字段和可选通道�
 分别用三种数据库的生产初始化 schema 运行单条、批量更新和批量插入定向测试；
 数据库路径已验证，MySQL/SQLite 的完整容器媒体拓扑仍未运行。
 
+**2026-10-25 第十一轮：带 SIP Mock 的完整 Chromium E2E —— 81/81 通过**
+
+在**本轮 17 个提交之后**（HEAD `7b143db`，含第十一轮全部修复）重跑全量
+Playwright（21 个 spec / 81 条用例），环境 = 本机 Docker Desktop 桥接拓扑
+（PostgreSQL 16 + Redis 7 + 真实 ZLM）+ 宿主 release 后端 + 仓库自带的
+`mock/tools/sip-device/sip_device_mock.py`（`--send-rtp --auto-keepalive 20
+--auto-alarm-secs 5`）+ 后端托管 `web/dist`：
+
+```
+81 passed (4.5m)
+[webrtc] ICE=connected frames=1 bytes=5154
+```
+
+覆盖到**真实媒体闭环**的用例包括：直播起流/停止、点播 FLV 实拉（`playUrls`）、
+云录像（`cloudRecord` 产出本轮新 MP4 并可 Range 播放/删除）、拉流代理
+（`streamProxy` 在 ZLM 侧真的产生并关闭代理流）、设备即时控制
+（`frontEnd` 三条）、WebRTC 真实 ZLM 流在浏览器完成 ICE 并解出视频帧。
+
+⚠️ **一条环境陷阱值得记下来**：后端跑在**宿主**、ZLM 在**容器**时，
+`GBSERVER_ZLM_PRIMARY_HOOK_URL` 必须用**宿主可达的 IPv4**
+（`http://192.168.3.149:18080/api/zlm/hook`），**不能**写 `127.0.0.1` ——
+容器里的 127.0.0.1 是容器自己，ZLM 收到流也通知不到平台，表现为
+「起流一直 waiting ZLM media」直到超时。写成 127.0.0.1 时同一套代码
+会有 9 条媒体用例失败；改成宿主 IPv4 后 81/81 全绿 —— **不是代码回归，是配置**。
+（容器内 `host.docker.internal` 在 macOS 上只解析出 IPv6 ULA，同样不可用。）
+
 ---
 
 ## F. 本轮改动清单（随本文档一起提交）
