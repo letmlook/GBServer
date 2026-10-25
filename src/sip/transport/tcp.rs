@@ -55,6 +55,85 @@ impl TcpListener {
     }
 }
 
+/// SIP 单条消息（头部 + 正文）的字节上限。
+///
+/// 用于两处兜底：① 对端谎报一个巨大的 `Content-Length`；② 对端连头结束标记
+/// 都不发，只灌字节 —— 两种情况都不能让服务端缓冲无限增长。
+pub const MAX_SIP_MESSAGE_BYTES: usize = 1024 * 1024;
+
+/// 接收缓冲的硬上限：一���大消息 + 下一条消息的一部分。
+pub const MAX_SIP_BUFFER_BYTES: usize = MAX_SIP_MESSAGE_BYTES * 2;
+
+/// 从字节缓冲里切出一条**完整**的 SIP 消息（按 `Content-Length` 分帧）。
+///
+/// ## 为什么只在头部做文本化
+///
+/// SIP 头部恒为 ASCII，但**正文不一定是 UTF-8** —— 真实国标设备的报文正文
+/// 常见 `<?xml version="1.0" encoding="GB2312"?>`，其中的中文按 GB2312 编码，
+/// 对 UTF-8 来说是非法字节。
+///
+/// 此前这里是 `String::from_utf8(整个缓冲)`：正文里出现**一个**非法字节，整块
+/// 缓冲就变成 `Err`，被当成「消息还没收全」而永远不解析 —— 于是该设备此后
+/// **所有**报文（ACK / BYE / 目录 / 心跳）都堵在缓冲里不再被处理，表现为
+/// 「设备在线但平台毫无反应」；同时缓冲没有任何上限，持续增长。
+/// （UDP 路径走 `Parser::parse` 的 `from_utf8_lossy`，所以同一个设备走 UDP
+/// 一切正常 —— 只有 TCP 会被这一个字节废掉。）
+///
+/// 现在改成：头结束标记在**字节层**找，只有头部做文本化，正文原样切出，
+/// 解析交给 `Parser::parse`（内部已是 `from_utf8_lossy`）。
+///
+/// ## 返回值
+/// - `Ok(None)`：消息还没收全，等更多字节；
+/// - `Err`：缓冲已不可信（超上限），调用方**必须断开**这条连接。
+pub fn take_sip_message(buf: &mut BytesMut) -> anyhow::Result<Option<(SipMessage, Vec<u8>)>> {
+    if buf.is_empty() {
+        return Ok(None);
+    }
+
+    // 头结束标记在**字节层**找（`\r\n\r\n`）
+    let Some(header_end) = buf.windows(4).position(|w| w == b"\r\n\r\n") else {
+        // 连头都没结束：缓冲已经大到不可能是合法头部 → 报错，让调用方断开
+        if buf.len() > MAX_SIP_MESSAGE_BYTES {
+            anyhow::bail!(
+                "SIP 头部未在 {} 字节内结束，判定为无效流",
+                MAX_SIP_MESSAGE_BYTES
+            );
+        }
+        return Ok(None);
+    };
+
+    // 只有头部需要文本化（正文可能是任意字节）
+    let header_text = String::from_utf8_lossy(&buf[..header_end]);
+    let mut content_length: Option<usize> = None;
+    for line in header_text.split("\r\n") {
+        let lower = line.to_lowercase();
+        if lower.starts_with("content-length:") || lower.starts_with("l:") {
+            if let Some(len_str) = line.split(':').nth(1) {
+                content_length = len_str.trim().parse().ok();
+                break;
+            }
+        }
+    }
+
+    let body_start = header_end + 4;
+    let body_len = content_length.unwrap_or(0);
+    if body_len > MAX_SIP_MESSAGE_BYTES {
+        anyhow::bail!(
+            "SIP Content-Length {} 超过上限 {}",
+            body_len,
+            MAX_SIP_MESSAGE_BYTES
+        );
+    }
+    let total_len = body_start + body_len;
+    if buf.len() < total_len {
+        return Ok(None);
+    }
+
+    let message_bytes = buf.split_to(total_len).freeze();
+    let message = Parser::parse(&message_bytes)?;
+    Ok(Some((message, message_bytes.to_vec())))
+}
+
 /// TCP 连接的**读半**：把字节流按 Content-Length 切成一条条 SIP 消息。
 ///
 /// 与写半分开持有，读循环阻塞等待数据时不会占住发送路径。
@@ -89,6 +168,14 @@ impl TcpReader {
                 return Ok(None);
             }
             self.read_buffer.extend_from_slice(&buf[..n]);
+            // 缓冲封顶：切不出完整消息且缓冲已超上限 → 报错，调用方会断开连接。
+            // （此前这里没有任何上限，一个不发头结束标记的对端就能把内存撑爆。）
+            if self.read_buffer.len() > MAX_SIP_BUFFER_BYTES {
+                anyhow::bail!(
+                    "SIP TCP 接收缓冲超过 {} 字节仍未切出完整消息，判定为无效流并断开",
+                    MAX_SIP_BUFFER_BYTES
+                );
+            }
         }
     }
 
@@ -101,46 +188,7 @@ impl TcpReader {
     }
 
     fn try_parse_message(&mut self) -> anyhow::Result<Option<(SipMessage, Vec<u8>)>> {
-        let data = &self.read_buffer[..];
-        if data.is_empty() {
-            return Ok(None);
-        }
-
-        let text = match String::from_utf8(data.to_vec()) {
-            Ok(t) => t,
-            Err(_) => return Ok(None),
-        };
-
-        if !text.contains("\r\n\r\n") {
-            return Ok(None);
-        }
-
-        let header_end = text.find("\r\n\r\n").unwrap();
-        let header_text = &text[..header_end];
-        let header_lines: Vec<&str> = header_text.split("\r\n").collect();
-
-        let mut content_length: Option<usize> = None;
-        for line in &header_lines {
-            let lower = line.to_lowercase();
-            if lower.starts_with("content-length:") || lower.starts_with("l:") {
-                if let Some(len_str) = line.split(':').nth(1) {
-                    content_length = len_str.trim().parse().ok();
-                    break;
-                }
-            }
-        }
-
-        let body_start = header_end + 4;
-        let body_len = content_length.unwrap_or(0);
-        let total_len = body_start + body_len;
-
-        if self.read_buffer.len() < total_len {
-            return Ok(None);
-        }
-
-        let message_bytes = self.read_buffer.split_to(total_len).freeze();
-        let message = Parser::parse(&message_bytes)?;
-        Ok(Some((message, message_bytes.to_vec())))
+        take_sip_message(&mut self.read_buffer)
     }
 }
 
@@ -450,5 +498,80 @@ mod outbound_transport_tests {
             text
         );
         assert!(text.contains("Call-ID: frame-test"), "{}", text);
+    }
+}
+
+#[cfg(test)]
+mod sip_framing_tests {
+    use super::*;
+
+    /// **回归**：正文含**非 UTF-8** 字节（GB2312 中文）时，消息必须仍能被切出来。
+    ///
+    /// 旧实现对**整个缓冲**做严格 `String::from_utf8`：正文里一个非法字节就让
+    /// 分帧永远返回 `None` —— 该设备此后所有报文（ACK / BYE / 目录 / 心跳）
+    /// 都堵在缓冲里不再被处理，表现为「设备在线但平台毫无反应」，
+    /// 同时缓冲没有任何上限地增长。
+    /// （UDP 路径走 `Parser::parse` 的 `from_utf8_lossy`，所以同一台设备走 UDP
+    /// 一切正常 —— 只有 TCP 会被这一个字节废掉。）
+    #[test]
+    fn takes_message_with_non_utf8_body() {
+        // GB2312 编码的「中文」两个字节对
+        let body: &[u8] = &[0xD6, 0xD0, 0xCE, 0xC4, 0xB9, 0xAB];
+
+        let mut raw: Vec<u8> = Vec::new();
+        raw.extend_from_slice(b"SIP/2.0 200 OK\r\nContent-Length: ");
+        raw.extend_from_slice(body.len().to_string().as_bytes());
+        raw.extend_from_slice(b"\r\n\r\n");
+        raw.extend_from_slice(body);
+
+        let mut buf = BytesMut::new();
+        buf.extend_from_slice(&raw);
+
+        let got = take_sip_message(&mut buf).expect("分帧不得报错");
+        let (_msg, bytes) = got.expect("必须切出一条消息");
+        assert_eq!(bytes, raw, "切出的字节必须与原始报文一致");
+        assert!(buf.is_empty(), "缓冲应被清空");
+    }
+
+    /// **回归**：一条报文被切走后，缓冲里剩下的**下一条**必须仍能切出来
+    /// （粘包场景）。
+    #[test]
+    fn takes_two_pipelined_messages() {
+        let mut raw: Vec<u8> = Vec::new();
+        for i in 0..2u8 {
+            raw.extend_from_slice(b"SIP/2.0 200 OK\r\nContent-Length: 2\r\nX-Seq: ");
+            raw.push(i);
+            raw.extend_from_slice(b"\r\n\r\nhi");
+        }
+        let mut buf = BytesMut::new();
+        buf.extend_from_slice(&raw);
+
+        let (_, first) = take_sip_message(&mut buf).unwrap().unwrap();
+        let (_, second) = take_sip_message(&mut buf).unwrap().unwrap();
+        assert_eq!(first.len() + second.len(), raw.len());
+        assert!(buf.is_empty());
+    }
+
+    /// 对端谎报一个巨大的 `Content-Length` → 必须报错（调用方据此断开），
+    /// 不能照单全收地去等那么多字节。
+    #[test]
+    fn errors_when_content_length_exceeds_limit() {
+        let mut buf = BytesMut::new();
+        buf.extend_from_slice(b"SIP/2.0 200 OK\r\nContent-Length: 99999999\r\n\r\n");
+        assert!(
+            take_sip_message(&mut buf).is_err(),
+            "超大的 Content-Length 必须报错而不是无限等待"
+        );
+    }
+
+    /// 对端连头结束标记都不发 → 缓冲超过上限后必须报错断开，不能无限攒字节。
+    #[test]
+    fn errors_when_buffer_exceeds_limit_without_header_end() {
+        let mut buf = BytesMut::new();
+        buf.extend(std::iter::repeat(b'A').take(MAX_SIP_MESSAGE_BYTES + 1));
+        assert!(
+            take_sip_message(&mut buf).is_err(),
+            "缓冲超上限且头未结束必须报错"
+        );
     }
 }
