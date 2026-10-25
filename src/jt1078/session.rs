@@ -89,7 +89,30 @@ impl Jt1078Session {
     /// Supports both structured frames (with seq/timestamp/checksum) and legacy length-prefixed frames.
     /// For structured frames, performs simple in-order delivery using sequence numbers and an internal buffer.
     pub fn feed_bytes(&mut self, data: &[u8]) -> Vec<Vec<u8>> {
+        // ── 接收缓冲封顶（未认证对端的 OOM 防线）────────────────────────
+        //
+        // 旧格式（4 字节大端长度前缀）可以声明一个**永远凑不齐**的长度
+        // （例如 0xFFFFFFFF），帧就永远解析不出来。而 `manager::feed_bytes`
+        // 在解析**之前**就刷新了 `last_heartbeat` —— 于是未认证的对端只要
+        // 持续发垃圾，会话就**永不过期**、缓冲只增不减，内存按线速增长直至
+        // OOM；再叠加「每个新源地址新建一个会话」，还能横向放大。
+        //
+        // JT808 单帧最大 64KB（见 `server.rs` 真帧路径的判据），这里给 256KB
+        // 的余量仍然远超任何合法用法。
+        const MAX_SESSION_BUFFER_BYTES: usize = 256 * 1024;
+
         self.buffer.extend_from_slice(data);
+        if self.buffer.len() > MAX_SESSION_BUFFER_BYTES {
+            tracing::warn!(
+                "JT1078 会话 {} 的接收缓冲超过 {} 字节，判定为无效流并丢弃（对端未按长度收敛）",
+                self.peer,
+                MAX_SESSION_BUFFER_BYTES
+            );
+            // 流已经失步，清空重来；不返回任何帧（这段数据本就不可信）
+            self.buffer.clear();
+            return Vec::new();
+        }
+
         let mut out = Vec::new();
 
         loop {
@@ -482,4 +505,54 @@ mod tests {
         assert_eq!(res_b.len(), 1);
         assert_eq!(res_b[0], p2);
     }
+}
+
+#[cfg(test)]
+mod session_buffer_bound_tests {
+    use super::*;
+    use std::net::SocketAddr;
+
+    fn make_addr() -> SocketAddr {
+        "127.0.0.1:60000".parse().unwrap()
+    }
+
+    /// **回归**：接收缓冲必须有上限。
+    ///
+    /// 旧格式（4 字节大端长度前缀）可以声明一个**永远凑不齐**的长度
+    /// （0xFFFFFFFF），帧就永远解析不出来；而 `manager::feed_bytes` 在解析
+    /// **之前**就刷新了 `last_heartbeat`，于是未认证的对端持续发垃圾就能让
+    /// 缓冲只增不减、会话永不过期 —— 内存按线速增长直至 OOM。
+    #[test]
+    fn session_buffer_is_bounded() {
+        let mut s = Jt1078Session::new(make_addr());
+        // 旧格式帧头：声明 0xFFFFFFFF 字节的正文（永远凑不齐）
+        let mut chunk = vec![0xFF, 0xFF, 0xFF, 0xFF];
+        chunk.extend_from_slice(&[0x00; 4096]);
+
+        for _ in 0..200 {
+            s.feed_bytes(&chunk);
+        }
+
+        assert!(
+            s.buffer.len() <= 256 * 1024,
+            "接收缓冲必须封顶，实际 {} 字节",
+            s.buffer.len()
+        );
+    }
+
+    /// **回归**：合法的大帧仍要能正常解析（封顶不能误伤正常流量）。
+    #[test]
+    fn bounded_buffer_still_parses_legacy_frames() {
+        let mut s = Jt1078Session::new(make_addr());
+        let payload = b"legacy-payload";
+        let mut raw = Vec::new();
+        raw.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+        raw.extend_from_slice(payload);
+
+        let out = s.feed_bytes(&raw);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0], payload);
+        assert!(s.buffer.is_empty());
+    }
+
 }
