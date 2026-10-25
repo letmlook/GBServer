@@ -922,9 +922,18 @@ impl SipServer {
         let _zlm_client = self.zlm_client.clone();
         let _config = self.config.clone();
 
+        let invite_manager_cleanup = invite_manager.clone();
         tokio::spawn(async move {
             loop {
                 device_manager.cleanup_expired(60).await;
+                // 已终止的 INVITE 会话此前**没有任何清理调用点** —— BYE 只把
+                // 状态置成 `Terminated`（B6 的约定），会话对象在内存里持续
+                // 累积。接上 `cleanup_expired`，超过 5 分钟的已终止会话被移除
+                // （同时清掉 StateStore 里的对应条目）。
+                let removed = invite_manager_cleanup.cleanup_expired(300).await;
+                if !removed.is_empty() {
+                    tracing::debug!("清理已终止的 INVITE 会话 {} 条", removed.len());
+                }
                 tokio::time::sleep(Duration::from_secs(30)).await;
             }
         });
@@ -2677,6 +2686,31 @@ impl SipServer {
         let from_device = Self::extract_device_id(&from).unwrap_or_default();
         let to_device = Self::extract_device_id(&to).unwrap_or_default();
 
+        // ── RFC 3261 §17.2.1：重传的请求必须得到**同一份**响应 ──────────
+        //
+        // 设备没收到 200 OK 时的**重发 INVITE**是正常行为；攻击者直接重放
+        // 同一条 INVITE 也一样。此前这里**不做任何去重**，于是每次重传都会
+        // 完整地重新处理一遍：① 新开一个 ZLM RTP 收流端口（200 OK 里通告的
+        // `m=` 端口随之改变，而设备仍按**第一次** 200 OK 的端口推流 ⇒ 媒体
+        // 落到孤儿端口，表现为「设备在线但一帧 RTP 都没有」）；② 同 Call-ID
+        // 的旧会话被直接覆盖，旧端口再也无人回收 ⇒ 端口泄漏。
+        //
+        // 判据用 **Call-ID + Via + CSeq**（RFC 3261 §17.2.1 规定重传三者
+        // 完全相同）；**不能**用 From —— 它在 UDP 上可随意伪造。
+        let txn_key = crate::sip::gb28181::invite_txn::InviteTxnKey::new(&call_id, &via, &cseq);
+        if let Some(cached) = crate::sip::gb28181::invite_txn::get_fresh_response(
+            crate::sip::gb28181::invite_txn::invite_txn_cache(),
+            &txn_key,
+        ) {
+            tracing::info!(
+                "入站 INVITE 重传（Call-ID={} CSeq={}）—— 重发同一份响应，不再重开 RTP 端口",
+                call_id,
+                cseq
+            );
+            Self::send_response(socket, addr, &cached).await?;
+            return Ok(());
+        }
+
         tracing::info!(
             "INVITE from {} to {} - CallID: {}",
             from_device,
@@ -2893,8 +2927,37 @@ impl SipServer {
             Some(&response_body),
         );
         Self::send_response(socket, addr, &response).await?;
+        // 记下这份响应：后续**同一条**请求的重传必须原样重发它
+        // （含同一个 SDP、同一个收流端口），而不是重新处理。
+        crate::sip::gb28181::invite_txn::remember_response(
+            crate::sip::gb28181::invite_txn::invite_txn_cache(),
+            txn_key.clone(),
+            response.clone(),
+        );
 
         if let Some(ref stream_key) = zlm_stream_key {
+            // 同 Call-ID 的**旧**会话（另一个 branch 的新尝试，不是重传）会被
+            // `create()` 直接覆盖 —— 旧会话持有的 ZLM 收流端口随之丢失，
+            // 没有任何地方再 `close_rtp_server` ⇒ 收流端口泄漏。
+            // 覆盖前先回收旧端口。
+            if let Some(old) = invite_session_manager.get(&call_id).await {
+                if let Some(old_stream) = old.zlm_stream_id.as_ref() {
+                    if zlm_stream_key.as_ref() != Some(old_stream) {
+                        if let Some(zlm) = zlm_client.as_ref() {
+                            if let Err(e) = zlm.close_rtp_server(old_stream).await {
+                                tracing::warn!(
+                                    "回收旧 INVITE 会话的 ZLM 收流端口失败 stream={}: {}",
+                                    old_stream,
+                                    e
+                                );
+                            } else {
+                                tracing::info!("已回收旧 INVITE 会话的收流端口 {}", old_stream);
+                            }
+                        }
+                    }
+                }
+            }
+
             let mut invite_session = crate::sip::gb28181::invite_session::InviteSession::new(
                 &call_id,
                 &from_device,
@@ -4191,11 +4254,7 @@ impl SipServer {
                             resp.headers.get("expires").map(|s| s.as_str()),
                         );
                         if let Some(secs) = granted {
-                            tracing::debug!(
-                                "Cascade {} granted expires = {}s",
-                                pid,
-                                secs
-                            );
+                            tracing::debug!("Cascade {} granted expires = {}s", pid, secs);
                         }
                         registrar.mark_registered(pid, granted);
                     } else if resp.status_code() >= 400 {

@@ -9,6 +9,7 @@ pub mod device_query;
 pub mod front_end_control;
 pub mod invite;
 pub mod invite_session;
+pub mod invite_txn;
 pub mod latency;
 pub mod media_waiter;
 pub mod nat_helper;

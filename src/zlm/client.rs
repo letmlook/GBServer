@@ -137,7 +137,9 @@ fn media_list_has_schema(
     schema: &str,
 ) -> Result<bool, String> {
     let arr = resp.get("data").and_then(|d| d.as_array()).ok_or_else(|| {
-        format!("ZLM getMediaList 响应里没有 data 数组（app={app} stream={stream} schema={schema}）")
+        format!(
+            "ZLM getMediaList 响应里没有 data 数组（app={app} stream={stream} schema={schema}）"
+        )
     })?;
     Ok(arr.iter().any(|m| {
         m.get("app").and_then(|v| v.as_str()) == Some(app)

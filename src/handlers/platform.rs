@@ -2350,7 +2350,6 @@ mod platform_contract_tests {
         }
     }
 
-
     fn add_body(v: serde_json::Value) -> PlatformAddBody {
         serde_json::from_value(v).expect("PlatformAddBody 反序列化")
     }

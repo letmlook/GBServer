@@ -1330,10 +1330,7 @@ mod c3_tests {
         );
         // 多个参数
         assert_eq!(
-            parse_granted_expires(
-                Some("<sip:x@1.2.3.4>;transport=udp;expires=900"),
-                None
-            ),
+            parse_granted_expires(Some("<sip:x@1.2.3.4>;transport=udp;expires=900"), None),
             Some(900)
         );
         // 解析不出来 → None（调用方回退到请求值）

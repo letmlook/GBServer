@@ -686,9 +686,7 @@ async fn sync_stream_changed(state: &AppState, data: &StreamChangedData) {
         // 问不到就**保持原值**（不动 StateStore），绝不用猜的增量去覆盖。
         let absolute: Option<i64> = match state.get_zlm_client(Some(media_server_id)) {
             Some(client) => match client.get_media_list(None, None, None).await {
-                Ok(list) => {
-                    Some(crate::zlm::types::count_distinct_media_streams(&list) as i64)
-                }
+                Ok(list) => Some(crate::zlm::types::count_distinct_media_streams(&list) as i64),
                 Err(e) => {
                     tracing::warn!(
                         "stream_changed: getMediaList 失败，保持既有流数量 server={}: {}",

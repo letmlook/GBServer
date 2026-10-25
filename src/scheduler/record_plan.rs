@@ -74,8 +74,14 @@ where
         // 本次不录像：流都没拉起来，没有可录的对象
         return Ok(());
     }
-    start_record_with_retry_fn(&mut start_record, 25, std::time::Duration::from_millis(800), app, stream)
-        .await
+    start_record_with_retry_fn(
+        &mut start_record,
+        25,
+        std::time::Duration::from_millis(800),
+        app,
+        stream,
+    )
+    .await
 }
 
 async fn start_record_with_retry_fn<F, Fut>(
@@ -682,12 +688,11 @@ mod recording_gate_tests {
             Box::pin(async move {
                 let n = c.fetch_add(1, Ordering::SeqCst) + 1;
                 match fail_until {
-                    Some(limit) if n < limit => {
-                        Err(anyhow::anyhow!("can not find the stream"))
-                    }
+                    Some(limit) if n < limit => Err(anyhow::anyhow!("can not find the stream")),
                     _ => Ok(()),
                 }
-            }) as std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send>>
+            })
+                as std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send>>
         }
     }
 
