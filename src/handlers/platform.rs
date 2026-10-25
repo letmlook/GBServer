@@ -11,6 +11,23 @@ use crate::db::platform as platform_db;
 use crate::db::platform_channel;
 use crate::db::{device as db_device, Platform};
 use crate::error::{AppError, ErrorCode};
+/// 校验级联平台的信令端口。
+///
+/// 上限 65535 是硬约束。此前**入库不校验、发包处用 `as u16` 静默回绕**
+/// （70000 → 4464、-1 → 65535）—— REGISTER / Keepalive 被打到一个**完全不同
+/// 的端口**，而管理页仍回显原始 `serverPort`，现场只能看到「无响应」，
+/// 查不到根因。0 同样无效（`SocketAddr::new(ip, 0)` 没有意义）。
+fn validate_server_port(port: Option<i32>) -> Result<Option<i32>, AppError> {
+    match port {
+        None => Ok(None),
+        Some(p) if (1..=65535).contains(&p) => Ok(Some(p)),
+        Some(p) => Err(AppError::business(
+            ErrorCode::Error400,
+            format!("信令端口必须在 1..=65535 之间，收到 {p}"),
+        )),
+    }
+}
+
 use crate::response::ApiResult;
 
 /// Deserialize a port field that may be either a JSON number (Vue's default)
@@ -1014,7 +1031,7 @@ pub async fn platform_add(
             format!("平台国标ID已存在: {server_gb_id}"),
         ));
     }
-    let server_port = body.server_port.unwrap_or(5060);
+    let server_port = validate_server_port(body.server_port)?.unwrap_or(5060);
     let device_gb_id = body.device_gb_id.clone().unwrap_or_default();
     let transport = body.transport.clone().unwrap_or_else(|| "TCP".to_string());
     let username = body.username.clone().unwrap_or_default();
@@ -1239,7 +1256,7 @@ pub async fn platform_update(
     let name = body.name.as_deref();
     let server_gb_id = body.server_gb_id.as_deref();
     let server_ip = body.server_host.as_deref();
-    let server_port = body.server_port;
+    let server_port = validate_server_port(body.server_port)?;
     let device_gb_id = body.device_gb_id.as_deref();
     let transport = body.transport.as_deref();
     let username = body.username.as_deref();
@@ -2272,6 +2289,67 @@ pub async fn platform_info(
 mod platform_contract_tests {
     use super::*;
     use crate::test_support::app_state;
+
+    /// **回归**：越界端口在**入库前**就必须被拒，不能靠发包处的 `as u16` 回绕。
+    /// **回归（端点级）**：越界端口必须被**拒绝入库**。
+    ///
+    /// 修复前 `serverPort: 70000` 会原样入库，发包处再 `as u16` 静默回绕到
+    /// **4464** —— REGISTER 打到一个完全不同的端口，而管理页仍回显 70000，
+    /// 现场只能看到「无响应」，查不到根因。
+    #[tokio::test]
+    async fn platform_add_rejects_out_of_range_server_port() {
+        let state = app_state().await;
+
+        for bad in [70000, 65536, 0, -1] {
+            let err = platform_add(
+                State(state.clone()),
+                Json(add_body(serde_json::json!({
+                    "name": "越界端口", "serverGBId": "34020000002000000123",
+                    "serverIp": "10.0.0.9", "serverPort": bad,
+                }))),
+            )
+            .await
+            .expect_err("越界端口必须被拒");
+            assert!(
+                matches!(err, AppError::Business(_, _)),
+                "端口 {bad} 应回业务错误，实际 {err:?}"
+            );
+        }
+
+        // 库里的确没有留下这些行
+        let row = platform_db::get_by_server_gb_id(&state.pool, "34020000002000000123")
+            .await
+            .unwrap();
+        assert!(row.is_none(), "越界端口不得入库");
+
+        // 合法端口仍然可以正常新增（不能把功能改没了）
+        let ok = platform_add(
+            State(state.clone()),
+            Json(add_body(serde_json::json!({
+                "name": "合法端口", "serverGBId": "34020000002000000124",
+                "serverIp": "10.0.0.9", "serverPort": 5060,
+            }))),
+        )
+        .await
+        .expect("合法端口应能新增");
+        assert_eq!(ok.0.code, 0, "msg={}", ok.0.msg);
+    }
+
+    #[test]
+    fn server_port_range_is_validated_before_persisting() {
+        assert_eq!(validate_server_port(None).unwrap(), None);
+        assert_eq!(validate_server_port(Some(5060)).unwrap(), Some(5060));
+        assert_eq!(validate_server_port(Some(1)).unwrap(), Some(1));
+        assert_eq!(validate_server_port(Some(65535)).unwrap(), Some(65535));
+        // 越界 → 400 业务错误
+        for bad in [0, -1, 65536, 70000, i32::MAX] {
+            assert!(
+                validate_server_port(Some(bad)).is_err(),
+                "端口 {bad} 必须被拒"
+            );
+        }
+    }
+
 
     fn add_body(v: serde_json::Value) -> PlatformAddBody {
         serde_json::from_value(v).expect("PlatformAddBody 反序列化")

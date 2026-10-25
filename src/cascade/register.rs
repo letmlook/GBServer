@@ -56,6 +56,29 @@ pub struct CascadeRegistrar {
     pool: RwLock<Option<crate::db::Pool>>,
 }
 
+/// 把库里存的 `server_port`（i32）安全地转成 u16。
+///
+/// **不能直接 `as u16`** —— 那是**静默回绕**：70000 → 4464、-1 → 65535。
+/// 结果是 REGISTER / Keepalive 被发到一个**完全不同的端口**，而管理页仍回显
+/// 原始值 —— 现场只能看到「无响应 / connection refused」，查不到根因。
+///
+/// 越界（或 0）一律返回 `None`：调用方**跳过该平台并告警**，而不是把信令
+/// 打到错端口。端口 0 同样无效（`SocketAddr::new(ip, 0)` 没有意义）。
+fn server_port_u16(raw: Option<i32>) -> Option<u16> {
+    match raw.unwrap_or(5060) {
+        p if (1..=65535).contains(&p) => Some(p as u16),
+        p => {
+            tracing::warn!(
+                "级联平台信令端口 {} 超出 1..=65535 —— 已跳过该平台（此前 `as u16` \
+                 会静默回绕到 {}，把信令打到错误的端口）",
+                p,
+                p as u16
+            );
+            None
+        }
+    }
+}
+
 impl CascadeRegistrar {
     pub fn new() -> Self {
         Self {
@@ -265,7 +288,9 @@ impl CascadeRegistrar {
                 .server_ip
                 .clone()
                 .unwrap_or_else(|| "127.0.0.1".to_string());
-            let server_port = p.server_port.unwrap_or(5060) as u16;
+            let Some(server_port) = server_port_u16(p.server_port) else {
+                continue;
+            };
             let password = p.password.clone().unwrap_or_default();
             let expires_secs: u64 = p
                 .expires
@@ -510,7 +535,13 @@ impl CascadeRegistrar {
             .server_ip
             .clone()
             .unwrap_or_else(|| "127.0.0.1".to_string());
-        let server_port = p.server_port.unwrap_or(5060) as u16;
+        let Some(server_port) = server_port_u16(p.server_port) else {
+            return Err(format!(
+                "平台 {} 的信令端口 {} 超出 1..=65535",
+                server_gb_id,
+                p.server_port.unwrap_or(5060)
+            ));
+        };
         let password = p.password.clone().unwrap_or_default();
         let expires_secs: u64 = p
             .expires
@@ -738,7 +769,9 @@ impl CascadeRegistrar {
                             .server_ip
                             .clone()
                             .unwrap_or_else(|| "127.0.0.1".to_string());
-                        let server_port = p.server_port.unwrap_or(5060) as u16;
+                        let Some(server_port) = server_port_u16(p.server_port) else {
+                            continue;
+                        };
                         let password = p.password.clone().unwrap_or_default();
                         let expires_secs: u64 = p
                             .expires
@@ -1183,6 +1216,25 @@ mod c3_tests {
              否则级联 keepalive 的 200 OK 不会刷新存活时间，「keepalive 超时检测」\
              会退化成「距上次 REGISTER 多久」，健康上级每 3~4 分钟被误判 Failed"
         );
+    }
+
+    /// **回归**：越界端口**不得**被静默回绕成一个「看起来合法」的值。
+    ///
+    /// 修复前是 `p.server_port.unwrap_or(5060) as u16`：70000 → 4464、-1 → 65535。
+    /// 结果是 REGISTER / Keepalive 被打到一个**完全不同的端口**，而管理页仍
+    /// 回显原始值 —— 现场只能看到「无响应」，查不到根因。
+    #[test]
+    fn server_port_out_of_range_is_rejected_not_truncated() {
+        assert_eq!(server_port_u16(Some(5060)), Some(5060));
+        assert_eq!(server_port_u16(None), Some(5060), "缺省应为 5060");
+        // 越界 → None（调用方跳过该平台并告警），而不是回绕
+        assert_eq!(server_port_u16(Some(70000)), None);
+        assert_eq!(server_port_u16(Some(-1)), None);
+        assert_eq!(server_port_u16(Some(0)), None);
+        assert_eq!(server_port_u16(Some(65536)), None);
+        // 边界内
+        assert_eq!(server_port_u16(Some(1)), Some(1));
+        assert_eq!(server_port_u16(Some(65535)), Some(65535));
     }
 
     /// C3.3: remove_platform → 完全移除（disable 路径）
