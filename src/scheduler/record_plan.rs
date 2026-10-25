@@ -34,6 +34,50 @@ fn is_already_recording_error(e: &anyhow::Error) -> bool {
     msg.contains("already") || msg.contains("recording")
 }
 
+/// 拉起设备流的结果。
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum LiveStreamOutcome {
+    /// 流已就绪（本次拉起成功，或本来就在）
+    Ready(String),
+    /// 拉起失败 —— 本次**不录像**
+    Failed(String),
+    /// 没有注入 SIP 服务端：假定流已存在
+    AssumePresent,
+}
+
+/// 本轮**是否还应该尝试 startRecord**。
+///
+/// 设备流没拉起来 ⇒ 这一路根本没有可录的流 ⇒ 不该尝试。
+///
+/// 修复前：拉起失败只打一条 warn 就继续往下走，于是对着**并不存在**的流做
+/// 25 × 800ms ≈ 20s 的重试 —— 日志写着「本次不录像」而实际发了 25 次
+/// `startRecord`，排障时被直接误导；而这一轮 tick 也被白白拖住 20s。
+fn should_attempt_recording(outcome: &LiveStreamOutcome) -> bool {
+    !matches!(outcome, LiveStreamOutcome::Failed(_))
+}
+
+/// 处理单个通道：按「拉流结果」决定要不要 `startRecord`。
+///
+/// `start_record` 是**可注入**的（测试里用它数「到底调了几次」）——
+/// 这正是本条缺陷的核心断言点：流没拉起来时，它**一次都不该被调用**。
+async fn record_channel<F, Fut>(
+    live_stream: LiveStreamOutcome,
+    mut start_record: F,
+    app: &str,
+    stream: &str,
+) -> anyhow::Result<()>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<()>>,
+{
+    if !should_attempt_recording(&live_stream) {
+        // 本次不录像：流都没拉起来，没有可录的对象
+        return Ok(());
+    }
+    start_record_with_retry_fn(&mut start_record, 25, std::time::Duration::from_millis(800), app, stream)
+        .await
+}
+
 /// 带重试的 `startRecord`：只在"流还没到"时重试，其它错误立即返回。
 async fn start_record_with_retry(
     zlm: &ZlmClient,
@@ -43,7 +87,7 @@ async fn start_record_with_retry(
     interval: std::time::Duration,
 ) -> anyhow::Result<()> {
     start_record_with_retry_fn(
-        || zlm.start_record("1", "__defaultVhost__", app, stream),
+        || zlm.start_record("1", "__defaultVhost__", app, &stream),
         attempts,
         interval,
         app,
@@ -183,6 +227,9 @@ impl RecordPlanScheduler {
     pub async fn run(&self) {
         tracing::info!("RecordPlanScheduler started");
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+        // 错过的 tick **不补发**：默认的 `Burst` 行为会在一轮处理超过 60s 时
+        // 立即补发错过的 tick，把「每分钟一轮」退化成连续紧循环。
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             tokio::select! {
                 _ = interval.tick() => {}
@@ -268,36 +315,57 @@ impl RecordPlanScheduler {
                 .collect()
         };
 
-        // 依次启动本 tick 内所有到期且未在录的通道（单个失败不影响后续）
-        for (channel_id, device_id, gb_channel_id, plan_id, ms_id) in to_start {
+        // 同一 tick 内的通道**互不依赖** → **并发**处理。
+        //
+        // 修复前是串行：每个「设备离线」的通道要等 `start_live_stream` 的 15s
+        // INVITE 超时，N 个通道就是 N×15s；一轮 tick 超过 60s 间隔后，
+        // `tokio::time::interval` 默认的 **Burst** 行为会把错过的 tick 立即补发
+        // → 调度器从「每分钟一轮」退化成**连续紧循环**，持续对 ZLM 发起
+        // startRecord（每通道 25 次/轮）。
+        use futures_util::stream::StreamExt;
+        const MAX_CONCURRENT_CHANNELS: usize = 8;
+        futures_util::stream::iter(to_start)
+            .for_each_concurrent(MAX_CONCURRENT_CHANNELS, |(channel_id, device_id, gb_channel_id, plan_id, ms_id)| async move {
             let Some((resolved_ms_id, zlm)) = self.resolve_client(ms_id.as_deref()) else {
-                continue;
+                return;
             };
             let app = "rtp";
             let stream = format!("{}_{}", device_id, gb_channel_id);
 
             // 先确保设备流存在：没人观看时 ZLM 里没有这个流，直接 startRecord
             // 只会失败（这正是"录像计划永远没有文件"的原因）。
-            if let Some(ref sip) = self.sip_server {
+            let live_stream = if let Some(ref sip) = self.sip_server {
                 match sip.start_live_stream(&device_id, &gb_channel_id, 15).await {
-                    Ok(sid) => tracing::info!(
-                        "RecordPlanScheduler: 已按期拉起设备流 {}（channel={}）",
-                        sid,
-                        channel_id
-                    ),
-                    Err(e) => tracing::warn!(
-                        "RecordPlanScheduler: 拉起设备流失败 {}/{}: {}（本次不录像）",
-                        device_id,
-                        gb_channel_id,
-                        e
-                    ),
+                    Ok(sid) => {
+                        tracing::info!(
+                            "RecordPlanScheduler: 已按期拉起设备流 {}（channel={}）",
+                            sid,
+                            channel_id
+                        );
+                        LiveStreamOutcome::Ready(sid)
+                    }
+                    Err(e) => {
+                        // **本次不录像**：流没拉起来，这一路根本没有可录的流。
+                        // 修复前这里只打一条 warn 就继续往下走，于是对着并不存在
+                        // 的流做 25×800ms ≈ 20s 的重试 —— 日志写着「本次不录像」
+                        // 而实际发了 25 次 startRecord，排障时被直接误导。
+                        // 下一轮 tick 会再试。
+                        tracing::warn!(
+                            "RecordPlanScheduler: 拉起设备流失败 {}/{}: {}（本次不录像，跳过）",
+                            device_id,
+                            gb_channel_id,
+                            e
+                        );
+                        LiveStreamOutcome::Failed(e.to_string())
+                    }
                 }
             } else {
                 tracing::debug!(
                     "RecordPlanScheduler: 未注入 SIP 服务端，假定流已存在（{}）",
                     stream
                 );
-            }
+                LiveStreamOutcome::AssumePresent
+            };
 
             // ZLM 注册流是**异步**的：`start_live_stream` 返回时（甚至返回
             // "This stream already exists" 时）流可能还没出现在 ZLM 的流列表里，
@@ -306,12 +374,11 @@ impl RecordPlanScheduler {
             // 设备推流与 startRecord 之间的竞态。这里做有界重试。
             // 25 × 800ms ≈ 20s 的等待窗口：设备推流 + ZLM 注册流在慢设备上
             // 可能超过 8s（实测出现过等满 10 次仍未注册、下一轮 tick 才成功）。
-            let mut start_result = start_record_with_retry(
-                &zlm,
+            let mut start_result = record_channel(
+                live_stream,
+                || zlm.start_record("1", "__defaultVhost__", app, &stream),
                 app,
                 &stream,
-                25,
-                std::time::Duration::from_millis(800),
             )
             .await;
 
@@ -376,7 +443,8 @@ impl RecordPlanScheduler {
                     );
                 }
             }
-        }
+            })
+            .await;
 
         let mut active = self.active_recordings.write().await;
         let mut to_remove = Vec::new();
@@ -613,5 +681,100 @@ mod start_record_retry_tests {
         .await;
         assert!(fatal.is_err());
         assert_eq!(fatal_calls, 1);
+    }
+}
+
+#[cfg(test)]
+mod recording_gate_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    fn counting_start_record(
+        calls: Arc<AtomicUsize>,
+        fail_until: Option<usize>,
+    ) -> impl FnMut() -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send>>
+    {
+        move || {
+            let c = calls.clone();
+            Box::pin(async move {
+                let n = c.fetch_add(1, Ordering::SeqCst) + 1;
+                match fail_until {
+                    Some(limit) if n < limit => {
+                        Err(anyhow::anyhow!("can not find the stream"))
+                    }
+                    _ => Ok(()),
+                }
+            }) as std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send>>
+        }
+    }
+
+    /// **回归**：设备流**没拉起来**时，本轮**一次都不该**调用 `startRecord`。
+    ///
+    /// 修复前：拉起失败只打一条 warn 就继续往下走，于是对着**并不存在**的流做
+    /// 25 × 800ms ≈ 20s 的重试 —— 日志写着「本次不录像」而实际发了 25 次
+    /// `startRecord`，排障时被直接误导；这一轮 tick 也被白白拖住 20s。
+    #[tokio::test]
+    async fn failed_live_stream_never_calls_start_record() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let r = record_channel(
+            LiveStreamOutcome::Failed("Device 34020000001320000001 not registered".into()),
+            counting_start_record(calls.clone(), None),
+            "rtp",
+            "dev_ch",
+        )
+        .await;
+        assert!(r.is_ok());
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "流没拉起来时不得调用 startRecord（此前会重试 25 次 ≈ 20s）"
+        );
+    }
+
+    /// **对照**：流已就绪时必须正常调用 —— 不能把功能改没了。
+    #[tokio::test]
+    async fn ready_live_stream_calls_start_record() {
+        for outcome in [
+            LiveStreamOutcome::Ready("sid".into()),
+            LiveStreamOutcome::AssumePresent,
+        ] {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let r = record_channel(
+                outcome.clone(),
+                counting_start_record(calls.clone(), None),
+                "rtp",
+                "dev_ch",
+            )
+            .await;
+            assert!(r.is_ok());
+            assert_eq!(
+                calls.load(Ordering::SeqCst),
+                1,
+                "{outcome:?} 时应调用一次 startRecord"
+            );
+        }
+    }
+
+    /// **回归**：「流还没在 ZLM 注册」的错误**仍然要重试**。
+    ///
+    /// 这是 B2 修过的「设备推流与 startRecord 之间的竞态」—— ZLM 注册流是
+    /// 异步的。B42 的修复**不得**把它误伤。
+    #[tokio::test]
+    async fn stream_not_ready_still_retries() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let r = record_channel(
+            LiveStreamOutcome::Ready("sid".into()),
+            counting_start_record(calls.clone(), Some(3)),
+            "rtp",
+            "dev_ch",
+        )
+        .await;
+        assert!(r.is_ok(), "第 3 次成功，整体应 Ok");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            3,
+            "「流还没注册」必须继续重试（B2 的修复不能被误伤）"
+        );
     }
 }
