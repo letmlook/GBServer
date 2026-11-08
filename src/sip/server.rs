@@ -9591,8 +9591,10 @@ mod dialog_tag_tests {
     async fn cascade_response_after_waiter_closes_is_acked_and_terminated() {
         let state = crate::test_support::app_state().await;
         let server = SipServer::new(SipConfig::default(), state.pool.clone(), None);
-        let remote = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        // The TCP transport tests register global routes for 127.0.0.1; use a
+        // distinct loopback address so their IP fallback cannot steal this UDP.
+        let remote = UdpSocket::bind("[::1]:0").await.unwrap();
+        let socket = Arc::new(UdpSocket::bind("[::1]:0").await.unwrap());
         let peer = remote.local_addr().unwrap();
         let call_id = "plat_race_test";
         server

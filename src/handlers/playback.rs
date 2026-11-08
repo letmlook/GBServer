@@ -44,6 +44,49 @@ mod command_state_tests {
     use super::*;
 
     #[tokio::test]
+    async fn failed_bye_restores_record_if_cancelled_before_session_insert() {
+        use crate::sip::gb28181::invite_session::{InviteSession, InviteSessionStatus, StreamType};
+        let (state, manager, stream) = state_with_session().await;
+        let mut recovery = manager.get(&stream).await.unwrap();
+        recovery.call_id = Some("before-insert".into());
+        recovery.source = "gb28181_playback_invite".into();
+        manager.remove(&stream).await;
+        let sip = Arc::new(crate::sip::SipServer::new(
+            crate::config::SipConfig::default(),
+            state.pool.clone(),
+            None,
+        ));
+        let mut session = InviteSession::new(
+            "before-insert",
+            "device",
+            "channel",
+            StreamType::Playback,
+            "127.0.0.1:15060".parse().unwrap(),
+        );
+        session.status = InviteSessionStatus::Active;
+        session.set_local_dialog("local", 1);
+        session.set_remote_tag("remote");
+        sip.invite_session_manager().create(session).await;
+        let guard = PlaybackStartGuard {
+            sip,
+            playback: Some(manager.clone()),
+            call_id: "before-insert".into(),
+            stream_id: stream.clone(),
+            recovery_session: Some(recovery),
+            rtp_lease: None,
+            armed: true,
+        };
+        drop(guard);
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while manager.get(&stream).await.is_none() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("recovery session missing");
+    }
+
+    #[tokio::test]
     async fn cancelled_ready_playback_retains_session_when_bye_never_sends() {
         use crate::sip::gb28181::invite_session::{InviteSession, InviteSessionStatus, StreamType};
         let (state, manager, stream) = state_with_session().await;
@@ -68,6 +111,7 @@ mod command_state_tests {
             playback: Some(manager.clone()),
             call_id: "failed-call".into(),
             stream_id: stream.clone(),
+            recovery_session: None,
             rtp_lease: None,
             armed: true,
         };
@@ -119,6 +163,7 @@ mod command_state_tests {
             playback: Some(manager.clone()),
             call_id: "retry-call".into(),
             stream_id: stream.clone(),
+            recovery_session: None,
             rtp_lease: None,
             armed: true,
         };
@@ -191,6 +236,7 @@ mod command_state_tests {
             playback: Some(manager.clone()),
             call_id: "missing".into(),
             stream_id: stream.clone(),
+            recovery_session: None,
             rtp_lease: Some(lease),
             armed: true,
         };
@@ -448,6 +494,7 @@ struct PlaybackStartGuard {
     playback: Option<Arc<PlaybackManager>>,
     call_id: String,
     stream_id: String,
+    recovery_session: Option<PlaybackSession>,
     rtp_lease: Option<crate::zlm::port_guard::RtpServerLease>,
     armed: bool,
 }
@@ -461,6 +508,7 @@ impl Drop for PlaybackStartGuard {
         let playback = self.playback.clone();
         let call_id = self.call_id.clone();
         let stream_id = self.stream_id.clone();
+        let recovery_session = self.recovery_session.take();
         let lease = self.rtp_lease.take();
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
             runtime.spawn(async move {
@@ -480,6 +528,9 @@ impl Drop for PlaybackStartGuard {
                 if sent || !active {
                     if let Some(playback) = playback { playback.remove(&stream_id).await; }
                 } else {
+                    if let (Some(playback), Some(recovery)) = (playback, recovery_session) {
+                        playback.ensure_present(recovery).await;
+                    }
                     tracing::error!(%call_id, %stream_id, "BYE 未发送，保留回放会话供后续重试；设备结束状态未确认");
                 }
                 drop(lease);
@@ -504,6 +555,14 @@ impl PlaybackManager {
             .write()
             .await
             .insert(session.stream_id.clone(), session);
+    }
+
+    async fn ensure_present(&self, session: PlaybackSession) {
+        self.sessions
+            .write()
+            .await
+            .entry(session.stream_id.clone())
+            .or_insert(session);
     }
 
     pub async fn get(&self, stream_id: &str) -> Option<PlaybackSession> {
@@ -803,11 +862,28 @@ pub async fn playback_start(
                         .await
                     {
                         Ok((call_id, _zlm_stream_id)) => {
+                            let recovery_session = PlaybackSession {
+                                stream_id: stream_id.clone(),
+                                call_id: Some(call_id.clone()),
+                                device_id: device_id.clone(),
+                                channel_id: channel_id.clone(),
+                                app: app.clone(),
+                                stream: stream_id.clone(),
+                                media_server_id: media_server_id.clone(),
+                                schema: "rtsp".to_string(),
+                                start_time: start_time.clone(),
+                                end_time: end_time.clone(),
+                                current_time: start_time.clone(),
+                                speed: 1.0,
+                                paused: false,
+                                source: source.to_string(),
+                            };
                             let mut playback_guard = PlaybackStartGuard {
                                 sip: sip_server.clone(),
                                 playback: state.playback_manager.clone(),
                                 call_id: call_id.clone(),
                                 stream_id: stream_id.clone(),
+                                recovery_session: Some(recovery_session.clone()),
                                 rtp_lease: Some(rtp_lease),
                                 armed: true,
                             };
@@ -821,24 +897,7 @@ pub async fn playback_start(
                                 &media_ip, http_port, &app, &stream_id,
                             );
                             if let Some(ref playback_manager) = state.playback_manager {
-                                playback_manager
-                                    .create(PlaybackSession {
-                                        stream_id: stream_id.clone(),
-                                        call_id: Some(call_id),
-                                        device_id: device_id.clone(),
-                                        channel_id: channel_id.clone(),
-                                        app: app.clone(),
-                                        stream: stream_id.clone(),
-                                        media_server_id: media_server_id.clone(),
-                                        schema: "rtsp".to_string(),
-                                        start_time: start_time.clone(),
-                                        end_time: end_time.clone(),
-                                        current_time: start_time.clone(),
-                                        speed: 1.0,
-                                        paused: false,
-                                        source: source.to_string(),
-                                    })
-                                    .await;
+                                playback_manager.create(recovery_session).await;
                             }
                             // `hls` 同样只在真的有源时给出（回放流在多数 ZLM 版本上
                             // 没有 hls 源，给出 404 地址会让前端优先选它而播不出来）
