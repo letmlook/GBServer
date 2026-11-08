@@ -9662,26 +9662,55 @@ mod dialog_tag_tests {
 
     #[tokio::test]
     async fn register_response_rejects_wrong_tcp_generation() {
+        use tokio::io::AsyncReadExt;
         let listener = tokio::net::TcpListener::bind("[::1]:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        let client = tokio::net::TcpStream::connect(addr).await.unwrap();
-        let (_peer, _) = listener.accept().await.unwrap();
+        let old_client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let (_old_peer, _) = listener.accept().await.unwrap();
         let manager = TcpConnectionManager::new();
-        manager.add_connection(addr, client.into_split().1).await;
+        let old_generation = uuid::Uuid::new_v4();
+        manager
+            .add_connection_with_generation(addr, old_client.into_split().1, old_generation)
+            .await;
+        let new_client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let (mut new_peer, _) = listener.accept().await.unwrap();
+        let new_generation = uuid::Uuid::new_v4();
+        manager
+            .add_connection_with_generation(addr, new_client.into_split().1, new_generation)
+            .await;
         crate::sip::transport::tcp::tcp_response_routes().insert(addr, manager);
         let udp = Arc::new(UdpSocket::bind("[::1]:0").await.unwrap());
         let result = SipServer::send_register_response(
             &udp,
             addr,
-            RegistrationIngress::Tcp(uuid::Uuid::new_v4()),
+            RegistrationIngress::Tcp(old_generation),
             "old response",
         )
         .await;
-        crate::sip::transport::tcp::tcp_response_routes().remove(&addr);
         assert!(
             result.is_err(),
             "response must not use a different TCP generation"
         );
+        let mut buf = [0u8; 12];
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), new_peer.read(&mut buf))
+                .await
+                .is_err()
+        );
+        SipServer::send_register_response(
+            &udp,
+            addr,
+            RegistrationIngress::Tcp(new_generation),
+            "new response",
+        )
+        .await
+        .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), new_peer.read_exact(&mut buf))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(&buf, b"new response");
+        crate::sip::transport::tcp::tcp_response_routes().remove(&addr);
     }
 
     #[tokio::test]
