@@ -38,6 +38,8 @@ Task 1 only supplies the allocator primitive; startup does not yet call it and r
 - [ ] Test fresh schema and existing-schema upgrade, save/reload, atomic CSeq reservation, conflict, transaction rollback and invalid state transitions using each actual database. Run SQLite tests and the project's PostgreSQL/MySQL smoke commands.
 - [ ] Add startup migration that propagates failure; implement runtime-pool dialect dispatch and parameterized SQL. Reservation must commit before the corresponding network send and never wrap.
 
+**2026-11-08 partial implementation:** startup now creates the journal table and propagates failures; insert/read/delete and compare-and-set CSeq reservation are present. SQLite connection reopen and concurrent reservations against SQLite, PostgreSQL 16 and MySQL 8 passed. This is storage infrastructure only: state transitions, timestamps, schema scripts, SIP write-ahead integration and restart restoration remain unfinished. The isolated three-dialect application smoke executed but reported CSV and unavailable RTSP source failures on all three dialects, plus PostgreSQL seed sequence collisions for role/user creation; its zero exit status does not mean all checks passed.
+
 ## Task 3: Write ahead and restore
 
 **Files:** `src/handlers/playback.rs`, `src/sip/server.rs`, `src/sip/gb28181/invite_session.rs`, `src/lib.rs`, journal module and integration tests.

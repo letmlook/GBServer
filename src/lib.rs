@@ -488,6 +488,7 @@ sqlx::query_scalar::<_, bool>(
 
     // ---- 阶段 5：**补齐缺失的表**（三种方言都要；幂等，绝不删数据） ----
     ensure_missing_tables(pool).await?;
+    db::playback_recovery::ensure_table(pool).await?;
 
     // ---- 阶段 6：**补齐/纠正列宽与列类型**（幂等，绝不删数据） ----
     // 必须放在建表之后：全新库上这些列建出来就已经是目标类型。

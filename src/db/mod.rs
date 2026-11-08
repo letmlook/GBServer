@@ -13,6 +13,7 @@ pub mod platform;
 pub mod platform_channel;
 pub mod platform_group;
 pub mod platform_region;
+pub mod playback_recovery;
 pub mod position_history;
 #[cfg(test)]
 mod read_smoke;
