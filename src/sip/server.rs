@@ -1460,13 +1460,17 @@ impl SipServer {
                             // 写半交给连接管理器（供响应与平台主动请求使用），
                             // 读半留在读循环里 —— 两者不共用锁，避免
                             // "读阻塞"与"写响应"互相顶住。
-                            let connection = conn_manager.add_connection(addr, write_half).await;
+                            let generation = uuid::Uuid::new_v4();
+                            let connection = conn_manager
+                                .add_connection_with_generation(addr, write_half, generation)
+                                .await;
 
                             tokio::spawn(async move {
                                 Self::handle_tcp_connection(
                                     addr,
                                     reader,
                                     connection,
+                                    generation,
                                     &config,
                                     &device_manager,
                                     &session_manager,
@@ -1864,6 +1868,7 @@ impl SipServer {
         addr: SocketAddr,
         mut reader: crate::sip::transport::tcp::TcpReader,
         connection: Arc<tokio::sync::Mutex<tokio::net::tcp::OwnedWriteHalf>>,
+        generation: uuid::Uuid,
         config: &Arc<SipConfig>,
         device_manager: &Arc<DeviceManager>,
         session_manager: &Arc<SessionManager>,
@@ -1888,7 +1893,7 @@ impl SipServer {
         transaction_manager: &Arc<TransactionManager>,
         catalog_sync_manager: &Arc<CatalogSyncManager>,
     ) {
-        let ingress = RegistrationIngress::Tcp(uuid::Uuid::new_v4());
+        let ingress = RegistrationIngress::Tcp(generation);
         // 读循环只持有**读半**，写半在 `conn_manager` 里，两者不共用锁。
         // 此前这里 `conn.write().await` 一直持到循环结束，而回响应的
         // `send_to` 又要拿同一把写锁 —— 直接死锁：设备 REGISTER 后
@@ -2246,12 +2251,15 @@ impl SipServer {
                 socket.send_to(response.as_bytes(), addr).await?;
                 Ok(())
             }
-            RegistrationIngress::Tcp(_) => {
+            RegistrationIngress::Tcp(generation) => {
                 let manager = crate::sip::transport::tcp::tcp_response_routes()
                     .get(&addr)
                     .map(|entry| entry.value().clone())
                     .ok_or_else(|| anyhow::anyhow!("REGISTER TCP connection unavailable"))?;
-                if manager.send_to(&addr, response).await? {
+                if manager
+                    .send_to_generation(&addr, generation, response)
+                    .await?
+                {
                     Ok(())
                 } else {
                     Err(anyhow::anyhow!("REGISTER TCP connection unavailable"))
@@ -9651,6 +9659,30 @@ pub fn build_upstream_device_status_response(sn: &str, local_device_id: &str, no
 #[cfg(test)]
 mod dialog_tag_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn register_response_rejects_wrong_tcp_generation() {
+        let listener = tokio::net::TcpListener::bind("[::1]:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let (_peer, _) = listener.accept().await.unwrap();
+        let manager = TcpConnectionManager::new();
+        manager.add_connection(addr, client.into_split().1).await;
+        crate::sip::transport::tcp::tcp_response_routes().insert(addr, manager);
+        let udp = Arc::new(UdpSocket::bind("[::1]:0").await.unwrap());
+        let result = SipServer::send_register_response(
+            &udp,
+            addr,
+            RegistrationIngress::Tcp(uuid::Uuid::new_v4()),
+            "old response",
+        )
+        .await;
+        crate::sip::transport::tcp::tcp_response_routes().remove(&addr);
+        assert!(
+            result.is_err(),
+            "response must not use a different TCP generation"
+        );
+    }
 
     #[tokio::test]
     async fn udp_registration_response_does_not_use_same_address_tcp_route() {

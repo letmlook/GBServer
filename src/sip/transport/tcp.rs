@@ -196,7 +196,7 @@ impl TcpReader {
 pub struct TcpConnectionManager {
     /// 对端地址 → **写半**。写半单独加锁：读循环不持有它，
     /// 因此"平台主动发请求"与"回响应"不会再与读阻塞互相顶住。
-    connections: Arc<RwLock<HashMap<SocketAddr, Arc<Mutex<OwnedWriteHalf>>>>>,
+    connections: Arc<RwLock<HashMap<SocketAddr, (uuid::Uuid, Arc<Mutex<OwnedWriteHalf>>)>>>,
     max_connections: usize,
 }
 
@@ -220,6 +220,16 @@ impl TcpConnectionManager {
         addr: SocketAddr,
         stream: OwnedWriteHalf,
     ) -> Arc<Mutex<OwnedWriteHalf>> {
+        self.add_connection_with_generation(addr, stream, uuid::Uuid::new_v4())
+            .await
+    }
+
+    pub async fn add_connection_with_generation(
+        &self,
+        addr: SocketAddr,
+        stream: OwnedWriteHalf,
+        generation: uuid::Uuid,
+    ) -> Arc<Mutex<OwnedWriteHalf>> {
         let mut guard = self.connections.write().await;
         // 同址重连：旧写半已被新连接取代
         guard.remove(&addr);
@@ -231,7 +241,7 @@ impl TcpConnectionManager {
             );
         }
         let connection = Arc::new(Mutex::new(stream));
-        guard.insert(addr, connection.clone());
+        guard.insert(addr, (generation, connection.clone()));
         connection
     }
 
@@ -243,7 +253,7 @@ impl TcpConnectionManager {
         let mut guard = self.connections.write().await;
         if !guard
             .get(addr)
-            .is_some_and(|current| Arc::ptr_eq(current, connection))
+            .is_some_and(|(_, current)| Arc::ptr_eq(current, connection))
         {
             return false;
         }
@@ -259,7 +269,39 @@ impl TcpConnectionManager {
     }
 
     pub async fn get_connection(&self, addr: &SocketAddr) -> Option<Arc<Mutex<OwnedWriteHalf>>> {
-        self.connections.read().await.get(addr).cloned()
+        self.connections
+            .read()
+            .await
+            .get(addr)
+            .map(|(_, connection)| connection.clone())
+    }
+
+    pub async fn send_to_generation(
+        &self,
+        addr: &SocketAddr,
+        generation: uuid::Uuid,
+        data: &str,
+    ) -> anyhow::Result<bool> {
+        let connection = self
+            .connections
+            .read()
+            .await
+            .get(addr)
+            .and_then(|(id, connection)| (*id == generation).then(|| connection.clone()));
+        let Some(connection) = connection else {
+            return Ok(false);
+        };
+        let result = async {
+            let mut stream = connection.lock().await;
+            stream.write_all(data.as_bytes()).await?;
+            stream.flush().await
+        }
+        .await;
+        if result.is_err() {
+            self.remove_connection_if_current(addr, &connection).await;
+        }
+        result?;
+        Ok(true)
     }
 
     /// 经 TCP 发送一条 SIP 消息。
@@ -312,7 +354,7 @@ impl TcpConnectionManager {
         let mut guard = self.connections.write().await;
         let addrs: Vec<SocketAddr> = guard.keys().cloned().collect();
         for addr in addrs {
-            if let Some(conn) = guard.get(&addr) {
+            if let Some((_, conn)) = guard.get(&addr) {
                 let is_stale = {
                     let stream = conn.lock().await;
                     stream.local_addr().is_err()
