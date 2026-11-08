@@ -4173,7 +4173,11 @@ impl SipServer {
         // A non-2xx final INVITE response is acknowledged within the original
         // transaction: preserve the INVITE's Via branch and request URI.
         if (300..=699).contains(&resp.status_code()) && cseq.ends_with(" INVITE") {
-            if let Some(ctx) = session_manager.get(&call_id).await {
+            let ctx = match session_manager.get(&call_id).await {
+                Some(ctx) => Some(ctx),
+                None => session_manager.rejected_context(&call_id).await,
+            };
+            if let Some(ctx) = ctx {
                 if let (Some(via), Some(from), Some(number), Some(peer), Some(to)) = (
                     ctx.via_header.as_deref(),
                     ctx.from_header.as_deref(),
@@ -4181,6 +4185,11 @@ impl SipServer {
                     ctx.device_addr,
                     resp.headers.get("to"),
                 ) {
+                    if cseq != cseq_header(number, "INVITE") {
+                        tracing::warn!(%call_id, "忽略序号不匹配的 INVITE 拒绝应答");
+                        return Ok(());
+                    }
+                    session_manager.remember_rejected(ctx.clone()).await;
                     let uri = format!("sip:{}@{}:{}", ctx.channel_id, peer.ip(), peer.port());
                     let ack = Parser::generate_ack(
                         &uri,

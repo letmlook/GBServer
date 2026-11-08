@@ -55,6 +55,10 @@ def main():
                 assert f"Via: {headers['via']}" in ack_text, ack_text
                 assert f"To: {headers['to']};tag=peer123" in ack_text, ack_text
                 assert f"Call-ID: {headers['call-id']}" in ack_text and "CSeq: 1 ACK" in ack_text, ack_text
+                time.sleep(0.3)
+                sock.sendto(response.encode(), addr)
+                repeated_ack, _ = sock.recvfrom(65535)
+                assert repeated_ack == ack, "retransmitted rejection did not receive the same ACK"
                 outcome.append((addr, headers))
                 return
             ack, _ = sock.recvfrom(65535)

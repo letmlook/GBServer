@@ -4,7 +4,29 @@ use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn rejected_transaction_expires_and_does_not_hold_live_session() {
+        let manager = SessionManager::new();
+        manager.create("call", "device", "channel", "Play").await;
+        let session = manager.get("call").await.unwrap();
+        manager
+            .remember_rejected_for(session, Duration::from_millis(30))
+            .await;
+        manager.remove("call").await;
+        assert!(manager.get("call").await.is_none());
+        assert!(manager.rejected_context("call").await.is_some());
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        assert!(manager.rejected_context("call").await.is_none());
+        assert!(manager.rejected.read().await.is_empty());
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct InviteSession {
@@ -45,12 +67,14 @@ pub enum SessionStatus {
 
 pub struct SessionManager {
     sessions: Arc<RwLock<HashMap<String, InviteSession>>>,
+    rejected: Arc<RwLock<HashMap<String, (Instant, InviteSession)>>>,
 }
 
 impl SessionManager {
     pub fn new() -> Self {
         Self {
             sessions: Arc::new(RwLock::new(HashMap::new())),
+            rejected: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -85,6 +109,53 @@ impl SessionManager {
 
     pub async fn get(&self, call_id: &str) -> Option<InviteSession> {
         self.sessions.read().await.get(call_id).cloned()
+    }
+
+    /// Retain the transaction context briefly to ACK retransmitted non-2xx finals.
+    pub async fn remember_rejected(&self, session: InviteSession) {
+        self.remember_rejected_for(session, Duration::from_secs(32))
+            .await;
+    }
+
+    async fn remember_rejected_for(&self, session: InviteSession, ttl: Duration) {
+        let expires = Instant::now() + ttl;
+        let call_id = session.call_id.clone();
+        let mut rejected = self.rejected.write().await;
+        rejected.retain(|_, (until, _)| *until > Instant::now());
+        if !rejected.contains_key(&call_id) && rejected.len() >= 4096 {
+            if let Some(oldest) = rejected
+                .iter()
+                .min_by_key(|(_, (until, _))| *until)
+                .map(|(key, _)| key.clone())
+            {
+                rejected.remove(&oldest);
+            }
+        }
+        if rejected.contains_key(&call_id) {
+            return;
+        }
+        rejected.insert(call_id.clone(), (expires, session));
+        drop(rejected);
+        let rejected = self.rejected.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(ttl).await;
+            let mut entries = rejected.write().await;
+            if entries
+                .get(&call_id)
+                .is_some_and(|(until, _)| *until == expires)
+            {
+                entries.remove(&call_id);
+            }
+        });
+    }
+
+    pub async fn rejected_context(&self, call_id: &str) -> Option<InviteSession> {
+        self.rejected
+            .read()
+            .await
+            .get(call_id)
+            .filter(|(expires, _)| *expires > Instant::now())
+            .map(|(_, session)| session.clone())
     }
 
     pub async fn update_status(&self, call_id: &str, status: SessionStatus) {
