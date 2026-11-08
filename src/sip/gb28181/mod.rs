@@ -15,6 +15,7 @@ pub mod media_waiter;
 pub mod nat_helper;
 pub mod pending_request;
 pub mod playback_session;
+pub mod recovery_routing;
 pub mod sdp_builder;
 pub mod ssrc;
 pub mod stream_reconnect;

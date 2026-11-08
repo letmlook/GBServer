@@ -396,6 +396,11 @@ mod command_state_tests {
         session.actual_signaling_peer = Some("192.0.2.10:15060".parse().unwrap());
         session.original_request_uri = Some("sip:channel@192.0.2.10:5060".into());
         session.original_to_header = Some("<sip:channel@192.0.2.10:5060>;tag=remote".into());
+        session.original_routing_headers =
+            Some(crate::sip::gb28181::invite_session::SipRoutingHeaders {
+                contacts: vec!["<sip:device@192.0.2.10:5060>".into()],
+                record_routes: vec!["<sip:proxy.example;lr>".into()],
+            });
         sip.session_manager()
             .set_invite_context(
                 "before-insert",
@@ -442,6 +447,12 @@ mod command_state_tests {
             .unwrap();
         assert_eq!(route.peer_addr, "192.0.2.10:15060");
         assert_eq!(route.transport, "tcp");
+        let routing = crate::db::playback_recovery::get_safe_routing(&state.pool, &stream)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(routing.contact_uri, "sip:device@192.0.2.10:5060");
+        assert_eq!(routing.record_route_uris, ["sip:proxy.example;lr"]);
         let address = crate::db::playback_recovery::get_dialog_address(&state.pool, &stream)
             .await
             .unwrap()
@@ -987,6 +998,15 @@ impl Drop for PlaybackStartGuard {
                                 } else if let Err(error) = crate::db::playback_recovery::insert(sip.database_pool(), &record).await {
                                     tracing::error!(%call_id, %stream_id, "持久化待清理回放失败，记录仅保存在当前进程: {}", error);
                                 } else {
+                                    if let Some(ref headers) = dialog.original_routing_headers {
+                                        if let Some(routing) = crate::sip::gb28181::recovery_routing::safe_routing(headers) {
+                                            if let Err(error) = crate::db::playback_recovery::insert_safe_routing(sip.database_pool(), &stream_id, &routing).await {
+                                                tracing::error!(%call_id, %stream_id, "持久化回放路由信息失败: {}", error);
+                                            }
+                                        } else {
+                                            tracing::warn!(%call_id, %stream_id, "回放路由包含不支持或不安全的字段，未保存路由信息");
+                                        }
+                                    }
                                     if let (Some(peer), Some(transport)) = (dialog.actual_signaling_peer, dialog.signaling_transport.as_ref()) {
                                         let route = crate::db::playback_recovery::ObservedRoute { stream_id: stream_id.clone(), peer_addr: peer.to_string(), transport: transport.clone() };
                                         if let Err(error) = crate::db::playback_recovery::insert_observed_route(sip.database_pool(), &route).await {

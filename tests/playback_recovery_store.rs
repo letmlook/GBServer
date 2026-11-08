@@ -30,6 +30,15 @@ async fn exercise(pool: Pool) {
         from_header: "<sip:platform@192.0.2.1:5060>;tag=local".into(),
         to_header: "<sip:channel@192.0.2.10:5060>;tag=remote".into(),
     };
+    let mut unsafe_address = address.clone();
+    unsafe_address.to_header = "<sip:channel:password@192.0.2.10:5060>;tag=remote".into();
+    assert!(journal::insert_dialog_address(&pool, &unsafe_address)
+        .await
+        .is_err());
+    assert!(journal::get_dialog_address(&pool, &record.stream_id)
+        .await
+        .unwrap()
+        .is_none());
     journal::insert_dialog_address(&pool, &address)
         .await
         .unwrap();
@@ -44,6 +53,38 @@ async fn exercise(pool: Pool) {
             .await
             .unwrap(),
         Some(route)
+    );
+    let routing = gbserver::sip::gb28181::recovery_routing::safe_routing(
+        &gbserver::sip::gb28181::invite_session::SipRoutingHeaders {
+            contacts: vec!["<sip:device@example.test>".into()],
+            record_routes: vec![
+                "<sip:first.example;lr>".into(),
+                "<sip:second.example;lr>".into(),
+            ],
+        },
+    )
+    .unwrap();
+    let invalid = gbserver::sip::gb28181::recovery_routing::SafeRouting {
+        contact_uri: "sip:user:password@example.test".into(),
+        record_route_uris: vec![],
+    };
+    assert!(
+        journal::insert_safe_routing(&pool, &record.stream_id, &invalid)
+            .await
+            .is_err()
+    );
+    assert!(journal::get_safe_routing(&pool, &record.stream_id)
+        .await
+        .unwrap()
+        .is_none());
+    journal::insert_safe_routing(&pool, &record.stream_id, &routing)
+        .await
+        .unwrap();
+    assert_eq!(
+        journal::get_safe_routing(&pool, &record.stream_id)
+            .await
+            .unwrap(),
+        Some(routing)
     );
     assert_eq!(
         journal::get_dialog_address(&pool, &record.stream_id)
@@ -113,6 +154,10 @@ async fn exercise(pool: Pool) {
         .unwrap()
         .is_none());
     assert!(journal::get_observed_route(&pool, &record.stream_id)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(journal::get_safe_routing(&pool, &record.stream_id)
         .await
         .unwrap()
         .is_none());

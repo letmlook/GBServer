@@ -48,7 +48,68 @@ pub async fn ensure_table(pool: &Pool) -> sqlx::Result<()> {
     crate::dispatch_exec!(pool, |p| {
         sqlx::query("CREATE TABLE IF NOT EXISTS gb_playback_observed_route (stream_id VARCHAR(128) PRIMARY KEY, peer_addr VARCHAR(128) NOT NULL, transport VARCHAR(16) NOT NULL)").execute(p)
     })?;
+    crate::dispatch_exec!(pool, |p| {
+        sqlx::query("CREATE TABLE IF NOT EXISTS gb_playback_safe_routing (stream_id VARCHAR(128) PRIMARY KEY, contact_uri TEXT NOT NULL, record_routes_json TEXT NOT NULL)").execute(p)
+    })?;
     Ok(())
+}
+
+fn validate_safe_routing(routing: &crate::sip::gb28181::recovery_routing::SafeRouting) -> bool {
+    let input = crate::sip::gb28181::invite_session::SipRoutingHeaders {
+        contacts: vec![format!("<{}>", routing.contact_uri)],
+        record_routes: routing
+            .record_route_uris
+            .iter()
+            .map(|uri| format!("<{}>", uri))
+            .collect(),
+    };
+    crate::sip::gb28181::recovery_routing::safe_routing(&input).as_ref() == Some(routing)
+}
+
+pub async fn insert_safe_routing(
+    pool: &Pool,
+    stream_id: &str,
+    routing: &crate::sip::gb28181::recovery_routing::SafeRouting,
+) -> sqlx::Result<()> {
+    if !validate_safe_routing(routing) {
+        return Err(sqlx::Error::Protocol("invalid recovery routing".into()));
+    }
+    let routes = serde_json::to_string(&routing.record_route_uris)
+        .map_err(|_| sqlx::Error::Protocol("invalid recovery routing".into()))?;
+    let sql = pool.sql("INSERT INTO gb_playback_safe_routing (stream_id, contact_uri, record_routes_json) VALUES (?, ?, ?)");
+    crate::dispatch_exec!(pool, |p| {
+        sqlx::query(&sql)
+            .bind(stream_id)
+            .bind(&routing.contact_uri)
+            .bind(&routes)
+            .execute(p)
+    })?;
+    Ok(())
+}
+
+pub async fn get_safe_routing(
+    pool: &Pool,
+    stream_id: &str,
+) -> sqlx::Result<Option<crate::sip::gb28181::recovery_routing::SafeRouting>> {
+    let sql = pool.sql(
+        "SELECT contact_uri, record_routes_json FROM gb_playback_safe_routing WHERE stream_id = ?",
+    );
+    let row: Option<(String, String)> = crate::dispatch!(pool, |p| {
+        sqlx::query_as(&sql).bind(stream_id).fetch_optional(p)
+    })?;
+    let Some((contact_uri, routes)) = row else {
+        return Ok(None);
+    };
+    let record_route_uris = serde_json::from_str(&routes)
+        .map_err(|_| sqlx::Error::Protocol("invalid recovery routing".into()))?;
+    let routing = crate::sip::gb28181::recovery_routing::SafeRouting {
+        contact_uri,
+        record_route_uris,
+    };
+    if !validate_safe_routing(&routing) {
+        return Err(sqlx::Error::Protocol("invalid recovery routing".into()));
+    }
+    Ok(Some(routing))
 }
 
 pub async fn insert_observed_route(pool: &Pool, route: &ObservedRoute) -> sqlx::Result<()> {
@@ -78,6 +139,15 @@ pub async fn get_observed_route(
 }
 
 pub async fn insert_dialog_address(pool: &Pool, address: &DialogAddress) -> sqlx::Result<()> {
+    if !crate::sip::gb28181::recovery_routing::safe_dialog_address(
+        &address.request_uri,
+        &address.from_header,
+        &address.to_header,
+    ) {
+        return Err(sqlx::Error::Protocol(
+            "invalid recovery dialog address".into(),
+        ));
+    }
     let sql = pool.sql("INSERT INTO gb_playback_dialog_address (stream_id, request_uri, from_header, to_header) VALUES (?, ?, ?, ?)");
     crate::dispatch_exec!(pool, |p| {
         sqlx::query(&sql)
@@ -95,11 +165,23 @@ pub async fn get_dialog_address(
     stream_id: &str,
 ) -> sqlx::Result<Option<DialogAddress>> {
     let sql = pool.sql("SELECT stream_id, request_uri, from_header, to_header FROM gb_playback_dialog_address WHERE stream_id = ?");
-    crate::dispatch!(pool, |p| {
+    let result: Option<DialogAddress> = crate::dispatch!(pool, |p| {
         sqlx::query_as::<_, DialogAddress>(&sql)
             .bind(stream_id)
             .fetch_optional(p)
-    })
+    })?;
+    if result.as_ref().is_some_and(|address| {
+        !crate::sip::gb28181::recovery_routing::safe_dialog_address(
+            &address.request_uri,
+            &address.from_header,
+            &address.to_header,
+        )
+    }) {
+        return Err(sqlx::Error::Protocol(
+            "invalid recovery dialog address".into(),
+        ));
+    }
+    Ok(result)
 }
 
 pub async fn insert(pool: &Pool, record: &RecoveryRecord) -> sqlx::Result<()> {
@@ -219,12 +301,17 @@ pub async fn reserve_cseq_at_least(
 }
 
 pub async fn delete(pool: &Pool, stream_id: &str) -> sqlx::Result<()> {
+    let routing_sql = pool.sql("DELETE FROM gb_playback_safe_routing WHERE stream_id = ?");
     let route_sql = pool.sql("DELETE FROM gb_playback_observed_route WHERE stream_id = ?");
     let address_sql = pool.sql("DELETE FROM gb_playback_dialog_address WHERE stream_id = ?");
     let record_sql = pool.sql("DELETE FROM gb_playback_recovery WHERE stream_id = ?");
     crate::dispatch!(pool, |p| {
         async {
             let mut tx = p.begin().await?;
+            sqlx::query(&routing_sql)
+                .bind(stream_id)
+                .execute(&mut *tx)
+                .await?;
             sqlx::query(&route_sql)
                 .bind(stream_id)
                 .execute(&mut *tx)
