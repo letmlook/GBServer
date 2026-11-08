@@ -4645,6 +4645,15 @@ impl SipServer {
                         resp.body.as_deref(),
                     )
                     .await;
+                if let Some(ref to_header) = to_header {
+                    invite_session_manager
+                        .set_original_to_header(
+                            &call_id,
+                            to_header,
+                            extract_sip_tag(to_header).as_deref(),
+                        )
+                        .await;
+                }
                 let mut delivery_failed = false;
                 if let Some((_, tx)) = pending_invites.remove(&call_id) {
                     // 把整个 200 OK 响应(含 SDP)发给调用方,
@@ -7949,6 +7958,9 @@ f=v/1/96/1/2/1/1/0
             .await;
             self.invite_session_manager
                 .set_zlm_stream_by_call_id(&call_id, zlm_stream_id, "rtp")
+                .await;
+            self.invite_session_manager
+                .set_original_request_uri(&call_id, &uri)
                 .await;
             match self.send_request_to(device_addr, &message).await {
                 Ok(sent_over_tcp) => {

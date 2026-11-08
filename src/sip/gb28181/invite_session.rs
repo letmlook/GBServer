@@ -170,6 +170,9 @@ pub struct InviteSession {
     pub peer_addr: SocketAddr,
     /// Actual transport selected for the outbound INVITE; None means unknown.
     pub signaling_transport: Option<String>,
+    /// Raw To header from the INVITE 200 response; never reconstruct it from current configuration.
+    pub original_to_header: Option<String>,
+    pub original_request_uri: Option<String>,
     pub sdp_request: Option<String>,
     pub sdp_response: Option<String>,
     pub timeout_seconds: u64,
@@ -229,6 +232,8 @@ impl InviteSession {
             last_activity: Utc::now(),
             peer_addr,
             signaling_transport: None,
+            original_to_header: None,
+            original_request_uri: None,
             sdp_request: None,
             sdp_response: None,
             timeout_seconds: 60,
@@ -608,6 +613,39 @@ impl InviteSessionManager {
         true
     }
 
+    pub async fn set_original_to_header(
+        &self,
+        call_id: &str,
+        to_header: &str,
+        remote_tag: Option<&str>,
+    ) -> bool {
+        let mut guard = self.sessions.write().await;
+        let Some(session) = guard.get_mut(call_id) else {
+            return false;
+        };
+        if session.original_to_header.is_some()
+            || to_header.is_empty()
+            || remote_tag.is_none_or(str::is_empty)
+            || session.remote_tag.as_deref() != remote_tag
+        {
+            return false;
+        }
+        session.original_to_header = Some(to_header.to_owned());
+        true
+    }
+
+    pub async fn set_original_request_uri(&self, call_id: &str, uri: &str) -> bool {
+        let mut guard = self.sessions.write().await;
+        let Some(session) = guard.get_mut(call_id) else {
+            return false;
+        };
+        if session.original_request_uri.is_some() || uri.is_empty() {
+            return false;
+        }
+        session.original_request_uri = Some(uri.to_owned());
+        true
+    }
+
     pub async fn get_by_device_channel(
         &self,
         device_id: &str,
@@ -802,6 +840,49 @@ pub fn build_playback_sdp(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn original_to_header_requires_matching_tag_and_is_immutable() {
+        let manager = InviteSessionManager::new();
+        let mut session = InviteSession::new(
+            "call",
+            "device",
+            "channel",
+            StreamType::Playback,
+            "127.0.0.1:5060".parse().unwrap(),
+        );
+        session.set_remote_tag("remote");
+        manager.create(session).await;
+        assert!(
+            !manager
+                .set_original_to_header("call", "<sip:x>;tag=other", Some("other"))
+                .await
+        );
+        assert!(
+            !manager
+                .set_original_to_header("call", "<sip:x>", None)
+                .await
+        );
+        assert!(
+            manager
+                .set_original_to_header("call", "<sip:x>;tag=remote", Some("remote"))
+                .await
+        );
+        assert!(
+            !manager
+                .set_original_to_header("call", "replacement", Some("remote"))
+                .await
+        );
+        assert_eq!(
+            manager
+                .get("call")
+                .await
+                .unwrap()
+                .original_to_header
+                .as_deref(),
+            Some("<sip:x>;tag=remote")
+        );
+    }
 
     #[tokio::test]
     async fn owned_ssrc_is_released_on_termination_and_removal() {

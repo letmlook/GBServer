@@ -18,6 +18,14 @@ pub struct RecoveryRecord {
     pub last_cseq: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
+pub struct DialogAddress {
+    pub stream_id: String,
+    pub request_uri: String,
+    pub from_header: String,
+    pub to_header: String,
+}
+
 const CREATE_TABLE: &str = "CREATE TABLE IF NOT EXISTS gb_playback_recovery (\
     stream_id VARCHAR(128) PRIMARY KEY, call_id VARCHAR(128) NOT NULL UNIQUE,\
     device_id VARCHAR(128) NOT NULL, channel_id VARCHAR(128) NOT NULL,\
@@ -27,7 +35,35 @@ const CREATE_TABLE: &str = "CREATE TABLE IF NOT EXISTS gb_playback_recovery (\
 
 pub async fn ensure_table(pool: &Pool) -> sqlx::Result<()> {
     crate::dispatch_exec!(pool, |p| { sqlx::query(CREATE_TABLE).execute(p) })?;
+    crate::dispatch_exec!(pool, |p| {
+        sqlx::query("CREATE TABLE IF NOT EXISTS gb_playback_dialog_address (stream_id VARCHAR(128) PRIMARY KEY, request_uri TEXT NOT NULL, from_header TEXT NOT NULL, to_header TEXT NOT NULL)").execute(p)
+    })?;
     Ok(())
+}
+
+pub async fn insert_dialog_address(pool: &Pool, address: &DialogAddress) -> sqlx::Result<()> {
+    let sql = pool.sql("INSERT INTO gb_playback_dialog_address (stream_id, request_uri, from_header, to_header) VALUES (?, ?, ?, ?)");
+    crate::dispatch_exec!(pool, |p| {
+        sqlx::query(&sql)
+            .bind(&address.stream_id)
+            .bind(&address.request_uri)
+            .bind(&address.from_header)
+            .bind(&address.to_header)
+            .execute(p)
+    })?;
+    Ok(())
+}
+
+pub async fn get_dialog_address(
+    pool: &Pool,
+    stream_id: &str,
+) -> sqlx::Result<Option<DialogAddress>> {
+    let sql = pool.sql("SELECT stream_id, request_uri, from_header, to_header FROM gb_playback_dialog_address WHERE stream_id = ?");
+    crate::dispatch!(pool, |p| {
+        sqlx::query_as::<_, DialogAddress>(&sql)
+            .bind(stream_id)
+            .fetch_optional(p)
+    })
 }
 
 pub async fn insert(pool: &Pool, record: &RecoveryRecord) -> sqlx::Result<()> {
@@ -147,7 +183,20 @@ pub async fn reserve_cseq_at_least(
 }
 
 pub async fn delete(pool: &Pool, stream_id: &str) -> sqlx::Result<()> {
-    let sql = pool.sql("DELETE FROM gb_playback_recovery WHERE stream_id = ?");
-    crate::dispatch_exec!(pool, |p| { sqlx::query(&sql).bind(stream_id).execute(p) })?;
-    Ok(())
+    let address_sql = pool.sql("DELETE FROM gb_playback_dialog_address WHERE stream_id = ?");
+    let record_sql = pool.sql("DELETE FROM gb_playback_recovery WHERE stream_id = ?");
+    crate::dispatch!(pool, |p| {
+        async {
+            let mut tx = p.begin().await?;
+            sqlx::query(&address_sql)
+                .bind(stream_id)
+                .execute(&mut *tx)
+                .await?;
+            sqlx::query(&record_sql)
+                .bind(stream_id)
+                .execute(&mut *tx)
+                .await?;
+            tx.commit().await
+        }
+    })
 }

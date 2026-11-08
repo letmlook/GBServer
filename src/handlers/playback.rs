@@ -393,6 +393,16 @@ mod command_state_tests {
         session.set_remote_tag("remote");
         let owned_ssrc = sip.test_playback_lease("device", "channel").unwrap();
         session.signaling_transport = Some("udp".into());
+        session.original_request_uri = Some("sip:channel@192.0.2.10:5060".into());
+        session.original_to_header = Some("<sip:channel@192.0.2.10:5060>;tag=remote".into());
+        sip.session_manager()
+            .set_invite_context(
+                "before-insert",
+                "<sip:platform@192.0.2.1:5060>;tag=local".into(),
+                1,
+                "127.0.0.1:15060".parse().unwrap(),
+            )
+            .await;
         assert_eq!(owned_ssrc.ssrc(), "1200000001");
         session.ssrc = Some(owned_ssrc.ssrc().to_string());
         sip.invite_session_manager()
@@ -425,6 +435,19 @@ mod command_state_tests {
         assert_eq!(saved.state, "cleanup_pending");
         assert_eq!(saved.transport, "udp");
         assert_eq!(saved.remote_tag.as_deref(), Some("remote"));
+        let address = crate::db::playback_recovery::get_dialog_address(&state.pool, &stream)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(address.request_uri, "sip:channel@192.0.2.10:5060");
+        assert_eq!(
+            address.from_header,
+            "<sip:platform@192.0.2.1:5060>;tag=local"
+        );
+        assert_eq!(
+            address.to_header,
+            "<sip:channel@192.0.2.10:5060>;tag=remote"
+        );
         sip.invite_session_manager().remove("before-insert").await;
         assert!(sip.ssrc_manager().get("1200000001").is_some());
         let mut restarted = crate::sip::SipServer::new(
@@ -956,6 +979,19 @@ impl Drop for PlaybackStartGuard {
                                     tracing::error!(%call_id, %stream_id, "无法保留回放 SSRC 的所有权，恢复记录仅保存在当前进程");
                                 } else if let Err(error) = crate::db::playback_recovery::insert(sip.database_pool(), &record).await {
                                     tracing::error!(%call_id, %stream_id, "持久化待清理回放失败，记录仅保存在当前进程: {}", error);
+                                } else if let (Some(from_header), Some(to_header), Some(request_uri)) = (
+                                    sip.session_manager().get(&call_id).await.and_then(|ctx| ctx.from_header),
+                                    dialog.original_to_header.clone(),
+                                    dialog.original_request_uri.clone(),
+                                ) {
+                                    let address = crate::db::playback_recovery::DialogAddress {
+                                        stream_id: stream_id.clone(),
+                                        request_uri,
+                                        from_header, to_header,
+                                    };
+                                    if let Err(error) = crate::db::playback_recovery::insert_dialog_address(sip.database_pool(), &address).await {
+                                        tracing::error!(%call_id, %stream_id, "持久化回放对话地址失败，暂不可恢复: {}", error);
+                                    }
                                 }
                             } else {
                                 tracing::error!(%call_id, %stream_id, "回放缺少 SSRC，无法持久化恢复记录");
