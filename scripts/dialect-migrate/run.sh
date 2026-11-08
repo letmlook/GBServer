@@ -54,7 +54,9 @@ echo "==> 3. 宏体里的裸 ? → 运行期方言改写"
 python3 $S/fix_raw_placeholders.py "${FILES[@]}"
 
 echo "==> 4. 守门人：dialect_guard 必须 0 违规"
-cargo test --lib dialect_guard 2>&1 | tail -20
+guard_log=$(mktemp "${TMPDIR:-/tmp}/gbserver-dialect-guard.XXXXXX")
+echo "    完整编译及测试日志：$guard_log"
+cargo test --lib dialect_guard 2>&1 | tee "$guard_log" | tail -20
 
 echo "==> 5. 符号体检（必须零丢失）"
 python3 $S/audit_symbols.py
