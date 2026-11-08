@@ -4,16 +4,22 @@
 
 此节仅记录本轮实际证据；下方 2026-09-19 的规模和真机数据是历史快照。
 
+2026-11-08：修正 `scripts/dialect_smoke.py` 的验收判定：CSV 验证文本表头，
+不可用的测试 RTSP 源仅在 ZLM 返回 DESCRIBE 404 时算预期结果，其他失败返回非零
+退出码。定向测试 3/3 通过；隔离 SQLite、PostgreSQL 16、MySQL 8 与真实 ZLM
+逐一冒烟均为 105 项 OK、0 项失败；另将 ZLM 地址设为不可达，验证脚本退出码为 1。
+上述结果不替代目标 Linux 主机和真机验收。
+
 2026-11-08：三数据库 API 冒烟补充连接独立真实 ZLM，SQLite、PostgreSQL 16、
 MySQL 8 各为 103 项 OK、2 项 BAD，失败集合一致：脚本将 CSV 文本按 JSON 判错，
 以及故意不存在的 RTSP 源返回 404。push/start、push/stop 和 media_server/check
-本轮均通过；各实例顺序运行，临时数据库及 ZLM/MySQL 容器已清理。脚本即使出现
-BAD 仍返回退出码 0，结论以输出逐项核对；目标 Linux 主机和真机仍待验收。
+本轮均通过；各实例顺序运行，临时数据库及 ZLM/MySQL 容器已清理。该轮脚本即使出现
+BAD 仍返回退出码 0，结论以输出逐项核对；该判定已在后续修复，见上。
 
 2026-11-08：在隔离 SQLite、PostgreSQL 16、MySQL 8 数据库上以同一当前后端二进制
 分别运行 `scripts/dialect_smoke.py`；三者均为 100 项 OK、5 项 BAD，失败集合一致：
 CSV 被脚本按 JSON 判错，以及 proxy/start、push/start、push/stop、media_server/check
-因本轮有意把 ZLM 地址设为不可达而失败。脚本对 BAD 项仍返回退出码 0，故以输出逐项
+因本轮有意把 ZLM 地址设为不可达而失败。该轮脚本对 BAD 项仍返回退出码 0，故以输出逐项
 判定，不能仅凭退出码称全通过；本轮也未覆盖三库各自的实际媒体路径。临时数据库和
 MySQL 容器已清理，目标 Linux 主机与真机仍待验收。
 

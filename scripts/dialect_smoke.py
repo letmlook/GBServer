@@ -32,11 +32,11 @@ python3 scripts/dialect_smoke.py --base http://127.0.0.1:18081/api --token "$TOK
 
 ## 预期"失败"（不是缺陷）
 
-* `GET /log/list?format=csv` 返回的是 **CSV 文本**而不是 JSON（脚本按 JSON 判定）；
-* `proxy/start` 指向一个不存在的 RTSP 源时，真实 ZLM 会回 404；
+* CSV 按文本表头校验；不存在的 RTSP 源必须由 ZLM 返回 DESCRIBE 404；
 * 第二次运行时 `platform/add` / `region/add` 等会因为上一次留下的数据报"已存在"。
 """
-import json, urllib.request, urllib.error
+import json, sys, urllib.request, urllib.error
+from smoke_result import csv_success, missing_source_rejected, smoke_exit_code
 
 import argparse
 import os
@@ -121,7 +121,6 @@ READS = [
     ('GET', '/group/tree/list', None),
     ('GET', '/group/tree/query?parentId=-1', None),
     ('GET', '/log/list?page=1&count=5&level=INFO', None),
-    ('GET', '/log/list?format=csv&level=INFO', None),
     ('GET', '/server/media_server/list', None),
     ('GET', '/server/media_server/online/list', None),
     ('GET', '/server/media_server/load', None),
@@ -245,7 +244,12 @@ check('POST', '/proxy/add',
        'rtspType': '0', 'enable': True},
       label='proxy/add', verbose=True)
 check('GET', f'/proxy/list?page=1&count=10&query={STREAM}', label='proxy/list(query)')
-check('GET', f'/proxy/start?app={APP}&stream={STREAM}', label='proxy/start')
+r = call('GET', f'/proxy/start?app={APP}&stream={STREAM}')
+if missing_source_rejected(r['st'], r['code'], str(r['msg'])):
+    print('OK   proxy/start -> 预期的 ZLM DESCRIBE 404')
+else:
+    print('BAD  proxy/start ->', r['st'], r['code'], str(r['msg'])[:100])
+    FAIL.append(('proxy/start', r['st'], r['code'], str(r['msg'])[:200]))
 check('GET', f'/proxy/stop?app={APP}&stream={STREAM}', label='proxy/stop')
 check('DELETE', f'/proxy/delete?app={APP}&stream={STREAM}', label='proxy/delete')
 
@@ -439,7 +443,11 @@ check('GET', '/server/media_server/load?id=zlmediakit-1', label='media_server/lo
 
 # ---------------- 日志导出 ----------------
 r = call('GET', '/log/list?format=csv&level=INFO')
-print('CSV 导出:', r['st'], str(r['msg'])[:60], '| 首行:', str(r['raw'])[:60].replace('\n', '\\n'))
+if csv_success(r['st'], r['raw']):
+    print('OK   CSV 导出 -> 表头有效')
+else:
+    print('BAD  CSV 导出 ->', r['st'], str(r['msg'])[:60])
+    FAIL.append(('CSV 导出', r['st'], r['code'], str(r['msg'])[:200]))
 
 # ---------------- 清理本脚本自己造的数据 ----------------
 # 用户先删、角色后删（角色删除会拒绝「仍有用户引用」的角色）。
@@ -462,3 +470,4 @@ print()
 print('=== 失败项:', len(FAIL))
 for f in FAIL:
     print('  ', f)
+sys.exit(smoke_exit_code(FAIL))
