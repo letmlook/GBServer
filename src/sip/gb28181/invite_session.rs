@@ -151,6 +151,13 @@ impl SdpInfo {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SipRoutingHeaders {
+    pub contacts: Vec<String>,
+    /// Response order; constructing the route set requires SIP route processing.
+    pub record_routes: Vec<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct InviteSession {
     pub call_id: String,
@@ -174,6 +181,7 @@ pub struct InviteSession {
     /// Raw To header from the INVITE 200 response; never reconstruct it from current configuration.
     pub original_to_header: Option<String>,
     pub original_request_uri: Option<String>,
+    pub original_routing_headers: Option<SipRoutingHeaders>,
     pub sdp_request: Option<String>,
     pub sdp_response: Option<String>,
     pub timeout_seconds: u64,
@@ -236,6 +244,7 @@ impl InviteSession {
             actual_signaling_peer: None,
             original_to_header: None,
             original_request_uri: None,
+            original_routing_headers: None,
             sdp_request: None,
             sdp_response: None,
             timeout_seconds: 60,
@@ -654,6 +663,27 @@ impl InviteSessionManager {
         true
     }
 
+    pub async fn set_original_routing_headers(
+        &self,
+        call_id: &str,
+        remote_tag: Option<&str>,
+        headers: SipRoutingHeaders,
+    ) -> bool {
+        let mut guard = self.sessions.write().await;
+        let Some(session) = guard.get_mut(call_id) else {
+            return false;
+        };
+        if session.stream_type != StreamType::Playback
+            || session.original_routing_headers.is_some()
+            || remote_tag.is_none_or(str::is_empty)
+            || session.remote_tag.as_deref() != remote_tag
+        {
+            return false;
+        }
+        session.original_routing_headers = Some(headers);
+        true
+    }
+
     pub async fn get_by_device_channel(
         &self,
         device_id: &str,
@@ -880,6 +910,36 @@ mod tests {
             !manager
                 .set_original_to_header("call", "replacement", Some("remote"))
                 .await
+        );
+        let routing = SipRoutingHeaders {
+            contacts: vec!["<sip:device@example.test>".into()],
+            record_routes: vec!["<sip:proxy;lr>".into()],
+        };
+        assert!(
+            !manager
+                .set_original_routing_headers("call", Some("other"), routing.clone())
+                .await
+        );
+        assert!(
+            manager
+                .set_original_routing_headers("call", Some("remote"), routing.clone())
+                .await
+        );
+        assert!(
+            !manager
+                .set_original_routing_headers(
+                    "call",
+                    Some("remote"),
+                    SipRoutingHeaders {
+                        contacts: vec![],
+                        record_routes: vec![]
+                    }
+                )
+                .await
+        );
+        assert_eq!(
+            manager.get("call").await.unwrap().original_routing_headers,
+            Some(routing)
         );
         assert_eq!(
             manager

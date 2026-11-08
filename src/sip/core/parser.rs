@@ -92,6 +92,7 @@ impl Parser {
         let reason = parts[2..].join(" ");
 
         let mut headers = HashMap::new();
+        let mut ordered_headers: Vec<(String, String)> = Vec::new();
         let mut body = None;
         let mut in_body = false;
         let mut body_content = String::new();
@@ -108,9 +109,17 @@ impl Parser {
                 body_content.push_str(line);
                 continue;
             }
+            if line.starts_with(' ') || line.starts_with('\t') {
+                if let Some((_, value)) = ordered_headers.last_mut() {
+                    value.push(' ');
+                    value.push_str(line.trim());
+                }
+                continue;
+            }
             if let Some(pos) = line.find(':') {
                 let name = line[..pos].trim().to_lowercase();
                 let value = line[pos + 1..].trim().to_string();
+                ordered_headers.push((name.clone(), value.clone()));
                 headers.insert(name, value);
             }
         }
@@ -125,6 +134,7 @@ impl Parser {
             status_code: status,
             reason,
             headers,
+            ordered_headers,
             body,
         })
     }
@@ -725,5 +735,45 @@ impl Parser {
             ],
             body,
         )
+    }
+}
+
+#[cfg(test)]
+mod recovery_header_tests {
+    use super::Parser;
+
+    #[test]
+    fn response_preserves_repeated_route_and_contact_headers_in_wire_order() {
+        let response = Parser::parse_response("SIP/2.0 200 OK\r\nRecord-Route: <sip:first.example;lr>,\r\n <sip:folded.example;lr>\r\nrecord-route: \"edge, west\" <sip:second.example;lr>\r\nContact: <sip:first-contact@example.test>\r\ncontact: <sip:second-contact@example.test>\r\nContent-Length: 0\r\n\r\n").unwrap();
+        let routes: Vec<_> = response
+            .ordered_headers
+            .iter()
+            .filter(|(name, _)| name == "record-route")
+            .map(|(_, value)| value.as_str())
+            .collect();
+        let contacts: Vec<_> = response
+            .ordered_headers
+            .iter()
+            .filter(|(name, _)| name == "contact")
+            .map(|(_, value)| value.as_str())
+            .collect();
+        assert_eq!(
+            routes,
+            [
+                "<sip:first.example;lr>, <sip:folded.example;lr>",
+                "\"edge, west\" <sip:second.example;lr>"
+            ]
+        );
+        assert_eq!(
+            contacts,
+            [
+                "<sip:first-contact@example.test>",
+                "<sip:second-contact@example.test>"
+            ]
+        );
+        assert_eq!(
+            response.headers.get("record-route").unwrap(),
+            "\"edge, west\" <sip:second.example;lr>"
+        );
     }
 }

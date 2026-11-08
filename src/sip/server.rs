@@ -469,6 +469,28 @@ use crate::sip::gb28181::media_waiter::{MediaWaitResult, MediaWaiterManager};
 use crate::sip::gb28181::pending_request::PendingRequestManager;
 use crate::sip::gb28181::subscription_lifecycle::SubscriptionLifecycle;
 
+/// Keep header field boundaries and wire order; do not split quoted commas.
+fn playback_response_routing_headers(
+    resp: &SipResponse,
+) -> Option<crate::sip::gb28181::invite_session::SipRoutingHeaders> {
+    if resp.ordered_headers.is_empty() {
+        return None;
+    }
+    let mut contacts = Vec::new();
+    let mut record_routes = Vec::new();
+    for (name, value) in &resp.ordered_headers {
+        match name.as_str() {
+            "contact" | "m" => contacts.push(value.clone()),
+            "record-route" => record_routes.push(value.clone()),
+            _ => {}
+        }
+    }
+    Some(crate::sip::gb28181::invite_session::SipRoutingHeaders {
+        contacts,
+        record_routes,
+    })
+}
+
 async fn select_playback_dialog(
     manager: &InviteSessionManager,
     device_id: &str,
@@ -4653,6 +4675,15 @@ impl SipServer {
                             extract_sip_tag(to_header).as_deref(),
                         )
                         .await;
+                    if let Some(routing) = playback_response_routing_headers(&resp) {
+                        invite_session_manager
+                            .set_original_routing_headers(
+                                &call_id,
+                                extract_sip_tag(to_header).as_deref(),
+                                routing,
+                            )
+                            .await;
+                    }
                 }
                 let mut delivery_failed = false;
                 if let Some((_, tx)) = pending_invites.remove(&call_id) {
@@ -9470,6 +9501,24 @@ pub fn build_upstream_device_status_response(sn: &str, local_device_id: &str, no
 #[cfg(test)]
 mod dialog_tag_tests {
     use super::*;
+
+    #[test]
+    fn playback_response_extracts_all_routing_headers_without_splitting_quoted_commas() {
+        let response = Parser::parse_response("SIP/2.0 200 OK\r\nContact: \"north, west\" <sip:device@example.test>\r\nm: <sip:backup@example.test>\r\nRecord-Route: <sip:first.example;lr>\r\nRecord-Route: <sip:second.example;lr>\r\nContent-Length: 0\r\n\r\n").unwrap();
+        let headers = playback_response_routing_headers(&response).unwrap();
+        assert_eq!(
+            headers.contacts,
+            [
+                "\"north, west\" <sip:device@example.test>",
+                "<sip:backup@example.test>"
+            ]
+        );
+        assert_eq!(
+            headers.record_routes,
+            ["<sip:first.example;lr>", "<sip:second.example;lr>"]
+        );
+        assert!(playback_response_routing_headers(&SipResponse::new(200)).is_none());
+    }
 
     #[tokio::test]
     async fn playback_invite_records_actual_tcp_transport() {

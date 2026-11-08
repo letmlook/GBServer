@@ -194,6 +194,8 @@ pub struct SipResponse {
     pub status_code: StatusCode,
     pub reason: String,
     pub headers: HashMap<String, String>,
+    /// Parsed header fields in wire order, including repeated field names.
+    pub ordered_headers: Vec<(String, String)>,
     pub body: Option<String>,
 }
 
@@ -205,6 +207,7 @@ impl SipResponse {
             status_code: status,
             reason: status.reason().to_string(),
             headers: HashMap::new(),
+            ordered_headers: Vec::new(),
             body: None,
         }
     }
