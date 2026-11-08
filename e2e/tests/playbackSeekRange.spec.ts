@@ -70,3 +70,39 @@ test('切换片段前停止旧会话，停止失败时保留旧会话', async ({
   await expect.poll(() => events.length).toBe(5)
   expect(events[4]).toBe('/dev-api/playback/stop/other-device/other-channel/stream-2')
 })
+
+for (const delayed of [false, true]) {
+  test(`离开回放页面时清理${delayed ? '迟到的' : '已启动的'}会话`, async ({ page }) => {
+    let release: () => void = () => {}
+    const pending = new Promise<void>((resolve) => { release = resolve })
+    let stopCount = 0
+    await page.route('**/gb_record/query/**', (route) => route.fulfill({ json: {
+      code: 0, msg: '成功', data: { total: 1, list: [
+        { name: '离开页面片段', startTime: '2026-10-18T10:00:00', endTime: '2026-10-18T10:01:00' }
+      ] }
+    } }))
+    await page.route('**/playback/start/**', async (route) => {
+      if (delayed) await pending
+      await route.fulfill({ json: { code: 0, msg: '成功', data: {
+        streamId: 'leave-stream', playUrl: 'rtsp://127.0.0.1/test'
+      } } })
+    })
+    await page.route('**/playback/stop/**', (route) => {
+      stopCount++
+      expect(new URL(route.request().url()).pathname).toBe(`/dev-api/playback/stop/${device}/${channel}/leave-stream`)
+      return route.fulfill({ json: { code: 0, msg: '成功', data: null } })
+    })
+    await page.goto('/#/playback', { waitUntil: 'domcontentloaded' })
+    await page.getByPlaceholder('国标设备ID').fill(device)
+    await page.getByPlaceholder('国标通道ID').fill(channel)
+    await page.getByRole('button', { name: '检索' }).click()
+    const started = page.waitForRequest((request) => request.url().includes('/playback/start/'))
+    await page.getByRole('row', { name: /离开页面片段/ }).click()
+    await started
+    if (!delayed) await expect(page.getByRole('button', { name: '暂停' })).toBeVisible()
+    await page.getByRole('link', { name: '控制台' }).click()
+    await expect(page.getByPlaceholder('国标设备ID')).toBeHidden()
+    if (delayed) release()
+    await expect.poll(() => stopCount, { timeout: 5000 }).toBe(1)
+  })
+}

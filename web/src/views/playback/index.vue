@@ -81,7 +81,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue'
+import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import GbDateTimeRange from '@/components/GbDateTimeRange/index.vue'
 import {
@@ -109,9 +109,12 @@ const videoRef = ref<HTMLVideoElement>()
 let hlsInstance: any = null
 let flvPlayer: any = null
 let playIndex = 0
-const PLAY_SEQ = ++playIndex
+let pageActive = true
+let lifecycleGeneration = 0
+let stoppingPlayback: Promise<void> | null = null
 
 function destroyPlayers() {
+  playIndex++
   try { hlsInstance?.destroy?.() } catch {}
   hlsInstance = null
   try { flvPlayer?.destroy?.() } catch {}
@@ -125,10 +128,11 @@ function destroyPlayers() {
 
 async function attachVideo(url: string) {
   await nextTick()
+  if (!pageActive) return
   const video = videoRef.value
   if (!video || !url) return
   destroyPlayers()
-  const seq = PLAY_SEQ
+  const seq = playIndex
 
   // Safari 原生 HLS
   if (video.canPlayType('application/vnd.apple.mpegurl') !== '' && url.includes('.m3u8')) {
@@ -138,7 +142,7 @@ async function attachVideo(url: string) {
   if (url.includes('.m3u8')) {
     try {
       const Hls = (await import('hls.js')).default
-      if (seq !== PLAY_SEQ) return
+      if (seq !== playIndex || !pageActive) return
       if (Hls.isSupported()) {
         const hls = new Hls({ enableWorker: true })
         hls.loadSource(url)
@@ -156,7 +160,7 @@ async function attachVideo(url: string) {
   if (url.includes('.flv')) {
     try {
       const flvjs = (await import('flv.js')).default
-      if (seq !== PLAY_SEQ) return
+      if (seq !== playIndex || !pageActive) return
       if (flvjs.isSupported()) {
         const player = flvjs.createPlayer({ type: 'flv', url, isLive: false })
         player.attachMediaElement(video)
@@ -170,6 +174,7 @@ async function attachVideo(url: string) {
     }
   }
   // 最后兜底：交给浏览器（mp4 等）
+  if (seq !== playIndex || !pageActive) return
   video.src = url
 }
 
@@ -236,10 +241,12 @@ function playbackDuration(start: unknown, end: unknown): number | null {
 
 async function onSelect(row: any) {
   if (playerLoading.value) return
+  const generation = lifecycleGeneration
   const { deviceId, channelId } = form
   playerLoading.value = true
   try {
     if (activePlayback.value) await stopCurrentPlayback()
+    if (!pageActive || generation !== lifecycleGeneration) return
     const res = await startPlayback(deviceId, channelId, {
       startTime: row.startTime,
       endTime: row.endTime
@@ -247,6 +254,12 @@ async function onSelect(row: any) {
     const data = res.data
     if (!data?.streamId) {
       throw new Error(res.msg || '后端未返回回放流')
+    }
+    if (!pageActive || generation !== lifecycleGeneration) {
+      await stopPlayback(deviceId, channelId, data.streamId).catch(() => {
+        ElMessage.warning('离开页面后回放停止未确认，请检查设备流状态')
+      })
+      return
     }
     activePlayback.value = { deviceId, channelId, streamId: data.streamId }
     currentStreamId.value = data.streamId
@@ -301,16 +314,34 @@ async function onStop() {
 async function stopCurrentPlayback() {
   const session = activePlayback.value
   if (!session) return
-  await stopPlayback(session.deviceId, session.channelId, session.streamId)
-  activePlayback.value = null
-  currentStreamId.value = ''
-  playUrl.value = ''
-  currentRecord.value = null
-  destroyPlayers()
+  if (!stoppingPlayback) {
+    stoppingPlayback = stopPlayback(session.deviceId, session.channelId, session.streamId)
+      .then(() => {
+        if (activePlayback.value !== session) return
+        activePlayback.value = null
+        currentStreamId.value = ''
+        playUrl.value = ''
+        currentRecord.value = null
+        destroyPlayers()
+      })
+      .finally(() => { stoppingPlayback = null })
+  }
+  await stoppingPlayback
 }
 
-onMounted(() => {})
-onUnmounted(destroyPlayers)
+function leavePlaybackPage() {
+  if (!pageActive) return
+  pageActive = false
+  lifecycleGeneration++
+  destroyPlayers()
+  void stopCurrentPlayback().catch(() => {
+    ElMessage.warning('离开页面后回放停止未确认，请检查设备流状态')
+  })
+}
+
+onActivated(() => { pageActive = true })
+onDeactivated(leavePlaybackPage)
+onBeforeUnmount(leavePlaybackPage)
 </script>
 
 <style scoped>
