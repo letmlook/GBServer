@@ -169,29 +169,6 @@ async fn sync_platform_registration(
     }
 }
 
-struct CascadeRtpLease {
-    zlm: crate::zlm::ZlmClient,
-    stream_id: String,
-    armed: bool,
-}
-
-impl Drop for CascadeRtpLease {
-    fn drop(&mut self) {
-        if !self.armed {
-            return;
-        }
-        let zlm = self.zlm.clone();
-        let stream_id = self.stream_id.clone();
-        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-            runtime.spawn(async move {
-                if let Err(error) = zlm.close_rtp_server(&stream_id).await {
-                    tracing::warn!(%stream_id, "取消级联启动后关闭 RTP 失败: {}", error);
-                }
-            });
-        }
-    }
-}
-
 async fn start_cascade_stream(
     sip: &crate::sip::SipServer,
     zlm: &crate::zlm::ZlmClient,
@@ -204,30 +181,18 @@ async fn start_cascade_stream(
         channel_id,
         uuid::Uuid::new_v4().simple()
     );
-    // The spawned request outlives cancellation of this future. Its result owns
-    // the allocation, so dropping either the JoinHandle output or our local
-    // lease schedules cleanup even if cancellation races with the response.
-    let client = zlm.clone();
-    let open_stream = stream_id.clone();
-    let (info, mut lease) = tokio::spawn(async move {
-        let lease = CascadeRtpLease {
-            zlm: client.clone(),
-            stream_id: open_stream.clone(),
-            armed: true,
-        };
-        let info = client
-            .open_rtp_server(&crate::zlm::OpenRtpServerRequest {
-                secret: client.secret.clone(),
-                stream_id: open_stream.clone(),
-                port: Some(0),
-                use_tcp: Some(false),
-                rtp_type: Some(0),
-                recv_port: None,
-            })
-            .await?;
-        Ok::<_, anyhow::Error>((info, lease))
-    })
-    .await??;
+    let (info, mut lease) = crate::zlm::port_guard::open_owned_rtp_server(
+        zlm,
+        crate::zlm::OpenRtpServerRequest {
+            secret: zlm.secret.clone(),
+            stream_id: stream_id.clone(),
+            port: Some(0),
+            use_tcp: Some(false),
+            rtp_type: Some(0),
+            recv_port: None,
+        },
+    )
+    .await?;
     if let Err(error) = sip
         .send_platform_invite(platform_id, channel_id, info.port, &stream_id)
         .await
@@ -240,10 +205,10 @@ async fn start_cascade_stream(
                 cleanup_error
             ));
         }
-        lease.armed = false;
+        lease.disarm();
         return Err(error);
     }
-    lease.armed = false;
+    lease.disarm();
     Ok(())
 }
 

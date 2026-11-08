@@ -43,6 +43,76 @@ fn new_playback_stream_id(device_id: &str, channel_id: &str) -> String {
 mod command_state_tests {
     use super::*;
 
+    #[tokio::test]
+    async fn playback_cancelled_during_rtp_open_closes_eventual_allocation() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let proceed = Arc::new(tokio::sync::Notify::new());
+        let closed = Arc::new(AtomicUsize::new(0));
+        let (a, b, c) = (entered.clone(), proceed.clone(), closed.clone());
+        let router = axum::Router::new()
+            .route(
+                "/index/api/openRtpServer",
+                axum::routing::get(move || {
+                    let (a, b) = (a.clone(), b.clone());
+                    async move {
+                        a.notify_one();
+                        b.notified().await;
+                        axum::Json(serde_json::json!({"code":0,"port":30001}))
+                    }
+                }),
+            )
+            .route(
+                "/index/api/closeRtpServer",
+                axum::routing::get(move || {
+                    let c = c.clone();
+                    async move {
+                        c.fetch_add(1, Ordering::SeqCst);
+                        axum::Json(serde_json::json!({"code":0,"hit":1}))
+                    }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        let mut state = crate::test_support::app_state().await;
+        state.sip_server = Some(Arc::new(crate::sip::SipServer::new(
+            crate::config::SipConfig::default(),
+            state.pool.clone(),
+            None,
+        )));
+        state.zlm_client = Some(Arc::new(crate::zlm::ZlmClient::new(
+            "127.0.0.1",
+            port,
+            "test",
+        )));
+        let task = tokio::spawn(async move {
+            playback_start(
+                State(state),
+                Path(("dev".into(), "ch".into())),
+                Query(PlaybackQuery {
+                    start_time: None,
+                    end_time: None,
+                }),
+            )
+            .await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(2), entered.notified())
+            .await
+            .unwrap();
+        task.abort();
+        let _ = task.await;
+        proceed.notify_one();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while closed.load(Ordering::SeqCst) == 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("playback RTP allocation leaked");
+        server.abort();
+    }
+
     #[test]
     fn playback_stream_ids_are_unique_for_concurrent_requests() {
         let ids: std::collections::HashSet<_> = std::thread::scope(|scope| {
@@ -493,8 +563,8 @@ pub async fn playback_start(
                 rtp_type: Some(0),
                 recv_port: None,
             };
-            match zlm_client.open_rtp_server(&rtp_req).await {
-                Ok(rtp_server) => {
+            match crate::zlm::port_guard::open_owned_rtp_server(zlm_client, rtp_req).await {
+                Ok((rtp_server, mut rtp_lease)) => {
                     if let Err(problem) = crate::zlm::port_guard::validate_allocated_rtp_port(
                         &state,
                         zlm_client,
@@ -573,12 +643,15 @@ pub async fn playback_start(
                             if hls_available {
                                 payload["hls"] = serde_json::json!(hls_url);
                             }
+                            rtp_lease.disarm();
                             return Ok(Json(ApiResult::success(payload)));
                         }
                         Err(e) => {
                             tracing::error!("Playback INVITE + media wait failed: {}", e);
                             // 清理已开 RTP 端口
-                            let _ = zlm_client.close_rtp_server(&stream_id).await;
+                            if zlm_client.close_rtp_server(&stream_id).await.is_ok() {
+                                rtp_lease.disarm();
+                            }
                             return Err(AppError::business(
                                 ErrorCode::Error500,
                                 format!(
