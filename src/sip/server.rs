@@ -298,7 +298,7 @@ fn build_ssrc(prefix: u8, device_id: &str) -> String {
     let domain = ssrc_domain_part(device_id);
     // 4 位序号：取设备号后 4 位数字，保证同一设备稳定、不同设备基本不冲突。
     // 需要严格唯一的场景（级联 startSendRtp，ZLM 按 ssrc 选流）走
-    // `SsrcManager::allocate`（自增计数器 + 占用表）。
+    // `SsrcManager::try_allocate`（自增计数器 + 占用表）。
     let digits: String = device_id.chars().filter(|c| c.is_ascii_digit()).collect();
     let tail: String = if digits.len() >= 4 {
         digits[digits.len() - 4..].to_string()
@@ -7909,7 +7909,11 @@ f=v/1/96/1/2/1/1/0
         // 上级平台会按回放处理，语义不符。
         // SSRC 也改为按会话分配：所有通道共用常量 0100000001 时，
         // 媒体面无法区分同时拉取的多路流。
-        let ssrc = self.ssrc_manager().allocate(channel_id, channel_id, "play");
+        let addr: std::net::SocketAddr = format!("{}:{}", server_ip, server_port).parse()?;
+        let ssrc = self
+            .ssrc_manager()
+            .try_allocate(channel_id, channel_id, "play")
+            .ok_or_else(|| anyhow::anyhow!("无法分配 SSRC：编号已用尽或域标识无效"))?;
         let sdp = build_invite_sdp(&self.config.ip, sdp_port, "Play", Some(&ssrc));
 
         // 平台侧：
@@ -7930,11 +7934,13 @@ f=v/1/96/1/2/1/1/0
             ("Content-Type", "application/sdp"),
         ];
 
-        let addr: std::net::SocketAddr = format!("{}:{}", server_ip, server_port).parse()?;
         let uri = format!("sip:{}@{}:{}", channel_id, server_ip, server_port);
         let message = Parser::generate_request("INVITE", &uri, &headers, Some(&sdp));
 
-        self.send_request_to(addr, &message).await?;
+        if let Err(error) = self.send_request_to(addr, &message).await {
+            self.ssrc_manager().release(&ssrc);
+            return Err(error);
+        }
         tracing::info!(
             "Sent platform INVITE for channel {} to platform {} at {}",
             channel_id,

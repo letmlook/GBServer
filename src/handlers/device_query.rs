@@ -313,7 +313,12 @@ pub async fn get_ssrc(
     if let Some(ref sip_server) = state.sip_server {
         let server = &*sip_server;
         let ssrc_mgr = server.ssrc_manager();
-        let ssrc = ssrc_mgr.allocate(&device_id, &channel_id, "live");
+        let Some(ssrc) = ssrc_mgr.try_allocate(&device_id, &channel_id, "live") else {
+            return Json(ApiResult::<()>::error(
+                "无法分配 SSRC：编号已用尽或域标识无效",
+            ))
+            .into_response();
+        };
         return Json(ApiResult::success(serde_json::json!({
             "deviceId": device_id,
             "channelId": channel_id,

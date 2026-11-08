@@ -24,7 +24,8 @@ impl SsrcManager {
         }
     }
 
-    /// 分配一个 SSRC。
+    /// 分配一个未占用的 SSRC；对应类型的编号耗尽或超出 RTP u32 范围时返回 None。
+    /// 调用方负责在会话结束后释放，不能把未释放的编号分配给其他会话。
     ///
     /// 国标 SSRC 为 **10 位十进制**：1 位类型位 + 5 位域标识 + 4 位流序号。
     /// 此前这里是 `format!("0{}{:04}0", prefix9, seq)` —— 前缀 9 位再加 4 位
@@ -36,8 +37,12 @@ impl SsrcManager {
     /// 早期实现取 SIP 设备号前 5 位（`34020`）：类型位为 `4`（对讲/广播）时
     /// 得到 `4340200001` = 4,340,200,001 > `u32::MAX`，RTP 头装不下，
     /// 平台只能回落到另一个 SSRC，与 `y=` 不一致。
-    pub fn allocate(&self, device_id: &str, channel_id: &str, stream_type: &str) -> String {
-        let seq = self.counter.fetch_add(1, Ordering::Relaxed);
+    pub fn try_allocate(
+        &self,
+        device_id: &str,
+        channel_id: &str,
+        stream_type: &str,
+    ) -> Option<String> {
         // 类型位：0 实时 / 1 回放 / 2 下载 / 4 广播(含对讲)
         let type_digit = match stream_type.to_ascii_lowercase().as_str() {
             "playback" | "history" | "play_back" => '1',
@@ -45,24 +50,26 @@ impl SsrcManager {
             "broadcast" | "talk" | "audio" => '4',
             _ => '0',
         };
-        let ssrc = format!("{}{}{:04}", type_digit, self.domain_part, seq % 10000);
-        debug_assert!(
-            ssrc.parse::<u32>().is_ok(),
-            "SSRC 必须能被 u32 表示（RTP 头 32 位）：{}",
-            ssrc
-        );
-
-        self.allocations.insert(
-            ssrc.clone(),
-            SsrcAllocation {
-                ssrc: ssrc.clone(),
-                device_id: device_id.to_string(),
-                channel_id: channel_id.to_string(),
-                stream_type: stream_type.to_string(),
-            },
-        );
-
-        ssrc
+        let start = self.counter.fetch_add(1, Ordering::Relaxed) % 10000;
+        for offset in 0..10000 {
+            let seq = (start + offset) % 10000;
+            let ssrc = format!("{}{}{:04}", type_digit, self.domain_part, seq);
+            if ssrc.parse::<u32>().is_err() {
+                return None;
+            }
+            if let dashmap::mapref::entry::Entry::Vacant(entry) =
+                self.allocations.entry(ssrc.clone())
+            {
+                entry.insert(SsrcAllocation {
+                    ssrc: ssrc.clone(),
+                    device_id: device_id.to_string(),
+                    channel_id: channel_id.to_string(),
+                    stream_type: stream_type.to_string(),
+                });
+                return Some(ssrc);
+            }
+        }
+        None
     }
 
     pub fn release(&self, ssrc: &str) -> Option<SsrcAllocation> {
@@ -121,9 +128,42 @@ mod tests {
     use super::*;
 
     #[test]
+    fn allocation_never_overwrites_active_ssrc_and_reuses_released_slot() {
+        let manager = SsrcManager::new("34020000002000000001");
+        let first = manager
+            .try_allocate("first", "channel", "playback")
+            .unwrap();
+        for _ in 1..10000 {
+            manager
+                .try_allocate("other", "channel", "playback")
+                .unwrap();
+        }
+        assert!(manager
+            .try_allocate("overflow", "channel", "playback")
+            .is_none());
+        assert_eq!(manager.get(&first).unwrap().device_id, "first");
+        manager.release(&first).unwrap();
+        let results = std::thread::scope(|scope| {
+            (0..8)
+                .map(|_| scope.spawn(|| manager.try_allocate("new", "channel", "playback")))
+                .collect::<Vec<_>>()
+                .into_iter()
+                .filter_map(|thread| thread.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(results, [first]);
+    }
+
+    #[test]
+    fn allocation_rejects_ssrc_outside_rtp_u32_range() {
+        let manager = SsrcManager::new("1239999900");
+        assert!(manager.try_allocate("device", "channel", "talk").is_none());
+    }
+
+    #[test]
     fn test_allocate_and_release() {
         let manager = SsrcManager::new("34020000002000000001");
-        let ssrc = manager.allocate("device1", "channel1", "Play");
+        let ssrc = manager.try_allocate("device1", "channel1", "Play").unwrap();
         // 国标 SSRC 必须是 10 位十进制
         assert_eq!(ssrc.len(), 10, "SSRC 应为 10 位, 实际 {}", ssrc);
         assert!(
@@ -153,7 +193,7 @@ mod tests {
             ("talk", '4'),
         ];
         for (kind, expected) in cases {
-            let ssrc = manager.allocate("d", "c", kind);
+            let ssrc = manager.try_allocate("d", "c", kind).unwrap();
             assert_eq!(ssrc.len(), 10, "{} -> {}", kind, ssrc);
             assert!(
                 ssrc.starts_with(expected),
@@ -168,7 +208,7 @@ mod tests {
     #[test]
     fn test_validate() {
         let manager = SsrcManager::new("34020000002000000001");
-        let ssrc = manager.allocate("device1", "channel1", "Play");
+        let ssrc = manager.try_allocate("device1", "channel1", "Play").unwrap();
         assert!(manager.validate(&ssrc, "device1", "channel1"));
         assert!(!manager.validate(&ssrc, "device2", "channel1"));
     }
@@ -182,7 +222,7 @@ mod tests {
         for i in 0..10 {
             let m = manager.clone();
             handles.push(std::thread::spawn(move || {
-                m.allocate("dev", &format!("ch{}", i), "Play")
+                m.try_allocate("dev", &format!("ch{}", i), "Play").unwrap()
             }));
         }
 
@@ -194,9 +234,9 @@ mod tests {
     #[test]
     fn test_release_by_device() {
         let manager = SsrcManager::new("34020000002000000001");
-        manager.allocate("device1", "ch1", "Play");
-        manager.allocate("device1", "ch2", "Play");
-        manager.allocate("device2", "ch3", "Play");
+        manager.try_allocate("device1", "ch1", "Play").unwrap();
+        manager.try_allocate("device1", "ch2", "Play").unwrap();
+        manager.try_allocate("device2", "ch3", "Play").unwrap();
 
         let released = manager.release_by_device("device1");
         assert_eq!(released.len(), 2);
