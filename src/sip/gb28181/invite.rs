@@ -67,7 +67,7 @@ pub enum SessionStatus {
 
 pub struct SessionManager {
     sessions: Arc<RwLock<HashMap<String, InviteSession>>>,
-    rejected: Arc<RwLock<HashMap<String, (Instant, InviteSession)>>>,
+    rejected: Arc<RwLock<HashMap<String, (Instant, InviteSession, bool)>>>,
 }
 
 impl SessionManager {
@@ -121,11 +121,11 @@ impl SessionManager {
         let expires = Instant::now() + ttl;
         let call_id = session.call_id.clone();
         let mut rejected = self.rejected.write().await;
-        rejected.retain(|_, (until, _)| *until > Instant::now());
+        rejected.retain(|_, (until, _, _)| *until > Instant::now());
         if !rejected.contains_key(&call_id) && rejected.len() >= 4096 {
             if let Some(oldest) = rejected
                 .iter()
-                .min_by_key(|(_, (until, _))| *until)
+                .min_by_key(|(_, (until, _, _))| *until)
                 .map(|(key, _)| key.clone())
             {
                 rejected.remove(&oldest);
@@ -134,7 +134,7 @@ impl SessionManager {
         if rejected.contains_key(&call_id) {
             return;
         }
-        rejected.insert(call_id.clone(), (expires, session));
+        rejected.insert(call_id.clone(), (expires, session, false));
         drop(rejected);
         let rejected = self.rejected.clone();
         tokio::spawn(async move {
@@ -142,7 +142,7 @@ impl SessionManager {
             let mut entries = rejected.write().await;
             if entries
                 .get(&call_id)
-                .is_some_and(|(until, _)| *until == expires)
+                .is_some_and(|(until, _, _)| *until == expires)
             {
                 entries.remove(&call_id);
             }
@@ -154,8 +154,25 @@ impl SessionManager {
             .read()
             .await
             .get(call_id)
-            .filter(|(expires, _)| *expires > Instant::now())
-            .map(|(_, session)| session.clone())
+            .filter(|(expires, _, _)| *expires > Instant::now())
+            .map(|(_, session, _)| session.clone())
+    }
+
+    pub async fn claim_late_bye(&self, call_id: &str) -> bool {
+        let mut rejected = self.rejected.write().await;
+        match rejected.get_mut(call_id) {
+            Some((expires, _, sent)) if *expires > Instant::now() && !*sent => {
+                *sent = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    pub async fn unclaim_late_bye(&self, call_id: &str) {
+        if let Some((_, _, sent)) = self.rejected.write().await.get_mut(call_id) {
+            *sent = false;
+        }
     }
 
     pub async fn update_status(&self, call_id: &str, status: SessionStatus) {

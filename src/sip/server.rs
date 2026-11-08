@@ -4170,6 +4170,73 @@ impl SipServer {
             cseq
         );
 
+        // A successful final response can arrive after the caller timed out.
+        // ACK it and immediately terminate the now-unwanted dialog.
+        if resp.status_code() == 200 && cseq.ends_with(" INVITE") {
+            if let Some(ctx) = session_manager.rejected_context(&call_id).await {
+                if let (Some(from), Some(number), Some(peer), Some(to)) = (
+                    ctx.from_header.as_deref(),
+                    ctx.cseq_num,
+                    ctx.device_addr,
+                    resp.headers.get("to"),
+                ) {
+                    if cseq != cseq_header(number, "INVITE") {
+                        return Ok(());
+                    }
+                    let uri = format!("sip:{}@{}:{}", ctx.channel_id, peer.ip(), peer.port());
+                    let via = format!(
+                        "SIP/2.0/UDP {}:{};branch={};rport",
+                        config.ip,
+                        config.port,
+                        generate_branch()
+                    );
+                    let ack = Parser::generate_ack(
+                        &uri,
+                        &via,
+                        from,
+                        to,
+                        &call_id,
+                        &cseq_header(number, "ACK"),
+                    );
+                    if let Err(error) =
+                        crate::sip::transport::tcp::send_sip_out(socket, peer, &ack).await
+                    {
+                        tracing::warn!(%call_id, "发送迟到应答 ACK 失败: {}", error);
+                        return Ok(());
+                    }
+                    if session_manager.claim_late_bye(&call_id).await {
+                        let via = format!(
+                            "SIP/2.0/UDP {}:{};branch={};rport",
+                            config.ip,
+                            config.port,
+                            generate_branch()
+                        );
+                        let seq = cseq_header(number.saturating_add(1), "BYE");
+                        let bye = Parser::generate_request(
+                            "BYE",
+                            &uri,
+                            &[
+                                ("Via", &via),
+                                ("From", from),
+                                ("To", to),
+                                ("Call-ID", &call_id),
+                                ("CSeq", &seq),
+                                ("Max-Forwards", "70"),
+                            ],
+                            None,
+                        );
+                        if let Err(error) =
+                            crate::sip::transport::tcp::send_sip_out(socket, peer, &bye).await
+                        {
+                            tracing::warn!(%call_id, "发送迟到对话 BYE 失败: {}", error);
+                            session_manager.unclaim_late_bye(&call_id).await;
+                        }
+                    }
+                    return Ok(());
+                }
+            }
+        }
+
         // A non-2xx final INVITE response is acknowledged within the original
         // transaction: preserve the INVITE's Via branch and request URI.
         if (300..=699).contains(&resp.status_code()) && cseq.ends_with(" INVITE") {
@@ -8046,6 +8113,9 @@ f=v/1/96/1/2/1/1/0
             },
         };
         if let Err(error) = result {
+            if let Some(ctx) = self.session_manager.get(&call_id).await {
+                self.session_manager.remember_rejected(ctx).await;
+            }
             self.pending_invites.remove(&call_id);
             self.session_manager.remove(&call_id).await;
             self.invite_session_manager.remove(&call_id).await;

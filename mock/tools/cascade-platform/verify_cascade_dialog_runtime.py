@@ -27,6 +27,7 @@ def main():
     channel = "34020000001310009876"
     reject = os.environ.get("GBSERVER_TEST_REJECT") == "1"
     media = os.environ.get("GBSERVER_TEST_MEDIA") == "1"
+    late = os.environ.get("GBSERVER_TEST_LATE") == "1"
     stream = f"cascade_{platform_gb}_{channel}"
     query = urllib.parse.urlencode({"secret": secret})
 
@@ -55,6 +56,8 @@ def main():
             response = (("SIP/2.0 486 Busy Here\r\n" if reject else "SIP/2.0 200 OK\r\n") + f"Via: {headers['via']}\r\n"
                         + f"From: {headers['from']}\r\nTo: {headers['to']};tag=peer123\r\n"
                         + f"Call-ID: {headers['call-id']}\r\nCSeq: 1 INVITE\r\nContent-Length: 0\r\n\r\n")
+            if late:
+                time.sleep(17)
             sock.sendto(response.encode(), addr)
             if reject:
                 ack, _ = sock.recvfrom(65535)
@@ -71,6 +74,26 @@ def main():
                 return
             ack, _ = sock.recvfrom(65535)
             assert ack.startswith(b"ACK "), ack[:80]
+            if late:
+                assert f"To: {headers['to']};tag=peer123" in ack.decode()
+                assert "CSeq: 1 ACK" in ack.decode()
+                bye, _ = sock.recvfrom(65535)
+                assert bye.startswith(b"BYE "), bye[:80]
+                assert f"Call-ID: {headers['call-id']}" in bye.decode()
+                assert f"To: {headers['to']};tag=peer123" in bye.decode()
+                assert "CSeq: 2 BYE" in bye.decode()
+                sock.sendto(response.encode(), addr)
+                repeated_ack, _ = sock.recvfrom(65535)
+                assert repeated_ack.startswith(b"ACK "), repeated_ack[:80]
+                sock.settimeout(0.5)
+                try:
+                    extra, _ = sock.recvfrom(65535)
+                except socket.timeout:
+                    pass
+                else:
+                    raise AssertionError(f"unexpected duplicate late BYE: {extra[:80]!r}")
+                outcome.append((addr, headers))
+                return
             if media:
                 ip, port, ssrc = SipDeviceMock._parse_platform_media(text.split("\r\n\r\n", 1)[1])
                 assert ip and port and ssrc.isdecimal(), (ip, port, ssrc)
@@ -90,6 +113,11 @@ def main():
         result = get(BASE + "/api/platform/channel/push?" + params, {"access-token": token})
         thread.join(10)
         assert len(outcome) == 1 and not isinstance(outcome[0], Exception), outcome
+        if late:
+            assert result["data"]["pushedCount"] == 0 and result["data"]["errors"], result
+            assert stream not in servers(), "timed-out INVITE leaked RTP server"
+            print("late 200 acknowledged and terminated without RTP leak")
+            return
         if reject:
             assert result["data"]["pushedCount"] == 0 and any("486" in error for error in result["data"]["errors"]), result
             assert stream not in servers(), "rejected INVITE leaked RTP server"
