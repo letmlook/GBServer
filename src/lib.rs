@@ -494,6 +494,7 @@ sqlx::query_scalar::<_, bool>(
     // 必须放在建表之后：全新库上这些列建出来就已经是目标类型。
     ensure_pg_column_types(pool).await?;
     ensure_mysql_column_types(pool).await?;
+    db::seq_sync::sync_serial_sequences(pool).await?;
 
     Ok(())
 }
@@ -1583,6 +1584,74 @@ mod tests {
     use crate::config::{DatabaseConfig, JwtConfig, ServerConfig};
     use chrono::Utc;
     use sqlx::sqlite::SqlitePoolOptions;
+
+    #[tokio::test]
+    #[ignore = "requires an isolated TEST_POSTGRES_URL initialized with the production schema"]
+    async fn sequence_sync_waits_for_concurrent_insert() {
+        let pg = sqlx::PgPool::connect(&std::env::var("TEST_POSTGRES_URL").unwrap())
+            .await
+            .unwrap();
+        sqlx::query("SELECT setval('gb_user_id_seq', 1, false)")
+            .execute(&pg)
+            .await
+            .unwrap();
+        let mut tx = pg.begin().await.unwrap();
+        sqlx::query("INSERT INTO gb_user (id, username) VALUES (2, 'concurrent-sequence-test')")
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        let pool = db::Pool::Postgres(pg.clone());
+        let mut sync =
+            tokio::spawn(async move { db::seq_sync::sync_serial_sequences(&pool).await });
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(500), &mut sync)
+                .await
+                .is_err()
+        );
+        tx.commit().await.unwrap();
+        sync.await.unwrap().unwrap();
+        let id: i32 = sqlx::query_scalar(
+            "INSERT INTO gb_user (username) VALUES ('after-sequence-test') RETURNING id",
+        )
+        .fetch_one(&pg)
+        .await
+        .unwrap();
+        assert!(id > 2);
+        sqlx::query("DELETE FROM gb_user WHERE username IN ('concurrent-sequence-test', 'after-sequence-test')").execute(&pg).await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an isolated TEST_POSTGRES_URL initialized with the production schema"]
+    async fn startup_synchronizes_postgres_seed_sequences() {
+        let pg = sqlx::PgPool::connect(&std::env::var("TEST_POSTGRES_URL").unwrap())
+            .await
+            .unwrap();
+        let pool = db::Pool::Postgres(pg.clone());
+        init_db_tables(&pool).await.unwrap();
+        let role_id: i32 = sqlx::query_scalar(
+            "INSERT INTO gb_user_role (name, authority) VALUES ('sequence-test', '1') RETURNING id",
+        )
+        .fetch_one(&pg)
+        .await
+        .unwrap();
+        let user_id: i32 = sqlx::query_scalar(
+            "INSERT INTO gb_user (username) VALUES ('sequence-test') RETURNING id",
+        )
+        .fetch_one(&pg)
+        .await
+        .unwrap();
+        assert!(role_id > 1 && user_id > 1);
+        sqlx::query("DELETE FROM gb_user WHERE id = $1")
+            .bind(user_id)
+            .execute(&pg)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM gb_user_role WHERE id = $1")
+            .bind(role_id)
+            .execute(&pg)
+            .await
+            .unwrap();
+    }
 
     /// Build a minimal `gb_media_server` table on an in-memory SQLite pool.
     /// Returns the pool and a `status=1`/`status=0` inserter closure.

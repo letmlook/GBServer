@@ -132,42 +132,48 @@ async fn advance_sequence(pool: &Pool, col: &SerialColumn) -> sqlx::Result<bool>
     // 2. postgres 里 `max(int4)` 的返回值仍是 **int4**（只有 `max(int8)` 才是
     //    int8），按 `Option<i64>` 解会报 "mismatched types"。必须显式
     //    `::bigint` 转一道 —— 这与本仓库其它地方的 INT4 列处理是同一个道理。
-    let max_col: Option<i64> = crate::dispatch!(pool, |p| {
-        sqlx::query_scalar(&format!(
-            "SELECT MAX({})::bigint FROM {}.{}",
-            quote_ident(&col.column),
-            quote_ident(&col.schema),
-            quote_ident(&col.table)
-        ))
-        .fetch_one(p)
-    })?;
-
-    // 序列当前状态：`last_value` 是最后发放的值，`is_called=false` 表示
-    // 还没发放过 —— 此时下一次 nextval 返回的就是 `last_value` 本身。
-    let (last_value, is_called): (i64, bool) = crate::dispatch!(pool, |p| {
-        sqlx::query_as(&format!(
-            "SELECT last_value, is_called FROM {}.{}",
-            quote_ident(&col.schema),
-            quote_ident(&col.sequence)
-        ))
-        .fetch_one(p)
-    })?;
-
-    let next_value = next_value_of(last_value, is_called);
+    let Pool::Postgres(pg) = pool else {
+        return Ok(false);
+    };
+    let mut tx = pg.begin().await?;
+    // INSERT takes ROW EXCLUSIVE before evaluating serial defaults. Holding this
+    // lock across MAX, sequence inspection and setval serializes normal writers
+    // and other startup syncs, preventing a stale setval from rewinding a sequence.
+    sqlx::query(&format!(
+        "LOCK TABLE {}.{} IN SHARE ROW EXCLUSIVE MODE",
+        quote_ident(&col.schema),
+        quote_ident(&col.table)
+    ))
+    .execute(&mut *tx)
+    .await?;
+    let max_col: Option<i64> = sqlx::query_scalar(&format!(
+        "SELECT MAX({})::bigint FROM {}.{}",
+        quote_ident(&col.column),
+        quote_ident(&col.schema),
+        quote_ident(&col.table)
+    ))
+    .fetch_one(&mut *tx)
+    .await?;
+    let (last_value, is_called): (i64, bool) = sqlx::query_as(&format!(
+        "SELECT last_value, is_called FROM {}.{}",
+        quote_ident(&col.schema),
+        quote_ident(&col.sequence)
+    ))
+    .fetch_one(&mut *tx)
+    .await?;
     let max_value = max_col.unwrap_or(0);
-    if !needs_advance(next_value, max_value) {
-        // 序列已经领先（或刚好对齐）—— **不能往回拨**，否则会重复发放 id。
+    if !needs_advance(next_value_of(last_value, is_called), max_value) {
+        tx.commit().await?;
         return Ok(false);
     }
-
-    crate::dispatch_exec!(pool, |p| {
-        sqlx::query(&format!(
-            "SELECT setval({}, $1, true)",
-            regclass_literal(&col.schema, &col.sequence)
-        ))
-        .bind(max_value)
-        .execute(p)
-    })?;
+    sqlx::query(&format!(
+        "SELECT setval({}, $1, true)",
+        regclass_literal(&col.schema, &col.sequence)
+    ))
+    .bind(max_value)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
     Ok(true)
 }
 
