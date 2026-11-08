@@ -3172,6 +3172,32 @@ async fn resolve_playback_target(state: &AppState, stream: &str) -> Option<(Stri
     parse_playback_stream_id(stream)
 }
 
+/// 日期时间按 SDP 相同的解析规则转换为相对录像起点的秒数。
+/// 数字和 HH:MM:SS 保持原有的相对秒数语义。
+fn normalize_playback_seek(seek: &str, start: &str, end: Option<&str>) -> Result<String, String> {
+    let seek = seek.trim();
+    if !seek.contains('T') && !seek.contains(' ') && !seek.contains('/') {
+        return Ok(seek.to_string());
+    }
+    use crate::sip::gb28181::sdp_builder::to_unix_seconds;
+    let target = to_unix_seconds(seek).ok_or_else(|| "无效的回放定位时间".to_string())?;
+    let start =
+        to_unix_seconds(start).ok_or_else(|| "回放起始时间无效，无法计算定位偏移".to_string())?;
+    if target < start {
+        return Err("定位时间早于回放起始时间".to_string());
+    }
+    if let Some(end) = end.filter(|value| !value.trim().is_empty()) {
+        let end = to_unix_seconds(end).ok_or_else(|| "回放结束时间无效".to_string())?;
+        if target > end {
+            return Err("定位时间晚于回放结束时间".to_string());
+        }
+    }
+    target
+        .checked_sub(start)
+        .map(|offset| offset.to_string())
+        .ok_or_else(|| "回放定位偏移超出范围".to_string())
+}
+
 /// 解析目标并下发 SIP `PlayBackCtrl`；成功返回 `(device_id, channel_id)`。
 pub(crate) async fn dispatch_playback_control(
     state: &AppState,
@@ -3185,6 +3211,18 @@ pub(crate) async fn dispatch_playback_control(
         .get(stream)
         .await
         .ok_or_else(|| format!("没有已登记的回放 SIP 对话：stream {}", stream))?;
+    let cmd = match cmd {
+        crate::sip::PlaybackControlCmd::Seek { seek_time } => {
+            crate::sip::PlaybackControlCmd::Seek {
+                seek_time: normalize_playback_seek(
+                    &seek_time,
+                    &session.start_time,
+                    session.end_time.as_deref(),
+                )?,
+            }
+        }
+        other => other,
+    };
     let (device_id, channel_id) = (session.device_id, session.channel_id);
     let call_id = session
         .call_id
@@ -3575,6 +3613,24 @@ pub struct ChannelDeleteQ {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn absolute_playback_seek_is_relative_to_session_start() {
+        let start = "2026-10-18T23:59:00Z";
+        let end = Some("2026-10-19T00:02:00Z");
+        assert_eq!(
+            normalize_playback_seek("2026-10-19T00:00:30Z", start, end).unwrap(),
+            "90"
+        );
+        assert_eq!(
+            normalize_playback_seek("2026-10-19T08:00:30+08:00", start, end).unwrap(),
+            "90"
+        );
+        assert_eq!(normalize_playback_seek("45", start, end).unwrap(), "45");
+        assert!(normalize_playback_seek("2026-10-18T23:58:59Z", start, end).is_err());
+        assert!(normalize_playback_seek("2026-10-19T00:02:01Z", start, end).is_err());
+        assert!(normalize_playback_seek("2026-10-19T00:00:00Z", "invalid", end).is_err());
+    }
 
     // ============ 回放控制参数解析（2026-09-11 真实实现后补测） ============
 

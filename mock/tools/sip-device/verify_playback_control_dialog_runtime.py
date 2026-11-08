@@ -76,6 +76,15 @@ def main():
                         (1, 2, 3, 4),
                     ))
                 assert all(result["code"] == 0 for result in results), results
+                target = urllib.parse.quote("2026-10-18T10:00:30", safe="")
+                seek = api(f"/api/playback/seek/{stream}/{target}", token)
+                assert seek["code"] == 0 and seek["data"]["sipSent"], seek
+                query = urllib.parse.urlencode({"stream": stream, "seek_time": "2026-10-18T10:00:45"})
+                compatible = api("/api/common/channel/playback/seek?" + query, token)
+                assert compatible["code"] == 0 and compatible["sipSent"], compatible
+                outside = urllib.parse.quote("2026-10-18T10:01:01", safe="")
+                rejected = api(f"/api/playback/seek/{stream}/{outside}", token)
+                assert rejected["code"] != 0, rejected
 
                 deadline = time.monotonic() + 3
                 while time.monotonic() < deadline:
@@ -83,11 +92,11 @@ def main():
                     output.seek(0)
                     log = output.read().decode(errors="replace")
                     matches = re.findall(r"Playback INFO dialog valid=True call_id=(\S+) cseq=(\d+)", log)
-                    if len(matches) >= 5:
+                    if len(matches) >= 7 and "Range: npt=30-" in log and "Range: npt=45-" in log:
                         break
                     time.sleep(0.1)
                 else:
-                    raise AssertionError("Mock did not receive five valid in-dialog INFO messages")
+                    raise AssertionError("Mock did not receive valid INFO and expected seek offsets")
                 assert "Playback INFO dialog valid=False" not in log, log[-1800:]
                 assert len({call_id for call_id, _ in matches}) == 1, matches
                 cseqs = [int(cseq) for _, cseq in matches]
@@ -101,7 +110,9 @@ def main():
                 assert bye_report.exists(), "Mock did not receive playback BYE"
                 bye = json.loads(bye_report.read_text())
                 assert bye["valid"] == 1 and bye["invalid"] == 0, bye
-                print(f"playback controls: five valid INFO messages with increasing CSeq {cseqs}")
+                assert len(matches) == 7, matches
+                print(f"playback controls: seven valid INFO messages with increasing CSeq {cseqs}")
+                print("absolute seek: public 30s, compatible 45s, out-of-range rejected")
                 print("playback stop: BYE CSeq greater than the final INFO")
             except Exception:
                 output.flush()
