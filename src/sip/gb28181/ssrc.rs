@@ -84,6 +84,42 @@ impl SsrcManager {
             })
     }
 
+    /// Reclaim a persisted playback number without displacing another session.
+    pub fn try_restore_lease(
+        self: &Arc<Self>,
+        ssrc: &str,
+        device_id: &str,
+        channel_id: &str,
+        stream_type: &str,
+    ) -> Option<SsrcLease> {
+        if !matches!(
+            stream_type.to_ascii_lowercase().as_str(),
+            "playback" | "history" | "play_back"
+        ) || ssrc.len() != 10
+            || !ssrc.bytes().all(|b| b.is_ascii_digit())
+            || ssrc.parse::<u32>().is_err()
+            || !ssrc.starts_with(&format!("1{}", self.domain_part))
+        {
+            return None;
+        }
+        let dashmap::mapref::entry::Entry::Vacant(entry) = self.allocations.entry(ssrc.to_owned())
+        else {
+            return None;
+        };
+        let allocation = SsrcAllocation {
+            allocation_id: uuid::Uuid::new_v4(),
+            ssrc: ssrc.to_owned(),
+            device_id: device_id.to_owned(),
+            channel_id: channel_id.to_owned(),
+            stream_type: stream_type.to_owned(),
+        };
+        entry.insert(allocation.clone());
+        Some(SsrcLease {
+            manager: self.clone(),
+            allocation,
+        })
+    }
+
     fn allocate_entry(
         &self,
         device_id: &str,
@@ -175,6 +211,60 @@ impl SsrcManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn restore_lease_is_exclusive_and_does_not_release_a_replacement() {
+        let manager = Arc::new(SsrcManager::new("34020000002000000001"));
+        let ssrc = "1200000001";
+        let lease = manager
+            .try_restore_lease(ssrc, "old", "ch", "playback")
+            .unwrap();
+        assert!(manager
+            .try_restore_lease(ssrc, "other", "ch", "playback")
+            .is_none());
+        manager.release(ssrc).unwrap();
+        let replacement = manager
+            .try_restore_lease(ssrc, "new", "ch", "playback")
+            .unwrap();
+        drop(lease);
+        assert_eq!(manager.get(ssrc).unwrap().device_id, "new");
+        drop(replacement);
+        assert!(manager.get(ssrc).is_none());
+    }
+
+    #[test]
+    fn restore_lease_rejects_invalid_or_conflicting_numbers() {
+        let manager = Arc::new(SsrcManager::new("34020000002000000001"));
+        for ssrc in [
+            "120000001",
+            "120000000x",
+            "4294967296",
+            "0200000001",
+            "1999990001",
+        ] {
+            assert!(
+                manager
+                    .try_restore_lease(ssrc, "d", "c", "playback")
+                    .is_none(),
+                "{ssrc}"
+            );
+        }
+        let results = std::thread::scope(|scope| {
+            (0..8)
+                .map(|_| {
+                    scope.spawn(|| manager.try_restore_lease("1200000001", "d", "c", "playback"))
+                })
+                .collect::<Vec<_>>()
+                .into_iter()
+                .filter_map(|t| t.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(results.len(), 1);
+        assert_ne!(
+            manager.try_allocate("other", "c", "playback").unwrap(),
+            "1200000001"
+        );
+    }
 
     #[test]
     fn lease_drop_releases_only_its_own_allocation() {
