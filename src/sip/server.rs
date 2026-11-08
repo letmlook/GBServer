@@ -158,49 +158,62 @@ pub enum PlaybackControlCmd {
 /// 的 **MANSCDP** 报文）——那是"设备控制"（云台/报警/录像）的报文族，
 /// 与回放控制完全不同。设备收到 MANSCDP 的 INFO 只会当作无法识别的控制命令，
 /// **暂停/继续/拖动/倍速全都不会生效**，而平台侧返回的是 success。
-pub(crate) fn build_playback_control_mansrtsp(cmd: &PlaybackControlCmd, cseq: u32) -> String {
+pub(crate) fn build_playback_control_mansrtsp(
+    cmd: &PlaybackControlCmd,
+    cseq: u32,
+) -> Result<String> {
     let (method, extra) = match cmd {
         PlaybackControlCmd::Play | PlaybackControlCmd::Resume => ("PLAY", String::new()),
         PlaybackControlCmd::Pause => ("PAUSE", String::new()),
         PlaybackControlCmd::Stop => ("TEARDOWN", String::new()),
         PlaybackControlCmd::Seek { seek_time } => {
             // 国标 Range 用 npt（秒）。入参可能是 RFC3339、`HH:MM:SS` 或纯秒数。
-            let npt = seek_time_to_npt(seek_time);
+            let npt =
+                seek_time_to_npt(seek_time).ok_or_else(|| anyhow::anyhow!("无效的回放定位时间"))?;
             ("PLAY", format!("Range: npt={}-\r\n", npt))
         }
         PlaybackControlCmd::Scale { speed } => ("PLAY", format!("Scale: {}\r\n", speed)),
     };
-    format!("{} RTSP/1.0\r\nCSeq: {}\r\n{}", method, cseq, extra)
+    Ok(format!(
+        "{} RTSP/1.0\r\nCSeq: {}\r\n{}",
+        method, cseq, extra
+    ))
 }
 
 /// 把回放定位时间换算成 MANSRTSP `Range: npt=` 需要的秒数。
 ///
 /// 支持：纯秒数、`HH:MM:SS`、`YYYY-MM-DDTHH:MM:SS`（按当日 00:00:00 起算）。
-/// 无法识别时回退为 `0`（从头播放）——调用方已在入口校验过格式。
-fn seek_time_to_npt(seek_time: &str) -> f64 {
+/// 无法识别或不合法时拒绝，避免误跳到开头。
+fn seek_time_to_npt(seek_time: &str) -> Option<f64> {
     let t = seek_time.trim();
     if let Ok(secs) = t.parse::<f64>() {
-        return secs;
+        return (secs.is_finite() && secs >= 0.0).then_some(secs);
+    }
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(t) {
+        use chrono::Timelike;
+        return Some((dt.hour() * 3600 + dt.minute() * 60 + dt.second()) as f64);
     }
     if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(t, "%Y-%m-%dT%H:%M:%S") {
         use chrono::Timelike;
-        return (dt.hour() * 3600 + dt.minute() * 60 + dt.second()) as f64;
+        return Some((dt.hour() * 3600 + dt.minute() * 60 + dt.second()) as f64);
     }
     if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(t, "%Y-%m-%d %H:%M:%S") {
         use chrono::Timelike;
-        return (dt.hour() * 3600 + dt.minute() * 60 + dt.second()) as f64;
+        return Some((dt.hour() * 3600 + dt.minute() * 60 + dt.second()) as f64);
     }
     let parts: Vec<&str> = t.split(':').collect();
     if parts.len() == 3 {
         if let (Ok(h), Ok(m), Ok(s)) = (
-            parts[0].parse::<f64>(),
-            parts[1].parse::<f64>(),
+            parts[0].parse::<u32>(),
+            parts[1].parse::<u32>(),
             parts[2].parse::<f64>(),
         ) {
-            return h * 3600.0 + m * 60.0 + s;
+            if m < 60 && s.is_finite() && (0.0..60.0).contains(&s) {
+                return Some(h as f64 * 3600.0 + m as f64 * 60.0 + s);
+            }
         }
     }
-    0.0
+    None
 }
 
 /// **遗留参考实现**：回放控制早就不用它了。
@@ -6577,6 +6590,11 @@ f=v/1/96/1/2/1/1/0
         call_id: Option<&str>,
         cmd: PlaybackControlCmd,
     ) -> Result<()> {
+        if let PlaybackControlCmd::Seek { seek_time } = &cmd {
+            if seek_time_to_npt(seek_time).is_none() {
+                return Err(anyhow::anyhow!("无效的回放定位时间"));
+            }
+        }
         let _send_guard = self.playback_control_send_lock.lock().await;
         let session =
             select_playback_dialog(&self.invite_session_manager, device_id, channel_id, call_id)
@@ -6586,7 +6604,7 @@ f=v/1/96/1/2/1/1/0
             .reserve_playback_cseq(&session.call_id, device_id, channel_id)
             .await
             .ok_or_else(|| anyhow::anyhow!("回放 SIP 对话已结束或 CSeq 已耗尽"))?;
-        let body = build_playback_control_mansrtsp(&cmd, cseq_num);
+        let body = build_playback_control_mansrtsp(&cmd, cseq_num)?;
         let call_id = session.call_id.clone();
         let from_tag = session.local_tag.as_deref().ok_or_else(|| {
             anyhow::anyhow!("Playback dialog {} has no local tag", session.call_id)
@@ -10174,25 +10192,43 @@ impl CascadePullHandleChannelProbe {
 mod playback_control_mansrtsp_tests {
     use super::*;
 
+    #[test]
+    fn rejects_invalid_playback_seek_values() {
+        for value in ["坏数据", "-1", "NaN", "inf", "01:60:00", "1:2:99"] {
+            assert!(seek_time_to_npt(value).is_none(), "{value}");
+        }
+        assert_eq!(seek_time_to_npt("0"), Some(0.0));
+        assert_eq!(seek_time_to_npt("120.5"), Some(120.5));
+        assert_eq!(seek_time_to_npt("2026-09-01T00:01:30Z"), Some(90.0));
+        assert!(build_playback_control_mansrtsp(
+            &PlaybackControlCmd::Seek {
+                seek_time: "坏数据".into()
+            },
+            2
+        )
+        .is_err());
+    }
+
     /// 回放控制必须是 MANSRTSP（RTSP 风格），不是 MANSCDP XML。
     #[test]
     fn builds_rtsp_style_commands() {
-        let b = build_playback_control_mansrtsp(&PlaybackControlCmd::Pause, 3);
+        let b = build_playback_control_mansrtsp(&PlaybackControlCmd::Pause, 3).unwrap();
         assert!(b.starts_with("PAUSE RTSP/1.0\r\n"), "{}", b);
         assert!(b.contains("CSeq: 3\r\n"), "{}", b);
         assert!(!b.contains("<?xml"), "回放控制不能是 XML：{}", b);
 
-        let b = build_playback_control_mansrtsp(&PlaybackControlCmd::Resume, 4);
+        let b = build_playback_control_mansrtsp(&PlaybackControlCmd::Resume, 4).unwrap();
         assert!(b.starts_with("PLAY RTSP/1.0\r\n"), "{}", b);
 
-        let b = build_playback_control_mansrtsp(&PlaybackControlCmd::Stop, 5);
+        let b = build_playback_control_mansrtsp(&PlaybackControlCmd::Stop, 5).unwrap();
         assert!(b.starts_with("TEARDOWN RTSP/1.0\r\n"), "{}", b);
     }
 
     /// 倍速用 `Scale`，拖动用 `Range: npt=<秒>-`。
     #[test]
     fn scale_and_seek_use_rtsp_headers() {
-        let b = build_playback_control_mansrtsp(&PlaybackControlCmd::Scale { speed: 4.0 }, 6);
+        let b =
+            build_playback_control_mansrtsp(&PlaybackControlCmd::Scale { speed: 4.0 }, 6).unwrap();
         assert!(b.starts_with("PLAY RTSP/1.0\r\n"), "{}", b);
         assert!(b.contains("Scale: 4\r\n"), "{}", b);
 
@@ -10201,12 +10237,13 @@ mod playback_control_mansrtsp_tests {
                 seek_time: "120".into(),
             },
             7,
-        );
+        )
+        .unwrap();
         assert!(b.contains("Range: npt=120-\r\n"), "{}", b);
 
         // 也接受 HH:MM:SS 与日期时间形式
-        assert_eq!(seek_time_to_npt("01:02:03"), 3723.0);
-        assert_eq!(seek_time_to_npt("2026-09-01T00:01:30"), 90.0);
-        assert_eq!(seek_time_to_npt("坏数据"), 0.0);
+        assert_eq!(seek_time_to_npt("01:02:03"), Some(3723.0));
+        assert_eq!(seek_time_to_npt("2026-09-01T00:01:30"), Some(90.0));
+        assert_eq!(seek_time_to_npt("坏数据"), None);
     }
 }
